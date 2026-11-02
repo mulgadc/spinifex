@@ -197,8 +197,9 @@ describe("AdminDashboardPanel", () => {
   it("renders add-ons as active for commercial", () => {
     setupMocks({ license: "commercial" })
     renderWithClient(<AdminDashboardPanel />, createTestQueryClient())
-    const activeBadges = screen.getAllByText("Active")
+    const activeBadges = screen.getAllByText("active")
     expect(activeBadges).toHaveLength(3)
+    expect(activeBadges[0]).toHaveAttribute("data-tone", "success")
   })
 
   it("does not show nodes section when there are no nodes", () => {

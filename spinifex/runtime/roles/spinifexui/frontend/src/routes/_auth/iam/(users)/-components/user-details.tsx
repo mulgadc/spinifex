@@ -17,10 +17,10 @@ import {
   PanelFields,
   PanelSection,
   PanelSpinner,
-  PanelTags,
 } from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
+import { IamTags } from "@/components/resource-tags"
 import { StateBadge } from "@/components/state-badge"
 import { Button, buttonVariants } from "@/components/ui/button"
 import type { PanelTab } from "@/lib/panel-search"
@@ -307,7 +307,7 @@ function AccessKeys({ userName }: { userName: string }) {
 function Tags({ userName }: { userName: string }) {
   const { data } = useSuspenseQuery(iamUserQueryOptions(userName))
 
-  return <PanelTags tags={data.User?.Tags} />
+  return <IamTags id={userName} kind="user" tags={data.User?.Tags} />
 }
 
 function Overview({ user }: { user: User }) {
@@ -417,6 +417,7 @@ export function UserDetails({
             aria-label="Open user page"
             className={buttonVariants({ size: "icon-sm", variant: "ghost" })}
             params={{ userName }}
+            search={{ tab }}
             to="/iam/list-users/$userName"
           >
             <Maximize2 />

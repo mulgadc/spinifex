@@ -42,6 +42,12 @@ export const createInstanceSchema = z
     // template supplies them, so they are optional here and enforced below
     // only when no launchTemplateId is set.
     imageId: z.string().optional(),
+    // Sent as the instance's Name tag, which AWS caps at 256 characters.
+    name: z
+      .string()
+      .trim()
+      .max(256, "Name must be at most 256 characters")
+      .optional(),
     instanceType: z.string().optional(),
     keyName: z.string().optional(),
     launchTemplateId: z.string().optional(),
@@ -68,6 +74,7 @@ export const createInstanceSchema = z
     securityGroupIds: z.array(z.string()).optional(),
     newSgName: z.string().optional(),
     newSgDescription: z.string().optional(),
+    allowPing: z.boolean().optional(),
     allowSsh: z.boolean().optional(),
     allowHttp: z.boolean().optional(),
     allowHttps: z.boolean().optional(),

@@ -120,16 +120,16 @@ describe("list-hosted-zones page", () => {
     ).toBeInTheDocument()
     expect(screen.getByText("7")).toBeInTheDocument()
     expect(screen.getByText("production")).toBeInTheDocument()
-    await expect(screen.findByText("Active")).resolves.toBeInTheDocument()
+    await expect(screen.findByText("active")).resolves.toBeInTheDocument()
     await expect(
-      screen.findByText("Pending nameservers"),
+      screen.findByText("pending nameservers"),
     ).resolves.toBeInTheDocument()
     await expect(
-      screen.findByText("Nameservers lost"),
+      screen.findByText("nameservers lost"),
     ).resolves.toBeInTheDocument()
-    await expect(screen.findByText("Suspended")).resolves.toBeInTheDocument()
-    // A zone whose activation cannot be read still lists, marked Unknown.
-    await expect(screen.findByText("Unknown")).resolves.toBeInTheDocument()
+    await expect(screen.findByText("suspended")).resolves.toBeInTheDocument()
+    // A zone whose activation cannot be read still lists, marked unknown.
+    await expect(screen.findByText("unknown")).resolves.toBeInTheDocument()
     expect(activation.get).toHaveBeenCalledWith("ZPENDING")
   })
 

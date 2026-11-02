@@ -1,6 +1,7 @@
 import { useState } from "react"
 
 import { StateBadge } from "@/components/state-badge"
+import { RelativeTime, TagPills, TruncatedText } from "@/components/table-cells"
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -139,23 +140,25 @@ function TableSpecimen() {
   return (
     <Specimen label="Table states">
       <div className="flex w-full flex-col gap-3">
-        <ToggleGroup
-          onValueChange={(values) => {
-            const next = values.at(-1)
+        <div className="overflow-x-auto">
+          <ToggleGroup
+            onValueChange={(values) => {
+              const next = values.at(-1)
 
-            if (next) {
-              setState(next)
-            }
-          }}
-          value={[state]}
-          variant="outline"
-        >
-          {TABLE_STATES.map((option) => (
-            <ToggleGroupItem key={option} value={option}>
-              {option}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
+              if (next) {
+                setState(next)
+              }
+            }}
+            value={[state]}
+            variant="outline"
+          >
+            {TABLE_STATES.map((option) => (
+              <ToggleGroupItem key={option} value={option}>
+                {option}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+        </div>
         <div className="rounded-md border">
           <ScrollArea className="h-72">
             <Table>
@@ -179,10 +182,24 @@ function TableSpecimen() {
   )
 }
 
+// Relative to the moment the page renders, so the specimen always reads the same.
+const THIRTY_THREE_MINUTES_AGO = new Date(Date.now() - 33 * 60 * 1000)
+
+const SAMPLE_TAGS = [
+  { Key: "Name", Value: "web-1" },
+  { Key: "spinifex:eks-cluster", Value: "test-cluster" },
+  { Key: "spinifex:eks-nodegroup", Value: "node-gap" },
+]
+
 export function DataSection() {
   return (
     <CatalogueSection title="Data and layout">
       <TableSpecimen />
+      <Specimen label="Table cells: relative time, truncated text, tag pills; hover for the full value">
+        <RelativeTime date={THIRTY_THREE_MINUTES_AGO} />
+        <TruncatedText text="a-very-long-instance-name-that-would-otherwise-widen-its-column" />
+        <TagPills omit={["Name"]} tags={SAMPLE_TAGS} />
+      </Specimen>
       <Specimen label="Breadcrumb">
         <Breadcrumb>
           <BreadcrumbList>

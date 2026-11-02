@@ -87,7 +87,7 @@ describe("KnowledgeBasesPage", () => {
   it("shows the knowledge base id and status", () => {
     renderSeeded([KB])
     expect(screen.getByText("kb-1")).toBeInTheDocument()
-    expect(screen.getByText("ACTIVE")).toBeInTheDocument()
+    expect(screen.getByText("active")).toBeInTheDocument()
   })
 
   it("renders a create knowledge base link", () => {

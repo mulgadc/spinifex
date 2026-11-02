@@ -217,7 +217,7 @@ describe("ADR-0016:S12 panel tabs and contents come from the panel system", () =
 const RAW_FIELDS = {
   "src/routes/_auth/s3/-components/upload-button.tsx":
     "the hidden file input behind the Upload button",
-  "src/routes/_auth/ec2/(instances)/-components/choice-tile.tsx":
+  "src/components/choice-tile.tsx":
     "a visually hidden radio inside a labelled tile, which the tile draws",
 } satisfies Allowlist
 
@@ -239,6 +239,154 @@ describe("ADR-0016:S15 errors use the shared error components", () => {
   it("never builds an alert of its own", () => {
     expect(
       offenders(ROUTES, (source) => has(source, /"@\/components\/ui\/alert"/u)),
+    ).toStrictEqual([])
+  })
+})
+
+// Rules below are named, not numbered, until the amendment that adds them to
+// ADR-0016 is accepted.
+
+const TINTED_ROUND = {
+  "src/routes/_auth/route53/(hosted-zones)/-components/create-hosted-zone-page.tsx":
+    "numbered steps and a success callout, neither of them a status pill",
+} satisfies Allowlist
+
+// A pill tinted with a status colour is a status, so it is a StatusBadge.
+function handBuiltStatusPill(source: string, path: string): boolean {
+  return (
+    path !== "src/components/state-badge.tsx" &&
+    has(source, /\brounded-full\b/u) &&
+    has(
+      source,
+      /\bbg-(?:success|warning|caution|danger|destructive)(?:\/|-subtle)/u,
+    )
+  )
+}
+
+describe("status pills come from StateBadge or StatusBadge", () => {
+  it("builds no status pill of its own", () => {
+    expect(
+      offenders(COMPOSED, handBuiltStatusPill, TINTED_ROUND),
+    ).toStrictEqual([])
+  })
+
+  it("allows only files that still tint a rounded element", () => {
+    expect(stale(COMPOSED, handBuiltStatusPill, TINTED_ROUND)).toStrictEqual([])
+  })
+
+  it("never shows a status in the brand-coloured default Badge", () => {
+    expect(
+      offenders(COMPOSED, (source) =>
+        has(source, /<Badge(?:\s+variant="default")?\s*>/u),
+      ),
+    ).toStrictEqual([])
+  })
+})
+
+function dropsTab(source: string, path: string): boolean {
+  if (path === "src/components/detail-panel.tsx") {
+    return false
+  }
+
+  return source
+    .split("fullPage={")
+    .slice(1)
+    .some((after) => !after.split("</Link>")[0]?.includes("search={{ tab }}"))
+}
+
+describe("expanding a panel keeps its tab", () => {
+  it("passes the open tab to every full-page link", () => {
+    const panels = Object.values(ALL).filter((source) =>
+      source.includes("fullPage={"),
+    )
+
+    expect(panels.length).toBeGreaterThan(20)
+    expect(offenders(ALL, dropsTab)).toStrictEqual([])
+  })
+})
+
+describe("resource tags are edited in place with InlineTags", () => {
+  it("never brings back the retired tag panels", () => {
+    expect(
+      offenders(ALL, (source) => has(source, /\b(?:PanelTags|TagsEditor)\b/u)),
+    ).toStrictEqual([])
+  })
+})
+
+const FILTER_TOGGLES = {
+  "src/components/filter-bar.tsx": "the filter bar is the one toggle group",
+} satisfies Allowlist
+
+function usesToggleGroup(source: string): boolean {
+  return has(source, /"@\/components\/ui\/toggle-group"/u)
+}
+
+describe("lists filter through one FilterBar", () => {
+  it("builds no filter toggles of its own", () => {
+    expect(offenders(COMPOSED, usesToggleGroup, FILTER_TOGGLES)).toStrictEqual(
+      [],
+    )
+  })
+
+  it("allows only files that still use a toggle group", () => {
+    expect(stale(COMPOSED, usesToggleGroup, FILTER_TOGGLES)).toStrictEqual([])
+  })
+})
+
+// With the React compiler on, a child handed a form never re-renders when
+// form.formState changes, and unit tests run with the compiler off.
+const OWNS_FORM_TOO = {
+  "src/components/elbv2/listener-rule-form.tsx":
+    "the rule form owns its useForm; only ConditionRow is handed it",
+} satisfies Allowlist
+
+function readsHandedFormState(source: string): boolean {
+  return (
+    has(source, /UseFormReturn|ReturnType<typeof useForm/u) &&
+    has(source, /\bform\.formState\./u)
+  )
+}
+
+describe("a component handed a form reads errors through useFormState", () => {
+  it("never reads formState from a form prop", () => {
+    expect(
+      offenders(COMPOSED, readsHandedFormState, OWNS_FORM_TOO),
+    ).toStrictEqual([])
+  })
+
+  it("allows only files that still read it", () => {
+    expect(stale(COMPOSED, readsHandedFormState, OWNS_FORM_TOO)).toStrictEqual(
+      [],
+    )
+  })
+})
+
+// A fill of the page's text colour turns white on the dark theme.
+function invertsTheSurface(source: string): boolean {
+  return has(source, /(?<![\w:-])(?:bg-foreground|text-background)(?![\w/-])/u)
+}
+
+const FLOATING = [
+  "src/components/ui/tooltip.tsx",
+  "src/components/ui/popover.tsx",
+  "src/components/ui/hover-card.tsx",
+  "src/components/ui/dropdown-menu.tsx",
+  "src/components/ui/select.tsx",
+  "src/components/ui/combobox.tsx",
+]
+
+describe("floating surfaces follow the theme", () => {
+  it("never fills a surface with the inverted text colour", () => {
+    expect(offenders(ALL, invertsTheSurface)).toStrictEqual([])
+  })
+
+  it("draws every tooltip, popover and menu on the popover tokens", () => {
+    expect(
+      FLOATING.filter(
+        (path) =>
+          !ALL[path]?.includes("bg-popover") ||
+          !ALL[path].includes("text-popover-foreground"),
+      ),
     ).toStrictEqual([])
   })
 })

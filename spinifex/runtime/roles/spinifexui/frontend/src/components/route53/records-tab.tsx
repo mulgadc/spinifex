@@ -1,12 +1,14 @@
 import type { Change, ResourceRecordSet } from "@aws-sdk/client-route-53"
 import { useSuspenseQuery } from "@tanstack/react-query"
-import { Pencil, Plus, Trash2 } from "lucide-react"
+import { Plus } from "lucide-react"
 import { useState } from "react"
 
+import { BulkDelete } from "@/components/bulk-delete"
 import { type DataColumn, DataTable } from "@/components/data-table"
-import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
 import { ErrorBanner } from "@/components/error-banner"
 import { editChanges, RecordForm } from "@/components/route53/record-form"
+import { SelectionBar } from "@/components/selection-bar"
+import { TruncatedText } from "@/components/table-cells"
 import { Button } from "@/components/ui/button"
 import type { ActivationState } from "@/lib/route53-activation"
 import { useChangeResourceRecordSets } from "@/mutations/route53"
@@ -41,105 +43,45 @@ function recordValues(recordSet: ResourceRecordSet): string[] {
   return (recordSet.ResourceRecords ?? []).map((r) => r.Value ?? "")
 }
 
-interface RecordActionsProps {
-  recordSet: ResourceRecordSet
-  zoneName: string
-  onEdit: () => void
-  onDelete: () => void
-}
-
-// The zone's own NS and SOA are not the customer's to change.
-function RecordActions({
-  recordSet,
-  zoneName,
-  onEdit,
-  onDelete,
-}: RecordActionsProps) {
-  const label = recordLabel(recordSet)
-
-  if (isZoneOwnedRecord(recordSet, zoneName)) {
-    return (
-      <span className="text-xs text-muted-foreground">Managed by the zone</span>
-    )
-  }
-
-  const editable = !recordSet.AliasTarget && isEditableType(recordSet.Type)
-
-  return (
-    <div className="flex justify-end gap-1">
-      {editable && (
-        <Button
-          aria-label={`Edit record ${label}`}
-          onClick={onEdit}
-          size="icon-sm"
-          variant="ghost"
-        >
-          <Pencil />
-        </Button>
-      )}
-      <Button
-        aria-label={`Delete record ${label}`}
-        onClick={onDelete}
-        size="icon-sm"
-        variant="ghost"
-      >
-        <Trash2 />
-      </Button>
-    </div>
-  )
-}
-
-function recordColumns(
-  zoneName: string,
-  onEdit: (recordSet: ResourceRecordSet) => void,
-  onDelete: (recordSet: ResourceRecordSet) => void,
-): DataColumn<ResourceRecordSet>[] {
+function recordColumns(zoneName: string): DataColumn<ResourceRecordSet>[] {
   return [
     {
       id: "name",
       header: "Name",
       cell: (recordSet) => (
-        <span className="font-mono text-xs break-all">
-          {decodeRecordName(recordSet.Name ?? "")}
-        </span>
+        <TruncatedText
+          className="font-mono text-xs"
+          text={decodeRecordName(recordSet.Name ?? "")}
+        />
       ),
     },
     { id: "type", header: "Type", cell: (recordSet) => recordSet.Type },
+    {
+      id: "value",
+      header: "Value",
+      cell: (recordSet) =>
+        isZoneOwnedRecord(recordSet, zoneName) ? (
+          <span className="flex flex-col">
+            <TruncatedText
+              className="font-mono text-xs text-muted-foreground"
+              text={recordValues(recordSet).join(", ")}
+            />
+            <span className="text-2xs text-muted-foreground">
+              Managed by the zone
+            </span>
+          </span>
+        ) : (
+          <TruncatedText
+            className="font-mono text-xs"
+            text={recordValues(recordSet).join(", ")}
+          />
+        ),
+    },
     {
       id: "ttl",
       header: "TTL",
       hideBelow: "sm",
       cell: (recordSet) => recordSet.TTL ?? "—",
-    },
-    {
-      id: "value",
-      header: "Value",
-      cell: (recordSet) => (
-        <span className="font-mono text-xs break-all">
-          {recordValues(recordSet).map((value) => (
-            <span className="block" key={value}>
-              {value}
-            </span>
-          ))}
-        </span>
-      ),
-    },
-    {
-      id: "actions",
-      header: "Actions",
-      align: "end",
-      cell: (recordSet) => (
-        <RecordActions
-          onDelete={() => {
-            onDelete(recordSet)
-          }}
-          onEdit={() => {
-            onEdit(recordSet)
-          }}
-          recordSet={recordSet}
-          zoneName={zoneName}
-        />
-      ),
     },
   ]
 }
@@ -158,9 +100,7 @@ export function RecordsTab({
   const [addOpen, setAddOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<ResourceRecordSet | undefined>()
 
-  const [deleteTarget, setDeleteTarget] = useState<
-    ResourceRecordSet | undefined
-  >()
+  const [selected, setSelected] = useState<Set<string>>(() => new Set())
 
   const notServed =
     activationState !== undefined && activationState !== "ACTIVE"
@@ -202,26 +142,48 @@ export function RecordsTab({
     }
   }
 
-  const handleDelete = async () => {
-    if (!deleteTarget) {
-      return
-    }
+  const byKey = new Map(recordSets.map((set) => [recordKey(set), set]))
 
-    await submitChanges([{ Action: "DELETE", ResourceRecordSet: deleteTarget }])
-    setDeleteTarget(undefined)
+  // The sets go in one batch, so the zone takes all of them or none.
+  const deleteRecords = async (
+    keys: readonly string[],
+  ): Promise<ReadonlyMap<string, string>> => {
+    const changes: Change[] = keys.flatMap((key) => {
+      const set = byKey.get(key)
+
+      return set ? [{ Action: "DELETE", ResourceRecordSet: set }] : []
+    })
+
+    try {
+      await changeMutation.mutateAsync({ zoneId, changes })
+
+      return new Map()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+
+      return new Map(keys.map((key) => [key, message]))
+    }
   }
 
-  const columns = recordColumns(
-    zoneName,
-    (recordSet) => {
+  const columns = recordColumns(zoneName)
+
+  const actionable = (set: ResourceRecordSet) =>
+    !isZoneOwnedRecord(set, zoneName)
+
+  const openRecord = (key: string) => {
+    const set = byKey.get(key)
+
+    if (set && !set.AliasTarget && isEditableType(set.Type)) {
       changeMutation.reset()
-      setEditTarget(recordSet)
-    },
-    (recordSet) => {
-      changeMutation.reset()
-      setDeleteTarget(recordSet)
-    },
-  )
+      setEditTarget(set)
+    }
+  }
+
+  const label = (key: string) => {
+    const set = byKey.get(key)
+
+    return set ? recordLabel(set) : key
+  }
 
   return (
     <div className="flex flex-col gap-3">
@@ -256,12 +218,40 @@ export function RecordsTab({
         </Button>
       </div>
 
+      {selected.size > 0 && (
+        <SelectionBar
+          count={selected.size}
+          onClear={() => {
+            setSelected(new Set())
+          }}
+        >
+          <BulkDelete
+            deleteMany={deleteRecords}
+            description="They stop resolving once the change is in sync."
+            ids={[...selected]}
+            label={label}
+            noun={["record set", "record sets"]}
+            onDeleted={(keys) => {
+              setSelected(
+                (current) =>
+                  new Set([...current].filter((key) => !keys.includes(key))),
+              )
+            }}
+          />
+        </SelectionBar>
+      )}
+
       <DataTable
+        activeId={editTarget ? recordKey(editTarget) : undefined}
         caption="Records"
         columns={columns}
         empty="No records."
         getRowId={recordKey}
+        isRowActionable={actionable}
+        onRowClick={openRecord}
+        onSelectedChange={setSelected}
         rows={recordSets}
+        selected={selected}
       />
 
       {/* Mounted only while open so every session starts from blank defaults. */}
@@ -294,23 +284,6 @@ export function RecordsTab({
           zoneName={zoneName}
         />
       )}
-
-      <DeleteConfirmationDialog
-        description={
-          deleteTarget
-            ? `Delete the ${recordLabel(deleteTarget)} record set? It stops resolving once the change is in sync.`
-            : ""
-        }
-        isPending={changeMutation.isPending}
-        onConfirm={handleDelete}
-        onOpenChange={(open) => {
-          if (!open) {
-            setDeleteTarget(undefined)
-          }
-        }}
-        open={deleteTarget !== undefined}
-        title="Delete record"
-      />
     </div>
   )
 }

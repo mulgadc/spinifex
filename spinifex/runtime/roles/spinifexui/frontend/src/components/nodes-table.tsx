@@ -1,4 +1,4 @@
-import { Badge } from "@/components/ui/badge"
+import { StatusBadge } from "@/components/state-badge"
 import type { NodeInfo } from "@/queries/admin"
 
 function formatUptime(seconds: number): string {
@@ -56,11 +56,11 @@ export function NodesTable({
                   {node.node}
                 </td>
                 <td className="py-1.5 pr-4">
-                  <Badge
-                    variant={node.status === "Ready" ? "default" : "secondary"}
+                  <StatusBadge
+                    tone={node.status === "Ready" ? "success" : "caution"}
                   >
                     {node.status}
-                  </Badge>
+                  </StatusBadge>
                 </td>
                 <td className="py-1.5 pr-4 font-mono text-muted-foreground">
                   {roles || "-"}

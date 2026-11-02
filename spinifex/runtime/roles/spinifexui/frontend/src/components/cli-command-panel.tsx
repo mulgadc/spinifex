@@ -150,7 +150,7 @@ export function CliCommandPanel({ commands }: CliCommandPanelProps) {
               {copied ? "Copied" : "Copy"}
             </Button>
           </div>
-          <div className="overflow-x-auto p-3">
+          <div className="p-3">
             {commands.map((cmd, i) => (
               <div key={cmd.label}>
                 {commands.length > 1 && (
@@ -158,7 +158,8 @@ export function CliCommandPanel({ commands }: CliCommandPanelProps) {
                     {cmd.label}
                   </div>
                 )}
-                <pre className="font-mono text-xs/relaxed">
+                {/* Wraps to the panel; copying takes the unwrapped text. */}
+                <pre className="font-mono text-xs/relaxed wrap-anywhere whitespace-pre-wrap">
                   <code>
                     {cmd.parts.map((part, j) => (
                       // oxlint-disable-next-line no-array-index-key -- positional tokens of one command, never reordered

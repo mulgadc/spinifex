@@ -174,7 +174,7 @@ function Summary({ zoneId }: { zoneId: string }) {
 
   return (
     <ActivationBadge
-      fallback={isPending ? "Loading…" : "Unknown"}
+      fallback={isPending ? "loading…" : "unknown"}
       state={activation?.state}
     />
   )
@@ -210,6 +210,7 @@ export function HostedZoneDetails({
             aria-label="Open hosted zone page"
             className={buttonVariants({ size: "icon-sm", variant: "ghost" })}
             params={{ id }}
+            search={{ tab }}
             to="/route53/list-hosted-zones/$id"
           >
             <Maximize2 />

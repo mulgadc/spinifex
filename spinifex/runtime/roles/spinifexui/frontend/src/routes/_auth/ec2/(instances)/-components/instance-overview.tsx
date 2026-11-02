@@ -20,12 +20,14 @@ import { adminVMsQueryOptions } from "@/queries/admin"
 import {
   ec2AddressesQueryOptions,
   ec2ImageQueryOptions,
+  ec2InstanceTypesQueryOptions,
   ec2SecurityGroupsQueryOptions,
 } from "@/queries/ec2"
 
 import { GpuSection } from "../../-components/gpu-section"
 import { IamRolePanel } from "../../-components/iam-role-panel"
 import { SSHAccess } from "../../-components/ssh-access"
+import { describeTypeSize } from "./run-instances-helpers"
 
 const LINK = "text-primary hover:underline"
 
@@ -225,6 +227,20 @@ function ImageField({
   )
 }
 
+function TypeField({ instance }: { instance: Instance }) {
+  const { data } = useQuery(ec2InstanceTypesQueryOptions)
+
+  const type = data?.InstanceTypes?.find(
+    (candidate) => candidate.InstanceType === instance.InstanceType,
+  )
+
+  return (
+    <PanelField info={type && describeTypeSize(type)} label="Type" mono>
+      {instance.InstanceType}
+    </PanelField>
+  )
+}
+
 function InstanceInformation({
   image,
   instance,
@@ -232,15 +248,16 @@ function InstanceInformation({
   image: Image | undefined
   instance: Instance
 }) {
+  const name = instance.Tags?.find((tag) => tag.Key === "Name")?.Value
+
   return (
     <PanelSection title="Instance information">
       <PanelFields>
         <PanelField copy={instance.InstanceId} label="Instance ID" mono>
           {instance.InstanceId}
         </PanelField>
-        <PanelField label="Type" mono>
-          {instance.InstanceType}
-        </PanelField>
+        <PanelField label="Name">{name}</PanelField>
+        <TypeField instance={instance} />
         <PanelField label="Zone">
           {instance.Placement?.AvailabilityZone}
         </PanelField>

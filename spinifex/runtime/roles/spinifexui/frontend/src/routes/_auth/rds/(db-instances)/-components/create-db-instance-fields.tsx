@@ -3,6 +3,7 @@ import type {
   DBEngineVersion,
   OrderableDBInstanceOption,
 } from "@aws-sdk/client-rds"
+import { Database } from "lucide-react"
 import type { ComponentProps } from "react"
 import {
   type Control,
@@ -11,15 +12,13 @@ import {
   Controller,
 } from "react-hook-form"
 
-import { TextField } from "@/components/form-fields"
+import mariadbMark from "@/assets/engines/mariadb.svg?no-inline"
+import postgresMark from "@/assets/engines/postgresql.svg?no-inline"
+import { ChoiceTile, ChoiceTiles } from "@/components/choice-tile"
+import { FieldLabel, TextField } from "@/components/form-fields"
 import type { PickerNotice } from "@/components/picker-notice"
 import { SecurityGroupPicker } from "@/components/security-group-picker"
-import {
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldTitle,
-} from "@/components/ui/field"
+import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import {
   Select,
   SelectContent,
@@ -27,7 +26,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Switch } from "@/components/ui/switch"
 import { isRdsSystemImage } from "@/lib/system-managed"
 import {
   type CreateDBInstanceFormData,
@@ -37,26 +35,33 @@ import {
 // The retention the backend applies when a create names none.
 export const DEFAULT_BACKUP_RETENTION_DAYS = 7
 
-// Parameters CreateDBInstance rejects outright. Rendered as disabled controls
-// rather than omitted: a user arriving from the AWS console looks for these,
-// and a visible disabled control answers what a missing one only raises.
-const UNAVAILABLE_OPTIONS = [
-  {
-    id: "multi-az",
-    label: "Multi-AZ deployment",
-    note: "Not available on Spinifex — the platform is single-AZ, so a standby would not exist.",
-  },
-  {
-    id: "publicly-accessible",
-    label: "Public access",
-    note: "Not available on Spinifex — the endpoint is a private VPC address.",
-  },
-  {
-    id: "storage-autoscaling",
-    label: "Storage autoscaling",
-    note: "Not available on Spinifex — allocated storage grows only when you ask it to.",
-  },
-] as const
+// The engine's own mark, served from the console's origin for the CSP's
+// img-src 'self'. Both marks are dark, so they sit on a light tile in dark mode.
+const ENGINE_MARKS = new Map<string, { name: string; mark: string }>([
+  ["mariadb", { name: "MariaDB", mark: mariadbMark }],
+  ["postgres", { name: "PostgreSQL", mark: postgresMark }],
+])
+
+export function engineName(engine: string): string {
+  return ENGINE_MARKS.get(engine)?.name ?? engine
+}
+
+function EngineMark({ engine }: { engine: string }) {
+  const known = ENGINE_MARKS.get(engine)
+
+  if (!known) {
+    return <Database aria-hidden className="size-8 text-muted-foreground" />
+  }
+
+  return (
+    <img
+      alt=""
+      className="size-8 object-contain dark:rounded-md dark:bg-white dark:p-0.5"
+      data-engine={engine}
+      src={known.mark}
+    />
+  )
+}
 
 // Which engines and versions this cluster holds an imported image for.
 export function engineImageCatalog(
@@ -146,40 +151,32 @@ export function EngineField({
 }) {
   return (
     <Field>
-      <FieldTitle>
-        <label htmlFor="db-engine">Engine</label>
-      </FieldTitle>
+      <FieldTitle>Engine</FieldTitle>
       <Controller
         control={control}
         name="engine"
         render={({ field }) => (
-          <Select
-            onValueChange={(value) => {
-              onEngineChange(value ?? "")
-            }}
-            value={field.value}
-          >
-            <SelectTrigger
-              aria-invalid={!!error}
-              className="w-full"
-              id="db-engine"
-            >
-              <SelectValue placeholder="Select an engine" />
-            </SelectTrigger>
-            <SelectContent>
-              {engines.map((engine) => (
-                <SelectItem
-                  disabled={!engineHasImage(engine)}
-                  key={engine}
-                  value={engine}
-                >
-                  {engineHasImage(engine)
-                    ? engine
-                    : `${engine} — image not imported`}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <ChoiceTiles columns={2} label="Engine">
+            {engines.map((engine) => (
+              <ChoiceTile
+                checked={field.value === engine}
+                description={
+                  engineHasImage(engine) ? undefined : "Image not imported"
+                }
+                icon={<EngineMark engine={engine} />}
+                key={engine}
+                label={engineName(engine)}
+                layout="inline"
+                onSelect={
+                  engineHasImage(engine)
+                    ? () => {
+                        onEngineChange(engine)
+                      }
+                    : undefined
+                }
+              />
+            ))}
+          </ChoiceTiles>
         )}
       />
       <FieldError errors={[error]} />
@@ -202,9 +199,11 @@ export function EngineVersionField({
 }) {
   return (
     <Field>
-      <FieldTitle>
-        <label htmlFor="db-engine-version">Engine version</label>
-      </FieldTitle>
+      <FieldLabel
+        id="db-engine-version"
+        info="There is no in-place version upgrade, so the version cannot be changed after the database is created."
+        label="Engine version"
+      />
       <Controller
         control={control}
         name="engineVersion"
@@ -232,49 +231,8 @@ export function EngineVersionField({
           </Select>
         )}
       />
-      <FieldDescription>
-        There is no in-place version upgrade, so this cannot be changed after
-        the database is created.
-      </FieldDescription>
       <FieldError errors={[error]} />
     </Field>
-  )
-}
-
-export function StorageEncryptionField() {
-  return (
-    <Field>
-      <FieldTitle>Storage encryption</FieldTitle>
-      <p className="text-sm">Encrypted — always on.</p>
-      <FieldDescription>
-        Storage is encrypted with the cluster key. Unencrypted storage is not
-        offered and a customer-managed key is not selectable.
-      </FieldDescription>
-    </Field>
-  )
-}
-
-export function UnavailableOptionsFieldset() {
-  return (
-    <fieldset className="space-y-3 rounded-md border border-border p-4">
-      <legend className="px-1 text-sm font-medium">
-        Not available on Spinifex
-      </legend>
-      {UNAVAILABLE_OPTIONS.map((option) => (
-        <div
-          className="flex items-start gap-2 text-xs text-muted-foreground"
-          key={option.id}
-        >
-          <span className="mt-0.5 flex">
-            <Switch aria-label={option.label} checked={false} disabled />
-          </span>
-          <span>
-            {option.label}
-            <span className="mt-0.5 block">{option.note}</span>
-          </span>
-        </div>
-      ))}
-    </fieldset>
   )
 }
 
@@ -283,15 +241,16 @@ export function AllocatedStorageField({
   ...inputProps
 }: Omit<
   ComponentProps<typeof TextField>,
-  "description" | "id" | "label" | "max" | "min" | "type"
+  "description" | "id" | "info" | "label" | "max" | "min" | "type"
 > & {
   bounds: OrderableDBInstanceOption | undefined
 }) {
   return (
     <TextField
-      description={
+      info={
         <>
-          gp3, encrypted. Storage grows only — it can never be shrunk.
+          gp3, encrypted with the cluster key. Storage grows only; it can never
+          be shrunk.
           {bounds?.MinStorageSize !== undefined &&
             ` This engine accepts ${bounds.MinStorageSize}–${bounds.MaxStorageSize} GiB.`}
         </>

@@ -1,7 +1,13 @@
 import type { Change, ResourceRecordSet } from "@aws-sdk/client-route-53"
 import { zodResolver } from "@hookform/resolvers/zod"
 import type { SubmitEvent } from "react"
-import { type DeepPartial, useForm, useWatch } from "react-hook-form"
+import {
+  type Control,
+  Controller,
+  type DeepPartial,
+  useForm,
+  useWatch,
+} from "react-hook-form"
 
 import {
   type CliCommand,
@@ -10,34 +16,109 @@ import {
   shellSingleQuote,
 } from "@/components/cli-command-panel"
 import { FormActions } from "@/components/form-actions"
-import { SelectField, selectOptions, TextField } from "@/components/form-fields"
+import {
+  FieldLabel,
+  SelectField,
+  selectOptions,
+  TextField,
+} from "@/components/form-fields"
 import { FormLock } from "@/components/form-lock"
 import { FormPanel } from "@/components/form-panel"
+import { InfoList } from "@/components/info-tip"
+import { Field, FieldDescription, FieldError } from "@/components/ui/field"
 import {
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldTitle,
-} from "@/components/ui/field"
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import {
+  DEFAULT_MX_PRIORITY,
+  DEFAULT_TTL_SECONDS,
   EDITABLE_RECORD_TYPES,
   ensureTrailingDot,
+  RECORD_TYPE_HELP,
   RECORD_VALUE_HINTS,
+  RECORD_VALUE_LABELS,
   type RecordSetFormData,
   recordSetSchema,
   sameName,
+  TTL_OPTIONS,
   toFormValues,
   toRecordSet,
 } from "@/types/route53"
-
-const DEFAULT_TTL_SECONDS = 300
 
 const NEW_RECORD_DEFAULTS: RecordSetFormData = {
   name: "",
   type: "A",
   ttl: DEFAULT_TTL_SECONDS,
+  priority: DEFAULT_MX_PRIORITY,
   values: "",
+}
+
+// The preset TTLs, plus a record's own value when it is not one of them, so
+// opening and saving a record never rewrites its TTL.
+export function ttlOptions(current: number | undefined) {
+  const custom =
+    current !== undefined &&
+    Number.isFinite(current) &&
+    !TTL_OPTIONS.some((option) => option.value === current)
+
+  const options = custom
+    ? [...TTL_OPTIONS, { value: current, label: `${current} seconds` }]
+    : TTL_OPTIONS
+
+  return options.map((option) => ({
+    value: String(option.value),
+    label: option.label,
+  }))
+}
+
+function TtlField({
+  control,
+  current,
+}: {
+  control: Control<RecordSetFormData>
+  current: number | undefined
+}) {
+  const options = ttlOptions(current)
+
+  return (
+    <Controller
+      control={control}
+      name="ttl"
+      render={({ field, fieldState }) => (
+        <Field>
+          <FieldLabel id="record-ttl" label="TTL" />
+          <Select
+            items={options}
+            onValueChange={(next) => {
+              field.onChange(Number(next ?? DEFAULT_TTL_SECONDS))
+            }}
+            value={String(field.value)}
+          >
+            <SelectTrigger
+              aria-invalid={!!fieldState.error}
+              className="w-full"
+              id="record-ttl"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {options.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <FieldError errors={[fieldState.error]} />
+        </Field>
+      )}
+    />
+  )
 }
 
 // editChanges is the batch that turns `original` into `updated`. A record set
@@ -121,21 +202,23 @@ export function RecordForm({
           <SelectField
             control={control}
             id="record-type"
+            info={<InfoList items={RECORD_TYPE_HELP} />}
             label="Record type"
             name="type"
             options={selectOptions(EDITABLE_RECORD_TYPES)}
           />
-          <TextField
-            error={errors.ttl}
-            id="record-ttl"
-            label="TTL (seconds)"
-            type="number"
-            {...register("ttl", { valueAsNumber: true })}
-          />
+          {type === "MX" && (
+            <TextField
+              description="Lower is tried first."
+              error={errors.priority}
+              id="record-priority"
+              label="Priority"
+              type="number"
+              {...register("priority", { valueAsNumber: true })}
+            />
+          )}
           <Field>
-            <FieldTitle>
-              <label htmlFor="record-values">Value</label>
-            </FieldTitle>
+            <FieldLabel id="record-values" label={RECORD_VALUE_LABELS[type]} />
             <Textarea
               aria-invalid={!!errors.values}
               id="record-values"
@@ -146,6 +229,7 @@ export function RecordForm({
             <FieldDescription>{RECORD_VALUE_HINTS[type]}</FieldDescription>
             <FieldError errors={[errors.values]} />
           </Field>
+          <TtlField control={control} current={original?.TTL} />
 
           <CliCommandPanel
             commands={buildRecordCommands(values, zoneId, zoneName, original)}
@@ -178,6 +262,9 @@ export function buildRecordCommands(
       ttl: Number.isFinite(values.ttl)
         ? (values.ttl ?? 0)
         : DEFAULT_TTL_SECONDS,
+      priority: Number.isFinite(values.priority)
+        ? (values.priority ?? DEFAULT_MX_PRIORITY)
+        : DEFAULT_MX_PRIORITY,
       values: values.values ?? "",
     },
     zoneName,

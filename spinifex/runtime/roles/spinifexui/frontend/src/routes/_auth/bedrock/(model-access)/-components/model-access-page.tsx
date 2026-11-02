@@ -8,7 +8,7 @@ import {
 } from "@/components/data-table"
 import { PageHeading } from "@/components/page-heading"
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
-import { Badge } from "@/components/ui/badge"
+import { StatusBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Field, FieldTitle } from "@/components/ui/field"
@@ -136,9 +136,9 @@ function modelAccessColumns(
         const granted = grantedModelIds.has(entry.modelId)
 
         return (
-          <Badge variant={granted ? "default" : "secondary"}>
+          <StatusBadge tone={granted ? "success" : "neutral"}>
             {granted ? "Granted" : "Ungranted"}
-          </Badge>
+          </StatusBadge>
         )
       },
     },

@@ -1,6 +1,7 @@
 import type { ApplyMethod, Parameter } from "@aws-sdk/client-rds"
 import { useState } from "react"
 
+import { FilterBar } from "@/components/filter-bar"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -29,6 +30,18 @@ import {
 } from "@/types/rds"
 
 type SourceFilter = "all" | "user" | "engine-default"
+
+const SOURCE_FILTERS: readonly { value: SourceFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "user", label: "Modified" },
+  { value: "engine-default", label: "Engine default" },
+]
+
+function matchesSource(parameter: Parameter, filter: SourceFilter): boolean {
+  const user = parameter.Source === PARAMETER_SOURCE_USER
+
+  return filter === "all" || (filter === "user") === user
+}
 
 interface Edit {
   value: string
@@ -188,52 +201,32 @@ export function ParametersEditor({
 
   const needle = filterText.trim().toLowerCase()
 
-  const visible = parameters.filter((parameter) => {
-    const source = parameter.Source ?? ""
+  const named = parameters.filter((parameter) =>
+    (parameter.ParameterName ?? "").toLowerCase().includes(needle),
+  )
 
-    if (sourceFilter === "user" && source !== PARAMETER_SOURCE_USER) {
-      return false
-    }
+  const visible = named.filter((parameter) =>
+    matchesSource(parameter, sourceFilter),
+  )
 
-    if (sourceFilter === "engine-default" && source === PARAMETER_SOURCE_USER) {
-      return false
-    }
-
-    return (parameter.ParameterName ?? "").toLowerCase().includes(needle)
-  })
+  const sourceChoices = SOURCE_FILTERS.map((filter) => ({
+    ...filter,
+    count: named.filter((parameter) => matchesSource(parameter, filter.value))
+      .length,
+  }))
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-end gap-3">
-        <div className="grow">
-          <label className="sr-only" htmlFor="parameter-filter">
-            Filter parameters
-          </label>
-          <Input
-            id="parameter-filter"
-            onChange={(e) => {
-              setFilterText(e.target.value)
-            }}
-            placeholder="Filter by parameter name"
-            value={filterText}
-          />
-        </div>
-        <Select
-          onValueChange={(value) => {
-            setSourceFilter(value ?? "all")
-          }}
-          value={sourceFilter}
-        >
-          <SelectTrigger aria-label="Filter by source" className="w-56">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All parameters</SelectItem>
-            <SelectItem value="user">Modified (user)</SelectItem>
-            <SelectItem value="engine-default">Engine default</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
+      <FilterBar
+        choice={sourceFilter}
+        choices={sourceChoices}
+        choicesLabel="Parameter source"
+        onChoiceChange={setSourceFilter}
+        onQueryChange={setFilterText}
+        placeholder="Filter by parameter name"
+        query={filterText}
+        searchLabel="Filter parameters"
+      />
 
       {!readOnly && editedNames.length > 0 && (
         <div className="flex flex-wrap items-center gap-3 rounded-md border p-3">

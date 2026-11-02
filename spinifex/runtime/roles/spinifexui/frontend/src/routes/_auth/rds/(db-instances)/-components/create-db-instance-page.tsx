@@ -1,6 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useSuspenseQuery, useQuery } from "@tanstack/react-query"
-import { useForm, useWatch } from "react-hook-form"
+import { useState } from "react"
+import { type FieldErrors, useForm, useWatch } from "react-hook-form"
 
 import {
   CliCommandPanel,
@@ -9,6 +10,7 @@ import {
   optionalFlag,
   type CliCommand,
 } from "@/components/cli-command-panel"
+import { PanelSection } from "@/components/detail-panel"
 import { FormActions } from "@/components/form-actions"
 import { SelectField, selectOptions, TextField } from "@/components/form-fields"
 import { FormLock } from "@/components/form-lock"
@@ -46,6 +48,10 @@ import {
   subnetGroupOptions,
 } from "../../-components/rds-form-fields"
 import {
+  BackupWindowField,
+  MaintenanceWindowField,
+} from "../../-components/window-fields"
+import {
   AllocatedStorageField,
   type CreateCliValues,
   createCliValues,
@@ -54,10 +60,24 @@ import {
   engineImageCatalog,
   EngineVersionField,
   instanceClassNotice,
+  engineName,
   PlacementSecurityGroupsField,
-  StorageEncryptionField,
-  UnavailableOptionsFieldset,
 } from "./create-db-instance-fields"
+
+// The fields the closed Advanced settings section holds, so a refused submit
+// can open it on the error rather than leave the error out of sight.
+const ADVANCED_FIELDS = [
+  "dbParameterGroupName",
+  "backupRetentionPeriod",
+  "preferredBackupWindow",
+  "preferredMaintenanceWindow",
+] as const satisfies readonly (keyof CreateDBInstanceFormData)[]
+
+export function hasAdvancedError(
+  errors: FieldErrors<CreateDBInstanceFormData>,
+): boolean {
+  return ADVANCED_FIELDS.some((name) => errors[name] !== undefined)
+}
 
 interface CreateDBInstancePageProps {
   // Called with the new DB instance's identifier once created, or with nothing on cancel.
@@ -66,6 +86,10 @@ interface CreateDBInstancePageProps {
 
 export function CreateDBInstancePage({ onClose }: CreateDBInstancePageProps) {
   const createInstance = useCreateDBInstance()
+
+  // Bumped on a refused submit with an error inside Advanced settings, which
+  // remounts the section open; react-hook-form keeps the values across it.
+  const [advancedReveals, setAdvancedReveals] = useState(0)
 
   const { data: engineVersionsData } = useSuspenseQuery(
     rdsEngineVersionsQueryOptions,
@@ -201,6 +225,12 @@ export function CreateDBInstancePage({ onClose }: CreateDBInstancePageProps) {
     onClose(data.dbInstanceIdentifier)
   }
 
+  const onInvalid = (invalid: FieldErrors<CreateDBInstanceFormData>) => {
+    if (hasAdvancedError(invalid)) {
+      setAdvancedReveals((count) => count + 1)
+    }
+  }
+
   // Both engine images absent is a cluster that cannot run RDS at all, so the
   // form is replaced. One absent is the normal state of a fresh cluster and
   // must leave the other engine's create path intact.
@@ -222,173 +252,192 @@ export function CreateDBInstancePage({ onClose }: CreateDBInstancePageProps) {
   const classNotice = instanceClassNotice(selectedEngine, engineClassNotice)
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)}>
+    <form onSubmit={handleSubmit(onSubmit, onInvalid)}>
       <FormLock
         className="space-y-6"
         locked={createInstance.isPending || isSubmitting}
       >
-        <TextField
-          description="Lowercase letters, digits and hyphens. This is also the endpoint hostname, so it cannot be changed later."
-          error={errors.dbInstanceIdentifier}
-          id="db-identifier"
-          label="DB instance identifier"
-          placeholder="orders-db"
-          {...register("dbInstanceIdentifier")}
-        />
+        <PanelSection title="Engine">
+          <div className="space-y-6">
+            <EngineField
+              control={control}
+              engineHasImage={engineHasImage}
+              engines={engines}
+              error={errors.engine}
+              onEngineChange={handleEngineChange}
+            />
 
-        <EngineField
-          control={control}
-          engineHasImage={engineHasImage}
-          engines={engines}
-          error={errors.engine}
-          onEngineChange={handleEngineChange}
-        />
+            {enginesMissingImage.map((engine) => (
+              <SystemImageRequired
+                description={`No ${engineName(engine)} image is imported on this cluster, so a ${engineName(engine)} database cannot launch. The other engines are unaffected.`}
+                importCommand={rdsImportCommand(engine)}
+                key={engine}
+                title={`${engineName(engine)} image not found`}
+              />
+            ))}
 
-        {enginesMissingImage.map((engine) => (
-          <SystemImageRequired
-            description={`No ${engine} image is imported on this cluster, so a ${engine} database cannot launch. The other engines are unaffected.`}
-            importCommand={rdsImportCommand(engine)}
-            key={engine}
-            title={`${engine} image not found`}
-          />
-        ))}
+            <EngineVersionField
+              control={control}
+              engineVersionHasImage={engineVersionHasImage}
+              error={errors.engineVersion}
+              selectedEngine={selectedEngine}
+              versions={versionsForEngine}
+            />
+          </div>
+        </PanelSection>
 
-        <EngineVersionField
-          control={control}
-          engineVersionHasImage={engineVersionHasImage}
-          error={errors.engineVersion}
-          selectedEngine={selectedEngine}
-          versions={versionsForEngine}
-        />
+        <PanelSection title="Settings">
+          <div className="space-y-6">
+            <TextField
+              error={errors.dbInstanceIdentifier}
+              id="db-identifier"
+              info="Lowercase letters, digits and hyphens. This is also the endpoint hostname, so it cannot be changed later."
+              label="DB instance identifier"
+              placeholder="orders-db"
+              {...register("dbInstanceIdentifier")}
+            />
 
-        <SelectField
-          control={control}
-          id="db-instance-class"
-          label="DB instance class"
-          name="dbInstanceClass"
-          notice={classNotice}
-          options={selectOptions(instanceClasses)}
-          placeholder="Select an instance class"
-        />
+            <TextField
+              error={errors.masterUsername}
+              id="db-master-username"
+              label="Master username"
+              placeholder="dbadmin"
+              {...register("masterUsername")}
+            />
 
-        <AllocatedStorageField
-          bounds={storageBounds}
-          error={errors.allocatedStorage}
-          {...register("allocatedStorage", { valueAsNumber: true })}
-        />
+            <TextField
+              error={errors.masterUserPassword}
+              id="db-master-password"
+              info={
+                <>
+                  8–128 printable ASCII characters, excluding &apos;/&apos;,
+                  &apos;&quot;&apos;, &apos;@&apos; and spaces.
+                </>
+              }
+              label="Master password"
+              type="password"
+              {...register("masterUserPassword")}
+            />
 
-        <StorageEncryptionField />
+            <TextField
+              error={errors.confirmPassword}
+              id="db-confirm-password"
+              label="Confirm master password"
+              type="password"
+              {...register("confirmPassword")}
+            />
 
-        <TextField
-          error={errors.masterUsername}
-          id="db-master-username"
-          label="Master username"
-          placeholder="dbadmin"
-          {...register("masterUsername")}
-        />
+            <TextField
+              error={errors.dbName}
+              id="db-name"
+              info="Leave blank to create no database. Letters, digits and underscores, starting with a letter."
+              label="Initial database name"
+              placeholder="Optional"
+              {...register("dbName")}
+            />
 
-        <TextField
-          description={
-            <>
-              8–128 printable ASCII characters, excluding &apos;/&apos;,
-              &apos;&quot;&apos;, &apos;@&apos; and spaces.
-            </>
-          }
-          error={errors.masterUserPassword}
-          id="db-master-password"
-          label="Master password"
-          type="password"
-          {...register("masterUserPassword")}
-        />
+            <DeletionProtectionField
+              control={control}
+              name="deletionProtection"
+            />
+          </div>
+        </PanelSection>
 
-        <TextField
-          error={errors.confirmPassword}
-          id="db-confirm-password"
-          label="Confirm master password"
-          type="password"
-          {...register("confirmPassword")}
-        />
+        <PanelSection title="Instance configuration">
+          <div className="space-y-6">
+            <SelectField
+              control={control}
+              id="db-instance-class"
+              label="DB instance class"
+              name="dbInstanceClass"
+              notice={classNotice}
+              options={selectOptions(instanceClasses)}
+              placeholder="Select an instance class"
+            />
 
-        <TextField
-          description="Leave blank to create no database. Letters, digits and underscores, starting with a letter."
-          error={errors.dbName}
-          id="db-name"
-          label="Initial database name"
-          placeholder="Optional"
-          {...register("dbName")}
-        />
+            <AllocatedStorageField
+              bounds={storageBounds}
+              error={errors.allocatedStorage}
+              {...register("allocatedStorage", { valueAsNumber: true })}
+            />
+          </div>
+        </PanelSection>
 
-        <TextField
-          description="Leave blank to use the engine's own port. The port is fixed at create and cannot be changed later."
-          error={errors.port}
-          id="db-port"
-          label="Port"
-          placeholder="Engine default"
-          {...register("port")}
-        />
+        <PanelSection title="Connectivity">
+          <div className="space-y-6">
+            <SelectField
+              control={control}
+              id="db-subnet-group"
+              info="Leave unset to place the endpoint in the account's default VPC subnet. The subnet group cannot be changed after create."
+              label="DB subnet group"
+              name="dbSubnetGroupName"
+              onValueChange={handleSubnetGroupChange}
+              options={subnetGroupOptions(subnetGroups)}
+              placeholder="Default VPC subnet"
+            />
 
-        <SelectField
-          control={control}
-          description="Leave unset to place the endpoint in the account's default VPC subnet. The subnet group cannot be changed after create."
-          id="db-subnet-group"
-          label="DB subnet group"
-          name="dbSubnetGroupName"
-          onValueChange={handleSubnetGroupChange}
-          options={subnetGroupOptions(subnetGroups)}
-          placeholder="Default VPC subnet"
-        />
+            <PlacementSecurityGroupsField
+              error={errors.vpcSecurityGroupIds}
+              groups={securityGroups}
+              onChange={setSecurityGroups}
+              placementVpcId={placementVpcId}
+              selected={selectedSecurityGroups}
+            />
 
-        <PlacementSecurityGroupsField
-          error={errors.vpcSecurityGroupIds}
-          groups={securityGroups}
-          onChange={setSecurityGroups}
-          placementVpcId={placementVpcId}
-          selected={selectedSecurityGroups}
-        />
+            <TextField
+              error={errors.port}
+              id="db-port"
+              info="Leave blank to use the engine's own port. The port is fixed at create and cannot be changed later."
+              label="Port"
+              placeholder="Engine default"
+              {...register("port")}
+            />
+          </div>
+        </PanelSection>
 
-        <SelectField
-          control={control}
-          id="db-parameter-group"
-          label="DB parameter group"
-          name="dbParameterGroupName"
-          options={parameterGroupOptions(groupsForEngine)}
-          placeholder="Engine default group"
-        />
+        <PanelSection
+          defaultOpen={advancedReveals > 0}
+          key={advancedReveals}
+          title="Advanced settings"
+        >
+          <div className="space-y-6">
+            <SelectField
+              control={control}
+              id="db-parameter-group"
+              label="DB parameter group"
+              name="dbParameterGroupName"
+              options={parameterGroupOptions(groupsForEngine)}
+              placeholder="Engine default group"
+            />
 
-        <TextField
-          description="0 disables automated backups. There is no point-in-time restore; backups are daily snapshots taken in the window below."
-          error={errors.backupRetentionPeriod}
-          id="db-backup-retention"
-          label="Backup retention (days)"
-          max={MAX_BACKUP_RETENTION_DAYS}
-          min={0}
-          type="number"
-          {...register("backupRetentionPeriod", { valueAsNumber: true })}
-        />
+            <TextField
+              error={errors.backupRetentionPeriod}
+              id="db-backup-retention"
+              info="0 disables automated backups. There is no point-in-time restore; backups are daily snapshots taken in the backup window."
+              label="Backup retention (days)"
+              max={MAX_BACKUP_RETENTION_DAYS}
+              min={0}
+              type="number"
+              {...register("backupRetentionPeriod", { valueAsNumber: true })}
+            />
 
-        <TextField
-          description="Leave blank to have one assigned. Minimum 30 minutes."
-          error={errors.preferredBackupWindow}
-          id="db-backup-window"
-          label="Preferred backup window"
-          placeholder="hh24:mi-hh24:mi in UTC"
-          {...register("preferredBackupWindow")}
-        />
+            <BackupWindowField
+              control={control}
+              id="db-backup-window"
+              name="preferredBackupWindow"
+            />
 
-        <TextField
-          description="Leave blank to have one assigned clear of the backup window."
-          error={errors.preferredMaintenanceWindow}
-          id="db-maintenance-window"
-          label="Preferred maintenance window"
-          placeholder="ddd:hh24:mi-ddd:hh24:mi in UTC"
-          {...register("preferredMaintenanceWindow")}
-        />
+            <MaintenanceWindowField
+              control={control}
+              id="db-maintenance-window"
+              name="preferredMaintenanceWindow"
+            />
+          </div>
+        </PanelSection>
 
-        <DeletionProtectionField control={control} name="deletionProtection" />
-
-        <TagsFieldArray control={control} name="tags" />
-
-        <UnavailableOptionsFieldset />
+        <PanelSection title="Tags">
+          <TagsFieldArray control={control} name="tags" />
+        </PanelSection>
 
         <CliCommandPanel
           commands={buildCreateDBInstanceCommands(createCliValues(values))}

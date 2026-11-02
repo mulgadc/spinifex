@@ -45,7 +45,7 @@ describe("ClusterServices", () => {
       "href",
       "/ecs/list-clusters/web/services/api",
     )
-    expect(screen.getByText("ACTIVE")).toBeInTheDocument()
+    expect(screen.getByText("active")).toBeInTheDocument()
     expect(
       screen.getByText(/2 running of 2 desired.*app:3/u),
     ).toBeInTheDocument()

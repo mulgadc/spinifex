@@ -61,9 +61,9 @@ describe("ClustersPage", () => {
     const { onSearchChange } = renderPage()
 
     expect(screen.getByRole("link", { name: "web" })).toBeInTheDocument()
-    expect(screen.getByText("ACTIVE")).toBeInTheDocument()
+    expect(screen.getByText("active")).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole("cell", { name: "ACTIVE" }))
+    fireEvent.click(screen.getByRole("cell", { name: "active" }))
     expect(onSearchChange).toHaveBeenCalledWith({
       ...CLOSED_CLUSTERS_PANEL,
       selected: "web",

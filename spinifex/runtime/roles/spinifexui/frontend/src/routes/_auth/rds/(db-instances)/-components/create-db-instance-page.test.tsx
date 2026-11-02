@@ -110,6 +110,47 @@ function seed(images: unknown[]): QueryClient {
   return qc
 }
 
+function renderForm() {
+  return renderWithClient(
+    <CreateDBInstancePage onClose={vi.fn()} />,
+    seed([image("postgres"), image("mariadb")]),
+  )
+}
+
+async function openAdvanced(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "Advanced settings" }))
+}
+
+async function choose(
+  user: ReturnType<typeof userEvent.setup>,
+  trigger: string,
+  option: string,
+) {
+  await user.click(screen.getByLabelText(trigger))
+  await user.click(screen.getByRole("option", { name: option }))
+}
+
+// Each picker opens a long list, which is slow under a loaded test run.
+const SLOW_FORM_MS = 15_000
+
+// Pasted rather than typed: every keystroke re-renders the whole form.
+async function enter(
+  user: ReturnType<typeof userEvent.setup>,
+  label: string,
+  text: string,
+) {
+  await user.click(screen.getByLabelText(label))
+  await user.paste(text)
+}
+
+async function fillRequired(user: ReturnType<typeof userEvent.setup>) {
+  await enter(user, "DB instance identifier", "orders-db")
+  await choose(user, "DB instance class", "db.t3.micro")
+  await enter(user, "Master username", "dbadmin")
+  await enter(user, "Master password", "Sup3rSecretPw")
+  await enter(user, "Confirm master password", "Sup3rSecretPw")
+}
+
 describe("CreateDBInstancePage system image gating", () => {
   it("renders the full form when both engine images are imported", () => {
     renderWithClient(
@@ -135,22 +176,36 @@ describe("CreateDBInstancePage system image gating", () => {
     expect(screen.queryByText(/RDS system image not found/)).toBeNull()
   })
 
-  it("keeps the engine without an image visible but unselectable", async () => {
-    const user = userEvent.setup()
+  it("keeps the engine without an image visible but unselectable", () => {
     renderWithClient(
       <CreateDBInstancePage onClose={vi.fn()} />,
       seed([image("postgres")]),
     )
 
-    await user.click(screen.getByLabelText("Engine"))
+    expect(screen.getByRole("radio", { name: "PostgreSQL" })).toBeEnabled()
+    expect(screen.getByRole("radio", { name: "MariaDB" })).toBeDisabled()
+    expect(screen.getByText("Image not imported")).toBeInTheDocument()
+  })
 
-    expect(screen.getByRole("option", { name: "postgres" })).toBeEnabled()
+  it("shows each engine as a tile with its own mark", () => {
+    const { container } = renderForm()
 
-    const missing = screen.getByRole("option", {
-      name: "mariadb — image not imported",
-    })
+    expect(
+      [...container.querySelectorAll<HTMLImageElement>("img[data-engine]")].map(
+        (img) => img.dataset.engine,
+      ),
+    ).toStrictEqual(["postgres", "mariadb"])
+  })
 
-    expect(missing).toHaveAttribute("aria-disabled", "true")
+  it("puts the engine before the identifier", () => {
+    const { container } = renderForm()
+    const inputs = [...container.querySelectorAll("input")]
+
+    expect(
+      inputs.indexOf(screen.getByRole("radio", { name: "PostgreSQL" })),
+    ).toBeLessThan(
+      inputs.indexOf(screen.getByLabelText("DB instance identifier")),
+    )
   })
 
   it("defaults to an engine that can actually boot", () => {
@@ -158,8 +213,8 @@ describe("CreateDBInstancePage system image gating", () => {
       <CreateDBInstancePage onClose={vi.fn()} />,
       seed([image("mariadb")]),
     )
-    expect(screen.getByLabelText("Engine")).toHaveTextContent("mariadb")
-    expect(screen.queryByLabelText("DB instance identifier")).not.toBeNull()
+    expect(screen.getByRole("radio", { name: "MariaDB" })).toBeChecked()
+    expect(screen.getByRole("radio", { name: "PostgreSQL" })).not.toBeChecked()
   })
 
   it("carries the import command for the engine that has no image", () => {
@@ -167,37 +222,29 @@ describe("CreateDBInstancePage system image gating", () => {
       <CreateDBInstancePage onClose={vi.fn()} />,
       seed([image("postgres")]),
     )
-    expect(screen.getByText("mariadb image not found")).toBeInTheDocument()
+    expect(screen.getByText("MariaDB image not found")).toBeInTheDocument()
     expect(
       screen.getByText(/spx admin images import.*mariadb/),
     ).toBeInTheDocument()
-    expect(screen.queryByText("postgres image not found")).toBeNull()
+    expect(screen.queryByText("PostgreSQL image not found")).toBeNull()
   })
 
-  it("rejects an image for a different engine version", async () => {
-    const user = userEvent.setup()
+  it("rejects an image for a different engine version", () => {
     renderWithClient(
       <CreateDBInstancePage onClose={vi.fn()} />,
       seed([image("postgres", "17"), image("mariadb")]),
     )
 
-    await user.click(screen.getByLabelText("Engine"))
-    expect(
-      screen.getByRole("option", { name: "postgres — image not imported" }),
-    ).toHaveAttribute("aria-disabled", "true")
+    expect(screen.getByRole("radio", { name: "PostgreSQL" })).toBeDisabled()
   })
 
-  it("rejects an image without the data-volume contract", async () => {
-    const user = userEvent.setup()
+  it("rejects an image without the data-volume contract", () => {
     renderWithClient(
       <CreateDBInstancePage onClose={vi.fn()} />,
       seed([image("postgres", "18", false), image("mariadb")]),
     )
 
-    await user.click(screen.getByLabelText("Engine"))
-    expect(
-      screen.getByRole("option", { name: "postgres — image not imported" }),
-    ).toHaveAttribute("aria-disabled", "true")
+    expect(screen.getByRole("radio", { name: "PostgreSQL" })).toBeDisabled()
   })
 
   it("replaces the form when no engine image is imported", () => {
@@ -208,17 +255,9 @@ describe("CreateDBInstancePage system image gating", () => {
   })
 })
 
-function renderForm() {
-  return renderWithClient(
-    <CreateDBInstancePage onClose={vi.fn()} />,
-    seed([image("postgres"), image("mariadb")]),
-  )
-}
-
 describe("CreateDBInstancePage fields", () => {
   it.each([
     "DB instance identifier",
-    "Engine",
     "Engine version",
     "DB instance class",
     "Allocated storage (GiB)",
@@ -228,33 +267,47 @@ describe("CreateDBInstancePage fields", () => {
     "Initial database name",
     "Port",
     "DB subnet group",
-    "DB parameter group",
-    "Backup retention (days)",
-    "Preferred backup window",
-    "Preferred maintenance window",
   ])("offers the %s field", (label) => {
     renderForm()
     expect(screen.getByLabelText(label)).toBeInTheDocument()
   })
 
-  it("shows encryption as a fixed row rather than a choice", () => {
+  it.each([
+    "DB parameter group",
+    "Backup retention (days)",
+    "Backup window (UTC)",
+    "Maintenance window (UTC)",
+  ])("keeps %s in Advanced settings, closed by default", async (label) => {
+    const user = userEvent.setup()
     renderForm()
-    expect(screen.getByText("Encrypted — always on.")).toBeInTheDocument()
-    expect(screen.queryByLabelText(/KMS/i)).toBeNull()
+    expect(screen.queryByLabelText(label)).toBeNull()
+
+    await openAdvanced(user)
+    expect(screen.getByLabelText(label)).toBeInTheDocument()
   })
 
-  it.each(["Multi-AZ deployment", "Public access", "Storage autoscaling"])(
-    "renders %s as a disabled control with a note",
-    (label) => {
+  it.each(["Engine", "Settings", "Instance configuration", "Connectivity"])(
+    "groups the form under a %s section",
+    (title) => {
       renderForm()
-      const toggle = screen.getByRole("switch", { name: label })
-      expect(toggle).toHaveAttribute("aria-disabled", "true")
-      expect(toggle).not.toBeChecked()
-      expect(toggle.closest("fieldset")).toHaveTextContent(
-        "Not available on Spinifex",
+      expect(screen.getByRole("button", { name: title })).toHaveAttribute(
+        "aria-expanded",
+        "true",
       )
     },
   )
+
+  it.each([
+    "Storage encryption",
+    "Not available on Spinifex",
+    "Multi-AZ deployment",
+    "Public access",
+    "Storage autoscaling",
+  ])("drops the %s note", (text) => {
+    renderForm()
+    expect(screen.queryByText(new RegExp(text, "i"))).toBeNull()
+    expect(screen.queryByRole("switch", { name: text })).toBeNull()
+  })
 
   it.each([
     "IAM database authentication",
@@ -332,11 +385,17 @@ describe("CreateDBInstancePage fields", () => {
     expect(screen.queryByText("db.r5.large")).toBeNull()
   })
 
-  it("states the storage bounds the catalog reported", () => {
+  it("states the storage bounds the catalog reported in its tip", async () => {
+    const user = userEvent.setup()
     renderForm()
-    expect(
-      screen.getByText(/This engine accepts 20–65536 GiB/),
-    ).toBeInTheDocument()
+    expect(screen.queryByText(/This engine accepts/)).toBeNull()
+
+    await user.click(
+      screen.getByRole("button", { name: "About Allocated storage (GiB)" }),
+    )
+    await expect(
+      screen.findByText(/This engine accepts 20–65536 GiB/),
+    ).resolves.toBeInTheDocument()
   })
 
   it("builds a CLI command that never echoes the password", () => {
@@ -367,18 +426,7 @@ describe("CreateDBInstancePage submit", () => {
       seed([image("postgres"), image("mariadb")]),
     )
 
-    await user.type(
-      screen.getByLabelText("DB instance identifier"),
-      "orders-db",
-    )
-    await user.click(screen.getByLabelText("DB instance class"))
-    await user.click(screen.getByRole("option", { name: "db.t3.micro" }))
-    await user.type(screen.getByLabelText("Master username"), "dbadmin")
-    await user.type(screen.getByLabelText("Master password"), "Sup3rSecretPw")
-    await user.type(
-      screen.getByLabelText("Confirm master password"),
-      "Sup3rSecretPw",
-    )
+    await fillRequired(user)
     await user.click(screen.getByRole("button", { name: "Create Database" }))
 
     await expect(
@@ -394,4 +442,60 @@ describe("CreateDBInstancePage submit", () => {
       screen.getByRole("button", { name: "Create Database" }),
     ).toBeEnabled()
   })
+
+  it(
+    "sends the windows the pickers built",
+    async () => {
+      const user = userEvent.setup()
+      renderForm()
+      await fillRequired(user)
+      await openAdvanced(user)
+      await choose(user, "Backup window start", "03:00")
+      await choose(user, "Maintenance window day", "Saturday")
+      await choose(user, "Maintenance window start", "23:30")
+      await user.click(screen.getByRole("button", { name: "Create Database" }))
+
+      await vi.waitFor(() => {
+        expect(mockSend).toHaveBeenCalled()
+      })
+      expect(mockSend.mock.lastCall?.[0].input).toMatchObject({
+        PreferredBackupWindow: "03:00-03:30",
+        PreferredMaintenanceWindow: "sat:23:30-sun:00:00",
+      })
+    },
+    SLOW_FORM_MS,
+  )
+
+  it(
+    "opens Advanced settings on an overlap and names it beside the field",
+    async () => {
+      const user = userEvent.setup()
+      renderForm()
+      await fillRequired(user)
+      await openAdvanced(user)
+      await choose(user, "Backup window start", "03:00")
+      await choose(user, "Maintenance window day", "Thursday")
+      await choose(user, "Maintenance window start", "03:00")
+      await openAdvanced(user)
+      expect(screen.queryByLabelText("Maintenance window (UTC)")).toBeNull()
+
+      mockSend.mockClear()
+      await user.click(screen.getByRole("button", { name: "Create Database" }))
+
+      await expect(
+        screen.findByText(
+          "The maintenance window overlaps the backup window at that time of day",
+        ),
+      ).resolves.toBeInTheDocument()
+      expect(
+        screen.getByLabelText("Maintenance window (UTC)"),
+      ).toBeInTheDocument()
+      expect(mockSend).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          input: expect.objectContaining({ DBInstanceIdentifier: "orders-db" }),
+        }),
+      )
+    },
+    SLOW_FORM_MS,
+  )
 })

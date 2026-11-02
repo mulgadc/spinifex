@@ -178,7 +178,7 @@ describe("create-hosted-zone walkthrough", () => {
     expect(
       screen.getByText("Answered by a.gtld-servers.net"),
     ).toBeInTheDocument()
-    expect(screen.getByText("Pending nameservers")).toBeInTheDocument()
+    expect(screen.getByText("pending nameservers")).toBeInTheDocument()
     expect(screen.queryByText("Registered")).toBeNull()
 
     await user.click(screen.getByRole("button", { name: "Check now" }))
@@ -206,7 +206,7 @@ describe("create-hosted-zone walkthrough", () => {
       }),
     )
     await expect(
-      screen.findByText("Pending nameservers"),
+      screen.findByText("pending nameservers"),
     ).resolves.toBeInTheDocument()
     const callsWhilePending = activation.get.mock.calls.length
 

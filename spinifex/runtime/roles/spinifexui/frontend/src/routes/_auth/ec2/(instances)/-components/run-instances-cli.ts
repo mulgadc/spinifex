@@ -8,6 +8,7 @@ import {
   optionalFlag,
   type CommandPart,
 } from "@/components/cli-command-panel"
+import { launchWizardPermissions } from "@/mutations/ec2"
 import type { CreateInstanceFormData } from "@/types/ec2"
 
 import { DEFAULT_ROOT_DEVICE_NAME } from "./run-instances-helpers"
@@ -25,6 +26,28 @@ function countParts(values: RunInstancesValues): CommandPart[] {
   return commandFlag("\\\n  --count", (values.count ?? 0) || 1)
 }
 
+// Single-quoted for the shell, so a quote in the name closes and reopens.
+function shellQuote(text: string): string {
+  return `'${text.replaceAll("'", String.raw`'\''`)}'`
+}
+
+function nameTagParts(values: RunInstancesValues): CommandPart[] {
+  const name = values.name?.trim()
+
+  if (!name) {
+    return []
+  }
+
+  const spec = [
+    { ResourceType: "instance", Tags: [{ Key: "Name", Value: name }] },
+  ]
+
+  return commandFlag(
+    "\\\n  --tag-specifications",
+    shellQuote(JSON.stringify(spec)),
+  )
+}
+
 function launchTemplateCommand(values: RunInstancesValues): CliCommand {
   const templateVersion = values.launchTemplateVersion || "$Default"
 
@@ -37,6 +60,7 @@ function launchTemplateCommand(values: RunInstancesValues): CliCommand {
         `LaunchTemplateId=${values.launchTemplateId},Version=${templateVersion}`,
       ),
       ...countParts(values),
+      ...nameTagParts(values),
     ],
   }
 }
@@ -62,6 +86,7 @@ function directLaunchParts(values: RunInstancesValues): CommandPart[] {
       values.placementGroupName && `GroupName=${values.placementGroupName}`,
     ),
     ...countParts(values),
+    ...nameTagParts(values),
   ]
 }
 
@@ -93,29 +118,13 @@ function createSecurityGroupCommand(
 function authorizeIngressCommand(
   values: RunInstancesValues,
 ): CliCommand | undefined {
-  const cidr =
-    values.ruleSource === "custom" && values.customCidr
-      ? values.customCidr
-      : "0.0.0.0/0"
+  const permissions = launchWizardPermissions(values)
 
-  const ports = [
-    ...(values.allowSsh === true ? [22] : []),
-    ...(values.allowHttp === true ? [80] : []),
-    ...(values.allowHttps === true ? [443] : []),
-  ]
-
-  if (ports.length === 0) {
+  if (permissions.length === 0) {
     return undefined
   }
 
-  const ipPerms = JSON.stringify(
-    ports.map((port) => ({
-      IpProtocol: "tcp",
-      FromPort: port,
-      ToPort: port,
-      IpRanges: [{ CidrIp: cidr }],
-    })),
-  )
+  const ipPerms = JSON.stringify(permissions)
 
   return {
     label: "Authorize inbound rules",

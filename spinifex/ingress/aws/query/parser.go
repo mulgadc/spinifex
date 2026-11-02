@@ -146,6 +146,10 @@ func setFieldValue(field reflect.Value, value string) error {
 			field.SetBytes([]byte(value))
 			return nil
 		}
+		// The Query protocol sends an empty list as its bare key with no value.
+		if value == "" {
+			field.Set(reflect.MakeSlice(field.Type(), 0, 0))
+		}
 
 	case reflect.String:
 		field.SetString(value)

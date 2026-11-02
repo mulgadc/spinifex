@@ -31,10 +31,17 @@ type Filter struct {
 	Values []string
 }
 
+// AWS refuses an empty value list on these names, each in its own words, and
+// accepts one on any other name without narrowing by it.
+var emptyValuesRefusals = map[string]string{
+	filterDBInstanceID:  "The list of DB Instance Identifiers must not be empty.",
+	filterParameterName: "The list of ParameterNames must not be empty.",
+	filterSnapshotType:  "Invalid value '' for filter snapshot-type",
+}
+
 // ReadFilters validates Filters against the names one Describe call recognises,
 // in AWS's order: an unknown name, compared case-sensitively, before an absent
-// value list. The query parser reads an empty list as absent, so both answer
-// the same.
+// or empty value list.
 func ReadFilters(filters []*rds.Filter, recognised ...string) ([]Filter, error) {
 	out := make([]Filter, 0, len(filters))
 	for _, entry := range filters {
@@ -45,9 +52,15 @@ func ReadFilters(filters []*rds.Filter, recognised ...string) ([]Filter, error) 
 		if entry == nil || entry.Name == nil || !slices.Contains(recognised, name) {
 			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "Unrecognized filter name: %s", name)
 		}
-		if len(entry.Values) == 0 {
+		if entry.Values == nil {
 			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterCombination,
 				"The values list cannot be null for the filter %s.", name)
+		}
+		if len(entry.Values) == 0 {
+			if msg, refused := emptyValuesRefusals[name]; refused {
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterCombination, "%s", msg)
+			}
+			continue
 		}
 		out = append(out, Filter{Name: name, Values: aws.StringValueSlice(entry.Values)})
 	}

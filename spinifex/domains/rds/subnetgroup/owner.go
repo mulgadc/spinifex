@@ -77,7 +77,7 @@ func (o *Owner) Create(ctx context.Context, accountID string, spec Spec) (*Recor
 	if _, err := kvstore.On[Record](kv).Create(ctx, Key(spec.Name), rec); err != nil {
 		if errors.Is(err, kvstore.ErrExists) {
 			return nil, awserrors.Errorf(awserrors.ErrorDBSubnetGroupAlreadyExists,
-				"DB subnet group %s already exists", spec.Name)
+				"The DB subnet group '%s' already exists.", spec.Name)
 		}
 		return nil, err
 	}

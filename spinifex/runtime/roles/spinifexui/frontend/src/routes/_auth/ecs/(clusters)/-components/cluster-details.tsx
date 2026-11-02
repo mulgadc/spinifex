@@ -10,9 +10,9 @@ import {
   PanelFields,
   PanelSection,
   PanelSpinner,
-  PanelTags,
 } from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
+import { EcsTags } from "@/components/resource-tags"
 import { StateBadge } from "@/components/state-badge"
 import { Button, buttonVariants } from "@/components/ui/button"
 import type { PanelTab } from "@/lib/panel-search"
@@ -67,12 +67,9 @@ function Settings({
   const remove = useDeleteCluster()
   const [confirm, setConfirm] = useState(false)
 
-  // ECS spells its tag fields in lower case; the panel reads EC2's.
-  const tags = cluster.tags?.map((tag) => ({ Key: tag.key, Value: tag.value }))
-
   return (
     <>
-      <PanelTags tags={tags} />
+      <EcsTags arn={cluster.clusterArn} tags={cluster.tags} />
       <PanelSection title="Manage">
         <div className="flex flex-col items-start gap-3">
           {remove.isError && (

@@ -30,10 +30,16 @@ func TestReadFilters_AnswersAsAWSDoes(t *testing.T) {
 		"unknown first": {[]*rds.Filter{{Name: aws.String("bogus")}}, awserrors.ErrorInvalidParameterValue, "Unrecognized filter name: bogus"},
 		"no values": {[]*rds.Filter{{Name: aws.String("engine")}}, awserrors.ErrorInvalidParameterCombination,
 			"The values list cannot be null for the filter engine."},
+		"empty db-instance-id": {filter(filterDBInstanceID), awserrors.ErrorInvalidParameterCombination,
+			"The list of DB Instance Identifiers must not be empty."},
+		"empty parameter-name": {filter(filterParameterName), awserrors.ErrorInvalidParameterCombination,
+			"The list of ParameterNames must not be empty."},
+		"empty snapshot-type": {filter(filterSnapshotType), awserrors.ErrorInvalidParameterCombination,
+			"Invalid value '' for filter snapshot-type"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := ReadFilters(tc.filters, filterEngine)
+			_, err := ReadFilters(tc.filters, filterEngine, filterDBInstanceID, filterParameterName, filterSnapshotType)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.code)
 			assert.Contains(t, err.Error(), tc.msg)
@@ -43,6 +49,10 @@ func TestReadFilters_AnswersAsAWSDoes(t *testing.T) {
 	got, err := ReadFilters(append(filter(filterEngine, "postgres"), filter(filterEngine, "mariadb")...), filterEngine)
 	require.NoError(t, err)
 	assert.Equal(t, []Filter{{filterEngine, []string{"postgres"}}, {filterEngine, []string{"mariadb"}}}, got)
+
+	got, err = ReadFilters(append(filter(filterEngine), filter(filterStatus, "available")...), filterEngine, filterStatus)
+	require.NoError(t, err)
+	assert.Equal(t, []Filter{{filterStatus, []string{"available"}}}, got, "an empty list narrows nothing")
 }
 
 // AWS applies parameter-name, matching names in any case, and accepts data-type
@@ -142,6 +152,24 @@ func TestRecognisedFiltersThatDoNotNarrow(t *testing.T) {
 			assert.Contains(t, err.Error(), "Unrecognized filter name: "+tc.unknown)
 		})
 	}
+}
+
+// AWS checks each engine value against its own engine names, not just the ones
+// this platform runs.
+func TestDescribeDBParameterGroups_RefusesUnknownEngine(t *testing.T) {
+	t.Parallel()
+	h := newCreateHarness(t, "")
+	describe := func(values ...string) error {
+		_, err := h.svc.DescribeDBParameterGroups(t.Context(),
+			&rds.DescribeDBParameterGroupsInput{Filters: filter(filterEngine, values...)}, testAccountID)
+		return err
+	}
+
+	require.NoError(t, describe("aurora-postgresql", "postgres"))
+	err := describe("postgres", "nope")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+	assert.Contains(t, err.Error(), "Unrecognized engine name: nope")
 }
 
 // AWS ignores Filters here entirely, even an unknown or malformed entry.

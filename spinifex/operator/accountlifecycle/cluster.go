@@ -30,7 +30,7 @@ func NewClusterEngine(
 	ctx context.Context,
 	nc *nats.Conn,
 	nodes ClusterNodes,
-	svc iamdomain.IAMService,
+	svc IAMBackend,
 	buckets BucketStore,
 ) (*Engine, error) {
 	// Refused rather than skipped. A teardown missing its bucket reaper still

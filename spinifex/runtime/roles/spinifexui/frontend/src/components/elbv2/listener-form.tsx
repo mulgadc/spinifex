@@ -5,7 +5,7 @@ import type {
 } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { useState } from "react"
 import type { UseFormReturn } from "react-hook-form"
-import { Controller, useWatch } from "react-hook-form"
+import { Controller, useFormState, useWatch } from "react-hook-form"
 
 import { CertificateImportForm } from "@/components/elbv2/certificate-import-form"
 import { Button } from "@/components/ui/button"
@@ -83,13 +83,8 @@ export function ListenerForm({
   certificates = EMPTY_CERTIFICATES,
   sslPolicies = EMPTY_SSL_POLICIES,
 }: ListenerFormProps) {
-  const {
-    control,
-    register,
-    getValues,
-    setValue,
-    formState: { errors },
-  } = form
+  const { control, register, getValues, setValue } = form
+  const { errors } = useFormState({ control })
 
   const [importOpen, setImportOpen] = useState(false)
 

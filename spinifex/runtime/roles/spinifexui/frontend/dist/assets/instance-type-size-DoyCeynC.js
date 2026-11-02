@@ -1,0 +1,1 @@
+function e(e){let t=e.VCpuInfo?.DefaultVCpus,n=e.MemoryInfo?.SizeInMiB;return[t===void 0?void 0:`${t} vCPU`,n===void 0?void 0:`${Number((n/1024).toFixed(2))} GiB memory`].filter(Boolean).join(` · `)}function t(t,n){let r=t.replace(/^db\./,``),i=n.find(e=>e.InstanceType===r);return i&&e(i)||void 0}export{e as n,t};

@@ -254,12 +254,6 @@ const assumeRoleConditionKeySourceAccount = "aws:SourceAccount"
 // Deny statements, second pass scans all Allows. A single-pass loop would skip a later
 // Deny and silently grant access.
 func evalTrustPolicy(docJSON, callerARN string, principalSources []string) error {
-	doc, err := iamdomain.ValidateTrustPolicyDocument(docJSON)
-	if err != nil {
-		// Docs are validated at write time; reaching here implies on-disk corruption.
-		return fmt.Errorf("stored trust policy invalid: %w", err)
-	}
-
 	// sourceAccount is the caller ARN's own account — available whenever the
 	// caller is an authenticated HTTPS SigV4 identity, and not caller-asserted.
 	// It is empty on the IMDS path, where principalSource is synthesised and
@@ -267,6 +261,15 @@ func evalTrustPolicy(docJSON, callerARN string, principalSources []string) error
 	sourceAccount := ""
 	if caller, ok := parsePrincipalARN(callerARN); ok {
 		sourceAccount = caller.account
+	}
+	return evalTrustPolicyFor(docJSON, callerARN, sourceAccount, principalSources)
+}
+
+func evalTrustPolicyFor(docJSON, callerARN, sourceAccount string, principalSources []string) error {
+	doc, err := iamdomain.ValidateTrustPolicyDocument(docJSON)
+	if err != nil {
+		// Docs are validated at write time; reaching here implies on-disk corruption.
+		return fmt.Errorf("stored trust policy invalid: %w", err)
 	}
 
 	for _, stmt := range doc.Statement {

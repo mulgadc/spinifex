@@ -13,6 +13,7 @@ import {
 } from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { InfoList, InfoTip } from "@/components/info-tip"
+import { InlineTags } from "@/components/inline-tags"
 import { PageHeading } from "@/components/page-heading"
 import { PickerNoticeText } from "@/components/picker-notice"
 import { SelectionBar } from "@/components/selection-bar"
@@ -21,6 +22,15 @@ import { Button } from "@/components/ui/button"
 import { WizardFailureBanner } from "@/components/wizard-failure-banner"
 
 import { CatalogueSection, Specimen, unwired } from "./catalogue-section"
+
+const SAMPLE_TAGS = [
+  { Key: "env", Value: "prod" },
+  { Key: "team", Value: "web" },
+]
+
+async function resolveUnwired() {
+  // A specimen shows the control, not its effect.
+}
 
 interface SampleVolume {
   id: string
@@ -168,6 +178,16 @@ export function PatternsSection() {
               </PanelField>
             </PanelFields>
           </PanelSection>
+        </div>
+      </Specimen>
+      <Specimen label="Tags: edit a row with the pencil, save with the tick, remove with the bin, add with +; read-only where tags cannot change">
+        <div className="grid w-full gap-4 md:grid-cols-2">
+          <InlineTags
+            onPut={resolveUnwired}
+            onRemove={resolveUnwired}
+            tags={SAMPLE_TAGS}
+          />
+          <InlineTags tags={SAMPLE_TAGS} />
         </div>
       </Specimen>
       <Specimen label="Info tip">

@@ -26,6 +26,17 @@ const maxParametersPerModify = 20
 // reach across the boundary to the other.
 const defaultParameterGroupPrefix = "default."
 
+// Every engine AWS offers, not only the ones this platform runs, as the
+// CreateDBInstance API reference lists them.
+var awsEngineNames = []string{
+	"aurora-mysql", "aurora-postgresql",
+	"custom-oracle-ee", "custom-oracle-ee-cdb", "custom-oracle-se2", "custom-oracle-se2-cdb",
+	"custom-sqlserver-ee", "custom-sqlserver-se", "custom-sqlserver-web", "custom-sqlserver-dev",
+	"db2-ae", "db2-ce", "db2-se", "mariadb", "mysql",
+	"oracle-ee", "oracle-ee-cdb", "oracle-se2", "oracle-se2-cdb", "postgres",
+	"sqlserver-dev-ee", "sqlserver-ee", "sqlserver-se", "sqlserver-ex", "sqlserver-web",
+}
+
 // AWS's own ApplyMethod values, echoed back on DescribeDBParameters.
 const (
 	ApplyMethodImmediate     = "immediate"
@@ -88,9 +99,21 @@ func (s *Service) DescribeDBParameterGroups(ctx context.Context, input *rds.Desc
 	if input == nil {
 		input = &rds.DescribeDBParameterGroupsInput{}
 	}
-	// AWS recognises both names and narrows by neither.
-	if _, err := ReadFilters(input.Filters, filterDBParameterGroupFamily, filterEngine); err != nil {
+	// AWS recognises both names and narrows by neither, but refuses an engine
+	// value it does not offer.
+	filters, err := ReadFilters(input.Filters, filterDBParameterGroupFamily, filterEngine)
+	if err != nil {
 		return nil, err
+	}
+	for _, f := range filters {
+		if f.Name != filterEngine {
+			continue
+		}
+		for _, value := range f.Values {
+			if !slices.Contains(awsEngineNames, value) {
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "Unrecognized engine name: %s", value)
+			}
+		}
 	}
 	if name := aws.StringValue(input.DBParameterGroupName); name != "" {
 		rec, err := s.parameterGroups().Get(ctx, accountID, name)

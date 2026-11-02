@@ -30,7 +30,7 @@ func EnsurePrivateEndpointENI(ctx context.Context,
 	vpcSvc k3sVPCProvisioner,
 	sgp sgProvisioner,
 	resolver SubnetVPCResolver,
-	accountID, clusterName, subnetID, vpcID string,
+	accountID, clusterName, subnetID, vpcID, clusterSGID string,
 ) (*PrivateEndpointENI, error) {
 	if accountID == "" {
 		return nil, errors.New("eks: EnsurePrivateEndpointENI empty account id")
@@ -40,6 +40,9 @@ func EnsurePrivateEndpointENI(ctx context.Context,
 	}
 	if vpcID == "" {
 		return nil, errors.New("eks: EnsurePrivateEndpointENI empty vpc id")
+	}
+	if clusterSGID == "" {
+		return nil, errors.New("eks: EnsurePrivateEndpointENI empty cluster SG id")
 	}
 
 	vpcCIDR, err := resolver.GetVPCCIDR(ctx, accountID, vpcID)
@@ -55,7 +58,7 @@ func EnsurePrivateEndpointENI(ctx context.Context,
 	eniOut, err := vpcSvc.CreateNetworkInterface(ctx, &ec2.CreateNetworkInterfaceInput{
 		SubnetId:    aws.String(subnetID),
 		Description: aws.String("EKS private-endpoint ENI for " + clusterName),
-		Groups:      aws.StringSlice([]string{sgID}),
+		Groups:      aws.StringSlice([]string{sgID, clusterSGID}),
 		TagSpecifications: []*ec2.TagSpecification{{
 			ResourceType: aws.String("network-interface"),
 			Tags: []*ec2.Tag{

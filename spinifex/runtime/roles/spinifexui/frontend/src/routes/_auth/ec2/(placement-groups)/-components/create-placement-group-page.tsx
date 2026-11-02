@@ -1,6 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import {
-  Controller,
   type DeepPartialSkipArrayKey,
   useForm,
   useWatch,
@@ -13,21 +12,20 @@ import {
   shellSingleQuote,
 } from "@/components/cli-command-panel"
 import { FormActions } from "@/components/form-actions"
+import { SelectField } from "@/components/form-fields"
 import { FormLock } from "@/components/form-lock"
 import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { useCreatePlacementGroup } from "@/mutations/ec2"
 import {
   type CreatePlacementGroupFormData,
   createPlacementGroupSchema,
 } from "@/types/ec2"
+
+const STRATEGY_OPTIONS = [
+  { value: "spread", label: "spread" },
+  { value: "cluster", label: "cluster" },
+]
 
 interface CreatePlacementGroupPageProps {
   // Called with the new resource's ID once created, or with nothing on cancel.
@@ -88,31 +86,26 @@ export function CreatePlacementGroupPage({
           <FieldError errors={[errors.groupName]} />
         </Field>
 
-        <Field>
-          <FieldTitle>
-            <label htmlFor="strategy">Strategy</label>
-          </FieldTitle>
-          <Controller
-            control={control}
-            name="strategy"
-            render={({ field }) => (
-              <Select onValueChange={field.onChange} value={field.value ?? ""}>
-                <SelectTrigger
-                  aria-invalid={!!errors.strategy}
-                  className="w-full"
-                  id="strategy"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="spread">spread</SelectItem>
-                  <SelectItem value="cluster">cluster</SelectItem>
-                </SelectContent>
-              </Select>
-            )}
-          />
-          <FieldError errors={[errors.strategy]} />
-        </Field>
+        <SelectField
+          control={control}
+          id="strategy"
+          info={
+            <>
+              <p>
+                <strong>Cluster</strong> keeps every instance on one node, for
+                the lowest latency between them.
+              </p>
+              <p>
+                <strong>Spread</strong> puts each instance on a different node,
+                so one node failing takes one instance. A launch fails when
+                there are not enough free nodes.
+              </p>
+            </>
+          }
+          label="Strategy"
+          name="strategy"
+          options={STRATEGY_OPTIONS}
+        />
 
         <CliCommandPanel commands={buildCreatePlacementGroupCommands(values)} />
 

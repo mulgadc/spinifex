@@ -977,13 +977,13 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 		return
 	}
 
-	// The customer-facing "cluster security group" AWS auto-creates lives in the
-	// caller's own VPC, not the system-managed CP VPC above — otherwise the
-	// tenant's own DescribeSecurityGroups can never resolve it. Idempotent with
-	// launchNodegroupInfra's own EnsureClusterSGs call, which reuses this same id.
-	custClusterSG, _, err := EnsureClusterSGs(ctx, s.deps.VPCSG, accountID, name, lc.vpcID)
+	// The customer-facing cluster security group lives in the caller's own VPC,
+	// not the system-managed CP VPC above, so the tenant's own
+	// DescribeSecurityGroups resolves it. Workers and the private-endpoint ENI
+	// carry it. Idempotent with the nodegroup launch, which finds it by tag.
+	custClusterSG, err := EnsureClusterSG(ctx, s.deps.VPCSG, accountID, name, lc.vpcID)
 	if err != nil {
-		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "ensure customer-vpc cluster SGs", err)
+		s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "ensure customer-vpc cluster SG", err)
 		return
 	}
 	meta.ResourcesVpcConfig.ClusterSecurityGroupId = custClusterSG
@@ -1002,7 +1002,7 @@ func (s *EKSServiceImpl) launchClusterInfra(ctx context.Context, lc clusterLaunc
 	// NIC and proxies to the CP target group with no data-plane change.
 	var crossAccountENIs []systeminstance.ExtraENIInput
 	if privateAccess {
-		pe, perr := EnsurePrivateEndpointENI(ctx, s.deps.VPCK3s, s.deps.VPCSG, s.deps.VPCSubnet, accountID, name, lc.subnetIDs[0], lc.vpcID)
+		pe, perr := EnsurePrivateEndpointENI(ctx, s.deps.VPCK3s, s.deps.VPCSG, s.deps.VPCSubnet, accountID, name, lc.subnetIDs[0], lc.vpcID, custClusterSG)
 		if perr != nil {
 			s.failClusterLaunch(ctx, acctKV, name, accountID, meta, "ensure private endpoint ENI", perr)
 			return
@@ -1621,7 +1621,7 @@ func (s *EKSServiceImpl) teardownClusterInfra(ctx context.Context, accountID, na
 		// New topology: SGs + IGW + subnets + route tables + NAT GW + VPC all live
 		// in the managed CP VPC under the system account. DeleteClusterCPVPC removes
 		// the IGW + VPC after the SGs, so SG cleanup must precede it.
-		cpSGErr := DeleteClusterSGs(ctx, s.deps.VPCSG, infraAcct, name, meta.ManagedCPVPC.VpcId)
+		cpSGErr := DeleteClusterSGs(ctx, s.deps.VPCSG, infraAcct, name, meta.ManagedCPVPC.VpcId, "")
 		if cpSGErr != nil {
 			fail(stepSecurityGroups, fmt.Errorf("delete cluster SGs: %w", cpSGErr))
 		}
@@ -1629,7 +1629,7 @@ func (s *EKSServiceImpl) teardownClusterInfra(ctx context.Context, accountID, na
 		// worker<->control-plane networking; reclaim them here too, or they orphan
 		// (cross-referencing each other) and pin the customer VPC on destroy.
 		if meta.ResourcesVpcConfig != nil && meta.ResourcesVpcConfig.VpcId != "" {
-			if err := DeleteClusterSGs(ctx, s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
+			if err := DeleteClusterSGs(ctx, s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId, meta.ResourcesVpcConfig.ClusterSecurityGroupId); err != nil {
 				fail(stepSecurityGroups, fmt.Errorf("delete customer-VPC cluster SGs: %w", err))
 			}
 		}
@@ -1653,7 +1653,7 @@ func (s *EKSServiceImpl) teardownClusterInfra(ctx context.Context, accountID, na
 		// Legacy topology: CP lived in the customer VPC; reclaim its SGs + the
 		// cluster-owned IGW (ownership-scoped — a reused customer IGW is left
 		// intact). IGW delete must precede any VPC delete to avoid DependencyViolation.
-		if err := DeleteClusterSGs(ctx, s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId); err != nil {
+		if err := DeleteClusterSGs(ctx, s.deps.VPCSG, accountID, name, meta.ResourcesVpcConfig.VpcId, meta.ResourcesVpcConfig.ClusterSecurityGroupId); err != nil {
 			fail(stepSecurityGroups, fmt.Errorf("delete cluster SGs: %w", err))
 		}
 		if s.deps.IGW != nil {

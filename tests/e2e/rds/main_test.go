@@ -302,15 +302,27 @@ func (f *Fixture) dbDiag(t *testing.T) harness.DBDiag {
 // The suite's own create request: valid as it stands, so a caller mutates only
 // the field it cares about.
 func validCreateInput(id string) *rds.CreateDBInstanceInput {
+	backup, maintenance := windowsClearOfTheRun()
 	return &rds.CreateDBInstanceInput{
-		DBInstanceIdentifier: aws.String(id),
-		Engine:               aws.String(dbEngine),
-		DBInstanceClass:      aws.String(dbClass),
-		AllocatedStorage:     aws.Int64(dbStorageGiB),
-		DBName:               aws.String(dbName),
-		MasterUsername:       aws.String(dbMasterUser),
-		MasterUserPassword:   aws.String(dbMasterPassword),
+		DBInstanceIdentifier:       aws.String(id),
+		Engine:                     aws.String(dbEngine),
+		DBInstanceClass:            aws.String(dbClass),
+		AllocatedStorage:           aws.Int64(dbStorageGiB),
+		DBName:                     aws.String(dbName),
+		MasterUsername:             aws.String(dbMasterUser),
+		MasterUserPassword:         aws.String(dbMasterPassword),
+		PreferredBackupWindow:      aws.String(backup),
+		PreferredMaintenanceWindow: aws.String(maintenance),
 	}
+}
+
+// Windows that cannot open while the suite runs. An assigned window lands
+// wherever the identifier hashes, so without these whether a backup or a
+// maintenance pass interrupts a subtest depends on the hour the cell runs.
+func windowsClearOfTheRun() (backup, maintenance string) {
+	now := time.Now().UTC()
+	return dailyWindowAt(now.Add(12*time.Hour), 30*time.Minute),
+		weeklyWindowAt(now.Add(18*time.Hour), 30*time.Minute)
 }
 
 // createDBInstance creates the suite's standard instance and returns the create

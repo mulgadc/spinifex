@@ -62,6 +62,9 @@ import { CreateLoadBalancerListenerSection } from "./create-load-balancer-listen
 // terminate at a TCP one.
 const LB_TYPES: readonly LbType[] = ["application", "network"]
 
+// Beside the button, since the field that failed may be scrolled out of view.
+const INVALID_FIELDS = new Error("Fix the highlighted fields above.")
+
 function targetGroupProtocolFor(
   protocol: ListenerProtocolValue,
 ): TargetGroupProtocol {
@@ -102,6 +105,7 @@ export function CreateLoadBalancerPage({
   const wizardMutation = useCreateLoadBalancerWizard()
 
   const [importOpen, setImportOpen] = useState(false)
+  const [invalid, setInvalid] = useState(false)
 
   const vpcs = vpcsData.Vpcs ?? []
   const allSubnets = subnetsData.Subnets ?? []
@@ -229,6 +233,7 @@ export function CreateLoadBalancerPage({
 
   const onSubmit = async (data: CreateLoadBalancerFormData) => {
     wizardMutation.reset()
+    setInvalid(false)
 
     let newTargetGroup: CreateTargetGroupFormData | undefined
 
@@ -236,6 +241,8 @@ export function CreateLoadBalancerPage({
       const tgValid = await tgForm.trigger()
 
       if (!tgValid) {
+        setInvalid(true)
+
         return
       }
 
@@ -275,8 +282,18 @@ export function CreateLoadBalancerPage({
     }
   }
 
+  // The target group is its own form, so it is checked here too: otherwise its
+  // errors appear only after the load balancer's are fixed.
+  const onInvalid = () => {
+    setInvalid(true)
+
+    if (getValues("listener.targetGroupMode") === "new") {
+      void tgForm.trigger()
+    }
+  }
+
   return (
-    <form onSubmit={handleSubmit(onSubmit)}>
+    <form onSubmit={handleSubmit(onSubmit, onInvalid)}>
       <FormLock
         className="space-y-6"
         locked={wizardMutation.isPending || isSubmitting}
@@ -435,8 +452,8 @@ export function CreateLoadBalancerPage({
         />
 
         <FormActions
-          error={wizardMutation.error}
-          errorMsg="Failed to create load balancer"
+          error={invalid ? INVALID_FIELDS : wizardMutation.error}
+          errorMsg={invalid ? undefined : "Failed to create load balancer"}
           isPending={wizardMutation.isPending}
           isSubmitting={isSubmitting}
           onCancel={() => {

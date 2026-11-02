@@ -187,4 +187,15 @@ type Account struct {
 
 	// Generation counts status changes. Records written before it existed read as 0.
 	Generation uint64 `json:"generation,omitempty"`
+
+	// TerminationOp names the deletion that quiesced the account. Records
+	// written before it existed, and accounts not terminating, carry none.
+	TerminationOp *TerminationOp `json:"termination_op,omitempty"`
+}
+
+// TerminationOp is the deletion operation that owns a TERMINATING account and
+// the fence of the job holder acting for it.
+type TerminationOp struct {
+	OperationID string `json:"operation_id"`
+	Fence       uint64 `json:"fence"`
 }

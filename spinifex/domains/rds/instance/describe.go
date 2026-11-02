@@ -2,7 +2,6 @@ package instance
 
 import (
 	"context"
-	"errors"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -39,7 +38,7 @@ func (s *Service) DescribeDBInstances(ctx context.Context, input *rds.DescribeDB
 		// A named instance the filters exclude is reported as absent rather than
 		// returned anyway, so the two halves of one request cannot disagree.
 		if matches != nil && !matches(rec) {
-			return nil, errors.New(awserrors.ErrorDBInstanceNotFound)
+			return nil, awserrors.Errorf(awserrors.ErrorDBInstanceNotFound, "DBInstance %s not found.", id)
 		}
 		return &rds.DescribeDBInstancesOutput{DBInstances: []*rds.DBInstance{s.projectDBInstance(rec)}}, nil
 	}
@@ -134,7 +133,7 @@ func (s *Service) getDBInstance(ctx context.Context, kv *kvstore.Bucket, id stri
 		return nil, 0, err
 	}
 	if !found {
-		return nil, 0, errors.New(awserrors.ErrorDBInstanceNotFound)
+		return nil, 0, awserrors.Errorf(awserrors.ErrorDBInstanceNotFound, "DBInstance %s not found.", id)
 	}
 	return &rec, rev, nil
 }

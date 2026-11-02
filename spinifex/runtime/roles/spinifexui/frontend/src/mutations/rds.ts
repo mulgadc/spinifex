@@ -1,5 +1,4 @@
 import {
-  AddTagsToResourceCommand,
   CreateDBInstanceCommand,
   CreateDBParameterGroupCommand,
   CreateDBSnapshotCommand,
@@ -11,7 +10,6 @@ import {
   ModifyDBInstanceCommand,
   ModifyDBParameterGroupCommand,
   RebootDBInstanceCommand,
-  RemoveTagsFromResourceCommand,
   RestoreDBInstanceFromDBSnapshotCommand,
   StartDBInstanceCommand,
   StopDBInstanceCommand,
@@ -28,7 +26,7 @@ import type {
   ParameterUpdate,
   RestoreDBInstanceFormData,
 } from "@/types/rds"
-import { type TagFormData, diffTags, toSdkTags } from "@/types/tags"
+import { toSdkTags } from "@/types/tags"
 
 const DB_INSTANCES_KEY = ["rds", "dbInstances"]
 const DB_SNAPSHOTS_KEY = ["rds", "dbSnapshots"]
@@ -382,47 +380,6 @@ export function useDeleteDBParameterGroup() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: PARAMETER_GROUPS_KEY })
-    },
-  })
-}
-
-export interface UpdateRdsTagsParams {
-  resourceName: string
-  tags: TagFormData[]
-  initialKeys: string[]
-}
-
-// Reconciles a DB instance's tags to the desired set: AddTagsToResource
-// overwrites the final tags and RemoveTagsFromResource drops the keys that went
-// away. Either call is skipped when it has no work.
-export function useUpdateRdsTags() {
-  const queryClient = useQueryClient()
-
-  return useMutation({
-    mutationFn: async (params: UpdateRdsTagsParams) => {
-      const { toSet, toRemove } = diffTags(params.tags, params.initialKeys)
-      const client = getRdsClient()
-
-      if (toSet) {
-        await client.send(
-          new AddTagsToResourceCommand({
-            ResourceName: params.resourceName,
-            Tags: toSet,
-          }),
-        )
-      }
-
-      if (toRemove.length > 0) {
-        await client.send(
-          new RemoveTagsFromResourceCommand({
-            ResourceName: params.resourceName,
-            TagKeys: toRemove,
-          }),
-        )
-      }
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["rds", "tags"] })
     },
   })
 }

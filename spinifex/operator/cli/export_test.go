@@ -102,11 +102,8 @@ func SetAccountDeletePollInterval(d time.Duration) func() {
 // PrintTeardownPlan exposes printTeardownPlan for testing.
 var PrintTeardownPlan = printTeardownPlan
 
-// RunAccountDryRun exposes runAccountDryRun for testing.
-var RunAccountDryRun = runAccountDryRun
-
-// PrintTeardownResult exposes printTeardownResult for testing.
-var PrintTeardownResult = printTeardownResult
+// PrintTeardownStage exposes printTeardownStage for testing.
+var PrintTeardownStage = printTeardownStage
 
 // PromptAccountName exposes promptAccountName for testing.
 var PromptAccountName = promptAccountName
@@ -229,3 +226,6 @@ func EnableSQSRemote(ctx context.Context, target adminTarget, node, instanceType
 	renderSQSStatus(w, out)
 	return nil
 }
+
+// AccountDeleteCmd exposes the delete command so a test can run it end to end.
+var AccountDeleteCmd = accountDeleteCmd

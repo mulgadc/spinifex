@@ -48,6 +48,9 @@ export const collapsibleContentVariants = cva("", {
       panel: "space-y-4 rounded-md border border-border p-4",
       indented: "space-y-4 border-l-2 border-muted pl-4",
       section: "px-4 pb-4",
+      // A sidebar service group: grows open and folds shut. Clipped while it
+      // moves, so the padding leaves its items' focus rings room.
+      nav: "-m-0.5 h-(--collapsible-panel-height) overflow-hidden p-0.5 transition-all duration-200 ease-out data-ending-style:h-0 data-ending-style:opacity-0 data-ending-style:duration-150 data-ending-style:ease-in data-starting-style:h-0 data-starting-style:opacity-0 motion-reduce:transition-none",
     },
   },
   defaultVariants: {

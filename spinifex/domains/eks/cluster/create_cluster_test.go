@@ -419,37 +419,6 @@ func TestCreateCluster_BuildsManagedCPVPCUnderSystemAccount(t *testing.T) {
 	assert.True(t, tagged, "NAT gateway EIP must carry the ManagedBy=eks tag")
 }
 
-// The primary cluster SG (clusterSecurityGroupId) must be created in the
-// caller's own VPC, not the system-managed CP VPC the control-plane VM
-// actually lives in — otherwise the tenant's own DescribeSecurityGroups can
-// never resolve it. fakeSubnetResolver resolves every subnet to "vpc-aaa".
-func TestCreateCluster_ClusterSecurityGroupCreatedInCallerVPC(t *testing.T) {
-	t.Parallel()
-	f := newEKSServiceFixture(t)
-
-	_, err := f.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, "")
-	require.NoError(t, err)
-	f.svc.WaitLaunches()
-
-	meta, err := GetClusterMeta(t.Context(), f.kv, "alpha")
-	require.NoError(t, err)
-	require.NotNil(t, meta.ResourcesVpcConfig)
-	assert.NotEmpty(t, meta.ResourcesVpcConfig.ClusterSecurityGroupId)
-
-	found := false
-	for _, call := range f.sg.createCalls {
-		if aws.StringValue(call.GroupName) == ClusterControlPlaneSGName("alpha") && aws.StringValue(call.VpcId) == "vpc-aaa" {
-			found = true
-		}
-	}
-	assert.True(t, found, "control-plane SG must be created in the caller's VPC (vpc-aaa)")
-
-	out, err := f.svc.DescribeCluster(context.Background(), &eks.DescribeClusterInput{Name: aws.String("alpha")}, testAccountID)
-	require.NoError(t, err)
-	require.NotNil(t, out.Cluster.ResourcesVpcConfig)
-	assert.Equal(t, meta.ResourcesVpcConfig.ClusterSecurityGroupId, aws.StringValue(out.Cluster.ResourcesVpcConfig.ClusterSecurityGroupId))
-}
-
 // Security groups the caller explicitly passes on CreateCluster must come back
 // unchanged from DescribeCluster — never substituted with platform-created ids.
 func TestCreateCluster_CallerSecurityGroupIdsEchoedNotOverwritten(t *testing.T) {

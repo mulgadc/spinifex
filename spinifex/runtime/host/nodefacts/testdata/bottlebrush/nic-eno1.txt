@@ -1,0 +1,43 @@
+Settings for eno1:
+	Supported ports: [ TP ]
+	Supported link modes:   10baseT/Half 10baseT/Full
+	                        100baseT/Half 100baseT/Full
+	                        1000baseT/Full
+	Supported pause frame use: Symmetric
+	Supports auto-negotiation: Yes
+	Supported FEC modes: Not reported
+	Advertised link modes:  10baseT/Half 10baseT/Full
+	                        100baseT/Half 100baseT/Full
+	                        1000baseT/Full
+	Advertised pause frame use: Symmetric
+	Advertised auto-negotiation: Yes
+	Advertised FEC modes: Not reported
+	Speed: 1000Mb/s
+	Duplex: Full
+	Auto-negotiation: on
+	Port: Twisted Pair
+	PHYAD: 1
+	Transceiver: internal
+	MDI-X: on (auto)
+        Current message level: 0x00000007 (7)
+                               drv probe link
+	Link detected: yes
+netlink error: Operation not permitted
+===
+driver: igb
+version: 6.12.73+deb13-amd64
+firmware-version: 1.63, 0x800009fa
+expansion-rom-version: 
+bus-info: 0000:64:00.0
+supports-statistics: yes
+supports-test: yes
+supports-eeprom-access: yes
+supports-register-dump: yes
+supports-priv-flags: yes
+===
+ID_VENDOR_FROM_DATABASE=Intel Corporation
+ID_MODEL_FROM_DATABASE=I350 Gigabit Network Connection
+ID_NET_NAME_MAC=enx000000000001
+ID_NET_NAME_ONBOARD=eno1
+ID_NET_NAME_PATH=enp100s0f0
+ID_NET_NAME=eno1

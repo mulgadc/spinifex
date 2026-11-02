@@ -92,12 +92,12 @@ func (r *nameReservationReaper) Delete(ctx context.Context, accountID string, re
 // IAMAccounts adapts the IAM service to the engine's AccountStore. The engine
 // declares its own Account type so its tests need no cluster; this is the one
 // place the two meet.
-type IAMAccounts struct{ svc iamdomain.IAMService }
+type IAMAccounts struct{ svc IAMBackend }
 
 var _ AccountStore = (*IAMAccounts)(nil)
 
 // NewIAMAccounts wraps svc as the engine's AccountStore.
-func NewIAMAccounts(svc iamdomain.IAMService) *IAMAccounts {
+func NewIAMAccounts(svc IAMBackend) *IAMAccounts {
 	return &IAMAccounts{svc: svc}
 }
 
@@ -106,21 +106,20 @@ func (a *IAMAccounts) GetAccount(accountID string) (*Account, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Account{
+	out := &Account{
 		AccountID: account.AccountID, AccountName: account.AccountName, Status: account.Status,
-	}, nil
-}
-
-func (a *IAMAccounts) SetAccountStatus(accountID, status string) (*Account, error) {
-	account, err := a.svc.SetAccountStatus(accountID, status)
-	if err != nil {
-		return nil, err
+		Generation: account.Generation,
 	}
-	return &Account{
-		AccountID: account.AccountID, AccountName: account.AccountName, Status: account.Status,
-	}, nil
+	if op := account.TerminationOp; op != nil {
+		out.TerminationOp = &TerminationOp{OperationID: op.OperationID, Fence: op.Fence}
+	}
+	return out, nil
 }
 
-func (a *IAMAccounts) DeleteAccount(accountID string) error {
-	return a.svc.DeleteAccount(accountID)
+func (a *IAMAccounts) QuiesceAccount(accountID, operationID string, fence uint64) (uint64, error) {
+	return a.svc.QuiesceAccount(accountID, operationID, fence)
+}
+
+func (a *IAMAccounts) DeleteAccount(accountID, operationID string, fence uint64) error {
+	return a.svc.DeleteAccount(accountID, operationID, fence)
 }

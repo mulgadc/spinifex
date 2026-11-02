@@ -107,7 +107,7 @@ describe("GuardrailsPage", () => {
   it("shows the guardrail id and status", () => {
     renderSeeded([GUARDRAIL])
     expect(screen.getByText("gr-1")).toBeInTheDocument()
-    expect(screen.getByText("READY")).toBeInTheDocument()
+    expect(screen.getByText("ready")).toBeInTheDocument()
   })
 
   it("deletes each selected guardrail with its own call", async () => {

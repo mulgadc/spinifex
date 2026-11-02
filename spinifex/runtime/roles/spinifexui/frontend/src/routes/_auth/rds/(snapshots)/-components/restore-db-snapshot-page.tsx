@@ -12,7 +12,7 @@ import {
   type CliCommand,
 } from "@/components/cli-command-panel"
 import { FormActions } from "@/components/form-actions"
-import { SelectField, selectOptions, TextField } from "@/components/form-fields"
+import { SelectField, TextField } from "@/components/form-fields"
 import { FormLock } from "@/components/form-lock"
 import { PageHeading } from "@/components/page-heading"
 import {
@@ -24,6 +24,7 @@ import { TagsFieldArray } from "@/components/tags-field-array"
 import { useRestoreDBInstanceFromDBSnapshot } from "@/mutations/rds"
 import {
   ec2ImagesQueryOptions,
+  ec2InstanceTypesQueryOptions,
   ec2SecurityGroupsQueryOptions,
 } from "@/queries/ec2"
 import {
@@ -194,13 +195,17 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
     dbSnapshotIdentifier,
   )
 
+  const instanceTypes = useQuery(ec2InstanceTypesQueryOptions).data
+    ?.InstanceTypes
+
   if (blocked !== undefined || !snapshot) {
     return blocked
   }
 
-  const { instanceClasses, classNotice } = instanceClassOptions(
+  const { classOptions, classSize, classNotice } = instanceClassOptions(
     orderableQuery,
     engine,
+    instanceTypes,
   )
 
   const subnetGroups = subnetGroupsData.DBSubnetGroups ?? []
@@ -246,7 +251,8 @@ export function RestoreDBSnapshotPage({ dbSnapshotIdentifier }: Props) {
               label="DB instance class"
               name="dbInstanceClass"
               notice={classNotice}
-              options={selectOptions(instanceClasses)}
+              options={classOptions}
+              description={classSize(values.dbInstanceClass)}
               placeholder="Select an instance class"
             />
 

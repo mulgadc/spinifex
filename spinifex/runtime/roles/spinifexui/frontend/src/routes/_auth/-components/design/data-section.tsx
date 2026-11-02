@@ -1,6 +1,9 @@
 import { useState } from "react"
 
+import { DeviceArt } from "@/components/device-art"
+import { SpeedDial } from "@/components/speed-dial"
 import { StateBadge } from "@/components/state-badge"
+import { RelativeTime, TagPills, TruncatedText } from "@/components/table-cells"
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -139,23 +142,25 @@ function TableSpecimen() {
   return (
     <Specimen label="Table states">
       <div className="flex w-full flex-col gap-3">
-        <ToggleGroup
-          onValueChange={(values) => {
-            const next = values.at(-1)
+        <div className="overflow-x-auto">
+          <ToggleGroup
+            onValueChange={(values) => {
+              const next = values.at(-1)
 
-            if (next) {
-              setState(next)
-            }
-          }}
-          value={[state]}
-          variant="outline"
-        >
-          {TABLE_STATES.map((option) => (
-            <ToggleGroupItem key={option} value={option}>
-              {option}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
+              if (next) {
+                setState(next)
+              }
+            }}
+            value={[state]}
+            variant="outline"
+          >
+            {TABLE_STATES.map((option) => (
+              <ToggleGroupItem key={option} value={option}>
+                {option}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+        </div>
         <div className="rounded-md border">
           <ScrollArea className="h-72">
             <Table>
@@ -179,10 +184,24 @@ function TableSpecimen() {
   )
 }
 
+// Relative to the moment the page renders, so the specimen always reads the same.
+const THIRTY_THREE_MINUTES_AGO = new Date(Date.now() - 33 * 60 * 1000)
+
+const SAMPLE_TAGS = [
+  { Key: "Name", Value: "web-1" },
+  { Key: "spinifex:eks-cluster", Value: "test-cluster" },
+  { Key: "spinifex:eks-nodegroup", Value: "node-gap" },
+]
+
 export function DataSection() {
   return (
     <CatalogueSection title="Data and layout">
       <TableSpecimen />
+      <Specimen label="Table cells: relative time, truncated text, tag pills; hover for the full value">
+        <RelativeTime date={THIRTY_THREE_MINUTES_AGO} />
+        <TruncatedText text="a-very-long-instance-name-that-would-otherwise-widen-its-column" />
+        <TagPills omit={["Name"]} tags={SAMPLE_TAGS} />
+      </Specimen>
       <Specimen label="Breadcrumb">
         <Breadcrumb>
           <BreadcrumbList>
@@ -239,6 +258,39 @@ export function DataSection() {
               <div className="p-3 text-muted-foreground">Detail</div>
             </ResizablePanel>
           </ResizablePanelGroup>
+        </div>
+      </Specimen>
+      <Specimen label="Device art">
+        <div className="flex flex-wrap items-end gap-4 text-muted-foreground">
+          <DeviceArt className="h-12 w-16" kind="internet" />
+          <DeviceArt className="h-12 w-16" kind="switch" />
+          <DeviceArt className="h-12 w-16" kind="segment" />
+          <DeviceArt
+            className="h-12 w-16"
+            formFactor="rack-server"
+            kind="node"
+          />
+          <DeviceArt className="h-12 w-16" formFactor="tower" kind="node" />
+          <DeviceArt
+            className="h-12 w-16"
+            formFactor="virtual-machine"
+            kind="node"
+          />
+          <DeviceArt className="h-12 w-16" formFactor="sbc" kind="node" />
+        </div>
+      </Specimen>
+      <Specimen label="Speed dial">
+        <div className="grid w-full max-w-xl grid-cols-2 gap-4">
+          <SpeedDial
+            bitsPerSecond={23.1e9}
+            label="node1 → node2"
+            linkMbps={25_000}
+          />
+          <SpeedDial
+            bitsPerSecond={410e6}
+            label="node2 → node1"
+            linkMbps={1000}
+          />
         </div>
       </Specimen>
     </CatalogueSection>

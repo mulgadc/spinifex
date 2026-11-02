@@ -236,12 +236,12 @@ Each stage runs to empty before the next begins, so nothing is deleted while som
 A large account takes minutes to tear down. The API does not hold the connection open for it: `DeleteAccount` starts the job, returns a `deletionId` immediately, and progress is read from `DescribeAccountDeletion`.
 
 ```bash
-AWS_PROFILE=spinifex-operator spx admin account delete 000000000042 --remote \
+AWS_PROFILE=spinifex-operator spx admin account delete 000000000042 \
   --name customer@example.com --yes \
   --endpoint https://node1.example.com:9999 --region us-west-1
 ```
 
-`spx --remote` starts the job and then polls, printing each stage as it lands. Your own client can do the same, or start the job and check back later — the deletion record outlives the account, so `DescribeAccountDeletion` stays answerable after the account is gone.
+`spx admin account delete` always goes through the admin API, so it signs with the standard AWS credential chain. On a cluster node that means `AWS_PROFILE=spinifex` (there is no default profile, so without it the command cannot find credentials), or equivalent credentials for an IAM user holding `spinifex:DeleteAccount` and `spinifex:DescribeAccountDeletion`, and a reachable gateway. The older `--remote` flag is accepted and ignored. The command starts the job and then polls, printing each stage as it lands. Your own client can do the same, or start the job and check back later — the deletion record outlives the account, so `DescribeAccountDeletion` stays answerable after the account is gone.
 
 One job runs per account. A second `DeleteAccount` with a different token while one is running returns `OperationInProgress`; with the *same* token it returns the running job, which is what makes a retry safe.
 

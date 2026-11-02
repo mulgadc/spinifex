@@ -103,8 +103,10 @@ func (s *racingDeleteStore) DeleteObject(ctx context.Context, input *s3.DeleteOb
 	return s.MemoryObjectStore.DeleteObject(ctx, input)
 }
 
-// A document another delete removed after this one read it is deleted, so the
-// call must succeed rather than answer InternalError for a finished delete.
+// A document another sweep removed after this one read it is deleted, so the
+// reclaimer must count it done rather than fail the sweep for a finished
+// delete. The record is the obligation, so retiring it is the reclaimer's step
+// and this is where a concurrent remover is now observed.
 func TestDeleteVolume_ConcurrentlyDeletedDocumentIsSuccess(t *testing.T) {
 	memory := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", memory)
@@ -115,14 +117,18 @@ func TestDeleteVolume_ConcurrentlyDeletedDocumentIsSuccess(t *testing.T) {
 		VolumeID: volumeID, CapacityGiB: 10, State: "available",
 	})
 
-	racing := &racingDeleteStore{MemoryObjectStore: memory}
-	svc.store = racing
-	svc.metadata = ebsmetadata.NewStore(racing, "test-bucket")
-
 	_, err := svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
 		VolumeId: aws.String(volumeID),
 	}, testVolAccountID)
 	require.NoError(t, err)
+
+	racing := &racingDeleteStore{MemoryObjectStore: memory}
+	svc.store = racing
+	svc.metadata = ebsmetadata.NewStore(racing, "test-bucket")
+
+	reclaimed, err := svc.NewVolumeReclaimReaper().Sweep(context.Background())
+	require.NoError(t, err, "a document a concurrent sweep removed is a finished delete, not a sweep failure")
+	assert.Equal(t, 1, reclaimed)
 
 	_, getErr := ebsmetadata.NewStore(memory, "test-bucket").GetVolume(context.Background(), testVolAccountID, volumeID)
 	assert.True(t, objectstore.IsNoSuchKeyError(getErr), "the document must be gone, got %v", getErr)

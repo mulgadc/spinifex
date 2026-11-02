@@ -1,183 +1,19 @@
-import { zodResolver } from "@hookform/resolvers/zod"
-import { useSuspenseQuery } from "@tanstack/react-query"
-import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import {
-  Controller,
-  type DeepPartialSkipArrayKey,
-  useForm,
-  useWatch,
-} from "react-hook-form"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 import { z } from "zod"
 
-import { BackLink } from "@/components/back-link"
-import {
-  CliCommandPanel,
-  type CliCommand,
-  cliPlaceholder,
-  commandFlag,
-  optionalFlag,
-} from "@/components/cli-command-panel"
-import { ErrorBanner } from "@/components/error-banner"
-import { FormActions } from "@/components/form-actions"
-import { PageHeading } from "@/components/page-heading"
-import { Field, FieldError, FieldTitle } from "@/components/ui/field"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import { Textarea } from "@/components/ui/textarea"
-import { useCreateSnapshot } from "@/mutations/ec2"
-import { ec2VolumesQueryOptions } from "@/queries/ec2"
-import { type CreateSnapshotFormData, createSnapshotSchema } from "@/types/ec2"
-
-/* oxlint-disable promise/prefer-await-to-then, unicorn/no-useless-undefined -- zod's .catch() supplies a schema fallback, not a promise handler */
+/* oxlint-disable promise/prefer-await-to-then -- zod's .catch() supplies a schema fallback, not a promise handler */
 const searchSchema = z.object({
-  volumeId: z.string().optional().catch(undefined),
+  volumeId: z.string().default("").catch(""),
 })
-/* oxlint-enable promise/prefer-await-to-then, unicorn/no-useless-undefined */
+/* oxlint-enable promise/prefer-await-to-then */
 
+// The form opens in the list's side panel; this address is kept for links.
 export const Route = createFileRoute("/_auth/ec2/(snapshots)/create-snapshot")({
   validateSearch: searchSchema,
-  loader: async ({ context }) => {
-    await context.queryClient.query({
-      ...ec2VolumesQueryOptions,
-      staleTime: "static",
+  beforeLoad: ({ search }) => {
+    throw redirect({
+      to: "/ec2/describe-snapshots",
+      search: { create: true, volume: search.volumeId },
     })
   },
-  head: () => ({
-    meta: [
-      {
-        title: "Create Snapshot | EC2 | Mulga",
-      },
-    ],
-  }),
-  component: CreateSnapshot,
 })
-
-function CreateSnapshot() {
-  const navigate = useNavigate()
-  const { data: volumesData } = useSuspenseQuery(ec2VolumesQueryOptions)
-  const createMutation = useCreateSnapshot()
-  const volumes = volumesData.Volumes ?? []
-
-  const { volumeId: searchVolumeId } = Route.useSearch()
-  const defaultVolumeId = searchVolumeId ?? volumes[0]?.VolumeId ?? ""
-
-  const {
-    control,
-    handleSubmit,
-    register,
-    formState: { errors, isSubmitting },
-  } = useForm<CreateSnapshotFormData>({
-    resolver: zodResolver(createSnapshotSchema),
-    defaultValues: {
-      volumeId: defaultVolumeId,
-      description: "",
-    },
-  })
-
-  const values = useWatch({ control })
-
-  const onSubmit = async (data: CreateSnapshotFormData) => {
-    await createMutation.mutateAsync(data)
-    navigate({ to: "/ec2/describe-snapshots" })
-  }
-
-  return (
-    <>
-      <BackLink to="/ec2/describe-snapshots">Back to snapshots</BackLink>
-
-      <PageHeading title="Create Snapshot" />
-
-      {createMutation.error && (
-        <ErrorBanner
-          error={createMutation.error}
-          msg="Failed to create snapshot"
-        />
-      )}
-
-      <form className="max-w-4xl space-y-6" onSubmit={handleSubmit(onSubmit)}>
-        <Field>
-          <FieldTitle>
-            <label htmlFor="volumeId">Volume</label>
-          </FieldTitle>
-          <Controller
-            control={control}
-            name="volumeId"
-            render={({ field }) => (
-              <Select onValueChange={field.onChange} value={field.value ?? ""}>
-                <SelectTrigger
-                  aria-invalid={!!errors.volumeId}
-                  className="w-full"
-                  id="volumeId"
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {volumes.map((volume) => (
-                    <SelectItem
-                      key={volume.VolumeId}
-                      value={volume.VolumeId ?? ""}
-                    >
-                      {volume.VolumeId} ({volume.Size} GiB)
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          />
-          <FieldError errors={[errors.volumeId]} />
-        </Field>
-
-        <Field>
-          <FieldTitle>
-            <label htmlFor="description">Description (optional)</label>
-          </FieldTitle>
-          <Textarea
-            id="description"
-            placeholder="Snapshot description"
-            {...register("description")}
-          />
-        </Field>
-
-        <CliCommandPanel commands={buildCreateSnapshotCommands(values)} />
-
-        <FormActions
-          isPending={createMutation.isPending}
-          isSubmitting={isSubmitting}
-          onCancel={async () => {
-            await navigate({ to: "/ec2/describe-snapshots" })
-          }}
-          pendingLabel="Creating…"
-          submitLabel="Create Snapshot"
-        />
-      </form>
-    </>
-  )
-}
-
-function buildCreateSnapshotCommands(
-  values: DeepPartialSkipArrayKey<CreateSnapshotFormData>,
-): CliCommand[] {
-  const description = values.description ?? ""
-
-  return [
-    {
-      label: "Create Snapshot",
-      parts: [
-        { type: "bin", value: "AWS_PROFILE=spinifex aws ec2 create-snapshot" },
-        ...commandFlag(
-          "\\\n  --volume-id",
-          cliPlaceholder(values.volumeId ?? "", "VolumeId"),
-        ),
-        ...optionalFlag(
-          "\\\n  --description",
-          description && `"${description}"`,
-        ),
-      ],
-    },
-  ]
-}

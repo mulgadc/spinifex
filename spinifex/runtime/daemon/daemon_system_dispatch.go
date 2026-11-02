@@ -43,6 +43,15 @@ const systemLaunchAction = "system.LaunchInstance"
 // The launch runs in its own goroutine so a multi-minute VM boot cannot
 // head-of-line block concurrent launches to the same node.
 func (d *Daemon) handleSystemLaunchInstance(msg *nats.Msg) string {
+	return d.dispatchSystemLaunch(msg, systemLaunchAction, d.LaunchSystemInstance)
+}
+
+// systemLaunchFunc launches one system instance from a decoded request.
+type systemLaunchFunc func(*elbv2domain.SystemInstanceInput) (*elbv2domain.SystemInstanceOutput, error)
+
+// dispatchSystemLaunch runs launch on its own goroutine and records the
+// request under action.
+func (d *Daemon) dispatchSystemLaunch(msg *nats.Msg, action string, launch systemLaunchFunc) string {
 	start := time.Now()
 	d.systemDispatchWg.Go(func() {
 		outcome := outcomeError
@@ -51,9 +60,9 @@ func (d *Daemon) handleSystemLaunchInstance(msg *nats.Msg) string {
 				slog.Error("system.LaunchInstance: handler panic", "subject", msg.Subject, "panic", r)
 				respondWithSystemLaunchError(msg, awserrors.ErrorServerInternal)
 			}
-			otelsetup.RecordRequest(context.Background(), systemLaunchAction, outcome, time.Since(start))
+			otelsetup.RecordRequest(context.Background(), action, outcome, time.Since(start))
 		}()
-		outcome = d.serveSystemLaunchInstance(msg)
+		outcome = d.serveSystemLaunch(msg, launch)
 	})
 	return outcomeDeferred
 }
@@ -61,6 +70,10 @@ func (d *Daemon) handleSystemLaunchInstance(msg *nats.Msg) string {
 // serveSystemLaunchInstance is the synchronous body of handleSystemLaunchInstance,
 // run on a per-request goroutine.
 func (d *Daemon) serveSystemLaunchInstance(msg *nats.Msg) string {
+	return d.serveSystemLaunch(msg, d.LaunchSystemInstance)
+}
+
+func (d *Daemon) serveSystemLaunch(msg *nats.Msg, launch systemLaunchFunc) string {
 	input := new(elbv2domain.SystemInstanceInput)
 	if err := json.Unmarshal(msg.Data, input); err != nil {
 		slog.Error("system.LaunchInstance: invalid JSON payload", "subject", msg.Subject, "err", err)
@@ -68,9 +81,9 @@ func (d *Daemon) serveSystemLaunchInstance(msg *nats.Msg) string {
 		return outcomeError
 	}
 
-	output, err := d.LaunchSystemInstance(input)
+	output, err := launch(input)
 	if err != nil {
-		slog.Error("system.LaunchInstance: LaunchSystemInstance failed",
+		slog.Error("system launch failed",
 			"instanceType", input.InstanceType, "subject", msg.Subject, "err", err)
 		respondWithSystemLaunchError(msg, err.Error())
 		return outcomeError
@@ -101,13 +114,22 @@ func (d *Daemon) LaunchSystemInstanceOnNode(nodeID string, input *elbv2domain.Sy
 	if input == nil || input.InstanceType == "" {
 		return nil, fmt.Errorf("system instance input missing InstanceType")
 	}
+	// An older receiver would ignore the kind and boot a load balancer.
+	if err := input.RefuseNonLoadBalancerKind(); err != nil {
+		return nil, err
+	}
 
+	return d.requestSystemLaunch(fmt.Sprintf("system.LaunchInstance.%s.%s", input.InstanceType, nodeID), input)
+}
+
+// requestSystemLaunch sends one launch to a node-targeted subject and decodes
+// its envelope. A no-responder error stays wrapped for the caller to classify.
+func (d *Daemon) requestSystemLaunch(subject string, input *elbv2domain.SystemInstanceInput) (*elbv2domain.SystemInstanceOutput, error) {
 	payload, err := json.Marshal(input)
 	if err != nil {
 		return nil, fmt.Errorf("marshal SystemInstanceInput: %w", err)
 	}
 
-	subject := fmt.Sprintf("system.LaunchInstance.%s.%s", input.InstanceType, nodeID)
 	reply, err := d.natsConn.Request(subject, payload, nodeSystemLaunchTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("nats request %s: %w", subject, err)

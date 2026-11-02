@@ -326,10 +326,14 @@ func TestVerifyImageChecksum(t *testing.T) {
 
 	t.Run("context deadline exceeded wraps fetch failure", func(t *testing.T) {
 		img := writeTempImage(t, debianName, debianBytes)
-		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			<-r.Context().Done()
+		// Hold until cleanup, not until the client gives up: returning on
+		// r.Context() sends an empty 200 that can win the client's deadline race.
+		release := make(chan struct{})
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			<-release
 		}))
 		t.Cleanup(srv.Close)
+		t.Cleanup(func() { close(release) })
 		trustTestServer(t, srv)
 
 		prev := checksumFetchTimeout

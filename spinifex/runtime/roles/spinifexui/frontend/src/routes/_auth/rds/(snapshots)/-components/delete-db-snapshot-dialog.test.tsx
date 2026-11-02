@@ -42,6 +42,9 @@ describe("DeleteDBSnapshotDialog", () => {
   it("sends DeleteDBSnapshot on confirm", async () => {
     const onDeleted = vi.fn()
     render(onDeleted)
+    fireEvent.change(screen.getByLabelText(/^To confirm, type/u), {
+      target: { value: "delete" },
+    })
     fireEvent.click(screen.getByRole("button", { name: "Delete" }))
     await waitFor(() => {
       expect(mockSend).toHaveBeenCalled()
@@ -62,6 +65,9 @@ describe("DeleteDBSnapshotDialog", () => {
     )
     const onDeleted = vi.fn()
     render(onDeleted)
+    fireEvent.change(screen.getByLabelText(/^To confirm, type/u), {
+      target: { value: "delete" },
+    })
     fireEvent.click(screen.getByRole("button", { name: "Delete" }))
     await expect(
       screen.findByText(/is in use by orders-db-restored/),

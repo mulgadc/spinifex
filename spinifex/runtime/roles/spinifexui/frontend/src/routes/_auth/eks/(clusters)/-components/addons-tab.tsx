@@ -1,351 +1,29 @@
 import type { AddonInfo } from "@aws-sdk/client-eks"
-import { zodResolver } from "@hookform/resolvers/zod"
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
-import { ArrowUpCircle, Trash2 } from "lucide-react"
+import { ArrowUpCircle, Plus, Trash2 } from "lucide-react"
 import { useState } from "react"
-import { Controller, useForm, useWatch } from "react-hook-form"
 
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
-import { DetailCard } from "@/components/detail-card"
-import { DetailRow } from "@/components/detail-row"
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog"
+  PanelField,
+  PanelFields,
+  PanelSection,
+} from "@/components/detail-panel"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Field, FieldError, FieldTitle } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import { JsonEditor } from "@/components/ui/json-editor"
-import { useCreateAddon, useDeleteAddon, useUpdateAddon } from "@/mutations/eks"
+import { useDeleteAddon } from "@/mutations/eks"
 import {
   eksAddonQueryOptions,
   eksAddonsQueryOptions,
   eksAddonVersionsQueryOptions,
 } from "@/queries/eks"
-import {
-  addonConfigurationSchema,
-  addonStatusVariant,
-  type CreateAddonFormValues,
-  createAddonSchema,
-} from "@/types/eks"
+import { addonStatusVariant } from "@/types/eks"
+
+import { AddAddonForm } from "./add-addon-form"
+import { UpdateAddonForm } from "./update-addon-form"
 
 const IN_PROGRESS_STATUSES = new Set(["CREATING", "UPDATING", "DELETING"])
 const STATUS_POLL_MS = 5000
-
-const selectClassName =
-  "h-7 w-full rounded-md border border-input bg-input/20 px-2 text-sm"
-
-function AddAddonDialog({
-  clusterName,
-  catalog,
-  installed,
-  open,
-  onOpenChange,
-}: {
-  clusterName: string
-  catalog: AddonInfo[]
-  installed: string[]
-  open: boolean
-  onOpenChange: (open: boolean) => void
-}) {
-  const createAddon = useCreateAddon()
-  const installedSet = new Set(installed)
-  const available = catalog.filter((a) => !installedSet.has(a.addonName ?? ""))
-
-  const {
-    control,
-    formState: { errors },
-    handleSubmit,
-    register,
-    reset,
-    setValue,
-  } = useForm<CreateAddonFormValues>({
-    resolver: zodResolver(createAddonSchema),
-    defaultValues: {
-      addonName: "",
-      addonVersion: "",
-      serviceAccountRoleArn: "",
-      configurationValues: "",
-    },
-  })
-
-  const addonName = useWatch({ control, name: "addonName" })
-  const addonVersion = useWatch({ control, name: "addonVersion" })
-  const selectedAddon = catalog.find((a) => a.addonName === addonName)
-  const versions = selectedAddon?.addonVersions ?? []
-  const selectedVersion = versions.find((v) => v.addonVersion === addonVersion)
-  const requiresIam = selectedVersion?.requiresIamPermissions ?? false
-
-  const handleAddonChange = (name: string) => {
-    const firstVersion =
-      catalog.find((a) => a.addonName === name)?.addonVersions?.[0]
-        ?.addonVersion ?? ""
-
-    setValue("addonName", name, { shouldValidate: true })
-    setValue("addonVersion", firstVersion, { shouldValidate: true })
-  }
-
-  const onSubmit = async (data: CreateAddonFormValues) => {
-    await createAddon.mutateAsync({
-      clusterName,
-      addonName: data.addonName,
-      addonVersion: data.addonVersion || undefined,
-      serviceAccountRoleArn: data.serviceAccountRoleArn.trim() || undefined,
-      configurationValues: data.configurationValues.trim() || undefined,
-    })
-    reset()
-    onOpenChange(false)
-  }
-
-  return (
-    <AlertDialog onOpenChange={onOpenChange} open={open}>
-      <AlertDialogContent className="max-h-[85vh] overflow-y-auto">
-        <AlertDialogHeader>
-          <AlertDialogTitle>Add add-on</AlertDialogTitle>
-        </AlertDialogHeader>
-
-        <form className="space-y-4" id="add-addon-form">
-          <Field>
-            <FieldTitle>
-              <label htmlFor="addon-name">Add-on</label>
-            </FieldTitle>
-            <select
-              aria-invalid={!!errors.addonName}
-              className={selectClassName}
-              id="addon-name"
-              onChange={(e) => {
-                handleAddonChange(e.target.value)
-              }}
-              value={addonName}
-            >
-              <option value="">Select add-on</option>
-              {available.map((a) => (
-                <option key={a.addonName} value={a.addonName ?? ""}>
-                  {a.addonName}
-                </option>
-              ))}
-            </select>
-            <FieldError errors={[errors.addonName]} />
-          </Field>
-
-          <Field>
-            <FieldTitle>
-              <label htmlFor="addon-version">Version</label>
-            </FieldTitle>
-            <select
-              aria-invalid={!!errors.addonVersion}
-              className={selectClassName}
-              disabled={versions.length === 0}
-              id="addon-version"
-              onChange={(e) => {
-                setValue("addonVersion", e.target.value, {
-                  shouldValidate: true,
-                })
-              }}
-              value={addonVersion}
-            >
-              {versions.map((v, i) => (
-                <option key={v.addonVersion} value={v.addonVersion ?? ""}>
-                  {v.addonVersion}
-                  {i === 0 ? " (latest)" : ""}
-                </option>
-              ))}
-            </select>
-            <FieldError errors={[errors.addonVersion]} />
-          </Field>
-
-          <Field>
-            <FieldTitle>
-              <label htmlFor="addon-role">Service account IAM role ARN</label>
-            </FieldTitle>
-            <Input
-              id="addon-role"
-              placeholder="arn:aws:iam::…:role/…"
-              {...register("serviceAccountRoleArn")}
-            />
-            {requiresIam && (
-              <p className="text-xs text-muted-foreground">
-                This add-on needs IAM permissions — provide an IRSA role ARN.
-              </p>
-            )}
-          </Field>
-
-          <Field>
-            <FieldTitle>
-              <label htmlFor="addon-config">Configuration values (JSON)</label>
-            </FieldTitle>
-            <Controller
-              control={control}
-              name="configurationValues"
-              render={({ field: { onBlur, onChange, ref, value } }) => (
-                <JsonEditor
-                  error={!!errors.configurationValues}
-                  id="addon-config"
-                  onBlur={onBlur}
-                  onChange={onChange}
-                  placeholder='{"replicaCount": 2}'
-                  ref={ref}
-                  rows={4}
-                  value={value}
-                />
-              )}
-            />
-            <FieldError errors={[errors.configurationValues]} />
-          </Field>
-        </form>
-
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            disabled={createAddon.isPending}
-            onClick={(e) => {
-              e.preventDefault()
-              void handleSubmit(onSubmit)()
-            }}
-          >
-            {createAddon.isPending ? "Adding…" : "Add"}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  )
-}
-
-function UpdateAddonDialog({
-  clusterName,
-  addonName,
-  current,
-  versions,
-  onOpenChange,
-}: {
-  clusterName: string
-  addonName: string
-  current: {
-    addonVersion?: string
-    serviceAccountRoleArn?: string
-    configurationValues?: string
-  }
-  versions: string[]
-  onOpenChange: (open: boolean) => void
-}) {
-  const updateAddon = useUpdateAddon()
-  const [version, setVersion] = useState(current.addonVersion ?? "")
-  const [role, setRole] = useState(current.serviceAccountRoleArn ?? "")
-  const [config, setConfig] = useState(current.configurationValues ?? "")
-  const [error, setError] = useState<string | undefined>()
-
-  const handleConfirm = () => {
-    const result = addonConfigurationSchema.safeParse(config)
-
-    if (!result.success) {
-      setError(
-        result.error.issues[0]?.message ?? "Configuration must be valid JSON",
-      )
-
-      return
-    }
-
-    setError(undefined)
-    updateAddon.mutate(
-      {
-        clusterName,
-        addonName,
-        addonVersion: version || undefined,
-        serviceAccountRoleArn: role.trim() || undefined,
-        configurationValues: config.trim() || undefined,
-      },
-      {
-        onSuccess: () => {
-          onOpenChange(false)
-        },
-      },
-    )
-  }
-
-  return (
-    <AlertDialog onOpenChange={onOpenChange} open>
-      <AlertDialogContent className="max-h-[85vh] overflow-y-auto">
-        <AlertDialogHeader>
-          <AlertDialogTitle>Update {addonName}</AlertDialogTitle>
-        </AlertDialogHeader>
-
-        <div className="space-y-4">
-          <Field>
-            <FieldTitle>
-              <label htmlFor="update-addon-version">Version</label>
-            </FieldTitle>
-            <select
-              className={selectClassName}
-              disabled={versions.length === 0}
-              id="update-addon-version"
-              onChange={(e) => {
-                setVersion(e.target.value)
-              }}
-              value={version}
-            >
-              {versions.map((v) => (
-                <option key={v} value={v}>
-                  {v}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          <Field>
-            <FieldTitle>
-              <label htmlFor="update-addon-role">
-                Service account IAM role ARN
-              </label>
-            </FieldTitle>
-            <Input
-              id="update-addon-role"
-              onChange={(e) => {
-                setRole(e.target.value)
-              }}
-              placeholder="arn:aws:iam::…:role/…"
-              value={role}
-            />
-          </Field>
-
-          <Field>
-            <FieldTitle>
-              <label htmlFor="update-addon-config">
-                Configuration values (JSON)
-              </label>
-            </FieldTitle>
-            <JsonEditor
-              error={!!error}
-              id="update-addon-config"
-              onChange={setConfig}
-              rows={4}
-              value={config}
-            />
-          </Field>
-        </div>
-        {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
-
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            disabled={updateAddon.isPending}
-            onClick={(e) => {
-              e.preventDefault()
-              handleConfirm()
-            }}
-          >
-            {updateAddon.isPending ? "Updating…" : "Update"}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  )
-}
 
 function AddonRow({
   clusterName,
@@ -378,50 +56,53 @@ function AddonRow({
       .filter(Boolean) ?? []
 
   return (
-    <DetailCard>
-      <DetailCard.Header>
-        <div className="flex items-center justify-between">
-          <span>{addonName}</span>
-          <div className="flex items-center gap-1">
-            <Badge variant={addonStatusVariant(addon?.status)}>
-              {addon?.status ?? "UNKNOWN"}
-            </Badge>
-            <Button
-              aria-label="Update add-on"
-              onClick={() => {
-                setShowUpdate(true)
-              }}
-              size="icon"
-              variant="ghost"
-            >
-              <ArrowUpCircle className="size-4" />
-            </Button>
-            <Button
-              aria-label="Remove add-on"
-              onClick={() => {
-                onDelete(addonName)
-              }}
-              size="icon"
-              variant="ghost"
-            >
-              <Trash2 className="size-4" />
-            </Button>
-          </div>
+    <div className="rounded-md border px-3 py-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="min-w-0 truncate text-sm font-medium">
+          {addonName}
+        </span>
+        <div className="flex items-center gap-1">
+          <Badge variant={addonStatusVariant(addon?.status)}>
+            {addon?.status ?? "UNKNOWN"}
+          </Badge>
+          <Button
+            aria-label="Update add-on"
+            onClick={() => {
+              setShowUpdate(true)
+            }}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <ArrowUpCircle />
+          </Button>
+          <Button
+            aria-label="Remove add-on"
+            onClick={() => {
+              onDelete(addonName)
+            }}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <Trash2 />
+          </Button>
         </div>
-      </DetailCard.Header>
-      <DetailCard.Content>
-        <DetailRow label="Version" value={addon?.addonVersion} />
-        <DetailRow label="IRSA role" value={addon?.serviceAccountRoleArn} />
+      </div>
+      <PanelFields>
+        <PanelField label="Version" mono>
+          {addon?.addonVersion}
+        </PanelField>
+        <PanelField copy={addon?.serviceAccountRoleArn} label="IRSA role" mono>
+          {addon?.serviceAccountRoleArn}
+        </PanelField>
         {issue && (
-          <DetailRow
-            label="Issue"
-            value={<span className="text-destructive">{issue}</span>}
-          />
+          <PanelField label="Issue">
+            <span className="text-destructive">{issue}</span>
+          </PanelField>
         )}
-      </DetailCard.Content>
+      </PanelFields>
 
       {showUpdate && (
-        <UpdateAddonDialog
+        <UpdateAddonForm
           addonName={addonName}
           clusterName={clusterName}
           current={{
@@ -429,11 +110,13 @@ function AddonRow({
             serviceAccountRoleArn: addon?.serviceAccountRoleArn,
             configurationValues: addon?.configurationValues,
           }}
-          onOpenChange={setShowUpdate}
+          onClose={() => {
+            setShowUpdate(false)
+          }}
           versions={versions}
         />
       )}
-    </DetailCard>
+    </div>
   )
 }
 
@@ -449,44 +132,52 @@ export function AddonsTab({ clusterName }: { clusterName: string }) {
 
   return (
     <>
-      <div className="mb-4 flex items-center justify-between gap-4">
-        <p className="text-xs text-muted-foreground">
-          Add-on manifests are staged; activation completes when the cluster
-          reports the workload ready.
-        </p>
-        <Button
-          onClick={() => {
-            setShowAdd(true)
-          }}
-          size="sm"
-        >
-          Add add-on
-        </Button>
-      </div>
-
-      {addons.length > 0 ? (
-        <div className="space-y-4">
-          {addons.map((name) => (
-            <AddonRow
-              addonName={name}
-              catalog={catalog}
-              clusterName={clusterName}
-              key={name}
-              onDelete={setPendingDelete}
-            />
-          ))}
+      <PanelSection title={`Add-ons (${addons.length})`}>
+        <div className="flex flex-col gap-3 py-1">
+          <p className="text-xs text-muted-foreground">
+            Add-on manifests are staged; activation completes when the cluster
+            reports the workload ready.
+          </p>
+          <div>
+            <Button
+              onClick={() => {
+                setShowAdd(true)
+              }}
+              size="sm"
+              variant="outline"
+            >
+              <Plus data-icon="inline-start" />
+              Add add-on
+            </Button>
+          </div>
+          {addons.length > 0 ? (
+            addons.map((name) => (
+              <AddonRow
+                addonName={name}
+                catalog={catalog}
+                clusterName={clusterName}
+                key={name}
+                onDelete={setPendingDelete}
+              />
+            ))
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No add-ons installed.
+            </p>
+          )}
         </div>
-      ) : (
-        <p className="text-muted-foreground">No add-ons installed.</p>
-      )}
+      </PanelSection>
 
-      <AddAddonDialog
-        catalog={catalog}
-        clusterName={clusterName}
-        installed={addons}
-        onOpenChange={setShowAdd}
-        open={showAdd}
-      />
+      {showAdd && (
+        <AddAddonForm
+          catalog={catalog}
+          clusterName={clusterName}
+          installed={addons}
+          onClose={() => {
+            setShowAdd(false)
+          }}
+        />
+      )}
 
       <DeleteConfirmationDialog
         confirmLabel="Remove"

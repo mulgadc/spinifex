@@ -10,6 +10,10 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/registryadapt"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -31,23 +35,33 @@ import (
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
+	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
+	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
+	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	route53awsapi "github.com/mulgadc/spinifex/spinifex/domains/route53/awsapi"
+	sqsworkerapi "github.com/mulgadc/spinifex/spinifex/domains/sqs/awsapi/worker"
+	sqsrelay "github.com/mulgadc/spinifex/spinifex/domains/sqs/relay"
+	sqsservicestate "github.com/mulgadc/spinifex/spinifex/domains/sqs/servicestate"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
+	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
+	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
+	instancecache "github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
@@ -56,15 +70,30 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 )
 
+// startInstanceStatus starts the read-only informer over the live instance
+// record space and pairs it with node liveness. The describe path still serves
+// from the fan-out and KV; only status synthesis reads the cache. Without it a
+// node that stops answering takes its instances out of DescribeInstanceStatus
+// entirely, so a dead host reads as no host.
+func startInstanceStatus(ctx context.Context, js jetstream.JetStream) ec2instanceapi.StatusSynthesis {
+	records := instancecache.New(js, instancecache.Config{
+		Bucket:            kvstore.Config{Name: daemon.InstanceStateBucket, History: 1},
+		Prefix:            daemon.InstanceRecordPrefix,
+		VisibleToCaller:   ec2instance.IsInstanceVisibleToCaller,
+		FallbackAccountID: awsidentifiers.GlobalAccountID,
+	})
+	go records.Run(ctx)
+	return ec2instanceapi.StatusSynthesis{
+		Records:  records,
+		Liveness: instancecache.NewLiveness(js, kvstore.Config{Name: daemon.ClusterStateBucket, History: 1}),
+	}
+}
+
 var serviceName = "awsgw"
 
 // OIDCJWKSReader is wired into STS here, not beside its own definition in
 // domains/eks/cluster, because domains/eks/cluster must not import domains/sts.
 var _ stsdomain.ClusterJWKSResolver = (*ekscluster.OIDCJWKSReader)(nil)
-
-// OIDCPublisher is wired into the gateway here for the same reason: the EKS
-// domain cannot import gateway.
-var _ gateway.OIDCPublisher = (*ekscluster.OIDCPublisher)(nil)
 
 // AccountStatusReader also serves as the quota override seal's TERMINATING
 // precondition, wired here because domains/iam must not import
@@ -148,12 +177,17 @@ func resolveSignupMaxAccounts(cfg signupConfig) int {
 
 // wireServiceRegistry builds gw.Services from regs and validates it against
 // the legacy dispatch table before the gateway ever serves a request.
-func wireServiceRegistry(gw *gateway.GatewayConfig, regs ...dispatch.Registration) error {
+func wireServiceRegistry(gw *pipeline.Config, regs ...dispatch.Registration) error {
 	b := dispatch.NewBuilder()
 	for _, reg := range regs {
 		if err := b.Register(reg); err != nil {
 			return err
 		}
+	}
+	// S3 is served by the object store, not this gateway; its clients still
+	// expect S3's error body when a request for it is rejected here.
+	if err := b.DeclareScope("s3", dispatch.ServiceTraits{XMLErrorShape: dispatch.XMLErrorShapeS3, PayloadBody: true}); err != nil {
+		return err
 	}
 	gw.Services = b.Build()
 	return gw.ValidateServices()
@@ -480,43 +514,22 @@ func launchService(config *config.ClusterConfig) error {
 	nodeIDs := slices.Collect(maps.Keys(config.Nodes))
 
 	ecrIssuer := ecrauth.NewIssuer(signingKey, ecrAudience)
-	gw := gateway.GatewayConfig{
-		Debug:                   nodeConfig.AWSGW.Debug,
-		DisableLogging:          false,
-		NATSConn:                natsConn,
-		RootCAs:                 rootCAs,
-		Config:                  nodeConfig.AWSGW.Config,
-		ExpectedNodes:           len(config.Nodes),
-		NodeIDs:                 nodeIDs,
-		Region:                  nodeConfig.Region,
-		InternalSuffix:          config.AWS.ServicesDomain,
-		RegistryPort:            registryPort,
-		RegistryHost:            registryHost,
-		AZ:                      nodeConfig.AZ,
-		IAMService:              iamService,
-		BucketStore:             objStore,
-		STSService:              stsService,
-		Version:                 version,
-		Commit:                  commit,
-		OIDC:                    ekscluster.NewOIDCPublisher(jwksJS),
-		ECRRegistry:             ecrRegistry,
-		ECRTokenIssuer:          ecrIssuer,
-		ECRTokenVerifier:        ecrauth.NewVerifier(verifyKeys, ecrAudience),
-		BedrockCredentials:      bedrockCredentials,
-		BedrockEndpoints:        bedrockEndpoints,
-		BedrockEndpointResolver: bedrockEndpointResolver,
-		BedrockLoggingConfig:    bedrockLoggingConfig,
-		BedrockRecorder:         bedrockRecorder,
-		BedrockAccess:           bedrockAccess,
-		BedrockAccessAdmin:      bedrockAccess,
-		BedrockProvisioned:      bedrockProvisioned,
-		BedrockGuardrails:       bedrockGuardrails,
-		BedrockEmbedder:         bedrockEmbedder,
-		SignupMaxAccounts:       signupMaxAccounts,
-		BedrockAgentKB:          bedrockAgentKB,
-		BedrockAgentDataSources: bedrockAgentDataSources,
-		BedrockAgentVector:      bedrockAgentVector,
+	ecrVerifier := ecrauth.NewVerifier(verifyKeys, ecrAudience)
+	credentials := credverify.New(iamService, stsService)
+	admission := accountadmission.New(iamService)
+	ecrBridge, err := ecrregistry.NewBridge(registryadapt.Config(ecrregistry.BridgeConfig{
+		Registry:  ecrRegistry,
+		Verifier:  ecrVerifier,
+		Issuer:    ecrIssuer,
+		Admission: admission,
+		Region:    nodeConfig.Region,
+	}, credentials, policyauth.New(iamService)))
+	if err != nil {
+		return fmt.Errorf("ECR registry bridge: %w", err)
 	}
+	registryHosts := ingresshttp.NewHostMatcher(config.AWS.ServicesDomain, "dkr", "ecr")
+	nodes := &NodeDiscovery{NATS: natsConn, Expected: len(config.Nodes)}
+	publicRoutes := PublicRoutes(ekscluster.NewOIDCPublisher(jwksJS), registryHosts.Middleware(ecrBridge.Handler()))
 
 	ecrControlPlane := awsapi.NewRegistration(awsapi.Deps{
 		Registry:           awsapi.NewRegistryActionService(ecrRegistry, ecrRegistry, ecrRegistry, ecrRegistry),
@@ -533,15 +546,16 @@ func launchService(config *config.ClusterConfig) error {
 	// Rotate the ECR signing key on a 30-day cadence, retaining the previous keys
 	// until their tokens expire. The rotator keeps the issuer/verifier current as
 	// keys roll. Bound to the same lifetime context as the STS janitor.
-	keyRotator, err := ecrauth.NewRotator(janitorCtx, js, masterKey, gw.ECRTokenIssuer, gw.ECRTokenVerifier)
+	keyRotator, err := ecrauth.NewRotator(janitorCtx, js, masterKey, ecrIssuer, ecrVerifier)
 	if err != nil {
 		return fmt.Errorf("ECR auth bridge: signing-key rotator: %w", err)
 	}
 	go keyRotator.Run(janitorCtx)
 
+	var throttler *ratelimit.Throttler
 	if throttleCfg.Enabled {
-		gw.Throttler = ratelimit.New(throttleCfg)
-		defer gw.Throttler.Stop()
+		throttler = ratelimit.New(throttleCfg)
+		defer throttler.Stop()
 	}
 
 	// Per-account service quotas. Only the enabled path opens the gateway-owned
@@ -558,19 +572,19 @@ func launchService(config *config.ClusterConfig) error {
 			return fmt.Errorf("init account quota bucket: %w", err)
 		}
 	}
-	gw.Quota = admissionquota.New(quotaCfg, usageBucket)
-	gw.Quota.SetOverrides(quotaOverrides)
+	quotaSvc := admissionquota.New(quotaCfg, usageBucket)
+	quotaSvc.SetOverrides(quotaOverrides)
 
 	// Seal precondition: the quota owner's only fact from IAM, read directly
 	// rather than through the gateway's cached IAMService, so a seal sees a
 	// TERMINATING flip the moment IAM commits it.
-	gw.Quota.SetAccountTerminationChecker(iamdomain.NewAccountStatusReader(js))
+	quotaSvc.SetAccountTerminationChecker(iamdomain.NewAccountStatusReader(js))
 	// SealAccountOverrides opens the override bucket itself when this
 	// gateway's quotas are disabled, so the seal subject works regardless of
 	// quotaCfg.Enabled and never touches the bucket at startup.
-	gw.Quota.SetJetStream(js)
+	quotaSvc.SetJetStream(js)
 
-	quotaSealSub, err := registerQuotaOverrideSeal(natsConn, gw.Quota)
+	quotaSealSub, err := registerQuotaOverrideSeal(natsConn, quotaSvc)
 	if err != nil {
 		return fmt.Errorf("subscribe quota override seal: %w", err)
 	}
@@ -580,60 +594,131 @@ func launchService(config *config.ClusterConfig) error {
 		}
 	}()
 
+	// Served whatever the gateway's [quota] setting: the claim is about this
+	// binary's override writers, not about whether quotas are enabled.
+	quotaSealCapSub, err := registerQuotaOverrideSealCapability(natsConn, config.Node)
+	if err != nil {
+		return fmt.Errorf("subscribe quota override seal capability: %w", err)
+	}
+	if quotaSealCapSub != nil {
+		defer func() {
+			if err := quotaSealCapSub.Unsubscribe(); err != nil {
+				slog.Warn("Quota override seal capability: unsubscribe failed", "err", err)
+			}
+		}()
+	}
+
 	// Bedrock token quota reads the stream-fed usage counters built above,
 	// independent of whether the standing-infra dimensions are enabled.
-	gw.Quota.SetBedrockUsage(bedrockUsage)
+	quotaSvc.SetBedrockUsage(bedrockUsage)
 
+	// Composed after the quota service and the instance cache it consumes.
+	// Without the status synthesis a node that stops answering takes its
+	// instances out of DescribeInstanceStatus entirely, so a dead host reads as
+	// no host.
+	ec2ControlPlane := newEC2Registration(ec2Wiring{
+		NATS:           natsConn,
+		IAM:            iamService,
+		Quota:          quotaSvc,
+		ActiveNodes:    nodes.ActiveNodes,
+		ExpectedNodes:  len(config.Nodes),
+		NodeIDs:        nodeIDs,
+		AZ:             nodeConfig.AZ,
+		RegistryHost:   registryHost,
+		RegistryPort:   registryPort,
+		InstanceStatus: startInstanceStatus(janitorCtx, js),
+	})
 	// Composed after the quota service because ELBv2 enforces and reports the
 	// load balancer cap through it.
-	elbv2ControlPlane := elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: natsConn, Quota: gw.Quota})
-	operatorControlPlane := operatoradmin.NewRegistration(operatoradmin.Deps{
-		Version:     gw.Version,
-		Commit:      gw.Commit,
+	elbv2ControlPlane := elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: natsConn, Quota: quotaSvc})
+	rdsControlPlane := rdsawsapi.NewRegistration(rdsawsapi.Deps{
+		NATS:          natsConn,
+		ExpectedNodes: len(config.Nodes),
+		Quota:         quotaSvc,
+	})
+	iamControlPlane := iamawsapi.NewRegistration(iamawsapi.Deps{
+		IAM: iamService,
+		CountInstanceProfileAssociations: func(ctx context.Context, accountID, profileARN string) (int, error) {
+			return ec2instanceapi.CountInstanceProfileAssociations(ctx, natsConn, nodes.ActiveNodes(ctx), accountID, profileARN)
+		},
+	})
+	ecsControlPlane := ecsawsapi.NewRegistration(ecsawsapi.Deps{NATS: natsConn, Roles: iamdomain.NewRoleResolver(iamService)})
+	eksControlPlane := eksawsapi.NewRegistration(eksawsapi.Deps{NATS: natsConn, Roles: iamdomain.NewRoleResolver(iamService)})
+	bedrockControlPlane := ochreawsapi.NewRegistration(ochreawsapi.Deps{
+		Credentials: bedrockCredentials,
+		Endpoints:   bedrockEndpointResolver,
+		Access:      bedrockAccess,
+		Recorder:    bedrockRecorder,
+		Logging:     bedrockLoggingConfig,
+		Provisioned: bedrockProvisioned,
+		Guardrails:  bedrockGuardrails,
+		Embedder:    bedrockEmbedder,
+		KB:          bedrockAgentKB,
+		DataSources: bedrockAgentDataSources,
+		Vector:      bedrockAgentVector,
+		Quota:       quotaSvc,
+	})
+	stsDeps := stsawsapi.Deps{STS: stsService, IAM: iamService}
+	stsControlPlane := stsawsapi.NewRegistration(stsDeps)
+	// The relay hands queued SQS work to the worker polling this gateway; the
+	// gate answers ServiceUnavailable until an operator enables SQS.
+	sqsGate := &sqsservicestate.Gate{JS: js, Region: nodeConfig.Region, TTL: 2 * time.Second}
+	sqsRelay := &sqsrelay.Relay{Admit: sqsGate.Open}
+	sqsControlPlane := sqsRegistrations(sqsRelay, registryHost, registryPort)
+	// Set once the gateway is composed, so status reports the registry it serves.
+	var composedServices *dispatch.Registry
+	operatorControlPlane := operatoradmin.NewRegistration(withClusterNodes(operatoradmin.Deps{
+		Version:     version,
+		Commit:      commit,
 		NATS:        natsConn,
 		RootCAs:     rootCAs,
-		ActiveNodes: gw.DiscoverActiveNodes,
+		ActiveNodes: nodes.ActiveNodes,
 		ModelAccess: bedrockAccess,
 		Credentials: bedrockCredentials,
 		Access:      bedrockAccess,
-	})
-	if err := wireServiceRegistry(&gw, ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, operatorControlPlane); err != nil {
+
+		IAM:                    iamService,
+		Quota:                  quotaSvc,
+		BucketStore:            objStore,
+		SignupMaxAccounts:      signupMaxAccounts,
+		Region:                 nodeConfig.Region,
+		SQSWorkerPolling:       sqsRelay.WorkerPresent,
+		SQSTenantAPIRegistered: func() bool { return sqsServed(composedServices) },
+	}, config))
+	// The SQS worker's internal surface binds its buckets per request and never
+	// creates them, so it refuses every caller until a worker launch has.
+	sqsWorkerDeps := sqsworkerapi.JetStreamDeps(js)
+	sqsWorkerDeps.Work = sqsRelay
+	sqsWorkerControlPlane := sqsworkerapi.NewRegistration(sqsWorkerDeps)
+	gw, err := composeGateway(gatewayInputs{
+		Debug:        nodeConfig.AWSGW.Debug,
+		Region:       nodeConfig.Region,
+		NATS:         natsConn,
+		IAM:          iamService,
+		Credentials:  credentials,
+		Admission:    admission,
+		PublicRoutes: publicRoutes,
+		PreAuth:      []dispatch.PreAuth{stsawsapi.NewPreAuth(stsDeps)},
+	}, append([]dispatch.Registration{ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, iamControlPlane, stsControlPlane, operatorControlPlane, ecsControlPlane, eksControlPlane, bedrockControlPlane, sqsWorkerControlPlane, ec2ControlPlane}, sqsControlPlane...)...)
+	if err != nil {
 		return fmt.Errorf("awsgw: %w", err)
 	}
+	composedServices = gw.Services
+	gw.Throttler = throttler
 
 	// Leader-locked vCPU reconcile: the only path that lowers the counter,
 	// recomputing it from the running-plus-stopped sweep so out-of-band
 	// terminations free quota. Started only when quotas are enabled so default-off
 	// gateways spin no ticker.
 	if quotaCfg.Enabled {
-		go runQuotaReconcile(janitorCtx, gw.Quota, natsConn, js, activeAccountIDs(iamService), len(config.Nodes))
+		go runQuotaReconcile(janitorCtx, quotaSvc, natsConn, js, activeAccountIDs(iamService), len(config.Nodes))
 	}
 
 	// Bedrock RPM enforcement is local and immediate (never gated on
 	// quotaCfg.Enabled); this loop only pushes a periodic observability
 	// snapshot to KV and is itself a no-op when the RPM dimension is
 	// disabled.
-	go gw.Quota.RunBedrockRPMSync(janitorCtx, js)
-
-	// Instance cache: a read-only informer over the live instance record space,
-	// started now so it is warm well before anything reads it. The describe
-	// path still serves from the fan-out and KV; only status synthesis reads it.
-	instanceCache := instancecache.New(js, instancecache.Config{
-		Bucket:            kvstore.Config{Name: daemon.InstanceStateBucket, History: 1},
-		Prefix:            daemon.InstanceRecordPrefix,
-		VisibleToCaller:   ec2instance.IsInstanceVisibleToCaller,
-		FallbackAccountID: awsidentifiers.GlobalAccountID,
-	})
-	go instanceCache.Run(janitorCtx)
-
-	// Without this a node that stops answering takes its instances out of
-	// DescribeInstanceStatus entirely, so a dead host reads as no host.
-	gw.InstanceStatus = ec2instanceapi.StatusSynthesis{
-		Records: instanceCache,
-		Liveness: instancecache.NewLiveness(js, kvstore.Config{
-			Name: daemon.ClusterStateBucket, History: 1,
-		}),
-	}
+	go quotaSvc.RunBedrockRPMSync(janitorCtx, js)
 
 	handler := gw.SetupRoutes()
 
@@ -803,4 +888,14 @@ func parseBedrockEndpoints(raw string) map[string]string {
 		return nil
 	}
 	return endpoints
+}
+
+// withClusterNodes sets the configured node sets teardown reaches: the
+// daemon on every node, and the gateway only on nodes that run awsgw. An
+// empty gateway set would fail every account termination closed.
+func withClusterNodes(d operatoradmin.Deps, config *config.ClusterConfig) operatoradmin.Deps {
+	d.ExpectedNodes = len(config.Nodes)
+	d.NodeIDs = slices.Sorted(maps.Keys(config.Nodes))
+	d.GatewayNodeIDs = config.NodesRunning("awsgw")
+	return d
 }

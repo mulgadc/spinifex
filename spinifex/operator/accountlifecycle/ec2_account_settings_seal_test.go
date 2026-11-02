@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2account "github.com/mulgadc/spinifex/spinifex/domains/ec2/account"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
@@ -222,7 +223,7 @@ func TestTeardownSealsAccountSettings(t *testing.T) {
 	_, nc, js := testutil.StartTestJetStream(t)
 	ctx := testCtx(t)
 
-	settings, err := ec2account.NewAccountSettingsServiceImplWithNATS(ctx, nil, nc)
+	settings, err := ec2account.NewAccountSettingsServiceImplWithNATS(ctx, &config.Config{}, nc)
 	require.NoError(t, err)
 	settings.SetAccountTerminationChecker(alwaysTerminatingChecker{})
 	_, err = settings.EnableEbsEncryptionByDefault(ctx, &ec2.EnableEbsEncryptionByDefaultInput{}, testAccountID)

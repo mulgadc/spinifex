@@ -70,6 +70,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/exonet"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/floating"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/ocinet"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
@@ -77,6 +78,7 @@ import (
 	rdsengine "github.com/mulgadc/spinifex/spinifex/domains/rds/engine"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	route53domain "github.com/mulgadc/spinifex/spinifex/domains/route53"
+	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerlaunch"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
@@ -102,7 +104,7 @@ type ResourceManager struct {
 	hostVCPU  int
 	hostMemGB float64
 	// reservedVCPU / reservedMem: resources held back for the daemon and
-	// co-located services. See hostReserve / defaultHostReserve.
+	// co-located services. See hostReserve / reservedVCPUFor (ADR-0015).
 	reservedVCPU  int
 	reservedMem   float64
 	allocatedVCPU int
@@ -166,6 +168,7 @@ type Daemon struct {
 	launchTemplateService *ec2launchtemplate.LaunchTemplateServiceImpl
 	spotInstanceService   *ec2spotinstance.SpotInstanceServiceImpl
 	vpcService            *ec2vpc.VPCServiceImpl
+	sqsWorker             *sqsWorkerEnsurer
 	eipService            ec2eip.EIPService
 	elbv2Service          *elbv2domain.ELBv2ServiceImpl
 	eksService            *ekscluster.EKSServiceImpl
@@ -186,6 +189,9 @@ type Daemon struct {
 	routeTableService     *ec2routetable.RouteTableServiceImpl
 	natGatewayService     *ec2natgw.NatGatewayServiceImpl
 	externalIPAM          *ec2vpc.ExternalIPAM
+	// floatingAllocators is every floating-address pool (source="vultr") on
+	// this node, written once during startup like ociAllocators.
+	floatingAllocators []floatingPool
 	// ociAllocators is every source="oci" pool on this node. Written once during
 	// startup, before anything reads it.
 	ociAllocators []ociPool
@@ -500,15 +506,15 @@ func parsePhysicalCores(data []byte) (int, bool) {
 // NewResourceManager creates a new ResourceManager. Errors if memory detection
 // fails or if the host is too small to satisfy the daemon's reserve.
 func NewResourceManager(gpuModels []instancetypes.GPUModel, migProfiles []instancetypes.MIGProfileSpec, gpuMgr *gpu.Manager) (*ResourceManager, error) {
-	// Use physical cores (not SMT threads); SPINIFEX_HOST_VCPU overrides.
-	hostVCPU := resolveHostVCPU(os.Getenv, physicalCoreCount())
+	// One instance vCPU per online CPU, as AWS counts (ADR-0015:S1).
+	hostVCPU := resolveHostVCPU(os.Getenv, hostCPUCount())
 
 	totalMemGB, err := getSystemMemory()
 	if err != nil {
 		return nil, fmt.Errorf("detect system memory: %w", err)
 	}
 
-	reserve := resolveHostReserve(os.Getenv)
+	reserve := resolveHostReserve(os.Getenv, hostVCPU)
 	reservedVCPU, reservedMem, err := applyHostReserve(reserve, hostVCPU, totalMemGB)
 	if err != nil {
 		slog.Error("host below minimum reserve — daemon refuses to start",
@@ -528,7 +534,7 @@ func NewResourceManager(gpuModels []instancetypes.GPUModel, migProfiles []instan
 	}
 
 	slog.Info("System resources detected",
-		"hostVCPU", hostVCPU, "logicalCPU", runtime.NumCPU(), "hostMemGB", totalMemGB,
+		"hostVCPU", hostVCPU, "physicalCores", physicalCoreCount(), "smt", smtState(), "hostMemGB", totalMemGB,
 		"reservedVCPU", reservedVCPU, "reservedMemGB", reservedMem,
 		"schedulableVCPU", hostVCPU-reservedVCPU, "schedulableMemGB", totalMemGB-reservedMem,
 		"instanceTypes", len(instanceTypes))
@@ -592,14 +598,19 @@ func (rm *ResourceManager) GetInstanceTypeInfos() []*ec2.InstanceTypeInfo {
 	return infos
 }
 
-// GetAvailableInstanceTypeInfos returns instance types based on total host capacity.
-// If showCapacity is true, it returns multiple entries representing available slots.
-// If showCapacity is false, it returns each supported type only once.
-func (rm *ResourceManager) GetAvailableInstanceTypeInfos(showCapacity bool) []*ec2.InstanceTypeInfo {
+// GetInstanceTypeAvailability returns each admissible instance type once with
+// the number of instances of it this node can currently take. Types with no
+// free slot are omitted.
+//
+// The count is returned as a number rather than as one entry per free slot.
+// Repeating the entry made the reply grow with free capacity, so an idle host
+// could exceed the NATS maximum payload and report no capacity at all.
+func (rm *ResourceManager) GetInstanceTypeAvailability() []ec2instance.InstanceTypeAvailability {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
 
-	var infos []*ec2.InstanceTypeInfo
+	avail := make([]ec2instance.InstanceTypeAvailability, 0, len(rm.instanceTypes))
+	totalSlots := int64(0)
 
 	for name, it := range rm.instanceTypes {
 		if instancetypes.IsSystemType(name) {
@@ -613,44 +624,37 @@ func (rm *ResourceManager) GetAvailableInstanceTypeInfos(showCapacity bool) []*e
 			continue
 		}
 
+		var count int64
+
 		// GPU types are capacity-gated by GPU pool size, not host CPU/memory.
 		// The GPU is the scarce resource; CPU/memory on GPU-class hardware is abundant.
 		if instancetypes.IsGPUType(it) {
-			count := rm.admissibleGPUInstances(name)
-			if showCapacity {
-				for range count {
-					infos = append(infos, it)
-				}
-			} else if count > 0 {
-				infos = append(infos, it)
-			}
+			count = int64(rm.admissibleGPUInstances(name))
+		} else {
+			count = int64(canAllocateCount(
+				rm.hostVCPU-rm.reservedVCPU-rm.reservedCRVCPU, rm.allocatedVCPU,
+				rm.hostMemGB-rm.reservedMem-rm.reservedCRMem, rm.allocatedMem,
+				vCPUs, rm.instanceMemChargeMiB(it),
+				1<<30, // effectively unlimited — let resources be the constraint
+				0, false,
+			))
+		}
+
+		if count <= 0 {
 			continue
 		}
 
-		count := canAllocateCount(
-			rm.hostVCPU-rm.reservedVCPU-rm.reservedCRVCPU, rm.allocatedVCPU,
-			rm.hostMemGB-rm.reservedMem-rm.reservedCRMem, rm.allocatedMem,
-			vCPUs, rm.instanceMemChargeMiB(it),
-			1<<30, // effectively unlimited — let resources be the constraint
-			0, false,
-		)
-
-		if showCapacity {
-			for range count {
-				infos = append(infos, it)
-			}
-		} else if count > 0 {
-			infos = append(infos, it)
-		}
+		avail = append(avail, ec2instance.InstanceTypeAvailability{Info: it, Available: count})
+		totalSlots += count
 	}
 
-	slog.Info("GetAvailableInstanceTypeInfos", "total_types", len(rm.instanceTypes), "total_available_slots", len(infos),
+	slog.Info("GetInstanceTypeAvailability", "total_types", len(rm.instanceTypes),
+		"available_types", len(avail), "total_available_slots", totalSlots,
 		"hostVCPU", rm.hostVCPU, "hostMem", rm.hostMemGB,
 		"reservedVCPU", rm.reservedVCPU, "reservedMem", rm.reservedMem,
-		"reservedCRVCPU", rm.reservedCRVCPU, "reservedCRMem", rm.reservedCRMem,
-		"showCapacity", showCapacity)
+		"reservedCRVCPU", rm.reservedCRVCPU, "reservedCRMem", rm.reservedCRMem)
 
-	return infos
+	return avail
 }
 
 // GetSupportedInstanceTypeInfos returns every supported instance type regardless
@@ -898,6 +902,9 @@ type natsSub struct {
 
 // subscribeAll registers all NATS subscriptions using a table-driven approach.
 func (d *Daemon) subscribeAll() error {
+	if d.sqsWorker == nil {
+		d.sqsWorker = newSQSWorkerEnsurer(d.buildSQSWorkerLauncher)
+	}
 	subs := []natsSub{
 		// ec2.RunInstances is handled by dynamic per-instance-type subscriptions
 		// managed by ResourceManager.initSubscriptions()
@@ -961,6 +968,9 @@ func (d *Daemon) subscribeAll() error {
 		// Capacity reservations: Create is node-targeted (gateway pins one node);
 		// Describe fans out and Cancel broadcasts, so both use plain Subscribe.
 		{fmt.Sprintf("ec2.CreateCapacityReservation.%s", d.node), d.handleEC2CreateCapacityReservation, ""},
+		// The shared SQS worker is launched only on an operator's request to the
+		// node it is pinned to; nothing starts it automatically.
+		{workerlaunch.EnsureSubjectPrefix + d.node, d.handleSQSWorkerEnsure, ""},
 		{"ec2.DescribeCapacityReservations", d.handleEC2DescribeCapacityReservations, ""},
 		{"ec2.CancelCapacityReservation", d.handleEC2CancelCapacityReservation, ""},
 		{"ec2.CreateNatGateway", handleNATSRequest(d.node, d.natGatewayService.CreateNatGateway), "spinifex-workers"},
@@ -1119,6 +1129,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"eks.UpdateAddon", handleNATSRequest(d.node, d.eksService.UpdateAddon), "spinifex-workers"},
 			natsSub{"eks.ListStagedAddonManifests", handleNATSRequest(d.node, d.eksService.ListStagedAddonManifests), "spinifex-workers"},
 			natsSub{"eks.GetRecoveryDirective", handleNATSRequest(d.node, d.eksService.GetRecoveryDirective), "spinifex-workers"},
+			natsSub{"eks.ListManagedWorkers", handleNATSRequest(d.node, d.eksService.ListManagedWorkers), "spinifex-workers"},
 			natsSub{"eks.SetRecoveryDirective", handleNATSRequest(d.node, d.eksService.SetRecoveryDirective), "spinifex-workers"},
 			natsSub{"eks.RestoreSnapshot", handleNATSRequest(d.node, d.eksService.RestoreSnapshot), "spinifex-workers"},
 			natsSub{"eks.TagResource", handleNATSRequest(d.node, d.eksService.TagResource), "spinifex-workers"},
@@ -1442,6 +1453,10 @@ func (d *Daemon) startLocal() error {
 		}
 	}
 
+	// The kernel, QEMU and firmware a guest boots on are what a boot hang
+	// depends on, so record them before any guest is started.
+	vm.LogHostVirtStack()
+
 	// Recover local instance state from disk. Fatal on corruption — orphaned VMs.
 	if err := d.LoadState(); err != nil {
 		return fmt.Errorf("load local instance state: %w", err)
@@ -1514,6 +1529,11 @@ func (d *Daemon) externalPoolConfigs() (pools []external.ExternalPoolConfig, any
 			ExoscaleConfigFile: p.ExoscaleConfigFile,
 			ExoscaleAccount:    p.ExoscaleAccount,
 			ExoscaleBinary:     p.ExoscaleBinary,
+
+			VultrRegion:    p.VultrRegion,
+			VultrKeyFile:   p.VultrKeyFile,
+			LabelPrefix:    p.LabelPrefix,
+			ProviderHostID: d.clusterConfig.Nodes[d.clusterConfig.Node].ProviderHostID,
 		})
 		if p.Source == "dhcp" {
 			anyDHCP = true
@@ -1559,7 +1579,6 @@ func (d *Daemon) installOCIAllocators(ipam *ec2vpc.ExternalIPAM, js jetstream.Je
 		}
 	}
 	if len(d.ociAllocators) > 0 {
-		go d.runOCIAffinityLoop()
 		go d.runOCIReconcileLoop()
 	}
 	return nil
@@ -1590,6 +1609,67 @@ func (d *Daemon) installExoscaleAllocators(ipam *ec2vpc.ExternalIPAM, js jetstre
 	return nil
 }
 
+// installFloatingAllocators builds one allocator per floating-address pool and
+// runs its first reconcile. That pass only marks unbound addresses; the
+// periodic one collects them, since another node may be mid-allocation.
+func (d *Daemon) installFloatingAllocators(ipam *ec2vpc.ExternalIPAM, js jetstream.JetStream) error {
+	for _, p := range ipam.PoolsWithSource(external.SourceVultr) {
+		alloc, err := floating.FromPoolConfig(d.ctx, js, p, d.ovnSBAddr())
+		if err != nil {
+			return fmt.Errorf("build floating allocator for pool %q: %w", p.Name, err)
+		}
+		if err := ipam.InstallAllocator(p.Name, alloc); err != nil {
+			return err
+		}
+		pool := floatingPool{name: p.Name, alloc: alloc}
+		d.floatingAllocators = append(d.floatingAllocators, pool)
+		pool.reconcile(d.ctx)
+	}
+	if len(d.floatingAllocators) > 0 {
+		go d.runFloatingReconcileLoop()
+	}
+	return nil
+}
+
+// floatingPool pairs a floating pool's allocator with its name.
+type floatingPool struct {
+	name  string
+	alloc *floating.PoolAllocator
+}
+
+// reconcile runs one pass and logs its outcome. A failure leaks money and
+// quota, not reachability, so it is logged and the next pass retries.
+func (p floatingPool) reconcile(ctx context.Context) {
+	res, err := p.alloc.Reconcile(ctx)
+	switch {
+	case err != nil:
+		slog.Error("floating allocator reconcile failed; leaked addresses may be billing",
+			"pool", p.name, "collected", len(res.Collected), "err", err)
+	case len(res.Collected) > 0 || len(res.Missing) > 0:
+		slog.Info("floating allocator reconcile", "pool", p.name,
+			"collected", len(res.Collected), "suspect", res.Suspect, "missing", len(res.Missing), "skipped", res.Skipped)
+	default:
+		slog.Debug("floating allocator reconcile clean", "pool", p.name, "suspect", res.Suspect, "skipped", res.Skipped)
+	}
+}
+
+// runFloatingReconcileLoop repeats the reconcile on the OCI cadence, for the
+// same reason: leaks come from releases and guests long after start.
+func (d *Daemon) runFloatingReconcileLoop() {
+	ticker := time.NewTicker(ociReconcileInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		for _, p := range d.floatingAllocators {
+			p.reconcile(d.ctx)
+		}
+	}
+}
+
 // ociPool pairs a pool's allocator with its name, so one pass can cover every
 // pool and reach a single verdict about each guest. Per-pool loops could not: a
 // guest is impaired or it is not, and two loops writing that answer from half the
@@ -1610,12 +1690,20 @@ const ociAffinityInterval = 15 * time.Second
 // quota, not reachability, and the pass lists a whole compartment.
 const ociReconcileInterval = 10 * time.Minute
 
-// runOCIAffinityLoop keeps OCI's idea of where an address lives in step with
-// where its guest actually runs. Every node runs its own, like the host EIP
-// loop and for the same reason: the question is about this host's guests, and a
-// node that never wins the reconcile lease would otherwise never claim the
-// addresses of the instances it is running.
-func (d *Daemon) runOCIAffinityLoop() {
+// startAddressAffinityLoop starts the claim pass when any cloud pool needs
+// its addresses delivered to the node running their owner.
+func (d *Daemon) startAddressAffinityLoop() {
+	if len(d.addressClaimers()) > 0 {
+		go d.runAddressAffinityLoop()
+	}
+}
+
+// runAddressAffinityLoop keeps the cloud's idea of where an address lives in
+// step with where its guest actually runs. Every node runs its own, like the
+// host EIP loop and for the same reason: the question is about this host's
+// guests, and a node that never wins the reconcile lease would otherwise never
+// claim the addresses of the instances it is running.
+func (d *Daemon) runAddressAffinityLoop() {
 	ticker := time.NewTicker(ociAffinityInterval)
 	defer ticker.Stop()
 	for {
@@ -1624,7 +1712,7 @@ func (d *Daemon) runOCIAffinityLoop() {
 			return
 		case <-ticker.C:
 		}
-		d.ClaimOCIAddresses(d.ctx)
+		d.ClaimCloudAddresses(d.ctx)
 	}
 }
 
@@ -1693,39 +1781,61 @@ func (p ociPool) retryStartupReconcile(ctx context.Context, initialBackoff, maxB
 		})
 }
 
-// ClaimOCIAddresses runs one affinity pass over every OCI pool and records which
-// guests OCI is not delivering an address to.
+// namedClaimer is one cloud pool the affinity pass drives, with the provider
+// it names in logs.
+type namedClaimer struct {
+	name     string
+	provider string
+	claimer  external.AddressClaimer
+}
+
+// addressClaimers is every pool whose addresses follow their owner's node.
+func (d *Daemon) addressClaimers() []namedClaimer {
+	out := make([]namedClaimer, 0, len(d.ociAllocators)+len(d.floatingAllocators))
+	for _, p := range d.ociAllocators {
+		out = append(out, namedClaimer{name: p.name, provider: "OCI", claimer: p.alloc})
+	}
+	for _, p := range d.floatingAllocators {
+		out = append(out, namedClaimer{name: p.name, provider: p.alloc.Pool().Source, claimer: p.alloc})
+	}
+	return out
+}
+
+// ClaimCloudAddresses runs one affinity pass over every cloud pool and records
+// which guests the cloud is not delivering an address to. One pass over all of
+// them, because a guest is impaired or it is not, and per-pool passes writing
+// that answer from half the evidence would take turns contradicting each other.
 //
 // Exported because the recovery path calls it in line: a guest relaunched here is
-// reported running the moment it boots, and until this has run OCI still delivers
-// its address to the node that died. Waiting for the ticker would mean up to a
-// full interval in which the records say recovered and the address says nothing.
+// reported running the moment it boots, and until this has run the cloud still
+// delivers its address to the node that died.
 //
 // A pass that could not read its own inputs marks nothing. It learned that no
-// guest is reachable, not that every guest is, and clearing on that would turn an
-// OCI outage into a clean bill of health.
-func (d *Daemon) ClaimOCIAddresses(ctx context.Context) {
-	if len(d.ociAllocators) == 0 {
+// guest is reachable, not that every guest is, and clearing on that would turn a
+// cloud outage into a clean bill of health.
+func (d *Daemon) ClaimCloudAddresses(ctx context.Context) {
+	claimers := d.addressClaimers()
+	if len(claimers) == 0 {
 		return
 	}
 
 	complete := true
 	stalled := make(map[string]string)
-	for _, p := range d.ociAllocators {
-		res, err := p.alloc.ClaimLocalAddresses(ctx)
+	for _, p := range claimers {
+		res, err := p.claimer.ClaimLocalAddresses(ctx)
 		if err != nil {
-			slog.Error("OCI address affinity pass failed; a guest here may be unreachable on its public address",
-				"pool", p.name, "err", err)
+			slog.Error("Cloud address affinity pass failed; a guest here may be unreachable on its public address",
+				"provider", p.provider, "pool", p.name, "err", err)
 			complete = false
 			continue
 		}
 		if len(res.Claimed) > 0 {
-			slog.Info("OCI addresses moved to this node", "pool", p.name,
+			slog.Info("Cloud addresses moved to this node", "provider", p.provider, "pool", p.name,
 				"claimed", res.Claimed, "local_bindings", res.Local)
 		}
 		for _, s := range res.Stalled {
-			slog.Error("OCI is not delivering an address to the node running its guest",
-				"pool", p.name, "public_ip", s.PublicIP, "eni_id", s.ENIID, "reason", s.Reason)
+			slog.Error("Cloud is not delivering an address to the node running its guest",
+				"provider", p.provider, "pool", p.name, "public_ip", s.PublicIP, "eni_id", s.ENIID, "reason", s.Reason)
 			if s.ENIID != "" {
 				stalled[s.ENIID] = s.Reason
 			}
@@ -2004,6 +2114,10 @@ func (d *Daemon) startCluster() error {
 			if exoErr := d.installExoscaleAllocators(ipam, js); exoErr != nil {
 				return nil, exoErr
 			}
+			if fErr := d.installFloatingAllocators(ipam, js); fErr != nil {
+				return nil, fErr
+			}
+			d.startAddressAffinityLoop()
 			return ipam, nil
 		})
 		if err != nil {
@@ -2429,6 +2543,7 @@ func (d *Daemon) startCluster() error {
 		}
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))
+			reapers = append(reapers, d.volumeService.NewVolumeReclaimReaper())
 		}
 		if d.eksService != nil {
 			reapers = append(reapers, d.eksService.NewBillableReaper(d.nodeRunningVMs))
@@ -2473,6 +2588,7 @@ func (d *Daemon) configureEBSProvider() error {
 	provider := ebsprovider.NewNATSProvider(d.natsConn, ebsProviderRequestTimeout)
 	d.ebsProvider = provider
 	d.instanceService.SetEBSProvider(provider)
+	d.instanceService.SetUnsealedWritesChecker(provider, d.node)
 	d.imageService.SetEBSProvider(provider)
 	d.snapshotService.SetEBSProvider(provider)
 	d.volumeService.SetEBSProvider(provider)
@@ -3429,40 +3545,45 @@ func (rm *ResourceManager) updateInstanceSubscriptions() {
 			subjectRoot = "system.LaunchInstance"
 			handler = rm.systemHandler
 		}
+		rm.syncTypeSubscriptions(subjectRoot, typeName, queueGroup, handler, canFit, gate)
+	}
+}
 
-		queueTopic := fmt.Sprintf("%s.%s", subjectRoot, typeName)
-		measured := natsMetricsHandler(queueTopic, handler)
-		_, subscribed := rm.instanceSubs[queueTopic]
-		if canFit && !subscribed {
-			sub, err := rm.natsConn.QueueSubscribe(queueTopic, queueGroup, measured)
-			if err != nil {
-				slog.Error("Failed to subscribe to instance type topic", "topic", queueTopic, "err", err)
-				continue
-			}
-			rm.instanceSubs[queueTopic] = sub
-			slog.Debug("Subscribed to instance type", "topic", queueTopic)
-		} else if !canFit && subscribed {
-			if err := rm.instanceSubs[queueTopic].Unsubscribe(); err != nil {
-				slog.Error("Failed to unsubscribe from instance type topic", "topic", queueTopic, "err", err)
-			}
-			delete(rm.instanceSubs, queueTopic)
-			slog.Info("Unsubscribed from instance type (capacity full)", "topic", queueTopic, "gate", gate)
+// syncTypeSubscriptions holds one subject root's queue and node-targeted
+// subscriptions for an instance type in line with whether it can fit.
+func (rm *ResourceManager) syncTypeSubscriptions(subjectRoot, typeName, queueGroup string, handler natsHandler, canFit bool, gate string) {
+	queueTopic := fmt.Sprintf("%s.%s", subjectRoot, typeName)
+	measured := natsMetricsHandler(queueTopic, handler)
+	_, subscribed := rm.instanceSubs[queueTopic]
+	if canFit && !subscribed {
+		sub, err := rm.natsConn.QueueSubscribe(queueTopic, queueGroup, measured)
+		if err != nil {
+			slog.Error("Failed to subscribe to instance type topic", "topic", queueTopic, "err", err)
+			return
 		}
+		rm.instanceSubs[queueTopic] = sub
+		slog.Debug("Subscribed to instance type", "topic", queueTopic)
+	} else if !canFit && subscribed {
+		if err := rm.instanceSubs[queueTopic].Unsubscribe(); err != nil {
+			slog.Error("Failed to unsubscribe from instance type topic", "topic", queueTopic, "err", err)
+		}
+		delete(rm.instanceSubs, queueTopic)
+		slog.Info("Unsubscribed from instance type (capacity full)", "topic", queueTopic, "gate", gate)
+	}
 
-		if rm.nodeID != "" {
-			// Node-targeted topic stays subscribed even when capacity is full:
-			// a committed reservation (e.g. spread placement) must not fail with
-			// "no responders". Capacity is enforced at launch time by allocate().
-			nodeTopic := fmt.Sprintf("%s.%s.%s", subjectRoot, typeName, rm.nodeID)
-			if _, nodeSubscribed := rm.instanceSubs[nodeTopic]; canFit && !nodeSubscribed {
-				sub, err := rm.natsConn.Subscribe(nodeTopic, measured)
-				if err != nil {
-					slog.Error("Failed to subscribe to node-specific topic", "topic", nodeTopic, "err", err)
-					continue
-				}
-				rm.instanceSubs[nodeTopic] = sub
-				slog.Debug("Subscribed to node-specific instance type", "topic", nodeTopic)
+	if rm.nodeID != "" {
+		// Node-targeted topic stays subscribed even when capacity is full:
+		// a committed reservation (e.g. spread placement) must not fail with
+		// "no responders". Capacity is enforced at launch time by allocate().
+		nodeTopic := fmt.Sprintf("%s.%s.%s", subjectRoot, typeName, rm.nodeID)
+		if _, nodeSubscribed := rm.instanceSubs[nodeTopic]; canFit && !nodeSubscribed {
+			sub, err := rm.natsConn.Subscribe(nodeTopic, measured)
+			if err != nil {
+				slog.Error("Failed to subscribe to node-specific topic", "topic", nodeTopic, "err", err)
+				return
 			}
+			rm.instanceSubs[nodeTopic] = sub
+			slog.Debug("Subscribed to node-specific instance type", "topic", nodeTopic)
 		}
 	}
 }

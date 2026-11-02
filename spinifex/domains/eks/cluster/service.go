@@ -44,6 +44,10 @@ type EKSService interface {
 	// AWS-SDK action): the on-VM addon-sync agent fetches staged manifests for a
 	// cluster via the internal-addons gateway route.
 	ListStagedAddonManifests(ctx context.Context, input *ListStagedAddonManifestsInput, accountID string) (*ListStagedAddonManifestsOutput, error)
+	// ListManagedWorkers is an internal control-plane method (not an AWS-SDK
+	// action): the on-VM node-gc agent fetches the cluster's live nodegroup
+	// workers via the internal-workers gateway route.
+	ListManagedWorkers(ctx context.Context, input *ListManagedWorkersInput, accountID string) (*ListManagedWorkersOutput, error)
 
 	// GetRecoveryDirective / SetRecoveryDirective are internal control-plane
 	// methods (not AWS-SDK actions): the on-VM k3s-recovery agent fetches its

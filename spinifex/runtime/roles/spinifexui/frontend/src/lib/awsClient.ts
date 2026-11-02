@@ -12,6 +12,7 @@ import { IAMClient } from "@aws-sdk/client-iam"
 import { RDSClient } from "@aws-sdk/client-rds"
 import { Route53Client } from "@aws-sdk/client-route-53"
 import { S3Client } from "@aws-sdk/client-s3"
+import { XhrHttpHandler } from "@aws-sdk/xhr-http-handler"
 import { HttpRequest } from "@smithy/protocol-http"
 
 import { getCredentials } from "./auth"
@@ -349,56 +350,68 @@ export function getRoute53Client(): Route53Client {
   return route53Client
 }
 
-export function getS3Client(): S3Client {
-  if (!s3Client) {
-    const credentials = getCredentials()
+function newS3Client(requestHandler?: XhrHttpHandler): S3Client {
+  const credentials = getCredentials()
 
-    if (!credentials) {
-      throw new Error("AWS credentials not configured")
-    }
-
-    s3Client = new S3Client({
-      endpoint: S3_SIGN_ENDPOINT,
-      region: getRegion(),
-      credentials: {
-        accessKeyId: credentials.accessKeyId,
-        secretAccessKey: credentials.secretAccessKey,
-        sessionToken: credentials.sessionToken,
-      },
-      forcePathStyle: true,
-    })
-    // Remove trailing slashes from request paths to fix compatibility with
-    // path-style S3 endpoints where a trailing slash causes the request to
-    // be interpreted as GetObject instead of ListObjects
-    s3Client.middlewareStack.add(
-      (next) => async (args) => {
-        if (
-          HttpRequest.isInstance(args.request) &&
-          args.request.path.endsWith("/") &&
-          args.request.path !== "/"
-        ) {
-          args.request.path = args.request.path.slice(0, -1)
-        }
-
-        return await next(args)
-      },
-      { step: "build", name: "removeTrailingSlash" },
-    )
-    s3Client.middlewareStack.add(
-      (next) => async (args) => {
-        if (HttpRequest.isInstance(args.request)) {
-          args.request.hostname = window.location.hostname
-          args.request.port = Number(window.location.port) || 443
-          args.request.path = `/proxy/s3${args.request.path}`
-        }
-
-        return await next(args)
-      },
-      { step: "finalizeRequest", name: "proxyRewrite", override: true },
-    )
+  if (!credentials) {
+    throw new Error("AWS credentials not configured")
   }
 
+  const client = new S3Client({
+    endpoint: S3_SIGN_ENDPOINT,
+    region: getRegion(),
+    credentials: {
+      accessKeyId: credentials.accessKeyId,
+      secretAccessKey: credentials.secretAccessKey,
+      sessionToken: credentials.sessionToken,
+    },
+    forcePathStyle: true,
+    requestHandler,
+  })
+
+  // Remove trailing slashes from request paths to fix compatibility with
+  // path-style S3 endpoints where a trailing slash causes the request to
+  // be interpreted as GetObject instead of ListObjects
+  client.middlewareStack.add(
+    (next) => async (args) => {
+      if (
+        HttpRequest.isInstance(args.request) &&
+        args.request.path.endsWith("/") &&
+        args.request.path !== "/"
+      ) {
+        args.request.path = args.request.path.slice(0, -1)
+      }
+
+      return await next(args)
+    },
+    { step: "build", name: "removeTrailingSlash" },
+  )
+  client.middlewareStack.add(
+    (next) => async (args) => {
+      if (HttpRequest.isInstance(args.request)) {
+        args.request.hostname = window.location.hostname
+        args.request.port = Number(window.location.port) || 443
+        args.request.path = `/proxy/s3${args.request.path}`
+      }
+
+      return await next(args)
+    },
+    { step: "finalizeRequest", name: "proxyRewrite", override: true },
+  )
+
+  return client
+}
+
+export function getS3Client(): S3Client {
+  s3Client ??= newS3Client()
+
   return s3Client
+}
+
+// A client of its own per upload: XHR reports bytes sent as they go, and the
+// upload's progress listener hears every request on its client's handler.
+export function createS3UploadClient(): S3Client {
+  return newS3Client(new XhrHttpHandler({}))
 }
 
 export function getBedrockAgentClient(): BedrockAgentClient {

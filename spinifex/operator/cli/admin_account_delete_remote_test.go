@@ -181,6 +181,32 @@ func TestFollowAccountDeletionStopsWhenTheContextEnds(t *testing.T) {
 	assert.Contains(t, err.Error(), "000000000042")
 }
 
+// The deadline usually expires while a poll is in flight, not between polls,
+// and that path must name the account too.
+func TestFollowAccountDeletionStopsWhenTheContextEndsMidPoll(t *testing.T) {
+	adminTestCredentials(t)
+
+	// Held until cleanup: the client may cancel before the server notices.
+	release := make(chan struct{})
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		<-release
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+
+	ctx, cancel := context.WithCancel(t.Context())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	err := cli.FollowAccountDeletion(ctx,
+		cli.AdminTarget(srv.URL, "us-west-1", writeServerCA(t, srv)), "000000000042")
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Contains(t, err.Error(), "000000000042")
+}
+
 // An unreadable job is not a finished one. Reporting it as complete would hide
 // a teardown still holding an account's resources.
 func TestFollowAccountDeletionFailsOnAnUnreadableJob(t *testing.T) {

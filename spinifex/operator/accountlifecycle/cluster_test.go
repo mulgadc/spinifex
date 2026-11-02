@@ -12,6 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func testClusterNodes() ClusterNodes {
+	return ClusterNodes{Expected: 1, DaemonIDs: []string{"node-1"}, GatewayIDs: []string{"node-1"}}
+}
+
 // The CLI and the admin API share this wiring precisely so neither can be
 // missing a reaper. A stage with none registered would silently skip whatever
 // it owns, leaving resources behind that nothing else deletes.
@@ -23,13 +27,13 @@ func TestNewClusterEngineCoversEveryStage(t *testing.T) {
 	svc, err := iamdomain.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
-	engine, err := NewClusterEngine(t.Context(), nc, 1, []string{"node-1"}, svc, newFakeBuckets())
+	engine, err := NewClusterEngine(t.Context(), nc, testClusterNodes(), svc, newFakeBuckets())
 	require.NoError(t, err)
 	require.NotNil(t, engine.Accounts)
 
 	// A teardown with no object store would report every stage drained and
 	// still delete the account record, leaving the tenant's objects behind.
-	_, err = NewClusterEngine(t.Context(), nc, 1, []string{"node-1"}, svc, nil)
+	_, err = NewClusterEngine(t.Context(), nc, testClusterNodes(), svc, nil)
 	require.Error(t, err)
 
 	for _, stage := range Stages() {
@@ -52,7 +56,7 @@ func TestNewClusterEngineRegistersTheEC2SettingsSealReaper(t *testing.T) {
 	svc, err := iamdomain.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
-	engine, err := NewClusterEngine(t.Context(), nc, 1, []string{"node-1"}, svc, newFakeBuckets())
+	engine, err := NewClusterEngine(t.Context(), nc, testClusterNodes(), svc, newFakeBuckets())
 	require.NoError(t, err)
 
 	var kinds []string
@@ -60,6 +64,37 @@ func TestNewClusterEngineRegistersTheEC2SettingsSealReaper(t *testing.T) {
 		kinds = append(kinds, reaper.Kind())
 	}
 	assert.Contains(t, kinds, "ec2-account-settings")
+}
+
+// The quota seal reaper must be registered in StageAccount on every surface,
+// and must probe the gateway nodes, not the daemon nodes: a swapped set would
+// compile and probe processes that never write an override.
+func TestNewClusterEngineRegistersTheQuotaOverrideSealReaper(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+
+	masterKey, err := iamdomain.GenerateMasterKey()
+	require.NoError(t, err)
+	svc, err := iamdomain.NewIAMServiceImpl(t.Context(), nc, masterKey)
+	require.NoError(t, err)
+
+	nodes := ClusterNodes{Expected: 3, DaemonIDs: []string{"d-1", "d-2", "d-3"}, GatewayIDs: []string{"gw-1"}}
+	engine, err := NewClusterEngine(t.Context(), nc, nodes, svc, newFakeBuckets())
+	require.NoError(t, err)
+
+	var quotaReaper *quotaOverrideSealReaper
+	var ec2Reaper *accountSettingsSealReaper
+	for _, reaper := range engine.reapersFor(StageAccount) {
+		switch r := reaper.(type) {
+		case *quotaOverrideSealReaper:
+			quotaReaper = r
+		case *accountSettingsSealReaper:
+			ec2Reaper = r
+		}
+	}
+	require.NotNil(t, quotaReaper, "quota-override reaper not registered in StageAccount")
+	require.NotNil(t, ec2Reaper)
+	assert.Equal(t, []string{"gw-1"}, quotaReaper.capability.(*sealCapabilityClient).nodeIDs)
+	assert.Equal(t, []string{"d-1", "d-2", "d-3"}, ec2Reaper.capability.(*sealCapabilityClient).nodeIDs)
 }
 
 // A teardown must refuse the accounts no credential may delete before it reads
@@ -72,7 +107,7 @@ func TestClusterEnginePrechecks(t *testing.T) {
 	svc, err := iamdomain.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
-	engine, err := NewClusterEngine(t.Context(), nc, 1, []string{"node-1"}, svc, newFakeBuckets())
+	engine, err := NewClusterEngine(t.Context(), nc, testClusterNodes(), svc, newFakeBuckets())
 	require.NoError(t, err)
 
 	// Account ids are sequential and the first is the protected super admin.

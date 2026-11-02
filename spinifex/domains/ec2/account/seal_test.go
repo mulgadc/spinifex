@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/nats-io/nats.go/jetstream"
@@ -479,13 +480,13 @@ func TestSealSurvivesServiceReconstruction(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	ctx := context.Background()
 
-	svc, err := NewAccountSettingsServiceImplWithNATS(ctx, nil, nc)
+	svc, err := NewAccountSettingsServiceImplWithNATS(ctx, &config.Config{}, nc)
 	require.NoError(t, err)
 	svc.SetAccountTerminationChecker(terminatingChecker(testAccountID))
 	first, err := svc.SealAccount(ctx, testAccountID)
 	require.NoError(t, err)
 
-	rebuilt, err := NewAccountSettingsServiceImplWithNATS(ctx, nil, nc)
+	rebuilt, err := NewAccountSettingsServiceImplWithNATS(ctx, &config.Config{}, nc)
 	require.NoError(t, err)
 
 	entry, err := rebuilt.settingsKV.Get(ctx, testAccountID)
@@ -546,14 +547,14 @@ func TestSealLeavesOtherAccountsUntouched(t *testing.T) {
 	svc := setupTestAccountService(t)
 	ctx := context.Background()
 	accountB := "222222222222"
-	_, err := svc.EnableEbsEncryptionByDefault(ctx, &ec2.EnableEbsEncryptionByDefaultInput{}, accountB)
+	_, err := svc.EnableSerialConsoleAccess(ctx, &ec2.EnableSerialConsoleAccessInput{}, accountB)
 	require.NoError(t, err)
 
 	svc.SetAccountTerminationChecker(terminatingChecker(testAccountID))
 	_, err = svc.SealAccount(ctx, testAccountID)
 	require.NoError(t, err)
 
-	out, err := svc.GetEbsEncryptionByDefault(ctx, &ec2.GetEbsEncryptionByDefaultInput{}, accountB)
+	out, err := svc.GetSerialConsoleAccessStatus(ctx, &ec2.GetSerialConsoleAccessStatusInput{}, accountB)
 	require.NoError(t, err)
-	assert.True(t, *out.EbsEncryptionByDefault)
+	assert.True(t, *out.SerialConsoleAccessEnabled)
 }

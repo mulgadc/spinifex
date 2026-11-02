@@ -258,6 +258,60 @@ func TestAttachVolume_InUseDifferentInstance(t *testing.T) {
 	assert.Contains(t, string(resp.Data), "VolumeInUse")
 }
 
+// TestAttachVolume_DeletingVolumeRefused pins the half of the delete contract
+// that is not about the delete itself: a volume whose teardown is already owed
+// must take no new dependant, because the objects behind it are being removed.
+// DeleteVolume records the obligation and returns, so between the call and the
+// reclaimer finishing it the volume is detached and would otherwise look
+// attachable.
+func TestAttachVolume_DeletingVolumeRefused(t *testing.T) {
+	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
+
+	instanceID := "i-attach-vol-deleting"
+	volumeID := "vol-deleting-attach"
+
+	instance := &vm.VM{
+		ID:           instanceID,
+		Status:       vm.StateRunning,
+		AccountID:    testAccountID,
+		InstanceType: getTestInstanceType(t),
+		Instance:     &ec2.Instance{},
+		QMPClient:    &qmp.QMPClient{},
+	}
+	daemon.vmMgr.Insert(instance)
+
+	seedVolumeConfig(t, daemon, store, ebsmetadata.Volume{
+		VolumeID:    volumeID,
+		CapacityGiB: 10,
+		State:       "deleting",
+		TenantID:    testAccountID,
+	})
+
+	sub, err := daemon.natsConn.Subscribe(
+		fmt.Sprintf("ec2.cmd.%s", instanceID),
+		daemon.handleEC2Events,
+	)
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	command := ec2v1.EC2InstanceCommand{
+		ID:               instanceID,
+		Attributes:       ec2v1.EC2CommandAttributes{AttachVolume: true},
+		AttachVolumeData: &ec2v1.AttachVolumeData{VolumeID: volumeID},
+	}
+	cmdData, err := json.Marshal(command)
+	require.NoError(t, err)
+
+	resp, err := natsRequest(daemon.natsConn,
+		fmt.Sprintf("ec2.cmd.%s", instanceID),
+		cmdData,
+		5*time.Second,
+	)
+	require.NoError(t, err)
+	assert.Contains(t, string(resp.Data), "VolumeInUse",
+		"a volume already recorded for deletion must not take a new attachment")
+}
+
 // TestAttachVolume_IdempotentSameInstance_DeviceMismatch verifies that a
 // same-instance re-attach requesting a DIFFERENT device than the one
 // already attached is treated as a real CSI conflict — AWS returns
@@ -579,4 +633,39 @@ func seedProviderVolume(t *testing.T, daemon *Daemon, volumeID string, sizeGiB i
 		CapacityRange: ebsprovider.CapacityRange{RequiredBytes: sizeGiB * 1024 * 1024 * 1024},
 	})
 	require.NoError(t, err)
+}
+
+// A volume still being prepared is never attachable: the request is refused
+// before any mount and the record keeps no attachment.
+func TestAttachVolume_RefusesACreatingVolume(t *testing.T) {
+	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
+
+	instanceID := "i-attach-creating"
+	volumeID := "vol-attach-creating"
+	daemon.vmMgr.Insert(&vm.VM{
+		ID: instanceID, Status: vm.StateRunning, AccountID: testAccountID,
+		InstanceType: getTestInstanceType(t), Instance: &ec2.Instance{}, QMPClient: &qmp.QMPClient{},
+	})
+	seedVolumeConfig(t, daemon, store, ebsmetadata.Volume{
+		VolumeID: volumeID, CapacityGiB: 10, State: "creating", TenantID: testAccountID,
+	})
+
+	sub, err := daemon.natsConn.Subscribe(fmt.Sprintf("ec2.cmd.%s", instanceID), daemon.handleEC2Events)
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	cmdData, err := json.Marshal(ec2v1.EC2InstanceCommand{
+		ID:               instanceID,
+		Attributes:       ec2v1.EC2CommandAttributes{AttachVolume: true},
+		AttachVolumeData: &ec2v1.AttachVolumeData{VolumeID: volumeID, Device: "/dev/sdf"},
+	})
+	require.NoError(t, err)
+	resp, err := natsRequest(daemon.natsConn, fmt.Sprintf("ec2.cmd.%s", instanceID), cmdData, 5*time.Second)
+	require.NoError(t, err)
+	assert.Contains(t, string(resp.Data), awserrors.ErrorVolumeInUse)
+
+	meta, err := ebsmetadata.NewStore(store, daemon.config.Predastore.Bucket).GetVolume(t.Context(), testAccountID, volumeID)
+	require.NoError(t, err)
+	assert.Equal(t, "creating", meta.State)
+	assert.Empty(t, meta.AttachedInstance)
 }

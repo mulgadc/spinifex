@@ -383,6 +383,9 @@ func (s *Service) taskToAWS(accountID string, r *TaskRecord) *ecs.Task {
 		LastStatus:           aws.String(r.LastStatus),
 		ContainerInstanceArn: aws.String(r.ContainerInstanceARN),
 		Tags:                 tagsToAWS(r.Tags),
+		CreatedAt:            awsTimeOrNil(r.CreatedAt),
+		StartedAt:            awsTimeOrNil(r.StartedAt),
+		StoppedAt:            awsTimeOrNil(r.StoppedAt),
 	}
 	if r.Group != "" {
 		t.Group = aws.String(r.Group)

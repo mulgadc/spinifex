@@ -513,6 +513,9 @@ func lookupLBByName(ctx context.Context, nlbp nlbProvisioner, accountID, name st
 		Names: aws.StringSlice([]string{name}),
 	}, accountID)
 	if err != nil {
+		if strings.Contains(err.Error(), awserrors.ErrorELBv2LoadBalancerNotFound) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("describe NLB %s: %w", name, err)
 	}
 	for _, lb := range out.LoadBalancers {

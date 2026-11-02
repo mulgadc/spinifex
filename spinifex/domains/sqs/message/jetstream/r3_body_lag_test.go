@@ -19,17 +19,19 @@ import (
 )
 
 // delayProxy forwards TCP to target, holding each chunk for the current
-// delay in both directions while preserving order.
+// delay in both directions while preserving order. A connection accepted
+// before setTarget waits for it.
 type delayProxy struct {
 	l      net.Listener
 	target string
+	ready  chan struct{}
 	delay  atomic.Int64
 }
 
-func newDelayProxy(t *testing.T, target string) *delayProxy {
+func newDelayProxy(t *testing.T) *delayProxy {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	p := &delayProxy{l: l, target: target}
+	p := &delayProxy{l: l, ready: make(chan struct{})}
 	t.Cleanup(func() { _ = l.Close() })
 	go func() {
 		for {
@@ -37,16 +39,27 @@ func newDelayProxy(t *testing.T, target string) *delayProxy {
 			if err != nil {
 				return
 			}
-			u, err := net.Dial("tcp", p.target)
-			if err != nil {
-				_ = c.Close()
-				continue
-			}
-			go p.pipe(c, u)
-			go p.pipe(u, c)
+			go p.forward(c)
 		}
 	}()
 	return p
+}
+
+// setTarget is called once, with the address the target server bound.
+func (p *delayProxy) setTarget(addr string) {
+	p.target = addr
+	close(p.ready)
+}
+
+func (p *delayProxy) forward(c net.Conn) {
+	<-p.ready
+	u, err := net.Dial("tcp", p.target)
+	if err != nil {
+		_ = c.Close()
+		return
+	}
+	go p.pipe(c, u)
+	go p.pipe(u, c)
 }
 
 type delayedChunk struct {
@@ -88,12 +101,11 @@ type lagCluster struct {
 
 func startLagCluster(t *testing.T) *lagCluster {
 	clustersize.RedeclareForTest(t, 3)
-	ports := routePorts(t)
 	c := &lagCluster{}
 	for i := range 3 {
 		for j := range 3 {
 			if i != j {
-				c.proxy[i][j] = newDelayProxy(t, fmt.Sprintf("127.0.0.1:%d", ports[j]))
+				c.proxy[i][j] = newDelayProxy(t)
 			}
 		}
 	}
@@ -109,7 +121,7 @@ func startLagCluster(t *testing.T) *lagCluster {
 			JetStream: true, StoreDir: t.TempDir(), NoLog: true, NoSigs: true,
 			// An unreachable advertised address stops gossip-learned routes that
 			// would bypass the proxies; the configured routes are a full mesh.
-			Cluster: server.ClusterOpts{Name: "lag", Host: "127.0.0.1", Port: ports[i], PoolSize: -1, NoAdvertise: true, Advertise: "127.0.0.1:1"},
+			Cluster: server.ClusterOpts{Name: "lag", Host: "127.0.0.1", Port: server.RANDOM_PORT, PoolSize: -1, NoAdvertise: true, Advertise: "127.0.0.1:1"},
 			Routes:  routes,
 		})
 		require.NoError(t, err)
@@ -119,6 +131,14 @@ func startLagCluster(t *testing.T) *lagCluster {
 	}
 	for i, srv := range c.servers {
 		require.True(t, srv.ReadyForConnections(10*time.Second), "node %d", i)
+	}
+	// Each server bound its own route port, so none was free to be taken.
+	for i := range 3 {
+		for j := range 3 {
+			if i != j {
+				c.proxy[i][j].setTarget(c.servers[j].ClusterAddr().String())
+			}
+		}
 	}
 	return c
 }

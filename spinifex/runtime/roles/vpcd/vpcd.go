@@ -25,6 +25,7 @@ import (
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/floating"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/ocinet"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn"
@@ -567,6 +568,10 @@ func launchService(cfg *Config) error {
 		slog.Info("vpcd: OCI address pairs in use; NAT rules and host routes follow the private half",
 			"pools", ociPools)
 	}
+	if fPools := floatingPoolNames(cfg.ExternalPools); len(fPools) > 0 {
+		binder := floating.NewGatewayBinder(floating.NewKVStore(js), fPools)
+		bindGatewayVPC = chainGatewayBinders(bindGatewayVPC, binder.BindGateway)
+	}
 	natMgr, err := policy.NewNATManager(liveClient, natMode, natOpts...)
 	if err != nil {
 		return fmt.Errorf("construct NAT manager: %w", err)
@@ -639,42 +644,20 @@ func launchService(cfg *Config) error {
 	}()
 
 	// Host ingress plumbing only exists in routed-NAT mode; other modes keep
-	// nil hooks so the IGW manager never touches host routes.
+	// nil hooks so the IGW manager never touches host routes. The hooks only
+	// nudge this node's host ingress loop, which owns the routes on every node.
 	var routedIngress *external.RoutedIngressHooks
+	var ingressNudge chan struct{}
 	if bridgeMode == BridgeModeNAT {
-		ingressRunner := host.NewExecRunner()
-		// Duplicate VPC CIDRs (every account's default VPC is 172.31.0.0/16)
-		// collide on the single host route table: the bootstrap VPC always
-		// wins; other VPCs only install when the CIDR is free and only remove
-		// a route their own gateway IP holds.
-		preferredVPC := ""
-		if cfg.Bootstrap != nil {
-			preferredVPC = cfg.Bootstrap.VpcId
+		ingressNudge = make(chan struct{}, 1)
+		nudge := func(context.Context, string, string, string) error {
+			select {
+			case ingressNudge <- struct{}{}:
+			default:
+			}
+			return nil
 		}
-		routedIngress = &external.RoutedIngressHooks{
-			Ensure: func(ctx context.Context, vpcID, vpcCIDR, gwLrpIP string) error {
-				if vpcID != preferredVPC {
-					holder, err := host.VPCIngressRouteVia(ctx, ingressRunner, vpcCIDR)
-					if err == nil && holder != "" && holder != gwLrpIP {
-						slog.Warn("vpcd: host ingress route conflict, keeping existing holder",
-							"vpc_id", vpcID, "vpc_cidr", vpcCIDR, "holder_gw", holder, "skipped_gw", gwLrpIP)
-						return nil
-					}
-				}
-				return host.EnsureVPCIngressRoute(ctx, ingressRunner, vpcCIDR, gwLrpIP)
-			},
-			Remove: func(ctx context.Context, vpcID, vpcCIDR, gwLrpIP string) error {
-				if gwLrpIP != "" {
-					holder, err := host.VPCIngressRouteVia(ctx, ingressRunner, vpcCIDR)
-					if err == nil && holder != "" && holder != gwLrpIP {
-						slog.Info("vpcd: leaving host ingress route held by another VPC",
-							"vpc_id", vpcID, "vpc_cidr", vpcCIDR, "holder_gw", holder)
-						return nil
-					}
-				}
-				return host.RemoveVPCIngressRoute(ctx, ingressRunner, vpcCIDR)
-			},
-		}
+		routedIngress = &external.RoutedIngressHooks{Ensure: nudge, Remove: nudge}
 	}
 
 	gwAllocator := pickGatewayAllocator(igwPool, liveClient, dhcpMgr)
@@ -815,11 +798,32 @@ func launchService(cfg *Config) error {
 	// SB re-bootstraps (snapshot install / compaction) with no deploy in flight.
 	go runOVNControllerWatchdog(loopCtx, newOVNWatchdog(host.NewGatewayClaimProber(cfg.OVNSBAddr)))
 
+	// Per host: releases an ovs-vswitchd that came up held in flow-restore-wait.
+	go runVswitchdWatchdog(loopCtx, newVswitchdWatchdog(hostFlowRestore{r: host.NewExecRunner()}))
+
 	// Host-side EIP plumbing, on every node. The drift loop above is leader-gated
 	// because it writes the shared NB DB; routes and proxy-ARP are this host's
 	// own, and a node that never wins the lease would otherwise have no path to
 	// the guests it is running.
 	go runHostEIPLoop(loopCtx, rec)
+
+	// Host VPC ingress routes, on every node and outside the drift lease for the
+	// same reason. Duplicate VPC CIDRs (every account's default VPC is
+	// 172.31.0.0/16) share one host route: the bootstrap VPC holds it.
+	if ingressNudge != nil {
+		preferredVPC := ""
+		if cfg.Bootstrap != nil {
+			preferredVPC = cfg.Bootstrap.VpcId
+		}
+		go reconcile.RunHostIngress(loopCtx, js, &reconcile.HostIngress{
+			OVN:    liveClient,
+			Routes: host.VPCIngressRoutes{Runner: host.NewExecRunner()},
+			LoadIntent: func(ctx context.Context) (reconcile.IntentState, error) {
+				return reconcile.LoadIntentFromKV(ctx, js, cfg.AZ)
+			},
+			PreferredVPC: preferredVPC,
+		}, ingressNudge)
+	}
 
 	// Host MSS clamp for peers behind NAT that never receive gateway_mtu's ICMP;
 	// physical uplinks have no host hop, so the loop only clears a stale table.
@@ -1017,6 +1021,41 @@ func selectExternalPools(externalMode string, pools []external.ExternalPoolConfi
 	return igwPool, publicPool
 }
 
+// floatingPoolNames lists the pools whose addresses are floating objects moved
+// between hosts, whose NAT gateway addresses must learn their VPC.
+func floatingPoolNames(pools []external.ExternalPoolConfig) []string {
+	var names []string
+	for _, p := range pools {
+		if p.IsVultr() {
+			names = append(names, p.Name)
+		}
+	}
+	return names
+}
+
+// chainGatewayBinders calls each non-nil binder, so OCI and floating pools in
+// one cluster both learn a NAT gateway's VPC.
+func chainGatewayBinders(binders ...func(ctx context.Context, externalIP, vpcID string) error) func(ctx context.Context, externalIP, vpcID string) error {
+	var live []func(ctx context.Context, externalIP, vpcID string) error
+	for _, b := range binders {
+		if b != nil {
+			live = append(live, b)
+		}
+	}
+	if len(live) == 0 {
+		return nil
+	}
+	return func(ctx context.Context, externalIP, vpcID string) error {
+		var errs []error
+		for _, b := range live {
+			if err := b(ctx, externalIP, vpcID); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		return errors.Join(errs...)
+	}
+}
+
 // ociPoolNames lists the pools whose addresses are OCI pairs, and so need the
 // public half mapped to a private one before it reaches OVN or a host route.
 func ociPoolNames(pools []external.ExternalPoolConfig) []string {
@@ -1029,13 +1068,23 @@ func ociPoolNames(pools []external.ExternalPoolConfig) []string {
 	return names
 }
 
+// eipUplinkLocator returns what EnsureEIPIngress resolves the proxy-ARP uplink
+// from. Vultr bare metal ARPs for a reserved IP on the public segment, so a
+// Vultr pool uses the interface the node routes the internet through.
+func eipUplinkLocator(pool *external.ExternalPoolConfig) (gateway, uplinkHint string) {
+	if pool.IsVultr() {
+		return host.InternetRouteProbe, ""
+	}
+	return pool.Gateway, pool.BindBridge
+}
+
 // hostEIPBinder builds the routed-mode host plumbing hooks for EIPs on the
-// public pool: /32 route into OVN plus proxy-ARP on the uplink. Static pools
-// locate the uplink via the pool gateway; dhcp pools via their bind bridge.
+// public pool: /32 route into OVN plus proxy-ARP on the uplink, which
+// eipUplinkLocator says how to find.
 func hostEIPBinder(pool *external.ExternalPoolConfig, sbAddr string) policy.HostEIPBinder {
 	runner := host.NewExecRunner()
 	prober := host.NewGatewayClaimProber(sbAddr)
-	gateway, uplinkHint := pool.Gateway, pool.BindBridge
+	gateway, uplinkHint := eipUplinkLocator(pool)
 	return policy.HostEIPBinder{
 		Bind: func(eip policy.EIPSpec, gwLrpIP string) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

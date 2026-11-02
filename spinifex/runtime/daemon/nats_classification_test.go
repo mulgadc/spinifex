@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
-	"slices"
 	"testing"
 	"time"
 
@@ -175,13 +174,14 @@ func TestEC2CommandRecordsUnderTheCommandNotTheInstance(t *testing.T) {
 	data, err := json.Marshal(commandFor(instanceID,
 		func(a *ec2v1.EC2CommandAttributes) { a.StopInstance = true }))
 	require.NoError(t, err)
+	before := requestCountFor(t, ec2CmdAction("StopInstance"), outcomeClientError)
 	_, err = daemon.natsConn.Request(subject, data, 5*time.Second)
 	require.NoError(t, err)
 
 	// The handler records after it replies, so poll rather than assume the point
 	// has landed by the time the reply arrives.
 	require.Eventually(t, func() bool {
-		return slices.Contains(requestOutcomesFor(t, ec2CmdAction("StopInstance")), outcomeClientError)
+		return requestCountFor(t, ec2CmdAction("StopInstance"), outcomeClientError) > before
 	}, 5*time.Second, 20*time.Millisecond,
 		"a stop naming an instance this node does not hold is the caller's error, and must be counted")
 	assert.Empty(t, requestOutcomesFor(t, subject),
@@ -199,7 +199,7 @@ func TestDrainVolumeRecordsItsPointAfterTheWork(t *testing.T) {
 	testutil.StartDrainSocket(t, daemon.config.DataDir, volumeID, "OK\n")
 	subscribeEC2Commands(t, daemon, instanceID)
 
-	before := len(requestOutcomesFor(t, ec2CmdAction("DrainVolume")))
+	before := requestCountFor(t, ec2CmdAction("DrainVolume"), outcomeSuccess)
 	reply := drainRequest(t, daemon, instanceID, volumeID)
 
 	var ack ec2v1.DrainVolumeResponse
@@ -209,8 +209,6 @@ func TestDrainVolumeRecordsItsPointAfterTheWork(t *testing.T) {
 	// The goroutine records after it replies, so poll rather than assume the
 	// point has landed by the time the reply arrives.
 	require.Eventually(t, func() bool {
-		return len(requestOutcomesFor(t, ec2CmdAction("DrainVolume"))) > before
-	}, 5*time.Second, 20*time.Millisecond, "the drain goroutine must record its own point")
-
-	assert.Contains(t, requestOutcomesFor(t, ec2CmdAction("DrainVolume")), outcomeSuccess)
+		return requestCountFor(t, ec2CmdAction("DrainVolume"), outcomeSuccess) > before
+	}, 5*time.Second, 20*time.Millisecond, "the drain goroutine must record its own success point")
 }

@@ -1,20 +1,31 @@
 package daemon
 
 import (
-	"os"
+	"os/exec"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
+// Measures a child the test owns: the test binary's own RSS grows with every
+// test that ran before it, so it cannot bound anything.
 func TestMeasureQEMURSSMiB_Self(t *testing.T) {
-	rss, err := measureQEMURSSMiB(os.Getpid())
+	cmd := exec.Command("sleep", "60")
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	rss, err := measureQEMURSSMiB(cmd.Process.Pid)
 	if err != nil {
-		t.Fatalf("measureQEMURSSMiB self: %v", err)
+		t.Fatalf("measureQEMURSSMiB child: %v", err)
 	}
 	if rss <= 0 {
 		t.Errorf("expected RSS > 0, got %f", rss)
 	}
-	if rss > 1024 {
-		t.Errorf("RSS %f MiB seems unreasonably high for a test process", rss)
+	if rss > 64 {
+		t.Errorf("RSS %f MiB seems unreasonably high for sleep(1)", rss)
 	}
 }
 

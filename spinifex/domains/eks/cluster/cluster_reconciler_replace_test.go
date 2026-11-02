@@ -298,6 +298,31 @@ func TestProvisionReplacementCP_LaunchesJoinOnFreeHost(t *testing.T) {
 		"replacement is told to prune the dead peer from etcd once joined")
 }
 
+func TestProvisionReplacementCP_RendersDisableAgent(t *testing.T) {
+	t.Parallel()
+	sched := &fakeHostScheduler{hosts: []string{"node-a", "node-b", "node-c"}}
+	inst := &seqK3sInst{}
+	svc := newPlacerService(sched, &fakePlacer{}, &seqK3sVPC{}, inst)
+	svc.deps.SystemAccessKey = "AKIATEST"
+	svc.deps.SystemSecretKey = "secret"
+	tmpl := validK3sInput()
+
+	_, err := svc.ProvisionReplacementCP(context.Background(), ReplacementCPRequest{
+		ClusterName:  "alpha",
+		Template:     &tmpl,
+		JoinURL:      k3sServerJoinURL("10.0.0.10"),
+		ExcludeHosts: []string{"node-a", "node-b"},
+		MemberCount:  haControlPlaneCount,
+		DeadPeerIP:   "10.0.0.12",
+	})
+
+	require.NoError(t, err)
+	assert.Contains(t, inst.userData["node-c"], "disable-agent: true",
+		"a replacement renders the current config, so it joins without an agent")
+	assert.Contains(t, inst.userData["node-c"], "EKS_ETCD_PRUNE_PEER_IP=10.0.0.12",
+		"the prune hint still reaches first boot")
+}
+
 func TestProvisionReplacementCP_NoFreeHostErrors(t *testing.T) {
 	t.Parallel()
 	sched := &fakeHostScheduler{hosts: []string{"node-a", "node-b"}}

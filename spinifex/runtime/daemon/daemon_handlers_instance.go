@@ -309,6 +309,18 @@ func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) string {
 				errPayload.Code != nil &&
 				*errPayload.Code == awserrors.ErrorInsufficientInstanceCapacity
 
+			if isCapacity && resp.Header.Get(natsmsg.UnsealedWritesHeader) == "true" {
+				// Starting elsewhere would open the volumes from the backend
+				// checkpoint and lose what this node has not sealed.
+				slog.Warn("ec2.start: owner at capacity holds unsealed writes; not starting elsewhere",
+					"instanceId", peek.InstanceID, "lastNode", lastNode)
+				if relayErr := msg.Respond(resp.Data); relayErr != nil {
+					slog.Error("ec2.start: failed to relay response from original node",
+						"instanceId", peek.InstanceID, "lastNode", lastNode, "err", relayErr)
+					return outcomeError
+				}
+				return outcomeFor(false)
+			}
 			if !isCapacity {
 				// Relay success or any non-capacity error as-is.
 				if relayErr := msg.Respond(resp.Data); relayErr != nil {

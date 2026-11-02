@@ -27,7 +27,7 @@ function seed(arns: string[]) {
 describe("TaskDefinitionsList", () => {
   it("renders family:revision from the ARN with a deregister action", () => {
     renderWithClient(
-      <TaskDefinitionsList clusterName="web" />,
+      <TaskDefinitionsList />,
       seed(["arn:aws:ecs:ap-southeast-2:123456789012:task-definition/app:3"]),
     )
     expect(screen.getByText("app:3")).toBeInTheDocument()
@@ -38,7 +38,7 @@ describe("TaskDefinitionsList", () => {
 
   it("opens the deregister confirmation", () => {
     renderWithClient(
-      <TaskDefinitionsList clusterName="web" />,
+      <TaskDefinitionsList />,
       seed(["arn:aws:ecs:ap-southeast-2:123456789012:task-definition/app:3"]),
     )
     fireEvent.click(screen.getByRole("button", { name: "Deregister" }))
@@ -48,7 +48,7 @@ describe("TaskDefinitionsList", () => {
   })
 
   it("shows empty state with no task definitions", () => {
-    renderWithClient(<TaskDefinitionsList clusterName="web" />, seed([]))
+    renderWithClient(<TaskDefinitionsList />, seed([]))
     expect(screen.getByText("No task definitions found.")).toBeInTheDocument()
   })
 })

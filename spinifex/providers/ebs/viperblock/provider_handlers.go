@@ -81,6 +81,12 @@ func RegisterProviderSubjects(cfg *Config, nc *nats.Conn) error {
 		cfg.dirty = dirty
 	}
 
+	// Read-only view of the daemon's heartbeats, opened lazily so a viperblockd
+	// that starts before the daemon still serves; a takeover asks for it.
+	if cfg.liveness == nil {
+		cfg.liveness = newHeartbeatLiveness(nc)
+	}
+
 	subs := []struct {
 		subject string
 		handler providerMsgHandler
@@ -131,6 +137,16 @@ func RegisterProviderSubjects(cfg *Config, nc *nats.Conn) error {
 		handleUnpublishVolume(ctx, cfg, msg)
 	})); err != nil {
 		return fmt.Errorf("subscribe to %s: %w", unpublishSubject, err)
+	}
+
+	unsealedSubject, err := ebsprovider.UnsealedWritesSubject(cfg.NodeName)
+	if err != nil {
+		return fmt.Errorf("build unsealed-writes subject: %w", err)
+	}
+	if _, err := nc.Subscribe(unsealedSubject, tracedProviderHandler(func(ctx context.Context, msg *nats.Msg) {
+		handleHoldsUnsealedWrites(ctx, cfg, msg)
+	})); err != nil {
+		return fmt.Errorf("subscribe to %s: %w", unsealedSubject, err)
 	}
 
 	return nil
@@ -876,6 +892,19 @@ func handleDeleteVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *na
 		return
 	}
 
+	// Local teardown runs first because its cost is fixed while the object
+	// deletion below scales with the volume. Behind it, a timeout on a large
+	// volume leaves this node's WAL and dirty marker behind for good.
+	if localPath, err := localVolumeDir(cfg.BaseDir, req.VolumeID); err == nil {
+		if err := os.RemoveAll(localPath); err != nil {
+			slog.Error("ebs.provider.volume.delete: failed to remove local volume directory", "volume", req.VolumeID, "path", localPath, "err", err)
+		}
+	}
+
+	// The volume is going, so a marker pinning it to this node pins nothing.
+	// Left behind it would outlive every copy of the data it describes.
+	cfg.purgeVolumeDirty(ctx, req.VolumeID)
+
 	store := providerObjectStoreFactory(cfg)
 	if err := deleteObjectPrefix(ctx, store, cfg.Bucket, req.VolumeID+"-efi/"); err != nil {
 		slog.Error("ebs.provider.volume.delete: failed to delete aux objects", "volume", req.VolumeID, "err", err)
@@ -887,18 +916,6 @@ func handleDeleteVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *na
 		respondProvider(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("delete volume objects: %v", err)})
 		return
 	}
-
-	// Delete is permanent: remove any on-disk WAL/checkpoint cache left on
-	// this node regardless of mount-tracking state, mirroring ebs.delete.
-	if localPath, err := localVolumeDir(cfg.BaseDir, req.VolumeID); err == nil {
-		if err := os.RemoveAll(localPath); err != nil {
-			slog.Error("ebs.provider.volume.delete: failed to remove local volume directory", "volume", req.VolumeID, "path", localPath, "err", err)
-		}
-	}
-
-	// The volume is gone, so a marker pinning it to this node pins nothing.
-	// Left behind it would outlive every copy of the data it describes.
-	cfg.purgeVolumeDirty(ctx, req.VolumeID)
 
 	slog.Info("ebs.provider.volume.delete: deleted", "volume", req.VolumeID)
 	respondProvider(ctx, msg, ebsprovider.DeleteVolumeResponse{Versioned: ebsprovider.NewVersioned()})
@@ -1857,6 +1874,32 @@ func handleUnpublishVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 
 	slog.Info("ebs.provider.volume.unpublish: unpublished", "volume", req.VolumeID, "node", cfg.NodeName)
 	respondProvider(ctx, msg, ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned()})
+}
+
+func handleHoldsUnsealedWrites(ctx context.Context, cfg *Config, msg *nats.Msg) {
+	var req ebsprovider.HoldsUnsealedWritesRequest
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		respondProvider(ctx, msg, ebsprovider.HoldsUnsealedWritesResponse{Versioned: ebsprovider.NewVersioned(), Error: badRequestError(err)})
+		return
+	}
+	if !ebsprovider.SupportsSchemaVersion(req.SchemaVersion) {
+		respondProvider(ctx, msg, ebsprovider.HoldsUnsealedWritesResponse{Versioned: ebsprovider.NewVersioned(), Error: unsupportedVersionError(req.SchemaVersion)})
+		return
+	}
+	for _, volume := range req.VolumeIDs {
+		if !validVolumeName(volume) {
+			respondProvider(ctx, msg, ebsprovider.HoldsUnsealedWritesResponse{Versioned: ebsprovider.NewVersioned(), Error: invalidArgumentError("invalid volume id %q", volume)})
+			return
+		}
+	}
+
+	held, err := cfg.unsealedWritesHeld(ctx, req.VolumeIDs)
+	if err != nil {
+		slog.Error("ebs.provider.unsealed: could not read dirty markers", "node", cfg.NodeName, "err", err)
+		respondProvider(ctx, msg, ebsprovider.HoldsUnsealedWritesResponse{Versioned: ebsprovider.NewVersioned(), Error: internalError("read dirty markers: %v", err)})
+		return
+	}
+	respondProvider(ctx, msg, ebsprovider.HoldsUnsealedWritesResponse{Versioned: ebsprovider.NewVersioned(), Held: held})
 }
 
 // mountEntryIsStale reports whether a MountedVolume describes an export that is

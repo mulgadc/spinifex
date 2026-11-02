@@ -50,11 +50,6 @@ type Container struct {
 	// SystemControls are sysctl namespace/value pairs applied to the OCI spec.
 	// No omitempty, for the same presence reason as Environment.
 	SystemControls []SystemControl `json:"systemControls"`
-	// MountPointsSet and VolumesFromSet record that the caller supplied an empty
-	// collection. A non-empty one is refused at registration, so only presence
-	// needs storing for describe to return [] instead of omitting the field.
-	MountPointsSet bool `json:"mountPointsSet,omitempty"`
-	VolumesFromSet bool `json:"volumesFromSet,omitempty"`
 	// InitProcessEnabled is stored only when supplied false; true is refused at
 	// registration, so a stored value is always false.
 	InitProcessEnabled *bool `json:"initProcessEnabled,omitempty"`
@@ -97,6 +92,8 @@ type Record struct {
 	Status                  string            `json:"status"`
 	Tags                    map[string]string `json:"tags,omitempty"`
 	RegisteredAt            time.Time         `json:"registeredAt"`
+	// DeregisteredAt is set when the revision first goes INACTIVE.
+	DeregisteredAt *time.Time `json:"deregisteredAt,omitempty"`
 }
 
 // ReservedCPU sums the per-container CPU reservations used for bin-pack

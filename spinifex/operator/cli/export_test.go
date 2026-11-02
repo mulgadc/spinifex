@@ -208,3 +208,24 @@ func ExecuteRoot(args []string, stderr io.Writer) error {
 	_, err := rootCmd.ExecuteC()
 	return err
 }
+
+// EnsureSQSWorkerRemote exposes ensureSQSWorkerRemote for testing, rendering
+// the result as spx admin sqs ensure-worker prints it.
+func EnsureSQSWorkerRemote(ctx context.Context, target adminTarget, node, instanceType string, sizeGiB int, w io.Writer) error {
+	out, err := ensureSQSWorkerRemote(ctx, target, node, instanceType, sizeGiB)
+	if err != nil {
+		return err
+	}
+	renderSQSWorkerEnsure(w, out)
+	return nil
+}
+
+// EnableSQSRemote exposes enableSQSRemote for testing, rendering the reply to w.
+func EnableSQSRemote(ctx context.Context, target adminTarget, node, instanceType string, sizeGiB int, w io.Writer) error {
+	out, err := enableSQSRemote(ctx, target, node, instanceType, sizeGiB)
+	if err != nil {
+		return err
+	}
+	renderSQSStatus(w, out)
+	return nil
+}

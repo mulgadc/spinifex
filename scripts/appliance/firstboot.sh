@@ -90,6 +90,12 @@ else
     log "WARNING: clock not synced, continuing with $(date -uIs)"
 fi
 
+# ── Connection tracking ─────────────────────────────────────────────────────
+# Before OVN opens any link, so arming the firewall later cannot drop one the
+# kernel first saw mid-stream. Non-fatal; the unit reloads it on later boots.
+/usr/local/lib/spinifex/spinifex-firewall-apply track \
+    || log "WARNING: connection tracking not loaded; arming the firewall may drop OVN links"
+
 # ── OVS and OVN ─────────────────────────────────────────────────────────────
 # Start them before setup-ovn.sh so their databases exist when it runs: on
 # physical hardware first-boot DB initialisation outlasts its own timeout.

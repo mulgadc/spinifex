@@ -116,8 +116,25 @@ func TestDescribeTargetGroups_UnknownReturnsNotFound(t *testing.T) {
 			account = "000000000999"
 		}
 		_, err := svc.DescribeTargetGroups(context.Background(), input, account)
-		assert.EqualError(t, err, awserrors.ErrorELBv2TargetGroupNotFound, name)
+		code, msg, _ := awserrors.ResolveErrorDetail(err)
+		assert.Equal(t, awserrors.ErrorELBv2TargetGroupNotFound, code, name)
+		assert.Equal(t, "One or more target groups not found", msg, name)
 	}
+
+	_, err = svc.DescribeTargetGroups(context.Background(), &elbv2.DescribeTargetGroupsInput{
+		TargetGroupArns: aws.StringSlice([]string{"not-an-arn"}),
+	}, testAccountID)
+	code, msg, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorValidationError, code)
+	assert.Equal(t, "'not-an-arn' is not a valid target group ARN", msg)
+
+	_, err = svc.DeleteTargetGroup(context.Background(), &elbv2.DeleteTargetGroupInput{TargetGroupArn: aws.String(knownArn)}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.DescribeTargetGroups(context.Background(), &elbv2.DescribeTargetGroupsInput{
+		TargetGroupArns: aws.StringSlice([]string{knownArn}),
+	}, testAccountID)
+	code, _, _ = awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorELBv2TargetGroupNotFound, code, "deleted group")
 
 	// An unfiltered describe with nothing to return is still a success.
 	empty, err := svc.DescribeTargetGroups(context.Background(), &elbv2.DescribeTargetGroupsInput{}, "000000000999")

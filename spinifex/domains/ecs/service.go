@@ -571,7 +571,10 @@ func (s *Service) DeregisterTaskDefinition(ctx context.Context, input *ecs.Dereg
 	if err != nil {
 		return nil, err
 	}
-	return &ecs.DeregisterTaskDefinitionOutput{TaskDefinition: taskDefToAWS(rec)}, nil
+	// AWS reports deregisteredAt on later reads, not in this response.
+	td := taskDefToAWS(rec)
+	td.DeregisteredAt = nil
+	return &ecs.DeregisterTaskDefinitionOutput{TaskDefinition: td}, nil
 }
 
 // DescribeTaskDefinition resolves "family", "family:rev" or an ARN to a revision.
@@ -593,7 +596,11 @@ func (s *Service) DescribeTaskDefinition(ctx context.Context, input *ecs.Describ
 	if err != nil {
 		return nil, err
 	}
-	return &ecs.DescribeTaskDefinitionOutput{TaskDefinition: taskDefToAWS(rec), Tags: tagsToAWS(rec.Tags)}, nil
+	tags := []*ecs.Tag{}
+	if slices.Contains(awsStringSlice(input.Include), ecs.TaskDefinitionFieldTags) {
+		tags = append(tags, tagsToAWS(rec.Tags)...)
+	}
+	return &ecs.DescribeTaskDefinitionOutput{TaskDefinition: taskDefToAWS(rec), Tags: tags}, nil
 }
 
 // ListTaskDefinitions returns revision ARNs, optionally filtered by family and
@@ -634,6 +641,11 @@ func taskDefToAWS(r *taskdefinition.Record) *ecs.TaskDefinition {
 		Revision:          aws.Int64(int64(r.Revision)),
 		TaskDefinitionArn: aws.String(r.ARN),
 		Status:            aws.String(r.Status),
+		RegisteredAt:      aws.Time(r.RegisteredAt),
+		DeregisteredAt:    r.DeregisteredAt,
+		// No task volume model, so AWS's empty defaults.
+		Volumes:              []*ecs.Volume{},
+		PlacementConstraints: []*ecs.TaskDefinitionPlacementConstraint{},
 	}
 	if r.NetworkMode != "" {
 		td.NetworkMode = aws.String(r.NetworkMode)
@@ -664,7 +676,7 @@ func taskDefToAWS(r *taskdefinition.Record) *ecs.TaskDefinition {
 		td.RuntimePlatform = rp
 	}
 	for _, c := range r.Containers {
-		td.ContainerDefinitions = append(td.ContainerDefinitions, containerToAWS(c))
+		td.ContainerDefinitions = append(td.ContainerDefinitions, containerToAWS(c, r.NetworkMode))
 	}
 	return td
 }

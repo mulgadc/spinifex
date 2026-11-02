@@ -57,49 +57,51 @@ function seed(subnets: unknown[] = SUBNETS) {
   return qc
 }
 
-function subnetCheckbox(subnetId: string): HTMLElement {
-  return screen.getByRole("checkbox", {
-    name: new RegExp(`Subnet ${subnetId}`),
-  })
+const onClose = vi.fn()
+
+function subnetSwitch(subnetId: string): HTMLElement {
+  return screen.getByRole("switch", { name: `Subnet ${subnetId}` })
 }
 
 describe("CreateDBSubnetGroupPage", () => {
   it("groups the subnets by VPC", () => {
-    renderWithClient(<CreateDBSubnetGroupPage />, seed())
+    renderWithClient(<CreateDBSubnetGroupPage onClose={onClose} />, seed())
     expect(screen.getByText(/vpc-1 \(prod\)/)).toBeInTheDocument()
-    expect(subnetCheckbox("subnet-a1")).toBeInTheDocument()
-    expect(subnetCheckbox("subnet-b1")).toBeInTheDocument()
+    expect(subnetSwitch("subnet-a1")).toBeInTheDocument()
+    expect(subnetSwitch("subnet-b1")).toBeInTheDocument()
   })
 
   // resolveGroupSubnets refuses a group spanning two VPCs, so the second VPC
   // has to go out of reach rather than stay selectable and fail at submit.
   it("puts the other VPCs out of reach once a subnet is chosen", async () => {
-    renderWithClient(<CreateDBSubnetGroupPage />, seed())
-    expect(subnetCheckbox("subnet-b1")).toBeEnabled()
+    renderWithClient(<CreateDBSubnetGroupPage onClose={onClose} />, seed())
+    expect(subnetSwitch("subnet-b1")).toBeEnabled()
 
-    fireEvent.click(subnetCheckbox("subnet-a1"))
+    fireEvent.click(subnetSwitch("subnet-a1"))
 
     await waitFor(() => {
-      expect(subnetCheckbox("subnet-b1")).toBeDisabled()
+      expect(
+        screen.queryByRole("switch", { name: "Subnet subnet-b1" }),
+      ).toBeNull()
     })
-    expect(subnetCheckbox("subnet-a2")).toBeEnabled()
+    expect(subnetSwitch("subnet-a2")).toBeEnabled()
     expect(screen.getByText(/must span one VPC/)).toBeInTheDocument()
   })
 
   it("explains an account with no subnets", () => {
-    renderWithClient(<CreateDBSubnetGroupPage />, seed([]))
+    renderWithClient(<CreateDBSubnetGroupPage onClose={onClose} />, seed([]))
     expect(screen.getByText(/No subnets in this account/)).toBeInTheDocument()
   })
 
   it("does not offer an AZ-count rule the platform does not enforce", () => {
-    renderWithClient(<CreateDBSubnetGroupPage />, seed())
+    renderWithClient(<CreateDBSubnetGroupPage onClose={onClose} />, seed())
     expect(
       screen.getByText(/the two-AZ rule AWS enforces does not apply here/),
     ).toBeInTheDocument()
   })
 
   it("sends CreateDBSubnetGroup with the chosen subnets", async () => {
-    renderWithClient(<CreateDBSubnetGroupPage />, seed())
+    renderWithClient(<CreateDBSubnetGroupPage onClose={onClose} />, seed())
 
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "orders-subnets" },
@@ -107,8 +109,8 @@ describe("CreateDBSubnetGroupPage", () => {
     fireEvent.change(screen.getByLabelText("Description"), {
       target: { value: "Private subnets" },
     })
-    fireEvent.click(subnetCheckbox("subnet-a1"))
-    fireEvent.click(subnetCheckbox("subnet-a2"))
+    fireEvent.click(subnetSwitch("subnet-a1"))
+    fireEvent.click(subnetSwitch("subnet-a2"))
     fireEvent.click(screen.getByRole("button", { name: "Create Subnet Group" }))
 
     await waitFor(() => {
@@ -118,10 +120,41 @@ describe("CreateDBSubnetGroupPage", () => {
     expect(input.DBSubnetGroupName).toBe("orders-subnets")
     expect(input.DBSubnetGroupDescription).toBe("Private subnets")
     expect(input.SubnetIds).toStrictEqual(["subnet-a1", "subnet-a2"])
+    await waitFor(() => {
+      expect(onClose).toHaveBeenCalledWith("orders-subnets")
+    })
+  })
+
+  it("shows a refused create beside the button and stays open", async () => {
+    mockSend.mockRejectedValueOnce(
+      Object.assign(new Error("Subnet group orders-subnets already exists"), {
+        name: "DBSubnetGroupAlreadyExists",
+      }),
+    )
+    renderWithClient(<CreateDBSubnetGroupPage onClose={onClose} />, seed())
+
+    fireEvent.change(screen.getByLabelText("Name"), {
+      target: { value: "orders-subnets" },
+    })
+    fireEvent.change(screen.getByLabelText("Description"), {
+      target: { value: "Private subnets" },
+    })
+    fireEvent.click(subnetSwitch("subnet-a1"))
+    fireEvent.click(screen.getByRole("button", { name: "Create Subnet Group" }))
+
+    await expect(
+      screen.findByText(
+        "DBSubnetGroupAlreadyExists: Subnet group orders-subnets already exists",
+      ),
+    ).resolves.toBeInTheDocument()
+    expect(onClose).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole("button", { name: "Create Subnet Group" }),
+    ).toBeEnabled()
   })
 
   it("refuses a reserved name before the round trip", async () => {
-    renderWithClient(<CreateDBSubnetGroupPage />, seed())
+    renderWithClient(<CreateDBSubnetGroupPage onClose={onClose} />, seed())
 
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "default" },
@@ -129,7 +162,7 @@ describe("CreateDBSubnetGroupPage", () => {
     fireEvent.change(screen.getByLabelText("Description"), {
       target: { value: "Private subnets" },
     })
-    fireEvent.click(subnetCheckbox("subnet-a1"))
+    fireEvent.click(subnetSwitch("subnet-a1"))
     fireEvent.click(screen.getByRole("button", { name: "Create Subnet Group" }))
 
     await expect(

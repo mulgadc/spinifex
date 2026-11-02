@@ -8,6 +8,7 @@ import (
 
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ec2launchtemplate "github.com/mulgadc/spinifex/spinifex/domains/ec2/launchtemplate"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/nats-io/nats.go"
@@ -237,4 +238,18 @@ func TestBuildEKSServiceDeps_ConfigDerivedFields(t *testing.T) {
 		deps := d.buildEKSServiceDeps()
 		assert.Empty(t, deps.GatewayCACert)
 	})
+}
+
+// A worker launch only honours a nodegroup's launch template when the daemon
+// hands EKS the launch-template service; a missed wire would make every
+// template-backed nodegroup fail to launch.
+func TestBuildEKSServiceDeps_WiresLaunchTemplates(t *testing.T) {
+	d := &Daemon{
+		config:                &config.Config{},
+		launchTemplateService: &ec2launchtemplate.LaunchTemplateServiceImpl{},
+	}
+
+	deps := d.buildEKSServiceDeps()
+
+	assert.NotNil(t, deps.LaunchTemplates)
 }

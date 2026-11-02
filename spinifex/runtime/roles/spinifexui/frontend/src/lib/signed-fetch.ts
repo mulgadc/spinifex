@@ -29,6 +29,7 @@ interface SignedProxyFetchOptions {
   // path is the gateway path the request is signed for and proxied to.
   path?: string
   parseError?: ErrorParser
+  signal?: AbortSignal
 }
 
 export interface SignedFetchOptions {
@@ -121,6 +122,7 @@ async function sendSigned({
   target,
   path = "/",
   parseError = errorFromBody,
+  signal,
 }: SignedProxyFetchOptions): Promise<Response> {
   const credentials = getCredentials()
 
@@ -174,6 +176,7 @@ async function sendSigned({
     method,
     headers,
     body,
+    signal,
   })
 
   if (!response.ok) {
@@ -229,6 +232,25 @@ export async function signedFetch<T>({
     service,
     contentType: FORM_CONTENT_TYPE,
     body: `Action=${action}${extraParams}`,
+  })
+}
+
+// signedStream sends a signed Action= request and returns the response unread,
+// for an action that streams its body; abort the signal to end it.
+export async function signedStream({
+  action,
+  service = "spinifex",
+  params,
+  signal,
+}: SignedFetchOptions & { signal?: AbortSignal }): Promise<Response> {
+  const extraParams = params ? `&${new URLSearchParams(params).toString()}` : ""
+
+  return await sendSigned({
+    label: action,
+    service,
+    contentType: FORM_CONTENT_TYPE,
+    body: `Action=${action}${extraParams}`,
+    signal,
   })
 }
 

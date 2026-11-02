@@ -22,19 +22,16 @@ vi.mock("@/lib/awsClient", async () => {
   return mockAwsClients(send)
 })
 
-vi.mock("@tanstack/react-router", async (importOriginal) => {
-  const { mockRouter } = await import("@/test/router")
-
-  return await mockRouter(importOriginal)
-})
-
 import { CreateKeyPairPage } from "./create-key-pair-page"
 
-function renderPage() {
-  return renderWithClient(<CreateKeyPairPage />, createTestQueryClient())
+function renderPage(onClose = vi.fn()) {
+  return renderWithClient(
+    <CreateKeyPairPage onClose={onClose} />,
+    createTestQueryClient(),
+  )
 }
 
-describe("create-key-pair route", () => {
+describe("CreateKeyPairPage", () => {
   // Only RSA can wrap a Windows administrator password, so the untouched form
   // has to submit RSA rather than leaving the user to know that.
   it("submits rsa without the user choosing a key type", async () => {
@@ -69,5 +66,29 @@ describe("create-key-pair route", () => {
       KeyName: "my-key",
       KeyType: "ed25519",
     })
+  })
+
+  it("shows a refused create beside the button and stays open", async () => {
+    const onClose = vi.fn()
+    renderPage(onClose)
+    const user = userEvent.setup()
+    send.mockRejectedValueOnce(
+      Object.assign(new Error("The keypair 'my-key' already exists."), {
+        name: "InvalidKeyPair.Duplicate",
+      }),
+    )
+
+    await user.type(screen.getByLabelText("Key Pair Name"), "my-key")
+    await user.click(screen.getByRole("button", { name: "Create Key Pair" }))
+
+    await expect(
+      screen.findByText(
+        "InvalidKeyPair.Duplicate: The keypair 'my-key' already exists.",
+      ),
+    ).resolves.toBeInTheDocument()
+    expect(onClose).not.toHaveBeenCalled()
+    expect(
+      screen.getByRole("button", { name: "Create Key Pair" }),
+    ).toBeEnabled()
   })
 })

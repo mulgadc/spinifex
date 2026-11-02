@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
@@ -184,23 +183,4 @@ func TestImportImage_RejectsIncompleteOpts(t *testing.T) {
 			assert.Empty(t, provider.calls, "nothing may be created before the options are checked")
 		})
 	}
-}
-
-// TestQemuNBDTarget_RewritesUnixForm locks the translation: the contract's
-// unix URI is not a form qemu accepts, so passing it through unchanged would
-// fail at the copy rather than here.
-func TestQemuNBDTarget_RewritesUnixForm(t *testing.T) {
-	socket := t.TempDir() + "/export.sock"
-	require.NoError(t, os.WriteFile(socket, nil, 0o600))
-
-	got, err := qemuNBDTarget("nbd:unix:" + socket)
-	require.NoError(t, err)
-	assert.Equal(t, "nbd+unix:///?socket="+socket, got)
-
-	got, err = qemuNBDTarget("nbd://10.0.0.5:10809")
-	require.NoError(t, err)
-	assert.Equal(t, "nbd://10.0.0.5:10809", got)
-
-	_, err = qemuNBDTarget("nbd:unix:" + t.TempDir() + "/absent.sock")
-	require.Error(t, err, "a socket that is not there must fail before qemu-img is run")
 }

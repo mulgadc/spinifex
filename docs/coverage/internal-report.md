@@ -1441,6 +1441,21 @@ request-payment: Requester Pays shifts transfer charges to the caller, which nee
 - `GetBucketRequestPayment`
 - `PutBucketRequestPayment`
 
+## sqs
+
+`2012-11-05` — 15 of 23 modelled operations implemented (65.2%), 0 stubbed, 0 not applicable, 0 registered outside the pinned model.
+
+### Not implemented
+
+- `AddPermission`
+- `CancelMessageMoveTask`
+- `DeleteQueue`
+- `ListDeadLetterSourceQueues`
+- `ListMessageMoveTasks`
+- `PurgeQueue`
+- `RemovePermission`
+- `StartMessageMoveTask`
+
 ## sts
 
 `2011-06-15` — 5 of 11 modelled operations implemented (45.5%), 0 stubbed, 0 not applicable, 0 registered outside the pinned model.

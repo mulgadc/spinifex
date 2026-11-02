@@ -335,7 +335,7 @@ func TestJSONErrorRequestIDMatchesAudit(t *testing.T) {
 
 			badSig := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
 			badSig.Host = "localhost:9999"
-			signTestRequestAs(t, badSig, []byte("{}"), testAccessKey, "wrong-secret", svc, time.Now().UTC())
+			gwfix.SignRequestAs(t, badSig, []byte("{}"), gwfix.AccessKey, "wrong-secret", svc, time.Now().UTC())
 
 			for _, req := range []*http.Request{signDispatchRequest(t, svc, []byte("{}")), badSig} {
 				resp := doRequest(r, req)

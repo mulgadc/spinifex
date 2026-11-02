@@ -315,7 +315,7 @@ func (m *Manager) startQEMU(instance *VM, appendConsole bool) error {
 		m.initENIRequests(instance)
 
 		instance.EBSRequests.Mu.Lock()
-		driveCfg, err := buildDrives(instance.EBSRequests.Requests, spec.VCPUs, instance.Config.MachineType)
+		driveCfg, err := buildDiskBootDrives(instance.EBSRequests.Requests, spec.VCPUs, instance.Config.MachineType)
 		instance.EBSRequests.Mu.Unlock()
 		if err != nil {
 			return err
@@ -1396,6 +1396,16 @@ func directBootLaunchConfig(base Config, requests []EBSRequest, cpuCount int) (C
 	cfg.Blockdevs = append(slices.Clone(base.Blockdevs), drives.Blockdevs...)
 	cfg.Devices = append(slices.Clone(base.Devices), drives.Devices...)
 	return cfg, nil
+}
+
+// buildDiskBootDrives is buildDrives for a guest that boots from a volume: a
+// request list with no boot volume is refused, as QEMU would start with
+// nothing to boot from and the guest would never come up.
+func buildDiskBootDrives(requests []EBSRequest, cpuCount int, machineType string) (driveConfig, error) {
+	if !slices.ContainsFunc(requests, func(r EBSRequest) bool { return r.Boot }) {
+		return driveConfig{}, errors.New("no boot volume among the instance's EBS requests")
+	}
+	return buildDrives(requests, cpuCount, machineType)
 }
 
 // buildDrives converts EBS requests into QEMU drive/iothread/device/blockdev

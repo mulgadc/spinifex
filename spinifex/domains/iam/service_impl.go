@@ -1217,6 +1217,8 @@ var ErrAccountUndeletable = errors.New("account is protected and cannot be delet
 // SetAccountStatus writes a new status and returns the updated account. It
 // refuses to move an account out of TERMINATING: teardown has already begun
 // destroying data, so restoring service would hand back a hollowed-out account.
+// The two protected accounts are never moved off ACTIVE, because control-plane
+// credentials for them skip the account-admission check downstream.
 func (s *IAMServiceImpl) SetAccountStatus(accountID, status string) (*Account, error) {
 	switch status {
 	case AccountStatusActive, AccountStatusSuspended, AccountStatusTerminating:
@@ -1224,6 +1226,10 @@ func (s *IAMServiceImpl) SetAccountStatus(accountID, status string) (*Account, e
 		return nil, awserrors.Errorf(awserrors.ErrorIAMInvalidInput,
 			"Account status %q is invalid. It must be one of %s, %s or %s.",
 			status, AccountStatusActive, AccountStatusSuspended, AccountStatusTerminating)
+	}
+
+	if reason, protected := UndeletableAccountIDs[accountID]; protected && status != AccountStatusActive {
+		return nil, fmt.Errorf("%s (%s) cannot be %s: %w", accountID, reason, status, ErrAccountUndeletable)
 	}
 
 	account, err := kvutil.Update(context.Background(), s.accountsBucket, accountID,

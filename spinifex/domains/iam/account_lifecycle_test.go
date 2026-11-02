@@ -24,6 +24,9 @@ func newLifecycleService(t *testing.T) iamdomain.IAMService {
 func TestSetAccountStatusMovesBetweenStates(t *testing.T) {
 	t.Parallel()
 	svc := newLifecycleService(t)
+	// A fresh service hands out 000000000001 first, an ID IAM never moves off ACTIVE.
+	_, err := svc.CreateAccount("reserved-admin")
+	require.NoError(t, err)
 	account, err := svc.CreateAccount("tenant@example.com")
 	require.NoError(t, err)
 
@@ -47,6 +50,9 @@ func TestSetAccountStatusMovesBetweenStates(t *testing.T) {
 func TestTerminatingIsAOneWayDoor(t *testing.T) {
 	t.Parallel()
 	svc := newLifecycleService(t)
+	// A fresh service hands out 000000000001 first, an ID IAM never moves off ACTIVE.
+	_, err := svc.CreateAccount("reserved-admin")
+	require.NoError(t, err)
 	account, err := svc.CreateAccount("tenant@example.com")
 	require.NoError(t, err)
 

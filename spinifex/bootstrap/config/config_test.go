@@ -1108,6 +1108,45 @@ provider = "bogus"
 	assert.Contains(t, err.Error(), `provider="bogus"`)
 }
 
+func TestLoadConfig_EBSProvider_SingleProviderPerCluster(t *testing.T) {
+	stanza := func(node, provider string) string {
+		return fmt.Sprintf("[nodes.%s.ebs]\nprovider = %q\n", node, provider)
+	}
+	cases := []struct {
+		name    string
+		ebs     []string
+		wantErr string
+	}{
+		{"all unset", []string{"", "", ""}, ""},
+		{"explicit viperblockd beside unset peers", []string{"", stanza("n2", EBSProviderViperblockd), ""}, ""},
+		{"explicit qemunbd beside unset peers", []string{stanza("n1", EBSProviderQEMUNBD), "", ""}, ""},
+		{"all explicit qemunbd", []string{stanza("n1", EBSProviderQEMUNBD), stanza("n2", EBSProviderQEMUNBD), stanza("n3", EBSProviderQEMUNBD)}, ""},
+		{"two explicit providers differ", []string{stanza("n1", EBSProviderQEMUNBD), stanza("n2", EBSProviderViperblockd), ""},
+			`[nodes.n1.ebs] provider resolves to "qemunbd" but [nodes.n2.ebs] resolves to "viperblockd"`},
+		{"only the third node differs", []string{stanza("n1", EBSProviderViperblockd), stanza("n2", EBSProviderViperblockd), stanza("n3", EBSProviderQEMUNBD)},
+			`[nodes.n1.ebs] provider resolves to "viperblockd" but [nodes.n3.ebs] resolves to "qemunbd"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "node = \"n1\"\n"
+			for i, ebs := range tc.ebs {
+				body += fmt.Sprintf("\n[nodes.n%d]\nregion = \"us-east-1\"\n%s", i+1, ebs)
+			}
+			resetViper(t)
+			path := filepath.Join(t.TempDir(), "spinifex.toml")
+			require.NoError(t, os.WriteFile(path, []byte(body), 0600))
+
+			_, err := LoadConfig(path)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
 func TestEBSConfig_ResolvedTunablesDefault(t *testing.T) {
 	var c EBSConfig
 	assert.Equal(t, DefaultNBDKitThreads, c.ResolvedThreads())

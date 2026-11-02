@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -353,6 +354,11 @@ type EBSConfig struct {
 	// (DefaultCacheSizeMB), the same way ViperblockConfig treats its toggles.
 	// Auxiliary -efi volumes are always uncached regardless of this value.
 	CacheSizeMB *int `json:"CacheSizeMB" mapstructure:"cache_size_mb"`
+}
+
+// SupportedEBSProvider reports whether name is a provider a node may run.
+func SupportedEBSProvider(name string) bool {
+	return name == EBSProviderViperblockd || name == EBSProviderQEMUNBD
 }
 
 // ResolvedProvider normalizes an empty Provider to EBSProviderViperblockd,
@@ -801,6 +807,27 @@ func validateVultrPool(cc *ClusterConfig, p ExternalPool) error {
 	return nil
 }
 
+// validateSingleEBSProvider refuses nodes whose explicit [nodes.<name>.ebs]
+// providers differ. A peer stanza without one is unknown, not the default: the
+// generated config omits it, and the cluster's KV lock is the authoritative check.
+func validateSingleEBSProvider(cc *ClusterConfig) error {
+	var first, want string
+	for _, name := range slices.Sorted(maps.Keys(cc.Nodes)) {
+		if !viper.IsSet("nodes." + name + ".ebs.provider") {
+			continue
+		}
+		got := cc.Nodes[name].EBS.ResolvedProvider()
+		if first == "" {
+			first, want = name, got
+			continue
+		}
+		if got != want {
+			return fmt.Errorf("config: [nodes.%s.ebs] provider resolves to %q but [nodes.%s.ebs] resolves to %q; every node in a cluster must use the same EBS provider", first, want, name, got)
+		}
+	}
+	return nil
+}
+
 func validateClusterConfig(cc *ClusterConfig) error {
 	if viper.IsSet("network.external_dhcp") {
 		return fmt.Errorf("config: [network] external_dhcp is no longer supported; remove the key (static WAN-pool allocation only)")
@@ -809,9 +836,9 @@ func validateClusterConfig(cc *ClusterConfig) error {
 		if viper.IsSet("nodes." + nodeName + ".vpcd.dhcp_bind_bridge") {
 			return fmt.Errorf("config: [nodes.%s.vpcd] dhcp_bind_bridge is no longer supported; remove the key (vpcd no longer runs a DHCP client)", nodeName)
 		}
-		switch nodeCfg.EBS.Provider {
-		case "", EBSProviderViperblockd, EBSProviderQEMUNBD:
-		case EBSProviderEmbedded:
+		switch {
+		case nodeCfg.EBS.Provider == "", SupportedEBSProvider(nodeCfg.EBS.Provider):
+		case nodeCfg.EBS.Provider == EBSProviderEmbedded:
 			// Refuse rather than silently upgrade: the embedded engine is gone,
 			// and starting anyway would migrate this node's volumes to
 			// ebsmetadata one-way without the operator ever asking for it.
@@ -828,6 +855,9 @@ func validateClusterConfig(cc *ClusterConfig) error {
 		if c := nodeCfg.EBS.CacheSizeMB; c != nil && *c < 0 {
 			return fmt.Errorf("config: [nodes.%s.ebs] cache_size_mb=%d must not be negative; use 0 to disable the cache, or remove the key for the default of %d", nodeName, *c, DefaultCacheSizeMB)
 		}
+	}
+	if err := validateSingleEBSProvider(cc); err != nil {
+		return err
 	}
 
 	if err := validateNorthstarCluster(cc); err != nil {

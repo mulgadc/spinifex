@@ -136,6 +136,9 @@ encryption_key_file = "{{.EncryptionKeyFile}}"
 {{- end}}
 
 [nodes.{{.Node}}.ebs]
+# provider: every node in a cluster must name the same one, and the daemon
+# refuses to start on a provider other than the one the cluster recorded.
+# Changing it needs the cluster wiped and reformed.
 provider = "viperblockd"
 # Per-volume export tunables. Both are applied per nbdkit process and there is
 # one of those per volume, so the host cost of each is the value times the

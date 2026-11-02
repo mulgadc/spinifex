@@ -812,6 +812,12 @@ func TestService_ListTasks_EmptyIsPresentNotAbsent(t *testing.T) {
 	assert.Empty(t, out.TaskArns)
 }
 
+func TestService_ListTasks_ClusterNotFound(t *testing.T) {
+	svc, _ := newTestService(t)
+	_, err := svc.ListTasks(context.Background(), &ecs.ListTasksInput{Cluster: aws.String("ghost")}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorECSClusterNotFound)
+}
+
 func TestService_ListContainerInstances_EmptyIsPresentNotAbsent(t *testing.T) {
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)

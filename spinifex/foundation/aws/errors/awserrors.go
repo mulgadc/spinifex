@@ -1268,7 +1268,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorEKSResourceInUse:                                      {HTTPCode: 409, Message: "A cluster with this name already exists in this account and Region. Delete the existing cluster, or choose a different name."},
 	ErrorEKSResourceNotFound:                                   {HTTPCode: 404, Message: "The specified cluster could not be found. You can view your available clusters with ListClusters. Amazon EKS clusters are Region specific."},
 	ErrorECSClientException:                                    {HTTPCode: 400, Message: "Unable to describe task definition."},
-	ErrorECSClusterNotFound:                                    {HTTPCode: 400, Message: "The specified cluster was not found. You can view your available clusters with ListClusters. Amazon ECS clusters are Region specific."},
+	ErrorECSClusterNotFound:                                    {HTTPCode: 400, Message: "Cluster not found."},
 	ErrorECSInvalidParameter:                                   {HTTPCode: 400, Message: "The specified parameter is not valid. Review the available parameters for the API request."},
 	ErrorECSServiceNotFound:                                    {HTTPCode: 400, Message: "The specified service was not found. You can view your available services with ListServices. Amazon ECS services are cluster specific and Region specific."},
 	ErrorRetryableError:                                        {HTTPCode: 400, Message: "A request submitted by an AWS service on your behalf could not be completed. The requesting service might automatically retry the request."},

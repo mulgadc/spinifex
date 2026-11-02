@@ -903,7 +903,7 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 ## eks
 
-`2017-11-01` — 27 of 70 modelled operations implemented (38.6%), 0 stubbed, 0 not applicable, 4 registered outside the pinned model.
+`2017-11-01` — 27 of 70 modelled operations implemented (38.6%), 0 stubbed, 0 not applicable, 5 registered outside the pinned model.
 
 ### Not implemented
 
@@ -955,6 +955,7 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 - `GetRecoveryDirective`
 - `ListInternalAddons`
+- `ListInternalWorkers`
 - `PublishInternal`
 - `WebhookTokenReview`
 

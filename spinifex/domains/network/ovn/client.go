@@ -88,7 +88,6 @@ type Client interface {
 	CreateDHCPOptions(ctx context.Context, opts *nbdb.DHCPOptions) (string, error)
 	UpdateDHCPOptionsOptions(ctx context.Context, uuid string, options map[string]string) error
 	DeleteDHCPOptions(ctx context.Context, uuid string) error
-	FindDHCPOptionsByCIDR(ctx context.Context, cidr string) (*nbdb.DHCPOptions, error)
 	FindDHCPOptionsByExternalID(ctx context.Context, key, value string) (*nbdb.DHCPOptions, error)
 	ListDHCPOptions(ctx context.Context) ([]nbdb.DHCPOptions, error)
 

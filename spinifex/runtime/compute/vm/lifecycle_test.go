@@ -1150,6 +1150,7 @@ func TestStartQEMU_DiskBoot_MgmtTapCreated(t *testing.T) {
 		InstanceType: "t3.nano",
 		MgmtMAC:      "02:aa:bb:cc:dd:ee",
 	}
+	instance.EBSRequests.Requests = []EBSRequest{{Name: "vol-root", NBDURI: "nbd:unix:/tmp/root.sock", Boot: true}}
 
 	err := m.startQEMU(instance, false)
 
@@ -2260,6 +2261,33 @@ func TestStartQEMU_DiskBoot_BootVolumeIsABlockdevNode(t *testing.T) {
 			for _, d := range allArgValues(got[0], "-drive") {
 				assert.NotContains(t, d, "id=os", "the boot volume must not also be a -drive")
 			}
+		})
+	}
+}
+
+// TestStartQEMU_DiskBoot_NoBootVolumeIsNotLaunched covers a disk-boot guest
+// whose only volumes are data volumes: their -blockdev nodes would satisfy
+// Execute, but QEMU would have nothing to boot from.
+func TestStartQEMU_DiskBoot_NoBootVolumeIsNotLaunched(t *testing.T) {
+	tests := []struct {
+		name     string
+		requests []EBSRequest
+	}{
+		{name: "data volume only", requests: []EBSRequest{{Name: "vol-data-a", NBDURI: "nbd:unix:/tmp/data-a.sock"}}},
+		{name: "no volumes", requests: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := directBootManager(t, &fakeNetworkPlumber{})
+			launches := withFakeQEMU(t)
+
+			instance := &VM{ID: "i-no-boot", InstanceType: "t3.nano"}
+			instance.EBSRequests.Requests = tt.requests
+			err := m.startQEMU(instance, false)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "no boot volume among the instance's EBS requests")
+			assert.Empty(t, launches(), "QEMU must not start")
 		})
 	}
 }

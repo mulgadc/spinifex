@@ -2562,6 +2562,7 @@ func (d *Daemon) startCluster() error {
 		if d.eksService != nil {
 			reapers = append(reapers, d.eksService.NewBillableReaper(d.nodeRunningVMs))
 			reapers = append(reapers, d.eksService.NewDeletingReaper())
+			reapers = append(reapers, d.eksService.NewNodegroupDeletingReaper())
 		}
 		// The RDS automated-backup retention sweep is the one reaper here that
 		// deletes customer data, which is why it rides this backstop rather than the

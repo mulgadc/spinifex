@@ -205,6 +205,8 @@ func TestS2_EKSLastNodegroupDeletedResumesTheClusterDelete(t *testing.T) {
 		ClusterName: aws.String("alpha"), NodegroupName: aws.String("ng1"),
 	}, testAccountID)
 	require.NoError(t, err)
+	_, err = f.svc.NewNodegroupDeletingReaper().Sweep(context.Background())
+	require.NoError(t, err)
 	f.svc.WaitTeardowns()
 
 	_, err = GetClusterMeta(t.Context(), f.kv, "alpha")

@@ -933,7 +933,7 @@ func TestUpdateNodegroupConfig_CapacityErrorSurfacesCode(t *testing.T) {
 	})
 }
 
-func TestDeleteNodegroup_TerminatesAndIsIdempotent(t *testing.T) {
+func TestDeleteNodegroup_ReapedGroupIsGoneAndRepeatDeleteIsNotFound(t *testing.T) {
 	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
@@ -946,13 +946,16 @@ func TestDeleteNodegroup_TerminatesAndIsIdempotent(t *testing.T) {
 		ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1"),
 	}, testAccountID)
 	require.NoError(t, err)
+	_, err = f.svc.NewNodegroupDeletingReaper().Sweep(context.Background())
+	require.NoError(t, err)
+	f.svc.WaitNodegroupDeletes()
 	require.Len(t, f.worker.terminateCalls, 1)
 	assert.Len(t, f.worker.terminateCalls[0], 2)
 
 	_, err = GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
 	assert.ErrorIs(t, err, ErrNodegroupNotFound)
 
-	// Second delete → ResourceNotFoundException (record already gone).
+	// Once the reaper has finished the group is gone: ResourceNotFoundException.
 	_, err = f.svc.DeleteNodegroup(context.Background(), &eks.DeleteNodegroupInput{
 		ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1"),
 	}, testAccountID)

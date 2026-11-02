@@ -65,6 +65,7 @@ func sweepNodegroups(t *testing.T, f *eksServiceFixture) int {
 	t.Helper()
 	n, err := f.svc.NewNodegroupDeletingReaper().Sweep(context.Background())
 	require.NoError(t, err)
+	f.svc.WaitNodegroupDeletes()
 	return n
 }
 
@@ -75,6 +76,7 @@ func backdateNodegroupReap(t *testing.T, f *eksServiceFixture, cluster, ng strin
 	rec, err := GetNodegroupRecord(t.Context(), f.kv, cluster, ng)
 	require.NoError(t, err)
 	rec.LastDeleteReapAttempt = time.Now().UTC().Add(-24 * time.Hour)
+	rec.DeletingSince = time.Now().UTC().Add(-24 * time.Hour)
 	require.NoError(t, PutNodegroupRecord(t.Context(), f.kv, rec))
 }
 

@@ -43,17 +43,47 @@ function recordValues(recordSet: ResourceRecordSet): string[] {
   return (recordSet.ResourceRecords ?? []).map((r) => r.Value ?? "")
 }
 
-function recordColumns(zoneName: string): DataColumn<ResourceRecordSet>[] {
+function isEditableSet(set: ResourceRecordSet, zoneName: string): boolean {
+  return (
+    !isZoneOwnedRecord(set, zoneName) &&
+    !set.AliasTarget &&
+    isEditableType(set.Type)
+  )
+}
+
+// An editable record's name is a button, so the edit pane opens from the
+// keyboard as well as from a row click.
+function recordColumns(
+  zoneName: string,
+  onOpen: (set: ResourceRecordSet) => void,
+): DataColumn<ResourceRecordSet>[] {
   return [
     {
       id: "name",
       header: "Name",
-      cell: (recordSet) => (
-        <TruncatedText
-          className="font-mono text-xs"
-          text={decodeRecordName(recordSet.Name ?? "")}
-        />
-      ),
+      cell: (recordSet) => {
+        const name = (
+          <TruncatedText
+            className="font-mono text-xs"
+            text={decodeRecordName(recordSet.Name ?? "")}
+          />
+        )
+
+        return isEditableSet(recordSet, zoneName) ? (
+          <button
+            aria-label={`Edit ${recordLabel(recordSet)}`}
+            className="max-w-full rounded-sm text-left font-medium text-primary hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            onClick={() => {
+              onOpen(recordSet)
+            }}
+            type="button"
+          >
+            {name}
+          </button>
+        ) : (
+          name
+        )
+      },
     },
     { id: "type", header: "Type", cell: (recordSet) => recordSet.Type },
     {
@@ -165,7 +195,12 @@ export function RecordsTab({
     }
   }
 
-  const columns = recordColumns(zoneName)
+  const editRecord = (set: ResourceRecordSet) => {
+    changeMutation.reset()
+    setEditTarget(set)
+  }
+
+  const columns = recordColumns(zoneName, editRecord)
 
   const actionable = (set: ResourceRecordSet) =>
     !isZoneOwnedRecord(set, zoneName)
@@ -173,9 +208,8 @@ export function RecordsTab({
   const openRecord = (key: string) => {
     const set = byKey.get(key)
 
-    if (set && !set.AliasTarget && isEditableType(set.Type)) {
-      changeMutation.reset()
-      setEditTarget(set)
+    if (set && isEditableSet(set, zoneName)) {
+      editRecord(set)
     }
   }
 

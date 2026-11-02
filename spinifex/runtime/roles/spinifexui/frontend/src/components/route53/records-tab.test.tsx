@@ -140,6 +140,20 @@ describe("RecordsTab", () => {
     )
   })
 
+  it("opens a record for editing from the keyboard", async () => {
+    renderTab([APEX_NS, WWW])
+    const user = userEvent.setup()
+
+    expect(screen.queryByRole("button", { name: `Edit ${ZONE} NS` })).toBeNull()
+
+    screen.getByRole("button", { name: "Edit www.example.com. A" }).focus()
+    await user.keyboard("{Enter}")
+
+    await expect(
+      screen.findByRole("region", { name: "Edit record" }),
+    ).resolves.toBeInTheDocument()
+  })
+
   it("warns that records are not served while the zone is pending", () => {
     renderTab(undefined, "PENDING_NAMESERVERS")
 

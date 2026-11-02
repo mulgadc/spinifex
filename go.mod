@@ -27,10 +27,10 @@ require (
 	github.com/klauspost/cpuid/v2 v2.4.1
 	github.com/miekg/dns v1.1.73
 	github.com/minio/highwayhash v1.0.4
-	github.com/mulgadc/bluebottle v1.23.0
-	github.com/mulgadc/northstar v1.23.0
-	github.com/mulgadc/predastore v1.23.0
-	github.com/mulgadc/viperblock v1.23.0
+	github.com/mulgadc/bluebottle v1.24.0
+	github.com/mulgadc/northstar v1.24.0
+	github.com/mulgadc/predastore v1.24.0
+	github.com/mulgadc/viperblock v1.24.0
 	github.com/nats-io/nats-server/v2 v2.15.2
 	github.com/nats-io/nats.go v1.55.0
 	github.com/nats-io/nkeys v0.4.16

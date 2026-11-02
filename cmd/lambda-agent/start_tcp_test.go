@@ -53,7 +53,7 @@ func (g *guest) startup() startup {
 type host struct {
 	ln   *net.TCPListener
 	gen  *guestconn.Generation
-	conn chan *tls.Conn
+	conn chan accepted
 }
 
 func newHost(t *testing.T) *host {
@@ -63,19 +63,42 @@ func newHost(t *testing.T) *host {
 	t.Cleanup(func() { ln.Close() })
 	gen, err := guestconn.NewGeneration(scope, time.Hour)
 	require.NoError(t, err)
-	return &host{ln: ln, gen: gen, conn: make(chan *tls.Conn, 1)}
+	return &host{ln: ln, gen: gen, conn: make(chan accepted, 1)}
 }
 
 func (h *host) entries() map[string][]byte { return h.gen.GuestEntries(h.ln.Addr().String()) }
 
-// accept runs the host end until ctx ends, handing over an authenticated guest.
+type accepted struct {
+	conn *tls.Conn
+	err  error
+}
+
+// accept runs the host end until ctx ends and reports what it accepted.
 func (h *host) accept(ctx context.Context) {
 	go func() {
 		c, err := h.gen.AcceptGuest(ctx, h.ln, 2*time.Second)
-		if err == nil {
-			h.conn <- c
-		}
+		h.conn <- accepted{c, err}
 	}()
+}
+
+// guest waits for the host to authenticate the guest.
+func (h *host) guest(t *testing.T) *tls.Conn {
+	t.Helper()
+	a := wait(t, h.conn, "host to authenticate the guest")
+	require.NoError(t, a.err)
+	return a.conn
+}
+
+// wait bounds every test wait so a stalled host or startup fails promptly.
+func wait[T any](t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+		panic("unreachable")
+	}
 }
 
 type result struct {
@@ -100,7 +123,7 @@ func TestStartupAuthenticatesAfterSealingFwCfg(t *testing.T) {
 	g := newGuest(t, h.entries())
 	done := runAsync(ctx, g.startup())
 
-	conn := <-h.conn
+	conn := h.guest(t)
 	select {
 	case <-g.sealedAt:
 	default:
@@ -110,7 +133,7 @@ func TestStartupAuthenticatesAfterSealingFwCfg(t *testing.T) {
 	assert.ErrorIs(t, err, os.ErrNotExist, "fw_cfg still readable while connected")
 
 	require.NoError(t, conn.Close())
-	res := <-done
+	res := wait(t, done, "startup to return")
 	assert.Equal(t, exitClosed, res.code)
 	assert.NoError(t, res.err)
 	assert.Equal(t, 1, g.unloads)
@@ -123,11 +146,11 @@ func TestStartupRefusesHostData(t *testing.T) {
 	h.accept(ctx)
 	done := runAsync(ctx, newGuest(t, h.entries()).startup())
 
-	conn := <-h.conn
+	conn := h.guest(t)
 	defer conn.Close()
 	_, err := conn.Write([]byte{0})
 	require.NoError(t, err)
-	res := <-done
+	res := wait(t, done, "startup to return")
 	assert.Equal(t, exitLink, res.code)
 	assert.ErrorIs(t, res.err, errNoProtocol)
 }
@@ -146,14 +169,14 @@ func TestStartupFailsWhenHostRefusesGuest(t *testing.T) {
 	entries[lambdav1.EntryGuestKey], entries[lambdav1.EntryGuestCert] = wrong[lambdav1.EntryGuestKey], wrong[lambdav1.EntryGuestCert]
 	g := newGuest(t, entries)
 
-	res := <-runAsync(ctx, g.startup())
+	res := wait(t, runAsync(ctx, g.startup()), "startup to return")
 	assert.Equal(t, exitLink, res.code)
 	require.Error(t, res.err)
 	assert.Contains(t, res.err.Error(), "bad certificate")
 	assert.Equal(t, 1, g.unloads)
 	select {
-	case <-h.conn:
-		t.Fatal("host accepted a guest it does not pin")
+	case a := <-h.conn:
+		require.Error(t, a.err, "host accepted a guest it does not pin")
 	default:
 	}
 }
@@ -222,12 +245,12 @@ func TestStartupStopsWithContext(t *testing.T) {
 	h := newHost(t)
 	h.accept(ctx)
 	done := runAsync(ctx, newGuest(t, h.entries()).startup())
-	conn := <-h.conn
+	conn := h.guest(t)
 	defer conn.Close()
 
 	reason := errors.New("guest shutting down")
 	cancel(reason)
-	res := <-done
+	res := wait(t, done, "startup to return")
 	assert.Equal(t, exitLink, res.code)
 	assert.ErrorIs(t, res.err, reason)
 }

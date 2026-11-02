@@ -1,7 +1,7 @@
 # Lambda v1 contracts
 
 This package will own the Lambda process contracts declared by ADR-0009:S13.
-It holds only the L-GUEST declaration so far, and no wire types: the transport, authentication mechanism and message shapes are not chosen.
+It holds only the L-GUEST declaration so far, and no wire types: the transport and authentication are decided (ADR-0009:S17), and the message shapes and framing are not chosen.
 It is not an AWS tenant-facing API.
 
 ## L-GUEST: node executor to guest agent
@@ -12,9 +12,27 @@ It is not an AWS tenant-facing API.
 
 **Operations:** bootstrap with scoped material, readiness, invoke, completion, bounded logs, shutdown.
 
-**Authentication:** mutual, bound to the environment ID and realization generation, using material the user runtime cannot read.
-The shared management network is not an implicit trusted path.
-The mechanism and transport are open (ADR-0009 M5), and choosing one must not change this authority model.
+**Transport:** TCP over the microVM's network (ADR-0009:S17).
+The agent dials one connection to a listener the executor owns for the environment, and the guest exposes no listener for host control.
+At most one authenticated control connection is active per environment, and the agent may reconnect; how a prior connection and its in-flight work are handled is open (ADR-0009 M1).
+The network is shared and untrusted: no source address, port or bridge membership is identity or authority.
+Tenant code may be able to reach the listener, but it cannot open the agent's connection or key material, so any connection it makes fails authentication.
+
+**Authentication:** mutual TLS 1.3, bound to the environment ID and realization generation, using material the user runtime cannot read (ADR-0009:S17).
+For each generation the executor creates ephemeral self-signed host and guest certificates whose single URI SAN is `spinifex-lambda://<Region>/<account>/<function ID>/<environment ID>/<generation>/<role>`, with role `host` or `guest`.
+Each end validates the peer certificate against the one pinned peer certificate and separately requires that URI SAN with the opposite role; hostname verification is not relied on.
+ALPN carries the L-GUEST major version, `spinifex-lambda-guest/1`, and an unsupported version fails the handshake.
+Under TLS 1.3 the guest's handshake can complete before the host refuses its certificate, so the guest treats the connection as accepted only after the host's first message.
+
+**Bootstrap material:** the executor passes these fw_cfg entries under `opt/spinifex/lambda/`, and the agent reads them as root and unloads `qemu_fw_cfg` before user code starts.
+
+| Entry | Content |
+|---|---|
+| `guest-key` | Guest private key, PEM |
+| `guest-cert` | Guest certificate, PEM |
+| `host-cert` | The one pinned host certificate, PEM |
+| `expect` | `<Region>/<account>/<function ID>/<environment ID>/<generation>` |
+| `host-addr` | Host listener as `host:port` |
 
 **Authority:** one environment's attempt only.
 The user runtime never holds these keys, and sharing the guest with the agent gives user code no platform authority.

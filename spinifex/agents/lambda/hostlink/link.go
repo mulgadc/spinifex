@@ -1,5 +1,6 @@
-// Package hostlink is the guest's boundary to host control. The transport is
-// not yet chosen; implementations of Link are carriers.
+// Package hostlink is the guest's boundary to host control: an authenticated
+// TCP connection under per-generation mutual TLS. The message protocol over it
+// is not yet chosen; implementations of Link are carriers.
 package hostlink
 
 import (

@@ -12,6 +12,11 @@ var (
 	ErrUnsupportedVersion = errors.New("unsupported EBS provider schema version")
 	ErrVolumeInUse        = errors.New("volume is in use")
 
+	// ErrVolumeHeldElsewhere is a publish refused because another node holds
+	// the volume's claim. It wraps ErrVolumeInUse, so a caller that only asks
+	// whether the volume is in use still matches it.
+	ErrVolumeHeldElsewhere = fmt.Errorf("volume is held by another node: %w", ErrVolumeInUse)
+
 	// ErrUnsupportedCapability is returned when a request asks for optional
 	// behaviour this provider does not advertise in Capabilities. It is
 	// distinct from ErrInvalidArgument: the request is well formed.
@@ -28,19 +33,35 @@ var (
 	ErrUnavailable = errors.New("provider is temporarily unable to answer")
 )
 
+// HeldElsewhereSchemaVersion is the first version a held-elsewhere refusal is
+// reported as such. Earlier requests get volume_in_use, as v1.23.0 sends it.
+const HeldElsewhereSchemaVersion uint16 = 3
+
+// HeldElsewhereError is the sentinel a held-elsewhere refusal of a request at
+// version wraps: ErrVolumeHeldElsewhere from HeldElsewhereSchemaVersion on.
+func HeldElsewhereError(version uint16) error {
+	if version >= HeldElsewhereSchemaVersion {
+		return ErrVolumeHeldElsewhere
+	}
+	return ErrVolumeInUse
+}
+
 // ErrorCode is the wire form of a provider error in ProviderError. Unwrap maps
 // every code but internal back to the matching Err sentinel.
 type ErrorCode string
 
 const (
-	ErrorCodeAlreadyExists      ErrorCode = "already_exists"
-	ErrorCodeInvalidArgument    ErrorCode = "invalid_argument"
-	ErrorCodeNotFound           ErrorCode = "not_found"
-	ErrorCodeUnsupportedVersion ErrorCode = "unsupported_version"
-	ErrorCodeVolumeInUse        ErrorCode = "volume_in_use"
-	ErrorCodeUnsupportedCap     ErrorCode = "unsupported_capability"
-	ErrorCodeUnavailable        ErrorCode = "unavailable"
-	ErrorCodeInternal           ErrorCode = "internal"
+	ErrorCodeAlreadyExists       ErrorCode = "already_exists"
+	ErrorCodeInvalidArgument     ErrorCode = "invalid_argument"
+	ErrorCodeNotFound            ErrorCode = "not_found"
+	ErrorCodeUnsupportedVersion  ErrorCode = "unsupported_version"
+	ErrorCodeVolumeInUse         ErrorCode = "volume_in_use"
+	ErrorCodeVolumeHeldElsewhere ErrorCode = "volume_held_elsewhere"
+	ErrorCodeUnsupportedCap      ErrorCode = "unsupported_capability"
+	// ErrorCodeUnavailable is the retry-later code: among others, a mount
+	// against a backing store that is not ready yet returns it.
+	ErrorCodeUnavailable ErrorCode = "unavailable"
+	ErrorCodeInternal    ErrorCode = "internal"
 )
 
 // Retryable reports whether repeating the identical request could succeed.
@@ -78,6 +99,8 @@ func (e *ProviderError) Unwrap() error {
 		return ErrUnsupportedVersion
 	case ErrorCodeVolumeInUse:
 		return ErrVolumeInUse
+	case ErrorCodeVolumeHeldElsewhere:
+		return ErrVolumeHeldElsewhere
 	case ErrorCodeUnsupportedCap:
 		return ErrUnsupportedCapability
 	case ErrorCodeUnavailable:
@@ -89,7 +112,12 @@ func (e *ProviderError) Unwrap() error {
 
 func checkVersion(version uint16) error {
 	if !SupportsSchemaVersion(version) {
-		return fmt.Errorf("%w: got %d, supported versions are %d and %d", ErrUnsupportedVersion, version, LegacySchemaVersion, SchemaVersion)
+		return fmt.Errorf("%w: got %d, %s", ErrUnsupportedVersion, version, SupportedVersionsText())
 	}
 	return nil
+}
+
+// SupportedVersionsText names the served version range for error messages.
+func SupportedVersionsText() string {
+	return fmt.Sprintf("supported versions are %d to %d", LegacySchemaVersion, SchemaVersion)
 }

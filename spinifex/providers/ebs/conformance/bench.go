@@ -137,7 +137,7 @@ func RunBenchSuite(b *testing.B, provider ebsprovider.EBSProvider, cfg BenchConf
 			}); err != nil {
 				b.Fatal(err)
 			}
-			if err := provider.UnpublishVolume(context.Background(), ebsprovider.UnpublishVolumeRequest{
+			if _, err := provider.UnpublishVolume(context.Background(), ebsprovider.UnpublishVolumeRequest{
 				Versioned: ebsprovider.NewVersioned(),
 				VolumeID:  volumeID,
 				NodeID:    cfg.node(),

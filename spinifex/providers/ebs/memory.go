@@ -27,6 +27,7 @@ type memoryVolume struct {
 	parameters       []byte
 	seed             []byte
 	published        *PublishedVolume
+	readOnly         bool
 }
 
 var _ EBSProvider = (*MemoryProvider)(nil)
@@ -53,7 +54,11 @@ func (m *MemoryProvider) GetCapabilities(_ context.Context, req GetCapabilitiesR
 	if err := checkVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
-	return &GetCapabilitiesResponse{Versioned: NewVersioned(), Capabilities: m.capabilities}, nil
+	return &GetCapabilitiesResponse{
+		Versioned:        ReplyVersioned(req.SchemaVersion),
+		Capabilities:     m.capabilities,
+		ContractVersions: SupportedSchemaVersions(),
+	}, nil
 }
 
 func (m *MemoryProvider) CreateVolume(_ context.Context, req CreateVolumeRequest) (*Volume, error) {
@@ -167,7 +172,7 @@ func (m *MemoryProvider) ListVolumes(_ context.Context, req ListVolumesRequest) 
 	defer m.mu.RUnlock()
 	ids := slices.Sorted(maps.Keys(m.volumes))
 
-	response := &ListVolumesResponse{Versioned: NewVersioned()}
+	response := &ListVolumesResponse{Versioned: ReplyVersioned(req.SchemaVersion)}
 	response.Volumes, response.NextToken = Page(ids, req.StartingToken, int(req.PageSize()),
 		func(id string) VolumeRef {
 			return VolumeRef{ID: id, Handle: m.volumes[id].volume.Handle}
@@ -338,7 +343,7 @@ func (m *MemoryProvider) ListSnapshots(_ context.Context, req ListSnapshotsReque
 	defer m.mu.RUnlock()
 	ids := slices.Sorted(maps.Keys(m.snapshots))
 
-	response := &ListSnapshotsResponse{Versioned: NewVersioned()}
+	response := &ListSnapshotsResponse{Versioned: ReplyVersioned(req.SchemaVersion)}
 	response.Snapshots, response.NextToken = Page(ids, req.StartingToken, int(req.PageSize()),
 		func(id string) SnapshotRef {
 			return SnapshotRef{
@@ -368,7 +373,10 @@ func (m *MemoryProvider) PublishVolume(_ context.Context, req PublishVolumeReque
 	}
 	if volume.published != nil {
 		if volume.published.NodeID != req.NodeID {
-			return nil, fmt.Errorf("%w: volume %s is published to %s", ErrVolumeInUse, req.VolumeID, volume.published.NodeID)
+			return nil, fmt.Errorf("%w: volume %s is published to %s", HeldElsewhereError(req.SchemaVersion), req.VolumeID, volume.published.NodeID)
+		}
+		if volume.readOnly != req.ReadOnly {
+			return nil, fmt.Errorf("%w: volume %s is already published read_only=%t", ErrVolumeInUse, req.VolumeID, volume.readOnly)
 		}
 		return clonePublished(volume.published), nil
 	}
@@ -377,26 +385,44 @@ func (m *MemoryProvider) PublishVolume(_ context.Context, req PublishVolumeReque
 		NodeID:   req.NodeID,
 		Export:   NewNBDExport("nbd+unix:///?socket=/memory/" + req.VolumeID + ".sock"),
 	}
+	volume.readOnly = req.ReadOnly
 	volume.volume.State = VolumeStateInUse
 	return clonePublished(volume.published), nil
 }
 
-func (m *MemoryProvider) UnpublishVolume(_ context.Context, req UnpublishVolumeRequest) error {
-	if err := checkVersion(req.SchemaVersion); err != nil {
-		return err
+// UnpublishVolume honours NoSeal trivially: the volume's bytes live in this
+// process, so there is no local copy to seal or to drop.
+func (m *MemoryProvider) UnpublishVolume(_ context.Context, req UnpublishVolumeRequest) (*UnpublishedVolume, error) {
+	if err := CheckUnpublishVersion(req); err != nil {
+		return nil, err
 	}
 	if req.VolumeID == "" || req.NodeID == "" {
-		return fmt.Errorf("%w: volume and node IDs are required", ErrInvalidArgument)
+		return nil, fmt.Errorf("%w: volume and node IDs are required", ErrInvalidArgument)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	result := &UnpublishedVolume{VolumeID: req.VolumeID, NodeID: req.NodeID}
 	volume := m.volumes[req.VolumeID]
 	if volume == nil || volume.published == nil || volume.published.NodeID != req.NodeID {
-		return nil
+		return result, nil
 	}
 	volume.published = nil
+	volume.readOnly = false
 	volume.volume.State = VolumeStateAvailable
-	return nil
+	result.TornDown = req.SchemaVersion >= NoSealSchemaVersion
+	return result, nil
+}
+
+// HoldsUnsealedWrites answers that none are held: every write lands in this
+// process's map, which is the backend, before it is acknowledged.
+func (m *MemoryProvider) HoldsUnsealedWrites(_ context.Context, nodeID string, volumeIDs []string) ([]string, error) {
+	if nodeID == "" {
+		return nil, fmt.Errorf("%w: node ID is required", ErrInvalidArgument)
+	}
+	if slices.Contains(volumeIDs, "") {
+		return nil, fmt.Errorf("%w: empty volume ID", ErrInvalidArgument)
+	}
+	return nil, nil
 }
 
 func cloneVolume(volume *Volume) *Volume {

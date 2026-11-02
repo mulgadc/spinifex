@@ -49,7 +49,7 @@ func (p *recordingProvider) PublishVolume(ctx context.Context, req ebsprovider.P
 	return &ebsprovider.PublishedVolume{VolumeID: req.VolumeID, NodeID: req.NodeID, Export: export}, nil
 }
 
-func (p *recordingProvider) UnpublishVolume(ctx context.Context, req ebsprovider.UnpublishVolumeRequest) error {
+func (p *recordingProvider) UnpublishVolume(ctx context.Context, req ebsprovider.UnpublishVolumeRequest) (*ebsprovider.UnpublishedVolume, error) {
 	p.calls = append(p.calls, "unpublish")
 	return p.MemoryProvider.UnpublishVolume(ctx, req)
 }

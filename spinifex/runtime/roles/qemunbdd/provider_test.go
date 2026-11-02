@@ -621,14 +621,14 @@ func TestUnpublishVolume_Success(t *testing.T) {
 	_, err := p.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{Versioned: versioned(), VolumeID: "vol-unpub", NodeID: "node-1"})
 	require.NoError(t, err)
 
-	require.NoError(t, p.UnpublishVolume(context.Background(), ebsprovider.UnpublishVolumeRequest{Versioned: versioned(), VolumeID: "vol-unpub", NodeID: "node-1"}))
+	require.NoError(t, unpublishErr(p.UnpublishVolume(context.Background(), ebsprovider.UnpublishVolumeRequest{Versioned: versioned(), VolumeID: "vol-unpub", NodeID: "node-1"})))
 	_, err = os.Stat(p.socketPath("vol-unpub"))
 	require.True(t, os.IsNotExist(err))
 }
 
 func TestUnpublishVolume_AbsentIsIdempotent(t *testing.T) {
 	p, _ := newTestProvider(t)
-	require.NoError(t, p.UnpublishVolume(context.Background(), ebsprovider.UnpublishVolumeRequest{Versioned: versioned(), VolumeID: "vol-never-existed", NodeID: "node-1"}))
+	require.NoError(t, unpublishErr(p.UnpublishVolume(context.Background(), ebsprovider.UnpublishVolumeRequest{Versioned: versioned(), VolumeID: "vol-never-existed", NodeID: "node-1"})))
 }
 
 func TestUnpublishVolume_RepeatIsIdempotent(t *testing.T) {
@@ -638,8 +638,8 @@ func TestUnpublishVolume_RepeatIsIdempotent(t *testing.T) {
 	_, err := p.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{Versioned: versioned(), VolumeID: "vol-unpub-repeat", NodeID: "node-1"})
 	require.NoError(t, err)
 
-	require.NoError(t, p.UnpublishVolume(context.Background(), ebsprovider.UnpublishVolumeRequest{Versioned: versioned(), VolumeID: "vol-unpub-repeat", NodeID: "node-1"}))
-	require.NoError(t, p.UnpublishVolume(context.Background(), ebsprovider.UnpublishVolumeRequest{Versioned: versioned(), VolumeID: "vol-unpub-repeat", NodeID: "node-1"}))
+	require.NoError(t, unpublishErr(p.UnpublishVolume(context.Background(), ebsprovider.UnpublishVolumeRequest{Versioned: versioned(), VolumeID: "vol-unpub-repeat", NodeID: "node-1"})))
+	require.NoError(t, unpublishErr(p.UnpublishVolume(context.Background(), ebsprovider.UnpublishVolumeRequest{Versioned: versioned(), VolumeID: "vol-unpub-repeat", NodeID: "node-1"})))
 
 	// Republishing after unpublish must start a fresh qemu-nbd.
 	_, err = p.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{Versioned: versioned(), VolumeID: "vol-unpub-repeat", NodeID: "node-1"})
@@ -666,3 +666,5 @@ func TestGetCapabilities_Fixed(t *testing.T) {
 	assert.False(t, resp.Capabilities.OnlineExpansion)
 	assert.False(t, resp.Capabilities.OwnerRouting)
 }
+
+func unpublishErr(_ *ebsprovider.UnpublishedVolume, err error) error { return err }

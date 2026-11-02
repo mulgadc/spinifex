@@ -21,6 +21,7 @@ const (
 	verbSnapshotDelete  = "snapshot.delete"
 	verbSnapshotCopy    = "snapshot.copy"
 	verbSnapshotList    = "snapshot.list"
+	verbUnsealedWrites  = "volume.unsealed"
 )
 
 // lieFlavours are the ways a successful answer can be wrong. Each one is a
@@ -240,10 +241,28 @@ func (p *Provider) PublishVolume(ctx context.Context, req ebsprovider.PublishVol
 	return published, nil
 }
 
-func (p *Provider) UnpublishVolume(ctx context.Context, req ebsprovider.UnpublishVolumeRequest) error {
+func (p *Provider) UnpublishVolume(ctx context.Context, req ebsprovider.UnpublishVolumeRequest) (*ebsprovider.UnpublishedVolume, error) {
 	injection := p.draw(verbVolumeUnpublish, req.VolumeID)
 	if stop, err := p.apply(ctx, injection); stop || err != nil {
-		return err
+		return nil, err
 	}
-	return p.after(injection, p.inner.UnpublishVolume(ctx, req))
+	result, err := p.inner.UnpublishVolume(ctx, req)
+	if err := p.after(injection, err); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// HoldsUnsealedWrites is never made to lie: a false "none held" lets an
+// instance start elsewhere over writes only this node has.
+func (p *Provider) HoldsUnsealedWrites(ctx context.Context, nodeID string, volumeIDs []string) ([]string, error) {
+	injection := p.drawTruthful(verbUnsealedWrites, nodeID)
+	if stop, err := p.apply(ctx, injection); stop || err != nil {
+		return nil, err
+	}
+	held, err := p.inner.HoldsUnsealedWrites(ctx, nodeID, volumeIDs)
+	if err := p.after(injection, err); err != nil {
+		return nil, err
+	}
+	return held, nil
 }

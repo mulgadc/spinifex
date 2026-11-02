@@ -30,6 +30,12 @@ func TestSubjectVerb_StripsIDsFromEveryDynamicSubject(t *testing.T) {
 	require.NoError(t, err)
 	unpublish, err := UnpublishSubject(nodeID)
 	require.NoError(t, err)
+	unsealed, err := UnsealedWritesSubject(nodeID)
+	require.NoError(t, err)
+	nodeCapabilities, err := NodeCapabilitiesSubject(nodeID)
+	require.NoError(t, err)
+	fenced, err := FenceNoticeSubject(nodeID)
+	require.NoError(t, err)
 
 	cases := map[string]string{
 		CapabilitiesSubject:   verbCapabilities,
@@ -47,6 +53,9 @@ func TestSubjectVerb_StripsIDsFromEveryDynamicSubject(t *testing.T) {
 		snapshotCreate:        verbSnapshotCreate,
 		publish:               verbVolumePublish,
 		unpublish:             verbVolumeUnpublish,
+		unsealed:              verbUnsealedWrites,
+		nodeCapabilities:      verbCapabilities,
+		fenced:                verbFenceNotice,
 	}
 
 	for subject, want := range cases {

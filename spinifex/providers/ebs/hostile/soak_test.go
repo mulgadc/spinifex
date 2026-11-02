@@ -105,7 +105,7 @@ func soakOneVolume(ctx context.Context, provider ebsprovider.EBSProvider, volume
 	if _, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{
 		Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: "node-1",
 	}); err == nil {
-		_ = provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{
+		_, _ = provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{
 			Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: "node-1",
 		})
 	}

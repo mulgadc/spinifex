@@ -250,7 +250,7 @@ func TestNATSProviderChecksVersionBeforeTransport(t *testing.T) {
 		require.ErrorIs(t, err, ErrUnsupportedVersion)
 	})
 	t.Run("UnpublishVolume", func(t *testing.T) {
-		err := provider.UnpublishVolume(ctx, UnpublishVolumeRequest{VolumeID: "vol-1", NodeID: "node-1"})
+		_, err := provider.UnpublishVolume(ctx, UnpublishVolumeRequest{VolumeID: "vol-1", NodeID: "node-1"})
 		require.ErrorIs(t, err, ErrUnsupportedVersion)
 	})
 }
@@ -563,7 +563,7 @@ func TestNATSProviderPropagatesProviderErrors(t *testing.T) {
 		respondWith(t, conn, subject, UnpublishVolumeResponse{
 			Versioned: NewVersioned(), Error: &ProviderError{Code: ErrorCodeNotFound, Message: "no such mount"},
 		})
-		err = NewNATSProvider(conn, time.Second).UnpublishVolume(t.Context(), UnpublishVolumeRequest{
+		_, err = NewNATSProvider(conn, time.Second).UnpublishVolume(t.Context(), UnpublishVolumeRequest{
 			Versioned: NewVersioned(), VolumeID: "vol-1", NodeID: "node-err",
 		})
 		require.ErrorIs(t, err, ErrNotFound)
@@ -601,7 +601,7 @@ func TestNATSProviderValidatesSubjectTokensBeforeTransport(t *testing.T) {
 		require.ErrorIs(t, err, ErrInvalidArgument)
 	})
 	t.Run("UnpublishVolume", func(t *testing.T) {
-		err := provider.UnpublishVolume(ctx, UnpublishVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-1", NodeID: "node.*"})
+		_, err := provider.UnpublishVolume(ctx, UnpublishVolumeRequest{Versioned: NewVersioned(), VolumeID: "vol-1", NodeID: "node.*"})
 		require.ErrorIs(t, err, ErrInvalidArgument)
 	})
 }

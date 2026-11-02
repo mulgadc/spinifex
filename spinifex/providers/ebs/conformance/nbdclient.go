@@ -217,7 +217,7 @@ func cleanupVolume(t *testing.T, provider ebsprovider.EBSProvider, cfg NBDClient
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	if err := provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{
+	if _, err := provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{
 		Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.NodeID,
 	}); err != nil {
 		t.Logf("cleanup: unpublish %s: %v", volumeID, err)
@@ -356,11 +356,12 @@ func RunNBDClientSuiteWithConfig(t *testing.T, newProvider func(t *testing.T) eb
 		uri := dialURI(t, nbdURI)
 		require.True(t, nbdReachable(uri), "export should be reachable before unpublish")
 
-		require.NoError(t, provider.UnpublishVolume(context.Background(), ebsprovider.UnpublishVolumeRequest{
+		_, err := provider.UnpublishVolume(context.Background(), ebsprovider.UnpublishVolumeRequest{
 			Versioned: ebsprovider.NewVersioned(),
 			VolumeID:  volumeID,
 			NodeID:    cfg.NodeID,
-		}))
+		})
+		require.NoError(t, err)
 
 		assert.Eventually(t, func() bool { return !nbdReachable(uri) }, 30*time.Second, 250*time.Millisecond,
 			"export still answers after UnpublishVolume")

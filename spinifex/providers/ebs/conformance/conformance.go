@@ -46,6 +46,12 @@ func capabilitiesOf(t *testing.T, provider ebsprovider.EBSProvider) ebsprovider.
 // fails the test instead of hanging it.
 const maxListPages = 100
 
+// unpublish is UnpublishVolume for a case that asserts only on the error.
+func unpublish(ctx context.Context, provider ebsprovider.EBSProvider, req ebsprovider.UnpublishVolumeRequest) error {
+	_, err := provider.UnpublishVolume(ctx, req)
+	return err
+}
+
 // volumeIDs projects one page of refs down to its IDs.
 func volumeIDs(refs []ebsprovider.VolumeRef) []string {
 	ids := make([]string, 0, len(refs))
@@ -845,17 +851,17 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			require.NoError(t, err)
 			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-unpub-ok"), NodeID: cfg.node()})
 			require.NoError(t, err)
-			require.NoError(t, provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-unpub-ok"), NodeID: cfg.node()}))
+			require.NoError(t, unpublish(ctx, provider, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-unpub-ok"), NodeID: cfg.node()}))
 		})
 
 		t.Run("absent target is idempotent", func(t *testing.T) {
 			provider := newProvider(t)
-			require.NoError(t, provider.UnpublishVolume(context.Background(), ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-never-existed"), NodeID: cfg.node()}))
+			require.NoError(t, unpublish(context.Background(), provider, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-never-existed"), NodeID: cfg.node()}))
 		})
 
 		t.Run("invalid_argument on missing ids", func(t *testing.T) {
 			provider := newProvider(t)
-			err := provider.UnpublishVolume(context.Background(), ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned()})
+			err := unpublish(context.Background(), provider, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned()})
 			require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
 		})
 	})
@@ -907,7 +913,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 
 			// Releasing the claim must make the volume publishable again, or
 			// the guarantee is indistinguishable from a permanent lock.
-			require.NoError(t, provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()}))
+			require.NoError(t, unpublish(ctx, provider, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()}))
 			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.otherNode()})
 			require.NoError(t, err, "a released claim must be reclaimable, or an unpublish strands the volume")
 		})
@@ -968,7 +974,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			require.ErrorIs(t, err, ebsprovider.ErrVolumeInUse,
 				"deleting a published volume must be refused; the export is still serving reads and writes against it")
 
-			require.NoError(t, provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()}))
+			require.NoError(t, unpublish(ctx, provider, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()}))
 			require.NoError(t, provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID}),
 				"once unpublished the delete must go through, or a volume can never be removed after being used")
 		})

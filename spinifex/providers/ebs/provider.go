@@ -19,10 +19,20 @@ const (
 	// evidence that the peer supports a newer representation.
 	LegacySchemaVersion uint16 = 1
 
+	// DescriptorSchemaVersion is the first version whose PublishVolume reply
+	// carries a VolumeExport descriptor, and so the first that can describe a
+	// block export.
+	DescriptorSchemaVersion uint16 = 2
+
+	// NoSealSchemaVersion is the first version that carries
+	// UnpublishVolumeRequest.NoSeal. A provider that does not serve it refuses
+	// the request as unsupported rather than dropping the flag and sealing.
+	NoSealSchemaVersion uint16 = 3
+
 	// SchemaVersion is the newest wire-contract version understood by this
 	// build. Every request and response carries a version so an unsupported
 	// representation fails at the boundary rather than silently decoding it.
-	SchemaVersion uint16 = 2
+	SchemaVersion uint16 = NoSealSchemaVersion
 )
 
 // Versioned is embedded in every request and response sent over NATS.
@@ -41,14 +51,39 @@ func NewVersioned() Versioned { return Versioned{SchemaVersion: LegacySchemaVers
 func NewLatestVersioned() Versioned { return Versioned{SchemaVersion: SchemaVersion} }
 
 // SupportsSchemaVersion reports whether this build can safely decode version.
+// Every version from LegacySchemaVersion to SchemaVersion is served.
 func SupportsSchemaVersion(version uint16) bool {
-	return version == LegacySchemaVersion || version == SchemaVersion
+	return version >= LegacySchemaVersion && version <= SchemaVersion
+}
+
+// SupportedSchemaVersions lists, in ascending order, every contract version
+// this build serves. GetCapabilitiesResponse.ContractVersions reports it.
+func SupportedSchemaVersions() []uint16 {
+	versions := make([]uint16, 0, SchemaVersion-LegacySchemaVersion+1)
+	for v := LegacySchemaVersion; v <= SchemaVersion; v++ {
+		versions = append(versions, v)
+	}
+	return versions
+}
+
+// ReplyVersioned stamps a reply with its request's version, so a body is never
+// labelled newer than its shape. A version this build cannot serve is answered
+// at LegacySchemaVersion, the one every peer decodes.
+func ReplyVersioned(requested uint16) Versioned {
+	if !SupportsSchemaVersion(requested) {
+		return NewVersioned()
+	}
+	return Versioned{SchemaVersion: requested}
 }
 
 // EBSProvider is the block-storage controller contract consumed by Spinifex.
 // Its operation and idempotency shape follows the CSI controller service, but
 // the transport remains NATS request/reply rather than CSI's gRPC transport.
 type EBSProvider interface {
+	// Required of every provider: a caller counts no answer as held, which
+	// would keep an instance from ever starting on another node.
+	UnsealedWritesChecker
+
 	GetCapabilities(context.Context, GetCapabilitiesRequest) (*GetCapabilitiesResponse, error)
 	CreateVolume(context.Context, CreateVolumeRequest) (*Volume, error)
 	GetVolume(context.Context, GetVolumeRequest) (*Volume, error)
@@ -60,7 +95,7 @@ type EBSProvider interface {
 	CopySnapshot(context.Context, CopySnapshotRequest) (*Snapshot, error)
 	ListSnapshots(context.Context, ListSnapshotsRequest) (*ListSnapshotsResponse, error)
 	PublishVolume(context.Context, PublishVolumeRequest) (*PublishedVolume, error)
-	UnpublishVolume(context.Context, UnpublishVolumeRequest) error
+	UnpublishVolume(context.Context, UnpublishVolumeRequest) (*UnpublishedVolume, error)
 }
 
 // Provider is retained as a concise alias for implementation code. New
@@ -164,8 +199,14 @@ type GetCapabilitiesRequest struct{ Versioned }
 type GetCapabilitiesResponse struct {
 	Versioned
 
-	Capabilities Capabilities   `json:"capabilities"`
-	Error        *ProviderError `json:"error,omitempty"`
+	Capabilities Capabilities `json:"capabilities"`
+
+	// ContractVersions lists every schema version the answering provider
+	// serves, ascending. A provider that predates the field leaves it empty,
+	// which a caller must read as no evidence, not as version 1 only.
+	ContractVersions []uint16 `json:"contract_versions,omitempty"`
+
+	Error *ProviderError `json:"error,omitempty"`
 }
 
 // CapacityRange mirrors CSI's capacity-range semantics. RequiredBytes is the
@@ -563,7 +604,7 @@ func (p *PublishedVolume) AsV1() (*PublishedVolumeV1, error) {
 		return nil, err
 	}
 	if p.Export.Kind != ExportKindNBD {
-		return nil, fmt.Errorf("%s export requires schema version %d", p.Export.Kind, SchemaVersion)
+		return nil, fmt.Errorf("%s export requires schema version %d", p.Export.Kind, DescriptorSchemaVersion)
 	}
 	return &PublishedVolumeV1{
 		VolumeID: p.VolumeID,
@@ -617,6 +658,33 @@ type UnpublishVolumeRequest struct {
 	VolumeID string `json:"volume_id"`
 	Handle   string `json:"handle,omitempty"`
 	NodeID   string `json:"node_id"`
+
+	// NoSeal drops this node's copy unsealed, because a newer owner's supersedes
+	// it; unlike AWS DetachVolume Force, which leaves a copy that must seal.
+	// Carried only at NoSealSchemaVersion or later (CheckUnpublishVersion).
+	NoSeal bool `json:"no_seal,omitempty"`
+}
+
+// CheckUnpublishVersion refuses a request this build cannot serve, and a
+// NoSeal sent below NoSealSchemaVersion: a provider at that version would
+// drop the flag and seal, so no provider may honour it there either.
+func CheckUnpublishVersion(req UnpublishVolumeRequest) error {
+	if err := checkVersion(req.SchemaVersion); err != nil {
+		return err
+	}
+	if req.NoSeal && req.SchemaVersion < NoSealSchemaVersion {
+		return fmt.Errorf("%w: no_seal requires schema version %d, got %d", ErrInvalidArgument, NoSealSchemaVersion, req.SchemaVersion)
+	}
+	return nil
+}
+
+// UnpublishedVolume is the outcome of an UnpublishVolume that succeeded.
+// TornDown reports whether an export existed and was removed; it is reported
+// only at NoSealSchemaVersion or later, and is false at earlier versions.
+type UnpublishedVolume struct {
+	VolumeID string `json:"volume_id"`
+	NodeID   string `json:"node_id"`
+	TornDown bool   `json:"torn_down,omitempty"`
 }
 
 // UnpublishVolumeResponse is the reply to UnpublishVolumeRequest. A nil Error
@@ -624,13 +692,14 @@ type UnpublishVolumeRequest struct {
 type UnpublishVolumeResponse struct {
 	Versioned
 
-	Error *ProviderError `json:"error,omitempty"`
+	// TornDown mirrors UnpublishedVolume.TornDown.
+	TornDown bool           `json:"torn_down,omitempty"`
+	Error    *ProviderError `json:"error,omitempty"`
 }
 
 // UnsealedWritesChecker answers, for one node, which of a set of volumes it
-// still holds writes for that the backend may not have. It is separate from
-// EBSProvider because only the instance start path asks, and only of the node
-// that last ran the instance.
+// still holds writes for that the backend may not have. A write-through
+// provider answers with none. Consumers that only ask this depend on it alone.
 type UnsealedWritesChecker interface {
 	HoldsUnsealedWrites(ctx context.Context, nodeID string, volumeIDs []string) ([]string, error)
 }
@@ -651,4 +720,26 @@ type HoldsUnsealedWritesResponse struct {
 
 	Held  []string       `json:"held,omitempty"`
 	Error *ProviderError `json:"error,omitempty"`
+}
+
+// FenceNotice announces that a provider revoked a live export on NodeID
+// because another node now holds the volume, so that node's daemon can stop
+// the guest using it. Sent over FenceNoticeSubject until acknowledged.
+type FenceNotice struct {
+	Versioned
+
+	VolumeID string `json:"volume_id"`
+	NodeID   string `json:"node_id"`
+	Winner   string `json:"winner,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+// FenceNoticeAck is the daemon's answer to a FenceNotice. Any answer ends the
+// sender's retries; InstanceID names the guest stopped, if one was, and Error
+// says why the daemon could not act on the notice.
+type FenceNoticeAck struct {
+	Versioned
+
+	InstanceID string         `json:"instance_id,omitempty"`
+	Error      *ProviderError `json:"error,omitempty"`
 }

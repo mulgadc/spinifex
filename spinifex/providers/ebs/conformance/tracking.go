@@ -84,12 +84,12 @@ func (p *trackingProvider) PublishVolume(ctx context.Context, req ebsprovider.Pu
 	return pub, err
 }
 
-func (p *trackingProvider) UnpublishVolume(ctx context.Context, req ebsprovider.UnpublishVolumeRequest) error {
-	err := p.EBSProvider.UnpublishVolume(ctx, req)
+func (p *trackingProvider) UnpublishVolume(ctx context.Context, req ebsprovider.UnpublishVolumeRequest) (*ebsprovider.UnpublishedVolume, error) {
+	result, err := p.EBSProvider.UnpublishVolume(ctx, req)
 	if err == nil {
 		delete(p.published, req.VolumeID)
 	}
-	return err
+	return result, err
 }
 
 // cleanup removes what the subtest left behind, in dependency order: a
@@ -100,7 +100,7 @@ func (p *trackingProvider) cleanup() {
 	ctx := context.Background()
 
 	for volumeID, nodeID := range p.published {
-		if err := p.EBSProvider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{
+		if _, err := p.EBSProvider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{
 			Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, Handle: p.volumes[volumeID], NodeID: nodeID,
 		}); err != nil {
 			p.t.Logf("conformance cleanup: unpublish %s: %v", volumeID, err)

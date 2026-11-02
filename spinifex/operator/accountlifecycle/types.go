@@ -136,6 +136,16 @@ type Account struct {
 	AccountID   string
 	AccountName string
 	Status      string
+
+	// Generation and TerminationOp are what a quiesce read-back compares.
+	Generation    uint64
+	TerminationOp *TerminationOp
+}
+
+// TerminationOp mirrors the operation and fence IAM holds on a terminating account.
+type TerminationOp struct {
+	OperationID string
+	Fence       uint64
 }
 
 // Request is one teardown.

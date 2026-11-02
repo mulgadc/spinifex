@@ -61,6 +61,8 @@ func (f *fakeAccounts) QuiesceAccount(_, operationID string, fence uint64) (uint
 	f.statuses = append(f.statuses, AccountStatusTerminating)
 	f.quiesces = append(f.quiesces, quiesceCall{operationID, fence})
 	f.account.Status = AccountStatusTerminating
+	f.account.Generation = 1
+	f.account.TerminationOp = &TerminationOp{OperationID: operationID, Fence: fence}
 	return 1, nil
 }
 

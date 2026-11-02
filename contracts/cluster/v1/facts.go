@@ -18,6 +18,11 @@ func ValidNodeID(node string) bool {
 	return nodeIDPattern.MatchString(node)
 }
 
+// NodeFactsOfSubject asks one node alone for its NodeFacts.
+func NodeFactsOfSubject(node string) string {
+	return NodeFactsSubject + "." + node
+}
+
 // NetTestServeSubject asks one node to start a one-shot throughput server.
 func NetTestServeSubject(node string) string {
 	return nodeNetTestPrefix + node + ".serve"
@@ -183,9 +188,10 @@ type NetTestServeResponse struct {
 }
 
 // NetTestRunRequest runs the client towards Address from the node's own
-// address on Plane.
+// address on Plane. Address must be what Target reports for that plane.
 type NetTestRunRequest struct {
 	Plane           string `json:"plane"`
+	Target          string `json:"target"`
 	Address         string `json:"address"`
 	Port            int    `json:"port"`
 	DurationSeconds int    `json:"duration_seconds"`

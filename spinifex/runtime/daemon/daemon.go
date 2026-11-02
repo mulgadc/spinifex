@@ -910,7 +910,7 @@ func (d *Daemon) subscribeAll() error {
 		d.sqsWorker = newSQSWorkerEnsurer(d.buildSQSWorkerLauncher)
 	}
 	if d.insight == nil {
-		d.insight = newNodeInsight(d.node)
+		d.insight = newNodeInsight(d.node, d.config.Host, d.config.VPCD.ExternalInterface)
 		d.insight.live = &nodeLiveSampler{insight: d.insight, nc: d.natsConn, subject: telemetryv1.NodeLiveSampleSubject(d.node)}
 	}
 	subs := []natsSub{
@@ -1068,6 +1068,7 @@ func (d *Daemon) subscribeAll() error {
 	}
 	if clusterv1.ValidNodeID(d.node) {
 		subs = append(subs,
+			natsSub{clusterv1.NodeFactsOfSubject(d.node), d.handleNodeFacts, ""},
 			natsSub{clusterv1.NetTestServeSubject(d.node), d.handleNetTestServe, ""},
 			natsSub{clusterv1.NetTestRunSubject(d.node), d.handleNetTestRun, ""},
 			natsSub{telemetryv1.NodeLiveWatchSubject(d.node), d.handleNodeLiveWatch, ""},

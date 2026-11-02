@@ -11,7 +11,7 @@ import {
   PLANE_ORDER,
   planesLabel,
 } from "@/lib/node-topology"
-import type { NICFacts, NodeFacts } from "@/queries/nodes"
+import type { NICFacts, NodeFacts, PlaneFacts } from "@/queries/nodes"
 
 const NIC_COLUMNS: DataColumn<NICFacts>[] = [
   {
@@ -92,6 +92,25 @@ const NIC_COLUMNS: DataColumn<NICFacts>[] = [
   },
 ]
 
+// The overlay shares the LAN plane when both sit on one bridge or one port,
+// as on dev-prod's br-lan or a cloud VM's private NIC.
+function overlayRidesLAN(planes: readonly PlaneFacts[]): boolean {
+  const lan = planes.find((p) => p.plane === "lan")
+  const vpc = planes.find((p) => p.plane === "vpc")
+
+  if (!lan || !vpc) {
+    return false
+  }
+
+  if (lan.bridge || vpc.bridge) {
+    return lan.bridge === vpc.bridge
+  }
+
+  const lanNICs = (lan.nics ?? []).join(",")
+
+  return lanNICs !== "" && lanNICs === (vpc.nics ?? []).join(",")
+}
+
 // Each plane the installer configured, then every physical port and what it
 // carries. A switch port is named only where LLDP said so.
 export function NodeNetwork({ facts }: { facts: NodeFacts | undefined }) {
@@ -121,21 +140,22 @@ export function NodeNetwork({ facts }: { facts: NodeFacts | undefined }) {
               label={PLANE_LABELS[plane.plane]}
               mono
             >
-              {plane.address
-                ? `${plane.address}/${plane.prefix ?? "?"}`
-                : "no address"}
-              {" · "}
-              {plane.bridge ?? "-"}
-              {plane.nics && plane.nics.length > 0
-                ? ` · ${plane.nics.join(", ")}`
-                : ""}
-              {plane.mtu ? ` · MTU ${plane.mtu}` : ""}
+              {[
+                plane.address
+                  ? `${plane.address}/${plane.prefix ?? "?"}`
+                  : "no address",
+                plane.bridge,
+                plane.nics?.join(", "),
+                plane.mtu ? `MTU ${plane.mtu}` : undefined,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
             </PanelField>
           ))}
         </PanelFields>
-        {planes.some((p) => p.plane === "vpc" && p.bridge === "br-lan") && (
+        {overlayRidesLAN(planes) && (
           <p className="mt-2 text-2xs text-muted-foreground">
-            The VPC overlay rides the LAN bridge on this node, so the two planes
+            The VPC overlay rides the LAN plane on this node, so the two planes
             share its ports.
           </p>
         )}

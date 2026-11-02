@@ -45,6 +45,7 @@ import {
   useInstanceClassOptions,
   parameterGroupOptions,
   parameterGroupsForEngine,
+  subnetGroupNotice,
   subnetGroupOptions,
 } from "../../-components/rds-form-fields"
 import {
@@ -375,6 +376,7 @@ export function CreateDBInstancePage({ onClose }: CreateDBInstancePageProps) {
               info="Leave unset to place the endpoint in the account's default VPC subnet. The subnet group cannot be changed after create."
               label="DB subnet group"
               name="dbSubnetGroupName"
+              notice={subnetGroupNotice(subnetGroups)}
               onValueChange={handleSubnetGroupChange}
               options={subnetGroupOptions(subnetGroups)}
               placeholder="Default VPC subnet"

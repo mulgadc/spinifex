@@ -385,7 +385,7 @@ func (d Deps) runNetworkTestPair(ctx context.Context, test *NetworkTest, from, t
 	}
 
 	runReq, err := json.Marshal(clusterv1.NetTestRunRequest{
-		Plane: test.Plane, Address: served.Address, Port: served.Port,
+		Plane: test.Plane, Target: to, Address: served.Address, Port: served.Port,
 		DurationSeconds: test.DurationSeconds, Streams: test.Streams,
 	})
 	if err != nil {

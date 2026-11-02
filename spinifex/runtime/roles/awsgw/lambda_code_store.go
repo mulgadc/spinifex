@@ -49,7 +49,7 @@ func (r *codeStoreRole) Create(trust string, tags map[string]string) error {
 		in.Tags = append(in.Tags, &iam.Tag{Key: aws.String(k), Value: aws.String(v)})
 	}
 	_, err := r.iam.CreateRole(identifiers.GlobalAccountID, in)
-	if err != nil && err.Error() == awserrors.ErrorIAMEntityAlreadyExists {
+	if awserrors.IsErrorCode(err, awserrors.ErrorIAMEntityAlreadyExists) {
 		return codestore.ErrExists
 	}
 	return err
@@ -59,7 +59,7 @@ func (r *codeStoreRole) Describe() (*codestore.RoleState, error) {
 	acct, name := identifiers.GlobalAccountID, aws.String(r.name)
 	got, err := r.iam.GetRole(acct, &iam.GetRoleInput{RoleName: name})
 	if err != nil {
-		if err.Error() == awserrors.ErrorIAMNoSuchEntity {
+		if awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity) {
 			return nil, codestore.ErrNotFound
 		}
 		return nil, err

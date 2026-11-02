@@ -46,3 +46,13 @@ func TestMicroVMDirectBoot(t *testing.T) {
 		assert.NotContains(t, a, "pcie-root-port", "pcie-root-port must not appear for microvm")
 	}
 }
+
+func TestNewMicroVMConfig_MitigationsOnByDefault(t *testing.T) {
+	cfg := NewMicroVMConfig(MicroVMSpec{Name: "i-default", LogLevel: 3})
+	assert.NotContains(t, cfg.KernelCmdline, "mitigations")
+}
+
+func TestNewMicroVMConfig_MitigationsOffOnlyWhenNamed(t *testing.T) {
+	cfg := NewMicroVMConfig(MicroVMSpec{Name: "i-optout", LogLevel: 3, MitigationsOff: true})
+	assert.Contains(t, cfg.KernelCmdline, " mitigations=off ")
+}

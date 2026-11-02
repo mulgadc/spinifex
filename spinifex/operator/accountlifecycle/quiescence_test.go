@@ -187,7 +187,11 @@ func TestPredastoreIsNeverCitedAndItsScopesNeverQuiesce(t *testing.T) {
 	}
 	for _, consumer := range q.Consumers {
 		assert.NotContains(t, consumer.Consumer, "predastore")
-		assert.Equal(t, "ADR-0005:S7", consumer.Basis)
+		want := "ADR-0005:S7"
+		if consumer.Consumer == "sts-mint-gate" {
+			want = "ADR-0008:S9 (IAM-owned)"
+		}
+		assert.Equal(t, want, consumer.Basis)
 	}
 	assert.Equal(t, []string{"awsgw-admission", "ecr-registry", "sts-mint-gate"},
 		[]string{q.Consumers[0].Consumer, q.Consumers[1].Consumer, q.Consumers[2].Consumer})

@@ -30,7 +30,7 @@ type QuiesceEvidence struct {
 var enforcementConsumers = []operatorv1.ConsumerBasis{
 	{Consumer: "awsgw-admission", Basis: "ADR-0005:S7"},
 	{Consumer: "ecr-registry", Basis: "ADR-0005:S7"},
-	{Consumer: "sts-mint-gate", Basis: "ADR-0005:S7"},
+	{Consumer: "sts-mint-gate", Basis: "ADR-0008:S9 (IAM-owned)"},
 }
 
 // accountedWriters cannot be fenced and are covered by the owner inventory.

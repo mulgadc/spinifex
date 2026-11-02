@@ -115,7 +115,7 @@ func (h *harness) UnpublishVolume(ctx context.Context, req ebsprovider.Unpublish
 	if h.unpublishErr != nil {
 		return nil, h.unpublishErr
 	}
-	return &ebsprovider.UnpublishedVolume{VolumeID: req.VolumeID, NodeID: req.NodeID}, nil
+	return &ebsprovider.UnpublishedVolume{}, nil
 }
 
 func (h *harness) preparer(t *testing.T) *Preparer {

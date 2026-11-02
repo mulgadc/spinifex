@@ -401,7 +401,7 @@ func (m *MemoryProvider) UnpublishVolume(_ context.Context, req UnpublishVolumeR
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	result := &UnpublishedVolume{VolumeID: req.VolumeID, NodeID: req.NodeID}
+	result := &UnpublishedVolume{}
 	volume := m.volumes[req.VolumeID]
 	if volume == nil || volume.published == nil || volume.published.NodeID != req.NodeID {
 		return result, nil

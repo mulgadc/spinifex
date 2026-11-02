@@ -310,7 +310,7 @@ func RunNBDClientSuiteWithConfig(t *testing.T, newProvider func(t *testing.T) eb
 	// holes to a server that really tracks allocation.
 	t.Run("sparse extent reporting matches the advertised capability", func(t *testing.T) {
 		provider := newProvider(t)
-		capabilities := capabilitiesOf(t, provider)
+		capabilities := capabilitiesOf(t, provider).Capabilities
 		nbdURI := publishForNBD(t, provider, cfg, cfg.VolumePrefix+"-extents", false)
 
 		holes := slices.ContainsFunc(nbdMap(t, dialURI(t, nbdURI)), func(extent nbdExtent) bool {
@@ -323,7 +323,7 @@ func RunNBDClientSuiteWithConfig(t *testing.T, newProvider func(t *testing.T) eb
 
 	t.Run("read-only publish matches the advertised capability", func(t *testing.T) {
 		provider := newProvider(t)
-		capabilities := capabilitiesOf(t, provider)
+		capabilities := capabilitiesOf(t, provider).Capabilities
 
 		if !capabilities.ReadOnlyPublish {
 			// Refusing is the contract for a provider that cannot honour it;

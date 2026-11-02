@@ -36,26 +36,17 @@ var ReferenceCapabilities = ebsprovider.Capabilities{
 
 // capabilitiesOf reads what a provider advertises, so the suite can branch on
 // it the way the contract tells callers to.
-func capabilitiesOf(t *testing.T, provider ebsprovider.EBSProvider) ebsprovider.Capabilities {
+func capabilitiesOf(t *testing.T, provider ebsprovider.EBSProvider) *ebsprovider.GetCapabilitiesResponse {
 	t.Helper()
 	resp, err := provider.GetCapabilities(context.Background(), ebsprovider.GetCapabilitiesRequest{Versioned: ebsprovider.NewVersioned()})
 	require.NoError(t, err)
 	require.NotNil(t, resp)
-	return resp.Capabilities
+	return resp
 }
 
 // maxListPages bounds a drain so a provider whose token fails to advance
 // fails the test instead of hanging it.
 const maxListPages = 100
-
-// contractVersionsOf reads the contract versions a provider says it serves.
-func contractVersionsOf(t *testing.T, provider ebsprovider.EBSProvider) []uint16 {
-	t.Helper()
-	resp, err := provider.GetCapabilities(context.Background(), ebsprovider.GetCapabilitiesRequest{Versioned: ebsprovider.NewVersioned()})
-	require.NoError(t, err)
-	require.NotNil(t, resp)
-	return resp.ContractVersions
-}
 
 // unpublish is UnpublishVolume for a case that asserts only on the error.
 func unpublish(ctx context.Context, provider ebsprovider.EBSProvider, req ebsprovider.UnpublishVolumeRequest) error {
@@ -198,8 +189,8 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		return newTrackingProvider(t, newRawProvider(t))
 	}
 
-	capabilities := capabilitiesOf(t, newProvider(t))
-	contractVersions := contractVersionsOf(t, newProvider(t))
+	advertised := capabilitiesOf(t, newProvider(t))
+	capabilities, contractVersions := advertised.Capabilities, advertised.ContractVersions
 
 	t.Run("GetCapabilities", func(t *testing.T) {
 		provider := newProvider(t)
@@ -446,8 +437,6 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 	})
 
 	t.Run("ListVolumes", func(t *testing.T) {
-		capabilities := capabilitiesOf(t, newProvider(t))
-
 		t.Run("unsupported_capability when enumeration is not advertised", func(t *testing.T) {
 			if capabilities.VolumeEnumeration {
 				t.Skip("provider advertises volume enumeration")
@@ -755,8 +744,6 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 	})
 
 	t.Run("ListSnapshots", func(t *testing.T) {
-		capabilities := capabilitiesOf(t, newProvider(t))
-
 		t.Run("unsupported_capability when enumeration is not advertised", func(t *testing.T) {
 			if capabilities.SnapshotEnumeration {
 				t.Skip("provider advertises snapshot enumeration")

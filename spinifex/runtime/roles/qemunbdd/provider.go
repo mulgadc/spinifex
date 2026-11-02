@@ -806,7 +806,7 @@ func (p *Provider) UnpublishVolume(_ context.Context, req ebsprovider.UnpublishV
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	result := &ebsprovider.UnpublishedVolume{VolumeID: req.VolumeID, NodeID: req.NodeID}
+	result := &ebsprovider.UnpublishedVolume{}
 	pub, ok := p.published[req.VolumeID]
 	if !ok || pub.nodeID != req.NodeID {
 		return result, nil

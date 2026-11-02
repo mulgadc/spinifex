@@ -39,20 +39,22 @@ const defaultRequestTimeout = 30 * time.Second
 // codebase's existing budget for an EBS operation the caller cannot bound.
 const dataMovementTimeout = 180 * time.Second
 
-// dataMovementSubjects names every subject that references or moves real data.
-// Everything absent answers from state already held and keeps the caller's
-// timeout, so a subject added without a deliberate decision stays fast.
-var dataMovementSubjects = map[string]struct{}{
-	CreateVolumeSubject:   {},
-	ExpandVolumeSubject:   {},
-	CopySnapshotSubject:   {},
-	DeleteVolumeSubject:   {},
-	DeleteSnapshotSubject: {},
+// dataMovementVerbs names every operation that references or moves real data,
+// however its subject addresses it. Everything absent answers from state
+// already held and keeps the caller's timeout, so a new verb stays fast.
+var dataMovementVerbs = map[string]bool{
+	verbVolumeCreate:   true,
+	verbVolumeExpand:   true,
+	verbVolumeDelete:   true,
+	verbSnapshotCreate: true,
+	verbSnapshotCopy:   true,
+	verbSnapshotDelete: true,
+	// Unpublish seals local state back to the backend, which takes as long as
+	// the volume has unsealed writes.
+	verbVolumeUnpublish: true,
 }
 
-// timeoutFor sizes a request to the work its subject names. The per-volume
-// snapshot create, the owner-routed variants and the per-node unpublish carry
-// no constant, so they are matched by prefix, by verb and by suffix.
+// timeoutFor sizes a request to the work its subject names.
 func (p *NATSProvider) timeoutFor(subject string) time.Duration {
 	if movesData(subject) {
 		return max(p.requestTimeout, dataMovementTimeout)
@@ -60,33 +62,8 @@ func (p *NATSProvider) timeoutFor(subject string) time.Duration {
 	return p.requestTimeout
 }
 
-// movesData answers for the named subjects, for the per-volume snapshot create
-// prefix, and for the owner-routed variants, none of which carry a constant.
 func movesData(subject string) bool {
-	if _, ok := dataMovementSubjects[subject]; ok {
-		return true
-	}
-	if strings.HasPrefix(subject, SnapshotCreateSubjectPrefix) {
-		return true
-	}
-	// Unpublish seals the volume's local state back to the backend, which
-	// takes as long as the volume has unsealed writes.
-	if isNodeSubject(subject, unpublishVerb) {
-		return true
-	}
-	_, verb, ok := ParseOwnerSubject(subject)
-	return ok && isDataMovementVerb(verb)
-}
-
-// isDataMovementVerb answers for the owner-routed subjects. volume.describe is
-// the one owner verb that reads state rather than moving data.
-func isDataMovementVerb(verb string) bool {
-	switch verb {
-	case verbSnapshotCreate, verbSnapshotCopy, verbVolumeExpand:
-		return true
-	default:
-		return false
-	}
+	return dataMovementVerbs[parseSubject(subject).verb]
 }
 
 // SnapshotSubject addresses a create by source volume so the owning node can
@@ -118,16 +95,16 @@ const (
 	fenceNoticeVerb      = "fenced"
 )
 
-// NodeSubjectWildcard is the subject matching verb on every node, for a server
+// nodeSubjectWildcard is the subject matching verb on every node, for a server
 // that stands in for every node's provider.
-func NodeSubjectWildcard(verb string) string { return subjectPrefix + "*." + verb }
+func nodeSubjectWildcard(verb string) string { return subjectPrefix + "*." + verb }
 
 // Wildcards over every node for each per-node subject.
 var (
-	PublishSubjectWildcard          = NodeSubjectWildcard(publishVerb)
-	UnpublishSubjectWildcard        = NodeSubjectWildcard(unpublishVerb)
-	UnsealedWritesSubjectWildcard   = NodeSubjectWildcard(unsealedVerb)
-	NodeCapabilitiesSubjectWildcard = NodeSubjectWildcard(nodeCapabilitiesVerb)
+	PublishSubjectWildcard          = nodeSubjectWildcard(publishVerb)
+	UnpublishSubjectWildcard        = nodeSubjectWildcard(unpublishVerb)
+	UnsealedWritesSubjectWildcard   = nodeSubjectWildcard(unsealedVerb)
+	NodeCapabilitiesSubjectWildcard = nodeSubjectWildcard(nodeCapabilitiesVerb)
 )
 
 func nodeSubject(nodeID, verb string) (string, error) {
@@ -135,16 +112,6 @@ func nodeSubject(nodeID, verb string) (string, error) {
 		return "", err
 	}
 	return subjectPrefix + nodeID + "." + verb, nil
-}
-
-// isNodeSubject reports whether subject is ebs.provider.v1.<node>.<verb>.
-func isNodeSubject(subject, verb string) bool {
-	rest, ok := strings.CutPrefix(subject, subjectPrefix)
-	if !ok {
-		return false
-	}
-	node, last, ok := strings.Cut(rest, ".")
-	return ok && node != "" && last == verb
 }
 
 // PublishSubject returns nodeID's per-node mount subject
@@ -568,7 +535,7 @@ func (p *NATSProvider) UnpublishVolume(ctx context.Context, req UnpublishVolumeR
 	if err := responseError(response.SchemaVersion, response.Error); err != nil {
 		return nil, err
 	}
-	return &UnpublishedVolume{VolumeID: req.VolumeID, NodeID: req.NodeID, TornDown: response.TornDown}, nil
+	return &UnpublishedVolume{TornDown: response.TornDown}, nil
 }
 
 // HoldsUnsealedWrites returns the subset of volumeIDs for which nodeID's

@@ -682,9 +682,7 @@ func CheckUnpublishVersion(req UnpublishVolumeRequest) error {
 // TornDown reports whether an export existed and was removed; it is reported
 // only at NoSealSchemaVersion or later, and is false at earlier versions.
 type UnpublishedVolume struct {
-	VolumeID string `json:"volume_id"`
-	NodeID   string `json:"node_id"`
-	TornDown bool   `json:"torn_down,omitempty"`
+	TornDown bool
 }
 
 // UnpublishVolumeResponse is the reply to UnpublishVolumeRequest. A nil Error

@@ -276,7 +276,8 @@ func TestHandlersRejectVersionSkew(t *testing.T) {
 			assert.Equal(t, ebsprovider.LegacySchemaVersion, envelope.SchemaVersion, "the refusal itself must be versioned")
 			require.NotNil(t, envelope.Error)
 			assert.Equal(t, ebsprovider.ErrorCodeUnsupportedVersion, envelope.Error.Code)
-			assert.Equal(t, fmt.Sprintf("unsupported schema version 99; supported versions are %d to %d", ebsprovider.LegacySchemaVersion, ebsprovider.SchemaVersion), envelope.Error.Message)
+			assert.Contains(t, envelope.Error.Message, "99", "the refusal must name the version it refused")
+			assert.Contains(t, envelope.Error.Message, ebsprovider.SupportedVersionsText(), "the refusal must name the versions served")
 		})
 	}
 }

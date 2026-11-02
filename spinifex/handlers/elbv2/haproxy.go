@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
-	"unicode"
 
 	"github.com/mulgadc/spinifex/spinifex/lbagent"
 )
@@ -537,13 +536,10 @@ func validHTTPStatusCode(s string) bool {
 	return true
 }
 
-// validFixedResponseBody rejects control characters, which would end or break
-// the single-line HAProxy directive the body is rendered into.
+// validFixedResponseBody rejects bytes that would end the single-line HAProxy
+// directive the single-quoted body is rendered into.
 func validFixedResponseBody(s string) bool {
-	if s == "" {
-		return false
-	}
-	return !strings.ContainsFunc(s, unicode.IsControl)
+	return s != "" && !strings.ContainsAny(s, "\n\r\x00")
 }
 
 // buildRedirect translates a RedirectAction into an HAProxy redirect directive.

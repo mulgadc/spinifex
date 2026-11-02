@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -2548,7 +2549,7 @@ func validateFixedResponseAction(fr *FixedResponseAction) error {
 	if utf8.RuneCountInString(fr.MessageBody) > maxFixedResponseBodyLen {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	if fr.MessageBody != "" && !validFixedResponseBody(fr.MessageBody) {
+	if strings.ContainsFunc(fr.MessageBody, unicode.IsControl) {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	return nil

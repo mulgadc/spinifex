@@ -312,6 +312,31 @@ func TestGenerateHAProxyConfig_FixedResponseIsLiteral(t *testing.T) {
 	assert.NotContains(t, config, `"${LB_SECRET_KEY}`)
 }
 
+// TestGenerateHAProxyConfig_FixedResponseKeepsStoredTab keeps a stored body with
+// a tab, which is literal inside single quotes and rendered before API checks existed.
+func TestGenerateHAProxyConfig_FixedResponseKeepsStoredTab(t *testing.T) {
+	t.Parallel()
+	lb := &LoadBalancerRecord{LoadBalancerID: "lb-tab"}
+	listeners := []*ListenerRecord{
+		{
+			ListenerArn: "arn:lst-tab",
+			Port:        80,
+			DefaultActions: []ListenerAction{
+				{Type: ActionTypeFixedResponse, FixedResponse: &FixedResponseAction{
+					StatusCode:  "503",
+					ContentType: "text/html",
+					MessageBody: "<pre>\tdown</pre>",
+				}},
+			},
+		},
+	}
+
+	config, _, err := GenerateHAProxyConfigWithCerts(lb, listeners, nil, nil, "0.0.0.0", nil)
+	require.NoError(t, err)
+
+	assert.Contains(t, config, "http-request return status 503 content-type 'text/html' string '<pre>\tdown</pre>'\n")
+}
+
 // TestGenerateHAProxyConfig_RedirectSchemeDefault renders the canonical
 // HTTP→HTTPS redirect (scheme-only change, all other fields default) as a
 // `redirect scheme https` directive so HAProxy preserves host/path/query.

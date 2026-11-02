@@ -136,14 +136,14 @@ Set your API key, then run the command for the deployment you chose:
 export VULTR_API_KEY=<your key>
 
 # Development and testing: one VM
-./deploy-vultr.sh up --channel latest --plan vx1-g-16c-64g
+./deploy-vultr.sh up --plan vx1-g-16c-64g
 
 # Production: three VMs
-./deploy-vultr.sh up --channel latest --plan vx1-g-16c-64g --nodes 3
+./deploy-vultr.sh up --plan vx1-g-16c-64g --nodes 3
 
 # Production on bare metal: one server, or three
-./deploy-vultr.sh up --channel latest --plan vbm-8c-64gb-amd
-./deploy-vultr.sh up --channel latest --plan vbm-8c-64gb-amd --nodes 3
+./deploy-vultr.sh up --plan vbm-8c-64gb-amd
+./deploy-vultr.sh up --plan vbm-8c-64gb-amd --nodes 3
 ```
 
 One VM takes about 4 minutes and three VMs about 16 minutes.

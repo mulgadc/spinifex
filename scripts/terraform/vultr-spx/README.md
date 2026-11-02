@@ -4,8 +4,9 @@
 
 ```bash
 export VULTR_API_KEY=...            # the key's IP allowlist must admit this host and every node
-./deploy-vultr.sh up --channel latest                                # one VX VM
-./deploy-vultr.sh up --channel latest --nodes 3 --plan vbm-8c-64gb-amd  # three bare-metal servers
+./deploy-vultr.sh up                                                 # one VX VM, latest release
+./deploy-vultr.sh up --nodes 3 --plan vbm-8c-64gb-amd                # three bare-metal servers
+./deploy-vultr.sh up --channel dev                                   # the newest dev build
 ./deploy-vultr.sh up --name v1 --distro spinifex-<version>.tar.gz    # a named deployment from a local tarball
 ./deploy-vultr.sh status
 ./deploy-vultr.sh credentials

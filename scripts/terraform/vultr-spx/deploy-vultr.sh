@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # deploy-vultr.sh — build a one- or three-node Spinifex deployment on Vultr, or tear it down.
 #
-#   deploy-vultr.sh up --channel latest                               one VX VM
-#   deploy-vultr.sh up --channel latest --nodes 3 --plan vbm-8c-64gb-amd three bare-metal servers
+#   deploy-vultr.sh up                                                one VX VM
+#   deploy-vultr.sh up --nodes 3 --plan vbm-8c-64gb-amd               three bare-metal servers
 #   deploy-vultr.sh status                 nodes, addresses and what the deployment holds
 #   deploy-vultr.sh credentials            print the AWS access key and secret
 #   deploy-vultr.sh ssh [nodeN] [command]  SSH to a node, node1 by default
@@ -38,7 +38,7 @@ NAME="default"
 REGION="ord"
 PLAN="vx1-g-16c-64g"
 DISTRO=""
-CHANNEL=""
+CHANNEL="latest"
 SPX_REGION="us-east-1"
 SPX_AZ="us-east-1a"
 SSH_KEY="$HOME/.ssh/id_ed25519"
@@ -57,7 +57,7 @@ Options:
   --region ID          Vultr region (default $REGION)
   --plan ID            Vultr plan (default $PLAN); vbm-8c-64gb-amd for bare metal
   --distro TARBALL     install this local release tarball
-  --channel CHANNEL    install from a release channel (latest, dev)
+  --channel CHANNEL    install from a release channel: latest (default) or dev
   --spx-region NAME    Spinifex region (default $SPX_REGION)
   --spx-az NAME        Spinifex availability zone (default $SPX_AZ)
   --ssh-key PATH       private key; PATH.pub is installed (default $SSH_KEY)
@@ -168,8 +168,6 @@ preflight() {
     [ -r "$SSH_KEY" ] && [ -r "$SSH_KEY.pub" ] || die "SSH key $SSH_KEY (and .pub) not readable"
     if [ -n "$DISTRO" ]; then
         [ -r "$DISTRO" ] || die "--distro $DISTRO not readable"
-    elif [ -z "$CHANNEL" ]; then
-        die "pass --distro TARBALL or --channel latest|dev"
     fi
     vultr GET /account >/dev/null || die "the API key was refused; check its IP allowlist"
     local type=vx1

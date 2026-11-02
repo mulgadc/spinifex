@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -659,4 +660,54 @@ func sortByPriority(rs []*RuleRecord) []*RuleRecord {
 		}
 	}
 	return out
+}
+
+func TestValidateListenerAction_FixedResponse(t *testing.T) {
+	t.Parallel()
+	fixed := func(ct, body string) ListenerAction {
+		return ListenerAction{Type: ActionTypeFixedResponse, FixedResponse: &FixedResponseAction{
+			StatusCode: "200", ContentType: ct, MessageBody: body,
+		}}
+	}
+
+	for _, ct := range []string{"", "text/plain", "text/css", "text/html", "application/javascript", "application/json"} {
+		assert.NoError(t, validateListenerAction(fixed(ct, "ok")), ct)
+	}
+	assert.NoError(t, validateListenerAction(fixed("text/plain", "")))
+	assert.NoError(t, validateListenerAction(fixed("text/plain", "sk=${LB_SECRET_KEY} it's \"q\" #x")))
+	assert.NoError(t, validateListenerAction(fixed("text/plain", strings.Repeat("é", 1024))))
+
+	bad := []ListenerAction{
+		fixed("text/$LB_SECRET_KEY", "ok"),
+		fixed("text/xml", "ok"),
+		fixed("TEXT/PLAIN", "ok"),
+		fixed("text/plain", strings.Repeat("a", 1025)),
+		fixed("text/plain", "line\nacl x always_true"),
+		fixed("text/plain", "cr\r"),
+		fixed("text/plain", "nul\x00"),
+	}
+	for _, a := range bad {
+		assert.EqualError(t, validateListenerAction(a), awserrors.ErrorInvalidParameterValue, "%+v", *a.FixedResponse)
+	}
+	assert.EqualError(t, validateListenerAction(ListenerAction{Type: ActionTypeFixedResponse}), awserrors.ErrorMissingParameter)
+}
+
+func TestCreateRule_RejectsFixedResponseContentType(t *testing.T) {
+	t.Parallel()
+	env := newRuleTestEnv(t, "cr-badfixed")
+
+	_, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
+		ListenerArn: aws.String(env.listenerArn),
+		Priority:    aws.Int64(1),
+		Conditions:  []*elbv2.RuleCondition{{Field: aws.String("path-pattern"), Values: aws.StringSlice([]string{"/x"})}},
+		Actions: []*elbv2.Action{{
+			Type: aws.String("fixed-response"),
+			FixedResponseConfig: &elbv2.FixedResponseActionConfig{
+				StatusCode:  aws.String("200"),
+				ContentType: aws.String("text/$LB_SECRET_KEY"),
+				MessageBody: aws.String("ok"),
+			},
+		}},
+	}, testAccountID)
+	require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }

@@ -14,6 +14,9 @@ import (
 func TestSetAccountStatusCountsOnlyChanges(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)
+	// A fresh service hands out 000000000001 first, an ID IAM never moves off ACTIVE.
+	_, err := svc.CreateAccount("reserved-admin")
+	require.NoError(t, err)
 	account, err := svc.CreateAccount("generation-counts")
 	require.NoError(t, err)
 	assert.Zero(t, account.Generation)
@@ -43,6 +46,9 @@ func TestSetAccountStatusCountsOnlyChanges(t *testing.T) {
 func TestAccountRecordWithoutGenerationReadsAsZero(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)
+	// A fresh service hands out 000000000001 first, an ID IAM never moves off ACTIVE.
+	_, err := svc.CreateAccount("reserved-admin")
+	require.NoError(t, err)
 	account, err := svc.CreateAccount("legacy-record")
 	require.NoError(t, err)
 
@@ -77,6 +83,9 @@ func (b *racingBucket) Update(ctx context.Context, key string, value []byte, las
 func TestSetAccountStatusRetriesOnAConcurrentWrite(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)
+	// A fresh service hands out 000000000001 first, an ID IAM never moves off ACTIVE.
+	_, err := svc.CreateAccount("reserved-admin")
+	require.NoError(t, err)
 	account, err := svc.CreateAccount("racing-writer")
 	require.NoError(t, err)
 

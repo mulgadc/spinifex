@@ -21,6 +21,9 @@ func TestAdmit_SeesAStatusWrittenByAnotherClientOnTheNextRequest(t *testing.T) {
 	writer, err := iamdomain.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
+	// A fresh service hands out 000000000001 first, an ID IAM never moves off ACTIVE.
+	_, err = writer.CreateAccount("reserved-admin")
+	require.NoError(t, err)
 	account, err := writer.CreateAccount("warm")
 	require.NoError(t, err)
 	bystander, err := writer.CreateAccount("bystander")

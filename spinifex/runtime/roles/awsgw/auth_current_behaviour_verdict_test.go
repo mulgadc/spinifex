@@ -423,6 +423,12 @@ func TestCurrentBehaviour_NoAccountStatusCache(t *testing.T) {
 	for _, status := range []string{iamdomain.AccountStatusSuspended, iamdomain.AccountStatusTerminating} {
 		t.Run(status, func(t *testing.T) {
 			e := newCBEnv(t, cbEnvOpts{})
+			// The fixture tenant holds the protected admin ID, which IAM will not move
+			// off ACTIVE, so the account that changes status is a second one.
+			flip, err := e.iam.CreateAccount("flipped")
+			require.NoError(t, err)
+			e.accountID = flip.AccountID
+			e.alice, e.aliceID = e.newUser(t, "bob")
 			gw := gwfix.WithDeps(&pipeline.Config{
 				DisableLogging: true,
 				Region:         gwfix.Region,
@@ -434,7 +440,7 @@ func TestCurrentBehaviour_NoAccountStatusCache(t *testing.T) {
 			h := gw.SetupRoutes()
 
 			require.Equal(t, http.StatusOK, e.request(t, h, e.alice, "sts", cbForm("GetCallerIdentity")).Code)
-			_, err := e.iam.SetAccountStatus(e.accountID, status)
+			_, err = e.iam.SetAccountStatus(e.accountID, status)
 			require.NoError(t, err)
 
 			assert.Equal(t, denied, cbOutcomeOf(e.request(t, h, e.alice, "sts", cbForm("GetCallerIdentity"))),

@@ -27,6 +27,9 @@ func newStatusReaderFixture(t *testing.T) (iamdomain.IAMService, *iamdomain.Acco
 func TestAccountStatusReader_TerminatingIsTrue(t *testing.T) {
 	t.Parallel()
 	svc, reader, _ := newStatusReaderFixture(t)
+	// A fresh service hands out 000000000001 first, an ID IAM never moves off ACTIVE.
+	_, err := svc.CreateAccount("reserved-admin")
+	require.NoError(t, err)
 	account, err := svc.CreateAccount("tenant@example.com")
 	require.NoError(t, err)
 	_, err = svc.SetAccountStatus(account.AccountID, iamdomain.AccountStatusTerminating)

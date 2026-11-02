@@ -25,13 +25,29 @@ type hostReserve struct {
 	memGB float64
 }
 
-// defaultHostReserve is the conservative floor for the fixed infrastructure tier.
-var defaultHostReserve = hostReserve{vCPU: 2, memGB: 2.0}
+// defaultHostReserveMemGB is the memory held back for the OS and Spinifex.
+const defaultHostReserveMemGB = 2.0
 
-// resolveHostReserve returns defaultHostReserve overridden by
+// reservedVCPUFor returns the CPUs held back for the OS and Spinifex's own
+// services on a host with hostVCPU online CPUs (ADR-0015:S2). The rest are
+// schedulable for instances, one instance vCPU to one CPU.
+func reservedVCPUFor(hostVCPU int) int {
+	switch {
+	case hostVCPU <= 8:
+		return 1
+	case hostVCPU <= 16:
+		return 2
+	case hostVCPU < 64:
+		return 4
+	default:
+		return 8
+	}
+}
+
+// resolveHostReserve returns the ADR-0015:S2 reserve for hostVCPU, overridden by
 // SPINIFEX_RESERVED_VCPU / SPINIFEX_RESERVED_MEM_GB when valid.
-func resolveHostReserve(getenv func(string) string) hostReserve {
-	r := defaultHostReserve
+func resolveHostReserve(getenv func(string) string, hostVCPU int) hostReserve {
+	r := hostReserve{vCPU: reservedVCPUFor(hostVCPU), memGB: defaultHostReserveMemGB}
 	if v := getenv("SPINIFEX_RESERVED_VCPU"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			r.vCPU = n
@@ -49,8 +65,8 @@ func resolveHostReserve(getenv func(string) string) hostReserve {
 	return r
 }
 
-// resolveHostVCPU returns detected core count, overridden by SPINIFEX_HOST_VCPU
-// when valid. Override is an escape hatch for hosts with misreported topology.
+// resolveHostVCPU returns the detected online CPU count, overridden by
+// SPINIFEX_HOST_VCPU when valid, an escape hatch for misreported topology.
 func resolveHostVCPU(getenv func(string) string, detected int) int {
 	if v := getenv("SPINIFEX_HOST_VCPU"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -270,4 +286,58 @@ func allocateForLaunch(canAlloc, minCount, maxCount int) (int, error) {
 		return 0, errInsufficientCapacity
 	}
 	return min(canAlloc, maxCount), nil
+}
+
+// onlineCPUPath lists the CPUs the kernel has online, such as "0-15" or "0-3,8-11".
+const onlineCPUPath = "/sys/devices/system/cpu/online"
+
+// hostCPUCount returns the CPUs the kernel has online (ADR-0015:S1): threads
+// when SMT is on, cores when it is off or absent, as on ARM. Read from sysfs
+// rather than runtime.NumCPU, which shrinks if the daemon is ever pinned.
+func hostCPUCount() int {
+	if data, err := os.ReadFile(onlineCPUPath); err == nil {
+		if n, ok := parseCPUList(string(data)); ok {
+			return n
+		}
+	}
+	return runtime.NumCPU()
+}
+
+// parseCPUList counts the CPUs in a kernel CPU list such as "0-7,16-23".
+func parseCPUList(list string) (int, bool) {
+	list = strings.TrimSpace(list)
+	if list == "" {
+		return 0, false
+	}
+	n := 0
+	for part := range strings.SplitSeq(list, ",") {
+		lo, hi, isRange := strings.Cut(part, "-")
+		first, err := strconv.Atoi(lo)
+		if err != nil || first < 0 {
+			return 0, false
+		}
+		last := first
+		if isRange {
+			if last, err = strconv.Atoi(hi); err != nil || last < first {
+				return 0, false
+			}
+		}
+		n += last - first + 1
+	}
+	return n, true
+}
+
+// smtStatePath reports whether SMT is active: "1", "0", or absent where the
+// CPU has none. Logged for operators; capacity never depends on it.
+const smtStatePath = "/sys/devices/system/cpu/smt/active"
+
+func smtState() string {
+	data, err := os.ReadFile(smtStatePath)
+	if err != nil {
+		return "unsupported"
+	}
+	if strings.TrimSpace(string(data)) == "1" {
+		return "on"
+	}
+	return "off"
 }

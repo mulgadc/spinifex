@@ -44,6 +44,7 @@ func TestCreateRepository_RejectsInvalidRequestsAndDuplicates(t *testing.T) {
 		{"malformed", `{`, awserrors.ErrorECRInvalidParameter},
 		{"missing name", `{}`, awserrors.ErrorECRInvalidParameter},
 		{"cross account", `{"repositoryName":"team/other","registryId":"999999999999"}`, awserrors.ErrorAccessDenied},
+		{"encryption type omitted", `{"repositoryName":"team/other","encryptionConfiguration":{}}`, awserrors.ErrorECRInvalidParameter},
 		{"unsupported KMS", `{"repositoryName":"team/other","encryptionConfiguration":{"encryptionType":"KMS"}}`, awserrors.ErrorECRInvalidParameter},
 	}
 	for _, tc := range cases {

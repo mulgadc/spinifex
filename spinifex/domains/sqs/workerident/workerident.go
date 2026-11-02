@@ -1,0 +1,752 @@
+// Package workerident is the SQS domain's authority on which VM is the
+// Region's shared SQS worker. A regional record moves launching -> bound ->
+// stopped, or launching -> failed, under compare-and-swap; a per-instance
+// index only finds the record.
+package workerident
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"regexp"
+
+	sqsjs "github.com/mulgadc/spinifex/spinifex/domains/sqs/message/jetstream"
+	"github.com/nats-io/nats.go/jetstream"
+)
+
+// Bucket is the SQS domain's KV bucket for worker identity.
+const Bucket = "spinifex-sqs-worker-identity"
+
+// BucketConfig is the bucket's configuration for test fixtures; production
+// opens it through Open, which takes the replica count from the cluster.
+func BucketConfig(replicas int) jetstream.KeyValueConfig {
+	return jetstream.KeyValueConfig{
+		Bucket:   Bucket,
+		History:  1,
+		Storage:  jetstream.FileStorage,
+		Replicas: replicas,
+	}
+}
+
+type State string
+
+const (
+	// A launch with this generation and claim ID is intended; no instance is
+	// the worker yet.
+	StateLaunching State = "launching"
+	// The record names the one instance that is the worker.
+	StateBound State = "bound"
+	// The caller confirmed the launch created no instance holding the volume.
+	StateFailed State = "failed"
+	// The caller confirmed the bound instance stopped and released the volume.
+	StateStopped State = "stopped"
+)
+
+// Record is the Region's current worker. Generation only grows; the first cut
+// pins the worker to NodeID and to one encrypted data volume.
+type Record struct {
+	Region       string `json:"region"`
+	State        State  `json:"state"`
+	Generation   uint64 `json:"generation"`
+	ClaimID      string `json:"claimID"`
+	NodeID       string `json:"nodeID"`
+	DataVolumeID string `json:"dataVolumeID,omitempty"`
+	InstanceType string `json:"instanceType"`
+	// SizeGiB is the data volume's size, fixed for the volume's life.
+	SizeGiB    int64  `json:"sizeGiB"`
+	InstanceID string `json:"instanceID,omitempty"`
+	// Dispatched is set once, before the launch is sent. A dispatched launch
+	// is never sent again: its outcome is reconciled, not retried.
+	Dispatched bool `json:"dispatched,omitempty"`
+	// NetworkAttempted is set once, before the claim's ENI create is sent. A
+	// create whose outcome was not seen is never sent again for that claim.
+	NetworkAttempted bool `json:"networkAttempted,omitempty"`
+	// VolumeAttempted is set once, before the first volume create is sent;
+	// DataVolumeID is recorded only after it. A replacement keeps both.
+	VolumeAttempted bool `json:"volumeAttempted,omitempty"`
+	// Contract is set only on a first launch by this release; a replacement
+	// keeps its predecessor's, since it reuses the same data volume.
+	Contract int `json:"contract,omitempty"`
+	// ReceiptInit is set to pending only when a fresh volume this launch
+	// created is first recorded, and moves once to recorded with the guest's
+	// receipt key fingerprint. Absent, it proves nothing about the volume.
+	ReceiptInit        ReceiptInit `json:"receiptInit,omitempty"`
+	ReceiptFingerprint string      `json:"receiptFingerprint,omitempty"`
+}
+
+// ReceiptInit is the receipt-signing key's initialization state.
+type ReceiptInit string
+
+const (
+	ReceiptPending  ReceiptInit = "pending"
+	ReceiptRecorded ReceiptInit = "recorded"
+)
+
+// MaxSizeGiB bounds the worker data volume, which holds every queue's data.
+const MaxSizeGiB = 16384
+
+// ContractAuthenticated marks a worker first launched with a receipt key.
+const ContractAuthenticated = 1
+
+// UnsupportedContract reports a missing or unknown launch contract. Such a
+// record is refused; its data volume is kept and never treated as empty.
+func (r Record) UnsupportedContract() bool { return r.Contract != ContractAuthenticated }
+
+// IndexEntry finds an instance's regional record. It is a lookup, never proof
+// that the instance is current.
+type IndexEntry struct {
+	Region     string `json:"region"`
+	Generation uint64 `json:"generation"`
+	ClaimID    string `json:"claimID"`
+}
+
+// Allocated reports whether the launch has sent any create, so its intent
+// can no longer be re-typed without a replacement.
+func (r Record) Allocated() bool {
+	return r.VolumeAttempted || r.NetworkAttempted || r.Dispatched
+}
+
+// LaunchRequest is one launch attempt. ClaimID is freshly minted per attempt
+// and reused only to retry it; only the current claim is recorded, so a VM
+// launch must be idempotent on generation and claim together. Supersedes is the generation the caller
+// read and is replacing, zero for the Region's first worker, so a replayed
+// request cannot take a generation it never observed. DataVolumeID is empty
+// for a first launch whose volume is not yet made.
+type LaunchRequest struct {
+	ClaimID             string
+	Supersedes          uint64
+	NodeID              string
+	DataVolumeID        string
+	DataVolumeEncrypted bool
+	// InstanceType is fixed for a generation; only a replacement may change it.
+	InstanceType string
+	// SizeGiB never changes once recorded: the volume holds the queue data.
+	SizeGiB int64
+}
+
+// Intent is a recorded launch the caller may realize.
+type Intent struct {
+	Region     string
+	Generation uint64
+	ClaimID    string
+	SizeGiB    int64
+}
+
+// Identity is an instance's authorized worker identity, taken from the
+// current regional record rather than from anything the instance supplies.
+type Identity struct {
+	Region       string
+	InstanceID   string
+	Generation   uint64
+	ClaimID      string
+	NodeID       string
+	DataVolumeID string
+	// ReceiptInit and ReceiptFingerprint are the record's receipt key state
+	// when it was read; RecordReceiptKey re-checks them under compare-and-swap.
+	ReceiptInit        ReceiptInit
+	ReceiptFingerprint string
+}
+
+var (
+	ErrUnknownInstance   = errors.New("instance is not an SQS worker")
+	ErrNotCurrent        = errors.New("instance is not the Region's current SQS worker")
+	ErrSuperseded        = errors.New("launch intent has been superseded")
+	ErrInFlight          = errors.New("another SQS worker launch is in flight or bound")
+	ErrConflict          = errors.New("worker identity conflicts with the recorded state")
+	ErrWrongNode         = errors.New("SQS worker is pinned to another node")
+	ErrVolumeMismatch    = errors.New("SQS worker is pinned to another data volume")
+	ErrTypeChanged       = errors.New("SQS worker launch holds a different instance type")
+	ErrUnencryptedVolume = errors.New("SQS worker data volume must be encrypted")
+	ErrUnreadable        = errors.New("worker identity record is unreadable")
+	ErrContended         = errors.New("worker identity changed concurrently; retry")
+	ErrSizeChanged       = errors.New("the worker data volume size cannot change")
+	ErrReceiptRecorded   = errors.New("a different receipt key fingerprint is already recorded")
+	ErrReceiptUnknown    = errors.New("worker record has no receipt key initialization; its volume is not proven new")
+	ErrDispatched        = errors.New("SQS worker launch was already dispatched; its outcome must be reconciled")
+	ErrNetworkAttempted  = errors.New("SQS worker network create was already sent; its outcome must be reconciled")
+	ErrVolumeAttempted   = errors.New("SQS worker volume create was already sent; its outcome must be reconciled")
+)
+
+const maxAttempts = 8
+
+var (
+	regionPattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+	instancePattern = regexp.MustCompile(`^i-[0-9a-f]{8,17}$`)
+	claimPattern    = regexp.MustCompile(`^[A-Za-z0-9-]{8,64}$`)
+	volumePattern   = regexp.MustCompile(`^vol-[0-9a-f]{17}$`)
+	nodePattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
+	typePattern     = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,63}$`)
+	// fingerprintPattern is a hex SHA-256.
+	fingerprintPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+)
+
+// Store is the worker identity authority. Reads go to the stream leader and
+// every decision that grants something is a compare-and-swap at the revision
+// read, so a stale or ambiguous result grants nothing.
+type Store struct {
+	JS jetstream.JetStream
+	KV jetstream.KeyValue
+}
+
+// Open opens or creates the bucket and refuses one that could lose records.
+func Open(ctx context.Context, js jetstream.JetStream) (Store, error) {
+	kv, err := sqsjs.OpenDurableKV(ctx, js, Bucket, "SQS worker identity: the current worker per Region and its instance index")
+	if err != nil {
+		return Store{}, err
+	}
+	return Store{JS: js, KV: kv}, nil
+}
+
+// Bind binds the existing bucket without creating it, refusing one that could
+// lose records; a reader that must not provision state uses it. It reads no
+// fence, so it refuses every replacement launch.
+func Bind(ctx context.Context, js jetstream.JetStream) (Store, error) {
+	kv, err := sqsjs.BindDurableKV(ctx, js, Bucket)
+	if err != nil {
+		return Store{}, err
+	}
+	return Store{JS: js, KV: kv}, nil
+}
+
+func regionKey(region string) string { return "region." + region }
+
+func indexKey(instanceID string) string { return "instance." + instanceID }
+
+// BeginLaunch records a launch intent. A retry of the same attempt returns the
+// same intent. A new attempt is refused while the previous one is launching or
+// bound, including one whose outcome is unknown; it takes the next generation
+// only after FailLaunch or RecordStopped confirmed nothing holds the volume.
+func (s Store) BeginLaunch(ctx context.Context, region string, req LaunchRequest) (Intent, error) {
+	switch {
+	case !regionPattern.MatchString(region):
+		return Intent{}, errors.New("invalid region")
+	case !claimPattern.MatchString(req.ClaimID):
+		return Intent{}, errors.New("invalid claim ID")
+	case !nodePattern.MatchString(req.NodeID):
+		return Intent{}, errors.New("invalid node ID")
+	case req.DataVolumeID != "" && !volumePattern.MatchString(req.DataVolumeID):
+		return Intent{}, errors.New("invalid data volume ID")
+	case req.DataVolumeID != "" && !req.DataVolumeEncrypted:
+		return Intent{}, ErrUnencryptedVolume
+	case !typePattern.MatchString(req.InstanceType):
+		return Intent{}, errors.New("invalid instance type")
+	case req.SizeGiB < 1 || req.SizeGiB > MaxSizeGiB:
+		return Intent{}, errors.New("invalid data volume size")
+	}
+	for range maxAttempts {
+		rec, rev, err := s.readRecord(ctx, region)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			if req.Supersedes != 0 {
+				return Intent{}, ErrConflict
+			}
+			next := Record{Region: region, State: StateLaunching, Generation: 1,
+				ClaimID: req.ClaimID, NodeID: req.NodeID, DataVolumeID: req.DataVolumeID, InstanceType: req.InstanceType,
+				SizeGiB: req.SizeGiB, VolumeAttempted: req.DataVolumeID != "", Contract: ContractAuthenticated}
+			// A failed create may still have applied; the re-read decides.
+			if s.put(ctx, regionKey(region), next, 0) == nil {
+				return intentOf(next), nil
+			}
+			continue
+		}
+		if err != nil {
+			return Intent{}, err
+		}
+		switch {
+		case rec.NodeID != req.NodeID:
+			return Intent{}, ErrWrongNode
+		case rec.DataVolumeID != req.DataVolumeID:
+			return Intent{}, ErrVolumeMismatch
+		case rec.SizeGiB != req.SizeGiB:
+			return Intent{}, ErrSizeChanged
+		}
+		next := *rec
+		switch {
+		case rec.ClaimID == req.ClaimID:
+			if rec.State != StateLaunching || rec.Generation != req.Supersedes+1 {
+				return Intent{}, ErrSuperseded
+			}
+			if rec.InstanceType != req.InstanceType {
+				// An intent that has sent nothing allocated nothing, so it may be re-typed.
+				if rec.Allocated() {
+					return Intent{}, ErrTypeChanged
+				}
+				next.InstanceType = req.InstanceType
+			}
+		case req.Supersedes != rec.Generation:
+			return Intent{}, ErrSuperseded
+		case rec.State == StateLaunching || rec.State == StateBound:
+			return Intent{}, ErrInFlight
+		default:
+			next.State, next.Generation, next.ClaimID, next.InstanceID, next.Dispatched, next.NetworkAttempted =
+				StateLaunching, rec.Generation+1, req.ClaimID, "", false, false
+			next.InstanceType = req.InstanceType
+		}
+		// Unchanged for a retry: the rewrite proves the read was current.
+		if s.put(ctx, regionKey(region), next, rev) == nil {
+			return intentOf(next), nil
+		}
+	}
+	return Intent{}, ErrContended
+}
+
+// BindInstance makes instanceID the worker for intent. The index entry is
+// written first, so the record never names an instance the index cannot
+// find; a lost reply is retried with the same arguments.
+func (s Store) BindInstance(ctx context.Context, intent Intent, instanceID string) error {
+	if err := validIntent(intent); err != nil {
+		return err
+	}
+	if !instancePattern.MatchString(instanceID) {
+		return errors.New("invalid instance ID")
+	}
+	entry := IndexEntry{Region: intent.Region, Generation: intent.Generation, ClaimID: intent.ClaimID}
+	if err := s.ensureIndex(ctx, instanceID, entry); err != nil {
+		return err
+	}
+	for range maxAttempts {
+		rec, rev, err := s.readRecord(ctx, intent.Region)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return ErrSuperseded
+		}
+		if err != nil {
+			return err
+		}
+		if rec.Generation != intent.Generation || rec.ClaimID != intent.ClaimID {
+			return ErrSuperseded
+		}
+		next := *rec
+		switch rec.State {
+		case StateLaunching:
+			next.State, next.InstanceID = StateBound, instanceID
+		case StateBound:
+			if rec.InstanceID != instanceID {
+				return ErrConflict
+			}
+		default:
+			return ErrSuperseded
+		}
+		if s.put(ctx, regionKey(intent.Region), next, rev) == nil {
+			return nil
+		}
+	}
+	return ErrContended
+}
+
+// FailLaunch records that intent's launch created no instance holding the data
+// volume. Call it only once that is confirmed; a launch with an unknown outcome
+// must stay launching. It refuses once bound or superseded, and is idempotent.
+func (s Store) FailLaunch(ctx context.Context, intent Intent) error {
+	if err := validIntent(intent); err != nil {
+		return err
+	}
+	for range maxAttempts {
+		rec, rev, err := s.readRecord(ctx, intent.Region)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return ErrSuperseded
+		}
+		if err != nil {
+			return err
+		}
+		if rec.Generation != intent.Generation || rec.ClaimID != intent.ClaimID {
+			return ErrSuperseded
+		}
+		next := *rec
+		switch rec.State {
+		case StateLaunching:
+			next.State = StateFailed
+		case StateFailed:
+		default:
+			return ErrConflict
+		}
+		if s.put(ctx, regionKey(intent.Region), next, rev) == nil {
+			return nil
+		}
+	}
+	return ErrContended
+}
+
+// MarkDispatched records that intent's launch is about to be sent. Exactly one
+// call wins; a second call, or a retry after a lost reply, gets ErrDispatched,
+// so an ambiguous dispatch is never repeated.
+func (s Store) MarkDispatched(ctx context.Context, intent Intent) error {
+	if err := validIntent(intent); err != nil {
+		return err
+	}
+	for range maxAttempts {
+		rec, rev, err := s.readRecord(ctx, intent.Region)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return ErrSuperseded
+		}
+		if err != nil {
+			return err
+		}
+		switch {
+		case rec.Generation != intent.Generation || rec.ClaimID != intent.ClaimID:
+			return ErrSuperseded
+		case rec.State != StateLaunching:
+			return ErrConflict
+		case rec.Dispatched:
+			return ErrDispatched
+		case rec.DataVolumeID == "":
+			return ErrConflict
+		}
+		next := *rec
+		next.Dispatched = true
+		if s.put(ctx, regionKey(intent.Region), next, rev) == nil {
+			return nil
+		}
+	}
+	return ErrContended
+}
+
+// MarkNetworkAttempted records that intent's ENI create is about to be sent.
+// Exactly one call wins; a second call, or a retry after a lost reply, gets
+// ErrNetworkAttempted, so an uncertain create is never repeated.
+func (s Store) MarkNetworkAttempted(ctx context.Context, intent Intent) error {
+	if err := validIntent(intent); err != nil {
+		return err
+	}
+	for range maxAttempts {
+		rec, rev, err := s.readRecord(ctx, intent.Region)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return ErrSuperseded
+		}
+		if err != nil {
+			return err
+		}
+		switch {
+		case rec.Generation != intent.Generation || rec.ClaimID != intent.ClaimID:
+			return ErrSuperseded
+		case rec.State != StateLaunching:
+			return ErrConflict
+		case rec.NetworkAttempted:
+			return ErrNetworkAttempted
+		}
+		next := *rec
+		next.NetworkAttempted = true
+		if s.put(ctx, regionKey(intent.Region), next, rev) == nil {
+			return nil
+		}
+	}
+	return ErrContended
+}
+
+// MarkVolumeAttempted records that intent's one volume create is about to be
+// sent. Exactly one call wins; any later call gets ErrVolumeAttempted, so a
+// create that may have applied is never sent again.
+func (s Store) MarkVolumeAttempted(ctx context.Context, intent Intent) error {
+	return s.updateLaunching(ctx, intent, func(rec *Record) error {
+		if rec.VolumeAttempted {
+			return ErrVolumeAttempted
+		}
+		rec.VolumeAttempted = true
+		return nil
+	})
+}
+
+// ClearVolumeAttempt withdraws the volume mark after a create proven never to
+// have been sent. It refuses once a volume is recorded, and is idempotent.
+func (s Store) ClearVolumeAttempt(ctx context.Context, intent Intent) error {
+	return s.updateLaunching(ctx, intent, func(rec *Record) error {
+		if rec.DataVolumeID != "" {
+			return ErrConflict
+		}
+		rec.VolumeAttempted = false
+		return nil
+	})
+}
+
+// RecordVolume records the volume the attempted create returned. A retry with
+// the same volume succeeds; a different one is refused.
+func (s Store) RecordVolume(ctx context.Context, intent Intent, volumeID string) error {
+	if !volumePattern.MatchString(volumeID) {
+		return errors.New("invalid data volume ID")
+	}
+	return s.updateLaunching(ctx, intent, func(rec *Record) error {
+		switch {
+		case !rec.VolumeAttempted:
+			return ErrConflict
+		case rec.DataVolumeID == volumeID:
+		case rec.DataVolumeID != "":
+			return ErrVolumeMismatch
+		default:
+			rec.ReceiptInit = ReceiptPending
+		}
+		rec.DataVolumeID = volumeID
+		return nil
+	})
+}
+
+// updateLaunching applies change to intent's record while it is launching and
+// undispatched, under compare-and-swap at the revision read.
+func (s Store) updateLaunching(ctx context.Context, intent Intent, change func(*Record) error) error {
+	if err := validIntent(intent); err != nil {
+		return err
+	}
+	for range maxAttempts {
+		rec, rev, err := s.readRecord(ctx, intent.Region)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return ErrSuperseded
+		}
+		if err != nil {
+			return err
+		}
+		switch {
+		case rec.Generation != intent.Generation || rec.ClaimID != intent.ClaimID:
+			return ErrSuperseded
+		case rec.State != StateLaunching || rec.Dispatched:
+			return ErrConflict
+		}
+		next := *rec
+		if err := change(&next); err != nil {
+			return err
+		}
+		if s.put(ctx, regionKey(intent.Region), next, rev) == nil {
+			return nil
+		}
+	}
+	return ErrContended
+}
+
+// Current is the Region's record, read from the stream leader. It decides
+// nothing by itself; every transition re-reads it under compare-and-swap.
+func (s Store) Current(ctx context.Context, region string) (Record, error) {
+	if !regionPattern.MatchString(region) {
+		return Record{}, errors.New("invalid region")
+	}
+	rec, _, err := s.readRecord(ctx, region)
+	if err != nil {
+		return Record{}, err
+	}
+	return *rec, nil
+}
+
+// RecordStopped records that intent's bound instance is confirmed stopped and
+// its data volume detached and no longer exported, which is the only way a
+// bound worker can be replaced. It is idempotent.
+func (s Store) RecordStopped(ctx context.Context, intent Intent, instanceID string) error {
+	if err := validIntent(intent); err != nil {
+		return err
+	}
+	for range maxAttempts {
+		rec, rev, err := s.readRecord(ctx, intent.Region)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return ErrSuperseded
+		}
+		if err != nil {
+			return err
+		}
+		if rec.Generation != intent.Generation || rec.ClaimID != intent.ClaimID {
+			return ErrSuperseded
+		}
+		if rec.InstanceID != instanceID {
+			return ErrConflict
+		}
+		next := *rec
+		switch rec.State {
+		case StateBound:
+			next.State = StateStopped
+		case StateStopped:
+		default:
+			return ErrConflict
+		}
+		if s.put(ctx, regionKey(intent.Region), next, rev) == nil {
+			return nil
+		}
+	}
+	return ErrContended
+}
+
+// RecordReceiptKey records the guest's receipt key fingerprint, moving a
+// pending initialization to recorded. The write is a compare-and-swap on the
+// record still bound to id's instance, generation, claim and volume; a
+// retry with the same fingerprint succeeds and any other is refused.
+func (s Store) RecordReceiptKey(ctx context.Context, id Identity, fingerprint string) error {
+	if !fingerprintPattern.MatchString(fingerprint) {
+		return errors.New("invalid receipt key fingerprint")
+	}
+	for range maxAttempts {
+		rec, rev, err := s.readRecord(ctx, id.Region)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return ErrNotCurrent
+		}
+		if err != nil {
+			return err
+		}
+		if rec.State != StateBound || rec.InstanceID != id.InstanceID || rec.Generation != id.Generation ||
+			rec.ClaimID != id.ClaimID || rec.DataVolumeID != id.DataVolumeID {
+			return ErrNotCurrent
+		}
+		switch rec.ReceiptInit {
+		case ReceiptRecorded:
+			if rec.ReceiptFingerprint == fingerprint {
+				return nil
+			}
+			return ErrReceiptRecorded
+		case ReceiptPending:
+		default:
+			return ErrReceiptUnknown
+		}
+		next := *rec
+		next.ReceiptInit, next.ReceiptFingerprint = ReceiptRecorded, fingerprint
+		if s.put(ctx, regionKey(id.Region), next, rev) == nil {
+			return nil
+		}
+	}
+	return ErrContended
+}
+
+// Authorize returns instanceID's worker identity only if the Region's current
+// record is bound to exactly that instance, generation and claim. A missing,
+// stale or partially written index entry authorizes nothing.
+func (s Store) Authorize(ctx context.Context, instanceID string) (Identity, error) {
+	if !instancePattern.MatchString(instanceID) {
+		return Identity{}, ErrUnknownInstance
+	}
+	var entry IndexEntry
+	if _, err := s.read(ctx, indexKey(instanceID), &entry); err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return Identity{}, ErrUnknownInstance
+		}
+		return Identity{}, err
+	}
+	if !regionPattern.MatchString(entry.Region) || entry.Generation == 0 || !claimPattern.MatchString(entry.ClaimID) {
+		return Identity{}, ErrUnreadable
+	}
+	for range maxAttempts {
+		rec, rev, err := s.readRecord(ctx, entry.Region)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return Identity{}, ErrNotCurrent
+		}
+		if err != nil {
+			return Identity{}, err
+		}
+		if rec.State != StateBound || rec.InstanceID != instanceID ||
+			rec.Generation != entry.Generation || rec.ClaimID != entry.ClaimID {
+			return Identity{}, ErrNotCurrent
+		}
+		// The unchanged rewrite proves the read was current, so a lagging
+		// replica cannot keep a replaced worker authorized.
+		if s.put(ctx, regionKey(entry.Region), *rec, rev) == nil {
+			return Identity{Region: rec.Region, InstanceID: instanceID, Generation: rec.Generation,
+				ClaimID: rec.ClaimID, NodeID: rec.NodeID, DataVolumeID: rec.DataVolumeID,
+				ReceiptInit: rec.ReceiptInit, ReceiptFingerprint: rec.ReceiptFingerprint}, nil
+		}
+	}
+	return Identity{}, ErrContended
+}
+
+// ensureIndex creates the entry once; instance IDs are never reused, so an
+// existing different entry is a conflict rather than something to overwrite.
+func (s Store) ensureIndex(ctx context.Context, instanceID string, entry IndexEntry) error {
+	for range maxAttempts {
+		var have IndexEntry
+		_, err := s.read(ctx, indexKey(instanceID), &have)
+		switch {
+		case errors.Is(err, jetstream.ErrKeyNotFound):
+			// A failed create may still have applied; the re-read decides.
+			if s.put(ctx, indexKey(instanceID), entry, 0) == nil {
+				return nil
+			}
+			continue
+		case err != nil:
+			return err
+		case have != entry:
+			return ErrConflict
+		}
+		return nil
+	}
+	return ErrContended
+}
+
+func validIntent(in Intent) error {
+	if !regionPattern.MatchString(in.Region) || in.Generation == 0 || !claimPattern.MatchString(in.ClaimID) {
+		return errors.New("invalid launch intent")
+	}
+	return nil
+}
+
+func intentOf(r Record) Intent {
+	return Intent{Region: r.Region, Generation: r.Generation, ClaimID: r.ClaimID, SizeGiB: r.SizeGiB}
+}
+
+func (s Store) readRecord(ctx context.Context, region string) (*Record, uint64, error) {
+	var rec Record
+	rev, err := s.read(ctx, regionKey(region), &rec)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !wellFormed(&rec, region) {
+		return nil, 0, ErrUnreadable
+	}
+	return &rec, rev, nil
+}
+
+func wellFormed(r *Record, region string) bool {
+	if r.Region != region || r.Generation == 0 || !claimPattern.MatchString(r.ClaimID) ||
+		!nodePattern.MatchString(r.NodeID) || !typePattern.MatchString(r.InstanceType) {
+		return false
+	}
+	if r.DataVolumeID == "" {
+		// Only an undispatched launch, or one that failed before it, lacks a volume.
+		if r.Dispatched || (r.State != StateLaunching && r.State != StateFailed) {
+			return false
+		}
+	} else if !r.VolumeAttempted || !volumePattern.MatchString(r.DataVolumeID) {
+		return false
+	}
+	switch r.ReceiptInit {
+	case "":
+		if r.ReceiptFingerprint != "" {
+			return false
+		}
+	case ReceiptPending:
+		if r.DataVolumeID == "" || r.ReceiptFingerprint != "" {
+			return false
+		}
+	case ReceiptRecorded:
+		if r.DataVolumeID == "" || !fingerprintPattern.MatchString(r.ReceiptFingerprint) {
+			return false
+		}
+	default:
+		return false
+	}
+	switch r.State {
+	case StateBound, StateStopped:
+		return instancePattern.MatchString(r.InstanceID)
+	case StateLaunching, StateFailed:
+		return r.InstanceID == ""
+	default:
+		return false
+	}
+}
+
+func (s Store) read(ctx context.Context, key string, into any) (uint64, error) {
+	value, rev, err := sqsjs.LeaderKVGet(ctx, s.JS, Bucket, key)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return 0, err
+		}
+		return 0, fmt.Errorf("read worker identity %s: %w", key, err)
+	}
+	if err := json.Unmarshal(value, into); err != nil {
+		return 0, ErrUnreadable
+	}
+	return rev, nil
+}
+
+// put creates the key when rev is zero and is a revision compare-and-swap
+// otherwise.
+func (s Store) put(ctx context.Context, key string, v any, rev uint64) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	if rev == 0 {
+		_, err = s.KV.Create(ctx, key, b)
+	} else {
+		_, err = s.KV.Update(ctx, key, b, rev)
+	}
+	return err
+}

@@ -135,7 +135,7 @@ func TestVolumeFence_KillFailureLeavesTheVolumeMounted(t *testing.T) {
 	// rather than left to the test's own cleanup.
 	ctx, cancel := context.WithCancel(t.Context())
 	watched := make(chan struct{})
-	go func() { defer close(watched); cfg.fenceVolume(ctx, volumeName, "node-b", "taken") }()
+	go func() { defer close(watched); cfg.fenceVolume(ctx, volumeName, leaseLostToPeer) }()
 	defer func() { cancel(); <-watched }()
 
 	assert.Never(t, func() bool {
@@ -168,7 +168,7 @@ func TestVolumeFence_CompletesOnceTheWriterFinallyExits(t *testing.T) {
 	cfg.processAlive = func(int) bool { return probes.Add(1) <= 2 }
 	cfg.fenceWatchEvery = 10 * time.Millisecond
 
-	cfg.fenceVolume(t.Context(), volumeName, "node-b", "taken")
+	cfg.fenceVolume(t.Context(), volumeName, leaseLostToPeer)
 
 	cfg.mu.Lock()
 	mounted := len(cfg.MountedVolumes)
@@ -192,7 +192,7 @@ func TestVolumeFence_DoesNotCompleteForAWriterItCannotSee(t *testing.T) {
 	cfg.processAlive = func(int) bool { return false }
 	cfg.fenceWatchEvery = 10 * time.Millisecond
 
-	cfg.fenceVolume(t.Context(), volumeName, "node-b", "taken")
+	cfg.fenceVolume(t.Context(), volumeName, leaseLostToPeer)
 
 	cfg.mu.Lock()
 	mounted := len(cfg.MountedVolumes)
@@ -216,7 +216,7 @@ func TestVolumeFence_DoesNotSealOnTheWayOut(t *testing.T) {
 	cfg := fencedConfig(t, natsURL, "node-a", volumeName)
 	cfg.sealVolume = func(context.Context, string) error { sealed = true; return nil }
 
-	cfg.fenceVolume(t.Context(), volumeName, "node-b", "taken")
+	cfg.fenceVolume(t.Context(), volumeName, leaseLostToPeer)
 
 	assert.False(t, sealed, "fencing must never seal: this node's copy is behind the winner's")
 }
@@ -231,7 +231,7 @@ func TestVolumeFence_LeavesTheDirtyMarkerToTheWinner(t *testing.T) {
 
 	cfg := fencedConfig(t, natsURL, "node-a", volumeName)
 
-	cfg.fenceVolume(t.Context(), volumeName, "node-b", "taken")
+	cfg.fenceVolume(t.Context(), volumeName, leaseLostToPeer)
 
 	record, ok := cfg.dirty.holder(t.Context(), volumeName)
 	require.True(t, ok, "fencing must leave the marker behind for the winner to take over")
@@ -249,7 +249,7 @@ func TestVolumeFence_AlreadyUnmountedIsNotAnError(t *testing.T) {
 		dirty:    newTestDirty(t, natsURL, "node-a"),
 	}
 
-	cfg.fenceVolume(t.Context(), "vol-fencenotmounted", "node-b", "taken")
+	cfg.fenceVolume(t.Context(), "vol-fencenotmounted", leaseLostToPeer)
 }
 
 // TestUnmountVolume_RefusesToSealUnderALiveWriter is the unmount side of the

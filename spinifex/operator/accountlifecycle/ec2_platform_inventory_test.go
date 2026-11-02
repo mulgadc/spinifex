@@ -169,7 +169,7 @@ func TestOnlyTheExplicitDryRunCallsTheEC2PlatformInventory(t *testing.T) {
 	require.NoError(t, err)
 	svc, err := iamdomain.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
-	cluster, err := NewClusterEngine(t.Context(), nc, 1, []string{"node-1"}, svc, newFakeBuckets())
+	cluster, err := NewClusterEngine(t.Context(), nc, testClusterNodes(), svc, newFakeBuckets())
 	require.NoError(t, err)
 	assert.IsType(t, &ec2PlatformInventoryClient{}, cluster.ec2Inventory)
 

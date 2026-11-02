@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { render, screen, waitFor } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import type { ReactNode } from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -122,8 +122,7 @@ describe("ListenersTab", () => {
       },
     )
     expect(screen.getByText("forward → my-tg")).toBeInTheDocument()
-    expect(screen.getByText("HTTP")).toBeInTheDocument()
-    expect(screen.getByText("80")).toBeInTheDocument()
+    expect(screen.getByText("HTTP:80")).toBeInTheDocument()
   })
 
   it("opens delete confirm and calls DeleteListenerCommand", async () => {
@@ -163,7 +162,7 @@ describe("ListenersTab", () => {
     expect(call.input).toStrictEqual({ ListenerArn: "arn:listener/1" })
   })
 
-  it("filters target groups by vpcId in the add-listener dialog", async () => {
+  it("filters target groups by vpcId in the add-listener form", async () => {
     const queryClient = seedClient({
       targetGroups: {
         TargetGroups: [
@@ -202,7 +201,7 @@ describe("ListenersTab", () => {
     expect(screen.queryByText(/tg-other-vpc/)).not.toBeInTheDocument()
   })
 
-  it("opens edit dialog pre-filled and calls ModifyListenerCommand", async () => {
+  it("opens the edit form pre-filled and calls ModifyListenerCommand", async () => {
     const queryClient = seedClient({
       listeners: {
         Listeners: [
@@ -241,15 +240,15 @@ describe("ListenersTab", () => {
       },
     )
     await user.click(screen.getByLabelText("Edit listener HTTP:80"))
-    await expect(
-      screen.findByRole("alertdialog", { name: /edit listener/i }),
-    ).resolves.toBeInTheDocument()
-    const portInput = screen.getByLabelText<HTMLInputElement>(/^port$/i)
+    const panel = await screen.findByRole("region", { name: "Edit listener" })
+    const portInput = within(panel).getByLabelText<HTMLInputElement>(/^port$/i)
     expect(portInput.value).toBe("80")
     await user.clear(portInput)
     await user.type(portInput, "8080")
     const before = mockSend.mock.calls.length
-    await user.click(screen.getByRole("button", { name: /save changes/i }))
+    await user.click(
+      within(panel).getByRole("button", { name: /save changes/i }),
+    )
     await waitFor(() => {
       expect(mockSend.mock.calls.length).toBeGreaterThan(before)
     })
@@ -290,10 +289,13 @@ describe("ListenersTab", () => {
       },
     )
     await user.click(screen.getByRole("button", { name: "Add listener" }))
-    await user.click(screen.getByLabelText("Default target group"))
+    const panel = await screen.findByRole("region", { name: "Add listener" })
+    await user.click(within(panel).getByLabelText("Default target group"))
     await user.click(await screen.findByText(/tg-a/))
     const before = mockSend.mock.calls.length
-    await user.click(screen.getByRole("button", { name: /^add listener$/i }))
+    await user.click(
+      within(panel).getByRole("button", { name: /^add listener$/i }),
+    )
     await waitFor(() => {
       expect(mockSend.mock.calls.length).toBeGreaterThan(before)
     })
@@ -361,15 +363,15 @@ describe("ListenersTab", () => {
     ).toBeInTheDocument()
 
     await user.click(screen.getByLabelText("Edit listener HTTPS:443"))
-    await expect(
-      screen.findByRole("alertdialog", { name: /edit listener/i }),
-    ).resolves.toBeInTheDocument()
+    const panel = await screen.findByRole("region", { name: "Edit listener" })
     // The HTTPS-only fields are prefilled from the listener record.
-    expect(screen.getByLabelText("Certificate")).toBeInTheDocument()
-    expect(screen.getByLabelText("Security policy")).toBeInTheDocument()
+    expect(within(panel).getByLabelText("Certificate")).toBeInTheDocument()
+    expect(within(panel).getByLabelText("Security policy")).toBeInTheDocument()
 
     const before = mockSend.mock.calls.length
-    await user.click(screen.getByRole("button", { name: /save changes/i }))
+    await user.click(
+      within(panel).getByRole("button", { name: /save changes/i }),
+    )
     await waitFor(() => {
       expect(mockSend.mock.calls.length).toBeGreaterThan(before)
     })

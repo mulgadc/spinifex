@@ -591,6 +591,27 @@ var (
 	// (e.g. Ochre's tokens-per-month cap) — unlike ErrorModelNotReadyException,
 	// which is reserved for transient capacity conditions that breach no quota.
 	ErrorServiceQuotaExceededException = "ServiceQuotaExceededException"
+
+	// SQS error codes as the 2012-11-05 model names them. The framework codes
+	// are the Coral errors SQS's JSON 1.0 endpoint sends for invalid input.
+	ErrorSQSQueueDoesNotExist              = "QueueDoesNotExist"
+	ErrorSQSQueueNameExists                = "QueueNameExists"
+	ErrorSQSQueueDeletedRecently           = "QueueDeletedRecently"
+	ErrorSQSInvalidAttributeName           = "InvalidAttributeName"
+	ErrorSQSInvalidAttributeValue          = "InvalidAttributeValue"
+	ErrorSQSInvalidAddress                 = "InvalidAddress"
+	ErrorSQSInvalidMessageContents         = "InvalidMessageContents"
+	ErrorSQSReceiptHandleIsInvalid         = "ReceiptHandleIsInvalid"
+	ErrorSQSMessageNotInflight             = "MessageNotInflight"
+	ErrorSQSEmptyBatchRequest              = "EmptyBatchRequest"
+	ErrorSQSTooManyEntriesInBatchRequest   = "TooManyEntriesInBatchRequest"
+	ErrorSQSBatchEntryIdsNotDistinct       = "BatchEntryIdsNotDistinct"
+	ErrorSQSInvalidBatchEntryId            = "InvalidBatchEntryId"
+	ErrorSQSBatchRequestTooLong            = "BatchRequestTooLong"
+	ErrorInvalidParameterValueException    = "InvalidParameterValueException"
+	ErrorMissingRequiredParameterException = "MissingRequiredParameterException"
+	ErrorSerializationException            = "SerializationException"
+	ErrorUnknownOperationException         = "UnknownOperationException"
 )
 
 // ValidErrorCode returns the error code if it exists in ErrorLookup,
@@ -798,7 +819,7 @@ var errorLookupByService = withNeutralValidationMessages(map[string]map[string]E
 // errors must not fall back to ErrorLookup's EC2 wording.
 var nonEC2Services = []string{
 	"iam", "sts", "elasticloadbalancing", "eks", "ecs", "ecr", "acm", "rds", "route53", "tagging", "spinifex",
-	"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime",
+	"bedrock", "bedrock-runtime", "bedrock-agent", "bedrock-agent-runtime", "sqs",
 }
 
 // withNeutralValidationMessages gives every non-EC2 service a service-neutral
@@ -1401,6 +1422,27 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorModelErrorException:           {HTTPCode: 424, Message: "The request failed because of an error while running the model."},
 	ErrorServiceQuotaExceededException: {HTTPCode: 400, Message: "The number of requests exceeds the service quota. Resubmit your request later."},
 	ErrorConflictException:             {HTTPCode: 409, Message: "There was a conflict performing an operation."},
+
+	// SQS. Statuses are the captured AWS responses; QueueNameExists and
+	// QueueDeletedRecently are not yet captured and take the model's 400.
+	ErrorSQSQueueDoesNotExist:              {HTTPCode: 400, Message: "The specified queue does not exist."},
+	ErrorSQSQueueNameExists:                {HTTPCode: 400, Message: "A queue already exists with the same name and a different value for attribute(s)."},
+	ErrorSQSQueueDeletedRecently:           {HTTPCode: 400, Message: "You must wait 60 seconds after deleting a queue before you can create another with the same name."},
+	ErrorSQSInvalidAttributeName:           {HTTPCode: 400, Message: "The specified attribute doesn't exist."},
+	ErrorSQSInvalidAttributeValue:          {HTTPCode: 400, Message: "A queue attribute value is invalid."},
+	ErrorSQSInvalidAddress:                 {HTTPCode: 404, Message: "The address is not valid for this endpoint."},
+	ErrorSQSInvalidMessageContents:         {HTTPCode: 400, Message: "The message contains characters outside the allowed set."},
+	ErrorSQSReceiptHandleIsInvalid:         {HTTPCode: 400, Message: "The specified receipt handle isn't valid."},
+	ErrorSQSMessageNotInflight:             {HTTPCode: 400, Message: "The specified message isn't in flight."},
+	ErrorSQSEmptyBatchRequest:              {HTTPCode: 400, Message: "The batch request doesn't contain any entries."},
+	ErrorSQSTooManyEntriesInBatchRequest:   {HTTPCode: 400, Message: "The batch request contains more entries than permissible."},
+	ErrorSQSBatchEntryIdsNotDistinct:       {HTTPCode: 400, Message: "Two or more batch entries in the request have the same Id."},
+	ErrorSQSInvalidBatchEntryId:            {HTTPCode: 400, Message: "The Id of a batch entry in a batch request doesn't abide by the specification."},
+	ErrorSQSBatchRequestTooLong:            {HTTPCode: 400, Message: "The length of all the messages put together is more than the limit."},
+	ErrorInvalidParameterValueException:    {HTTPCode: 400, Message: "One or more parameters are invalid."},
+	ErrorMissingRequiredParameterException: {HTTPCode: 400, Message: "The request is missing a required parameter."},
+	ErrorSerializationException:            {HTTPCode: 400, Message: "The request body could not be deserialized."},
+	ErrorUnknownOperationException:         {HTTPCode: 400, Message: "The requested operation is not recognized."},
 
 	// Route 53.
 	ErrorNoSuchHostedZone:          {HTTPCode: 404, Message: "No hosted zone exists with the ID that you specified."},

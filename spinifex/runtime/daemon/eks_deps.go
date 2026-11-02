@@ -118,6 +118,9 @@ func (d *Daemon) buildEKSServiceDeps() ekscluster.EKSServiceDeps {
 	if d.volumeService != nil {
 		deps.Volume = d.volumeService
 	}
+	if d.launchTemplateService != nil {
+		deps.LaunchTemplates = d.launchTemplateService
+	}
 
 	return deps
 }

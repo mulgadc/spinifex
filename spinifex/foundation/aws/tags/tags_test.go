@@ -17,6 +17,7 @@ func TestIsSystemManaged(t *testing.T) {
 		"elbv2": {ManagedByELBv2, true, "HAProxy VMs are platform-owned"},
 		"eks":   {ManagedByEKS, true, "K3s control-plane VMs are platform-owned"},
 		"rds":   {ManagedByRDS, true, "DB engine VMs are platform-owned and live in the system account"},
+		"sqs":   {ManagedBySQS, true, "SQS store VMs are platform-owned and live in the system account"},
 		// Container instances launched from the ECS node AMI stay customer-owned,
 		// so only the AMI carries the tag — never a VM.
 		"ecs":      {ManagedByECS, false, "ECS container instances are customer-owned"},

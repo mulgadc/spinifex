@@ -1,0 +1,33 @@
+name: Mulga design
+
+# Reminds the author to say whether the Mulga design records need to change.
+# It reads only the pull request body, uses no secrets, and warns without ever
+# failing: the check is a prompt, not a gate.
+
+on:
+  pull_request:
+    branches:
+      - dev
+    types: [opened, edited, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  mulga_design:
+    name: Mulga design line
+    if: ${{ !endsWith(github.actor, '[bot]') }}
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Check the Mulga design line
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        working-directory: .github/scripts
+        run: |
+          python3 -m unittest -q test_mulga_design_check
+          python3 mulga_design_check.py

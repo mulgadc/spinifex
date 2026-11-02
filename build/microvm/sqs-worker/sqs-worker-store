@@ -1,0 +1,5 @@
+#!/bin/sh
+# Respawned by init: the guest's own SQS nats-server, started only on a
+# prepared config. A store that must not run parks instead of exiting.
+. /usr/local/lib/sqs-worker/sqs-worker-lib.sh
+sqsw_store

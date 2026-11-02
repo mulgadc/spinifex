@@ -37,3 +37,18 @@ func TestVolumeFencedEvent_JSON(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(golden), &decoded))
 	assert.Equal(t, event, decoded)
 }
+
+// TestVolumeFencedAck_JSON pins the daemon's answer, which is what ends
+// viperblockd's retries of a fence notice.
+func TestVolumeFencedAck_JSON(t *testing.T) {
+	golden := `{"instance":"i-1","error":"bad event"}`
+	ack := viperblocklegacyv1.VolumeFencedAck{Instance: "i-1", Error: "bad event"}
+
+	marshaled, err := json.Marshal(ack)
+	require.NoError(t, err)
+	assert.JSONEq(t, golden, string(marshaled))
+
+	empty, err := json.Marshal(viperblocklegacyv1.VolumeFencedAck{})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{}`, string(empty), "an ack for a volume with no local guest carries nothing")
+}

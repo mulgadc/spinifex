@@ -12,11 +12,12 @@ set -eu
 # once.
 #
 #   server      → eks-token-webhook, k3s (server), k3s-first-boot (bootstrap
-#                 publish), mulga-eks-state-report
+#                 publish), mulga-eks-state-report, mulga-eks-node-gc
 #   server-join → eks-token-webhook, k3s (server, joins the first server's etcd
-#                 quorum), mulga-eks-state-report. NO k3s-first-boot: the first
-#                 server already publishes the cluster-identical bootstrap
-#                 artifacts; a join re-publish only races the bootstrap bus.
+#                 quorum), mulga-eks-state-report, mulga-eks-node-gc. NO
+#                 k3s-first-boot: the first server already publishes the
+#                 cluster-identical bootstrap artifacts; a join re-publish only
+#                 races the bootstrap bus.
 #   agent       → k3s-agent
 #
 # Paths are overridable via env so the selection logic is unit-testable (bats)
@@ -140,6 +141,7 @@ case "${ROLE}" in
         # writer owns. HA multi-server addon delivery is tracked separately
         # Server-join nodes do not run this setup.
         svc_enable mulga-eks-addon-sync
+        svc_enable mulga-eks-node-gc
         svc_start eks-token-webhook
         svc_start mulga-eks-k3s-recovery
         svc_start k3s
@@ -147,6 +149,7 @@ case "${ROLE}" in
         svc_start k3s-first-boot
         svc_start mulga-eks-state-report
         svc_start mulga-eks-addon-sync
+        svc_start mulga-eks-node-gc
         ;;
     server-join)
         log "configuring server-join role"
@@ -158,11 +161,13 @@ case "${ROLE}" in
         svc_enable k3s
         svc_enable konnectivity-server
         svc_enable mulga-eks-state-report
+        svc_enable mulga-eks-node-gc
         svc_start eks-token-webhook
         svc_start mulga-eks-k3s-recovery
         svc_start k3s
         svc_start konnectivity-server
         svc_start mulga-eks-state-report
+        svc_start mulga-eks-node-gc
         ;;
     agent)
         log "configuring agent role"

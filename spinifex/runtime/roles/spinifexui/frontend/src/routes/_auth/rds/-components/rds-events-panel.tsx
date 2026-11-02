@@ -6,46 +6,33 @@ interface RdsEventsPanelProps {
   events: Event[]
 }
 
-// The event ring an instance and a snapshot each keep. Both render it the same
-// way, so the table lives here rather than once per detail page.
+// The event ring an instance and a snapshot each keep, newest first. Stacked
+// rather than tabled, so it reads in a side panel's narrow column.
 export function RdsEventsPanel({ events }: RdsEventsPanelProps) {
   if (events.length === 0) {
     return (
-      <p className="text-muted-foreground">No events in the last 14 days.</p>
+      <p className="text-sm text-muted-foreground">
+        No events in the last 14 days.
+      </p>
     )
   }
 
   return (
-    <div className="overflow-x-auto rounded-lg border bg-card">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b text-left text-muted-foreground">
-            <th className="px-4 py-2 font-medium">Time</th>
-            <th className="px-4 py-2 font-medium">Categories</th>
-            <th className="px-4 py-2 font-medium">Message</th>
-          </tr>
-        </thead>
-        <tbody>
-          {events
-            .toSorted(
-              (a, b) => (b.Date?.getTime() ?? 0) - (a.Date?.getTime() ?? 0),
-            )
-            .map((event) => (
-              <tr
-                className="border-b last:border-0"
-                key={`${event.Date?.toISOString()}-${event.Message}`}
-              >
-                <td className="px-4 py-2 font-mono text-xs">
-                  {formatDateTime(event.Date)}
-                </td>
-                <td className="px-4 py-2 text-xs">
-                  {event.EventCategories?.join(", ")}
-                </td>
-                <td className="px-4 py-2">{event.Message}</td>
-              </tr>
-            ))}
-        </tbody>
-      </table>
-    </div>
+    <ol aria-label="Events" className="divide-y text-sm">
+      {events
+        .toSorted((a, b) => (b.Date?.getTime() ?? 0) - (a.Date?.getTime() ?? 0))
+        .map((event) => (
+          <li
+            className="flex flex-col gap-0.5 py-2"
+            key={`${event.Date?.toISOString()}-${event.Message}`}
+          >
+            <span className="flex flex-wrap items-baseline justify-between gap-x-3 text-xs text-muted-foreground">
+              <span className="font-mono">{formatDateTime(event.Date)}</span>
+              <span>{event.EventCategories?.join(", ")}</span>
+            </span>
+            <span>{event.Message}</span>
+          </li>
+        ))}
+    </ol>
   )
 }

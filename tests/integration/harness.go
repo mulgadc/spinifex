@@ -20,6 +20,14 @@
 package integration
 
 import (
+	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
+	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
+	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
+	"context"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/clusterready"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"encoding/json"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"net/http/httptest"
@@ -40,12 +48,24 @@ import (
 	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
 	elbv2awsapi "github.com/mulgadc/spinifex/spinifex/domains/elbv2/awsapi"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
+	iamawsapi "github.com/mulgadc/spinifex/spinifex/domains/iam/awsapi"
+	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
+	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
+	ecsawsapi "github.com/mulgadc/spinifex/spinifex/domains/ecs/awsapi"
+	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
 	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/ec2quota"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/registryadapt"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
+	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
-	"github.com/mulgadc/spinifex/spinifex/gateway"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
+	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
@@ -65,12 +85,12 @@ const (
 	// testAccessKeyID/testSecretAccessKey are the root credentials seeded
 	// into the real IAM service for every harness-started gateway. AKIA
 	// prefix routes SigV4 auth through the long-lived-key path (see
-	// spinifex/gateway/auth.go resolveLongLivedAKID).
+	// spinifex/ingress/aws/pipeline/auth.go resolveLongLivedAKID).
 	testAccessKeyID     = "AKIAINTEGRATIONTESTR"
 	testSecretAccessKey = "integration-test-root-secret"
 
-	// nodeDiscoverSubject is the fan-out GatewayConfig.DiscoverActiveNodes
-	// publishes to (spinifex/gateway/gateway.go). StartGateway stubs it with
+	// nodeDiscoverSubject is the fan-out NodeDiscovery.ActiveNodes
+	// publishes to (spinifex/ingress/aws/pipeline/gateway.go). StartGateway stubs it with
 	// a single-node reply so any call path that triggers node discovery
 	// resolves immediately instead of riding out the fan-out's 500ms timeout.
 	nodeDiscoverSubject = "spinifex.nodes.discover"
@@ -78,7 +98,7 @@ const (
 	// testECRAudience is the audience claim every harness-issued ECR JWT is
 	// minted for and verified against — arbitrary but stable within this tier,
 	// mirroring production's "ecr.<region>.<suffix>" shape without depending on
-	// GatewayConfig.InternalSuffix (unset here; the in-process harness talks to
+	// an empty registry host suffix (unset here; the in-process harness talks to
 	// the gateway's httptest address directly rather than a registry hostname).
 	testECRAudience = "ecr.integration-test"
 
@@ -105,16 +125,16 @@ type Gateway struct {
 	// AccountID is the account the seeded root credentials belong to
 	// (awsidentifiers.GlobalAccountID).
 	AccountID string
-	// Config is the GatewayConfig SetupRoutes was built from, exposed so
+	// Config is the pipeline.Config SetupRoutes was built from, exposed so
 	// tests can inspect or further wire fields StartGateway did not set.
-	Config *gateway.GatewayConfig
+	Config *pipeline.Config
 }
 
-// Option customises a Gateway's GatewayConfig before SetupRoutes builds the
+// Option customises a Gateway's pipeline.Config before SetupRoutes builds the
 // router. Applied after StartGateway's own defaults, so an Option can
 // override any of them (e.g. a different Region/AZ, or a nil IAMService to
 // exercise the pre-IAM-compatibility bypass paths).
-type Option func(*gateway.GatewayConfig)
+type Option func(*pipeline.Config)
 
 // StartGateway boots the real gateway router over the package's shared,
 // embedded NATS JetStream server — connected via a fresh, isolated NATS
@@ -133,10 +153,16 @@ type Option func(*gateway.GatewayConfig)
 // every other control-plane path (auth, routing, XML/JSON marshaling, IAM
 // policy evaluation) runs for real.
 func StartGateway(t *testing.T, opts ...Option) *Gateway {
-	return startGateway(t, suiteConformance, opts...)
+	return startGateway(t, suiteConformance, nil, opts...)
 }
 
-func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option) *Gateway {
+// StartGatewayWithServices is StartGateway with extra service registrations,
+// for a service production does not register yet.
+func StartGatewayWithServices(t *testing.T, extra []awsdispatch.Registration, opts ...Option) *Gateway {
+	return startGateway(t, suiteConformance, extra, opts...)
+}
+
+func startGateway(t *testing.T, collector *conformanceCollector, extra []awsdispatch.Registration, opts ...Option) *Gateway {
 	t.Helper()
 
 	// Every test connects into its own dynamically provisioned NATS account
@@ -178,6 +204,7 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	ecrMeta := ecrdomain.NewNATSMetaStore(nc)
 	ecrRegistry := ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), ecrMeta, awsidentifiers.GlobalAccountID)
 	ecrIssuer := ecrauth.NewIssuer(signingKey, testECRAudience)
+	ecrVerifier := ecrauth.NewVerifier(verifyKeys, testECRAudience)
 	ecrEndpoint := awsapi.RepositoryEndpoint{Region: testRegion, ServicesDomain: testECRServicesDomain}
 	services := awsdispatch.NewBuilder()
 	require.NoError(t, services.Register(awsapi.NewRegistration(awsapi.Deps{
@@ -192,35 +219,78 @@ func startGateway(t *testing.T, collector *conformanceCollector, opts ...Option)
 	// Composed as awsgw composes them. The harness has no quota service, and
 	// Tagging has no resource listers because no integration test aggregates.
 	require.NoError(t, services.Register(elbv2awsapi.NewRegistration(elbv2awsapi.Deps{NATS: nc})))
+	require.NoError(t, services.Register(rdsawsapi.NewRegistration(rdsawsapi.Deps{NATS: nc})))
+	// Ochre model access is deny-by-default, so without a grant store every
+	// bedrock route refuses. Tests sign as the system account, which the store
+	// exempts from grants exactly as it does in production, so the catalog is
+	// visible here without provisioning grants per test; a test signing as a
+	// tenant account would have to grant first.
+	require.NoError(t, services.Register(ochreawsapi.NewRegistration(ochreawsapi.Deps{Access: bedrockAccess})))
+	require.NoError(t, services.Register(ecsawsapi.NewRegistration(ecsawsapi.Deps{NATS: nc})))
+	require.NoError(t, services.Register(eksawsapi.NewRegistration(eksawsapi.Deps{NATS: nc, Roles: iamdomain.NewRoleResolver(iamSvc)})))
+	require.NoError(t, services.Register(iamawsapi.NewRegistration(iamawsapi.Deps{
+		IAM: iamSvc,
+		CountInstanceProfileAssociations: func(ctx context.Context, accountID, profileARN string) (int, error) {
+			return ec2instanceapi.CountInstanceProfileAssociations(ctx, nc, 1, accountID, profileARN)
+		},
+	})))
+	stsDeps := stsawsapi.Deps{STS: stsSvc, IAM: iamSvc}
+	require.NoError(t, services.Register(stsawsapi.NewRegistration(stsDeps)))
 	require.NoError(t, services.Register(taggingawsapi.NewRegistration(taggingawsapi.Deps{Aggregator: tagging.NewAggregator()})))
 
-	cfg := &gateway.GatewayConfig{
+	cfg := gwfix.WithDeps(&pipeline.Config{
 		DisableLogging: true,
-		NATSConn:       nc,
-		Services:       services.Build(),
-		ExpectedNodes:  1,
+		Admin:          pipeline.AdminSurface{Service: operatoradmin.ServiceName, WithRequestID: operatoradmin.WithRequestID},
 		Region:         testRegion,
-		AZ:             testAZ,
-		IAMService:     iamSvc,
-		STSService:     stsSvc,
-		// ECRRegistry serves the OCI Distribution v2 (/v2/*) data plane; its
-		// Meta store is a NATS client, so a test that pushes/pulls or manages
-		// repositories must additionally call StartECRDaemonLite to subscribe a
-		// real MetaServiceImpl or every ECR request will time out with no
-		// responder. Blob/manifest bytes are memory-backed: no predastore.
-		ECRRegistry:      ecrRegistry,
-		ECRTokenIssuer:   ecrIssuer,
-		ECRTokenVerifier: ecrauth.NewVerifier(verifyKeys, testECRAudience),
-		// Ochre model access is deny-by-default, so without a grant store every
-		// bedrock route refuses. Tests sign as the system account, which the
-		// store exempts from grants exactly as it does in production, so the
-		// catalog is visible here without provisioning grants per test; a test
-		// signing as a tenant account would have to grant first.
-		BedrockAccess:      bedrockAccess,
-		BedrockAccessAdmin: bedrockAccess,
-	}
+		PreAuth:        []awsdispatch.PreAuth{stsawsapi.NewPreAuth(stsDeps)},
+	}, gwfix.Deps{NATS: nc, Nodes: 1, IAM: iamSvc, STS: stsSvc})
 	for _, opt := range opts {
 		opt(cfg)
+	}
+	// EC2 is registered once the options have run so its node count follows
+	// ExpectedNodes, as awsgw takes it from the same config.
+	require.NoError(t, services.Register(ec2awsapi.NewRegistration(ec2awsapi.Deps{
+		NATS:          nc,
+		IAM:           iamSvc,
+		Quota:         ec2quota.Adapter{Service: admissionquota.New(admissionquota.Limits{}, nil)},
+		ActiveNodes:   func(context.Context) int { return gwfix.DepsOf(cfg).Nodes },
+		ExpectedNodes: gwfix.DepsOf(cfg).Nodes,
+		AZ:            testAZ,
+		Endpoint:      "https://localhost:9999",
+	})))
+	for _, reg := range extra {
+		require.NoError(t, services.Register(reg))
+	}
+	cfg.Services = services.Build()
+	// Built after the options so a test that swaps or drops a service sees the
+	// verifier follow it, as production wires the verifier over the same services.
+	if cfg.Credentials == nil {
+		cfg.Credentials = credverify.New(gwfix.DepsOf(cfg).IAM, gwfix.DepsOf(cfg).STS)
+	}
+
+	// The OCI /v2 data plane. Its Meta store is a NATS client, so a test that
+	// pushes or pulls must call StartECRDaemonLite or every request times out.
+	// Blob and manifest bytes are memory-backed: no predastore.
+	if cfg.Policy == nil {
+		cfg.Policy = policyauth.New(gwfix.DepsOf(cfg).IAM)
+	}
+	if cfg.Readiness == nil {
+		cfg.Readiness = clusterready.New(gwfix.DepsOf(cfg).NATS)
+	}
+	admission := accountadmission.New(gwfix.DepsOf(cfg).IAM)
+	if cfg.Admission == nil {
+		cfg.Admission = admission
+	}
+	if cfg.PublicRoutes == nil {
+		bridge, err := ecrregistry.NewBridge(registryadapt.Config(ecrregistry.BridgeConfig{
+			Registry:  ecrRegistry,
+			Verifier:  ecrVerifier,
+			Issuer:    ecrIssuer,
+			Admission: admission,
+			Region:    cfg.Region,
+		}, credverify.New(gwfix.DepsOf(cfg).IAM, gwfix.DepsOf(cfg).STS), policyauth.New(gwfix.DepsOf(cfg).IAM)))
+		require.NoError(t, err)
+		cfg.PublicRoutes = awsgw.PublicRoutes(nil, ingresshttp.NewHostMatcher("", "dkr", "ecr").Middleware(bridge.Handler()))
 	}
 
 	handler := cfg.SetupRoutes()

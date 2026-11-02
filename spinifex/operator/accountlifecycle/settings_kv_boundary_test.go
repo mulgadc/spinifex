@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -28,6 +29,17 @@ var forbiddenSettingsImports = []string{
 // bucket or its key directly instead of reaching it only through
 // contracts/ec2/v1 and NATS.
 var forbiddenSettingsIdentifiers = []string{"spinifex-ec2-account-settings", "KVBucketAccountSettings"}
+
+// quotaPackage is the quota owner. The legacy engine may name it only for the
+// usage bucket it creates; the override record is reached over
+// contracts/admission/v1 and NATS alone.
+const quotaPackage = "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+
+// forbiddenQuotaSelectors would let this package open, read, write or seal
+// the override record, or build the quota service, instead of asking the owner.
+var forbiddenQuotaSelectors = []string{"KVBucketAccountQuota", "SetOverrides", "PutAccountQuota", "GetAccountQuota", "SealAccountOverrides", "New"}
+
+const quotaOverrideBucket = "spinifex-account-quota"
 
 // Teardown reaches EC2 settings only over contracts/ec2/v1: no import of the
 // settings owner or bootstrap/config (nodes arrive via NewClusterEngine), and
@@ -61,6 +73,27 @@ func TestAccountTeardownHasNoSettingsKVAccess(t *testing.T) {
 			}
 		}
 
+		quotaName := ""
+		for _, imp := range f.Imports {
+			if p, _ := strconv.Unquote(imp.Path.Value); p == quotaPackage {
+				quotaName = "quota"
+				if imp.Name != nil {
+					quotaName = imp.Name.Name
+				}
+			}
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			sel, ok := n.(*ast.SelectorExpr)
+			if !ok || quotaName == "" {
+				return true
+			}
+			if x, isIdent := sel.X.(*ast.Ident); isIdent && x.Name == quotaName && slices.Contains(forbiddenQuotaSelectors, sel.Sel.Name) {
+				t.Errorf("%s: uses quota.%s; the override record belongs to the quota owner and is reached only through contracts/admission/v1",
+					fset.Position(sel.Pos()), sel.Sel.Name)
+			}
+			return true
+		})
+
 		ast.Inspect(f, func(n ast.Node) bool {
 			lit, ok := n.(*ast.BasicLit)
 			if !ok || lit.Kind != token.STRING {
@@ -69,6 +102,10 @@ func TestAccountTeardownHasNoSettingsKVAccess(t *testing.T) {
 			value, uerr := strconv.Unquote(lit.Value)
 			if uerr != nil {
 				return true
+			}
+			if value == quotaOverrideBucket {
+				t.Errorf("%s: names %q; the override bucket is the quota owner's own, never this package's",
+					fset.Position(lit.Pos()), value)
 			}
 			for _, bad := range forbiddenSettingsIdentifiers {
 				if value == bad {

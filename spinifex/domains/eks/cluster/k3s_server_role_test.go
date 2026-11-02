@@ -38,6 +38,9 @@ func TestEnsureK3sServerInstanceProfile_CreatesRolePolicyProfile(t *testing.T) {
 	// these IMDS creds; without this action the gateway 403s the boot-time fetch
 	// and a wedged control plane can never be auto-reset.
 	assert.Contains(t, policy, "eks:GetRecoveryDirective")
+	// The node-gc agent pulls the live nodegroup workers with these IMDS creds;
+	// without this action a terminated worker's Node is never deleted.
+	assert.Contains(t, policy, "eks:ListInternalWorkers")
 
 	require.NotNil(t, f.Profiles[CPInstanceRoleName])
 	assert.Len(t, f.Profiles[CPInstanceRoleName].Roles, 1)

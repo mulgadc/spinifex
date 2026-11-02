@@ -1,4 +1,3 @@
-import { useNavigate } from "@tanstack/react-router"
 import { AlertTriangle, Check, Download } from "lucide-react"
 
 import {
@@ -12,20 +11,22 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
+import { Textarea } from "@/components/ui/textarea"
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard"
 
 interface PrivateKeyModalProps {
   open: boolean
   keyName: string
   keyMaterial: string
+  onClose: () => void
 }
 
 export function PrivateKeyModal({
   open,
   keyName,
   keyMaterial,
+  onClose,
 }: PrivateKeyModalProps) {
-  const navigate = useNavigate()
   const { copied, copy } = useCopyToClipboard()
 
   const handleDownload = () => {
@@ -36,10 +37,6 @@ export function PrivateKeyModal({
     link.download = `${keyName}.pem`
     link.click()
     URL.revokeObjectURL(url)
-  }
-
-  const handleClose = () => {
-    navigate({ to: "/ec2/describe-key-pairs" })
   }
 
   return (
@@ -58,12 +55,14 @@ export function PrivateKeyModal({
         </AlertDialogHeader>
 
         <div className="space-y-3">
-          <textarea
+          <Textarea
             aria-label={`Private key material for ${keyName}`}
-            className="w-full resize-none overflow-y-auto rounded-md border border-input bg-input/20 px-2 py-2 font-mono text-xs"
+            className="field-sizing-fixed overflow-y-auto"
             readOnly
             rows={4}
+            size="sm"
             value={keyMaterial}
+            variant="code"
           />
 
           <div className="flex gap-2">
@@ -97,7 +96,7 @@ export function PrivateKeyModal({
         </div>
 
         <AlertDialogFooter>
-          <AlertDialogCancel onClick={handleClose}>
+          <AlertDialogCancel onClick={onClose}>
             Close and Continue
           </AlertDialogCancel>
         </AlertDialogFooter>

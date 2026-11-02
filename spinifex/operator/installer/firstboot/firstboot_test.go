@@ -133,6 +133,30 @@ func TestWriteScriptEnablesNatsWatchdogTimer(t *testing.T) {
 	}
 }
 
+// A RAFT link that opens before conntrack runs is first seen mid-stream when
+// the firewall arms, and its server-side packets are dropped as new flows. A
+// provisioning controller forms the cluster after firstboot, so both modes.
+func TestWriteScriptLoadsConntrackBeforeOVN(t *testing.T) {
+	for _, skip := range []bool{false, true} {
+		root := t.TempDir()
+		makeRootDirs(t, root)
+		if err := Write(root, Config{Hostname: "test-node", SkipFormation: skip}); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		content := readScript(t, root)
+
+		track := strings.Index(content, "/usr/local/lib/spinifex/spinifex-firewall-apply track")
+		if track < 0 {
+			t.Fatalf("SkipFormation=%v: firstboot never loads connection tracking", skip)
+		}
+		for _, later := range []string{"systemctl start ovn-central", "/usr/local/bin/setup-ovn.sh", "spx admin init --", "spx admin join"} {
+			if i := strings.Index(content, later); i >= 0 && i < track {
+				t.Errorf("SkipFormation=%v: %q runs before connection tracking is loaded", skip, later)
+			}
+		}
+	}
+}
+
 func TestWriteScriptCallbackAfterDoneMarker(t *testing.T) {
 	root := t.TempDir()
 	makeRootDirs(t, root)

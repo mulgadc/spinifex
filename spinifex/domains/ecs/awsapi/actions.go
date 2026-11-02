@@ -306,6 +306,11 @@ func runTask(ctx context.Context, svc ecsdomain.ECSService, accountID string, in
 	if err := checkTaskLaunchRoles(ctx, svc, accountID, input.TaskDefinition, passRoleCheck); err != nil {
 		return nil, err
 	}
+	if input.Overrides != nil {
+		if err := checkTaskDefinitionRoles(overrideRoleCheck(ctx), input.Overrides.TaskRoleArn, input.Overrides.ExecutionRoleArn); err != nil {
+			return nil, err
+		}
+	}
 	return svc.RunTask(ctx, input, accountID)
 }
 

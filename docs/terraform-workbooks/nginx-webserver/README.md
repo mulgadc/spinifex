@@ -56,8 +56,8 @@ Clone the Terraform examples from the Spinifex repository:
 ```bash
 git clone --depth 1 --filter=blob:none --sparse https://github.com/mulgadc/spinifex.git spinifex-tf
 cd spinifex-tf
-git sparse-checkout set docs/terraform
-cd docs/terraform/nginx-webserver
+git sparse-checkout set docs/terraform-workbooks
+cd docs/terraform-workbooks/nginx-webserver
 ```
 
 Or create a `main.tf` file and paste the full configuration below.

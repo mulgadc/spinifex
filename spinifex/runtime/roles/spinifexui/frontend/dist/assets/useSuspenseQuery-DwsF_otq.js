@@ -1,1 +1,0 @@
-import{d as e,n as t,t as n}from"./useBaseQuery-CE1m2pVx.js";function r(r,i){return n({...r,enabled:!0,suspense:!0,throwOnError:t,placeholderData:void 0},e,i)}export{r as t};

@@ -1,0 +1,301 @@
+package awsapi_test
+
+import (
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/internal/testkit/gwtest"
+	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// dispatchEC2 drives the registration with no NATS connection. A permitted request
+// therefore reaches the handler and fails there, which is what proves the policy
+// check ran ahead of the resource existing at all.
+func dispatchEC2(t *testing.T, h *gwtest.Harness, body string) error {
+	t.Helper()
+	return dispatchEC2With(t, h, ec2awsapi.NewRegistration(ec2awsapi.Deps{}), body)
+}
+
+func dispatchEC2With(t *testing.T, h *gwtest.Harness, reg dispatch.Registration, body string) error {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	return h.Dispatch(reg, ec2awsapi.ServiceName, httptest.NewRecorder(), req)
+}
+
+// TestEC2Request_ScopedDenyFires is the bypass this work closes. An operator
+// fences a production instance; before the resolver the fence was inert and
+// TerminateInstances against it was permitted with nothing logged.
+func TestEC2Request_ScopedDenyFires(t *testing.T) {
+	h := gwtest.Scoped(
+		gwtest.Statement("Allow", "ec2:*", "*"),
+		gwtest.Statement("Deny", "ec2:TerminateInstances", "arn:aws:ec2:*:*:instance/i-prod"),
+	)
+
+	gwtest.AssertUnauthorized(t, dispatchEC2(t, h, "Action=TerminateInstances&InstanceId.1=i-prod"))
+	gwtest.AssertPermitted(t, dispatchEC2(t, h, "Action=TerminateInstances&InstanceId.1=i-dev"))
+}
+
+// TestEC2Request_ScopedAllowGrants is the other half: a least-privilege policy
+// used to deny everything, so the only working policy shape was Resource "*".
+func TestEC2Request_ScopedAllowGrants(t *testing.T) {
+	h := gwtest.Scoped(
+		gwtest.Statement("Allow", "ec2:TerminateInstances", "arn:aws:ec2:*:*:instance/i-dev"),
+	)
+
+	gwtest.AssertPermitted(t, dispatchEC2(t, h, "Action=TerminateInstances&InstanceId.1=i-dev"))
+	gwtest.AssertUnauthorized(t, dispatchEC2(t, h, "Action=TerminateInstances&InstanceId.1=i-prod"))
+}
+
+// TestEC2Request_DenyOneMemberFailsTheBatch pins the AWS combining rule: a batch
+// containing one fenced instance fails whole rather than terminating the rest.
+func TestEC2Request_DenyOneMemberFailsTheBatch(t *testing.T) {
+	h := gwtest.Scoped(
+		gwtest.Statement("Allow", "ec2:*", "*"),
+		gwtest.Statement("Deny", "ec2:TerminateInstances", "arn:aws:ec2:*:*:instance/i-prod"),
+	)
+
+	gwtest.AssertUnauthorized(t, dispatchEC2(t, h,
+		"Action=TerminateInstances&InstanceId.1=i-dev&InstanceId.2=i-prod&InstanceId.3=i-other"))
+	gwtest.AssertPermitted(t, dispatchEC2(t, h,
+		"Action=TerminateInstances&InstanceId.1=i-dev&InstanceId.2=i-other"))
+}
+
+// TestEC2Request_MultiResourceParity covers a resource beyond the primary one.
+// A tenant constraining launches by instance would otherwise have the AMI and
+// subnet unchecked, which is a smaller instance of the same bug.
+func TestEC2Request_MultiResourceParity(t *testing.T) {
+	h := gwtest.Scoped(
+		gwtest.Statement("Allow", "ec2:*", "*"),
+		gwtest.Statement("Deny", "ec2:RunInstances", "arn:aws:ec2:*:*:image/ami-restricted"),
+		gwtest.Statement("Deny", "ec2:RunInstances", "arn:aws:ec2:*:*:subnet/subnet-restricted"),
+	)
+
+	gwtest.AssertUnauthorized(t, dispatchEC2(t, h, "Action=RunInstances&ImageId=ami-restricted&MinCount=1&MaxCount=1"))
+	gwtest.AssertUnauthorized(t, dispatchEC2(t, h,
+		"Action=RunInstances&ImageId=ami-allowed&NetworkInterface.1.SubnetId=subnet-restricted&MinCount=1&MaxCount=1"))
+	gwtest.AssertPermitted(t, dispatchEC2(t, h, "Action=RunInstances&ImageId=ami-allowed&MinCount=1&MaxCount=1"))
+}
+
+func TestEC2Request_UsesCanonicalParsedResources(t *testing.T) {
+	t.Run("lower camel location name", func(t *testing.T) {
+		h := gwtest.Scoped(
+			gwtest.Statement("Allow", "ec2:*", "*"),
+			gwtest.Statement("Deny", "ec2:ModifyInstanceAttribute", "arn:aws:ec2:*:*:instance/i-prod"),
+		)
+		gwtest.AssertUnauthorized(t, dispatchEC2(t, h, "Action=ModifyInstanceAttribute&instanceId=i-prod"))
+	})
+
+	t.Run("location name list wrapper", func(t *testing.T) {
+		h := gwtest.Scoped(
+			gwtest.Statement("Allow", "ec2:*", "*"),
+			gwtest.Statement("Deny", "ec2:TerminateInstances", "arn:aws:ec2:*:*:instance/i-prod"),
+		)
+		gwtest.AssertUnauthorized(t, dispatchEC2(t, h, "Action=TerminateInstances&InstanceId.InstanceId.1=i-prod"))
+	})
+
+	t.Run("handler field precedence", func(t *testing.T) {
+		h := gwtest.Scoped(
+			gwtest.Statement("Allow", "ec2:*", "*"),
+			gwtest.Statement("Deny", "ec2:DeleteKeyPair", "arn:aws:ec2:*:*:key-pair/key-prod"),
+		)
+		gwtest.AssertUnauthorized(t, dispatchEC2(t, h, "Action=DeleteKeyPair&KeyName=dev&KeyPairId=key-prod"))
+	})
+}
+
+func TestEC2Request_CreateRouteChecksNATGateway(t *testing.T) {
+	h := gwtest.Scoped(
+		gwtest.Statement("Allow", "ec2:*", "*"),
+		gwtest.Statement("Deny", "ec2:CreateRoute", "arn:aws:ec2:*:*:natgateway/nat-prod"),
+	)
+	gwtest.AssertUnauthorized(t, dispatchEC2(t, h, "Action=CreateRoute&RouteTableId=rtb-dev&NatGatewayId=nat-prod"))
+}
+
+func TestEC2Request_RequestSpotInstancesChecksLaunchResources(t *testing.T) {
+	h := gwtest.Scoped(
+		gwtest.Statement("Allow", "ec2:*", "*"),
+		gwtest.Statement("Deny", "ec2:RequestSpotInstances", "arn:aws:ec2:*:*:subnet/subnet-prod"),
+	)
+	body := "Action=RequestSpotInstances&LaunchSpecification.ImageId=ami-1&" +
+		"LaunchSpecification.InstanceType=t3.micro&LaunchSpecification.SubnetId=subnet-prod"
+	gwtest.AssertUnauthorized(t, dispatchEC2(t, h, body))
+}
+
+// TestEC2Request_GetSecurityGroupsForVpcIsVpcScoped pins the one read action
+// that names a resource: registered unscoped, a policy fencing one VPC would be
+// bypassed by asking about another.
+func TestEC2Request_GetSecurityGroupsForVpcIsVpcScoped(t *testing.T) {
+	h := gwtest.Scoped(
+		gwtest.Statement("Allow", "ec2:*", "*"),
+		gwtest.Statement("Deny", "ec2:GetSecurityGroupsForVpc", "arn:aws:ec2:*:*:vpc/vpc-prod"),
+	)
+
+	gwtest.AssertUnauthorized(t, dispatchEC2(t, h, "Action=GetSecurityGroupsForVpc&VpcId=vpc-prod"))
+	gwtest.AssertPermitted(t, dispatchEC2(t, h, "Action=GetSecurityGroupsForVpc&VpcId=vpc-dev"))
+}
+
+// TestEC2Request_UpdateSecurityGroupRuleDescriptionsIsGroupScoped pins that
+// both description writers name the group they mutate: registered unscoped, a
+// policy fencing one security group would not apply to them.
+func TestEC2Request_UpdateSecurityGroupRuleDescriptionsIsGroupScoped(t *testing.T) {
+	h := gwtest.Scoped(
+		gwtest.Statement("Allow", "ec2:*", "*"),
+		gwtest.Statement("Deny", "ec2:UpdateSecurityGroupRuleDescriptions*", "arn:aws:ec2:*:*:security-group/sg-prod"),
+	)
+
+	for _, action := range []string{"UpdateSecurityGroupRuleDescriptionsIngress", "UpdateSecurityGroupRuleDescriptionsEgress"} {
+		gwtest.AssertUnauthorized(t, dispatchEC2(t, h, "Action="+action+"&GroupId=sg-prod"))
+		gwtest.AssertPermitted(t, dispatchEC2(t, h, "Action="+action+"&GroupId=sg-dev"))
+	}
+}
+
+// TestEC2Request_ModifySecurityGroupRulesIsGroupScoped pins that the modify
+// names the group it mutates, so a policy fencing one security group applies.
+func TestEC2Request_ModifySecurityGroupRulesIsGroupScoped(t *testing.T) {
+	h := gwtest.Scoped(
+		gwtest.Statement("Allow", "ec2:*", "*"),
+		gwtest.Statement("Deny", "ec2:ModifySecurityGroupRules", "arn:aws:ec2:*:*:security-group/sg-prod"),
+	)
+
+	const update = "&SecurityGroupRule.1.SecurityGroupRuleId=sgr-0123456789abcdef0" +
+		"&SecurityGroupRule.1.SecurityGroupRule.IpProtocol=tcp" +
+		"&SecurityGroupRule.1.SecurityGroupRule.FromPort=22&SecurityGroupRule.1.SecurityGroupRule.ToPort=22" +
+		"&SecurityGroupRule.1.SecurityGroupRule.CidrIpv4=10.0.0.0/24"
+	gwtest.AssertUnauthorized(t, dispatchEC2(t, h, "Action=ModifySecurityGroupRules&GroupId=sg-prod"+update))
+	gwtest.AssertPermitted(t, dispatchEC2(t, h, "Action=ModifySecurityGroupRules&GroupId=sg-dev"+update))
+}
+
+func TestEC2Request_RejectsOversizedResourceList(t *testing.T) {
+	var body strings.Builder
+	body.WriteString("Action=TerminateInstances")
+	for i := 1; i <= query.MaxSliceLen+1; i++ {
+		body.WriteString("&InstanceId.")
+		body.WriteString(strconv.Itoa(i))
+		body.WriteString("=i-")
+		body.WriteString(strconv.Itoa(i))
+	}
+
+	h := gwtest.Scoped(gwtest.Statement("Allow", "ec2:*", "*"))
+	err := dispatchEC2(t, h, body.String())
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorMalformedQueryString, err.Error())
+}
+
+// TestEC2Request_AccountWideAllowIsUnaffected is the property the remaining
+// per-service beads rest on: passing a real ARN where "*" was passed cannot
+// withdraw access that works today.
+func TestEC2Request_AccountWideAllowIsUnaffected(t *testing.T) {
+	for _, policy := range []iamdomain.Statement{
+		gwtest.Statement("Allow", "ec2:*", "*"),
+		gwtest.Statement("Allow", "*", "*"),
+	} {
+		h := gwtest.Scoped(policy)
+		for _, body := range []string{
+			"Action=TerminateInstances&InstanceId.1=i-abc",
+			"Action=RunInstances&ImageId=ami-1&SubnetId=subnet-1&KeyName=k1",
+			"Action=CreateTags&ResourceId.1=i-abc&Tag.1.Key=Name&Tag.1.Value=x",
+			"Action=CreateTags&ResourceId.1=nope-abc&Tag.1.Key=Name&Tag.1.Value=x",
+			"Action=DeleteVolume&VolumeId=vol-1",
+			"Action=DescribeInstances",
+		} {
+			t.Run(body, func(t *testing.T) {
+				gwtest.AssertPermitted(t, dispatchEC2(t, h, body))
+			})
+		}
+	}
+}
+
+// TestEC2Request_MissingIdentifierStaysAValidationFault: the gate must not turn
+// a malformed request into a denial. With an account-wide grant the absent
+// identifier resolves to "*" and the handler reports its own fault.
+func TestEC2Request_MissingIdentifierStaysAValidationFault(t *testing.T) {
+	h := gwtest.Scoped(gwtest.Statement("Allow", "ec2:*", "*"))
+
+	gwtest.AssertPermitted(t, dispatchEC2(t, h, "Action=TerminateInstances"))
+	gwtest.AssertPermitted(t, dispatchEC2(t, h, "Action=DeleteVolume"))
+}
+
+// TestEC2Request_IdentifierIsAValueNotAPattern: an id of literally * builds an
+// ARN ending /*, which neither matches a scoped Deny on a real instance nor
+// widens a grant to one.
+func TestEC2Request_IdentifierIsAValueNotAPattern(t *testing.T) {
+	fenced := gwtest.Scoped(
+		gwtest.Statement("Allow", "ec2:*", "*"),
+		gwtest.Statement("Deny", "ec2:TerminateInstances", "arn:aws:ec2:*:*:instance/i-prod"),
+	)
+	gwtest.AssertPermitted(t, dispatchEC2(t, fenced, "Action=TerminateInstances&InstanceId.1=*"))
+
+	// An id containing / is not truncated on the way to the evaluator. The
+	// reverted STS work built an ARN from the segment after the final /, so a
+	// Deny on i-prod fenced i-prod/admin and a grant fenced the wrong object.
+	gwtest.AssertPermitted(t, dispatchEC2(t, fenced, "Action=TerminateInstances&InstanceId.1=i-prod/admin"))
+	gwtest.AssertUnauthorized(t, dispatchEC2(t, fenced, "Action=TerminateInstances&InstanceId.1=i-prod"))
+}
+
+// TestEC2Request_ARNIsBuiltFromTheNodeRegion: the credential-scope region is
+// caller-supplied and never validated, so an ARN built from it would let a
+// caller sign for another region and slide out from under a Deny scoped to the
+// real one.
+func TestEC2Request_ARNIsBuiltFromTheNodeRegion(t *testing.T) {
+	h := gwtest.Scoped(
+		gwtest.Statement("Allow", "ec2:*", "*"),
+		gwtest.Statement("Deny", "ec2:TerminateInstances", "arn:aws:ec2:"+gwtest.Region+":*:instance/i-prod"),
+	)
+
+	gwtest.AssertUnauthorized(t, dispatchEC2(t, h, "Action=TerminateInstances&InstanceId.1=i-prod"))
+}
+
+// profileIAMService resolves every instance profile to one holding role app, or
+// fails resolution with resolveErr.
+type profileIAMService struct {
+	resolveErr error
+}
+
+func (s *profileIAMService) ResolveInstanceProfile(accountID, _ string) (*iamdomain.InstanceProfile, error) {
+	if s.resolveErr != nil {
+		return nil, s.resolveErr
+	}
+	return &iamdomain.InstanceProfile{AccountID: accountID, RoleName: "app"}, nil
+}
+
+func (s *profileIAMService) CanonicalResourceARN(accountID string, _ arn.IAMResourceType, name string) (string, error) {
+	return "arn:aws:iam::" + accountID + ":role/" + name, nil
+}
+
+func passRoleDeniedHarness(t *testing.T, resolveErr error) (*gwtest.Harness, dispatch.Registration) {
+	t.Helper()
+	h := gwtest.Scoped(
+		gwtest.Statement("Allow", "ec2:*", "*"),
+		gwtest.Statement("Deny", "iam:PassRole", "*"),
+	)
+	_, nc := testutil.StartTestNATS(t)
+	return h, ec2awsapi.NewRegistration(ec2awsapi.Deps{NATS: nc, IAM: &profileIAMService{resolveErr: resolveErr}})
+}
+
+// An iam:PassRole denial raised during dispatch is EC2's UnauthorizedOperation,
+// the same as a denial at the action gate.
+func TestEC2Request_PassRoleDenialIsUnauthorizedOperation(t *testing.T) {
+	h, reg := passRoleDeniedHarness(t, nil)
+	gwtest.AssertUnauthorized(t, dispatchEC2With(t, h, reg,
+		"Action=AssociateIamInstanceProfile&InstanceId=i-dev&IamInstanceProfile.Name=web"))
+}
+
+// Only the gateway's own policy denial is translated: an AccessDenied from
+// instance-profile resolution reaches the caller unchanged.
+func TestEC2Request_ResolverAccessDeniedPassesThrough(t *testing.T) {
+	h, reg := passRoleDeniedHarness(t, errors.New(awserrors.ErrorAccessDenied))
+	err := dispatchEC2With(t, h, reg, "Action=AssociateIamInstanceProfile&InstanceId=i-dev&IamInstanceProfile.Name=web")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+}

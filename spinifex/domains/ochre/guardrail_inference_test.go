@@ -567,6 +567,7 @@ func TestInvokeStreamRouter_GuardrailInputBlock_SkipsBackend(t *testing.T) {
 
 	src, err := rt.InvokeModelWithResponseStream(ctx, grCallerAccount, modelID, []byte(`{"prompt":"this has a badword in it"}`), aws.StringValue(createOut.GuardrailId), guardrailDraftVersion)
 	require.NoError(t, err)
+	defer func() { _ = src.Close() }()
 	chunks := drainInvokeStream(t, src)
 	assert.Equal(t, int32(0), hits.Load(), "the backend stream must never be started on an INPUT block")
 	require.Len(t, chunks, 2)
@@ -598,6 +599,7 @@ func TestInvokeStreamRouter_GuardrailOutputBlock_Buffered(t *testing.T) {
 
 	src, err := rt.InvokeModelWithResponseStream(ctx, grCallerAccount, modelID, []byte(`{"prompt":"hello"}`), aws.StringValue(createOut.GuardrailId), guardrailDraftVersion)
 	require.NoError(t, err)
+	defer func() { _ = src.Close() }()
 	chunks := drainInvokeStream(t, src)
 	require.Len(t, chunks, 2, "the raw deltas must collapse into exactly one guarded delta + final chunk")
 
@@ -628,6 +630,7 @@ func TestInvokeStreamRouter_GuardrailOutputAnonymize_Buffered(t *testing.T) {
 
 	src, err := rt.InvokeModelWithResponseStream(ctx, grCallerAccount, modelID, []byte(`{"prompt":"hello"}`), aws.StringValue(createOut.GuardrailId), guardrailDraftVersion)
 	require.NoError(t, err)
+	defer func() { _ = src.Close() }()
 	chunks := drainInvokeStream(t, src)
 	require.Len(t, chunks, 2)
 
@@ -654,6 +657,7 @@ func TestInvokeStreamRouter_NoGuardrailHeader_Regression(t *testing.T) {
 
 	src, err := rt.InvokeModelWithResponseStream(context.Background(), "000000000001", modelID, []byte(`{"prompt":"hello"}`), "", "")
 	require.NoError(t, err)
+	defer func() { _ = src.Close() }()
 	chunks := drainInvokeStream(t, src)
 	require.Len(t, chunks, 3)
 

@@ -38,6 +38,22 @@ func leaderLastMsg(ctx context.Context, js jsapi.JetStream, stream, subject stri
 	return leaderMsgGet(ctx, js, stream, msgGetRequest{LastFor: subject})
 }
 
+// LeaderKVGet reads key from an SQS KV bucket through the stream leader and
+// returns its value and revision. An absent, deleted or purged key is
+// jsapi.ErrKeyNotFound; any other failure is returned and decides nothing.
+func LeaderKVGet(ctx context.Context, js jsapi.JetStream, bucket, key string) ([]byte, uint64, error) {
+	m, err := leaderLastMsg(ctx, js, "KV_"+bucket, "$KV."+bucket+"."+key)
+	switch {
+	case errors.Is(err, jsapi.ErrMsgNotFound):
+		return nil, 0, jsapi.ErrKeyNotFound
+	case err != nil:
+		return nil, 0, err
+	case kvRemoved(m.Header):
+		return nil, 0, jsapi.ErrKeyNotFound
+	}
+	return m.Data, m.Sequence, nil
+}
+
 // leaderStateKeys lists the live keys under keyPrefix in a state bucket up
 // to sequence bound, with one leader message get per record.
 func leaderStateKeys(ctx context.Context, js jsapi.JetStream, bucket, keyPrefix string, bound uint64) (map[string]struct{}, error) {

@@ -1,24 +1,11 @@
-import { createFileRoute } from "@tanstack/react-router"
-import { z } from "zod"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 
-import { RegisterTaskDefinitionPage } from "./-components/register-task-definition-page"
-
-/* oxlint-disable promise/prefer-await-to-then -- zod's .catch() supplies a schema fallback, not a promise handler */
-const searchSchema = z.object({ cluster: z.string().catch("") })
-/* oxlint-enable promise/prefer-await-to-then */
-
+// The form opens in the task definitions list's side panel; this address is
+// kept for links.
 export const Route = createFileRoute(
   "/_auth/ecs/(clusters)/register-task-definition",
 )({
-  validateSearch: searchSchema,
-  head: () => ({
-    meta: [{ title: "Register Task Definition | ECS | Mulga" }],
-  }),
-  component: RouteComponent,
+  beforeLoad: () => {
+    throw redirect({ to: "/ecs/task-definitions", search: { create: true } })
+  },
 })
-
-function RouteComponent() {
-  const { cluster } = Route.useSearch()
-
-  return <RegisterTaskDefinitionPage cluster={cluster} />
-}

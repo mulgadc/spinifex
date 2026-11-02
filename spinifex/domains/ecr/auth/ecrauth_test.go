@@ -155,6 +155,32 @@ func TestIssuerVerifier_RoundTrip(t *testing.T) {
 	assert.Equal(t, "user", claims.PrincipalType)
 }
 
+// A token carries the role ID only when one was minted in, and verifies either way, so
+// a token minted before the claim existed keeps working.
+func TestIssuerVerifier_RoleIDClaim(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	key, verify, err := LoadOrCreateSigningKey(t.Context(), js, testMasterKey)
+	require.NoError(t, err)
+	iss, vf := NewIssuer(key, testAudience), NewVerifier(verify, testAudience)
+
+	role := Principal{
+		AccountID: "000000000001", ARN: "arn:aws:sts::000000000001:assumed-role/SharedOps/session",
+		Type: "assumed-role", AccessKeyID: "ASIAROLEDEMO", RoleID: "AROAROLEID0000000001",
+	}
+	tok, _, err := iss.Mint(role)
+	require.NoError(t, err)
+	claims, err := vf.Verify(tok)
+	require.NoError(t, err)
+	assert.Equal(t, "AROAROLEID0000000001", claims.RoleID)
+
+	tok, _, err = iss.Mint(samplePrincipal())
+	require.NoError(t, err)
+	claims, err = vf.Verify(tok)
+	require.NoError(t, err)
+	assert.Empty(t, claims.RoleID)
+}
+
 func TestIssuer_MintRequiresAccountID(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)

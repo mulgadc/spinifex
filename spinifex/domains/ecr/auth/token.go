@@ -19,6 +19,9 @@ const (
 	DefaultTokenTTL = 12 * time.Hour
 )
 
+// PrincipalTypeAssumedRole is the principalType claim of a role session's token.
+const PrincipalTypeAssumedRole = "assumed-role"
+
 // supportedPrincipalTypes are the mulga:principalType claim values a verified
 // token may carry. These mirror the gateway package's principalType constants
 // (user, assumed-role, root); this package can't import gateway (it would
@@ -26,9 +29,9 @@ const (
 // constants — a rename on either side is caught by ecrauth_test.go and by
 // the gateway ECR principal tests exercising real Mint/Verify round-trips.
 var supportedPrincipalTypes = map[string]bool{
-	"user":         true,
-	"assumed-role": true,
-	"root":         true,
+	"user":                   true,
+	PrincipalTypeAssumedRole: true,
+	"root":                   true,
 }
 
 // SupportedPrincipalType reports whether t is a principalType claim value
@@ -52,6 +55,7 @@ type Claims struct {
 	AccountID     string `json:"mulga:accountID"`
 	PrincipalType string `json:"mulga:principalType,omitempty"`
 	AccessKeyID   string `json:"mulga:accessKeyID,omitempty"`
+	RoleID        string `json:"mulga:roleID,omitempty"`
 }
 
 // Principal is the SigV4-authenticated caller GetAuthorizationToken mints a
@@ -61,6 +65,7 @@ type Principal struct {
 	ARN         string
 	Type        string
 	AccessKeyID string
+	RoleID      string
 }
 
 // Issuer mints ES256 ECR tokens bound to an audience (ecr.{region}.{suffix}).
@@ -134,6 +139,7 @@ func (i *Issuer) Mint(p Principal) (token string, expiresAt time.Time, err error
 		AccountID:     p.AccountID,
 		PrincipalType: p.Type,
 		AccessKeyID:   p.AccessKeyID,
+		RoleID:        p.RoleID,
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
 	tok.Header["kid"] = key.Kid

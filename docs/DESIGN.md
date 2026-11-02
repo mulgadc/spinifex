@@ -33,67 +33,32 @@ The gateway (`spinifex/runtime/roles/awsgw/awsgw.go`) is the entry point:
 // Connect to NATS (retries while the local broker comes up)
 natsConn, err := natsmsg.ConnectNATSWithRetry(...)
 
-// Load IAM (master key + JetStream KV) and create the gateway
-gw := gateway.GatewayConfig{
-    NATSConn:   natsConn,
-    Config:     nodeConfig.AWSGW.Config,
-    IAMService: iamService,
+// Load IAM (master key + JetStream KV), then compose the gateway: composeGateway
+// sets every production hook and wires the service registry from each domain's
+// awsapi registration.
+gw, err := composeGateway(gatewayInputs{
+    NATS:        natsConn,
+    IAM:         iamService,
+    Credentials: credentials,
+    Admission:   admission,
     // ...
-}
+}, ecrControlPlane, acmControlPlane, ec2ControlPlane /* ... */)
 
 // Serve over TLS
 server.ListenAndServeTLS("", "")
 ```
 
-Request routing (`spinifex/gateway/gateway.go`):
+Request routing (`spinifex/ingress/aws/pipeline/gateway.go`):
 
-1. **Authentication**: SigV4 middleware validates AWS credentials and resolves the account ID
-2. **Throttling**: Per-account+action token bucket rejects bursts post-auth
-3. **Service Detection**: Extracts service name from the Authorization header
-4. **Action Dispatch**: Routes to service-specific handler. A service registered through the ingress dispatch registry (`ingress/aws/dispatch`, wired by `runtime/roles/awsgw`) is dispatched by its registration; currently those are the ECR and ACM control planes, registered from `domains/ecr/awsapi` and `domains/acm/awsapi`. Every other service uses the legacy switch:
-
-```go
-switch svc {
-case "ec2":
-    err = gw.EC2_Request(w, r)
-case "iam":
-    err = gw.IAM_Request(w, r)
-case "sts":
-    err = gw.STS_Request(w, r)
-case "elasticloadbalancing":
-    err = gw.ELBv2_Request(w, r)
-case "eks":
-    err = gw.EKS_Request(w, r)
-case "bedrock":
-    err = gw.Bedrock_Request(w, r)
-// ... bedrock-runtime, bedrock-agent, bedrock-agent-runtime
-case "ecs":
-    err = gw.ECS_Request(w, r)
-case "rds":
-    err = gw.RDS_Request(w, r)
-case "tagging":
-    err = gw.Tagging_Request(w, r)
-case "spinifex":
-    err = gw.Spinifex_Request(w, r)
-}
-```
+1. **Public routes**: `/oidc/eks/...` and `/v2` (the ECR registry) are mounted ahead of SigV4 by `runtime/roles/awsgw`
+2. **Authentication**: SigV4 middleware validates AWS credentials and resolves the account ID
+3. **Throttling**: Per-account+action token bucket rejects bursts post-auth
+4. **Service Detection**: Extracts service name from the Authorization header
+5. **Action Dispatch**: Every service is a registration (`ingress/aws/dispatch`) built by its domain's `awsapi.NewRegistration` and wired by `runtime/roles/awsgw`. The pipeline dispatches by registered service name and holds no per-service code. The private `/admin/<Method>` surface dispatches to the registration `awsgw` names as `Admin.Service`.
 
 ### 3. EC2 Handler
 
-The EC2 handler (`spinifex/gateway/ec2.go`) parses the `Action` parameter and delegates to specific handlers via the generic `ec2Handler` and `ec2HandlerWithReq` wrappers. The account ID resolved by SigV4 auth is threaded into every handler so requests are scoped per IAM principal:
-
-```go
-"RunInstances": ec2HandlerWithReq(func(ctx context.Context, input *ec2.RunInstancesInput, gw *GatewayConfig, accountID string, r *http.Request) (any, error) {
-    // ... PassRole and launch-quota checks, then the vCPU quota charge
-    return ec2instanceapi.RunInstances(ctx, input, gw.NATSConn, gw.IAMService, accountID, passRoleCheck, launchQuotaCheck, gw.ExpectedNodes)
-}),
-"DescribeInstances": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstancesInput, gw *GatewayConfig, accountID string) (any, error) {
-    return ec2instanceapi.DescribeInstancesChecked(ctx, input, gw.NATSConn, 0, gw.NodeIDs, accountID)
-}),
-// ... + volumes, snapshots, VPCs, subnets, route tables, IGWs, NAT gateways,
-// security groups, network interfaces, elastic IPs, placement groups, key pairs,
-// images, tags, capacity reservations, spot instances
-```
+The EC2 registration (`spinifex/domains/ec2/awsapi`, `NewRegistration`) parses the `Action` parameter and looks the handler up in its action table. The account ID resolved by SigV4 auth is threaded into every handler so requests are scoped per IAM principal. Each action's handler is built from the owning EC2 resource package (`domains/ec2/instance`, `volume`, `vpc` and so on), with PassRole, quota and client-token idempotency wrapped on at the action table rather than inside the resource.
 
 ### 4. NATS Messaging
 
@@ -181,12 +146,17 @@ type Daemon struct {
 
 Tracks available and allocated CPU/memory to prevent overcommit, and drives the dynamic `ec2.RunInstances.{type}` subscriptions:
 
+One instance vCPU is one CPU the kernel has online: a thread with SMT on, a core with SMT off or on ARM, as AWS counts a vCPU.
+The OS and Spinifex's own services keep 1 CPU on a host with up to 8, 2 up to 16, 4 up to 63 and 8 from 64, and every other CPU is schedulable one-to-one with no overcommit.
+[ADR-0015](https://github.com/mulgadc/mulga/blob/main/docs/adr/0015-host-cpu-capacity-and-reservation.md) fixes this rule.
+
+
 ```go
 type ResourceManager struct {
     mu            sync.RWMutex
-    hostVCPU      int                                // raw runtime.NumCPU
+    hostVCPU      int                                // online CPUs (ADR-0015:S1)
     hostMemGB     float64                            // raw /proc/meminfo MemTotal
-    reservedVCPU  int                                // held back for spinifex services
+    reservedVCPU  int                                // ADR-0015:S2 tier: 1, 2, 4 or 8
     reservedMem   float64                            // held back for spinifex services
     allocatedVCPU int
     allocatedMem  float64
@@ -233,15 +203,50 @@ Viperblock responds with an NBD URI that QEMU uses to access the block device.
 
 A direct-boot microVM keeps the launcher's saved `vm.Config` as a clean base, and `startQEMU` adds data volumes only to a launch-only copy of it (`runtime/compute/vm/lifecycle.go`).
 At each start the daemon takes one snapshot of the instance's already-mounted data requests, probes each NBD or host block export from that snapshot, and builds the command from the same snapshot, so the launched endpoint is the one that was checked and is never written back into the saved base.
-Each data volume becomes a `virtio-blk-device` on the MMIO bus with the same id, node name, I/O thread, serial and `werror=stop,rerror=stop` policy as the PCI device, and takes no PCIe hot-plug port.
+The microVM boots with `pcie=on`, so its NICs are `virtio-net-pci` devices with MSI-X interrupts instead of `virtio-net-device` MMIO devices.
+Each data volume becomes a `virtio-blk-pci` device on the default PCIe bus with the same id, node name, I/O thread, serial and `werror=stop,rerror=stop` policy as the q35 device, and takes no PCIe hot-plug port.
+A microVM started without `pcie=on` keeps the `virtio-*-device` MMIO transports.
 
 Boot and EFI requests are rejected on this path, and a direct-boot instance with no data requests launches its base unchanged.
 Disk-boot (q35) instances keep the existing PCI hot-plug path.
 
-Hot-attaching a volume to a running direct-boot microVM is not supported, because the MMIO bus has no PCIe root port to plug into.
+Hot-attaching a volume to a running direct-boot microVM is not supported, because the microVM has no PCIe hot-plug root port to plug into.
 `AttachVolume` refuses it before mounting the volume or changing any instance or volume state, and the EC2 API returns `UnsupportedOperation`.
 
 This covers only requests that are already mounted when the instance starts; nothing yet supplies data volumes to a system instance, and the path is verified with fake-QEMU unit tests, not with a real EBS volume in a guest.
+
+#### Volume leases
+
+Before opening an engine on a volume, the Viperblock worker takes a lease: one entry per volume in the `VIPERBLOCK_VOLUME_LEASES` JetStream KV bucket, which expires 45 seconds after its last write (`providers/ebs/viperblock/volume_lease.go`).
+A renewal becomes eligible once the last confirmed write is 10 seconds old, and the holder checks for that periodically, so the rewrite lands some time after that point.
+Each rewrite is conditioned on the revision the holder last wrote, and a refused write that finds the entry gone or naming another owner or generation fences the export as a takeover.
+It may keep writing for 40 seconds after the last write the store acknowledged, measured from when that write was sent, because the server starts the entry's expiry when it applies the write and never earlier.
+A slow acknowledgement therefore shortens the remaining validity rather than extending it, and an acquisition acknowledged after its validity has already run out is refused as retryable.
+
+For a holder that cannot renew, a timer is armed for the validity deadline, leaving a nominal 5 seconds before the entry can expire; when it fires, the export's nbdkit is fenced with SIGKILL (`volume_fence.go`).
+The fence runs on its own goroutine, so Go scheduling, that goroutine and process termination all delay the kill, and enough delay can use up the whole margin; a kill held in uninterruptible sleep, which the fence waits up to 30 seconds for, is the extreme case.
+Once a lease is lost or has lapsed it stays lost: a renewal that succeeds afterwards is ignored, and another open on the same node cannot share it while the fence runs.
+
+These rules bound only the holder's own clock.
+The storage backend does not reject a stale writer, so a paused or partitioned host that resumes after its validity can still write; generation enforcement at the write boundary is required by Q-24 in the umbrella repository's `docs/specs/viperblock/rfc3-1_overview.md` and is not implemented.
+An export that survives a daemon restart writes without a renewed lease until recovery adopts it, and a survivor that recovery cannot adopt while a guest still uses it is left running without a lease or a fence.
+
+#### Unsealed writes and start elsewhere (interim)
+
+A volume is unsealed while its node holds writes the backend has not confirmed; the node records this in a dirty marker naming itself as owner (`providers/ebs/viperblock/volume_dirty.go`).
+Opening such a volume on another node loses those writes, so two guards stop it while the previous owner may still hold them.
+This is an interim guard until the instance lifecycle work defines ownership, and it is not a fence.
+
+When `ec2.start` is forwarded to the node that last ran a stopped instance and that node refuses for capacity, the forwarding node normally starts the instance locally.
+If the refusing node still holds unsealed writes for any of the instance's volumes, it sets the `X-Unsealed-Writes` NATS reply header and the forwarder relays `InsufficientInstanceCapacity` instead of starting elsewhere.
+The check asks the owner's viperblockd over the per-node `unsealed` verb with a 5 second bound, and a check that fails or times out counts as holding, so the refusal is kept.
+
+Independently, a node that finds another node's dirty marker on a volume refuses to open it when that node's daemon heartbeat (`heartbeat.<node>` in the cluster-state bucket) is under 60 seconds old.
+It also refuses when the heartbeat cannot be read or no heartbeat source is wired, and the refusal maps to the held-elsewhere error that recovery retries.
+A previous owner that has stopped heartbeating is opened over with a warning, as before.
+The heartbeat age is compared across node clocks, so the 60 second window is also the clock-skew allowance.
+
+EKS control-plane recovery treats both refusals, capacity and held-elsewhere, as retryable: it keeps retrying the stopped member and does not count them against its restart attempts.
 
 ### Predastore (S3)
 
@@ -273,8 +278,8 @@ storage-provider contract.
 ### SQS message store (internal)
 
 `domains/sqs/message` defines the store-neutral interface the SQS domain reaches its message store through (ADR-0011:S6), with a JetStream adapter in `domains/sqs/message/jetstream` and a shared conformance suite in `domains/sqs/message/conformance`.
-It is an internal primitive: nothing outside the SQS domain uses it, no daemon or service is wired to it, and it does not itself deliver an SQS API.
-The dedicated JetStream server ADR-0011 describes is not deployed by this code, and Spinifex ships no host service, unit, user or firewall rule for it.
+It is used only by the SQS worker inside the SQS system instance and does not itself deliver an SQS API.
+Spinifex ships no host service, unit, user or firewall rule for the dedicated JetStream server; the system instance that runs it is described under *SQS system instance (operator-launched)*.
 
 The interface covers durable and idempotent append, body and metadata reads, conditional state writes and deletes, per-namespace counts, namespace enumeration, an ordered change feed, a bounded paginated scan, namespace deletion and a sweep of tombstoned bodies.
 A namespace carries an immutable message-shard and state-shard allocation chosen when the queue is created, so a later change in shard counts never moves an existing queue.
@@ -292,6 +297,37 @@ If that consumer delivers nothing for about two seconds while the stream holds a
 `Close` is terminal, waits for consumer opens and deletes in progress and retries failed deletes, but cleanup is best effort for a create whose outcome is unknown: a consumer that lands after its last delete is removed by the server's one-minute inactive threshold.
 
 Coverage is unit and conformance tests on in-process R1 and R3 servers; there is no end-to-end or multi-host validation of this code, and earlier multi-host evidence predates the final feed.
+
+### SQS system instance (operator-launched)
+
+One system-owned microVM per Region runs both the SQS store and the SQS worker as separate processes, on one encrypted data volume pinned to one node (ADR-0011 Amendment 5, ADR-0012 Amendment 6).
+Only an operator activates it with the super-admin `EnsureSQSWorker` or `EnableSQS` actions; nothing starts it at daemon startup, and platform NATS is neither used nor changed for SQS data.
+This first profile is fresh single-node only: a host cluster of more than one node is refused before anything is recorded or allocated, and there is no disable.
+
+`make build-sqs-worker-microvm-image` builds the one `sqs-worker` image: the static `sqs-worker` binary, the pinned `nats-server`, the ext4 tools and a network `/init`; releases ship it as `microvm-sqs-worker`, which `setup.sh` installs to `/usr/share/spinifex/microvm/sqs-worker`.
+At boot the guest reads three firmware config values under `opt/spinifex/sqs-worker/` (the data disk's serial, its Region and the gateway URL on this node's mgmt bridge) and refuses before touching any disk if one is missing or malformed.
+It selects exactly one disk with that serial, runs `e2fsck -p`, mounts it at `/data` and confirms from `/proc/self/mountinfo` that the whole disk is what is mounted; the guest never formats.
+
+The store is a dedicated `nats-server` listening only on `127.0.0.1`, with its JetStream directory at `/data/jetstream` and `GOMEMLIMIT=512MiB` (ADR-0011:S11), so nothing outside the VM can reach it and it needs no network identity of its own.
+The store starts only after the receipt key is settled, and the worker connects only after the store answers JetStream account info, so an unavailable store never appears ready.
+
+The receipt-signing key lives on the data disk under `/data/sqs-worker-key`, written to a temporary file, synced, renamed and its directory synced before its fingerprint is recorded.
+`domains/sqs/workerident` holds the platform's receipt-key state on the worker's identity record, beside its generation, claim, pinned node and volume: `pending` is set only when the record first creates its volume, and `recorded` holds the fingerprint.
+Under `pending` the guest may create a key, or reuse a valid key it already wrote before a crash, only while no `/data/jetstream` directory exists; any store data under `pending` refuses, because it proves the volume is not new.
+Under `recorded` a missing, unreadable or different key refuses the boot and is never regenerated; a record with no receipt-key state is refused as not proven new.
+`RecordReceiptKey` writes the fingerprint by compare-and-swap that re-checks the current instance, generation, claim and volume, and a lost reply is answered by reading the record again, never by a new key.
+A replacement worker reuses the pinned volume and keeps its predecessor's receipt-key state.
+
+The worker reaches the gateway over TLS 1.3 trusting only the cluster CA, signing with instance-role credentials from the metadata service only.
+The internal `spinifex-sqs` actions are `ClaimReceiptKey`, `RecordReceiptKey`, `PollWork` and `CompleteWork`; the gateway admits only an assumed-role session of `sqsWorkerRole` in the system account and resolves the instance through `workerident.Authorize`, a point-in-time check against the current bound record.
+The worker pulls tenant work from its own node's gateway relay and posts results back, so no SQS payload crosses platform NATS; the relay holds a bounded, in-memory set of waiting requests and answers `ServiceUnavailable` when it is full or no worker is polling.
+
+`EnsureSQSWorker` takes a `NodeId`, an `InstanceType` and a `VolumeSizeGiB`; the instance type's memory must exceed the store's 512 MiB limit, and a later request for a different type or size is refused as `IncorrectState`.
+`EnableSQS` records the Region's desired state, pinned to one node, and then ensures the worker; `status` reports it ready only when the worker is bound, polling and the tenant API is registered.
+A store launch record or VM from the earlier separate-store design, or a worker record without a supported launch contract, is refused with its volume kept: enable stops before recording anything, and a relaunch of an old store VM is marked failed rather than started.
+
+Evidence is local: unit tests, the guest shell test and an AWS SDK test that creates a queue and sends, receives and deletes a message through the real worker loop against a real local JetStream store and a restart.
+A real guest boot, its metadata route on a real ENI and the signed path on a live node are unproven, Viperblock's at-rest key is held by the platform, and SQS-managed message encryption is not implemented, so the profile must not hold tenant production data.
 
 ## Configuration
 

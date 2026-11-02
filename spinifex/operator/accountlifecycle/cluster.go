@@ -12,6 +12,15 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
+// ClusterNodes is the configured node set a teardown reaches. The two ID lists
+// are different processes: a daemon on every node, a gateway only on nodes
+// that run awsgw. They are named fields so one cannot be passed for the other.
+type ClusterNodes struct {
+	Expected   int
+	DaemonIDs  []string
+	GatewayIDs []string
+}
+
 // NewClusterEngine wires every reaper against a live cluster.
 //
 // The CLI and the admin API both build their engine here rather than each
@@ -20,8 +29,7 @@ import (
 func NewClusterEngine(
 	ctx context.Context,
 	nc *nats.Conn,
-	expectedNodes int,
-	nodeIDs []string,
+	nodes ClusterNodes,
 	svc iamdomain.IAMService,
 	buckets BucketStore,
 ) (*Engine, error) {
@@ -65,7 +73,7 @@ func NewClusterEngine(
 	// live spot request launches a replacement for anything already terminated.
 	reapers = append(reapers, ELBv2Reapers(nc)...)
 	reapers = append(reapers, EC2ExtraReapers(nc)...)
-	reapers = append(reapers, EC2Reapers(nc, expectedNodes, nodeIDs)...)
+	reapers = append(reapers, EC2Reapers(nc, nodes.Expected, nodes.DaemonIDs)...)
 
 	reapers = append(reapers, S3Reapers(buckets)...)
 	reapers = append(reapers, ACMReapers(nc)...)
@@ -74,7 +82,9 @@ func NewClusterEngine(
 	// Before the account counters and reservations: the seal must still be
 	// able to find the account IAM holds as TERMINATING, which the account
 	// record reaper does not remove.
-	reapers = append(reapers, EC2AccountSettingsReapers(nc, nodeIDs)...)
+	reapers = append(reapers, EC2AccountSettingsReapers(nc, nodes.DaemonIDs)...)
+	// Independent of the EC2 seal: either failing keeps the account TERMINATING.
+	reapers = append(reapers, QuotaOverrideSealReapers(nc, nodes.GatewayIDs)...)
 	reapers = append(reapers, AccountReapers(svc, names, usage)...)
 
 	engine := NewEngine(NewIAMAccounts(svc), reapers...)

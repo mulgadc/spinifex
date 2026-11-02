@@ -41,27 +41,28 @@ func beat(t *testing.T, jsm *JetStreamManager, node string) {
 
 func TestKVIPSecBarrier_ReportsEveryLiveNodesState(t *testing.T) {
 	barrier, jsm := newTestIPSecBarrier(t)
-	nodes := []string{"ipsec-a", "ipsec-b"}
+	a, b := uniqueAdapterID("ipsec-a"), uniqueAdapterID("ipsec-b")
+	nodes := []string{a, b}
 	for _, n := range nodes {
 		beat(t, jsm, n)
 	}
 
-	require.NoError(t, barrier.Publish(t.Context(), "ipsec-a", host.IPSecNodeStatus{Ready: true, NBReachable: true}))
+	require.NoError(t, barrier.Publish(t.Context(), a, host.IPSecNodeStatus{Ready: true, NBReachable: true}))
 
 	cluster, err := barrier.Cluster(t.Context(), nodes)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]host.IPSecNodeStatus{
-		"ipsec-a": {Ready: true, NBReachable: true},
-		"ipsec-b": {},
+		a: {Ready: true, NBReachable: true},
+		b: {},
 	}, cluster)
 
-	require.NoError(t, barrier.Publish(t.Context(), "ipsec-b", host.IPSecNodeStatus{Ready: true}))
+	require.NoError(t, barrier.Publish(t.Context(), b, host.IPSecNodeStatus{Ready: true}))
 
 	cluster, err = barrier.Cluster(t.Context(), nodes)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]host.IPSecNodeStatus{
-		"ipsec-a": {Ready: true, NBReachable: true},
-		"ipsec-b": {Ready: true},
+		a: {Ready: true, NBReachable: true},
+		b: {Ready: true},
 	}, cluster)
 }
 
@@ -69,13 +70,14 @@ func TestKVIPSecBarrier_ReportsEveryLiveNodesState(t *testing.T) {
 // is exactly the case the flag must not be asserted over.
 func TestKVIPSecBarrier_ExplicitlyUnreadyNodeIsReported(t *testing.T) {
 	barrier, jsm := newTestIPSecBarrier(t)
-	beat(t, jsm, "ipsec-unready")
+	node := uniqueAdapterID("ipsec-unready")
+	beat(t, jsm, node)
 
-	require.NoError(t, barrier.Publish(t.Context(), "ipsec-unready", host.IPSecNodeStatus{}))
+	require.NoError(t, barrier.Publish(t.Context(), node, host.IPSecNodeStatus{}))
 
-	cluster, err := barrier.Cluster(t.Context(), []string{"ipsec-unready"})
+	cluster, err := barrier.Cluster(t.Context(), []string{node})
 	require.NoError(t, err)
-	assert.Equal(t, map[string]host.IPSecNodeStatus{"ipsec-unready": {}}, cluster)
+	assert.Equal(t, map[string]host.IPSecNodeStatus{node: {}}, cluster)
 }
 
 // A node taken out of service has no chassis registered, so there is no tunnel
@@ -83,14 +85,15 @@ func TestKVIPSecBarrier_ExplicitlyUnreadyNodeIsReported(t *testing.T) {
 // the peers that are still talking to each other.
 func TestKVIPSecBarrier_NodeThatStoppedHeartbeatingDropsOutOfTheSet(t *testing.T) {
 	barrier, jsm := newTestIPSecBarrier(t)
-	beat(t, jsm, "ipsec-gone")
+	node := uniqueAdapterID("ipsec-gone")
+	beat(t, jsm, node)
 
-	require.NoError(t, barrier.Publish(t.Context(), "ipsec-gone", host.IPSecNodeStatus{Ready: true}))
+	require.NoError(t, barrier.Publish(t.Context(), node, host.IPSecNodeStatus{Ready: true}))
 
 	// Far enough ahead that both the status record and the heartbeat are stale.
 	barrier.now = func() time.Time { return time.Now().Add(ipsecStatusFreshness + time.Hour) }
 
-	cluster, err := barrier.Cluster(t.Context(), []string{"ipsec-gone"})
+	cluster, err := barrier.Cluster(t.Context(), []string{node})
 	require.NoError(t, err)
 	assert.Empty(t, cluster)
 }
@@ -99,28 +102,30 @@ func TestKVIPSecBarrier_NodeThatStoppedHeartbeatingDropsOutOfTheSet(t *testing.T
 // longer vouch for its own configuration, so it counts as not ready.
 func TestKVIPSecBarrier_LiveNodeWithAStaleStatusIsNotReady(t *testing.T) {
 	barrier, jsm := newTestIPSecBarrier(t)
+	node := uniqueAdapterID("ipsec-stale")
 
-	require.NoError(t, barrier.Publish(t.Context(), "ipsec-stale", host.IPSecNodeStatus{Ready: true}))
+	require.NoError(t, barrier.Publish(t.Context(), node, host.IPSecNodeStatus{Ready: true}))
 
 	// The status is stale, but a heartbeat lands at the shifted clock.
 	shifted := time.Now().Add(ipsecStatusFreshness + time.Minute)
 	barrier.now = func() time.Time { return shifted }
 	require.NoError(t, jsm.WriteHeartbeat(&Heartbeat{
-		Node:      "ipsec-stale",
+		Node:      node,
 		Timestamp: shifted.UTC().Format(time.RFC3339),
 	}))
 
-	cluster, err := barrier.Cluster(t.Context(), []string{"ipsec-stale"})
+	cluster, err := barrier.Cluster(t.Context(), []string{node})
 	require.NoError(t, err)
-	assert.Equal(t, map[string]host.IPSecNodeStatus{"ipsec-stale": {}}, cluster)
+	assert.Equal(t, map[string]host.IPSecNodeStatus{node: {}}, cluster)
 }
 
 // A node that has never published anything and never heartbeated is not part of
 // the running cluster yet.
 func TestKVIPSecBarrier_UnknownNodeIsAbsent(t *testing.T) {
 	barrier, _ := newTestIPSecBarrier(t)
+	node := uniqueAdapterID("ipsec-never-seen")
 
-	cluster, err := barrier.Cluster(t.Context(), []string{"ipsec-never-seen"})
+	cluster, err := barrier.Cluster(t.Context(), []string{node})
 	require.NoError(t, err)
 	assert.Empty(t, cluster)
 }

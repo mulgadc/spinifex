@@ -1,6 +1,9 @@
 package daemon
 
-import "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+import (
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+)
 
 // One key now holds an instance for its whole life, so which set it belongs to
 // is a predicate over the record rather than the prefix it sits under. Before
@@ -60,6 +63,11 @@ func recoverable(record *vm.InstanceRecord) bool {
 		return false
 	}
 	if vm.VolumeFenced(record.Status.Instance) {
+		return false
+	}
+	// The SQS store restarts only on the node that launched it; there is no
+	// takeover of the store or its data volume.
+	if record.Spec.ManagedBy == tags.ManagedBySQS {
 		return false
 	}
 	return !storageFaulted(record)

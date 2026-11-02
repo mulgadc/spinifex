@@ -62,14 +62,14 @@ describe("InlinePoliciesPanel", () => {
 
   it("opens the add form seeded with the policy template", () => {
     renderWithClient(<InlinePoliciesPanel kind="user" name={USER} />, seed([]))
-    fireEvent.click(screen.getByRole("button", { name: "Add Inline Policy" }))
+    fireEvent.click(screen.getByRole("button", { name: "Add inline policy" }))
     expect(screen.getByLabelText("Policy name")).toBeInTheDocument()
     expect(jsonEditor().value).toContain("2012-10-17")
   })
 
   it("blocks save when the document is invalid JSON", () => {
     renderWithClient(<InlinePoliciesPanel kind="user" name={USER} />, seed([]))
-    fireEvent.click(screen.getByRole("button", { name: "Add Inline Policy" }))
+    fireEvent.click(screen.getByRole("button", { name: "Add inline policy" }))
     fireEvent.change(screen.getByLabelText("Policy name"), {
       target: { value: POLICY },
     })
@@ -83,7 +83,7 @@ describe("InlinePoliciesPanel", () => {
   it("creates an inline policy via PutUserPolicy", async () => {
     send.mockResolvedValue({})
     renderWithClient(<InlinePoliciesPanel kind="user" name={USER} />, seed([]))
-    fireEvent.click(screen.getByRole("button", { name: "Add Inline Policy" }))
+    fireEvent.click(screen.getByRole("button", { name: "Add inline policy" }))
     fireEvent.change(screen.getByLabelText("Policy name"), {
       target: { value: POLICY },
     })
@@ -120,6 +120,30 @@ describe("InlinePoliciesPanel", () => {
       UserName: USER,
       PolicyName: POLICY,
     })
+  })
+
+  it("shows a refused delete in the banner and keeps the policy", async () => {
+    send.mockRejectedValueOnce(
+      Object.assign(new Error("The user policy cannot be found."), {
+        name: "NoSuchEntity",
+      }),
+    )
+    renderWithClient(
+      <InlinePoliciesPanel kind="user" name={USER} />,
+      seed([POLICY]),
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }))
+
+    const dialog = await screen.findByRole("alertdialog")
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }))
+
+    await expect(
+      screen.findByText("NoSuchEntity: The user policy cannot be found."),
+    ).resolves.toBeInTheDocument()
+    expect(
+      screen.getByText("Failed to delete inline policy"),
+    ).toBeInTheDocument()
+    expect(screen.getByText(POLICY)).toBeInTheDocument()
   })
 
   it("does not delete when the confirmation is cancelled", async () => {

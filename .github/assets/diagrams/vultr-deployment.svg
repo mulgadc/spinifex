@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="580" viewBox="0 0 900 580">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0a0a0a"/>
+      <stop offset="100%" style="stop-color:#0d1117"/>
+    </linearGradient>
+    <linearGradient id="vpc-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#58a6ff14"/>
+      <stop offset="100%" style="stop-color:#58a6ff05"/>
+    </linearGradient>
+    <linearGradient id="node-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#3fb9501f"/>
+      <stop offset="100%" style="stop-color:#3fb95008"/>
+    </linearGradient>
+    <linearGradient id="svc-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#a855f71f"/>
+      <stop offset="100%" style="stop-color:#a855f708"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#71717a"/>
+    </marker>
+  </defs>
+  <rect width="900" height="580" fill="url(#bg)" rx="12"/>
+  <text x="24" y="30" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#a1a1aa" letter-spacing="2.5" font-weight="600">SPINIFEX ON VULTR · ONE NODE OR THREE</text>
+  <text x="876" y="30" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#71717a" text-anchor="end">--nodes 1 or 3 · vx1-g-16c-64g or bare metal</text>
+  <rect x="30" y="52" width="250" height="56" rx="8" fill="#e4e4e70d" stroke="#e4e4e7" stroke-width="1.1" stroke-opacity="0.6"/>
+  <text x="155.0" y="76" font-family="'SF Mono', ui-monospace, monospace" font-size="12.5" fill="#e4e4e7" text-anchor="middle" font-weight="700">Your machine</text>
+  <text x="155.0" y="94" font-family="'Segoe UI', system-ui, sans-serif" font-size="10" fill="#a1a1aa" text-anchor="middle">deploy-vultr.sh · OpenTofu or Terraform</text>
+  <rect x="325" y="52" width="250" height="56" rx="8" fill="#3fb9500d" stroke="#3fb950" stroke-width="1.1" stroke-opacity="0.6"/>
+  <text x="450.0" y="76" font-family="'SF Mono', ui-monospace, monospace" font-size="12.5" fill="#3fb950" text-anchor="middle" font-weight="700">Internet</text>
+  <text x="450.0" y="94" font-family="'Segoe UI', system-ui, sans-serif" font-size="10" fill="#7ee787" text-anchor="middle">customers reach your EC2 and load balancers</text>
+  <rect x="620" y="52" width="250" height="56" rx="8" fill="#58a6ff12" stroke="#58a6ff" stroke-width="1.1" stroke-opacity="0.6"/>
+  <text x="745.0" y="76" font-family="'SF Mono', ui-monospace, monospace" font-size="12.5" fill="#79c0ff" text-anchor="middle" font-weight="700">Vultr API</text>
+  <text x="745.0" y="94" font-family="'Segoe UI', system-ui, sans-serif" font-size="10" fill="#a5d6ff" text-anchor="middle">VPC · servers · reserved IPs</text>
+  <rect x="30" y="160" width="840" height="400" rx="10" fill="url(#vpc-grad)" stroke="#58a6ff" stroke-width="1.2" stroke-opacity="0.55" stroke-dasharray="6,4"/>
+  <text x="50" y="184" font-family="'SF Mono', ui-monospace, monospace" font-size="12" fill="#79c0ff" font-weight="700">Vultr VPC</text>
+  <text x="850" y="184" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#58a6ff" text-anchor="end">private network 10.10.8.0/24</text>
+  <line x1="155" y1="108" x2="155" y2="158" stroke="#71717a" stroke-width="1.2" opacity="0.8" marker-end="url(#arrow)"/>
+  <text x="165" y="138" font-family="'Segoe UI', system-ui, sans-serif" font-size="10" fill="#a1a1aa" text-anchor="start">Terraform builds · SSH installs</text>
+  <line x1="450" y1="108" x2="450" y2="158" stroke="#71717a" stroke-width="1.2" opacity="0.8" marker-end="url(#arrow)"/>
+  <text x="460" y="138" font-family="'Segoe UI', system-ui, sans-serif" font-size="10" fill="#a1a1aa" text-anchor="start">reserved IPs</text>
+  <line x1="745" y1="158" x2="745" y2="110" stroke="#71717a" stroke-width="1.2" opacity="0.8" marker-end="url(#arrow)"/>
+  <text x="735" y="138" font-family="'Segoe UI', system-ui, sans-serif" font-size="10" fill="#a1a1aa" text-anchor="end">Spinifex calls the API</text>
+  <rect x="60" y="205" width="250" height="118" rx="8" fill="url(#node-grad)" stroke="#3fb950" stroke-width="1.2" stroke-opacity="0.6"/>
+  <text x="78" y="229" font-family="'SF Mono', ui-monospace, monospace" font-size="12.5" fill="#3fb950" font-weight="700">node1</text>
+  <text x="292" y="229" font-family="'Segoe UI', system-ui, sans-serif" font-size="9.5" fill="#7ee787" text-anchor="end">Ubuntu 24.04 · Spinifex</text>
+  <line x1="74" y1="237" x2="296" y2="237" stroke="#3fb950" stroke-opacity="0.3" stroke-width="0.6"/>
+  <rect x="76" y="250" width="74" height="24" rx="5" fill="#3fb9501a" stroke="#3fb950" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="113.0" y="266" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#7ee787" text-anchor="middle">AWS API</text>
+  <rect x="160" y="250" width="60" height="24" rx="5" fill="#3fb9501a" stroke="#3fb950" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="190.0" y="266" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#7ee787" text-anchor="middle">EBS</text>
+  <rect x="230" y="250" width="60" height="24" rx="5" fill="#3fb9501a" stroke="#3fb950" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="260.0" y="266" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#7ee787" text-anchor="middle">S3</text>
+  <text x="185" y="300" font-family="'Segoe UI', system-ui, sans-serif" font-size="9.5" fill="#a1a1aa" text-anchor="middle">VPC networking · your instances</text>
+  <rect x="325" y="205" width="250" height="118" rx="8" fill="url(#node-grad)" stroke="#3fb950" stroke-width="1.2" stroke-opacity="0.6" stroke-dasharray="5,3"/>
+  <text x="343" y="229" font-family="'SF Mono', ui-monospace, monospace" font-size="12.5" fill="#3fb950" font-weight="700">node2</text>
+  <text x="557" y="229" font-family="'Segoe UI', system-ui, sans-serif" font-size="9.5" fill="#7ee787" text-anchor="end">with --nodes 3</text>
+  <line x1="339" y1="237" x2="561" y2="237" stroke="#3fb950" stroke-opacity="0.3" stroke-width="0.6"/>
+  <rect x="341" y="250" width="74" height="24" rx="5" fill="#3fb9501a" stroke="#3fb950" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="378.0" y="266" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#7ee787" text-anchor="middle">AWS API</text>
+  <rect x="425" y="250" width="60" height="24" rx="5" fill="#3fb9501a" stroke="#3fb950" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="455.0" y="266" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#7ee787" text-anchor="middle">EBS</text>
+  <rect x="495" y="250" width="60" height="24" rx="5" fill="#3fb9501a" stroke="#3fb950" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="525.0" y="266" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#7ee787" text-anchor="middle">S3</text>
+  <text x="450" y="300" font-family="'Segoe UI', system-ui, sans-serif" font-size="9.5" fill="#a1a1aa" text-anchor="middle">VPC networking · your instances</text>
+  <rect x="590" y="205" width="250" height="118" rx="8" fill="url(#node-grad)" stroke="#3fb950" stroke-width="1.2" stroke-opacity="0.6" stroke-dasharray="5,3"/>
+  <text x="608" y="229" font-family="'SF Mono', ui-monospace, monospace" font-size="12.5" fill="#3fb950" font-weight="700">node3</text>
+  <text x="822" y="229" font-family="'Segoe UI', system-ui, sans-serif" font-size="9.5" fill="#7ee787" text-anchor="end">with --nodes 3</text>
+  <line x1="604" y1="237" x2="826" y2="237" stroke="#3fb950" stroke-opacity="0.3" stroke-width="0.6"/>
+  <rect x="606" y="250" width="74" height="24" rx="5" fill="#3fb9501a" stroke="#3fb950" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="643.0" y="266" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#7ee787" text-anchor="middle">AWS API</text>
+  <rect x="690" y="250" width="60" height="24" rx="5" fill="#3fb9501a" stroke="#3fb950" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="720.0" y="266" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#7ee787" text-anchor="middle">EBS</text>
+  <rect x="760" y="250" width="60" height="24" rx="5" fill="#3fb9501a" stroke="#3fb950" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="790.0" y="266" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#7ee787" text-anchor="middle">S3</text>
+  <text x="715" y="300" font-family="'Segoe UI', system-ui, sans-serif" font-size="9.5" fill="#a1a1aa" text-anchor="middle">VPC networking · your instances</text>
+  <line x1="310" y1="264" x2="325" y2="264" stroke="#58a6ff" stroke-width="1.6" stroke-dasharray="3,3" opacity="0.9"/>
+  <line x1="575" y1="264" x2="590" y2="264" stroke="#58a6ff" stroke-width="1.6" stroke-dasharray="3,3" opacity="0.9"/>
+  <text x="450" y="348" font-family="'Segoe UI', system-ui, sans-serif" font-size="10" fill="#79c0ff" text-anchor="middle">nodes cluster over the private network: control plane, EBS replicas and S3 shards</text>
+  <rect x="60" y="370" width="780" height="166" rx="8" fill="url(#svc-grad)" stroke="#a855f7" stroke-width="1.2" stroke-opacity="0.55"/>
+  <text x="80" y="394" font-family="'SF Mono', ui-monospace, monospace" font-size="12" fill="#c084fc" font-weight="700">AWS services across the fleet</text>
+  <text x="820" y="394" font-family="'Segoe UI', system-ui, sans-serif" font-size="9.5" fill="#d8b4fe" text-anchor="end">spread across the nodes; with three, moved to a survivor if one fails</text>
+  <line x1="76" y1="402" x2="824" y2="402" stroke="#a855f7" stroke-opacity="0.3" stroke-width="0.6"/>
+  <rect x="76" y="418" width="86" height="52" rx="6" fill="#a855f71a" stroke="#a855f7" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="119.0" y="440" font-family="'SF Mono', ui-monospace, monospace" font-size="11.5" fill="#d8b4fe" text-anchor="middle" font-weight="700">EC2</text>
+  <text x="119.0" y="457" font-family="'Segoe UI', system-ui, sans-serif" font-size="9" fill="#a1a1aa" text-anchor="middle">instances</text>
+  <rect x="169" y="418" width="86" height="52" rx="6" fill="#a855f71a" stroke="#a855f7" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="212.0" y="440" font-family="'SF Mono', ui-monospace, monospace" font-size="11.5" fill="#d8b4fe" text-anchor="middle" font-weight="700">ALB / NLB</text>
+  <text x="212.0" y="457" font-family="'Segoe UI', system-ui, sans-serif" font-size="9" fill="#a1a1aa" text-anchor="middle">load balancers</text>
+  <rect x="262" y="418" width="86" height="52" rx="6" fill="#a855f71a" stroke="#a855f7" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="305.0" y="440" font-family="'SF Mono', ui-monospace, monospace" font-size="11.5" fill="#d8b4fe" text-anchor="middle" font-weight="700">EKS</text>
+  <text x="305.0" y="457" font-family="'Segoe UI', system-ui, sans-serif" font-size="9" fill="#a1a1aa" text-anchor="middle">Kubernetes</text>
+  <rect x="355" y="418" width="86" height="52" rx="6" fill="#a855f71a" stroke="#a855f7" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="398.0" y="440" font-family="'SF Mono', ui-monospace, monospace" font-size="11.5" fill="#d8b4fe" text-anchor="middle" font-weight="700">ECS</text>
+  <text x="398.0" y="457" font-family="'Segoe UI', system-ui, sans-serif" font-size="9" fill="#a1a1aa" text-anchor="middle">containers</text>
+  <rect x="448" y="418" width="86" height="52" rx="6" fill="#a855f71a" stroke="#a855f7" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="491.0" y="440" font-family="'SF Mono', ui-monospace, monospace" font-size="11.5" fill="#d8b4fe" text-anchor="middle" font-weight="700">RDS</text>
+  <text x="491.0" y="457" font-family="'Segoe UI', system-ui, sans-serif" font-size="9" fill="#a1a1aa" text-anchor="middle">databases</text>
+  <rect x="541" y="418" width="86" height="52" rx="6" fill="#a855f71a" stroke="#a855f7" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="584.0" y="440" font-family="'SF Mono', ui-monospace, monospace" font-size="11.5" fill="#d8b4fe" text-anchor="middle" font-weight="700">S3</text>
+  <text x="584.0" y="457" font-family="'Segoe UI', system-ui, sans-serif" font-size="9" fill="#a1a1aa" text-anchor="middle">object storage</text>
+  <rect x="634" y="418" width="86" height="52" rx="6" fill="#a855f71a" stroke="#a855f7" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="677.0" y="440" font-family="'SF Mono', ui-monospace, monospace" font-size="11.5" fill="#d8b4fe" text-anchor="middle" font-weight="700">EBS</text>
+  <text x="677.0" y="457" font-family="'Segoe UI', system-ui, sans-serif" font-size="9" fill="#a1a1aa" text-anchor="middle">volumes</text>
+  <rect x="727" y="418" width="86" height="52" rx="6" fill="#a855f71a" stroke="#a855f7" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="770.0" y="440" font-family="'SF Mono', ui-monospace, monospace" font-size="11.5" fill="#d8b4fe" text-anchor="middle" font-weight="700">IAM</text>
+  <text x="770.0" y="457" font-family="'Segoe UI', system-ui, sans-serif" font-size="9" fill="#a1a1aa" text-anchor="middle">access</text>
+  <text x="450" y="500" font-family="'Segoe UI', system-ui, sans-serif" font-size="10.5" fill="#a1a1aa" text-anchor="middle">Use the AWS CLI, SDKs and Terraform against your own endpoint, unmodified.</text>
+  <text x="450" y="520" font-family="'Segoe UI', system-ui, sans-serif" font-size="9.5" fill="#71717a" text-anchor="middle">Public addresses are Vultr reserved IPs, attached to the node each resource runs on.</text>
+</svg>

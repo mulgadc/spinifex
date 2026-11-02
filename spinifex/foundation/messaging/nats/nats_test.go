@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -878,15 +879,19 @@ func TestGather_StopOnFirstSkipsErrors(t *testing.T) {
 	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 
+	var errorsSent sync.WaitGroup
+	errorsSent.Add(2)
 	for range 2 {
 		_, err := nc.Subscribe("test.gather.first", func(msg *nats.Msg) {
 			_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
+			errorsSent.Done()
 		})
 		require.NoError(t, err)
 	}
-	// Delayed so the two error frames are processed (and skipped) first.
+	// One connection publishes in order, so waiting here puts both error
+	// frames ahead of the success in the inbox.
 	_, err := nc.Subscribe("test.gather.first", func(msg *nats.Msg) {
-		time.Sleep(50 * time.Millisecond)
+		errorsSent.Wait()
 		_ = msg.Respond([]byte(`{"value":"found"}`))
 	})
 	require.NoError(t, err)

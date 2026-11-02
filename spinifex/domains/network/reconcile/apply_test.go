@@ -115,6 +115,53 @@ func TestReconcile_PortSuppressDHCP(t *testing.T) {
 	}
 }
 
+// A deleted DHCP_Options row clears dhcpv4_options on every LSP that pointed at
+// it. The next pass recreates the row under a new UUID and must re-link the
+// existing ports to it, leaving a SuppressDHCP port unlinked.
+func TestReconcile_ExistingPortRelinkedToRecreatedDHCPOptions(t *testing.T) {
+	rec, m := newTestReconciler(t)
+	ctx := context.Background()
+
+	intent := freshIntent(t)
+	mac, _ := net.ParseMAC("02:00:00:00:00:09")
+	intent.Ports["eni-static"] = topology.PortSpec{
+		PortID: "eni-static", SubnetID: "subnet-a", VPCID: "vpc-a",
+		PrivateIP: netip.MustParseAddr("10.0.1.11"), MAC: mac,
+		SGIDs: []string{"sg-a"}, SuppressDHCP: true,
+	}
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile #1: %v", err)
+	}
+
+	old, err := m.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", "subnet-a")
+	if err != nil {
+		t.Fatalf("DHCP options after first pass: %v", err)
+	}
+	if err := m.DeleteDHCPOptions(ctx, old.UUID); err != nil {
+		t.Fatalf("DeleteDHCPOptions: %v", err)
+	}
+	portName := "port-" + intent.Ports["eni-a"].PortID
+	m.Ports[portName].DHCPv4Options = nil
+
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile #2: %v", err)
+	}
+
+	cur, err := m.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", "subnet-a")
+	if err != nil {
+		t.Fatalf("DHCP options after second pass: %v", err)
+	}
+	if cur.UUID == old.UUID {
+		t.Fatalf("DHCP options row was not recreated")
+	}
+	if got := m.Ports[portName].DHCPv4Options; got == nil || *got != cur.UUID {
+		t.Errorf("existing LSP dhcpv4_options = %v, want %s", got, cur.UUID)
+	}
+	if got := m.Ports["port-eni-static"].DHCPv4Options; got != nil {
+		t.Errorf("SuppressDHCP LSP must stay unlinked, got %q", *got)
+	}
+}
+
 func TestReconcile_PortJoinsPortGroupAtomically(t *testing.T) {
 	rec, m := newTestReconciler(t)
 	ctx := context.Background()

@@ -826,20 +826,6 @@ func (c *LiveClient) DeleteDHCPOptions(ctx context.Context, uuid string) error {
 	return nil
 }
 
-func (c *LiveClient) FindDHCPOptionsByCIDR(ctx context.Context, cidr string) (*nbdb.DHCPOptions, error) {
-	var options []nbdb.DHCPOptions
-	err := c.client.WhereCache(func(o *nbdb.DHCPOptions) bool {
-		return o.CIDR == cidr
-	}).List(ctx, &options)
-	if err != nil {
-		return nil, fmt.Errorf("find DHCP options by CIDR: %w", err)
-	}
-	if len(options) == 0 {
-		return nil, fmt.Errorf("DHCP options for CIDR %q not found", cidr)
-	}
-	return &options[0], nil
-}
-
 func (c *LiveClient) FindDHCPOptionsByExternalID(ctx context.Context, key, value string) (*nbdb.DHCPOptions, error) {
 	var options []nbdb.DHCPOptions
 	err := c.client.WhereCache(func(o *nbdb.DHCPOptions) bool {

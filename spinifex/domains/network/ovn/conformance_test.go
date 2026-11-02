@@ -573,31 +573,26 @@ func conformDHCPOptions(t *testing.T, cli ovn.Client, ctx context.Context) {
 	require.NoError(t, err)
 	require.NotEmpty(t, uuid, "create must return the row UUID callers store")
 
-	byCIDR, err := cli.FindDHCPOptionsByCIDR(ctx, "10.0.1.0/24")
-	require.NoError(t, err)
-	assert.Equal(t, uuid, byCIDR.UUID)
-	assert.Equal(t, "10.0.1.1", byCIDR.Options["server_id"])
-
 	byExtID, err := cli.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", "subnet-1")
 	require.NoError(t, err)
 	assert.Equal(t, uuid, byExtID.UUID)
+	assert.Equal(t, "10.0.1.0/24", byExtID.CIDR)
+	assert.Equal(t, "10.0.1.1", byExtID.Options["server_id"])
 
 	require.NoError(t, cli.UpdateDHCPOptionsOptions(ctx, uuid, map[string]string{
 		"server_id": "10.0.1.1", "lease_time": "7200",
 	}))
-	byCIDR, err = cli.FindDHCPOptionsByCIDR(ctx, "10.0.1.0/24")
+	byExtID, err = cli.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", "subnet-1")
 	require.NoError(t, err)
-	assert.Equal(t, "7200", byCIDR.Options["lease_time"], "update must replace the options map")
+	assert.Equal(t, "7200", byExtID.Options["lease_time"], "update must replace the options map")
 
 	all, err := cli.ListDHCPOptions(ctx)
 	require.NoError(t, err)
 	assert.Len(t, all, 1)
 
-	_, err = cli.FindDHCPOptionsByCIDR(ctx, "10.9.9.0/24")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "10.9.9.0/24")
 	_, err = cli.FindDHCPOptionsByExternalID(ctx, "spinifex:subnet_id", "subnet-nope")
-	assert.Error(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "subnet-nope")
 
 	require.NoError(t, cli.DeleteDHCPOptions(ctx, uuid))
 	all, err = cli.ListDHCPOptions(ctx)

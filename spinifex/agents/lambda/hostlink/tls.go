@@ -18,7 +18,7 @@ import (
 )
 
 // FwCfgDir is where the guest kernel exposes the executor's fw_cfg entries.
-const FwCfgDir = "/sys/firmware/qemu_fw_cfg/by_name/" + lambdav1.FwCfgPrefix
+const FwCfgDir = FwCfgRoot + "/by_name/" + lambdav1.FwCfgPrefix
 
 // Identity is the guest's material for one environment generation.
 type Identity struct {

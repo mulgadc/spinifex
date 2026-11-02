@@ -76,7 +76,7 @@ func ensureCert(dir, caCertPath, caKeyPath, cn string, dns []string, ips []net.I
 		return certPath, keyPath, nil
 	}
 
-	caCert, caKey, err := loadCA(caCertPath, caKeyPath)
+	caCert, caKey, err := LoadCA(caCertPath, caKeyPath)
 	if err != nil {
 		return "", "", err
 	}
@@ -135,8 +135,8 @@ func certCoversSANs(certPath, keyPath string, dns []string, ips []net.IP) bool {
 	return true
 }
 
-// loadCA parses the PEM CA cert + EC/PKCS8 private key used to sign the leaf.
-func loadCA(certPath, keyPath string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
+// LoadCA parses the PEM CA cert + EC/PKCS8 private key used to sign the leaf.
+func LoadCA(certPath, keyPath string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read ca cert %s: %w", certPath, err)

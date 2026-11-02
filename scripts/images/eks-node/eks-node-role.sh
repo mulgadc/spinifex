@@ -11,13 +11,14 @@ set -eu
 # cron can branch without re-parsing, then disables itself so it runs exactly
 # once.
 #
-#   server      → eks-token-webhook, k3s (server), k3s-first-boot (bootstrap
-#                 publish), mulga-eks-state-report, mulga-eks-node-gc
+#   server      → eks-token-webhook, k3s (server), eks-pod-identity-webhook,
+#                 k3s-first-boot (bootstrap publish), mulga-eks-state-report,
+#                 mulga-eks-node-gc
 #   server-join → eks-token-webhook, k3s (server, joins the first server's etcd
-#                 quorum), mulga-eks-state-report, mulga-eks-node-gc. NO
-#                 k3s-first-boot: the first server already publishes the
-#                 cluster-identical bootstrap artifacts; a join re-publish only
-#                 races the bootstrap bus.
+#                 quorum), eks-pod-identity-webhook, mulga-eks-state-report,
+#                 mulga-eks-node-gc. NO k3s-first-boot: the first server
+#                 already publishes the cluster-identical bootstrap artifacts;
+#                 a join re-publish only races the bootstrap bus.
 #   agent       → k3s-agent
 #
 # Paths are overridable via env so the selection logic is unit-testable (bats)
@@ -79,6 +80,14 @@ svc_start() {
         openrc) rc-service "$1" start ;;
         systemd) systemctl start --no-block "$1.service" ;;
     esac
+}
+
+# IRSA injector: every server runs one, called by its own apiserver. It is
+# optional (failurePolicy Ignore), so it goes last and a fault only costs
+# injection, never the control plane.
+svc_optional() {
+    svc_enable "$1" && svc_start "$1" ||
+        log "WARN: optional service $1 failed to enable or start; continuing without it"
 }
 
 svc_disable() {
@@ -150,6 +159,7 @@ case "${ROLE}" in
         svc_start mulga-eks-state-report
         svc_start mulga-eks-addon-sync
         svc_start mulga-eks-node-gc
+        svc_optional eks-pod-identity-webhook
         ;;
     server-join)
         log "configuring server-join role"
@@ -168,6 +178,7 @@ case "${ROLE}" in
         svc_start konnectivity-server
         svc_start mulga-eks-state-report
         svc_start mulga-eks-node-gc
+        svc_optional eks-pod-identity-webhook
         ;;
     agent)
         log "configuring agent role"

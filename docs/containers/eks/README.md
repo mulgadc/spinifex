@@ -96,6 +96,53 @@ Limits:
   The load balancer VM reports target health through its own host's gateway, so while that gateway is down the unhealthy control plane stays in rotation.
 - Not measured: more than one control plane per host, a physical-node failure instead of a stopped gateway, and the target health state as `DescribeTargetHealth` reports it, because the load balancer and control-plane VMs belong to the system account.
 
+### IAM roles for service accounts in your workloads
+
+A pod gets an IAM role by running under a ServiceAccount that carries the role ARN in an annotation.
+No pod-spec wiring is needed.
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/app-role
+```
+
+Every control plane runs a mutating webhook that acts on pod creation.
+When the pod's ServiceAccount has the annotation, the webhook adds these to each container and init container:
+
+- `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE`, with a projected token volume named `aws-iam-token` mounted at `/var/run/secrets/eks.amazonaws.com/serviceaccount`.
+- `AWS_REGION`, `AWS_DEFAULT_REGION` and `AWS_STS_REGIONAL_ENDPOINTS`.
+- `AWS_ENDPOINT_URL_STS`, so the SDK calls the Spinifex STS endpoint.
+- `AWS_CA_BUNDLE`, pointing at `/etc/spinifex/ca-bundle/ca.pem`, a ConfigMap named `spinifex-ca-bundle` that is created in every namespace and holds the system roots plus the gateway CA.
+- `SSL_CERT_FILE` with the same path, only when the container does not set it. Clients such as the AWS Load Balancer Controller read this variable instead of `AWS_CA_BUNDLE`.
+
+Your workload still sets `AWS_ENDPOINT_URL` (or the per-service variable) for every service other than STS.
+
+The token audience defaults to `sts.amazonaws.com`.
+The expiry defaults to a value between 79200 and 86400 seconds and is clamped to 600 to 86400 seconds.
+Set them with the `eks.amazonaws.com/audience` and `eks.amazonaws.com/token-expiration` annotations on the ServiceAccount.
+The `token-expiration` annotation on the pod wins over the ServiceAccount.
+
+A container is left alone when it already has the role, region and regional STS settings, which is how the managed add-ons and your own explicit wiring are skipped.
+When some are present, the missing ones and the mount are added.
+Containers named in the pod's `eks.amazonaws.com/skip-containers` annotation (comma separated) are not touched.
+A pod whose ServiceAccount has no role annotation is not changed.
+
+The webhook fails open: if it cannot decide, the pod is created without injection.
+Each injection, skip and failure is logged with the namespace, pod and reason in the control-plane console log.
+Because it fails open, a pod that needs a role but starts without credentials is the symptom to look for, and the console log says why.
+
+The webhook listens on `127.0.0.1:8445` of each control plane, and each API server calls its own.
+Port 8444 is a different listener, the readiness check described above.
+
+Existing clusters get the webhook only when their control planes are replaced by the current `eks-node` image.
+No user-facing operation replaces a control plane, and automatic replacement does not currently work when the replacement reuses the failed member's IP.
+Recreate the cluster to adopt it.
+User-workload injection through a cluster created with an older image is not measured.
+
 ## Prerequisites
 
 > [!IMPORTANT]

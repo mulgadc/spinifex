@@ -1,7 +1,7 @@
 # Lambda v1 contracts
 
 This package will own the Lambda process contracts declared by ADR-0009:S13.
-It holds only the L-GUEST declaration so far, and no wire types: the transport and authentication are decided (ADR-0009:S17), and the message shapes and framing are not chosen.
+It holds the L-GUEST declaration and, in `guest.go`, the connection vocabulary both ends share: the scope, the URI SAN roles, the ALPN identifier and the fw_cfg entry names. The transport and authentication are decided (ADR-0009:S17); the invocation message types and framing are not chosen, so no message types are defined here.
 It is not an AWS tenant-facing API.
 
 ## L-GUEST: node executor to guest agent

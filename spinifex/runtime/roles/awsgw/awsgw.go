@@ -707,7 +707,7 @@ func launchService(config *config.ClusterConfig) error {
 	sqsControlPlane := sqsRegistrations(sqsRelay, registryHost, registryPort)
 	// Set once the gateway is composed, so status reports the registry it serves.
 	var composedServices *dispatch.Registry
-	operatorControlPlane := operatoradmin.NewRegistration(operatorDeps(iamService, config, operatoradmin.Deps{
+	operatorAdminDeps := operatorDeps(iamService, config, operatoradmin.Deps{
 		Version:     version,
 		Commit:      commit,
 		NATS:        natsConn,
@@ -723,7 +723,11 @@ func launchService(config *config.ClusterConfig) error {
 		Region:                 nodeConfig.Region,
 		SQSWorkerPolling:       sqsRelay.WorkerPresent,
 		SQSTenantAPIRegistered: func() bool { return sqsServed(composedServices) },
-	}))
+	})
+	operatorControlPlane := operatoradmin.NewRegistration(operatorAdminDeps)
+	// Every gateway scans for account deletions whose holder died; the fenced
+	// takeover makes any number of them safe.
+	defer operatorAdminDeps.StartDeletionResumer(janitorCtx)()
 	// The SQS worker's internal surface binds its buckets per request and never
 	// creates them, so it refuses every caller until a worker launch has.
 	sqsWorkerDeps := sqsworkerapi.JetStreamDeps(js)

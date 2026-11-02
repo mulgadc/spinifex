@@ -1,6 +1,9 @@
 package awsgw
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
@@ -67,4 +70,21 @@ func TestOperatorDeps_BindsTheConcreteIAMServiceAndNodes(t *testing.T) {
 	assert.Same(t, iamService, got.IAM, "IAM")
 	assert.Same(t, iamService, got.Termination, "Termination")
 	assert.Equal(t, []string{"n1"}, got.GatewayNodeIDs, "GatewayNodeIDs")
+}
+
+// The deletion resumer is what finishes an account deletion whose gateway died,
+// with no request to prompt it. A composition that stops starting it would leave
+// such jobs stuck until someone retried by hand.
+func TestAwsgwStartsTheDeletionResumer(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "awsgw.go", nil, 0)
+	require.NoError(t, err)
+
+	var started bool
+	ast.Inspect(file, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "StartDeletionResumer" {
+			started = true
+		}
+		return true
+	})
+	assert.True(t, started, "awsgw.go must call Deps.StartDeletionResumer")
 }

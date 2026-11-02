@@ -1,7 +1,7 @@
 import { Upload } from "@aws-sdk/lib-storage"
 import { useSyncExternalStore } from "react"
 
-import { createS3UploadClient } from "@/lib/awsClient"
+import { createS3UploadClient } from "@/lib/aws-client"
 import { currentRate, RATE_WINDOW_MS, type RateSample } from "@/lib/transfer"
 
 export type UploadStatus =

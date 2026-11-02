@@ -6,7 +6,7 @@ vi.mock("./sts", () => ({
   exchangeForSession: vi.fn(),
 }))
 
-vi.mock("./awsClient", () => ({
+vi.mock("./aws-client", () => ({
   clearClients: vi.fn(),
 }))
 
@@ -16,7 +16,7 @@ vi.mock("./auth", async (orig) => ({
 }))
 
 import { setSessionCredentials } from "./auth"
-import { clearClients } from "./awsClient"
+import { clearClients } from "./aws-client"
 import { startConsoleHandoff } from "./console-handoff"
 import { exchangeForSession } from "./sts"
 

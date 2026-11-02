@@ -6,6 +6,7 @@ import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 import { NodeNetworkTest } from "./node-network-test"
 
+// SAFETY: NodeNetworkTest reads only planes, so the other NodeFacts fields are left out.
 const facts = {
   node: "node2",
   planes: [

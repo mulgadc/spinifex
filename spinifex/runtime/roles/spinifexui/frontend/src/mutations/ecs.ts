@@ -12,7 +12,7 @@ import {
 } from "@aws-sdk/client-ecs"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 
-import { getEcsClient } from "@/lib/awsClient"
+import { getEcsClient } from "@/lib/aws-client"
 import {
   provisionCapacity,
   type ProvisionCapacityRequest,

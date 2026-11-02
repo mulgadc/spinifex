@@ -11,7 +11,7 @@ const sdk = await vi.hoisted(async () => {
   return createFakeSdk()
 })
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(sdk.send)
@@ -57,6 +57,7 @@ describe("CreateTargetGroupPage", () => {
       expect(sdk.send).toHaveBeenCalledOnce()
     })
 
+    // SAFETY: the one send is the CreateTargetGroupCommand the form submits.
     const input = sdk.send.mock.calls[0]?.[0].input as {
       Name: string
       Protocol: string
@@ -93,6 +94,7 @@ describe("CreateTargetGroupPage", () => {
       expect(sdk.send).toHaveBeenCalledOnce()
     })
 
+    // SAFETY: the one send is the CreateTargetGroupCommand the form submits.
     const input = sdk.send.mock.calls[0]?.[0].input as {
       Protocol: string
       HealthCheckProtocol: string

@@ -25,7 +25,7 @@ const sdk = await vi.hoisted(async () => {
   return createFakeSdk()
 })
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(sdk.send)
@@ -149,10 +149,7 @@ describe("CreateLoadBalancerPage", () => {
     })
 
     const createCommands = sdk.send.mock.calls
-      .map(
-        (call) =>
-          (call[0] as { constructor: { name: string } }).constructor.name,
-      )
+      .map((call) => call[0].constructor.name)
       .filter((name) => name.startsWith("Create"))
 
     expect(createCommands).toStrictEqual([
@@ -240,20 +237,17 @@ describe("CreateLoadBalancerPage", () => {
     })
 
     const createCalls = sdk.send.mock.calls.filter((call) =>
-      (
-        call[0] as { constructor: { name: string } }
-      ).constructor.name.startsWith("Create"),
+      call[0].constructor.name.startsWith("Create"),
     )
 
-    const createNames = createCalls.map(
-      (call) => (call[0] as { constructor: { name: string } }).constructor.name,
-    )
+    const createNames = createCalls.map((call) => call[0].constructor.name)
 
     expect(createNames).toStrictEqual([
       "CreateLoadBalancerCommand",
       "CreateListenerCommand",
     ])
 
+    // SAFETY: createNames above confirms createCalls[1] is the CreateListenerCommand.
     const listenerInput = createCalls[1]?.[0].input as {
       DefaultActions: { Type: string; TargetGroupArn: string }[]
     }
@@ -300,16 +294,13 @@ describe("CreateLoadBalancerPage", () => {
     })
 
     const createCalls = sdk.send.mock.calls.filter((call) =>
-      (
-        call[0] as { constructor: { name: string } }
-      ).constructor.name.startsWith("Create"),
+      call[0].constructor.name.startsWith("Create"),
     )
 
+    // SAFETY: every command input is an object, and the expects below name the fields they read.
     const byName = (name: string) =>
       createCalls.find(
-        (call) =>
-          (call[0] as { constructor: { name: string } }).constructor.name ===
-          name,
+        (call) => call[0].constructor.name === name,
         // oxlint-disable-next-line anti-slop/no-unsafe-dictionary-type -- the call log holds inputs of several command types; the assertions below name the fields
       )?.[0].input as Record<string, unknown> | undefined
 

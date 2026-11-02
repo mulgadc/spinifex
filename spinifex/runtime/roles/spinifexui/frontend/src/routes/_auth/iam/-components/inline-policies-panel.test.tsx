@@ -5,7 +5,7 @@ import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 const { send } = vi.hoisted(() => ({ send: vi.fn() }))
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(send)
@@ -41,9 +41,13 @@ function seed(policyNames: string[], document?: string) {
 function jsonEditor(): HTMLTextAreaElement {
   const editor = screen
     .getAllByRole("textbox")
-    .find((node) => node.tagName === "TEXTAREA")
+    .find((node) => node instanceof HTMLTextAreaElement)
 
-  return editor as HTMLTextAreaElement
+  if (!editor) {
+    throw new Error("no JSON policy editor rendered")
+  }
+
+  return editor
 }
 
 describe("InlinePoliciesPanel", () => {

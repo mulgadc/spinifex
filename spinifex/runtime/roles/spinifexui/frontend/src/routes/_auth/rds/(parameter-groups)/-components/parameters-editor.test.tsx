@@ -1,3 +1,4 @@
+import type { Parameter } from "@aws-sdk/client-rds"
 import { fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
@@ -5,7 +6,7 @@ import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(mockSend)
@@ -23,7 +24,7 @@ const DYNAMIC_PARAM = {
   DataType: "integer",
   AllowedValues: "-1-2147483647 (ms)",
   IsModifiable: true,
-}
+} satisfies Parameter
 
 const STATIC_PARAM = {
   ParameterName: "max_connections",
@@ -35,7 +36,7 @@ const STATIC_PARAM = {
   DataType: "integer",
   AllowedValues: "6-8388607",
   IsModifiable: true,
-}
+} satisfies Parameter
 
 const FIXED_PARAM = {
   ParameterName: "ssl",
@@ -47,16 +48,16 @@ const FIXED_PARAM = {
   DataType: "boolean",
   AllowedValues: "0,1",
   IsModifiable: false,
-}
+} satisfies Parameter
 
 function render(
-  parameters: unknown[] = [DYNAMIC_PARAM, STATIC_PARAM, FIXED_PARAM],
+  parameters: Parameter[] = [DYNAMIC_PARAM, STATIC_PARAM, FIXED_PARAM],
   readOnly = false,
 ) {
   return renderWithClient(
     <ParametersEditor
       dbParameterGroupName="orders-pg"
-      parameters={parameters as never}
+      parameters={parameters}
       readOnly={readOnly}
     />,
     createTestQueryClient(),
@@ -126,8 +127,13 @@ describe("ParametersEditor", () => {
     ).not.toBeInTheDocument()
 
     const row = screen.getByText("max_connections").closest("tr")
+
+    if (!row) {
+      throw new Error("max_connections is not in a table row")
+    }
+
     expect(
-      within(row as HTMLElement).getByText(/adopted at the next reboot/),
+      within(row).getByText(/adopted at the next reboot/),
     ).toBeInTheDocument()
   })
 

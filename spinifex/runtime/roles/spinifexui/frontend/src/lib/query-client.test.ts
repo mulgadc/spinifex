@@ -14,7 +14,7 @@ vi.mock("./auth", () => ({
   },
 }))
 
-vi.mock("./awsClient", () => ({ clearClients: clearClientsMock }))
+vi.mock("./aws-client", () => ({ clearClients: clearClientsMock }))
 
 let createQueryClient: typeof import("./query-client").createQueryClient
 

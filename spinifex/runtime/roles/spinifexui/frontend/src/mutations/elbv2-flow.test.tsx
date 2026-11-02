@@ -35,10 +35,18 @@ const { sdk } = await vi.hoisted(async () => {
     state: string
   }
 
-  const state = {
-    lbs: [] as StoredLb[],
-    tgs: [] as StoredTg[],
-    listeners: [] as StoredListener[],
+  interface FakeElbv2State {
+    lbs: StoredLb[]
+    tgs: StoredTg[]
+    listeners: StoredListener[]
+    targets: Map<string, TargetRecord[]>
+    seq: number
+  }
+
+  const state: FakeElbv2State = {
+    lbs: [],
+    tgs: [],
+    listeners: [],
     targets: new Map<string, TargetRecord[]>(),
     seq: 0,
   }
@@ -197,7 +205,7 @@ const { sdk } = await vi.hoisted(async () => {
   }
 })
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(sdk.send)

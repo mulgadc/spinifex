@@ -7,7 +7,7 @@ import {
 } from "@aws-sdk/client-route-53"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 
-import { getRoute53Client } from "@/lib/awsClient"
+import { getRoute53Client } from "@/lib/aws-client"
 import {
   bareZoneId,
   verifyHostedZoneDelegation,

@@ -13,6 +13,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 
 import { NodesTable } from "./nodes-table"
 
+// SAFETY: NodesTable reads only the fields set here, and renders absent roles as "-".
 const node = {
   node: "node-1",
   status: "Ready",
@@ -38,7 +39,7 @@ const facts = {
   ],
   planes: null,
   sources: null,
-} as NodeFacts
+} satisfies NodeFacts
 
 function renderTable(nodes: NodeInfo[], nodeFacts?: NodeFacts[]) {
   const onRowClick = vi.fn()

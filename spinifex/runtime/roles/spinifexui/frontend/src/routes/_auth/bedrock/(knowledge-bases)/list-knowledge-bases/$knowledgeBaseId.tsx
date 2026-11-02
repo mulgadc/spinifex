@@ -7,7 +7,7 @@ import { panelSearchFields } from "@/lib/panel-search"
 import {
   dataSourcesQueryOptions,
   knowledgeBaseQueryOptions,
-} from "@/queries/bedrockAgent"
+} from "@/queries/bedrock-agent"
 
 import { KnowledgeBaseDetails } from "../-components/knowledge-base-details"
 

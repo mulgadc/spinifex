@@ -27,7 +27,6 @@ export default defineConfig({
     "@tanstack/query/stable-query-client": "error",
     "@tanstack/router/create-route-property-order": "error",
     "@tanstack/router/route-param-names": "error",
-    "anti-slop/require-safety-comment-for-type-assertion": "off",
     "eslint/func-style": [
       "error",
       "declaration",
@@ -102,46 +101,8 @@ export default defineConfig({
     ],
     "typescript/strict-boolean-expressions": "off",
     "typescript/strict-void-return": "off",
-    "unicorn/filename-case": [
-      "error",
-      { cases: { kebabCase: true, camelCase: true } },
-    ],
   },
   overrides: [
-    {
-      // Pages chart through the design system's chart components, so the
-      // library can change in one place.
-      files: ["src/routes/**/*.{ts,tsx}"],
-      rules: {
-        "eslint/no-restricted-imports": [
-          "error",
-          {
-            patterns: [
-              {
-                group: [
-                  "recharts",
-                  "recharts/*",
-                  "chart.js",
-                  "chart.js/*",
-                  "react-chartjs-2",
-                  "echarts",
-                  "echarts/*",
-                  "echarts-for-react",
-                  "uplot",
-                  "uplot-react",
-                  "d3",
-                  "d3-*",
-                  "@visx/*",
-                  "@nivo/*",
-                ],
-                message:
-                  "Use the chart components in src/components, not a chart library.",
-              },
-            ],
-          },
-        ],
-      },
-    },
     {
       files: [
         "**/*.{test,spec}.{ts,tsx,js,jsx}",

@@ -18,7 +18,7 @@ const mockRuntimeSend = vi.hoisted(() =>
 
 const mockBedrockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(mockBedrockSend, {
@@ -192,6 +192,7 @@ describe("GuardrailDetails", () => {
       expect(mockBedrockSend).toHaveBeenCalled()
     })
 
+    // SAFETY: the first send is the DeleteGuardrailCommand the confirm issues.
     const input = mockBedrockSend.mock.calls[0]?.[0].input as {
       guardrailIdentifier: string
     }
@@ -213,6 +214,7 @@ describe("GuardrailDetails", () => {
       expect(mockBedrockSend).toHaveBeenCalled()
     })
 
+    // SAFETY: the first send is the CreateGuardrailVersionCommand the action issues.
     const input = mockBedrockSend.mock.calls[0]?.[0].input as {
       guardrailIdentifier: string
     }

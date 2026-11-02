@@ -16,11 +16,11 @@ import { StateBadge } from "@/components/state-badge"
 import { Button, buttonVariants } from "@/components/ui/button"
 import type { PanelTab } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
-import { useDeleteKnowledgeBase } from "@/mutations/bedrockAgent"
+import { useDeleteKnowledgeBase } from "@/mutations/bedrock-agent"
 import {
   dataSourcesQueryOptions,
   knowledgeBaseQueryOptions,
-} from "@/queries/bedrockAgent"
+} from "@/queries/bedrock-agent"
 
 import { AddDataSourceForm } from "./add-data-source-form"
 import { DataSourceCard } from "./data-source-card"

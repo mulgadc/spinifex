@@ -25,7 +25,7 @@ import {
 } from "@aws-sdk/client-iam"
 import { queryOptions } from "@tanstack/react-query"
 
-import { getIamClient } from "@/lib/awsClient"
+import { getIamClient } from "@/lib/aws-client"
 import { decodePolicyDocument } from "@/lib/json"
 
 // IAM returns 100 items when MaxItems is omitted; 1000 is the most it allows.

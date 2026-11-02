@@ -8,6 +8,7 @@ import { NodeNetwork } from "./node-network"
 const OVERLAY_NOTE = /The VPC overlay rides the LAN plane/
 
 // A Vultr VM: no bridges, the cluster and overlay on one private NIC.
+// SAFETY: NodeNetwork reads only planes, nics and sources, so hardware fields are left out.
 const cloudVM = {
   node: "node2",
   planes: [
@@ -46,6 +47,7 @@ describe("NodeNetwork planes", () => {
   })
 
   it("names the bridge when the plane sits on one", () => {
+    // SAFETY: as cloudVM, a NodeFacts without the hardware fields NodeNetwork never reads.
     const bridged = {
       ...cloudVM,
       planes: [
@@ -75,6 +77,7 @@ describe("NodeNetwork planes", () => {
   })
 
   it("does not claim a shared plane when the overlay has its own port", () => {
+    // SAFETY: as cloudVM, a NodeFacts without the hardware fields NodeNetwork never reads.
     const split = {
       ...cloudVM,
       planes: [

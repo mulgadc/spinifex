@@ -10,7 +10,7 @@ import { getRegion } from "./cluster-config"
 
 // SDK signs against the real backend host so the SigV4 signature includes the
 // correct Host header; middleware rewrites the outgoing URL to the same-origin
-// reverse proxy after signing. Mirrors awsClient.ts.
+// reverse proxy after signing. Mirrors aws-client.ts.
 const AWSGW_SIGN_ENDPOINT = `${window.location.protocol}//localhost:9999`
 
 // Session lifetime requested from STS GetSessionToken (12 hours).

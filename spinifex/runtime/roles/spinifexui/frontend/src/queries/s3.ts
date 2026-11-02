@@ -5,7 +5,7 @@ import {
 } from "@aws-sdk/client-s3"
 import { queryOptions } from "@tanstack/react-query"
 
-import { getS3Client } from "@/lib/awsClient"
+import { getS3Client } from "@/lib/aws-client"
 
 // Keys and folders per page of the object browser. S3 counts both toward
 // MaxKeys, and caps a page at 1000.

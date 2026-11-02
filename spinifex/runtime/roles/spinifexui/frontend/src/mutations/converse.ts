@@ -7,7 +7,7 @@ import {
 } from "@aws-sdk/client-bedrock-runtime"
 import { useMutation } from "@tanstack/react-query"
 
-import { getBedrockRuntimeClient } from "@/lib/awsClient"
+import { getBedrockRuntimeClient } from "@/lib/aws-client"
 
 export interface ConverseParams {
   modelId: string

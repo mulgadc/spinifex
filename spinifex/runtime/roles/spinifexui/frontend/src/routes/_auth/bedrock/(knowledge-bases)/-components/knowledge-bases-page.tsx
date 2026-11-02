@@ -18,7 +18,7 @@ import { buttonVariants } from "@/components/ui/button"
 import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
 import { formatDateTime } from "@/lib/utils"
-import { useDeleteKnowledgeBase } from "@/mutations/bedrockAgent"
+import { useDeleteKnowledgeBase } from "@/mutations/bedrock-agent"
 
 import { KnowledgeBaseDetails } from "./knowledge-base-details"
 import { KnowledgeBaseFormPage } from "./knowledge-base-form-page"

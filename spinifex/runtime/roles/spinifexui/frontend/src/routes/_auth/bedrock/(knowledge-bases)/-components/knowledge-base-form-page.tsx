@@ -29,7 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
-import { useCreateKnowledgeBase } from "@/mutations/bedrockAgent"
+import { useCreateKnowledgeBase } from "@/mutations/bedrock-agent"
 import { foundationModelsQueryOptions } from "@/queries/bedrock"
 import {
   dimensionsForModelArn,
@@ -37,7 +37,7 @@ import {
   formToCreateKnowledgeBaseInput,
   kbFormSchema,
   type KnowledgeBaseFormData,
-} from "@/types/bedrockAgent"
+} from "@/types/bedrock-agent"
 
 export function KnowledgeBaseFormPage({
   onClose,

@@ -35,7 +35,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query"
 
-import { getIamClient } from "@/lib/awsClient"
+import { getIamClient } from "@/lib/aws-client"
 import type {
   AddRoleToProfileParams,
   CreateGroupFormData,

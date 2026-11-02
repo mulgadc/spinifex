@@ -11,7 +11,7 @@ const mockSend = vi.hoisted(() =>
   vi.fn().mockResolvedValue({ ingestionJobSummaries: [] }),
 )
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(mockSend)
@@ -27,7 +27,7 @@ import type { PanelTab } from "@/lib/panel-search"
 import {
   dataSourcesQueryOptions,
   knowledgeBaseQueryOptions,
-} from "@/queries/bedrockAgent"
+} from "@/queries/bedrock-agent"
 
 import { KnowledgeBaseDetails } from "./knowledge-base-details"
 
@@ -145,6 +145,7 @@ describe("KnowledgeBaseDetails", () => {
       expect(mockSend).toHaveBeenCalled()
     })
 
+    // SAFETY: the first send is the DeleteKnowledgeBaseCommand the confirm issues.
     const input = mockSend.mock.calls[0]?.[0].input as {
       knowledgeBaseId: string
     }
@@ -172,6 +173,7 @@ describe("KnowledgeBaseDetails", () => {
       expect(mockSend).toHaveBeenCalled()
     })
 
+    // SAFETY: the first send is the CreateDataSourceCommand the inline form submits.
     const input = mockSend.mock.calls[0]?.[0].input as {
       knowledgeBaseId: string
       name: string
@@ -201,6 +203,7 @@ describe("KnowledgeBaseDetails", () => {
       expect(mockSend).toHaveBeenCalled()
     })
 
+    // SAFETY: the first send is the CreateDataSourceCommand the inline form submits.
     const input = mockSend.mock.calls[0]?.[0].input as {
       vectorIngestionConfiguration?: {
         chunkingConfiguration?: { chunkingStrategy?: string }

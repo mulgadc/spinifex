@@ -1,7 +1,7 @@
 import { vi } from "vitest"
 
 type ClientGetter = Extract<
-  keyof typeof import("@/lib/awsClient"),
+  keyof typeof import("@/lib/aws-client"),
   `get${string}Client`
 >
 
@@ -38,8 +38,10 @@ export function mockAwsClients(
   send: Send,
   overrides: Partial<Record<ClientGetter, Send>> = {},
 ): AwsClientsMock {
+  // SAFETY: the entries cover every key of CLIENT_GETTERS, which is keyed by ClientGetter.
   const getters = Object.fromEntries(
     Object.keys(CLIENT_GETTERS).map((name) => {
+      // SAFETY: name is a key of CLIENT_GETTERS, whose keys are ClientGetter by its type.
       const client = { send: overrides[name as ClientGetter] ?? send }
 
       return [name, () => client]

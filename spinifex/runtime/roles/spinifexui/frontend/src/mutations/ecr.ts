@@ -13,7 +13,7 @@ import {
 } from "@aws-sdk/client-ecr"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 
-import { getEcrClient } from "@/lib/awsClient"
+import { getEcrClient } from "@/lib/aws-client"
 
 export function useCreateRepository() {
   const queryClient = useQueryClient()

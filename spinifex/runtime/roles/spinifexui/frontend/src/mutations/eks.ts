@@ -14,7 +14,7 @@ import {
 } from "@aws-sdk/client-eks"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 
-import { getEksClient } from "@/lib/awsClient"
+import { getEksClient } from "@/lib/aws-client"
 import type {
   AccessEntryParams,
   AssociateAccessPolicyParams,

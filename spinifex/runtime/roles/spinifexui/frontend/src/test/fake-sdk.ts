@@ -32,6 +32,7 @@ export function createFakeSdk(
       throw new Error(`No handler registered for SDK command ${commandName}`)
     }
 
+    // SAFETY: a handler is registered under the command name whose input type it declares.
     return handler(command.input as never)
   })
 

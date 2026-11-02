@@ -1,7 +1,7 @@
 import { z } from "zod"
 
 import { awsCredentialsSchema, setSessionCredentials } from "./auth"
-import { clearClients } from "./awsClient"
+import { clearClients } from "./aws-client"
 import { exchangeForSession } from "./sts"
 
 // Origins allowed to hand credentials to the console. Hardcoded on purpose —
@@ -60,10 +60,11 @@ export function startConsoleHandoff(opts?: {
   // that holds for the real sender.
   const openerRaw: unknown = globalThis.window?.opener ?? null
 
-  /* oxlint-disable anti-slop/no-runtime-typeof, typescript/no-unsafe-type-assertion -- a cross-realm WindowProxy carries no narrower contract, so a duck check is the only reliable one */
+  /* oxlint-disable anti-slop/no-runtime-typeof, typescript/no-unsafe-type-assertion -- SAFETY: openerRaw is read only through an optional postMessage, which tolerates any value */
   const canPost =
     typeof (openerRaw as { postMessage?: unknown })?.postMessage === "function"
 
+  // SAFETY: canPost has confirmed openerRaw carries a callable postMessage.
   const opener = canPost ? (openerRaw as Window) : null
 
   /* oxlint-enable anti-slop/no-runtime-typeof, typescript/no-unsafe-type-assertion */

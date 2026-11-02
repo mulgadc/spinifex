@@ -5,7 +5,7 @@ import { renderMutationHook } from "@/test/render"
 
 const mockSend = vi.hoisted(() => vi.fn())
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(mockSend)

@@ -16,7 +16,7 @@ import {
 } from "@aws-sdk/client-rds"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 
-import { getRdsClient } from "@/lib/awsClient"
+import { getRdsClient } from "@/lib/aws-client"
 import type {
   CreateDBInstanceFormData,
   CreateDBParameterGroupFormData,

@@ -1,7 +1,7 @@
 import { ListCertificatesCommand } from "@aws-sdk/client-acm"
 import { queryOptions } from "@tanstack/react-query"
 
-import { getAcmClient } from "@/lib/awsClient"
+import { getAcmClient } from "@/lib/aws-client"
 
 export const acmCertificatesQueryOptions = queryOptions({
   queryKey: ["acm", "certificates"],

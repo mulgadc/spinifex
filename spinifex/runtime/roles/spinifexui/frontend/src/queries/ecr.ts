@@ -8,7 +8,7 @@ import {
 } from "@aws-sdk/client-ecr"
 import { queryOptions } from "@tanstack/react-query"
 
-import { getEcrClient } from "@/lib/awsClient"
+import { getEcrClient } from "@/lib/aws-client"
 
 export const ecrRepositoriesQueryOptions = queryOptions({
   queryKey: ["ecr", "repositories"],

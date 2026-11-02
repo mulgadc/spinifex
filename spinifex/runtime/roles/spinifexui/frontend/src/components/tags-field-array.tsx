@@ -34,7 +34,7 @@ export function TagsFieldArray<T extends FieldValues>({
           <div className="flex items-start gap-2" key={field.id}>
             <Controller
               control={control}
-              // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- react-hook-form cannot infer a path built from a generic array name
+              // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- SAFETY: name is an ArrayPath<T> of key/value rows, so name.index.key is a Path<T>
               name={`${name}.${index}.key` as Path<T>}
               render={({ field: key, fieldState }) => (
                 <div className="min-w-0 flex-1">
@@ -50,7 +50,7 @@ export function TagsFieldArray<T extends FieldValues>({
             />
             <Controller
               control={control}
-              // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- as above
+              // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- SAFETY: name is an ArrayPath<T> of key/value rows, so name.index.value is a Path<T>
               name={`${name}.${index}.value` as Path<T>}
               render={({ field: value, fieldState }) => (
                 <div className="min-w-0 flex-1">
@@ -79,7 +79,7 @@ export function TagsFieldArray<T extends FieldValues>({
         ))}
         <Button
           onClick={() => {
-            // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- every caller's tags array is this row shape
+            // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- SAFETY: every caller's tags array holds this key/value row shape
             append({ key: "", value: "" } as FieldArray<T, ArrayPath<T>>)
           }}
           size="sm"

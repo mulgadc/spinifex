@@ -10,7 +10,7 @@ const sdk = await vi.hoisted(async () => {
   return createFakeSdk()
 })
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(sdk.send)
@@ -68,6 +68,7 @@ describe("RunTaskPage", () => {
       expect(sdk.send).toHaveBeenCalledOnce()
     })
 
+    // SAFETY: the one send is the RunTaskCommand the form submits.
     const input = sdk.send.mock.calls[0]?.[0].input as {
       cluster: string
       taskDefinition: string
@@ -117,6 +118,7 @@ describe("RunTaskPage", () => {
       expect(sdk.send).toHaveBeenCalledOnce()
     })
 
+    // SAFETY: the one send is the RunTaskCommand the form submits.
     const input = sdk.send.mock.calls[0]?.[0].input as {
       networkConfiguration?: {
         awsvpcConfiguration?: { subnets?: string[] }

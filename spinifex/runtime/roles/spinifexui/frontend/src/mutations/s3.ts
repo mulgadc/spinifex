@@ -8,7 +8,7 @@ import {
 } from "@aws-sdk/client-s3"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 
-import { getS3Client } from "@/lib/awsClient"
+import { getS3Client } from "@/lib/aws-client"
 import type { CreateBucketFormData } from "@/types/s3"
 
 export function useCreateBucket() {

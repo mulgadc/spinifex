@@ -26,7 +26,11 @@ async function rejection(promise: Promise<unknown>): Promise<Error> {
   try {
     await promise
   } catch (error) {
-    return error as Error
+    if (error instanceof Error) {
+      return error
+    }
+
+    throw error
   }
 
   throw new Error("expected the request to reject")
@@ -68,6 +72,7 @@ describe("signedFetch", () => {
 
     await signedFetch({ action: "GetVersion" })
 
+    // SAFETY: sendSigned calls fetch with a string URL and an init object.
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toMatch(/\/proxy\/awsgw\/$/)
     expect(init.body).toBe("Action=GetVersion")
@@ -82,7 +87,9 @@ describe("signedFetch", () => {
 
     await signedFetch({ action: "GetVersion" })
 
+    // SAFETY: sendSigned calls fetch with a string URL and an init object.
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit
+    // SAFETY: sendSigned passes headers as a plain object copied from the signer.
     const headers = init.headers as Record<string, string>
     expect(findHeader(headers, "x-amz-security-token")).toBe(
       credentials.sessionToken,
@@ -144,10 +151,12 @@ describe("signedAdminFetch", () => {
 
     await signedAdminFetch({ method: "ListAccounts", body: {} })
 
+    // SAFETY: sendSigned calls fetch with a string URL and an init object.
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toContain("/proxy/awsgw/admin/ListAccounts")
     expect(init.method).toBe("POST")
     expect(init.body).toBe("{}")
+    // SAFETY: sendSigned passes headers as a plain object copied from the signer.
     const headers = init.headers as Record<string, string>
     expect(findHeader(headers, "content-type")).toBe("application/json")
   })
@@ -161,6 +170,7 @@ describe("signedAdminFetch", () => {
 
     await signedAdminFetch({ method: "ListAccounts" })
 
+    // SAFETY: sendSigned calls fetch with a string URL and an init object.
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit
     expect(init.body).toBe("{}")
   })
@@ -213,12 +223,14 @@ describe("signedProxyXmlFetch", () => {
       path: PATH,
     })
 
+    // SAFETY: sendSigned calls fetch with a string URL and an init object.
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toMatch(
       /\/proxy\/awsgw\/2013-04-01\/hostedzone\/Z1\/activation$/,
     )
     expect(init.method).toBe("GET")
     expect(init.body).toBeUndefined()
+    // SAFETY: sendSigned passes headers as a plain object copied from the signer.
     const headers = init.headers as Record<string, string>
     expect(findHeader(headers, "content-type")).toBeUndefined()
     expect(findHeader(headers, "authorization")).toContain(
@@ -239,6 +251,7 @@ describe("signedProxyXmlFetch", () => {
       path: PATH,
     })
 
+    // SAFETY: sendSigned calls fetch with a string URL and an init object.
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit
     expect(init.method).toBe("POST")
     expect(init.body).toBeUndefined()

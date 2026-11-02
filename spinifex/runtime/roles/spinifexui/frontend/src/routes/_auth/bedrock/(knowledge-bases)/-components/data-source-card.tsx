@@ -10,8 +10,8 @@ import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialo
 import { StateBadge } from "@/components/state-badge"
 import { Button } from "@/components/ui/button"
 import { formatDateTime } from "@/lib/utils"
-import { useDeleteDataSource } from "@/mutations/bedrockAgent"
-import { ingestionJobsQueryOptions } from "@/queries/bedrockAgent"
+import { useDeleteDataSource } from "@/mutations/bedrock-agent"
+import { ingestionJobsQueryOptions } from "@/queries/bedrock-agent"
 
 const RECENT_JOBS_SHOWN = 3
 

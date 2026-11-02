@@ -16,7 +16,7 @@ const sdk = await vi.hoisted(async () => {
   return createFakeSdk()
 })
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(sdk.send)

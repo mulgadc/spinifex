@@ -5,7 +5,7 @@ import {
 } from "@aws-sdk/client-bedrock"
 import { queryOptions } from "@tanstack/react-query"
 
-import { getBedrockClient } from "@/lib/awsClient"
+import { getBedrockClient } from "@/lib/aws-client"
 
 const GUARDRAIL_STALE_TIME = 30_000
 const FOUNDATION_MODELS_STALE_TIME = 30_000

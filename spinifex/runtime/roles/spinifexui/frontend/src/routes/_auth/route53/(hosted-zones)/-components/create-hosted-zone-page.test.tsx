@@ -13,7 +13,7 @@ const sdk = await vi.hoisted(async () => {
 
 const activation = vi.hoisted(() => ({ get: vi.fn(), verify: vi.fn() }))
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(sdk.send)

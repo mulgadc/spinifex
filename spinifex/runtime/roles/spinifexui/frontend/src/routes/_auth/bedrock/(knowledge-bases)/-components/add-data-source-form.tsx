@@ -9,12 +9,12 @@ import { Field, FieldError, FieldTitle } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
-import { useCreateDataSource } from "@/mutations/bedrockAgent"
+import { useCreateDataSource } from "@/mutations/bedrock-agent"
 import {
   type DataSourceFormData,
   dataSourceFormSchema,
   EMPTY_DATA_SOURCE_FORM_DEFAULTS,
-} from "@/types/bedrockAgent"
+} from "@/types/bedrock-agent"
 
 export function AddDataSourceForm({
   knowledgeBaseId,

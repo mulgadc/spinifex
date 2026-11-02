@@ -7,7 +7,7 @@ import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { useApplyGuardrail } from "@/mutations/bedrockRuntime"
+import { useApplyGuardrail } from "@/mutations/bedrock-runtime"
 
 interface GuardrailTesterProps {
   guardrailId: string

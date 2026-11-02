@@ -22,7 +22,7 @@ import {
 } from "@aws-sdk/client-ec2"
 import { queryOptions } from "@tanstack/react-query"
 
-import { getEc2Client } from "@/lib/awsClient"
+import { getEc2Client } from "@/lib/aws-client"
 
 export const ec2AvailabilityZonesQueryOptions = queryOptions({
   queryKey: ["ec2", "availabilityZones"],

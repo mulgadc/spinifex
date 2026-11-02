@@ -19,7 +19,7 @@ const sdk = await vi.hoisted(async () => {
   return createFakeSdk()
 })
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(sdk.send)
@@ -75,6 +75,7 @@ const ARM_IMAGE = image("ami-o101a", "oracle-10.1-arm64", "arm64", "/dev/vda")
 
 function x86(name: string): InstanceTypeInfo {
   return {
+    // SAFETY: InstanceType is a plain string on the wire, so a name outside the SDK enum is fine.
     InstanceType: name as InstanceTypeInfo["InstanceType"],
     ProcessorInfo: { SupportedArchitectures: ["x86_64"] },
     VCpuInfo: { DefaultVCpus: 2 },

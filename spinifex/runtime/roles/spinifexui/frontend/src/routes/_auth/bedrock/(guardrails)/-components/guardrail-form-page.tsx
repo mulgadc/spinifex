@@ -52,7 +52,7 @@ import {
 // react-hook-form cannot infer a path built from a runtime array index, so
 // every array-row field name is funnelled through this one assertion.
 function path(template: string): Path<GuardrailFormData> {
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- react-hook-form cannot infer a path built from a runtime array index
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- SAFETY: callers build template from GuardrailFormData's own array field names
   return template as Path<GuardrailFormData>
 }
 

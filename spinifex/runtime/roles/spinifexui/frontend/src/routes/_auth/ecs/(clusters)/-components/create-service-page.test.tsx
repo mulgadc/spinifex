@@ -10,7 +10,7 @@ const sdk = await vi.hoisted(async () => {
   return createFakeSdk()
 })
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(sdk.send)
@@ -74,6 +74,7 @@ describe("CreateServicePage", () => {
       expect(sdk.send).toHaveBeenCalledOnce()
     })
 
+    // SAFETY: the one send is the CreateServiceCommand the form submits.
     const input = sdk.send.mock.calls[0]?.[0].input as {
       cluster: string
       serviceName: string

@@ -37,7 +37,7 @@ import {
   getElbv2Client,
   getIamClient,
   getRdsClient,
-} from "@/lib/awsClient"
+} from "@/lib/aws-client"
 
 export interface TagWriter {
   onPut: (key: string, value: string) => Promise<void>

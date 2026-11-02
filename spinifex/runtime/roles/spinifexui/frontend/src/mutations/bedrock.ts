@@ -6,7 +6,7 @@ import {
 } from "@aws-sdk/client-bedrock"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 
-import { getBedrockClient } from "@/lib/awsClient"
+import { getBedrockClient } from "@/lib/aws-client"
 import {
   formToCreateInput,
   formToUpdateInput,

@@ -60,6 +60,7 @@ function noProgress() {
 }
 
 function file(name: string, size: number) {
+  // SAFETY: the upload store reads only a File's name, size and type.
   return { name, size, type: "" } as File
 }
 

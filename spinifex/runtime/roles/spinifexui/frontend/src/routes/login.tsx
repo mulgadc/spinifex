@@ -37,7 +37,7 @@ import {
   getCredentials,
   setSessionCredentials,
 } from "@/lib/auth"
-import { clearClients } from "@/lib/awsClient"
+import { clearClients } from "@/lib/aws-client"
 import { startConsoleHandoff } from "@/lib/console-handoff"
 import { isDirectHostAccess } from "@/lib/host-access"
 import { exchangeForSession } from "@/lib/sts"

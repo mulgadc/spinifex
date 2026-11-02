@@ -121,6 +121,7 @@ describe("activation requests", () => {
 
     const activation = await getHostedZoneActivation("/hostedzone/Z0123")
 
+    // SAFETY: sendSigned calls fetch with a string URL and an init object.
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toMatch(
       /\/proxy\/awsgw\/2013-04-01\/hostedzone\/Z0123\/activation$/,
@@ -145,6 +146,7 @@ describe("activation requests", () => {
 
     const activation = await verifyHostedZoneDelegation("Z0123")
 
+    // SAFETY: sendSigned calls fetch with a string URL and an init object.
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toMatch(/\/hostedzone\/Z0123\/activation$/)
     expect(init.method).toBe("POST")

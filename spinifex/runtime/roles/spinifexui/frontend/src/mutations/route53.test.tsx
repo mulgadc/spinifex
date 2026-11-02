@@ -12,7 +12,7 @@ const sdk = await vi.hoisted(async () => {
 
 const activation = vi.hoisted(() => ({ verify: vi.fn() }))
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(sdk.send)
@@ -49,6 +49,7 @@ describe("route53 mutations", () => {
       expect(result.current.isSuccess).toBeTruthy()
     })
 
+    // SAFETY: the first send is the CreateHostedZoneCommand the mutation issues.
     const input = sdk.send.mock.calls[0]?.[0].input as
       | CreateHostedZoneCommandInput
       | undefined

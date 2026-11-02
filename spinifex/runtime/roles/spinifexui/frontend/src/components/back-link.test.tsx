@@ -16,6 +16,7 @@ describe("BackLink", () => {
   })
 
   it("passes link props through", () => {
+    // SAFETY: the router is mocked, so Link renders any path as an href unchecked.
     render(<BackLink to={"/instances" as never}>Back</BackLink>)
     const link = screen.getByRole("link")
     expect(link).toHaveAttribute("href", "/instances")

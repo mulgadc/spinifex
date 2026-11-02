@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest"
 
 const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(mockSend)
@@ -131,6 +131,7 @@ describe("GuardrailsPage", () => {
       expect(mockSend).toHaveBeenCalledTimes(2)
     })
 
+    // SAFETY: every send here is a DeleteGuardrailCommand, one per selected row.
     const ids = mockSend.mock.calls.map(
       ([command]) =>
         (command as { input: { guardrailIdentifier: string } }).input

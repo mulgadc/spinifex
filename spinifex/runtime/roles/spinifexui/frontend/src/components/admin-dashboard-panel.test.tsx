@@ -78,13 +78,16 @@ function setupMocks({
     license,
   })
 
+  // SAFETY: the panel calls useQuery with a query key alone and reads only data.
   mockUseQuery.mockImplementation(((opts: { queryKey: string[] }) => {
     if (opts.queryKey[1] === "nodes") {
+      // SAFETY: the panel reads only data from a query result.
       return {
         data: { nodes, cluster_mode: clusterMode },
       } as ReturnType<typeof useQuery>
     }
 
+    // SAFETY: the panel reads only data from a query result.
     return { data: { vms } } as ReturnType<typeof useQuery>
   }) as typeof useQuery)
 }

@@ -8,8 +8,9 @@ import { GpuInstanceTypeSelect } from "./gpu-instance-type-select"
 const STANDARD_TYPES = [
   { InstanceType: "t3.nano" },
   { InstanceType: "t3.micro" },
-] as InstanceTypeInfo[]
+] satisfies InstanceTypeInfo[]
 
+// SAFETY: spinifex reports MIG instance types that the SDK InstanceType enum lacks.
 const GPU_TYPES = [
   {
     InstanceType: "mig.1g.24gb",

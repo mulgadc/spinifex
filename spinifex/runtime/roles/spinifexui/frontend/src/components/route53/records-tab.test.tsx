@@ -12,7 +12,7 @@ const sdk = await vi.hoisted(async () => {
   return createFakeSdk()
 })
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(sdk.send)
@@ -90,6 +90,7 @@ async function submittedChanges(): Promise<unknown> {
     expect(changeCall()).toBeDefined()
   })
 
+  // SAFETY: changeCall finds the ChangeResourceRecordSetsCommand by its class name.
   const input = changeCall()?.input as
     | { ChangeBatch: { Changes: unknown } }
     | undefined

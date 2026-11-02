@@ -11,7 +11,7 @@ import {
 } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { queryOptions } from "@tanstack/react-query"
 
-import { getElbv2Client } from "@/lib/awsClient"
+import { getElbv2Client } from "@/lib/aws-client"
 
 const PROVISIONING_POLL_MS = 5000
 

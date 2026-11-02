@@ -194,8 +194,8 @@ export async function signedProxyFetch<T>(
 ): Promise<T> {
   const response = await sendSigned(options)
 
-  // The caller names the response shape its action returns, and the gateway has
-  // already been checked for a non-ok status above.
+  // SAFETY: the caller names the response shape its action returns, and the
+  // gateway has already been checked for a non-ok status above.
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- response.json() returns Promise<any>
   return await (response.json() as Promise<T>)
 }

@@ -1,7 +1,7 @@
 import { ImportCertificateCommand } from "@aws-sdk/client-acm"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 
-import { getAcmClient } from "@/lib/awsClient"
+import { getAcmClient } from "@/lib/aws-client"
 
 const textEncoder = new TextEncoder()
 

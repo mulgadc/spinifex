@@ -5,7 +5,7 @@ import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(mockSend)
@@ -59,8 +59,8 @@ describe("DeleteDBInstanceDialog", () => {
         name: "Take a final snapshot before deleting",
       }),
     ).toBeChecked()
-    const field = screen.getByLabelText("Final snapshot name")
-    expect((field as HTMLInputElement).value).toMatch(/^orders-db-final-/)
+    const field = screen.getByLabelText<HTMLInputElement>("Final snapshot name")
+    expect(field.value).toMatch(/^orders-db-final-/)
   })
 
   it("explains that a final snapshot pins the data volume", () => {

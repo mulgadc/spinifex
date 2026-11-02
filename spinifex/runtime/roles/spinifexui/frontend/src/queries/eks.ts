@@ -12,7 +12,7 @@ import {
 } from "@aws-sdk/client-eks"
 import { queryOptions } from "@tanstack/react-query"
 
-import { getEksClient } from "@/lib/awsClient"
+import { getEksClient } from "@/lib/aws-client"
 
 const CLUSTER_STALE_TIME = 30_000
 const STATIC_STALE_TIME = 300_000

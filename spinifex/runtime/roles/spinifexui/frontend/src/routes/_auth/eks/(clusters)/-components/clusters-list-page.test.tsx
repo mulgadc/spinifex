@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest"
 
 const mockSend = vi.hoisted(() => vi.fn())
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(mockSend)
@@ -130,7 +130,7 @@ describe("ClustersListPage", () => {
     // Each delete invalidates the cluster queries, so refetches interleave.
     const deletes = () =>
       mockSend.mock.calls
-        .map(([command]) => command as unknown)
+        .map(([command]): unknown => command)
         .filter((command) => command instanceof DeleteClusterCommand)
         .map((command) => command.input.name)
 

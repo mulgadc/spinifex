@@ -7,7 +7,7 @@ import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 const send = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(send)
@@ -33,7 +33,7 @@ const INSTANCE_TYPES = [
       TotalGpuMemoryInMiB: 24_576,
     },
   },
-] as InstanceTypeInfo[]
+] satisfies InstanceTypeInfo[]
 
 function seed(opts?: { nodegroupVersion?: string; gpuNodegroup?: boolean }) {
   const qc = createTestQueryClient()

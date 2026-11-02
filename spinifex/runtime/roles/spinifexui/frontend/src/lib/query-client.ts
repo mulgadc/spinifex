@@ -4,7 +4,7 @@ import { uploads } from "@/lib/uploads"
 
 import { clearCredentials, onSessionChangedInOtherTab } from "./auth"
 import { isStaleCredentialsError } from "./auth-error"
-import { clearClients } from "./awsClient"
+import { clearClients } from "./aws-client"
 
 // Guard so the flood of concurrent failures from stale creds triggers a single
 // recovery rather than racing redirects.

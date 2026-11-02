@@ -12,7 +12,7 @@ import {
 } from "@aws-sdk/client-rds"
 import { queryOptions } from "@tanstack/react-query"
 
-import { getRdsClient } from "@/lib/awsClient"
+import { getRdsClient } from "@/lib/aws-client"
 import { isTransitionalStatus, SNAPSHOT_STATUS_CREATING } from "@/types/rds"
 
 // Creates take minutes and half the RDS statuses are transitional, so a list

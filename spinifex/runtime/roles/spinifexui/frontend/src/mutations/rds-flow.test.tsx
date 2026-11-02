@@ -137,9 +137,14 @@ const { sdk } = await vi.hoisted(async () => {
   // oxlint-disable-next-line anti-slop/no-known-value-widening -- keyed by the engine the command names, not by a closed set
   const ENGINE_PORTS: Record<string, number> = { postgres: 5432, mariadb: 3306 }
 
-  const state = {
-    instances: [] as StoredInstance[],
-    snapshots: [] as StoredSnapshot[],
+  interface FakeRdsState {
+    instances: StoredInstance[]
+    snapshots: StoredSnapshot[]
+  }
+
+  const state: FakeRdsState = {
+    instances: [],
+    snapshots: [],
   }
 
   function find(identifier: string): StoredInstance {
@@ -461,7 +466,7 @@ const { sdk } = await vi.hoisted(async () => {
   }
 })
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(sdk.send)

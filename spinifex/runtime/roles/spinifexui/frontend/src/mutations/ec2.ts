@@ -66,7 +66,7 @@ import {
 } from "@aws-sdk/client-ec2"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 
-import { getEc2Client } from "@/lib/awsClient"
+import { getEc2Client } from "@/lib/aws-client"
 import { resolveSubnetCidrs } from "@/lib/subnet-calculator"
 import { ec2KeyPairsQueryOptions } from "@/queries/ec2"
 import type {
@@ -193,8 +193,10 @@ async function runInstances(
 ) {
   const command = new RunInstancesCommand({
     ImageId: params.imageId || undefined,
+    // SAFETY: the SDK sends InstanceType as a plain string, so a type its enum
+    // lacks still reaches the server unchanged.
     InstanceType: params.instanceType
-      ? // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- AWS SDK expects _InstanceType enum
+      ? // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- see SAFETY above
         (params.instanceType as _InstanceType)
       : undefined,
     KeyName: params.keyName || undefined,
@@ -370,7 +372,7 @@ export function buildLaunchTemplateData(
   }
 
   if (data.instanceType) {
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- AWS SDK expects _InstanceType enum
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- SAFETY: the SDK sends InstanceType as a plain string, so a type its enum lacks still reaches the server
     out.InstanceType = data.instanceType as _InstanceType
   }
 

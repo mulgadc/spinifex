@@ -14,6 +14,7 @@ import {
 } from "./os-images"
 
 function image(id: string, name: string, architecture?: string): Image {
+  // SAFETY: Architecture is a plain string on the wire, and tests pass names the SDK enum lacks.
   return { ImageId: id, Name: name, Architecture: architecture as never }
 }
 

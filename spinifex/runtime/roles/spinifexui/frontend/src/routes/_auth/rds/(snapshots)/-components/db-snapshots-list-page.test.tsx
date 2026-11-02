@@ -9,7 +9,7 @@ import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(mockSend)
@@ -222,7 +222,7 @@ describe("DBSnapshotsListPage", () => {
 
     const deletes = () =>
       mockSend.mock.calls
-        .map(([command]) => command as unknown)
+        .map(([command]): unknown => command)
         .filter((command) => command instanceof DeleteDBSnapshotCommand)
         .map((command) => command.input.DBSnapshotIdentifier)
 

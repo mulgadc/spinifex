@@ -7,7 +7,7 @@ import { createTestQueryClient, renderWithClient } from "@/test/render"
 
 const send = vi.hoisted(() => vi.fn())
 
-vi.mock("@/lib/awsClient", async () => {
+vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
   return mockAwsClients(send)

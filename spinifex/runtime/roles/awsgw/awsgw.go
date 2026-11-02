@@ -892,8 +892,10 @@ func parseBedrockEndpoints(raw string) map[string]string {
 
 // withClusterNodes sets the configured node sets teardown reaches: the
 // daemon on every node, and the gateway only on nodes that run awsgw. An
-// empty gateway set would fail every account termination closed.
+// empty gateway set would fail every account termination closed. NodeID names
+// this gateway as the holder of a deletion job.
 func withClusterNodes(d operatoradmin.Deps, config *config.ClusterConfig) operatoradmin.Deps {
+	d.NodeID = config.Node
 	d.ExpectedNodes = len(config.Nodes)
 	d.NodeIDs = slices.Sorted(maps.Keys(config.Nodes))
 	d.GatewayNodeIDs = config.NodesRunning("awsgw")

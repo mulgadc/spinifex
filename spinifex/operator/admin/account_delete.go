@@ -6,6 +6,7 @@ import (
 	"errors"
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"log/slog"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -74,7 +75,30 @@ type accountDeletionJob struct {
 	// Error is the failure reason, including the stuck-resource summary. The
 	// per-stage Stuck entries carry which resources and why.
 	Error string `json:"error,omitempty"`
+
+	// OperationID names the whole deletion and survives every takeover.
+	// DeletionID is kept readable and equals it for records written now.
+	OperationID string `json:"operationId,omitempty"`
+	// Fence is 1 on acceptance and grows by one per takeover. A writer whose
+	// fence is no longer the stored one has been superseded and must stop.
+	Fence      uint64             `json:"fence,omitempty"`
+	Holder     string             `json:"holder,omitempty"`
+	LeaseUntil string             `json:"leaseUntil,omitempty"`
+	Takeovers  []deletionTakeover `json:"takeovers,omitempty"`
 }
+
+// deletionTakeover records one change of holder.
+type deletionTakeover struct {
+	Fence  uint64 `json:"fence"`
+	Holder string `json:"holder"`
+	At     string `json:"at"`
+	Reason string `json:"reason"`
+}
+
+const (
+	takeoverReasonLeaseExpired = "lease_expired"
+	takeoverReasonFailed       = "failed"
+)
 
 // deleteAccount starts a teardown, or answers a dry run inline.
 func (d Deps) deleteAccount(ctx context.Context, body []byte) (any, error) {
@@ -133,7 +157,7 @@ func (d Deps) deleteAccount(ctx context.Context, body []byte) (any, error) {
 		return nil, teardownError("DeleteAccount", req.AccountID, err)
 	}
 
-	job, replay, err := claimDeletionJob(ctx, jobs, &req)
+	job, revision, replay, err := claimDeletionJob(ctx, jobs, &req, d.holderID())
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +165,7 @@ func (d Deps) deleteAccount(ctx context.Context, body []byte) (any, error) {
 		return deletionJobResponse(replay), nil
 	}
 
-	d.runAccountDeletion(engine, jobs, job)
+	d.runAccountDeletion(engine, jobs, job, revision)
 
 	return &DeleteAccountResponse{
 		DeletionID: job.DeletionID, AccountID: job.AccountID, State: job.State,
@@ -209,6 +233,19 @@ func (d Deps) listAccounts(_ context.Context, _ []byte) (any, error) {
 	return response, nil
 }
 
+// holderID names this gateway in the job record. The node ID is used when the
+// composition supplies one, otherwise the host name.
+func (d Deps) holderID() string {
+	if d.NodeID != "" {
+		return d.NodeID
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		return "unknown"
+	}
+	return host
+}
+
 // runAccountDeletion runs the teardown in the background on its own context.
 // The request's context is cancelled the moment the response is written, and a
 // teardown cancelled halfway leaves the account half-emptied.
@@ -216,12 +253,13 @@ func (d Deps) runAccountDeletion(
 	engine *accountteardown.Engine,
 	jobs jetstream.KeyValue,
 	job *accountDeletionJob,
+	revision uint64,
 ) {
-	tracker := &deletionTracker{jobs: jobs, job: job}
+	ctx, cancel := context.WithTimeout(context.Background(), accountDeletionTimeout)
+	tracker := &deletionTracker{jobs: jobs, job: job, revision: revision, cancel: cancel}
 	engine.OnStage = tracker.stageFinished
 
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), accountDeletionTimeout)
 		defer cancel()
 
 		stop := tracker.startHeartbeat(ctx)
@@ -237,12 +275,17 @@ func (d Deps) runAccountDeletion(
 }
 
 // deletionTracker keeps the stored job in step with a teardown as it runs. Its
-// mutex covers the heartbeat and the stage callback, which write concurrently.
+// mutex covers the heartbeat and the stage callback, which write concurrently,
+// and the revision each write is conditional on.
 type deletionTracker struct {
 	jobs jetstream.KeyValue
+	// cancel stops the teardown once the tracker finds it has been superseded.
+	cancel context.CancelFunc
 
-	mu  sync.Mutex
-	job *accountDeletionJob
+	mu       sync.Mutex
+	job      *accountDeletionJob
+	revision uint64
+	lost     bool
 }
 
 func (t *deletionTracker) stageFinished(ctx context.Context, stage accountteardown.StageResult) {
@@ -268,6 +311,13 @@ func (t *deletionTracker) finished(ctx context.Context, result *accountteardown.
 	t.mu.Unlock()
 
 	t.persist(ctx)
+
+	t.mu.Lock()
+	lost := t.lost
+	t.mu.Unlock()
+	if lost {
+		return
+	}
 	if err != nil {
 		slog.Error("DeleteAccount: teardown failed", "accountID", accountID, "err", err)
 		return
@@ -275,9 +325,9 @@ func (t *deletionTracker) finished(ctx context.Context, result *accountteardown.
 	slog.Info("DeleteAccount: teardown complete", "accountID", accountID, "state", state)
 }
 
-// startHeartbeat refreshes UpdatedAt while the teardown runs. Without it a
-// gateway restarted mid-teardown leaves a job that looks live forever, and the
-// account can never be retried through the API.
+// startHeartbeat refreshes UpdatedAt and the lease while the teardown runs.
+// Without it a gateway restarted mid-teardown leaves a job that looks live
+// forever, and the account can never be retried through the API.
 func (t *deletionTracker) startHeartbeat(ctx context.Context) func() {
 	ticker := time.NewTicker(accountDeletionHeartbeat)
 	done := make(chan struct{})
@@ -299,35 +349,81 @@ func (t *deletionTracker) startHeartbeat(ctx context.Context) func() {
 	return func() { close(done) }
 }
 
+// persistAttempts bounds the retries after a revision conflict that turns out
+// to be this holder's own earlier write.
+const persistAttempts = 3
+
+// persist writes the job at the revision this holder last saw. A conflict is
+// resolved by re-reading: a different fence means another holder took over, so
+// this one stops for good; the same fence only means the revision moved.
 func (t *deletionTracker) persist(ctx context.Context) {
 	t.mu.Lock()
-	t.job.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	record, err := json.Marshal(t.job)
-	accountID := t.job.AccountID
-	t.mu.Unlock()
-
-	if err != nil {
-		slog.Error("DeleteAccount: failed to marshal job record", "accountID", accountID, "err", err)
+	defer t.mu.Unlock()
+	if t.lost {
 		return
 	}
-	if _, err := t.jobs.Put(ctx, accountID, record); err != nil {
-		// The teardown itself is unaffected; only its progress report is. Losing
-		// the run over a KV write would be the worse outcome.
-		slog.Error("DeleteAccount: failed to store job progress", "accountID", accountID, "err", err)
+
+	for range persistAttempts {
+		now := time.Now().UTC()
+		t.job.UpdatedAt = now.Format(time.RFC3339)
+		t.job.LeaseUntil = now.Add(accountDeletionStale).Format(time.RFC3339)
+		record, err := json.Marshal(t.job)
+		if err != nil {
+			slog.Error("DeleteAccount: failed to marshal job record", "accountID", t.job.AccountID, "err", err)
+			return
+		}
+
+		revision, err := t.jobs.Update(ctx, t.job.AccountID, record, t.revision)
+		if err == nil {
+			t.revision = revision
+			return
+		}
+		if !isRevisionConflict(err) {
+			// The teardown itself is unaffected; only its progress report is. Losing
+			// the run over a KV write would be the worse outcome.
+			slog.Error("DeleteAccount: failed to store job progress", "accountID", t.job.AccountID, "err", err)
+			return
+		}
+
+		current, currentRevision, readErr := readDeletionEntry(ctx, t.jobs, t.job.AccountID)
+		if readErr != nil || current == nil {
+			slog.Error("DeleteAccount: failed to re-read job after a conflict", "accountID", t.job.AccountID, "err", readErr)
+			return
+		}
+		if current.Fence != t.job.Fence {
+			t.lost = true
+			slog.Warn("DeleteAccount: superseded by another holder, stopping",
+				"account_id", t.job.AccountID, "operation_id", t.job.OperationID,
+				"own_fence", t.job.Fence, "current_fence", current.Fence)
+			if t.cancel != nil {
+				t.cancel()
+			}
+			return
+		}
+		t.revision = currentRevision
 	}
+	slog.Error("DeleteAccount: job progress kept conflicting", "accountID", t.job.AccountID)
+}
+
+func isRevisionConflict(err error) bool {
+	return errors.Is(err, jetstream.ErrKeyExists) || errors.Is(err, jetstream.ErrKeyRevisionMismatch)
 }
 
 // claimDeletionJob CAS-creates the job record, which is what stops two
 // gateways tearing the same account down at once. It returns a non-nil replay
-// when an existing job answers the request instead.
+// when an existing job answers the request instead, and the revision the new
+// holder's later writes are conditional on.
 func claimDeletionJob(
 	ctx context.Context,
 	jobs jetstream.KeyValue,
 	req *operatorv1.DeleteAccountRequest,
-) (*accountDeletionJob, *accountDeletionJob, error) {
+	holder string,
+) (*accountDeletionJob, uint64, *accountDeletionJob, error) {
 	now := time.Now().UTC()
+	operationID := uuid.NewV4().String()
 	job := &accountDeletionJob{
-		DeletionID:  uuid.NewV4().String(),
+		DeletionID:  operationID,
+		OperationID: operationID,
 		AccountID:   req.AccountID,
 		AccountName: req.AccountName,
 		ClientToken: req.ClientToken,
@@ -335,48 +431,77 @@ func claimDeletionJob(
 		Force:       req.Force,
 		StartedAt:   now.Format(time.RFC3339),
 		UpdatedAt:   now.Format(time.RFC3339),
+		Fence:       1,
+		Holder:      holder,
+		LeaseUntil:  now.Add(accountDeletionStale).Format(time.RFC3339),
 	}
 	record, err := json.Marshal(job)
 	if err != nil {
 		slog.Error("DeleteAccount: failed to marshal job record", "err", err)
-		return nil, nil, errors.New(awserrors.ErrorInternalError)
+		return nil, 0, nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	if _, err := jobs.Create(ctx, req.AccountID, record); err == nil {
-		return job, nil, nil
+	revision, err := jobs.Create(ctx, req.AccountID, record)
+	if err == nil {
+		return job, revision, nil, nil
 	} else if !errors.Is(err, jetstream.ErrKeyExists) {
 		slog.Error("DeleteAccount: failed to claim deletion job", "accountID", req.AccountID, "err", err)
-		return nil, nil, errors.New(awserrors.ErrorInternalError)
+		return nil, 0, nil, errors.New(awserrors.ErrorInternalError)
 	}
 
 	// Another gateway claimed it between the replay check and here, so the same
 	// token has to be recognised a second time.
 	if replay, err := replayDeletionJob(ctx, jobs, req); err != nil || replay != nil {
-		return nil, replay, err
+		return nil, 0, replay, err
 	}
 
-	existing, err := readDeletionJob(ctx, jobs, req.AccountID)
+	existing, existingRevision, err := readDeletionEntry(ctx, jobs, req.AccountID)
 	if err != nil {
-		return nil, nil, err
+		return nil, 0, nil, err
 	}
 	if existing == nil {
 		// Deleted between Create and Get. Retryable rather than a fault.
-		return nil, nil, errors.New(awserrors.ErrorOperationInProgress)
+		return nil, 0, nil, errors.New(awserrors.ErrorOperationInProgress)
 	}
 
-	if existing.State == operatorv1.DeletionStateRunning && !deletionJobStale(existing, now) {
-		return nil, nil, errors.New(awserrors.ErrorOperationInProgress)
+	reason := takeoverReasonFailed
+	if existing.State == operatorv1.DeletionStateRunning {
+		if !deletionLeaseExpired(existing, now) {
+			return nil, 0, nil, errors.New(awserrors.ErrorOperationInProgress)
+		}
+		reason = takeoverReasonLeaseExpired
 	}
 
-	// A failed job, or one whose gateway stopped heartbeating, is retried under
-	// a new deletion id. Teardown is idempotent: it re-lists what is left.
-	if _, err := jobs.Put(ctx, req.AccountID, record); err != nil {
+	// A failed job, or one whose holder stopped renewing its lease, is taken
+	// over at the next fence. Teardown is idempotent: it re-lists what is left.
+	// The operation keeps its id; a record from before fences gets one now.
+	if existing.OperationID != "" {
+		job.OperationID = existing.OperationID
+		job.DeletionID = existing.OperationID
+	}
+	job.Fence = existing.Fence + 1
+	job.Takeovers = append(append([]deletionTakeover(nil), existing.Takeovers...), deletionTakeover{
+		Fence: job.Fence, Holder: holder, At: now.Format(time.RFC3339), Reason: reason,
+	})
+	record, err = json.Marshal(job)
+	if err != nil {
+		slog.Error("DeleteAccount: failed to marshal job record", "err", err)
+		return nil, 0, nil, errors.New(awserrors.ErrorInternalError)
+	}
+
+	revision, err = jobs.Update(ctx, req.AccountID, record, existingRevision)
+	if err != nil {
+		if isRevisionConflict(err) {
+			// Another taker won the same expired lease.
+			return nil, 0, nil, errors.New(awserrors.ErrorOperationInProgress)
+		}
 		slog.Error("DeleteAccount: failed to take over deletion job", "accountID", req.AccountID, "err", err)
-		return nil, nil, errors.New(awserrors.ErrorInternalError)
+		return nil, 0, nil, errors.New(awserrors.ErrorInternalError)
 	}
-	slog.Warn("DeleteAccount: retrying a job that did not finish",
-		"accountID", req.AccountID, "previousDeletionID", existing.DeletionID, "previousState", existing.State)
-	return job, nil, nil
+	slog.Warn("DeleteAccount: taking over a job that did not finish",
+		"account_id", req.AccountID, "operation_id", job.OperationID,
+		"previous_fence", existing.Fence, "fence", job.Fence, "previous_state", existing.State, "reason", reason)
+	return job, revision, nil, nil
 }
 
 // replayDeletionJob answers a retry from the stored record. A token bound to a
@@ -394,6 +519,11 @@ func replayDeletionJob(
 	if existing.ClientToken == req.ClientToken {
 		if existing.AccountName != req.AccountName {
 			return nil, errors.New(awserrors.ErrorIdempotentParameterMismatch)
+		}
+		// A RUNNING job whose lease has lapsed has no holder to follow, so the
+		// retry falls through to takeover and resumes it.
+		if existing.State == operatorv1.DeletionStateRunning && deletionLeaseExpired(existing, time.Now().UTC()) {
+			return nil, nil
 		}
 		return existing, nil
 	}
@@ -418,8 +548,22 @@ func deletionJobResponse(job *accountDeletionJob) *DeleteAccountResponse {
 	}
 }
 
-// deletionJobStale reports whether a RUNNING job has stopped heartbeating for
-// long enough that the gateway running it is presumed gone.
+// deletionLeaseExpired reports whether a RUNNING job has no live holder. The
+// lease is authoritative; a record from before leases falls back to its
+// heartbeat age.
+func deletionLeaseExpired(job *accountDeletionJob, now time.Time) bool {
+	if job.LeaseUntil != "" {
+		until, err := time.Parse(time.RFC3339, job.LeaseUntil)
+		if err != nil {
+			return true
+		}
+		return now.After(until)
+	}
+	return deletionJobStale(job, now)
+}
+
+// deletionJobStale reports whether a job's heartbeat has stopped for long
+// enough that the gateway running it is presumed gone.
 func deletionJobStale(job *accountDeletionJob, now time.Time) bool {
 	updated, err := time.Parse(time.RFC3339, job.UpdatedAt)
 	if err != nil {
@@ -431,21 +575,27 @@ func deletionJobStale(job *accountDeletionJob, now time.Time) bool {
 }
 
 func readDeletionJob(ctx context.Context, jobs jetstream.KeyValue, accountID string) (*accountDeletionJob, error) {
+	job, _, err := readDeletionEntry(ctx, jobs, accountID)
+	return job, err
+}
+
+// readDeletionEntry also returns the revision a conditional write is based on.
+func readDeletionEntry(ctx context.Context, jobs jetstream.KeyValue, accountID string) (*accountDeletionJob, uint64, error) {
 	entry, err := jobs.Get(ctx, accountID)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, nil
+			return nil, 0, nil
 		}
 		slog.Error("DeleteAccount: failed to read deletion job", "accountID", accountID, "err", err)
-		return nil, errors.New(awserrors.ErrorInternalError)
+		return nil, 0, errors.New(awserrors.ErrorInternalError)
 	}
 
 	var job accountDeletionJob
 	if err := json.Unmarshal(entry.Value(), &job); err != nil {
 		slog.Error("DeleteAccount: failed to unmarshal deletion job", "accountID", accountID, "err", err)
-		return nil, errors.New(awserrors.ErrorInternalError)
+		return nil, 0, errors.New(awserrors.ErrorInternalError)
 	}
-	return &job, nil
+	return &job, entry.Revision(), nil
 }
 
 // accountDeletionStore opens the job bucket. Opened per request, like the

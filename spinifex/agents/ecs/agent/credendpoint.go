@@ -47,6 +47,13 @@ type credResponse struct {
 
 // credEntry caches one task's assumed-role credentials alongside the role it was
 // assumed from.
+// credRole is the task role a credID serves and the task it belongs to; the
+// task ID names the STS session, since the credID is a secret.
+type credRole struct {
+	roleARN string
+	taskID  string
+}
+
 type credEntry struct {
 	roleARN string
 	creds   stsauth.Credentials
@@ -71,7 +78,7 @@ type credEndpoint struct {
 	assume func(ctx context.Context, roleARN, sessionName string) (stsauth.Credentials, error)
 
 	mu         sync.Mutex
-	roles      map[string]string    // credID -> taskRoleARN
+	roles      map[string]credRole  // credID -> task role
 	cache      map[string]credEntry // credID -> cached creds
 	httpClient *http.Client
 
@@ -98,7 +105,7 @@ func newCredEndpoint(provider credentials.CredentialsProvider, region, gatewayUR
 		port:       port,
 		proxyPort:  defaultCredProxyPort,
 		run:        run,
-		roles:      map[string]string{},
+		roles:      map[string]credRole{},
 		cache:      map[string]credEntry{},
 	}
 	c.assume = c.assumeOverGateway
@@ -107,12 +114,12 @@ func newCredEndpoint(provider credentials.CredentialsProvider, region, gatewayUR
 
 // Register associates a credID with the task role it serves; Deregister removes
 // it and drops any cached credentials. Both are no-ops for an empty credID.
-func (c *credEndpoint) Register(credID, roleARN string) {
+func (c *credEndpoint) Register(credID, taskID, roleARN string) {
 	if credID == "" || roleARN == "" {
 		return
 	}
 	c.mu.Lock()
-	c.roles[credID] = roleARN
+	c.roles[credID] = credRole{roleARN: roleARN, taskID: taskID}
 	c.mu.Unlock()
 }
 
@@ -142,25 +149,25 @@ func (c *credEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	creds, roleARN, err := c.fetch(r.Context(), credID)
+	creds, role, err := c.fetch(r.Context(), credID)
 	if err != nil {
 		if errors.Is(err, errUnknownCredID) {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		slog.Error("ecs-agent: assume task role failed", "credId", credID, "err", err)
+		slog.Error("ecs-agent: assume task role failed", "task", role.taskID, "role", role.roleARN, "err", err)
 		http.Error(w, "credentials unavailable", http.StatusBadGateway)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(credResponse{
-		RoleArn:         roleARN,
+		RoleArn:         role.roleARN,
 		AccessKeyID:     creds.AccessKeyID,
 		SecretAccessKey: creds.SecretAccessKey,
 		Token:           creds.SessionToken,
 		Expiration:      creds.Expiration.UTC().Format(time.RFC3339),
 	}); err != nil {
-		slog.Warn("ecs-agent: encode credential response", "credId", credID, "err", err)
+		slog.Warn("ecs-agent: encode credential response", "task", role.taskID, "err", err)
 	}
 }
 
@@ -169,28 +176,28 @@ var errUnknownCredID = fmt.Errorf("unknown credId")
 
 // fetch returns valid credentials for credID, reusing the cache until within the
 // refresh margin and otherwise assuming the task role over the gateway.
-func (c *credEndpoint) fetch(ctx context.Context, credID string) (stsauth.Credentials, string, error) {
+func (c *credEndpoint) fetch(ctx context.Context, credID string) (stsauth.Credentials, credRole, error) {
 	c.mu.Lock()
-	roleARN, known := c.roles[credID]
+	role, known := c.roles[credID]
 	if !known {
 		c.mu.Unlock()
-		return stsauth.Credentials{}, "", errUnknownCredID
+		return stsauth.Credentials{}, credRole{}, errUnknownCredID
 	}
-	if e, ok := c.cache[credID]; ok && e.roleARN == roleARN && credValid(e.creds, credRefreshMargin) {
+	if e, ok := c.cache[credID]; ok && e.roleARN == role.roleARN && credValid(e.creds, credRefreshMargin) {
 		c.mu.Unlock()
-		return e.creds, roleARN, nil
+		return e.creds, role, nil
 	}
 	c.mu.Unlock()
 
-	creds, err := c.assume(ctx, roleARN, sessionName(credID))
+	creds, err := c.assume(ctx, role.roleARN, sessionName(role.taskID))
 	if err != nil {
-		return stsauth.Credentials{}, "", err
+		return stsauth.Credentials{}, role, err
 	}
 
 	c.mu.Lock()
-	c.cache[credID] = credEntry{roleARN: roleARN, creds: creds}
+	c.cache[credID] = credEntry{roleARN: role.roleARN, creds: creds}
 	c.mu.Unlock()
-	return creds, roleARN, nil
+	return creds, role, nil
 }
 
 // AssumeProvider returns a CredentialsProvider that mints credentials by assuming
@@ -390,10 +397,10 @@ func credValid(c stsauth.Credentials, margin time.Duration) bool {
 	return time.Now().Add(margin).Before(c.Expiration)
 }
 
-// sessionName derives an AssumeRole RoleSessionName from credID, satisfying the
+// sessionName derives an AssumeRole RoleSessionName from the task ID, satisfying the
 // STS [\w+=,.@-]{2,64} constraint.
-func sessionName(credID string) string {
-	name := "ecs-" + credID
+func sessionName(taskID string) string {
+	name := "ecs-" + taskID
 	if len(name) > 64 {
 		name = name[:64]
 	}

@@ -29,7 +29,7 @@ func TestCredEndpoint_ServesRegisteredCredID(t *testing.T) {
 	c, _ := newTestCredEndpoint(stsauth.Credentials{
 		AccessKeyID: "AKIA", SecretAccessKey: "secret", SessionToken: "tok", Expiration: exp,
 	})
-	c.Register("cred-1", "arn:aws:iam::111122223333:role/task")
+	c.Register("cred-1", "task-1", "arn:aws:iam::111122223333:role/task")
 
 	rr := httptest.NewRecorder()
 	c.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v2/credentials/cred-1", nil))
@@ -51,6 +51,26 @@ func TestCredEndpoint_ServesRegisteredCredID(t *testing.T) {
 	}
 }
 
+// The STS session name lands in the assumed-role ARN and in STS logs, so it is
+// built from the public task ID and never from the secret credID.
+func TestCredEndpoint_SessionNameIsTaskIDNotCredID(t *testing.T) {
+	c, _ := newTestCredEndpoint(stsauth.Credentials{})
+	var gotSession string
+	c.assume = func(ctx context.Context, roleARN, session string) (stsauth.Credentials, error) {
+		gotSession = session
+		return stsauth.Credentials{AccessKeyID: "AKIA", SecretAccessKey: "secret"}, nil
+	}
+	c.Register("secret-cred", "task-1", "arn:role")
+	rr := httptest.NewRecorder()
+	c.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v2/credentials/secret-cred", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if gotSession != "ecs-task-1" {
+		t.Errorf("session name = %q, want ecs-task-1", gotSession)
+	}
+}
+
 func TestCredEndpoint_UnknownCredIDIs404(t *testing.T) {
 	c, calls := newTestCredEndpoint(stsauth.Credentials{AccessKeyID: "x", SecretAccessKey: "y"})
 	rr := httptest.NewRecorder()
@@ -65,7 +85,7 @@ func TestCredEndpoint_UnknownCredIDIs404(t *testing.T) {
 
 func TestCredEndpoint_WrongMethodIs405(t *testing.T) {
 	c, _ := newTestCredEndpoint(stsauth.Credentials{AccessKeyID: "x", SecretAccessKey: "y"})
-	c.Register("cred-1", "arn:role")
+	c.Register("cred-1", "task-1", "arn:role")
 	rr := httptest.NewRecorder()
 	c.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v2/credentials/cred-1", nil))
 	if rr.Code != http.StatusMethodNotAllowed {
@@ -77,7 +97,7 @@ func TestCredEndpoint_CachesUntilExpiry(t *testing.T) {
 	c, calls := newTestCredEndpoint(stsauth.Credentials{
 		AccessKeyID: "AKIA", SecretAccessKey: "secret", Expiration: time.Now().Add(time.Hour),
 	})
-	c.Register("cred-1", "arn:role")
+	c.Register("cred-1", "task-1", "arn:role")
 	for hit := range 3 {
 		rr := httptest.NewRecorder()
 		c.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v2/credentials/cred-1", nil))
@@ -95,7 +115,7 @@ func TestCredEndpoint_RefreshesNearExpiry(t *testing.T) {
 	c, calls := newTestCredEndpoint(stsauth.Credentials{
 		AccessKeyID: "AKIA", SecretAccessKey: "secret", Expiration: time.Now().Add(time.Minute),
 	})
-	c.Register("cred-1", "arn:role")
+	c.Register("cred-1", "task-1", "arn:role")
 	for range 2 {
 		rr := httptest.NewRecorder()
 		c.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v2/credentials/cred-1", nil))
@@ -107,7 +127,7 @@ func TestCredEndpoint_RefreshesNearExpiry(t *testing.T) {
 
 func TestCredEndpoint_DeregisterDropsCredID(t *testing.T) {
 	c, _ := newTestCredEndpoint(stsauth.Credentials{AccessKeyID: "x", SecretAccessKey: "y"})
-	c.Register("cred-1", "arn:role")
+	c.Register("cred-1", "task-1", "arn:role")
 	c.Deregister("cred-1")
 	rr := httptest.NewRecorder()
 	c.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v2/credentials/cred-1", nil))
@@ -121,7 +141,7 @@ func TestCredEndpoint_AssumeFailureIs502(t *testing.T) {
 	c.assume = func(ctx context.Context, roleARN, sessionName string) (stsauth.Credentials, error) {
 		return stsauth.Credentials{}, context.DeadlineExceeded
 	}
-	c.Register("cred-1", "arn:role")
+	c.Register("cred-1", "task-1", "arn:role")
 	rr := httptest.NewRecorder()
 	c.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v2/credentials/cred-1", nil))
 	if rr.Code != http.StatusBadGateway {
@@ -133,7 +153,7 @@ func TestCredEndpoint_StartServesOverLoopback(t *testing.T) {
 	c, _ := newTestCredEndpoint(stsauth.Credentials{
 		AccessKeyID: "AKIA", SecretAccessKey: "secret", Expiration: time.Now().Add(time.Hour),
 	})
-	c.Register("cred-1", "arn:role")
+	c.Register("cred-1", "task-1", "arn:role")
 	c.port = 0 // bind an ephemeral port instead of privileged 80
 	if err := c.Start(); err != nil {
 		t.Fatalf("start: %v", err)

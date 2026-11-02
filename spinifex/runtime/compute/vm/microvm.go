@@ -36,6 +36,7 @@ type MicroVMSpec struct {
 	FwCfg          []FwCfgEntry
 	NetDevs        []NetDev
 	Devices        []Device
+	SerialPorts    []SerialPort
 }
 
 // NewMicroVMConfig builds the Config for a direct-boot microvm launch: qboot,
@@ -58,6 +59,7 @@ func NewMicroVMConfig(s MicroVMSpec) Config {
 		FwCfg:         s.FwCfg,
 		NetDevs:       s.NetDevs,
 		Devices:       s.Devices,
+		SerialPorts:   s.SerialPorts,
 	}
 }
 

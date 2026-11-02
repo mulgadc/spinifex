@@ -468,6 +468,17 @@ type Config struct {
 	Initrd        string       `json:"initrd,omitempty"`         // path to initramfs; emits -initrd when set
 	KernelCmdline string       `json:"kernel_cmdline,omitempty"` // emits -append when set
 	FwCfg         []FwCfgEntry `json:"fw_cfg,omitempty"`         // each emits -fw_cfg name=<name>,file=<path>
+
+	// SerialPorts are named virtio-serial ports, each backed by a host unix
+	// socket that QEMU listens on. They carry no network traffic.
+	SerialPorts []SerialPort `json:"serial_ports,omitempty"`
+}
+
+// SerialPort is one virtserialport named Name in the guest, whose host end is
+// a unix socket at Socket that QEMU creates and listens on.
+type SerialPort struct {
+	Name   string `json:"name"`
+	Socket string `json:"socket"`
 }
 
 // FwCfgEntry describes a single QEMU firmware configuration file entry.
@@ -672,6 +683,12 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		args = append(args, "-fw_cfg", fmt.Sprintf("name=%s,file=%s", fw.Name, fw.File))
 	}
 
+	portArgs, err := serialPortArgs(cfg.SerialPorts)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, portArgs...)
+
 	if cfg.Architecture == "" {
 		return nil, fmt.Errorf("architecture missing")
 	}
@@ -698,6 +715,29 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 	//cmd.Stderr = os.Stderr
 
 	return cmd, nil
+}
+
+// serialPortArgs renders one virtio-serial controller and, per port, a
+// listening socket chardev and its virtserialport. Commas are refused because
+// QEMU would read them as further options.
+func serialPortArgs(ports []SerialPort) ([]string, error) {
+	if len(ports) == 0 {
+		return nil, nil
+	}
+	args := []string{"-device", "virtio-serial-pci,id=vserial0"}
+	for i, p := range ports {
+		if p.Name == "" || p.Socket == "" {
+			return nil, fmt.Errorf("serial port %d: name and socket are required", i)
+		}
+		if strings.ContainsRune(p.Name, ',') || strings.ContainsRune(p.Socket, ',') {
+			return nil, fmt.Errorf("serial port %q: name and socket must not contain a comma", p.Name)
+		}
+		id := fmt.Sprintf("vport%d", i)
+		args = append(args,
+			"-chardev", fmt.Sprintf("socket,id=%s,path=%s,server=on,wait=off", id, p.Socket),
+			"-device", fmt.Sprintf("virtserialport,bus=vserial0.0,chardev=%s,name=%s", id, p.Name))
+	}
+	return args, nil
 }
 
 // appendOpt renders a chardev append option, or nothing when off, so a

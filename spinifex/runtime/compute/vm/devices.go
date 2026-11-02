@@ -170,8 +170,8 @@ type blkDeviceJSON struct {
 
 // BlkDeviceMapped returns a virtio-blk -device that spreads its virtqueues
 // across a pool of poolSize IOThreads, round-robin. Falls back to BlkDevice's
-// scalar iothread= form when poolSize <= 1, so the common small-guest case is
-// byte-for-byte what it was before this existed.
+// scalar iothread= form when poolSize <= 1, when there is one queue, or on an
+// MMIO machine.
 //
 // Every queue is mapped exactly once and the scalar iothread= property is
 // absent: QEMU treats the two as alternative assignments and rejects both.
@@ -390,9 +390,18 @@ func (o NBDServerOpts) CommandLineArgs() []string {
 // monitor-owned node that blockdev-del can later remove (unlike -drive,
 // which only creates a BlockBackend with an auto-generated node-name).
 func VolumeBlockdev(nodeName string, server NBDServerOpts) Blockdev {
-	opts := append([]string{"driver=nbd", fmt.Sprintf("node-name=%s", nodeName)}, server.CommandLineArgs()...)
-	opts = append(opts, "export=", fmt.Sprintf("reconnect-delay=%d", NBDReconnectDelaySeconds))
+	opts := append([]string{"driver=nbd", fmt.Sprintf("node-name=%s", nodeName)}, nbdNodeOpts("", server)...)
 	return Blockdev{Value: strings.Join(opts, ",")}
+}
+
+// nbdNodeOpts returns an nbd node's server, export and reconnect-delay options,
+// each prefixed with prefix: "" on the nbd node itself, "file." under raw.
+func nbdNodeOpts(prefix string, server NBDServerOpts) []string {
+	var opts []string
+	for _, arg := range server.CommandLineArgs() {
+		opts = append(opts, prefix+arg)
+	}
+	return append(opts, prefix+"export=", fmt.Sprintf("%sreconnect-delay=%d", prefix, NBDReconnectDelaySeconds))
 }
 
 // bootNodeName is the boot volume's block-node name, which its -device names
@@ -411,13 +420,22 @@ func nbdServerOpts(uri string) (NBDServerOpts, error) {
 // bootNBDBlockdev renders the boot volume's -blockdev for an NBD export: a raw
 // node over an nbd node, the graph -drive format=raw,cache=none built, with the
 // same O_DIRECT setting and reconnect delay.
-func bootNBDBlockdev(server NBDServerOpts) Blockdev {
-	opts := []string{"driver=raw", fmt.Sprintf("node-name=%s", bootNodeName), "cache.direct=on", "file.driver=nbd"}
-	for _, arg := range server.CommandLineArgs() {
-		opts = append(opts, "file."+arg)
-	}
-	opts = append(opts, "file.export=", fmt.Sprintf("file.reconnect-delay=%d", NBDReconnectDelaySeconds))
+func bootNBDBlockdev(nodeName string, server NBDServerOpts) Blockdev {
+	opts := append([]string{"driver=raw", fmt.Sprintf("node-name=%s", nodeName), "cache.direct=on", "file.driver=nbd"}, nbdNodeOpts("file.", server)...)
 	return Blockdev{Value: strings.Join(opts, ",")}
+}
+
+// exportBlockdev renders v's -blockdev as nodeName: a host_device node for a
+// block export, otherwise the NBD node nbdBlockdev builds from its URI.
+func exportBlockdev(v EBSRequest, kind volumeExportKind, nodeName string, nbdBlockdev func(string, NBDServerOpts) Blockdev) (Blockdev, error) {
+	if kind == volumeExportBlock {
+		return VolumeHostDeviceBlockdev(nodeName, HostDeviceOpts{Path: v.BlockDevice, SizeBytes: v.BlockSizeBytes}), nil
+	}
+	server, err := nbdServerOpts(v.NBDURI)
+	if err != nil {
+		return Blockdev{}, fmt.Errorf("parse NBDURI for volume %s: %w", v.Name, err)
+	}
+	return nbdBlockdev(nodeName, server), nil
 }
 
 // HostDeviceOpts is a host block device export. QEMU opens Path through the

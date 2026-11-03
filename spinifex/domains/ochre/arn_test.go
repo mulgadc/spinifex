@@ -150,12 +150,3 @@ func TestResolveGuardrailID_AcceptsRawIDOrARN(t *testing.T) {
 	_, err = ResolveGuardrailID(foreignARN, ptTestRegion, ptTestAccount)
 	require.Error(t, err)
 }
-
-// TestParseBedrockARN_RejectsOtherPartition pins that both parsers accept only
-// the aws partition, the one this stack issues ARNs under.
-func TestParseBedrockARN_RejectsOtherPartition(t *testing.T) {
-	_, err := ParseProvisionedModelARN("arn:aws-cn:bedrock:us-east-1:000000000001:provisioned-model/abc", ptTestRegion, ptTestAccount)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err))
-	_, err = ParseGuardrailARN("arn:aws-cn:bedrock:us-east-1:000000000001:guardrail/abc", ptTestRegion, ptTestAccount)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(err))
-}

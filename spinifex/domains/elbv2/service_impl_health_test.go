@@ -10,6 +10,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -91,26 +92,66 @@ func TestRegisterTargets_ResolvesPrivateIP(t *testing.T) {
 	assert.Equal(t, "10.0.1.50", tg.Targets[0].PrivateIP)
 }
 
-func TestRegisterTargets_UnresolvableIP(t *testing.T) {
+func TestRegisterTargets_UnknownInstanceFailsWholeCall(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestServiceWithInstance(t, "i-web001", "10.0.1.50")
 
-	tgOut, _ := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
-		Name: aws.String("unresolvable-tg"),
+	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
+		Name: aws.String("unknown-instance-tg"),
 		Port: aws.Int64(80),
 	}, testAccountID)
+	require.NoError(t, err)
 	tgArn := tgOut.TargetGroups[0].TargetGroupArn
 
-	// Register an instance that doesn't exist — should still succeed with empty IP
-	_, err := svc.RegisterTargets(context.Background(), &elbv2.RegisterTargetsInput{
-		TargetGroupArn: tgArn,
-		Targets:        []*elbv2.TargetDescription{{Id: aws.String("i-nonexistent")}},
+	for _, ids := range [][]string{{"i-nonexistent"}, {"i-web001", "i-nonexistent"}} {
+		targets := make([]*elbv2.TargetDescription, 0, len(ids))
+		for _, id := range ids {
+			targets = append(targets, &elbv2.TargetDescription{Id: aws.String(id)})
+		}
+		_, err = svc.RegisterTargets(context.Background(), &elbv2.RegisterTargetsInput{
+			TargetGroupArn: tgArn,
+			Targets:        targets,
+		}, testAccountID)
+		code, msg, ok := awserrors.ResolveErrorDetail(err)
+		require.True(t, ok, "ids %v: %v", ids, err)
+		assert.Equal(t, awserrors.ErrorValidationError, code)
+		assert.Equal(t, "The following targets are not valid instances: 'i-nonexistent'", msg)
+
+		tg, err := svc.store.GetTargetGroupByArn(t.Context(), *tgArn)
+		require.NoError(t, err)
+		assert.Empty(t, tg.Targets, "ids %v", ids)
+	}
+}
+
+func TestRegisterTargets_ReregisterSkipsInstanceLookup(t *testing.T) {
+	t.Parallel()
+	svc, vpcSvc, _ := setupTestServiceWithInstance(t, "i-web001", "10.0.1.50")
+
+	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
+		Name: aws.String("reregister-tg"),
+		Port: aws.Int64(80),
 	}, testAccountID)
 	require.NoError(t, err)
+	tgArn := tgOut.TargetGroups[0].TargetGroupArn
+	in := &elbv2.RegisterTargetsInput{
+		TargetGroupArn: tgArn,
+		Targets:        []*elbv2.TargetDescription{{Id: aws.String("i-web001")}},
+	}
+	_, err = svc.RegisterTargets(context.Background(), in, testAccountID)
+	require.NoError(t, err)
 
-	tg, _ := svc.store.GetTargetGroupByArn(t.Context(), *tgArn)
+	enis, err := vpcSvc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, enis.NetworkInterfaces, 1)
+	require.NoError(t, vpcSvc.DetachENI(context.Background(), testAccountID, *enis.NetworkInterfaces[0].NetworkInterfaceId))
+
+	_, err = svc.RegisterTargets(context.Background(), in, testAccountID)
+	require.NoError(t, err)
+
+	tg, err := svc.store.GetTargetGroupByArn(t.Context(), *tgArn)
+	require.NoError(t, err)
 	require.Len(t, tg.Targets, 1)
-	assert.Empty(t, tg.Targets[0].PrivateIP)
+	assert.Equal(t, "10.0.1.50", tg.Targets[0].PrivateIP)
 }
 
 func TestRegisterTargets_WithoutVPCService(t *testing.T) {

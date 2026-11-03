@@ -3,15 +3,16 @@ package ebsprovider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/nats-io/nats.go"
 )
 
-// NotifyFenced sends notice once to the daemon on notice.NodeID and returns the
-// instance it stopped, or "" if none. A *ProviderError means the daemon heard
-// the notice and refused it; any other error means it was not heard.
+// NotifyFenced sends notice once and returns the instance the daemon stopped.
+// An ErrInvalidArgument error is terminal: the notice can never be sent. A
+// *ProviderError (internal for an undecodable ack) was heard; others were not.
 func NotifyFenced(ctx context.Context, conn *nats.Conn, notice FenceNotice, timeout time.Duration) (string, error) {
 	if notice.VolumeID == "" {
 		return "", fmt.Errorf("%w: fence notice names no volume", ErrInvalidArgument)
@@ -21,28 +22,15 @@ func NotifyFenced(ctx context.Context, conn *nats.Conn, notice FenceNotice, time
 		return "", err
 	}
 	if conn == nil {
-		return "", nats.ErrConnectionClosed
+		return "", fmt.Errorf("%w: no connection to send the fence notice on", ErrInvalidArgument)
 	}
-	payload, err := json.Marshal(notice)
+
+	reply, err := requestReply(ctx, conn, subject, timeout, notice)
 	if err != nil {
-		return "", fmt.Errorf("encode %s notice: %w", subject, err)
+		return "", err
 	}
-
-	request := &nats.Msg{Subject: subject, Data: payload, Header: nats.Header{}}
-	ctx, span := startClientSpan(ctx, subject, request.Header)
-	defer span.End()
-
-	requestCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	msg, err := conn.RequestMsgWithContext(requestCtx, request)
-	if err != nil {
-		RecordSpanError(span, err)
-		return "", fmt.Errorf("request %s: %w", subject, err)
-	}
-	RecordResponseError(span, msg.Data)
-
 	var ack FenceNoticeAck
-	if err := json.Unmarshal(msg.Data, &ack); err != nil {
+	if err := json.Unmarshal(reply, &ack); err != nil {
 		// The daemon answered, so repeating the notice would only repeat this.
 		return "", &ProviderError{Code: ErrorCodeInternal, Message: fmt.Sprintf("decode %s ack: %v", subject, err)}
 	}
@@ -50,4 +38,16 @@ func NotifyFenced(ctx context.Context, conn *nats.Conn, notice FenceNotice, time
 		return ack.InstanceID, ack.Error
 	}
 	return ack.InstanceID, nil
+}
+
+// FenceNoticeRetryable reports whether a NotifyFenced error leaves the notice
+// to be sent again: it was not heard, or the daemon refused it as unavailable.
+func FenceNoticeRetryable(err error) bool {
+	if err == nil || errors.Is(err, ErrInvalidArgument) {
+		return false
+	}
+	if _, refused := errors.AsType[*ProviderError](err); refused {
+		return errors.Is(err, ErrUnavailable)
+	}
+	return true
 }

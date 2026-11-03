@@ -569,17 +569,33 @@ func (p *NATSProvider) HoldsUnsealedWrites(ctx context.Context, nodeID string, v
 // connected reports whether a request can be sent now. A reconnecting
 // connection would buffer it and send it on reconnect, after its caller may
 // have given up, so the provider would act with nobody waiting on the result.
-func (p *NATSProvider) connected() bool {
-	return p.conn != nil && p.conn.IsConnected()
+func connected(conn *nats.Conn) bool {
+	return conn != nil && conn.IsConnected()
 }
 
+func (p *NATSProvider) connected() bool { return connected(p.conn) }
+
 func (p *NATSProvider) request(ctx context.Context, subject string, input, output any) error {
-	if !p.connected() {
-		return nats.ErrConnectionClosed
+	reply, err := requestReply(ctx, p.conn, subject, p.timeoutFor(subject), input)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(reply, output); err != nil {
+		return fmt.Errorf("decode %s response: %w: %w", subject, ErrUnreadableReply, err)
+	}
+	return nil
+}
+
+// requestReply sends input on subject as ctx's account, waits up to timeout
+// and returns the raw reply. Its client span records a transport error, an
+// unreadable reply, or the error the reply carries; decoding is the caller's.
+func requestReply(ctx context.Context, conn *nats.Conn, subject string, timeout time.Duration, input any) ([]byte, error) {
+	if !connected(conn) {
+		return nil, nats.ErrConnectionClosed
 	}
 	payload, err := json.Marshal(input)
 	if err != nil {
-		return fmt.Errorf("encode %s request: %w", subject, err)
+		return nil, fmt.Errorf("encode %s request: %w", subject, err)
 	}
 
 	request := &nats.Msg{Subject: subject, Data: payload, Header: nats.Header{}}
@@ -590,18 +606,24 @@ func (p *NATSProvider) request(ctx context.Context, subject string, input, outpu
 	ctx, span := startClientSpan(ctx, subject, accountID, request.Header)
 	defer span.End()
 
-	requestCtx, cancel := context.WithTimeout(ctx, p.timeoutFor(subject))
+	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	msg, err := p.conn.RequestMsgWithContext(requestCtx, request)
+	msg, err := conn.RequestMsgWithContext(requestCtx, request)
 	if err != nil {
 		RecordSpanError(span, err)
-		return fmt.Errorf("request %s: %w", subject, err)
-	}
-	if err := json.Unmarshal(msg.Data, output); err != nil {
-		RecordSpanError(span, err)
-		return fmt.Errorf("decode %s response: %w: %w", subject, ErrUnreadableReply, err)
+		return nil, fmt.Errorf("request %s: %w", subject, err)
 	}
 	RecordResponseError(span, msg.Data)
+	return msg.Data, nil
+}
+
+// ValidateNodeID reports whether nodeID can address this node's contract
+// subjects. A node that fails it has no fence-notice subject, so a revoked
+// export there would leave its guest running.
+func ValidateNodeID(nodeID string) error {
+	if err := validateSubjectToken(nodeID); err != nil {
+		return fmt.Errorf("node ID cannot address EBS provider subjects: %w", err)
+	}
 	return nil
 }
 

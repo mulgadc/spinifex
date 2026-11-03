@@ -5119,3 +5119,51 @@ func TestDescribeInstanceAttribute_UserDataUnsetCarriesNoValue(t *testing.T) {
 		})
 	}
 }
+
+// AWS refuses an AMI built for another architecture than the instance type
+// with InvalidParameterValue, before any capacity or ENI is touched.
+func TestPrepareRunInstances_ArchitectureMismatch(t *testing.T) {
+	types := map[string]*ec2.InstanceTypeInfo{
+		"t3.micro": {
+			InstanceType:  aws.String("t3.micro"),
+			ProcessorInfo: &ec2.ProcessorInfo{SupportedArchitectures: []*string{aws.String("x86_64")}},
+		},
+		"t4g.micro": {
+			InstanceType:  aws.String("t4g.micro"),
+			ProcessorInfo: &ec2.ProcessorInfo{SupportedArchitectures: []*string{aws.String("arm64")}},
+		},
+	}
+	for _, tc := range []struct{ instanceType, amiArch, typeArch string }{
+		{"t3.micro", "arm64", "x86_64"},
+		{"t4g.micro", "x86_64", "arm64"},
+	} {
+		t.Run(tc.instanceType, func(t *testing.T) {
+			prov := &fakeResourceCapacityProvider{
+				instanceTypes: types,
+				canAllocFn: func(*ec2.InstanceTypeInfo, int) int {
+					t.Fatal("capacity consulted for a mismatched architecture")
+					return 0
+				},
+			}
+			svc := &InstanceServiceImpl{
+				instanceTypes: types,
+				amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+					"ami-1": {ImageOwnerAlias: "acc", Architecture: tc.amiArch},
+				}},
+				resourceMgr: prov,
+			}
+			_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+				InstanceType: aws.String(tc.instanceType),
+				ImageId:      aws.String("ami-1"),
+				MinCount:     aws.Int64(1),
+				MaxCount:     aws.Int64(1),
+			}, "acc", "")
+			require.Error(t, err)
+			assert.Nil(t, instances)
+			code, message, ok := awserrors.ResolveErrorDetail(err)
+			require.True(t, ok)
+			assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+			assert.Contains(t, message, "The architecture '"+tc.typeArch+"' of the specified instance type does not match the architecture '"+tc.amiArch+"' of the specified AMI.")
+		})
+	}
+}

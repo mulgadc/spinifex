@@ -65,9 +65,10 @@ The EC2 registration (`spinifex/domains/ec2/awsapi`, `NewRegistration`) parses t
 The gateway communicates with daemons via NATS request/response. Most calls go through `natsmsg.NATSRequest`, which marshals the input, attaches the account ID as a NATS header, and unmarshals the typed response:
 
 ```go
-func (s *NATSInstanceService) RunInstances(ctx context.Context, input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error) {
-    topic := fmt.Sprintf("ec2.RunInstances.%s", aws.StringValue(input.InstanceType))
-    return natsmsg.NATSRequest[ec2.Reservation](ctx, s.natsConn, topic, input, 5*time.Minute, accountID)
+func runIntoReservation(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, accountID, crID string) (*ec2.Reservation, error) {
+    subject := "ec2.RunInstances.cr." + crID
+    reservation, err := natsmsg.NATSRequest[ec2.Reservation](ctx, natsConn, subject, input, 5*time.Minute, accountID)
+    // ...
 }
 ```
 

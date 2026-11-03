@@ -117,7 +117,7 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 		if decodeErr == nil {
 			resource = functionARN(inv.Region, inv.AccountID, aws.StringValue(c.Create.FunctionName))
 		}
-	case "GetFunction", "GetFunctionConfiguration", "GetFunctionCodeSigningConfig":
+	case "GetFunction", "GetFunctionConfiguration", "GetFunctionCodeSigningConfig", "ListVersionsByFunction":
 		if name, _, err := resolveFunctionName(inv.Region, inv.AccountID, params[0]); err == nil {
 			resource = functionARN(inv.Region, inv.AccountID, name)
 		}
@@ -134,7 +134,8 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 		}
 	}
 	// Only GetFunction presigns code; the other reads are metadata only.
-	needsCodes := action != "GetFunctionConfiguration" && action != "GetFunctionCodeSigningConfig"
+	needsCodes := action != "GetFunctionConfiguration" && action != "GetFunctionCodeSigningConfig" &&
+		action != "ListVersionsByFunction"
 	if d.Meta == nil || (d.Codes == nil && needsCodes) {
 		return errors.New(awserrors.ErrorServiceException)
 	}

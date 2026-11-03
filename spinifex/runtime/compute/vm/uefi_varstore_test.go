@@ -484,7 +484,7 @@ func TestStartQEMU_PointerPassesTheLocalCopyAsPflashUnit1(t *testing.T) {
 	instance := f.instance(key, f.identity)
 	instance.EBSRequests.Requests = []EBSRequest{{Name: "vol-root", NBDURI: nbdListener(t), Boot: true}}
 
-	require.NoError(t, f.m.startQEMU(instance, false))
+	require.NoError(t, f.m.startQEMU(instance))
 
 	got := launches()
 	require.Len(t, got, 1)
@@ -504,7 +504,7 @@ func TestStartQEMU_PointerWithoutALocalCopyIsNotLaunched(t *testing.T) {
 	instance := f.instance(keyFor("boot"), f.identity)
 	instance.EBSRequests.Requests = []EBSRequest{{Name: "vol-root", NBDURI: nbdListener(t), Boot: true}}
 
-	err := f.m.startQEMU(instance, false)
+	err := f.m.startQEMU(instance)
 
 	require.ErrorIs(t, err, os.ErrNotExist)
 	assert.Empty(t, launches())

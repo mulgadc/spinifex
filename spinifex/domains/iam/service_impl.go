@@ -597,8 +597,14 @@ func (s *IAMServiceImpl) DeleteUser(accountID string, input *iam.DeleteUserInput
 	if len(user.AttachedPolicies) > 0 {
 		return nil, errDetachPoliciesFirst
 	}
-	if len(user.Groups) > 0 {
-		return nil, errors.New(awserrors.ErrorIAMDeleteConflict)
+	for _, groupName := range user.Groups {
+		if _, err := s.getGroup(ctx, accountID, groupName); err == nil {
+			return nil, awserrors.Errorf(awserrors.ErrorIAMDeleteConflict, "Cannot delete entity, must remove users from group first.")
+		} else if code, _ := awserrors.ResolveErrorCode(err); code != awserrors.ErrorIAMNoSuchEntity {
+			return nil, fmt.Errorf("get group: %w", err)
+		}
+		slog.Warn("DeleteUser: ignoring group name with no group record",
+			"accountID", accountID, "userName", userName, "groupName", groupName)
 	}
 	if len(user.InlinePolicies) > 0 {
 		return nil, errDeletePoliciesFirst

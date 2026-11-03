@@ -75,6 +75,28 @@ func TestMemoryProviderNamePrefixConformance(t *testing.T) {
 	}
 }
 
+// TestMemoryProviderFenceNoticeConformance runs the suite with the revocation
+// case enabled, so the contract's fence notice is held to the same check here
+// as on viperblockd.
+func TestMemoryProviderFenceNoticeConformance(t *testing.T) {
+	_, conn := testutil.StartTestNATS(t)
+	shared := ebsprovider.NewMemoryProvider(conformance.ReferenceCapabilities)
+	shared.NotifyFencesOn(conn)
+
+	conformance.RunSuiteWithConfig(t, func(t *testing.T) ebsprovider.EBSProvider {
+		t.Helper()
+		return shared
+	}, conformance.SuiteConfig{
+		RevokeExport: func(t *testing.T, published *ebsprovider.PublishedVolume) ebsprovider.FenceNotice {
+			t.Helper()
+			return conformance.CaptureFenceNotice(t, conn, published.NodeID, func() error {
+				_, err := shared.RevokePublication(t.Context(), published.VolumeID, "node-elsewhere")
+				return err
+			})
+		},
+	})
+}
+
 // TestNATSProviderConformance runs the suite against a NATSProvider backed
 // by natsserve.Serve, the production-shaped neutral server, rather than a
 // test-only twin: this exercises the transport this package's implementors actually run in production, not a hand-written stand-in for it.

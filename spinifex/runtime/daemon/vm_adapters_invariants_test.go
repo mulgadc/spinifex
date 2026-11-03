@@ -10,21 +10,19 @@ import (
 )
 
 // TestUnmountNeverReleasesBootVolume locks the stop/crash attachment-persistence
-// contract: Unmount seals the block map but must NOT mark a boot/root volume
-// "available". Unmount is driven by stop (runtime/compute/vm/shutdown.go) and crash recovery
-// (runtime/compute/vm/crash_recovery.go), where the instance keeps its attachment and restarts —
-// only DetachVolume and terminate release a boot volume. Releasing it here while
+// contract: Unmount seals the block map but never marks any attached volume
+// "available", boot or data. Unmount is driven by stop (runtime/compute/vm/shutdown.go)
+// and crash recovery (runtime/compute/vm/crash_recovery.go), where the instance keeps
+// its attachments and restarts; as on AWS, EBS root and data volumes persist across
+// stop. Only DetachVolume and terminate release a volume. Releasing one here while
 // the instance still owns it splits the volume-state record (describe-instances
-// "attached" vs describe-volumes "available"). EFI is not a
-// sufficient proxy for "boot": BIOS-boot roots are Boot && !EFI, so the gate must
-// also exclude Boot. Only non-boot data volumes may be released by Unmount.
+// "attached" vs describe-volumes "available").
 func TestUnmountNeverReleasesBootVolume(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
-	volState := &recordingVolState{}
-	adapter := newNATSMounter(daemon.natsConn, daemon.node, volState)
+	adapter := newNATSMounter(daemon.natsConn, daemon.node)
 
 	// Stand in for the provider: every unpublish succeeds (sealed).
-	serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
+	fake := serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
 
 	inst := &vm.VM{
 		ID: "i-unmount-boot",
@@ -38,11 +36,7 @@ func TestUnmountNeverReleasesBootVolume(t *testing.T) {
 	}
 	require.NoError(t, adapter.Unmount(t.Context(), inst))
 
-	calls := volState.snapshot()
-	assert.NotContains(t, calls, "vol-bios-root:available",
-		"a BIOS-boot root volume (Boot && !EFI) must stay attached across stop/crash unmount, not be released to available")
-	assert.NotContains(t, calls, "vol-efi-root:available",
-		"an EFI-boot root volume must stay attached across stop/crash unmount")
-	assert.Contains(t, calls, "vol-data:available",
-		"a non-boot data volume is released to available by Unmount")
+	// Boot, EFI and data volumes alike are sealed and left attached: stop and
+	// crash unmount never release any attached volume.
+	assert.ElementsMatch(t, []string{"vol-bios-root", "vol-efi-root", "vol-data"}, fake.unpublished())
 }

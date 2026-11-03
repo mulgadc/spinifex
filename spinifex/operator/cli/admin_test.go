@@ -675,6 +675,15 @@ func TestAdminInitCmd_ExternalDHCPFlagSchema(t *testing.T) {
 	assert.Empty(t, poolFlag.DefValue)
 }
 
+// These flags were accepted but never read, so passing them silently did
+// nothing; cobra must now reject them as unknown.
+func TestUnreadFlagsAreNotRegistered(t *testing.T) {
+	assert.Nil(t, adminInitCmd.Flags().Lookup("host"), "admin init --host")
+	for _, name := range []string{"host", "nats-token", "nats-subject"} {
+		assert.Nil(t, rootCmd.PersistentFlags().Lookup(name), "global --%s", name)
+	}
+}
+
 // DHCP-sourced pool must emit source + bind_bridge into spinifex.toml so the
 // daemon's validator and vpcd's DHCPManager find the bridge they DORA on.
 func TestSpinifexTomlTemplate_ExternalPoolDHCPSource(t *testing.T) {

@@ -158,11 +158,7 @@ func configuration(rec function.Record, revision uint64, env map[string]string) 
 		cfg.CodeSize = aws.Int64(rec.Code.Size)
 	}
 	if len(env) > 0 {
-		vars := make(map[string]*string, len(env))
-		for k, v := range env {
-			vars[k] = aws.String(v)
-		}
-		cfg.Environment = &lambda.EnvironmentResponse{Variables: vars}
+		cfg.Environment = &lambda.EnvironmentResponse{Variables: aws.StringMap(env)}
 	}
 	return cfg, nil
 }

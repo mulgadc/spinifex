@@ -5,6 +5,7 @@ import (
 	"math"
 	"reflect"
 	"slices"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -52,15 +53,26 @@ var ec2TaggableTypes = map[string]taggableTypes{
 	"RunInstances":                    taggable("instance", "volume", "network-interface", "spot-instances-request"),
 }
 
-// validateTagSpecificationTypes refuses a TagSpecifications entry whose
-// ResourceType the action cannot tag, rather than silently dropping its tags.
-func validateTagSpecificationTypes(action string, input any) error {
+// validateTagSpecifications refuses a TagSpecifications entry whose ResourceType
+// the action cannot tag, or a tag key with the reserved aws: prefix. Only
+// customer requests come through here, so system callers may still set aws: tags.
+func validateTagSpecifications(action string, input any) error {
 	allowed, ok := ec2TaggableTypes[action]
 	if !ok {
 		return nil
 	}
 	for _, spec := range tagSpecifications(input) {
-		if spec == nil || spec.ResourceType == nil {
+		if spec == nil {
+			continue
+		}
+		for _, tag := range spec.Tags {
+			// AWS reserves the prefix in any case.
+			if key := aws.StringValue(tag.Key); strings.HasPrefix(strings.ToLower(key), "aws:") {
+				return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+					"Value ( %s ) for parameter key is invalid. Tag keys starting with 'aws:' are reserved for internal use", key)
+			}
+		}
+		if spec.ResourceType == nil {
 			continue
 		}
 		if rt := aws.StringValue(spec.ResourceType); !slices.Contains(allowed.types, rt) {

@@ -16,3 +16,14 @@ func TestPatternParams(t *testing.T) {
 		patternParams("/clusters/{clusterName}/node-groups/{nodegroupName}"))
 	assert.Equal(t, []string{"*"}, patternParams("/tags/*"))
 }
+
+func TestRouterActionsAreSortedAndDistinct(t *testing.T) {
+	rr := NewRouter("svc", []Route[int]{
+		{Method: "GET", Pattern: "/b", Action: "GetB"},
+		{Method: "DELETE", Pattern: "/tags/*", Action: "UntagResource"},
+		{Method: "POST", Pattern: "/a", Action: "CreateA"},
+		{Method: "DELETE", Pattern: "/tags/{arn}", Action: "UntagResource"},
+	})
+
+	assert.Equal(t, []string{"CreateA", "GetB", "UntagResource"}, rr.Actions())
+}

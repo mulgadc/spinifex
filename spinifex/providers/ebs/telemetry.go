@@ -3,6 +3,7 @@ package ebsprovider
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -218,9 +219,9 @@ func RecordProviderError(span trace.Span, providerErr *ProviderError) {
 	span.SetStatus(codes.Error, providerErr.Message)
 }
 
-// RecordResponseError tags span with the error an encoded response carries.
-// The response types share no accessor for it, so this re-reads the one field
-// rather than making every verb implement one; it runs only when recording.
+// RecordResponseError tags span with the error an encoded response carries, or
+// fails it for a response that is not readable. The response types share no
+// accessor, so this re-reads the one field; it runs only when recording.
 func RecordResponseError(span trace.Span, data []byte) {
 	if !span.IsRecording() {
 		return
@@ -229,6 +230,7 @@ func RecordResponseError(span trace.Span, data []byte) {
 		Error *ProviderError `json:"error"`
 	}
 	if err := json.Unmarshal(data, &envelope); err != nil {
+		RecordSpanError(span, fmt.Errorf("%w: %w", ErrUnreadableReply, err))
 		return
 	}
 	RecordProviderError(span, envelope.Error)

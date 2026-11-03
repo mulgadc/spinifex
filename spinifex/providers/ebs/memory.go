@@ -2,12 +2,15 @@ package ebsprovider
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/nats-io/nats.go"
 )
 
 // MemoryProvider is a deterministic, concurrency-safe Provider used by
@@ -19,6 +22,10 @@ type MemoryProvider struct {
 	volumes      map[string]*memoryVolume
 	snapshots    map[string]*Snapshot
 	now          func() time.Time
+	fenceConn    *nats.Conn
+	// Zero takes the defaults; tests shorten them.
+	fenceNoticeTimeout time.Duration
+	fenceNoticeEvery   time.Duration
 }
 
 type memoryVolume struct {
@@ -406,11 +413,71 @@ func (m *MemoryProvider) UnpublishVolume(_ context.Context, req UnpublishVolumeR
 	if volume == nil || volume.published == nil || volume.published.NodeID != req.NodeID {
 		return result, nil
 	}
-	volume.published = nil
-	volume.readOnly = false
-	volume.volume.State = VolumeStateAvailable
+	volume.unpublish()
 	result.TornDown = req.SchemaVersion >= NoSealSchemaVersion
 	return result, nil
+}
+
+// NotifyFencesOn sets the connection RevokePublication announces fences on.
+func (m *MemoryProvider) NotifyFencesOn(conn *nats.Conn) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.fenceConn = conn
+}
+
+// unpublish drops the volume's publication. The caller holds the provider lock.
+func (v *memoryVolume) unpublish() {
+	v.published = nil
+	v.readOnly = false
+	v.volume.State = VolumeStateAvailable
+}
+
+// Defaults for RevokePublication's notice: each attempt's wait for an answer,
+// and the pause before an unanswered notice is sent again.
+const (
+	memoryFenceNoticeTimeout = 2 * time.Second
+	memoryFenceNoticeEvery   = time.Second
+)
+
+// RevokePublication tears volumeID's publication down as a provider that lost
+// the volume to winner does, then sends a FenceNotice to the node it was
+// published on until heard or ctx ends. It returns the instance stopped there.
+func (m *MemoryProvider) RevokePublication(ctx context.Context, volumeID, winner string) (string, error) {
+	m.mu.Lock()
+	conn := m.fenceConn
+	volume := m.volumes[volumeID]
+	timeout := cmp.Or(m.fenceNoticeTimeout, memoryFenceNoticeTimeout)
+	every := cmp.Or(m.fenceNoticeEvery, memoryFenceNoticeEvery)
+	if conn == nil {
+		m.mu.Unlock()
+		return "", fmt.Errorf("%w: no connection to announce the fence on", ErrUnavailable)
+	}
+	if volume == nil || volume.published == nil {
+		m.mu.Unlock()
+		return "", fmt.Errorf("%w: volume %s is not published", ErrNotFound, volumeID)
+	}
+	nodeID := volume.published.NodeID
+	volume.unpublish()
+	m.mu.Unlock()
+
+	notice := FenceNotice{
+		Versioned: NewVersioned(),
+		VolumeID:  volumeID,
+		NodeID:    nodeID,
+		Winner:    winner,
+		Reason:    "volume revoked in favour of " + winner,
+	}
+	for {
+		instanceID, err := NotifyFenced(ctx, conn, notice, timeout)
+		if !FenceNoticeRetryable(err) || conn.IsClosed() {
+			return instanceID, err
+		}
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("fence notice for %s never acknowledged: %w: %w", volumeID, ctx.Err(), err)
+		case <-time.After(every):
+		}
+	}
 }
 
 // HoldsUnsealedWrites answers that none are held: every write lands in this

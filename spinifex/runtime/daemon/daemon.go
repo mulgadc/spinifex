@@ -41,7 +41,6 @@ import (
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/preflight"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
@@ -733,6 +732,11 @@ func (d *Daemon) SetConfigPath(path string) {
 
 // NewDaemon creates a new daemon instance.
 func NewDaemon(cfg *config.ClusterConfig) (*Daemon, error) {
+	// The fence notice is node-addressed: a daemon that cannot subscribe to it
+	// would leave a guest running on a volume whose export was revoked.
+	if err := ebsprovider.ValidateNodeID(cfg.Node); err != nil {
+		return nil, fmt.Errorf("cluster config node %q: %w", cfg.Node, err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// If WalDir is not set, use BaseDir
@@ -936,6 +940,8 @@ func (d *Daemon) subscribeAll() error {
 		// Cluster-wide on purpose: the QMP detach is instance-scoped, so a
 		// volume held by an unreachable host has no other way out.
 		{"ec2.ForceDetachVolume", handleNATSRequest(d.node, d.volumeService.ForceDetachVolume), "spinifex-workers"},
+		{"ec2.DetachVolumeFromStopped", handleNATSRequest(d.node, d.instanceService.DetachVolumeFromStopped), "spinifex-workers"},
+		{"ec2.AttachVolumeToStopped", handleNATSRequest(d.node, d.instanceService.AttachVolumeToStopped), "spinifex-workers"},
 		{"ec2.DescribeVolumeStatus", handleNATSRequest(d.node, d.volumeService.DescribeVolumeStatus), "spinifex-workers"},
 		{"ec2.DescribeVolumesModifications", handleNATSRequest(d.node, d.volumeService.DescribeVolumesModifications), "spinifex-workers"},
 		{"ec2.CreateSnapshot", handleNATSRequest(d.node, d.snapshotService.CreateSnapshot), "spinifex-workers"},
@@ -1353,10 +1359,8 @@ func (d *Daemon) subscribeAll() error {
 		// here, so the reconcile request flows daemon-ward.
 		natsSub{dhcp.TopicLeaseChanged, d.handleDHCPLeaseChanged, "spinifex-workers"},
 		natsSub{dhcp.TopicOwnerCheck, d.handleDHCPOwnerCheck, "spinifex-workers"},
-		// Node-addressed with no queue group: the fenced guest is on this host,
-		// so a worker on another node would find nothing to stop.
-		natsSub{viperblocklegacyv1.VolumeFencedSubject(d.node), d.handleVolumeFenced, ""},
 	)
+	subs = append(subs, d.fenceNoticeSubs()...)
 
 	// Per-node, no queue group: a second daemon claiming this node ID also
 	// answers, so the teardown probe sees a duplicate and refuses to seal. An
@@ -2571,6 +2575,7 @@ func (d *Daemon) startCluster() error {
 			d.vmMgr.NewTerminatedTeardownReaper(),
 			d.vmMgr.NewOrphanQEMUReaper(),
 			d.vmMgr.NewStuckTerminateReaper(),
+			d.vmMgr.NewLocalConsoleLogReaper(),
 		}
 		if eniRec := d.newENIReconciler(); eniRec != nil {
 			reapers = append(reapers, eniRec)
@@ -2752,6 +2757,10 @@ func (d *Daemon) initJetStream() error {
 
 		if err == nil {
 			err = d.jsManager.InitClusterConfigBucket()
+		}
+
+		if err == nil {
+			err = d.jsManager.InitUEFIStoreBucket()
 		}
 
 		if err == nil {

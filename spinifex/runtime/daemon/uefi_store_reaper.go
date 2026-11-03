@@ -203,6 +203,11 @@ func (r *uefiStoreReaper) completeTerminatedMarks(ctx context.Context) {
 		case err != nil:
 			slog.WarnContext(ctx, "uefi-store: unreadable store record", "instanceId", id, "err", err)
 		case rec.State == uefistore.StateLive:
+			if ok, err := r.instances.TerminateDecided(id); err != nil || !ok {
+				slog.WarnContext(ctx, "uefi-store: terminated instance still has a live record, leaving its store live",
+					"instanceId", id, "err", err)
+				continue
+			}
 			if _, err := r.stores.MarkDeleting(ctx, id); err != nil {
 				slog.WarnContext(ctx, "uefi-store: failed to record a terminated instance's store for deletion",
 					"instanceId", id, "err", err)

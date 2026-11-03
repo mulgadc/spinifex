@@ -156,6 +156,34 @@ func TestS7_UEFIStoreReaperRefusesADeletingStoreOfALiveInstance(t *testing.T) {
 	}
 }
 
+// TestS7_UEFIStoreReaperKeepsTheStoreOfAStoppedInstanceATerminateFailedToRemove
+// enforces ADR-0003:S7 when a stopped terminate wrote its terminated record but
+// failed to remove the stopped one: the instance can still start, so its store stays.
+func TestS7_UEFIStoreReaperKeepsTheStoreOfAStoppedInstanceATerminateFailedToRemove(t *testing.T) {
+	for name, tc := range map[string]struct {
+		deleting bool
+		want     string
+	}{
+		"store marked deleting": {deleting: true, want: uefistore.StateDeleting},
+		"mark not landed":       {deleting: false, want: uefistore.StateLive},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newUEFIReaperFixture(t)
+			const id = "i-0000000000000000a"
+			f.writeInstance(t, id, vm.StateStopped)
+			f.writeTerminated(t, id, vm.TeardownPending)
+			f.seedStore(t, id, 3, tc.deleting)
+
+			reaped, err := f.r.Sweep(t.Context())
+			require.NoError(t, err)
+			assert.Zero(t, reaped)
+			assert.Equal(t, 3, f.objectCount(t, id), "ADR-0003:S7: a stopped instance's store must survive its terminated record")
+			assert.Equal(t, tc.want, f.recordState(t, id), "the reaper must not move a startable instance's store")
+			assert.Equal(t, string(vm.TeardownPending), f.terminatedUEFIMark(t, id))
+		})
+	}
+}
+
 // failingObjects stands in for predastore while it is down: every list and
 // delete fails.
 type failingObjects struct {

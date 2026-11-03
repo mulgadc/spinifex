@@ -219,17 +219,10 @@ func loadRecord[T any](store *kvstore.Store[T], key string) (*T, error) {
 	return record, nil
 }
 
-// TerminateDecided reports whether instanceID is terminated or terminating, or
-// has no instance record at all, read from the KV store at call time. A read
-// error is returned rather than guessed, so a partition never reads as absent.
+// TerminateDecided reports whether instanceID has no live instance record, or
+// one that is terminating, read from the KV store at call time. The live record
+// wins over a terminated one, and a read error is returned rather than guessed.
 func (m *JetStreamManager) TerminateDecided(instanceID string) (bool, error) {
-	terminated, err := m.LoadTerminatedInstance(instanceID)
-	if err != nil {
-		return false, err
-	}
-	if terminated != nil {
-		return true, nil
-	}
 	record, err := m.LoadInstanceRecord(instanceID)
 	if err != nil {
 		return false, err

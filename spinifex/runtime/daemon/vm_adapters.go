@@ -95,10 +95,9 @@ func (a *stateStoreAdapter) DeleteTerminatedInstance(id string) error {
 
 // volumeMounterAdapter satisfies vm.VolumeMounter over the EBS contract's
 // PublishVolume and UnpublishVolume, sent at the cluster's one contract
-// version to this node's provider. Unmount also marks volumes available.
+// version to this node's provider.
 type volumeMounterAdapter struct {
 	node     string
-	volState vm.VolumeStateUpdater
 	provider mounterProvider
 	// abandonTimeout bounds each no-seal unpublish Abandon sends.
 	abandonTimeout time.Duration
@@ -114,10 +113,9 @@ var _ mounterProvider = (*ebsprovider.NATSProvider)(nil)
 
 var _ vm.VolumeMounter = (*volumeMounterAdapter)(nil)
 
-func newVolumeMounterAdapter(provider mounterProvider, node string, volState vm.VolumeStateUpdater) *volumeMounterAdapter {
+func newVolumeMounterAdapter(provider mounterProvider, node string) *volumeMounterAdapter {
 	return &volumeMounterAdapter{
 		node:           node,
-		volState:       volState,
 		provider:       provider,
 		abandonTimeout: abandonTimeout,
 	}
@@ -296,26 +294,15 @@ func (a *volumeMounterAdapter) Unmount(ctx context.Context, instance *vm.VM) err
 
 	var sealErrs []error
 	for _, ebsRequest := range instance.EBSRequests.Requests {
-		// Every volume is attempted and the seal failures aggregated. An unsealed
-		// volume must NOT go available: a reattach on a node without the local
-		// WAL would find no checkpoint (bad superblock).
+		// Every volume is attempted and the seal failures aggregated. A stop or
+		// crash leaves every volume in-use and attached, so no state is written.
 		if err := a.unpublish(ctx, instance.AccountID, ebsRequest); err != nil {
-			slog.Error("Volume seal failed, leaving volume non-available",
+			slog.Error("Volume seal failed",
 				"instance", instance.ID, "volume", ebsRequest.Name, "err", err)
 			sealErrs = append(sealErrs, fmt.Errorf("seal %s: %w", ebsRequest.Name, err))
 			continue
 		}
 		slog.Info("Unmounted volume", "instance", instance.ID, "volume", ebsRequest.Name)
-
-		// A boot volume stays attached across stop/crash unmount: only
-		// DetachVolume and terminate release it, and flipping it available while
-		// the instance restarts would split the state record.
-		if !ebsRequest.Boot && a.volState != nil {
-			if err := a.volState.UpdateVolumeState(instance.AccountID, ebsRequest.Name, "available", "", ""); err != nil {
-				slog.Error("Failed to update volume state to available after unmount",
-					"volumeId", ebsRequest.Name, "err", err)
-			}
-		}
 	}
 
 	return errors.Join(sealErrs...)
@@ -676,7 +663,7 @@ func (d *Daemon) buildVMManagerDeps() vm.Deps {
 	return vm.Deps{
 		NodeID:             d.node,
 		StateStore:         d.stateStore,
-		VolumeMounter:      newVolumeMounterAdapter(d.ebsProvider, d.node, d.volumeService),
+		VolumeMounter:      newVolumeMounterAdapter(d.ebsProvider, d.node),
 		NetworkPlumber:     d.networkPlumber,
 		InstanceTypes:      newInstanceTypeResolverAdapter(d.resourceMgr),
 		Resources:          newResourceControllerAdapter(d.resourceMgr),

@@ -16,9 +16,8 @@ var sshHealth harness.SSHHealth
 
 // runStopStart stops fix.Instance and waits for it to reach the
 // "stopped" state, then asserts that rebooting a stopped instance is
-// rejected with IncorrectInstanceState. Leaves the instance stopped so
-// Phase 7a / 7b can act against the stopped state. Maps to run-e2e.sh
-// ~1027–1053.
+// rejected with IncorrectInstanceState, then starts it again. Maps to
+// run-e2e.sh ~1027–1053.
 func runStopStart(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — Instance State Transitions (Stop)")
 
@@ -54,22 +53,21 @@ func runStopStart(t *testing.T, fix *Fixture) {
 	harness.WaitForInstanceState(t, fix.AWS, instanceID, "running")
 }
 
-// runAttachToStoppedError creates a fresh 10 GiB volume and attempts
-// to attach it to the (currently stopped) primary instance. The attach
-// must fail with IncorrectInstanceState. The test volume is deleted
-// in-line on success and via t.Cleanup on early failure. Maps to
-// run-e2e.sh ~1054–1068.
-func runAttachToStoppedError(t *testing.T, fix *Fixture) {
-	harness.Phase(t, "Single — Attach Volume to Stopped Instance (Error Path)")
+// runAttachToStopped attaches a fresh 10 GiB volume to the (stopped) primary
+// instance, as AWS allows: the attach edits the stopped record and claims the
+// volume in-use, a delete is refused while it is attached, and a detach
+// releases it to available. The volume is deleted in-line on success and via
+// t.Cleanup on early failure.
+func runAttachToStopped(t *testing.T, fix *Fixture) {
+	harness.Phase(t, "Single — Attach/Detach Volume on a Stopped Instance")
 
 	inst, _ := needInstance(t, fix)
 	instanceID := aws.StringValue(inst.InstanceId)
 	az := needAZ(t, fix)
 
-	// Stop the primary instance so the IncorrectInstanceState assertion has
-	// something to bite on, then restore it at end so sibling Test* see the
-	// canonical running row.
-	harness.Step(t, "stop-instances %s (precondition for 7a)", instanceID)
+	// Stop the primary instance, then restore it at end so sibling Test* see
+	// the canonical running row.
+	harness.Step(t, "stop-instances %s (precondition)", instanceID)
 	_, err := fix.AWS.EC2.StopInstances(&ec2.StopInstancesInput{
 		InstanceIds: []*string{aws.String(instanceID)},
 	})
@@ -92,13 +90,16 @@ func runAttachToStoppedError(t *testing.T, fix *Fixture) {
 	require.NotEmpty(t, stoppedVolID, "create-volume returned empty VolumeId")
 	harness.Detail(t, "test_volume", stoppedVolID)
 
-	// Best-effort cleanup if the negative assertion or anything else fails
-	// before we reach the explicit delete-volume below.
+	// Best-effort cleanup if anything fails before the explicit delete below.
 	cleaned := false
 	t.Cleanup(func() {
 		if cleaned {
 			return
 		}
+		_, _ = fix.AWS.EC2.DetachVolume(&ec2.DetachVolumeInput{
+			VolumeId:   aws.String(stoppedVolID),
+			InstanceId: aws.String(instanceID),
+		})
 		_, _ = fix.AWS.EC2.DeleteVolume(&ec2.DeleteVolumeInput{
 			VolumeId: aws.String(stoppedVolID),
 		})
@@ -106,15 +107,33 @@ func runAttachToStoppedError(t *testing.T, fix *Fixture) {
 
 	harness.WaitForVolumeState(t, fix.AWS, stoppedVolID, "available")
 
-	harness.Step(t, "attach-volume %s -> %s (should fail)", stoppedVolID, instanceID)
-	harness.ExpectError(t, "IncorrectInstanceState", func() error {
-		_, err := fix.AWS.EC2.AttachVolume(&ec2.AttachVolumeInput{
-			VolumeId:   aws.String(stoppedVolID),
-			InstanceId: aws.String(instanceID),
-			Device:     aws.String("/dev/sdg"),
+	harness.Step(t, "attach-volume %s -> %s (stopped)", stoppedVolID, instanceID)
+	_, err = fix.AWS.EC2.AttachVolume(&ec2.AttachVolumeInput{
+		VolumeId:   aws.String(stoppedVolID),
+		InstanceId: aws.String(instanceID),
+		Device:     aws.String("/dev/sdg"),
+	})
+	require.NoError(t, err, "attach-volume to a stopped instance")
+	vol := harness.WaitForVolumeState(t, fix.AWS, stoppedVolID, "in-use")
+	require.Len(t, vol.Attachments, 1, "attachments on %s", stoppedVolID)
+	require.Equal(t, instanceID, aws.StringValue(vol.Attachments[0].InstanceId), "attached instance")
+	require.Equal(t, "/dev/sdg", aws.StringValue(vol.Attachments[0].Device), "attached device")
+
+	harness.Step(t, "delete-volume %s while attached (should fail)", stoppedVolID)
+	harness.ExpectError(t, "VolumeInUse", func() error {
+		_, err := fix.AWS.EC2.DeleteVolume(&ec2.DeleteVolumeInput{
+			VolumeId: aws.String(stoppedVolID),
 		})
 		return err
 	})
+
+	harness.Step(t, "detach-volume %s from %s (stopped)", stoppedVolID, instanceID)
+	_, err = fix.AWS.EC2.DetachVolume(&ec2.DetachVolumeInput{
+		VolumeId:   aws.String(stoppedVolID),
+		InstanceId: aws.String(instanceID),
+	})
+	require.NoError(t, err, "detach-volume from a stopped instance")
+	harness.WaitForVolumeState(t, fix.AWS, stoppedVolID, "available")
 
 	harness.Step(t, "delete-volume %s", stoppedVolID)
 	_, err = fix.AWS.EC2.DeleteVolume(&ec2.DeleteVolumeInput{

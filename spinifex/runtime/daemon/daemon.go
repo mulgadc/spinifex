@@ -941,6 +941,8 @@ func (d *Daemon) subscribeAll() error {
 		// Cluster-wide on purpose: the QMP detach is instance-scoped, so a
 		// volume held by an unreachable host has no other way out.
 		{"ec2.ForceDetachVolume", handleNATSRequest(d.node, d.volumeService.ForceDetachVolume), "spinifex-workers"},
+		{"ec2.DetachVolumeFromStopped", handleNATSRequest(d.node, d.instanceService.DetachVolumeFromStopped), "spinifex-workers"},
+		{"ec2.AttachVolumeToStopped", handleNATSRequest(d.node, d.instanceService.AttachVolumeToStopped), "spinifex-workers"},
 		{"ec2.DescribeVolumeStatus", handleNATSRequest(d.node, d.volumeService.DescribeVolumeStatus), "spinifex-workers"},
 		{"ec2.DescribeVolumesModifications", handleNATSRequest(d.node, d.volumeService.DescribeVolumesModifications), "spinifex-workers"},
 		{"ec2.CreateSnapshot", handleNATSRequest(d.node, d.snapshotService.CreateSnapshot), "spinifex-workers"},
@@ -2579,6 +2581,7 @@ func (d *Daemon) startCluster() error {
 			d.vmMgr.NewOrphanQEMUReaper(),
 			d.vmMgr.NewStuckTerminateReaper(),
 			d.vmMgr.NewUEFIWriteBackReaper(),
+			d.vmMgr.NewLocalConsoleLogReaper(),
 		}
 		if eniRec := d.newENIReconciler(); eniRec != nil {
 			reapers = append(reapers, eniRec)

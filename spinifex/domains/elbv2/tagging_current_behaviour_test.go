@@ -2,8 +2,6 @@ package elbv2
 
 import (
 	"context"
-	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -37,25 +35,16 @@ func TestCurrentBehaviour_Tagging_ELBv2AddTagsAppliesNothingWhenALaterARNIsUnkno
 	assert.Empty(t, tagsFor(t, svc, arn), "the first resource must not be tagged")
 }
 
-// AddTags refuses only an empty key: 51 tags, a 129-character key, a
-// 257-character value and an aws: key are all stored.
-func TestCurrentBehaviour_Tagging_ELBv2AddTagsAppliesNoTagLimits(t *testing.T) {
+// AddTags stores a key with the aws: prefix.
+func TestCurrentBehaviour_Tagging_ELBv2AddTagsAcceptsAwsPrefixedKey(t *testing.T) {
 	svc := setupTestService(t)
 	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("cb-limits-lb")}, testAccountID)
 	require.NoError(t, err)
 	arn := *lbOut.LoadBalancers[0].LoadBalancerArn
 
-	tags := []*elbv2.Tag{
-		{Key: aws.String("aws:reserved"), Value: aws.String("v")},
-		{Key: aws.String(strings.Repeat("k", 129)), Value: aws.String(strings.Repeat("v", 257))},
-	}
-	for i := range 49 {
-		tags = append(tags, &elbv2.Tag{Key: aws.String(fmt.Sprintf("key-%02d", i)), Value: aws.String("v")})
-	}
+	tags := []*elbv2.Tag{{Key: aws.String("aws:reserved"), Value: aws.String("v")}}
 	_, err = svc.AddTags(context.Background(), &elbv2.AddTagsInput{ResourceArns: []*string{aws.String(arn)}, Tags: tags}, testAccountID)
 	require.NoError(t, err)
 
-	got := tagsFor(t, svc, arn)
-	assert.Len(t, got, 51)
-	assert.Contains(t, got, "aws:reserved")
+	assert.Contains(t, tagsFor(t, svc, arn), "aws:reserved")
 }

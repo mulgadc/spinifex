@@ -411,6 +411,8 @@ func (m *Manager) finalizeTerminated(instance *VM) error {
 		instance.TerminatedAt = time.Now()
 	}
 
+	retireConsoleLog(instance.Config.ConsoleLogPath)
+
 	if m.deps.StateStore != nil {
 		if err := m.deps.StateStore.WriteTerminatedInstance(instance.ID, instance); err != nil {
 			slog.Error("Failed to write terminated instance to KV, keeping in local state for retry",

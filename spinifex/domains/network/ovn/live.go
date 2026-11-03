@@ -883,60 +883,24 @@ func (c *LiveClient) AddNAT(ctx context.Context, routerName string, nat *nbdb.NA
 
 // DeleteNAT removes every NAT rule matching (natType, logicalIP) from routerName.
 // Scoped to routerName.NAT — AWS CIDRs repeat across VPCs so the pair is not globally
-// unique. Deletes all matches so a duplicate row (e.g. minted by a racing reconcile)
-// is fully cleaned on teardown rather than leaking past the first delete.
+// unique. Deletes all matches so a racing reconcile's duplicate row does not leak.
 func (c *LiveClient) DeleteNAT(ctx context.Context, routerName string, natType, logicalIP string) error {
-	lr, err := c.GetLogicalRouter(ctx, routerName)
-	if err != nil {
-		return fmt.Errorf("get logical router for NAT delete: %w", err)
-	}
-	routerNATs := make(map[string]struct{}, len(lr.NAT))
-	for _, uuid := range lr.NAT {
-		routerNATs[uuid] = struct{}{}
-	}
-
-	var nats []nbdb.NAT
-	err = c.client.WhereCache(func(n *nbdb.NAT) bool {
-		if _, ok := routerNATs[n.UUID]; !ok {
-			return false
-		}
+	return c.deleteRouterNATs(ctx, routerName, func(n *nbdb.NAT) bool {
 		return n.Type == natType && n.LogicalIP == logicalIP
-	}).List(ctx, &nats)
-	if err != nil {
-		return fmt.Errorf("find NAT: %w", err)
-	}
-	if len(nats) == 0 {
-		return fmt.Errorf("NAT %s %s on %s: %w", natType, logicalIP, routerName, ErrNATNotFound)
-	}
-
-	var allOps []ovsdb.Operation
-	for i := range nats {
-		nat := &nats[i]
-		mutateOps, mErr := c.client.Where(lr).Mutate(lr, model.Mutation{
-			Field:   &lr.NAT,
-			Mutator: "delete",
-			Value:   []string{nat.UUID},
-		})
-		if mErr != nil {
-			return fmt.Errorf("mutate router NAT ops: %w", mErr)
-		}
-		deleteOps, dErr := c.client.Where(nat).Delete()
-		if dErr != nil {
-			return fmt.Errorf("delete NAT ops: %w", dErr)
-		}
-		allOps = append(allOps, mutateOps...)
-		allOps = append(allOps, deleteOps...)
-	}
-
-	if err := c.transactOps(ctx, allOps); err != nil {
-		return fmt.Errorf("delete NAT transact: %w", err)
-	}
-	return nil
+	}, fmt.Sprintf("NAT %s %s", natType, logicalIP))
 }
 
-// DeleteNATByExternalIP removes a NAT rule matching (natType, externalIP) from
+// DeleteNATByExternalIP removes every NAT rule matching (natType, externalIP) from
 // routerName only. Returns ErrNATNotFound if absent on this router.
 func (c *LiveClient) DeleteNATByExternalIP(ctx context.Context, routerName string, natType, externalIP string) error {
+	return c.deleteRouterNATs(ctx, routerName, func(n *nbdb.NAT) bool {
+		return n.Type == natType && n.ExternalIP == externalIP
+	}, fmt.Sprintf("NAT %s external_ip=%s", natType, externalIP))
+}
+
+// deleteRouterNATs removes every NAT on routerName matching pred in one transaction,
+// returning ErrNATNotFound (described by desc) when none match.
+func (c *LiveClient) deleteRouterNATs(ctx context.Context, routerName string, pred func(*nbdb.NAT) bool, desc string) error {
 	lr, err := c.GetLogicalRouter(ctx, routerName)
 	if err != nil {
 		return fmt.Errorf("get logical router for NAT delete: %w", err)
@@ -951,13 +915,13 @@ func (c *LiveClient) DeleteNATByExternalIP(ctx context.Context, routerName strin
 		if _, ok := routerNATs[n.UUID]; !ok {
 			return false
 		}
-		return n.Type == natType && n.ExternalIP == externalIP
+		return pred(n)
 	}).List(ctx, &nats)
 	if err != nil {
-		return fmt.Errorf("find NAT by external IP: %w", err)
+		return fmt.Errorf("find %s: %w", desc, err)
 	}
 	if len(nats) == 0 {
-		return fmt.Errorf("NAT %s external_ip=%s on %s: %w", natType, externalIP, routerName, ErrNATNotFound)
+		return fmt.Errorf("%s on %s: %w", desc, routerName, ErrNATNotFound)
 	}
 
 	var allOps []ovsdb.Operation
@@ -980,7 +944,7 @@ func (c *LiveClient) DeleteNATByExternalIP(ctx context.Context, routerName strin
 	}
 
 	if err := c.transactOps(ctx, allOps); err != nil {
-		return fmt.Errorf("delete NAT by external IP transact: %w", err)
+		return fmt.Errorf("delete %s transact: %w", desc, err)
 	}
 	return nil
 }
@@ -1168,32 +1132,18 @@ func (c *LiveClient) FindStaticRoute(ctx context.Context, routerName, ipPrefix s
 }
 
 func (c *LiveClient) DeleteStaticRoute(ctx context.Context, routerName string, ipPrefix string) error {
+	route, err := c.FindStaticRoute(ctx, routerName, ipPrefix)
+	if err != nil {
+		return err
+	}
+	if route == nil {
+		return fmt.Errorf("static route %s not found", ipPrefix)
+	}
+
 	lr, err := c.GetLogicalRouter(ctx, routerName)
 	if err != nil {
 		return fmt.Errorf("get logical router for route delete: %w", err)
 	}
-	// Scope the prefix match to this router's rows — every VPC router carries
-	// 0.0.0.0/0, so an unscoped cache match can grab another router's route.
-	owned := make(map[string]struct{}, len(lr.StaticRoutes))
-	for _, u := range lr.StaticRoutes {
-		owned[u] = struct{}{}
-	}
-	var routes []nbdb.LogicalRouterStaticRoute
-	err = c.client.WhereCache(func(r *nbdb.LogicalRouterStaticRoute) bool {
-		if r.IPPrefix != ipPrefix {
-			return false
-		}
-		_, ok := owned[r.UUID]
-		return ok
-	}).List(ctx, &routes)
-	if err != nil {
-		return fmt.Errorf("find static route: %w", err)
-	}
-	if len(routes) == 0 {
-		return fmt.Errorf("static route %s not found", ipPrefix)
-	}
-
-	route := &routes[0]
 
 	mutateOps, err := c.client.Where(lr).Mutate(lr, model.Mutation{
 		Field:   &lr.StaticRoutes,

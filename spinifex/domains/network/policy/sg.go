@@ -17,19 +17,11 @@ type SGSpec struct {
 	EgressRules  []Rule
 }
 
-// SecurityGroupManager attaches ACL policy to an SG's port group. EnsureSG
-// and UpdateSG share replace-all semantics: each call replaces the full ACL
-// set (infra + tenant) in one OVSDB transaction.
+// SecurityGroupManager attaches ACL policy to an SG's port group.
 type SecurityGroupManager interface {
-	// EnsureSG sets the full ACL set; idempotent.
+	// EnsureSG replaces the full ACL set (infra + tenant) in one OVSDB
+	// transaction; idempotent, so it serves both create and update.
 	EnsureSG(ctx context.Context, sg SGSpec) error
-
-	// UpdateSG replaces the SG's ACL set. Semantically identical to EnsureSG.
-	UpdateSG(ctx context.Context, sg SGSpec) error
-
-	// DeleteSG clears every ACL on the SG's port group; the PG itself
-	// stays (topology.Manager owns the lifecycle).
-	DeleteSG(ctx context.Context, groupID string) error
 }
 
 // EgressPolicy is the platform egress-abuse policy applied to every guest port
@@ -60,18 +52,6 @@ func NewSecurityGroupManager(client ovn.Client, egress EgressPolicy) SecurityGro
 
 func (m *sgManager) EnsureSG(ctx context.Context, sg SGSpec) error {
 	return m.applyACLs(ctx, sg)
-}
-
-func (m *sgManager) UpdateSG(ctx context.Context, sg SGSpec) error {
-	return m.applyACLs(ctx, sg)
-}
-
-func (m *sgManager) DeleteSG(ctx context.Context, groupID string) error {
-	pg := topology.SecurityGroupPortGroup(groupID)
-	if err := m.ovn.ClearACLs(ctx, pg); err != nil {
-		return fmt.Errorf("clear ACLs on %s: %w", pg, err)
-	}
-	return nil
 }
 
 // applyACLs atomically replaces infra + tenant ACLs in one OVSDB transaction.

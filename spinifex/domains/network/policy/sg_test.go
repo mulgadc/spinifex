@@ -43,7 +43,7 @@ func TestSGManager_EnsureSG_AppliesInfraPlusTenantACLs(t *testing.T) {
 	assert.Len(t, storedPG.ACLs, 9)
 }
 
-func TestSGManager_UpdateSG_ReplacesACLSet(t *testing.T) {
+func TestSGManager_EnsureSG_ReplacesACLSet(t *testing.T) {
 	ctx := context.Background()
 	m, pg := newSGMockWithPG(t, "sg-web")
 	sg := NewSecurityGroupManager(m, EgressPolicy{})
@@ -56,7 +56,7 @@ func TestSGManager_UpdateSG_ReplacesACLSet(t *testing.T) {
 	assert.Equal(t, 7, firstCount) // 6 infra + 1 tenant
 
 	// Replace with a different set — wider ingress, no egress.
-	require.NoError(t, sg.UpdateSG(ctx, SGSpec{
+	require.NoError(t, sg.EnsureSG(ctx, SGSpec{
 		GroupID: "sg-web",
 		IngressRules: []Rule{
 			{IPProtocol: "tcp", FromPort: 80, ToPort: 80, CIDR: "0.0.0.0/0"},
@@ -65,24 +65,6 @@ func TestSGManager_UpdateSG_ReplacesACLSet(t *testing.T) {
 		},
 	}))
 	assert.Len(t, m.PortGroups[pg].ACLs, 9) // 6 infra + 3 tenant
-}
-
-func TestSGManager_DeleteSG_ClearsACLsKeepsPortGroup(t *testing.T) {
-	ctx := context.Background()
-	m, pg := newSGMockWithPG(t, "sg-web")
-	sg := NewSecurityGroupManager(m, EgressPolicy{})
-
-	require.NoError(t, sg.EnsureSG(ctx, SGSpec{
-		GroupID:      "sg-web",
-		IngressRules: []Rule{{IPProtocol: "-1", CIDR: "0.0.0.0/0"}},
-	}))
-	assert.NotEmpty(t, m.PortGroups[pg].ACLs)
-
-	require.NoError(t, sg.DeleteSG(ctx, "sg-web"))
-	assert.Empty(t, m.PortGroups[pg].ACLs)
-	// Port group still present — L2 owns lifecycle.
-	_, exists := m.PortGroups[pg]
-	assert.True(t, exists)
 }
 
 func TestSGManager_EnsureSG_MissingPortGroup_ReturnsError(t *testing.T) {
@@ -95,9 +77,9 @@ func TestSGManager_EnsureSG_MissingPortGroup_ReturnsError(t *testing.T) {
 	assert.Contains(t, err.Error(), "port group")
 }
 
-// TestSGManager_UpdateSG_AtomicReplace asserts EnsureSG/UpdateSG use
+// TestSGManager_EnsureSG_AtomicReplace asserts repeated EnsureSG calls use
 // ReplaceACLs (single OVSDB transaction) and never call ClearACLs.
-func TestSGManager_UpdateSG_AtomicReplace(t *testing.T) {
+func TestSGManager_EnsureSG_AtomicReplace(t *testing.T) {
 	ctx := context.Background()
 	m, pg := newSGMockWithPG(t, "sg-web")
 	sg := NewSecurityGroupManager(m, EgressPolicy{})
@@ -106,14 +88,14 @@ func TestSGManager_UpdateSG_AtomicReplace(t *testing.T) {
 		GroupID:      "sg-web",
 		IngressRules: []Rule{{IPProtocol: "tcp", FromPort: 22, ToPort: 22, CIDR: "10.0.0.0/8"}},
 	}))
-	require.NoError(t, sg.UpdateSG(ctx, SGSpec{
+	require.NoError(t, sg.EnsureSG(ctx, SGSpec{
 		GroupID:      "sg-web",
 		IngressRules: []Rule{{IPProtocol: "tcp", FromPort: 80, ToPort: 80, CIDR: "0.0.0.0/0"}},
 	}))
 
-	assert.Equal(t, 2, m.ReplaceACLCalls, "EnsureSG+UpdateSG must call ReplaceACLs")
-	assert.Zero(t, m.ClearACLCalls, "EnsureSG/UpdateSG must NOT call ClearACLs")
-	assert.NotEmpty(t, m.PortGroups[pg].ACLs, "PG ACLs must never be empty after UpdateSG")
+	assert.Equal(t, 2, m.ReplaceACLCalls, "each EnsureSG must call ReplaceACLs")
+	assert.Zero(t, m.ClearACLCalls, "EnsureSG must NOT call ClearACLs")
+	assert.NotEmpty(t, m.PortGroups[pg].ACLs, "PG ACLs must never be empty after a replace")
 }
 
 func hasACLNamed(m *mock.Client, name string) bool {

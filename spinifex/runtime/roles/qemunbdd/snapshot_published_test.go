@@ -64,9 +64,10 @@ func (c *attachedClient) detach() {
 	_ = c.cmd.Wait()
 }
 
-// A snapshot of a volume a guest is attached to must succeed and hold what
-// the guest wrote through the export, which is the only path a write takes.
-func TestQEMUNBDSnapshotOfAttachedVolumeHoldsItsWrites(t *testing.T) {
+// A snapshot of a volume a guest is attached to is refused and writes nothing,
+// leaving the guest's connection intact. Once the volume is unpublished it
+// snapshots, holding what the guest wrote.
+func TestQEMUNBDSnapshotOfAttachedVolumeIsRefused(t *testing.T) {
 	requireQEMUTools(t)
 	provider := newQEMUProvider(t)
 	ctx := t.Context()
@@ -75,13 +76,22 @@ func TestQEMUNBDSnapshotOfAttachedVolumeHoldsItsWrites(t *testing.T) {
 	require.NoError(t, err)
 	pub, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: "node-1"})
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		_, _ = provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: "node-1"})
-	})
 
 	guest := attachClient(t, pub.Export.NBD.NBDURI)
 	guest.run(t, "write -P 0xab 1M 64k", "wrote 65536/65536")
 
+	_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volumeID})
+	require.ErrorIs(t, err, ebsprovider.ErrVolumeInUse)
+	listed, err := provider.ListSnapshots(ctx, ebsprovider.ListSnapshotsRequest{Versioned: ebsprovider.NewVersioned()})
+	require.NoError(t, err)
+	for _, snap := range listed.Snapshots {
+		assert.NotEqual(t, snapshotID, snap.ID, "a refused snapshot must leave nothing behind")
+	}
+	guest.run(t, "read -P 0xab 1M 64k", "read 65536/65536")
+
+	guest.detach()
+	_, err = provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: "node-1"})
+	require.NoError(t, err)
 	snap, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volumeID})
 	require.NoError(t, err)
 	require.Equal(t, ebsprovider.SnapshotStateCompleted, snap.State)
@@ -91,7 +101,4 @@ func TestQEMUNBDSnapshotOfAttachedVolumeHoldsItsWrites(t *testing.T) {
 	require.NoError(t, err, "%s", out)
 	assert.Contains(t, string(out), "read 65536/65536")
 	assert.NotContains(t, string(out), "Pattern verification failed")
-
-	// The guest keeps its connection through the snapshot.
-	guest.run(t, "read -P 0xab 1M 64k", "read 65536/65536")
 }

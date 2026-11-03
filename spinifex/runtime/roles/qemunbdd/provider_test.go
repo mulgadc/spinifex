@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
-	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -415,21 +414,28 @@ func TestCreateSnapshot_Argv(t *testing.T) {
 	assert.Equal(t, []string{"info", "--output=json", "--force-share", snapPath}, calls[1].args)
 }
 
-// qemu-nbd holds a published volume's file locked, so its snapshot reads
-// what the export serves rather than the file.
-func TestCreateSnapshot_PublishedVolumeReadsThroughTheExport(t *testing.T) {
+// A published volume is refused before qemu-img runs, and an unpublished one
+// snapshots again from its file.
+func TestCreateSnapshot_PublishedVolumeIsRefused(t *testing.T) {
 	p, fr := newTestProvider(t)
+	ctx := context.Background()
 	volPath := p.volumePath("vol-snap-pub")
 	require.NoError(t, os.WriteFile(volPath, nil, 0o640))
-	_, err := p.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{Versioned: versioned(), VolumeID: "vol-snap-pub", NodeID: "node-1"})
+	_, err := p.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: versioned(), VolumeID: "vol-snap-pub", NodeID: "node-1"})
 	require.NoError(t, err)
+	published := len(fr.callsSnapshot())
 
-	_, err = p.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{Versioned: versioned(), SnapshotID: "snap-pub", VolumeID: "vol-snap-pub"})
+	_, err = p.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: versioned(), SnapshotID: "snap-pub", VolumeID: "vol-snap-pub"})
+	require.ErrorIs(t, err, ebsprovider.ErrVolumeInUse)
+	assert.Len(t, fr.callsSnapshot(), published, "a refused snapshot must not run qemu-img")
+	_, statErr := os.Stat(p.snapshotPath("snap-pub"))
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+
+	_, err = p.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{Versioned: versioned(), VolumeID: "vol-snap-pub", NodeID: "node-1"})
 	require.NoError(t, err)
-
-	calls := fr.callsSnapshot()
-	require.Len(t, calls, 3)
-	assert.Equal(t, []string{"convert", "-O", "qcow2", "-f", "raw", nbd.FormatNBDSocketURI(p.socketPath("vol-snap-pub")), p.snapshotPath("snap-pub")}, calls[1].args)
+	snap, err := p.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: versioned(), SnapshotID: "snap-pub", VolumeID: "vol-snap-pub"})
+	require.NoError(t, err)
+	assert.Equal(t, "vol-snap-pub", snap.SourceVolumeID)
 }
 
 func TestCreateSnapshot_NotFoundSourceVolume(t *testing.T) {
@@ -581,7 +587,7 @@ func TestPublishVolume_ArgvReadWrite(t *testing.T) {
 		"--socket", p.socketPath("vol-pub"),
 		"--format", "qcow2",
 		"--persistent",
-		"--shared=0",
+		"--shared=1",
 		"--fork",
 		"--pid-file", p.pidFilePath("vol-pub"),
 		volPath,

@@ -385,9 +385,10 @@ func TestCreateSnapshot_Provider_UndrainableAttachedVolumeFails(t *testing.T) {
 	assert.Empty(t, out.Snapshots, "a failed drain must not leave a snapshot behind")
 }
 
-// On a write-through provider an attached volume snapshots without a drain,
-// even when its host would fail one, because the provider has nothing to flush.
-func TestCreateSnapshot_Provider_WriteThroughSnapshotsAttachedVolume(t *testing.T) {
+// On a write-through provider the domain issues no drain for an attached volume,
+// even when its host would fail one, and leaves the snapshot to the provider.
+// The memory provider accepts it; qemunbdd itself refuses a published volume.
+func TestCreateSnapshot_Provider_WriteThroughIssuesNoDrain(t *testing.T) {
 	svc, _, nc := setupDrainService(t)
 	svc.config.EBS.Provider = config.EBSProviderQEMUNBD
 	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{})

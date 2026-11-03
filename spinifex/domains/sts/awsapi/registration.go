@@ -104,7 +104,7 @@ var actions = map[string]action{
 func NewRegistration(deps Deps) dispatch.Registration {
 	return dispatch.Registration{
 		Service:       ServiceName,
-		ResolveAction: resolveAction,
+		ResolveAction: dispatch.ResolveQueryAction,
 		Dispatch:      deps.dispatch,
 		Errors:        dispatch.ErrorEnvelopeXML,
 		Traits:        dispatch.ServiceTraits{XMLThrottleCode: awserrors.ErrorThrottling},
@@ -196,33 +196,11 @@ func anonymousArgs(r *http.Request) (map[string]string, bool) {
 	return args, true
 }
 
-// resolveAction is the one Query Action parser telemetry and dispatch share.
-// It leaves the body readable for the dispatcher and answers "" on any failure.
-func resolveAction(r *http.Request) string {
-	args, err := readQueryArgs(r)
-	if err != nil {
-		return ""
-	}
-	return args["Action"]
-}
-
-func readQueryArgs(r *http.Request) (map[string]string, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, sigv4.MaxPayloadLen+1))
-	if err != nil {
-		return nil, err
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	if int64(len(body)) > sigv4.MaxPayloadLen {
-		return nil, errors.New(awserrors.ErrorRequestEntityTooLarge)
-	}
-	return query.ParseArgs(string(body))
-}
-
 // dispatch parses the request, resolves the caller, applies the identity-policy
 // gate and runs the action. Errors are awserrors codes the gateway renders.
 func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 	r := inv.Request
-	queryArgs, err := readQueryArgs(r)
+	queryArgs, err := dispatch.ReadArgs(r)
 	if err != nil {
 		slog.Debug("STS: malformed query string", "err", err)
 		return errors.New(awserrors.ErrorMalformedQueryString)

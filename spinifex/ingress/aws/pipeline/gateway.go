@@ -22,7 +22,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
-	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -451,12 +450,6 @@ func (gw *Config) ErrorHandler(w http.ResponseWriter, r *http.Request, err error
 	if _, err := w.Write(xmlError); err != nil {
 		slog.Error("Failed to write error response", "err", err)
 	}
-}
-
-// ParseAWSQueryArgs parses an AWS query-protocol body. Returns an error on
-// invalid percent-encoding so callers can surface MalformedQueryString.
-func ParseAWSQueryArgs(body string) (map[string]string, error) {
-	return query.ParseArgs(body)
 }
 
 // xmlErrorBody renders an error in the XML envelope svc's clients expect, from

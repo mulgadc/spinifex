@@ -172,7 +172,7 @@ func (d Deps) bedrock(w http.ResponseWriter, inv dispatch.Invocation) error {
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	body, err := readBoundedBody(r)
+	body, err := dispatch.ReadBoundedBody(r)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "Bedrock_Request: failed to read body", "err", err)
 		return err

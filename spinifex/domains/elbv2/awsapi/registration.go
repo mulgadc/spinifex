@@ -1,17 +1,14 @@
 package awsapi
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
-	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
@@ -217,7 +214,7 @@ func NewRegistration(deps Deps) dispatch.Registration {
 	return dispatch.Registration{
 		Service:       ServiceName,
 		InventoryName: InventoryName,
-		ResolveAction: resolveAction,
+		ResolveAction: dispatch.ResolveQueryAction,
 		Dispatch:      deps.dispatch,
 		Errors:        dispatch.ErrorEnvelopeXML,
 		Inventory:     OperationInventory(),
@@ -235,35 +232,11 @@ func OperationInventory() dispatch.Inventory {
 	return dispatch.Inventory{Registered: ActionNames()}
 }
 
-// resolveAction is the one Query Action parser telemetry and dispatch share.
-// It leaves the body readable for the dispatcher and answers "" on any failure.
-func resolveAction(r *http.Request) string {
-	args, err := readQueryArgs(r)
-	if err != nil {
-		return ""
-	}
-	return args["Action"]
-}
-
-// readQueryArgs parses the Query body and rewinds it, so the same bytes can be
-// read again. Any read or parse failure is a malformed query string.
-func readQueryArgs(r *http.Request) (map[string]string, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, sigv4.MaxPayloadLen+1))
-	if err != nil {
-		return nil, err
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	if int64(len(body)) > sigv4.MaxPayloadLen {
-		return nil, errors.New(awserrors.ErrorRequestEntityTooLarge)
-	}
-	return query.ParseArgs(string(body))
-}
-
 // dispatch parses, scopes and authorizes the request from one parse of its
 // body, then runs the action. Errors are awserrors codes the gateway renders.
 func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 	r := inv.Request
-	queryArgs, err := readQueryArgs(r)
+	queryArgs, err := dispatch.ReadArgs(r)
 	if err != nil {
 		slog.DebugContext(r.Context(), "ELBv2: malformed query string", "err", err)
 		return errors.New(awserrors.ErrorMalformedQueryString)

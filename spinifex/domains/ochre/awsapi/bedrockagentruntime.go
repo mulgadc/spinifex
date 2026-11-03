@@ -96,7 +96,7 @@ func (d Deps) bedrockAgentRuntime(w http.ResponseWriter, inv dispatch.Invocation
 
 	// RetrieveAndGenerate names its knowledge base in the body, so the body is
 	// read ahead of the gate; Retrieve names it in the path.
-	body, err := readBoundedBody(r)
+	body, err := dispatch.ReadBoundedBody(r)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "BedrockAgentRuntime_Request: failed to read body", "err", err)
 		return err

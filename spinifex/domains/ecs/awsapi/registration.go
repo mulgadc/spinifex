@@ -2,14 +2,11 @@ package awsapi
 
 import (
 	"errors"
-	"io"
 	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
-	"strings"
 
-	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/passrole"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
@@ -35,7 +32,7 @@ type Deps struct {
 func NewRegistration(deps Deps) dispatch.Registration {
 	return dispatch.Registration{
 		Service:       ServiceName,
-		ResolveAction: resolveAction,
+		ResolveAction: dispatch.ResolveTargetAction,
 		Dispatch:      deps.dispatch,
 		Errors:        dispatch.ErrorEnvelopeJSON,
 		Inventory:     OperationInventory(),
@@ -50,35 +47,11 @@ func OperationInventory() dispatch.Inventory {
 	}
 }
 
-func resolveAction(r *http.Request) string {
-	return actionFromTarget(r.Header.Get("X-Amz-Target"))
-}
-
-// actionFromTarget extracts the action suffix from an X-Amz-Target header.
-// Any "<Prefix>.<Action>" or bare "<Action>" form is accepted.
-func actionFromTarget(target string) string {
-	if _, after, ok := strings.CutLast(target, "."); ok {
-		return after
-	}
-	return target
-}
-
-func readBoundedBody(r *http.Request) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, sigv4.MaxPayloadLen+1))
-	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-	if int64(len(body)) > sigv4.MaxPayloadLen {
-		return nil, errors.New(awserrors.ErrorRequestEntityTooLarge)
-	}
-	return body, nil
-}
-
 // dispatch resolves, scopes and authorizes the request, then runs the action.
 // Errors are awserrors codes the gateway renders.
 func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 	r := inv.Request
-	action := resolveAction(r)
+	action := dispatch.ResolveTargetAction(r)
 	if action == "" {
 		return errors.New(awserrors.ErrorMissingAction)
 	}
@@ -99,7 +72,7 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	body, err := readBoundedBody(r)
+	body, err := dispatch.ReadBoundedBody(r)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "ECS dispatch: failed to read body", "err", err)
 		return err

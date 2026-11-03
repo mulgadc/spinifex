@@ -4,17 +4,13 @@ package awsapi
 
 import (
 	"context"
-	"errors"
-	"io"
 	"maps"
 	"net/http"
 	"slices"
 	"strings"
 
-	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
-	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 )
 
@@ -156,17 +152,6 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 	default:
 		return d.bedrock(w, inv)
 	}
-}
-
-func readBoundedBody(r *http.Request) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, sigv4.MaxPayloadLen+1))
-	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-	if int64(len(body)) > sigv4.MaxPayloadLen {
-		return nil, errors.New(awserrors.ErrorRequestEntityTooLarge)
-	}
-	return body, nil
 }
 
 func (d Deps) resolver() ochre.CredentialResolver {

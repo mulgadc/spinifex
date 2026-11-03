@@ -1,8 +1,6 @@
 package awsapi
 
 import (
-	"net/http"
-
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 )
 
@@ -11,7 +9,7 @@ import (
 func NewRegistration(deps Deps) dispatch.Registration {
 	return dispatch.Registration{
 		Service:       ServiceName,
-		ResolveAction: resolveAction,
+		ResolveAction: dispatch.ResolveQueryAction,
 		Dispatch:      NewHandler(deps).Dispatch,
 		Errors:        dispatch.ErrorEnvelopeXML,
 		Traits:        dispatch.ServiceTraits{XMLErrorShape: dispatch.XMLErrorShapeEC2},
@@ -23,14 +21,4 @@ func NewRegistration(deps Deps) dispatch.Registration {
 // action in the table is implemented, so none is Stubbed or Unsupported.
 func OperationInventory() dispatch.Inventory {
 	return dispatch.Inventory{Registered: ActionNames()}
-}
-
-// resolveAction is the one Query Action parser telemetry and dispatch share.
-// It leaves the body readable for the dispatcher and answers "" on any failure.
-func resolveAction(r *http.Request) string {
-	args, err := readQueryArgs(r)
-	if err != nil {
-		return ""
-	}
-	return args["Action"]
 }

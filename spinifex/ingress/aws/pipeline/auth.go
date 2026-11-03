@@ -3,6 +3,7 @@ package pipeline
 import (
 	"bytes"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"io"
@@ -197,7 +198,7 @@ func (gw *Config) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 
 			// A malformed body keeps the action unset; the dispatcher re-parses it and
 			// returns MalformedQueryString.
-			if args, err := ParseAWSQueryArgs(string(body)); err == nil {
+			if args, err := query.ParseArgs(string(body)); err == nil {
 				if action := args["Action"]; action != "" {
 					ctx = reqctx.WithAction(ctx, action)
 				}
@@ -217,20 +218,6 @@ func (gw *Config) SigV4AuthMiddleware() func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
-}
-
-// resolveNonQueryAction resolves the action for JSON-1.1 (X-Amz-Target) and
-// path-routed REST-JSON services (eks), which carry no
-// query-protocol Action parameter. Empty on no match.
-func resolveNonQueryAction(r *http.Request) string {
-	if target := r.Header.Get("X-Amz-Target"); target != "" {
-		if _, after, ok := strings.CutLast(target, "."); ok {
-			return after
-		}
-		return target
-	}
-
-	return ""
 }
 
 // signingTime returns the timestamp the client signed with, read straight off the
@@ -265,7 +252,7 @@ func (gw *Config) mismatchAction(r *http.Request, service string) string {
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
-	args, err := ParseAWSQueryArgs(string(body))
+	args, err := query.ParseArgs(string(body))
 	if err != nil {
 		return ""
 	}

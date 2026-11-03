@@ -465,21 +465,18 @@ func TestThreadStatFields(t *testing.T) {
 	assert.Empty(t, threadStatFields("garbage"))
 }
 
-func TestExecute_ConsoleLogAppendOnlyWhenAsked(t *testing.T) {
+func TestExecute_ConsoleLogAppendOnEveryBoot(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		cfg    Config
-		want   string
-		absent string
+		name string
+		cfg  Config
+		want string
 	}{
-		{"socket fresh", Config{SerialSocket: "/s", ConsoleLogPath: "/c"}, "logfile=/c", "logappend"},
-		{"socket reboot", Config{SerialSocket: "/s", ConsoleLogPath: "/c", ConsoleLogAppend: true}, "logfile=/c,logappend=on", ""},
-		{"file reboot", Config{MachineType: "microvm", ConsoleLogPath: "/c", ConsoleLogAppend: true}, "file,id=console0,path=/c,append=on", ""},
+		{"socket", Config{SerialSocket: "/s", ConsoleLogPath: "/c"}, "logfile=/c,logappend=on"},
+		{"file", Config{MachineType: "microvm", ConsoleLogPath: "/c"}, "file,id=console0,path=/c,append=on"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := minimalConfig()
-			cfg.MachineType, cfg.SerialSocket = tc.cfg.MachineType, tc.cfg.SerialSocket
-			cfg.ConsoleLogPath, cfg.ConsoleLogAppend = tc.cfg.ConsoleLogPath, tc.cfg.ConsoleLogAppend
+			cfg.MachineType, cfg.SerialSocket, cfg.ConsoleLogPath = tc.cfg.MachineType, tc.cfg.SerialSocket, tc.cfg.ConsoleLogPath
 			cmd, err := cfg.Execute()
 			require.NoError(t, err)
 			var chardev string
@@ -489,9 +486,6 @@ func TestExecute_ConsoleLogAppendOnlyWhenAsked(t *testing.T) {
 				}
 			}
 			assert.Contains(t, chardev, tc.want)
-			if tc.absent != "" {
-				assert.NotContains(t, chardev, tc.absent)
-			}
 		})
 	}
 }

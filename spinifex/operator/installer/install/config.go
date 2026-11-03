@@ -157,13 +157,6 @@ func (c *Config) PlaneAddress(p Plane) string {
 	return role.Address
 }
 
-// PlaneBridge returns the bridge carrying a plane after collapsing, so callers
-// asking for the vpc bridge on a single-NIC node correctly get br-wan.
-func (c *Config) PlaneBridge(p Plane) string {
-	_, landed := c.Resolve(p)
-	return landed.Bridge()
-}
-
 // RoleBinding pairs a plane with the role that carries it.
 type RoleBinding struct {
 	Plane Plane

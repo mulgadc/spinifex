@@ -112,10 +112,10 @@ func (s *ELBv2ServiceImpl) resolveOwnedTaggable(ctx context.Context, arn, accoun
 	return h, nil
 }
 
-// validateAllTaggable checks every ARN before the caller writes anything, so
-// an unknown or cross-account ARN anywhere in the request fails it with no
-// resource modified. It returns the ARNs with repeats removed.
-func (s *ELBv2ServiceImpl) validateAllTaggable(ctx context.Context, arns []*string, accountID string) ([]string, error) {
+// validateAllTaggable checks every ARN, and that adding newTags keeps each
+// resource within the tag limit, before the caller writes anything, so a bad
+// request modifies no resource. It returns the ARNs with repeats removed.
+func (s *ELBv2ServiceImpl) validateAllTaggable(ctx context.Context, arns []*string, accountID string, newTags map[string]string) ([]string, error) {
 	unique := make([]string, 0, len(arns))
 	seen := make(map[string]struct{}, len(arns))
 	for _, arnPtr := range arns {
@@ -128,8 +128,18 @@ func (s *ELBv2ServiceImpl) validateAllTaggable(ctx context.Context, arns []*stri
 		}
 		seen[arn] = struct{}{}
 
-		if _, err := s.resolveOwnedTaggable(ctx, arn, accountID); err != nil {
+		h, err := s.resolveOwnedTaggable(ctx, arn, accountID)
+		if err != nil {
 			return nil, err
+		}
+		total := len(h.tags)
+		for k := range newTags {
+			if _, ok := h.tags[k]; !ok {
+				total++
+			}
+		}
+		if total > maxResourceTags {
+			return nil, errTooManyTags()
 		}
 		unique = append(unique, arn)
 	}
@@ -144,19 +154,12 @@ func (s *ELBv2ServiceImpl) AddTags(ctx context.Context, input *elbv2.AddTagsInpu
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	newTags := make(map[string]string, len(input.Tags))
-	for _, t := range input.Tags {
-		if t == nil || t.Key == nil || *t.Key == "" {
-			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-		}
-		v := ""
-		if t.Value != nil {
-			v = *t.Value
-		}
-		newTags[*t.Key] = v
+	newTags, err := tagsFromSDK(input.Tags)
+	if err != nil {
+		return nil, err
 	}
 
-	arns, err := s.validateAllTaggable(ctx, input.ResourceArns, accountID)
+	arns, err := s.validateAllTaggable(ctx, input.ResourceArns, accountID, newTags)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +201,7 @@ func (s *ELBv2ServiceImpl) RemoveTags(ctx context.Context, input *elbv2.RemoveTa
 		keys = append(keys, *k)
 	}
 
-	arns, err := s.validateAllTaggable(ctx, input.ResourceArns, accountID)
+	arns, err := s.validateAllTaggable(ctx, input.ResourceArns, accountID, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -38,9 +38,13 @@ func daemonWithFakeStateStore(t *testing.T, store *vmmock.StateStore) *Daemon {
 	t.Helper()
 	d := createTestDaemon(t, sharedNATSURL)
 	d.stateStore = store
+	objects := objectstore.NewMemoryObjectStore()
+	for _, stopped := range store.Stopped {
+		seedBootVolume(t, objects, d.config.Predastore.Bucket, stopped.AccountID, stopped.ID)
+	}
 	d.instanceService = ec2instance.NewInstanceServiceImpl(
 		d.config, d.resourceMgr.instanceTypes, d.natsConn,
-		objectstore.NewMemoryObjectStore(), d.vmMgr, d.resourceMgr, store,
+		objects, d.vmMgr, d.resourceMgr, store,
 	)
 	return d
 }
@@ -71,7 +75,7 @@ func decodeError(t *testing.T, data []byte) map[string]any {
 
 // stoppedVMFixture builds a minimally-valid stopped VM for handler tests.
 func stoppedVMFixture(id, accountID string) *vm.VM {
-	return &vm.VM{
+	return withBootVolume(&vm.VM{
 		ID:           id,
 		Status:       vm.StateStopped,
 		InstanceType: "t3.micro",
@@ -84,7 +88,7 @@ func stoppedVMFixture(id, accountID string) *vm.VM {
 			InstanceId:   aws.String(id),
 			InstanceType: aws.String("t3.micro"),
 		},
-	}
+	})
 }
 
 // --- handleEC2StartStoppedInstance ---

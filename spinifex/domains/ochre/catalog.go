@@ -252,18 +252,9 @@ func (e catalogEntry) toSummary() *bedrock.FoundationModelSummary {
 	}
 }
 
+// FoundationModelDetails and FoundationModelSummary have identical fields.
 func (e catalogEntry) toDetails() *bedrock.FoundationModelDetails {
-	return &bedrock.FoundationModelDetails{
-		ModelArn:                   aws.String(modelARN(e.ModelID)),
-		ModelId:                    aws.String(e.ModelID),
-		ModelName:                  aws.String(e.ModelName),
-		ProviderName:               aws.String(e.ProviderName),
-		InputModalities:            aws.StringSlice(e.InputModalities),
-		OutputModalities:           aws.StringSlice(e.OutputModalities),
-		ResponseStreamingSupported: aws.Bool(e.ResponseStreamingSupported),
-		InferenceTypesSupported:    aws.StringSlice(e.InferenceTypesSupported),
-		CustomizationsSupported:    aws.StringSlice(e.CustomizationsSupported),
-	}
+	return (*bedrock.FoundationModelDetails)(e.toSummary())
 }
 
 func modelARN(modelID string) string {

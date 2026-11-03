@@ -2653,3 +2653,29 @@ func TestApplyRecordTags_ReachesASecurityGroupRule(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, desc.SecurityGroupRules[0].Tags)
 }
+
+// The gateway refuses aws: keys from customers; system callers such as EKS
+// reach the service directly and still set and filter on them.
+func TestCreateSecurityGroup_SystemCallerSetsReservedTag(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+
+	out, err := svc.CreateSecurityGroup(context.Background(), &ec2.CreateSecurityGroupInput{
+		GroupName:   aws.String("eks-cluster-sg"),
+		Description: aws.String("eks"),
+		VpcId:       aws.String(vpcID),
+		TagSpecifications: []*ec2.TagSpecification{{
+			ResourceType: aws.String("security-group"),
+			Tags:         []*ec2.Tag{{Key: aws.String("aws:eks:cluster-name"), Value: aws.String("alpha")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	desc, err := svc.DescribeSecurityGroups(context.Background(), &ec2.DescribeSecurityGroupsInput{
+		Filters: []*ec2.Filter{{Name: aws.String("tag:aws:eks:cluster-name"), Values: aws.StringSlice([]string{"alpha"})}},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.SecurityGroups, 1)
+	assert.Equal(t, *out.GroupId, *desc.SecurityGroups[0].GroupId)
+}

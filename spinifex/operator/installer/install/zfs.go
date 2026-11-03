@@ -1,14 +1,11 @@
 package install
 
 import (
-	"bufio"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math"
 	"math/bits"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -171,41 +168,6 @@ func loadZFSModule() error {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-}
-
-// ImportablePools returns the names of pools visible to `zpool import`. There
-// is still no machine-readable output in OpenZFS 2.3, so the human format is
-// parsed — the same approach Proxmox::Sys::ZFS takes.
-func ImportablePools() ([]string, error) {
-	out, err := exec.Command("zpool", "import").Output()
-	if err != nil {
-		// zpool exits non-zero when there is nothing to import, which is the
-		// normal case. Anything else — no binary, no /dev/zfs — must surface, or
-		// a machine with an existing pool looks empty to the caller.
-		if _, ok := errors.AsType[*exec.ExitError](err); ok {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("zpool import: %w", err)
-	}
-	return parseImportablePools(string(out)), nil
-}
-
-// parseImportablePools extracts pool names from `zpool import` output. Split
-// out from the command call so it can be tested against captured fixtures.
-func parseImportablePools(out string) []string {
-	var pools []string
-	scanner := bufio.NewScanner(strings.NewReader(out))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		// Only the "pool:" key introduces a pool; "id:", "state:" and the
-		// config tree that follows are attributes of the one before it.
-		if name, ok := strings.CutPrefix(line, "pool:"); ok {
-			if n := strings.TrimSpace(name); n != "" {
-				pools = append(pools, n)
-			}
-		}
-	}
-	return pools
 }
 
 // createPool builds the root pool across the selected disks. altroot keeps

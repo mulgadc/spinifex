@@ -141,7 +141,7 @@ func createTestDaemon(t *testing.T, natsURL string) *Daemon {
 	// publish/unpublish over NATS using the test's connection.
 	daemon.vmMgr.SetDeps(vm.Deps{
 		NodeID:               daemon.node,
-		VolumeMounter:        newNATSMounter(daemon.natsConn, daemon.node, daemon.volumeService),
+		VolumeMounter:        newNATSMounter(daemon.natsConn, daemon.node),
 		VolumeStateUpdater:   daemon.volumeService,
 		DetachDelay:          daemon.detachDelay,
 		DeviceDeletedTimeout: daemon.deviceDeletedTimeout,
@@ -3322,7 +3322,7 @@ func TestVolumeMounterAdapter_UnmountOne_UnmountError(t *testing.T) {
 	fake.setUnpublish(func(string) ebsprovider.UnpublishVolumeResponse {
 		return unpublishRefusal(ebsprovider.ErrorCodeInternal, "seal volume: device busy")
 	})
-	adapter := newNATSMounter(daemon.natsConn, daemon.node, nil)
+	adapter := newNATSMounter(daemon.natsConn, daemon.node)
 
 	err := adapter.UnmountOne(t.Context(), "", viperblocklegacyv1.EBSRequest{Name: "vol-rollback-err"})
 	require.Error(t, err, "an unpublish refusal must propagate so DetachVolume can keep the volume attached")
@@ -3337,54 +3337,19 @@ func TestVolumeMounterAdapter_UnmountOne_RequestFailure(t *testing.T) {
 	require.NoError(t, err)
 	nc.Close()
 
-	adapter := newNATSMounter(nc, "node-1", nil)
+	adapter := newNATSMounter(nc, "node-1")
 	require.ErrorIs(t, adapter.UnmountOne(t.Context(), "", viperblocklegacyv1.EBSRequest{Name: "vol-timeout"}), nats.ErrConnectionClosed,
 		"a failed unpublish request must propagate as an error")
 }
 
-// recordingVolState records UpdateVolumeState calls so the bulk-unmount test can
-// assert which volumes transitioned to available.
-// accounts is recorded separately because the account is a key segment of the
-// document, not a label: an unmount that writes under anything but the
-// instance's own account leaves the volume stuck in-use, and the adapter only
-// logs the error.
-type recordingVolState struct {
-	mu       sync.Mutex
-	calls    []string
-	accounts []string
-}
-
-func (r *recordingVolState) UpdateVolumeState(accountID, volumeID, state, instanceID, attachmentDevice string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.calls = append(r.calls, volumeID+":"+state)
-	r.accounts = append(r.accounts, accountID)
-	return nil
-}
-
-func (r *recordingVolState) snapshot() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]string(nil), r.calls...)
-}
-
-func (r *recordingVolState) accountsSnapshot() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]string(nil), r.accounts...)
-}
-
-var _ vm.VolumeStateUpdater = (*recordingVolState)(nil)
-
-// TestVolumeMounterAdapter_Unmount_SealFailureIsReportedAndWritesNoVolumeState
+// TestVolumeMounterAdapter_Unmount_SealFailureIsReported
 // verifies that a per-volume seal failure during the bulk Unmount (stop/crash)
 // is returned, naming the volume, while the other volumes still seal and the
 // loop completes. Unmount only seals: it never writes volume state, so every
 // volume stays attached to the stopped instance.
-func TestVolumeMounterAdapter_Unmount_SealFailureIsReportedAndWritesNoVolumeState(t *testing.T) {
+func TestVolumeMounterAdapter_Unmount_SealFailureIsReported(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
-	volState := &recordingVolState{}
-	adapter := newNATSMounter(daemon.natsConn, daemon.node, volState)
+	adapter := newNATSMounter(daemon.natsConn, daemon.node)
 	fake := serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
 	fake.setUnpublish(func(volumeID string) ebsprovider.UnpublishVolumeResponse {
 		if volumeID == "vol-fail" {
@@ -3402,19 +3367,15 @@ func TestVolumeMounterAdapter_Unmount_SealFailureIsReportedAndWritesNoVolumeStat
 	err := adapter.Unmount(t.Context(), inst)
 	require.Error(t, err, "bulk Unmount must report a per-volume seal failure")
 	assert.Contains(t, err.Error(), "vol-fail", "the error must name the volume that did not seal")
-
-	assert.Empty(t, volState.snapshot(),
-		"Unmount seals only; neither the failed nor the sealed volume changes state")
 }
 
-// TestVolumeMounterAdapter_Unmount_NotFoundIsASealedOutcomeAndWritesNoVolumeState
+// TestVolumeMounterAdapter_Unmount_NotFoundIsASealedOutcome
 // verifies that an unpublish answered not_found, which means the provider holds
 // no export of the volume, is not an error and, like every Unmount outcome,
 // writes no volume state.
-func TestVolumeMounterAdapter_Unmount_NotFoundIsASealedOutcomeAndWritesNoVolumeState(t *testing.T) {
+func TestVolumeMounterAdapter_Unmount_NotFoundIsASealedOutcome(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
-	volState := &recordingVolState{}
-	adapter := newNATSMounter(daemon.natsConn, daemon.node, volState)
+	adapter := newNATSMounter(daemon.natsConn, daemon.node)
 	fake := serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
 	fake.setUnpublish(func(volumeID string) ebsprovider.UnpublishVolumeResponse {
 		return unpublishRefusal(ebsprovider.ErrorCodeNotFound, fmt.Sprintf("Volume %s not found", volumeID))
@@ -3433,10 +3394,6 @@ func TestVolumeMounterAdapter_Unmount_NotFoundIsASealedOutcomeAndWritesNoVolumeS
 	require.NoError(t, adapter.Unmount(t.Context(), inst))
 	require.NoError(t, adapter.UnmountOne(t.Context(), "000000000042", viperblocklegacyv1.EBSRequest{Name: "vol-data-retry"}),
 		"a hot detach of a volume the provider no longer holds is already done")
-
-	assert.Empty(t, volState.snapshot(),
-		"a not_found unpublish must not change any volume's state")
-	assert.Empty(t, volState.accountsSnapshot(), "no state write means no account-keyed write")
 }
 
 // TestVolumeMounterAdapter_Mount_PartialFailureRollback verifies that when
@@ -3453,7 +3410,7 @@ func TestVolumeMounterAdapter_Mount_PartialFailureRollback(t *testing.T) {
 		}
 		return publishedNBD("nbd://mounted-" + volumeID)
 	})
-	adapter := newNATSMounter(nc, node, nil)
+	adapter := newNATSMounter(nc, node)
 
 	err := adapter.Mount(t.Context(), mounterTestVM("vol-1", "vol-2", "vol-3"))
 	require.Error(t, err, "Mount should propagate the vol-2 failure")
@@ -3466,7 +3423,7 @@ func TestVolumeMounterAdapter_Mount_PartialFailureRollback(t *testing.T) {
 // the failing volume is torn down along with the one already published.
 func TestVolumeMounterAdapter_Mount_UndecodableReplyRollsBackBoth(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
-	adapter := newNATSMounter(daemon.natsConn, daemon.node, nil)
+	adapter := newNATSMounter(daemon.natsConn, daemon.node)
 
 	publishSubject, err := ebsprovider.PublishSubject(daemon.node)
 	require.NoError(t, err)
@@ -3515,7 +3472,7 @@ func TestVolumeMounterAdapter_Mount_UndecodableReplyRollsBackBoth(t *testing.T) 
 // attached without surfacing the leak to the caller.
 func TestVolumeMounterAdapter_Mount_RollbackFailurePropagates(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
-	adapter := newNATSMounter(daemon.natsConn, daemon.node, nil)
+	adapter := newNATSMounter(daemon.natsConn, daemon.node)
 	fake := serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
 	fake.setPublish(func(volumeID string) ebsprovider.PublishVolumeResponse {
 		if volumeID == "vol-2" {

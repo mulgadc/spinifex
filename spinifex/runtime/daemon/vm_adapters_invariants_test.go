@@ -19,11 +19,10 @@ import (
 // "attached" vs describe-volumes "available").
 func TestUnmountNeverReleasesBootVolume(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
-	volState := &recordingVolState{}
-	adapter := newNATSMounter(daemon.natsConn, daemon.node, volState)
+	adapter := newNATSMounter(daemon.natsConn, daemon.node)
 
 	// Stand in for the provider: every unpublish succeeds (sealed).
-	serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
+	fake := serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
 
 	inst := &vm.VM{
 		ID: "i-unmount-boot",
@@ -37,11 +36,7 @@ func TestUnmountNeverReleasesBootVolume(t *testing.T) {
 	}
 	require.NoError(t, adapter.Unmount(t.Context(), inst))
 
-	calls := volState.snapshot()
-	assert.NotContains(t, calls, "vol-bios-root:available",
-		"a BIOS-boot root volume (Boot && !EFI) must stay attached across stop/crash unmount, not be released to available")
-	assert.NotContains(t, calls, "vol-efi-root:available",
-		"an EFI-boot root volume must stay attached across stop/crash unmount")
-	assert.NotContains(t, calls, "vol-data:available",
-		"a data volume stays in-use across stop/crash unmount, not released to available")
+	// Boot, EFI and data volumes alike are sealed and left attached: stop and
+	// crash unmount never release any attached volume.
+	assert.ElementsMatch(t, []string{"vol-bios-root", "vol-efi-root", "vol-data"}, fake.unpublished())
 }

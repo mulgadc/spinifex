@@ -95,10 +95,9 @@ func (a *stateStoreAdapter) DeleteTerminatedInstance(id string) error {
 
 // volumeMounterAdapter satisfies vm.VolumeMounter over the EBS contract's
 // PublishVolume and UnpublishVolume, sent at the cluster's one contract
-// version to this node's provider. Unmount also marks volumes available.
+// version to this node's provider.
 type volumeMounterAdapter struct {
 	node     string
-	volState vm.VolumeStateUpdater
 	provider mounterProvider
 	// abandonTimeout bounds each no-seal unpublish Abandon sends.
 	abandonTimeout time.Duration
@@ -114,10 +113,9 @@ var _ mounterProvider = (*ebsprovider.NATSProvider)(nil)
 
 var _ vm.VolumeMounter = (*volumeMounterAdapter)(nil)
 
-func newVolumeMounterAdapter(provider mounterProvider, node string, volState vm.VolumeStateUpdater) *volumeMounterAdapter {
+func newVolumeMounterAdapter(provider mounterProvider, node string) *volumeMounterAdapter {
 	return &volumeMounterAdapter{
 		node:           node,
-		volState:       volState,
 		provider:       provider,
 		abandonTimeout: abandonTimeout,
 	}
@@ -665,7 +663,7 @@ func (d *Daemon) buildVMManagerDeps() vm.Deps {
 	return vm.Deps{
 		NodeID:             d.node,
 		StateStore:         d.stateStore,
-		VolumeMounter:      newVolumeMounterAdapter(d.ebsProvider, d.node, d.volumeService),
+		VolumeMounter:      newVolumeMounterAdapter(d.ebsProvider, d.node),
 		NetworkPlumber:     d.networkPlumber,
 		InstanceTypes:      newInstanceTypeResolverAdapter(d.resourceMgr),
 		Resources:          newResourceControllerAdapter(d.resourceMgr),

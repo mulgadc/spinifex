@@ -10,7 +10,6 @@ import (
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
-	ebsprovider "github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/stretchr/testify/assert"
@@ -21,8 +20,7 @@ import (
 // them and releases the node-local mount without touching their state.
 func TestUnmount_LeavesDataVolumesAttached(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
-	volState := &recordingVolState{}
-	adapter := newNATSMounter(daemon.natsConn, daemon.node, volState)
+	adapter := newNATSMounter(daemon.natsConn, daemon.node)
 	fake := serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
 
 	inst := &vm.VM{
@@ -41,35 +39,6 @@ func TestUnmount_LeavesDataVolumesAttached(t *testing.T) {
 
 	assert.ElementsMatch(t, []string{"vol-root", "vol-efi", "vol-data-a", "vol-data-b"}, fake.unpublished(),
 		"every volume is still sealed on stop")
-	assert.Empty(t, volState.snapshot(),
-		"no volume state may change: a stopped instance's volumes stay in-use and attached")
-}
-
-// A seal that fails or that reports NotFound must not turn into a state write
-// either; the retry path relied on that write before.
-func TestUnmount_SealOutcomesNeverWriteVolumeState(t *testing.T) {
-	for name, resp := range map[string]ebsprovider.UnpublishVolumeResponse{
-		"seal failed": unpublishRefusal(ebsprovider.ErrorCodeInternal, "seal volume: predastore unreachable"),
-		"not found":   unpublishRefusal(ebsprovider.ErrorCodeNotFound, "Volume vol-data not found"),
-	} {
-		t.Run(name, func(t *testing.T) {
-			daemon := createTestDaemon(t, sharedNATSURL)
-			volState := &recordingVolState{}
-			adapter := newNATSMounter(daemon.natsConn, daemon.node, volState)
-			fake := serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
-			fake.setUnpublish(func(string) ebsprovider.UnpublishVolumeResponse { return resp })
-
-			inst := &vm.VM{
-				ID: "i-seal-outcome",
-				EBSRequests: vm.EBSRequests{
-					Requests: []viperblocklegacyv1.EBSRequest{{Name: "vol-data"}},
-				},
-			}
-			_ = adapter.Unmount(t.Context(), inst)
-
-			assert.Empty(t, volState.snapshot())
-		})
-	}
 }
 
 // The point of keeping the attachment: after the stopped instance's unmount,
@@ -93,7 +62,7 @@ func TestStoppedInstanceVolume_CannotBeAttachedElsewhere(t *testing.T) {
 
 	serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
 
-	adapter := newNATSMounter(daemon.natsConn, daemon.node, daemon.volumeService)
+	adapter := newNATSMounter(daemon.natsConn, daemon.node)
 	stopped := &vm.VM{
 		ID:        stoppedID,
 		AccountID: testAccountID,

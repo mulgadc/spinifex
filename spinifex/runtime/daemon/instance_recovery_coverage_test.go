@@ -257,7 +257,7 @@ func TestRecoveryAttemptSucceeds(t *testing.T) {
 	// starting QEMU, which is the one part of a recovery this cannot do.
 	d.vmMgr.SetDeps(vm.Deps{
 		NodeID:             d.node,
-		VolumeMounter:      newNATSMounter(d.natsConn, d.node, d.volumeService),
+		VolumeMounter:      newNATSMounter(d.natsConn, d.node),
 		VolumeStateUpdater: d.volumeService,
 		Hooks: vm.ManagerHooks{BeforeInstanceRelaunch: func(v *vm.VM) error {
 			d.vmMgr.Inspect(v, func(v *vm.VM) { v.Status = vm.StateShuttingDown })

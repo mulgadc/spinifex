@@ -662,7 +662,8 @@ func TestAuthorization(t *testing.T) {
 
 func TestRegistration_ResolvesActionsAndInventory(t *testing.T) {
 	reg := awsapi.NewRegistration(awsapi.Deps{})
-	assert.Equal(t, []string{"CreateFunction", "GetFunction", "GetFunctionConfiguration"}, reg.Inventory.Registered)
+	assert.Equal(t, []string{"CreateFunction", "GetFunction", "GetFunctionCodeSigningConfig", "GetFunctionConfiguration"}, reg.Inventory.Registered)
+	assert.Equal(t, "GetFunctionCodeSigningConfig", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2020-06-30/functions/x/code-signing-config", nil)))
 	assert.Equal(t, "CreateFunction", reg.ResolveAction(httptest.NewRequest(http.MethodPost, "/2015-03-31/functions", nil)))
 	assert.Equal(t, "GetFunction", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2015-03-31/functions/x", nil)))
 	assert.Equal(t, "GetFunctionConfiguration", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2015-03-31/functions/x/configuration", nil)))
@@ -785,5 +786,87 @@ func TestGetFunctionConfiguration_Authorization(t *testing.T) {
 	})
 	t.Run("an allow on the function ARN passes", func(t *testing.T) {
 		require.NoError(t, get(setup(t, gwtest.Statement("Allow", "lambda:GetFunctionConfiguration", arn))))
+	})
+}
+
+func TestGetFunctionCodeSigningConfig_ExistingFunctionHasExplicitNulls(t *testing.T) {
+	e := newEnv(t)
+	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
+	require.NoError(t, err)
+
+	arn := "arn%3Aaws%3Alambda%3A" + gwtest.Region + "%3A" + gwtest.AccountID + "%3Afunction%3Ahello"
+	for _, name := range []string{"hello", arn, gwtest.AccountID + "%3Afunction%3Ahello"} {
+		rec, err := e.do(http.MethodGet, "/2020-06-30/functions/"+name+"/code-signing-config", nil)
+		require.NoError(t, err, name)
+		require.Equal(t, http.StatusOK, rec.Code, name)
+		assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+		assert.JSONEq(t, `{"CodeSigningConfigArn":null,"FunctionName":null}`, rec.Body.String(), name)
+	}
+}
+
+func TestGetFunctionCodeSigningConfig_MissingFunctionIsNotFound(t *testing.T) {
+	e := newEnv(t)
+	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
+	require.NoError(t, err)
+
+	_, err = e.do(http.MethodGet, "/2020-06-30/functions/ghost/code-signing-config", nil)
+	requireCode(t, err, awserrors.ErrorResourceNotFoundException)
+	_, getErr := e.do(http.MethodGet, "/2015-03-31/functions/ghost", nil)
+	assert.Equal(t, getErr.Error(), err.Error())
+
+	e.h.Region = "us-west-2"
+	_, err = e.do(http.MethodGet, "/2020-06-30/functions/hello/code-signing-config", nil)
+	requireCode(t, err, awserrors.ErrorResourceNotFoundException)
+}
+
+func TestGetFunctionCodeSigningConfig_NeedsNeitherCodeStoreNorDecryption(t *testing.T) {
+	e := newEnv(t)
+	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) {
+		b["Environment"] = map[string]any{"Variables": map[string]string{"MODE": "prod"}}
+	}))
+	require.NoError(t, err)
+	e.deps.Codes = func(context.Context) (awsapi.CodeStore, error) { return nil, errors.New("code store down") }
+	e.deps.AEAD = nil
+
+	rec, err := e.do(http.MethodGet, "/2020-06-30/functions/hello/code-signing-config", nil)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"CodeSigningConfigArn":null,"FunctionName":null}`, rec.Body.String())
+	_, err = e.do(http.MethodGet, "/2015-03-31/functions/hello/configuration", nil)
+	requireCode(t, err, awserrors.ErrorServiceException)
+
+	e.deps.Codes = nil
+	_, err = e.do(http.MethodGet, "/2020-06-30/functions/hello/code-signing-config", nil)
+	require.NoError(t, err)
+}
+
+func TestGetFunctionCodeSigningConfig_Authorization(t *testing.T) {
+	arn := "arn:aws:lambda:" + gwtest.Region + ":" + gwtest.AccountID + ":function:hello"
+	setup := func(t *testing.T, statements ...iamdomain.Statement) *env {
+		e := newEnv(t, statements...)
+		_, err := e.meta.Create(t.Context(), gwtest.AccountID, gwtest.Region, function.Record{
+			FunctionID: "f1", FunctionName: "hello", Role: roleARN, Runtime: "provided.al2023", Handler: "h",
+			Timeout: 3, MemorySize: 128, Code: function.Code{RevisionID: "r1"},
+		})
+		require.NoError(t, err)
+		return e
+	}
+	get := func(e *env) error {
+		_, err := e.do(http.MethodGet, "/2020-06-30/functions/hello/code-signing-config", nil)
+		return err
+	}
+
+	t.Run("lambda:GetFunction alone is not enough", func(t *testing.T) {
+		gwtest.AssertDenied(t, get(setup(t, gwtest.Statement("Allow", "lambda:GetFunction", "*"))))
+	})
+	t.Run("a deny on the function ARN applies", func(t *testing.T) {
+		gwtest.AssertDenied(t, get(setup(t,
+			gwtest.Statement("Allow", "lambda:*", "*"),
+			gwtest.Statement("Deny", "lambda:GetFunctionCodeSigningConfig", arn))))
+	})
+	t.Run("an allow on another function ARN does not apply", func(t *testing.T) {
+		gwtest.AssertDenied(t, get(setup(t, gwtest.Statement("Allow", "lambda:GetFunctionCodeSigningConfig", arn+"-other"))))
+	})
+	t.Run("an allow on the function ARN passes", func(t *testing.T) {
+		require.NoError(t, get(setup(t, gwtest.Statement("Allow", "lambda:GetFunctionCodeSigningConfig", arn))))
 	})
 }

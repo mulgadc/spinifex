@@ -59,9 +59,9 @@ func startLambdaDaemonLite(t *testing.T, nc *nats.Conn) {
 	sub(t, nc, lambdafunction.SubjectRollbackCreate, func(m *nats.Msg) { dispatch(m, svc.RollbackCreate) })
 }
 
-// Signed Create, Get and GetFunctionConfiguration over NATS metadata and the
-// Predastore fixture's code store, then downloads Code.Location. The fixture's
-// service key stands in for the scoped code-store session, which is untested.
+// Signed Create and the Get reads over NATS metadata and the Predastore
+// fixture's code store, then downloads Code.Location. The fixture's service
+// key stands in for the scoped code-store session, which is untested.
 func TestLambda_SignedCreateAndGetDownloadsTheStoredCode(t *testing.T) {
 	fixture := testpredastore.Start(t)
 	bucket := codestore.BucketName(testRegion)
@@ -133,6 +133,15 @@ func TestLambda_SignedCreateAndGetDownloadsTheStoredCode(t *testing.T) {
 	cfg, err := cli.GetFunctionConfiguration(&lambda.GetFunctionConfigurationInput{FunctionName: aws.String("e2e-fn")})
 	require.NoError(t, err)
 	require.Equal(t, got.Configuration.String(), cfg.String())
+
+	signing, err := cli.GetFunctionCodeSigningConfig(&lambda.GetFunctionCodeSigningConfigInput{FunctionName: aws.String("e2e-fn")})
+	require.NoError(t, err)
+	require.Nil(t, signing.CodeSigningConfigArn)
+	require.Nil(t, signing.FunctionName)
+	_, err = cli.GetFunctionCodeSigningConfig(&lambda.GetFunctionCodeSigningConfigInput{FunctionName: aws.String("e2e-missing")})
+	var aerr awserr.Error
+	require.ErrorAs(t, err, &aerr)
+	require.Equal(t, lambda.ErrCodeResourceNotFoundException, aerr.Code())
 
 	// SSL_CERT_FILE (set by the fixture) makes the default client trust it.
 	resp, err := http.Get(aws.StringValue(got.Code.Location)) //nolint:gosec,noctx // URL is the presigned location under test

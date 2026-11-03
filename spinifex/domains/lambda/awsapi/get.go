@@ -23,26 +23,33 @@ func notFound(region, accountID, name string) error {
 		arn.FormatLambdaFunction(region, accountID, name))
 }
 
-// loadConfiguration resolves the requested $LATEST function and renders its
-// configuration; it is a metadata read and never touches the code store.
-func (d Deps) loadConfiguration(ctx context.Context, c *call) (function.Record, *lambda.FunctionConfiguration, error) {
+// lookup resolves the requested $LATEST function's record; query is the
+// Qualifier query parameter, empty for an action that has none.
+func (d Deps) lookup(ctx context.Context, c *call, query string) (function.Record, uint64, error) {
 	name, q, err := resolveFunctionName(c.Region, c.AccountID, c.Params[0])
 	if err != nil {
-		return function.Record{}, nil, err
+		return function.Record{}, 0, err
 	}
-	if query := c.Query.Get("Qualifier"); query != "" {
+	if query != "" {
 		if q != "" && q != query {
-			return function.Record{}, nil, invalid("The derived qualifier from the function name does not match the specified qualifier.")
+			return function.Record{}, 0, invalid("The derived qualifier from the function name does not match the specified qualifier.")
 		}
 		q = query
 	}
 	if q != "" && q != "$LATEST" {
-		return function.Record{}, nil, notFound(c.Region, c.AccountID, name+":"+q)
+		return function.Record{}, 0, notFound(c.Region, c.AccountID, name+":"+q)
 	}
 	rec, revision, err := d.Meta.Get(ctx, c.AccountID, c.Region, name)
 	if errors.Is(err, function.ErrNotFound) {
-		return function.Record{}, nil, notFound(c.Region, c.AccountID, name)
+		return function.Record{}, 0, notFound(c.Region, c.AccountID, name)
 	}
+	return rec, revision, err
+}
+
+// loadConfiguration resolves the requested $LATEST function and renders its
+// configuration; it is a metadata read and never touches the code store.
+func (d Deps) loadConfiguration(ctx context.Context, c *call) (function.Record, *lambda.FunctionConfiguration, error) {
+	rec, revision, err := d.lookup(ctx, c, c.Query.Get("Qualifier"))
 	if err != nil {
 		return function.Record{}, nil, err
 	}
@@ -71,6 +78,19 @@ func (d Deps) getFunctionConfiguration(ctx context.Context, c *call) (reply, err
 		return reply{}, err
 	}
 	return reply{Status: http.StatusOK, Body: cfg}, nil
+}
+
+// noCodeSigning is AWS's body for a function without a code signing config:
+// both members present and null, which the SDK shapes cannot encode.
+var noCodeSigning = rawJSON(`{"CodeSigningConfigArn":null,"FunctionName":null}`)
+
+// getFunctionCodeSigningConfig implements GetFunctionCodeSigningConfig; code
+// signing is unsupported, so it only proves the function exists.
+func (d Deps) getFunctionCodeSigningConfig(ctx context.Context, c *call) (reply, error) {
+	if _, _, err := d.lookup(ctx, c, ""); err != nil {
+		return reply{}, err
+	}
+	return reply{Status: http.StatusOK, Body: noCodeSigning}, nil
 }
 
 // getFunction implements GetFunction for the $LATEST version.

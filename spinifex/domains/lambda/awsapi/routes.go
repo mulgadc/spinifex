@@ -21,6 +21,10 @@ type call struct {
 	Create *lambda.CreateFunctionInput
 }
 
+// rawJSON is a response body written as is, for a shape the SDK encoder
+// cannot produce.
+type rawJSON []byte
+
 // reply is a handler's success: the HTTP status and the SDK shape to encode.
 type reply struct {
 	Status int
@@ -44,6 +48,10 @@ var routes = []route{
 	{Method: "GET", Pattern: "/2015-03-31/functions/{FunctionName}/configuration", Action: "GetFunctionConfiguration",
 		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
 			return d.getFunctionConfiguration(ctx, c)
+		}},
+	{Method: "GET", Pattern: "/2020-06-30/functions/{FunctionName}/code-signing-config", Action: "GetFunctionCodeSigningConfig",
+		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
+			return d.getFunctionCodeSigningConfig(ctx, c)
 		}},
 }
 

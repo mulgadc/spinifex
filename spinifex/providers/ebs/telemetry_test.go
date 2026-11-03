@@ -32,8 +32,6 @@ func TestSubjectVerb_StripsIDsFromEveryDynamicSubject(t *testing.T) {
 	require.NoError(t, err)
 	unsealed, err := UnsealedWritesSubject(nodeID)
 	require.NoError(t, err)
-	nodeCapabilities, err := NodeCapabilitiesSubject(nodeID)
-	require.NoError(t, err)
 	fenced, err := FenceNoticeSubject(nodeID)
 	require.NoError(t, err)
 
@@ -54,7 +52,6 @@ func TestSubjectVerb_StripsIDsFromEveryDynamicSubject(t *testing.T) {
 		publish:               verbVolumePublish,
 		unpublish:             verbVolumeUnpublish,
 		unsealed:              verbUnsealedWrites,
-		nodeCapabilities:      verbCapabilities,
 		fenced:                verbFenceNotice,
 	}
 

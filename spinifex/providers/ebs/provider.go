@@ -40,14 +40,13 @@ type Versioned struct {
 	SchemaVersion uint16 `json:"schema_version"`
 }
 
-// NewVersioned returns the oldest representation guaranteed to interoperate
-// during an N/N-1 rollout. Callers may use NewLatestVersioned only after a
-// capability exchange proves the target understands SchemaVersion.
+// NewVersioned returns LegacySchemaVersion, the oldest representation a
+// provider serves, for a request whose shape is the same at every version.
 func NewVersioned() Versioned { return Versioned{SchemaVersion: LegacySchemaVersion} }
 
-// NewLatestVersioned returns the newest representation this build understands.
-// It must not be used merely because this binary is new: a separately released
-// peer may still be serving LegacySchemaVersion.
+// NewLatestVersioned returns SchemaVersion. A cluster runs one contract
+// version, which every provider in it serves, so a request that needs a field
+// only the newest version carries is sent at it without asking first.
 func NewLatestVersioned() Versioned { return Versioned{SchemaVersion: SchemaVersion} }
 
 // SupportsSchemaVersion reports whether this build can safely decode version.

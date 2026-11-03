@@ -543,7 +543,7 @@ func TestDetachVolume_DeviceGuards(t *testing.T) {
 }
 
 // TestDetachVolume_SealFailureGatesAvailable covers the durability gate in the
-// detach-seal fix: when ebs.unmount (the synchronous block-map seal) fails,
+// detach-seal fix: when unpublish (the synchronous block-map seal) fails,
 // DetachVolume must propagate the error, must NOT flip the volume to "available",
 // and must leave it in EBSRequests so the volume stays attached/retryable and its
 // local WAL is retained. A regression back to fire-and-forget unmount would let a
@@ -661,7 +661,7 @@ func TestAttachVolume_MountAmbiguous_TriggersUnmountOne(t *testing.T) {
 // MountOne failures (NATS timeout, backend explicit Error, marshal errors)
 // do NOT trigger UnmountOne — only the empty-URI ambiguous case rolls back.
 func TestAttachVolume_GenericMountError_DoesNotUnmount(t *testing.T) {
-	mounter := &fakeVolumeMounter{mountOneErr: errors.New("ebs.mount NATS request: timeout")}
+	mounter := &fakeVolumeMounter{mountOneErr: errors.New("publish request: timeout")}
 	m, _ := attachVolumeRunningInstance(t, nil, mounter)
 
 	_, err := m.AttachVolume(t.Context(), "i-1", "vol-1", "/dev/sdf")
@@ -1387,7 +1387,7 @@ func TestDetachVolume_DeviceDeletedTimeout_FallsBackToRetry(t *testing.T) {
 // detach-wedges-when-QEMU-dies fix: when QEMU is provably gone (PID file
 // present, process dead), DetachVolume issues no QMP command — those steps
 // would only hang on the wedged process — and proceeds straight to the
-// ebs.unmount seal and the attachment clear.
+// unpublish seal and the attachment clear.
 func TestDetachVolume_ConfirmedDeadQEMU_SkipsQMPAndSeals(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 
@@ -1418,7 +1418,7 @@ func TestDetachVolume_ConfirmedDeadQEMU_SkipsQMPAndSeals(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "/dev/sdf", device)
 	assert.False(t, qmpCalled.Load(), "a confirmed-dead QEMU must receive no QMP command")
-	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne, "the ebs.unmount seal must still run")
+	assert.Equal(t, []string{"vol-1"}, mounter.unmountedOne, "the unpublish seal must still run")
 	calls := updater.snapshot()
 	require.Len(t, calls, 1, "the stale attachment must be cleared exactly once")
 	assert.Equal(t, "available", calls[0].State, "the volume must be returned to available")

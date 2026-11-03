@@ -19,6 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -92,26 +93,129 @@ func (a *stateStoreAdapter) DeleteTerminatedInstance(id string) error {
 	return a.js.DeleteTerminatedInstance(id)
 }
 
-// volumeMounterAdapter satisfies vm.VolumeMounter by routing ebs.mount /
-// ebs.unmount NATS requests. Unmount also updates volume state via VolumeStateUpdater.
+// volumeMounterAdapter satisfies vm.VolumeMounter over the EBS contract's
+// PublishVolume and UnpublishVolume, sent at the cluster's one contract
+// version to this node's provider. Unmount also marks volumes available.
 type volumeMounterAdapter struct {
-	nc       *nats.Conn
 	node     string
 	volState vm.VolumeStateUpdater
+	provider mounterProvider
+	// abandonTimeout bounds each no-seal unpublish Abandon sends.
+	abandonTimeout time.Duration
 }
+
+// mounterProvider is the part of the EBS contract the mounter drives.
+type mounterProvider interface {
+	PublishVolume(context.Context, ebsprovider.PublishVolumeRequest) (*ebsprovider.PublishedVolume, error)
+	UnpublishVolume(context.Context, ebsprovider.UnpublishVolumeRequest) (*ebsprovider.UnpublishedVolume, error)
+}
+
+var _ mounterProvider = (*ebsprovider.NATSProvider)(nil)
 
 var _ vm.VolumeMounter = (*volumeMounterAdapter)(nil)
 
-// unmountSealTimeout bounds the ebs.unmount NATS request. The handler now drives
-// a synchronous block-map seal to predastore (S3 I/O), which runs AFTER
-// viperblockd's SIGKILL once its 120s KillProcess grace elapses — so this
-// must strictly exceed that grace plus a seal allowance, never merely match
-// it: an unmount that consumes the whole grace could otherwise never be
-// observed as successful.
-const unmountSealTimeout = 180 * time.Second
+func newVolumeMounterAdapter(provider mounterProvider, node string, volState vm.VolumeStateUpdater) *volumeMounterAdapter {
+	return &volumeMounterAdapter{
+		node:           node,
+		volState:       volState,
+		provider:       provider,
+		abandonTimeout: abandonTimeout,
+	}
+}
 
-func newVolumeMounterAdapter(nc *nats.Conn, node string, volState vm.VolumeStateUpdater) *volumeMounterAdapter {
-	return &volumeMounterAdapter{nc: nc, node: node, volState: volState}
+// publish mounts req's volume on this node through PublishVolume and records
+// the export on req. A failure worth retrying is vm.ErrMountRetryable; one
+// that leaves unknown whether the provider exported it is vm.ErrMountAmbiguous.
+func (a *volumeMounterAdapter) publish(ctx context.Context, accountID string, req *viperblocklegacyv1.EBSRequest) error {
+	// A caller already gone sends nothing, so there is no export to tear down;
+	// only a cancellation after the request went out leaves the outcome unknown.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("publish volume %s: %w", req.Name, err)
+	}
+	published, err := a.provider.PublishVolume(ebsprovider.WithAccountID(ctx, accountID), ebsprovider.PublishVolumeRequest{
+		Versioned: ebsprovider.NewLatestVersioned(),
+		VolumeID:  req.Name,
+		NodeID:    a.node,
+	})
+	if err != nil {
+		switch {
+		case publishRetryable(err):
+			return fmt.Errorf("publish volume %s: %w: %w", req.Name, err, vm.ErrMountRetryable)
+		case publishOutcomeUnknown(err):
+			return fmt.Errorf("publish volume %s: %w: %w", req.Name, err, vm.ErrMountAmbiguous)
+		}
+		return fmt.Errorf("publish volume %s: %w", req.Name, err)
+	}
+	applyExport(req, published.Export)
+	slog.InfoContext(ctx, "Published volume", "volume", req.Name, "node", a.node, "export_kind", string(published.Export.Kind))
+	return nil
+}
+
+// publishRetryable reports whether a failed publish is worth repeating later.
+// A connection that is down never sent the request, and not_found is how a
+// volume whose state is not loadable yet is reported; restore backs off on both.
+func publishRetryable(err error) bool {
+	if errors.Is(err, nats.ErrNoResponders) || errors.Is(err, nats.ErrConnectionClosed) {
+		return true
+	}
+	var providerErr *ebsprovider.ProviderError
+	if !errors.As(err, &providerErr) {
+		return false
+	}
+	return providerErr.Code.Retryable() || providerErr.Code == ebsprovider.ErrorCodeNotFound
+}
+
+// publishOutcomeUnknown reports whether the provider may have exported the
+// volume despite the error: the request was sent but no usable reply came back,
+// or the caller stopped waiting for it. A connection found down sends nothing.
+func publishOutcomeUnknown(err error) bool {
+	for _, unknown := range []error{
+		context.DeadlineExceeded, context.Canceled, nats.ErrTimeout, ebsprovider.ErrUnreadableReply,
+		ebsprovider.ErrNoPublishedVolume, ebsprovider.ErrInvalidExport,
+	} {
+		if errors.Is(err, unknown) {
+			return true
+		}
+	}
+	return false
+}
+
+// applyExport records export on req as the one export field QEMU attaches.
+// The provider client has already validated it.
+func applyExport(req *viperblocklegacyv1.EBSRequest, export ebsprovider.VolumeExport) {
+	switch export.Kind {
+	case ebsprovider.ExportKindBlock:
+		req.NBDURI = ""
+		req.BlockDevice = export.Block.DevicePath
+		req.BlockSizeBytes = export.Block.SizeBytes
+	default:
+		req.NBDURI = export.NBD.NBDURI
+		req.BlockDevice = ""
+		req.BlockSizeBytes = 0
+	}
+}
+
+// unpublish tears down this node's export of req's volume through
+// UnpublishVolume, which seals first, and returns nil only once its block map
+// is sealed or the provider holds no export of it.
+func (a *volumeMounterAdapter) unpublish(ctx context.Context, accountID string, req viperblocklegacyv1.EBSRequest) error {
+	// The seal takes the provider's data-movement budget, not what is left of
+	// the caller's; the caller's trace is kept.
+	sealCtx := ebsprovider.WithAccountID(context.WithoutCancel(ctx), accountID)
+	_, err := a.provider.UnpublishVolume(sealCtx, ebsprovider.UnpublishVolumeRequest{
+		Versioned: ebsprovider.NewLatestVersioned(),
+		VolumeID:  req.Name,
+		NodeID:    a.node,
+	})
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ebsprovider.ErrNotFound):
+		slog.InfoContext(ctx, "Unpublish found no volume, counting it as done", "volume", req.Name, "node", a.node)
+		return nil
+	default:
+		return fmt.Errorf("unpublish volume %s: %w", req.Name, err)
+	}
 }
 
 // ebsRequestWithTrace sends an ebs.* NATS request, opening a client span under
@@ -123,13 +227,10 @@ func newVolumeMounterAdapter(nc *nats.Conn, node string, volState vm.VolumeState
 // sweep or a recovery belongs to nobody, and crediting it to whoever happens
 // to be admin would be worse than leaving it blank.
 func ebsRequestWithTrace(ctx context.Context, nc *nats.Conn, accountID, subject string, data []byte, timeout time.Duration) (msg *nats.Msg, err error) {
-	attrs := []attribute.KeyValue{
+	attrs := append([]attribute.KeyValue{
 		attribute.String("messaging.system", "nats"),
 		attribute.String("messaging.destination.name", subject),
-	}
-	if accountID != "" {
-		attrs = append(attrs, attribute.String(natsmsg.AttrAccountID, accountID))
-	}
+	}, natsmsg.AccountAttrs(accountID)...)
 
 	ctx, span := otel.Tracer(daemonTracerName).Start(ctx, "NATS "+subject,
 		trace.WithSpanKind(trace.SpanKindClient),
@@ -162,7 +263,7 @@ func (a *volumeMounterAdapter) Mount(ctx context.Context, instance *vm.VM) error
 		var rbErrs []error
 		for _, idx := range mounted {
 			req := instance.EBSRequests.Requests[idx]
-			if err := a.unmountOne(ctx, instance.AccountID, req); err != nil {
+			if err := a.unpublish(ctx, instance.AccountID, req); err != nil {
 				slog.Error("Mount rollback: unmount failed",
 					"volume", req.Name, "err", err)
 				rbErrs = append(rbErrs, fmt.Errorf("unmount %s: %w", req.Name, err))
@@ -175,42 +276,14 @@ func (a *volumeMounterAdapter) Mount(ctx context.Context, instance *vm.VM) error
 	}
 
 	for k, v := range instance.EBSRequests.Requests {
-		ebsMountRequest, err := json.Marshal(v)
-		if err != nil {
-			slog.Error("Failed to marshal volume payload", "err", err)
-			return rollback(err)
-		}
-
-		reply, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID, viperblocklegacyv1.MountSubject(a.node), ebsMountRequest, 30*time.Second)
-
-		slog.Info("Mounting volume", "Vol", v.Name, "NBDURI", v.NBDURI)
-
-		if err != nil {
-			slog.Error("Failed to request EBS mount", "err", err)
-			// A missing responder means viperblockd has not finished starting;
-			// during recovery that is transient, so let the caller retry.
-			if errors.Is(err, nats.ErrNoResponders) {
-				return rollback(fmt.Errorf("ebs mount had no responder: %w", vm.ErrMountRetryable))
+		if err := a.publish(ctx, instance.AccountID, &instance.EBSRequests.Requests[k]); err != nil {
+			slog.Error("Failed to publish volume", "volume", v.Name, "err", err)
+			// The provider may have started this export, so it is torn down too.
+			if errors.Is(err, vm.ErrMountAmbiguous) {
+				mounted = append(mounted, k)
 			}
 			return rollback(err)
 		}
-
-		var ebsMountResponse viperblocklegacyv1.EBSMountResponse
-		if err := json.Unmarshal(reply.Data, &ebsMountResponse); err != nil {
-			slog.Error("Failed to unmarshal volume response:", "err", err)
-			return rollback(err)
-		}
-
-		if ebsMountResponse.Error != "" {
-			slog.Error("Failed to mount volume", "error", ebsMountResponse.Error, "retryable", ebsMountResponse.Retryable)
-			if ebsMountResponse.Retryable {
-				return rollback(fmt.Errorf("failed to mount volume: %s: %w", ebsMountResponse.Error, vm.ErrMountRetryable))
-			}
-			return rollback(fmt.Errorf("failed to mount volume: %s", ebsMountResponse.Error))
-		}
-
-		slog.Debug("Mounted volume successfully", "response", ebsMountResponse.URI)
-		instance.EBSRequests.Requests[k].NBDURI = ebsMountResponse.URI
 		mounted = append(mounted, k)
 	}
 
@@ -223,39 +296,22 @@ func (a *volumeMounterAdapter) Unmount(ctx context.Context, instance *vm.VM) err
 
 	var sealErrs []error
 	for _, ebsRequest := range instance.EBSRequests.Requests {
-		ebsUnMountRequest, err := json.Marshal(ebsRequest)
-		if err != nil {
-			slog.Error("Failed to marshal volume payload for unmount", "err", err)
-			sealErrs = append(sealErrs, fmt.Errorf("marshal unmount request for %s: %w", ebsRequest.Name, err))
+		// Every volume is attempted and the seal failures aggregated. An unsealed
+		// volume must NOT go available: a reattach on a node without the local
+		// WAL would find no checkpoint (bad superblock).
+		if err := a.unpublish(ctx, instance.AccountID, ebsRequest); err != nil {
+			slog.Error("Volume seal failed, leaving volume non-available",
+				"instance", instance.ID, "volume", ebsRequest.Name, "err", err)
+			sealErrs = append(sealErrs, fmt.Errorf("seal %s: %w", ebsRequest.Name, err))
 			continue
 		}
-
-		// ebs.unmount seals the block map to predastore. Every volume is
-		// attempted, and the failures are aggregated for the caller: the
-		// volume must NOT go available, because a reattach on a node without
-		// the local WAL would find no checkpoint (bad superblock).
-		sealed := true
-		msg, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID, viperblocklegacyv1.UnmountSubject(a.node), ebsUnMountRequest, unmountSealTimeout)
-		if err != nil {
-			slog.Error("Failed to unmount volume",
-				"name", ebsRequest.Name, "instance", instance.ID, "err", err)
-			sealErrs = append(sealErrs, fmt.Errorf("unmount %s: %w", ebsRequest.Name, err))
-			sealed = false
-		} else if sealErr := unmountResponseError(msg.Data); sealErr != nil {
-			slog.Error("Volume unmount seal failed, leaving volume non-available",
-				"instance", instance.ID, "volume", ebsRequest.Name, "err", sealErr)
-			sealErrs = append(sealErrs, fmt.Errorf("seal %s: %w", ebsRequest.Name, sealErr))
-			sealed = false
-		} else {
-			slog.Info("Unmounted volume",
-				"instance", instance.ID, "volume", ebsRequest.Name, "data", string(msg.Data))
-		}
+		slog.Info("Unmounted volume", "instance", instance.ID, "volume", ebsRequest.Name)
 
 		// Boot/root volumes must stay attached across stop/crash unmount: EFI is
 		// the wrong proxy for "boot" (BIOS-boot roots are Boot && !EFI), so gate on
 		// Boot too. Only DetachVolume and terminate release a boot volume; flipping
 		// it available here while the instance restarts splits the state record.
-		if sealed && !ebsRequest.EFI && !ebsRequest.Boot && a.volState != nil {
+		if !ebsRequest.EFI && !ebsRequest.Boot && a.volState != nil {
 			if err := a.volState.UpdateVolumeState(instance.AccountID, ebsRequest.Name, "available", "", ""); err != nil {
 				slog.Error("Failed to update volume state to available after unmount",
 					"volumeId", ebsRequest.Name, "err", err)
@@ -266,127 +322,75 @@ func (a *volumeMounterAdapter) Unmount(ctx context.Context, instance *vm.VM) err
 	return errors.Join(sealErrs...)
 }
 
-// abandonTimeout bounds one ebs.abandon request. Generous enough to cover
-// viperblockd's SIGKILL wait for an nbdkit stuck in the storage path, and far
-// short of the unmount's budget because nothing here seals.
+// abandonTimeout bounds one no-seal unpublish. Generous enough to cover a
+// provider killing an export stuck in the storage path, and far short of the
+// seal budget because nothing here seals.
 const abandonTimeout = 45 * time.Second
 
-// Abandon tears down this node's export of every volume the instance had open,
-// without sealing any of them.
+// Abandon tears down this node's export of every volume the instance had open
+// through UnpublishVolume with NoSeal, so none of them is sealed.
 //
 // Every volume is attempted and the failures are aggregated, because a volume
 // left exported is one the new owner cannot open — the caller is dropping a
 // superseded instance and needs to know whether it actually let go.
-func (a *volumeMounterAdapter) Abandon(ctx context.Context, instance *vm.VM, reason string) error {
+func (a *volumeMounterAdapter) Abandon(ctx context.Context, instance *vm.VM, reason string) (err error) {
+	ctx, span := otel.Tracer(daemonTracerName).Start(ctx, "ebs.mounter.abandon", trace.WithAttributes(append([]attribute.KeyValue{
+		attribute.String("instance.id", instance.ID),
+		attribute.String("abandon.reason", reason),
+	}, natsmsg.AccountAttrs(instance.AccountID)...)...))
+	defer func() { endOpSpan(span, err) }()
+
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()
 
 	var errs []error
 	for _, ebsRequest := range instance.EBSRequests.Requests {
-		payload, err := json.Marshal(viperblocklegacyv1.VolumeAbandonRequest{Volume: ebsRequest.Name, Reason: reason})
-		if err != nil {
-			errs = append(errs, fmt.Errorf("marshal abandon request for %s: %w", ebsRequest.Name, err))
-			continue
-		}
-
-		msg, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID,
-			viperblocklegacyv1.VolumeAbandonSubject(a.node), payload, abandonTimeout)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("abandon %s: %w", ebsRequest.Name, err))
-			continue
-		}
-
-		var resp viperblocklegacyv1.VolumeAbandonResponse
-		if err := json.Unmarshal(msg.Data, &resp); err != nil {
-			errs = append(errs, fmt.Errorf("unmarshal abandon response for %s: %w", ebsRequest.Name, err))
-			continue
-		}
-		if resp.Error != "" {
-			errs = append(errs, fmt.Errorf("abandon %s: %s", ebsRequest.Name, resp.Error))
-			continue
-		}
-		if resp.Abandoned {
-			slog.WarnContext(ctx, "Gave up a volume export to the node that owns the instance now",
-				"instance", instance.ID, "volume", ebsRequest.Name, "reason", reason)
+		if err := a.abandonOne(ctx, instance, ebsRequest.Name, reason); err != nil {
+			errs = append(errs, err)
 		}
 	}
-
 	return errors.Join(errs...)
 }
 
-// MountOne sends ebs.mount for a single request and writes the resolved
-// NBDURI back into req.NBDURI. Used by hot-attach (Manager.AttachVolume).
-func (a *volumeMounterAdapter) MountOne(ctx context.Context, accountID string, req *viperblocklegacyv1.EBSRequest) error {
-	payload, err := json.Marshal(req)
-	if err != nil {
-		return fmt.Errorf("marshal ebs.mount request: %w", err)
+// abandonOne drops this node's export of volumeID unsealed. A volume the
+// provider does not know is one this node no longer holds.
+func (a *volumeMounterAdapter) abandonOne(ctx context.Context, instance *vm.VM, volumeID, reason string) error {
+	abandonCtx, cancel := context.WithTimeout(ebsprovider.WithAccountID(ctx, instance.AccountID), a.abandonTimeout)
+	defer cancel()
+	unpublished, err := a.provider.UnpublishVolume(abandonCtx, ebsprovider.UnpublishVolumeRequest{
+		Versioned: ebsprovider.NewLatestVersioned(),
+		VolumeID:  volumeID,
+		NodeID:    a.node,
+		NoSeal:    true,
+	})
+	switch {
+	case errors.Is(err, ebsprovider.ErrNotFound):
+		return nil
+	case err != nil:
+		return fmt.Errorf("abandon %s (%s): %w", volumeID, reason, err)
 	}
-
-	reply, err := ebsRequestWithTrace(ctx, a.nc, accountID, viperblocklegacyv1.MountSubject(a.node), payload, 30*time.Second)
-	if err != nil {
-		return fmt.Errorf("ebs.mount NATS request: %w", err)
+	if unpublished.TornDown {
+		slog.WarnContext(ctx, "Gave up a volume export to the node that owns the instance now",
+			"instance", instance.ID, "volume", volumeID, "reason", reason)
 	}
-
-	var resp viperblocklegacyv1.EBSMountResponse
-	if err := json.Unmarshal(reply.Data, &resp); err != nil {
-		return fmt.Errorf("unmarshal ebs.mount response: %w", err)
-	}
-	if resp.Error != "" {
-		return fmt.Errorf("ebs.mount returned error: %s", resp.Error)
-	}
-	if resp.URI == "" {
-		return vm.ErrMountAmbiguous
-	}
-
-	req.NBDURI = resp.URI
 	return nil
 }
 
-// UnmountOne sends ebs.unmount and returns any error. The handler seals the
-// volume's block map to predastore, so the caller decides whether a failure
-// blocks the volume's available transition.
+// MountOne mounts a single request and writes the resolved export back into
+// req. Used by hot-attach (Manager.AttachVolume).
+func (a *volumeMounterAdapter) MountOne(ctx context.Context, accountID string, req *viperblocklegacyv1.EBSRequest) error {
+	return a.publish(ctx, accountID, req)
+}
+
+// UnmountOne unmounts a single request and returns any error. The unmount
+// seals the volume's block map to the backend, so the caller decides whether
+// a failure blocks the volume's available transition.
 func (a *volumeMounterAdapter) UnmountOne(ctx context.Context, accountID string, req viperblocklegacyv1.EBSRequest) error {
-	if err := a.unmountOne(ctx, accountID, req); err != nil {
+	if err := a.unpublish(ctx, accountID, req); err != nil {
 		slog.Error("UnmountOne failed", "volume", req.Name, "err", err)
 		return err
 	}
 	slog.Info("UnmountOne: volume unmounted successfully", "volume", req.Name)
-	return nil
-}
-
-// unmountOne sends ebs.unmount and returns any error.
-func (a *volumeMounterAdapter) unmountOne(ctx context.Context, accountID string, req viperblocklegacyv1.EBSRequest) error {
-	payload, err := json.Marshal(req)
-	if err != nil {
-		return fmt.Errorf("marshal unmount request: %w", err)
-	}
-	msg, err := ebsRequestWithTrace(ctx, a.nc, accountID, viperblocklegacyv1.UnmountSubject(a.node), payload, unmountSealTimeout)
-	if err != nil {
-		return fmt.Errorf("ebs.unmount NATS request: %w", err)
-	}
-	return unmountResponseError(msg.Data)
-}
-
-// unmountResponseError reports a seal/unmount failure from an ebs.unmount
-// response payload: a non-empty Error, or a volume still reported mounted.
-// Returns nil when the unmount and its block-map seal succeeded, or when the
-// volume was already unmounted and sealed (NotFound) — viperblockd only
-// reports NotFound once the seal itself has completed, so a retry landing
-// here is an idempotent success, not a failure.
-func unmountResponseError(data []byte) error {
-	var resp viperblocklegacyv1.EBSUnMountResponse
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return fmt.Errorf("unmarshal unmount response: %w", err)
-	}
-	if resp.NotFound {
-		return nil
-	}
-	if resp.Error != "" {
-		return fmt.Errorf("ebs.unmount returned error: %s", resp.Error)
-	}
-	if resp.Mounted {
-		return fmt.Errorf("volume still mounted after unmount")
-	}
 	return nil
 }
 
@@ -673,7 +677,7 @@ func (d *Daemon) buildVMManagerDeps() vm.Deps {
 	return vm.Deps{
 		NodeID:             d.node,
 		StateStore:         d.stateStore,
-		VolumeMounter:      newVolumeMounterAdapter(d.natsConn, d.node, d.volumeService),
+		VolumeMounter:      newVolumeMounterAdapter(d.ebsProvider, d.node, d.volumeService),
 		NetworkPlumber:     d.networkPlumber,
 		InstanceTypes:      newInstanceTypeResolverAdapter(d.resourceMgr),
 		Resources:          newResourceControllerAdapter(d.resourceMgr),

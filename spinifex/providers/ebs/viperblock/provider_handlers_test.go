@@ -154,7 +154,6 @@ func providerSubjectCases() []providerSubjectCase {
 			"node_id":    "test-node",
 			"volume_ids": []string{"vol-testunsealed01"},
 		}},
-		{"node_capabilities", "ebs.provider.v1.test-node.capabilities", map[string]any{}},
 	}
 }
 
@@ -1007,9 +1006,8 @@ func TestProviderHandlers_UnpublishVolume_RemovesMountedVolume(t *testing.T) {
 }
 
 // TestProviderHandlers_UnpublishVolume_AbsentIsIdempotent covers a volume this
-// node never mounted. The legacy path treats that as a successful seal (see
-// unmountResponseError), and so must this one: a retry after a request that
-// timed out client-side but completed server-side has to converge.
+// node never mounted, which counts as a successful seal: a retry after a
+// request that timed out client-side but completed server-side must converge.
 func TestProviderHandlers_UnpublishVolume_AbsentIsIdempotent(t *testing.T) {
 	_, natsURL := setupEmbeddedNATS(t)
 	cfg := setupTestConfig(t, natsURL)
@@ -1043,8 +1041,8 @@ func TestProviderHandlers_PublishUnpublish_RequireNodeName(t *testing.T) {
 	cfgNamed := setupTestConfig(t, natsURL2)
 	ncNamed := startProviderSubjects(t, cfgNamed, natsURL2)
 
-	assert.Equal(t, ncNamed.NumSubscriptions()-4, ncNoNode.NumSubscriptions(),
-		"an empty NodeName must skip exactly the publish, unpublish, unsealed-writes and node capabilities subscriptions")
+	assert.Equal(t, ncNamed.NumSubscriptions()-3, ncNoNode.NumSubscriptions(),
+		"an empty NodeName must skip exactly the publish, unpublish and unsealed-writes subscriptions")
 
 	// The other provider subjects must still work without a node name.
 	body := marshalRequest(t, map[string]any{"schema_version": ebsprovider.SchemaVersion})

@@ -13,6 +13,7 @@ import (
 
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/nats-io/nats.go"
@@ -676,36 +677,16 @@ func TestHandleShutdownDrain(t *testing.T) {
 	})
 }
 
-// stubEBSUnmount answers the daemon's ebs.<node>.unmount subject with a fixed
-// response, standing in for viperblockd. Returns the volumes it was asked to
-// unmount once the subscription has been drained.
-func stubEBSUnmount(t *testing.T, d *Daemon, resp viperblocklegacyv1.EBSUnMountResponse) func() []string {
+// stubEBSUnmount answers the daemon's unpublish subject, standing in for its
+// provider, with refusal when one is given. Returns the volumes it was asked
+// to unmount.
+func stubEBSUnmount(t *testing.T, d *Daemon, refusal *ebsprovider.ProviderError) func() []string {
 	t.Helper()
-	var (
-		mu      sync.Mutex
-		volumes []string
-	)
-	sub, err := d.natsConn.Subscribe("ebs."+d.node+".unmount", func(msg *nats.Msg) {
-		var req viperblocklegacyv1.EBSRequest
-		require.NoError(t, json.Unmarshal(msg.Data, &req))
-		mu.Lock()
-		volumes = append(volumes, req.Name)
-		mu.Unlock()
-		reply := resp
-		reply.Volume = req.Name
-		data, marshalErr := json.Marshal(reply)
-		require.NoError(t, marshalErr)
-		require.NoError(t, msg.Respond(data))
+	fake := serveFakeNodeProvider(t, d.natsConn, d.node)
+	fake.setUnpublish(func(string) ebsprovider.UnpublishVolumeResponse {
+		return ebsprovider.UnpublishVolumeResponse{Error: refusal}
 	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	require.NoError(t, d.natsConn.Flush())
-
-	return func() []string {
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]string(nil), volumes...)
-	}
+	return fake.unpublished
 }
 
 // drainRunningInstance is a guest in the state DRAIN finds it in: running, with
@@ -731,10 +712,8 @@ func TestHandleShutdownDrain_SealFailure(t *testing.T) {
 		require.NoError(t, daemon.jsManager.InitClusterStateBucket())
 		t.Cleanup(func() { _ = daemon.jsManager.DeleteShutdownMarker(daemon.node) })
 
-		unmounted := stubEBSUnmount(t, daemon, viperblocklegacyv1.EBSUnMountResponse{
-			Mounted: true,
-			Error:   "seal volume to predastore: transfer stalled: idle timeout",
-		})
+		unmounted := stubEBSUnmount(t, daemon, providerRefusal(ebsprovider.ErrorCodeInternal,
+			"seal volume to predastore: transfer stalled: idle timeout"))
 		daemon.vmMgr.Insert(drainRunningInstance("i-drain-seal-fail", "vol-drain-seal-fail"))
 
 		subject := "spinifex.cluster.shutdown.drain.sealfail"
@@ -770,7 +749,7 @@ func TestHandleShutdownDrain_SealFailure(t *testing.T) {
 		require.NoError(t, daemon.jsManager.InitClusterStateBucket())
 		t.Cleanup(func() { _ = daemon.jsManager.DeleteShutdownMarker(daemon.node) })
 
-		unmounted := stubEBSUnmount(t, daemon, viperblocklegacyv1.EBSUnMountResponse{})
+		unmounted := stubEBSUnmount(t, daemon, nil)
 		instance := drainRunningInstance("i-drain-seal-ok", "vol-drain-seal-ok")
 		daemon.vmMgr.Insert(instance)
 

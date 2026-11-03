@@ -149,16 +149,6 @@ func RegisterProviderSubjects(cfg *Config, nc *nats.Conn) error {
 		return fmt.Errorf("subscribe to %s: %w", unsealedSubject, err)
 	}
 
-	// The queue subject is answered by any node's provider; this one only by
-	// this node's, so a daemon can learn what its own provider serves.
-	nodeCapabilitiesSubject, err := ebsprovider.NodeCapabilitiesSubject(cfg.NodeName)
-	if err != nil {
-		return fmt.Errorf("build node capabilities subject: %w", err)
-	}
-	if _, err := nc.Subscribe(nodeCapabilitiesSubject, tracedProviderHandler(handleProviderCapabilities)); err != nil {
-		return fmt.Errorf("subscribe to %s: %w", nodeCapabilitiesSubject, err)
-	}
-
 	return nil
 }
 
@@ -1929,7 +1919,7 @@ func tearDownPublication(ctx context.Context, cfg *Config, req ebsprovider.Unpub
 	if err != nil {
 		// Nothing mounted here is already the state unpublish asks for, so a
 		// retry after a request that completed server-side converges rather
-		// than erroring, matching the legacy path's unmountResponseError.
+		// than erroring.
 		if unmountResp.NotFound {
 			return unmountResp.Reaped, nil
 		}

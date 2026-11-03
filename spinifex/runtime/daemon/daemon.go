@@ -941,6 +941,7 @@ func (d *Daemon) subscribeAll() error {
 		// volume held by an unreachable host has no other way out.
 		{"ec2.ForceDetachVolume", handleNATSRequest(d.node, d.volumeService.ForceDetachVolume), "spinifex-workers"},
 		{"ec2.DetachVolumeFromStopped", handleNATSRequest(d.node, d.instanceService.DetachVolumeFromStopped), "spinifex-workers"},
+		{"ec2.AttachVolumeToStopped", handleNATSRequest(d.node, d.instanceService.AttachVolumeToStopped), "spinifex-workers"},
 		{"ec2.DescribeVolumeStatus", handleNATSRequest(d.node, d.volumeService.DescribeVolumeStatus), "spinifex-workers"},
 		{"ec2.DescribeVolumesModifications", handleNATSRequest(d.node, d.volumeService.DescribeVolumesModifications), "spinifex-workers"},
 		{"ec2.CreateSnapshot", handleNATSRequest(d.node, d.snapshotService.CreateSnapshot), "spinifex-workers"},

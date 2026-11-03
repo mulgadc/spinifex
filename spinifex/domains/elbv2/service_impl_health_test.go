@@ -103,7 +103,7 @@ func TestRegisterTargets_UnknownInstanceFailsWholeCall(t *testing.T) {
 	require.NoError(t, err)
 	tgArn := tgOut.TargetGroups[0].TargetGroupArn
 
-	for _, ids := range [][]string{{"i-nonexistent"}, {"i-web001", "i-nonexistent"}} {
+	for _, ids := range [][]string{{"i-nonexistent"}, {"i-web001", "i-nonexistent"}, {"i-web00?"}} {
 		targets := make([]*elbv2.TargetDescription, 0, len(ids))
 		for _, id := range ids {
 			targets = append(targets, &elbv2.TargetDescription{Id: aws.String(id)})
@@ -115,7 +115,7 @@ func TestRegisterTargets_UnknownInstanceFailsWholeCall(t *testing.T) {
 		code, msg, ok := awserrors.ResolveErrorDetail(err)
 		require.True(t, ok, "ids %v: %v", ids, err)
 		assert.Equal(t, awserrors.ErrorValidationError, code)
-		assert.Equal(t, "The following targets are not valid instances: 'i-nonexistent'", msg)
+		assert.Equal(t, "The following targets are not valid instances: '"+ids[len(ids)-1]+"'", msg)
 
 		tg, err := svc.store.GetTargetGroupByArn(t.Context(), *tgArn)
 		require.NoError(t, err)

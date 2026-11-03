@@ -1246,7 +1246,9 @@ func (s *ELBv2ServiceImpl) resolveTargetIP(ctx context.Context, instanceID, acco
 		slog.ErrorContext(ctx, "RegisterTargets: ENI lookup failed", "instanceId", instanceID, "err", err)
 		return "", false, errors.New(awserrors.ErrorServerInternal)
 	}
-	if len(result.NetworkInterfaces) == 0 {
+	// The filter matches wildcards, so require the attachment to name this exact instance.
+	if len(result.NetworkInterfaces) == 0 || result.NetworkInterfaces[0].Attachment == nil ||
+		aws.StringValue(result.NetworkInterfaces[0].Attachment.InstanceId) != instanceID {
 		return "", false, nil
 	}
 	return aws.StringValue(result.NetworkInterfaces[0].PrivateIpAddress), true, nil

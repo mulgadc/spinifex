@@ -196,7 +196,7 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 	}
 
 	_, qemuSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.start_qemu")
-	qemuErr := m.startQEMU(instance, false)
+	qemuErr := m.startQEMU(instance)
 	endSpanWithError(qemuSpan, qemuErr)
 	if qemuErr != nil {
 		slog.ErrorContext(ctx, "Failed to launch instance", "err", qemuErr)
@@ -302,9 +302,9 @@ func qemuStderrLevel(line string) slog.Level {
 }
 
 // startQEMU launches the QEMU process for instance and waits for startup to
-// confirm. appendConsole keeps the console log of the process it replaces, so a
-// reboot does not erase what the guest printed before it.
-func (m *Manager) startQEMU(instance *VM, appendConsole bool) error {
+// confirm. The console log is opened in append mode, so a replacement process
+// keeps what the guest printed before it.
+func (m *Manager) startQEMU(instance *VM) error {
 	pidFile, err := hostprocess.GeneratePidFile(instance.ID)
 	if err != nil {
 		slog.Error("Failed to generate PID file", "err", err)
@@ -532,7 +532,6 @@ func (m *Manager) startQEMU(instance *VM, appendConsole bool) error {
 		}
 		launchCfg = &composed
 	}
-	launchCfg.ConsoleLogAppend = appendConsole
 
 	// An NBD export is waited on until it accepts connections; a block export
 	// is local to the host and only has to exist. An invalid request has no
@@ -635,13 +634,7 @@ func (m *Manager) startQEMU(instance *VM, appendConsole bool) error {
 			slog.Info("Replaced VM process exited", "instance", instance.ID, "pid", cmd.Process.Pid, "err", waitErr)
 			return
 		}
-		if waitErr != nil {
-			if m.deps.CrashHandler != nil {
-				m.deps.CrashHandler(instance, waitErr)
-			}
-		} else {
-			slog.Info("VM process exited cleanly", "instance", instance.ID)
-		}
+		m.HandleQEMUExit(instance, waitErr)
 	}()
 
 	pid := <-processChan
@@ -996,6 +989,7 @@ func (m *Manager) qmpHeartbeatPoll(instance *VM) bool {
 	if err == nil && qmpStatus.Status == qmpStatusShutdown &&
 		m.Status(instance) == StateRunning {
 		slog.InfoContext(ctx, "Guest powered itself off, ending QEMU", "instance", instance.ID)
+		instance.guestPoweroff.Store(true)
 		if _, quitErr := sendQMPCommand(ctx, instance.QMPClient,
 			qmp.QMPCommand{Execute: "quit"}, instance.ID); quitErr != nil {
 			slog.WarnContext(ctx, "QMP quit failed after guest shutdown",

@@ -70,8 +70,8 @@ const ltUserData = "#cloud-config\n" +
 func runLaunchTemplateBoot(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — launch-template-sourced fields on a booted guest")
 
-	instType, _ := needInstanceTypeArch(t, fix)
-	keyName, keyPath := needKeyPair(t, fix)
+	instType, _ := harness.DiscoverNanoInstanceType(t, fix.Harness)
+	keyName, keyPath := harness.EnsureKeyPair(t, fix.Harness)
 	amiID := needAMI(t, fix)
 	vpc := harness.EnsureDefaultVPC(t, fix.Harness)
 	require.NotEmpty(t, vpc.SGID, "default SG ID required")

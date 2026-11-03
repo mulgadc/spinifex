@@ -162,6 +162,35 @@ type streamRecordCtx struct {
 	inputText string
 }
 
+// record emits the stream's one InvocationRecord. The status is always 200:
+// the header is already committed by the time a pump runs.
+func (rc streamRecordCtx) record(ctx context.Context, src any, modelID, errCode string, partial bool, outputText string) {
+	recorder := rc.recorder
+	if recorder == nil {
+		recorder = NoopRecorder
+	}
+	inputTokens, outputTokens, estimated := int64(0), int64(0), true
+	if ur, ok := src.(usageReporter); ok {
+		inputTokens, outputTokens, estimated = ur.usage()
+	}
+	recorder.Record(ctx, InvocationRecord{
+		RequestID:      rc.requestID,
+		AccountID:      rc.accountID,
+		ModelID:        modelID,
+		Operation:      rc.operation,
+		Backend:        rc.backend,
+		LatencyMs:      time.Since(rc.start).Milliseconds(),
+		HTTPStatus:     http.StatusOK,
+		ErrorCode:      errCode,
+		InputTokens:    inputTokens,
+		OutputTokens:   outputTokens,
+		UsageEstimated: estimated,
+		Partial:        partial,
+		InputText:      rc.inputText,
+		OutputText:     outputText,
+	})
+}
+
 type noopRecorder struct{}
 
 func (noopRecorder) Record(context.Context, InvocationRecord) {}

@@ -1725,6 +1725,28 @@ func TestDeleteVolume_VolumeAttachedButAvailable(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorVolumeInUse, err.Error())
 }
 
+// A stopped instance keeps its volumes in use, so deleting one is refused
+// until it is detached; AWS answers the same.
+func TestDeleteVolume_VolumeHeldByStoppedInstanceIsRefused(t *testing.T) {
+	kv := setupTestVolumeKV(t)
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+	svc.snapshotKV = kv
+
+	createVolumeInStoreWithMeta(t, svc, store, "vol-held", ebsmetadata.Volume{
+		VolumeID:         "vol-held",
+		CapacityGiB:      10,
+		State:            "in-use",
+		AttachedInstance: "i-stopped",
+	})
+
+	_, err := svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
+		VolumeId: aws.String("vol-held"),
+	}, testVolAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorVolumeInUse, err.Error())
+}
+
 func TestDeleteVolume_EmptyStateUnattachedDeletable(t *testing.T) {
 	kv := setupTestVolumeKV(t)
 	store := objectstore.NewMemoryObjectStore()

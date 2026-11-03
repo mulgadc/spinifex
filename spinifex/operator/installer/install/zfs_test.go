@@ -215,45 +215,6 @@ func TestResolveZFSOptsKeepsOperatorChoices(t *testing.T) {
 	}
 }
 
-func TestParseImportablePools(t *testing.T) {
-	// Captured from `zpool import` on a machine with a pool from a previous
-	// install: the config tree below each header must not be mistaken for one.
-	const out = `   pool: rpool
-     id: 8543219876543210987
-  state: ONLINE
- action: The pool can be imported using its name or numeric identifier.
- config:
-
-	rpool                     ONLINE
-	  raidz1-0                ONLINE
-	    virtio-spinifex-disk1-part3  ONLINE
-	    virtio-spinifex-disk2-part3  ONLINE
-
-   pool: tank
-     id: 1111111111111111111
-  state: ONLINE
- config:
-
-	tank                      ONLINE
-`
-	got := parseImportablePools(out)
-	want := []string{"rpool", "tank"}
-	if len(got) != len(want) {
-		t.Fatalf("parseImportablePools() = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("pool %d = %q, want %q", i, got[i], want[i])
-		}
-	}
-}
-
-func TestParseImportablePoolsEmpty(t *testing.T) {
-	if got := parseImportablePools("no pools available to import\n"); len(got) != 0 {
-		t.Errorf("parseImportablePools() = %v, want none", got)
-	}
-}
-
 // Every dataset must be creatable in order: a child cannot be created before
 // its parent, and getting this wrong only shows up on real hardware.
 func TestDatasetsAreOrderedParentFirst(t *testing.T) {

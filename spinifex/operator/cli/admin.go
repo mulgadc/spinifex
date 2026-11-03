@@ -382,7 +382,6 @@ func init() {
 	adminInitCmd.Flags().String("az", "ap-southeast-2a", "Mulga AZ to create")
 	adminInitCmd.Flags().String("node", "node1", "Node name, increment for additional nodes (default, node1)")
 	adminInitCmd.Flags().Int("nodes", 3, "Number of nodes to expect for cluster (1, or 3 and up)")
-	adminInitCmd.Flags().String("host", "", "Leader node to join (if not specified, tries multicast discovery)")
 	adminInitCmd.Flags().Int("port", 4432, "Port to bind cluster services on")
 	adminInitCmd.Flags().String("bind", "0.0.0.0", "IP address to bind services to (e.g., 10.11.12.1 for multi-node). Default 0.0.0.0 listens on all interfaces.")
 	adminInitCmd.Flags().String("advertise", "", "External IP that off-host clients (ALB VMs, remote operators) should dial. Auto-detected from default route when empty.")

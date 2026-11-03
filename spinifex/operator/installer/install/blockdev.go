@@ -49,8 +49,7 @@ var (
 )
 
 // ListDisks enumerates install-candidate disks from /sys/block. It reads sysfs
-// and blkid only — pool detection is separate (ImportablePools) because it is
-// far slower and not every caller needs it.
+// and blkid only.
 func ListDisks() ([]Disk, error) {
 	entries, err := os.ReadDir(sysBlockDir)
 	if err != nil {
@@ -101,16 +100,6 @@ func (d Disk) SizeHuman() string {
 	default:
 		return fmt.Sprintf("%dB", d.Bytes)
 	}
-}
-
-// Stable returns the path to use when building a pool: the by-id path when one
-// exists, else the kernel name. Pools referencing /dev/sdX break when a
-// controller enumerates disks in a different order after a reboot.
-func (d Disk) Stable() string {
-	if d.ByID != "" {
-		return d.ByID
-	}
-	return d.Path
 }
 
 // PartitionPath returns the device path for partition n of this disk. NVMe and

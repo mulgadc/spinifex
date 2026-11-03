@@ -78,18 +78,6 @@ func LsblkRootGiB(t *testing.T, tgt SSHTarget) int {
 	return int(bytesN / (1 << 30))
 }
 
-// GetSerialConsoleAccessEnabled returns the current account attribute value.
-// Wraps ec2.GetSerialConsoleAccessStatus so callers don't have to deal with
-// the pointer-bool field.
-func GetSerialConsoleAccessEnabled(t *testing.T, c *AWSClient) bool {
-	t.Helper()
-	out, err := c.EC2.GetSerialConsoleAccessStatus(&ec2.GetSerialConsoleAccessStatusInput{})
-	if err != nil {
-		t.Fatalf("GetSerialConsoleAccessStatus: %v", err)
-	}
-	return aws.BoolValue(out.SerialConsoleAccessEnabled)
-}
-
 // EnableSerialConsoleAccess flips the account attribute on and returns the
 // new value (should be true).
 func EnableSerialConsoleAccess(t *testing.T, c *AWSClient) bool {

@@ -121,27 +121,6 @@ func WaitForDBInstanceGone(t *testing.T, c *AWSClient, id string, opts ...PollOp
 	t.Logf("DB instance %s is gone", id)
 }
 
-// WaitForDBSnapshotAvailable polls until the snapshot reports available, which
-// is the point the data exists and a restore will accept it.
-func WaitForDBSnapshotAvailable(t *testing.T, c *AWSClient, id string, opts ...PollOpt) *rds.DBSnapshot {
-	t.Helper()
-	cfg := applyOpts(pollCfg{timeout: 10 * time.Minute, interval: 5 * time.Second}, opts...)
-	var last *rds.DBSnapshot
-	EventuallyErr(t, func() error {
-		snapshot, err := DescribeDBSnapshot(c, id)
-		if err != nil {
-			return fmt.Errorf("describe-db-snapshots %s: %w", id, err)
-		}
-		last = snapshot
-		if status := aws.StringValue(snapshot.Status); status != DBSnapshotAvailable {
-			return fmt.Errorf("%s status=%s want=%s", id, status, DBSnapshotAvailable)
-		}
-		return nil
-	}, cfg.timeout, cfg.interval)
-	t.Logf("DB snapshot %s reached status %s", id, DBSnapshotAvailable)
-	return last
-}
-
 // DescribeDBInstance returns the single named DB instance. A named instance that
 // does not exist is an error from the API, not an empty list.
 func DescribeDBInstance(c *AWSClient, id string) (*rds.DBInstance, error) {

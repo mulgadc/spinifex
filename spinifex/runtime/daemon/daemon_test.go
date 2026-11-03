@@ -3376,13 +3376,12 @@ func (r *recordingVolState) accountsSnapshot() []string {
 
 var _ vm.VolumeStateUpdater = (*recordingVolState)(nil)
 
-// TestVolumeMounterAdapter_Unmount_SealFailureSkipsAvailable verifies the
-// teardown-path durability gate: a per-volume seal failure during the bulk
-// Unmount (stop/terminate) must NOT transition that volume to available — a
-// reattach on a WAL-less node would find no checkpoint (bad superblock) — while
-// other volumes still seal and the loop completes. The failure is returned, not
-// swallowed: the caller decides whether losing that seal is survivable.
-func TestVolumeMounterAdapter_Unmount_SealFailureSkipsAvailable(t *testing.T) {
+// TestVolumeMounterAdapter_Unmount_SealFailureIsReportedAndWritesNoVolumeState
+// verifies that a per-volume seal failure during the bulk Unmount (stop/crash)
+// is returned, naming the volume, while the other volumes still seal and the
+// loop completes. Unmount only seals: it never writes volume state, so every
+// volume stays attached to the stopped instance.
+func TestVolumeMounterAdapter_Unmount_SealFailureIsReportedAndWritesNoVolumeState(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
 	volState := &recordingVolState{}
 	adapter := newNATSMounter(daemon.natsConn, daemon.node, volState)
@@ -3404,18 +3403,15 @@ func TestVolumeMounterAdapter_Unmount_SealFailureSkipsAvailable(t *testing.T) {
 	require.Error(t, err, "bulk Unmount must report a per-volume seal failure")
 	assert.Contains(t, err.Error(), "vol-fail", "the error must name the volume that did not seal")
 
-	calls := volState.snapshot()
-	assert.NotContains(t, calls, "vol-fail:available",
-		"a failed seal must not transition the volume to available")
-	assert.Contains(t, calls, "vol-ok:available",
-		"a successful seal must still transition the volume to available")
+	assert.Empty(t, volState.snapshot(),
+		"Unmount seals only; neither the failed nor the sealed volume changes state")
 }
 
-// TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable verifies that an
-// unpublish answered not_found, which means the provider holds no export of
-// the volume, still flips a non-boot data volume to available, while the
-// boot/EFI gate stays intact.
-func TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable(t *testing.T) {
+// TestVolumeMounterAdapter_Unmount_NotFoundIsASealedOutcomeAndWritesNoVolumeState
+// verifies that an unpublish answered not_found, which means the provider holds
+// no export of the volume, is not an error and, like every Unmount outcome,
+// writes no volume state.
+func TestVolumeMounterAdapter_Unmount_NotFoundIsASealedOutcomeAndWritesNoVolumeState(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
 	volState := &recordingVolState{}
 	adapter := newNATSMounter(daemon.natsConn, daemon.node, volState)
@@ -3438,13 +3434,9 @@ func TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable(t *testing.T) {
 	require.NoError(t, adapter.UnmountOne(t.Context(), "000000000042", viperblocklegacyv1.EBSRequest{Name: "vol-data-retry"}),
 		"a hot detach of a volume the provider no longer holds is already done")
 
-	calls := volState.snapshot()
-	assert.Contains(t, calls, "vol-data-retry:available",
-		"a not_found unpublish must still flip a non-boot data volume to available")
-	assert.NotContains(t, calls, "vol-boot-retry:available",
-		"a boot volume must stay attached even when the unpublish reports not_found")
-	assert.Equal(t, []string{"000000000042"}, volState.accountsSnapshot(),
-		"the state write must be keyed on the instance's own account, not its ID")
+	assert.Empty(t, volState.snapshot(),
+		"a not_found unpublish must not change any volume's state")
+	assert.Empty(t, volState.accountsSnapshot(), "no state write means no account-keyed write")
 }
 
 // TestVolumeMounterAdapter_Mount_PartialFailureRollback verifies that when

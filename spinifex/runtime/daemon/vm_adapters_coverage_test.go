@@ -223,7 +223,7 @@ func TestVolumeMounterAdapter_Unmount_Errors(t *testing.T) {
 		assert.Empty(t, volState.updated, "an unsealed volume must not go available")
 	})
 
-	t.Run("state update failure does not fail the unmount", func(t *testing.T) {
+	t.Run("a sealed unmount writes no volume state", func(t *testing.T) {
 		node := uniqueAdapterID("node-unmount")
 		serveFakeNodeProvider(t, nc, node)
 		volState := &recordingVolumeState{err: errInjected}
@@ -232,7 +232,7 @@ func TestVolumeMounterAdapter_Unmount_Errors(t *testing.T) {
 		instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-a"}}
 
 		require.NoError(t, adapter.Unmount(t.Context(), instance))
-		assert.Equal(t, []string{"vol-a=available"}, volState.updated)
+		assert.Empty(t, volState.updated, "a stopped instance keeps its volumes attached")
 	})
 }
 

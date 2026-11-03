@@ -2530,7 +2530,7 @@ func (s *InstanceServiceImpl) startLocalRecord(ctx context.Context, local *vm.VM
 	if !IsInstanceVisible(accountID, local.AccountID) {
 		slog.WarnContext(ctx, "StartStoppedInstance: instance not visible",
 			"instanceId", local.ID, "callerAccount", accountID, "ownerAccount", local.AccountID)
-		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidInstanceIDNotFound, "instance", local.ID)
 	}
 
 	status := s.vmMgr.Status(local)
@@ -2544,7 +2544,7 @@ func (s *InstanceServiceImpl) startLocalRecord(ctx context.Context, local *vm.VM
 		return &StartStoppedInstanceOutput{Status: "running", InstanceID: local.ID}, nil
 	case vm.StateTerminated:
 		slog.WarnContext(ctx, "StartStoppedInstance: local record is terminated", "instanceId", local.ID)
-		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidInstanceIDNotFound, "instance", local.ID)
 	default:
 		slog.WarnContext(ctx, "StartStoppedInstance: instance already being started locally",
 			"instanceId", local.ID, "status", string(status))
@@ -2584,7 +2584,7 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 			return s.startLocalRecord(ctx, local, accountID)
 		}
 		slog.WarnContext(ctx, "StartStoppedInstance: instance not found in shared KV", "instanceId", input.InstanceID)
-		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidInstanceIDNotFound, "instance", input.InstanceID)
 	}
 	if instance.Status != vm.StateStopped {
 		slog.ErrorContext(ctx, "StartStoppedInstance: instance not in stopped state", "instanceId", input.InstanceID, "status", instance.Status)
@@ -2593,7 +2593,7 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 	if !IsInstanceVisible(accountID, instance.AccountID) {
 		slog.WarnContext(ctx, "StartStoppedInstance: instance not visible",
 			"instanceId", input.InstanceID, "callerAccount", accountID, "ownerAccount", instance.AccountID)
-		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidInstanceIDNotFound, "instance", input.InstanceID)
 	}
 
 	// Atomic claim: at most one caller across the cluster can win this race

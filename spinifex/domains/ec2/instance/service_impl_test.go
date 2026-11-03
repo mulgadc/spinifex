@@ -2424,7 +2424,7 @@ func TestStartStoppedInstance_NotFound(t *testing.T) {
 	}
 	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: "i-missing"}, "acc")
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.EqualError(t, err, "The instance ID 'i-missing' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 }
 
 // TestStartStoppedInstance_NotFoundButRunningLocally covers the local-race
@@ -2526,7 +2526,7 @@ func TestStartStoppedInstance_LocalTerminatedRecordIsNotFound(t *testing.T) {
 	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
 
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.EqualError(t, err, "The instance ID 'i-gone' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 }
 
 // TestStartStoppedInstance_LocalRecordOfAnotherAccount holds the visibility
@@ -2546,7 +2546,7 @@ func TestStartStoppedInstance_LocalRecordOfAnotherAccount(t *testing.T) {
 	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "other-acc")
 
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.EqualError(t, err, "The instance ID 'i-someone-elses' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 }
 
 func TestStartStoppedInstance_NotStopped(t *testing.T) {
@@ -2576,7 +2576,7 @@ func TestStartStoppedInstance_NotVisible(t *testing.T) {
 	}
 	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "other-acc")
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.EqualError(t, err, "The instance ID 'i-foreign' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 
 	// Cross-tenant rejection must not delete from KV.
 	assert.Empty(t, store.DeletedStopped, "cross-tenant rejection must not delete stopped instance")
@@ -2771,7 +2771,7 @@ func TestStartStoppedInstance_ConcurrentClaimRace(t *testing.T) {
 	var conflicted, winnerFailed int
 	for _, err := range errs {
 		require.Error(t, err, "vmMgr.Run is wired to fail fast — no caller should succeed end-to-end")
-		switch err.Error() {
+		switch code, _ := awserrors.ResolveErrorCode(err); code {
 		case awserrors.ErrorIncorrectInstanceState, awserrors.ErrorInvalidInstanceIDNotFound:
 			conflicted++
 		case awserrors.ErrorServerInternal:

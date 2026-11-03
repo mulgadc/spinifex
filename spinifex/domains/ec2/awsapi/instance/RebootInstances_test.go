@@ -88,7 +88,7 @@ func TestRebootInstances_NeverExistedIsNotFound(t *testing.T) {
 
 	_, err := RebootInstances(context.Background(), input, nc, "123456789012")
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.EqualError(t, err, "The instance ID 'i-d2d5fe795b6b57882' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 }
 
 func TestRebootInstances_BucketsUnreachableIsServerError(t *testing.T) {

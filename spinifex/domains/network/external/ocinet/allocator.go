@@ -27,12 +27,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"net/netip"
 	"sync"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/backoff"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/providers/cloud/oci"
@@ -203,7 +203,7 @@ func New(client oci.Client, store Store, cfg Config) (*PoolAllocator, error) {
 		a.budget = assignBudget
 	}
 	if a.sleep == nil {
-		a.sleep = sleepCtx
+		a.sleep = backoff.Sleep
 	}
 	if a.now == nil {
 		a.now = time.Now
@@ -410,7 +410,7 @@ func (a *PoolAllocator) waitAssigned(ctx context.Context, pub oci.PublicIP) (oci
 	deadline := time.Now().Add(a.budget)
 	for i := 0; ; i++ {
 		wait := a.schedule[min(i, len(a.schedule)-1)]
-		if j := jitter(assignJitter); wait+j > 0 {
+		if j := backoff.Jitter(assignJitter); wait+j > 0 {
 			wait += j
 		}
 		if time.Now().Add(wait).After(deadline) {
@@ -499,28 +499,5 @@ func displayName(req external.AllocateRequest) string {
 		return DisplayNamePrefix + req.InstanceID
 	default:
 		return DisplayNamePrefix + "unclaimed"
-	}
-}
-
-func jitter(span time.Duration) time.Duration {
-	if span <= 0 {
-		return 0
-	}
-	// Spreading the poll ladder, not generating a secret: math/rand is the
-	// right tool and crypto/rand would be cargo cult here.
-	return time.Duration(rand.Int64N(int64(2*span))) - span //nolint:gosec // jitter, not a secret
-}
-
-func sleepCtx(ctx context.Context, d time.Duration) error {
-	if d <= 0 {
-		return nil
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
 	}
 }

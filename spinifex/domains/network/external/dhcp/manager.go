@@ -6,12 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"net"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external/backoff"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 
 	"github.com/nats-io/nats.go"
@@ -395,7 +395,7 @@ func (m *Manager) run(ctx context.Context, self *leaseLoop, e Entry, reaffirm bo
 					return
 				}
 				slog.Warn("dhcp manager: re-DORA after expiry failed; backing off", "client_id", e.Lease.ClientID, "err", err)
-				if !sleepWithCtx(ctx, postExpiryBackoff) {
+				if backoff.Sleep(ctx, postExpiryBackoff) != nil {
 					return
 				}
 			}
@@ -515,7 +515,7 @@ func (m *Manager) acquireWithBackoff(ctx context.Context, purpose string, req Ac
 		if remaining <= 0 {
 			break
 		}
-		attempt := base + jitter(acquireAttemptJitter)
+		attempt := base + backoff.Jitter(acquireAttemptJitter)
 		if attempt <= 0 {
 			attempt = base
 		}
@@ -882,38 +882,12 @@ func decodeHWAddr(s string) (net.HardwareAddr, error) {
 func sleepUntil(ctx context.Context, now func() time.Time, deadline time.Time) bool {
 	d := deadline.Sub(now())
 	if d > 0 {
-		d += jitter(renewJitter)
+		d += backoff.Jitter(renewJitter)
 		if d < 0 {
 			d = 0
 		}
 	} else {
 		d = 0
 	}
-	return sleepWithCtx(ctx, d)
-}
-
-func sleepWithCtx(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		select {
-		case <-ctx.Done():
-			return false
-		default:
-			return true
-		}
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
-	}
-}
-
-func jitter(span time.Duration) time.Duration {
-	if span <= 0 {
-		return 0
-	}
-	return time.Duration(rand.Int64N(int64(span*2))) - span //nolint:gosec // jitter, not cryptographic
+	return backoff.Sleep(ctx, d) == nil
 }

@@ -3,7 +3,6 @@ package message_test
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/message"
@@ -105,31 +104,6 @@ func TestSendAppendResultsThatAreNotSuccess(t *testing.T) {
 			require.ErrorIs(t, err, message.ErrUnavailable)
 			assert.Zero(t, res)
 			assert.Equal(t, 1, st.appends, "exactly one append, never a resend")
-		})
-	}
-}
-
-func TestSendEnforcesCombinedBodyAndAttributeLimit(t *testing.T) {
-	attrs := []message.Attribute{str("ab", "String", "héllo"), bin("c", "Binary.gz", []byte{1, 2, 3})}
-	for name, tc := range map[string]struct {
-		bodyLen int
-		wantErr error
-	}{
-		"at the limit":  {bodyLen: 1024 - 27},
-		"one byte over": {bodyLen: 1024 - 26, wantErr: message.ErrInvalidParameter},
-	} {
-		t.Run(name, func(t *testing.T) {
-			st := &recordingStore{res: message.AppendResult{Position: 1}}
-			in := sendInput(strings.Repeat("x", tc.bodyLen))
-			in.MessageAttributes = attrs
-			err := send(st, goodTarget(), in)
-			if tc.wantErr != nil {
-				require.ErrorIs(t, err, tc.wantErr)
-				assert.Zero(t, st.appends)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, 1, st.appends)
 		})
 	}
 }

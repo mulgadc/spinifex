@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -225,11 +226,18 @@ func (s *Service) CreateCluster(ctx context.Context, input *ecs.CreateClusterInp
 			return nil, err
 		}
 	}
-	return &ecs.CreateClusterOutput{Cluster: rec.toAWS()}, nil
+	c := rec.toAWS()
+	if found {
+		if _, err := s.applyClusterCounts(ctx, kv, name, c); err != nil {
+			return nil, err
+		}
+	}
+	return &ecs.CreateClusterOutput{Cluster: c}, nil
 }
 
 // DescribeClusters returns meta for the named clusters; unknown names surface
-// as MISSING failures. Settings are only returned under Include=SETTINGS.
+// as MISSING failures. Settings, tags, statistics and attachments are only
+// filled under the matching Include value.
 func (s *Service) DescribeClusters(ctx context.Context, input *ecs.DescribeClustersInput, accountID string) (*ecs.DescribeClustersOutput, error) {
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
@@ -239,7 +247,7 @@ func (s *Service) DescribeClusters(ctx context.Context, input *ecs.DescribeClust
 	if len(names) == 0 {
 		names = []string{defaultCluster}
 	}
-	includeSettings := slices.Contains(awsStringSlice(input.Include), ecs.ClusterFieldSettings)
+	include := awsStringSlice(input.Include)
 	out := &ecs.DescribeClustersOutput{Clusters: []*ecs.Cluster{}, Failures: []*ecs.Failure{}}
 	for _, name := range names {
 		name = ClusterShortName(name)
@@ -253,55 +261,99 @@ func (s *Service) DescribeClusters(ctx context.Context, input *ecs.DescribeClust
 			continue
 		}
 		c := rec.toAWS()
-		if !includeSettings {
+		if !slices.Contains(include, ecs.ClusterFieldSettings) {
 			c.Settings = nil
 		}
-		if err := s.applyClusterCounts(ctx, kv, name, c); err != nil {
+		if !slices.Contains(include, ecs.ClusterFieldTags) {
+			c.Tags = []*ecs.Tag{}
+		}
+		if slices.Contains(include, ecs.ClusterFieldAttachments) {
+			c.Attachments = []*ecs.Attachment{}
+		}
+		counts, err := s.applyClusterCounts(ctx, kv, name, c)
+		if err != nil {
 			return nil, err
+		}
+		if slices.Contains(include, ecs.ClusterFieldStatistics) {
+			c.Statistics = counts.statistics()
 		}
 		out.Clusters = append(out.Clusters, c)
 	}
 	return out, nil
 }
 
+// clusterCounts are a cluster's tallies, all EC2 launch type.
+type clusterCounts struct {
+	running, pending, activeServices int64
+}
+
+// statistics renders the Include=STATISTICS pairs in the order AWS returns
+// them; Spinifex runs no Fargate, External or ManagedInstances work.
+func (c clusterCounts) statistics() []*ecs.KeyValuePair {
+	pairs := []struct {
+		name  string
+		value int64
+	}{
+		{"runningEC2TasksCount", c.running},
+		{"runningFargateTasksCount", 0},
+		{"pendingEC2TasksCount", c.pending},
+		{"pendingFargateTasksCount", 0},
+		{"runningExternalTasksCount", 0},
+		{"pendingExternalTasksCount", 0},
+		{"runningManagedInstancesTasksCount", 0},
+		{"pendingManagedInstancesTasksCount", 0},
+		{"activeEC2ServiceCount", c.activeServices},
+		{"activeFargateServiceCount", 0},
+		{"drainingEC2ServiceCount", 0},
+		{"drainingFargateServiceCount", 0},
+		{"activeExternalServiceCount", 0},
+		{"drainingExternalServiceCount", 0},
+		{"activeManagedInstancesServiceCount", 0},
+		{"drainingManagedInstancesServiceCount", 0},
+	}
+	out := make([]*ecs.KeyValuePair, 0, len(pairs))
+	for _, p := range pairs {
+		out = append(out, &ecs.KeyValuePair{Name: aws.String(p.name), Value: aws.String(strconv.FormatInt(p.value, 10))})
+	}
+	return out
+}
+
 // applyClusterCounts fills the four count fields AWS always returns on a
-// cluster, tallied at read time from the existing listers. The separate
-// Statistics key/value list, which Include=STATISTICS adds, stays unset.
-func (s *Service) applyClusterCounts(ctx context.Context, kv jetstream.KeyValue, cluster string, c *ecs.Cluster) error {
+// cluster, tallied at read time from the existing listers.
+func (s *Service) applyClusterCounts(ctx context.Context, kv jetstream.KeyValue, cluster string, c *ecs.Cluster) (clusterCounts, error) {
+	var counts clusterCounts
 	instances, err := s.listInstanceRecords(ctx, kv, cluster)
 	if err != nil {
-		return err
+		return counts, err
 	}
 	c.RegisteredContainerInstancesCount = aws.Int64(int64(len(instances)))
 
 	tasks, err := s.listTaskRecords(ctx, kv, cluster)
 	if err != nil {
-		return err
+		return counts, err
 	}
-	var running, pending int64
 	for i := range tasks {
 		switch tasks[i].LastStatus {
 		case TaskStatusRunning:
-			running++
+			counts.running++
 		case TaskStatusPending:
-			pending++
+			counts.pending++
 		}
 	}
-	c.RunningTasksCount = aws.Int64(running)
-	c.PendingTasksCount = aws.Int64(pending)
+	c.RunningTasksCount = aws.Int64(counts.running)
+	c.PendingTasksCount = aws.Int64(counts.pending)
 
 	services, err := s.listServiceRecords(ctx, kv, cluster)
 	if err != nil {
-		return err
+		return counts, err
 	}
-	var active int64
 	for i := range services {
 		if services[i].Status == ServiceStatusActive {
-			active++
+			counts.activeServices++
 		}
 	}
-	c.ActiveServicesCount = aws.Int64(active)
-	return nil
+	c.ActiveServicesCount = aws.Int64(counts.activeServices)
+	return counts, nil
 }
 
 // ListClusters returns the ARNs of all clusters in the account.
@@ -331,15 +383,24 @@ func (s *Service) ListClusters(ctx context.Context, _ *ecs.ListClustersInput, ac
 	return &ecs.ListClustersOutput{ClusterArns: aws.StringSlice(arns)}, nil
 }
 
+// toAWS renders the stored cluster with the counts zeroed and every list AWS
+// always returns present, so an empty one marshals as [] rather than vanishing.
 func (r *ClusterRecord) toAWS() *ecs.Cluster {
 	c := &ecs.Cluster{
-		ClusterName: aws.String(r.Name),
-		ClusterArn:  aws.String(r.ARN),
-		Status:      aws.String(r.Status),
-		Tags:        tagsToAWS(r.Tags),
+		ClusterName:                       aws.String(r.Name),
+		ClusterArn:                        aws.String(r.ARN),
+		Status:                            aws.String(r.Status),
+		Tags:                              tagsToAWS(r.Tags),
+		RegisteredContainerInstancesCount: aws.Int64(0),
+		RunningTasksCount:                 aws.Int64(0),
+		PendingTasksCount:                 aws.Int64(0),
+		ActiveServicesCount:               aws.Int64(0),
+		Statistics:                        []*ecs.KeyValuePair{},
+		CapacityProviders:                 aws.StringSlice(r.CapacityProviders),
+		DefaultCapacityProviderStrategy:   make([]*ecs.CapacityProviderStrategyItem, 0, len(r.DefaultCapacityProviderStrategy)),
 	}
-	if len(r.CapacityProviders) > 0 {
-		c.CapacityProviders = aws.StringSlice(r.CapacityProviders)
+	if c.Tags == nil {
+		c.Tags = []*ecs.Tag{}
 	}
 	for _, item := range r.DefaultCapacityProviderStrategy {
 		c.DefaultCapacityProviderStrategy = append(c.DefaultCapacityProviderStrategy, item.toAWS())

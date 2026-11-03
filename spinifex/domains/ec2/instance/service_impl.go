@@ -1964,6 +1964,10 @@ var DescribeInstancesValidFilters = map[string]bool{
 	"subnet-id":           true,
 	"tag-key":             true,
 	"tag-value":           true,
+	"private-ip-address":  true,
+
+	"network-interface.private-ip-address":           true,
+	"network-interface.addresses.private-ip-address": true,
 }
 
 // DescribeInstanceStatusValidFilters lists the filter names accepted by
@@ -2020,6 +2024,13 @@ func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]
 			if ic.SubnetId != nil {
 				field = *ic.SubnetId
 			}
+		case "private-ip-address":
+			field = aws.StringValue(ic.PrivateIpAddress)
+		case "network-interface.private-ip-address", "network-interface.addresses.private-ip-address":
+			if !matchNICPrivateIP(ic.NetworkInterfaces, values, name == "network-interface.addresses.private-ip-address") {
+				return false
+			}
+			continue
 		case "tag-key":
 			if !matchTagKey(ic.Tags, values) {
 				return false
@@ -2044,6 +2055,22 @@ func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]
 	// Check tag:Key filters via the instance's Tag slice.
 	tags := awsfilters.EC2TagsToMap(ic.Tags)
 	return awsfilters.MatchesTags(filters, tags)
+}
+
+// matchNICPrivateIP reports whether any interface's primary private IPv4
+// address, or with secondary set any address it carries, matches the values.
+func matchNICPrivateIP(nics []*ec2.InstanceNetworkInterface, values []string, secondary bool) bool {
+	return slices.ContainsFunc(nics, func(nic *ec2.InstanceNetworkInterface) bool {
+		if nic == nil {
+			return false
+		}
+		if nic.PrivateIpAddress != nil && awsfilters.MatchesAny(values, *nic.PrivateIpAddress) {
+			return true
+		}
+		return secondary && slices.ContainsFunc(nic.PrivateIpAddresses, func(a *ec2.InstancePrivateIpAddress) bool {
+			return a != nil && a.PrivateIpAddress != nil && awsfilters.MatchesAny(values, *a.PrivateIpAddress)
+		})
+	})
 }
 
 // matchTagKey returns true if any tag key on the resource matches any of the filter values.

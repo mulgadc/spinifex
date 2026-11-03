@@ -42,7 +42,7 @@ func helperCmd(mode string) *exec.Cmd {
 // fakeDaemon runs one attempt whose VM never exits and prints the VM's PID.
 func fakeDaemon() int {
 	vm := helperCmd("hang")
-	_, _ = Run(context.Background(), vm, time.Hour, func(ctx context.Context) error {
+	_, _ = Run(context.Background(), vm, time.Hour, func(ctx context.Context, _ int) error {
 		fmt.Println(vm.Process.Pid)
 		<-ctx.Done()
 		return nil
@@ -76,7 +76,7 @@ func exitedWithin(t *testing.T, fd int, d time.Duration) bool {
 func TestRun_DeadlineKillsAndReapsTheVM(t *testing.T) {
 	vm := helperCmd("hang")
 	sawDeadline := false
-	out, err := Run(t.Context(), vm, 200*time.Millisecond, func(ctx context.Context) error {
+	out, err := Run(t.Context(), vm, 200*time.Millisecond, func(ctx context.Context, _ int) error {
 		<-ctx.Done()
 		sawDeadline = errors.Is(ctx.Err(), context.DeadlineExceeded)
 		return nil
@@ -90,7 +90,7 @@ func TestRun_DeadlineKillsAndReapsTheVM(t *testing.T) {
 
 func TestRun_SessionEndStopsTheVM(t *testing.T) {
 	vm := helperCmd("hang")
-	out, err := Run(t.Context(), vm, time.Minute, func(context.Context) error { return nil })
+	out, err := Run(t.Context(), vm, time.Minute, func(context.Context, int) error { return nil })
 	require.NoError(t, err)
 	assert.False(t, out.TimedOut)
 	assert.True(t, out.Stopped)
@@ -100,7 +100,7 @@ func TestRun_SessionEndStopsTheVM(t *testing.T) {
 func TestRun_SessionErrorIsReturnedAfterTheStop(t *testing.T) {
 	boom := errors.New("guest refused")
 	vm := helperCmd("hang")
-	out, err := Run(t.Context(), vm, time.Minute, func(context.Context) error { return boom })
+	out, err := Run(t.Context(), vm, time.Minute, func(context.Context, int) error { return boom })
 	require.ErrorIs(t, err, boom)
 	assert.True(t, out.Stopped)
 	require.NotNil(t, vm.ProcessState)
@@ -108,7 +108,7 @@ func TestRun_SessionErrorIsReturnedAfterTheStop(t *testing.T) {
 
 func TestRun_VMExitBeforeAResultIsAFailure(t *testing.T) {
 	vm := helperCmd("exit")
-	out, err := Run(t.Context(), vm, time.Minute, func(ctx context.Context) error {
+	out, err := Run(t.Context(), vm, time.Minute, func(ctx context.Context, _ int) error {
 		<-ctx.Done()
 		return nil
 	})
@@ -120,7 +120,7 @@ func TestRun_VMExitBeforeAResultIsAFailure(t *testing.T) {
 func TestRun_CallerCancelIsNotATimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	vm := helperCmd("hang")
-	out, err := Run(ctx, vm, time.Minute, func(ctx context.Context) error {
+	out, err := Run(ctx, vm, time.Minute, func(ctx context.Context, _ int) error {
 		cancel()
 		<-ctx.Done()
 		return nil
@@ -132,7 +132,7 @@ func TestRun_CallerCancelIsNotATimeout(t *testing.T) {
 
 func TestRun_StartFailureNeverRunsTheSession(t *testing.T) {
 	called := false
-	out, err := Run(t.Context(), exec.Command("/nonexistent/qemu"), time.Minute, func(context.Context) error {
+	out, err := Run(t.Context(), exec.Command("/nonexistent/qemu"), time.Minute, func(context.Context, int) error {
 		called = true
 		return nil
 	})
@@ -144,7 +144,7 @@ func TestRun_StartFailureNeverRunsTheSession(t *testing.T) {
 func TestRun_SetsTheParentDeathSignal(t *testing.T) {
 	vm := helperCmd("hang")
 	vm.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	_, err := Run(t.Context(), vm, time.Minute, func(context.Context) error { return nil })
+	_, err := Run(t.Context(), vm, time.Minute, func(context.Context, int) error { return nil })
 	require.NoError(t, err)
 	assert.Equal(t, syscall.SIGKILL, vm.SysProcAttr.Pdeathsig)
 	require.NotNil(t, vm.SysProcAttr.PidFD, "the VM is signalled only through its pidfd")
@@ -183,7 +183,7 @@ func TestRun_DaemonDeathKillsTheVM(t *testing.T) {
 func TestRun_ResultAfterTheDeadlineIsATimeout(t *testing.T) {
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 	vm := helperCmd("hang")
-	out, err := Run(t.Context(), vm, time.Millisecond, func(context.Context) error {
+	out, err := Run(t.Context(), vm, time.Millisecond, func(context.Context, int) error {
 		for start := time.Now(); time.Since(start) < 5*time.Millisecond; {
 		}
 		return nil
@@ -197,7 +197,7 @@ func TestRun_FailedWaitLeavesTheStopUnproven(t *testing.T) {
 	waitVM = func(*exec.Cmd) error { return errors.New("wait failed") }
 	t.Cleanup(func() { waitVM = (*exec.Cmd).Wait })
 	vm := helperCmd("hang")
-	out, err := Run(t.Context(), vm, time.Minute, func(context.Context) error { return nil })
+	out, err := Run(t.Context(), vm, time.Minute, func(context.Context, int) error { return nil })
 	require.ErrorIs(t, err, ErrStopUnproven)
 	assert.False(t, out.Stopped)
 	select {
@@ -233,7 +233,7 @@ func TestRun_ResultRacingACallerCancelIsNotASuccess(t *testing.T) {
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 	ctx := &cancelOnly{Context: t.Context(), done: make(chan struct{})}
 	vm := helperCmd("hang")
-	out, err := Run(ctx, vm, time.Minute, func(context.Context) error {
+	out, err := Run(ctx, vm, time.Minute, func(context.Context, int) error {
 		close(ctx.done)
 		return nil
 	})
@@ -248,7 +248,7 @@ func TestRun_RefusesToLaunchWithoutPidfds(t *testing.T) {
 	t.Cleanup(func() { pidfdSupported = orig })
 	called := false
 	vm := helperCmd("hang")
-	out, err := Run(t.Context(), vm, time.Minute, func(context.Context) error {
+	out, err := Run(t.Context(), vm, time.Minute, func(context.Context, int) error {
 		called = true
 		return nil
 	})
@@ -263,7 +263,7 @@ func TestRun_CancelledBeforeLaunchStartsNothing(t *testing.T) {
 	cancel()
 	called := false
 	vm := helperCmd("hang")
-	out, err := Run(ctx, vm, time.Minute, func(context.Context) error {
+	out, err := Run(ctx, vm, time.Minute, func(context.Context, int) error {
 		called = true
 		return nil
 	})
@@ -294,7 +294,7 @@ func TestRun_CancelledDuringStartStopsTheVMWithoutASession(t *testing.T) {
 	ctx := &cancelOnStart{Context: inner, cancel: cancel}
 	called := false
 	vm := helperCmd("hang")
-	out, err := Run(ctx, vm, time.Minute, func(context.Context) error {
+	out, err := Run(ctx, vm, time.Minute, func(context.Context, int) error {
 		called = true
 		return nil
 	})

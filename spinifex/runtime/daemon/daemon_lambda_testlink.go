@@ -83,6 +83,8 @@ func (d *Daemon) startLambdaTestLink() {
 			TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
 		}},
 	}
+	// Recovery shares the node slot with requests, so the two never overlap.
+	go tl.RecoverLoop(d.ctx, testlink.RecoverRounds, testlink.RecoverInterval)
 	if _, err := tl.Serve(d.ctx, d.natsConn, d.node); err != nil {
 		slog.Error("Lambda test link: subscribe", "err", err)
 		return

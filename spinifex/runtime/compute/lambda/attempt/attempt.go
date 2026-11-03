@@ -55,18 +55,21 @@ type Outcome struct {
 	// Reaped closes when the process is known to have exited, possibly after
 	// Run returns; it stays open if the wait failed.
 	Reaped <-chan struct{}
+	// SessionDone closes once the session callback has returned, or at once if
+	// it never ran; Run can return while the callback still runs.
+	SessionDone <-chan struct{}
 }
 
-// Run starts cmd, runs session while the VM lives, then kills and reaps the
-// VM. It returns nil only when the session returned nil before the deadline,
-// the VM exit and any caller cancel, and the VM was then proven stopped.
-func Run(ctx context.Context, cmd *exec.Cmd, timeout time.Duration, session func(context.Context) error) (Outcome, error) {
+// Run starts cmd, runs session with the VM's clone-time pidfd while the VM lives,
+// then kills and reaps it. It returns nil only when the session returned nil before
+// the deadline, the VM exit and any caller cancel, and the stop was then proven.
+func Run(ctx context.Context, cmd *exec.Cmd, timeout time.Duration, session func(ctx context.Context, pidfd int) error) (Outcome, error) {
 	if err := ctx.Err(); err != nil {
-		return Outcome{Stopped: true, Reaped: closedChan()}, err
+		return Outcome{Stopped: true, Reaped: closedChan(), SessionDone: closedChan()}, err
 	}
 	if !pidfdSupported() {
 		// Without a stable handle the VM could only be signalled by PID.
-		return Outcome{Stopped: true, Reaped: closedChan()}, ErrNoPidfd
+		return Outcome{Stopped: true, Reaped: closedChan(), SessionDone: closedChan()}, ErrNoPidfd
 	}
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
@@ -108,29 +111,44 @@ func Run(ctx context.Context, cmd *exec.Cmd, timeout time.Duration, session func
 	}()
 	if err := <-started; errors.Is(err, ErrNoPidfd) {
 		go wait()
-		out, stopErr := awaitStop(Outcome{Reaped: reaped}, reaped, waitFailed)
+		out, stopErr := awaitStop(Outcome{Reaped: reaped, SessionDone: closedChan()}, reaped, waitFailed)
 		if stopErr != nil {
 			return out, stopErr
 		}
 		return out, err
 	} else if err != nil {
 		// A failed Start leaves no child: os/exec reaps a fork whose exec failed.
-		return Outcome{Stopped: true, Reaped: closedChan()}, fmt.Errorf("lambda attempt: start VM: %w", err)
+		return Outcome{Stopped: true, Reaped: closedChan(), SessionDone: closedChan()}, fmt.Errorf("lambda attempt: start VM: %w", err)
 	}
 	defer func() { _ = unix.Close(pidfd) }()
 
 	if err := ctx.Err(); err != nil {
 		// Cancelled while the VM started: stop it before any session runs.
-		return stop(Outcome{Reaped: reaped}, pidfd, reaped, waitFailed, err)
+		return stop(Outcome{Reaped: reaped, SessionDone: closedChan()}, pidfd, reaped, waitFailed, err)
 	}
 
 	deadline := time.Now().Add(timeout)
 	sessCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
+	// The callback gets its own duplicate, so a callback outliving Run never
+	// sees this descriptor's number reused.
+	sessFD, err := unix.FcntlInt(uintptr(pidfd), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return stop(Outcome{Reaped: reaped, SessionDone: closedChan()}, pidfd, reaped, waitFailed,
+			fmt.Errorf("lambda attempt: duplicate pidfd: %w", err))
+	}
 	sessDone := make(chan error, 1)
-	go func() { sessDone <- session(sessCtx) }()
+	sessFinished := make(chan struct{})
+	go func() {
+		// Released before the result is published, so a caller holding the
+		// result always sees SessionDone closed.
+		err := session(sessCtx, sessFD)
+		_ = unix.Close(sessFD)
+		close(sessFinished)
+		sessDone <- err
+	}()
 
-	out := Outcome{Reaped: reaped}
+	out := Outcome{Reaped: reaped, SessionDone: sessFinished}
 	var result error
 	sessReturned := false
 	select {
@@ -154,7 +172,7 @@ func Run(ctx context.Context, cmd *exec.Cmd, timeout time.Duration, session func
 	}
 	cancel()
 
-	out, err := stop(out, pidfd, reaped, waitFailed, result)
+	out, err = stop(out, pidfd, reaped, waitFailed, result)
 	if errors.Is(err, ErrStopUnproven) {
 		return out, err
 	}

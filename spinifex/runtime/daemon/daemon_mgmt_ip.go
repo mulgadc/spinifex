@@ -238,10 +238,39 @@ func nextFreeIP(baseIP net.IP, rangeMin, rangeMax byte, allocated []MgmtIPEntry)
 // returned — callers (LaunchSystemInstance rollback, CleanupMgmtNetwork)
 // cannot act on a Release error, matching the pre-existing signature.
 func (a *MgmtIPAllocator) Release(instanceID string) {
+	ip, foreign, node, err := a.release(instanceID)
+	if err != nil && !errors.Is(err, errMgmtIPNoKV) {
+		slog.Warn("Failed to release mgmt IP in cluster KV; address remains reserved until reconciled",
+			"instance", instanceID, "err", err)
+	}
+	if foreign != "" {
+		slog.Info("Left a management IP reserved: it belongs to the node running this instance now",
+			"instance", instanceID, "ip", ip, "holder", foreign, "node", node)
+	}
+}
+
+// ReleaseChecked frees the instance's address like Release, but returns nil
+// only when the cluster record no longer holds it for this node: removed now,
+// or absent. A KV failure, no KV or another node's entry is an error.
+func (a *MgmtIPAllocator) ReleaseChecked(instanceID string) error {
+	_, foreign, _, err := a.release(instanceID)
+	if err != nil {
+		return err
+	}
+	if foreign != "" {
+		return fmt.Errorf("mgmt IP for %s is held by node %s", instanceID, foreign)
+	}
+	return nil
+}
+
+var errMgmtIPNoKV = errors.New("mgmt IP release unconfirmed: no cluster KV bound")
+
+func (a *MgmtIPAllocator) release(instanceID string) (ip, foreign, node string, err error) {
 	a.mu.Lock()
 	ip, hadLocal := a.allocated[instanceID]
 	delete(a.allocated, instanceID)
-	jsManager, node, subnet := a.jsManager, a.node, a.subnet
+	jsManager, subnet := a.jsManager, a.subnet
+	node = a.node
 	a.mu.Unlock()
 
 	if hadLocal {
@@ -249,7 +278,7 @@ func (a *MgmtIPAllocator) Release(instanceID string) {
 	}
 
 	if jsManager == nil {
-		return
+		return ip, "", node, errMgmtIPNoKV
 	}
 
 	// createIfAbsent=false: releasing an instance this node never allocated
@@ -262,8 +291,7 @@ func (a *MgmtIPAllocator) Release(instanceID string) {
 	// it up for the next instance anywhere — and this path runs on exactly the
 	// node that should not: the one dropping a guest another node now runs,
 	// whether it was fenced or found superseded on its return.
-	foreign := ""
-	_, err := updateMgmtIPAMWithRetry(jsManager, subnet, func(r *MgmtIPRecord) {
+	_, err = updateMgmtIPAMWithRetry(jsManager, subnet, func(r *MgmtIPRecord) {
 		foreign = ""
 		for i, e := range r.Allocated {
 			if e.InstanceID != instanceID {
@@ -279,14 +307,13 @@ func (a *MgmtIPAllocator) Release(instanceID string) {
 			return
 		}
 	}, false)
-	if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
-		slog.Warn("Failed to release mgmt IP in cluster KV; address remains reserved until reconciled",
-			"instance", instanceID, "err", err)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		err = nil
 	}
-	if foreign != "" {
-		slog.Info("Left a management IP reserved: it belongs to the node running this instance now",
-			"instance", instanceID, "ip", ip, "holder", foreign, "node", node)
+	if err != nil {
+		return ip, foreign, node, fmt.Errorf("release mgmt IP for %s: %w", instanceID, err)
 	}
+	return ip, foreign, node, nil
 }
 
 // Claim records this node as the holder of an instance's management IP, for an

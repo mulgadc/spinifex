@@ -77,6 +77,7 @@ func TestGrant_LifecycleFreesTheSlotOnlyOnProvenStop(t *testing.T) {
 	_, err = s.Issue(ctx, attempt(c, "a2"))
 	require.ErrorIs(t, err, ErrNodeBusy, "an accepted result does not free the slot")
 
+	require.NoError(t, s.Released(ctx, a.Grant))
 	require.NoError(t, s.Stopped(ctx, a.Grant))
 	require.Equal(t, StateEnded, state(t, s, "a1"))
 	require.ErrorIs(t, s.Accept(ctx, a.Grant), ErrWrongState, "no result accepted after the end")
@@ -99,6 +100,7 @@ func TestGrant_AmbiguousHoldsTheSlotUntilStopIsProven(t *testing.T) {
 	require.ErrorIs(t, s.Accept(ctx, a.Grant), ErrWrongState, "no result accepted while ambiguous")
 	require.ErrorIs(t, s.Withdraw(ctx, a.Grant), ErrWrongState, "a started attempt cannot be withdrawn")
 
+	require.NoError(t, s.Released(ctx, a.Grant))
 	require.NoError(t, s.Stopped(ctx, a.Grant))
 	_, err = s.Issue(ctx, attempt(c, "a2"))
 	require.NoError(t, err)
@@ -242,6 +244,7 @@ func TestGrant_DuplicateAttemptIsRefused(t *testing.T) {
 	s, c := newStore(t)
 	ctx := context.Background()
 	a := started(t, s, c, "a1")
+	require.NoError(t, s.Released(ctx, a.Grant))
 	require.NoError(t, s.Stopped(ctx, a.Grant))
 
 	_, err := s.Issue(ctx, attempt(c, "a1"))
@@ -323,4 +326,23 @@ func TestGrant_StartRefusesAMismatchedRequestUnchanged(t *testing.T) {
 		require.Equal(t, StateGranted, state(t, s, "a1"), name)
 	}
 	require.NoError(t, s.Start(ctx, a.Grant, a.Identity))
+}
+
+// A released attempt still holds the node; only Stopped, and only after
+// Released, frees it for the next grant.
+func TestReleasedHoldsTheNodeUntilStopped(t *testing.T) {
+	s, c := newStore(t)
+	ctx := context.Background()
+	a, err := s.Issue(ctx, attempt(c, "a1"))
+	require.NoError(t, err)
+	require.NoError(t, s.Start(ctx, a.Grant, a.Identity))
+	require.ErrorIs(t, s.Stopped(ctx, a.Grant), ErrWrongState)
+
+	require.NoError(t, s.Released(ctx, a.Grant))
+	_, err = s.Issue(ctx, attempt(c, "a2"))
+	require.ErrorIs(t, err, ErrNodeBusy)
+
+	require.NoError(t, s.Stopped(ctx, a.Grant))
+	_, err = s.Issue(ctx, attempt(c, "a2"))
+	require.NoError(t, err)
 }

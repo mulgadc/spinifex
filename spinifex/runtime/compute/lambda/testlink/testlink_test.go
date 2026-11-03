@@ -26,15 +26,23 @@ import (
 )
 
 type fakeIPs struct {
-	allocErr            error
-	allocated, released []string
+	allocErr, releaseErr error
+	releaseFails         int
+	allocated, released  []string
 }
 
 func (f *fakeIPs) Allocate(id string) (string, error) {
 	f.allocated = append(f.allocated, id)
 	return "10.15.8.250", f.allocErr
 }
-func (f *fakeIPs) Release(id string) { f.released = append(f.released, id) }
+func (f *fakeIPs) ReleaseChecked(id string) error {
+	f.released = append(f.released, id)
+	if f.releaseFails > 0 {
+		f.releaseFails--
+		return errors.New("kv unavailable")
+	}
+	return f.releaseErr
+}
 
 type fakeTaps struct {
 	createErr, removeErr error

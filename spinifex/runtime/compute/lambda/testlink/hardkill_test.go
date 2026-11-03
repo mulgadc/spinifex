@@ -70,7 +70,7 @@ func runArmed(t *testing.T, script string, wait time.Duration) (bool, attempt.Ou
 	defer hk.close()
 	cmd.Env = append(cmd.Env, "HK_WRONG_NONCE=0123456789abcdef0123456789abcdef")
 	sent := false
-	out, err := attempt.Run(context.Background(), cmd, 30*time.Second, func(ctx context.Context) error {
+	out, err := attempt.Run(context.Background(), cmd, 30*time.Second, func(ctx context.Context, _ int) error {
 		if err := hk.await(ctx, cmd.Process.Pid, wait); err != nil {
 			return err
 		}

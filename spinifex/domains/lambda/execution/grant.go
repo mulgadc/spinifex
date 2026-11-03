@@ -34,7 +34,10 @@ const (
 	StateAccepted = "accepted"
 	// StateWithdrawn: the attempt never started, and now never can.
 	StateWithdrawn = "withdrawn"
-	// StateEnded: the caller proved the attempt's VM stopped.
+	// StateReleased: the VM stop is proven and its resources released, but the
+	// daemon's own record of it is not yet gone; the node stays held.
+	StateReleased = "released"
+	// StateEnded: the stop is proven and nothing of the attempt remains.
 	StateEnded = "ended"
 	// StateAmbiguous: the end is unproven; the attempt keeps the node's slot.
 	StateAmbiguous = "ambiguous"
@@ -87,6 +90,28 @@ type Attempt struct {
 	State     string    `json:"state"`
 	LaunchBy  time.Time `json:"launchBy"`
 	CreatedAt time.Time `json:"createdAt"`
+	Launch    *Launch   `json:"launch,omitempty"`
+}
+
+// Launch identifies an attempt's VM process, its launcher and what it holds,
+// so a restarted daemon can prove the stop. The pidfs inodes are comparable
+// only within BootID on MachineID; they do not identify the host.
+type Launch struct {
+	MachineID     string `json:"machineId"`
+	BootID        string `json:"bootId"`
+	PIDNamespace  uint64 `json:"pidNamespace"`
+	LauncherPID   int    `json:"launcherPid"`
+	LauncherInode uint64 `json:"launcherInode"`
+	PID           int    `json:"pid"`
+	Inode         uint64 `json:"inode"`
+	TapName       string `json:"tapName"`
+	TapIndex      int    `json:"tapIndex"`
+	TapOwner      string `json:"tapOwner"`
+}
+
+func (l Launch) valid() bool {
+	return l.MachineID != "" && l.BootID != "" && l.PIDNamespace != 0 && l.LauncherPID > 0 &&
+		l.LauncherInode != 0 && l.PID > 0 && l.Inode != 0
 }
 
 // nodeRecord is a node's one slot. Seq survives every attempt so each later
@@ -212,6 +237,21 @@ func (s *Store) Accept(ctx context.Context, g Grant) error {
 	})
 }
 
+// Launched records the running attempt's launch identity, once, before the
+// daemon sends the guest anything.
+func (s *Store) Launched(ctx context.Context, g Grant, l Launch) error {
+	if !l.valid() {
+		return errors.New("execution: incomplete launch identity")
+	}
+	return s.transition(ctx, g, func(a *Attempt) error {
+		if a.State != StateRunning || a.Launch != nil {
+			return fmt.Errorf("%w: %s", ErrWrongState, a.State)
+		}
+		a.Launch = &l
+		return nil
+	})
+}
+
 // Withdraw ends a grant that never started, for a caller that knows it sent
 // nothing. It fails once the daemon has started the attempt.
 func (s *Store) Withdraw(ctx context.Context, g Grant) error {
@@ -224,16 +264,28 @@ func (s *Store) Withdraw(ctx context.Context, g Grant) error {
 	})
 }
 
-// Stopped records the caller's proof that the attempt's VM has stopped and
-// everything it held is released, which frees the node for the next grant.
-func (s *Store) Stopped(ctx context.Context, g Grant) error {
+// Released records the caller's proof that the attempt's VM has stopped and
+// everything it held is released. The node stays held until Stopped.
+func (s *Store) Released(ctx context.Context, g Grant) error {
 	return s.transition(ctx, g, func(a *Attempt) error {
 		switch a.State {
 		case StateRunning, StateAccepted, StateAmbiguous:
-			a.State = StateEnded
+			a.State = StateReleased
 			return nil
 		}
 		return fmt.Errorf("%w: %s", ErrWrongState, a.State)
+	})
+}
+
+// Stopped records that nothing of a released attempt remains, which frees the
+// node for the next grant.
+func (s *Store) Stopped(ctx context.Context, g Grant) error {
+	return s.transition(ctx, g, func(a *Attempt) error {
+		if a.State != StateReleased {
+			return fmt.Errorf("%w: %s", ErrWrongState, a.State)
+		}
+		a.State = StateEnded
+		return nil
 	})
 }
 

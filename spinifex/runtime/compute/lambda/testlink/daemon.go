@@ -54,9 +54,12 @@ type Taps interface {
 // Grants is the execution owner's side of an attempt the daemon runs.
 type Grants interface {
 	Start(ctx context.Context, g execution.Grant, want execution.Identity) error
+	Launched(ctx context.Context, g execution.Grant, l execution.Launch) error
 	Accept(ctx context.Context, g execution.Grant) error
+	Released(ctx context.Context, g execution.Grant) error
 	Stopped(ctx context.Context, g execution.Grant) error
 	Ambiguous(ctx context.Context, g execution.Grant) error
+	Current(ctx context.Context, node string) (execution.Attempt, error)
 }
 
 var _ Grants = (*execution.Store)(nil)
@@ -64,7 +67,7 @@ var _ Grants = (*execution.Store)(nil)
 // IPs hands out and takes back management-bridge addresses.
 type IPs interface {
 	Allocate(id string) (string, error)
-	Release(id string)
+	ReleaseChecked(id string) error
 }
 
 // Daemon runs one test-link invocation at a time on this node.
@@ -149,6 +152,10 @@ func (d *Daemon) Handle(ctx context.Context, data []byte) Reply {
 	if id, err := d.unresolved(); err != nil || id != "" {
 		return refused("an unresolved test-link attempt holds this node's slot")
 	}
+	// Without pidfs a restarted daemon could not identify the VM it left.
+	if _, err := selfInode(); err != nil {
+		return refused(err.Error())
+	}
 	lib, err := d.sealInitializer()
 	if err != nil {
 		return refused(err.Error())
@@ -166,29 +173,56 @@ func (d *Daemon) Handle(ctx context.Context, data []byte) Reply {
 
 	var rep Reply
 	resolved := true
+	marker := ""
 	if code, err := d.fetch(ctx, req); err != nil {
 		rep = refused(err.Error())
 	} else {
-		rep, resolved = d.run(ctx, req, code, lib)
+		rep, resolved, marker = d.run(ctx, req, code, lib)
 	}
-	held = !resolved
-	d.record(ctx, req, resolved)
+	held = !d.finish(ctx, req.Grant, resolved, marker)
 	return rep
 }
 
-// record tells the owner how the attempt ended: stopped only when the VM stop
-// is proven and everything it held released, otherwise ambiguous.
-func (d *Daemon) record(ctx context.Context, req Request, resolved bool) {
-	if resolved {
-		if err := d.Grants.Stopped(ctx, req.Grant); err != nil {
-			// The write may have landed; the stop was proven before it either way.
-			slog.Error("Lambda test link: stop record outcome unknown", "attempt", req.AttemptID, "err", err)
+// finish tells the owner how the attempt ended, ambiguous unless the VM stop
+// is proven and everything released. It reports whether the node is free.
+func (d *Daemon) finish(ctx context.Context, g execution.Grant, resolved bool, marker string) bool {
+	if !resolved {
+		if err := d.Grants.Ambiguous(ctx, g); err != nil {
+			slog.Error("Lambda test link: ambiguous record outcome unknown", "attempt", g.AttemptID, "err", err)
 		}
-		return
+		return false
 	}
-	if err := d.Grants.Ambiguous(ctx, req.Grant); err != nil {
-		slog.Error("Lambda test link: ambiguous record outcome unknown", "attempt", req.AttemptID, "err", err)
+	if err := d.Grants.Released(ctx, g); err != nil {
+		// The write may have landed; the stop was proven before it either way.
+		slog.Error("Lambda test link: release record outcome unknown; marker kept", "attempt", g.AttemptID, "err", err)
+		return false
 	}
+	return d.complete(ctx, g, marker)
+}
+
+// complete removes a released attempt's marker and only then frees the node,
+// so the owner keeps the node held for as long as the marker can remain.
+func (d *Daemon) complete(ctx context.Context, g execution.Grant, marker string) bool {
+	if !removeMarker(marker) {
+		return false
+	}
+	if err := d.Grants.Stopped(ctx, g); err != nil {
+		slog.Error("Lambda test link: stop record outcome unknown; node held until recovery", "attempt", g.AttemptID, "err", err)
+		return false
+	}
+	return true
+}
+
+// removeMarker removes an attempt marker; "" names none. Already gone is success.
+func removeMarker(marker string) bool {
+	if marker == "" {
+		return true
+	}
+	if err := os.Remove(marker); err != nil && !errors.Is(err, os.ErrNotExist) {
+		slog.Error("Lambda test link: remove attempt marker", "marker", marker, "err", err)
+		return false
+	}
+	return true
 }
 
 // CheckRequest is the daemon's validation of a test-link request.
@@ -280,20 +314,21 @@ func (d *Daemon) fetch(ctx context.Context, req Request) ([]byte, error) {
 // run holds the marker, address, tap and files from before allocation until
 // the VM stop is proven, and keeps them all when it is not. resolved is true
 // only once everything is released.
-func (d *Daemon) run(ctx context.Context, req Request, code []byte, lib *os.File) (rep Reply, resolved bool) {
+func (d *Daemon) run(ctx context.Context, req Request, code []byte, lib *os.File) (rep Reply, resolved bool, marker string) {
 	a := &held{id: "lambda-" + req.AttemptID, dir: filepath.Join(d.WorkDir, req.AttemptID),
 		marker: filepath.Join(d.WorkDir, req.AttemptID+markerSuffix)}
 	f, err := os.OpenFile(a.marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		return refused("attempt marker unavailable"), true
+		return refused("attempt marker unavailable"), true, ""
 	}
 	_ = f.Close()
+	marker = a.marker
 
 	ip, err := d.IPs.Allocate(a.id)
 	if err != nil {
 		// A failed allocation may still have written the address, so it stays held.
 		slog.Error("Lambda test link: address allocation outcome unknown; attempt held", "attempt", req.AttemptID, "err", err)
-		return refused("management address unavailable"), false
+		return refused("management address unavailable"), false, marker
 	}
 	a.ip = true
 	tapName := "lm" + req.AttemptID
@@ -302,29 +337,39 @@ func (d *Daemon) run(ctx context.Context, req Request, code []byte, lib *os.File
 		slog.Error("Lambda test link: guest tap", "attempt", req.AttemptID, "err", err)
 		if a.tap.Name == "" && !errors.Is(err, host.ErrTapNotCreated) {
 			// A link may exist that this attempt cannot identify, so it stays held.
-			return refused("guest tap setup failed"), false
+			return refused("guest tap setup failed"), false, marker
 		}
-		return refused("guest tap setup failed"), d.release(a)
+		return refused("guest tap setup failed"), d.release(a), marker
 	}
 	mac := vm.GenerateMgmtMAC(a.id)
 	cfg, gen, ln, err := d.prepare(req, code, a.dir, tapName, mac, ip)
 	if err != nil {
 		slog.Error("Lambda test link: prepare attempt", "attempt", req.AttemptID, "err", err)
-		return refused("attempt preparation failed"), d.release(a)
+		return refused("attempt preparation failed"), d.release(a), marker
 	}
 	defer func() { _ = ln.Close() }()
 
 	cmd, err := cfg.Execute()
 	if err != nil {
-		return refused("VM command build failed"), d.release(a)
+		return refused("VM command build failed"), d.release(a), marker
 	}
 	hk, err := armCommand(cmd, lib, timeoutFor(req)+HardKillMargin)
 	if err != nil {
-		return refused("hard-kill setup failed"), d.release(a)
+		return refused("hard-kill setup failed"), d.release(a), marker
 	}
 	defer hk.close()
 	var result Reply
-	out, runErr := attempt.Run(ctx, cmd, timeoutFor(req), func(sctx context.Context) error {
+	unrecorded := false
+	out, runErr := attempt.Run(ctx, cmd, timeoutFor(req), func(sctx context.Context, pidfd int) error {
+		// The owner holds the launch identity before the guest is sent anything.
+		l, err := launchIdentity(pidfd, cmd.Process.Pid, a.tap)
+		if err != nil {
+			return err
+		}
+		if err := d.Grants.Launched(sctx, req.Grant, l); err != nil {
+			unrecorded = true
+			return fmt.Errorf("%w: %w", ErrLaunchNotRecorded, err)
+		}
 		// No frame reaches the guest until QEMU proves its own kill timer is armed.
 		if err := hk.await(sctx, cmd.Process.Pid, armWait); err != nil {
 			return err
@@ -336,18 +381,30 @@ func (d *Daemon) run(ctx context.Context, req Request, code []byte, lib *os.File
 	if !out.Stopped {
 		slog.Error("Lambda test link: VM stop not proven; marker, tap, address and files held",
 			"attempt", req.AttemptID, "tap", tapName, "err", runErr)
-		return Reply{Outcome: OutcomeUnknown, Error: "VM stop not proven"}, false
+		return Reply{Outcome: OutcomeUnknown, Error: "VM stop not proven"}, false, marker
+	}
+	// What the callback set is read only once it has returned.
+	select {
+	case <-out.SessionDone:
+	default:
+		slog.Error("Lambda test link: session still running after the VM stopped; attempt held", "attempt", req.AttemptID)
+		return Reply{Outcome: OutcomeUnknown, Error: "session did not finish"}, false, marker
+	}
+	if unrecorded {
+		slog.Error("Lambda test link: launch identity write failed; attempt held as ambiguous",
+			"attempt", req.AttemptID, "err", runErr)
+		return Reply{Outcome: OutcomeUnknown, Error: ErrLaunchNotRecorded.Error()}, false, marker
 	}
 	resolved = d.release(a)
 	if runErr != nil {
 		slog.Warn("Lambda test link: attempt ended without a result", "attempt", req.AttemptID, "timed_out", out.TimedOut, "err", runErr)
-		return Reply{Outcome: OutcomeUnknown, Error: safeRunError(runErr)}, resolved
+		return Reply{Outcome: OutcomeUnknown, Error: safeRunError(runErr)}, resolved, marker
 	}
-	return result, resolved
+	return result, resolved, marker
 }
 
 func safeRunError(err error) string {
-	for _, known := range []error{ErrNotArmed, ErrResultNotAccepted, ErrFunctionTimeout, attempt.ErrTimedOut, attempt.ErrVMExited, attempt.ErrNoPidfd, context.Canceled, context.DeadlineExceeded} {
+	for _, known := range []error{ErrLaunchNotRecorded, ErrVMGone, ErrNoPidfs, ErrNotArmed, ErrResultNotAccepted, ErrFunctionTimeout, attempt.ErrTimedOut, attempt.ErrVMExited, attempt.ErrNoPidfd, context.Canceled, context.DeadlineExceeded} {
 		if errors.Is(err, known) {
 			return known.Error()
 		}
@@ -502,9 +559,9 @@ type held struct {
 	tap             host.OwnedTap
 }
 
-// release gives back what an attempt held once nothing can still use it. It
-// stops at the first failure, keeping that and everything taken before it,
-// marker included, and reports whether everything went.
+// release gives back what an attempt held once nothing can still use it, and
+// is safe to repeat. It stops at the first failure and reports whether it all
+// went; the marker is not its to remove.
 func (d *Daemon) release(a *held) bool {
 	if err := os.RemoveAll(a.dir); err != nil {
 		slog.Error("Lambda test link: remove attempt files; attempt held", "dir", a.dir, "err", err)
@@ -516,14 +573,11 @@ func (d *Daemon) release(a *held) bool {
 			return false
 		}
 	}
-	// Release reports no outcome; the marker going does not prove the address
-	// left the cluster record.
 	if a.ip {
-		d.IPs.Release(a.id)
-	}
-	if err := os.Remove(a.marker); err != nil {
-		slog.Error("Lambda test link: remove attempt marker", "marker", a.marker, "err", err)
-		return false
+		if err := d.IPs.ReleaseChecked(a.id); err != nil {
+			slog.Error("Lambda test link: address release unconfirmed; attempt held", "attempt", a.id, "err", err)
+			return false
+		}
 	}
 	return true
 }

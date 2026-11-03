@@ -117,7 +117,7 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 		if decodeErr == nil {
 			resource = functionARN(inv.Region, inv.AccountID, aws.StringValue(c.Create.FunctionName))
 		}
-	case "GetFunction":
+	case "GetFunction", "GetFunctionConfiguration":
 		if name, _, err := resolveFunctionName(inv.Region, inv.AccountID, params[0]); err == nil {
 			resource = functionARN(inv.Region, inv.AccountID, name)
 		}
@@ -133,7 +133,8 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 			return err
 		}
 	}
-	if d.Meta == nil || d.Codes == nil {
+	// A configuration read is metadata only, so it does not need the code store.
+	if d.Meta == nil || (d.Codes == nil && action != "GetFunctionConfiguration") {
 		return errors.New(awserrors.ErrorServiceException)
 	}
 

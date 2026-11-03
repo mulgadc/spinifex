@@ -59,11 +59,9 @@ func startLambdaDaemonLite(t *testing.T, nc *nats.Conn) {
 	sub(t, nc, lambdafunction.SubjectRollbackCreate, func(m *nats.Msg) { dispatch(m, svc.RollbackCreate) })
 }
 
-// TestLambda_SignedCreateAndGetDownloadsTheStoredCode drives CreateFunction and
-// GetFunction through signed ingress, the NATS-owned function record and the
-// real code store on the Predastore fixture, then downloads Code.Location.
-// The fixture authenticates only its service key, so that key stands in for
-// the scoped code-store session; provisioning and session scoping are not here.
+// Signed Create, Get and GetFunctionConfiguration over NATS metadata and the
+// Predastore fixture's code store, then downloads Code.Location. The fixture's
+// service key stands in for the scoped code-store session, which is untested.
 func TestLambda_SignedCreateAndGetDownloadsTheStoredCode(t *testing.T) {
 	fixture := testpredastore.Start(t)
 	bucket := codestore.BucketName(testRegion)
@@ -131,6 +129,10 @@ func TestLambda_SignedCreateAndGetDownloadsTheStoredCode(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "e2e", aws.StringValue(got.Configuration.Environment.Variables["MODE"]))
 	require.NotNil(t, got.Code.Location)
+
+	cfg, err := cli.GetFunctionConfiguration(&lambda.GetFunctionConfigurationInput{FunctionName: aws.String("e2e-fn")})
+	require.NoError(t, err)
+	require.Equal(t, got.Configuration.String(), cfg.String())
 
 	// SSL_CERT_FILE (set by the fixture) makes the default client trust it.
 	resp, err := http.Get(aws.StringValue(got.Code.Location)) //nolint:gosec,noctx // URL is the presigned location under test

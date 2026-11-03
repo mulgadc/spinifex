@@ -36,6 +36,7 @@ type Deps struct {
 	Resources          ResourceController
 	VolumeStateUpdater VolumeStateUpdater
 	InstanceCleaner    InstanceCleaner
+	UEFIStores         UEFIStoreTerminator
 	Hooks              ManagerHooks
 
 	// ShutdownSignal returns true once the daemon has begun coordinated

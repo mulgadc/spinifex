@@ -683,6 +683,7 @@ func (d *Daemon) buildVMManagerDeps() vm.Deps {
 		Resources:          newResourceControllerAdapter(d.resourceMgr),
 		VolumeStateUpdater: d.volumeService,
 		InstanceCleaner:    newInstanceCleanerAdapter(d),
+		UEFIStores:         d.newUEFIStoreTerminator(),
 		Hooks: vm.ManagerHooks{
 			OnInstanceUp:           d.onInstanceUpHook(),
 			OnInstanceDown:         d.onInstanceDownHook(),

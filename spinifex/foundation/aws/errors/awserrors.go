@@ -581,6 +581,10 @@ var (
 	ErrorELBv2IncompatibleProtocols        = "IncompatibleProtocols"
 	ErrorELBv2CertificateNotFound          = "CertificateNotFound"
 	ErrorELBv2SSLPolicyNotFound            = "SSLPolicyNotFound"
+	ErrorELBv2DuplicateTagKeys             = "DuplicateTagKeys"
+	// ErrorELBv2TooManyTags aliases ErrorRoute53TooManyTagsForZone: both wire
+	// codes are "TooManyTags", so ELBv2 returns it via Errorf with its own message.
+	ErrorELBv2TooManyTags = ErrorRoute53TooManyTagsForZone
 
 	// Bedrock/bedrock-runtime error codes.
 	ErrorValidationException = "ValidationException"
@@ -1423,6 +1427,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorELBv2IncompatibleProtocols:        {HTTPCode: 400, Message: "The listener protocol is incompatible with the target group protocol."},
 	ErrorELBv2CertificateNotFound:          {HTTPCode: 400, Message: "One or more specified certificates do not exist."},
 	ErrorELBv2SSLPolicyNotFound:            {HTTPCode: 400, Message: "The specified SSL policy does not exist."},
+	ErrorELBv2DuplicateTagKeys:             {HTTPCode: 400, Message: "A tag key was specified more than once."},
 
 	// Bedrock/bedrock-runtime error codes. ResourceNotFoundException reuses the
 	// EKS entry (ErrorEKSResourceNotFound) — same wire code, same HTTP status.

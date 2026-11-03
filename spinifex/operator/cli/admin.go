@@ -31,6 +31,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	ebsobligation "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/obligation"
 	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
@@ -247,6 +248,18 @@ the backend. This is the list of volumes where that would cost something.`,
 	Run: runVolumesUnsealedCmd,
 }
 
+var volumesObligationsCmd = &cobra.Command{
+	Use:   "obligations",
+	Short: "Report volume exports a cleared attachment left on a node",
+	Long: `List the open unpublish obligations: exports a force detach, or a terminate
+whose unmount did not complete, left on the node that held the attachment.
+
+The node named settles each one once it answers. An obligation stays open
+while its node is down; it closes without the node only once the node has
+been removed from the cluster. This command only reports.`,
+	Run: runVolumesObligationsCmd,
+}
+
 var accountCmd = &cobra.Command{
 	Use:   "account",
 	Short: "Manage Spinifex accounts",
@@ -351,6 +364,7 @@ func init() {
 	adminCmd.AddCommand(volumesCmd)
 	volumesCmd.AddCommand(volumesOrphansCmd)
 	volumesCmd.AddCommand(volumesUnsealedCmd)
+	volumesCmd.AddCommand(volumesObligationsCmd)
 
 	adminCmd.AddCommand(accountCmd)
 	accountCmd.AddCommand(accountCreateCmd)
@@ -4101,6 +4115,45 @@ func printChecksumError(w io.Writer, imageFile, imageName string, image imagecat
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "The cached file was left in place. To re-download and retry:")
 	fmt.Fprintf(w, "  spx admin images import --name %s --force\n", imageName)
+}
+
+func runVolumesObligationsCmd(_ *cobra.Command, _ []string) {
+	_, nc, err := loadConfigAndConnect()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Could not connect to the cluster: %v\n", err)
+		os.Exit(1)
+	}
+	defer nc.Close()
+
+	open, err := ebsobligation.ListOpen(context.Background(), nc)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Could not read the unpublish obligations:", err)
+		os.Exit(1)
+	}
+	printUnpublishObligations(os.Stdout, open, time.Now())
+}
+
+// printUnpublishObligations writes the open obligations, oldest first, with
+// the node each waits on and its age.
+func printUnpublishObligations(w io.Writer, open []ebsobligation.UnpublishObligation, now time.Time) {
+	if len(open) == 0 {
+		fmt.Fprintln(w, "No open unpublish obligations: no node holds an export of a cleared attachment.")
+		return
+	}
+	sort.Slice(open, func(i, j int) bool { return open[i].RecordedAt.Before(open[j].RecordedAt) })
+	fmt.Fprintf(w, "%d open unpublish obligation(s):\n\n", len(open))
+	for _, o := range open {
+		fmt.Fprintf(w, "  %s\n", o.VolumeID)
+		fmt.Fprintf(w, "    node:     %s\n", o.NodeID)
+		fmt.Fprintf(w, "    instance: %s\n", o.InstanceID)
+		fmt.Fprintf(w, "    age:      %s\n", now.Sub(o.RecordedAt).Truncate(time.Second))
+		if o.Attempts > 0 {
+			fmt.Fprintf(w, "    attempts: %d\n", o.Attempts)
+		}
+		if o.Error != "" {
+			fmt.Fprintf(w, "    error:    %s\n", o.Error)
+		}
+	}
 }
 
 func runVolumesUnsealedCmd(_ *cobra.Command, _ []string) {

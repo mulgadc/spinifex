@@ -166,7 +166,7 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 	// fails, unmounting seals the untouched backend and keeps the launch from
 	// exposing a writer that snapshots would classify as available.
 	if stateErr := m.markAttachedVolumesInUse(instance); stateErr != nil {
-		if unmountErr := m.deps.VolumeMounter.Unmount(ctx, instance); unmountErr != nil {
+		if unmountErr := m.unmountVolumes(ctx, instance); unmountErr != nil {
 			return errors.Join(
 				fmt.Errorf("persist attached volume state: %w", stateErr),
 				fmt.Errorf("rollback mounted volumes: %w", unmountErr),

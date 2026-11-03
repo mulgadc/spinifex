@@ -8,11 +8,15 @@ import (
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
+	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
@@ -102,6 +106,77 @@ type volumeMounterAdapter struct {
 	provider mounterProvider
 	// abandonTimeout bounds each no-seal unpublish Abandon sends.
 	abandonTimeout time.Duration
+	// volumes serialises every publish and unpublish of a volume on this
+	// node with the unpublish obligation reaper.
+	volumes volumeLocks
+}
+
+// volumeLocks is a lock per volume, and the time this process last published
+// each volume it has not unpublished since.
+type volumeLocks struct {
+	mu    sync.Mutex
+	locks map[string]*volumeLock
+}
+
+type volumeLock struct {
+	mu          sync.Mutex
+	refs        int
+	publishedAt time.Time
+}
+
+// acquire returns volumeID's lock entry, locked; wait false gives up rather
+// than block on a publish or unpublish in flight.
+func (l *volumeLocks) acquire(volumeID string, wait bool) (*volumeLock, bool) {
+	l.mu.Lock()
+	if l.locks == nil {
+		l.locks = make(map[string]*volumeLock)
+	}
+	entry, ok := l.locks[volumeID]
+	if !ok {
+		entry = &volumeLock{}
+		l.locks[volumeID] = entry
+	}
+	entry.refs++
+	l.mu.Unlock()
+
+	if wait {
+		entry.mu.Lock()
+		return entry, true
+	}
+	if entry.mu.TryLock() {
+		return entry, true
+	}
+	l.release(volumeID, entry, false)
+	return nil, false
+}
+
+// release drops a reference, unlocking the entry when locked is true. An entry
+// nobody holds and that records no publish is forgotten.
+func (l *volumeLocks) release(volumeID string, entry *volumeLock, locked bool) {
+	if locked {
+		entry.mu.Unlock()
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry.refs--
+	if entry.refs == 0 && entry.publishedAt.IsZero() {
+		delete(l.locks, volumeID)
+	}
+}
+
+// withVolume runs fn holding volumeID's lock.
+func (a *volumeMounterAdapter) withVolume(volumeID string, fn func(*volumeLock) error) error {
+	entry, _ := a.volumes.acquire(volumeID, true)
+	defer a.volumes.release(volumeID, entry, true)
+	return fn(entry)
+}
+
+// recordPublished stamps a publish that may have exported the volume, and
+// clears the stamp once an unpublish has torn it down. The caller holds the lock.
+func (a *volumeMounterAdapter) recordPublished(entry *volumeLock, at time.Time) {
+	a.volumes.mu.Lock()
+	entry.publishedAt = at
+	a.volumes.mu.Unlock()
 }
 
 // mounterProvider is the part of the EBS contract the mounter drives.
@@ -127,11 +202,18 @@ func newVolumeMounterAdapter(provider mounterProvider, node string, volState vm.
 // the export on req. A failure worth retrying is vm.ErrMountRetryable; one
 // that leaves unknown whether the provider exported it is vm.ErrMountAmbiguous.
 func (a *volumeMounterAdapter) publish(ctx context.Context, accountID string, req *viperblocklegacyv1.EBSRequest) error {
+	return a.withVolume(req.Name, func(entry *volumeLock) error {
+		return a.publishLocked(ctx, accountID, req, entry)
+	})
+}
+
+func (a *volumeMounterAdapter) publishLocked(ctx context.Context, accountID string, req *viperblocklegacyv1.EBSRequest, entry *volumeLock) error {
 	// A caller already gone sends nothing, so there is no export to tear down;
 	// only a cancellation after the request went out leaves the outcome unknown.
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("publish volume %s: %w", req.Name, err)
 	}
+	started := time.Now()
 	published, err := a.provider.PublishVolume(ebsprovider.WithAccountID(ctx, accountID), ebsprovider.PublishVolumeRequest{
 		Versioned: ebsprovider.NewLatestVersioned(),
 		VolumeID:  req.Name,
@@ -142,10 +224,12 @@ func (a *volumeMounterAdapter) publish(ctx context.Context, accountID string, re
 		case publishRetryable(err):
 			return fmt.Errorf("publish volume %s: %w: %w", req.Name, err, vm.ErrMountRetryable)
 		case publishOutcomeUnknown(err):
+			a.recordPublished(entry, started)
 			return fmt.Errorf("publish volume %s: %w: %w", req.Name, err, vm.ErrMountAmbiguous)
 		}
 		return fmt.Errorf("publish volume %s: %w", req.Name, err)
 	}
+	a.recordPublished(entry, started)
 	applyExport(req, published.Export)
 	slog.InfoContext(ctx, "Published volume", "volume", req.Name, "node", a.node, "export_kind", string(published.Export.Kind))
 	return nil
@@ -199,23 +283,75 @@ func applyExport(req *viperblocklegacyv1.EBSRequest, export ebsprovider.VolumeEx
 // UnpublishVolume, which seals first, and returns nil only once its block map
 // is sealed or the provider holds no export of it.
 func (a *volumeMounterAdapter) unpublish(ctx context.Context, accountID string, req viperblocklegacyv1.EBSRequest) error {
+	return a.withVolume(req.Name, func(entry *volumeLock) error {
+		return a.unpublishLocked(ctx, accountID, req.Name, "", entry)
+	})
+}
+
+func (a *volumeMounterAdapter) unpublishLocked(ctx context.Context, accountID, volumeID, handle string, entry *volumeLock) error {
 	// The seal takes the provider's data-movement budget, not what is left of
 	// the caller's; the caller's trace is kept.
 	sealCtx := ebsprovider.WithAccountID(context.WithoutCancel(ctx), accountID)
 	_, err := a.provider.UnpublishVolume(sealCtx, ebsprovider.UnpublishVolumeRequest{
 		Versioned: ebsprovider.NewLatestVersioned(),
-		VolumeID:  req.Name,
+		VolumeID:  volumeID,
+		Handle:    handle,
 		NodeID:    a.node,
 	})
 	switch {
 	case err == nil:
+		a.recordPublished(entry, time.Time{})
 		return nil
 	case errors.Is(err, ebsprovider.ErrNotFound):
-		slog.InfoContext(ctx, "Unpublish found no volume, counting it as done", "volume", req.Name, "node", a.node)
+		a.recordPublished(entry, time.Time{})
+		slog.InfoContext(ctx, "Unpublish found no volume, counting it as done", "volume", volumeID, "node", a.node)
 		return nil
 	default:
-		return fmt.Errorf("unpublish volume %s: %w", req.Name, err)
+		return fmt.Errorf("unpublish volume %s: %w", volumeID, err)
 	}
+}
+
+var _ ec2volume.ObligationUnpublisher = (*volumeMounterAdapter)(nil)
+
+// HoldVolume takes volumeID's lock for the unpublish obligation reaper without
+// waiting, so a sweep never queues behind a seal or a wedged publish.
+func (a *volumeMounterAdapter) HoldVolume(volumeID string) (ec2volume.VolumeHold, bool) {
+	entry, ok := a.volumes.acquire(volumeID, false)
+	if !ok {
+		return nil, false
+	}
+	return &mounterVolumeHold{a: a, volumeID: volumeID, entry: entry}, true
+}
+
+// mounterVolumeHold is one volume's lock, held by the obligation reaper.
+type mounterVolumeHold struct {
+	a        *volumeMounterAdapter
+	volumeID string
+	entry    *volumeLock
+	released bool
+}
+
+var _ ec2volume.VolumeHold = (*mounterVolumeHold)(nil)
+
+func (h *mounterVolumeHold) PublishedSince(t time.Time) bool {
+	h.a.volumes.mu.Lock()
+	defer h.a.volumes.mu.Unlock()
+	return !h.entry.publishedAt.IsZero() && h.entry.publishedAt.After(t)
+}
+
+func (h *mounterVolumeHold) Unpublish(ctx context.Context, accountID, handle string, noSeal bool) error {
+	if !noSeal {
+		return h.a.unpublishLocked(ctx, accountID, h.volumeID, handle, h.entry)
+	}
+	return h.a.abandonLocked(ctx, accountID, "", h.volumeID, handle, "an unpublish obligation for a volume being deleted", h.entry)
+}
+
+func (h *mounterVolumeHold) Release() {
+	if h.released {
+		return
+	}
+	h.released = true
+	h.a.volumes.release(h.volumeID, h.entry, true)
 }
 
 // ebsRequestWithTrace sends an ebs.* NATS request, opening a client span under
@@ -302,7 +438,7 @@ func (a *volumeMounterAdapter) Unmount(ctx context.Context, instance *vm.VM) err
 		if err := a.unpublish(ctx, instance.AccountID, ebsRequest); err != nil {
 			slog.Error("Volume seal failed, leaving volume non-available",
 				"instance", instance.ID, "volume", ebsRequest.Name, "err", err)
-			sealErrs = append(sealErrs, fmt.Errorf("seal %s: %w", ebsRequest.Name, err))
+			sealErrs = append(sealErrs, &vm.VolumeUnpublishError{VolumeID: ebsRequest.Name, Err: err})
 			continue
 		}
 		slog.Info("Unmounted volume", "instance", instance.ID, "volume", ebsRequest.Name)
@@ -355,23 +491,32 @@ func (a *volumeMounterAdapter) Abandon(ctx context.Context, instance *vm.VM, rea
 // abandonOne drops this node's export of volumeID unsealed. A volume the
 // provider does not know is one this node no longer holds.
 func (a *volumeMounterAdapter) abandonOne(ctx context.Context, instance *vm.VM, volumeID, reason string) error {
-	abandonCtx, cancel := context.WithTimeout(ebsprovider.WithAccountID(ctx, instance.AccountID), a.abandonTimeout)
+	return a.withVolume(volumeID, func(entry *volumeLock) error {
+		return a.abandonLocked(ctx, instance.AccountID, instance.ID, volumeID, "", reason, entry)
+	})
+}
+
+func (a *volumeMounterAdapter) abandonLocked(ctx context.Context, accountID, instanceID, volumeID, handle, reason string, entry *volumeLock) error {
+	abandonCtx, cancel := context.WithTimeout(ebsprovider.WithAccountID(ctx, accountID), a.abandonTimeout)
 	defer cancel()
 	unpublished, err := a.provider.UnpublishVolume(abandonCtx, ebsprovider.UnpublishVolumeRequest{
 		Versioned: ebsprovider.NewLatestVersioned(),
 		VolumeID:  volumeID,
+		Handle:    handle,
 		NodeID:    a.node,
 		NoSeal:    true,
 	})
 	switch {
 	case errors.Is(err, ebsprovider.ErrNotFound):
+		a.recordPublished(entry, time.Time{})
 		return nil
 	case err != nil:
 		return fmt.Errorf("abandon %s (%s): %w", volumeID, reason, err)
 	}
+	a.recordPublished(entry, time.Time{})
 	if unpublished.TornDown {
-		slog.WarnContext(ctx, "Gave up a volume export to the node that owns the instance now",
-			"instance", instance.ID, "volume", volumeID, "reason", reason)
+		slog.WarnContext(ctx, "Gave up a volume export unsealed",
+			"instance", instanceID, "volume", volumeID, "reason", reason, "node", a.node)
 	}
 	return nil
 }
@@ -677,7 +822,7 @@ func (d *Daemon) buildVMManagerDeps() vm.Deps {
 	return vm.Deps{
 		NodeID:             d.node,
 		StateStore:         d.stateStore,
-		VolumeMounter:      newVolumeMounterAdapter(d.ebsProvider, d.node, d.volumeService),
+		VolumeMounter:      d.volumeMounter(),
 		NetworkPlumber:     d.networkPlumber,
 		InstanceTypes:      newInstanceTypeResolverAdapter(d.resourceMgr),
 		Resources:          newResourceControllerAdapter(d.resourceMgr),
@@ -721,6 +866,21 @@ func newInstanceCleanerAdapter(d *Daemon) *instanceCleanerAdapter {
 // flagged DeleteOnTermination via the volume service.
 // Errors are logged per volume; partial failure is tolerated.
 func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
+	// Volumes the last unmount here left exported: clearing their attachments
+	// owes this node an unpublish, recorded before the clear.
+	var leftPublished []string
+	if a.d.vmMgr != nil {
+		a.d.vmMgr.Inspect(instance, func(v *vm.VM) { leftPublished = slices.Clone(v.UnpublishOwed) })
+	} else {
+		leftPublished = slices.Clone(instance.UnpublishOwed)
+	}
+	owedFor := func(volumeID string) ec2instance.OwedUnpublish {
+		if !slices.Contains(leftPublished, volumeID) {
+			return ec2instance.OwedUnpublish{}
+		}
+		return ec2instance.OwedUnpublish{NodeID: a.d.node, InstanceID: instance.ID}
+	}
+
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()
 
@@ -764,7 +924,7 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 					"name", ebsRequest.Name, "id", instance.ID)
 				continue
 			}
-			if err := a.d.volumeService.DetachVolumeOnTerminate(context.Background(), ebsRequest.Name, instance.AccountID); err != nil && !awserrors.IsNotFound(err) && !objectstore.IsNoSuchKeyError(err) {
+			if err := a.d.volumeService.DetachVolumeOnTerminate(context.Background(), ebsRequest.Name, instance.AccountID, owedFor(ebsRequest.Name)); err != nil && !awserrors.IsNotFound(err) && !objectstore.IsNoSuchKeyError(err) {
 				slog.Error("Failed to detach volume on termination",
 					"name", ebsRequest.Name, "id", instance.ID, "err", err)
 				firstErr = cmp.Or(firstErr, err)
@@ -787,7 +947,7 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 		// (above, via terminateCleanup) deliberately never clears a Boot
 		// volume's attachment, so without this the root volume still hits
 		// DeleteVolume's in-use guard here.
-		if err := a.d.volumeService.DeleteVolumeOnTerminate(context.Background(), ebsRequest.Name, instance.AccountID); err != nil && !awserrors.IsNotFound(err) && !objectstore.IsNoSuchKeyError(err) {
+		if err := a.d.volumeService.DeleteVolumeOnTerminate(context.Background(), ebsRequest.Name, instance.AccountID, owedFor(ebsRequest.Name)); err != nil && !awserrors.IsNotFound(err) && !objectstore.IsNoSuchKeyError(err) {
 			slog.Error("Failed to delete volume on termination",
 				"name", ebsRequest.Name, "id", instance.ID, "err", err)
 			firstErr = cmp.Or(firstErr, err)

@@ -159,7 +159,11 @@ type Daemon struct {
 	imageService      *ec2image.ImageServiceImpl
 	volumeService     *ec2volume.VolumeServiceImpl
 	// ebsProvider is the sole EBS backend, set once during startup.
-	ebsProvider           ebsprovider.EBSProvider
+	ebsProvider ebsprovider.EBSProvider
+	// mounter is this node's one volume mounter, shared by the VM manager and
+	// the unpublish obligation reaper so both take the same volume locks.
+	mounter               *volumeMounterAdapter
+	mounterOnce           sync.Once
 	accountService        *ec2account.AccountSettingsServiceImpl
 	snapshotService       *ec2snapshot.SnapshotServiceImpl
 	tagsService           *ec2tags.TagsServiceImpl
@@ -2044,6 +2048,9 @@ func (d *Daemon) startCluster() error {
 	if err := d.configureEBSProvider(); err != nil {
 		return fmt.Errorf("configure EBS provider: %w", err)
 	}
+	if err := d.configureUnpublishObligations(); err != nil {
+		return fmt.Errorf("configure EBS unpublish obligations: %w", err)
+	}
 	tagsKV, err := initServiceWithRetry("tags KV bucket", func() (jetstream.KeyValue, error) {
 		tagsJS, jsErr := jetstream.New(d.natsConn)
 		if jsErr != nil {
@@ -2586,6 +2593,8 @@ func (d *Daemon) startCluster() error {
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))
 			reapers = append(reapers, d.volumeService.NewVolumeReclaimReaper())
+			reapers = append(reapers, d.volumeService.NewUnpublishObligationReaper(d.node, d.volumeMounter()))
+			reapers = append(reapers, d.volumeService.NewUnpublishObligationCloser(d.nodeDeparted))
 		}
 		if d.eksService != nil {
 			reapers = append(reapers, d.eksService.NewBillableReaper(d.nodeRunningVMs))

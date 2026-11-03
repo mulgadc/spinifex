@@ -16,6 +16,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit/ebsfake"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
@@ -1767,7 +1768,7 @@ func TestDeleteVolumeOnTerminate_ClearsAttachmentThenDeletes(t *testing.T) {
 		AttachedInstance: "i-stopped",
 	})
 
-	err := svc.DeleteVolumeOnTerminate(context.Background(), volumeID, testVolAccountID)
+	err := svc.DeleteVolumeOnTerminate(context.Background(), volumeID, testVolAccountID, ec2instance.OwedUnpublish{})
 	require.NoError(t, err, "terminate implies detach: a stale attachment must not block the terminate delete")
 
 	deleting, err := svc.GetVolumeMetadata(testVolAccountID, volumeID)
@@ -1794,7 +1795,7 @@ func TestDeleteVolumeOnTerminate_AlreadyGoneMetadataIsSuccess(t *testing.T) {
 	svc.snapshotKV = kv
 
 	// No metadata doc is ever written for this volume ID.
-	err := svc.DeleteVolumeOnTerminate(context.Background(), "vol-already-gone", testVolAccountID)
+	err := svc.DeleteVolumeOnTerminate(context.Background(), "vol-already-gone", testVolAccountID, ec2instance.OwedUnpublish{})
 	require.NoError(t, err, "a volume with no metadata document is already gone, not a teardown failure")
 }
 
@@ -1807,7 +1808,7 @@ func TestDetachVolumeOnTerminate_AlreadyGoneMetadataIsSuccess(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 	svc.snapshotKV = kv
 
-	err := svc.DetachVolumeOnTerminate(context.Background(), "vol-already-gone", testVolAccountID)
+	err := svc.DetachVolumeOnTerminate(context.Background(), "vol-already-gone", testVolAccountID, ec2instance.OwedUnpublish{})
 	require.NoError(t, err, "a volume with no metadata document is already gone, not a teardown failure")
 }
 
@@ -1891,7 +1892,7 @@ func TestDeleteVolume_SecondDeleteIsAcceptedWithoutASecondTeardown(t *testing.T)
 
 	// DeleteOnTermination arriving for a volume already owed must not reset it
 	// to available, which would let a second teardown through.
-	require.NoError(t, svc.DeleteVolumeOnTerminate(context.Background(), volumeID, testVolAccountID))
+	require.NoError(t, svc.DeleteVolumeOnTerminate(context.Background(), volumeID, testVolAccountID, ec2instance.OwedUnpublish{}))
 	meta, err := svc.metadata.GetVolume(context.Background(), testVolAccountID, volumeID)
 	require.NoError(t, err)
 	assert.Equal(t, "deleting", meta.State)
@@ -1939,7 +1940,7 @@ func TestDeleteVolumeOnTerminate_SurfacesDeleteFailure(t *testing.T) {
 	_, err = kv.Put(t.Context(), volumeID, snapData)
 	require.NoError(t, err)
 
-	err = svc.DeleteVolumeOnTerminate(context.Background(), volumeID, testVolAccountID)
+	err = svc.DeleteVolumeOnTerminate(context.Background(), volumeID, testVolAccountID, ec2instance.OwedUnpublish{})
 	require.Error(t, err, "a DeleteVolume failure must be surfaced, not swallowed")
 	assert.Contains(t, err.Error(), awserrors.ErrorVolumeInUse)
 

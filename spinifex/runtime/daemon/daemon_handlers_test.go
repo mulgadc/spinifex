@@ -26,6 +26,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2account "github.com/mulgadc/spinifex/spinifex/domains/ec2/account"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	ebsobligation "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/obligation"
 	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
@@ -107,6 +108,17 @@ func wireTestEBSProvider(daemon *Daemon, store objectstore.ObjectStore) {
 	daemon.imageService.SetEBSProvider(provider)
 	daemon.snapshotService.SetEBSProvider(provider)
 	daemon.volumeService.SetEBSProvider(provider)
+}
+
+// wireTestUnpublishObligations gives the daemon's volume service an obligation
+// bucket on a JetStream of its own, so no other test's obligations are seen.
+func wireTestUnpublishObligations(t *testing.T, daemon *Daemon) *ebsobligation.Store {
+	t.Helper()
+	_, _, js := testutil.StartTestJetStream(t)
+	store := ebsobligation.NewStore(js)
+	require.NoError(t, store.Open(t.Context()))
+	daemon.volumeService.SetUnpublishObligations(store, nil, daemon.clusterMembers)
+	return store
 }
 
 // seedVolumeDocument registers a volume the only way the control plane knows

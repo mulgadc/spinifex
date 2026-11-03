@@ -1734,6 +1734,7 @@ type fakeVolumeDeleter struct {
 	calls    []string
 	deleted  []string
 	detached []string
+	owed     []OwedUnpublish
 	err      error
 }
 
@@ -1749,7 +1750,8 @@ func (f *fakeVolumeDeleter) DeleteVolume(_ context.Context, input *ec2.DeleteVol
 
 // DeleteVolumeOnTerminate mirrors DeleteVolume's call/error bookkeeping; the
 // stopped-instance terminate path calls this instead of DeleteVolume.
-func (f *fakeVolumeDeleter) DeleteVolumeOnTerminate(_ context.Context, volumeID, _ string) error {
+func (f *fakeVolumeDeleter) DeleteVolumeOnTerminate(_ context.Context, volumeID, _ string, owed OwedUnpublish) error {
+	f.owed = append(f.owed, owed)
 	f.calls = append(f.calls, volumeID)
 	if f.err != nil {
 		return f.err
@@ -1761,7 +1763,8 @@ func (f *fakeVolumeDeleter) DeleteVolumeOnTerminate(_ context.Context, volumeID,
 // DetachVolumeOnTerminate mirrors DeleteVolumeOnTerminate's call/error
 // bookkeeping but records into detached instead of deleted; the non-DoT
 // Boot-volume branch calls this instead of deleting.
-func (f *fakeVolumeDeleter) DetachVolumeOnTerminate(_ context.Context, volumeID, _ string) error {
+func (f *fakeVolumeDeleter) DetachVolumeOnTerminate(_ context.Context, volumeID, _ string, owed OwedUnpublish) error {
+	f.owed = append(f.owed, owed)
 	f.calls = append(f.calls, volumeID)
 	if f.err != nil {
 		return f.err
@@ -2009,6 +2012,45 @@ func TestTerminateStoppedInstance_UserVolumeDeleted(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"vol-user-001"}, vd.deleted, "only DeleteOnTermination=true volumes deleted")
 	assert.Equal(t, []string{"vol-keep-001"}, vd.detached, "terminate implies detach even for a volume that survives it")
+	assert.Equal(t, []OwedUnpublish{{}, {}}, vd.owed, "a stop whose unmount completed owes no unpublish")
+}
+
+// A stop whose seal failed left those volumes exported on the node that
+// stopped the instance, so terminate names that node for each of them alone.
+func TestTerminateStoppedInstance_FailedSealOwesTheStoppingNodeAnUnpublish(t *testing.T) {
+	id := "i-seal-failed"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc", LastNode: "node-a",
+		UnpublishOwed: []string{"vol-root-001", "vol-keep-001"}}
+	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+		{Name: "vol-root-001", Boot: true, DeleteOnTermination: true},
+		{Name: "vol-keep-001", DeleteOnTermination: false},
+		{Name: "vol-sealed-001", DeleteOnTermination: false},
+	}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+	vd := &fakeVolumeDeleter{}
+	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+
+	owed := OwedUnpublish{NodeID: "node-a", InstanceID: id}
+	assert.Equal(t, []string{"vol-root-001", "vol-keep-001", "vol-sealed-001"}, vd.calls)
+	assert.Equal(t, []OwedUnpublish{owed, owed, {}}, vd.owed)
+}
+
+// With no node recorded there is no node to name; the terminate owes nothing
+// rather than naming an empty node.
+func TestTerminateStoppedInstance_NoLastNodeOwesNothing(t *testing.T) {
+	id := "i-seal-failed-nonode"
+	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc", UnpublishOwed: []string{"vol-keep-001"}}
+	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-keep-001"}}
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+	vd := &fakeVolumeDeleter{}
+	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+	assert.Equal(t, []OwedUnpublish{{}}, vd.owed)
 }
 
 // TestTerminateStoppedInstance_StampsTeardownVolumesDone locks the

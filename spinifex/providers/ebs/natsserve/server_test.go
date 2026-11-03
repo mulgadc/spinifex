@@ -81,3 +81,34 @@ func TestServerSpan_SurvivesAnUntracedCaller(t *testing.T) {
 	assert.Equal(t, "ebs.volume.list", serverSpan.Name())
 	assert.False(t, serverSpan.Parent().IsValid(), "an untraced caller must not leave a dangling parent")
 }
+
+// TestServerSpan_CarriesTheCallersAccount attributes provider work to the
+// account the request acts for, on both halves of the hop, and leaves an
+// unattributed request unattributed.
+func TestServerSpan_CarriesTheCallersAccount(t *testing.T) {
+	recorder := testutil.RecordSpans(t)
+	client := serveMemoryProvider(t)
+
+	ctx := ebsprovider.WithAccountID(t.Context(), "000000000042")
+	_, err := client.ListVolumes(ctx, ebsprovider.ListVolumesRequest{Versioned: ebsprovider.NewVersioned()})
+	require.NoError(t, err)
+	clientSpan, serverSpan := spansByKind(t, recorder)
+	assert.Equal(t, "000000000042", spanAccount(clientSpan))
+	assert.Equal(t, "000000000042", spanAccount(serverSpan))
+
+	recorder = testutil.RecordSpans(t)
+	_, err = client.ListVolumes(t.Context(), ebsprovider.ListVolumesRequest{Versioned: ebsprovider.NewVersioned()})
+	require.NoError(t, err)
+	clientSpan, serverSpan = spansByKind(t, recorder)
+	assert.Empty(t, spanAccount(clientSpan))
+	assert.Empty(t, spanAccount(serverSpan))
+}
+
+func spanAccount(span sdktrace.ReadOnlySpan) string {
+	for _, attr := range span.Attributes() {
+		if attr.Key == "aws.account_id" {
+			return attr.Value.AsString()
+		}
+	}
+	return ""
+}

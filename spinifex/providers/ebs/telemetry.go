@@ -30,6 +30,9 @@ const (
 	attrNodeID      = "ebs.provider.node_id"
 	attrOwnerRouted = "ebs.provider.owner_routed"
 	attrErrorCode   = "ebs.provider.error_code"
+	// attrAccountID matches the key the gateway and the control plane's own
+	// NATS spans use, so one field follows a request to the provider.
+	attrAccountID = "aws.account_id"
 )
 
 // VerbUnknown is the verb reported for a subject that is not part of the
@@ -122,10 +125,15 @@ func parseSubject(subject string) subjectTarget {
 	}
 }
 
-func (t subjectTarget) attributes(subject string) []attribute.KeyValue {
+// attributes describes the target; an empty accountID is left off, as work
+// with no caller must not be credited to anyone.
+func (t subjectTarget) attributes(subject, accountID string) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.String("messaging.system", "nats"),
 		attribute.String(attrSubject, subject),
+	}
+	if accountID != "" {
+		attrs = append(attrs, attribute.String(attrAccountID, accountID))
 	}
 	if t.volumeID != "" {
 		attrs = append(attrs, attribute.String(attrVolumeID, t.volumeID))
@@ -154,11 +162,11 @@ func (c headerCarrier) Keys() []string {
 
 // startClientSpan opens a span for an outbound request and injects the trace
 // context into hdr so the serving provider joins the same trace.
-func startClientSpan(ctx context.Context, subject string, hdr nats.Header) (context.Context, trace.Span) {
+func startClientSpan(ctx context.Context, subject, accountID string, hdr nats.Header) (context.Context, trace.Span) {
 	target := parseSubject(subject)
 	ctx, span := otel.Tracer(tracerName).Start(ctx, spanNamePrefix+target.verb,
 		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(target.attributes(subject)...))
+		trace.WithAttributes(target.attributes(subject, accountID)...))
 	otel.GetTextMapPropagator().Inject(ctx, headerCarrier(hdr))
 	return ctx, span
 }
@@ -176,16 +184,18 @@ func startCompletionSpan(ctx context.Context, verb, completionSubject string) (c
 }
 
 // StartServerSpan joins the trace carried in msg's headers and opens a span
-// for the verb its subject names. Callers must End the returned span and
-// should pass the returned context into the work the handler does.
+// for the verb its subject names, attributed to the account the request
+// carries. Callers must End the span and pass the context into the handler.
 func StartServerSpan(ctx context.Context, msg *nats.Msg) (context.Context, trace.Span) {
 	target := parseSubject(msg.Subject)
+	var accountID string
 	if msg.Header != nil {
 		ctx = otel.GetTextMapPropagator().Extract(ctx, headerCarrier(msg.Header))
+		accountID = msg.Header.Get(AccountIDHeader)
 	}
 	return otel.Tracer(tracerName).Start(ctx, spanNamePrefix+target.verb,
 		trace.WithSpanKind(trace.SpanKindServer),
-		trace.WithAttributes(target.attributes(msg.Subject)...))
+		trace.WithAttributes(target.attributes(msg.Subject, accountID)...))
 }
 
 // RecordSpanError marks span failed for a transport or handler error.

@@ -218,6 +218,30 @@ var (
 	ErrInvalidExport     = errors.New("returned an invalid export")
 )
 
+// ErrUnreadableReply is a reply that arrived but could not be decoded, or
+// carried a schema version this build does not serve. The provider did
+// receive the request, so whatever it asked for may have happened.
+var ErrUnreadableReply = errors.New("provider reply could not be read")
+
+// AccountIDHeader carries the account a contract request acts for. It is the
+// header the control plane's other NATS hops use, so one name attributes a
+// request from the gateway through to the provider.
+const AccountIDHeader = "X-Account-ID"
+
+type accountIDKey struct{}
+
+// WithAccountID returns ctx carrying the account the contract requests made
+// under it act for. An empty accountID leaves them unattributed.
+func WithAccountID(ctx context.Context, accountID string) context.Context {
+	return context.WithValue(ctx, accountIDKey{}, accountID)
+}
+
+// AccountIDFromContext returns the account WithAccountID put on ctx, or "".
+func AccountIDFromContext(ctx context.Context) string {
+	accountID, _ := ctx.Value(accountIDKey{}).(string)
+	return accountID
+}
+
 // NATSProvider drives a provider daemon through the versioned ebs.* contract.
 type NATSProvider struct {
 	conn           *nats.Conn
@@ -358,7 +382,7 @@ func (p *NATSProvider) CreateSnapshot(ctx context.Context, req CreateSnapshotReq
 	if err != nil {
 		return nil, err
 	}
-	if p.conn == nil || !p.conn.IsConnected() {
+	if !p.connected() {
 		return nil, nats.ErrConnectionClosed
 	}
 
@@ -398,7 +422,7 @@ func (p *NATSProvider) CreateSnapshot(ctx context.Context, req CreateSnapshotReq
 	RecordResponseError(waitSpan, msg.Data)
 	var completed CreateSnapshotResponse
 	if err := json.Unmarshal(msg.Data, &completed); err != nil {
-		return nil, fmt.Errorf("decode snapshot completion: %w", err)
+		return nil, fmt.Errorf("decode snapshot completion: %w: %w", ErrUnreadableReply, err)
 	}
 	if err := responseError(completed.SchemaVersion, completed.Error); err != nil {
 		return nil, err
@@ -542,10 +566,15 @@ func (p *NATSProvider) HoldsUnsealedWrites(ctx context.Context, nodeID string, v
 	return response.Held, nil
 }
 
+// connected reports whether a request can be sent now. A reconnecting
+// connection would buffer it and send it on reconnect, after its caller may
+// have given up, so the provider would act with nobody waiting on the result.
+func (p *NATSProvider) connected() bool {
+	return p.conn != nil && p.conn.IsConnected()
+}
+
 func (p *NATSProvider) request(ctx context.Context, subject string, input, output any) error {
-	// Only a closed connection refuses: one that is reconnecting buffers the
-	// request and sends it once the connection is back.
-	if p.conn == nil || p.conn.IsClosed() {
+	if !p.connected() {
 		return nats.ErrConnectionClosed
 	}
 	payload, err := json.Marshal(input)
@@ -554,7 +583,11 @@ func (p *NATSProvider) request(ctx context.Context, subject string, input, outpu
 	}
 
 	request := &nats.Msg{Subject: subject, Data: payload, Header: nats.Header{}}
-	ctx, span := startClientSpan(ctx, subject, request.Header)
+	accountID := AccountIDFromContext(ctx)
+	if accountID != "" {
+		request.Header.Set(AccountIDHeader, accountID)
+	}
+	ctx, span := startClientSpan(ctx, subject, accountID, request.Header)
 	defer span.End()
 
 	requestCtx, cancel := context.WithTimeout(ctx, p.timeoutFor(subject))
@@ -566,7 +599,7 @@ func (p *NATSProvider) request(ctx context.Context, subject string, input, outpu
 	}
 	if err := json.Unmarshal(msg.Data, output); err != nil {
 		RecordSpanError(span, err)
-		return fmt.Errorf("decode %s response: %w", subject, err)
+		return fmt.Errorf("decode %s response: %w: %w", subject, ErrUnreadableReply, err)
 	}
 	RecordResponseError(span, msg.Data)
 	return nil
@@ -585,7 +618,7 @@ func (p *NATSProvider) requestOwnerFirst(ctx context.Context, ownerSubject, queu
 
 func responseError(version uint16, providerErr *ProviderError) error {
 	if err := checkVersion(version); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrUnreadableReply, err)
 	}
 	if providerErr != nil {
 		return providerErr

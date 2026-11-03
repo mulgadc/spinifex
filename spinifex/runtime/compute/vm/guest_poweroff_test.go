@@ -124,3 +124,32 @@ func TestHandleQEMUExit_WaitErrorIsACrashEvenWithMark(t *testing.T) {
 	assert.Contains(t, rt.targets(instance.ID), StateError)
 	assert.NotContains(t, rt.targets(instance.ID), StateStopped)
 }
+
+// One heartbeat poll is enough to see the poweroff and end QEMU, and the exit
+// then stops the instance. It never goes through the failure count that
+// precedes crash recovery, which takes three polls to reach. The interval is a
+// constant, so "within one interval" is a single poll with no waiting.
+func TestGuestPoweroff_ReachesStoppedFromOnePollWithoutCrashCounting(t *testing.T) {
+	m, _, rt, _ := guestPoweroffManager(t)
+	scheduled := countScheduledRestarts(t)
+
+	qmpClient, cancel := newMockQMPClient(t, func(cmd qmp.QMPCommand) map[string]any {
+		if cmd.Execute == "query-status" {
+			return qmpStatusResponse(qmpStatusShutdown, false)
+		}
+		return nil
+	})
+	defer cancel()
+	instance := &VM{
+		ID: "i-one-poll", Status: StateRunning, InstanceType: "t3.micro",
+		Instance: &ec2.Instance{}, QMPClient: qmpClient,
+	}
+	m.Insert(instance)
+
+	require.True(t, m.qmpHeartbeatPoll(instance), "the poll keeps running until QEMU exits")
+	m.HandleQEMUExit(instance, nil)
+
+	assert.Equal(t, []InstanceState{StateStopping, StateStopped}, rt.targets(instance.ID))
+	assert.Zero(t, instance.Health.QMPConsecutiveFailures, "a powered-off guest is not a failed heartbeat")
+	assert.Zero(t, scheduled.Load(), "no crash restart")
+}

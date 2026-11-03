@@ -88,3 +88,19 @@ func TestReconcileStartVolumes_MissingBootVolumeFailsTheStart(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "vol-root", "the error names the missing boot volume")
 }
+
+// An instance stopped on an older build had its data volumes released to
+// available with no attachment; those are still the instance's own and a
+// start must bring them back.
+func TestReconcileStartVolumes_ReattachesStillAvailableUnattachedVolume(t *testing.T) {
+	svc := startVolumesService(t,
+		ebsmetadata.Volume{VolumeID: "vol-root", State: "in-use", AttachedInstance: "i-old"},
+		ebsmetadata.Volume{VolumeID: "vol-released", State: "available"},
+	)
+	inst := startingInstance("i-old", "vol-root", "vol-released")
+
+	require.NoError(t, svc.reconcileStartVolumes(context.Background(), inst))
+
+	assert.Equal(t, []string{"vol-root", "vol-released"}, requestedNames(inst))
+	assert.Equal(t, []string{"vol-root", "vol-released"}, mappedNames(inst))
+}

@@ -206,11 +206,12 @@ func TestPercentilesComeFromRealSamples(t *testing.T) {
 func TestFirstBreachNamesTheStageThatCrossedTheSLO(t *testing.T) {
 	t.Parallel()
 
-	// Two stages: the second is slow enough to miss a 30ms read SLO.
-	fast := fixedOp("Op", loadgen.KindRead, 2*time.Millisecond, nil)
-	slow := fixedOp("Op", loadgen.KindRead, 60*time.Millisecond, nil)
+	// The SLO sits 200x above the fast op and half the slow one, so only a
+	// scheduler stall of 200ms could make the fast stage breach.
+	fast := fixedOp("Op", loadgen.KindRead, time.Millisecond, nil)
+	slow := fixedOp("Op", loadgen.KindRead, 400*time.Millisecond, nil)
 
-	slo := loadgen.SLO{ReadP99: 30 * time.Millisecond}
+	slo := loadgen.SLO{ReadP99: 200 * time.Millisecond}
 	first, err := loadgen.Run(context.Background(), targets(1), []loadgen.Op{fast},
 		[]loadgen.Stage{{Mode: loadgen.ModeClosed, Concurrency: 1, Duration: 100 * time.Millisecond}}, slo)
 	if err != nil {
@@ -219,10 +220,16 @@ func TestFirstBreachNamesTheStageThatCrossedTheSLO(t *testing.T) {
 	if len(first.Stages[0].Breached) != 0 {
 		t.Fatalf("fast stage reported a breach: %v", first.Stages[0].Breached)
 	}
+	if got := first.Stages[0].Ops["Op"]; got.Count-got.Errors < 1 {
+		t.Fatalf("fast stage recorded %d ops with %d errors; an empty stage proves no non-breach", got.Count, got.Errors)
+	}
+	if b := first.FirstBreach[loadgen.ModeClosed]; b != nil {
+		t.Fatalf("fast run recorded a first breach at stage %d", b.StageIndex)
+	}
 
 	stages := []loadgen.Stage{
-		{Mode: loadgen.ModeClosed, Concurrency: 1, Duration: 100 * time.Millisecond},
-		{Mode: loadgen.ModeClosed, Concurrency: 2, Duration: 200 * time.Millisecond},
+		{Mode: loadgen.ModeClosed, Concurrency: 1, Duration: 600 * time.Millisecond},
+		{Mode: loadgen.ModeClosed, Concurrency: 2, Duration: 600 * time.Millisecond},
 	}
 	report, err := loadgen.Run(context.Background(), targets(1), []loadgen.Op{slow}, stages, slo)
 	if err != nil {

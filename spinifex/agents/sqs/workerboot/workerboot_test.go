@@ -322,7 +322,9 @@ func TestBoot_RecordedKeyMismatchRefuses(t *testing.T) {
 	g := newGuest(t)
 	g.contract()
 	key := g.recordKey()
-	g.auth.recorded = workerkey.Fingerprint(append([]byte("x"), key[1:]...))
+	other := append([]byte(nil), key...)
+	other[0] ^= 0xff
+	g.auth.recorded = workerkey.Fingerprint(other)
 	_, err := g.boot()
 	if !errors.Is(err, workerkey.ErrKeyMismatch) {
 		t.Fatalf("err = %v, want ErrKeyMismatch", err)

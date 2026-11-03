@@ -45,6 +45,7 @@ type localClient struct {
 	svc *function.MetaService
 
 	mu             sync.Mutex
+	forceActive    bool
 	failCodeStored bool
 	passOwnerClock bool
 	rollbacks      int
@@ -68,6 +69,11 @@ func (c *localClient) Get(ctx context.Context, account, region, name string) (fu
 	if !r.Found {
 		return function.Record{}, 0, function.ErrNotFound
 	}
+	c.mu.Lock()
+	if c.forceActive {
+		r.Record.State = function.StateActive
+	}
+	c.mu.Unlock()
 	return r.Record, r.Revision, nil
 }
 
@@ -655,7 +661,7 @@ func TestAuthorization(t *testing.T) {
 
 func TestRegistration_ResolvesActionsAndInventory(t *testing.T) {
 	reg := awsapi.NewRegistration(awsapi.Deps{})
-	assert.Equal(t, []string{"CreateFunction", "GetFunction", "GetFunctionCodeSigningConfig", "GetFunctionConfiguration", "ListVersionsByFunction"}, reg.Inventory.Registered)
+	assert.Equal(t, []string{"CreateFunction", "GetFunction", "GetFunctionCodeSigningConfig", "GetFunctionConfiguration", "Invoke", "ListVersionsByFunction"}, reg.Inventory.Registered)
 	assert.Equal(t, "ListVersionsByFunction", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2015-03-31/functions/x/versions", nil)))
 	assert.Equal(t, "GetFunctionCodeSigningConfig", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2020-06-30/functions/x/code-signing-config", nil)))
 	assert.Equal(t, "CreateFunction", reg.ResolveAction(httptest.NewRequest(http.MethodPost, "/2015-03-31/functions", nil)))

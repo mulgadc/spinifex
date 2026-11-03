@@ -24,6 +24,7 @@ import (
 
 	lambdav1 "github.com/mulgadc/spinifex/contracts/lambda/v1"
 	"github.com/mulgadc/spinifex/spinifex/agents/lambda/hostlink"
+	"github.com/mulgadc/spinifex/spinifex/domains/lambda/execution"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/attempt"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/guestconn"
@@ -39,9 +40,6 @@ const (
 	fwCfgPackage     = lambdav1.FwCfgPrefix + "test-package-"
 )
 
-// noGrant marks the test path: no attempt grant exists for it.
-const noGrant = "test-only-no-grant"
-
 const markerSuffix = ".attempt"
 
 var attemptIDPattern = regexp.MustCompile(`^[0-9a-f]{12}$`)
@@ -53,6 +51,16 @@ type Taps interface {
 	RemoveOwnedTap(tap host.OwnedTap) error
 }
 
+// Grants is the execution owner's side of an attempt the daemon runs.
+type Grants interface {
+	Start(ctx context.Context, g execution.Grant, want execution.Identity) error
+	Accept(ctx context.Context, g execution.Grant) error
+	Stopped(ctx context.Context, g execution.Grant) error
+	Ambiguous(ctx context.Context, g execution.Grant) error
+}
+
+var _ Grants = (*execution.Store)(nil)
+
 // IPs hands out and takes back management-bridge addresses.
 type IPs interface {
 	Allocate(id string) (string, error)
@@ -61,6 +69,8 @@ type IPs interface {
 
 // Daemon runs one test-link invocation at a time on this node.
 type Daemon struct {
+	Node     string
+	Grants   Grants
 	Taps     Taps
 	IPs      IPs
 	Bridge   string
@@ -70,6 +80,10 @@ type Daemon struct {
 	Firmware string
 	WorkDir  string
 	HTTP     *http.Client
+	// Initializer is the hard-kill library preloaded into QEMU, and
+	// InitializerSHA256 the digest it must have.
+	Initializer       string
+	InitializerSHA256 string
 
 	busy atomic.Bool
 }
@@ -108,8 +122,9 @@ func (d *Daemon) Serve(ctx context.Context, nc *nats.Conn, node string) (*nats.S
 	})
 }
 
-// Handle runs one request. It refuses before launch when it can; after
-// launch it reports done only with a result and a proven VM stop.
+// Handle runs one request under its grant. It refuses before launch when it
+// can; after launch it reports done only with a result the owner accepted and
+// a proven VM stop.
 func (d *Daemon) Handle(ctx context.Context, data []byte) Reply {
 	var req Request
 	if err := json.Unmarshal(data, &req); err != nil {
@@ -117,6 +132,9 @@ func (d *Daemon) Handle(ctx context.Context, data []byte) Reply {
 	}
 	if err := CheckRequest(req); err != nil {
 		return refused(err.Error())
+	}
+	if req.Grant.Node != d.Node {
+		return refused("grant names another node")
 	}
 	if !d.busy.CompareAndSwap(false, true) {
 		return refused("another test-link attempt holds this node's slot")
@@ -131,20 +149,56 @@ func (d *Daemon) Handle(ctx context.Context, data []byte) Reply {
 	if id, err := d.unresolved(); err != nil || id != "" {
 		return refused("an unresolved test-link attempt holds this node's slot")
 	}
-
-	code, err := d.fetch(ctx, req)
-	if err != nil {
+	if err := d.checkInitializer(); err != nil {
 		return refused(err.Error())
 	}
-	rep, resolved := d.run(ctx, req, code)
+	// The owner refuses a stale, replayed or mismatched grant before anything
+	// is taken; a write it cannot confirm leaves the attempt possibly started.
+	if err := d.Grants.Start(ctx, req.Grant, req.Identity()); err != nil {
+		if errors.Is(err, execution.ErrOutcomeUnknown) {
+			slog.Error("Lambda test link: grant start outcome unknown; node held", "attempt", req.AttemptID, "err", err)
+			return Reply{Outcome: OutcomeUnknown, Error: "grant start outcome unknown"}
+		}
+		return refused(err.Error())
+	}
+
+	var rep Reply
+	resolved := true
+	if code, err := d.fetch(ctx, req); err != nil {
+		rep = refused(err.Error())
+	} else {
+		rep, resolved = d.run(ctx, req, code)
+	}
 	held = !resolved
+	d.record(ctx, req, resolved)
 	return rep
+}
+
+// record tells the owner how the attempt ended: stopped only when the VM stop
+// is proven and everything it held released, otherwise ambiguous.
+func (d *Daemon) record(ctx context.Context, req Request, resolved bool) {
+	if resolved {
+		if err := d.Grants.Stopped(ctx, req.Grant); err != nil {
+			// The write may have landed; the stop was proven before it either way.
+			slog.Error("Lambda test link: stop record outcome unknown", "attempt", req.AttemptID, "err", err)
+		}
+		return
+	}
+	if err := d.Grants.Ambiguous(ctx, req.Grant); err != nil {
+		slog.Error("Lambda test link: ambiguous record outcome unknown", "attempt", req.AttemptID, "err", err)
+	}
 }
 
 // CheckRequest is the daemon's validation of a test-link request.
 func CheckRequest(req Request) error {
 	if !attemptIDPattern.MatchString(req.AttemptID) {
 		return errors.New("attempt ID must be 12 lowercase hex digits")
+	}
+	if req.Grant.GrantID == "" || req.Grant.AttemptID != req.AttemptID {
+		return errors.New("request carries no grant for its attempt")
+	}
+	if req.RequestID == "" || req.RevisionID == "" {
+		return errors.New("request and revision IDs are required")
 	}
 	if req.TimeoutMs <= 0 || req.TimeoutMs > maxTimeoutMs {
 		return fmt.Errorf("timeout %d ms outside 1..%d", req.TimeoutMs, maxTimeoutMs)
@@ -249,9 +303,18 @@ func (d *Daemon) run(ctx context.Context, req Request, code []byte) (rep Reply, 
 	if err != nil {
 		return refused("VM command build failed"), d.release(a)
 	}
+	hk, err := armCommand(cmd, d.Initializer, timeoutFor(req)+HardKillMargin)
+	if err != nil {
+		return refused("hard-kill setup failed"), d.release(a)
+	}
+	defer hk.close()
 	var result Reply
 	out, runErr := attempt.Run(ctx, cmd, timeoutFor(req), func(sctx context.Context) error {
-		r, err := d.session(sctx, req, gen, ln, a.dir)
+		// No frame reaches the guest until QEMU proves its own kill timer is armed.
+		if err := hk.await(sctx, cmd.Process.Pid, armWait); err != nil {
+			return err
+		}
+		r, err := d.session(sctx, req, gen, ln, a.dir, d.Grants.Accept)
 		result = r
 		return err
 	})
@@ -269,7 +332,7 @@ func (d *Daemon) run(ctx context.Context, req Request, code []byte) (rep Reply, 
 }
 
 func safeRunError(err error) string {
-	for _, known := range []error{ErrFunctionTimeout, attempt.ErrTimedOut, attempt.ErrVMExited, attempt.ErrNoPidfd, context.Canceled, context.DeadlineExceeded} {
+	for _, known := range []error{ErrNotArmed, ErrResultNotAccepted, ErrFunctionTimeout, attempt.ErrTimedOut, attempt.ErrVMExited, attempt.ErrNoPidfd, context.Canceled, context.DeadlineExceeded} {
 		if errors.Is(err, known) {
 			return known.Error()
 		}
@@ -345,8 +408,10 @@ func timeoutFor(req Request) time.Duration {
 }
 
 // session accepts the guest, sends the one invocation and checks the result
-// answers it. The guest key file goes once the guest has authenticated.
-func (d *Daemon) session(ctx context.Context, req Request, gen *guestconn.Generation, ln *net.TCPListener, dir string) (Reply, error) {
+// answers it before the owner records it accepted. The guest key file goes
+// once the guest has authenticated.
+func (d *Daemon) session(ctx context.Context, req Request, gen *guestconn.Generation, ln *net.TCPListener, dir string,
+	accept func(context.Context, execution.Grant) error) (Reply, error) {
 	conn, err := gen.AcceptGuest(ctx, ln, handshakeTimeout)
 	if err != nil {
 		return Reply{}, fmt.Errorf("accept guest: %w", err)
@@ -365,7 +430,7 @@ func (d *Daemon) session(ctx context.Context, req Request, gen *guestconn.Genera
 
 	stream := hostlink.NewTestStream(conn)
 	if err := stream.HostSend(hostlink.Request{
-		GrantID:     noGrant,
+		GrantID:     req.Grant.GrantID,
 		AttemptID:   req.AttemptID,
 		RequestID:   req.RequestID,
 		FunctionARN: req.FunctionARN,
@@ -382,8 +447,15 @@ func (d *Daemon) session(ctx context.Context, req Request, gen *guestconn.Genera
 	if !now().Before(deadline) {
 		return Reply{}, ErrFunctionTimeout
 	}
-	if resp.GrantID != noGrant || resp.AttemptID != req.AttemptID || resp.RequestID != req.RequestID {
+	if resp.GrantID != req.Grant.GrantID || resp.AttemptID != req.AttemptID || resp.RequestID != req.RequestID {
 		return Reply{}, errors.New("result answers a different request")
+	}
+	if err := accept(rctx, req.Grant); err != nil {
+		return Reply{}, pastDeadline(deadline, fmt.Errorf("%w: %w", ErrResultNotAccepted, err))
+	}
+	// An acceptance that lands after the deadline is still a timeout.
+	if !now().Before(deadline) {
+		return Reply{}, ErrFunctionTimeout
 	}
 	_ = stream.HostShutdown()
 	return Reply{Outcome: OutcomeDone, Payload: resp.Payload, FunctionError: resp.FunctionError}, nil
@@ -391,6 +463,10 @@ func (d *Daemon) session(ctx context.Context, req Request, gen *guestconn.Genera
 
 // now is the clock the dispatch deadline is read from; tests replace it.
 var now = time.Now
+
+// ErrResultNotAccepted reports a result the owner would not accept under the
+// attempt's grant.
+var ErrResultNotAccepted = errors.New("result not accepted under the current grant")
 
 // ErrFunctionTimeout reports that the guest did not answer within the
 // function timeout counted from dispatch.

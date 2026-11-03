@@ -13,6 +13,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/codestore"
+	"github.com/mulgadc/spinifex/spinifex/domains/lambda/execution"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/testlink"
 	"github.com/nats-io/nats.go"
@@ -31,17 +32,28 @@ type natsRequester interface {
 
 var _ natsRequester = (*nats.Conn)(nil)
 
+// grantIssuer records an attempt's grant and withdraws one never sent.
+type grantIssuer interface {
+	Issue(ctx context.Context, a execution.Attempt) (execution.Attempt, error)
+	Withdraw(ctx context.Context, g execution.Grant) error
+}
+
+var _ grantIssuer = (*execution.Store)(nil)
+
 // testLinkExecutor sends each invocation to the test-link daemon on Node.
 type testLinkExecutor struct {
-	NATS  natsRequester
-	Node  string
-	Codes func(context.Context) (codePresigner, error)
+	NATS   natsRequester
+	Node   string
+	Codes  func(context.Context) (codePresigner, error)
+	Grants func(context.Context) (grantIssuer, error)
+	now    func() time.Time
 }
 
 var _ awsapi.Executor = (*testLinkExecutor)(nil)
 
-// InvokeSync refuses anything it cannot send whole. Once the request is on the
-// wire, every failure is an unknown outcome, never a refusal.
+// InvokeSync records the attempt's grant before sending and refuses anything
+// it cannot send whole. Once the request is on the wire, every failure is an
+// unknown outcome, never a refusal.
 func (e *testLinkExecutor) InvokeSync(ctx context.Context, in awsapi.SyncInvocation) (awsapi.SyncResult, error) {
 	rec := in.Function
 	if rec.Code.SHA256 == "" || rec.Code.Size <= 0 || rec.Code.Size > testlink.MaxCodeBytes {
@@ -64,13 +76,40 @@ func (e *testLinkExecutor) InvokeSync(ctx context.Context, in awsapi.SyncInvocat
 	if err != nil {
 		return awsapi.SyncResult{}, &awsapi.RefusalError{Err: err}
 	}
+	grants, err := e.Grants(ctx)
+	if err != nil {
+		return awsapi.SyncResult{}, &awsapi.RefusalError{Err: fmt.Errorf("execution owner: %w", err)}
+	}
+	now := time.Now
+	if e.now != nil {
+		now = e.now
+	}
+	// Nothing has been sent yet, so even a grant write of unknown outcome is
+	// a refusal; a landed grant expires unstarted at its launch deadline.
+	att, err := grants.Issue(ctx, execution.Attempt{
+		Grant: execution.Grant{AttemptID: attemptID, EnvironmentID: "env-" + attemptID, Generation: 1, Node: e.Node},
+		Identity: execution.Identity{RequestID: requestID, AccountID: rec.AccountID, Region: rec.Region,
+			FunctionID: rec.FunctionID, RevisionID: rec.Code.RevisionID, CodeSHA256: rec.Code.SHA256},
+		LaunchBy: now().Add(testlink.LaunchWindow),
+	})
+	if err != nil {
+		return awsapi.SyncResult{}, &awsapi.RefusalError{Err: fmt.Errorf("attempt grant: %w", err)}
+	}
+	refuse := func(err error) (awsapi.SyncResult, error) {
+		if werr := grants.Withdraw(ctx, att.Grant); werr != nil {
+			err = fmt.Errorf("%w; grant not withdrawn: %w", err, werr)
+		}
+		return awsapi.SyncResult{}, &awsapi.RefusalError{Err: err}
+	}
 	body, err := json.Marshal(testlink.Request{
+		Grant:       att.Grant,
 		AttemptID:   attemptID,
 		RequestID:   requestID,
 		FunctionARN: arn.FormatLambdaFunction(rec.Region, rec.AccountID, rec.FunctionName),
 		Region:      rec.Region,
 		AccountID:   rec.AccountID,
 		FunctionID:  rec.FunctionID,
+		RevisionID:  rec.Code.RevisionID,
 		TimeoutMs:   rec.Timeout * 1000,
 		MemoryMiB:   rec.MemorySize,
 		CodeURL:     url,
@@ -79,11 +118,11 @@ func (e *testLinkExecutor) InvokeSync(ctx context.Context, in awsapi.SyncInvocat
 		Payload:     in.Payload,
 	})
 	if err != nil {
-		return awsapi.SyncResult{}, &awsapi.RefusalError{Err: errors.New("encode test-link request")}
+		return refuse(errors.New("encode test-link request"))
 	}
 	// The encoded request, base64 payload included, must fit one NATS message.
 	if limit := e.NATS.MaxPayload(); int64(len(body)) > limit {
-		return awsapi.SyncResult{}, &awsapi.RefusalError{Err: fmt.Errorf("encoded request of %d bytes exceeds the %d-byte message limit", len(body), limit)}
+		return refuse(fmt.Errorf("encoded request of %d bytes exceeds the %d-byte message limit", len(body), limit))
 	}
 	msg, err := e.NATS.RequestWithContext(ctx, testlink.Subject(e.Node), body)
 	if err != nil {
@@ -97,6 +136,9 @@ func (e *testLinkExecutor) InvokeSync(ctx context.Context, in awsapi.SyncInvocat
 	case testlink.OutcomeDone:
 		return awsapi.SyncResult{Payload: rep.Payload, FunctionError: rep.FunctionError, ExecutedVersion: "$LATEST"}, nil
 	case testlink.OutcomeRefused:
+		// The daemon launched nothing. A grant it started it has ended itself,
+		// so withdrawing is refused then and changes nothing.
+		_ = grants.Withdraw(ctx, att.Grant)
 		return awsapi.SyncResult{}, &awsapi.RefusalError{Err: fmt.Errorf("test-link daemon refused: %s", rep.Error)}
 	default:
 		return awsapi.SyncResult{}, fmt.Errorf("test-link attempt %s: outcome %q: %s", attemptID, rep.Outcome, rep.Error)

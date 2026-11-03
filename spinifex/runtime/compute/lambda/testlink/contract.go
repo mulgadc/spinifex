@@ -1,12 +1,15 @@
 //go:build lambdatestlink
 
-// Package testlink carries one controlled-test Lambda invocation from the
-// gateway to the daemon on the same node and runs it in a fresh guest VM. It
-// exists only in lambdatestlink builds; it holds no grant and is not the
-// production executor.
+// Package testlink runs one controlled-test Lambda invocation in a fresh guest
+// VM on the gateway's node. It exists only in lambdatestlink builds, is not the
+// production executor, and does not yet bind the guest to the grant.
 package testlink
 
-import "time"
+import (
+	"time"
+
+	"github.com/mulgadc/spinifex/spinifex/domains/lambda/execution"
+)
 
 // Subject is the request subject for one node's test-link daemon.
 func Subject(node string) string { return "spinifex.lambda.testlink.invoke." + node }
@@ -27,23 +30,27 @@ const (
 	// BootAllowance is added to the function timeout to bound the whole VM run.
 	BootAllowance = 15 * time.Second
 	CodeURLTTL    = 2 * time.Minute
+	// LaunchWindow is how long a grant may wait for the daemon to start it.
+	LaunchWindow = 30 * time.Second
 )
 
 // Request asks the daemon to run one invocation. CodeURL is a short-lived
 // download link for the exact digest; it must never be logged or stored.
 type Request struct {
-	AttemptID   string `json:"attempt_id"`
-	RequestID   string `json:"request_id"`
-	FunctionARN string `json:"function_arn"`
-	Region      string `json:"region"`
-	AccountID   string `json:"account_id"`
-	FunctionID  string `json:"function_id"`
-	TimeoutMs   int64  `json:"timeout_ms"`
-	MemoryMiB   int64  `json:"memory_mib"`
-	CodeURL     string `json:"code_url"`
-	CodeSize    int64  `json:"code_size"`
-	CodeSHA256  string `json:"code_sha256"`
-	Payload     []byte `json:"payload"`
+	Grant       execution.Grant `json:"grant"`
+	AttemptID   string          `json:"attempt_id"`
+	RequestID   string          `json:"request_id"`
+	FunctionARN string          `json:"function_arn"`
+	Region      string          `json:"region"`
+	AccountID   string          `json:"account_id"`
+	FunctionID  string          `json:"function_id"`
+	RevisionID  string          `json:"revision_id"`
+	TimeoutMs   int64           `json:"timeout_ms"`
+	MemoryMiB   int64           `json:"memory_mib"`
+	CodeURL     string          `json:"code_url"`
+	CodeSize    int64           `json:"code_size"`
+	CodeSHA256  string          `json:"code_sha256"`
+	Payload     []byte          `json:"payload"`
 }
 
 // Reply is the daemon's answer. Error is a reason safe to log.
@@ -52,4 +59,10 @@ type Reply struct {
 	Payload       []byte `json:"payload,omitempty"`
 	FunctionError string `json:"function_error,omitempty"`
 	Error         string `json:"error,omitempty"`
+}
+
+// Identity is the request and code identity the grant must authorise.
+func (r Request) Identity() execution.Identity {
+	return execution.Identity{RequestID: r.RequestID, AccountID: r.AccountID, Region: r.Region,
+		FunctionID: r.FunctionID, RevisionID: r.RevisionID, CodeSHA256: r.CodeSHA256}
 }

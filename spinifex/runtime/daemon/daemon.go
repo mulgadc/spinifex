@@ -2755,6 +2755,10 @@ func (d *Daemon) initJetStream() error {
 		}
 
 		if err == nil {
+			err = d.jsManager.InitUEFIStoreBucket()
+		}
+
+		if err == nil {
 			d.jsManager.SetSyncObserver(d)
 			// Replicas cannot be undeclared here: bucket creation refuses
 			// before it, so reaching this line means it was declared.

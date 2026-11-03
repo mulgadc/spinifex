@@ -32,15 +32,6 @@ func GatewaySwitchPort(vpcID string) string { return "gw-port-" + vpcID }
 // Only this binding carries the gateway-chassis claim; the LRP binding stays chassis-less.
 func GatewayChassisRedirectPort(vpcID string) string { return "cr-" + GatewayRouterPort(vpcID) }
 
-// ExternalSwitch is the OVN logical switch name for the legacy per-VPC external
-// switch. Retained only so the reconciler/teardown can identify and remove
-// pre-shared-switch deployments; new attaches use ExternalSwitchShared.
-func ExternalSwitch(vpcID string) string { return "ext-" + vpcID }
-
-// ExternalLocalnetPort is the legacy per-VPC localnet LSP name. Retained for
-// legacy cleanup only; see ExternalLocalnetPortShared.
-func ExternalLocalnetPort(vpcID string) string { return "ext-port-" + vpcID }
-
 // ExternalSwitchShared is the single shared external logical switch. Every VPC
 // gateway router port attaches here so only one untagged localnet exists per
 // physical network — multiple per-VPC localnets on one uplink collide on L2.

@@ -77,15 +77,3 @@ func EnsureNATEgressRules(ctx context.Context, r Runner) error {
 	}
 	return nil
 }
-
-// RemoveNATEgressRules deletes the routed-NAT egress rules; missing rules are
-// not an error (teardown is idempotent).
-func RemoveNATEgressRules(ctx context.Context, r Runner) {
-	for _, rule := range natEgressRules {
-		if _, err := r.Run(ctx, "iptables", natRuleArgs("-D", rule.table, rule.chain, rule.spec)...); err != nil {
-			slog.Debug("host: NAT egress rule not present on delete", "table", rule.table, "chain", rule.chain, "err", err)
-		}
-	}
-	_, _ = r.Run(ctx, "iptables", "-t", "nat", "-F", EIPHairpinChain)
-	_, _ = r.Run(ctx, "iptables", "-t", "nat", "-X", EIPHairpinChain)
-}

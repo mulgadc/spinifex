@@ -137,7 +137,8 @@ aws ec2 get-console-output --instance-id $INSTANCE_ID \
 
 Like AWS, the call returns the most recent 64 KiB of the console.
 While an instance is shutting down after a terminate request, the call reads the renamed file described below.
-Once the instance has left the node's running set, which includes a stopped or terminated instance, the node no longer answers the call for it.
+Once the instance has left the node's running set, which includes a stopped or terminated instance, the node no longer answers and the call returns `InvalidInstanceID.NotFound`.
+AWS keeps answering for a terminated instance for about an hour, so this is a known gap.
 Whether the API should answer for a stopped instance is not settled here; only the file on the host is kept.
 
 ### Where console logs live and how big they get

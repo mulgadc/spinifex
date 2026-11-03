@@ -146,6 +146,15 @@ for INIT in openrc systemd; do
     )"
     check "server(${INIT}): enables node-gc" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" mulga-eks-node-gc)")"
     check "server(${INIT}): starts node-gc" "yes" "$(present "${CALLS}" "$(start_cmd "${INIT}" mulga-eks-node-gc)")"
+    check "server(${INIT}): enables log-forward" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" mulga-eks-log-forward)")"
+    check "server(${INIT}): starts log-forward" "yes" "$(present "${CALLS}" "$(start_cmd "${INIT}" mulga-eks-log-forward)")"
+    check "server(${INIT}): starts log-forward before the webhook" "yes" "$(
+        awk -v f="$(start_cmd "${INIT}" mulga-eks-log-forward)" -v w="$(start_cmd "${INIT}" eks-pod-identity-webhook)" '
+            index($0, f) == 1 { fn = NR }
+            index($0, w) == 1 { wn = NR }
+            END { print (fn > 0 && wn > fn) ? "yes" : "no" }
+        ' "${CALLS}"
+    )"
     check "server(${INIT}): no k3s-agent" "no" "$(present "${CALLS}" "$(enable_cmd "${INIT}" k3s-agent)")"
     check "server(${INIT}): self-disables" "yes" "$(present "${CALLS}" "$(disable_cmd "${INIT}" eks-node-role)")"
     check "server(${INIT}): pod-identity-webhook is the last call" "$(start_cmd "${INIT}" eks-pod-identity-webhook)" "$(grep -v "$(disable_cmd "${INIT}" eks-node-role)" "${CALLS}" | tail -n 1)"
@@ -196,6 +205,15 @@ for INIT in openrc systemd; do
     # published the cluster-identical artifacts, and a join re-publish would
     # only race the bootstrap bus. This is deliberate, not an oversight.
     check "server-join(${INIT}): pod-identity-webhook is the last call" "$(start_cmd "${INIT}" eks-pod-identity-webhook)" "$(grep -v "$(disable_cmd "${INIT}" eks-node-role)" "${CALLS}" | tail -n 1)"
+    check "server-join(${INIT}): enables log-forward" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" mulga-eks-log-forward)")"
+    check "server-join(${INIT}): starts log-forward" "yes" "$(present "${CALLS}" "$(start_cmd "${INIT}" mulga-eks-log-forward)")"
+    check "server-join(${INIT}): starts log-forward before the webhook" "yes" "$(
+        awk -v f="$(start_cmd "${INIT}" mulga-eks-log-forward)" -v w="$(start_cmd "${INIT}" eks-pod-identity-webhook)" '
+            index($0, f) == 1 { fn = NR }
+            index($0, w) == 1 { wn = NR }
+            END { print (fn > 0 && wn > fn) ? "yes" : "no" }
+        ' "${CALLS}"
+    )"
     check "server-join(${INIT}): no k3s-first-boot" "yes" "$(absent_all "${CALLS}" "k3s-first-boot")"
     check "server-join(${INIT}): no k3s-agent" "yes" "$(absent_all "${CALLS}" "$(enable_cmd "${INIT}" k3s-agent)")"
     check "server-join(${INIT}): self-disables" "yes" "$(present "${CALLS}" "$(disable_cmd "${INIT}" eks-node-role)")"
@@ -207,7 +225,38 @@ for INIT in openrc systemd; do
     check "agent(${INIT}): exit 0" 0 "${rc}"
     check "agent(${INIT}): role file" "agent" "$(cat "${ROLE_FILE}")"
     check "agent(${INIT}): enables k3s-agent" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" k3s-agent)")"
+    check "agent(${INIT}): enables log-forward" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" mulga-eks-log-forward)")"
+    check "agent(${INIT}): starts log-forward" "yes" "$(present "${CALLS}" "$(start_cmd "${INIT}" mulga-eks-log-forward)")"
+    check "agent(${INIT}): log-forward is enabled after k3s-agent" "yes" "$(
+        awk -v k="$(enable_cmd "${INIT}" k3s-agent)" -v f="$(enable_cmd "${INIT}" mulga-eks-log-forward)" '
+            index($0, k) == 1 { kn = NR }
+            index($0, f) == 1 { fn = NR }
+            END { print (kn > 0 && fn > kn) ? "yes" : "no" }
+        ' "${CALLS}"
+    )"
+
     check "agent(${INIT}): no server services" "yes" "$(absent_all "${CALLS}" "eks-token-webhook" "eks-pod-identity-webhook" "k3s-first-boot" "mulga-eks-node-gc" "$(enable_cmd "${INIT}" k3s)")"
+
+    # A broken log forwarder must never stop a node joining.
+    for FAILING in enable start; do
+        run_case "${INIT}" agent_logfwd_${FAILING}_fail
+        printf 'SPINIFEX_K3S_ROLE=agent\n' > "${EKS_NODE_ENVFILE}"
+        if [ "${FAILING}" = enable ]; then
+            STUB_FAIL="$(enable_cmd "${INIT}" mulga-eks-log-forward)"
+            export STUB_FAIL
+            STUB_FAIL="${STUB_FAIL#rc-update add }"; STUB_FAIL="${STUB_FAIL#systemctl enable }"
+        else
+            STUB_FAIL="$(start_cmd "${INIT}" mulga-eks-log-forward)"
+            export STUB_FAIL
+            STUB_FAIL="${STUB_FAIL#rc-service }"; STUB_FAIL="${STUB_FAIL#systemctl start --no-block }"
+        fi
+        invoke
+        unset STUB_FAIL
+        check "agent(${INIT}): log-forward ${FAILING} failure still exits 0" 0 "${rc}"
+        check "agent(${INIT}): log-forward ${FAILING} failure still enables k3s-agent" "yes" "$(present "${CALLS}" "$(enable_cmd "${INIT}" k3s-agent)")"
+        check "agent(${INIT}): log-forward ${FAILING} failure still starts k3s-agent" "yes" "$(present "${CALLS}" "$(start_cmd "${INIT}" k3s-agent)")"
+        check "agent(${INIT}): log-forward ${FAILING} failure still self-disables" "yes" "$(present "${CALLS}" "$(disable_cmd "${INIT}" eks-node-role)")"
+    done
 
     # --- agent (inferred from agent.env, no explicit role) ---
     run_case "${INIT}" agent_inferred

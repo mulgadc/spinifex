@@ -32,14 +32,11 @@ func (c *refusingCPControl) StartInstance(context.Context, string) error {
 
 func (c *refusingCPControl) StopInstance(context.Context, string) error { return nil }
 
-// What the start path returns after crossing NATS. An owner that predates the
-// held-elsewhere header sends only viperblockd's text; a current one sends the
-// header, which StartInstances turns back into the sentinel, in any wording.
+// What the start path returns after crossing NATS: StartInstances wraps the
+// sentinel back on when the owner's reply carries the held-elsewhere header.
 var (
 	errStartCapacity = errors.New(awserrors.ErrorInsufficientInstanceCapacity)
-	errStartHeld     = awserrors.Errorf(awserrors.ErrorIncorrectState, "%s",
-		"volume is leased by another owner: held by node-a since 2026-10-30T01:00:00Z")
-	errStartHeldByCode = fmt.Errorf("%w: %w", ec2v1.ErrVolumeHeldElsewhere,
+	errStartHeld     = fmt.Errorf("%w: %w", ec2v1.ErrVolumeHeldElsewhere,
 		awserrors.Errorf(awserrors.ErrorIncorrectState, "%s", "volume vol-1 is published to node-a"))
 )
 
@@ -49,9 +46,8 @@ var (
 func TestMaybeRecoverCP_RetryableStartRefusalIsRetriedNotReplaced(t *testing.T) {
 	t.Parallel()
 	for name, refusal := range map[string]error{
-		"insufficient capacity":              errStartCapacity,
-		"volume held elsewhere, legacy text": errStartHeld,
-		"volume held elsewhere, by code":     errStartHeldByCode,
+		"insufficient capacity": errStartCapacity,
+		"volume held elsewhere": errStartHeld,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -78,18 +74,30 @@ func TestMaybeRecoverCP_RetryableStartRefusalIsRetriedNotReplaced(t *testing.T) 
 	}
 }
 
-// The cap still bounds the faults nothing says will clear.
+// The cap still bounds the faults nothing says will clear. IncorrectState
+// without the held-elsewhere sentinel is one, whatever its message says.
 func TestMaybeRecoverCP_UnknownStartFailureStillCountsAgainstTheBudget(t *testing.T) {
 	t.Parallel()
-	cp := &refusingCPControl{err: errors.New(awserrors.ErrorServerInternal)}
-	r := newRecoveryReconciler(t, cp)
-	r.degradedSince = time.Now().Add(-10 * time.Minute)
+	for name, refusal := range map[string]error{
+		"server internal": errors.New(awserrors.ErrorServerInternal),
+		"unrelated incorrect state": awserrors.Errorf(awserrors.ErrorIncorrectState, "%s",
+			"instance i-cp is not in a state from which it can be started"),
+		"lease text without the sentinel": awserrors.Errorf(awserrors.ErrorIncorrectState, "%s",
+			ec2v1.VolumeHeldElsewhereText+": held by node-a since 2026-10-30T01:00:00Z"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cp := &refusingCPControl{err: refusal}
+			r := newRecoveryReconciler(t, cp)
+			r.degradedSince = time.Now().Add(-10 * time.Minute)
 
-	for range r.maxRestartAttempts + 2 {
-		r.lastRestartAt = time.Time{}
-		r.maybeRecoverControlPlane(t.Context(), metaWithCP("i-cp"), "stale")
+			for range r.maxRestartAttempts + 2 {
+				r.lastRestartAt = time.Time{}
+				r.maybeRecoverControlPlane(t.Context(), metaWithCP("i-cp"), "stale")
+			}
+
+			require.Equal(t, r.maxRestartAttempts, cp.startCalls, "stops at the attempt cap")
+			assert.Equal(t, r.maxRestartAttempts, r.restartAttempts)
+		})
 	}
-
-	require.Equal(t, r.maxRestartAttempts, cp.startCalls, "stops at the attempt cap")
-	assert.Equal(t, r.maxRestartAttempts, r.restartAttempts)
 }

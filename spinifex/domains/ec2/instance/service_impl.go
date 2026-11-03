@@ -2841,30 +2841,15 @@ func (s *InstanceServiceImpl) RecoverInstance(ctx context.Context, instance *vm.
 	return s.launchClaimedInstance(ctx, instance, undo)
 }
 
-// ErrVolumeHeldElsewhere reports a launch refused because another node still
-// holds one of the instance's volume leases. Recovery retries it on the lease's
-// own clock, so it must match with errors.Is on this node and across NATS.
-var ErrVolumeHeldElsewhere = ec2v1.ErrVolumeHeldElsewhere
-
-// volumeHeldElsewhereError converts a mount refused because another node holds
-// the volume into IncorrectState naming the holder, and returns nil otherwise.
-// Without it the caller gets ServerInternal and retries what cannot succeed.
+// volumeHeldElsewhereError converts a mount the EBS provider refused with its
+// held-elsewhere code into IncorrectState naming the holder, wrapping
+// ec2v1.ErrVolumeHeldElsewhere, and returns nil for anything else.
 func volumeHeldElsewhereError(err error) error {
-	if err == nil {
+	if !errors.Is(err, ebsprovider.ErrVolumeHeldElsewhere) {
 		return nil
 	}
-	if !errors.Is(err, ebsprovider.ErrVolumeHeldElsewhere) && !legacyHeldElsewhere(err) {
-		return nil
-	}
-	return fmt.Errorf("%w: %w", ErrVolumeHeldElsewhere,
+	return fmt.Errorf("%w: %w", ec2v1.ErrVolumeHeldElsewhere,
 		awserrors.Errorf(awserrors.ErrorIncorrectState, "%s", err.Error()))
-}
-
-// legacyHeldElsewhere matches viperblockd's lease text, the only signal a legacy
-// ebs.mount reply or a publish below HeldElsewhereSchemaVersion carries, since
-// volume_in_use there also means a read-only mismatch. Retired at finalisation.
-func legacyHeldElsewhere(err error) bool {
-	return strings.Contains(err.Error(), ec2v1.VolumeHeldElsewhereText)
 }
 
 // restoreClaimedStoppedInstance writes instance back to the shared

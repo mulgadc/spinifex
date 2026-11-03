@@ -2,9 +2,8 @@ package ec2v1
 
 import "errors"
 
-// VolumeHeldElsewhereText is the text viperblockd gives a lease refusal. A
-// legacy ebs.mount reply and a reply from a node that predates the held-elsewhere
-// header carry no code, so readers fall back to matching it until finalisation.
+// VolumeHeldElsewhereText is the message viperblockd gives a lease refusal. It
+// is wording for the operator; callers classify the refusal by its code.
 const VolumeHeldElsewhereText = "volume is leased by another owner"
 
 // ErrVolumeHeldElsewhere marks a start refused because another node still

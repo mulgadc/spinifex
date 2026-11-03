@@ -673,7 +673,7 @@ func TestStartInstances_VolumeHeldElsewhereSurvivesTheForward(t *testing.T) {
 		objectstore.NewMemoryObjectStore(), d.vmMgr, d.resourceMgr, store,
 	)
 
-	held := fmt.Errorf("%w: %w", ec2instance.ErrVolumeHeldElsewhere,
+	held := fmt.Errorf("%w: %w", ec2v1.ErrVolumeHeldElsewhere,
 		awserrors.Errorf(awserrors.ErrorIncorrectState, "%s", "volume vol-1 is published to node-a"))
 	owner := func(context.Context, *ec2instance.StartStoppedInstanceInput, string) (*ec2instance.StartStoppedInstanceOutput, error) {
 		return nil, held

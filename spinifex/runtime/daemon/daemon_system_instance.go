@@ -245,7 +245,12 @@ func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInp
 	publicIP := ""
 	if input.Scheme == elbv2domain.SchemeInternetFacing && d.vpcService != nil && instance.ENIId != "" {
 		if d.eipService != nil {
-			allocOut, allocErr := d.eipService.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, eniAccountID)
+			allocOut, allocErr := d.eipService.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{
+				TagSpecifications: []*ec2.TagSpecification{{
+					ResourceType: aws.String("elastic-ip"),
+					Tags:         []*ec2.Tag{{Key: aws.String(tags.ManagedByKey), Value: aws.String(managedBy)}},
+				}},
+			}, eniAccountID)
 			if allocErr != nil {
 				slog.Error("LaunchSystemInstance: EIP AllocateAddress failed", "instanceId", instance.ID, "err", allocErr)
 				d.cleanupFailedSystemInstance(instance, instanceType)

@@ -2,11 +2,18 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	testutil "github.com/mulgadc/spinifex/internal/testkit"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -90,4 +97,85 @@ func TestS7_TerminateSystemInstanceStillTerminatesEverySystemKind(t *testing.T) 
 			assert.Equal(t, vm.StateTerminated, d.vmMgr.Status(routed))
 		})
 	}
+}
+
+// bindRealEIP gives d a real EIP service and allocates an address, optionally
+// tagged as system-managed, then records instanceID against it.
+func bindRealEIP(t *testing.T, d *Daemon, instanceID, managedBy string) (allocID, publicIP string, svc *ec2eip.EIPServiceImpl) {
+	t.Helper()
+	_, nc, js := testutil.StartTestJetStream(t)
+	ipam, err := ec2vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
+		{Name: "wan-test", RangeStart: "203.0.113.10", RangeEnd: "203.0.113.20", Gateway: "203.0.113.1", PrefixLen: 24},
+	})
+	require.NoError(t, err)
+	d.externalIPAM = ipam
+	svc, err = ec2eip.NewEIPServiceImpl(t.Context(), nc, ipam, d.vpcService)
+	require.NoError(t, err)
+	d.eipService = svc
+
+	in := &ec2.AllocateAddressInput{}
+	if managedBy != "" {
+		in.TagSpecifications = []*ec2.TagSpecification{{
+			ResourceType: aws.String("elastic-ip"),
+			Tags:         []*ec2.Tag{{Key: aws.String(tags.ManagedByKey), Value: aws.String(managedBy)}},
+		}}
+	}
+	out, err := svc.AllocateAddress(t.Context(), in, testAccountID)
+	require.NoError(t, err)
+
+	kv, err := js.KeyValue(t.Context(), ec2eip.KVBucketEIPs)
+	require.NoError(t, err)
+	key := testAccountID + "." + aws.StringValue(out.AllocationId)
+	entry, err := kv.Get(t.Context(), key)
+	require.NoError(t, err)
+	var rec ec2eip.EIPRecord
+	require.NoError(t, json.Unmarshal(entry.Value(), &rec))
+	rec.InstanceId = instanceID
+	data, err := json.Marshal(rec)
+	require.NoError(t, err)
+	_, err = kv.Update(t.Context(), key, data, entry.Revision())
+	require.NoError(t, err)
+	return aws.StringValue(out.AllocationId), aws.StringValue(out.PublicIp), svc
+}
+
+func addressKept(t *testing.T, svc *ec2eip.EIPServiceImpl, allocID string) bool {
+	t.Helper()
+	out, err := svc.DescribeAddresses(t.Context(), &ec2.DescribeAddressesInput{AllocationIds: []*string{aws.String(allocID)}}, testAccountID)
+	return err == nil && len(out.Addresses) == 1
+}
+
+func TestS7_TerminateSystemInstanceNeverReleasesCustomerEIP(t *testing.T) {
+	t.Run("remote owner refuses", func(t *testing.T) {
+		owner := createTestDaemon(t, sharedNATSURL)
+		t.Cleanup(owner.vmMgr.WaitForBackgroundWork)
+		cust := &vm.VM{ID: "i-cust-remote-eip", Status: vm.StateRunning, AccountID: testAccountID}
+		owner.vmMgr.Insert(cust)
+		require.NoError(t, owner.subscribeSystemTerminate(cust.ID))
+
+		caller := createVPCTestDaemon(t)
+		allocID, _, svc := bindRealEIP(t, caller, cust.ID, "")
+
+		err := caller.TerminateSystemInstance(cust.ID)
+		require.ErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound)
+		assert.Equal(t, vm.StateRunning, owner.vmMgr.Status(cust))
+		assert.True(t, addressKept(t, svc, allocID), "a customer address survives a refused terminate")
+	})
+
+	t.Run("no owner, stopped customer instance", func(t *testing.T) {
+		d := createVPCTestDaemon(t)
+		id := fmt.Sprintf("i-cust-stopped-%d", time.Now().UnixNano())
+		allocID, _, svc := bindRealEIP(t, d, id, "")
+
+		_ = d.TerminateSystemInstance(id)
+		assert.True(t, addressKept(t, svc, allocID), "a customer address survives a wrong system instance ID")
+	})
+
+	t.Run("system address is still released on the no-owner path", func(t *testing.T) {
+		d := createVPCTestDaemon(t)
+		id := fmt.Sprintf("i-alb-gone-%d", time.Now().UnixNano())
+		allocID, _, svc := bindRealEIP(t, d, id, tags.ManagedByELBv2)
+
+		_ = d.TerminateSystemInstance(id)
+		assert.False(t, addressKept(t, svc, allocID), "an internet-facing ALB address is released when no node owns the VM")
+	})
 }

@@ -179,7 +179,12 @@ func TestEIP_ReleaseWhileAssociated(t *testing.T) {
 func TestEIP_ReleaseByInstanceID_ReclaimsAssociatedEIP(t *testing.T) {
 	svc, _, _ := setupTestEIP(t)
 
-	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
+	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{
+		TagSpecifications: []*ec2.TagSpecification{{
+			ResourceType: aws.String("elastic-ip"),
+			Tags:         []*ec2.Tag{{Key: aws.String("spinifex:managed-by"), Value: aws.String("elbv2")}},
+		}},
+	}, testAccountID)
 	require.NoError(t, err)
 	allocID := *out.AllocationId
 
@@ -860,4 +865,27 @@ func TestEIP_DisassociateByENI_ClearsEveryEIPOnTheInterface(t *testing.T) {
 	found, err = svc.DisassociateByENI(t.Context(), testAccountID, "eni-shared")
 	require.NoError(t, err)
 	assert.False(t, found)
+}
+
+func TestEIP_ReleaseByInstanceID_LeavesUntaggedAddress(t *testing.T) {
+	svc, _, _ := setupTestEIP(t)
+
+	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
+	require.NoError(t, err)
+	key := testAccountID + "." + *out.AllocationId
+	entry, err := svc.eipKV.Get(t.Context(), key)
+	require.NoError(t, err)
+	var record EIPRecord
+	require.NoError(t, json.Unmarshal(entry.Value(), &record))
+	record.State = "associated"
+	record.InstanceId = "i-customer"
+	data, err := json.Marshal(record)
+	require.NoError(t, err)
+	_, err = svc.eipKV.Update(t.Context(), key, data, entry.Revision())
+	require.NoError(t, err)
+
+	require.NoError(t, svc.ReleaseAddressByInstanceID("i-customer"))
+
+	_, err = svc.eipKV.Get(t.Context(), key)
+	assert.NoError(t, err, "an address no system launch allocated is never released by instance ID")
 }

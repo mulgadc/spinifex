@@ -879,7 +879,8 @@ func (s *EIPServiceImpl) AssociatedPublicIPForInstance(ctx context.Context, acco
 // against instanceID, across all accounts. Idempotent backstop for system-VM
 // teardown paths that lose the cached allocation ID — when the VM is already
 // gone from the manager the per-instance release never runs, so an
-// internet-facing ALB's EIP would otherwise orphan. No-op when nothing matches.
+// internet-facing ALB's EIP would otherwise orphan. It touches only addresses
+// tagged as system-managed, and is a no-op when nothing matches.
 func (s *EIPServiceImpl) ReleaseAddressByInstanceID(instanceID string) error {
 	ctx := context.Background()
 	if instanceID == "" {
@@ -906,6 +907,13 @@ func (s *EIPServiceImpl) ReleaseAddressByInstanceID(instanceID string) error {
 			continue
 		}
 		if record.InstanceId != instanceID || record.AllocationId == "" {
+			continue
+		}
+		// Only an address a system VM launch allocated, so a wrong instance ID
+		// can never release a customer's own address.
+		if !awstags.IsSystemManaged(record.Tags[awstags.ManagedByKey]) {
+			slog.Warn("ReleaseAddressByInstanceID: address is not system-managed, left alone",
+				"instanceId", instanceID, "allocationId", record.AllocationId)
 			continue
 		}
 		// Key is "{accountID}.{allocID}"; the account scopes the release calls.

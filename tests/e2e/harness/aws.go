@@ -4,7 +4,6 @@ package harness
 
 import (
 	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"net/http"
 	"os"
@@ -150,19 +149,4 @@ func newAWSClient(t *testing.T, env *Env, accessKey, secretKey, sessionToken str
 		Bedrock:        bedrock.New(sess),
 		BedrockRuntime: bedrockruntime.New(sess),
 	}
-}
-
-// IgnoreCertErrors disables TLS verification on all bundled clients.
-// Use only for fault-injection scenarios.
-func (c *AWSClient) IgnoreCertErrors() {
-	tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
-	hc := &http.Client{Transport: tr}
-	c.EC2Conf.Config.HTTPClient = hc
-	c.ELBv2.Config.HTTPClient = hc
-	c.EKS.Config.HTTPClient = hc
-	c.IAM.Config.HTTPClient = hc
-	c.STS.Config.HTTPClient = hc
-	c.ACM.Config.HTTPClient = hc
-	c.ECR.Config.HTTPClient = hc
-	_ = (*x509.CertPool)(nil) // silence unused-import on hardened paths
 }

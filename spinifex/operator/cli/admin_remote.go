@@ -167,13 +167,21 @@ func callAdmin(ctx context.Context, target adminTarget, method string, req, out 
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)
 	}
+	return signedPost(ctx, target, "/admin/"+method, "application/json", body, decodeAdminError, out)
+}
 
+// signedPost SigV4-signs body for service spinifex, POSTs it to path on the
+// gateway and decodes a 200 reply as JSON into out. Any other status goes
+// through decodeErr.
+func signedPost(ctx context.Context, target adminTarget, path, contentType string, body []byte,
+	decodeErr func(int, []byte) error, out any,
+) error {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(target.endpoint, "/")+"/admin/"+method, bytes.NewReader(body))
+		strings.TrimRight(target.endpoint, "/")+path, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Content-Type", contentType)
 
 	signer, err := gwsign.NewIMDS(ctx, target.region)
 	if err != nil {
@@ -199,7 +207,7 @@ func callAdmin(ctx context.Context, target adminTarget, method string, req, out 
 		return fmt.Errorf("gateway returned HTTP %d with an unreadable body: %w", resp.StatusCode, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return decodeAdminError(resp.StatusCode, payload)
+		return decodeErr(resp.StatusCode, payload)
 	}
 	if err := json.Unmarshal(payload, out); err != nil {
 		return fmt.Errorf("decode response: %w", err)

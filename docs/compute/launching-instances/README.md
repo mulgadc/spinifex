@@ -148,14 +148,15 @@ The serial console of each instance is written on its host to `/run/spinifex/con
 The daemon keeps them bounded.
 A file over 4 MiB is cut back in place to its newest 1 MiB, and the guest keeps writing while it happens.
 The console is opened in append mode, so a reboot or auto-restart of the guest adds to the same file instead of starting over.
-A live `console-<instance-id>.log` is never deleted, whatever its age, so a stopped instance keeps its console.
+A live `console-<instance-id>.log` is deleted only when it has not changed for an hour and no QEMU process on the host has it open, so a stopped instance keeps its console for an hour and a quiet running guest keeps it indefinitely.
+If the daemon cannot read the open files of every QEMU process on the host, it deletes nothing on that pass and logs a warning.
+This also clears the file of an instance that was stopped and then terminated, or that was recovered on another node, within about an hour of its last write.
 When an instance is terminated, including a failed first launch and the system instances behind load balancers, queues and EKS control planes, its file is renamed to `console-<instance-id>.log.terminated`.
 The daemon removes a `.terminated` file an hour after its last write.
 
 Known limits:
 
 - The log shipper follows only `console-*.log`, so it stops following a file when it is renamed on terminate, and the last few seconds of output that it had not yet read can be lost.
-- If an instance is recovered on another node, the previous node's live file stays until that host reboots, and the 4 MiB cut keeps it small.
 - The instance password retrieval reads only the live file name, so it does not find a console renamed after terminate.
 
 ## Instance Types

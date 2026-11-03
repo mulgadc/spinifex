@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
@@ -19,6 +20,9 @@ const (
 	// consoleRemoveAfter is how long a retired console file lingers so a late
 	// GetConsoleOutput still sees it.
 	consoleRemoveAfter = time.Hour
+	// consoleIdleAfter is how long a live console file must sit unchanged, with
+	// no QEMU on this node holding it open, before it is removed.
+	consoleIdleAfter = time.Hour
 )
 
 // consoleTerminatedSuffix marks the console file of an instance that is gone
@@ -42,18 +46,20 @@ func retireConsoleLog(path string) {
 }
 
 // ConsoleLogReaper caps the serial console files under dir and removes the
-// retired ones. It never removes a live console-<id>.log, whatever its age, so
-// a stopped instance keeps its console without anyone reading instance state.
+// retired ones. A live console-<id>.log goes only after an idle hour with no
+// QEMU on this node holding it open, decided from /proc alone and never from
+// instance state.
 type ConsoleLogReaper struct {
-	dir string
-	now func() time.Time
+	dir      string
+	procRoot string
+	now      func() time.Time
 }
 
 var _ Reaper = (*ConsoleLogReaper)(nil)
 
 // NewConsoleLogReaper builds a reaper over the console files in dir.
 func NewConsoleLogReaper(dir string) *ConsoleLogReaper {
-	return &ConsoleLogReaper{dir: dir, now: time.Now}
+	return &ConsoleLogReaper{dir: dir, procRoot: qemuProcRoot, now: time.Now}
 }
 
 func (r *ConsoleLogReaper) Class() string      { return "console-log" }
@@ -64,17 +70,27 @@ func (m *Manager) NewLocalConsoleLogReaper() *ConsoleLogReaper {
 	return NewConsoleLogReaper(hostprocess.RuntimeDir())
 }
 
-// Sweep cuts oversized console files back to their newest consoleKeepBytes and
-// removes retired ones that have sat for over an hour.
+// Sweep removes idle live console files nothing holds open, cuts oversized ones
+// back to their newest consoleKeepBytes, and removes retired ones that have sat
+// for over an hour.
 func (r *ConsoleLogReaper) Sweep(context.Context) (int, error) {
 	reaped := 0
 	live, err := filepath.Glob(filepath.Join(r.dir, "console-*.log"))
 	if err != nil {
 		return 0, err
 	}
+	now := r.now()
+	warned := false
 	for _, p := range live {
 		info, err := os.Stat(p)
-		if err != nil || !info.Mode().IsRegular() || info.Size() <= consoleTrimAbove {
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if now.Sub(info.ModTime()) > consoleIdleAfter && r.removeIfUnheld(p, &warned) {
+			reaped++
+			continue
+		}
+		if info.Size() <= consoleTrimAbove {
 			continue
 		}
 		if err := trimConsoleLog(p); err != nil {
@@ -87,7 +103,6 @@ func (r *ConsoleLogReaper) Sweep(context.Context) (int, error) {
 	if err != nil {
 		return reaped, err
 	}
-	now := r.now()
 	for _, p := range retired {
 		info, err := os.Stat(p)
 		if err != nil || !info.Mode().IsRegular() || now.Sub(info.ModTime()) <= consoleRemoveAfter {
@@ -100,6 +115,64 @@ func (r *ConsoleLogReaper) Sweep(context.Context) (int, error) {
 		reaped++
 	}
 	return reaped, nil
+}
+
+// removeIfUnheld removes path when no QEMU process on this node has it open. If
+// the process table cannot be read in full it removes nothing, since a guest
+// that is merely quiet must keep its log.
+func (r *ConsoleLogReaper) removeIfUnheld(path string, warned *bool) bool {
+	held, err := qemuOpenFiles(r.procRoot)
+	if err != nil {
+		if !*warned {
+			slog.Warn("vm/gc: idle console logs kept, cannot tell whether QEMU holds them", "err", err)
+			*warned = true
+		}
+		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	if held[path] {
+		return false
+	}
+	if err := os.Remove(path); err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("vm/gc: remove idle console log failed", "path", path, "err", err)
+		}
+		return false
+	}
+	return true
+}
+
+// qemuOpenFiles returns the files every QEMU process under procRoot has open.
+// Any unreadable descriptor table is an error, never a partial answer.
+func qemuOpenFiles(procRoot string) (map[string]bool, error) {
+	pids, err := scanLiveQEMUPIDs(procRoot)
+	if err != nil {
+		return nil, err
+	}
+	held := make(map[string]bool)
+	for _, pid := range pids {
+		fdDir := filepath.Join(procRoot, strconv.Itoa(pid), "fd")
+		fds, err := os.ReadDir(fdDir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		for _, fd := range fds {
+			target, err := os.Readlink(filepath.Join(fdDir, fd.Name()))
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return nil, err
+			}
+			held[target] = true
+		}
+	}
+	return held, nil
 }
 
 // trimConsoleLog rewrites the file in place as its newest consoleKeepBytes. The

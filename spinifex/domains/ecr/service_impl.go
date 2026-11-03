@@ -16,8 +16,7 @@ type MetaServiceImpl struct {
 
 var _ MetaService = (*MetaServiceImpl)(nil)
 
-// NewMetaServiceImpl builds a MetaService over an explicit MetaStore (used by
-// daemon-side tests with a MemoryMetaStore).
+// NewMetaServiceImpl builds a MetaService over an explicit MetaStore.
 func NewMetaServiceImpl(store MetaStore) *MetaServiceImpl {
 	return &MetaServiceImpl{store: store}
 }

@@ -35,7 +35,7 @@ func (s *blobPutFailStore) PutObject(ctx context.Context, input *s3.PutObjectInp
 func TestFinishUpload_StoreFailure_CleansUp(t *testing.T) {
 	mem := objectstore.NewMemoryObjectStore()
 	store := &blobPutFailStore{MemoryObjectStore: mem}
-	meta := ecr.NewMemoryMetaStore()
+	meta := newTestMetaStore(t)
 	reg := NewRegistry(store, meta, testAccount)
 	seedRepo(t, reg, "team/app")
 
@@ -72,7 +72,7 @@ func awsString(s string) *string { return &s }
 // updates issued from the same observed revision cannot both commit. One wins,
 // the other gets ErrConflict — so a racing PATCH is rejected, never merged.
 func TestUploadCAS_SameRevisionSingleWinner(t *testing.T) {
-	meta := ecr.NewMemoryMetaStore()
+	meta := newTestMetaStore(t)
 	rev, err := meta.PutUpload(context.Background(), testAccount, "u-race", ecr.UploadState{RepoName: "r"})
 	require.NoError(t, err)
 
@@ -116,7 +116,7 @@ func TestUploadCAS_SameRevisionSingleWinner(t *testing.T) {
 // hash state and the recorded byte object never desynchronise.
 func TestPatchUpload_ConcurrentNoCorruption(t *testing.T) {
 	for iter := range 25 {
-		reg := newTestRegistry()
+		reg := newTestRegistry(t)
 		repo := "team/race"
 		seedRepo(t, reg, repo)
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -30,11 +29,7 @@ func referrerMeta(digest, subject string) ManifestMeta {
 // its own referrers state.
 func referrerStores(t *testing.T) map[string]MetaStore {
 	t.Helper()
-	_, nc, _ := testutil.StartTestJetStream(t)
-	return map[string]MetaStore{
-		"memory": NewMemoryMetaStore(),
-		"kv":     NewKVMetaStore(testutil.NewJetStream(t, nc)),
-	}
+	return map[string]MetaStore{"kv": newTestKVMetaStore(t)}
 }
 
 func TestListReferrers(t *testing.T) {

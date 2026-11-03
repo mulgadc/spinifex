@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,7 +31,7 @@ func (c *countingStore) EnsureBucket(ctx context.Context, bucket string) error {
 
 func TestRegistry_EnsureBucketFailureReturns500(t *testing.T) {
 	store := &countingStore{MemoryObjectStore: objectstore.NewMemoryObjectStore(), ensureErr: errors.New("predastore down")}
-	reg := NewRegistry(store, ecr.NewMemoryMetaStore(), testAccount)
+	reg := NewRegistry(store, newTestMetaStore(t), testAccount)
 
 	w := do(reg, http.MethodGet, "/v2/myrepo/tags/list", nil, nil)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
@@ -40,7 +39,7 @@ func TestRegistry_EnsureBucketFailureReturns500(t *testing.T) {
 
 func TestRegistry_EnsureBucketCachedAfterSuccess(t *testing.T) {
 	store := &countingStore{MemoryObjectStore: objectstore.NewMemoryObjectStore()}
-	reg := NewRegistry(store, ecr.NewMemoryMetaStore(), testAccount)
+	reg := NewRegistry(store, newTestMetaStore(t), testAccount)
 
 	do(reg, http.MethodGet, "/v2/myrepo/tags/list", nil, nil)
 	do(reg, http.MethodGet, "/v2/other/tags/list", nil, nil)

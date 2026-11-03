@@ -2,6 +2,7 @@ package ecrregistry
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/internal/testkit"
 
 	"crypto/sha256"
 	"encoding/hex"
@@ -21,8 +22,15 @@ import (
 
 const testAccount = "000000000000"
 
-func newTestRegistry() *Registry {
-	return NewRegistry(objectstore.NewMemoryObjectStore(), ecr.NewMemoryMetaStore(), testAccount)
+func newTestRegistry(t *testing.T) *Registry {
+	t.Helper()
+	return NewRegistry(objectstore.NewMemoryObjectStore(), newTestMetaStore(t), testAccount)
+}
+
+func newTestMetaStore(t *testing.T) *ecr.KVMetaStore {
+	t.Helper()
+	_, _, js := testutil.StartTestJetStream(t)
+	return ecr.NewKVMetaStore(js)
 }
 
 func digestOf(b []byte) string {
@@ -69,7 +77,7 @@ func pushBlob(t *testing.T, reg *Registry, repo string, data []byte) string {
 }
 
 func TestBlobUpload_Monolithic_And_Head_Get(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	data := []byte("hello layer bytes")
 	dg := pushBlob(t, reg, "team/app", data)
 
@@ -84,20 +92,20 @@ func TestBlobUpload_Monolithic_And_Head_Get(t *testing.T) {
 }
 
 func TestBlobHead_NotFound(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	w := do(reg, http.MethodHead, "/v2/team/app/blobs/"+digestOf([]byte("absent")), nil, nil)
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
 func TestBlobGet_MalformedDigest(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	w := do(reg, http.MethodGet, "/v2/team/app/blobs/sha256:zzz", nil, nil)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assertCode(t, w, "DIGEST_INVALID")
 }
 
 func TestBlobUpload_Chunked(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	seedRepo(t, reg, "r/repo")
 	c1 := []byte("first-chunk-")
 	c2 := []byte("second-chunk")
@@ -124,7 +132,7 @@ func TestBlobUpload_Chunked(t *testing.T) {
 }
 
 func TestBlobUpload_DigestMismatch(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	seedRepo(t, reg, "r/repo")
 	w := do(reg, http.MethodPost, "/v2/r/repo/blobs/uploads/", nil, nil)
 	loc := w.Header().Get("Location")
@@ -134,7 +142,7 @@ func TestBlobUpload_DigestMismatch(t *testing.T) {
 }
 
 func TestBlobUpload_Cancel(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	seedRepo(t, reg, "r/repo")
 	w := do(reg, http.MethodPost, "/v2/r/repo/blobs/uploads/", nil, nil)
 	loc := w.Header().Get("Location")
@@ -161,7 +169,7 @@ func putManifestReferencing(t *testing.T, reg *Registry, repo, digest string) {
 }
 
 func TestBlobMount_HitAndMiss(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	data := []byte("shared-layer")
 	dg := pushBlob(t, reg, "team/source", data)
 	putManifestReferencing(t, reg, "team/source", dg)
@@ -185,7 +193,7 @@ func TestBlobMount_HitAndMiss(t *testing.T) {
 // as a plain upload start, matching the authorization middleware's
 // classification of the same request.
 func TestBlobMount_MissingFromFallsThroughToUpload(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	data := []byte("shared-layer")
 	dg := pushBlob(t, reg, "team/source", data)
 	putManifestReferencing(t, reg, "team/source", dg)
@@ -200,7 +208,7 @@ func TestBlobMount_MissingFromFallsThroughToUpload(t *testing.T) {
 // named source repository is rejected as a mount — proving digest existence
 // alone is not enough to mount cross-repo.
 func TestBlobMount_UnreferencedDigestFallsThrough(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	unreferenced := pushBlob(t, reg, "team/other", []byte("not-in-source"))
 	seedRepo(t, reg, "team/source")
 	seedRepo(t, reg, "team/dest")
@@ -214,7 +222,7 @@ func TestBlobMount_UnreferencedDigestFallsThrough(t *testing.T) {
 // repository that does not exist never mounts, and never distinguishes
 // itself from an unreferenced-digest miss (both fall through identically).
 func TestBlobMount_NonexistentSourceFallsThrough(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	dg := pushBlob(t, reg, "team/elsewhere", []byte("some-bytes"))
 	seedRepo(t, reg, "team/dest")
 
@@ -224,7 +232,7 @@ func TestBlobMount_NonexistentSourceFallsThrough(t *testing.T) {
 }
 
 func TestManifest_PutGetHead_ImageManifest(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	repo := "team/app"
 
 	cfg := []byte(`{"config":true}`)
@@ -255,7 +263,7 @@ func TestManifest_PutGetHead_ImageManifest(t *testing.T) {
 }
 
 func TestManifest_Put_MissingBlob(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	repo := "team/app"
 	seedRepo(t, reg, repo)
 	manifest := fmt.Appendf(nil,
@@ -268,7 +276,7 @@ func TestManifest_Put_MissingBlob(t *testing.T) {
 }
 
 func TestManifest_Get_AcceptMismatch(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	repo := "team/app"
 	cfg := pushBlob(t, reg, repo, []byte("c"))
 	manifest := fmt.Appendf(nil,
@@ -285,7 +293,7 @@ func TestManifest_Get_AcceptMismatch(t *testing.T) {
 // acceptable manifest media type as its own Accept header line rather than one
 // comma-joined value. Negotiation must consider every line, not just the first.
 func TestManifest_Get_MultipleAcceptHeaders(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	repo := "team/app"
 	cfg := pushBlob(t, reg, repo, []byte("c"))
 	manifest := fmt.Appendf(nil,
@@ -305,7 +313,7 @@ func TestManifest_Get_MultipleAcceptHeaders(t *testing.T) {
 }
 
 func TestManifest_Get_Unknown(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	w := do(reg, http.MethodGet, "/v2/team/app/manifests/missing", nil, nil)
 	assert.Equal(t, http.StatusNotFound, w.Code)
 	assertCode(t, w, "MANIFEST_UNKNOWN")
@@ -314,7 +322,7 @@ func TestManifest_Get_Unknown(t *testing.T) {
 // TestStartUpload_RepoNotCreated asserts a blob upload to a repository that was
 // never created is rejected up front — ECR does not auto-create on push.
 func TestStartUpload_RepoNotCreated(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	w := do(reg, http.MethodPost, "/v2/team/ghost/blobs/uploads/", nil, nil)
 	assert.Equal(t, http.StatusNotFound, w.Code)
 	assertCode(t, w, "NAME_UNKNOWN")
@@ -323,7 +331,7 @@ func TestStartUpload_RepoNotCreated(t *testing.T) {
 // TestPutManifest_RepoNotCreated asserts a manifest PUT to an uncreated
 // repository is rejected with NAME_UNKNOWN.
 func TestPutManifest_RepoNotCreated(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	manifest := fmt.Appendf(nil, `{"mediaType":"%s","layers":[]}`, mediaTypeDockerManifest)
 	w := do(reg, http.MethodPut, "/v2/team/ghost/manifests/v1", manifest,
 		map[string]string{"Content-Type": mediaTypeDockerManifest})
@@ -332,7 +340,7 @@ func TestPutManifest_RepoNotCreated(t *testing.T) {
 }
 
 func TestManifest_ImageIndex_ChildValidation(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	repo := "team/app"
 
 	// Push a child image manifest first.
@@ -372,7 +380,7 @@ func TestManifest_ImageIndex_ChildValidation(t *testing.T) {
 }
 
 func TestManifest_Delete_Tag(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	repo := "team/app"
 	cfg := pushBlob(t, reg, repo, []byte("c"))
 	manifest := fmt.Appendf(nil,
@@ -390,7 +398,7 @@ func TestManifest_Delete_Tag(t *testing.T) {
 // TestManifest_Delete_ByDigest proves delete-by-digest is no longer a no-op: it
 // removes the manifest record + object, and a subsequent GET is a 404.
 func TestManifest_Delete_ByDigest(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	repo := "team/app"
 	cfg := pushBlob(t, reg, repo, []byte("cfg-bytes"))
 	manifest := fmt.Appendf(nil,
@@ -412,7 +420,7 @@ func TestManifest_Delete_ByDigest(t *testing.T) {
 }
 
 func TestTagsList(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	repo := "team/app"
 	cfg := pushBlob(t, reg, repo, []byte("c"))
 	manifest := fmt.Appendf(nil,
@@ -434,13 +442,13 @@ func TestTagsList(t *testing.T) {
 }
 
 func TestTagsList_UnknownRepo(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	w := do(reg, http.MethodGet, "/v2/team/ghost/tags/list", nil, nil)
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
 func TestCatalog(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	pushBlob(t, reg, "team/a", []byte("a"))
 	pushBlob(t, reg, "team/b", []byte("b"))
 
@@ -454,21 +462,21 @@ func TestCatalog(t *testing.T) {
 }
 
 func TestDispatch_InvalidRepoName(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	w := do(reg, http.MethodGet, "/v2/Team/App/tags/list", nil, nil)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assertCode(t, w, "NAME_INVALID")
 }
 
 func TestDispatch_RepeatedSeparatorRepoName(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	dg := pushBlob(t, reg, "team/a__b--c", []byte("layer"))
 	w := do(reg, http.MethodHead, "/v2/team/a__b--c/blobs/"+dg, nil, nil)
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
 func TestDispatch_UnknownPath(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	w := do(reg, http.MethodGet, "/v2/team/app/frobnicate", nil, nil)
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }

@@ -50,7 +50,7 @@ func putPolicy(t *testing.T, reg *Registry, account, repo, policy string) {
 const untaggedExpirePolicy = `{"rules":[{"rulePriority":1,"selection":{"tagStatus":"untagged","countType":"sinceImagePushed","countUnit":"days","countNumber":7},"action":{"type":"expire"}}]}`
 
 func TestSweepRepo_SinceImagePushed(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	now := time.Now().UTC()
 	repo := "team/app"
 	seedTimedImage(t, reg, testAccount, repo, "sha256:olduntagged", now.AddDate(0, 0, -10))
@@ -65,7 +65,7 @@ func TestSweepRepo_SinceImagePushed(t *testing.T) {
 }
 
 func TestSweepRepo_ImageCountMoreThan(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	now := time.Now().UTC()
 	repo := "team/app"
 	seedTimedImage(t, reg, testAccount, repo, "sha256:a", now.AddDate(0, 0, -1), "a")
@@ -81,7 +81,7 @@ func TestSweepRepo_ImageCountMoreThan(t *testing.T) {
 }
 
 func TestSweepRepo_NoPolicy(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	now := time.Now().UTC()
 	repo := "team/app"
 	seedTimedImage(t, reg, testAccount, repo, "sha256:x", now.AddDate(0, 0, -100))
@@ -92,7 +92,7 @@ func TestSweepRepo_NoPolicy(t *testing.T) {
 }
 
 func TestSweepRepo_Idempotent(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	now := time.Now().UTC()
 	repo := "team/app"
 	seedTimedImage(t, reg, testAccount, repo, "sha256:olduntagged", now.AddDate(0, 0, -10))
@@ -105,7 +105,7 @@ func TestSweepRepo_Idempotent(t *testing.T) {
 }
 
 func TestSweepOnce_MultiAccount(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	now := time.Now().UTC()
 	const acct2 = "000000000001"
 	policy := `{"rules":[{"rulePriority":1,"selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":1},"action":{"type":"expire"}}]}`
@@ -125,7 +125,7 @@ func TestSweepOnce_MultiAccount(t *testing.T) {
 }
 
 func TestSweepOnce_AccountsError(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	s := NewLifecycleSweeper(reg, func() ([]string, error) {
 		return nil, assert.AnError
 	}, time.Hour)
@@ -133,7 +133,7 @@ func TestSweepOnce_AccountsError(t *testing.T) {
 }
 
 func TestNewLifecycleSweeper_DefaultInterval(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	s := NewLifecycleSweeper(reg, func() ([]string, error) { return nil, nil }, 0)
 	assert.Equal(t, DefaultLifecycleSweepInterval, s.interval)
 
@@ -147,7 +147,7 @@ func TestNewLifecycleSweeper_DefaultInterval(t *testing.T) {
 // TestSweeperRun drives the ticker loop: with a tiny interval and an expiring
 // image, the first tick must delete it; cancelling the context stops Run.
 func TestSweeperRun(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	now := time.Now().UTC()
 	repo := "team/app"
 	seedTimedImage(t, reg, testAccount, repo, "sha256:olduntagged", now.AddDate(0, 0, -10))
@@ -184,7 +184,7 @@ func TestSweeperRun(t *testing.T) {
 // TestSweepRepo_InvalidStoredPolicy exercises the evaluate-error branch: a
 // malformed stored policy is logged and skipped, deleting nothing.
 func TestSweepRepo_InvalidStoredPolicy(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	now := time.Now().UTC()
 	repo := "team/app"
 	seedTimedImage(t, reg, testAccount, repo, "sha256:x", now.AddDate(0, 0, -100))
@@ -198,7 +198,7 @@ func TestSweepRepo_InvalidStoredPolicy(t *testing.T) {
 // TestSweepRepo_PolicyWithoutRepo exercises the ListImages-not-found branch: a
 // policy stored for a repo with no manifests yields nothing to expire.
 func TestSweepRepo_PolicyWithoutRepo(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	now := time.Now().UTC()
 	putPolicy(t, reg, testAccount, "ghost", untaggedExpirePolicy)
 

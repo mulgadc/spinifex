@@ -21,7 +21,7 @@ const svcTestAccount = "000000000000"
 // ErrNotFound/ErrConflict into the response flags rather than transport errors,
 // so they survive the AWS-error-code-only NATS reply.
 func TestMetaServiceImpl_FlagMapping(t *testing.T) {
-	svc := NewMetaServiceImpl(NewMemoryMetaStore())
+	svc := NewMetaServiceImpl(newTestKVMetaStore(t))
 
 	// Absent repo -> Found:false, nil error.
 	dr, err := svc.RepoDescribe(context.Background(), &RepoDescribeRequest{Repo: "ghost"}, svcTestAccount)

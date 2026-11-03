@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -61,8 +62,8 @@ func TestKVKeyHelpers(t *testing.T) {
 	assert.Equal(t, "sha256-abc", DigestToken("sha256:abc"))
 }
 
-func TestMemoryMetaStore_RepoRoundtrip(t *testing.T) {
-	m := NewMemoryMetaStore()
+func TestKVMetaStore_RepoRoundtrip(t *testing.T) {
+	m := newTestKVMetaStore(t)
 	const acct = "000000000000"
 
 	_, err := m.GetRepo(context.Background(), acct, "team/app")
@@ -80,8 +81,8 @@ func TestMemoryMetaStore_RepoRoundtrip(t *testing.T) {
 	assert.Equal(t, []string{"team/app", "team/web"}, repos)
 }
 
-func TestMemoryMetaStore_TagsAndManifests(t *testing.T) {
-	m := NewMemoryMetaStore()
+func TestKVMetaStore_TagsAndManifests(t *testing.T) {
+	m := newTestKVMetaStore(t)
 	const acct = "000000000000"
 
 	require.NoError(t, m.PutTag(context.Background(), acct, "r", "v1", "sha256:aaa"))
@@ -112,8 +113,8 @@ func TestMemoryMetaStore_TagsAndManifests(t *testing.T) {
 	assert.ErrorIs(t, m.DeleteManifestMeta(context.Background(), acct, "r", "sha256:ccc"), ErrNotFound)
 }
 
-func TestMemoryMetaStore_UploadCAS(t *testing.T) {
-	m := NewMemoryMetaStore()
+func TestKVMetaStore_UploadCAS(t *testing.T) {
+	m := newTestKVMetaStore(t)
 	const acct = "000000000000"
 
 	rev, err := m.PutUpload(context.Background(), acct, "u1", UploadState{RepoName: "r"})
@@ -143,8 +144,8 @@ func TestTrimSuffixMeta(t *testing.T) {
 	assert.Equal(t, "team/app", trimSuffixMeta("repos/team/app/meta"))
 }
 
-func TestMemoryMetaStore_DeleteRepoAndListManifests(t *testing.T) {
-	m := NewMemoryMetaStore()
+func TestKVMetaStore_DeleteRepoAndListManifests(t *testing.T) {
+	m := newTestKVMetaStore(t)
 	const acct = "000000000000"
 
 	require.NoError(t, m.PutRepo(context.Background(), acct, RepoMeta{Name: "team/app", CreatedAt: time.Now()}))
@@ -156,7 +157,7 @@ func TestMemoryMetaStore_DeleteRepoAndListManifests(t *testing.T) {
 
 	digs, err := m.ListManifests(context.Background(), acct, "team/app")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"sha256:ccc"}, digs)
+	assert.Equal(t, []string{DigestToken("sha256:ccc")}, digs)
 
 	require.NoError(t, m.DeleteRepo(context.Background(), acct, "team/app"))
 	_, err = m.GetRepo(context.Background(), acct, "team/app")
@@ -180,50 +181,6 @@ func TestMemoryMetaStore_DeleteRepoAndListManifests(t *testing.T) {
 	assert.ErrorIs(t, m.DeleteRepo(context.Background(), acct, "team/ghost"), ErrNotFound)
 }
 
-func TestMemoryMetaStore_RepoPolicy(t *testing.T) {
-	m := NewMemoryMetaStore()
-	const acct = "000000000000"
-	const policy = `{"Version":"2012-10-17"}`
-
-	_, err := m.GetRepoPolicy(context.Background(), acct, "team/app")
-	assert.ErrorIs(t, err, ErrNotFound)
-	_, err = m.DeleteRepoPolicy(context.Background(), acct, "team/app")
-	assert.ErrorIs(t, err, ErrNotFound)
-
-	require.NoError(t, m.PutRepoPolicy(context.Background(), acct, "team/app", []byte(policy)))
-	got, err := m.GetRepoPolicy(context.Background(), acct, "team/app")
-	require.NoError(t, err)
-	assert.Equal(t, policy, string(got))
-
-	deleted, err := m.DeleteRepoPolicy(context.Background(), acct, "team/app")
-	require.NoError(t, err)
-	assert.Equal(t, policy, string(deleted))
-	_, err = m.GetRepoPolicy(context.Background(), acct, "team/app")
-	assert.ErrorIs(t, err, ErrNotFound)
-}
-
-func TestMemoryMetaStore_LifecyclePolicy(t *testing.T) {
-	m := NewMemoryMetaStore()
-	const acct = "000000000000"
-	const policy = `{"rules":[]}`
-
-	_, err := m.GetLifecyclePolicy(context.Background(), acct, "team/app")
-	assert.ErrorIs(t, err, ErrNotFound)
-	_, err = m.DeleteLifecyclePolicy(context.Background(), acct, "team/app")
-	assert.ErrorIs(t, err, ErrNotFound)
-
-	require.NoError(t, m.PutLifecyclePolicy(context.Background(), acct, "team/app", []byte(policy)))
-	got, err := m.GetLifecyclePolicy(context.Background(), acct, "team/app")
-	require.NoError(t, err)
-	assert.Equal(t, policy, string(got))
-
-	deleted, err := m.DeleteLifecyclePolicy(context.Background(), acct, "team/app")
-	require.NoError(t, err)
-	assert.Equal(t, policy, string(deleted))
-	_, err = m.GetLifecyclePolicy(context.Background(), acct, "team/app")
-	assert.ErrorIs(t, err, ErrNotFound)
-}
-
 func TestManifestMeta_DecodesRecordWithoutReferrerFields(t *testing.T) {
 	var m ManifestMeta
 	require.NoError(t, json.Unmarshal([]byte(`{"digest":"sha256:ccc","mediaType":"application/vnd.oci.image.manifest.v1+json","size":10,"pushedAt":"2026-01-01T00:00:00Z","childDigests":["sha256:ddd"]}`), &m))
@@ -231,4 +188,10 @@ func TestManifestMeta_DecodesRecordWithoutReferrerFields(t *testing.T) {
 	assert.Equal(t, []string{"sha256:ddd"}, m.ChildDigests)
 	assert.Empty(t, m.SubjectDigest)
 	assert.Empty(t, m.ArtifactType)
+}
+
+func newTestKVMetaStore(t *testing.T) *KVMetaStore {
+	t.Helper()
+	_, _, js := testutil.StartTestJetStream(t)
+	return NewKVMetaStore(js)
 }

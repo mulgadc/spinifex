@@ -44,7 +44,7 @@ func storeLayersManifest(t *testing.T, reg *Registry, repo, tag string, layers .
 }
 
 func TestDeleteImage_ReclaimsBlobsKeepsShared(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	repo := "team/app"
 	shared := pushBlob(t, reg, repo, []byte("shared-layer-bytes"))
 	exclusive := pushBlob(t, reg, repo, []byte("exclusive-layer-bytes"))
@@ -85,7 +85,7 @@ func seedImage(t *testing.T, reg *Registry, repo, tag string) ([]byte, string) {
 }
 
 func TestStoreAndGetManifest_RoundTrip(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	manifest, digest := seedImage(t, reg, "team/app", "v1")
 
 	// Fetch by tag.
@@ -114,7 +114,7 @@ func TestStoreAndGetManifest_RoundTrip(t *testing.T) {
 }
 
 func TestListImages_TaggedAndUntagged(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	repo := "team/app"
 	seedImage(t, reg, repo, "v1")
 	seedImage(t, reg, repo, "v2")
@@ -176,7 +176,7 @@ func TestListImages_KVDigestForm(t *testing.T) {
 }
 
 func TestDeleteImage_ByTagAndByDigest(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	repo := "team/app"
 	_, digest := seedImage(t, reg, repo, "v1")
 	seedImage(t, reg, repo, "v2") // shares nothing; distinct digest
@@ -205,7 +205,7 @@ func TestDeleteImage_ByTagAndByDigest(t *testing.T) {
 }
 
 func TestDeleteImage_ByDigestClearsTags(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	repo := "team/app"
 	_, digest := seedImage(t, reg, repo, "v1")
 	// Add a second tag pointing at the same digest.
@@ -221,7 +221,7 @@ func TestDeleteImage_ByDigestClearsTags(t *testing.T) {
 }
 
 func TestStoreManifest_ImmutableTag(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	repo := "team/app"
 	manA := fmt.Appendf(nil, `{"schemaVersion":2,"mediaType":"%s","layers":[{"digest":"%s"}]}`,
 		mediaTypeDockerManifest, pushBlob(t, reg, repo, []byte("layer-a")))
@@ -254,7 +254,7 @@ func TestStoreManifest_ImmutableTag(t *testing.T) {
 }
 
 func TestStoreManifest_BadDigestReference(t *testing.T) {
-	reg := newTestRegistry()
+	reg := newTestRegistry(t)
 	repo := "team/app"
 	cfgDg := pushBlob(t, reg, repo, []byte("cfg"))
 	manifest := fmt.Appendf(nil,

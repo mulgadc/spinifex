@@ -322,6 +322,7 @@ func TestPrepareUEFIVarStore_DifferentCodeBuildBootsAndIsCounted(t *testing.T) {
 // does not answer.
 type failingGetStore struct {
 	*objectstore.MemoryObjectStore
+
 	err error
 }
 

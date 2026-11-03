@@ -1953,6 +1953,9 @@ func (s *InstanceServiceImpl) createEFIVolumeViaProvider(ctx context.Context, ef
 // does not support, as AWS does. An unrecorded architecture on either side is
 // not a mismatch.
 func checkImageArchitecture(it *ec2.InstanceTypeInfo, amiArch string) error {
+	if amiArch == "aarch64" { // admin image import accepts it as an alias
+		amiArch = "arm64"
+	}
 	if amiArch == "" || it == nil || it.ProcessorInfo == nil || len(it.ProcessorInfo.SupportedArchitectures) == 0 {
 		return nil
 	}

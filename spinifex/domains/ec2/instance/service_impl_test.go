@@ -5166,4 +5166,5 @@ func TestPrepareRunInstances_ArchitectureMismatch(t *testing.T) {
 			assert.Contains(t, message, "The architecture '"+tc.typeArch+"' of the specified instance type does not match the architecture '"+tc.amiArch+"' of the specified AMI.")
 		})
 	}
+	assert.NoError(t, checkImageArchitecture(types["t4g.micro"], "aarch64"))
 }

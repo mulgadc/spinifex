@@ -103,8 +103,8 @@ func (s *Subscriber) handleUpdateSG(msg *nats.Msg) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), sgHandlerTimeout)
 	defer cancel()
-	if err := s.sg.UpdateSG(ctx, toSGSpec(evt)); err != nil {
-		slog.Error("subscribers: UpdateSG failed", "group_id", evt.GroupId, "err", err)
+	if err := s.sg.EnsureSG(ctx, toSGSpec(evt)); err != nil {
+		slog.Error("subscribers: vpc.update-sg EnsureSG failed", "group_id", evt.GroupId, "err", err)
 		respond(msg, err)
 		return
 	}

@@ -1,5 +1,5 @@
 //test:in-package — projects a SecurityGroupEvent through the unexported
-//toSGSpec, which is how the vpc.update-sg handler reaches policy.UpdateSG.
+//toSGSpec, which is how the vpc.update-sg handler reaches policy.EnsureSG.
 
 package subscribers
 
@@ -19,7 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 )
 
-// aclFingerprints applies a vpc.update-sg payload through policy.UpdateSG and
+// aclFingerprints applies a vpc.update-sg payload through policy.EnsureSG and
 // returns the resulting ACL set as sorted, UUID-free strings.
 func aclFingerprints(t *testing.T, payload string) []string {
 	t.Helper()
@@ -30,7 +30,7 @@ func aclFingerprints(t *testing.T, payload string) []string {
 	pg := topology.SecurityGroupPortGroup(evt.GroupId)
 	require.NoError(t, m.CreatePortGroup(context.Background(), pg, nil))
 	sg := policy.NewSecurityGroupManager(m, policy.EgressPolicy{})
-	require.NoError(t, sg.UpdateSG(context.Background(), toSGSpec(evt)))
+	require.NoError(t, sg.EnsureSG(context.Background(), toSGSpec(evt)))
 
 	stored, ok := m.PortGroups[pg]
 	require.True(t, ok)

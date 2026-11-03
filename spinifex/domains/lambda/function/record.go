@@ -62,7 +62,36 @@ const (
 	KVBucketAccountPrefix  = "lambda-account-"
 	KVBucketAccountHistory = 1
 	kvFunctionKeyPrefix    = "fn."
+	kvUploadKeyPrefix      = "upload."
 )
+
+// KVUploadKey returns the key of the record that tracks one code upload. The
+// bucket is shared across Regions, so the Region is part of the key.
+func KVUploadKey(region, functionID, revisionID string) string {
+	return kvUploadKeyPrefix + region + "." + functionID + "." + revisionID
+}
+
+// Upload states. An owed upload may have a code copy that no function record
+// names; it stays owed until the owner records otherwise.
+const (
+	UploadOwed     = "owed"
+	UploadAttached = "attached"
+)
+
+// Upload tracks one code upload. A create begun through this owner writes it
+// before the copy; records and copies from older owners have none.
+type Upload struct {
+	FormatVersion int       `json:"formatVersion"`
+	AccountID     string    `json:"accountId"`
+	Region        string    `json:"region"`
+	FunctionName  string    `json:"functionName"`
+	FunctionID    string    `json:"functionId"`
+	RevisionID    string    `json:"revisionId"`
+	State         string    `json:"state"`
+	CreatedAt     time.Time `json:"createdAt"`
+	// AttachedRevision is the function record revision that names the copy.
+	AttachedRevision uint64 `json:"attachedRevision,omitempty"`
+}
 
 // KVAccountBucket returns the per-account JetStream KV bucket name.
 func KVAccountBucket(accountID string) string { return KVBucketAccountPrefix + accountID }

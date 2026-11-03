@@ -10,9 +10,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -160,6 +162,19 @@ func TestLambda_SignedCreateAndGetDownloadsTheStoredCode(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, base64.StdEncoding.EncodeToString(sum[:]), aws.StringValue(created.CodeSha256))
+	account := strings.Split(aws.StringValue(created.FunctionArn), ":")[4]
+	stored, storedRev, err := meta.Client.Get(t.Context(), account, testRegion, "e2e-fn")
+	require.NoError(t, err)
+	js, err := jetstream.New(gw.NATSConn)
+	require.NoError(t, err)
+	kv, err := js.KeyValue(t.Context(), lambdafunction.KVAccountBucket(account))
+	require.NoError(t, err)
+	upEntry, err := kv.Get(t.Context(), lambdafunction.KVUploadKey(testRegion, stored.FunctionID, stored.Code.RevisionID))
+	require.NoError(t, err, "the stored copy is tracked by an upload record")
+	var up lambdafunction.Upload
+	require.NoError(t, json.Unmarshal(upEntry.Value(), &up))
+	require.Equal(t, lambdafunction.UploadAttached, up.State)
+	require.Equal(t, storedRev, up.AttachedRevision)
 
 	got, err := cli.GetFunction(&lambda.GetFunctionInput{FunctionName: aws.String("e2e-fn")})
 	require.NoError(t, err)

@@ -26,6 +26,7 @@ var (
 	nameRE   = regexp.MustCompile(`^[a-zA-Z0-9-_]{1,64}$`)
 	regionRE = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 	digestRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	idRE     = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 )
 
 // ValidName reports whether name is a legal function name.
@@ -81,17 +82,15 @@ func decode(data []byte) (Record, error) {
 	return rec, nil
 }
 
-// Create binds the name by writing the record with kv.Create. The record starts
-// Pending with its code storing and a claim that expires after ClaimTTL. A name
-// held only by an expired, still-storing claim is taken over once.
-//
-// Orphaned code objects from rolled-back or taken-over claims are not cleaned up yet.
+// Create records the code upload, then claims the name with kv.Create: Pending,
+// code storing, claim expiring after ClaimTTL. A name held only by an expired,
+// still-storing claim is taken over once; the taken-over upload stays owed.
 func (s *MetaService) Create(ctx context.Context, req *CreateRequest, accountID string) (*CreateResponse, error) {
 	rec := req.Record
 	if !regionRE.MatchString(req.Region) {
 		return nil, badRegion()
 	}
-	if !ValidName(rec.FunctionName) || rec.FunctionID == "" || rec.Code.RevisionID == "" || accountID == "" {
+	if !ValidName(rec.FunctionName) || !idRE.MatchString(rec.FunctionID) || !idRE.MatchString(rec.Code.RevisionID) || accountID == "" {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValueException, "function record is incomplete")
 	}
 	kv, err := s.bucket(ctx, accountID)
@@ -112,6 +111,21 @@ func (s *MetaService) Create(ctx context.Context, req *CreateRequest, accountID 
 	}
 	key := KVFunctionKey(req.Region, rec.FunctionName)
 
+	// The upload is recorded before the claim exists, so no copy can be written
+	// for a claim that has no upload record.
+	upKey := KVUploadKey(req.Region, rec.FunctionID, rec.Code.RevisionID)
+	upData, err := json.Marshal(Upload{
+		FormatVersion: FormatVersion, AccountID: accountID, Region: req.Region, FunctionName: rec.FunctionName,
+		FunctionID: rec.FunctionID, RevisionID: rec.Code.RevisionID, State: UploadOwed, CreatedAt: now,
+	})
+	if err != nil {
+		return nil, err
+	}
+	upRev, err := kv.Create(ctx, upKey, upData)
+	if err != nil {
+		return nil, fmt.Errorf("lambda: record code upload: %w", err)
+	}
+
 	rev, err := kv.Create(ctx, key, data)
 	if err == nil {
 		return &CreateResponse{Revision: rev}, nil
@@ -123,25 +137,83 @@ func (s *MetaService) Create(ctx context.Context, req *CreateRequest, accountID 
 	exists := conflict("Function already exist: %s", rec.FunctionName)
 	entry, err := kv.Get(ctx, key)
 	if err != nil {
-		return nil, exists
+		return nil, s.refused(ctx, kv, upKey, upRev, exists)
 	}
 	old, err := decode(entry.Value())
 	if err != nil || old.Code.State != CodeStoring || !s.now().After(old.ClaimExpiresAt) {
-		return nil, exists
+		return nil, s.refused(ctx, kv, upKey, upRev, exists)
 	}
 	if err := kv.Delete(ctx, key, jetstream.LastRevision(entry.Revision())); err != nil {
-		return nil, exists
+		return nil, s.refused(ctx, kv, upKey, upRev, exists)
 	}
 	slog.WarnContext(ctx, "Lambda: took over an expired function name claim",
 		"function_name", rec.FunctionName, "old_function_id", old.FunctionID)
 	rev, err = kv.Create(ctx, key, data)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
-			return nil, exists
+			return nil, s.refused(ctx, kv, upKey, upRev, exists)
 		}
 		return nil, fmt.Errorf("lambda: create function record: %w", err)
 	}
 	return &CreateResponse{Revision: rev}, nil
+}
+
+// refused drops the upload record of a create that certainly holds no claim:
+// the gateway writes code only after Create succeeds. A failed drop leaves the
+// upload owed, which is safe.
+func (s *MetaService) refused(ctx context.Context, kv jetstream.KeyValue, upKey string, upRev uint64, err error) error {
+	if derr := kv.Delete(ctx, upKey, jetstream.LastRevision(upRev)); derr != nil {
+		slog.WarnContext(ctx, "Lambda: upload record of a refused create was not dropped", "key", upKey, "err", derr)
+	}
+	return err
+}
+
+// checkUpload returns the owed upload record for rec. Any other record, or
+// none, refuses the caller; nothing is rewritten, because the state of a record
+// this owner cannot vouch for is unknown.
+func checkUpload(ctx context.Context, kv jetstream.KeyValue, rec Record) (Upload, uint64, error) {
+	refuse := func(why string, args ...any) (Upload, uint64, error) {
+		slog.WarnContext(ctx, "Lambda: code upload record refused; its state is unknown",
+			"function_id", rec.FunctionID, "revision_id", rec.Code.RevisionID, "reason", fmt.Sprintf(why, args...))
+		return Upload{}, 0, awserrors.Errorf(awserrors.ErrorServiceException, "function code upload is not tracked")
+	}
+	entry, err := kv.Get(ctx, KVUploadKey(rec.Region, rec.FunctionID, rec.Code.RevisionID))
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return refuse("missing")
+	}
+	if err != nil {
+		return Upload{}, 0, fmt.Errorf("lambda: get code upload record: %w", err)
+	}
+	var up Upload
+	if err := json.Unmarshal(entry.Value(), &up); err != nil {
+		return refuse("unreadable")
+	}
+	if up.FormatVersion != FormatVersion {
+		return refuse("format version %d", up.FormatVersion)
+	}
+	if up.AccountID != rec.AccountID || up.Region != rec.Region || up.FunctionName != rec.FunctionName ||
+		up.FunctionID != rec.FunctionID || up.RevisionID != rec.Code.RevisionID {
+		return refuse("identity mismatch")
+	}
+	if up.State != UploadOwed {
+		return refuse("state %s", up.State)
+	}
+	return up, entry.Revision(), nil
+}
+
+// attach marks the checked upload as named by the function record at revision.
+// KV has no multi-key write, so a change since the check fails this CAS, and
+// the record is then left as found, its state unknown.
+func attach(ctx context.Context, kv jetstream.KeyValue, up Upload, upRev, revision uint64) {
+	up.State, up.AttachedRevision = UploadAttached, revision
+	data, err := json.Marshal(up)
+	if err == nil {
+		_, err = kv.Update(ctx, KVUploadKey(up.Region, up.FunctionID, up.RevisionID), data, upRev)
+	}
+	if err != nil {
+		slog.WarnContext(ctx, "Lambda: upload record not marked attached; its state is unknown",
+			"function_id", up.FunctionID, "revision_id", up.RevisionID, "err", err)
+	}
 }
 
 // Get returns the record, or Found false when the name is unbound.
@@ -190,8 +262,9 @@ func (s *MetaService) readStoring(ctx context.Context, kv jetstream.KeyValue, re
 	return rec, nil
 }
 
-// CodeStored marks the code stored. It is refused, leaving the record unchanged,
-// when the revision moved, the code is not storing, or the claim has expired.
+// CodeStored marks the code stored. It is refused, leaving both records unchanged,
+// when the revision moved, the code is not storing, the claim has expired, or
+// the upload record is not the owed one this create wrote.
 func (s *MetaService) CodeStored(ctx context.Context, req *CodeStoredRequest, accountID string) (*CodeStoredResponse, error) {
 	if !regionRE.MatchString(req.Region) {
 		return nil, badRegion()
@@ -214,6 +287,10 @@ func (s *MetaService) CodeStored(ctx context.Context, req *CodeStoredRequest, ac
 	if now.After(rec.ClaimExpiresAt) {
 		return nil, conflict("Function creation claim expired: %s", req.FunctionName)
 	}
+	up, upRev, err := checkUpload(ctx, kv, rec)
+	if err != nil {
+		return nil, err
+	}
 	rec.Code.State, rec.Code.SHA256, rec.Code.Size = CodeStored, req.SHA256, req.Size
 	rec.State, rec.StateReasonCode, rec.StateReason = StatePending, ReasonCodeCreating, ReasonCreating
 	rec.LastModified = now.UTC()
@@ -228,12 +305,13 @@ func (s *MetaService) CodeStored(ctx context.Context, req *CodeStoredRequest, ac
 		}
 		return nil, fmt.Errorf("lambda: update function record: %w", err)
 	}
+	attach(ctx, kv, up, upRev, rev)
 	return &CodeStoredResponse{Record: rec, Revision: rev}, nil
 }
 
 // RollbackCreate frees the name of a create whose own code write failed. It
 // deletes only a record still storing at exactly the revision create returned;
-// an already-absent name is success.
+// an already-absent name is success. The upload stays owed: the write may have landed.
 func (s *MetaService) RollbackCreate(ctx context.Context, req *RollbackCreateRequest, accountID string) (*RollbackCreateResponse, error) {
 	if !regionRE.MatchString(req.Region) {
 		return nil, badRegion()

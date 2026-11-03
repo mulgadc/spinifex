@@ -110,11 +110,20 @@ type memStore struct {
 	objects map[codestore.Ref][]byte
 	putErr  error
 	urlErr  error
+	// beforePut runs once, unlocked, before the next write lands.
+	beforePut func()
 }
 
 var _ awsapi.CodeStore = (*memStore)(nil)
 
 func (m *memStore) Put(_ context.Context, ref codestore.Ref, code []byte) (string, error) {
+	m.mu.Lock()
+	hook := m.beforePut
+	m.beforePut = nil
+	m.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.putErr != nil {
@@ -168,6 +177,40 @@ func newHarness(t *testing.T, statements ...iamdomain.Statement) (*gwtest.Harnes
 		return b
 	}
 	return gwtest.Scoped(statements...), meta, store, kv, key
+}
+
+// uploads returns every upload record in the account bucket, by function ID.
+func (e *env) uploads(t *testing.T) map[string]function.Upload {
+	t.Helper()
+	kv := e.kv(t)
+	keys, err := kv.ListKeys(t.Context())
+	require.NoError(t, err)
+	out := map[string]function.Upload{}
+	for k := range keys.Keys() {
+		if !strings.HasPrefix(k, "upload.") {
+			continue
+		}
+		entry, err := kv.Get(t.Context(), k)
+		require.NoError(t, err)
+		var up function.Upload
+		require.NoError(t, json.Unmarshal(entry.Value(), &up))
+		require.Equal(t, function.KVUploadKey(up.Region, up.FunctionID, up.RevisionID), k)
+		out[up.FunctionID] = up
+	}
+	return out
+}
+
+// requireTracked asserts every code copy in the store has an upload record.
+func (e *env) requireTracked(t *testing.T) {
+	t.Helper()
+	ups := e.uploads(t)
+	e.store.mu.Lock()
+	defer e.store.mu.Unlock()
+	for ref := range e.store.objects {
+		up, ok := ups[ref.FunctionID]
+		require.True(t, ok, "code copy %s has no upload record", ref.FunctionID)
+		require.Equal(t, ref.RevisionID, up.RevisionID)
+	}
 }
 
 type env struct {
@@ -281,6 +324,15 @@ func TestCreateFunction_Success(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(entry.Value()), "hunter2", "the environment is never stored in plaintext")
 	assert.Contains(t, string(entry.Value()), "envCipher")
+
+	e.requireTracked(t)
+	ups := e.uploads(t)
+	require.Len(t, ups, 1)
+	for _, up := range ups {
+		assert.Equal(t, function.UploadAttached, up.State)
+		assert.Equal(t, entry.Revision(), up.AttachedRevision)
+		assert.Equal(t, "hello", up.FunctionName)
+	}
 }
 
 func TestCreateFunction_RendersTheStoredTimestamps(t *testing.T) {
@@ -313,6 +365,8 @@ func TestCreateFunction_DuplicateNameLeavesFirstUntouched(t *testing.T) {
 	assert.Contains(t, err.Error(), "Function already exist: hello")
 
 	assert.Equal(t, 1, e.store.count(), "the loser wrote no code")
+	assert.Len(t, e.uploads(t), 1, "the refused create leaves no upload record")
+	e.requireTracked(t)
 	after, _, err := e.meta.Get(t.Context(), gwtest.AccountID, gwtest.Region, "hello")
 	require.NoError(t, err)
 	assert.Equal(t, first, after)
@@ -327,6 +381,11 @@ func TestCreateFunction_CodePutFailureFreesTheName(t *testing.T) {
 	assert.Equal(t, 1, e.meta.rollbacks)
 	_, _, err = e.meta.Get(t.Context(), gwtest.AccountID, gwtest.Region, "hello")
 	require.ErrorIs(t, err, function.ErrNotFound)
+	ups := e.uploads(t)
+	require.Len(t, ups, 1)
+	for _, up := range ups {
+		assert.Equal(t, function.UploadOwed, up.State, "a failed write may still have landed")
+	}
 
 	e.store.putErr = nil
 	rec, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
@@ -343,6 +402,51 @@ func TestCreateFunction_CodeStoredFailureRollsBackOnce(t *testing.T) {
 	assert.Equal(t, 1, e.store.count(), "the code object is left in place, never deleted here")
 	_, _, err = e.meta.Get(t.Context(), gwtest.AccountID, gwtest.Region, "hello")
 	require.ErrorIs(t, err, function.ErrNotFound, "the still-storing claim was withdrawn")
+	e.requireTracked(t)
+	for _, up := range e.uploads(t) {
+		assert.Equal(t, function.UploadOwed, up.State, "the unnamed copy stays owed")
+	}
+}
+
+// The first create's write stalls past its claim, a second create takes the
+// name over, then the first write lands and its completion is refused.
+func TestCreateFunction_LateWriterAfterTakeoverStaysTracked(t *testing.T) {
+	e := newEnv(t)
+	key := function.KVFunctionKey(gwtest.Region, "hello")
+	e.store.beforePut = func() {
+		entry, err := e.kv(t).Get(t.Context(), key)
+		require.NoError(t, err)
+		var rec function.Record
+		require.NoError(t, json.Unmarshal(entry.Value(), &rec))
+		rec.ClaimExpiresAt = time.Now().Add(-time.Second)
+		data, err := json.Marshal(rec)
+		require.NoError(t, err)
+		_, err = e.kv(t).Update(t.Context(), key, data, entry.Revision())
+		require.NoError(t, err)
+
+		rec2, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) {
+			b["Code"] = map[string]any{"ZipFile": mustZip(t, "second")}
+		}))
+		require.NoError(t, err)
+		require.Equal(t, http.StatusCreated, rec2.Code)
+	}
+
+	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
+	requireCode(t, err, awserrors.ErrorServiceException)
+	assert.Equal(t, 2, e.store.count(), "both copies landed")
+	e.requireTracked(t)
+
+	winner, _, err := e.meta.Get(t.Context(), gwtest.AccountID, gwtest.Region, "hello")
+	require.NoError(t, err)
+	ups := e.uploads(t)
+	require.Len(t, ups, 2)
+	for id, up := range ups {
+		if id == winner.FunctionID {
+			assert.Equal(t, function.UploadAttached, up.State)
+			continue
+		}
+		assert.Equal(t, function.UploadOwed, up.State, "the late writer's copy is never inferred complete")
+	}
 }
 
 func TestCreateFunction_RefusesUnsupportedInput(t *testing.T) {

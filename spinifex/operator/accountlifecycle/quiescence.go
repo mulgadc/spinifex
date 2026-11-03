@@ -7,16 +7,16 @@ import (
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 )
 
-// finalInventoryRereadWired says whether anything re-reads the owner inventory
-// before the account record goes. Until it does, a write landing after the
-// reaper stage is orphaned, so no kind may be recorded as quiesced.
-var finalInventoryRereadWired = false
-
 // QuiesceEvidence is what the engine read after QuiesceAccount returned.
 type QuiesceEvidence struct {
 	OperationID string
 	Fence       uint64
 	Generation  uint64
+
+	// Exercise is set only for a non-finalizing run, which re-reads the owner
+	// inventory after its cleanup and removes no account record. An ordinary
+	// delete re-reads nothing before the record goes, so it records no scope.
+	Exercise bool
 
 	// Account is the IAM record read back after the quiesce.
 	Account     *Account
@@ -79,7 +79,8 @@ var otherScopes = []unresolvedEntry{
 
 // EvaluateQuiescence applies ADR-0008:S9's three conditions to the evidence and
 // records what holds. A fence the read-back does not confirm stops everything
-// else; otherwise every scope is listed, and none is reported quiesced yet.
+// else; otherwise every scope is listed. A kind is quiesced only for an
+// exercise whose owner inventory for it was complete.
 func EvaluateQuiescence(ev QuiesceEvidence) operatorv1.IAMQuiescence {
 	out := operatorv1.IAMQuiescence{
 		OperationID:   ev.OperationID,
@@ -109,7 +110,7 @@ func EvaluateQuiescence(ev QuiesceEvidence) operatorv1.IAMQuiescence {
 		switch {
 		case !complete:
 			out.Unresolved = append(out.Unresolved, writerEntry("ec2-"+kind, operatorv1.ReasonOwnerInventoryIncomplete))
-		case !finalInventoryRereadWired:
+		case !ev.Exercise:
 			out.Unresolved = append(out.Unresolved, writerEntry("ec2-"+kind, operatorv1.ReasonFinalInventoryRereadNotWired))
 		default:
 			out.QuiescedScope = append(out.QuiescedScope, kind)

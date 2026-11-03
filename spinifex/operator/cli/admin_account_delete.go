@@ -61,6 +61,8 @@ func init() {
 	accountCmd.AddCommand(accountDeleteCmd)
 
 	accountDeleteCmd.Flags().Bool("dry-run", false, "Report what would be deleted and change nothing")
+	accountDeleteCmd.Flags().Bool("non-finalizing", false, "Quiesce and clean the EC2 platform kinds, then stop with the account still TERMINATING")
+	_ = accountDeleteCmd.Flags().MarkHidden("non-finalizing")
 	accountDeleteCmd.Flags().Bool("force", false, "Escalate past state guards for resources that will not delete")
 	accountDeleteCmd.Flags().Bool("yes", false, "Skip the interactive confirmation (requires --name)")
 	accountDeleteCmd.Flags().String("name", "", "Account name, which must match the stored record")

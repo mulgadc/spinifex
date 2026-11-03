@@ -43,6 +43,27 @@ func TestAdminWire_DeletionStates(t *testing.T) {
 	require.Equal(t, "RUNNING", DeletionStateRunning)
 	require.Equal(t, "COMPLETED", DeletionStateCompleted)
 	require.Equal(t, "FAILED", DeletionStateFailed)
+	require.Equal(t, "EXERCISED", DeletionStateExercised)
+}
+
+func TestAdminWire_NonFinalizingDeleteRequest(t *testing.T) {
+	goldenJSON(t, DeleteAccountRequest{AccountID: "000000000042", AccountName: "acme", ClientToken: "tok-3", NonFinalizing: true},
+		`{"accountId":"000000000042","accountName":"acme","clientToken":"tok-3","nonFinalizing":true}`)
+}
+
+func TestAdminWire_ExerciseResult(t *testing.T) {
+	goldenJSON(t, ExerciseResult{
+		Cleanup: &PlatformCleanup{
+			Kinds:  []CleanupKind{{Kind: "key-pair", Status: "observed-clean-at-scan-time"}},
+			Items:  []CleanupItem{{ResourceID: "pg-1", Kind: "placement-group", Disposition: "blocked", Reason: "instance-members", MemberCount: 1}},
+			Counts: []CleanupCount{{Kind: "key-pair", Class: "public-key-object-without-metadata", Disposition: "deleted", Count: 2}},
+		},
+		Accounting: []KindAccounting{{Kind: "placement-group", Status: AccountingAccounted, Remaining: 1}},
+	}, `{"cleanup":{"kinds":[{"kind":"key-pair","status":"observed-clean-at-scan-time"}],
+		"items":[{"resourceId":"pg-1","kind":"placement-group","disposition":"blocked","reason":"instance-members","memberCount":1}],
+		"counts":[{"kind":"key-pair","class":"public-key-object-without-metadata","disposition":"deleted","count":2}]},
+		"accounting":[{"kind":"placement-group","status":"accounted","remaining":1}]}`)
+	goldenJSON(t, ExerciseResult{Skipped: ExerciseSkippedNoQuiescedKind}, `{"skipped":"no-quiesced-kind"}`)
 }
 
 func TestAdminWire_ListAccountsResponse(t *testing.T) {

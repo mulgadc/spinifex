@@ -110,6 +110,8 @@ func (d Deps) resumeDeletion(
 		AccountName: existing.AccountName,
 		ClientToken: existing.ClientToken,
 		Force:       existing.Force,
+
+		NonFinalizing: existing.NonFinalizing,
 	}
 	job, newRevision, _, err := takeOverDeletionJob(ctx, jobs, req, d.holderID(), existing, revision, takeoverReasonLeaseExpired, now)
 	if err != nil {

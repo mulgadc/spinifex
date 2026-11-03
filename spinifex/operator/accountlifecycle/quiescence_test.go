@@ -72,12 +72,10 @@ func TestEvaluateQuiescenceRecordsEvidenceButQuiescesNothingWithoutAFinalReread(
 	assert.Equal(t, "2026-11-02T00:00:00Z", q.EvaluatedAt)
 }
 
-// The wiring step flips this switch; the complete kinds are then, and only then, named.
+// Only an exercise, which re-reads the inventory after cleanup, names the complete kinds.
 func TestEvaluateQuiescenceNamesCompleteKindsOnceTheRereadIsWired(t *testing.T) {
-	finalInventoryRereadWired = true
-	t.Cleanup(func() { finalInventoryRereadWired = false })
-
 	ev := confirmedEvidence()
+	ev.Exercise = true
 	ev.Inventory.Kinds[1].Status = ec2v1.PlatformStatusScanIncomplete
 	q := EvaluateQuiescence(ev)
 
@@ -133,9 +131,8 @@ func TestEvaluateQuiescenceRecordsNothingWhenTheFenceIsNotConfirmed(t *testing.T
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			finalInventoryRereadWired = true
-			t.Cleanup(func() { finalInventoryRereadWired = false })
 			ev := confirmedEvidence()
+			ev.Exercise = true
 			tc.mutate(&ev)
 			q := EvaluateQuiescence(ev)
 
@@ -172,11 +169,11 @@ func TestEveryOtherScopeIsRecordedUnresolvedByName(t *testing.T) {
 
 // Predastore has no accepted enforcement contract, so the scopes it admits writes
 // for stay unresolved and it is never cited as a consumer, even once the
-// re-read is wired and every L09 kind is complete.
+// run is an exercise and every L09 kind is complete.
 func TestPredastoreIsNeverCitedAndItsScopesNeverQuiesce(t *testing.T) {
-	finalInventoryRereadWired = true
-	t.Cleanup(func() { finalInventoryRereadWired = false })
-	q := EvaluateQuiescence(confirmedEvidence())
+	ev := confirmedEvidence()
+	ev.Exercise = true
+	q := EvaluateQuiescence(ev)
 
 	for _, scope := range []string{"s3", "ecr"} {
 		got := unresolvedFor(q, scope)

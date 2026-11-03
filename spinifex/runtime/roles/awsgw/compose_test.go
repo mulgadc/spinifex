@@ -1,12 +1,16 @@
 package awsgw
 
 import (
+	"context"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountcleanup"
+	"github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	operatoradmin "github.com/mulgadc/spinifex/spinifex/operator/admin"
 
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
@@ -87,4 +91,41 @@ func TestAwsgwStartsTheDeletionResumer(t *testing.T) {
 		return true
 	})
 	assert.True(t, started, "awsgw.go must call Deps.StartDeletionResumer")
+}
+
+type fixedCleaner struct{}
+
+func (fixedCleaner) CleanupPlatform(context.Context, *accountcleanup.Request) (*accountcleanup.Result, error) {
+	return &accountcleanup.Result{}, nil
+}
+
+// A non-finalizing DeleteAccount cleans through the in-process owners awsgw
+// binds. A cleanup that cannot be built must leave the field nil, which refuses
+// the request, rather than bind something half-working.
+func TestWithPlatformCleaner_BindsTheCleanupOrLeavesItNil(t *testing.T) {
+	bound := withPlatformCleaner(operatoradmin.Deps{}, func() (accountlifecycle.PlatformCleaner, error) { return fixedCleaner{}, nil })
+	assert.NotNil(t, bound.PlatformCleaner)
+
+	unbound := withPlatformCleaner(operatoradmin.Deps{}, func() (accountlifecycle.PlatformCleaner, error) {
+		return nil, errors.New("owner store unavailable")
+	})
+	assert.Nil(t, unbound.PlatformCleaner)
+}
+
+// The cleanup is bound where the operator deps are composed, or the exercise is
+// refused on every gateway.
+func TestAwsgwBindsThePlatformCleanup(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "awsgw.go", nil, 0)
+	require.NoError(t, err)
+
+	var bound bool
+	ast.Inspect(file, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok {
+			if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == "withPlatformCleaner" {
+				bound = true
+			}
+		}
+		return true
+	})
+	assert.True(t, bound, "awsgw.go must call withPlatformCleaner")
 }

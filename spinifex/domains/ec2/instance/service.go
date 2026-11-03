@@ -144,7 +144,7 @@ type VolumeDeleter interface {
 	// terminate without deleting it, matching AWS semantics for a
 	// DeleteOnTermination=false volume: terminate still implies detach, it
 	// just leaves the volume behind as available rather than deleting it.
-	DetachVolumeOnTerminate(ctx context.Context, volumeID, accountID string) error
+	DetachVolumeOnTerminate(ctx context.Context, volumeID, instanceID, accountID string) error
 }
 
 // VolumeCreator creates the volumes a launch names beyond the root device, and

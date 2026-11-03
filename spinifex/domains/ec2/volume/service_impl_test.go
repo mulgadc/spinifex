@@ -1883,8 +1883,34 @@ func TestDetachVolumeOnTerminate_AlreadyGoneMetadataIsSuccess(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 	svc.snapshotKV = kv
 
-	err := svc.DetachVolumeOnTerminate(context.Background(), "vol-already-gone", testVolAccountID)
+	err := svc.DetachVolumeOnTerminate(context.Background(), "vol-already-gone", "i-gone", testVolAccountID)
 	require.NoError(t, err, "a volume with no metadata document is already gone, not a teardown failure")
+}
+
+// A teardown retried after the volume moved on must not clear the attachment it
+// now has, while the terminated instance's own attachment is still cleared.
+func TestDetachVolumeOnTerminate_LeavesAVolumeAttachedElsewhere(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+	createVolumeInStoreWithMeta(t, svc, store, "vol-moved", ebsmetadata.Volume{
+		VolumeID: "vol-moved", CapacityGiB: 20, State: "in-use", AttachedInstance: "i-new", DeviceName: "/dev/sdf",
+	})
+	createVolumeInStoreWithMeta(t, svc, store, "vol-own", ebsmetadata.Volume{
+		VolumeID: "vol-own", CapacityGiB: 20, State: "in-use", AttachedInstance: "i-old", DeviceName: "/dev/sdf",
+	})
+
+	require.NoError(t, svc.DetachVolumeOnTerminate(context.Background(), "vol-moved", "i-old", testVolAccountID))
+	require.NoError(t, svc.DetachVolumeOnTerminate(context.Background(), "vol-own", "i-old", testVolAccountID))
+
+	moved, err := svc.GetVolumeMetadata(testVolAccountID, "vol-moved")
+	require.NoError(t, err)
+	assert.Equal(t, "in-use", moved.State)
+	assert.Equal(t, "i-new", moved.AttachedInstance)
+
+	own, err := svc.GetVolumeMetadata(testVolAccountID, "vol-own")
+	require.NoError(t, err)
+	assert.Equal(t, "available", own.State)
+	assert.Empty(t, own.AttachedInstance)
 }
 
 // failingDeleteProvider makes the provider's delete fail while leaving every

@@ -611,7 +611,7 @@ func (r *Reconciler) reconcileStopping(ctx context.Context, kv *kvstore.Bucket, 
 // what lets the customer retry the delete.
 func (r *Reconciler) reconcileDeleting(ctx context.Context, kv *kvstore.Bucket, rev uint64, accountID string, rec *DBInstanceRecord) error {
 	err := r.svc.teardownDBInstance(ctx, kv, accountID, rec, false)
-	if err == nil || errors.Is(err, errFinalSnapshotInProgress) {
+	if err == nil || errors.Is(err, errFinalSnapshotInProgress) || errors.Is(err, errModifyInProgress) {
 		return nil
 	}
 	if time.Since(transitionStarted(rec)) > transitionTimeout {

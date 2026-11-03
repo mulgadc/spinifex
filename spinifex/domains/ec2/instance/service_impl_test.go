@@ -1761,7 +1761,7 @@ func (f *fakeVolumeDeleter) DeleteVolumeOnTerminate(_ context.Context, volumeID,
 // DetachVolumeOnTerminate mirrors DeleteVolumeOnTerminate's call/error
 // bookkeeping but records into detached instead of deleted; the non-DoT
 // Boot-volume branch calls this instead of deleting.
-func (f *fakeVolumeDeleter) DetachVolumeOnTerminate(_ context.Context, volumeID, _ string) error {
+func (f *fakeVolumeDeleter) DetachVolumeOnTerminate(_ context.Context, volumeID, _, _ string) error {
 	f.calls = append(f.calls, volumeID)
 	if f.err != nil {
 		return f.err

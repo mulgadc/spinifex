@@ -19,6 +19,10 @@ import (
 
 var errFinalSnapshotInProgress = errors.New("rds: final DB snapshot creation is still in progress")
 
+// errModifyInProgress defers a teardown until a modify that already holds the
+// lease, and may be growing the data volume, has let go of it.
+var errModifyInProgress = errors.New("rds: a modification of the DB instance is still in progress")
+
 type finalSnapshotReservation struct {
 	creator  bool
 	revision uint64
@@ -93,6 +97,10 @@ func (s *Service) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInsta
 	}
 
 	if err := s.teardownDBInstance(ctx, kv, accountID, rec, reservation.creator); err != nil {
+		// The reconciler finishes the delete once the modify lets go.
+		if errors.Is(err, errModifyInProgress) {
+			return &rds.DeleteDBInstanceOutput{DBInstance: s.projectDBInstance(rec)}, nil
+		}
 		return nil, err
 	}
 
@@ -177,6 +185,14 @@ func (s *Service) checkFinalSnapshotAvailable(ctx context.Context, kv *kvstore.B
 // any point it stopped at.
 func (s *Service) teardownDBInstance(ctx context.Context, kv *kvstore.Bucket, accountID string,
 	rec *DBInstanceRecord, finalSnapshotCreator bool) error {
+	current, _, err := s.getDBInstance(ctx, kv, rec.DBInstanceIdentifier)
+	if err != nil {
+		return err
+	}
+	if current.ModifyLease.live() {
+		return errModifyInProgress
+	}
+
 	// Asked to stop cleanly even though the VM is about to go: it is what makes
 	// the final snapshot a clean checkpoint rather than one needing WAL replay.
 	if rec.FinalSnapshotIdentifier != "" {

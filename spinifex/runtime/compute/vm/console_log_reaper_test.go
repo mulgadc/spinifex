@@ -110,6 +110,7 @@ func TestConsoleLogReaper_RemovesByInstanceState(t *testing.T) {
 		"i-term-old":     {State: StateTerminated, TerminatedAt: now.Add(-consoleRemoveAfter - time.Minute)},
 		"i-term-new":     {State: StateTerminated, TerminatedAt: now.Add(-consoleRemoveAfter + time.Minute)},
 		"i-term-nostamp": {State: StateTerminated},
+		"i-term-fresh":   {State: StateTerminated},
 		"i-running":      {State: StateRunning},
 		"i-stopped":      {State: StateStopped},
 	}
@@ -117,17 +118,22 @@ func TestConsoleLogReaper_RemovesByInstanceState(t *testing.T) {
 	old := now.Add(-48 * time.Hour)
 	paths := map[string]string{}
 	for id := range entries {
-		paths[id] = writeConsole(t, dir, id, []byte("boot\n"), old)
+		mtime := old
+		if id == "i-term-fresh" {
+			mtime = now.Add(-time.Minute)
+		}
+		paths[id] = writeConsole(t, dir, id, []byte("boot\n"), mtime)
 	}
 
 	reaped, err := r.Sweep(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, 1, reaped, "only the instance terminated over an hour ago")
+	assert.Equal(t, 2, reaped, "terminated over an hour ago, and terminated with no stamp and a stale file")
 
 	exists := func(id string) bool { _, err := os.Stat(paths[id]); return err == nil }
 	assert.False(t, exists("i-term-old"), "terminated over an hour ago: removed")
 	assert.True(t, exists("i-term-new"), "terminated recently: kept for the shipper and late reads")
-	assert.True(t, exists("i-term-nostamp"), "no terminated-at stamp: never guessed old")
+	assert.False(t, exists("i-term-nostamp"), "no stamp: the file's own mtime decides, so it is not kept forever")
+	assert.True(t, exists("i-term-fresh"), "no stamp but a fresh file: kept")
 	assert.True(t, exists("i-running"), "running: kept")
 	assert.True(t, exists("i-stopped"), "stopped: kept, AWS returns console output after stop")
 }

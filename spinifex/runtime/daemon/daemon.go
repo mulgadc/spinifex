@@ -2573,6 +2573,7 @@ func (d *Daemon) startCluster() error {
 			d.vmMgr.NewTerminatedTeardownReaper(),
 			d.vmMgr.NewOrphanQEMUReaper(),
 			d.vmMgr.NewStuckTerminateReaper(),
+			d.vmMgr.NewLocalConsoleLogReaper(),
 		}
 		if eniRec := d.newENIReconciler(); eniRec != nil {
 			reapers = append(reapers, eniRec)

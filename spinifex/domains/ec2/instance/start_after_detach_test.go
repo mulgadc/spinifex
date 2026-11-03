@@ -17,6 +17,7 @@ import (
 // launch, which is the earliest point that shows what the start would attach.
 type mountRecorder struct {
 	refusingMounter
+
 	mu      sync.Mutex
 	mounted []string
 }

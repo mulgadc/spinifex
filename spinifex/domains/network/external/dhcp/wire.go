@@ -199,35 +199,44 @@ func fromWireLease(w *wireLease) (*Lease, error) {
 		RawOffer:      w.RawOffer,
 		RawACK:        w.RawACK,
 	}
-	if w.IP != "" {
-		l.IP = net.ParseIP(w.IP)
+	if err := decodeLeaseAddrs(l, w.IP, w.SubnetMask, w.Routers, w.DNS, w.ServerID, w.HWAddr); err != nil {
+		return nil, err
 	}
-	if w.SubnetMask != "" {
-		m, err := parseMask(w.SubnetMask)
+	return l, nil
+}
+
+// decodeLeaseAddrs parses the address fields shared by the wire and KV lease
+// formats into l. Unparseable routers and DNS servers are dropped.
+func decodeLeaseAddrs(l *Lease, ip, mask string, routers, dns []string, serverID, hw string) error {
+	if ip != "" {
+		l.IP = net.ParseIP(ip)
+	}
+	if mask != "" {
+		m, err := parseMask(mask)
 		if err != nil {
-			return nil, fmt.Errorf("subnet_mask: %w", err)
+			return fmt.Errorf("parse subnet_mask %q: %w", mask, err)
 		}
 		l.SubnetMask = m
 	}
-	for _, s := range w.Routers {
-		if ip := net.ParseIP(s); ip != nil {
-			l.Routers = append(l.Routers, ip)
+	for _, s := range routers {
+		if r := net.ParseIP(s); r != nil {
+			l.Routers = append(l.Routers, r)
 		}
 	}
-	for _, s := range w.DNS {
-		if ip := net.ParseIP(s); ip != nil {
-			l.DNS = append(l.DNS, ip)
+	for _, s := range dns {
+		if d := net.ParseIP(s); d != nil {
+			l.DNS = append(l.DNS, d)
 		}
 	}
-	if w.ServerID != "" {
-		l.ServerID = net.ParseIP(w.ServerID)
+	if serverID != "" {
+		l.ServerID = net.ParseIP(serverID)
 	}
-	if w.HWAddr != "" {
-		hw, err := net.ParseMAC(w.HWAddr)
+	if hw != "" {
+		mac, err := net.ParseMAC(hw)
 		if err != nil {
-			return nil, fmt.Errorf("hwaddr: %w", err)
+			return fmt.Errorf("parse hwaddr %q: %w", hw, err)
 		}
-		l.HWAddr = hw
+		l.HWAddr = mac
 	}
-	return l, nil
+	return nil
 }

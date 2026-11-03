@@ -232,35 +232,8 @@ func fromWireEntry(w wireEntry) (Entry, error) {
 		RawOffer:    w.RawOffer,
 		RawACK:      w.RawACK,
 	}
-	if w.IP != "" {
-		lease.IP = net.ParseIP(w.IP)
-	}
-	if w.SubnetMask != "" {
-		mask, err := parseMask(w.SubnetMask)
-		if err != nil {
-			return Entry{}, fmt.Errorf("parse subnet_mask %q: %w", w.SubnetMask, err)
-		}
-		lease.SubnetMask = mask
-	}
-	for _, s := range w.Routers {
-		if ip := net.ParseIP(s); ip != nil {
-			lease.Routers = append(lease.Routers, ip)
-		}
-	}
-	for _, s := range w.DNS {
-		if ip := net.ParseIP(s); ip != nil {
-			lease.DNS = append(lease.DNS, ip)
-		}
-	}
-	if w.ServerID != "" {
-		lease.ServerID = net.ParseIP(w.ServerID)
-	}
-	if w.HWAddr != "" {
-		hw, err := net.ParseMAC(w.HWAddr)
-		if err != nil {
-			return Entry{}, fmt.Errorf("parse hwaddr %q: %w", w.HWAddr, err)
-		}
-		lease.HWAddr = hw
+	if err := decodeLeaseAddrs(lease, w.IP, w.SubnetMask, w.Routers, w.DNS, w.ServerID, w.HWAddr); err != nil {
+		return Entry{}, err
 	}
 	if !w.Expiry.IsZero() {
 		lease.LeaseDuration = w.Expiry.Sub(w.Acquired)

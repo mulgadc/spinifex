@@ -284,7 +284,7 @@ func (s *Service) DescribeClusters(ctx context.Context, input *ecs.DescribeClust
 
 // clusterCounts are a cluster's tallies, all EC2 launch type.
 type clusterCounts struct {
-	running, pending, activeServices, drainingServices int64
+	running, pending, activeServices int64
 }
 
 // statistics renders the Include=STATISTICS pairs in the order AWS returns
@@ -304,7 +304,7 @@ func (c clusterCounts) statistics() []*ecs.KeyValuePair {
 		{"pendingManagedInstancesTasksCount", 0},
 		{"activeEC2ServiceCount", c.activeServices},
 		{"activeFargateServiceCount", 0},
-		{"drainingEC2ServiceCount", c.drainingServices},
+		{"drainingEC2ServiceCount", 0},
 		{"drainingFargateServiceCount", 0},
 		{"activeExternalServiceCount", 0},
 		{"drainingExternalServiceCount", 0},
@@ -348,11 +348,8 @@ func (s *Service) applyClusterCounts(ctx context.Context, kv jetstream.KeyValue,
 		return counts, err
 	}
 	for i := range services {
-		switch services[i].Status {
-		case ServiceStatusActive:
+		if services[i].Status == ServiceStatusActive {
 			counts.activeServices++
-		case ServiceStatusDraining:
-			counts.drainingServices++
 		}
 	}
 	c.ActiveServicesCount = aws.Int64(counts.activeServices)

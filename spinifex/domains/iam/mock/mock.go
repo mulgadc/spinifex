@@ -61,6 +61,10 @@ type SystemInstanceRoleEnsurer struct {
 	// are returned by the matching call instead of acting.
 	RemoveRoleFromInstanceProfileErr error
 	DeleteInstanceProfileErr         error
+	// GetInstanceProfileErr, when set, is returned by GetInstanceProfile
+	// instead of reading, for exercising callers that must tell a failed read
+	// from a missing profile.
+	GetInstanceProfileErr error
 	// EmptyInstanceProfileARN makes CreateInstanceProfile return an empty
 	// ARN, for exercising callers that must reject it.
 	EmptyInstanceProfileARN bool
@@ -138,6 +142,9 @@ func (e *SystemInstanceRoleEnsurer) GetInstanceProfile(_ string, in *iam.GetInst
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	if e.GetInstanceProfileErr != nil {
+		return nil, e.GetInstanceProfileErr
+	}
 	p, ok := e.Profiles[aws.StringValue(in.InstanceProfileName)]
 	if !ok {
 		return nil, awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "Instance Profile %s cannot be found.", aws.StringValue(in.InstanceProfileName))

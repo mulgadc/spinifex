@@ -2,11 +2,14 @@ package vm
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
@@ -121,7 +124,7 @@ func (r *ConsoleLogReaper) Sweep(context.Context) (int, error) {
 // the process table cannot be read in full it removes nothing, since a guest
 // that is merely quiet must keep its log.
 func (r *ConsoleLogReaper) removeIfUnheld(path string, warned *bool) bool {
-	held, err := qemuOpenFiles(r.procRoot)
+	held, err := qemuOpenFiles(r.procRoot, r.dir)
 	if err != nil {
 		if !*warned {
 			slog.Warn("vm/gc: idle console logs kept, cannot tell whether QEMU holds them", "err", err)
@@ -145,10 +148,15 @@ func (r *ConsoleLogReaper) removeIfUnheld(path string, warned *bool) bool {
 }
 
 // qemuOpenFiles returns the files every QEMU process under procRoot has open.
-// Any unreadable descriptor table is an error, never a partial answer.
-func qemuOpenFiles(procRoot string) (map[string]bool, error) {
+// Any unreadable descriptor table is an error, never a partial answer. The scan
+// is complete only while the daemon keeps CAP_SYS_ADMIN under ProtectProc=invisible,
+// so an instance pidfile naming a live pid the scan missed is an error too.
+func qemuOpenFiles(procRoot, runtimeDir string) (map[string]bool, error) {
 	pids, err := scanLiveQEMUPIDs(procRoot)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkPidFilesVisible(runtimeDir, pids); err != nil {
 		return nil, err
 	}
 	held := make(map[string]bool)
@@ -173,6 +181,24 @@ func qemuOpenFiles(procRoot string) (map[string]bool, error) {
 		}
 	}
 	return held, nil
+}
+
+// checkPidFilesVisible fails when an instance pidfile names a process that is
+// alive but absent from seen. Signal 0 answers even when /proc hides the pid.
+func checkPidFilesVisible(runtimeDir string, seen []int) error {
+	visible := make(map[int]bool, len(seen))
+	for _, pid := range seen {
+		visible[pid] = true
+	}
+	for pid, id := range pidFileOwners(runtimeDir) {
+		if !strings.HasPrefix(id, "i-") || visible[pid] {
+			continue
+		}
+		if err := syscall.Kill(pid, 0); err == nil || err == syscall.EPERM {
+			return fmt.Errorf("pidfile for %s names live pid %d that the process scan cannot see", id, pid)
+		}
+	}
+	return nil
 }
 
 // trimConsoleLog rewrites the file in place as its newest consoleKeepBytes. The

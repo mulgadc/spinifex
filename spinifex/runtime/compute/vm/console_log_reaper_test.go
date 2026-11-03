@@ -267,3 +267,32 @@ func TestConsoleLogReaper_KeepsIdleFileWhenProcessTableUnreadable(t *testing.T) 
 	_, err = os.Stat(idle)
 	assert.NoError(t, err, "cannot prove it is unused: kept")
 }
+
+func TestConsoleLogReaper_KeepsIdleFileWhenPidFileNamesLivePidTheScanMissed(t *testing.T) {
+	now := time.Now()
+	r, dir := newConsoleReaper(t, now)
+	idle := writeConsole(t, dir, "i-quiet", []byte("boot\n"), now.Add(-48*time.Hour))
+	// This test process is alive but is no QEMU, so the fabricated scan never lists it.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "i-quiet.pid"), []byte(strconv.Itoa(os.Getpid())), 0o644))
+
+	reaped, err := r.Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, reaped)
+	_, err = os.Stat(idle)
+	assert.NoError(t, err, "a live pid the scan cannot see means the scan is incomplete: nothing removed")
+}
+
+func TestConsoleLogReaper_IgnoresPidFileOfDeadProcess(t *testing.T) {
+	now := time.Now()
+	r, dir := newConsoleReaper(t, now)
+	idle := writeConsole(t, dir, "i-gone", []byte("boot\n"), now.Add(-48*time.Hour))
+	cmd := exec.Command("true")
+	require.NoError(t, cmd.Run())
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "i-gone.pid"), []byte(strconv.Itoa(cmd.Process.Pid)), 0o644))
+
+	reaped, err := r.Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, reaped)
+	_, err = os.Stat(idle)
+	assert.ErrorIs(t, err, os.ErrNotExist, "a pidfile for a dead process does not block removal")
+}

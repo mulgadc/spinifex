@@ -23,42 +23,61 @@ func notFound(region, accountID, name string) error {
 		arn.FormatLambdaFunction(region, accountID, name))
 }
 
-// getFunction implements GetFunction for the $LATEST version.
-func (d Deps) getFunction(ctx context.Context, c *call) (reply, error) {
+// loadConfiguration resolves the requested $LATEST function and renders its
+// configuration; it is a metadata read and never touches the code store.
+func (d Deps) loadConfiguration(ctx context.Context, c *call) (function.Record, *lambda.FunctionConfiguration, error) {
 	name, q, err := resolveFunctionName(c.Region, c.AccountID, c.Params[0])
 	if err != nil {
-		return reply{}, err
+		return function.Record{}, nil, err
 	}
 	if query := c.Query.Get("Qualifier"); query != "" {
 		if q != "" && q != query {
-			return reply{}, invalid("The derived qualifier from the function name does not match the specified qualifier.")
+			return function.Record{}, nil, invalid("The derived qualifier from the function name does not match the specified qualifier.")
 		}
 		q = query
 	}
 	if q != "" && q != "$LATEST" {
-		return reply{}, notFound(c.Region, c.AccountID, name+":"+q)
+		return function.Record{}, nil, notFound(c.Region, c.AccountID, name+":"+q)
 	}
 	rec, revision, err := d.Meta.Get(ctx, c.AccountID, c.Region, name)
 	if errors.Is(err, function.ErrNotFound) {
-		return reply{}, notFound(c.Region, c.AccountID, name)
+		return function.Record{}, nil, notFound(c.Region, c.AccountID, name)
 	}
 	if err != nil {
-		return reply{}, err
+		return function.Record{}, nil, err
 	}
 
 	var env map[string]string
 	if rec.EnvCipher != "" {
 		if d.AEAD == nil {
-			return reply{}, serviceError("environment decryption is unavailable")
+			return function.Record{}, nil, serviceError("environment decryption is unavailable")
 		}
 		if env, err = function.OpenEnv(d.AEAD, rec.AccountID, rec.FunctionID, rec.EnvCipher); err != nil {
 			slog.ErrorContext(ctx, "Lambda: open environment failed", "function_id", rec.FunctionID, "err", err)
-			return reply{}, serviceError("could not read the function environment")
+			return function.Record{}, nil, serviceError("could not read the function environment")
 		}
 	}
 	cfg, err := configuration(rec, revision, env)
 	if err != nil {
-		return reply{}, serviceError("could not build the function configuration")
+		return function.Record{}, nil, serviceError("could not build the function configuration")
+	}
+	return rec, cfg, nil
+}
+
+// getFunctionConfiguration implements GetFunctionConfiguration for $LATEST.
+func (d Deps) getFunctionConfiguration(ctx context.Context, c *call) (reply, error) {
+	_, cfg, err := d.loadConfiguration(ctx, c)
+	if err != nil {
+		return reply{}, err
+	}
+	return reply{Status: http.StatusOK, Body: cfg}, nil
+}
+
+// getFunction implements GetFunction for the $LATEST version.
+func (d Deps) getFunction(ctx context.Context, c *call) (reply, error) {
+	rec, cfg, err := d.loadConfiguration(ctx, c)
+	if err != nil {
+		return reply{}, err
 	}
 	out := &lambda.GetFunctionOutput{
 		Configuration: cfg,

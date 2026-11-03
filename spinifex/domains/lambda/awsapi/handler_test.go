@@ -662,8 +662,128 @@ func TestAuthorization(t *testing.T) {
 
 func TestRegistration_ResolvesActionsAndInventory(t *testing.T) {
 	reg := awsapi.NewRegistration(awsapi.Deps{})
-	assert.Equal(t, []string{"CreateFunction", "GetFunction"}, reg.Inventory.Registered)
+	assert.Equal(t, []string{"CreateFunction", "GetFunction", "GetFunctionConfiguration"}, reg.Inventory.Registered)
 	assert.Equal(t, "CreateFunction", reg.ResolveAction(httptest.NewRequest(http.MethodPost, "/2015-03-31/functions", nil)))
 	assert.Equal(t, "GetFunction", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2015-03-31/functions/x", nil)))
+	assert.Equal(t, "GetFunctionConfiguration", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2015-03-31/functions/x/configuration", nil)))
 	assert.Empty(t, reg.ResolveAction(httptest.NewRequest(http.MethodDelete, "/2015-03-31/functions/x", nil)))
+}
+
+func TestGetFunctionConfiguration_ReturnsTheSameConfigurationAsGetFunction(t *testing.T) {
+	e := newEnv(t)
+	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) {
+		b["Environment"] = map[string]any{"Variables": map[string]string{"MODE": "prod"}}
+	}))
+	require.NoError(t, err)
+
+	rec, err := e.do(http.MethodGet, "/2015-03-31/functions/hello", nil)
+	require.NoError(t, err)
+	var full lambda.GetFunctionOutput
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &full))
+
+	rec, err = e.do(http.MethodGet, "/2015-03-31/functions/hello/configuration", nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.NotContains(t, rec.Body.String(), `"Code"`, "the configuration is the top-level body, not GetFunction's wrapper")
+	var cfg lambda.FunctionConfiguration
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &cfg))
+	assert.Equal(t, *full.Configuration, cfg)
+	assert.Equal(t, "prod", *cfg.Environment.Variables["MODE"])
+
+	arn := "arn%3Aaws%3Alambda%3A" + gwtest.Region + "%3A" + gwtest.AccountID + "%3Afunction%3Ahello"
+	for _, path := range []string{
+		"/2015-03-31/functions/hello/configuration?Qualifier=%24LATEST",
+		"/2015-03-31/functions/" + arn + "/configuration",
+		"/2015-03-31/functions/" + arn + "%3A%24LATEST/configuration",
+	} {
+		rec, err := e.do(http.MethodGet, path, nil)
+		require.NoError(t, err, path)
+		assert.Equal(t, http.StatusOK, rec.Code, path)
+	}
+}
+
+func TestGetFunctionConfiguration_MissingAndUnsupportedMatchGetFunction(t *testing.T) {
+	e := newEnv(t)
+	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
+	require.NoError(t, err)
+
+	for label, tc := range map[string]struct{ suffix, code string }{
+		"missing":         {"ghost", awserrors.ErrorResourceNotFoundException},
+		"version":         {"hello?Qualifier=3", awserrors.ErrorResourceNotFoundException},
+		"other account":   {"arn%3Aaws%3Alambda%3A" + gwtest.Region + "%3A999999999999%3Afunction%3Ahello", awserrors.ErrorResourceNotFoundException},
+		"qualifier clash": {"hello%3A%24LATEST?Qualifier=3", awserrors.ErrorInvalidParameterValueException},
+		"not lambda":      {"arn%3Aaws%3As3%3A%3A%3Abucket", awserrors.ErrorInvalidParameterValueException},
+	} {
+		t.Run(label, func(t *testing.T) {
+			path, query, _ := strings.Cut(tc.suffix, "?")
+			if query != "" {
+				query = "?" + query
+			}
+			_, getErr := e.do(http.MethodGet, "/2015-03-31/functions/"+path+query, nil)
+			requireCode(t, getErr, tc.code)
+			_, err := e.do(http.MethodGet, "/2015-03-31/functions/"+path+"/configuration"+query, nil)
+			requireCode(t, err, tc.code)
+			assert.Equal(t, getErr.Error(), err.Error())
+		})
+	}
+
+	e.h.Region = "us-west-2"
+	_, err = e.do(http.MethodGet, "/2015-03-31/functions/hello/configuration", nil)
+	requireCode(t, err, awserrors.ErrorResourceNotFoundException)
+}
+
+func TestGetFunctionConfiguration_DoesNotNeedTheCodeStore(t *testing.T) {
+	for name, codes := range map[string]awsapi.CodeStoreFunc{
+		"store outage": func(context.Context) (awsapi.CodeStore, error) { return nil, errors.New("code store down") },
+		"no store":     nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
+			require.NoError(t, err)
+			e.deps.Codes = codes
+
+			rec, err := e.do(http.MethodGet, "/2015-03-31/functions/hello/configuration", nil)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, rec.Code)
+			var cfg lambda.FunctionConfiguration
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &cfg))
+			assert.Equal(t, "hello", *cfg.FunctionName)
+
+			_, err = e.do(http.MethodGet, "/2015-03-31/functions/hello", nil)
+			requireCode(t, err, awserrors.ErrorServiceException)
+		})
+	}
+}
+
+func TestGetFunctionConfiguration_Authorization(t *testing.T) {
+	arn := "arn:aws:lambda:" + gwtest.Region + ":" + gwtest.AccountID + ":function:hello"
+	setup := func(t *testing.T, statements ...iamdomain.Statement) *env {
+		e := newEnv(t, statements...)
+		_, err := e.meta.Create(t.Context(), gwtest.AccountID, gwtest.Region, function.Record{
+			FunctionID: "f1", FunctionName: "hello", Role: roleARN, Runtime: "provided.al2023", Handler: "h",
+			Timeout: 3, MemorySize: 128, Code: function.Code{RevisionID: "r1"},
+		})
+		require.NoError(t, err)
+		return e
+	}
+	get := func(e *env) error {
+		_, err := e.do(http.MethodGet, "/2015-03-31/functions/hello/configuration", nil)
+		return err
+	}
+
+	t.Run("lambda:GetFunction alone is not enough", func(t *testing.T) {
+		gwtest.AssertDenied(t, get(setup(t, gwtest.Statement("Allow", "lambda:GetFunction", "*"))))
+	})
+	t.Run("a deny on the function ARN applies", func(t *testing.T) {
+		gwtest.AssertDenied(t, get(setup(t,
+			gwtest.Statement("Allow", "lambda:*", "*"),
+			gwtest.Statement("Deny", "lambda:GetFunctionConfiguration", arn))))
+	})
+	t.Run("an allow on another function ARN does not apply", func(t *testing.T) {
+		gwtest.AssertDenied(t, get(setup(t, gwtest.Statement("Allow", "lambda:GetFunctionConfiguration", arn+"-other"))))
+	})
+	t.Run("an allow on the function ARN passes", func(t *testing.T) {
+		require.NoError(t, get(setup(t, gwtest.Statement("Allow", "lambda:GetFunctionConfiguration", arn))))
+	})
 }

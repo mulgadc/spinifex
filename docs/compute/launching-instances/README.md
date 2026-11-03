@@ -86,6 +86,7 @@ While the instance is stopped, `attach-volume` of one of its data volumes to ano
 `detach-volume` works on a stopped instance, with or without `--instance-id`.
 The volume becomes `available` and the next start does not attach it.
 The root volume of a stopped instance can be detached too, as on AWS.
+The internal EFI variable store is not a customer volume: it never appears in `describe-volumes` or `BlockDeviceMappings`, and detaching it is refused with `OperationNotPermitted`.
 The instance then cannot start: `start-instances` returns `InvalidParameterValue` with "Instance does not have a volume attached at root (/dev/sda1)".
 
 `attach-volume` works on a stopped instance too.

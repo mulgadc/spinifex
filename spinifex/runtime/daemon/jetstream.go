@@ -857,6 +857,18 @@ func mutateRecord[T any](store *kvstore.Store[T], key string, mutate func(*T)) (
 	return updated, nil
 }
 
+// ListNonTerminatedInstances returns every instance record that is not
+// terminated, whichever node holds it and whatever its desired state. It is
+// the existence source for the strict account inventory.
+func (m *JetStreamManager) ListNonTerminatedInstances() ([]*vm.VM, error) {
+	if m.records == nil {
+		return nil, errors.New("KV bucket not initialized")
+	}
+	return listInstances(m.records, func(r *vm.InstanceRecord) bool {
+		return r != nil && r.Status.Status != vm.StateTerminated
+	})
+}
+
 // ListStoppedInstances returns the stopped instances in the shared KV store.
 // The key space also holds every running instance, so membership is the
 // record's answer rather than the prefix's.

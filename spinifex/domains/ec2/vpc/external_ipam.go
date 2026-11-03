@@ -122,7 +122,7 @@ func (m *ExternalIPAM) AllocateIP(ctx context.Context, region, az, purpose, allo
 	if m == nil {
 		return "", "", fmt.Errorf("external IPAM unavailable on this node: %w", errors.New(awserrors.ErrorInsufficientAddressCapacity))
 	}
-	pool := m.findPool(region, az)
+	pool := external.FindPool(m.pools, region, az)
 	if pool == nil {
 		return "", "", fmt.Errorf("no external pool available for region=%q az=%q: %w", region, az, errors.New(awserrors.ErrorInsufficientAddressCapacity))
 	}
@@ -219,30 +219,6 @@ func (m *ExternalIPAM) allocatorFor(poolName string) (external.Allocator, error)
 		return nil, fmt.Errorf("no allocator for pool %q (static disabled and no allocator installed for it)", poolName)
 	}
 	return m.static, nil
-}
-
-// findPool returns the best pool for the given region/AZ using the same
-// fallback order as topology.go: AZ-scoped → region-scoped → unscoped.
-func (m *ExternalIPAM) findPool(region, az string) *external.ExternalPoolConfig {
-	for i := range m.pools {
-		p := &m.pools[i]
-		if p.AZ != "" && p.AZ == az && p.Region == region {
-			return p
-		}
-	}
-	for i := range m.pools {
-		p := &m.pools[i]
-		if p.AZ == "" && p.Region != "" && p.Region == region {
-			return p
-		}
-	}
-	for i := range m.pools {
-		p := &m.pools[i]
-		if p.Region == "" && p.AZ == "" {
-			return p
-		}
-	}
-	return nil
 }
 
 // filterStatic returns only the static pools (Source unset or "static").

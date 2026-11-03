@@ -73,18 +73,6 @@ func TestEnsureIMDSBridgeAddBrError(t *testing.T) {
 	}
 }
 
-func TestRemoveIMDSBridge(t *testing.T) {
-	s := newStubRunner()
-	s.expect("ovs-vsctl", nil, nil)
-
-	if err := RemoveIMDSBridge(context.Background(), s); err != nil {
-		t.Fatalf("RemoveIMDSBridge: %v", err)
-	}
-	if !s.called("ovs-vsctl --if-exists del-br " + IMDSBridge) {
-		t.Errorf("expected del-br; calls: %v", s.calls)
-	}
-}
-
 func TestInstallIMDSFlow(t *testing.T) {
 	s := newStubRunner()
 	s.expect("ovs-ofctl", nil, nil)

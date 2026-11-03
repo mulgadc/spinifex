@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -293,6 +294,34 @@ func TestDrainVolume_WriteThroughProviderSkipsDrain(t *testing.T) {
 
 	require.NoError(t, svc.drainVolume(context.Background(), "vol-qnbd", "", "", testAccountID))
 	assert.Empty(t, got, "no drain may be issued for a provider that buffers nothing")
+}
+
+// Only viperblockd serves the drain socket. A provider nothing names, written
+// through or not, must not be routed a drain that can only fail, and an unset
+// provider is viperblockd and still drains.
+func TestDrainVolume_OnlyViperblockdDrains(t *testing.T) {
+	for _, tc := range []struct {
+		provider string
+		drains   bool
+	}{
+		{provider: "", drains: true},
+		{provider: config.EBSProviderViperblockd, drains: true},
+		{provider: config.EBSProviderQEMUNBD, drains: false},
+		{provider: "ocibsd", drains: false},
+	} {
+		t.Run("provider="+tc.provider, func(t *testing.T) {
+			svc, store, nc := setupDrainService(t)
+			svc.config.EBS.Provider = tc.provider
+			seedVolumeAttachment(t, store, "vol-which-drains", "in-use", drainInstanceID)
+			got := drainResponder(t, nc, drainInstanceID, drainedAck(t, "vol-which-drains"))
+
+			require.NoError(t, svc.drainVolume(context.Background(), "vol-which-drains", "", "", testAccountID))
+			assert.Equal(t, tc.drains, len(got) == 1)
+		})
+	}
+	assert.Equal(t, slog.LevelWarn, SkippedDrainLevel(&config.Config{EBS: config.EBSConfig{Provider: "ocibsd"}}),
+		"skipping the drain for a provider not known to write through deserves a warning")
+	assert.Equal(t, slog.LevelInfo, SkippedDrainLevel(&config.Config{EBS: config.EBSConfig{Provider: config.EBSProviderQEMUNBD}}))
 }
 
 // putProviderVolume seeds both the control-plane document CreateSnapshot's

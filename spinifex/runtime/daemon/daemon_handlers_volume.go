@@ -169,8 +169,11 @@ func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command e
 		return outcomeSuccess
 	}
 
+	// A caller that skips no drain itself, such as a control plane configured
+	// for another provider or predating the skip, still routes the drain here,
+	// so the hosting node answers for its own provider.
 	if !ec2snapshot.DrainsThroughSocket(d.config) {
-		slog.InfoContext(ctx, "DrainVolume: provider writes through, nothing to drain",
+		slog.Log(ctx, ec2snapshot.SkippedDrainLevel(d.config), "DrainVolume: this host's provider serves no drain socket, acking without a drain",
 			"volumeId", volumeID, "instanceId", command.ID, "provider", d.config.EBS.ResolvedProvider())
 		respondWithJSON(d.node, msg, ec2v1.DrainVolumeResponse{VolumeID: volumeID, Status: ec2v1.DrainVolumeStatusDrained})
 		return outcomeSuccess

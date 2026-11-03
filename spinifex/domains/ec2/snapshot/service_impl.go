@@ -308,10 +308,25 @@ func DrainVolumeSocket(dataDir, volumeID string) error {
 }
 
 // DrainsThroughSocket reports whether cfg's EBS provider buffers writes behind
-// a snapshot.sock drain. A write-through provider has nothing to flush, and
-// lacking the socket is how it looks, not a failed drain.
+// a snapshot.sock drain. Only viperblockd does; any other provider serves no
+// socket, so a drain against it could only fail.
 func DrainsThroughSocket(cfg *config.Config) bool {
 	return cfg.EBS.ResolvedProvider() == config.EBSProviderViperblockd
+}
+
+// KnownWriteThrough reports whether cfg's EBS provider is one known to buffer
+// nothing, so skipping its drain is expected rather than worth a warning.
+func KnownWriteThrough(cfg *config.Config) bool {
+	return cfg.EBS.ResolvedProvider() == config.EBSProviderQEMUNBD
+}
+
+// SkippedDrainLevel is the level a skipped drain is logged at: Info for a
+// provider known to write through, Warn for one nothing says buffers nothing.
+func SkippedDrainLevel(cfg *config.Config) slog.Level {
+	if KnownWriteThrough(cfg) {
+		return slog.LevelInfo
+	}
+	return slog.LevelWarn
 }
 
 // drainVolume flushes the volume's in-flight writes to S3 before the snapshot
@@ -338,7 +353,7 @@ func DrainVolume(ctx context.Context, cfg *config.Config, store objectstore.Obje
 		return nil
 	}
 	if !DrainsThroughSocket(cfg) {
-		slog.InfoContext(ctx, "DrainVolume: provider writes through, nothing to drain",
+		slog.Log(ctx, SkippedDrainLevel(cfg), "DrainVolume: provider serves no drain socket, skipping the drain",
 			"volumeId", volumeID, "provider", cfg.EBS.ResolvedProvider())
 		return nil
 	}

@@ -2,6 +2,8 @@ package cli_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -75,6 +77,9 @@ func TestStorageStatusRendersMetaNodeRaftState(t *testing.T) {
 	assert.Equal(t, http.MethodPost, got.Method)
 	assert.Equal(t, "/", got.URL.Path)
 	assert.Equal(t, "Action=GetStorageStatus", gotBody)
+	assert.Equal(t, "application/x-www-form-urlencoded; charset=utf-8", got.Header.Get("Content-Type"))
+	bodySum := sha256.Sum256([]byte(gotBody))
+	assert.Equal(t, hex.EncodeToString(bodySum[:]), got.Header.Get("X-Amz-Content-Sha256"), "the signature must cover the body sent")
 	assert.Contains(t, got.Header.Get("Authorization"), "/us-west-1/spinifex/aws4_request")
 
 	out := buf.String()

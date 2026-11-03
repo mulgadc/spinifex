@@ -2,20 +2,15 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/mulgadc/spinifex/internal/gwsign"
 	"github.com/spf13/cobra"
 )
 
@@ -123,46 +118,10 @@ func ensureSQSWorkerRemote(ctx context.Context, target adminTarget, node, instan
 }
 
 // callSpinifexAction signs a spinifex query action with the standard AWS
-// credential chain and decodes its JSON reply, as GetStorageStatus does.
+// credential chain and decodes its JSON reply.
 func callSpinifexAction(ctx context.Context, target adminTarget, form url.Values, out any) error {
-	body := form.Encode()
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(target.endpoint, "/")+"/", strings.NewReader(body))
-	if err != nil {
-		return err
-	}
-	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
-
-	signer, err := gwsign.NewIMDS(ctx, target.region)
-	if err != nil {
-		return fmt.Errorf("resolve AWS credentials: %w", err)
-	}
-	sum := sha256.Sum256([]byte(body))
-	if err := signer.Sign(httpReq, hex.EncodeToString(sum[:]), "spinifex", target.region); err != nil {
-		return fmt.Errorf("sign request: %w", err)
-	}
-
-	client, err := adminHTTPClient(target.caBundle)
-	if err != nil {
-		return err
-	}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("call %s: %w", target.endpoint, err)
-	}
-	defer resp.Body.Close()
-
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, adminMaxResponseBytes))
-	if err != nil {
-		return fmt.Errorf("gateway returned HTTP %d with an unreadable body: %w", resp.StatusCode, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return decodeQueryError(resp.StatusCode, payload)
-	}
-	if err := json.Unmarshal(payload, out); err != nil {
-		return fmt.Errorf("decode response: %w", err)
-	}
-	return nil
+	return signedPost(ctx, target, "/", "application/x-www-form-urlencoded; charset=utf-8",
+		[]byte(form.Encode()), decodeQueryError, out)
 }
 
 func renderSQSWorkerEnsure(w io.Writer, out *sqsWorkerEnsureOutput) {

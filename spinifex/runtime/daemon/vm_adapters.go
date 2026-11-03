@@ -96,9 +96,8 @@ func (a *stateStoreAdapter) DeleteTerminatedInstance(id string) error {
 }
 
 // volumeMounterAdapter satisfies vm.VolumeMounter over PublishVolume and
-// UnpublishVolume when this node's provider serves the contract at
-// NoSealSchemaVersion, and over the legacy ebs.mount/unmount subjects
-// otherwise. Unmount also updates volume state via VolumeStateUpdater.
+// UnpublishVolume when this node's provider lists NoSealSchemaVersion, and over
+// legacy ebs.mount/unmount otherwise. Unmount also marks volumes available.
 type volumeMounterAdapter struct {
 	nc       *nats.Conn
 	node     string
@@ -222,20 +221,12 @@ func contractSpan(ctx context.Context, accountID, name, volumeID string) (contex
 	return otel.Tracer(daemonTracerName).Start(ctx, name, trace.WithAttributes(attrs...))
 }
 
-func endContractSpan(span trace.Span, err error) {
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-	}
-	span.End()
-}
-
 // publish mounts req's volume on this node through PublishVolume and records
 // the export on req. Retry-later, not_found and no responder back off as
 // vm.ErrMountRetryable; a reply with no usable export is vm.ErrMountAmbiguous.
 func (a *volumeMounterAdapter) publish(ctx context.Context, accountID string, req *viperblocklegacyv1.EBSRequest) (err error) {
 	ctx, span := contractSpan(ctx, accountID, "ebs.mounter.publish", req.Name)
-	defer func() { endContractSpan(span, err) }()
+	defer func() { endOpSpan(span, err) }()
 
 	published, err := a.provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{
 		Versioned: ebsprovider.NewVersioned(),
@@ -296,7 +287,7 @@ func applyExport(req *viperblocklegacyv1.EBSRequest, export ebsprovider.VolumeEx
 // already in the state asked for.
 func (a *volumeMounterAdapter) unpublish(ctx context.Context, accountID string, req viperblocklegacyv1.EBSRequest) (err error) {
 	ctx, span := contractSpan(ctx, accountID, "ebs.mounter.unpublish", req.Name)
-	defer func() { endContractSpan(span, err) }()
+	defer func() { endOpSpan(span, err) }()
 
 	// The seal takes the provider's data-movement budget, not what is left of
 	// the caller's; the caller's trace is kept.

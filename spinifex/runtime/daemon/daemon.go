@@ -2622,9 +2622,9 @@ const ebsProviderRequestTimeout = 30 * time.Second
 // a missing responder must be reported promptly, and the check is advisory.
 const ebsProviderProbeTimeout = 2 * time.Second
 
-// configureEBSProvider wires a single NATSProvider into every EBS-adjacent
-// service. The control plane never constructs a provider implementation
-// itself, so this always runs regardless of which daemon answers on the wire.
+// configureEBSProvider wires a NATSProvider into the EBS-adjacent services;
+// the volume mounter builds its own. The control plane never constructs a
+// provider implementation, so this runs whichever daemon answers on the wire.
 func (d *Daemon) configureEBSProvider() error {
 	provider := ebsprovider.NewNATSProvider(d.natsConn, ebsProviderRequestTimeout)
 	d.ebsProvider = provider

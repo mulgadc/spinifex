@@ -435,7 +435,7 @@ func TestNATSClientAcquireReleaseRoundtrip(t *testing.T) {
 	assert.Equal(t, "eip", got.Purpose)
 	assert.Equal(t, "default", got.PoolName)
 
-	require.NoError(t, client.RequestRelease(context.Background(), "eipalloc-A"))
+	require.NoError(t, client.RequestReleaseByIP(context.Background(), "default", lease.IP.String(), false))
 	_, err = store.Get(t.Context(), "eipalloc-A")
 	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
 	assert.Equal(t, 1, fake.ReleaseCount())
@@ -676,8 +676,9 @@ func TestManagerReleaseUnknownClientIsNoop(t *testing.T) {
 			_ = s.Unsubscribe()
 		}
 	})
-	client := dhcp.NewNATSClient(nc, time.Second)
-	assert.NoError(t, client.RequestRelease(context.Background(), "never-existed"))
+	msg, err := nc.Request(dhcp.TopicRelease, []byte(`{"client_id":"never-existed"}`), time.Second)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{}`, string(msg.Data))
 	assert.Equal(t, 0, fake.ReleaseCount())
 }
 

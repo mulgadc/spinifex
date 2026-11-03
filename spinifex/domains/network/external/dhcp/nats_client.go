@@ -89,15 +89,6 @@ func (c *NATSClient) RequestAcquire(ctx context.Context, p AcquireParams) (*Leas
 	return fromWireLease(reply.Lease)
 }
 
-// RequestRelease issues an idempotent release RPC. Unknown client-ids
-// return nil (vpcd treats them as already-released).
-func (c *NATSClient) RequestRelease(ctx context.Context, clientID string) error {
-	if clientID == "" {
-		return errors.New("dhcp NATSClient: clientID required")
-	}
-	return c.requestRelease(ctx, releaseWireRequest{ClientID: clientID})
-}
-
 // RequestReleaseByIP releases the lease that holds (poolName, ip).
 // Used by DHCPPoolAllocator.Release, whose external.Allocator signature
 // only carries the IP — vpcd looks up the client-id from the lease store.

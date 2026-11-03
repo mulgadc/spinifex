@@ -1,9 +1,9 @@
 package daemon
 
 import (
-	"encoding/json"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"testing"
+	"time"
 
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -37,77 +37,65 @@ func withRecordedSpans(t *testing.T) *tracetest.SpanRecorder {
 	return sr
 }
 
-// TestEbsRequestWithTrace_HeaderCarriesTraceparent pins the minimum bar: the
-// outbound ebs.mount NATS message carries a non-empty traceparent header, so
-// a consumer that calls natsmsg.ExtractTraceContext has something to join.
-func TestEbsRequestWithTrace_HeaderCarriesTraceparent(t *testing.T) {
-	withRecordedSpans(t)
-	daemon := createTestDaemon(t, sharedNATSURL)
-
+// requestOnceOn answers a single request on subject with an empty JSON body
+// and hands back the headers it carried, so a test can assert on the wire.
+func requestOnceOn(t *testing.T, nc *nats.Conn, subject string) <-chan nats.Header {
+	t.Helper()
 	headerCh := make(chan nats.Header, 1)
-	sub, err := daemon.natsConn.Subscribe("ebs.node-1.mount", func(msg *nats.Msg) {
+	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
 		headerCh <- msg.Header
-		resp := viperblocklegacyv1.EBSMountResponse{URI: "nbd://traced-vol"}
-		data, marshalErr := json.Marshal(resp)
-		require.NoError(t, marshalErr)
-		require.NoError(t, msg.Respond(data))
+		require.NoError(t, msg.Respond([]byte("{}")))
 	})
 	require.NoError(t, err)
-	defer sub.Unsubscribe()
+	require.NoError(t, nc.Flush())
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	return headerCh
+}
 
-	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
-	req := &viperblocklegacyv1.EBSRequest{Name: "vol-traced", DeviceName: "/dev/sdf"}
-	require.NoError(t, adapter.MountOne(t.Context(), "", req))
+// TestEbsRequestWithTrace_HeaderCarriesTraceparent pins the minimum bar: the
+// outbound ebs.* NATS message carries a non-empty traceparent header, so a
+// consumer that calls natsmsg.ExtractTraceContext has something to join.
+func TestEbsRequestWithTrace_HeaderCarriesTraceparent(t *testing.T) {
+	withRecordedSpans(t)
+	nc := connectMounterTest(t)
+	subject := "ebs." + newMounterTestNode() + ".delete"
+	headerCh := requestOnceOn(t, nc, subject)
 
-	hdr := <-headerCh
-	assert.NotEmpty(t, hdr.Get("traceparent"), "outbound ebs.mount request must carry a traceparent header")
+	_, err := ebsRequestWithTrace(t.Context(), nc, "", subject, []byte("{}"), 5*time.Second)
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, (<-headerCh).Get("traceparent"), "outbound ebs.* request must carry a traceparent header")
 }
 
 // TestEbsRequestWithTrace_ProducerConsumerLinked proves the actual parent/child
-// linkage: the consumer span opened via natsmsg.StartConsumerSpan (the same
-// helper viperblockd's ebs.mount/ebs.unmount handlers use) shares the producer
-// span's trace ID and names it as its parent, rather than rooting a new trace
-// — the exact gap this fix closes for the 81 mount + 81 unmount rooted spans
-// the trace analysis found.
+// linkage: the consumer span opened via natsmsg.StartConsumerSpan (the helper
+// viperblockd's legacy handlers use) shares the producer span's trace ID and
+// names it as its parent, rather than rooting a new trace.
 func TestEbsRequestWithTrace_ProducerConsumerLinked(t *testing.T) {
 	sr := withRecordedSpans(t)
-	daemon := createTestDaemon(t, sharedNATSURL)
+	nc := connectMounterTest(t)
+	subject := "ebs." + newMounterTestNode() + ".delete"
 
 	consumerEnded := make(chan struct{})
-	sub, err := daemon.natsConn.Subscribe("ebs.node-1.unmount", func(msg *nats.Msg) {
+	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
 		defer close(consumerEnded)
-		// Mirrors viperblockd's ebs.unmount handler: open a consumer span
-		// joining whatever trace context the producer injected.
 		_, span := natsmsg.StartConsumerSpan(msg)
 		defer span.End()
-
-		resp := viperblocklegacyv1.EBSUnMountResponse{}
-		data, marshalErr := json.Marshal(resp)
-		require.NoError(t, marshalErr)
-		require.NoError(t, msg.Respond(data))
+		require.NoError(t, msg.Respond([]byte("{}")))
 	})
 	require.NoError(t, err)
+	require.NoError(t, nc.Flush())
 	defer sub.Unsubscribe()
 
-	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
-	require.NoError(t, adapter.UnmountOne(t.Context(), "", viperblocklegacyv1.EBSRequest{Name: "vol-linked"}))
+	_, err = ebsRequestWithTrace(t.Context(), nc, "", subject, []byte("{}"), 5*time.Second)
+	require.NoError(t, err)
 	// The handler replies before its deferred span.End runs, so the consumer
-	// span may not be recorded yet when UnmountOne returns.
+	// span may not be recorded yet when the request returns.
 	<-consumerEnded
 
-	// The mount-route capabilities read records its own span; only the
-	// unmount hop is under test.
-	var spans []sdktrace.ReadOnlySpan
-	for _, s := range sr.Ended() {
-		if s.Name() == "NATS ebs.node-1.unmount" {
-			spans = append(spans, s)
-		}
-	}
+	spans := sr.Ended()
 	require.Len(t, spans, 2, "expected one producer span and one consumer span")
 
-	// Both spans share the "NATS ebs.node-1.unmount" name; distinguish by kind
-	// (producer = client, consumer = server, as set by ebsRequestWithTrace and
-	// natsmsg.StartConsumerSpan respectively).
 	var producer, consumer sdktrace.ReadOnlySpan
 	for _, s := range spans {
 		switch s.SpanKind() {
@@ -126,43 +114,21 @@ func TestEbsRequestWithTrace_ProducerConsumerLinked(t *testing.T) {
 		"consumer span's parent must be the producer span")
 }
 
-// mountOnceOn answers a single ebs.mount on subject and hands back the headers
-// the adapter sent, so a test can assert on the wire rather than the span only.
-func mountOnceOn(t *testing.T, nc *nats.Conn, subject string) <-chan nats.Header {
-	t.Helper()
-	headerCh := make(chan nats.Header, 1)
-	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
-		headerCh <- msg.Header
-		data, marshalErr := json.Marshal(viperblocklegacyv1.EBSMountResponse{URI: "nbd://vol"})
-		require.NoError(t, marshalErr)
-		require.NoError(t, msg.Respond(data))
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	return headerCh
-}
-
 // The ebs hop used to root its own trace from context.Background(), so block
 // storage work appeared as an orphan trace no request could be followed into.
 // Given a caller's context it must extend that trace instead.
 func TestEbsRequestWithTrace_JoinsTheCallersTrace(t *testing.T) {
 	sr := withRecordedSpans(t)
-	daemon := createTestDaemon(t, sharedNATSURL)
-	mountOnceOn(t, daemon.natsConn, "ebs.node-1.mount")
+	nc := connectMounterTest(t)
+	subject := "ebs." + newMounterTestNode() + ".delete"
+	requestOnceOn(t, nc, subject)
 
-	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
 	ctx, caller := otel.Tracer("test").Start(t.Context(), "caller")
-	require.NoError(t, adapter.MountOne(ctx, "000000000042", &viperblocklegacyv1.EBSRequest{Name: "vol-ctx"}))
+	_, err := ebsRequestWithTrace(ctx, nc, "000000000042", subject, []byte("{}"), 5*time.Second)
+	require.NoError(t, err)
 	caller.End()
 
-	var producer sdktrace.ReadOnlySpan
-	for _, s := range sr.Ended() {
-		if s.SpanKind() == trace.SpanKindClient {
-			producer = s
-		}
-	}
-	require.NotNil(t, producer, "producer span must be recorded")
-
+	producer := clientSpan(t, sr)
 	assert.Equal(t, caller.SpanContext().TraceID(), producer.SpanContext().TraceID(),
 		"the ebs span must join the caller's trace rather than root one of its own")
 	assert.Equal(t, caller.SpanContext().SpanID(), producer.Parent().SpanID(),
@@ -174,25 +140,16 @@ func TestEbsRequestWithTrace_JoinsTheCallersTrace(t *testing.T) {
 // reads the header to attribute its own consumer span.
 func TestEbsRequestWithTrace_CarriesTheAccount(t *testing.T) {
 	sr := withRecordedSpans(t)
-	daemon := createTestDaemon(t, sharedNATSURL)
-	headerCh := mountOnceOn(t, daemon.natsConn, "ebs.node-1.mount")
+	nc := connectMounterTest(t)
+	subject := "ebs." + newMounterTestNode() + ".delete"
+	headerCh := requestOnceOn(t, nc, subject)
 
-	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
-	instance := &vm.VM{ID: "i-acct", AccountID: "000000000042"}
-	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-acct"}}
-	require.NoError(t, adapter.Mount(t.Context(), instance))
+	_, err := ebsRequestWithTrace(t.Context(), nc, "000000000042", subject, []byte("{}"), 5*time.Second)
+	require.NoError(t, err)
 
 	assert.Equal(t, "000000000042", (<-headerCh).Get(natsmsg.AccountIDHeader),
 		"viperblockd reads the account off the header, so it must be set")
-
-	var producer sdktrace.ReadOnlySpan
-	for _, s := range sr.Ended() {
-		if s.SpanKind() == trace.SpanKindClient {
-			producer = s
-		}
-	}
-	require.NotNil(t, producer)
-	assert.Equal(t, "000000000042", spanAccountOf(producer),
+	assert.Equal(t, "000000000042", spanAccountOf(clientSpan(t, sr)),
 		"the ebs span must name the account it acted for")
 }
 
@@ -200,25 +157,80 @@ func TestEbsRequestWithTrace_CarriesTheAccount(t *testing.T) {
 // would be worse than leaving it unattributed.
 func TestEbsRequestWithTrace_OmitsAnAbsentAccount(t *testing.T) {
 	sr := withRecordedSpans(t)
-	daemon := createTestDaemon(t, sharedNATSURL)
-	headerCh := mountOnceOn(t, daemon.natsConn, "ebs.node-1.mount")
+	nc := connectMounterTest(t)
+	subject := "ebs." + newMounterTestNode() + ".delete"
+	headerCh := requestOnceOn(t, nc, subject)
 
-	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
-	require.NoError(t, adapter.MountOne(t.Context(), "", &viperblocklegacyv1.EBSRequest{Name: "vol-none"}))
+	_, err := ebsRequestWithTrace(t.Context(), nc, "", subject, []byte("{}"), 5*time.Second)
+	require.NoError(t, err)
 
 	assert.Empty(t, (<-headerCh).Get(natsmsg.AccountIDHeader),
 		"an unattributed request must not carry a blank account header")
+	assert.Empty(t, spanAccountOf(clientSpan(t, sr)), "an unattributed span must carry no account")
+}
+
+// A mount names its account on the mounter's span, which the provider's
+// request span joins under the caller's trace, and an unattributed one names
+// none.
+func TestVolumeMounterAdapter_ContractSpansCarryTheAccountUnderTheCaller(t *testing.T) {
+	sr := withRecordedSpans(t)
+	nc := connectMounterTest(t)
+	node := newMounterTestNode()
+	serveFakeNodeProvider(t, nc, node)
+	adapter := newVolumeMounterAdapter(nc, node, nil)
+
+	ctx, caller := otel.Tracer("test").Start(t.Context(), "caller")
+	instance := &vm.VM{ID: "i-acct", AccountID: "000000000042"}
+	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-acct"}}
+	require.NoError(t, adapter.Mount(ctx, instance))
+	require.NoError(t, adapter.MountOne(ctx, "", &viperblocklegacyv1.EBSRequest{Name: "vol-none"}))
+	caller.End()
+
+	spans := map[string]sdktrace.ReadOnlySpan{}
+	var request sdktrace.ReadOnlySpan
 	for _, s := range sr.Ended() {
-		if s.SpanKind() == trace.SpanKindClient {
-			assert.Empty(t, spanAccountOf(s), "an unattributed span must carry no account")
+		if s.Name() == "ebs.mounter.publish" {
+			spans[volumeOf(s)] = s
+		} else if s.SpanKind() == trace.SpanKindClient && request == nil {
+			request = s
 		}
 	}
+	mount, unattributed := spans["vol-acct"], spans["vol-none"]
+	require.NotNil(t, mount)
+	require.NotNil(t, unattributed)
+	require.NotNil(t, request, "the provider request must record a client span")
+
+	assert.Equal(t, "000000000042", spanAccountOf(mount), "the mounter span must name the account it acted for")
+	assert.Empty(t, spanAccountOf(unattributed), "an unattributed mount must carry no account")
+	assert.Equal(t, caller.SpanContext().SpanID(), mount.Parent().SpanID(), "the mounter span must join the caller")
+	assert.Equal(t, mount.SpanContext().SpanID(), request.Parent().SpanID(), "the provider request must sit under the mounter span")
+}
+
+// clientSpan returns the one client span sr recorded.
+func clientSpan(t *testing.T, sr *tracetest.SpanRecorder) sdktrace.ReadOnlySpan {
+	t.Helper()
+	var spans []sdktrace.ReadOnlySpan
+	for _, s := range sr.Ended() {
+		if s.SpanKind() == trace.SpanKindClient {
+			spans = append(spans, s)
+		}
+	}
+	require.Len(t, spans, 1)
+	return spans[0]
 }
 
 // spanAccountOf returns the account attribute of span, or "".
 func spanAccountOf(span sdktrace.ReadOnlySpan) string {
+	return spanAttribute(span, natsmsg.AttrAccountID)
+}
+
+func volumeOf(span sdktrace.ReadOnlySpan) string {
+	return spanAttribute(span, "volume.id")
+}
+
+func spanAttribute(span sdktrace.ReadOnlySpan, key string) string {
 	for _, attr := range span.Attributes() {
-		if string(attr.Key) == natsmsg.AttrAccountID {
+		if string(attr.Key) == key {
 			return attr.Value.AsString()
 		}
 	}

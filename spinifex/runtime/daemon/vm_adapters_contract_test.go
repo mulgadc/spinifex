@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -49,43 +50,8 @@ func replyJSON(t *testing.T, nc *nats.Conn, subject string, reply func(data []by
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 }
 
-// advertiseVersions answers node's per-node capabilities subject with the
-// versions versions() returns, and counts how often it was asked.
-func advertiseVersions(t *testing.T, nc *nats.Conn, node string, versions func() []uint16) *atomic.Int32 {
-	t.Helper()
-	subject, err := ebsprovider.NodeCapabilitiesSubject(node)
-	require.NoError(t, err)
-	var asked atomic.Int32
-	replyJSON(t, nc, subject, func([]byte) any {
-		asked.Add(1)
-		return ebsprovider.GetCapabilitiesResponse{Versioned: ebsprovider.NewVersioned(), ContractVersions: versions()}
-	})
-	return &asked
-}
-
-// countLegacy answers node's legacy mount and unmount subjects successfully
-// and counts the requests each received.
-func countLegacy(t *testing.T, nc *nats.Conn, node string) (mounts, unmounts *atomic.Int32) {
-	t.Helper()
-	mounts, unmounts = new(atomic.Int32), new(atomic.Int32)
-	replyJSON(t, nc, viperblocklegacyv1.MountSubject(node), func(data []byte) any {
-		mounts.Add(1)
-		var req viperblocklegacyv1.EBSRequest
-		_ = json.Unmarshal(data, &req)
-		return viperblocklegacyv1.EBSMountResponse{URI: "nbd://legacy-" + req.Name, Mounted: true}
-	})
-	replyJSON(t, nc, viperblocklegacyv1.UnmountSubject(node), func(data []byte) any {
-		unmounts.Add(1)
-		var req viperblocklegacyv1.EBSRequest
-		_ = json.Unmarshal(data, &req)
-		return viperblocklegacyv1.EBSUnMountResponse{Volume: req.Name}
-	})
-	return mounts, unmounts
-}
-
-// serveMemoryProvider serves a memory provider holding volumeIDs as node's
-// local provider, listing every version this build serves.
-func serveMemoryProvider(t *testing.T, nc *nats.Conn, node string, volumeIDs ...string) *ebsprovider.MemoryProvider {
+// newMemoryProvider returns a memory provider holding volumeIDs.
+func newMemoryProvider(t *testing.T, volumeIDs ...string) *ebsprovider.MemoryProvider {
 	t.Helper()
 	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{})
 	for _, id := range volumeIDs {
@@ -96,10 +62,15 @@ func serveMemoryProvider(t *testing.T, nc *nats.Conn, node string, volumeIDs ...
 		})
 		require.NoError(t, err)
 	}
-	stop, err := natsserve.Serve(t.Context(), nc, provider, natsserve.Options{NoQueueGroup: true, NodeID: node})
+	return provider
+}
+
+// serveMemoryProvider serves provider as nodeID's local provider.
+func serveMemoryProvider(t *testing.T, nc *nats.Conn, provider *ebsprovider.MemoryProvider, nodeID string) {
+	t.Helper()
+	stop, err := natsserve.Serve(t.Context(), nc, provider, natsserve.Options{NoQueueGroup: true, NodeID: nodeID})
 	require.NoError(t, err)
 	t.Cleanup(stop)
-	return provider
 }
 
 func volumeState(t *testing.T, provider *ebsprovider.MemoryProvider, volumeID string) ebsprovider.VolumeState {
@@ -117,13 +88,147 @@ func mounterTestVM(volumeIDs ...string) *vm.VM {
 	return instance
 }
 
-// A local provider listing version 3 takes every mount and unmount, and the
-// legacy subjects see none of them.
-func TestVolumeMounterAdapter_ContractWhenLocalProviderListsVersion3(t *testing.T) {
+// contractCall is one request a fakeNodeProvider or a spy received.
+type contractCall struct {
+	subject string
+	version uint16
+	volume  string
+	noSeal  bool
+}
+
+// fakeNodeProvider answers node's publish and unpublish subjects with the
+// replies the test sets, echoing each request's version, and records them.
+type fakeNodeProvider struct {
+	mu        sync.Mutex
+	publish   func(volumeID string) ebsprovider.PublishVolumeResponse
+	unpublish func(volumeID string) ebsprovider.UnpublishVolumeResponse
+	calls     []contractCall
+}
+
+// serveFakeNodeProvider starts a fake that publishes every volume as an NBD
+// export and unpublishes it successfully until the test says otherwise.
+func serveFakeNodeProvider(t *testing.T, nc *nats.Conn, node string) *fakeNodeProvider {
+	t.Helper()
+	f := &fakeNodeProvider{
+		publish:   func(volumeID string) ebsprovider.PublishVolumeResponse { return publishedNBD("nbd://" + volumeID) },
+		unpublish: func(string) ebsprovider.UnpublishVolumeResponse { return ebsprovider.UnpublishVolumeResponse{} },
+	}
+	publishSubject, err := ebsprovider.PublishSubject(node)
+	require.NoError(t, err)
+	replyJSON(t, nc, publishSubject, func(data []byte) any {
+		var req ebsprovider.PublishVolumeRequest
+		_ = json.Unmarshal(data, &req)
+		f.mu.Lock()
+		f.calls = append(f.calls, contractCall{subject: publishSubject, version: req.SchemaVersion, volume: req.VolumeID})
+		reply := f.publish
+		f.mu.Unlock()
+		resp := reply(req.VolumeID)
+		resp.Versioned = ebsprovider.ReplyVersioned(req.SchemaVersion)
+		if resp.Published != nil {
+			published := *resp.Published
+			published.VolumeID, published.NodeID = req.VolumeID, req.NodeID
+			resp.Published = &published
+		}
+		return resp
+	})
+	unpublishSubject, err := ebsprovider.UnpublishSubject(node)
+	require.NoError(t, err)
+	replyJSON(t, nc, unpublishSubject, func(data []byte) any {
+		var req ebsprovider.UnpublishVolumeRequest
+		_ = json.Unmarshal(data, &req)
+		f.mu.Lock()
+		f.calls = append(f.calls, contractCall{subject: unpublishSubject, version: req.SchemaVersion, volume: req.VolumeID, noSeal: req.NoSeal})
+		reply := f.unpublish
+		f.mu.Unlock()
+		resp := reply(req.VolumeID)
+		resp.Versioned = ebsprovider.ReplyVersioned(req.SchemaVersion)
+		return resp
+	})
+	return f
+}
+
+func (f *fakeNodeProvider) setPublish(reply func(volumeID string) ebsprovider.PublishVolumeResponse) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.publish = reply
+}
+
+func (f *fakeNodeProvider) setUnpublish(reply func(volumeID string) ebsprovider.UnpublishVolumeResponse) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unpublish = reply
+}
+
+func (f *fakeNodeProvider) snapshot() []contractCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]contractCall(nil), f.calls...)
+}
+
+// unpublished returns, in order, the volumes the fake was asked to unpublish.
+func (f *fakeNodeProvider) unpublished() []string {
+	var volumes []string
+	for _, call := range f.snapshot() {
+		if strings.HasSuffix(call.subject, ".unmount") {
+			volumes = append(volumes, call.volume)
+		}
+	}
+	return volumes
+}
+
+func publishedNBD(uri string) ebsprovider.PublishVolumeResponse {
+	return ebsprovider.PublishVolumeResponse{Published: &ebsprovider.PublishedVolume{Export: ebsprovider.NewNBDExport(uri)}}
+}
+
+func providerRefusal(code ebsprovider.ErrorCode, message string) *ebsprovider.ProviderError {
+	return &ebsprovider.ProviderError{Code: code, Message: message}
+}
+
+func publishRefusal(code ebsprovider.ErrorCode) func(string) ebsprovider.PublishVolumeResponse {
+	return func(string) ebsprovider.PublishVolumeResponse {
+		return ebsprovider.PublishVolumeResponse{Error: providerRefusal(code, "refused: "+string(code))}
+	}
+}
+
+func unpublishRefusal(code ebsprovider.ErrorCode, message string) ebsprovider.UnpublishVolumeResponse {
+	return ebsprovider.UnpublishVolumeResponse{Error: providerRefusal(code, message)}
+}
+
+// spyOn records every request sent on subject without answering it, so a
+// request the mounter sends there is seen even when another subscriber
+// answers it.
+func spyOn(t *testing.T, nc *nats.Conn, subject string) func() []contractCall {
+	t.Helper()
+	var (
+		mu    sync.Mutex
+		calls []contractCall
+	)
+	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
+		var req ebsprovider.UnpublishVolumeRequest
+		_ = json.Unmarshal(msg.Data, &req)
+		mu.Lock()
+		calls = append(calls, contractCall{subject: msg.Subject, version: req.SchemaVersion, volume: req.VolumeID, noSeal: req.NoSeal})
+		mu.Unlock()
+	})
+	require.NoError(t, err)
+	require.NoError(t, nc.Flush())
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	return func() []contractCall {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]contractCall(nil), calls...)
+	}
+}
+
+// Every mount, unmount and abandon goes to the node's provider over the
+// contract at the cluster's one version, and none uses a legacy subject.
+func TestVolumeMounterAdapter_EveryRequestAtVersion3OverTheContract(t *testing.T) {
 	nc := connectMounterTest(t)
 	node := newMounterTestNode()
-	provider := serveMemoryProvider(t, nc, node, "vol-a", "vol-b", "vol-hot")
-	legacyMounts, legacyUnmounts := countLegacy(t, nc, node)
+	provider := newMemoryProvider(t, "vol-a", "vol-b", "vol-hot", "vol-moved")
+	serveMemoryProvider(t, nc, provider, node)
+	contractCalls := spyOn(t, nc, "ebs.provider.v1."+node+".*")
+	legacyCalls := spyOn(t, nc, "ebs."+node+".*")
 	volState := &recordingVolState{}
 	adapter := newVolumeMounterAdapter(nc, node, volState)
 
@@ -146,91 +251,17 @@ func TestVolumeMounterAdapter_ContractWhenLocalProviderListsVersion3(t *testing.
 	}
 	assert.ElementsMatch(t, []string{"vol-a:available", "vol-b:available"}, volState.snapshot())
 
-	assert.Zero(t, legacyMounts.Load(), "no mount may use the legacy subject")
-	assert.Zero(t, legacyUnmounts.Load(), "no unmount may use the legacy subject")
-}
+	moved := mounterTestVM("vol-moved")
+	require.NoError(t, adapter.Mount(t.Context(), moved))
+	require.NoError(t, adapter.Abandon(t.Context(), moved, "superseded"))
+	assert.Equal(t, ebsprovider.VolumeStateAvailable, volumeState(t, provider, "vol-moved"), "abandon must give the export up")
 
-// A provider that does not list version 3, or that predates the per-node
-// capabilities subject, keeps the legacy subjects for every operation.
-func TestVolumeMounterAdapter_LegacyWhenLocalProviderLacksVersion3(t *testing.T) {
-	tests := []struct {
-		name      string
-		advertise bool
-		versions  []uint16
-	}{
-		{name: "ListsVersions1And2", advertise: true, versions: []uint16{1, 2}},
-		{name: "PredatesContractVersions", advertise: true, versions: nil},
-		{name: "NoPerNodeCapabilitiesSubject", advertise: false},
+	calls := contractCalls()
+	assert.Len(t, calls, 8, "two mounts, a hot attach and detach, two unmounts, a mount and an abandon")
+	for _, call := range calls {
+		assert.Equal(t, ebsprovider.SchemaVersion, call.version, "%s for %s", call.subject, call.volume)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			nc := connectMounterTest(t)
-			node := newMounterTestNode()
-			if tt.advertise {
-				advertiseVersions(t, nc, node, func() []uint16 { return tt.versions })
-			}
-			var published atomic.Int32
-			for _, build := range []func(string) (string, error){ebsprovider.PublishSubject, ebsprovider.UnpublishSubject} {
-				subject, err := build(node)
-				require.NoError(t, err)
-				replyJSON(t, nc, subject, func([]byte) any {
-					published.Add(1)
-					return ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned()}
-				})
-			}
-			legacyMounts, legacyUnmounts := countLegacy(t, nc, node)
-			adapter := newVolumeMounterAdapter(nc, node, nil)
-
-			instance := mounterTestVM("vol-a")
-			require.NoError(t, adapter.Mount(t.Context(), instance))
-			assert.Equal(t, "nbd://legacy-vol-a", instance.EBSRequests.Requests[0].NBDURI)
-			hot := &viperblocklegacyv1.EBSRequest{Name: "vol-hot"}
-			require.NoError(t, adapter.MountOne(t.Context(), testAccountID, hot))
-			require.NoError(t, adapter.UnmountOne(t.Context(), testAccountID, *hot))
-			require.NoError(t, adapter.Unmount(t.Context(), instance))
-
-			assert.Equal(t, int32(2), legacyMounts.Load())
-			assert.Equal(t, int32(2), legacyUnmounts.Load())
-			assert.Zero(t, published.Load(), "no request may reach the contract subjects")
-		})
-	}
-}
-
-// fakeContractPublish answers node's publish subject with whatever the test
-// has set, so a test can change the provider's answer between relaunches.
-type fakeContractPublish struct {
-	mu    sync.Mutex
-	reply ebsprovider.PublishVolumeResponseV1
-}
-
-func (f *fakeContractPublish) set(reply ebsprovider.PublishVolumeResponseV1) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.reply = reply
-}
-
-func (f *fakeContractPublish) serve(t *testing.T, nc *nats.Conn, node string) {
-	t.Helper()
-	subject, err := ebsprovider.PublishSubject(node)
-	require.NoError(t, err)
-	replyJSON(t, nc, subject, func(data []byte) any {
-		var req ebsprovider.PublishVolumeRequest
-		_ = json.Unmarshal(data, &req)
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		reply := f.reply
-		reply.Versioned = ebsprovider.ReplyVersioned(req.SchemaVersion)
-		if reply.Published != nil {
-			published := *reply.Published
-			published.VolumeID = req.VolumeID
-			reply.Published = &published
-		}
-		return reply
-	})
-}
-
-func publishRefusal(code ebsprovider.ErrorCode) ebsprovider.PublishVolumeResponseV1 {
-	return ebsprovider.PublishVolumeResponseV1{Error: &ebsprovider.ProviderError{Code: code, Message: "refused: " + string(code)}}
+	assert.Empty(t, legacyCalls(), "no request may use a legacy subject")
 }
 
 // A relaunch refused as retry-later, or because the volume state is not found
@@ -240,10 +271,8 @@ func TestVolumeMounterAdapter_RetryLaterRefusalBacksOffAndRecovers(t *testing.T)
 		t.Run(string(code), func(t *testing.T) {
 			nc := connectMounterTest(t)
 			node := newMounterTestNode()
-			advertiseVersions(t, nc, node, ebsprovider.SupportedSchemaVersions)
-			publish := &fakeContractPublish{}
-			publish.set(publishRefusal(code))
-			publish.serve(t, nc, node)
+			fake := serveFakeNodeProvider(t, nc, node)
+			fake.setPublish(publishRefusal(code))
 			adapter := newVolumeMounterAdapter(nc, node, nil)
 
 			instance := mounterTestVM("vol-relaunch")
@@ -252,7 +281,7 @@ func TestVolumeMounterAdapter_RetryLaterRefusalBacksOffAndRecovers(t *testing.T)
 			hot := &viperblocklegacyv1.EBSRequest{Name: "vol-hot"}
 			require.ErrorIs(t, adapter.MountOne(t.Context(), testAccountID, hot), vm.ErrMountRetryable)
 
-			publish.set(ebsprovider.PublishVolumeResponseV1{Published: &ebsprovider.PublishedVolumeV1{NodeID: node, NBDURI: "nbd://ready"}})
+			fake.setPublish(func(string) ebsprovider.PublishVolumeResponse { return publishedNBD("nbd://ready") })
 			require.NoError(t, adapter.Mount(t.Context(), instance))
 			assert.Equal(t, "nbd://ready", instance.EBSRequests.Requests[0].NBDURI)
 		})
@@ -262,14 +291,16 @@ func TestVolumeMounterAdapter_RetryLaterRefusalBacksOffAndRecovers(t *testing.T)
 // A refusal that retrying cannot fix fails the mount outright, so restore
 // does not back off forever against a provider that will never accept it.
 func TestVolumeMounterAdapter_PermanentRefusalIsNotRetryable(t *testing.T) {
-	for _, code := range []ebsprovider.ErrorCode{ebsprovider.ErrorCodeVolumeInUse, ebsprovider.ErrorCodeInternal, ebsprovider.ErrorCodeInvalidArgument} {
+	codes := []ebsprovider.ErrorCode{
+		ebsprovider.ErrorCodeVolumeInUse, ebsprovider.ErrorCodeVolumeHeldElsewhere,
+		ebsprovider.ErrorCodeInternal, ebsprovider.ErrorCodeInvalidArgument,
+	}
+	for _, code := range codes {
 		t.Run(string(code), func(t *testing.T) {
 			nc := connectMounterTest(t)
 			node := newMounterTestNode()
-			advertiseVersions(t, nc, node, ebsprovider.SupportedSchemaVersions)
-			publish := &fakeContractPublish{}
-			publish.set(publishRefusal(code))
-			publish.serve(t, nc, node)
+			fake := serveFakeNodeProvider(t, nc, node)
+			fake.setPublish(publishRefusal(code))
 			adapter := newVolumeMounterAdapter(nc, node, nil)
 
 			err := adapter.Mount(t.Context(), mounterTestVM("vol-refused"))
@@ -279,58 +310,24 @@ func TestVolumeMounterAdapter_PermanentRefusalIsNotRetryable(t *testing.T) {
 	}
 }
 
-// A mount that finds no provider on the publish subject backs off, and the
-// next one asks for capabilities again, so a provider restarted at another
-// version is seen.
-func TestVolumeMounterAdapter_NoResponderBacksOffAndRereadsCapabilities(t *testing.T) {
+// A volume another node holds is refused with the held-elsewhere code, which
+// a provider only sends at version 3, and the refusal reaches Mount's caller
+// as the sentinel that tells it apart from an ordinary volume in use.
+func TestVolumeMounterAdapter_HeldElsewhereReachesTheMountCaller(t *testing.T) {
 	nc := connectMounterTest(t)
-	node := newMounterTestNode()
-	var versionsMu sync.Mutex
-	versions := ebsprovider.SupportedSchemaVersions()
-	asked := advertiseVersions(t, nc, node, func() []uint16 {
-		versionsMu.Lock()
-		defer versionsMu.Unlock()
-		return versions
-	})
-	legacyMounts, _ := countLegacy(t, nc, node)
-	adapter := newVolumeMounterAdapter(nc, node, nil)
+	owner, other := newMounterTestNode(), newMounterTestNode()
+	provider := newMemoryProvider(t, "vol-held")
+	serveMemoryProvider(t, nc, provider, owner)
+	serveMemoryProvider(t, nc, provider, other)
 
-	instance := mounterTestVM("vol-starting")
-	err := adapter.Mount(t.Context(), instance)
-	require.ErrorIs(t, err, vm.ErrMountRetryable)
-	require.ErrorIs(t, err, nats.ErrNoResponders)
-	assert.Equal(t, int32(1), asked.Load())
+	require.NoError(t, newVolumeMounterAdapter(nc, owner, nil).Mount(t.Context(), mounterTestVM("vol-held")))
 
-	// The provider comes back at a version without the contract mount path.
-	versionsMu.Lock()
-	versions = []uint16{1, 2}
-	versionsMu.Unlock()
-
-	require.NoError(t, adapter.Mount(t.Context(), instance))
-	assert.Equal(t, int32(2), asked.Load(), "no responder must make the next mount re-read capabilities")
-	assert.Equal(t, int32(1), legacyMounts.Load())
-	assert.Equal(t, "nbd://legacy-vol-starting", instance.EBSRequests.Requests[0].NBDURI)
-
-	require.NoError(t, adapter.Mount(t.Context(), instance))
-	assert.Equal(t, int32(2), asked.Load(), "an answered route is cached until a request finds no responder")
-}
-
-// An unmount that finds no provider fails the seal, so the volume does not go
-// available, and the route is re-read on the next call.
-func TestVolumeMounterAdapter_UnmountNoResponderKeepsVolumeAndRereads(t *testing.T) {
-	nc := connectMounterTest(t)
-	node := newMounterTestNode()
-	asked := advertiseVersions(t, nc, node, ebsprovider.SupportedSchemaVersions)
-	volState := &recordingVolState{}
-	adapter := newVolumeMounterAdapter(nc, node, volState)
-
-	instance := mounterTestVM("vol-gone")
-	err := adapter.Unmount(t.Context(), instance)
-	require.ErrorIs(t, err, nats.ErrNoResponders)
-	assert.Empty(t, volState.snapshot(), "an unsealed volume must not go available")
-
-	require.Error(t, adapter.UnmountOne(t.Context(), testAccountID, viperblocklegacyv1.EBSRequest{Name: "vol-gone"}))
-	assert.Equal(t, int32(2), asked.Load())
+	err := newVolumeMounterAdapter(nc, other, nil).Mount(t.Context(), mounterTestVM("vol-held"))
+	require.ErrorIs(t, err, ebsprovider.ErrVolumeHeldElsewhere)
+	var providerErr *ebsprovider.ProviderError
+	require.ErrorAs(t, err, &providerErr)
+	assert.Equal(t, ebsprovider.ErrorCodeVolumeHeldElsewhere, providerErr.Code)
+	assert.Equal(t, ebsprovider.VolumeStateInUse, volumeState(t, provider, "vol-held"), "the refused mount must not take the volume from its owner")
 }
 
 // The unpublish budget is the provider's data-movement budget, not the
@@ -342,17 +339,15 @@ func TestVolumeMounterAdapter_UnpublishOutlastingRequestTimeoutCompletes(t *test
 
 	nc := connectMounterTest(t)
 	node := newMounterTestNode()
-	advertiseVersions(t, nc, node, ebsprovider.SupportedSchemaVersions)
-	slow := func([]byte) any {
+	fake := serveFakeNodeProvider(t, nc, node)
+	fake.setUnpublish(func(string) ebsprovider.UnpublishVolumeResponse {
 		time.Sleep(sealTime)
-		return ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned()}
-	}
-	unpublishSubject, err := ebsprovider.UnpublishSubject(node)
-	require.NoError(t, err)
-	replyJSON(t, nc, unpublishSubject, slow)
-	publishSubject, err := ebsprovider.PublishSubject(node)
-	require.NoError(t, err)
-	replyJSON(t, nc, publishSubject, slow)
+		return ebsprovider.UnpublishVolumeResponse{}
+	})
+	fake.setPublish(func(volumeID string) ebsprovider.PublishVolumeResponse {
+		time.Sleep(sealTime)
+		return publishedNBD("nbd://" + volumeID)
+	})
 
 	volState := &recordingVolState{}
 	adapter := newVolumeMounterAdapter(nc, node, volState)
@@ -362,16 +357,17 @@ func TestVolumeMounterAdapter_UnpublishOutlastingRequestTimeoutCompletes(t *test
 	assert.Equal(t, []string{"vol-slow-seal:available"}, volState.snapshot())
 	require.NoError(t, adapter.UnmountOne(t.Context(), testAccountID, viperblocklegacyv1.EBSRequest{Name: "vol-slow-seal"}))
 
-	err = adapter.MountOne(t.Context(), testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-slow-seal"})
+	err := adapter.MountOne(t.Context(), testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-slow-seal"})
 	require.ErrorIs(t, err, context.DeadlineExceeded, "the publish must be held to the request timeout")
 }
 
 // A failed volume rolls back the volumes this Mount already published, and a
 // missing volume backs off rather than failing the relaunch.
-func TestVolumeMounterAdapter_ContractMountRollsBackOnFailure(t *testing.T) {
+func TestVolumeMounterAdapter_MountRollsBackOnFailure(t *testing.T) {
 	nc := connectMounterTest(t)
 	node := newMounterTestNode()
-	provider := serveMemoryProvider(t, nc, node, "vol-present")
+	provider := newMemoryProvider(t, "vol-present")
+	serveMemoryProvider(t, nc, provider, node)
 	adapter := newVolumeMounterAdapter(nc, node, nil)
 
 	err := adapter.Mount(t.Context(), mounterTestVM("vol-present", "vol-missing"))
@@ -380,8 +376,7 @@ func TestVolumeMounterAdapter_ContractMountRollsBackOnFailure(t *testing.T) {
 	assert.Equal(t, ebsprovider.VolumeStateAvailable, volumeState(t, provider, "vol-present"), "the published volume must be unpublished")
 }
 
-// stubMounterProvider publishes a fixed export, for exports no NATS reply at
-// the mounter's request version can carry.
+// stubMounterProvider publishes a fixed export without a NATS round trip.
 type stubMounterProvider struct {
 	export ebsprovider.VolumeExport
 }
@@ -394,10 +389,6 @@ func (s *stubMounterProvider) PublishVolume(_ context.Context, req ebsprovider.P
 
 func (s *stubMounterProvider) UnpublishVolume(context.Context, ebsprovider.UnpublishVolumeRequest) (*ebsprovider.UnpublishedVolume, error) {
 	return &ebsprovider.UnpublishedVolume{}, nil
-}
-
-func (s *stubMounterProvider) GetNodeCapabilities(context.Context, string, ebsprovider.GetCapabilitiesRequest) (*ebsprovider.GetCapabilitiesResponse, error) {
-	return &ebsprovider.GetCapabilitiesResponse{ContractVersions: ebsprovider.SupportedSchemaVersions()}, nil
 }
 
 // A block export replaces whatever export the request carried before, so a
@@ -422,57 +413,36 @@ func TestVolumeMounterAdapter_BlockExportReplacesNBDURI(t *testing.T) {
 	assert.Zero(t, req.BlockSizeBytes)
 }
 
-// unpublishRecorder answers node's unpublish subject successfully and records
-// the volumes it was asked to tear down.
-type unpublishRecorder struct {
-	mu      sync.Mutex
-	volumes []string
-}
-
-func (r *unpublishRecorder) serve(t *testing.T, nc *nats.Conn, node string, reply func() ebsprovider.UnpublishVolumeResponse) {
-	t.Helper()
-	subject, err := ebsprovider.UnpublishSubject(node)
-	require.NoError(t, err)
-	replyJSON(t, nc, subject, func(data []byte) any {
-		var req ebsprovider.UnpublishVolumeRequest
-		_ = json.Unmarshal(data, &req)
-		r.mu.Lock()
-		r.volumes = append(r.volumes, req.VolumeID)
-		r.mu.Unlock()
-		return reply()
-	})
-}
-
-func (r *unpublishRecorder) snapshot() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]string(nil), r.volumes...)
-}
-
-func unpublishOK() ebsprovider.UnpublishVolumeResponse {
-	return ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned()}
-}
-
 // A publish answered without a usable export may still have started one, so
-// hot attach gets ErrMountAmbiguous and Mount tears that volume down too.
+// hot attach gets ErrMountAmbiguous with the request untouched, and Mount
+// tears that volume down too.
 func TestVolumeMounterAdapter_AmbiguousPublishIsTornDown(t *testing.T) {
-	nc := connectMounterTest(t)
-	node := newMounterTestNode()
-	advertiseVersions(t, nc, node, ebsprovider.SupportedSchemaVersions)
-	publish := &fakeContractPublish{}
-	publish.set(ebsprovider.PublishVolumeResponseV1{Published: &ebsprovider.PublishedVolumeV1{NodeID: node, NBDURI: ""}})
-	publish.serve(t, nc, node)
-	unpublished := &unpublishRecorder{}
-	unpublished.serve(t, nc, node, unpublishOK)
-	adapter := newVolumeMounterAdapter(nc, node, nil)
+	replies := map[string]struct {
+		reply ebsprovider.PublishVolumeResponse
+		cause error
+	}{
+		"NoPublishedVolume": {reply: ebsprovider.PublishVolumeResponse{}, cause: ebsprovider.ErrNoPublishedVolume},
+		"EmptyExport":       {reply: publishedNBD(""), cause: ebsprovider.ErrInvalidExport},
+	}
+	for name, tt := range replies {
+		t.Run(name, func(t *testing.T) {
+			nc := connectMounterTest(t)
+			node := newMounterTestNode()
+			fake := serveFakeNodeProvider(t, nc, node)
+			fake.setPublish(func(string) ebsprovider.PublishVolumeResponse { return tt.reply })
+			adapter := newVolumeMounterAdapter(nc, node, nil)
 
-	err := adapter.MountOne(t.Context(), testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-hot"})
-	require.ErrorIs(t, err, vm.ErrMountAmbiguous)
-	require.ErrorIs(t, err, ebsprovider.ErrInvalidExport)
+			hot := &viperblocklegacyv1.EBSRequest{Name: "vol-hot", NBDURI: "nbd://stale"}
+			err := adapter.MountOne(t.Context(), testAccountID, hot)
+			require.ErrorIs(t, err, vm.ErrMountAmbiguous)
+			require.ErrorIs(t, err, tt.cause)
+			assert.Equal(t, "nbd://stale", hot.NBDURI, "a failed publish must not overwrite the request's export")
 
-	err = adapter.Mount(t.Context(), mounterTestVM("vol-ambiguous"))
-	require.ErrorIs(t, err, vm.ErrMountAmbiguous)
-	assert.Equal(t, []string{"vol-ambiguous"}, unpublished.snapshot(), "the ambiguous volume must be unpublished")
+			err = adapter.Mount(t.Context(), mounterTestVM("vol-ambiguous"))
+			require.ErrorIs(t, err, vm.ErrMountAmbiguous)
+			assert.Equal(t, []string{"vol-ambiguous"}, fake.unpublished(), "the ambiguous volume must be unpublished")
+		})
+	}
 }
 
 // A detach spends part of its deadline on the unplug, so the seal must not
@@ -483,18 +453,15 @@ func TestVolumeMounterAdapter_UnpublishOutlivesCallerContext(t *testing.T) {
 
 	nc := connectMounterTest(t)
 	node := newMounterTestNode()
-	advertiseVersions(t, nc, node, ebsprovider.SupportedSchemaVersions)
+	fake := serveFakeNodeProvider(t, nc, node)
 	var sealed atomic.Int32
-	unpublishSubject, err := ebsprovider.UnpublishSubject(node)
-	require.NoError(t, err)
-	replyJSON(t, nc, unpublishSubject, func([]byte) any {
+	fake.setUnpublish(func(string) ebsprovider.UnpublishVolumeResponse {
 		time.Sleep(sealTime)
 		sealed.Add(1)
-		return unpublishOK()
+		return ebsprovider.UnpublishVolumeResponse{}
 	})
 	volState := &recordingVolState{}
 	adapter := newVolumeMounterAdapter(nc, node, volState)
-	require.True(t, adapter.useContract(t.Context()))
 
 	short, cancelShort := context.WithTimeout(t.Context(), sealTime/4)
 	defer cancelShort()
@@ -507,87 +474,52 @@ func TestVolumeMounterAdapter_UnpublishOutlivesCallerContext(t *testing.T) {
 	assert.Equal(t, []string{"vol-stop:available"}, volState.snapshot())
 }
 
-// A Mount's rollback unmounts over the route its mounts took, even when the
-// failure dropped the cached route and the provider now answers differently.
-func TestVolumeMounterAdapter_RollbackKeepsTheMountRoute(t *testing.T) {
+// Abandon drops each export unsealed, at the version that carries NoSeal, and
+// tries every volume: an export torn down is logged, one not held here or
+// unknown to the provider is the ordinary case, and a refusal is returned.
+func TestVolumeMounterAdapter_AbandonUnpublishesWithoutSealing(t *testing.T) {
 	nc := connectMounterTest(t)
 	node := newMounterTestNode()
-	var askedOnce atomic.Bool
-	advertiseVersions(t, nc, node, func() []uint16 {
-		if askedOnce.Swap(true) {
-			return []uint16{1, 2}
+	fake := serveFakeNodeProvider(t, nc, node)
+	fake.setUnpublish(func(volumeID string) ebsprovider.UnpublishVolumeResponse {
+		switch volumeID {
+		case "vol-torn":
+			return ebsprovider.UnpublishVolumeResponse{TornDown: true}
+		case "vol-unknown":
+			return unpublishRefusal(ebsprovider.ErrorCodeNotFound, "volume not found")
+		case "vol-refused":
+			return unpublishRefusal(ebsprovider.ErrorCodeUnavailable, "export busy")
 		}
-		return ebsprovider.SupportedSchemaVersions()
+		return ebsprovider.UnpublishVolumeResponse{}
 	})
-	// Answers the first publish only, so the second finds no responder.
-	publishSubject, err := ebsprovider.PublishSubject(node)
-	require.NoError(t, err)
-	sub, err := nc.Subscribe(publishSubject, func(msg *nats.Msg) {
-		data, _ := json.Marshal(ebsprovider.PublishVolumeResponseV1{
-			Versioned: ebsprovider.NewVersioned(),
-			Published: &ebsprovider.PublishedVolumeV1{VolumeID: "vol-a", NodeID: node, NBDURI: "nbd://vol-a"},
-		})
-		_ = msg.Respond(data)
-	})
-	require.NoError(t, err)
-	require.NoError(t, sub.AutoUnsubscribe(1))
-	require.NoError(t, nc.Flush())
-	unpublished := &unpublishRecorder{}
-	unpublished.serve(t, nc, node, unpublishOK)
-	_, legacyUnmounts := countLegacy(t, nc, node)
+	logs := captureSlogForTest(t)
 	adapter := newVolumeMounterAdapter(nc, node, nil)
 
-	err = adapter.Mount(t.Context(), mounterTestVM("vol-a", "vol-b"))
-	require.ErrorIs(t, err, vm.ErrMountRetryable)
-	assert.Equal(t, []string{"vol-a"}, unpublished.snapshot(), "the published volume must be unpublished")
-	assert.Zero(t, legacyUnmounts.Load(), "a published volume must not be rolled back over the legacy subject")
+	err := adapter.Abandon(t.Context(), mounterTestVM("vol-torn", "vol-absent", "vol-unknown", "vol-refused"), "superseded")
+	require.ErrorIs(t, err, ebsprovider.ErrUnavailable)
+	assert.Contains(t, err.Error(), "abandon vol-refused")
+	for _, volume := range []string{"vol-torn", "vol-absent", "vol-unknown"} {
+		assert.NotContains(t, err.Error(), volume)
+	}
+
+	calls := fake.snapshot()
+	require.Len(t, calls, 4, "every volume is attempted")
+	for _, call := range calls {
+		assert.True(t, call.noSeal, "%s must be dropped unsealed", call.volume)
+		assert.Equal(t, ebsprovider.NoSealSchemaVersion, call.version, "%s must be sent at the version carrying NoSeal", call.volume)
+	}
+	const gaveUp = "Gave up a volume export"
+	assert.Contains(t, logs.String(), "instance=i-mounter volume=vol-torn reason=superseded")
+	assert.Equal(t, 1, strings.Count(logs.String(), gaveUp), "only a torn-down export is reported as given up")
 }
 
-// A provider answering not_found holds no export of the volume, which is the
-// state an unmount asks for, so the volume counts as sealed.
-func TestVolumeMounterAdapter_UnpublishNotFoundCountsAsSealed(t *testing.T) {
+// An abandon that finds no provider has not let go, so the caller is told.
+func TestVolumeMounterAdapter_AbandonNoResponderFails(t *testing.T) {
 	nc := connectMounterTest(t)
-	node := newMounterTestNode()
-	advertiseVersions(t, nc, node, ebsprovider.SupportedSchemaVersions)
-	unpublished := &unpublishRecorder{}
-	unpublished.serve(t, nc, node, func() ebsprovider.UnpublishVolumeResponse {
-		return ebsprovider.UnpublishVolumeResponse{
-			Versioned: ebsprovider.NewVersioned(),
-			Error:     &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeNotFound, Message: "volume not found"},
-		}
-	})
-	volState := &recordingVolState{}
-	adapter := newVolumeMounterAdapter(nc, node, volState)
+	adapter := newVolumeMounterAdapter(nc, newMounterTestNode(), nil)
 
-	require.NoError(t, adapter.Unmount(t.Context(), mounterTestVM("vol-gone")))
-	assert.Equal(t, []string{"vol-gone:available"}, volState.snapshot())
-	require.NoError(t, adapter.UnmountOne(t.Context(), testAccountID, viperblocklegacyv1.EBSRequest{Name: "vol-gone"}))
-	assert.Equal(t, []string{"vol-gone", "vol-gone"}, unpublished.snapshot())
-}
-
-// No responder on the legacy subject drops the cached route too, so a
-// provider restarted at version 3 takes the next mount over the contract.
-func TestVolumeMounterAdapter_LegacyNoResponderRereadsCapabilities(t *testing.T) {
-	nc := connectMounterTest(t)
-	node := newMounterTestNode()
-	capsSubject, err := ebsprovider.NodeCapabilitiesSubject(node)
-	require.NoError(t, err)
-	caps, err := nc.Subscribe(capsSubject, func(msg *nats.Msg) {
-		data, _ := json.Marshal(ebsprovider.GetCapabilitiesResponse{Versioned: ebsprovider.NewVersioned(), ContractVersions: []uint16{1, 2}})
-		_ = msg.Respond(data)
-	})
-	require.NoError(t, err)
-	require.NoError(t, nc.Flush())
-	adapter := newVolumeMounterAdapter(nc, node, nil)
-
-	instance := mounterTestVM("vol-restart")
-	require.ErrorIs(t, adapter.Mount(t.Context(), instance), vm.ErrMountRetryable)
-
-	require.NoError(t, caps.Unsubscribe())
-	provider := serveMemoryProvider(t, nc, node, "vol-restart")
-	legacyMounts, _ := countLegacy(t, nc, node)
-
-	require.NoError(t, adapter.Mount(t.Context(), instance))
-	assert.Zero(t, legacyMounts.Load(), "the mount must take the contract path")
-	assert.Equal(t, ebsprovider.VolumeStateInUse, volumeState(t, provider, "vol-restart"))
+	err := adapter.Abandon(t.Context(), mounterTestVM("vol-1", "vol-2"), "superseded")
+	require.ErrorIs(t, err, nats.ErrNoResponders)
+	assert.Contains(t, err.Error(), "vol-1")
+	assert.Contains(t, err.Error(), "vol-2", "every volume is attempted")
 }

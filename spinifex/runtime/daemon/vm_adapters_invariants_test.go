@@ -1,12 +1,10 @@
 package daemon
 
 import (
-	"encoding/json"
 	"testing"
 
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,16 +23,8 @@ func TestUnmountNeverReleasesBootVolume(t *testing.T) {
 	volState := &recordingVolState{}
 	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, volState)
 
-	// Stand in for the ebs daemon: every ebs.<node>.unmount succeeds (sealed).
-	sub, err := daemon.natsConn.Subscribe(viperblocklegacyv1.UnmountSubject(daemon.node), func(msg *nats.Msg) {
-		var req viperblocklegacyv1.EBSRequest
-		require.NoError(t, json.Unmarshal(msg.Data, &req))
-		data, err := json.Marshal(viperblocklegacyv1.EBSUnMountResponse{Volume: req.Name, Mounted: false})
-		require.NoError(t, err)
-		require.NoError(t, msg.Respond(data))
-	})
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
+	// Stand in for the provider: every unpublish succeeds (sealed).
+	serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
 
 	inst := &vm.VM{
 		ID: "i-unmount-boot",

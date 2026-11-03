@@ -35,8 +35,9 @@ const (
 const defaultRequestTimeout = 30 * time.Second
 
 // dataMovementTimeout bounds the subjects whose duration is a function of the
-// volume rather than of the control plane. Matches unmountSealTimeout, this
-// codebase's existing budget for an EBS operation the caller cannot bound.
+// volume rather than of the control plane. It must exceed viperblockd's 120s
+// kill grace plus a seal allowance, or an unpublish that uses the whole grace
+// could never be seen to succeed.
 const dataMovementTimeout = 180 * time.Second
 
 // dataMovementVerbs names every operation that references or moves real data,

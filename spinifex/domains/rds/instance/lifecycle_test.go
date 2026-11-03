@@ -878,6 +878,7 @@ func TestUncleanStopMessage_IsEngineAware(t *testing.T) {
 // A stopped DB VM is terminated over ec2.terminate as the system account. Gone
 // in either form is done; a refusal is returned so the teardown retries.
 func TestNATSInstanceCommander_TerminateStoppedInstance(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		reply   []byte

@@ -5,9 +5,7 @@ package ecs
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"maps"
 	"slices"
@@ -168,39 +166,12 @@ func (s *Service) bucket(ctx context.Context, accountID string) (jetstream.KeyVa
 	return GetOrCreateAccountBucket(ctx, js, accountID)
 }
 
-// getJSON reads key into out. Returns (false, nil) when the key is absent.
-func getJSON(ctx context.Context, kv jetstream.KeyValue, key string, out any) (bool, error) {
-	entry, err := kv.Get(ctx, key)
-	if errors.Is(err, jetstream.ErrKeyNotFound) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if err := json.Unmarshal(entry.Value(), out); err != nil {
-		return false, fmt.Errorf("unmarshal %s: %w", key, err)
-	}
-	return true, nil
-}
-
-// putJSON marshals v and writes it at key.
-func putJSON(ctx context.Context, kv jetstream.KeyValue, key string, v any) error {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	if _, err := kv.Put(ctx, key, data); err != nil {
-		return fmt.Errorf("put %s: %w", key, err)
-	}
-	return nil
-}
-
 // deleteKeysWithPrefix deletes every KV key under prefix. Used by DeleteCluster
 // to sweep a cluster's whole key subtree (meta/instances/tasks/services/
 // assignments) after its tasks are stopped. Best-effort per key; the first
 // delete error is returned after attempting the rest.
 func deleteKeysWithPrefix(ctx context.Context, kv jetstream.KeyValue, prefix string) error {
-	keys, err := keysWithPrefix(ctx, kv, prefix)
+	keys, err := taskdefinition.KeysWithPrefix(ctx, kv, prefix)
 	if err != nil {
 		return err
 	}
@@ -211,25 +182,6 @@ func deleteKeysWithPrefix(ctx context.Context, kv jetstream.KeyValue, prefix str
 		}
 	}
 	return firstErr
-}
-
-// keysWithPrefix returns all KV keys under prefix.
-func keysWithPrefix(ctx context.Context, kv jetstream.KeyValue, prefix string) ([]string, error) {
-	keys, err := kv.Keys(ctx)
-	if errors.Is(err, jetstream.ErrNoKeysFound) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(keys))
-	for _, k := range keys {
-		if strings.HasPrefix(k, prefix) {
-			out = append(out, k)
-		}
-	}
-	slices.Sort(out)
-	return out, nil
 }
 
 // --- Cluster ---
@@ -247,7 +199,7 @@ func (s *Service) CreateCluster(ctx context.Context, input *ecs.CreateClusterInp
 	}
 
 	var rec ClusterRecord
-	found, err := getJSON(ctx, kv, ClusterMetaKey(name), &rec)
+	found, err := taskdefinition.GetJSON(ctx, kv, ClusterMetaKey(name), &rec)
 	if err != nil {
 		return nil, err
 	}
@@ -269,7 +221,7 @@ func (s *Service) CreateCluster(ctx context.Context, input *ecs.CreateClusterInp
 				rec.Tags[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
 			}
 		}
-		if err := putJSON(ctx, kv, ClusterMetaKey(name), &rec); err != nil {
+		if err := taskdefinition.PutJSON(ctx, kv, ClusterMetaKey(name), &rec); err != nil {
 			return nil, err
 		}
 	}
@@ -292,7 +244,7 @@ func (s *Service) DescribeClusters(ctx context.Context, input *ecs.DescribeClust
 	for _, name := range names {
 		name = ClusterShortName(name)
 		var rec ClusterRecord
-		found, err := getJSON(ctx, kv, ClusterMetaKey(name), &rec)
+		found, err := taskdefinition.GetJSON(ctx, kv, ClusterMetaKey(name), &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -358,7 +310,7 @@ func (s *Service) ListClusters(ctx context.Context, _ *ecs.ListClustersInput, ac
 	if err != nil {
 		return nil, err
 	}
-	keys, err := keysWithPrefix(ctx, kv, "clusters/")
+	keys, err := taskdefinition.KeysWithPrefix(ctx, kv, "clusters/")
 	if err != nil {
 		return nil, err
 	}
@@ -368,7 +320,7 @@ func (s *Service) ListClusters(ctx context.Context, _ *ecs.ListClustersInput, ac
 			continue
 		}
 		var rec ClusterRecord
-		found, err := getJSON(ctx, kv, k, &rec)
+		found, err := taskdefinition.GetJSON(ctx, kv, k, &rec)
 		if err != nil {
 			return nil, err
 		}

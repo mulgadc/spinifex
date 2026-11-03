@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"log/slog"
 	"strings"
 	"time"
@@ -33,7 +34,7 @@ func (s *Service) StopTask(ctx context.Context, input *ecs.StopTaskInput, accoun
 		return nil, err
 	}
 	var task TaskRecord
-	found, err := getJSON(ctx, kv, TaskKey(cluster, taskID), &task)
+	found, err := taskdefinition.GetJSON(ctx, kv, TaskKey(cluster, taskID), &task)
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +58,7 @@ func (s *Service) StartTask(ctx context.Context, input *ecs.StartTaskInput, acco
 		return nil, err
 	}
 	var clusterRec ClusterRecord
-	found, err := getJSON(ctx, kv, ClusterMetaKey(cluster), &clusterRec)
+	found, err := taskdefinition.GetJSON(ctx, kv, ClusterMetaKey(cluster), &clusterRec)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +102,7 @@ func (s *Service) StartTask(ctx context.Context, input *ecs.StartTaskInput, acco
 				continue
 			}
 		}
-		if err := putJSON(ctx, kv, TaskKey(cluster, taskID), rec); err != nil {
+		if err := taskdefinition.PutJSON(ctx, kv, TaskKey(cluster, taskID), rec); err != nil {
 			return nil, err
 		}
 		if err := s.publishAssign(ctx, kv, accountID, cluster, inst.InstanceID, rec, taskDef); err != nil {
@@ -168,12 +169,12 @@ func (s *Service) requestStopTask(ctx context.Context, kv jetstream.KeyValue, ac
 		return
 	}
 	task.DesiredStatus = TaskStatusStopped
-	if perr := putJSON(ctx, kv, TaskKey(task.Cluster, task.TaskID), task); perr != nil {
+	if perr := taskdefinition.PutJSON(ctx, kv, TaskKey(task.Cluster, task.TaskID), task); perr != nil {
 		slog.ErrorContext(ctx, "ECS requestStopTask: persist failed", "task", task.TaskID, "err", perr)
 		return
 	}
 	sd := ecsv1.StopDirective{TaskID: task.TaskID, Reason: reason}
-	if perr := putJSON(ctx, kv, StopKey(task.Cluster, task.ContainerInstanceID, task.TaskID), &sd); perr != nil {
+	if perr := taskdefinition.PutJSON(ctx, kv, StopKey(task.Cluster, task.ContainerInstanceID, task.TaskID), &sd); perr != nil {
 		slog.ErrorContext(ctx, "ECS requestStopTask: post stop directive failed", "task", task.TaskID, "err", perr)
 	}
 }
@@ -196,7 +197,7 @@ func (s *Service) forceStopTask(ctx context.Context, kv jetstream.KeyValue, acco
 	// cleared fields land in this single write.
 	s.releaseTaskPublicIP(ctx, accountID, task)
 	s.reclaimTaskENI(ctx, accountID, task)
-	if perr := putJSON(ctx, kv, TaskKey(task.Cluster, task.TaskID), task); perr != nil {
+	if perr := taskdefinition.PutJSON(ctx, kv, TaskKey(task.Cluster, task.TaskID), task); perr != nil {
 		slog.ErrorContext(ctx, "ECS forceStopTask: persist failed", "task", task.TaskID, "err", perr)
 		return
 	}
@@ -238,7 +239,7 @@ func (s *Service) applyServiceTargets(ctx context.Context, kv jetstream.KeyValue
 		return
 	}
 	var svc ServiceRecord
-	found, err := getJSON(ctx, kv, ServiceKey(task.Cluster, name), &svc)
+	found, err := taskdefinition.GetJSON(ctx, kv, ServiceKey(task.Cluster, name), &svc)
 	if err != nil || !found || len(svc.LoadBalancers) == 0 {
 		return
 	}
@@ -270,7 +271,7 @@ func (s *Service) assignTaskPublicIP(ctx context.Context, kv jetstream.KeyValue,
 		return
 	}
 	var svc ServiceRecord
-	found, err := getJSON(ctx, kv, ServiceKey(task.Cluster, name), &svc)
+	found, err := taskdefinition.GetJSON(ctx, kv, ServiceKey(task.Cluster, name), &svc)
 	if err != nil || !found || !strings.EqualFold(svc.AssignPublicIP, "ENABLED") {
 		return
 	}
@@ -281,7 +282,7 @@ func (s *Service) assignTaskPublicIP(ctx context.Context, kv jetstream.KeyValue,
 	}
 	task.ENIPublicIP = publicIP
 	task.ENIEIPAllocationID = allocID
-	if perr := putJSON(ctx, kv, TaskKey(task.Cluster, task.TaskID), task); perr != nil {
+	if perr := taskdefinition.PutJSON(ctx, kv, TaskKey(task.Cluster, task.TaskID), task); perr != nil {
 		slog.ErrorContext(ctx, "ECS auto-EIP: persist public IP failed", "task", task.TaskID, "err", perr)
 	}
 }

@@ -28,7 +28,7 @@ func TestService_DeleteCluster_CascadesAndSweeps(t *testing.T) {
 	list, err := svc.ListClusters(context.Background(), &ecs.ListClustersInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, list.ClusterArns)
-	keys, err := keysWithPrefix(t.Context(), kv, clusterKeyPrefix("web"))
+	keys, err := taskdefinition.KeysWithPrefix(t.Context(), kv, clusterKeyPrefix("web"))
 	require.NoError(t, err)
 	assert.Empty(t, keys)
 }

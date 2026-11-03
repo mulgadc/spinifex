@@ -15,8 +15,6 @@ const TestAccountID = testAccountID
 var (
 	NewTestService   = newTestService
 	RegisterInstance = registerInstance
-	PutJSON          = putJSON
-	GetJSON          = getJSON
 	ServiceTaskGroup = serviceTaskGroup
 )
 

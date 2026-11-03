@@ -563,7 +563,7 @@ func TestInstanceCleanerAdapter_ReleaseAttachedENIs_ListInstanceENIsErrorTolerat
 
 func TestVolumeMounterAdapter_Mount_NoResponderIsRetryable(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
-	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
+	adapter := newNATSMounter(daemon.natsConn, daemon.node, nil)
 
 	// No subscriber on the mount subject: viperblockd is still starting, so
 	// the request returns nats.ErrNoResponders, which must be retryable.

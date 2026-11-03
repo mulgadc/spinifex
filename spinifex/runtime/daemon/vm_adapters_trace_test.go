@@ -5,8 +5,6 @@ import (
 	"testing"
 	"time"
 
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
-	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -169,43 +167,6 @@ func TestEbsRequestWithTrace_OmitsAnAbsentAccount(t *testing.T) {
 	assert.Empty(t, spanAccountOf(clientSpan(t, sr)), "an unattributed span must carry no account")
 }
 
-// A mount names its account on the mounter's span, which the provider's
-// request span joins under the caller's trace, and an unattributed one names
-// none.
-func TestVolumeMounterAdapter_ContractSpansCarryTheAccountUnderTheCaller(t *testing.T) {
-	sr := withRecordedSpans(t)
-	nc := connectMounterTest(t)
-	node := newMounterTestNode()
-	serveFakeNodeProvider(t, nc, node)
-	adapter := newVolumeMounterAdapter(nc, node, nil)
-
-	ctx, caller := otel.Tracer("test").Start(t.Context(), "caller")
-	instance := &vm.VM{ID: "i-acct", AccountID: "000000000042"}
-	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-acct"}}
-	require.NoError(t, adapter.Mount(ctx, instance))
-	require.NoError(t, adapter.MountOne(ctx, "", &viperblocklegacyv1.EBSRequest{Name: "vol-none"}))
-	caller.End()
-
-	spans := map[string]sdktrace.ReadOnlySpan{}
-	var request sdktrace.ReadOnlySpan
-	for _, s := range sr.Ended() {
-		if s.Name() == "ebs.mounter.publish" {
-			spans[volumeOf(s)] = s
-		} else if s.SpanKind() == trace.SpanKindClient && request == nil {
-			request = s
-		}
-	}
-	mount, unattributed := spans["vol-acct"], spans["vol-none"]
-	require.NotNil(t, mount)
-	require.NotNil(t, unattributed)
-	require.NotNil(t, request, "the provider request must record a client span")
-
-	assert.Equal(t, "000000000042", spanAccountOf(mount), "the mounter span must name the account it acted for")
-	assert.Empty(t, spanAccountOf(unattributed), "an unattributed mount must carry no account")
-	assert.Equal(t, caller.SpanContext().SpanID(), mount.Parent().SpanID(), "the mounter span must join the caller")
-	assert.Equal(t, mount.SpanContext().SpanID(), request.Parent().SpanID(), "the provider request must sit under the mounter span")
-}
-
 // clientSpan returns the one client span sr recorded.
 func clientSpan(t *testing.T, sr *tracetest.SpanRecorder) sdktrace.ReadOnlySpan {
 	t.Helper()
@@ -222,10 +183,6 @@ func clientSpan(t *testing.T, sr *tracetest.SpanRecorder) sdktrace.ReadOnlySpan 
 // spanAccountOf returns the account attribute of span, or "".
 func spanAccountOf(span sdktrace.ReadOnlySpan) string {
 	return spanAttribute(span, natsmsg.AttrAccountID)
-}
-
-func volumeOf(span sdktrace.ReadOnlySpan) string {
-	return spanAttribute(span, "volume.id")
 }
 
 func spanAttribute(span sdktrace.ReadOnlySpan, key string) string {

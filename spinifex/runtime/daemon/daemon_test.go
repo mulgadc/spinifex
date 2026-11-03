@@ -138,10 +138,10 @@ func createTestDaemon(t *testing.T, natsURL string) *Daemon {
 	// Wire the minimum vm.Deps that handler tests rely on. Lifecycle (Run/Start/
 	// Stop/Terminate) tests still set up their own deps; this gives the
 	// AttachVolume / DetachVolume manager methods enough plumbing to drive
-	// ebs.mount/unmount over NATS using the test's connection.
+	// publish/unpublish over NATS using the test's connection.
 	daemon.vmMgr.SetDeps(vm.Deps{
 		NodeID:               daemon.node,
-		VolumeMounter:        newVolumeMounterAdapter(daemon.natsConn, daemon.node, daemon.volumeService),
+		VolumeMounter:        newNATSMounter(daemon.natsConn, daemon.node, daemon.volumeService),
 		VolumeStateUpdater:   daemon.volumeService,
 		DetachDelay:          daemon.detachDelay,
 		DeviceDeletedTimeout: daemon.deviceDeletedTimeout,
@@ -2400,12 +2400,12 @@ func TestDetachVolume_SuccessPath(t *testing.T) {
 	assert.Equal(t, []string{"device_del", "blockdev-del", "object-del"}, qmpCommands)
 	mu.Unlock()
 
-	// Verify ebs.unmount was called
+	// Verify unpublish was called
 	select {
 	case unmountedVol := <-ebsUnmountCalled:
 		assert.Equal(t, volumeID, unmountedVol)
 	case <-time.After(5 * time.Second):
-		t.Fatal("ebs.unmount was not called")
+		t.Fatal("unpublish was not called")
 	}
 
 	// Verify volume removed from EBSRequests
@@ -3322,7 +3322,7 @@ func TestVolumeMounterAdapter_UnmountOne_UnmountError(t *testing.T) {
 	fake.setUnpublish(func(string) ebsprovider.UnpublishVolumeResponse {
 		return unpublishRefusal(ebsprovider.ErrorCodeInternal, "seal volume: device busy")
 	})
-	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
+	adapter := newNATSMounter(daemon.natsConn, daemon.node, nil)
 
 	err := adapter.UnmountOne(t.Context(), "", viperblocklegacyv1.EBSRequest{Name: "vol-rollback-err"})
 	require.Error(t, err, "an unpublish refusal must propagate so DetachVolume can keep the volume attached")
@@ -3337,7 +3337,7 @@ func TestVolumeMounterAdapter_UnmountOne_RequestFailure(t *testing.T) {
 	require.NoError(t, err)
 	nc.Close()
 
-	adapter := newVolumeMounterAdapter(nc, "node-1", nil)
+	adapter := newNATSMounter(nc, "node-1", nil)
 	require.ErrorIs(t, adapter.UnmountOne(t.Context(), "", viperblocklegacyv1.EBSRequest{Name: "vol-timeout"}), nats.ErrConnectionClosed,
 		"a failed unpublish request must propagate as an error")
 }
@@ -3385,7 +3385,7 @@ var _ vm.VolumeStateUpdater = (*recordingVolState)(nil)
 func TestVolumeMounterAdapter_Unmount_SealFailureSkipsAvailable(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
 	volState := &recordingVolState{}
-	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, volState)
+	adapter := newNATSMounter(daemon.natsConn, daemon.node, volState)
 	fake := serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
 	fake.setUnpublish(func(volumeID string) ebsprovider.UnpublishVolumeResponse {
 		if volumeID == "vol-fail" {
@@ -3418,7 +3418,7 @@ func TestVolumeMounterAdapter_Unmount_SealFailureSkipsAvailable(t *testing.T) {
 func TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
 	volState := &recordingVolState{}
-	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, volState)
+	adapter := newNATSMounter(daemon.natsConn, daemon.node, volState)
 	fake := serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
 	fake.setUnpublish(func(volumeID string) ebsprovider.UnpublishVolumeResponse {
 		return unpublishRefusal(ebsprovider.ErrorCodeNotFound, fmt.Sprintf("Volume %s not found", volumeID))
@@ -3448,96 +3448,73 @@ func TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable(t *testing.T) {
 }
 
 // TestVolumeMounterAdapter_Mount_PartialFailureRollback verifies that when
-// any of Mount's per-volume failure paths fires mid-fan-out, the adapter
-// unmounts the volumes already successfully mounted in the same Mount()
-// call. Without rollback, a launch failure on the second of three volumes
-// would leave the first volume's export live, leaking it every retry.
+// the second of three volumes is refused, the adapter unpublishes the volume
+// it already published in the same Mount() call and nothing else. Without
+// rollback, a launch failure would leave the first volume's export live.
 func TestVolumeMounterAdapter_Mount_PartialFailureRollback(t *testing.T) {
-	tests := []struct {
-		name        string
-		respondVol2 func(msg *nats.Msg)
-		wantErrSub  string
-	}{
-		{
-			name: "ProviderRefusal",
-			respondVol2: func(msg *nats.Msg) {
-				data, _ := json.Marshal(ebsprovider.PublishVolumeResponse{
-					Versioned: ebsprovider.NewLatestVersioned(),
-					Error:     providerRefusal(ebsprovider.ErrorCodeInternal, "simulated mount failure"),
-				})
-				msg.Respond(data)
-			},
-			wantErrSub: "simulated mount failure",
-		},
-		{
-			name: "MalformedResponse",
-			respondVol2: func(msg *nats.Msg) {
-				msg.Respond([]byte("not-valid-json"))
-			},
-			wantErrSub: "invalid character",
-		},
-	}
+	nc := connectMounterTest(t)
+	node := newMounterTestNode()
+	fake := serveFakeNodeProvider(t, nc, node)
+	fake.setPublish(func(volumeID string) ebsprovider.PublishVolumeResponse {
+		if volumeID == "vol-2" {
+			return ebsprovider.PublishVolumeResponse{Error: providerRefusal(ebsprovider.ErrorCodeInternal, "simulated mount failure")}
+		}
+		return publishedNBD("nbd://mounted-" + volumeID)
+	})
+	adapter := newNATSMounter(nc, node, nil)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			daemon := createTestDaemon(t, sharedNATSURL)
-			adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
+	err := adapter.Mount(t.Context(), mounterTestVM("vol-1", "vol-2", "vol-3"))
+	require.Error(t, err, "Mount should propagate the vol-2 failure")
+	assert.Contains(t, err.Error(), "simulated mount failure")
+	assert.Equal(t, []string{"vol-1"}, fake.unpublished(),
+		"only the previously published vol-1 is rolled back; a refused publish exported nothing")
+}
 
-			publishSubject, err := ebsprovider.PublishSubject(daemon.node)
-			require.NoError(t, err)
-			mountSub, err := daemon.natsConn.Subscribe(publishSubject, func(msg *nats.Msg) {
-				var req ebsprovider.PublishVolumeRequest
-				require.NoError(t, json.Unmarshal(msg.Data, &req))
-				if req.VolumeID == "vol-2" {
-					tt.respondVol2(msg)
-					return
-				}
-				resp := publishedNBD("nbd://mounted-" + req.VolumeID)
-				resp.Versioned = ebsprovider.ReplyVersioned(req.SchemaVersion)
-				resp.Published.VolumeID, resp.Published.NodeID = req.VolumeID, req.NodeID
-				data, _ := json.Marshal(resp)
-				msg.Respond(data)
-			})
-			require.NoError(t, err)
-			defer mountSub.Unsubscribe()
+// A publish reply that cannot be decoded may still have started an export, so
+// the failing volume is torn down along with the one already published.
+func TestVolumeMounterAdapter_Mount_UndecodableReplyRollsBackBoth(t *testing.T) {
+	daemon := createTestDaemon(t, sharedNATSURL)
+	adapter := newNATSMounter(daemon.natsConn, daemon.node, nil)
 
-			unmounted := make(chan string, 3)
-			unpublishSubject, err := ebsprovider.UnpublishSubject(daemon.node)
-			require.NoError(t, err)
-			unmountSub, err := daemon.natsConn.Subscribe(unpublishSubject, func(msg *nats.Msg) {
-				var req ebsprovider.UnpublishVolumeRequest
-				require.NoError(t, json.Unmarshal(msg.Data, &req))
-				unmounted <- req.VolumeID
-				data, _ := json.Marshal(ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.ReplyVersioned(req.SchemaVersion)})
-				msg.Respond(data)
-			})
-			require.NoError(t, err)
-			defer unmountSub.Unsubscribe()
+	publishSubject, err := ebsprovider.PublishSubject(daemon.node)
+	require.NoError(t, err)
+	mountSub, err := daemon.natsConn.Subscribe(publishSubject, func(msg *nats.Msg) {
+		var req ebsprovider.PublishVolumeRequest
+		require.NoError(t, json.Unmarshal(msg.Data, &req))
+		if req.VolumeID == "vol-2" {
+			msg.Respond([]byte("not-valid-json"))
+			return
+		}
+		resp := publishedNBD("nbd://mounted-" + req.VolumeID)
+		resp.Versioned = ebsprovider.ReplyVersioned(req.SchemaVersion)
+		data, _ := json.Marshal(resp)
+		msg.Respond(data)
+	})
+	require.NoError(t, err)
+	defer mountSub.Unsubscribe()
 
-			instance := &vm.VM{
-				ID:        "i-mount-rollback",
-				AccountID: testAccountID,
-				EBSRequests: vm.EBSRequests{
-					Requests: []viperblocklegacyv1.EBSRequest{
-						{Name: "vol-1"},
-						{Name: "vol-2"},
-						{Name: "vol-3"},
-					},
-				},
-			}
+	unmounted := make(chan string, 3)
+	unpublishSubject, err := ebsprovider.UnpublishSubject(daemon.node)
+	require.NoError(t, err)
+	unmountSub, err := daemon.natsConn.Subscribe(unpublishSubject, func(msg *nats.Msg) {
+		var req ebsprovider.UnpublishVolumeRequest
+		require.NoError(t, json.Unmarshal(msg.Data, &req))
+		unmounted <- req.VolumeID
+		data, _ := json.Marshal(ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.ReplyVersioned(req.SchemaVersion)})
+		msg.Respond(data)
+	})
+	require.NoError(t, err)
+	defer unmountSub.Unsubscribe()
 
-			err = adapter.Mount(t.Context(), instance)
-			require.Error(t, err, "Mount should propagate the vol-2 failure")
-			assert.Contains(t, err.Error(), tt.wantErrSub)
+	err = adapter.Mount(t.Context(), mounterTestVM("vol-1", "vol-2", "vol-3"))
+	require.ErrorIs(t, err, vm.ErrMountAmbiguous)
+	require.ErrorIs(t, err, ebsprovider.ErrUnreadableReply)
+	assert.Contains(t, err.Error(), "invalid character")
 
-			// Mount returns only after rollback completes (the unpublish round
-			// trip is synchronous), and the subscriber sends on the buffered
-			// channel before responding, so every rollback is observable here.
-			require.Len(t, unmounted, 1,
-				"exactly one volume (vol-1, the previously mounted one) should be rolled back")
-			assert.Equal(t, "vol-1", <-unmounted)
-		})
-	}
+	// Mount returns only after rollback completes, and the subscriber sends on
+	// the buffered channel before responding, so every rollback is seen here.
+	require.Len(t, unmounted, 2, "vol-1 and the ambiguous vol-2 are rolled back")
+	assert.ElementsMatch(t, []string{"vol-1", "vol-2"}, []string{<-unmounted, <-unmounted})
 }
 
 // TestVolumeMounterAdapter_Mount_RollbackFailurePropagates verifies that
@@ -3546,7 +3523,7 @@ func TestVolumeMounterAdapter_Mount_PartialFailureRollback(t *testing.T) {
 // attached without surfacing the leak to the caller.
 func TestVolumeMounterAdapter_Mount_RollbackFailurePropagates(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
-	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
+	adapter := newNATSMounter(daemon.natsConn, daemon.node, nil)
 	fake := serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
 	fake.setPublish(func(volumeID string) ebsprovider.PublishVolumeResponse {
 		if volumeID == "vol-2" {

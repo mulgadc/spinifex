@@ -21,7 +21,7 @@ import (
 func TestUnmountNeverReleasesBootVolume(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
 	volState := &recordingVolState{}
-	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, volState)
+	adapter := newNATSMounter(daemon.natsConn, daemon.node, volState)
 
 	// Stand in for the provider: every unpublish succeeds (sealed).
 	serveFakeNodeProvider(t, daemon.natsConn, daemon.node)

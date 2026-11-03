@@ -119,7 +119,7 @@ When a daemon handles `RunInstances`:
 
 ```go
 // Volume mounting through the EBS provider contract (runtime/daemon/vm_adapters.go)
-published, err := a.provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: mounterVersioned(), VolumeID: req.Name, NodeID: a.node})
+published, err := a.provider.PublishVolume(ebsprovider.WithAccountID(ctx, accountID), ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: req.Name, NodeID: a.node})
 
 // QEMU launch with NBD-backed drives in args (runtime/compute/vm/vm.go)
 cmd := exec.Command(qemuArchitecture, args...) // qemu-system-x86_64 or qemu-system-aarch64

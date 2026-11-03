@@ -94,12 +94,14 @@ func (a *stateStoreAdapter) DeleteTerminatedInstance(id string) error {
 }
 
 // volumeMounterAdapter satisfies vm.VolumeMounter over the EBS contract's
-// PublishVolume and UnpublishVolume, sent at mounterSchemaVersion to this
-// node's provider. Unmount also marks volumes available.
+// PublishVolume and UnpublishVolume, sent at the cluster's one contract
+// version to this node's provider. Unmount also marks volumes available.
 type volumeMounterAdapter struct {
 	node     string
 	volState vm.VolumeStateUpdater
 	provider mounterProvider
+	// abandonTimeout bounds each no-seal unpublish Abandon sends.
+	abandonTimeout time.Duration
 }
 
 // mounterProvider is the part of the EBS contract the mounter drives.
@@ -112,41 +114,21 @@ var _ mounterProvider = (*ebsprovider.NATSProvider)(nil)
 
 var _ vm.VolumeMounter = (*volumeMounterAdapter)(nil)
 
-// mounterSchemaVersion is the one contract version a cluster runs, which every
-// provider in it serves and which carries NoSeal for Abandon.
-const mounterSchemaVersion = ebsprovider.SchemaVersion
-
-func mounterVersioned() ebsprovider.Versioned {
-	return ebsprovider.Versioned{SchemaVersion: mounterSchemaVersion}
-}
-
-func newVolumeMounterAdapter(nc *nats.Conn, node string, volState vm.VolumeStateUpdater) *volumeMounterAdapter {
+func newVolumeMounterAdapter(provider mounterProvider, node string, volState vm.VolumeStateUpdater) *volumeMounterAdapter {
 	return &volumeMounterAdapter{
-		node:     node,
-		volState: volState,
-		provider: ebsprovider.NewNATSProvider(nc, ebsProviderRequestTimeout),
+		node:           node,
+		volState:       volState,
+		provider:       provider,
+		abandonTimeout: abandonTimeout,
 	}
-}
-
-// contractSpan opens a span over one contract call so the owning account is
-// recorded on the trace, which the contract request does not carry.
-func contractSpan(ctx context.Context, accountID, name, volumeID string) (context.Context, trace.Span) {
-	attrs := []attribute.KeyValue{attribute.String("volume.id", volumeID)}
-	if accountID != "" {
-		attrs = append(attrs, attribute.String(natsmsg.AttrAccountID, accountID))
-	}
-	return otel.Tracer(daemonTracerName).Start(ctx, name, trace.WithAttributes(attrs...))
 }
 
 // publish mounts req's volume on this node through PublishVolume and records
-// the export on req. Retry-later, not_found and no responder back off as
-// vm.ErrMountRetryable; a reply with no usable export is vm.ErrMountAmbiguous.
-func (a *volumeMounterAdapter) publish(ctx context.Context, accountID string, req *viperblocklegacyv1.EBSRequest) (err error) {
-	ctx, span := contractSpan(ctx, accountID, "ebs.mounter.publish", req.Name)
-	defer func() { endOpSpan(span, err) }()
-
-	published, err := a.provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{
-		Versioned: mounterVersioned(),
+// the export on req. A failure worth retrying is vm.ErrMountRetryable; one
+// that leaves unknown whether the provider exported it is vm.ErrMountAmbiguous.
+func (a *volumeMounterAdapter) publish(ctx context.Context, accountID string, req *viperblocklegacyv1.EBSRequest) error {
+	published, err := a.provider.PublishVolume(ebsprovider.WithAccountID(ctx, accountID), ebsprovider.PublishVolumeRequest{
+		Versioned: ebsprovider.NewLatestVersioned(),
 		VolumeID:  req.Name,
 		NodeID:    a.node,
 	})
@@ -154,23 +136,21 @@ func (a *volumeMounterAdapter) publish(ctx context.Context, accountID string, re
 		switch {
 		case publishRetryable(err):
 			return fmt.Errorf("publish volume %s: %w: %w", req.Name, err, vm.ErrMountRetryable)
-		case errors.Is(err, ebsprovider.ErrNoPublishedVolume), errors.Is(err, ebsprovider.ErrInvalidExport):
+		case publishOutcomeUnknown(err):
 			return fmt.Errorf("publish volume %s: %w: %w", req.Name, err, vm.ErrMountAmbiguous)
 		}
 		return fmt.Errorf("publish volume %s: %w", req.Name, err)
 	}
-	if err := applyExport(req, published.Export); err != nil {
-		return fmt.Errorf("publish volume %s: %w: %w", req.Name, err, vm.ErrMountAmbiguous)
-	}
+	applyExport(req, published.Export)
 	slog.InfoContext(ctx, "Published volume", "volume", req.Name, "node", a.node, "export_kind", string(published.Export.Kind))
 	return nil
 }
 
 // publishRetryable reports whether a failed publish is worth repeating later.
-// not_found is included because a volume whose state is not loadable yet is
-// reported that way, and restore must back off on it.
+// A connection that is down never sent the request, and not_found is how a
+// volume whose state is not loadable yet is reported; restore backs off on both.
 func publishRetryable(err error) bool {
-	if errors.Is(err, nats.ErrNoResponders) {
+	if errors.Is(err, nats.ErrNoResponders) || errors.Is(err, nats.ErrConnectionClosed) {
 		return true
 	}
 	var providerErr *ebsprovider.ProviderError
@@ -180,11 +160,23 @@ func publishRetryable(err error) bool {
 	return providerErr.Code.Retryable() || providerErr.Code == ebsprovider.ErrorCodeNotFound
 }
 
-// applyExport records export on req as the one export field QEMU attaches.
-func applyExport(req *viperblocklegacyv1.EBSRequest, export ebsprovider.VolumeExport) error {
-	if err := export.Validate(); err != nil {
-		return fmt.Errorf("invalid export: %w", err)
+// publishOutcomeUnknown reports whether the provider may have exported the
+// volume despite the error: the request was sent but no usable reply came back.
+func publishOutcomeUnknown(err error) bool {
+	for _, unknown := range []error{
+		context.DeadlineExceeded, nats.ErrTimeout, ebsprovider.ErrUnreadableReply,
+		ebsprovider.ErrNoPublishedVolume, ebsprovider.ErrInvalidExport,
+	} {
+		if errors.Is(err, unknown) {
+			return true
+		}
 	}
+	return false
+}
+
+// applyExport records export on req as the one export field QEMU attaches.
+// The provider client has already validated it.
+func applyExport(req *viperblocklegacyv1.EBSRequest, export ebsprovider.VolumeExport) {
 	switch export.Kind {
 	case ebsprovider.ExportKindBlock:
 		req.NBDURI = ""
@@ -195,20 +187,17 @@ func applyExport(req *viperblocklegacyv1.EBSRequest, export ebsprovider.VolumeEx
 		req.BlockDevice = ""
 		req.BlockSizeBytes = 0
 	}
-	return nil
 }
 
 // unpublish tears down this node's export of req's volume through
 // UnpublishVolume, which seals first, and returns nil only once its block map
 // is sealed or the provider holds no export of it.
-func (a *volumeMounterAdapter) unpublish(ctx context.Context, accountID string, req viperblocklegacyv1.EBSRequest) (err error) {
-	ctx, span := contractSpan(ctx, accountID, "ebs.mounter.unpublish", req.Name)
-	defer func() { endOpSpan(span, err) }()
-
+func (a *volumeMounterAdapter) unpublish(ctx context.Context, accountID string, req viperblocklegacyv1.EBSRequest) error {
 	// The seal takes the provider's data-movement budget, not what is left of
 	// the caller's; the caller's trace is kept.
-	_, err = a.provider.UnpublishVolume(context.WithoutCancel(ctx), ebsprovider.UnpublishVolumeRequest{
-		Versioned: mounterVersioned(),
+	sealCtx := ebsprovider.WithAccountID(context.WithoutCancel(ctx), accountID)
+	_, err := a.provider.UnpublishVolume(sealCtx, ebsprovider.UnpublishVolumeRequest{
+		Versioned: ebsprovider.NewLatestVersioned(),
 		VolumeID:  req.Name,
 		NodeID:    a.node,
 	})
@@ -232,13 +221,10 @@ func (a *volumeMounterAdapter) unpublish(ctx context.Context, accountID string, 
 // sweep or a recovery belongs to nobody, and crediting it to whoever happens
 // to be admin would be worse than leaving it blank.
 func ebsRequestWithTrace(ctx context.Context, nc *nats.Conn, accountID, subject string, data []byte, timeout time.Duration) (msg *nats.Msg, err error) {
-	attrs := []attribute.KeyValue{
+	attrs := append([]attribute.KeyValue{
 		attribute.String("messaging.system", "nats"),
 		attribute.String("messaging.destination.name", subject),
-	}
-	if accountID != "" {
-		attrs = append(attrs, attribute.String(natsmsg.AttrAccountID, accountID))
-	}
+	}, natsmsg.AccountAttrs(accountID)...)
 
 	ctx, span := otel.Tracer(daemonTracerName).Start(ctx, "NATS "+subject,
 		trace.WithSpanKind(trace.SpanKindClient),
@@ -341,7 +327,13 @@ const abandonTimeout = 45 * time.Second
 // Every volume is attempted and the failures are aggregated, because a volume
 // left exported is one the new owner cannot open — the caller is dropping a
 // superseded instance and needs to know whether it actually let go.
-func (a *volumeMounterAdapter) Abandon(ctx context.Context, instance *vm.VM, reason string) error {
+func (a *volumeMounterAdapter) Abandon(ctx context.Context, instance *vm.VM, reason string) (err error) {
+	ctx, span := otel.Tracer(daemonTracerName).Start(ctx, "ebs.mounter.abandon", trace.WithAttributes(append([]attribute.KeyValue{
+		attribute.String("instance.id", instance.ID),
+		attribute.String("abandon.reason", reason),
+	}, natsmsg.AccountAttrs(instance.AccountID)...)...))
+	defer func() { endOpSpan(span, err) }()
+
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()
 
@@ -356,14 +348,11 @@ func (a *volumeMounterAdapter) Abandon(ctx context.Context, instance *vm.VM, rea
 
 // abandonOne drops this node's export of volumeID unsealed. A volume the
 // provider does not know is one this node no longer holds.
-func (a *volumeMounterAdapter) abandonOne(ctx context.Context, instance *vm.VM, volumeID, reason string) (err error) {
-	ctx, span := contractSpan(ctx, instance.AccountID, "ebs.mounter.abandon", volumeID)
-	defer func() { endOpSpan(span, err) }()
-
-	ctx, cancel := context.WithTimeout(ctx, abandonTimeout)
+func (a *volumeMounterAdapter) abandonOne(ctx context.Context, instance *vm.VM, volumeID, reason string) error {
+	abandonCtx, cancel := context.WithTimeout(ebsprovider.WithAccountID(ctx, instance.AccountID), a.abandonTimeout)
 	defer cancel()
-	unpublished, err := a.provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{
-		Versioned: mounterVersioned(),
+	unpublished, err := a.provider.UnpublishVolume(abandonCtx, ebsprovider.UnpublishVolumeRequest{
+		Versioned: ebsprovider.NewLatestVersioned(),
 		VolumeID:  volumeID,
 		NodeID:    a.node,
 		NoSeal:    true,
@@ -372,7 +361,7 @@ func (a *volumeMounterAdapter) abandonOne(ctx context.Context, instance *vm.VM, 
 	case errors.Is(err, ebsprovider.ErrNotFound):
 		return nil
 	case err != nil:
-		return fmt.Errorf("abandon %s: %w", volumeID, err)
+		return fmt.Errorf("abandon %s (%s): %w", volumeID, reason, err)
 	}
 	if unpublished.TornDown {
 		slog.WarnContext(ctx, "Gave up a volume export to the node that owns the instance now",
@@ -391,17 +380,12 @@ func (a *volumeMounterAdapter) MountOne(ctx context.Context, accountID string, r
 // seals the volume's block map to the backend, so the caller decides whether
 // a failure blocks the volume's available transition.
 func (a *volumeMounterAdapter) UnmountOne(ctx context.Context, accountID string, req viperblocklegacyv1.EBSRequest) error {
-	if err := a.unmountOne(ctx, accountID, req); err != nil {
+	if err := a.unpublish(ctx, accountID, req); err != nil {
 		slog.Error("UnmountOne failed", "volume", req.Name, "err", err)
 		return err
 	}
 	slog.Info("UnmountOne: volume unmounted successfully", "volume", req.Name)
 	return nil
-}
-
-// unmountOne unmounts a single request, sealing it, and returns any error.
-func (a *volumeMounterAdapter) unmountOne(ctx context.Context, accountID string, req viperblocklegacyv1.EBSRequest) error {
-	return a.unpublish(ctx, accountID, req)
 }
 
 // instanceTypeResolverAdapter satisfies vm.InstanceTypeResolver by projecting
@@ -687,7 +671,7 @@ func (d *Daemon) buildVMManagerDeps() vm.Deps {
 	return vm.Deps{
 		NodeID:             d.node,
 		StateStore:         d.stateStore,
-		VolumeMounter:      newVolumeMounterAdapter(d.natsConn, d.node, d.volumeService),
+		VolumeMounter:      newVolumeMounterAdapter(d.ebsProvider, d.node, d.volumeService),
 		NetworkPlumber:     d.networkPlumber,
 		InstanceTypes:      newInstanceTypeResolverAdapter(d.resourceMgr),
 		Resources:          newResourceControllerAdapter(d.resourceMgr),

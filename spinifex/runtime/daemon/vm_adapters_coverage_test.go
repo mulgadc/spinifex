@@ -182,15 +182,18 @@ func TestBuildVMManagerDeps_BackingStoreReady(t *testing.T) {
 
 // --- volumeMounterAdapter ---
 
-func TestVolumeMounterAdapter_Mount_ClosedConnIsNotRetryable(t *testing.T) {
-	adapter := newVolumeMounterAdapter(closedAdapterTestConn(t), "node-closed", nil)
+// A connection that is down refuses the publish before sending it, so restore
+// backs off and retries, and there is no export to tear down.
+func TestVolumeMounterAdapter_Mount_DisconnectedIsRetryable(t *testing.T) {
+	adapter := newNATSMounter(closedAdapterTestConn(t), "node-closed", nil)
 	instance := &vm.VM{ID: "i-mount-closed"}
 	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-closed"}}
 
 	err := adapter.Mount(t.Context(), instance)
 	require.ErrorIs(t, err, nats.ErrConnectionClosed)
-	assert.NotErrorIs(t, err, vm.ErrMountRetryable,
-		"only a missing responder means viperblockd is still starting")
+	require.ErrorIs(t, err, vm.ErrMountRetryable, "restore must back off until the connection is back")
+	assert.NotErrorIs(t, err, vm.ErrMountAmbiguous, "a request never sent left nothing to tear down")
+	require.ErrorIs(t, adapter.MountOne(t.Context(), testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-hot"}), vm.ErrMountRetryable)
 }
 
 // recordingVolumeState records UpdateVolumeState calls and returns err.
@@ -209,7 +212,7 @@ func TestVolumeMounterAdapter_Unmount_Errors(t *testing.T) {
 
 	t.Run("no responder fails the seal and leaves the volume", func(t *testing.T) {
 		volState := &recordingVolumeState{}
-		adapter := newVolumeMounterAdapter(nc, uniqueAdapterID("node-unmount"), volState)
+		adapter := newNATSMounter(nc, uniqueAdapterID("node-unmount"), volState)
 		instance := &vm.VM{ID: "i-unmount-none"}
 		instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-a"}, {Name: "vol-b"}}
 
@@ -224,7 +227,7 @@ func TestVolumeMounterAdapter_Unmount_Errors(t *testing.T) {
 		node := uniqueAdapterID("node-unmount")
 		serveFakeNodeProvider(t, nc, node)
 		volState := &recordingVolumeState{err: errInjected}
-		adapter := newVolumeMounterAdapter(nc, node, volState)
+		adapter := newNATSMounter(nc, node, volState)
 		instance := &vm.VM{ID: "i-unmount-state"}
 		instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-a"}}
 

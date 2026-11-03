@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
@@ -14,68 +15,89 @@ import (
 // (unlike RDS's colon-separated ones), so the type and id share one segment.
 const provisionedModelResourceType = "provisioned-model"
 
-// FormatProvisionedModelARN builds the ARN a CreateProvisionedModelThroughput
-// call returns and every other PT op accepts back in place of a raw id.
-func FormatProvisionedModelARN(region, accountID, id string) string {
-	return fmt.Sprintf("arn:aws:bedrock:%s:%s:%s/%s", region, accountID, provisionedModelResourceType, id)
-}
+// knowledgeBaseResourceType is the ARN resource-type segment a knowledge base
+// renders under. DataSource carries no ARN field in AWS's own shape (only
+// KnowledgeBase does), so there is no data-source counterpart.
+const knowledgeBaseResourceType = "knowledge-base"
 
-// ParsedProvisionedModelARN is a PT ARN split into the parts a caller acts on.
+// guardrailResourceType is the ARN resource-type segment for a guardrail.
+const guardrailResourceType = "guardrail"
+
+// ParsedBedrockARN is a Bedrock ARN split into the parts a caller acts on.
 // Partition and service are validated rather than returned: only
 // "arn:aws:bedrock" is ever accepted.
-type ParsedProvisionedModelARN struct {
+type ParsedBedrockARN struct {
 	Region    string
 	AccountID string
 	ID        string
 }
 
-// provisionedModelARNSegmentCount is the number of colon-separated segments in
-// arn:aws:bedrock:{region}:{accountID}:provisioned-model/{id}.
-const provisionedModelARNSegmentCount = 6
+// ParsedProvisionedModelARN is a parsed provisioned-model ARN.
+type ParsedProvisionedModelARN = ParsedBedrockARN
 
-// ParseProvisionedModelARN parses a PT ARN and validates it belongs to the
-// caller: wrong partition/service/resource-type, a foreign region or account,
-// or a malformed id are all rejected here, so a foreign-account ARN never
-// reaches a store lookup at all, mirroring rdsinstance.ParseARN.
-func ParseProvisionedModelARN(arn, region, accountID string) (ParsedProvisionedModelARN, error) {
-	parts := strings.SplitN(arn, ":", provisionedModelARNSegmentCount)
-	if len(parts) != provisionedModelARNSegmentCount {
-		return ParsedProvisionedModelARN{}, ptARNError(arn, "expected the form arn:aws:bedrock:{region}:{account}:provisioned-model/{id}")
-	}
-	if parts[0] != "arn" || parts[1] != "aws" || parts[2] != "bedrock" {
-		return ParsedProvisionedModelARN{}, ptARNError(arn, "only arn:aws:bedrock resources are addressable here")
-	}
-	if parts[3] != region {
-		return ParsedProvisionedModelARN{}, ptARNError(arn, fmt.Sprintf("region %q does not match this endpoint's region %q", parts[3], region))
-	}
-	if parts[4] != accountID {
-		return ParsedProvisionedModelARN{}, ptARNError(arn, "the resource belongs to another account")
-	}
+// ParsedGuardrailARN is a parsed guardrail ARN.
+type ParsedGuardrailARN = ParsedBedrockARN
 
-	resourceType, id, ok := strings.Cut(parts[5], "/")
-	if !ok || resourceType != provisionedModelResourceType || id == "" || strings.ContainsAny(id, ":/") {
-		return ParsedProvisionedModelARN{}, ptARNError(arn, "the resource name is empty or malformed")
-	}
-
-	return ParsedProvisionedModelARN{Region: parts[3], AccountID: parts[4], ID: id}, nil
+func formatBedrockARN(region, accountID, resourceType, id string) string {
+	return fmt.Sprintf("arn:aws:bedrock:%s:%s:%s/%s", region, accountID, resourceType, id)
 }
 
-// ResolveProvisionedModelID accepts either a bare id or a full ARN (the shape
-// every PT op's ProvisionedModelId field allows) and returns the bare id,
-// validating region/account ownership when an ARN is given.
-func ResolveProvisionedModelID(idOrARN, region, accountID string) (string, error) {
+// parseBedrockARN parses arn:aws:bedrock:{region}:{account}:{resourceType}/{id}
+// and rejects a foreign region or account, a different resource type or a
+// malformed id, so a foreign-account ARN never reaches a store lookup.
+func parseBedrockARN(s, region, accountID, resourceType string) (ParsedBedrockARN, error) {
+	invalid := func(why string) (ParsedBedrockARN, error) {
+		return ParsedBedrockARN{}, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%q is not a valid %s ARN: %s", s, resourceType, why)
+	}
+	service, arnRegion, arnAccount, resource, ok := arn.Split(s)
+	if !ok {
+		return invalid(fmt.Sprintf("expected the form arn:aws:bedrock:{region}:{account}:%s/{id}", resourceType))
+	}
+	if service != "bedrock" {
+		return invalid("only arn:aws:bedrock resources are addressable here")
+	}
+	if arnRegion != region {
+		return invalid(fmt.Sprintf("region %q does not match this endpoint's region %q", arnRegion, region))
+	}
+	if arnAccount != accountID {
+		return invalid("the resource belongs to another account")
+	}
+	gotType, id, ok := strings.Cut(resource, "/")
+	if !ok || gotType != resourceType || id == "" || strings.ContainsAny(id, ":/") {
+		return invalid("the resource name is empty or malformed")
+	}
+	return ParsedBedrockARN{Region: arnRegion, AccountID: arnAccount, ID: id}, nil
+}
+
+// resolveBedrockID returns a bare id unchanged, or parses an ARN of
+// resourceType and returns its id after the ownership checks.
+func resolveBedrockID(idOrARN, region, accountID, resourceType string) (string, error) {
 	if !strings.HasPrefix(idOrARN, "arn:") {
 		return idOrARN, nil
 	}
-	parsed, err := ParseProvisionedModelARN(idOrARN, region, accountID)
+	parsed, err := parseBedrockARN(idOrARN, region, accountID, resourceType)
 	if err != nil {
 		return "", err
 	}
 	return parsed.ID, nil
 }
 
-func ptARNError(arn, why string) error {
-	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%q is not a valid provisioned-model ARN: %s", arn, why)
+// FormatProvisionedModelARN builds the ARN a CreateProvisionedModelThroughput
+// call returns and every other PT op accepts back in place of a raw id.
+func FormatProvisionedModelARN(region, accountID, id string) string {
+	return formatBedrockARN(region, accountID, provisionedModelResourceType, id)
+}
+
+// ParseProvisionedModelARN parses a PT ARN and validates it belongs to the
+// caller, mirroring rdsinstance.ParseARN.
+func ParseProvisionedModelARN(s, region, accountID string) (ParsedProvisionedModelARN, error) {
+	return parseBedrockARN(s, region, accountID, provisionedModelResourceType)
+}
+
+// ResolveProvisionedModelID accepts either a bare id or a full ARN (the shape
+// every PT op's ProvisionedModelId field allows) and returns the bare id.
+func ResolveProvisionedModelID(idOrARN, region, accountID string) (string, error) {
+	return resolveBedrockID(idOrARN, region, accountID, provisionedModelResourceType)
 }
 
 // LooksLikeProvisionedModelARN is the cheap shape guard the inference path
@@ -87,79 +109,27 @@ func LooksLikeProvisionedModelARN(modelID string) bool {
 	return strings.HasPrefix(modelID, "arn:") && strings.Contains(modelID, ":"+provisionedModelResourceType+"/")
 }
 
-// knowledgeBaseResourceType is the ARN resource-type segment a knowledge base
-// renders under. DataSource carries no ARN field in AWS's own shape (only
-// KnowledgeBase does), so there is no data-source counterpart.
-const knowledgeBaseResourceType = "knowledge-base"
-
-// FormatKnowledgeBaseARN builds the ARN a CreateKnowledgeBase call returns,
-// mirroring FormatGuardrailARN's shape.
+// FormatKnowledgeBaseARN builds the ARN a CreateKnowledgeBase call returns.
 func FormatKnowledgeBaseARN(region, accountID, id string) string {
-	return fmt.Sprintf("arn:aws:bedrock:%s:%s:%s/%s", region, accountID, knowledgeBaseResourceType, id)
+	return formatBedrockARN(region, accountID, knowledgeBaseResourceType, id)
 }
-
-// guardrailResourceType is the ARN resource-type segment for a guardrail.
-const guardrailResourceType = "guardrail"
 
 // FormatGuardrailARN builds the ARN a CreateGuardrail call returns and every
 // other guardrail op accepts back in place of a raw id.
 func FormatGuardrailARN(region, accountID, id string) string {
-	return fmt.Sprintf("arn:aws:bedrock:%s:%s:%s/%s", region, accountID, guardrailResourceType, id)
+	return formatBedrockARN(region, accountID, guardrailResourceType, id)
 }
-
-// ParsedGuardrailARN is a guardrail ARN split into the parts a caller acts on.
-type ParsedGuardrailARN struct {
-	Region    string
-	AccountID string
-	ID        string
-}
-
-// guardrailARNSegmentCount is the number of colon-separated segments in
-// arn:aws:bedrock:{region}:{accountID}:guardrail/{id}.
-const guardrailARNSegmentCount = 6
 
 // ParseGuardrailARN parses a guardrail ARN and validates it belongs to the
-// caller: wrong partition/service/resource-type, a foreign region or account,
-// or a malformed id are all rejected here, mirroring ParseProvisionedModelARN.
-func ParseGuardrailARN(arn, region, accountID string) (ParsedGuardrailARN, error) {
-	parts := strings.SplitN(arn, ":", guardrailARNSegmentCount)
-	if len(parts) != guardrailARNSegmentCount {
-		return ParsedGuardrailARN{}, guardrailARNError(arn, "expected the form arn:aws:bedrock:{region}:{account}:guardrail/{id}")
-	}
-	if parts[0] != "arn" || parts[1] != "aws" || parts[2] != "bedrock" {
-		return ParsedGuardrailARN{}, guardrailARNError(arn, "only arn:aws:bedrock resources are addressable here")
-	}
-	if parts[3] != region {
-		return ParsedGuardrailARN{}, guardrailARNError(arn, fmt.Sprintf("region %q does not match this endpoint's region %q", parts[3], region))
-	}
-	if parts[4] != accountID {
-		return ParsedGuardrailARN{}, guardrailARNError(arn, "the resource belongs to another account")
-	}
-
-	resourceType, id, ok := strings.Cut(parts[5], "/")
-	if !ok || resourceType != guardrailResourceType || id == "" || strings.ContainsAny(id, ":/") {
-		return ParsedGuardrailARN{}, guardrailARNError(arn, "the resource name is empty or malformed")
-	}
-
-	return ParsedGuardrailARN{Region: parts[3], AccountID: parts[4], ID: id}, nil
+// caller.
+func ParseGuardrailARN(s, region, accountID string) (ParsedGuardrailARN, error) {
+	return parseBedrockARN(s, region, accountID, guardrailResourceType)
 }
 
 // ResolveGuardrailID accepts either a bare id or a full ARN (the shape every
-// guardrail op's GuardrailIdentifier field allows) and returns the bare id,
-// validating region/account ownership when an ARN is given.
+// guardrail op's GuardrailIdentifier field allows) and returns the bare id.
 func ResolveGuardrailID(idOrARN, region, accountID string) (string, error) {
-	if !strings.HasPrefix(idOrARN, "arn:") {
-		return idOrARN, nil
-	}
-	parsed, err := ParseGuardrailARN(idOrARN, region, accountID)
-	if err != nil {
-		return "", err
-	}
-	return parsed.ID, nil
-}
-
-func guardrailARNError(arn, why string) error {
-	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "%q is not a valid guardrail ARN: %s", arn, why)
+	return resolveBedrockID(idOrARN, region, accountID, guardrailResourceType)
 }
 
 // resolveInferenceTarget translates modelID into the (accountID, modelID)

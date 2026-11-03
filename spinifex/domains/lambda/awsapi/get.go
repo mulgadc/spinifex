@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -17,6 +18,9 @@ import (
 
 // codeURLTTL is how long the presigned code location stays valid.
 const codeURLTTL = 10 * time.Minute
+
+// maxListItems is the largest MaxItems a list action accepts.
+const maxListItems = 10000
 
 func notFound(region, accountID, name string) error {
 	return awserrors.Errorf(awserrors.ErrorResourceNotFoundException, "Function not found: %s",
@@ -48,8 +52,8 @@ func (d Deps) lookup(ctx context.Context, c *call, query string) (function.Recor
 
 // loadConfiguration resolves the requested $LATEST function and renders its
 // configuration; it is a metadata read and never touches the code store.
-func (d Deps) loadConfiguration(ctx context.Context, c *call) (function.Record, *lambda.FunctionConfiguration, error) {
-	rec, revision, err := d.lookup(ctx, c, c.Query.Get("Qualifier"))
+func (d Deps) loadConfiguration(ctx context.Context, c *call, query string) (function.Record, *lambda.FunctionConfiguration, error) {
+	rec, revision, err := d.lookup(ctx, c, query)
 	if err != nil {
 		return function.Record{}, nil, err
 	}
@@ -73,7 +77,7 @@ func (d Deps) loadConfiguration(ctx context.Context, c *call) (function.Record, 
 
 // getFunctionConfiguration implements GetFunctionConfiguration for $LATEST.
 func (d Deps) getFunctionConfiguration(ctx context.Context, c *call) (reply, error) {
-	_, cfg, err := d.loadConfiguration(ctx, c)
+	_, cfg, err := d.loadConfiguration(ctx, c, c.Query.Get("Qualifier"))
 	if err != nil {
 		return reply{}, err
 	}
@@ -93,9 +97,29 @@ func (d Deps) getFunctionCodeSigningConfig(ctx context.Context, c *call) (reply,
 	return reply{Status: http.StatusOK, Body: noCodeSigning}, nil
 }
 
+// listVersionsByFunction implements ListVersionsByFunction while $LATEST is
+// the only version. Paging is refused rather than guessed at.
+func (d Deps) listVersionsByFunction(ctx context.Context, c *call) (reply, error) {
+	if raw, ok := c.Query["MaxItems"]; ok {
+		n, err := strconv.Atoi(raw[0])
+		if err != nil || n < 1 || n > maxListItems {
+			return reply{}, invalid("MaxItems must be between 1 and %d", maxListItems)
+		}
+	}
+	if c.Query.Has("Marker") {
+		return reply{}, unsupported("Marker")
+	}
+	rec, cfg, err := d.loadConfiguration(ctx, c, "")
+	if err != nil {
+		return reply{}, err
+	}
+	cfg.FunctionArn = aws.String(arn.FormatLambdaFunction(rec.Region, rec.AccountID, rec.FunctionName) + ":$LATEST")
+	return reply{Status: http.StatusOK, Body: &lambda.ListVersionsByFunctionOutput{Versions: []*lambda.FunctionConfiguration{cfg}}}, nil
+}
+
 // getFunction implements GetFunction for the $LATEST version.
 func (d Deps) getFunction(ctx context.Context, c *call) (reply, error) {
-	rec, cfg, err := d.loadConfiguration(ctx, c)
+	rec, cfg, err := d.loadConfiguration(ctx, c, c.Query.Get("Qualifier"))
 	if err != nil {
 		return reply{}, err
 	}

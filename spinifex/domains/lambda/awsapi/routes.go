@@ -49,6 +49,10 @@ var routes = []route{
 		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
 			return d.getFunctionConfiguration(ctx, c)
 		}},
+	{Method: "GET", Pattern: "/2015-03-31/functions/{FunctionName}/versions", Action: "ListVersionsByFunction",
+		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
+			return d.listVersionsByFunction(ctx, c)
+		}},
 	{Method: "GET", Pattern: "/2020-06-30/functions/{FunctionName}/code-signing-config", Action: "GetFunctionCodeSigningConfig",
 		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
 			return d.getFunctionCodeSigningConfig(ctx, c)

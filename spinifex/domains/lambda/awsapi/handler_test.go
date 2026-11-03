@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"runtime"
 	"strings"
 	"sync"
@@ -662,7 +663,8 @@ func TestAuthorization(t *testing.T) {
 
 func TestRegistration_ResolvesActionsAndInventory(t *testing.T) {
 	reg := awsapi.NewRegistration(awsapi.Deps{})
-	assert.Equal(t, []string{"CreateFunction", "GetFunction", "GetFunctionCodeSigningConfig", "GetFunctionConfiguration"}, reg.Inventory.Registered)
+	assert.Equal(t, []string{"CreateFunction", "GetFunction", "GetFunctionCodeSigningConfig", "GetFunctionConfiguration", "ListVersionsByFunction"}, reg.Inventory.Registered)
+	assert.Equal(t, "ListVersionsByFunction", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2015-03-31/functions/x/versions", nil)))
 	assert.Equal(t, "GetFunctionCodeSigningConfig", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2020-06-30/functions/x/code-signing-config", nil)))
 	assert.Equal(t, "CreateFunction", reg.ResolveAction(httptest.NewRequest(http.MethodPost, "/2015-03-31/functions", nil)))
 	assert.Equal(t, "GetFunction", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2015-03-31/functions/x", nil)))
@@ -868,5 +870,109 @@ func TestGetFunctionCodeSigningConfig_Authorization(t *testing.T) {
 	})
 	t.Run("an allow on the function ARN passes", func(t *testing.T) {
 		require.NoError(t, get(setup(t, gwtest.Statement("Allow", "lambda:GetFunctionCodeSigningConfig", arn))))
+	})
+}
+
+func TestListVersionsByFunction_ListsOnlyLatest(t *testing.T) {
+	e := newEnv(t)
+	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) {
+		b["Environment"] = map[string]any{"Variables": map[string]string{"MODE": "prod"}}
+	}))
+	require.NoError(t, err)
+	rec, err := e.do(http.MethodGet, "/2015-03-31/functions/hello/configuration", nil)
+	require.NoError(t, err)
+	var cfg lambda.FunctionConfiguration
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &cfg))
+
+	arn := "arn:aws:lambda:" + gwtest.Region + ":" + gwtest.AccountID + ":function:hello"
+	for _, path := range []string{
+		"/2015-03-31/functions/hello/versions",
+		"/2015-03-31/functions/hello/versions?MaxItems=10000",
+		"/2015-03-31/functions/hello/versions?MaxItems=1",
+		"/2015-03-31/functions/" + url.PathEscape(arn) + "/versions",
+	} {
+		rec, err := e.do(http.MethodGet, path, nil)
+		require.NoError(t, err, path)
+		require.Equal(t, http.StatusOK, rec.Code, path)
+		assert.NotContains(t, rec.Body.String(), "NextMarker", path)
+		var out lambda.ListVersionsByFunctionOutput
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out), path)
+		require.Len(t, out.Versions, 1, path)
+		v := out.Versions[0]
+		assert.Equal(t, arn+":$LATEST", *v.FunctionArn, path)
+		assert.Equal(t, "$LATEST", *v.Version, path)
+		assert.Equal(t, "prod", *v.Environment.Variables["MODE"], path)
+		v.FunctionArn = cfg.FunctionArn
+		assert.Equal(t, cfg, *v, "apart from the qualified ARN it is the configuration read")
+	}
+}
+
+func TestListVersionsByFunction_RefusesBadMaxItemsAndAnyMarker(t *testing.T) {
+	e := newEnv(t)
+	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
+	require.NoError(t, err)
+
+	for _, q := range []string{"MaxItems=0", "MaxItems=10001", "MaxItems=-1", "MaxItems=ten", "MaxItems=", "Marker=not-a-marker", "Marker="} {
+		_, err := e.do(http.MethodGet, "/2015-03-31/functions/hello/versions?"+q, nil)
+		requireCode(t, err, awserrors.ErrorInvalidParameterValueException)
+	}
+}
+
+func TestListVersionsByFunction_MissingFunctionIsNotFound(t *testing.T) {
+	e := newEnv(t)
+	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
+	require.NoError(t, err)
+
+	_, err = e.do(http.MethodGet, "/2015-03-31/functions/ghost/versions", nil)
+	requireCode(t, err, awserrors.ErrorResourceNotFoundException)
+	_, getErr := e.do(http.MethodGet, "/2015-03-31/functions/ghost", nil)
+	assert.Equal(t, getErr.Error(), err.Error())
+
+	e.h.Region = "us-west-2"
+	_, err = e.do(http.MethodGet, "/2015-03-31/functions/hello/versions", nil)
+	requireCode(t, err, awserrors.ErrorResourceNotFoundException)
+}
+
+func TestListVersionsByFunction_DoesNotNeedTheCodeStore(t *testing.T) {
+	e := newEnv(t)
+	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
+	require.NoError(t, err)
+	e.deps.Codes = func(context.Context) (awsapi.CodeStore, error) { return nil, errors.New("code store down") }
+	_, err = e.do(http.MethodGet, "/2015-03-31/functions/hello/versions", nil)
+	require.NoError(t, err)
+	e.deps.Codes = nil
+	_, err = e.do(http.MethodGet, "/2015-03-31/functions/hello/versions", nil)
+	require.NoError(t, err)
+}
+
+func TestListVersionsByFunction_Authorization(t *testing.T) {
+	arn := "arn:aws:lambda:" + gwtest.Region + ":" + gwtest.AccountID + ":function:hello"
+	setup := func(t *testing.T, statements ...iamdomain.Statement) *env {
+		e := newEnv(t, statements...)
+		_, err := e.meta.Create(t.Context(), gwtest.AccountID, gwtest.Region, function.Record{
+			FunctionID: "f1", FunctionName: "hello", Role: roleARN, Runtime: "provided.al2023", Handler: "h",
+			Timeout: 3, MemorySize: 128, Code: function.Code{RevisionID: "r1"},
+		})
+		require.NoError(t, err)
+		return e
+	}
+	list := func(e *env) error {
+		_, err := e.do(http.MethodGet, "/2015-03-31/functions/hello/versions", nil)
+		return err
+	}
+
+	t.Run("lambda:GetFunction alone is not enough", func(t *testing.T) {
+		gwtest.AssertDenied(t, list(setup(t, gwtest.Statement("Allow", "lambda:GetFunction", "*"))))
+	})
+	t.Run("a deny on the function ARN applies", func(t *testing.T) {
+		gwtest.AssertDenied(t, list(setup(t,
+			gwtest.Statement("Allow", "lambda:*", "*"),
+			gwtest.Statement("Deny", "lambda:ListVersionsByFunction", arn))))
+	})
+	t.Run("an allow on another function ARN does not apply", func(t *testing.T) {
+		gwtest.AssertDenied(t, list(setup(t, gwtest.Statement("Allow", "lambda:ListVersionsByFunction", arn+"-other"))))
+	})
+	t.Run("an allow on the function ARN passes", func(t *testing.T) {
+		require.NoError(t, list(setup(t, gwtest.Statement("Allow", "lambda:ListVersionsByFunction", arn))))
 	})
 }

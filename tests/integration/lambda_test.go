@@ -138,6 +138,13 @@ func TestLambda_SignedCreateAndGetDownloadsTheStoredCode(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, signing.CodeSigningConfigArn)
 	require.Nil(t, signing.FunctionName)
+	versions, err := cli.ListVersionsByFunction(&lambda.ListVersionsByFunctionInput{FunctionName: aws.String("e2e-fn"), MaxItems: aws.Int64(10000)})
+	require.NoError(t, err)
+	require.Len(t, versions.Versions, 1)
+	require.Equal(t, aws.StringValue(got.Configuration.FunctionArn)+":$LATEST", aws.StringValue(versions.Versions[0].FunctionArn))
+	require.Equal(t, "$LATEST", aws.StringValue(versions.Versions[0].Version))
+	require.Nil(t, versions.NextMarker)
+
 	_, err = cli.GetFunctionCodeSigningConfig(&lambda.GetFunctionCodeSigningConfigInput{FunctionName: aws.String("e2e-missing")})
 	var aerr awserr.Error
 	require.ErrorAs(t, err, &aerr)

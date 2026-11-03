@@ -421,3 +421,56 @@ func TestVolumeMounterAdapter_BlockExportReplacesNBDURI(t *testing.T) {
 	assert.Empty(t, req.BlockDevice)
 	assert.Zero(t, req.BlockSizeBytes)
 }
+
+// unpublishRecorder answers node's unpublish subject successfully and records
+// the volumes it was asked to tear down.
+type unpublishRecorder struct {
+	mu      sync.Mutex
+	volumes []string
+}
+
+func (r *unpublishRecorder) serve(t *testing.T, nc *nats.Conn, node string, reply func() ebsprovider.UnpublishVolumeResponse) {
+	t.Helper()
+	subject, err := ebsprovider.UnpublishSubject(node)
+	require.NoError(t, err)
+	replyJSON(t, nc, subject, func(data []byte) any {
+		var req ebsprovider.UnpublishVolumeRequest
+		_ = json.Unmarshal(data, &req)
+		r.mu.Lock()
+		r.volumes = append(r.volumes, req.VolumeID)
+		r.mu.Unlock()
+		return reply()
+	})
+}
+
+func (r *unpublishRecorder) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.volumes...)
+}
+
+func unpublishOK() ebsprovider.UnpublishVolumeResponse {
+	return ebsprovider.UnpublishVolumeResponse{Versioned: ebsprovider.NewVersioned()}
+}
+
+// A publish answered without a usable export may still have started one, so
+// hot attach gets ErrMountAmbiguous and Mount tears that volume down too.
+func TestVolumeMounterAdapter_AmbiguousPublishIsTornDown(t *testing.T) {
+	nc := connectMounterTest(t)
+	node := newMounterTestNode()
+	advertiseVersions(t, nc, node, ebsprovider.SupportedSchemaVersions)
+	publish := &fakeContractPublish{}
+	publish.set(ebsprovider.PublishVolumeResponseV1{Published: &ebsprovider.PublishedVolumeV1{NodeID: node, NBDURI: ""}})
+	publish.serve(t, nc, node)
+	unpublished := &unpublishRecorder{}
+	unpublished.serve(t, nc, node, unpublishOK)
+	adapter := newVolumeMounterAdapter(nc, node, nil)
+
+	err := adapter.MountOne(t.Context(), testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-hot"})
+	require.ErrorIs(t, err, vm.ErrMountAmbiguous)
+	require.ErrorIs(t, err, ebsprovider.ErrInvalidExport)
+
+	err = adapter.Mount(t.Context(), mounterTestVM("vol-ambiguous"))
+	require.ErrorIs(t, err, vm.ErrMountAmbiguous)
+	assert.Equal(t, []string{"vol-ambiguous"}, unpublished.snapshot(), "the ambiguous volume must be unpublished")
+}

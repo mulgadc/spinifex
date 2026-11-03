@@ -218,6 +218,14 @@ func validateSubjectToken(value string) error {
 	return nil
 }
 
+// A publish answered without an error but without a usable export. The
+// provider may have started the export anyway, so a caller must not assume
+// nothing is left to tear down.
+var (
+	ErrNoPublishedVolume = errors.New("returned no published volume")
+	ErrInvalidExport     = errors.New("returned an invalid export")
+)
+
 // NATSProvider drives a provider daemon through the versioned ebs.* contract.
 type NATSProvider struct {
 	conn           *nats.Conn
@@ -496,11 +504,11 @@ func (p *NATSProvider) PublishVolume(ctx context.Context, req PublishVolumeReque
 			return nil, err
 		}
 		if response.Published == nil {
-			return nil, fmt.Errorf("%s returned no published volume", subject)
+			return nil, fmt.Errorf("%s %w", subject, ErrNoPublishedVolume)
 		}
 		published := PublishedVolumeFromV1(response.Published)
 		if err := published.Export.Validate(); err != nil {
-			return nil, fmt.Errorf("%s returned an invalid export: %w", subject, err)
+			return nil, fmt.Errorf("%s %w: %w", subject, ErrInvalidExport, err)
 		}
 		return published, nil
 	}
@@ -512,10 +520,10 @@ func (p *NATSProvider) PublishVolume(ctx context.Context, req PublishVolumeReque
 		return nil, err
 	}
 	if response.Published == nil {
-		return nil, fmt.Errorf("%s returned no published volume", subject)
+		return nil, fmt.Errorf("%s %w", subject, ErrNoPublishedVolume)
 	}
 	if err := response.Published.Export.Validate(); err != nil {
-		return nil, fmt.Errorf("%s returned an invalid export: %w", subject, err)
+		return nil, fmt.Errorf("%s %w: %w", subject, ErrInvalidExport, err)
 	}
 	return response.Published, nil
 }

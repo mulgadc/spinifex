@@ -231,8 +231,8 @@ func endContractSpan(span trace.Span, err error) {
 }
 
 // publish mounts req's volume on this node through PublishVolume and records
-// the export on req. A refusal the provider marks retry-later, a missing
-// volume state and no responder all back off as vm.ErrMountRetryable.
+// the export on req. Retry-later, not_found and no responder back off as
+// vm.ErrMountRetryable; a reply with no usable export is vm.ErrMountAmbiguous.
 func (a *volumeMounterAdapter) publish(ctx context.Context, accountID string, req *viperblocklegacyv1.EBSRequest) (err error) {
 	ctx, span := contractSpan(ctx, accountID, "ebs.mounter.publish", req.Name)
 	defer func() { endContractSpan(span, err) }()
@@ -244,13 +244,16 @@ func (a *volumeMounterAdapter) publish(ctx context.Context, accountID string, re
 	})
 	if err != nil {
 		a.noteRequestErr(err)
-		if publishRetryable(err) {
+		switch {
+		case publishRetryable(err):
 			return fmt.Errorf("publish volume %s: %w: %w", req.Name, err, vm.ErrMountRetryable)
+		case errors.Is(err, ebsprovider.ErrNoPublishedVolume), errors.Is(err, ebsprovider.ErrInvalidExport):
+			return fmt.Errorf("publish volume %s: %w: %w", req.Name, err, vm.ErrMountAmbiguous)
 		}
 		return fmt.Errorf("publish volume %s: %w", req.Name, err)
 	}
 	if err := applyExport(req, published.Export); err != nil {
-		return fmt.Errorf("publish volume %s: %w", req.Name, err)
+		return fmt.Errorf("publish volume %s: %w: %w", req.Name, err, vm.ErrMountAmbiguous)
 	}
 	slog.InfoContext(ctx, "Published volume", "volume", req.Name, "node", a.node, "export_kind", string(published.Export.Kind))
 	return nil
@@ -377,6 +380,10 @@ func (a *volumeMounterAdapter) Mount(ctx context.Context, instance *vm.VM) error
 		if contract {
 			if err := a.publish(ctx, instance.AccountID, &instance.EBSRequests.Requests[k]); err != nil {
 				slog.Error("Failed to publish volume", "volume", v.Name, "err", err)
+				// The provider may have started this export, so it is torn down too.
+				if errors.Is(err, vm.ErrMountAmbiguous) {
+					mounted = append(mounted, k)
+				}
 				return rollback(err)
 			}
 			mounted = append(mounted, k)

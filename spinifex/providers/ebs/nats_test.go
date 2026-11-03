@@ -475,6 +475,7 @@ func TestNATSProviderRejectsEmptySuccessResponse(t *testing.T) {
 		respondWith(t, conn, subject, PublishVolumeResponse{Versioned: empty})
 		_, err = provider.PublishVolume(ctx, PublishVolumeRequest{Versioned: NewLatestVersioned(), VolumeID: "vol-empty", NodeID: "node-empty"})
 		require.EqualError(t, err, subject+" returned no published volume")
+		require.ErrorIs(t, err, ErrNoPublishedVolume)
 	})
 
 	t.Run("CreateSnapshot", func(t *testing.T) {
@@ -512,6 +513,7 @@ func TestNATSProviderRejectsInvalidExport(t *testing.T) {
 			})
 			published, err := provider.PublishVolume(t.Context(), PublishVolumeRequest{Versioned: NewLatestVersioned(), VolumeID: "vol-1", NodeID: tt.node})
 			require.EqualError(t, err, subject+" returned an invalid export: "+tt.wantErr)
+			require.ErrorIs(t, err, ErrInvalidExport)
 			assert.Nil(t, published)
 		})
 	}

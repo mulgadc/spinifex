@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -414,6 +415,23 @@ func TestCreateSnapshot_Argv(t *testing.T) {
 	assert.Equal(t, []string{"info", "--output=json", "--force-share", snapPath}, calls[1].args)
 }
 
+// qemu-nbd holds a published volume's file locked, so its snapshot reads
+// what the export serves rather than the file.
+func TestCreateSnapshot_PublishedVolumeReadsThroughTheExport(t *testing.T) {
+	p, fr := newTestProvider(t)
+	volPath := p.volumePath("vol-snap-pub")
+	require.NoError(t, os.WriteFile(volPath, nil, 0o640))
+	_, err := p.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{Versioned: versioned(), VolumeID: "vol-snap-pub", NodeID: "node-1"})
+	require.NoError(t, err)
+
+	_, err = p.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{Versioned: versioned(), SnapshotID: "snap-pub", VolumeID: "vol-snap-pub"})
+	require.NoError(t, err)
+
+	calls := fr.callsSnapshot()
+	require.Len(t, calls, 3)
+	assert.Equal(t, []string{"convert", "-O", "qcow2", "-f", "raw", nbd.FormatNBDSocketURI(p.socketPath("vol-snap-pub")), p.snapshotPath("snap-pub")}, calls[1].args)
+}
+
 func TestCreateSnapshot_NotFoundSourceVolume(t *testing.T) {
 	p, _ := newTestProvider(t)
 	_, err := p.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{Versioned: versioned(), SnapshotID: "snap-orphan", VolumeID: "vol-never-existed"})
@@ -563,7 +581,7 @@ func TestPublishVolume_ArgvReadWrite(t *testing.T) {
 		"--socket", p.socketPath("vol-pub"),
 		"--format", "qcow2",
 		"--persistent",
-		"--shared=1",
+		"--shared=0",
 		"--fork",
 		"--pid-file", p.pidFilePath("vol-pub"),
 		volPath,

@@ -21,10 +21,10 @@ import (
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 )
 
-// nbdSharedClients bounds how many simultaneous NBD connections qemu-nbd
-// accepts against one export. A volume has exactly one attaching client, so
-// this stays at qemu-nbd's own default rather than inviting concurrent writers through the same socket.
-const nbdSharedClients = 1
+// nbdSharedClients is unlimited (0): CreateSnapshot reads beside the attached
+// client, and any limit above 1 makes qemu-nbd advertise multi-conn, so a
+// client opening several connections would block on the ones over it.
+const nbdSharedClients = 0
 
 // maxUnixSocketPath is the kernel's sun_path limit for an AF_UNIX address.
 // A base directory deep enough to push a socket past it must fail with that
@@ -533,7 +533,13 @@ func (p *Provider) CreateSnapshot(ctx context.Context, req ebsprovider.CreateSna
 		return nil, fmt.Errorf("%w: volume %s", ebsprovider.ErrNotFound, req.VolumeID)
 	}
 
-	if _, err := p.run.Run(ctx, "qemu-img", "convert", "-O", "qcow2", volPath, snapPath); err != nil {
+	// A published volume's file is qemu-nbd's, locked and with metadata it may
+	// still cache, so the copy reads what the export serves instead.
+	args := []string{"convert", "-O", "qcow2", volPath, snapPath}
+	if pub, ok := p.published[req.VolumeID]; ok && !pub.dead() {
+		args = []string{"convert", "-O", "qcow2", "-f", "raw", nbd.FormatNBDSocketURI(pub.socketPath), snapPath}
+	}
+	if _, err := p.run.Run(ctx, "qemu-img", args...); err != nil {
 		return nil, fmt.Errorf("create snapshot %s: %w", req.SnapshotID, err)
 	}
 	p.snapshotMeta[req.SnapshotID] = snapshotMeta{sourceVolumeID: req.VolumeID}

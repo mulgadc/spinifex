@@ -215,9 +215,9 @@ func launchDNSGuests(t *testing.T, fix *Fixture) map[string]dnsGuest {
 	t.Helper()
 	_, defaultSG, subnetID := harness.DiscoverDefaultVPC(t, fix.AWS)
 	harness.AuthorizeSSHIngress(t, fix.AWS, defaultSG)
-	instanceType, arch := needInstanceTypeArch(t, fix)
+	instanceType, arch := harness.DiscoverNanoInstanceType(t, fix.Harness)
 	amiID := needAMI(t, fix, arch)
-	keyName, keyPath := needKeyPair(t, fix)
+	keyName, keyPath := harness.EnsureKeyPair(t, fix.Harness)
 
 	wanted := make(map[string]harness.Node, 3)
 	for _, node := range fix.Cluster.Nodes[:3] {

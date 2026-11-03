@@ -22,7 +22,7 @@ func runAccountScoping(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — EC2 Account Scoping")
 
 	amiID := needAMI(t, fix)
-	instType, _ := needInstanceTypeArch(t, fix)
+	instType, _ := harness.DiscoverNanoInstanceType(t, fix.Harness)
 	az := needAZ(t, fix)
 
 	carousel := harness.NewAccountCarousel()

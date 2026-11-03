@@ -30,7 +30,7 @@ func runVolumeDurability(t *testing.T, fix *Fixture) {
 	az := needAZ(t, fix)
 	trio := needInstanceTrio(t, fix)
 	require.GreaterOrEqual(t, len(trio), 2, "need >=2 trio instances")
-	_, pemPath := needKeyPair(t, fix)
+	_, pemPath := harness.EnsureKeyPair(t, fix.Harness)
 
 	// Pick two trio instances on distinct cluster nodes.
 	srcID, dstID, srcNode, dstNode := pickCrossNodePair(t, fix, trio)

@@ -37,28 +37,11 @@ func needAZ(t *testing.T, fix *Fixture) string {
 	return harness.DiscoverDefaultAZ(t, fix.Harness)
 }
 
-// needInstanceTypeArch returns the discovered nano instance type and its
-// architecture. Memoized on the harness fixture.
-func needInstanceTypeArch(t *testing.T, fix *Fixture) (instanceType, arch string) {
-	t.Helper()
-	return harness.DiscoverNanoInstanceType(t, fix.Harness)
-}
-
 // needAMI returns the discovered Ubuntu AMI for the given architecture.
 // Memoized on the harness fixture.
 func needAMI(t *testing.T, fix *Fixture, arch string) string {
 	t.Helper()
 	return harness.DiscoverUbuntuAMI(t, fix.Harness, arch)
-}
-
-// needKeyPair ensures a package-scoped EC2 key pair and returns its name and
-// PEM path. Memoized on the harness fixture so all tests share one key. The
-// pem is written under fix.TmpDir — not a per-test artifact dir — since it
-// must stay on disk for every Test* in the package, and a per-test dir gets
-// pruned by t.Cleanup as soon as whichever test first calls this one passes.
-func needKeyPair(t *testing.T, fix *Fixture) (name, pemPath string) {
-	t.Helper()
-	return harness.EnsureKeyPair(t, fix.Harness)
 }
 
 // Package-scoped trio. Whichever Test* runs first triggers the launch; every other caller of needInstanceTrio reuses the same IDs.
@@ -73,9 +56,9 @@ var (
 func needInstanceTrio(t *testing.T, fix *Fixture) []string {
 	t.Helper()
 	trioOnce.Do(func() {
-		instType, arch := needInstanceTypeArch(t, fix)
+		instType, arch := harness.DiscoverNanoInstanceType(t, fix.Harness)
 		amiID := needAMI(t, fix, arch)
-		keyName, _ := needKeyPair(t, fix)
+		keyName, _ := harness.EnsureKeyPair(t, fix.Harness)
 		def := harness.EnsureDefaultVPC(t, fix.Harness)
 		require.NotEmpty(t, def.SGID, "default SG required")
 		harness.AuthorizeSSHIngress(t, fix.AWS, def.SGID)
@@ -175,9 +158,9 @@ func launchCrossNodePair(t *testing.T, fix *Fixture, runnerSGPrefix string) cros
 	t.Helper()
 
 	vpcID, defSGID, subnetID := harness.DiscoverDefaultVPC(t, fix.AWS)
-	instType, arch := needInstanceTypeArch(t, fix)
+	instType, arch := harness.DiscoverNanoInstanceType(t, fix.Harness)
 	amiID := needAMI(t, fix, arch)
-	keyName, keyPath := needKeyPair(t, fix)
+	keyName, keyPath := harness.EnsureKeyPair(t, fix.Harness)
 
 	runnerSG := harness.EnsureSG(t, fix.Harness, vpcID, runnerSGPrefix)
 	harness.AuthorizeSSHIngress(t, fix.AWS, runnerSG)

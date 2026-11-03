@@ -154,7 +154,6 @@ func providerSubjectCases() []providerSubjectCase {
 			"node_id":    "test-node",
 			"volume_ids": []string{"vol-testunsealed01"},
 		}},
-		{"node_capabilities", "ebs.provider.v1.test-node.capabilities", map[string]any{}},
 	}
 }
 
@@ -1043,8 +1042,8 @@ func TestProviderHandlers_PublishUnpublish_RequireNodeName(t *testing.T) {
 	cfgNamed := setupTestConfig(t, natsURL2)
 	ncNamed := startProviderSubjects(t, cfgNamed, natsURL2)
 
-	assert.Equal(t, ncNamed.NumSubscriptions()-4, ncNoNode.NumSubscriptions(),
-		"an empty NodeName must skip exactly the publish, unpublish, unsealed-writes and node capabilities subscriptions")
+	assert.Equal(t, ncNamed.NumSubscriptions()-3, ncNoNode.NumSubscriptions(),
+		"an empty NodeName must skip exactly the publish, unpublish and unsealed-writes subscriptions")
 
 	// The other provider subjects must still work without a node name.
 	body := marshalRequest(t, map[string]any{"schema_version": ebsprovider.SchemaVersion})

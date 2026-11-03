@@ -89,11 +89,10 @@ func SnapshotCompletionSubject(snapshotID string) (string, error) {
 
 // Last tokens of the per-node subjects: ebs.provider.v1.<node>.<verb>.
 const (
-	publishVerb          = "mount"
-	unpublishVerb        = "unmount"
-	unsealedVerb         = "unsealed"
-	nodeCapabilitiesVerb = "capabilities"
-	fenceNoticeVerb      = "fenced"
+	publishVerb     = "mount"
+	unpublishVerb   = "unmount"
+	unsealedVerb    = "unsealed"
+	fenceNoticeVerb = "fenced"
 )
 
 // nodeSubjectWildcard is the subject matching verb on every node, for a server
@@ -102,10 +101,9 @@ func nodeSubjectWildcard(verb string) string { return subjectPrefix + "*." + ver
 
 // Wildcards over every node for each per-node subject.
 var (
-	PublishSubjectWildcard          = nodeSubjectWildcard(publishVerb)
-	UnpublishSubjectWildcard        = nodeSubjectWildcard(unpublishVerb)
-	UnsealedWritesSubjectWildcard   = nodeSubjectWildcard(unsealedVerb)
-	NodeCapabilitiesSubjectWildcard = nodeSubjectWildcard(nodeCapabilitiesVerb)
+	PublishSubjectWildcard        = nodeSubjectWildcard(publishVerb)
+	UnpublishSubjectWildcard      = nodeSubjectWildcard(unpublishVerb)
+	UnsealedWritesSubjectWildcard = nodeSubjectWildcard(unsealedVerb)
 )
 
 func nodeSubject(nodeID, verb string) (string, error) {
@@ -132,13 +130,6 @@ func UnpublishSubject(nodeID string) (string, error) {
 // unsealed writes for a set of volumes.
 func UnsealedWritesSubject(nodeID string) (string, error) {
 	return nodeSubject(nodeID, unsealedVerb)
-}
-
-// NodeCapabilitiesSubject returns nodeID's per-node GetCapabilities subject
-// (ebs.provider.v1.<node>.capabilities). Unlike CapabilitiesSubject, which
-// any node's provider answers, only nodeID's provider answers it.
-func NodeCapabilitiesSubject(nodeID string) (string, error) {
-	return nodeSubject(nodeID, nodeCapabilitiesVerb)
 }
 
 // FenceNoticeSubject returns nodeID's fence-notice subject
@@ -248,26 +239,11 @@ func NewNATSProvider(conn *nats.Conn, requestTimeout time.Duration) *NATSProvide
 }
 
 func (p *NATSProvider) GetCapabilities(ctx context.Context, req GetCapabilitiesRequest) (*GetCapabilitiesResponse, error) {
-	return p.getCapabilities(ctx, CapabilitiesSubject, req)
-}
-
-// GetNodeCapabilities asks nodeID's own provider what it supports, over
-// NodeCapabilitiesSubject. A provider that predates that subject gets no
-// responder, which a caller must count as no evidence.
-func (p *NATSProvider) GetNodeCapabilities(ctx context.Context, nodeID string, req GetCapabilitiesRequest) (*GetCapabilitiesResponse, error) {
-	subject, err := NodeCapabilitiesSubject(nodeID)
-	if err != nil {
-		return nil, err
-	}
-	return p.getCapabilities(ctx, subject, req)
-}
-
-func (p *NATSProvider) getCapabilities(ctx context.Context, subject string, req GetCapabilitiesRequest) (*GetCapabilitiesResponse, error) {
 	if err := checkVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	var response GetCapabilitiesResponse
-	if err := p.request(ctx, subject, req, &response); err != nil {
+	if err := p.request(ctx, CapabilitiesSubject, req, &response); err != nil {
 		return nil, err
 	}
 	if err := responseError(response.SchemaVersion, response.Error); err != nil {

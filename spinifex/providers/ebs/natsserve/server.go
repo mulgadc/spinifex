@@ -36,9 +36,9 @@ type Options struct {
 	// across workers does not apply.
 	NoQueueGroup bool
 
-	// NodeID scopes the per-node subjects (publish, unpublish, unsealed writes
-	// and per-node capabilities) to this node, as a production daemon serves
-	// them. Left empty, Serve subscribes their wildcards and answers for any node.
+	// NodeID scopes the per-node subjects (publish, unpublish and unsealed
+	// writes) to this node, as a production daemon serves them. Left empty,
+	// Serve subscribes their wildcards and answers for any node.
 	NodeID string
 }
 
@@ -135,7 +135,6 @@ func Serve(ctx context.Context, nc *nats.Conn, provider ebsprovider.EBSProvider,
 		{ebsprovider.PublishSubjectWildcard, ebsprovider.PublishSubject, handlePublishVolume(provider)},
 		{ebsprovider.UnpublishSubjectWildcard, ebsprovider.UnpublishSubject, handleUnpublishVolume(provider)},
 		{ebsprovider.UnsealedWritesSubjectWildcard, ebsprovider.UnsealedWritesSubject, handleHoldsUnsealedWrites(provider)},
-		{ebsprovider.NodeCapabilitiesSubjectWildcard, ebsprovider.NodeCapabilitiesSubject, handleCapabilities(provider)},
 	}
 	for _, step := range nodeSteps {
 		subject := step.wildcard

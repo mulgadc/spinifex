@@ -115,8 +115,6 @@ func parseSubject(subject string) subjectTarget {
 		return subjectTarget{verb: verbVolumeUnpublish, nodeID: nodeID}
 	case unsealedVerb:
 		return subjectTarget{verb: verbUnsealedWrites, nodeID: nodeID}
-	case nodeCapabilitiesVerb:
-		return subjectTarget{verb: verbCapabilities, nodeID: nodeID}
 	case fenceNoticeVerb:
 		return subjectTarget{verb: verbFenceNotice, nodeID: nodeID}
 	default:

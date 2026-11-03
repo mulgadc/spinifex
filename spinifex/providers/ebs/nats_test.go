@@ -720,8 +720,6 @@ func TestTimeoutForSizesEachSubjectToItsWork(t *testing.T) {
 	require.NoError(t, err)
 	unsealed, err := UnsealedWritesSubject("node-1")
 	require.NoError(t, err)
-	nodeCapabilities, err := NodeCapabilitiesSubject("node-1")
-	require.NoError(t, err)
 
 	// A delete costs one round trip per object, so its duration is a function
 	// of the volume. On prod a 100 GiB volume's delete took 52 s against a 30 s
@@ -742,7 +740,7 @@ func TestTimeoutForSizesEachSubjectToItsWork(t *testing.T) {
 	fast := []string{
 		CapabilitiesSubject, GetVolumeSubject, ListVolumesSubject,
 		ListSnapshotsSubject, ownerDescribe,
-		publish, unsealed, nodeCapabilities,
+		publish, unsealed,
 	}
 	for _, subject := range fast {
 		assert.Equal(t, callerTimeout, p.timeoutFor(subject),

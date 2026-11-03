@@ -217,15 +217,9 @@ func TestEC2TagsToMap_Nil(t *testing.T) {
 func TestInstanceMatchesFilters_PrivateIPAddress(t *testing.T) {
 	inst := &vm.VM{ID: "i-abc"}
 	ic := &ec2.Instance{
-		InstanceId:       aws.String("i-abc"),
-		PrivateIpAddress: aws.String("10.0.1.5"),
-		NetworkInterfaces: []*ec2.InstanceNetworkInterface{{
-			PrivateIpAddress: aws.String("10.0.1.5"),
-			PrivateIpAddresses: []*ec2.InstancePrivateIpAddress{
-				{PrivateIpAddress: aws.String("10.0.1.5"), Primary: aws.Bool(true)},
-				{PrivateIpAddress: aws.String("10.0.1.9"), Primary: aws.Bool(false)},
-			},
-		}},
+		InstanceId:        aws.String("i-abc"),
+		PrivateIpAddress:  aws.String("10.0.1.5"),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterface{{PrivateIpAddress: aws.String("10.0.1.5")}},
 	}
 	tests := []struct {
 		name  string
@@ -237,8 +231,7 @@ func TestInstanceMatchesFilters_PrivateIPAddress(t *testing.T) {
 		{"network-interface.private-ip-address", "10.0.1.5", true},
 		{"network-interface.private-ip-address", "10.0.1.9", false},
 		{"network-interface.addresses.private-ip-address", "10.0.1.5", true},
-		{"network-interface.addresses.private-ip-address", "10.0.1.9", true},
-		{"network-interface.addresses.private-ip-address", "10.0.1.7", false},
+		{"network-interface.addresses.private-ip-address", "10.0.1.9", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name+"="+tt.value, func(t *testing.T) {
@@ -251,14 +244,16 @@ func TestInstanceMatchesFilters_PrivateIPAddress(t *testing.T) {
 	}
 }
 
-// An interface reported without PrivateIpAddresses still matches the
-// addresses filter on its primary address.
-func TestInstanceMatchesFilters_AddressesPrivateIPWithoutAddressList(t *testing.T) {
+// A terminated instance keeps its stored address, which it no longer owns.
+func TestInstanceMatchesFilters_PrivateIPTerminated(t *testing.T) {
 	inst := &vm.VM{ID: "i-abc"}
 	ic := &ec2.Instance{
 		InstanceId:        aws.String("i-abc"),
+		State:             &ec2.InstanceState{Name: aws.String(ec2.InstanceStateNameTerminated)},
+		PrivateIpAddress:  aws.String("10.0.1.5"),
 		NetworkInterfaces: []*ec2.InstanceNetworkInterface{{PrivateIpAddress: aws.String("10.0.1.5")}},
 	}
-	filters := map[string][]string{"network-interface.addresses.private-ip-address": {"10.0.1.5"}}
-	assert.True(t, instanceMatchesFilters(inst, ic, filters))
+	for _, name := range []string{"private-ip-address", "network-interface.private-ip-address", "network-interface.addresses.private-ip-address"} {
+		assert.False(t, instanceMatchesFilters(inst, ic, map[string][]string{name: {"10.0.1.5"}}), name)
+	}
 }

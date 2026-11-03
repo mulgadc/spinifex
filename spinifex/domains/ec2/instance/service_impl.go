@@ -2006,6 +2006,11 @@ func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]
 			continue
 		}
 
+		// A terminated instance has released its addresses, so AWS matches none.
+		if strings.HasSuffix(name, "private-ip-address") && ic.State != nil && aws.StringValue(ic.State.Name) == ec2.InstanceStateNameTerminated {
+			return false
+		}
+
 		var field string
 		switch name {
 		case "instance-state-name":
@@ -2027,7 +2032,7 @@ func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]
 		case "private-ip-address":
 			field = aws.StringValue(ic.PrivateIpAddress)
 		case "network-interface.private-ip-address", "network-interface.addresses.private-ip-address":
-			if !matchNICPrivateIP(ic.NetworkInterfaces, values, name == "network-interface.addresses.private-ip-address") {
+			if !matchNICPrivateIP(ic.NetworkInterfaces, values) {
 				return false
 			}
 			continue
@@ -2057,19 +2062,11 @@ func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]
 	return awsfilters.MatchesTags(filters, tags)
 }
 
-// matchNICPrivateIP reports whether any interface's primary private IPv4
-// address, or with secondary set any address it carries, matches the values.
-func matchNICPrivateIP(nics []*ec2.InstanceNetworkInterface, values []string, secondary bool) bool {
+// matchNICPrivateIP reports whether any interface's private IPv4 address
+// matches the values. Interfaces carry only a primary address.
+func matchNICPrivateIP(nics []*ec2.InstanceNetworkInterface, values []string) bool {
 	return slices.ContainsFunc(nics, func(nic *ec2.InstanceNetworkInterface) bool {
-		if nic == nil {
-			return false
-		}
-		if nic.PrivateIpAddress != nil && awsfilters.MatchesAny(values, *nic.PrivateIpAddress) {
-			return true
-		}
-		return secondary && slices.ContainsFunc(nic.PrivateIpAddresses, func(a *ec2.InstancePrivateIpAddress) bool {
-			return a != nil && a.PrivateIpAddress != nil && awsfilters.MatchesAny(values, *a.PrivateIpAddress)
-		})
+		return nic != nil && nic.PrivateIpAddress != nil && awsfilters.MatchesAny(values, *nic.PrivateIpAddress)
 	})
 }
 

@@ -25,7 +25,7 @@ func start(ctx context.Context) int {
 
 // run authenticates to the host and holds the connection until it closes.
 func (s startup) run(ctx context.Context) (int, error) {
-	conn, code, err := s.connect(ctx)
+	conn, _, code, err := s.connect(ctx)
 	if err != nil {
 		return code, err
 	}

@@ -28,13 +28,16 @@ static long parse(const char *s, long min, long max) {
 __attribute__((constructor)) static void hardkill_arm(void) {
 	long dl = parse(getenv("SPX_HARDKILL_MS"), 1, LONG_MAX / 1000000L);
 	int ack = (int)parse(getenv("SPX_HARDKILL_ACK_FD"), 3, INT_MAX);
+	int lib = (int)parse(getenv("SPX_HARDKILL_LIB_FD"), 3, INT_MAX);
+	if (lib == ack) die();
 	const char *nonce = getenv("SPX_HARDKILL_NONCE");
 	char tag[33];
 	if (!nonce || strlen(nonce) != 32 || strspn(nonce, "0123456789abcdef") != 32) die();
 	memcpy(tag, nonce, sizeof tag);
 	// Nothing QEMU starts later inherits the backstop's settings.
 	if (unsetenv("SPX_HARDKILL_MS") || unsetenv("SPX_HARDKILL_ACK_FD") ||
-	    unsetenv("SPX_HARDKILL_NONCE") || unsetenv("LD_PRELOAD")) die();
+	    unsetenv("SPX_HARDKILL_NONCE") || unsetenv("SPX_HARDKILL_LIB_FD") ||
+	    unsetenv("LD_PRELOAD")) die();
 
 	struct sigevent sev;
 	memset(&sev, 0, sizeof sev);
@@ -47,6 +50,10 @@ __attribute__((constructor)) static void hardkill_arm(void) {
 	its.it_value.tv_sec = dl / 1000;
 	its.it_value.tv_nsec = (dl % 1000) * 1000000L;
 	if (timer_settime(t, 0, &its, NULL) != 0) die();
+
+	// The loader has mapped the library; the ack also proves QEMU keeps no
+	// handle on its memfd.
+	if (close(lib) != 0) die();
 
 	char msg[128];
 	int n = snprintf(msg, sizeof msg, "armed %d %ld %s\n", getpid(), dl, tag);

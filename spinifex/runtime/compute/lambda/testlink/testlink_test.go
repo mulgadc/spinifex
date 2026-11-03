@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	lambdav1 "github.com/mulgadc/spinifex/contracts/lambda/v1"
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/execution"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
@@ -300,4 +301,40 @@ func TestDaemon_OneAttemptAtATime(t *testing.T) {
 	require.Equal(t, OutcomeRefused, rep.Outcome)
 	require.Contains(t, rep.Error, "another")
 	require.Equal(t, execution.StateGranted, g.state(t))
+}
+
+func TestCheckRequest_RefusesGrantWithoutEnvironmentGeneration(t *testing.T) {
+	cases := map[string]func(*execution.Grant){
+		"no environment":       func(g *execution.Grant) { g.EnvironmentID = "" },
+		"generation zero":      func(g *execution.Grant) { g.Generation = 0 },
+		"slash in environment": func(g *execution.Grant) { g.EnvironmentID = "env/1" },
+		"newline in grant":     func(g *execution.Grant) { g.GrantID = "g\n1" },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			req := baseRequest("https://example.invalid/code", []byte("zip"))
+			req.Grant = execution.Grant{GrantID: "g1", AttemptID: req.AttemptID, EnvironmentID: "env-1", Generation: 3, Node: testNode}
+			require.NoError(t, CheckRequest(req))
+			mutate(&req.Grant)
+			require.ErrorContains(t, CheckRequest(req), "grant")
+		})
+	}
+}
+
+// The guest's certificates name the granted environment generation, and the
+// grant entry it binds its run to names the same grant.
+func TestPrepare_ScopeAndGrantEntryComeFromTheGrant(t *testing.T) {
+	req := baseRequest("https://example.invalid/code", []byte("zip"))
+	req.Grant = execution.Grant{GrantID: "g-7", AttemptID: req.AttemptID, EnvironmentID: "env-x", Generation: 3, Node: testNode}
+	d := &Daemon{ImageDir: t.TempDir(), HostIP: "127.0.0.1"}
+	dir := filepath.Join(t.TempDir(), "attempt")
+	_, gen, ln, err := d.prepare(req, []byte("zip"), dir, "tap0", "02:00:00:00:00:01", "10.0.0.2")
+	require.NoError(t, err)
+	defer ln.Close()
+
+	entry, err := os.ReadFile(filepath.Join(dir, "fwcfg-test-grant"))
+	require.NoError(t, err)
+	require.Equal(t, "g-7\n0123456789ab\nenv-x\n3\n", string(entry))
+	expect := gen.GuestEntries(ln.Addr().String())[lambdav1.EntryScope]
+	require.Equal(t, "ap-southeast-2/123456789012/fn1/env-x/3", strings.TrimSpace(string(expect)))
 }

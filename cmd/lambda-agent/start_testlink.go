@@ -54,13 +54,14 @@ func start(ctx context.Context) int {
 func (t testlink) run(parent context.Context) (int, error) {
 	// The package values are fw_cfg entries, so read them before connect seals it.
 	spec, specErr := readPackageSpec(t.fwCfgDir)
-	conn, code, err := t.connect(parent)
+	grant, grantErr := readGrant(t.fwCfgDir)
+	conn, scope, code, err := t.connect(parent)
 	if err != nil {
-		return code, errors.Join(err, specErr)
+		return code, errors.Join(err, specErr, grantErr)
 	}
 	defer conn.Close()
-	if specErr != nil {
-		return exitRefused, specErr
+	if err := errors.Join(specErr, grantErr); err != nil {
+		return exitRefused, err
 	}
 	link := hostlink.NewTestStream(conn)
 
@@ -75,6 +76,10 @@ func (t testlink) run(parent context.Context) (int, error) {
 	}
 	if parent.Err() != nil {
 		return exitLink, context.Cause(parent)
+	}
+	// Nothing of the tenant's is installed or run for an unbound request.
+	if err := checkBinding(scope, grant, first, time.Now()); err != nil {
+		return exitRefused, err
 	}
 	if err := t.pkg.install(spec); err != nil {
 		return exitRefused, fmt.Errorf("install package: %w", err)

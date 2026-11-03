@@ -57,7 +57,7 @@ func startSession(t *testing.T, ctx context.Context, req Request, accept func(co
 }
 
 func testRequest(timeoutMs int64) Request {
-	return Request{Grant: execution.Grant{GrantID: "g1", AttemptID: "0123456789ab"},
+	return Request{Grant: execution.Grant{GrantID: "g1", AttemptID: "0123456789ab", EnvironmentID: "env-1", Generation: 1},
 		AttemptID: "0123456789ab", RequestID: "r", Region: "ap-southeast-2",
 		AccountID: "123456789012", FunctionID: "fn1", TimeoutMs: timeoutMs}
 }

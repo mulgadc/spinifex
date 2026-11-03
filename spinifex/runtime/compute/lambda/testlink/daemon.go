@@ -149,9 +149,11 @@ func (d *Daemon) Handle(ctx context.Context, data []byte) Reply {
 	if id, err := d.unresolved(); err != nil || id != "" {
 		return refused("an unresolved test-link attempt holds this node's slot")
 	}
-	if err := d.checkInitializer(); err != nil {
+	lib, err := d.sealInitializer()
+	if err != nil {
 		return refused(err.Error())
 	}
+	defer func() { _ = lib.Close() }()
 	// The owner refuses a stale, replayed or mismatched grant before anything
 	// is taken; a write it cannot confirm leaves the attempt possibly started.
 	if err := d.Grants.Start(ctx, req.Grant, req.Identity()); err != nil {
@@ -167,7 +169,7 @@ func (d *Daemon) Handle(ctx context.Context, data []byte) Reply {
 	if code, err := d.fetch(ctx, req); err != nil {
 		rep = refused(err.Error())
 	} else {
-		rep, resolved = d.run(ctx, req, code)
+		rep, resolved = d.run(ctx, req, code, lib)
 	}
 	held = !resolved
 	d.record(ctx, req, resolved)
@@ -197,6 +199,10 @@ func CheckRequest(req Request) error {
 	if req.Grant.GrantID == "" || req.Grant.AttemptID != req.AttemptID {
 		return errors.New("request carries no grant for its attempt")
 	}
+	if _, err := lambdav1.ParseScope(scope(req)); err != nil || req.Grant.Generation == 0 ||
+		strings.ContainsAny(req.Grant.GrantID+req.Grant.EnvironmentID, "/\n") {
+		return errors.New("grant names no valid environment generation")
+	}
 	if req.RequestID == "" || req.RevisionID == "" {
 		return errors.New("request and revision IDs are required")
 	}
@@ -219,8 +225,17 @@ func CheckRequest(req Request) error {
 	return nil
 }
 
+// scope is the environment generation the owner granted; the guest and host
+// certificates carry it, so the guest authenticates the grant's environment.
 func scope(req Request) string {
-	return req.Region + "/" + req.AccountID + "/" + req.FunctionID + "/" + req.AttemptID + "/1"
+	return req.Region + "/" + req.AccountID + "/" + req.FunctionID + "/" +
+		req.Grant.EnvironmentID + "/" + strconv.FormatUint(req.Grant.Generation, 10)
+}
+
+// grantEntry is the test-grant fw_cfg value the guest binds its one run to:
+// grant ID, attempt ID, environment ID and generation, one per line.
+func grantEntry(g execution.Grant) []byte {
+	return fmt.Appendf(nil, "%s\n%s\n%s\n%d\n", g.GrantID, g.AttemptID, g.EnvironmentID, g.Generation)
 }
 
 // fetch downloads the code copy over verified TLS and checks its exact size
@@ -265,7 +280,7 @@ func (d *Daemon) fetch(ctx context.Context, req Request) ([]byte, error) {
 // run holds the marker, address, tap and files from before allocation until
 // the VM stop is proven, and keeps them all when it is not. resolved is true
 // only once everything is released.
-func (d *Daemon) run(ctx context.Context, req Request, code []byte) (rep Reply, resolved bool) {
+func (d *Daemon) run(ctx context.Context, req Request, code []byte, lib *os.File) (rep Reply, resolved bool) {
 	a := &held{id: "lambda-" + req.AttemptID, dir: filepath.Join(d.WorkDir, req.AttemptID),
 		marker: filepath.Join(d.WorkDir, req.AttemptID+markerSuffix)}
 	f, err := os.OpenFile(a.marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
@@ -303,7 +318,7 @@ func (d *Daemon) run(ctx context.Context, req Request, code []byte) (rep Reply, 
 	if err != nil {
 		return refused("VM command build failed"), d.release(a)
 	}
-	hk, err := armCommand(cmd, d.Initializer, timeoutFor(req)+HardKillMargin)
+	hk, err := armCommand(cmd, lib, timeoutFor(req)+HardKillMargin)
 	if err != nil {
 		return refused("hard-kill setup failed"), d.release(a)
 	}
@@ -368,6 +383,7 @@ func (d *Daemon) prepare(req Request, code []byte, dir, tap, mac, ip string) (*v
 	entries := gen.GuestEntries(ln.Addr().String())
 	entries["test-package-size"] = []byte(strconv.FormatInt(req.CodeSize, 10))
 	entries["test-package-sha256"] = []byte(req.CodeSHA256)
+	entries["test-grant"] = grantEntry(req.Grant)
 	var fwCfg []vm.FwCfgEntry
 	for name, value := range entries {
 		path := filepath.Join(dir, "fwcfg-"+name)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"strings"
 	"testing"
 	"time"
 
@@ -694,6 +695,31 @@ func TestStartInstances_VolumeHeldElsewhereSurvivesTheForward(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, awserrors.ErrorIncorrectState, code)
 	assert.Contains(t, message, "node-a", "the operator still learns where the volume is")
+}
+
+// The header is the one signal that a refusal was a volume held elsewhere, so
+// the owner must not put it on any other start failure in the same AWS code.
+func TestStartOwner_HeldElsewhereHeaderOnlyOnAHeldVolume(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	for name, tc := range map[string]struct {
+		err  error
+		want string
+	}{
+		"held elsewhere": {fmt.Errorf("%w: %w", ec2v1.ErrVolumeHeldElsewhere,
+			awserrors.Errorf(awserrors.ErrorIncorrectState, "%s", "volume vol-1 is published to node-a")), "true"},
+		"other incorrect state": {awserrors.Errorf(awserrors.ErrorIncorrectState, "%s",
+			"instance i-0abc0000000000003 is not stopped"), ""},
+		"internal fault": {errors.New(awserrors.ErrorServerInternal), ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			owner := func(context.Context, *ec2instance.StartStoppedInstanceInput, string) (*ec2instance.StartStoppedInstanceOutput, error) {
+				return nil, tc.err
+			}
+			reply := requestHandler(t, nc, "ec2.start.owner-"+strings.ReplaceAll(name, " ", "-"),
+				asMsgHandler(handleNATSRequest("node-owner", owner)), testAccountID, []byte(`{}`))
+			assert.Equal(t, tc.want, reply.Header.Get(natsmsg.VolumeHeldElsewhereHeader))
+		})
+	}
 }
 
 // --- handleSetInstanceTags / handleSetInstanceMonitoring ---

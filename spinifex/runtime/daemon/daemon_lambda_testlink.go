@@ -84,12 +84,12 @@ func (d *Daemon) startLambdaTestLink() {
 		}},
 	}
 	// Recovery shares the node slot with requests, so the two never overlap.
-	go tl.RecoverLoop(d.ctx, testlink.RecoverRounds, testlink.RecoverInterval)
+	go tl.RecoverLoop(d.ctx, testlink.RecoverFirst, testlink.RecoverMax)
 	if _, err := tl.Serve(d.ctx, d.natsConn, d.node); err != nil {
 		slog.Error("Lambda test link: subscribe", "err", err)
 		return
 	}
-	slog.Warn("Lambda test link serving: test-only, guest not bound to the grant, not for production", "node", d.node)
+	slog.Warn("Lambda test link serving: test-only, not for production; the guest does not verify owner grant authority", "node", d.node)
 }
 
 var _ testlink.Taps = (*host.OVSPlumber)(nil)

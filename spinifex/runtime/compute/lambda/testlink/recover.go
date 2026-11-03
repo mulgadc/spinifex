@@ -196,16 +196,30 @@ func proveStopped(l execution.Launch) error {
 	return nil
 }
 
-// RecoverRounds and RecoverInterval bound how long a held attempt is retried.
+// RecoverFirst is the first retry interval; it doubles up to RecoverMax.
 const (
-	RecoverRounds   = 10
-	RecoverInterval = 30 * time.Second
+	RecoverFirst = 5 * time.Second
+	RecoverMax   = 5 * time.Minute
 )
 
-// RecoverLoop retries Recover until it settles, the rounds run out or ctx
-// ends. Each round takes the node's slot, so it never runs beside Handle.
-func (d *Daemon) RecoverLoop(ctx context.Context, rounds int, every time.Duration) {
-	for i := 0; i < rounds; i++ {
+// recoverWait sleeps between rounds; it reports false once ctx ends.
+var recoverWait = func(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// RecoverLoop retries Recover on ctx until it settles, waiting first and then
+// doubling up to ceiling. Each round takes the node's slot, so it never runs
+// beside Handle. It covers what a previous daemon left, not a later Handle.
+func (d *Daemon) RecoverLoop(ctx context.Context, first, ceiling time.Duration) {
+	wait := first
+	for {
 		if d.busy.CompareAndSwap(false, true) {
 			settled := d.Recover(ctx)
 			d.busy.Store(false)
@@ -213,15 +227,11 @@ func (d *Daemon) RecoverLoop(ctx context.Context, rounds int, every time.Duratio
 				return
 			}
 		}
-		t := time.NewTimer(every)
-		select {
-		case <-ctx.Done():
-			t.Stop()
+		if !recoverWait(ctx, wait) {
 			return
-		case <-t.C:
 		}
+		wait = min(wait*2, ceiling)
 	}
-	slog.Error("Lambda test link: attempt still held after bounded recovery", "rounds", rounds)
 }
 
 // Recover proves the stop of an attempt an earlier daemon on this boot left

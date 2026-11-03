@@ -308,13 +308,43 @@ func TestRecoverLoop_RetriesATransientFailure(t *testing.T) {
 	require.NoError(t, vm.Process.Kill())
 	_ = vm.Wait()
 	r := newRecoverRig(t, execution.StateRunning, &l)
-	r.ips.releaseFails = 2
+	// Far more failed rounds than any fixed bound, as in a long KV outage.
+	r.ips.releaseFails = 500
+	var waits []time.Duration
+	prev := recoverWait
+	recoverWait = func(_ context.Context, d time.Duration) bool { waits = append(waits, d); return true }
+	t.Cleanup(func() { recoverWait = prev })
 
-	r.d.RecoverLoop(context.Background(), 5, time.Millisecond)
+	r.d.RecoverLoop(context.Background(), time.Second, 8*time.Second)
 	assert.Equal(t, execution.StateEnded, r.grants.cur.State)
 	assert.NoFileExists(t, r.marker)
-	assert.Len(t, r.ips.released, 3)
+	assert.Len(t, r.ips.released, 501)
+	require.Len(t, waits, 500)
+	assert.Equal(t, []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 8 * time.Second}, waits[:5])
+	assert.Equal(t, 8*time.Second, waits[499], "the interval is capped")
 	assert.False(t, r.d.busy.Load(), "recovery left the node slot taken")
+}
+
+// The loop ends when its context does, leaving the attempt held.
+func TestRecoverLoop_StopsWithItsContext(t *testing.T) {
+	vm, ino := child(t)
+	l := recordedLaunch(t, vm, ino)
+	require.NoError(t, vm.Process.Kill())
+	_ = vm.Wait()
+	r := newRecoverRig(t, execution.StateRunning, &l)
+	r.ips.releaseFails = 1 << 30
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan struct{})
+	go func() { r.d.RecoverLoop(ctx, time.Hour, time.Hour); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RecoverLoop did not stop with its context")
+	}
+	assert.NotEqual(t, execution.StateEnded, r.grants.cur.State)
+	assert.FileExists(t, r.marker)
 }
 
 // A round never runs while a request holds the node slot.
@@ -325,7 +355,11 @@ func TestRecoverLoop_NeverRunsBesideARequest(t *testing.T) {
 	_ = vm.Wait()
 	r := newRecoverRig(t, execution.StateRunning, &l)
 	r.d.busy.Store(true)
+	rounds := 0
+	prev := recoverWait
+	recoverWait = func(context.Context, time.Duration) bool { rounds++; return rounds < 3 }
+	t.Cleanup(func() { recoverWait = prev })
 
-	r.d.RecoverLoop(context.Background(), 3, time.Millisecond)
+	r.d.RecoverLoop(context.Background(), time.Second, time.Second)
 	r.assertHeld(t)
 }

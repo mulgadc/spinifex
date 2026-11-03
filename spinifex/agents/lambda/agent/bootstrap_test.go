@@ -169,3 +169,11 @@ func TestStartBootstrapMissingExecutableFails(t *testing.T) {
 	_, err := startBootstrap(context.Background(), filepath.Join(t.TempDir(), "bootstrap"), nil, nil, nil, nil)
 	assert.Error(t, err)
 }
+
+func TestStartBootstrapRunsInItsOwnDirectory(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "data.txt"), []byte("packaged"), 0o644))
+	bootstrap := filepath.Join(dir, "bootstrap")
+	require.NoError(t, os.WriteFile(bootstrap, []byte("#!/bin/sh\ncat data.txt\n"), 0o755))
+	assert.Equal(t, "packaged", string(run(t, bootstrap, []string{"PATH=/bin:/usr/bin"}, false)))
+}

@@ -30,6 +30,7 @@ var handler = flag.String("handler", os.Getenv("_HANDLER"), "function handler pa
 // connection; the carrier is not the guest protocol.
 type testlink struct {
 	startup
+	pkg            taskPackage
 	runtimeAddr    string
 	startBootstrap func(ctx context.Context, env []string) (*exec.Cmd, error)
 }
@@ -37,6 +38,7 @@ type testlink struct {
 func start(ctx context.Context) int {
 	t := testlink{
 		startup:     defaultStartup(),
+		pkg:         devTaskPackage(),
 		runtimeAddr: runtimeAddr,
 		startBootstrap: func(ctx context.Context, env []string) (*exec.Cmd, error) {
 			return agent.StartBootstrap(ctx, taskRoot+"/bootstrap", env, os.Stdout, os.Stderr)
@@ -50,11 +52,16 @@ func start(ctx context.Context) int {
 }
 
 func (t testlink) run(parent context.Context) (int, error) {
+	// The package values are fw_cfg entries, so read them before connect seals it.
+	spec, specErr := readPackageSpec(t.fwCfgDir)
 	conn, code, err := t.connect(parent)
 	if err != nil {
-		return code, err
+		return code, errors.Join(err, specErr)
 	}
 	defer conn.Close()
+	if specErr != nil {
+		return exitRefused, specErr
+	}
 	link := hostlink.NewTestStream(conn)
 
 	// The handshake can return before the host refuses the guest, so nothing
@@ -68,6 +75,9 @@ func (t testlink) run(parent context.Context) (int, error) {
 	}
 	if parent.Err() != nil {
 		return exitLink, context.Cause(parent)
+	}
+	if err := t.pkg.install(spec); err != nil {
+		return exitRefused, fmt.Errorf("install package: %w", err)
 	}
 
 	srv := runtimeapi.New()

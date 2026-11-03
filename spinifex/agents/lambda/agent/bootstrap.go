@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"path/filepath"
 	goruntime "runtime"
 	"syscall"
 	"time"
@@ -18,8 +19,8 @@ import (
 const sandboxID = 993
 
 // StartBootstrap starts the function's bootstrap at path as the sandbox uid and
-// gid with no supplementary groups, with no_new_privs, and with exactly env.
-// The caller waits on the returned command.
+// gid with no supplementary groups, with no_new_privs, and with exactly env,
+// in the bootstrap's own directory. The caller waits on the returned command.
 func StartBootstrap(ctx context.Context, path string, env []string, stdout, stderr io.Writer) (*exec.Cmd, error) {
 	cred := &syscall.Credential{Uid: sandboxID, Gid: sandboxID, Groups: []uint32{}}
 	return startBootstrap(ctx, path, env, stdout, stderr, cred)
@@ -30,6 +31,8 @@ func startBootstrap(ctx context.Context, path string, env []string, stdout, stde
 	// A nil Env inherits the agent's environment; the bootstrap gets only env.
 	cmd.Env = append([]string{}, env...)
 	cmd.Stdout, cmd.Stderr = stdout, stderr
+	// Packaged functions open their files relative to the task root.
+	cmd.Dir = filepath.Dir(path)
 	if cred != nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: cred}
 	}

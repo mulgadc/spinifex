@@ -5,10 +5,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -43,12 +47,31 @@ func TestHelperBootstrap(t *testing.T) {
 type bootstrapStarts struct {
 	n       int
 	started chan struct{}
+	task    string
+	sealed  bool
 }
 
-func (b *bootstrapStarts) testlink(g *guest) testlink {
+// testlink builds a guest whose fw_cfg also carries a controlled package,
+// installed into a temp dir without mounting anything.
+func (b *bootstrapStarts) testlink(t *testing.T, entries map[string][]byte) testlink {
+	t.Helper()
+	zipBytes := testZip(t, map[string]string{"bootstrap": "#!/bin/sh\n", "lib/data.txt": "data"})
+	disk := filepath.Join(t.TempDir(), "disk")
+	require.NoError(t, os.WriteFile(disk, zipBytes, 0o600))
+	sum := sha256.Sum256(zipBytes)
+	entries[entryPackageSize] = []byte(strconv.Itoa(len(zipBytes)))
+	entries[entryPackageSHA256] = []byte(hex.EncodeToString(sum[:]))
+	g := newGuest(t, entries)
 	b.started = make(chan struct{}, 1)
+	b.task = t.TempDir()
 	return testlink{
-		startup:     g.startup(),
+		startup: g.startup(),
+		pkg: taskPackage{
+			device: disk, dir: b.task,
+			loadDriver: func() error { return nil },
+			mountDir:   func(string) error { return nil },
+			sealDir:    func(string) error { b.sealed = true; return nil },
+		},
 		runtimeAddr: "127.0.0.1:0",
 		startBootstrap: func(ctx context.Context, env []string) (*exec.Cmd, error) {
 			b.n++
@@ -80,7 +103,7 @@ func TestTestlinkServesOneInvocationThenStops(t *testing.T) {
 	h := newHost(t)
 	h.accept(ctx)
 	var b bootstrapStarts
-	done := runTestlinkAsync(ctx, b.testlink(newGuest(t, h.entries())))
+	done := runTestlinkAsync(ctx, b.testlink(t, h.entries()))
 
 	conn := h.guest(t)
 	defer conn.Close()
@@ -109,6 +132,8 @@ func TestTestlinkServesOneInvocationThenStops(t *testing.T) {
 		assert.Error(t, err, "agent answered a second invocation")
 	}
 	assert.Equal(t, 1, b.n)
+	assert.True(t, b.sealed, "task dir not made read-only")
+	assert.FileExists(t, filepath.Join(b.task, "lib", "data.txt"))
 }
 
 func TestTestlinkShutdownBeforeInvocationNeverStartsBootstrap(t *testing.T) {
@@ -117,7 +142,7 @@ func TestTestlinkShutdownBeforeInvocationNeverStartsBootstrap(t *testing.T) {
 	h := newHost(t)
 	h.accept(ctx)
 	var b bootstrapStarts
-	done := runTestlinkAsync(ctx, b.testlink(newGuest(t, h.entries())))
+	done := runTestlinkAsync(ctx, b.testlink(t, h.entries()))
 
 	conn := h.guest(t)
 	defer conn.Close()
@@ -142,7 +167,7 @@ func TestTestlinkHostRefusalNeverStartsBootstrap(t *testing.T) {
 	entries[lambdav1.EntryGuestKey], entries[lambdav1.EntryGuestCert] = wrong[lambdav1.EntryGuestKey], wrong[lambdav1.EntryGuestCert]
 	var b bootstrapStarts
 
-	res := wait(t, runTestlinkAsync(ctx, b.testlink(newGuest(t, entries))), "agent to stop")
+	res := wait(t, runTestlinkAsync(ctx, b.testlink(t, entries)), "agent to stop")
 	assert.Equal(t, exitLink, res.code)
 	require.Error(t, res.err)
 	assert.Contains(t, res.err.Error(), "bad certificate")
@@ -155,7 +180,7 @@ func TestTestlinkHostCloseBeforeFrameNeverStartsBootstrap(t *testing.T) {
 	h := newHost(t)
 	h.accept(ctx)
 	var b bootstrapStarts
-	done := runTestlinkAsync(ctx, b.testlink(newGuest(t, h.entries())))
+	done := runTestlinkAsync(ctx, b.testlink(t, h.entries()))
 
 	require.NoError(t, h.guest(t).Close())
 	res := wait(t, done, "agent to stop")
@@ -176,4 +201,46 @@ func TestOneInvocationHonoursCancelledContext(t *testing.T) {
 	req, err := o.Next(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, "r-1", req.RequestID)
+}
+
+// A package that fails its check is refused after authentication, and the
+// bootstrap never starts.
+func TestTestlinkBadPackageNeverStartsBootstrap(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	h := newHost(t)
+	h.accept(ctx)
+	var b bootstrapStarts
+	tl := b.testlink(t, h.entries())
+	tl.pkg.device = filepath.Join(t.TempDir(), "other")
+	require.NoError(t, os.WriteFile(tl.pkg.device, testZip(t, map[string]string{"bootstrap": "x"}), 0o600))
+	done := runTestlinkAsync(ctx, tl)
+
+	conn := h.guest(t)
+	defer conn.Close()
+	require.NoError(t, hostlink.NewTestStream(conn).HostSend(hostlink.Request{RequestID: "r-1"}))
+	res := wait(t, done, "agent to stop")
+	assert.Equal(t, exitRefused, res.code)
+	assert.ErrorContains(t, res.err, "install package")
+	assert.Zero(t, b.n)
+	assert.False(t, b.sealed)
+}
+
+// Missing package values still seal fw_cfg, and the agent refuses before
+// waiting for any frame.
+func TestTestlinkMissingPackageSpecRefuses(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	h := newHost(t)
+	h.accept(ctx)
+	var b bootstrapStarts
+	tl := b.testlink(t, h.entries())
+	require.NoError(t, os.RemoveAll(filepath.Join(tl.fwCfgDir, entryPackageSHA256)))
+
+	res := wait(t, runTestlinkAsync(ctx, tl), "agent to stop")
+	assert.Equal(t, exitRefused, res.code)
+	assert.ErrorContains(t, res.err, "read "+entryPackageSHA256)
+	assert.Zero(t, b.n)
+	_, err := os.Stat(tl.fwCfgRoot)
+	assert.ErrorIs(t, err, os.ErrNotExist, "fw_cfg not sealed")
 }

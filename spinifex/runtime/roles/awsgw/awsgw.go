@@ -390,8 +390,9 @@ func launchService(config *config.ClusterConfig) error {
 	if err != nil {
 		return fmt.Errorf("lambda environment key: %w", err)
 	}
-	// Built but not routed: Lambda stays out of the public router until its runtime image exists.
-	_ = lambdaawsapi.NewRegistration(lambdaawsapi.Deps{
+	// Built but routed only in test-link builds: Lambda stays out of the public
+	// router until its runtime image exists.
+	lambdaControlPlane := lambdaawsapi.NewRegistration(lambdaawsapi.Deps{
 		Meta: lambdafunction.NewNATSClient(natsConn),
 		Codes: func(ctx context.Context) (lambdaawsapi.CodeStore, error) {
 			store, err := lambdaCodeStore.Store(ctx)
@@ -403,6 +404,7 @@ func launchService(config *config.ClusterConfig) error {
 		Roles:  iamdomain.NewRoleResolver(iamService),
 		Trusts: lambdaRoleTrusts(iamService),
 		AEAD:   lambdaKey.AEAD,
+		Exec:   lambdaTestExecutor(natsConn, config.Node, lambdaCodeStore),
 	})
 
 	// ECR auth bridge: load (or first-run create) the ES256 signing key from the
@@ -746,7 +748,7 @@ func launchService(config *config.ClusterConfig) error {
 		Admission:    admission,
 		PublicRoutes: publicRoutes,
 		PreAuth:      []dispatch.PreAuth{stsawsapi.NewPreAuth(stsDeps)},
-	}, append([]dispatch.Registration{ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, iamControlPlane, stsControlPlane, operatorControlPlane, ecsControlPlane, eksControlPlane, bedrockControlPlane, sqsWorkerControlPlane, ec2ControlPlane}, sqsControlPlane...)...)
+	}, append([]dispatch.Registration{ecrControlPlane, acmControlPlane, route53ControlPlane, taggingControlPlane, elbv2ControlPlane, rdsControlPlane, iamControlPlane, stsControlPlane, operatorControlPlane, ecsControlPlane, eksControlPlane, bedrockControlPlane, sqsWorkerControlPlane, ec2ControlPlane}, append(sqsControlPlane, lambdaTestRoutes(lambdaControlPlane)...)...)...)
 	if err != nil {
 		return fmt.Errorf("awsgw: %w", err)
 	}

@@ -378,7 +378,7 @@ func TestService_TaskCredIDIsMintedSecret(t *testing.T) {
 		assert.Equal(t, as.CredID, second[taskID].CredID, "re-delivered assign changed credential ID")
 
 		var rec TaskRecord
-		found, gerr := getJSON(ctx, kv, TaskKey("web", taskID), &rec)
+		found, gerr := taskdefinition.GetJSON(ctx, kv, TaskKey("web", taskID), &rec)
 		require.NoError(t, gerr)
 		require.True(t, found)
 		assert.Equal(t, as.CredID, rec.CredID)
@@ -558,10 +558,10 @@ func TestScheduler_ReapBucket_StopsStaleInstanceTasks(t *testing.T) {
 	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
 	var rec InstanceRecord
-	_, err = getJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec)
+	_, err = taskdefinition.GetJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec)
 	require.NoError(t, err)
 	rec.LastSeen = time.Now().UTC().Add(-2 * heartbeatTimeout)
-	require.NoError(t, putJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec))
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec))
 
 	sc := NewScheduler(nc, svc, "test-holder")
 	sc.reapBucket(context.Background(), kv, testAccountID, time.Now().UTC())
@@ -721,7 +721,7 @@ func TestService_RunTask_GPU_ReservesOnPlacement(t *testing.T) {
 	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
 	var rec InstanceRecord
-	found, err := getJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec)
+	found, err := taskdefinition.GetJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, 2, rec.TotalGPU)
@@ -732,7 +732,7 @@ func TestService_RunTask_GPU_ReservesOnPlacement(t *testing.T) {
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: taskID,
 		LastStatus: ecsv1.TaskStatusStopped, Reason: "exited",
 	}))
-	found, err = getJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec)
+	found, err = taskdefinition.GetJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, 0, rec.ReservedGPU)

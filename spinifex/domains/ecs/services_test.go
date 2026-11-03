@@ -3,6 +3,7 @@ package ecs
 import (
 	"context"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"testing"
 	"time"
 
@@ -469,7 +470,7 @@ func TestService_StopTask_StopsAndDeregisters(t *testing.T) {
 		NetworkMode: NetworkModeAwsvpc, ENIPrivateIP: "10.0.1.9",
 		ReservedCPU: 64, ReservedMemoryMiB: 64,
 	}
-	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-9"), task))
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, TaskKey("web", "t-9"), task))
 
 	// Cooperative stop: the task stays RUNNING with desiredStatus=STOPPED and a
 	// stop directive lands in the instance inbox; nothing is deregistered until the
@@ -483,7 +484,7 @@ func TestService_StopTask_StopsAndDeregisters(t *testing.T) {
 	assert.Empty(t, reg.deregistered)
 
 	var sd ecsv1.StopDirective
-	found, err := getJSON(t.Context(), kv, StopKey("web", "i-1", "t-9"), &sd)
+	found, err := taskdefinition.GetJSON(t.Context(), kv, StopKey("web", "i-1", "t-9"), &sd)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, "bye", sd.Reason)
@@ -494,7 +495,7 @@ func TestService_StopTask_StopsAndDeregisters(t *testing.T) {
 		TaskID: "t-9", LastStatus: ecsv1.TaskStatusStopped,
 	}))
 	assert.Equal(t, []string{key(tgARN, "10.0.1.9", 80)}, reg.deregistered)
-	found, err = getJSON(t.Context(), kv, StopKey("web", "i-1", "t-9"), &sd)
+	found, err = taskdefinition.GetJSON(t.Context(), kv, StopKey("web", "i-1", "t-9"), &sd)
 	require.NoError(t, err)
 	assert.False(t, found)
 
@@ -518,7 +519,7 @@ func TestService_StopTask_UnplacedForceStops(t *testing.T) {
 		TaskID: "t-np", Cluster: "web",
 		LastStatus: TaskStatusPending, DesiredStatus: TaskStatusRunning,
 	}
-	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-np"), task))
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, TaskKey("web", "t-np"), task))
 
 	out, err := svc.StopTask(context.Background(), &ecs.StopTaskInput{
 		Cluster: aws.String("web"), Task: aws.String("t-np"), Reason: aws.String("cancel"),
@@ -550,7 +551,7 @@ func TestService_TargetGroup_RegisterOnRunningDeregisterOnStopped(t *testing.T) 
 		ContainerInstanceID: "i-1", LastStatus: TaskStatusPending,
 		NetworkMode: NetworkModeAwsvpc, ENIPrivateIP: "10.0.1.5",
 	}
-	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-1"), task))
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, TaskKey("web", "t-1"), task))
 
 	// RUNNING → register.
 	require.NoError(t, svc.recordTaskState(context.Background(), &ecsv1.TaskState{

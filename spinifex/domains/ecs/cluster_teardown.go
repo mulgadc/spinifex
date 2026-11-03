@@ -3,6 +3,7 @@ package ecs
 import (
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -34,7 +35,7 @@ func (s *Service) DeleteCluster(ctx context.Context, input *ecs.DeleteClusterInp
 		return nil, err
 	}
 	var rec ClusterRecord
-	found, err := getJSON(ctx, kv, ClusterMetaKey(cluster), &rec)
+	found, err := taskdefinition.GetJSON(ctx, kv, ClusterMetaKey(cluster), &rec)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +72,7 @@ func (s *Service) DeregisterContainerInstance(ctx context.Context, input *ecs.De
 		return nil, err
 	}
 	var rec InstanceRecord
-	found, err := getJSON(ctx, kv, InstanceKey(cluster, id), &rec)
+	found, err := taskdefinition.GetJSON(ctx, kv, InstanceKey(cluster, id), &rec)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +125,7 @@ func (s *Service) UpdateContainerInstancesState(ctx context.Context, input *ecs.
 	for _, ref := range awsStringSlice(input.ContainerInstances) {
 		id := ContainerInstanceShortID(ref)
 		var rec InstanceRecord
-		found, gerr := getJSON(ctx, kv, InstanceKey(cluster, id), &rec)
+		found, gerr := taskdefinition.GetJSON(ctx, kv, InstanceKey(cluster, id), &rec)
 		if gerr != nil {
 			return nil, gerr
 		}
@@ -134,7 +135,7 @@ func (s *Service) UpdateContainerInstancesState(ctx context.Context, input *ecs.
 		}
 		rec.Status = status
 		rec.Reaped = false
-		if perr := putJSON(ctx, kv, InstanceKey(cluster, id), &rec); perr != nil {
+		if perr := taskdefinition.PutJSON(ctx, kv, InstanceKey(cluster, id), &rec); perr != nil {
 			return nil, perr
 		}
 		if status == InstanceStatusDraining {

@@ -2,6 +2,7 @@ package ecs
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 
 	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	"github.com/nats-io/nats.go/jetstream"
@@ -55,14 +56,14 @@ func (s *Service) PollAssignments(ctx context.Context, input *PollAssignmentsInp
 		_ = kv.Delete(ctx, StopKey(cluster, instanceID, TaskShortID(taskID)))
 	}
 
-	keys, err := keysWithPrefix(ctx, kv, AssignmentsPrefix(cluster, instanceID))
+	keys, err := taskdefinition.KeysWithPrefix(ctx, kv, AssignmentsPrefix(cluster, instanceID))
 	if err != nil {
 		return nil, err
 	}
 	out := &PollAssignmentsOutput{}
 	for _, key := range keys {
 		var as ecsv1.Assign
-		found, err := getJSON(ctx, kv, key, &as)
+		found, err := taskdefinition.GetJSON(ctx, kv, key, &as)
 		if err != nil {
 			return nil, err
 		}
@@ -71,13 +72,13 @@ func (s *Service) PollAssignments(ctx context.Context, input *PollAssignmentsInp
 		}
 	}
 
-	stopKeys, err := keysWithPrefix(ctx, kv, StopsPrefix(cluster, instanceID))
+	stopKeys, err := taskdefinition.KeysWithPrefix(ctx, kv, StopsPrefix(cluster, instanceID))
 	if err != nil {
 		return nil, err
 	}
 	for _, key := range stopKeys {
 		var sd ecsv1.StopDirective
-		found, err := getJSON(ctx, kv, key, &sd)
+		found, err := taskdefinition.GetJSON(ctx, kv, key, &sd)
 		if err != nil {
 			return nil, err
 		}

@@ -189,14 +189,14 @@ func singleTaskRecord(t *testing.T, svc *Service, cluster string) (TaskRecord, b
 	t.Helper()
 	kv, err := svc.bucket(context.Background(), testAccountID)
 	require.NoError(t, err)
-	keys, err := keysWithPrefix(context.Background(), kv, TasksPrefix(cluster))
+	keys, err := taskdefinition.KeysWithPrefix(context.Background(), kv, TasksPrefix(cluster))
 	require.NoError(t, err)
 	require.LessOrEqual(t, len(keys), 1, "test expects at most one task record")
 	if len(keys) == 0 {
 		return TaskRecord{}, false
 	}
 	var rec TaskRecord
-	found, err := getJSON(context.Background(), kv, keys[0], &rec)
+	found, err := taskdefinition.GetJSON(context.Background(), kv, keys[0], &rec)
 	require.NoError(t, err)
 	return rec, found
 }
@@ -317,10 +317,10 @@ func TestReaper_Awsvpc_ReleasesENI(t *testing.T) {
 	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
 	var rec InstanceRecord
-	_, err = getJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec)
+	_, err = taskdefinition.GetJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec)
 	require.NoError(t, err)
 	rec.LastSeen = time.Now().UTC().Add(-2 * heartbeatTimeout)
-	require.NoError(t, putJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec))
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec))
 
 	sc := NewScheduler(nc, svc, "test-holder")
 	sc.reapBucket(context.Background(), kv, testAccountID, time.Now().UTC())

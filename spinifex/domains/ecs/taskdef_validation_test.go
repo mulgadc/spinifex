@@ -3,6 +3,7 @@ package ecs
 import (
 	"context"
 	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -240,7 +241,7 @@ func TestRunTask_AssignCarriesGPU(t *testing.T) {
 	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
 	var rec TaskRecord
-	found, err := getJSON(t.Context(), kv, TaskKey("web", taskID), &rec)
+	found, err := taskdefinition.GetJSON(t.Context(), kv, TaskKey("web", taskID), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, 1, rec.GPU)

@@ -19,7 +19,7 @@ import (
 func reloadService(t *testing.T, kv jetstream.KeyValue, cluster, name string) *ServiceRecord {
 	t.Helper()
 	var rec ServiceRecord
-	found, err := getJSON(t.Context(), kv, ServiceKey(cluster, name), &rec)
+	found, err := taskdefinition.GetJSON(t.Context(), kv, ServiceKey(cluster, name), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	return &rec
@@ -329,7 +329,7 @@ func TestDeployment_LegacyServiceSynthesizesPrimary(t *testing.T) {
 		DesiredCount: 1, Status: ServiceStatusActive,
 		SchedulingStrategy: SchedulingStrategyReplica, DeploymentID: "legacy-dep",
 	}
-	require.NoError(t, putJSON(t.Context(), kv, ServiceKey("web", "legacy"), rec))
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, ServiceKey("web", "legacy"), rec))
 
 	require.NoError(t, svc.reconcileService(context.Background(), kv, testAccountID, rec))
 	reloaded := reloadService(t, kv, "web", "legacy")
@@ -388,7 +388,7 @@ func TestDeployment_RepeatedStartFailuresBackOffWithoutTheCircuitBreaker(t *test
 	// Once it passes, launching resumes: the backoff is a brake, not a stop.
 	rec = reloadService(t, kv, "web", "web")
 	rec.primaryDeployment().NextLaunchAt = time.Now().UTC().Add(-time.Second)
-	require.NoError(t, putJSON(t.Context(), kv, ServiceKey("web", "web"), rec))
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, ServiceKey("web", "web"), rec))
 	require.NoError(t, svc.reconcileService(context.Background(), kv, testAccountID, reloadService(t, kv, "web", "web")))
 
 	assert.Positive(t, liveServiceTasks(t, svc, kv, "web", "web"), "backoff never released the deployment")

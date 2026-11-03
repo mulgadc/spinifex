@@ -7,6 +7,7 @@ package ecs
 import (
 	"context"
 	"encoding/json"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"testing"
 	"time"
 
@@ -60,11 +61,11 @@ func runOneTask(t *testing.T, svc *Service, kv jetstream.KeyValue) string {
 		Cluster: aws.String("web"), TaskDefinition: aws.String("app"), Count: aws.Int64(1),
 	}, testAccountID)
 	require.NoError(t, err)
-	keys, err := keysWithPrefix(t.Context(), kv, TasksPrefix("web"))
+	keys, err := taskdefinition.KeysWithPrefix(t.Context(), kv, TasksPrefix("web"))
 	require.NoError(t, err)
 	require.Len(t, keys, 1)
 	var task TaskRecord
-	found, err := getJSON(t.Context(), kv, keys[0], &task)
+	found, err := taskdefinition.GetJSON(t.Context(), kv, keys[0], &task)
 	require.NoError(t, err)
 	require.True(t, found)
 	return task.TaskID
@@ -128,11 +129,11 @@ func TestScheduler_TheReaperAsksForTheSoonestHeartbeatWindow(t *testing.T) {
 	now := time.Now().UTC()
 
 	var inst InstanceRecord
-	found, err := getJSON(t.Context(), kv, InstanceKey("web", "i-1"), &inst)
+	found, err := taskdefinition.GetJSON(t.Context(), kv, InstanceKey("web", "i-1"), &inst)
 	require.NoError(t, err)
 	require.True(t, found)
 	inst.LastSeen = now.Add(-30 * time.Second)
-	require.NoError(t, putJSON(t.Context(), kv, InstanceKey("web", "i-1"), &inst))
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, InstanceKey("web", "i-1"), &inst))
 
 	due, err := sc.reap(t.Context())
 	require.NoError(t, err)
@@ -142,12 +143,12 @@ func TestScheduler_TheReaperAsksForTheSoonestHeartbeatWindow(t *testing.T) {
 	// Past the window the reaper acts, and with nothing live left it asks for
 	// nothing: the resync is the only thing that need bring it back.
 	inst.LastSeen = now.Add(-2 * heartbeatTimeout)
-	require.NoError(t, putJSON(t.Context(), kv, InstanceKey("web", "i-1"), &inst))
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, InstanceKey("web", "i-1"), &inst))
 	due, err = sc.reap(t.Context())
 	require.NoError(t, err)
 	assert.Zero(t, due)
 
-	found, err = getJSON(t.Context(), kv, InstanceKey("web", "i-1"), &inst)
+	found, err = taskdefinition.GetJSON(t.Context(), kv, InstanceKey("web", "i-1"), &inst)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, InstanceStatusDraining, inst.Status, "an instance past its window is still reaped")
@@ -195,17 +196,17 @@ func TestScheduler_TheTimerPassReturnsTheSoonestOfItsJobs(t *testing.T) {
 	// A live instance due in 10s, and a stopped task due much later: the pass must
 	// come back for the sooner of the two.
 	var inst InstanceRecord
-	found, err := getJSON(t.Context(), kv, InstanceKey("web", "i-1"), &inst)
+	found, err := taskdefinition.GetJSON(t.Context(), kv, InstanceKey("web", "i-1"), &inst)
 	require.NoError(t, err)
 	require.True(t, found)
 	inst.LastSeen = now.Add(10*time.Second - heartbeatTimeout)
-	require.NoError(t, putJSON(t.Context(), kv, InstanceKey("web", "i-1"), &inst))
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, InstanceKey("web", "i-1"), &inst))
 
 	stopped := TaskRecord{
 		TaskID: "t-1", Cluster: "web", ARN: TaskARN(testRegion, testAccountID, "web", "t-1"),
 		LastStatus: TaskStatusStopped, DesiredStatus: TaskStatusStopped, StoppedAt: now,
 	}
-	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-1"), &stopped))
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, TaskKey("web", "t-1"), &stopped))
 
 	reapDue, err := sc.reap(t.Context())
 	require.NoError(t, err)
@@ -231,11 +232,11 @@ func TestScheduler_AnInFlightServiceAsksToBeRevisited(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, reconcileInterval, due)
 
-	keys, err := keysWithPrefix(t.Context(), kv, TasksPrefix("web"))
+	keys, err := taskdefinition.KeysWithPrefix(t.Context(), kv, TasksPrefix("web"))
 	require.NoError(t, err)
 	require.Len(t, keys, 1)
 	var task TaskRecord
-	found, err := getJSON(t.Context(), kv, keys[0], &task)
+	found, err := taskdefinition.GetJSON(t.Context(), kv, keys[0], &task)
 	require.NoError(t, err)
 	require.True(t, found)
 	require.NoError(t, svc.recordTaskState(t.Context(), &ecsv1.TaskState{

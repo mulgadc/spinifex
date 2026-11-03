@@ -3,6 +3,7 @@ package ecs
 import (
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"testing"
 	"time"
 
@@ -19,7 +20,7 @@ func TestSweepStoppedBucket_PrunesOnlyStale(t *testing.T) {
 			TaskID: id, Cluster: "web", ARN: TaskARN(testRegion, testAccountID, "web", id),
 			LastStatus: status, DesiredStatus: status, StoppedAt: stoppedAt,
 		}
-		require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", id), &rec))
+		require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, TaskKey("web", id), &rec))
 	}
 
 	put("stale", TaskStatusStopped, now.Add(-2*time.Hour))   // older than retention -> prune
@@ -36,7 +37,7 @@ func TestSweepStoppedBucket_PrunesOnlyStale(t *testing.T) {
 
 	exists := func(id string) bool {
 		var rec TaskRecord
-		found, gerr := getJSON(t.Context(), kv, TaskKey("web", id), &rec)
+		found, gerr := taskdefinition.GetJSON(t.Context(), kv, TaskKey("web", id), &rec)
 		require.NoError(t, gerr)
 		return found
 	}
@@ -58,7 +59,7 @@ func TestSweepStoppedBucket_RetriesOwedENI_Succeeds(t *testing.T) {
 		NetworkMode: NetworkModeAwsvpc, ENIID: "eni-1", ENIAttachmentID: "att-1",
 		StoppedAt: now.Add(-2 * time.Hour), // well past retention
 	}
-	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec))
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec))
 
 	pruned, due, err := svc.sweepStoppedBucket(t.Context(), kv, testAccountID, now, time.Hour)
 	require.NoError(t, err)
@@ -67,7 +68,7 @@ func TestSweepStoppedBucket_RetriesOwedENI_Succeeds(t *testing.T) {
 	assert.Equal(t, 1, eni.releaseCalls)
 
 	var got TaskRecord
-	found, gerr := getJSON(t.Context(), kv, TaskKey("web", "t-1"), &got)
+	found, gerr := taskdefinition.GetJSON(t.Context(), kv, TaskKey("web", "t-1"), &got)
 	require.NoError(t, gerr)
 	require.True(t, found)
 	assert.Equal(t, "eni-1", got.ENIID, "the identity survives release as the forensic record")
@@ -88,7 +89,7 @@ func TestSweepStoppedBucket_RetryFails_BacksOff(t *testing.T) {
 		NetworkMode: NetworkModeAwsvpc, ENIID: "eni-1",
 		StoppedAt: now.Add(-2 * time.Hour),
 	}
-	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec))
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec))
 
 	pruned, due, err := svc.sweepStoppedBucket(t.Context(), kv, testAccountID, now, time.Hour)
 	require.NoError(t, err)
@@ -96,7 +97,7 @@ func TestSweepStoppedBucket_RetryFails_BacksOff(t *testing.T) {
 	assert.Equal(t, eniReleaseBackoffBase, due)
 
 	var got TaskRecord
-	found, gerr := getJSON(t.Context(), kv, TaskKey("web", "t-1"), &got)
+	found, gerr := taskdefinition.GetJSON(t.Context(), kv, TaskKey("web", "t-1"), &got)
 	require.NoError(t, gerr)
 	require.True(t, found)
 	assert.Equal(t, "eni-1", got.ENIID, "a failed retry is still owed")
@@ -118,7 +119,7 @@ func TestSweepStoppedBucket_RetryNotDueYet_Skipped(t *testing.T) {
 		StoppedAt:         now.Add(-2 * time.Hour),
 		ENIReleaseNextTry: now.Add(10 * time.Minute),
 	}
-	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec))
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec))
 
 	pruned, due, err := svc.sweepStoppedBucket(t.Context(), kv, testAccountID, now, time.Hour)
 	require.NoError(t, err)
@@ -142,7 +143,7 @@ func TestSweepStoppedBucket_HonoursPerPassCap(t *testing.T) {
 			NetworkMode: NetworkModeAwsvpc, ENIID: "eni-" + id,
 			StoppedAt: now.Add(-2 * time.Hour),
 		}
-		require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", id), &rec))
+		require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, TaskKey("web", id), &rec))
 	}
 
 	_, due, err := svc.sweepStoppedBucket(t.Context(), kv, testAccountID, now, time.Hour)
@@ -173,7 +174,7 @@ func TestSweepStoppedBucket_CappedOverflow_AsksForSweepInterval(t *testing.T) {
 			NetworkMode: NetworkModeAwsvpc, ENIID: "eni-" + id,
 			StoppedAt: now.Add(-2 * time.Hour),
 		}
-		require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", id), &rec))
+		require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, TaskKey("web", id), &rec))
 	}
 
 	_, due, err := svc.sweepStoppedBucket(t.Context(), kv, testAccountID, now, time.Hour)
@@ -196,7 +197,7 @@ func TestSweepStoppedBucket_PrunesReleased_KeepsOwed(t *testing.T) {
 		NetworkMode: NetworkModeAwsvpc, ENIID: "eni-released", ENIReleased: true,
 		StoppedAt: now.Add(-2 * time.Hour), // well past retention
 	}
-	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "released"), &released))
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, TaskKey("web", "released"), &released))
 
 	owed := TaskRecord{
 		TaskID: "owed", Cluster: "web", ARN: TaskARN(testRegion, testAccountID, "web", "owed"),
@@ -204,7 +205,7 @@ func TestSweepStoppedBucket_PrunesReleased_KeepsOwed(t *testing.T) {
 		NetworkMode: NetworkModeAwsvpc, ENIID: "eni-owed", ENIReleased: false,
 		StoppedAt: now.Add(-2 * time.Hour), // also well past retention, but still owed
 	}
-	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "owed"), &owed))
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, TaskKey("web", "owed"), &owed))
 
 	pruned, _, err := svc.sweepStoppedBucket(t.Context(), kv, testAccountID, now, time.Hour)
 	require.NoError(t, err)
@@ -212,7 +213,7 @@ func TestSweepStoppedBucket_PrunesReleased_KeepsOwed(t *testing.T) {
 
 	exists := func(id string) bool {
 		var rec TaskRecord
-		found, gerr := getJSON(t.Context(), kv, TaskKey("web", id), &rec)
+		found, gerr := taskdefinition.GetJSON(t.Context(), kv, TaskKey("web", id), &rec)
 		require.NoError(t, gerr)
 		return found
 	}

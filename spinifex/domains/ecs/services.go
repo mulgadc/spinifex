@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"log/slog"
 	"strings"
 	"time"
@@ -145,7 +146,7 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 		return nil, err
 	}
 	var clusterRec ClusterRecord
-	found, err := getJSON(ctx, kv, ClusterMetaKey(cluster), &clusterRec)
+	found, err := taskdefinition.GetJSON(ctx, kv, ClusterMetaKey(cluster), &clusterRec)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +155,7 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 	}
 
 	var existing ServiceRecord
-	if ok, gerr := getJSON(ctx, kv, ServiceKey(cluster, name), &existing); gerr != nil {
+	if ok, gerr := taskdefinition.GetJSON(ctx, kv, ServiceKey(cluster, name), &existing); gerr != nil {
 		return nil, gerr
 	} else if ok && existing.Status == ServiceStatusActive {
 		return &ecs.CreateServiceOutput{Service: s.serviceToAWS(accountID, &existing)}, nil
@@ -195,7 +196,7 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 	applyDeploymentConfig(&rec, input.DeploymentConfiguration)
 	rec.LastGoodTaskDefARN = taskDef.ARN
 	rec.Deployments = []Deployment{newPrimaryDeployment(rec.DeploymentID, taskDef, rec.DesiredCount)}
-	if err := putJSON(ctx, kv, ServiceKey(cluster, name), &rec); err != nil {
+	if err := taskdefinition.PutJSON(ctx, kv, ServiceKey(cluster, name), &rec); err != nil {
 		return nil, err
 	}
 
@@ -214,7 +215,7 @@ func (s *Service) UpdateService(ctx context.Context, input *ecs.UpdateServiceInp
 		return nil, err
 	}
 	var rec ServiceRecord
-	found, err := getJSON(ctx, kv, ServiceKey(cluster, name), &rec)
+	found, err := taskdefinition.GetJSON(ctx, kv, ServiceKey(cluster, name), &rec)
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +254,7 @@ func (s *Service) UpdateService(ctx context.Context, input *ecs.UpdateServiceInp
 		}
 	}
 	rec.UpdatedAt = time.Now().UTC()
-	if err := putJSON(ctx, kv, ServiceKey(cluster, name), &rec); err != nil {
+	if err := taskdefinition.PutJSON(ctx, kv, ServiceKey(cluster, name), &rec); err != nil {
 		return nil, err
 	}
 	if err := s.reconcileService(ctx, kv, accountID, &rec); err != nil {
@@ -272,7 +273,7 @@ func (s *Service) DeleteService(ctx context.Context, input *ecs.DeleteServiceInp
 		return nil, err
 	}
 	var rec ServiceRecord
-	found, err := getJSON(ctx, kv, ServiceKey(cluster, name), &rec)
+	found, err := taskdefinition.GetJSON(ctx, kv, ServiceKey(cluster, name), &rec)
 	if err != nil {
 		return nil, err
 	}
@@ -292,7 +293,7 @@ func (s *Service) DeleteService(ctx context.Context, input *ecs.DeleteServiceInp
 	rec.RunningCount = 0
 	rec.PendingCount = 0
 	rec.UpdatedAt = time.Now().UTC()
-	if err := putJSON(ctx, kv, ServiceKey(cluster, name), &rec); err != nil {
+	if err := taskdefinition.PutJSON(ctx, kv, ServiceKey(cluster, name), &rec); err != nil {
 		return nil, err
 	}
 	return &ecs.DeleteServiceOutput{Service: s.serviceToAWS(accountID, &rec)}, nil
@@ -309,7 +310,7 @@ func (s *Service) DescribeServices(ctx context.Context, input *ecs.DescribeServi
 	for _, ref := range awsStringSlice(input.Services) {
 		name := ServiceShortName(ref)
 		var rec ServiceRecord
-		found, gerr := getJSON(ctx, kv, ServiceKey(cluster, name), &rec)
+		found, gerr := taskdefinition.GetJSON(ctx, kv, ServiceKey(cluster, name), &rec)
 		if gerr != nil {
 			return nil, gerr
 		}
@@ -430,7 +431,7 @@ func persistServiceIfChanged(ctx context.Context, kv jetstream.KeyValue, svc *Se
 	if bytes.Equal(before, after) {
 		return nil
 	}
-	return putJSON(ctx, kv, ServiceKey(svc.Cluster, svc.Name), svc)
+	return taskdefinition.PutJSON(ctx, kv, ServiceKey(svc.Cluster, svc.Name), svc)
 }
 
 // reconcileAllServices reconciles every ACTIVE service in every ECS account
@@ -603,14 +604,14 @@ func (s *Service) listServiceTasks(ctx context.Context, kv jetstream.KeyValue, c
 
 // listTaskRecords returns every task record in a cluster.
 func (s *Service) listTaskRecords(ctx context.Context, kv jetstream.KeyValue, cluster string) ([]TaskRecord, error) {
-	keys, err := keysWithPrefix(ctx, kv, TasksPrefix(cluster))
+	keys, err := taskdefinition.KeysWithPrefix(ctx, kv, TasksPrefix(cluster))
 	if err != nil {
 		return nil, err
 	}
 	out := make([]TaskRecord, 0, len(keys))
 	for _, k := range keys {
 		var rec TaskRecord
-		found, err := getJSON(ctx, kv, k, &rec)
+		found, err := taskdefinition.GetJSON(ctx, kv, k, &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -623,14 +624,14 @@ func (s *Service) listTaskRecords(ctx context.Context, kv jetstream.KeyValue, cl
 
 // listServiceRecords returns every service record in a cluster.
 func (s *Service) listServiceRecords(ctx context.Context, kv jetstream.KeyValue, cluster string) ([]ServiceRecord, error) {
-	keys, err := keysWithPrefix(ctx, kv, ServicesPrefix(cluster))
+	keys, err := taskdefinition.KeysWithPrefix(ctx, kv, ServicesPrefix(cluster))
 	if err != nil {
 		return nil, err
 	}
 	out := make([]ServiceRecord, 0, len(keys))
 	for _, k := range keys {
 		var rec ServiceRecord
-		found, err := getJSON(ctx, kv, k, &rec)
+		found, err := taskdefinition.GetJSON(ctx, kv, k, &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -643,7 +644,7 @@ func (s *Service) listServiceRecords(ctx context.Context, kv jetstream.KeyValue,
 
 // allServiceRecords returns every service record across all clusters in a bucket.
 func (s *Service) allServiceRecords(ctx context.Context, kv jetstream.KeyValue) ([]ServiceRecord, error) {
-	keys, err := keysWithPrefix(ctx, kv, "clusters/")
+	keys, err := taskdefinition.KeysWithPrefix(ctx, kv, "clusters/")
 	if err != nil {
 		return nil, err
 	}
@@ -653,7 +654,7 @@ func (s *Service) allServiceRecords(ctx context.Context, kv jetstream.KeyValue) 
 			continue
 		}
 		var rec ServiceRecord
-		found, err := getJSON(ctx, kv, k, &rec)
+		found, err := taskdefinition.GetJSON(ctx, kv, k, &rec)
 		if err != nil {
 			return nil, err
 		}

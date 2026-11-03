@@ -2,6 +2,7 @@ package ecs
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -17,7 +18,7 @@ func TestReportTaskGPU_MergesOntoTaskContainers(t *testing.T) {
 	svc, _ := newTestService(t)
 	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-1"), &TaskRecord{
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, TaskKey("web", "t-1"), &TaskRecord{
 		TaskID: "t-1", Cluster: "web",
 		Containers: []ContainerState{
 			{Name: "web", Status: "RUNNING"},
@@ -33,7 +34,7 @@ func TestReportTaskGPU_MergesOntoTaskContainers(t *testing.T) {
 	assert.Equal(t, "OK", out.Acknowledgment)
 
 	var rec TaskRecord
-	found, err := getJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec)
+	found, err := taskdefinition.GetJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	for _, c := range rec.Containers {
@@ -63,7 +64,7 @@ func TestDescribeTasks_GPUIDsPopulatedFromReport(t *testing.T) {
 	svc, _ := newTestService(t)
 	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-1"), &TaskRecord{
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, TaskKey("web", "t-1"), &TaskRecord{
 		TaskID: "t-1", ARN: TaskARN(svc.region, testAccountID, "web", "t-1"), Cluster: "web",
 		Containers: []ContainerState{{Name: "trainer", Status: "RUNNING", GPUIDs: []string{"GPU-aaa", "GPU-bbb"}}},
 	}))
@@ -85,7 +86,7 @@ func TestRecordTaskState_PreservesGPUIDsAcrossStoppedReport(t *testing.T) {
 	svc, _ := newTestService(t)
 	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-1"), &TaskRecord{
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, TaskKey("web", "t-1"), &TaskRecord{
 		TaskID: "t-1", ARN: TaskARN(svc.region, testAccountID, "web", "t-1"), Cluster: "web",
 		ContainerInstanceID: "i-1",
 		Containers:          []ContainerState{{Name: "trainer", Status: "PENDING"}},
@@ -99,7 +100,7 @@ func TestRecordTaskState_PreservesGPUIDsAcrossStoppedReport(t *testing.T) {
 	}))
 
 	var rec TaskRecord
-	found, err := getJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec)
+	found, err := taskdefinition.GetJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Len(t, rec.Containers, 1)
@@ -114,7 +115,7 @@ func TestRecordTaskState_PreservesGPUIDsAcrossStoppedReport(t *testing.T) {
 		Containers: []ecsv1.ContainerStatus{{Name: "trainer", Status: ecsv1.TaskStatusStopped, ExitCode: &exit}},
 	}))
 
-	found, err = getJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec)
+	found, err = taskdefinition.GetJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Len(t, rec.Containers, 1)
@@ -137,7 +138,7 @@ func TestRecordTaskState_ReportedGPUIDsOverwritePinned(t *testing.T) {
 	svc, _ := newTestService(t)
 	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-1"), &TaskRecord{
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, TaskKey("web", "t-1"), &TaskRecord{
 		TaskID: "t-1", ARN: TaskARN(svc.region, testAccountID, "web", "t-1"), Cluster: "web",
 		ContainerInstanceID: "i-1",
 		Containers:          []ContainerState{{Name: "trainer", Status: "RUNNING", GPUIDs: []string{"GPU-aaa"}}},
@@ -150,7 +151,7 @@ func TestRecordTaskState_ReportedGPUIDsOverwritePinned(t *testing.T) {
 	}))
 
 	var rec TaskRecord
-	found, err := getJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec)
+	found, err := taskdefinition.GetJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Len(t, rec.Containers, 1)
@@ -163,7 +164,7 @@ func TestRecordTaskState_NonGPUContainerStaysEmpty(t *testing.T) {
 	svc, _ := newTestService(t)
 	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-1"), &TaskRecord{
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, TaskKey("web", "t-1"), &TaskRecord{
 		TaskID: "t-1", ARN: TaskARN(svc.region, testAccountID, "web", "t-1"), Cluster: "web",
 		ContainerInstanceID: "i-1",
 		Containers:          []ContainerState{{Name: "web", Status: "PENDING"}},
@@ -183,7 +184,7 @@ func TestRecordTaskState_NonGPUContainerStaysEmpty(t *testing.T) {
 	}))
 
 	var rec TaskRecord
-	found, err := getJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec)
+	found, err := taskdefinition.GetJSON(t.Context(), kv, TaskKey("web", "t-1"), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Len(t, rec.Containers, 1)

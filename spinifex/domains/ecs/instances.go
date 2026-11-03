@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"log/slog"
 	"slices"
 	"time"
@@ -17,14 +18,14 @@ import (
 
 // listInstanceRecords returns all container-instance records in a cluster.
 func (s *Service) listInstanceRecords(ctx context.Context, kv jetstream.KeyValue, cluster string) ([]InstanceRecord, error) {
-	keys, err := keysWithPrefix(ctx, kv, InstancesPrefix(cluster))
+	keys, err := taskdefinition.KeysWithPrefix(ctx, kv, InstancesPrefix(cluster))
 	if err != nil {
 		return nil, err
 	}
 	out := make([]InstanceRecord, 0, len(keys))
 	for _, k := range keys {
 		var rec InstanceRecord
-		found, err := getJSON(ctx, kv, k, &rec)
+		found, err := taskdefinition.GetJSON(ctx, kv, k, &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -138,7 +139,7 @@ func (s *Service) DescribeContainerInstances(ctx context.Context, input *ecs.Des
 	for _, ref := range awsStringSlice(input.ContainerInstances) {
 		id := ContainerInstanceShortID(ref)
 		var rec InstanceRecord
-		found, err := getJSON(ctx, kv, InstanceKey(cluster, id), &rec)
+		found, err := taskdefinition.GetJSON(ctx, kv, InstanceKey(cluster, id), &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -194,7 +195,7 @@ func (s *Service) ListContainerInstances(ctx context.Context, input *ecs.ListCon
 // it back. Used by both the AWS register path and the bus register handler.
 func (s *Service) upsertInstance(ctx context.Context, kv jetstream.KeyValue, accountID, cluster, instanceID string, mutate func(*InstanceRecord)) (*InstanceRecord, error) {
 	var rec InstanceRecord
-	found, err := getJSON(ctx, kv, InstanceKey(cluster, instanceID), &rec)
+	found, err := taskdefinition.GetJSON(ctx, kv, InstanceKey(cluster, instanceID), &rec)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +213,7 @@ func (s *Service) upsertInstance(ctx context.Context, kv jetstream.KeyValue, acc
 	if mutate != nil {
 		mutate(&rec)
 	}
-	if err := putJSON(ctx, kv, InstanceKey(cluster, instanceID), &rec); err != nil {
+	if err := taskdefinition.PutJSON(ctx, kv, InstanceKey(cluster, instanceID), &rec); err != nil {
 		return nil, err
 	}
 	return &rec, nil
@@ -345,7 +346,7 @@ func (s *Service) recordHeartbeat(ctx context.Context, msg *ecsv1.Heartbeat) err
 		return err
 	}
 	var rec InstanceRecord
-	found, err := getJSON(ctx, kv, InstanceKey(msg.ClusterName, msg.InstanceID), &rec)
+	found, err := taskdefinition.GetJSON(ctx, kv, InstanceKey(msg.ClusterName, msg.InstanceID), &rec)
 	if err != nil || !found {
 		return err
 	}
@@ -353,7 +354,7 @@ func (s *Service) recordHeartbeat(ctx context.Context, msg *ecsv1.Heartbeat) err
 	if msg.Status != "" {
 		rec.Status = msg.Status
 	}
-	return putJSON(ctx, kv, InstanceKey(msg.ClusterName, msg.InstanceID), &rec)
+	return taskdefinition.PutJSON(ctx, kv, InstanceKey(msg.ClusterName, msg.InstanceID), &rec)
 }
 
 // recordTaskState applies an agent task-state report: it updates the task record
@@ -364,7 +365,7 @@ func (s *Service) recordTaskState(ctx context.Context, msg *ecsv1.TaskState) err
 		return err
 	}
 	var task TaskRecord
-	found, err := getJSON(ctx, kv, TaskKey(msg.ClusterName, msg.TaskID), &task)
+	found, err := taskdefinition.GetJSON(ctx, kv, TaskKey(msg.ClusterName, msg.TaskID), &task)
 	if err != nil || !found {
 		return err
 	}
@@ -406,7 +407,7 @@ func (s *Service) recordTaskState(ctx context.Context, msg *ecsv1.TaskState) err
 		// filtering on desired status would otherwise see it as still wanted.
 		task.DesiredStatus = TaskStatusStopped
 	}
-	if err := putJSON(ctx, kv, TaskKey(msg.ClusterName, msg.TaskID), &task); err != nil {
+	if err := taskdefinition.PutJSON(ctx, kv, TaskKey(msg.ClusterName, msg.TaskID), &task); err != nil {
 		return err
 	}
 
@@ -430,7 +431,7 @@ func (s *Service) recordTaskState(ctx context.Context, msg *ecsv1.TaskState) err
 		s.reclaimAssignInbox(ctx, kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID)
 		s.reclaimStopInbox(ctx, kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID)
 		s.reclaimTaskENI(ctx, msg.AccountID, &task)
-		if perr := putJSON(ctx, kv, TaskKey(msg.ClusterName, msg.TaskID), &task); perr != nil {
+		if perr := taskdefinition.PutJSON(ctx, kv, TaskKey(msg.ClusterName, msg.TaskID), &task); perr != nil {
 			slog.ErrorContext(ctx, "ECS task STOPPED: persist after EIP release failed", "task", msg.TaskID, "err", perr)
 		}
 		return s.releaseReservation(ctx, kv, msg.ClusterName, task.ContainerInstanceID, msg.TaskID, task.ReservedCPU, task.ReservedMemoryMiB, task.GPU, eniReservationFor(task.NetworkMode))
@@ -485,7 +486,7 @@ func (s *Service) recordDeploymentFailure(ctx context.Context, kv jetstream.KeyV
 		return
 	}
 	var svc ServiceRecord
-	found, err := getJSON(ctx, kv, ServiceKey(cluster, name), &svc)
+	found, err := taskdefinition.GetJSON(ctx, kv, ServiceKey(cluster, name), &svc)
 	if err != nil || !found {
 		return
 	}
@@ -493,7 +494,7 @@ func (s *Service) recordDeploymentFailure(ctx context.Context, kv jetstream.KeyV
 		if svc.Deployments[i].ID == depID {
 			svc.Deployments[i].FailedTasks++
 			svc.Deployments[i].UpdatedAt = time.Now().UTC()
-			if perr := putJSON(ctx, kv, ServiceKey(cluster, name), &svc); perr != nil {
+			if perr := taskdefinition.PutJSON(ctx, kv, ServiceKey(cluster, name), &svc); perr != nil {
 				slog.ErrorContext(ctx, "ECS deployment failure accounting: persist failed", "service", name, "err", perr)
 			}
 			return

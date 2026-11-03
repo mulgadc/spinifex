@@ -2,6 +2,7 @@ package ecs
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"testing"
 
 	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
@@ -16,9 +17,9 @@ import (
 func TestPollAssignments_DrainsStopsAndAcks(t *testing.T) {
 	svc, _, kv := serviceTestRig(t)
 
-	require.NoError(t, putJSON(t.Context(), kv, AssignmentKey("web", "i-1", "t-1"),
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, AssignmentKey("web", "i-1", "t-1"),
 		&ecsv1.Assign{TaskID: "t-1", ClusterName: "web", InstanceID: "i-1"}))
-	require.NoError(t, putJSON(t.Context(), kv, StopKey("web", "i-1", "t-2"),
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, StopKey("web", "i-1", "t-2"),
 		&ecsv1.StopDirective{TaskID: "t-2", Reason: "drain"}))
 
 	out, err := svc.PollAssignments(context.Background(), &PollAssignmentsInput{
@@ -41,7 +42,7 @@ func TestPollAssignments_DrainsStopsAndAcks(t *testing.T) {
 	assert.Empty(t, out.Assignments)
 	assert.Empty(t, out.Stops)
 
-	found, err := getJSON(t.Context(), kv, StopKey("web", "i-1", "t-2"), &ecsv1.StopDirective{})
+	found, err := taskdefinition.GetJSON(t.Context(), kv, StopKey("web", "i-1", "t-2"), &ecsv1.StopDirective{})
 	require.NoError(t, err)
 	assert.False(t, found)
 }

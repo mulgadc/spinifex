@@ -1,6 +1,7 @@
 package ecs_test
 
 import (
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -23,7 +24,7 @@ func seedTasks(t *testing.T, svc *ecsdomain.Service, cluster string, recs ...*ec
 	for _, r := range recs {
 		r.Cluster = cluster
 		r.ARN = ecsdomain.TaskARN(svc.Region(), ecsdomain.TestAccountID, cluster, r.TaskID)
-		require.NoError(t, ecsdomain.PutJSON(t.Context(), kv, ecsdomain.TaskKey(cluster, r.TaskID), r))
+		require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, ecsdomain.TaskKey(cluster, r.TaskID), r))
 	}
 }
 
@@ -124,7 +125,7 @@ func TestRecordTaskState_SelfExitMovesDesiredStatusToStopped(t *testing.T) {
 	kv, err := svc.Bucket(t.Context(), ecsdomain.TestAccountID)
 	require.NoError(t, err)
 	var rec ecsdomain.TaskRecord
-	found, err := ecsdomain.GetJSON(t.Context(), kv, ecsdomain.TaskKey("web", "t-1"), &rec)
+	found, err := taskdefinition.GetJSON(t.Context(), kv, ecsdomain.TaskKey("web", "t-1"), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, ecsdomain.TaskStatusStopped, rec.DesiredStatus)

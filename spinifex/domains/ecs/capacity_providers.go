@@ -3,6 +3,7 @@ package ecs
 import (
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -23,7 +24,7 @@ func (s *Service) PutClusterCapacityProviders(ctx context.Context, input *ecs.Pu
 		return nil, err
 	}
 	var rec ClusterRecord
-	found, err := getJSON(ctx, kv, ClusterMetaKey(cluster), &rec)
+	found, err := taskdefinition.GetJSON(ctx, kv, ClusterMetaKey(cluster), &rec)
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +34,7 @@ func (s *Service) PutClusterCapacityProviders(ctx context.Context, input *ecs.Pu
 
 	rec.CapacityProviders = awsStringSlice(input.CapacityProviders)
 	rec.DefaultCapacityProviderStrategy = strategyFromAWS(input.DefaultCapacityProviderStrategy)
-	if err := putJSON(ctx, kv, ClusterMetaKey(cluster), &rec); err != nil {
+	if err := taskdefinition.PutJSON(ctx, kv, ClusterMetaKey(cluster), &rec); err != nil {
 		return nil, err
 	}
 	return &ecs.PutClusterCapacityProvidersOutput{Cluster: rec.toAWS()}, nil
@@ -53,7 +54,7 @@ func (s *Service) CreateCapacityProvider(ctx context.Context, input *ecs.CreateC
 	}
 
 	var existing CapacityProviderRecord
-	found, err := getJSON(ctx, kv, CapacityProviderKey(name), &existing)
+	found, err := taskdefinition.GetJSON(ctx, kv, CapacityProviderKey(name), &existing)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +70,7 @@ func (s *Service) CreateCapacityProvider(ctx context.Context, input *ecs.CreateC
 		Tags:                     tagsToMap(input.Tags),
 		CreatedAt:                time.Now().UTC(),
 	}
-	if err := putJSON(ctx, kv, CapacityProviderKey(name), &rec); err != nil {
+	if err := taskdefinition.PutJSON(ctx, kv, CapacityProviderKey(name), &rec); err != nil {
 		return nil, err
 	}
 	return &ecs.CreateCapacityProviderOutput{CapacityProvider: rec.toAWS()}, nil
@@ -86,13 +87,13 @@ func (s *Service) DescribeCapacityProviders(ctx context.Context, input *ecs.Desc
 
 	names := awsStringSlice(input.CapacityProviders)
 	if len(names) == 0 {
-		keys, kerr := keysWithPrefix(ctx, kv, CapacityProvidersPrefix())
+		keys, kerr := taskdefinition.KeysWithPrefix(ctx, kv, CapacityProvidersPrefix())
 		if kerr != nil {
 			return nil, kerr
 		}
 		for _, k := range keys {
 			var rec CapacityProviderRecord
-			ok, gerr := getJSON(ctx, kv, k, &rec)
+			ok, gerr := taskdefinition.GetJSON(ctx, kv, k, &rec)
 			if gerr != nil {
 				return nil, gerr
 			}
@@ -106,7 +107,7 @@ func (s *Service) DescribeCapacityProviders(ctx context.Context, input *ecs.Desc
 	for _, ref := range names {
 		name := CapacityProviderShortName(ref)
 		var rec CapacityProviderRecord
-		ok, gerr := getJSON(ctx, kv, CapacityProviderKey(name), &rec)
+		ok, gerr := taskdefinition.GetJSON(ctx, kv, CapacityProviderKey(name), &rec)
 		if gerr != nil {
 			return nil, gerr
 		}
@@ -132,7 +133,7 @@ func (s *Service) DeleteCapacityProvider(ctx context.Context, input *ecs.DeleteC
 		return nil, err
 	}
 	var rec CapacityProviderRecord
-	found, err := getJSON(ctx, kv, CapacityProviderKey(name), &rec)
+	found, err := taskdefinition.GetJSON(ctx, kv, CapacityProviderKey(name), &rec)
 	if err != nil {
 		return nil, err
 	}

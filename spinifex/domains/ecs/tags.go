@@ -78,7 +78,7 @@ func (s *Service) resourceTags(ctx context.Context, kv jetstream.KeyValue, kind 
 	switch kind {
 	case ecsResourceCluster:
 		var rec ClusterRecord
-		found, err := getJSON(ctx, kv, ClusterMetaKey(id), &rec)
+		found, err := taskdefinition.GetJSON(ctx, kv, ClusterMetaKey(id), &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -92,7 +92,7 @@ func (s *Service) resourceTags(ctx context.Context, kv jetstream.KeyValue, kind 
 			return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 		}
 		var rec taskdefinition.Record
-		found, err := getJSON(ctx, kv, taskdefinition.RevKey(family, rev), &rec)
+		found, err := taskdefinition.GetJSON(ctx, kv, taskdefinition.RevKey(family, rev), &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -102,7 +102,7 @@ func (s *Service) resourceTags(ctx context.Context, kv jetstream.KeyValue, kind 
 		return rec.Tags, nil
 	case ecsResourceService:
 		var rec ServiceRecord
-		found, err := getJSON(ctx, kv, ServiceKey(cluster, id), &rec)
+		found, err := taskdefinition.GetJSON(ctx, kv, ServiceKey(cluster, id), &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -112,7 +112,7 @@ func (s *Service) resourceTags(ctx context.Context, kv jetstream.KeyValue, kind 
 		return rec.Tags, nil
 	case ecsResourceTask:
 		var rec TaskRecord
-		found, err := getJSON(ctx, kv, TaskKey(cluster, id), &rec)
+		found, err := taskdefinition.GetJSON(ctx, kv, TaskKey(cluster, id), &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -122,7 +122,7 @@ func (s *Service) resourceTags(ctx context.Context, kv jetstream.KeyValue, kind 
 		return rec.Tags, nil
 	case ecsResourceContainerInstance:
 		var rec InstanceRecord
-		found, err := getJSON(ctx, kv, InstanceKey(cluster, id), &rec)
+		found, err := taskdefinition.GetJSON(ctx, kv, InstanceKey(cluster, id), &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -142,7 +142,7 @@ func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue,
 	switch kind {
 	case ecsResourceCluster:
 		var rec ClusterRecord
-		found, err := getJSON(ctx, kv, ClusterMetaKey(id), &rec)
+		found, err := taskdefinition.GetJSON(ctx, kv, ClusterMetaKey(id), &rec)
 		if err != nil {
 			return err
 		}
@@ -150,14 +150,14 @@ func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue,
 			return errors.New(awserrors.ErrorECSClusterNotFound)
 		}
 		rec.Tags = mutate(rec.Tags)
-		return putJSON(ctx, kv, ClusterMetaKey(id), &rec)
+		return taskdefinition.PutJSON(ctx, kv, ClusterMetaKey(id), &rec)
 	case ecsResourceTaskDefinition:
 		family, rev := taskdefinition.ParseRef(id)
 		if family == "" || rev == 0 {
 			return errors.New(awserrors.ErrorECSInvalidParameter)
 		}
 		var rec taskdefinition.Record
-		found, err := getJSON(ctx, kv, taskdefinition.RevKey(family, rev), &rec)
+		found, err := taskdefinition.GetJSON(ctx, kv, taskdefinition.RevKey(family, rev), &rec)
 		if err != nil {
 			return err
 		}
@@ -165,10 +165,10 @@ func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue,
 			return errors.New(awserrors.ErrorECSInvalidParameter)
 		}
 		rec.Tags = mutate(rec.Tags)
-		return putJSON(ctx, kv, taskdefinition.RevKey(family, rev), &rec)
+		return taskdefinition.PutJSON(ctx, kv, taskdefinition.RevKey(family, rev), &rec)
 	case ecsResourceService:
 		var rec ServiceRecord
-		found, err := getJSON(ctx, kv, ServiceKey(cluster, id), &rec)
+		found, err := taskdefinition.GetJSON(ctx, kv, ServiceKey(cluster, id), &rec)
 		if err != nil {
 			return err
 		}
@@ -176,10 +176,10 @@ func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue,
 			return errors.New(awserrors.ErrorECSServiceNotFound)
 		}
 		rec.Tags = mutate(rec.Tags)
-		return putJSON(ctx, kv, ServiceKey(cluster, id), &rec)
+		return taskdefinition.PutJSON(ctx, kv, ServiceKey(cluster, id), &rec)
 	case ecsResourceTask:
 		var rec TaskRecord
-		found, err := getJSON(ctx, kv, TaskKey(cluster, id), &rec)
+		found, err := taskdefinition.GetJSON(ctx, kv, TaskKey(cluster, id), &rec)
 		if err != nil {
 			return err
 		}
@@ -187,10 +187,10 @@ func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue,
 			return errors.New(awserrors.ErrorECSInvalidParameter)
 		}
 		rec.Tags = mutate(rec.Tags)
-		return putJSON(ctx, kv, TaskKey(cluster, id), &rec)
+		return taskdefinition.PutJSON(ctx, kv, TaskKey(cluster, id), &rec)
 	case ecsResourceContainerInstance:
 		var rec InstanceRecord
-		found, err := getJSON(ctx, kv, InstanceKey(cluster, id), &rec)
+		found, err := taskdefinition.GetJSON(ctx, kv, InstanceKey(cluster, id), &rec)
 		if err != nil {
 			return err
 		}
@@ -198,7 +198,7 @@ func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue,
 			return errors.New(awserrors.ErrorECSInvalidParameter)
 		}
 		rec.Tags = mutate(rec.Tags)
-		return putJSON(ctx, kv, InstanceKey(cluster, id), &rec)
+		return taskdefinition.PutJSON(ctx, kv, InstanceKey(cluster, id), &rec)
 	default:
 		return errors.New(awserrors.ErrorECSInvalidParameter)
 	}

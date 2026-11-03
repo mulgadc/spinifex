@@ -34,7 +34,7 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 	}
 
 	var clusterRec ClusterRecord
-	found, err := getJSON(ctx, kv, ClusterMetaKey(cluster), &clusterRec)
+	found, err := taskdefinition.GetJSON(ctx, kv, ClusterMetaKey(cluster), &clusterRec)
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +82,7 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 			}
 		}
 
-		if err := putJSON(ctx, kv, TaskKey(cluster, taskID), rec); err != nil {
+		if err := taskdefinition.PutJSON(ctx, kv, TaskKey(cluster, taskID), rec); err != nil {
 			return nil, err
 		}
 		if err := s.publishAssign(ctx, kv, accountID, cluster, inst.InstanceID, rec, taskDef); err != nil {
@@ -166,7 +166,7 @@ func (s *Service) provisionTaskENI(ctx context.Context, kv jetstream.KeyValue, a
 			rec.DesiredStatus = TaskStatusStopped
 			rec.StoppedReason = fmt.Sprintf("ENI attach failed: %s", err)
 			rec.StoppedAt = time.Now().UTC()
-			if perr := putJSON(ctx, kv, TaskKey(cluster, rec.TaskID), rec); perr != nil {
+			if perr := taskdefinition.PutJSON(ctx, kv, TaskKey(cluster, rec.TaskID), rec); perr != nil {
 				slog.ErrorContext(ctx, "ECS RunTask: persist ENI rollback failed", "task", rec.TaskID, "err", perr)
 			}
 		}
@@ -271,7 +271,7 @@ func (s *Service) publishAssign(ctx context.Context, kv jetstream.KeyValue, acco
 	for _, c := range td.Containers {
 		msg.Containers = append(msg.Containers, containerToAssign(c))
 	}
-	return putJSON(ctx, kv, AssignmentKey(cluster, instanceID, rec.TaskID), &msg)
+	return taskdefinition.PutJSON(ctx, kv, AssignmentKey(cluster, instanceID, rec.TaskID), &msg)
 }
 
 // DescribeTasks returns task records for the named tasks in a cluster.
@@ -285,7 +285,7 @@ func (s *Service) DescribeTasks(ctx context.Context, input *ecs.DescribeTasksInp
 	for _, ref := range awsStringSlice(input.Tasks) {
 		taskID := ContainerInstanceShortID(ref)
 		var rec TaskRecord
-		found, err := getJSON(ctx, kv, TaskKey(cluster, taskID), &rec)
+		found, err := taskdefinition.GetJSON(ctx, kv, TaskKey(cluster, taskID), &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -308,14 +308,14 @@ func (s *Service) ListTasks(ctx context.Context, input *ecs.ListTasksInput, acco
 		return nil, err
 	}
 	var clusterRec ClusterRecord
-	found, err := getJSON(ctx, kv, ClusterMetaKey(cluster), &clusterRec)
+	found, err := taskdefinition.GetJSON(ctx, kv, ClusterMetaKey(cluster), &clusterRec)
 	if err != nil {
 		return nil, err
 	}
 	if !found {
 		return nil, errors.New(awserrors.ErrorECSClusterNotFound)
 	}
-	keys, err := keysWithPrefix(ctx, kv, TasksPrefix(cluster))
+	keys, err := taskdefinition.KeysWithPrefix(ctx, kv, TasksPrefix(cluster))
 	if err != nil {
 		return nil, err
 	}
@@ -323,7 +323,7 @@ func (s *Service) ListTasks(ctx context.Context, input *ecs.ListTasksInput, acco
 	arns := make([]string, 0, len(keys))
 	for _, k := range keys {
 		var rec TaskRecord
-		found, err := getJSON(ctx, kv, k, &rec)
+		found, err := taskdefinition.GetJSON(ctx, kv, k, &rec)
 		if err != nil {
 			return nil, err
 		}

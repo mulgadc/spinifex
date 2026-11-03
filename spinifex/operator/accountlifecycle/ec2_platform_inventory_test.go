@@ -160,54 +160,52 @@ func TestEC2PlatformInventoryClientDistrustsAMalformedReply(t *testing.T) {
 	}, reply.Kinds)
 }
 
-// The cluster wiring binds the NATS adapter, and only the explicit dry run
-// consults it: precheck, the inventory the CLI prints before a real teardown,
-// a Teardown request marked dry run and a full teardown all leave it uncalled.
-func TestOnlyTheExplicitDryRunCallsTheEC2PlatformInventory(t *testing.T) {
+// The cluster wiring binds the NATS adapter, and the dry run lists the L09 kinds
+// from the owner's inventory, because no reaper lists them any more.
+func TestTheDryRunListsTheL09KindsFromTheOwnerInventory(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
 	svc, err := iamdomain.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
-	cluster, err := NewClusterEngine(t.Context(), nc, testClusterNodes(), svc, newFakeBuckets())
+	cluster, err := NewClusterEngine(t.Context(), nc, testClusterNodes(), svc, newFakeBuckets(), &stubCleaner{})
 	require.NoError(t, err)
 	assert.IsType(t, &ec2PlatformInventoryClient{}, cluster.ec2Inventory)
 
-	inventory := &fakeInventory{reply: ec2v1.IncompletePlatformInventory(testAccountID, "req-1", ec2v1.PlatformReasonNoResponder)}
-	reaper := &fakeReaper{kind: "key-pair", stage: StagePlatform, resources: []Resource{{Kind: "key-pair", ID: "deploy"}}}
-	engine := quietEngine(newFakeAccounts(), reaper)
-	engine.ec2Inventory = inventory
+	reply := *completeInventory()
+	reply.Kinds[0].Status = ec2v1.PlatformStatusRecordsFound
+	reply.Items = []ec2v1.PlatformItem{{Kind: reply.Kinds[0].Kind, ResourceID: "key-1", Disposition: "found"}}
+	engine := quietEngine(newFakeAccounts())
+	engine.ec2Inventory = &stubInventory{reply: reply}
 
-	require.NoError(t, engine.Precheck(testAccountID, testAccountName))
-	_, err = engine.Inventory(testCtx(t), testAccountID)
-	require.NoError(t, err)
-	dryRun := request()
-	dryRun.DryRun = true
-	_, err = engine.Teardown(testCtx(t), dryRun)
-	require.NoError(t, err)
-	assert.Empty(t, inventory.calls())
+	result, err := engine.DryRun(testCtx(t), testAccountID)
 
-	_, err = engine.DryRun(testCtx(t), testAccountID, "req-1")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"req-1"}, inventory.calls())
-
-	result, err := engine.Teardown(testCtx(t), request())
-	require.NoError(t, err)
-	assert.True(t, result.AccountDeleted)
-	assert.Equal(t, []string{"req-1"}, inventory.calls(), "a real teardown never consults the inventory")
-}
-
-// The shadow matches legacy listings to inventory kinds by the reapers' kind
-// names, so the registered platform reapers must use the contract's names.
-func TestPlatformReaperKindsAreTheInventoryKinds(t *testing.T) {
-	var kinds []string
-	for _, reaper := range EC2Reapers(nil, 1, nil) {
-		if reaper.Stage() == StagePlatform {
-			kinds = append(kinds, reaper.Kind())
+	var listed []Resource
+	for _, stage := range result.Stages {
+		if stage.Stage == StagePlatform {
+			listed = stage.Deleted
 		}
 	}
-	for _, kind := range ec2ShadowKinds {
-		assert.Contains(t, kinds, kind.kind)
+	require.Len(t, listed, 1)
+	assert.Equal(t, "key-1", listed[0].ID)
+}
+
+// An inventory that cannot say what the account holds is an error, never an
+// empty listing the operator would read as a clean account.
+func TestTheDryRunFailsWhenTheOwnerInventoryIsIncomplete(t *testing.T) {
+	engine := quietEngine(newFakeAccounts())
+	engine.ec2Inventory = &stubInventory{reply: ec2v1.IncompletePlatformInventory(testAccountID, "", ec2v1.PlatformReasonNoResponder)}
+
+	_, err := engine.DryRun(testCtx(t), testAccountID)
+
+	require.Error(t, err)
+}
+
+// The L09 kinds are the owner's, so no legacy reaper may list or delete them.
+func TestNoLegacyReaperOwnsAnL09Kind(t *testing.T) {
+	for _, reaper := range EC2Reapers(nil, 1, nil) {
+		assert.NotContains(t, ec2PlatformKinds, reaper.Kind())
 	}
 }
 

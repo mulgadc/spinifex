@@ -84,8 +84,8 @@ type ListAccountsResponse struct {
 }
 
 // IAMQuiescence is the coordinator's recorded view of IAM quiescence for one
-// fence. Recording only: it admits nothing. QuiescedScope is filled only for a
-// non-finalizing run, and holds as of EvaluatedAt: a write after that is not caught.
+// fence. Recording only: it admits nothing. QuiescedScope is filled only by a run
+// that guarantees a final inventory re-read, and holds as of EvaluatedAt.
 type IAMQuiescence struct {
 	OperationID   string            `json:"operationId"`
 	Fence         uint64            `json:"fence"`

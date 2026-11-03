@@ -59,8 +59,8 @@ type Deps struct {
 	// Termination is the concrete IAM service, the only holder of the capability
 	// to quiesce and remove an account. DeleteAccount needs it.
 	Termination accountteardown.IAMBackend
-	// PlatformCleaner is the in-process EC2 platform cleanup a non-finalizing
-	// DeleteAccount runs. Nil refuses that request.
+	// PlatformCleaner is the in-process EC2 platform cleanup every DeleteAccount
+	// runs. Nil refuses a request that is not a dry run.
 	PlatformCleaner   accountteardown.PlatformCleaner
 	Quota             *quota.Service
 	ExpectedNodes     int

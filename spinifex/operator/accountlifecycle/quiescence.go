@@ -13,10 +13,11 @@ type QuiesceEvidence struct {
 	Fence       uint64
 	Generation  uint64
 
-	// Exercise is set only for a non-finalizing run, which re-reads the owner
-	// inventory after its cleanup and removes no account record. An ordinary
-	// delete re-reads nothing before the record goes, so it records no scope.
-	Exercise bool
+	// FinalRereadGuaranteed is set by a run that re-reads the owner inventory
+	// after its cleanup and before anything is finalised: an exercise, and an
+	// ordinary delete before it removes the account record. A caller that does
+	// not guarantee it records no scope.
+	FinalRereadGuaranteed bool
 
 	// Account is the IAM record read back after the quiesce.
 	Account     *Account
@@ -79,8 +80,8 @@ var otherScopes = []unresolvedEntry{
 
 // EvaluateQuiescence applies ADR-0008:S9's three conditions to the evidence and
 // records what holds. A fence the read-back does not confirm stops everything
-// else; otherwise every scope is listed. A kind is quiesced only for an
-// exercise whose owner inventory for it was complete.
+// else; otherwise every scope is listed. A kind is quiesced only when the final
+// re-read is guaranteed and its owner inventory was complete.
 func EvaluateQuiescence(ev QuiesceEvidence) operatorv1.IAMQuiescence {
 	out := operatorv1.IAMQuiescence{
 		OperationID:   ev.OperationID,
@@ -110,7 +111,7 @@ func EvaluateQuiescence(ev QuiesceEvidence) operatorv1.IAMQuiescence {
 		switch {
 		case !complete:
 			out.Unresolved = append(out.Unresolved, writerEntry("ec2-"+kind, operatorv1.ReasonOwnerInventoryIncomplete))
-		case !ev.Exercise:
+		case !ev.FinalRereadGuaranteed:
 			out.Unresolved = append(out.Unresolved, writerEntry("ec2-"+kind, operatorv1.ReasonFinalInventoryRereadNotWired))
 		default:
 			out.QuiescedScope = append(out.QuiescedScope, kind)

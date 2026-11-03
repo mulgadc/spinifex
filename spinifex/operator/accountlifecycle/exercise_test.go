@@ -251,20 +251,87 @@ func TestS7_ExerciseCleansNothingUnlessItsQuiescenceWasRecordedUnderAConfirmedFe
 	})
 }
 
-// ADR-0003:S7: an ordinary teardown never runs the platform cleanup and never
-// records a quiesced scope, whatever its inventory says.
-func TestS7_OrdinaryTeardownNeverCleansOrRecordsAScope(t *testing.T) {
+func ordinaryEngine(accounts AccountStore, cleaner PlatformCleaner, replies ...ec2v1.PlatformInventoryReply) *Engine {
+	return exerciseEngine(accounts, cleaner, &sequencedInventory{replies: replies})
+}
+
+// ADR-0003:S7: an ordinary delete cleans a kind only after recording it quiesced
+// under the fence, and cleans only the recorded kinds.
+func TestS7_OrdinaryDeleteCleansOnlyKindsItRecordedQuiesced(t *testing.T) {
 	accounts := newFakeAccounts()
+	var recorded []operatorv1.IAMQuiescence
 	cleaner := &stubCleaner{result: cleanResult()}
-	engine := exerciseEngine(accounts, cleaner, &sequencedInventory{replies: []ec2v1.PlatformInventoryReply{*completeInventory()}})
-	var recorded operatorv1.IAMQuiescence
-	engine.OnQuiesced = func(_ context.Context, q operatorv1.IAMQuiescence) { recorded = q }
+	cleaner.onCall = func() { assert.NotEmpty(t, recorded, "quiescence must be recorded before any cleanup") }
+	partial := *completeInventory()
+	partial.Kinds[0].Status = ec2v1.PlatformStatusScanIncomplete
+	engine := ordinaryEngine(accounts, cleaner, *completeInventory(), partial, *completeInventory())
+	engine.OnQuiesced = func(_ context.Context, q operatorv1.IAMQuiescence) { recorded = append(recorded, q) }
 
 	_, err := engine.Teardown(context.Background(), exerciseRequest())
 
 	require.NoError(t, err)
+	require.Len(t, recorded, 2)
+	require.Len(t, cleaner.calls, 1)
+	assert.ElementsMatch(t, recorded[1].QuiescedScope, cleaner.calls[0].Kinds)
+	assert.NotContains(t, cleaner.calls[0].Kinds, ec2v1.PlatformKindKeyPair, "an incomplete kind is never cleaned")
+	assert.True(t, cleaner.calls[0].DeleteLiveTemplates)
+}
+
+// ADR-0003:S7: with no kind quiesced the cleanup does not run, and a final
+// re-read that cannot complete keeps the account TERMINATING.
+func TestS7_OrdinaryDeleteWithNoQuiescedKindCleansNothingAndKeepsTheAccount(t *testing.T) {
+	accounts := newFakeAccounts()
+	cleaner := &stubCleaner{result: cleanResult()}
+	incomplete := ec2v1.IncompletePlatformInventory(testAccountID, "op-1", ec2v1.PlatformReasonTimeout)
+	engine := ordinaryEngine(accounts, cleaner, incomplete)
+
+	result, err := engine.Teardown(context.Background(), exerciseRequest())
+
+	require.ErrorIs(t, err, ErrResourcesStuck)
 	assert.Empty(t, cleaner.calls)
-	assert.Empty(t, recorded.QuiescedScope)
+	assert.False(t, accounts.deleted)
+	assert.Positive(t, result.StuckCount())
+	assert.Equal(t, AccountStatusTerminating, accounts.account.Status)
+}
+
+// ADR-0003:S7: a record that remains after cleanup keeps the account, whatever
+// Force says, and is named with the cleanup's own reason.
+func TestS7_OrdinaryDeleteKeepsTheAccountWhileAnL09RecordRemains(t *testing.T) {
+	for _, force := range []bool{false, true} {
+		accounts := newFakeAccounts()
+		cleaner := &stubCleaner{result: withItem(cleanResult(), accountcleanup.Item{
+			ResourceID: "key-1", Kind: ec2v1.PlatformKindKeyPair, Disposition: accountcleanup.DispositionBlocked, Reason: accountcleanup.ReasonInstanceReference,
+		})}
+		engine := ordinaryEngine(accounts, cleaner, *completeInventory(), rereadWithKeyPair("key-1"))
+		req := exerciseRequest()
+		req.Force = force
+
+		result, err := engine.Teardown(context.Background(), req)
+
+		require.ErrorIs(t, err, ErrResourcesStuck, "force=%v", force)
+		assert.False(t, accounts.deleted, "force=%v", force)
+		var reasons []string
+		for _, stage := range result.Stages {
+			for _, stuck := range stage.Stuck {
+				reasons = append(reasons, stuck.Reason)
+			}
+		}
+		assert.Contains(t, reasons, accountcleanup.ReasonInstanceReference)
+	}
+}
+
+// ADR-0003:S7: without the cleanup or the inventory an ordinary delete does not
+// start, so it cannot fall back to deleting the account with L09 records unread.
+func TestS7_OrdinaryDeleteRefusesToStartWithoutTheCleanupOrInventory(t *testing.T) {
+	accounts := newFakeAccounts()
+	engine := ordinaryEngine(accounts, nil, *completeInventory())
+	engine.Cleanup = nil
+
+	_, err := engine.Teardown(context.Background(), exerciseRequest())
+
+	require.ErrorIs(t, err, errPlatformCleanupMissing)
+	assert.False(t, accounts.deleted)
+	assert.NotEqual(t, AccountStatusTerminating, accounts.account.Status, "nothing was quiesced")
 }
 
 func TestInstanceReferencesSkipTerminalInstancesAndNameKeysAndGroups(t *testing.T) {

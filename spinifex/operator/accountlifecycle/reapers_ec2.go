@@ -15,9 +15,6 @@ import (
 	ec2igwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/igw"
 	ec2imageapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/image"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
-	ec2keyapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/key"
-	ec2launchtemplateapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/launchtemplate"
-	ec2placementgroupapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/placementgroup"
 	ec2routetableapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/routetable"
 	ec2snapshotapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/snapshot"
 	ec2volumeapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/volume"
@@ -55,10 +52,6 @@ func EC2Reapers(nc *nats.Conn, expectedNodes int, nodeIDs []string) []Reaper {
 		&subnetReaper{nc: nc},
 		&securityGroupReaper{nc: nc},
 		&vpcReaper{nc: nc},
-
-		&keyPairReaper{nc: nc},
-		&placementGroupReaper{nc: nc},
-		&launchTemplateReaper{nc: nc},
 	}
 }
 
@@ -565,90 +558,6 @@ func (r *vpcReaper) List(ctx context.Context, accountID string) ([]Resource, err
 func (r *vpcReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
 	_, err := ec2vpcapi.DeleteVpc(ctx, &ec2.DeleteVpcInput{
 		VpcId: aws.String(resource.ID),
-	}, r.nc, accountID)
-	return ignoreAlreadyGone(err)
-}
-
-type keyPairReaper struct{ nc *nats.Conn }
-
-func (r *keyPairReaper) Kind() string { return "key-pair" }
-func (r *keyPairReaper) Stage() Stage { return StagePlatform }
-
-func (r *keyPairReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	out, err := ec2keyapi.DescribeKeyPairs(ctx, &ec2.DescribeKeyPairsInput{}, r.nc, accountID)
-	if err != nil {
-		return nil, err
-	}
-
-	var found []Resource
-	for _, pair := range out.KeyPairs {
-		if pair == nil || pair.KeyName == nil {
-			continue
-		}
-		found = append(found, Resource{Kind: r.Kind(), ID: *pair.KeyName})
-	}
-	return found, nil
-}
-
-func (r *keyPairReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
-	_, err := ec2keyapi.DeleteKeyPair(ctx, &ec2.DeleteKeyPairInput{
-		KeyName: aws.String(resource.ID),
-	}, r.nc, accountID)
-	return ignoreAlreadyGone(err)
-}
-
-type placementGroupReaper struct{ nc *nats.Conn }
-
-func (r *placementGroupReaper) Kind() string { return "placement-group" }
-func (r *placementGroupReaper) Stage() Stage { return StagePlatform }
-
-func (r *placementGroupReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	out, err := ec2placementgroupapi.DescribePlacementGroups(ctx, &ec2.DescribePlacementGroupsInput{}, r.nc, accountID)
-	if err != nil {
-		return nil, err
-	}
-
-	var found []Resource
-	for _, group := range out.PlacementGroups {
-		if group == nil || group.GroupName == nil {
-			continue
-		}
-		found = append(found, Resource{Kind: r.Kind(), ID: *group.GroupName})
-	}
-	return found, nil
-}
-
-func (r *placementGroupReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
-	_, err := ec2placementgroupapi.DeletePlacementGroup(ctx, &ec2.DeletePlacementGroupInput{
-		GroupName: aws.String(resource.ID),
-	}, r.nc, accountID)
-	return ignoreAlreadyGone(err)
-}
-
-type launchTemplateReaper struct{ nc *nats.Conn }
-
-func (r *launchTemplateReaper) Kind() string { return "launch-template" }
-func (r *launchTemplateReaper) Stage() Stage { return StagePlatform }
-
-func (r *launchTemplateReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	out, err := ec2launchtemplateapi.DescribeLaunchTemplates(ctx, &ec2.DescribeLaunchTemplatesInput{}, r.nc, accountID)
-	if err != nil {
-		return nil, err
-	}
-
-	var found []Resource
-	for _, template := range out.LaunchTemplates {
-		if template == nil || template.LaunchTemplateId == nil {
-			continue
-		}
-		found = append(found, Resource{Kind: r.Kind(), ID: *template.LaunchTemplateId})
-	}
-	return found, nil
-}
-
-func (r *launchTemplateReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
-	_, err := ec2launchtemplateapi.DeleteLaunchTemplate(ctx, &ec2.DeleteLaunchTemplateInput{
-		LaunchTemplateId: aws.String(resource.ID),
 	}, r.nc, accountID)
 	return ignoreAlreadyGone(err)
 }

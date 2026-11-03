@@ -26,12 +26,15 @@ type ClusterNodes struct {
 // The CLI and the admin API both build their engine here rather than each
 // assembling its own list: a reaper registered on one surface and not the other
 // would leave resources behind depending on how the teardown was started.
+// The key-pair, placement-group and launch-template kinds have no reaper: the
+// EC2-owned cleanup removes them.
 func NewClusterEngine(
 	ctx context.Context,
 	nc *nats.Conn,
 	nodes ClusterNodes,
 	svc IAMBackend,
 	buckets BucketStore,
+	cleaner PlatformCleaner,
 ) (*Engine, error) {
 	// Refused rather than skipped. A teardown missing its bucket reaper still
 	// reports every stage drained and still deletes the account record, leaving
@@ -89,5 +92,8 @@ func NewClusterEngine(
 
 	engine := NewEngine(NewIAMAccounts(svc), reapers...)
 	engine.ec2Inventory = newEC2PlatformInventoryClient(nc)
+	// May be nil: a dry run needs no cleanup, and Teardown and Exercise refuse
+	// to start without it.
+	engine.Cleanup = cleaner
 	return engine, nil
 }

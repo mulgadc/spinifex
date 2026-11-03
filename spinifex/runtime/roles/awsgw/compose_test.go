@@ -99,7 +99,7 @@ func (fixedCleaner) CleanupPlatform(context.Context, *accountcleanup.Request) (*
 	return &accountcleanup.Result{}, nil
 }
 
-// A non-finalizing DeleteAccount cleans through the in-process owners awsgw
+// Every DeleteAccount cleans through the in-process owners awsgw
 // binds. A cleanup that cannot be built must leave the field nil, which refuses
 // the request, rather than bind something half-working.
 func TestWithPlatformCleaner_BindsTheCleanupOrLeavesItNil(t *testing.T) {
@@ -112,7 +112,7 @@ func TestWithPlatformCleaner_BindsTheCleanupOrLeavesItNil(t *testing.T) {
 	assert.Nil(t, unbound.PlatformCleaner)
 }
 
-// The cleanup is bound where the operator deps are composed, or the exercise is
+// The cleanup is bound where the operator deps are composed, or every delete is
 // refused on every gateway.
 func TestAwsgwBindsThePlatformCleanup(t *testing.T) {
 	file, err := parser.ParseFile(token.NewFileSet(), "awsgw.go", nil, 0)
@@ -128,4 +128,26 @@ func TestAwsgwBindsThePlatformCleanup(t *testing.T) {
 		return true
 	})
 	assert.True(t, bound, "awsgw.go must call withPlatformCleaner")
+}
+
+// The ordinary delete may remove a live launch template only when EKS says no
+// nodegroup names it, so the cleanup must be built with the EKS-backed reader.
+func TestPlatformCleanerIsBuiltWithTheEKSTemplateConsumerReader(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "platform_cleanup.go", nil, 0)
+	require.NoError(t, err)
+
+	var wired bool
+	ast.Inspect(file, func(n ast.Node) bool {
+		if kv, ok := n.(*ast.KeyValueExpr); ok {
+			if key, ok := kv.Key.(*ast.Ident); ok && key.Name == "Consumers" {
+				if call, ok := kv.Value.(*ast.CallExpr); ok {
+					if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "NewTemplateConsumerReader" {
+						wired = true
+					}
+				}
+			}
+		}
+		return true
+	})
+	assert.True(t, wired, "platformCleaner must set ReferenceReaders.Consumers to accountlifecycle.NewTemplateConsumerReader")
 }

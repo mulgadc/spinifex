@@ -53,8 +53,8 @@ func runWANEgressSMTPBlock(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — Platform egress ACL blocks outbound SMTP (25/465/587) to public destinations, AWS parity")
 
 	vpcID, _, subnetID := harness.DiscoverDefaultVPC(t, fix.AWS)
-	instType, _ := needInstanceTypeArch(t, fix)
-	keyName, keyPath := needKeyPair(t, fix)
+	instType, _ := harness.DiscoverNanoInstanceType(t, fix.Harness)
+	keyName, keyPath := harness.EnsureKeyPair(t, fix.Harness)
 	ami := needAMI(t, fix)
 
 	sgID := harness.EnsureSG(t, fix.Harness, vpcID, "smtpblock-sg")

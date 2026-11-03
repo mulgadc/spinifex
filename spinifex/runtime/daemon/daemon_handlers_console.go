@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 )
 
@@ -49,6 +50,11 @@ func (d *Daemon) handleEC2GetConsoleOutput(msg *nats.Msg) {
 
 	if logPath != "" {
 		info, err := os.Stat(logPath)
+		if err != nil && os.IsNotExist(err) {
+			// A terminated instance's file is renamed, not removed, until it ages out.
+			logPath = vm.RetiredConsolePath(logPath)
+			info, err = os.Stat(logPath)
+		}
 		if err == nil {
 			modTime = info.ModTime()
 

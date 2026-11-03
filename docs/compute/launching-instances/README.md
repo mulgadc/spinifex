@@ -23,6 +23,7 @@ resources:
 - [Overview](#overview)
 - [Launch](#launch)
 - [Manage](#manage)
+- [Stopping and Data Volumes](#stopping-and-data-volumes)
 - [Modify Instance Attributes](#modify-instance-attributes)
 - [Instance Metadata Options](#instance-metadata-options)
 - [Spot Instances](#spot-instances)
@@ -72,6 +73,31 @@ aws ec2 start-instances --instance-ids $INSTANCE_ID
 aws ec2 terminate-instances --instance-ids $INSTANCE_ID
 aws ec2 reboot-instances --instance-ids $INSTANCE_ID
 ```
+
+## Stopping and Data Volumes
+
+A guest that powers itself off (`poweroff`, `shutdown -h`) goes `stopping` then `stopped`, the same as `stop-instances`.
+It is not restarted automatically.
+`InstanceInitiatedShutdownBehavior=terminate` is not honoured yet: a guest shutdown always stops the instance.
+
+Data volumes stay `in-use` and attached to a stopped instance, and `start-instances` mounts them again.
+While the instance is stopped, `attach-volume` of one of its data volumes to another instance returns `VolumeInUse`, and `delete-volume` is refused.
+
+`detach-volume` works on a stopped instance, with or without `--instance-id`.
+The volume becomes `available` and the next start does not attach it.
+The root volume of a stopped instance can be detached too, as on AWS.
+The internal EFI variable store is not a customer volume: it never appears in `describe-volumes` or `BlockDeviceMappings`, and detaching it is refused with `OperationNotPermitted`.
+The instance then cannot start: `start-instances` returns `InvalidParameterValue` with "Instance does not have a volume attached at root (/dev/sda1)".
+
+`attach-volume` works on a stopped instance too.
+The volume must be `available` and in the instance's availability zone, otherwise the call returns `VolumeInUse` or `InvalidVolume.ZoneMismatch`.
+The attachment is recorded on the stopped instance and the volume becomes `in-use` straight away.
+Attaching at the root device name (for example `/dev/sda1`) makes the volume the root again, and the next `start-instances` boots from it.
+
+An instance stopped by an earlier build had its data volumes released to `available` while its record still listed them.
+On start, a listed data volume that was deleted or is now attached to another instance is dropped with a warning in the daemon log, and the start continues.
+A listed volume that is still `available` and unattached is attached again.
+A missing root volume fails the start with the same `InvalidParameterValue` answer.
 
 ## Modify Instance Attributes
 
@@ -134,6 +160,30 @@ Decode the output:
 aws ec2 get-console-output --instance-id $INSTANCE_ID \
   --query 'Output' --output text | base64 -d
 ```
+
+Like AWS, the call returns the most recent 64 KiB of the console.
+While an instance is shutting down after a terminate request, the call reads the renamed file described below.
+Once the instance has left the node's running set, which includes a stopped or terminated instance, the node no longer answers and the call returns `InvalidInstanceID.NotFound`.
+AWS still lists a terminated instance for a while after termination, so a caller may expect this call to work then; it does not here, a known gap.
+Whether the API should answer for a stopped instance is not settled here; only the file on the host is kept.
+
+### Where console logs live and how big they get
+
+The serial console of each instance is written on its host to `/run/spinifex/console-<instance-id>.log`.
+`/run` is memory-backed, so these files are cleared when the host reboots, including any left by older releases.
+The daemon keeps them bounded.
+A file over 4 MiB is cut back in place to its newest 1 MiB, and the guest keeps writing while it happens.
+The console is opened in append mode, so a reboot or auto-restart of the guest adds to the same file instead of starting over.
+A live `console-<instance-id>.log` is deleted only when it has not changed for an hour and no QEMU process on the host has it open, so a stopped instance keeps its console for an hour and a quiet running guest keeps it indefinitely.
+If the daemon cannot read the open files of every QEMU process on the host, it deletes nothing on that pass and logs a warning.
+This also clears the file of an instance that was stopped and then terminated, or that was recovered on another node, within about an hour of its last write.
+When an instance is terminated, including a failed first launch and the system instances behind load balancers, queues and EKS control planes, its file is renamed to `console-<instance-id>.log.terminated`.
+The daemon removes a `.terminated` file an hour after its last write.
+
+Known limits:
+
+- The log shipper follows only `console-*.log`, so it stops following a file when it is renamed on terminate, and the last few seconds of output that it had not yet read can be lost.
+- The instance password retrieval reads only the live file name, so it does not find a console renamed after terminate.
 
 ## Instance Types
 

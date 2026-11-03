@@ -19,7 +19,7 @@ var _ ec2volume.InstanceNodeLocator = (*JetStreamManager)(nil)
 // keep the reaper's check and unpublish clear of a publish on this node.
 func (d *Daemon) volumeMounter() *volumeMounterAdapter {
 	d.mounterOnce.Do(func() {
-		d.mounter = newVolumeMounterAdapter(d.ebsProvider, d.node, d.volumeService)
+		d.mounter = newVolumeMounterAdapter(d.ebsProvider, d.node)
 	})
 	return d.mounter
 }

@@ -117,3 +117,30 @@ func TestEC2Request_TagSpecificationResourceType(t *testing.T) {
 		})
 	}
 }
+
+// AWS reserves the aws: prefix in any case on every create call's
+// TagSpecifications, and refuses it even on a DryRun request.
+func TestEC2Request_TagSpecificationReservedKey(t *testing.T) {
+	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true, Region: authzRegion}, gwfix.Deps{IAM: allowAllIAMService()}))
+
+	reserved := func(action, rt, key string) string {
+		return tagSpecBody(action, rt) + "&TagSpecification.1.Tag.2.Key=" + key + "&TagSpecification.1.Tag.2.Value=c"
+	}
+	cases := []struct{ name, body, key string }{
+		{"CreateSecurityGroup", reserved("CreateSecurityGroup", "security-group", "aws:eks:cluster-name") +
+			"&GroupName=g&GroupDescription=d&VpcId=vpc-1", "aws:eks:cluster-name"},
+		{"upper case prefix", reserved("CreateVpc", "vpc", "AWS:x") + "&CidrBlock=10.0.0.0/16", "AWS:x"},
+		{"DryRun", reserved("RunInstances", "instance", "aws:x") + "&ImageId=ami-1&MinCount=1&MaxCount=1&DryRun=true", "aws:x"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := serveEC2(gw, tc.body)
+			assert.Equal(t, http.StatusBadRequest, w.Code)
+			assert.Contains(t, w.Body.String(), "<Code>InvalidParameterValue</Code>")
+			assert.Contains(t, w.Body.String(), "<Message>"+xmlText(t,
+				"Value ( "+tc.key+" ) for parameter key is invalid. Tag keys starting with 'aws:' are reserved for internal use")+"</Message>")
+		})
+	}
+	// A key merely containing aws: is the customer's to use.
+	assertPermitted(t, dispatchEC2(t, gw, reserved("CreateVpc", "vpc", "x-aws:y")+"&CidrBlock=10.0.0.0/16"))
+}

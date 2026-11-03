@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -56,6 +57,17 @@ func NewRouter[H any](service string, routes []Route[H]) *Router[H] {
 		rr.mux.MethodFunc(route.Method, route.Pattern, func(http.ResponseWriter, *http.Request) {})
 	}
 	return rr
+}
+
+// Actions returns the distinct actions in the table in sorted order; an action
+// may be reachable by more than one route.
+func (rr *Router[H]) Actions() []string {
+	names := make([]string, 0, len(rr.entries))
+	for _, entry := range rr.entries {
+		names = append(names, entry.route.Action)
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
 }
 
 // Lookup matches method+path, returning the action, path params, and handler, or

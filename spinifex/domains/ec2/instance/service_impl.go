@@ -2700,6 +2700,12 @@ func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instanc
 	// failure of this launch.
 	instance.FirstLaunch = false
 
+	if err := s.reconcileStartVolumes(ctx, instance); err != nil {
+		slog.ErrorContext(ctx, "launchClaimedInstance: volumes cannot be reconciled", "instanceId", instance.ID, "err", err)
+		undo()
+		return err
+	}
+
 	instanceType, ok := s.resourceMgr.InstanceTypes()[instance.InstanceType]
 	if !ok {
 		slog.ErrorContext(ctx, "launchClaimedInstance: instance type not available on this node",
@@ -3682,4 +3688,154 @@ func (s *InstanceServiceImpl) DescribeInstanceStatus(ctx context.Context, input 
 
 	slog.InfoContext(ctx, "DescribeInstanceStatus completed", "count", len(statuses))
 	return &ec2.DescribeInstanceStatusOutput{InstanceStatuses: statuses}, nil
+}
+
+// DetachVolumeFromStopped removes a data volume from a stopped instance's
+// record, so a later start no longer attaches it. It does not touch the
+// volume's own state; the caller releases that once the record is clean. The
+// device the volume held comes back on the attachment.
+func (s *InstanceServiceImpl) DetachVolumeFromStopped(ctx context.Context, input *ec2.DetachVolumeInput, accountID string) (*ec2.VolumeAttachment, error) {
+	if input == nil || aws.StringValue(input.InstanceId) == "" || aws.StringValue(input.VolumeId) == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if s.stoppedStore == nil {
+		slog.ErrorContext(ctx, "DetachVolumeFromStopped: stopped store not available")
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	instanceID, volumeID := *input.InstanceId, *input.VolumeId
+
+	stored, err := s.stoppedStore.LoadStoppedInstance(instanceID)
+	if err != nil {
+		slog.ErrorContext(ctx, "DetachVolumeFromStopped: failed to load stopped instance", "instanceId", instanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if stored == nil || !IsInstanceVisible(accountID, stored.AccountID) {
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	req, ok := findVolumeRequest(stored, volumeID)
+	if !ok {
+		return nil, errors.New(awserrors.ErrorIncorrectState)
+	}
+	if req.EFI {
+		return nil, errors.New(awserrors.ErrorOperationNotPermitted)
+	}
+
+	var removed bool
+	_, err = s.stoppedStore.UpdateStoppedInstance(instanceID, func(v *vm.VM) {
+		removed = removeVolumeFromRecord(v, volumeID)
+	})
+	if err != nil {
+		if errors.Is(err, kvstore.ErrNotFound) {
+			slog.WarnContext(ctx, "DetachVolumeFromStopped: instance claimed concurrently", "instanceId", instanceID)
+			return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
+		}
+		slog.ErrorContext(ctx, "DetachVolumeFromStopped: failed to update stopped instance", "instanceId", instanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if !removed {
+		return nil, errors.New(awserrors.ErrorIncorrectState)
+	}
+
+	return &ec2.VolumeAttachment{
+		VolumeId:   aws.String(volumeID),
+		InstanceId: aws.String(instanceID),
+		Device:     aws.String(req.DeviceName),
+		State:      aws.String(ec2.VolumeAttachmentStateDetaching),
+	}, nil
+}
+
+// AttachVolumeToStopped adds an available volume to a stopped instance's
+// record, so the next start mounts it. The volume is claimed in-use first and
+// released again if the record edit fails, so a failure never leaves the record
+// naming a volume another instance could take.
+func (s *InstanceServiceImpl) AttachVolumeToStopped(ctx context.Context, input *ec2.AttachVolumeInput, accountID string) (*ec2.VolumeAttachment, error) {
+	if input == nil || aws.StringValue(input.InstanceId) == "" || aws.StringValue(input.VolumeId) == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if s.stoppedStore == nil || s.metadata == nil {
+		slog.ErrorContext(ctx, "AttachVolumeToStopped: stores not available")
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	instanceID, volumeID := *input.InstanceId, *input.VolumeId
+
+	stored, err := s.stoppedStore.LoadStoppedInstance(instanceID)
+	if err != nil {
+		slog.ErrorContext(ctx, "AttachVolumeToStopped: failed to load stopped instance", "instanceId", instanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if stored == nil || !IsInstanceVisible(accountID, stored.AccountID) {
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+
+	meta, err := s.metadata.GetVolume(ctx, accountID, volumeID)
+	if err != nil {
+		if objectstore.IsNoSuchKeyError(err) {
+			return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+		}
+		slog.ErrorContext(ctx, "AttachVolumeToStopped: failed to read volume", "volumeId", volumeID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if meta.TenantID != accountID {
+		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+	}
+	if meta.State != "available" {
+		return nil, errors.New(awserrors.ErrorVolumeInUse)
+	}
+	if meta.AvailabilityZone != "" && s.config != nil && s.config.AZ != "" && meta.AvailabilityZone != s.config.AZ {
+		return nil, errors.New(awserrors.ErrorInvalidVolumeZoneMismatch)
+	}
+
+	device, boot, err := stoppedAttachDevice(stored, aws.StringValue(input.Device))
+	if err != nil {
+		return nil, err
+	}
+
+	meta.State = "in-use"
+	meta.AttachedInstance = instanceID
+	meta.DeviceName = device
+	meta.AttachedAt = time.Now()
+	if err := s.metadata.PutVolume(ctx, meta); err != nil {
+		slog.ErrorContext(ctx, "AttachVolumeToStopped: failed to claim volume", "volumeId", volumeID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	var conflict error
+	_, err = s.stoppedStore.UpdateStoppedInstance(instanceID, func(v *vm.VM) {
+		// The device was chosen against a snapshot, so it is checked again
+		// against the record the edit is applied to.
+		if _, _, cerr := stoppedAttachDevice(v, device); cerr != nil {
+			conflict = cerr
+			return
+		}
+		addVolumeToRecord(v, volumeID, device, boot)
+	})
+	if err == nil && conflict != nil {
+		err = conflict
+	}
+	if err != nil {
+		meta.State = "available"
+		meta.AttachedInstance = ""
+		meta.DeviceName = ""
+		meta.AttachedAt = time.Time{}
+		if rerr := s.metadata.PutVolume(ctx, meta); rerr != nil {
+			slog.ErrorContext(ctx, "AttachVolumeToStopped: failed to release volume after a failed record edit", "volumeId", volumeID, "err", rerr)
+		}
+		if conflict != nil {
+			return nil, conflict
+		}
+		if errors.Is(err, kvstore.ErrNotFound) {
+			slog.WarnContext(ctx, "AttachVolumeToStopped: instance claimed concurrently", "instanceId", instanceID)
+			return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
+		}
+		slog.ErrorContext(ctx, "AttachVolumeToStopped: failed to update stopped instance", "instanceId", instanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	return &ec2.VolumeAttachment{
+		VolumeId:   aws.String(volumeID),
+		InstanceId: aws.String(instanceID),
+		Device:     aws.String(device),
+		State:      aws.String(ec2.VolumeAttachmentStateAttaching),
+	}, nil
 }

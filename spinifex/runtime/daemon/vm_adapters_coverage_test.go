@@ -185,7 +185,7 @@ func TestBuildVMManagerDeps_BackingStoreReady(t *testing.T) {
 // A connection that is down refuses the publish before sending it, so restore
 // backs off and retries, and there is no export to tear down.
 func TestVolumeMounterAdapter_Mount_DisconnectedIsRetryable(t *testing.T) {
-	adapter := newNATSMounter(closedAdapterTestConn(t), "node-closed", nil)
+	adapter := newNATSMounter(closedAdapterTestConn(t), "node-closed")
 	instance := &vm.VM{ID: "i-mount-closed"}
 	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-closed"}}
 
@@ -196,23 +196,11 @@ func TestVolumeMounterAdapter_Mount_DisconnectedIsRetryable(t *testing.T) {
 	require.ErrorIs(t, adapter.MountOne(t.Context(), testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-hot"}), vm.ErrMountRetryable)
 }
 
-// recordingVolumeState records UpdateVolumeState calls and returns err.
-type recordingVolumeState struct {
-	err     error
-	updated []string
-}
-
-func (r *recordingVolumeState) UpdateVolumeState(_, volumeID, state, _, _ string) error {
-	r.updated = append(r.updated, volumeID+"="+state)
-	return r.err
-}
-
 func TestVolumeMounterAdapter_Unmount_Errors(t *testing.T) {
 	nc := connectAdapterTestNATS(t, sharedNATSURL)
 
-	t.Run("no responder fails the seal and leaves the volume", func(t *testing.T) {
-		volState := &recordingVolumeState{}
-		adapter := newNATSMounter(nc, uniqueAdapterID("node-unmount"), volState)
+	t.Run("no responder fails the seal for every volume", func(t *testing.T) {
+		adapter := newNATSMounter(nc, uniqueAdapterID("node-unmount"))
 		instance := &vm.VM{ID: "i-unmount-none"}
 		instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-a"}, {Name: "vol-b"}}
 
@@ -220,19 +208,16 @@ func TestVolumeMounterAdapter_Unmount_Errors(t *testing.T) {
 		require.ErrorIs(t, err, nats.ErrNoResponders)
 		assert.Contains(t, err.Error(), "vol-a")
 		assert.Contains(t, err.Error(), "vol-b", "every volume is attempted")
-		assert.Empty(t, volState.updated, "an unsealed volume must not go available")
 	})
 
-	t.Run("state update failure does not fail the unmount", func(t *testing.T) {
+	t.Run("a sealed unmount succeeds", func(t *testing.T) {
 		node := uniqueAdapterID("node-unmount")
 		serveFakeNodeProvider(t, nc, node)
-		volState := &recordingVolumeState{err: errInjected}
-		adapter := newNATSMounter(nc, node, volState)
+		adapter := newNATSMounter(nc, node)
 		instance := &vm.VM{ID: "i-unmount-state"}
 		instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-a"}}
 
 		require.NoError(t, adapter.Unmount(t.Context(), instance))
-		assert.Equal(t, []string{"vol-a=available"}, volState.updated)
 	})
 }
 

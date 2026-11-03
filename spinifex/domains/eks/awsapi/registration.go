@@ -38,7 +38,7 @@ func NewRegistration(deps Deps) dispatch.Registration {
 
 // OperationInventory classifies the actions the registration serves.
 func OperationInventory() dispatch.Inventory {
-	return dispatch.Inventory{Registered: actionNames()}
+	return dispatch.Inventory{Registered: router.Actions()}
 }
 
 func resolveAction(r *http.Request) string {

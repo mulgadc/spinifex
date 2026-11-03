@@ -91,6 +91,28 @@ BODY=$(sed 's/^\[k3s-agent\] //' "${OUT}" | head -n 1)
 check "truncate: body is exactly 512 bytes" "512" "$(printf '%s' "${BODY}" | wc -c | tr -d ' ')"
 check "truncate: keeps the start of the line" "time=\"2026-11-03T03:00:00Z\"" "$(printf '%s' "${BODY}" | cut -c1-27)"
 
+# --- redaction runs before the cut: a secret over the limit leaves no prefix ---
+# The pad puts the 512-byte cut right after the bare marker (AKIA, eyJ, K10).
+# A cut fragment that long matches no redaction pattern, so redacting after the
+# cut would leave it in the output.
+HEAD='time="2026-11-03T03:00:00Z" level=error msg="'
+straddle() { # straddle <name> <secret> <bytes of the secret kept by the cut>
+    PAD=$(awk -v n=$((512 - ${#HEAD} - 1 - $3)) 'BEGIN { for (i = 0; i < n; i++) printf "x"; }')
+    forward "straddle_$1" <<EOF
+${HEAD}${PAD} $2 tail"
+EOF
+    check "straddle(${1}): line forwarded" "1" "$(forwarded)"
+    check "straddle(${1}): cut keeps the marker length" "$3" "$(sed 's/^\[k3s-agent\] //' "${OUT}" | head -n 1 | awk -v p="${PAD} " '{ print length($0) - index($0, p) - length(p) + 1 }')"
+    if grep -qF "$(printf '%s' "$2" | cut -c1-"$3")" "${OUT}"; then
+        check "straddle(${1}): no fragment survives the cut" "absent" "present"
+    else
+        check "straddle(${1}): no fragment survives the cut" "absent" "absent"
+    fi
+}
+straddle jwt "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2ln" 3
+straddle akia "AKIAIOSFODNN7EXAMPLE" 4
+straddle k3s_token "K1009f3c2d4e5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2::server:s3cr3tPassw0rd" 3
+
 # --- rate cap: 60 a minute, then one summary of what was dropped ---
 gen() { # gen <count>
     awk -v n="$1" 'BEGIN { for (i = 0; i < n; i++) printf "time=\"t\" level=error msg=\"loop %d\"\n", i }'

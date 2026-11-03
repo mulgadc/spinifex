@@ -542,3 +542,52 @@ func TestVolumeMounterAdapter_RollbackKeepsTheMountRoute(t *testing.T) {
 	assert.Equal(t, []string{"vol-a"}, unpublished.snapshot(), "the published volume must be unpublished")
 	assert.Zero(t, legacyUnmounts.Load(), "a published volume must not be rolled back over the legacy subject")
 }
+
+// A provider answering not_found holds no export of the volume, which is the
+// state an unmount asks for, so the volume counts as sealed.
+func TestVolumeMounterAdapter_UnpublishNotFoundCountsAsSealed(t *testing.T) {
+	nc := connectMounterTest(t)
+	node := newMounterTestNode()
+	advertiseVersions(t, nc, node, ebsprovider.SupportedSchemaVersions)
+	unpublished := &unpublishRecorder{}
+	unpublished.serve(t, nc, node, func() ebsprovider.UnpublishVolumeResponse {
+		return ebsprovider.UnpublishVolumeResponse{
+			Versioned: ebsprovider.NewVersioned(),
+			Error:     &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeNotFound, Message: "volume not found"},
+		}
+	})
+	volState := &recordingVolState{}
+	adapter := newVolumeMounterAdapter(nc, node, volState)
+
+	require.NoError(t, adapter.Unmount(t.Context(), mounterTestVM("vol-gone")))
+	assert.Equal(t, []string{"vol-gone:available"}, volState.snapshot())
+	require.NoError(t, adapter.UnmountOne(t.Context(), testAccountID, viperblocklegacyv1.EBSRequest{Name: "vol-gone"}))
+	assert.Equal(t, []string{"vol-gone", "vol-gone"}, unpublished.snapshot())
+}
+
+// No responder on the legacy subject drops the cached route too, so a
+// provider restarted at version 3 takes the next mount over the contract.
+func TestVolumeMounterAdapter_LegacyNoResponderRereadsCapabilities(t *testing.T) {
+	nc := connectMounterTest(t)
+	node := newMounterTestNode()
+	capsSubject, err := ebsprovider.NodeCapabilitiesSubject(node)
+	require.NoError(t, err)
+	caps, err := nc.Subscribe(capsSubject, func(msg *nats.Msg) {
+		data, _ := json.Marshal(ebsprovider.GetCapabilitiesResponse{Versioned: ebsprovider.NewVersioned(), ContractVersions: []uint16{1, 2}})
+		_ = msg.Respond(data)
+	})
+	require.NoError(t, err)
+	require.NoError(t, nc.Flush())
+	adapter := newVolumeMounterAdapter(nc, node, nil)
+
+	instance := mounterTestVM("vol-restart")
+	require.ErrorIs(t, adapter.Mount(t.Context(), instance), vm.ErrMountRetryable)
+
+	require.NoError(t, caps.Unsubscribe())
+	provider := serveMemoryProvider(t, nc, node, "vol-restart")
+	legacyMounts, _ := countLegacy(t, nc, node)
+
+	require.NoError(t, adapter.Mount(t.Context(), instance))
+	assert.Zero(t, legacyMounts.Load(), "the mount must take the contract path")
+	assert.Equal(t, ebsprovider.VolumeStateInUse, volumeState(t, provider, "vol-restart"))
+}

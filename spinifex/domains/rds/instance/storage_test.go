@@ -20,6 +20,11 @@ type fakeVolumeResizer struct {
 	sizes    map[string]int64
 	modified []*ec2.ModifyVolumeInput
 
+	// attachedTo is the instance each in-use volume is attached to, as a stop now
+	// leaves it; expanded records the grows taken through that attachment.
+	attachedTo map[string]string
+	expanded   []string
+
 	describeErr error
 	modifyErr   error
 	// missing makes the volume read as gone, which is the state a grow must not
@@ -50,7 +55,12 @@ func (f *fakeVolumeResizer) DescribeVolumes(_ context.Context, in *ec2.DescribeV
 		if !ok {
 			continue
 		}
-		out.Volumes = append(out.Volumes, &ec2.Volume{VolumeId: aws.String(id), Size: aws.Int64(size)})
+		vol := &ec2.Volume{VolumeId: aws.String(id), Size: aws.Int64(size), State: aws.String(ec2.VolumeStateAvailable)}
+		if inst := f.attachedTo[id]; inst != "" {
+			vol.State = aws.String(ec2.VolumeStateInUse)
+			vol.Attachments = []*ec2.VolumeAttachment{{VolumeId: aws.String(id), InstanceId: aws.String(inst)}}
+		}
+		out.Volumes = append(out.Volumes, vol)
 	}
 	return out, nil
 }
@@ -68,6 +78,23 @@ func (f *fakeVolumeResizer) ModifyVolume(ctx context.Context, in *ec2.ModifyVolu
 	}
 	f.modified = append(f.modified, in)
 	f.sizes[id] = size
+	return &ec2.ModifyVolumeOutput{}, nil
+}
+
+// Mirrors the store: a grow through an attachment is refused unless the volume
+// is attached to the instance the caller names.
+func (f *fakeVolumeResizer) ExpandAttachedToStopped(ctx context.Context, _, volumeID, instanceID string, sizeGiB int64) (*ec2.ModifyVolumeOutput, error) {
+	if f.onModify != nil {
+		f.onModify(ctx)
+	}
+	if f.modifyErr != nil {
+		return nil, f.modifyErr
+	}
+	if instanceID == "" || f.attachedTo[volumeID] != instanceID {
+		return nil, errors.New(awserrors.ErrorIncorrectState)
+	}
+	f.expanded = append(f.expanded, volumeID+":"+instanceID)
+	f.sizes[volumeID] = sizeGiB
 	return &ec2.ModifyVolumeOutput{}, nil
 }
 
@@ -104,7 +131,7 @@ func TestGrowDataVolume_SkipsAVolumeAlreadyAtTheTarget(t *testing.T) {
 	h := newModifyHarness(t)
 	h.storage.sizes[testDataVolume] = 50
 
-	require.NoError(t, h.svc.growDataVolume(t.Context(), testDataVolume, 50))
+	require.NoError(t, h.svc.growDataVolume(t.Context(), testDataVolume, testInstance, 50))
 	assert.Empty(t, h.storage.modified, "a volume already at the target is not modified again")
 }
 
@@ -115,7 +142,7 @@ func TestGrowDataVolume_FailsWhenTheVolumeIsGone(t *testing.T) {
 	h := newModifyHarness(t)
 	h.storage.missing = true
 
-	err := h.svc.growDataVolume(t.Context(), testDataVolume, 50)
+	err := h.svc.growDataVolume(t.Context(), testDataVolume, testInstance, 50)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no longer exists")
 	assert.Empty(t, h.storage.modified)
@@ -125,7 +152,7 @@ func TestGrowDataVolume_FailsWithoutAVolume(t *testing.T) {
 	t.Parallel()
 	h := newModifyHarness(t)
 
-	require.Error(t, h.svc.growDataVolume(t.Context(), "", 50))
+	require.Error(t, h.svc.growDataVolume(t.Context(), "", testInstance, 50))
 }
 
 // ModifyVolume refuses a volume a running VM holds, so the order is the
@@ -149,6 +176,35 @@ func TestGrowInstanceStorage_StopsTheEngineAndTheVMBeforeGrowing(t *testing.T) {
 	issued := h.agent.received()
 	require.Len(t, issued, 1)
 	assert.Equal(t, CommandStopEngine, issued[0].Type)
+}
+
+// A stop leaves the data volume attached to the stopped VM, so the grow goes
+// through that attachment rather than the customer path, which refuses it.
+func TestGrowInstanceStorage_GrowsTheVolumeStillAttachedToTheStoppedVM(t *testing.T) {
+	t.Parallel()
+	h := newModifyHarness(t)
+	h.storage.attachedTo = map[string]string{testDataVolume: testInstance}
+	rec := modifiableRecord()
+
+	require.NoError(t, h.svc.growInstanceStorage(t.Context(), testAccountID, &rec, 50))
+
+	assert.Equal(t, []string{testDataVolume + ":" + testInstance}, h.storage.expanded)
+	assert.Empty(t, h.storage.modified, "an attached volume must not go through ModifyVolume")
+	assert.Equal(t, int64(50), h.storage.sizes[testDataVolume])
+	assert.Equal(t, []string{"stop:" + testInstance, "start:" + testInstance}, h.cmdr.calls)
+}
+
+// A data volume attached to some other instance is not this DB VM's to grow.
+func TestGrowDataVolume_RefusesAVolumeAttachedToAnotherInstance(t *testing.T) {
+	t.Parallel()
+	h := newModifyHarness(t)
+	h.storage.attachedTo = map[string]string{testDataVolume: "i-someone-else"}
+
+	err := h.svc.growDataVolume(t.Context(), testDataVolume, testInstance, 50)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIncorrectState)
+	assert.Empty(t, h.storage.expanded)
+	assert.NotEqual(t, int64(50), h.storage.sizes[testDataVolume])
 }
 
 // The stop command is accepted seconds before the volume detaches, and the

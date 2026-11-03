@@ -1468,6 +1468,60 @@ func TestModifyVolume_AttachedInUse(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorIncorrectState, err.Error())
 }
 
+func TestExpandAttachedToStopped_GrowsTheNamedInstancesVolume(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+	createVolumeInStoreWithMeta(t, svc, store, "vol-stopped", ebsmetadata.Volume{
+		VolumeID:         "vol-stopped",
+		CapacityGiB:      20,
+		State:            "in-use",
+		AttachedInstance: "i-owner",
+		DeviceName:       "/dev/sdf",
+	})
+
+	out, err := svc.ExpandAttachedToStopped(context.Background(), testVolAccountID, "vol-stopped", "i-owner", 30)
+	require.NoError(t, err)
+	assert.Equal(t, int64(30), aws.Int64Value(out.VolumeModification.TargetSize))
+
+	meta, err := svc.GetVolumeMetadata(testVolAccountID, "vol-stopped")
+	require.NoError(t, err)
+	assert.Equal(t, uint64(30), meta.CapacityGiB)
+	assert.Equal(t, "in-use", meta.State, "the grow must not change the attachment")
+	assert.Equal(t, "i-owner", meta.AttachedInstance)
+	assert.Equal(t, "/dev/sdf", meta.DeviceName)
+}
+
+func TestExpandAttachedToStopped_Refusals(t *testing.T) {
+	cases := []struct {
+		name     string
+		meta     ebsmetadata.Volume
+		instance string
+		want     string
+	}{
+		{"attached to another instance", ebsmetadata.Volume{State: "in-use", AttachedInstance: "i-other"}, "i-owner", awserrors.ErrorIncorrectState},
+		{"not attached", ebsmetadata.Volume{State: "available"}, "i-owner", awserrors.ErrorIncorrectState},
+		{"still creating", ebsmetadata.Volume{State: string(ebsprovider.VolumeStateCreating)}, "i-owner", awserrors.ErrorIncorrectState},
+		{"no instance named", ebsmetadata.Volume{State: "in-use", AttachedInstance: "i-owner"}, "", awserrors.ErrorMissingParameter},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := objectstore.NewMemoryObjectStore()
+			svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+			tc.meta.VolumeID = "vol-x"
+			tc.meta.CapacityGiB = 20
+			createVolumeInStoreWithMeta(t, svc, store, "vol-x", tc.meta)
+
+			_, err := svc.ExpandAttachedToStopped(context.Background(), testVolAccountID, "vol-x", tc.instance, 30)
+			require.Error(t, err)
+			assert.Equal(t, tc.want, err.Error())
+
+			meta, err := svc.GetVolumeMetadata(testVolAccountID, "vol-x")
+			require.NoError(t, err)
+			assert.Equal(t, uint64(20), meta.CapacityGiB, "a refused grow must leave the size unchanged")
+		})
+	}
+}
+
 func TestModifyVolume_SuccessfulGrow(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)

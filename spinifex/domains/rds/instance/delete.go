@@ -186,6 +186,9 @@ func (s *Service) teardownDBInstance(ctx context.Context, kv *kvstore.Bucket, ac
 	if err := s.terminateInstanceVM(ctx, rec.InstanceID); err != nil {
 		return fmt.Errorf("rds: terminate the VM behind %s: %w", rec.DBInstanceIdentifier, err)
 	}
+	if err := s.requireDataVolumeDetached(ctx, rec.DataVolumeID, rec.InstanceID); err != nil {
+		return err
+	}
 	if err := s.takeFinalSnapshot(ctx, kv, accountID, rec, finalSnapshotCreator); err != nil {
 		return err
 	}
@@ -224,8 +227,8 @@ func (s *Service) teardownDBInstance(ctx context.Context, kv *kvstore.Bucket, ac
 	return nil
 }
 
-// A VM no node owns is already terminated, which is the state this is trying to
-// reach.
+// A VM no node owns is either already gone or stopped, and a stopped one is
+// terminated from its shared record, which also detaches the data volume.
 func (s *Service) terminateInstanceVM(ctx context.Context, instanceID string) error {
 	if instanceID == "" {
 		return nil
@@ -234,9 +237,47 @@ func (s *Service) terminateInstanceVM(ctx context.Context, instanceID string) er
 	if launcher == nil {
 		return errors.New("rds: no system-instance launcher configured")
 	}
-	if err := launcher.TerminateSystemInstance(instanceID); err != nil &&
-		!errors.Is(err, systeminstance.ErrSystemInstanceNotFound) {
+	err := launcher.TerminateSystemInstance(instanceID)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, systeminstance.ErrSystemInstanceNotFound) {
 		return err
+	}
+	if s.deps.Instances == nil {
+		return nil
+	}
+	if err := s.deps.Instances.TerminateStoppedInstance(ctx, instanceID); err != nil {
+		return fmt.Errorf("terminate the stopped VM %s: %w", instanceID, err)
+	}
+	return nil
+}
+
+// A stopped-VM terminate records a failed detach without failing, and a volume
+// left attached would be retained as if a snapshot held it. Errors so the
+// caller retries; a volume already gone is released.
+func (s *Service) requireDataVolumeDetached(ctx context.Context, volumeID, instanceID string) error {
+	if volumeID == "" || instanceID == "" || s.deps.Storage == nil {
+		return nil
+	}
+	out, err := s.deps.Storage.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
+		VolumeIds: aws.StringSlice([]string{volumeID}),
+	}, awsidentifiers.GlobalAccountID)
+	if err != nil {
+		if awserrors.IsErrorCode(err, awserrors.ErrorInvalidVolumeNotFound) {
+			return nil
+		}
+		return fmt.Errorf("rds: read the data volume %s: %w", volumeID, err)
+	}
+	for _, volume := range out.Volumes {
+		if aws.StringValue(volume.VolumeId) != volumeID || aws.StringValue(volume.State) != ec2.VolumeStateInUse {
+			continue
+		}
+		for _, a := range volume.Attachments {
+			if aws.StringValue(a.InstanceId) == instanceID {
+				return fmt.Errorf("rds: data volume %s is still attached to the terminated VM %s", volumeID, instanceID)
+			}
+		}
 	}
 	return nil
 }

@@ -34,6 +34,9 @@ type instanceCommander interface {
 	// Relaunches a VM whose owning node no longer holds it, from its persisted
 	// stopped-instance record.
 	StartStoppedInstance(ctx context.Context, instanceID string) error
+	// Terminates a VM no node holds from its stopped-instance record. A VM
+	// already gone is not an error.
+	TerminateStoppedInstance(ctx context.Context, instanceID string) error
 }
 
 // ErrInstanceNotOnNode means no node subscribes ec2.cmd.{instanceID} for this VM,
@@ -452,5 +455,15 @@ func (c *natsInstanceCommander) send(ctx context.Context, instanceID string, att
 func (c *natsInstanceCommander) StartStoppedInstance(ctx context.Context, instanceID string) error {
 	_, err := natsmsg.NATSRequest[ec2instance.StartStoppedInstanceOutput](ctx, c.nc, "ec2.start",
 		ec2instance.StartStoppedInstanceInput{InstanceID: instanceID}, c.timeout, awsidentifiers.GlobalAccountID)
+	return err
+}
+
+func (c *natsInstanceCommander) TerminateStoppedInstance(ctx context.Context, instanceID string) error {
+	_, err := natsmsg.NATSRequest[ec2instance.TerminateStoppedInstanceOutput](ctx, c.nc, "ec2.terminate",
+		ec2instance.TerminateStoppedInstanceInput{InstanceID: instanceID}, c.timeout, awsidentifiers.GlobalAccountID)
+	if err == nil || errors.Is(err, nats.ErrNoResponders) ||
+		strings.Contains(err.Error(), awserrors.ErrorInvalidInstanceIDNotFound) {
+		return nil
+	}
 	return err
 }

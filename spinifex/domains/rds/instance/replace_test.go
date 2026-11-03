@@ -5,6 +5,8 @@ import (
 	"errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
+
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -197,6 +199,41 @@ func TestReplaceInstanceVM_GrowsTheVolumeWhileNoVMHoldsIt(t *testing.T) {
 	assert.Equal(t, 1, terminatedAtGrow, "the volume was grown while the old VM still held it")
 	assert.False(t, launchedAtGrow, "the volume was grown after the replacement had already attached it")
 	assert.Equal(t, int64(80), h.storage.sizes[testDataVolume])
+}
+
+// A guest poweroff now ends as a stop, so the old VM may be held by no node with
+// the data volume still attached; it is terminated from its record before the grow.
+func TestReplaceInstanceVM_TerminatesAStoppedOldVMBeforeGrowing(t *testing.T) {
+	t.Parallel()
+	h := newModifyHarness(t)
+	rec := seedReplaceable(t, h, modifiableRecord())
+	h.launch.launcher.terminateErr = systeminstance.ErrSystemInstanceNotFound
+	h.storage.attachedTo = map[string]string{testDataVolume: testInstance}
+	h.cmdr.onTerminateStopped = func(string) { delete(h.storage.attachedTo, testDataVolume) }
+
+	require.NoError(t, h.svc.replaceInstanceVM(t.Context(), h.kv(t), testAccountID, &rec, replaceInput{
+		InstanceClass: "db.m5.large", InstanceType: "m5.large", GrowStorageToGiB: 80, Reason: "the instance class changed",
+	}))
+
+	assert.Contains(t, h.cmdr.calls, "terminate-stopped:"+testInstance)
+	assert.Equal(t, int64(80), h.storage.sizes[testDataVolume])
+	assert.NotEqual(t, testInstance, h.record(t).InstanceID)
+}
+
+// A replace that finds the data volume still on the old VM goes no further: the
+// replacement would boot without its datadir.
+func TestReplaceInstanceVM_StopsWhileTheDataVolumeIsStillOnTheOldVM(t *testing.T) {
+	t.Parallel()
+	h := newModifyHarness(t)
+	rec := seedReplaceable(t, h, modifiableRecord())
+	h.launch.launcher.terminateErr = systeminstance.ErrSystemInstanceNotFound
+	h.storage.attachedTo = map[string]string{testDataVolume: testInstance}
+
+	err := h.svc.replaceInstanceVM(t.Context(), h.kv(t), testAccountID, &rec, replaceInput{Reason: "recovery"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "still attached")
+	assert.Nil(t, h.launch.launcher.input, "no replacement may launch without the data volume")
+	assert.Equal(t, testInstance, h.record(t).InstanceID)
 }
 
 // An unmapped class has no instance type behind it, so the replace is refused

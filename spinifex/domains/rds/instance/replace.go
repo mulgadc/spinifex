@@ -89,6 +89,9 @@ func (s *Service) replaceInstanceVM(ctx context.Context, kv *kvstore.Bucket, acc
 	if err := s.terminateInstanceVM(ctx, oldInstanceID); err != nil {
 		return fmt.Errorf("terminate the VM behind %s: %w", rec.DBInstanceIdentifier, err)
 	}
+	if err := s.requireDataVolumeDetached(ctx, rec.DataVolumeID, oldInstanceID); err != nil {
+		return err
+	}
 	// The system NIC is disposable and the fresh launch mints its own; leaving
 	// this one behind would hold an address in the shared RDS system subnet.
 	if err := context.Cause(ctx); err != nil {
@@ -102,7 +105,7 @@ func (s *Service) replaceInstanceVM(ctx context.Context, kv *kvstore.Bucket, acc
 		return err
 	}
 	if in.GrowStorageToGiB > 0 {
-		if err := s.growDataVolume(ctx, rec.DataVolumeID, in.GrowStorageToGiB); err != nil {
+		if err := s.growDataVolume(ctx, rec.DataVolumeID, "", in.GrowStorageToGiB); err != nil {
 			return err
 		}
 	}

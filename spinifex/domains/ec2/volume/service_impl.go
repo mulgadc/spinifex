@@ -995,8 +995,23 @@ func (s *VolumeServiceImpl) UpdateVolumeState(accountID, volumeID, state, attach
 	return nil
 }
 
-// ModifyVolume modifies an EBS volume (grow-only, requires stopped instance).
+// ModifyVolume modifies an EBS volume (grow-only, refused while attached).
 func (s *VolumeServiceImpl) ModifyVolume(ctx context.Context, input *ec2.ModifyVolumeInput, accountID string) (*ec2.ModifyVolumeOutput, error) {
+	return s.modifyVolume(ctx, input, accountID, "")
+}
+
+// ExpandAttachedToStopped grows a volume still attached to instanceID, which the
+// caller has stopped and holds exclusively. Not reachable from the AWS API.
+func (s *VolumeServiceImpl) ExpandAttachedToStopped(ctx context.Context, accountID, volumeID, instanceID string, sizeGiB int64) (*ec2.ModifyVolumeOutput, error) {
+	if instanceID == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return s.modifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: aws.String(volumeID), Size: aws.Int64(sizeGiB)}, accountID, instanceID)
+}
+
+// modifyVolume grows a volume. An empty stoppedOwner refuses any attached
+// volume; otherwise only a volume attached to that instance is accepted.
+func (s *VolumeServiceImpl) modifyVolume(ctx context.Context, input *ec2.ModifyVolumeInput, accountID, stoppedOwner string) (*ec2.ModifyVolumeOutput, error) {
 	if input == nil || input.VolumeId == nil || *input.VolumeId == "" {
 		return nil, errors.New(awserrors.ErrorInvalidVolumeIDMalformed)
 	}
@@ -1016,7 +1031,9 @@ func (s *VolumeServiceImpl) ModifyVolume(ctx context.Context, input *ec2.ModifyV
 	if input.Size == nil || *input.Size <= originalSize {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	if (meta.AttachedInstance != "" && meta.State == "in-use") || meta.State == string(ebsprovider.VolumeStateCreating) {
+	attached := meta.AttachedInstance != "" && meta.State == "in-use"
+	if meta.State == string(ebsprovider.VolumeStateCreating) || attached != (stoppedOwner != "") ||
+		(attached && meta.AttachedInstance != stoppedOwner) {
 		return nil, errors.New(awserrors.ErrorIncorrectState)
 	}
 	originalType := meta.VolumeType

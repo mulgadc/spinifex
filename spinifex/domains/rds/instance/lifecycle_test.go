@@ -16,7 +16,10 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -52,6 +55,10 @@ type fakeInstanceCommander struct {
 	// The VM state an accepted stop takes down. Nil models a node that accepts
 	// the command and never lands it.
 	vm *fakeInstanceState
+	// terminateStoppedErr is what terminating a stopped VM returns; onTerminateStopped
+	// runs first, so a test can model what the terminate does to the data volume.
+	terminateStoppedErr error
+	onTerminateStopped  func(instanceID string)
 }
 
 var _ instanceCommander = (*fakeInstanceCommander)(nil)
@@ -89,6 +96,14 @@ func (f *fakeInstanceCommander) StartInstance(_ context.Context, instanceID stri
 func (f *fakeInstanceCommander) StartStoppedInstance(_ context.Context, instanceID string) error {
 	f.calls = append(f.calls, "start-stopped:"+instanceID)
 	return f.err
+}
+
+func (f *fakeInstanceCommander) TerminateStoppedInstance(_ context.Context, instanceID string) error {
+	f.calls = append(f.calls, "terminate-stopped:"+instanceID)
+	if f.onTerminateStopped != nil {
+		f.onTerminateStopped(instanceID)
+	}
+	return f.terminateStoppedErr
 }
 
 // fakeSnapshots stands in for the EC2 snapshot service. holding is what
@@ -265,6 +280,7 @@ type lifecycleHarness struct {
 	sysvpc   *fakeSystemVPC
 	launcher *fakeLauncher
 	volumes  *fakeVolumes
+	storage  *fakeVolumeResizer
 	agent    *stubAgent
 	vmState  *fakeInstanceState
 }
@@ -286,6 +302,7 @@ func newLifecycleHarness(t *testing.T, agentFails bool) *lifecycleHarness {
 		sysvpc:   &fakeSystemVPC{},
 		launcher: &fakeLauncher{},
 		volumes:  &fakeVolumes{},
+		storage:  newFakeVolumeResizer("vol-rdsdata01", 20),
 		vmState:  vmState,
 	}
 	h.agent = newStubAgent(t, nc, testAccountID, testDBID, agentFails)
@@ -294,6 +311,7 @@ func newLifecycleHarness(t *testing.T, agentFails bool) *lifecycleHarness {
 		MasterKey:          testMasterKey,
 		Instances:          h.cmdr,
 		Snapshots:          h.snaps,
+		Storage:            h.storage,
 		InstanceState:      h.vmState,
 		VMStopTimeout:      testVMStopTimeout,
 		ServingCertKeyBits: testServingCertKeyBits,
@@ -855,4 +873,52 @@ func TestUncleanStopMessage_IsEngineAware(t *testing.T) {
 	// still gets the half of the warning that does not depend on knowing it.
 	unknown := uncleanStopMessage(t.Context(), "oracle", "stopping the instance")
 	assert.Equal(t, "The database engine could not be shut down cleanly before stopping the instance.", unknown)
+}
+
+// A stopped DB VM is terminated over ec2.terminate as the system account. Gone
+// in either form is done; a refusal is returned so the teardown retries.
+func TestNATSInstanceCommander_TerminateStoppedInstance(t *testing.T) {
+	cases := []struct {
+		name    string
+		reply   []byte
+		noReply bool
+		wantErr string
+	}{
+		{name: "terminated", reply: []byte(`{}`)},
+		{name: "already gone", reply: awserrors.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound)},
+		{name: "no responder", noReply: true},
+		{name: "refused", reply: awserrors.GenerateErrorPayload(awserrors.ErrorIncorrectInstanceState), wantErr: awserrors.ErrorIncorrectInstanceState},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, nc := testutil.StartTestNATS(t)
+			var got struct {
+				InstanceID string
+				Account    string
+			}
+			if !tc.noReply {
+				_, err := nc.Subscribe("ec2.terminate", func(msg *nats.Msg) {
+					var in ec2instance.TerminateStoppedInstanceInput
+					_ = json.Unmarshal(msg.Data, &in)
+					got.InstanceID, got.Account = in.InstanceID, msg.Header.Get(natsmsg.AccountIDHeader)
+					_ = msg.Respond(tc.reply)
+				})
+				require.NoError(t, err)
+				require.NoError(t, nc.Flush())
+			}
+
+			err := NewNATSInstanceCommander(nc).TerminateStoppedInstance(t.Context(), testInstance)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			if !tc.noReply {
+				assert.Equal(t, testInstance, got.InstanceID)
+				assert.Equal(t, awsidentifiers.GlobalAccountID, got.Account)
+			}
+		})
+	}
 }

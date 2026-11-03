@@ -100,6 +100,58 @@ func DisableSerialConsoleAccess(t *testing.T, c *AWSClient) bool {
 	return aws.BoolValue(out.SerialConsoleAccessEnabled)
 }
 
+// FirstNanoInstanceType returns the first instance type whose name contains
+// "nano". Unlike DiscoverNanoInstanceType it needs only an AWSClient.
+func FirstNanoInstanceType(t *testing.T, c *AWSClient) string {
+	t.Helper()
+	out, err := c.EC2.DescribeInstanceTypes(&ec2.DescribeInstanceTypesInput{})
+	if err != nil {
+		t.Fatalf("DescribeInstanceTypes: %v", err)
+	}
+	for _, it := range out.InstanceTypes {
+		name := aws.StringValue(it.InstanceType)
+		if strings.Contains(name, "nano") {
+			t.Logf("instance type: %s", name)
+			return name
+		}
+	}
+	t.Fatal("no nano instance type available")
+	return ""
+}
+
+// PreferredAMI returns the first ami-ubuntu* image, else the first image not
+// named alpine, else the first image of any kind.
+func PreferredAMI(t *testing.T, c *AWSClient) string {
+	t.Helper()
+	out, err := c.EC2.DescribeImages(&ec2.DescribeImagesInput{})
+	if err != nil {
+		t.Fatalf("DescribeImages: %v", err)
+	}
+	var ubuntu, nonAlpine, anyAMI string
+	for _, img := range out.Images {
+		id := aws.StringValue(img.ImageId)
+		name := aws.StringValue(img.Name)
+		if anyAMI == "" {
+			anyAMI = id
+		}
+		if !strings.Contains(strings.ToLower(name), "alpine") && nonAlpine == "" {
+			nonAlpine = id
+		}
+		if strings.HasPrefix(name, "ami-ubuntu") {
+			ubuntu = id
+			break
+		}
+	}
+	for _, candidate := range []string{ubuntu, nonAlpine, anyAMI} {
+		if candidate != "" {
+			t.Logf("AMI: %s", candidate)
+			return candidate
+		}
+	}
+	t.Fatal("no AMIs available")
+	return ""
+}
+
 // DiscoverDefaultVPC returns (vpcID, defaultSGID, defaultSubnetID). Fatals if
 // the default VPC is absent — its absence indicates a bootstrap failure.
 func DiscoverDefaultVPC(t *testing.T, c *AWSClient) (vpcID, sgID, subnetID string) {

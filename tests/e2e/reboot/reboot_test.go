@@ -258,10 +258,10 @@ func phase0Prereqs(t *testing.T, fix *fixture) {
 	require.NoError(t, fix.ssh.Ping(ctx, fix.env.WANHost), "ssh to %s", fix.env.WANHost)
 	harness.Detail(t, "ssh", "ok")
 
-	fix.instanceType = discoverNanoInstanceType(t, fix.aws)
+	fix.instanceType = harness.FirstNanoInstanceType(t, fix.aws)
 	harness.Detail(t, "instance_type", fix.instanceType)
 
-	fix.amiID = discoverAMI(t, fix.aws)
+	fix.amiID = harness.PreferredAMI(t, fix.aws)
 	harness.Detail(t, "ami", fix.amiID)
 
 	provisionKeyPair(t, fix, keyName)
@@ -715,52 +715,6 @@ func runHTTPBurst(t *testing.T, fix *fixture, label string) {
 		"%s round-robin: expected >=2 unique responders, got %d (counts=%v)", label, len(counts), counts)
 	assert.GreaterOrEqualf(t, totalOK, probesPerRun/2,
 		"%s success rate: only %d/%d", label, totalOK, probesPerRun)
-}
-
-// --- Discovery -----------------------------------------------------------
-
-func discoverNanoInstanceType(t *testing.T, c *harness.AWSClient) string {
-	t.Helper()
-	out, err := c.EC2.DescribeInstanceTypes(&ec2.DescribeInstanceTypesInput{})
-	require.NoError(t, err, "describe-instance-types")
-	for _, it := range out.InstanceTypes {
-		name := aws.StringValue(it.InstanceType)
-		if strings.Contains(name, "nano") {
-			return name
-		}
-	}
-	t.Fatal("no nano instance type available")
-	return ""
-}
-
-// discoverAMI prefers ubuntu, then non-alpine, then anything — matches
-// run-reboot-e2e.sh's three-stage AMI fallback chain.
-func discoverAMI(t *testing.T, c *harness.AWSClient) string {
-	t.Helper()
-	out, err := c.EC2.DescribeImages(&ec2.DescribeImagesInput{})
-	require.NoError(t, err, "describe-images")
-	var ubuntu, nonAlpine, anyAMI string
-	for _, img := range out.Images {
-		id := aws.StringValue(img.ImageId)
-		name := aws.StringValue(img.Name)
-		if anyAMI == "" {
-			anyAMI = id
-		}
-		if !strings.Contains(strings.ToLower(name), "alpine") && nonAlpine == "" {
-			nonAlpine = id
-		}
-		if strings.HasPrefix(name, "ami-ubuntu") {
-			ubuntu = id
-			break
-		}
-	}
-	for _, candidate := range []string{ubuntu, nonAlpine, anyAMI} {
-		if candidate != "" {
-			return candidate
-		}
-	}
-	t.Fatal("no AMIs available")
-	return ""
 }
 
 func describePrivateIP(t *testing.T, c *harness.AWSClient, id string) string {

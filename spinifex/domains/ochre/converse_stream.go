@@ -146,7 +146,7 @@ func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, model
 	if gc != nil {
 		ident, version := aws.StringValue(gc.GuardrailIdentifier), aws.StringValue(gc.GuardrailVersion)
 		blocked, message, _, assessments, err := enforceGuardrail(ctx, guardrails, embedder, accountID, ident, version,
-			bedrockruntime.GuardrailContentSourceInput, streamGuardrailTexts(input))
+			bedrockruntime.GuardrailContentSourceInput, converseGuardrailTexts(converseStreamToConverseInput(input)))
 		if err != nil {
 			return err
 		}

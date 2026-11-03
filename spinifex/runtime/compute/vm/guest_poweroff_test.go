@@ -40,9 +40,9 @@ func guestPoweroffManager(t *testing.T) (*Manager, *fakeStateStore, *recordedTra
 
 func TestQMPHeartbeatPoll_MarksGuestPoweroff(t *testing.T) {
 	for name, tc := range map[string]struct {
-		status string
+		status  string
 		running bool
-		want   bool
+		want    bool
 	}{
 		"guest shut down": {qmpStatusShutdown, false, true},
 		"guest running":   {"running", true, false},

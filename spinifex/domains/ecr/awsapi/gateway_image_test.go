@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,7 +26,8 @@ import (
 // object store + memory meta) and its composed ECR JSON image-action service.
 func newImageGateway(t *testing.T) *ecrGW {
 	t.Helper()
-	meta := ecrdomain.NewMemoryMetaStore()
+	_, _, js := testutil.StartTestJetStream(t)
+	meta := ecrdomain.NewKVMetaStore(js)
 	reg := ecrregistry.NewRegistry(objectstore.NewMemoryObjectStore(), meta, ecrTestAccount)
 	gw := newECRGW(nil, awsapi.Deps{Registry: awsapi.NewRegistryActionService(reg, reg, reg, reg), LifecyclePreview: awsapi.NewLifecyclePreviewActionService(meta, reg)})
 	imageRegistries.Store(gw, reg)

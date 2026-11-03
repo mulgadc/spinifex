@@ -7,15 +7,16 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+	"github.com/stretchr/testify/require"
 )
 
 // StartECRDaemonLite subscribes a real ecr.MetaServiceImpl (the same
 // production service the live daemon runs, see runtime/daemon/daemon.go)
 // to every ecr.* NATS subject the gateway's ECR control-plane handlers and
 // ECRRegistry.Meta dial for metadata — repos, policies, lifecycle policies,
-// tags, manifest records, and in-progress upload state. It is memory-backed
-// (ecr.NewMemoryMetaStore) rather than JetStream-KV-backed, matching
-// DaemonLite's in-scope resources.
+// tags, manifest records, and in-progress upload state. It is backed by
+// JetStream KV on the test's isolated NATS account, like the live daemon.
 //
 // Blob and manifest bytes never travel these subjects (ECRRegistry.Store
 // handles those directly against its own objectstore.ObjectStore, wired in
@@ -28,8 +29,10 @@ import (
 func StartECRDaemonLite(t *testing.T, gw *Gateway) *ecr.MetaServiceImpl {
 	t.Helper()
 
-	svc := ecr.NewMetaServiceImpl(ecr.NewMemoryMetaStore())
 	nc := gw.NATSConn
+	js, err := jetstream.New(nc)
+	require.NoError(t, err, "jetstream handle for the ECR meta store")
+	svc := ecr.NewKVMetaService(js)
 
 	sub(t, nc, ecr.SubjectRepoCreate, func(m *nats.Msg) { dispatch(m, svc.RepoCreate) })
 	sub(t, nc, ecr.SubjectRepoDescribe, func(m *nats.Msg) { dispatch(m, svc.RepoDescribe) })

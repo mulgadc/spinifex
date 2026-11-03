@@ -732,6 +732,11 @@ func (d *Daemon) SetConfigPath(path string) {
 
 // NewDaemon creates a new daemon instance.
 func NewDaemon(cfg *config.ClusterConfig) (*Daemon, error) {
+	// The fence notice is node-addressed: a daemon that cannot subscribe to it
+	// would leave a guest running on a volume whose export was revoked.
+	if err := ebsprovider.ValidateNodeID(cfg.Node); err != nil {
+		return nil, fmt.Errorf("cluster config node %q: %w", cfg.Node, err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// If WalDir is not set, use BaseDir

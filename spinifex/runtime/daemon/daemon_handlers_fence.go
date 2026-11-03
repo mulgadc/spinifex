@@ -3,9 +3,9 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/nats-io/nats.go"
 )
@@ -30,30 +30,28 @@ func (d *Daemon) fenceNoticeSubs() []natsSub {
 // process holding memory and taps, and an instance record claiming this node
 // runs something that runs somewhere else now.
 func (d *Daemon) handleFenceNotice(msg *nats.Msg) string {
-	ctx, span := natsmsg.StartConsumerSpan(msg)
+	ctx, span := ebsprovider.StartServerSpan(context.Background(), msg)
 	defer span.End()
 
 	var notice ebsprovider.FenceNotice
-	if err := json.Unmarshal(msg.Data, &notice); err != nil {
-		slog.ErrorContext(ctx, "volume fenced: bad notice", "err", err)
-		ackFenceNotice(ctx, msg, ebsprovider.FenceNoticeAck{Versioned: ebsprovider.NewVersioned(), Error: &ebsprovider.ProviderError{
-			Code: ebsprovider.ErrorCodeInvalidArgument, Message: "bad notice: " + err.Error(),
-		}})
-		return outcomeError
-	}
+	decodeErr := json.Unmarshal(msg.Data, &notice)
 	ack := ebsprovider.FenceNoticeAck{Versioned: ebsprovider.ReplyVersioned(notice.SchemaVersion)}
-	if !ebsprovider.SupportsSchemaVersion(notice.SchemaVersion) {
-		slog.ErrorContext(ctx, "volume fenced: notice in an unsupported schema version",
-			"volumeId", notice.VolumeID, "schemaVersion", notice.SchemaVersion)
-		ack.Error = &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnsupportedVersion, Message: ebsprovider.SupportedVersionsText()}
+	refuse := func(code ebsprovider.ErrorCode, message string) string {
+		slog.ErrorContext(ctx, "volume fenced: refused the notice", "volumeId", notice.VolumeID, "code", code, "err", message)
+		ack.Error = &ebsprovider.ProviderError{Code: code, Message: message}
+		ebsprovider.RecordProviderError(span, ack.Error)
 		ackFenceNotice(ctx, msg, ack)
 		return outcomeError
+	}
+	if decodeErr != nil {
+		return refuse(ebsprovider.ErrorCodeInvalidArgument, "bad notice: "+decodeErr.Error())
+	}
+	if !ebsprovider.SupportsSchemaVersion(notice.SchemaVersion) {
+		return refuse(ebsprovider.ErrorCodeUnsupportedVersion,
+			fmt.Sprintf("unsupported schema version %d; ", notice.SchemaVersion)+ebsprovider.SupportedVersionsText())
 	}
 	if notice.VolumeID == "" {
-		slog.ErrorContext(ctx, "volume fenced: notice named no volume")
-		ack.Error = &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeInvalidArgument, Message: "notice named no volume"}
-		ackFenceNotice(ctx, msg, ack)
-		return outcomeError
+		return refuse(ebsprovider.ErrorCodeInvalidArgument, "notice named no volume")
 	}
 
 	// FenceVolume moves the guest out of running before it returns, so the ack

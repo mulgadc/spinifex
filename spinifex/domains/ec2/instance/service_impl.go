@@ -680,6 +680,10 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 		slog.WarnContext(ctx, "PrepareRunInstances: AMI not owned by caller", "imageId", *input.ImageId, "amiOwner", amiOwner, "accountID", accountID)
 		return nil, nil, nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 	}
+	if err := checkImageArchitecture(instanceType, amiMeta.Architecture); err != nil {
+		slog.WarnContext(ctx, "PrepareRunInstances: AMI architecture does not match instance type", "imageId", *input.ImageId, "InstanceType", *input.InstanceType, "amiArchitecture", amiMeta.Architecture)
+		return nil, nil, nil, err
+	}
 
 	if input.KeyName != nil && *input.KeyName != "" {
 		if s.keyValidator == nil {
@@ -1943,6 +1947,24 @@ func (s *InstanceServiceImpl) createEFIVolumeViaProvider(ctx context.Context, ef
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	return nil
+}
+
+// checkImageArchitecture refuses an AMI whose architecture the instance type
+// does not support, as AWS does. An unrecorded architecture on either side is
+// not a mismatch.
+func checkImageArchitecture(it *ec2.InstanceTypeInfo, amiArch string) error {
+	if amiArch == "aarch64" { // admin image import accepts it as an alias
+		amiArch = "arm64"
+	}
+	if amiArch == "" || it == nil || it.ProcessorInfo == nil || len(it.ProcessorInfo.SupportedArchitectures) == 0 {
+		return nil
+	}
+	if slices.Contains(aws.StringValueSlice(it.ProcessorInfo.SupportedArchitectures), amiArch) {
+		return nil
+	}
+	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+		"The architecture '%s' of the specified instance type does not match the architecture '%s' of the specified AMI. Specify an instance type and an AMI that have matching architectures, and try again. You can use 'describe-instance-types' or 'describe-images' to discover the architecture of the instance type or AMI.",
+		instanceArchitecture(it), amiArch)
 }
 
 // instanceArchitecture returns the AWS architecture string from the instance type.

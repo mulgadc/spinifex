@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -105,11 +107,53 @@ func TestCreateTags_NoOwnerNotFound(t *testing.T) {
 		Resources: []*string{aws.String("vol-tag-still"), aws.String(absent)},
 		Tags:      []*ec2.Tag{{Key: aws.String("env"), Value: aws.String("prod")}},
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assertInstancesNotFound(t, err, "The instance ID 'i-tag-absent' does not exist")
 
 	assert.Empty(t, centralTags(t, d, testAccountID, absent))
 	assert.Equal(t, map[string]string{"env": "prod"}, centralTags(t, d, testAccountID, "vol-tag-still"))
+}
+
+// assertInstancesNotFound checks err is InvalidInstanceID.NotFound with EC2's message.
+func assertInstancesNotFound(t *testing.T, err error, wantMessage string) {
+	t.Helper()
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "err = %v", err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, code)
+	assert.Equal(t, wantMessage, message)
+}
+
+// Cloud Custodian's retry_skip_bad_ids pulls the quoted, comma-separated ids
+// out of the message, drops them from the batch and retries the rest, so
+// every missing instance must be named for the retry to tag the live one.
+func TestCreateTags_NotFoundNamesIDsForSkipRetry(t *testing.T) {
+	const live = "i-tag-live"
+	d := tagTestDaemon(t, live, nil)
+	subscribeOwner(t, d, live)
+	quoted := regexp.MustCompile(`['"]([^'"]+)['"]`)
+
+	resources := []string{"i-tag-gone1", live, "i-tag-gone2"}
+	tags := []*ec2.Tag{{Key: aws.String("env"), Value: aws.String("prod")}}
+	_, err := d.createTags(context.Background(), &ec2.CreateTagsInput{Resources: aws.StringSlice(resources), Tags: tags}, testAccountID)
+	assertInstancesNotFound(t, err, "The instance IDs 'i-tag-gone1, i-tag-gone2' do not exist")
+
+	_, message, _ := awserrors.ResolveErrorDetail(err)
+	bad := map[string]bool{}
+	for _, m := range quoted.FindAllStringSubmatch(message, -1) {
+		for id := range strings.SplitSeq(m[1], ",") {
+			bad[strings.TrimSpace(id)] = true
+		}
+	}
+	var rest []string
+	for _, r := range resources {
+		if !bad[r] {
+			rest = append(rest, r)
+		}
+	}
+	require.Equal(t, []string{live}, rest)
+
+	_, err = d.createTags(context.Background(), &ec2.CreateTagsInput{Resources: aws.StringSlice(rest), Tags: tags}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"env": "prod"}, recordTags(t, d, live))
 }
 
 // A many-instance call fans out concurrently: absent owners all fail fast
@@ -120,8 +164,7 @@ func TestDeleteTags_NoOwnerNotFound(t *testing.T) {
 	_, err := d.deleteTags(context.Background(), &ec2.DeleteTagsInput{
 		Resources: []*string{aws.String("i-tag-gone1"), aws.String("i-tag-gone2")},
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidInstanceIDNotFound), "err = %v", err)
 }
 
 // With no running owner, create-tags falls back to the shared stopped store
@@ -165,8 +208,7 @@ func TestDeleteTags_StoppedCrossAccountRejected(t *testing.T) {
 	_, err := d.deleteTags(context.Background(), &ec2.DeleteTagsInput{
 		Resources: []*string{aws.String(id)},
 	}, attacker)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidInstanceIDNotFound), "err = %v", err)
 
 	assert.Equal(t, map[string]string{"Name": "web"}, tagsAsMap(stopped.Stopped[id].Instance.Tags))
 	assert.Empty(t, centralTags(t, d, attacker, id))
@@ -184,8 +226,7 @@ func TestCreateTags_OwnerErrorRelayed(t *testing.T) {
 		Resources: []*string{aws.String(id)},
 		Tags:      []*ec2.Tag{{Key: aws.String("stolen"), Value: aws.String("yes")}},
 	}, attacker)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidInstanceIDNotFound), "err = %v", err)
 
 	assert.Equal(t, map[string]string{"Name": "web"}, recordTags(t, d, id))
 	assert.Empty(t, centralTags(t, d, testAccountID, id))

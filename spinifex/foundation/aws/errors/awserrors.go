@@ -700,6 +700,15 @@ func IDNotFound(code, kind, id string) error {
 	return Errorf(code, "The %s ID '%s' does not exist", kind, id)
 }
 
+// IDsNotFound is IDNotFound for one or more IDs; several render as EC2's
+// plural "The <kind> IDs '<a>, <b>' do not exist".
+func IDsNotFound(code, kind string, ids []string) error {
+	if len(ids) == 1 {
+		return IDNotFound(code, kind, ids[0])
+	}
+	return Errorf(code, "The %s IDs '%s' do not exist", kind, strings.Join(ids, ", "))
+}
+
 // HasDependencies returns DependencyViolation with EC2's message for a
 // resource that cannot be deleted while others depend on it.
 func HasDependencies(kind, id string) error {

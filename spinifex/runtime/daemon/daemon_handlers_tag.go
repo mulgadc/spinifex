@@ -168,7 +168,8 @@ func (d *Daemon) deleteTags(ctx context.Context, input *ec2.DeleteTagsInput, acc
 
 // tagInstances sends the tag mutation to each instance's owner concurrently,
 // so a many-instance call costs one owner timeout rather than one per
-// instance. The first failure in input order is returned.
+// instance. The first failure in input order is returned; if that is
+// InvalidInstanceID.NotFound, its message names every missing instance.
 func (d *Daemon) tagInstances(ctx context.Context, instanceIDs []string, data *ec2v1.InstanceTagsData, remove bool, accountID string) error {
 	errs := make([]error, len(instanceIDs))
 	var wg sync.WaitGroup
@@ -178,10 +179,20 @@ func (d *Daemon) tagInstances(ctx context.Context, instanceIDs []string, data *e
 		})
 	}
 	wg.Wait()
-	for _, err := range errs {
-		if err != nil {
-			return err
+	var missing []string
+	for i, err := range errs {
+		if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorInvalidInstanceIDNotFound {
+			missing = append(missing, instanceIDs[i])
 		}
+	}
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorInvalidInstanceIDNotFound {
+			return awserrors.IDsNotFound(code, "instance", missing)
+		}
+		return err
 	}
 	return nil
 }

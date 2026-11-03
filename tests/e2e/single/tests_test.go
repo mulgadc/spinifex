@@ -135,8 +135,8 @@ func TestStopStart(t *testing.T) {
 	runStopStart(t, requireSingleNodeFixture(t))
 }
 
-func TestAttachToStoppedError(t *testing.T) {
-	runAttachToStoppedError(t, requireSingleNodeFixture(t))
+func TestAttachToStopped(t *testing.T) {
+	runAttachToStopped(t, requireSingleNodeFixture(t))
 }
 
 // TestSpotInstanceLifecycle drives the two spot terminal transitions that need

@@ -578,22 +578,6 @@ func (s *Store) PutRule(ctx context.Context, r *RuleRecord) error {
 	return err
 }
 
-// GetRule retrieves a rule by its short ID.
-func (s *Store) GetRule(ctx context.Context, ruleID string) (*RuleRecord, error) {
-	entry, err := s.kv.Get(ctx, KeyPrefixRule+ruleID)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var r RuleRecord
-	if err := json.Unmarshal(entry.Value(), &r); err != nil {
-		return nil, fmt.Errorf("unmarshal rule: %w", err)
-	}
-	return &r, nil
-}
-
 // DeleteRule removes a rule by its short ID.
 func (s *Store) DeleteRule(ctx context.Context, ruleID string) error {
 	err := s.kv.Delete(ctx, KeyPrefixRule+ruleID)

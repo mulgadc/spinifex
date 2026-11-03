@@ -1438,6 +1438,51 @@ func TestHandleEC2GetConsoleOutput(t *testing.T) {
 	assert.Contains(t, string(decoded), "Boot complete.")
 }
 
+func TestHandleEC2GetConsoleOutput_AfterTrimReturnsNewest64KiB(t *testing.T) {
+	daemon := createFullTestDaemon(t, sharedNATSURL)
+
+	instanceID := "i-console-trim-001"
+	dir := t.TempDir()
+	logPath := dir + "/console-" + instanceID + ".log"
+	var body bytes.Buffer
+	for i := 0; body.Len() < 5<<20; i++ {
+		fmt.Fprintf(&body, "l%014d\n", i)
+	}
+	require.NoError(t, os.WriteFile(logPath, body.Bytes(), 0o644))
+
+	daemon.vmMgr.Insert(&vm.VM{
+		ID:        instanceID,
+		Status:    vm.StateRunning,
+		AccountID: testAccountID,
+		Config:    vm.Config{ConsoleLogPath: logPath},
+	})
+	reaper := vm.NewConsoleLogReaper(dir, func() (map[string]vm.ConsoleLogEntry, error) {
+		return map[string]vm.ConsoleLogEntry{instanceID: {State: vm.StateRunning}}, nil
+	})
+	_, err := reaper.Sweep(context.Background())
+	require.NoError(t, err)
+	info, err := os.Stat(logPath)
+	require.NoError(t, err)
+	require.Equal(t, int64(1<<20), info.Size(), "the console must have been trimmed before it is read")
+
+	topic := fmt.Sprintf("ec2.%s.GetConsoleOutput", instanceID)
+	sub, err := daemon.natsConn.Subscribe(topic, daemon.handleEC2GetConsoleOutput)
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+	reqData, _ := json.Marshal(&ec2.GetConsoleOutputInput{InstanceId: aws.String(instanceID)})
+	reply, err := natsRequest(daemon.natsConn, topic, reqData, 5*time.Second)
+	require.NoError(t, err)
+
+	var output ec2.GetConsoleOutputOutput
+	require.NoError(t, json.Unmarshal(reply.Data, &output))
+	decoded, err := base64.StdEncoding.DecodeString(*output.Output)
+	require.NoError(t, err)
+	want := body.Bytes()[body.Len()-64*1024:]
+	decodedSize := len(decoded)
+	assert.Equal(t, 64*1024, decodedSize)
+	assert.True(t, bytes.Equal(want, decoded), "the response is the newest 64 KiB of the original console")
+}
+
 func TestHandleEC2GetConsoleOutput_EmptyLog(t *testing.T) {
 	natsURL := sharedNATSURL
 	daemon := createFullTestDaemon(t, natsURL)

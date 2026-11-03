@@ -267,7 +267,7 @@ func TestVolumeMounterAdapter_EveryRequestAtVersion3OverTheContract(t *testing.T
 	for _, id := range []string{"vol-a", "vol-b"} {
 		assert.Equal(t, ebsprovider.VolumeStateAvailable, volumeState(t, provider, id), "unmount must unpublish %s", id)
 	}
-	assert.ElementsMatch(t, []string{"vol-a:available", "vol-b:available"}, volState.snapshot())
+	assert.Empty(t, volState.snapshot(), "stop unmount must not write volume state")
 
 	moved := mounterTestVM("vol-moved")
 	require.NoError(t, adapter.Mount(t.Context(), moved))
@@ -374,7 +374,7 @@ func TestVolumeMounterAdapter_UnpublishOutlastingRequestTimeoutCompletes(t *test
 	adapter.provider = ebsprovider.NewNATSProvider(nc, requestTimeout)
 
 	require.NoError(t, adapter.Unmount(t.Context(), mounterTestVM("vol-slow-seal")))
-	assert.Equal(t, []string{"vol-slow-seal:available"}, volState.snapshot())
+	assert.Empty(t, volState.snapshot(), "stop unmount must not write volume state")
 	require.NoError(t, adapter.UnmountOne(t.Context(), testAccountID, viperblocklegacyv1.EBSRequest{Name: "vol-slow-seal"}))
 
 	err := adapter.MountOne(t.Context(), testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-slow-seal"})
@@ -649,7 +649,7 @@ func TestVolumeMounterAdapter_UnpublishOutlivesCallerContext(t *testing.T) {
 	cancel()
 	require.NoError(t, adapter.Unmount(cancelled, mounterTestVM("vol-stop")))
 	assert.Equal(t, int32(2), sealed.Load())
-	assert.Equal(t, []string{"vol-stop:available"}, volState.snapshot())
+	assert.Empty(t, volState.snapshot(), "stop unmount must not write volume state")
 }
 
 // Abandon drops each export unsealed, at the version that carries NoSeal, and

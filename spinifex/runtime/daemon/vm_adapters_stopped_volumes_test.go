@@ -9,10 +9,10 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
+	ebsprovider "github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,19 +22,8 @@ import (
 func TestUnmount_LeavesDataVolumesAttached(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
 	volState := &recordingVolState{}
-	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, volState)
-
-	var sealed []string
-	sub, err := daemon.natsConn.Subscribe(viperblocklegacyv1.UnmountSubject(daemon.node), func(msg *nats.Msg) {
-		var req viperblocklegacyv1.EBSRequest
-		require.NoError(t, json.Unmarshal(msg.Data, &req))
-		sealed = append(sealed, req.Name)
-		data, err := json.Marshal(viperblocklegacyv1.EBSUnMountResponse{Volume: req.Name})
-		require.NoError(t, err)
-		require.NoError(t, msg.Respond(data))
-	})
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
+	adapter := newNATSMounter(daemon.natsConn, daemon.node, volState)
+	fake := serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
 
 	inst := &vm.VM{
 		ID:        "i-stop-keep",
@@ -50,7 +39,7 @@ func TestUnmount_LeavesDataVolumesAttached(t *testing.T) {
 	}
 	require.NoError(t, adapter.Unmount(t.Context(), inst))
 
-	assert.ElementsMatch(t, []string{"vol-root", "vol-efi", "vol-data-a", "vol-data-b"}, sealed,
+	assert.ElementsMatch(t, []string{"vol-root", "vol-efi", "vol-data-a", "vol-data-b"}, fake.unpublished(),
 		"every volume is still sealed on stop")
 	assert.Empty(t, volState.snapshot(),
 		"no volume state may change: a stopped instance's volumes stay in-use and attached")
@@ -59,23 +48,16 @@ func TestUnmount_LeavesDataVolumesAttached(t *testing.T) {
 // A seal that fails or that reports NotFound must not turn into a state write
 // either; the retry path relied on that write before.
 func TestUnmount_SealOutcomesNeverWriteVolumeState(t *testing.T) {
-	for name, resp := range map[string]viperblocklegacyv1.EBSUnMountResponse{
-		"seal failed": {Error: "seal volume: predastore unreachable"},
-		"not found":   {NotFound: true, Error: "Volume vol-data not found"},
+	for name, resp := range map[string]ebsprovider.UnpublishVolumeResponse{
+		"seal failed": unpublishRefusal(ebsprovider.ErrorCodeInternal, "seal volume: predastore unreachable"),
+		"not found":   unpublishRefusal(ebsprovider.ErrorCodeNotFound, "Volume vol-data not found"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			daemon := createTestDaemon(t, sharedNATSURL)
 			volState := &recordingVolState{}
-			adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, volState)
-
-			sub, err := daemon.natsConn.Subscribe(viperblocklegacyv1.UnmountSubject(daemon.node), func(msg *nats.Msg) {
-				resp.Volume = "vol-data"
-				data, err := json.Marshal(resp)
-				require.NoError(t, err)
-				require.NoError(t, msg.Respond(data))
-			})
-			require.NoError(t, err)
-			defer sub.Unsubscribe()
+			adapter := newNATSMounter(daemon.natsConn, daemon.node, volState)
+			fake := serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
+			fake.setUnpublish(func(string) ebsprovider.UnpublishVolumeResponse { return resp })
 
 			inst := &vm.VM{
 				ID: "i-seal-outcome",
@@ -109,17 +91,9 @@ func TestStoppedInstanceVolume_CannotBeAttachedElsewhere(t *testing.T) {
 		DeviceName:       "/dev/sdf",
 	})
 
-	sealSub, err := daemon.natsConn.Subscribe(viperblocklegacyv1.UnmountSubject(daemon.node), func(msg *nats.Msg) {
-		var req viperblocklegacyv1.EBSRequest
-		require.NoError(t, json.Unmarshal(msg.Data, &req))
-		data, err := json.Marshal(viperblocklegacyv1.EBSUnMountResponse{Volume: req.Name})
-		require.NoError(t, err)
-		require.NoError(t, msg.Respond(data))
-	})
-	require.NoError(t, err)
-	defer sealSub.Unsubscribe()
+	serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
 
-	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, daemon.volumeService)
+	adapter := newNATSMounter(daemon.natsConn, daemon.node, daemon.volumeService)
 	stopped := &vm.VM{
 		ID:        stoppedID,
 		AccountID: testAccountID,

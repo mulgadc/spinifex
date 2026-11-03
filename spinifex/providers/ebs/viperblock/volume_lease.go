@@ -105,6 +105,10 @@ var errVolumeLeaseHeld = errors.New(ec2v1.VolumeHeldElsewhereText)
 // holds this" from "nobody can say who does".
 var errNoVolumeLeaseStore = errors.New("no volume lease store")
 
+// errNoVolumeDirtyStore reports an open refused because this node cannot record
+// that it holds unsealed writes, so a later takeover could not warn about them.
+var errNoVolumeDirtyStore = errors.New("no volume dirty marker store")
+
 // volumeLeaseRecord is what a holder publishes about itself. Generation is the
 // revision that won the race: monotonic across the bucket, so a later opener
 // always carries a higher one than the writer it displaced.
@@ -678,6 +682,9 @@ func (cfg *Config) leaseOwner() string {
 func (cfg *Config) acquireVolumeLease(ctx context.Context, volumeName string) (*volumeLease, error) {
 	if cfg.leases == nil {
 		return nil, fmt.Errorf("%w: cannot establish exclusive access to %s", errNoVolumeLeaseStore, volumeName)
+	}
+	if cfg.dirty == nil {
+		return nil, fmt.Errorf("%w: cannot record unsealed writes for %s", errNoVolumeDirtyStore, volumeName)
 	}
 	lease, err := cfg.leases.acquire(ctx, volumeName)
 	if err != nil {

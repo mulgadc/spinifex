@@ -47,6 +47,8 @@ func installTestVolumeLeases(t *testing.T, cfg *Config, natsURL string) {
 	leases, err := newVolumeLeases(t.Context(), nc, cfg.leaseOwner())
 	require.NoError(t, err)
 	cfg.leases = leases
+	// An open refuses without dirty markers too, so the fixture needs both.
+	cfg.dirty = newTestDirty(t, natsURL, cfg.leaseOwner())
 }
 
 // startTestService runs the adapter's startup sequence (the same one

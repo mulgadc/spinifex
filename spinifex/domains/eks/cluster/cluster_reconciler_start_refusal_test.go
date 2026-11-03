@@ -3,9 +3,11 @@ package cluster
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,12 +32,15 @@ func (c *refusingCPControl) StartInstance(context.Context, string) error {
 
 func (c *refusingCPControl) StopInstance(context.Context, string) error { return nil }
 
-// What the start path returns after crossing NATS: the code and the message the
-// owning node sent, with no sentinel left to match on.
+// What the start path returns after crossing NATS. An owner that predates the
+// held-elsewhere header sends only viperblockd's text; a current one sends the
+// header, which StartInstances turns back into the sentinel, in any wording.
 var (
 	errStartCapacity = errors.New(awserrors.ErrorInsufficientInstanceCapacity)
 	errStartHeld     = awserrors.Errorf(awserrors.ErrorIncorrectState, "%s",
 		"volume is leased by another owner: held by node-a since 2026-10-30T01:00:00Z")
+	errStartHeldByCode = fmt.Errorf("%w: %w", ec2v1.ErrVolumeHeldElsewhere,
+		awserrors.Errorf(awserrors.ErrorIncorrectState, "%s", "volume vol-1 is published to node-a"))
 )
 
 // A refusal that clears by itself must not use up the restart budget, or the
@@ -44,8 +49,9 @@ var (
 func TestMaybeRecoverCP_RetryableStartRefusalIsRetriedNotReplaced(t *testing.T) {
 	t.Parallel()
 	for name, refusal := range map[string]error{
-		"insufficient capacity": errStartCapacity,
-		"volume held elsewhere": errStartHeld,
+		"insufficient capacity":              errStartCapacity,
+		"volume held elsewhere, legacy text": errStartHeld,
+		"volume held elsewhere, by code":     errStartHeldByCode,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

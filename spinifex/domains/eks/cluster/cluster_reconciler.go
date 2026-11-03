@@ -795,6 +795,11 @@ func retryableStartRefusal(err error) bool {
 	if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorInsufficientInstanceCapacity {
 		return true
 	}
+	if errors.Is(err, ec2v1.ErrVolumeHeldElsewhere) {
+		return true
+	}
+	// An owner that predates the held-elsewhere header sends only viperblockd's
+	// lease text. Retired at finalisation, when every node sends the header.
 	_, message, _ := awserrors.ResolveErrorDetail(err)
 	return strings.Contains(message, ec2v1.VolumeHeldElsewhereText) || strings.Contains(err.Error(), ec2v1.VolumeHeldElsewhereText)
 }

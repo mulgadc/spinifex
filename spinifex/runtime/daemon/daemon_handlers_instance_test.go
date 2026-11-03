@@ -1,8 +1,10 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"testing"
@@ -10,6 +12,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
@@ -640,6 +644,46 @@ func TestHandleEC2StartStoppedInstance_Forwarding(t *testing.T) {
 		msg.Header.Set(natsmsg.AccountIDHeader, testAccountID)
 		assert.Equal(t, outcomeError, d.handleEC2StartStoppedInstance(msg))
 	})
+}
+
+// A start refused because another node holds a volume crosses the owner's
+// reply, the ec2.start forwarder's relay and the StartInstances client, and
+// must still match the sentinel at the end, whatever words the provider used.
+func TestStartInstances_VolumeHeldElsewhereSurvivesTheForward(t *testing.T) {
+	ns, nc := testutil.StartTestNATS(t)
+	store := vmmock.New()
+	v := stoppedVMFixture("i-0abc0000000000001", testAccountID)
+	v.LastNode = "node-owner"
+	store.Stopped[v.ID] = v
+	d := createTestDaemon(t, ns.ClientURL())
+	d.stateStore = store
+	d.instanceService = ec2instance.NewInstanceServiceImpl(
+		d.config, d.resourceMgr.instanceTypes, d.natsConn,
+		objectstore.NewMemoryObjectStore(), d.vmMgr, d.resourceMgr, store,
+	)
+
+	held := fmt.Errorf("%w: %w", ec2instance.ErrVolumeHeldElsewhere,
+		awserrors.Errorf(awserrors.ErrorIncorrectState, "%s", "volume vol-1 is published to node-a"))
+	owner := func(context.Context, *ec2instance.StartStoppedInstanceInput, string) (*ec2instance.StartStoppedInstanceOutput, error) {
+		return nil, held
+	}
+	for subject, fn := range map[string]nats.MsgHandler{
+		"ec2.start.node-owner": asMsgHandler(handleNATSRequest("node-owner", owner)),
+		"ec2.start":            asMsgHandler(d.handleEC2StartStoppedInstance),
+	} {
+		sub, err := nc.Subscribe(subject, fn)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sub.Unsubscribe() })
+	}
+
+	_, err := ec2instanceapi.StartInstances(t.Context(),
+		&ec2.StartInstancesInput{InstanceIds: []*string{aws.String(v.ID)}}, nc, testAccountID)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ec2v1.ErrVolumeHeldElsewhere, "the caller cannot read this refusal from its words")
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorIncorrectState, code)
+	assert.Contains(t, message, "node-a", "the operator still learns where the volume is")
 }
 
 // --- handleSetInstanceTags / handleSetInstanceMonitoring ---

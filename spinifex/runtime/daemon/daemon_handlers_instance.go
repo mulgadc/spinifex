@@ -323,7 +323,7 @@ func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) string {
 			}
 			if !isCapacity {
 				// Relay success or any non-capacity error as-is.
-				if relayErr := msg.Respond(resp.Data); relayErr != nil {
+				if relayErr := relayStartReply(msg, resp); relayErr != nil {
 					slog.Error("ec2.start: failed to relay response from original node",
 						"instanceId", peek.InstanceID, "lastNode", lastNode, "err", relayErr)
 					return outcomeError
@@ -349,4 +349,15 @@ func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) string {
 	}
 
 	return handleNATSRequest(d.node, d.instanceService.StartStoppedInstance)(msg)
+}
+
+// relayStartReply answers msg with the owner's reply, keeping the header that
+// says a refusal was a volume held elsewhere, which the body cannot carry.
+func relayStartReply(msg, resp *nats.Msg) error {
+	reply := nats.NewMsg("")
+	reply.Data = resp.Data
+	if v := resp.Header.Get(natsmsg.VolumeHeldElsewhereHeader); v != "" {
+		reply.Header.Set(natsmsg.VolumeHeldElsewhereHeader, v)
+	}
+	return msg.RespondMsg(reply)
 }

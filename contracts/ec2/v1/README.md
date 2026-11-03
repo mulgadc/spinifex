@@ -37,6 +37,13 @@ contract or an approved compatibility plan; it is not a package refactor.
 Only the subject is owned here today.
 The request (`account_id`) and reply (`vpc_id`, `error`) bodies are still declared as anonymous structs on each side; moving them into this package is a contract change that needs its own characterization first.
 
+## Volume held elsewhere
+
+A start refused because another node holds one of the instance's volumes is an `IncorrectState` error payload on the `ec2.start`, `ec2.start.<node>` and `ec2.cmd.<instance-id>` replies, and the AWS body cannot say why.
+The owning node adds the `X-Volume-Held-Elsewhere: true` header to that reply, the `ec2.start` forwarder relays it, and `StartInstances` wraps `ErrVolumeHeldElsewhere` around the error it rebuilds, so a caller matches it with `errors.Is` rather than reading the message.
+The owning node sets the header from the EBS provider's `volume_held_elsewhere` code, or from `VolumeHeldElsewhereText` in a reply that carries no such code.
+A reply from a node that predates the header carries only that text, so readers keep matching it until finalisation, when every node sends the header.
+
 ## Platform inventory
 
 `PlatformInventorySubject` (`ec2.v1.PlatformInventory`) is a request/reply route on which a daemon in the `spinifex-workers` queue group reports one account's key pairs, placement groups, launch templates and their `ec2-tags` entries from the EC2 owner stores.

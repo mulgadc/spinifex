@@ -1238,6 +1238,9 @@ func (s *InstanceServiceImpl) StartInstance(ctx context.Context, instance *vm.VM
 			return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 		default:
 			slog.ErrorContext(ctx, "StartInstance: vmMgr.Start failed", "err", err)
+			if refusal := volumeHeldElsewhereError(err); refusal != nil {
+				return refusal
+			}
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 	}
@@ -2838,40 +2841,30 @@ func (s *InstanceServiceImpl) RecoverInstance(ctx context.Context, instance *vm.
 	return s.launchClaimedInstance(ctx, instance, undo)
 }
 
-// volumeExclusionMarkers are the refusals that mean another node is writing this
-// volume right now, or is still live and holds its unsealed writes. A previous
-// owner that has stopped heartbeating is opened over with a warning instead. The
-// text arrives having crossed NATS from viperblockd.
-var volumeExclusionMarkers = []string{
-	ec2v1.VolumeHeldElsewhereText,
-}
-
 // ErrVolumeHeldElsewhere reports a launch refused because another node still
-// holds one of the instance's volume leases.
-//
-// Recovery treats it differently from every other failure — it clears on the
-// lease's own clock rather than needing anything fixed — so it has to be
-// recognisable with errors.Is rather than inferred from text that has already
-// crossed NATS once.
-var ErrVolumeHeldElsewhere = errors.New("a volume is leased by another node")
+// holds one of the instance's volume leases. Recovery retries it on the lease's
+// own clock, so it must match with errors.Is on this node and across NATS.
+var ErrVolumeHeldElsewhere = ec2v1.ErrVolumeHeldElsewhere
 
 // volumeHeldElsewhereError converts a mount refused because another node holds
-// the volume into a client-facing error carrying that reason. Returns nil for
-// anything else. Without it the caller gets ServerInternal and is told to
-// retry, which cannot succeed while the holder is down, and the text naming the
-// holder never leaves the node's log.
+// the volume into IncorrectState naming the holder, and returns nil otherwise.
+// Without it the caller gets ServerInternal and retries what cannot succeed.
 func volumeHeldElsewhereError(err error) error {
 	if err == nil {
 		return nil
 	}
-	msg := err.Error()
-	for _, marker := range volumeExclusionMarkers {
-		if strings.Contains(msg, marker) {
-			return fmt.Errorf("%w: %w", ErrVolumeHeldElsewhere,
-				awserrors.Errorf(awserrors.ErrorIncorrectState, "%s", msg))
-		}
+	if !errors.Is(err, ebsprovider.ErrVolumeHeldElsewhere) && !legacyHeldElsewhere(err) {
+		return nil
 	}
-	return nil
+	return fmt.Errorf("%w: %w", ErrVolumeHeldElsewhere,
+		awserrors.Errorf(awserrors.ErrorIncorrectState, "%s", err.Error()))
+}
+
+// legacyHeldElsewhere matches viperblockd's lease text, the only signal a legacy
+// ebs.mount reply or a publish below HeldElsewhereSchemaVersion carries, since
+// volume_in_use there also means a read-only mismatch. Retired at finalisation.
+func legacyHeldElsewhere(err error) bool {
+	return strings.Contains(err.Error(), ec2v1.VolumeHeldElsewhereText)
 }
 
 // restoreClaimedStoppedInstance writes instance back to the shared

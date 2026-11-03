@@ -53,12 +53,12 @@ var providerObjectStoreFactory = func(cfg *Config) objectstore.ObjectStore {
 // viperblock engine construction out of the EC2 control-plane handlers and
 // into the storage daemon that owns BaseDir and the mounted-volume registry.
 //
-// PublishVolume/UnpublishVolume are node-addressed (ebsprovider.PublishSubject
-// / UnpublishSubject already route to one node), so they are only registered
-// when cfg.NodeName is set; there is no queue-group fallback the way the
-// legacy ebs.mount/ebs.unmount subjects have.
+// It refuses a cfg.NodeName that cannot address the node-addressed subjects.
 // Exported so harnesses can put a real provider behind the control plane.
 func RegisterProviderSubjects(cfg *Config, nc *nats.Conn) error {
+	if err := cfg.validateNodeName(); err != nil {
+		return err
+	}
 	// The lease store has to exist before any subject is served: a handler
 	// that reaches an engine open without one refuses, and refusing every
 	// publish is a worse failure than not starting.
@@ -112,11 +112,6 @@ func RegisterProviderSubjects(cfg *Config, nc *nats.Conn) error {
 		handleCreateSnapshot(ctx, cfg, nc, msg)
 	})); err != nil {
 		return fmt.Errorf("subscribe to %s: %w", snapshotCreateWildcard, err)
-	}
-
-	if cfg.NodeName == "" {
-		slog.Warn("ebs.provider: NodeName is empty, this node cannot serve PublishVolume/UnpublishVolume attachments")
-		return nil
 	}
 
 	publishSubject, err := ebsprovider.PublishSubject(cfg.NodeName)
@@ -1809,8 +1804,8 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (viperbl
 
 // handlePublishVolume serves ebs.provider.v1.<node>.mount, the provider-neutral
 // front for the same nbdkit mount path ebs.mount uses. It is node-addressed
-// (RegisterProviderSubjects only subscribes it when cfg.NodeName is set), so
-// unlike the legacy handler there is no queue-group fallback to reason about.
+// (subscribed on cfg.NodeName's subject), so unlike the legacy handler there
+// is no queue-group fallback to reason about.
 func handlePublishVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *nats.Msg) {
 	var req ebsprovider.PublishVolumeRequest
 	err := json.Unmarshal(msg.Data, &req)

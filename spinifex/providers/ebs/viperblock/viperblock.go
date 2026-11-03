@@ -24,6 +24,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/mulgadc/viperblock/viperblock/backends/s3"
@@ -826,6 +827,9 @@ func (cfg *Config) RecoverMountedVolumes(ctx context.Context, nc *nats.Conn) {
 // readiness: without the round trip a caller can act on the signal and still
 // have its request arrive before the interest does.
 func (cfg *Config) Run(nc *nats.Conn) error {
+	if err := cfg.validateNodeName(); err != nil {
+		return err
+	}
 	if err := cfg.LoadEncryptionKey(); err != nil {
 		return err
 	}
@@ -839,11 +843,7 @@ func (cfg *Config) Run(nc *nats.Conn) error {
 
 	cfg.RecoverMountedVolumes(context.Background(), nc)
 
-	if cfg.NodeName != "" {
-		slog.Info("Waiting for EBS events", "node", cfg.NodeName)
-	} else {
-		slog.Info("Waiting for EBS events (single-node mode)")
-	}
+	slog.Info("Waiting for EBS events", "node", cfg.NodeName)
 
 	if err := RegisterVolumeLifecycleSubjects(cfg, nc); err != nil {
 		return err
@@ -857,6 +857,15 @@ func (cfg *Config) Run(nc *nats.Conn) error {
 	}
 	if cfg.ready != nil {
 		close(cfg.ready)
+	}
+	return nil
+}
+
+// validateNodeName refuses a node name the contract cannot address. Without
+// one the fence notice has no subject, and a fenced guest would keep running.
+func (cfg *Config) validateNodeName() error {
+	if err := ebsprovider.ValidateNodeID(cfg.NodeName); err != nil {
+		return fmt.Errorf("viperblockd node name %q (cluster config node): %w", cfg.NodeName, err)
 	}
 	return nil
 }

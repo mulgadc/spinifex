@@ -319,8 +319,8 @@ func (cfg *Config) fenceNoticeRetry() time.Duration {
 }
 
 // publishVolumeFenced tells the local daemon a guest is running against a disk
-// that is gone, until the daemon acknowledges. It gives up on a closed
-// connection, or once the volume is exported here again by a newer mount.
+// that is gone, until the daemon acknowledges. It gives up on a notice that can
+// never be acted on, a closed connection, or the volume being exported again.
 func (cfg *Config) publishVolumeFenced(ctx context.Context, volumeName, winner string) {
 	if cfg.nc == nil {
 		return
@@ -332,21 +332,10 @@ func (cfg *Config) publishVolumeFenced(ctx context.Context, volumeName, winner s
 		Winner:    winner,
 		Reason:    fmt.Sprintf("volume lease moved to %s while this node had the volume open", winner),
 	}
-	subject, err := ebsprovider.FenceNoticeSubject(notice.NodeID)
-	if err != nil {
-		slog.ErrorContext(ctx, "fence: no fence-notice subject for this node, the guest is left with dead I/O",
-			"volume", volumeName, "node", notice.NodeID, "err", err)
-		return
-	}
 	began := time.Now()
 
 	for attempt := 1; ; attempt++ {
 		instanceID, err := ebsprovider.NotifyFenced(ctx, cfg.nc, notice, fenceNoticeTimeout)
-		if _, refused := errors.AsType[*ebsprovider.ProviderError](err); refused {
-			slog.ErrorContext(ctx, "fence: the daemon could not act on the fenced volume",
-				"volume", volumeName, "subject", subject, "err", err)
-			return
-		}
 		if err == nil {
 			if attempt > 1 {
 				slog.WarnContext(ctx, "fence: the daemon acknowledged the fenced volume after retrying",
@@ -355,10 +344,15 @@ func (cfg *Config) publishVolumeFenced(ctx context.Context, volumeName, winner s
 			}
 			return
 		}
+		if !ebsprovider.FenceNoticeRetryable(err) {
+			slog.ErrorContext(ctx, "fence: the daemon cannot act on the fenced volume, the guest is left with dead I/O",
+				"volume", volumeName, "node", notice.NodeID, "attempts", attempt, "err", err)
+			return
+		}
 
 		if cfg.nc.IsClosed() {
 			slog.ErrorContext(ctx, "fence: connection closed before the daemon acknowledged the fenced volume, the guest may be left with dead I/O",
-				"volume", volumeName, "subject", subject, "attempts", attempt)
+				"volume", volumeName, "node", notice.NodeID, "attempts", attempt)
 			return
 		}
 		if _, again := cfg.lookupMountedVolume(volumeName); again {
@@ -368,7 +362,7 @@ func (cfg *Config) publishVolumeFenced(ctx context.Context, volumeName, winner s
 		}
 		if attempt == 1 || attempt%fenceNoticeLogEveryTries == 0 {
 			slog.ErrorContext(ctx, "fence: the daemon has not acknowledged the fenced volume, retrying; until it does the guest keeps running with dead I/O",
-				"volume", volumeName, "subject", subject, "attempts", attempt,
+				"volume", volumeName, "node", notice.NodeID, "attempts", attempt,
 				"unacknowledged_ms", otelsetup.Millis(time.Since(began)), "err", err)
 		}
 

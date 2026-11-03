@@ -258,6 +258,63 @@ func TestS4_FenceNoticeStopsWithTheConnection(t *testing.T) {
 	}
 }
 
+// TestFenceNotice_UnavailableDaemonIsAskedAgain keeps a refusal that says
+// "not now" from ending delivery: the guest is still running on a dead disk.
+func TestFenceNotice_UnavailableDaemonIsAskedAgain(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+
+	const volumeName = "vol-fencenoticeunavailable"
+	cfg, nc := noticeConfig(t, natsURL, volumeName)
+
+	subject, err := ebsprovider.FenceNoticeSubject("node-a")
+	require.NoError(t, err)
+	unavailable, err := json.Marshal(ebsprovider.FenceNoticeAck{
+		Versioned: ebsprovider.NewVersioned(),
+		Error:     &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnavailable, Message: "not yet"},
+	})
+	require.NoError(t, err)
+	ack, err := json.Marshal(ebsprovider.FenceNoticeAck{Versioned: ebsprovider.NewVersioned(), InstanceID: "i-fenced"})
+	require.NoError(t, err)
+	var heard atomic.Int32
+	_, err = nc.Subscribe(subject, func(msg *nats.Msg) {
+		if heard.Add(1) == 1 {
+			_ = msg.Respond(unavailable)
+			return
+		}
+		_ = msg.Respond(ack)
+	})
+	require.NoError(t, err)
+	require.NoError(t, nc.Flush())
+
+	done := make(chan struct{})
+	go func() { defer close(done); cfg.onVolumeLeaseLost(context.Background(), volumeName, leaseLostStalled) }()
+	select {
+	case <-done:
+	case <-time.After(fenceNoticeTimeout + 2*time.Second):
+		t.Fatal("a fence notice was still being sent after the daemon acknowledged it")
+	}
+	assert.Equal(t, int32(2), heard.Load(), "ADR-0007:S4: a daemon that was unavailable was never asked again")
+}
+
+// TestFenceNotice_UnsendableNoticeIsNotRetried stops a notice that can never
+// be addressed from spinning until shutdown on a goroutine nobody watches.
+func TestFenceNotice_UnsendableNoticeIsNotRetried(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+
+	const volumeName = "vol-fencenoticeunsendable"
+	cfg, _ := noticeConfig(t, natsURL, volumeName)
+	cfg.NodeName = ""
+	cfg.MountedVolumes = nil // gone, as after the teardown, so only the error can end the retry
+
+	done := make(chan struct{})
+	go func() { defer close(done); cfg.publishVolumeFenced(t.Context(), volumeName, "node-b") }()
+	select {
+	case <-done:
+	case <-time.After(fenceNoticeTimeout + 2*time.Second):
+		t.Fatal("a fence notice with no subject to send it on kept retrying")
+	}
+}
+
 // TestFenceNotice_RefusedNoticeIsNotRepeated keeps a notice the daemon heard and
 // could not act on from being resent forever: a refusal is an answer.
 func TestFenceNotice_RefusedNoticeIsNotRepeated(t *testing.T) {

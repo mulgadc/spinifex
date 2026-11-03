@@ -162,6 +162,24 @@ func (r *iamUserReaper) Delete(_ context.Context, accountID string, resource Res
 		}
 	}
 
+	// AWS refuses DeleteUser while the user is in a group.
+	groups, err := r.svc.ListGroupsForUser(accountID, &iam.ListGroupsForUserInput{UserName: aws.String(resource.ID)})
+	if err != nil && !isAlreadyGone(err) {
+		return err
+	}
+	if groups != nil {
+		for _, group := range groups.Groups {
+			if group == nil || group.GroupName == nil {
+				continue
+			}
+			if _, err := r.svc.RemoveUserFromGroup(accountID, &iam.RemoveUserFromGroupInput{
+				UserName: aws.String(resource.ID), GroupName: group.GroupName,
+			}); err != nil && !isAlreadyGone(err) {
+				return err
+			}
+		}
+	}
+
 	_, err = r.svc.DeleteUser(accountID, &iam.DeleteUserInput{UserName: aws.String(resource.ID)})
 	return ignoreAlreadyGone(err)
 }
@@ -249,8 +267,46 @@ func (r *iamGroupReaper) List(_ context.Context, accountID string) ([]Resource, 
 	return found, nil
 }
 
+// Delete strips the group's policies first: AWS refuses to delete a group that
+// still has any. Its members were removed with their users, earlier in the stage.
 func (r *iamGroupReaper) Delete(_ context.Context, accountID string, resource Resource, _ bool) error {
-	_, err := r.svc.DeleteGroup(accountID, &iam.DeleteGroupInput{GroupName: aws.String(resource.ID)})
+	attached, err := r.svc.ListAttachedGroupPolicies(accountID, &iam.ListAttachedGroupPoliciesInput{
+		GroupName: aws.String(resource.ID),
+	})
+	if err != nil && !isAlreadyGone(err) {
+		return err
+	}
+	if attached != nil {
+		for _, policy := range attached.AttachedPolicies {
+			if policy == nil || policy.PolicyArn == nil {
+				continue
+			}
+			if _, err := r.svc.DetachGroupPolicy(accountID, &iam.DetachGroupPolicyInput{
+				GroupName: aws.String(resource.ID), PolicyArn: policy.PolicyArn,
+			}); err != nil && !isAlreadyGone(err) {
+				return err
+			}
+		}
+	}
+
+	inline, err := r.svc.ListGroupPolicies(accountID, &iam.ListGroupPoliciesInput{GroupName: aws.String(resource.ID)})
+	if err != nil && !isAlreadyGone(err) {
+		return err
+	}
+	if inline != nil {
+		for _, name := range inline.PolicyNames {
+			if name == nil {
+				continue
+			}
+			if _, err := r.svc.DeleteGroupPolicy(accountID, &iam.DeleteGroupPolicyInput{
+				GroupName: aws.String(resource.ID), PolicyName: name,
+			}); err != nil && !isAlreadyGone(err) {
+				return err
+			}
+		}
+	}
+
+	_, err = r.svc.DeleteGroup(accountID, &iam.DeleteGroupInput{GroupName: aws.String(resource.ID)})
 	return ignoreAlreadyGone(err)
 }
 

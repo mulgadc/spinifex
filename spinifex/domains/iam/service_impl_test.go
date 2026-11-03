@@ -3180,3 +3180,37 @@ func TestDeleteUser_RevocationFailureKeepsDelete(t *testing.T) {
 	_, err = svc.GetUser(testAccountID, &iam.GetUserInput{UserName: aws.String("leaver")})
 	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorIAMNoSuchEntity))
 }
+
+func TestDeleteUser_DanglingGroupName(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "danglinggroup")
+	createTestGroup(t, svc, "gone")
+	_, err := svc.AddUserToGroup(testAccountID, &iam.AddUserToGroupInput{
+		UserName: aws.String("danglinggroup"), GroupName: aws.String("gone"),
+	})
+	require.NoError(t, err)
+	require.NoError(t, svc.groupsBucket.Delete(t.Context(), testAccountID+".gone"))
+
+	_, err = svc.DeleteUser(testAccountID, &iam.DeleteUserInput{UserName: aws.String("danglinggroup")})
+	require.NoError(t, err)
+
+	_, err = svc.GetUser(testAccountID, &iam.GetUserInput{UserName: aws.String("danglinggroup")})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+}
+
+func TestDeleteUser_LiveGroupStillConflicts(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestUser(t, svc, "ingroup")
+	createTestGroup(t, svc, "live")
+	_, err := svc.AddUserToGroup(testAccountID, &iam.AddUserToGroupInput{
+		UserName: aws.String("ingroup"), GroupName: aws.String("live"),
+	})
+	require.NoError(t, err)
+
+	_, err = svc.DeleteUser(testAccountID, &iam.DeleteUserInput{UserName: aws.String("ingroup")})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMDeleteConflict)
+}

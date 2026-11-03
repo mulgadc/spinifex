@@ -1141,9 +1141,9 @@ func handleCreateSnapshot(ctx context.Context, cfg *Config, nc *nats.Conn, msg *
 		},
 	})
 
-	// The drain runs in the background with the snapshot, so a flush that
-	// grows with the dirty set never holds this request. WithoutCancel keeps
-	// the trace context while dropping the deadline the work must outlive.
+	// The drain runs in the background with the snapshot, so only the accept
+	// reply is freed of it; a caller waiting on completion still waits for it.
+	// WithoutCancel keeps the trace context but drops the request's deadline.
 	go completeCreateSnapshot(context.WithoutCancel(ctx), cfg, nc, req, operationID, completionSubject)
 }
 

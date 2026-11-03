@@ -2771,7 +2771,7 @@ func TestStartStoppedInstance_ConcurrentClaimRace(t *testing.T) {
 	var conflicted, winnerFailed int
 	for _, err := range errs {
 		require.Error(t, err, "vmMgr.Run is wired to fail fast — no caller should succeed end-to-end")
-		switch err.Error() {
+		switch code, _ := awserrors.ResolveErrorCode(err); code {
 		case awserrors.ErrorIncorrectInstanceState, awserrors.ErrorInvalidInstanceIDNotFound:
 			conflicted++
 		case awserrors.ErrorServerInternal:

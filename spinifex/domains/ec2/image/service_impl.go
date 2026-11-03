@@ -580,7 +580,7 @@ func (s *ImageServiceImpl) createSnapshot(ctx context.Context, volMeta ebsmetada
 	})
 	if err != nil || created == nil {
 		slog.ErrorContext(ctx, "provider CreateSnapshot failed", "op", op, "volumeId", volMeta.VolumeID, "snapshotId", snapshotID, "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
+		return ec2snapshot.ProviderCreateError(err)
 	}
 	slog.InfoContext(ctx, "snapshot created", "op", op, "volumeId", volMeta.VolumeID, "snapshotId", snapshotID)
 	return nil

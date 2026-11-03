@@ -222,3 +222,24 @@ func TestCreateImageFromInstance_SetsEnaSupportFromInstance(t *testing.T) {
 	require.NotNil(t, ami.EnaSupport)
 	assert.True(t, *ami.EnaSupport)
 }
+
+// createUnavailableProvider refuses every CreateSnapshot as retry-later.
+type createUnavailableProvider struct {
+	ebsprovider.EBSProvider
+}
+
+func (p *createUnavailableProvider) CreateSnapshot(context.Context, ebsprovider.CreateSnapshotRequest) (*ebsprovider.Snapshot, error) {
+	return nil, &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnavailable, Message: "held by node-2"}
+}
+
+// TestSnapshotStoppedVolume_Provider_UnavailableIsRetryLater locks that the
+// CreateImage snapshot surfaces a provider's retry-later as ServiceUnavailable.
+func TestSnapshotStoppedVolume_Provider_UnavailableIsRetryLater(t *testing.T) {
+	svc, _, provider := setupProviderSnapshotImageService(t)
+	doc := seedProviderVolume(t, svc, provider, "vol-stopped-busy", 8)
+	svc.SetEBSProvider(&createUnavailableProvider{EBSProvider: provider})
+
+	err := svc.snapshotStoppedVolume(doc.VolumeID, "snap-stopped-busy", testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServiceUnavailable, err.Error())
+}

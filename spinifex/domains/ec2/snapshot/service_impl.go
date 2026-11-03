@@ -221,7 +221,8 @@ func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.Cre
 		Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volumeID, VolumeHandle: volume.ProviderHandle,
 	})
 	if err != nil || created == nil {
-		return nil, errors.New(awserrors.ErrorServerInternal)
+		slog.ErrorContext(ctx, "CreateSnapshot: provider CreateSnapshot failed", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
+		return nil, ProviderCreateError(err)
 	}
 	now := time.Now()
 	snapshotCfg := ebsmetadata.Snapshot{
@@ -765,6 +766,16 @@ func unreadableRecordError(ctx context.Context, snapshotID, accountID, kind stri
 	}
 	return awserrors.Errorf(awserrors.ErrorServerInternal,
 		"Cannot confirm that snapshot '%s' is not in use: %d %s record(s) could not be read", snapshotID, len(unreadable), kind)
+}
+
+// ProviderCreateError maps a provider CreateSnapshot failure to the code a
+// client can act on. A provider that cannot answer now is retry-later, as for
+// a delete; anything else is internal.
+func ProviderCreateError(err error) error {
+	if errors.Is(err, ebsprovider.ErrUnavailable) {
+		return errors.New(awserrors.ErrorServiceUnavailable)
+	}
+	return errors.New(awserrors.ErrorServerInternal)
 }
 
 // providerDeleteError maps a provider DeleteSnapshot failure to the code a

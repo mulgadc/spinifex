@@ -85,12 +85,14 @@ While the instance is stopped, `attach-volume` of one of its data volumes to ano
 
 `detach-volume` works on a stopped instance, with or without `--instance-id`.
 The volume becomes `available` and the next start does not attach it.
-The root volume of a stopped instance cannot be detached: Spinifex returns `OperationNotPermitted`, where AWS allows it and the next start then fails.
+The root volume of a stopped instance can be detached too, as on AWS.
+The instance then cannot start: `start-instances` returns `InvalidParameterValue` with "Instance does not have a volume attached at root (/dev/sda1)".
+Attaching a volume to a stopped instance is not implemented yet, so a detached root volume cannot be put back through the API.
 
 An instance stopped by an earlier build had its data volumes released to `available` while its record still listed them.
 On start, a listed data volume that was deleted or is now attached to another instance is dropped with a warning in the daemon log, and the start continues.
 A listed volume that is still `available` and unattached is attached again.
-A missing root volume fails the start with `ServerInternal`.
+A missing root volume fails the start with the same `InvalidParameterValue` answer.
 
 ## Modify Instance Attributes
 

@@ -9,6 +9,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
+	ebsmetadata "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
@@ -24,6 +26,10 @@ func (s *InstanceServiceImpl) reconcileStartVolumes(ctx context.Context, instanc
 	requests := slices.Clone(instance.EBSRequests.Requests)
 	instance.EBSRequests.Mu.Unlock()
 
+	if !slices.ContainsFunc(requests, func(r viperblocklegacyv1.EBSRequest) bool { return r.Boot }) {
+		return noRootVolumeError(instance)
+	}
+
 	var drop []string
 	for _, req := range requests {
 		meta, err := s.metadata.GetVolume(ctx, instance.AccountID, req.Name)
@@ -33,7 +39,8 @@ func (s *InstanceServiceImpl) reconcileStartVolumes(ctx context.Context, instanc
 		}
 		if req.Boot {
 			if missing {
-				return fmt.Errorf("boot volume %s of %s no longer exists", req.Name, instance.ID)
+				slog.ErrorContext(ctx, "start: root volume no longer exists", "instanceId", instance.ID, "volumeId", req.Name)
+				return noRootVolumeError(instance)
 			}
 			continue
 		}
@@ -66,4 +73,14 @@ func (s *InstanceServiceImpl) reconcileStartVolumes(ctx context.Context, instanc
 		})
 	}
 	return nil
+}
+
+// noRootVolumeError is what AWS answers when an instance is started with
+// nothing attached at its root device name.
+func noRootVolumeError(instance *vm.VM) error {
+	device := ebsmetadata.RootDeviceName
+	if instance.Instance != nil && aws.StringValue(instance.Instance.RootDeviceName) != "" {
+		device = aws.StringValue(instance.Instance.RootDeviceName)
+	}
+	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "Instance does not have a volume attached at root (%s)", device)
 }

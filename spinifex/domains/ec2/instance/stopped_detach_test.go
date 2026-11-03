@@ -79,7 +79,6 @@ func TestDetachVolumeFromStopped_Refusals(t *testing.T) {
 		stopped bool
 		want    string
 	}{
-		{"boot volume", owner, "vol-root", true, awserrors.ErrorOperationNotPermitted},
 		{"volume not on the instance", owner, "vol-elsewhere", true, awserrors.ErrorIncorrectState},
 		{"another account", "000000000099", "vol-data", true, awserrors.ErrorInvalidInstanceIDNotFound},
 		{"no such stopped instance", owner, "vol-data", false, awserrors.ErrorInvalidInstanceIDNotFound},
@@ -102,4 +101,39 @@ func TestDetachVolumeFromStopped_Refusals(t *testing.T) {
 				"a refused detach changes nothing")
 		})
 	}
+}
+
+// AWS lets the root volume of a stopped instance be detached; the instance then
+// cannot start until a volume is attached at its root device name again.
+func TestDetachVolumeFromStopped_DetachesTheRootVolume(t *testing.T) {
+	owner := awsidentifiers.GlobalAccountID
+	id := "i-stopped-root"
+	stored := stoppedWithVolumes(owner, id)
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: stored}}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{}), stoppedStore: store}
+
+	out, err := svc.DetachVolumeFromStopped(context.Background(), stoppedDetachInput(id, "vol-root"), owner)
+	require.NoError(t, err)
+
+	assert.Equal(t, "/dev/sda1", aws.StringValue(out.Device))
+	assert.Equal(t, []string{"vol-data", "vol-other"}, volumeNames(stored))
+	assert.Equal(t, vm.StateStopped, stored.Status)
+}
+
+// The EFI variable store is Spinifex-internal and never shown to the customer,
+// so it cannot be detached even by its name.
+func TestDetachVolumeFromStopped_RefusesTheInternalEFIStore(t *testing.T) {
+	owner := awsidentifiers.GlobalAccountID
+	id := "i-stopped-efi"
+	stored := stoppedWithVolumes(owner, id)
+	stored.EBSRequests.Requests = append(stored.EBSRequests.Requests,
+		viperblocklegacyv1.EBSRequest{Name: "vol-efi", EFI: true})
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: stored}}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{}), stoppedStore: store}
+
+	_, err := svc.DetachVolumeFromStopped(context.Background(), stoppedDetachInput(id, "vol-efi"), owner)
+
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorOperationNotPermitted), "got %v", err)
+	assert.Equal(t, []string{"vol-root", "vol-data", "vol-other", "vol-efi"}, volumeNames(stored))
 }

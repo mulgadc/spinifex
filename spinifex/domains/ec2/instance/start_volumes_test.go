@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/stretchr/testify/assert"
@@ -82,11 +83,29 @@ func TestReconcileStartVolumes_DropsVolumesThatAreNoLongerTheInstances(t *testin
 func TestReconcileStartVolumes_MissingBootVolumeFailsTheStart(t *testing.T) {
 	svc := startVolumesService(t, ebsmetadata.Volume{VolumeID: "vol-data", State: "available"})
 	inst := startingInstance("i-old", "vol-root", "vol-data")
+	inst.Instance.RootDeviceName = aws.String("/dev/sda1")
 
 	err := svc.reconcileStartVolumes(context.Background(), inst)
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "vol-root", "the error names the missing boot volume")
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidParameterValue), "got %v", err)
+	assert.Contains(t, err.Error(), "Instance does not have a volume attached at root (/dev/sda1)")
+}
+
+// A root volume detached while the instance was stopped leaves no boot request
+// in the record; AWS refuses the start with the same answer.
+func TestReconcileStartVolumes_NoRootVolumeAttachedFailsTheStart(t *testing.T) {
+	svc := startVolumesService(t, ebsmetadata.Volume{VolumeID: "vol-data", State: "in-use", AttachedInstance: "i-old"})
+	inst := startingInstance("i-old", "vol-root", "vol-data")
+	require.True(t, removeVolumeFromRecord(inst, "vol-root"))
+	inst.Instance.RootDeviceName = aws.String("/dev/sda1")
+
+	err := svc.reconcileStartVolumes(context.Background(), inst)
+
+	require.Error(t, err)
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidParameterValue), "got %v", err)
+	assert.Contains(t, err.Error(), "Instance does not have a volume attached at root (/dev/sda1)")
+	assert.Equal(t, []string{"vol-data"}, requestedNames(inst), "a refused start changes nothing")
 }
 
 // An instance stopped on an older build had its data volumes released to

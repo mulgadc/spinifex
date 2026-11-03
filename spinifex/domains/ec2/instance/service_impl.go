@@ -2703,7 +2703,7 @@ func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instanc
 	if err := s.reconcileStartVolumes(ctx, instance); err != nil {
 		slog.ErrorContext(ctx, "launchClaimedInstance: volumes cannot be reconciled", "instanceId", instance.ID, "err", err)
 		undo()
-		return errors.New(awserrors.ErrorServerInternal)
+		return err
 	}
 
 	instanceType, ok := s.resourceMgr.InstanceTypes()[instance.InstanceType]
@@ -3708,7 +3708,7 @@ func (s *InstanceServiceImpl) DetachVolumeFromStopped(ctx context.Context, input
 	if !ok {
 		return nil, errors.New(awserrors.ErrorIncorrectState)
 	}
-	if req.Boot || req.EFI {
+	if req.EFI {
 		return nil, errors.New(awserrors.ErrorOperationNotPermitted)
 	}
 

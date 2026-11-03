@@ -25,7 +25,7 @@ func removeVolumeFromRecord(v *vm.VM, volumeID string) bool {
 	v.EBSRequests.Mu.Lock()
 	defer v.EBSRequests.Mu.Unlock()
 	i := slices.IndexFunc(v.EBSRequests.Requests, func(r viperblocklegacyv1.EBSRequest) bool { return r.Name == volumeID })
-	if i < 0 || v.EBSRequests.Requests[i].Boot || v.EBSRequests.Requests[i].EFI {
+	if i < 0 || v.EBSRequests.Requests[i].EFI {
 		return false
 	}
 	v.EBSRequests.Requests = slices.Delete(v.EBSRequests.Requests, i, i+1)

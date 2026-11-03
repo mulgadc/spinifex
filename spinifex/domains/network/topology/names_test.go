@@ -16,8 +16,6 @@ func TestNameHelpers(t *testing.T) {
 		{"GatewayRouterPort", GatewayRouterPort("vpc-abc"), "gw-vpc-abc"},
 		{"GatewaySwitchPort", GatewaySwitchPort("vpc-abc"), "gw-port-vpc-abc"},
 		{"GatewayChassisRedirectPort", GatewayChassisRedirectPort("vpc-abc"), "cr-gw-vpc-abc"},
-		{"ExternalSwitch", ExternalSwitch("vpc-abc"), "ext-vpc-abc"},
-		{"ExternalLocalnetPort", ExternalLocalnetPort("vpc-abc"), "ext-port-vpc-abc"},
 		{"ExternalSwitchShared", ExternalSwitchShared(), "ext-shared"},
 		{"ExternalLocalnetPortShared", ExternalLocalnetPortShared(), "ext-port-shared"},
 		{"SecurityGroupPortGroup", SecurityGroupPortGroup("sg-abc-123"), "sg_abc_123"},

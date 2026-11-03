@@ -47,11 +47,6 @@ func NewKVStore(js jetstream.JetStream) *KVStore {
 	return &KVStore{store: kvstore.New[Record](js, bucketConfig())}
 }
 
-// NewKVStoreOver builds a store over an already-open bucket.
-func NewKVStoreOver(kv jetstream.KeyValue) *KVStore {
-	return &KVStore{store: kvstore.Over[Record](nil, kv, bucketConfig())}
-}
-
 // Mutate implements Store. Upsert rather than Mutate: the first allocation on
 // a pool is what creates its record, and Mutate reports ErrNotFound for an
 // absent key — so every pool would fail its own first allocation, after OCI

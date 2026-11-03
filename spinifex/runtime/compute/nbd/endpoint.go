@@ -55,11 +55,6 @@ func NBDSocketDir() string {
 	return hostprocess.RuntimeDir()
 }
 
-// IsSocketURI reports whether the NBD URI refers to a Unix socket (ends with ".sock" or contains "unix:").
-func IsSocketURI(nbdURI string) bool {
-	return strings.HasSuffix(nbdURI, ".sock") || strings.Contains(nbdURI, "unix:")
-}
-
 // FormatNBDSocketURI formats a socket path as an NBD URI
 // (nbd+unix:///?socket=/path/to/socket.sock), the form libnbd, qemu and
 // nbdkit all accept. QEMU's older nbd:unix: syntax is not a URI.

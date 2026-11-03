@@ -131,23 +131,6 @@ func TestDisableMIGMode_Failure(t *testing.T) {
 	assert.Contains(t, err.Error(), "disable MIG mode")
 }
 
-// --- IsMIGModeEnabled ---
-
-func TestIsMIGModeEnabled_ReturnsEnabled(t *testing.T) {
-	dir := t.TempDir()
-	fakeNvidiaSmi(t, dir, lgipA100, "", 0)
-	enabled, err := IsMIGModeEnabled("0000:01:00.0")
-	require.NoError(t, err)
-	assert.True(t, enabled)
-}
-
-func TestIsMIGModeEnabled_Failure(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
-	_, err := IsMIGModeEnabled("0000:01:00.0")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "query MIG mode")
-}
-
 // --- DestroyAllInstances ---
 
 func TestDestroyAllInstances_Success(t *testing.T) {

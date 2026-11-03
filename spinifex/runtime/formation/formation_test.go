@@ -87,7 +87,6 @@ func TestNewFormationServer(t *testing.T) {
 
 	assert.Equal(t, 3, fs.expected)
 	assert.Empty(t, fs.nodes)
-	assert.False(t, fs.IsComplete())
 }
 
 func TestRegisterNode(t *testing.T) {
@@ -122,17 +121,6 @@ func TestRegisterDuplicateIP(t *testing.T) {
 	assert.Contains(t, err.Error(), "bind IP")
 }
 
-func TestIsComplete(t *testing.T) {
-	t.Parallel()
-	fs := NewFormationServer(2, testCreds(), "", "", nil, testToken, testTokenTTL)
-
-	assert.False(t, fs.IsComplete())
-	require.NoError(t, fs.RegisterNode(testNode("node1", "10.0.0.1")))
-	assert.False(t, fs.IsComplete())
-	require.NoError(t, fs.RegisterNode(testNode("node2", "10.0.0.2")))
-	assert.True(t, fs.IsComplete())
-}
-
 func TestWaitForCompletion(t *testing.T) {
 	t.Parallel()
 	fs := NewFormationServer(2, testCreds(), "", "", nil, testToken, testTokenTTL)
@@ -145,7 +133,7 @@ func TestWaitForCompletion(t *testing.T) {
 
 	err := fs.WaitForCompletion(5 * time.Second)
 	require.NoError(t, err)
-	assert.True(t, fs.IsComplete())
+	assert.Len(t, fs.Nodes(), 2)
 }
 
 func TestWaitForCompletionTimeout(t *testing.T) {

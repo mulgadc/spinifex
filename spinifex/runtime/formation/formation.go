@@ -244,13 +244,6 @@ func (fs *FormationServer) isComplete() bool {
 	return len(fs.nodes) >= fs.expected
 }
 
-// IsComplete returns true when the expected number of nodes have registered.
-func (fs *FormationServer) IsComplete() bool {
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
-	return fs.isComplete()
-}
-
 // WaitForCompletion blocks until all nodes have joined or the timeout fires.
 func (fs *FormationServer) WaitForCompletion(timeout time.Duration) error {
 	select {

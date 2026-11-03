@@ -44,20 +44,6 @@ func DisableMIGMode(pciAddr string) error {
 	return nil
 }
 
-// IsMIGModeEnabled reports whether MIG mode is currently active on pciAddr.
-func IsMIGModeEnabled(pciAddr string) (bool, error) {
-	out, err := exec.Command(
-		"nvidia-smi",
-		"--query-gpu=mig.mode.current",
-		"--format=csv,noheader",
-		"--id="+pciAddr,
-	).Output()
-	if err != nil {
-		return false, fmt.Errorf("query MIG mode on %s: %w", pciAddr, err)
-	}
-	return strings.TrimSpace(string(out)) == "Enabled", nil
-}
-
 // CreateInstances creates the maximum number of GI+CI pairs on pciAddr using
 // the given profile, then enumerates the resulting mdev UUIDs. It stops at the
 // first nvidia-smi error rather than leaving a partially populated set.

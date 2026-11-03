@@ -1014,8 +1014,8 @@ func reportUEFIStoreOrphans(ctx context.Context, nc *nats.Conn, store objectstor
 	return nil
 }
 
-// kvInstanceIndex lists the instance IDs the instance-state and terminated
-// buckets hold a record for, by key alone, so an undecodable record counts.
+// kvInstanceIndex is the instance domain's index of every instance ID it holds
+// a record for.
 type kvInstanceIndex struct {
 	js jetstream.JetStream
 }
@@ -1023,31 +1023,7 @@ type kvInstanceIndex struct {
 var _ admin.InstanceIndex = kvInstanceIndex{}
 
 func (k kvInstanceIndex) InstanceIDs(ctx context.Context) (map[string]bool, error) {
-	ids := make(map[string]bool)
-	buckets := map[string][]string{
-		daemon.InstanceStateBucket:      {daemon.InstanceRecordPrefix, daemon.StoppedInstancePrefix},
-		daemon.TerminatedInstanceBucket: {daemon.InstanceRecordPrefix, daemon.TerminatedInstancePrefix},
-	}
-	for name, prefixes := range buckets {
-		kv, err := k.js.KeyValue(ctx, name)
-		if err != nil {
-			return nil, fmt.Errorf("open %s: %w", name, err)
-		}
-		lister, err := kv.ListKeys(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("list %s: %w", name, err)
-		}
-		for key := range lister.Keys() {
-			for _, prefix := range prefixes {
-				if id, ok := strings.CutPrefix(key, prefix); ok {
-					ids[id] = true
-				}
-			}
-		}
-		// The lister closes itself once drained, so Stop only reports that.
-		_ = lister.Stop()
-	}
-	return ids, nil
+	return daemon.KnownInstanceIDs(ctx, k.js)
 }
 
 func runimagesRemoveCmd(cmd *cobra.Command, args []string) {

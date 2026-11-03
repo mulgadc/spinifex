@@ -66,14 +66,15 @@ func (t *uefiStoreTerminator) RemoveLocalUEFIStore(instanceID string) error {
 	return os.RemoveAll(uefiLocalDir(t.dataDir, instanceID))
 }
 
-// uefiInstanceRecords is what the store reaper reads of the instance records:
-// enough to tell a decided terminate from a live instance.
+// uefiInstanceRecords is what the store reaper asks of the instance domain:
+// whether a terminate is decided, and the terminated records' uefi entries.
 type uefiInstanceRecords interface {
-	LoadInstanceRecord(instanceID string) (*vm.InstanceRecord, error)
-	LoadTerminatedInstance(instanceID string) (*vm.VM, error)
-	ListTerminatedInstances() ([]*vm.VM, error)
-	UpdateTerminatedInstance(instanceID string, mutate func(*vm.VM)) (*vm.VM, error)
+	TerminateDecided(instanceID string) (bool, error)
+	OpenTeardowns(dep string) ([]string, error)
+	MarkTeardownDone(instanceID, dep string) error
 }
+
+var _ uefiInstanceRecords = (*JetStreamManager)(nil)
 
 // uefiStoreReaper deletes the variable stores whose record is deleting: each
 // object under the instance's prefix, then the record. Terminate, or an
@@ -148,7 +149,7 @@ func (r *uefiStoreReaper) reap(ctx context.Context, id string) bool {
 		return false
 	}
 
-	ok, err := r.terminateDecided(id)
+	ok, err := r.instances.TerminateDecided(id)
 	if err != nil {
 		slog.WarnContext(ctx, "uefi-store: cannot read the instance record, retrying next sweep", "instanceId", id, "err", err)
 		return false
@@ -168,7 +169,7 @@ func (r *uefiStoreReaper) reap(ctx context.Context, id string) bool {
 			"instanceId", id, "deleted", deleted, "err", err)
 		return false
 	}
-	if err := r.markTerminatedDone(id); err != nil {
+	if err := r.instances.MarkTeardownDone(id, vm.TeardownUEFI); err != nil {
 		slog.WarnContext(ctx, "uefi-store: failed to mark the terminated record, retrying next sweep", "instanceId", id, "err", err)
 		return false
 	}
@@ -183,79 +184,28 @@ func (r *uefiStoreReaper) reap(ctx context.Context, id string) bool {
 	return true
 }
 
-// terminateDecided reports whether id's instance is terminated or terminating,
-// or has no record at all, which is what a forget or an expired terminated
-// record leaves.
-func (r *uefiStoreReaper) terminateDecided(id string) (bool, error) {
-	terminated, err := r.instances.LoadTerminatedInstance(id)
-	if err != nil {
-		return false, err
-	}
-	if terminated != nil {
-		return true, nil
-	}
-	record, err := r.instances.LoadInstanceRecord(id)
-	if err != nil {
-		return false, err
-	}
-	if record == nil {
-		return true, nil
-	}
-	switch record.Status.Status {
-	case vm.StateShuttingDown, vm.StateTerminated:
-		return true, nil
-	}
-	return false, nil
-}
-
-// markTerminatedDone sets the terminated record's uefi entry done, if the
-// record is still there to carry one.
-func (r *uefiStoreReaper) markTerminatedDone(id string) error {
-	terminated, err := r.instances.LoadTerminatedInstance(id)
-	if err != nil {
-		return err
-	}
-	if terminated == nil || vm.TeardownState(terminated.Teardown[vm.TeardownUEFI]) == vm.TeardownDone {
-		return nil
-	}
-	_, err = r.instances.UpdateTerminatedInstance(id, func(v *vm.VM) {
-		if v.Teardown == nil {
-			v.Teardown = make(map[string]string)
-		}
-		v.Teardown[vm.TeardownUEFI] = string(vm.TeardownDone)
-	})
-	if errors.Is(err, kvstore.ErrNotFound) {
-		return nil
-	}
-	return err
-}
-
 // completeTerminatedMarks finishes the mark of each terminate that recorded a
 // uefi entry but did not land its store record in deleting.
 func (r *uefiStoreReaper) completeTerminatedMarks(ctx context.Context) {
-	terminated, err := r.instances.ListTerminatedInstances()
+	ids, err := r.instances.OpenTeardowns(vm.TeardownUEFI)
 	if err != nil {
 		slog.WarnContext(ctx, "uefi-store: cannot list terminated instances", "err", err)
 		return
 	}
-	for _, v := range terminated {
-		state, ok := v.Teardown[vm.TeardownUEFI]
-		if !ok || vm.TeardownState(state) == vm.TeardownDone || v.Status != vm.StateTerminated {
-			continue
-		}
-		rec, _, err := r.stores.Get(ctx, v.ID)
+	for _, id := range ids {
+		rec, _, err := r.stores.Get(ctx, id)
 		switch {
 		case errors.Is(err, kvstore.ErrNotFound):
 			// Nothing left to delete: the store is gone or never existed.
-			if err := r.markTerminatedDone(v.ID); err != nil {
-				slog.WarnContext(ctx, "uefi-store: failed to mark the terminated record", "instanceId", v.ID, "err", err)
+			if err := r.instances.MarkTeardownDone(id, vm.TeardownUEFI); err != nil {
+				slog.WarnContext(ctx, "uefi-store: failed to mark the terminated record", "instanceId", id, "err", err)
 			}
 		case err != nil:
-			slog.WarnContext(ctx, "uefi-store: unreadable store record", "instanceId", v.ID, "err", err)
+			slog.WarnContext(ctx, "uefi-store: unreadable store record", "instanceId", id, "err", err)
 		case rec.State == uefistore.StateLive:
-			if _, err := r.stores.MarkDeleting(ctx, v.ID); err != nil {
+			if _, err := r.stores.MarkDeleting(ctx, id); err != nil {
 				slog.WarnContext(ctx, "uefi-store: failed to record a terminated instance's store for deletion",
-					"instanceId", v.ID, "err", err)
+					"instanceId", id, "err", err)
 			}
 		}
 	}

@@ -270,8 +270,8 @@ func (s *Service) terminateInstanceVM(ctx context.Context, instanceID string) er
 }
 
 // A stopped-VM terminate records a failed detach without failing, and a volume
-// left attached would be retained as if a snapshot held it. Errors so the
-// caller retries; a volume already gone is released.
+// left attached would be retained as if a snapshot held it. The VM is gone by
+// now, so the detach is repeated here, on every retry, until it lands.
 func (s *Service) requireDataVolumeDetached(ctx context.Context, volumeID, instanceID string) error {
 	if volumeID == "" || instanceID == "" || s.deps.Storage == nil {
 		return nil
@@ -290,9 +290,14 @@ func (s *Service) requireDataVolumeDetached(ctx context.Context, volumeID, insta
 			continue
 		}
 		for _, a := range volume.Attachments {
-			if aws.StringValue(a.InstanceId) == instanceID {
-				return fmt.Errorf("rds: data volume %s is still attached to the terminated VM %s", volumeID, instanceID)
+			if aws.StringValue(a.InstanceId) != instanceID {
+				continue
 			}
+			if err := s.deps.Storage.DetachVolumeOnTerminate(ctx, volumeID, instanceID, awsidentifiers.GlobalAccountID); err != nil {
+				return fmt.Errorf("rds: detach the data volume %s from the terminated VM %s: %w", volumeID, instanceID, err)
+			}
+			slog.InfoContext(ctx, "rds: detached the data volume the VM's terminate left attached",
+				"volumeId", volumeID, "instanceId", instanceID)
 		}
 	}
 	return nil

@@ -24,6 +24,9 @@ type fakeVolumeResizer struct {
 	// leaves it; expanded records the grows taken through that attachment.
 	attachedTo map[string]string
 	expanded   []string
+	// detachErr fails the terminate-time detach; detached records the ones made.
+	detachErr error
+	detached  []string
 
 	describeErr error
 	modifyErr   error
@@ -96,6 +99,18 @@ func (f *fakeVolumeResizer) ExpandAttachedToStopped(ctx context.Context, _, volu
 	f.expanded = append(f.expanded, volumeID+":"+instanceID)
 	f.sizes[volumeID] = sizeGiB
 	return &ec2.ModifyVolumeOutput{}, nil
+}
+
+// Mirrors the store: only the terminated instance's own attachment is cleared.
+func (f *fakeVolumeResizer) DetachVolumeOnTerminate(_ context.Context, volumeID, instanceID, _ string) error {
+	if f.detachErr != nil {
+		return f.detachErr
+	}
+	if f.attachedTo[volumeID] == instanceID {
+		delete(f.attachedTo, volumeID)
+		f.detached = append(f.detached, volumeID+":"+instanceID)
+	}
+	return nil
 }
 
 // The whole rule set a resize is checked against, ahead of any state change.

@@ -220,7 +220,7 @@ func TestReplaceInstanceVM_TerminatesAStoppedOldVMBeforeGrowing(t *testing.T) {
 	assert.NotEqual(t, testInstance, h.record(t).InstanceID)
 }
 
-// A replace that finds the data volume still on the old VM goes no further: the
+// A replace that cannot get the data volume off the old VM goes no further: the
 // replacement would boot without its datadir.
 func TestReplaceInstanceVM_StopsWhileTheDataVolumeIsStillOnTheOldVM(t *testing.T) {
 	t.Parallel()
@@ -228,10 +228,11 @@ func TestReplaceInstanceVM_StopsWhileTheDataVolumeIsStillOnTheOldVM(t *testing.T
 	rec := seedReplaceable(t, h, modifiableRecord())
 	h.launch.launcher.terminateErr = systeminstance.ErrSystemInstanceNotFound
 	h.storage.attachedTo = map[string]string{testDataVolume: testInstance}
+	h.storage.detachErr = errors.New("the volume store is unavailable")
 
 	err := h.svc.replaceInstanceVM(t.Context(), h.kv(t), testAccountID, &rec, replaceInput{Reason: "recovery"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "still attached")
+	assert.Contains(t, err.Error(), "detach the data volume")
 	assert.Nil(t, h.launch.launcher.input, "no replacement may launch without the data volume")
 	assert.Equal(t, testInstance, h.record(t).InstanceID)
 }

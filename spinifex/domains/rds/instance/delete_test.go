@@ -399,10 +399,9 @@ func TestDeleteDBInstance_TerminatesAStoppedVMFromItsRecord(t *testing.T) {
 	assert.False(t, h.recordExists(t, testDBID))
 }
 
-// The stopped terminate reports success even when its detach failed. Releasing
-// then would retain the volume as if a snapshot held it, so the teardown stops
-// and is retried instead.
-func TestDeleteDBInstance_StopsWhileTheDataVolumeIsStillAttached(t *testing.T) {
+// The stopped terminate reports success even when its detach failed, and a
+// retried teardown finds the record gone, so the teardown repeats the detach.
+func TestDeleteDBInstance_DetachesWhatTheStoppedTerminateLeftAttached(t *testing.T) {
 	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	h.launcher.terminateErr = systeminstance.ErrSystemInstanceNotFound
@@ -410,8 +409,26 @@ func TestDeleteDBInstance_StopsWhileTheDataVolumeIsStillAttached(t *testing.T) {
 	seedInstance(t, h.svc, availableRecord())
 
 	_, err := h.svc.DeleteDBInstance(t.Context(), skipFinalSnapshot(), testAccountID)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"vol-rdsdata01:" + testInstance}, h.storage.detached)
+	assert.Equal(t, []string{"vol-rdsdata01"}, h.volumes.deleted)
+	assert.False(t, h.recordExists(t, testDBID))
+}
+
+// A detach that keeps failing must not let the release read the volume as
+// snapshot-held: the teardown stops with the record kept, and is retried.
+func TestDeleteDBInstance_StopsWhileTheDataVolumeCannotBeDetached(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	h.launcher.terminateErr = systeminstance.ErrSystemInstanceNotFound
+	h.storage.attachedTo = map[string]string{"vol-rdsdata01": testInstance}
+	h.storage.detachErr = errors.New("the volume store is unavailable")
+	seedInstance(t, h.svc, availableRecord())
+
+	_, err := h.svc.DeleteDBInstance(t.Context(), skipFinalSnapshot(), testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "still attached")
+	assert.Contains(t, err.Error(), "detach the data volume")
 
 	assert.Empty(t, h.volumes.deleted)
 	_, retained := h.retainedVolume(t, "vol-rdsdata01")

@@ -24,6 +24,7 @@ type volumeResizer interface {
 	DescribeVolumes(ctx context.Context, input *ec2.DescribeVolumesInput, accountID string) (*ec2.DescribeVolumesOutput, error)
 	ModifyVolume(ctx context.Context, input *ec2.ModifyVolumeInput, accountID string) (*ec2.ModifyVolumeOutput, error)
 	ExpandAttachedToStopped(ctx context.Context, accountID, volumeID, instanceID string, sizeGiB int64) (*ec2.ModifyVolumeOutput, error)
+	DetachVolumeOnTerminate(ctx context.Context, volumeID, instanceID, accountID string) error
 }
 
 // Everything a resize request can be wrong about, checked before the instance

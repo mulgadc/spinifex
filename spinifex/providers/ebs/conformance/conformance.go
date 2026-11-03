@@ -658,7 +658,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			for _, version := range contractVersions {
 				snapshotID := cfg.id(fmt.Sprintf("snap-held-queue-v%d", version))
 				_, err = queue.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.Versioned{SchemaVersion: version}, SnapshotID: snapshotID, VolumeID: volumeID})
-				require.Error(t, err, "v%d: a node not holding the volume must not snapshot it", version)
+				require.ErrorIs(t, err, ebsprovider.ErrUnavailable, "v%d: a node not holding the volume must refuse as retry-later", version)
 				if capabilities.SnapshotEnumeration {
 					assert.NotContains(t, drainSnapshotIDs(t, provider, 0), snapshotID)
 				}

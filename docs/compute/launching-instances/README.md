@@ -135,6 +135,28 @@ aws ec2 get-console-output --instance-id $INSTANCE_ID \
   --query 'Output' --output text | base64 -d
 ```
 
+Like AWS, the call returns the most recent 64 KiB of the console.
+While an instance is shutting down after a terminate request, the call reads the renamed file described below.
+Once the instance has left the node's running set, which includes a stopped or terminated instance, the node no longer answers the call for it.
+Whether the API should answer for a stopped instance is not settled here; only the file on the host is kept.
+
+### Where console logs live and how big they get
+
+The serial console of each instance is written on its host to `/run/spinifex/console-<instance-id>.log`.
+`/run` is memory-backed, so these files are cleared when the host reboots, including any left by older releases.
+The daemon keeps them bounded.
+A file over 4 MiB is cut back in place to its newest 1 MiB, and the guest keeps writing while it happens.
+The console is opened in append mode, so a reboot or auto-restart of the guest adds to the same file instead of starting over.
+A live `console-<instance-id>.log` is never deleted, whatever its age, so a stopped instance keeps its console.
+When an instance is terminated, including a failed first launch and the system instances behind load balancers, queues and EKS control planes, its file is renamed to `console-<instance-id>.log.terminated`.
+The daemon removes a `.terminated` file an hour after its last write.
+
+Known limits:
+
+- The log shipper follows only `console-*.log`, so it stops following a file when it is renamed on terminate, and the last few seconds of output that it had not yet read can be lost.
+- If an instance is recovered on another node, the previous node's live file stays until that host reboots, and the 4 MiB cut keeps it small.
+- The instance password retrieval reads only the live file name, so it does not find a console renamed after terminate.
+
 ## Instance Types
 
 List instance types available on the current host. The catalog is generated from the host CPU (Intel, AMD, or ARM) and includes burstable (t-family), general purpose (m-family), compute optimised (c-family), and memory optimised (r-family) types.

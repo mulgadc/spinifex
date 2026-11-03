@@ -82,7 +82,7 @@ func (h *Handler) Dispatch(w http.ResponseWriter, inv dispatch.Invocation) error
 		return err
 	}
 	// AWS refuses a bad tag resource type even on a DryRun request.
-	if err := validateTagSpecificationTypes(action, input); err != nil {
+	if err := validateTagSpecifications(action, input); err != nil {
 		return err
 	}
 	if dryRunRequested(input) {

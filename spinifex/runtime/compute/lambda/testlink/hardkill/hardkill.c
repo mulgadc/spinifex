@@ -1,5 +1,5 @@
-// Test-only backstop preloaded into QEMU: before main it arms a SIGKILL timer
-// and acknowledges on an inherited fd. Any failure kills the process at once.
+// Test-only backstop preloaded into QEMU: before main it arms a SIGKILL timer at an
+// absolute CLOCK_BOOTTIME deadline, then acks on an inherited fd; any failure kills it.
 // Build: cc -O2 -Wall -Wextra -shared -fPIC -o hardkill.so hardkill.c -lrt
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
@@ -26,7 +26,7 @@ static long parse(const char *s, long min, long max) {
 }
 
 __attribute__((constructor)) static void hardkill_arm(void) {
-	long dl = parse(getenv("SPX_HARDKILL_MS"), 1, LONG_MAX / 1000000L);
+	long dl = parse(getenv("SPX_HARDKILL_DEADLINE_NS"), 1, LONG_MAX);
 	int ack = (int)parse(getenv("SPX_HARDKILL_ACK_FD"), 3, INT_MAX);
 	int lib = (int)parse(getenv("SPX_HARDKILL_LIB_FD"), 3, INT_MAX);
 	if (lib == ack) die();
@@ -35,7 +35,7 @@ __attribute__((constructor)) static void hardkill_arm(void) {
 	if (!nonce || strlen(nonce) != 32 || strspn(nonce, "0123456789abcdef") != 32) die();
 	memcpy(tag, nonce, sizeof tag);
 	// Nothing QEMU starts later inherits the backstop's settings.
-	if (unsetenv("SPX_HARDKILL_MS") || unsetenv("SPX_HARDKILL_ACK_FD") ||
+	if (unsetenv("SPX_HARDKILL_DEADLINE_NS") || unsetenv("SPX_HARDKILL_ACK_FD") ||
 	    unsetenv("SPX_HARDKILL_NONCE") || unsetenv("SPX_HARDKILL_LIB_FD") ||
 	    unsetenv("LD_PRELOAD")) die();
 
@@ -47,9 +47,10 @@ __attribute__((constructor)) static void hardkill_arm(void) {
 	if (timer_create(CLOCK_BOOTTIME, &sev, &t) != 0) die();
 	struct itimerspec its;
 	memset(&its, 0, sizeof its);
-	its.it_value.tv_sec = dl / 1000;
-	its.it_value.tv_nsec = (dl % 1000) * 1000000L;
-	if (timer_settime(t, 0, &its, NULL) != 0) die();
+	its.it_value.tv_sec = dl / 1000000000L;
+	its.it_value.tv_nsec = dl % 1000000000L;
+	// A deadline already past makes the kill due at once.
+	if (timer_settime(t, TIMER_ABSTIME, &its, NULL) != 0) die();
 
 	// The loader has mapped the library; the ack also proves QEMU keeps no
 	// handle on its memfd.

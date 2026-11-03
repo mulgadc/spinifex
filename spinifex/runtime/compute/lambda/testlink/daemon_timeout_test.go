@@ -5,6 +5,7 @@ package testlink
 import (
 	"context"
 	"errors"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -47,7 +48,7 @@ func startSession(t *testing.T, ctx context.Context, req Request, accept func(co
 	workDir := t.TempDir()
 	go func() {
 		start := time.Now()
-		r, err := (&Daemon{}).session(ctx, req, gen, ln, workDir, accept)
+		r, err := (&Daemon{}).session(ctx, req, gen, ln, workDir, sessionDeadline, accept)
 		done <- sessionEnd{r, err, time.Since(start)}
 	}()
 	guest, err := hostlink.Dial(ctx, id)
@@ -166,4 +167,26 @@ func TestSession_AcceptanceAfterTheDeadlineIsATimeout(t *testing.T) {
 	require.ErrorIs(t, e.err, ErrFunctionTimeout)
 	require.Empty(t, e.reply.Payload)
 	require.Equal(t, start.Add(10*time.Second), acceptDeadline, "Accept is bounded by the dispatch deadline")
+}
+
+// sessionDeadline is the fixed boottime deadline startSession passes; far
+// ahead unless a test moves it.
+var sessionDeadline = time.Duration(math.MaxInt64)
+
+// A session whose guest accept outlasts the fixed deadline sends no frame.
+func TestSession_ExpiredBeforeHostSendSendsNothing(t *testing.T) {
+	sessionDeadline = 0
+	t.Cleanup(func() { sessionDeadline = time.Duration(math.MaxInt64) })
+	req := testRequest(1000)
+	called := false
+	guest, done := startSession(t, context.Background(), req, func(context.Context, execution.Grant) error {
+		called = true
+		return nil
+	})
+	end := <-done
+	require.ErrorIs(t, end.err, ErrDeadlineExpired)
+	require.False(t, called)
+	_ = guest.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, _ := guest.Read(make([]byte, 1))
+	require.Zero(t, n, "no frame reached the guest")
 }

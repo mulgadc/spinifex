@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -371,4 +372,57 @@ func TestSameArch_RefusesOtherMachinesAndNonELF(t *testing.T) {
 	}
 	require.ErrorContains(t, sameArch(elfHeader(other)), "built for")
 	require.ErrorContains(t, sameArch([]byte("library")), "not an ELF object")
+}
+
+// stepBoot makes the first CLOCK_BOOTTIME read return base and every later
+// read return later, so the fixed deadline is set before the jump.
+func stepBoot(t *testing.T, base, later time.Duration) {
+	t.Helper()
+	orig := bootNow
+	var calls atomic.Int32
+	bootNow = func() (time.Duration, error) {
+		if calls.Add(1) == 1 {
+			return base, nil
+		}
+		return later, nil
+	}
+	t.Cleanup(func() { bootNow = orig })
+}
+
+// A launch delayed past the deadline fixed before the grant started is refused
+// before QEMU starts, and everything it took is released.
+func TestDaemon_DelayedLaunchPastTheFixedDeadlineIsRefused(t *testing.T) {
+	code := []byte("zip bytes")
+	srv := codeServer(t, code)
+	g := grant(t, code)
+	ips, taps := &fakeIPs{}, &fakeTaps{}
+	d := g.daemon(&Daemon{IPs: ips, Taps: taps, HTTP: srv.Client(), WorkDir: t.TempDir()})
+	req := g.request(srv.URL, code)
+	var parsed Request
+	require.NoError(t, json.Unmarshal(req, &parsed))
+	stepBoot(t, time.Hour, hardDeadlineFrom(time.Hour, parsed))
+
+	rep := d.Handle(context.Background(), req)
+	require.Equal(t, OutcomeRefused, rep.Outcome)
+	require.Equal(t, ErrDeadlineExpired.Error(), rep.Error)
+	require.Equal(t, []string{"lambda-0123456789ab"}, ips.released)
+	require.Len(t, taps.removed, 1)
+	require.False(t, d.busy.Load())
+	require.Equal(t, execution.StateEnded, g.state(t))
+}
+
+// A code fetch that uses its whole allowance still leaves the function its
+// full configured timeout, plus the kill margin, before the fixed backstop.
+func TestHardDeadline_SlowFetchKeepsTheFullFunctionTimeout(t *testing.T) {
+	req := Request{TimeoutMs: 3000}
+	base := time.Hour
+	afterFetch := base + fetchTimeout
+	stepBoot(t, base, afterFetch)
+
+	boot, err := bootNow()
+	require.NoError(t, err)
+	deadline := hardDeadlineFrom(boot, req)
+
+	require.False(t, expired(deadline), "a full-allowance fetch must not expire the attempt")
+	require.Equal(t, timeoutFor(req)+HardKillMargin, deadline-afterFetch)
 }

@@ -32,6 +32,27 @@ const armWait = 5 * time.Second
 // ErrNotArmed means QEMU gave no valid proof that its hard-kill timer is armed.
 var ErrNotArmed = errors.New("hard-kill timer not armed")
 
+// ErrDeadlineExpired means the attempt's fixed hard-kill deadline has passed,
+// so nothing may be dispatched to the guest.
+var ErrDeadlineExpired = errors.New("hard-kill deadline expired")
+
+// bootNow reads CLOCK_BOOTTIME, which keeps counting through suspend; a var so
+// tests can move it.
+var bootNow = func() (time.Duration, error) {
+	var ts unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_BOOTTIME, &ts); err != nil {
+		return 0, fmt.Errorf("read CLOCK_BOOTTIME: %w", err)
+	}
+	return time.Duration(ts.Nano()), nil
+}
+
+// expired reports whether the absolute boottime deadline has passed; an
+// unreadable clock counts as expired.
+func expired(deadline time.Duration) bool {
+	t, err := bootNow()
+	return err != nil || t >= deadline
+}
+
 // maxInitializer bounds the bytes read for the hard-kill initializer.
 const maxInitializer = 1 << 20
 
@@ -141,15 +162,18 @@ func sealedCopy(b []byte) (*os.File, error) {
 
 // hardKill is one attempt's arming request and the pipe its ack arrives on.
 type hardKill struct {
-	ms    int64
-	nonce string
-	r, w  *os.File
+	deadline time.Duration // absolute CLOCK_BOOTTIME
+	nonce    string
+	r, w     *os.File
 }
 
 // armCommand sets cmd's environment to the daemon's without any inherited
 // dynamic-loader or backstop setting, then preloads lib by its inherited fd
-// and passes the ack pipe; the caller still owns lib.
+// and passes the ack pipe and the absolute boottime deadline; the caller still owns lib.
 func armCommand(cmd *exec.Cmd, lib *os.File, deadline time.Duration) (*hardKill, error) {
+	if deadline <= 0 {
+		return nil, errors.New("hard-kill deadline not set")
+	}
 	nb := make([]byte, 16)
 	if _, err := rand.Read(nb); err != nil {
 		return nil, fmt.Errorf("hard-kill nonce: %w", err)
@@ -158,7 +182,7 @@ func armCommand(cmd *exec.Cmd, lib *os.File, deadline time.Duration) (*hardKill,
 	if err != nil {
 		return nil, fmt.Errorf("hard-kill pipe: %w", err)
 	}
-	hk := &hardKill{ms: deadline.Milliseconds(), nonce: hex.EncodeToString(nb), r: r, w: w}
+	hk := &hardKill{deadline: deadline, nonce: hex.EncodeToString(nb), r: r, w: w}
 	base := cmd.Env
 	if base == nil {
 		base = os.Environ()
@@ -174,7 +198,7 @@ func armCommand(cmd *exec.Cmd, lib *os.File, deadline time.Duration) (*hardKill,
 	cmd.Env = append(env,
 		"LD_PRELOAD=/proc/self/fd/"+strconv.Itoa(ack+1),
 		"SPX_HARDKILL_LIB_FD="+strconv.Itoa(ack+1),
-		"SPX_HARDKILL_MS="+strconv.FormatInt(hk.ms, 10),
+		"SPX_HARDKILL_DEADLINE_NS="+strconv.FormatInt(int64(hk.deadline), 10),
 		"SPX_HARDKILL_ACK_FD="+strconv.Itoa(ack),
 		"SPX_HARDKILL_NONCE="+hk.nonce)
 	cmd.ExtraFiles = append(cmd.ExtraFiles, w, lib)
@@ -199,7 +223,7 @@ func (hk *hardKill) await(ctx context.Context, pid int, wait time.Duration) erro
 	if err := hk.r.SetReadDeadline(deadline); err != nil {
 		return fmt.Errorf("%w: %w", ErrNotArmed, err)
 	}
-	want := fmt.Sprintf("armed %d %d %s\n", pid, hk.ms, hk.nonce)
+	want := fmt.Sprintf("armed %d %d %s\n", pid, int64(hk.deadline), hk.nonce)
 	got := make([]byte, 0, len(want))
 	buf := make([]byte, len(want)+1)
 	for len(got) <= len(want) {
@@ -207,6 +231,9 @@ func (hk *hardKill) await(ctx context.Context, pid int, wait time.Duration) erro
 		got = append(got, buf[:n]...)
 		if err != nil {
 			if errors.Is(err, io.EOF) && bytes.Equal(got, []byte(want)) {
+				if expired(hk.deadline) {
+					return ErrDeadlineExpired
+				}
 				return nil
 			}
 			break
@@ -217,6 +244,10 @@ func (hk *hardKill) await(ctx context.Context, pid int, wait time.Duration) erro
 	}
 	if !bytes.Equal(got, []byte(want)) {
 		return ErrNotArmed
+	}
+	// An ack read at or after the deadline may have raced the due kill.
+	if expired(hk.deadline) {
+		return ErrDeadlineExpired
 	}
 	return nil
 }

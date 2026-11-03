@@ -161,6 +161,13 @@ func (d *Daemon) Handle(ctx context.Context, data []byte) Reply {
 		return refused(err.Error())
 	}
 	defer func() { _ = lib.Close() }()
+	// One absolute boottime deadline, fixed before the grant starts and never
+	// extended; QEMU's kill timer and every dispatch check use it.
+	boot, err := bootNow()
+	if err != nil {
+		return refused(err.Error())
+	}
+	hardDeadline := hardDeadlineFrom(boot, req)
 	// The owner refuses a stale, replayed or mismatched grant before anything
 	// is taken; a write it cannot confirm leaves the attempt possibly started.
 	if err := d.Grants.Start(ctx, req.Grant, req.Identity()); err != nil {
@@ -177,7 +184,7 @@ func (d *Daemon) Handle(ctx context.Context, data []byte) Reply {
 	if code, err := d.fetch(ctx, req); err != nil {
 		rep = refused(err.Error())
 	} else {
-		rep, resolved, marker = d.run(ctx, req, code, lib)
+		rep, resolved, marker = d.run(ctx, req, code, lib, hardDeadline)
 	}
 	held = !d.finish(ctx, req.Grant, resolved, marker)
 	return rep
@@ -314,7 +321,7 @@ func (d *Daemon) fetch(ctx context.Context, req Request) ([]byte, error) {
 // run holds the marker, address, tap and files from before allocation until
 // the VM stop is proven, and keeps them all when it is not. resolved is true
 // only once everything is released.
-func (d *Daemon) run(ctx context.Context, req Request, code []byte, lib *os.File) (rep Reply, resolved bool, marker string) {
+func (d *Daemon) run(ctx context.Context, req Request, code []byte, lib *os.File, hardDeadline time.Duration) (rep Reply, resolved bool, marker string) {
 	a := &held{id: "lambda-" + req.AttemptID, dir: filepath.Join(d.WorkDir, req.AttemptID),
 		marker: filepath.Join(d.WorkDir, req.AttemptID+markerSuffix)}
 	f, err := os.OpenFile(a.marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
@@ -353,7 +360,11 @@ func (d *Daemon) run(ctx context.Context, req Request, code []byte, lib *os.File
 	if err != nil {
 		return refused("VM command build failed"), d.release(a), marker
 	}
-	hk, err := armCommand(cmd, lib, timeoutFor(req)+HardKillMargin)
+	// A launch delayed past the fixed deadline is refused before QEMU starts.
+	if expired(hardDeadline) {
+		return refused(ErrDeadlineExpired.Error()), d.release(a), marker
+	}
+	hk, err := armCommand(cmd, lib, hardDeadline)
 	if err != nil {
 		return refused("hard-kill setup failed"), d.release(a), marker
 	}
@@ -374,7 +385,7 @@ func (d *Daemon) run(ctx context.Context, req Request, code []byte, lib *os.File
 		if err := hk.await(sctx, cmd.Process.Pid, armWait); err != nil {
 			return err
 		}
-		r, err := d.session(sctx, req, gen, ln, a.dir, d.Grants.Accept)
+		r, err := d.session(sctx, req, gen, ln, a.dir, hardDeadline, d.Grants.Accept)
 		result = r
 		return err
 	})
@@ -476,6 +487,12 @@ func (d *Daemon) prepare(req Request, code []byte, dir, tap, mac, ip string) (*v
 	return &cfg, gen, ln, nil
 }
 
+// hardDeadlineFrom is the fixed backstop for an attempt whose clock was read at
+// boot: the bounded code fetch, boot and function timeout, then the kill margin.
+func hardDeadlineFrom(boot time.Duration, req Request) time.Duration {
+	return boot + fetchTimeout + timeoutFor(req) + HardKillMargin
+}
+
 func timeoutFor(req Request) time.Duration {
 	return time.Duration(req.TimeoutMs)*time.Millisecond + BootAllowance
 }
@@ -484,7 +501,7 @@ func timeoutFor(req Request) time.Duration {
 // answers it before the owner records it accepted. The guest key file goes
 // once the guest has authenticated.
 func (d *Daemon) session(ctx context.Context, req Request, gen *guestconn.Generation, ln *net.TCPListener, dir string,
-	accept func(context.Context, execution.Grant) error) (Reply, error) {
+	hardDeadline time.Duration, accept func(context.Context, execution.Grant) error) (Reply, error) {
 	conn, err := gen.AcceptGuest(ctx, ln, handshakeTimeout)
 	if err != nil {
 		return Reply{}, fmt.Errorf("accept guest: %w", err)
@@ -502,6 +519,11 @@ func (d *Daemon) session(ctx context.Context, req Request, gen *guestconn.Genera
 	defer cancel()
 
 	stream := hostlink.NewTestStream(conn)
+	// Accepting the guest can outlast the deadline; a pause after this check
+	// still relies on QEMU's kill timer.
+	if expired(hardDeadline) {
+		return Reply{}, ErrDeadlineExpired
+	}
 	if err := stream.HostSend(hostlink.Request{
 		GrantID:     req.Grant.GrantID,
 		AttemptID:   req.AttemptID,

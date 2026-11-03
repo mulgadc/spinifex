@@ -26,7 +26,7 @@ import (
 func TestArmCommand_DropsInheritedLoaderSettings(t *testing.T) {
 	t.Setenv("LD_PRELOAD", "/evil.so")
 	t.Setenv("LD_LIBRARY_PATH", "/evil")
-	t.Setenv("SPX_HARDKILL_MS", "1")
+	t.Setenv("SPX_HARDKILL_DEADLINE_NS", "1")
 	t.Setenv("KEEP_ME", "yes")
 	cmd := exec.Command("/bin/true")
 	cmd.ExtraFiles = []*os.File{os.Stdin}
@@ -45,11 +45,19 @@ func TestArmCommand_DropsInheritedLoaderSettings(t *testing.T) {
 		}
 	}
 	require.Equal(t, []string{"LD_PRELOAD=/proc/self/fd/5"}, loader)
-	require.ElementsMatch(t, []string{"SPX_HARDKILL_MS=90000", "SPX_HARDKILL_ACK_FD=4",
+	require.ElementsMatch(t, []string{"SPX_HARDKILL_DEADLINE_NS=90000000000", "SPX_HARDKILL_ACK_FD=4",
 		"SPX_HARDKILL_LIB_FD=5", "SPX_HARDKILL_NONCE=" + hk.nonce}, backstop)
 	require.Contains(t, cmd.Env, "KEEP_ME=yes")
 	require.Equal(t, []*os.File{os.Stdin, hk.w, lib}, cmd.ExtraFiles)
 	require.Len(t, hk.nonce, 32)
+}
+
+// fromBoot is the absolute CLOCK_BOOTTIME deadline d from now.
+func fromBoot(t *testing.T, d time.Duration) time.Duration {
+	t.Helper()
+	b, err := bootNow()
+	require.NoError(t, err)
+	return b + d
 }
 
 func emptyFile(t *testing.T) *os.File {
@@ -65,7 +73,7 @@ func emptyFile(t *testing.T) *os.File {
 func runArmed(t *testing.T, script string, wait time.Duration) (bool, attempt.Outcome, error) {
 	t.Helper()
 	cmd := exec.Command("/bin/sh", "-c", script)
-	hk, err := armCommand(cmd, emptyFile(t), time.Minute)
+	hk, err := armCommand(cmd, emptyFile(t), fromBoot(t, time.Minute))
 	require.NoError(t, err)
 	defer hk.close()
 	cmd.Env = append(cmd.Env, "HK_WRONG_NONCE=0123456789abcdef0123456789abcdef")
@@ -80,7 +88,7 @@ func runArmed(t *testing.T, script string, wait time.Duration) (bool, attempt.Ou
 	return sent, out, err
 }
 
-const ackLine = `printf 'armed %s %s %s\n' "$$" "$SPX_HARDKILL_MS" `
+const ackLine = `printf 'armed %s %s %s\n' "$$" "$SPX_HARDKILL_DEADLINE_NS" `
 
 func TestHardKill_FrameWaitsForTheExactAck(t *testing.T) {
 	sent, out, err := runArmed(t, `eval "`+ackLine+`\"\$SPX_HARDKILL_NONCE\" >&$SPX_HARDKILL_ACK_FD"; exec sleep 60`, 2*time.Second)
@@ -95,7 +103,7 @@ func TestHardKill_MissingOrWrongAckSendsNothing(t *testing.T) {
 		"silent":         `exec sleep 60`,
 		"exits early":    `exit 0`,
 		"wrong nonce":    `eval "` + ackLine + `\"\$HK_WRONG_NONCE\" >&$SPX_HARDKILL_ACK_FD"; exec sleep 60`,
-		"wrong pid":      `eval "printf 'armed 1 %s %s\n' \"\$SPX_HARDKILL_MS\" \"\$SPX_HARDKILL_NONCE\" >&$SPX_HARDKILL_ACK_FD"; exec sleep 60`,
+		"wrong pid":      `eval "printf 'armed 1 %s %s\n' \"\$SPX_HARDKILL_DEADLINE_NS\" \"\$SPX_HARDKILL_NONCE\" >&$SPX_HARDKILL_ACK_FD"; exec sleep 60`,
 		"wrong deadline": `eval "printf 'armed %s 1 %s\n' \"\$\$\" \"\$SPX_HARDKILL_NONCE\" >&$SPX_HARDKILL_ACK_FD"; exec sleep 60`,
 		"trailing data":  `eval "` + ackLine + `\"\$SPX_HARDKILL_NONCE\" extra >&$SPX_HARDKILL_ACK_FD"; exec sleep 60`,
 	}
@@ -147,14 +155,14 @@ func TestHardKill_InitializerFailureNeverReachesMain(t *testing.T) {
 	libFD := "SPX_HARDKILL_LIB_FD=4"
 	cases := map[string][]string{
 		"no settings":      nil,
-		"bad deadline":     {"SPX_HARDKILL_MS=12x", "SPX_HARDKILL_ACK_FD=3", libFD, nonce},
-		"zero deadline":    {"SPX_HARDKILL_MS=0", "SPX_HARDKILL_ACK_FD=3", libFD, nonce},
-		"low fd":           {"SPX_HARDKILL_MS=1000", "SPX_HARDKILL_ACK_FD=2", libFD, nonce},
-		"no lib fd":        {"SPX_HARDKILL_MS=1000", "SPX_HARDKILL_ACK_FD=3", nonce},
-		"lib fd is ack fd": {"SPX_HARDKILL_MS=1000", "SPX_HARDKILL_ACK_FD=3", "SPX_HARDKILL_LIB_FD=3", nonce},
-		"lib fd not open":  {"SPX_HARDKILL_MS=1000", "SPX_HARDKILL_ACK_FD=3", "SPX_HARDKILL_LIB_FD=98", nonce},
-		"short nonce":      {"SPX_HARDKILL_MS=1000", "SPX_HARDKILL_ACK_FD=3", libFD, "SPX_HARDKILL_NONCE=abc"},
-		"ack fd not open":  {"SPX_HARDKILL_MS=1000", "SPX_HARDKILL_ACK_FD=97", libFD, nonce},
+		"bad deadline":     {"SPX_HARDKILL_DEADLINE_NS=12x", "SPX_HARDKILL_ACK_FD=3", libFD, nonce},
+		"zero deadline":    {"SPX_HARDKILL_DEADLINE_NS=0", "SPX_HARDKILL_ACK_FD=3", libFD, nonce},
+		"low fd":           {"SPX_HARDKILL_DEADLINE_NS=9000000000000000000", "SPX_HARDKILL_ACK_FD=2", libFD, nonce},
+		"no lib fd":        {"SPX_HARDKILL_DEADLINE_NS=9000000000000000000", "SPX_HARDKILL_ACK_FD=3", nonce},
+		"lib fd is ack fd": {"SPX_HARDKILL_DEADLINE_NS=9000000000000000000", "SPX_HARDKILL_ACK_FD=3", "SPX_HARDKILL_LIB_FD=3", nonce},
+		"lib fd not open":  {"SPX_HARDKILL_DEADLINE_NS=9000000000000000000", "SPX_HARDKILL_ACK_FD=3", "SPX_HARDKILL_LIB_FD=98", nonce},
+		"short nonce":      {"SPX_HARDKILL_DEADLINE_NS=9000000000000000000", "SPX_HARDKILL_ACK_FD=3", libFD, "SPX_HARDKILL_NONCE=abc"},
+		"ack fd not open":  {"SPX_HARDKILL_DEADLINE_NS=9000000000000000000", "SPX_HARDKILL_ACK_FD=97", libFD, nonce},
 	}
 	for name, env := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -234,7 +242,7 @@ func TestHardKill_SealedInitializerLoadsByFD(t *testing.T) {
 			lib := sealedBuilt(t)
 			argv := append(append([]string{}, prefix...), "/bin/sleep", "60")
 			cmd := exec.Command(argv[0], argv[1:]...)
-			hk, err := armCommand(cmd, lib, 400*time.Millisecond)
+			hk, err := armCommand(cmd, lib, fromBoot(t, 400*time.Millisecond))
 			require.NoError(t, err)
 			defer hk.close()
 			if prefix != nil {
@@ -337,6 +345,34 @@ func TestDaemon_InitializerCheckRefusesBeforeTheGrantStarts(t *testing.T) {
 			require.Contains(t, rep.Error, "hard-kill initializer")
 			require.Empty(t, ips.allocated)
 			require.Equal(t, execution.StateGranted, g.state(t))
+		})
+	}
+}
+
+// An exact ack read at or after the fixed deadline may have raced the due
+// kill, so nothing is sent and the VM stop is still proven.
+func TestHardKill_AckAtOrAfterTheDeadlineSendsNothing(t *testing.T) {
+	for name, past := range map[string]time.Duration{"at": 0, "after": time.Millisecond} {
+		t.Run(name, func(t *testing.T) {
+			script := `eval "` + ackLine + `\"\$SPX_HARDKILL_NONCE\" >&$SPX_HARDKILL_ACK_FD"; exec sleep 60`
+			cmd := exec.Command("/bin/sh", "-c", script)
+			hk, err := armCommand(cmd, emptyFile(t), fromBoot(t, time.Minute))
+			require.NoError(t, err)
+			defer hk.close()
+			orig := bootNow
+			bootNow = func() (time.Duration, error) { return hk.deadline + past, nil }
+			t.Cleanup(func() { bootNow = orig })
+			sent := false
+			out, err := attempt.Run(context.Background(), cmd, 30*time.Second, func(ctx context.Context, _ int) error {
+				if err := hk.await(ctx, cmd.Process.Pid, 2*time.Second); err != nil {
+					return err
+				}
+				sent = true
+				return nil
+			})
+			require.ErrorIs(t, err, ErrDeadlineExpired)
+			require.False(t, sent)
+			require.True(t, out.Stopped)
 		})
 	}
 }

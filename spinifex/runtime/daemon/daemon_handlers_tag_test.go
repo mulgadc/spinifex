@@ -156,6 +156,19 @@ func TestCreateTags_NotFoundNamesIDsForSkipRetry(t *testing.T) {
 	assert.Equal(t, map[string]string{"env": "prod"}, recordTags(t, d, live))
 }
 
+// An owner that is subscribed but never answers has not proven the instance
+// absent, so the NotFound message must not name it for the retry to drop.
+func TestCreateTags_SlowOwnerNotNamedMissing(t *testing.T) {
+	const slow = "i-tag-slow"
+	d := tagTestDaemon(t, slow, nil)
+	sub, err := d.natsConn.Subscribe("ec2.cmd."+slow, func(*nats.Msg) {})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	_, err = d.createTags(context.Background(), &ec2.CreateTagsInput{Resources: aws.StringSlice([]string{"i-tag-gone1", slow}), Tags: []*ec2.Tag{{Key: aws.String("k"), Value: aws.String("v")}}}, testAccountID)
+	assertInstancesNotFound(t, err, "The instance ID 'i-tag-gone1' does not exist")
+}
+
 // A many-instance call fans out concurrently: absent owners all fail fast
 // with NotFound rather than serialising owner requests.
 func TestDeleteTags_NoOwnerNotFound(t *testing.T) {

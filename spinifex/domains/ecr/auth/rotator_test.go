@@ -99,7 +99,7 @@ func TestRotateOnce_MintsAndSwaps(t *testing.T) {
 	r.rotateOnce(t.Context(), time.Now().UTC())
 
 	// A new active key took over.
-	assert.NotEqual(t, key.Kid, issuer.ActiveKid(), "issuer should sign with the rotated key")
+	assert.NotEqual(t, key.Kid, activeKid(issuer), "issuer should sign with the rotated key")
 
 	// Both old and new tokens verify (previous key retained).
 	_, err = verifier.Verify(oldTok)
@@ -142,7 +142,7 @@ func TestRotateOnce_PrunesExpiredKey(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, metas, 1, "the older key should be pruned")
 	assert.Equal(t, second.Kid, active.Kid, "newest key remains active")
-	assert.Equal(t, second.Kid, issuer.ActiveKid())
+	assert.Equal(t, second.Kid, activeKid(issuer))
 }
 
 // TestRotator_RunRotatesThenStops drives the scheduler loop on a fast interval
@@ -169,7 +169,7 @@ func TestRotator_RunRotatesThenStops(t *testing.T) {
 	stopped := make(chan struct{})
 	go func() { r.Run(ctx); close(stopped) }()
 
-	require.Eventually(t, func() bool { return issuer.ActiveKid() != key.Kid },
+	require.Eventually(t, func() bool { return activeKid(issuer) != key.Kid },
 		2*time.Second, 5*time.Millisecond, "rotator should mint a new active key")
 
 	cancel()
@@ -217,4 +217,11 @@ func TestIssuerVerifier_ConcurrentSwap(t *testing.T) {
 		}
 	}
 	<-done
+}
+
+// activeKid reads the kid the issuer currently signs with.
+func activeKid(i *Issuer) string {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.key.Kid
 }

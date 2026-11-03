@@ -108,7 +108,7 @@ func TestFeedRecoveryCloseWinsOverCancel(t *testing.T) {
 	b, next := recoverInto(ctx, t, s, f)
 	closed := make(chan error, 1)
 	go func() { closed <- f.Close() }()
-	require.Eventually(t, f.isClosed, 5*time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool { return closeBegun(f) }, 5*time.Second, 5*time.Millisecond)
 	cancel()
 	close(b.release)
 	close(b.proceed)

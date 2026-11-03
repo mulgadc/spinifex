@@ -169,7 +169,7 @@ func TestInvokeRouter_InvokeModel_ProvisionedThroughputARN_ResolvesPinnedEndpoin
 	arn := createPTCommitment(t, store, ptCallerAccount)
 
 	spy := &spyEndpointResolver{baseURL: ts.URL}
-	rt := NewInvokeRouter(nil, spy, nil, grantAll{}, store, nil, nil)
+	rt := NewRouter(nil, spy, nil, grantAll{}, store, nil, nil)
 
 	respBody, contentType, err := rt.InvokeModel(context.Background(), ptCallerAccount, arn, []byte(`{"prompt":"hello"}`), "", "")
 	require.NoError(t, err)
@@ -197,7 +197,7 @@ func TestInvokeRouter_InvokeModel_BareModelID_StillUsesGlobalShorthand(t *testin
 
 	store := newProvisionedTestStore(t, newStubEndpointProvisioner())
 	spy := &spyEndpointResolver{baseURL: ts.URL}
-	rt := NewInvokeRouter(nil, spy, nil, grantAll{}, store, nil, nil)
+	rt := NewRouter(nil, spy, nil, grantAll{}, store, nil, nil)
 
 	_, _, err := rt.InvokeModel(context.Background(), ptCallerAccount, selfHostTestModel, []byte(`{"prompt":"hello"}`), "", "")
 	require.NoError(t, err)

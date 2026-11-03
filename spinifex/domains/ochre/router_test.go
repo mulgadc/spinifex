@@ -2,6 +2,7 @@ package ochre
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -312,4 +313,34 @@ func TestRouter_Converse_ProvisionedThroughputARN_CapacityMultipliesByModelUnits
 	release1()
 	release2()
 	release3()
+}
+
+func TestRouter_VendorKey_ErrorMapping(t *testing.T) {
+	resolveErr := errors.New("kv unavailable")
+	cases := []struct {
+		name     string
+		resolver CredentialResolver
+		provider string
+		wantKey  string
+		wantErr  string
+	}{
+		{"anthropic resolved", stubCredentialResolver{key: "sk-test", ok: true}, providerPrefix + vendorAnthropic, "sk-test", ""},
+		{"anthropic unresolvable", stubCredentialResolver{ok: false}, providerPrefix + vendorAnthropic, "", awserrors.ErrorAccessDeniedException},
+		{"resolver error passes through", stubCredentialResolver{err: resolveErr}, providerPrefix + vendorAnthropic, "", resolveErr.Error()},
+		{"unknown vendor", stubCredentialResolver{key: "sk-test", ok: true}, providerPrefix + "openai", "", awserrors.ErrorResourceNotFoundException},
+		{"not a vendor tier", stubCredentialResolver{key: "sk-test", ok: true}, "on-prem", "", awserrors.ErrorResourceNotFoundException},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := NewRouter(tc.resolver, nil, nil, grantAll{}, nil, nil, nil)
+			key, err := rt.vendorKey(context.Background(), "000000000001", tc.provider)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantErr, err.Error())
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantKey, key)
+		})
+	}
 }

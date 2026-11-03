@@ -408,7 +408,7 @@ func TestInvokeRouter_GuardrailInputBlock_Llama_SkipsBackend(t *testing.T) {
 
 	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	ts, hits := countingLlamaCompletionsServer(t, "hi")
-	rt := NewInvokeRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, store, nil)
+	rt := NewRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, store, nil)
 
 	respBody, contentType, err := rt.InvokeModel(ctx, grCallerAccount, modelID, []byte(`{"prompt":"this has a badword in it"}`), aws.StringValue(createOut.GuardrailId), guardrailDraftVersion)
 	require.NoError(t, err)
@@ -433,7 +433,7 @@ func TestInvokeRouter_GuardrailInputBlock_Anthropic_SkipsBackend(t *testing.T) {
 
 	modelID := "anthropic.claude-3-5-sonnet-20240620-v1:0"
 	withProviderCatalogEntry(t, modelID)
-	rt := NewInvokeRouter(stubCredentialResolver{key: "sk-test", ok: true}, nil, nil, grantAll{}, nil, store, nil)
+	rt := NewRouter(stubCredentialResolver{key: "sk-test", ok: true}, nil, nil, grantAll{}, nil, store, nil)
 
 	body := []byte(`{"anthropic_version":"bedrock-2023-05-31","max_tokens":100,"messages":[{"role":"user","content":[{"type":"text","text":"this has a badword in it"}]}]}`)
 	respBody, contentType, err := rt.InvokeModel(ctx, grCallerAccount, modelID, body, aws.StringValue(createOut.GuardrailId), guardrailDraftVersion)
@@ -453,7 +453,7 @@ func TestInvokeRouter_GuardrailOutputBlock_Llama(t *testing.T) {
 
 	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	ts, _ := countingLlamaCompletionsServer(t, "this has a badword in it")
-	rt := NewInvokeRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, store, nil)
+	rt := NewRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, store, nil)
 
 	respBody, _, err := rt.InvokeModel(ctx, grCallerAccount, modelID, []byte(`{"prompt":"hello"}`), aws.StringValue(createOut.GuardrailId), guardrailDraftVersion)
 	require.NoError(t, err)
@@ -472,7 +472,7 @@ func TestInvokeRouter_GuardrailOutputAnonymize_Llama(t *testing.T) {
 
 	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	ts, _ := countingLlamaCompletionsServer(t, "contact jane@example.com for support")
-	rt := NewInvokeRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, store, nil)
+	rt := NewRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, store, nil)
 
 	respBody, _, err := rt.InvokeModel(ctx, grCallerAccount, modelID, []byte(`{"prompt":"hello"}`), aws.StringValue(createOut.GuardrailId), guardrailDraftVersion)
 	require.NoError(t, err)
@@ -487,7 +487,7 @@ func TestInvokeRouter_GuardrailOutputAnonymize_Llama(t *testing.T) {
 func TestInvokeRouter_NoGuardrailHeader_Regression(t *testing.T) {
 	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	ts, hits := countingLlamaCompletionsServer(t, "hi there")
-	rt := NewInvokeRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, nil, nil)
+	rt := NewRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, nil, nil)
 
 	respBody, _, err := rt.InvokeModel(context.Background(), "000000000001", modelID, []byte(`{"prompt":"hello"}`), "", "")
 	require.NoError(t, err)
@@ -503,7 +503,7 @@ func TestInvokeRouter_UnknownOrForeignGuardrailReturnsResourceNotFound(t *testin
 	ctx := context.Background()
 	modelID := "meta.llama3-2-1b-instruct-v1:0"
 	ts, hits := countingLlamaCompletionsServer(t, "hi")
-	rt := NewInvokeRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, store, nil)
+	rt := NewRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, store, nil)
 
 	_, _, err := rt.InvokeModel(ctx, grCallerAccount, modelID, []byte(`{"prompt":"hello"}`), "does-not-exist", guardrailDraftVersion)
 	require.Error(t, err)
@@ -563,7 +563,7 @@ func TestInvokeStreamRouter_GuardrailInputBlock_SkipsBackend(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	rt := NewInvokeStreamRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), grantAll{}, nil, store, nil)
+	rt := NewRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, store, nil)
 
 	src, err := rt.InvokeModelWithResponseStream(ctx, grCallerAccount, modelID, []byte(`{"prompt":"this has a badword in it"}`), aws.StringValue(createOut.GuardrailId), guardrailDraftVersion)
 	require.NoError(t, err)
@@ -595,7 +595,7 @@ func TestInvokeStreamRouter_GuardrailOutputBlock_Buffered(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	rt := NewInvokeStreamRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), grantAll{}, nil, store, nil)
+	rt := NewRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, store, nil)
 
 	src, err := rt.InvokeModelWithResponseStream(ctx, grCallerAccount, modelID, []byte(`{"prompt":"hello"}`), aws.StringValue(createOut.GuardrailId), guardrailDraftVersion)
 	require.NoError(t, err)
@@ -626,7 +626,7 @@ func TestInvokeStreamRouter_GuardrailOutputAnonymize_Buffered(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	rt := NewInvokeStreamRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), grantAll{}, nil, store, nil)
+	rt := NewRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, store, nil)
 
 	src, err := rt.InvokeModelWithResponseStream(ctx, grCallerAccount, modelID, []byte(`{"prompt":"hello"}`), aws.StringValue(createOut.GuardrailId), guardrailDraftVersion)
 	require.NoError(t, err)
@@ -653,7 +653,7 @@ func TestInvokeStreamRouter_NoGuardrailHeader_Regression(t *testing.T) {
 	defer ts.Close()
 
 	modelID := "meta.llama3-2-1b-instruct-v1:0"
-	rt := NewInvokeStreamRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), grantAll{}, nil, nil, nil)
+	rt := NewRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, nil, nil)
 
 	src, err := rt.InvokeModelWithResponseStream(context.Background(), "000000000001", modelID, []byte(`{"prompt":"hello"}`), "", "")
 	require.NoError(t, err)
@@ -810,7 +810,7 @@ func TestInvokeRouter_GuardrailOutputPath_DeletedMidRequest_FailsClosed(t *testi
 	}))
 	defer ts.Close()
 
-	rt := NewInvokeRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, store, nil)
+	rt := NewRouter(nil, NewStaticEndpointResolver(map[string]string{modelID: ts.URL}), nil, grantAll{}, nil, store, nil)
 
 	respBody, _, err := rt.InvokeModel(ctx, grCallerAccount, modelID, []byte(`{"prompt":"hello"}`), aws.StringValue(createOut.GuardrailId), guardrailDraftVersion)
 	require.Error(t, err)

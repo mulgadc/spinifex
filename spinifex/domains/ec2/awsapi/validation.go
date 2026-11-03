@@ -67,9 +67,6 @@ func validateTagSpecifications(action string, input any) error {
 		}
 		for _, tag := range spec.Tags {
 			// AWS reserves the prefix in any case.
-			if tag == nil {
-				continue
-			}
 			if key := aws.StringValue(tag.Key); strings.HasPrefix(strings.ToLower(key), "aws:") {
 				return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 					"Value ( %s ) for parameter key is invalid. Tag keys starting with 'aws:' are reserved for internal use", key)

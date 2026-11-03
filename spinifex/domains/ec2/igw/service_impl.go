@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -74,6 +75,7 @@ type IGWServiceImpl struct {
 	config        *config.Config
 	igwKV         jetstream.KeyValue
 	vpcKV         jetstream.KeyValue
+	eipKV         jetstream.KeyValue
 	natsConn      *nats.Conn
 	gatePublisher GatePublisher
 }
@@ -105,12 +107,19 @@ func NewIGWServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn
 		return nil, fmt.Errorf("failed to get VPC KV bucket: %w", err)
 	}
 
+	// Read EIP associations so detach can refuse while addresses are mapped.
+	eipKV, err := kvutil.GetOrCreateBucket(ctx, js, ec2eip.KVBucketEIPs, 10)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get EIP KV bucket: %w", err)
+	}
+
 	slog.Info("IGW service initialized with JetStream KV", "bucket", KVBucketIGW)
 
 	return &IGWServiceImpl{
 		config:   cfg,
 		igwKV:    igwKV,
 		vpcKV:    vpcKV,
+		eipKV:    eipKV,
 		natsConn: natsConn,
 	}, nil
 }
@@ -400,6 +409,16 @@ func (s *IGWServiceImpl) DetachInternetGateway(ctx context.Context, input *ec2.D
 		return nil, errors.New(awserrors.ErrorGatewayNotAttached)
 	}
 
+	mapped, err := s.vpcHasMappedAddress(ctx, accountID, vpcID)
+	if err != nil {
+		slog.ErrorContext(ctx, "DetachInternetGateway: failed to read EIP associations", "vpcId", vpcID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if mapped {
+		return nil, awserrors.Errorf(awserrors.ErrorDependencyViolation,
+			"Network %s has some mapped public address(es). Please unmap those public address(es) before detaching the gateway.", vpcID)
+	}
+
 	record.VpcId = ""
 	record.State = "available"
 	record.AttachState = ""
@@ -429,6 +448,40 @@ func (s *IGWServiceImpl) DetachInternetGateway(ctx context.Context, input *ec2.D
 	slog.InfoContext(ctx, "DetachInternetGateway completed", "internetGatewayId", igwID, "vpcId", vpcID, "accountID", accountID)
 
 	return &ec2.DetachInternetGatewayOutput{}, nil
+}
+
+// vpcHasMappedAddress reports whether any of the account's elastic IPs is
+// associated into vpcID, whether to an interface or a NAT gateway.
+func (s *IGWServiceImpl) vpcHasMappedAddress(ctx context.Context, accountID, vpcID string) (bool, error) {
+	keys, err := s.eipKV.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	prefix := accountID + "."
+	for _, k := range keys {
+		if k == kvutil.VersionKey || !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		entry, err := s.eipKV.Get(ctx, k)
+		if err != nil {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				continue
+			}
+			return false, fmt.Errorf("eipKV.Get(%s): %w", k, err)
+		}
+		var record ec2eip.EIPRecord
+		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			slog.WarnContext(ctx, "vpcHasMappedAddress: malformed EIP record", "key", k, "err", err)
+			continue
+		}
+		if record.AssociationId != "" && record.VpcId == vpcID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // publishAttach asks vpcd to create the OVN external switch, gateway and SNAT.

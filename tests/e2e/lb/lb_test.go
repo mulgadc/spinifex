@@ -231,8 +231,8 @@ func setupSharedFixture(t *testing.T, c *harness.AWSClient, artifacts string) *s
 	f := &sharedFixture{}
 
 	harness.Phase(t, "Discovering cluster capacity")
-	f.InstanceType = discoverNanoInstanceType(t, c)
-	f.AMIID = discoverAMI(t, c)
+	f.InstanceType = harness.FirstNanoInstanceType(t, c)
+	f.AMIID = harness.PreferredAMI(t, c)
 
 	harness.Phase(t, "Ensuring SSH key pair %q", lbKeyName)
 	ensureKeyPair(t, c)
@@ -288,50 +288,6 @@ func pickPeer(env *harness.Env) string {
 		return ""
 	}
 	return env.NodeIPs[1]
-}
-
-func discoverNanoInstanceType(t *testing.T, c *harness.AWSClient) string {
-	t.Helper()
-	out, err := c.EC2.DescribeInstanceTypes(&ec2.DescribeInstanceTypesInput{})
-	require.NoError(t, err)
-	for _, it := range out.InstanceTypes {
-		name := aws.StringValue(it.InstanceType)
-		if strings.Contains(name, "nano") {
-			t.Logf("instance type: %s", name)
-			return name
-		}
-	}
-	t.Fatal("no nano instance type available")
-	return ""
-}
-
-func discoverAMI(t *testing.T, c *harness.AWSClient) string {
-	t.Helper()
-	out, err := c.EC2.DescribeImages(&ec2.DescribeImagesInput{})
-	require.NoError(t, err)
-	var fallback, nonAlpine, ubuntu string
-	for _, img := range out.Images {
-		id := aws.StringValue(img.ImageId)
-		name := aws.StringValue(img.Name)
-		if fallback == "" {
-			fallback = id
-		}
-		if !strings.Contains(strings.ToLower(name), "alpine") && nonAlpine == "" {
-			nonAlpine = id
-		}
-		if strings.HasPrefix(name, "ami-ubuntu") {
-			ubuntu = id
-			break
-		}
-	}
-	for _, candidate := range []string{ubuntu, nonAlpine, fallback} {
-		if candidate != "" {
-			t.Logf("AMI: %s", candidate)
-			return candidate
-		}
-	}
-	t.Fatal("no AMIs available")
-	return ""
 }
 
 func ensureKeyPair(t *testing.T, c *harness.AWSClient) {

@@ -139,8 +139,8 @@ func TestGuestShutdownBudget(t *testing.T) {
 	require.NoError(t, fix.ssh.Ping(ctx, fix.env.WANHost), "ssh to %s", fix.env.WANHost)
 	cancel()
 
-	fix.instanceType = discoverNanoInstanceType(t, fix.aws)
-	fix.amiID = discoverAMI(t, fix.aws)
+	fix.instanceType = harness.FirstNanoInstanceType(t, fix.aws)
+	fix.amiID = harness.PreferredAMI(t, fix.aws)
 	harness.Detail(t, "instance_type", fix.instanceType)
 	harness.Detail(t, "ami", fix.amiID)
 	provisionKeyPair(t, fix, guestShutdownKeyName)

@@ -35,8 +35,8 @@ func TestInternalALBPrivateSubnet(t *testing.T) {
 	f := &sharedFixture{}
 
 	harness.Phase(t, "Discovering cluster capacity")
-	f.InstanceType = discoverNanoInstanceType(t, c)
-	f.AMIID = discoverAMI(t, c)
+	f.InstanceType = harness.FirstNanoInstanceType(t, c)
+	f.AMIID = harness.PreferredAMI(t, c)
 	ensureKeyPair(t, c)
 	t.Cleanup(func() { deleteKeyPair(t, c) })
 

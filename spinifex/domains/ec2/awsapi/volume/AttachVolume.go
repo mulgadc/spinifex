@@ -49,6 +49,12 @@ func AttachVolume(ctx context.Context, input *ec2.AttachVolumeInput, natsConn *n
 		device = *input.Device
 	}
 
+	// The shared record decides: a stopped instance has no QMP to plug into, so
+	// its record is edited and the volume claimed there instead.
+	if isStoppedInstance(ctx, instanceID, natsConn, accountID) {
+		return attachToStopped(ctx, natsConn, accountID, input)
+	}
+
 	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
 		Attributes: ec2v1.EC2CommandAttributes{
@@ -95,6 +101,24 @@ func AttachVolume(ctx context.Context, input *ec2.AttachVolumeInput, natsConn *n
 
 	slog.InfoContext(ctx, "AttachVolume completed", "instanceId", instanceID, "volumeId", volumeID)
 	return output, nil
+}
+
+// attachToStoppedSubject is answered by any node and edits the stopped
+// instance record in the shared bucket.
+const attachToStoppedSubject = "ec2.AttachVolumeToStopped"
+
+// attachToStopped asks the instance service to add the volume to the stopped
+// instance's record; the volume is claimed in-use by the same call.
+func attachToStopped(ctx context.Context, natsConn *nats.Conn, accountID string, input *ec2.AttachVolumeInput) (ec2.VolumeAttachment, error) {
+	attachment, err := natsmsg.NATSRequest[ec2.VolumeAttachment](ctx, natsConn, attachToStoppedSubject, input, 30*time.Second, accountID)
+	if err != nil {
+		slog.ErrorContext(ctx, "AttachVolume: stopped-instance attach failed", "volumeId", aws.StringValue(input.VolumeId), "instanceId", aws.StringValue(input.InstanceId), "err", err)
+		return ec2.VolumeAttachment{}, err
+	}
+	if attachment == nil {
+		return ec2.VolumeAttachment{}, nil
+	}
+	return *attachment, nil
 }
 
 // isStoppedInstance checks the shared KV (via ec2.DescribeStoppedInstances) to

@@ -2842,7 +2842,7 @@ func TestHandleEC2DescribeInstanceTypes_NoFilter(t *testing.T) {
 func TestHandleEC2StartStoppedInstance_InstanceTypeNotAvailable(t *testing.T) {
 	daemon := createFullTestDaemonWithJetStream(t, sharedJSNATSURL)
 
-	stoppedVM := &vm.VM{
+	stoppedVM := withBootVolume(&vm.VM{
 		ID:           "i-start-badtype-001",
 		Status:       vm.StateStopped,
 		InstanceType: "z99.nonexistent",
@@ -2851,7 +2851,13 @@ func TestHandleEC2StartStoppedInstance_InstanceTypeNotAvailable(t *testing.T) {
 			InstanceId:   aws.String("i-start-badtype-001"),
 			InstanceType: aws.String("z99.nonexistent"),
 		},
-	}
+	})
+	objects := objectstore.NewMemoryObjectStore()
+	seedBootVolume(t, objects, daemon.config.Predastore.Bucket, testAccountID, stoppedVM.ID)
+	daemon.instanceService = ec2instance.NewInstanceServiceImpl(
+		daemon.config, daemon.resourceMgr.instanceTypes, daemon.natsConn,
+		objects, daemon.vmMgr, daemon.resourceMgr, daemon.jsManager,
+	)
 	err := daemon.jsManager.WriteStoppedInstance(stoppedVM.ID, stoppedVM)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = daemon.jsManager.DeleteStoppedInstance(stoppedVM.ID) })

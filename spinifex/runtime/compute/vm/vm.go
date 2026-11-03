@@ -137,6 +137,10 @@ type VM struct {
 	// claiming the flag serialises reboots of one instance.
 	rebooting atomic.Bool `json:"-"`
 
+	// guestPoweroff is set once the heartbeat has seen the guest power itself off
+	// and asked QEMU to quit, so the exit that follows is a stop, not a crash.
+	guestPoweroff atomic.Bool `json:"-"`
+
 	// relaunchMu is held while a reboot swaps this guest's QEMU process, so a
 	// stop or terminate never unmounts volumes under a process being started.
 	relaunchMu sync.Mutex `json:"-"`

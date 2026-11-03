@@ -145,6 +145,11 @@ type SuiteConfig struct {
 	// the provider, standing in for a crash. Nil skips the dead-export case,
 	// for a provider whose export is not a separate process.
 	KillExport func(t *testing.T, published *ebsprovider.PublishedVolume)
+
+	// QueueOnOtherNode returns a client answered only on the queue subjects, by
+	// a node other than NodeID: what a request meets when the volume's owner
+	// does not answer. Nil skips the cases that need it.
+	QueueOnOtherNode func(t *testing.T) ebsprovider.EBSProvider
 }
 
 func (c SuiteConfig) node() string {
@@ -629,6 +634,39 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			provider := newProvider(t)
 			_, err := provider.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned()})
 			require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
+		})
+
+		// Only the owner can drain what it buffers, so a node answering in its
+		// place must refuse rather than snapshot a checkpoint the owner has not
+		// flushed. The owner's own snapshot then succeeds.
+		t.Run("refused on the queue subject while another node holds the volume", func(t *testing.T) {
+			if !capabilities.OwnerRouting || !capabilities.Exclusion.SingleWriter() {
+				t.Skip("no owner routing behind cluster exclusion, so no node answers in place of an owner")
+			}
+			if cfg.QueueOnOtherNode == nil {
+				t.Skip("no queue-only client on another node configured")
+			}
+			provider := newProvider(t)
+			queue := newTrackingProvider(t, cfg.QueueOnOtherNode(t))
+			ctx := context.Background()
+			volumeID := cfg.id("vol-snap-held")
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
+			require.NoError(t, err)
+
+			for _, version := range contractVersions {
+				snapshotID := cfg.id(fmt.Sprintf("snap-held-queue-v%d", version))
+				_, err = queue.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.Versioned{SchemaVersion: version}, SnapshotID: snapshotID, VolumeID: volumeID})
+				require.Error(t, err, "v%d: a node not holding the volume must not snapshot it", version)
+				if capabilities.SnapshotEnumeration {
+					assert.NotContains(t, drainSnapshotIDs(t, provider, 0), snapshotID)
+				}
+			}
+
+			snap, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-held-owner"), VolumeID: volumeID})
+			require.NoError(t, err, "the holder answers for its own volume")
+			assert.Equal(t, ebsprovider.SnapshotStateCompleted, snap.State)
 		})
 	})
 

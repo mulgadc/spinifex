@@ -307,6 +307,13 @@ func DrainVolumeSocket(dataDir, volumeID string) error {
 	return nil
 }
 
+// DrainsThroughSocket reports whether cfg's EBS provider buffers writes behind
+// a snapshot.sock drain. A write-through provider has nothing to flush, and
+// lacking the socket is how it looks, not a failed drain.
+func DrainsThroughSocket(cfg *config.Config) bool {
+	return cfg.EBS.ResolvedProvider() == config.EBSProviderViperblockd
+}
+
 // drainVolume flushes the volume's in-flight writes to S3 before the snapshot
 // reads the live checkpoint from there.
 func (s *SnapshotServiceImpl) drainVolume(ctx context.Context, volumeID string, fallbackState, fallbackInstance string, accountID string) error {
@@ -328,6 +335,11 @@ func DrainVolume(ctx context.Context, cfg *config.Config, store objectstore.Obje
 	// A metadata-only snapshot never reads the live checkpoint, so there is
 	// nothing for a drain to make current.
 	if cfg == nil || cfg.Predastore.Host == "" {
+		return nil
+	}
+	if !DrainsThroughSocket(cfg) {
+		slog.InfoContext(ctx, "DrainVolume: provider writes through, nothing to drain",
+			"volumeId", volumeID, "provider", cfg.EBS.ResolvedProvider())
 		return nil
 	}
 

@@ -13,6 +13,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
@@ -462,6 +463,22 @@ func TestDrainVolume_HostNodeWithoutSocketFails(t *testing.T) {
 		testAccountID, drainCommandFor(t, instanceID, volumeID))
 
 	assert.Equal(t, awserrors.ErrorServerInternal, replyErrCode(t, resp.Data))
+}
+
+// A write-through provider never serves snapshot.sock, so a running instance
+// on it has nothing buffered: the drain acks rather than failing its snapshot.
+func TestDrainVolume_WriteThroughProviderAcksWithoutSocket(t *testing.T) {
+	const instanceID, volumeID = "i-drain-qnbd", "vol-drain-qnbd"
+	daemon := drainTestDaemon(t, instanceID)
+	daemon.config.EBS.Provider = config.EBSProviderQEMUNBD
+
+	resp := requestHandler(t, daemon.natsConn, "ec2.cmd."+instanceID, daemon.handleEC2Events,
+		testAccountID, drainCommandFor(t, instanceID, volumeID))
+
+	var ack ec2v1.DrainVolumeResponse
+	require.NoError(t, json.Unmarshal(resp.Data, &ack))
+	assert.Equal(t, volumeID, ack.VolumeID)
+	assert.Equal(t, ec2v1.DrainVolumeStatusDrained, ack.Status)
 }
 
 // A plugin that refuses the drain (ERR rather than OK) is a failure, not an ack.

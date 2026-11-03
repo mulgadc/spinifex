@@ -1141,13 +1141,9 @@ func handleCreateSnapshot(ctx context.Context, cfg *Config, nc *nats.Conn, msg *
 		},
 	})
 
-	// The caller is responsible for draining the volume (flushing guest
-	// writes to the live checkpoint) before requesting a snapshot; that
-	// coordination goes through the guest over ec2.cmd.<instanceID> and
-	// stays a control-plane concern this provider boundary does not reach.
-	// WithoutCancel keeps the trace context while dropping the deadline: the
-	// work has to outlive the request it was accepted by, and it still has to
-	// be attributable to it.
+	// The drain runs in the background with the snapshot, so a flush that
+	// grows with the dirty set never holds this request. WithoutCancel keeps
+	// the trace context while dropping the deadline the work must outlive.
 	go completeCreateSnapshot(context.WithoutCancel(ctx), cfg, nc, req, operationID, completionSubject)
 }
 
@@ -1188,7 +1184,7 @@ func snapshotErrorCode(err error) ebsprovider.ErrorCode {
 		return ebsprovider.ErrorCodeNotFound
 	case errors.Is(err, errSnapshotExistsElsewhere):
 		return ebsprovider.ErrorCodeAlreadyExists
-	case errors.Is(err, errVolumeLeaseHeld), errors.Is(err, errNoVolumeLeaseStore):
+	case errors.Is(err, errVolumeLeaseHeld), errors.Is(err, errNoVolumeLeaseStore), errors.Is(err, errExportSettling):
 		// Exclusive access could not be established. The holder gives the
 		// volume up on detach, so this is worth repeating rather than the
 		// permanent failure an internal error reads as.
@@ -1216,18 +1212,19 @@ func checkSnapshotIDFree(vb *viperblock.VB, volumeID, snapshotID string) error {
 }
 
 // snapshotVolumeEngine creates snapshotID off volumeID's live checkpoint,
-// preferring an already-mounted VB over opening a second engine on the same
-// volume. Draining the volume so the checkpoint is current is the caller's
-// responsibility (see handleCreateSnapshot).
-//
-// The unmounted branch opens through openVolumeVB, so it holds the volume's
-// cluster-wide lease for as long as the engine is open: a snapshot taken
-// beside a live writer on another node is two engines on one volume.
+// preferring an already-mounted VB, drained first so the checkpoint is
+// current, over opening a second engine on the same volume.
 func snapshotVolumeEngine(ctx context.Context, cfg *Config, volumeID, snapshotID string) (*ebsprovider.Snapshot, error) {
 	if mv, ok := findMountedVolume(cfg, volumeID); ok && mv.VB != nil {
+		if err := drainMountedExport(cfg.BaseDir, volumeID); err != nil {
+			return nil, err
+		}
 		return createSnapshotWithVB(mv.VB, volumeID, snapshotID)
 	}
 
+	// openVolumeVB holds the cluster-wide lease while the engine is open, so a
+	// node without the drain socket is refused while another node holds the
+	// volume, rather than reading a checkpoint that node has not flushed.
 	vb, lease, err := openVolumeVB(ctx, cfg, volumeID)
 	if err != nil {
 		return nil, err

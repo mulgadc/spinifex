@@ -282,6 +282,19 @@ func TestDrainVolume_MetadataOnlySkipsDrain(t *testing.T) {
 	require.NoError(t, svc.drainVolume(context.Background(), "vol-meta-only", "", "", testAccountID))
 }
 
+// A write-through provider has no snapshot.sock anywhere, so an attached
+// volume on it must not be routed to a host whose drain can only fail.
+func TestDrainVolume_WriteThroughProviderSkipsDrain(t *testing.T) {
+	svc, store, nc := setupDrainService(t)
+	svc.config.EBS.Provider = config.EBSProviderQEMUNBD
+	seedVolumeAttachment(t, store, "vol-qnbd", "in-use", drainInstanceID)
+	got := drainResponder(t, nc, drainInstanceID,
+		[]byte(`{"Code":"`+awserrors.ErrorServerInternal+`","Message":"drain failed"}`))
+
+	require.NoError(t, svc.drainVolume(context.Background(), "vol-qnbd", "", "", testAccountID))
+	assert.Empty(t, got, "no drain may be issued for a provider that buffers nothing")
+}
+
 // putProviderVolume seeds both the control-plane document CreateSnapshot's
 // provider branch reads for attachment state, and the provider's own record,
 // mirroring what CreateVolume's provider branch leaves behind.
@@ -341,4 +354,22 @@ func TestCreateSnapshot_Provider_UndrainableAttachedVolumeFails(t *testing.T) {
 	out, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, out.Snapshots, "a failed drain must not leave a snapshot behind")
+}
+
+// On a write-through provider an attached volume snapshots without a drain,
+// even when its host would fail one, because the provider has nothing to flush.
+func TestCreateSnapshot_Provider_WriteThroughSnapshotsAttachedVolume(t *testing.T) {
+	svc, _, nc := setupDrainService(t)
+	svc.config.EBS.Provider = config.EBSProviderQEMUNBD
+	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{})
+	svc.SetEBSProvider(provider)
+	putProviderVolume(t, svc, provider, "vol-qnbd-attached", "in-use", drainInstanceID)
+	got := drainResponder(t, nc, drainInstanceID,
+		[]byte(`{"Code":"`+awserrors.ErrorServerInternal+`","Message":"no drain socket"}`))
+
+	snap, err := svc.CreateSnapshot(context.Background(),
+		&ec2.CreateSnapshotInput{VolumeId: aws.String("vol-qnbd-attached")}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "vol-qnbd-attached", aws.StringValue(snap.VolumeId))
+	assert.Empty(t, got, "no drain may be issued for a provider that buffers nothing")
 }

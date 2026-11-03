@@ -169,6 +169,13 @@ func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command e
 		return outcomeSuccess
 	}
 
+	if !ec2snapshot.DrainsThroughSocket(d.config) {
+		slog.InfoContext(ctx, "DrainVolume: provider writes through, nothing to drain",
+			"volumeId", volumeID, "instanceId", command.ID, "provider", d.config.EBS.ResolvedProvider())
+		respondWithJSON(d.node, msg, ec2v1.DrainVolumeResponse{VolumeID: volumeID, Status: ec2v1.DrainVolumeStatusDrained})
+		return outcomeSuccess
+	}
+
 	slog.InfoContext(ctx, "Draining volume before snapshot", "volumeId", volumeID, "instanceId", command.ID)
 
 	// A missing or unresponsive socket under a running instance means the writes

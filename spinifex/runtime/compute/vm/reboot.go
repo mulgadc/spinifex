@@ -52,7 +52,7 @@ const (
 // startRelaunchedQEMU starts the replacement process. A var so tests can stand
 // in for QEMU.
 var startRelaunchedQEMU = func(m *Manager, instance *VM) error {
-	return m.startQEMU(instance, true)
+	return m.startQEMU(instance)
 }
 
 // errRelaunchFailed marks a reboot that ended the old QEMU and could not start

@@ -176,7 +176,7 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 	}
 
 	_, qemuSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.start_qemu")
-	qemuErr := m.startQEMU(instance, false)
+	qemuErr := m.startQEMU(instance)
 	endSpanWithError(qemuSpan, qemuErr)
 	if qemuErr != nil {
 		slog.ErrorContext(ctx, "Failed to launch instance", "err", qemuErr)
@@ -282,9 +282,9 @@ func qemuStderrLevel(line string) slog.Level {
 }
 
 // startQEMU launches the QEMU process for instance and waits for startup to
-// confirm. appendConsole keeps the console log of the process it replaces, so a
-// reboot does not erase what the guest printed before it.
-func (m *Manager) startQEMU(instance *VM, appendConsole bool) error {
+// confirm. The console log is opened in append mode, so a replacement process
+// keeps what the guest printed before it.
+func (m *Manager) startQEMU(instance *VM) error {
 	pidFile, err := hostprocess.GeneratePidFile(instance.ID)
 	if err != nil {
 		slog.Error("Failed to generate PID file", "err", err)
@@ -504,7 +504,6 @@ func (m *Manager) startQEMU(instance *VM, appendConsole bool) error {
 		}
 		launchCfg = &composed
 	}
-	launchCfg.ConsoleLogAppend = appendConsole
 
 	// An NBD export is waited on until it accepts connections; a block export
 	// is local to the host and only has to exist. An invalid request has no

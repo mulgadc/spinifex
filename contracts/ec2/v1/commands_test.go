@@ -16,7 +16,6 @@ func TestEC2InstanceCommandJSONContract(t *testing.T) {
 			StartInstance:               true,
 			AttachVolume:                true,
 			DetachVolume:                true,
-			DrainVolume:                 true,
 			RebootInstance:              true,
 			AttachENI:                   true,
 			DetachENI:                   true,
@@ -28,7 +27,6 @@ func TestEC2InstanceCommandJSONContract(t *testing.T) {
 		},
 		AttachVolumeData:          &AttachVolumeData{VolumeID: "vol-1", Device: "/dev/sdf"},
 		DetachVolumeData:          &DetachVolumeData{VolumeID: "vol-2", Device: "/dev/sdg", Force: true},
-		DrainVolumeData:           &DrainVolumeData{VolumeID: "vol-3"},
 		AttachENIData:             &AttachENIData{NetworkInterfaceID: "eni-1", DeviceIndex: 2},
 		DetachENIData:             &DetachENIData{AttachmentID: "eni-attach-1", Force: true},
 		IamProfileAssociationData: &IamProfileAssociationData{InstanceProfileArn: "arn:aws:iam::123456789012:instance-profile/example"},
@@ -47,7 +45,6 @@ func TestEC2InstanceCommandJSONContract(t *testing.T) {
 			"start_instance": true,
 			"attach_volume": true,
 			"detach_volume": true,
-			"drain_volume": true,
 			"reboot_instance": true,
 			"attach_eni": true,
 			"detach_eni": true,
@@ -59,7 +56,6 @@ func TestEC2InstanceCommandJSONContract(t *testing.T) {
 		},
 		"attach_volume_data": {"volume_id": "vol-1", "device": "/dev/sdf"},
 		"detach_volume_data": {"volume_id": "vol-2", "device": "/dev/sdg", "force": true},
-		"drain_volume_data": {"volume_id": "vol-3"},
 		"attach_eni_data": {"network_interface_id": "eni-1", "device_index": 2},
 		"detach_eni_data": {"attachment_id": "eni-attach-1", "force": true},
 		"iam_profile_association_data": {"instance_profile_arn": "arn:aws:iam::123456789012:instance-profile/example"},
@@ -67,16 +63,6 @@ func TestEC2InstanceCommandJSONContract(t *testing.T) {
 		"instance_tags_data": {"tags": {"Name": "example"}, "tag_keys": ["old"]},
 		"instance_monitoring_data": {"enabled": true}
 	}`, string(data))
-}
-
-func TestDrainVolumeResponseJSONContract(t *testing.T) {
-	data, err := json.Marshal(DrainVolumeResponse{
-		VolumeID: "vol-1",
-		Status:   DrainVolumeStatusDrained,
-	})
-	require.NoError(t, err)
-	require.JSONEq(t, `{"volume_id":"vol-1","status":"drained"}`, string(data))
-	require.Equal(t, "not-running", DrainVolumeStatusNotRunning)
 }
 
 func TestInstanceCommandSubjects(t *testing.T) {

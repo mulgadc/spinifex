@@ -414,6 +414,30 @@ func TestCreateSnapshot_Argv(t *testing.T) {
 	assert.Equal(t, []string{"info", "--output=json", "--force-share", snapPath}, calls[1].args)
 }
 
+// A published volume is refused before qemu-img runs, and an unpublished one
+// snapshots again from its file.
+func TestCreateSnapshot_PublishedVolumeIsRefused(t *testing.T) {
+	p, fr := newTestProvider(t)
+	ctx := context.Background()
+	volPath := p.volumePath("vol-snap-pub")
+	require.NoError(t, os.WriteFile(volPath, nil, 0o640))
+	_, err := p.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: versioned(), VolumeID: "vol-snap-pub", NodeID: "node-1"})
+	require.NoError(t, err)
+	published := len(fr.callsSnapshot())
+
+	_, err = p.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: versioned(), SnapshotID: "snap-pub", VolumeID: "vol-snap-pub"})
+	require.ErrorIs(t, err, ebsprovider.ErrVolumeInUse)
+	assert.Len(t, fr.callsSnapshot(), published, "a refused snapshot must not run qemu-img")
+	_, statErr := os.Stat(p.snapshotPath("snap-pub"))
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+
+	_, err = p.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{Versioned: versioned(), VolumeID: "vol-snap-pub", NodeID: "node-1"})
+	require.NoError(t, err)
+	snap, err := p.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: versioned(), SnapshotID: "snap-pub", VolumeID: "vol-snap-pub"})
+	require.NoError(t, err)
+	assert.Equal(t, "vol-snap-pub", snap.SourceVolumeID)
+}
+
 func TestCreateSnapshot_NotFoundSourceVolume(t *testing.T) {
 	p, _ := newTestProvider(t)
 	_, err := p.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{Versioned: versioned(), SnapshotID: "snap-orphan", VolumeID: "vol-never-existed"})

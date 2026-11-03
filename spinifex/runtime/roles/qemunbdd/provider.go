@@ -533,6 +533,11 @@ func (p *Provider) CreateSnapshot(ctx context.Context, req ebsprovider.CreateSna
 		return nil, fmt.Errorf("%w: volume %s", ebsprovider.ErrNotFound, req.VolumeID)
 	}
 
+	// qemu-nbd holds a published volume's file locked and keeps writing it, so
+	// no copy of it is point-in-time. The volume must be unpublished first.
+	if pub, ok := p.published[req.VolumeID]; ok && !pub.dead() {
+		return nil, fmt.Errorf("%w: volume %s is published, so it cannot be snapshotted until it is unpublished", ebsprovider.ErrVolumeInUse, req.VolumeID)
+	}
 	if _, err := p.run.Run(ctx, "qemu-img", "convert", "-O", "qcow2", volPath, snapPath); err != nil {
 		return nil, fmt.Errorf("create snapshot %s: %w", req.SnapshotID, err)
 	}

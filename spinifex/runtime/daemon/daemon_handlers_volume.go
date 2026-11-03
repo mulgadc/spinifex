@@ -11,7 +11,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
-	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
@@ -136,50 +135,6 @@ func (d *Daemon) handleDetachVolume(ctx context.Context, msg *nats.Msg, command 
 	}
 
 	d.respondWithVolumeAttachment(msg, command.DetachVolumeData.VolumeID, command.ID, deviceName, "detaching")
-	return outcomeSuccess
-}
-
-// handleDrainVolume flushes the volume's in-flight writes to S3 by dialing the
-// drain socket the local NBD plugin serves. ec2.CreateSnapshot is answered by
-// any node in the cluster, but only the node hosting the instance subscribes
-// ec2.cmd.{instanceID}, so routing the drain here lands it where the writes are.
-//
-// Runs on its own goroutine (see handleEC2Events) so a long flush cannot hold
-// the instance's command subscription.
-func (d *Daemon) handleDrainVolume(ctx context.Context, msg *nats.Msg, command ec2v1.EC2InstanceCommand, instance *vm.VM) string {
-	ctx, span := startOpSpan(ctx, "ec2.DrainVolume", command.ID)
-	var err error
-	defer func() { endOpSpan(span, err) }()
-
-	if command.DrainVolumeData == nil || command.DrainVolumeData.VolumeID == "" {
-		slog.ErrorContext(ctx, "DrainVolume: missing drain volume data", "instanceId", command.ID)
-		return respondErrorOutcome(d.node, msg, awserrors.ErrorInvalidParameterValue)
-	}
-
-	volumeID := command.DrainVolumeData.VolumeID
-
-	// Only stable post-teardown states prove the volume was sealed. Transitional
-	// states still have a live or shutting-down writer, so they must drain or
-	// fail rather than acknowledge an older checkpoint as current.
-	status := d.vmMgr.Status(instance)
-	if status == vm.StateStopped || status == vm.StateTerminated {
-		slog.InfoContext(ctx, "DrainVolume: instance teardown is complete, nothing to drain",
-			"volumeId", volumeID, "instanceId", command.ID, "status", status)
-		respondWithJSON(d.node, msg, ec2v1.DrainVolumeResponse{VolumeID: volumeID, Status: ec2v1.DrainVolumeStatusNotRunning})
-		return outcomeSuccess
-	}
-
-	slog.InfoContext(ctx, "Draining volume before snapshot", "volumeId", volumeID, "instanceId", command.ID)
-
-	// A missing or unresponsive socket under a running instance means the writes
-	// cannot be made current, so the caller must fail its snapshot rather than
-	// read a stale checkpoint.
-	if err = ec2snapshot.DrainVolumeSocket(d.config.DataDir, volumeID); err != nil {
-		slog.ErrorContext(ctx, "DrainVolume: drain failed", "volumeId", volumeID, "instanceId", command.ID, "err", err)
-		return respondErrorOutcome(d.node, msg, awserrors.ErrorServerInternal)
-	}
-
-	respondWithJSON(d.node, msg, ec2v1.DrainVolumeResponse{VolumeID: volumeID, Status: ec2v1.DrainVolumeStatusDrained})
 	return outcomeSuccess
 }
 

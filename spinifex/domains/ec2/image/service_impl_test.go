@@ -2551,56 +2551,19 @@ func TestResetImageAttribute_MissingParameters(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
 
-func TestSnapshotRunningVolume_VolumeConfigMissing(t *testing.T) {
+func TestSnapshotVolume_VolumeConfigMissing(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := &ImageServiceImpl{
 		config:     &config.Config{},
 		store:      store,
 		bucketName: testBucket,
 	}
-	err := svc.snapshotRunningVolume("vol-missing", "snap-r1", testAccountID)
+	err := svc.snapshotVolume("vol-missing", "snap-s1", testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
 
-func TestSnapshotRunningVolume_BackendInitFails(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-	}))
-	defer srv.Close()
-
-	store := objectstore.NewMemoryObjectStore()
-	svc := &ImageServiceImpl{
-		config: &config.Config{
-			Predastore: config.PredastoreConfig{
-				Host:   srv.URL,
-				Region: "us-east-1",
-				Bucket: testBucket,
-			},
-		},
-		store:      store,
-		bucketName: testBucket,
-	}
-	createTestVolumeConfig(t, store, "vol-running1", 10)
-
-	err := svc.snapshotRunningVolume("vol-running1", "snap-r2", testAccountID)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
-}
-
-func TestSnapshotStoppedVolume_VolumeConfigMissing(t *testing.T) {
-	store := objectstore.NewMemoryObjectStore()
-	svc := &ImageServiceImpl{
-		config:     &config.Config{},
-		store:      store,
-		bucketName: testBucket,
-	}
-	err := svc.snapshotStoppedVolume("vol-missing", "snap-s1", testAccountID)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
-}
-
-func TestSnapshotStoppedVolume_BackendInitFails(t *testing.T) {
+func TestSnapshotVolume_BackendInitFails(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
@@ -2620,7 +2583,7 @@ func TestSnapshotStoppedVolume_BackendInitFails(t *testing.T) {
 	}
 	createTestVolumeConfig(t, store, "vol-stopped1", 10)
 
-	err := svc.snapshotStoppedVolume("vol-stopped1", "snap-s2", testAccountID)
+	err := svc.snapshotVolume("vol-stopped1", "snap-s2", testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
@@ -2646,60 +2609,7 @@ func imageS3MockServer(t *testing.T) *httptest.Server {
 	}))
 }
 
-func TestSnapshotRunningVolume_EncryptionKeyLoadError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	store := objectstore.NewMemoryObjectStore()
-	svc := &ImageServiceImpl{
-		config: &config.Config{
-			Predastore: config.PredastoreConfig{
-				Host:   srv.URL,
-				Region: "us-east-1",
-				Bucket: testBucket,
-			},
-			Viperblock: config.ViperblockConfig{
-				EncryptionKeyFile: "/nonexistent-image-run-key.bin",
-			},
-		},
-		store:      store,
-		bucketName: testBucket,
-	}
-	createTestVolumeConfig(t, store, "vol-running-enckey", 10)
-
-	err := svc.snapshotRunningVolume("vol-running-enckey", "snap-run-enckey", testAccountID)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
-}
-
-func TestSnapshotRunningVolume_LoadStateFails(t *testing.T) {
-	srv := imageS3MockServer(t)
-	defer srv.Close()
-
-	store := objectstore.NewMemoryObjectStore()
-	svc := &ImageServiceImpl{
-		config: &config.Config{
-			Predastore: config.PredastoreConfig{
-				Host:      srv.URL,
-				Region:    "us-east-1",
-				Bucket:    testBucket,
-				AccessKey: "test-key",
-				SecretKey: "test-secret",
-			},
-		},
-		store:      store,
-		bucketName: testBucket,
-	}
-	createTestVolumeConfig(t, store, "vol-running-lsf", 10)
-
-	err := svc.snapshotRunningVolume("vol-running-lsf", "snap-run-lsf", testAccountID)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
-}
-
-func TestSnapshotStoppedVolume_EncryptionKeyLoadError(t *testing.T) {
+func TestSnapshotVolume_EncryptionKeyLoadError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -2722,12 +2632,12 @@ func TestSnapshotStoppedVolume_EncryptionKeyLoadError(t *testing.T) {
 	}
 	createTestVolumeConfig(t, store, "vol-stopped-enckey", 10)
 
-	err := svc.snapshotStoppedVolume("vol-stopped-enckey", "snap-stop-enckey", testAccountID)
+	err := svc.snapshotVolume("vol-stopped-enckey", "snap-stop-enckey", testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
 
-func TestSnapshotStoppedVolume_LoadStateFails(t *testing.T) {
+func TestSnapshotVolume_LoadStateFails(t *testing.T) {
 	srv := imageS3MockServer(t)
 	defer srv.Close()
 
@@ -2747,7 +2657,7 @@ func TestSnapshotStoppedVolume_LoadStateFails(t *testing.T) {
 	}
 	createTestVolumeConfig(t, store, "vol-stopped-lsf", 10)
 
-	err := svc.snapshotStoppedVolume("vol-stopped-lsf", "snap-stop-lsf", testAccountID)
+	err := svc.snapshotVolume("vol-stopped-lsf", "snap-stop-lsf", testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }

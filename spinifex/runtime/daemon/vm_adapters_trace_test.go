@@ -95,7 +95,14 @@ func TestEbsRequestWithTrace_ProducerConsumerLinked(t *testing.T) {
 	// span may not be recorded yet when UnmountOne returns.
 	<-consumerEnded
 
-	spans := sr.Ended()
+	// The mount-route capabilities read records its own span; only the
+	// unmount hop is under test.
+	var spans []sdktrace.ReadOnlySpan
+	for _, s := range sr.Ended() {
+		if s.Name() == "NATS ebs.node-1.unmount" {
+			spans = append(spans, s)
+		}
+	}
 	require.Len(t, spans, 2, "expected one producer span and one consumer span")
 
 	// Both spans share the "NATS ebs.node-1.unmount" name; distinguish by kind

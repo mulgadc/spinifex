@@ -23,8 +23,8 @@ import (
 var lambdaHardKillSHA256 string
 
 // startLambdaTestLink serves controlled-test Lambda invocations for this node.
-// Attempts whose VM stop is unproven keep their tap, address, files and grant,
-// and nothing finds them again after a restart.
+// Attempts whose VM stop is unproven keep their tap, address, files and grant;
+// after a restart on the same boot, RecoverLoop tries to prove and release them.
 func (d *Daemon) startLambdaTestLink() {
 	if lambdaHardKillSHA256 == "" {
 		slog.Error("Lambda test link: hard-kill initializer digest not pinned; not serving")

@@ -346,3 +346,31 @@ func TestReleasedHoldsTheNodeUntilStopped(t *testing.T) {
 	_, err = s.Issue(ctx, attempt(c, "a2"))
 	require.NoError(t, err)
 }
+
+// The launch identity is recorded once, complete, and only while running, so
+// recovery never acts on a partial or replaced identity.
+func TestGrant_LaunchedRecordsACompleteIdentityOnce(t *testing.T) {
+	s, c := newStore(t)
+	ctx := context.Background()
+	l := Launch{MachineID: "m", BootID: "b", PIDNamespace: 4026531836, LauncherPID: 10,
+		LauncherInode: 11, PID: 20, Inode: 21}
+
+	granted, err := s.Issue(ctx, attempt(c, "a0"))
+	require.NoError(t, err)
+	require.ErrorIs(t, s.Launched(ctx, granted.Grant, l), ErrWrongState, "not yet running")
+	require.NoError(t, s.Withdraw(ctx, granted.Grant))
+
+	a := started(t, s, c, "a1")
+	partial := l
+	partial.Inode = 0
+	require.Error(t, s.Launched(ctx, a.Grant, partial))
+	require.NoError(t, s.Launched(ctx, a.Grant, l))
+	other := l
+	other.PID = 99
+	require.ErrorIs(t, s.Launched(ctx, a.Grant, other), ErrWrongState, "recorded once")
+
+	rec, err := s.Current(ctx, "node1")
+	require.NoError(t, err)
+	require.NotNil(t, rec.Launch)
+	require.Equal(t, l, *rec.Launch)
+}

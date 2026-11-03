@@ -51,9 +51,21 @@ func (g *recoverGrants) Stopped(context.Context, execution.Grant) error {
 	return g.stopErr
 }
 
+// requirePidfs skips a real-process case only when this kernel's pidfds are
+// not on pidfs; any other probe failure fails the test.
+func requirePidfs(t *testing.T) {
+	t.Helper()
+	if _, err := selfInode(); errors.Is(err, ErrNoPidfs) {
+		t.Skip("pidfds are not on pidfs on this kernel")
+	} else if err != nil {
+		t.Fatalf("probe pidfs: %v", err)
+	}
+}
+
 // child starts a long sleep and returns it with its pidfs inode.
 func child(t *testing.T) (*exec.Cmd, uint64) {
 	t.Helper()
+	requirePidfs(t)
 	fd := -1
 	cmd := exec.Command("sleep", "300")
 	cmd.SysProcAttr = &syscall.SysProcAttr{PidFD: &fd}
@@ -246,6 +258,7 @@ func TestRecover_PartialProgressIsRetried(t *testing.T) {
 // The launch identity comes from the exact clone-time pidfd, and an exited VM
 // is refused before anything is recorded.
 func TestLaunchIdentity(t *testing.T) {
+	requirePidfs(t)
 	fd := -1
 	cmd := exec.Command("sleep", "300")
 	cmd.SysProcAttr = &syscall.SysProcAttr{PidFD: &fd}
@@ -269,6 +282,16 @@ func TestLaunchIdentity(t *testing.T) {
 	_, err = launchIdentity(fd, cmd.Process.Pid, host.OwnedTap{})
 	assert.ErrorIs(t, err, ErrVMGone)
 	_ = cmd.Wait()
+}
+
+// A descriptor that is not on pidfs has no usable identity, so it is refused
+// rather than compared.
+func TestPidfsInode_RefusesANonPidfsDescriptor(t *testing.T) {
+	f, err := os.Open(os.DevNull)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+	_, err = pidfsInode(int(f.Fd()))
+	assert.ErrorIs(t, err, ErrNoPidfs)
 }
 
 // An invalid descriptor is never read as an exit.

@@ -238,7 +238,7 @@ func nextFreeIP(baseIP net.IP, rangeMin, rangeMax byte, allocated []MgmtIPEntry)
 // returned — callers (LaunchSystemInstance rollback, CleanupMgmtNetwork)
 // cannot act on a Release error, matching the pre-existing signature.
 func (a *MgmtIPAllocator) Release(instanceID string) {
-	ip, foreign, node, err := a.release(instanceID)
+	ip, foreign, node, err := a.release(instanceID, false)
 	if err != nil && !errors.Is(err, errMgmtIPNoKV) {
 		slog.Warn("Failed to release mgmt IP in cluster KV; address remains reserved until reconciled",
 			"instance", instanceID, "err", err)
@@ -249,31 +249,40 @@ func (a *MgmtIPAllocator) Release(instanceID string) {
 	}
 }
 
-// ReleaseChecked frees the instance's address like Release, but returns nil
-// only when the cluster record no longer holds it for this node: removed now,
-// or absent. A KV failure, no KV or another node's entry is an error.
+// ReleaseChecked returns nil only once the cluster record no longer holds the address for
+// this node; any failure, another node's entry or one naming no node leaves both entries
+// in place. Callers must serialize Allocate and ReleaseChecked for the same instance ID.
 func (a *MgmtIPAllocator) ReleaseChecked(instanceID string) error {
-	_, foreign, _, err := a.release(instanceID)
+	ip, foreign, _, err := a.release(instanceID, true)
 	if err != nil {
 		return err
 	}
 	if foreign != "" {
 		return fmt.Errorf("mgmt IP for %s is held by node %s", instanceID, foreign)
 	}
+	a.mu.Lock()
+	if cur, ok := a.allocated[instanceID]; ok && cur == ip {
+		delete(a.allocated, instanceID)
+	}
+	a.mu.Unlock()
 	return nil
 }
 
 var errMgmtIPNoKV = errors.New("mgmt IP release unconfirmed: no cluster KV bound")
 
-func (a *MgmtIPAllocator) release(instanceID string) (ip, foreign, node string, err error) {
+var errMgmtIPOwnerless = errors.New("mgmt IP entry names no node")
+
+func (a *MgmtIPAllocator) release(instanceID string, requireOwner bool) (ip, foreign, node string, err error) {
 	a.mu.Lock()
 	ip, hadLocal := a.allocated[instanceID]
-	delete(a.allocated, instanceID)
+	if !requireOwner {
+		delete(a.allocated, instanceID)
+	}
 	jsManager, subnet := a.jsManager, a.subnet
 	node = a.node
 	a.mu.Unlock()
 
-	if hadLocal {
+	if hadLocal && !requireOwner {
 		slog.Debug("Management IP released locally", "instance", instanceID, "ip", ip)
 	}
 
@@ -291,11 +300,16 @@ func (a *MgmtIPAllocator) release(instanceID string) (ip, foreign, node string, 
 	// it up for the next instance anywhere — and this path runs on exactly the
 	// node that should not: the one dropping a guest another node now runs,
 	// whether it was fenced or found superseded on its return.
+	ownerless := false
 	_, err = updateMgmtIPAMWithRetry(jsManager, subnet, func(r *MgmtIPRecord) {
-		foreign = ""
+		foreign, ownerless = "", false
 		for i, e := range r.Allocated {
 			if e.InstanceID != instanceID {
 				continue
+			}
+			if requireOwner && (e.Node == "" || node == "") {
+				ownerless = true
+				return
 			}
 			// An entry written before the node field existed names nobody, and
 			// refusing those would leak every pre-upgrade address forever.
@@ -312,6 +326,9 @@ func (a *MgmtIPAllocator) release(instanceID string) (ip, foreign, node string, 
 	}
 	if err != nil {
 		return ip, foreign, node, fmt.Errorf("release mgmt IP for %s: %w", instanceID, err)
+	}
+	if ownerless {
+		return ip, "", node, fmt.Errorf("release mgmt IP for %s: %w", instanceID, errMgmtIPOwnerless)
 	}
 	return ip, foreign, node, nil
 }

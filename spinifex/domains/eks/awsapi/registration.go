@@ -3,11 +3,9 @@ package awsapi
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 
-	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/passrole"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
@@ -62,17 +60,6 @@ func CallerFromActor(actor dispatch.Actor) Caller {
 		SessionName:   name,
 		RoleName:      actor.RoleName(),
 	}
-}
-
-func readBoundedBody(r *http.Request) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, sigv4.MaxPayloadLen+1))
-	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-	if int64(len(body)) > sigv4.MaxPayloadLen {
-		return nil, errors.New(awserrors.ErrorRequestEntityTooLarge)
-	}
-	return body, nil
 }
 
 // dispatch runs the action and renames the generic parameter error to the code
@@ -139,7 +126,7 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	body, err := readBoundedBody(r)
+	body, err := dispatch.ReadBoundedBody(r)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "EKS dispatch: failed to read body", "err", err)
 		return err

@@ -3,10 +3,6 @@ package awsapi
 import (
 	"context"
 	"encoding/xml"
-	"io"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -29,22 +25,6 @@ func TestNewRegistration_RegistersUnderCredentialScopeAndInventoryName(t *testin
 	assert.Equal(t, ActionNames(), inv.Registered)
 	assert.Empty(t, inv.Stubbed)
 	assert.Empty(t, inv.Unsupported)
-}
-
-func TestResolveAction_ReadsActionAndRewindsBody(t *testing.T) {
-	body := "Action=DescribeLoadBalancers&Version=2015-12-01"
-	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
-
-	assert.Equal(t, "DescribeLoadBalancers", resolveAction(r))
-
-	again, err := io.ReadAll(r.Body)
-	require.NoError(t, err)
-	assert.Equal(t, body, string(again), "the dispatcher must still see the whole body")
-}
-
-func TestResolveAction_UnparseableBodyIsEmpty(t *testing.T) {
-	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=%zz"))
-	assert.Empty(t, resolveAction(r))
 }
 
 // A registration with no quota reports the AWS default cap and enforces none.

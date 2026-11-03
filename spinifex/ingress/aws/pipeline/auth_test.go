@@ -17,6 +17,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	authlimit "github.com/mulgadc/spinifex/spinifex/ingress/aws/ratelimit"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/reqctx"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
@@ -212,7 +213,7 @@ func TestSigV4Auth_NilIAMService(t *testing.T) {
 	}
 }
 
-func TestParseAWSQueryArgs_URLDecoding(t *testing.T) {
+func TestQueryParseArgs_URLDecoding(t *testing.T) {
 	testCases := []struct {
 		name     string
 		input    string
@@ -233,7 +234,7 @@ func TestParseAWSQueryArgs_URLDecoding(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			result, err := ParseAWSQueryArgs(tc.input)
+			result, err := query.ParseArgs(tc.input)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}

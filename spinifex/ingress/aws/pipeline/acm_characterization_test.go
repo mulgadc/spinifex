@@ -16,9 +16,8 @@ import (
 	"testing"
 )
 
-// TestACMActionFromTarget_FormsAndTelemetryAgree pins how acmActionFromTarget
-// and the legacy resolveNonQueryAction each resolve the X-Amz-Target header
-// today. A refactor that lets them diverge breaks this.
+// TestACMActionFromTarget_FormsAndTelemetryAgree pins how the ACM registration
+// resolves the X-Amz-Target header for dispatch and telemetry.
 func TestACMActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -37,9 +36,6 @@ func TestACMActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/", nil)
 			req.Header.Set("X-Amz-Target", tc.target)
 			assert.Equal(t, tc.wantAction, acmEntry.ResolveAction(req))
-
-			assert.Equal(t, tc.wantAction, resolveNonQueryAction(req),
-				"dispatch and telemetry parsers must agree on %q", tc.target)
 		})
 	}
 }

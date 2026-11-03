@@ -111,7 +111,7 @@ func (d Deps) bedrockRuntime(w http.ResponseWriter, inv dispatch.Invocation) err
 		return err
 	}
 
-	body, err := readBoundedBody(r)
+	body, err := dispatch.ReadBoundedBody(r)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "BedrockRuntime_Request: failed to read body", "err", err)
 		return err

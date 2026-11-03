@@ -90,29 +90,6 @@ func converseGuardrailTexts(input *bedrockruntime.ConverseInput) []string {
 	return texts
 }
 
-// streamGuardrailTexts is converseGuardrailTexts' sibling for
-// ConverseStreamInput: the two request shapes are field-identical for
-// Messages/System, only the generated Go type name differs.
-func streamGuardrailTexts(input *bedrockruntime.ConverseStreamInput) []string {
-	var texts []string
-	for _, s := range input.System {
-		if s != nil && s.Text != nil {
-			texts = append(texts, aws.StringValue(s.Text))
-		}
-	}
-	for _, m := range input.Messages {
-		if m == nil || aws.StringValue(m.Role) != bedrockruntime.ConversationRoleUser {
-			continue
-		}
-		for _, c := range m.Content {
-			if c != nil && c.Text != nil {
-				texts = append(texts, aws.StringValue(c.Text))
-			}
-		}
-	}
-	return texts
-}
-
 // converseOutputTexts collects the OUTPUT-checkable text from a completed
 // ConverseOutput's assistant message.
 func converseOutputTexts(out *bedrockruntime.ConverseOutput) []string {

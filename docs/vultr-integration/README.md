@@ -265,19 +265,13 @@ If this returns a list of available instance types, your installation is working
 
 Spinifex is running, but it holds nothing yet: no machine images, no networks, no instances.
 
-Continue to [Setting Up Your Cluster](/docs/setting-up-your-cluster) to import an AMI, create an SSH key pair, create a VPC with a public subnet, and launch your first instance.
-Run that guide's `aws` commands on your machine, with `AWS_PROFILE=spinifex` set.
-Its `spx` commands run on a node, so pass them to `./deploy-vultr.sh ssh` from the `vultr-spx` directory:
+Log in to node 1, and follow [Setting Up Your Cluster](/docs/setting-up-your-cluster) there to import an AMI, create an SSH key pair, create a VPC with a public subnet, and launch your first instance:
 
 ```bash
-./deploy-vultr.sh ssh 'spx admin images list'
-./deploy-vultr.sh ssh 'spx admin images import --name ubuntu-26.04-x86_64'
+./deploy-vultr.sh ssh
 ```
 
-To import an existing SSH key, use the one from the prerequisites, `fileb://~/.ssh/id_ed25519.pub`.
-
 An instance you launch into a public subnet gets a Vultr reserved IP, which you can see in the Vultr portal under **Network → Reserved IPs**.
-So does an instance launched without `--subnet-id`, because the default VPC's subnets assign public addresses as they do on AWS.
 
 ## 8. Test resiliency
 

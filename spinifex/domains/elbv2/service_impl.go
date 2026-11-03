@@ -3293,66 +3293,12 @@ func (s *ELBv2ServiceImpl) DescribeTags(ctx context.Context, input *elbv2.Descri
 		}
 		arn := *arnPtr
 
-		resourceType, err := elbv2ResourceTypeFromArn(arn)
+		h, notFoundError, found, err := s.resolveTaggable(ctx, arn)
 		if err != nil {
 			return nil, err
 		}
-
-		var (
-			tags          map[string]string
-			ownerAccount  string
-			notFoundError string
-			found         bool
-		)
-		switch resourceType {
-		case resourcearn.ELBv2LoadBalancer:
-			notFoundError = awserrors.ErrorELBv2LoadBalancerNotFound
-			lb, lbErr := s.store.GetLoadBalancerByArn(ctx, arn)
-			if lbErr != nil {
-				slog.ErrorContext(ctx, "DescribeTags: failed to get LB", "arn", arn, "err", lbErr)
-				return nil, errors.New(awserrors.ErrorServerInternal)
-			}
-			if lb != nil {
-				found = true
-				tags = lb.Tags
-				ownerAccount = lb.AccountID
-			}
-		case resourcearn.ELBv2TargetGroup:
-			notFoundError = awserrors.ErrorELBv2TargetGroupNotFound
-			tg, tgErr := s.store.GetTargetGroupByArn(ctx, arn)
-			if tgErr != nil {
-				slog.ErrorContext(ctx, "DescribeTags: failed to get target group", "arn", arn, "err", tgErr)
-				return nil, errors.New(awserrors.ErrorServerInternal)
-			}
-			if tg != nil {
-				found = true
-				tags = tg.Tags
-				ownerAccount = tg.AccountID
-			}
-		case resourcearn.ELBv2Listener:
-			notFoundError = awserrors.ErrorELBv2ListenerNotFound
-			l, lErr := s.store.GetListenerByArn(ctx, arn)
-			if lErr != nil {
-				slog.ErrorContext(ctx, "DescribeTags: failed to get listener", "arn", arn, "err", lErr)
-				return nil, errors.New(awserrors.ErrorServerInternal)
-			}
-			if l != nil {
-				found = true
-				tags = l.Tags
-				ownerAccount = l.AccountID
-			}
-		case resourcearn.ELBv2ListenerRule:
-			notFoundError = awserrors.ErrorELBv2RuleNotFound
-			r, rErr := s.store.GetRuleByArn(ctx, arn)
-			if rErr != nil {
-				slog.ErrorContext(ctx, "DescribeTags: failed to get rule", "arn", arn, "err", rErr)
-				return nil, errors.New(awserrors.ErrorServerInternal)
-			}
-			if r != nil {
-				found = true
-				tags = r.Tags
-				ownerAccount = r.AccountID
-			} else if lArn, isDefault := listenerArnFromDefaultRuleArn(arn); isDefault {
+		if !found {
+			if lArn, isDefault := listenerArnFromDefaultRuleArn(arn); isDefault {
 				// Synthetic default rule: not stored, carries no tags. Resolve via
 				// its parent listener so a controller's post-create rule-tag sync
 				// gets an empty TagDescription instead of an error.
@@ -3363,19 +3309,18 @@ func (s *ELBv2ServiceImpl) DescribeTags(ctx context.Context, input *elbv2.Descri
 				}
 				if l != nil {
 					found = true
-					tags = nil
-					ownerAccount = l.AccountID
+					h = taggable{owner: l.AccountID}
 				}
 			}
 		}
 
-		if !found || ownerAccount != accountID {
+		if !found || h.owner != accountID {
 			return nil, errors.New(notFoundError)
 		}
 
 		descriptions = append(descriptions, &elbv2.TagDescription{
 			ResourceArn: aws.String(arn),
-			Tags:        tagsMapToSDK(tags),
+			Tags:        tagsMapToSDK(h.tags),
 		})
 	}
 

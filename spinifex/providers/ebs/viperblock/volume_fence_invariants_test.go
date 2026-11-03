@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -133,16 +133,16 @@ func TestS4_FenceHolderReadIsBounded(t *testing.T) {
 // fenceResponder answers fence notices as the daemon does and records them.
 type fenceResponder struct {
 	mu     sync.Mutex
-	events []viperblocklegacyv1.VolumeFencedEvent
+	events []ebsprovider.FenceNotice
 }
 
 func (r *fenceResponder) handle(msg *nats.Msg) {
-	var event viperblocklegacyv1.VolumeFencedEvent
-	_ = json.Unmarshal(msg.Data, &event)
+	var notice ebsprovider.FenceNotice
+	_ = json.Unmarshal(msg.Data, &notice)
 	r.mu.Lock()
-	r.events = append(r.events, event)
+	r.events = append(r.events, notice)
 	r.mu.Unlock()
-	payload, _ := json.Marshal(viperblocklegacyv1.VolumeFencedAck{Instance: "i-fenced"})
+	payload, _ := json.Marshal(ebsprovider.FenceNoticeAck{Versioned: ebsprovider.ReplyVersioned(notice.SchemaVersion), InstanceID: "i-fenced"})
 	_ = msg.Respond(payload)
 }
 
@@ -185,7 +185,9 @@ func TestS4_FenceNoticeSurvivesAMissedDelivery(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(daemonConn.Close)
 	responder := &fenceResponder{}
-	_, err = daemonConn.Subscribe(viperblocklegacyv1.VolumeFencedSubject("node-a"), responder.handle)
+	subject, err := ebsprovider.FenceNoticeSubject("node-a")
+	require.NoError(t, err)
+	_, err = daemonConn.Subscribe(subject, responder.handle)
 	require.NoError(t, err)
 	require.NoError(t, daemonConn.Flush())
 
@@ -197,7 +199,10 @@ func TestS4_FenceNoticeSurvivesAMissedDelivery(t *testing.T) {
 	require.GreaterOrEqualf(t, responder.count(), 1,
 		"ADR-0007:S4: a daemon that subscribed after the first notice never heard the fence, so its guest runs on with no disk. "+
 			"Fix: retry publishVolumeFenced (volume_fence.go) until the daemon acknowledges")
-	assert.Equal(t, volumeName, responder.events[0].Volume)
+	first := responder.events[0]
+	assert.Equal(t, volumeName, first.VolumeID)
+	assert.Equal(t, "node-a", first.NodeID)
+	assert.True(t, ebsprovider.SupportsSchemaVersion(first.SchemaVersion), "the daemon refuses a notice in a version it cannot read")
 
 	seen := responder.count()
 	time.Sleep(5 * cfg.fenceNoticeEvery)
@@ -251,4 +256,37 @@ func TestS4_FenceNoticeStopsWithTheConnection(t *testing.T) {
 	case <-time.After(fenceNoticeTimeout + 2*time.Second):
 		t.Fatal("a fence notice kept retrying on a closed connection")
 	}
+}
+
+// TestFenceNotice_RefusedNoticeIsNotRepeated keeps a notice the daemon heard and
+// could not act on from being resent forever: a refusal is an answer.
+func TestFenceNotice_RefusedNoticeIsNotRepeated(t *testing.T) {
+	_, natsURL := setupEmbeddedNATS(t)
+
+	const volumeName = "vol-fencenoticerefused"
+	cfg, nc := noticeConfig(t, natsURL, volumeName)
+
+	subject, err := ebsprovider.FenceNoticeSubject("node-a")
+	require.NoError(t, err)
+	var heard atomic.Int32
+	refusal, err := json.Marshal(ebsprovider.FenceNoticeAck{
+		Versioned: ebsprovider.NewVersioned(),
+		Error:     &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnsupportedVersion, Message: "no"},
+	})
+	require.NoError(t, err)
+	_, err = nc.Subscribe(subject, func(msg *nats.Msg) {
+		heard.Add(1)
+		_ = msg.Respond(refusal)
+	})
+	require.NoError(t, err)
+	require.NoError(t, nc.Flush())
+
+	done := make(chan struct{})
+	go func() { defer close(done); cfg.onVolumeLeaseLost(context.Background(), volumeName, leaseLostStalled) }()
+	select {
+	case <-done:
+	case <-time.After(fenceNoticeTimeout + 2*time.Second):
+		t.Fatal("a fence notice kept retrying after the daemon refused it")
+	}
+	assert.Equal(t, int32(1), heard.Load())
 }

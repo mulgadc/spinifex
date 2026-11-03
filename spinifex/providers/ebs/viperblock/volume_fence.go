@@ -9,8 +9,8 @@ import (
 	"os"
 	"time"
 
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -325,32 +325,32 @@ func (cfg *Config) publishVolumeFenced(ctx context.Context, volumeName, winner s
 	if cfg.nc == nil {
 		return
 	}
-	event := viperblocklegacyv1.VolumeFencedEvent{
-		Volume: volumeName,
-		Node:   cfg.leaseOwner(),
-		Winner: winner,
-		Reason: fmt.Sprintf("volume lease moved to %s while this node had the volume open", winner),
+	notice := ebsprovider.FenceNotice{
+		Versioned: ebsprovider.NewVersioned(),
+		VolumeID:  volumeName,
+		NodeID:    cfg.NodeName,
+		Winner:    winner,
+		Reason:    fmt.Sprintf("volume lease moved to %s while this node had the volume open", winner),
 	}
-	payload, err := json.Marshal(event)
+	subject, err := ebsprovider.FenceNoticeSubject(notice.NodeID)
 	if err != nil {
-		slog.ErrorContext(ctx, "fence: marshal fenced event", "volume", volumeName, "err", err)
+		slog.ErrorContext(ctx, "fence: no fence-notice subject for this node, the guest is left with dead I/O",
+			"volume", volumeName, "node", notice.NodeID, "err", err)
 		return
 	}
-	subject := viperblocklegacyv1.VolumeFencedSubject(cfg.NodeName)
 	began := time.Now()
 
 	for attempt := 1; ; attempt++ {
-		reqCtx, cancel := context.WithTimeout(ctx, fenceNoticeTimeout)
-		reply, err := cfg.nc.RequestWithContext(reqCtx, subject, payload)
-		cancel()
+		instanceID, err := ebsprovider.NotifyFenced(ctx, cfg.nc, notice, fenceNoticeTimeout)
+		if _, refused := errors.AsType[*ebsprovider.ProviderError](err); refused {
+			slog.ErrorContext(ctx, "fence: the daemon could not act on the fenced volume",
+				"volume", volumeName, "subject", subject, "err", err)
+			return
+		}
 		if err == nil {
-			var ack viperblocklegacyv1.VolumeFencedAck
-			if jerr := json.Unmarshal(reply.Data, &ack); jerr == nil && ack.Error != "" {
-				slog.ErrorContext(ctx, "fence: the daemon could not act on the fenced volume",
-					"volume", volumeName, "subject", subject, "err", ack.Error)
-			} else if attempt > 1 {
+			if attempt > 1 {
 				slog.WarnContext(ctx, "fence: the daemon acknowledged the fenced volume after retrying",
-					"volume", volumeName, "instance", ack.Instance, "attempts", attempt,
+					"volume", volumeName, "instance", instanceID, "attempts", attempt,
 					"unacknowledged_ms", otelsetup.Millis(time.Since(began)))
 			}
 			return

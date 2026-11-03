@@ -9,9 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestVolumeAbandonSubject_BothForms pins the abandon route the same way the
-// fenced route is pinned: node-addressed, with an empty-node fallback for a
-// single-node daemon.
+// TestVolumeAbandonSubject_BothForms pins the abandon route: node-addressed,
+// with an empty-node fallback for a single-node daemon.
 func TestVolumeAbandonSubject_BothForms(t *testing.T) {
 	assert.Equal(t, "ebs.node-a.abandon", viperblocklegacyv1.VolumeAbandonSubject("node-a"))
 	assert.Equal(t, "ebs.abandon", viperblocklegacyv1.VolumeAbandonSubject(""))

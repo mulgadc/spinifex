@@ -8,6 +8,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/nats-io/nats.go"
 )
 
 // MemoryProvider is a deterministic, concurrency-safe Provider used by
@@ -19,6 +21,7 @@ type MemoryProvider struct {
 	volumes      map[string]*memoryVolume
 	snapshots    map[string]*Snapshot
 	now          func() time.Time
+	fenceConn    *nats.Conn
 }
 
 type memoryVolume struct {
@@ -411,6 +414,43 @@ func (m *MemoryProvider) UnpublishVolume(_ context.Context, req UnpublishVolumeR
 	volume.volume.State = VolumeStateAvailable
 	result.TornDown = req.SchemaVersion >= NoSealSchemaVersion
 	return result, nil
+}
+
+// NotifyFencesOn sets the connection RevokePublication announces fences on.
+func (m *MemoryProvider) NotifyFencesOn(conn *nats.Conn) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.fenceConn = conn
+}
+
+// RevokePublication tears volumeID's publication down as a provider that lost
+// the volume to winner does, then sends one FenceNotice to the node it was
+// published on. It returns the instance that node's daemon stopped.
+func (m *MemoryProvider) RevokePublication(ctx context.Context, volumeID, winner string) (string, error) {
+	m.mu.Lock()
+	conn := m.fenceConn
+	volume := m.volumes[volumeID]
+	if conn == nil {
+		m.mu.Unlock()
+		return "", fmt.Errorf("%w: no connection to announce the fence on", ErrUnavailable)
+	}
+	if volume == nil || volume.published == nil {
+		m.mu.Unlock()
+		return "", fmt.Errorf("%w: volume %s is not published", ErrNotFound, volumeID)
+	}
+	nodeID := volume.published.NodeID
+	volume.published = nil
+	volume.readOnly = false
+	volume.volume.State = VolumeStateAvailable
+	m.mu.Unlock()
+
+	return NotifyFenced(ctx, conn, FenceNotice{
+		Versioned: NewVersioned(),
+		VolumeID:  volumeID,
+		NodeID:    nodeID,
+		Winner:    winner,
+		Reason:    "volume revoked in favour of " + winner,
+	}, defaultRequestTimeout)
 }
 
 // HoldsUnsealedWrites answers that none are held: every write lands in this

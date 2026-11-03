@@ -150,6 +150,11 @@ type SuiteConfig struct {
 	// a node other than NodeID: what a request meets when the volume's owner
 	// does not answer. Nil skips the cases that need it.
 	QueueOnOtherNode func(t *testing.T) ebsprovider.EBSProvider
+
+	// RevokeExport makes the provider revoke a live export as it does when the
+	// volume is lost to another node, and returns the FenceNotice it sent; see
+	// CaptureFenceNotice. Nil skips the case, for a provider that never revokes.
+	RevokeExport func(t *testing.T, published *ebsprovider.PublishedVolume) ebsprovider.FenceNotice
 }
 
 func (c SuiteConfig) node() string {
@@ -986,6 +991,24 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			second, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
 			require.NoError(t, err, "a dead export must not make its volume unpublishable")
 			nbdInfoRetry(t, dialURI(t, publishedNBDURI(t, second)))
+		})
+
+		t.Run("revoking a live export sends a fence notice to its node", func(t *testing.T) {
+			if cfg.RevokeExport == nil {
+				t.Skip("this provider never revokes a live export")
+			}
+			provider := newProvider(t)
+			ctx := context.Background()
+			volumeID := cfg.id("vol-pub-revoked")
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			published, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
+			require.NoError(t, err)
+
+			notice := cfg.RevokeExport(t, published)
+			assert.Equal(t, volumeID, notice.VolumeID, "the daemon stops the guest on the volume the notice names")
+			assert.Equal(t, published.NodeID, notice.NodeID, "the notice must name the node whose export was revoked")
+			assert.True(t, ebsprovider.SupportsSchemaVersion(notice.SchemaVersion), "a daemon refuses a notice in a version it cannot read")
 		})
 
 		t.Run("not_found on absent volume", func(t *testing.T) {

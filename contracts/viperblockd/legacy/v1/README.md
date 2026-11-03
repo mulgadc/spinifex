@@ -51,19 +51,6 @@ request/reply replies.
 removed its local state and export. These routes and JSON shapes are deployed
 legacy compatibility behaviour, not a generic EBS-provider interface.
 
-## Fence route
-
-`VolumeFencedSubject(node)` is `ebs.<node>.fenced`, or `ebs.fenced` with no
-node for a single-node daemon. The Viperblock adapter publishes
-`VolumeFencedEvent` on it after tearing down an export whose volume lease
-moved to another node; the local daemon subscribes to stop the guest that
-was using it. Node-addressed, like mount and unmount: the guest is local, and
-no other node's daemon has anything to stop.
-
-The event is sent as a request and repeated until the daemon replies with `VolumeFencedAck`, because the fence often runs while the node's NATS server is restarting and a single publish can reach no subscriber.
-The daemon replies only when the event carries a reply subject, so a plain publish is still accepted.
-Repeats are harmless, since fencing a guest that is already fenced changes nothing.
-
 ## Abandon route
 
 `VolumeAbandonSubject(node)` is `ebs.<node>.abandon`. The daemon uses

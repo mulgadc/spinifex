@@ -41,7 +41,6 @@ import (
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/preflight"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
@@ -1353,10 +1352,8 @@ func (d *Daemon) subscribeAll() error {
 		// here, so the reconcile request flows daemon-ward.
 		natsSub{dhcp.TopicLeaseChanged, d.handleDHCPLeaseChanged, "spinifex-workers"},
 		natsSub{dhcp.TopicOwnerCheck, d.handleDHCPOwnerCheck, "spinifex-workers"},
-		// Node-addressed with no queue group: the fenced guest is on this host,
-		// so a worker on another node would find nothing to stop.
-		natsSub{viperblocklegacyv1.VolumeFencedSubject(d.node), d.handleVolumeFenced, ""},
 	)
+	subs = append(subs, d.fenceNoticeSubs()...)
 
 	// Per-node, no queue group: a second daemon claiming this node ID also
 	// answers, so the teardown probe sees a duplicate and refuses to seal. An

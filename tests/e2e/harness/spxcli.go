@@ -38,11 +38,8 @@ func spxChildEnv() []string {
 		"SPINIFEX_CONFIG_PATH":  {},
 		"SPINIFEX_ACCESS_KEY":   {},
 		"SPINIFEX_SECRET_KEY":   {},
-		"SPINIFEX_HOST":         {},
 		"SPINIFEX_BASE_DIR":     {},
 		"SPINIFEX_NATS_HOST":    {},
-		"SPINIFEX_NATS_TOKEN":   {},
-		"SPINIFEX_NATS_SUBJECT": {},
 	}
 	out := os.Environ()[:0]
 	for _, kv := range os.Environ() {

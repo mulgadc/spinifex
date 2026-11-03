@@ -1237,10 +1237,12 @@ func (s *InstanceServiceImpl) StartInstance(ctx context.Context, instance *vm.VM
 				"instanceId", command.ID, "err", err)
 			return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 		default:
-			slog.ErrorContext(ctx, "StartInstance: vmMgr.Start failed", "err", err)
+			// A volume held elsewhere is the caller's 400, not a fault on this node.
 			if refusal := volumeHeldElsewhereError(err); refusal != nil {
+				slog.WarnContext(ctx, "StartInstance: vmMgr.Start failed", "instanceId", command.ID, "err", err)
 				return refusal
 			}
+			slog.ErrorContext(ctx, "StartInstance: vmMgr.Start failed", "instanceId", command.ID, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 	}

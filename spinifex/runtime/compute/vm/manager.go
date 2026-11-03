@@ -87,6 +87,9 @@ type Deps struct {
 	// (predastore + viperblock) is confirmed up. Nil is treated as ready,
 	// preserving behaviour for tests and nodes with storage unwired.
 	BackingStoreReady func() bool
+
+	// UEFIVarStore is where UEFI variable stores are read from and kept.
+	UEFIVarStore UEFIVarStoreDeps
 }
 
 // Manager owns the in-memory map of running VMs on this node and every

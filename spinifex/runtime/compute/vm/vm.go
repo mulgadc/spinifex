@@ -387,7 +387,7 @@ type Device struct {
 }
 
 // Drive is one QEMU -drive entry, used for the pflash firmware drives (the
-// CODE blob and the EFI volume). Each set field becomes a key=value option.
+// CODE blob and the variable store). Each set field becomes a key=value option.
 type Drive struct {
 	File   string `json:"file"`
 	Format string `json:"format"`
@@ -396,7 +396,7 @@ type Drive struct {
 	ID     string `json:"id"`
 	Cache  string `json:"cache,omitempty"`
 	// Unit selects the pflash slot when If=="pflash": 0 is the CODE blob,
-	// 1 is the per-VM VARS volume. Ignored for non-pflash drives.
+	// 1 is the per-VM variable store. Ignored for non-pflash drives.
 	Unit int `json:"unit,omitempty"`
 	// ReadOnly emits readonly=on; used for the pflash CODE blob.
 	ReadOnly bool `json:"readonly,omitempty"`
@@ -588,8 +588,8 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 			return nil, fwErr
 		}
 		// pflash CODE must come before VARS so QEMU loads firmware into the
-		// readonly slot first; buildDrives emits the VARS drive (unit 1) from
-		// the per-VM EFI viperblock volume.
+		// readonly slot first; startQEMU emits the VARS drive (unit 1) from
+		// the node's copy of the variable store or the EFI volume.
 		drives = append([]Drive{{If: "pflash", Format: "raw", Unit: 0, ReadOnly: true, File: codePath}}, drives...)
 	}
 

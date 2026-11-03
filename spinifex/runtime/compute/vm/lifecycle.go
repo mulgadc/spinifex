@@ -92,6 +92,9 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrInstanceNotFound, id)
 	}
+	if err := CheckUEFIVarStore(instance); err != nil {
+		return err
+	}
 	// StateError is rejected by launchStillValid; move to Pending first so
 	// launch proceeds (resource re-allocation is the caller's responsibility).
 	if m.Status(instance) == StateError && m.deps.TransitionState != nil {
@@ -127,6 +130,13 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 		return nil
 	}
 
+	// Before the reason below is cleared, so a refused start changes nothing.
+	if err := CheckUEFIVarStore(instance); err != nil {
+		slog.ErrorContext(ctx, "Refusing to launch a UEFI instance without exactly one variable store",
+			"instanceId", instance.ID, "err", err)
+		return err
+	}
+
 	// A reason left by the stop, or by a restore that found this node could not
 	// schedule the instance, describes a state the instance is now leaving.
 	// Clearing it here keeps the node the only writer of the field.
@@ -146,6 +156,16 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 			slog.ErrorContext(ctx, "Instance is already running", "InstanceID", instance.ID, "pid", pid)
 			return errors.New("instance is already running")
 		}
+	}
+
+	// Before the mount, so a store this node cannot boot fails the launch
+	// with nothing to roll back.
+	uefiCtx, uefiSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.uefi_var_store")
+	uefiErr := m.prepareUEFIVarStore(uefiCtx, instance)
+	endSpanWithError(uefiSpan, uefiErr)
+	if uefiErr != nil {
+		slog.ErrorContext(ctx, "Failed to prepare the UEFI variable store", "instanceId", instance.ID, "err", uefiErr)
+		return uefiErr
 	}
 
 	_, mountSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.mount_volumes")
@@ -324,6 +344,14 @@ func (m *Manager) startQEMU(instance *VM, appendConsole bool) error {
 		instance.Config.IOThreads = append(instance.Config.IOThreads, driveCfg.IOThreads...)
 		instance.Config.Devices = append(instance.Config.Devices, driveCfg.Devices...)
 		instance.Config.Blockdevs = append(instance.Config.Blockdevs, driveCfg.Blockdevs...)
+
+		varsDrive, err := m.uefiVarsDrive(instance)
+		if err != nil {
+			return err
+		}
+		if varsDrive != nil {
+			instance.Config.Drives = append(instance.Config.Drives, *varsDrive)
+		}
 	}
 
 	if instance.DirectBoot {
@@ -1322,7 +1350,7 @@ func buildBaseVMConfig(instanceID, instanceType, pidFile, consoleLogPath, serial
 		CPUCount:       vCPUs,
 		Architecture:   architecture,
 		InstanceType:   instanceType,
-		UseUEFI:        bootMode == "uefi" || bootMode == "uefi-preferred",
+		UseUEFI:        isUEFIBootMode(bootMode),
 
 		// Present EC2-shaped DMI so stock cloud-init activates the Ec2 datasource.
 		SMBIOSUUID:         ec2SMBIOSUUID(instanceID),
@@ -1415,7 +1443,8 @@ func buildDiskBootDrives(requests []EBSRequest, cpuCount int, machineType string
 //
 // The boot volume is a -blockdev node named "os" under a bootindex=1 device
 // that carries werror/rerror; it is never detached, so it keeps fixed names.
-// EFI volumes emit pflash unit=1; Config.Execute adds the CODE blob (unit=0).
+// EFI volumes emit pflash unit=1, as uefiVarsDrive does for a variable store
+// pointer; Config.Execute adds the CODE blob (unit=0).
 //
 // Every other (data) volume is given the same named node-name/device-id/
 // iothread-id shape AttachVolume's hot-plug path uses, via a -blockdev entry

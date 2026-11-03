@@ -151,6 +151,7 @@ type Daemon struct {
 	natsConn          *nats.Conn
 	resourceMgr       *ResourceManager
 	instanceService   *ec2instance.InstanceServiceImpl
+	instanceObjects   objectstore.ObjectStore
 	dnsWriter         *dns.Writer
 	dnsReconciler     *dns.Reconciler
 	dnsBaseDomain     string
@@ -2019,6 +2020,7 @@ func (d *Daemon) startCluster() error {
 
 	// Create services before loading/launching instances, since LaunchInstance depends on them
 	store := objectstore.NewS3ObjectStoreFromConfig(netaddr.DialTarget(d.config.Predastore.Host), d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
+	d.instanceObjects = store
 	d.instanceService = ec2instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store, d.vmMgr, d.resourceMgr, d.jsManager)
 	d.dnsWriter = dns.NewWriter(d.config, d.clusterConfig, d.natsConn)
 	d.dnsReconciler = dns.NewReconciler(d.config, d.clusterConfig, d.natsConn, d.dnsWriter, d.dnsDesiredSet, d.dnsWatchSources()...)

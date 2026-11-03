@@ -700,6 +700,11 @@ func (d *Daemon) buildVMManagerDeps() vm.Deps {
 		DeviceDeletedTimeout:       d.deviceDeletedTimeout,
 		ConsumeCleanShutdownMarker: d.consumeCleanShutdownMarker(),
 		BackingStoreReady:          func() bool { return d.checkPredastoreReady() && d.checkViperblockReady() },
+		UEFIVarStore: vm.UEFIVarStoreDeps{
+			Objects: d.instanceObjects,
+			Bucket:  d.config.Predastore.Bucket,
+			DataDir: DataDirOrDefault(d.config.DataDir),
+		},
 	}
 }
 

@@ -1,9 +1,11 @@
 package viperblock
 
 import (
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,18 +21,32 @@ import (
 func mountedSnapshotFixture(t *testing.T, volumeID string) (cfg *Config, dataDir string, vb *viperblock.VB) {
 	t.Helper()
 	dataDir = testutil.SocketTempDir(t)
-	vb = createTestVBWithState(t, volumeID)
+	cfg, vb = mountedAt(t, volumeID, filepath.Join(dataDir, "viperblock"))
+	return cfg, dataDir, vb
+}
+
+// mountedAt is a node with volumeID mounted over a real engine under baseDir.
+func mountedAt(t *testing.T, volumeID, baseDir string) (*Config, *viperblock.VB) {
+	t.Helper()
+	vb := createTestVBWithState(t, volumeID)
 	t.Cleanup(func() {
 		vb.StopChunkUploader()
 		vb.StopWALSyncer()
 	})
-	cfg = &Config{
+	cfg := &Config{
 		NodeName:       "node-a",
-		BaseDir:        filepath.Join(dataDir, "viperblock"),
+		BaseDir:        baseDir,
 		MountedVolumes: []MountedVolume{{Name: volumeID, VB: vb}},
 	}
 	require.NoError(t, os.MkdirAll(cfg.BaseDir, 0o750))
-	return cfg, dataDir, vb
+	return cfg, vb
+}
+
+// leaveUnsealedWAL stands in for a client whose disconnect seal failed: the
+// plugin keeps the volume's local WAL and writes no receipt.
+func leaveUnsealedWAL(t *testing.T, cfg *Config, volumeID string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Join(cfg.BaseDir, volumeID, "wal", "chunks"), 0o750))
 }
 
 func requireNoSnapshot(t *testing.T, vb *viperblock.VB, snapshotID string) {
@@ -134,5 +150,71 @@ func TestSnapshotVolumeEngine_ExportBetweenConnectionsIsRetryLater(t *testing.T)
 	require.ErrorIs(t, err, errExportSettling)
 	assert.Nil(t, snapshot)
 	assert.Equal(t, ebsprovider.ErrorCodeUnavailable, snapshotErrorCode(err))
+	requireNoSnapshot(t, vb, snapshotID)
+}
+
+// The plugin releases the lock even when its disconnect seal fails, so a free
+// lock with WAL left behind and no receipt is writes that never reached the
+// backend, and the checkpoint a snapshot would read predates them.
+func TestSnapshotVolumeEngine_UnsealedLastClientFailsTheSnapshot(t *testing.T) {
+	const volumeID, snapshotID = "vol-drainunsealed", "snap-drainunsealed01"
+	cfg, _, vb := mountedSnapshotFixture(t, volumeID)
+	leaveUnsealedWAL(t, cfg, volumeID)
+
+	snapshot, err := snapshotVolumeEngine(t.Context(), cfg, volumeID, snapshotID)
+
+	require.ErrorIs(t, err, errExportDrainFailed)
+	assert.Nil(t, snapshot)
+	assert.Equal(t, ebsprovider.ErrorCodeInternal, snapshotErrorCode(err))
+	requireNoSnapshot(t, vb, snapshotID)
+}
+
+// A seal receipt is the plugin's proof the last client's writes reached the
+// backend, so local WAL beside it does not block the snapshot.
+func TestSnapshotVolumeEngine_SealedLastClientProceeds(t *testing.T) {
+	const volumeID, snapshotID = "vol-drainsealed", "snap-drainsealed0001"
+	cfg, _, _ := mountedSnapshotFixture(t, volumeID)
+	leaveUnsealedWAL(t, cfg, volumeID)
+	receipt, err := json.Marshal(sealReceipt{Volume: volumeID, PID: 1, SealedAt: time.Now()})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(sealReceiptPath(cfg.BaseDir, volumeID), receipt, 0o600))
+
+	snapshot, err := snapshotVolumeEngine(t.Context(), cfg, volumeID, snapshotID)
+
+	require.NoError(t, err)
+	assert.Equal(t, ebsprovider.SnapshotStateCompleted, snapshot.State)
+	assert.FileExists(t, sealReceiptPath(cfg.BaseDir, volumeID), "the receipt belongs to the unmount it attests to")
+}
+
+// A socket path the plugin could not have listened on never appears, so a
+// connected client there can never be drained: that is permanent, not retry.
+func TestSnapshotVolumeEngine_ConnectedClientWithUnservableSocketFails(t *testing.T) {
+	const volumeID, snapshotID = "vol-drainlongpath", "snap-drainlongpath01"
+	baseDir := filepath.Join(t.TempDir(), strings.Repeat("d", maxUnixSocketPath))
+	cfg, vb := mountedAt(t, volumeID, baseDir)
+	lock, err := viperblock.AcquireVolumeLock(cfg.BaseDir, volumeID)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = viperblock.ReleaseVolumeLock(lock) })
+
+	snapshot, err := snapshotVolumeEngine(t.Context(), cfg, volumeID, snapshotID)
+
+	require.ErrorIs(t, err, errExportDrainFailed)
+	assert.NotErrorIs(t, err, errExportSettling)
+	assert.Nil(t, snapshot)
+	assert.Equal(t, ebsprovider.ErrorCodeInternal, snapshotErrorCode(err))
+	requireNoSnapshot(t, vb, snapshotID)
+}
+
+// A plugin that closes the connection without an ack has not confirmed the
+// flush, so the snapshot fails.
+func TestSnapshotVolumeEngine_DrainClosedWithoutAckFailsTheSnapshot(t *testing.T) {
+	const volumeID, snapshotID = "vol-drainnoack", "snap-drainnoack00001"
+	cfg, dataDir, vb := mountedSnapshotFixture(t, volumeID)
+	testutil.StartDrainSocket(t, dataDir, volumeID, "")
+
+	snapshot, err := snapshotVolumeEngine(t.Context(), cfg, volumeID, snapshotID)
+
+	require.ErrorIs(t, err, errExportDrainFailed)
+	assert.Nil(t, snapshot)
 	requireNoSnapshot(t, vb, snapshotID)
 }

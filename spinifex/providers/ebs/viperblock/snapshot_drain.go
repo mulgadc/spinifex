@@ -1,6 +1,7 @@
 package viperblock
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -40,18 +41,18 @@ var errExportSettling = errors.New("export is between connections")
 // drainMountedExport asks the nbdkit plugin serving volumeID on this node to
 // flush its WAL and live checkpoint to the backend before a snapshot reads
 // them. The plugin serves the socket only while a client is connected.
-func drainMountedExport(baseDir, volumeID string) error {
-	sockPath := filepath.Join(baseDir, volumeID, "snapshot.sock")
-	if len(sockPath) > maxUnixSocketPath {
-		return requireNoConnectedClient(baseDir, volumeID)
+func drainMountedExport(ctx context.Context, cfg *Config, volumeID string) error {
+	sockPath := filepath.Join(cfg.BaseDir, volumeID, "snapshot.sock")
+	if len(sockPath) >= maxUnixSocketPath {
+		return requireNoConnectedClient(cfg, volumeID, false)
 	}
 	start := time.Now()
 	conn, err := net.DialTimeout("unix", sockPath, exportDrainDialTimeout)
 	if errors.Is(err, fs.ErrNotExist) {
-		return requireNoConnectedClient(baseDir, volumeID)
+		return requireNoConnectedClient(cfg, volumeID, true)
 	}
 	if err != nil {
-		return fmt.Errorf("%w: %s: dial %s: %w", errExportDrainFailed, volumeID, sockPath, err)
+		return fmt.Errorf("%w: %s: %w", errExportDrainFailed, volumeID, err)
 	}
 	defer conn.Close()
 
@@ -64,16 +65,19 @@ func drainMountedExport(baseDir, volumeID string) error {
 	if !strings.HasPrefix(string(buf[:n]), "OK") {
 		return fmt.Errorf("%w: %s: ack %q", errExportDrainFailed, volumeID, string(buf[:n]))
 	}
-	slog.Info("ebs.provider.snapshot.create: drained export", "volume", volumeID, "drain_ms", otelsetup.Millis(time.Since(start)))
+	slog.InfoContext(ctx, "ebs.provider.snapshot.create: drained export", "volume", volumeID, "drain_ms", otelsetup.Millis(time.Since(start)))
 	return nil
 }
 
-// requireNoConnectedClient tells an export with no client, whose last one was
-// drained when it disconnected, from one whose client is between connections.
-// The plugin holds the volume lock from open until that drain has finished.
-func requireNoConnectedClient(baseDir, volumeID string) error {
-	lock, err := viperblock.AcquireVolumeLock(baseDir, volumeID)
+// requireNoConnectedClient proves an export serving no drain socket has nothing
+// buffered. canServeSocket is false when the socket path is too long for the
+// plugin to listen on, so a held lock there never clears.
+func requireNoConnectedClient(cfg *Config, volumeID string, canServeSocket bool) error {
+	lock, err := viperblock.AcquireVolumeLock(cfg.BaseDir, volumeID)
 	if errors.Is(err, viperblock.ErrVolumeLocked) {
+		if !canServeSocket {
+			return fmt.Errorf("%w: %s: client connected with no drain socket", errExportDrainFailed, volumeID)
+		}
 		return fmt.Errorf("%w: %s", errExportSettling, volumeID)
 	}
 	if err != nil {
@@ -82,5 +86,15 @@ func requireNoConnectedClient(baseDir, volumeID string) error {
 	if err := viperblock.ReleaseVolumeLock(lock); err != nil {
 		return fmt.Errorf("%w: %s: %w", errExportDrainFailed, volumeID, err)
 	}
-	return nil
+	return requireLastClientSealed(cfg, volumeID)
+}
+
+// requireLastClientSealed refuses an export whose last client left WAL behind
+// without a seal receipt. The plugin releases the lock after a failed seal too,
+// so a free lock alone does not show the writes reached the backend.
+func requireLastClientSealed(cfg *Config, volumeID string) error {
+	if isAuxVolume(volumeID) || !volumeHoldsLocalWAL(cfg, volumeID) || hasSealReceipt(cfg.BaseDir, volumeID) {
+		return nil
+	}
+	return fmt.Errorf("%w: %s: last client left unsealed WAL", errExportDrainFailed, volumeID)
 }

@@ -546,6 +546,22 @@ func volumeNeedsSeal(volumeName, baseDir string) bool {
 	return err == nil
 }
 
+// volumeHoldsLocalWAL reports whether an nbdkit plugin has opened the
+// volume's WAL here and not removed it. A successful seal removes it; an
+// export no client has connected to yet never created it.
+func volumeHoldsLocalWAL(cfg *Config, volumeName string) bool {
+	walBase := cfg.WALBaseDir
+	if walBase == "" {
+		walBase = cfg.BaseDir
+	}
+	dir, err := localVolumeDir(walBase, volumeName)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(dir, "wal"))
+	return err == nil
+}
+
 // sealReceiptSuffix names the file the nbdkit plugin leaves at
 // baseDir/<volume>.sealed after a successful seal.
 const sealReceiptSuffix = ".sealed"
@@ -584,7 +600,22 @@ func consumeSealReceipt(baseDir, volume string) bool {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		slog.Warn("failed to remove seal receipt", "volume", volume, "path", path, "err", err)
 	}
+	return validSealReceipt(data, volume, path)
+}
 
+// hasSealReceipt is consumeSealReceipt without the delete, for a reader that
+// must leave the receipt for the unmount it attests to.
+func hasSealReceipt(baseDir, volume string) bool {
+	path := sealReceiptPath(baseDir, volume)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return validSealReceipt(data, volume, path)
+}
+
+// validSealReceipt reports whether data is a receipt the plugin wrote for volume.
+func validSealReceipt(data []byte, volume, path string) bool {
 	var receipt sealReceipt
 	if err := json.Unmarshal(data, &receipt); err != nil {
 		slog.Warn("malformed seal receipt", "volume", volume, "path", path, "err", err)

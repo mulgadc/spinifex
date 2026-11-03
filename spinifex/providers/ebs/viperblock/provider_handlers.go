@@ -1216,7 +1216,7 @@ func checkSnapshotIDFree(vb *viperblock.VB, volumeID, snapshotID string) error {
 // current, over opening a second engine on the same volume.
 func snapshotVolumeEngine(ctx context.Context, cfg *Config, volumeID, snapshotID string) (*ebsprovider.Snapshot, error) {
 	if mv, ok := findMountedVolume(cfg, volumeID); ok && mv.VB != nil {
-		if err := drainMountedExport(cfg.BaseDir, volumeID); err != nil {
+		if err := drainMountedExport(ctx, cfg, volumeID); err != nil {
 			return nil, err
 		}
 		return createSnapshotWithVB(mv.VB, volumeID, snapshotID)

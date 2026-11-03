@@ -171,7 +171,6 @@ func TestEC2ReapersAreOrderedByDependency(t *testing.T) {
 		"instance",
 		"snapshot", "image", "volume",
 		"address", "network-interface", "internet-gateway", "route-table", "subnet", "security-group", "vpc",
-		"key-pair", "placement-group", "launch-template",
 	}, kinds)
 
 	// A volume with a live snapshot refuses to delete, so the reverse order
@@ -180,7 +179,6 @@ func TestEC2ReapersAreOrderedByDependency(t *testing.T) {
 	assert.Equal(t, StageCompute, reapers[indexOfKind(reapers, "instance")].Stage())
 	assert.Equal(t, StageStorage, reapers[indexOfKind(reapers, "volume")].Stage())
 	assert.Equal(t, StageNetwork, reapers[indexOfKind(reapers, "vpc")].Stage())
-	assert.Equal(t, StagePlatform, reapers[indexOfKind(reapers, "key-pair")].Stage())
 }
 
 func indexOfKind(reapers []Reaper, kind string) int {
@@ -777,37 +775,6 @@ func TestSubnetAndVPCReapersReportTheirVPC(t *testing.T) {
 	// being torn down has no use for one.
 	assert.Equal(t, "default", vpcs[0].Detail)
 	assert.Empty(t, vpcs[1].Detail)
-}
-
-func TestPlatformReapersListAndDelete(t *testing.T) {
-	cluster := newFakeCluster(t)
-	cluster.reply("ec2.DescribeKeyPairs", ec2.DescribeKeyPairsOutput{
-		KeyPairs: []*ec2.KeyPairInfo{{KeyName: aws.String("deploy")}, {}},
-	})
-	cluster.reply("ec2.DescribePlacementGroups", ec2.DescribePlacementGroupsOutput{
-		PlacementGroups: []*ec2.PlacementGroup{{GroupName: aws.String("spread")}, {}},
-	})
-	cluster.reply("ec2.DescribeLaunchTemplates", ec2.DescribeLaunchTemplatesOutput{
-		LaunchTemplates: []*ec2.LaunchTemplate{{LaunchTemplateId: aws.String("lt-1")}, {}},
-	})
-
-	ctx := testCtx(t)
-	for _, tc := range []struct {
-		reaper Reaper
-		wantID string
-	}{
-		{&keyPairReaper{nc: cluster.nc}, "deploy"},
-		{&placementGroupReaper{nc: cluster.nc}, "spread"},
-		{&launchTemplateReaper{nc: cluster.nc}, "lt-1"},
-	} {
-		t.Run(tc.reaper.Kind(), func(t *testing.T) {
-			found, err := tc.reaper.List(ctx, "000000000042")
-			require.NoError(t, err)
-			require.Len(t, found, 1)
-			assert.Equal(t, tc.wantID, found[0].ID)
-			assert.NoError(t, tc.reaper.Delete(ctx, "000000000042", found[0], false))
-		})
-	}
 }
 
 // A listing that fails must abort the teardown. Reading a failed listing as an

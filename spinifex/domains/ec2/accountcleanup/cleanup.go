@@ -49,11 +49,13 @@ type PlacementGroupOwner interface {
 	CleanupAccount(ctx context.Context, accountID string, referenced func(groupID, groupName string) string) (*ec2placementgroup.AccountCleanup, error)
 }
 
-// LaunchTemplateOwner is the launch-template owner's account scan and residue
-// cleanup; live templates are never deleted by account cleanup.
+// LaunchTemplateOwner is the launch-template owner's account scan, residue
+// cleanup and live-template delete; a run deletes live templates only when its
+// request asks and the consumer check completed.
 type LaunchTemplateOwner interface {
 	ScanAccount(ctx context.Context, accountID string) (*ec2launchtemplate.AccountScan, error)
 	CleanupAccountResidue(ctx context.Context, accountID string, settledBefore time.Time) (*ec2launchtemplate.AccountCleanup, error)
+	DeleteLiveTemplates(ctx context.Context, accountID string, referenced func(id, name string) string) (*ec2launchtemplate.AccountTemplateDeletes, error)
 }
 
 // TagIndexOwner lists and clears the account's tag-index entries.
@@ -153,6 +155,11 @@ func (c *Cleanup) CleanupPlatform(ctx context.Context, req *Request) (*Result, e
 	var keyRun *keyPairRun
 	var groupRun *placementGroupRun
 	var templateRun *launchTemplateRun
+	// Live templates go first when asked: a version that names a key pair or
+	// group blocks it, so the reference read must see what remains.
+	if req.DeleteLiveTemplates && slices.Contains(kinds, ec2v1.PlatformKindLaunchTemplate) {
+		templateRun = c.cleanLaunchTemplates(ctx, acct, settledBefore, true)
+	}
 	if slices.Contains(kinds, ec2v1.PlatformKindKeyPair) || slices.Contains(kinds, ec2v1.PlatformKindPlacementGroup) {
 		refs := c.readReferences(ctx, acct)
 		if slices.Contains(kinds, ec2v1.PlatformKindKeyPair) {
@@ -162,8 +169,8 @@ func (c *Cleanup) CleanupPlatform(ctx context.Context, req *Request) (*Result, e
 			groupRun = c.cleanPlacementGroups(ctx, acct, refs)
 		}
 	}
-	if slices.Contains(kinds, ec2v1.PlatformKindLaunchTemplate) {
-		templateRun = c.cleanLaunchTemplates(ctx, acct, settledBefore)
+	if templateRun == nil && slices.Contains(kinds, ec2v1.PlatformKindLaunchTemplate) {
+		templateRun = c.cleanLaunchTemplates(ctx, acct, settledBefore, false)
 	}
 
 	// Tags are listed before the owner re-scans, so a resource created in

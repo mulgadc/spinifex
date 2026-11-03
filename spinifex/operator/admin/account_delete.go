@@ -124,12 +124,12 @@ func (d Deps) deleteAccount(ctx context.Context, body []byte) (any, error) {
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	if req.NonFinalizing && d.PlatformCleaner == nil {
+	if !req.DryRun && d.PlatformCleaner == nil {
 		slog.Error("DeleteAccount: platform cleanup not available")
 		return nil, errors.New(awserrors.ErrorServiceUnavailable)
 	}
 
-	engine, err := accountteardown.NewClusterEngine(ctx, d.NATS, accountteardown.ClusterNodes{Expected: d.ExpectedNodes, DaemonIDs: d.NodeIDs, GatewayIDs: d.GatewayNodeIDs}, d.Termination, d.BucketStore)
+	engine, err := accountteardown.NewClusterEngine(ctx, d.NATS, accountteardown.ClusterNodes{Expected: d.ExpectedNodes, DaemonIDs: d.NodeIDs, GatewayIDs: d.GatewayNodeIDs}, d.Termination, d.BucketStore, d.PlatformCleaner)
 	if err != nil {
 		slog.Error("DeleteAccount: failed to build teardown engine", "err", err)
 		return nil, errors.New(awserrors.ErrorServiceUnavailable)
@@ -139,7 +139,8 @@ func (d Deps) deleteAccount(ctx context.Context, body []byte) (any, error) {
 		inventoryCtx, cancel := context.WithTimeout(ctx, accountDeletionInventoryTimeout)
 		defer cancel()
 
-		inventory, err := engine.DryRun(inventoryCtx, req.AccountID, requestIDFrom(ctx))
+		slog.InfoContext(ctx, "DeleteAccount dry run", "accountID", req.AccountID, "requestID", requestIDFrom(ctx))
+		inventory, err := engine.DryRun(inventoryCtx, req.AccountID)
 		if err != nil {
 			return nil, teardownError("DeleteAccount", req.AccountID, err)
 		}
@@ -274,7 +275,6 @@ func (d Deps) runAccountDeletion(
 	engine.OnStage = tracker.stageFinished
 	engine.OnQuiesced = tracker.quiesced
 	if job.NonFinalizing {
-		engine.Cleanup = d.PlatformCleaner
 		engine.OnExercised = tracker.exercised
 	}
 

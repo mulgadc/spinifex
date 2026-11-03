@@ -61,13 +61,7 @@ func (e *Engine) Exercise(ctx context.Context, req Request) (*operatorv1.Exercis
 // accountForRemainder re-reads the owner inventory after cleanup and holds it
 // against the cleanup result, per quiesced kind.
 func (e *Engine) accountForRemainder(ctx context.Context, req Request, kinds []string, cleanup *operatorv1.PlatformCleanup) []operatorv1.KindAccounting {
-	budget := ec2PlatformShadowBudget
-	if e.ec2PlatformShadowBudget > 0 {
-		budget = e.ec2PlatformShadowBudget
-	}
-	rereadCtx, cancel := context.WithTimeout(ctx, budget)
-	defer cancel()
-	reply := e.ec2Inventory.PlatformInventory(rereadCtx, req.AccountID, req.OperationID)
+	reply := e.awaitPlatformInventory(ctx, req.AccountID, req.OperationID)
 	return AccountForRemainder(kinds, &reply, cleanup)
 }
 
@@ -165,7 +159,7 @@ var _ accountcleanup.InstanceReferenceReader = (*InstanceReferenceReader)(nil)
 
 // NewInstanceReferenceReader builds the reader over the configured node set.
 func NewInstanceReferenceReader(nc *nats.Conn, nodeIDs []string) *InstanceReferenceReader {
-	return &InstanceReferenceReader{nc: nc, nodeIDs: nodeIDs, budget: ec2PlatformShadowBudget}
+	return &InstanceReferenceReader{nc: nc, nodeIDs: nodeIDs, budget: ec2PlatformInventoryBudget}
 }
 
 func (r *InstanceReferenceReader) AccountInstanceReferences(ctx context.Context, accountID string) (*accountcleanup.References, error) {

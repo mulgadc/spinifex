@@ -23,10 +23,10 @@ func consoleBody(n int) []byte {
 	return b.Bytes()[:n]
 }
 
-func newConsoleReaper(t *testing.T, entries map[string]ConsoleLogEntry, now time.Time) (*ConsoleLogReaper, string) {
+func newConsoleReaper(t *testing.T, now time.Time) (*ConsoleLogReaper, string) {
 	t.Helper()
 	dir := t.TempDir()
-	r := NewConsoleLogReaper(dir, func() (map[string]ConsoleLogEntry, error) { return entries, nil })
+	r := NewConsoleLogReaper(dir)
 	r.now = func() time.Time { return now }
 	return r, dir
 }
@@ -41,7 +41,7 @@ func writeConsole(t *testing.T, dir, id string, body []byte, mtime time.Time) st
 
 func TestConsoleLogReaper_TrimsToNewestMiB(t *testing.T) {
 	now := time.Now()
-	r, dir := newConsoleReaper(t, map[string]ConsoleLogEntry{"i-big": {State: StateRunning}}, now)
+	r, dir := newConsoleReaper(t, now)
 	body := consoleBody(5 << 20)
 	p := writeConsole(t, dir, "i-big", body, now)
 
@@ -58,10 +58,7 @@ func TestConsoleLogReaper_TrimsToNewestMiB(t *testing.T) {
 
 func TestConsoleLogReaper_LeavesFilesAtOrBelowTheLimit(t *testing.T) {
 	now := time.Now()
-	r, dir := newConsoleReaper(t, map[string]ConsoleLogEntry{
-		"i-small": {State: StateRunning},
-		"i-limit": {State: StateRunning},
-	}, now)
+	r, dir := newConsoleReaper(t, now)
 	small := consoleBody(3 << 20)
 	limit := consoleBody(consoleTrimAbove)
 	ps := writeConsole(t, dir, "i-small", small, now)
@@ -82,7 +79,7 @@ func TestConsoleLogReaper_LeavesFilesAtOrBelowTheLimit(t *testing.T) {
 // file usable for that writer: no hole of NULs, and later output at the end.
 func TestConsoleLogReaper_AppendWriterKeepsWritingAfterTrim(t *testing.T) {
 	now := time.Now()
-	r, dir := newConsoleReaper(t, map[string]ConsoleLogEntry{"i-live": {State: StateRunning}}, now)
+	r, dir := newConsoleReaper(t, now)
 	p := filepath.Join(dir, "console-i-live.log")
 	w, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
 	require.NoError(t, err)
@@ -104,73 +101,68 @@ func TestConsoleLogReaper_AppendWriterKeepsWritingAfterTrim(t *testing.T) {
 	assert.LessOrEqual(t, len(got), consoleKeepBytes+len(marker))
 }
 
-func TestConsoleLogReaper_RemovesByInstanceState(t *testing.T) {
+func TestConsoleLogReaper_RemovesOnlyAgedRetiredFiles(t *testing.T) {
 	now := time.Now()
-	entries := map[string]ConsoleLogEntry{
-		"i-term-old":     {State: StateTerminated, TerminatedAt: now.Add(-consoleRemoveAfter - time.Minute)},
-		"i-term-new":     {State: StateTerminated, TerminatedAt: now.Add(-consoleRemoveAfter + time.Minute)},
-		"i-term-nostamp": {State: StateTerminated},
-		"i-term-fresh":   {State: StateTerminated},
-		"i-running":      {State: StateRunning},
-		"i-stopped":      {State: StateStopped},
-	}
-	r, dir := newConsoleReaper(t, entries, now)
-	old := now.Add(-48 * time.Hour)
-	paths := map[string]string{}
-	for id := range entries {
-		mtime := old
-		if id == "i-term-fresh" {
-			mtime = now.Add(-time.Minute)
-		}
-		paths[id] = writeConsole(t, dir, id, []byte("boot\n"), mtime)
-	}
-
-	reaped, err := r.Sweep(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, 2, reaped, "terminated over an hour ago, and terminated with no stamp and a stale file")
-
-	exists := func(id string) bool { _, err := os.Stat(paths[id]); return err == nil }
-	assert.False(t, exists("i-term-old"), "terminated over an hour ago: removed")
-	assert.True(t, exists("i-term-new"), "terminated recently: kept for the shipper and late reads")
-	assert.False(t, exists("i-term-nostamp"), "no stamp: the file's own mtime decides, so it is not kept forever")
-	assert.True(t, exists("i-term-fresh"), "no stamp but a fresh file: kept")
-	assert.True(t, exists("i-running"), "running: kept")
-	assert.True(t, exists("i-stopped"), "stopped: kept, AWS returns console output after stop")
-}
-
-func TestConsoleLogReaper_UnknownFilesGoByMtime(t *testing.T) {
-	now := time.Now()
-	r, dir := newConsoleReaper(t, map[string]ConsoleLogEntry{}, now)
-	fresh := writeConsole(t, dir, "i-unknown-fresh", []byte("boot\n"), now.Add(-consoleRemoveAfter+time.Minute))
-	stale := writeConsole(t, dir, "i-unknown-stale", []byte("boot\n"), now.Add(-consoleRemoveAfter-time.Minute))
-	other := filepath.Join(dir, "serial-i-unknown-stale.sock.log")
+	r, dir := newConsoleReaper(t, now)
+	old := now.Add(-consoleRemoveAfter - time.Minute)
+	recent := now.Add(-consoleRemoveAfter + time.Minute)
+	retiredOld := writeConsole(t, dir, "i-gone-old", []byte("x\n"), old)
+	retiredNew := writeConsole(t, dir, "i-gone-new", []byte("x\n"), recent)
+	require.NoError(t, os.Rename(retiredOld, RetiredConsolePath(retiredOld)))
+	require.NoError(t, os.Rename(retiredNew, RetiredConsolePath(retiredNew)))
+	require.NoError(t, os.Chtimes(RetiredConsolePath(retiredOld), old, old))
+	require.NoError(t, os.Chtimes(RetiredConsolePath(retiredNew), recent, recent))
+	// A stopped or running instance's file, however old, is never removed.
+	stopped := writeConsole(t, dir, "i-stopped", []byte("boot\n"), now.Add(-720*time.Hour))
+	other := filepath.Join(dir, "serial-i-x.sock.log.terminated")
 	require.NoError(t, os.WriteFile(other, []byte("x"), 0o644))
-	require.NoError(t, os.Chtimes(other, now.Add(-72*time.Hour), now.Add(-72*time.Hour)))
+	require.NoError(t, os.Chtimes(other, old, old))
 
 	reaped, err := r.Sweep(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, 1, reaped)
+	assert.Equal(t, 1, reaped, "only the retired file older than an hour")
 
-	_, err = os.Stat(fresh)
-	assert.NoError(t, err, "an unknown file with a fresh mtime may belong to an instance still loading")
-	_, err = os.Stat(stale)
-	assert.ErrorIs(t, err, os.ErrNotExist, "an unknown file untouched for over an hour is an orphan")
+	_, err = os.Stat(RetiredConsolePath(retiredOld))
+	assert.ErrorIs(t, err, os.ErrNotExist, "retired over an hour ago: removed")
+	_, err = os.Stat(RetiredConsolePath(retiredNew))
+	assert.NoError(t, err, "retired recently: kept for a late GetConsoleOutput")
+	_, err = os.Stat(stopped)
+	assert.NoError(t, err, "console-<id>.log is never removed whatever its age, AWS returns it after stop")
 	_, err = os.Stat(other)
 	assert.NoError(t, err, "files that are not console logs are never touched")
 }
 
-func TestConsoleLogReaper_ListFailureTouchesNothing(t *testing.T) {
+func TestRetireConsoleLog(t *testing.T) {
+	dir := t.TempDir()
+	p := writeConsole(t, dir, "i-end", []byte("last words\n"), time.Now())
+
+	retireConsoleLog(p)
+	_, err := os.Stat(p)
+	assert.ErrorIs(t, err, os.ErrNotExist, "the live name no longer matches the shipper's glob")
+	got, err := os.ReadFile(RetiredConsolePath(p))
+	require.NoError(t, err)
+	assert.Equal(t, "last words\n", string(got))
+
+	assert.NotPanics(t, func() { retireConsoleLog(p) }, "a repeat finalize is a no-op")
+	assert.NotPanics(t, func() { retireConsoleLog("") }, "an instance that never got a console path is a no-op")
+}
+
+func TestConsoleLogReaper_TrimsOnlyLiveFiles(t *testing.T) {
 	now := time.Now()
-	r, dir := newConsoleReaper(t, nil, now)
-	r.instances = func() (map[string]ConsoleLogEntry, error) { return nil, fmt.Errorf("records unavailable") }
-	p := writeConsole(t, dir, "i-any", consoleBody(5<<20), now.Add(-72*time.Hour))
+	r, dir := newConsoleReaper(t, now)
+	big := writeConsole(t, dir, "i-big", consoleBody(5<<20), now)
+	retired := writeConsole(t, dir, "i-gone", consoleBody(5<<20), now)
+	require.NoError(t, os.Rename(retired, RetiredConsolePath(retired)))
 
-	_, err := r.Sweep(context.Background())
-	require.Error(t, err)
-
-	info, statErr := os.Stat(p)
-	require.NoError(t, statErr, "an unreadable record set must not look like every instance is gone")
-	assert.Equal(t, int64(5<<20), info.Size())
+	reaped, err := r.Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, reaped)
+	info, err := os.Stat(big)
+	require.NoError(t, err)
+	assert.Equal(t, int64(consoleKeepBytes), info.Size())
+	info, err = os.Stat(RetiredConsolePath(retired))
+	require.NoError(t, err)
+	assert.Equal(t, int64(5<<20), info.Size(), "a retired file is final and is only aged out")
 }
 
 func TestExecute_ConsoleAlwaysAppends(t *testing.T) {

@@ -432,10 +432,10 @@ type Config struct {
 	NoGraphic          bool   `json:"no_graphic"`
 	MachineType        string `json:"machine_type"`
 	ConsoleLogPath     string `json:"console_log_path,omitempty"`
-	SerialSocket     string `json:"serial_socket,omitempty"`
-	CPUType          string `json:"cpu_type"`
-	CPUCount         int    `json:"cpu_count"`
-	Memory           int    `json:"memory"`
+	SerialSocket       string `json:"serial_socket,omitempty"`
+	CPUType            string `json:"cpu_type"`
+	CPUCount           int    `json:"cpu_count"`
+	Memory             int    `json:"memory"`
 
 	Drives    []Drive    `json:"drives"`
 	IOThreads []IOThread `json:"io_threads,omitempty"`

@@ -307,11 +307,10 @@ func (a *volumeMounterAdapter) Unmount(ctx context.Context, instance *vm.VM) err
 		}
 		slog.Info("Unmounted volume", "instance", instance.ID, "volume", ebsRequest.Name)
 
-		// Boot/root volumes must stay attached across stop/crash unmount: EFI is
-		// the wrong proxy for "boot" (BIOS-boot roots are Boot && !EFI), so gate on
-		// Boot too. Only DetachVolume and terminate release a boot volume; flipping
-		// it available here while the instance restarts splits the state record.
-		if !ebsRequest.EFI && !ebsRequest.Boot && a.volState != nil {
+		// A boot volume stays attached across stop/crash unmount: only
+		// DetachVolume and terminate release it, and flipping it available while
+		// the instance restarts would split the state record.
+		if !ebsRequest.Boot && a.volState != nil {
 			if err := a.volState.UpdateVolumeState(instance.AccountID, ebsRequest.Name, "available", "", ""); err != nil {
 				slog.Error("Failed to update volume state to available after unmount",
 					"volumeId", ebsRequest.Name, "err", err)

@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -48,12 +47,8 @@ const (
 )
 
 // ErrUEFIVarStoreMissing is a UEFI instance whose record names no variable
-// store and carries no EFI volume, so it has nothing to boot its variables from.
+// store, so it has nothing to boot its variables from.
 var ErrUEFIVarStoreMissing = errors.New("UEFI instance has no variable store")
-
-// ErrUEFIVarStoreConflict is a UEFI instance whose record names a variable
-// store and also carries an EFI volume, so either one would be ignored.
-var ErrUEFIVarStoreConflict = errors.New("UEFI instance has both a variable store pointer and an EFI volume")
 
 // ErrUEFIFirmwareMismatch is a variable store written under firmware whose
 // architecture or VARS size differs from this node's, which pflash cannot load.
@@ -83,28 +78,17 @@ func isUEFIBootMode(bootMode string) bool {
 	return bootMode == "uefi" || bootMode == "uefi-preferred"
 }
 
-// usesUEFIVarStore reports whether v boots through UEFI and so needs a
+// UsesUEFIVarStore reports whether v boots through UEFI and so needs a
 // variable store. A direct-boot microvm boots qboot and has none.
-func usesUEFIVarStore(v *VM) bool {
+func UsesUEFIVarStore(v *VM) bool {
 	return !v.DirectBoot && isUEFIBootMode(v.BootMode)
 }
 
-// CheckUEFIVarStore refuses a UEFI instance that has no variable store, or
-// two, before anything about it is changed. An EFI volume still counts as a
-// store until RunInstances seeds pointers instead. The caller owns v.
+// CheckUEFIVarStore refuses a UEFI instance whose record names no variable
+// store, before anything about it is changed. The caller owns v.
 func CheckUEFIVarStore(v *VM) error {
-	if !usesUEFIVarStore(v) {
-		return nil
-	}
-	v.EBSRequests.Mu.Lock()
-	hasEFIVolume := slices.ContainsFunc(v.EBSRequests.Requests, func(r EBSRequest) bool { return r.EFI })
-	v.EBSRequests.Mu.Unlock()
-
-	switch {
-	case v.UEFIVarStore == nil && !hasEFIVolume:
+	if UsesUEFIVarStore(v) && v.UEFIVarStore == nil {
 		return fmt.Errorf("%w: %s", ErrUEFIVarStoreMissing, v.ID)
-	case v.UEFIVarStore != nil && hasEFIVolume:
-		return fmt.Errorf("%w: %s points at %s", ErrUEFIVarStoreConflict, v.ID, v.UEFIVarStore.Key)
 	}
 	return nil
 }
@@ -128,13 +112,16 @@ func (m *Manager) uefiVarsPath(instanceID string) (string, error) {
 }
 
 // uefiVarsDrive is pflash unit 1 from this node's copy of the store the
-// record points at, or nil with no pointer. Launch seeds the copy and a
-// reboot reuses it, so a missing one fails rather than booting without it.
+// record points at, or nil for a guest that boots without UEFI. Launch seeds
+// the copy and a reboot reuses it, so a missing one fails the boot.
 func (m *Manager) uefiVarsDrive(instance *VM) (*Drive, error) {
+	if !UsesUEFIVarStore(instance) {
+		return nil, nil
+	}
 	hasPointer := false
 	m.Inspect(instance, func(v *VM) { hasPointer = v.UEFIVarStore != nil })
-	if !hasPointer || !usesUEFIVarStore(instance) {
-		return nil, nil
+	if !hasPointer {
+		return nil, fmt.Errorf("%w: %s", ErrUEFIVarStoreMissing, instance.ID)
 	}
 	path, err := m.uefiVarsPath(instance.ID)
 	if err != nil {
@@ -157,7 +144,7 @@ func (m *Manager) prepareUEFIVarStore(ctx context.Context, instance *VM) error {
 			ref = &cp
 		}
 	})
-	if ref == nil || !usesUEFIVarStore(instance) {
+	if ref == nil || !UsesUEFIVarStore(instance) {
 		return nil
 	}
 

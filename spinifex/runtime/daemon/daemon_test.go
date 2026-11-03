@@ -3414,7 +3414,7 @@ func TestVolumeMounterAdapter_Unmount_SealFailureSkipsAvailable(t *testing.T) {
 // TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable verifies that an
 // unpublish answered not_found, which means the provider holds no export of
 // the volume, still flips a non-boot data volume to available, while the
-// boot/EFI gate stays intact.
+// boot gate stays intact.
 func TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
 	volState := &recordingVolState{}
@@ -3429,8 +3429,8 @@ func TestVolumeMounterAdapter_Unmount_NotFoundFlipsToAvailable(t *testing.T) {
 		AccountID: "000000000042",
 		EBSRequests: vm.EBSRequests{
 			Requests: []viperblocklegacyv1.EBSRequest{
-				{Name: "vol-boot-retry", Boot: true, EFI: false},
-				{Name: "vol-data-retry", Boot: false, EFI: false},
+				{Name: "vol-boot-retry", Boot: true},
+				{Name: "vol-data-retry", Boot: false},
 			},
 		},
 	}

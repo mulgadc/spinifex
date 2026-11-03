@@ -111,7 +111,7 @@ Daemons (`spinifex/runtime/daemon/daemon.go`) subscribe to NATS topics and handl
 When a daemon handles `RunInstances`:
 
 1. **Resource Check**: Validates CPU/memory availability via `ResourceManager`
-2. **Volume Generation**: Creates boot and EFI volumes via Viperblock
+2. **Volume Generation**: Creates the boot volume through the EBS provider and, for a UEFI guest, seeds its variable store as an object under `uefi/<instance-id>/` with a store record in `spinifex-uefi-stores` and a pointer on the instance record
 3. **Volume Mount**: Publishes each volume through the EBS provider contract (`PublishVolume` on `ebs.provider.v1.{node}.mount`), receives its export
 4. **QEMU Launch**: Builds and executes QEMU command with NBD-backed disks
 5. **QMP Monitoring**: Establishes QEMU Machine Protocol connection for VM management

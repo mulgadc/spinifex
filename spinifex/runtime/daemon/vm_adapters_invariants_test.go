@@ -15,9 +15,8 @@ import (
 // (runtime/compute/vm/crash_recovery.go), where the instance keeps its attachment and restarts —
 // only DetachVolume and terminate release a boot volume. Releasing it here while
 // the instance still owns it splits the volume-state record (describe-instances
-// "attached" vs describe-volumes "available"). EFI is not a
-// sufficient proxy for "boot": BIOS-boot roots are Boot && !EFI, so the gate must
-// also exclude Boot. Only non-boot data volumes may be released by Unmount.
+// "attached" vs describe-volumes "available"). Only non-boot data volumes may be
+// released by Unmount.
 func TestUnmountNeverReleasesBootVolume(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
 	volState := &recordingVolState{}
@@ -30,19 +29,16 @@ func TestUnmountNeverReleasesBootVolume(t *testing.T) {
 		ID: "i-unmount-boot",
 		EBSRequests: vm.EBSRequests{
 			Requests: []viperblocklegacyv1.EBSRequest{
-				{Name: "vol-bios-root", Boot: true, EFI: false},
-				{Name: "vol-efi-root", Boot: true, EFI: true},
-				{Name: "vol-data", Boot: false, EFI: false},
+				{Name: "vol-root", Boot: true},
+				{Name: "vol-data", Boot: false},
 			},
 		},
 	}
 	require.NoError(t, adapter.Unmount(t.Context(), inst))
 
 	calls := volState.snapshot()
-	assert.NotContains(t, calls, "vol-bios-root:available",
-		"a BIOS-boot root volume (Boot && !EFI) must stay attached across stop/crash unmount, not be released to available")
-	assert.NotContains(t, calls, "vol-efi-root:available",
-		"an EFI-boot root volume must stay attached across stop/crash unmount")
+	assert.NotContains(t, calls, "vol-root:available",
+		"a root volume must stay attached across stop/crash unmount, not be released to available")
 	assert.Contains(t, calls, "vol-data:available",
 		"a non-boot data volume is released to available by Unmount")
 }

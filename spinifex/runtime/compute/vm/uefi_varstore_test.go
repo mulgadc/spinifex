@@ -399,37 +399,28 @@ func TestPrepareUEFIVarStore_NoPointerIsANoOp(t *testing.T) {
 	assert.NoDirExists(t, filepath.Join(f.dataDir, "uefi"))
 }
 
-// A UEFI instance with no pointer, or two stores, is refused before the
-// launch clears or changes anything on its record.
-func TestRun_UEFIInstanceWithoutExactlyOneStoreIsRefused(t *testing.T) {
-	efiVolume := EBSRequest{Name: "vol-1-efi", EFI: true}
+// A UEFI instance with no pointer is refused before the launch clears or
+// changes anything on its record, and an EFI volume is not a store.
+func TestRun_UEFIInstanceWithoutAPointerIsRefused(t *testing.T) {
 	tests := []struct {
-		name    string
-		pointer bool
-		efi     bool
-		want    error
+		name     string
+		requests []EBSRequest
 	}{
-		{name: "no pointer and no EFI volume", want: ErrUEFIVarStoreMissing},
-		{name: "a pointer and an EFI volume", pointer: true, efi: true, want: ErrUEFIVarStoreConflict},
+		{name: "no volumes"},
+		{name: "an EFI volume", requests: []EBSRequest{{Name: "vol-1-efi", NBDURI: "nbd:unix:/tmp/efi.sock", EFI: true}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newUEFIFixture(t)
-			key := ""
-			if tt.pointer {
-				key = keyFor("p")
-			}
-			instance := f.instance(key, f.identity)
-			if tt.efi {
-				instance.EBSRequests.Requests = []EBSRequest{efiVolume}
-			}
+			instance := f.instance("", f.identity)
+			instance.EBSRequests.Requests = tt.requests
 			stale := &ec2.StateReason{Code: aws.String("Client.UserInitiatedShutdown"), Message: aws.String("Client.UserInitiatedShutdown: User initiated shutdown")}
 			instance.Instance.StateReason = stale
 			before := instance.Record()
 
 			err := f.m.Run(t.Context(), instance)
 
-			require.ErrorIs(t, err, tt.want)
+			require.ErrorIs(t, err, ErrUEFIVarStoreMissing)
 			assert.Empty(t, f.mounter.mounted)
 			assert.Equal(t, before, instance.Record(), "the record is unchanged")
 		})
@@ -452,15 +443,13 @@ func TestStart_UEFIInstanceWithoutAPointerIsRefusedBeforeTheTransition(t *testin
 	assert.Equal(t, StateError, instance.Status)
 }
 
-// Until RunInstances seeds pointers, an instance whose variables are on an
-// EFI volume still launches through the volume, and a BIOS or microvm
-// guest needs no store at all.
+// A UEFI instance with a pointer launches, and a BIOS or microvm guest needs
+// no store at all.
 func TestCheckUEFIVarStore_Accepts(t *testing.T) {
 	tests := []struct {
 		name string
 		v    *VM
 	}{
-		{name: "EFI volume", v: &VM{BootMode: "uefi", EBSRequests: EBSRequests{Requests: []EBSRequest{{Name: "vol-efi", EFI: true}}}}},
 		{name: "pointer", v: &VM{BootMode: "uefi-preferred", UEFIVarStore: &UEFIVarStoreRef{Key: "k"}}},
 		{name: "BIOS", v: &VM{BootMode: "legacy-bios"}},
 		{name: "no boot mode", v: &VM{}},
@@ -493,6 +482,21 @@ func TestStartQEMU_PointerPassesTheLocalCopyAsPflashUnit1(t *testing.T) {
 		"file=" + f.codePath + ",format=raw,if=pflash,unit=0,readonly=on",
 		"file=" + vars + ",format=raw,if=pflash,unit=1",
 	}, allArgValues(got[0], "-drive"))
+}
+
+// A UEFI guest is never started without its VARS drive: not when the
+// node's copy is missing, and not when the record names no store.
+func TestStartQEMU_UEFIWithoutAPointerIsNotLaunched(t *testing.T) {
+	f := newUEFIFixture(t)
+	f.m.deps.NetworkPlumber = &fakeNetworkPlumber{}
+	launches := withFakeQEMU(t)
+	instance := f.instance("", f.identity)
+	instance.EBSRequests.Requests = []EBSRequest{{Name: "vol-root", NBDURI: nbdListener(t), Boot: true}}
+
+	err := f.m.startQEMU(instance, false)
+
+	require.ErrorIs(t, err, ErrUEFIVarStoreMissing)
+	assert.Empty(t, launches())
 }
 
 // A reboot reuses the copy the launch seeded; without one there is nothing

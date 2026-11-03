@@ -2217,6 +2217,9 @@ func (d *Daemon) startCluster() error {
 	d.instanceService.SetTerminationDeps(d.volumeService, d.vpcService, ipReleaser, d.tagsService)
 	d.instanceService.SetVolumeCreator(d.volumeService)
 	d.instanceService.SetRunInstancesDeps(d.imageService, d.keyService, &daemonENICreator{d: d}, ipAllocator)
+	if d.jsManager != nil && d.jsManager.UEFIStores() != nil {
+		d.instanceService.SetUEFIVarStore(d.jsManager.UEFIStores(), d.node)
+	}
 
 	if d.gpuManager != nil {
 		d.instanceService.SetGPUClaimer(&daemonGPUClaimer{d: d})

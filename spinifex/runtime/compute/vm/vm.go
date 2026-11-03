@@ -413,7 +413,7 @@ type IOThread struct {
 // monitor-owned node addressable by node-name, which is what makes
 // blockdev-del able to remove it later. Used for boot and data volumes, so a
 // cold-booted data volume has the same detachable block-graph shape as a
-// hot-attached one; EFI volumes keep the pflash -drive shape.
+// hot-attached one.
 type Blockdev struct {
 	Value string `json:"value"`
 }
@@ -589,7 +589,7 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		}
 		// pflash CODE must come before VARS so QEMU loads firmware into the
 		// readonly slot first; startQEMU emits the VARS drive (unit 1) from
-		// the node's copy of the variable store or the EFI volume.
+		// the node's copy of the variable store.
 		drives = append([]Drive{{If: "pflash", Format: "raw", Unit: 0, ReadOnly: true, File: codePath}}, drives...)
 	}
 

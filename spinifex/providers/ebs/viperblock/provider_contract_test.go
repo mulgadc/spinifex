@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/internal/testkit/deadpid"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
@@ -235,6 +236,9 @@ func TestPublishError_Codes(t *testing.T) {
 			assert.Equal(t, tc.want, got.Code)
 		})
 	}
+	// Callers still recognise held-elsewhere by its text, so the message keeps it.
+	heldElsewhere := publishError(ebsprovider.NoSealSchemaVersion, "vol-publisherror01", leaseHeld)
+	assert.Contains(t, heldElsewhere.Message, ec2v1.VolumeHeldElsewhereText)
 	assert.True(t, ebsprovider.ErrorCodeUnavailable.Retryable(), "a backing store that is not ready must read as retry-later")
 }
 

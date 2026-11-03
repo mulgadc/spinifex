@@ -127,6 +127,11 @@ func newVolumeMounterAdapter(provider mounterProvider, node string, volState vm.
 // the export on req. A failure worth retrying is vm.ErrMountRetryable; one
 // that leaves unknown whether the provider exported it is vm.ErrMountAmbiguous.
 func (a *volumeMounterAdapter) publish(ctx context.Context, accountID string, req *viperblocklegacyv1.EBSRequest) error {
+	// A caller already gone sends nothing, so there is no export to tear down;
+	// only a cancellation after the request went out leaves the outcome unknown.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("publish volume %s: %w", req.Name, err)
+	}
 	published, err := a.provider.PublishVolume(ebsprovider.WithAccountID(ctx, accountID), ebsprovider.PublishVolumeRequest{
 		Versioned: ebsprovider.NewLatestVersioned(),
 		VolumeID:  req.Name,
@@ -161,10 +166,11 @@ func publishRetryable(err error) bool {
 }
 
 // publishOutcomeUnknown reports whether the provider may have exported the
-// volume despite the error: the request was sent but no usable reply came back.
+// volume despite the error: the request was sent but no usable reply came back,
+// or the caller stopped waiting for it. A connection found down sends nothing.
 func publishOutcomeUnknown(err error) bool {
 	for _, unknown := range []error{
-		context.DeadlineExceeded, nats.ErrTimeout, ebsprovider.ErrUnreadableReply,
+		context.DeadlineExceeded, context.Canceled, nats.ErrTimeout, ebsprovider.ErrUnreadableReply,
 		ebsprovider.ErrNoPublishedVolume, ebsprovider.ErrInvalidExport,
 	} {
 		if errors.Is(err, unknown) {

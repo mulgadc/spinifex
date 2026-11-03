@@ -32,9 +32,9 @@ var ErrVolumeNotDetachable = errors.New("volume cannot be detached")
 // supplies a device name that does not match the recorded attachment.
 var ErrVolumeDeviceMismatch = errors.New("volume device name mismatch")
 
-// ErrMountAmbiguous is returned by VolumeMounter.Mount and MountOne when the
-// publish reply carried no usable export, so the provider may have started
-// one; the caller unpublishes defensively so it is not orphaned.
+// ErrMountAmbiguous is returned by VolumeMounter.Mount and MountOne when a sent
+// publish got no usable export back (bad reply, timeout, cancelled caller), so
+// the provider may have started one; it is unpublished so it is not orphaned.
 var ErrMountAmbiguous = errors.New("publish reply carried no usable export")
 
 // ErrENINotAttached is returned by HotUnplugENI when the supplied ENI id

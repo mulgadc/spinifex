@@ -492,8 +492,8 @@ func TestVolumeMounterAdapter_AmbiguousPublishIsTornDown(t *testing.T) {
 	}
 }
 
-// A caller that gives up during a later volume's publish still gets the
-// volumes already published unpublished, rather than left exported.
+// A caller that gives up during a later volume's publish still gets that volume
+// and the ones already published unpublished, rather than left exported.
 func TestVolumeMounterAdapter_MountRollbackOutlivesCancelledCaller(t *testing.T) {
 	nc := connectMounterTest(t)
 	node := newMounterTestNode()
@@ -517,7 +517,63 @@ func TestVolumeMounterAdapter_MountRollbackOutlivesCancelledCaller(t *testing.T)
 	}()
 	err := adapter.Mount(ctx, mounterTestVM("vol-first", "vol-slow"))
 	require.ErrorIs(t, err, context.Canceled)
-	assert.Contains(t, fake.unpublished(), "vol-first", "the published volume must be unpublished despite the cancelled caller")
+	require.ErrorIs(t, err, vm.ErrMountAmbiguous)
+	assert.NotErrorIs(t, err, vm.ErrMountRetryable)
+	assert.ElementsMatch(t, []string{"vol-first", "vol-slow"}, fake.unpublished(),
+		"the published volume and the one whose publish the provider received must be unpublished despite the cancelled caller")
+}
+
+// A hot attach whose caller gives up after the provider received the publish
+// is ambiguous, so the attach unpublishes it, and that teardown still reaches
+// the provider under the cancelled context.
+func TestVolumeMounterAdapter_MountOneCancelledAfterSendIsAmbiguous(t *testing.T) {
+	nc := connectMounterTest(t)
+	node := newMounterTestNode()
+	fake := serveFakeNodeProvider(t, nc, node)
+	arrived, release := make(chan struct{}), make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	fake.setPublish(func(volumeID string) ebsprovider.PublishVolumeResponse {
+		close(arrived)
+		<-release
+		return publishedNBD("nbd://" + volumeID)
+	})
+	adapter := newNATSMounter(nc, node, nil)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() {
+		<-arrived
+		cancel()
+	}()
+	req := &viperblocklegacyv1.EBSRequest{Name: "vol-hot", NBDURI: "nbd://stale"}
+	err := adapter.MountOne(ctx, testAccountID, req)
+	require.ErrorIs(t, err, context.Canceled)
+	require.ErrorIs(t, err, vm.ErrMountAmbiguous)
+	assert.NotErrorIs(t, err, vm.ErrMountRetryable)
+	assert.Equal(t, "nbd://stale", req.NBDURI, "a failed publish must not overwrite the request's export")
+
+	require.NoError(t, adapter.UnmountOne(ctx, testAccountID, *req))
+	assert.Equal(t, []string{"vol-hot"}, fake.unpublished())
+}
+
+// A caller already gone when a publish would start sends nothing, so neither
+// call is ambiguous and Mount unpublishes only the volumes it published.
+func TestVolumeMounterAdapter_PublishAfterCallerGoneSendsNothing(t *testing.T) {
+	nc := connectMounterTest(t)
+	node := newMounterTestNode()
+	fake := serveFakeNodeProvider(t, nc, node)
+	adapter := newNATSMounter(nc, node, nil)
+
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	err := adapter.MountOne(cancelled, testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-hot"})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.NotErrorIs(t, err, vm.ErrMountAmbiguous)
+
+	err = adapter.Mount(cancelled, mounterTestVM("vol-never"))
+	require.ErrorIs(t, err, context.Canceled)
+	assert.NotErrorIs(t, err, vm.ErrMountAmbiguous)
+	assert.Empty(t, fake.snapshot(), "no request may reach the provider for a caller already gone")
 }
 
 // Every contract request names the account it acts for on the wire, so the

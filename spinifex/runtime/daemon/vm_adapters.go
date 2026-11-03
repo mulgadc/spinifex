@@ -122,11 +122,27 @@ type volumeLock struct {
 	mu          sync.Mutex
 	refs        int
 	publishedAt time.Time
+	// settling is set while the unpublish obligation reaper holds the lock.
+	settling bool
 }
 
-// acquire returns volumeID's lock entry, locked; wait false gives up rather
-// than block on a publish or unpublish in flight.
-func (l *volumeLocks) acquire(volumeID string, wait bool) (*volumeLock, bool) {
+// acquireMode says what acquire does when the lock is wanted elsewhere.
+type acquireMode int
+
+const (
+	// acquireWait blocks behind any holder.
+	acquireWait acquireMode = iota
+	// acquireUnlessSettling blocks, but refuses while the obligation reaper
+	// holds the lock: a request never waits on a seal it did not ask for.
+	acquireUnlessSettling
+	// acquireIdle takes the lock only when nobody holds or awaits it, and
+	// marks the entry settling. The obligation reaper uses it.
+	acquireIdle
+)
+
+// acquire returns volumeID's lock entry, locked, or false when mode refuses
+// to wait for the holder.
+func (l *volumeLocks) acquire(volumeID string, mode acquireMode) (*volumeLock, bool) {
 	l.mu.Lock()
 	if l.locks == nil {
 		l.locks = make(map[string]*volumeLock)
@@ -136,28 +152,29 @@ func (l *volumeLocks) acquire(volumeID string, wait bool) (*volumeLock, bool) {
 		entry = &volumeLock{}
 		l.locks[volumeID] = entry
 	}
+	switch {
+	case mode == acquireUnlessSettling && entry.settling,
+		mode == acquireIdle && entry.refs > 0:
+		l.mu.Unlock()
+		return nil, false
+	case mode == acquireIdle:
+		entry.settling = true
+	}
 	entry.refs++
 	l.mu.Unlock()
 
-	if wait {
-		entry.mu.Lock()
-		return entry, true
-	}
-	if entry.mu.TryLock() {
-		return entry, true
-	}
-	l.release(volumeID, entry, false)
-	return nil, false
+	// An idle entry has no holder, so this never blocks for acquireIdle.
+	entry.mu.Lock()
+	return entry, true
 }
 
-// release drops a reference, unlocking the entry when locked is true. An entry
-// nobody holds and that records no publish is forgotten.
-func (l *volumeLocks) release(volumeID string, entry *volumeLock, locked bool) {
-	if locked {
-		entry.mu.Unlock()
-	}
+// release unlocks the entry and drops a reference. An entry nobody holds and
+// that records no publish is forgotten.
+func (l *volumeLocks) release(volumeID string, entry *volumeLock) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	entry.settling = false
+	entry.mu.Unlock()
 	entry.refs--
 	if entry.refs == 0 && entry.publishedAt.IsZero() {
 		delete(l.locks, volumeID)
@@ -166,8 +183,8 @@ func (l *volumeLocks) release(volumeID string, entry *volumeLock, locked bool) {
 
 // withVolume runs fn holding volumeID's lock.
 func (a *volumeMounterAdapter) withVolume(volumeID string, fn func(*volumeLock) error) error {
-	entry, _ := a.volumes.acquire(volumeID, true)
-	defer a.volumes.release(volumeID, entry, true)
+	entry, _ := a.volumes.acquire(volumeID, acquireWait)
+	defer a.volumes.release(volumeID, entry)
 	return fn(entry)
 }
 
@@ -202,9 +219,12 @@ func newVolumeMounterAdapter(provider mounterProvider, node string, volState vm.
 // the export on req. A failure worth retrying is vm.ErrMountRetryable; one
 // that leaves unknown whether the provider exported it is vm.ErrMountAmbiguous.
 func (a *volumeMounterAdapter) publish(ctx context.Context, accountID string, req *viperblocklegacyv1.EBSRequest) error {
-	return a.withVolume(req.Name, func(entry *volumeLock) error {
-		return a.publishLocked(ctx, accountID, req, entry)
-	})
+	entry, ok := a.volumes.acquire(req.Name, acquireUnlessSettling)
+	if !ok {
+		return fmt.Errorf("publish volume %s: %w: %w", req.Name, vm.ErrVolumeSettling, vm.ErrMountRetryable)
+	}
+	defer a.volumes.release(req.Name, entry)
+	return a.publishLocked(ctx, accountID, req, entry)
 }
 
 func (a *volumeMounterAdapter) publishLocked(ctx context.Context, accountID string, req *viperblocklegacyv1.EBSRequest, entry *volumeLock) error {
@@ -313,10 +333,11 @@ func (a *volumeMounterAdapter) unpublishLocked(ctx context.Context, accountID, v
 
 var _ ec2volume.ObligationUnpublisher = (*volumeMounterAdapter)(nil)
 
-// HoldVolume takes volumeID's lock for the unpublish obligation reaper without
-// waiting, so a sweep never queues behind a seal or a wedged publish.
+// HoldVolume takes volumeID's lock for the unpublish obligation reaper only when
+// nobody holds or awaits it. A sweep never queues behind a publish, and a publish
+// refuses rather than queue behind the sweep's seal.
 func (a *volumeMounterAdapter) HoldVolume(volumeID string) (ec2volume.VolumeHold, bool) {
-	entry, ok := a.volumes.acquire(volumeID, false)
+	entry, ok := a.volumes.acquire(volumeID, acquireIdle)
 	if !ok {
 		return nil, false
 	}
@@ -351,7 +372,7 @@ func (h *mounterVolumeHold) Release() {
 		return
 	}
 	h.released = true
-	h.a.volumes.release(h.volumeID, h.entry, true)
+	h.a.volumes.release(h.volumeID, h.entry)
 }
 
 // ebsRequestWithTrace sends an ebs.* NATS request, opening a client span under

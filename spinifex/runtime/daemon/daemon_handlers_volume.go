@@ -150,7 +150,7 @@ func attachDetachErrorCode(err error) string {
 		return awserrors.ErrorUnsupportedOperation
 	case errors.Is(err, vm.ErrAttachmentLimitExceeded):
 		return awserrors.ErrorAttachmentLimitExceeded
-	case errors.Is(err, vm.ErrVolumeNotAttached):
+	case errors.Is(err, vm.ErrVolumeNotAttached), errors.Is(err, vm.ErrVolumeSettling):
 		return awserrors.ErrorIncorrectState
 	case errors.Is(err, vm.ErrVolumeNotDetachable):
 		return awserrors.ErrorOperationNotPermitted

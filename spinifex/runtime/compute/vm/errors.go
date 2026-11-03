@@ -65,6 +65,10 @@ var ErrAttachmentLimitExceeded = errors.New("attachment limit exceeded")
 // volumeID is not present in the instance's EBSRequests.
 var ErrVolumeNotAttached = errors.New("volume not attached to instance")
 
+// ErrVolumeSettling is returned by a mount while this node is still tearing
+// down the volume's export from an earlier, force-cleared attachment.
+var ErrVolumeSettling = errors.New("volume is still being detached from an earlier attachment")
+
 // ErrVolumeNotDetachable is returned by DetachVolume when the target
 // volume is a boot or EFI volume that cannot be hot-unplugged.
 var ErrVolumeNotDetachable = errors.New("volume cannot be detached")

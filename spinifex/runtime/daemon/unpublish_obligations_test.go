@@ -127,16 +127,22 @@ func TestInstanceLastNode_AnUnreadableRecordIsAnError(t *testing.T) {
 
 // holdTestProvider records each call and can hold a publish open until told.
 type holdTestProvider struct {
-	mu           sync.Mutex
-	unpublishes  []ebsprovider.UnpublishVolumeRequest
-	unpublishErr error
-	publishGate  chan struct{}
-	publishing   chan struct{}
+	mu            sync.Mutex
+	publishes     int
+	unpublishes   []ebsprovider.UnpublishVolumeRequest
+	unpublishErr  error
+	publishGate   chan struct{}
+	publishing    chan struct{}
+	unpublishGate chan struct{}
+	unpublishing  chan struct{}
 }
 
 var _ mounterProvider = (*holdTestProvider)(nil)
 
 func (p *holdTestProvider) PublishVolume(_ context.Context, req ebsprovider.PublishVolumeRequest) (*ebsprovider.PublishedVolume, error) {
+	p.mu.Lock()
+	p.publishes++
+	p.mu.Unlock()
 	if p.publishGate != nil {
 		close(p.publishing)
 		<-p.publishGate
@@ -145,6 +151,10 @@ func (p *holdTestProvider) PublishVolume(_ context.Context, req ebsprovider.Publ
 }
 
 func (p *holdTestProvider) UnpublishVolume(_ context.Context, req ebsprovider.UnpublishVolumeRequest) (*ebsprovider.UnpublishedVolume, error) {
+	if p.unpublishGate != nil {
+		close(p.unpublishing)
+		<-p.unpublishGate
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.unpublishes = append(p.unpublishes, req)
@@ -203,6 +213,40 @@ func TestVolumeMounterHold_RefusedWhileAPublishIsInFlight(t *testing.T) {
 	hold, ok = adapter.HoldVolume("vol-busy")
 	require.True(t, ok, "a second release does not unlock someone else's hold")
 	hold.Release()
+}
+
+// TestS8_AttachRefusesRatherThanWaitBehindTheReapersSeal enforces ADR-0003:S8:
+// a publish arriving while the obligation reaper seals the volume answers at
+// once, retryable, instead of waiting on a seal that scales with the volume.
+func TestS8_AttachRefusesRatherThanWaitBehindTheReapersSeal(t *testing.T) {
+	provider := &holdTestProvider{unpublishGate: make(chan struct{}), unpublishing: make(chan struct{})}
+	adapter := newVolumeMounterAdapter(provider, "node-hold", nil)
+	hold, ok := adapter.HoldVolume("vol-sealing")
+	require.True(t, ok)
+	sealed := make(chan error, 1)
+	go func() { sealed <- hold.Unpublish(context.Background(), testAccountID, "handle-1", false) }()
+	<-provider.unpublishing
+
+	refused := make(chan error, 1)
+	go func() {
+		refused <- adapter.MountOne(context.Background(), testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-sealing"})
+	}()
+	select {
+	case err := <-refused:
+		require.ErrorIs(t, err, vm.ErrVolumeSettling)
+		require.ErrorIs(t, err, vm.ErrMountRetryable)
+	case <-time.After(5 * time.Second):
+		t.Fatal("ADR-0003:S8: the attach waited behind the reaper's seal")
+	}
+	provider.mu.Lock()
+	assert.Zero(t, provider.publishes, "a refused attach sends no publish")
+	provider.mu.Unlock()
+
+	close(provider.unpublishGate)
+	require.NoError(t, <-sealed)
+	hold.Release()
+	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-sealing"}),
+		"the attach goes through once the seal is done")
 }
 
 func TestVolumeMounterHold_UnpublishSealsOrDropsAsAsked(t *testing.T) {

@@ -89,6 +89,11 @@ func TestAttachDetachErrorCode(t *testing.T) {
 			want: awserrors.ErrorInvalidParameterValue,
 		},
 		{
+			name: "a mount refused behind a settling seal maps to IncorrectState",
+			err:  fmt.Errorf("mount volume vol-1: publish volume vol-1: %w: %w", vm.ErrVolumeSettling, vm.ErrMountRetryable),
+			want: awserrors.ErrorIncorrectState,
+		},
+		{
 			name: "unknown error falls through to ServerInternal",
 			err:  errors.New("QMP blockdev-add: connection refused"),
 			want: awserrors.ErrorServerInternal,

@@ -128,6 +128,23 @@ func TestBuildDeviceMap(t *testing.T) {
 			wantLen: 4,
 		},
 		{
+			// A -blockdev boot node leaves the BlockBackend unnamed, so the
+			// entry is keyed by its node-name instead of "".
+			name: "blockdev boot device is named by its node-name",
+			devices: []qmp.BlockDevice{
+				{Device: "", Inserted: &qmp.BlockInserted{NodeName: "os"}, QDev: "/machine/peripheral-anon/device[0]/virtio-backend"},
+				{Device: "cloudinit", Inserted: &qmp.BlockInserted{NodeName: "#block123"}, QDev: "/machine/peripheral-anon/device[3]/virtio-backend"},
+				{Device: "", Inserted: &qmp.BlockInserted{NodeName: "nbd-vol-abc"}, QDev: "/machine/peripheral/vdisk-vol-abc/virtio-backend"},
+			},
+			want: map[string]string{
+				"os":            "/dev/vda",
+				"cloudinit":     "/dev/vdb",
+				"vdisk-vol-abc": "/dev/vdc",
+			},
+			absent:  []string{"", "nbd-vol-abc"},
+			wantLen: 3,
+		},
+		{
 			// Boot devices returned out of order: lowest PCI index wins /dev/vda;
 			// hot-plugged devices sort after boot devices.
 			name: "PCI-index ordering across mixed boot and hot-plug",
@@ -425,4 +442,16 @@ func TestLogGuestDeviceMap_LeavesBlockDeviceMappingsAlone(t *testing.T) {
 		"the root mapping must still name the device the AMI declares, not /dev/vda")
 	assert.Equal(t, "/dev/sdf", aws.StringValue(v.Instance.BlockDeviceMappings[1].DeviceName),
 		"a data mapping must still name the device the caller asked for, not /dev/vdb")
+}
+
+// TestBuildDeviceMap_UnnamedBootDeviceWithoutMedium covers an unnamed
+// boot-time BlockBackend that reports no inserted medium.
+func TestBuildDeviceMap_UnnamedBootDeviceWithoutMedium(t *testing.T) {
+	devices := []qmp.BlockDevice{
+		{Device: "", Inserted: nil, QDev: "/machine/peripheral-anon/device[0]/virtio-backend"},
+		{Device: "cloudinit", Inserted: &qmp.BlockInserted{}, QDev: "/machine/peripheral-anon/device[3]/virtio-backend"},
+	}
+	var got map[string]string
+	require.NotPanics(t, func() { got = buildDeviceMap(devices) })
+	assert.Equal(t, "/dev/vdb", got["cloudinit"], "the unnamed device still holds its PCI slot")
 }

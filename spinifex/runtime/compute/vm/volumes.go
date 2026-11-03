@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 )
 
@@ -143,7 +142,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 	if kind == volumeExportBlock {
 		blockdevArgs = HostDeviceOpts{Path: ebsRequest.BlockDevice, SizeBytes: ebsRequest.BlockSizeBytes}.QMPArgs(nodeName)
 	} else {
-		serverType, socketPath, nbdHost, nbdPort, err := nbd.ParseNBDURI(ebsRequest.NBDURI)
+		server, err := nbdServerOpts(ebsRequest.NBDURI)
 		if err != nil {
 			slog.ErrorContext(ctx, "AttachVolume: failed to parse NBDURI", "uri", ebsRequest.NBDURI, "err", err)
 			_ = m.rollbackUnmount(ctx, instance.AccountID, ebsRequest)
@@ -152,7 +151,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 		blockdevArgs = map[string]any{
 			"node-name":       nodeName,
 			"driver":          "nbd",
-			"server":          NBDServerOpts{Type: serverType, Path: socketPath, Host: nbdHost, Port: nbdPort}.QMPArg(),
+			"server":          server.QMPArg(),
 			"export":          "",
 			"read-only":       false,
 			"reconnect-delay": NBDReconnectDelaySeconds,

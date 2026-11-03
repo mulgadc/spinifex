@@ -87,7 +87,11 @@ While the instance is stopped, `attach-volume` of one of its data volumes to ano
 The volume becomes `available` and the next start does not attach it.
 The root volume of a stopped instance can be detached too, as on AWS.
 The instance then cannot start: `start-instances` returns `InvalidParameterValue` with "Instance does not have a volume attached at root (/dev/sda1)".
-Attaching a volume to a stopped instance is not implemented yet, so a detached root volume cannot be put back through the API.
+
+`attach-volume` works on a stopped instance too.
+The volume must be `available` and in the instance's availability zone, otherwise the call returns `VolumeInUse` or `InvalidVolume.ZoneMismatch`.
+The attachment is recorded on the stopped instance and the volume becomes `in-use` straight away.
+Attaching at the root device name (for example `/dev/sda1`) makes the volume the root again, and the next `start-instances` boots from it.
 
 An instance stopped by an earlier build had its data volumes released to `available` while its record still listed them.
 On start, a listed data volume that was deleted or is now attached to another instance is dropped with a warning in the daemon log, and the start continues.

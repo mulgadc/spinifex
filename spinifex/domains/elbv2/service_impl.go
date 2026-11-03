@@ -1976,7 +1976,16 @@ func (s *ELBv2ServiceImpl) DescribeLoadBalancers(ctx context.Context, input *elb
 		result = append(result, s.lbRecordToSDK(ctx, lb))
 	}
 
-	// AWS fails the whole call when any requested name is unknown.
+	// AWS fails the whole call when any requested ARN or name is unknown.
+	if len(arnFilter) > 0 {
+		for _, lb := range result {
+			delete(arnFilter, aws.StringValue(lb.LoadBalancerArn))
+		}
+		if len(arnFilter) > 0 {
+			return nil, awserrors.Errorf(awserrors.ErrorELBv2LoadBalancerNotFound,
+				"One or more load balancers not found")
+		}
+	}
 	if len(nameFilter) > 0 {
 		for _, lb := range result {
 			delete(nameFilter, aws.StringValue(lb.LoadBalancerName))

@@ -123,7 +123,7 @@ func buildInitializer(t *testing.T) string {
 		t.Skip("no C compiler to build the initializer")
 	}
 	lib := filepath.Join(t.TempDir(), "hardkill.so")
-	build := exec.Command(cc, "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC", "-o", lib, "hardkill/hardkill.c", "-lrt")
+	build := exec.Command(cc, "-std=c17", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC", "-o", lib, "hardkill/hardkill.c", "-lrt")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build initializer: %v: %s", err, out)
 	}

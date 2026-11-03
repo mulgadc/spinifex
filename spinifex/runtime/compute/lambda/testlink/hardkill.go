@@ -7,12 +7,14 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"debug/elf"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -55,6 +57,9 @@ func (d *Daemon) sealInitializer() (*os.File, error) {
 	if !digestIs(b, d.InitializerSHA256) {
 		return nil, errors.New("hard-kill initializer digest mismatch")
 	}
+	if err := sameArch(b); err != nil {
+		return nil, err
+	}
 	m, err := sealedCopy(b)
 	if err != nil {
 		return nil, fmt.Errorf("hard-kill initializer seal: %w", err)
@@ -67,6 +72,32 @@ func (d *Daemon) sealInitializer() (*os.File, error) {
 		return nil, errors.New("hard-kill initializer seal: sealed copy differs")
 	}
 	return m, nil
+}
+
+// CheckInitializer proves the configured initializer matches the pin and this
+// daemon's architecture, so a mismatched pair is refused before serving.
+func (d *Daemon) CheckInitializer() error {
+	m, err := d.sealInitializer()
+	if err != nil {
+		return err
+	}
+	return m.Close()
+}
+
+// elfMachine maps GOARCH to the ELF machine an initializer must be built for.
+var elfMachine = map[string]elf.Machine{"amd64": elf.EM_X86_64, "arm64": elf.EM_AARCH64}
+
+// sameArch refuses an initializer whose ELF machine differs from the daemon's.
+func sameArch(b []byte) error {
+	want, ok := elfMachine[runtime.GOARCH]
+	f, err := elf.NewFile(bytes.NewReader(b))
+	if err != nil {
+		return errors.New("hard-kill initializer is not an ELF object")
+	}
+	if !ok || f.Machine != want || f.Class != elf.ELFCLASS64 {
+		return fmt.Errorf("hard-kill initializer built for %v, daemon is %s", f.Machine, runtime.GOARCH)
+	}
+	return nil
 }
 
 // memfdCreate is unix.MemfdCreate; tests replace it to reach kernel refusals.

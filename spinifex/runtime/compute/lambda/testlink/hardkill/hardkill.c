@@ -1,7 +1,7 @@
 // Test-only backstop preloaded into QEMU: before main it arms a SIGKILL timer
 // and acknowledges on an inherited fd. Any failure kills the process at once.
 // Build: cc -O2 -Wall -Wextra -shared -fPIC -o hardkill.so hardkill.c -lrt
-#define _GNU_SOURCE
+#define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <limits.h>
 #include <signal.h>

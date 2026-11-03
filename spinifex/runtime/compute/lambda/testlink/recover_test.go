@@ -363,3 +363,18 @@ func TestRecoverLoop_NeverRunsBesideARequest(t *testing.T) {
 	r.d.RecoverLoop(context.Background(), time.Second, time.Second)
 	r.assertHeld(t)
 }
+
+// Recovery uses only the owner record, taps and addresses: a held attempt is
+// released on a daemon whose missing pin and initializer refuse serving.
+func TestRecover_DoesNotNeedServingDependencies(t *testing.T) {
+	vm, ino := child(t)
+	l := recordedLaunch(t, vm, ino)
+	require.NoError(t, vm.Process.Kill())
+	_ = vm.Wait()
+	r := newRecoverRig(t, execution.StateRunning, &l)
+	require.Error(t, r.d.CheckInitializer(), "serving check should refuse without a pin")
+	require.Empty(t, r.d.HostIP)
+	require.Nil(t, r.d.HTTP)
+	r.d.Recover(context.Background())
+	r.assertRecovered(t)
+}

@@ -5,6 +5,8 @@ package testlink
 import (
 	"context"
 	"crypto/sha256"
+	"debug/elf"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -90,8 +93,9 @@ func grant(t *testing.T, code []byte) *granted {
 	})
 	require.NoError(t, err)
 	lib := filepath.Join(t.TempDir(), "hardkill.so")
-	require.NoError(t, os.WriteFile(lib, []byte("library"), 0o600))
-	sum := sha256.Sum256([]byte("library"))
+	elfLib := elfHeader(elfMachine[runtime.GOARCH])
+	require.NoError(t, os.WriteFile(lib, elfLib, 0o600))
+	sum := sha256.Sum256(elfLib)
 	return &granted{store: store, att: att, lib: lib, libSHA: hex.EncodeToString(sum[:])}
 }
 
@@ -345,4 +349,26 @@ func TestPrepare_ScopeAndGrantEntryComeFromTheGrant(t *testing.T) {
 	require.Equal(t, "g-7\n0123456789ab\nenv-x\n3\n", string(entry))
 	expect := gen.GuestEntries(ln.Addr().String())[lambdav1.EntryScope]
 	require.Equal(t, "ap-southeast-2/123456789012/fn1/env-x/3", strings.TrimSpace(string(expect)))
+}
+
+// elfHeader is a bare 64-bit little-endian shared-object header for machine.
+func elfHeader(machine elf.Machine) []byte {
+	h := make([]byte, 64)
+	copy(h, elf.ELFMAG)
+	h[elf.EI_CLASS], h[elf.EI_DATA], h[elf.EI_VERSION] = byte(elf.ELFCLASS64), byte(elf.ELFDATA2LSB), byte(elf.EV_CURRENT)
+	binary.LittleEndian.PutUint16(h[16:], uint16(elf.ET_DYN))
+	binary.LittleEndian.PutUint16(h[18:], uint16(machine))
+	binary.LittleEndian.PutUint32(h[20:], uint32(elf.EV_CURRENT))
+	binary.LittleEndian.PutUint16(h[52:], 64)
+	return h
+}
+
+func TestSameArch_RefusesOtherMachinesAndNonELF(t *testing.T) {
+	require.NoError(t, sameArch(elfHeader(elfMachine[runtime.GOARCH])))
+	other := elf.EM_AARCH64
+	if runtime.GOARCH == "arm64" {
+		other = elf.EM_X86_64
+	}
+	require.ErrorContains(t, sameArch(elfHeader(other)), "built for")
+	require.ErrorContains(t, sameArch([]byte("library")), "not an ELF object")
 }

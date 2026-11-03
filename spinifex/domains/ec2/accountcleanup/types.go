@@ -10,6 +10,11 @@ type Request struct {
 
 	// Kinds limits the run to these platform kinds. Empty means all three.
 	Kinds []string `json:"kinds,omitempty"`
+
+	// DeleteLiveTemplates lets the run delete live launch templates that no
+	// nodegroup names, using the TemplateConsumerReader. Without it live
+	// templates are never deleted.
+	DeleteLiveTemplates bool `json:"delete_live_templates,omitempty"`
 }
 
 // Result is what the owner stores hold after one run. Kinds reuse the ec2.v1
@@ -88,7 +93,8 @@ const (
 	ReasonInstanceReference = "instance-reference"
 	// ReasonSpotRequestReference: an open or active spot request names it.
 	ReasonSpotRequestReference = "spot-request-reference"
-	// ReasonLaunchTemplateReference: a version of a live launch template names it.
+	// ReasonLaunchTemplateReference: a version of a live launch template names a
+	// key pair or group, or a nodegroup names a template.
 	ReasonLaunchTemplateReference = "launch-template-reference"
 	// ReasonReferenceUnknown: a record EC2 cannot read may name it, so it is
 	// never deleted by account cleanup.

@@ -1222,17 +1222,26 @@ func snapshotVolumeEngine(ctx context.Context, cfg *Config, volumeID, snapshotID
 		return createSnapshotWithVB(mv.VB, volumeID, snapshotID)
 	}
 
-	// openVolumeVB holds the cluster-wide lease while the engine is open, so a
-	// node without the drain socket is refused while another node holds the
-	// volume, rather than reading a checkpoint that node has not flushed.
-	vb, lease, err := openVolumeVB(ctx, cfg, volumeID)
+	// The lease refuses a volume another node holds. It is reentrant here, so
+	// an export this node runs but has not registered is excluded or drained
+	// separately, and the engine opens only once that is settled.
+	lease, err := cfg.acquireVolumeLease(ctx, volumeID)
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		vb.Detach()
-		cfg.releaseVolumeLease(ctx, lease)
-	}()
+	defer cfg.releaseVolumeLease(ctx, lease)
+
+	lock, err := excludeLocalWriter(ctx, cfg, volumeID)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseWriterLock(ctx, lock, volumeID)
+
+	vb, err := openLeasedVolumeVB(ctx, cfg, volumeID, lease)
+	if err != nil {
+		return nil, err
+	}
+	defer vb.Detach()
 	return createSnapshotWithVB(vb, volumeID, snapshotID)
 }
 

@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -44,12 +45,12 @@ var errExportSettling = errors.New("export is between connections")
 func drainMountedExport(ctx context.Context, cfg *Config, volumeID string) error {
 	sockPath := filepath.Join(cfg.BaseDir, volumeID, "snapshot.sock")
 	if len(sockPath) >= maxUnixSocketPath {
-		return requireNoConnectedClient(cfg, volumeID, false)
+		return requireNoConnectedClient(ctx, cfg, volumeID, "")
 	}
 	start := time.Now()
 	conn, err := net.DialTimeout("unix", sockPath, exportDrainDialTimeout)
 	if errors.Is(err, fs.ErrNotExist) {
-		return requireNoConnectedClient(cfg, volumeID, true)
+		return requireNoConnectedClient(ctx, cfg, volumeID, sockPath)
 	}
 	if err != nil {
 		return fmt.Errorf("%w: %s: %w", errExportDrainFailed, volumeID, err)
@@ -70,14 +71,16 @@ func drainMountedExport(ctx context.Context, cfg *Config, volumeID string) error
 }
 
 // requireNoConnectedClient proves an export serving no drain socket has nothing
-// buffered. canServeSocket is false when the socket path is too long for the
-// plugin to listen on, so a held lock there never clears.
-func requireNoConnectedClient(cfg *Config, volumeID string, canServeSocket bool) error {
+// buffered. sockPath is empty when the socket path is too long for the plugin
+// to listen on, so a held lock there never clears.
+func requireNoConnectedClient(ctx context.Context, cfg *Config, volumeID, sockPath string) error {
 	lock, err := viperblock.AcquireVolumeLock(cfg.BaseDir, volumeID)
 	if errors.Is(err, viperblock.ErrVolumeLocked) {
-		if !canServeSocket {
+		if sockPath == "" {
 			return fmt.Errorf("%w: %s: client connected with no drain socket", errExportDrainFailed, volumeID)
 		}
+		slog.WarnContext(ctx, "ebs.provider.snapshot.create: volume locked with no drain socket, refusing as retry-later",
+			"volume", volumeID, "socket", sockPath)
 		return fmt.Errorf("%w: %s", errExportSettling, volumeID)
 	}
 	if err != nil {
@@ -90,11 +93,37 @@ func requireNoConnectedClient(cfg *Config, volumeID string, canServeSocket bool)
 }
 
 // requireLastClientSealed refuses an export whose last client left WAL behind
-// without a seal receipt. The plugin releases the lock after a failed seal too,
-// so a free lock alone does not show the writes reached the backend.
+// without a seal receipt newer than it. The plugin releases the lock after a
+// failed seal too, so a free lock alone does not show the writes reached the backend.
 func requireLastClientSealed(cfg *Config, volumeID string) error {
-	if isAuxVolume(volumeID) || !volumeHoldsLocalWAL(cfg, volumeID) || hasSealReceipt(cfg.BaseDir, volumeID) {
+	if isAuxVolume(volumeID) || !volumeHoldsLocalWAL(cfg, volumeID) || sealReceiptCoversWAL(cfg, volumeID) {
 		return nil
 	}
 	return fmt.Errorf("%w: %s: last client left unsealed WAL", errExportDrainFailed, volumeID)
+}
+
+// excludeLocalWriter proves no export on this node holds writes the backend
+// lacks before a snapshot opens its own engine. The returned lock keeps a new
+// writer out until the snapshot is read; it is nil when a live export was drained.
+func excludeLocalWriter(ctx context.Context, cfg *Config, volumeID string) (*os.File, error) {
+	lock, err := viperblock.AcquireVolumeLock(cfg.BaseDir, volumeID)
+	if errors.Is(err, viperblock.ErrVolumeLocked) {
+		return nil, drainMountedExport(ctx, cfg, volumeID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s: %w", errExportDrainFailed, volumeID, err)
+	}
+	if err := requireLastClientSealed(cfg, volumeID); err != nil {
+		releaseWriterLock(ctx, lock, volumeID)
+		return nil, err
+	}
+	return lock, nil
+}
+
+// releaseWriterLock gives up a lock excludeLocalWriter took. A failed release
+// leaves only the kernel to drop it at exit, so it is logged, not returned.
+func releaseWriterLock(ctx context.Context, lock *os.File, volumeID string) {
+	if err := viperblock.ReleaseVolumeLock(lock); err != nil {
+		slog.WarnContext(ctx, "ebs.provider.snapshot.create: failed to release volume lock", "volume", volumeID, "err", err)
+	}
 }

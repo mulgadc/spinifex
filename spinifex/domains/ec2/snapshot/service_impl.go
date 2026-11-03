@@ -209,7 +209,7 @@ func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.Cre
 	})
 	if err != nil || created == nil {
 		slog.ErrorContext(ctx, "CreateSnapshot: provider CreateSnapshot failed", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
-		return nil, ProviderCreateError(err)
+		return nil, ProviderCreateError(volumeID, err)
 	}
 	now := time.Now()
 	snapshotCfg := ebsmetadata.Snapshot{
@@ -557,14 +557,19 @@ func unreadableRecordError(ctx context.Context, snapshotID, accountID, kind stri
 		"Cannot confirm that snapshot '%s' is not in use: %d %s record(s) could not be read", snapshotID, len(unreadable), kind)
 }
 
-// ProviderCreateError maps a provider CreateSnapshot failure to the code a
-// client can act on. A provider that cannot answer now is retry-later, as for
-// a delete; anything else is internal.
-func ProviderCreateError(err error) error {
-	if errors.Is(err, ebsprovider.ErrUnavailable) {
+// ProviderCreateError maps a provider CreateSnapshot failure of volumeID to
+// the code a client can act on: retry-later for a provider that cannot answer
+// now, IncorrectState for one that needs the volume detached, else internal.
+func ProviderCreateError(volumeID string, err error) error {
+	switch {
+	case errors.Is(err, ebsprovider.ErrUnavailable):
 		return errors.New(awserrors.ErrorServiceUnavailable)
+	case errors.Is(err, ebsprovider.ErrVolumeInUse):
+		return awserrors.Errorf(awserrors.ErrorIncorrectState,
+			"The volume '%s' is in use. Detach it before creating a snapshot.", volumeID)
+	default:
+		return errors.New(awserrors.ErrorServerInternal)
 	}
-	return errors.New(awserrors.ErrorServerInternal)
 }
 
 // providerDeleteError maps a provider DeleteSnapshot failure to the code a

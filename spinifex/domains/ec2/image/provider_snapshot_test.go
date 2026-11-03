@@ -248,6 +248,31 @@ func TestSnapshotVolume_Provider_UnavailableIsRetryLater(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorServiceUnavailable, err.Error())
 }
 
+// createInUseProvider refuses every CreateSnapshot as volume in use.
+type createInUseProvider struct {
+	ebsprovider.EBSProvider
+}
+
+func (p *createInUseProvider) CreateSnapshot(context.Context, ebsprovider.CreateSnapshotRequest) (*ebsprovider.Snapshot, error) {
+	return nil, &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeVolumeInUse, Message: "published"}
+}
+
+// TestSnapshotVolume_Provider_VolumeInUseIsIncorrectState locks that the
+// CreateImage snapshot tells the caller to detach a volume the provider refuses as in use.
+func TestSnapshotVolume_Provider_VolumeInUseIsIncorrectState(t *testing.T) {
+	svc, _, provider := setupProviderSnapshotImageService(t)
+	doc := seedProviderVolume(t, svc, provider, "vol-attached-inuse", 8)
+	svc.SetEBSProvider(&createInUseProvider{EBSProvider: provider})
+
+	err := svc.snapshotVolume(doc.VolumeID, "snap-attached-inuse", testAccountID)
+
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "unregistered error: %v", err)
+	assert.Equal(t, awserrors.ErrorIncorrectState, code)
+	assert.Contains(t, message, doc.VolumeID)
+	assert.Contains(t, message, "Detach")
+}
+
 // countingSnapshotProvider counts the CreateSnapshot calls it forwards.
 type countingSnapshotProvider struct {
 	ebsprovider.EBSProvider

@@ -1531,6 +1531,22 @@ func (p *createFailingProvider) CreateSnapshot(context.Context, ebsprovider.Crea
 	return nil, p.err
 }
 
+// A provider that cannot snapshot a volume while it is attached refuses it
+// as in use, which the client can act on by detaching the volume first.
+func TestCreateSnapshot_ProviderVolumeInUseIsIncorrectState(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+	createTestVolume(t, svc, store, "vol-create-inuse", 10)
+	svc.SetEBSProvider(&createFailingProvider{EBSProvider: svc.provider,
+		err: &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeVolumeInUse, Message: "published"}})
+
+	_, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-create-inuse")}, testAccountID)
+
+	code, message := clientErrorDetail(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectState, code)
+	assert.Contains(t, message, "vol-create-inuse")
+	assert.Contains(t, message, "Detach")
+}
+
 // A provider that cannot answer now, such as one refusing a volume another
 // node holds, is retry-later for the client; any other failure is internal.
 func TestCreateSnapshot_ProviderFailureMapsToSpecificError(t *testing.T) {

@@ -2252,7 +2252,7 @@ func TestStartQEMU_DiskBoot_BootVolumeIsABlockdevNode(t *testing.T) {
 			req := tt.req(t)
 			instance := &VM{ID: "i-boot-blockdev", InstanceType: "t3.nano"}
 			instance.EBSRequests.Requests = []EBSRequest{req}
-			require.NoError(t, m.startQEMU(instance, false))
+			require.NoError(t, m.startQEMU(instance))
 
 			got := launches()
 			require.Len(t, got, 1)
@@ -2283,7 +2283,7 @@ func TestStartQEMU_DiskBoot_NoBootVolumeIsNotLaunched(t *testing.T) {
 
 			instance := &VM{ID: "i-no-boot", InstanceType: "t3.nano"}
 			instance.EBSRequests.Requests = tt.requests
-			err := m.startQEMU(instance, false)
+			err := m.startQEMU(instance)
 
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "no boot volume among the instance's EBS requests")

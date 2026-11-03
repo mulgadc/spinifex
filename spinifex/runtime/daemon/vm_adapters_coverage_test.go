@@ -196,6 +196,28 @@ func TestBuildVMManagerDeps_UEFIVarStore(t *testing.T) {
 
 	d.config.DataDir = ""
 	assert.Equal(t, DefaultDataDir, d.buildVMManagerDeps().UEFIVarStore.DataDir)
+	var unwired vm.UEFIStoreRecords
+	assert.Equal(t, unwired, got.Records, "without JetStream the records stay a nil interface, so write-back reads as unwired")
+	var noInstances vm.UEFIInstancePointers
+	assert.Equal(t, noInstances, got.Instances)
+}
+
+// With JetStream the write-back reads and changes the store records and the
+// instance records through the daemon's own handles.
+func TestBuildVMManagerDeps_UEFIWriteBackUsesTheStoreRecordsAndInstanceRecords(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js, err := NewJetStreamManager(nc)
+	require.NoError(t, err)
+	d := &Daemon{config: &config.Config{}, vmMgr: vm.NewManager(), jsManager: js}
+
+	got := d.buildVMManagerDeps().UEFIVarStore
+	var unwired vm.UEFIStoreRecords
+	assert.Equal(t, unwired, got.Records, "an unopened store-record bucket is not handed out as a typed nil")
+	assert.Same(t, js, got.Instances)
+
+	require.NoError(t, js.InitUEFIStoreBucket())
+	got = d.buildVMManagerDeps().UEFIVarStore
+	assert.Same(t, js.UEFIStores(), got.Records)
 }
 
 // --- volumeMounterAdapter ---

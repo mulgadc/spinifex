@@ -699,12 +699,26 @@ func (d *Daemon) buildVMManagerDeps() vm.Deps {
 		DeviceDeletedTimeout:       d.deviceDeletedTimeout,
 		ConsumeCleanShutdownMarker: d.consumeCleanShutdownMarker(),
 		BackingStoreReady:          func() bool { return d.checkPredastoreReady() && d.checkViperblockReady() },
-		UEFIVarStore: vm.UEFIVarStoreDeps{
-			Objects: d.instanceObjects,
-			Bucket:  d.config.Predastore.Bucket,
-			DataDir: DataDirOrDefault(d.config.DataDir),
-		},
+		UEFIVarStore:               d.uefiVarStoreDeps(),
 	}
+}
+
+// uefiVarStoreDeps is where the node reads, keeps and writes back variable
+// stores. Records and Instances are left nil, not typed nil, without
+// JetStream, so write-back reads as unwired rather than panicking.
+func (d *Daemon) uefiVarStoreDeps() vm.UEFIVarStoreDeps {
+	deps := vm.UEFIVarStoreDeps{
+		Objects: d.instanceObjects,
+		Bucket:  d.config.Predastore.Bucket,
+		DataDir: DataDirOrDefault(d.config.DataDir),
+	}
+	if d.jsManager != nil {
+		deps.Instances = d.jsManager
+		if stores := d.jsManager.UEFIStores(); stores != nil {
+			deps.Records = stores
+		}
+	}
+	return deps
 }
 
 // instanceCleanerAdapter satisfies vm.InstanceCleaner by delegating to the

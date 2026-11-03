@@ -100,7 +100,11 @@ func (m *Manager) Stop(id string) error {
 		return ErrInstanceNotFound
 	}
 
-	migrated, stopErr := m.stopOne(instance)
+	migrated, pending, stopErr := m.stopOne(instance)
+	if pending != nil {
+		// A stop that kept the instance in the running set records it there.
+		m.settleUEFIWriteBack(context.Background(), pending, m.writeRunningState())
+	}
 	// A failed seal still ran the whole sequence, so the ownership hand-off
 	// below must still happen; the error is reported after it.
 	if stopErr != nil && !errors.Is(stopErr, ErrVolumeSealFailed) {
@@ -125,17 +129,19 @@ func (m *Manager) Stop(id string) error {
 // Stopping → stopCleanup → release auto-assigned IP → Stopped → migrate to
 // "stopped" KV → OnInstanceDown.
 // The bool reports whether migration removed the instance (caller must persist).
+// A returned write-back is the caller's to settle after it persists the
+// running set, which is the record write a stop that does not migrate makes.
 //
 // A failed volume seal (ErrVolumeSealFailed) does not abort the sequence —
 // QEMU is already down, so the remaining steps must still run — but it is
 // returned so the caller can refuse to advance. A precheck failure returns
 // ErrInvalidTransition with nothing torn down.
-func (m *Manager) stopOne(instance *VM) (bool, error) {
+func (m *Manager) stopOne(instance *VM) (bool, *uefiWriteBack, error) {
 	if err := m.transitionWithPrecheck(instance, StateStopping); err != nil {
-		return false, err
+		return false, nil, err
 	}
 
-	sealErr := m.stopCleanup(instance)
+	pending, sealErr := m.stopCleanup(instance)
 
 	m.UpdateState(instance.ID, func(v *VM) { v.LastNode = m.deps.NodeID })
 
@@ -158,23 +164,25 @@ func (m *Manager) stopOne(instance *VM) (bool, error) {
 		// The address is kept for the same reason. A drain is not a customer
 		// stop, and Restore brings the instance back on the same address rather
 		// than changing it under a guest nobody asked to move.
-		return false, sealErr
+		return false, pending, sealErr
 	}
 
 	if !m.MigrateStoppedToSharedKV(instance) {
+		m.settleUEFIWriteBack(context.Background(), pending, errUEFIRecordWriteFailed)
 		// Either StateStore unavailable / write failed (instance stays in
 		// local map; restoreInstances retries on next boot) OR a concurrent
 		// handler reclaimed the slot (id now resolves to a different live
 		// VM). Either way, do not fire OnInstanceDown — firing it would
 		// unsubscribe the per-id NATS subscriptions of the reclaimed
 		// instance.
-		return false, sealErr
+		return false, nil, sealErr
 	}
+	m.settleUEFIWriteBack(context.Background(), pending, nil)
 
 	if m.deps.Hooks.OnInstanceDown != nil {
 		m.deps.Hooks.OnInstanceDown(instance.ID)
 	}
-	return true, sealErr
+	return true, nil, sealErr
 }
 
 // StopAll fans stopOne across every VM for the coordinated shutdown DRAIN phase.
@@ -191,13 +199,20 @@ func (m *Manager) StopAll() error {
 	var (
 		mu       sync.Mutex
 		sealErrs []error
+		pending  []*uefiWriteBack
 	)
 	var wg sync.WaitGroup
 	for _, instance := range snapshot {
 		wg.Add(1)
 		go func(v *VM) {
 			defer wg.Done()
-			if _, err := m.stopOne(v); err != nil {
+			_, wb, err := m.stopOne(v)
+			if wb != nil {
+				mu.Lock()
+				pending = append(pending, wb)
+				mu.Unlock()
+			}
+			if err != nil {
 				if errors.Is(err, ErrInvalidTransition) {
 					slog.Debug("StopAll: skipping non-running instance",
 						"instanceId", v.ID, "state", string(m.Status(v)))
@@ -213,9 +228,13 @@ func (m *Manager) StopAll() error {
 		}(instance)
 	}
 	wg.Wait()
-	if err := m.writeRunningState(); err != nil {
-		slog.Error("StopAll: failed to persist running state after fan-out", "err", err)
-		sealErrs = append(sealErrs, err)
+	persistErr := m.writeRunningState()
+	for _, wb := range pending {
+		m.settleUEFIWriteBack(context.Background(), wb, persistErr)
+	}
+	if persistErr != nil {
+		slog.Error("StopAll: failed to persist running state after fan-out", "err", persistErr)
+		sealErrs = append(sealErrs, persistErr)
 	}
 	return errors.Join(sealErrs...)
 }
@@ -341,14 +360,17 @@ func (m *Manager) MarkRecoveryFailed(instance *VM, reason string) {
 		"instanceId", instance.ID, "reason", reason)
 
 	m.goroutineWg.Go(func() {
-		if err := m.stopCleanup(instance); err != nil {
+		pending, err := m.stopCleanup(instance)
+		if err != nil {
 			slog.Error("Volume seal failed during recovery cleanup; volume left unsealed for operator action",
 				"instanceId", instance.ID, "err", err)
 		}
 		m.Inspect(instance, func(v *VM) { v.LastNode = m.deps.NodeID })
-		if err := m.writeRunningState(); err != nil {
+		persistErr := m.writeRunningState()
+		m.settleUEFIWriteBack(context.Background(), pending, persistErr)
+		if persistErr != nil {
 			slog.Error("Failed to persist state after recovery failure",
-				"instanceId", instance.ID, "err", err)
+				"instanceId", instance.ID, "err", persistErr)
 		}
 	})
 }
@@ -496,12 +518,14 @@ func (m *Manager) stampOutstandingTeardownFailed(instance *VM) {
 	})
 }
 
-// stopCleanup performs the per-instance teardown shared by Stop and the
-// initial section of Terminate: graceful QMP shutdown, PID-file wait,
-// volume unmount, tap teardown (main + extra ENI + mgmt), resource
-// deallocation. Every step runs; only a failed volume seal is returned.
-func (m *Manager) stopCleanup(instance *VM) error {
-	sealErr := m.shutdownAndUnmount(instance)
+// stopCleanup performs the per-instance teardown of a sealing stop: graceful
+// QMP shutdown, PID-file wait, variable store write-back, volume unmount, tap
+// teardown (main + extra ENI + mgmt), resource deallocation. Every step runs;
+// only a failed volume seal is returned, with any write-back left to settle.
+func (m *Manager) stopCleanup(instance *VM) (*uefiWriteBack, error) {
+	m.shutdownQEMU(instance)
+	pending := m.writeBackUEFIVarStore(context.Background(), instance)
+	sealErr := m.unmountAfterShutdown(instance)
 	m.cleanupTapDevices(instance)
 	if m.deps.InstanceCleaner != nil {
 		if err := m.deps.InstanceCleaner.ReleaseGPU(instance); err != nil {
@@ -518,7 +542,7 @@ func (m *Manager) stopCleanup(instance *VM) error {
 		m.UpdateState(instance.ID, func(v *VM) { v.CapacityReservationId = "" })
 	}
 
-	return sealErr
+	return pending, sealErr
 }
 
 // releaseAutoAssignedPublicIP returns the instance's auto-assigned address to
@@ -615,7 +639,12 @@ func (m *Manager) terminateCleanup(instance *VM) {
 // and telemetry cleanup stay best-effort and are logged only.
 func (m *Manager) shutdownAndUnmount(instance *VM) error {
 	m.shutdownQEMU(instance)
+	return m.unmountAfterShutdown(instance)
+}
 
+// unmountAfterShutdown is shutdownAndUnmount once QEMU is down: the unmount,
+// then the fw_cfg and telemetry cleanup.
+func (m *Manager) unmountAfterShutdown(instance *VM) error {
 	var sealErr error
 	if m.deps.VolumeMounter != nil {
 		if err := m.deps.VolumeMounter.Unmount(context.Background(), instance); err != nil {

@@ -65,6 +65,10 @@ type UEFIVarStoreDeps struct {
 	Objects objectstore.ObjectStore
 	Bucket  string
 	DataDir string
+	// Records and Instances carry write-back obligations and move the
+	// pointer; write-back is off on a node without them.
+	Records   UEFIStoreRecords
+	Instances UEFIInstancePointers
 }
 
 // uefiSeed is seeded.json: the pointer key vars.fd beside it was seeded from.
@@ -188,13 +192,10 @@ func (m *Manager) prepareUEFIVarStore(ctx context.Context, instance *VM) error {
 	if err := writeFileAtomic(dir, uefiVarsFileName, region); err != nil {
 		return fmt.Errorf("write UEFI variable store for %s: %w", instance.ID, err)
 	}
-	seed, err := json.Marshal(uefiSeed{Key: ref.Key, SeededAt: time.Now().UTC()})
-	if err != nil {
-		return fmt.Errorf("encode %s for %s: %w", uefiSeededFileName, instance.ID, err)
-	}
-	if err := writeFileAtomic(dir, uefiSeededFileName, seed); err != nil {
+	if err := writeUEFISeed(dir, ref.Key); err != nil {
 		return fmt.Errorf("write %s for %s: %w", uefiSeededFileName, instance.ID, err)
 	}
+	m.clearForeignUEFIWriteBack(ctx, instance.ID)
 	recordUEFIStoreSeed("object")
 	slog.InfoContext(ctx, "Seeded UEFI variable store from the object store",
 		"instanceId", instance.ID, "key", ref.Key, "bytes", len(region), "fetch_ms", otelsetup.Millis(time.Since(start)))
@@ -341,6 +342,8 @@ var (
 	uefiStoreMetricsOnce   sync.Once
 	uefiStoreSeedCounter   metric.Int64Counter
 	uefiFirmwareMismatches metric.Int64Counter
+	uefiWriteBacks         metric.Int64Counter
+	uefiWriteBackSkips     metric.Int64Counter
 )
 
 func uefiStoreMetrics() {
@@ -356,6 +359,18 @@ func uefiStoreMetrics() {
 		uefiFirmwareMismatches, err = meter.Int64Counter("mulga.vm.uefi_store.firmware_mismatches",
 			metric.WithDescription("UEFI launches whose variable store was written under different firmware, by what differed. Only kind=code boots."),
 			metric.WithUnit("{launch}"))
+		if err != nil {
+			otel.Handle(err)
+		}
+		uefiWriteBacks, err = meter.Int64Counter("mulga.vm.uefi_store.write_backs",
+			metric.WithDescription("UEFI variable store write-backs by outcome: written, deferred to the reaper, retried by it, dropped, or failed."),
+			metric.WithUnit("{write_back}"))
+		if err != nil {
+			otel.Handle(err)
+		}
+		uefiWriteBackSkips, err = meter.Int64Counter("mulga.vm.uefi_store.write_back_skips",
+			metric.WithDescription("Sealing stops that wrote no UEFI variable store back, by the check that refused it."),
+			metric.WithUnit("{stop}"))
 		if err != nil {
 			otel.Handle(err)
 		}

@@ -103,6 +103,10 @@ type Manager struct {
 	// imdsLocks serialises each primary ENI's IMDS datapath attach, repair and
 	// teardown, which run outside mu.
 	imdsLocks keyedMutex
+
+	// uefiLocks serialises a stop's variable store write-back with the
+	// reaper's retry of the same instance's obligation.
+	uefiLocks keyedMutex
 }
 
 // NewManager returns a Manager with no collaborators wired. Tests that only

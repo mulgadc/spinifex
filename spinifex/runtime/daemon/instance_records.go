@@ -215,3 +215,44 @@ func loadRecord[T any](store *kvstore.Store[T], key string) (*T, error) {
 	}
 	return record, nil
 }
+
+var _ vm.UEFIInstancePointers = (*JetStreamManager)(nil)
+
+// LoadUEFIVarStoreOwner reads the fields of instanceID's record a variable
+// store write-back is decided on, at the revision read. An absent record is
+// found=false; an unreachable bucket is an error.
+func (m *JetStreamManager) LoadUEFIVarStoreOwner(instanceID string) (vm.UEFIVarStoreOwner, bool, error) {
+	if m.records == nil {
+		return vm.UEFIVarStoreOwner{}, false, errors.New("KV bucket not initialized")
+	}
+	record, rev, err := m.records.Get(context.Background(), instanceRecordKey(instanceID))
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return vm.UEFIVarStoreOwner{}, false, nil
+	}
+	if err != nil {
+		return vm.UEFIVarStoreOwner{}, false, err
+	}
+	return vm.UEFIVarStoreOwner{
+		Status:   record.Status.Status,
+		LastNode: record.Status.LastNode,
+		Pointer:  record.Status.UEFIVarStore,
+		Revision: rev,
+	}, true, nil
+}
+
+// CompareAndSetUEFIVarStore points instanceID's record at ref only while it
+// is still at rev, changing nothing else, and reports kvstore.ErrConflict
+// once anything has written the record since.
+func (m *JetStreamManager) CompareAndSetUEFIVarStore(instanceID string, ref *vm.UEFIVarStoreRef, rev uint64) error {
+	if m.records == nil {
+		return errors.New("KV bucket not initialized")
+	}
+	key := instanceRecordKey(instanceID)
+	record, _, err := m.records.Get(context.Background(), key)
+	if err != nil {
+		return err
+	}
+	record.Status.UEFIVarStore = ref
+	_, err = m.records.CompareAndSet(context.Background(), key, record, rev)
+	return err
+}

@@ -2700,6 +2700,12 @@ func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instanc
 	// failure of this launch.
 	instance.FirstLaunch = false
 
+	if err := s.reconcileStartVolumes(ctx, instance); err != nil {
+		slog.ErrorContext(ctx, "launchClaimedInstance: volumes cannot be reconciled", "instanceId", instance.ID, "err", err)
+		undo()
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
 	instanceType, ok := s.resourceMgr.InstanceTypes()[instance.InstanceType]
 	if !ok {
 		slog.ErrorContext(ctx, "launchClaimedInstance: instance type not available on this node",

@@ -607,13 +607,7 @@ func (m *Manager) startQEMU(instance *VM, appendConsole bool) error {
 			slog.Info("Replaced VM process exited", "instance", instance.ID, "pid", cmd.Process.Pid, "err", waitErr)
 			return
 		}
-		if waitErr != nil {
-			if m.deps.CrashHandler != nil {
-				m.deps.CrashHandler(instance, waitErr)
-			}
-		} else {
-			slog.Info("VM process exited cleanly", "instance", instance.ID)
-		}
+		m.HandleQEMUExit(instance, waitErr)
 	}()
 
 	pid := <-processChan
@@ -968,6 +962,7 @@ func (m *Manager) qmpHeartbeatPoll(instance *VM) bool {
 	if err == nil && qmpStatus.Status == qmpStatusShutdown &&
 		m.Status(instance) == StateRunning {
 		slog.InfoContext(ctx, "Guest powered itself off, ending QEMU", "instance", instance.ID)
+		instance.guestPoweroff.Store(true)
 		if _, quitErr := sendQMPCommand(ctx, instance.QMPClient,
 			qmp.QMPCommand{Execute: "quit"}, instance.ID); quitErr != nil {
 			slog.WarnContext(ctx, "QMP quit failed after guest shutdown",

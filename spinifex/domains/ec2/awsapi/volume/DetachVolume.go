@@ -74,6 +74,12 @@ func DetachVolume(ctx context.Context, input *ec2.DetachVolumeInput, natsConn *n
 
 	force := input.Force != nil && *input.Force
 
+	// The shared record decides: a stopped instance has no QMP to unplug from,
+	// so its record is edited first and the volume released after.
+	if isStoppedInstance(ctx, instanceID, natsConn, accountID) {
+		return detachFromStopped(ctx, natsConn, accountID, volumeID, instanceID, device)
+	}
+
 	command := ec2v1.EC2InstanceCommand{
 		ID: instanceID,
 		Attributes: ec2v1.EC2CommandAttributes{
@@ -152,6 +158,30 @@ func forceDetach(ctx context.Context, natsConn *nats.Conn, accountID, volumeID, 
 
 	slog.WarnContext(ctx, "DetachVolume: forced, the instance had no responder",
 		"volumeId", volumeID, "instanceId", instanceID)
+	if attachment == nil {
+		return ec2.VolumeAttachment{}, nil
+	}
+	return *attachment, nil
+}
+
+// detachFromStopped removes the volume from the stopped instance's record and
+// then releases the volume, in that order, so a failed release leaves the
+// record clean and the volume still held rather than the reverse.
+func detachFromStopped(ctx context.Context, natsConn *nats.Conn, accountID, volumeID, instanceID, device string) (ec2.VolumeAttachment, error) {
+	in := &ec2.DetachVolumeInput{VolumeId: &volumeID, InstanceId: &instanceID}
+	if device != "" {
+		in.Device = &device
+	}
+	if _, err := natsmsg.NATSRequest[ec2.VolumeAttachment](ctx, natsConn, detachFromStoppedSubject, in, 30*time.Second, accountID); err != nil {
+		slog.ErrorContext(ctx, "DetachVolume: stopped-instance record edit failed", "volumeId", volumeID, "instanceId", instanceID, "err", err)
+		return ec2.VolumeAttachment{}, err
+	}
+	attachment, err := natsmsg.NATSRequest[ec2.VolumeAttachment](ctx, natsConn, forceDetachSubject,
+		&ec2.DetachVolumeInput{VolumeId: &volumeID, Force: aws.Bool(true)}, 30*time.Second, accountID)
+	if err != nil {
+		slog.ErrorContext(ctx, "DetachVolume: release after record edit failed", "volumeId", volumeID, "instanceId", instanceID, "err", err)
+		return ec2.VolumeAttachment{}, err
+	}
 	if attachment == nil {
 		return ec2.VolumeAttachment{}, nil
 	}

@@ -566,7 +566,9 @@ func (p *NATSProvider) HoldsUnsealedWrites(ctx context.Context, nodeID string, v
 }
 
 func (p *NATSProvider) request(ctx context.Context, subject string, input, output any) error {
-	if p.conn == nil || !p.conn.IsConnected() {
+	// Only a closed connection refuses: one that is reconnecting buffers the
+	// request and sends it once the connection is back.
+	if p.conn == nil || p.conn.IsClosed() {
 		return nats.ErrConnectionClosed
 	}
 	payload, err := json.Marshal(input)

@@ -1919,7 +1919,7 @@ func tearDownPublication(ctx context.Context, cfg *Config, req ebsprovider.Unpub
 	if err != nil {
 		// Nothing mounted here is already the state unpublish asks for, so a
 		// retry after a request that completed server-side converges rather
-		// than erroring, matching the legacy path's unmountResponseError.
+		// than erroring.
 		if unmountResp.NotFound {
 			return unmountResp.Reaped, nil
 		}

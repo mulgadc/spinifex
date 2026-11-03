@@ -210,9 +210,9 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 
 	t.Run("ContractVersions", func(t *testing.T) {
 		t.Run("listed versions are ascending and include the legacy version", func(t *testing.T) {
-			require.NotEmpty(t, contractVersions, "a caller cannot choose a version for a provider that lists none")
+			require.NotEmpty(t, contractVersions, "a provider must list the contract versions it serves")
 			assert.Contains(t, contractVersions, ebsprovider.LegacySchemaVersion,
-				"dropping the legacy version strands every caller still in an N/N-1 rollout")
+				"callers send version-neutral requests at the legacy version, so a provider must serve it")
 			for i := 1; i < len(contractVersions); i++ {
 				assert.Lessf(t, contractVersions[i-1], contractVersions[i], "contract versions %v are not strictly ascending", contractVersions)
 			}

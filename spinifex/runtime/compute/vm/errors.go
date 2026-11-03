@@ -32,11 +32,10 @@ var ErrVolumeNotDetachable = errors.New("volume cannot be detached")
 // supplies a device name that does not match the recorded attachment.
 var ErrVolumeDeviceMismatch = errors.New("volume device name mismatch")
 
-// ErrMountAmbiguous is returned by VolumeMounter.MountOne when the
-// backend acknowledged the mount but returned an empty URI. The mount may
-// or may not have started serving NBD; AttachVolume must invoke UnmountOne
-// defensively so a half-started backend mount is not orphaned.
-var ErrMountAmbiguous = errors.New("ebs.mount succeeded with empty URI")
+// ErrMountAmbiguous is returned by VolumeMounter.Mount and MountOne when the
+// publish reply carried no usable export, so the provider may have started
+// one; the caller unpublishes defensively so it is not orphaned.
+var ErrMountAmbiguous = errors.New("publish reply carried no usable export")
 
 // ErrENINotAttached is returned by HotUnplugENI when the supplied ENI id
 // is not present in the instance's ENIRequests.AttachedByENIID map.

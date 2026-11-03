@@ -1006,9 +1006,8 @@ func TestProviderHandlers_UnpublishVolume_RemovesMountedVolume(t *testing.T) {
 }
 
 // TestProviderHandlers_UnpublishVolume_AbsentIsIdempotent covers a volume this
-// node never mounted. The legacy path treats that as a successful seal (see
-// unmountResponseError), and so must this one: a retry after a request that
-// timed out client-side but completed server-side has to converge.
+// node never mounted, which counts as a successful seal: a retry after a
+// request that timed out client-side but completed server-side must converge.
 func TestProviderHandlers_UnpublishVolume_AbsentIsIdempotent(t *testing.T) {
 	_, natsURL := setupEmbeddedNATS(t)
 	cfg := setupTestConfig(t, natsURL)

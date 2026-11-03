@@ -117,7 +117,7 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 		if decodeErr == nil {
 			resource = functionARN(inv.Region, inv.AccountID, aws.StringValue(c.Create.FunctionName))
 		}
-	case "GetFunction", "GetFunctionConfiguration":
+	case "GetFunction", "GetFunctionConfiguration", "GetFunctionCodeSigningConfig":
 		if name, _, err := resolveFunctionName(inv.Region, inv.AccountID, params[0]); err == nil {
 			resource = functionARN(inv.Region, inv.AccountID, name)
 		}
@@ -133,8 +133,9 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 			return err
 		}
 	}
-	// A configuration read is metadata only, so it does not need the code store.
-	if d.Meta == nil || (d.Codes == nil && action != "GetFunctionConfiguration") {
+	// Only GetFunction presigns code; the other reads are metadata only.
+	needsCodes := action != "GetFunctionConfiguration" && action != "GetFunctionCodeSigningConfig"
+	if d.Meta == nil || (d.Codes == nil && needsCodes) {
 		return errors.New(awserrors.ErrorServiceException)
 	}
 
@@ -181,7 +182,13 @@ func (d Deps) checkPassRole(inv dispatch.Invocation, roleARN string) error {
 }
 
 func writeJSON(w http.ResponseWriter, out reply) {
-	body, err := jsonutil.BuildJSON(out.Body)
+	var body []byte
+	var err error
+	if raw, ok := out.Body.(rawJSON); ok {
+		body = raw
+	} else {
+		body, err = jsonutil.BuildJSON(out.Body)
+	}
 	if err != nil {
 		slog.Error("Failed to marshal Lambda response", "err", err)
 		w.Header().Set("Content-Type", "application/json")

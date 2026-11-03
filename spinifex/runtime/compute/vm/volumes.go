@@ -25,7 +25,7 @@ const blockdevDelMaxAttempts = 20
 // object-del steps), so a wedged-but-responsive QEMU cannot stack per-step
 // timeouts into an effectively unbounded hang. It comfortably covers those
 // steps' own budgets (qmpCommandTimeout + the bounded blockdev-del retry) plus
-// margin; the ebs.unmount seal keeps its separate unmountSealTimeout.
+// margin; the volume seal is not bound by it and keeps its own budget.
 const detachAggregateTimeout = 3 * time.Minute
 
 // ErrHotAttachUnsupported is returned by AttachVolume for a direct-boot microvm,
@@ -344,8 +344,8 @@ func (m *Manager) DetachVolume(ctx context.Context, id, volumeID, device string,
 
 	// Bound the ctx-driven portion of the hot-unplug chain so a wedged-but-
 	// responsive QEMU cannot stack per-step QMP timeouts into an unbounded hang
-	// that pins attachMu forever. The ebs.unmount seal below keeps its own
-	// unmountSealTimeout. This deadline cannot preempt a plain-mutex QMP call,
+	// that pins attachMu forever. The volume seal below is not bound by it and
+	// keeps its own budget. This deadline cannot preempt a plain-mutex QMP call,
 	// which is why a fully dead QEMU is short-circuited outright below.
 	ctx, cancel := context.WithTimeout(ctx, detachAggregateTimeout)
 	defer cancel()

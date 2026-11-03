@@ -474,3 +474,35 @@ func TestVolumeMounterAdapter_AmbiguousPublishIsTornDown(t *testing.T) {
 	require.ErrorIs(t, err, vm.ErrMountAmbiguous)
 	assert.Equal(t, []string{"vol-ambiguous"}, unpublished.snapshot(), "the ambiguous volume must be unpublished")
 }
+
+// A detach spends part of its deadline on the unplug, so the seal must not
+// inherit what is left: a caller context already cancelled, or one shorter
+// than the seal, still gets the seal completed.
+func TestVolumeMounterAdapter_UnpublishOutlivesCallerContext(t *testing.T) {
+	const sealTime = 200 * time.Millisecond
+
+	nc := connectMounterTest(t)
+	node := newMounterTestNode()
+	advertiseVersions(t, nc, node, ebsprovider.SupportedSchemaVersions)
+	var sealed atomic.Int32
+	unpublishSubject, err := ebsprovider.UnpublishSubject(node)
+	require.NoError(t, err)
+	replyJSON(t, nc, unpublishSubject, func([]byte) any {
+		time.Sleep(sealTime)
+		sealed.Add(1)
+		return unpublishOK()
+	})
+	volState := &recordingVolState{}
+	adapter := newVolumeMounterAdapter(nc, node, volState)
+	require.True(t, adapter.useContract(t.Context()))
+
+	short, cancelShort := context.WithTimeout(t.Context(), sealTime/4)
+	defer cancelShort()
+	require.NoError(t, adapter.UnmountOne(short, testAccountID, viperblocklegacyv1.EBSRequest{Name: "vol-detach"}))
+
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	require.NoError(t, adapter.Unmount(cancelled, mounterTestVM("vol-stop")))
+	assert.Equal(t, int32(2), sealed.Load())
+	assert.Equal(t, []string{"vol-stop:available"}, volState.snapshot())
+}

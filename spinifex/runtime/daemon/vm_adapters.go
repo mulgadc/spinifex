@@ -298,7 +298,9 @@ func (a *volumeMounterAdapter) unpublish(ctx context.Context, accountID string, 
 	ctx, span := contractSpan(ctx, accountID, "ebs.mounter.unpublish", req.Name)
 	defer func() { endContractSpan(span, err) }()
 
-	_, err = a.provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{
+	// The seal takes the provider's data-movement budget, not what is left of
+	// the caller's; the caller's trace is kept.
+	_, err = a.provider.UnpublishVolume(context.WithoutCancel(ctx), ebsprovider.UnpublishVolumeRequest{
 		Versioned: ebsprovider.NewVersioned(),
 		VolumeID:  req.Name,
 		NodeID:    a.node,

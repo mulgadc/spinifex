@@ -506,3 +506,39 @@ func TestVolumeMounterAdapter_UnpublishOutlivesCallerContext(t *testing.T) {
 	assert.Equal(t, int32(2), sealed.Load())
 	assert.Equal(t, []string{"vol-stop:available"}, volState.snapshot())
 }
+
+// A Mount's rollback unmounts over the route its mounts took, even when the
+// failure dropped the cached route and the provider now answers differently.
+func TestVolumeMounterAdapter_RollbackKeepsTheMountRoute(t *testing.T) {
+	nc := connectMounterTest(t)
+	node := newMounterTestNode()
+	var askedOnce atomic.Bool
+	advertiseVersions(t, nc, node, func() []uint16 {
+		if askedOnce.Swap(true) {
+			return []uint16{1, 2}
+		}
+		return ebsprovider.SupportedSchemaVersions()
+	})
+	// Answers the first publish only, so the second finds no responder.
+	publishSubject, err := ebsprovider.PublishSubject(node)
+	require.NoError(t, err)
+	sub, err := nc.Subscribe(publishSubject, func(msg *nats.Msg) {
+		data, _ := json.Marshal(ebsprovider.PublishVolumeResponseV1{
+			Versioned: ebsprovider.NewVersioned(),
+			Published: &ebsprovider.PublishedVolumeV1{VolumeID: "vol-a", NodeID: node, NBDURI: "nbd://vol-a"},
+		})
+		_ = msg.Respond(data)
+	})
+	require.NoError(t, err)
+	require.NoError(t, sub.AutoUnsubscribe(1))
+	require.NoError(t, nc.Flush())
+	unpublished := &unpublishRecorder{}
+	unpublished.serve(t, nc, node, unpublishOK)
+	_, legacyUnmounts := countLegacy(t, nc, node)
+	adapter := newVolumeMounterAdapter(nc, node, nil)
+
+	err = adapter.Mount(t.Context(), mounterTestVM("vol-a", "vol-b"))
+	require.ErrorIs(t, err, vm.ErrMountRetryable)
+	assert.Equal(t, []string{"vol-a"}, unpublished.snapshot(), "the published volume must be unpublished")
+	assert.Zero(t, legacyUnmounts.Load(), "a published volume must not be rolled back over the legacy subject")
+}

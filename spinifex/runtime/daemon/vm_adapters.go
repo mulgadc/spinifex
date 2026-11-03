@@ -360,12 +360,15 @@ func (a *volumeMounterAdapter) Mount(ctx context.Context, instance *vm.VM) error
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()
 
+	// The rollback takes the route the mounts took, even if a failure since
+	// has dropped the cached one.
+	contract := a.useContract(ctx)
 	mounted := make([]int, 0, len(instance.EBSRequests.Requests))
 	rollback := func(origErr error) error {
 		var rbErrs []error
 		for _, idx := range mounted {
 			req := instance.EBSRequests.Requests[idx]
-			if err := a.unmountOne(ctx, instance.AccountID, req); err != nil {
+			if err := a.seal(ctx, instance.AccountID, req, contract); err != nil {
 				slog.Error("Mount rollback: unmount failed",
 					"volume", req.Name, "err", err)
 				rbErrs = append(rbErrs, fmt.Errorf("unmount %s: %w", req.Name, err))
@@ -377,7 +380,6 @@ func (a *volumeMounterAdapter) Mount(ctx context.Context, instance *vm.VM) error
 		return origErr
 	}
 
-	contract := a.useContract(ctx)
 	for k, v := range instance.EBSRequests.Requests {
 		if contract {
 			if err := a.publish(ctx, instance.AccountID, &instance.EBSRequests.Requests[k]); err != nil {
@@ -445,18 +447,19 @@ func (a *volumeMounterAdapter) Unmount(ctx context.Context, instance *vm.VM) err
 		// Every volume is attempted and the seal failures aggregated. An unsealed
 		// volume must NOT go available: a reattach on a node without the local
 		// WAL would find no checkpoint (bad superblock).
-		var sealed bool
-		if contract {
-			sealed = a.unmountContract(ctx, instance, ebsRequest, &sealErrs)
-		} else {
-			sealed = a.unmountLegacy(ctx, instance, ebsRequest, &sealErrs)
+		if err := a.seal(ctx, instance.AccountID, ebsRequest, contract); err != nil {
+			slog.Error("Volume seal failed, leaving volume non-available",
+				"instance", instance.ID, "volume", ebsRequest.Name, "err", err)
+			sealErrs = append(sealErrs, fmt.Errorf("seal %s: %w", ebsRequest.Name, err))
+			continue
 		}
+		slog.Info("Unmounted volume", "instance", instance.ID, "volume", ebsRequest.Name)
 
 		// Boot/root volumes must stay attached across stop/crash unmount: EFI is
 		// the wrong proxy for "boot" (BIOS-boot roots are Boot && !EFI), so gate on
 		// Boot too. Only DetachVolume and terminate release a boot volume; flipping
 		// it available here while the instance restarts splits the state record.
-		if sealed && !ebsRequest.EFI && !ebsRequest.Boot && a.volState != nil {
+		if !ebsRequest.EFI && !ebsRequest.Boot && a.volState != nil {
 			if err := a.volState.UpdateVolumeState(instance.AccountID, ebsRequest.Name, "available", "", ""); err != nil {
 				slog.Error("Failed to update volume state to available after unmount",
 					"volumeId", ebsRequest.Name, "err", err)
@@ -465,47 +468,6 @@ func (a *volumeMounterAdapter) Unmount(ctx context.Context, instance *vm.VM) err
 	}
 
 	return errors.Join(sealErrs...)
-}
-
-// unmountContract unpublishes one of instance's volumes, appending any failure
-// to sealErrs, and reports whether the seal completed.
-func (a *volumeMounterAdapter) unmountContract(ctx context.Context, instance *vm.VM, req viperblocklegacyv1.EBSRequest, sealErrs *[]error) bool {
-	if err := a.unpublish(ctx, instance.AccountID, req); err != nil {
-		slog.Error("Volume unpublish failed, leaving volume non-available",
-			"instance", instance.ID, "volume", req.Name, "err", err)
-		*sealErrs = append(*sealErrs, fmt.Errorf("seal %s: %w", req.Name, err))
-		return false
-	}
-	slog.Info("Unpublished volume", "instance", instance.ID, "volume", req.Name)
-	return true
-}
-
-// unmountLegacy sends ebs.unmount for one of instance's volumes, appending any
-// failure to sealErrs, and reports whether the seal completed.
-func (a *volumeMounterAdapter) unmountLegacy(ctx context.Context, instance *vm.VM, req viperblocklegacyv1.EBSRequest, sealErrs *[]error) bool {
-	payload, err := json.Marshal(req)
-	if err != nil {
-		slog.Error("Failed to marshal volume payload for unmount", "err", err)
-		*sealErrs = append(*sealErrs, fmt.Errorf("marshal unmount request for %s: %w", req.Name, err))
-		return false
-	}
-	msg, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID, viperblocklegacyv1.UnmountSubject(a.node), payload, unmountSealTimeout)
-	if err != nil {
-		a.noteRequestErr(err)
-		slog.Error("Failed to unmount volume",
-			"name", req.Name, "instance", instance.ID, "err", err)
-		*sealErrs = append(*sealErrs, fmt.Errorf("unmount %s: %w", req.Name, err))
-		return false
-	}
-	if sealErr := unmountResponseError(msg.Data); sealErr != nil {
-		slog.Error("Volume unmount seal failed, leaving volume non-available",
-			"instance", instance.ID, "volume", req.Name, "err", sealErr)
-		*sealErrs = append(*sealErrs, fmt.Errorf("seal %s: %w", req.Name, sealErr))
-		return false
-	}
-	slog.Info("Unmounted volume",
-		"instance", instance.ID, "volume", req.Name, "data", string(msg.Data))
-	return true
 }
 
 // abandonTimeout bounds one ebs.abandon request. Generous enough to cover
@@ -602,7 +564,14 @@ func (a *volumeMounterAdapter) UnmountOne(ctx context.Context, accountID string,
 
 // unmountOne unmounts a single request, sealing it, and returns any error.
 func (a *volumeMounterAdapter) unmountOne(ctx context.Context, accountID string, req viperblocklegacyv1.EBSRequest) error {
-	if a.useContract(ctx) {
+	return a.seal(ctx, accountID, req, a.useContract(ctx))
+}
+
+// seal unmounts req over the contract or the legacy subject, as contract
+// says, and returns nil only once its block map is sealed or it was already
+// unmounted.
+func (a *volumeMounterAdapter) seal(ctx context.Context, accountID string, req viperblocklegacyv1.EBSRequest, contract bool) error {
+	if contract {
 		return a.unpublish(ctx, accountID, req)
 	}
 	payload, err := json.Marshal(req)

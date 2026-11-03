@@ -9,8 +9,8 @@ import (
 	"os"
 	"time"
 
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -319,46 +319,40 @@ func (cfg *Config) fenceNoticeRetry() time.Duration {
 }
 
 // publishVolumeFenced tells the local daemon a guest is running against a disk
-// that is gone, until the daemon acknowledges. It gives up on a closed
-// connection, or once the volume is exported here again by a newer mount.
+// that is gone, until the daemon acknowledges. It gives up on a notice that can
+// never be acted on, a closed connection, or the volume being exported again.
 func (cfg *Config) publishVolumeFenced(ctx context.Context, volumeName, winner string) {
 	if cfg.nc == nil {
 		return
 	}
-	event := viperblocklegacyv1.VolumeFencedEvent{
-		Volume: volumeName,
-		Node:   cfg.leaseOwner(),
-		Winner: winner,
-		Reason: fmt.Sprintf("volume lease moved to %s while this node had the volume open", winner),
+	notice := ebsprovider.FenceNotice{
+		Versioned: ebsprovider.NewVersioned(),
+		VolumeID:  volumeName,
+		NodeID:    cfg.NodeName,
+		Winner:    winner,
+		Reason:    fmt.Sprintf("volume lease moved to %s while this node had the volume open", winner),
 	}
-	payload, err := json.Marshal(event)
-	if err != nil {
-		slog.ErrorContext(ctx, "fence: marshal fenced event", "volume", volumeName, "err", err)
-		return
-	}
-	subject := viperblocklegacyv1.VolumeFencedSubject(cfg.NodeName)
 	began := time.Now()
 
 	for attempt := 1; ; attempt++ {
-		reqCtx, cancel := context.WithTimeout(ctx, fenceNoticeTimeout)
-		reply, err := cfg.nc.RequestWithContext(reqCtx, subject, payload)
-		cancel()
+		instanceID, err := ebsprovider.NotifyFenced(ctx, cfg.nc, notice, fenceNoticeTimeout)
 		if err == nil {
-			var ack viperblocklegacyv1.VolumeFencedAck
-			if jerr := json.Unmarshal(reply.Data, &ack); jerr == nil && ack.Error != "" {
-				slog.ErrorContext(ctx, "fence: the daemon could not act on the fenced volume",
-					"volume", volumeName, "subject", subject, "err", ack.Error)
-			} else if attempt > 1 {
+			if attempt > 1 {
 				slog.WarnContext(ctx, "fence: the daemon acknowledged the fenced volume after retrying",
-					"volume", volumeName, "instance", ack.Instance, "attempts", attempt,
+					"volume", volumeName, "instance", instanceID, "attempts", attempt,
 					"unacknowledged_ms", otelsetup.Millis(time.Since(began)))
 			}
+			return
+		}
+		if !ebsprovider.FenceNoticeRetryable(err) {
+			slog.ErrorContext(ctx, "fence: the daemon cannot act on the fenced volume, the guest is left with dead I/O",
+				"volume", volumeName, "node", notice.NodeID, "attempts", attempt, "err", err)
 			return
 		}
 
 		if cfg.nc.IsClosed() {
 			slog.ErrorContext(ctx, "fence: connection closed before the daemon acknowledged the fenced volume, the guest may be left with dead I/O",
-				"volume", volumeName, "subject", subject, "attempts", attempt)
+				"volume", volumeName, "node", notice.NodeID, "attempts", attempt)
 			return
 		}
 		if _, again := cfg.lookupMountedVolume(volumeName); again {
@@ -368,7 +362,7 @@ func (cfg *Config) publishVolumeFenced(ctx context.Context, volumeName, winner s
 		}
 		if attempt == 1 || attempt%fenceNoticeLogEveryTries == 0 {
 			slog.ErrorContext(ctx, "fence: the daemon has not acknowledged the fenced volume, retrying; until it does the guest keeps running with dead I/O",
-				"volume", volumeName, "subject", subject, "attempts", attempt,
+				"volume", volumeName, "node", notice.NodeID, "attempts", attempt,
 				"unacknowledged_ms", otelsetup.Millis(time.Since(began)), "err", err)
 		}
 

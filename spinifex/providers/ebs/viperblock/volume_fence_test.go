@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -171,15 +172,25 @@ func TestVolumeFence_CompletesOnceTheWriterFinallyExits(t *testing.T) {
 
 	const volumeName = "vol-fencekilllate"
 
-	cfg := fencedConfig(t, natsURL, "node-a", volumeName)
+	cfg, nc := noticeConfig(t, natsURL, volumeName)
 	cfg.MountedVolumes[0].PID = 0 // rejected by ForceKillProcess, so the kill cannot succeed
 	// Alive for the guard and one watch pass, gone on the next: the fence has to
 	// see the failure persist and then resolve.
 	var probes atomic.Int32
 	cfg.processAlive = func(int) bool { return probes.Add(1) <= 2 }
 	cfg.fenceWatchEvery = 10 * time.Millisecond
+	responder := &fenceResponder{}
+	subject, err := ebsprovider.FenceNoticeSubject("node-a")
+	require.NoError(t, err)
+	_, err = nc.Subscribe(subject, responder.handle)
+	require.NoError(t, err)
+	require.NoError(t, nc.Flush())
 
 	cfg.fenceVolume(t.Context(), volumeName, leaseLostToPeer)
+	require.Equalf(t, 1, responder.count(),
+		"ADR-0007:S4: a fence that completed late never told the daemon, so its guest runs on with no disk. "+
+			"Fix: publishVolumeFenced once awaitFencedWriterExit sees the writer gone (volume_fence.go)")
+	assert.Equal(t, volumeName, responder.events[0].VolumeID)
 
 	cfg.mu.Lock()
 	mounted := len(cfg.MountedVolumes)

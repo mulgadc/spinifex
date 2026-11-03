@@ -75,6 +75,7 @@ type providerHarness struct {
 	nodeID           string
 	otherNodeID      string
 	killExport       func(*testing.T, *ebsprovider.PublishedVolume)
+	revokeExport     func(*testing.T, *ebsprovider.PublishedVolume) ebsprovider.FenceNotice
 	queueOnOtherNode func(t *testing.T) ebsprovider.EBSProvider
 }
 
@@ -86,6 +87,8 @@ type providerHarness struct {
 // would go to a subject nobody serves and time out instead of being refused.
 // Both share the NATS the volume leases live in and the bucket the volumes
 // live in, so a second opener is refused by the lease, not by the harness.
+// The hooks kill a published export's nbdkit behind the handlers' back, and
+// revoke one as a lost lease does.
 func inProcessProvider(t *testing.T) providerHarness {
 	t.Helper()
 	pluginPath := requireExportTools(t)
@@ -123,6 +126,17 @@ func inProcessProvider(t *testing.T) providerHarness {
 	_, err = js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: clusterv1.ClusterStateBucket})
 	require.NoError(t, err)
 
+	holder := func(t *testing.T, published *ebsprovider.PublishedVolume) (*Config, MountedVolume) {
+		t.Helper()
+		for _, node := range []*Config{first, second} {
+			if mv, ok := findMountedVolume(node, published.VolumeID); ok && node.NodeName == published.NodeID {
+				return node, mv
+			}
+		}
+		t.Fatalf("no mounted entry for %s on %s", published.VolumeID, published.NodeID)
+		return nil, MountedVolume{}
+	}
+
 	return providerHarness{
 		newProvider: func(t *testing.T) ebsprovider.EBSProvider {
 			t.Helper()
@@ -130,16 +144,18 @@ func inProcessProvider(t *testing.T) providerHarness {
 		},
 		nodeID:      first.NodeName,
 		otherNodeID: second.NodeName,
-		// Kills a published export's nbdkit behind the handlers' back.
 		killExport: func(t *testing.T, published *ebsprovider.PublishedVolume) {
 			t.Helper()
-			for _, node := range []*Config{first, second} {
-				if mv, ok := findMountedVolume(node, published.VolumeID); ok && node.NodeName == published.NodeID {
-					require.NoError(t, hostprocess.ForceKillProcess(mv.PID, 5*time.Second))
-					return
-				}
-			}
-			t.Fatalf("no mounted entry for %s on %s", published.VolumeID, published.NodeID)
+			_, mv := holder(t, published)
+			require.NoError(t, hostprocess.ForceKillProcess(mv.PID, 5*time.Second))
+		},
+		revokeExport: func(t *testing.T, published *ebsprovider.PublishedVolume) ebsprovider.FenceNotice {
+			t.Helper()
+			node, _ := holder(t, published)
+			return conformance.CaptureFenceNotice(t, nc, published.NodeID, func() error {
+				node.onVolumeLeaseLost(t.Context(), published.VolumeID, leaseLostStalled)
+				return nil
+			})
 		},
 		queueOnOtherNode: func(t *testing.T) ebsprovider.EBSProvider {
 			t.Helper()
@@ -163,6 +179,7 @@ func TestViperblockdConformance(t *testing.T) {
 		NodeID:           h.nodeID,
 		OtherNodeID:      h.otherNodeID,
 		KillExport:       h.killExport,
+		RevokeExport:     h.revokeExport,
 		QueueOnOtherNode: h.queueOnOtherNode,
 	})
 }

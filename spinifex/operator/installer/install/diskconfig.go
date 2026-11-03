@@ -171,20 +171,6 @@ func (d DiskConfig) WithRoles(roles []RoleMount) DiskConfig {
 	return d
 }
 
-// RolesForDisks assigns roles positionally, which is the default the UI offers:
-// first disk picked is the OS, second is spinifex, third is predastore.
-func RolesForDisks(disks []Disk) []RoleMount {
-	out := make([]RoleMount, 0, len(disks))
-	for i, disk := range disks {
-		var role DiskRole
-		if i < len(AllDiskRoles) {
-			role = AllDiskRoles[i]
-		}
-		out = append(out, RoleMount{Role: role, Disk: disk})
-	}
-	return out
-}
-
 // DataMounts is every role except the OS drive, shallowest mountpoint first.
 // This is the traversal every stage of the install shares.
 func (d DiskConfig) DataMounts() []RoleMount {

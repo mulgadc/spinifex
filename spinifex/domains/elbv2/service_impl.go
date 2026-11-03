@@ -1342,6 +1342,11 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 
 	name := *input.Name
 
+	tags, err := tagsFromSDK(input.Tags)
+	if err != nil {
+		return nil, err
+	}
+
 	// Check for duplicate name
 	existing, err := s.store.GetLoadBalancerByName(ctx, name, accountID)
 	if err != nil {
@@ -1413,8 +1418,6 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 			securityGroups = append(securityGroups, *sg)
 		}
 	}
-
-	tags := tagsFromSDK(input.Tags)
 
 	// Create ENIs in each subnet (when VPC service is available)
 	var eniIDs []string
@@ -2128,7 +2131,10 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 	tgID := awsidentifiers.GenerateResourceID("tg")
 	tgArn := resourcearn.FormatELBv2TargetGroup(s.region, accountID, name, tgID)
 
-	tags := tagsFromSDK(input.Tags)
+	tags, err := tagsFromSDK(input.Tags)
+	if err != nil {
+		return nil, err
+	}
 
 	record := &TargetGroupRecord{
 		TargetGroupArn:  tgArn,
@@ -2912,7 +2918,10 @@ func (s *ELBv2ServiceImpl) CreateListener(ctx context.Context, input *elbv2.Crea
 		actions = append(actions, action)
 	}
 
-	tags := tagsFromSDK(input.Tags)
+	tags, err := tagsFromSDK(input.Tags)
+	if err != nil {
+		return nil, err
+	}
 
 	record := &ListenerRecord{
 		ListenerArn:     listenerArn,
@@ -3329,15 +3338,57 @@ func (s *ELBv2ServiceImpl) DescribeTags(ctx context.Context, input *elbv2.Descri
 	}, nil
 }
 
-// tagsFromSDK converts an SDK Tag slice into a tag map, skipping nil key/value entries.
-func tagsFromSDK(tags []*elbv2.Tag) map[string]string {
-	m := make(map[string]string, len(tags))
-	for _, tag := range tags {
-		if tag.Key != nil && tag.Value != nil {
-			m[*tag.Key] = *tag.Value
-		}
+// maxResourceTags is AWS's per-resource tag limit for ELBv2 resources.
+const maxResourceTags = 50
+
+// tagCharsPattern is the ELBv2 model's TagKey and TagValue pattern.
+var tagCharsPattern = regexp.MustCompile(`^([\p{L}\p{Z}\p{N}_.:/=+\-@]*)$`)
+
+// tagsFromSDK validates tags against the ELBv2 model and converts them into a
+// tag map, storing a missing Value as "".
+func tagsFromSDK(tags []*elbv2.Tag) (map[string]string, error) {
+	if tags != nil && len(tags) == 0 {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError, "1 validation error detected: Value at 'tags' failed to satisfy constraint: Member must have length greater than or equal to 1")
 	}
-	return m
+	m := make(map[string]string, len(tags))
+	for i, tag := range tags {
+		if tag == nil || tag.Key == nil {
+			return nil, awserrors.Errorf(awserrors.ErrorValidationError, "1 validation error detected: Value null at 'tags.%d.member.key' failed to satisfy constraint: Member must not be null", i+1)
+		}
+		if err := validateTagString(*tag.Key, fmt.Sprintf("tags.%d.member.key", i+1), 1, 128); err != nil {
+			return nil, err
+		}
+		v := aws.StringValue(tag.Value)
+		if err := validateTagString(v, fmt.Sprintf("tags.%d.member.value", i+1), 0, 256); err != nil {
+			return nil, err
+		}
+		if _, dup := m[*tag.Key]; dup {
+			return nil, errors.New(awserrors.ErrorELBv2DuplicateTagKeys)
+		}
+		m[*tag.Key] = v
+	}
+	if len(m) > maxResourceTags {
+		return nil, errTooManyTags()
+	}
+	return m, nil
+}
+
+func validateTagString(v, member string, minLen, maxLen int) error {
+	n := utf8.RuneCountInString(v)
+	if n < minLen {
+		return awserrors.Errorf(awserrors.ErrorValidationError, "1 validation error detected: Value at '%s' failed to satisfy constraint: Member must have length greater than or equal to %d", member, minLen)
+	}
+	if n > maxLen {
+		return awserrors.Errorf(awserrors.ErrorValidationError, "1 validation error detected: Value at '%s' failed to satisfy constraint: Member must have length less than or equal to %d", member, maxLen)
+	}
+	if !tagCharsPattern.MatchString(v) {
+		return awserrors.Errorf(awserrors.ErrorValidationError, "1 validation error detected: Value at '%s' failed to satisfy constraint: Member must satisfy regular expression pattern: %s", member, tagCharsPattern.String())
+	}
+	return nil
+}
+
+func errTooManyTags() error {
+	return awserrors.Errorf(awserrors.ErrorELBv2TooManyTags, "You've reached the limit on the number of tags for this resource.")
 }
 
 // tagsMapToSDK converts a tag map into a sorted SDK Tag slice; returns nil for empty input.

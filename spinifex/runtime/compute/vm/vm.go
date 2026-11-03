@@ -137,6 +137,10 @@ type VM struct {
 	// claiming the flag serialises reboots of one instance.
 	rebooting atomic.Bool `json:"-"`
 
+	// guestPoweroff is set once the heartbeat has seen the guest power itself off
+	// and asked QEMU to quit, so the exit that follows is a stop, not a crash.
+	guestPoweroff atomic.Bool `json:"-"`
+
 	// relaunchMu is held while a reboot swaps this guest's QEMU process, so a
 	// stop or terminate never unmounts volumes under a process being started.
 	relaunchMu sync.Mutex `json:"-"`
@@ -432,13 +436,10 @@ type Config struct {
 	NoGraphic          bool   `json:"no_graphic"`
 	MachineType        string `json:"machine_type"`
 	ConsoleLogPath     string `json:"console_log_path,omitempty"`
-	// ConsoleLogAppend keeps the existing console log rather than truncating
-	// it, for a reboot that replaces the process.
-	ConsoleLogAppend bool   `json:"-"`
-	SerialSocket     string `json:"serial_socket,omitempty"`
-	CPUType          string `json:"cpu_type"`
-	CPUCount         int    `json:"cpu_count"`
-	Memory           int    `json:"memory"`
+	SerialSocket       string `json:"serial_socket,omitempty"`
+	CPUType            string `json:"cpu_type"`
+	CPUCount           int    `json:"cpu_count"`
+	Memory             int    `json:"memory"`
 
 	Drives    []Drive    `json:"drives"`
 	IOThreads []IOThread `json:"io_threads,omitempty"`
@@ -552,11 +553,11 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		// -serial chardev:console0 wires it to the existing device (not a new one).
 		// Do NOT use -device isa-serial here — that adds a second device (ttyS1)
 		// while the kernel talks to ttyS0.
-		args = append(args, "-chardev", fmt.Sprintf("file,id=console0,path=%s%s", cfg.ConsoleLogPath, appendOpt(",append", cfg.ConsoleLogAppend)))
+		args = append(args, "-chardev", fmt.Sprintf("file,id=console0,path=%s,append=on", cfg.ConsoleLogPath))
 		args = append(args, "-serial", "chardev:console0")
 	} else if cfg.SerialSocket != "" && cfg.ConsoleLogPath != "" {
-		chardevOpts := fmt.Sprintf("socket,id=console0,path=%s,server=on,wait=off,logfile=%s%s",
-			cfg.SerialSocket, cfg.ConsoleLogPath, appendOpt(",logappend", cfg.ConsoleLogAppend))
+		chardevOpts := fmt.Sprintf("socket,id=console0,path=%s,server=on,wait=off,logfile=%s,logappend=on",
+			cfg.SerialSocket, cfg.ConsoleLogPath)
 		args = append(args, "-chardev", chardevOpts)
 		args = append(args, "-serial", "chardev:console0")
 	}
@@ -692,13 +693,4 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 	//cmd.Stderr = os.Stderr
 
 	return cmd, nil
-}
-
-// appendOpt renders a chardev append option, or nothing when off, so a
-// fresh launch keeps the command line it always had.
-func appendOpt(key string, on bool) string {
-	if !on {
-		return ""
-	}
-	return key + "=on"
 }

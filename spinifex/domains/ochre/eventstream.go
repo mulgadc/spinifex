@@ -3,6 +3,7 @@ package ochre
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	esv2 "github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
@@ -131,6 +132,22 @@ func (fw *frameWriter) writeException(excType string, payload []byte) error {
 	headers.Set(":message-type", esv2.StringValue("exception"))
 	headers.Set(":exception-type", esv2.StringValue(excType))
 	return fw.writeMessage(headers, payload)
+}
+
+// writeUpstreamFault frames a mid-stream source error as an in-band exception
+// and returns the error code to record: the fault's own, or ClientDisconnected
+// when the exception frame cannot be written either.
+func (fw *frameWriter) writeUpstreamFault(op, modelID string, err error) string {
+	excType := excInternalServerException
+	if _, ok := errors.AsType[*streamFaultError](err); ok {
+		excType = excModelStreamErrorException
+	}
+	slog.Error(op+": upstream fault", "model", modelID, "err", err)
+	if werr := fw.writeException(excType, exceptionPayload(err)); werr != nil {
+		slog.Error(op+": failed to write exception frame", "model", modelID, "err", werr)
+		return errCodeClientDisconnected
+	}
+	return awserrors.ValidErrorCodeFromError(err)
 }
 
 // writeChunk frames a provider-native chunk as the

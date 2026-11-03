@@ -1,0 +1,30 @@
+#!/sbin/openrc-run
+# mulga-eks-log-forward — copies k3s warnings and errors to the serial console
+# so they reach the Elasticsearch sink. Best effort: nothing depends on it and
+# a failure here never affects the node.
+
+description="Forward k3s warnings and errors to the serial console"
+command="/bin/sh"
+command_background="yes"
+supervisor="supervise-daemon"
+respawn_delay=5
+pidfile="/run/mulga-eks-log-forward.pid"
+output_log="/dev/null"
+error_log="/dev/null"
+
+depend() {
+    after k3s k3s-agent
+}
+
+start_pre() {
+    role=$(cat /etc/spinifex-eks/role 2>/dev/null || true)
+    if [ "${role}" = "agent" ]; then
+        log=/var/log/k3s-agent.log
+        FORWARD_PREFIX="[k3s-agent]"
+    else
+        log=/var/log/k3s.log
+        FORWARD_PREFIX="[k3s]"
+    fi
+    export FORWARD_PREFIX
+    command_args="-c 'tail -n +1 -F ${log} 2>/dev/null | /usr/local/sbin/mulga-eks-log-forward'"
+}

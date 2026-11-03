@@ -1042,7 +1042,7 @@ func TestStartQEMU_DirectBoot_PrimaryTapError(t *testing.T) {
 		ENIMac:       "02:aa:bb:cc:dd:01",
 	}
 
-	err := m.startQEMU(instance, false)
+	err := m.startQEMU(instance)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "setup tap device")
@@ -1070,7 +1070,7 @@ func TestStartQEMU_DirectBoot_BridgeEnsureError(t *testing.T) {
 		ENIMac:       "02:aa:bb:cc:dd:04",
 	}
 
-	err := m.startQEMU(instance, false)
+	err := m.startQEMU(instance)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ensure IMDS bridge")
@@ -1105,7 +1105,7 @@ func TestStartQEMU_DirectBoot_ExtraENITapError(t *testing.T) {
 		},
 	}
 
-	err := m.startQEMU(instance, false)
+	err := m.startQEMU(instance)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "extra ENI")
@@ -1126,7 +1126,7 @@ func TestStartQEMU_DirectBoot_MgmtTapError(t *testing.T) {
 		MgmtMAC:      "02:aa:bb:cc:dd:ff",
 	}
 
-	err := m.startQEMU(instance, false)
+	err := m.startQEMU(instance)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mgmt tap")
@@ -1152,7 +1152,7 @@ func TestStartQEMU_DiskBoot_MgmtTapCreated(t *testing.T) {
 	}
 	instance.EBSRequests.Requests = []EBSRequest{{Name: "vol-root", NBDURI: "nbd:unix:/tmp/root.sock", Boot: true}}
 
-	err := m.startQEMU(instance, false)
+	err := m.startQEMU(instance)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mgmt tap")
@@ -1174,7 +1174,7 @@ func TestStartQEMU_DirectBoot_InstanceTypeNotFound(t *testing.T) {
 		DirectBoot:   true,
 	}
 
-	err := m.startQEMU(instance, false)
+	err := m.startQEMU(instance)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "x9.enormous")
@@ -1190,7 +1190,7 @@ func TestStartQEMU_BlockDeviceMissing(t *testing.T) {
 	instance := directBootInstance("i-blk-missing",
 		EBSRequest{Name: "vol-blk", BlockDevice: missing, BlockSizeBytes: 1 << 20})
 
-	err := m.startQEMU(instance, false)
+	err := m.startQEMU(instance)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "block device not present for vol-blk")
@@ -2089,12 +2089,12 @@ func TestStartQEMU_DirectBoot_LaunchesMountedDataVolumeWithoutSavingIt(t *testin
 	second := nbdListener(t)
 
 	instance := directBootInstance("i-db-vol", EBSRequest{Name: "vol-data-a", NBDURI: first})
-	require.NoError(t, m.startQEMU(instance, false))
+	require.NoError(t, m.startQEMU(instance))
 
 	// A later launch from the same saved base, after the volume was remounted
 	// on a different endpoint.
 	instance.EBSRequests.Requests[0].NBDURI = second
-	require.NoError(t, m.startQEMU(instance, false))
+	require.NoError(t, m.startQEMU(instance))
 
 	got := launches()
 	require.Len(t, got, 2)
@@ -2136,7 +2136,7 @@ func TestStartQEMU_DirectBoot_LaunchesTheEndpointItProbed(t *testing.T) {
 		instance.EBSRequests.Mu.Unlock()
 		return orig(uri, timeout)
 	}
-	require.NoError(t, m.startQEMU(instance, false))
+	require.NoError(t, m.startQEMU(instance))
 
 	assert.Equal(t, []string{probedEP}, probed)
 	got := launches()
@@ -2151,7 +2151,7 @@ func TestStartQEMU_DirectBoot_NoVolumesLaunchesTheBase(t *testing.T) {
 	launches := withFakeQEMU(t)
 
 	instance := directBootInstance("i-db-novol")
-	require.NoError(t, m.startQEMU(instance, false))
+	require.NoError(t, m.startQEMU(instance))
 
 	got := launches()
 	require.Len(t, got, 1)
@@ -2176,7 +2176,7 @@ func TestStartQEMU_DirectBoot_InvalidDataRequestIsNotLaunched(t *testing.T) {
 			launches := withFakeQEMU(t)
 
 			instance := directBootInstance("i-db-bad", tt.req)
-			err := m.startQEMU(instance, false)
+			err := m.startQEMU(instance)
 
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
@@ -2197,7 +2197,7 @@ func TestStartQEMU_DiskBoot_DataVolumeStaysOnThePCIPath(t *testing.T) {
 		{Name: "vol-data-a", NBDURI: ep},
 	}
 	require.NoError(t, os.WriteFile(strings.TrimPrefix(instance.EBSRequests.Requests[0].NBDURI, "nbd:unix:"), nil, 0o600))
-	require.NoError(t, m.startQEMU(instance, false))
+	require.NoError(t, m.startQEMU(instance))
 
 	got := launches()
 	require.Len(t, got, 1)
@@ -2252,7 +2252,7 @@ func TestStartQEMU_DiskBoot_BootVolumeIsABlockdevNode(t *testing.T) {
 			req := tt.req(t)
 			instance := &VM{ID: "i-boot-blockdev", InstanceType: "t3.nano"}
 			instance.EBSRequests.Requests = []EBSRequest{req}
-			require.NoError(t, m.startQEMU(instance, false))
+			require.NoError(t, m.startQEMU(instance))
 
 			got := launches()
 			require.Len(t, got, 1)
@@ -2283,7 +2283,7 @@ func TestStartQEMU_DiskBoot_NoBootVolumeIsNotLaunched(t *testing.T) {
 
 			instance := &VM{ID: "i-no-boot", InstanceType: "t3.nano"}
 			instance.EBSRequests.Requests = tt.requests
-			err := m.startQEMU(instance, false)
+			err := m.startQEMU(instance)
 
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "no boot volume among the instance's EBS requests")

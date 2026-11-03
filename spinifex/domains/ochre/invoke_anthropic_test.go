@@ -73,7 +73,7 @@ func TestAnthropicInvokeAdapter_InvokeModel_401ReturnsAccessDenied(t *testing.T)
 
 // TestBoundAnthropicInvokeAdapter_InvokeModel exercises newAnthropicInvokeAdapter
 // and boundAnthropicInvokeAdapter.InvokeModel (the InvokeAdapter used by
-// InvokeRouter for the "provider:anthropic" tier). newAnthropicInvokeAdapter
+// Router.InvokeModel for the "provider:anthropic" tier). newAnthropicInvokeAdapter
 // hardcodes the real Anthropic base URL, so — same package as production code
 // — the test reaches into the unexported inner client to redirect it at an
 // httptest stub instead of the network.

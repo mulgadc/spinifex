@@ -27,21 +27,21 @@ type Provider interface {
 	Converse(ctx context.Context, modelID string, input *bedrockruntime.ConverseInput) (*bedrockruntime.ConverseOutput, error)
 }
 
-// Router resolves a modelId to its catalog entry and dispatches to the
-// matching Provider, resolving self-host endpoints and provider credentials
-// as needed.
+// Router resolves a modelId to its catalog entry and dispatches Converse,
+// ConverseStream, InvokeModel and InvokeModelWithResponseStream to the
+// matching backend, resolving self-host endpoints and provider credentials.
 type Router struct {
 	resolver         CredentialResolver
 	endpointResolver EndpointResolver
 	recorder         Recorder
 	access           AccessResolver
 	// provisioned resolves a provisioned-throughput ARN's commitment.
-	// Nil (a Router built without one) means Converse rejects any PT ARN as
-	// ResourceNotFoundException rather than a bare modelId's usual denial.
+	// Nil (a Router built without one) means every operation rejects any PT
+	// ARN as ResourceNotFoundException rather than a bare modelId's denial.
 	provisioned *ProvisionedStore
-	// guardrails resolves a Converse request's GuardrailConfig. Nil fails
-	// closed on any GuardrailConfig (ResourceNotFoundException) rather than
-	// proceeding unguarded; a request with none is unaffected either way.
+	// guardrails resolves a request's GuardrailConfig or guardrail header.
+	// Nil fails closed on any guardrail (ResourceNotFoundException) rather
+	// than proceeding unguarded; a request with none is unaffected.
 	guardrails *GuardrailStore
 	// embedder drives topicPolicy's semantic match. Nil falls back to the
 	// guardrail engine's literal matcher (see assessTopicPolicy).
@@ -66,6 +66,24 @@ func NewRouter(resolver CredentialResolver, endpointResolver EndpointResolver, r
 		access = DenyAllAccessResolver
 	}
 	return &Router{resolver: resolver, endpointResolver: endpointResolver, recorder: recorder, access: access, provisioned: provisioned, guardrails: guardrails, embedder: embedder}
+}
+
+// vendorKey resolves the API key for a "provider:<vendor>" catalog tier. Any
+// tier other than Anthropic is ResourceNotFoundException; an Anthropic tier
+// with no resolvable credential is AccessDeniedException.
+func (rt *Router) vendorKey(ctx context.Context, accountID, provider string) (string, error) {
+	vendor, ok := strings.CutPrefix(provider, providerPrefix)
+	if !ok || vendor != vendorAnthropic {
+		return "", errors.New(awserrors.ErrorResourceNotFoundException)
+	}
+	key, resolvable, err := rt.resolver.Resolve(ctx, accountID, vendor)
+	if err != nil {
+		return "", err
+	}
+	if !resolvable {
+		return "", errors.New(awserrors.ErrorAccessDeniedException)
+	}
+	return key, nil
 }
 
 // Converse routes modelID to its provider via the catalog. Unknown modelIds
@@ -133,9 +151,7 @@ func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input
 	backend = entry.Provider
 
 	var p Provider
-	vendor, isVendor := strings.CutPrefix(entry.Provider, providerPrefix)
-	switch {
-	case entry.Provider == tierSelfHost:
+	if entry.Provider == tierSelfHost {
 		var release func()
 		release, err = admitSelfHost(ctx, rt.provisioned, ptAccountID, modelID, entry)
 		if err != nil {
@@ -147,27 +163,13 @@ func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input
 		} else {
 			p = newVLLMProvider(rt.endpointResolver)
 		}
-	case isVendor:
-		switch vendor {
-		case vendorAnthropic:
-			var key string
-			var resolvable bool
-			key, resolvable, err = rt.resolver.Resolve(ctx, accountID, vendorAnthropic)
-			if err != nil {
-				return nil, err
-			}
-			if !resolvable {
-				err = errors.New(awserrors.ErrorAccessDeniedException)
-				return nil, err
-			}
-			p = newAnthropicProvider(key)
-		default:
-			err = errors.New(awserrors.ErrorResourceNotFoundException)
+	} else {
+		var key string
+		key, err = rt.vendorKey(ctx, accountID, entry.Provider)
+		if err != nil {
 			return nil, err
 		}
-	default:
-		err = errors.New(awserrors.ErrorResourceNotFoundException)
-		return nil, err
+		p = newAnthropicProvider(key)
 	}
 
 	// An INPUT block returns early with a guarded ConverseOutput, never
@@ -268,9 +270,7 @@ func (rt *Router) ConverseStream(ctx context.Context, accountID, modelID string,
 	// whether the eventual source gets slot-release wrapping and whether an
 	// error return past this point must release the slot explicitly.
 	var selfHostRelease func()
-	vendor, isVendor := strings.CutPrefix(entry.Provider, providerPrefix)
-	switch {
-	case entry.Provider == tierSelfHost:
+	if entry.Provider == tierSelfHost {
 		selfHostRelease, err = admitSelfHost(ctx, rt.provisioned, ptAccountID, modelID, entry)
 		if err != nil {
 			return nil, err
@@ -280,22 +280,12 @@ func (rt *Router) ConverseStream(ctx context.Context, accountID, modelID string,
 		} else {
 			p = newVLLMProvider(rt.endpointResolver)
 		}
-	case isVendor:
-		switch vendor {
-		case vendorAnthropic:
-			key, ok, err := rt.resolver.Resolve(ctx, accountID, vendorAnthropic)
-			if err != nil {
-				return nil, err
-			}
-			if !ok {
-				return nil, errors.New(awserrors.ErrorAccessDeniedException)
-			}
-			p = newAnthropicProvider(key)
-		default:
-			return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+	} else {
+		key, err := rt.vendorKey(ctx, accountID, entry.Provider)
+		if err != nil {
+			return nil, err
 		}
-	default:
-		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+		p = newAnthropicProvider(key)
 	}
 
 	sp, ok := p.(ConverseStreamProvider)

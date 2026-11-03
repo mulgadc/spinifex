@@ -29,7 +29,7 @@ type invokeStreamSource interface {
 // in-band exception event, since the HTTP status can no longer change.
 // requestContentType is the client's declared Content-Type, logged only.
 // resolver, endpointResolver, recorder and access may be nil;
-// NewInvokeStreamRouter and the internal NoopRecorder fallback keep this call
+// NewRouter and the internal NoopRecorder fallback keep this call
 // safe either way. provisioned may be nil, disabling PT ARN acceptance (any
 // PT ARN then reads as an unknown modelId). guardrailIdent/guardrailVersion
 // come from the request's X-Amzn-Bedrock-Guardrail* headers. embedder drives
@@ -41,13 +41,13 @@ func InvokeModelWithResponseStream(ctx context.Context, w http.ResponseWriter, a
 	requestID := uuid.NewV4().String()
 	start := time.Now()
 
-	// Resolved here too (InvokeStreamRouter below resolves it again for
+	// Resolved here too (the Router below resolves it again for
 	// routing) purely so entry's Provider tag reflects a PT ARN's target
 	// model, not the raw ARN, for the InvocationRecord's Backend field.
 	_, recordModelID, _ := resolveInferenceTarget(ctx, accountID, modelID, provisioned)
-	entry, _ := lookupCatalogEntry(recordModelID) // InvokeStreamRouter below re-validates; only its Provider tag is needed here.
+	entry, _ := lookupCatalogEntry(recordModelID) // the Router below re-validates; only its Provider tag is needed here.
 
-	src, err := NewInvokeStreamRouter(resolver, endpointResolver, access, provisioned, guardrails, embedder).InvokeModelWithResponseStream(ctx, accountID, modelID, body, guardrailIdent, guardrailVersion)
+	src, err := NewRouter(resolver, endpointResolver, nil, access, provisioned, guardrails, embedder).InvokeModelWithResponseStream(ctx, accountID, modelID, body, guardrailIdent, guardrailVersion)
 	if err != nil {
 		return err
 	}

@@ -273,7 +273,7 @@ func TestCatalog_SelfHostEntriesFitTheLlamaInvokeAdapter(t *testing.T) {
 			continue
 		}
 		assert.True(t, strings.HasPrefix(entry.ModelID, "meta.llama"),
-			"familyMeta entry %q is not a Llama model; InvokeRouter would serve it "+
+			"familyMeta entry %q is not a Llama model; Router.InvokeModel would serve it "+
 				"through llamaInvokeAdapter with the wrong native schema", entry.ModelID)
 	}
 }

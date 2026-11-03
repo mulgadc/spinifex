@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
+	"maps"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -314,7 +315,7 @@ func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) string {
 				// checkpoint and lose what this node has not sealed.
 				slog.Warn("ec2.start: owner at capacity holds unsealed writes; not starting elsewhere",
 					"instanceId", peek.InstanceID, "lastNode", lastNode)
-				if relayErr := msg.Respond(resp.Data); relayErr != nil {
+				if relayErr := relayStartReply(msg, resp); relayErr != nil {
 					slog.Error("ec2.start: failed to relay response from original node",
 						"instanceId", peek.InstanceID, "lastNode", lastNode, "err", relayErr)
 					return outcomeError
@@ -351,13 +352,11 @@ func (d *Daemon) handleEC2StartStoppedInstance(msg *nats.Msg) string {
 	return handleNATSRequest(d.node, d.instanceService.StartStoppedInstance)(msg)
 }
 
-// relayStartReply answers msg with the owner's reply, keeping the header that
-// says a refusal was a volume held elsewhere, which the body cannot carry.
+// relayStartReply answers msg with the owner's reply, body and every header,
+// since the headers carry what the AWS body cannot, such as why it refused.
 func relayStartReply(msg, resp *nats.Msg) error {
 	reply := nats.NewMsg("")
 	reply.Data = resp.Data
-	if v := resp.Header.Get(natsmsg.VolumeHeldElsewhereHeader); v != "" {
-		reply.Header.Set(natsmsg.VolumeHeldElsewhereHeader, v)
-	}
+	maps.Copy(reply.Header, resp.Header)
 	return msg.RespondMsg(reply)
 }

@@ -590,10 +590,17 @@ func TestHandleEC2StartStoppedInstance_Forwarding(t *testing.T) {
 
 	t.Run("owner success is relayed", func(t *testing.T) {
 		d, _, body := newFixture(t, "i-p1-fwd-ok", "node-p1-ok")
-		owner(t, d, "node-p1-ok", func(m *nats.Msg) { _ = m.Respond([]byte(`{"started":true}`)) })
+		owner(t, d, "node-p1-ok", func(m *nats.Msg) {
+			resp := nats.NewMsg(m.Reply)
+			resp.Data = []byte(`{"started":true}`)
+			resp.Header.Set(natsmsg.NodeIDHeader, "node-p1-ok")
+			_ = m.RespondMsg(resp)
+		})
 
 		reply := requestHandler(t, d.natsConn, "ec2.start.p1-ok", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
 		assert.JSONEq(t, `{"started":true}`, string(reply.Data))
+		assert.Equal(t, "node-p1-ok", reply.Header.Get(natsmsg.NodeIDHeader),
+			"the relayed verdict is the owner's, headers included")
 	})
 
 	t.Run("owner at capacity falls back locally", func(t *testing.T) {
@@ -620,12 +627,15 @@ func TestHandleEC2StartStoppedInstance_Forwarding(t *testing.T) {
 			resp := nats.NewMsg(m.Reply)
 			resp.Data = awserrors.GenerateErrorPayload(awserrors.ErrorInsufficientInstanceCapacity)
 			resp.Header.Set(natsmsg.UnsealedWritesHeader, "true")
+			resp.Header.Set(natsmsg.NodeIDHeader, "node-p1-dirty")
 			_ = m.RespondMsg(resp)
 		})
 
 		reply := requestHandler(t, d.natsConn, "ec2.start.p1-dirty", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
 		assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, decodeError(t, reply.Data)["Code"],
 			"an owner that still holds unsealed writes must not be bypassed by a local start")
+		assert.Equal(t, "true", reply.Header.Get(natsmsg.UnsealedWritesHeader))
+		assert.Equal(t, "node-p1-dirty", reply.Header.Get(natsmsg.NodeIDHeader))
 	})
 
 	t.Run("owner not subscribed falls back locally", func(t *testing.T) {

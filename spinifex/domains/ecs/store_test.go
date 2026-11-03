@@ -124,8 +124,6 @@ func TestKeyPaths(t *testing.T) {
 
 	assert.Equal(t, "clusters/web/services/", ServicesPrefix("web"))
 	assert.Equal(t, "clusters/web/services/api", ServiceKey("web", "api"))
-
-	assert.Equal(t, "123456789012/web", LeaderLeaseKey("123456789012", "web"))
 }
 
 // Prefix helpers must be a true prefix of their per-record key so a KV

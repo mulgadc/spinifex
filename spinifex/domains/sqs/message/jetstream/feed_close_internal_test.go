@@ -234,7 +234,7 @@ func TestFeedCloseReportsLateDeleteFailure(t *testing.T) {
 	b.deleteErr = injected
 	closed := make(chan error, 1)
 	go func() { closed <- f.Close() }()
-	for !f.isClosed() {
+	for !closeBegun(f) {
 		time.Sleep(time.Millisecond)
 	}
 	close(b.release)
@@ -255,7 +255,7 @@ func (c *closeOnDelivery) Next(opts ...jsapi.NextOpt) (jsapi.Msg, error) {
 	msg, err := c.MessagesContext.Next(opts...)
 	if err == nil {
 		go func() { _ = c.f.Close() }()
-		for !c.f.isClosed() {
+		for !closeBegun(c.f) {
 			time.Sleep(time.Millisecond)
 		}
 	}
@@ -286,4 +286,10 @@ func TestFeedWithholdsDeliveryRacingClose(t *testing.T) {
 	got, err := resumed.Next(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, second, got.Position, "the withheld change is not lost")
+}
+
+// closeBegun reports whether Close has begun on f.
+func closeBegun(f *feed) bool {
+	_, closed := f.current()
+	return closed
 }

@@ -17,11 +17,7 @@ func TestKeyHelpers(t *testing.T) {
 		got  string
 		want string
 	}{
-		{"repo meta", RepoMetaKey("team/app"), "repos/team/app/_meta.json"},
-		{"tag", TagKey("team/app", "v1"), "repos/team/app/manifests/by-tag/v1"},
 		{"manifest", ManifestKey("team/app", "sha256:abcd"), "repos/team/app/manifests/by-digest/sha256-abcd"},
-		{"index", IndexKey("team/app"), "repos/team/app/manifests/index.json"},
-		{"upload", UploadKey("u-1"), "uploads/u-1"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {

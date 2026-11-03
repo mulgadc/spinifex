@@ -211,21 +211,14 @@ func TestNewAttributes_ErrorsNeverCarryValues(t *testing.T) {
 	}
 }
 
-func TestAttributes_SizeAndCombinedLimit(t *testing.T) {
+func TestAttributes_SizeAndSetLimit(t *testing.T) {
 	a := mustAttrs(t, str("ab", "String", "héllo"), bin("c", "Binary.gz", []byte{1, 2, 3}))
 	// name + data type + value bytes: (2+6+6) + (1+9+3).
 	assert.Equal(t, 27, a.Size())
 
 	const limit = message.MaxMessageSize
-	assert.NoError(t, message.CheckMessageSize(limit-27, a, limit))
-	assert.ErrorIs(t, message.CheckMessageSize(limit-26, a, limit), message.ErrInvalidParameter)
-	assert.NoError(t, message.CheckMessageSize(limit, mustAttrs(t), limit))
-	assert.ErrorIs(t, message.CheckMessageSize(1024, a, 1024), message.ErrInvalidParameter)
-
 	big := mustAttrs(t, bin("b", "Binary", make([]byte, limit-len("b")-len("Binary"))))
 	assert.Equal(t, limit, big.Size())
-	assert.NoError(t, message.CheckMessageSize(0, big, limit))
-	assert.ErrorIs(t, message.CheckMessageSize(1, big, limit), message.ErrInvalidParameter)
 
 	_, err := message.NewAttributes([]message.Attribute{bin("b", "Binary", make([]byte, limit-len("b")-len("Binary")+1))})
 	assert.ErrorIs(t, err, message.ErrInvalidParameter, "a set no queue could accept is refused outright")

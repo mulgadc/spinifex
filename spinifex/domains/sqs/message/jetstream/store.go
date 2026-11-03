@@ -522,13 +522,6 @@ func (f *feed) current() (jsapi.MessagesContext, bool) {
 	return f.it, f.closed
 }
 
-// isClosed reports whether Close has begun.
-func (f *feed) isClosed() bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.closed
-}
-
 // begin records consumer work Close must wait for; f.mu must be held.
 func (f *feed) begin() {
 	if f.busy == 0 {

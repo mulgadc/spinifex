@@ -28,41 +28,21 @@ func AccountBucket(accountID string) string {
 // shapes every ECR storage path must use. Blobs are pooled per account for
 // dedup; manifests and tags are indexed per repository.
 const (
-	// repoMetaKeyFmt is the repo config object (scan-on-push, tag mutability).
-	repoMetaKeyFmt = "repos/%s/_meta.json"
-	// tagKeyFmt maps a tag to a digest pointer (body is "sha256:...").
-	tagKeyFmt = "repos/%s/manifests/by-tag/%s"
 	// manifestKeyFmt holds manifest JSON keyed by its own digest.
 	manifestKeyFmt = "repos/%s/manifests/by-digest/%s"
-	// indexKeyFmt is the rolling tag->digest index used by ListImages.
-	indexKeyFmt = "repos/%s/manifests/index.json"
 	// blobKeyFmt is the account-wide blob pool, two-char hex shard.
 	blobKeyFmt = "blobs/%s/%s"
-	// uploadKeyFmt holds in-progress chunked upload bytes.
-	uploadKeyFmt = "uploads/%s"
 	// uploadChunkKeyFmt holds a single revision's assembled bytes under a unique
 	// per-write token, so a CAS-winning PATCH always points at exactly the bytes
 	// it hashed (a losing concurrent write lands on a different, orphaned token).
 	uploadChunkKeyFmt = "uploads/%s/%s"
 )
 
-// RepoMetaKey returns the key for a repository's config object.
-func RepoMetaKey(repo string) string { return fmt.Sprintf(repoMetaKeyFmt, repo) }
-
-// TagKey returns the key for a tag's digest pointer.
-func TagKey(repo, tag string) string { return fmt.Sprintf(tagKeyFmt, repo, tag) }
-
 // ManifestKey returns the key for a manifest stored by its digest. The digest
 // is sanitized via DigestToken so the object key carries no ':' separator.
 func ManifestKey(repo, digest string) string {
 	return fmt.Sprintf(manifestKeyFmt, repo, DigestToken(digest))
 }
-
-// IndexKey returns the key for a repository's tag->digest index.
-func IndexKey(repo string) string { return fmt.Sprintf(indexKeyFmt, repo) }
-
-// UploadKey returns the key for an in-progress upload's bytes.
-func UploadKey(uploadID string) string { return fmt.Sprintf(uploadKeyFmt, uploadID) }
 
 // UploadChunkKey returns the key for one revision's assembled upload bytes,
 // addressed by a unique per-write token.

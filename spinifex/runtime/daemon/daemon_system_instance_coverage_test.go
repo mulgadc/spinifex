@@ -731,7 +731,7 @@ func TestTerminateSystemInstance(t *testing.T) {
 	t.Run("local terminate releases the EIP", func(t *testing.T) {
 		eip := &sysInstReclaimingEIP{fakeEIPService: fakeEIPService{disassociateErr: errInjected}}
 		d.eipService = eip
-		inst := &vm.VM{ID: "i-term-ok", Status: vm.StateRunning, AccountID: testAccountID,
+		inst := &vm.VM{ID: "i-term-ok", Status: vm.StateRunning, AccountID: awsidentifiers.GlobalAccountID, ManagedBy: tags.ManagedByELBv2,
 			PublicIP: "203.0.113.7", PublicIPAllocID: "eipalloc-t", PublicIPAssocID: "eipassoc-t"}
 		d.vmMgr.Insert(inst)
 
@@ -746,7 +746,7 @@ func TestTerminateSystemInstance(t *testing.T) {
 	t.Run("local terminate failure", func(t *testing.T) {
 		d.eipService = nil
 		d.vmMgr.SetDeps(vm.Deps{NodeID: d.node, TransitionState: func(*vm.VM, vm.InstanceState) error { return errInjected }})
-		d.vmMgr.Insert(&vm.VM{ID: "i-term-fail", Status: vm.StateRunning})
+		d.vmMgr.Insert(&vm.VM{ID: "i-term-fail", Status: vm.StateRunning, AccountID: awsidentifiers.GlobalAccountID, ManagedBy: tags.ManagedByELBv2})
 
 		err := d.TerminateSystemInstance("i-term-fail")
 		require.Error(t, err)

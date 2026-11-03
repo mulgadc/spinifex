@@ -636,7 +636,10 @@ func (d *Daemon) attachSystemMgmtNIC(inst *vm.VM) error {
 // and the teardown deletes a still-attached ENI (InvalidNetworkInterface.InUse).
 func (d *Daemon) TerminateSystemInstance(instanceID string) error {
 	var termErr error
-	if _, exists := d.vmMgr.Get(instanceID); exists {
+	if inst, exists := d.vmMgr.Get(instanceID); exists {
+		if !isSystemVM(inst) {
+			return refuseNonSystemTerminate(instanceID)
+		}
 		termErr = d.terminateSystemInstanceLocal(instanceID)
 	} else {
 		termErr = d.terminateSystemInstanceRemote(instanceID)
@@ -663,11 +666,27 @@ func (d *Daemon) reclaimSystemInstanceEIP(instanceID string) {
 	}
 }
 
-// terminateSystemInstanceLocal stops a VM owned by this node.
+// isSystemVM reports whether inst is a platform-owned VM: a known system
+// manager launched it into the system account.
+func isSystemVM(inst *vm.VM) bool {
+	return tags.IsSystemManaged(inst.ManagedBy) && inst.AccountID == awsidentifiers.GlobalAccountID
+}
+
+// refuseNonSystemTerminate answers a system terminate aimed at a customer
+// instance as if the system instance were gone, so no caller can end one.
+func refuseNonSystemTerminate(instanceID string) error {
+	slog.Warn("TerminateSystemInstance: refused, not a system instance", "instanceId", instanceID)
+	return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotFound, instanceID)
+}
+
+// terminateSystemInstanceLocal stops a system VM owned by this node.
 func (d *Daemon) terminateSystemInstanceLocal(instanceID string) error {
 	instance, exists := d.vmMgr.Get(instanceID)
 	if !exists {
 		return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotFound, instanceID)
+	}
+	if !isSystemVM(instance) {
+		return refuseNonSystemTerminate(instanceID)
 	}
 
 	// Release EIP through the EIP service for system VMs whose public IP was

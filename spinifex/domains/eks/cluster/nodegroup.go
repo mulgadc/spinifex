@@ -379,6 +379,12 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV jetstream.K
 		ModifiedAt:     now,
 	}
 
+	// Recorded before the claim, so a name is durable before any worker launches.
+	if rec.NodeRole != "" {
+		rec.InstanceProfileID = uuid.NewV4().String()
+		rec.InstanceProfileName = nodegroupProfilePrefix + rec.InstanceProfileID
+	}
+
 	// Atomically claim the record; concurrent/duplicate CreateNodegroup requests lose here.
 	owned, err := ClaimNodegroupRecord(ctx, acctKV, rec)
 	if err != nil {
@@ -716,7 +722,7 @@ func (s *EKSServiceImpl) launchOneWorker(ctx context.Context, rec *NodegroupReco
 	// Attach the node role's instance profile so IMDS serves the role to the ECR
 	// credential provider; without it worker pulls from the internal ECR get 401.
 	if s.iamEnsurer() != nil && rec.NodeRole != "" {
-		profileARN, perr := s.ensureNodeInstanceProfile(accountID, rec.NodeRole)
+		profileARN, perr := s.nodeProfileForLaunch(accountID, rec)
 		if perr != nil {
 			return "", fmt.Errorf("ensure node instance profile: %w", perr)
 		}
@@ -855,14 +861,10 @@ func gatewayHostIP(gatewayURL string) string {
 	return host
 }
 
-// ensureNodeInstanceProfile guarantees an IAM instance profile named for the
-// nodegroup's node role exists and carries that role, returning its ARN. Workers
-// launch with this profile so IMDS serves the node role to the ECR credential
-// provider, mirroring the implicit instance profile real EKS creates for a node
-// role. Idempotent: concurrent worker launches converge on the same profile.
-func (s *EKSServiceImpl) ensureNodeInstanceProfile(accountID, nodeRoleARN string) (string, error) {
-	// Resolution compares the supplied ARN against the stored one, so an invented
-	// path cannot bind a profile to the role its trailing name happens to match.
+// resolveNodeRoleName returns the name of the stored role nodeRoleARN names.
+// Resolution compares the supplied ARN against the stored one, so an invented
+// path cannot bind a profile to the role its trailing name happens to match.
+func (s *EKSServiceImpl) resolveNodeRoleName(accountID, nodeRoleARN string) (string, error) {
 	_, roleName, err := auth.ResolveRoleARN(nodeRoleARN, func(account, name string) (string, error) {
 		// The profile is created under the caller's account, so a role from
 		// another account would silently bind a name that account does not own.
@@ -880,6 +882,19 @@ func (s *EKSServiceImpl) ensureNodeInstanceProfile(accountID, nodeRoleARN string
 	})
 	if err != nil {
 		return "", fmt.Errorf("node role ARN %q: %w", nodeRoleARN, err)
+	}
+	return roleName, nil
+}
+
+// ensureNodeInstanceProfile guarantees an IAM instance profile named for the
+// nodegroup's node role exists and carries that role, returning its ARN. Workers
+// launch with this profile so IMDS serves the node role to the ECR credential
+// provider, mirroring the implicit instance profile real EKS creates for a node
+// role. Idempotent: concurrent worker launches converge on the same profile.
+func (s *EKSServiceImpl) ensureNodeInstanceProfile(accountID, nodeRoleARN string) (string, error) {
+	roleName, err := s.resolveNodeRoleName(accountID, nodeRoleARN)
+	if err != nil {
+		return "", err
 	}
 	profileName := roleName
 
@@ -1017,6 +1032,9 @@ func (s *EKSServiceImpl) reconcileNodegroup(ctx context.Context, acctKV jetstrea
 				return nil, nodegroupNotFound(ng)
 			}
 			return nil, err
+		}
+		if rec.Status == eks.NodegroupStatusDeleting || rec.Status == eks.NodegroupStatusDeleteFailed {
+			return nil, errors.New(awserrors.ErrorEKSResourceInUse)
 		}
 		applyScalingUpdate(rec, scaling)
 		if labels != nil {
@@ -1227,31 +1245,47 @@ func (s *EKSServiceImpl) deleteNodegroup(ctx context.Context, acctKV jetstream.K
 	if err := requireCluster(ctx, acctKV, cluster); err != nil {
 		return nil, err
 	}
-	rec, err := GetNodegroupRecord(ctx, acctKV, cluster, ng)
+	rec, err := s.markNodegroupDeleting(ctx, acctKV, cluster, ng)
 	if err != nil {
-		if errors.Is(err, ErrNodegroupNotFound) {
-			return nil, nodegroupNotFound(ng)
-		}
 		return nil, err
 	}
-
-	if len(rec.InstanceIDs) > 0 {
-		if err := s.deps.Worker.TerminateWorkerInstances(ctx, rec.InstanceIDs, accountID); err != nil {
-			return nil, fmt.Errorf("terminate workers: %w", err)
-		}
+	if !s.noDeleteKick {
+		s.startNodegroupDelete(accountID, acctKV, cluster, ng)
 	}
-	if err := DeleteNodegroupRecord(ctx, acctKV, cluster, ng); err != nil {
-		return nil, err
-	}
-	// A cluster delete waits on its node groups; the last one going lets it run.
-	if meta, err := GetClusterMeta(ctx, acctKV, cluster); err == nil && meta.Status == ClusterStatusDeleting {
-		if rest, err := ListNodegroupRecords(ctx, acctKV, cluster); err == nil && len(rest) == 0 {
-			s.startTeardown(accountID, cluster)
-		}
-	}
-
-	rec.Status = eks.NodegroupStatusDeleting
 	return &eks.DeleteNodegroupOutput{Nodegroup: nodegroupRecordToAWS(rec)}, nil
+}
+
+// markNodegroupDeleting records DELETING and returns. The workers, the profile
+// and the record itself are the nodegroup reaper's to remove, so the request
+// never waits on work that scales with the group (a launching group is refused).
+func (s *EKSServiceImpl) markNodegroupDeleting(ctx context.Context, kv jetstream.KeyValue, cluster, ng string) (*NodegroupRecord, error) {
+	for range ngCASMaxRetries {
+		rec, rev, err := getNodegroupEntry(ctx, kv, cluster, ng)
+		if err != nil {
+			if errors.Is(err, ErrNodegroupNotFound) {
+				return nil, nodegroupNotFound(ng)
+			}
+			return nil, err
+		}
+		if rec.Status == eks.NodegroupStatusDeleting || rec.Status == eks.NodegroupStatusCreating {
+			return nil, errors.New(awserrors.ErrorEKSResourceInUse)
+		}
+		now := time.Now().UTC()
+		rec.Status = eks.NodegroupStatusDeleting
+		rec.StatusReason = ""
+		rec.DeletingSince = now
+		rec.DeleteReapAttempts = 0
+		rec.LastDeleteReapAttempt = time.Time{}
+		rec.ModifiedAt = now
+		ok, err := s.casPutNodegroup(ctx, kv, rec, rev)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			return rec, nil
+		}
+	}
+	return nil, errors.New(awserrors.ErrorServerInternal)
 }
 
 // decryptNodeToken reads + decrypts the cluster's K3s join token from KV.
@@ -1496,8 +1530,12 @@ func nodegroupRecordToAWS(rec *NodegroupRecord) *eks.Nodegroup {
 	// wrong; a nil slice here would marshal the key away entirely.
 	issues := make([]*eks.Issue, 0, 1)
 	if rec.StatusReason != "" {
+		code := eks.NodegroupIssueCodeNodeCreationFailure
+		if rec.Status == eks.NodegroupStatusDeleting || rec.Status == eks.NodegroupStatusDeleteFailed {
+			code = eks.NodegroupIssueCodeNodeTerminationFailure
+		}
 		issues = append(issues, &eks.Issue{
-			Code:        aws.String(eks.NodegroupIssueCodeNodeCreationFailure),
+			Code:        aws.String(code),
 			Message:     aws.String(rec.StatusReason),
 			ResourceIds: aws.StringSlice(rec.InstanceIDs),
 		})

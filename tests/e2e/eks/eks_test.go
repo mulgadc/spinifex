@@ -242,6 +242,12 @@ func TestEKS(t *testing.T) {
 		runEBSCSIVolume(t, c, env, artifacts, fx)
 	})
 
+	parent := t
+	t.Run("NodegroupDelete", func(t *testing.T) {
+		requireClusterReady(t, fx)
+		runNodegroupDelete(t, parent, c, fx)
+	})
+
 	t.Run("DeleteCluster", func(t *testing.T) {
 		requireClusterReady(t, fx)
 		clusterSG := clusterSecurityGroupID(t, fx)
@@ -256,6 +262,10 @@ func TestEKS(t *testing.T) {
 		waitClusterGoneWhileDeleting(t, c, fx.ClusterName)
 		fx.Deleted = true
 		assertBystanderRulesAfterDelete(t, c, bystander, clusterSG)
+		if fx.BystanderProfile != "" {
+			_, perr := c.IAM.GetInstanceProfile(&iam.GetInstanceProfileInput{InstanceProfileName: aws.String(fx.BystanderProfile)})
+			require.NoError(t, perr, "a customer-made instance profile must survive DeleteCluster")
+		}
 
 		_, err = c.EKS.DeleteCluster(&eks.DeleteClusterInput{Name: aws.String(fx.ClusterName)})
 		var aerr awserr.Error
@@ -452,12 +462,9 @@ func createWebIdentityRole(t *testing.T, c *harness.AWSClient, fx *clusterFixtur
 // EC2-service trust policy — real EKS has the same prerequisite: the customer
 // creates the node instance role before CreateNodegroup). Both runIRSAPod and
 // runEBSCSIVolume call this independently rather than one leaking the role for
-// the other to pick up by naming convention: CreateNodegroup's worker launch
-// attaches the role to a same-named instance profile (ensureNodeInstanceProfile
-// in nodegroup.go), so DeleteRole fails while that attachment stands. The
-// cleanup here detaches it first and asserts the delete instead of discarding
-// its error, so a real leak fails the test instead of leaving the role behind
-// for the next subtest to silently depend on.
+// the other to pick up by naming convention. The cleanup asserts the delete
+// with no hand step, so a nodegroup that leaves its instance profile attached
+// fails the test instead of leaving the role behind.
 func ensureNodeRole(t *testing.T, c *harness.AWSClient, fx *clusterFixture) (roleArn, roleName string) {
 	t.Helper()
 	roleName = fx.ClusterName + "-node"
@@ -470,13 +477,6 @@ func ensureNodeRole(t *testing.T, c *harness.AWSClient, fx *clusterFixture) (rol
 	require.NoError(t, err, "create-node-role")
 	roleArn = aws.StringValue(out.Role.Arn)
 	t.Cleanup(func() {
-		_, err := c.IAM.RemoveRoleFromInstanceProfile(&iam.RemoveRoleFromInstanceProfileInput{
-			InstanceProfileName: aws.String(roleName),
-			RoleName:            aws.String(roleName),
-		})
-		if err != nil && !harness.ErrorCodeIs(err, iam.ErrCodeNoSuchEntityException) {
-			t.Errorf("remove-role-from-instance-profile %s: %v", roleName, err)
-		}
 		if _, err := c.IAM.DeleteRole(&iam.DeleteRoleInput{RoleName: aws.String(roleName)}); err != nil {
 			t.Errorf("delete-node-role %s: %v", roleName, err)
 		}
@@ -1055,6 +1055,9 @@ type clusterFixture struct {
 	Egress      *harness.WorkerEgress
 	Cluster     *eks.Cluster
 	Deleted     bool
+	// BystanderProfile is a customer-made instance profile that must outlive
+	// the nodegroup and cluster deletes.
+	BystanderProfile string
 }
 
 func setupClusterFixture(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts string) *clusterFixture {

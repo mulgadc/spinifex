@@ -49,6 +49,16 @@ type NodegroupRecord struct {
 	Tags           map[string]string `json:"tags,omitempty"`
 	InstanceIDs    []string          `json:"instanceIds,omitempty"`
 	Health         string            `json:"health,omitempty"`
+	// InstanceProfileID and InstanceProfileName identify the instance profile
+	// EKS made for this incarnation of the nodegroup; both are empty on a record
+	// that predates it.
+	InstanceProfileID   string `json:"instanceProfileId,omitempty"`
+	InstanceProfileName string `json:"instanceProfileName,omitempty"`
+	// DeletingSince, DeleteReapAttempts and LastDeleteReapAttempt pace the reaper that finishes
+	// a DELETING nodegroup.
+	DeletingSince         time.Time `json:"deletingSince,omitzero"`
+	DeleteReapAttempts    int       `json:"deleteReapAttempts,omitempty"`
+	LastDeleteReapAttempt time.Time `json:"lastDeleteReapAttempt,omitzero"`
 	// GPUEnabled/GPUVendor cache whether InstanceTypes includes a GPU family and
 	// which vendor, so worker launches resolve the matching GPU node AMI without
 	// re-scanning InstanceTypes on every launch.

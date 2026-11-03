@@ -56,6 +56,9 @@ func TestListManagedWorkers_DropsWorkersTheNodegroupTerminated(t *testing.T) {
 		ClusterName: aws.String("c1"), NodegroupName: aws.String("ng2"),
 	}, testAccountID)
 	require.NoError(t, err)
+	_, err = f.svc.NewNodegroupDeletingReaper().Sweep(context.Background())
+	require.NoError(t, err)
+	f.svc.WaitNodegroupDeletes()
 	got = managedWorkers(t, f, "c1")
 	assert.Len(t, got, 1)
 	for _, id := range ng2.InstanceIDs {

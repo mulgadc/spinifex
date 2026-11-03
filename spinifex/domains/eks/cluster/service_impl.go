@@ -201,20 +201,26 @@ type WorkerLauncher interface {
 	// host spread. An empty nodeID launches on the local node like RunWorkerInstance.
 	RunWorkerInstanceOnNode(ctx context.Context, nodeID string, input *ec2.RunInstancesInput, accountID string) (*ec2.Reservation, error)
 	TerminateWorkerInstances(ctx context.Context, instanceIDs []string, accountID string) error
+	// LiveWorkerInstances returns the given workers not yet proven terminated or
+	// absent. An undecidable answer is an error, never an empty list.
+	LiveWorkerInstances(ctx context.Context, instanceIDs []string, accountID string) ([]string, error)
 }
 
 // iamEnsurer resolves the IAM ensurer, preferring the test-injected deps.IAM,
 // then the lazy IAMProvider (built at launch time to dodge the daemon-startup
 // NATS-KV race). Returns nil when neither yields a service, so callers fall back
-// to static creds / skip the profile. The provider's concrete service satisfies
-// instanceProfileEnsurer (identical method set to SystemInstanceRoleEnsurer).
+// to static creds / skip the profile.
 func (s *EKSServiceImpl) iamEnsurer() instanceProfileEnsurer {
 	if s.deps.IAM != nil {
 		return s.deps.IAM
 	}
 	if s.deps.IAMProvider != nil {
 		if e := s.deps.IAMProvider(); e != nil {
-			return e
+			// The concrete service has the wider surface; the shared interface
+			// stays narrow so other callers are not forced to grow it.
+			if ep, ok := e.(instanceProfileEnsurer); ok {
+				return ep
+			}
 		}
 	}
 	return nil
@@ -227,6 +233,8 @@ type instanceProfileEnsurer interface {
 	GetInstanceProfile(accountID string, input *iam.GetInstanceProfileInput) (*iam.GetInstanceProfileOutput, error)
 	CreateInstanceProfile(accountID string, input *iam.CreateInstanceProfileInput) (*iam.CreateInstanceProfileOutput, error)
 	AddRoleToInstanceProfile(accountID string, input *iam.AddRoleToInstanceProfileInput) (*iam.AddRoleToInstanceProfileOutput, error)
+	RemoveRoleFromInstanceProfile(accountID string, input *iam.RemoveRoleFromInstanceProfileInput) (*iam.RemoveRoleFromInstanceProfileOutput, error)
+	DeleteInstanceProfile(accountID string, input *iam.DeleteInstanceProfileInput) (*iam.DeleteInstanceProfileOutput, error)
 
 	// Role find-or-create surface for the system-managed control-plane role.
 	// Unlike worker node roles (customer-supplied), the k3s server role is
@@ -276,6 +284,12 @@ type EKSServiceImpl struct {
 	teardownMu      sync.Mutex
 	teardownRunning map[string]struct{}
 	teardownWG      sync.WaitGroup
+	// noDeleteKick, set by tests, leaves a nodegroup delete to the reaper sweep.
+	noDeleteKick bool
+	// workersEndWait and workersEndPoll bound how long one delete pass waits for
+	// ended workers to be proven gone; zero means the defaults.
+	workersEndWait time.Duration
+	workersEndPoll time.Duration
 	// teardownKV, when set by a test, replaces the converger's account bucket.
 	teardownKV func(ctx context.Context, accountID string) (jetstream.KeyValue, error)
 

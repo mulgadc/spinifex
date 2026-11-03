@@ -86,6 +86,12 @@ type fakeWorkerLauncher struct {
 	// before subsequent calls succeed — simulates a transient launch failure
 	// (QMP timeout, host pressure) that clears on retry.
 	failNextN int
+	// beforeRun, when set, runs at the start of every launch, before it is
+	// recorded, so a test can inspect durable state at launch time.
+	beforeRun func(*ec2.RunInstancesInput)
+	// stillLive lists instances LiveWorkerInstances keeps reporting as live.
+	stillLive []string
+	liveErr   error
 }
 
 var _ WorkerLauncher = (*fakeWorkerLauncher)(nil)
@@ -101,6 +107,9 @@ func (f *fakeWorkerLauncher) RunWorkerInstance(ctx context.Context, input *ec2.R
 func (f *fakeWorkerLauncher) RunWorkerInstanceOnNode(_ context.Context, nodeID string, input *ec2.RunInstancesInput, _ string) (*ec2.Reservation, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.beforeRun != nil {
+		f.beforeRun(input)
+	}
 	f.runCalls = append(f.runCalls, input)
 	f.runNodes = append(f.runNodes, nodeID)
 	if f.failNextN > 0 {
@@ -127,6 +136,21 @@ func (f *fakeWorkerLauncher) TerminateWorkerInstances(_ context.Context, ids []s
 	defer f.mu.Unlock()
 	f.terminateCalls = append(f.terminateCalls, ids)
 	return f.termErr
+}
+
+func (f *fakeWorkerLauncher) LiveWorkerInstances(_ context.Context, ids []string, _ string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.liveErr != nil {
+		return nil, f.liveErr
+	}
+	var live []string
+	for _, id := range ids {
+		if slices.Contains(f.stillLive, id) {
+			live = append(live, id)
+		}
+	}
+	return live, nil
 }
 
 // runCount / terminatedCount return the recorded call totals under the lock so
@@ -927,7 +951,7 @@ func TestUpdateNodegroupConfig_CapacityErrorSurfacesCode(t *testing.T) {
 	})
 }
 
-func TestDeleteNodegroup_TerminatesAndIsIdempotent(t *testing.T) {
+func TestDeleteNodegroup_ReapedGroupIsGoneAndRepeatDeleteIsNotFound(t *testing.T) {
 	t.Parallel()
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
@@ -940,13 +964,16 @@ func TestDeleteNodegroup_TerminatesAndIsIdempotent(t *testing.T) {
 		ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1"),
 	}, testAccountID)
 	require.NoError(t, err)
+	_, err = f.svc.NewNodegroupDeletingReaper().Sweep(context.Background())
+	require.NoError(t, err)
+	f.svc.WaitNodegroupDeletes()
 	require.Len(t, f.worker.terminateCalls, 1)
 	assert.Len(t, f.worker.terminateCalls[0], 2)
 
 	_, err = GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
 	assert.ErrorIs(t, err, ErrNodegroupNotFound)
 
-	// Second delete → ResourceNotFoundException (record already gone).
+	// Once the reaper has finished the group is gone: ResourceNotFoundException.
 	_, err = f.svc.DeleteNodegroup(context.Background(), &eks.DeleteNodegroupInput{
 		ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1"),
 	}, testAccountID)

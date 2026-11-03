@@ -59,6 +59,9 @@ Authentication uses **EKS access entries** (the API authentication mode) — IAM
 
 - **Access entries are the only auth path.** `authentication_mode` accepts `API` (the default when unset) and `API_AND_CONFIG_MAP`; bare `CONFIG_MAP` is rejected. Spinifex has no `aws-auth` ConfigMap path, so `API_AND_CONFIG_MAP` behaves as `API`: grant access with access entries.
 - **The cluster security group is auto-managed.** As on EKS, Spinifex creates one `eks-cluster-sg-<name>-<id>` in your VPC, tagged `kubernetes.io/cluster/<name>=owned` and `aws:eks:cluster-name`, allowing all traffic from itself. It is attached to the workers and the private-endpoint network interface, and `DescribeCluster` reports it as `clusterSecurityGroupId`. A launch template that names security groups replaces it on the workers, as on AWS. Clusters created before this change keep their `-control-plane-sg` and `-nodegroup-sg` until you recreate them. Deleting a cluster deletes the cluster security group and removes only the rules on your other security groups that reference it. `vpc_config.security_group_ids` is ignored.
+- **Node group deletes are asynchronous.** `DeleteNodegroup` returns at once with the group `DELETING`, and `DescribeNodegroup` answers `ResourceNotFoundException` once the workers and the group's instance profile are gone. Deleting a cluster or creating a group of the same name while a group is `DELETING` returns `ResourceInUseException`, as does a second delete of a `DELETING` group.
+- **If a node group delete cannot finish,** the group moves to `DELETE_FAILED` after 30 minutes, with a `NODE_TERMINATION_FAILURE` health issue naming the workers that are still running. Run `DeleteNodegroup` again to resume it.
+- **Each node group owns an EKS-managed instance profile.** Spinifex creates it, tags it `spinifex:eks-cluster`, `spinifex:eks-nodegroup` and `spinifex:eks-profile-id`, and puts the node role in it. It is removed with the group, so you can delete the node role afterwards with no extra steps. Spinifex never deletes an instance profile it did not create, or one whose tags, name or role no longer match what it recorded; it leaves the profile and logs a warning with its name.
 - **The worker image is fixed.** Node groups always boot Spinifex's `eks-node` image. `ami_type` is recorded but does not select the image, and the image must be registered on the cluster before you create a node group.
 - **Workers launch with IMDSv2 required and an IMDS hop limit of 2.**
   This matches AWS managed node groups and lets a pod without IRSA reach the node role through the SDK default credential chain.
@@ -376,6 +379,15 @@ Control plane readiness and kubectl authentication above lists which clusters re
 **Workload unreachable from outside the cluster.** The cluster security group only allows intra-cluster traffic by default. Add an ingress rule for your NodePort to it, as shown in the CLI tab. An Ingress served by the AWS Load Balancer Controller needs no rule: the controller adds it to the cluster security group.
 
 **`create-cluster` rejected with an authentication-mode error.** `CONFIG_MAP` is the one mode Spinifex rejects, because it has no `aws-auth` ConfigMap path. Set `authentication_mode` to `API` or `API_AND_CONFIG_MAP`, or leave it unset, and grant access with access entries.
+
+**`delete-role` fails with `DeleteConflict` after deleting a node group.** Node groups created before per-group instance profiles left an instance profile named after the role, which Spinifex no longer removes because it cannot prove it created it. Remove it yourself:
+
+```bash
+aws iam remove-role-from-instance-profile --instance-profile-name <role-name> --role-name <role-name>
+aws iam delete-instance-profile --instance-profile-name <role-name>
+```
+
+**A node group is `DELETE_FAILED`.** `aws eks describe-nodegroup` lists the workers that did not stop under `health.issues`. Once they are gone, or after you fix the cause, run `aws eks delete-nodegroup` again.
 
 **Addon install fails.** Only addons bundled into the registered `eks-node` image install successfully. If you pin an addon version in Terraform, use the AWS form from `DescribeAddonVersions` (see Add-on versions above), or leave `addon_version` unset so Spinifex selects the catalog default.
 

@@ -36,6 +36,9 @@ type SystemInstanceRoleEnsurer struct {
 	CreateRoleCalls               int
 	CreateInstanceProfileCalls    int
 	AddRoleToInstanceProfileCalls int
+	TagInstanceProfileCalls       int
+	RemoveRoleCalls               int
+	DeleteInstanceProfileCalls    int
 
 	// LastTrustDoc captures the AssumeRolePolicyDocument of the most recent
 	// CreateRole call.
@@ -54,6 +57,14 @@ type SystemInstanceRoleEnsurer struct {
 	// AddRoleToInstanceProfileErr, when set, is returned by
 	// AddRoleToInstanceProfile instead of attaching.
 	AddRoleToInstanceProfileErr error
+	// RemoveRoleFromInstanceProfileErr and DeleteInstanceProfileErr, when set,
+	// are returned by the matching call instead of acting.
+	RemoveRoleFromInstanceProfileErr error
+	DeleteInstanceProfileErr         error
+	// GetInstanceProfileErr, when set, is returned by GetInstanceProfile
+	// instead of reading, for exercising callers that must tell a failed read
+	// from a missing profile.
+	GetInstanceProfileErr error
 	// EmptyInstanceProfileARN makes CreateInstanceProfile return an empty
 	// ARN, for exercising callers that must reject it.
 	EmptyInstanceProfileARN bool
@@ -81,6 +92,7 @@ func copyRole(r *iam.Role) *iam.Role {
 func copyProfile(p *iam.InstanceProfile) *iam.InstanceProfile {
 	c := *p
 	c.Roles = append([]*iam.Role(nil), p.Roles...)
+	c.Tags = append([]*iam.Tag(nil), p.Tags...)
 	return &c
 }
 
@@ -130,6 +142,9 @@ func (e *SystemInstanceRoleEnsurer) GetInstanceProfile(_ string, in *iam.GetInst
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	if e.GetInstanceProfileErr != nil {
+		return nil, e.GetInstanceProfileErr
+	}
 	p, ok := e.Profiles[aws.StringValue(in.InstanceProfileName)]
 	if !ok {
 		return nil, awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "Instance Profile %s cannot be found.", aws.StringValue(in.InstanceProfileName))
@@ -157,6 +172,7 @@ func (e *SystemInstanceRoleEnsurer) CreateInstanceProfile(accountID string, in *
 	p := &iam.InstanceProfile{
 		InstanceProfileName: aws.String(name),
 		Arn:                 aws.String(arn),
+		Tags:                append([]*iam.Tag(nil), in.Tags...),
 	}
 	e.Profiles[name] = p
 	return &iam.CreateInstanceProfileOutput{InstanceProfile: copyProfile(p)}, nil
@@ -180,4 +196,102 @@ func (e *SystemInstanceRoleEnsurer) AddRoleToInstanceProfile(_ string, in *iam.A
 	}
 	p.Roles = []*iam.Role{{RoleName: in.RoleName}}
 	return &iam.AddRoleToInstanceProfileOutput{}, nil
+}
+
+func (e *SystemInstanceRoleEnsurer) TagInstanceProfile(_ string, in *iam.TagInstanceProfileInput) (*iam.TagInstanceProfileOutput, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.TagInstanceProfileCalls++
+	p, ok := e.Profiles[aws.StringValue(in.InstanceProfileName)]
+	if !ok {
+		return nil, awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "Instance Profile %s cannot be found.", aws.StringValue(in.InstanceProfileName))
+	}
+	for _, t := range in.Tags {
+		replaced := false
+		for i, have := range p.Tags {
+			if aws.StringValue(have.Key) == aws.StringValue(t.Key) {
+				p.Tags[i] = t
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			p.Tags = append(p.Tags, t)
+		}
+	}
+	return &iam.TagInstanceProfileOutput{}, nil
+}
+
+func (e *SystemInstanceRoleEnsurer) UntagInstanceProfile(_ string, in *iam.UntagInstanceProfileInput) (*iam.UntagInstanceProfileOutput, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	p, ok := e.Profiles[aws.StringValue(in.InstanceProfileName)]
+	if !ok {
+		return nil, awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "Instance Profile %s cannot be found.", aws.StringValue(in.InstanceProfileName))
+	}
+	drop := map[string]bool{}
+	for _, k := range in.TagKeys {
+		drop[aws.StringValue(k)] = true
+	}
+	kept := p.Tags[:0:0]
+	for _, t := range p.Tags {
+		if !drop[aws.StringValue(t.Key)] {
+			kept = append(kept, t)
+		}
+	}
+	p.Tags = kept
+	return &iam.UntagInstanceProfileOutput{}, nil
+}
+
+func (e *SystemInstanceRoleEnsurer) ListInstanceProfileTags(_ string, in *iam.ListInstanceProfileTagsInput) (*iam.ListInstanceProfileTagsOutput, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	p, ok := e.Profiles[aws.StringValue(in.InstanceProfileName)]
+	if !ok {
+		return nil, awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "Instance Profile %s cannot be found.", aws.StringValue(in.InstanceProfileName))
+	}
+	return &iam.ListInstanceProfileTagsOutput{Tags: append([]*iam.Tag(nil), p.Tags...)}, nil
+}
+
+func (e *SystemInstanceRoleEnsurer) RemoveRoleFromInstanceProfile(_ string, in *iam.RemoveRoleFromInstanceProfileInput) (*iam.RemoveRoleFromInstanceProfileOutput, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.RemoveRoleCalls++
+	if e.RemoveRoleFromInstanceProfileErr != nil {
+		return nil, e.RemoveRoleFromInstanceProfileErr
+	}
+	p, ok := e.Profiles[aws.StringValue(in.InstanceProfileName)]
+	if !ok {
+		return nil, awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "Instance Profile %s cannot be found.", aws.StringValue(in.InstanceProfileName))
+	}
+	if len(p.Roles) == 0 || aws.StringValue(p.Roles[0].RoleName) != aws.StringValue(in.RoleName) {
+		return nil, awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "The role with name %s cannot be found.", aws.StringValue(in.RoleName))
+	}
+	p.Roles = nil
+	return &iam.RemoveRoleFromInstanceProfileOutput{}, nil
+}
+
+// DeleteInstanceProfile refuses while a role is attached, as IAM does.
+func (e *SystemInstanceRoleEnsurer) DeleteInstanceProfile(_ string, in *iam.DeleteInstanceProfileInput) (*iam.DeleteInstanceProfileOutput, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.DeleteInstanceProfileCalls++
+	if e.DeleteInstanceProfileErr != nil {
+		return nil, e.DeleteInstanceProfileErr
+	}
+	name := aws.StringValue(in.InstanceProfileName)
+	p, ok := e.Profiles[name]
+	if !ok {
+		return nil, awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "Instance Profile %s cannot be found.", name)
+	}
+	if len(p.Roles) > 0 {
+		return nil, awserrors.Errorf(awserrors.ErrorIAMDeleteConflict, "Cannot delete entity, must remove roles from instance profile first.")
+	}
+	delete(e.Profiles, name)
+	return &iam.DeleteInstanceProfileOutput{}, nil
 }

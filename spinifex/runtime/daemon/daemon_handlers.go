@@ -191,9 +191,6 @@ func handleNATSRequestWithPrincipal[I any, O any](nodeID string, serviceFn func(
 func (d *Daemon) handleEC2Events(msg *nats.Msg) {
 	start := time.Now()
 	action, outcome := d.dispatchEC2Command(msg)
-	if outcome == outcomeDeferred {
-		return
-	}
 	otelsetup.RecordRequest(context.Background(), ec2CmdAction(action), outcome, time.Since(start))
 }
 
@@ -233,21 +230,6 @@ func (d *Daemon) dispatchEC2Command(msg *nats.Msg) (string, string) {
 		return name, d.handleAttachVolume(ctx, msg, command, instance)
 	case command.Attributes.DetachVolume:
 		return name, d.handleDetachVolume(ctx, msg, command, instance)
-	case command.Attributes.DrainVolume:
-		// A drain flushes the volume's whole dirty set to S3, so it is bounded by
-		// the dirty set rather than by a unit of work. nats.go delivers a
-		// subscription's messages serially, so running it inline would stall
-		// every other command for this instance — stop, terminate, hot-plug —
-		// for the duration. It touches no VM state, so it is safe off-thread.
-		//
-		// It therefore records its own point: timing the dispatch would call
-		// every drain an instant success.
-		started := time.Now()
-		go func() {
-			outcome := d.handleDrainVolume(ctx, msg, command, instance)
-			otelsetup.RecordRequest(context.Background(), ec2CmdAction(name), outcome, time.Since(started))
-		}()
-		return name, outcomeDeferred
 	case command.Attributes.AttachENI:
 		return name, d.handleAttachNetworkInterface(ctx, msg, command, instance)
 	case command.Attributes.DetachENI:
@@ -314,8 +296,6 @@ func ec2CommandName(command ec2v1.EC2InstanceCommand) string {
 		return "AttachVolume"
 	case command.Attributes.DetachVolume:
 		return "DetachVolume"
-	case command.Attributes.DrainVolume:
-		return "DrainVolume"
 	case command.Attributes.AttachENI:
 		return "AttachNetworkInterface"
 	case command.Attributes.DetachENI:

@@ -38,7 +38,7 @@ type CreateImageParams struct {
 	Input         *ec2.CreateImageInput
 	RootVolumeID  string
 	SourceImageID string
-	IsRunning     bool // true = use live checkpoint (instance still running), false = use numbered checkpoint from Close
+	IsRunning     bool // logged only: the provider's CreateSnapshot drains a live volume itself
 }
 
 // ImageServiceImpl handles AMI image operations with S3 storage.
@@ -69,9 +69,7 @@ func (s *ImageServiceImpl) MetadataStore() *ebsmetadata.Store {
 	return s.metadata
 }
 
-// NewImageServiceImpl creates a new daemon-side image service. natsConn is used
-// to drain a running instance's volume (routed to the node hosting it) before
-// CreateImageFromInstance reads its live checkpoint.
+// NewImageServiceImpl creates a new daemon-side image service.
 func NewImageServiceImpl(cfg *config.Config, natsConn *nats.Conn) *ImageServiceImpl {
 	store := objectstore.NewS3ObjectStoreFromConfig(
 		cfg.Predastore.Host,
@@ -99,8 +97,7 @@ func NewImageServiceImplWithStore(store objectstore.ObjectStore, bucketName stri
 }
 
 // NewImageServiceImplWithConfig creates an image service with an explicit
-// config and NATS connection (for testing the running-volume drain path,
-// which needs config.DataDir/Predastore and a NATS connection to route to).
+// config, object store and NATS connection (for testing).
 func NewImageServiceImplWithConfig(cfg *config.Config, store objectstore.ObjectStore, natsConn *nats.Conn) *ImageServiceImpl {
 	return &ImageServiceImpl{
 		config:     cfg,
@@ -447,15 +444,9 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		"rootVolumeId", params.RootVolumeID, "amiId", amiID, "snapshotId", snapshotID,
 		"isRunning", params.IsRunning)
 
-	// Step 1: Snapshot root volume (live via NATS or offline from S3)
-	var snapshotErr error
-	if params.IsRunning {
-		snapshotErr = s.snapshotRunningVolume(params.RootVolumeID, snapshotID, accountID)
-	} else {
-		snapshotErr = s.snapshotStoppedVolume(params.RootVolumeID, snapshotID, accountID)
-	}
-	if snapshotErr != nil {
-		return nil, snapshotErr
+	// Step 1: Snapshot root volume
+	if err := s.snapshotVolume(params.RootVolumeID, snapshotID, accountID); err != nil {
+		return nil, err
 	}
 
 	// Step 2: Read source volume config for size
@@ -521,51 +512,21 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 	}, nil
 }
 
-// snapshotRunningVolume creates a snapshot of a running instance's volume by
-// draining it to the node hosting it (so any writes buffered there reach S3),
-// then reading the live checkpoint written by nbdkit on every NBD Flush. This
-// shares domains/ec2/snapshot's DrainVolume with ec2.CreateSnapshot so the two
-// live-snapshot paths cannot diverge on when a drain is required.
-func (s *ImageServiceImpl) snapshotRunningVolume(volumeID, snapshotID, accountID string) error {
+// snapshotVolume snapshots the root volume through the EBS provider, whether
+// or not the instance is running. A provider that buffers writes drains the
+// volume inside its own CreateSnapshot, so no drain is issued here.
+func (s *ImageServiceImpl) snapshotVolume(volumeID, snapshotID, accountID string) error {
 	if s.config == nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
 	volMeta, err := s.getVolumeMetadata(context.Background(), accountID, volumeID)
 	if err != nil {
-		slog.Error("snapshotRunningVolume: failed to read volume metadata", "volumeId", volumeID, "err", err)
+		slog.Error("snapshotVolume: failed to read volume metadata", "volumeId", volumeID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Flush the writes still buffered by whichever node serves the volume, so
-	// the snapshot below is current rather than an arbitrarily stale one
-	// predating e.g. a guest-triggered GPT rewrite (growpart on first boot). An
-	// attached volume that cannot be drained fails here rather than silently
-	// producing an image from a stale checkpoint.
-	if err := ec2snapshot.DrainVolume(context.Background(), s.config, s.store, s.natsConn, volumeID, volMeta.State, volMeta.AttachedInstance, accountID); err != nil {
-		slog.Error("snapshotRunningVolume: drain failed", "volumeId", volumeID, "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	return s.createSnapshot(context.Background(), volMeta, snapshotID, "snapshotRunningVolume")
-}
-
-// snapshotStoppedVolume creates a snapshot of a detached volume. No drain: the
-// volume is stopped/detached, so nothing is buffered on a serving node.
-// viperblockd's handleCreateSnapshot prefers a live mounted engine over opening
-// a second one, so it handles the mounted case itself.
-func (s *ImageServiceImpl) snapshotStoppedVolume(volumeID, snapshotID, accountID string) error {
-	if s.config == nil {
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	volMeta, err := s.getVolumeMetadata(context.Background(), accountID, volumeID)
-	if err != nil {
-		slog.Error("snapshotStoppedVolume: failed to read volume metadata", "volumeId", volumeID, "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	return s.createSnapshot(context.Background(), volMeta, snapshotID, "snapshotStoppedVolume")
+	return s.createSnapshot(context.Background(), volMeta, snapshotID, "snapshotVolume")
 }
 
 // createSnapshot delegates snapshot creation for volMeta to the EBS provider.

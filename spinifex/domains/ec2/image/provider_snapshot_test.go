@@ -2,16 +2,20 @@ package image
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -96,15 +100,15 @@ func TestGetVolumeMetadata_Provider_UnknownVolumeIsNotFound(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidVolumeNotFound, err.Error())
 }
 
-// TestSnapshotStoppedVolume_Provider_CreatesThroughProvider locks that a
-// stopped-volume snapshot under a provider is created via provider.CreateSnapshot
+// TestSnapshotVolume_Provider_CreatesThroughProvider locks that a
+// root-volume snapshot under a provider is created via provider.CreateSnapshot
 // and never falls through to building an embedded engine — the Predastore host
 // is a closed port, so any fallback would fail with connection refused.
-func TestSnapshotStoppedVolume_Provider_CreatesThroughProvider(t *testing.T) {
+func TestSnapshotVolume_Provider_CreatesThroughProvider(t *testing.T) {
 	svc, _, provider := setupProviderSnapshotImageService(t)
 	doc := seedProviderVolume(t, svc, provider, "vol-stopped001", 8)
 
-	err := svc.snapshotStoppedVolume(doc.VolumeID, "snap-stopped001", testAccountID)
+	err := svc.snapshotVolume(doc.VolumeID, "snap-stopped001", testAccountID)
 	require.NoError(t, err, "the provider path must not fall through to the embedded engine against the closed Predastore port")
 
 	// CreateSnapshot is idempotent on (SnapshotID, VolumeID): re-issuing it
@@ -118,22 +122,22 @@ func TestSnapshotStoppedVolume_Provider_CreatesThroughProvider(t *testing.T) {
 	assert.Equal(t, doc.VolumeID, snap.SourceVolumeID)
 }
 
-// TestSnapshotRunningVolume_Provider_PassesProviderHandleAsVolumeHandle locks
+// TestSnapshotVolume_Provider_PassesProviderHandleAsVolumeHandle locks
 // that the ebsmetadata document's ProviderHandle is threaded through as
 // CreateSnapshotRequest.VolumeHandle. A wrong handle must be rejected by the
 // provider (MemoryProvider treats an empty VolumeHandle as "skip the check",
 // so only a mismatched non-empty value proves the real value is forwarded).
-func TestSnapshotRunningVolume_Provider_PassesProviderHandleAsVolumeHandle(t *testing.T) {
+func TestSnapshotVolume_Provider_PassesProviderHandleAsVolumeHandle(t *testing.T) {
 	svc, _, provider := setupProviderSnapshotImageService(t)
 	doc := seedProviderVolume(t, svc, provider, "vol-running001", 8)
 
-	err := svc.snapshotRunningVolume(doc.VolumeID, "snap-running001", testAccountID)
+	err := svc.snapshotVolume(doc.VolumeID, "snap-running001", testAccountID)
 	require.NoError(t, err, "the correct provider handle must let CreateSnapshot succeed")
 
 	doc.ProviderHandle = "wrong-handle"
 	require.NoError(t, svc.MetadataStore().PutVolume(context.Background(), doc))
 
-	err = svc.snapshotRunningVolume(doc.VolumeID, "snap-running002", testAccountID)
+	err = svc.snapshotVolume(doc.VolumeID, "snap-running002", testAccountID)
 	require.Error(t, err, "a mismatched provider handle must be rejected, proving the value came from the document")
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
@@ -232,14 +236,63 @@ func (p *createUnavailableProvider) CreateSnapshot(context.Context, ebsprovider.
 	return nil, &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnavailable, Message: "held by node-2"}
 }
 
-// TestSnapshotStoppedVolume_Provider_UnavailableIsRetryLater locks that the
+// TestSnapshotVolume_Provider_UnavailableIsRetryLater locks that the
 // CreateImage snapshot surfaces a provider's retry-later as ServiceUnavailable.
-func TestSnapshotStoppedVolume_Provider_UnavailableIsRetryLater(t *testing.T) {
+func TestSnapshotVolume_Provider_UnavailableIsRetryLater(t *testing.T) {
 	svc, _, provider := setupProviderSnapshotImageService(t)
 	doc := seedProviderVolume(t, svc, provider, "vol-stopped-busy", 8)
 	svc.SetEBSProvider(&createUnavailableProvider{EBSProvider: provider})
 
-	err := svc.snapshotStoppedVolume(doc.VolumeID, "snap-stopped-busy", testAccountID)
+	err := svc.snapshotVolume(doc.VolumeID, "snap-stopped-busy", testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServiceUnavailable, err.Error())
+}
+
+// countingSnapshotProvider counts the CreateSnapshot calls it forwards.
+type countingSnapshotProvider struct {
+	ebsprovider.EBSProvider
+
+	creates atomic.Int32
+}
+
+func (p *countingSnapshotProvider) CreateSnapshot(ctx context.Context, req ebsprovider.CreateSnapshotRequest) (*ebsprovider.Snapshot, error) {
+	p.creates.Add(1)
+	return p.EBSProvider.CreateSnapshot(ctx, req)
+}
+
+// An image of a running instance is snapshotted by the provider, which drains
+// a buffered volume itself, so CreateImage neither dials the drain socket nor
+// asks the instance's host to drain.
+func TestCreateImageFromInstance_RunningInstanceLeavesTheDrainToTheProvider(t *testing.T) {
+	const instanceID = "i-running-drain"
+	svc, _, provider := setupProviderSnapshotImageService(t)
+	_, nc := testutil.StartTestNATS(t)
+	svc.natsConn = nc
+	svc.config.DataDir = testutil.SocketTempDir(t)
+	counting := &countingSnapshotProvider{EBSProvider: provider}
+	svc.SetEBSProvider(counting)
+
+	doc := seedProviderVolume(t, svc, provider, "vol-running-drain", 8)
+	doc.State, doc.AttachedInstance = "in-use", instanceID
+	require.NoError(t, svc.MetadataStore().PutVolume(context.Background(), doc))
+	drains := testutil.StartDrainSocket(t, svc.config.DataDir, doc.VolumeID, "OK\n")
+	var commands atomic.Int32
+	sub, err := nc.Subscribe(ec2v1.InstanceCommandSubject(instanceID), func(msg *nats.Msg) {
+		commands.Add(1)
+		_ = msg.Respond([]byte(`{"Code":"InternalError","Message":"no drain socket"}`))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	out, err := svc.CreateImageFromInstance(CreateImageParams{
+		Input:        &ec2.CreateImageInput{InstanceId: aws.String(instanceID), Name: aws.String("running-ami")},
+		RootVolumeID: doc.VolumeID,
+		IsRunning:    true,
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.ImageId)
+
+	assert.Equal(t, int32(1), counting.creates.Load(), "the provider must take the snapshot")
+	assert.Zero(t, drains(), "CreateImage must not dial the drain socket")
+	assert.Zero(t, commands.Load(), "CreateImage must not ask the instance's host to drain")
 }

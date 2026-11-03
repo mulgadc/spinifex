@@ -107,7 +107,7 @@ func TestVMMarshal_LegacyHostfwdNotWrittenBack(t *testing.T) {
 	assert.Contains(t, raw, "hostfwd_port_map")
 }
 
-// The other twelve command booleans had nowhere to go because nothing read them
+// The other eleven command booleans had nowhere to go because nothing read them
 // back. A record must carry none of them, so they are gone rather than unread.
 func TestVMMarshal_CommandBooleansAreNotPersisted(t *testing.T) {
 	legacy, err := json.Marshal(map[string]any{
@@ -115,7 +115,6 @@ func TestVMMarshal_CommandBooleansAreNotPersisted(t *testing.T) {
 		"attributes": ec2v1.EC2CommandAttributes{
 			AttachVolume:                true,
 			DetachVolume:                true,
-			DrainVolume:                 true,
 			StartInstance:               true,
 			RebootInstance:              true,
 			AttachENI:                   true,
@@ -137,7 +136,7 @@ func TestVMMarshal_CommandBooleansAreNotPersisted(t *testing.T) {
 	require.NoError(t, err)
 
 	for _, field := range []string{
-		"attach_volume", "detach_volume", "drain_volume", "start_instance",
+		"attach_volume", "detach_volume", "start_instance",
 		"reboot_instance", "attach_eni", "detach_eni",
 		"associate_iam_instance_profile", "set_spot_lineage", "set_instance_tags",
 		"remove_instance_tags", "set_instance_monitoring",

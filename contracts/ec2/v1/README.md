@@ -23,7 +23,7 @@ subject shape are wire compatibility. Callers and receivers must use this
 package rather than rebuild those details. `commands_test.go` preserves the
 version-1 JSON shape and subject form.
 
-This package owns shared command payloads and the drain-volume response. It
+This package owns shared command payloads. It
 does not define every action's reply body, authorize the request, store EC2
 state or implement NATS transport. Those remain responsibilities of the EC2
 domain and its runtime composition.

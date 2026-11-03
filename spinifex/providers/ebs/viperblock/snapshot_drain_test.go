@@ -90,6 +90,20 @@ func TestSnapshotVolumeEngine_MountedVolumeIsDrainedBeforeTheSnapshot(t *testing
 	}
 }
 
+// The control plane issues no drain of its own, so this one is the only flush
+// an attached volume's snapshot gets, and it must happen exactly once.
+func TestSnapshotVolumeEngine_MountedVolumeIsDrainedOnce(t *testing.T) {
+	const volumeID, snapshotID = "vol-drainonce", "snap-drainonce000001"
+	cfg, dataDir, _ := mountedSnapshotFixture(t, volumeID)
+	drains := testutil.StartDrainSocket(t, dataDir, volumeID, "OK\n")
+
+	snapshot, err := snapshotVolumeEngine(t.Context(), cfg, volumeID, snapshotID)
+
+	require.NoError(t, err)
+	assert.Equal(t, ebsprovider.SnapshotStateCompleted, snapshot.State)
+	assert.Equal(t, 1, drains())
+}
+
 // A plugin that answers without confirming the flush leaves the checkpoint
 // unproven, so the snapshot fails rather than capturing older data.
 func TestSnapshotVolumeEngine_RefusedDrainFailsTheSnapshot(t *testing.T) {

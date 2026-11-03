@@ -131,6 +131,10 @@ func DetachVolume(ctx context.Context, input *ec2.DetachVolumeInput, natsConn *n
 // running the instance and so cannot help when that host is the problem.
 const forceDetachSubject = "ec2.ForceDetachVolume"
 
+// detachFromStoppedSubject is answered by any node and edits the stopped
+// instance record in the shared bucket.
+const detachFromStoppedSubject = "ec2.DetachVolumeFromStopped"
+
 // forceDetach releases a volume whose instance has no responder.
 //
 // A volume outlives the instance it was attached to whenever teardown failed

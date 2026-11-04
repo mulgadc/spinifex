@@ -74,6 +74,9 @@ func (r *OrphanQEMUReaper) Sweep(context.Context) (int, error) {
 		if err != nil {
 			continue // no PID file on this node: process is not here
 		}
+		if pid <= 0 {
+			continue // not a PID: unknown state, so the file is kept
+		}
 		if !hostprocess.ProcessAlive(pid) {
 			_ = hostprocess.RemovePidFile(v.ID) // stale PID file for a dead, terminated instance
 			continue
@@ -147,7 +150,7 @@ func pidReadProvesExit(pid int, err error) bool {
 // rather than short-circuiting on an absent file.
 func qemuConfirmedDead(instanceID string) bool {
 	pid, err := hostprocess.ReadPidFile(instanceID)
-	if err != nil {
+	if err != nil || pid <= 0 {
 		return false
 	}
 	return !hostprocess.ProcessAlive(pid)

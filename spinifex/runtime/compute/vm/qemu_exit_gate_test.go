@@ -268,3 +268,71 @@ func TestTeardownReaperRemovesTheLocalUEFIStoreOnceQEMUIsGone(t *testing.T) {
 	assert.Equal(t, []string{id}, removed)
 	assert.Equal(t, string(TeardownDone), store.terminated[id].Teardown[TeardownQEMU])
 }
+
+func pidFileExists(t *testing.T, id string) bool {
+	t.Helper()
+	_, err := hostprocess.ReadPidFile(id)
+	return !errors.Is(err, fs.ErrNotExist)
+}
+
+// TestS7_NonPositivePidFileSurvivesBackstopOrphanAndTeardown walks the sequence
+// that ends in volume deletion: the stuck-terminate backstop, the orphan reaper's
+// terminated-record loop, then the teardown reaper. None may read a PID of 0 or
+// below as proof QEMU exited, nor remove the file that still records it.
+func TestS7_NonPositivePidFileSurvivesBackstopOrphanAndTeardown(t *testing.T) {
+	hostprocess.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
+	for _, content := range []string{"0", "-1"} {
+		t.Run(content, func(t *testing.T) {
+			cleaner := &recordingInstanceCleaner{}
+			stuck, store := newStuckTerminateReaper(t, cleaner)
+			const id = "i-nonpositive-pid-sequence"
+			writeCorruptPidFile(t, id, content)
+			stuck.m.InsertIfAbsent(&VM{
+				ID:             id,
+				Status:         StateShuttingDown,
+				LastNode:       "test-node",
+				ShuttingDownAt: time.Now().Add(-(stuckTerminateTimeout + time.Minute)),
+			})
+
+			_, err := stuck.Sweep(context.Background())
+			require.NoError(t, err)
+			require.Contains(t, store.terminated, id)
+			assert.True(t, pidFileExists(t, id), "backstop must keep the file")
+
+			_, err = stuck.m.NewOrphanQEMUReaper().Sweep(context.Background())
+			require.NoError(t, err)
+			assert.True(t, pidFileExists(t, id), "orphan reaper must keep the file")
+
+			_, err = stuck.m.NewTerminatedTeardownReaper().Sweep(context.Background())
+			require.NoError(t, err)
+			assert.Empty(t, cleaner.deleteVolumes)
+		})
+	}
+}
+
+// TestS7_PidFileDeletionSitesKeepNonPositivePids covers the remaining sites that
+// remove a QEMU PID file on proof of exit.
+func TestS7_PidFileDeletionSitesKeepNonPositivePids(t *testing.T) {
+	for _, content := range []string{"0", "-1"} {
+		t.Run("fence "+content, func(t *testing.T) {
+			t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+			const id = "i-nonpositive-fence"
+			writeCorruptPidFile(t, id, content)
+			NewManager().killFencedQEMU(context.Background(), &VM{ID: id})
+			assert.True(t, pidFileExists(t, id))
+		})
+		t.Run("restore "+content, func(t *testing.T) {
+			t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+			const id = "i-nonpositive-restore"
+			writeCorruptPidFile(t, id, content)
+			assert.False(t, killOrphanedQEMU(&VM{ID: id}))
+			assert.True(t, pidFileExists(t, id))
+		})
+		t.Run("confirmed dead "+content, func(t *testing.T) {
+			t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+			const id = "i-nonpositive-confirmed"
+			writeCorruptPidFile(t, id, content)
+			assert.False(t, qemuConfirmedDead(id))
+		})
+	}
+}

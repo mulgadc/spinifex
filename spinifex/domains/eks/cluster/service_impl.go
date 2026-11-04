@@ -12,7 +12,6 @@ import (
 	"maps"
 	"net"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +31,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go"
@@ -1300,29 +1300,19 @@ func (s *EKSServiceImpl) ListClusters(ctx context.Context, input *eks.ListCluste
 	if err != nil {
 		return nil, eksReadUnavailableOr(err, "list cluster names")
 	}
-	sort.Strings(names)
-
+	from, err := decodeEKSToken(input.NextToken)
+	if err != nil {
+		return nil, err
+	}
 	maxResults := int(aws.Int64Value(input.MaxResults))
 	if maxResults <= 0 || maxResults > 100 {
 		maxResults = 100
 	}
-	startToken := aws.StringValue(input.NextToken)
-
-	page := make([]string, 0, maxResults)
-	var nextToken string
-	startIdx := 0
-	if startToken != "" {
-		startIdx = sort.SearchStrings(names, startToken)
-	}
-	endIdx := min(startIdx+maxResults, len(names))
-	page = append(page, names[startIdx:endIdx]...)
-	if endIdx < len(names) {
-		nextToken = names[endIdx]
-	}
+	page, next := paging.Page(names, func(n string) string { return n }, paging.Request{Limit: maxResults, From: from})
 
 	out := &eks.ListClustersOutput{Clusters: aws.StringSlice(page)}
-	if nextToken != "" {
-		out.NextToken = aws.String(nextToken)
+	if next != "" {
+		out.NextToken = aws.String(next)
 	}
 	return out, nil
 }

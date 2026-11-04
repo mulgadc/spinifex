@@ -1986,6 +1986,10 @@ var DescribeInstancesValidFilters = map[string]bool{
 	"subnet-id":           true,
 	"tag-key":             true,
 	"tag-value":           true,
+	"private-ip-address":  true,
+
+	"network-interface.private-ip-address":           true,
+	"network-interface.addresses.private-ip-address": true,
 }
 
 // DescribeInstanceStatusValidFilters lists the filter names accepted by
@@ -2024,6 +2028,11 @@ func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]
 			continue
 		}
 
+		// A terminated instance has released its addresses, so AWS matches none.
+		if strings.HasSuffix(name, "private-ip-address") && ic.State != nil && aws.StringValue(ic.State.Name) == ec2.InstanceStateNameTerminated {
+			return false
+		}
+
 		var field string
 		switch name {
 		case "instance-state-name":
@@ -2042,6 +2051,18 @@ func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]
 			if ic.SubnetId != nil {
 				field = *ic.SubnetId
 			}
+		case "private-ip-address":
+			field = aws.StringValue(ic.PrivateIpAddress)
+		case "network-interface.private-ip-address":
+			if !matchNICPrivateIP(ic.NetworkInterfaces, values) {
+				return false
+			}
+			continue
+		case "network-interface.addresses.private-ip-address":
+			if !matchNICAnyPrivateIP(ic.NetworkInterfaces, values) {
+				return false
+			}
+			continue
 		case "tag-key":
 			if !matchTagKey(ic.Tags, values) {
 				return false
@@ -2066,6 +2087,31 @@ func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]
 	// Check tag:Key filters via the instance's Tag slice.
 	tags := awsfilters.EC2TagsToMap(ic.Tags)
 	return awsfilters.MatchesTags(filters, tags)
+}
+
+// matchNICPrivateIP reports whether any interface's private IPv4 address
+// matches the values. Interfaces carry only a primary address.
+func matchNICPrivateIP(nics []*ec2.InstanceNetworkInterface, values []string) bool {
+	return slices.ContainsFunc(nics, func(nic *ec2.InstanceNetworkInterface) bool {
+		return nic != nil && nic.PrivateIpAddress != nil && awsfilters.MatchesAny(values, *nic.PrivateIpAddress)
+	})
+}
+
+// matchNICAnyPrivateIP matches any address an interface carries: its primary
+// address, checked directly because the stored list can omit it, and every
+// PrivateIpAddresses entry.
+func matchNICAnyPrivateIP(nics []*ec2.InstanceNetworkInterface, values []string) bool {
+	return slices.ContainsFunc(nics, func(nic *ec2.InstanceNetworkInterface) bool {
+		if nic == nil {
+			return false
+		}
+		if nic.PrivateIpAddress != nil && awsfilters.MatchesAny(values, *nic.PrivateIpAddress) {
+			return true
+		}
+		return slices.ContainsFunc(nic.PrivateIpAddresses, func(a *ec2.InstancePrivateIpAddress) bool {
+			return a != nil && a.PrivateIpAddress != nil && awsfilters.MatchesAny(values, *a.PrivateIpAddress)
+		})
+	})
 }
 
 // matchTagKey returns true if any tag key on the resource matches any of the filter values.

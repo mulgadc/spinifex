@@ -213,3 +213,67 @@ func TestEC2TagsToMap(t *testing.T) {
 func TestEC2TagsToMap_Nil(t *testing.T) {
 	assert.Nil(t, awsfilters.EC2TagsToMap(nil))
 }
+
+func TestInstanceMatchesFilters_PrivateIPAddress(t *testing.T) {
+	inst := &vm.VM{ID: "i-abc"}
+	ic := &ec2.Instance{
+		InstanceId:       aws.String("i-abc"),
+		PrivateIpAddress: aws.String("10.0.1.5"),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterface{{
+			PrivateIpAddress: aws.String("10.0.1.5"),
+			PrivateIpAddresses: []*ec2.InstancePrivateIpAddress{
+				{PrivateIpAddress: aws.String("10.0.1.5"), Primary: aws.Bool(true)},
+				{PrivateIpAddress: aws.String("10.0.1.9"), Primary: aws.Bool(false)},
+			},
+		}},
+	}
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"private-ip-address", "10.0.1.5", true},
+		{"private-ip-address", "10.0.1.9", false},
+		{"private-ip-address", "10.0.1.7", false},
+		{"network-interface.private-ip-address", "10.0.1.5", true},
+		{"network-interface.private-ip-address", "10.0.1.9", false},
+		{"network-interface.private-ip-address", "10.0.1.7", false},
+		{"network-interface.addresses.private-ip-address", "10.0.1.5", true},
+		{"network-interface.addresses.private-ip-address", "10.0.1.9", true},
+		{"network-interface.addresses.private-ip-address", "10.0.1.7", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name+"="+tt.value, func(t *testing.T) {
+			parsed, err := awsfilters.ParseFilters([]*ec2.Filter{
+				{Name: aws.String(tt.name), Values: []*string{aws.String(tt.value)}},
+			}, DescribeInstancesValidFilters)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, instanceMatchesFilters(inst, ic, parsed))
+		})
+	}
+}
+
+// A stored interface can carry its primary address with no PrivateIpAddresses
+// list, and the addresses filter must still match it.
+func TestInstanceMatchesFilters_AddressesPrivateIPWithoutAddressList(t *testing.T) {
+	inst := &vm.VM{ID: "i-abc"}
+	ic := &ec2.Instance{
+		InstanceId:        aws.String("i-abc"),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterface{{PrivateIpAddress: aws.String("10.0.1.5")}},
+	}
+	assert.True(t, instanceMatchesFilters(inst, ic, map[string][]string{"network-interface.addresses.private-ip-address": {"10.0.1.5"}}))
+}
+
+// A terminated instance keeps its stored address, which it no longer owns.
+func TestInstanceMatchesFilters_PrivateIPTerminated(t *testing.T) {
+	inst := &vm.VM{ID: "i-abc"}
+	ic := &ec2.Instance{
+		InstanceId:        aws.String("i-abc"),
+		State:             &ec2.InstanceState{Name: aws.String(ec2.InstanceStateNameTerminated)},
+		PrivateIpAddress:  aws.String("10.0.1.5"),
+		NetworkInterfaces: []*ec2.InstanceNetworkInterface{{PrivateIpAddress: aws.String("10.0.1.5")}},
+	}
+	for _, name := range []string{"private-ip-address", "network-interface.private-ip-address", "network-interface.addresses.private-ip-address"} {
+		assert.False(t, instanceMatchesFilters(inst, ic, map[string][]string{name: {"10.0.1.5"}}), name)
+	}
+}

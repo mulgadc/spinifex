@@ -1,4 +1,4 @@
-import { Activity, Eye, Gauge, Network } from "lucide-react"
+import { Activity, Eye, Gauge, HardDrive, Network } from "lucide-react"
 
 import { DetailPanel } from "@/components/detail-panel"
 import { StateBadge } from "@/components/state-badge"
@@ -6,6 +6,7 @@ import type { PanelTab } from "@/lib/panel-search"
 import type { NodeInfo } from "@/queries/admin"
 import type { NodeFacts } from "@/queries/nodes"
 
+import { NodeDisks } from "./node-disks"
 import { NodeHardware } from "./node-hardware"
 import { NodeMetrics } from "./node-metrics"
 import { NodeNetwork } from "./node-network"
@@ -55,6 +56,12 @@ export function NodeDetails({
           label: "Network",
           icon: Network,
           content: <NodeNetwork facts={facts} />,
+        },
+        {
+          id: "disks",
+          label: "Disks",
+          icon: HardDrive,
+          content: <NodeDisks facts={facts} />,
         },
         {
           id: "monitoring",

@@ -109,6 +109,34 @@ export interface PlaneFacts {
   mtu?: number
 }
 
+export interface DiskFacts {
+  name: string
+  path: string
+  size_bytes: number
+  model?: string
+  transport?: string
+  rotational?: boolean
+  removable?: boolean
+}
+
+// Sizes are absent until the daemon has read the mount, and error says why.
+export interface FilesystemFacts {
+  mount: string
+  source: string
+  disk?: string
+  type: string
+  bind_of?: string
+  usage?: FilesystemUsage
+  error?: string
+}
+
+// Absent until the filesystem has been read; a full one reports avail_bytes 0.
+export interface FilesystemUsage {
+  size_bytes: number
+  used_bytes: number
+  avail_bytes: number
+}
+
 export type FormFactor =
   | "rack-server"
   | "tower"
@@ -128,6 +156,8 @@ export interface NodeFacts {
   memory: MemoryFacts
   nics: NICFacts[] | null
   planes: PlaneFacts[] | null
+  disks?: DiskFacts[]
+  filesystems?: FilesystemFacts[]
   sources: Record<string, string> | null
 }
 

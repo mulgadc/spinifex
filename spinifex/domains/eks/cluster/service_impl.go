@@ -1269,13 +1269,9 @@ func (s *EKSServiceImpl) DescribeCluster(ctx context.Context, input *eks.Describ
 	if name == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	js, err := jetstream.New(s.deps.NATSConn)
+	acctKV, err := s.accountBucket(ctx, accountID)
 	if err != nil {
-		return nil, fmt.Errorf("jetstream: %w", err)
-	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
-	if err != nil {
-		return nil, fmt.Errorf("get account bucket: %w", err)
+		return nil, err
 	}
 	meta, err := GetClusterMeta(ctx, acctKV, name)
 	if err != nil {
@@ -1335,13 +1331,9 @@ func (s *EKSServiceImpl) DeleteCluster(ctx context.Context, input *eks.DeleteClu
 	if name == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	js, err := jetstream.New(s.deps.NATSConn)
+	acctKV, err := s.accountBucket(ctx, accountID)
 	if err != nil {
-		return nil, fmt.Errorf("jetstream: %w", err)
-	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
-	if err != nil {
-		return nil, fmt.Errorf("get account bucket: %w", err)
+		return nil, err
 	}
 
 	meta, err := GetClusterMeta(ctx, acctKV, name)
@@ -1705,7 +1697,7 @@ func (s *EKSServiceImpl) CreateNodegroup(ctx context.Context, input *eks.CreateN
 	if err := s.requireOrchestrationDeps("CreateNodegroup"); err != nil {
 		return nil, err
 	}
-	acctKV, err := s.nodegroupAcctKV(ctx, accountID)
+	acctKV, err := s.accountBucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -1716,7 +1708,7 @@ func (s *EKSServiceImpl) DescribeNodegroup(ctx context.Context, input *eks.Descr
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.nodegroupAcctKV(ctx, accountID)
+	acctKV, err := s.accountBucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -1727,7 +1719,7 @@ func (s *EKSServiceImpl) ListNodegroups(ctx context.Context, input *eks.ListNode
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.nodegroupAcctKV(ctx, accountID)
+	acctKV, err := s.accountBucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -1738,7 +1730,7 @@ func (s *EKSServiceImpl) UpdateNodegroupConfig(ctx context.Context, input *eks.U
 	if err := s.requireOrchestrationDeps("UpdateNodegroupConfig"); err != nil {
 		return nil, err
 	}
-	acctKV, err := s.nodegroupAcctKV(ctx, accountID)
+	acctKV, err := s.accountBucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -1749,7 +1741,7 @@ func (s *EKSServiceImpl) DeleteNodegroup(ctx context.Context, input *eks.DeleteN
 	if err := s.requireOrchestrationDeps("DeleteNodegroup"); err != nil {
 		return nil, err
 	}
-	acctKV, err := s.nodegroupAcctKV(ctx, accountID)
+	acctKV, err := s.accountBucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -1763,13 +1755,9 @@ func (s *EKSServiceImpl) acctKVForCluster(ctx context.Context, accountID, cluste
 	if cluster == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	js, err := jetstream.New(s.deps.NATSConn)
+	acctKV, err := s.accountBucket(ctx, accountID)
 	if err != nil {
-		return nil, fmt.Errorf("jetstream: %w", err)
-	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
-	if err != nil {
-		return nil, fmt.Errorf("get account bucket: %w", err)
+		return nil, err
 	}
 	if _, err := GetClusterMeta(ctx, acctKV, cluster); err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
@@ -2186,11 +2174,18 @@ func (s *EKSServiceImpl) casUpdateNodegroupTags(ctx context.Context, accountID, 
 
 // accountBucket returns the per-account KV bucket for accountID.
 func (s *EKSServiceImpl) accountBucket(ctx context.Context, accountID string) (jetstream.KeyValue, error) {
+	if s.deps.NATSConn == nil {
+		return nil, errors.New("eks: nil NATS connection")
+	}
 	js, err := jetstream.New(s.deps.NATSConn)
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	return GetOrCreateAccountBucket(ctx, js, accountID)
+	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("get account bucket: %w", err)
+	}
+	return acctKV, nil
 }
 
 // clusterNameFromARN extracts the cluster name from an EKS cluster ARN

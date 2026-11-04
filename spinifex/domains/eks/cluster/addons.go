@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -15,7 +14,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/addon"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/nats-io/nats.go/jetstream"
 )
 
 // ListAddons returns the names of every managed add-on installed on a cluster.
@@ -369,19 +367,7 @@ func (s *EKSServiceImpl) addonInstaller() addon.Installer {
 	if s.deps.AddonInstaller != nil {
 		return s.deps.AddonInstaller
 	}
-	return addon.NewStagingInstaller(s.addonBucket)
-}
-
-// addonBucket opens the account bucket the staging installer writes manifests to.
-func (s *EKSServiceImpl) addonBucket(ctx context.Context, accountID string) (jetstream.KeyValue, error) {
-	if s.deps.NATSConn == nil {
-		return nil, errors.New("eks: stagingInstaller nil NATS connection")
-	}
-	js, err := jetstream.New(s.deps.NATSConn)
-	if err != nil {
-		return nil, fmt.Errorf("jetstream: %w", err)
-	}
-	return GetOrCreateAccountBucket(ctx, js, accountID)
+	return addon.NewStagingInstaller(s.accountBucket)
 }
 
 // resolveAddonVersion maps a client version, in AWS form or bare upstream form,

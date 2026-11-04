@@ -64,6 +64,9 @@ func applyRuntimeCapacity(r *InstanceRecord, cpu, memoryMiB int) {
 // normally registers over the Layer-2 bus; this keeps API parity by writing the
 // same record shape from an explicit call.
 func (s *Service) RegisterContainerInstance(ctx context.Context, input *ecs.RegisterContainerInstanceInput, accountID string) (*ecs.RegisterContainerInstanceOutput, error) {
+	if err := validateTags(input.Tags); err != nil {
+		return nil, err
+	}
 	cluster := ClusterShortName(aws.StringValue(input.Cluster))
 	instanceID := aws.StringValue(input.InstanceIdentityDocument)
 	if instanceID == "" {

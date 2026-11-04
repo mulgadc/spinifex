@@ -131,6 +131,9 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 	if name == "" {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
+	if err := validateTags(input.Tags); err != nil {
+		return nil, err
+	}
 	if strategy := aws.StringValue(input.SchedulingStrategy); strategy != "" && strategy != SchedulingStrategyReplica {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter) // DAEMON unsupported (Q15)
 	}

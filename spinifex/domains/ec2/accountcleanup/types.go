@@ -47,6 +47,8 @@ type Item struct {
 	Disposition string `json:"disposition"`
 	Reason      string `json:"reason,omitempty"`
 	MemberCount int    `json:"member_count,omitempty"`
+	// State is the lifecycle state a compute item was last seen in.
+	State string `json:"state,omitempty"`
 }
 
 // Count is the number of records of one class with one disposition, for

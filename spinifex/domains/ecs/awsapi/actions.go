@@ -38,6 +38,10 @@ func checkTaskLaunchRoles(ctx context.Context, svc ecsdomain.ECSService, account
 		return nil
 	}
 	out, err := svc.DescribeTaskDefinition(ctx, &ecs.DescribeTaskDefinitionInput{TaskDefinition: taskDefinition}, accountID)
+	if code, _ := awserrors.ResolveErrorCode(err); code == awserrors.ErrorECSClientException {
+		// DescribeTaskDefinition's not-found message is not the one launches get.
+		return ecsdomain.TaskDefinitionNotFound()
+	}
 	if err != nil {
 		return err
 	}
@@ -54,6 +58,9 @@ func checkTaskLaunchRoles(ctx context.Context, svc ecsdomain.ECSService, account
 func CreateCluster(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.CreateClusterInput)
 	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
+		return nil, err
+	}
+	if err := checkCreateCluster(input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).CreateCluster(ctx, input, accountID)
@@ -278,6 +285,9 @@ func runTask(ctx context.Context, svc ecsdomain.ECSService, accountID string, in
 	if err := checkTaskLaunchRoles(ctx, svc, accountID, input.TaskDefinition, passRoleCheck); err != nil {
 		return nil, err
 	}
+	if err := checkCapacityProviderStrategy(input.CapacityProviderStrategy); err != nil {
+		return nil, err
+	}
 	if input.Overrides != nil {
 		if err := checkTaskDefinitionRoles(overrideRoleCheck(ctx), input.Overrides.TaskRoleArn, input.Overrides.ExecutionRoleArn); err != nil {
 			return nil, err
@@ -361,6 +371,9 @@ func CreateService(ctx context.Context, nc *nats.Conn, accountID string, body []
 // ECSService instead of a live NATS connection.
 func createService(ctx context.Context, svc ecsdomain.ECSService, accountID string, input *ecs.CreateServiceInput, passRoleCheck PassRoleChecker) (any, error) {
 	if err := checkTaskLaunchRoles(ctx, svc, accountID, input.TaskDefinition, passRoleCheck); err != nil {
+		return nil, err
+	}
+	if err := checkCapacityProviderStrategy(input.CapacityProviderStrategy); err != nil {
 		return nil, err
 	}
 	return svc.CreateService(ctx, input, accountID)
@@ -501,6 +514,9 @@ func ListTagsForResource(ctx context.Context, nc *nats.Conn, accountID string, b
 func PutClusterCapacityProviders(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.PutClusterCapacityProvidersInput)
 	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
+		return nil, err
+	}
+	if err := checkCapacityProviderStrategy(input.DefaultCapacityProviderStrategy); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).PutClusterCapacityProviders(ctx, input, accountID)

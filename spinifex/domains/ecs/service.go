@@ -8,10 +8,12 @@ import (
 	"errors"
 	"log/slog"
 	"maps"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -190,6 +192,9 @@ func deleteKeysWithPrefix(ctx context.Context, kv jetstream.KeyValue, prefix str
 // CreateCluster persists a cluster meta record. Idempotent: re-creating an
 // existing cluster returns the existing ACTIVE record.
 func (s *Service) CreateCluster(ctx context.Context, input *ecs.CreateClusterInput, accountID string) (*ecs.CreateClusterOutput, error) {
+	if err := validateTags(input.Tags); err != nil {
+		return nil, err
+	}
 	name := aws.StringValue(input.ClusterName)
 	if name == "" {
 		name = defaultCluster
@@ -216,12 +221,7 @@ func (s *Service) CreateCluster(ctx context.Context, input *ecs.CreateClusterInp
 			return nil, err
 		}
 		rec.Settings = settings
-		if len(input.Tags) > 0 {
-			rec.Tags = map[string]string{}
-			for _, t := range input.Tags {
-				rec.Tags[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
-			}
-		}
+		rec.Tags = tagsToMap(input.Tags)
 		if err := taskdefinition.PutJSON(ctx, kv, ClusterMetaKey(name), &rec); err != nil {
 			return nil, err
 		}
@@ -463,6 +463,56 @@ func tagsToMap(tags []*ecs.Tag) map[string]string {
 	return out
 }
 
+// maxTags is the most tags an ECS resource can carry.
+const maxTags = 50
+
+var tagPattern = regexp.MustCompile(`^([\p{L}\p{Z}\p{N}_.:/=+\-@]*)$`)
+
+// validateTags applies the model's tag constraints with AWS's messages.
+func validateTags(tags []*ecs.Tag) error {
+	if len(tags) > maxTags {
+		return errTagLimitExceeded()
+	}
+	for _, t := range tags {
+		if t == nil {
+			return validateTagKey("")
+		}
+		if err := validateTagKey(aws.StringValue(t.Key)); err != nil {
+			return err
+		}
+		value := aws.StringValue(t.Value)
+		if utf8.RuneCountInString(value) > 256 {
+			return awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "Tag value must have length less than or equal to 256")
+		}
+		if !tagPattern.MatchString(value) {
+			return errInvalidTagCharacters()
+		}
+	}
+	return nil
+}
+
+func validateTagKey(key string) error {
+	if key == "" {
+		return awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "Tag key can not be null or empty.")
+	}
+	if utf8.RuneCountInString(key) > 128 {
+		return awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "Tag key must have length less than or equal to 128")
+	}
+	if !tagPattern.MatchString(key) {
+		return errInvalidTagCharacters()
+	}
+	return nil
+}
+
+func errTagLimitExceeded() error {
+	return awserrors.Errorf(awserrors.ErrorECSClientException, "Tag Limit Exceeded.")
+}
+
+func errInvalidTagCharacters() error {
+	return awserrors.Errorf(awserrors.ErrorECSInvalidParameter,
+		"Some tags contain invalid characters. Valid characters: UTF-8 letters, spaces, numbers and _ . / = + - : @.")
+}
+
 // --- Task definition ---
 
 // RegisterTaskDefinition stores a new revision of a family, bumping latest-rev.
@@ -472,6 +522,9 @@ func (s *Service) RegisterTaskDefinition(ctx context.Context, input *ecs.Registe
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
 	if err := validateContainerDefs(input.ContainerDefinitions, aws.StringValue(input.Memory)); err != nil {
+		return nil, err
+	}
+	if err := validateTags(input.Tags); err != nil {
 		return nil, err
 	}
 	warnUnsupportedLogDrivers(ctx, family, input.ContainerDefinitions)
@@ -611,8 +664,8 @@ func (s *Service) DescribeTaskDefinition(ctx context.Context, input *ecs.Describ
 	if family, _ := taskdefinition.ParseRef(ref); family == "" {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
-	// AWS answers an unknown revision with ClientException, not the
-	// InvalidParameterException that launches get for the same reference.
+	// AWS answers an unknown revision with ClientException; launches get the
+	// same code with TaskDefinitionNotFound's message instead.
 	rec, err := s.taskDefs.Resolve(ctx, kv, ref)
 	if err != nil && err.Error() == awserrors.ErrorECSInvalidParameter {
 		return nil, errors.New(awserrors.ErrorECSClientException)
@@ -654,9 +707,22 @@ type taskDefinitionResolver interface {
 
 var _ taskDefinitionResolver = (*taskdefinition.Owner)(nil)
 
+// TaskDefinitionNotFound is AWS's answer when RunTask, StartTask, CreateService
+// or UpdateService names a well-formed but unknown task definition.
+func TaskDefinitionNotFound() error {
+	return awserrors.Errorf(awserrors.ErrorECSClientException, "TaskDefinition not found.")
+}
+
 // resolveTaskDef is how task and service launches reach task definitions.
+// A malformed reference (no family) keeps InvalidParameterException.
 func (s *Service) resolveTaskDef(ctx context.Context, kv jetstream.KeyValue, ref string) (*taskdefinition.Record, error) {
-	return s.launchDefs.Resolve(ctx, kv, ref)
+	rec, err := s.launchDefs.Resolve(ctx, kv, ref)
+	if err != nil && err.Error() == awserrors.ErrorECSInvalidParameter {
+		if family, _ := taskdefinition.ParseRef(ref); family != "" {
+			return nil, TaskDefinitionNotFound()
+		}
+	}
+	return rec, err
 }
 
 func taskDefToAWS(r *taskdefinition.Record) *ecs.TaskDefinition {

@@ -194,3 +194,50 @@ func TestCreateService_PinsTheResolvedRevision(t *testing.T) {
 	require.Len(t, d.Services, 1)
 	assert.Equal(t, pinned, aws.StringValue(d.Services[0].TaskDefinition))
 }
+
+// Every launch answers an unknown family or revision with AWS's ClientException
+// "TaskDefinition not found.", while a reference with no family stays
+// InvalidParameterException.
+func TestLaunches_UnknownTaskDefinitionIsNotFound(t *testing.T) {
+	svc, _, _ := serviceTestRig(t)
+	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
+		Cluster: aws.String("web"), ServiceName: aws.String("web"), TaskDefinition: aws.String("app"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	launches := map[string]func(ref string) error{
+		"RunTask": func(ref string) error {
+			_, err := svc.RunTask(context.Background(), &ecs.RunTaskInput{Cluster: aws.String("web"), TaskDefinition: aws.String(ref)}, testAccountID)
+			return err
+		},
+		"StartTask": func(ref string) error {
+			_, err := svc.StartTask(context.Background(), &ecs.StartTaskInput{
+				Cluster: aws.String("web"), TaskDefinition: aws.String(ref), ContainerInstances: []*string{aws.String("i-1")},
+			}, testAccountID)
+			return err
+		},
+		"CreateService": func(ref string) error {
+			_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
+				Cluster: aws.String("web"), ServiceName: aws.String("other"), TaskDefinition: aws.String(ref),
+			}, testAccountID)
+			return err
+		},
+		"UpdateService": func(ref string) error {
+			_, err := svc.UpdateService(context.Background(), &ecs.UpdateServiceInput{
+				Cluster: aws.String("web"), Service: aws.String("web"), TaskDefinition: aws.String(ref),
+			}, testAccountID)
+			return err
+		},
+	}
+	for name, launch := range launches {
+		for _, ref := range []string{"ghost", "app:9", taskdefinition.ARN(testRegion, testAccountID, "app", 9)} {
+			code, msg, ok := awserrors.ResolveErrorDetail(launch(ref))
+			require.True(t, ok, "%s %s", name, ref)
+			assert.Equal(t, awserrors.ErrorECSClientException, code, "%s %s", name, ref)
+			assert.Equal(t, "TaskDefinition not found.", msg, "%s %s", name, ref)
+		}
+		err := launch(":1")
+		require.Error(t, err, name)
+		assert.Equal(t, awserrors.ErrorECSInvalidParameter, err.Error(), name)
+	}
+}

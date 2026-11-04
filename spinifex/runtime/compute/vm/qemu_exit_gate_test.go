@@ -6,6 +6,7 @@ package vm
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"sync"
 	"testing"
@@ -99,4 +100,80 @@ func TestS7_StuckTerminateDeletesVolumesOnceQEMUIsProvenGone(t *testing.T) {
 	assert.False(t, hostprocess.ProcessAlive(pid))
 	assert.Equal(t, []string{id}, cleaner.deleteVolumes)
 	assert.Equal(t, string(TeardownDone), store.terminated[id].Teardown[TeardownQEMU])
+}
+
+func writeCorruptPidFile(t *testing.T, id string) {
+	t.Helper()
+	path, err := hostprocess.GeneratePidFile(id)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, []byte("not-a-pid"), 0o600))
+}
+
+// TestS7_UnknownQEMUStateNeverPermitsVolumeDeletion enforces ADR-0003:S7: a PID
+// file that cannot be read is unknown state, not proof QEMU exited, on both the
+// backstop and the teardown reaper.
+func TestS7_UnknownQEMUStateNeverPermitsVolumeDeletion(t *testing.T) {
+	hostprocess.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
+
+	t.Run("stuck terminate backstop", func(t *testing.T) {
+		cleaner := &recordingInstanceCleaner{}
+		stuck, store := newStuckTerminateReaper(t, cleaner)
+		const id = "i-corrupt-pid-stuck"
+		writeCorruptPidFile(t, id)
+		stuck.m.InsertIfAbsent(&VM{
+			ID:             id,
+			Status:         StateShuttingDown,
+			ShuttingDownAt: time.Now().Add(-(stuckTerminateTimeout + time.Minute)),
+		})
+		_, err := stuck.Sweep(context.Background())
+		require.NoError(t, err)
+		assert.Empty(t, cleaner.deleteVolumes)
+		assert.Equal(t, string(TeardownFailed), store.terminated[id].Teardown[TeardownQEMU])
+	})
+
+	t.Run("teardown reaper", func(t *testing.T) {
+		cleaner := &recordingInstanceCleaner{}
+		stuck, store := newStuckTerminateReaper(t, cleaner)
+		const id = "i-corrupt-pid-reaper"
+		writeCorruptPidFile(t, id)
+		require.NoError(t, store.WriteTerminatedInstance(id, &VM{
+			ID:       id,
+			Status:   StateTerminated,
+			LastNode: "test-node",
+			Teardown: map[string]string{TeardownQEMU: string(TeardownFailed), TeardownVolumes: string(TeardownFailed)},
+		}))
+		_, err := stuck.m.NewTerminatedTeardownReaper().Sweep(context.Background())
+		require.NoError(t, err)
+		assert.Empty(t, cleaner.deleteVolumes)
+		assert.Equal(t, string(TeardownFailed), store.terminated[id].Teardown[TeardownQEMU])
+	})
+}
+
+// TestStuckTerminateKillFailureKeepsTheUEFIObligation checks the failed-kill
+// handoff still records the UEFI store for the store reaper to complete.
+func TestStuckTerminateKillFailureKeepsTheUEFIObligation(t *testing.T) {
+	hostprocess.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
+	orig := forceKillQEMU
+	forceKillQEMU = func(int, time.Duration) error { return errors.New("kill failed") }
+	t.Cleanup(func() { forceKillQEMU = orig })
+
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	store := newFakeStateStore()
+	m := NewManagerWithDeps(Deps{
+		NodeID:          "test-node",
+		StateStore:      store,
+		InstanceCleaner: &recordingInstanceCleaner{},
+		UEFIStores:      &fakeUEFIStores{},
+	})
+	const id = "i-kill-fails-uefi"
+	liveQEMU(t, id)
+	m.InsertIfAbsent(&VM{
+		ID:             id,
+		Status:         StateShuttingDown,
+		ShuttingDownAt: time.Now().Add(-(stuckTerminateTimeout + time.Minute)),
+	})
+	_, err := m.NewStuckTerminateReaper().Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, string(TeardownFailed), store.terminated[id].Teardown[TeardownUEFI],
+		"the UEFI obligation must survive the failed-kill handoff")
 }

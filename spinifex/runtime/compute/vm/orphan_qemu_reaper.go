@@ -2,7 +2,9 @@ package vm
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"time"
 
@@ -129,6 +131,17 @@ func qemuProcessAlive(instanceID string) bool {
 		return false
 	}
 	return hostprocess.ProcessAlive(pid)
+}
+
+// qemuProvenGone reports whether the instance's QEMU is provably gone: its PID
+// file is absent or names a dead process. An unreadable or corrupt PID file is
+// unknown state, not proof, so callers gating data deletion must not proceed.
+func qemuProvenGone(instanceID string) bool {
+	pid, err := hostprocess.ReadPidFile(instanceID)
+	if err != nil {
+		return errors.Is(err, fs.ErrNotExist)
+	}
+	return !hostprocess.ProcessAlive(pid)
 }
 
 // qemuConfirmedDead reports whether the instance's QEMU is provably gone: its

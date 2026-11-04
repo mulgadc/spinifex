@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"sync"
@@ -452,7 +453,8 @@ var forceKillQEMU = hostprocess.ForceKillProcess
 // teardown failed for TerminatedTeardownReaper, and drives the record to
 // terminated. The cleaner is idempotent, so racing the wedged goroutine is safe.
 func (m *Manager) forceFinalizeStuckTerminate(instance *VM) error {
-	if pid, err := hostprocess.ReadPidFile(instance.ID); err == nil && hostprocess.ProcessAlive(pid) {
+	pid, readErr := hostprocess.ReadPidFile(instance.ID)
+	if readErr == nil && hostprocess.ProcessAlive(pid) {
 		slog.Warn("Force-killing wedged QEMU for stuck terminate",
 			"instanceId", instance.ID, "pid", pid)
 		if err := forceKillQEMU(pid, orphanQEMUKillTimeout); err != nil {
@@ -460,10 +462,17 @@ func (m *Manager) forceFinalizeStuckTerminate(instance *VM) error {
 				"instanceId", instance.ID, "pid", pid, "err", err)
 		}
 	}
-	// Volumes are deleted only once QEMU is proven gone; otherwise the guest may
-	// still write to them and the record is left for TerminatedTeardownReaper.
-	if qemuProcessAlive(instance.ID) {
+	// Volumes are deleted only once QEMU is proven gone, judged on the PID seen
+	// before the kill; otherwise the record is left for TerminatedTeardownReaper.
+	gone := errors.Is(readErr, fs.ErrNotExist)
+	if readErr == nil {
+		gone = !hostprocess.ProcessAlive(pid)
+	}
+	if !gone {
 		m.markTeardown(instance, TeardownQEMU, TeardownFailed)
+		if m.deps.UEFIStores != nil {
+			m.markTeardown(instance, TeardownUEFI, TeardownFailed)
+		}
 		m.stampOutstandingTeardownFailed(instance)
 		return m.finalizeTerminated(instance)
 	}

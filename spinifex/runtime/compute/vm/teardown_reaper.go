@@ -190,7 +190,7 @@ func (r *TerminatedTeardownReaper) retryOutstanding(v *VM) map[string]TeardownSt
 
 	// Volumes stay outstanding until no QEMU process for the instance is alive
 	// on this node; that proof is also what completes the QEMU teardown.
-	if !qemuProcessAlive(v.ID) {
+	if qemuProvenGone(v.ID) {
 		if outstanding(v, TeardownQEMU) {
 			results[TeardownQEMU] = TeardownDone
 		}

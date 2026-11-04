@@ -222,28 +222,36 @@ func TestTerminateServingVM_EmptyRecordIsANoop(t *testing.T) {
 	assert.Empty(t, h.volumes.deleted)
 }
 
-func TestTerminateServingVM_OwnershipUnknownLeavesEverythingForRetry(t *testing.T) {
-	h := newLaunchHarness()
-	h.launcher.terminateErr = fmt.Errorf("%w: i-42", systeminstance.ErrSystemInstanceOwnershipUnknown)
-	rec := EndpointRecord{
-		InstanceID: "i-42",
-		ENIID:      "eni-42",
-		Members:    map[string]MemberEndpoint{testModelID: {Port: 8000, WeightsVolumeID: "vol-42"}},
-	}
+func TestTerminateServingVM_RefusedTerminateLeavesEverything(t *testing.T) {
+	for _, sentinel := range []error{systeminstance.ErrSystemInstanceOwnershipUnknown, systeminstance.ErrSystemInstanceNotSystem} {
+		t.Run(sentinel.Error(), func(t *testing.T) {
+			h := newLaunchHarness()
+			h.launcher.terminateErr = fmt.Errorf("%w: i-42", sentinel)
+			rec := EndpointRecord{
+				InstanceID: "i-42",
+				ENIID:      "eni-42",
+				Members:    map[string]MemberEndpoint{testModelID: {Port: 8000, WeightsVolumeID: "vol-42"}},
+			}
 
-	err := TerminateServingVM(t.Context(), h.deps(), rec)
-	require.ErrorIs(t, err, systeminstance.ErrSystemInstanceOwnershipUnknown)
-	assert.Empty(t, h.vpc.deleted)
-	assert.Empty(t, h.volumes.deleted)
+			err := TerminateServingVM(t.Context(), h.deps(), rec)
+			require.ErrorIs(t, err, sentinel)
+			assert.Empty(t, h.vpc.deleted)
+			assert.Empty(t, h.volumes.deleted)
+		})
+	}
 }
 
-func TestLaunchServingVM_RollbackKeepsResourcesWhenOwnershipUnknown(t *testing.T) {
-	h := newLaunchHarness()
-	h.attacher = &fakeAttacher{failErr: errors.New("no free hot-plug port")}
-	h.launcher.terminateErr = fmt.Errorf("%w: vm", systeminstance.ErrSystemInstanceOwnershipUnknown)
+func TestLaunchServingVM_RollbackKeepsResourcesWhenTerminateRefused(t *testing.T) {
+	for _, sentinel := range []error{systeminstance.ErrSystemInstanceOwnershipUnknown, systeminstance.ErrSystemInstanceNotSystem} {
+		t.Run(sentinel.Error(), func(t *testing.T) {
+			h := newLaunchHarness()
+			h.attacher = &fakeAttacher{failErr: errors.New("no free hot-plug port")}
+			h.launcher.terminateErr = fmt.Errorf("%w: vm", sentinel)
 
-	_, err := LaunchServingVM(t.Context(), h.deps(), testLaunchInput())
-	require.Error(t, err)
-	assert.Empty(t, h.vpc.deleted, "the VM may still be running; its ENI must be left alone")
-	assert.Empty(t, h.volumes.deleted)
+			_, err := LaunchServingVM(t.Context(), h.deps(), testLaunchInput())
+			require.Error(t, err)
+			assert.Empty(t, h.vpc.deleted, "the VM may still be running; its ENI must be left alone")
+			assert.Empty(t, h.volumes.deleted)
+		})
+	}
 }

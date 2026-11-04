@@ -137,7 +137,12 @@ func TestS7_TerminateSystemInstanceRefusesCustomerInstance(t *testing.T) {
 					err = launcher.TerminateSystemInstance(c.inst.ID)
 				}
 				require.Error(t, err, c.name)
-				assert.Contains(t, err.Error(), systeminstance.ErrSystemInstanceNotFound.Error(), c.name)
+				assert.Contains(t, err.Error(), systeminstance.ErrSystemInstanceNotSystem.Error(), c.name)
+				assert.NotContains(t, err.Error(), systeminstance.ErrSystemInstanceNotFound.Error(), c.name)
+				if route != "nats launcher" {
+					require.ErrorIs(t, err, systeminstance.ErrSystemInstanceNotSystem, c.name)
+					assert.NotErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound, c.name)
+				}
 				if c.loc == atLive {
 					assert.Equal(t, vm.StateRunning, d.vmMgr.Status(c.inst), c.name)
 				}
@@ -350,7 +355,11 @@ func TestS7_TerminateSystemInstanceNeverReleasesCustomerEIP(t *testing.T) {
 
 			err = d.TerminateSystemInstance(c.inst.ID)
 
-			require.ErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound)
+			if c.loc == atNone {
+				require.ErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound)
+			} else {
+				require.ErrorIs(t, err, systeminstance.ErrSystemInstanceNotSystem)
+			}
 			assert.True(t, addressKept(t, svc, allocID), "a customer's address survives a wrong system instance ID")
 		})
 	}
@@ -399,4 +408,25 @@ func TestS7_WrapperSkipsBackstopWhenOwnerCannotReadRecord(t *testing.T) {
 
 	require.ErrorIs(t, err, systeminstance.ErrSystemInstanceOwnershipUnknown)
 	assert.True(t, addressKept(t, svc, launchID), "the VM may still be running, so its launch address is kept")
+}
+
+// A refused customer ID must never read as "gone": callers act on the ID after
+// NotFound, and acting on a customer instance is the hole this guard closes.
+func TestS7_NotSystemIsNeitherNotFoundNorOwnershipUnknown(t *testing.T) {
+	assert.NotErrorIs(t, systeminstance.ErrSystemInstanceNotSystem, systeminstance.ErrSystemInstanceNotFound)
+	assert.NotErrorIs(t, systeminstance.ErrSystemInstanceNotSystem, systeminstance.ErrSystemInstanceOwnershipUnknown)
+	assert.NotContains(t, systeminstance.ErrSystemInstanceNotSystem.Error(), systeminstance.ErrSystemInstanceNotFound.Error())
+	assert.NotContains(t, systeminstance.ErrSystemInstanceNotFound.Error(), systeminstance.ErrSystemInstanceNotSystem.Error())
+}
+
+// The asking node maps a routed customer refusal back to the same sentinel.
+func TestTerminateSystemInstance_RoutedNotSystemMapsBack(t *testing.T) {
+	d := guardDaemon(t)
+	stage(t, d, &vm.VM{ID: "i-routed-cust", Status: vm.StateStopped, AccountID: testAccountID}, atStopped)
+	require.NoError(t, d.subscribeSystemTerminate("i-routed-cust"))
+
+	err := d.terminateSystemInstanceRemote("i-routed-cust")
+	require.ErrorIs(t, err, systeminstance.ErrSystemInstanceNotSystem)
+	assert.NotErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound)
+	assert.NotErrorIs(t, err, systeminstance.ErrSystemInstanceOwnershipUnknown)
 }

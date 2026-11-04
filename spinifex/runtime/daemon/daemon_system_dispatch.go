@@ -178,6 +178,9 @@ func (d *Daemon) terminateSystemInstanceRemote(instanceID string) error {
 		if strings.Contains(env.Error, systeminstance.ErrSystemInstanceNotFound.Error()) {
 			return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotFound, instanceID)
 		}
+		if strings.Contains(env.Error, systeminstance.ErrSystemInstanceNotSystem.Error()) {
+			return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotSystem, instanceID)
+		}
 		if strings.Contains(env.Error, systeminstance.ErrSystemInstanceOwnershipUnknown.Error()) {
 			return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceOwnershipUnknown, instanceID)
 		}

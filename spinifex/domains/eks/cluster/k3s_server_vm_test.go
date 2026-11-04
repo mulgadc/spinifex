@@ -995,13 +995,18 @@ func assertEC2TaggedAsEKSControlPlane(t *testing.T, ec2Tags []*ec2.Tag, clusterN
 	assert.Equal(t, clusterEKSRoleControlPlane, got[clusterEKSRoleTagKey])
 }
 
-func TestTerminateK3sServerVM_OwnershipUnknownStopsBeforeENIDelete(t *testing.T) {
+func TestTerminateK3sServerVM_RefusedTerminateStopsBeforeENIDelete(t *testing.T) {
 	t.Parallel()
-	vpc := &fakeK3sVPC{}
-	inst := &fakeK3sInst{terminateErr: fmt.Errorf("%w: i-aaa111", systeminstance.ErrSystemInstanceOwnershipUnknown)}
+	for _, sentinel := range []error{systeminstance.ErrSystemInstanceOwnershipUnknown, systeminstance.ErrSystemInstanceNotSystem} {
+		t.Run(sentinel.Error(), func(t *testing.T) {
+			t.Parallel()
+			vpc := &fakeK3sVPC{}
+			inst := &fakeK3sInst{terminateErr: fmt.Errorf("%w: i-aaa111", sentinel)}
 
-	err := TerminateK3sServerVM(context.Background(), vpc, inst, "111122223333", "i-aaa111", "eni-aaa111")
-	require.ErrorIs(t, err, systeminstance.ErrSystemInstanceOwnershipUnknown)
-	assert.Empty(t, vpc.detachCalls, "the VM may still be running; its ENI must be left alone")
-	assert.Empty(t, vpc.deleteCalls)
+			err := TerminateK3sServerVM(context.Background(), vpc, inst, "111122223333", "i-aaa111", "eni-aaa111")
+			require.ErrorIs(t, err, sentinel)
+			assert.Empty(t, vpc.detachCalls, "the VM may still be running; its ENI must be left alone")
+			assert.Empty(t, vpc.deleteCalls)
+		})
+	}
 }

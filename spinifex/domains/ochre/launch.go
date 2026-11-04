@@ -324,7 +324,8 @@ func LaunchServingVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (out 
 			slog.WarnContext(ctx, "bedrock: rollback terminate of failed serving VM failed",
 				"group", in.GroupID, "instanceId", instanceID, "err", termErr)
 		}
-		return !errors.Is(termErr, systeminstance.ErrSystemInstanceOwnershipUnknown)
+		return !errors.Is(termErr, systeminstance.ErrSystemInstanceOwnershipUnknown) &&
+			!errors.Is(termErr, systeminstance.ErrSystemInstanceNotSystem)
 	}
 
 	memberOut := make(map[string]LaunchMemberOutput, len(in.Members))
@@ -369,8 +370,9 @@ func TerminateServingVM(ctx context.Context, deps LaunchDeps, rec EndpointRecord
 		if err := deps.Instance.TerminateSystemInstance(rec.InstanceID); err != nil &&
 			!errors.Is(err, systeminstance.ErrSystemInstanceNotFound) {
 			wrapped := fmt.Errorf("terminate instance %s: %w", rec.InstanceID, err)
-			if errors.Is(err, systeminstance.ErrSystemInstanceOwnershipUnknown) {
-				// The VM may still be running: leave its ENI and volumes for the retry.
+			if errors.Is(err, systeminstance.ErrSystemInstanceOwnershipUnknown) ||
+				errors.Is(err, systeminstance.ErrSystemInstanceNotSystem) {
+				// Possibly still running, or not ours to end: leave its ENI and volumes.
 				return wrapped
 			}
 			errs = append(errs, wrapped)

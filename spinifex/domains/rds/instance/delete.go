@@ -248,7 +248,8 @@ func (s *Service) teardownDBInstance(ctx context.Context, kv *kvstore.Bucket, ac
 
 // A VM no node owns is either already gone or stopped, and a stopped one is
 // terminated from its shared record once its data volume is out of that record.
-// An unreadable ownership record is returned so the delete stops and is retried.
+// An unreadable ownership record, or a record that names a customer instance,
+// is returned so the delete stops and nothing is touched.
 func (s *Service) terminateInstanceVM(ctx context.Context, instanceID, dataVolumeID string) error {
 	if instanceID == "" {
 		return nil

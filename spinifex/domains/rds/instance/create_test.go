@@ -657,18 +657,23 @@ func TestValidateCreateRequest_AcceptsInertParameters(t *testing.T) {
 	assert.Equal(t, int64(60), req.MonitoringInterval)
 }
 
-func TestCreateDBInstance_RollbackKeepsResourcesWhenOwnershipUnknown(t *testing.T) {
+func TestCreateDBInstance_RollbackKeepsResourcesWhenTerminateRefused(t *testing.T) {
 	t.Parallel()
-	h := newCreateHarness(t, "")
-	h.launch.launcher.terminateErr = fmt.Errorf("%w: i-rds0001", systeminstance.ErrSystemInstanceOwnershipUnknown)
-	h.launch.launcher.onLaunch = func() {
-		kv, err := h.svc.bucket(t.Context(), testAccountID)
-		require.NoError(t, err)
-		require.NoError(t, kv.Delete(t.Context(), DBInstanceKey(testDBInstanceID)))
-	}
+	for _, sentinel := range []error{systeminstance.ErrSystemInstanceOwnershipUnknown, systeminstance.ErrSystemInstanceNotSystem} {
+		t.Run(sentinel.Error(), func(t *testing.T) {
+			t.Parallel()
+			h := newCreateHarness(t, "")
+			h.launch.launcher.terminateErr = fmt.Errorf("%w: i-rds0001", sentinel)
+			h.launch.launcher.onLaunch = func() {
+				kv, err := h.svc.bucket(t.Context(), testAccountID)
+				require.NoError(t, err)
+				require.NoError(t, kv.Delete(t.Context(), DBInstanceKey(testDBInstanceID)))
+			}
 
-	_, err := h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)
-	require.Error(t, err)
-	assert.Empty(t, h.launch.volumes.deleted, "the VM may still be running; its volume must be left alone")
-	assert.NotContains(t, h.launch.unwind, "delete-eni")
+			_, err := h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)
+			require.Error(t, err)
+			assert.Empty(t, h.launch.volumes.deleted, "the VM may still be running; its volume must be left alone")
+			assert.NotContains(t, h.launch.unwind, "delete-eni")
+		})
+	}
 }

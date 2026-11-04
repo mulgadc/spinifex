@@ -302,7 +302,8 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 			slog.WarnContext(ctx, "rds: rollback terminate of failed DB VM failed",
 				"dbInstance", in.DBInstanceIdentifier, "instanceId", instanceID, "err", termErr)
 		}
-		return !errors.Is(termErr, systeminstance.ErrSystemInstanceOwnershipUnknown)
+		return !errors.Is(termErr, systeminstance.ErrSystemInstanceOwnershipUnknown) &&
+			!errors.Is(termErr, systeminstance.ErrSystemInstanceNotSystem)
 	}
 
 	// A replace re-attaches the datadir it already has; only a create makes one,

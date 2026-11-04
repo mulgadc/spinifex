@@ -650,7 +650,8 @@ func (d *Daemon) TerminateSystemInstance(instanceID string) error {
 	// returns NotFound and never reaches the owner's release, so an internet-facing
 	// ALB's launch EIP would orphan. Idempotent — a no-op once released. Skipped
 	// when the owner could not read the record: the VM may still be running.
-	if !errors.Is(termErr, systeminstance.ErrSystemInstanceOwnershipUnknown) {
+	if !errors.Is(termErr, systeminstance.ErrSystemInstanceOwnershipUnknown) &&
+		!errors.Is(termErr, systeminstance.ErrSystemInstanceNotSystem) {
 		d.reclaimSystemInstanceEIP(instanceID, cls)
 	}
 	return termErr
@@ -678,8 +679,8 @@ func (d *Daemon) reclaimSystemInstanceEIP(instanceID string, cls systeminstance.
 }
 
 // requireSystemInstance lets a terminate go ahead only for a system VM. A
-// customer or unknown ID is answered as gone and an unreadable record as
-// ownership unknown; either way nothing is touched.
+// customer ID is refused as not a system instance, an unknown ID answered as
+// gone and an unreadable record as ownership unknown; nothing is touched.
 func (d *Daemon) requireSystemInstance(instanceID string) (systeminstance.Classification, error) {
 	cls, err := d.classifySystemInstance(instanceID)
 	if err != nil {
@@ -688,6 +689,9 @@ func (d *Daemon) requireSystemInstance(instanceID string) (systeminstance.Classi
 	}
 	if cls.Ownership != systeminstance.OwnershipSystem {
 		slog.Warn("TerminateSystemInstance: refused, not a system instance", "instanceId", instanceID, "ownership", cls.Ownership)
+		if cls.Ownership == systeminstance.OwnershipCustomer {
+			return cls, fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotSystem, instanceID)
+		}
 		return cls, fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotFound, instanceID)
 	}
 	return cls, nil

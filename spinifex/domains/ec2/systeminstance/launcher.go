@@ -10,6 +10,11 @@ import "errors"
 // Callers treat it as idempotent success so a retried delete does not block on a gone VM.
 var ErrSystemInstanceNotFound = errors.New("sysinstance: instance not found")
 
+// ErrSystemInstanceNotSystem is returned by TerminateSystemInstance when the ID
+// names a customer instance. Nothing was touched, and it is not "gone": callers
+// must stop and never act on that ID.
+var ErrSystemInstanceNotSystem = errors.New("sysinstance: not a system instance")
+
 // ErrSystemInstanceOwnershipUnknown is returned by TerminateSystemInstance when
 // the instance's record could not be read. Nothing was terminated; callers must
 // stop and retry, never treat it as the VM being gone.

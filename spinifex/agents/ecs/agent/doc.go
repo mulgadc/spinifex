@@ -5,8 +5,7 @@
 // task assignments, runs them through containerd, and reports state back over
 // the gateway.
 //
-// Static config (gateway URL, CA, region, cluster, seeded IAM creds, containerd
-// socket) is read from the cloud-init env file /etc/spinifex-ecs/agent.env
+// Static config (gateway URL, CA, region, cluster, containerd socket) is read from the cloud-init env file /etc/spinifex-ecs/agent.env
 // (KEY=value); real env vars override it. Host identity (account, instance, AZ)
 // comes from IMDS at boot.
 package agent

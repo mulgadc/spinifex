@@ -21,7 +21,8 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   const { mockRouter } = await import("@/test/router")
 
   return await mockRouter(importOriginal, {
-    params: { id: "arn:tg:1" },
+    // An old doubly encoded bookmark arrives still encoded once.
+    params: { id: encodeURIComponent("arn:tg:1") },
   })
 })
 

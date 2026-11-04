@@ -119,14 +119,20 @@ describe("breadcrumbTrail", () => {
     })
   })
 
-  it("names a policy by its ARN from the singly encoded path", () => {
-    const arn = "arn:aws:iam::000000000001:policy/AdministratorAccess"
-
+  it.each([
+    [
+      "/iam/list-policies",
+      "arn:aws:iam::000000000001:policy/AdministratorAccess",
+    ],
+    [
+      "/ec2/describe-load-balancers",
+      "arn:aws:elasticloadbalancing:ap-southeast-2:000000000001:loadbalancer/app/web/50dc6c495c0c9188",
+    ],
+    ["/ecr/list-repositories", "team/web"],
+  ])("names the resource under %s from its encoded segment", (list, id) => {
     expect(
-      breadcrumbTrail(NAV, `/iam/list-policies/${encodeURIComponent(arn)}`).at(
-        -1,
-      ),
-    ).toStrictEqual({ label: arn })
+      breadcrumbTrail(NAV, `${list}/${encodeURIComponent(id)}`).at(-1),
+    ).toStrictEqual({ label: id })
   })
 
   it("is empty off the nav", () => {

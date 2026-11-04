@@ -175,7 +175,7 @@ export function PolicyDetails({
           <Link
             aria-label="Open policy page"
             className={buttonVariants({ size: "icon-sm", variant: "ghost" })}
-            params={{ policyArn: policyArn }}
+            params={{ policyArn }}
             search={{ tab }}
             to="/iam/list-policies/$policyArn"
           >

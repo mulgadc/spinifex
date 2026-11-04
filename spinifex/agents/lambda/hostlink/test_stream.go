@@ -53,7 +53,8 @@ var _ Link = (*TestStream)(nil)
 
 // NewTestStream starts reading frames from rw.
 func NewTestStream(rw io.ReadWriter) *TestStream {
-	s := &TestStream{rw: rw, in: make(chan frame), wslot: make(chan struct{}, 1)}
+	// One slot lets the reader finish after an unread frame instead of blocking.
+	s := &TestStream{rw: rw, in: make(chan frame, 1), wslot: make(chan struct{}, 1)}
 	s.conn, _ = rw.(net.Conn)
 	go s.readLoop()
 	return s

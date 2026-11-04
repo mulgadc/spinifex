@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountinventory"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
@@ -46,8 +47,9 @@ func (f *fakeVolumes) VolumeInventory(context.Context, string) ([]accountinvento
 type fakeDeleter struct {
 	store   *fakeVolumes
 	reclaim string
-	errFor  map[string]error
-	deleted []string
+	errFor   map[string]error
+	deleted  []string
+	onDelete func()
 }
 
 func (f *fakeDeleter) DeleteVolume(_ context.Context, _, id string) error {
@@ -55,6 +57,9 @@ func (f *fakeDeleter) DeleteVolume(_ context.Context, _, id string) error {
 		return err
 	}
 	f.deleted = append(f.deleted, id)
+	if f.onDelete != nil {
+		f.onDelete()
+	}
 	f.store.vols = slices.DeleteFunc(f.store.vols, func(v accountinventory.VolumeItem) bool {
 		if v.VolumeID != id {
 			return false
@@ -318,8 +323,7 @@ func TestS7_CleanupStorageUnresolvedOwnerKeepsItsTags(t *testing.T) {
 		rig.volumes.vols = nil
 		rig.volumes.failAt = 3 // the tag-ownership read
 		rig.spot.err = errors.New("spot scan failed")
-		rig.teardown.err = errors.New("teardown unread")
-		rig.tags.ids = []string{"i-0x", "vol-0x", "sir-0x"}
+		rig.tags.ids = []string{"vol-0x", "sir-0x"}
 
 		res := rig.run(t, force)
 
@@ -388,4 +392,45 @@ func TestCleanupStorage_RejectsBadRequestAndNilDependency(t *testing.T) {
 	require.Error(t, err)
 	assert.Empty(t, rig.deleter.deleted)
 	assert.Zero(t, rig.volumes.reads, "nothing is read before the wiring is proven")
+}
+
+// ADR-0003:S7. Unreadable teardown deletes no volume; a terminated record with
+// unfinished teardown may still have a QEMU holding a volume no record names.
+func TestS7_CleanupStorageUnprovenTeardownDeletesNoVolume(t *testing.T) {
+	cases := map[string]func(*storageRig){
+		"teardown unreadable": func(r *storageRig) { r.teardown.err = errors.New("store down") },
+		"terminated record with failed teardown": func(r *storageRig) {
+			r.teardown.outstanding = []ec2instance.OutstandingInstance{{InstanceID: runningID, State: ec2.InstanceStateNameTerminated, Teardown: map[string]string{"qemu": "failed"}}}
+		},
+	}
+	for name, arrange := range cases {
+		for _, force := range []bool{false, true} {
+			t.Run(name, func(t *testing.T) {
+				rig := newStorageRig()
+				arrange(rig)
+
+				res := rig.run(t, force)
+
+				assert.Empty(t, rig.deleter.deleted, "ADR-0003:S7: unproven teardown must not allow a volume delete (force=%v)", force)
+				assert.Equal(t, StatusIncomplete, res.Status)
+			})
+		}
+	}
+}
+
+// A volume that first shows up in the re-read stays visible.
+func TestCleanupStorage_VolumeAppearingDuringCleanupIsReported(t *testing.T) {
+	rig := newStorageRig()
+	rig.deleter.reclaim = "gone"
+	rig.deleter.onDelete = func() {
+		rig.volumes.vols = append(rig.volumes.vols, volume(deletingVol, ec2.VolumeStateDeleting, ""))
+	}
+
+	res := rig.run(t, false)
+
+	item := itemFor(res, deletingVol)
+	require.NotNil(t, item)
+	assert.Equal(t, DispositionPending, item.Disposition)
+	assert.Equal(t, ReasonAppearedDuringCleanup, item.Reason)
+	assert.Equal(t, StatusIncomplete, res.Status)
 }

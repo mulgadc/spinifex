@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountinventory"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
@@ -123,22 +124,34 @@ func (c *StorageCleanup) CleanupStorage(ctx context.Context, req *StorageRequest
 		return res, nil
 	}
 
-	c.deleteFreeVolumes(ctx, req.AccountID, volumes, live, res)
-	c.clearTagResidue(ctx, req.AccountID, live, res)
+	outstanding, err := c.teardown.AccountTeardownOutstanding(req.AccountID)
+	if err != nil {
+		slog.WarnContext(ctx, "CleanupStorage: teardown unread, nothing deleted", "account_id", req.AccountID, "err", err)
+		res.incomplete(ReasonHolderProofIncomplete)
+		return res, nil
+	}
+
+	c.deleteFreeVolumes(ctx, req.AccountID, volumes, live, outstanding, res)
+	c.clearTagResidue(ctx, req.AccountID, live, outstanding, res)
 	return res, nil
 }
 
 // deleteFreeVolumes deletes the free volumes, re-reads the inventory and
 // reports each volume from that re-read.
-func (c *StorageCleanup) deleteFreeVolumes(ctx context.Context, accountID string, volumes []accountinventory.VolumeItem, live *ec2.DescribeInstancesOutput, res *StorageResult) {
+func (c *StorageCleanup) deleteFreeVolumes(ctx context.Context, accountID string, volumes []accountinventory.VolumeItem, live *ec2.DescribeInstancesOutput, outstanding []ec2instance.OutstandingInstance, res *StorageResult) {
 	issued := map[string]bool{}
 	blocked := map[string]string{}
+	unproven := terminatedTeardownOutstanding(outstanding)
 	for _, v := range volumes {
 		switch {
 		case v.State == ec2.VolumeStateDeleting:
 			// The owner is already reclaiming it; the re-read reports it.
 		case v.AttachedInstance != "" || volumeMappedByLiveInstance(live, v.VolumeID):
 			blocked[v.VolumeID] = ReasonHolderPresent
+		case unproven:
+			// A terminated record whose teardown is unfinished may still have a
+			// QEMU holding a volume this record no longer names.
+			blocked[v.VolumeID] = ReasonTerminationUnproven
 		case v.State != ec2.VolumeStateAvailable:
 			blocked[v.VolumeID] = ReasonVolumeStateUnproven
 		default:
@@ -169,6 +182,15 @@ func (c *StorageCleanup) deleteFreeVolumes(ctx context.Context, accountID string
 		for _, v := range after {
 			present[v.VolumeID] = v
 		}
+		initial := map[string]bool{}
+		for _, v := range volumes {
+			initial[v.VolumeID] = true
+		}
+		for _, v := range after {
+			if !initial[v.VolumeID] {
+				res.Items = append(res.Items, Item{ResourceID: v.VolumeID, Kind: KindVolume, State: v.State, Disposition: DispositionPending, Reason: ReasonAppearedDuringCleanup})
+			}
+		}
 		for _, v := range volumes {
 			now, still := present[v.VolumeID]
 			switch {
@@ -186,6 +208,15 @@ func (c *StorageCleanup) deleteFreeVolumes(ctx context.Context, accountID string
 	for id, reason := range blocked {
 		res.Items = append(res.Items, Item{ResourceID: id, Kind: KindVolume, Disposition: DispositionBlocked, Reason: reason})
 	}
+}
+
+// terminatedTeardownOutstanding reports whether an instance whose record says
+// terminated still has unfinished teardown. Its mappings are gone from the
+// live listing, so no volume can be shown free of it.
+func terminatedTeardownOutstanding(outstanding []ec2instance.OutstandingInstance) bool {
+	return slices.ContainsFunc(outstanding, func(o ec2instance.OutstandingInstance) bool {
+		return o.State == ec2.InstanceStateNameTerminated
+	})
 }
 
 // volumeMappedByLiveInstance reports whether a live instance's block device
@@ -210,14 +241,14 @@ func volumeMappedByLiveInstance(live *ec2.DescribeInstancesOutput, volumeID stri
 // clearTagResidue removes the tag entries of instances, volumes and spot
 // requests whose owner re-read resolved and holds no record. An owner that did
 // not resolve keeps its entries and the run incomplete.
-func (c *StorageCleanup) clearTagResidue(ctx context.Context, accountID string, live *ec2.DescribeInstancesOutput, res *StorageResult) {
+func (c *StorageCleanup) clearTagResidue(ctx context.Context, accountID string, live *ec2.DescribeInstancesOutput, outstanding []ec2instance.OutstandingInstance, res *StorageResult) {
 	tagged, err := c.tags.ScanAccountResourceIDs(ctx, accountID, storageTagPrefixes...)
 	if err != nil {
 		slog.WarnContext(ctx, "CleanupStorage: tag index read failed", "account_id", accountID, "err", err)
 		res.incomplete(ReasonTagIndexUnread)
 		return
 	}
-	owned, resolved := c.ownedResourceIDs(ctx, accountID, live)
+	owned, resolved := c.ownedResourceIDs(ctx, accountID, live, outstanding)
 	var cleared []string
 	for _, id := range tagged {
 		prefix := tagPrefix(id)
@@ -260,7 +291,7 @@ func (c *StorageCleanup) clearTagResidue(ctx context.Context, accountID string, 
 // and whether that read completed. Instances are owned while listed live or
 // while their teardown is unfinished; a missing teardown record is not proof
 // of completion, but tags of an instance with no live record are residue.
-func (c *StorageCleanup) ownedResourceIDs(ctx context.Context, accountID string, live *ec2.DescribeInstancesOutput) (map[string]bool, map[string]bool) {
+func (c *StorageCleanup) ownedResourceIDs(ctx context.Context, accountID string, live *ec2.DescribeInstancesOutput, outstanding []ec2instance.OutstandingInstance) (map[string]bool, map[string]bool) {
 	owned := map[string]bool{}
 	resolved := map[string]bool{}
 
@@ -278,16 +309,13 @@ func (c *StorageCleanup) ownedResourceIDs(ctx context.Context, accountID string,
 			owned[r.RequestID] = true
 		}
 	}
-	outstanding, err := c.teardown.AccountTeardownOutstanding(accountID)
-	if err == nil {
-		resolved["i-"] = true
-		for _, o := range outstanding {
-			owned[o.InstanceID] = true
-		}
-		for _, reservation := range live.Reservations {
-			for _, in := range reservation.Instances {
-				owned[aws.StringValue(in.InstanceId)] = true
-			}
+	resolved["i-"] = true
+	for _, o := range outstanding {
+		owned[o.InstanceID] = true
+	}
+	for _, reservation := range live.Reservations {
+		for _, in := range reservation.Instances {
+			owned[aws.StringValue(in.InstanceId)] = true
 		}
 	}
 	return owned, resolved

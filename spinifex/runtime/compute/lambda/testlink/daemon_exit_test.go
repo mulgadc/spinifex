@@ -2,6 +2,8 @@
 
 package testlink
 
+//test:in-package drives the unexported session and clock hooks of the host side
+
 import (
 	"bytes"
 	"context"

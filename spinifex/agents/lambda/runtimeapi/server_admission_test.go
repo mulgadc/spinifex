@@ -1,5 +1,7 @@
 package runtimeapi
 
+//test:in-package drives the unexported admit and exit transitions to force both orders
+
 import (
 	"bytes"
 	"context"

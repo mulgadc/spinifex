@@ -2,6 +2,8 @@
 
 package hostlink
 
+//test:in-package reaches the unexported write slot, frame types and readFrame to force orderings
+
 import (
 	"bytes"
 	"context"

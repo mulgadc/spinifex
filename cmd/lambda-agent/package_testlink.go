@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"golang.org/x/sys/unix"
 )
@@ -28,6 +29,7 @@ import (
 const (
 	entryPackageSize   = "test-package-size"
 	entryPackageSHA256 = "test-package-sha256"
+	entryHandler       = "test-handler"
 
 	devMaxZipBytes    = 16 << 20
 	devMaxUnzipBytes  = 64 << 20
@@ -37,8 +39,9 @@ const (
 )
 
 type packageSpec struct {
-	size   int64
-	sha256 [sha256.Size]byte
+	size    int64
+	sha256  [sha256.Size]byte
+	handler string
 }
 
 type unpackLimits struct {
@@ -76,6 +79,13 @@ func readPackageSpec(fwCfgDir string) (packageSpec, error) {
 		return spec, errors.New("package sha256 is not 64 hex digits")
 	}
 	copy(spec.sha256[:], b)
+	if spec.handler, err = read(entryHandler); err != nil {
+		return spec, err
+	}
+	if spec.handler == "" || len(spec.handler) > 128 || strings.IndexFunc(spec.handler, unicode.IsSpace) >= 0 ||
+		strings.ContainsRune(spec.handler, 0) {
+		return spec, errors.New("handler must be 1..128 characters with no whitespace")
+	}
 	return spec, nil
 }
 

@@ -1,0 +1,23 @@
+#cloud-config
+# Host preparation only. Spinifex is installed and formed over SSH by deploy-latitude.sh.
+# latitude.sh substitutes double-brace variables in user data, so this file holds none.
+write_files:
+  - path: /etc/cloud/cloud.cfg.d/99-spinifex-network.cfg
+    content: |
+      network: {config: disabled}
+  # The image's netplan lists eno2 with no address and without optional, so boot waits two minutes
+  # for it. --any returns once one link, eno1, is online; it changes the wait, not the network.
+  # UNVERIFIED: the binary path is the Ubuntu one and the drop-in first applies on the next boot.
+  - path: /etc/systemd/system/systemd-networkd-wait-online.service.d/10-spinifex-any.conf
+    content: |
+      [Service]
+      ExecStart=
+      ExecStart=/usr/lib/systemd/systemd-networkd-wait-online --any
+# runcmd carries on past a failing command, so each line stands alone.
+runcmd:
+  - [sh, -c, "command -v ufw >/dev/null && ufw --force disable || true"]
+  - [sh, -c, "systemctl disable --now unattended-upgrades.service apt-daily-upgrade.timer apt-daily.timer || true"]
+  # The image ships empty apt lists and no git, which the workbooks need.
+  - [sh, -c, "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git || true"]
+  - [sh, -c, "systemctl daemon-reload || true"]
+  - [sh, -c, "touch /var/lib/cloud/spinifex-host-ready"]

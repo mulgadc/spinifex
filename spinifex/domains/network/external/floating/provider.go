@@ -24,6 +24,9 @@ type Address struct {
 	// HolderID is the provider host the address is attached to; empty when
 	// it is attached nowhere.
 	HolderID string
+	// Failed is set when the provider reports the address broken, so it is neither
+	// handed out nor treated as settled where it is. Only a fixed set reports it.
+	Failed bool
 }
 
 // Provider is the vendor half of a floating public address. Errors are wrapped
@@ -41,6 +44,15 @@ type Provider interface {
 	Get(ctx context.Context, addrID string) (Address, error)
 	// List returns every address in the provider scope, ours or not.
 	List(ctx context.Context) ([]Address, error)
+}
+
+// FixedSet is implemented by a provider whose addresses are bought ahead of
+// time and handed out, not created per allocation. The engine picks a member
+// that has no binding inside the pool's record update, so two nodes cannot
+// take the same one, and never creates, labels or deletes a member.
+type FixedSet interface {
+	// Members returns every address of the set with its current holder.
+	Members(ctx context.Context) ([]Address, error)
 }
 
 var (

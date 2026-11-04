@@ -2,10 +2,14 @@ package floating
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
@@ -28,6 +32,10 @@ type Binding struct {
 	// GatewayVPCID names the VPC whose NAT gateway answers on the address. Such
 	// an address has no ENI, so this is what says which node must hold it.
 	GatewayVPCID string `json:"gateway_vpc_id,omitempty"`
+	// Gen is a token drawn at allocation, never reused, so a holder pass that
+	// read the binding before a release and re-allocation can tell it is stale.
+	// Only a fixed set draws one; other providers' records carry none.
+	Gen string `json:"gen,omitempty"`
 	// Holder is the provider host this node last confirmed the address on. It
 	// is observed state, written after the provider agreed, never identity.
 	Holder string `json:"holder,omitempty"`
@@ -53,6 +61,9 @@ type Config struct {
 	Pool external.ExternalPoolConfig
 	// HostID is this node's provider host ID, which the holder pass attaches to.
 	HostID string
+	// KnownHostIDs are the other nodes' provider host IDs. A holder the provider reports
+	// is logged only when it is one of these or HostID.
+	KnownHostIDs []string
 	// LocalPorts lists the OVS ports plugged on this node, keyed by port name.
 	LocalPorts func(ctx context.Context) (map[string]struct{}, error)
 	// LocalGateway reports whether vpcID's gateway chassis is this node.
@@ -64,6 +75,8 @@ type PoolAllocator struct {
 	provider Provider
 	store    Store
 	cfg      Config
+	// fixed is set when the provider hands out a pre-bought set of addresses.
+	fixed bool
 	// suspects holds unbound labelled addresses one reconcile pass has seen,
 	// so the next can collect them. See Reconcile.
 	suspects map[string]struct{}
@@ -74,6 +87,16 @@ var (
 	_ external.OwnerTracker   = (*PoolAllocator)(nil)
 	_ external.AddressClaimer = (*PoolAllocator)(nil)
 )
+
+// holderLabel names a provider-reported holder for a log or a stall reason. For a fixed set
+// the value is shown only if it is a host we configured; anything else, which the provider
+// alone vouches for, is not echoed. Other providers log the holder as they always have.
+func (a *PoolAllocator) holderLabel(id string) string {
+	if !a.fixed || id == "" || id == a.cfg.HostID || slices.Contains(a.cfg.KnownHostIDs, id) {
+		return id
+	}
+	return "unrecognised holder"
+}
 
 // New constructs an allocator bound to a single pool.
 func New(provider Provider, store Store, cfg Config) (*PoolAllocator, error) {
@@ -86,10 +109,20 @@ func New(provider Provider, store Store, cfg Config) (*PoolAllocator, error) {
 	if cfg.HostID == "" {
 		return nil, fmt.Errorf("floating: pool %q missing provider host id", cfg.Pool.Name)
 	}
-	if cfg.Pool.LabelPrefix == "" {
+	_, fixed := provider.(FixedSet)
+	if cfg.Pool.LabelPrefix == "" && !fixed {
 		return nil, fmt.Errorf("floating: pool %q missing label prefix", cfg.Pool.Name)
 	}
-	return &PoolAllocator{provider: provider, store: store, cfg: cfg, suspects: map[string]struct{}{}}, nil
+	return &PoolAllocator{provider: provider, store: store, cfg: cfg, fixed: fixed, suspects: map[string]struct{}{}}, nil
+}
+
+// newGen returns a fresh random token for a binding's Gen.
+func newGen() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("floating: draw allocation token: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 // Pool returns the pool this allocator manages.
@@ -103,6 +136,10 @@ func (a *PoolAllocator) Pool() external.ExternalPoolConfig { return a.cfg.Pool }
 func (a *PoolAllocator) Allocate(ctx context.Context, req external.AllocateRequest) (netip.Addr, error) {
 	if req.PoolName != "" && req.PoolName != a.cfg.Pool.Name {
 		return netip.Addr{}, fmt.Errorf("floating: pool mismatch (got %q, bound to %q)", req.PoolName, a.cfg.Pool.Name)
+	}
+
+	if fs, ok := a.provider.(FixedSet); ok {
+		return a.allocateFixed(ctx, fs, req)
 	}
 
 	addr, err := a.provider.Create(ctx, a.label(req))
@@ -135,6 +172,53 @@ func (a *PoolAllocator) Allocate(ctx context.Context, req external.AllocateReque
 		"pool", a.cfg.Pool.Name, "public_ip", key, "addr_id", addr.ID,
 		"purpose", req.Purpose, "eni_id", req.ENIID)
 	return addr.IP, nil
+}
+
+// allocateFixed hands out a member of the provider's set that has no binding.
+// The member is chosen inside the record update, which reruns on a conflict,
+// so the choice is made against the record that is actually written.
+func (a *PoolAllocator) allocateFixed(ctx context.Context, fs FixedSet, req external.AllocateRequest) (netip.Addr, error) {
+	members, err := fs.Members(ctx)
+	if err != nil {
+		return netip.Addr{}, capacityErr(req.Purpose, fmt.Errorf("floating: list pool members: %w", err), err)
+	}
+	sort.Slice(members, func(i, j int) bool { return members[i].IP.Less(members[j].IP) })
+
+	gen, err := newGen()
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	var picked Address
+	err = a.store.Mutate(ctx, a.cfg.Pool.Name, func(rec *Record) (bool, error) {
+		picked = Address{}
+		for _, m := range members {
+			if !m.IP.IsValid() || m.Failed {
+				continue
+			}
+			key := m.IP.String()
+			if _, used := rec.Bindings[key]; used {
+				continue
+			}
+			rec.Bindings[key] = Binding{
+				AddrID:       m.ID,
+				Purpose:      req.Purpose,
+				AllocationID: req.AllocationID,
+				ENIID:        req.ENIID,
+				InstanceID:   req.InstanceID,
+				Gen:          gen,
+			}
+			picked = m
+			return true, nil
+		}
+		return false, fmt.Errorf("floating: pool %s has no free address: %w", a.cfg.Pool.Name, ErrQuotaExceeded)
+	})
+	if err != nil {
+		return netip.Addr{}, capacityErr(req.Purpose, fmt.Errorf("floating: allocate from pool: %w", err), err)
+	}
+	slog.InfoContext(ctx, "floating allocated external IP",
+		"pool", a.cfg.Pool.Name, "public_ip", picked.IP.String(), "addr_id", picked.ID,
+		"purpose", req.Purpose, "eni_id", req.ENIID)
+	return picked.IP, nil
 }
 
 // Release drops the binding and deletes the address. ownerENIID scopes the
@@ -242,7 +326,11 @@ func (a *PoolAllocator) undo(ctx context.Context, addr Address) {
 // destroy detaches and then deletes an address; a missing one is already gone.
 // Vultr documents delete as detaching implicitly, but has been measured to
 // refuse it with "Unable to detach subnet" while the address is attached.
+// A fixed set's members belong to whoever bought them, so nothing is destroyed.
 func (a *PoolAllocator) destroy(ctx context.Context, addrID string) error {
+	if a.fixed {
+		return nil
+	}
 	if err := a.provider.Detach(ctx, addrID); err != nil && !errors.Is(err, ErrNotFound) {
 		return fmt.Errorf("detach: %w", err)
 	}

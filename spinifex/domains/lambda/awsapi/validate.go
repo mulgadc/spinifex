@@ -30,6 +30,20 @@ const (
 
 var nameRE = regexp.MustCompile(`^[a-zA-Z0-9-_]{1,64}$`)
 
+// nameQualifierRE is the qualifier suffix of Invoke's documented FunctionName
+// pattern; queryQualifierRE is its Qualifier pattern, bounded by maxQualifierLen.
+var (
+	nameQualifierRE  = regexp.MustCompile(`^(\$LATEST(\.PUBLISHED)?|[a-zA-Z0-9-_]+)$`)
+	queryQualifierRE = regexp.MustCompile(`^(\$LATEST(\.PUBLISHED)?|[a-zA-Z0-9-_$]+)$`)
+)
+
+// maxQualifierLen bounds the Qualifier query; maxFunctionNameLen bounds the
+// whole FunctionName, qualifier suffix included.
+const (
+	maxQualifierLen    = 128
+	maxFunctionNameLen = 256
+)
+
 func invalid(format string, args ...any) error {
 	return awserrors.Errorf(awserrors.ErrorInvalidParameterValueException, format, args...)
 }

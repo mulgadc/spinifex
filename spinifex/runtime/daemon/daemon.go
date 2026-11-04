@@ -197,7 +197,7 @@ type Daemon struct {
 	routeTableService     *ec2routetable.RouteTableServiceImpl
 	natGatewayService     *ec2natgw.NatGatewayServiceImpl
 	externalIPAM          *ec2vpc.ExternalIPAM
-	// floatingAllocators is every floating-address pool (source="vultr") on
+	// floatingAllocators is every floating-address pool (source="vultr" or "latitude") on
 	// this node, written once during startup like ociAllocators.
 	floatingAllocators []floatingPool
 	// ociAllocators is every source="oci" pool on this node. Written once during
@@ -921,6 +921,9 @@ func (d *Daemon) subscribeAll() error {
 	if d.insight == nil {
 		d.insight = newNodeInsight(d.node, d.config.Host, d.config.VPCD.ExternalInterface)
 		d.insight.live = &nodeLiveSampler{insight: d.insight, nc: d.natsConn, subject: telemetryv1.NodeLiveSampleSubject(d.node)}
+		if d.ctx != nil {
+			go d.insight.probeUsage(d.ctx)
+		}
 	}
 	subs := []natsSub{
 		// ec2.RunInstances is handled by dynamic per-instance-type subscriptions
@@ -1568,9 +1571,14 @@ func (d *Daemon) externalPoolConfigs() (pools []external.ExternalPoolConfig, any
 			ExoscaleAccount:    p.ExoscaleAccount,
 			ExoscaleBinary:     p.ExoscaleBinary,
 
-			VultrRegion:    p.VultrRegion,
-			VultrKeyFile:   p.VultrKeyFile,
-			LabelPrefix:    p.LabelPrefix,
+			VultrRegion:  p.VultrRegion,
+			VultrKeyFile: p.VultrKeyFile,
+			LabelPrefix:  p.LabelPrefix,
+
+			LatitudeProjectID:    p.LatitudeProjectID,
+			LatitudeKeyFile:      p.LatitudeKeyFile,
+			LatitudeElasticIPIDs: slices.Clone(p.LatitudeElasticIPIDs),
+
 			ProviderHostID: d.clusterConfig.Nodes[d.clusterConfig.Node].ProviderHostID,
 		})
 		if p.Source == "dhcp" {
@@ -1647,12 +1655,25 @@ func (d *Daemon) installExoscaleAllocators(ipam *ec2vpc.ExternalIPAM, js jetstre
 	return nil
 }
 
+// peerProviderHostIDs lists every node's provider host ID, which the floating
+// allocator may name in logs.
+func (d *Daemon) peerProviderHostIDs() []string {
+	var ids []string
+	for _, n := range d.clusterConfig.Nodes {
+		if n.ProviderHostID != "" {
+			ids = append(ids, n.ProviderHostID)
+		}
+	}
+	return ids
+}
+
 // installFloatingAllocators builds one allocator per floating-address pool and
 // runs its first reconcile. That pass only marks unbound addresses; the
 // periodic one collects them, since another node may be mid-allocation.
 func (d *Daemon) installFloatingAllocators(ipam *ec2vpc.ExternalIPAM, js jetstream.JetStream) error {
-	for _, p := range ipam.PoolsWithSource(external.SourceVultr) {
-		alloc, err := floating.FromPoolConfig(d.ctx, js, p, d.ovnSBAddr())
+	pools := slices.Concat(ipam.PoolsWithSource(external.SourceVultr), ipam.PoolsWithSource(external.SourceLatitude))
+	for _, p := range pools {
+		alloc, err := floating.FromPoolConfig(d.ctx, js, p, d.ovnSBAddr(), d.peerProviderHostIDs())
 		if err != nil {
 			return fmt.Errorf("build floating allocator for pool %q: %w", p.Name, err)
 		}
@@ -2518,6 +2539,7 @@ func (d *Daemon) startCluster() error {
 	if err := d.subscribeAll(); err != nil {
 		return fmt.Errorf("failed to subscribe to NATS topics: %w", err)
 	}
+	d.startLambdaTestLink()
 
 	// Ochre vector store platform appliance + VectorService, backgrounded:
 	// launching the appliance can block on a cold RDS VM boot for minutes, and

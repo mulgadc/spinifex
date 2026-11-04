@@ -71,6 +71,7 @@ func (t *uefiStoreTerminator) RemoveLocalUEFIStore(instanceID string) error {
 type uefiInstanceRecords interface {
 	TerminateDecided(instanceID string) (bool, error)
 	OpenTeardowns(dep string) ([]string, error)
+	QEMUTeardownSettled(instanceID string) (bool, error)
 	MarkTeardownDone(instanceID, dep string) error
 }
 
@@ -83,6 +84,8 @@ var _ uefiInstanceRecords = (*JetStreamManager)(nil)
 // It also completes a terminate whose mark failed, from the terminated
 // record's pending or failed uefi entry. That record is the terminate itself,
 // so moving the store record to deleting there is still not the reaper's call.
+// It waits while the record's QEMU teardown is open or the record is gone: the
+// store is deleted only once QEMU is proven gone.
 //
 // Cluster-wide: the store outlives the node that ran the instance, and one
 // sweeper keeps two deletes off one prefix.
@@ -193,6 +196,11 @@ func (r *uefiStoreReaper) completeTerminatedMarks(ctx context.Context) {
 		return
 	}
 	for _, id := range ids {
+		if settled, err := r.instances.QEMUTeardownSettled(id); err != nil || !settled {
+			slog.DebugContext(ctx, "uefi-store: QEMU not proven gone for a terminated instance, leaving its store",
+				"instanceId", id, "err", err)
+			continue
+		}
 		rec, _, err := r.stores.Get(ctx, id)
 		switch {
 		case errors.Is(err, kvstore.ErrNotFound):

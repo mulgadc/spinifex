@@ -19,6 +19,10 @@ import (
 
 var errFinalSnapshotInProgress = errors.New("rds: final DB snapshot creation is still in progress")
 
+// errModifyInProgress defers a teardown until a modify that already holds the
+// lease, and may be growing the data volume, has let go of it.
+var errModifyInProgress = errors.New("rds: a modification of the DB instance is still in progress")
+
 type finalSnapshotReservation struct {
 	creator  bool
 	revision uint64
@@ -93,6 +97,10 @@ func (s *Service) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInsta
 	}
 
 	if err := s.teardownDBInstance(ctx, kv, accountID, rec, reservation.creator); err != nil {
+		// The reconciler finishes the delete once the modify lets go.
+		if errors.Is(err, errModifyInProgress) {
+			return &rds.DeleteDBInstanceOutput{DBInstance: s.projectDBInstance(rec)}, nil
+		}
 		return nil, err
 	}
 
@@ -177,14 +185,28 @@ func (s *Service) checkFinalSnapshotAvailable(ctx context.Context, kv *kvstore.B
 // any point it stopped at.
 func (s *Service) teardownDBInstance(ctx context.Context, kv *kvstore.Bucket, accountID string,
 	rec *DBInstanceRecord, finalSnapshotCreator bool) error {
+	current, _, err := s.getDBInstance(ctx, kv, rec.DBInstanceIdentifier)
+	if err != nil {
+		return err
+	}
+	if current.ModifyLease.live() {
+		return errModifyInProgress
+	}
+	// A modify that finished since the delete was accepted may have replaced the
+	// VM, so the teardown works from the record as it is now.
+	rec = current
+
 	// Asked to stop cleanly even though the VM is about to go: it is what makes
 	// the final snapshot a clean checkpoint rather than one needing WAL replay.
 	if rec.FinalSnapshotIdentifier != "" {
 		s.stopEngineOrRecordFallback(ctx, accountID, rec, "deleting")
 	}
 
-	if err := s.terminateInstanceVM(ctx, rec.InstanceID); err != nil {
+	if err := s.terminateInstanceVM(ctx, rec.InstanceID, rec.DataVolumeID); err != nil {
 		return fmt.Errorf("rds: terminate the VM behind %s: %w", rec.DBInstanceIdentifier, err)
+	}
+	if err := s.requireDataVolumeDetached(ctx, rec.DataVolumeID, rec.InstanceID); err != nil {
+		return err
 	}
 	if err := s.takeFinalSnapshot(ctx, kv, accountID, rec, finalSnapshotCreator); err != nil {
 		return err
@@ -224,9 +246,9 @@ func (s *Service) teardownDBInstance(ctx context.Context, kv *kvstore.Bucket, ac
 	return nil
 }
 
-// A VM no node owns is already terminated, which is the state this is trying to
-// reach.
-func (s *Service) terminateInstanceVM(ctx context.Context, instanceID string) error {
+// A VM no node owns is either already gone or stopped, and a stopped one is
+// terminated from its shared record once its data volume is out of that record.
+func (s *Service) terminateInstanceVM(ctx context.Context, instanceID, dataVolumeID string) error {
 	if instanceID == "" {
 		return nil
 	}
@@ -234,11 +256,79 @@ func (s *Service) terminateInstanceVM(ctx context.Context, instanceID string) er
 	if launcher == nil {
 		return errors.New("rds: no system-instance launcher configured")
 	}
-	if err := launcher.TerminateSystemInstance(instanceID); err != nil &&
-		!errors.Is(err, systeminstance.ErrSystemInstanceNotFound) {
+	err := launcher.TerminateSystemInstance(instanceID)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, systeminstance.ErrSystemInstanceNotFound) {
 		return err
 	}
+	if s.deps.Instances == nil {
+		return nil
+	}
+	if err := s.releaseDataVolumeFromStopped(ctx, instanceID, dataVolumeID); err != nil {
+		return err
+	}
+	if err := s.deps.Instances.TerminateStoppedInstance(ctx, instanceID); err != nil {
+		return fmt.Errorf("terminate the stopped VM %s: %w", instanceID, err)
+	}
 	return nil
+}
+
+// Anything that later terminates the stopped record, or retries its teardown,
+// detaches every volume the record names, whatever that volume is attached to
+// by then. So the data volume leaves the record before the volume is released.
+func (s *Service) releaseDataVolumeFromStopped(ctx context.Context, instanceID, volumeID string) error {
+	if volumeID == "" {
+		return nil
+	}
+	if err := s.deps.Instances.DetachVolumeFromStopped(ctx, instanceID, volumeID); err != nil {
+		return fmt.Errorf("rds: remove the data volume %s from the stopped VM %s: %w", volumeID, instanceID, err)
+	}
+	attachedTo, err := s.dataVolumeAttachment(ctx, volumeID)
+	if err != nil || attachedTo != instanceID {
+		return err
+	}
+	// The release a customer's detach from a stopped instance makes, which owes
+	// the node still exporting the volume an unpublish.
+	if _, err := s.deps.Storage.ForceDetachVolume(ctx, &ec2.DetachVolumeInput{
+		VolumeId: aws.String(volumeID), Force: aws.Bool(true),
+	}, awsidentifiers.GlobalAccountID); err != nil && !awserrors.IsErrorCode(err, awserrors.ErrorInvalidVolumeNotFound) {
+		return fmt.Errorf("rds: release the data volume %s from the stopped VM %s: %w", volumeID, instanceID, err)
+	}
+	return nil
+}
+
+// A volume left attached would be retained as if a snapshot held it, so the
+// teardown stops here and its retry releases the volume.
+func (s *Service) requireDataVolumeDetached(ctx context.Context, volumeID, instanceID string) error {
+	if volumeID == "" || instanceID == "" {
+		return nil
+	}
+	attachedTo, err := s.dataVolumeAttachment(ctx, volumeID)
+	if err != nil {
+		return err
+	}
+	if attachedTo == instanceID {
+		return fmt.Errorf("rds: the data volume %s is still attached to the terminated VM %s", volumeID, instanceID)
+	}
+	return nil
+}
+
+// The instance the data volume is attached to, empty when it is detached, gone
+// or there is no volume service to ask.
+func (s *Service) dataVolumeAttachment(ctx context.Context, volumeID string) (string, error) {
+	if volumeID == "" || s.deps.Storage == nil {
+		return "", nil
+	}
+	_, attachedTo, err := s.dataVolumeState(ctx, volumeID)
+	if err != nil {
+		if awserrors.IsErrorCode(err, awserrors.ErrorInvalidVolumeNotFound) || errors.Is(err, errDataVolumeGone) {
+			return "", nil
+		}
+		return "", fmt.Errorf("rds: read the data volume %s: %w", volumeID, err)
+	}
+	return attachedTo, nil
 }
 
 // Reserves the final snapshot name before deletion becomes destructive. The

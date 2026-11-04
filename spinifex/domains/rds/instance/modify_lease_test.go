@@ -260,3 +260,39 @@ func TestClaimModifyLease_RefusesAnotherHolderButNotItsOwn(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, claimed)
 }
+
+// A delete that lands while a modify holds the lease, possibly mid-grow, must
+// not terminate or detach anything until that modify lets go; the reconciler
+// finishes the delete afterwards.
+func TestDeleteDBInstance_WaitsForAModifyThatHoldsTheLease(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	rec := availableRecord()
+	rec.ModifyLease = heldLease(modifyLeaseTTL)
+	seedInstance(t, h.svc, rec)
+
+	out, err := h.svc.DeleteDBInstance(t.Context(), skipFinalSnapshot(), testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, string(StatusDeleting), aws.StringValue(out.DBInstance.DBInstanceStatus))
+
+	assert.Empty(t, h.launcher.terminated, "nothing may be terminated while a modify holds the lease")
+	assert.Empty(t, h.cmdr.calls)
+	assert.Empty(t, h.volumes.deleted)
+	assert.True(t, h.recordExists(t, testDBID), "the record stays for the reconciler to finish")
+}
+
+// Once the record is deleting, a modify that had not yet claimed the lease can
+// never claim it, so the teardown's lease check cannot be overtaken.
+func TestClaimModifyLease_RefusesADeletingInstance(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	rec := availableRecord()
+	rec.Status = StatusDeleting
+	seedInstance(t, h.svc, rec)
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+
+	claimed, _, err := h.svc.claimModifyLease(t.Context(), kv, testDBID, h.svc.newModifyLeaseHolder())
+	require.NoError(t, err)
+	assert.False(t, claimed)
+}

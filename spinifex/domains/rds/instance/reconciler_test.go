@@ -418,3 +418,23 @@ func TestReconciler_RelinquishOnlyReleasesItsOwnLease(t *testing.T) {
 
 	assert.False(t, other.lease.TryAcquire(t.Context()), "the original holder still owns the lease")
 }
+
+// An overrun modify failed on a fresh read must not fail a delete accepted since
+// the pass opened; the delete owns the record.
+func TestTransitionFresh_LeavesAnAcceptedDelete(t *testing.T) {
+	t.Parallel()
+	h := newReconcileHarness(t)
+	rec := healthyRecord()
+	rec.Status = StatusDeleting
+	seedInstance(t, h.svc, rec)
+
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	require.NoError(t, h.rec.transitionFresh(t.Context(), kv, rec.DBInstanceIdentifier, StatusFailed, "overran"))
+
+	var stored DBInstanceRecord
+	found, err := getJSON(t.Context(), kv, DBInstanceKey(rec.DBInstanceIdentifier), &stored)
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.Equal(t, StatusDeleting, stored.Status)
+}

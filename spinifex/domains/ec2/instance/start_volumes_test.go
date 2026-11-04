@@ -123,3 +123,20 @@ func TestReconcileStartVolumes_ReattachesStillAvailableUnattachedVolume(t *testi
 	assert.Equal(t, []string{"vol-root", "vol-released"}, requestedNames(inst))
 	assert.Equal(t, []string{"vol-root", "vol-released"}, mappedNames(inst))
 }
+
+// ALB and SQS guests boot from a kernel with no root volume, so a start or a
+// recovery must not demand one; an SQS store's data volume stays named.
+func TestReconcileStartVolumes_DirectBootNeedsNoRootVolume(t *testing.T) {
+	t.Parallel()
+	svc := startVolumesService(t)
+
+	alb := &vm.VM{ID: "i-alb", AccountID: startVolumesAccount, Status: vm.StateStopped, DirectBoot: true,
+		Instance: &ec2.Instance{InstanceId: aws.String("i-alb")}}
+	require.NoError(t, svc.reconcileStartVolumes(context.Background(), alb))
+
+	sqs := &vm.VM{ID: "i-sqs", AccountID: startVolumesAccount, Status: vm.StateStopped, DirectBoot: true,
+		Instance: &ec2.Instance{InstanceId: aws.String("i-sqs")}}
+	sqs.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-store-gone", DeviceName: "/dev/vdb"}}
+	require.NoError(t, svc.reconcileStartVolumes(context.Background(), sqs))
+	assert.Equal(t, []string{"vol-store-gone"}, requestedNames(sqs), "a system store volume is never pruned")
+}

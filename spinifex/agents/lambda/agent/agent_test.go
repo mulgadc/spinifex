@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,6 +24,7 @@ const api = "/2018-06-01/runtime/"
 type fakeLink struct {
 	reqs []hostlink.Request
 	got  chan hostlink.Response
+	ctxs chan context.Context // when set, the context of each Complete
 }
 
 var _ hostlink.Link = (*fakeLink)(nil)
@@ -37,6 +39,9 @@ func (l *fakeLink) Next(ctx context.Context) (hostlink.Request, error) {
 }
 
 func (l *fakeLink) Complete(ctx context.Context, r hostlink.Response) error {
+	if l.ctxs != nil {
+		l.ctxs <- ctx
+	}
 	l.got <- r
 	return nil
 }
@@ -139,4 +144,59 @@ func (errLink) Next(context.Context) (hostlink.Request, error) {
 func TestRunReturnsLinkError(t *testing.T) {
 	err := Run(context.Background(), &errLink{}, runtimeapi.New())
 	require.EqualError(t, err, "link down")
+}
+
+func TestRunBoundsTheResultWriteByTheDeadlinePlusGrace(t *testing.T) {
+	t.Run("on time", func(t *testing.T) {
+		srv := runtimeapi.New()
+		ts := httptest.NewServer(srv.Handler())
+		defer ts.Close()
+		runtime(t, ts.URL, func(string, []byte) (string, string) { return "/response", "ok" })
+		dl := deadline(time.Minute)
+		link := &fakeLink{got: make(chan hostlink.Response, 1), ctxs: make(chan context.Context, 1),
+			reqs: []hostlink.Request{{RequestID: "r", DeadlineMs: dl}}}
+		require.NoError(t, Run(context.Background(), link, srv))
+		d, ok := (<-link.ctxs).Deadline()
+		require.True(t, ok)
+		assert.Equal(t, time.UnixMilli(dl).Add(resultWriteGrace), d)
+	})
+	t.Run("a timed-out result is written after the deadline", func(t *testing.T) {
+		srv := runtimeapi.New() // nothing answers: the invocation expires
+		link := &fakeLink{got: make(chan hostlink.Response, 1), ctxs: make(chan context.Context, 1),
+			reqs: []hostlink.Request{{RequestID: "r", DeadlineMs: deadline(30 * time.Millisecond)}}}
+		require.ErrorIs(t, Run(context.Background(), link, srv), ErrInvocationTimedOut)
+		wctx := <-link.ctxs
+		d, ok := wctx.Deadline()
+		require.True(t, ok)
+		assert.Greater(t, time.Until(d), -resultWriteGrace, "the write deadline is not already past")
+		assert.Equal(t, "Sandbox.Timedout", (<-link.got).FunctionError)
+	})
+}
+
+// A body lost after admission sends the host nothing, so it reports the
+// outcome unknown, whether or not the bootstrap is still alive.
+func TestRunSendsNoResultWhenTheBodyIsLost(t *testing.T) {
+	srv := runtimeapi.New()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	link := &fakeLink{got: make(chan hostlink.Response, 1), reqs: []hostlink.Request{{RequestID: "r", DeadlineMs: deadline(time.Minute)}}}
+	done := make(chan error, 1)
+	go func() { done <- Run(context.Background(), link, srv) }()
+
+	resp, err := http.Get(ts.URL + api + "invocation/next")
+	require.NoError(t, err)
+	resp.Body.Close()
+	conn, err := net.Dial("tcp", ts.Listener.Addr().String())
+	require.NoError(t, err)
+	_, err = conn.Write([]byte("POST " + api + "invocation/r/response HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\npartial"))
+	require.NoError(t, err)
+	conn.Close()
+
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, runtimeapi.ErrResponseBodyFailed)
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run waited for the invocation deadline")
+	}
+	assert.Empty(t, link.got, "no result may be reported")
 }

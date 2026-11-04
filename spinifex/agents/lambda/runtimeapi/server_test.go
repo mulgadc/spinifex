@@ -170,7 +170,7 @@ func TestOversizeResponse(t *testing.T) {
 
 	got := <-out
 	require.NoError(t, got.err)
-	assert.Equal(t, "Function.ResponseSizeTooLarge", got.res.FunctionError)
+	assert.Equal(t, "Unhandled", got.res.FunctionError)
 	assert.Equal(t, "Function.ResponseSizeTooLarge", errType(t, got.res.Payload))
 }
 

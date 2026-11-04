@@ -25,6 +25,7 @@ import {
   ec2KeyPairsQueryOptions,
   ec2LaunchTemplatesQueryOptions,
   ec2PlacementGroupsQueryOptions,
+  ec2RouteTablesQueryOptions,
   ec2SecurityGroupsQueryOptions,
   ec2SubnetsQueryOptions,
   ec2VpcsQueryOptions,
@@ -72,6 +73,9 @@ function useRunInstancesData() {
   // Not a suspense query: the figure is a refinement of the form, so a session
   // whose policy does not grant the action still gets a usable launch panel.
   const { data: capacityData } = useQuery(instanceTypeCapacityQueryOptions)
+  // Route tables only sort subnets into public and private, so a session that
+  // cannot describe them still gets the flat list.
+  const { data: routeTablesData } = useQuery(ec2RouteTablesQueryOptions)
 
   const { data: subnetsData } = useSuspenseQuery(ec2SubnetsQueryOptions)
   const { data: pgData } = useSuspenseQuery(ec2PlacementGroupsQueryOptions)
@@ -96,6 +100,7 @@ function useRunInstancesData() {
     instanceTypeCapacity: capacityData?.available ?? {},
     keyPairs: keyPairsData.KeyPairs ?? [],
     subnets,
+    routeTables: routeTablesData?.RouteTables,
     placementGroups: pgData.PlacementGroups ?? [],
     securityGroups: sgData.SecurityGroups ?? [],
     launchTemplates: ltData.LaunchTemplates ?? [],
@@ -116,6 +121,7 @@ export function RunInstancesPage({
     instanceTypeCapacity,
     keyPairs,
     subnets,
+    routeTables,
     placementGroups,
     securityGroups,
     launchTemplates,
@@ -313,6 +319,7 @@ export function RunInstancesPage({
                 effectiveVpcId={effectiveVpcId}
                 errors={errors}
                 otherSubnets={otherSubnets}
+                routeTables={routeTables}
                 register={register}
                 securityGroups={securityGroups}
                 selectedSubnetId={selectedSubnetId}

@@ -84,6 +84,7 @@ func diskHost(t *testing.T) Env {
 	// The daemon's own view: ProtectSystem=full re-mounts /usr and /boot/efi
 	// over themselves, ReadWritePaths does the same to /var/lib/spinifex/spinifex,
 	// PrivateTmp binds /var/tmp, and ProtectHome covers /home and a mount beneath it.
+	// The volume group is mounted over sda1 at /srv, hiding it.
 	writeTree(t, root, map[string]string{"proc/self/mountinfo": `22 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw
 23 22 259:1 / /boot/efi rw,relatime shared:2 - vfat /dev/nvme0n1p1 rw
 24 22 253:0 / /mnt/disk2 rw,relatime shared:3 - xfs /dev/mapper/vg-data rw
@@ -100,6 +101,8 @@ func diskHost(t *testing.T) Env {
 34 33 0:25 /systemd/inaccessible/dir /home ro - tmpfs tmpfs rw
 36 25 253:0 /spinifex/spinifex /var/lib/spinifex/spinifex rw - xfs /dev/mapper/vg-data rw
 37 22 259:2 /var/tmp/systemd-private-0a2b-spinifex-daemon.service-ebu7EK/tmp /var/tmp rw - ext4 /dev/nvme0n1p2 rw
+38 22 8:1 / /srv rw - ext4 /dev/sda1 rw
+39 38 253:0 /srv /srv rw - xfs /dev/mapper/vg-data rw
 `})
 	return Env{SysRoot: sys, ProcRoot: filepath.Join(root, "proc")}
 }
@@ -127,6 +130,8 @@ func TestFilesystemsKeepsRealMountsNamesBindsAndDropsSelfRemounts(t *testing.T) 
 		{Mount: "/mnt/old disk", Source: "/dev/sda1", Type: "ext4", Disk: "sda", ID: "31 8:1 / /mnt/old disk"},
 		{Mount: "/home", Source: "/dev/nvme0n1p3", Type: "ext4", Disk: "nvme0n1", Error: "not visible to the daemon"},
 		{Mount: "/home/backup", Source: "/dev/sda1", Type: "ext4", Disk: "sda", BindOf: "/mnt/old disk/backup", Error: "not visible to the daemon"},
+		{Mount: "/srv", Source: "/dev/sda1", Type: "ext4", Disk: "sda", Error: "not visible to the daemon"},
+		{Mount: "/srv", Source: "/dev/mapper/vg-data", Type: "xfs", Disk: "sda", BindOf: "/mnt/disk2/srv", ID: "39 253:0 /srv /srv"},
 	}, Filesystems(env))
 }
 
@@ -137,7 +142,7 @@ func TestBuildReportsDisksAndFilesystems(t *testing.T) {
 	f := Build(t.Context(), env)
 
 	assert.Len(t, f.Disks, 4)
-	assert.Len(t, f.Filesystems, 8)
+	assert.Len(t, f.Filesystems, 10)
 }
 
 func TestHiddenMountsAreNotProbed(t *testing.T) {
@@ -145,5 +150,5 @@ func TestHiddenMountsAreNotProbed(t *testing.T) {
 	for _, m := range Mounts(Filesystems(diskHost(t))) {
 		paths = append(paths, m.Path)
 	}
-	assert.Equal(t, []string{"/", "/boot/efi", "/mnt/disk2", "/var/lib/spinifex", "/tank", "/mnt/old disk"}, paths)
+	assert.Equal(t, []string{"/", "/boot/efi", "/mnt/disk2", "/var/lib/spinifex", "/tank", "/mnt/old disk", "/srv"}, paths)
 }

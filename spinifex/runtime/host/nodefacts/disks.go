@@ -144,8 +144,9 @@ func Filesystems(env Env) []clusterv1.FilesystemFacts {
 	return out
 }
 
-// mountEntries reads the real filesystems from mountinfo, marking those a
-// different filesystem covers, and every mount beneath them, as hidden.
+// mountEntries reads the real filesystems from mountinfo, marking as hidden
+// those a different filesystem covers and every mount beneath them, except
+// the covering mount and what is mounted on it.
 // showsItsParent reports whether m mounts the directory its parent already
 // shows at that path, as ProtectSystem and ReadWritePaths do.
 func showsItsParent(parent, m mountEntry) bool {
@@ -180,7 +181,7 @@ func mountEntries(path string) []mountEntry {
 			source: unescapeMount(fields[sep+2]),
 		})
 	}
-	covered := map[string]bool{}
+	coveredBy := map[string]string{}
 	parentOf := map[string]string{}
 	byID := map[string]mountEntry{}
 	for _, m := range all {
@@ -189,7 +190,7 @@ func mountEntries(path string) []mountEntry {
 	for _, m := range all {
 		// A re-mount of the same directory over itself still shows it.
 		if p, ok := byID[m.parent]; ok && p.mount == m.mount && (p.device != m.device || p.root != m.root) {
-			covered[p.id] = true
+			coveredBy[p.id] = m.id
 		}
 	}
 	var out []mountEntry
@@ -197,11 +198,13 @@ func mountEntries(path string) []mountEntry {
 		if pseudoFSTypes[m.fsType] || (m.fsType != "zfs" && !strings.HasPrefix(m.source, "/dev/")) {
 			continue
 		}
+		below := ""
 		for id, depth := m.id, 0; id != "" && depth < len(all); id, depth = parentOf[id], depth+1 {
-			if covered[id] {
+			if c, ok := coveredBy[id]; ok && c != below {
 				m.hidden = true
 				break
 			}
+			below = id
 		}
 		out = append(out, m)
 	}

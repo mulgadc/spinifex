@@ -905,10 +905,7 @@ func (c *LiveClient) deleteRouterNATs(ctx context.Context, routerName string, pr
 	if err != nil {
 		return fmt.Errorf("get logical router for NAT delete: %w", err)
 	}
-	routerNATs := make(map[string]struct{}, len(lr.NAT))
-	for _, uuid := range lr.NAT {
-		routerNATs[uuid] = struct{}{}
-	}
+	routerNATs := uuidSet(lr.NAT)
 
 	var nats []nbdb.NAT
 	err = c.client.WhereCache(func(n *nbdb.NAT) bool {
@@ -1032,10 +1029,7 @@ func (c *LiveClient) FindNATByLogicalIP(ctx context.Context, routerName, natType
 	if err != nil {
 		return nil, fmt.Errorf("get logical router for NAT lookup: %w", err)
 	}
-	owned := make(map[string]struct{}, len(lr.NAT))
-	for _, u := range lr.NAT {
-		owned[u] = struct{}{}
-	}
+	owned := uuidSet(lr.NAT)
 	var nats []nbdb.NAT
 	if err := c.client.WhereCache(func(n *nbdb.NAT) bool {
 		if _, ok := owned[n.UUID]; !ok {
@@ -1111,10 +1105,7 @@ func (c *LiveClient) FindStaticRoute(ctx context.Context, routerName, ipPrefix s
 	if err != nil {
 		return nil, fmt.Errorf("get logical router for static route lookup: %w", err)
 	}
-	owned := make(map[string]struct{}, len(lr.StaticRoutes))
-	for _, u := range lr.StaticRoutes {
-		owned[u] = struct{}{}
-	}
+	owned := uuidSet(lr.StaticRoutes)
 	var routes []nbdb.LogicalRouterStaticRoute
 	if err := c.client.WhereCache(func(r *nbdb.LogicalRouterStaticRoute) bool {
 		if r.IPPrefix != ipPrefix {
@@ -1210,10 +1201,7 @@ func (c *LiveClient) FindLogicalRouterPolicy(ctx context.Context, routerName str
 	if err != nil {
 		return nil, fmt.Errorf("get logical router for policy lookup: %w", err)
 	}
-	owned := make(map[string]struct{}, len(lr.Policies))
-	for _, u := range lr.Policies {
-		owned[u] = struct{}{}
-	}
+	owned := uuidSet(lr.Policies)
 	var policies []nbdb.LogicalRouterPolicy
 	if err := c.client.WhereCache(func(p *nbdb.LogicalRouterPolicy) bool {
 		if p.Priority != priority || p.Match != match {
@@ -1238,10 +1226,7 @@ func (c *LiveClient) ListLogicalRouterPolicies(ctx context.Context, routerName s
 	if len(lr.Policies) == 0 {
 		return nil, nil
 	}
-	owned := make(map[string]struct{}, len(lr.Policies))
-	for _, u := range lr.Policies {
-		owned[u] = struct{}{}
-	}
+	owned := uuidSet(lr.Policies)
 	var policies []nbdb.LogicalRouterPolicy
 	if err := c.client.WhereCache(func(p *nbdb.LogicalRouterPolicy) bool {
 		_, ok := owned[p.UUID]
@@ -1736,4 +1721,13 @@ func (c *LiveClient) ReplaceACLs(ctx context.Context, portGroupName string, spec
 		return fmt.Errorf("replace ACLs transact: %w", err)
 	}
 	return nil
+}
+
+// uuidSet indexes a router's row-reference column for membership checks.
+func uuidSet(uuids []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(uuids))
+	for _, u := range uuids {
+		set[u] = struct{}{}
+	}
+	return set
 }

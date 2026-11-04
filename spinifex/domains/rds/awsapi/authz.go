@@ -8,6 +8,7 @@ import (
 
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 )
 
 // The resource a policy check evaluates against when the request names nothing
@@ -50,7 +51,7 @@ func AuthorizeCaller(ctx context.Context, action string, caller Caller) error {
 // in the system account. It says the caller is an RDS VM, not which one — the
 // binding to a specific DB instance is authorizeAgent's, and needs NATS.
 func requireAgentPrincipal(ctx context.Context, caller Caller) error {
-	if caller.PrincipalType != principalTypeAssumedRole ||
+	if caller.PrincipalType != dispatch.PrincipalTypeAssumedRole ||
 		caller.AccountID != awsidentifiers.GlobalAccountID ||
 		caller.RoleName != rdsinstance.InstanceRoleName ||
 		caller.SessionName == "" {

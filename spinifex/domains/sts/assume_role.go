@@ -32,10 +32,6 @@ const (
 	stsActionWildcard   = "sts:*"
 	globalWildcard      = "*"
 
-	// principalTypeAssumedRole is the SessionCredential.PrincipalType for a role session;
-	// empty stored values are also treated as this type.
-	principalTypeAssumedRole = "assumed-role"
-
 	// principalTypeUser is the SessionCredential.PrincipalType for sessions minted by
 	// GetSessionToken, which resolve back to the calling IAM user.
 	principalTypeUser = "user"
@@ -539,7 +535,7 @@ func assumedRoleEnvelope(role *iam.Role, roleAccountID, sessionName, sourceIdent
 	roleID := aws.StringValue(role.RoleId)
 	roleName := aws.StringValue(role.RoleName)
 	return sessionEnvelope{
-		PrincipalType:     principalTypeAssumedRole,
+		PrincipalType:     PrincipalTypeAssumedRole,
 		AccountID:         roleAccountID,
 		SessionName:       sessionName,
 		SourceIdentity:    sourceIdentity,

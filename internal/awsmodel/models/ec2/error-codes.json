@@ -1,6 +1,6 @@
 {
   "source": "https://docs.aws.amazon.com/ec2/latest/devguide/errors-overview.html",
-  "verifiedOn": "2026-08-05",
+  "verifiedOn": "2026-11-04",
   "commonClient": [
     "AuthFailure",
     "Blocked",
@@ -95,6 +95,7 @@
     "InvalidVolumeID.Malformed",
     "InvalidVpcID.NotFound",
     "InvalidVpcRange",
+    "NatGatewayNotFound",
     "OperationNotPermitted",
     "ReservationCapacityExceeded",
     "Resource.AlreadyAssociated",

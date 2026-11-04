@@ -388,6 +388,22 @@ func TestCreateRoute(t *testing.T) {
 	assert.Equal(t, "igw-test1", record.Routes[1].GatewayId)
 }
 
+// AWS answers a route to an unknown NAT gateway with InvalidNatGatewayID.NotFound,
+// unlike the NAT gateway describe and delete calls, which use NatGatewayNotFound.
+func TestCreateRoute_UnknownNatGatewayKeepsInvalidIDCode(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	rtbID := createTestRtb(t, svc)
+
+	_, err := svc.CreateRoute(t.Context(), &ec2.CreateRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		NatGatewayId:         aws.String("nat-absent00000000"),
+	}, testAccountID)
+
+	assert.EqualError(t, err, awserrors.ErrorInvalidNatGatewayIDNotFound)
+}
+
 func TestCreateRoute_DuplicateDestination(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)

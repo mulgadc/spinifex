@@ -17,7 +17,7 @@ import (
 
 // TestRLC1_NatGatewayDeleteNotFoundOnAbsent enforces the Common Resource
 // Lifecycle Contract rule #1 (AWS-faithful delete, per-service): the EC2
-// DeleteNatGateway API returns InvalidNatGatewayID.NotFound for an absent NAT
+// DeleteNatGateway API returns NatGatewayNotFound for an absent NAT
 // gateway, not success. Idempotent convergence belongs to destroy orchestration, which
 // tolerates NotFound via awserrors.IsNotFound; the public API stays AWS compatible.
 func TestRLC1_NatGatewayDeleteNotFoundOnAbsent(t *testing.T) {
@@ -27,8 +27,8 @@ func TestRLC1_NatGatewayDeleteNotFoundOnAbsent(t *testing.T) {
 		NatGatewayId: aws.String("nat-absent00000000"),
 	}, testAccountID)
 
-	require.Errorf(t, err, "DeleteNatGateway on an absent NAT gateway must return %s, not success (RLC rule #1 AWS-faithful delete): destroy orchestration tolerates NotFound, the API must not", awserrors.ErrorInvalidNatGatewayIDNotFound)
-	assert.ErrorContains(t, err, awserrors.ErrorInvalidNatGatewayIDNotFound, "DeleteNatGateway on an absent NAT gateway must return the canonical NotFound (RLC rule #1)")
+	require.Errorf(t, err, "DeleteNatGateway on an absent NAT gateway must return %s, not success (RLC rule #1 AWS-faithful delete): destroy orchestration tolerates NotFound, the API must not", awserrors.ErrorNatGatewayNotFound)
+	assert.ErrorContains(t, err, awserrors.ErrorNatGatewayNotFound, "DeleteNatGateway on an absent NAT gateway must return the canonical NotFound (RLC rule #1)")
 }
 
 // TestRLC3_NatGatewayDeletesWhileRouted enforces Q-98: a NAT gateway is

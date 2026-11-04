@@ -207,7 +207,25 @@ func TestDescribeNatGateways_ByID(t *testing.T) {
 	_, err = svc.DescribeNatGateways(t.Context(), &ec2.DescribeNatGatewaysInput{
 		NatGatewayIds: []*string{aws.String("nat-nope")},
 	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidNatGatewayIDNotFound)
+	assert.EqualError(t, err, awserrors.ErrorNatGatewayNotFound)
+}
+
+// AWS fails the whole call when any named ID is absent, rather than returning
+// the IDs it does hold.
+func TestDescribeNatGateways_UnknownIDAmongKnownFailsWholeCall(t *testing.T) {
+	svc := setupTestService(t)
+	createOut, err := svc.CreateNatGateway(t.Context(), &ec2.CreateNatGatewayInput{
+		SubnetId:     aws.String("subnet-pub1"),
+		AllocationId: aws.String("eipalloc-test1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.DescribeNatGateways(t.Context(), &ec2.DescribeNatGatewaysInput{
+		NatGatewayIds: []*string{createOut.NatGateway.NatGatewayId, aws.String("nat-absent00000000")},
+	}, testAccountID)
+
+	assert.EqualError(t, err, awserrors.ErrorNatGatewayNotFound)
+	assert.Nil(t, out, "no partial list when one ID is absent")
 }
 
 func TestDescribeNatGateways_FilterByState(t *testing.T) {
@@ -279,7 +297,7 @@ func TestDescribeNatGateways_DeletedGatewayVisible(t *testing.T) {
 	_, err = svc.DescribeNatGateways(t.Context(), &ec2.DescribeNatGatewaysInput{
 		NatGatewayIds: []*string{aws.String("nat-never-existed")},
 	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidNatGatewayIDNotFound)
+	assert.EqualError(t, err, awserrors.ErrorNatGatewayNotFound)
 }
 
 func TestDescribeNatGateways_FilterByNatGatewayId(t *testing.T) {

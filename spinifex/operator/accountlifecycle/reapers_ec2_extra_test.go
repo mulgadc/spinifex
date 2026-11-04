@@ -13,6 +13,7 @@ import (
 	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
 	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -141,10 +142,14 @@ func TestNatGatewayReaperKeepsDeletingGateways(t *testing.T) {
 }
 
 func TestNatGatewayReaperTreatsAMissingGatewayAsDeleted(t *testing.T) {
-	svc := &fakeNatGateways{err: errors.New("InvalidNatGatewayID.NotFound: no such gateway")}
-	reaper := &natGatewayReaper{svc: svc}
+	for _, code := range []string{awserrors.ErrorNatGatewayNotFound, "InvalidNatGatewayID.NotFound"} {
+		t.Run(code, func(t *testing.T) {
+			svc := &fakeNatGateways{err: errors.New(code + ": no such gateway")}
+			reaper := &natGatewayReaper{svc: svc}
 
-	assert.NoError(t, reaper.Delete(t.Context(), "000000000002", Resource{ID: "nat-gone"}, false))
+			assert.NoError(t, reaper.Delete(t.Context(), "000000000002", Resource{ID: "nat-gone"}, false))
+		})
+	}
 }
 
 func TestEgressOnlyIGWReaperCarriesItsVPC(t *testing.T) {

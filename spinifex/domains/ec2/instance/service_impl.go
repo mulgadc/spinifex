@@ -234,6 +234,7 @@ type InstanceServiceImpl struct {
 	eniDeleter        ENIDeleter
 	ipReleaser        PublicIPReleaser
 	tagWriter         InstanceTagWriter
+	uefiStores        UEFIStoreMarker
 	gpuClaimer        GPUClaimer
 	amiLoader         AMIMetaLoader
 	ebsProvider       ebsprovider.EBSProvider
@@ -312,6 +313,12 @@ func (s *InstanceServiceImpl) SetTerminationDeps(vd VolumeDeleter, ed ENIDeleter
 	s.eniDeleter = ed
 	s.ipReleaser = pr
 	s.tagWriter = tw
+}
+
+// SetUEFIStores wires the store records a stopped instance's terminate marks
+// for deletion. nil leaves terminate recording no UEFI store obligation.
+func (s *InstanceServiceImpl) SetUEFIStores(m UEFIStoreMarker) {
+	s.uefiStores = m
 }
 
 // SetGPUClaimer wires the GPU passthrough claim/release dependency used by
@@ -2990,6 +2997,7 @@ func (s *InstanceServiceImpl) TerminateStoppedInstance(ctx context.Context, inpu
 	s.deleteInstanceVolumes(ctx, instance, input.InstanceID)
 	s.releaseInstancePublicIP(ctx, instance, input.InstanceID)
 	s.deleteInstanceENI(ctx, instance, input.InstanceID)
+	hasUEFIStore := s.stampUEFIStoreTeardown(ctx, instance)
 
 	// Write to terminated KV FIRST so the instance is visible in DescribeInstances.
 	// If this fails the instance stays in the stopped bucket — safe to retry.
@@ -2997,6 +3005,16 @@ func (s *InstanceServiceImpl) TerminateStoppedInstance(ctx context.Context, inpu
 	if err := s.stoppedStore.WriteTerminatedInstance(input.InstanceID, instance); err != nil {
 		slog.ErrorContext(ctx, "TerminateStoppedInstance: failed to write to terminated KV, aborting", "instanceId", input.InstanceID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	// Marked only once the terminate is durable: a stopped instance whose
+	// terminate failed keeps its store. A failed mark leaves the teardown entry
+	// pending, from which the store reaper completes it.
+	if hasUEFIStore {
+		if _, err := s.uefiStores.MarkDeleting(ctx, input.InstanceID); err != nil {
+			slog.WarnContext(ctx, "TerminateStoppedInstance: failed to record UEFI variable store for deletion",
+				"instanceId", input.InstanceID, "err", err)
+		}
 	}
 
 	// Now safe to remove from stopped KV. Retry once on failure so the instance
@@ -3014,6 +3032,29 @@ func (s *InstanceServiceImpl) TerminateStoppedInstance(ctx context.Context, inpu
 
 	slog.InfoContext(ctx, "Terminated stopped instance from shared KV", "instanceId", input.InstanceID)
 	return &TerminateStoppedInstanceOutput{Status: "terminated", InstanceID: input.InstanceID}, nil
+}
+
+// stampUEFIStoreTeardown records the UEFI store teardown entry the terminated
+// record carries, and reports whether the instance has a store to mark. An
+// unreadable bucket is stamped failed, which the store reaper resolves.
+func (s *InstanceServiceImpl) stampUEFIStoreTeardown(ctx context.Context, instance *vm.VM) bool {
+	if s.uefiStores == nil {
+		return false
+	}
+	has, err := s.uefiStores.Exists(ctx, instance.ID)
+	state := vm.TeardownPending
+	switch {
+	case err != nil:
+		slog.WarnContext(ctx, "TerminateStoppedInstance: failed to read UEFI store record", "instanceId", instance.ID, "err", err)
+		state = vm.TeardownFailed
+	case !has:
+		return false
+	}
+	if instance.Teardown == nil {
+		instance.Teardown = make(map[string]string)
+	}
+	instance.Teardown[vm.TeardownUEFI] = string(state)
+	return has
 }
 
 func (s *InstanceServiceImpl) deleteInstanceVolumes(ctx context.Context, instance *vm.VM, instanceID string) {

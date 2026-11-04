@@ -448,11 +448,13 @@ func TestDescribeInstancesChecked_ExplicitIDNotFound_CompleteSweep(t *testing.T)
 	require.NoError(t, err)
 	nc.Flush()
 
-	input := &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String("i-doesnotexist0000000")}}
+	input := &ec2.DescribeInstancesInput{InstanceIds: aws.StringSlice([]string{"i-doesnotexist0000000", "i-real", "i-doesnotexist0000001"})}
 	_, err = DescribeInstancesChecked(context.Background(), input, nc, 1, nil, "123456789012")
 
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "err = %v", err)
+	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, code)
+	assert.Equal(t, "The instance IDs 'i-doesnotexist0000000, i-doesnotexist0000001' do not exist", message)
 }
 
 // TestDescribeInstances_ExplicitIDNotFound_StaysSilent guards the internal
@@ -624,8 +626,7 @@ func TestDescribeInstancesChecked_Identity_AllNodesAnswer_NotFoundAsserted(t *te
 	_, err := DescribeInstancesChecked(context.Background(), input, nc, 0, []string{"node-1", "node-2"}, "123456789012",
 		WithFanoutTimeout(2*time.Second))
 
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidInstanceIDNotFound), "err = %v", err)
 }
 
 // A node answering with a decodable error envelope never becomes a valid
@@ -684,7 +685,7 @@ func TestDescribeInstancesChecked_Identity_NilReservationsIsValidResponder(t *te
 		WithFanoutTimeout(2*time.Second))
 
 	require.Error(t, err, "a nil-Reservations node is a complete, valid responder, so the sweep is complete and NotFound must fire")
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidInstanceIDNotFound), "err = %v", err)
 }
 
 // An empty nodeIDs falls back to the legacy expectedNodes path, which the

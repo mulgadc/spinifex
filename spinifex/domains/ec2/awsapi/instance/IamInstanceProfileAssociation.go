@@ -82,7 +82,7 @@ func AssociateIamInstanceProfile(ctx context.Context, input *ec2.AssociateIamIns
 	assoc, err := natsmsg.NATSRequest[ec2.IamInstanceProfileAssociation](ctx, natsConn, subject, command, fanOutTimeout, accountID)
 	if err != nil {
 		if errors.Is(err, nats.ErrNoResponders) {
-			return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+			return nil, awserrors.IDNotFound(awserrors.ErrorInvalidInstanceIDNotFound, "instance", *input.InstanceId)
 		}
 		return nil, err
 	}

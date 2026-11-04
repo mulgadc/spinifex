@@ -10,10 +10,7 @@ import (
 
 func markDeleting(t *testing.T, s *uefistore.Store, id string) {
 	t.Helper()
-	rec, rev, err := s.Get(t.Context(), id)
-	require.NoError(t, err)
-	rec.State = uefistore.StateDeleting
-	_, err = s.CompareAndSet(t.Context(), rec, rev)
+	_, err := s.MarkDeleting(t.Context(), id)
 	require.NoError(t, err)
 }
 

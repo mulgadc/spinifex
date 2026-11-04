@@ -359,6 +359,8 @@ var describeVolumesValidFilters = map[string]bool{
 	"attachment.device":      true,
 	"availability-zone":      true,
 	"snapshot-id":            true,
+	"tag-key":                true,
+	"tag-value":              true,
 }
 
 // DescribeVolumes lists EBS volumes by reading config.json files from S3.
@@ -415,7 +417,7 @@ func (s *VolumeServiceImpl) DescribeVolumes(ctx context.Context, input *ec2.Desc
 // volumeMatchesFilters checks whether an ec2.Volume satisfies all parsed awsfilters.
 func volumeMatchesFilters(vol *ec2.Volume, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if awsfilters.IsTagFilter(name) {
 			continue
 		}
 
@@ -484,7 +486,6 @@ func volumeMatchesFilters(vol *ec2.Volume, filters map[string][]string) bool {
 		}
 	}
 
-	// Check tag:Key filters
 	tags := awsfilters.EC2TagsToMap(vol.Tags)
 	return awsfilters.MatchesTags(filters, tags)
 }

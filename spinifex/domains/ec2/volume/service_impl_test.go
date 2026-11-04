@@ -2812,3 +2812,40 @@ func TestDescribeVolumesModifications_UnknownFilter(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
 	assert.Contains(t, message, "not-a-real-filter")
 }
+
+func TestDescribeVolumes_FilterByTagKeyAndTagValue(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+
+	createVolumeInStoreWithMeta(t, svc, store, "vol-tagged", ebsmetadata.Volume{
+		VolumeID: "vol-tagged", CapacityGiB: 10, State: "available", TenantID: "000000000001",
+		Tags: map[string]string{"Keep": "x"},
+	})
+	createVolumeInStoreWithMeta(t, svc, store, "vol-other", ebsmetadata.Volume{
+		VolumeID: "vol-other", CapacityGiB: 10, State: "available", TenantID: "000000000001",
+		Tags: map[string]string{"Other": "y"},
+	})
+
+	tests := []struct {
+		name, filter, value string
+		want                []string
+	}{
+		{"tag-key match", "tag-key", "Keep", []string{"vol-tagged"}},
+		{"tag-value match", "tag-value", "x", []string{"vol-tagged"}},
+		{"tag-key miss", "tag-key", "Missing", nil},
+		{"tag-value miss", "tag-value", "x-missing", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
+				Filters: []*ec2.Filter{{Name: aws.String(tt.filter), Values: []*string{aws.String(tt.value)}}},
+			}, "000000000001")
+			require.NoError(t, err)
+			var got []string
+			for _, v := range out.Volumes {
+				got = append(got, *v.VolumeId)
+			}
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

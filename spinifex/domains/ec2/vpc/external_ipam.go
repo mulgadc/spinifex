@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
@@ -230,59 +229,4 @@ func filterStatic(pools []external.ExternalPoolConfig) []external.ExternalPoolCo
 		}
 	}
 	return out
-}
-
-// ValidatePoolConfig checks that a pool config is valid.
-func ValidatePoolConfig(pool external.ExternalPoolConfig) error {
-	if pool.Name == "" {
-		return fmt.Errorf("pool name is required")
-	}
-	if pool.Gateway == "" {
-		return fmt.Errorf("gateway is required for pool %q", pool.Name)
-	}
-	if net.ParseIP(pool.Gateway) == nil {
-		return fmt.Errorf("invalid gateway IP: %q", pool.Gateway)
-	}
-	if pool.GatewayIP != "" && net.ParseIP(pool.GatewayIP) == nil {
-		return fmt.Errorf("invalid gateway_ip: %q", pool.GatewayIP)
-	}
-	startIP := net.ParseIP(pool.RangeStart)
-	if startIP == nil {
-		return fmt.Errorf("invalid range_start: %q", pool.RangeStart)
-	}
-	endIP := net.ParseIP(pool.RangeEnd)
-	if endIP == nil {
-		return fmt.Errorf("invalid range_end: %q", pool.RangeEnd)
-	}
-	if compareIPs(startIP, endIP) > 0 {
-		return fmt.Errorf("range_start %s is greater than range_end %s", pool.RangeStart, pool.RangeEnd)
-	}
-	if pool.GwLrpRangeStart != "" || pool.GwLrpRangeEnd != "" {
-		gwS := net.ParseIP(pool.GwLrpRangeStart)
-		gwE := net.ParseIP(pool.GwLrpRangeEnd)
-		if gwS == nil {
-			return fmt.Errorf("invalid gw_lrp_range_start: %q", pool.GwLrpRangeStart)
-		}
-		if gwE == nil {
-			return fmt.Errorf("invalid gw_lrp_range_end: %q", pool.GwLrpRangeEnd)
-		}
-		if compareIPs(gwS, gwE) > 0 {
-			return fmt.Errorf("gw_lrp_range_start %s is greater than gw_lrp_range_end %s",
-				pool.GwLrpRangeStart, pool.GwLrpRangeEnd)
-		}
-		// Overlap test: !(gwE < rangeS || gwS > rangeE)
-		if compareIPs(gwE, startIP) >= 0 && compareIPs(gwS, endIP) <= 0 {
-			return fmt.Errorf("gw_lrp_range %s-%s overlaps range %s-%s",
-				pool.GwLrpRangeStart, pool.GwLrpRangeEnd, pool.RangeStart, pool.RangeEnd)
-		}
-	}
-	return nil
-}
-
-// compareIPs orders two addresses. Callers parse both first, so an invalid Addr
-// only arises from a nil net.IP and sorts before every valid address.
-func compareIPs(a, b net.IP) int {
-	x, _ := netip.AddrFromSlice(a)
-	y, _ := netip.AddrFromSlice(b)
-	return x.Unmap().Compare(y.Unmap())
 }

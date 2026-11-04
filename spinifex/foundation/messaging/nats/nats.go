@@ -238,6 +238,10 @@ const AccountIDHeader = "X-Account-ID"
 // forwarder must relay it instead of starting the instance elsewhere.
 const UnsealedWritesHeader = "X-Unsealed-Writes"
 
+// VolumeHeldElsewhereHeader marks a start reply refused because another node
+// holds one of the instance's volumes, which the AWS error body cannot say.
+const VolumeHeldElsewhereHeader = "X-Volume-Held-Elsewhere"
+
 // PrincipalARNHeader carries the caller's resolved IAM principal ARN from gateway to daemon handlers.
 const PrincipalARNHeader = "X-Principal-ARN"
 

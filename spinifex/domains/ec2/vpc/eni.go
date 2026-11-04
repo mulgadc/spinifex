@@ -1,6 +1,7 @@
 package vpc
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1147,9 +1148,16 @@ func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string, gro
 	}
 
 	if record.AttachmentId != "" {
+		// A system VM's owner is the internal system account, which AWS never
+		// exposes: its service-managed ENIs report the ELB service alias instead.
+		instanceOwner := cmp.Or(record.InstanceOwnerId, accountID)
+		if instanceOwner == awsidentifiers.GlobalAccountID {
+			instanceOwner = "amazon-elb"
+		}
 		eni.Attachment = &ec2.NetworkInterfaceAttachment{
 			AttachmentId:        aws.String(record.AttachmentId),
 			InstanceId:          aws.String(record.InstanceId),
+			InstanceOwnerId:     aws.String(instanceOwner),
 			DeviceIndex:         aws.Int64(record.DeviceIndex),
 			Status:              aws.String("attached"),
 			DeleteOnTermination: aws.Bool(record.DeleteOnTermination == nil || *record.DeleteOnTermination),

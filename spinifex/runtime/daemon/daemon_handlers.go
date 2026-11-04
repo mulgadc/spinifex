@@ -85,9 +85,13 @@ func respondWithServiceError(nodeID string, msg *nats.Msg, err error) {
 	payload := awserrors.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), message)
 	// The AWS body stays as it is; the header is how ec2.start tells its
 	// forwarder this refusal must not be answered by starting elsewhere.
-	var extra nats.Header
+	extra := nats.Header{}
 	if _, ok := errors.AsType[*ec2instance.UnsealedWritesError](err); ok {
-		extra = nats.Header{natsmsg.UnsealedWritesHeader: []string{"true"}}
+		extra.Set(natsmsg.UnsealedWritesHeader, "true")
+	}
+	// A start caller cannot tell a held volume from any other IncorrectState.
+	if errors.Is(err, ec2v1.ErrVolumeHeldElsewhere) {
+		extra.Set(natsmsg.VolumeHeldElsewhereHeader, "true")
 	}
 	respondNATSMsgWithHeader(nodeID, msg, payload, extra)
 }

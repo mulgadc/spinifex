@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/internal/testkit/gwtest"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/awsapi"
@@ -115,7 +116,7 @@ func TestInvoke_PendingFunctionIsAConflictAndNeverDispatches(t *testing.T) {
 	e, ex := newInvokeEnv(t)
 	e.meta.forceActive = false
 	_, err := e.invoke(t.Context(), invokePath, nil, nil)
-	requireCode(t, err, awserrors.ErrorResourceConflictException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
 	assert.Equal(t, 0, ex.count())
 }
 
@@ -123,7 +124,7 @@ func TestInvoke_FailsClosedWithoutAnExecutor(t *testing.T) {
 	e, _ := newInvokeEnv(t)
 	e.deps.Exec = nil
 	_, err := e.invoke(t.Context(), invokePath, nil, nil)
-	requireCode(t, err, awserrors.ErrorServiceException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorServiceException)
 }
 
 func TestInvoke_DoesNotNeedTheCodeStore(t *testing.T) {
@@ -141,21 +142,21 @@ func TestInvoke_RefusalBeforeDispatchIsKeptApartFromAnUnknownOutcome(t *testing.
 
 	ex.err = &awsapi.RefusalError{Err: awserrors.Errorf(awserrors.ErrorThrottling, "Rate exceeded")}
 	_, err := e.invoke(t.Context(), invokePath, nil, nil)
-	requireCode(t, err, awserrors.ErrorThrottling)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorThrottling)
 
 	ex.err = &awsapi.RefusalError{Err: errors.New("uncoded")}
 	_, err = e.invoke(t.Context(), invokePath, nil, nil)
-	requireCode(t, err, awserrors.ErrorServiceException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorServiceException)
 
 	ex.err = errors.New("transport lost")
 	_, err = e.invoke(t.Context(), invokePath, nil, nil)
-	requireCode(t, err, awserrors.ErrorServiceException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorServiceException)
 	assert.Contains(t, err.Error()+errMessage(err), "outcome is unknown")
 
 	ex.err = nil
 	ex.result = awsapi.SyncResult{Payload: []byte(`{}`)}
 	_, err = e.invoke(t.Context(), invokePath, nil, nil)
-	requireCode(t, err, awserrors.ErrorServiceException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorServiceException)
 }
 
 func errMessage(err error) string {
@@ -175,7 +176,7 @@ func TestInvoke_RefusesOptionsItDoesNotImplement(t *testing.T) {
 		{"X-Amz-Tenant-Id": {"t1"}},
 	} {
 		_, err := e.invoke(t.Context(), invokePath, h, nil)
-		requireCode(t, err, awserrors.ErrorInvalidParameterValueException)
+		testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
 	}
 	assert.Equal(t, 0, ex.count())
 
@@ -198,7 +199,7 @@ func TestInvoke_PayloadLimit(t *testing.T) {
 	_, err := e.invoke(t.Context(), invokePath, nil, jsonOfSize(6*1024*1024))
 	require.NoError(t, err)
 	_, err = e.invoke(t.Context(), invokePath, nil, jsonOfSize(6*1024*1024+1))
-	requireCode(t, err, awserrors.ErrorRequestEntityTooLargeException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorRequestEntityTooLargeException)
 	assert.Equal(t, 1, ex.count())
 }
 
@@ -206,7 +207,7 @@ func TestInvoke_PayloadMustBeJSONUnlessEmpty(t *testing.T) {
 	e, ex := newInvokeEnv(t)
 	for _, bad := range []string{"not json", `{"a":`, "{} {}", "\x00"} {
 		_, err := e.invoke(t.Context(), invokePath, nil, []byte(bad))
-		requireCode(t, err, awserrors.ErrorInvalidRequestContentException)
+		testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidRequestContentException)
 	}
 	assert.Equal(t, 0, ex.count(), "a malformed payload reached the executor")
 
@@ -222,9 +223,9 @@ func TestInvoke_PayloadMustBeJSONUnlessEmpty(t *testing.T) {
 func TestInvoke_MissingAndUnsupportedFunctions(t *testing.T) {
 	e, ex := newInvokeEnv(t)
 	_, err := e.invoke(t.Context(), "/2015-03-31/functions/ghost/invocations", nil, nil)
-	requireCode(t, err, awserrors.ErrorResourceNotFoundException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceNotFoundException)
 	_, err = e.invoke(t.Context(), invokePath+"?Qualifier=1", nil, nil)
-	requireCode(t, err, awserrors.ErrorResourceNotFoundException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceNotFoundException)
 	_, err = e.invoke(t.Context(), invokePath+"?Qualifier=%24LATEST", nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, ex.count())

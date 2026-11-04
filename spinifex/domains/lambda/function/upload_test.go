@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -71,7 +72,7 @@ func TestUpload_RefusedDuplicateLeavesNoRecord(t *testing.T) {
 	svc, _ := newTestService(t)
 	mustCreate(t, svc, "hello", "f1")
 	_, err := svc.Create(t.Context(), createReq("hello", "f2"), testAccount)
-	requireCode(t, err, awserrors.ErrorResourceConflictException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
 	_, ok := upload(t, svc, "f2")
 	assert.False(t, ok, "a create refused before any claim can never be written to")
 	requireOwed(t, svc, "f1")
@@ -91,7 +92,7 @@ func TestUpload_ExpiredClaimIsNotTakenAsCompletion(t *testing.T) {
 	rev := mustCreate(t, svc, "hello", "f1")
 	c.t = c.t.Add(ClaimTTL + time.Second)
 	_, err := svc.CodeStored(t.Context(), &CodeStoredRequest{Region: testRegion, FunctionName: "hello", Revision: rev, SHA256: testDigest, Size: 9}, testAccount)
-	requireCode(t, err, awserrors.ErrorResourceConflictException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
 	requireOwed(t, svc, "f1")
 }
 
@@ -106,9 +107,9 @@ func TestUpload_TakeoverAndLateWriterLeaveTheOriginalOwed(t *testing.T) {
 	requireOwed(t, svc, "f2")
 
 	_, err := svc.CodeStored(t.Context(), &CodeStoredRequest{Region: testRegion, FunctionName: "hello", Revision: oldRev, SHA256: testDigest, Size: 9}, testAccount)
-	requireCode(t, err, awserrors.ErrorResourceConflictException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
 	_, err = svc.RollbackCreate(t.Context(), &RollbackCreateRequest{Region: testRegion, FunctionName: "hello", Revision: oldRev}, testAccount)
-	requireCode(t, err, awserrors.ErrorResourceConflictException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
 	requireOwed(t, svc, "f1")
 
 	_, err = svc.CodeStored(t.Context(), &CodeStoredRequest{Region: testRegion, FunctionName: "hello", Revision: newRev, SHA256: testDigest, Size: 9}, testAccount)
@@ -122,7 +123,7 @@ func TestUpload_RefusesIdentifiersThatCannotBeKeys(t *testing.T) {
 	svc, _ := newTestService(t)
 	for _, id := range []string{"a.b", "a b", "a*"} {
 		_, err := svc.Create(t.Context(), createReq("hello", id), testAccount)
-		requireCode(t, err, awserrors.ErrorInvalidParameterValueException)
+		testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
 	}
 	assert.False(t, mustGet(t, svc, "hello").Found)
 }
@@ -193,7 +194,7 @@ func TestUpload_CodeStoredRefusesAnUnrecognisedRecord(t *testing.T) {
 			}
 
 			_, err = svc.CodeStored(t.Context(), &CodeStoredRequest{Region: testRegion, FunctionName: "hello", Revision: rev, SHA256: testDigest, Size: 9}, testAccount)
-			requireCode(t, err, awserrors.ErrorServiceException)
+			testutil.RequireAWSCode(t, err, awserrors.ErrorServiceException)
 
 			fn := mustGet(t, svc, "hello")
 			assert.Equal(t, rev, fn.Revision, "the function record is unchanged")

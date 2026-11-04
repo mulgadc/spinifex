@@ -432,7 +432,7 @@ func TestCreateFunction_LateWriterAfterTakeoverStaysTracked(t *testing.T) {
 	}
 
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
-	requireCode(t, err, awserrors.ErrorServiceException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorServiceException)
 	assert.Equal(t, 2, e.store.count(), "both copies landed")
 	e.requireTracked(t)
 

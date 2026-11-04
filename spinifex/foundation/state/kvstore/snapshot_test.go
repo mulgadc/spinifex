@@ -1,10 +1,17 @@
 package kvstore_test
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 )
 
@@ -100,4 +107,48 @@ func TestLastSequenceIsZeroWhenNothingMatches(t *testing.T) {
 	watermark, err := store.LastSequence(t.Context(), "i.*")
 	require.NoError(t, err)
 	require.Zero(t, watermark)
+}
+
+// A client reaching JetStream through an imported API prefix sends the
+// leader read under that prefix; its own account has no JetStream to answer
+// the default one.
+func TestLastSequenceHonoursTheAPIPrefix(t *testing.T) {
+	t.Parallel()
+	conf := filepath.Join(t.TempDir(), "server.conf")
+	require.NoError(t, os.WriteFile(conf, []byte(`
+listen: "127.0.0.1:-1"
+jetstream: {store_dir: "`+t.TempDir()+`"}
+accounts: {
+  JS: {jetstream: enabled, users: [{user: js, password: js}], exports: [{service: "$JS.API.>"}]}
+  APP: {users: [{user: app, password: app}], imports: [{service: {account: JS, subject: "$JS.API.>"}, to: "pre.API.>"}]}
+}
+`), 0o600))
+	opts, err := server.ProcessConfigFile(conf)
+	require.NoError(t, err)
+	opts.NoLog, opts.NoSigs = true, true
+	srv, err := server.NewServer(opts)
+	require.NoError(t, err)
+	go srv.Start()
+	require.True(t, srv.ReadyForConnections(10*time.Second))
+	t.Cleanup(srv.Shutdown)
+
+	connect := func(user string) *nats.Conn {
+		nc, err := nats.Connect(srv.ClientURL(), nats.UserInfo(user, user))
+		require.NoError(t, err)
+		t.Cleanup(nc.Close)
+		return nc
+	}
+	owner := kvstore.New[snapRecord](testutil.NewJetStream(t, connect("js")), kvstore.Config{Name: "watermark-prefix", History: 1})
+	require.NoError(t, owner.Set(t.Context(), "i.a", &snapRecord{Name: "a"}))
+	want, err := owner.LastSequence(t.Context(), "i.*")
+	require.NoError(t, err)
+	require.NotZero(t, want)
+
+	js, err := jetstream.NewWithAPIPrefix(connect("app"), "pre.API")
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	got, err := kvstore.NewBucket(js, kvstore.Config{Name: "watermark-prefix"}).LastSequence(ctx, "i.*")
+	require.NoError(t, err)
+	require.Equal(t, want, got)
 }

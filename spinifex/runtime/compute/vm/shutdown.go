@@ -434,6 +434,8 @@ func (m *Manager) finalizeTerminated(instance *VM) error {
 // finalizeTerminated is a no-op — the shutting-down → terminated transition is
 // already spent and terminated is terminal.
 func (m *Manager) reconcileVanishedQEMU(instance *VM) error {
+	// The wedged terminate may not have finished its unmount.
+	m.markAllVolumesOwed(instance)
 	m.markTeardown(instance, TeardownQEMU, TeardownDone)
 	m.markUEFIStoreForDeletion(instance)
 	m.stampOutstandingTeardownFailed(instance)
@@ -460,6 +462,9 @@ func (m *Manager) forceFinalizeStuckTerminate(instance *VM) error {
 	}
 	m.markTeardown(instance, TeardownQEMU, TeardownDone)
 
+	// No unmount ran here, so every attachment the cleaner clears leaves its
+	// publish in place and is owed an unpublish.
+	m.markAllVolumesOwed(instance)
 	if m.deps.InstanceCleaner != nil {
 		m.markTeardownResult(instance, TeardownVolumes, m.deps.InstanceCleaner.DeleteVolumes(instance))
 	}
@@ -623,7 +628,7 @@ func (m *Manager) shutdownAndUnmount(instance *VM) error {
 
 	var sealErr error
 	if m.deps.VolumeMounter != nil {
-		if err := m.deps.VolumeMounter.Unmount(context.Background(), instance); err != nil {
+		if err := m.unmountVolumes(context.Background(), instance); err != nil {
 			slog.Error("Volume unmount failed", "id", instance.ID, "err", err)
 			sealErr = fmt.Errorf("%w for instance %s: %w", ErrVolumeSealFailed, instance.ID, err)
 		}
@@ -638,6 +643,47 @@ func (m *Manager) shutdownAndUnmount(instance *VM) error {
 	removeTelemetryArtifacts(instance)
 
 	return sealErr
+}
+
+// unmountVolumes unmounts the instance's volumes and records the ones the
+// unmount left exported, which a terminate clearing their attachments then
+// owes an unpublish. Every unmount replaces the record, and until it answers
+// every volume counts as still exported.
+func (m *Manager) unmountVolumes(ctx context.Context, instance *VM) error {
+	names := instanceVolumeNames(instance)
+	m.Inspect(instance, func(v *VM) { v.UnpublishOwed = names })
+	err := m.deps.VolumeMounter.Unmount(ctx, instance)
+	owed := volumesLeftPublished(err, names)
+	m.Inspect(instance, func(v *VM) { v.UnpublishOwed = owed })
+	return err
+}
+
+// markAllVolumesOwed records every volume as still exported, for a terminate
+// finished without an unmount that is known to have completed. It never waits
+// on a stalled unmount, which has already recorded every volume.
+func (m *Manager) markAllVolumesOwed(instance *VM) {
+	if !instance.EBSRequests.Mu.TryLock() {
+		slog.Warn("Volume requests are held, keeping the recorded unpublish obligations", "id", instance.ID)
+		return
+	}
+	owed := requestNames(instance.EBSRequests.Requests)
+	instance.EBSRequests.Mu.Unlock()
+	m.Inspect(instance, func(v *VM) { v.UnpublishOwed = owed })
+}
+
+// instanceVolumeNames lists the volumes the instance has requests for.
+func instanceVolumeNames(instance *VM) []string {
+	instance.EBSRequests.Mu.Lock()
+	defer instance.EBSRequests.Mu.Unlock()
+	return requestNames(instance.EBSRequests.Requests)
+}
+
+func requestNames(requests []EBSRequest) []string {
+	names := make([]string, 0, len(requests))
+	for _, req := range requests {
+		names = append(names, req.Name)
+	}
+	return names
 }
 
 // ForgetSuperseded stops any local copy of an instance another node now owns

@@ -286,6 +286,11 @@ type VM struct {
 	// pending/failed and purges the record once all dependents are done.
 	Teardown map[string]string `json:"teardown,omitempty"`
 
+	// UnpublishOwed lists the volumes the last unmount on LastNode left
+	// exported, so a terminate that clears their attachments records an
+	// unpublish obligation for each. Every unmount replaces it.
+	UnpublishOwed []string `json:"unpublish_owed,omitempty"`
+
 	// TerminatedAt is when the instance entered StateTerminated. The GC backstop
 	// keeps a completed terminated record describable until this is older than
 	// the visibility window, after which it may reclaim it early; the bucket's

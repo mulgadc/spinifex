@@ -1,6 +1,9 @@
 package vm
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // ErrInstanceNotFound is returned by manager methods that look up an
 // instance by id when no entry exists in the running map.
@@ -16,6 +19,44 @@ var ErrInvalidTransition = errors.New("invalid state transition")
 // because stopping viperblock next is what tears the volume's state.
 var ErrVolumeSealFailed = errors.New("volume seal failed")
 
+// VolumeUnpublishError is one volume an unmount left exported. A VolumeMounter
+// reports each such volume with it, so the manager knows which publishes a
+// later terminate leaves in place.
+type VolumeUnpublishError struct {
+	VolumeID string
+	Err      error
+}
+
+func (e *VolumeUnpublishError) Error() string {
+	return fmt.Sprintf("seal %s: %v", e.VolumeID, e.Err)
+}
+
+func (e *VolumeUnpublishError) Unwrap() error { return e.Err }
+
+// volumesLeftPublished returns the volumes an unmount error leaves exported:
+// one VolumeUnpublishError per volume, joined. An error that names none leaves
+// the outcome of every volume unknown, so all of them are returned.
+func volumesLeftPublished(err error, volumes []string) []string {
+	if err == nil {
+		return nil
+	}
+	parts := []error{err}
+	var joined interface{ Unwrap() []error }
+	if errors.As(err, &joined) {
+		parts = joined.Unwrap()
+	}
+	var named []string
+	for _, part := range parts {
+		if ve, ok := errors.AsType[*VolumeUnpublishError](part); ok {
+			named = append(named, ve.VolumeID)
+		}
+	}
+	if len(named) == 0 {
+		return append([]string(nil), volumes...)
+	}
+	return named
+}
+
 // ErrAttachmentLimitExceeded is returned by AttachVolume when the
 // instance has no free /dev/sd[f-p] slot to assign.
 var ErrAttachmentLimitExceeded = errors.New("attachment limit exceeded")
@@ -23,6 +64,10 @@ var ErrAttachmentLimitExceeded = errors.New("attachment limit exceeded")
 // ErrVolumeNotAttached is returned by DetachVolume when the supplied
 // volumeID is not present in the instance's EBSRequests.
 var ErrVolumeNotAttached = errors.New("volume not attached to instance")
+
+// ErrVolumeSettling is returned by a mount while this node is still sealing
+// the volume's export from an earlier attachment.
+var ErrVolumeSettling = errors.New("volume is still being detached from an earlier attachment")
 
 // ErrVolumeNotDetachable is returned by DetachVolume when the target
 // volume is a boot or EFI volume that cannot be hot-unplugged.

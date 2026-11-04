@@ -24,6 +24,7 @@ Single source of truth for the current schema version of every config file Spini
 | `spinifex-cluster-config` | `1` | `daemon.ClusterConfigBucketVersion` |
 | `spinifex-terminated-instances` | `3` | `daemon.TerminatedInstanceBucketVersion` |
 | `spinifex-uefi-stores` | `1` | `uefistore.BucketVersion` |
+| `spinifex-ebs-unpublish-obligations` | `1` | `ebsobligation.BucketVersion` |
 
 ## Registered migrations
 

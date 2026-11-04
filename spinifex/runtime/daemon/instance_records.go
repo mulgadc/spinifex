@@ -219,6 +219,25 @@ func loadRecord[T any](store *kvstore.Store[T], key string) (*T, error) {
 	return record, nil
 }
 
+// InstanceLastNode names the node that last ran instanceID, from its live
+// record or, failing that, its terminated one. found is false when neither
+// exists. It is the volume domain's one view of instance state.
+func (m *JetStreamManager) InstanceLastNode(instanceID string) (node string, found bool, err error) {
+	record, err := m.LoadInstanceRecord(instanceID)
+	if err != nil {
+		return "", false, err
+	}
+	if record == nil {
+		if record, err = m.LoadTerminatedInstanceRecord(instanceID); err != nil {
+			return "", false, err
+		}
+	}
+	if record == nil {
+		return "", false, nil
+	}
+	return record.Status.LastNode, true, nil
+}
+
 // TerminateDecided reports whether instanceID has no live instance record, or
 // one that is terminating, read from the KV store at call time. The live record
 // wins over a terminated one, and a read error is returned rather than guessed.

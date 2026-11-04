@@ -1241,7 +1241,12 @@ func (s *InstanceServiceImpl) StartInstance(ctx context.Context, instance *vm.VM
 				"instanceId", command.ID, "err", err)
 			return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 		default:
-			slog.ErrorContext(ctx, "StartInstance: vmMgr.Start failed", "err", err)
+			// A volume held elsewhere is the caller's 400, not a fault on this node.
+			if refusal := volumeHeldElsewhereError(err); refusal != nil {
+				slog.WarnContext(ctx, "StartInstance: vmMgr.Start failed", "instanceId", command.ID, "err", err)
+				return refusal
+			}
+			slog.ErrorContext(ctx, "StartInstance: vmMgr.Start failed", "instanceId", command.ID, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 	}
@@ -2912,40 +2917,15 @@ func (s *InstanceServiceImpl) RecoverInstance(ctx context.Context, instance *vm.
 	return s.launchClaimedInstance(ctx, instance, undo)
 }
 
-// volumeExclusionMarkers are the refusals that mean another node is writing this
-// volume right now, or is still live and holds its unsealed writes. A previous
-// owner that has stopped heartbeating is opened over with a warning instead. The
-// text arrives having crossed NATS from viperblockd.
-var volumeExclusionMarkers = []string{
-	ec2v1.VolumeHeldElsewhereText,
-}
-
-// ErrVolumeHeldElsewhere reports a launch refused because another node still
-// holds one of the instance's volume leases.
-//
-// Recovery treats it differently from every other failure — it clears on the
-// lease's own clock rather than needing anything fixed — so it has to be
-// recognisable with errors.Is rather than inferred from text that has already
-// crossed NATS once.
-var ErrVolumeHeldElsewhere = errors.New("a volume is leased by another node")
-
-// volumeHeldElsewhereError converts a mount refused because another node holds
-// the volume into a client-facing error carrying that reason. Returns nil for
-// anything else. Without it the caller gets ServerInternal and is told to
-// retry, which cannot succeed while the holder is down, and the text naming the
-// holder never leaves the node's log.
+// volumeHeldElsewhereError converts a mount the EBS provider refused with its
+// held-elsewhere code into IncorrectState naming the holder, wrapping
+// ec2v1.ErrVolumeHeldElsewhere, and returns nil for anything else.
 func volumeHeldElsewhereError(err error) error {
-	if err == nil {
+	if !errors.Is(err, ebsprovider.ErrVolumeHeldElsewhere) {
 		return nil
 	}
-	msg := err.Error()
-	for _, marker := range volumeExclusionMarkers {
-		if strings.Contains(msg, marker) {
-			return fmt.Errorf("%w: %w", ErrVolumeHeldElsewhere,
-				awserrors.Errorf(awserrors.ErrorIncorrectState, "%s", msg))
-		}
-	}
-	return nil
+	return fmt.Errorf("%w: %w", ec2v1.ErrVolumeHeldElsewhere,
+		awserrors.Errorf(awserrors.ErrorIncorrectState, "%s", err.Error()))
 }
 
 // restoreClaimedStoppedInstance writes instance back to the shared

@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -224,20 +225,41 @@ func TestLambdaTestLinkSeam_TimeoutsAreUnknown(t *testing.T) {
 	cases := map[string]struct {
 		timeout int64
 		guest   func(context.Context, net.Conn)
+		reason  string
 	}{
-		"agent timeout before the host deadline": {2, agentGuest(2*time.Second-200*time.Millisecond, func(base string) { nextInvocationID(base) })},
-		"host deadline":                          {1, func(ctx context.Context, _ net.Conn) { <-ctx.Done() }},
+		"agent timeout before the host deadline": {2, agentGuest(2*time.Second-200*time.Millisecond, func(base string) { nextInvocationID(base) }), testlink.ErrTimeoutUnproven.Error()},
+		"host deadline":                          {1, func(ctx context.Context, _ net.Conn) { <-ctx.Done() }, testlink.ErrFunctionTimeout.Error()},
+		"bootstrap posts the timeout error type": {10, agentGuest(0, postSpoofedTimeout), testlink.ErrTimeoutUnproven.Error()},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			srv := codeServer(t)
 			run := invokeComposed(t, tc.timeout, srv.URL+"/code", srv.Client(), tc.guest)
-			require.Equal(t, testlink.OutcomeUnknown, daemonReply(t, run.replies[0]).Outcome)
+			rep := daemonReply(t, run.replies[0])
+			require.Equal(t, testlink.OutcomeUnknown, rep.Outcome)
+			require.Equal(t, tc.reason, rep.Error, "the outcome is unknown for the wrong reason")
 			require.Equal(t, http.StatusInternalServerError, run.resp.StatusCode)
 			require.Equal(t, "ServiceException", run.resp.Header.Get("X-Amzn-Errortype"))
 			require.Empty(t, run.resp.Header.Get("X-Amz-Function-Error"))
 			require.NotContains(t, string(run.body), "Sandbox.Timedout")
 		})
+	}
+}
+
+// postSpoofedTimeout is a bootstrap reporting Sandbox.Timedout as its own error.
+func postSpoofedTimeout(base string) {
+	id, ok := nextInvocationID(base)
+	if !ok {
+		return
+	}
+	req, err := http.NewRequest(http.MethodPost, base+"invocation/"+id+"/error",
+		strings.NewReader(`{"errorType":"Sandbox.Timedout","errorMessage":"spoof"}`))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Lambda-Runtime-Function-Error-Type", "Sandbox.Timedout")
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		_ = resp.Body.Close()
 	}
 }
 

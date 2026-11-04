@@ -10,6 +10,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -60,6 +62,7 @@ type exitingGuest struct {
 	admitted chan struct{} // closed when a POST's body is first read
 	runErr   chan error    // agent.Run's return
 	bdone    chan struct{} // closed when the bootstrap function returns
+	drained  chan struct{} // closed when the guest stream's reader has finished
 }
 
 // startExitingGuest runs bootstrap against the guest. Errors a bootstrap
@@ -68,7 +71,7 @@ func startExitingGuest(t *testing.T, ctx context.Context, guest net.Conn, gate c
 	bootstrap func(g *exitingGuest)) *exitingGuest {
 	t.Helper()
 	srv := runtimeapi.New()
-	g := &exitingGuest{admitted: make(chan struct{}), runErr: make(chan error, 1), bdone: make(chan struct{})}
+	g := &exitingGuest{admitted: make(chan struct{}), runErr: make(chan error, 1), bdone: make(chan struct{}), drained: make(chan struct{})}
 	var once sync.Once
 	h := srv.Handler()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -92,6 +95,7 @@ func startExitingGuest(t *testing.T, ctx context.Context, guest net.Conn, gate c
 	}()
 	go func() {
 		defer cancel()
+		defer close(g.drained)
 		stream := hostlink.NewTestStream(&gateConn{Conn: guest, gate: gate})
 		g.runErr <- agent.Run(actx, stream, srv)
 		// The connection closes when the agent stops, as its process exit
@@ -398,40 +402,54 @@ func TestSession_LateResultNeverReachesAccept(t *testing.T) {
 	require.Zero(t, accepts.Load())
 }
 
-// A body held open past the invocation deadline ends as unknown. The host
-// stream's reader is the host session's own and is not part of this check.
+// A body held open past the invocation deadline ends as unknown. The ignore
+// covers every hostlink readLoop and exists for the host session's own reader,
+// whose shutdown is tracked separately; the guest reader is shown finished
+// by the drain channel.
 func TestSession_SlowAdmittedBodyHeldPastTheDeadlineIsUnknown(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent(), goleak.IgnoreAnyFunction("github.com/mulgadc/spinifex/spinifex/agents/lambda/hostlink.(*TestStream).readLoop"))
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent(),
+		goleak.IgnoreAnyFunction("github.com/mulgadc/spinifex/spinifex/agents/lambda/hostlink.(*TestStream).readLoop"))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var accepts atomic.Int32
-	guest, done := startSession(t, ctx, testRequest(500), countAccept(&accepts))
+	guest, done := startSession(t, ctx, testRequest(3000), countAccept(&accepts))
 	held := make(chan net.Conn, 1)
 	g := startExitingGuest(t, ctx, guest, nil, func(g *exitingGuest) {
 		id, ok := g.next(t)
 		if !ok {
 			return
 		}
-		conn := g.startPartial(t, id)
-		// The POST is admitted while its connection is still open.
-		if conn != nil && waitFor(t, g.admitted, "the server to admit the POST") {
+		if conn := g.startPartial(t, id); conn != nil {
 			held <- conn
 		}
 	})
 
-	e := recv(t, done, "the host's outcome")
-	recv(t, g.bdone, "the bootstrap to return")
+	// Admission must come before the host's deadline, not after it.
+	var e sessionEnd
+	select {
+	case <-g.admitted:
+	case e = <-done:
+		t.Fatalf("the host finished before the POST was admitted: %v", e.err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the POST was not admitted")
+	}
+	e = recv(t, done, "the host's outcome")
 	require.Error(t, e.err)
 	require.Empty(t, e.reply.Payload)
 	require.Zero(t, accepts.Load())
 
-	select {
-	case conn := <-held:
-		_ = conn.Close()
-	default:
-		t.Error("the POST was never admitted")
-	}
-	g.ts.Close()
+	// The agent ends with the timeout or a link error, whichever lands first.
+	recv(t, g.runErr, "agent.Run to return")
+	recv(t, g.bdone, "the bootstrap to return")
+	recv(t, g.drained, "the guest stream's reader to finish")
+	_ = (<-held).Close()
+	closed := make(chan struct{})
+	go func() { g.ts.Close(); close(closed) }()
+	recv(t, closed, "the HTTP handler to finish")
 	_ = guest.Close()
 	http.DefaultTransport.(*http.Transport).CloseIdleConnections()
+	// Observation only: which readLoop goroutines remain, for the report.
+	dump := make([]byte, 1<<20)
+	dump = dump[:runtime.Stack(dump, true)]
+	t.Logf("readLoop goroutines still running: %d", strings.Count(string(dump), "TestStream).readLoop"))
 }

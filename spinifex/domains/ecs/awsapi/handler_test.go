@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ecs"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/stretchr/testify/assert"
@@ -56,14 +58,11 @@ func TestActions_StubsReturnNotImplemented(t *testing.T) {
 
 func TestWriteJSONResponse(t *testing.T) {
 	w := httptest.NewRecorder()
-	WriteJSONResponse(w, map[string]string{"clusterArn": "arn:aws:ecs:::cluster/x"})
+	WriteJSONResponse(w, &ecs.CreateServiceOutput{Service: &ecs.Service{ServiceName: aws.String("web")}})
 
 	assert.Equal(t, 200, w.Code)
 	assert.Equal(t, envelope.JSONContentType, w.Header().Get("Content-Type"))
-
-	var got map[string]string
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
-	assert.Equal(t, "arn:aws:ecs:::cluster/x", got["clusterArn"])
+	assert.JSONEq(t, `{"service":{"serviceName":"web","availabilityZoneRebalancing":"DISABLED"}}`, w.Body.String())
 }
 
 // A response jsonutil cannot encode still reaches the SDK as an AWS JSON 1.1

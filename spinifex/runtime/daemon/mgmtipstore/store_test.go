@@ -548,20 +548,36 @@ func TestStore_RefusesStreamWithoutCreationTime(t *testing.T) {
 	requireUnchanged(t, s, string(raw), rev)
 }
 
+// advanceOnUpdate lands a newer value on the key just before the confirming
+// conditional write reaches the real bucket.
+type advanceOnUpdate struct {
+	jetstream.KeyValue
+	t     *testing.T
+	key   string
+	value []byte
+	rev   uint64
+}
+
+func (a *advanceOnUpdate) Update(ctx context.Context, key string, value []byte, last uint64) (uint64, error) {
+	rev, err := a.KeyValue.Put(ctx, a.key, a.value)
+	require.NoError(a.t, err)
+	a.rev = rev
+	return a.KeyValue.Update(ctx, key, value, last)
+}
+
 func TestLookup_StaleReadBetweenReadAndConfirmIsRefused(t *testing.T) {
 	s, _ := newStore(t)
 	putRecord(t, s, formed(entry("10.11.12.10", "i-1", "node1")))
 
-	var newerRev uint64
-	s.betweenReadAndConfirm = func() { newerRev = putRecord(t, s, formed()) }
+	newer, err := encode(formed(entry("10.11.12.10", "i-2", "node2")))
+	require.NoError(t, err)
+	wrap := &advanceOnUpdate{KeyValue: s.kv, t: t, key: testKey, value: newer}
+	s.kv = wrap
 
 	got, err := s.Lookup(t.Context(), testPrefix, "i-1", "node1", "10.11.12.10")
 	require.ErrorIs(t, err, ErrStale)
 	assert.Equal(t, Entry{}, got)
-
-	newer, err := encode(formed())
-	require.NoError(t, err)
-	requireUnchanged(t, s, string(newer), newerRev)
+	requireUnchanged(t, s, string(newer), wrap.rev)
 }
 
 func TestInsert_InPlaceMutationOfReturnedEntriesDoesNotReachTheStore(t *testing.T) {

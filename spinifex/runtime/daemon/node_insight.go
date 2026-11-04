@@ -43,6 +43,8 @@ type nodeInsight struct {
 	mu      sync.Mutex
 	facts   clusterv1.NodeFacts
 	factsAt time.Time
+	// usage is read outside mu, so a hung mount never holds up the facts.
+	usage nodefacts.UsageProber
 
 	live   *nodeLiveSampler
 	server nettest.Server
@@ -65,8 +67,16 @@ func (n *nodeInsight) currentFacts(ctx context.Context) clusterv1.NodeFacts {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	n.facts = nodefacts.Build(ctx, n.env)
+	n.usage.Apply(n.facts.Filesystems)
 	n.factsAt = time.Now()
 	return n.facts
+}
+
+// probeUsage reads every filesystem's usage now and each interval until ctx ends.
+func (n *nodeInsight) probeUsage(ctx context.Context) {
+	n.usage.Run(ctx, func() []string {
+		return nodefacts.Mounts(nodefacts.Filesystems(n.env))
+	}, nodefacts.UsageInterval)
 }
 
 // planeAddress is the node's address on plane, or "" when it has none.

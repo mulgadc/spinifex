@@ -114,6 +114,8 @@ func Build(ctx context.Context, env Env) clusterv1.NodeFacts {
 	f.Sources["lldp"] = lldpState
 	f.NICs = nicFacts(env, neighbours)
 	f.Planes = planeFacts(env, f.NICs)
+	f.Disks = diskFacts(env.SysRoot)
+	f.Filesystems = Filesystems(env)
 	for i := range f.NICs {
 		for _, p := range f.Planes {
 			if slices.Contains(p.NICs, f.NICs[i].Name) {

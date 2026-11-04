@@ -921,6 +921,9 @@ func (d *Daemon) subscribeAll() error {
 	if d.insight == nil {
 		d.insight = newNodeInsight(d.node, d.config.Host, d.config.VPCD.ExternalInterface)
 		d.insight.live = &nodeLiveSampler{insight: d.insight, nc: d.natsConn, subject: telemetryv1.NodeLiveSampleSubject(d.node)}
+		if d.ctx != nil {
+			go d.insight.probeUsage(d.ctx)
+		}
 	}
 	subs := []natsSub{
 		// ec2.RunInstances is handled by dynamic per-instance-type subscriptions

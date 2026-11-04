@@ -8,6 +8,7 @@ export const PANEL_TABS = [
   "settings",
   "network",
   "speedtest",
+  "disks",
 ] as const
 
 export type PanelTab = (typeof PANEL_TABS)[number]

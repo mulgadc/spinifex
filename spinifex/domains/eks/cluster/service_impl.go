@@ -2166,6 +2166,9 @@ func (s *EKSServiceImpl) casUpdateNodegroupTags(ctx context.Context, accountID, 
 
 // accountBucket returns the per-account KV bucket for accountID.
 func (s *EKSServiceImpl) accountBucket(ctx context.Context, accountID string) (jetstream.KeyValue, error) {
+	if s.deps.NATSConn == nil {
+		return nil, errors.New("eks: nil NATS connection")
+	}
 	js, err := jetstream.New(s.deps.NATSConn)
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)

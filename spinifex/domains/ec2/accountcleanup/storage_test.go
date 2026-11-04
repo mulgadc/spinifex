@@ -45,8 +45,8 @@ func (f *fakeVolumes) VolumeInventory(context.Context, string) ([]accountinvento
 // fakeDeleter acts on the volume fake: reclaim "gone" removes the record,
 // "deleting" marks it, anything else leaves it.
 type fakeDeleter struct {
-	store   *fakeVolumes
-	reclaim string
+	store    *fakeVolumes
+	reclaim  string
 	errFor   map[string]error
 	deleted  []string
 	onDelete func()

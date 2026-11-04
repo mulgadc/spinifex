@@ -552,6 +552,7 @@ func TestStore_RefusesStreamWithoutCreationTime(t *testing.T) {
 // conditional write reaches the real bucket.
 type advanceOnUpdate struct {
 	jetstream.KeyValue
+
 	t     *testing.T
 	key   string
 	value []byte
@@ -559,7 +560,7 @@ type advanceOnUpdate struct {
 }
 
 func (a *advanceOnUpdate) Update(ctx context.Context, key string, value []byte, last uint64) (uint64, error) {
-	rev, err := a.KeyValue.Put(ctx, a.key, a.value)
+	rev, err := a.Put(ctx, a.key, a.value)
 	require.NoError(a.t, err)
 	a.rev = rev
 	return a.KeyValue.Update(ctx, key, value, last)

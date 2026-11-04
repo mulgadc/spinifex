@@ -516,7 +516,7 @@ func (s *LaunchTemplateServiceImpl) commitHeader(ctx context.Context, op, accoun
 		if err == nil {
 			return nil
 		}
-		if !isRevisionConflict(err) {
+		if !kvutil.IsRevisionConflict(err) {
 			slog.ErrorContext(ctx, op+": header commit failed", "launchTemplateId", ltID, "err", err)
 			return err
 		}
@@ -539,11 +539,6 @@ func (s *LaunchTemplateServiceImpl) commitHeader(ctx context.Context, op, accoun
 		entry = next
 	}
 	return errors.New("header commit retries exhausted")
-}
-
-// isRevisionConflict reports a CAS write that lost to a concurrent writer.
-func isRevisionConflict(err error) bool {
-	return errors.Is(err, jetstream.ErrKeyRevisionMismatch) || errors.Is(err, jetstream.ErrKeyExists)
 }
 
 // abandonVersion removes a body whose header commit failed. A failure is
@@ -616,7 +611,7 @@ func (s *LaunchTemplateServiceImpl) setDefaultVersion(ctx context.Context, accou
 		if err == nil {
 			return header, nil
 		}
-		if !isRevisionConflict(err) {
+		if !kvutil.IsRevisionConflict(err) {
 			slog.ErrorContext(ctx, "ModifyLaunchTemplate: header update failed", "launchTemplateId", header.LaunchTemplateId, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}

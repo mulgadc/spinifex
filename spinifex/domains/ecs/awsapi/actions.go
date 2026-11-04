@@ -76,6 +76,9 @@ func DescribeClusters(ctx context.Context, nc *nats.Conn, accountID string, body
 	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
+	if err := checkClustersInclude(input.Include); err != nil {
+		return nil, err
+	}
 	return ecsdomain.NewNATSECSService(nc).DescribeClusters(ctx, input, accountID)
 }
 
@@ -188,6 +191,9 @@ func UpdateContainerInstancesState(ctx context.Context, nc *nats.Conn, accountID
 func DescribeContainerInstances(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DescribeContainerInstancesInput)
 	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
+		return nil, err
+	}
+	if err := checkContainerInstancesInclude(input.Include); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).DescribeContainerInstances(ctx, input, accountID)
@@ -313,6 +319,9 @@ func DescribeTasks(ctx context.Context, nc *nats.Conn, accountID string, body []
 	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
+	if err := checkTasksInclude(input.Include); err != nil {
+		return nil, err
+	}
 	return ecsdomain.NewNATSECSService(nc).DescribeTasks(ctx, input, accountID)
 }
 
@@ -389,6 +398,9 @@ func DeleteService(ctx context.Context, nc *nats.Conn, accountID string, body []
 func DescribeServices(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DescribeServicesInput)
 	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
+		return nil, err
+	}
+	if err := checkServicesInclude(input.Include); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).DescribeServices(ctx, input, accountID)
@@ -502,6 +514,9 @@ func CreateCapacityProvider(ctx context.Context, nc *nats.Conn, accountID string
 func DescribeCapacityProviders(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DescribeCapacityProvidersInput)
 	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
+		return nil, err
+	}
+	if err := checkCapacityProvidersInclude(input.Include); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).DescribeCapacityProviders(ctx, input, accountID)

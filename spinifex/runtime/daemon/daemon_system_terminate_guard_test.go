@@ -241,8 +241,18 @@ func bindRealEIP(t *testing.T, d *Daemon, instanceID string) (allocID string, sv
 	require.NoError(t, err)
 	d.eipService = svc
 
-	out, err := svc.AllocateAddress(t.Context(), &ec2.AllocateAddressInput{}, testAccountID)
+	out, err := svc.AllocateAddress(t.Context(), &ec2.AllocateAddressInput{
+		TagSpecifications: []*ec2.TagSpecification{{
+			ResourceType: aws.String("elastic-ip"),
+			Tags:         []*ec2.Tag{{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByELBv2)}},
+		}},
+	}, testAccountID)
 	require.NoError(t, err)
+	desc, err := svc.DescribeAddresses(t.Context(), &ec2.DescribeAddressesInput{AllocationIds: []*string{out.AllocationId}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Addresses, 1)
+	require.Contains(t, desc.Addresses[0].Tags, &ec2.Tag{Key: aws.String(tags.ManagedByKey), Value: aws.String(tags.ManagedByELBv2)},
+		"the customer address carries the system manager tag")
 
 	kv, err := js.KeyValue(t.Context(), ec2eip.KVBucketEIPs)
 	require.NoError(t, err)
@@ -344,4 +354,49 @@ func TestS7_TerminateSystemInstanceNeverReleasesCustomerEIP(t *testing.T) {
 			assert.True(t, addressKept(t, svc, allocID), "a customer's address survives a wrong system instance ID")
 		})
 	}
+}
+
+// flipOwnership classifies as a system VM once, then fails every later read, as
+// an owner node does when its record store drops between the two lookups.
+type flipOwnership struct {
+	first systeminstance.Classification
+	calls *atomic.Int32
+}
+
+func (f flipOwnership) Classify(string) (systeminstance.Classification, error) {
+	if f.calls.Add(1) == 1 {
+		return f.first, nil
+	}
+	return systeminstance.Classification{}, errors.New("kv down")
+}
+
+func TestS7_WrapperSkipsBackstopWhenOwnerCannotReadRecord(t *testing.T) {
+	d := createVPCTestDaemon(t)
+	_, nc, js := testutil.StartTestJetStream(t)
+	ipam, err := ec2vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
+		{Name: "wan-test", RangeStart: "203.0.113.10", RangeEnd: "203.0.113.20", Gateway: "203.0.113.1", PrefixLen: 24},
+	})
+	require.NoError(t, err)
+	svc, err := ec2eip.NewEIPServiceImpl(t.Context(), nc, ipam, d.vpcService)
+	require.NoError(t, err)
+	d.eipService = svc
+	kv, err := js.KeyValue(t.Context(), ec2eip.KVBucketEIPs)
+	require.NoError(t, err)
+
+	launch, err := svc.AllocateAddress(t.Context(), &ec2.AllocateAddressInput{}, testAccountID)
+	require.NoError(t, err)
+	launchID := aws.StringValue(launch.AllocationId)
+	associateEIP(t, kv, launchID, "eni-alb")
+
+	d.natsConn = nc
+	d.ownership = flipOwnership{
+		first: systeminstance.Classification{Ownership: systeminstance.OwnershipSystem, PublicIPAllocID: launchID, ENIID: "eni-alb"},
+		calls: &atomic.Int32{},
+	}
+	require.NoError(t, d.subscribeSystemTerminate("i-alb-flip"))
+
+	err = d.TerminateSystemInstance("i-alb-flip")
+
+	require.ErrorIs(t, err, systeminstance.ErrSystemInstanceOwnershipUnknown)
+	assert.True(t, addressKept(t, svc, launchID), "the VM may still be running, so its launch address is kept")
 }

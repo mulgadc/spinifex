@@ -648,8 +648,11 @@ func (d *Daemon) TerminateSystemInstance(instanceID string) error {
 
 	// Backstop for the no-owner case: when no node owns the VM the remote route
 	// returns NotFound and never reaches the owner's release, so an internet-facing
-	// ALB's launch EIP would orphan. Idempotent — a no-op once released.
-	d.reclaimSystemInstanceEIP(instanceID, cls)
+	// ALB's launch EIP would orphan. Idempotent — a no-op once released. Skipped
+	// when the owner could not read the record: the VM may still be running.
+	if !errors.Is(termErr, systeminstance.ErrSystemInstanceOwnershipUnknown) {
+		d.reclaimSystemInstanceEIP(instanceID, cls)
+	}
 	return termErr
 }
 

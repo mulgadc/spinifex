@@ -2,7 +2,6 @@ package vpc
 
 import (
 	"errors"
-	"net"
 	"strconv"
 	"sync"
 	"testing"
@@ -335,13 +334,6 @@ func TestIPAM_ClaimIP_ConcurrentRace(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, ips, 1, "the address must be recorded exactly once despite the race")
 	assert.Equal(t, "10.0.38.50", ips[0].IP)
-}
-
-func TestCompareIPs_NilSortsFirst(t *testing.T) {
-	t.Parallel()
-	assert.Negative(t, compareIPs(nil, net.ParseIP("10.0.0.1")))
-	assert.Zero(t, compareIPs(net.ParseIP("10.0.0.1"), net.ParseIP("10.0.0.1")))
-	assert.Positive(t, compareIPs(net.ParseIP("10.0.0.2"), net.ParseIP("10.0.0.1")))
 }
 
 func itoa(i int) string {

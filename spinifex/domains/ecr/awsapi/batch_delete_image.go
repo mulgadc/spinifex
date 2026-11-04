@@ -33,19 +33,19 @@ func BatchDeleteImage(ctx context.Context, deleter ImageDeleter, accountID strin
 	if err := ValidateRepositoryScope(req.RepositoryName, req.RegistryID, accountID); err != nil {
 		return nil, err
 	}
-	if len(req.ImageIDs) > maxImageBatch {
-		return nil, MaxItemsError("imageIds", maxImageBatch)
+	if err := validateImageIDs(req.ImageIDs, true); err != nil {
+		return nil, err
 	}
 
 	deleted := make([]*ecr.ImageIdentifier, 0, len(req.ImageIDs))
 	failures := make([]*ecr.ImageFailure, 0)
 	for _, imageID := range req.ImageIDs {
-		if imageID.ImageDigest == "" && imageID.ImageTag == "" {
+		if imageID.ImageDigest == "" && imageID.ImageTag == nil {
 			failures = append(failures, imageFailure(imageID, ecr.ImageFailureCodeMissingDigestAndTag, "no digest or tag specified"))
 			continue
 		}
 
-		digest, err := deleter.DeleteImage(ctx, accountID, req.RepositoryName, imageID.ImageTag, imageID.ImageDigest)
+		digest, err := deleter.DeleteImage(ctx, accountID, req.RepositoryName, imageID.tag(), imageID.ImageDigest)
 		if errors.Is(err, ecrregistry.ErrImageNotFound) {
 			failures = append(failures, imageFailure(imageID, ecr.ImageFailureCodeImageNotFound, ImageNotFoundReason))
 			continue
@@ -56,8 +56,8 @@ func BatchDeleteImage(ctx context.Context, deleter ImageDeleter, accountID strin
 		}
 
 		deletedImage := &ecr.ImageIdentifier{ImageDigest: aws.String(digest)}
-		if imageID.ImageTag != "" {
-			deletedImage.ImageTag = aws.String(imageID.ImageTag)
+		if imageID.ImageTag != nil {
+			deletedImage.ImageTag = imageID.ImageTag
 		}
 		deleted = append(deleted, deletedImage)
 	}

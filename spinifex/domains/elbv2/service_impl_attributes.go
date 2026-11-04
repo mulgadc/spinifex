@@ -32,8 +32,12 @@ type attrResource[R any] struct {
 	save        func(*R) error
 	accountIDOf func(*R) string
 	defaults    func(*R) map[string]string
-	attrsOf     func(*R) map[string]string
-	setAttrs    func(*R, map[string]string)
+	// accepts overrides the known-key check, which otherwise uses defaults.
+	accepts func(key string) bool
+	// unknownKey builds the error for a rejected key; nil means a bare ValidationError.
+	unknownKey func(key string) error
+	attrsOf    func(*R) map[string]string
+	setAttrs   func(*R, map[string]string)
 	// validate rejects a bad value for a known key before anything is stored.
 	validate func(key, value string) error
 	// afterChange runs once the changed keys are persisted; its error fails the call.
@@ -57,29 +61,36 @@ func (r attrResource[R]) load() (*R, error) {
 
 // modifyResourceAttributes validates and merges submitted attributes, persisting only
 // on change. rawCount is pre-nil-filter count, used to distinguish "nothing sent"
-// from "everything sent was invalid".
-func modifyResourceAttributes[R any](res attrResource[R], pairs []attrPair, rawCount int) ([]attrPair, error) {
+// from "everything sent was invalid". It returns the submitted pairs and the full merged set.
+func modifyResourceAttributes[R any](res attrResource[R], pairs []attrPair, rawCount int) (submitted, full []attrPair, err error) {
 	if res.arn == "" {
-		return nil, errors.New(awserrors.ErrorMissingParameter)
+		return nil, nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 	rec, err := res.load()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	known := res.defaults(rec)
+	accepts := res.accepts
+	if accepts == nil {
+		known := res.defaults(rec)
+		accepts = func(k string) bool { _, ok := known[k]; return ok }
+	}
 	attrs := res.attrsOf(rec)
-	submitted := make([]attrPair, 0, len(pairs))
+	submitted = make([]attrPair, 0, len(pairs))
 	var changed []string
 	for _, p := range pairs {
-		if _, ok := known[p.Key]; !ok {
+		if !accepts(p.Key) {
 			slog.Warn(res.opName+": rejecting unknown attribute key", "arn", res.arn, "key", p.Key)
-			return nil, errors.New(awserrors.ErrorValidationError)
+			if res.unknownKey != nil {
+				return nil, nil, res.unknownKey(p.Key)
+			}
+			return nil, nil, errors.New(awserrors.ErrorValidationError)
 		}
 		if res.validate != nil {
 			if err := res.validate(p.Key, p.Value); err != nil {
 				slog.Warn(res.opName+": rejecting attribute value", "arn", res.arn, "key", p.Key)
-				return nil, err
+				return nil, nil, err
 			}
 		}
 	}
@@ -102,7 +113,7 @@ func modifyResourceAttributes[R any](res attrResource[R], pairs []attrPair, rawC
 	// landed write.
 	if rawCount > 0 && len(submitted) == 0 {
 		slog.Warn(res.opName+": all submitted attributes were invalid", "arn", res.arn, "submitted_count", rawCount)
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
 	// Skip the NATS/KV write when nothing changed. Terraform re-applies the same
@@ -112,16 +123,16 @@ func modifyResourceAttributes[R any](res attrResource[R], pairs []attrPair, rawC
 		res.setAttrs(rec, attrs)
 		if err := res.save(rec); err != nil {
 			slog.Error(res.opName+": failed to persist", "arn", res.arn, "err", err)
-			return nil, errors.New(awserrors.ErrorServerInternal)
+			return nil, nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		if res.afterChange != nil {
 			if err := res.afterChange(rec, changed); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 	}
 
-	return submitted, nil
+	return submitted, mergedAttributes(res, rec), nil
 }
 
 // describeResourceAttributes returns the record's attributes merged over the
@@ -136,6 +147,11 @@ func describeResourceAttributes[R any](res attrResource[R]) ([]attrPair, error) 
 		return nil, err
 	}
 
+	return mergedAttributes(res, rec), nil
+}
+
+// mergedAttributes returns rec's stored attributes over its defaults, sorted by key.
+func mergedAttributes[R any](res attrResource[R], rec *R) []attrPair {
 	merged := res.defaults(rec)
 	maps.Copy(merged, res.attrsOf(rec))
 
@@ -144,7 +160,7 @@ func describeResourceAttributes[R any](res attrResource[R]) ([]attrPair, error) 
 	for _, k := range keys {
 		out = append(out, attrPair{Key: k, Value: merged[k]})
 	}
-	return out, nil
+	return out
 }
 
 // sdkAttrsIn converts an SDK attribute slice into internal pairs, dropping nil
@@ -196,9 +212,15 @@ func (s *ELBv2ServiceImpl) tgAttrResource(ctx context.Context, arn, accountID, o
 			return err
 		},
 		accountIDOf: func(r *TargetGroupRecord) string { return r.AccountID },
-		defaults:    func(*TargetGroupRecord) map[string]string { return DefaultTargetGroupAttributes() },
-		attrsOf:     func(r *TargetGroupRecord) map[string]string { return r.Attributes },
-		setAttrs:    func(r *TargetGroupRecord, m map[string]string) { r.Attributes = m },
+		defaults: func(r *TargetGroupRecord) map[string]string {
+			return DefaultTargetGroupAttributes(r.Protocol, r.TargetType)
+		},
+		accepts: func(key string) bool { return targetGroupAttributeKeys[key] },
+		unknownKey: func(key string) error {
+			return awserrors.Errorf(awserrors.ErrorValidationError, "Target group attribute key '%s' is not recognized", key)
+		},
+		attrsOf:  func(r *TargetGroupRecord) map[string]string { return r.Attributes },
+		setAttrs: func(r *TargetGroupRecord, m map[string]string) { r.Attributes = m },
 	}
 }
 
@@ -299,11 +321,11 @@ func (s *ELBv2ServiceImpl) ModifyTargetGroupAttributes(ctx context.Context, inpu
 	const op = "ModifyTargetGroupAttributes"
 	arn := aws.StringValue(input.TargetGroupArn)
 	pairs, raw := sdkAttrsIn(input.Attributes, tgAttrKeyVal, arn, op)
-	submitted, err := modifyResourceAttributes(s.tgAttrResource(ctx, arn, accountID, op), pairs, raw)
+	_, full, err := modifyResourceAttributes(s.tgAttrResource(ctx, arn, accountID, op), pairs, raw)
 	if err != nil {
 		return nil, err
 	}
-	return &elbv2.ModifyTargetGroupAttributesOutput{Attributes: sdkAttrsOut(submitted, mkTGAttr)}, nil
+	return &elbv2.ModifyTargetGroupAttributesOutput{Attributes: sdkAttrsOut(full, mkTGAttr)}, nil
 }
 
 func (s *ELBv2ServiceImpl) DescribeTargetGroupAttributes(ctx context.Context, input *elbv2.DescribeTargetGroupAttributesInput, accountID string) (*elbv2.DescribeTargetGroupAttributesOutput, error) {
@@ -326,7 +348,7 @@ func (s *ELBv2ServiceImpl) ModifyLoadBalancerAttributes(ctx context.Context, inp
 	const op = "ModifyLoadBalancerAttributes"
 	arn := aws.StringValue(input.LoadBalancerArn)
 	pairs, raw := sdkAttrsIn(input.Attributes, lbAttrKeyVal, arn, op)
-	submitted, err := modifyResourceAttributes(s.lbAttrResource(ctx, arn, accountID, op), pairs, raw)
+	submitted, _, err := modifyResourceAttributes(s.lbAttrResource(ctx, arn, accountID, op), pairs, raw)
 	if err != nil {
 		return nil, err
 	}

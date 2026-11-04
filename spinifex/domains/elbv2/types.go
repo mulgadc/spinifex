@@ -342,9 +342,18 @@ func DefaultLoadBalancerAttributes(lbType string) map[string]string {
 	}
 }
 
-// DefaultTargetGroupAttributes returns the default attribute set for target groups.
-func DefaultTargetGroupAttributes() map[string]string {
-	return maps.Clone(targetGroupAttributeDefaults)
+// DefaultTargetGroupAttributes returns the attributes AWS reports for a new
+// target group of this protocol and target type. HTTPS uses the HTTP set and
+// every other protocol the TCP set.
+func DefaultTargetGroupAttributes(protocol, targetType string) map[string]string {
+	if protocol == ProtocolHTTP || protocol == ProtocolHTTPS {
+		return maps.Clone(httpTargetGroupAttributeDefaults)
+	}
+	attrs := maps.Clone(tcpTargetGroupAttributeDefaults)
+	if targetType == TargetTypeInstance {
+		attrs["preserve_client_ip.enabled"] = "true"
+	}
+	return attrs
 }
 
 // Default attribute sets are package-level vars; callers receive a clone so
@@ -395,32 +404,56 @@ var (
 		"secondary_ips.auto_assigned.per_subnet": "0",
 	}
 
-	targetGroupAttributeDefaults = map[string]string{
+	// HTTP and HTTPS target groups, as AWS reports them for instance and ip targets.
+	httpTargetGroupAttributeDefaults = map[string]string{
 		"deregistration_delay.timeout_seconds":                                           "300",
-		"stickiness.enabled":                                                             "false",
-		"stickiness.type":                                                                "lb_cookie",
-		"stickiness.lb_cookie.duration_seconds":                                          "86400",
-		"load_balancing.cross_zone.enabled":                                              "use_load_balancer_configuration",
-		"load_balancing.algorithm.type":                                                  "round_robin",
-		"slow_start.duration_seconds":                                                    "0",
 		"load_balancing.algorithm.anomaly_mitigation":                                    "off",
+		"load_balancing.algorithm.type":                                                  "round_robin",
+		"load_balancing.cross_zone.enabled":                                              "use_load_balancer_configuration",
+		"slow_start.duration_seconds":                                                    "0",
 		"stickiness.app_cookie.cookie_name":                                              "",
 		"stickiness.app_cookie.duration_seconds":                                         "86400",
-		"lambda.multi_value_headers.enabled":                                             "false",
+		"stickiness.enabled":                                                             "false",
+		"stickiness.lb_cookie.duration_seconds":                                          "86400",
+		"stickiness.type":                                                                "lb_cookie",
 		"target_group_health.dns_failover.minimum_healthy_targets.count":                 "1",
 		"target_group_health.dns_failover.minimum_healthy_targets.percentage":            "off",
 		"target_group_health.unhealthy_state_routing.minimum_healthy_targets.count":      "1",
 		"target_group_health.unhealthy_state_routing.minimum_healthy_targets.percentage": "off",
-		// NLB target-group defaults. The AWS Load Balancer Controller always
-		// writes these on NLB target groups (e.g. ingress-nginx); without them as
-		// known keys the modify is rejected and LBC loops on the Service forever.
-		"proxy_protocol_v2.enabled":                                    "false",
-		"deregistration_delay.connection_termination.enabled":          "false",
-		"preserve_client_ip.enabled":                                   "false",
-		"target_health_state.unhealthy.connection_termination.enabled": "true",
-		"target_health_state.unhealthy.draining_interval_seconds":      "0",
-		// GWLB-only; AWS requires both to hold the same value.
-		"target_failover.on_deregistration": "no_rebalance",
-		"target_failover.on_unhealthy":      "no_rebalance",
 	}
+
+	// TCP-family target groups; preserve_client_ip.enabled is set by target type.
+	tcpTargetGroupAttributeDefaults = map[string]string{
+		"deregistration_delay.connection_termination.enabled":                            "false",
+		"deregistration_delay.timeout_seconds":                                           "300",
+		"load_balancing.cross_zone.enabled":                                              "use_load_balancer_configuration",
+		"preserve_client_ip.enabled":                                                     "false",
+		"proxy_protocol_v2.enabled":                                                      "false",
+		"stickiness.enabled":                                                             "false",
+		"stickiness.type":                                                                "source_ip",
+		"target_group_health.dns_failover.minimum_healthy_targets.count":                 "1",
+		"target_group_health.dns_failover.minimum_healthy_targets.percentage":            "off",
+		"target_group_health.unhealthy_state_routing.minimum_healthy_targets.count":      "1",
+		"target_group_health.unhealthy_state_routing.minimum_healthy_targets.percentage": "off",
+		"target_health_state.unhealthy.connection_termination.enabled":                   "true",
+		"target_health_state.unhealthy.draining_interval_seconds":                        "0",
+	}
+
+	// Keys ModifyTargetGroupAttributes accepts on any target group. The load
+	// balancer controller writes the NLB keys on every NLB group, so this is the
+	// union of the protocol sets plus the lambda and GWLB keys.
+	targetGroupAttributeKeys = func() map[string]bool {
+		keys := map[string]bool{
+			"lambda.multi_value_headers.enabled": true,
+			"target_failover.on_deregistration":  true,
+			"target_failover.on_unhealthy":       true,
+		}
+		for k := range httpTargetGroupAttributeDefaults {
+			keys[k] = true
+		}
+		for k := range tcpTargetGroupAttributeDefaults {
+			keys[k] = true
+		}
+		return keys
+	}()
 )

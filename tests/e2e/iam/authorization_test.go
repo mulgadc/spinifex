@@ -271,6 +271,38 @@ func runIAMAuthorization(t *testing.T, fix *Fixture) {
 		})
 	})
 
+	t.Run("RenamingAUserNeedsUpdateUserOnBothNames", func(t *testing.T) {
+		source, target := uniqueAuthzName("rename-src"), uniqueAuthzName("rename-dst")
+		_, err := fix.AWS.IAM.CreateUser(&iam.CreateUserInput{UserName: aws.String(source)})
+		require.NoError(t, err, "create-user %s", source)
+		t.Cleanup(func() { deleteAuthzUserBestEffort(t, fix, source) })
+		t.Cleanup(func() { deleteAuthzUserBestEffort(t, fix, target) })
+
+		grant := func(names ...string) authzStatement {
+			resources := make([]string, 0, len(names))
+			for _, name := range names {
+				resources = append(resources, "arn:aws:iam::"+account+":user/"+name)
+			}
+			return authzStatement{Effect: "Allow", Action: []string{"iam:UpdateUser"}, Resource: resources}
+		}
+		rename := func(principal *authzPrincipal) error {
+			_, err := principal.Client.IAM.UpdateUser(&iam.UpdateUserInput{
+				UserName: aws.String(source), NewUserName: aws.String(target),
+			})
+			return err
+		}
+
+		sourceOnly := newAuthzPrincipal(t, fix, "rename-source-only", grant(source))
+		harness.ExpectError(t, "AccessDenied", func() error { return rename(sourceOnly) })
+		targetOnly := newAuthzPrincipal(t, fix, "rename-target-only", grant(target))
+		harness.ExpectError(t, "AccessDenied", func() error { return rename(targetOnly) })
+
+		both := newAuthzPrincipal(t, fix, "rename-both", grant(source, target))
+		require.NoError(t, rename(both), "update-user %s -> %s must be allowed by a grant on both names", source, target)
+		_, err = fix.AWS.IAM.GetUser(&iam.GetUserInput{UserName: aws.String(target)})
+		require.NoError(t, err, "get-user %s after rename", target)
+	})
+
 	t.Run("ASourceIPConditionSeesTheRealClientAddress", func(t *testing.T) {
 		here := observedClientCIDR(t, fix.Env)
 

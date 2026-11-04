@@ -181,6 +181,10 @@ func (s *StateStore) ListNonTerminatedInstances() ([]*vm.VM, error) {
 	return out, nil
 }
 
+// ListTerminatedInPrimary answers none: the mock keeps no terminated record in
+// its primary sets.
+func (s *StateStore) ListTerminatedInPrimary() ([]*vm.VM, error) { return nil, nil }
+
 func (s *StateStore) ListStoppedInstances() ([]*vm.VM, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -107,6 +107,7 @@ type StoppedInstanceStore interface {
 	LoadStoppedInstance(instanceID string) (*vm.VM, error)
 	ListStoppedInstances() ([]*vm.VM, error)
 	ListNonTerminatedInstances() ([]*vm.VM, error)
+	ListTerminatedInPrimary() ([]*vm.VM, error)
 	ListTerminatedInstances() ([]*vm.VM, error)
 	WriteStoppedInstance(instanceID string, instance *vm.VM) error
 	DeleteStoppedInstance(instanceID string) error

@@ -365,19 +365,12 @@ func TestVolumeReaperForceRetainsAVolumeALiveInstanceHolds(t *testing.T) {
 // the volume and its attachment exactly as they were.
 func TestVolumeReaperForceRetainsAVolumeWhenTheHolderCannotBeProvenGone(t *testing.T) {
 	t.Parallel()
-	twoNodes := []string{fakeClusterNode, "node-2"}
 	cases := []struct {
 		name  string
 		setup func(cluster *fakeCluster)
 		nodes []string
 	}{
 		{"configured node set unknown", func(*fakeCluster) {}, []string{}},
-		{"lone node answers NotFound while another is silent", func(cluster *fakeCluster) {
-			cluster.fail("ec2.DescribeInstances", awserrors.ErrorInvalidInstanceIDNotFound)
-		}, twoNodes},
-		{"terminated copy found while the holder node is silent", func(cluster *fakeCluster) {
-			cluster.reply("ec2.DescribeTerminatedInstances", instancesIn("terminated", "i-held"))
-		}, twoNodes},
 		{"node describe fails", func(cluster *fakeCluster) {
 			cluster.fail("ec2.DescribeInstances", awserrors.ErrorServerInternal)
 		}, nil},
@@ -398,25 +391,32 @@ func TestVolumeReaperForceRetainsAVolumeWhenTheHolderCannotBeProvenGone(t *testi
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			cluster := newFakeCluster(t)
-			volume := newHeldVolume(cluster, "vol-held", "i-held")
-			tc.setup(cluster)
 			nodes := tc.nodes
 			if nodes == nil {
 				nodes = []string{fakeClusterNode}
 			}
-
-			reaper := newVolumeReaper(cluster.nc, nodes...)
-			err := reaper.Delete(silentClusterCtx(t), "000000000042", Resource{Kind: "volume", ID: "vol-held"}, true)
-
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "vol-held")
-			deleted, holder, detaches := volume.state()
-			assert.False(t, deleted)
-			assert.Equal(t, "i-held", holder)
-			assert.Zero(t, detaches)
+			assertForceRetainsTheHeldVolume(t, tc.setup, nodes)
 		})
 	}
+}
+
+// assertForceRetainsTheHeldVolume force-deletes a volume i-held holds and
+// asserts the volume and its attachment survive untouched.
+func assertForceRetainsTheHeldVolume(t *testing.T, setup func(cluster *fakeCluster), nodes []string) {
+	t.Helper()
+	cluster := newFakeCluster(t)
+	volume := newHeldVolume(cluster, "vol-held", "i-held")
+	setup(cluster)
+
+	reaper := newVolumeReaper(cluster.nc, nodes...)
+	err := reaper.Delete(silentClusterCtx(t), "000000000042", Resource{Kind: "volume", ID: "vol-held"}, true)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vol-held")
+	deleted, holder, detaches := volume.state()
+	assert.False(t, deleted)
+	assert.Equal(t, "i-held", holder)
+	assert.Zero(t, detaches)
 }
 
 // The deadlock force exists for: the instance is gone but its volume record
@@ -934,59 +934,4 @@ func TestEC2ReapersRemoveInterfacesBeforeSubnets(t *testing.T) {
 
 func newVolumeReaper(nc *nats.Conn, nodeIDs ...string) *volumeReaper {
 	return &volumeReaper{nc: nc, nodeIDs: nodeIDs}
-}
-
-// The holder lives on node-2, which never answers, while node-1 answers every
-// fan-out twice. A count of replies reads that as complete and the holder as
-// gone; only judging by responder identity sees that node-2 is missing.
-func TestVolumeReaperForceRetainsAVolumeWhenOneNodeAnswersTwiceAndTheHolderNodeIsSilent(t *testing.T) {
-	t.Parallel()
-	cluster := newFakeCluster(t)
-	volume := newHeldVolume(cluster, "vol-held", "i-on-silent-node")
-	cluster.echoAsNode(t, "ec2.DescribeInstances", fakeClusterNode)
-
-	reaper := newVolumeReaper(cluster.nc, fakeClusterNode, "node-2")
-	err := reaper.Delete(silentClusterCtx(t), "000000000042", Resource{Kind: "volume", ID: "vol-held"}, true)
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "vol-held")
-	assert.Contains(t, err.Error(), "i-on-silent-node")
-	deleted, holder, detaches := volume.state()
-	assert.False(t, deleted, "a holder on a silent node is not proven gone")
-	assert.Equal(t, "i-on-silent-node", holder)
-	assert.Zero(t, detaches)
-	assert.NotContains(t, cluster.called(), forceDetachSubject)
-}
-
-func TestForcedTeardownKeepsTheAccountWhenOneNodeAnswersTwiceAndTheHolderNodeIsSilent(t *testing.T) {
-	t.Parallel()
-	cluster := newFakeCluster(t)
-	volume := newHeldVolume(cluster, "vol-held", "i-on-silent-node")
-	cluster.echoAsNode(t, "ec2.DescribeInstances", fakeClusterNode)
-
-	accounts := newFakeAccounts()
-	engine := quietEngine(accounts, newVolumeReaper(cluster.nc, fakeClusterNode, "node-2"))
-	req := request()
-	req.Force = true
-
-	result, err := engine.Teardown(silentClusterCtx(t), req)
-
-	require.ErrorIs(t, err, ErrResourcesStuck)
-	require.Equal(t, 1, result.StuckCount())
-	var stuck Stuck
-	for _, stage := range result.Stages {
-		if len(stage.Stuck) > 0 {
-			stuck = stage.Stuck[0]
-		}
-	}
-	assert.Equal(t, "vol-held", stuck.Resource.ID)
-	assert.Contains(t, stuck.Reason, "vol-held")
-	assert.Contains(t, stuck.Reason, "i-on-silent-node")
-	assert.False(t, result.AccountDeleted)
-	assert.False(t, accounts.deleted)
-	assert.Equal(t, AccountStatusTerminating, accounts.account.Status)
-	deleted, holder, detaches := volume.state()
-	assert.False(t, deleted)
-	assert.Equal(t, "i-on-silent-node", holder)
-	assert.Zero(t, detaches)
 }

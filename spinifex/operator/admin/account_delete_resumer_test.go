@@ -83,6 +83,8 @@ func TestDeletionResumerFinishesAnAbandonedJobWithoutARequest(t *testing.T) {
 	storeDeletionJob(t, gw, abandonedJob(account.AccountID, "tenant@example.com"))
 
 	require.Equal(t, 1, gw.resumeDeletions(t.Context(), time.Now().UTC()))
+	// Parallel only once the teardown is running, so its drain poll overlaps the serial tests.
+	t.Parallel()
 
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted
@@ -113,6 +115,8 @@ func TestConcurrentResumersProduceOneTakeover(t *testing.T) {
 	wg.Wait()
 
 	assert.Equal(t, int32(1), resumed.Load())
+	// Parallel only once the teardown is running, so its drain poll overlaps the serial tests.
+	t.Parallel()
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted
 	}, 30*time.Second, 100*time.Millisecond)

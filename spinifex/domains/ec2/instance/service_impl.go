@@ -1,6 +1,7 @@
 package instance
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -3904,4 +3905,58 @@ func (s *InstanceServiceImpl) AttachVolumeToStopped(ctx context.Context, input *
 		Device:     aws.String(device),
 		State:      aws.String(ec2.VolumeAttachmentStateAttaching),
 	}, nil
+}
+
+// AccountTeardownOutstanding reports instances not terminated with every dependent done.
+// Terminated records expire after 1h, so it is never sole evidence an account is clear.
+// An unreadable record or one with no instance ID fails the read.
+func (s *InstanceServiceImpl) AccountTeardownOutstanding(accountID string) ([]OutstandingInstance, error) {
+	if s.stoppedStore == nil {
+		return nil, errors.New("instance record store not configured")
+	}
+	live, err := s.stoppedStore.ListNonTerminatedInstances()
+	if err != nil {
+		return nil, fmt.Errorf("list non-terminated instances: %w", err)
+	}
+	primaryTerminated, err := s.stoppedStore.ListTerminatedInPrimary()
+	if err != nil {
+		return nil, fmt.Errorf("list terminated instances in primary store: %w", err)
+	}
+	terminated, err := s.stoppedStore.ListTerminatedInstances()
+	if err != nil {
+		return nil, fmt.Errorf("list terminated instances: %w", err)
+	}
+
+	// An instance can sit in both stores while a terminate is mid-flight. The
+	// non-terminated record is listed first and wins, so it is never reported
+	// as torn down on the strength of the terminated copy.
+	byID := map[string]OutstandingInstance{}
+	for _, store := range []struct {
+		name    string
+		records []*vm.VM
+	}{{"non-terminated", live}, {"primary terminated", primaryTerminated}, {"terminated", terminated}} {
+		for _, v := range store.records {
+			if v == nil || v.ID == "" {
+				return nil, fmt.Errorf("%s instance store holds a record with no instance ID", store.name)
+			}
+			if !IsInstanceVisible(accountID, v.AccountID) {
+				continue
+			}
+			if v.Status == vm.StateTerminated && v.TeardownComplete() {
+				continue
+			}
+			if _, seen := byID[v.ID]; seen {
+				continue
+			}
+			byID[v.ID] = OutstandingInstance{
+				InstanceID: v.ID,
+				State:      string(v.Status),
+				Teardown:   maps.Clone(v.Teardown),
+			}
+		}
+	}
+
+	return slices.SortedFunc(maps.Values(byID), func(a, b OutstandingInstance) int {
+		return cmp.Compare(a.InstanceID, b.InstanceID)
+	}), nil
 }

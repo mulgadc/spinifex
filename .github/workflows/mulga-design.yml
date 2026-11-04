@@ -29,6 +29,4 @@ jobs:
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         working-directory: .github/scripts
-        run: |
-          python3 -m unittest -q test_mulga_design_check
-          python3 mulga_design_check.py
+        run: bash mulga-design-check.sh

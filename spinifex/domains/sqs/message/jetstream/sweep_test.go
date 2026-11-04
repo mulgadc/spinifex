@@ -56,6 +56,7 @@ func requireState(t *testing.T, s message.Store, m swept, want bool) {
 }
 
 func TestSweepDeletesOnlyTombstonedBodies(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	ctx := context.Background()
 	q, neighbour, other := ns(1, 1, "q"), ns(1, 0, "n"), ns(2, 1, "q")
@@ -97,6 +98,7 @@ func (failStateDelete) DeleteState(context.Context, message.Namespace, message.P
 }
 
 func TestSweepCrashBetweenBodyAndStateDelete(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	ctx := context.Background()
 	m := withState(t, s, ns(0, 1, "q"), "deleted")

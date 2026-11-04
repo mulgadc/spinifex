@@ -84,7 +84,7 @@ jobs:
 
       - name: Resolve sibling release tags from go.mod
         id: siblings
-        run: bash spinifex/.github/resolve-release-sibling-refs.sh spinifex/go.mod
+        run: bash spinifex/.github/scripts/resolve-release-sibling-refs.sh spinifex/go.mod
 
       - name: Checkout Viperblock
         uses: actions/checkout@v7.0.1

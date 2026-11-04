@@ -102,6 +102,7 @@ func (r *apiRecorder) drain(t *testing.T, client *nats.Conn) []string {
 // to have returned once its test's cleanups finish, including one left
 // blocked on a sentinel nobody drained.
 func TestRecorderStopsWithItsTest(t *testing.T) {
+	// Not parallel: its final checks need both subtests to have finished first.
 	srv, js := startServer(t, t.TempDir())
 	var idle, stuck *apiRecorder
 	t.Run("drained", func(t *testing.T) {
@@ -130,6 +131,7 @@ func TestRecorderStopsWithItsTest(t *testing.T) {
 // message get, which only the stream leader answers, never a direct get,
 // which a follower may answer from state it has not yet applied.
 func TestGetStateIsLeaderServed(t *testing.T) {
+	t.Parallel()
 	srv, js := startServer(t, t.TempDir())
 	s, err := sqsjs.New(context.Background(), js, testConfig)
 	require.NoError(t, err)
@@ -163,6 +165,7 @@ func TestGetStateIsLeaderServed(t *testing.T) {
 // TestGetStateSemantics covers each way a record can be absent, and that a
 // present one carries the value and revision its last write returned.
 func TestGetStateSemantics(t *testing.T) {
+	t.Parallel()
 	s, js := newStore(t)
 	ctx := context.Background()
 	q := ns(1, 0, "sem")
@@ -207,6 +210,7 @@ func TestGetStateSemantics(t *testing.T) {
 }
 
 func TestGetStateErrors(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	q := ns(0, 0, "errs")
 	pos := appendTo(t, s, q, "b")
@@ -230,6 +234,7 @@ func TestGetStateErrors(t *testing.T) {
 // TestGetStateHonoursAPIPrefix reads state through a JetStream context
 // built for a domain and for an explicit prefix.
 func TestGetStateHonoursAPIPrefix(t *testing.T) {
+	t.Parallel()
 	srv, err := server.NewServer(&server.Options{
 		Host: "127.0.0.1", Port: -1, JetStream: true, JetStreamDomain: "hub",
 		StoreDir: t.TempDir(), NoLog: true, NoSigs: true,

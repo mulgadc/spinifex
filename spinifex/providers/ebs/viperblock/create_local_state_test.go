@@ -18,6 +18,8 @@ import (
 // local copy over the backend, so a leftover here answers describe as if the
 // volume still existed after another node deleted it.
 func TestProviderHandlers_CreateVolume_LeavesNoLocalState(t *testing.T) {
+	t.Parallel()
+
 	fixture := testpredastore.Start(t)
 	_, natsURL := setupEmbeddedNATS(t)
 

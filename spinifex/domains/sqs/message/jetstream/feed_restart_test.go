@@ -288,6 +288,7 @@ func testR3FeedOpenAcrossRestart(t *testing.T) {
 // TestFeedProbeStallSnapshot drives the probe's stall path: the snapshot runs
 // once, sees live elapsed time, and finishes before expect returns.
 func TestFeedProbeStallSnapshot(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	f, err := s.Feed(context.Background(), 0, 0)
 	require.NoError(t, err)

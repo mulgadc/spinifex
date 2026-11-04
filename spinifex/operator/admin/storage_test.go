@@ -16,6 +16,7 @@ import (
 )
 
 func TestGetStorageStatus_Success(t *testing.T) {
+	t.Parallel()
 	_, nc := startEmbeddedNATS(t)
 
 	// Mock daemon returning storage config
@@ -98,8 +99,9 @@ func TestApplyMetaStatus_NoLeaderStaysHealthy(t *testing.T) {
 }
 
 func TestQueryMetaNodeStatus_Unreachable(t *testing.T) {
+	t.Parallel()
 	out := &MetaNodeStatus{ID: 1, Host: "127.0.0.1", Port: 1} // nothing listens here
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	queryMetaNodeStatus(ctx, out, nil, "127.0.0.1", 1)
 

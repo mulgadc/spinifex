@@ -15,6 +15,7 @@ import (
 // TestKVRemovedMatchesKVGet pins the markers nats.go's KV Get treats as an
 // absent key, including server-written TTL and purge markers.
 func TestKVRemovedMatchesKVGet(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		key     string
@@ -63,6 +64,7 @@ func startJetStream(t *testing.T) jsapi.JetStream {
 // captured before the pass. A later delete still removes a key: with
 // history 1 it also removes the key's earlier record.
 func TestLeaderStateKeysStopsAtTheBound(t *testing.T) {
+	t.Parallel()
 	js := startJetStream(t)
 	ctx := context.Background()
 	kv, err := js.CreateKeyValue(ctx, jsapi.KeyValueConfig{Bucket: "b", History: 1})
@@ -120,6 +122,7 @@ func (c *cancelOnRead) Options() jsapi.JetStreamOptions {
 // TestLeaderStateKeysStopsWhenCancelled returns the context's error from a
 // pass cancelled between records rather than a partial key set.
 func TestLeaderStateKeysStopsWhenCancelled(t *testing.T) {
+	t.Parallel()
 	js := startJetStream(t)
 	kv, err := js.CreateKeyValue(context.Background(), jsapi.KeyValueConfig{Bucket: "c", History: 1})
 	require.NoError(t, err)

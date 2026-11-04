@@ -1,7 +1,13 @@
 import type { Vpc } from "@aws-sdk/client-ec2"
 import { useQuery } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
-import { Eye, Maximize2, SlidersHorizontal, Trash2 } from "lucide-react"
+import {
+  Eye,
+  Maximize2,
+  SlidersHorizontal,
+  Trash2,
+  Workflow,
+} from "lucide-react"
 import { useState } from "react"
 
 import {
@@ -13,6 +19,7 @@ import {
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
 import { Ec2Tags } from "@/components/resource-tags"
 import { StateBadge } from "@/components/state-badge"
+import { NetworkTopology } from "@/components/topology/network-topology"
 import { Button, buttonVariants } from "@/components/ui/button"
 import type { PanelTab } from "@/lib/panel-search"
 import { getNameTag } from "@/lib/utils"
@@ -157,6 +164,12 @@ export function VpcDetails({
           label: "Overview",
           icon: Eye,
           content: <Overview vpc={vpc} />,
+        },
+        {
+          id: "topology",
+          label: "Topology",
+          icon: Workflow,
+          content: <NetworkTopology focus={{ kind: "vpc", id }} vpc={vpc} />,
         },
         {
           id: "settings",

@@ -1,14 +1,13 @@
 import type { RouteTable, Subnet } from "@aws-sdk/client-ec2"
 
-// A subnet is public when the table it routes by, its explicit association or
-// else its VPC's main table, sends some destination to an internet gateway.
-export function subnetIsPublic(
+// The table a subnet routes by: its explicit association, else its VPC's main.
+export function routeTableFor(
   subnet: Subnet,
   routeTables: readonly RouteTable[],
-): boolean {
+): RouteTable | undefined {
   const { SubnetId: subnetId, VpcId: vpcId } = subnet
 
-  const table =
+  return (
     (subnetId === undefined
       ? undefined
       : routeTables.find((rt) =>
@@ -17,6 +16,18 @@ export function subnetIsPublic(
     routeTables.find(
       (rt) => rt.VpcId === vpcId && rt.Associations?.some((a) => a.Main),
     )
+  )
+}
 
-  return table?.Routes?.some((r) => r.GatewayId?.startsWith("igw-")) ?? false
+// A subnet is public when the table it routes by sends some destination to an
+// internet gateway.
+export function subnetIsPublic(
+  subnet: Subnet,
+  routeTables: readonly RouteTable[],
+): boolean {
+  return (
+    routeTableFor(subnet, routeTables)?.Routes?.some((r) =>
+      r.GatewayId?.startsWith("igw-"),
+    ) ?? false
+  )
 }

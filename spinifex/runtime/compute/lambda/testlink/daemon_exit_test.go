@@ -18,7 +18,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/agents/lambda/agent"
 	"github.com/mulgadc/spinifex/spinifex/agents/lambda/hostlink"
 	"github.com/mulgadc/spinifex/spinifex/agents/lambda/runtimeapi"
+	"github.com/mulgadc/spinifex/spinifex/domains/lambda/execution"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 )
 
 // gateConn holds back the guest's writes until gate is closed, standing in
@@ -52,6 +54,7 @@ func (b firstRead) Read(p []byte) (int, error) {
 // bootstrap exit applied as the guest binary does, so only an exit before a
 // response is admitted cancels the invocation.
 type exitingGuest struct {
+	ts       *httptest.Server
 	base     string // host:port of the Runtime API
 	exit     func()
 	admitted chan struct{} // closed when a POST's body is first read
@@ -75,6 +78,7 @@ func startExitingGuest(t *testing.T, ctx context.Context, guest net.Conn, gate c
 		h.ServeHTTP(w, r)
 	}))
 	t.Cleanup(ts.Close)
+	g.ts = ts
 	g.base = ts.Listener.Addr().String()
 	actx, cancel := context.WithCancel(ctx)
 	g.exit = func() {
@@ -133,6 +137,8 @@ func (g *exitingGuest) startPartial(t *testing.T, id string) net.Conn {
 		t.Errorf("bootstrap dial: %v", err)
 		return nil
 	}
+	// Closed on every exit path, or the server's Close would wait on the handler.
+	t.Cleanup(func() { _ = conn.Close() })
 	req := "POST " + runtimeBase + "invocation/" + id + "/response HTTP/1.1\r\nHost: x\r\nContent-Length: 1000\r\n\r\npartial"
 	if _, err := conn.Write([]byte(req)); err != nil {
 		t.Errorf("bootstrap partial post: %v", err)
@@ -291,4 +297,128 @@ func TestSession_AllowedResponseAtCapIsDone(t *testing.T) {
 	require.NoError(t, e.err)
 	require.Len(t, e.reply.Payload, runtimeapi.MaxResponseBytes)
 	require.Equal(t, int32(1), accepts.Load())
+}
+
+// rawGuest reads the host's request over the authenticated connection and
+// returns what a hand-written result must echo.
+func rawGuest(t *testing.T, ctx context.Context, guest net.Conn) (*hostlink.TestStream, hostlink.Response) {
+	t.Helper()
+	stream := hostlink.NewTestStream(guest)
+	req, err := stream.Next(ctx)
+	require.NoError(t, err)
+	return stream, hostlink.Response{GrantID: req.GrantID, AttemptID: req.AttemptID, RequestID: req.RequestID, Payload: []byte(`{"ok":true}`)}
+}
+
+func TestSession_IncompleteResultFrameThenCloseIsUnknown(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var accepts atomic.Int32
+	guest, done := startSession(t, ctx, testRequest(20_000), countAccept(&accepts))
+	_, _ = rawGuest(t, ctx, guest)
+	// A length prefix promising 1000 bytes, then 40 of them, then the end.
+	partial := append([]byte{0, 0, 3, 232}, []byte(`{"type":"result","response":{"grant_id":"g1"`)...)
+	_, err := guest.Write(partial)
+	require.NoError(t, err)
+	require.NoError(t, guest.Close())
+
+	e := recv(t, done, "the host's outcome")
+	require.Error(t, e.err)
+	require.Empty(t, e.reply.Payload)
+	require.Zero(t, accepts.Load(), "a partial frame must not be accepted")
+}
+
+func TestSession_FullFrameReadBeforeCloseFollowsTheHostsOwnChecks(t *testing.T) {
+	cases := map[string]struct {
+		acceptErr error
+		wantErr   error
+		accepts   int32
+	}{
+		"accepted":         {nil, nil, 1},
+		"grant not current": {execution.ErrNotCurrent, ErrResultNotAccepted, 1},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			var accepts atomic.Int32
+			hostRead := make(chan struct{})
+			var once sync.Once
+			accept := func(context.Context, execution.Grant) error {
+				accepts.Add(1)
+				once.Do(func() { close(hostRead) })
+				return tc.acceptErr
+			}
+			guest, done := startSession(t, ctx, testRequest(20_000), accept)
+			stream, resp := rawGuest(t, ctx, guest)
+			require.NoError(t, stream.Complete(ctx, resp))
+			// Close only once the host holds the whole frame.
+			recv(t, hostRead, "the host to read the frame")
+			require.NoError(t, guest.Close())
+
+			e := recv(t, done, "the host's outcome")
+			if tc.wantErr == nil {
+				require.NoError(t, e.err)
+				require.Equal(t, OutcomeDone, e.reply.Outcome)
+				require.Equal(t, resp.Payload, e.reply.Payload)
+			} else {
+				require.ErrorIs(t, e.err, tc.wantErr)
+				require.Empty(t, e.reply.Payload)
+			}
+			require.Equal(t, tc.accepts, accepts.Load())
+		})
+	}
+}
+
+func TestSession_LateResultNeverReachesAccept(t *testing.T) {
+	var reads atomic.Int32
+	start := time.Now()
+	now = func() time.Time {
+		if reads.Add(1) == 1 {
+			return start
+		}
+		return start.Add(time.Hour)
+	}
+	t.Cleanup(func() { now = time.Now })
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var accepts atomic.Int32
+	guest, done := startSession(t, ctx, testRequest(10_000), countAccept(&accepts))
+	stream, resp := rawGuest(t, ctx, guest)
+	require.NoError(t, stream.Complete(ctx, resp))
+
+	e := recv(t, done, "the host's outcome")
+	require.ErrorIs(t, e.err, ErrFunctionTimeout)
+	require.Zero(t, accepts.Load())
+}
+
+// A body held open past the invocation deadline ends as unknown; once the
+// connection and servers close, nothing the test started is left running.
+func TestSession_SlowAdmittedBodyHeldPastTheDeadlineIsUnknown(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var accepts atomic.Int32
+	guest, done := startSession(t, ctx, testRequest(500), countAccept(&accepts))
+	var held net.Conn
+	g := startExitingGuest(t, ctx, guest, nil, func(g *exitingGuest) {
+		id, ok := g.next(t)
+		if !ok {
+			return
+		}
+		held = g.startPartial(t, id)
+	})
+
+	e := recv(t, done, "the host's outcome")
+	recv(t, g.bdone, "the bootstrap to return")
+	require.Error(t, e.err)
+	require.Empty(t, e.reply.Payload)
+	require.Zero(t, accepts.Load())
+	require.ErrorIs(t, recv(t, g.runErr, "agent.Run to return"), agent.ErrInvocationTimedOut)
+
+	if held != nil {
+		_ = held.Close()
+	}
+	g.ts.Close()
+	guest.Close()
+	http.DefaultTransport.(*http.Transport).CloseIdleConnections()
 }

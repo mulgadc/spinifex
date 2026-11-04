@@ -224,8 +224,7 @@ func TestBootstrapExitBeforeAdmissionCancels(t *testing.T) {
 	t.Run("before the flight exists", func(t *testing.T) {
 		s := New()
 		assert.True(t, s.BootstrapExited())
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
+		ctx := t.Context()
 		go func() { _, _ = s.Invoke(ctx, inv("req-1", time.Minute)) }()
 		require.Eventually(t, func() bool {
 			s.mu.Lock()

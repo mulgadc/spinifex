@@ -479,13 +479,23 @@ func TestSession_ExitBeforeTheFlightExistsIsUnknown(t *testing.T) {
 	acancel()
 
 	runErr := make(chan error, 1)
+	drained := make(chan struct{})
 	go func() {
-		runErr <- agent.Run(actx, hostlink.NewTestStream(guest), srv)
+		defer close(drained)
+		stream := hostlink.NewTestStream(guest)
+		runErr <- agent.Run(actx, stream, srv)
 		_ = guest.Close()
+		// Read to the terminal error so the stream's reader has exited.
+		for {
+			if _, err := stream.Next(context.Background()); err != nil && !errors.Is(err, hostlink.ErrShutdown) {
+				return
+			}
+		}
 	}()
 
 	e := recv(t, done, "the host's outcome")
 	require.Error(t, recv(t, runErr, "agent.Run to return"))
+	recv(t, drained, "the guest stream's reader to finish")
 	require.Error(t, e.err)
 	require.False(t, errors.Is(e.err, ErrResultNotAccepted))
 	require.Empty(t, e.reply.Payload)

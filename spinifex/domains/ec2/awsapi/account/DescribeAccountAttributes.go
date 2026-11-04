@@ -4,6 +4,7 @@
 package account
 
 import (
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -14,12 +15,7 @@ import (
 // but default-vpc is static; defaultVPCID looks that one up, is called only
 // when it is asked for, and returns "" for an account with no default VPC.
 func DescribeAccountAttributes(input *ec2.DescribeAccountAttributesInput, defaultVPCID func() (string, error)) (*ec2.DescribeAccountAttributesOutput, error) {
-	requestedAttrs := make(map[string]bool)
-	for _, name := range input.AttributeNames {
-		if name != nil {
-			requestedAttrs[*name] = true
-		}
-	}
+	requestedAttrs := identifiers.Set(input.AttributeNames)
 
 	returnAll := len(requestedAttrs) == 0
 

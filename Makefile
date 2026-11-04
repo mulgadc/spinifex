@@ -42,11 +42,15 @@ ifdef QUIET
   _COVQ  = 2>&1 | { grep -Ev '^\s*(ok|PASS|\?|=== RUN|--- PASS:)\s' | grep -v 'coverage: 0\.0%' || true; }; exit $${PIPESTATUS[0]}
   _RACEQ = 2>&1 | { grep -Ev '^\s*(ok|PASS|\?|=== RUN|--- PASS:)\s' || true; }; exit $${PIPESTATUS[0]}
   _SECQ  = >
+  _HDR   = :
+  _RUNSH = sh "$$t" >"$$log" 2>&1 || { echo "-- $$t"; cat "$$log"; exit 1; }
 else
   _Q     =
   _COVQ  =
   _RACEQ =
   _SECQ  = 2>&1 | tee
+  _HDR   = echo -e
+  _RUNSH = echo "-- $$t"; sh "$$t" || exit 1
 endif
 
 build: go_build build-installer build-lb-agent generate-aws-model-coverage
@@ -240,32 +244,29 @@ preflight:
 NODE_SCRIPTS := scripts/setup.sh scripts/setup-ovn.sh scripts/install-node.sh scripts/smoke-test.sh scripts/node-reset.sh scripts/uninstall-spx.sh scripts/lib/distro.sh scripts/lib/stage-sqs-store-microvm.sh
 
 test-build-scripts:
-	@echo -e "\n....Running build/scripts/**/*_test.sh...."
-	@for t in $$(find build/scripts -name '*_test.sh' | sort); do \
-		echo "-- $$t"; \
-		sh "$$t" || exit 1; \
+	@$(_HDR) "\n....Running build/scripts/**/*_test.sh...."
+	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; for t in $$(find build/scripts -name '*_test.sh' | sort); do \
+		$(_RUNSH); \
 	done
-	@echo -e "\n....Running scripts/*_test.sh, scripts/lib/*_test.sh and scripts/appliance/*_test.sh...."
-	@for t in $$( (find scripts -maxdepth 1 -name '*_test.sh'; find scripts/lib scripts/appliance -name '*_test.sh') | sort); do \
-		echo "-- $$t"; \
-		sh "$$t" || exit 1; \
+	@$(_HDR) "\n....Running scripts/*_test.sh, scripts/lib/*_test.sh and scripts/appliance/*_test.sh...."
+	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; for t in $$( (find scripts -maxdepth 1 -name '*_test.sh'; find scripts/lib scripts/appliance -name '*_test.sh') | sort); do \
+		$(_RUNSH); \
 	done
-	@echo -e "\n....Running scripts/terraform/latitude-spx/*_test.sh...."
-	@for t in $$(find scripts/terraform/latitude-spx -maxdepth 1 -name '*_test.sh' | sort); do \
-		echo "-- $$t"; \
-		sh "$$t" || exit 1; \
+	@$(_HDR) "\n....Running scripts/terraform/latitude-spx/*_test.sh...."
+	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; for t in $$(find scripts/terraform/latitude-spx -maxdepth 1 -name '*_test.sh' | sort); do \
+		$(_RUNSH); \
 	done
-	@echo -e "\n....Running .github/scripts/*_test.sh...."
-	@for t in $$(find .github/scripts -maxdepth 1 -name '*_test.sh' | sort); do \
-		echo "-- $$t"; \
-		sh "$$t" || exit 1; \
+	@$(_HDR) "\n....Running .github/scripts/*_test.sh...."
+	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; for t in $$(find .github/scripts -maxdepth 1 -name '*_test.sh' | sort); do \
+		$(_RUNSH); \
 	done
-	shellcheck -S warning .github/scripts/hypervisor-disk-preflight.sh .github/scripts/hypervisor-disk-preflight_test.sh \
-		.github/scripts/wait-for-memory.sh .github/scripts/wait-for-memory_test.sh
-	@echo -e "\n....Running shellcheck over build/scripts/**/*.sh + the node scripts...."
-	shellcheck -S warning $$(find build/scripts -name '*.sh' | sort) $(NODE_SCRIPTS)
-	shellcheck -S warning -x scripts/build-oracle-appliance.sh $$(find scripts/appliance -name '*.sh' | sort)
-	@echo "  test-build-scripts ok"
+	$(_Q)shellcheck -S warning .github/scripts/hypervisor-disk-preflight.sh \
+		.github/scripts/wait-for-memory.sh \
+		.github/scripts/mulga-design-check.sh
+	@$(_HDR) "\n....Running shellcheck over build/scripts/**/*.sh + the node scripts...."
+	$(_Q)shellcheck -S warning $$(find build/scripts -name '*.sh' | sort) $(NODE_SCRIPTS)
+	$(_Q)shellcheck -S warning -x scripts/build-oracle-appliance.sh $$(find scripts/appliance -name '*.sh' | sort)
+	@$(_HDR) "  test-build-scripts ok"
 
 # E2E harness unit tests. Build-tagged `e2e` so they're skipped by the
 # default `go test ./spinifex/...`. Runs with mocked AWS clients — no

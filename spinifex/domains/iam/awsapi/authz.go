@@ -167,6 +167,17 @@ func ResourceARNs(action, accountID string, input any, svc iamdomain.IAMService)
 	if resource == "" {
 		resource = anyResource
 	}
+	if action == "UpdateUser" && resource != anyResource {
+		newName, err := stringField(input, "NewUserName")
+		if err != nil {
+			return nil, err
+		}
+		if newName != "" {
+			// AWS also authorizes the rename target, at the user's current path.
+			prefix := resource[:strings.LastIndex(resource, "/")+1]
+			return []string{resource, prefix + newName}, nil
+		}
+	}
 	return []string{resource}, nil
 }
 

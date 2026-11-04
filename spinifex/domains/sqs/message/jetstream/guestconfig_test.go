@@ -64,6 +64,7 @@ func guestStore(t *testing.T) (message.Store, *server.Options) {
 // ADR-0011:S4: the guest's own config admits a full 1 MiB message with the
 // metadata a send writes, while the application limit stays at 1 MiB.
 func TestS4_GuestConfigAdmitsAFullMessage(t *testing.T) {
+	t.Parallel()
 	e := newSendEnv(t)
 	store, opts := guestStore(t)
 	assert.Equal(t, int32(2<<20), opts.MaxPayload)
@@ -92,6 +93,7 @@ func TestS4_GuestConfigAdmitsAFullMessage(t *testing.T) {
 // ADR-0011:S4: a full 1 MiB message whose size is shared between ten
 // attributes and the body still fits the guest's own payload limit.
 func TestS4_GuestConfigAdmitsAFullMessageWithAttributes(t *testing.T) {
+	t.Parallel()
 	e := newReceiveEnv(t)
 	store, _ := guestStore(t)
 	q := e.create(t, acct, "orders", nil)

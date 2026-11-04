@@ -11,7 +11,8 @@ import (
 )
 
 // ValidateModifyTargetGroupInput rejects a nil input with InvalidParameterValue and a missing
-// TargetGroupArn with MissingParameter.
+// TargetGroupArn with MissingParameter, and health check settings outside the model with
+// ValidationError.
 func ValidateModifyTargetGroupInput(input *elbv2.ModifyTargetGroupInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -19,7 +20,8 @@ func ValidateModifyTargetGroupInput(input *elbv2.ModifyTargetGroupInput) error {
 	if input.TargetGroupArn == nil || *input.TargetGroupArn == "" {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
-	return nil
+	return validateHealthCheck(input.HealthCheckProtocol, input.HealthCheckIntervalSeconds,
+		input.HealthCheckTimeoutSeconds, input.HealthyThresholdCount, input.UnhealthyThresholdCount)
 }
 
 // ModifyTargetGroup implements the ELBv2 ModifyTargetGroup action, updating health check settings

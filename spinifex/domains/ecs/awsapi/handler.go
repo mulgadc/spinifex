@@ -12,21 +12,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 	"reflect"
 	"sort"
 
 	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/nats-io/nats.go"
 )
 
 // TargetPrefix is the X-Amz-Target service prefix for ECS control-plane calls.
 const TargetPrefix = "AmazonEC2ContainerServiceV20141113"
-
-// JSONContentType is the AWS JSON 1.1 content type ECS clients expect.
-const JSONContentType = "application/x-amz-json-1.1"
 
 // PassRoleChecker enforces iam:PassRole on a role ARN a task definition names,
 // built from the caller's identity and threaded down from the gateway.
@@ -136,30 +133,15 @@ var RawJSONActions = map[string]bool{
 // SDK's jsonutil marshaler (epoch-second time encoding), matching ECR/ACM/EKS.
 func WriteJSONResponse(w http.ResponseWriter, obj any) {
 	body, err := jsonutil.BuildJSON(obj)
-	if err != nil {
-		slog.Error("ECS: failed to marshal response JSON", "err", err)
-		http.Error(w, awserrors.ErrorInternalError, http.StatusInternalServerError)
-		return
+	if err == nil {
+		body = addSDKGapFields(obj, body)
 	}
-	writeJSONBody(w, addSDKGapFields(obj, body))
+	envelope.WriteJSONBody(w, body, err)
 }
 
 // WriteRawJSONResponse serialises obj with encoding/json (RFC3339 times) for the
 // internal agent↔gateway actions in RawJSONActions.
 func WriteRawJSONResponse(w http.ResponseWriter, obj any) {
 	body, err := json.Marshal(obj)
-	if err != nil {
-		slog.Error("ECS: failed to marshal raw response JSON", "err", err)
-		http.Error(w, awserrors.ErrorInternalError, http.StatusInternalServerError)
-		return
-	}
-	writeJSONBody(w, body)
-}
-
-func writeJSONBody(w http.ResponseWriter, body []byte) {
-	w.Header().Set("Content-Type", JSONContentType)
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write(body); err != nil {
-		slog.Error("ECS: failed to write response", "err", err)
-	}
+	envelope.WriteJSONBody(w, body, err)
 }

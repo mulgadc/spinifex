@@ -61,16 +61,6 @@ func closedAdapterTestConn(t *testing.T) *nats.Conn {
 	return nc
 }
 
-// respondJSON subscribes subject on nc and answers every request with reply.
-func respondJSON(t *testing.T, nc *nats.Conn, subject string, reply any) {
-	t.Helper()
-	data, err := json.Marshal(reply)
-	require.NoError(t, err)
-	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) { _ = msg.Respond(data) })
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sub.Unsubscribe() })
-}
-
 // --- stateStoreAdapter ---
 
 func TestStateStoreAdapter_DelegatesToJetStream(t *testing.T) {
@@ -190,36 +180,45 @@ func TestBuildVMManagerDeps_BackingStoreReady(t *testing.T) {
 		"no predastore configured and JetStream answering is ready")
 }
 
+// Variable stores live in the instance domain's bucket, read through the
+// same object store, with the live copy under the persistent data directory.
+func TestBuildVMManagerDeps_UEFIVarStore(t *testing.T) {
+	objects := objectstore.NewMemoryObjectStore()
+	d := &Daemon{
+		config:          &config.Config{DataDir: "/srv/spinifex", Predastore: config.PredastoreConfig{Bucket: "spinifex-instances"}},
+		vmMgr:           vm.NewManager(),
+		instanceObjects: objects,
+	}
+	got := d.buildVMManagerDeps().UEFIVarStore
+	assert.Same(t, objects, got.Objects)
+	assert.Equal(t, "spinifex-instances", got.Bucket)
+	assert.Equal(t, "/srv/spinifex", got.DataDir)
+
+	d.config.DataDir = ""
+	assert.Equal(t, DefaultDataDir, d.buildVMManagerDeps().UEFIVarStore.DataDir)
+}
+
 // --- volumeMounterAdapter ---
 
-func TestVolumeMounterAdapter_Mount_ClosedConnIsNotRetryable(t *testing.T) {
-	adapter := newVolumeMounterAdapter(closedAdapterTestConn(t), "node-closed", nil)
+// A connection that is down refuses the publish before sending it, so restore
+// backs off and retries, and there is no export to tear down.
+func TestVolumeMounterAdapter_Mount_DisconnectedIsRetryable(t *testing.T) {
+	adapter := newNATSMounter(closedAdapterTestConn(t), "node-closed")
 	instance := &vm.VM{ID: "i-mount-closed"}
 	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-closed"}}
 
 	err := adapter.Mount(t.Context(), instance)
 	require.ErrorIs(t, err, nats.ErrConnectionClosed)
-	assert.NotErrorIs(t, err, vm.ErrMountRetryable,
-		"only a missing responder means viperblockd is still starting")
-}
-
-// recordingVolumeState records UpdateVolumeState calls and returns err.
-type recordingVolumeState struct {
-	err     error
-	updated []string
-}
-
-func (r *recordingVolumeState) UpdateVolumeState(_, volumeID, state, _, _ string) error {
-	r.updated = append(r.updated, volumeID+"="+state)
-	return r.err
+	require.ErrorIs(t, err, vm.ErrMountRetryable, "restore must back off until the connection is back")
+	assert.NotErrorIs(t, err, vm.ErrMountAmbiguous, "a request never sent left nothing to tear down")
+	require.ErrorIs(t, adapter.MountOne(t.Context(), testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-hot"}), vm.ErrMountRetryable)
 }
 
 func TestVolumeMounterAdapter_Unmount_Errors(t *testing.T) {
 	nc := connectAdapterTestNATS(t, sharedNATSURL)
 
-	t.Run("no responder fails the seal and leaves the volume", func(t *testing.T) {
-		volState := &recordingVolumeState{}
-		adapter := newVolumeMounterAdapter(nc, uniqueAdapterID("node-unmount"), volState)
+	t.Run("no responder fails the seal for every volume", func(t *testing.T) {
+		adapter := newNATSMounter(nc, uniqueAdapterID("node-unmount"))
 		instance := &vm.VM{ID: "i-unmount-none"}
 		instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-a"}, {Name: "vol-b"}}
 
@@ -227,87 +226,16 @@ func TestVolumeMounterAdapter_Unmount_Errors(t *testing.T) {
 		require.ErrorIs(t, err, nats.ErrNoResponders)
 		assert.Contains(t, err.Error(), "vol-a")
 		assert.Contains(t, err.Error(), "vol-b", "every volume is attempted")
-		assert.Empty(t, volState.updated, "an unsealed volume must not go available")
 	})
 
-	t.Run("state update failure does not fail the unmount", func(t *testing.T) {
+	t.Run("a sealed unmount succeeds", func(t *testing.T) {
 		node := uniqueAdapterID("node-unmount")
-		respondJSON(t, nc, "ebs."+node+".unmount", viperblocklegacyv1.EBSUnMountResponse{Volume: "vol-a"})
-		volState := &recordingVolumeState{err: errInjected}
-		adapter := newVolumeMounterAdapter(nc, node, volState)
+		serveFakeNodeProvider(t, nc, node)
+		adapter := newNATSMounter(nc, node)
 		instance := &vm.VM{ID: "i-unmount-state"}
 		instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-a"}}
 
 		require.NoError(t, adapter.Unmount(t.Context(), instance))
-		assert.Equal(t, []string{"vol-a=available"}, volState.updated)
-	})
-}
-
-func TestVolumeMounterAdapter_Abandon(t *testing.T) {
-	nc := connectAdapterTestNATS(t, sharedNATSURL)
-
-	// abandonResponder answers per volume so one request can mix outcomes.
-	abandonResponder := func(t *testing.T, node string, replies map[string][]byte) *[]viperblocklegacyv1.VolumeAbandonRequest {
-		t.Helper()
-		var (
-			mu   sync.Mutex
-			seen []viperblocklegacyv1.VolumeAbandonRequest
-		)
-		sub, err := nc.Subscribe(viperblocklegacyv1.VolumeAbandonSubject(node), func(msg *nats.Msg) {
-			var req viperblocklegacyv1.VolumeAbandonRequest
-			_ = json.Unmarshal(msg.Data, &req)
-			mu.Lock()
-			seen = append(seen, req)
-			mu.Unlock()
-			_ = msg.Respond(replies[req.Volume])
-		})
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = sub.Unsubscribe() })
-		return &seen
-	}
-	instanceWith := func(volumes ...string) *vm.VM {
-		v := &vm.VM{ID: "i-abandon", AccountID: testAccountID}
-		for _, name := range volumes {
-			v.EBSRequests.Requests = append(v.EBSRequests.Requests, viperblocklegacyv1.EBSRequest{Name: name})
-		}
-		return v
-	}
-
-	t.Run("no responder", func(t *testing.T) {
-		adapter := newVolumeMounterAdapter(nc, uniqueAdapterID("node-abandon"), nil)
-		err := adapter.Abandon(t.Context(), instanceWith("vol-1"), "superseded")
-		assert.ErrorIs(t, err, nats.ErrNoResponders)
-	})
-
-	t.Run("outcomes per volume", func(t *testing.T) {
-		node := uniqueAdapterID("node-abandon")
-		seen := abandonResponder(t, node, map[string][]byte{
-			"vol-abandoned": []byte(`{"abandoned":true}`),
-			"vol-absent":    []byte(`{"abandoned":false}`),
-		})
-		adapter := newVolumeMounterAdapter(nc, node, nil)
-
-		require.NoError(t, adapter.Abandon(t.Context(), instanceWith("vol-abandoned", "vol-absent"), "superseded"),
-			"a volume not exported here is the ordinary case, not a failure")
-		require.Len(t, *seen, 2)
-		assert.Equal(t, viperblocklegacyv1.VolumeAbandonRequest{Volume: "vol-abandoned", Reason: "superseded"}, (*seen)[0])
-	})
-
-	t.Run("failures are joined and do not stop the sweep", func(t *testing.T) {
-		node := uniqueAdapterID("node-abandon")
-		seen := abandonResponder(t, node, map[string][]byte{
-			"vol-garbled": []byte(`not json`),
-			"vol-refused": []byte(`{"error":"export busy"}`),
-			"vol-ok":      []byte(`{"abandoned":true}`),
-		})
-		adapter := newVolumeMounterAdapter(nc, node, nil)
-
-		err := adapter.Abandon(t.Context(), instanceWith("vol-garbled", "vol-refused", "vol-ok"), "fenced")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "unmarshal abandon response for vol-garbled")
-		assert.Contains(t, err.Error(), "abandon vol-refused: export busy")
-		assert.NotContains(t, err.Error(), "vol-ok")
-		assert.Len(t, *seen, 3, "every volume is attempted")
 	})
 }
 

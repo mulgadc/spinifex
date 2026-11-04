@@ -16,6 +16,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit/ebsfake"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
@@ -1725,6 +1726,28 @@ func TestDeleteVolume_VolumeAttachedButAvailable(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorVolumeInUse, err.Error())
 }
 
+// A stopped instance keeps its volumes in use, so deleting one is refused
+// until it is detached; AWS answers the same.
+func TestDeleteVolume_VolumeHeldByStoppedInstanceIsRefused(t *testing.T) {
+	kv := setupTestVolumeKV(t)
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+	svc.snapshotKV = kv
+
+	createVolumeInStoreWithMeta(t, svc, store, "vol-held", ebsmetadata.Volume{
+		VolumeID:         "vol-held",
+		CapacityGiB:      10,
+		State:            "in-use",
+		AttachedInstance: "i-stopped",
+	})
+
+	_, err := svc.DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{
+		VolumeId: aws.String("vol-held"),
+	}, testVolAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorVolumeInUse, err.Error())
+}
+
 func TestDeleteVolume_EmptyStateUnattachedDeletable(t *testing.T) {
 	kv := setupTestVolumeKV(t)
 	store := objectstore.NewMemoryObjectStore()
@@ -1767,7 +1790,7 @@ func TestDeleteVolumeOnTerminate_ClearsAttachmentThenDeletes(t *testing.T) {
 		AttachedInstance: "i-stopped",
 	})
 
-	err := svc.DeleteVolumeOnTerminate(context.Background(), volumeID, testVolAccountID)
+	err := svc.DeleteVolumeOnTerminate(context.Background(), volumeID, testVolAccountID, ec2instance.OwedUnpublish{})
 	require.NoError(t, err, "terminate implies detach: a stale attachment must not block the terminate delete")
 
 	deleting, err := svc.GetVolumeMetadata(testVolAccountID, volumeID)
@@ -1794,7 +1817,7 @@ func TestDeleteVolumeOnTerminate_AlreadyGoneMetadataIsSuccess(t *testing.T) {
 	svc.snapshotKV = kv
 
 	// No metadata doc is ever written for this volume ID.
-	err := svc.DeleteVolumeOnTerminate(context.Background(), "vol-already-gone", testVolAccountID)
+	err := svc.DeleteVolumeOnTerminate(context.Background(), "vol-already-gone", testVolAccountID, ec2instance.OwedUnpublish{})
 	require.NoError(t, err, "a volume with no metadata document is already gone, not a teardown failure")
 }
 
@@ -1807,7 +1830,7 @@ func TestDetachVolumeOnTerminate_AlreadyGoneMetadataIsSuccess(t *testing.T) {
 	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
 	svc.snapshotKV = kv
 
-	err := svc.DetachVolumeOnTerminate(context.Background(), "vol-already-gone", testVolAccountID)
+	err := svc.DetachVolumeOnTerminate(context.Background(), "vol-already-gone", testVolAccountID, ec2instance.OwedUnpublish{})
 	require.NoError(t, err, "a volume with no metadata document is already gone, not a teardown failure")
 }
 
@@ -1891,7 +1914,7 @@ func TestDeleteVolume_SecondDeleteIsAcceptedWithoutASecondTeardown(t *testing.T)
 
 	// DeleteOnTermination arriving for a volume already owed must not reset it
 	// to available, which would let a second teardown through.
-	require.NoError(t, svc.DeleteVolumeOnTerminate(context.Background(), volumeID, testVolAccountID))
+	require.NoError(t, svc.DeleteVolumeOnTerminate(context.Background(), volumeID, testVolAccountID, ec2instance.OwedUnpublish{}))
 	meta, err := svc.metadata.GetVolume(context.Background(), testVolAccountID, volumeID)
 	require.NoError(t, err)
 	assert.Equal(t, "deleting", meta.State)
@@ -1939,7 +1962,7 @@ func TestDeleteVolumeOnTerminate_SurfacesDeleteFailure(t *testing.T) {
 	_, err = kv.Put(t.Context(), volumeID, snapData)
 	require.NoError(t, err)
 
-	err = svc.DeleteVolumeOnTerminate(context.Background(), volumeID, testVolAccountID)
+	err = svc.DeleteVolumeOnTerminate(context.Background(), volumeID, testVolAccountID, ec2instance.OwedUnpublish{})
 	require.Error(t, err, "a DeleteVolume failure must be surfaced, not swallowed")
 	assert.Contains(t, err.Error(), awserrors.ErrorVolumeInUse)
 
@@ -2789,4 +2812,41 @@ func TestDescribeVolumesModifications_UnknownFilter(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
 	assert.Contains(t, message, "not-a-real-filter")
+}
+
+func TestDescribeVolumes_FilterByTagKeyAndTagValue(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	svc := newTestVolumeServiceWithStore("ap-southeast-2a", store)
+
+	createVolumeInStoreWithMeta(t, svc, store, "vol-tagged", ebsmetadata.Volume{
+		VolumeID: "vol-tagged", CapacityGiB: 10, State: "available", TenantID: "000000000001",
+		Tags: map[string]string{"Keep": "x"},
+	})
+	createVolumeInStoreWithMeta(t, svc, store, "vol-other", ebsmetadata.Volume{
+		VolumeID: "vol-other", CapacityGiB: 10, State: "available", TenantID: "000000000001",
+		Tags: map[string]string{"Other": "y"},
+	})
+
+	tests := []struct {
+		name, filter, value string
+		want                []string
+	}{
+		{"tag-key match", "tag-key", "Keep", []string{"vol-tagged"}},
+		{"tag-value match", "tag-value", "x", []string{"vol-tagged"}},
+		{"tag-key miss", "tag-key", "Missing", nil},
+		{"tag-value miss", "tag-value", "x-missing", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := svc.DescribeVolumes(context.Background(), &ec2.DescribeVolumesInput{
+				Filters: []*ec2.Filter{{Name: aws.String(tt.filter), Values: []*string{aws.String(tt.value)}}},
+			}, "000000000001")
+			require.NoError(t, err)
+			var got []string
+			for _, v := range out.Volumes {
+				got = append(got, *v.VolumeId)
+			}
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }

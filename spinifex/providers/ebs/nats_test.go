@@ -475,6 +475,7 @@ func TestNATSProviderRejectsEmptySuccessResponse(t *testing.T) {
 		respondWith(t, conn, subject, PublishVolumeResponse{Versioned: empty})
 		_, err = provider.PublishVolume(ctx, PublishVolumeRequest{Versioned: NewLatestVersioned(), VolumeID: "vol-empty", NodeID: "node-empty"})
 		require.EqualError(t, err, subject+" returned no published volume")
+		require.ErrorIs(t, err, ErrNoPublishedVolume)
 	})
 
 	t.Run("CreateSnapshot", func(t *testing.T) {
@@ -512,6 +513,7 @@ func TestNATSProviderRejectsInvalidExport(t *testing.T) {
 			})
 			published, err := provider.PublishVolume(t.Context(), PublishVolumeRequest{Versioned: NewLatestVersioned(), VolumeID: "vol-1", NodeID: tt.node})
 			require.EqualError(t, err, subject+" returned an invalid export: "+tt.wantErr)
+			require.ErrorIs(t, err, ErrInvalidExport)
 			assert.Nil(t, published)
 		})
 	}
@@ -718,8 +720,6 @@ func TestTimeoutForSizesEachSubjectToItsWork(t *testing.T) {
 	require.NoError(t, err)
 	unsealed, err := UnsealedWritesSubject("node-1")
 	require.NoError(t, err)
-	nodeCapabilities, err := NodeCapabilitiesSubject("node-1")
-	require.NoError(t, err)
 
 	// A delete costs one round trip per object, so its duration is a function
 	// of the volume. On prod a 100 GiB volume's delete took 52 s against a 30 s
@@ -740,7 +740,7 @@ func TestTimeoutForSizesEachSubjectToItsWork(t *testing.T) {
 	fast := []string{
 		CapabilitiesSubject, GetVolumeSubject, ListVolumesSubject,
 		ListSnapshotsSubject, ownerDescribe,
-		publish, unsealed, nodeCapabilities,
+		publish, unsealed,
 	}
 	for _, subject := range fast {
 		assert.Equal(t, callerTimeout, p.timeoutFor(subject),

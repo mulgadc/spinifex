@@ -65,6 +65,7 @@ func recoverInto(ctx context.Context, t *testing.T, s *Store, f *feed) (*blockin
 }
 
 func TestFeedNextAfterCloseCreatesNoConsumer(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	appendAt(t, s, message.Namespace{Queue: "q"})
 	f := openWedgeable(t, s)
@@ -81,6 +82,7 @@ func TestFeedNextAfterCloseCreatesNoConsumer(t *testing.T) {
 // TestFeedCloseInterruptsBlockedNext: a Next waiting on a consumer with
 // nothing to deliver returns message.ErrFeedClosed promptly once Close runs.
 func TestFeedCloseInterruptsBlockedNext(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	f := openWedgeable(t, s)
 	f.idleCheck = time.Minute
@@ -103,6 +105,7 @@ func TestFeedCloseInterruptsBlockedNext(t *testing.T) {
 // TestFeedCloseConcurrentWithNext races Close against active Next calls and
 // recoveries; run under -race. Every round ends closed with no consumer.
 func TestFeedCloseConcurrentWithNext(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	ns := message.Namespace{Queue: "q"}
 	for range 3 {
@@ -151,6 +154,7 @@ func (s *stallingStream) GetMsg(ctx context.Context, _ uint64, _ ...jsapi.GetMsg
 // TestFeedCloseInterruptsRecoveryProbe: Close ends a Next blocked in the
 // idle check's stream read, not only one waiting on the consumer.
 func TestFeedCloseInterruptsRecoveryProbe(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	f := openWedgeable(t, s)
 	stall := &stallingStream{Stream: f.stream, entered: make(chan struct{})}
@@ -176,6 +180,7 @@ func TestFeedCloseInterruptsRecoveryProbe(t *testing.T) {
 // TestFeedCloseWaitsForInFlightOpen: Close waits for a reopen already
 // creating a consumer, and that consumer is gone when Close returns nil.
 func TestFeedCloseWaitsForInFlightOpen(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	f := openWedgeable(t, s)
 	b, next := recoverInto(context.Background(), t, s, f)
@@ -202,6 +207,7 @@ func TestFeedCloseWaitsForInFlightOpen(t *testing.T) {
 // rather than success; a repeated Close waits again and succeeds once the
 // late consumer has been deleted.
 func TestFeedCloseReportsStuckOpen(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	f := openWedgeable(t, s)
 	f.closeWait = 200 * time.Millisecond
@@ -227,6 +233,7 @@ func TestFeedCloseReportsStuckOpen(t *testing.T) {
 // TestFeedCloseReportsLateDeleteFailure: if the consumer a racing reopen
 // created cannot be deleted, Close returns that error, not success.
 func TestFeedCloseReportsLateDeleteFailure(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	f := openWedgeable(t, s)
 	b, next := recoverInto(context.Background(), t, s, f)
@@ -234,7 +241,7 @@ func TestFeedCloseReportsLateDeleteFailure(t *testing.T) {
 	b.deleteErr = injected
 	closed := make(chan error, 1)
 	go func() { closed <- f.Close() }()
-	for !f.isClosed() {
+	for !closeBegun(f) {
 		time.Sleep(time.Millisecond)
 	}
 	close(b.release)
@@ -255,7 +262,7 @@ func (c *closeOnDelivery) Next(opts ...jsapi.NextOpt) (jsapi.Msg, error) {
 	msg, err := c.MessagesContext.Next(opts...)
 	if err == nil {
 		go func() { _ = c.f.Close() }()
-		for !c.f.isClosed() {
+		for !closeBegun(c.f) {
 			time.Sleep(time.Millisecond)
 		}
 	}
@@ -265,6 +272,7 @@ func (c *closeOnDelivery) Next(opts ...jsapi.NextOpt) (jsapi.Msg, error) {
 // TestFeedWithholdsDeliveryRacingClose: a change received after Close began
 // is not returned, and a feed from the last delivered cursor still gets it.
 func TestFeedWithholdsDeliveryRacingClose(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	ns := message.Namespace{Queue: "q"}
 	first := appendAt(t, s, ns)
@@ -286,4 +294,10 @@ func TestFeedWithholdsDeliveryRacingClose(t *testing.T) {
 	got, err := resumed.Next(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, second, got.Position, "the withheld change is not lost")
+}
+
+// closeBegun reports whether Close has begun on f.
+func closeBegun(f *feed) bool {
+	_, closed := f.current()
+	return closed
 }

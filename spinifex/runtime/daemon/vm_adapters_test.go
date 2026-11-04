@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"reflect"
 	"testing"
 
@@ -232,118 +231,6 @@ func TestOnInstanceDownHook_OnlyRemovesTargetedInstance(t *testing.T) {
 	assert.NotNil(t, d.natsSubscriptions[keep.ID+".password"])
 	_, dropPresent := d.natsSubscriptions[drop.ID]
 	assert.False(t, dropPresent)
-}
-
-func TestVolumeMounterAdapter_MountOne(t *testing.T) {
-	tests := []struct {
-		name       string
-		responder  func(t *testing.T, msg *nats.Msg)
-		skipSub    bool
-		wantErr    bool
-		wantErrSub string
-		wantErrIs  error
-		wantNBDURI string
-		initialURI string
-	}{
-		{
-			name: "HappyPath_UpdatesNBDURI",
-			responder: func(t *testing.T, msg *nats.Msg) {
-				resp := viperblocklegacyv1.EBSMountResponse{URI: "nbd://mounted-vol"}
-				data, err := json.Marshal(resp)
-				require.NoError(t, err)
-				require.NoError(t, msg.Respond(data))
-			},
-			wantNBDURI: "nbd://mounted-vol",
-		},
-		{
-			name:       "NATSNoResponders_ReturnsError",
-			skipSub:    true,
-			wantErr:    true,
-			wantErrSub: "ebs.mount NATS request",
-		},
-		{
-			name: "UnmarshalFailure_ReturnsError",
-			responder: func(t *testing.T, msg *nats.Msg) {
-				require.NoError(t, msg.Respond([]byte("not json")))
-			},
-			wantErr:    true,
-			wantErrSub: "unmarshal ebs.mount response",
-		},
-		{
-			name: "ResponseError_IncludedInError",
-			responder: func(t *testing.T, msg *nats.Msg) {
-				resp := viperblocklegacyv1.EBSMountResponse{Error: "boom"}
-				data, err := json.Marshal(resp)
-				require.NoError(t, err)
-				require.NoError(t, msg.Respond(data))
-			},
-			wantErr:    true,
-			wantErrSub: "boom",
-		},
-		{
-			name: "EmptyURI_ReturnsErrMountAmbiguous",
-			responder: func(t *testing.T, msg *nats.Msg) {
-				resp := viperblocklegacyv1.EBSMountResponse{URI: ""}
-				data, err := json.Marshal(resp)
-				require.NoError(t, err)
-				require.NoError(t, msg.Respond(data))
-			},
-			wantErr:   true,
-			wantErrIs: vm.ErrMountAmbiguous,
-		},
-		{
-			name: "EmptyURI_PreservesInitialNBDURIOnFailure",
-			responder: func(t *testing.T, msg *nats.Msg) {
-				resp := viperblocklegacyv1.EBSMountResponse{URI: ""}
-				data, err := json.Marshal(resp)
-				require.NoError(t, err)
-				require.NoError(t, msg.Respond(data))
-			},
-			initialURI: "nbd://stale",
-			wantErr:    true,
-			wantErrIs:  vm.ErrMountAmbiguous,
-			wantNBDURI: "nbd://stale",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			daemon := createTestDaemon(t, sharedNATSURL)
-			adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
-
-			if !tt.skipSub {
-				sub, err := daemon.natsConn.Subscribe("ebs.node-1.mount", func(msg *nats.Msg) {
-					tt.responder(t, msg)
-				})
-				require.NoError(t, err)
-				defer sub.Unsubscribe()
-			}
-
-			req := &viperblocklegacyv1.EBSRequest{
-				Name:       "vol-mountone",
-				DeviceName: "/dev/sdf",
-				NBDURI:     tt.initialURI,
-			}
-
-			err := adapter.MountOne(t.Context(), "", req)
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.wantErrSub != "" {
-					assert.Contains(t, err.Error(), tt.wantErrSub)
-				}
-				if tt.wantErrIs != nil {
-					assert.ErrorIs(t, err, tt.wantErrIs)
-				}
-				assert.Equal(t, tt.wantNBDURI, req.NBDURI,
-					"NBDURI must not be overwritten on failure")
-				return
-			}
-
-			require.NoError(t, err)
-			assert.Equal(t, tt.wantNBDURI, req.NBDURI,
-				"happy path must write resolved NBDURI back to req")
-		})
-	}
 }
 
 // --- ReleaseGPU ---
@@ -674,56 +561,9 @@ func TestInstanceCleanerAdapter_ReleaseAttachedENIs_ListInstanceENIsErrorTolerat
 		"an enumeration failure must not surface as a terminate error")
 }
 
-// TestVolumeMounterAdapter_Mount_WrapsErrMountRetryable verifies that a
-// viperblockd ebs.mount response with Retryable=true is wrapped so
-// vm.Manager's recovery-relaunch retry can match it with errors.Is. A
-// Retryable=false response must NOT match, so relaunchAll still fails fast
-// on permanent mount errors.
-func TestVolumeMounterAdapter_Mount_WrapsErrMountRetryable(t *testing.T) {
-	daemon := createTestDaemon(t, sharedNATSURL)
-	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
-
-	sub, err := daemon.natsConn.Subscribe("ebs."+daemon.node+".mount", func(msg *nats.Msg) {
-		resp := viperblocklegacyv1.EBSMountResponse{Error: "state not found", Retryable: true}
-		data, _ := json.Marshal(resp)
-		_ = msg.Respond(data)
-	})
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	instance := &vm.VM{ID: "i-mount-retryable"}
-	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-retryable"}}
-
-	err = adapter.Mount(t.Context(), instance)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, vm.ErrMountRetryable,
-		"a Retryable mount response must wrap vm.ErrMountRetryable so relaunchAll can retry it")
-}
-
-func TestVolumeMounterAdapter_Mount_PermanentErrorNotWrapped(t *testing.T) {
-	daemon := createTestDaemon(t, sharedNATSURL)
-	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
-
-	sub, err := daemon.natsConn.Subscribe("ebs."+daemon.node+".mount", func(msg *nats.Msg) {
-		resp := viperblocklegacyv1.EBSMountResponse{Error: "volume vol-permanent is already mounted read_only=true on this node"}
-		data, _ := json.Marshal(resp)
-		_ = msg.Respond(data)
-	})
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	instance := &vm.VM{ID: "i-mount-permanent"}
-	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-permanent"}}
-
-	err = adapter.Mount(t.Context(), instance)
-	require.Error(t, err)
-	assert.NotErrorIs(t, err, vm.ErrMountRetryable,
-		"a non-Retryable mount response must not be mistaken for a transient failure")
-}
-
 func TestVolumeMounterAdapter_Mount_NoResponderIsRetryable(t *testing.T) {
 	daemon := createTestDaemon(t, sharedNATSURL)
-	adapter := newVolumeMounterAdapter(daemon.natsConn, daemon.node, nil)
+	adapter := newNATSMounter(daemon.natsConn, daemon.node)
 
 	// No subscriber on the mount subject: viperblockd is still starting, so
 	// the request returns nats.ErrNoResponders, which must be retryable.

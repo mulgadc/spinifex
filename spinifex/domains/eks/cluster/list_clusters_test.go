@@ -28,18 +28,28 @@ func TestEKSServiceImpl_ListClustersPagination(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"c01", "c02"}, aws.StringValueSlice(p1.Clusters))
 	require.NotNil(t, p1.NextToken)
-	assert.Equal(t, "c03", aws.StringValue(p1.NextToken))
 
 	p2, err := f.svc.ListClusters(context.Background(), &eks.ListClustersInput{MaxResults: aws.Int64(2), NextToken: p1.NextToken}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"c03", "c04"}, aws.StringValueSlice(p2.Clusters))
 	require.NotNil(t, p2.NextToken)
-	assert.Equal(t, "c05", aws.StringValue(p2.NextToken))
 
 	p3, err := f.svc.ListClusters(context.Background(), &eks.ListClustersInput{MaxResults: aws.Int64(2), NextToken: p2.NextToken}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"c05"}, aws.StringValueSlice(p3.Clusters))
 	assert.Nil(t, p3.NextToken, "final page must not advertise a NextToken")
+}
+
+// A token this service did not issue is rejected, not resumed from: a bare
+// cluster name used to be accepted as one.
+func TestEKSServiceImpl_ListClustersRejectsForeignToken(t *testing.T) {
+	t.Parallel()
+	f := newEKSServiceFixture(t)
+	require.NoError(t, PutClusterMeta(t.Context(), f.kv, sampleClusterMeta("c01")))
+
+	_, err := f.svc.ListClusters(context.Background(), &eks.ListClustersInput{NextToken: aws.String("c01")}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorEKSInvalidParameter, awserrors.ValidErrorCodeFromError(err))
 }
 
 // TestEKSServiceImpl_ListClustersMaxResultsClamped confirms an out-of-range

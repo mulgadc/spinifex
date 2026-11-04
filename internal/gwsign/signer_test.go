@@ -12,7 +12,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 )
 
@@ -145,7 +144,7 @@ func TestNewInstanceRole_UsesOnlyIMDS(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	s := newInstanceRole(imds.New(imds.Options{Endpoint: srv.URL}))
+	s := newInstanceRole(srv.URL)
 	req := httptest.NewRequest(http.MethodPost, "https://gw.example/", nil)
 	if err := s.Sign(req, emptySHA, testService, testRegion); err != nil {
 		t.Fatal(err)
@@ -155,9 +154,41 @@ func TestNewInstanceRole_UsesOnlyIMDS(t *testing.T) {
 	}
 
 	srv.Close()
-	cold := newInstanceRole(imds.New(imds.Options{Endpoint: srv.URL}))
+	cold := newInstanceRole(srv.URL)
 	if err := cold.EnsureCredentials(context.Background()); err == nil {
 		t.Fatal("environment keys were used when IMDS was unreachable")
+	}
+}
+
+// Once the cached instance-role key has expired, a refresh that cannot reach
+// IMDS must fail the sign rather than reuse the expired key with a new expiry.
+func TestNewInstanceRole_FailedRefreshErrorsInsteadOfStaleKey(t *testing.T) {
+	const staleKey = "ASIASTALEEXAMPLE0001"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/latest/api/token":
+			_, _ = w.Write([]byte("token"))
+		case "/latest/meta-data/iam/security-credentials/":
+			_, _ = w.Write([]byte("sqsWorkerRole"))
+		case "/latest/meta-data/iam/security-credentials/sqsWorkerRole":
+			_, _ = w.Write([]byte(`{"Code":"Success","AccessKeyId":"` + staleKey + `","SecretAccessKey":"s","Token":"t","Expiration":"2000-01-01T00:00:00Z"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	s := newInstanceRole(srv.URL)
+	if err := s.EnsureCredentials(t.Context()); err != nil {
+		t.Fatalf("first retrieve: %v", err)
+	}
+
+	srv.Close()
+	req := httptest.NewRequest(http.MethodPost, "https://gw.example/", nil)
+	err := s.Sign(req, emptySHA, testService, testRegion)
+	if err == nil {
+		t.Fatalf("Sign after failed refresh = nil, signed with %q", req.Header.Get("Authorization"))
+	}
+	if auth := req.Header.Get("Authorization"); auth != "" {
+		t.Fatalf("request carries Authorization %q after a failed refresh", auth)
 	}
 }
 

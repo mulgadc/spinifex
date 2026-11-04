@@ -5,8 +5,8 @@ import (
 )
 
 // VolumeMounter mounts and unmounts the EBS volumes attached to a VM. The
-// real implementation routes ebs.mount / ebs.unmount NATS requests; the
-// abstraction keeps NATS out of the manager.
+// real implementation publishes and unpublishes them through the EBS provider
+// over NATS; the abstraction keeps NATS out of the manager.
 //
 // Every method takes the caller's context so the ebs.* span joins the trace
 // that asked for the work rather than rooting one of its own. Shutdown and
@@ -14,9 +14,9 @@ import (
 // honest answer rather than a missing one.
 type VolumeMounter interface {
 	// Mount mounts every attached volume in v.EBSRequests.Requests, recording
-	// the resolved NBDURI back onto each request entry.
+	// the resolved export back onto each request entry.
 	Mount(ctx context.Context, v *VM) error
-	// Unmount sends ebs.unmount for each attached volume, which drives the
+	// Unmount unmounts each attached volume, which drives the
 	// synchronous block-map seal. Every volume is attempted; the seal
 	// failures are aggregated and returned, and mean the data is not durable.
 	Unmount(ctx context.Context, v *VM) error
@@ -31,12 +31,12 @@ type VolumeMounter interface {
 	// anywhere.
 	Abandon(ctx context.Context, v *VM, reason string) error
 
-	// MountOne sends ebs.mount for a single request and writes the resolved
-	// NBDURI back into req.NBDURI on success. Used by hot-attach. accountID
+	// MountOne mounts a single request and writes the resolved export back
+	// into req on success. Used by hot-attach. accountID
 	// names the owner, which a lone request carries no instance to supply.
 	MountOne(ctx context.Context, accountID string, req *EBSRequest) error
-	// UnmountOne sends ebs.unmount for a single request and returns any error.
-	// ebs.unmount drives the synchronous block-map seal to predastore, so hot
+	// UnmountOne unmounts a single request and returns any error. The
+	// unmount drives the synchronous block-map seal to the backend, so hot
 	// detach gates the volume's available transition on the returned error.
 	UnmountOne(ctx context.Context, accountID string, req EBSRequest) error
 }

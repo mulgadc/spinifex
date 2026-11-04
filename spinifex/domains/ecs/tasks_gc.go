@@ -2,6 +2,7 @@ package ecs
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"log/slog"
 	"strings"
 	"time"
@@ -52,7 +53,7 @@ func (sc *Scheduler) sweepStoppedTasks(ctx context.Context) (time.Duration, erro
 // the ENI release for any that still owe one. A missing StoppedAt or an owed
 // (unreleased) ENI both block deletion; the latter until the release succeeds.
 func (s *Service) sweepStoppedBucket(ctx context.Context, kv jetstream.KeyValue, accountID string, now time.Time, retention time.Duration) (int, time.Duration, error) {
-	keys, err := keysWithPrefix(ctx, kv, "clusters/")
+	keys, err := taskdefinition.KeysWithPrefix(ctx, kv, "clusters/")
 	if err != nil {
 		return 0, 0, err
 	}
@@ -64,7 +65,7 @@ func (s *Service) sweepStoppedBucket(ctx context.Context, kv jetstream.KeyValue,
 			continue
 		}
 		var task TaskRecord
-		found, gerr := getJSON(ctx, kv, k, &task)
+		found, gerr := taskdefinition.GetJSON(ctx, kv, k, &task)
 		if gerr != nil || !found {
 			continue
 		}
@@ -116,7 +117,7 @@ func (s *Service) retryTaskENIRelease(ctx context.Context, kv jetstream.KeyValue
 		task.ENIReleaseAttempts++
 		task.ENIReleaseNextTry = now.Add(eniReleaseBackoff(task.ENIReleaseAttempts))
 	}
-	if perr := putJSON(ctx, kv, key, task); perr != nil {
+	if perr := taskdefinition.PutJSON(ctx, kv, key, task); perr != nil {
 		slog.Warn("ECS sweep: persist ENI retry state failed", "key", key, "err", perr)
 	}
 }

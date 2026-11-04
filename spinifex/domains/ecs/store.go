@@ -107,12 +107,6 @@ func ServiceKey(cluster, serviceName string) string {
 	return ServicesPrefix(cluster) + serviceName
 }
 
-// LeaderLeaseKey returns the per-cluster scheduler leader-lease key in the shared
-// leader bucket (Q3).
-func LeaderLeaseKey(accountID, clusterName string) string {
-	return fmt.Sprintf("%s/%s", accountID, clusterName)
-}
-
 // CapacityProvidersPrefix returns the KV key prefix under which all
 // capacity-provider records live. Account-scoped (not cluster-scoped),
 // matching the AWS ARN shape; a cluster references providers by name.

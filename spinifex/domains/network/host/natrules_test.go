@@ -80,17 +80,6 @@ func TestEnsureNATEgressRules_InsertFailure(t *testing.T) {
 	}
 }
 
-func TestRemoveNATEgressRules_IgnoresMissing(t *testing.T) {
-	r := newStubRunner()
-	r.expect("iptables -t nat -D", nil, fmt.Errorf("no match"))
-	r.expect("iptables -t filter -D", nil, nil)
-
-	RemoveNATEgressRules(context.Background(), r)
-	if !r.called("iptables -t nat -D POSTROUTING") {
-		t.Errorf("expected POSTROUTING delete attempt, got %v", r.calls)
-	}
-}
-
 // The hairpin jump must end above the MASQUERADE: both terminate in nat, so
 // whichever is first decides the source, and MASQUERADE's is exempt from DNAT.
 func TestEnsureNATEgressRules_HairpinJumpPrecedesMasquerade(t *testing.T) {

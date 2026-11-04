@@ -49,12 +49,12 @@ func platformCleaner(ctx context.Context, node *config.Config, nc *nats.Conn, js
 		Instances: accountlifecycle.NewInstanceReferenceReader(nc, nodeIDs),
 		Spot:      spot,
 		Templates: templates,
+		Consumers: accountlifecycle.NewTemplateConsumerReader(nc),
 	}), nil
 }
 
-// withPlatformCleaner binds the cleanup a non-finalizing DeleteAccount runs. When
-// it cannot be built the field stays nil, which refuses that request instead of
-// half-running it.
+// withPlatformCleaner binds the cleanup every DeleteAccount runs. When it cannot
+// be built the field stays nil, which refuses the request instead of half-running it.
 func withPlatformCleaner(d operatoradmin.Deps, build func() (accountlifecycle.PlatformCleaner, error)) operatoradmin.Deps {
 	cleaner, err := build()
 	if err != nil {

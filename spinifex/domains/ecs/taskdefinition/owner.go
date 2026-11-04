@@ -63,10 +63,10 @@ func (o *Owner) Register(ctx context.Context, kv jetstream.KeyValue, accountID s
 		RequiresCompatibilities: spec.RequiresCompatibilities,
 		RuntimePlatform:         spec.RuntimePlatform,
 	}
-	if err := putJSON(ctx, kv, RevKey(spec.Family, rev), rec); err != nil {
+	if err := PutJSON(ctx, kv, RevKey(spec.Family, rev), rec); err != nil {
 		return nil, err
 	}
-	if err := putJSON(ctx, kv, LatestRevKey(spec.Family), rev); err != nil {
+	if err := PutJSON(ctx, kv, LatestRevKey(spec.Family), rev); err != nil {
 		return nil, err
 	}
 	return rec, nil
@@ -75,7 +75,7 @@ func (o *Owner) Register(ctx context.Context, kv jetstream.KeyValue, accountID s
 // nextRevision reads the family's latest-rev and returns latest+1 (1 if absent).
 func nextRevision(ctx context.Context, kv jetstream.KeyValue, family string) (int, error) {
 	var latest int
-	found, err := getJSON(ctx, kv, LatestRevKey(family), &latest)
+	found, err := GetJSON(ctx, kv, LatestRevKey(family), &latest)
 	if err != nil {
 		return 0, err
 	}
@@ -88,7 +88,7 @@ func nextRevision(ctx context.Context, kv jetstream.KeyValue, family string) (in
 // Deregister marks one revision INACTIVE; the revision stays describable.
 func (o *Owner) Deregister(ctx context.Context, kv jetstream.KeyValue, family string, rev int) (*Record, error) {
 	var rec Record
-	found, err := getJSON(ctx, kv, RevKey(family, rev), &rec)
+	found, err := GetJSON(ctx, kv, RevKey(family, rev), &rec)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +100,7 @@ func (o *Owner) Deregister(ctx context.Context, kv jetstream.KeyValue, family st
 		rec.DeregisteredAt = &now
 	}
 	rec.Status = StatusInactive
-	if err := putJSON(ctx, kv, RevKey(family, rev), &rec); err != nil {
+	if err := PutJSON(ctx, kv, RevKey(family, rev), &rec); err != nil {
 		return nil, err
 	}
 	return &rec, nil
@@ -115,7 +115,7 @@ func (o *Owner) Resolve(ctx context.Context, kv jetstream.KeyValue, ref string) 
 	}
 	if rev == 0 {
 		var latest int
-		found, err := getJSON(ctx, kv, LatestRevKey(family), &latest)
+		found, err := GetJSON(ctx, kv, LatestRevKey(family), &latest)
 		if err != nil {
 			return nil, err
 		}
@@ -125,7 +125,7 @@ func (o *Owner) Resolve(ctx context.Context, kv jetstream.KeyValue, ref string) 
 		rev = latest
 	}
 	var rec Record
-	found, err := getJSON(ctx, kv, RevKey(family, rev), &rec)
+	found, err := GetJSON(ctx, kv, RevKey(family, rev), &rec)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +142,7 @@ func (o *Owner) List(ctx context.Context, kv jetstream.KeyValue, family, status 
 	if family != "" {
 		prefix = RevsPrefix(family)
 	}
-	keys, err := keysWithPrefix(ctx, kv, prefix)
+	keys, err := KeysWithPrefix(ctx, kv, prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +152,7 @@ func (o *Owner) List(ctx context.Context, kv jetstream.KeyValue, family, status 
 			continue
 		}
 		var rec Record
-		found, err := getJSON(ctx, kv, k, &rec)
+		found, err := GetJSON(ctx, kv, k, &rec)
 		if err != nil {
 			return nil, err
 		}
@@ -163,8 +163,8 @@ func (o *Owner) List(ctx context.Context, kv jetstream.KeyValue, family, status 
 	return arns, nil
 }
 
-// getJSON reads key into out. Returns (false, nil) when the key is absent.
-func getJSON(ctx context.Context, kv jetstream.KeyValue, key string, out any) (bool, error) {
+// GetJSON reads key into out. Returns (false, nil) when the key is absent.
+func GetJSON(ctx context.Context, kv jetstream.KeyValue, key string, out any) (bool, error) {
 	entry, err := kv.Get(ctx, key)
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
 		return false, nil
@@ -178,8 +178,8 @@ func getJSON(ctx context.Context, kv jetstream.KeyValue, key string, out any) (b
 	return true, nil
 }
 
-// putJSON marshals v and writes it at key.
-func putJSON(ctx context.Context, kv jetstream.KeyValue, key string, v any) error {
+// PutJSON marshals v and writes it at key.
+func PutJSON(ctx context.Context, kv jetstream.KeyValue, key string, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -190,8 +190,8 @@ func putJSON(ctx context.Context, kv jetstream.KeyValue, key string, v any) erro
 	return nil
 }
 
-// keysWithPrefix returns all KV keys under prefix, sorted.
-func keysWithPrefix(ctx context.Context, kv jetstream.KeyValue, prefix string) ([]string, error) {
+// KeysWithPrefix returns all KV keys under prefix, sorted.
+func KeysWithPrefix(ctx context.Context, kv jetstream.KeyValue, prefix string) ([]string, error) {
 	keys, err := kv.Keys(ctx)
 	if errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, nil

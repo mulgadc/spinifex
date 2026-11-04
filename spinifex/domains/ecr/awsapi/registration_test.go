@@ -16,6 +16,7 @@ import (
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -172,18 +173,6 @@ var composedCases = []struct{ action, body string }{
 	{"DeleteRepository", `{"repositoryName":"app"}`},
 }
 
-func TestActionFromTarget(t *testing.T) {
-	for target, want := range map[string]string{
-		TargetPrefix + ".CreateRepository": "CreateRepository",
-		"a.b.ListRepositories":             "ListRepositories",
-		"GetAuthorizationToken":            "GetAuthorizationToken",
-		TargetPrefix + ".":                 "",
-		"":                                 "",
-	} {
-		assert.Equal(t, want, actionFromTarget(target), "target %q", target)
-	}
-}
-
 // Every composed action must be in the Actions namespace, or dispatch rejects
 // it as InvalidAction before its resources are ever scoped.
 func TestComposedActionsAreInTheNamespace(t *testing.T) {
@@ -330,7 +319,7 @@ func TestDispatch_GetAuthorizationTokenMintsForTheVerifiedActor(t *testing.T) {
 		RoleID:      "AROAROLEID0000000001",
 	}, be.minted[0])
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, JSONContentType, w.Header().Get("Content-Type"))
+	assert.Equal(t, envelope.JSONContentType, w.Header().Get("Content-Type"))
 }
 
 // Only a role session names a role, and the ID is the part of aws:userid before the

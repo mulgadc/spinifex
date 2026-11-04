@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
-	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/stretchr/testify/assert"
@@ -129,7 +128,6 @@ func TestEC2CommandNameCoversEveryCommand(t *testing.T) {
 	}{
 		{"AttachVolume", func(a *ec2v1.EC2CommandAttributes) { a.AttachVolume = true }},
 		{"DetachVolume", func(a *ec2v1.EC2CommandAttributes) { a.DetachVolume = true }},
-		{"DrainVolume", func(a *ec2v1.EC2CommandAttributes) { a.DrainVolume = true }},
 		{"AttachNetworkInterface", func(a *ec2v1.EC2CommandAttributes) { a.AttachENI = true }},
 		{"DetachNetworkInterface", func(a *ec2v1.EC2CommandAttributes) { a.DetachENI = true }},
 		{"AssociateIamInstanceProfile", func(a *ec2v1.EC2CommandAttributes) { a.AssociateIamInstanceProfile = true }},
@@ -186,29 +184,4 @@ func TestEC2CommandRecordsUnderTheCommandNotTheInstance(t *testing.T) {
 		"a stop naming an instance this node does not hold is the caller's error, and must be counted")
 	assert.Empty(t, requestOutcomesFor(t, subject),
 		"the instance id must not reach the metric dimension")
-}
-
-// A drain runs off-thread so the command subscription is not held for the
-// length of the flush. Its point therefore has to be recorded by the goroutine
-// once the work finishes: recording at dispatch would call every drain an
-// instant success.
-func TestDrainVolumeRecordsItsPointAfterTheWork(t *testing.T) {
-	installOutcomeReader(t)
-	const instanceID, volumeID = "i-drain-metric", "vol-drain-metric"
-	daemon := drainTestDaemon(t, instanceID)
-	testutil.StartDrainSocket(t, daemon.config.DataDir, volumeID, "OK\n")
-	subscribeEC2Commands(t, daemon, instanceID)
-
-	before := requestCountFor(t, ec2CmdAction("DrainVolume"), outcomeSuccess)
-	reply := drainRequest(t, daemon, instanceID, volumeID)
-
-	var ack ec2v1.DrainVolumeResponse
-	require.NoError(t, json.Unmarshal(reply.Data, &ack))
-	require.Equal(t, ec2v1.DrainVolumeStatusDrained, ack.Status)
-
-	// The goroutine records after it replies, so poll rather than assume the
-	// point has landed by the time the reply arrives.
-	require.Eventually(t, func() bool {
-		return requestCountFor(t, ec2CmdAction("DrainVolume"), outcomeSuccess) > before
-	}, 5*time.Second, 20*time.Millisecond, "the drain goroutine must record its own success point")
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/conformance"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	testpredastore "github.com/mulgadc/spinifex/tests/fixtures/predastore"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 )
@@ -53,24 +54,49 @@ func requireExportTools(t *testing.T) string {
 	return pluginPath
 }
 
+// queueOnlyNode stands a node up whose provider subjects are served on a NATS
+// of its own, with the cluster's lease, dirty and liveness state, so its
+// client reaches it on the queue subjects alone, as when an owner is silent.
+func queueOnlyNode(t *testing.T, node *Config, clusterNC *nats.Conn) ebsprovider.EBSProvider {
+	t.Helper()
+	dirty, err := newVolumeDirty(t.Context(), clusterNC, node.leaseOwner())
+	require.NoError(t, err)
+	node.dirty = dirty
+	node.liveness = newHeartbeatLiveness(clusterNC)
+
+	_, privateURL := setupEmbeddedNATS(t)
+	return ebsprovider.NewNATSProvider(startProviderSubjects(t, node, privateURL), 60*time.Second)
+}
+
+// providerHarness is what inProcessProvider stands up: a client for the
+// cluster, both node names, and the hooks the conformance suite takes.
+type providerHarness struct {
+	newProvider      func(t *testing.T) ebsprovider.EBSProvider
+	nodeID           string
+	otherNodeID      string
+	killExport       func(*testing.T, *ebsprovider.PublishedVolume)
+	revokeExport     func(*testing.T, *ebsprovider.PublishedVolume) ebsprovider.FenceNotice
+	queueOnOtherNode func(t *testing.T) ebsprovider.EBSProvider
+}
+
 // inProcessProvider stands two nodes of the provider handlers up over one
-// embedded NATS and one predastore, and returns a client for them plus both
-// node names. Everything is torn down with the test.
+// embedded NATS and one predastore. Everything is torn down with the test.
 //
 // Two nodes rather than one because the exclusion this provider advertises is
 // cluster-scoped, and a single node cannot exercise it: the second publish
 // would go to a subject nobody serves and time out instead of being refused.
 // Both share the NATS the volume leases live in and the bucket the volumes
 // live in, so a second opener is refused by the lease, not by the harness.
-// The last return kills a published export's nbdkit behind the handlers' back.
-func inProcessProvider(t *testing.T) (func(t *testing.T) ebsprovider.EBSProvider, string, string, func(*testing.T, *ebsprovider.PublishedVolume)) {
+// The hooks kill a published export's nbdkit behind the handlers' back, and
+// revoke one as a lost lease does.
+func inProcessProvider(t *testing.T) providerHarness {
 	t.Helper()
 	pluginPath := requireExportTools(t)
 
 	fixture := testpredastore.Start(t)
 	_, natsURL := setupEmbeddedNATS(t)
 
-	newNode := func(name string) *Config {
+	newNode := func(t *testing.T, name string) *Config {
 		cfg := setupTestConfig(t, natsURL)
 		cfg.S3Host = "https://" + fixture.Host
 		cfg.Bucket = testpredastore.DefaultBucket
@@ -88,8 +114,8 @@ func inProcessProvider(t *testing.T) (func(t *testing.T) ebsprovider.EBSProvider
 		return cfg
 	}
 
-	first := newNode("node-1")
-	second := newNode("node-2")
+	first := newNode(t, "node-1")
+	second := newNode(t, "node-2")
 	nc := startProviderSubjects(t, first, natsURL)
 	startProviderSubjects(t, second, natsURL)
 
@@ -100,21 +126,42 @@ func inProcessProvider(t *testing.T) (func(t *testing.T) ebsprovider.EBSProvider
 	_, err = js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: clusterv1.ClusterStateBucket})
 	require.NoError(t, err)
 
-	killExport := func(t *testing.T, published *ebsprovider.PublishedVolume) {
+	holder := func(t *testing.T, published *ebsprovider.PublishedVolume) (*Config, MountedVolume) {
 		t.Helper()
 		for _, node := range []*Config{first, second} {
 			if mv, ok := findMountedVolume(node, published.VolumeID); ok && node.NodeName == published.NodeID {
-				require.NoError(t, hostprocess.ForceKillProcess(mv.PID, 5*time.Second))
-				return
+				return node, mv
 			}
 		}
 		t.Fatalf("no mounted entry for %s on %s", published.VolumeID, published.NodeID)
+		return nil, MountedVolume{}
 	}
 
-	return func(t *testing.T) ebsprovider.EBSProvider {
-		t.Helper()
-		return ebsprovider.NewNATSProvider(nc, 60*time.Second)
-	}, first.NodeName, second.NodeName, killExport
+	return providerHarness{
+		newProvider: func(t *testing.T) ebsprovider.EBSProvider {
+			t.Helper()
+			return ebsprovider.NewNATSProvider(nc, 60*time.Second)
+		},
+		nodeID:      first.NodeName,
+		otherNodeID: second.NodeName,
+		killExport: func(t *testing.T, published *ebsprovider.PublishedVolume) {
+			t.Helper()
+			_, mv := holder(t, published)
+			require.NoError(t, hostprocess.ForceKillProcess(mv.PID, 5*time.Second))
+		},
+		revokeExport: func(t *testing.T, published *ebsprovider.PublishedVolume) ebsprovider.FenceNotice {
+			t.Helper()
+			node, _ := holder(t, published)
+			return conformance.CaptureFenceNotice(t, nc, published.NodeID, func() error {
+				node.onVolumeLeaseLost(t.Context(), published.VolumeID, leaseLostStalled)
+				return nil
+			})
+		},
+		queueOnOtherNode: func(t *testing.T) ebsprovider.EBSProvider {
+			t.Helper()
+			return queueOnlyNode(t, newNode(t, "node-3"), nc)
+		},
+	}
 }
 
 // runPrefix names one run's volumes so it cannot meet an earlier run's
@@ -126,12 +173,16 @@ func runPrefix() string {
 // TestViperblockdConformance judges the provider handlers by the same suite
 // MemoryProvider and qemunbdd answer to.
 func TestViperblockdConformance(t *testing.T) {
-	newProvider, nodeID, otherNodeID, killExport := inProcessProvider(t)
-	conformance.RunSuiteWithConfig(t, newProvider, conformance.SuiteConfig{
-		NamePrefix:  runPrefix(),
-		NodeID:      nodeID,
-		OtherNodeID: otherNodeID,
-		KillExport:  killExport,
+	t.Parallel()
+
+	h := inProcessProvider(t)
+	conformance.RunSuiteWithConfig(t, h.newProvider, conformance.SuiteConfig{
+		NamePrefix:       runPrefix(),
+		NodeID:           h.nodeID,
+		OtherNodeID:      h.otherNodeID,
+		KillExport:       h.killExport,
+		RevokeExport:     h.revokeExport,
+		QueueOnOtherNode: h.queueOnOtherNode,
 	})
 }
 
@@ -139,9 +190,11 @@ func TestViperblockdConformance(t *testing.T) {
 // cannot: whether the nbdkit export viperblockd publishes is usable by libnbd,
 // which knows nothing about this codebase.
 func TestViperblockdNBDClient(t *testing.T) {
-	newProvider, nodeID, _, _ := inProcessProvider(t)
-	conformance.RunNBDClientSuiteWithConfig(t, newProvider, conformance.NBDClientConfig{
-		NodeID:       nodeID,
+	t.Parallel()
+
+	h := inProcessProvider(t)
+	conformance.RunNBDClientSuiteWithConfig(t, h.newProvider, conformance.NBDClientConfig{
+		NodeID:       h.nodeID,
 		VolumePrefix: "vol-" + runPrefix() + "nbd",
 	})
 }

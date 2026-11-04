@@ -204,12 +204,17 @@ type launchTemplateRun struct {
 	before  *ec2launchtemplate.AccountScan
 	cleaned *ec2launchtemplate.AccountCleanup
 	did     attempts
+	// deleteLive is true when this run tried to delete live templates.
+	deleteLive bool
 }
 
-func (c *Cleanup) cleanLaunchTemplates(ctx context.Context, acct string, settledBefore time.Time) *launchTemplateRun {
-	run := &launchTemplateRun{kind: c.startKind(ec2v1.PlatformKindLaunchTemplate), did: newAttempts()}
+func (c *Cleanup) cleanLaunchTemplates(ctx context.Context, acct string, settledBefore time.Time, deleteLive bool) *launchTemplateRun {
+	run := &launchTemplateRun{kind: c.startKind(ec2v1.PlatformKindLaunchTemplate), did: newAttempts(), deleteLive: deleteLive}
 	if before, err := c.templates.ScanAccount(ctx, acct); err == nil {
 		run.before = before
+	}
+	if deleteLive {
+		c.deleteLiveTemplates(ctx, acct, run)
 	}
 	cleaned, err := c.templates.CleanupAccountResidue(ctx, acct, settledBefore)
 	if err != nil {
@@ -218,8 +223,48 @@ func (c *Cleanup) cleanLaunchTemplates(ctx context.Context, acct string, settled
 		return run
 	}
 	run.cleaned = cleaned
-	keepAll(run.did.kept, cleaned.KeptTemplateIDs, ReasonReferenceUnknown)
+	for _, id := range cleaned.KeptTemplateIDs {
+		if run.did.kept[id] == "" {
+			run.did.kept[id] = ReasonReferenceUnknown
+		}
+	}
 	return run
+}
+
+// deleteLiveTemplates deletes the live templates no consumer names. Without a
+// complete consumer answer nothing is deleted and every live template is kept
+// as unchecked, so an unreadable consumer never reads as "no references".
+func (c *Cleanup) deleteLiveTemplates(ctx context.Context, acct string, run *launchTemplateRun) {
+	var consumers *TemplateConsumers
+	if c.refs.Consumers != nil {
+		var err error
+		consumers, err = c.refs.Consumers.AccountTemplateConsumers(ctx, acct)
+		if err != nil {
+			slog.WarnContext(ctx, "Platform cleanup: template consumer check failed", "err", err)
+			consumers = nil
+		}
+	}
+	if consumers == nil {
+		if run.before != nil {
+			keepAll(run.did.kept, run.before.LiveTemplateIDs, ReasonReferenceCheckFailed)
+		}
+		run.kind.incomplete(ReasonReferenceCheckFailed)
+		return
+	}
+	deletes, err := c.templates.DeleteLiveTemplates(ctx, acct, func(id, name string) string {
+		if consumers.names(id, name) {
+			return ReasonLaunchTemplateReference
+		}
+		return ""
+	})
+	if err != nil {
+		slog.WarnContext(ctx, "Platform cleanup: live template delete failed", "err", err)
+		run.kind.incomplete(ec2v1.PlatformReasonStoreListFailed)
+		return
+	}
+	markAll(run.did.deleted, deletes.DeletedTemplateIDs)
+	markAll(run.did.failed, deletes.FailedTemplateIDs)
+	maps.Copy(run.did.kept, deletes.Referenced)
 }
 
 func (c *Cleanup) finishLaunchTemplates(ctx context.Context, acct string, run *launchTemplateRun, res *Result) ownedIDs {
@@ -250,8 +295,10 @@ func (c *Cleanup) finishLaunchTemplates(ctx context.Context, acct string, run *l
 	}
 	// Live templates are never deleted here, so every one still present is
 	// blocked on the unknown EKS nodegroup reference, whenever it appeared.
-	for _, id := range afterLive {
-		run.did.kept[id] = ReasonReferenceUnknown
+	if !run.deleteLive {
+		for _, id := range afterLive {
+			run.did.kept[id] = ReasonReferenceUnknown
+		}
 	}
 	for _, id := range sortedUnion(beforeLive, kept, afterLive) {
 		disposition, reason := itemDisposition(id, run.did, present[id], after != nil)

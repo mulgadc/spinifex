@@ -35,18 +35,18 @@ type Engine struct {
 	// TERMINATING and before the first stage. It records evidence and gates nothing.
 	OnQuiesced func(ctx context.Context, quiescence operatorv1.IAMQuiescence)
 
-	// Cleanup runs the EC2 platform cleanup. Only Exercise uses it.
+	// Cleanup runs the EC2 platform cleanup. Teardown and Exercise both need it.
 	Cleanup PlatformCleaner
 
 	// OnExercised receives what a non-finalizing run did after quiescence.
 	OnExercised func(ctx context.Context, result operatorv1.ExerciseResult)
 
-	// ec2Inventory is EC2's read-only platform inventory. Only DryRun consults
-	// it, and only to log a comparison; no teardown or Inventory call does.
+	// ec2Inventory is EC2's read-only platform inventory: Inventory lists the
+	// L09 kinds from it, and the quiescence evaluation and final re-read use it.
 	ec2Inventory ec2PlatformInventory
 
-	// ec2PlatformShadowBudget overrides ec2PlatformShadowBudget when positive.
-	ec2PlatformShadowBudget time.Duration
+	// ec2PlatformBudget overrides ec2PlatformInventoryBudget when positive.
+	ec2PlatformBudget time.Duration
 }
 
 // NewEngine builds an engine with the default timeouts.
@@ -97,23 +97,21 @@ func (e *Engine) Inventory(ctx context.Context, accountID string) (*Result, erro
 			}
 			stageResult.Deleted = append(stageResult.Deleted, found...)
 		}
+		if stage == StagePlatform {
+			listed, err := e.listPlatformKinds(ctx, accountID)
+			if err != nil {
+				return nil, err
+			}
+			stageResult.Deleted = append(stageResult.Deleted, listed...)
+		}
 		result.Stages = append(result.Stages, stageResult)
 	}
 	return result, nil
 }
 
-// DryRun is the explicit operator dry run. It returns exactly what Inventory
-// returns; beside it, EC2's platform inventory is compared with the legacy
-// listings and only logged, under correlationRef, which authorises nothing.
-func (e *Engine) DryRun(ctx context.Context, accountID, correlationRef string) (*Result, error) {
-	result, err := e.Inventory(ctx, accountID)
-	if err != nil {
-		return nil, err
-	}
-	if e.ec2Inventory != nil {
-		e.shadowEC2Platform(ctx, result, correlationRef)
-	}
-	return result, nil
+// DryRun is the explicit operator dry run: exactly what Inventory returns.
+func (e *Engine) DryRun(ctx context.Context, accountID string) (*Result, error) {
+	return e.Inventory(ctx, accountID)
 }
 
 // Teardown empties the account and then removes it.
@@ -129,13 +127,16 @@ func (e *Engine) Teardown(ctx context.Context, req Request) (*Result, error) {
 	if req.DryRun {
 		return e.Inventory(ctx, req.AccountID)
 	}
+	if e.Cleanup == nil || e.ec2Inventory == nil {
+		return nil, errPlatformCleanupMissing
+	}
 
 	generation, err := e.Accounts.QuiesceAccount(req.AccountID, req.OperationID, req.Fence)
 	if err != nil {
 		return nil, fmt.Errorf("quiesce account: %w", err)
 	}
 	if e.OnQuiesced != nil {
-		e.OnQuiesced(ctx, e.evaluateQuiescence(ctx, req, generation, false))
+		e.OnQuiesced(ctx, e.evaluateQuiescence(ctx, req, generation, true))
 	}
 	e.logger().InfoContext(ctx, "Account teardown started",
 		"accountID", account.AccountID, "accountName", account.AccountName, "force", req.Force)
@@ -145,16 +146,27 @@ func (e *Engine) Teardown(ctx context.Context, req Request) (*Result, error) {
 		AccountName: account.AccountName,
 		Forced:      req.Force,
 	}
+	var platform *platformRun
 	for _, stage := range Stages() {
+		if stage == StagePlatform {
+			var err error
+			if platform, err = e.cleanPlatform(ctx, req, generation); err != nil {
+				return result, err
+			}
+		}
 		stageResult, err := e.runStage(ctx, stage, req)
 		if err != nil {
 			return result, err
+		}
+		if stage == StagePlatform {
+			stageResult.Deleted = append(stageResult.Deleted, platform.deleted...)
 		}
 		result.Stages = append(result.Stages, stageResult)
 		if e.OnStage != nil {
 			e.OnStage(ctx, stageResult)
 		}
 	}
+	e.rereadPlatform(ctx, req, platform, result)
 
 	if stuck := result.StuckCount(); stuck > 0 {
 		// The account stays TERMINATING on purpose. Removing the record now
@@ -344,19 +356,13 @@ func SortReapers(reapers []Reaper) {
 
 // evaluateQuiescence reads back what the quiesce wrote and, only if the fence
 // is confirmed, asks EC2 for its platform inventory within a short budget.
-func (e *Engine) evaluateQuiescence(ctx context.Context, req Request, generation uint64, exercise bool) operatorv1.IAMQuiescence {
+func (e *Engine) evaluateQuiescence(ctx context.Context, req Request, generation uint64, finalRereadGuaranteed bool) operatorv1.IAMQuiescence {
 	ev := QuiesceEvidence{
-		OperationID: req.OperationID, Fence: req.Fence, Generation: generation, EvaluatedAt: time.Now(), Exercise: exercise,
+		OperationID: req.OperationID, Fence: req.Fence, Generation: generation, EvaluatedAt: time.Now(), FinalRereadGuaranteed: finalRereadGuaranteed,
 	}
 	ev.Account, ev.ReadbackErr = e.Accounts.GetAccount(req.AccountID)
 	if _, confirmed := fenceReadback(ev); confirmed && e.ec2Inventory != nil {
-		budget := ec2PlatformShadowBudget
-		if e.ec2PlatformShadowBudget > 0 {
-			budget = e.ec2PlatformShadowBudget
-		}
-		inventoryCtx, cancel := context.WithTimeout(ctx, budget)
-		defer cancel()
-		reply := e.ec2Inventory.PlatformInventory(inventoryCtx, req.AccountID, req.OperationID)
+		reply := e.awaitPlatformInventory(ctx, req.AccountID, req.OperationID)
 		ev.Inventory = &reply
 	}
 	return EvaluateQuiescence(ev)

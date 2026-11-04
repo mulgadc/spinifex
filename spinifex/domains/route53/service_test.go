@@ -509,7 +509,9 @@ func TestChangesOnAnActiveZoneWaitForSync(t *testing.T) {
 
 	doc, _, err := svc.Store().GetRRSets(ctx, acctA, bare)
 	require.NoError(t, err)
-	require.NoError(t, svc.Store().MarkChangesInSync(ctx, acctA, bare, doc.Version))
+	changes, err := svc.Store().ListZoneChanges(ctx, acctA, bare)
+	require.NoError(t, err)
+	require.NoError(t, svc.Store().MarkInSync(ctx, changes, doc.Version))
 	got, err := svc.GetChange(ctx, &r53.GetChangeInput{Id: out.ChangeInfo.Id}, acctA)
 	require.NoError(t, err)
 	assert.Equal(t, route53.ChangeStatusInSync, aws.StringValue(got.ChangeInfo.Status))

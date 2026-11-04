@@ -17,3 +17,15 @@ func Distinct(ids []*string) []string {
 	}
 	return distinct
 }
+
+// Set returns the non-nil values of a request's resource-ID slice as a lookup
+// set. An empty string is kept, so a request naming "" matches no resource.
+func Set(ids []*string) map[string]bool {
+	set := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id != nil {
+			set[*id] = true
+		}
+	}
+	return set
+}

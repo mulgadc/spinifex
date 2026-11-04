@@ -13,6 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 )
 
 // InvokeModel/InvokeModelWithResponseStream carry their guardrail selection
@@ -111,7 +112,7 @@ func (d Deps) bedrockRuntime(w http.ResponseWriter, inv dispatch.Invocation) err
 		return err
 	}
 
-	body, err := readBoundedBody(r)
+	body, err := dispatch.ReadBoundedBody(r)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "BedrockRuntime_Request: failed to read body", "err", err)
 		return err
@@ -132,7 +133,7 @@ func (d Deps) bedrockRuntime(w http.ResponseWriter, inv dispatch.Invocation) err
 
 	// ConverseStream and InvokeModelWithResponseStream own w directly and
 	// write framed event-stream bytes as they arrive, rather than one
-	// buffered struct/body WriteJSONResponse/WriteRawResponse could send in
+	// buffered struct/body WriteJSONResult/WriteRawResponse could send in
 	// one shot. Each returns an error ONLY for a pre-first-frame failure
 	// (-> ErrorHandler); once streaming starts they always return nil,
 	// surfacing any further failure as an in-band exception event.
@@ -150,6 +151,6 @@ func (d Deps) bedrockRuntime(w http.ResponseWriter, inv dispatch.Invocation) err
 		return err
 	}
 
-	ochre.WriteJSONResponse(w, output)
+	envelope.WriteJSONResult(w, output)
 	return nil
 }

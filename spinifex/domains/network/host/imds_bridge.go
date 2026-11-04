@@ -65,13 +65,6 @@ func EnsureIMDSInputRule(ctx context.Context, r Runner) error {
 	return nil
 }
 
-// RemoveIMDSInputRule drops the INPUT accept; a missing rule is not an error.
-func RemoveIMDSInputRule(ctx context.Context, r Runner) {
-	if _, err := r.Run(ctx, "iptables", natRuleArgs("-D", "filter", "INPUT", imdsInputSpec)...); err != nil {
-		slog.Debug("host: IMDS input rule not present on delete", "err", err)
-	}
-}
-
 // imdsRemapComment tags the DNAT rules so an operator can find them and the
 // uninstaller can remove them.
 const imdsRemapComment = "spinifex-imds-remap"
@@ -115,25 +108,6 @@ func EnsureIMDSRemapRules(ctx context.Context, r Runner) error {
 		}
 		slog.Info("host: installed IMDS remap rule", "guest_addr", spec[3], "host_addr", spec[len(spec)-1])
 	}
-	return nil
-}
-
-// RemoveIMDSRemapRules drops the DNATs; a missing rule is not an error.
-func RemoveIMDSRemapRules(ctx context.Context, r Runner) {
-	for _, spec := range imdsRemapSpecs() {
-		if _, err := r.Run(ctx, "iptables", natRuleArgs("-D", "nat", "PREROUTING", spec)...); err != nil {
-			slog.Debug("host: IMDS remap rule not present on delete", "err", err)
-		}
-	}
-}
-
-// RemoveIMDSBridge deletes the IMDS bridge and every flow on it. Idempotent:
-// --if-exists tolerates an already-absent bridge.
-func RemoveIMDSBridge(ctx context.Context, r Runner) error {
-	if _, err := r.Run(ctx, "ovs-vsctl", "--if-exists", "del-br", IMDSBridge); err != nil {
-		return fmt.Errorf("delete %s: %w", IMDSBridge, err)
-	}
-	slog.Debug("IMDS bridge removed", "bridge", IMDSBridge)
 	return nil
 }
 

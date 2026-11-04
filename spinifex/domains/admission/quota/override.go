@@ -230,7 +230,7 @@ func (s *Service) clearAccountQuota(ctx context.Context, accountID string) error
 			return nil
 		case errors.Is(err, jetstream.ErrKeyNotFound):
 			return nil
-		case isRevisionConflict(err):
+		case kvutil.IsRevisionConflict(err):
 			// A concurrent write landed between the read and the guarded
 			// delete; retry against whatever revision now holds.
 			continue

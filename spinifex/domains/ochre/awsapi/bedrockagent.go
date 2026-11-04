@@ -20,6 +20,7 @@ import (
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/nats-io/nats.go"
 )
 
@@ -137,7 +138,7 @@ func (d Deps) bedrockAgent(w http.ResponseWriter, inv dispatch.Invocation) error
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	body, err := readBoundedBody(r)
+	body, err := dispatch.ReadBoundedBody(r)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "BedrockAgent_Request: failed to read body", "err", err)
 		return err
@@ -148,7 +149,7 @@ func (d Deps) bedrockAgent(w http.ResponseWriter, inv dispatch.Invocation) error
 		return err
 	}
 
-	ochre.WriteJSONResponse(w, output)
+	envelope.WriteJSONResult(w, output)
 	return nil
 }
 

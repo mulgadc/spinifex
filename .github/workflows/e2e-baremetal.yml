@@ -71,9 +71,16 @@ jobs:
       ARTIFACT_DIR: /tmp/spinifex-e2e-nightly-cell-${{ inputs.cell || '20' }}-${{ github.run_id }}
       SPINIFEX_OTEL_ATTRS: ${{ inputs.otel-attrs || format('ci.run_id={0},ci.workflow={1},ci.cell={2},ci.matrix=baremetal/pxe/real-hw', github.run_id, github.workflow, inputs.cell || '20') }}
     steps:
+      # A cancelled job's root steps outlive it, since the runner cannot reach
+      # them once it kills sudo, and would keep writing here and to the cache.
+      # A rootfs killed before bin/bash exists is one the build refuses to reuse.
       - name: Clean Workspace
         run: |
+          sudo systemctl stop spinifex-bm-pxe.scope spinifex-bm-e2e.scope 2>/dev/null || true
           sudo umount -R -l "${BM_ISO_CACHE}/rootfs" 2>/dev/null || true
+          if [ -d "${BM_ISO_CACHE}/rootfs" ] && [ ! -x "${BM_ISO_CACHE}/rootfs/bin/bash" ]; then
+            sudo rm -rf --one-file-system "${BM_ISO_CACHE}/rootfs"
+          fi
           if [ ! -c /dev/null ]; then sudo rm -f /dev/null; sudo mknod -m 666 /dev/null c 1 3; fi
           sudo rm -rf --one-file-system "$GITHUB_WORKSPACE"/*
 
@@ -113,10 +120,15 @@ jobs:
             "$GITHUB_WORKSPACE" \
             "${RUNNER_TEMP}/spinifex-tests.tar" \
             "${RUNNER_TEMP}/bm-bins"
+          # Built here, as the runner user, so the PXE build finds it current.
+          make -C "$GITHUB_WORKSPACE" build-microvm-image
 
       - name: Build PXE Artifacts
         run: |
-          sudo make -C mulga/scripts/iso-builder \
+          # -o build-spinifex: the binaries come from Build Artifacts, and a
+          # rebuild here would write root-owned files into the workspace.
+          sudo systemd-run --scope --collect --quiet --unit=spinifex-bm-pxe -- \
+            make -C mulga/scripts/iso-builder -o build-spinifex \
             build-rootfs build-squashfs build-initramfs \
             CACHE="${BM_ISO_CACHE}" \
             SPINIFEX_BIN="${RUNNER_TEMP}/bm-bins/spx" \
@@ -124,6 +136,10 @@ jobs:
             SPINIFEX_SRC="${GITHUB_WORKSPACE}" \
             VIPERBLOCK_SRC="${RUNNER_TEMP}/bm-bins/viperblock" \
             VERSION="$(cd "$GITHUB_WORKSPACE" && git describe --tags --always --exclude '*-dev' 2>/dev/null || echo dev)"
+          if root_owned="$(find "$GITHUB_WORKSPACE" -user root -print -quit)" && [ -n "$root_owned" ]; then
+            echo "::error::the PXE build wrote root-owned files into the workspace, e.g. $root_owned"
+            exit 1
+          fi
 
       - name: Write ePDU credentials
         run: |
@@ -195,12 +211,17 @@ jobs:
           done
           export BM_TEST_TIMEOUT
           echo "suites=${BM_SUITES} test-timeout=${BM_TEST_TIMEOUT}"
-          sudo -E mulga/scripts/baremetal/run-baremetal-e2e.sh \
+          sudo -E systemd-run --scope --collect --quiet --unit=spinifex-bm-e2e -- \
+            mulga/scripts/baremetal/run-baremetal-e2e.sh \
             --vmlinuz   "${BM_ISO_CACHE}/vmlinuz" \
             --initrd    "${BM_ISO_CACHE}/initrd.img" \
             --squashfs  "${BM_ISO_CACHE}/spinifex.squashfs" \
             --tests-tar "${RUNNER_TEMP}/spinifex-tests.tar" \
             2>&1 | tee "${ARTIFACT_DIR}/test-baremetal.log"
+
+      - name: Stop this job's root steps
+        if: always()
+        run: sudo systemctl stop spinifex-bm-pxe.scope spinifex-bm-e2e.scope 2>/dev/null || true
 
       - name: Generate JUnit report
         if: always()

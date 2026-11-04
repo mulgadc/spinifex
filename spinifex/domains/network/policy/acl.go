@@ -47,8 +47,8 @@ const denyACLSeverity = "info"
 // MUST be validated upstream; values are interpolated verbatim.
 type Rule struct {
 	IPProtocol string // "tcp", "udp", "icmp", or "-1" (all)
-	FromPort   int64
-	ToPort     int64
+	FromPort   int64  // ICMP type for "icmp", -1 for any
+	ToPort     int64  // ICMP code for "icmp", -1 for any
 	CIDR       string
 	SourceSG   string
 }
@@ -181,7 +181,15 @@ func appendProtocolMatch(parts []string, rule Rule) ([]string, error) {
 	case "udp":
 		return appendPortMatch(parts, "udp", rule.FromPort, rule.ToPort), nil
 	case "icmp":
-		return append(parts, "icmp4"), nil
+		// AWS reads an ICMP rule's FromPort as the type and ToPort as the code.
+		parts = append(parts, "icmp4")
+		if rule.FromPort != -1 {
+			parts = append(parts, fmt.Sprintf("icmp4.type == %d", rule.FromPort))
+		}
+		if rule.ToPort != -1 {
+			parts = append(parts, fmt.Sprintf("icmp4.code == %d", rule.ToPort))
+		}
+		return parts, nil
 	case "-1", "":
 		return parts, nil
 	default:

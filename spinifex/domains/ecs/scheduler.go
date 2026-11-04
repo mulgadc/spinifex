@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"log/slog"
 	"strings"
 	"sync"
@@ -362,7 +363,7 @@ func (sc *Scheduler) reap(ctx context.Context) (time.Duration, error) {
 // reapBucket reaps one account's disconnected instances and reports when the
 // soonest instance it left alone falls due.
 func (sc *Scheduler) reapBucket(ctx context.Context, kv jetstream.KeyValue, accountID string, now time.Time) time.Duration {
-	keys, err := keysWithPrefix(ctx, kv, "clusters/")
+	keys, err := taskdefinition.KeysWithPrefix(ctx, kv, "clusters/")
 	if err != nil {
 		return 0
 	}
@@ -372,7 +373,7 @@ func (sc *Scheduler) reapBucket(ctx context.Context, kv jetstream.KeyValue, acco
 			continue
 		}
 		var inst InstanceRecord
-		found, err := getJSON(ctx, kv, k, &inst)
+		found, err := taskdefinition.GetJSON(ctx, kv, k, &inst)
 		if err != nil || !found {
 			continue
 		}
@@ -387,7 +388,7 @@ func (sc *Scheduler) reapBucket(ctx context.Context, kv jetstream.KeyValue, acco
 			"lastSeen", inst.LastSeen.Format(time.RFC3339))
 		inst.Status = InstanceStatusDraining
 		inst.Reaped = true
-		if perr := putJSON(ctx, kv, k, &inst); perr != nil {
+		if perr := taskdefinition.PutJSON(ctx, kv, k, &inst); perr != nil {
 			continue
 		}
 		sc.stopInstanceTasks(ctx, kv, accountID, inst.Cluster, inst.InstanceID)
@@ -398,13 +399,13 @@ func (sc *Scheduler) reapBucket(ctx context.Context, kv jetstream.KeyValue, acco
 // stopInstanceTasks transitions a reaped instance's non-stopped tasks to STOPPED
 // and reclaims each awsvpc task's ENI (leak guard for a dead agent).
 func (sc *Scheduler) stopInstanceTasks(ctx context.Context, kv jetstream.KeyValue, accountID, cluster, instanceID string) {
-	keys, err := keysWithPrefix(ctx, kv, TasksPrefix(cluster))
+	keys, err := taskdefinition.KeysWithPrefix(ctx, kv, TasksPrefix(cluster))
 	if err != nil {
 		return
 	}
 	for _, k := range keys {
 		var task TaskRecord
-		found, err := getJSON(ctx, kv, k, &task)
+		found, err := taskdefinition.GetJSON(ctx, kv, k, &task)
 		if err != nil || !found {
 			continue
 		}

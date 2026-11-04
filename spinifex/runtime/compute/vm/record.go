@@ -96,6 +96,7 @@ type InstanceStatus struct {
 	IamInstanceProfileAssociationId string              `json:"iam_instance_profile_association_id,omitempty"`
 
 	Teardown       map[string]string `json:"teardown,omitempty"`
+	UnpublishOwed  []string          `json:"unpublish_owed,omitempty"`
 	TerminatedAt   time.Time         `json:"terminated_at,omitzero"`
 	ShuttingDownAt time.Time         `json:"shutting_down_at,omitzero"`
 	FirstLaunch    bool              `json:"first_launch,omitempty"`
@@ -106,6 +107,10 @@ type InstanceStatus struct {
 	EBSRequests       []EBSRequest   `json:"ebs_requests,omitempty"`
 	ENIAvailableSlots []int          `json:"eni_available_slots,omitempty"`
 	ENIAttachedByID   map[string]int `json:"eni_attached_by_id,omitempty"`
+
+	// UEFIVarStore is optional, so records written without it still decode
+	// and the bucket schema does not change.
+	UEFIVarStore *UEFIVarStoreRef `json:"uefi_var_store,omitempty"`
 }
 
 // Record projects a VM onto the persisted record. QMPClient and the request
@@ -160,12 +165,14 @@ func (v *VM) Record() *InstanceRecord {
 			GPUAttachments:                  v.GPUAttachments,
 			IamInstanceProfileAssociationId: v.IamInstanceProfileAssociationId,
 			Teardown:                        v.Teardown,
+			UnpublishOwed:                   v.UnpublishOwed,
 			TerminatedAt:                    v.TerminatedAt,
 			ShuttingDownAt:                  v.ShuttingDownAt,
 			FirstLaunch:                     v.FirstLaunch,
 			EBSRequests:                     v.EBSRequests.Requests,
 			ENIAvailableSlots:               v.ENIRequests.AvailableSlots,
 			ENIAttachedByID:                 v.ENIRequests.AttachedByENIID,
+			UEFIVarStore:                    v.UEFIVarStore,
 		},
 	}
 }
@@ -219,9 +226,11 @@ func VMFromRecord(r *InstanceRecord) *VM {
 		GPUAttachments:                  r.Status.GPUAttachments,
 		IamInstanceProfileAssociationId: r.Status.IamInstanceProfileAssociationId,
 		Teardown:                        r.Status.Teardown,
+		UnpublishOwed:                   r.Status.UnpublishOwed,
 		TerminatedAt:                    r.Status.TerminatedAt,
 		ShuttingDownAt:                  r.Status.ShuttingDownAt,
 		FirstLaunch:                     r.Status.FirstLaunch,
+		UEFIVarStore:                    r.Status.UEFIVarStore,
 	}
 	v.EBSRequests.Requests = r.Status.EBSRequests
 	v.ENIRequests.AvailableSlots = r.Status.ENIAvailableSlots

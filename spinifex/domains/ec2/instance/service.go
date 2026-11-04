@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
@@ -105,6 +106,8 @@ type GPUClaimer interface {
 type StoppedInstanceStore interface {
 	LoadStoppedInstance(instanceID string) (*vm.VM, error)
 	ListStoppedInstances() ([]*vm.VM, error)
+	ListNonTerminatedInstances() ([]*vm.VM, error)
+	ListTerminatedInPrimary() ([]*vm.VM, error)
 	ListTerminatedInstances() ([]*vm.VM, error)
 	WriteStoppedInstance(instanceID string, instance *vm.VM) error
 	DeleteStoppedInstance(instanceID string) error
@@ -121,6 +124,15 @@ type StoppedInstanceStore interface {
 	ClaimStoppedInstance(instanceID string) (*vm.VM, error)
 }
 
+// UEFIStoreMarker records a terminated instance's UEFI variable store for
+// deletion. Implemented by uefistore.Store.
+type UEFIStoreMarker interface {
+	Exists(ctx context.Context, instanceID string) (bool, error)
+	MarkDeleting(ctx context.Context, instanceID string) (bool, error)
+}
+
+var _ UEFIStoreMarker = (*uefistore.Store)(nil)
+
 // InstanceTagWriter projects an instance record's full tag set into the
 // central tag store, and removes it on terminate. Implemented by
 // domains/ec2/tags.TagsServiceImpl.
@@ -128,6 +140,17 @@ type InstanceTagWriter interface {
 	PutResourceTags(ctx context.Context, accountID, resourceID string, tags map[string]string) error
 	DeleteAllTags(ctx context.Context, accountID, resourceID string) error
 }
+
+// OwedUnpublish names the publish a terminate leaves in place when its unmount
+// did not complete: the node still exporting the volume and the instance it
+// served. The zero value means the unmount completed and nothing is owed.
+type OwedUnpublish struct {
+	NodeID     string
+	InstanceID string
+}
+
+// Owed reports whether a publish is left in place.
+func (o OwedUnpublish) Owed() bool { return o.NodeID != "" }
 
 // VolumeDeleter deletes EBS volumes. Implemented by domains/ec2/volume's
 // VolumeServiceImpl (used by the daemon).
@@ -137,14 +160,16 @@ type VolumeDeleter interface {
 	// DeleteVolumeOnTerminate deletes a DeleteOnTermination volume as part of
 	// an instance terminate: it clears any stale attachment (terminate
 	// implies detach) before deleting, so a still-attached boot volume left
-	// over from Stop is not rejected by DeleteVolume's in-use guard.
-	DeleteVolumeOnTerminate(ctx context.Context, volumeID, accountID string) error
+	// over from Stop is not rejected by DeleteVolume's in-use guard. When owed
+	// names a publish, an unpublish obligation is recorded before the clear.
+	DeleteVolumeOnTerminate(ctx context.Context, volumeID, accountID string, owed OwedUnpublish) error
 
 	// DetachVolumeOnTerminate clears a still-attached volume's attachment on
 	// terminate without deleting it, matching AWS semantics for a
 	// DeleteOnTermination=false volume: terminate still implies detach, it
 	// just leaves the volume behind as available rather than deleting it.
-	DetachVolumeOnTerminate(ctx context.Context, volumeID, accountID string) error
+	// When owed names a publish, an unpublish obligation is recorded first.
+	DetachVolumeOnTerminate(ctx context.Context, volumeID, accountID string, owed OwedUnpublish) error
 }
 
 // VolumeCreator creates the volumes a launch names beyond the root device, and

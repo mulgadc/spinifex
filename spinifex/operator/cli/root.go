@@ -123,10 +123,6 @@ func init() {
 	mustBindEnv("secret-key", "SPINIFEX_SECRET_KEY")
 	mustBindPFlag("secret-key", rootCmd.PersistentFlags(), "secret-key")
 
-	rootCmd.PersistentFlags().String("host", "", "AWS Endpoint (overrides config file and env)")
-	mustBindEnv("host", "SPINIFEX_HOST")
-	mustBindPFlag("host", rootCmd.PersistentFlags(), "host")
-
 	// Viperblock config
 	rootCmd.PersistentFlags().String("base-dir", "", "Viperblock base directory (overrides config file and env)")
 	mustBindEnv("base-dir", "SPINIFEX_BASE_DIR")
@@ -136,19 +132,6 @@ func init() {
 	rootCmd.PersistentFlags().String("nats-host", "", "NATS server host (overrides config file and env)")
 	mustBindEnv("nats-host", "SPINIFEX_NATS_HOST")
 	mustBindPFlag("nats-host", rootCmd.PersistentFlags(), "nats-host")
-
-	rootCmd.PersistentFlags().String("nats-token", "", "NATS authentication token (overrides config file and env)")
-	mustBindEnv("nats-token", "SPINIFEX_NATS_TOKEN")
-	mustBindPFlag("nats-token", rootCmd.PersistentFlags(), "nats-token")
-
-	rootCmd.PersistentFlags().String("nats-subject", "", "NATS subscription subject (overrides config file and env)")
-	mustBindEnv("nats-subject", "SPINIFEX_NATS_SUBJECT")
-	mustBindPFlag("nats-subject", rootCmd.PersistentFlags(), "nats-subject")
-
-	// Bind flags to viper
-	//viper.BindPFlag("nats.host", rootCmd.PersistentFlags().Lookup("nats-host"))
-	//viper.BindPFlag("nats.acl.token", rootCmd.PersistentFlags().Lookup("nats-token"))
-	//viper.BindPFlag("nats.sub.subject", rootCmd.PersistentFlags().Lookup("nats-subject"))
 }
 
 // initConfig reads in config file and ENV variables if set.

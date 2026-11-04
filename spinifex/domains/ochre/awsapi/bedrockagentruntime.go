@@ -18,6 +18,7 @@ import (
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 )
 
 // converseFn is ochre.Converse partially applied over the request's
@@ -96,7 +97,7 @@ func (d Deps) bedrockAgentRuntime(w http.ResponseWriter, inv dispatch.Invocation
 
 	// RetrieveAndGenerate names its knowledge base in the body, so the body is
 	// read ahead of the gate; Retrieve names it in the path.
-	body, err := readBoundedBody(r)
+	body, err := dispatch.ReadBoundedBody(r)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "BedrockAgentRuntime_Request: failed to read body", "err", err)
 		return err
@@ -132,7 +133,7 @@ func (d Deps) bedrockAgentRuntime(w http.ResponseWriter, inv dispatch.Invocation
 		return err
 	}
 
-	ochre.WriteJSONResponse(w, output)
+	envelope.WriteJSONResult(w, output)
 	return nil
 }
 

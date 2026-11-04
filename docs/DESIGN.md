@@ -112,14 +112,14 @@ When a daemon handles `RunInstances`:
 
 1. **Resource Check**: Validates CPU/memory availability via `ResourceManager`
 2. **Volume Generation**: Creates boot and EFI volumes via Viperblock
-3. **Volume Mount**: Sends a mount request to the colocated Viperblock worker on `ebs.{node}.mount`, receives NBD URI
+3. **Volume Mount**: Publishes each volume through the EBS provider contract (`PublishVolume` on `ebs.provider.v1.{node}.mount`), receives its export
 4. **QEMU Launch**: Builds and executes QEMU command with NBD-backed disks
 5. **QMP Monitoring**: Establishes QEMU Machine Protocol connection for VM management
 6. **Command subscription**: Subscribes to `ec2.cmd.{instanceID}` for subsequent commands on this VM
 
 ```go
-// Volume mounting via NATS (runtime/daemon/vm_adapters.go)
-reply, err := ebsRequestWithTrace(ctx, a.nc, instance.AccountID, viperblocklegacyv1.MountSubject(a.node), ebsMountRequest, 30*time.Second)
+// Volume mounting through the EBS provider contract (runtime/daemon/vm_adapters.go)
+published, err := a.provider.PublishVolume(ebsprovider.WithAccountID(ctx, accountID), ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: req.Name, NodeID: a.node})
 
 // QEMU launch with NBD-backed drives in args (runtime/compute/vm/vm.go)
 cmd := exec.Command(qemuArchitecture, args...) // qemu-system-x86_64 or qemu-system-aarch64

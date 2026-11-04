@@ -31,7 +31,7 @@ const (
 func workerActor(session string) dispatch.Actor {
 	return dispatch.Actor{
 		AccountID:     awsidentifiers.GlobalAccountID,
-		PrincipalType: principalTypeAssumedRole,
+		PrincipalType: dispatch.PrincipalTypeAssumedRole,
 		PrincipalARN:  "arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":role/" + WorkerRoleName,
 		SessionName:   session,
 	}
@@ -167,15 +167,15 @@ func TestPrincipalGate(t *testing.T) {
 	const customer = "123456789012"
 	roleIn := func(acct, role string) string { return "arn:aws:iam::" + acct + ":role/" + role }
 	cases := map[string]dispatch.Actor{
-		"customer account role": {AccountID: customer, PrincipalType: principalTypeAssumedRole,
+		"customer account role": {AccountID: customer, PrincipalType: dispatch.PrincipalTypeAssumedRole,
 			PrincipalARN: roleIn(customer, WorkerRoleName), SessionName: instance},
-		"system account, another role": {AccountID: awsidentifiers.GlobalAccountID, PrincipalType: principalTypeAssumedRole,
+		"system account, another role": {AccountID: awsidentifiers.GlobalAccountID, PrincipalType: dispatch.PrincipalTypeAssumedRole,
 			PrincipalARN: roleIn(awsidentifiers.GlobalAccountID, "rdsInstanceRole"), SessionName: instance},
-		"role in another account": {AccountID: awsidentifiers.GlobalAccountID, PrincipalType: principalTypeAssumedRole,
+		"role in another account": {AccountID: awsidentifiers.GlobalAccountID, PrincipalType: dispatch.PrincipalTypeAssumedRole,
 			PrincipalARN: roleIn(customer, WorkerRoleName), SessionName: instance},
 		"system account user": {AccountID: awsidentifiers.GlobalAccountID, PrincipalType: "user",
 			PrincipalARN: "arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":user/" + WorkerRoleName, UserName: WorkerRoleName},
-		"empty session":    {AccountID: awsidentifiers.GlobalAccountID, PrincipalType: principalTypeAssumedRole, PrincipalARN: roleIn(awsidentifiers.GlobalAccountID, WorkerRoleName)},
+		"empty session":    {AccountID: awsidentifiers.GlobalAccountID, PrincipalType: dispatch.PrincipalTypeAssumedRole, PrincipalARN: roleIn(awsidentifiers.GlobalAccountID, WorkerRoleName)},
 		"anonymous caller": {},
 	}
 	for name, actor := range cases {

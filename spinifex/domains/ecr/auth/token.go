@@ -91,16 +91,6 @@ func (i *Issuer) SetActiveKey(key *SigningKey) {
 	i.mu.Unlock()
 }
 
-// ActiveKid returns the kid of the current signing key, or "" if none.
-func (i *Issuer) ActiveKid() string {
-	i.mu.RLock()
-	defer i.mu.RUnlock()
-	if i.key == nil {
-		return ""
-	}
-	return i.key.Kid
-}
-
 // Mint returns a signed ES256 JWT for p and its expiry. The kid header lets any
 // verifier resolve the public key from the shared signing-key set.
 func (i *Issuer) Mint(p Principal) (token string, expiresAt time.Time, err error) {

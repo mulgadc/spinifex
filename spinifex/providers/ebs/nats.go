@@ -35,8 +35,9 @@ const (
 const defaultRequestTimeout = 30 * time.Second
 
 // dataMovementTimeout bounds the subjects whose duration is a function of the
-// volume rather than of the control plane. Matches unmountSealTimeout, this
-// codebase's existing budget for an EBS operation the caller cannot bound.
+// volume rather than of the control plane. It must exceed viperblockd's 120s
+// kill grace plus a seal allowance, or an unpublish that uses the whole grace
+// could never be seen to succeed.
 const dataMovementTimeout = 180 * time.Second
 
 // dataMovementVerbs names every operation that references or moves real data,
@@ -88,11 +89,10 @@ func SnapshotCompletionSubject(snapshotID string) (string, error) {
 
 // Last tokens of the per-node subjects: ebs.provider.v1.<node>.<verb>.
 const (
-	publishVerb          = "mount"
-	unpublishVerb        = "unmount"
-	unsealedVerb         = "unsealed"
-	nodeCapabilitiesVerb = "capabilities"
-	fenceNoticeVerb      = "fenced"
+	publishVerb     = "mount"
+	unpublishVerb   = "unmount"
+	unsealedVerb    = "unsealed"
+	fenceNoticeVerb = "fenced"
 )
 
 // nodeSubjectWildcard is the subject matching verb on every node, for a server
@@ -101,10 +101,9 @@ func nodeSubjectWildcard(verb string) string { return subjectPrefix + "*." + ver
 
 // Wildcards over every node for each per-node subject.
 var (
-	PublishSubjectWildcard          = nodeSubjectWildcard(publishVerb)
-	UnpublishSubjectWildcard        = nodeSubjectWildcard(unpublishVerb)
-	UnsealedWritesSubjectWildcard   = nodeSubjectWildcard(unsealedVerb)
-	NodeCapabilitiesSubjectWildcard = nodeSubjectWildcard(nodeCapabilitiesVerb)
+	PublishSubjectWildcard        = nodeSubjectWildcard(publishVerb)
+	UnpublishSubjectWildcard      = nodeSubjectWildcard(unpublishVerb)
+	UnsealedWritesSubjectWildcard = nodeSubjectWildcard(unsealedVerb)
 )
 
 func nodeSubject(nodeID, verb string) (string, error) {
@@ -131,13 +130,6 @@ func UnpublishSubject(nodeID string) (string, error) {
 // unsealed writes for a set of volumes.
 func UnsealedWritesSubject(nodeID string) (string, error) {
 	return nodeSubject(nodeID, unsealedVerb)
-}
-
-// NodeCapabilitiesSubject returns nodeID's per-node GetCapabilities subject
-// (ebs.provider.v1.<node>.capabilities). Unlike CapabilitiesSubject, which
-// any node's provider answers, only nodeID's provider answers it.
-func NodeCapabilitiesSubject(nodeID string) (string, error) {
-	return nodeSubject(nodeID, nodeCapabilitiesVerb)
 }
 
 // FenceNoticeSubject returns nodeID's fence-notice subject
@@ -218,6 +210,38 @@ func validateSubjectToken(value string) error {
 	return nil
 }
 
+// A publish answered without an error but without a usable export. The
+// provider may have started the export anyway, so a caller must not assume
+// nothing is left to tear down.
+var (
+	ErrNoPublishedVolume = errors.New("returned no published volume")
+	ErrInvalidExport     = errors.New("returned an invalid export")
+)
+
+// ErrUnreadableReply is a reply that arrived but could not be decoded, or
+// carried a schema version this build does not serve. The provider did
+// receive the request, so whatever it asked for may have happened.
+var ErrUnreadableReply = errors.New("provider reply could not be read")
+
+// AccountIDHeader carries the account a contract request acts for. It is the
+// header the control plane's other NATS hops use, so one name attributes a
+// request from the gateway through to the provider.
+const AccountIDHeader = "X-Account-ID"
+
+type accountIDKey struct{}
+
+// WithAccountID returns ctx carrying the account the contract requests made
+// under it act for. An empty accountID leaves them unattributed.
+func WithAccountID(ctx context.Context, accountID string) context.Context {
+	return context.WithValue(ctx, accountIDKey{}, accountID)
+}
+
+// AccountIDFromContext returns the account WithAccountID put on ctx, or "".
+func AccountIDFromContext(ctx context.Context) string {
+	accountID, _ := ctx.Value(accountIDKey{}).(string)
+	return accountID
+}
+
 // NATSProvider drives a provider daemon through the versioned ebs.* contract.
 type NATSProvider struct {
 	conn           *nats.Conn
@@ -239,26 +263,11 @@ func NewNATSProvider(conn *nats.Conn, requestTimeout time.Duration) *NATSProvide
 }
 
 func (p *NATSProvider) GetCapabilities(ctx context.Context, req GetCapabilitiesRequest) (*GetCapabilitiesResponse, error) {
-	return p.getCapabilities(ctx, CapabilitiesSubject, req)
-}
-
-// GetNodeCapabilities asks nodeID's own provider what it supports, over
-// NodeCapabilitiesSubject. A provider that predates that subject gets no
-// responder, which a caller must count as no evidence.
-func (p *NATSProvider) GetNodeCapabilities(ctx context.Context, nodeID string, req GetCapabilitiesRequest) (*GetCapabilitiesResponse, error) {
-	subject, err := NodeCapabilitiesSubject(nodeID)
-	if err != nil {
-		return nil, err
-	}
-	return p.getCapabilities(ctx, subject, req)
-}
-
-func (p *NATSProvider) getCapabilities(ctx context.Context, subject string, req GetCapabilitiesRequest) (*GetCapabilitiesResponse, error) {
 	if err := checkVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	var response GetCapabilitiesResponse
-	if err := p.request(ctx, subject, req, &response); err != nil {
+	if err := p.request(ctx, CapabilitiesSubject, req, &response); err != nil {
 		return nil, err
 	}
 	if err := responseError(response.SchemaVersion, response.Error); err != nil {
@@ -373,7 +382,7 @@ func (p *NATSProvider) CreateSnapshot(ctx context.Context, req CreateSnapshotReq
 	if err != nil {
 		return nil, err
 	}
-	if p.conn == nil || !p.conn.IsConnected() {
+	if !p.connected() {
 		return nil, nats.ErrConnectionClosed
 	}
 
@@ -413,7 +422,7 @@ func (p *NATSProvider) CreateSnapshot(ctx context.Context, req CreateSnapshotReq
 	RecordResponseError(waitSpan, msg.Data)
 	var completed CreateSnapshotResponse
 	if err := json.Unmarshal(msg.Data, &completed); err != nil {
-		return nil, fmt.Errorf("decode snapshot completion: %w", err)
+		return nil, fmt.Errorf("decode snapshot completion: %w: %w", ErrUnreadableReply, err)
 	}
 	if err := responseError(completed.SchemaVersion, completed.Error); err != nil {
 		return nil, err
@@ -496,11 +505,11 @@ func (p *NATSProvider) PublishVolume(ctx context.Context, req PublishVolumeReque
 			return nil, err
 		}
 		if response.Published == nil {
-			return nil, fmt.Errorf("%s returned no published volume", subject)
+			return nil, fmt.Errorf("%s %w", subject, ErrNoPublishedVolume)
 		}
 		published := PublishedVolumeFromV1(response.Published)
 		if err := published.Export.Validate(); err != nil {
-			return nil, fmt.Errorf("%s returned an invalid export: %w", subject, err)
+			return nil, fmt.Errorf("%s %w: %w", subject, ErrInvalidExport, err)
 		}
 		return published, nil
 	}
@@ -512,10 +521,10 @@ func (p *NATSProvider) PublishVolume(ctx context.Context, req PublishVolumeReque
 		return nil, err
 	}
 	if response.Published == nil {
-		return nil, fmt.Errorf("%s returned no published volume", subject)
+		return nil, fmt.Errorf("%s %w", subject, ErrNoPublishedVolume)
 	}
 	if err := response.Published.Export.Validate(); err != nil {
-		return nil, fmt.Errorf("%s returned an invalid export: %w", subject, err)
+		return nil, fmt.Errorf("%s %w: %w", subject, ErrInvalidExport, err)
 	}
 	return response.Published, nil
 }
@@ -557,31 +566,64 @@ func (p *NATSProvider) HoldsUnsealedWrites(ctx context.Context, nodeID string, v
 	return response.Held, nil
 }
 
+// connected reports whether a request can be sent now. A reconnecting
+// connection would buffer it and send it on reconnect, after its caller may
+// have given up, so the provider would act with nobody waiting on the result.
+func connected(conn *nats.Conn) bool {
+	return conn != nil && conn.IsConnected()
+}
+
+func (p *NATSProvider) connected() bool { return connected(p.conn) }
+
 func (p *NATSProvider) request(ctx context.Context, subject string, input, output any) error {
-	if p.conn == nil || !p.conn.IsConnected() {
-		return nats.ErrConnectionClosed
+	reply, err := requestReply(ctx, p.conn, subject, p.timeoutFor(subject), input)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(reply, output); err != nil {
+		return fmt.Errorf("decode %s response: %w: %w", subject, ErrUnreadableReply, err)
+	}
+	return nil
+}
+
+// requestReply sends input on subject as ctx's account, waits up to timeout
+// and returns the raw reply. Its client span records a transport error, an
+// unreadable reply, or the error the reply carries; decoding is the caller's.
+func requestReply(ctx context.Context, conn *nats.Conn, subject string, timeout time.Duration, input any) ([]byte, error) {
+	if !connected(conn) {
+		return nil, nats.ErrConnectionClosed
 	}
 	payload, err := json.Marshal(input)
 	if err != nil {
-		return fmt.Errorf("encode %s request: %w", subject, err)
+		return nil, fmt.Errorf("encode %s request: %w", subject, err)
 	}
 
 	request := &nats.Msg{Subject: subject, Data: payload, Header: nats.Header{}}
-	ctx, span := startClientSpan(ctx, subject, request.Header)
+	accountID := AccountIDFromContext(ctx)
+	if accountID != "" {
+		request.Header.Set(AccountIDHeader, accountID)
+	}
+	ctx, span := startClientSpan(ctx, subject, accountID, request.Header)
 	defer span.End()
 
-	requestCtx, cancel := context.WithTimeout(ctx, p.timeoutFor(subject))
+	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	msg, err := p.conn.RequestMsgWithContext(requestCtx, request)
+	msg, err := conn.RequestMsgWithContext(requestCtx, request)
 	if err != nil {
 		RecordSpanError(span, err)
-		return fmt.Errorf("request %s: %w", subject, err)
-	}
-	if err := json.Unmarshal(msg.Data, output); err != nil {
-		RecordSpanError(span, err)
-		return fmt.Errorf("decode %s response: %w", subject, err)
+		return nil, fmt.Errorf("request %s: %w", subject, err)
 	}
 	RecordResponseError(span, msg.Data)
+	return msg.Data, nil
+}
+
+// ValidateNodeID reports whether nodeID can address this node's contract
+// subjects. A node that fails it has no fence-notice subject, so a revoked
+// export there would leave its guest running.
+func ValidateNodeID(nodeID string) error {
+	if err := validateSubjectToken(nodeID); err != nil {
+		return fmt.Errorf("node ID cannot address EBS provider subjects: %w", err)
+	}
 	return nil
 }
 
@@ -598,7 +640,7 @@ func (p *NATSProvider) requestOwnerFirst(ctx context.Context, ownerSubject, queu
 
 func responseError(version uint16, providerErr *ProviderError) error {
 	if err := checkVersion(version); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrUnreadableReply, err)
 	}
 	if providerErr != nil {
 		return providerErr

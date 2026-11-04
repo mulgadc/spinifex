@@ -839,42 +839,6 @@ func TestIntegration_ServiceGracefulShutdown(t *testing.T) {
 	t.Log("Service is running and responsive")
 }
 
-// TestIntegration_GenericTopicRouting tests that NodeName="" uses generic ebs.unmount with queue group.
-func TestIntegration_GenericTopicRouting(t *testing.T) {
-	t.Parallel()
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	ns, natsURL := setupEmbeddedNATS(t)
-	defer ns.Shutdown()
-
-	cfg := setupTestConfig(t, natsURL)
-	cfg.NodeName = "" // Single-node / generic mode
-	cfg.MountedVolumes = []MountedVolume{
-		{Name: "vol-generic", PID: deadpid.PID},
-	}
-
-	startTestService(t, cfg)
-
-	nc, err := nats.Connect(natsURL)
-	assert.NoError(t, err)
-	defer nc.Close()
-
-	// Send to generic topic (not ebs.{node}.unmount)
-	request := viperblocklegacyv1.EBSRequest{Name: "vol-generic"}
-	requestData, _ := json.Marshal(request)
-
-	msg, err := nc.Request("ebs.unmount", requestData, 3*time.Second)
-	assert.NoError(t, err)
-
-	var response viperblocklegacyv1.EBSUnMountResponse
-	assert.NoError(t, json.Unmarshal(msg.Data, &response))
-	assert.Equal(t, "vol-generic", response.Volume)
-	assert.False(t, response.Mounted)
-	assert.Empty(t, response.Error)
-}
-
 // TestIntegration_MountAuxiliaryVolumeSuffix tests that volumes with -cloudinit suffix
 // reach the mount handler and trigger the auxiliary volume code path.
 func TestIntegration_MountAuxiliaryVolumeSuffix(t *testing.T) {

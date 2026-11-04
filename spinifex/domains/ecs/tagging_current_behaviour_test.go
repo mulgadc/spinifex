@@ -2,6 +2,7 @@ package ecs
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"strings"
 	"sync"
 	"testing"
@@ -57,11 +58,11 @@ func TestCurrentBehaviour_Tagging_ECSTagWriteRevertsInterleavedRecordWrite(t *te
 	key := ServiceKey("web", "api")
 	wrapped := &interleavingKV{KeyValue: kv, key: key, between: func() {
 		var rec ServiceRecord
-		found, gerr := getJSON(ctx, kv, key, &rec)
+		found, gerr := taskdefinition.GetJSON(ctx, kv, key, &rec)
 		require.NoError(t, gerr)
 		require.True(t, found)
 		rec.DesiredCount = 5
-		require.NoError(t, putJSON(ctx, kv, key, &rec))
+		require.NoError(t, taskdefinition.PutJSON(ctx, kv, key, &rec))
 	}}
 
 	err = svc.mutateResourceTags(ctx, wrapped, ecsResourceService, "web", "api", func(existing map[string]string) map[string]string {
@@ -74,7 +75,7 @@ func TestCurrentBehaviour_Tagging_ECSTagWriteRevertsInterleavedRecordWrite(t *te
 	require.NoError(t, err)
 
 	var final ServiceRecord
-	found, err := getJSON(ctx, kv, key, &final)
+	found, err := taskdefinition.GetJSON(ctx, kv, key, &final)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, 0, final.DesiredCount, "the interleaved DesiredCount=5 write is lost")

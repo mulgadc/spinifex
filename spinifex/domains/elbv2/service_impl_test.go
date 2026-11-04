@@ -5,7 +5,9 @@ import (
 	"encoding/xml"
 	"fmt"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"maps"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -355,6 +357,42 @@ func TestDescribeLoadBalancers_UnknownNameReturnsNotFound(t *testing.T) {
 	}, "999999999999")
 	code, _, _ = awserrors.ResolveErrorDetail(err)
 	assert.Equal(t, awserrors.ErrorELBv2LoadBalancerNotFound, code)
+}
+
+func TestDescribeLoadBalancers_UnknownArnReturnsNotFound(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("nf-arn-alb")}, testAccountID)
+	require.NoError(t, err)
+	lbArn := aws.StringValue(lbOut.LoadBalancers[0].LoadBalancerArn)
+	missing := "arn:aws:elasticloadbalancing:ap-southeast-2:" + testAccountID + ":loadbalancer/app/nosuchlb/0123456789abcdef"
+
+	for _, arns := range [][]string{{missing}, {lbArn, missing}} {
+		_, err = svc.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{
+			LoadBalancerArns: aws.StringSlice(arns),
+		}, testAccountID)
+		code, msg, _ := awserrors.ResolveErrorDetail(err)
+		assert.Equal(t, awserrors.ErrorELBv2LoadBalancerNotFound, code, "arns %v", arns)
+		assert.Equal(t, "One or more load balancers not found", msg)
+	}
+
+	// Another account's load balancer is not visible by ARN.
+	_, err = svc.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{
+		LoadBalancerArns: aws.StringSlice([]string{lbArn}),
+	}, "999999999999")
+	code, _, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorELBv2LoadBalancerNotFound, code)
+}
+
+func TestDescribeLoadBalancers_NoFilterEmptyAccountReturnsEmptyList(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	desc, err := svc.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.NotNil(t, desc.LoadBalancers)
+	assert.Empty(t, desc.LoadBalancers)
 }
 
 func TestDescribeListeners_UnknownLoadBalancerReturnsNotFound(t *testing.T) {
@@ -2711,65 +2749,143 @@ func TestUpdateStoredConfig_MissingTargetGroup(t *testing.T) {
 
 // --- Attribute tests ---
 
-// TestDefaultTargetGroupAttributes_CoversTerraformKeys guards the full
-// TargetGroupAttribute key set from the ELBv2 API reference. A missing key
-// fails the whole ModifyTargetGroupAttributes call with ValidationError.
-func TestDefaultTargetGroupAttributes_CoversTerraformKeys(t *testing.T) {
-	t.Parallel()
-	attrs := DefaultTargetGroupAttributes()
-
-	expected := map[string]string{
+var (
+	wantHTTPTGAttrs = map[string]string{
 		"deregistration_delay.timeout_seconds":                                           "300",
-		"stickiness.enabled":                                                             "false",
-		"stickiness.type":                                                                "lb_cookie",
-		"stickiness.lb_cookie.duration_seconds":                                          "86400",
+		"load_balancing.algorithm.anomaly_mitigation":                                    "off",
+		"load_balancing.algorithm.type":                                                  "round_robin",
+		"load_balancing.cross_zone.enabled":                                              "use_load_balancer_configuration",
+		"slow_start.duration_seconds":                                                    "0",
 		"stickiness.app_cookie.cookie_name":                                              "",
 		"stickiness.app_cookie.duration_seconds":                                         "86400",
-		"load_balancing.cross_zone.enabled":                                              "use_load_balancer_configuration",
-		"load_balancing.algorithm.type":                                                  "round_robin",
-		"load_balancing.algorithm.anomaly_mitigation":                                    "off",
-		"slow_start.duration_seconds":                                                    "0",
-		"lambda.multi_value_headers.enabled":                                             "false",
+		"stickiness.enabled":                                                             "false",
+		"stickiness.lb_cookie.duration_seconds":                                          "86400",
+		"stickiness.type":                                                                "lb_cookie",
 		"target_group_health.dns_failover.minimum_healthy_targets.count":                 "1",
 		"target_group_health.dns_failover.minimum_healthy_targets.percentage":            "off",
 		"target_group_health.unhealthy_state_routing.minimum_healthy_targets.count":      "1",
 		"target_group_health.unhealthy_state_routing.minimum_healthy_targets.percentage": "off",
-		"proxy_protocol_v2.enabled":                                                      "false",
+	}
+	wantTCPTGAttrs = map[string]string{
 		"deregistration_delay.connection_termination.enabled":                            "false",
-		"preserve_client_ip.enabled":                                                     "false",
+		"deregistration_delay.timeout_seconds":                                           "300",
+		"load_balancing.cross_zone.enabled":                                              "use_load_balancer_configuration",
+		"proxy_protocol_v2.enabled":                                                      "false",
+		"stickiness.enabled":                                                             "false",
+		"stickiness.type":                                                                "source_ip",
+		"target_group_health.dns_failover.minimum_healthy_targets.count":                 "1",
+		"target_group_health.dns_failover.minimum_healthy_targets.percentage":            "off",
+		"target_group_health.unhealthy_state_routing.minimum_healthy_targets.count":      "1",
+		"target_group_health.unhealthy_state_routing.minimum_healthy_targets.percentage": "off",
 		"target_health_state.unhealthy.connection_termination.enabled":                   "true",
 		"target_health_state.unhealthy.draining_interval_seconds":                        "0",
-		"target_failover.on_deregistration":                                              "no_rebalance",
-		"target_failover.on_unhealthy":                                                   "no_rebalance",
 	}
+)
 
-	for k, v := range expected {
-		got, ok := attrs[k]
-		assert.True(t, ok, "target group default attributes missing key %q — terraform will hit ValidationError", k)
-		assert.Equal(t, v, got, "target group default value mismatch for key %s", k)
+// wantTGAttrs returns the attribute set AWS reports for a new target group.
+func wantTGAttrs(protocol, targetType string) map[string]string {
+	if protocol == "HTTP" {
+		return maps.Clone(wantHTTPTGAttrs)
 	}
+	m := maps.Clone(wantTCPTGAttrs)
+	m["preserve_client_ip.enabled"] = strconv.FormatBool(targetType == "instance")
+	return m
+}
+
+func tgAttrMap(attrs []*elbv2.TargetGroupAttribute) map[string]string {
+	m := make(map[string]string, len(attrs))
+	for _, a := range attrs {
+		m[*a.Key] = *a.Value
+	}
+	return m
+}
+
+var tgAttrCases = []struct{ protocol, targetType string }{
+	{"HTTP", "instance"}, {"HTTP", "ip"}, {"TCP", "instance"}, {"TCP", "ip"},
+}
+
+func createAttrTG(t *testing.T, svc *ELBv2ServiceImpl, protocol, targetType string) *string {
+	t.Helper()
+	out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
+		Name:       aws.String("tg-attr-" + strings.ToLower(protocol) + "-" + targetType),
+		Protocol:   aws.String(protocol),
+		Port:       aws.Int64(80),
+		TargetType: aws.String(targetType),
+	}, testAccountID)
+	require.NoError(t, err)
+	return out.TargetGroups[0].TargetGroupArn
 }
 
 func TestDescribeTargetGroupAttributes_Defaults(t *testing.T) {
 	t.Parallel()
-	svc := setupTestService(t)
-	tgOut, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("tg-attr-defaults")}, testAccountID)
-	require.NoError(t, err)
+	for _, tc := range tgAttrCases {
+		t.Run(tc.protocol+"/"+tc.targetType, func(t *testing.T) {
+			t.Parallel()
+			svc := setupTestService(t)
+			arn := createAttrTG(t, svc, tc.protocol, tc.targetType)
 
-	out, err := svc.DescribeTargetGroupAttributes(context.Background(), &elbv2.DescribeTargetGroupAttributesInput{
-		TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn,
+			out, err := svc.DescribeTargetGroupAttributes(context.Background(), &elbv2.DescribeTargetGroupAttributesInput{
+				TargetGroupArn: arn,
+			}, testAccountID)
+			require.NoError(t, err)
+			assert.Equal(t, wantTGAttrs(tc.protocol, tc.targetType), tgAttrMap(out.Attributes))
+		})
+	}
+}
+
+func TestModifyTargetGroupAttributes_ReturnsFullSet(t *testing.T) {
+	t.Parallel()
+	for _, tc := range tgAttrCases {
+		t.Run(tc.protocol+"/"+tc.targetType, func(t *testing.T) {
+			t.Parallel()
+			svc := setupTestService(t)
+			arn := createAttrTG(t, svc, tc.protocol, tc.targetType)
+
+			out, err := svc.ModifyTargetGroupAttributes(context.Background(), &elbv2.ModifyTargetGroupAttributesInput{
+				TargetGroupArn: arn,
+				Attributes: []*elbv2.TargetGroupAttribute{
+					{Key: aws.String("deregistration_delay.timeout_seconds"), Value: aws.String("30")},
+				},
+			}, testAccountID)
+			require.NoError(t, err)
+			want := wantTGAttrs(tc.protocol, tc.targetType)
+			want["deregistration_delay.timeout_seconds"] = "30"
+			assert.Equal(t, want, tgAttrMap(out.Attributes))
+		})
+	}
+}
+
+// The load balancer controller writes NLB keys on every target group it manages.
+func TestModifyTargetGroupAttributes_AcceptsOtherProtocolKeys(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	arn := createAttrTG(t, svc, "HTTP", "instance")
+
+	_, err := svc.ModifyTargetGroupAttributes(context.Background(), &elbv2.ModifyTargetGroupAttributesInput{
+		TargetGroupArn: arn,
+		Attributes: []*elbv2.TargetGroupAttribute{
+			{Key: aws.String("proxy_protocol_v2.enabled"), Value: aws.String("false")},
+			{Key: aws.String("target_failover.on_unhealthy"), Value: aws.String("no_rebalance")},
+			{Key: aws.String("target_failover.on_deregistration"), Value: aws.String("no_rebalance")},
+			{Key: aws.String("lambda.multi_value_headers.enabled"), Value: aws.String("false")},
+		},
 	}, testAccountID)
 	require.NoError(t, err)
+}
 
-	defaults := DefaultTargetGroupAttributes()
-	assert.Len(t, out.Attributes, len(defaults))
-	attrMap := make(map[string]string)
-	for _, a := range out.Attributes {
-		attrMap[*a.Key] = *a.Value
-	}
-	for k, v := range defaults {
-		assert.Equal(t, v, attrMap[k], "default mismatch for key %s", k)
-	}
+func TestModifyTargetGroupAttributes_UnknownKeyMessage(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	arn := createAttrTG(t, svc, "TCP", "ip")
+
+	_, err := svc.ModifyTargetGroupAttributes(context.Background(), &elbv2.ModifyTargetGroupAttributesInput{
+		TargetGroupArn: arn,
+		Attributes:     []*elbv2.TargetGroupAttribute{{Key: aws.String("bogus.key"), Value: aws.String("1")}},
+	}, testAccountID)
+	require.Error(t, err)
+	code, msg, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorValidationError, code)
+	assert.Equal(t, "Target group attribute key 'bogus.key' is not recognized", msg)
 }
 
 func TestDescribeLoadBalancerAttributes_ALBDefaults(t *testing.T) {
@@ -2989,6 +3105,14 @@ func echoMap(pairs []echoPair) map[string]string {
 	return m
 }
 
+// modifyLen is the number of pairs k's Modify returns after n were submitted.
+func (k attrKind) modifyLen(n int) int {
+	if k.modifySetLen > 0 {
+		return k.modifySetLen
+	}
+	return n
+}
+
 // attrArnPtr returns nil for an empty ARN so the MissingArn cases exercise the
 // real "no ARN supplied" path rather than an empty-string ARN.
 func attrArnPtr(arn string) *string {
@@ -3010,6 +3134,7 @@ type attrKind struct {
 	defaultKey        string // a default present after create
 	defaultVal        string
 	unknownKey        string // a key the handler must reject
+	modifySetLen      int    // size of the full set Modify returns; 0 when it echoes the submitted pairs
 
 	create   func(t *testing.T, svc *ELBv2ServiceImpl, name string) string
 	modify   func(svc *ELBv2ServiceImpl, arn, accountID string, attrs []rawAttr) ([]echoPair, error)
@@ -3026,7 +3151,8 @@ func attrKinds() []attrKind {
 			keyA:       "deregistration_delay.timeout_seconds", valA: "45", valA2: "30",
 			keyB: "stickiness.enabled", valB: "true",
 			defaultKey: "stickiness.type", defaultVal: "lb_cookie",
-			unknownKey: "stickness.enabled", // typo of "stickiness"
+			unknownKey:   "stickness.enabled", // typo of "stickiness"
+			modifySetLen: len(wantHTTPTGAttrs),
 			create: func(t *testing.T, svc *ELBv2ServiceImpl, name string) string {
 				out, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String(name)}, testAccountID)
 				require.NoError(t, err)
@@ -3143,7 +3269,7 @@ func TestAttributeRoundTrip(t *testing.T) {
 			// pass a length check.
 			echoed, err := k.modify(svc, arn, testAccountID, kvAttrs([2]string{k.keyA, k.valA}, [2]string{k.keyB, k.valB}))
 			require.NoError(t, err)
-			require.Len(t, echoed, 2)
+			require.Len(t, echoed, k.modifyLen(2))
 			em := echoMap(echoed)
 			assert.Equal(t, k.valA, em[k.keyA])
 			assert.Equal(t, k.valB, em[k.keyB])
@@ -3262,10 +3388,9 @@ func TestAttributeSkipsInvalidEntries(t *testing.T) {
 				kvAttr(k.keyB, k.valB),
 			})
 			require.NoError(t, err)
-			// Only the one valid attribute should be returned.
-			require.Len(t, echoed, 1)
-			assert.Equal(t, k.keyB, echoed[0].Key)
-			assert.Equal(t, k.valB, echoed[0].Val)
+			// The invalid elements are dropped and the valid one applied.
+			require.Len(t, echoed, k.modifyLen(1))
+			assert.Equal(t, k.valB, echoMap(echoed)[k.keyB])
 
 			// The valid attribute should have been persisted.
 			desc, err := k.describe(svc, arn, testAccountID)
@@ -3351,7 +3476,7 @@ func TestAttributeNoopSkipsPersist(t *testing.T) {
 			// Second modify with identical values — must skip the Put.
 			echoed, err := k.modify(svc, arn, testAccountID, kvAttrs([2]string{k.keyA, k.valA}))
 			require.NoError(t, err)
-			require.Len(t, echoed, 1)
+			require.Len(t, echoed, k.modifyLen(1))
 			assert.Equal(t, revBefore, k.revision(t, svc, arn), "identical modify must not increment KV revision")
 
 			// Empty attribute list is also a no-op.
@@ -3374,7 +3499,8 @@ func TestAttributeRejectsUnknownKey(t *testing.T) {
 			arn := k.create(t, svc, "attr-unknown-key")
 
 			_, err := k.modify(svc, arn, testAccountID, kvAttrs([2]string{k.unknownKey, "true"}))
-			assert.EqualError(t, err, awserrors.ErrorValidationError)
+			code, _ := awserrors.ResolveErrorCode(err)
+			assert.Equal(t, awserrors.ErrorValidationError, code)
 
 			// The rejected key must not have been persisted.
 			desc, err := k.describe(svc, arn, testAccountID)

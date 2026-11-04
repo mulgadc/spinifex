@@ -34,6 +34,9 @@ type fakeIAM struct {
 	profileRoles     map[string][]string
 	attachedUser     []string
 	inlineUser       []string
+	userGroups       []string
+	attachedGroup    []string
+	inlineGroup      []string
 	attachedRole     []string
 	inlineRole       []string
 
@@ -97,6 +100,48 @@ func (f *fakeIAM) ListAccessKeys(_ string, input *iam.ListAccessKeysInput) (*iam
 func (f *fakeIAM) DeleteAccessKey(_ string, _ *iam.DeleteAccessKeyInput) (*iam.DeleteAccessKeyOutput, error) {
 	f.record("DeleteAccessKey")
 	return &iam.DeleteAccessKeyOutput{}, nil
+}
+
+func (f *fakeIAM) ListGroupsForUser(_ string, _ *iam.ListGroupsForUserInput) (*iam.ListGroupsForUserOutput, error) {
+	f.record("ListGroupsForUser")
+	out := &iam.ListGroupsForUserOutput{}
+	for _, name := range f.userGroups {
+		out.Groups = append(out.Groups, &iam.Group{GroupName: aws.String(name)})
+	}
+	return out, nil
+}
+
+func (f *fakeIAM) RemoveUserFromGroup(_ string, _ *iam.RemoveUserFromGroupInput) (*iam.RemoveUserFromGroupOutput, error) {
+	f.record("RemoveUserFromGroup")
+	return &iam.RemoveUserFromGroupOutput{}, nil
+}
+
+func (f *fakeIAM) ListAttachedGroupPolicies(_ string, _ *iam.ListAttachedGroupPoliciesInput) (*iam.ListAttachedGroupPoliciesOutput, error) {
+	f.record("ListAttachedGroupPolicies")
+	out := &iam.ListAttachedGroupPoliciesOutput{}
+	for _, arn := range f.attachedGroup {
+		out.AttachedPolicies = append(out.AttachedPolicies, &iam.AttachedPolicy{PolicyArn: aws.String(arn)})
+	}
+	return out, nil
+}
+
+func (f *fakeIAM) DetachGroupPolicy(_ string, _ *iam.DetachGroupPolicyInput) (*iam.DetachGroupPolicyOutput, error) {
+	f.record("DetachGroupPolicy")
+	return &iam.DetachGroupPolicyOutput{}, nil
+}
+
+func (f *fakeIAM) ListGroupPolicies(_ string, _ *iam.ListGroupPoliciesInput) (*iam.ListGroupPoliciesOutput, error) {
+	f.record("ListGroupPolicies")
+	out := &iam.ListGroupPoliciesOutput{}
+	for _, name := range f.inlineGroup {
+		out.PolicyNames = append(out.PolicyNames, aws.String(name))
+	}
+	return out, nil
+}
+
+func (f *fakeIAM) DeleteGroupPolicy(_ string, _ *iam.DeleteGroupPolicyInput) (*iam.DeleteGroupPolicyOutput, error) {
+	f.record("DeleteGroupPolicy")
+	return &iam.DeleteGroupPolicyOutput{}, nil
 }
 
 func (f *fakeIAM) ListAttachedUserPolicies(_ string, _ *iam.ListAttachedUserPoliciesInput) (*iam.ListAttachedUserPoliciesOutput, error) {
@@ -337,7 +382,38 @@ func TestUserReaperStripsPoliciesBeforeDeleting(t *testing.T) {
 	assert.Equal(t, []string{
 		"ListAttachedUserPolicies", "DetachUserPolicy",
 		"ListUserPolicies", "DeleteUserPolicy",
+		"ListGroupsForUser", "DeleteUser",
+	}, svc.calls)
+}
+
+func TestUserReaperRemovesGroupMembershipsBeforeDeleting(t *testing.T) {
+	svc := newFakeIAM()
+	svc.userGroups = []string{"g1", "g2"}
+
+	err := (&iamUserReaper{svc: svc}).Delete(testCtx(t), "000000000042",
+		Resource{Kind: "iam-user", ID: "admin"}, false)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{
+		"ListAttachedUserPolicies", "ListUserPolicies",
+		"ListGroupsForUser", "RemoveUserFromGroup", "RemoveUserFromGroup",
 		"DeleteUser",
+	}, svc.calls)
+}
+
+func TestGroupReaperStripsPoliciesBeforeDeleting(t *testing.T) {
+	svc := newFakeIAM()
+	svc.attachedGroup = []string{"arn:aws:iam::000000000042:policy/p"}
+	svc.inlineGroup = []string{"inline-1"}
+
+	err := (&iamGroupReaper{svc: svc}).Delete(testCtx(t), "000000000042",
+		Resource{Kind: "iam-group", ID: "g"}, false)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{
+		"ListAttachedGroupPolicies", "DetachGroupPolicy",
+		"ListGroupPolicies", "DeleteGroupPolicy",
+		"DeleteGroup",
 	}, svc.calls)
 }
 

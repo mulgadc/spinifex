@@ -70,8 +70,8 @@ The platform serves **405 AWS API operations** across the services below. See ex
 | **RDS** | Databases | PostgreSQL and MariaDB, with automated backups | Available |
 | **Route 53** | DNS | [Northstar](https://github.com/mulgadc/northstar): authoritative DNS with hosted zones | Available |
 | **Bedrock** | AI deployment | vLLM for text generation and Hugging Face TEI for embeddings and reranking | Q4 2026 |
-| **Lambda** | Serverless functions | | Q1 2027 |
-| **SQS** | Message queues | | Q1 2027 |
+| **Lambda** | Serverless functions | QEMU `microvm` execution environments | Q1 2027 |
+| **SQS** | Message queues | A dedicated NATS JetStream store in a per-Region QEMU `microvm` guest | Q1 2027 |
 
 Roadmap services ship under the same AWS API surface, so code written for AWS today works the moment they land. [Track what's shipped in the release notes](https://github.com/mulgadc/spinifex/releases).
 

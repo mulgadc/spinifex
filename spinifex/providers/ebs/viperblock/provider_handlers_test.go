@@ -154,7 +154,6 @@ func providerSubjectCases() []providerSubjectCase {
 			"node_id":    "test-node",
 			"volume_ids": []string{"vol-testunsealed01"},
 		}},
-		{"node_capabilities", "ebs.provider.v1.test-node.capabilities", map[string]any{}},
 	}
 }
 
@@ -1007,9 +1006,8 @@ func TestProviderHandlers_UnpublishVolume_RemovesMountedVolume(t *testing.T) {
 }
 
 // TestProviderHandlers_UnpublishVolume_AbsentIsIdempotent covers a volume this
-// node never mounted. The legacy path treats that as a successful seal (see
-// unmountResponseError), and so must this one: a retry after a request that
-// timed out client-side but completed server-side has to converge.
+// node never mounted, which counts as a successful seal: a retry after a
+// request that timed out client-side but completed server-side must converge.
 func TestProviderHandlers_UnpublishVolume_AbsentIsIdempotent(t *testing.T) {
 	_, natsURL := setupEmbeddedNATS(t)
 	cfg := setupTestConfig(t, natsURL)
@@ -1029,29 +1027,29 @@ func TestProviderHandlers_UnpublishVolume_AbsentIsIdempotent(t *testing.T) {
 	assert.Nil(t, resp.Error, "unpublishing a volume this node never mounted must succeed")
 }
 
-// TestProviderHandlers_PublishUnpublish_RequireNodeName covers
-// RegisterProviderSubjects' NodeName gate: PublishVolume/UnpublishVolume must
-// not be registered when cfg.NodeName is empty (PublishSubject has no node to
-// address), while every other ebs.provider.v1.* subject still is.
-func TestProviderHandlers_PublishUnpublish_RequireNodeName(t *testing.T) {
+// TestProviderHandlers_RefuseAnUnaddressableNodeName keeps viperblockd from
+// serving where the node-addressed subjects, the fence notice among them, have
+// no subject: a fence there would leave its guest running.
+func TestProviderHandlers_RefuseAnUnaddressableNodeName(t *testing.T) {
 	_, natsURL := setupEmbeddedNATS(t)
-	cfgNoNode := setupTestConfig(t, natsURL)
-	cfgNoNode.NodeName = ""
-	ncNoNode := startProviderSubjects(t, cfgNoNode, natsURL)
+	for _, node := range []string{"", "node.a", "node-*"} {
+		t.Run(node, func(t *testing.T) {
+			nc, err := nats.Connect(natsURL)
+			require.NoError(t, err)
+			t.Cleanup(nc.Close)
 
-	_, natsURL2 := setupEmbeddedNATS(t)
-	cfgNamed := setupTestConfig(t, natsURL2)
-	ncNamed := startProviderSubjects(t, cfgNamed, natsURL2)
+			register := setupTestConfig(t, natsURL)
+			register.NodeName = node
+			err = RegisterProviderSubjects(register, nc)
+			require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
+			assert.Contains(t, err.Error(), "viperblockd node name")
 
-	assert.Equal(t, ncNamed.NumSubscriptions()-4, ncNoNode.NumSubscriptions(),
-		"an empty NodeName must skip exactly the publish, unpublish, unsealed-writes and node capabilities subscriptions")
-
-	// The other provider subjects must still work without a node name.
-	body := marshalRequest(t, map[string]any{"schema_version": ebsprovider.SchemaVersion})
-	msg := requestProvider(t, ncNoNode, ebsprovider.CapabilitiesSubject, body)
-	var resp ebsprovider.GetCapabilitiesResponse
-	require.NoError(t, json.Unmarshal(msg.Data, &resp))
-	assert.Nil(t, resp.Error)
+			run := setupTestConfig(t, natsURL)
+			run.NodeName = node
+			require.ErrorIs(t, run.Run(nc), ebsprovider.ErrInvalidArgument)
+			assert.Zero(t, nc.NumSubscriptions(), "a refused start must serve nothing")
+		})
+	}
 }
 
 // TestProviderHandlers_CreateVolume_SeedValidation covers the guards that must

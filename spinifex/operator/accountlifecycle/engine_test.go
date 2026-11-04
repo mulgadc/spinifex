@@ -126,6 +126,10 @@ func quietEngine(accounts AccountStore, reapers ...Reaper) *Engine {
 	engine := NewEngine(accounts, reapers...)
 	engine.Logger = slog.New(slog.DiscardHandler)
 	engine.Timeouts = Timeouts{StageDrain: 200 * time.Millisecond, DrainPoll: 5 * time.Millisecond}
+	// An account with nothing in the L09 kinds, so a teardown test about another
+	// stage need not stand up the EC2 owners.
+	engine.Cleanup = &stubCleaner{result: cleanResult()}
+	engine.ec2Inventory = &stubInventory{reply: *completeInventory()}
 	return engine
 }
 

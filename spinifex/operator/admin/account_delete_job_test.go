@@ -56,7 +56,7 @@ func newDeleteAccountGateway(t *testing.T) Deps {
 		// it can attribute to a configured node. The seal subjects have their
 		// own responders below, which a second reply here would race.
 		sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
-			if msg.Subject == ec2v1.SealAccountSettingsSubject || strings.HasPrefix(msg.Subject, sealCapabilitySubjectPrefix) {
+			if msg.Subject == ec2v1.SealAccountSettingsSubject || msg.Subject == ec2v1.PlatformInventorySubject || strings.HasPrefix(msg.Subject, sealCapabilitySubjectPrefix) {
 				return
 			}
 			reply := nats.NewMsg(msg.Reply)
@@ -87,6 +87,20 @@ func newDeleteAccountGateway(t *testing.T) Deps {
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sealSub.Unsubscribe() })
+
+	// The tenant owns nothing in the L09 kinds: every scan is complete and clean.
+	inventorySub, err := nc.Subscribe(ec2v1.PlatformInventorySubject, func(msg *nats.Msg) {
+		var req ec2v1.PlatformInventoryRequest
+		_ = json.Unmarshal(msg.Data, &req)
+		reply := ec2v1.PlatformInventoryReply{AccountID: req.AccountID, CorrelationRef: req.CorrelationRef}
+		for _, kind := range ec2v1.PlatformKinds() {
+			reply.Kinds = append(reply.Kinds, ec2v1.PlatformKindReport{Kind: kind, Status: ec2v1.PlatformStatusObservedClean})
+		}
+		data, _ := json.Marshal(reply)
+		_ = msg.Respond(data)
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = inventorySub.Unsubscribe() })
 
 	for _, node := range []string{"node-1"} {
 		capSub, err := nc.Subscribe(ec2v1.AccountSettingsSealCapabilitySubject(node), func(msg *nats.Msg) {
@@ -126,13 +140,14 @@ func newDeleteAccountGateway(t *testing.T) Deps {
 	require.NoError(t, nc.Flush())
 
 	return Deps{
-		IAM:            svc,
-		Termination:    svc,
-		NATS:           nc,
-		ExpectedNodes:  1,
-		NodeIDs:        []string{"node-1"},
-		GatewayNodeIDs: []string{"node-1"},
-		BucketStore:    emptyBucketStore{},
+		IAM:             svc,
+		Termination:     svc,
+		NATS:            nc,
+		ExpectedNodes:   1,
+		NodeIDs:         []string{"node-1"},
+		GatewayNodeIDs:  []string{"node-1"},
+		BucketStore:     emptyBucketStore{},
+		PlatformCleaner: &panicCleaner{},
 	}
 }
 
@@ -256,7 +271,6 @@ func TestAdminDeleteAccountDryRunChangesNothing(t *testing.T) {
 // and holding the call open for it would make every timeout-and-retry start a
 // second one.
 func TestAdminDeleteAccountReturnsBeforeTheTeardownFinishes(t *testing.T) {
-	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 
@@ -269,6 +283,8 @@ func TestAdminDeleteAccountReturnsBeforeTheTeardownFinishes(t *testing.T) {
 	assert.NotEmpty(t, response.DeletionID)
 	assert.Equal(t, account.AccountID, response.AccountID)
 	assert.Equal(t, operatorv1.DeletionStateRunning, response.State)
+	// Parallel only once the teardown is running, so its drain poll overlaps the serial tests.
+	t.Parallel()
 
 	// Progress is polled, so the record has to reach a terminal state on its own.
 	require.Eventually(t, func() bool {
@@ -288,7 +304,6 @@ func TestAdminDeleteAccountReturnsBeforeTheTeardownFinishes(t *testing.T) {
 // The record outlives the account it describes, so a retry that arrives after
 // the teardown finished is answered from it rather than as a missing account.
 func TestAdminDeleteAccountReplaysAfterTheAccountIsGone(t *testing.T) {
-	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	body := deleteAccountBody(t, account.AccountID, "tenant@example.com", deleteClientToken)
@@ -296,6 +311,8 @@ func TestAdminDeleteAccountReplaysAfterTheAccountIsGone(t *testing.T) {
 	first, err := gw.deleteAccount(t.Context(), body)
 	require.NoError(t, err)
 	started := first.(*DeleteAccountResponse)
+	// Parallel only once the teardown is running, so its drain poll overlaps the serial tests.
+	t.Parallel()
 
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/internal/testkit/deadpid"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
@@ -176,23 +177,6 @@ func TestProviderHandlers_PublishVolume_RepublishRepliesInRequestVersion(t *test
 	}
 }
 
-// TestProviderHandlers_NodeCapabilitiesListsServedVersions pins the per-node
-// subject to the same contract versions this build serves.
-func TestProviderHandlers_NodeCapabilitiesListsServedVersions(t *testing.T) {
-	_, natsURL := setupEmbeddedNATS(t)
-	cfg := setupTestConfig(t, natsURL)
-	nc := startProviderSubjects(t, cfg, natsURL)
-
-	subject, err := ebsprovider.NodeCapabilitiesSubject(cfg.NodeName)
-	require.NoError(t, err)
-	msg := requestProvider(t, nc, subject, marshalRequest(t, map[string]any{"schema_version": ebsprovider.SchemaVersion}))
-
-	var resp ebsprovider.GetCapabilitiesResponse
-	require.NoError(t, json.Unmarshal(msg.Data, &resp))
-	require.Nil(t, resp.Error)
-	assert.Equal(t, ebsprovider.SupportedSchemaVersions(), resp.ContractVersions)
-}
-
 // TestProviderHandlers_UnpublishNoSealAboveServedVersionRefused covers a caller
 // newer than this build: a no_seal it cannot vouch for is refused, and the
 // export is neither torn down nor sealed.
@@ -252,6 +236,9 @@ func TestPublishError_Codes(t *testing.T) {
 			assert.Equal(t, tc.want, got.Code)
 		})
 	}
+	// Callers still recognise held-elsewhere by its text, so the message keeps it.
+	heldElsewhere := publishError(ebsprovider.NoSealSchemaVersion, "vol-publisherror01", leaseHeld)
+	assert.Contains(t, heldElsewhere.Message, ec2v1.VolumeHeldElsewhereText)
 	assert.True(t, ebsprovider.ErrorCodeUnavailable.Retryable(), "a backing store that is not ready must read as retry-later")
 }
 

@@ -2,6 +2,7 @@ package webhookcert
 
 import (
 	"crypto/x509"
+	"encoding/pem"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,7 +15,11 @@ const (
 
 func parseLeaf(t *testing.T, certPEM []byte) *x509.Certificate {
 	t.Helper()
-	leaf, err := x509.ParseCertificate(decodeFirst(certPEM))
+	blk, _ := pem.Decode(certPEM)
+	if blk == nil {
+		t.Fatal("no PEM block in cert")
+	}
+	leaf, err := x509.ParseCertificate(blk.Bytes)
 	if err != nil {
 		t.Fatalf("parse cert: %v", err)
 	}

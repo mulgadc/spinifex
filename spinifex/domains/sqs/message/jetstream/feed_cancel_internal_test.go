@@ -33,6 +33,7 @@ func emptied(t *testing.T, f *feed) {
 // TestFeedCancelledBeforeOpenCreatesNothing: Feed with an ended ctx returns
 // its error and creates no consumer.
 func TestFeedCancelledBeforeOpenCreatesNothing(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -51,6 +52,7 @@ func TestFeedCancelledBeforeOpenCreatesNothing(t *testing.T) {
 // TestFeedStartCancelledDuringCreate: a first open whose create finishes after
 // ctx ended releases that consumer and returns ctx's error.
 func TestFeedStartCancelledDuringCreate(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	f := openWedgeable(t, s)
 	emptied(t, f)
@@ -79,6 +81,7 @@ func TestFeedStartCancelledDuringCreate(t *testing.T) {
 // after ctx ended releases that consumer, returns ctx's error and no change;
 // the stored change is delivered by the next Next.
 func TestFeedRecoveryCancelledDuringCreate(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	f := openWedgeable(t, s)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -102,13 +105,14 @@ func TestFeedRecoveryCancelledDuringCreate(t *testing.T) {
 // during a recovery's create, Next returns ErrFeedClosed and Close succeeds
 // only once the late consumer is deleted.
 func TestFeedRecoveryCloseWinsOverCancel(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	f := openWedgeable(t, s)
 	ctx, cancel := context.WithCancel(context.Background())
 	b, next := recoverInto(ctx, t, s, f)
 	closed := make(chan error, 1)
 	go func() { closed <- f.Close() }()
-	require.Eventually(t, f.isClosed, 5*time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool { return closeBegun(f) }, 5*time.Second, 5*time.Millisecond)
 	cancel()
 	close(b.release)
 	close(b.proceed)
@@ -120,6 +124,7 @@ func TestFeedRecoveryCloseWinsOverCancel(t *testing.T) {
 // TestFeedConsumerHasInactiveBackstop: every feed consumer carries the
 // server-side inactive threshold that removes one an ambiguous create left.
 func TestFeedConsumerHasInactiveBackstop(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	f := openWedgeable(t, s)
 	info, err := f.consumer.Info(context.Background())
@@ -144,6 +149,7 @@ func (c cancelThenFail) OrderedConsumer(context.Context, jsapi.OrderedConsumerCo
 // TestFeedFailedOpenAfterCancelReportsCancellation: an open that fails after
 // ctx ended still reports ctx's error, alongside the create failure.
 func TestFeedFailedOpenAfterCancelReportsCancellation(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	f := openWedgeable(t, s)
 	emptied(t, f)

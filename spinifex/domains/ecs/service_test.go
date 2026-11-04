@@ -108,7 +108,7 @@ func TestService_CreateCluster_RejectsUnsupportedSetting(t *testing.T) {
 	assert.Empty(t, list.ClusterArns)
 }
 
-func TestService_DescribeClusters_ReturnsTags(t *testing.T) {
+func TestService_DescribeClusters_ReturnsTagsUnderInclude(t *testing.T) {
 	svc, _ := newTestService(t)
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{
 		ClusterName: aws.String("web"),
@@ -119,8 +119,16 @@ func TestService_DescribeClusters_ReturnsTags(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	out, err := svc.DescribeClusters(context.Background(), &ecs.DescribeClustersInput{
+	plain, err := svc.DescribeClusters(context.Background(), &ecs.DescribeClustersInput{
 		Clusters: []*string{aws.String("web")},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, plain.Clusters, 1)
+	assert.NotNil(t, plain.Clusters[0].Tags)
+	assert.Empty(t, plain.Clusters[0].Tags, "tags are only returned under Include=TAGS")
+
+	out, err := svc.DescribeClusters(context.Background(), &ecs.DescribeClustersInput{
+		Clusters: []*string{aws.String("web")}, Include: aws.StringSlice([]string{ecs.ClusterFieldTags}),
 	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, out.Clusters, 1)
@@ -378,7 +386,7 @@ func TestService_TaskCredIDIsMintedSecret(t *testing.T) {
 		assert.Equal(t, as.CredID, second[taskID].CredID, "re-delivered assign changed credential ID")
 
 		var rec TaskRecord
-		found, gerr := getJSON(ctx, kv, TaskKey("web", taskID), &rec)
+		found, gerr := taskdefinition.GetJSON(ctx, kv, TaskKey("web", taskID), &rec)
 		require.NoError(t, gerr)
 		require.True(t, found)
 		assert.Equal(t, as.CredID, rec.CredID)
@@ -558,10 +566,10 @@ func TestScheduler_ReapBucket_StopsStaleInstanceTasks(t *testing.T) {
 	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
 	var rec InstanceRecord
-	_, err = getJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec)
+	_, err = taskdefinition.GetJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec)
 	require.NoError(t, err)
 	rec.LastSeen = time.Now().UTC().Add(-2 * heartbeatTimeout)
-	require.NoError(t, putJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec))
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec))
 
 	sc := NewScheduler(nc, svc, "test-holder")
 	sc.reapBucket(context.Background(), kv, testAccountID, time.Now().UTC())
@@ -721,7 +729,7 @@ func TestService_RunTask_GPU_ReservesOnPlacement(t *testing.T) {
 	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
 	var rec InstanceRecord
-	found, err := getJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec)
+	found, err := taskdefinition.GetJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, 2, rec.TotalGPU)
@@ -732,7 +740,7 @@ func TestService_RunTask_GPU_ReservesOnPlacement(t *testing.T) {
 		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: taskID,
 		LastStatus: ecsv1.TaskStatusStopped, Reason: "exited",
 	}))
-	found, err = getJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec)
+	found, err = taskdefinition.GetJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, 0, rec.ReservedGPU)
@@ -863,6 +871,109 @@ func TestService_DescribeClusters_CountsAlwaysPresent(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, stats.Clusters, 1)
 	assertCounts(t, stats.Clusters[0])
+}
+
+// TestService_DescribeClusters_IncludeStatisticsAndAttachments checks the
+// sixteen string pairs AWS returns under Include=STATISTICS, in AWS's order,
+// and that ATTACHMENTS adds an empty attachments list.
+func TestService_DescribeClusters_IncludeStatisticsAndAttachments(t *testing.T) {
+	svc, _, _ := serviceTestRig(t)
+	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
+		Cluster: aws.String("web"), ServiceName: aws.String("web"), TaskDefinition: aws.String("app"),
+		DesiredCount: aws.Int64(1),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	plain, err := svc.DescribeClusters(context.Background(), &ecs.DescribeClustersInput{
+		Clusters: []*string{aws.String("web")},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, plain.Clusters, 1)
+	assert.NotNil(t, plain.Clusters[0].Statistics)
+	assert.Empty(t, plain.Clusters[0].Statistics)
+	assert.Nil(t, plain.Clusters[0].Attachments)
+
+	out, err := svc.DescribeClusters(context.Background(), &ecs.DescribeClustersInput{
+		Clusters: []*string{aws.String("web")},
+		Include:  aws.StringSlice([]string{ecs.ClusterFieldStatistics, ecs.ClusterFieldAttachments}),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Clusters, 1)
+	c := out.Clusters[0]
+	assert.NotNil(t, c.Attachments)
+	assert.Empty(t, c.Attachments)
+
+	want := [][2]string{
+		{"runningEC2TasksCount", "0"},
+		{"runningFargateTasksCount", "0"},
+		{"pendingEC2TasksCount", "1"},
+		{"pendingFargateTasksCount", "0"},
+		{"runningExternalTasksCount", "0"},
+		{"pendingExternalTasksCount", "0"},
+		{"runningManagedInstancesTasksCount", "0"},
+		{"pendingManagedInstancesTasksCount", "0"},
+		{"activeEC2ServiceCount", "1"},
+		{"activeFargateServiceCount", "0"},
+		{"drainingEC2ServiceCount", "0"},
+		{"drainingFargateServiceCount", "0"},
+		{"activeExternalServiceCount", "0"},
+		{"drainingExternalServiceCount", "0"},
+		{"activeManagedInstancesServiceCount", "0"},
+		{"drainingManagedInstancesServiceCount", "0"},
+	}
+	got := make([][2]string, 0, len(c.Statistics))
+	for _, kv := range c.Statistics {
+		got = append(got, [2]string{aws.StringValue(kv.Name), aws.StringValue(kv.Value)})
+	}
+	assert.Equal(t, want, got)
+}
+
+// TestService_ClusterResponses_AlwaysCarryCountsAndLists checks every cluster
+// response carries the four counts and the statistics and capacity-provider
+// lists as present empty lists, as AWS does, so they marshal as [].
+func TestService_ClusterResponses_AlwaysCarryCountsAndLists(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	assertShape := func(t *testing.T, op string, c *ecs.Cluster) {
+		t.Helper()
+		for name, v := range map[string]*int64{
+			"registeredContainerInstancesCount": c.RegisteredContainerInstancesCount,
+			"runningTasksCount":                 c.RunningTasksCount,
+			"pendingTasksCount":                 c.PendingTasksCount,
+			"activeServicesCount":               c.ActiveServicesCount,
+		} {
+			assert.NotNil(t, v, "%s: %s", op, name)
+		}
+		assert.NotNil(t, c.Statistics, "%s: statistics", op)
+		assert.NotNil(t, c.CapacityProviders, "%s: capacityProviders", op)
+		assert.NotNil(t, c.DefaultCapacityProviderStrategy, "%s: defaultCapacityProviderStrategy", op)
+		assert.NotNil(t, c.Tags, "%s: tags", op)
+	}
+
+	created, err := svc.CreateCluster(ctx, &ecs.CreateClusterInput{
+		ClusterName: aws.String("web"), Tags: []*ecs.Tag{{Key: aws.String("team"), Value: aws.String("infra")}},
+	}, testAccountID)
+	require.NoError(t, err)
+	assertShape(t, "CreateCluster", created.Cluster)
+	assert.Len(t, created.Cluster.Tags, 1, "CreateCluster echoes the tags")
+
+	described, err := svc.DescribeClusters(ctx, &ecs.DescribeClustersInput{Clusters: aws.StringSlice([]string{"web"})}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, described.Clusters, 1)
+	assertShape(t, "DescribeClusters", described.Clusters[0])
+
+	put, err := svc.PutClusterCapacityProviders(ctx, &ecs.PutClusterCapacityProvidersInput{
+		Cluster: aws.String("web"), CapacityProviders: []*string{}, DefaultCapacityProviderStrategy: []*ecs.CapacityProviderStrategyItem{},
+	}, testAccountID)
+	require.NoError(t, err)
+	assertShape(t, "PutClusterCapacityProviders", put.Cluster)
+	assert.Empty(t, put.Cluster.Tags)
+	assert.NotNil(t, put.Cluster.Attachments)
+
+	deleted, err := svc.DeleteCluster(ctx, &ecs.DeleteClusterInput{Cluster: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	assertShape(t, "DeleteCluster", deleted.Cluster)
+	assert.Empty(t, deleted.Cluster.Tags)
 }
 
 // The following cover the ECS list operations that must return the ARNs key

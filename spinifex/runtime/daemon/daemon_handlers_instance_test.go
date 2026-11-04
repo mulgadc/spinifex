@@ -1,15 +1,20 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/internal/testkit"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
@@ -38,9 +43,13 @@ func daemonWithFakeStateStore(t *testing.T, store *vmmock.StateStore) *Daemon {
 	t.Helper()
 	d := createTestDaemon(t, sharedNATSURL)
 	d.stateStore = store
+	objects := objectstore.NewMemoryObjectStore()
+	for _, stopped := range store.Stopped {
+		seedBootVolume(t, objects, d.config.Predastore.Bucket, stopped.AccountID, stopped.ID)
+	}
 	d.instanceService = ec2instance.NewInstanceServiceImpl(
 		d.config, d.resourceMgr.instanceTypes, d.natsConn,
-		objectstore.NewMemoryObjectStore(), d.vmMgr, d.resourceMgr, store,
+		objects, d.vmMgr, d.resourceMgr, store,
 	)
 	return d
 }
@@ -71,7 +80,7 @@ func decodeError(t *testing.T, data []byte) map[string]any {
 
 // stoppedVMFixture builds a minimally-valid stopped VM for handler tests.
 func stoppedVMFixture(id, accountID string) *vm.VM {
-	return &vm.VM{
+	return withBootVolume(&vm.VM{
 		ID:           id,
 		Status:       vm.StateStopped,
 		InstanceType: "t3.micro",
@@ -84,7 +93,7 @@ func stoppedVMFixture(id, accountID string) *vm.VM {
 			InstanceId:   aws.String(id),
 			InstanceType: aws.String("t3.micro"),
 		},
-	}
+	})
 }
 
 // --- handleEC2StartStoppedInstance ---
@@ -586,10 +595,17 @@ func TestHandleEC2StartStoppedInstance_Forwarding(t *testing.T) {
 
 	t.Run("owner success is relayed", func(t *testing.T) {
 		d, _, body := newFixture(t, "i-p1-fwd-ok", "node-p1-ok")
-		owner(t, d, "node-p1-ok", func(m *nats.Msg) { _ = m.Respond([]byte(`{"started":true}`)) })
+		owner(t, d, "node-p1-ok", func(m *nats.Msg) {
+			resp := nats.NewMsg(m.Reply)
+			resp.Data = []byte(`{"started":true}`)
+			resp.Header.Set(natsmsg.NodeIDHeader, "node-p1-ok")
+			_ = m.RespondMsg(resp)
+		})
 
 		reply := requestHandler(t, d.natsConn, "ec2.start.p1-ok", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
 		assert.JSONEq(t, `{"started":true}`, string(reply.Data))
+		assert.Equal(t, "node-p1-ok", reply.Header.Get(natsmsg.NodeIDHeader),
+			"the relayed verdict is the owner's, headers included")
 	})
 
 	t.Run("owner at capacity falls back locally", func(t *testing.T) {
@@ -616,12 +632,15 @@ func TestHandleEC2StartStoppedInstance_Forwarding(t *testing.T) {
 			resp := nats.NewMsg(m.Reply)
 			resp.Data = awserrors.GenerateErrorPayload(awserrors.ErrorInsufficientInstanceCapacity)
 			resp.Header.Set(natsmsg.UnsealedWritesHeader, "true")
+			resp.Header.Set(natsmsg.NodeIDHeader, "node-p1-dirty")
 			_ = m.RespondMsg(resp)
 		})
 
 		reply := requestHandler(t, d.natsConn, "ec2.start.p1-dirty", asMsgHandler(d.handleEC2StartStoppedInstance), testAccountID, body)
 		assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, decodeError(t, reply.Data)["Code"],
 			"an owner that still holds unsealed writes must not be bypassed by a local start")
+		assert.Equal(t, "true", reply.Header.Get(natsmsg.UnsealedWritesHeader))
+		assert.Equal(t, "node-p1-dirty", reply.Header.Get(natsmsg.NodeIDHeader))
 	})
 
 	t.Run("owner not subscribed falls back locally", func(t *testing.T) {
@@ -640,6 +659,71 @@ func TestHandleEC2StartStoppedInstance_Forwarding(t *testing.T) {
 		msg.Header.Set(natsmsg.AccountIDHeader, testAccountID)
 		assert.Equal(t, outcomeError, d.handleEC2StartStoppedInstance(msg))
 	})
+}
+
+// A start refused because another node holds a volume crosses the owner's
+// reply, the ec2.start forwarder's relay and the StartInstances client, and
+// must still match the sentinel at the end, whatever words the provider used.
+func TestStartInstances_VolumeHeldElsewhereSurvivesTheForward(t *testing.T) {
+	ns, nc := testutil.StartTestNATS(t)
+	store := vmmock.New()
+	v := stoppedVMFixture("i-0abc0000000000001", testAccountID)
+	v.LastNode = "node-owner"
+	store.Stopped[v.ID] = v
+	d := createTestDaemon(t, ns.ClientURL())
+	d.stateStore = store
+	d.instanceService = ec2instance.NewInstanceServiceImpl(
+		d.config, d.resourceMgr.instanceTypes, d.natsConn,
+		objectstore.NewMemoryObjectStore(), d.vmMgr, d.resourceMgr, store,
+	)
+
+	held := fmt.Errorf("%w: %w", ec2v1.ErrVolumeHeldElsewhere,
+		awserrors.Errorf(awserrors.ErrorIncorrectState, "%s", "volume vol-1 is published to node-a"))
+	owner := func(context.Context, *ec2instance.StartStoppedInstanceInput, string) (*ec2instance.StartStoppedInstanceOutput, error) {
+		return nil, held
+	}
+	for subject, fn := range map[string]nats.MsgHandler{
+		"ec2.start.node-owner": asMsgHandler(handleNATSRequest("node-owner", owner)),
+		"ec2.start":            asMsgHandler(d.handleEC2StartStoppedInstance),
+	} {
+		sub, err := nc.Subscribe(subject, fn)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sub.Unsubscribe() })
+	}
+
+	_, err := ec2instanceapi.StartInstances(t.Context(),
+		&ec2.StartInstancesInput{InstanceIds: []*string{aws.String(v.ID)}}, nc, testAccountID)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ec2v1.ErrVolumeHeldElsewhere, "the caller cannot read this refusal from its words")
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorIncorrectState, code)
+	assert.Contains(t, message, "node-a", "the operator still learns where the volume is")
+}
+
+// The header is the one signal that a refusal was a volume held elsewhere, so
+// the owner must not put it on any other start failure in the same AWS code.
+func TestStartOwner_HeldElsewhereHeaderOnlyOnAHeldVolume(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	for name, tc := range map[string]struct {
+		err  error
+		want string
+	}{
+		"held elsewhere": {fmt.Errorf("%w: %w", ec2v1.ErrVolumeHeldElsewhere,
+			awserrors.Errorf(awserrors.ErrorIncorrectState, "%s", "volume vol-1 is published to node-a")), "true"},
+		"other incorrect state": {awserrors.Errorf(awserrors.ErrorIncorrectState, "%s",
+			"instance i-0abc0000000000003 is not stopped"), ""},
+		"internal fault": {errors.New(awserrors.ErrorServerInternal), ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			owner := func(context.Context, *ec2instance.StartStoppedInstanceInput, string) (*ec2instance.StartStoppedInstanceOutput, error) {
+				return nil, tc.err
+			}
+			reply := requestHandler(t, nc, "ec2.start.owner-"+strings.ReplaceAll(name, " ", "-"),
+				asMsgHandler(handleNATSRequest("node-owner", owner)), testAccountID, []byte(`{}`))
+			assert.Equal(t, tc.want, reply.Header.Get(natsmsg.VolumeHeldElsewhereHeader))
+		})
+	}
 }
 
 // --- handleSetInstanceTags / handleSetInstanceMonitoring ---

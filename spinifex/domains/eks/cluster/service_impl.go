@@ -12,7 +12,6 @@ import (
 	"maps"
 	"net"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,7 +31,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -567,13 +568,9 @@ func (s *EKSServiceImpl) CreateCluster(ctx context.Context, input *eks.CreateClu
 	name := aws.StringValue(input.Name)
 	subnetIDs := aws.StringValueSlice(input.ResourcesVpcConfig.SubnetIds)
 
-	js, err := jetstream.New(s.deps.NATSConn)
+	acctKV, err := s.accountBucket(ctx, accountID)
 	if err != nil {
-		return nil, logCreateErr(name, accountID, "jetstream", err)
-	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
-	if err != nil {
-		return nil, logCreateErr(name, accountID, "get account bucket", err)
+		return nil, logCreateErr(name, accountID, "account bucket", err)
 	}
 
 	// ClientRequestToken idempotency, mirroring the EC2 RunInstances ClientToken
@@ -1269,13 +1266,9 @@ func (s *EKSServiceImpl) DescribeCluster(ctx context.Context, input *eks.Describ
 	if name == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	js, err := jetstream.New(s.deps.NATSConn)
+	acctKV, err := s.accountBucket(ctx, accountID)
 	if err != nil {
-		return nil, fmt.Errorf("jetstream: %w", err)
-	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
-	if err != nil {
-		return nil, fmt.Errorf("get account bucket: %w", err)
+		return nil, err
 	}
 	meta, err := GetClusterMeta(ctx, acctKV, name)
 	if err != nil {
@@ -1288,41 +1281,27 @@ func (s *EKSServiceImpl) DescribeCluster(ctx context.Context, input *eks.Describ
 }
 
 func (s *EKSServiceImpl) ListClusters(ctx context.Context, input *eks.ListClustersInput, accountID string) (*eks.ListClustersOutput, error) {
-	js, err := jetstream.New(s.deps.NATSConn)
+	acctKV, err := s.accountBucket(ctx, accountID)
 	if err != nil {
-		return nil, eksReadUnavailableOr(err, "jetstream")
-	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
-	if err != nil {
-		return nil, eksReadUnavailableOr(err, "get account bucket")
+		return nil, eksReadUnavailableOr(err, "account bucket")
 	}
 	names, err := listClusterNames(ctx, acctKV)
 	if err != nil {
 		return nil, eksReadUnavailableOr(err, "list cluster names")
 	}
-	sort.Strings(names)
-
+	from, err := decodeEKSToken(input.NextToken)
+	if err != nil {
+		return nil, err
+	}
 	maxResults := int(aws.Int64Value(input.MaxResults))
 	if maxResults <= 0 || maxResults > 100 {
 		maxResults = 100
 	}
-	startToken := aws.StringValue(input.NextToken)
-
-	page := make([]string, 0, maxResults)
-	var nextToken string
-	startIdx := 0
-	if startToken != "" {
-		startIdx = sort.SearchStrings(names, startToken)
-	}
-	endIdx := min(startIdx+maxResults, len(names))
-	page = append(page, names[startIdx:endIdx]...)
-	if endIdx < len(names) {
-		nextToken = names[endIdx]
-	}
+	page, next := paging.Page(names, func(n string) string { return n }, paging.Request{Limit: maxResults, From: from})
 
 	out := &eks.ListClustersOutput{Clusters: aws.StringSlice(page)}
-	if nextToken != "" {
-		out.NextToken = aws.String(nextToken)
+	if next != "" {
+		out.NextToken = aws.String(next)
 	}
 	return out, nil
 }
@@ -1335,13 +1314,9 @@ func (s *EKSServiceImpl) DeleteCluster(ctx context.Context, input *eks.DeleteClu
 	if name == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	js, err := jetstream.New(s.deps.NATSConn)
+	acctKV, err := s.accountBucket(ctx, accountID)
 	if err != nil {
-		return nil, fmt.Errorf("jetstream: %w", err)
-	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
-	if err != nil {
-		return nil, fmt.Errorf("get account bucket: %w", err)
+		return nil, err
 	}
 
 	meta, err := GetClusterMeta(ctx, acctKV, name)
@@ -1705,7 +1680,7 @@ func (s *EKSServiceImpl) CreateNodegroup(ctx context.Context, input *eks.CreateN
 	if err := s.requireOrchestrationDeps("CreateNodegroup"); err != nil {
 		return nil, err
 	}
-	acctKV, err := s.nodegroupAcctKV(ctx, accountID)
+	acctKV, err := s.accountBucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -1716,7 +1691,7 @@ func (s *EKSServiceImpl) DescribeNodegroup(ctx context.Context, input *eks.Descr
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.nodegroupAcctKV(ctx, accountID)
+	acctKV, err := s.accountBucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -1727,7 +1702,7 @@ func (s *EKSServiceImpl) ListNodegroups(ctx context.Context, input *eks.ListNode
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	acctKV, err := s.nodegroupAcctKV(ctx, accountID)
+	acctKV, err := s.accountBucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -1738,7 +1713,7 @@ func (s *EKSServiceImpl) UpdateNodegroupConfig(ctx context.Context, input *eks.U
 	if err := s.requireOrchestrationDeps("UpdateNodegroupConfig"); err != nil {
 		return nil, err
 	}
-	acctKV, err := s.nodegroupAcctKV(ctx, accountID)
+	acctKV, err := s.accountBucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -1749,7 +1724,7 @@ func (s *EKSServiceImpl) DeleteNodegroup(ctx context.Context, input *eks.DeleteN
 	if err := s.requireOrchestrationDeps("DeleteNodegroup"); err != nil {
 		return nil, err
 	}
-	acctKV, err := s.nodegroupAcctKV(ctx, accountID)
+	acctKV, err := s.accountBucket(ctx, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -1763,13 +1738,9 @@ func (s *EKSServiceImpl) acctKVForCluster(ctx context.Context, accountID, cluste
 	if cluster == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	js, err := jetstream.New(s.deps.NATSConn)
+	acctKV, err := s.accountBucket(ctx, accountID)
 	if err != nil {
-		return nil, fmt.Errorf("jetstream: %w", err)
-	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
-	if err != nil {
-		return nil, fmt.Errorf("get account bucket: %w", err)
+		return nil, err
 	}
 	if _, err := GetClusterMeta(ctx, acctKV, cluster); err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
@@ -2161,36 +2132,36 @@ func (s *EKSServiceImpl) casUpdateNodegroupTags(ctx context.Context, accountID, 
 	if err != nil {
 		return err
 	}
-	for range ngCASMaxRetries {
-		rec, rev, err := getNodegroupEntry(ctx, acctKV, cluster, ng)
-		if err != nil {
-			if errors.Is(err, ErrNodegroupNotFound) {
-				return errors.New(awserrors.ErrorEKSResourceNotFound)
-			}
-			return err
-		}
+	_, err = kvutil.Update(ctx, acctKV, NodegroupKey(cluster, ng), kvutil.CASConfig{
+		Attempts:  ngCASMaxRetries,
+		NotFound:  errors.New(awserrors.ErrorEKSResourceNotFound),
+		Exhausted: func(string, int) error { return errors.New(awserrors.ErrorServerInternal) },
+	}, func(rec *NodegroupRecord) (bool, error) {
 		tags, changed := mutate(rec.Tags)
 		if !changed {
-			return nil
+			return false, nil
 		}
 		rec.Tags = tags
 		rec.ModifiedAt = time.Now().UTC()
-		if ok, err := s.casPutNodegroup(ctx, acctKV, rec, rev); err != nil {
-			return err
-		} else if ok {
-			return nil
-		}
-	}
-	return errors.New(awserrors.ErrorServerInternal)
+		return true, nil
+	})
+	return err
 }
 
 // accountBucket returns the per-account KV bucket for accountID.
 func (s *EKSServiceImpl) accountBucket(ctx context.Context, accountID string) (jetstream.KeyValue, error) {
+	if s.deps.NATSConn == nil {
+		return nil, errors.New("eks: nil NATS connection")
+	}
 	js, err := jetstream.New(s.deps.NATSConn)
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	return GetOrCreateAccountBucket(ctx, js, accountID)
+	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("get account bucket: %w", err)
+	}
+	return acctKV, nil
 }
 
 // clusterNameFromARN extracts the cluster name from an EKS cluster ARN
@@ -2447,12 +2418,7 @@ func (s *EKSServiceImpl) stopBootstrap(accountID, clusterName string) {
 }
 
 func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *ClusterMeta) {
-	js, err := jetstream.New(s.deps.NATSConn)
-	if err != nil {
-		slog.Error("spawnReconciler: jetstream", "err", err)
-		return
-	}
-	acctKV, err := GetOrCreateAccountBucket(s.bgCtx, js, accountID)
+	acctKV, err := s.accountBucket(s.bgCtx, accountID)
 	if err != nil {
 		slog.Error("spawnReconciler: account bucket", "err", err)
 		return

@@ -124,7 +124,7 @@ func TestStopInstances_NeverExistedIsNotFound(t *testing.T) {
 	}, nc, "123456789012")
 
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.EqualError(t, err, "The instance ID 'i-d2d5fe795b6b57882' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 	assert.Nil(t, output)
 }
 
@@ -220,6 +220,6 @@ func TestStopInstances_MixedBatchWithUnknownIDFails(t *testing.T) {
 	}, nc, "123456789012")
 
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.EqualError(t, err, "The instance ID 'i-587b21c4147f9d9d8' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 	assert.Nil(t, output)
 }

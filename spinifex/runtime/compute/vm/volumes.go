@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 )
 
@@ -26,7 +25,7 @@ const blockdevDelMaxAttempts = 20
 // object-del steps), so a wedged-but-responsive QEMU cannot stack per-step
 // timeouts into an effectively unbounded hang. It comfortably covers those
 // steps' own budgets (qmpCommandTimeout + the bounded blockdev-del retry) plus
-// margin; the ebs.unmount seal keeps its separate unmountSealTimeout.
+// margin; the volume seal is not bound by it and keeps its own budget.
 const detachAggregateTimeout = 3 * time.Minute
 
 // ErrHotAttachUnsupported is returned by AttachVolume for a direct-boot microvm,
@@ -120,9 +119,9 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 		return "", fmt.Errorf("VolumeMounter not wired")
 	}
 	if err := m.deps.VolumeMounter.MountOne(ctx, instance.AccountID, &ebsRequest); err != nil {
-		slog.ErrorContext(ctx, "AttachVolume: ebs.mount failed", "volumeId", volumeID, "err", err)
-		// Empty-URI response leaves backend NBD state ambiguous; unmount
-		// defensively to avoid orphaning a half-started mount.
+		slog.ErrorContext(ctx, "AttachVolume: publish failed", "volumeId", volumeID, "err", err)
+		// A publish with no usable reply may have started an export, so it is
+		// unpublished defensively rather than orphaned.
 		if errors.Is(err, ErrMountAmbiguous) {
 			_ = m.rollbackUnmount(ctx, instance.AccountID, ebsRequest)
 		}
@@ -143,7 +142,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 	if kind == volumeExportBlock {
 		blockdevArgs = HostDeviceOpts{Path: ebsRequest.BlockDevice, SizeBytes: ebsRequest.BlockSizeBytes}.QMPArgs(nodeName)
 	} else {
-		serverType, socketPath, nbdHost, nbdPort, err := nbd.ParseNBDURI(ebsRequest.NBDURI)
+		server, err := nbdServerOpts(ebsRequest.NBDURI)
 		if err != nil {
 			slog.ErrorContext(ctx, "AttachVolume: failed to parse NBDURI", "uri", ebsRequest.NBDURI, "err", err)
 			_ = m.rollbackUnmount(ctx, instance.AccountID, ebsRequest)
@@ -152,7 +151,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 		blockdevArgs = map[string]any{
 			"node-name":       nodeName,
 			"driver":          "nbd",
-			"server":          NBDServerOpts{Type: serverType, Path: socketPath, Host: nbdHost, Port: nbdPort}.QMPArg(),
+			"server":          server.QMPArg(),
 			"export":          "",
 			"read-only":       false,
 			"reconnect-delay": NBDReconnectDelaySeconds,
@@ -301,7 +300,7 @@ func (m *Manager) AttachVolume(ctx context.Context, id, volumeID, device string)
 }
 
 // DetachVolume hot-unplugs a volume via the QMP pipeline (device_del →
-// blockdev-del → object-del → ebs.unmount). Returns the recorded AWS-API device
+// blockdev-del → object-del → unpublish). Returns the recorded AWS-API device
 // name. force=true tolerates device_del failure; blockdev-del is always required.
 func (m *Manager) DetachVolume(ctx context.Context, id, volumeID, device string, force bool) (string, error) {
 	instance, ok := m.Get(id)
@@ -345,8 +344,8 @@ func (m *Manager) DetachVolume(ctx context.Context, id, volumeID, device string,
 
 	// Bound the ctx-driven portion of the hot-unplug chain so a wedged-but-
 	// responsive QEMU cannot stack per-step QMP timeouts into an unbounded hang
-	// that pins attachMu forever. The ebs.unmount seal below keeps its own
-	// unmountSealTimeout. This deadline cannot preempt a plain-mutex QMP call,
+	// that pins attachMu forever. The volume seal below is not bound by it and
+	// keeps its own budget. This deadline cannot preempt a plain-mutex QMP call,
 	// which is why a fully dead QEMU is short-circuited outright below.
 	ctx, cancel := context.WithTimeout(ctx, detachAggregateTimeout)
 	defer cancel()
@@ -360,7 +359,7 @@ func (m *Manager) DetachVolume(ctx context.Context, id, volumeID, device string,
 
 	// A confirmed-dead QEMU took every block node and guest device down with it,
 	// so the QMP unplug steps are moot — and worse, issuing them only risks
-	// hanging on the wedged process. Skip straight to the ebs.unmount seal and
+	// hanging on the wedged process. Skip straight to the unpublish seal and
 	// the attachment clear. This is the detach-wedges-when-QEMU-dies fix: the
 	// context deadline above cannot interrupt a plain-mutex QMP path, so a
 	// provably-gone process must bypass it rather than wait on it. A missing PID
@@ -423,15 +422,15 @@ func (m *Manager) DetachVolume(ctx context.Context, id, volumeID, device string,
 			"volumeId", volumeID, "instanceId", instance.ID)
 	}
 
-	// ebs.unmount drives the synchronous block-map seal to predastore. On
+	// Unpublish drives the synchronous block-map seal to the backend. On
 	// failure the volume's local WAL is retained, so keep the volume attached
 	// and return the error; an AWS-CLI retry re-drives the seal and same-node
 	// reattach still works meanwhile.
 	if m.deps.VolumeMounter != nil {
 		if err := m.deps.VolumeMounter.UnmountOne(ctx, instance.AccountID, ebsReq); err != nil {
-			slog.ErrorContext(ctx, "DetachVolume: ebs.unmount seal failed, leaving volume attached",
+			slog.ErrorContext(ctx, "DetachVolume: unpublish seal failed, leaving volume attached",
 				"volumeId", volumeID, "err", err)
-			return "", fmt.Errorf("ebs.unmount seal: %w", err)
+			return "", fmt.Errorf("unpublish seal: %w", err)
 		}
 	}
 
@@ -555,7 +554,7 @@ func (m *Manager) tryBlockdevDel(ctx context.Context, instance *VM, nodeName str
 			return nil
 		}
 		// A prior detach already removed the block node (e.g. an AWS-CLI retry
-		// after the ebs.unmount seal failed): treat as success so the retry
+		// after the unpublish seal failed): treat as success so the retry
 		// resumes through object-del to the seal instead of wedging on a
 		// now-absent node.
 		if isQMPNodeNotFound(err) {

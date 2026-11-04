@@ -9,6 +9,7 @@ import (
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/policy"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,12 +38,12 @@ func TestAuthorizeCaller_DeniesInternalActionsToCustomers(t *testing.T) {
 	}{
 		{"customer user", testCaller},
 		{"customer role session", Caller{
-			AccountID: testAccountID, PrincipalType: principalTypeAssumedRole,
+			AccountID: testAccountID, PrincipalType: dispatch.PrincipalTypeAssumedRole,
 			RoleName: "admin", SessionName: "alice",
 		}},
 		// The one an rds:* admin grant would otherwise carry all the way in.
 		{"customer session named like an instance", Caller{
-			AccountID: testAccountID, PrincipalType: principalTypeAssumedRole,
+			AccountID: testAccountID, PrincipalType: dispatch.PrincipalTypeAssumedRole,
 			RoleName: rdsinstance.InstanceRoleName, SessionName: testInstanceID,
 		}},
 		{"system user rather than a session", Caller{
@@ -50,7 +51,7 @@ func TestAuthorizeCaller_DeniesInternalActionsToCustomers(t *testing.T) {
 			RoleName: rdsinstance.InstanceRoleName, SessionName: testInstanceID,
 		}},
 		{"system session under another role", Caller{
-			AccountID: awsidentifiers.GlobalAccountID, PrincipalType: principalTypeAssumedRole,
+			AccountID: awsidentifiers.GlobalAccountID, PrincipalType: dispatch.PrincipalTypeAssumedRole,
 			RoleName: "ecsInstanceRole", SessionName: testInstanceID,
 		}},
 	}

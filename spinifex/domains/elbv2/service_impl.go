@@ -1230,10 +1230,11 @@ func certFilesToSDK(certFiles map[string]string) []*CertFile {
 }
 
 // resolveTargetIP looks up the private IP for an instance by finding its primary ENI.
-// Returns empty string if VPC service is unavailable or no ENI found.
-func (s *ELBv2ServiceImpl) resolveTargetIP(ctx context.Context, instanceID, accountID string) string {
+// found is false when no ENI in the account is attached to the instance, which
+// is how a non-existent instance shows; without a VPC service nothing is checked.
+func (s *ELBv2ServiceImpl) resolveTargetIP(ctx context.Context, instanceID, accountID string) (ip string, found bool, err error) {
 	if s.VPCService == nil {
-		return ""
+		return "", true, nil
 	}
 
 	result, err := s.VPCService.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
@@ -1241,35 +1242,35 @@ func (s *ELBv2ServiceImpl) resolveTargetIP(ctx context.Context, instanceID, acco
 			{Name: aws.String("attachment.instance-id"), Values: []*string{aws.String(instanceID)}},
 		},
 	}, accountID)
-	if err != nil || len(result.NetworkInterfaces) == 0 {
-		slog.WarnContext(ctx, "Could not resolve target IP — target will not receive traffic until ENI is attached", "instanceId", instanceID, "err", err)
-		return ""
+	if err != nil {
+		slog.ErrorContext(ctx, "RegisterTargets: ENI lookup failed", "instanceId", instanceID, "err", err)
+		return "", false, errors.New(awserrors.ErrorServerInternal)
 	}
-
-	// Use the first (primary) ENI's private IP
-	if result.NetworkInterfaces[0].PrivateIpAddress != nil {
-		return *result.NetworkInterfaces[0].PrivateIpAddress
+	// The filter matches wildcards, so require the attachment to name this exact instance.
+	if len(result.NetworkInterfaces) == 0 || result.NetworkInterfaces[0].Attachment == nil ||
+		aws.StringValue(result.NetworkInterfaces[0].Attachment.InstanceId) != instanceID {
+		return "", false, nil
 	}
-	return ""
+	return aws.StringValue(result.NetworkInterfaces[0].PrivateIpAddress), true, nil
 }
 
 // resolveRegisteredTargetIP returns the private IP for a target being registered.
 // For ip-type targets the ID is the IP; for instance targets it is resolved via
-// the primary ENI. Returns an error if the ID doesn't match the target type.
-func (s *ELBv2ServiceImpl) resolveRegisteredTargetIP(ctx context.Context, targetType, id, accountID string) (string, error) {
+// the primary ENI, and found is false when the instance does not exist.
+func (s *ELBv2ServiceImpl) resolveRegisteredTargetIP(ctx context.Context, targetType, id, accountID string) (ip string, found bool, err error) {
 	switch targetType {
 	case TargetTypeIP:
 		if net.ParseIP(id) == nil {
 			slog.WarnContext(ctx, "RegisterTargets: ip target id is not a valid IP", "id", id)
-			return "", errors.New(awserrors.ErrorInvalidParameterValue)
+			return "", false, errors.New(awserrors.ErrorInvalidParameterValue)
 		}
-		return id, nil
+		return id, true, nil
 	default: // instance
 		if net.ParseIP(id) != nil {
 			slog.WarnContext(ctx, "RegisterTargets: instance target group given an IP address", "id", id)
-			return "", errors.New(awserrors.ErrorInvalidParameterValue)
+			return "", false, errors.New(awserrors.ErrorInvalidParameterValue)
 		}
-		return s.resolveTargetIP(ctx, id, accountID), nil
+		return s.resolveTargetIP(ctx, id, accountID)
 	}
 }
 
@@ -1342,6 +1343,11 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 
 	name := *input.Name
 
+	tags, err := tagsFromSDK(input.Tags)
+	if err != nil {
+		return nil, err
+	}
+
 	// Check for duplicate name
 	existing, err := s.store.GetLoadBalancerByName(ctx, name, accountID)
 	if err != nil {
@@ -1374,6 +1380,15 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 		if scheme != SchemeInternetFacing && scheme != SchemeInternal {
 			return nil, errors.New(awserrors.ErrorELBv2InvalidScheme)
 		}
+	}
+
+	// Only ipv4 front ends are served, as SetIpAddressType enforces, and
+	// Spinifex has no Outposts customer-owned address pools.
+	if t := aws.StringValue(input.IpAddressType); t != "" && t != IPAddressTypeIPv4 {
+		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
+	}
+	if aws.StringValue(input.CustomerOwnedIpv4Pool) != "" {
+		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
 	}
 
 	lbID := awsidentifiers.GenerateResourceID("lb")
@@ -1413,8 +1428,6 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 			securityGroups = append(securityGroups, *sg)
 		}
 	}
-
-	tags := tagsFromSDK(input.Tags)
 
 	// Create ENIs in each subnet (when VPC service is available)
 	var eniIDs []string
@@ -1972,7 +1985,16 @@ func (s *ELBv2ServiceImpl) DescribeLoadBalancers(ctx context.Context, input *elb
 		result = append(result, s.lbRecordToSDK(ctx, lb))
 	}
 
-	// AWS fails the whole call when any requested name is unknown.
+	// AWS fails the whole call when any requested ARN or name is unknown.
+	if len(arnFilter) > 0 {
+		for _, lb := range result {
+			delete(arnFilter, aws.StringValue(lb.LoadBalancerArn))
+		}
+		if len(arnFilter) > 0 {
+			return nil, awserrors.Errorf(awserrors.ErrorELBv2LoadBalancerNotFound,
+				"One or more load balancers not found")
+		}
+	}
 	if len(nameFilter) > 0 {
 		for _, lb := range result {
 			delete(nameFilter, aws.StringValue(lb.LoadBalancerName))
@@ -2128,7 +2150,10 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 	tgID := awsidentifiers.GenerateResourceID("tg")
 	tgArn := resourcearn.FormatELBv2TargetGroup(s.region, accountID, name, tgID)
 
-	tags := tagsFromSDK(input.Tags)
+	tags, err := tagsFromSDK(input.Tags)
+	if err != nil {
+		return nil, err
+	}
 
 	record := &TargetGroupRecord{
 		TargetGroupArn:  tgArn,
@@ -2454,6 +2479,7 @@ func (s *ELBv2ServiceImpl) RegisterTargets(ctx context.Context, input *elbv2.Reg
 		registered[targetKey(t.Id, t.Port)] = true
 	}
 	pending := make([]Target, 0, len(input.Targets))
+	var invalid []string
 	for _, td := range input.Targets {
 		if td.Id == nil {
 			continue
@@ -2465,9 +2491,13 @@ func (s *ELBv2ServiceImpl) RegisterTargets(ctx context.Context, input *elbv2.Reg
 		if registered[targetKey(*td.Id, port)] {
 			continue // Already registered
 		}
-		privateIP, err := s.resolveRegisteredTargetIP(ctx, tg.TargetType, *td.Id, accountID)
+		privateIP, found, err := s.resolveRegisteredTargetIP(ctx, tg.TargetType, *td.Id, accountID)
 		if err != nil {
 			return nil, err
+		}
+		if !found {
+			invalid = append(invalid, "'"+*td.Id+"'")
+			continue
 		}
 		pending = append(pending, Target{
 			Id:          *td.Id,
@@ -2476,6 +2506,10 @@ func (s *ELBv2ServiceImpl) RegisterTargets(ctx context.Context, input *elbv2.Reg
 			HealthDesc:  "Target registration is in progress",
 			PrivateIP:   privateIP,
 		})
+	}
+
+	if len(invalid) > 0 {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError, "The following targets are not valid instances: %s", strings.Join(invalid, ", "))
 	}
 
 	// The append runs against the record as committed, not the copy read above,
@@ -2912,7 +2946,10 @@ func (s *ELBv2ServiceImpl) CreateListener(ctx context.Context, input *elbv2.Crea
 		actions = append(actions, action)
 	}
 
-	tags := tagsFromSDK(input.Tags)
+	tags, err := tagsFromSDK(input.Tags)
+	if err != nil {
+		return nil, err
+	}
 
 	record := &ListenerRecord{
 		ListenerArn:     listenerArn,
@@ -3293,66 +3330,12 @@ func (s *ELBv2ServiceImpl) DescribeTags(ctx context.Context, input *elbv2.Descri
 		}
 		arn := *arnPtr
 
-		resourceType, err := elbv2ResourceTypeFromArn(arn)
+		h, notFoundError, found, err := s.resolveTaggable(ctx, arn)
 		if err != nil {
 			return nil, err
 		}
-
-		var (
-			tags          map[string]string
-			ownerAccount  string
-			notFoundError string
-			found         bool
-		)
-		switch resourceType {
-		case resourcearn.ELBv2LoadBalancer:
-			notFoundError = awserrors.ErrorELBv2LoadBalancerNotFound
-			lb, lbErr := s.store.GetLoadBalancerByArn(ctx, arn)
-			if lbErr != nil {
-				slog.ErrorContext(ctx, "DescribeTags: failed to get LB", "arn", arn, "err", lbErr)
-				return nil, errors.New(awserrors.ErrorServerInternal)
-			}
-			if lb != nil {
-				found = true
-				tags = lb.Tags
-				ownerAccount = lb.AccountID
-			}
-		case resourcearn.ELBv2TargetGroup:
-			notFoundError = awserrors.ErrorELBv2TargetGroupNotFound
-			tg, tgErr := s.store.GetTargetGroupByArn(ctx, arn)
-			if tgErr != nil {
-				slog.ErrorContext(ctx, "DescribeTags: failed to get target group", "arn", arn, "err", tgErr)
-				return nil, errors.New(awserrors.ErrorServerInternal)
-			}
-			if tg != nil {
-				found = true
-				tags = tg.Tags
-				ownerAccount = tg.AccountID
-			}
-		case resourcearn.ELBv2Listener:
-			notFoundError = awserrors.ErrorELBv2ListenerNotFound
-			l, lErr := s.store.GetListenerByArn(ctx, arn)
-			if lErr != nil {
-				slog.ErrorContext(ctx, "DescribeTags: failed to get listener", "arn", arn, "err", lErr)
-				return nil, errors.New(awserrors.ErrorServerInternal)
-			}
-			if l != nil {
-				found = true
-				tags = l.Tags
-				ownerAccount = l.AccountID
-			}
-		case resourcearn.ELBv2ListenerRule:
-			notFoundError = awserrors.ErrorELBv2RuleNotFound
-			r, rErr := s.store.GetRuleByArn(ctx, arn)
-			if rErr != nil {
-				slog.ErrorContext(ctx, "DescribeTags: failed to get rule", "arn", arn, "err", rErr)
-				return nil, errors.New(awserrors.ErrorServerInternal)
-			}
-			if r != nil {
-				found = true
-				tags = r.Tags
-				ownerAccount = r.AccountID
-			} else if lArn, isDefault := listenerArnFromDefaultRuleArn(arn); isDefault {
+		if !found {
+			if lArn, isDefault := listenerArnFromDefaultRuleArn(arn); isDefault {
 				// Synthetic default rule: not stored, carries no tags. Resolve via
 				// its parent listener so a controller's post-create rule-tag sync
 				// gets an empty TagDescription instead of an error.
@@ -3363,19 +3346,18 @@ func (s *ELBv2ServiceImpl) DescribeTags(ctx context.Context, input *elbv2.Descri
 				}
 				if l != nil {
 					found = true
-					tags = nil
-					ownerAccount = l.AccountID
+					h = taggable{owner: l.AccountID}
 				}
 			}
 		}
 
-		if !found || ownerAccount != accountID {
+		if !found || h.owner != accountID {
 			return nil, errors.New(notFoundError)
 		}
 
 		descriptions = append(descriptions, &elbv2.TagDescription{
 			ResourceArn: aws.String(arn),
-			Tags:        tagsMapToSDK(tags),
+			Tags:        tagsMapToSDK(h.tags),
 		})
 	}
 
@@ -3384,15 +3366,57 @@ func (s *ELBv2ServiceImpl) DescribeTags(ctx context.Context, input *elbv2.Descri
 	}, nil
 }
 
-// tagsFromSDK converts an SDK Tag slice into a tag map, skipping nil key/value entries.
-func tagsFromSDK(tags []*elbv2.Tag) map[string]string {
-	m := make(map[string]string, len(tags))
-	for _, tag := range tags {
-		if tag.Key != nil && tag.Value != nil {
-			m[*tag.Key] = *tag.Value
-		}
+// maxResourceTags is AWS's per-resource tag limit for ELBv2 resources.
+const maxResourceTags = 50
+
+// tagCharsPattern is the ELBv2 model's TagKey and TagValue pattern.
+var tagCharsPattern = regexp.MustCompile(`^([\p{L}\p{Z}\p{N}_.:/=+\-@]*)$`)
+
+// tagsFromSDK validates tags against the ELBv2 model and converts them into a
+// tag map, storing a missing Value as "".
+func tagsFromSDK(tags []*elbv2.Tag) (map[string]string, error) {
+	if tags != nil && len(tags) == 0 {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError, "1 validation error detected: Value at 'tags' failed to satisfy constraint: Member must have length greater than or equal to 1")
 	}
-	return m
+	m := make(map[string]string, len(tags))
+	for i, tag := range tags {
+		if tag == nil || tag.Key == nil {
+			return nil, awserrors.Errorf(awserrors.ErrorValidationError, "1 validation error detected: Value null at 'tags.%d.member.key' failed to satisfy constraint: Member must not be null", i+1)
+		}
+		if err := validateTagString(*tag.Key, fmt.Sprintf("tags.%d.member.key", i+1), 1, 128); err != nil {
+			return nil, err
+		}
+		v := aws.StringValue(tag.Value)
+		if err := validateTagString(v, fmt.Sprintf("tags.%d.member.value", i+1), 0, 256); err != nil {
+			return nil, err
+		}
+		if _, dup := m[*tag.Key]; dup {
+			return nil, errors.New(awserrors.ErrorELBv2DuplicateTagKeys)
+		}
+		m[*tag.Key] = v
+	}
+	if len(m) > maxResourceTags {
+		return nil, errTooManyTags()
+	}
+	return m, nil
+}
+
+func validateTagString(v, member string, minLen, maxLen int) error {
+	n := utf8.RuneCountInString(v)
+	if n < minLen {
+		return awserrors.Errorf(awserrors.ErrorValidationError, "1 validation error detected: Value at '%s' failed to satisfy constraint: Member must have length greater than or equal to %d", member, minLen)
+	}
+	if n > maxLen {
+		return awserrors.Errorf(awserrors.ErrorValidationError, "1 validation error detected: Value at '%s' failed to satisfy constraint: Member must have length less than or equal to %d", member, maxLen)
+	}
+	if !tagCharsPattern.MatchString(v) {
+		return awserrors.Errorf(awserrors.ErrorValidationError, "1 validation error detected: Value at '%s' failed to satisfy constraint: Member must satisfy regular expression pattern: %s", member, tagCharsPattern.String())
+	}
+	return nil
+}
+
+func errTooManyTags() error {
+	return awserrors.Errorf(awserrors.ErrorELBv2TooManyTags, "You've reached the limit on the number of tags for this resource.")
 }
 
 // tagsMapToSDK converts a tag map into a sorted SDK Tag slice; returns nil for empty input.

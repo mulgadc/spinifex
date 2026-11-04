@@ -97,6 +97,7 @@ func consumerNames(t *testing.T, s *Store) []string {
 // consumer that delivers nothing, Next replaces the consumer from the cursor
 // and returns that change within one idle check plus the reopen.
 func TestFeedRecoversFromWedgedPull(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	ns := message.Namespace{Queue: "q"}
 	first, second := appendAt(t, s, ns), appendAt(t, s, ns)
@@ -129,6 +130,7 @@ func TestFeedRecoversFromWedgedPull(t *testing.T) {
 // TestFeedIdleWithNothingStoredKeepsConsumer: an idle feed caught up with the
 // stream waits on its consumer and never rebuilds it.
 func TestFeedIdleWithNothingStoredKeepsConsumer(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	ns := message.Namespace{Queue: "q"}
 	appendAt(t, s, ns)

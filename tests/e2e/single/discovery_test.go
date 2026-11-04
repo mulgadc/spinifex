@@ -140,7 +140,7 @@ func runDiscovery(t *testing.T, fix *Fixture) {
 	require.NotEmpty(t, azOut.AvailabilityZones, "describe-availability-zones empty")
 
 	harness.Step(t, "discovering nano instance type")
-	instType, arch := needInstanceTypeArch(t, fix)
+	instType, arch := harness.DiscoverNanoInstanceType(t, fix.Harness)
 	require.NotEmpty(t, instType, "no nano instance type discovered")
 	require.NotEmpty(t, arch, "nano instance type missing SupportedArchitectures")
 	az := needAZ(t, fix)

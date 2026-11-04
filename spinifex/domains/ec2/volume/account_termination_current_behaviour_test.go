@@ -9,6 +9,7 @@ import (
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ebsmetadata "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -59,7 +60,7 @@ func TestCurrentBehaviour_AccountTermination_SnapshottedDeleteOnTerminationVolum
 	require.NoError(t, err)
 	require.NoError(t, volumes.UpdateVolumeState(accountID, volumeID, "in-use", instanceID, "/dev/sda1"))
 
-	err = volumes.DeleteVolumeOnTerminate(ctx, volumeID, accountID)
+	err = volumes.DeleteVolumeOnTerminate(ctx, volumeID, accountID, ec2instance.OwedUnpublish{})
 	assert.EqualError(t, err, awserrors.ErrorVolumeInUse, "the snapshot index refuses the terminate delete")
 
 	survivor, err := metadata.GetVolume(ctx, accountID, volumeID)

@@ -20,6 +20,7 @@ func newForceDetachService(t *testing.T) *VolumeServiceImpl {
 	t.Helper()
 	svc := newTestVolumeService("ap-southeast-2a")
 	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+	wireObligations(t, svc, &fakeNodeLocator{nodes: map[string]string{"i-stuck0000000000": "node-a"}}, "node-a", "node-b")
 	return svc
 }
 
@@ -47,7 +48,11 @@ func TestForceDetachVolumeClearsTheAttachment(t *testing.T) {
 	// The previous instance is reported back: it is the only record of what
 	// the volume was torn away from.
 	assert.Equal(t, "i-stuck0000000000", aws.StringValue(attachment.InstanceId))
-	assert.Equal(t, "detached", aws.StringValue(attachment.State))
+	// The export is still up on the node that served it, so the attachment is
+	// reported mid-teardown, as AWS reports a detach it has not finished.
+	assert.Equal(t, "detaching", aws.StringValue(attachment.State))
+	assert.Equal(t, "/dev/sdf", aws.StringValue(attachment.Device))
+	assert.False(t, aws.TimeValue(attachment.AttachTime).IsZero())
 
 	meta, err := svc.GetVolumeMetadata("000000000011", "vol-forcedetach1")
 	require.NoError(t, err)
@@ -112,4 +117,8 @@ func TestForceDetachVolumeOnAnUnattachedVolume(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Empty(t, aws.StringValue(attachment.InstanceId))
+	assert.Equal(t, "detached", aws.StringValue(attachment.State))
+	open, err := svc.obligations.List(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, open, "an unattached volume has no publish to undo")
 }

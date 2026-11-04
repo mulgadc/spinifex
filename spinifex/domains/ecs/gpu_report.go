@@ -1,6 +1,10 @@
 package ecs
 
-import "context"
+import (
+	"context"
+
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
+)
 
 // ReportTaskGPUInput is the agent's per-task GPU device-assignment report
 // (agent → gateway). Internal agent↔gateway shape, not an AWS SDK action:
@@ -36,7 +40,7 @@ func (s *Service) ReportTaskGPU(ctx context.Context, input *ReportTaskGPUInput, 
 		return nil, err
 	}
 	var task TaskRecord
-	found, err := getJSON(ctx, kv, TaskKey(cluster, taskID), &task)
+	found, err := taskdefinition.GetJSON(ctx, kv, TaskKey(cluster, taskID), &task)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +59,7 @@ func (s *Service) ReportTaskGPU(ctx context.Context, input *ReportTaskGPUInput, 
 		}
 	}
 	if changed {
-		if err := putJSON(ctx, kv, TaskKey(cluster, taskID), &task); err != nil {
+		if err := taskdefinition.PutJSON(ctx, kv, TaskKey(cluster, taskID), &task); err != nil {
 			return nil, err
 		}
 	}

@@ -10,7 +10,7 @@ import (
 func TestLoadConfig_Defaults(t *testing.T) {
 	// Ensure env vars don't leak in from the host.
 	for _, k := range []string{"ECS_GATEWAY_URL", "ECS_GATEWAY_CA", "ECS_REGION",
-		"ECS_CLUSTER", "ECS_ACCESS_KEY", "ECS_SECRET_KEY", "ECS_IMDS_BASE",
+		"ECS_CLUSTER", "ECS_IMDS_BASE",
 		"ECS_CONTAINERD_SOCKET", "ECS_HEARTBEAT_INTERVAL", "ECS_POLL_INTERVAL"} {
 		t.Setenv(k, "")
 	}
@@ -43,7 +43,6 @@ func TestLoadConfig_FileThenEnvOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("ECS_GATEWAY_URL", "https://gw.env")
-	t.Setenv("ECS_ACCESS_KEY", "AKIAENV")
 
 	cfg := LoadConfig(envFile)
 	if cfg.GatewayURL != "https://gw.env" {
@@ -54,9 +53,6 @@ func TestLoadConfig_FileThenEnvOverride(t *testing.T) {
 	}
 	if cfg.ClusterName != "prod" {
 		t.Errorf("ClusterName = %q, want from file", cfg.ClusterName)
-	}
-	if cfg.AccessKey != "AKIAENV" {
-		t.Errorf("AccessKey = %q, want env", cfg.AccessKey)
 	}
 }
 

@@ -3,6 +3,7 @@ package vultr
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"sync"
@@ -63,12 +64,7 @@ func (f *Fake) Seed(r ReservedIP) {
 func (f *Fake) IDs() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	ids := make([]string, 0, len(f.ips))
-	for id := range f.ips {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
-	return ids
+	return slices.Sorted(maps.Keys(f.ips))
 }
 
 // HolderOf reports which instance holds id; empty when unattached or missing.

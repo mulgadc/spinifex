@@ -167,11 +167,11 @@ func registerVpcdStub(t *testing.T, nc *nats.Conn, defaultPayload []byte) {
 	})
 }
 
-// SeedKV creates a KV bucket and populates it with the given entries.
+// SeedKV creates or updates a KV bucket and populates it with the given entries.
 // Returns the KV handle for further use.
 func SeedKV(t *testing.T, js jetstream.JetStream, bucket string, entries map[string][]byte) jetstream.KeyValue {
 	t.Helper()
-	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: bucket, History: 1})
+	kv, err := js.CreateOrUpdateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: bucket, History: 1})
 	require.NoError(t, err)
 	for k, v := range entries {
 		_, err := kv.Put(t.Context(), k, v)

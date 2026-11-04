@@ -41,7 +41,6 @@ import (
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/preflight"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
@@ -152,6 +151,7 @@ type Daemon struct {
 	natsConn          *nats.Conn
 	resourceMgr       *ResourceManager
 	instanceService   *ec2instance.InstanceServiceImpl
+	instanceObjects   objectstore.ObjectStore
 	dnsWriter         *dns.Writer
 	dnsReconciler     *dns.Reconciler
 	dnsBaseDomain     string
@@ -160,7 +160,11 @@ type Daemon struct {
 	imageService      *ec2image.ImageServiceImpl
 	volumeService     *ec2volume.VolumeServiceImpl
 	// ebsProvider is the sole EBS backend, set once during startup.
-	ebsProvider           ebsprovider.EBSProvider
+	ebsProvider ebsprovider.EBSProvider
+	// mounter is this node's one volume mounter, shared by the VM manager and
+	// the unpublish obligation reaper so both take the same volume locks.
+	mounter               *volumeMounterAdapter
+	mounterOnce           sync.Once
 	accountService        *ec2account.AccountSettingsServiceImpl
 	snapshotService       *ec2snapshot.SnapshotServiceImpl
 	tagsService           *ec2tags.TagsServiceImpl
@@ -733,6 +737,11 @@ func (d *Daemon) SetConfigPath(path string) {
 
 // NewDaemon creates a new daemon instance.
 func NewDaemon(cfg *config.ClusterConfig) (*Daemon, error) {
+	// The fence notice is node-addressed: a daemon that cannot subscribe to it
+	// would leave a guest running on a volume whose export was revoked.
+	if err := ebsprovider.ValidateNodeID(cfg.Node); err != nil {
+		return nil, fmt.Errorf("cluster config node %q: %w", cfg.Node, err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// If WalDir is not set, use BaseDir
@@ -936,6 +945,8 @@ func (d *Daemon) subscribeAll() error {
 		// Cluster-wide on purpose: the QMP detach is instance-scoped, so a
 		// volume held by an unreachable host has no other way out.
 		{"ec2.ForceDetachVolume", handleNATSRequest(d.node, d.volumeService.ForceDetachVolume), "spinifex-workers"},
+		{"ec2.DetachVolumeFromStopped", handleNATSRequest(d.node, d.instanceService.DetachVolumeFromStopped), "spinifex-workers"},
+		{"ec2.AttachVolumeToStopped", handleNATSRequest(d.node, d.instanceService.AttachVolumeToStopped), "spinifex-workers"},
 		{"ec2.DescribeVolumeStatus", handleNATSRequest(d.node, d.volumeService.DescribeVolumeStatus), "spinifex-workers"},
 		{"ec2.DescribeVolumesModifications", handleNATSRequest(d.node, d.volumeService.DescribeVolumesModifications), "spinifex-workers"},
 		{"ec2.CreateSnapshot", handleNATSRequest(d.node, d.snapshotService.CreateSnapshot), "spinifex-workers"},
@@ -1028,6 +1039,7 @@ func (d *Daemon) subscribeAll() error {
 		{fmt.Sprintf("ec2.start.%s", d.node), handleNATSRequest(d.node, d.instanceService.StartStoppedInstance), ""},
 		{"ec2.terminate", handleNATSRequest(d.node, d.instanceService.TerminateStoppedInstance), "spinifex-workers"},
 		{"ec2.DescribeStoppedInstances", handleNATSRequest(d.node, d.instanceService.DescribeStoppedInstances), "spinifex-workers"},
+		{"ec2.DescribeAccountInstanceRecords", handleNATSRequest(d.node, d.instanceService.DescribeAccountInstanceRecords), "spinifex-workers"},
 		{"ec2.DescribeTerminatedInstances", handleNATSRequest(d.node, d.instanceService.DescribeTerminatedInstances), "spinifex-workers"},
 		// these fan out to all nodes and gateway aggregates the results. The
 		// handler only sees per-daemon local state (vmMgr/stoppedStore), so
@@ -1353,10 +1365,8 @@ func (d *Daemon) subscribeAll() error {
 		// here, so the reconcile request flows daemon-ward.
 		natsSub{dhcp.TopicLeaseChanged, d.handleDHCPLeaseChanged, "spinifex-workers"},
 		natsSub{dhcp.TopicOwnerCheck, d.handleDHCPOwnerCheck, "spinifex-workers"},
-		// Node-addressed with no queue group: the fenced guest is on this host,
-		// so a worker on another node would find nothing to stop.
-		natsSub{viperblocklegacyv1.VolumeFencedSubject(d.node), d.handleVolumeFenced, ""},
 	)
+	subs = append(subs, d.fenceNoticeSubs()...)
 
 	// Per-node, no queue group: a second daemon claiming this node ID also
 	// answers, so the teardown probe sees a duplicate and refuses to seal. An
@@ -2035,6 +2045,7 @@ func (d *Daemon) startCluster() error {
 
 	// Create services before loading/launching instances, since LaunchInstance depends on them
 	store := objectstore.NewS3ObjectStoreFromConfig(netaddr.DialTarget(d.config.Predastore.Host), d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
+	d.instanceObjects = store
 	d.instanceService = ec2instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store, d.vmMgr, d.resourceMgr, d.jsManager)
 	d.dnsWriter = dns.NewWriter(d.config, d.clusterConfig, d.natsConn)
 	d.dnsReconciler = dns.NewReconciler(d.config, d.clusterConfig, d.natsConn, d.dnsWriter, d.dnsDesiredSet, d.dnsWatchSources()...)
@@ -2059,6 +2070,9 @@ func (d *Daemon) startCluster() error {
 	d.volumeService = ec2volume.NewVolumeServiceImpl(d.config, d.natsConn, snap.kv)
 	if err := d.configureEBSProvider(); err != nil {
 		return fmt.Errorf("configure EBS provider: %w", err)
+	}
+	if err := d.configureUnpublishObligations(); err != nil {
+		return fmt.Errorf("configure EBS unpublish obligations: %w", err)
 	}
 	tagsKV, err := initServiceWithRetry("tags KV bucket", func() (jetstream.KeyValue, error) {
 		tagsJS, jsErr := jetstream.New(d.natsConn)
@@ -2229,6 +2243,9 @@ func (d *Daemon) startCluster() error {
 	}
 
 	d.instanceService.SetTerminationDeps(d.volumeService, d.vpcService, ipReleaser, d.tagsService)
+	if d.jsManager != nil && d.jsManager.UEFIStores() != nil {
+		d.instanceService.SetUEFIStores(d.jsManager.UEFIStores())
+	}
 	d.instanceService.SetVolumeCreator(d.volumeService)
 	d.instanceService.SetRunInstancesDeps(d.imageService, d.keyService, &daemonENICreator{d: d}, ipAllocator)
 
@@ -2589,6 +2606,7 @@ func (d *Daemon) startCluster() error {
 			d.vmMgr.NewTerminatedTeardownReaper(),
 			d.vmMgr.NewOrphanQEMUReaper(),
 			d.vmMgr.NewStuckTerminateReaper(),
+			d.vmMgr.NewLocalConsoleLogReaper(),
 		}
 		if eniRec := d.newENIReconciler(); eniRec != nil {
 			reapers = append(reapers, eniRec)
@@ -2599,9 +2617,14 @@ func (d *Daemon) startCluster() error {
 		if gpuRec := d.newGPUPoolReconciler(); gpuRec != nil {
 			reapers = append(reapers, gpuRec)
 		}
+		if uefiStores := d.newUEFIStoreReaper(); uefiStores != nil {
+			reapers = append(reapers, uefiStores)
+		}
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))
 			reapers = append(reapers, d.volumeService.NewVolumeReclaimReaper())
+			reapers = append(reapers, d.volumeService.NewUnpublishObligationReaper(d.node, d.volumeMounter()))
+			reapers = append(reapers, d.volumeService.NewUnpublishObligationCloser(d.nodeDeparted))
 		}
 		if d.eksService != nil {
 			reapers = append(reapers, d.eksService.NewBillableReaper(d.nodeRunningVMs))
@@ -2640,9 +2663,9 @@ const ebsProviderRequestTimeout = 30 * time.Second
 // a missing responder must be reported promptly, and the check is advisory.
 const ebsProviderProbeTimeout = 2 * time.Second
 
-// configureEBSProvider wires a single NATSProvider into every EBS-adjacent
-// service. The control plane never constructs a provider implementation
-// itself, so this always runs regardless of which daemon answers on the wire.
+// configureEBSProvider wires a NATSProvider into the EBS-adjacent services and
+// the volume mounter. The control plane never constructs a provider
+// implementation, so this runs whichever daemon answers on the wire.
 func (d *Daemon) configureEBSProvider() error {
 	provider := ebsprovider.NewNATSProvider(d.natsConn, ebsProviderRequestTimeout)
 	d.ebsProvider = provider
@@ -2770,6 +2793,10 @@ func (d *Daemon) initJetStream() error {
 
 		if err == nil {
 			err = d.jsManager.InitClusterConfigBucket()
+		}
+
+		if err == nil {
+			err = d.jsManager.InitUEFIStoreBucket()
 		}
 
 		if err == nil {

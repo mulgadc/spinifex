@@ -52,6 +52,7 @@ func externalStore(t *testing.T, js jsapi.JetStream) *sqsjs.Store {
 }
 
 func TestR3ExternalConformance(t *testing.T) {
+	// Not parallel: it redeclares the process-wide cluster size.
 	urls := os.Getenv(externalURLsEnv)
 	if urls == "" {
 		t.Skipf("set %s to a dedicated three-node SQS JetStream cluster", externalURLsEnv)

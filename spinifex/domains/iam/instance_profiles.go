@@ -305,12 +305,7 @@ func (s *IAMServiceImpl) TagInstanceProfile(accountID string, input *iam.TagInst
 
 	profileName := *input.InstanceProfileName
 	err := s.updateInstanceProfileCAS(ctx, accountID, profileName, func(p *InstanceProfile) (bool, error) {
-		merged := mergeTags(p.Tags, input.Tags, exactKeys)
-		if len(merged) > maxTagsPerResource {
-			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
-		}
-		p.Tags = merged
-		return true, nil
+		return true, applyTags(&p.Tags, input.Tags, exactKeys)
 	})
 	if err != nil {
 		return nil, err

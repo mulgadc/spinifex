@@ -1,0 +1,21 @@
+# Codex review gate: calls bluebottle's reusable workflows from main, so a PR cannot change its own review.
+name: codex-review
+
+on:
+  pull_request_target:
+    branches: [dev]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  review:
+    if: github.event_name == 'pull_request_target'
+    uses: mulgadc/bluebottle/.github/workflows/codex-pr-review.yml@main
+    secrets: inherit
+  waive:
+    if: github.event_name == 'issue_comment' && github.event.issue.pull_request
+    uses: mulgadc/bluebottle/.github/workflows/codex-waive.yml@main
+    secrets: inherit

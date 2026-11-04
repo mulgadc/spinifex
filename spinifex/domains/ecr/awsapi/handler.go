@@ -11,21 +11,15 @@ package awsapi
 import (
 	"context"
 	"errors"
-	"log/slog"
-	"net/http"
 	"reflect"
 	"sort"
 
-	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 )
 
 // TargetPrefix is the X-Amz-Target service prefix for ECR control-plane calls.
 const TargetPrefix = "AmazonEC2ContainerRegistry_V20150921"
-
-// JSONContentType is the AWS JSON 1.1 content type ECR clients expect.
-const JSONContentType = "application/x-amz-json-1.1"
 
 // Handler is the signature every ECR control-plane action implements. nc is the
 // gateway NATS connection (handlers relay onto ecr.* subjects); accountID is the
@@ -128,20 +122,4 @@ func actionsWithHandler(target Handler) []string {
 	}
 	sort.Strings(actions)
 	return actions
-}
-
-// WriteJSONResponse serialises obj as a 200 AWS JSON 1.1 response using the
-// SDK's jsonutil marshaler (epoch-second time encoding), matching ACM/EKS.
-func WriteJSONResponse(w http.ResponseWriter, obj any) {
-	body, err := jsonutil.BuildJSON(obj)
-	if err != nil {
-		slog.Error("ECR: failed to marshal response JSON", "err", err)
-		http.Error(w, awserrors.ErrorInternalError, http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", JSONContentType)
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write(body); err != nil {
-		slog.Error("ECR: failed to write response", "err", err)
-	}
 }

@@ -58,18 +58,6 @@ func dispatchWith(t *testing.T, deps Deps, inv dispatch.Invocation) (*httptest.R
 	return w, NewRegistration(deps).Dispatch(w, inv)
 }
 
-func TestActionFromTarget(t *testing.T) {
-	for target, want := range map[string]string{
-		"CertificateManager.ListCertificates": "ListCertificates",
-		"a.b.ListCertificates":                "ListCertificates",
-		"ListCertificates":                    "ListCertificates",
-		"CertificateManager.":                 "",
-		"":                                    "",
-	} {
-		assert.Equal(t, want, actionFromTarget(target), "target %q", target)
-	}
-}
-
 // TestActionsScopeTableIsExhaustive is what stops the next ACM action being
 // added with a silent account-wide grant. It asserts both directions, so a
 // scope left behind by a deleted or renamed action fails too.

@@ -200,15 +200,6 @@ func DecodeAttributes(b []byte) (Attributes, error) {
 	return attrs, nil
 }
 
-// CheckMessageSize applies the combined limit: body bytes plus attribute
-// bytes must not exceed the queue's maximum message size.
-func CheckMessageSize(bodyLen int, attrs Attributes, maxSize int) error {
-	if total := bodyLen + attrs.Size(); total > maxSize {
-		return fmt.Errorf("%w: message body and attributes are %d bytes, over the queue's limit of %d", ErrInvalidParameter, total, maxSize)
-	}
-	return nil
-}
-
 // encodePayload frames a schema-2 body record: the attribute encoding's
 // length, the encoding, then the body.
 func encodePayload(attrs Attributes, body []byte) []byte {

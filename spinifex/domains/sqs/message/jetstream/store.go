@@ -522,13 +522,6 @@ func (f *feed) current() (jsapi.MessagesContext, bool) {
 	return f.it, f.closed
 }
 
-// isClosed reports whether Close has begun.
-func (f *feed) isClosed() bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.closed
-}
-
 // begin records consumer work Close must wait for; f.mu must be held.
 func (f *feed) begin() {
 	if f.busy == 0 {
@@ -967,10 +960,10 @@ func shardFilter(shard message.Shard) string {
 // (after, bound] until fn returns false. Each match is a leader message get,
 // which returns the whole body: a follower's consumer may lag applied purges.
 func readRange(ctx context.Context, js jsapi.JetStream, stream, filter string, after, bound uint64, fn func(*jsapi.RawStreamMsg) (bool, error)) (uint64, bool, error) {
-	req := msgGetRequest{NextFor: filter}
+	req := kvutil.MsgGetRequest{NextFor: filter}
 	for after < bound {
 		req.Seq = after + 1
-		msg, err := leaderMsgGet(ctx, js, stream, req)
+		msg, err := kvutil.LeaderMsgGet(ctx, js, stream, req)
 		switch {
 		case errors.Is(err, jsapi.ErrMsgNotFound):
 			return bound, true, nil

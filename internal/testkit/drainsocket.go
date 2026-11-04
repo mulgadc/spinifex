@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -28,10 +29,11 @@ func SocketTempDir(t *testing.T) string {
 // StartDrainSocket stands in for the NBD plugin's drain socket, at the path the
 // plugin serves it on the node hosting volumeID ({dataDir}/viperblock/{volumeID}
 // /snapshot.sock). Every connection is answered with ack ("OK\n" for a drain
-// that reached S3, "ERR\n" for one that did not) and closed.
-func StartDrainSocket(t *testing.T, dataDir, volumeID, ack string) {
+// that reached S3, "ERR\n" for one that did not) and closed. connections
+// reports how many drains have been asked for so far.
+func StartDrainSocket(t *testing.T, dataDir, volumeID, ack string) (connections func() int) {
 	t.Helper()
-	serveDrainSocket(t, dataDir, volumeID, ack, nil, nil)
+	return serveDrainSocket(t, dataDir, volumeID, ack, nil, nil)
 }
 
 // StartBlockingDrainSocket stands in for a plugin whose flush is still running:
@@ -43,7 +45,7 @@ func StartBlockingDrainSocket(t *testing.T, dataDir, volumeID, ack string) (acce
 
 	acceptedCh := make(chan struct{})
 	releaseCh := make(chan struct{})
-	serveDrainSocket(t, dataDir, volumeID, ack, acceptedCh, releaseCh)
+	_ = serveDrainSocket(t, dataDir, volumeID, ack, acceptedCh, releaseCh)
 
 	var once sync.Once
 	t.Cleanup(func() { once.Do(func() { close(releaseCh) }) })
@@ -52,8 +54,9 @@ func StartBlockingDrainSocket(t *testing.T, dataDir, volumeID, ack string) (acce
 }
 
 // serveDrainSocket answers every connection with ack, optionally closing
-// accepted on the first one and waiting for release before it replies.
-func serveDrainSocket(t *testing.T, dataDir, volumeID, ack string, accepted chan struct{}, release <-chan struct{}) {
+// accepted on the first one and waiting for release before it replies. The
+// returned func counts the connections accepted so far.
+func serveDrainSocket(t *testing.T, dataDir, volumeID, ack string, accepted chan struct{}, release <-chan struct{}) func() int {
 	t.Helper()
 
 	dir := filepath.Join(dataDir, "viperblock", volumeID)
@@ -63,6 +66,7 @@ func serveDrainSocket(t *testing.T, dataDir, volumeID, ack string, accepted chan
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ln.Close() })
 
+	var count atomic.Int64
 	go func() {
 		var once sync.Once
 		for {
@@ -70,6 +74,7 @@ func serveDrainSocket(t *testing.T, dataDir, volumeID, ack string, accepted chan
 			if err != nil {
 				return // listener closed by the cleanup above
 			}
+			count.Add(1)
 			if accepted != nil {
 				once.Do(func() { close(accepted) })
 			}
@@ -80,4 +85,5 @@ func serveDrainSocket(t *testing.T, dataDir, volumeID, ack string, accepted chan
 			_ = conn.Close()
 		}
 	}()
+	return func() int { return int(count.Load()) }
 }

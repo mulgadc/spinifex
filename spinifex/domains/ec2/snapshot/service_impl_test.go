@@ -1519,3 +1519,84 @@ func TestDropEmptySnapshotRefsDoesNotDropAConcurrentAdd(t *testing.T) {
 		assert.True(t, has, "iteration %d: the concurrent add was dropped by the empty-key delete", i)
 	}
 }
+
+// createFailingProvider fails only CreateSnapshot, with err.
+type createFailingProvider struct {
+	ebsprovider.EBSProvider
+
+	err error
+}
+
+func (p *createFailingProvider) CreateSnapshot(context.Context, ebsprovider.CreateSnapshotRequest) (*ebsprovider.Snapshot, error) {
+	return nil, p.err
+}
+
+// A provider that cannot snapshot a volume while it is attached refuses it
+// as in use, which the client can act on by detaching the volume first.
+func TestCreateSnapshot_ProviderVolumeInUseIsIncorrectState(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+	createTestVolume(t, svc, store, "vol-create-inuse", 10)
+	svc.SetEBSProvider(&createFailingProvider{EBSProvider: svc.provider,
+		err: &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeVolumeInUse, Message: "published"}})
+
+	_, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-create-inuse")}, testAccountID)
+
+	code, message := clientErrorDetail(t, err)
+	assert.Equal(t, awserrors.ErrorIncorrectState, code)
+	assert.Contains(t, message, "vol-create-inuse")
+	assert.Contains(t, message, "Detach")
+}
+
+// A provider that cannot answer now, such as one refusing a volume another
+// node holds, is retry-later for the client; any other failure is internal.
+func TestCreateSnapshot_ProviderFailureMapsToSpecificError(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		wantCode string
+	}{
+		{"provider unavailable", &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnavailable, Message: "held by node-2"}, awserrors.ErrorServiceUnavailable},
+		{"internal failure", &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeInternal, Message: "boom"}, awserrors.ErrorServerInternal},
+		{"transport failure", errors.New("connection reset"), awserrors.ErrorServerInternal},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, store := setupTestSnapshotService(t)
+			createTestVolume(t, svc, store, "vol-create-fail", 10)
+			svc.SetEBSProvider(&createFailingProvider{EBSProvider: svc.provider, err: tc.err})
+
+			_, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-create-fail")}, testAccountID)
+			require.Error(t, err)
+			assert.Equal(t, tc.wantCode, err.Error())
+		})
+	}
+}
+
+func TestDescribeSnapshots_FilterByTagKeyAndTagValue(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+	tagged := createTestSnapshot(t, svc, store, "vol-tagged", 10, map[string]string{"Keep": "x"})
+	createTestSnapshot(t, svc, store, "vol-other", 20, map[string]string{"Other": "y"})
+
+	tests := []struct {
+		name, filter, value string
+		want                []string
+	}{
+		{"tag-key match", "tag-key", "Keep", []string{tagged}},
+		{"tag-value match", "tag-value", "x", []string{tagged}},
+		{"tag-key miss", "tag-key", "Missing", nil},
+		{"tag-value miss", "tag-value", "x-missing", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{
+				Filters: []*ec2.Filter{{Name: aws.String(tt.filter), Values: []*string{aws.String(tt.value)}}},
+			}, testAccountID)
+			require.NoError(t, err)
+			var got []string
+			for _, s := range out.Snapshots {
+				got = append(got, *s.SnapshotId)
+			}
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

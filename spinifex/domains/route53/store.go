@@ -244,16 +244,6 @@ func (s *Store) ListZoneChanges(ctx context.Context, account, zoneID string) ([]
 	return out, nil
 }
 
-// MarkChangesInSync moves every PENDING change for a zone at or below version
-// to INSYNC.
-func (s *Store) MarkChangesInSync(ctx context.Context, account, zoneID string, version uint64) error {
-	changes, err := s.ListZoneChanges(ctx, account, zoneID)
-	if err != nil {
-		return err
-	}
-	return s.MarkInSync(ctx, changes, version)
-}
-
 // MarkInSync moves each PENDING change in changes at or below version to
 // INSYNC, for a caller that has already listed them.
 func (s *Store) MarkInSync(ctx context.Context, changes []ChangeRecord, version uint64) error {

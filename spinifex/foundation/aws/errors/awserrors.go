@@ -581,6 +581,10 @@ var (
 	ErrorELBv2IncompatibleProtocols        = "IncompatibleProtocols"
 	ErrorELBv2CertificateNotFound          = "CertificateNotFound"
 	ErrorELBv2SSLPolicyNotFound            = "SSLPolicyNotFound"
+	ErrorELBv2DuplicateTagKeys             = "DuplicateTagKeys"
+	// ErrorELBv2TooManyTags aliases ErrorRoute53TooManyTagsForZone: both wire
+	// codes are "TooManyTags", so ELBv2 returns it via Errorf with its own message.
+	ErrorELBv2TooManyTags = ErrorRoute53TooManyTagsForZone
 
 	// Bedrock/bedrock-runtime error codes.
 	ErrorValidationException = "ValidationException"
@@ -624,16 +628,6 @@ var (
 	ErrorResourceConflictException = "ResourceConflictException"
 	ErrorServiceException          = "ServiceException"
 )
-
-// ValidErrorCode returns the error code if it exists in ErrorLookup,
-// otherwise returns ErrorServerInternal. Use this to sanitize error strings
-// before sending them to clients.
-func ValidErrorCode(code string) string {
-	if _, ok := ErrorLookup[code]; ok {
-		return code
-	}
-	return ErrorServerInternal
-}
 
 // ResolveErrorCode returns the first registered AWS error code in err's unwrap tree.
 func ResolveErrorCode(err error) (string, bool) {
@@ -700,6 +694,15 @@ func IDNotFound(code, kind, id string) error {
 	return Errorf(code, "The %s ID '%s' does not exist", kind, id)
 }
 
+// IDsNotFound is IDNotFound for one or more IDs; several render as EC2's
+// plural "The <kind> IDs '<a>, <b>' do not exist".
+func IDsNotFound(code, kind string, ids []string) error {
+	if len(ids) == 1 {
+		return IDNotFound(code, kind, ids[0])
+	}
+	return Errorf(code, "The %s IDs '%s' do not exist", kind, strings.Join(ids, ", "))
+}
+
 // HasDependencies returns DependencyViolation with EC2's message for a
 // resource that cannot be deleted while others depend on it.
 func HasDependencies(kind, id string) error {
@@ -760,33 +763,6 @@ func ResolveRetryAfter(err error) (time.Duration, bool) {
 		return ResolveRetryAfter(wrapped.Unwrap())
 	}
 	return 0, false
-}
-
-// fieldsError attaches extra response-body fields to an error without changing
-// its text, for protocols that carry them (e.g. a REST-JSON throttle Reason).
-type fieldsError struct {
-	err    error
-	fields map[string]string
-}
-
-func (e *fieldsError) Error() string { return e.err.Error() }
-func (e *fieldsError) Unwrap() error { return e.err }
-
-// WithFields attaches extra top-level response-body fields to err. Protocols
-// without extra fields ignore them.
-func WithFields(err error, fields map[string]string) error {
-	if err == nil || len(fields) == 0 {
-		return err
-	}
-	return &fieldsError{err: err, fields: fields}
-}
-
-// ResolveFields returns the fields attached to err via WithFields, if any.
-func ResolveFields(err error) map[string]string {
-	if fe, ok := errors.AsType[*fieldsError](err); ok {
-		return fe.fields
-	}
-	return nil
 }
 
 // errorLookupByService overrides ErrorLookup's message and HTTP status for a
@@ -886,14 +862,6 @@ func HTTPStatusForError(err error) int {
 	return http.StatusInternalServerError
 }
 
-// HasErrorCode reports whether s is exactly a registered AWS error code.
-// Use it to decide whether an error string may be surfaced to clients verbatim
-// (mapped to its real HTTP status) rather than wrapped/sanitized to 500.
-func HasErrorCode(s string) bool {
-	_, ok := ErrorLookup[s]
-	return ok
-}
-
 // IsErrorCode reports whether err carries the named AWS error code.
 // Uses substring matching because handlers return codes as plain strings, sometimes wrapped with %w.
 func IsErrorCode(err error, code string) bool {
@@ -983,7 +951,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInterfaceInUseByTrafficMirrorSession:                  {HTTPCode: 409, Message: "The Traffic Mirror source that you are trying to create uses an interface that is already associated with a session. An interface can only be associated with a session, or with a target, but not both."},
 	ErrorInterfaceInUseByTrafficMirrorTarget:                   {HTTPCode: 409, Message: "The Traffic Mirror source that you are trying to create uses an interface that is already associated with a target. An interface can only be associated with a session, or with a target, but not both. If the interface is associated with a target, it cannot be associated with another target."},
 	ErrorInternalError:                                         {HTTPCode: 500, Message: "An internal error has occurred. Retry your request, and if the problem persists, contact Mulga support with the details."},
-	ErrorInternalFailure:                                       {HTTPCode: 404, Message: "The request processing has failed because of an unknown error, exception, or failure."},
+	ErrorInternalFailure:                                       {HTTPCode: 500, Message: "The request processing has failed because of an unknown error, exception, or failure."},
 	ErrorInternetGatewayLimitExceeded:                          {HTTPCode: 400, Message: "You've reached the limit on the number of internet gateways that you can create. For more information, see Amazon VPC quotas."},
 	ErrorInvalidAMIAttributeItemValue:                          {HTTPCode: 400, Message: "The value of an item added to, or removed from, an image attribute is not valid. If you are specifying a userId, check that it is in the form of an AWS account ID, without hyphens."},
 	ErrorInvalidAMIIDMalformed:                                 {HTTPCode: 400, Message: "The specified AMI ID is malformed. Ensure that you provide the full AMI ID, in the form ami-xxxxxxxxxxxxxxxxx."},
@@ -1278,7 +1246,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorResourceLimitExceeded:                                 {HTTPCode: 400, Message: "You have exceeded an Amazon EC2 resource limit. For example, you might have too many snapshot copies in progress."},
 	ErrorResourceNotFound:                                      {HTTPCode: 404, Message: "The specified resource was not found."},
 	ErrorEKSResourceInUse:                                      {HTTPCode: 409, Message: "A cluster with this name already exists in this account and Region. Delete the existing cluster, or choose a different name."},
-	ErrorEKSResourceNotFound:                                   {HTTPCode: 404, Message: "The specified cluster could not be found. You can view your available clusters with ListClusters. Amazon EKS clusters are Region specific."},
+	ErrorEKSResourceNotFound:                                   {HTTPCode: 404, Message: "The specified resource could not be found. You can view your available clusters with ListClusters. You can view your available managed node groups with ListNodegroups. Amazon EKS clusters and node groups are Amazon Web Services Region specific."},
 	ErrorEKSInvalidRequest:                                     {HTTPCode: 400, Message: "The request is invalid given the state of the cluster or access entry."},
 	ErrorEKSBadRequest:                                         {HTTPCode: 400, Message: "A parameter of the request is not valid."},
 	ErrorECSClientException:                                    {HTTPCode: 400, Message: "Unable to describe task definition."},
@@ -1423,6 +1391,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorELBv2IncompatibleProtocols:        {HTTPCode: 400, Message: "The listener protocol is incompatible with the target group protocol."},
 	ErrorELBv2CertificateNotFound:          {HTTPCode: 400, Message: "One or more specified certificates do not exist."},
 	ErrorELBv2SSLPolicyNotFound:            {HTTPCode: 400, Message: "The specified SSL policy does not exist."},
+	ErrorELBv2DuplicateTagKeys:             {HTTPCode: 400, Message: "A tag key was specified more than once."},
 
 	// Bedrock/bedrock-runtime error codes. ResourceNotFoundException reuses the
 	// EKS entry (ErrorEKSResourceNotFound) — same wire code, same HTTP status.

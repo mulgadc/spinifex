@@ -30,7 +30,6 @@ func TestTaggingActionFromTarget_FormsAndTelemetryAgree(t *testing.T) {
 			req.Header.Set("X-Amz-Target", tc.target)
 			gw := withTagging(&Config{}, tagging.NewAggregator())
 			assert.Equal(t, tc.wantAction, gw.selector().ResolveAction(req, "tagging"))
-			assert.Equal(t, tc.wantAction, resolveNonQueryAction(req))
 		})
 	}
 }

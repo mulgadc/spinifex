@@ -15,9 +15,11 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ebsmetadata "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
@@ -30,6 +32,7 @@ import (
 type recoveryStore struct {
 	m        *JetStreamManager
 	liveness *instancecache.Liveness
+	objects  *objectstore.MemoryObjectStore
 }
 
 func newRecoveryStore(t *testing.T) *recoveryStore {
@@ -55,7 +58,7 @@ func newRecoveryStore(t *testing.T) *recoveryStore {
 		_ = m.js.DeleteKeyValue(context.Background(), name)
 		_ = m.js.DeleteKeyValue(context.Background(), name+"-hb")
 	})
-	return &recoveryStore{m: m, liveness: instancecache.NewLiveness(m.js, beats)}
+	return &recoveryStore{m: m, liveness: instancecache.NewLiveness(m.js, beats), objects: objectstore.NewMemoryObjectStore()}
 }
 
 // beat writes node's heartbeat stamped at.
@@ -70,6 +73,8 @@ func (s *recoveryStore) put(t *testing.T, id, node, instanceType string) {
 	record := runningOn(id, node)
 	record.Spec.InstanceType = instanceType
 	record.Status.Instance = &ec2.Instance{InstanceId: aws.String(id)}
+	record.Status.EBSRequests = []vm.EBSRequest{{Name: bootVolumeID(id), Boot: true, DeviceName: ebsmetadata.RootDeviceName}}
+	seedBootVolume(t, s.objects, "test-bucket", record.Metadata.AccountID, id)
 	require.NoError(t, s.m.records.Set(context.Background(), instanceRecordKey(id), record))
 }
 
@@ -92,6 +97,7 @@ func recoveryDaemon(t *testing.T, s *recoveryStore) (*Daemon, *instanceRecovery)
 
 	d := createTestDaemon(t, sharedNATSURL)
 	d.jsManager = s.m
+	d.instanceService = ec2instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, s.objects, d.vmMgr, d.resourceMgr, nil)
 	d.predastoreHealth.at = time.Now()
 	d.predastoreHealth.result = predastoreHealthOK
 
@@ -251,7 +257,7 @@ func TestRecoveryAttemptSucceeds(t *testing.T) {
 	// starting QEMU, which is the one part of a recovery this cannot do.
 	d.vmMgr.SetDeps(vm.Deps{
 		NodeID:             d.node,
-		VolumeMounter:      newVolumeMounterAdapter(d.natsConn, d.node, d.volumeService),
+		VolumeMounter:      newNATSMounter(d.natsConn, d.node),
 		VolumeStateUpdater: d.volumeService,
 		Hooks: vm.ManagerHooks{BeforeInstanceRelaunch: func(v *vm.VM) error {
 			d.vmMgr.Inspect(v, func(v *vm.VM) { v.Status = vm.StateShuttingDown })

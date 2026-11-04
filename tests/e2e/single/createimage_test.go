@@ -72,10 +72,9 @@ func runCreateImage(t *testing.T, fix *Fixture) {
 
 	runBootVerifyAMI(t, fix, customAMIID, "running-path")
 
-	// The offline path: CreateImage against the same instance stopped. The
-	// daemon's IsRunning decision is the instance's actual VM status at call
-	// time (daemon_handlers_image.go), not the NoReboot flag, so stopping the
-	// source instance is what selects snapshotStoppedVolume.
+	// The offline path: CreateImage against the same instance stopped. Both
+	// states take the single snapshotVolume path, so this proves the provider
+	// snapshots a volume with no connected client as well as a live one.
 	harness.Step(t, "stop-instances %s (precondition for stopped-path CreateImage)", instanceID)
 	_, err = fix.AWS.EC2.StopInstances(&ec2.StopInstancesInput{
 		InstanceIds: []*string{aws.String(instanceID)},
@@ -110,8 +109,8 @@ func runBootVerifyAMI(t *testing.T, fix *Fixture, amiID, label string) {
 	t.Helper()
 	harness.Step(t, "boot-verify %s ami=%s", label, amiID)
 
-	instType, _ := needInstanceTypeArch(t, fix)
-	keyName, keyPath := needKeyPair(t, fix)
+	instType, _ := harness.DiscoverNanoInstanceType(t, fix.Harness)
+	keyName, keyPath := harness.EnsureKeyPair(t, fix.Harness)
 	vpc := harness.EnsureDefaultVPC(t, fix.Harness)
 	require.NotEmpty(t, vpc.SGID, "default SG ID required")
 	harness.AuthorizeSSHIngress(t, fix.AWS, vpc.SGID)

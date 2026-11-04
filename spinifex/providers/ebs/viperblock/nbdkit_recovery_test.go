@@ -415,7 +415,7 @@ func TestReapOrphanedNbdkit_LiveReferencer_LeftRunningAndLogged(t *testing.T) {
 // TestReapOrphanedNbdkit_TCPEndpointReferencedAcrossSplitBlockdevArgs proves
 // endpointReferencer recognizes a TCP endpoint even when QEMU's -blockdev
 // splits host and port into server.host=/server.port= within one argument,
-// not just the joined host:port form a boot/EFI drive uses.
+// not just the joined host:port form an EFI pflash drive uses.
 func TestReapOrphanedNbdkit_TCPEndpointReferencedAcrossSplitBlockdevArgs(t *testing.T) {
 	pid := spawnLongRunningProcess(t)
 	procRoot := t.TempDir()
@@ -426,6 +426,46 @@ func TestReapOrphanedNbdkit_TCPEndpointReferencedAcrossSplitBlockdevArgs(t *test
 	disc := discoveredNbdkit{PID: pid, Volume: "vol-reap-tcp1", Port: 10899}
 	assert.False(t, reapOrphanedNbdkit(procRoot, disc, reapReasonUnadoptable), "a referenced orphan must never be signalled")
 	assert.Never(t, func() bool { return !hostprocess.ProcessAlive(pid) }, 50*time.Millisecond, 5*time.Millisecond, "a TCP endpoint split across server.host=/server.port= must still be recognized as referenced")
+}
+
+// TestReapOrphanedNbdkit_BootBlockdevReferencer_LeftRunning pins the boot
+// volume's -blockdev, whose server options carry a file. prefix: a live
+// guest's root nbdkit named only that way must never be signalled.
+func TestReapOrphanedNbdkit_BootBlockdevReferencer_LeftRunning(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "vol-boot-root.sock")
+	tests := []struct {
+		name string
+		arg  string
+		disc func(pid int) discoveredNbdkit
+	}{
+		{
+			name: "unix socket",
+			arg:  "driver=raw,node-name=os,cache.direct=on,file.driver=nbd,file.server.type=unix,file.server.path=" + socket + ",file.export=,file.reconnect-delay=30",
+			disc: func(pid int) discoveredNbdkit {
+				return discoveredNbdkit{PID: pid, Volume: "vol-boot-unix1", Socket: socket}
+			},
+		},
+		{
+			name: "tcp",
+			arg:  "driver=raw,node-name=os,cache.direct=on,file.driver=nbd,file.server.type=inet,file.server.host=127.0.0.1,file.server.port=10897,file.export=,file.reconnect-delay=30",
+			disc: func(pid int) discoveredNbdkit {
+				return discoveredNbdkit{PID: pid, Volume: "vol-boot-tcp1", Port: 10897}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pid := spawnLongRunningProcess(t)
+			procRoot := t.TempDir()
+			const referencerPID = 909092
+			writeReferencerFixture(t, procRoot, referencerPID, tt.arg)
+
+			logs := captureLogs(t)
+			assert.False(t, reapOrphanedNbdkit(procRoot, tt.disc(pid), reapReasonUnadoptable), "a boot volume's nbdkit must never be signalled")
+			assert.Never(t, func() bool { return !hostprocess.ProcessAlive(pid) }, 50*time.Millisecond, 5*time.Millisecond, "a boot volume's nbdkit must never be signalled")
+			assert.Contains(t, logs.String(), fmt.Sprintf("referencing_pid=%d", referencerPID))
+		})
+	}
 }
 
 // unreadableProcDir creates procRoot/<pid> with a cmdline file inside, then

@@ -2,6 +2,7 @@ package sts
 
 import (
 	"errors"
+	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"strings"
 	"testing"
 
@@ -122,12 +123,12 @@ func TestGetAccessKeyInfo_MalformedKeyRejectedWithoutLookup(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := svc.GetAccessKeyInfo(&sts.GetAccessKeyInfoInput{AccessKeyId: aws.String(tc.akid)})
 			assert.Nil(t, out)
-			requireAWSError(t, err, awserrors.ErrorValidationError, tc.want)
+			testutil.RequireAWSError(t, err, awserrors.ErrorValidationError, tc.want)
 		})
 	}
 
 	_, err := svc.GetAccessKeyInfo(&sts.GetAccessKeyInfoInput{AccessKeyId: aws.String("")})
-	requireAWSError(t, err, awserrors.ErrorMissingParameter, "")
+	testutil.RequireAWSError(t, err, awserrors.ErrorMissingParameter, "")
 	assert.Zero(t, stub.calls, "malformed access key ID must not reach the KV bucket")
 }
 

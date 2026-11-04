@@ -8,17 +8,17 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
-	"github.com/mulgadc/spinifex/spinifex/agents/ecs/credentials"
 	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 )
 
-// fixedCredsProvider is a static credentials.CredentialsProvider for tests
+// fixedCredsProvider is a static aws.CredentialsProvider for tests
 // that only need a valid SigV4 signature, not real IMDS rotation.
 type fixedCredsProvider struct{}
 
-func (fixedCredsProvider) Retrieve(context.Context) (credentials.Credentials, error) {
-	return credentials.Credentials{AccessKeyID: "AKIATEST", SecretAccessKey: "secret"}, nil
+func (fixedCredsProvider) Retrieve(context.Context) (aws.Credentials, error) {
+	return aws.Credentials{AccessKeyID: "AKIATEST", SecretAccessKey: "secret"}, nil
 }
 
 func newTestGatewayControlPlane(t *testing.T, srv *httptest.Server) *gatewayControlPlane {

@@ -448,7 +448,7 @@ func extractClientError(results []nodeLaunchResult) error {
 		if r.Err == nil {
 			continue
 		}
-		code, ok := awserrors.ResolveErrorCode(r.Err)
+		code, msg, ok := awserrors.ResolveErrorDetail(r.Err)
 		if !ok {
 			continue
 		}
@@ -462,6 +462,9 @@ func extractClientError(results []nodeLaunchResult) error {
 			awserrors.ErrorInvalidGroupNotFound,
 			awserrors.ErrorInvalidParameterValue,
 			awserrors.ErrorSecurityGroupsPerInterfaceLimitExceeded:
+			if msg != "" {
+				return awserrors.Errorf(code, "%s", msg)
+			}
 			return errors.New(code)
 		}
 	}

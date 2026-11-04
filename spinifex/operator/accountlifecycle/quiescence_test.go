@@ -75,7 +75,7 @@ func TestEvaluateQuiescenceRecordsEvidenceButQuiescesNothingWithoutAFinalReread(
 // Only an exercise, which re-reads the inventory after cleanup, names the complete kinds.
 func TestEvaluateQuiescenceNamesCompleteKindsOnceTheRereadIsWired(t *testing.T) {
 	ev := confirmedEvidence()
-	ev.Exercise = true
+	ev.FinalRereadGuaranteed = true
 	ev.Inventory.Kinds[1].Status = ec2v1.PlatformStatusScanIncomplete
 	q := EvaluateQuiescence(ev)
 
@@ -132,7 +132,7 @@ func TestEvaluateQuiescenceRecordsNothingWhenTheFenceIsNotConfirmed(t *testing.T
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			ev := confirmedEvidence()
-			ev.Exercise = true
+			ev.FinalRereadGuaranteed = true
 			tc.mutate(&ev)
 			q := EvaluateQuiescence(ev)
 
@@ -172,7 +172,7 @@ func TestEveryOtherScopeIsRecordedUnresolvedByName(t *testing.T) {
 // run is an exercise and every L09 kind is complete.
 func TestPredastoreIsNeverCitedAndItsScopesNeverQuiesce(t *testing.T) {
 	ev := confirmedEvidence()
-	ev.Exercise = true
+	ev.FinalRereadGuaranteed = true
 	q := EvaluateQuiescence(ev)
 
 	for _, scope := range []string{"s3", "ecr"} {
@@ -215,8 +215,10 @@ func TestTeardownReportsQuiescenceAfterTheQuiesceAndBeforeTheFirstStage(t *testi
 	engine.ec2Inventory = inventory
 	var got operatorv1.IAMQuiescence
 	engine.OnQuiesced = func(_ context.Context, q operatorv1.IAMQuiescence) {
+		if len(events) == 0 {
+			assert.Equal(t, 0, reaper.deletesAttempted, "no stage may have run yet")
+		}
 		events = append(events, "quiesced")
-		assert.Equal(t, 0, reaper.deletesAttempted, "no stage may have run yet")
 		assert.Equal(t, AccountStatusTerminating, accounts.account.Status)
 		got = q
 	}
@@ -231,12 +233,12 @@ func TestTeardownReportsQuiescenceAfterTheQuiesceAndBeforeTheFirstStage(t *testi
 	_, err := engine.Teardown(context.Background(), req)
 
 	require.NoError(t, err)
-	assert.Equal(t, []string{"quiesced", "stage"}, events)
+	assert.Equal(t, []string{"quiesced", "stage", "quiesced", "stage"}, events, "the second evaluation precedes the platform stage")
 	assert.Equal(t, "op-7", got.OperationID)
 	assert.Equal(t, uint64(3), got.Fence)
 	assert.Equal(t, uint64(1), got.Generation)
-	assert.Equal(t, 1, inventory.calls)
-	assert.True(t, accounts.deleted, "recording must not change the legacy teardown")
+	assert.Equal(t, 3, inventory.calls, "two evaluations and the final re-read")
+	assert.True(t, accounts.deleted)
 }
 
 // A fence the read-back does not confirm must not spend an inventory call, and a
@@ -258,7 +260,7 @@ func TestTeardownRecordsAFailedReadbackAndStillRunsEveryStage(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got.Unresolved, 1)
 	assert.Equal(t, operatorv1.ReasonIAMReadbackFailed, got.Unresolved[0].Reason)
-	assert.Zero(t, inventory.calls)
+	assert.Equal(t, 1, inventory.calls, "only the final re-read: no evaluation reads inventory behind an unconfirmed fence")
 	assert.True(t, accounts.deleted)
 }
 

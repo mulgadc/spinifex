@@ -18,20 +18,10 @@ import (
 // values are fresh on every pass; see the test's doc comment.
 var clientTokenRun atomic.Int64
 
-// TestRunInstances_ClientTokenIdempotency proves ClientToken dedup
-// (domains/ec2/awsapi/instance/RunInstances.go's ClientTokenStore wrapping) runs for
-// real through the full gateway: a replayed token must not reach the daemon a
-// second time, and a different token must launch again.
-//
-// getClientTokenStore (clienttoken.go) binds its JetStream KV bucket via a
-// process-wide sync.Once, so the very first test in this package's binary
-// that supplies a ClientToken permanently decides which test's NATS account
-// backs the store for the rest of the run. No other test can collide with
-// this one — every key is namespaced by accountID+token, and these token
-// values appear nowhere else in the suite — but THIS test collides with
-// itself under -count=N: the store outlives each pass, so a fixed token would
-// make the second pass's opening launch look like a replay of the first
-// pass's. Hence the per-invocation suffix.
+// TestRunInstances_ClientTokenIdempotency proves ClientToken dedup runs through
+// the full gateway: a replayed token must not reach the daemon a second time,
+// and a different token must launch again. The token bucket lives on the
+// shared server and outlives each -count=N pass, hence the per-run suffix.
 func TestRunInstances_ClientTokenIdempotency(t *testing.T) {
 	gw := StartGateway(t)
 

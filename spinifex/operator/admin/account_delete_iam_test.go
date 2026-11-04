@@ -39,6 +39,8 @@ func TestDeletionRecordCarriesTheIAMQuiescence(t *testing.T) {
 	_, err := gw.deleteAccount(t.Context(),
 		deleteAccountBody(t, account.AccountID, "tenant@example.com", deleteClientToken))
 	require.NoError(t, err)
+	// Parallel only once the teardown is running, so its drain poll overlaps the serial tests.
+	t.Parallel()
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted
 	}, 30*time.Second, 100*time.Millisecond)
@@ -48,19 +50,11 @@ func TestDeletionRecordCarriesTheIAMQuiescence(t *testing.T) {
 	assert.Equal(t, stored.OperationID, stored.IAM.OperationID)
 	assert.Equal(t, uint64(1), stored.IAM.Fence)
 	assert.Positive(t, stored.IAM.Generation)
-	assert.Empty(t, stored.IAM.QuiescedScope)
+	assert.ElementsMatch(t, []string{"key-pair", "placement-group", "launch-template"}, stored.IAM.QuiescedScope)
 	assert.NotEmpty(t, stored.IAM.Unresolved)
 	assert.Len(t, stored.IAM.Consumers, 3)
-	// The stubbed cluster answers the inventory subject with an empty body, which
-	// is an incomplete inventory, and recording that must not fail the teardown.
-	for _, kind := range []string{"ec2-key-pair", "ec2-placement-group", "ec2-launch-template"} {
-		var reasons []string
-		for _, entry := range stored.IAM.Unresolved {
-			if entry.Scope == kind {
-				reasons = append(reasons, entry.Reason)
-			}
-		}
-		assert.Equal(t, []string{operatorv1.ReasonOwnerInventoryIncomplete}, reasons, kind)
+	for _, entry := range stored.IAM.Unresolved {
+		assert.NotContains(t, []string{"ec2-key-pair", "ec2-placement-group", "ec2-launch-template"}, entry.Scope)
 	}
 }
 

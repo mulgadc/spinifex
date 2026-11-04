@@ -169,27 +169,6 @@ func TestParseNBDURI(t *testing.T) {
 	}
 }
 
-func TestIsSocketURI(t *testing.T) {
-	tests := []struct {
-		name string
-		uri  string
-		want bool
-	}{
-		{"Socket suffix", "/run/nbd-vol.sock", true},
-		{"Unix prefix", "unix:/run/nbd-vol", true},
-		{"Both", "unix:/run/nbd-vol.sock", true},
-		{"TCP URI", "nbd://127.0.0.1:9000", false},
-		{"Empty", "", false},
-		{"Random path", "/tmp/somefile.txt", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, IsSocketURI(tt.uri))
-		})
-	}
-}
-
 func TestFormatNBDSocketURI(t *testing.T) {
 	assert.Equal(t, "nbd+unix:///?socket=/run/nbd-vol.sock", FormatNBDSocketURI("/run/nbd-vol.sock"))
 	assert.Equal(t, "nbd+unix:///?socket=/tmp/test.sock", FormatNBDSocketURI("/tmp/test.sock"))

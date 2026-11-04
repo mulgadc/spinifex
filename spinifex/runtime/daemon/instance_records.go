@@ -3,10 +3,13 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // InstanceRecordPrefix is the key prefix for the per-resource instance record
@@ -214,4 +217,112 @@ func loadRecord[T any](store *kvstore.Store[T], key string) (*T, error) {
 		return nil, err
 	}
 	return record, nil
+}
+
+// InstanceLastNode names the node that last ran instanceID, from its live
+// record or, failing that, its terminated one. found is false when neither
+// exists. It is the volume domain's one view of instance state.
+func (m *JetStreamManager) InstanceLastNode(instanceID string) (node string, found bool, err error) {
+	record, err := m.LoadInstanceRecord(instanceID)
+	if err != nil {
+		return "", false, err
+	}
+	if record == nil {
+		if record, err = m.LoadTerminatedInstanceRecord(instanceID); err != nil {
+			return "", false, err
+		}
+	}
+	if record == nil {
+		return "", false, nil
+	}
+	return record.Status.LastNode, true, nil
+}
+
+// TerminateDecided reports whether instanceID has no live instance record, or
+// one that is terminating, read from the KV store at call time. The live record
+// wins over a terminated one, and a read error is returned rather than guessed.
+func (m *JetStreamManager) TerminateDecided(instanceID string) (bool, error) {
+	record, err := m.LoadInstanceRecord(instanceID)
+	if err != nil {
+		return false, err
+	}
+	if record == nil {
+		return true, nil
+	}
+	switch record.Status.Status {
+	case vm.StateShuttingDown, vm.StateTerminated:
+		return true, nil
+	}
+	return false, nil
+}
+
+// OpenTeardowns lists the terminated instances whose dependency entry dep is
+// recorded and not yet done. A record that has expired is not listed, and a
+// failed listing is returned whole rather than as a partial set.
+func (m *JetStreamManager) OpenTeardowns(dep string) ([]string, error) {
+	terminated, err := m.ListTerminatedInstances()
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, v := range terminated {
+		state, ok := v.Teardown[dep]
+		if ok && vm.TeardownState(state) != vm.TeardownDone && v.Status == vm.StateTerminated {
+			ids = append(ids, v.ID)
+		}
+	}
+	return ids, nil
+}
+
+// MarkTeardownDone sets the terminated record's dependency entry dep done. An
+// absent or expired record is not an error: there is no entry left to close.
+func (m *JetStreamManager) MarkTeardownDone(instanceID, dep string) error {
+	terminated, err := m.LoadTerminatedInstance(instanceID)
+	if err != nil {
+		return err
+	}
+	if terminated == nil || vm.TeardownState(terminated.Teardown[dep]) == vm.TeardownDone {
+		return nil
+	}
+	_, err = m.UpdateTerminatedInstance(instanceID, func(v *vm.VM) {
+		if v.Teardown == nil {
+			v.Teardown = make(map[string]string)
+		}
+		v.Teardown[dep] = string(vm.TeardownDone)
+	})
+	if errors.Is(err, kvstore.ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
+// KnownInstanceIDs lists every instance ID the instance-state and terminated
+// buckets hold a record for, in any key space, by key alone so an undecodable
+// record still counts. It attaches to the buckets and fails if one is missing.
+func KnownInstanceIDs(ctx context.Context, js jetstream.JetStream) (map[string]bool, error) {
+	ids := make(map[string]bool)
+	buckets := map[string][]string{
+		InstanceStateBucket:      {InstanceRecordPrefix, StoppedInstancePrefix},
+		TerminatedInstanceBucket: {InstanceRecordPrefix, TerminatedInstancePrefix},
+	}
+	for name, prefixes := range buckets {
+		kv, err := js.KeyValue(ctx, name)
+		if err != nil {
+			return nil, fmt.Errorf("open %s: %w", name, err)
+		}
+		lister, err := kv.ListKeys(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list %s: %w", name, err)
+		}
+		for key := range lister.Keys() {
+			for _, prefix := range prefixes {
+				if id, ok := strings.CutPrefix(key, prefix); ok {
+					ids[id] = true
+				}
+			}
+		}
+		// The lister closes itself once drained, so Stop only reports that.
+		_ = lister.Stop()
+	}
+	return ids, nil
 }

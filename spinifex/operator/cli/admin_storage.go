@@ -2,20 +2,15 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
-	"net/http"
+	"net/url"
 	"os"
 	"strconv"
-	"strings"
 	"text/tabwriter"
 	"time"
 
-	"github.com/mulgadc/spinifex/internal/gwsign"
 	"github.com/spf13/cobra"
 )
 
@@ -99,44 +94,9 @@ func runStorageStatus(cmd *cobra.Command, _ []string) error {
 // getStorageStatusRemote signs and sends the spinifex GetStorageStatus action,
 // the same query-protocol request the web console makes.
 func getStorageStatusRemote(ctx context.Context, target adminTarget) (*storageStatus, error) {
-	body := "Action=GetStorageStatus"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(target.endpoint, "/")+"/", strings.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
-
-	signer, err := gwsign.NewIMDS(ctx, target.region)
-	if err != nil {
-		return nil, fmt.Errorf("resolve AWS credentials: %w", err)
-	}
-	sum := sha256.Sum256([]byte(body))
-	if err := signer.Sign(httpReq, hex.EncodeToString(sum[:]), "spinifex", target.region); err != nil {
-		return nil, fmt.Errorf("sign request: %w", err)
-	}
-
-	client, err := adminHTTPClient(target.caBundle)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("call %s: %w", target.endpoint, err)
-	}
-	defer resp.Body.Close()
-
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, adminMaxResponseBytes))
-	if err != nil {
-		return nil, fmt.Errorf("gateway returned HTTP %d with an unreadable body: %w", resp.StatusCode, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, decodeQueryError(resp.StatusCode, payload)
-	}
-
 	var out storageStatus
-	if err := json.Unmarshal(payload, &out); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+	if err := callSpinifexAction(ctx, target, url.Values{"Action": {"GetStorageStatus"}}, &out); err != nil {
+		return nil, err
 	}
 	return &out, nil
 }

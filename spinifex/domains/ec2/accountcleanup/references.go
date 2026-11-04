@@ -35,17 +35,38 @@ type TemplateReferenceReader interface {
 	AccountTemplateReferences(ctx context.Context, accountID string) (*ec2launchtemplate.TemplateReferences, error)
 }
 
+// TemplateConsumers are the IDs and names of launch templates that records
+// outside EC2, such as EKS nodegroups, still name. They select what to keep and
+// are never reported.
+type TemplateConsumers struct {
+	TemplateIDs   map[string]bool
+	TemplateNames map[string]bool
+}
+
+// TemplateConsumerReader reads which launch templates records outside EC2 name,
+// every status included, complete or an error. The consumer's owner answers it;
+// EC2 never reads those records.
+type TemplateConsumerReader interface {
+	AccountTemplateConsumers(ctx context.Context, accountID string) (*TemplateConsumers, error)
+}
+
+func (c *TemplateConsumers) names(id, name string) bool {
+	return c.TemplateIDs[id] || c.TemplateNames[name]
+}
+
 var (
 	_ SpotReferenceReader     = (*ec2spotinstance.SpotInstanceServiceImpl)(nil)
 	_ TemplateReferenceReader = (*ec2launchtemplate.LaunchTemplateServiceImpl)(nil)
 )
 
 // ReferenceReaders are the checks run before key pairs and placement groups
-// are deleted. A nil reader counts as a failed check.
+// are deleted. A nil reader counts as a failed check. Consumers is read only
+// by a request that deletes live templates, where nil is also a failed check.
 type ReferenceReaders struct {
 	Instances InstanceReferenceReader
 	Spot      SpotReferenceReader
 	Templates TemplateReferenceReader
+	Consumers TemplateConsumerReader
 }
 
 func newReferences() *References {

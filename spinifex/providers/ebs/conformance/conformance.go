@@ -145,6 +145,16 @@ type SuiteConfig struct {
 	// the provider, standing in for a crash. Nil skips the dead-export case,
 	// for a provider whose export is not a separate process.
 	KillExport func(t *testing.T, published *ebsprovider.PublishedVolume)
+
+	// QueueOnOtherNode returns a client answered only on the queue subjects, by
+	// a node other than NodeID: what a request meets when the volume's owner
+	// does not answer. Nil skips the cases that need it.
+	QueueOnOtherNode func(t *testing.T) ebsprovider.EBSProvider
+
+	// RevokeExport makes the provider revoke a live export as it does when the
+	// volume is lost to another node, and returns the FenceNotice it sent; see
+	// CaptureFenceNotice. Nil skips the case, for a provider that never revokes.
+	RevokeExport func(t *testing.T, published *ebsprovider.PublishedVolume) ebsprovider.FenceNotice
 }
 
 func (c SuiteConfig) node() string {
@@ -210,9 +220,9 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 
 	t.Run("ContractVersions", func(t *testing.T) {
 		t.Run("listed versions are ascending and include the legacy version", func(t *testing.T) {
-			require.NotEmpty(t, contractVersions, "a caller cannot choose a version for a provider that lists none")
+			require.NotEmpty(t, contractVersions, "a provider must list the contract versions it serves")
 			assert.Contains(t, contractVersions, ebsprovider.LegacySchemaVersion,
-				"dropping the legacy version strands every caller still in an N/N-1 rollout")
+				"callers send version-neutral requests at the legacy version, so a provider must serve it")
 			for i := 1; i < len(contractVersions); i++ {
 				assert.Lessf(t, contractVersions[i-1], contractVersions[i], "contract versions %v are not strictly ascending", contractVersions)
 			}
@@ -630,6 +640,39 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			_, err := provider.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned()})
 			require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
 		})
+
+		// Only the owner can drain what it buffers, so a node answering in its
+		// place must refuse rather than snapshot a checkpoint the owner has not
+		// flushed. The owner's own snapshot then succeeds.
+		t.Run("refused on the queue subject while another node holds the volume", func(t *testing.T) {
+			if !capabilities.OwnerRouting || !capabilities.Exclusion.SingleWriter() {
+				t.Skip("no owner routing behind cluster exclusion, so no node answers in place of an owner")
+			}
+			if cfg.QueueOnOtherNode == nil {
+				t.Skip("no queue-only client on another node configured")
+			}
+			provider := newProvider(t)
+			queue := newTrackingProvider(t, cfg.QueueOnOtherNode(t))
+			ctx := context.Background()
+			volumeID := cfg.id("vol-snap-held")
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
+			require.NoError(t, err)
+
+			for _, version := range contractVersions {
+				snapshotID := cfg.id(fmt.Sprintf("snap-held-queue-v%d", version))
+				_, err = queue.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.Versioned{SchemaVersion: version}, SnapshotID: snapshotID, VolumeID: volumeID})
+				require.ErrorIs(t, err, ebsprovider.ErrUnavailable, "v%d: a node not holding the volume must refuse as retry-later", version)
+				if capabilities.SnapshotEnumeration {
+					assert.NotContains(t, drainSnapshotIDs(t, provider, 0), snapshotID)
+				}
+			}
+
+			snap, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-held-owner"), VolumeID: volumeID})
+			require.NoError(t, err, "the holder answers for its own volume")
+			assert.Equal(t, ebsprovider.SnapshotStateCompleted, snap.State)
+		})
 	})
 
 	t.Run("DeleteSnapshot", func(t *testing.T) {
@@ -948,6 +991,24 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			second, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
 			require.NoError(t, err, "a dead export must not make its volume unpublishable")
 			nbdInfoRetry(t, dialURI(t, publishedNBDURI(t, second)))
+		})
+
+		t.Run("revoking a live export sends a fence notice to its node", func(t *testing.T) {
+			if cfg.RevokeExport == nil {
+				t.Skip("this provider never revokes a live export")
+			}
+			provider := newProvider(t)
+			ctx := context.Background()
+			volumeID := cfg.id("vol-pub-revoked")
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			published, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
+			require.NoError(t, err)
+
+			notice := cfg.RevokeExport(t, published)
+			assert.Equal(t, volumeID, notice.VolumeID, "the daemon stops the guest on the volume the notice names")
+			assert.Equal(t, published.NodeID, notice.NodeID, "the notice must name the node whose export was revoked")
+			assert.True(t, ebsprovider.SupportsSchemaVersion(notice.SchemaVersion), "a daemon refuses a notice in a version it cannot read")
 		})
 
 		t.Run("not_found on absent volume", func(t *testing.T) {

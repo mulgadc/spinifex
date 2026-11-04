@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -23,6 +24,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/mulgadc/viperblock/viperblock/backends/s3"
@@ -459,12 +461,22 @@ func openVolumeVB(ctx context.Context, cfg *Config, volumeName string) (*viperbl
 	if err != nil {
 		return nil, nil, err
 	}
+	vb, err := openLeasedVolumeVB(ctx, cfg, volumeName, lease)
+	if err != nil {
+		cfg.releaseVolumeLease(ctx, lease)
+		return nil, nil, err
+	}
+	return vb, lease, nil
+}
 
+// openLeasedVolumeVB is openVolumeVB under a lease the caller already holds,
+// for a caller with a check to make between the lease and the open. The lease
+// stays the caller's to release, on failure too.
+func openLeasedVolumeVB(ctx context.Context, cfg *Config, volumeName string, lease *volumeLease) (*viperblock.VB, error) {
 	vbconfig, s3cfg := volumeVBConfig(cfg, volumeName)
 	vb, err := viperblock.New(&vbconfig, "s3", s3cfg)
 	if err != nil {
-		cfg.releaseVolumeLease(ctx, lease)
-		return nil, nil, fmt.Errorf("new viperblock: %w", err)
+		return nil, fmt.Errorf("new viperblock: %w", err)
 	}
 
 	// New starts the chunk uploader and WAL syncer, so a failure below must
@@ -473,22 +485,21 @@ func openVolumeVB(ctx context.Context, cfg *Config, volumeName string) (*viperbl
 	defer func() {
 		if !opened {
 			vb.Detach()
-			cfg.releaseVolumeLease(ctx, lease)
 		}
 	}()
 
 	if err := vb.Backend.InitCtx(ctx); err != nil {
-		return nil, nil, fmt.Errorf("backend init: %w", err)
+		return nil, fmt.Errorf("backend init: %w", err)
 	}
 	if err := loadStateWithRetry(ctx, cfg, vb, volumeName); err != nil {
 		if errors.Is(err, viperblock.ErrStateNotFound) {
 			cfg.clearVolumeDirty(ctx, volumeName, lease.generation)
 		}
-		return nil, nil, fmt.Errorf("load state: %w", err)
+		return nil, fmt.Errorf("load state: %w", err)
 	}
 
 	opened = true
-	return vb, lease, nil
+	return vb, nil
 }
 
 // isAuxVolume reports whether a volume is an -efi auxiliary volume. Auxiliary
@@ -546,6 +557,55 @@ func volumeNeedsSeal(volumeName, baseDir string) bool {
 	return err == nil
 }
 
+// volumeHoldsLocalWAL reports whether an nbdkit plugin has opened the
+// volume's WAL here and not removed it. A successful seal removes it; an
+// export no client has connected to yet never created it.
+func volumeHoldsLocalWAL(cfg *Config, volumeName string) bool {
+	dir, err := localWALDir(cfg, volumeName)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(dir)
+	return err == nil
+}
+
+// localWALDir is where the nbdkit plugin keeps volumeName's WAL on this node.
+func localWALDir(cfg *Config, volumeName string) (string, error) {
+	walBase := cfg.WALBaseDir
+	if walBase == "" {
+		walBase = cfg.BaseDir
+	}
+	dir, err := localVolumeDir(walBase, volumeName)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "wal"), nil
+}
+
+// latestWALChange is the newest modification time under the volume's local
+// WAL, the directory itself included, so a file created or removed counts too.
+func latestWALChange(cfg *Config, volumeName string) (time.Time, error) {
+	dir, err := localWALDir(cfg, volumeName)
+	if err != nil {
+		return time.Time{}, err
+	}
+	var latest time.Time
+	err = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.ModTime().After(latest) {
+			latest = info.ModTime()
+		}
+		return nil
+	})
+	return latest, err
+}
+
 // sealReceiptSuffix names the file the nbdkit plugin leaves at
 // baseDir/<volume>.sealed after a successful seal.
 const sealReceiptSuffix = ".sealed"
@@ -584,17 +644,51 @@ func consumeSealReceipt(baseDir, volume string) bool {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		slog.Warn("failed to remove seal receipt", "volume", volume, "path", path, "err", err)
 	}
+	_, ok := validSealReceipt(data, volume, path)
+	return ok
+}
 
-	var receipt sealReceipt
-	if err := json.Unmarshal(data, &receipt); err != nil {
-		slog.Warn("malformed seal receipt", "volume", volume, "path", path, "err", err)
+// sealReceiptCoversWAL reports whether the volume's seal receipt postdates
+// every change to its local WAL, leaving the receipt for the unmount it
+// attests to. An older receipt is an earlier client's, not the last one's.
+func sealReceiptCoversWAL(cfg *Config, volume string) bool {
+	path := sealReceiptPath(cfg.BaseDir, volume)
+	data, err := os.ReadFile(path)
+	if err != nil {
 		return false
 	}
-	if receipt.Volume != volume || receipt.SealedAt.IsZero() {
-		slog.Warn("seal receipt missing required fields", "volume", volume, "path", path, "receipt", receipt)
+	receipt, ok := validSealReceipt(data, volume, path)
+	if !ok {
+		return false
+	}
+	latest, err := latestWALChange(cfg, volume)
+	if err != nil {
+		slog.Warn("could not read local WAL to date its seal receipt", "volume", volume, "err", err)
+		return false
+	}
+	// The plugin writes SealedAt to the millisecond, after the seal's own WAL
+	// changes, so a WAL change in the receipt's millisecond is the seal's.
+	if receipt.SealedAt.Before(latest.Truncate(time.Millisecond)) {
+		slog.Warn("seal receipt predates the local WAL, treating the WAL as unsealed",
+			"volume", volume, "sealed_at", receipt.SealedAt, "wal_changed_at", latest)
 		return false
 	}
 	return true
+}
+
+// validSealReceipt decodes data, reporting whether it is a receipt the plugin
+// wrote for volume.
+func validSealReceipt(data []byte, volume, path string) (sealReceipt, bool) {
+	var receipt sealReceipt
+	if err := json.Unmarshal(data, &receipt); err != nil {
+		slog.Warn("malformed seal receipt", "volume", volume, "path", path, "err", err)
+		return sealReceipt{}, false
+	}
+	if receipt.Volume != volume || receipt.SealedAt.IsZero() {
+		slog.Warn("seal receipt missing required fields", "volume", volume, "path", path, "receipt", receipt)
+		return sealReceipt{}, false
+	}
+	return receipt, true
 }
 
 // clearStaleSealReceipt removes any seal receipt left by a previous mount of
@@ -733,6 +827,9 @@ func (cfg *Config) RecoverMountedVolumes(ctx context.Context, nc *nats.Conn) {
 // readiness: without the round trip a caller can act on the signal and still
 // have its request arrive before the interest does.
 func (cfg *Config) Run(nc *nats.Conn) error {
+	if err := cfg.validateNodeName(); err != nil {
+		return err
+	}
 	if err := cfg.LoadEncryptionKey(); err != nil {
 		return err
 	}
@@ -746,11 +843,7 @@ func (cfg *Config) Run(nc *nats.Conn) error {
 
 	cfg.RecoverMountedVolumes(context.Background(), nc)
 
-	if cfg.NodeName != "" {
-		slog.Info("Waiting for EBS events", "node", cfg.NodeName)
-	} else {
-		slog.Info("Waiting for EBS events (single-node mode)")
-	}
+	slog.Info("Waiting for EBS events", "node", cfg.NodeName)
 
 	if err := RegisterVolumeLifecycleSubjects(cfg, nc); err != nil {
 		return err
@@ -764,6 +857,15 @@ func (cfg *Config) Run(nc *nats.Conn) error {
 	}
 	if cfg.ready != nil {
 		close(cfg.ready)
+	}
+	return nil
+}
+
+// validateNodeName refuses a node name the contract cannot address. Without
+// one the fence notice has no subject, and a fenced guest would keep running.
+func (cfg *Config) validateNodeName() error {
+	if err := ebsprovider.ValidateNodeID(cfg.NodeName); err != nil {
+		return fmt.Errorf("viperblockd node name %q (cluster config node): %w", cfg.NodeName, err)
 	}
 	return nil
 }

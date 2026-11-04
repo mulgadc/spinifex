@@ -48,10 +48,10 @@ func ExtractTraceContext(ctx context.Context, msg *nats.Msg) context.Context {
 // front door to whichever service ends up doing the work.
 const AttrAccountID = "aws.account_id"
 
-// accountAttrs returns the account attribute for accountID, or nothing. Work
+// AccountAttrs returns the account attribute for accountID, or nothing. Work
 // with no caller — a sweep, a reconciler, a node-to-node probe — is left
 // unattributed rather than being credited to whoever happens to be admin.
-func accountAttrs(accountID string) []attribute.KeyValue {
+func AccountAttrs(accountID string) []attribute.KeyValue {
 	if accountID == "" {
 		return nil
 	}
@@ -66,7 +66,7 @@ func StartConsumerSpan(msg *nats.Msg) (context.Context, trace.Span) {
 	attrs := append([]attribute.KeyValue{
 		attribute.String("messaging.system", "nats"),
 		attribute.String("messaging.destination.name", msg.Subject),
-	}, accountAttrs(AccountIDFromMsg(msg))...)
+	}, AccountAttrs(AccountIDFromMsg(msg))...)
 
 	return otel.Tracer(natsTracerName).Start(ctx, "NATS "+msg.Subject,
 		trace.WithSpanKind(trace.SpanKindConsumer),
@@ -78,7 +78,7 @@ func startProducerSpan(ctx context.Context, subject, accountID string) (context.
 	attrs := append([]attribute.KeyValue{
 		attribute.String("messaging.system", "nats"),
 		attribute.String("messaging.destination.name", subject),
-	}, accountAttrs(accountID)...)
+	}, AccountAttrs(accountID)...)
 
 	return otel.Tracer(natsTracerName).Start(ctx, "NATS "+subject,
 		trace.WithSpanKind(trace.SpanKindClient),

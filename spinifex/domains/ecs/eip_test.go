@@ -2,6 +2,7 @@ package ecs
 
 import (
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -37,14 +38,14 @@ func TestAssignTaskPublicIP_EnabledAssociatesAndPersists(t *testing.T) {
 	eips := &stubEIPs{publicIP: "192.0.2.50", allocID: "eipalloc-1"}
 	svc.eips = eips
 
-	require.NoError(t, putJSON(t.Context(), kv, ServiceKey("web", "web"), &ServiceRecord{
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, ServiceKey("web", "web"), &ServiceRecord{
 		Name: "web", Cluster: "web", AssignPublicIP: "ENABLED",
 	}))
 	task := &TaskRecord{
 		TaskID: "t-1", Cluster: "web", Group: serviceTaskGroup("web"),
 		ENIID: "eni-1", ENIPrivateIP: "172.31.0.8",
 	}
-	require.NoError(t, putJSON(t.Context(), kv, TaskKey("web", "t-1"), task))
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, TaskKey("web", "t-1"), task))
 
 	svc.assignTaskPublicIP(context.Background(), kv, testAccountID, task)
 
@@ -53,7 +54,7 @@ func TestAssignTaskPublicIP_EnabledAssociatesAndPersists(t *testing.T) {
 	assert.Equal(t, "eipalloc-1", task.ENIEIPAllocationID)
 
 	var persisted TaskRecord
-	found, err := getJSON(t.Context(), kv, TaskKey("web", "t-1"), &persisted)
+	found, err := taskdefinition.GetJSON(t.Context(), kv, TaskKey("web", "t-1"), &persisted)
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, "192.0.2.50", persisted.ENIPublicIP)
@@ -64,7 +65,7 @@ func TestAssignTaskPublicIP_DisabledNoOp(t *testing.T) {
 	eips := &stubEIPs{publicIP: "192.0.2.50", allocID: "eipalloc-1"}
 	svc.eips = eips
 
-	require.NoError(t, putJSON(t.Context(), kv, ServiceKey("web", "web"), &ServiceRecord{
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, ServiceKey("web", "web"), &ServiceRecord{
 		Name: "web", Cluster: "web", // AssignPublicIP unset
 	}))
 	task := &TaskRecord{

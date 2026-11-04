@@ -23,7 +23,7 @@ subject shape are wire compatibility. Callers and receivers must use this
 package rather than rebuild those details. `commands_test.go` preserves the
 version-1 JSON shape and subject form.
 
-This package owns shared command payloads and the drain-volume response. It
+This package owns shared command payloads. It
 does not define every action's reply body, authorize the request, store EC2
 state or implement NATS transport. Those remain responsibilities of the EC2
 domain and its runtime composition.
@@ -36,6 +36,13 @@ contract or an approved compatibility plan; it is not a package refactor.
 `EnsureDefaultVpcSubject` (`ec2.EnsureDefaultVpc`) is the request/reply route on which the gateway's account creation asks a daemon in the `spinifex-workers` queue group to build the account's default VPC.
 Only the subject is owned here today.
 The request (`account_id`) and reply (`vpc_id`, `error`) bodies are still declared as anonymous structs on each side; moving them into this package is a contract change that needs its own characterization first.
+
+## Volume held elsewhere
+
+A start refused because another node holds one of the instance's volumes is an `IncorrectState` error payload on the `ec2.start`, `ec2.start.<node>` and `ec2.cmd.<instance-id>` replies, and the AWS body cannot say why.
+The owning node adds the `X-Volume-Held-Elsewhere: true` header to that reply, the `ec2.start` forwarder relays it, and `StartInstances` wraps `ErrVolumeHeldElsewhere` around the error it rebuilds, so a caller matches it with `errors.Is` rather than reading the message.
+The owning node sets the header only from the EBS provider's `volume_held_elsewhere` code, which every provider returns for this refusal; no reader matches the message text.
+`VolumeHeldElsewhereText` is the wording viperblockd puts in that refusal's message, not a signal.
 
 ## Platform inventory
 

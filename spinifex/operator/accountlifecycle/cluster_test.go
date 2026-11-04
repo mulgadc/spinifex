@@ -27,13 +27,13 @@ func TestNewClusterEngineCoversEveryStage(t *testing.T) {
 	svc, err := iamdomain.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
-	engine, err := NewClusterEngine(t.Context(), nc, testClusterNodes(), svc, newFakeBuckets())
+	engine, err := NewClusterEngine(t.Context(), nc, testClusterNodes(), svc, newFakeBuckets(), &stubCleaner{})
 	require.NoError(t, err)
 	require.NotNil(t, engine.Accounts)
 
 	// A teardown with no object store would report every stage drained and
 	// still delete the account record, leaving the tenant's objects behind.
-	_, err = NewClusterEngine(t.Context(), nc, testClusterNodes(), svc, nil)
+	_, err = NewClusterEngine(t.Context(), nc, testClusterNodes(), svc, nil, &stubCleaner{})
 	require.Error(t, err)
 
 	for _, stage := range Stages() {
@@ -56,7 +56,7 @@ func TestNewClusterEngineRegistersTheEC2SettingsSealReaper(t *testing.T) {
 	svc, err := iamdomain.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
-	engine, err := NewClusterEngine(t.Context(), nc, testClusterNodes(), svc, newFakeBuckets())
+	engine, err := NewClusterEngine(t.Context(), nc, testClusterNodes(), svc, newFakeBuckets(), &stubCleaner{})
 	require.NoError(t, err)
 
 	var kinds []string
@@ -78,7 +78,7 @@ func TestNewClusterEngineRegistersTheQuotaOverrideSealReaper(t *testing.T) {
 	require.NoError(t, err)
 
 	nodes := ClusterNodes{Expected: 3, DaemonIDs: []string{"d-1", "d-2", "d-3"}, GatewayIDs: []string{"gw-1"}}
-	engine, err := NewClusterEngine(t.Context(), nc, nodes, svc, newFakeBuckets())
+	engine, err := NewClusterEngine(t.Context(), nc, nodes, svc, newFakeBuckets(), &stubCleaner{})
 	require.NoError(t, err)
 
 	var quotaReaper *quotaOverrideSealReaper
@@ -107,7 +107,7 @@ func TestClusterEnginePrechecks(t *testing.T) {
 	svc, err := iamdomain.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
 
-	engine, err := NewClusterEngine(t.Context(), nc, testClusterNodes(), svc, newFakeBuckets())
+	engine, err := NewClusterEngine(t.Context(), nc, testClusterNodes(), svc, newFakeBuckets(), &stubCleaner{})
 	require.NoError(t, err)
 
 	// Account ids are sequential and the first is the protected super admin.

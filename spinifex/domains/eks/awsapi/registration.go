@@ -3,14 +3,13 @@ package awsapi
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 
-	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/passrole"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/nats-io/nats.go"
 )
 
@@ -40,39 +39,12 @@ func NewRegistration(deps Deps) dispatch.Registration {
 
 // OperationInventory classifies the actions the registration serves.
 func OperationInventory() dispatch.Inventory {
-	return dispatch.Inventory{Registered: actionNames()}
+	return dispatch.Inventory{Registered: router.Actions()}
 }
 
 func resolveAction(r *http.Request) string {
 	action, _, _, _ := router.Lookup(r.Method, r.URL.EscapedPath())
 	return action
-}
-
-// CallerFromActor projects the verified actor onto the EKS caller. The role name
-// comes from the underlying role ARN, never the session name, which the caller
-// picks at AssumeRole time and could name its way past the gate.
-func CallerFromActor(actor dispatch.Actor) Caller {
-	name := actor.UserName
-	if actor.PrincipalType == principalTypeAssumedRole {
-		name = actor.SessionName
-	}
-	return Caller{
-		AccountID:     actor.AccountID,
-		PrincipalType: actor.PrincipalType,
-		SessionName:   name,
-		RoleName:      actor.RoleName(),
-	}
-}
-
-func readBoundedBody(r *http.Request) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, sigv4.MaxPayloadLen+1))
-	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-	if int64(len(body)) > sigv4.MaxPayloadLen {
-		return nil, errors.New(awserrors.ErrorRequestEntityTooLarge)
-	}
-	return body, nil
 }
 
 // dispatch runs the action and renames the generic parameter error to the code
@@ -139,7 +111,7 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 		return errors.New(awserrors.ErrorInternalError)
 	}
 
-	body, err := readBoundedBody(r)
+	body, err := dispatch.ReadBoundedBody(r)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "EKS dispatch: failed to read body", "err", err)
 		return err
@@ -164,7 +136,7 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 	// the path or body, so an eks:* grant evaluates as permitted and only the
 	// principal class plus the caller's own instance say whether it is its own.
 	if IsInternalAction(action) {
-		if err := AuthorizeInternal(r.Context(), d.NATS, action, CallerFromActor(actor), params, body); err != nil {
+		if err := AuthorizeInternal(r.Context(), d.NATS, action, actor.Caller(), params, body); err != nil {
 			return err
 		}
 	}
@@ -198,7 +170,7 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 		return err
 	}
 
-	WriteJSONResponse(w, output)
+	envelope.WriteJSONResult(w, output)
 	return nil
 }
 

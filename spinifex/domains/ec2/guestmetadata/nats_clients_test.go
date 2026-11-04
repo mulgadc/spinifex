@@ -197,3 +197,20 @@ func TestTTLCache_ExpiresEntries(t *testing.T) {
 	_, ok = c.get("k")
 	assert.False(t, ok)
 }
+
+// sweep drops expired entries so the map cannot grow without bound across
+// instance churn.
+func TestTTLCache_SweepDropsExpired(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	c := newTTLCache[bool](time.Minute)
+	c.now = func() time.Time { return now }
+
+	c.put("old", true)
+	now = now.Add(time.Minute)
+	c.put("new", true)
+	c.sweep(now.Add(time.Second))
+
+	assert.Len(t, c.m, 1, "only the live entry survives the sweep")
+	_, ok := c.m["new"]
+	assert.True(t, ok)
+}

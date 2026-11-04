@@ -53,12 +53,12 @@ var providerObjectStoreFactory = func(cfg *Config) objectstore.ObjectStore {
 // viperblock engine construction out of the EC2 control-plane handlers and
 // into the storage daemon that owns BaseDir and the mounted-volume registry.
 //
-// PublishVolume/UnpublishVolume are node-addressed (ebsprovider.PublishSubject
-// / UnpublishSubject already route to one node), so they are only registered
-// when cfg.NodeName is set; there is no queue-group fallback the way the
-// legacy ebs.mount/ebs.unmount subjects have.
+// It refuses a cfg.NodeName that cannot address the node-addressed subjects.
 // Exported so harnesses can put a real provider behind the control plane.
 func RegisterProviderSubjects(cfg *Config, nc *nats.Conn) error {
+	if err := cfg.validateNodeName(); err != nil {
+		return err
+	}
 	// The lease store has to exist before any subject is served: a handler
 	// that reaches an engine open without one refuses, and refusing every
 	// publish is a worse failure than not starting.
@@ -114,11 +114,6 @@ func RegisterProviderSubjects(cfg *Config, nc *nats.Conn) error {
 		return fmt.Errorf("subscribe to %s: %w", snapshotCreateWildcard, err)
 	}
 
-	if cfg.NodeName == "" {
-		slog.Warn("ebs.provider: NodeName is empty, this node cannot serve PublishVolume/UnpublishVolume attachments")
-		return nil
-	}
-
 	publishSubject, err := ebsprovider.PublishSubject(cfg.NodeName)
 	if err != nil {
 		return fmt.Errorf("build publish subject: %w", err)
@@ -147,16 +142,6 @@ func RegisterProviderSubjects(cfg *Config, nc *nats.Conn) error {
 		handleHoldsUnsealedWrites(ctx, cfg, msg)
 	})); err != nil {
 		return fmt.Errorf("subscribe to %s: %w", unsealedSubject, err)
-	}
-
-	// The queue subject is answered by any node's provider; this one only by
-	// this node's, so a daemon can learn what its own provider serves.
-	nodeCapabilitiesSubject, err := ebsprovider.NodeCapabilitiesSubject(cfg.NodeName)
-	if err != nil {
-		return fmt.Errorf("build node capabilities subject: %w", err)
-	}
-	if _, err := nc.Subscribe(nodeCapabilitiesSubject, tracedProviderHandler(handleProviderCapabilities)); err != nil {
-		return fmt.Errorf("subscribe to %s: %w", nodeCapabilitiesSubject, err)
 	}
 
 	return nil
@@ -1141,13 +1126,9 @@ func handleCreateSnapshot(ctx context.Context, cfg *Config, nc *nats.Conn, msg *
 		},
 	})
 
-	// The caller is responsible for draining the volume (flushing guest
-	// writes to the live checkpoint) before requesting a snapshot; that
-	// coordination goes through the guest over ec2.cmd.<instanceID> and
-	// stays a control-plane concern this provider boundary does not reach.
-	// WithoutCancel keeps the trace context while dropping the deadline: the
-	// work has to outlive the request it was accepted by, and it still has to
-	// be attributable to it.
+	// The drain runs in the background with the snapshot, so only the accept
+	// reply is freed of it; a caller waiting on completion still waits for it.
+	// WithoutCancel keeps the trace context but drops the request's deadline.
 	go completeCreateSnapshot(context.WithoutCancel(ctx), cfg, nc, req, operationID, completionSubject)
 }
 
@@ -1188,7 +1169,7 @@ func snapshotErrorCode(err error) ebsprovider.ErrorCode {
 		return ebsprovider.ErrorCodeNotFound
 	case errors.Is(err, errSnapshotExistsElsewhere):
 		return ebsprovider.ErrorCodeAlreadyExists
-	case errors.Is(err, errVolumeLeaseHeld), errors.Is(err, errNoVolumeLeaseStore):
+	case errors.Is(err, errVolumeLeaseHeld), errors.Is(err, errNoVolumeLeaseStore), errors.Is(err, errExportSettling):
 		// Exclusive access could not be established. The holder gives the
 		// volume up on detach, so this is worth repeating rather than the
 		// permanent failure an internal error reads as.
@@ -1216,26 +1197,36 @@ func checkSnapshotIDFree(vb *viperblock.VB, volumeID, snapshotID string) error {
 }
 
 // snapshotVolumeEngine creates snapshotID off volumeID's live checkpoint,
-// preferring an already-mounted VB over opening a second engine on the same
-// volume. Draining the volume so the checkpoint is current is the caller's
-// responsibility (see handleCreateSnapshot).
-//
-// The unmounted branch opens through openVolumeVB, so it holds the volume's
-// cluster-wide lease for as long as the engine is open: a snapshot taken
-// beside a live writer on another node is two engines on one volume.
+// preferring an already-mounted VB, drained first so the checkpoint is
+// current, over opening a second engine on the same volume.
 func snapshotVolumeEngine(ctx context.Context, cfg *Config, volumeID, snapshotID string) (*ebsprovider.Snapshot, error) {
 	if mv, ok := findMountedVolume(cfg, volumeID); ok && mv.VB != nil {
+		if err := drainMountedExport(ctx, cfg, volumeID); err != nil {
+			return nil, err
+		}
 		return createSnapshotWithVB(mv.VB, volumeID, snapshotID)
 	}
 
-	vb, lease, err := openVolumeVB(ctx, cfg, volumeID)
+	// The lease refuses a volume another node holds. It is reentrant here, so
+	// an export this node runs but has not registered is excluded or drained
+	// separately, and the engine opens only once that is settled.
+	lease, err := cfg.acquireVolumeLease(ctx, volumeID)
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		vb.Detach()
-		cfg.releaseVolumeLease(ctx, lease)
-	}()
+	defer cfg.releaseVolumeLease(ctx, lease)
+
+	lock, err := excludeLocalWriter(ctx, cfg, volumeID)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseWriterLock(ctx, lock, volumeID)
+
+	vb, err := openLeasedVolumeVB(ctx, cfg, volumeID, lease)
+	if err != nil {
+		return nil, err
+	}
+	defer vb.Detach()
 	return createSnapshotWithVB(vb, volumeID, snapshotID)
 }
 
@@ -1813,8 +1804,8 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (viperbl
 
 // handlePublishVolume serves ebs.provider.v1.<node>.mount, the provider-neutral
 // front for the same nbdkit mount path ebs.mount uses. It is node-addressed
-// (RegisterProviderSubjects only subscribes it when cfg.NodeName is set), so
-// unlike the legacy handler there is no queue-group fallback to reason about.
+// (subscribed on cfg.NodeName's subject), so unlike the legacy handler there
+// is no queue-group fallback to reason about.
 func handlePublishVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *nats.Msg) {
 	var req ebsprovider.PublishVolumeRequest
 	err := json.Unmarshal(msg.Data, &req)
@@ -1929,7 +1920,7 @@ func tearDownPublication(ctx context.Context, cfg *Config, req ebsprovider.Unpub
 	if err != nil {
 		// Nothing mounted here is already the state unpublish asks for, so a
 		// retry after a request that completed server-side converges rather
-		// than erroring, matching the legacy path's unmountResponseError.
+		// than erroring.
 		if unmountResp.NotFound {
 			return unmountResp.Reaped, nil
 		}

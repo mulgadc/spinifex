@@ -34,6 +34,8 @@ func newTestLeases(t *testing.T, natsURL, owner string) *volumeLeases {
 // engines on one encrypted volume issue overlapping AES-GCM nonces, so the
 // second claimant losing is the whole point of the lease.
 func TestVolumeLease_SecondNodeIsRefused(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	first := newTestLeases(t, natsURL, "node-a")
@@ -53,6 +55,8 @@ func TestVolumeLease_SecondNodeIsRefused(t *testing.T) {
 // one-way door: a volume detached from one node has to be attachable on the
 // next, which is the ordinary EBS lifecycle.
 func TestVolumeLease_ReleasedVolumeIsClaimableAgain(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	first := newTestLeases(t, natsURL, "node-a")
@@ -72,6 +76,8 @@ func TestVolumeLease_ReleasedVolumeIsClaimableAgain(t *testing.T) {
 // opens a detached engine while the mount that is being torn down still holds
 // the lease. Refusing itself there would fail every seal.
 func TestVolumeLease_RepeatAcquireOnOneNodeShares(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	leases := newTestLeases(t, natsURL, "node-a")
@@ -98,6 +104,8 @@ func TestVolumeLease_RepeatAcquireOnOneNodeShares(t *testing.T) {
 // nbdkit exports outlive the daemon, so recovery has to re-adopt them; waiting
 // out the TTL would leave live exports untracked.
 func TestVolumeLease_NodeReclaimsItsOwnStaleEntry(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-leaserestart01"
@@ -119,6 +127,8 @@ func TestVolumeLease_NodeReclaimsItsOwnStaleEntry(t *testing.T) {
 // A daemon that cannot reach JetStream cannot establish that it is the only
 // opener, and opening blind is what the lease exists to prevent.
 func TestVolumeLease_OpenRefusesWithoutALeaseStore(t *testing.T) {
+	t.Parallel()
+
 	cfg := &Config{NodeName: "test-node"}
 
 	lease, err := cfg.acquireVolumeLease(t.Context(), "vol-nostore00000001")
@@ -130,6 +140,8 @@ func TestVolumeLease_OpenRefusesWithoutALeaseStore(t *testing.T) {
 // snapshot request that lands on a node without the volume mounted must not
 // open a second engine over storage another node is writing.
 func TestVolumeLease_UnmountedSnapshotIsRefusedByTheHolder(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-snapshotexcl01"
@@ -152,6 +164,8 @@ func TestVolumeLease_UnmountedSnapshotIsRefusedByTheHolder(t *testing.T) {
 // fail-closed default on the snapshot path specifically. A daemon that cannot
 // reach JetStream cannot establish that it is the only opener.
 func TestVolumeLease_UnmountedSnapshotRefusesWithoutALeaseStore(t *testing.T) {
+	t.Parallel()
+
 	cfg := &Config{NodeName: "node-a", BaseDir: t.TempDir()}
 
 	snapshot, err := snapshotVolumeEngine(t.Context(), cfg, "vol-snapshotnostor", "snap-nostore00000001")
@@ -230,11 +244,15 @@ func leaseEntry(t *testing.T, owner string, generation uint64) []byte {
 // has been taken, must mark the lease lost rather than shrug it off as
 // transient and keep renewing over whoever now holds the volume.
 func TestVolumeLease_RenewalConflictLosesTheLeaseToARealPeer(t *testing.T) {
+	t.Parallel()
+
 	for name, code := range map[string]jetstream.ErrorCode{
 		"single replica": jetstream.JSErrCodeStreamWrongLastSequence,
 		"replicated":     jetstream.JSErrCodeStreamWrongLastSequenceConstant,
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
 			_, natsURL := setupEmbeddedNATS(t)
 			leases := newTestLeases(t, natsURL, "node-a")
 
@@ -265,6 +283,8 @@ func TestVolumeLease_RenewalConflictLosesTheLeaseToARealPeer(t *testing.T) {
 // ten-second JetStream stall on prod destroyed four running guests this way,
 // each fenced with winner=unknown against a peer that never existed.
 func TestVolumeLease_RenewalConflictOnThisNodesOwnWriteIsNotATakeover(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 	leases := newTestLeases(t, natsURL, "node-a")
 
@@ -310,6 +330,8 @@ func TestVolumeLease_RenewalConflictOnThisNodesOwnWriteIsNotATakeover(t *testing
 // reclaimed the volume through takeOver. The owner matches and the lease is
 // still superseded, so the generation is what decides it.
 func TestVolumeLease_RenewalConflictOnAnOlderGenerationIsATakeover(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 	leases := newTestLeases(t, natsURL, "node-a")
 
@@ -336,6 +358,8 @@ func TestVolumeLease_RenewalConflictOnAnOlderGenerationIsATakeover(t *testing.T)
 // nothing, so it must not fence — and it must not silently extend the lease
 // either. Local validity is the bound that depends on reading nothing.
 func TestVolumeLease_RenewalConflictWithAnUnreadableEntryKeepsTheLease(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 	leases := newTestLeases(t, natsURL, "node-a")
 
@@ -364,6 +388,8 @@ func TestVolumeLease_RenewalConflictWithAnUnreadableEntryKeepsTheLease(t *testin
 // gone rather than changed. There is nothing to re-read and nothing to adopt,
 // and the server may already have granted it to somebody else.
 func TestVolumeLease_RenewalAgainstAMissingEntryIsATakeover(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 	leases := newTestLeases(t, natsURL, "node-a")
 
@@ -395,6 +421,8 @@ func TestVolumeLease_RenewalAgainstAMissingEntryIsATakeover(t *testing.T) {
 // rule, that an unnameable winner never fences, would remove the second and
 // leave a partitioned node writing for as long as it stayed partitioned.
 func TestVolumeLease_FencingRule(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 	leases := newTestLeases(t, natsURL, "node-a")
 
@@ -427,6 +455,8 @@ func TestVolumeLease_FencingRule(t *testing.T) {
 // cannot address another volume's entry: "." and ">" are JetStream subject
 // tokens, and a name carrying them would claim or read the wrong key.
 func TestVolumeLease_RejectsUnsafeKeys(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 	leases := newTestLeases(t, natsURL, "node-a")
 
@@ -441,6 +471,8 @@ func TestVolumeLease_RejectsUnsafeKeys(t *testing.T) {
 // the server may grant the entry to somebody else, and it has to get at least
 // one check in between giving up on renewal and reaching that point.
 func TestVolumeLease_ValidityIsBoundedBelowTheServerTTL(t *testing.T) {
+	t.Parallel()
+
 	require.Less(t, volumeLeaseValidity, volumeLeaseTTL,
 		"a holder that stops only when the server expires the entry has already overlapped its successor")
 	require.Less(t, volumeLeaseRenewInterval, volumeLeaseValidity,
@@ -456,6 +488,8 @@ func TestVolumeLease_ValidityIsBoundedBelowTheServerTTL(t *testing.T) {
 // outage begins, so what it survives is validity minus that interval, and that
 // has to cover the whole unwritable window rather than one stalled write.
 func TestVolumeLease_SurvivesTheOutageTheHostProduces(t *testing.T) {
+	t.Parallel()
+
 	tolerated := volumeLeaseValidity - volumeLeaseRenewInterval
 	require.GreaterOrEqual(t, tolerated, jetstreamOutageBound,
 		"a lease that cannot outlast the outages these hosts produce surrenders volumes no peer has taken")
@@ -473,6 +507,8 @@ func TestVolumeLease_SurvivesTheOutageTheHostProduces(t *testing.T) {
 // has to give the volume up on its own clock, and report the reason as a stall
 // rather than as a peer taking it — nobody has necessarily taken it yet.
 func TestVolumeLease_UnconfirmedRenewalSurrendersTheVolume(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 	leases := newTestLeases(t, natsURL, "node-a")
 
@@ -556,6 +592,8 @@ func (k *blockingKV) updateInFlight() bool {
 // a device stall, and the holder has to stop writing on validity regardless —
 // so the surrender has to land while that renewal is still inside JetStream.
 func TestVolumeLease_ValidityIsEnforcedWhileARenewalIsBlocked(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 	leases := newTestLeases(t, natsURL, "node-a")
 
@@ -609,6 +647,8 @@ func TestVolumeLease_ValidityIsEnforcedWhileARenewalIsBlocked(t *testing.T) {
 // after. The entry may already belong to another node, so deleting it on the
 // way out would evict a live holder and hand the volume to a third opener.
 func TestVolumeLease_SurrenderedLeaseIsNotDeletedOnRelease(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 	leases := newTestLeases(t, natsURL, "node-a")
 
@@ -633,6 +673,8 @@ func TestVolumeLease_SurrenderedLeaseIsNotDeletedOnRelease(t *testing.T) {
 // into a second engine on one encrypted volume, and treating a timeout as
 // permanent strands a guest across a cluster restart, which is what happened.
 func TestLeaseStoreUnavailable(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name string
 		err  error
@@ -655,6 +697,8 @@ func TestLeaseStoreUnavailable(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			assert.Equal(t, tt.want, leaseStoreUnavailable(tt.err))
 		})
 	}
@@ -665,6 +709,8 @@ func TestLeaseStoreUnavailable(t *testing.T) {
 // ErrLeaseStoreUnavailable, because that is the sentinel mountErrRetryable
 // looks for and the only reason the relaunch backoff engages.
 func TestVolumeLease_UnreachableStoreIsRetryable(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	nc, err := nats.Connect(natsURL)

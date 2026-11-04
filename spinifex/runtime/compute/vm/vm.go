@@ -14,11 +14,13 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/runtime/host/hostos"
@@ -135,6 +137,10 @@ type VM struct {
 	// QEMU replaced. The heartbeat leaves the guest alone for that window, and
 	// claiming the flag serialises reboots of one instance.
 	rebooting atomic.Bool `json:"-"`
+
+	// guestPoweroff is set once the heartbeat has seen the guest power itself off
+	// and asked QEMU to quit, so the exit that follows is a stop, not a crash.
+	guestPoweroff atomic.Bool `json:"-"`
 
 	// relaunchMu is held while a reboot swaps this guest's QEMU process, so a
 	// stop or terminate never unmounts volumes under a process being started.
@@ -280,6 +286,11 @@ type VM struct {
 	// pending/failed and purges the record once all dependents are done.
 	Teardown map[string]string `json:"teardown,omitempty"`
 
+	// UnpublishOwed lists the volumes the last unmount on LastNode left
+	// exported, so a terminate that clears their attachments records an
+	// unpublish obligation for each. Every unmount replaces it.
+	UnpublishOwed []string `json:"unpublish_owed,omitempty"`
+
 	// TerminatedAt is when the instance entered StateTerminated. The GC backstop
 	// keeps a completed terminated record describable until this is older than
 	// the visibility window, after which it may reclaim it early; the bucket's
@@ -308,6 +319,20 @@ type VM struct {
 	// tolerated by migrate.
 	InstanceLifecycle     string `json:"instance_lifecycle,omitempty"`
 	SpotInstanceRequestId string `json:"spot_instance_request_id,omitempty"`
+
+	// UEFIVarStore points at the object holding this instance's UEFI variable
+	// store. Status, so written only by the node; nil for a BIOS instance.
+	UEFIVarStore *UEFIVarStoreRef `json:"uefi_var_store,omitempty"`
+}
+
+// UEFIVarStoreRef names the store object an instance launches from, with the
+// firmware it was written under, so a launch can check it without reading the
+// object's metadata.
+type UEFIVarStoreRef struct {
+	Key        string                     `json:"key"`
+	Firmware   uefistore.FirmwareIdentity `json:"firmware"`
+	WriterNode string                     `json:"writer_node"`
+	WrittenAt  time.Time                  `json:"written_at"`
 }
 
 // UnmarshalJSON folds the fields of legacy records that mixed a request with an
@@ -371,8 +396,8 @@ type Device struct {
 	Value string `json:"value"`
 }
 
-// Drive is one QEMU -drive entry, used for boot, EFI and pflash firmware
-// drives. Each set field becomes a key=value option.
+// Drive is one QEMU -drive entry, used for the pflash firmware drives (the
+// CODE blob and the variable store). Each set field becomes a key=value option.
 type Drive struct {
 	File   string `json:"file"`
 	Format string `json:"format"`
@@ -380,17 +405,8 @@ type Drive struct {
 	Media  string `json:"media"`
 	ID     string `json:"id"`
 	Cache  string `json:"cache,omitempty"`
-	// Werror and Rerror set QEMU's block on-error policy. "stop" pauses the VM
-	// and holds the failed request, so a transient backend loss is resumed with
-	// cont instead of reaching the guest as EIO and corrupting its filesystem.
-	Werror string `json:"werror,omitempty"`
-	Rerror string `json:"rerror,omitempty"`
-	// ReconnectDelay emits file.reconnect-delay, the seconds an NBD disconnect
-	// pauses requests before failing them. The file. prefix is required: the
-	// bare name reaches the format driver, which has no such option.
-	ReconnectDelay int `json:"reconnect_delay,omitempty"`
 	// Unit selects the pflash slot when If=="pflash": 0 is the CODE blob,
-	// 1 is the per-VM VARS volume. Ignored for non-pflash drives.
+	// 1 is the per-VM variable store. Ignored for non-pflash drives.
 	Unit int `json:"unit,omitempty"`
 	// ReadOnly emits readonly=on; used for the pflash CODE blob.
 	ReadOnly bool `json:"readonly,omitempty"`
@@ -405,9 +421,9 @@ type IOThread struct {
 // Blockdev is a QEMU -blockdev entry: the command-line equivalent of the
 // blockdev-add QMP command. Unlike a -drive with if=none, it produces a
 // monitor-owned node addressable by node-name, which is what makes
-// blockdev-del able to remove it later. Used for data (non-boot, non-EFI)
-// volumes so a cold-booted one has the same detachable block-graph shape as
-// a hot-attached one; boot/EFI volumes keep the legacy -drive shape.
+// blockdev-del able to remove it later. Used for boot and data volumes, so a
+// cold-booted data volume has the same detachable block-graph shape as a
+// hot-attached one; EFI volumes keep the pflash -drive shape.
 type Blockdev struct {
 	Value string `json:"value"`
 }
@@ -426,13 +442,10 @@ type Config struct {
 	NoGraphic          bool   `json:"no_graphic"`
 	MachineType        string `json:"machine_type"`
 	ConsoleLogPath     string `json:"console_log_path,omitempty"`
-	// ConsoleLogAppend keeps the existing console log rather than truncating
-	// it, for a reboot that replaces the process.
-	ConsoleLogAppend bool   `json:"-"`
-	SerialSocket     string `json:"serial_socket,omitempty"`
-	CPUType          string `json:"cpu_type"`
-	CPUCount         int    `json:"cpu_count"`
-	Memory           int    `json:"memory"`
+	SerialSocket       string `json:"serial_socket,omitempty"`
+	CPUType            string `json:"cpu_type"`
+	CPUCount           int    `json:"cpu_count"`
+	Memory             int    `json:"memory"`
 
 	Drives    []Drive    `json:"drives"`
 	IOThreads []IOThread `json:"io_threads,omitempty"`
@@ -479,6 +492,32 @@ type FwCfgEntry struct {
 // resolveQEMUBinary is a variable so tests run without QEMU installed.
 var resolveQEMUBinary = hostos.QEMUBinary
 
+// kvmOverride pins the /dev/kvm probe for tests: 0 probes the host, 1 reports
+// KVM present, 2 absent. Atomic so a test can set it while others build argv.
+var kvmOverride atomic.Int32
+
+func kvmAvailable() bool {
+	switch kvmOverride.Load() {
+	case 1:
+		return true
+	case 2:
+		return false
+	}
+	_, err := os.Stat("/dev/kvm")
+	return err == nil
+}
+
+// SetKVMAvailableForTest makes Execute see KVM as present or absent for one test.
+func SetKVMAvailableForTest(tb testing.TB, present bool) {
+	tb.Helper()
+	v := int32(2)
+	if present {
+		v = 1
+	}
+	prev := kvmOverride.Swap(v)
+	tb.Cleanup(func() { kvmOverride.Store(prev) })
+}
+
 func (cfg *Config) Execute() (*exec.Cmd, error) {
 	args := []string{}
 
@@ -518,10 +557,7 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		args = append(args, "-smbios", fmt.Sprintf("type=3,asset=%s", cfg.SMBIOSAssetTag))
 	}
 
-	// Validate native kvm support
-	_, err := os.Stat("/dev/kvm")
-
-	if err != nil {
+	if !kvmAvailable() {
 		slog.Warn("Native KVM support not detected on host. Check permissions and host")
 		//slog.Warn("Setting -cpu max, `host` CPU type unavailable")
 		// Use qemu defaults
@@ -546,11 +582,11 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		// -serial chardev:console0 wires it to the existing device (not a new one).
 		// Do NOT use -device isa-serial here — that adds a second device (ttyS1)
 		// while the kernel talks to ttyS0.
-		args = append(args, "-chardev", fmt.Sprintf("file,id=console0,path=%s%s", cfg.ConsoleLogPath, appendOpt(",append", cfg.ConsoleLogAppend)))
+		args = append(args, "-chardev", fmt.Sprintf("file,id=console0,path=%s,append=on", cfg.ConsoleLogPath))
 		args = append(args, "-serial", "chardev:console0")
 	} else if cfg.SerialSocket != "" && cfg.ConsoleLogPath != "" {
-		chardevOpts := fmt.Sprintf("socket,id=console0,path=%s,server=on,wait=off,logfile=%s%s",
-			cfg.SerialSocket, cfg.ConsoleLogPath, appendOpt(",logappend", cfg.ConsoleLogAppend))
+		chardevOpts := fmt.Sprintf("socket,id=console0,path=%s,server=on,wait=off,logfile=%s,logappend=on",
+			cfg.SerialSocket, cfg.ConsoleLogPath)
 		args = append(args, "-chardev", chardevOpts)
 		args = append(args, "-serial", "chardev:console0")
 	}
@@ -571,8 +607,8 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		args = append(args, "-object", fmt.Sprintf("iothread,id=%s", iot.ID))
 	}
 
-	if len(cfg.Drives) == 0 && cfg.KernelImage == "" {
-		return nil, fmt.Errorf("at least one drive or a kernel image is required")
+	if len(cfg.Drives) == 0 && len(cfg.Blockdevs) == 0 && cfg.KernelImage == "" {
+		return nil, fmt.Errorf("at least one drive, blockdev or a kernel image is required")
 	}
 
 	drives := cfg.Drives
@@ -582,8 +618,8 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 			return nil, fwErr
 		}
 		// pflash CODE must come before VARS so QEMU loads firmware into the
-		// readonly slot first; buildDrives emits the VARS drive (unit 1) from
-		// the per-VM EFI viperblock volume.
+		// readonly slot first; startQEMU emits the VARS drive (unit 1) from
+		// the node's copy of the variable store or the EFI volume.
 		drives = append([]Drive{{If: "pflash", Format: "raw", Unit: 0, ReadOnly: true, File: codePath}}, drives...)
 	}
 
@@ -620,18 +656,6 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 
 		if drive.Cache != "" {
 			opts = append(opts, fmt.Sprintf("cache=%s", drive.Cache))
-		}
-
-		if drive.Werror != "" {
-			opts = append(opts, fmt.Sprintf("werror=%s", drive.Werror))
-		}
-
-		if drive.Rerror != "" {
-			opts = append(opts, fmt.Sprintf("rerror=%s", drive.Rerror))
-		}
-
-		if drive.ReconnectDelay > 0 {
-			opts = append(opts, fmt.Sprintf("file.reconnect-delay=%d", drive.ReconnectDelay))
 		}
 
 		args = append(args, "-drive", strings.Join(opts, ","))
@@ -698,13 +722,4 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 	//cmd.Stderr = os.Stderr
 
 	return cmd, nil
-}
-
-// appendOpt renders a chardev append option, or nothing when off, so a
-// fresh launch keeps the command line it always had.
-func appendOpt(key string, on bool) string {
-	if !on {
-		return ""
-	}
-	return key + "=on"
 }

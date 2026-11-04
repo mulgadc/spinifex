@@ -126,8 +126,6 @@ func wireVerbs(t *testing.T) []wireVerb {
 	require.NoError(t, err)
 	unsealedSubject, err := ebsprovider.UnsealedWritesSubject("node-1")
 	require.NoError(t, err)
-	nodeCapabilitiesSubject, err := ebsprovider.NodeCapabilitiesSubject("node-1")
-	require.NoError(t, err)
 
 	return []wireVerb{
 		{name: "capabilities", subject: ebsprovider.CapabilitiesSubject,
@@ -156,8 +154,6 @@ func wireVerbs(t *testing.T) []wireVerb {
 			request: ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-1", NodeID: "node-1"}},
 		{name: "unsealed", subject: unsealedSubject,
 			request: ebsprovider.HoldsUnsealedWritesRequest{Versioned: ebsprovider.NewVersioned(), NodeID: "node-1", VolumeIDs: []string{"vol-1"}}},
-		{name: "node.capabilities", subject: nodeCapabilitiesSubject,
-			request: ebsprovider.GetCapabilitiesRequest{Versioned: ebsprovider.NewVersioned()}},
 	}
 }
 
@@ -735,22 +731,6 @@ func TestServeNodeIDScopesMountSubjects(t *testing.T) {
 	require.NoError(t, err)
 	_, err = conn.Request(otherSubject, payload, requestTimeout)
 	require.ErrorIs(t, err, nats.ErrNoResponders, "another node's mount subject must go unanswered")
-}
-
-// TestGetNodeCapabilitiesIsAnsweredOnlyByThatNode is why the per-node subject
-// exists: the shared one is answered by whichever node's provider is fastest,
-// which says nothing about the provider on the node a caller will mount on.
-func TestGetNodeCapabilitiesIsAnsweredOnlyByThatNode(t *testing.T) {
-	conn := serveProvider(t, ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}), natsserve.Options{NodeID: "node-1"})
-	client := ebsprovider.NewNATSProvider(conn, requestTimeout)
-	request := ebsprovider.GetCapabilitiesRequest{Versioned: ebsprovider.NewVersioned()}
-
-	resp, err := client.GetNodeCapabilities(t.Context(), "node-1", request)
-	require.NoError(t, err)
-	assert.Equal(t, ebsprovider.SupportedSchemaVersions(), resp.ContractVersions)
-
-	_, err = client.GetNodeCapabilities(t.Context(), "node-2", request)
-	require.ErrorIs(t, err, nats.ErrNoResponders, "another node's capabilities subject must go unanswered")
 }
 
 // TestServeRejectsUnroutableNodeID covers the subject-build failure path: an

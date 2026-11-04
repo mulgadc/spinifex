@@ -48,7 +48,6 @@ func awaitState(t *testing.T, gw Deps, accountID, state string) *accountDeletion
 // ordinary delete takes the same operation over to finish it.
 func TestNonFinalizingDeleteEndsExercisedAndALaterDeleteTakesItOver(t *testing.T) {
 	gw := newDeleteAccountGateway(t)
-	gw.PlatformCleaner = &panicCleaner{}
 	account := newTenantAccount(t, gw, "tenant@example.com")
 
 	_, err := gw.deleteAccount(t.Context(), exerciseBody(t, account.AccountID, "tenant@example.com", exerciseToken, nil))
@@ -66,6 +65,8 @@ func TestNonFinalizingDeleteEndsExercisedAndALaterDeleteTakesItOver(t *testing.T
 
 	_, err = gw.deleteAccount(t.Context(), deleteAccountBody(t, account.AccountID, "tenant@example.com", deleteClientToken))
 	require.NoError(t, err)
+	// Parallel only once the teardown is running, so its drain poll overlaps the serial tests.
+	t.Parallel()
 
 	done := awaitState(t, gw, account.AccountID, operatorv1.DeletionStateCompleted)
 	assert.Equal(t, exercised.OperationID, done.OperationID)
@@ -74,12 +75,11 @@ func TestNonFinalizingDeleteEndsExercisedAndALaterDeleteTakesItOver(t *testing.T
 	assert.Equal(t, takeoverReasonExerciseFinished, done.Takeovers[0].Reason)
 	assert.Nil(t, done.Exercise, "the takeover starts a fresh run")
 	assert.Equal(t, uint64(2), done.IAM.Fence)
-	assert.Empty(t, done.IAM.QuiescedScope, "an ordinary delete records no scope")
+	assert.ElementsMatch(t, []string{"key-pair", "placement-group", "launch-template"}, done.IAM.QuiescedScope, "an ordinary delete guarantees the final re-read")
 }
 
 func TestNonFinalizingIsPartOfTheIdempotencyKeyAndRefusesForce(t *testing.T) {
 	gw := newDeleteAccountGateway(t)
-	gw.PlatformCleaner = &panicCleaner{}
 	account := newTenantAccount(t, gw, "tenant@example.com")
 
 	_, err := gw.deleteAccount(t.Context(), exerciseBody(t, account.AccountID, "tenant@example.com", exerciseToken,
@@ -98,8 +98,9 @@ func TestNonFinalizingIsPartOfTheIdempotencyKeyAndRefusesForce(t *testing.T) {
 	assert.Equal(t, operatorv1.DeletionStateExercised, again.(*DeleteAccountResponse).State, "a repeated exercise is answered from the record")
 }
 
-func TestNonFinalizingWithoutACleanupIsRefusedBeforeAnyJobExists(t *testing.T) {
+func TestDeleteWithoutACleanupIsRefusedBeforeAnyJobExists(t *testing.T) {
 	gw := newDeleteAccountGateway(t)
+	gw.PlatformCleaner = nil
 	account := newTenantAccount(t, gw, "tenant@example.com")
 
 	_, err := gw.deleteAccount(t.Context(), exerciseBody(t, account.AccountID, "tenant@example.com", exerciseToken, nil))
@@ -116,7 +117,6 @@ func TestNonFinalizingWithoutACleanupIsRefusedBeforeAnyJobExists(t *testing.T) {
 // non-finalizing decision into a deletion.
 func TestResumerKeepsAnAbandonedExerciseNonFinalizing(t *testing.T) {
 	gw := newDeleteAccountGateway(t)
-	gw.PlatformCleaner = &panicCleaner{}
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	job := abandonedJob(account.AccountID, "tenant@example.com")
 	job.NonFinalizing = true

@@ -31,6 +31,7 @@ func stateBucketRequests(subjects []string, bucket string) (leaderGets int, othe
 // for state keys: one leader message get per record under the prefix, then
 // one that finds none, with no direct get and no consumer on the bucket.
 func TestStateEnumerationIsLeaderServed(t *testing.T) {
+	t.Parallel()
 	srv, js := startServer(t, t.TempDir())
 	s, err := sqsjs.New(context.Background(), js, testConfig)
 	require.NoError(t, err)
@@ -80,6 +81,7 @@ func TestStateEnumerationIsLeaderServed(t *testing.T) {
 // TestStateEnumerationSkipsGapsAndOtherNamespaces counts through removed
 // revisions and interleaved records of neighbouring namespaces.
 func TestStateEnumerationSkipsGapsAndOtherNamespaces(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	ctx := context.Background()
 	q := ns(1, 0, "gap")
@@ -109,6 +111,7 @@ func TestStateEnumerationSkipsGapsAndOtherNamespaces(t *testing.T) {
 // TestStateEnumerationMarkers drops a key at its delete or purge marker and
 // counts it again when a later write follows.
 func TestStateEnumerationMarkers(t *testing.T) {
+	t.Parallel()
 	s, js := newStore(t)
 	ctx := context.Background()
 	q := ns(0, 0, "mark")
@@ -130,6 +133,7 @@ func TestStateEnumerationMarkers(t *testing.T) {
 }
 
 func TestStateEnumerationCancelled(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	q := ns(0, 0, "cancel")
 	pos := appendTo(t, s, q, "b")

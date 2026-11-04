@@ -144,7 +144,7 @@ func TestTaggingPipeline_GetResources_GoldenAllResources(t *testing.T) {
 	resp := doRequest(app, signTaggingRequest(t, taggingTargetPrefix+"GetResources", []byte("{}")))
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, tagging.JSONContentType, resp.Header.Get("Content-Type"))
+	assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"))
 	// Results come back sorted by ARN, not in lister order.
 	assert.JSONEq(t, `{"PaginationToken":"","ResourceTagMappingList":[`+
 		`{"ResourceARN":"arn:aws:ec2:`+gwfix.Region+`:`+authzAccountID+`:instance/i-1","Tags":[{"Key":"env","Value":"dev"}]},`+

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"strings"
 	"time"
 	"uuid"
 
@@ -43,48 +42,6 @@ type InvokeAdapter interface {
 	InvokeModel(ctx context.Context, modelID string, body []byte) (respBody []byte, contentType string, err error)
 }
 
-// InvokeRouter resolves a modelId to its catalog entry and dispatches to the
-// matching InvokeAdapter, resolving self-host endpoints and provider
-// credentials as needed.
-type InvokeRouter struct {
-	resolver         CredentialResolver
-	endpointResolver EndpointResolver
-	recorder         Recorder
-	access           AccessResolver
-	// provisioned resolves a provisioned-throughput ARN's commitment. Nil
-	// means InvokeModel rejects any PT ARN as ResourceNotFoundException
-	// rather than a bare modelId's usual denial.
-	provisioned *ProvisionedStore
-	// guardrails resolves an InvokeModel request's guardrail header. Nil
-	// fails closed on any guardrail identifier (ResourceNotFoundException)
-	// rather than proceeding unguarded; a request with none is unaffected.
-	guardrails *GuardrailStore
-	// embedder drives topicPolicy's semantic match. Nil falls back to the
-	// guardrail engine's literal matcher (see assessTopicPolicy).
-	embedder Embedder
-}
-
-// NewInvokeRouter constructs an InvokeRouter. A nil resolver, endpointResolver,
-// or recorder falls back to a no-op implementation, and a nil access falls back
-// to denying every model, so an InvokeRouter is always safe to use even before
-// the real stores are wired in. A nil provisioned disables PT ARN acceptance.
-// A nil embedder leaves topicPolicy on the literal matcher alone.
-func NewInvokeRouter(resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore, guardrails *GuardrailStore, embedder Embedder) *InvokeRouter {
-	if resolver == nil {
-		resolver = NoopCredentialResolver
-	}
-	if endpointResolver == nil {
-		endpointResolver = NewStaticEndpointResolver(nil)
-	}
-	if recorder == nil {
-		recorder = NoopRecorder
-	}
-	if access == nil {
-		access = DenyAllAccessResolver
-	}
-	return &InvokeRouter{resolver: resolver, endpointResolver: endpointResolver, recorder: recorder, access: access, provisioned: provisioned, guardrails: guardrails, embedder: embedder}
-}
-
 // InvokeModel routes modelID to its family adapter via the catalog. Unknown
 // modelIds and unresolvable vendors return ResourceNotFoundException; an
 // ungranted model, or a vendor with no resolvable credential, returns
@@ -92,7 +49,7 @@ func NewInvokeRouter(resolver CredentialResolver, endpointResolver EndpointResol
 // deferred closure. guardrailIdent/guardrailVersion come from the request's
 // X-Amzn-Bedrock-Guardrail* headers; an empty guardrailIdent leaves behaviour
 // byte-identical to a request with no guardrail at all.
-func (rt *InvokeRouter) InvokeModel(ctx context.Context, accountID, modelID string, body []byte, guardrailIdent, guardrailVersion string) (respBody []byte, contentType string, err error) {
+func (rt *Router) InvokeModel(ctx context.Context, accountID, modelID string, body []byte, guardrailIdent, guardrailVersion string) (respBody []byte, contentType string, err error) {
 	requestID := uuid.NewV4().String()
 	start := time.Now()
 	var backend string
@@ -135,9 +92,8 @@ func (rt *InvokeRouter) InvokeModel(ctx context.Context, accountID, modelID stri
 	backend = entry.Provider
 
 	var a InvokeAdapter
-	vendor, isVendor := strings.CutPrefix(entry.Provider, providerPrefix)
-	switch {
-	case entry.Provider == tierSelfHost:
+	switch entry.Provider {
+	case tierSelfHost:
 		// Family validation first: a model this platform cannot serve at
 		// all must fail ValidationException outright, not consume (or be
 		// refused for) admission capacity it was never going to use.
@@ -151,27 +107,13 @@ func (rt *InvokeRouter) InvokeModel(ctx context.Context, accountID, modelID stri
 			return nil, "", err
 		}
 		defer release()
-	case isVendor:
-		switch vendor {
-		case vendorAnthropic:
-			var key string
-			var resolvable bool
-			key, resolvable, err = rt.resolver.Resolve(ctx, accountID, vendorAnthropic)
-			if err != nil {
-				return nil, "", err
-			}
-			if !resolvable {
-				err = errors.New(awserrors.ErrorAccessDeniedException)
-				return nil, "", err
-			}
-			a = newAnthropicInvokeAdapter(key)
-		default:
-			err = errors.New(awserrors.ErrorResourceNotFoundException)
+	default:
+		var key string
+		key, err = rt.vendorKey(ctx, accountID, entry.Provider)
+		if err != nil {
 			return nil, "", err
 		}
-	default:
-		err = errors.New(awserrors.ErrorResourceNotFoundException)
-		return nil, "", err
+		a = newAnthropicInvokeAdapter(key)
 	}
 
 	// INPUT guardrail check happens after the adapter is resolved (matching
@@ -242,63 +184,25 @@ func (rt *InvokeRouter) InvokeModel(ctx context.Context, accountID, modelID stri
 
 // InvokeModel is the bedrock-runtime InvokeModel entry point used by the
 // gateway route table. resolver, endpointResolver, recorder, access and
-// provisioned may be nil; NewInvokeRouter supplies no-op (and, for access,
+// provisioned may be nil; NewRouter supplies no-op (and, for access,
 // deny-all; for provisioned, PT-ARN-rejecting) fallbacks. guardrailIdent/
 // guardrailVersion come from the request's X-Amzn-Bedrock-Guardrail* headers.
 // embedder drives topicPolicy's semantic match; nil falls back to the
 // literal matcher.
 func InvokeModel(ctx context.Context, accountID, modelID string, body []byte, resolver CredentialResolver, endpointResolver EndpointResolver, recorder Recorder, access AccessResolver, provisioned *ProvisionedStore, guardrailIdent, guardrailVersion string, guardrails *GuardrailStore, embedder Embedder) ([]byte, string, error) {
-	return NewInvokeRouter(resolver, endpointResolver, recorder, access, provisioned, guardrails, embedder).InvokeModel(ctx, accountID, modelID, body, guardrailIdent, guardrailVersion)
+	return NewRouter(resolver, endpointResolver, recorder, access, provisioned, guardrails, embedder).InvokeModel(ctx, accountID, modelID, body, guardrailIdent, guardrailVersion)
 }
 
 // InvokeStreamAdapter is the optional streaming capability an InvokeAdapter
 // may implement. Both shipped families (Llama/vLLM, Anthropic) do;
-// InvokeStreamRouter type-asserts the resolved InvokeAdapter to it rather
+// Router.InvokeModelWithResponseStream type-asserts the resolved InvokeAdapter to it rather
 // than widening InvokeAdapter itself, mirroring ConverseStreamProvider.
 type InvokeStreamAdapter interface {
 	InvokeModelWithResponseStream(ctx context.Context, modelID string, body []byte) (invokeStreamSource, error)
 }
 
-// InvokeStreamRouter resolves a modelId to its catalog entry and dispatches
-// to the matching InvokeStreamAdapter, resolving self-host endpoints and
-// provider credentials as needed.
-type InvokeStreamRouter struct {
-	resolver         CredentialResolver
-	endpointResolver EndpointResolver
-	access           AccessResolver
-	// provisioned resolves a provisioned-throughput ARN's commitment. Nil
-	// means InvokeModelWithResponseStream rejects any PT ARN as
-	// ResourceNotFoundException, mirroring InvokeRouter.
-	provisioned *ProvisionedStore
-	// guardrails resolves an InvokeModelWithResponseStream request's
-	// guardrail header, mirroring InvokeRouter.guardrails.
-	guardrails *GuardrailStore
-	// embedder drives topicPolicy's semantic match. Nil falls back to the
-	// guardrail engine's literal matcher (see assessTopicPolicy).
-	embedder Embedder
-}
-
-// NewInvokeStreamRouter constructs an InvokeStreamRouter. A nil resolver or
-// endpointResolver falls back to a resolver/resolver that finds nothing, and a
-// nil access falls back to denying every model, so an InvokeStreamRouter is
-// always safe to use even before the real stores are wired in. A nil
-// provisioned disables PT ARN acceptance. A nil embedder leaves topicPolicy
-// on the literal matcher alone.
-func NewInvokeStreamRouter(resolver CredentialResolver, endpointResolver EndpointResolver, access AccessResolver, provisioned *ProvisionedStore, guardrails *GuardrailStore, embedder Embedder) *InvokeStreamRouter {
-	if resolver == nil {
-		resolver = NoopCredentialResolver
-	}
-	if endpointResolver == nil {
-		endpointResolver = NewStaticEndpointResolver(nil)
-	}
-	if access == nil {
-		access = DenyAllAccessResolver
-	}
-	return &InvokeStreamRouter{resolver: resolver, endpointResolver: endpointResolver, access: access, provisioned: provisioned, guardrails: guardrails, embedder: embedder}
-}
-
 // InvokeModelWithResponseStream routes modelID to its family adapter via the
-// catalog, exactly like InvokeRouter.InvokeModel — including the same
+// catalog, exactly like Router.InvokeModel — including the same
 // translate-before-resolve treatment of a PT ARN via rt.provisioned — then
 // requires the resolved adapter to also implement InvokeStreamAdapter.
 // guardrailIdent/guardrailVersion come from the request's
@@ -306,8 +210,8 @@ func NewInvokeStreamRouter(resolver CredentialResolver, endpointResolver Endpoin
 // byte-identical to a request with no guardrail at all. An INPUT block never
 // opens the backend stream; OUTPUT enforcement wraps the resolved source for
 // buffered/SYNC assessment at end-of-stream.
-func (rt *InvokeStreamRouter) InvokeModelWithResponseStream(ctx context.Context, accountID, modelID string, body []byte, guardrailIdent, guardrailVersion string) (invokeStreamSource, error) {
-	// Translate before resolve, exactly like InvokeRouter.InvokeModel.
+func (rt *Router) InvokeModelWithResponseStream(ctx context.Context, accountID, modelID string, body []byte, guardrailIdent, guardrailVersion string) (invokeStreamSource, error) {
+	// Translate before resolve, exactly like Router.InvokeModel.
 	ptAccountID, modelID, err := resolveInferenceTarget(ctx, accountID, modelID, rt.provisioned)
 	if err != nil {
 		return nil, err
@@ -324,9 +228,8 @@ func (rt *InvokeStreamRouter) InvokeModelWithResponseStream(ctx context.Context,
 	// once, either explicitly here or via the slot-releasing source wrapper
 	// on the success path.
 	var selfHostRelease func()
-	vendor, isVendor := strings.CutPrefix(entry.Provider, providerPrefix)
-	switch {
-	case entry.Provider == tierSelfHost:
+	switch entry.Provider {
+	case tierSelfHost:
 		// Family validation first: a model this platform cannot serve at
 		// all must fail ValidationException outright, not consume (or be
 		// refused for) admission capacity it was never going to use.
@@ -338,22 +241,12 @@ func (rt *InvokeStreamRouter) InvokeModelWithResponseStream(ctx context.Context,
 		if err != nil {
 			return nil, err
 		}
-	case isVendor:
-		switch vendor {
-		case vendorAnthropic:
-			key, ok, err := rt.resolver.Resolve(ctx, accountID, vendorAnthropic)
-			if err != nil {
-				return nil, err
-			}
-			if !ok {
-				return nil, errors.New(awserrors.ErrorAccessDeniedException)
-			}
-			a = newAnthropicInvokeAdapter(key)
-		default:
-			return nil, errors.New(awserrors.ErrorResourceNotFoundException)
-		}
 	default:
-		return nil, errors.New(awserrors.ErrorResourceNotFoundException)
+		key, err := rt.vendorKey(ctx, accountID, entry.Provider)
+		if err != nil {
+			return nil, err
+		}
+		a = newAnthropicInvokeAdapter(key)
 	}
 
 	sa, ok := a.(InvokeStreamAdapter)

@@ -1,9 +1,7 @@
 package awsapi
 
 import (
-	"bytes"
 	"errors"
-	"io"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -12,7 +10,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
-	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
@@ -26,25 +23,11 @@ const (
 	ec2ServicePrincipal = "ec2.amazonaws.com"
 )
 
-// readQueryArgs parses the Query body and rewinds it, so the same bytes can be
-// read again. Any read or parse failure is a malformed query string.
-func readQueryArgs(r *http.Request) (map[string]string, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, sigv4.MaxPayloadLen+1))
-	if err != nil {
-		return nil, err
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	if int64(len(body)) > sigv4.MaxPayloadLen {
-		return nil, errors.New(awserrors.ErrorRequestEntityTooLarge)
-	}
-	return query.ParseArgs(string(body))
-}
-
 // Dispatch parses, authorizes and runs one EC2 request, then writes the XML
 // response. A returned error is an awserrors code the gateway renders.
 func (h *Handler) Dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 	r := inv.Request
-	queryArgs, err := readQueryArgs(r)
+	queryArgs, err := dispatch.ReadArgs(r)
 	if err != nil {
 		slog.Debug("EC2: malformed query string", "err", err)
 		return errors.New(awserrors.ErrorMalformedQueryString)
@@ -99,7 +82,7 @@ func (h *Handler) Dispatch(w http.ResponseWriter, inv dispatch.Invocation) error
 		return err
 	}
 	// AWS refuses a bad tag resource type even on a DryRun request.
-	if err := validateTagSpecificationTypes(action, input); err != nil {
+	if err := validateTagSpecifications(action, input); err != nil {
 		return err
 	}
 	if dryRunRequested(input) {

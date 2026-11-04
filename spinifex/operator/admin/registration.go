@@ -1,25 +1,21 @@
 package admin
 
 import (
-	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
 
-	"github.com/mulgadc/bluebottle/pkg/sigv4"
 	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
-	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -59,8 +55,8 @@ type Deps struct {
 	// Termination is the concrete IAM service, the only holder of the capability
 	// to quiesce and remove an account. DeleteAccount needs it.
 	Termination accountteardown.IAMBackend
-	// PlatformCleaner is the in-process EC2 platform cleanup a non-finalizing
-	// DeleteAccount runs. Nil refuses that request.
+	// PlatformCleaner is the in-process EC2 platform cleanup every DeleteAccount
+	// runs. Nil refuses a request that is not a dry run.
 	PlatformCleaner   accountteardown.PlatformCleaner
 	Quota             *quota.Service
 	ExpectedNodes     int
@@ -126,25 +122,7 @@ func resolveAction(r *http.Request) string {
 	if method, ok := PathMethod(r.URL.Path); ok {
 		return method
 	}
-	args, err := readQueryArgs(r)
-	if err != nil {
-		return ""
-	}
-	return args["Action"]
-}
-
-// readQueryArgs parses the Query body and rewinds it, so the same bytes can be
-// read again. Any read or parse failure is a malformed query string.
-func readQueryArgs(r *http.Request) (map[string]string, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, sigv4.MaxPayloadLen+1))
-	if err != nil {
-		return nil, err
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	if int64(len(body)) > sigv4.MaxPayloadLen {
-		return nil, errors.New(awserrors.ErrorRequestEntityTooLarge)
-	}
-	return query.ParseArgs(string(body))
+	return dispatch.ResolveQueryAction(r)
 }
 
 // dispatch parses, authorizes and runs one request. The policy gate runs
@@ -155,7 +133,7 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 		return d.dispatchREST(w, inv)
 	}
 	r := inv.Request
-	args, err := readQueryArgs(r)
+	args, err := dispatch.ReadArgs(r)
 	if err != nil {
 		slog.DebugContext(r.Context(), "Spinifex: malformed query string", "err", err)
 		return errors.New(awserrors.ErrorMalformedQueryString)

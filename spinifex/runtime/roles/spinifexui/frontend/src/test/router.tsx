@@ -11,13 +11,13 @@ interface MockLinkProps {
   to?: string
 }
 
-// Renders the href the real router would build, with `$param` segments
-// substituted, so tests can assert link targets without a router context.
+// Renders the href the real router would build: `$param` segments are
+// substituted and percent-encoded once, as the router encodes path params.
 function MockLink({ children, className, onClick, params, to }: MockLinkProps) {
   let href = to
 
   for (const [key, value] of Object.entries(params ?? {})) {
-    href = href?.replace(`$${key}`, value)
+    href = href?.replace(`$${key}`, encodeURIComponent(value))
   }
 
   return (

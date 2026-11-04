@@ -220,24 +220,27 @@ func TestWithModifyLease_CancelsWhenRenewalsFailUntilExpiry(t *testing.T) {
 	js, err := h.svc.js()
 	require.NoError(t, err)
 
-	bucketDeleted := make(chan error, 1)
+	// The bucket is deleted outside the apply context: the renewer may expire the
+	// lease mid-delete under load, and that must not abort the delete itself.
+	applying := make(chan struct{})
 	finished := make(chan error, 1)
 	go func() {
 		_, applyErr := h.svc.withModifyLease(t.Context(), kv, testDBID, func(ctx context.Context) error {
-			bucketDeleted <- js.DeleteKeyValue(ctx, kv.Name())
+			close(applying)
 			<-ctx.Done()
 			return context.Cause(ctx)
 		})
 		finished <- applyErr
 	}()
-	require.NoError(t, <-bucketDeleted)
-
 	select {
+	case <-applying:
 	case applyErr := <-finished:
-		require.ErrorIs(t, applyErr, errModifyLeaseLost)
-	case <-time.After(time.Second):
-		t.Fatal("the apply context was not cancelled when renewal failed through the lease expiry")
+		t.Fatalf("the lease was not claimed: %v", applyErr)
 	}
+	require.NoError(t, js.DeleteKeyValue(t.Context(), kv.Name()))
+
+	// Every renewal now fails, so only the expiry can end the apply.
+	require.ErrorIs(t, <-finished, errModifyLeaseLost)
 }
 
 // Re-taking a lease we already hold has to be allowed, or a caller that claims

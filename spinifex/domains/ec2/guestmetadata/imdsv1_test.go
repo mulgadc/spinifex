@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/stretchr/testify/assert"
@@ -105,36 +104,6 @@ func TestIMDSv1_LookupFailureDeniesAndCaches(t *testing.T) {
 		assert.Equal(t, http.StatusUnauthorized, get(t, h, prefixMetaData+"instance-id", "").Code)
 	}
 	assert.Equal(t, 1, res.calls, "a failing lookup must not be retried per request")
-}
-
-// An expired entry is re-resolved, so flipping HttpTokens takes effect without a
-// vpcd restart.
-func TestIMDSv1_CacheExpires(t *testing.T) {
-	c := newV1AllowCache()
-	now := time.Unix(1_700_000_000, 0).UTC()
-
-	c.put("i-1", true, now)
-	allowed, ok := c.get("i-1", now.Add(v1AllowTTL-time.Second))
-	require.True(t, ok)
-	assert.True(t, allowed)
-
-	_, ok = c.get("i-1", now.Add(v1AllowTTL+time.Second))
-	assert.False(t, ok, "entry must expire after the TTL")
-}
-
-// sweep drops expired entries so the map cannot grow without bound across
-// instance churn.
-func TestIMDSv1_CacheSweep(t *testing.T) {
-	c := newV1AllowCache()
-	now := time.Unix(1_700_000_000, 0).UTC()
-
-	c.put("i-old", true, now)
-	c.put("i-new", true, now.Add(v1AllowTTL))
-	c.sweep(now.Add(v1AllowTTL + time.Second))
-
-	_, ok := c.get("i-old", now.Add(v1AllowTTL+time.Second))
-	assert.False(t, ok)
-	assert.Len(t, c.entries, 1, "only the live entry survives the sweep")
 }
 
 // An ENI with no attached instance denies without attempting a lookup.

@@ -463,3 +463,32 @@ func TestSession_SlowAdmittedBodyHeldPastTheDeadlineIsUnknown(t *testing.T) {
 	dump = dump[:runtime.Stack(dump, true)]
 	t.Logf("readLoop goroutines still running: %d", strings.Count(string(dump), "TestStream).readLoop"))
 }
+
+// The bootstrap exits before any invocation exists: the exit is applied and
+// the context cancelled before agent.Run starts, so nothing can be sent.
+func TestSession_ExitBeforeTheFlightExistsIsUnknown(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var accepts atomic.Int32
+	guest, done := startSession(t, ctx, testRequest(20_000), countAccept(&accepts))
+
+	srv := runtimeapi.New()
+	actx, acancel := context.WithCancel(ctx)
+	defer acancel()
+	require.True(t, srv.BootstrapExited(), "an exit before any invocation must cancel")
+	acancel()
+
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- agent.Run(actx, hostlink.NewTestStream(guest), srv)
+		_ = guest.Close()
+	}()
+
+	e := recv(t, done, "the host's outcome")
+	require.Error(t, recv(t, runErr, "agent.Run to return"))
+	require.Error(t, e.err)
+	require.False(t, errors.Is(e.err, ErrResultNotAccepted))
+	require.Empty(t, e.reply.Payload)
+	require.Zero(t, accepts.Load(), "the owner was asked to accept a result after an early exit")
+	require.Less(t, e.took, 15*time.Second, "the host waited for its deadline")
+}

@@ -29,6 +29,10 @@ func TestListActions_RefuseMaxResultsOutsideRange(t *testing.T) {
 		_, err = DescribeRepositories(context.Background(), store, repositoryActionEndpoint(), repositoryActionTestAccount, []byte(`{"maxResults":`+value+`}`))
 		requireECRInvalidParameter(t, err, want)
 	}
+	for _, value := range []string{"1", "1000"} {
+		_, err := DescribeRepositories(context.Background(), store, repositoryActionEndpoint(), repositoryActionTestAccount, []byte(`{"maxResults":`+value+`}`))
+		require.NoError(t, err, value)
+	}
 }
 
 func TestImageListActions_RefuseImageStatusOutsideEnum(t *testing.T) {
@@ -60,6 +64,10 @@ func TestTagMutabilityActions_RefuseExclusionFiltersOutsideModel(t *testing.T) {
 			[]byte(`{"repositoryName":"team/app","imageTagMutability":"MUTABLE","imageTagMutabilityExclusionFilters":`+filters+`}`))
 		requireECRInvalidParameter(t, err, want)
 	}
+	five := strings.Repeat(`{"filterType":"WILDCARD","filter":"`+strings.Repeat("v", 128)+`"},`, 4) + `{"filterType":"WILDCARD","filter":"v*"}`
+	_, err := CreateRepository(context.Background(), store, repositoryActionEndpoint(), repositoryActionTestAccount,
+		[]byte(`{"repositoryName":"team/app","imageTagMutabilityExclusionFilters":[`+five+`]}`))
+	require.NoError(t, err)
 }
 
 func TestCreateRepository_RefusesEveryKMSKey(t *testing.T) {

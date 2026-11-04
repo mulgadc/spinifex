@@ -111,78 +111,101 @@ type volumeMounterAdapter struct {
 }
 
 // volumeLocks is a lock per volume, and the time this process last published
-// each volume it has not unpublished since.
+// each volume it has not unpublished since. A publish never waits behind a
+// seal: it refuses while one holds the lock, and a waiting seal yields to it.
 type volumeLocks struct {
 	mu    sync.Mutex
 	locks map[string]*volumeLock
 }
 
+// volumeLock is guarded by volumeLocks.mu.
 type volumeLock struct {
-	mu          sync.Mutex
-	refs        int
+	wake        *sync.Cond
+	held        bool
+	waiting     int
+	publishes   int // waiting publishes, which every waiting seal lets go first
 	publishedAt time.Time
-	// settling is set while the unpublish obligation reaper holds the lock.
-	settling bool
+	// sealing is set while the holder seals the volume.
+	sealing bool
 }
 
 // acquireMode says what acquire does when the lock is wanted elsewhere.
 type acquireMode int
 
 const (
-	// acquireWait blocks behind any holder.
+	// acquireWait blocks behind any holder. Abandon uses it: it never seals.
 	acquireWait acquireMode = iota
-	// acquireUnlessSettling blocks, but refuses while the obligation reaper
-	// holds the lock: a request never waits on a seal it did not ask for.
-	acquireUnlessSettling
-	// acquireIdle takes the lock only when nobody holds or awaits it, and
-	// marks the entry settling. The obligation reaper uses it.
+	// acquirePublish refuses while a seal holds the lock, and otherwise waits
+	// only for holders that do not seal.
+	acquirePublish
+	// acquireSeal waits for the holder and for every waiting publish, then
+	// holds the lock sealing.
+	acquireSeal
+	// acquireIdle takes the lock sealing only when nobody holds or awaits it.
+	// The obligation reaper uses it.
 	acquireIdle
 )
 
-// acquire returns volumeID's lock entry, locked, or false when mode refuses
-// to wait for the holder.
+// acquire returns volumeID's lock entry, held, or false when mode refuses to
+// wait for the holder.
 func (l *volumeLocks) acquire(volumeID string, mode acquireMode) (*volumeLock, bool) {
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.locks == nil {
 		l.locks = make(map[string]*volumeLock)
 	}
 	entry, ok := l.locks[volumeID]
 	if !ok {
-		entry = &volumeLock{}
+		entry = &volumeLock{wake: sync.NewCond(&l.mu)}
 		l.locks[volumeID] = entry
 	}
-	switch {
-	case mode == acquireUnlessSettling && entry.settling,
-		mode == acquireIdle && entry.refs > 0:
-		l.mu.Unlock()
-		return nil, false
-	case mode == acquireIdle:
-		entry.settling = true
+	switch mode {
+	case acquireIdle:
+		if entry.held || entry.waiting > 0 {
+			return nil, false
+		}
+	case acquirePublish:
+		if entry.sealing {
+			return nil, false
+		}
+		entry.publishes++
+		entry.wait(func() bool { return entry.held })
+		entry.publishes--
+	case acquireSeal:
+		entry.wait(func() bool { return entry.held || entry.publishes > 0 })
+	default:
+		entry.wait(func() bool { return entry.held })
 	}
-	entry.refs++
-	l.mu.Unlock()
-
-	// An idle entry has no holder, so this never blocks for acquireIdle.
-	entry.mu.Lock()
+	entry.held = true
+	entry.sealing = mode == acquireSeal || mode == acquireIdle
 	return entry, true
 }
 
-// release unlocks the entry and drops a reference. An entry nobody holds and
-// that records no publish is forgotten.
+// wait blocks while busy reports true. The caller holds volumeLocks.mu.
+func (e *volumeLock) wait(busy func() bool) {
+	e.waiting++
+	for busy() {
+		e.wake.Wait()
+	}
+	e.waiting--
+}
+
+// release gives the lock up. An entry nobody holds or awaits and that records
+// no publish is forgotten.
 func (l *volumeLocks) release(volumeID string, entry *volumeLock) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	entry.settling = false
-	entry.mu.Unlock()
-	entry.refs--
-	if entry.refs == 0 && entry.publishedAt.IsZero() {
+	entry.held = false
+	entry.sealing = false
+	entry.wake.Broadcast()
+	if entry.waiting == 0 && entry.publishedAt.IsZero() {
 		delete(l.locks, volumeID)
 	}
 }
 
-// withVolume runs fn holding volumeID's lock.
-func (a *volumeMounterAdapter) withVolume(volumeID string, fn func(*volumeLock) error) error {
-	entry, _ := a.volumes.acquire(volumeID, acquireWait)
+// withVolume runs fn holding volumeID's lock in mode.
+func (a *volumeMounterAdapter) withVolume(volumeID string, mode acquireMode, fn func(*volumeLock) error) error {
+	entry, _ := a.volumes.acquire(volumeID, mode)
 	defer a.volumes.release(volumeID, entry)
 	return fn(entry)
 }
@@ -217,7 +240,7 @@ func newVolumeMounterAdapter(provider mounterProvider, node string) *volumeMount
 // the export on req. A failure worth retrying is vm.ErrMountRetryable; one
 // that leaves unknown whether the provider exported it is vm.ErrMountAmbiguous.
 func (a *volumeMounterAdapter) publish(ctx context.Context, accountID string, req *viperblocklegacyv1.EBSRequest) error {
-	entry, ok := a.volumes.acquire(req.Name, acquireUnlessSettling)
+	entry, ok := a.volumes.acquire(req.Name, acquirePublish)
 	if !ok {
 		return fmt.Errorf("publish volume %s: %w: %w", req.Name, vm.ErrVolumeSettling, vm.ErrMountRetryable)
 	}
@@ -301,7 +324,7 @@ func applyExport(req *viperblocklegacyv1.EBSRequest, export ebsprovider.VolumeEx
 // UnpublishVolume, which seals first, and returns nil only once its block map
 // is sealed or the provider holds no export of it.
 func (a *volumeMounterAdapter) unpublish(ctx context.Context, accountID string, req viperblocklegacyv1.EBSRequest) error {
-	return a.withVolume(req.Name, func(entry *volumeLock) error {
+	return a.withVolume(req.Name, acquireSeal, func(entry *volumeLock) error {
 		return a.unpublishLocked(ctx, accountID, req.Name, "", entry)
 	})
 }
@@ -498,7 +521,7 @@ func (a *volumeMounterAdapter) Abandon(ctx context.Context, instance *vm.VM, rea
 // abandonOne drops this node's export of volumeID unsealed. A volume the
 // provider does not know is one this node no longer holds.
 func (a *volumeMounterAdapter) abandonOne(ctx context.Context, instance *vm.VM, volumeID, reason string) error {
-	return a.withVolume(volumeID, func(entry *volumeLock) error {
+	return a.withVolume(volumeID, acquireWait, func(entry *volumeLock) error {
 		return a.abandonLocked(ctx, instance.AccountID, instance.ID, volumeID, "", reason, entry)
 	})
 }

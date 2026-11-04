@@ -249,6 +249,87 @@ func TestS8_AttachRefusesRatherThanWaitBehindTheReapersSeal(t *testing.T) {
 		"the attach goes through once the seal is done")
 }
 
+// TestS8_AttachRefusesRatherThanWaitBehindAStopsSeal enforces ADR-0003:S8: a
+// force detach clears the attachment while a stop still seals the volume, and
+// an attach elsewhere on this node answers at once instead of waiting.
+func TestS8_AttachRefusesRatherThanWaitBehindAStopsSeal(t *testing.T) {
+	provider := &holdTestProvider{unpublishGate: make(chan struct{}), unpublishing: make(chan struct{})}
+	adapter := newVolumeMounterAdapter(provider, "node-hold")
+	sealed := make(chan error, 1)
+	go func() {
+		sealed <- adapter.UnmountOne(context.Background(), testAccountID, viperblocklegacyv1.EBSRequest{Name: "vol-stopping"})
+	}()
+	<-provider.unpublishing
+
+	refused := make(chan error, 1)
+	go func() {
+		refused <- adapter.MountOne(context.Background(), testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-stopping"})
+	}()
+	select {
+	case err := <-refused:
+		require.ErrorIs(t, err, vm.ErrVolumeSettling)
+		require.ErrorIs(t, err, vm.ErrMountRetryable)
+	case <-time.After(5 * time.Second):
+		t.Fatal("ADR-0003:S8: the attach waited behind the stop's seal")
+	}
+	provider.mu.Lock()
+	assert.Zero(t, provider.publishes, "a refused attach sends no publish")
+	provider.mu.Unlock()
+
+	close(provider.unpublishGate)
+	require.NoError(t, <-sealed)
+	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-stopping"}),
+		"the attach goes through once the seal is done")
+}
+
+// TestS8_AWaitingPublishGoesBeforeASealQueuedBehindIt enforces ADR-0003:S8: a
+// publish waiting on a holder that does not seal is never overtaken by a seal
+// that queued after it, so it never ends up waiting on that seal.
+func TestS8_AWaitingPublishGoesBeforeASealQueuedBehindIt(t *testing.T) {
+	var locks volumeLocks
+	first, ok := locks.acquire("vol-busy", acquirePublish)
+	require.True(t, ok)
+
+	waiters := func() int {
+		locks.mu.Lock()
+		defer locks.mu.Unlock()
+		return locks.locks["vol-busy"].waiting
+	}
+	var (
+		mu    sync.Mutex
+		order []string
+	)
+	took := func(who string, entry *volumeLock, sealing bool) {
+		mu.Lock()
+		order = append(order, who)
+		mu.Unlock()
+		assert.Equal(t, sealing, entry.sealing, who)
+		locks.release("vol-busy", entry)
+	}
+	done := make(chan struct{}, 2)
+	go func() {
+		entry, _ := locks.acquire("vol-busy", acquireSeal)
+		took("seal", entry, true)
+		done <- struct{}{}
+	}()
+	require.Eventually(t, func() bool { return waiters() == 1 }, 5*time.Second, time.Millisecond)
+	go func() {
+		entry, ok := locks.acquire("vol-busy", acquirePublish)
+		assert.True(t, ok, "a publish behind a holder that does not seal waits rather than refuses")
+		took("publish", entry, false)
+		done <- struct{}{}
+	}()
+	require.Eventually(t, func() bool { return waiters() == 2 }, 5*time.Second, time.Millisecond)
+
+	locks.release("vol-busy", first)
+	<-done
+	<-done
+	assert.Equal(t, []string{"publish", "seal"}, order)
+	locks.mu.Lock()
+	assert.Empty(t, locks.locks, "an entry nobody holds or awaits is forgotten")
+	locks.mu.Unlock()
+}
+
 func TestVolumeMounterHold_UnpublishSealsOrDropsAsAsked(t *testing.T) {
 	provider := &holdTestProvider{}
 	adapter := newVolumeMounterAdapter(provider, "node-hold")

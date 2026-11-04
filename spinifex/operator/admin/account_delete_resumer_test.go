@@ -78,12 +78,13 @@ func TestS7_DeletionResumerActsOnlyOnAnAcceptedOperationWithoutALiveLease(t *tes
 // A job left by a dead gateway finishes with no request: the resumer takes it
 // over once, under the same operation, and the teardown runs to completion.
 func TestDeletionResumerFinishesAnAbandonedJobWithoutARequest(t *testing.T) {
-	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	storeDeletionJob(t, gw, abandonedJob(account.AccountID, "tenant@example.com"))
 
 	require.Equal(t, 1, gw.resumeDeletions(t.Context(), time.Now().UTC()))
+	// Parallel only once the teardown is running, so its drain poll overlaps the serial tests.
+	t.Parallel()
 
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted
@@ -99,7 +100,6 @@ func TestDeletionResumerFinishesAnAbandonedJobWithoutARequest(t *testing.T) {
 
 // Every gateway runs a resumer, so several see the same expired lease at once.
 func TestConcurrentResumersProduceOneTakeover(t *testing.T) {
-	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	storeDeletionJob(t, gw, abandonedJob(account.AccountID, "tenant@example.com"))
@@ -115,6 +115,8 @@ func TestConcurrentResumersProduceOneTakeover(t *testing.T) {
 	wg.Wait()
 
 	assert.Equal(t, int32(1), resumed.Load())
+	// Parallel only once the teardown is running, so its drain poll overlaps the serial tests.
+	t.Parallel()
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted
 	}, 30*time.Second, 100*time.Millisecond)

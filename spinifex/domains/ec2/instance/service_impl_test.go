@@ -1038,7 +1038,7 @@ func TestDescribeInstancesFromKV_FilterExcludesOnlyInstance_ReturnsZeroReservati
 	input := &ec2.DescribeInstancesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("instance-type"), Values: []*string{aws.String("t3.nano")}}},
 	}
-	out, err := svc.describeInstancesFromKV(context.Background(), input, awsidentifiers.GlobalAccountID, listFn, 80, "stopped", "DescribeStoppedInstances")
+	out, err := svc.describeInstancesFromKV(context.Background(), input, awsidentifiers.GlobalAccountID, listFn, 80, "stopped", "DescribeStoppedInstances", false)
 	require.NoError(t, err)
 	assert.Empty(t, out.Reservations, "a reservation with every instance filtered out must not appear in the response")
 }

@@ -2234,7 +2234,18 @@ func (s *InstanceServiceImpl) DescribeStoppedInstances(ctx context.Context, inpu
 	if s.stoppedStore == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListStoppedInstances, 80, "stopped", "DescribeStoppedInstances")
+	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListStoppedInstances, 80, "stopped", "DescribeStoppedInstances", false)
+}
+
+// DescribeAccountInstanceRecords returns every non-terminated instance record
+// the account owns, whichever node holds it. It is the existence source for the
+// strict account inventory, so a record it cannot project fails the call rather
+// than being skipped.
+func (s *InstanceServiceImpl) DescribeAccountInstanceRecords(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error) {
+	if s.stoppedStore == nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListNonTerminatedInstances, 0, "pending", "DescribeAccountInstanceRecords", true)
 }
 
 // DescribeTerminatedInstances returns terminated instances from the terminated KV bucket.
@@ -2242,10 +2253,10 @@ func (s *InstanceServiceImpl) DescribeTerminatedInstances(ctx context.Context, i
 	if s.stoppedStore == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListTerminatedInstances, 48, "terminated", "DescribeTerminatedInstances")
+	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListTerminatedInstances, 48, "terminated", "DescribeTerminatedInstances", false)
 }
 
-func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string, listFn func() ([]*vm.VM, error), fallbackCode int64, fallbackName, opName string) (*ec2.DescribeInstancesOutput, error) {
+func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string, listFn func() ([]*vm.VM, error), fallbackCode int64, fallbackName, opName string, strict bool) (*ec2.DescribeInstancesOutput, error) {
 	instanceIDFilter, err := ParseInstanceIDFilter(input.InstanceIds)
 	if err != nil {
 		return nil, err
@@ -2273,6 +2284,11 @@ func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input
 			continue
 		}
 		if instance.Reservation == nil || instance.Instance == nil {
+			if strict {
+				slog.ErrorContext(ctx, opName+": record has nil Reservation/Instance, refusing a listing that would omit it",
+					"instanceId", instance.ID)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
 			slog.WarnContext(ctx, opName+": skipping instance with nil Reservation/Instance (data integrity issue)",
 				"instanceId", instance.ID)
 			continue

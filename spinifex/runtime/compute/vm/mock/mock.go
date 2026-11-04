@@ -40,6 +40,7 @@ type StateStore struct {
 	WriteStoppedErr    error
 	UpdateStoppedErr   error
 	ListStoppedErr     error
+	ListLiveErr        error
 	DeleteStoppedErr   error
 	ClaimStoppedErr    error
 	WriteTerminatedErr error
@@ -163,6 +164,21 @@ func (s *StateStore) DeleteStoppedInstance(id string) error {
 	delete(s.Stopped, id)
 	s.DeletedStopped = append(s.DeletedStopped, id)
 	return nil
+}
+
+// ListNonTerminatedInstances answers the stopped and saved-running sets
+// together, which is every record a test has put in the store.
+func (s *StateStore) ListNonTerminatedInstances() ([]*vm.VM, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ListLiveErr != nil {
+		return nil, s.ListLiveErr
+	}
+	out := slices.Collect(maps.Values(s.Stopped))
+	for _, node := range s.Saved {
+		out = append(out, slices.Collect(maps.Values(node))...)
+	}
+	return out, nil
 }
 
 func (s *StateStore) ListStoppedInstances() ([]*vm.VM, error) {

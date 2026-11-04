@@ -1035,6 +1035,7 @@ func (d *Daemon) subscribeAll() error {
 		{fmt.Sprintf("ec2.start.%s", d.node), handleNATSRequest(d.node, d.instanceService.StartStoppedInstance), ""},
 		{"ec2.terminate", handleNATSRequest(d.node, d.instanceService.TerminateStoppedInstance), "spinifex-workers"},
 		{"ec2.DescribeStoppedInstances", handleNATSRequest(d.node, d.instanceService.DescribeStoppedInstances), "spinifex-workers"},
+		{"ec2.DescribeAccountInstanceRecords", handleNATSRequest(d.node, d.instanceService.DescribeAccountInstanceRecords), "spinifex-workers"},
 		{"ec2.DescribeTerminatedInstances", handleNATSRequest(d.node, d.instanceService.DescribeTerminatedInstances), "spinifex-workers"},
 		// these fan out to all nodes and gateway aggregates the results. The
 		// handler only sees per-daemon local state (vmMgr/stoppedStore), so

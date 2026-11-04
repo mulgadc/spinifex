@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -80,7 +81,7 @@ const invokePath = "/2015-03-31/functions/hello/invocations"
 
 func TestInvoke_ReturnsTheExecutorPayloadAndHeaders(t *testing.T) {
 	e, ex := newInvokeEnv(t)
-	payload := []byte("not json \x00 bytes")
+	payload := []byte(`{"a":40,"b":2,"note":"caf\u00e9"}`)
 	rec, err := e.invoke(t.Context(), invokePath, nil, payload)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -187,13 +188,35 @@ func TestInvoke_RefusesOptionsItDoesNotImplement(t *testing.T) {
 	}
 }
 
+// jsonOfSize is a JSON string exactly n bytes long.
+func jsonOfSize(n int) []byte {
+	return []byte(`"` + strings.Repeat("a", n-2) + `"`)
+}
+
 func TestInvoke_PayloadLimit(t *testing.T) {
 	e, ex := newInvokeEnv(t)
-	_, err := e.invoke(t.Context(), invokePath, nil, make([]byte, 6*1024*1024))
+	_, err := e.invoke(t.Context(), invokePath, nil, jsonOfSize(6*1024*1024))
 	require.NoError(t, err)
-	_, err = e.invoke(t.Context(), invokePath, nil, make([]byte, 6*1024*1024+1))
-	requireCode(t, err, awserrors.ErrorRequestEntityTooLarge)
+	_, err = e.invoke(t.Context(), invokePath, nil, jsonOfSize(6*1024*1024+1))
+	requireCode(t, err, awserrors.ErrorRequestEntityTooLargeException)
 	assert.Equal(t, 1, ex.count())
+}
+
+func TestInvoke_PayloadMustBeJSONUnlessEmpty(t *testing.T) {
+	e, ex := newInvokeEnv(t)
+	for _, bad := range []string{"not json", `{"a":`, "{} {}", "\x00"} {
+		_, err := e.invoke(t.Context(), invokePath, nil, []byte(bad))
+		requireCode(t, err, awserrors.ErrorInvalidRequestContentException)
+	}
+	assert.Equal(t, 0, ex.count(), "a malformed payload reached the executor")
+
+	for _, good := range []string{"", `{"a":1}`, `[1,2]`, `"s"`, `42`, `null`, " true "} {
+		_, err := e.invoke(t.Context(), invokePath, nil, []byte(good))
+		require.NoError(t, err, "payload %q", good)
+	}
+	require.Equal(t, 7, ex.count())
+	assert.Empty(t, ex.calls[0].Payload, "an empty body is dispatched as it is")
+	assert.Equal(t, []byte(" true "), ex.calls[6].Payload)
 }
 
 func TestInvoke_MissingAndUnsupportedFunctions(t *testing.T) {

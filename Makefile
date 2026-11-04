@@ -226,6 +226,7 @@ bin/lambda-agent: go.mod go.sum $$(call go_local_srcs,./cmd/lambda-agent)
 	GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o $@ ./cmd/lambda-agent
 
 build-lambda-runtime-microvm-image: $(LAMBDA_RUNTIME_MICROVM_ARTIFACTS) ## Build the Lambda runtime microVM kernel and initramfs (not shipped)
+	GOWORK=off go run ./cmd/lambda-image-agent-tag $(LAMBDA_RUNTIME_MICROVM_OUT_DIR)/initramfs.cpio.gz absent
 
 # Controlled-test only: a separately built guest whose agent has the
 # lambdatestlink tag, in its own outputs, never touching bin/lambda-agent or the
@@ -238,6 +239,7 @@ build-lambda-testlink-image: ## Build the test-link Lambda guest image and print
 	@mkdir -p bin $(LAMBDA_TESTLINK_IMAGE_DIR)
 	GOWORK=off GOFLAGS= CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags lambdatestlink -ldflags '-s -w' -o bin/lambda-agent-testlink ./cmd/lambda-agent
 	./scripts/build-lambda-runtime-microvm-image.sh bin/lambda-agent-testlink $(LAMBDA_TESTLINK_IMAGE_DIR)
+	GOWORK=off go run ./cmd/lambda-image-agent-tag $(LAMBDA_TESTLINK_IMAGE_DIR)/initramfs.cpio.gz present
 	install -m 0644 $(MICROVM_OUT_DIR)/qboot.rom $(LAMBDA_TESTLINK_IMAGE_DIR)/qboot.rom
 	@digest=$$(GOWORK=off go run -tags lambdatestlink ./cmd/lambda-image-digest $(LAMBDA_TESTLINK_IMAGE_DIR)) && \
 	[[ "$$digest" =~ $(LAMBDA_DIGEST_RE) ]] || { echo "image digest not computed"; exit 1; }; \
@@ -375,7 +377,7 @@ test-race:
 	@echo -e "\n....Running tests with race detector for $(GO_PROJECT_NAME)...."
 	$(_Q)LOG_IGNORE=1 SPINIFEX_SQS_R3=1 go test $(GOTESTFLAGS) -race -timeout 300s ./spinifex/... ./cmd/... ./internal/... ./contracts/... ./architecture/... $(_RACEQ)
 	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -tags=lambdatestlink -timeout 120s ./cmd/lambda-agent/ ./spinifex/agents/lambda/hostlink/ ./spinifex/runtime/compute/lambda/testlink/ ./spinifex/domains/network/host/ $(_RACEQ)
-	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -tags=lambdatestlink -timeout 120s -run '^TestLambdaTestLinkExecutor_' ./spinifex/runtime/roles/awsgw/ $(_RACEQ)
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -tags=lambdatestlink -timeout 120s -run '^TestLambdaTestLink(Executor|Reply)_' ./spinifex/runtime/roles/awsgw/ $(_RACEQ)
 	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -tags=lambdatestlink -timeout 120s -run '^TestLambdaTestLink' ./spinifex/runtime/daemon/ $(_RACEQ)
 
 # Unit tests for in-repo GitHub Actions (e.g. .github/actions/e2e-analyze).

@@ -1036,3 +1036,59 @@ func TestMgmtIPAllocator_ReleaseCheckedFreesOwnAndRefusesForeign(t *testing.T) {
 		t.Errorf("foreign entry after refusal = %+v (present %v), want node-2 holding %s", entry, present, ip)
 	}
 }
+
+// Release, unlike ReleaseChecked, always drops the local entry: a foreign holder
+// keeps its cluster entry and a failed KV write is only logged, matching what its
+// callers relied on before ReleaseChecked existed.
+func TestMgmtIPAllocator_ReleaseDropsLocalOnForeignHolderAndKVFailure(t *testing.T) {
+	jsm := newTestMgmtJSM(t)
+	node1, err := NewMgmtIPAllocator("10.33.8.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node1.BindKV(jsm, "node-1")
+	cleanupMgmtIPAM(t, jsm, node1)
+	node2, err := NewMgmtIPAllocator("10.33.8.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node2.BindKV(jsm, "node-2")
+
+	ip, err := node1.Allocate("i-moved")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node2.Claim("i-moved", ip)
+	node1.Release("i-moved")
+	if node1.AllocatedCount() != 0 {
+		t.Errorf("local entries after release with a foreign holder = %d, want 0", node1.AllocatedCount())
+	}
+	if entry, present := mgmtIPEntryFor(t, jsm, node1, "i-moved"); !present || entry.Node != "node-2" {
+		t.Errorf("foreign entry after release = %+v (present %v), want node-2 kept", entry, present)
+	}
+
+	nc, err := nats.Connect(sharedJSNATSURL)
+	if err != nil {
+		t.Fatalf("connect NATS: %v", err)
+	}
+	broken, err := NewJetStreamManager(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := broken.InitClusterStateBucket(); err != nil {
+		t.Fatal(err)
+	}
+	node3, err := NewMgmtIPAllocator("10.33.8.3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node3.BindKV(broken, "node-3")
+	if _, err := node3.Allocate("i-lost-kv"); err != nil {
+		t.Fatal(err)
+	}
+	nc.Close()
+	node3.Release("i-lost-kv")
+	if node3.AllocatedCount() != 0 {
+		t.Errorf("local entries after release with KV down = %d, want 0", node3.AllocatedCount())
+	}
+}

@@ -2,6 +2,7 @@ package awsapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -60,8 +61,13 @@ func (d Deps) invoke(ctx context.Context, c *call) (reply, error) {
 		return reply{}, err
 	}
 	if len(c.Body) > maxSyncPayload {
-		return reply{}, awserrors.Errorf(awserrors.ErrorRequestEntityTooLarge,
+		return reply{}, awserrors.Errorf(awserrors.ErrorRequestEntityTooLargeException,
 			"Request must be smaller than %d bytes for the InvokeFunction operation", maxSyncPayload)
+	}
+	// An empty body is dispatched as it is; anything else must be JSON.
+	if len(c.Body) > 0 && !json.Valid(c.Body) {
+		return reply{}, awserrors.Errorf(awserrors.ErrorInvalidRequestContentException,
+			"Could not parse request body into json")
 	}
 	rec, revision, err := d.lookup(ctx, c, c.Query.Get("Qualifier"))
 	if err != nil {

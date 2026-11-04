@@ -420,7 +420,7 @@ func (d *Daemon) run(ctx context.Context, req Request, code []byte, lib *os.File
 }
 
 func safeRunError(err error) string {
-	for _, known := range []error{ErrLaunchNotRecorded, ErrVMGone, ErrNoPidfs, ErrNotArmed, ErrResultNotAccepted, ErrFunctionTimeout, attempt.ErrTimedOut, attempt.ErrVMExited, attempt.ErrNoPidfd, context.Canceled, context.DeadlineExceeded} {
+	for _, known := range []error{ErrLaunchNotRecorded, ErrVMGone, ErrNoPidfs, ErrNotArmed, ErrResultNotAccepted, ErrFunctionTimeout, ErrTimeoutUnproven, attempt.ErrTimedOut, attempt.ErrVMExited, attempt.ErrNoPidfd, context.Canceled, context.DeadlineExceeded} {
 		if errors.Is(err, known) {
 			return known.Error()
 		}
@@ -567,6 +567,11 @@ func (d *Daemon) session(ctx context.Context, req Request, gen *guestconn.Genera
 	if resp.GrantID != req.Grant.GrantID || resp.AttemptID != req.AttemptID || resp.RequestID != req.RequestID {
 		return Reply{}, errors.New("result answers a different request")
 	}
+	// Either the agent's own clock or a bootstrap can claim a timeout, and
+	// neither proves one, so the claim is never reported as a result.
+	if resp.FunctionError == errTypeTimedOut {
+		return Reply{}, ErrTimeoutUnproven
+	}
 	if err := accept(rctx, req.Grant); err != nil {
 		return Reply{}, pastDeadline(deadline, fmt.Errorf("%w: %w", ErrResultNotAccepted, err))
 	}
@@ -588,6 +593,13 @@ var ErrResultNotAccepted = errors.New("result not accepted under the current gra
 // ErrFunctionTimeout reports that the guest did not answer within the
 // function timeout counted from dispatch.
 var ErrFunctionTimeout = errors.New("function timed out")
+
+// errTypeTimedOut is the function error a guest uses to claim a timeout.
+const errTypeTimedOut = "Sandbox.Timedout"
+
+// ErrTimeoutUnproven reports a result claiming a timeout the host cannot
+// attribute; the outcome stays unknown.
+var ErrTimeoutUnproven = errors.New("guest-reported timeout not proven")
 
 func pastDeadline(deadline time.Time, err error) error {
 	if !now().Before(deadline) {

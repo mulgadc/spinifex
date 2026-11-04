@@ -368,22 +368,6 @@ func (m *Manager) MarkFailed(pciAddress string) {
 	}
 }
 
-// MarkMIGFailed marks a MIG slice unavailable after a QEMU launch error.
-// Other slices on the same GPU remain available.
-func (m *Manager) MarkMIGFailed(mdevPath string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for i := range m.pool {
-		e := &m.pool[i]
-		if e.MIGInstance != nil && e.MIGInstance.MdevPath == mdevPath && e.InstanceID == "" {
-			e.Available = false
-			slog.Warn("MIG instance marked unavailable after launch failure — restart daemon to retry",
-				"mdev", mdevPath)
-			return
-		}
-	}
-}
-
 // AddMIGInstances appends pool entries for each MIG slice on device.
 func (m *Manager) AddMIGInstances(device GPUDevice, instances []MIGInstance) {
 	m.mu.Lock()

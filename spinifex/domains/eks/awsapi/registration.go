@@ -9,6 +9,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/passrole"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/nats-io/nats.go"
 )
 
@@ -38,7 +39,7 @@ func NewRegistration(deps Deps) dispatch.Registration {
 
 // OperationInventory classifies the actions the registration serves.
 func OperationInventory() dispatch.Inventory {
-	return dispatch.Inventory{Registered: actionNames()}
+	return dispatch.Inventory{Registered: router.Actions()}
 }
 
 func resolveAction(r *http.Request) string {
@@ -185,7 +186,7 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 		return err
 	}
 
-	WriteJSONResponse(w, output)
+	envelope.WriteJSONResult(w, output)
 	return nil
 }
 

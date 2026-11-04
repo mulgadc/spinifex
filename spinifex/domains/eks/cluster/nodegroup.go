@@ -95,7 +95,7 @@ const ngCASMaxRetries = 16
 var ErrNodegroupNotFound = errors.New("eks: nodegroup not found")
 
 // nodegroupNotFound is the AWS answer for a missing node group on an existing
-// cluster; a missing cluster keeps the code's default cluster message.
+// cluster; a missing cluster keeps the code's default resource message.
 func nodegroupNotFound(ng string) error {
 	return awserrors.Errorf(awserrors.ErrorEKSResourceNotFound, "No node group found for name: %s.", ng)
 }

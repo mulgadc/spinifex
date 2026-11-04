@@ -1571,3 +1571,32 @@ func TestCreateSnapshot_ProviderFailureMapsToSpecificError(t *testing.T) {
 		})
 	}
 }
+
+func TestDescribeSnapshots_FilterByTagKeyAndTagValue(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+	tagged := createTestSnapshot(t, svc, store, "vol-tagged", 10, map[string]string{"Keep": "x"})
+	createTestSnapshot(t, svc, store, "vol-other", 20, map[string]string{"Other": "y"})
+
+	tests := []struct {
+		name, filter, value string
+		want                []string
+	}{
+		{"tag-key match", "tag-key", "Keep", []string{tagged}},
+		{"tag-value match", "tag-value", "x", []string{tagged}},
+		{"tag-key miss", "tag-key", "Missing", nil},
+		{"tag-value miss", "tag-value", "x-missing", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{
+				Filters: []*ec2.Filter{{Name: aws.String(tt.filter), Values: []*string{aws.String(tt.value)}}},
+			}, testAccountID)
+			require.NoError(t, err)
+			var got []string
+			for _, s := range out.Snapshots {
+				got = append(got, *s.SnapshotId)
+			}
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

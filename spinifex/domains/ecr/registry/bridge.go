@@ -185,13 +185,14 @@ func (b *Bridge) serveRegistry(w http.ResponseWriter, r *http.Request) {
 			WriteError(w, http.StatusServiceUnavailable, "UNKNOWN", "authorization unavailable")
 			return
 		}
-		if err := b.authorizer.Authorize(r, principal, policy.IAMAction("ecr", req.Action), []string{resource}); err != nil {
+		action := policy.IAMAction("ecr", req.Action)
+		if err := b.authorizer.Authorize(r, principal, action, []string{resource}); err != nil {
 			if errors.Is(err, ErrUnavailable) {
 				// IAM/STS/NATS dependency failure: fail closed, never dispatch.
 				WriteError(w, http.StatusServiceUnavailable, "UNKNOWN", "authorization unavailable")
 				return
 			}
-			WriteError(w, http.StatusForbidden, "DENIED", "insufficient permissions")
+			WriteError(w, http.StatusForbidden, "DENIED", fmt.Sprintf("User: %s is not authorized to perform: %s on resource: %s", principal.CallerARN, action, resource))
 			return
 		}
 	}

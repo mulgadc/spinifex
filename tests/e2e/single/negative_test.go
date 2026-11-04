@@ -46,9 +46,9 @@ func runNegativeErrorPaths(t *testing.T, fix *Fixture) {
 	amiID := needAMI(t, fix)
 	inst, rootVolumeID := needInstance(t, fix)
 	instanceID := aws.StringValue(inst.InstanceId)
-	instType, _ := needInstanceTypeArch(t, fix)
+	instType, _ := harness.DiscoverNanoInstanceType(t, fix.Harness)
 	customAMIID := needCustomAMI(t, fix)
-	existingKey, _ := needKeyPair(t, fix)
+	existingKey, _ := harness.EnsureKeyPair(t, fix.Harness)
 
 	// 8a: RunInstances with malformed AMI ID (missing ami- prefix).
 	t.Run("8a_InvalidAMIIDMalformed", func(t *testing.T) {

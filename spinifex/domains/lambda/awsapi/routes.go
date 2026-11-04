@@ -3,7 +3,6 @@ package awsapi
 import (
 	"context"
 	"net/url"
-	"slices"
 
 	"github.com/aws/aws-sdk-go/service/lambda"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/rest"
@@ -57,16 +56,6 @@ var routes = []route{
 		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
 			return d.getFunctionCodeSigningConfig(ctx, c)
 		}},
-}
-
-// actionNames returns the distinct actions in routes in stable order.
-func actionNames() []string {
-	names := make([]string, 0, len(routes))
-	for _, r := range routes {
-		names = append(names, r.Action)
-	}
-	slices.Sort(names)
-	return slices.Compact(names)
 }
 
 var router = rest.NewRouter("lambda", routes)

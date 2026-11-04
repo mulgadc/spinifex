@@ -36,8 +36,8 @@ func runInstanceMetadata(t *testing.T, fix *Fixture) {
 
 	want, _ := needInstance(t, fix)
 	instanceID := aws.StringValue(want.InstanceId)
-	expectedType, _ := needInstanceTypeArch(t, fix)
-	expectedKey, _ := needKeyPair(t, fix)
+	expectedType, _ := harness.DiscoverNanoInstanceType(t, fix.Harness)
+	expectedKey, _ := harness.EnsureKeyPair(t, fix.Harness)
 	expectedAMI := needAMI(t, fix)
 
 	out, err := fix.AWS.EC2.DescribeInstances(&ec2.DescribeInstancesInput{

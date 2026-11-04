@@ -2,12 +2,13 @@ package instance
 
 import (
 	"encoding/base64"
-	"slices"
+	"fmt"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 )
 
 // AWS's page size when a Describe call names none.
@@ -17,31 +18,31 @@ const defaultMaxRecords = 100
 // so a key compares field by field exactly as the fields do.
 const pageKeySeparator = "\x00"
 
-// Page returns one page of items, already in ascending key order. The Marker is base64 of the next
-// item's key, as AWS issues it; a resume starts at the first key not below it, so that item's deletion
-// skips nothing. MaxRecords outside 1-100 is 100.
+// Page returns one page of items, sorted by key. The Marker is base64 of the next item's key, as AWS
+// issues it; a resume starts at the first key not below it, so that item's deletion skips nothing.
+// MaxRecords outside 1-100 is 100.
 func Page[T any](items []T, key func(T) string, maxRecords *int64, marker *string) ([]T, *string, error) {
-	start := 0
+	req := paging.Request{Limit: defaultMaxRecords}
 	if encoded := aws.StringValue(marker); encoded != "" {
 		decoded, err := base64.StdEncoding.DecodeString(encoded)
 		if err != nil {
 			return nil, nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 				"Marker %q was not issued by this service", encoded)
 		}
-		start, _ = slices.BinarySearchFunc(items, string(decoded), func(item T, target string) int {
-			return strings.Compare(key(item), target)
-		})
+		req.From = string(decoded)
 	}
-
-	limit := defaultMaxRecords
 	if requested := aws.Int64Value(maxRecords); requested > 0 && requested < defaultMaxRecords {
-		limit = int(requested)
+		req.Limit = int(requested)
 	}
-	rest := items[start:]
-	if len(rest) <= limit {
-		return rest, nil, nil
+	page, token := paging.Page(items, key, req)
+	if token == "" {
+		return page, nil, nil
 	}
-	return rest[:limit], aws.String(base64.StdEncoding.EncodeToString([]byte(key(rest[limit])))), nil
+	next, err := paging.DecodeToken(token)
+	if err != nil {
+		return nil, nil, fmt.Errorf("re-encode page marker: %w", err)
+	}
+	return page, aws.String(base64.StdEncoding.EncodeToString([]byte(next))), nil
 }
 
 func pageKey(fields ...string) string {

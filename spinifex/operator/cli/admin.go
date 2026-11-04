@@ -32,6 +32,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
@@ -45,6 +46,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/viperblock/dirty"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
+	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
 	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 	"github.com/mulgadc/spinifex/spinifex/runtime/host/dns"
@@ -382,7 +384,6 @@ func init() {
 	adminInitCmd.Flags().String("az", "ap-southeast-2a", "Mulga AZ to create")
 	adminInitCmd.Flags().String("node", "node1", "Node name, increment for additional nodes (default, node1)")
 	adminInitCmd.Flags().Int("nodes", 3, "Number of nodes to expect for cluster (1, or 3 and up)")
-	adminInitCmd.Flags().String("host", "", "Leader node to join (if not specified, tries multicast discovery)")
 	adminInitCmd.Flags().Int("port", 4432, "Port to bind cluster services on")
 	adminInitCmd.Flags().String("bind", "0.0.0.0", "IP address to bind services to (e.g., 10.11.12.1 for multi-node). Default 0.0.0.0 listens on all interfaces.")
 	adminInitCmd.Flags().String("advertise", "", "External IP that off-host clients (ALB VMs, remote operators) should dial. Auto-detected from default route when empty.")
@@ -952,6 +953,13 @@ func runVolumesOrphansCmd(_ *cobra.Command, _ []string) {
 		fmt.Fprintln(os.Stderr, "Orphan scan failed:", err)
 		os.Exit(1)
 	}
+	// The variable stores are reported first, so the volume report's early
+	// return on a clean scan cannot hide them.
+	if err := reportUEFIStoreOrphans(context.Background(), nc, store, node.Predastore.Bucket); err != nil {
+		fmt.Fprintln(os.Stderr, "UEFI store orphan scan failed:", err)
+		os.Exit(1)
+	}
+	fmt.Println()
 	if len(orphans) == 0 {
 		fmt.Println("No orphaned volumes: every volume the provider holds has a control-plane record.")
 		return
@@ -968,6 +976,53 @@ func runVolumesOrphansCmd(_ *cobra.Command, _ []string) {
 	fmt.Println()
 	fmt.Println("Nothing was deleted. Each of these holds data that cannot be reached")
 	fmt.Println("through the EC2 API; removing one is a per-volume operator decision.")
+}
+
+// reportUEFIStoreOrphans prints the UEFI variable stores that nothing owns.
+// It reads only, and attaches to the buckets rather than creating them.
+func reportUEFIStoreOrphans(ctx context.Context, nc *nats.Conn, store objectstore.ObjectStore, bucket string) error {
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return fmt.Errorf("jetstream: %w", err)
+	}
+	orphans, err := admin.FindOrphanUEFIStores(ctx, store, bucket, ebsmetadata.NewStore(store, bucket),
+		uefistore.NewReader(js), kvInstanceIndex{js: js})
+	if err != nil {
+		return err
+	}
+	if orphans.Empty() {
+		fmt.Println("No orphaned UEFI variable stores.")
+		return nil
+	}
+	fmt.Println("Orphaned UEFI variable stores:")
+	for _, p := range orphans.InstancePrefixes {
+		fmt.Printf("  %s  (no instance record and no store record)\n", p)
+	}
+	for _, p := range orphans.ImagePrefixes {
+		fmt.Printf("  %s  (no AMI document)\n", p)
+	}
+	for _, p := range orphans.OtherPrefixes {
+		fmt.Printf("  %s  (names neither an instance nor an image)\n", p)
+	}
+	for _, r := range orphans.Records {
+		fmt.Printf("  store record %s  (account %s, %s, no instance record)\n", r.InstanceID, r.AccountID, r.State)
+	}
+	fmt.Println()
+	fmt.Println("Nothing was deleted. An absent instance record is not proof of a terminate,")
+	fmt.Println("so settling each of these is an operator decision.")
+	return nil
+}
+
+// kvInstanceIndex is the instance domain's index of every instance ID it holds
+// a record for.
+type kvInstanceIndex struct {
+	js jetstream.JetStream
+}
+
+var _ admin.InstanceIndex = kvInstanceIndex{}
+
+func (k kvInstanceIndex) InstanceIDs(ctx context.Context) (map[string]bool, error) {
+	return daemon.KnownInstanceIDs(ctx, k.js)
 }
 
 func runimagesRemoveCmd(cmd *cobra.Command, args []string) {

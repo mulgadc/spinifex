@@ -42,10 +42,16 @@ type LocalState struct {
 // LocalStatePath returns the absolute path to the per-node instance state file.
 // Empty dataDir falls back to DefaultDataDir.
 func LocalStatePath(dataDir string) string {
+	return filepath.Join(DataDirOrDefault(dataDir), DefaultLocalStateDir, LocalStateFileName)
+}
+
+// DataDirOrDefault is the daemon's persistent data directory: dataDir, or
+// DefaultDataDir when it is empty.
+func DataDirOrDefault(dataDir string) string {
 	if dataDir == "" {
-		dataDir = DefaultDataDir
+		return DefaultDataDir
 	}
-	return filepath.Join(dataDir, DefaultLocalStateDir, LocalStateFileName)
+	return dataDir
 }
 
 // MarshalLocalState produces the JSON wire form of vms with the lowest schema

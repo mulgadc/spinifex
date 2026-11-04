@@ -115,7 +115,7 @@ func TerminateInstances(ctx context.Context, input *ec2.TerminateInstancesInput,
 				}
 				if queryOK && state == bucketStateAbsent && daemonReportedAbsent {
 					slog.InfoContext(ctx, "TerminateInstances: Instance does not exist", "instance_id", instanceID)
-					return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+					return nil, awserrors.IDNotFound(awserrors.ErrorInvalidInstanceIDNotFound, "instance", instanceID)
 				}
 				slog.ErrorContext(ctx, "TerminateInstances: cannot confirm instance state",
 					"instance_id", instanceID, "bucket_state", state, "query_ok", queryOK, "terminate_err", terminateErr)

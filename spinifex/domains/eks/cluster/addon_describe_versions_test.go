@@ -2,11 +2,13 @@ package cluster
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/addon"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -104,6 +106,18 @@ func TestDescribeAddonVersions_PagesByAddon(t *testing.T) {
 		want = append(want, aws.StringValue(a.AddonName))
 	}
 	assert.Equal(t, want, names)
+}
+
+// Well-formed base64 that this service did not issue is rejected, not resumed.
+func TestDescribeAddonVersions_RejectsForeignToken(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	token := base64.RawURLEncoding.EncodeToString([]byte(csiAddon))
+	_, err := svc.DescribeAddonVersions(context.Background(),
+		&eks.DescribeAddonVersionsInput{NextToken: aws.String(token)}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorEKSInvalidParameter, awserrors.ValidErrorCodeFromError(err))
 }
 
 // Every add-on carries the descriptive fields the data source and console read.

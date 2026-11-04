@@ -85,7 +85,10 @@ func (s *ELBv2ServiceImpl) CreateRule(ctx context.Context, input *elbv2.CreateRu
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	tags := tagsFromSDK(input.Tags)
+	tags, err := tagsFromSDK(input.Tags)
+	if err != nil {
+		return nil, err
+	}
 
 	record := &RuleRecord{
 		RuleArn:     ruleArn,

@@ -38,8 +38,8 @@ func runSpotInstanceLifecycle(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — Spot Instance terminal transitions (live VM)")
 
 	amiID := needAMI(t, fix)
-	instType, _ := needInstanceTypeArch(t, fix)
-	keyName, _ := needKeyPair(t, fix)
+	instType, _ := harness.DiscoverNanoInstanceType(t, fix.Harness)
+	keyName, _ := harness.EnsureKeyPair(t, fix.Harness)
 
 	const count = 2
 	harness.Step(t, "request-spot-instances ami=%s type=%s count=%d", amiID, instType, count)

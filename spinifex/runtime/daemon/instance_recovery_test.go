@@ -17,6 +17,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -403,7 +404,7 @@ func TestWhatTheLaunchRefusalMeansForTheNextAttempt(t *testing.T) {
 		{
 			name: "the old owner still holds the volume lease",
 			err: fmt.Errorf("mount refused: %w", fmt.Errorf("%w: %w",
-				ec2instance.ErrVolumeHeldElsewhere,
+				ec2v1.ErrVolumeHeldElsewhere,
 				awserrors.Errorf(awserrors.ErrorIncorrectState, "volume is leased by another owner: node-1"))),
 			want: recoveryFaultLeaseHeld,
 			code: "Server.HostRecoveryFailed",

@@ -107,7 +107,7 @@ func runIMDS(t *testing.T, fix *Fixture) {
 	sshHealth.Require(t)
 
 	adminAccount := harness.IAMAccountID(t, fix.AWS)
-	keyName, keyPath := needKeyPair(t, fix)
+	keyName, keyPath := harness.EnsureKeyPair(t, fix.Harness)
 	imdsEnsureRoleProfile(t, fix, adminAccount)
 
 	// Two VPCs, identical subnet CIDR → the first VM in each gets the same IP.
@@ -294,7 +294,7 @@ func runIMDS(t *testing.T, fix *Fixture) {
 	// The unsigned document is consumed by real SDKs in-guest; assert the fields
 	// resolved from ENI + instance facts, including the launch-time architecture.
 	harness.Step(t, "GET /latest/dynamic/instance-identity/document")
-	_, wantArch := needInstanceTypeArch(t, fix)
+	_, wantArch := harness.DiscoverNanoInstanceType(t, fix.Harness)
 	docBody := imdsGet(t, tgtX, tokenX, "/latest/dynamic/instance-identity/document")
 	var idDoc struct {
 		InstanceID   string `json:"instanceId"`
@@ -617,8 +617,8 @@ func imdsRegionFromAZ(az string) string {
 func imdsRunVM(t *testing.T, fix *Fixture, spec imdsVMSpec) string {
 	t.Helper()
 	amiID := needAMI(t, fix)
-	instType, _ := needInstanceTypeArch(t, fix)
-	keyName, _ := needKeyPair(t, fix)
+	instType, _ := harness.DiscoverNanoInstanceType(t, fix.Harness)
+	keyName, _ := harness.EnsureKeyPair(t, fix.Harness)
 
 	in := &ec2.RunInstancesInput{
 		ImageId:          aws.String(amiID),

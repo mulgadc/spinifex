@@ -44,7 +44,10 @@ export const ecsClusterQueryOptions = (clusterName: string) =>
     queryKey: ["ecs", "clusters", clusterName],
     queryFn: async () => {
       const described = await getEcsClient().send(
-        new DescribeClustersCommand({ clusters: [clusterName] }),
+        new DescribeClustersCommand({
+          clusters: [clusterName],
+          include: ["TAGS"],
+        }),
       )
 
       return described.clusters?.[0] ?? null

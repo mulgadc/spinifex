@@ -3,9 +3,6 @@ package awsapi
 import (
 	"context"
 
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -60,20 +57,4 @@ func TestActions_ScanSurfaceUnsupported(t *testing.T) {
 		assert.Equal(t, awserrors.ErrorOperationNotSupported, err.Error(),
 			"action %q should resolve to the OperationNotSupported stub", action)
 	}
-}
-
-func TestWriteJSONResponse(t *testing.T) {
-	type repo struct {
-		RepositoryName *string `locationName:"repositoryName" type:"string"`
-	}
-	name := "team/app"
-	w := httptest.NewRecorder()
-	WriteJSONResponse(w, &repo{RepositoryName: &name})
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, JSONContentType, w.Header().Get("Content-Type"))
-
-	var decoded map[string]string
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &decoded))
-	assert.Equal(t, "team/app", decoded["repositoryName"])
 }

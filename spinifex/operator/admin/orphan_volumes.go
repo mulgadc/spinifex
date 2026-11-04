@@ -2,12 +2,18 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 )
 
 // efiVolumeSuffix marks a volume derived from another one. An EFI variable
@@ -114,4 +120,120 @@ func listProviderVolumes(ctx context.Context, provider ebsprovider.EBSProvider) 
 		}
 		token = resp.NextToken
 	}
+}
+
+// UEFIStoreRecords is the read side of the UEFI store-record bucket.
+type UEFIStoreRecords interface {
+	InstanceIDs(ctx context.Context) ([]string, error)
+	Get(ctx context.Context, instanceID string) (*uefistore.UEFIStoreRecord, uint64, error)
+}
+
+var _ UEFIStoreRecords = (*uefistore.Store)(nil)
+
+// InstanceIndex reports every instance ID the control plane holds a record
+// for, live or terminated. A record it cannot decode still counts.
+type InstanceIndex interface {
+	InstanceIDs(ctx context.Context) (map[string]bool, error)
+}
+
+// OrphanUEFIStoreRecord is a store record that is not deleting and whose
+// instance has no record, so nothing will ever delete its objects.
+type OrphanUEFIStoreRecord struct {
+	InstanceID string
+	AccountID  string
+	State      string
+}
+
+// OrphanUEFIStores is what the object store and the store records hold for
+// UEFI variable stores that nothing owns.
+type OrphanUEFIStores struct {
+	// InstancePrefixes are uefi/i-*/ prefixes with no instance record and no
+	// store record.
+	InstancePrefixes []string
+	// ImagePrefixes are uefi/ami-*/ prefixes with no AMI document.
+	ImagePrefixes []string
+	// OtherPrefixes are prefixes named for neither an instance nor an image,
+	// which no owner can ever claim.
+	OtherPrefixes []string
+	Records       []OrphanUEFIStoreRecord
+}
+
+// Empty reports whether the scan found nothing.
+func (o *OrphanUEFIStores) Empty() bool {
+	return len(o.InstancePrefixes) == 0 && len(o.ImagePrefixes) == 0 && len(o.OtherPrefixes) == 0 && len(o.Records) == 0
+}
+
+// FindOrphanUEFIStores reports UEFI variable stores that nothing owns. Like
+// FindOrphanVolumes it never deletes: an absent instance record is not proof
+// of a terminate, so settling each one is an operator's decision.
+//
+// Every read is strict. A record or document this cannot read aborts the scan
+// rather than reading as absent, which would point an operator at live data.
+func FindOrphanUEFIStores(ctx context.Context, objects objectstore.ObjectStore, bucket string,
+	metadata *ebsmetadata.Store, stores UEFIStoreRecords, instances InstanceIndex) (*OrphanUEFIStores, error) {
+	if objects == nil || bucket == "" || metadata == nil || stores == nil || instances == nil {
+		return nil, errors.New("uefi orphan scan: object store, bucket, metadata, store records and instance index are all required")
+	}
+
+	known, err := instances.InstanceIDs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("uefi orphan scan: list instance records: %w", err)
+	}
+	images, err := metadata.ListAMIsStrict(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("uefi orphan scan: list control-plane images: %w", err)
+	}
+	imageIDs := make(map[string]bool, len(images))
+	for _, image := range images {
+		imageIDs[image.ImageID] = true
+	}
+
+	out := &OrphanUEFIStores{}
+	ids, err := stores.InstanceIDs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("uefi orphan scan: list store records: %w", err)
+	}
+	recorded := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		recorded[id] = true
+		rec, _, err := stores.Get(ctx, id)
+		if errors.Is(err, kvstore.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("uefi orphan scan: read store record %s: %w", id, err)
+		}
+		if rec.State != uefistore.StateDeleting && !known[id] {
+			out.Records = append(out.Records, OrphanUEFIStoreRecord{InstanceID: id, AccountID: rec.AccountID, State: rec.State})
+		}
+	}
+
+	_, prefixes, err := objectstore.ListAll(ctx, objects, &s3.ListObjectsV2Input{
+		Bucket:    aws.String(bucket),
+		Prefix:    aws.String(uefistore.ObjectRoot),
+		Delimiter: aws.String("/"),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("uefi orphan scan: list store objects: %w", err)
+	}
+	for _, p := range prefixes {
+		prefix := aws.StringValue(p.Prefix)
+		owner := strings.TrimSuffix(strings.TrimPrefix(prefix, uefistore.ObjectRoot), "/")
+		switch {
+		case strings.HasPrefix(owner, "i-"):
+			if !known[owner] && !recorded[owner] {
+				out.InstancePrefixes = append(out.InstancePrefixes, prefix)
+			}
+		case strings.HasPrefix(owner, "ami-"):
+			if !imageIDs[owner] {
+				out.ImagePrefixes = append(out.ImagePrefixes, prefix)
+			}
+		default:
+			out.OtherPrefixes = append(out.OtherPrefixes, prefix)
+		}
+	}
+	sort.Strings(out.InstancePrefixes)
+	sort.Strings(out.ImagePrefixes)
+	sort.Strings(out.OtherPrefixes)
+	return out, nil
 }

@@ -90,6 +90,9 @@ func TestInternalALBPrivateSubnet(t *testing.T) {
 	harness.WaitForTargetsHealthy(t, c, tgArn, 1, label, 2*time.Minute)
 
 	eni := lbENI(t, c, "app", lb)
+	require.NotNil(t, eni.Attachment, "%s ENI must be attached", label)
+	assert.Equal(t, "amazon-elb", aws.StringValue(eni.Attachment.InstanceOwnerId), "%s attachment owner", label)
+	assert.True(t, aws.BoolValue(eni.RequesterManaged), "%s ENI must be requester-managed", label)
 	assert.Empty(t, publicIP(eni), "%s must not have a public IP", label)
 	lbIP := privateIP(eni)
 	require.NotEmpty(t, lbIP, "%s needs a private IP", label)

@@ -106,6 +106,9 @@ type Store struct {
 	bucket  string
 	created time.Time
 	stat    func(ctx context.Context) (*jetstream.StreamInfo, error)
+
+	// betweenReadAndConfirm is a test seam, nil in production.
+	betweenReadAndConfirm func()
 }
 
 // Bind attaches to an existing bucket and verifies it. An absent bucket is an
@@ -343,6 +346,9 @@ func (s *Store) Lookup(ctx context.Context, prefix netip.Prefix, instanceID, nod
 	snap, err := s.Load(ctx, prefix)
 	if err != nil {
 		return Entry{}, err
+	}
+	if s.betweenReadAndConfirm != nil {
+		s.betweenReadAndConfirm()
 	}
 	if err := s.Confirm(ctx, snap); err != nil {
 		return Entry{}, err

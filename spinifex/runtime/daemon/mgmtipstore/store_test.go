@@ -547,3 +547,40 @@ func TestStore_RefusesStreamWithoutCreationTime(t *testing.T) {
 	require.ErrorIs(t, err, ErrNoCreationTime)
 	requireUnchanged(t, s, string(raw), rev)
 }
+
+func TestLookup_StaleReadBetweenReadAndConfirmIsRefused(t *testing.T) {
+	s, _ := newStore(t)
+	putRecord(t, s, formed(entry("10.11.12.10", "i-1", "node1")))
+
+	var newerRev uint64
+	s.betweenReadAndConfirm = func() { newerRev = putRecord(t, s, formed()) }
+
+	got, err := s.Lookup(t.Context(), testPrefix, "i-1", "node1", "10.11.12.10")
+	require.ErrorIs(t, err, ErrStale)
+	assert.Equal(t, Entry{}, got)
+
+	newer, err := encode(formed())
+	require.NoError(t, err)
+	requireUnchanged(t, s, string(newer), newerRev)
+}
+
+func TestInsert_InPlaceMutationOfReturnedEntriesDoesNotReachTheStore(t *testing.T) {
+	s, _ := newStore(t)
+	putRecord(t, s, formed(entry("10.11.12.10", "i-1", "node1")))
+	snap, err := s.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+
+	tampered := snap.Record()
+	tampered.Entries[0].IP = "10.11.12.99"
+	tampered.Entries[0].InstanceID = "i-evil"
+	tampered.Entries[0].Node = "evil"
+
+	got, err := s.Insert(t.Context(), snap, "i-2", "node2")
+	require.NoError(t, err)
+	assert.Equal(t, "10.11.12.11", got.IP, "the original holder's address stays occupied")
+
+	reloaded, err := s.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+	assert.Equal(t, []Entry{entry("10.11.12.10", "i-1", "node1"), entry("10.11.12.11", "i-2", "node2")}, reloaded.Record().Entries)
+	assert.Equal(t, "i-1", snap.Record().Entries[0].InstanceID)
+}

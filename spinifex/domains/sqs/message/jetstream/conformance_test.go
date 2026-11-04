@@ -36,12 +36,14 @@ func r1Harness(t *testing.T) conformance.Harness {
 }
 
 func TestR1Conformance(t *testing.T) {
+	t.Parallel()
 	conformance.Run(t, r1Harness)
 }
 
 // TestR1SharedInstanceConformance runs every case on one long-lived store,
 // so each must pass beside other queues' data on the shared streams.
 func TestR1SharedInstanceConformance(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	conformance.Run(t, func(*testing.T) conformance.Harness {
 		return conformance.Harness{Store: s, MessageShards: testConfig.MessageStreams, StateShards: testConfig.StateBuckets}

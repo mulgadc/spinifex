@@ -58,6 +58,7 @@ func returnsWithin(ch <-chan error, d time.Duration) (error, bool) {
 // TestFeedConcurrentCloseWaitsForDelete: a second Close does not report
 // success while the first Close's delete is still in progress.
 func TestFeedConcurrentCloseWaitsForDelete(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	f := openWedgeable(t, s)
 	d := controlDeletes(f, true)
@@ -76,6 +77,7 @@ func TestFeedConcurrentCloseWaitsForDelete(t *testing.T) {
 // TestFeedCloseWaitsForRecoveryRelease: Close waits for the release of a
 // consumer a recovery has detached.
 func TestFeedCloseWaitsForRecoveryRelease(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	ns := message.Namespace{Queue: "q"}
 	appendAt(t, s, ns)
@@ -104,6 +106,7 @@ func TestFeedCloseWaitsForRecoveryRelease(t *testing.T) {
 // TestFeedCloseRetriesFailedDelete: a failed delete is an error, not success,
 // and a later Close retries it.
 func TestFeedCloseRetriesFailedDelete(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	f := openWedgeable(t, s)
 	d := controlDeletes(f, false)
@@ -118,6 +121,7 @@ func TestFeedCloseRetriesFailedDelete(t *testing.T) {
 // TestFeedCloseRetriesFailedRecoveryRelease: a recovery's failed delete is
 // retried by Close rather than forgotten.
 func TestFeedCloseRetriesFailedRecoveryRelease(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	ns := message.Namespace{Queue: "q"}
 	appendAt(t, s, ns)
@@ -139,6 +143,7 @@ func TestFeedCloseRetriesFailedRecoveryRelease(t *testing.T) {
 // TestFeedDeliveryClaimedBeforeCloseIsReturned: Close beginning after Next has
 // claimed a change does not withdraw it, and the feed then reports closed.
 func TestFeedDeliveryClaimedBeforeCloseIsReturned(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	ns := message.Namespace{Queue: "q"}
 	first := appendAt(t, s, ns)
@@ -176,6 +181,7 @@ func (l lostReply) OrderedConsumer(_ context.Context, cfg jsapi.OrderedConsumerC
 }
 
 func TestFeedFailedCreateLeavesNoConsumer(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	f := openWedgeable(t, s)
 	require.NoError(t, f.discard(f.detachForTest()))
@@ -188,6 +194,7 @@ func TestFeedFailedCreateLeavesNoConsumer(t *testing.T) {
 // TestFeedCallerDeadlineDoesNotCutCreateShort: real creates under caller
 // deadlines that expire mid-request complete, so none lands unowned.
 func TestFeedCallerDeadlineDoesNotCutCreateShort(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	f := openWedgeable(t, s)
 	require.NoError(t, f.discard(f.detachForTest()))
@@ -205,6 +212,7 @@ func TestFeedCallerDeadlineDoesNotCutCreateShort(t *testing.T) {
 // finds nothing, Close deletes the name again, catching a create that landed
 // after that first delete.
 func TestFeedCloseRetriesAbandonedCreate(t *testing.T) {
+	t.Parallel()
 	s, _ := feedStore(t)
 	f := openWedgeable(t, s)
 	require.NoError(t, f.discard(f.detachForTest()))

@@ -18,6 +18,7 @@ import (
 // code, an ordered Messages iterator idling with stored messages pending
 // after a full cluster restart. Opt-in: it is slow and probabilistic.
 func TestNATSOrderedFeedStallRepro(t *testing.T) {
+	// Not parallel: it redeclares the process-wide cluster size.
 	rounds, _ := strconv.Atoi(os.Getenv("NATS_ORDERED_REPRO_ROUNDS"))
 	if rounds < 1 {
 		t.Skip("set NATS_ORDERED_REPRO_ROUNDS to run")

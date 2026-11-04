@@ -35,6 +35,7 @@ func collect(seqs *[]uint64, stopAt uint64) func(*jsapi.RawStreamMsg) (bool, err
 // TestReadRangeStopsAtTheBound never passes fn a match beyond the bound,
 // even when the bound itself is a removed position.
 func TestReadRangeStopsAtTheBound(t *testing.T) {
+	t.Parallel()
 	js := rangeStream(t)
 	var seqs []uint64
 	last, done, err := readRange(context.Background(), js, "r", "r.>", 0, 3, collect(&seqs, 0))
@@ -47,6 +48,7 @@ func TestReadRangeStopsAtTheBound(t *testing.T) {
 // TestReadRangeDoneWhenStoppedAtTheBound reports the pass complete when fn
 // stops on the bound's own match, and incomplete when it stops earlier.
 func TestReadRangeDoneWhenStoppedAtTheBound(t *testing.T) {
+	t.Parallel()
 	js := rangeStream(t)
 	var seqs []uint64
 	last, done, err := readRange(context.Background(), js, "r", "r.>", 0, 4, collect(&seqs, 4))
@@ -66,6 +68,7 @@ func TestReadRangeDoneWhenStoppedAtTheBound(t *testing.T) {
 // TestReadRangeReturnsRequestErrors surfaces a failed leader read rather
 // than reporting the pass complete.
 func TestReadRangeReturnsRequestErrors(t *testing.T) {
+	t.Parallel()
 	js := rangeStream(t)
 	var seqs []uint64
 	_, _, err := readRange(context.Background(), js, "r", "r.>", 0, 1, collect(&seqs, 0))

@@ -73,6 +73,7 @@ func recv(name string, n int) message.ReceiveInput {
 }
 
 func TestReceiveReturnsSentMessageWithHandle(t *testing.T) {
+	t.Parallel()
 	e := newReceiveEnv(t)
 	q := e.create(t, acct, "orders", map[string]string{"VisibilityTimeout": "30"})
 	sent := e.send(t, "orders", "hello", nil)
@@ -111,6 +112,7 @@ func TestReceiveReturnsSentMessageWithHandle(t *testing.T) {
 }
 
 func TestReceiveMaxNumberOfMessages(t *testing.T) {
+	t.Parallel()
 	e := newReceiveEnv(t)
 	e.create(t, acct, "orders", nil)
 	for i := range 15 {
@@ -154,6 +156,7 @@ func TestReceiveMaxNumberOfMessages(t *testing.T) {
 }
 
 func TestReceiveIsolatesQueues(t *testing.T) {
+	t.Parallel()
 	e := newReceiveEnv(t)
 	e.create(t, acct, "orders", nil)
 	e.create(t, acct, "audit", nil)
@@ -175,6 +178,7 @@ func TestReceiveIsolatesQueues(t *testing.T) {
 // A queue whose first visible message lies beyond one receive's scan budget
 // is reached by the next receive, which resumes the pass.
 func TestReceiveResumesBeyondScanBudget(t *testing.T) {
+	t.Parallel()
 	e := newReceiveEnv(t)
 	e.create(t, acct, "orders", nil)
 	budget := message.ReceiveScanPage * message.ReceiveScanPages
@@ -199,6 +203,7 @@ func TestReceiveResumesBeyondScanBudget(t *testing.T) {
 }
 
 func TestReceiveCompetingConsumers(t *testing.T) {
+	t.Parallel()
 	e := newReceiveEnv(t)
 	e.create(t, acct, "orders", nil)
 	for i := range 20 {
@@ -233,7 +238,9 @@ func TestReceiveCompetingConsumers(t *testing.T) {
 // A scan failure or an unsettled claim is never an empty queue; a receive
 // that claimed something still returns it.
 func TestReceiveReportsUnsettledOutcomes(t *testing.T) {
+	t.Parallel()
 	t.Run("scan fails", func(t *testing.T) {
+		t.Parallel()
 		e := newReceiveEnv(t)
 		e.create(t, acct, "orders", nil)
 		e.send(t, "orders", "hello", nil)
@@ -242,6 +249,7 @@ func TestReceiveReportsUnsettledOutcomes(t *testing.T) {
 		require.ErrorIs(t, err, message.ErrUnavailable)
 	})
 	t.Run("only claim is ambiguous", func(t *testing.T) {
+		t.Parallel()
 		e := newReceiveEnv(t)
 		e.create(t, acct, "orders", nil)
 		e.send(t, "orders", "hello", nil)
@@ -251,6 +259,7 @@ func TestReceiveReportsUnsettledOutcomes(t *testing.T) {
 		assert.Empty(t, got)
 	})
 	t.Run("another claim succeeds", func(t *testing.T) {
+		t.Parallel()
 		e := newReceiveEnv(t)
 		e.create(t, acct, "orders", nil)
 		e.send(t, "orders", "first", nil)
@@ -262,6 +271,7 @@ func TestReceiveReportsUnsettledOutcomes(t *testing.T) {
 		assert.Equal(t, second.MessageID, got[0].MessageID)
 	})
 	t.Run("newer record", func(t *testing.T) {
+		t.Parallel()
 		e := newReceiveEnv(t)
 		q := e.create(t, acct, "orders", nil)
 		sent := e.send(t, "orders", "hello", nil)

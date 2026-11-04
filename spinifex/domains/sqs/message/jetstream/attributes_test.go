@@ -27,6 +27,7 @@ func md5Hex(b []byte) string {
 }
 
 func TestSendWithAttributesStoresVersionedRecordAndReceivesThem(t *testing.T) {
+	t.Parallel()
 	e := newReceiveEnv(t)
 	q := e.create(t, acct, "orders", nil)
 	in := input("orders", "hello")
@@ -56,6 +57,7 @@ func TestSendWithAttributesStoresVersionedRecordAndReceivesThem(t *testing.T) {
 }
 
 func TestSendWithoutAttributesKeepsPlainRecord(t *testing.T) {
+	t.Parallel()
 	e := newReceiveEnv(t)
 	q := e.create(t, acct, "orders", nil)
 	res := e.send(t, "orders", "plain", nil)
@@ -70,6 +72,7 @@ func TestSendWithoutAttributesKeepsPlainRecord(t *testing.T) {
 
 // A record as an earlier release wrote it, appended directly, still reads.
 func TestReceiveReadsEarlierPlainRecords(t *testing.T) {
+	t.Parallel()
 	e := newReceiveEnv(t)
 	q := e.create(t, acct, "orders", nil)
 	enq := strconv.FormatInt(fixedNow.UnixMilli(), 10)

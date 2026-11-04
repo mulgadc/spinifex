@@ -70,12 +70,14 @@ func streamNames(t *testing.T, js jsapi.JetStream) []string {
 }
 
 func TestDefaultConfigPerTopology(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, sqsjs.Config{MessageStreams: 16, StateBuckets: 8, DuplicateWindow: sqsjs.DefaultDuplicateWindow}, sqsjs.DefaultConfig(1))
 	assert.Equal(t, sqsjs.Config{MessageStreams: 8, StateBuckets: 8, DuplicateWindow: sqsjs.DefaultDuplicateWindow}, sqsjs.DefaultConfig(3))
 	require.NoError(t, sqsjs.DefaultConfig(1).Validate())
 }
 
 func TestConfigValidate(t *testing.T) {
+	t.Parallel()
 	for name, cfg := range map[string]sqsjs.Config{
 		"no streams":           {StateBuckets: 1, DuplicateWindow: time.Minute},
 		"no buckets":           {MessageStreams: 1, DuplicateWindow: time.Minute},
@@ -91,6 +93,7 @@ func TestConfigValidate(t *testing.T) {
 // TestMessageStreamConfigPerReplicaCount covers both topologies' stream shape,
 // including R3, which one embedded server cannot host.
 func TestMessageStreamConfigPerReplicaCount(t *testing.T) {
+	t.Parallel()
 	for nodes, want := range map[int]int{1: 1, 3: 3} {
 		sc := testConfig.MessageStreamConfig(2, clustersize.ReplicasFor(nodes))
 		assert.Equal(t, want, sc.Replicas, "%d nodes", nodes)
@@ -105,6 +108,7 @@ func TestMessageStreamConfigPerReplicaCount(t *testing.T) {
 }
 
 func TestNamesAndKeys(t *testing.T) {
+	t.Parallel()
 	q := ns(5, 1, "q-1")
 	assert.Equal(t, "sqs.m.5.q-1", sqsjs.Subject(q))
 	assert.Equal(t, "q.5.q-1.42", sqsjs.StateKey(q, 42))
@@ -114,6 +118,7 @@ func TestNamesAndKeys(t *testing.T) {
 // TestNewProvisionsOnlyTheFixedLayout holds ADR-0011:S9: no stream, bucket
 // or consumer is created per queue.
 func TestNewProvisionsOnlyTheFixedLayout(t *testing.T) {
+	t.Parallel()
 	s, js := newStore(t)
 	want := []string{"KV_sqs_state_0", "KV_sqs_state_1", "SQS_M_0", "SQS_M_1", "SQS_M_2"}
 	require.Equal(t, want, streamNames(t, js))
@@ -148,6 +153,7 @@ func TestNewProvisionsOnlyTheFixedLayout(t *testing.T) {
 }
 
 func TestAppendSubjectPerNamespace(t *testing.T) {
+	t.Parallel()
 	s, js := newStore(t)
 	ctx := context.Background()
 	a, b, otherShard := ns(1, 0, "qa"), ns(1, 1, "qb"), ns(2, 0, "qa")
@@ -179,6 +185,7 @@ func TestAppendSubjectPerNamespace(t *testing.T) {
 }
 
 func TestAppendRejectsBadInput(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	ctx := context.Background()
 	_, err := s.Append(ctx, ns(0, 0, "a.b"), message.AppendInput{})
@@ -196,6 +203,7 @@ func TestAppendRejectsBadInput(t *testing.T) {
 // TestAllocationWithNoResourceFails: an allocation no configuration ever
 // provisioned is an error, never a silent create or a not-found.
 func TestAllocationWithNoResourceFails(t *testing.T) {
+	t.Parallel()
 	s, js := newStore(t)
 	ctx := context.Background()
 	_, err := s.Append(ctx, ns(7, 0, "q"), message.AppendInput{Body: []byte("m")})
@@ -209,6 +217,7 @@ func TestAllocationWithNoResourceFails(t *testing.T) {
 }
 
 func TestIdempotentAppend(t *testing.T) {
+	t.Parallel()
 	s, js := newStore(t)
 	ctx := context.Background()
 	q, neighbour := ns(0, 0, "qa"), ns(0, 1, "qb")
@@ -235,6 +244,7 @@ func TestIdempotentAppend(t *testing.T) {
 // TestAppendSurvivesRestart: an acknowledged append is on disk, so a server
 // started over the same directory still serves it at the same position.
 func TestAppendSurvivesRestart(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	srv, js := startServer(t, dir)
 	ctx := context.Background()
@@ -266,6 +276,7 @@ func TestAppendSurvivesRestart(t *testing.T) {
 }
 
 func TestStateCompareAndSet(t *testing.T) {
+	t.Parallel()
 	s, js := newStore(t)
 	ctx := context.Background()
 	q := ns(2, 1, "q")
@@ -301,6 +312,7 @@ func TestStateCompareAndSet(t *testing.T) {
 }
 
 func TestStateIsolatedAcrossSharedBucket(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	ctx := context.Background()
 	// Same queue ID and state bucket, different message shards: a position
@@ -318,6 +330,7 @@ func TestStateIsolatedAcrossSharedBucket(t *testing.T) {
 }
 
 func TestConcurrentStateWrites(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	ctx := context.Background()
 	q := ns(1, 1, "q")
@@ -350,6 +363,7 @@ func TestConcurrentStateWrites(t *testing.T) {
 // changed count applies to new queues, and an existing queue keeps the
 // stream and bucket its record names.
 func TestTopologyTransitionKeepsExistingAllocations(t *testing.T) {
+	t.Parallel()
 	_, js := startServer(t, t.TempDir())
 	ctx := context.Background()
 	before, err := sqsjs.New(ctx, js, sqsjs.Config{MessageStreams: 3, StateBuckets: 3, DuplicateWindow: time.Minute})
@@ -399,6 +413,7 @@ func TestTopologyTransitionKeepsExistingAllocations(t *testing.T) {
 // are supported, so no other size reaches provisioning, which would
 // otherwise create R5 on five nodes.
 func TestNewRefusesUnsupportedClusterSize(t *testing.T) {
+	// Not parallel: it redeclares the process-wide cluster size.
 	_, js := startServer(t, t.TempDir())
 	for _, nodes := range []int{2, 4, 5} {
 		t.Run(fmt.Sprintf("%d nodes", nodes), func(t *testing.T) {
@@ -429,6 +444,7 @@ func requireUsage(t *testing.T, s *sqsjs.Store, q message.Namespace, want messag
 }
 
 func TestGet(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	ctx := context.Background()
 	a, b := ns(1, 0, "qa"), ns(1, 1, "qb")
@@ -451,6 +467,7 @@ func TestGet(t *testing.T) {
 }
 
 func TestDeleteIsNamespaceScopedAndIdempotent(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	ctx := context.Background()
 	a, b := ns(0, 0, "qa"), ns(0, 0, "qb")
@@ -470,6 +487,7 @@ func TestDeleteIsNamespaceScopedAndIdempotent(t *testing.T) {
 }
 
 func TestDeleteThroughIsSubjectScoped(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	ctx := context.Background()
 	a, b := ns(2, 1, "qa"), ns(2, 1, "qb")
@@ -505,6 +523,7 @@ func TestDeleteThroughIsSubjectScoped(t *testing.T) {
 }
 
 func TestCountExcludesDeletedStateAndNeighbours(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	ctx := context.Background()
 	// Same stream and state bucket, so only the subject and key prefix
@@ -538,6 +557,7 @@ func TestCountExcludesDeletedStateAndNeighbours(t *testing.T) {
 }
 
 func TestDeleteNamespaceRemovesOnlyItsData(t *testing.T) {
+	t.Parallel()
 	s, js := newStore(t)
 	ctx := context.Background()
 	a, b := ns(0, 1, "qa"), ns(0, 1, "qb")
@@ -567,6 +587,7 @@ func TestDeleteNamespaceRemovesOnlyItsData(t *testing.T) {
 // TestUndeclaredAllocationCreatesNothing: every read and cleanup on an
 // allocation no configuration provisioned fails and creates no resource.
 func TestUndeclaredAllocationCreatesNothing(t *testing.T) {
+	t.Parallel()
 	s, js := newStore(t)
 	ctx := context.Background()
 	before := streamNames(t, js)
@@ -585,6 +606,7 @@ func TestUndeclaredAllocationCreatesNothing(t *testing.T) {
 }
 
 func TestLimits(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	assert.Equal(t, message.Limits{RetentionBackstop: message.MinRetentionBackstop, IdempotencyWindow: testConfig.DuplicateWindow}, s.Limits())
 }
@@ -593,6 +615,7 @@ func TestLimits(t *testing.T) {
 // real queue's message shard and queue ID but a state shard with no bucket
 // must fail before it purges the queue's bodies.
 func TestDeleteNamespaceWithUndeclaredStateShardDeletesNothing(t *testing.T) {
+	t.Parallel()
 	s, js := newStore(t)
 	ctx := context.Background()
 	valid := ns(1, 1, "q")
@@ -651,6 +674,7 @@ func consumerCount(t *testing.T, js jsapi.JetStream, stream string) int {
 // with different state shards; each change names its complete namespace and
 // only domain metadata.
 func TestFeedReconstructsNamespaces(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	ctx := context.Background()
 	a, b, other := ns(1, 0, "qa"), ns(1, 1, "qb"), ns(2, 1, "qa")
@@ -671,6 +695,7 @@ func TestFeedReconstructsNamespaces(t *testing.T) {
 
 // TestFeedDeliversNoBody: the feed is headers-only; a body never reaches it.
 func TestFeedDeliversNoBody(t *testing.T) {
+	t.Parallel()
 	s, js := newStore(t)
 	appendTo(t, s, ns(0, 0, "q"), "body bytes")
 	f := openFeed(t, s, 0, 0)
@@ -692,6 +717,7 @@ func TestFeedDeliversNoBody(t *testing.T) {
 }
 
 func TestFeedOrderResumeAndDeletedOmission(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	ctx := context.Background()
 	q := ns(0, 1, "q")
@@ -710,6 +736,7 @@ func TestFeedOrderResumeAndDeletedOmission(t *testing.T) {
 }
 
 func TestFeedWakesOnLiveAppend(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	q := ns(2, 0, "q")
 	f := openFeed(t, s, 2, 0)
@@ -731,6 +758,7 @@ func TestFeedWakesOnLiveAppend(t *testing.T) {
 }
 
 func TestFeedNextHonoursContext(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	f := openFeed(t, s, 0, 0)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -743,6 +771,7 @@ func TestFeedNextHonoursContext(t *testing.T) {
 }
 
 func TestFeedCloseLeavesNoConsumer(t *testing.T) {
+	t.Parallel()
 	s, js := newStore(t)
 	appendTo(t, s, ns(1, 0, "q"), "x")
 	f, err := s.Feed(context.Background(), 1, 0)
@@ -754,6 +783,7 @@ func TestFeedCloseLeavesNoConsumer(t *testing.T) {
 }
 
 func TestFeedRejectsMalformedStateShardHeader(t *testing.T) {
+	t.Parallel()
 	s, js := newStore(t)
 	ctx := context.Background()
 	q := ns(0, 0, "q")
@@ -779,6 +809,7 @@ func TestFeedRejectsMalformedStateShardHeader(t *testing.T) {
 }
 
 func TestFeedOpensRetainedStreamButCreatesNone(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	srv, js := startServer(t, dir)
 	ctx := context.Background()
@@ -804,6 +835,7 @@ func TestFeedOpensRetainedStreamButCreatesNone(t *testing.T) {
 // TestFeedAfterMaximumCursorReplaysNothing: no position follows the maximum
 // cursor, so the feed must not wrap to the start of the stream.
 func TestFeedAfterMaximumCursorReplaysNothing(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	q := ns(0, 0, "q")
 	appendTo(t, s, q, "existing")
@@ -825,6 +857,7 @@ func namespaces(t *testing.T, s *sqsjs.Store, shard message.Shard) []message.Nam
 // and a neighbouring shard. The store holds no queue records, so every row
 // is rebuilt from stored data alone.
 func TestNamespacesListsCompleteRows(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	ctx := context.Background()
 	both, stateOnly, bodyOnly, cleared := ns(1, 1, "both"), ns(1, 0, "state-only"), ns(1, 1, "body-only"), ns(1, 0, "cleared")
@@ -863,6 +896,7 @@ func TestNamespacesListsCompleteRows(t *testing.T) {
 // bucket, a state-only queue on a historical bucket and a queue on a
 // historical stream are still listed, and listing creates nothing.
 func TestNamespacesFindsHistoricalBuckets(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	srv, js := startServer(t, dir)
 	ctx := context.Background()
@@ -894,8 +928,10 @@ func TestNamespacesFindsHistoricalBuckets(t *testing.T) {
 // so bodies and state that disagree, or state split across buckets, is
 // reported rather than resolved by guessing.
 func TestNamespacesRefusesConflictingAllocations(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	t.Run("BodyAndStateDisagree", func(t *testing.T) {
+		t.Parallel()
 		s, _ := newStore(t)
 		p := appendTo(t, s, ns(1, 0, "q"), "m")
 		_, err := s.PutState(ctx, ns(1, 1, "q"), p, []byte("s"), 0)
@@ -904,6 +940,7 @@ func TestNamespacesRefusesConflictingAllocations(t *testing.T) {
 		require.ErrorIs(t, err, sqsjs.ErrCorruptRecord)
 	})
 	t.Run("StateInTwoBuckets", func(t *testing.T) {
+		t.Parallel()
 		s, _ := newStore(t)
 		for shard := range message.Shard(2) {
 			_, err := s.PutState(ctx, ns(1, shard, "q"), 1, []byte("s"), 0)
@@ -913,6 +950,7 @@ func TestNamespacesRefusesConflictingAllocations(t *testing.T) {
 		require.ErrorIs(t, err, sqsjs.ErrCorruptRecord)
 	})
 	t.Run("FirstAndLastBodyDisagree", func(t *testing.T) {
+		t.Parallel()
 		s, _ := newStore(t)
 		appendTo(t, s, ns(1, 0, "q"), "m")
 		appendTo(t, s, ns(1, 1, "q"), "m")
@@ -920,6 +958,7 @@ func TestNamespacesRefusesConflictingAllocations(t *testing.T) {
 		require.ErrorIs(t, err, sqsjs.ErrCorruptRecord)
 	})
 	t.Run("MalformedStateKey", func(t *testing.T) {
+		t.Parallel()
 		s, js := newStore(t)
 		kv, err := js.KeyValue(ctx, sqsjs.BucketName(0))
 		require.NoError(t, err)
@@ -933,6 +972,7 @@ func TestNamespacesRefusesConflictingAllocations(t *testing.T) {
 // TestNamespacesRefusesAMiddleBodyWithAnotherStateShard: every body is
 // checked, not only the first and last.
 func TestNamespacesRefusesAMiddleBodyWithAnotherStateShard(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	appendTo(t, s, ns(1, 0, "q"), "first")
 	appendTo(t, s, ns(1, 1, "q"), "middle")
@@ -943,6 +983,7 @@ func TestNamespacesRefusesAMiddleBodyWithAnotherStateShard(t *testing.T) {
 
 // TestNamespacesLeavesNoConsumer: the enumeration pass removes its consumer.
 func TestNamespacesLeavesNoConsumer(t *testing.T) {
+	t.Parallel()
 	s, js := newStore(t)
 	for i := range 600 {
 		appendTo(t, s, ns(1, 0, fmt.Sprintf("q%d", i%3)), "m")
@@ -959,6 +1000,7 @@ func TestNamespacesLeavesNoConsumer(t *testing.T) {
 // configuration's shard might, would let any replica answer with a stale
 // body. The store refuses the read rather than serve one.
 func TestGetRefusesDirectGetStream(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	_, js := startServer(t, t.TempDir())
 	s, err := sqsjs.New(ctx, js, testConfig)

@@ -311,3 +311,28 @@ func TestS7_UEFIStoreReaperWaitsForQEMUBeforeCompletingATerminatedMark(t *testin
 	assert.Equal(t, "absent", f.recordState(t, id))
 	assert.Equal(t, string(vm.TeardownDone), f.terminatedUEFIMark(t, id))
 }
+
+// listsMissingRecord reports an open uefi teardown for an instance whose
+// terminated record has expired since the listing.
+type listsMissingRecord struct {
+	*JetStreamManager
+	id string
+}
+
+func (l listsMissingRecord) OpenTeardowns(string) ([]string, error) { return []string{l.id}, nil }
+
+// TestS7_UEFIStoreReaperLeavesTheStoreWhenTheTerminatedRecordExpired enforces
+// ADR-0003:S7: with the record gone nothing proves QEMU exited, so the store is
+// neither marked deleting nor deleted.
+func TestS7_UEFIStoreReaperLeavesTheStoreWhenTheTerminatedRecordExpired(t *testing.T) {
+	f := newUEFIReaperFixture(t)
+	const id = "i-00000000000expired"
+	f.seedStore(t, id, 3, false)
+	f.r.instances = listsMissingRecord{JetStreamManager: f.m, id: id}
+
+	reaped, err := f.r.Sweep(t.Context())
+	require.NoError(t, err)
+	assert.Zero(t, reaped)
+	assert.Equal(t, 3, f.objectCount(t, id), "ADR-0003:S7: store objects deleted with no record proving QEMU exited")
+	assert.Equal(t, uefistore.StateLive, f.recordState(t, id))
+}

@@ -255,16 +255,16 @@ func (m *JetStreamManager) OpenTeardowns(dep string) ([]string, error) {
 	return ids, nil
 }
 
-// QEMUTeardownOpen reports whether the terminated record carries a QEMU
-// teardown entry that is not done, i.e. QEMU is not yet proven gone. A record
-// with no such entry, or none at all, records no QEMU obligation.
-func (m *JetStreamManager) QEMUTeardownOpen(instanceID string) (bool, error) {
+// QEMUTeardownSettled reports whether the terminated record proves QEMU is not
+// a concern: the record exists and its QEMU teardown entry is done or absent
+// (nothing ever ran). A missing record, e.g. expired, proves nothing.
+func (m *JetStreamManager) QEMUTeardownSettled(instanceID string) (bool, error) {
 	terminated, err := m.LoadTerminatedInstance(instanceID)
 	if err != nil || terminated == nil {
 		return false, err
 	}
 	state, ok := terminated.Teardown[vm.TeardownQEMU]
-	return ok && vm.TeardownState(state) != vm.TeardownDone, nil
+	return !ok || vm.TeardownState(state) == vm.TeardownDone, nil
 }
 
 // MarkTeardownDone sets the terminated record's dependency entry dep done. An

@@ -263,15 +263,7 @@ func (s *EKSServiceImpl) teardownBucket(ctx context.Context, accountID string) (
 	if s.teardownKV != nil {
 		return s.teardownKV(ctx, accountID)
 	}
-	js, err := jetstream.New(s.deps.NATSConn)
-	if err != nil {
-		return nil, fmt.Errorf("jetstream: %w", err)
-	}
-	kv, err := GetOrCreateAccountBucket(ctx, js, accountID)
-	if err != nil {
-		return nil, fmt.Errorf("get account bucket: %w", err)
-	}
-	return kv, nil
+	return s.accountBucket(ctx, accountID)
 }
 
 // removeClusterRecord deletes the cluster's KV state once a pass has torn down

@@ -516,7 +516,7 @@ func (s *LaunchTemplateServiceImpl) commitHeader(ctx context.Context, op, accoun
 		if err == nil {
 			return nil
 		}
-		if !isRevisionConflict(err) {
+		if !kvutil.IsRevisionConflict(err) {
 			slog.ErrorContext(ctx, op+": header commit failed", "launchTemplateId", ltID, "err", err)
 			return err
 		}
@@ -539,11 +539,6 @@ func (s *LaunchTemplateServiceImpl) commitHeader(ctx context.Context, op, accoun
 		entry = next
 	}
 	return errors.New("header commit retries exhausted")
-}
-
-// isRevisionConflict reports a CAS write that lost to a concurrent writer.
-func isRevisionConflict(err error) bool {
-	return errors.Is(err, jetstream.ErrKeyRevisionMismatch) || errors.Is(err, jetstream.ErrKeyExists)
 }
 
 // abandonVersion removes a body whose header commit failed. A failure is
@@ -616,7 +611,7 @@ func (s *LaunchTemplateServiceImpl) setDefaultVersion(ctx context.Context, accou
 		if err == nil {
 			return header, nil
 		}
-		if !isRevisionConflict(err) {
+		if !kvutil.IsRevisionConflict(err) {
 			slog.ErrorContext(ctx, "ModifyLaunchTemplate: header update failed", "launchTemplateId", header.LaunchTemplateId, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
@@ -882,8 +877,8 @@ func (s *LaunchTemplateServiceImpl) DescribeLaunchTemplates(ctx context.Context,
 		}
 	}
 
-	nameSet := stringSet(input.LaunchTemplateNames)
-	idSet := stringSet(input.LaunchTemplateIds)
+	nameSet := awsidentifiers.Set(input.LaunchTemplateNames)
+	idSet := awsidentifiers.Set(input.LaunchTemplateIds)
 
 	prefix := accountID + "."
 	keys, err := s.kv.Keys(ctx)
@@ -944,7 +939,7 @@ func (s *LaunchTemplateServiceImpl) DescribeLaunchTemplates(ctx context.Context,
 
 func templateMatchesFilters(h *LaunchTemplateHeader, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if awsfilters.IsTagFilter(name) {
 			continue
 		}
 		switch name {
@@ -958,17 +953,6 @@ func templateMatchesFilters(h *LaunchTemplateHeader, filters map[string][]string
 			}
 		case "create-time":
 			if !awsfilters.MatchesAny(values, h.CreateTime.Format(time.RFC3339)) {
-				return false
-			}
-		case "tag-key":
-			matched := false
-			for k := range h.Tags {
-				if awsfilters.MatchesAny(values, k) {
-					matched = true
-					break
-				}
-			}
-			if !matched {
 				return false
 			}
 		default:
@@ -1175,19 +1159,6 @@ func isHeaderKey(k, prefix string) bool {
 	}
 	rest := k[len(prefix):]
 	return strings.HasPrefix(rest, "lt-") && !strings.Contains(rest, ".")
-}
-
-func stringSet(in []*string) map[string]bool {
-	if len(in) == 0 {
-		return nil
-	}
-	set := make(map[string]bool, len(in))
-	for _, s := range in {
-		if s != nil {
-			set[*s] = true
-		}
-	}
-	return set
 }
 
 // validateTemplateID enforces the lt- id prefix so a syntactically invalid id

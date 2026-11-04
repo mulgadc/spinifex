@@ -5,13 +5,14 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/nats-io/nats.go"
 )
 
 // CreateAccessEntry — POST /clusters/{name}/access-entries.
 func CreateAccessEntry(ctx context.Context, natsConn *nats.Conn, accountID, cluster string, body []byte) (*eks.CreateAccessEntryOutput, error) {
 	input := new(eks.CreateAccessEntryInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	input.ClusterName = aws.String(cluster)
@@ -36,7 +37,7 @@ func ListAccessEntries(ctx context.Context, natsConn *nats.Conn, accountID, clus
 // UpdateAccessEntry — POST /clusters/{name}/access-entries/{arn}.
 func UpdateAccessEntry(ctx context.Context, natsConn *nats.Conn, accountID, cluster, principalARN string, body []byte) (*eks.UpdateAccessEntryOutput, error) {
 	input := new(eks.UpdateAccessEntryInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	input.ClusterName = aws.String(cluster)
@@ -56,7 +57,7 @@ func DeleteAccessEntry(ctx context.Context, natsConn *nats.Conn, accountID, clus
 // AssociateAccessPolicy — POST /clusters/{name}/access-entries/{arn}/access-policies.
 func AssociateAccessPolicy(ctx context.Context, natsConn *nats.Conn, accountID, cluster, principalARN string, body []byte) (*eks.AssociateAccessPolicyOutput, error) {
 	input := new(eks.AssociateAccessPolicyInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	input.ClusterName = aws.String(cluster)

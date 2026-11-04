@@ -14,9 +14,6 @@ package webhookcert
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
@@ -24,11 +21,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/mulgadc/spinifex/spinifex/agents/eks/konnectivitycert"
 )
 
 // Config names the webhook certificate and where it is cached.
@@ -69,13 +67,25 @@ func ensureCert(dir, cn string, dnsNames []string) (certPEM, keyPEM []byte, err 
 
 	if c, cerr := os.ReadFile(certPath); cerr == nil {
 		if k, kerr := os.ReadFile(keyPath); kerr == nil {
-			if _, perr := x509.ParseCertificate(decodeFirst(c)); perr == nil && len(k) > 0 {
-				return c, k, nil
+			if blk, _ := pem.Decode(c); blk != nil && len(k) > 0 {
+				if _, perr := x509.ParseCertificate(blk.Bytes); perr == nil {
+					return c, k, nil
+				}
 			}
 		}
 	}
 
-	certPEM, keyPEM, err = generateSelfSigned(cn, dnsNames)
+	now := time.Now().UTC()
+	certPEM, keyPEM, err = konnectivitycert.Mint(&x509.Certificate{
+		Subject:               pkix.Name{CommonName: cn},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.AddDate(10, 0, 0),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		DNSNames:              dnsNames,
+	}, nil, nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -89,51 +99,6 @@ func ensureCert(dir, cn string, dnsNames []string) (certPEM, keyPEM []byte, err 
 		return nil, nil, fmt.Errorf("write %s: %w", keyPath, err)
 	}
 	return certPEM, keyPEM, nil
-}
-
-// generateSelfSigned mints an ECDSA-P256 self-signed cert valid as both a CA and
-// a server cert, with the given common name and DNS SANs.
-func generateSelfSigned(cn string, dnsNames []string) (certPEM, keyPEM []byte, err error) {
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, nil, fmt.Errorf("generate key: %w", err)
-	}
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return nil, nil, fmt.Errorf("serial: %w", err)
-	}
-	now := time.Now().UTC()
-	tmpl := x509.Certificate{
-		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: cn},
-		NotBefore:             now.Add(-time.Hour),
-		NotAfter:              now.AddDate(10, 0, 0),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment | x509.KeyUsageCertSign,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-		DNSNames:              dnsNames,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &priv.PublicKey, priv)
-	if err != nil {
-		return nil, nil, fmt.Errorf("create cert: %w", err)
-	}
-	keyDER, err := x509.MarshalECPrivateKey(priv)
-	if err != nil {
-		return nil, nil, fmt.Errorf("marshal key: %w", err)
-	}
-	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-	return certPEM, keyPEM, nil
-}
-
-// decodeFirst returns the DER bytes of the first PEM block, or nil.
-func decodeFirst(pemBytes []byte) []byte {
-	blk, _ := pem.Decode(pemBytes)
-	if blk == nil {
-		return nil
-	}
-	return blk.Bytes
 }
 
 func splitCSV(s string) []string {

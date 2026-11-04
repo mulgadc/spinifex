@@ -32,6 +32,7 @@ func messageStreamRequests(subjects []string, stream string) (leaderGets, infos 
 // for bodies: one leader message get per stored body through the bound, with
 // no direct get and no consumer on the message stream.
 func TestBodyEnumerationIsLeaderServed(t *testing.T) {
+	t.Parallel()
 	srv, js := startServer(t, t.TempDir())
 	s, err := sqsjs.New(context.Background(), js, testConfig)
 	require.NoError(t, err)
@@ -85,6 +86,7 @@ func TestBodyEnumerationIsLeaderServed(t *testing.T) {
 // and neighbouring namespaces in stream order, and stops at the first page's
 // bound even when later bodies exist.
 func TestScanStepsOverGapsInOrderWithinTheBound(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	ctx := context.Background()
 	a, b := ns(0, 0, "gap-a"), ns(0, 0, "gap-b")
@@ -119,6 +121,7 @@ func TestScanStepsOverGapsInOrderWithinTheBound(t *testing.T) {
 }
 
 func TestBodyEnumerationCancelled(t *testing.T) {
+	t.Parallel()
 	s, _ := newStore(t)
 	appendTo(t, s, ns(0, 0, "cancel"), "b")
 	ctx, cancel := context.WithCancel(context.Background())

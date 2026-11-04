@@ -37,7 +37,13 @@ func (s *Service) PutClusterCapacityProviders(ctx context.Context, input *ecs.Pu
 	if err := taskdefinition.PutJSON(ctx, kv, ClusterMetaKey(cluster), &rec); err != nil {
 		return nil, err
 	}
-	return &ecs.PutClusterCapacityProvidersOutput{Cluster: rec.toAWS()}, nil
+	c := rec.toAWS()
+	c.Tags = []*ecs.Tag{}
+	c.Attachments = []*ecs.Attachment{}
+	if _, err := s.applyClusterCounts(ctx, kv, cluster, c); err != nil {
+		return nil, err
+	}
+	return &ecs.PutClusterCapacityProvidersOutput{Cluster: c}, nil
 }
 
 // CreateCapacityProvider persists a new capacity provider. Idempotent:

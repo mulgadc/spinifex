@@ -47,7 +47,7 @@ func GetConsoleOutput(ctx context.Context, input *ec2.GetConsoleOutputInput, nat
 	if err != nil {
 		// No daemon subscription or timeout: stopped/terminated/non-existent instances all surface as NotFound.
 		if errors.Is(err, nats.ErrNoResponders) || errors.Is(err, nats.ErrTimeout) {
-			return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+			return nil, awserrors.IDNotFound(awserrors.ErrorInvalidInstanceIDNotFound, "instance", *input.InstanceId)
 		}
 		return nil, fmt.Errorf("failed to get console output: %w", err)
 	}

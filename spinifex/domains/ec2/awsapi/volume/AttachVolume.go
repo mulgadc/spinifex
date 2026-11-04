@@ -84,7 +84,7 @@ func AttachVolume(ctx context.Context, input *ec2.AttachVolumeInput, natsConn *n
 			if isStoppedInstance(ctx, instanceID, natsConn, accountID) {
 				return output, errors.New(awserrors.ErrorIncorrectInstanceState)
 			}
-			return output, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+			return output, awserrors.IDNotFound(awserrors.ErrorInvalidInstanceIDNotFound, "instance", instanceID)
 		}
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}

@@ -11,7 +11,8 @@ import (
 )
 
 // ValidateCreateLoadBalancerInput rejects a nil input with InvalidParameterValue and a missing
-// Name with MissingParameter.
+// Name with MissingParameter, and an IpAddressType or CustomerOwnedIpv4Pool outside the model
+// with ValidationError.
 func ValidateCreateLoadBalancerInput(input *elbv2.CreateLoadBalancerInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -19,7 +20,10 @@ func ValidateCreateLoadBalancerInput(input *elbv2.CreateLoadBalancerInput) error
 	if input.Name == nil || *input.Name == "" {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
-	return nil
+	if err := checkEnum(input.IpAddressType, "ipAddressType", ipAddressTypes); err != nil {
+		return err
+	}
+	return checkLengthPattern(input.CustomerOwnedIpv4Pool, "customerOwnedIpv4Pool", 256, customerOwnedIpv4PoolPattern)
 }
 
 // CreateLoadBalancer handles the ELBv2 CreateLoadBalancer API call.

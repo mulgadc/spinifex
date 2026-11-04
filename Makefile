@@ -42,11 +42,15 @@ ifdef QUIET
   _COVQ  = 2>&1 | { grep -Ev '^\s*(ok|PASS|\?|=== RUN|--- PASS:)\s' | grep -v 'coverage: 0\.0%' || true; }; exit $${PIPESTATUS[0]}
   _RACEQ = 2>&1 | { grep -Ev '^\s*(ok|PASS|\?|=== RUN|--- PASS:)\s' || true; }; exit $${PIPESTATUS[0]}
   _SECQ  = >
+  _HDR   = :
+  _RUNSH = sh "$$t" >"$$log" 2>&1 || { echo "-- $$t"; cat "$$log"; exit 1; }
 else
   _Q     =
   _COVQ  =
   _RACEQ =
   _SECQ  = 2>&1 | tee
+  _HDR   = echo -e
+  _RUNSH = echo "-- $$t"; sh "$$t" || exit 1
 endif
 
 build: go_build build-installer build-lb-agent generate-aws-model-coverage
@@ -77,6 +81,35 @@ LDFLAGS := -s -w -X github.com/mulgadc/spinifex/spinifex/operator/cli.Version=$(
 go_build:
 	@echo -e "\n....Building $(GO_PROJECT_NAME)"
 	go build $(GO_BUILD_MOD) -ldflags "$(LDFLAGS)" -o ./bin/$(GO_PROJECT_NAME) cmd/spinifex/main.go
+
+# Controlled-test only: builds the tagged daemon and its hard-kill initializer
+# together, pinning the initializer's digest into that daemon build. The daemon
+# keeps its symbols so the pin can be read back from the binary.
+# LAMBDA_IMAGE_DIGEST is the test-link runtime image digest that
+# build-lambda-testlink-image prints; it is read raw and validated before use.
+LAMBDA_TESTLINK_DIR := ./bin/lambda-testlink
+LAMBDA_TESTLINK_PKG := github.com/mulgadc/spinifex/spinifex/runtime/daemon
+LAMBDA_TESTLINK_PIN := $(LAMBDA_TESTLINK_PKG).lambdaHardKillSHA256
+LAMBDA_DIGEST_RE := ^[0-9a-f]{64}$$
+build-lambda-testlink: override export LAMBDA_IMAGE_DIGEST := $(value LAMBDA_IMAGE_DIGEST)
+build-lambda-testlink:
+	@[[ "$$LAMBDA_IMAGE_DIGEST" =~ $(LAMBDA_DIGEST_RE) ]] || { echo "LAMBDA_IMAGE_DIGEST must be 64 lowercase hex digits"; exit 1; }
+	@host=$$(uname -m); goos=$$(go env GOOS); goarch=$$(go env GOARCH); \
+	test "$$host" = x86_64 && test "$$goos/$$goarch" = linux/amd64 || { echo "the test link supports only an x86_64 host building linux/amd64, not $$host building $$goos/$$goarch"; exit 1; }
+	@rm -f $(LAMBDA_TESTLINK_DIR)/hardkill.so $(LAMBDA_TESTLINK_DIR)/$(GO_PROJECT_NAME)
+	@mkdir -p $(LAMBDA_TESTLINK_DIR).tmp
+	@rm -f $(LAMBDA_TESTLINK_DIR).tmp/hardkill.so $(LAMBDA_TESTLINK_DIR).tmp/$(GO_PROJECT_NAME)
+	cc -std=c17 -O2 -Wall -Wextra -Werror -shared -fPIC -o $(LAMBDA_TESTLINK_DIR).tmp/hardkill.so spinifex/runtime/compute/lambda/testlink/hardkill/hardkill.c -lrt
+	scripts/check-glibc-ceiling.sh 2.34 $(LAMBDA_TESTLINK_DIR).tmp/hardkill.so
+	@digest=$$(sha256sum $(LAMBDA_TESTLINK_DIR).tmp/hardkill.so | cut -d' ' -f1); \
+	test $${#digest} -eq 64 || { echo "initializer digest missing"; exit 1; }; \
+	echo "initializer sha256 $$digest"; \
+	pin="-X $(LAMBDA_TESTLINK_PIN)=$$digest -X $(LAMBDA_TESTLINK_PKG).lambdaImageDigest=$$LAMBDA_IMAGE_DIGEST"; \
+	LAMBDA_TESTLINK_INITIALIZER=$(abspath $(LAMBDA_TESTLINK_DIR).tmp/hardkill.so) go test -count=1 -tags lambdatestlink -ldflags "$$pin" -run '^TestLambda(HardKillPin|ImageDigestPin)$$' ./spinifex/runtime/daemon/ && \
+	go build $(GO_BUILD_MOD) -tags lambdatestlink -ldflags "$(subst -s -w ,,$(LDFLAGS)) $$pin" -o $(LAMBDA_TESTLINK_DIR).tmp/$(GO_PROJECT_NAME) cmd/spinifex/main.go
+	@mkdir -p $(LAMBDA_TESTLINK_DIR)
+	mv $(LAMBDA_TESTLINK_DIR).tmp/hardkill.so $(LAMBDA_TESTLINK_DIR).tmp/$(GO_PROJECT_NAME) $(LAMBDA_TESTLINK_DIR)/
+	@rmdir $(LAMBDA_TESTLINK_DIR).tmp
 
 build-installer:
 	@echo -e "\n....Building spinifex-installer"
@@ -193,6 +226,24 @@ bin/lambda-agent: go.mod go.sum $$(call go_local_srcs,./cmd/lambda-agent)
 	GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o $@ ./cmd/lambda-agent
 
 build-lambda-runtime-microvm-image: $(LAMBDA_RUNTIME_MICROVM_ARTIFACTS) ## Build the Lambda runtime microVM kernel and initramfs (not shipped)
+	GOWORK=off go run ./cmd/lambda-image-agent-tag $(LAMBDA_RUNTIME_MICROVM_OUT_DIR)/initramfs.cpio.gz absent
+
+# Controlled-test only: a separately built guest whose agent has the
+# lambdatestlink tag, in its own outputs, never touching bin/lambda-agent or the
+# default image. It prints the digest to pass as LAMBDA_IMAGE_DIGEST.
+LAMBDA_TESTLINK_IMAGE_DIR := $(MICROVM_OUT_DIR)/lambda-testlink-runtime
+build-lambda-testlink-image: ## Build the test-link Lambda guest image and print its digest (not shipped)
+	@host=$$(uname -m); goos=$$(go env GOOS); goarch=$$(go env GOARCH); \
+	test "$$host" = x86_64 && test "$$goos/$$goarch" = linux/amd64 || { echo "the test link supports only an x86_64 host building linux/amd64, not $$host building $$goos/$$goarch"; exit 1; }
+	$(MAKE) --no-print-directory $(MICROVM_OUT_DIR)/qboot.rom
+	@mkdir -p bin $(LAMBDA_TESTLINK_IMAGE_DIR)
+	GOWORK=off GOFLAGS= CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags lambdatestlink -ldflags '-s -w' -o bin/lambda-agent-testlink ./cmd/lambda-agent
+	./scripts/build-lambda-runtime-microvm-image.sh bin/lambda-agent-testlink $(LAMBDA_TESTLINK_IMAGE_DIR)
+	GOWORK=off go run ./cmd/lambda-image-agent-tag $(LAMBDA_TESTLINK_IMAGE_DIR)/initramfs.cpio.gz present
+	install -m 0644 $(MICROVM_OUT_DIR)/qboot.rom $(LAMBDA_TESTLINK_IMAGE_DIR)/qboot.rom
+	@digest=$$(GOWORK=off go run -tags lambdatestlink ./cmd/lambda-image-digest $(LAMBDA_TESTLINK_IMAGE_DIR)) && \
+	[[ "$$digest" =~ $(LAMBDA_DIGEST_RE) ]] || { echo "image digest not computed"; exit 1; }; \
+	echo "LAMBDA_IMAGE_DIGEST=$$digest"
 
 # qboot is the microvm firmware. The source tarball ships with each release
 # because qboot is GPL-2.0.
@@ -240,27 +291,29 @@ preflight:
 NODE_SCRIPTS := scripts/setup.sh scripts/setup-ovn.sh scripts/install-node.sh scripts/smoke-test.sh scripts/node-reset.sh scripts/uninstall-spx.sh scripts/lib/distro.sh scripts/lib/stage-sqs-store-microvm.sh
 
 test-build-scripts:
-	@echo -e "\n....Running build/scripts/**/*_test.sh...."
-	@for t in $$(find build/scripts -name '*_test.sh' | sort); do \
-		echo "-- $$t"; \
-		sh "$$t" || exit 1; \
+	@$(_HDR) "\n....Running build/scripts/**/*_test.sh...."
+	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; for t in $$(find build/scripts -name '*_test.sh' | sort); do \
+		$(_RUNSH); \
 	done
-	@echo -e "\n....Running scripts/*_test.sh, scripts/lib/*_test.sh and scripts/appliance/*_test.sh...."
-	@for t in $$( (find scripts -maxdepth 1 -name '*_test.sh'; find scripts/lib scripts/appliance -name '*_test.sh') | sort); do \
-		echo "-- $$t"; \
-		sh "$$t" || exit 1; \
+	@$(_HDR) "\n....Running scripts/*_test.sh, scripts/lib/*_test.sh and scripts/appliance/*_test.sh...."
+	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; for t in $$( (find scripts -maxdepth 1 -name '*_test.sh'; find scripts/lib scripts/appliance -name '*_test.sh') | sort); do \
+		$(_RUNSH); \
 	done
-	@echo -e "\n....Running .github/scripts/*_test.sh...."
-	@for t in $$(find .github/scripts -maxdepth 1 -name '*_test.sh' | sort); do \
-		echo "-- $$t"; \
-		sh "$$t" || exit 1; \
+	@$(_HDR) "\n....Running scripts/terraform/latitude-spx/*_test.sh...."
+	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; for t in $$(find scripts/terraform/latitude-spx -maxdepth 1 -name '*_test.sh' | sort); do \
+		$(_RUNSH); \
 	done
-	shellcheck -S warning .github/scripts/hypervisor-disk-preflight.sh .github/scripts/hypervisor-disk-preflight_test.sh \
-		.github/scripts/wait-for-memory.sh .github/scripts/wait-for-memory_test.sh
-	@echo -e "\n....Running shellcheck over build/scripts/**/*.sh + the node scripts...."
-	shellcheck -S warning $$(find build/scripts -name '*.sh' | sort) $(NODE_SCRIPTS)
-	shellcheck -S warning -x scripts/build-oracle-appliance.sh $$(find scripts/appliance -name '*.sh' | sort)
-	@echo "  test-build-scripts ok"
+	@$(_HDR) "\n....Running .github/scripts/*_test.sh...."
+	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; for t in $$(find .github/scripts -maxdepth 1 -name '*_test.sh' | sort); do \
+		$(_RUNSH); \
+	done
+	$(_Q)shellcheck -S warning .github/scripts/hypervisor-disk-preflight.sh \
+		.github/scripts/wait-for-memory.sh \
+		.github/scripts/mulga-design-check.sh
+	@$(_HDR) "\n....Running shellcheck over build/scripts/**/*.sh + the node scripts...."
+	$(_Q)shellcheck -S warning $$(find build/scripts -name '*.sh' | sort) $(NODE_SCRIPTS)
+	$(_Q)shellcheck -S warning -x scripts/build-oracle-appliance.sh $$(find scripts/appliance -name '*.sh' | sort)
+	@$(_HDR) "  test-build-scripts ok"
 
 # E2E harness unit tests. Build-tagged `e2e` so they're skipped by the
 # default `go test ./spinifex/...`. Runs with mocked AWS clients — no
@@ -327,7 +380,10 @@ test-cover:
 test-race:
 	@echo -e "\n....Running tests with race detector for $(GO_PROJECT_NAME)...."
 	$(_Q)LOG_IGNORE=1 SPINIFEX_SQS_R3=1 go test $(GOTESTFLAGS) -race -timeout 300s ./spinifex/... ./cmd/... ./internal/... ./contracts/... ./architecture/... $(_RACEQ)
-	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -tags=lambdatestlink -timeout 120s ./cmd/lambda-agent/ ./spinifex/agents/lambda/hostlink/ $(_RACEQ)
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -tags=lambdatestlink -timeout 120s ./cmd/lambda-agent/ ./spinifex/agents/lambda/hostlink/ ./spinifex/runtime/compute/lambda/testlink/ ./spinifex/domains/network/host/ $(_RACEQ)
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -tags=lambdatestlink -timeout 120s -run '^TestLambdaTestLink(Executor|Reply)_' ./spinifex/runtime/roles/awsgw/ $(_RACEQ)
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -tags=lambdatestlink,lambdatestlinkseam -timeout 120s -run '^TestLambdaTestLinkSeam_' ./spinifex/runtime/roles/awsgw/ $(_RACEQ)
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -tags=lambdatestlink -timeout 120s -run '^TestLambdaTestLink' ./spinifex/runtime/daemon/ $(_RACEQ)
 
 # Unit tests for in-repo GitHub Actions (e.g. .github/actions/e2e-analyze).
 # Kept out of `test-cover` so coverage % isn't diluted by CI-only tooling.
@@ -538,7 +594,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-worker-microvm-image build-lambda-runtime-microvm-image install-microvm install-sqs-worker-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
+.PHONY: test-package-check build build-lambda-testlink build-lambda-testlink-image build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-worker-microvm-image build-lambda-runtime-microvm-image install-microvm install-sqs-worker-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

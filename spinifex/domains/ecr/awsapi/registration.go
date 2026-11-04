@@ -11,6 +11,7 @@ import (
 	ecrauth "github.com/mulgadc/spinifex/spinifex/domains/ecr/auth"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/nats-io/nats.go"
 )
 
@@ -128,7 +129,7 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 		return err
 	}
 
-	WriteJSONResponse(w, output)
+	envelope.WriteJSONResult(w, output)
 	return nil
 }
 

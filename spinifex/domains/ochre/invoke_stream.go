@@ -2,13 +2,10 @@ package ochre
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net/http"
 	"time"
 	"uuid"
-
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
 // invokeStreamSource is the backend-agnostic InvokeModelWithResponseStream
@@ -83,36 +80,11 @@ func InvokeModelWithResponseStream(ctx context.Context, w http.ResponseWriter, a
 // disconnect (ctx.Done), or upstream fault — the deferred closure records
 // exactly one InvocationRecord via rc.recorder.
 func pumpInvokeStream(ctx context.Context, fw *frameWriter, src invokeStreamSource, modelID string, rc streamRecordCtx) {
-	if rc.recorder == nil {
-		rc.recorder = NoopRecorder
-	}
 	partial := true
 	errCode := ""
-
-	defer func() {
-		inputTokens, outputTokens, estimated := int64(0), int64(0), true
-		if ur, ok := src.(usageReporter); ok {
-			inputTokens, outputTokens, estimated = ur.usage()
-		}
-		rc.recorder.Record(ctx, InvocationRecord{
-			RequestID:      rc.requestID,
-			AccountID:      rc.accountID,
-			ModelID:        modelID,
-			Operation:      rc.operation,
-			Backend:        rc.backend,
-			LatencyMs:      time.Since(rc.start).Milliseconds(),
-			HTTPStatus:     http.StatusOK, // the 200 header is already committed by the time the pump runs
-			ErrorCode:      errCode,
-			InputTokens:    inputTokens,
-			OutputTokens:   outputTokens,
-			UsageEstimated: estimated,
-			Partial:        partial,
-			InputText:      rc.inputText,
-			// OutputText is intentionally left empty: chunks are opaque
-			// provider-native bytes (Llama JSON or raw Anthropic SSE data),
-			// with no generic way to recover assistant text across both.
-		})
-	}()
+	// OutputText stays empty: chunks are opaque provider-native bytes with no
+	// generic way to recover assistant text across Llama and Anthropic.
+	defer func() { rc.record(ctx, src, modelID, errCode, partial, "") }()
 
 	for {
 		select {
@@ -124,16 +96,7 @@ func pumpInvokeStream(ctx context.Context, fw *frameWriter, src invokeStreamSour
 
 		chunk, ok, err := src.Next(ctx)
 		if err != nil {
-			excType := excInternalServerException
-			if _, ok := errors.AsType[*streamFaultError](err); ok {
-				excType = excModelStreamErrorException
-			}
-			errCode = awserrors.ValidErrorCodeFromError(err)
-			slog.Error("invoke-with-response-stream: upstream fault", "model", modelID, "err", err)
-			if werr := fw.writeException(excType, exceptionPayload(err)); werr != nil {
-				slog.Error("invoke-with-response-stream: failed to write exception frame", "model", modelID, "err", werr)
-				errCode = errCodeClientDisconnected
-			}
+			errCode = fw.writeUpstreamFault("invoke-with-response-stream", modelID, err)
 			return
 		}
 		if !ok {

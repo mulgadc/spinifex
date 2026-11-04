@@ -317,9 +317,6 @@ func TestListDisksAttachesByIDPath(t *testing.T) {
 	if disks[0].ByID != want {
 		t.Errorf("ByID = %q, want %q", disks[0].ByID, want)
 	}
-	if disks[0].Stable() != want {
-		t.Errorf("Stable() = %q, want the by-id path", disks[0].Stable())
-	}
 }
 
 func TestPrefixRank(t *testing.T) {
@@ -331,7 +328,7 @@ func TestPrefixRank(t *testing.T) {
 	}
 }
 
-func TestSizeHuman(t *testing.T) {
+func TestHumanSize(t *testing.T) {
 	tests := []struct {
 		bytes int64
 		want  string
@@ -342,17 +339,14 @@ func TestSizeHuman(t *testing.T) {
 		{512, "512B"},
 	}
 	for _, tt := range tests {
-		if got := (Disk{Bytes: tt.bytes}).SizeHuman(); got != tt.want {
-			t.Errorf("SizeHuman(%d) = %q, want %q", tt.bytes, got, tt.want)
+		if got := HumanSize(tt.bytes); got != tt.want {
+			t.Errorf("HumanSize(%d) = %q, want %q", tt.bytes, got, tt.want)
 		}
 	}
 }
 
 func TestStableFallsBackToKernelName(t *testing.T) {
 	d := Disk{Path: "/dev/sda"}
-	if d.Stable() != "/dev/sda" {
-		t.Errorf("Stable() = %q", d.Stable())
-	}
 	if d.StablePartitionPath(2) != "/dev/sda2" {
 		t.Errorf("StablePartitionPath(2) = %q", d.StablePartitionPath(2))
 	}

@@ -254,6 +254,10 @@ func TestRegistrationDispatch_ListenerAttributesNeedNoDaemon(t *testing.T) {
 	for _, action := range []string{"DescribeListenerAttributes", "ModifyListenerAttributes"} {
 		t.Run(action, func(t *testing.T) {
 			form := url.Values{"Action": {action}, "ListenerArn": {testLsnrArn}}
+			if action == "ModifyListenerAttributes" {
+				form.Set("Attributes.member.1.Key", "tcp.idle_timeout.seconds")
+				form.Set("Attributes.member.1.Value", "350")
+			}
 			w, _, err := invoke(t, elbv2awsapi.Deps{NATS: nc}, form.Encode(), nil)
 			require.NoError(t, err)
 			assert.Equal(t, action+"Response", rootElement(t, w.Body.Bytes()))

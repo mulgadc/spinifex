@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"sort"
@@ -74,12 +75,7 @@ func DescribeInstanceTypes(ctx context.Context, input *ec2.DescribeInstanceTypes
 		}
 	}
 
-	requestedTypes := make(map[string]bool)
-	for _, it := range input.InstanceTypes {
-		if it != nil {
-			requestedTypes[*it] = true
-		}
-	}
+	requestedTypes := identifiers.Set(input.InstanceTypes)
 
 	var finalInstanceTypes []*ec2.InstanceTypeInfo
 	if showCapacity {

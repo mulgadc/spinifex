@@ -73,6 +73,8 @@ func hangingFenceConfig(t *testing.T, natsURL, volumeName string) (*Config, *han
 // before the server can re-grant the entry, so nbdkit has to be dead inside that
 // margin even when the read naming the winner never comes back.
 func TestS4_FenceStopsTheWriterBeforeReadingTheHolder(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-fencekillfirst"
@@ -105,6 +107,8 @@ func TestS4_FenceStopsTheWriterBeforeReadingTheHolder(t *testing.T) {
 // after the kill. The holder read only names the winner, and the daemon's notice
 // waits behind it, so a store that never answers must not hold the guest up.
 func TestS4_FenceHolderReadIsBounded(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-fencereadbounded"
@@ -170,6 +174,8 @@ func noticeConfig(t *testing.T, natsURL, volumeName string) (*Config, *nats.Conn
 // its disk, and a node's NATS restarting mid-fence leaves nobody subscribed for
 // the first send. It has to arrive once the daemon is back, however late.
 func TestS4_FenceNoticeSurvivesAMissedDelivery(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-fencenoticelate"
@@ -213,6 +219,8 @@ func TestS4_FenceNoticeSurvivesAMissedDelivery(t *testing.T) {
 // exported here again it belongs to a newer mount, and a notice that finally
 // lands then would stop the guest that mount is serving.
 func TestS4_StaleFenceNoticeIsDropped(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-fencenoticestale"
@@ -240,6 +248,8 @@ func TestS4_StaleFenceNoticeIsDropped(t *testing.T) {
 // TestS4_FenceNoticeStopsWithTheConnection keeps a shutting-down viperblockd from
 // leaving a notice goroutine spinning on a connection that cannot carry it.
 func TestS4_FenceNoticeStopsWithTheConnection(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-fencenoticeclosed"
@@ -261,6 +271,8 @@ func TestS4_FenceNoticeStopsWithTheConnection(t *testing.T) {
 // TestFenceNotice_UnavailableDaemonIsAskedAgain keeps a refusal that says
 // "not now" from ending delivery: the guest is still running on a dead disk.
 func TestFenceNotice_UnavailableDaemonIsAskedAgain(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-fencenoticeunavailable"
@@ -299,6 +311,8 @@ func TestFenceNotice_UnavailableDaemonIsAskedAgain(t *testing.T) {
 // TestFenceNotice_UnsendableNoticeIsNotRetried stops a notice that can never
 // be addressed from spinning until shutdown on a goroutine nobody watches.
 func TestFenceNotice_UnsendableNoticeIsNotRetried(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-fencenoticeunsendable"
@@ -318,6 +332,8 @@ func TestFenceNotice_UnsendableNoticeIsNotRetried(t *testing.T) {
 // TestFenceNotice_RefusedNoticeIsNotRepeated keeps a notice the daemon heard and
 // could not act on from being resent forever: a refusal is an answer.
 func TestFenceNotice_RefusedNoticeIsNotRepeated(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-fencenoticerefused"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/aws/aws-sdk-go/service/ecr"
@@ -38,6 +39,13 @@ func DescribeRepositories(ctx context.Context, store RepositoryStore, endpoint R
 	}
 	if req.RegistryID != "" && req.RegistryID != accountID {
 		return nil, errors.New(awserrors.ErrorAccessDenied)
+	}
+
+	switch {
+	case req.RepositoryNames != nil && len(req.RepositoryNames) == 0:
+		return nil, ConstraintError("RepositoryNameList", "Must not be empty")
+	case len(req.RepositoryNames) > maxRepositoryNameList:
+		return nil, ConstraintError("RepositoryNameList", fmt.Sprintf("Must have length less than or equal to %d", maxRepositoryNameList))
 	}
 
 	names := req.RepositoryNames

@@ -103,6 +103,7 @@ func input(name, body string) message.SendInput {
 func ptr(n int) *int { return &n }
 
 func TestSendAppendsBodyAndMetadata(t *testing.T) {
+	t.Parallel()
 	e := newSendEnv(t)
 	q := e.create(t, acct, "orders", nil)
 
@@ -138,11 +139,13 @@ func (f faultStore) Append(ctx context.Context, ns message.Namespace, in message
 }
 
 func TestSendLostAppendReplyIsNeverSuccess(t *testing.T) {
+	t.Parallel()
 	e := newSendEnv(t)
 	q := e.create(t, acct, "orders", nil)
 	errLost := errors.New("reply lost")
 
 	t.Run("applied but the reply was lost", func(t *testing.T) {
+		t.Parallel()
 		fs := faultStore{Store: e.store, append: func(ctx context.Context, ns message.Namespace, in message.AppendInput) (message.AppendResult, error) {
 			_, err := e.store.Append(ctx, ns, in)
 			require.NoError(t, err)
@@ -157,6 +160,7 @@ func TestSendLostAppendReplyIsNeverSuccess(t *testing.T) {
 
 // Neither logs nor errors carry a body, whatever the outcome.
 func TestSendNeverExposesTheBody(t *testing.T) {
+	// Not parallel: it captures the process-wide default logger.
 	var logs bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))

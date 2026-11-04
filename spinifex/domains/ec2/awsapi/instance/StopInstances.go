@@ -73,7 +73,7 @@ func StopInstances(ctx context.Context, input *ec2.StopInstancesInput, natsConn 
 			case state == bucketStateTerminated:
 				return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
 			case queryOK:
-				return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+				return nil, awserrors.IDNotFound(awserrors.ErrorInvalidInstanceIDNotFound, "instance", instanceID)
 			default:
 				return nil, errors.New(awserrors.ErrorServerInternal)
 			}

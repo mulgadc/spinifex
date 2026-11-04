@@ -10,10 +10,15 @@ import (
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 )
 
-// imageIdentifier is the AWS JSON 1.1 {imageDigest, imageTag} pair.
+// imageIdentifier is the AWS JSON 1.1 {imageDigest, imageTag} pair. ImageTag
+// is a pointer so an empty tag can be told apart from an omitted one.
 type imageIdentifier struct {
-	ImageDigest string `json:"imageDigest"`
-	ImageTag    string `json:"imageTag"`
+	ImageDigest string  `json:"imageDigest"`
+	ImageTag    *string `json:"imageTag"`
+}
+
+func (id imageIdentifier) tag() string {
+	return aws.StringValue(id.ImageTag)
 }
 
 type describeImagesRequest struct {
@@ -36,6 +41,9 @@ func DescribeImages(ctx context.Context, catalog ImageCatalog, accountID string,
 	if err := ValidateRepositoryScope(req.RepositoryName, req.RegistryID, accountID); err != nil {
 		return nil, err
 	}
+	if err := validateImageIDs(req.ImageIDs, false); err != nil {
+		return nil, err
+	}
 	if err := req.Filter.validate(); err != nil {
 		return nil, err
 	}
@@ -53,7 +61,7 @@ func DescribeImages(ctx context.Context, catalog ImageCatalog, accountID string,
 			if image.ImageDigest != "" && image.ImageDigest == record.Digest {
 				return true
 			}
-			if image.ImageTag != "" && slices.Contains(record.Tags, image.ImageTag) {
+			if image.ImageTag != nil && slices.Contains(record.Tags, *image.ImageTag) {
 				return true
 			}
 		}
@@ -82,7 +90,7 @@ func DescribeImages(ctx context.Context, catalog ImageCatalog, accountID string,
 	}
 	if len(req.ImageIDs) > 0 && len(details) == 0 {
 		first := req.ImageIDs[0]
-		return nil, ImageNotFoundError(accountID, req.RepositoryName, first.ImageDigest, first.ImageTag)
+		return nil, ImageNotFoundError(accountID, req.RepositoryName, first.ImageDigest, first.tag())
 	}
 
 	return &ecr.DescribeImagesOutput{ImageDetails: details}, nil

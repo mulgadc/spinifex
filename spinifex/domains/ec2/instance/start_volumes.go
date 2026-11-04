@@ -18,7 +18,9 @@ import (
 // reconcileStartVolumes drops the data volumes a claimed instance can no longer
 // have, and fails the start when its boot volume is gone.
 func (s *InstanceServiceImpl) reconcileStartVolumes(ctx context.Context, instance *vm.VM) error {
-	if s.metadata == nil {
+	// A direct-boot system guest boots from a kernel, not a root volume, and its
+	// one data volume, if any, is its own store rather than a customer's.
+	if s.metadata == nil || instance.DirectBoot {
 		return nil
 	}
 

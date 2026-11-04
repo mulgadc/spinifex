@@ -1845,6 +1845,7 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeDetach(t *testing.T) {
 func TestStuckTerminateReaper_DetachesNonDoTVolumeWithoutUnmount(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
+	obligations := wireTestUnpublishObligations(t, daemon)
 
 	const instanceID = "i-wedged-terminate"
 	volumeID := "vol-data-wedged"
@@ -1884,6 +1885,15 @@ func TestStuckTerminateReaper_DetachesNonDoTVolumeWithoutUnmount(t *testing.T) {
 	assert.Equal(t, "available", meta.State,
 		"the force-complete path must still detach a non-Boot DeleteOnTermination=false volume")
 	assert.Empty(t, meta.AttachedInstance)
+
+	// The unmount never ran, so the export may still be up on this node: the
+	// cleared attachment leaves exactly one obligation naming it.
+	open, err := obligations.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, open, 1)
+	assert.Equal(t, volumeID, open[0].VolumeID)
+	assert.Equal(t, daemon.node, open[0].NodeID)
+	assert.Equal(t, instanceID, open[0].InstanceID)
 }
 
 // TestHandleEC2Events_AttachVolume tests the attach-volume handler in handleEC2Events.

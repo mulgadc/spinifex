@@ -39,6 +39,8 @@ func TestDeletionRecordCarriesTheIAMQuiescence(t *testing.T) {
 	_, err := gw.deleteAccount(t.Context(),
 		deleteAccountBody(t, account.AccountID, "tenant@example.com", deleteClientToken))
 	require.NoError(t, err)
+	// Parallel only once the teardown is running, so its drain poll overlaps the serial tests.
+	t.Parallel()
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted
 	}, 30*time.Second, 100*time.Millisecond)

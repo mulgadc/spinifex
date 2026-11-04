@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net"
@@ -23,8 +22,6 @@ const (
 	runtimeAddr = "127.0.0.1:9001"
 	taskRoot    = "/var/task"
 )
-
-var handler = flag.String("handler", os.Getenv("_HANDLER"), "function handler passed to the bootstrap")
 
 // testlink relays one invocation over the test carrier on the authenticated
 // connection; the carrier is not the guest protocol.
@@ -54,13 +51,14 @@ func start(ctx context.Context) int {
 func (t testlink) run(parent context.Context) (int, error) {
 	// The package values are fw_cfg entries, so read them before connect seals it.
 	spec, specErr := readPackageSpec(t.fwCfgDir)
-	conn, code, err := t.connect(parent)
+	grant, grantErr := readGrant(t.fwCfgDir)
+	conn, scope, code, err := t.connect(parent)
 	if err != nil {
-		return code, errors.Join(err, specErr)
+		return code, errors.Join(err, specErr, grantErr)
 	}
 	defer conn.Close()
-	if specErr != nil {
-		return exitRefused, specErr
+	if err := errors.Join(specErr, grantErr); err != nil {
+		return exitRefused, err
 	}
 	link := hostlink.NewTestStream(conn)
 
@@ -75,6 +73,10 @@ func (t testlink) run(parent context.Context) (int, error) {
 	}
 	if parent.Err() != nil {
 		return exitLink, context.Cause(parent)
+	}
+	// Nothing of the tenant's is installed or run for an unbound request.
+	if err := checkBinding(scope, grant, first, time.Now()); err != nil {
+		return exitRefused, err
 	}
 	if err := t.pkg.install(spec); err != nil {
 		return exitRefused, fmt.Errorf("install package: %w", err)
@@ -93,7 +95,7 @@ func (t testlink) run(parent context.Context) (int, error) {
 	defer cancel(nil)
 	cmd, err := t.startBootstrap(ctx, []string{
 		"AWS_LAMBDA_RUNTIME_API=" + ln.Addr().String(),
-		"_HANDLER=" + *handler,
+		"_HANDLER=" + spec.handler,
 		"LAMBDA_TASK_ROOT=" + taskRoot,
 		"PATH=/bin:/sbin:/usr/bin",
 	})

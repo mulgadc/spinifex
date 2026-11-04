@@ -32,6 +32,7 @@ type iamAuthzPolicyService struct {
 	canonicalErr  error
 	deleteRoleErr error
 	deleted       []string
+	renamed       []string
 }
 
 func (s *iamAuthzPolicyService) CanonicalResourceARN(_ string, _ arn.IAMResourceType, name string) (string, error) {
@@ -51,6 +52,11 @@ func (s *iamAuthzPolicyService) DeleteRole(_ string, input *iam.DeleteRoleInput)
 		return nil, s.deleteRoleErr
 	}
 	return &iam.DeleteRoleOutput{}, nil
+}
+
+func (s *iamAuthzPolicyService) UpdateUser(_ string, input *iam.UpdateUserInput) (*iam.UpdateUserOutput, error) {
+	s.renamed = append(s.renamed, *input.UserName+"->"+*input.NewUserName)
+	return &iam.UpdateUserOutput{}, nil
 }
 
 // iamGateway pairs a caller holding statements with the service they act on.
@@ -248,4 +254,35 @@ func TestAddRoleToInstanceProfile_MissingRoleStaysValidationFault(t *testing.T) 
 	gw, _ := addRoleGateway(statement("Allow", "iam:AddRoleToInstanceProfile", "*"))
 	err := dispatchIAM(t, gw, "Action=AddRoleToInstanceProfile&InstanceProfileName=web")
 	require.EqualError(t, err, awserrors.ErrorMissingParameter)
+}
+
+// TestIAMRequest_UpdateUserRenameAuthorizesSourceAndTarget pins AWS's rule that
+// a rename needs iam:UpdateUser on both the user and user/<NewUserName>, the
+// target taking the user's current path.
+func TestIAMRequest_UpdateUserRenameAuthorizesSourceAndTarget(t *testing.T) {
+	users := map[string]string{"alice": "arn:aws:iam::123456789012:user/teams/alice"}
+	const (
+		source = "arn:aws:iam::*:user/teams/alice"
+		target = "arn:aws:iam::*:user/teams/bob"
+		body   = "Action=UpdateUser&UserName=alice&NewUserName=bob"
+	)
+
+	t.Run("source-only grant is denied", func(t *testing.T) {
+		gw, svc := iamScopedGateway(users, statement("Allow", "iam:UpdateUser", source))
+		assertDenied(t, dispatchIAM(t, gw, body))
+		assert.Empty(t, svc.renamed)
+	})
+
+	t.Run("target-only grant is denied", func(t *testing.T) {
+		gw, svc := iamScopedGateway(users, statement("Allow", "iam:UpdateUser", target))
+		assertDenied(t, dispatchIAM(t, gw, body))
+		assert.Empty(t, svc.renamed)
+	})
+
+	t.Run("grant on both succeeds", func(t *testing.T) {
+		gw, svc := iamScopedGateway(users, statement("Allow", "iam:UpdateUser", source),
+			statement("Allow", "iam:UpdateUser", target))
+		require.NoError(t, dispatchIAM(t, gw, body))
+		assert.Equal(t, []string{"alice->bob"}, svc.renamed)
+	})
 }

@@ -10,25 +10,6 @@ import (
 	"time"
 )
 
-type unmarshalTarget any
-
-var CommandResponseTypes = map[string]unmarshalTarget{
-	"stop":             &json.RawMessage{},
-	"cont":             &json.RawMessage{},
-	"system_powerdown": &json.RawMessage{},
-	"system_reset":     &json.RawMessage{},
-	"system_wakeup":    &json.RawMessage{},
-	"quit":             &json.RawMessage{},
-
-	"query-block": &[]BlockDevice{},
-
-	"query-status": &Status{},
-
-	"query-cpus-fast":  &[]CPUInfoFast{},
-	"query-blockstats": &[]BlockStats{},
-	"query-balloon":    &BalloonInfo{},
-}
-
 // CPUInfoFast is one vCPU entry from query-cpus-fast. ThreadID is the host
 // thread backing the vCPU; its /proc/<tid>/stat utime+stime deltas yield
 // guest CPU utilization.
@@ -63,13 +44,6 @@ type Status struct {
 	Status     string `json:"status"`
 	Singlestep bool   `json:"singlestep"`
 	Running    bool   `json:"running"`
-}
-
-// QMPQueryBlockResponse is the full query-block reply envelope: the block
-// devices, or a QMP error.
-type QMPQueryBlockResponse struct {
-	Return []BlockDevice `json:"return"`
-	Error  *QMPError     `json:"error,omitempty"`
 }
 
 // BlockDevice is one device entry from query-block. Inserted is nil when no
@@ -231,7 +205,7 @@ func (c *QMPClient) Close() error {
 }
 
 // Execute sends one command and decodes its response into out (a pointer,
-// typically from CommandResponseTypes shapes). Async QMP events interleaved on
+// such as *Status or *[]BlockStats). Async QMP events interleaved on
 // the stream are skipped. Intended for short-lived, single-owner connections
 // (e.g. the telemetry collector); the manager path in vm uses its own
 // reconnecting wrapper. The caller must hold no other reader on the stream.

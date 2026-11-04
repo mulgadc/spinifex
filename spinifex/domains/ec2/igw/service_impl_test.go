@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
@@ -173,14 +174,14 @@ func TestDeleteInternetGateway_WhileAttached(t *testing.T) {
 	_, err = svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 	}, testAccountID)
-	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "The internetGateway '"+igwID+"' has dependencies and cannot be deleted.")
+	testutil.RequireAWSError(t, err, awserrors.ErrorDependencyViolation, "The internetGateway '"+igwID+"' has dependencies and cannot be deleted.")
 
 	// Attaching again names the gateway and the network it is on
 	_, err = svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
-	requireAWSError(t, err, awserrors.ErrorResourceAlreadyAssociated, "resource "+igwID+" is already attached to network vpc-test123")
+	testutil.RequireAWSError(t, err, awserrors.ErrorResourceAlreadyAssociated, "resource "+igwID+" is already attached to network vpc-test123")
 }
 
 func TestInternetGateway_NotFoundNamesTheID(t *testing.T) {
@@ -190,20 +191,12 @@ func TestInternetGateway_NotFoundNamesTheID(t *testing.T) {
 	_, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		InternetGatewayIds: []*string{aws.String("igw-0000000000000dead")},
 	}, testAccountID)
-	requireAWSError(t, err, awserrors.ErrorInvalidInternetGatewayIDNotFound, "The internetGateway ID 'igw-0000000000000dead' does not exist")
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidInternetGatewayIDNotFound, "The internetGateway ID 'igw-0000000000000dead' does not exist")
 
 	_, err = svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
 		InternetGatewayId: aws.String("igw-0000000000000dead"),
 	}, testAccountID)
-	requireAWSError(t, err, awserrors.ErrorInvalidInternetGatewayIDNotFound, "The internetGateway ID 'igw-0000000000000dead' does not exist")
-}
-
-func requireAWSError(t *testing.T, err error, code, message string) {
-	t.Helper()
-	got, msg, ok := awserrors.ResolveErrorDetail(err)
-	require.True(t, ok, "error %v carries no AWS code", err)
-	assert.Equal(t, code, got)
-	assert.Equal(t, message, msg)
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidInternetGatewayIDNotFound, "The internetGateway ID 'igw-0000000000000dead' does not exist")
 }
 
 func TestDescribeInternetGateways_All(t *testing.T) {
@@ -595,6 +588,59 @@ func TestDetachInternetGateway(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, desc.InternetGateways, 1)
 	assert.Empty(t, desc.InternetGateways[0].Attachments)
+}
+
+// AWS refuses the detach while an elastic IP is associated into the VPC and
+// leaves the attachment in place; it succeeds once the address is unmapped.
+func TestDetachInternetGateway_MappedPublicAddress(t *testing.T) {
+	svc, _ := setupTestIGWService(t)
+	igwID := createTestIGW(t, svc)
+	_, err := svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
+		InternetGatewayId: aws.String(igwID),
+		VpcId:             aws.String("vpc-test123"),
+	}, testAccountID)
+	require.NoError(t, err)
+	confirmAttach(t, svc, igwID, "vpc-test123")
+
+	putEIP := func(rec ec2eip.EIPRecord) {
+		data, err := json.Marshal(rec)
+		require.NoError(t, err)
+		_, err = svc.eipKV.Put(context.Background(), kvutil.AccountKey(testAccountID, rec.AllocationId), data)
+		require.NoError(t, err)
+	}
+	putEIP(ec2eip.EIPRecord{AllocationId: "eipalloc-other", AssociationId: "eipassoc-other", VpcId: "vpc-other", State: "associated"})
+	putEIP(ec2eip.EIPRecord{AllocationId: "eipalloc-mapped", AssociationId: "eipassoc-mapped", ENIId: "eni-1", VpcId: "vpc-test123", State: "associated"})
+
+	// Another account's address naming the same VPC ID is not this account's dependency.
+	foreign, err := json.Marshal(ec2eip.EIPRecord{AllocationId: "eipalloc-foreign", AssociationId: "eipassoc-foreign", VpcId: "vpc-test123", State: "associated"})
+	require.NoError(t, err)
+	_, err = svc.eipKV.Put(context.Background(), kvutil.AccountKey("999999999999", "eipalloc-foreign"), foreign)
+	require.NoError(t, err)
+
+	detach := func() error {
+		_, err := svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
+			InternetGatewayId: aws.String(igwID),
+			VpcId:             aws.String("vpc-test123"),
+		}, testAccountID)
+		return err
+	}
+
+	err = detach()
+	require.Error(t, err)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorDependencyViolation, code)
+	assert.Contains(t, msg, "mapped public address(es)")
+
+	desc, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
+		InternetGatewayIds: []*string{aws.String(igwID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.InternetGateways[0].Attachments, 1)
+	assert.Equal(t, "vpc-test123", aws.StringValue(desc.InternetGateways[0].Attachments[0].VpcId))
+
+	putEIP(ec2eip.EIPRecord{AllocationId: "eipalloc-mapped", State: "allocated"})
+	require.NoError(t, detach())
 }
 
 func TestDetachInternetGateway_NotAttached(t *testing.T) {

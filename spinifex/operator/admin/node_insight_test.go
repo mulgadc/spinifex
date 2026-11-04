@@ -205,6 +205,8 @@ func TestNetworkTestFailsARunWhoseServerNeverAnswers(t *testing.T) {
 
 	started, err := d.StartNetworkTest(ctx, map[string]string{"Plane": "lan", "Source": "a", "Target": "b", "DurationSeconds": "5"})
 	require.NoError(t, err)
+	// Parallel only once the test is running, so its serve timeout overlaps the serial tests.
+	t.Parallel()
 
 	var done NetworkTest
 	require.Eventually(t, func() bool {

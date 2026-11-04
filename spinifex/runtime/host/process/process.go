@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -35,6 +36,38 @@ func ProcessAlive(pid int) bool {
 		return false
 	}
 	return process.Signal(syscall.Signal(0)) == nil
+}
+
+// signalProbe is the signal-0 probe behind ProcessExited, replaceable in tests.
+var signalProbe atomic.Pointer[func(pid int) error]
+
+func init() {
+	probe := func(pid int) error {
+		process, err := os.FindProcess(pid)
+		if err != nil {
+			return err
+		}
+		return process.Signal(syscall.Signal(0))
+	}
+	signalProbe.Store(&probe)
+}
+
+// SetSignalProbe replaces the signal-0 probe behind ProcessExited and returns
+// a func that restores the previous one. It exists for tests.
+func SetSignalProbe(probe func(pid int) error) (restore func()) {
+	prev := signalProbe.Swap(&probe)
+	return func() { signalProbe.Store(prev) }
+}
+
+// ProcessExited reports whether pid is provably gone: the signal-0 probe fails
+// with ESRCH. Any other failure (EPERM for a live process of another user, a
+// reused PID) or a non-positive pid is unknown, not proof of exit.
+func ProcessExited(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := (*signalProbe.Load())(pid)
+	return errors.Is(err, syscall.ESRCH) || errors.Is(err, os.ErrProcessDone)
 }
 
 // ForceKillProcess SIGKILLs a process immediately and waits up to timeout for

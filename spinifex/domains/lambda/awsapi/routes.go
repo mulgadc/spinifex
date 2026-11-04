@@ -2,8 +2,8 @@ package awsapi
 
 import (
 	"context"
+	"net/http"
 	"net/url"
-	"slices"
 
 	"github.com/aws/aws-sdk-go/service/lambda"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/rest"
@@ -16,9 +16,13 @@ type call struct {
 	Params    []string
 	Query     url.Values
 	Body      []byte
+	Header    http.Header
 	// Create is the decoded CreateFunction body, decoded once ahead of the
 	// authorization gate and the PassRole check that both read it.
 	Create *lambda.CreateFunctionInput
+	// Invoke is Invoke's validated target, resolved ahead of the
+	// authorization gate whose resource it names.
+	Invoke *invokeTarget
 }
 
 // rawJSON is a response body written as is, for a shape the SDK encoder
@@ -29,6 +33,7 @@ type rawJSON []byte
 type reply struct {
 	Status int
 	Body   any
+	Header http.Header
 }
 
 type route = rest.Route[routeHandler]
@@ -57,16 +62,10 @@ var routes = []route{
 		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
 			return d.getFunctionCodeSigningConfig(ctx, c)
 		}},
-}
-
-// actionNames returns the distinct actions in routes in stable order.
-func actionNames() []string {
-	names := make([]string, 0, len(routes))
-	for _, r := range routes {
-		names = append(names, r.Action)
-	}
-	slices.Sort(names)
-	return slices.Compact(names)
+	{Method: "POST", Pattern: "/2015-03-31/functions/{FunctionName}/invocations", Action: "Invoke",
+		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
+			return d.invoke(ctx, c)
+		}},
 }
 
 var router = rest.NewRouter("lambda", routes)

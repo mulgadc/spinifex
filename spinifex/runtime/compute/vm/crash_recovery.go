@@ -152,7 +152,7 @@ func (m *Manager) HandleCrash(instance *VM, waitErr error) {
 	removeTelemetryArtifacts(instance)
 
 	if m.deps.VolumeMounter != nil {
-		if err := m.deps.VolumeMounter.Unmount(context.Background(), instance); err != nil {
+		if err := m.unmountVolumes(context.Background(), instance); err != nil {
 			slog.Error("Volume unmount failed during crash handling",
 				"instance", instance.ID, "err", err)
 		}

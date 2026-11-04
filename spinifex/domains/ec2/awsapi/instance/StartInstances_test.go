@@ -3,11 +3,14 @@ package instance
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -160,4 +163,34 @@ func TestStartInstances_MixedSuccessAndFailure(t *testing.T) {
 	// Daemon error for any instance should fail the whole call
 	require.Error(t, err)
 	assert.Equal(t, "InvalidInstanceID.NotFound", err.Error())
+}
+
+// The AWS body says only IncorrectState, so the header is the one thing that
+// tells a held volume apart from any other refusal in that code.
+func TestStartInstances_VolumeHeldElsewhereHeader(t *testing.T) {
+	t.Parallel()
+	for name, held := range map[string]bool{"with header": true, "without header": false} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, nc := startTestNATSServer(t)
+			const id = "i-0abc0000000000002"
+			_, err := nc.Subscribe(ec2v1.InstanceCommandSubject(id), func(msg *nats.Msg) {
+				reply := nats.NewMsg(msg.Reply)
+				reply.Data = awserrors.GenerateErrorPayloadWithMessage(awserrors.ErrorIncorrectState, "volume vol-1 is published to node-a")
+				if held {
+					reply.Header.Set(natsmsg.VolumeHeldElsewhereHeader, "true")
+				}
+				_ = msg.RespondMsg(reply)
+			})
+			require.NoError(t, err)
+
+			_, err = StartInstances(t.Context(), &ec2.StartInstancesInput{InstanceIds: []*string{aws.String(id)}}, nc, "123456789012")
+			require.Error(t, err)
+			assert.Equal(t, held, errors.Is(err, ec2v1.ErrVolumeHeldElsewhere))
+			code, message, ok := awserrors.ResolveErrorDetail(err)
+			require.True(t, ok)
+			assert.Equal(t, awserrors.ErrorIncorrectState, code)
+			assert.Equal(t, "volume vol-1 is published to node-a", message)
+		})
+	}
 }

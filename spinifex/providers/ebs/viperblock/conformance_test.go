@@ -173,6 +173,8 @@ func runPrefix() string {
 // TestViperblockdConformance judges the provider handlers by the same suite
 // MemoryProvider and qemunbdd answer to.
 func TestViperblockdConformance(t *testing.T) {
+	t.Parallel()
+
 	h := inProcessProvider(t)
 	conformance.RunSuiteWithConfig(t, h.newProvider, conformance.SuiteConfig{
 		NamePrefix:       runPrefix(),
@@ -188,6 +190,8 @@ func TestViperblockdConformance(t *testing.T) {
 // cannot: whether the nbdkit export viperblockd publishes is usable by libnbd,
 // which knows nothing about this codebase.
 func TestViperblockdNBDClient(t *testing.T) {
+	t.Parallel()
+
 	h := inProcessProvider(t)
 	conformance.RunNBDClientSuiteWithConfig(t, h.newProvider, conformance.NBDClientConfig{
 		NodeID:       h.nodeID,

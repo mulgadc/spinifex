@@ -151,7 +151,7 @@ var ec2Actions = map[string]ec2Action{
 		launchQuotaCheck := func() error {
 			return c.Quota.EnforceLaunch(ctx, accountID, aws.StringValue(input.InstanceType), int(aws.Int64Value(input.MaxCount)))
 		}
-		reservation, err := ec2instanceapi.RunInstances(ctx, input, c.NATS, c.IAM, accountID, passRoleCheck, launchQuotaCheck, c.ExpectedNodes)
+		reservation, err := ec2instanceapi.RunInstances(ctx, input, c.NATS, c.clientTokenBucket, c.IAM, accountID, passRoleCheck, launchQuotaCheck, c.ExpectedNodes)
 		if err != nil {
 			return nil, err
 		}
@@ -436,7 +436,7 @@ var ec2Actions = map[string]ec2Action{
 		passRoleCheck := func(roleARN string) error {
 			return c.passRole(roleARN)
 		}
-		return ec2spotinstanceapi.RequestSpotInstances(ctx, input, c.NATS, c.IAM, accountID, c.AZ, passRoleCheck, c.Quota, c.ExpectedNodes)
+		return ec2spotinstanceapi.RequestSpotInstances(ctx, input, c.NATS, c.clientTokenBucket, c.IAM, accountID, c.AZ, passRoleCheck, c.Quota, c.ExpectedNodes)
 	}),
 	"DescribeSpotInstanceRequests": ec2Handler(func(ctx context.Context, input *ec2.DescribeSpotInstanceRequestsInput, c *call, accountID string) (any, error) {
 		return ec2spotinstanceapi.DescribeSpotInstanceRequests(ctx, input, c.NATS, accountID)

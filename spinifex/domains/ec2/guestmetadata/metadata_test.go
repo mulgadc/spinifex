@@ -150,10 +150,12 @@ func withTapConn(h http.Handler, eni *eniFacts, setTTL connTTLSetter) http.Handl
 // clock. The per-tap responder is left nil — the HTTP handler is exercised directly.
 func newTestService(res eniResolver, fIAM profileLookup, assumer stsAssumer) (*IMDSServiceImpl, time.Time) {
 	now := time.Unix(1_700_000_000, 0).UTC()
+	v1Allow := newTTLCache[bool](v1AllowTTL)
+	v1Allow.now = func() time.Time { return now }
 	return &IMDSServiceImpl{
 		resolver:       res,
 		tokens:         newTokenStore(),
-		v1Allow:        newV1AllowCache(),
+		v1Allow:        v1Allow,
 		creds:          newCredCache(assumer),
 		iam:            fIAM,
 		roleMiss:       newRoleMissLogger(func() time.Time { return now }),

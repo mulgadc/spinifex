@@ -18,6 +18,11 @@ const (
 	minLifecyclePolicyTextLength  = 100
 	maxLifecyclePolicyTextLength  = 30720
 	maxRepositoryPolicyTextLength = 10240
+
+	minImageTagLength     = 1
+	maxImageTagLength     = 300
+	maxMediaTypeListItems = 100
+	maxRepositoryNameList = 100
 )
 
 // ValidateRepositoryName returns InvalidParameterException naming the first
@@ -50,6 +55,42 @@ func EnumValueError(field string, allowed ...string) error {
 // MaxItemsError refuses a list field carrying more than limit members.
 func MaxItemsError(field string, limit int) error {
 	return ConstraintError(field, fmt.Sprintf("Member must have length less than or equal to %d", limit))
+}
+
+// validateListLength refuses a list field whose member count falls outside
+// [minLen, maxLen], the bounds of field's model shape.
+func validateListLength(field string, n, minLen, maxLen int) error {
+	if n < minLen {
+		return ConstraintError(field, fmt.Sprintf("Member must have length greater than or equal to %d", minLen))
+	}
+	if n > maxLen {
+		return MaxItemsError(field, maxLen)
+	}
+	return nil
+}
+
+// validateImageIDs checks imageIds against ImageIdentifierList: 1-100 members,
+// each tag 1-300 characters. An omitted list is refused only when required.
+func validateImageIDs(ids []imageIdentifier, required bool) error {
+	if ids == nil {
+		if required {
+			return RequiredParameterError("imageIds")
+		}
+		return nil
+	}
+	if err := validateListLength("imageIds", len(ids), 1, maxImageBatch); err != nil {
+		return err
+	}
+	for i, id := range ids {
+		if id.ImageTag == nil {
+			continue
+		}
+		field := fmt.Sprintf("imageIds.%d.member.imageTag", i+1)
+		if err := ValidateTextLength(field, *id.ImageTag, minImageTagLength, maxImageTagLength); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ValidateTextLength refuses text whose length in characters falls outside

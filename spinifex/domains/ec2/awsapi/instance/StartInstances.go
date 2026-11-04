@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"log/slog"
 	"time"
@@ -102,7 +103,7 @@ func startLiveInstance(ctx context.Context, natsConn *nats.Conn, instanceID, acc
 
 	if responseError, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
 		slog.ErrorContext(ctx, "StartInstances: owner returned error", "instance_id", instanceID, "code", *responseError.Code)
-		return nil, false, startRefusalError(responseError)
+		return nil, false, startRefusalError(responseError, msg.Header)
 	}
 
 	slog.InfoContext(ctx, "StartInstances: restarted via owner node", "instance_id", instanceID, "response", string(msg.Data))
@@ -135,18 +136,25 @@ func startStoppedInstance(ctx context.Context, natsConn *nats.Conn, instanceID, 
 
 	if responseError, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
 		slog.ErrorContext(ctx, "StartInstances: Daemon returned error", "instance_id", instanceID, "code", *responseError.Code)
-		return nil, startRefusalError(responseError)
+		return nil, startRefusalError(responseError, msg.Header)
 	}
 
 	slog.InfoContext(ctx, "StartInstances: Command sent successfully", "instance_id", instanceID, "response", string(msg.Data))
 	return newStateChange(instanceID, 0, "pending", 80, "stopped"), nil
 }
 
-// startRefusalError rebuilds the daemon's error, keeping the message it sent.
-// Reconstructing from the code alone renders the generic ErrorLookup text
-// instead, which replaces the name of the node holding the volume with
-// boilerplate about attaching volumes -- the one fact the operator needed.
-func startRefusalError(responseError ec2.ResponseError) error {
+// startRefusalError rebuilds the daemon's error, keeping the message it sent,
+// which names the node holding the volume, and wrapping ErrVolumeHeldElsewhere
+// when the reply's header says that is why the start was refused.
+func startRefusalError(responseError ec2.ResponseError, header nats.Header) error {
+	err := startRefusalCodeError(responseError)
+	if header.Get(natsmsg.VolumeHeldElsewhereHeader) == "true" {
+		return fmt.Errorf("%w: %w", ec2v1.ErrVolumeHeldElsewhere, err)
+	}
+	return err
+}
+
+func startRefusalCodeError(responseError ec2.ResponseError) error {
 	var code, message string
 	if responseError.Code != nil {
 		code = *responseError.Code

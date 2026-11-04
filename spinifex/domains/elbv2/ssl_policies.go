@@ -29,6 +29,7 @@ type sslPolicyDef struct {
 	name      string
 	protocols []string
 	ciphers   []sslPolicyCipher
+	lbTypes   []string
 }
 
 // sslPolicyCatalog is the fixed set of supported security policies, keyed by
@@ -43,6 +44,7 @@ var sslPolicyCatalog = map[string]sslPolicyDef{
 			{"ECDHE-ECDSA-AES256-GCM-SHA384", 3},
 			{"ECDHE-RSA-AES256-GCM-SHA384", 4},
 		},
+		lbTypes: []string{LoadBalancerTypeApplication, LoadBalancerTypeNetwork},
 	},
 	"ELBSecurityPolicy-TLS13-1-2-2021-06": {
 		name:      "ELBSecurityPolicy-TLS13-1-2-2021-06",
@@ -54,6 +56,7 @@ var sslPolicyCatalog = map[string]sslPolicyDef{
 			{"ECDHE-ECDSA-AES128-GCM-SHA256", 4},
 			{"ECDHE-RSA-AES128-GCM-SHA256", 5},
 		},
+		lbTypes: []string{LoadBalancerTypeApplication, LoadBalancerTypeNetwork},
 	},
 }
 
@@ -87,6 +90,6 @@ func sslPolicyToSDK(def sslPolicyDef) *elbv2.SslPolicy {
 		Name:                       aws.String(def.name),
 		SslProtocols:               protocols,
 		Ciphers:                    ciphers,
-		SupportedLoadBalancerTypes: []*string{aws.String("application")},
+		SupportedLoadBalancerTypes: aws.StringSlice(def.lbTypes),
 	}
 }

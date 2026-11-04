@@ -23,8 +23,6 @@ import (
 // ServiceName is the SigV4 credential-scope service STS clients sign for.
 const ServiceName = "sts"
 
-const principalTypeAssumedRole = stsdomain.PrincipalTypeAssumedRole
-
 // Deps are the composed capabilities the STS control plane dispatches to. A
 // nil STS answers every action with InternalError.
 type Deps struct {
@@ -278,7 +276,7 @@ func resolveCaller(inv dispatch.Invocation) (caller, dispatch.Actor, error) {
 		principalType: actor.PrincipalType,
 		accessKey:     actor.AccessKeyID,
 	}
-	if actor.PrincipalType == principalTypeAssumedRole {
+	if actor.PrincipalType == dispatch.PrincipalTypeAssumedRole {
 		c.identity = actor.SessionName
 		c.assumedRoleID = actor.UserID
 	}
@@ -292,7 +290,7 @@ func detailedDenial(actor dispatch.Actor, denial *dispatch.PolicyDenialError) er
 	callerARN := actor.CallerARN
 	if callerARN == "" {
 		callerARN = actor.UserName
-		if actor.PrincipalType == principalTypeAssumedRole {
+		if actor.PrincipalType == dispatch.PrincipalTypeAssumedRole {
 			callerARN = actor.SessionName
 		}
 	}

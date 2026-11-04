@@ -25,11 +25,17 @@ import (
 
 const helperEnv = "LAMBDA_AGENT_TEST_BOOTSTRAP"
 
+// helperHandlerOut names the file the helper bootstrap writes its _HANDLER to.
+const helperHandlerOut = "LAMBDA_AGENT_TEST_HANDLER_OUT"
+
 // TestHelperBootstrap is the fake function bootstrap, run as a subprocess: it
 // echoes one invocation through the Runtime API, then waits for the next.
 func TestHelperBootstrap(t *testing.T) {
 	if os.Getenv(helperEnv) != "1" {
 		return
+	}
+	if out := os.Getenv(helperHandlerOut); out != "" {
+		require.NoError(t, os.WriteFile(out, []byte(os.Getenv("_HANDLER")), 0o600))
 	}
 	base := "http://" + os.Getenv("AWS_LAMBDA_RUNTIME_API") + "/2018-06-01/runtime/invocation/"
 	resp, err := http.Get(base + "next")
@@ -44,11 +50,19 @@ func TestHelperBootstrap(t *testing.T) {
 	_, _ = http.Get(base + "next")
 }
 
+// testGrantEntry grants g-1 for attempt a-1 on the fixture scope's env-1/1.
+const testGrantEntry = "g-1\na-1\nenv-1\n1\n"
+
+// testHandler is the handler the fixture's host configures.
+const testHandler = "bootstrap.fixture"
+
 type bootstrapStarts struct {
 	n       int
 	started chan struct{}
 	task    string
 	sealed  bool
+	// handlerOut receives the _HANDLER the bootstrap process itself saw.
+	handlerOut string
 }
 
 // testlink builds a guest whose fw_cfg also carries a controlled package,
@@ -61,9 +75,16 @@ func (b *bootstrapStarts) testlink(t *testing.T, entries map[string][]byte) test
 	sum := sha256.Sum256(zipBytes)
 	entries[entryPackageSize] = []byte(strconv.Itoa(len(zipBytes)))
 	entries[entryPackageSHA256] = []byte(hex.EncodeToString(sum[:]))
+	if _, ok := entries[entryHandler]; !ok {
+		entries[entryHandler] = []byte(testHandler)
+	}
+	if _, ok := entries[entryGrant]; !ok {
+		entries[entryGrant] = []byte(testGrantEntry)
+	}
 	g := newGuest(t, entries)
 	b.started = make(chan struct{}, 1)
 	b.task = t.TempDir()
+	b.handlerOut = filepath.Join(t.TempDir(), "handler")
 	return testlink{
 		startup: g.startup(),
 		pkg: taskPackage{
@@ -77,7 +98,7 @@ func (b *bootstrapStarts) testlink(t *testing.T, entries map[string][]byte) test
 			b.n++
 			b.started <- struct{}{}
 			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHelperBootstrap$")
-			cmd.Env = append(env, helperEnv+"=1")
+			cmd.Env = append(env, helperEnv+"=1", helperHandlerOut+"="+b.handlerOut)
 			return cmd, cmd.Start()
 		},
 	}
@@ -132,6 +153,9 @@ func TestTestlinkServesOneInvocationThenStops(t *testing.T) {
 		assert.Error(t, err, "agent answered a second invocation")
 	}
 	assert.Equal(t, 1, b.n)
+	seen, err := os.ReadFile(b.handlerOut)
+	require.NoError(t, err, "bootstrap process did not report its handler")
+	assert.Equal(t, testHandler, string(seen), "bootstrap process not given the configured handler")
 	assert.True(t, b.sealed, "task dir not made read-only")
 	assert.FileExists(t, filepath.Join(b.task, "lib", "data.txt"))
 }
@@ -218,7 +242,8 @@ func TestTestlinkBadPackageNeverStartsBootstrap(t *testing.T) {
 
 	conn := h.guest(t)
 	defer conn.Close()
-	require.NoError(t, hostlink.NewTestStream(conn).HostSend(hostlink.Request{RequestID: "r-1"}))
+	require.NoError(t, hostlink.NewTestStream(conn).HostSend(hostlink.Request{GrantID: "g-1", AttemptID: "a-1", RequestID: "r-1",
+		DeadlineMs: time.Now().Add(5 * time.Second).UnixMilli()}))
 	res := wait(t, done, "agent to stop")
 	assert.Equal(t, exitRefused, res.code)
 	assert.ErrorContains(t, res.err, "install package")
@@ -244,3 +269,87 @@ func TestTestlinkMissingPackageSpecRefuses(t *testing.T) {
 	_, err := os.Stat(tl.fwCfgRoot)
 	assert.ErrorIs(t, err, os.ErrNotExist, "fw_cfg not sealed")
 }
+
+// A request that does not carry this VM's grant, or a grant for another
+// environment generation than the one authenticated, installs and runs
+// nothing of the tenant's.
+func TestTestlinkUnboundRequestNeverStartsBootstrap(t *testing.T) {
+	cases := map[string]struct {
+		grant            string
+		grantID, attempt string
+		deadlineMs       int64
+		want             string
+	}{
+		"frame with no deadline":      {testGrantEntry, "g-1", "a-1", -1, "no deadline"},
+		"frame with expired deadline": {testGrantEntry, "g-1", "a-1", time.Now().Add(-time.Second).UnixMilli(), "deadline already passed"},
+		"frame for another grant":     {testGrantEntry, "g-2", "a-1", 0, "does not carry this VM's grant"},
+		"frame for another attempt":   {testGrantEntry, "g-1", "a-2", 0, "does not carry this VM's grant"},
+		"frame with no grant":         {testGrantEntry, "", "", 0, "does not carry this VM's grant"},
+		"grant for another env":       {"g-1\na-1\nenv-2\n1\n", "g-1", "a-1", 0, "not for the authenticated environment"},
+		"grant for another gen":       {"g-1\na-1\nenv-1\n2\n", "g-1", "a-1", 0, "not for the authenticated environment"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			h := newHost(t)
+			h.accept(ctx)
+			var b bootstrapStarts
+			entries := h.entries()
+			entries[entryGrant] = []byte(tc.grant)
+			done := runTestlinkAsync(ctx, b.testlink(t, entries))
+			conn := h.guest(t)
+			defer conn.Close()
+			deadline := time.Now().Add(5 * time.Second).UnixMilli()
+			switch {
+			case tc.deadlineMs < 0:
+				deadline = 0
+			case tc.deadlineMs > 0:
+				deadline = tc.deadlineMs
+			}
+			req := hostlink.Request{GrantID: tc.grantID, AttemptID: tc.attempt, RequestID: "r-1",
+				DeadlineMs: deadline, Payload: []byte(`{}`)}
+			require.NoError(t, hostlink.NewTestStream(conn).HostSend(req))
+
+			res := wait(t, done, "agent to stop")
+			assert.Equal(t, exitRefused, res.code)
+			assert.ErrorContains(t, res.err, tc.want)
+			assert.Zero(t, b.n)
+			assert.False(t, b.sealed)
+			assert.NoFileExists(t, filepath.Join(b.task, "bootstrap"), "package installed")
+		})
+	}
+}
+
+// A missing or malformed grant entry refuses before any frame is awaited.
+func TestTestlinkBadGrantEntryRefuses(t *testing.T) {
+	cases := map[string]*string{
+		"missing":       nil,
+		"too few lines": ptr("g-1\na-1\nenv-1\n"),
+		"generation 0":  ptr("g-1\na-1\nenv-1\n0\n"),
+		"empty grant":   ptr("\na-1\nenv-1\n1\n"),
+	}
+	for name, grant := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			h := newHost(t)
+			h.accept(ctx)
+			var b bootstrapStarts
+			entries := h.entries()
+			if grant != nil {
+				entries[entryGrant] = []byte(*grant)
+			}
+			tl := b.testlink(t, entries)
+			if grant == nil {
+				require.NoError(t, os.RemoveAll(filepath.Join(tl.fwCfgDir, entryGrant)))
+			}
+			res := wait(t, runTestlinkAsync(ctx, tl), "agent to stop")
+			assert.Equal(t, exitRefused, res.code)
+			assert.ErrorContains(t, res.err, entryGrant)
+			assert.Zero(t, b.n)
+		})
+	}
+}
+
+func ptr(s string) *string { return &s }

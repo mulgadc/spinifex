@@ -65,9 +65,11 @@ type eniResolver interface {
 // responder per local primary-ENI tap, each serving the shared mux with the
 // tap's ENI identity.
 type IMDSServiceImpl struct {
-	resolver       eniResolver
-	tokens         *tokenStore
-	v1Allow        *v1AllowCache
+	resolver eniResolver
+	tokens   *tokenStore
+	// v1Allow memoises HttpTokens per instance: the untokened path needs no
+	// credentials, so resolving it per request would allow unbounded fan-outs.
+	v1Allow        *ttlCache[bool]
 	creds          *credCache
 	iam            profileLookup
 	roleMiss       *roleMissLogger
@@ -169,7 +171,7 @@ func NewIMDSServiceImpl(ctx context.Context, natsConn *nats.Conn, sts stsAssumer
 			lookup:   &localInstanceLookup{local: localState, records: records},
 		},
 		tokens:         newTokenStore(),
-		v1Allow:        newV1AllowCache(),
+		v1Allow:        newTTLCache[bool](v1AllowTTL),
 		creds:          newCredCache(sts),
 		iam:            iamSvc,
 		roleMiss:       newRoleMissLogger(time.Now),

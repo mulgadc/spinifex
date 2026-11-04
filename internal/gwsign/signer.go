@@ -15,13 +15,18 @@ import (
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/credentials/ec2rolecreds"
-	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
+	"github.com/mulgadc/spinifex/internal/imdscreds"
 )
 
 // Signer holds a credential provider and signs requests in place.
 type Signer struct {
 	provider aws.CredentialsProvider
+}
+
+// New returns a Signer over provider. Wrap a provider that fetches remotely in
+// aws.NewCredentialsCache, since Sign retrieves on every call.
+func New(provider aws.CredentialsProvider) *Signer {
+	return &Signer{provider: provider}
 }
 
 // NewStatic returns a Signer using fixed long-lived keys (no session token).
@@ -46,12 +51,14 @@ func NewIMDS(ctx context.Context, region string) (*Signer, error) {
 
 // NewInstanceRole returns a Signer whose credentials come only from the
 // instance metadata service: no environment, profile or static-key fallback.
+// A failed refresh of expired credentials is an error, not the stale key.
 func NewInstanceRole() *Signer {
-	return newInstanceRole(imds.New(imds.Options{}))
+	return newInstanceRole("")
 }
 
-func newInstanceRole(client *imds.Client) *Signer {
-	return &Signer{provider: aws.NewCredentialsCache(ec2rolecreds.New(func(o *ec2rolecreds.Options) { o.Client = client }))}
+// newInstanceRole reads from the IMDS root base; "" means the default endpoint.
+func newInstanceRole(base string) *Signer {
+	return &Signer{provider: aws.NewCredentialsCache(imdscreds.NewProvider(nil, base))}
 }
 
 // EnsureCredentials retrieves once from the provider, surfacing the error so a

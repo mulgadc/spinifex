@@ -50,7 +50,7 @@ func runVolumeLifecycle(t *testing.T, fix *Fixture) {
 	az := needAZ(t, fix)
 	inst, _ := needInstance(t, fix)
 	instanceID := aws.StringValue(inst.InstanceId)
-	_, keyPath := needKeyPair(t, fix)
+	_, keyPath := harness.EnsureKeyPair(t, fix.Harness)
 
 	// This phase creates + deletes a standalone test volume; do NOT route
 	// through harness.EnsureVolume because the fixture's terminate-on-cleanup

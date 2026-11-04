@@ -7,3 +7,6 @@ trustPolicy: no-downgrade
 # so the backport reads as a downgrade. Dev-only, reached via @babel/core.
 trustPolicyExclude:
   - semver@6.3.1
+# eslint 10 pins minimatch ^10, which has no fix for GHSA-g3hv-75wg-m249.
+overrides:
+  minimatch: ^11.0.1

@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/mulgadc/spinifex/internal/stsauth"
+	"github.com/aws/aws-sdk-go-v2/aws"
 
 	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 )
@@ -30,7 +30,7 @@ func TestTaskCredID(t *testing.T) {
 // The task ID is public (it is the task ARN suffix), so naming another task's ID
 // at the credential endpoint must not yield that task's role.
 func TestRegisterTaskCreds_TaskIDDoesNotServeCredentials(t *testing.T) {
-	c, _ := newTestCredEndpoint(stsauth.Credentials{AccessKeyID: "AKIA", SecretAccessKey: "secret"})
+	c, _ := newTestCredEndpoint(aws.Credentials{AccessKeyID: "AKIA", SecretAccessKey: "secret"})
 	a := Agent{cred: c}
 	get := func(id string) int {
 		rr := httptest.NewRecorder()

@@ -9,9 +9,14 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -42,12 +47,44 @@ const lambdaTrustPolicy = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow
 
 // The gateway's NATS connection and IAM service exist only once
 // StartGatewayWithServices has built them, after the registration list.
-type lateMeta struct{ lambdafunction.Client }
+type lateMeta struct {
+	lambdafunction.Client
+	// active reports every record Active, standing in for runtime availability.
+	active atomic.Bool
+}
+
+func (m *lateMeta) Get(ctx context.Context, accountID, region, name string) (lambdafunction.Record, uint64, error) {
+	rec, rev, err := m.Client.Get(ctx, accountID, region, name)
+	if err == nil && m.active.Load() {
+		rec.State = lambdafunction.StateActive
+	}
+	return rec, rev, err
+}
+
+// echoExec stands in for the execution owner: it returns the payload it got.
+type echoExec struct {
+	mu   sync.Mutex
+	last lambdaawsapi.SyncInvocation
+}
+
+func (e *echoExec) InvokeSync(_ context.Context, inv lambdaawsapi.SyncInvocation) (lambdaawsapi.SyncResult, error) {
+	e.mu.Lock()
+	e.last = inv
+	e.mu.Unlock()
+	return lambdaawsapi.SyncResult{Payload: inv.Payload, FunctionError: "Handled", ExecutedVersion: "$LATEST"}, nil
+}
 
 type lateRoles struct{ passrole.Resolver }
 
 // startLambdaDaemonLite subscribes the production MetaService to the subjects
 // the gateway's Lambda client dials, on JetStream KV like the live daemon.
+func mustHex(t *testing.T, s string) []byte {
+	t.Helper()
+	b, err := hex.DecodeString(s)
+	require.NoError(t, err)
+	return b
+}
+
 func startLambdaDaemonLite(t *testing.T, nc *nats.Conn) {
 	t.Helper()
 	js, err := jetstream.New(nc)
@@ -90,7 +127,7 @@ func TestLambda_SignedCreateAndGetDownloadsTheStoredCode(t *testing.T) {
 	envKey, err := masterkey.New(keyBytes)
 	require.NoError(t, err)
 
-	meta, roles := &lateMeta{}, &lateRoles{}
+	meta, roles, exec := &lateMeta{}, &lateRoles{}, &echoExec{}
 	var trusts func(accountID, roleARN string) (bool, error)
 	gw := StartGatewayWithServices(t, []awsdispatch.Registration{lambdaawsapi.NewRegistration(lambdaawsapi.Deps{
 		Meta:   meta,
@@ -98,6 +135,7 @@ func TestLambda_SignedCreateAndGetDownloadsTheStoredCode(t *testing.T) {
 		Roles:  roles,
 		Trusts: func(accountID, roleARN string) (bool, error) { return trusts(accountID, roleARN) },
 		AEAD:   envKey.AEAD,
+		Exec:   exec,
 	})})
 	iamSvc, ok := gwfix.DepsOf(gw.Config).IAM.(*iamdomain.IAMServiceImpl)
 	require.True(t, ok, "harness IAM service type")
@@ -124,6 +162,19 @@ func TestLambda_SignedCreateAndGetDownloadsTheStoredCode(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, base64.StdEncoding.EncodeToString(sum[:]), aws.StringValue(created.CodeSha256))
+	account := strings.Split(aws.StringValue(created.FunctionArn), ":")[4]
+	stored, storedRev, err := meta.Client.Get(t.Context(), account, testRegion, "e2e-fn")
+	require.NoError(t, err)
+	js, err := jetstream.New(gw.NATSConn)
+	require.NoError(t, err)
+	kv, err := js.KeyValue(t.Context(), lambdafunction.KVAccountBucket(account))
+	require.NoError(t, err)
+	upEntry, err := kv.Get(t.Context(), lambdafunction.KVUploadKey(testRegion, stored.FunctionID, stored.Code.RevisionID))
+	require.NoError(t, err, "the stored copy is tracked by an upload record")
+	var up lambdafunction.Upload
+	require.NoError(t, json.Unmarshal(upEntry.Value(), &up))
+	require.Equal(t, lambdafunction.UploadAttached, up.State)
+	require.Equal(t, storedRev, up.AttachedRevision)
 
 	got, err := cli.GetFunction(&lambda.GetFunctionInput{FunctionName: aws.String("e2e-fn")})
 	require.NoError(t, err)
@@ -149,6 +200,26 @@ func TestLambda_SignedCreateAndGetDownloadsTheStoredCode(t *testing.T) {
 	var aerr awserr.Error
 	require.ErrorAs(t, err, &aerr)
 	require.Equal(t, lambda.ErrCodeResourceNotFoundException, aerr.Code())
+
+	// Every stored function stays Pending, so Invoke is refused before dispatch
+	// until the record is reported Active.
+	invokeIn := &lambda.InvokeInput{FunctionName: aws.String("e2e-fn"), Payload: []byte(`{"a":40,"b":2}`)}
+	_, err = cli.Invoke(invokeIn)
+	require.ErrorAs(t, err, &aerr)
+	require.Equal(t, lambda.ErrCodeResourceConflictException, aerr.Code())
+	meta.active.Store(true)
+	out, err := cli.Invoke(invokeIn)
+	require.NoError(t, err)
+	require.Equal(t, int64(http.StatusOK), aws.Int64Value(out.StatusCode))
+	require.Equal(t, invokeIn.Payload, out.Payload)
+	require.Equal(t, "Handled", aws.StringValue(out.FunctionError))
+	require.Equal(t, "$LATEST", aws.StringValue(out.ExecutedVersion))
+	exec.mu.Lock()
+	require.Equal(t, aws.StringValue(cfg.CodeSha256), base64.StdEncoding.EncodeToString(mustHex(t, exec.last.Function.Code.SHA256)))
+	exec.mu.Unlock()
+	_, err = cli.Invoke(&lambda.InvokeInput{FunctionName: aws.String("e2e-fn"), LogType: aws.String(lambda.LogTypeTail)})
+	require.ErrorAs(t, err, &aerr)
+	require.Equal(t, lambda.ErrCodeInvalidParameterValueException, aerr.Code())
 
 	// SSL_CERT_FILE (set by the fixture) makes the default client trust it.
 	resp, err := http.Get(aws.StringValue(got.Code.Location)) //nolint:gosec,noctx // URL is the presigned location under test

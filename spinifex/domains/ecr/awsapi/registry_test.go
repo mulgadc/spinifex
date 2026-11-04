@@ -8,6 +8,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,7 +20,7 @@ func describeRegistryWire(t *testing.T, accountID string, body []byte) map[strin
 	out, err := awsapi.Actions["DescribeRegistry"](context.Background(), nil, accountID, body)
 	require.NoError(t, err)
 	w := httptest.NewRecorder()
-	awsapi.WriteJSONResponse(w, out)
+	envelope.WriteJSONResult(w, out)
 	var decoded map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &decoded))
 	return decoded

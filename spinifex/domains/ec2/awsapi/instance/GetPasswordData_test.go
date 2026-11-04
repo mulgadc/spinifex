@@ -120,7 +120,7 @@ func TestGetPasswordData_NoResponders(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, output)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.EqualError(t, err, "The instance ID 'i-nosubscriber' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 }
 
 func TestGetPasswordData_Timeout(t *testing.T) {
@@ -140,7 +140,7 @@ func TestGetPasswordData_Timeout(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, output)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.EqualError(t, err, "The instance ID 'i-slow' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 }
 
 func TestGetPasswordData_DaemonError(t *testing.T) {

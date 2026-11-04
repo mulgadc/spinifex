@@ -11,6 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ecrdomain "github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -115,7 +116,7 @@ func TestLifecyclePolicy_CompactTextAndLastEvaluatedAt(t *testing.T) {
 	assert.True(t, got.LastEvaluatedAt.Equal(time.Unix(0, 0)))
 
 	w := httptest.NewRecorder()
-	WriteJSONResponse(w, got)
+	envelope.WriteJSONResult(w, got)
 	assert.Contains(t, w.Body.String(), `"lastEvaluatedAt":0`)
 
 	out, err = DeleteLifecyclePolicy(context.Background(), nc, policyTestAccount, repoBody)

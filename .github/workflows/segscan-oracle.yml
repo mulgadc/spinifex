@@ -34,7 +34,7 @@ jobs:
         id: siblings
         env:
           BRANCH: ${{ github.head_ref || github.ref_name }}
-        run: bash .github/resolve-sibling-refs.sh
+        run: bash .github/scripts/resolve-sibling-refs.sh
         working-directory: spinifex
 
       - name: Checkout Viperblock

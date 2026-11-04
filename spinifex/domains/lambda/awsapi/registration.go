@@ -8,7 +8,9 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -50,6 +52,8 @@ type Deps struct {
 	Trusts func(accountID, roleARN string) (bool, error)
 	// AEAD seals function environment variables; it is the master key's cipher.
 	AEAD cipher.AEAD
+	// Exec runs synchronous attempts; nil refuses every Invoke.
+	Exec Executor
 }
 
 // NewRegistration returns the Lambda REST-JSON registration.
@@ -59,7 +63,7 @@ func NewRegistration(deps Deps) dispatch.Registration {
 		ResolveAction: resolveAction,
 		Dispatch:      deps.dispatch,
 		Errors:        dispatch.ErrorEnvelopeRESTJSON,
-		Inventory:     dispatch.Inventory{Registered: actionNames()},
+		Inventory:     dispatch.Inventory{Registered: router.Actions()},
 	}
 }
 
@@ -89,6 +93,17 @@ func functionARN(region, accountID, name string) string {
 	return arn.FormatLambdaFunction(region, accountID, name)
 }
 
+// qualifiedFunctionARN names the version or alias a validated request selects,
+// since Lambda matches a qualified request only against a qualified policy
+// resource.
+func qualifiedFunctionARN(region, accountID, name, qualifier string) string {
+	base := functionARN(region, accountID, name)
+	if base == "*" || qualifier == "" {
+		return base
+	}
+	return base + ":" + qualifier
+}
+
 // serve resolves the route, authorizes the request, then runs the action.
 func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 	r := inv.Request
@@ -104,7 +119,7 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 	if err != nil {
 		return err
 	}
-	c := &call{AccountID: inv.AccountID, Region: inv.Region, Params: params, Query: r.URL.Query(), Body: body}
+	c := &call{AccountID: inv.AccountID, Region: inv.Region, Params: params, Query: r.URL.Query(), Body: body, Header: r.Header}
 
 	// The region is the gateway's own, never the caller-supplied credential
 	// scope, so a caller cannot sign for another region to slide out from
@@ -121,8 +136,19 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 		if name, _, err := resolveFunctionName(inv.Region, inv.AccountID, params[0]); err == nil {
 			resource = functionARN(inv.Region, inv.AccountID, name)
 		}
+	case "Invoke":
+		// Invoke validates deterministically before authorizing, and its
+		// resource comes from that same validated target. URL.Query drops
+		// malformed pairs, so the raw query is parsed strictly here.
+		if c.Query, err = url.ParseQuery(r.URL.RawQuery); err != nil {
+			return invalid("The request query string could not be parsed.")
+		}
+		if c.Invoke, err = validateInvoke(c); err != nil {
+			return err
+		}
+		resource = qualifiedFunctionARN(inv.Region, inv.AccountID, c.Invoke.Name, c.Invoke.Qualifier)
 	}
-	if err := inv.Authorize(ServiceName, action, []string{resource}, nil); err != nil {
+	if err := inv.Authorize(ServiceName, iamAction(action), []string{resource}, nil); err != nil {
 		return err
 	}
 	if decodeErr != nil {
@@ -133,9 +159,9 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 			return err
 		}
 	}
-	// Only GetFunction presigns code; the other reads are metadata only.
+	// Only CreateFunction and GetFunction touch the code store.
 	needsCodes := action != "GetFunctionConfiguration" && action != "GetFunctionCodeSigningConfig" &&
-		action != "ListVersionsByFunction"
+		action != "ListVersionsByFunction" && action != "Invoke"
 	if d.Meta == nil || (d.Codes == nil && needsCodes) {
 		return errors.New(awserrors.ErrorServiceException)
 	}
@@ -146,6 +172,14 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 	}
 	writeJSON(w, out)
 	return nil
+}
+
+// iamAction is the IAM action an API operation is authorized as.
+func iamAction(action string) string {
+	if action == "Invoke" {
+		return "InvokeFunction"
+	}
+	return action
 }
 
 func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
@@ -197,6 +231,7 @@ func writeJSON(w http.ResponseWriter, out reply) {
 		_, _ = w.Write(envelope.JSONBody(awserrors.ErrorServiceException, "failed to marshal response"))
 		return
 	}
+	maps.Copy(w.Header(), out.Header)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(out.Status)
 	if _, err := w.Write(body); err != nil {

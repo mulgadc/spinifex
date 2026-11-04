@@ -59,6 +59,8 @@ func requireMarkerStillNames(t *testing.T, cfg *Config, volume, owner string) {
 // A node still heartbeating holds its unsealed writes in memory, and opening
 // the volume from the backend checkpoint would silently discard them.
 func TestVolumeTakeover_RefusedWhileTheMarkerOwnerIsLive(t *testing.T) {
+	t.Parallel()
+
 	const volume = "vol-takeoverlive"
 	cfg := takeoverFixture(t, volume, &fakeLiveness{seen: time.Now().Add(-5 * time.Second), found: true})
 
@@ -70,6 +72,8 @@ func TestVolumeTakeover_RefusedWhileTheMarkerOwnerIsLive(t *testing.T) {
 }
 
 func TestVolumeTakeover_AllowedOnceTheMarkerOwnerIsStale(t *testing.T) {
+	t.Parallel()
+
 	const volume = "vol-takeoverstale"
 	cfg := takeoverFixture(t, volume, &fakeLiveness{seen: time.Now().Add(-2 * nodeLivenessWindow), found: true})
 
@@ -83,6 +87,8 @@ func TestVolumeTakeover_AllowedOnceTheMarkerOwnerIsStale(t *testing.T) {
 }
 
 func TestVolumeTakeover_AllowedWhenTheMarkerOwnerHasNoHeartbeat(t *testing.T) {
+	t.Parallel()
+
 	const volume = "vol-takeoverunseen"
 	cfg := takeoverFixture(t, volume, &fakeLiveness{found: false})
 
@@ -91,6 +97,8 @@ func TestVolumeTakeover_AllowedWhenTheMarkerOwnerHasNoHeartbeat(t *testing.T) {
 }
 
 func TestVolumeTakeover_NoMarkerNeverAsksAboutLiveness(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 	liveness := &fakeLiveness{err: errors.New("must not be asked")}
 	cfg := &Config{
@@ -106,6 +114,8 @@ func TestVolumeTakeover_NoMarkerNeverAsksAboutLiveness(t *testing.T) {
 
 // An unreadable heartbeat is not evidence that the owner is gone.
 func TestVolumeTakeover_RefusedWhenLivenessCannotBeRead(t *testing.T) {
+	t.Parallel()
+
 	const volume = "vol-takeovererror"
 	cfg := takeoverFixture(t, volume, &fakeLiveness{err: errors.New("kv unavailable")})
 
@@ -116,6 +126,8 @@ func TestVolumeTakeover_RefusedWhenLivenessCannotBeRead(t *testing.T) {
 }
 
 func TestVolumeTakeover_RefusedWhenNoLivenessStoreIsWired(t *testing.T) {
+	t.Parallel()
+
 	const volume = "vol-takeovernostore"
 	cfg := takeoverFixture(t, volume, nil)
 
@@ -128,6 +140,8 @@ func TestVolumeTakeover_RefusedWhenNoLivenessStoreIsWired(t *testing.T) {
 // Refusing without a store is only safe if production always has one, or every
 // takeover in the cluster would be refused.
 func TestRegisterProviderSubjects_WiresALivenessStore(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 	cfg := setupTestConfig(t, natsURL)
 	startProviderSubjects(t, cfg, natsURL)
@@ -138,6 +152,8 @@ func TestRegisterProviderSubjects_WiresALivenessStore(t *testing.T) {
 // The daemon writes heartbeats under clusterv1.HeartbeatKey with a JSON record
 // carrying more than the timestamp. The reader must date one it did not shape.
 func TestHeartbeatLiveness_ReadsWhatTheDaemonWrites(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)

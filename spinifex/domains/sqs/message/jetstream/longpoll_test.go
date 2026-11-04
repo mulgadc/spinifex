@@ -90,6 +90,7 @@ func goReceive(r *message.Receiver, ctx context.Context, in message.ReceiveInput
 
 // A send from a separate sender wakes a waiting receiver without a recheck.
 func TestLongPollWakesOnSend(t *testing.T) {
+	t.Parallel()
 	e := newLongPollEnv(t)
 	e.create(t, "orders", nil)
 	res := goReceive(e.receiver(nil, noRecheck), context.Background(), wait("orders", 10))
@@ -107,6 +108,7 @@ func TestLongPollWakesOnSend(t *testing.T) {
 // An append to another queue on the same shard wakes nothing it can take,
 // so the waiter keeps waiting and times out empty.
 func TestLongPollIgnoresOtherQueues(t *testing.T) {
+	t.Parallel()
 	e := newLongPollEnv(t)
 	e.create(t, "orders", nil)
 	e.create(t, "other", nil)
@@ -121,6 +123,7 @@ func TestLongPollIgnoresOtherQueues(t *testing.T) {
 }
 
 func TestLongPollEmptyTimesOut(t *testing.T) {
+	t.Parallel()
 	e := newLongPollEnv(t)
 	e.create(t, "orders", nil)
 	start := time.Now()
@@ -135,6 +138,7 @@ func TestLongPollEmptyTimesOut(t *testing.T) {
 
 // Two waiting receivers on separate instances: one send is taken once.
 func TestLongPollCompetingReceivers(t *testing.T) {
+	t.Parallel()
 	e := newLongPollEnv(t)
 	e.create(t, "orders", nil)
 	a := goReceive(e.receiver(nil, noRecheck), context.Background(), wait("orders", 3))
@@ -153,6 +157,7 @@ func TestLongPollCompetingReceivers(t *testing.T) {
 }
 
 func TestLongPollStopsOnCancel(t *testing.T) {
+	t.Parallel()
 	e := newLongPollEnv(t)
 	e.create(t, "orders", nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -200,6 +205,7 @@ func (f failingFeed) Next(ctx context.Context) (message.Change, error) {
 // A wake feed that fails after opening ends the wait as unavailable, not
 // as a successful empty receive.
 func TestLongPollFeedFailureAfterOpen(t *testing.T) {
+	t.Parallel()
 	e := newLongPollEnv(t)
 	e.create(t, "orders", nil)
 	lose := make(chan struct{})
@@ -253,6 +259,7 @@ func (s *heldStore) Scan(ctx context.Context, shard message.Shard, from message.
 // A scan held past the wait ends it on time: empty after a completed poll,
 // unavailable when no poll ever completed. No wake consumer is left.
 func TestLongPollHeldScan(t *testing.T) {
+	t.Parallel()
 	e := newLongPollEnv(t)
 	e.create(t, "orders", nil)
 

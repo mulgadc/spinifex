@@ -65,6 +65,8 @@ func TestNonFinalizingDeleteEndsExercisedAndALaterDeleteTakesItOver(t *testing.T
 
 	_, err = gw.deleteAccount(t.Context(), deleteAccountBody(t, account.AccountID, "tenant@example.com", deleteClientToken))
 	require.NoError(t, err)
+	// Parallel only once the teardown is running, so its drain poll overlaps the serial tests.
+	t.Parallel()
 
 	done := awaitState(t, gw, account.AccountID, operatorv1.DeletionStateCompleted)
 	assert.Equal(t, exercised.OperationID, done.OperationID)

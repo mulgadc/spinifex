@@ -156,54 +156,6 @@ func TestMIGRelease_UnknownInstance_ReturnsError(t *testing.T) {
 	require.ErrorIs(t, err, ErrNoGPUClaimed)
 }
 
-// --- MarkMIGFailed ---
-
-func TestMarkMIGFailed_TargetsOnlyNamedSlice(t *testing.T) {
-	root := t.TempDir()
-	mdev1 := makeMdevDir(t, root, "uuid-gi1")
-	mdev2 := makeMdevDir(t, root, "uuid-gi2")
-
-	m := NewManager(nil)
-	m.AddMIGInstances(newMIGDevice("0000:01:00.0"), []MIGInstance{
-		{GIID: 1, MdevPath: mdev1, Profile: MIGProfile{Name: "1g.10gb"}},
-		{GIID: 2, MdevPath: mdev2, Profile: MIGProfile{Name: "1g.10gb"}},
-	})
-
-	m.MarkMIGFailed(mdev1)
-
-	// First slice is failed, second is still available.
-	assert.Equal(t, 1, m.Available())
-
-	_, mig, err := m.Claim("i-001", "1g.10gb")
-	require.NoError(t, err)
-	assert.Equal(t, mdev2, mig.MdevPath, "claim must skip failed slice and pick the healthy one")
-}
-
-func TestMarkMIGFailed_AlreadyClaimedSlice_NoChange(t *testing.T) {
-	root := t.TempDir()
-	mdev := makeMdevDir(t, root, "uuid-gi1")
-
-	m := NewManager(nil)
-	m.AddMIGInstances(newMIGDevice("0000:01:00.0"), []MIGInstance{
-		{GIID: 1, MdevPath: mdev, Profile: MIGProfile{Name: "1g.10gb"}},
-	})
-
-	_, _, err := m.Claim("i-001", "1g.10gb")
-	require.NoError(t, err)
-
-	// MarkMIGFailed on a claimed slice must be a no-op (condition: InstanceID == "").
-	m.MarkMIGFailed(mdev)
-	require.NoError(t, m.Release("i-001"))
-	// After release the slice must be available again (not failed).
-	assert.Equal(t, 1, m.Available())
-}
-
-func TestMarkMIGFailed_UnknownPath_NoOp(t *testing.T) {
-	m := NewManager(nil)
-	// Must not panic.
-	m.MarkMIGFailed("/nonexistent/mdev")
-}
-
 // --- MarkFailed (whole-GPU) does not affect MIG entries ---
 
 func TestMarkFailed_DoesNotAffectMIGEntries(t *testing.T) {

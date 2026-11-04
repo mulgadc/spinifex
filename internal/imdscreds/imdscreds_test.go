@@ -1,9 +1,11 @@
 package imdscreds
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -60,8 +62,8 @@ func TestFetch_OK(t *testing.T) {
 	if got.AccessKeyID != "AKIATEST" || got.SecretAccessKey != "secrettest" || got.SessionToken != "sessiontoken" {
 		t.Errorf("creds mismatch: %+v", got)
 	}
-	if !got.Expiration.Equal(exp) {
-		t.Errorf("Expiration = %v, want %v", got.Expiration, exp)
+	if !got.Expires.Equal(exp) {
+		t.Errorf("Expires = %v, want %v", got.Expires, exp)
 	}
 }
 
@@ -130,5 +132,48 @@ func TestNewProvider_WithholdsExtendOnFailure(t *testing.T) {
 	}
 	if _, ok := p.(aws.AdjustExpiresByCredentialsCacheStrategy); !ok {
 		t.Error("provider dropped AdjustExpiresBy, which a caller using an ExpiryWindow relies on")
+	}
+}
+
+// Behind aws.CredentialsCache, as the ecs-agent uses it, a refresh that fails
+// against an expired credential must surface as an error rather than hand back
+// the dead key with a pushed-out expiry.
+func TestNewProvider_CachedFailedRefreshErrors(t *testing.T) {
+	var hits atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/latest/api/token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Aws-Ec2-Metadata-Token-Ttl-Seconds", "21600")
+		_, _ = w.Write([]byte("v2-token"))
+	})
+	mux.HandleFunc("/latest/meta-data/iam/security-credentials/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/latest/meta-data/iam/security-credentials/" {
+			_, _ = w.Write([]byte("node-role"))
+			return
+		}
+		if hits.Add(1) > 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"Code":            "Success",
+			"AccessKeyId":     "AKIA",
+			"SecretAccessKey": "secret",
+			"Expiration":      time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cache := aws.NewCredentialsCache(NewProvider(srv.Client(), srv.URL+"/latest"))
+	first, err := cache.Retrieve(context.Background())
+	if err != nil {
+		t.Fatalf("first Retrieve: %v", err)
+	}
+	got, err := cache.Retrieve(context.Background())
+	if err == nil {
+		t.Fatalf("refresh failure was reported as success: %+v", got)
+	}
+	if got.Expires.After(first.Expires) {
+		t.Errorf("expiry extended on refresh failure: %v -> %v", first.Expires, got.Expires)
 	}
 }

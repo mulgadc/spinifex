@@ -26,3 +26,22 @@ func TestActor_RoleName(t *testing.T) {
 		})
 	}
 }
+
+func TestActor_Caller(t *testing.T) {
+	const acct = "000000000001"
+	session := Actor{
+		AccountID: acct, PrincipalType: PrincipalTypeAssumedRole,
+		PrincipalARN: "arn:aws:iam::" + acct + ":role/real-role", SessionName: "i-abc", UserName: "ignored",
+	}
+	assert.Equal(t, Caller{AccountID: acct, PrincipalType: PrincipalTypeAssumedRole, RoleName: "real-role", SessionName: "i-abc"}, session.Caller())
+
+	// A session named after a role does not make the caller that role.
+	named := Actor{
+		AccountID: acct, PrincipalType: PrincipalTypeAssumedRole,
+		PrincipalARN: "arn:aws:iam::" + acct + ":role/tenant", SessionName: "real-role",
+	}
+	assert.Equal(t, "tenant", named.Caller().RoleName)
+
+	user := Actor{AccountID: acct, PrincipalType: "user", UserName: "alice", SessionName: "ignored", PrincipalARN: "arn:aws:iam::" + acct + ":user/alice"}
+	assert.Equal(t, Caller{AccountID: acct, PrincipalType: "user", SessionName: "alice"}, user.Caller())
+}

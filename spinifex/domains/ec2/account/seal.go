@@ -8,6 +8,7 @@ import (
 
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -56,20 +57,6 @@ func (s *AccountSettingsServiceImpl) checkTerminating(ctx context.Context, accou
 		return awserrors.Errorf(awserrors.ErrorIncorrectState, "account %s is not TERMINATING", accountID)
 	}
 	return nil
-}
-
-// isRevisionConflict reports a lost CAS race SealAccount should retry. Besides
-// the two sentinels, Create's retry against a delete marker returns a bare
-// *jetstream.APIError carrying a wrong-last-sequence code.
-func isRevisionConflict(err error) bool {
-	if errors.Is(err, jetstream.ErrKeyExists) || errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
-		return true
-	}
-	if apiErr, ok := errors.AsType[*jetstream.APIError](err); ok {
-		return apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence ||
-			apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequenceConstant
-	}
-	return false
 }
 
 // SealAccount seals accountID's settings record so no later mutation can
@@ -122,7 +109,7 @@ func (s *AccountSettingsServiceImpl) SealAccount(ctx context.Context, accountID 
 		switch {
 		case writeErr == nil:
 			return &AccountSettingsSeal{Revision: newRev}, nil
-		case isRevisionConflict(writeErr):
+		case kvutil.IsRevisionConflict(writeErr):
 			continue
 		default:
 			slog.ErrorContext(ctx, "Failed to write sealed account settings record", "accountID", accountID, "err", writeErr)

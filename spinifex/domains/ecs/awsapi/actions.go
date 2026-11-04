@@ -2,7 +2,6 @@ package awsapi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 
@@ -10,16 +9,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/ecs"
 	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/nats-io/nats.go"
 )
-
-// unmarshalIfBody decodes body into out only when non-empty.
-func unmarshalIfBody(body []byte, out any) error {
-	if len(body) == 0 {
-		return nil
-	}
-	return json.Unmarshal(body, out)
-}
 
 // checkTaskDefinitionRoles enforces iam:PassRole on every role ARN a task
 // definition names. A nil/empty ARN is skipped — there is nothing to pass,
@@ -61,7 +53,7 @@ func checkTaskLaunchRoles(ctx context.Context, svc ecsdomain.ECSService, account
 // means a zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func CreateCluster(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.CreateClusterInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).CreateCluster(ctx, input, accountID)
@@ -71,7 +63,7 @@ func CreateCluster(ctx context.Context, nc *nats.Conn, accountID string, body []
 // means a zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func DeleteCluster(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DeleteClusterInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).DeleteCluster(ctx, input, accountID)
@@ -81,7 +73,10 @@ func DeleteCluster(ctx context.Context, nc *nats.Conn, accountID string, body []
 // (empty means a zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func DescribeClusters(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DescribeClustersInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
+		return nil, err
+	}
+	if err := checkClustersInclude(input.Include); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).DescribeClusters(ctx, input, accountID)
@@ -91,7 +86,7 @@ func DescribeClusters(ctx context.Context, nc *nats.Conn, accountID string, body
 // means a zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func ListClusters(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.ListClustersInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).ListClusters(ctx, input, accountID)
@@ -103,7 +98,7 @@ func ListClusters(ctx context.Context, nc *nats.Conn, accountID string, body []b
 // iam:PassRole on the task and execution role ARNs before registering via NATS.
 func RegisterTaskDefinition(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.RegisterTaskDefinitionInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	if err := checkTaskDefinitionRoles(passRoleCheck, input.TaskRoleArn, input.ExecutionRoleArn); err != nil {
@@ -117,7 +112,7 @@ func RegisterTaskDefinition(ctx context.Context, nc *nats.Conn, accountID string
 // to the NATS ECS service for accountID.
 func DeregisterTaskDefinition(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DeregisterTaskDefinitionInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).DeregisterTaskDefinition(ctx, input, accountID)
@@ -128,7 +123,7 @@ func DeregisterTaskDefinition(ctx context.Context, nc *nats.Conn, accountID stri
 // NATS ECS service for accountID.
 func DescribeTaskDefinition(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DescribeTaskDefinitionInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).DescribeTaskDefinition(ctx, input, accountID)
@@ -139,7 +134,10 @@ func DescribeTaskDefinition(ctx context.Context, nc *nats.Conn, accountID string
 // for accountID.
 func ListTaskDefinitions(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.ListTaskDefinitionsInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
+		return nil, err
+	}
+	if err := checkListTaskDefinitions(input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).ListTaskDefinitions(ctx, input, accountID)
@@ -152,7 +150,7 @@ func ListTaskDefinitions(ctx context.Context, nc *nats.Conn, accountID string, b
 // to the NATS ECS service for accountID.
 func RegisterContainerInstance(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.RegisterContainerInstanceInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).RegisterContainerInstance(ctx, input, accountID)
@@ -162,7 +160,7 @@ func RegisterContainerInstance(ctx context.Context, nc *nats.Conn, accountID str
 // Input/output are the custom domains/ecs types, not aws-sdk-go ecs shapes.
 func ProvisionCapacity(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecsdomain.ProvisionCapacityInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).ProvisionCapacity(ctx, input, accountID)
@@ -173,7 +171,7 @@ func ProvisionCapacity(ctx context.Context, nc *nats.Conn, accountID string, bod
 // forwarded to the NATS ECS service for accountID.
 func DeregisterContainerInstance(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DeregisterContainerInstanceInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).DeregisterContainerInstance(ctx, input, accountID)
@@ -184,7 +182,7 @@ func DeregisterContainerInstance(ctx context.Context, nc *nats.Conn, accountID s
 // forwarded to the NATS ECS service for accountID.
 func UpdateContainerInstancesState(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.UpdateContainerInstancesStateInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).UpdateContainerInstancesState(ctx, input, accountID)
@@ -195,7 +193,10 @@ func UpdateContainerInstancesState(ctx context.Context, nc *nats.Conn, accountID
 // NATS ECS service for accountID.
 func DescribeContainerInstances(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DescribeContainerInstancesInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
+		return nil, err
+	}
+	if err := checkContainerInstancesInclude(input.Include); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).DescribeContainerInstances(ctx, input, accountID)
@@ -206,7 +207,7 @@ func DescribeContainerInstances(ctx context.Context, nc *nats.Conn, accountID st
 // ECS service for accountID.
 func ListContainerInstances(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.ListContainerInstancesInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).ListContainerInstances(ctx, input, accountID)
@@ -219,7 +220,7 @@ func ListContainerInstances(ctx context.Context, nc *nats.Conn, accountID string
 // three rather than leave one stray resource behind.
 func RunTask(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.RunTaskInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	out, err := runTaskIdempotent(ctx, ecsdomain.NewNATSECSService(nc), accountID, input, passRoleCheck,
@@ -289,7 +290,7 @@ func runTask(ctx context.Context, svc ecsdomain.ECSService, accountID string, in
 // after enforcing iam:PassRole on the task definition's roles.
 func StartTask(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.StartTaskInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	return startTask(ctx, ecsdomain.NewNATSECSService(nc), accountID, input, passRoleCheck)
@@ -308,7 +309,7 @@ func startTask(ctx context.Context, svc ecsdomain.ECSService, accountID string, 
 // means a zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func StopTask(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.StopTaskInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).StopTask(ctx, input, accountID)
@@ -318,7 +319,10 @@ func StopTask(ctx context.Context, nc *nats.Conn, accountID string, body []byte,
 // means a zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func DescribeTasks(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DescribeTasksInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
+		return nil, err
+	}
+	if err := checkTasksInclude(input.Include); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).DescribeTasks(ctx, input, accountID)
@@ -328,7 +332,10 @@ func DescribeTasks(ctx context.Context, nc *nats.Conn, accountID string, body []
 // zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func ListTasks(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.ListTasksInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
+		return nil, err
+	}
+	if err := checkListTasks(input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).ListTasks(ctx, input, accountID)
@@ -341,7 +348,7 @@ func ListTasks(ctx context.Context, nc *nats.Conn, accountID string, body []byte
 // iam:PassRole must be enforced here instead.
 func CreateService(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.CreateServiceInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	if err := checkAZRebalancing(body); err != nil {
@@ -363,7 +370,7 @@ func createService(ctx context.Context, svc ecsdomain.ECSService, accountID stri
 // iam:PassRole on a new task definition's roles before calling NATS.
 func UpdateService(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.UpdateServiceInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	if err := checkAZRebalancing(body); err != nil {
@@ -386,7 +393,7 @@ func updateService(ctx context.Context, svc ecsdomain.ECSService, accountID stri
 // means a zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func DeleteService(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DeleteServiceInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).DeleteService(ctx, input, accountID)
@@ -396,7 +403,10 @@ func DeleteService(ctx context.Context, nc *nats.Conn, accountID string, body []
 // (empty means a zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func DescribeServices(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DescribeServicesInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
+		return nil, err
+	}
+	if err := checkServicesInclude(input.Include); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).DescribeServices(ctx, input, accountID)
@@ -406,7 +416,10 @@ func DescribeServices(ctx context.Context, nc *nats.Conn, accountID string, body
 // means a zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func ListServices(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.ListServicesInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
+		return nil, err
+	}
+	if err := checkListServices(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).ListServices(ctx, input, accountID)
@@ -417,7 +430,7 @@ func ListServices(ctx context.Context, nc *nats.Conn, accountID string, body []b
 // instance cannot report state for another account's task.
 func SubmitTaskStateChange(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.SubmitTaskStateChangeInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).SubmitTaskStateChange(ctx, input, accountID)
@@ -429,7 +442,7 @@ func SubmitTaskStateChange(ctx context.Context, nc *nats.Conn, accountID string,
 // encodes it with encoding/json (RawJSONActions), not the jsonutil marshaler.
 func PollAssignments(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecsdomain.PollAssignmentsInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).PollAssignments(ctx, input, accountID)
@@ -440,7 +453,7 @@ func PollAssignments(ctx context.Context, nc *nats.Conn, accountID string, body 
 // AWS's SubmitTaskStateChange has no gpuIds field.
 func ReportTaskGPU(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecsdomain.ReportTaskGPUInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).ReportTaskGPU(ctx, input, accountID)
@@ -452,7 +465,7 @@ func ReportTaskGPU(ctx context.Context, nc *nats.Conn, accountID string, body []
 // body (empty means a zero input) is decoded and forwarded to the NATS ECS service for accountID.
 func TagResource(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.TagResourceInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).TagResource(ctx, input, accountID)
@@ -463,7 +476,7 @@ func TagResource(ctx context.Context, nc *nats.Conn, accountID string, body []by
 // accountID.
 func UntagResource(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.UntagResourceInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).UntagResource(ctx, input, accountID)
@@ -474,7 +487,7 @@ func UntagResource(ctx context.Context, nc *nats.Conn, accountID string, body []
 // for accountID.
 func ListTagsForResource(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.ListTagsForResourceInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).ListTagsForResource(ctx, input, accountID)
@@ -487,7 +500,7 @@ func ListTagsForResource(ctx context.Context, nc *nats.Conn, accountID string, b
 // decoded and forwarded to the NATS ECS service for accountID.
 func PutClusterCapacityProviders(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.PutClusterCapacityProvidersInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).PutClusterCapacityProviders(ctx, input, accountID)
@@ -498,7 +511,10 @@ func PutClusterCapacityProviders(ctx context.Context, nc *nats.Conn, accountID s
 // service for accountID.
 func CreateCapacityProvider(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.CreateCapacityProviderInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
+		return nil, err
+	}
+	if err := checkAutoScalingGroupProvider(input.AutoScalingGroupProvider); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).CreateCapacityProvider(ctx, input, accountID)
@@ -509,7 +525,10 @@ func CreateCapacityProvider(ctx context.Context, nc *nats.Conn, accountID string
 // NATS ECS service for accountID.
 func DescribeCapacityProviders(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DescribeCapacityProvidersInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
+		return nil, err
+	}
+	if err := checkCapacityProvidersInclude(input.Include); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).DescribeCapacityProviders(ctx, input, accountID)
@@ -520,7 +539,7 @@ func DescribeCapacityProviders(ctx context.Context, nc *nats.Conn, accountID str
 // service for accountID.
 func DeleteCapacityProvider(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.DeleteCapacityProviderInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).DeleteCapacityProvider(ctx, input, accountID)

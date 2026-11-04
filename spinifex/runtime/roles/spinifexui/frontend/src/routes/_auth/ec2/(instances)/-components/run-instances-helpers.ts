@@ -65,14 +65,17 @@ export function subnetLabel(subnet: Subnet): string {
   return name ? `${name} (${subnet.SubnetId})` : (subnet.SubnetId ?? "")
 }
 
-export function subnetSummary(subnet: Subnet): string {
+export function subnetSummary(subnet: Subnet, isPublic: boolean): string {
   return [
     subnet.CidrBlock,
     subnet.AvailabilityZone,
     subnet.VpcId,
+    isPublic
+      ? "public: routes to an internet gateway"
+      : "private: no internet gateway route",
     subnet.MapPublicIpOnLaunch
       ? "public IP assigned on launch"
-      : "private address only",
+      : "no public IP on launch",
   ]
     .filter(Boolean)
     .join(" · ")

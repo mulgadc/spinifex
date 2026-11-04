@@ -25,6 +25,7 @@ import {
   ec2KeyPairsQueryOptions,
   ec2LaunchTemplatesQueryOptions,
   ec2PlacementGroupsQueryOptions,
+  ec2RouteTablesQueryOptions,
   ec2SecurityGroupsQueryOptions,
   ec2SubnetsQueryOptions,
   ec2VpcsQueryOptions,
@@ -74,6 +75,7 @@ function useRunInstancesData() {
   const { data: capacityData } = useQuery(instanceTypeCapacityQueryOptions)
 
   const { data: subnetsData } = useSuspenseQuery(ec2SubnetsQueryOptions)
+  const { data: routeTablesData } = useSuspenseQuery(ec2RouteTablesQueryOptions)
   const { data: pgData } = useSuspenseQuery(ec2PlacementGroupsQueryOptions)
   const { data: vpcsData } = useSuspenseQuery(ec2VpcsQueryOptions)
   const { data: sgData } = useSuspenseQuery(ec2SecurityGroupsQueryOptions)
@@ -96,6 +98,7 @@ function useRunInstancesData() {
     instanceTypeCapacity: capacityData?.available ?? {},
     keyPairs: keyPairsData.KeyPairs ?? [],
     subnets,
+    routeTables: routeTablesData.RouteTables ?? [],
     placementGroups: pgData.PlacementGroups ?? [],
     securityGroups: sgData.SecurityGroups ?? [],
     launchTemplates: ltData.LaunchTemplates ?? [],
@@ -116,6 +119,7 @@ export function RunInstancesPage({
     instanceTypeCapacity,
     keyPairs,
     subnets,
+    routeTables,
     placementGroups,
     securityGroups,
     launchTemplates,
@@ -313,6 +317,7 @@ export function RunInstancesPage({
                 effectiveVpcId={effectiveVpcId}
                 errors={errors}
                 otherSubnets={otherSubnets}
+                routeTables={routeTables}
                 register={register}
                 securityGroups={securityGroups}
                 selectedSubnetId={selectedSubnetId}

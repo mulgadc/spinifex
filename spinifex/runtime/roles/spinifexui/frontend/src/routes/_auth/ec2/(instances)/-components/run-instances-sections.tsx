@@ -5,6 +5,7 @@ import type {
   KeyPairInfo,
   LaunchTemplate,
   PlacementGroup,
+  RouteTable,
   SecurityGroup,
   Subnet,
 } from "@aws-sdk/client-ec2"
@@ -38,13 +39,16 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { getRegion } from "@/lib/cluster-config"
 import type { Architecture } from "@/lib/os-images"
+import { subnetIsPublic } from "@/lib/subnet-routing"
 import { formatVRAMMiB } from "@/lib/utils"
 import { ec2LaunchTemplateVersionsQueryOptions } from "@/queries/ec2"
 import { type CreateInstanceFormData, VOLUME_TYPES } from "@/types/ec2"
@@ -594,6 +598,7 @@ interface NetworkSectionProps {
   errors: FormErrors
   otherSubnets: readonly Subnet[]
   register: FormRegister
+  routeTables: readonly RouteTable[]
   securityGroups: SecurityGroup[]
   selectedSubnetId: string | undefined
   setValue: UseFormSetValue<RunInstancesFormInput>
@@ -607,6 +612,7 @@ export function NetworkSection({
   errors,
   otherSubnets,
   register,
+  routeTables,
   securityGroups,
   selectedSubnetId,
   setValue,
@@ -633,6 +639,7 @@ export function NetworkSection({
           defaultSubnet={defaultSubnet}
           effectiveSubnet={effectiveSubnet}
           otherSubnets={otherSubnets}
+          routeTables={routeTables}
           selectedSubnetId={selectedSubnetId}
         />
 
@@ -655,14 +662,37 @@ type SubnetFieldProps = Pick<
   | "defaultSubnet"
   | "effectiveSubnet"
   | "otherSubnets"
+  | "routeTables"
   | "selectedSubnetId"
 >
+
+// Each group is sorted by its label, and an empty group is left out.
+function subnetGroups(
+  subnets: readonly Subnet[],
+  routeTables: readonly RouteTable[],
+): { label: string; subnets: Subnet[] }[] {
+  const sorted = subnets.toSorted((a, b) =>
+    subnetLabel(a).localeCompare(subnetLabel(b)),
+  )
+
+  return [
+    {
+      label: "Public subnets",
+      subnets: sorted.filter((s) => subnetIsPublic(s, routeTables)),
+    },
+    {
+      label: "Private subnets",
+      subnets: sorted.filter((s) => !subnetIsPublic(s, routeTables)),
+    },
+  ].filter((group) => group.subnets.length > 0)
+}
 
 function SubnetField({
   control,
   defaultSubnet,
   effectiveSubnet,
   otherSubnets,
+  routeTables,
   selectedSubnetId,
 }: SubnetFieldProps) {
   return (
@@ -699,10 +729,18 @@ function SubnetField({
                   ? `Default: ${subnetLabel(defaultSubnet)}`
                   : "No subnet"}
               </SelectItem>
-              {otherSubnets.map((subnet) => (
-                <SelectItem key={subnet.SubnetId} value={subnet.SubnetId ?? ""}>
-                  {subnetLabel(subnet)}
-                </SelectItem>
+              {subnetGroups(otherSubnets, routeTables).map((group) => (
+                <SelectGroup key={group.label}>
+                  <SelectLabel>{group.label}</SelectLabel>
+                  {group.subnets.map((subnet) => (
+                    <SelectItem
+                      key={subnet.SubnetId}
+                      value={subnet.SubnetId ?? ""}
+                    >
+                      {subnetLabel(subnet)}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
               ))}
             </SelectContent>
           </Select>
@@ -710,7 +748,10 @@ function SubnetField({
       />
       <FieldDescription>
         {effectiveSubnet
-          ? subnetSummary(effectiveSubnet)
+          ? subnetSummary(
+              effectiveSubnet,
+              subnetIsPublic(effectiveSubnet, routeTables),
+            )
           : "This account has no default subnet, so an instance launched without one gets no VPC network interface. Choose a subnet."}
       </FieldDescription>
     </Field>

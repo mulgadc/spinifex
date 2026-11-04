@@ -4,6 +4,7 @@ import type {
   InstanceTypeInfo,
   LaunchTemplate,
   PlacementGroup,
+  RouteTable,
   RunInstancesCommandInput,
   Subnet,
 } from "@aws-sdk/client-ec2"
@@ -38,6 +39,7 @@ import {
   ec2KeyPairsQueryOptions,
   ec2LaunchTemplatesQueryOptions,
   ec2PlacementGroupsQueryOptions,
+  ec2RouteTablesQueryOptions,
   ec2SecurityGroupsQueryOptions,
   ec2SubnetsQueryOptions,
   ec2VpcsQueryOptions,
@@ -117,11 +119,26 @@ const DEFAULT_SUBNET: Subnet = {
   MapPublicIpOnLaunch: true,
 }
 
+// The default VPC's main table routes to its internet gateway.
+const DEFAULT_ROUTE_TABLES: RouteTable[] = [
+  {
+    RouteTableId: "rtb-main",
+    VpcId: "vpc-1",
+    Associations: [{ Main: true }],
+    Routes: [{ DestinationCidrBlock: "0.0.0.0/0", GatewayId: "igw-1" }],
+  },
+]
+
+function namedSubnet(id: string, name: string): Subnet {
+  return { SubnetId: id, VpcId: "vpc-2", Tags: [{ Key: "Name", Value: name }] }
+}
+
 interface SetupOptions {
   images?: Image[]
   instanceTypes?: InstanceTypeInfo[]
   capacity?: Record<string, number>
   subnets?: Subnet[]
+  routeTables?: RouteTable[]
   launchTemplates?: LaunchTemplate[]
   placementGroups?: PlacementGroup[]
   onClose?: (instanceId?: string) => void
@@ -132,6 +149,7 @@ function setup({
   instanceTypes = INSTANCE_TYPES,
   capacity = CAPACITY,
   subnets = [DEFAULT_SUBNET],
+  routeTables = DEFAULT_ROUTE_TABLES,
   launchTemplates = [],
   placementGroups = [],
   onClose = vi.fn(),
@@ -157,6 +175,10 @@ function setup({
   queryClient.setQueryData(ec2SubnetsQueryOptions.queryKey, {
     $metadata: {},
     Subnets: subnets,
+  })
+  queryClient.setQueryData(ec2RouteTablesQueryOptions.queryKey, {
+    $metadata: {},
+    RouteTables: routeTables,
   })
   queryClient.setQueryData(ec2PlacementGroupsQueryOptions.queryKey, {
     $metadata: {},
@@ -508,9 +530,82 @@ describe("run-instances network", () => {
     )
     expect(
       screen.getByText(
-        "172.31.0.0/20 · ap-southeast-2a · vpc-1 · public IP assigned on launch",
+        "172.31.0.0/20 · ap-southeast-2a · vpc-1 · public: routes to an internet gateway · public IP assigned on launch",
       ),
     ).toBeInTheDocument()
+  })
+
+  it("groups the other subnets as public or private by their route tables", async () => {
+    const user = userEvent.setup()
+
+    setup({
+      subnets: [
+        DEFAULT_SUBNET,
+        namedSubnet("subnet-web", "web"),
+        namedSubnet("subnet-app", "app"),
+        namedSubnet("subnet-db", "db"),
+      ],
+      routeTables: [
+        ...DEFAULT_ROUTE_TABLES,
+        {
+          RouteTableId: "rtb-public",
+          VpcId: "vpc-2",
+          Associations: [{ SubnetId: "subnet-web" }],
+          Routes: [{ DestinationCidrBlock: "0.0.0.0/0", GatewayId: "igw-2" }],
+        },
+        {
+          RouteTableId: "rtb-private",
+          VpcId: "vpc-2",
+          Associations: [{ Main: true }],
+          Routes: [
+            { DestinationCidrBlock: "0.0.0.0/0", NatGatewayId: "nat-1" },
+          ],
+        },
+      ],
+    })
+
+    await user.click(await screen.findByLabelText("Subnet"))
+
+    const listbox = await screen.findByRole("listbox")
+
+    const listed = within(listbox)
+      .getAllByRole("group")
+      .map((group) => ({
+        label: within(group).getByText(/subnets$/u).textContent,
+        options: within(group)
+          .getAllByRole("option")
+          .map((option) => option.textContent),
+      }))
+
+    expect(listed).toStrictEqual([
+      { label: "Public subnets", options: ["web (subnet-web)"] },
+      {
+        label: "Private subnets",
+        options: ["app (subnet-app)", "db (subnet-db)"],
+      },
+    ])
+
+    await user.click(screen.getByRole("option", { name: "app (subnet-app)" }))
+
+    expect(
+      screen.getByText(
+        /private: no internet gateway route · no public IP on launch/u,
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it("leaves out a group with no subnets", async () => {
+    const user = userEvent.setup()
+    setup({
+      subnets: [DEFAULT_SUBNET, { SubnetId: "subnet-pub", VpcId: "vpc-1" }],
+    })
+
+    await user.click(await screen.findByLabelText("Subnet"))
+
+    await expect(
+      screen.findByText("Public subnets"),
+    ).resolves.toBeInTheDocument()
+    expect(screen.queryByText("Private subnets")).not.toBeInTheDocument()
   })
 
   it("warns when the account has no default subnet", async () => {

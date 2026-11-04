@@ -256,8 +256,9 @@ test-build-scripts:
 	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; for t in $$(find .github/scripts -maxdepth 1 -name '*_test.sh' | sort); do \
 		$(_RUNSH); \
 	done
-	$(_Q)shellcheck -S warning .github/scripts/hypervisor-disk-preflight.sh .github/scripts/hypervisor-disk-preflight_test.sh \
-		.github/scripts/wait-for-memory.sh .github/scripts/wait-for-memory_test.sh
+	$(_Q)shellcheck -S warning .github/scripts/hypervisor-disk-preflight.sh \
+		.github/scripts/wait-for-memory.sh \
+		.github/scripts/mulga-design-check.sh
 	@$(_HDR) "\n....Running shellcheck over build/scripts/**/*.sh + the node scripts...."
 	$(_Q)shellcheck -S warning $$(find build/scripts -name '*.sh' | sort) $(NODE_SCRIPTS)
 	$(_Q)shellcheck -S warning -x scripts/build-oracle-appliance.sh $$(find scripts/appliance -name '*.sh' | sort)

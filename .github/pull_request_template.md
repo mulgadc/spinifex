@@ -14,11 +14,6 @@
 - Owner-local ordering, recovery, retained-state, or force impact:
 - Cross-domain dependency or ownership impact:
 - Evidence added or rechecked:
-- ADR-0008 lifecycle register / ADR-0001 migration-record / bead updates:
-
-## Mulga design
-
-<!-- One line, so a reviewer knows whether the design records in the private mulga repository need to change. Write either "Updated: <mulga PR or bead id>" or "Not needed: <reason>". This is a reminder, not a gate. -->
 
 ## Community Contribution License
 

@@ -23,6 +23,15 @@ func BindDurable(ctx context.Context, js jsapi.KeyValueManager, bucket string) (
 // VerifyDurable refuses a bucket whose stored stream configuration could expire,
 // cap or evict records, or holds fewer replicas than the cluster needs.
 func VerifyDurable(ctx context.Context, kv jsapi.KeyValue, bucket string) (jsapi.KeyValue, error) {
+	if _, err := VerifyDurableInfo(ctx, kv, bucket); err != nil {
+		return nil, err
+	}
+	return kv, nil
+}
+
+// VerifyDurableInfo is VerifyDurable returning the stream information it
+// checked, so a caller can also bind the stream's creation time.
+func VerifyDurableInfo(ctx context.Context, kv jsapi.KeyValue, bucket string) (*jsapi.StreamInfo, error) {
 	replicas, err := clustersize.Replicas()
 	if err != nil {
 		return nil, fmt.Errorf("bucket %s: %w", bucket, err)
@@ -38,11 +47,11 @@ func VerifyDurable(ctx context.Context, kv jsapi.KeyValue, bucket string) (jsapi
 	if err := CheckDurable(st.StreamInfo().Config, replicas); err != nil {
 		return nil, fmt.Errorf("bucket %s is not durable: %w", bucket, err)
 	}
-	return kv, nil
+	return st.StreamInfo(), nil
 }
 
 // CheckDurable refuses any effective stream setting under which an accepted
-// authority write could later expire, be evicted or lost, lag a source, or be
+// authority write could later expire, be evicted, lag a source, or be
 // refused; the bucket's records are compared and swapped, never re-derived.
 func CheckDurable(sc jsapi.StreamConfig, replicas int) error {
 	switch {

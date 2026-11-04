@@ -176,3 +176,17 @@ func TestAccountTeardownOutstanding_UndecodableTerminatedRecordFailsTheRead(t *t
 	require.Error(t, err)
 	assert.Nil(t, out)
 }
+
+// finalizeTerminated persists the terminated state to the primary store before
+// the terminated bucket is written, and the second write can fail. A record
+// with an unfinished dependent that sits only in the primary store must show.
+func TestAccountTeardownOutstanding_TerminatedOnlyInPrimaryStoreIsReported(t *testing.T) {
+	m, svc := teardownReadFixture(t)
+	liveRecord(t, m, "i-gap", teardownAcct, vm.StateTerminated, map[string]string{
+		vm.TeardownQEMU:    string(vm.TeardownDone),
+		vm.TeardownVolumes: string(vm.TeardownPending),
+	})
+	liveRecord(t, m, "i-gap-done", teardownAcct, vm.StateTerminated, teardownAllDone)
+
+	assert.Equal(t, map[string]string{"i-gap": string(vm.StateTerminated)}, outstandingStates(t, svc, teardownAcct))
+}

@@ -3918,6 +3918,10 @@ func (s *InstanceServiceImpl) AccountTeardownOutstanding(accountID string) ([]Ou
 	if err != nil {
 		return nil, fmt.Errorf("list non-terminated instances: %w", err)
 	}
+	primaryTerminated, err := s.stoppedStore.ListTerminatedInPrimary()
+	if err != nil {
+		return nil, fmt.Errorf("list terminated instances in primary store: %w", err)
+	}
 	terminated, err := s.stoppedStore.ListTerminatedInstances()
 	if err != nil {
 		return nil, fmt.Errorf("list terminated instances: %w", err)
@@ -3930,7 +3934,7 @@ func (s *InstanceServiceImpl) AccountTeardownOutstanding(accountID string) ([]Ou
 	for _, store := range []struct {
 		name    string
 		records []*vm.VM
-	}{{"non-terminated", live}, {"terminated", terminated}} {
+	}{{"non-terminated", live}, {"primary terminated", primaryTerminated}, {"terminated", terminated}} {
 		for _, v := range store.records {
 			if v == nil || v.ID == "" {
 				return nil, fmt.Errorf("%s instance store holds a record with no instance ID", store.name)

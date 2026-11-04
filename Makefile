@@ -252,6 +252,10 @@ test-build-scripts:
 	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; for t in $$( (find scripts -maxdepth 1 -name '*_test.sh'; find scripts/lib scripts/appliance -name '*_test.sh') | sort); do \
 		$(_RUNSH); \
 	done
+	@$(_HDR) "\n....Running scripts/terraform/latitude-spx/*_test.sh...."
+	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; for t in $$(find scripts/terraform/latitude-spx -maxdepth 1 -name '*_test.sh' | sort); do \
+		$(_RUNSH); \
+	done
 	@$(_HDR) "\n....Running .github/scripts/*_test.sh...."
 	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; for t in $$(find .github/scripts -maxdepth 1 -name '*_test.sh' | sort); do \
 		$(_RUNSH); \

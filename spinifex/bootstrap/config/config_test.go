@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/viper"
@@ -1548,6 +1549,83 @@ func TestLoadConfig_NetworkPoolVultrRejections(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.want)
 		})
 	}
+}
+
+const latitudePoolBase = `
+source = "latitude"
+latitude_project_id = "proj_1"
+latitude_elastic_ip_ids = ["eip_1", "eip_2"]
+`
+
+func TestLoadConfig_NetworkPoolLatitudeSourceAccepted(t *testing.T) {
+	cfg, err := loadVultrPool(t, "nat", latitudePoolBase+"latitude_key_file = \"/etc/spinifex/latitude/api-token\"\n",
+		[2]string{"sv_a", "sv_b"})
+	require.NoError(t, err)
+	p := cfg.Network.ExternalPools[0]
+	assert.Equal(t, "latitude", p.Source)
+	assert.Equal(t, "proj_1", p.LatitudeProjectID)
+	assert.Equal(t, []string{"eip_1", "eip_2"}, p.LatitudeElasticIPIDs)
+	assert.Equal(t, "/etc/spinifex/latitude/api-token", p.LatitudeKeyFile)
+	assert.Equal(t, "sv_a", cfg.Nodes["n1"].ProviderHostID)
+}
+
+func latitudeIDs(n int) string {
+	ids := make([]string, n)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("%q", fmt.Sprintf("eip_%d", i))
+	}
+	return "source = \"latitude\"\nlatitude_project_id = \"p\"\nlatitude_elastic_ip_ids = [" + strings.Join(ids, ", ") + "]\n"
+}
+
+func TestLoadConfig_NetworkPoolLatitudeSetIsCapped(t *testing.T) {
+	cfg, err := loadVultrPool(t, "nat", latitudeIDs(MaxLatitudeElasticIPs), [2]string{"a", "b"})
+	require.NoError(t, err)
+	assert.Len(t, cfg.Network.ExternalPools[0].LatitudeElasticIPIDs, MaxLatitudeElasticIPs)
+
+	_, err = loadVultrPool(t, "nat", latitudeIDs(MaxLatitudeElasticIPs+1), [2]string{"a", "b"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "at most 5 are allowed")
+}
+
+func TestLoadConfig_NetworkPoolLatitudeRejections(t *testing.T) {
+	both := [2]string{"a", "b"}
+	cases := []struct {
+		name, mode, body string
+		nodes            [2]string
+		want             string
+	}{
+		{"pool mode", "pool", latitudePoolBase, both, `requires [network] external_mode = "nat"`},
+		{"no project", "nat", "source = \"latitude\"\nlatitude_elastic_ip_ids = [\"e\"]\n", both, "requires latitude_project_id and latitude_elastic_ip_ids"},
+		{"no ids", "nat", "source = \"latitude\"\nlatitude_project_id = \"p\"\n", both, "requires latitude_project_id and latitude_elastic_ip_ids"},
+		{"duplicate id", "nat", "source = \"latitude\"\nlatitude_project_id = \"p\"\nlatitude_elastic_ip_ids = [\"e\", \"e\"]\n", both, "twice"},
+		{"empty id", "nat", "source = \"latitude\"\nlatitude_project_id = \"p\"\nlatitude_elastic_ip_ids = [\"\"]\n", both, "empty entry"},
+		{"relative key file", "nat", latitudePoolBase + "latitude_key_file = \"token\"\n", both, "absolute path"},
+		{"label prefix", "nat", latitudePoolBase + "label_prefix = \"x\"\n", both, "only valid with source=\"vultr\""},
+		{"range", "nat", latitudePoolBase + "range_start = \"1.2.3.4\"\nrange_end = \"1.2.3.4\"\n", both, "listed by ID"},
+		{"a node without its server id", "nat", latitudePoolBase, [2]string{"a", ""}, "[nodes.n2] provider_host_id is required"},
+		{"latitude keys on static", "nat", "latitude_project_id = \"p\"\n", both, `only valid with source="latitude"`},
+		{"vultr keys on latitude", "nat", latitudePoolBase + "vultr_region = \"ord\"\n", both, `only valid with source="vultr"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadVultrPool(t, tc.mode, tc.body, tc.nodes)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+}
+
+func TestLoadConfig_NetworkPoolLatitudeIDInTwoPoolsIsRejected(t *testing.T) {
+	resetViper(t)
+	body := "node = \"n1\"\n\n[network]\nexternal_mode = \"nat\"\n\n" +
+		"[[network.external_pools]]\nname = \"a\"\nsource = \"latitude\"\nlatitude_project_id = \"p\"\nlatitude_elastic_ip_ids = [\"e1\", \"e2\"]\n\n" +
+		"[[network.external_pools]]\nname = \"b\"\nsource = \"latitude\"\nlatitude_project_id = \"p\"\nlatitude_elastic_ip_ids = [\"e3\", \"e2\"]\n\n" +
+		"[nodes.n1]\nregion = \"us-east-1\"\nprovider_host_id = \"sv_1\"\n"
+	path := filepath.Join(t.TempDir(), "spinifex.toml")
+	require.NoError(t, os.WriteFile(path, []byte(body), 0600))
+	_, err := LoadConfig(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"e2" is also named by pool "a"`)
 }
 
 func TestLoadConfig_NorthstarNameservers(t *testing.T) {

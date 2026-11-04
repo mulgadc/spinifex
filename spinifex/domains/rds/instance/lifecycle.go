@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
@@ -34,6 +35,12 @@ type instanceCommander interface {
 	// Relaunches a VM whose owning node no longer holds it, from its persisted
 	// stopped-instance record.
 	StartStoppedInstance(ctx context.Context, instanceID string) error
+	// Terminates a VM no node holds from its stopped-instance record. A VM
+	// already gone is not an error.
+	TerminateStoppedInstance(ctx context.Context, instanceID string) error
+	// Removes a volume from a stopped VM's record without changing the volume.
+	// A VM or volume no longer in the record is not an error.
+	DetachVolumeFromStopped(ctx context.Context, instanceID, volumeID string) error
 }
 
 // ErrInstanceNotOnNode means no node subscribes ec2.cmd.{instanceID} for this VM,
@@ -338,10 +345,15 @@ func (s *Service) completeTransition(ctx context.Context, kv *kvstore.Bucket, id
 // Records why an operation failed and returns the error the caller surfaces, so
 // a failed transition cannot be left looking like one still in progress.
 func (s *Service) failTransition(ctx context.Context, kv *kvstore.Bucket, accountID string, rec *DBInstanceRecord, reason string) error {
-	if err := s.updateInstance(ctx, kv, rec.DBInstanceIdentifier, func(stored *DBInstanceRecord) {
+	// A delete accepted meanwhile owns the record; failing it would drop the delete.
+	if _, err := s.updateInstanceIf(ctx, kv, rec.DBInstanceIdentifier, func(stored *DBInstanceRecord) bool {
+		if stored.Status == StatusDeleting {
+			return false
+		}
 		stored.Status = StatusFailed
 		stored.FailureReason = reason
 		stored.TransitionStartedAt = nil
+		return true
 	}); err != nil {
 		slog.ErrorContext(ctx, "rds: marking a failed lifecycle transition failed",
 			"dbInstance", rec.DBInstanceIdentifier, "err", err)
@@ -452,5 +464,27 @@ func (c *natsInstanceCommander) send(ctx context.Context, instanceID string, att
 func (c *natsInstanceCommander) StartStoppedInstance(ctx context.Context, instanceID string) error {
 	_, err := natsmsg.NATSRequest[ec2instance.StartStoppedInstanceOutput](ctx, c.nc, "ec2.start",
 		ec2instance.StartStoppedInstanceInput{InstanceID: instanceID}, c.timeout, awsidentifiers.GlobalAccountID)
+	return err
+}
+
+func (c *natsInstanceCommander) TerminateStoppedInstance(ctx context.Context, instanceID string) error {
+	_, err := natsmsg.NATSRequest[ec2instance.TerminateStoppedInstanceOutput](ctx, c.nc, "ec2.terminate",
+		ec2instance.TerminateStoppedInstanceInput{InstanceID: instanceID}, c.timeout, awsidentifiers.GlobalAccountID)
+	if err == nil || strings.Contains(err.Error(), awserrors.ErrorInvalidInstanceIDNotFound) {
+		return nil
+	}
+	return err
+}
+
+// The record no longer naming the volume is IncorrectState, which is the state
+// this is trying to reach.
+func (c *natsInstanceCommander) DetachVolumeFromStopped(ctx context.Context, instanceID, volumeID string) error {
+	_, err := natsmsg.NATSRequest[ec2.VolumeAttachment](ctx, c.nc, "ec2.DetachVolumeFromStopped",
+		&ec2.DetachVolumeInput{InstanceId: aws.String(instanceID), VolumeId: aws.String(volumeID)},
+		c.timeout, awsidentifiers.GlobalAccountID)
+	if err == nil || awserrors.IsErrorCode(err, awserrors.ErrorInvalidInstanceIDNotFound) ||
+		awserrors.IsErrorCode(err, awserrors.ErrorIncorrectState) {
+		return nil
+	}
 	return err
 }

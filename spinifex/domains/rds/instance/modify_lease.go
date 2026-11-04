@@ -97,7 +97,9 @@ func (s *Service) claimModifyLease(
 ) (bool, time.Time, error) {
 	var expiresAt time.Time
 	claimed, err := s.updateInstanceIf(ctx, kv, id, func(rec *DBInstanceRecord) bool {
-		if rec.ModifyLease.live() && rec.ModifyLease.Holder != holder {
+		// A delete moves the record to deleting before its teardown checks for a
+		// live lease, so a modify that has not claimed one by then never does.
+		if rec.Status == StatusDeleting || (rec.ModifyLease.live() && rec.ModifyLease.Holder != holder) {
 			return false
 		}
 		expiresAt = time.Now().UTC().Add(s.modifyLeaseTTL())

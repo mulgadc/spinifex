@@ -631,6 +631,33 @@ func (s *InstanceServiceImpl) deleteCentralInstanceTags(ctx context.Context, ins
 	}
 }
 
+// resolveDefaultSubnet fills SubnetId from the account's default subnet when the
+// request names neither a subnet nor a pre-created ENI. A missing default VPC or
+// subnet is the caller's error; any other lookup failure is InternalError.
+func (s *InstanceServiceImpl) resolveDefaultSubnet(ctx context.Context, input *ec2.RunInstancesInput, accountID string) error {
+	if s.eniCreator == nil || aws.StringValue(input.SubnetId) != "" {
+		return nil
+	}
+	if len(input.NetworkInterfaces) > 0 && input.NetworkInterfaces[0] != nil {
+		nic := input.NetworkInterfaces[0]
+		if aws.StringValue(nic.SubnetId) != "" || aws.StringValue(nic.NetworkInterfaceId) != "" {
+			return nil
+		}
+	}
+	subnet, err := s.eniCreator.GetDefaultSubnet(ctx, accountID)
+	if err != nil {
+		if code, ok := awserrors.ResolveErrorCode(err); ok && (code == awserrors.ErrorVPCIdNotSpecified || code == awserrors.ErrorMissingInput) {
+			slog.WarnContext(ctx, "PrepareRunInstances: no default subnet", "err", err)
+			return err
+		}
+		slog.ErrorContext(ctx, "PrepareRunInstances: default subnet lookup failed", "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	input.SubnetId = aws.String(subnet.SubnetID)
+	slog.InfoContext(ctx, "PrepareRunInstances: resolved default subnet", "subnetId", subnet.SubnetID)
+	return nil
+}
+
 // PrepareRunInstances validates input, allocates capacity, creates VM metadata,
 // auto-creates the primary ENI, and auto-assigns a public IP when needed.
 // Does NOT touch vmMgr or NATS — callers insert VMs then call LaunchRunInstances.
@@ -708,6 +735,10 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 			slog.ErrorContext(ctx, "PrepareRunInstances: key pair not found", "keyName", *input.KeyName, "err", err)
 			return nil, nil, nil, errors.New(awserrors.ErrorInvalidKeyPairNotFound)
 		}
+	}
+
+	if err := s.resolveDefaultSubnet(ctx, input, accountID); err != nil {
+		return nil, nil, nil, err
 	}
 
 	minCount := int(*input.MinCount)
@@ -857,14 +888,6 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 			instances = append(instances, instance)
 			allEC2Instances = append(allEC2Instances, ec2Instance)
 			continue
-		}
-
-		if (input.SubnetId == nil || *input.SubnetId == "") && s.eniCreator != nil {
-			defaultSubnet, dsErr := s.eniCreator.GetDefaultSubnet(ctx, accountID)
-			if dsErr == nil && defaultSubnet != nil {
-				input.SubnetId = aws.String(defaultSubnet.SubnetID)
-				slog.InfoContext(ctx, "PrepareRunInstances: resolved default subnet", "instanceId", instance.ID, "subnetId", defaultSubnet.SubnetID)
-			}
 		}
 
 		if input.SubnetId != nil && *input.SubnetId != "" && s.eniCreator != nil {

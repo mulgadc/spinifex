@@ -1608,35 +1608,59 @@ func (s *VPCServiceImpl) GetDefaultSubnet(accountID string) (*SubnetRecord, erro
 
 func (s *VPCServiceImpl) getDefaultSubnet(ctx context.Context, accountID string) (*SubnetRecord, error) {
 	prefix := accountID + "."
-	keys, err := s.subnetKV.Keys(ctx)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil, fmt.Errorf("no default subnet found")
-		}
-		return nil, fmt.Errorf("list subnets: %w", err)
+	vpcKeys, err := s.vpcKV.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
+		return nil, fmt.Errorf("list vpcs: %w", err)
 	}
-
-	for _, key := range keys {
-		if key == kvutil.VersionKey {
+	defaultVpcID := ""
+	for _, key := range vpcKeys {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
-		if !strings.HasPrefix(key, prefix) {
+		entry, err := s.vpcKV.Get(ctx, key)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			continue // deleted since Keys
+		}
+		if err != nil {
+			return nil, fmt.Errorf("get vpc %s: %w", key, err)
+		}
+		var record VPCRecord
+		if err := json.Unmarshal(entry.Value(), &record); err != nil {
+			return nil, fmt.Errorf("unmarshal vpc %s: %w", key, err)
+		}
+		if record.IsDefault {
+			defaultVpcID = record.VpcId
+			break
+		}
+	}
+	if defaultVpcID == "" {
+		return nil, awserrors.Errorf(awserrors.ErrorVPCIdNotSpecified, "No default VPC for this user. GroupName is only supported for EC2-Classic and default VPC.")
+	}
+
+	keys, err := s.subnetKV.Keys(ctx)
+	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
+		return nil, fmt.Errorf("list subnets: %w", err)
+	}
+	for _, key := range keys {
+		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		entry, err := s.subnetKV.Get(ctx, key)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			continue // deleted since Keys
+		}
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("get subnet %s: %w", key, err)
 		}
 		var record SubnetRecord
 		if err := json.Unmarshal(entry.Value(), &record); err != nil {
-			continue
+			return nil, fmt.Errorf("unmarshal subnet %s: %w", key, err)
 		}
-		if record.IsDefault {
+		if record.IsDefault && record.VpcId == defaultVpcID {
 			return &record, nil
 		}
 	}
-
-	return nil, fmt.Errorf("no default subnet found")
+	return nil, awserrors.Errorf(awserrors.ErrorMissingInput, "No subnets found for the default VPC '%s'. Please specify a subnet.", defaultVpcID)
 }
 
 // GetSubnet looks up a SubnetRecord by ID.

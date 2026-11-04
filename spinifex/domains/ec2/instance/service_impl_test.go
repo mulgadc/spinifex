@@ -3581,28 +3581,29 @@ func TestStopOrTerminateInstance_TerminationProtection(t *testing.T) {
 }
 
 type fakeENICreator struct {
-	defaultSubnet   *SubnetInfo
-	subnet          *SubnetInfo
-	getENIByID      map[string]*ENIInfo
-	getENIErr       error
-	createOut       *ec2.CreateNetworkInterfaceOutput
-	createOuts      []*ec2.CreateNetworkInterfaceOutput // per-call outputs; overrides createOut when set
-	createInputs    []*ec2.CreateNetworkInterfaceInput  // every input CreateNetworkInterface received, in call order
-	createCalls     int
-	createErr       error
-	createErrOnCall int // 1-based call index to fail; 0 fails every call when createErr is set
-	attachErr       error
-	attachErrOnCall int // 1-based call index to fail; 0 fails every call when attachErr is set
-	attachCalls     int
-	updateCalls     int
-	clearCalls      int // updateCalls where publicIP is ""
-	detachCalls     int
-	detached        []string
-	detachErr       error                // returned by every DetachENI call when set
-	instanceENIs    map[string][]ENIInfo // keyed by instanceID, for ListInstanceENIs
-	listENIsErr     error
-	eniHasEIP       bool  // what ENIHasEIP reports for every ENI
-	eniHasEIPErr    error // when set, ENIHasEIP fails instead
+	defaultSubnet    *SubnetInfo
+	defaultSubnetErr error
+	subnet           *SubnetInfo
+	getENIByID       map[string]*ENIInfo
+	getENIErr        error
+	createOut        *ec2.CreateNetworkInterfaceOutput
+	createOuts       []*ec2.CreateNetworkInterfaceOutput // per-call outputs; overrides createOut when set
+	createInputs     []*ec2.CreateNetworkInterfaceInput  // every input CreateNetworkInterface received, in call order
+	createCalls      int
+	createErr        error
+	createErrOnCall  int // 1-based call index to fail; 0 fails every call when createErr is set
+	attachErr        error
+	attachErrOnCall  int // 1-based call index to fail; 0 fails every call when attachErr is set
+	attachCalls      int
+	updateCalls      int
+	clearCalls       int // updateCalls where publicIP is ""
+	detachCalls      int
+	detached         []string
+	detachErr        error                // returned by every DetachENI call when set
+	instanceENIs     map[string][]ENIInfo // keyed by instanceID, for ListInstanceENIs
+	listENIsErr      error
+	eniHasEIP        bool  // what ENIHasEIP reports for every ENI
+	eniHasEIPErr     error // when set, ENIHasEIP fails instead
 }
 
 func (f *fakeENICreator) ENIHasEIP(_ context.Context, _, _ string) (bool, error) {
@@ -3610,8 +3611,11 @@ func (f *fakeENICreator) ENIHasEIP(_ context.Context, _, _ string) (bool, error)
 }
 
 func (f *fakeENICreator) GetDefaultSubnet(_ context.Context, _ string) (*SubnetInfo, error) {
+	if f.defaultSubnetErr != nil {
+		return nil, f.defaultSubnetErr
+	}
 	if f.defaultSubnet == nil {
-		return nil, errors.New("no default")
+		return nil, awserrors.Errorf(awserrors.ErrorVPCIdNotSpecified, "No default VPC for this user. GroupName is only supported for EC2-Classic and default VPC.")
 	}
 	return f.defaultSubnet, nil
 }
@@ -3695,6 +3699,41 @@ func (f *fakeIPAllocator) AllocateIP(_ context.Context, _, _, _, _, _, _ string)
 		return f.publicIPs[min(f.calls, len(f.publicIPs))-1], f.poolName, nil
 	}
 	return f.publicIP, f.poolName, nil
+}
+
+// With no SubnetId and no default VPC or default subnet, RunInstances returns
+// the lookup's AWS error before allocating capacity or creating an ENI; any
+// other lookup failure is InternalError rather than a launch with no ENI.
+func TestPrepareRunInstances_NoDefaultSubnetLaunchesNothing(t *testing.T) {
+	cases := []struct {
+		name     string
+		lookup   error
+		wantCode string
+	}{
+		{"no default VPC", awserrors.Errorf(awserrors.ErrorVPCIdNotSpecified, "No default VPC for this user. GroupName is only supported for EC2-Classic and default VPC."), awserrors.ErrorVPCIdNotSpecified},
+		{"no default subnet", awserrors.Errorf(awserrors.ErrorMissingInput, "No subnets found for the default VPC 'vpc-1'. Please specify a subnet."), awserrors.ErrorMissingInput},
+		{"lookup failure", errors.New("list subnets: timeout"), awserrors.ErrorServerInternal},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			eni := &fakeENICreator{defaultSubnetErr: tc.lookup}
+			svc, prov := prepareSvcWithENI(t, eni, nil)
+
+			_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+				InstanceType: aws.String("t3.micro"),
+				ImageId:      aws.String("ami-1"),
+				MinCount:     aws.Int64(1),
+				MaxCount:     aws.Int64(2),
+			}, "acc", "")
+
+			code, ok := awserrors.ResolveErrorCode(err)
+			require.True(t, ok, "err %v carries no AWS code", err)
+			assert.Equal(t, tc.wantCode, code)
+			assert.Empty(t, instances)
+			assert.Empty(t, prov.allocated)
+			assert.Zero(t, eni.createCalls)
+		})
+	}
 }
 
 // prepareSvcWithENI returns a service wired with allocator + AMI + ENI/IP deps

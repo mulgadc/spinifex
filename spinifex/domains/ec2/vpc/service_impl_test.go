@@ -11,6 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1108,6 +1109,28 @@ func TestGetDefaultSubnet(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "172.31.0.0/20", subnet.CidrBlock)
 	assert.True(t, subnet.IsDefault)
+}
+
+// RunInstances surfaces these codes and messages unchanged when no SubnetId is given.
+func TestGetDefaultSubnet_MissingDefaultErrors(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+
+	_, err := svc.GetDefaultSubnet(testAccountID)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "err %v carries no AWS code", err)
+	assert.Equal(t, awserrors.ErrorVPCIdNotSpecified, code)
+	assert.Equal(t, "No default VPC for this user. GroupName is only supported for EC2-Classic and default VPC.", msg)
+
+	info, err := svc.EnsureDefaultVPC(testAccountID)
+	require.NoError(t, err)
+	require.NoError(t, svc.subnetKV.Delete(t.Context(), kvutil.AccountKey(testAccountID, info.SubnetId)))
+
+	_, err = svc.GetDefaultSubnet(testAccountID)
+	code, msg, ok = awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "err %v carries no AWS code", err)
+	assert.Equal(t, awserrors.ErrorMissingInput, code)
+	assert.Equal(t, "No subnets found for the default VPC '"+info.VpcId+"'. Please specify a subnet.", msg)
 }
 
 func TestGetDefaultSubnet_NotConfusedByNonDefault(t *testing.T) {

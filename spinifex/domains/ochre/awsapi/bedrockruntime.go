@@ -133,7 +133,7 @@ func (d Deps) bedrockRuntime(w http.ResponseWriter, inv dispatch.Invocation) err
 
 	// ConverseStream and InvokeModelWithResponseStream own w directly and
 	// write framed event-stream bytes as they arrive, rather than one
-	// buffered struct/body WriteJSONResponse/WriteRawResponse could send in
+	// buffered struct/body WriteJSONResult/WriteRawResponse could send in
 	// one shot. Each returns an error ONLY for a pre-first-frame failure
 	// (-> ErrorHandler); once streaming starts they always return nil,
 	// surfacing any further failure as an in-band exception event.

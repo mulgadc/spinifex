@@ -7,8 +7,6 @@ package ochre
 import (
 	"log/slog"
 	"net/http"
-
-	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 )
 
 // WriteRawResponse writes body verbatim with contentType and a 200 status,
@@ -19,19 +17,5 @@ func WriteRawResponse(w http.ResponseWriter, body []byte, contentType string) {
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(body); err != nil {
 		slog.Error("Failed to write bedrock raw response", "err", err)
-	}
-}
-
-// WriteJSONError emits the AWS REST-JSON error envelope with the given code,
-// message, and HTTP status.
-func WriteJSONError(w http.ResponseWriter, code, message string, httpStatus int) {
-	body := envelope.JSONBody(code, message)
-	w.Header().Set("Content-Type", envelope.JSONContentType)
-	if httpStatus == 0 {
-		httpStatus = http.StatusInternalServerError
-	}
-	w.WriteHeader(httpStatus)
-	if _, err := w.Write(body); err != nil {
-		slog.Error("Failed to write bedrock error response", "err", err)
 	}
 }

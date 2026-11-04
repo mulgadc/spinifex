@@ -3,7 +3,6 @@ package ecs
 import (
 	"context"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
-	"strings"
 	"sync"
 	"testing"
 
@@ -65,12 +64,12 @@ func TestCurrentBehaviour_Tagging_ECSTagWriteRevertsInterleavedRecordWrite(t *te
 		require.NoError(t, taskdefinition.PutJSON(ctx, kv, key, &rec))
 	}}
 
-	err = svc.mutateResourceTags(ctx, wrapped, ecsResourceService, "web", "api", func(existing map[string]string) map[string]string {
+	err = svc.mutateResourceTags(ctx, wrapped, ecsResourceService, "web", "api", func(existing map[string]string) (map[string]string, error) {
 		if existing == nil {
 			existing = map[string]string{}
 		}
 		existing["team"] = "infra"
-		return existing
+		return existing, nil
 	})
 	require.NoError(t, err)
 
@@ -106,9 +105,8 @@ func TestCurrentBehaviour_Tagging_ECSForeignAccountARNTagsCallerResource(t *test
 	assert.Equal(t, "foreign-arn", aws.StringValue(listed.Tags[0].Value))
 }
 
-// TagResource applies no tag-count, key-length, value-length or aws: prefix
-// rule: all 52 tags below are stored.
-func TestCurrentBehaviour_Tagging_ECSTagResourceAppliesNoTagLimits(t *testing.T) {
+// TagResource applies no aws: prefix rule: the reserved key below is stored.
+func TestCurrentBehaviour_Tagging_ECSTagResourceAcceptsAWSPrefix(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
@@ -116,17 +114,11 @@ func TestCurrentBehaviour_Tagging_ECSTagResourceAppliesNoTagLimits(t *testing.T)
 	require.NoError(t, err)
 	arn := aws.StringValue(created.Cluster.ClusterArn)
 
-	tags := []*ecs.Tag{
-		{Key: aws.String("aws:reserved"), Value: aws.String("v")},
-		{Key: aws.String(strings.Repeat("k", 129)), Value: aws.String(strings.Repeat("v", 257))},
-	}
-	for i := range 50 {
-		tags = append(tags, &ecs.Tag{Key: aws.String("k" + strings.Repeat("x", i+1)), Value: aws.String("v")})
-	}
+	tags := []*ecs.Tag{{Key: aws.String("aws:reserved"), Value: aws.String("v")}}
 	_, err = svc.TagResource(ctx, &ecs.TagResourceInput{ResourceArn: aws.String(arn), Tags: tags}, testAccountID)
 	require.NoError(t, err)
 
 	listed, err := svc.ListTagsForResource(ctx, &ecs.ListTagsForResourceInput{ResourceArn: aws.String(arn)}, testAccountID)
 	require.NoError(t, err)
-	assert.Len(t, listed.Tags, 52)
+	assert.Len(t, listed.Tags, 1)
 }

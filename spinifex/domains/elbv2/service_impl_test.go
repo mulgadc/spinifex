@@ -2866,6 +2866,8 @@ func TestModifyTargetGroupAttributes_AcceptsOtherProtocolKeys(t *testing.T) {
 		Attributes: []*elbv2.TargetGroupAttribute{
 			{Key: aws.String("proxy_protocol_v2.enabled"), Value: aws.String("false")},
 			{Key: aws.String("target_failover.on_unhealthy"), Value: aws.String("no_rebalance")},
+			{Key: aws.String("target_failover.on_deregistration"), Value: aws.String("no_rebalance")},
+			{Key: aws.String("lambda.multi_value_headers.enabled"), Value: aws.String("false")},
 		},
 	}, testAccountID)
 	require.NoError(t, err)

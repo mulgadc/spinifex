@@ -253,7 +253,7 @@ func TestVerifySessionPrincipal_LegacyRecord_Rejected(t *testing.T) {
 		{"role session with no RoleID", &SessionCredential{
 			AccessKeyID:       "ASIALEGACYROLE000001",
 			AccountID:         testCallerAccountID,
-			PrincipalType:     principalTypeAssumedRole,
+			PrincipalType:     PrincipalTypeAssumedRole,
 			SessionName:       "session-1",
 			UnderlyingRoleARN: aws.StringValue(role.Arn),
 		}},

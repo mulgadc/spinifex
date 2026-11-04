@@ -34,7 +34,7 @@ func requestIDFrom(ctx context.Context) string {
 // actorName is the name the caller goes by: the session name for a role
 // session and the user name for every other principal.
 func actorName(a dispatch.Actor) string {
-	if a.PrincipalType == "assumed-role" {
+	if a.PrincipalType == dispatch.PrincipalTypeAssumedRole {
 		return a.SessionName
 	}
 	return a.UserName

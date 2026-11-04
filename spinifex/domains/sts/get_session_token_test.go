@@ -136,7 +136,7 @@ func TestGetSessionToken_RejectsNonUserAndSessionCallers(t *testing.T) {
 		principalType string
 		accessKeyID   string
 	}{
-		{"assumed_role_session", principalTypeAssumedRole, "ASIAEXAMPLEAAAAAAAAA"},
+		{"assumed_role_session", PrincipalTypeAssumedRole, "ASIAEXAMPLEAAAAAAAAA"},
 		{"user_session", principalTypeUser, "ASIAEXAMPLEAAAAAAAAA"},
 		{"empty_principal_type", "", testCallerAccessKeyID},
 	}

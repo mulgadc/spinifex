@@ -11,7 +11,6 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,29 +29,13 @@ func invocation(body, accountID string, actor dispatch.Actor, actorErr error, au
 	}
 }
 
-func TestCallerFromActor_NameFollowsPrincipalType(t *testing.T) {
-	roleARN := "arn:aws:iam::" + awsidentifiers.GlobalAccountID + ":role/" + rdsinstance.InstanceRoleName
-	session := dispatch.Actor{
-		AccountID: awsidentifiers.GlobalAccountID, PrincipalType: principalTypeAssumedRole,
-		PrincipalARN: roleARN, SessionName: "i-abc", UserName: "ignored",
-	}
-	got := CallerFromActor(session)
-	assert.Equal(t, "i-abc", got.SessionName)
-	assert.Equal(t, rdsinstance.InstanceRoleName, got.RoleName)
-
-	user := dispatch.Actor{AccountID: "000000000002", PrincipalType: "user", UserName: "alice", SessionName: "ignored"}
-	got = CallerFromActor(user)
-	assert.Equal(t, "alice", got.SessionName)
-	assert.Empty(t, got.RoleName, "a user has no role name")
-}
-
-func TestCallerFromActor_RoleNameNeverFromSessionName(t *testing.T) {
+func TestRequireAgentPrincipal_RoleNameNeverFromSessionName(t *testing.T) {
 	// The caller picks its own session name at AssumeRole time; naming it after
 	// the agent role must not make it the agent role.
-	got := CallerFromActor(dispatch.Actor{
-		AccountID: "000000000002", PrincipalType: principalTypeAssumedRole,
+	got := dispatch.Actor{
+		AccountID: "000000000002", PrincipalType: dispatch.PrincipalTypeAssumedRole,
 		PrincipalARN: "arn:aws:iam::000000000002:role/tenant", SessionName: rdsinstance.InstanceRoleName,
-	})
+	}.Caller()
 	assert.Equal(t, "tenant", got.RoleName)
 	assert.Error(t, requireAgentPrincipal(context.Background(), got))
 }

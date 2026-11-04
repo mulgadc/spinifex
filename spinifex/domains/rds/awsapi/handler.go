@@ -11,23 +11,14 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
 	"github.com/nats-io/nats.go"
 )
 
-// Only an assumed-role session can be an in-guest agent.
-const principalTypeAssumedRole = "assumed-role"
-
 // Caller identifies the requester. Customer actions need only AccountID; the internal agent
 // actions have to tell an instance role apart from a user, which the account alone cannot do.
-type Caller struct {
-	AccountID     string
-	PrincipalType string
-	RoleName      string
-	// The RoleSessionName of an assumed-role session. For IMDS instance-role
-	// credentials it is the internal EC2 instance ID.
-	SessionName string
-}
+type Caller = dispatch.Caller
 
 // Env holds cluster facts a handler needs that the request cannot carry. It holds the ingredient
 // rather than a ready-made probe, so the next action needing a fan-out gets it without another

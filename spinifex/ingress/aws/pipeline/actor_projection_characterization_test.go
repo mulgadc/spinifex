@@ -9,8 +9,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
-	eksawsapi "github.com/mulgadc/spinifex/spinifex/domains/eks/awsapi"
-	rdsawsapi "github.com/mulgadc/spinifex/spinifex/domains/rds/awsapi"
 	stsawsapi "github.com/mulgadc/spinifex/spinifex/domains/sts/awsapi"
 	"net/http"
 	"strings"
@@ -74,8 +72,8 @@ func actorProbeGateway(t *testing.T, e *cbEnv) (http.Handler, *[]actorObservatio
 				return err
 			}
 			r := inv.Request
-			rds := rdsawsapi.CallerFromActor(actor)
-			eks := eksawsapi.CallerFromActor(actor)
+			rds := actor.Caller()
+			eks := actor.Caller()
 			seen = append(seen, actorObservation{
 				Actor:             actor,
 				Identity:          callerOf(r).Identity,

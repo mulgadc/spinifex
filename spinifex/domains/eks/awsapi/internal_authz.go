@@ -11,24 +11,15 @@ import (
 
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// Only an assumed-role session can be a control-plane VM.
-const principalTypeAssumedRole = "assumed-role"
-
 // Caller is the principal behind an EKS request. The internal routes have to
 // tell the CP VM's instance role apart from a user, which the account alone
 // cannot do, and then tell one VM from another.
-type Caller struct {
-	AccountID     string
-	PrincipalType string
-	RoleName      string
-	// The RoleSessionName of an assumed-role session. For IMDS instance-role
-	// credentials it is the internal EC2 instance ID.
-	SessionName string
-}
+type Caller = dispatch.Caller
 
 // IsInternalAction reports whether action is one of the internal CP-VM routes:
 // the ones naming the customer account in the path or body, which no customer
@@ -123,7 +114,7 @@ var internalBodyAccounts = map[string]func(body []byte) (string, error){
 // in the system account. It says the caller is a control-plane VM, not which
 // one — the binding to a cluster is AuthorizeInternal's, and needs NATS.
 func requireCPAgent(ctx context.Context, action string, caller Caller) error {
-	if caller.PrincipalType != principalTypeAssumedRole ||
+	if caller.PrincipalType != dispatch.PrincipalTypeAssumedRole ||
 		caller.AccountID != awsidentifiers.GlobalAccountID ||
 		caller.RoleName != ekscluster.CPInstanceRoleName ||
 		caller.SessionName == "" {

@@ -46,22 +46,6 @@ func resolveAction(r *http.Request) string {
 	return action
 }
 
-// CallerFromActor projects the verified actor onto the EKS caller. The role name
-// comes from the underlying role ARN, never the session name, which the caller
-// picks at AssumeRole time and could name its way past the gate.
-func CallerFromActor(actor dispatch.Actor) Caller {
-	name := actor.UserName
-	if actor.PrincipalType == principalTypeAssumedRole {
-		name = actor.SessionName
-	}
-	return Caller{
-		AccountID:     actor.AccountID,
-		PrincipalType: actor.PrincipalType,
-		SessionName:   name,
-		RoleName:      actor.RoleName(),
-	}
-}
-
 // dispatch runs the action and renames the generic parameter error to the code
 // EKS declares. The internal routes keep theirs: the CP-VM agents match on it.
 func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
@@ -151,7 +135,7 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 	// the path or body, so an eks:* grant evaluates as permitted and only the
 	// principal class plus the caller's own instance say whether it is its own.
 	if IsInternalAction(action) {
-		if err := AuthorizeInternal(r.Context(), d.NATS, action, CallerFromActor(actor), params, body); err != nil {
+		if err := AuthorizeInternal(r.Context(), d.NATS, action, actor.Caller(), params, body); err != nil {
 			return err
 		}
 	}

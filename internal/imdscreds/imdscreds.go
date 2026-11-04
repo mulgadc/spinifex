@@ -21,31 +21,18 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
 )
 
-// Credentials is a resolved instance-role credential set with parsed expiry.
-type Credentials struct {
-	AccessKeyID     string
-	SecretAccessKey string
-	SessionToken    string
-	Expiration      time.Time
-}
-
 // Fetch resolves the instance role then its credentials via the SDK's IMDSv2
 // client and the ec2rolecreds provider. base is the IMDS root, e.g.
 // http://169.254.169.254/latest.
-func Fetch(client *http.Client, base string) (Credentials, error) {
+func Fetch(client *http.Client, base string) (aws.Credentials, error) {
 	creds, err := NewProvider(client, base).Retrieve(context.Background())
 	if err != nil {
-		return Credentials{}, fmt.Errorf("fetch IMDS credentials: %w", err)
+		return aws.Credentials{}, fmt.Errorf("fetch IMDS credentials: %w", err)
 	}
 	if creds.AccessKeyID == "" || creds.SecretAccessKey == "" {
-		return Credentials{}, fmt.Errorf("IMDS credentials missing access/secret key")
+		return aws.Credentials{}, fmt.Errorf("IMDS credentials missing access/secret key")
 	}
-	return Credentials{
-		AccessKeyID:     creds.AccessKeyID,
-		SecretAccessKey: creds.SecretAccessKey,
-		SessionToken:    creds.SessionToken,
-		Expiration:      creds.Expires,
-	}, nil
+	return creds, nil
 }
 
 // NewProvider builds an ec2rolecreds provider against base, an IMDS root URL

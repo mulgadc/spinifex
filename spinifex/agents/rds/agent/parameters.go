@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -124,11 +125,10 @@ func (s parameterStore) chownToEngine(path string) error {
 // Rejects rather than saturates: a clamped ID would hand the file to another
 // account while the engine still runs as the real one.
 func ownerID(id uint32) (int, error) {
-	n := safecast.Uint64ToInt(uint64(id))
-	if uint64(n) != uint64(id) {
+	if uint64(id) > math.MaxInt {
 		return 0, fmt.Errorf("%d does not fit an int", id)
 	}
-	return n, nil
+	return safecast.Uint64ToInt(uint64(id)), nil
 }
 
 // Snapshots the installed set as the rollback target, but only once the engine

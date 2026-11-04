@@ -316,6 +316,7 @@ func TestS7_UEFIStoreReaperWaitsForQEMUBeforeCompletingATerminatedMark(t *testin
 // terminated record has expired since the listing.
 type listsMissingRecord struct {
 	*JetStreamManager
+
 	id string
 }
 

@@ -110,7 +110,7 @@ Three entry points, in the order they run:
 
 ### `iam` — everything IAM and STS
 
-Policy evaluation against live requests rather than unit-level: a deny applying to the next request without a new credential, resource-scoped grants naming one key pair, `aws:SourceIp` seeing the real client address, assumed-role sessions carrying role policies, and revocation stopping one key alone.
+Policy evaluation against live requests rather than unit-level: a deny applying to the next request without a new credential, resource-scoped grants naming one key pair, a user rename needing `iam:UpdateUser` on both the old and the new name, `aws:SourceIp` seeing the real client address, assumed-role sessions carrying role policies, and revocation stopping one key alone.
 
 ### `cert` — the cluster CA and TLS identity
 

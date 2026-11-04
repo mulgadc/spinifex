@@ -281,7 +281,7 @@ func TestRegistration_UpdateUser(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, calls, 1)
-	assert.Equal(t, []string{"arn:aws:iam::" + testAccountID + ":user/alice"}, calls[0].resources)
+	assert.Equal(t, []string{"arn:aws:iam::" + testAccountID + ":user/alice", "arn:aws:iam::" + testAccountID + ":user/alicia"}, calls[0].resources)
 	assert.Contains(t, w.Body.String(), "UpdateUserResponse")
 	require.NotNil(t, svc.updateUser)
 	assert.Equal(t, "alicia", *svc.updateUser.NewUserName)

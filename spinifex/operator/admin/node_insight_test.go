@@ -195,6 +195,7 @@ func TestNetworkTestRunsEveryDirectionAndRecordsEachResult(t *testing.T) {
 }
 
 func TestNetworkTestFailsARunWhoseServerNeverAnswers(t *testing.T) {
+	t.Parallel()
 	_, nc, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
 	d := Deps{NATS: nc, NetworkTests: NewKVNetworkTests(js), NodeIDs: []string{"a", "b"}}

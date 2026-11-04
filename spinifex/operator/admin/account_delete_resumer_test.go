@@ -78,6 +78,7 @@ func TestS7_DeletionResumerActsOnlyOnAnAcceptedOperationWithoutALiveLease(t *tes
 // A job left by a dead gateway finishes with no request: the resumer takes it
 // over once, under the same operation, and the teardown runs to completion.
 func TestDeletionResumerFinishesAnAbandonedJobWithoutARequest(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	storeDeletionJob(t, gw, abandonedJob(account.AccountID, "tenant@example.com"))
@@ -98,6 +99,7 @@ func TestDeletionResumerFinishesAnAbandonedJobWithoutARequest(t *testing.T) {
 
 // Every gateway runs a resumer, so several see the same expired lease at once.
 func TestConcurrentResumersProduceOneTakeover(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	storeDeletionJob(t, gw, abandonedJob(account.AccountID, "tenant@example.com"))

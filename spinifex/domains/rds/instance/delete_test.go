@@ -486,3 +486,39 @@ func TestDeleteDBInstance_ReturnsAStoppedTerminateRefusal(t *testing.T) {
 	assert.Empty(t, h.volumes.deleted)
 	assert.True(t, h.recordExists(t, testDBID))
 }
+
+// A class change that finished after the delete was accepted replaced the VM;
+// the teardown must take down the replacement, not the VM the delete first saw.
+func TestTeardownDBInstance_UsesTheVMAModifyLeftBehind(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	stale := availableRecord()
+	stale.Status = StatusDeleting
+	replaced := stale
+	replaced.InstanceID = "i-replacement"
+	seedInstance(t, h.svc, replaced)
+
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	require.NoError(t, h.svc.teardownDBInstance(t.Context(), kv, testAccountID, &stale, false))
+
+	assert.Equal(t, []string{"i-replacement"}, h.launcher.terminated)
+	assert.False(t, h.recordExists(t, testDBID))
+}
+
+// A modify that fails after a delete was accepted must not turn the record to
+// failed, or the reconciler would never finish the delete.
+func TestFailTransition_KeepsAnAcceptedDelete(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	rec := availableRecord()
+	rec.Status = StatusDeleting
+	seedInstance(t, h.svc, rec)
+
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	err = h.svc.failTransition(t.Context(), kv, testAccountID, &rec, "the DB instance could not be modified: boom")
+	require.Error(t, err)
+
+	assert.Equal(t, StatusDeleting, h.record(t).Status)
+}

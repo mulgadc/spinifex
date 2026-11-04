@@ -861,6 +861,10 @@ func (r *Reconciler) transitionFresh(ctx context.Context, kv *kvstore.Bucket, id
 	if err != nil || !found {
 		return err
 	}
+	// A delete accepted since this pass read the record now owns it.
+	if rec.Status == StatusDeleting {
+		return nil
+	}
 	return r.transition(ctx, kv, rev, &rec, to, reason)
 }
 

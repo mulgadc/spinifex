@@ -192,6 +192,9 @@ func (s *Service) teardownDBInstance(ctx context.Context, kv *kvstore.Bucket, ac
 	if current.ModifyLease.live() {
 		return errModifyInProgress
 	}
+	// A modify that finished since the delete was accepted may have replaced the
+	// VM, so the teardown works from the record as it is now.
+	rec = current
 
 	// Asked to stop cleanly even though the VM is about to go: it is what makes
 	// the final snapshot a clean checkpoint rather than one needing WAL replay.

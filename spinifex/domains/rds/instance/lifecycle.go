@@ -345,10 +345,15 @@ func (s *Service) completeTransition(ctx context.Context, kv *kvstore.Bucket, id
 // Records why an operation failed and returns the error the caller surfaces, so
 // a failed transition cannot be left looking like one still in progress.
 func (s *Service) failTransition(ctx context.Context, kv *kvstore.Bucket, accountID string, rec *DBInstanceRecord, reason string) error {
-	if err := s.updateInstance(ctx, kv, rec.DBInstanceIdentifier, func(stored *DBInstanceRecord) {
+	// A delete accepted meanwhile owns the record; failing it would drop the delete.
+	if _, err := s.updateInstanceIf(ctx, kv, rec.DBInstanceIdentifier, func(stored *DBInstanceRecord) bool {
+		if stored.Status == StatusDeleting {
+			return false
+		}
 		stored.Status = StatusFailed
 		stored.FailureReason = reason
 		stored.TransitionStartedAt = nil
+		return true
 	}); err != nil {
 		slog.ErrorContext(ctx, "rds: marking a failed lifecycle transition failed",
 			"dbInstance", rec.DBInstanceIdentifier, "err", err)

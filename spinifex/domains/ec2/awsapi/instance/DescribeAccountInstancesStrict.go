@@ -68,7 +68,13 @@ func DescribeAccountInstancesStrict(ctx context.Context, natsConn *nats.Conn, no
 		return nil, incompleteListingError()
 	}
 
-	return &ec2.DescribeInstancesOutput{Reservations: joinLiveOntoRecords(records, live)}, nil
+	joined, nodeOnly := joinLiveOntoRecords(records, live)
+	if len(nodeOnly) > 0 {
+		slog.WarnContext(ctx, "DescribeInstances: strict listing refused, node reports instances with no record",
+			"instances", nodeOnly)
+		return nil, incompleteListingError()
+	}
+	return &ec2.DescribeInstancesOutput{Reservations: joined}, nil
 }
 
 // unconfiguredNodes returns the node IDs that answered but are not in nodeIDs.
@@ -83,9 +89,9 @@ func unconfiguredNodes(frames []natsmsg.Frame, nodeIDs []string) []string {
 }
 
 // joinLiveOntoRecords starts from the recorded instances and replaces each with
-// the answering node's view of it. An instance only a node reports is added, so
-// the result is the union and never the intersection.
-func joinLiveOntoRecords(records, live []*ec2.Reservation) []*ec2.Reservation {
+// the answering node's view of it. Instances only a node reports are returned
+// by ID: a lost record write can cause one, and it must not be dropped.
+func joinLiveOntoRecords(records, live []*ec2.Reservation) ([]*ec2.Reservation, []string) {
 	type entry struct {
 		reservation *ec2.Reservation
 		instance    *ec2.Instance
@@ -112,7 +118,9 @@ func joinLiveOntoRecords(records, live []*ec2.Reservation) []*ec2.Reservation {
 		}
 	}
 	add(records)
+	recorded := len(order)
 	add(live)
+	nodeOnly := slices.Clone(order[recorded:])
 
 	out := make([]*ec2.Reservation, 0, len(order))
 	for _, id := range order {
@@ -124,5 +132,5 @@ func joinLiveOntoRecords(records, live []*ec2.Reservation) []*ec2.Reservation {
 			Instances:     []*ec2.Instance{e.instance},
 		})
 	}
-	return mergeReservationsByID(out)
+	return mergeReservationsByID(out), nodeOnly
 }

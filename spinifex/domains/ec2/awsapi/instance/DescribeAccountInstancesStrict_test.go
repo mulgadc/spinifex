@@ -59,14 +59,13 @@ func TestDescribeAccountInstancesStrict_UnheldRecordIsReturnedWithItsRecordedSta
 	assert.Equal(t, "stopped", aws.StringValue(inst.State.Name))
 }
 
-// A node's answer replaces the recorded view of the instance it holds, and an
-// instance only a node reports is added rather than dropped.
+// A node's answer replaces the recorded view of the instance it holds.
 func TestDescribeAccountInstancesStrict_NodeAnswersAreJoinedOntoRecords(t *testing.T) {
 	t.Parallel()
 	_, nc := startTestNATSServer(t)
 	subscribeAccountRecords(t, nc, mustMarshalDescribeOutput(t, strictReservations(strictInstance("i-held", "pending"))))
 	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-1", mustMarshalDescribeOutput(t,
-		strictReservations(strictInstance("i-held", "running"), strictInstance("i-node-only", "running"))))
+		strictReservations(strictInstance("i-held", "running"))))
 	nc.Flush()
 
 	out, err := strictList(nc, "node-1")
@@ -78,7 +77,26 @@ func TestDescribeAccountInstancesStrict_NodeAnswersAreJoinedOntoRecords(t *testi
 			states[aws.StringValue(inst.InstanceId)] = aws.StringValue(inst.State.Name)
 		}
 	}
-	assert.Equal(t, map[string]string{"i-held": "running", "i-node-only": "running"}, states)
+	assert.Equal(t, map[string]string{"i-held": "running"}, states)
+}
+
+// An instance a node reports with no record can come from a lost record write.
+// Returning it or dropping it would both answer for an unproven account.
+func TestDescribeAccountInstancesStrict_NodeOnlyInstanceFails(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeAccountRecords(t, nc, mustMarshalDescribeOutput(t, strictReservations(strictInstance("i-held", "running"))))
+	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-1", mustMarshalDescribeOutput(t,
+		strictReservations(strictInstance("i-held", "running"), strictInstance("i-node-only", "running"))))
+	nc.Flush()
+
+	out, err := strictList(nc, "node-1")
+
+	require.Error(t, err)
+	assert.Nil(t, out)
+	code, ok := awserrors.ResolveErrorCode(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorServiceUnavailable, code)
 }
 
 // A frame from a node outside the configured set means the expected set is

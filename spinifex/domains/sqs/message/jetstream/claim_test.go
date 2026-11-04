@@ -47,6 +47,7 @@ func claimPos(pos message.Position, vt time.Duration) message.ClaimInput {
 }
 
 func TestClaimLifecycleOnJetStream(t *testing.T) {
+	t.Parallel()
 	s := claimStore(t)
 	ctx := context.Background()
 	pos := appendAt(t, s, fixedNow, fixedNow.Add(10*time.Second))
@@ -80,6 +81,7 @@ func TestClaimLifecycleOnJetStream(t *testing.T) {
 
 // Competing receivers on one message: exactly one claim is acknowledged.
 func TestClaimCompetingReceiversOnJetStream(t *testing.T) {
+	t.Parallel()
 	s := claimStore(t)
 	ctx := context.Background()
 	for _, prior := range []bool{false, true} {
@@ -140,6 +142,7 @@ func (l *lostClaimReply) PutState(ctx context.Context, ns message.Namespace, pos
 }
 
 func TestClaimAppliedButLostReplyOnJetStream(t *testing.T) {
+	t.Parallel()
 	s := claimStore(t)
 	ctx := context.Background()
 	pos := appendAt(t, s, fixedNow, fixedNow)
@@ -208,6 +211,7 @@ func (h *hookedStore) PutState(ctx context.Context, ns message.Namespace, pos me
 // tombstone between the claim's body read and its state read leaves the
 // record absent again; the claim must not resurrect the deleted message.
 func TestClaimDoesNotResurrectRemovedMessage(t *testing.T) {
+	t.Parallel()
 	s := claimStore(t)
 	ctx := context.Background()
 	pos := appendAt(t, s, fixedNow, fixedNow)
@@ -255,6 +259,7 @@ func (c *steppingClock) claimer(s message.Store) *message.Claimer {
 // A slow body or state read does not spend the visibility: the deadline is
 // measured from the claim attempt, after both reads.
 func TestClaimDeadlineFromAttemptNotRequestStart(t *testing.T) {
+	t.Parallel()
 	s := claimStore(t)
 	ctx := context.Background()
 	pos := appendAt(t, s, fixedNow, fixedNow)

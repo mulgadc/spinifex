@@ -50,6 +50,7 @@ func (e receiveEnv) state(t *testing.T, q queue.Record, h string) (map[string]an
 }
 
 func TestDeleteCurrentHandleWritesTombstone(t *testing.T) {
+	t.Parallel()
 	e := newReceiveEnv(t)
 	q := e.create(t, acct, "orders", nil)
 	m := e.receiveOne(t, "orders")
@@ -73,6 +74,7 @@ func TestDeleteCurrentHandleWritesTombstone(t *testing.T) {
 
 // An older handle succeeds without deleting the newer receive.
 func TestDeleteOlderHandleKeepsNewerReceive(t *testing.T) {
+	t.Parallel()
 	e := newReceiveEnv(t)
 	q := e.create(t, acct, "orders", nil)
 	first := e.receiveOne(t, "orders")
@@ -94,6 +96,7 @@ func TestDeleteOlderHandleKeepsNewerReceive(t *testing.T) {
 }
 
 func TestDeleteIsIdempotent(t *testing.T) {
+	t.Parallel()
 	e := newReceiveEnv(t)
 	q := e.create(t, acct, "orders", nil)
 	m := e.receiveOne(t, "orders")
@@ -113,6 +116,7 @@ func TestDeleteIsIdempotent(t *testing.T) {
 // A delete racing a re-receive either tombstones before it, so the receive
 // gets nothing, or loses to it and leaves the newer receive in flight.
 func TestDeleteRacingReReceive(t *testing.T) {
+	t.Parallel()
 	for range 10 {
 		e := newReceiveEnv(t)
 		q := e.create(t, acct, "orders", nil)
@@ -139,6 +143,7 @@ func TestDeleteRacingReReceive(t *testing.T) {
 }
 
 func TestDeleteRefusesInvalidHandles(t *testing.T) {
+	t.Parallel()
 	e := newReceiveEnv(t)
 	q := e.create(t, acct, "orders", nil)
 	e.create(t, acct, "audit", nil)
@@ -170,7 +175,9 @@ func TestDeleteRefusesInvalidHandles(t *testing.T) {
 }
 
 func TestDeleteUnsettledOutcomes(t *testing.T) {
+	t.Parallel()
 	t.Run("lost reply, tombstone applied", func(t *testing.T) {
+		t.Parallel()
 		e := newReceiveEnv(t)
 		q := e.create(t, acct, "orders", nil)
 		m := e.receiveOne(t, "orders")
@@ -180,6 +187,7 @@ func TestDeleteUnsettledOutcomes(t *testing.T) {
 		assert.Equal(t, message.StatusDeleted, st["s"])
 	})
 	t.Run("lost reply, nothing applied", func(t *testing.T) {
+		t.Parallel()
 		e := newReceiveEnv(t)
 		q := e.create(t, acct, "orders", nil)
 		m := e.receiveOne(t, "orders")
@@ -190,6 +198,7 @@ func TestDeleteUnsettledOutcomes(t *testing.T) {
 		assert.Equal(t, before, after)
 	})
 	t.Run("state read fails", func(t *testing.T) {
+		t.Parallel()
 		e := newReceiveEnv(t)
 		e.create(t, acct, "orders", nil)
 		m := e.receiveOne(t, "orders")
@@ -203,6 +212,7 @@ func TestDeleteUnsettledOutcomes(t *testing.T) {
 		"older than key": `{"v":1,"s":"inflight","c":1,"g":0,"d":1,"r":1,"f":1}`,
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			e := newReceiveEnv(t)
 			q := e.create(t, acct, "orders", nil)
 			m := e.receiveOne(t, "orders")
@@ -222,6 +232,7 @@ func TestDeleteUnsettledOutcomes(t *testing.T) {
 
 // Neither handles nor bodies appear in errors or logs on any refusal.
 func TestDeleteKeepsHandlesOutOfErrorsAndLogs(t *testing.T) {
+	// Not parallel: it captures the process-wide default logger.
 	var logs bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))

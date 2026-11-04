@@ -24,6 +24,7 @@ func vis(name, handle string, seconds int) message.ChangeVisibilityInput {
 }
 
 func TestChangeVisibilityExtendsDeadline(t *testing.T) {
+	t.Parallel()
 	e := newReceiveEnv(t)
 	q := e.create(t, acct, "orders", map[string]string{"VisibilityTimeout": "30"})
 	m := e.receiveOne(t, "orders")
@@ -51,6 +52,7 @@ func TestChangeVisibilityExtendsDeadline(t *testing.T) {
 // The cap is the issuing receive's time plus 12 hours, inclusive, and does
 // not reset when the deadline is extended.
 func TestChangeVisibilityTwelveHourCap(t *testing.T) {
+	t.Parallel()
 	e := newReceiveEnv(t)
 	q := e.create(t, acct, "orders", map[string]string{"VisibilityTimeout": "30"})
 	m := e.receiveOne(t, "orders")
@@ -75,6 +77,7 @@ func TestChangeVisibilityTwelveHourCap(t *testing.T) {
 }
 
 func TestChangeVisibilityRefusesInvalidHandles(t *testing.T) {
+	t.Parallel()
 	e := newReceiveEnv(t)
 	q := e.create(t, acct, "orders", nil)
 	e.create(t, acct, "audit", nil)
@@ -96,6 +99,7 @@ func TestChangeVisibilityRefusesInvalidHandles(t *testing.T) {
 // A delete landing between the read and the write wins; the change retries,
 // finds the tombstone and reports not in flight.
 func TestChangeVisibilityRacingDelete(t *testing.T) {
+	t.Parallel()
 	e := newReceiveEnv(t)
 	q := e.create(t, acct, "orders", nil)
 	m := e.receiveOne(t, "orders")
@@ -110,6 +114,7 @@ func TestChangeVisibilityRacingDelete(t *testing.T) {
 // bounded retries are spent; the record ends at one of the requested
 // deadlines with its generation intact.
 func TestChangeVisibilityConcurrent(t *testing.T) {
+	t.Parallel()
 	e := newReceiveEnv(t)
 	q := e.create(t, acct, "orders", nil)
 	m := e.receiveOne(t, "orders")
@@ -141,7 +146,9 @@ func TestChangeVisibilityConcurrent(t *testing.T) {
 }
 
 func TestChangeVisibilityUnsettledOutcomes(t *testing.T) {
+	t.Parallel()
 	t.Run("lost reply, applied", func(t *testing.T) {
+		t.Parallel()
 		e := newReceiveEnv(t)
 		e.create(t, acct, "orders", nil)
 		m := e.receiveOne(t, "orders")
@@ -149,6 +156,7 @@ func TestChangeVisibilityUnsettledOutcomes(t *testing.T) {
 		require.ErrorIs(t, e.changer(f).ChangeVisibility(context.Background(), vis("orders", m.ReceiptHandle, 60)), message.ErrUnavailable)
 	})
 	t.Run("lost reply, not applied, not resent", func(t *testing.T) {
+		t.Parallel()
 		e := newReceiveEnv(t)
 		q := e.create(t, acct, "orders", nil)
 		m := e.receiveOne(t, "orders")
@@ -160,6 +168,7 @@ func TestChangeVisibilityUnsettledOutcomes(t *testing.T) {
 		assert.Equal(t, before, after)
 	})
 	t.Run("state read fails", func(t *testing.T) {
+		t.Parallel()
 		e := newReceiveEnv(t)
 		e.create(t, acct, "orders", nil)
 		m := e.receiveOne(t, "orders")
@@ -173,6 +182,7 @@ func TestChangeVisibilityUnsettledOutcomes(t *testing.T) {
 		"incomplete":     `{"v":1,"s":"inflight","c":1,"g":1}`,
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			e := newReceiveEnv(t)
 			q := e.create(t, acct, "orders", nil)
 			m := e.receiveOne(t, "orders")

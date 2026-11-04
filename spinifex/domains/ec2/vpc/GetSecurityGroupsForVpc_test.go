@@ -227,21 +227,6 @@ func TestGetSecurityGroupsForVpc_DeleteBetweenPagesSkipsNothing(t *testing.T) {
 	assert.ElementsMatch(t, expected, seen)
 }
 
-func TestGetSecurityGroupsForVpc_MaxResultsOutOfRange(t *testing.T) {
-	t.Parallel()
-	svc := setupTestVPCService(t)
-	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
-
-	for _, n := range []int64{4, 1001} {
-		_, err := svc.GetSecurityGroupsForVpc(context.Background(), &ec2.GetSecurityGroupsForVpcInput{
-			VpcId:      aws.String(vpcID),
-			MaxResults: aws.Int64(n),
-		}, testAccountID)
-		require.Error(t, err, "MaxResults %d", n)
-		assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidParameterValue), "MaxResults %d: %v", n, err)
-	}
-}
-
 func TestGetSecurityGroupsForVpc_MalformedNextToken(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)

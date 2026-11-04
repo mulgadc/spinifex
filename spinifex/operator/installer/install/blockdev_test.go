@@ -331,7 +331,7 @@ func TestPrefixRank(t *testing.T) {
 	}
 }
 
-func TestSizeHuman(t *testing.T) {
+func TestHumanSize(t *testing.T) {
 	tests := []struct {
 		bytes int64
 		want  string
@@ -342,8 +342,8 @@ func TestSizeHuman(t *testing.T) {
 		{512, "512B"},
 	}
 	for _, tt := range tests {
-		if got := (Disk{Bytes: tt.bytes}).SizeHuman(); got != tt.want {
-			t.Errorf("SizeHuman(%d) = %q, want %q", tt.bytes, got, tt.want)
+		if got := HumanSize(tt.bytes); got != tt.want {
+			t.Errorf("HumanSize(%d) = %q, want %q", tt.bytes, got, tt.want)
 		}
 	}
 }

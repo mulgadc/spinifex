@@ -90,16 +90,19 @@ func ListDisks() ([]Disk, error) {
 }
 
 // SizeHuman renders the disk size for display, e.g. "1.7T".
-func (d Disk) SizeHuman() string {
+func (d Disk) SizeHuman() string { return HumanSize(d.Bytes) }
+
+// HumanSize renders a byte count for display, e.g. "1.7T".
+func HumanSize(b int64) string {
 	switch {
-	case d.Bytes >= 1<<40:
-		return fmt.Sprintf("%.1fT", float64(d.Bytes)/(1<<40))
-	case d.Bytes >= 1<<30:
-		return fmt.Sprintf("%.1fG", float64(d.Bytes)/(1<<30))
-	case d.Bytes >= 1<<20:
-		return fmt.Sprintf("%.1fM", float64(d.Bytes)/(1<<20))
+	case b >= 1<<40:
+		return fmt.Sprintf("%.1fT", float64(b)/(1<<40))
+	case b >= 1<<30:
+		return fmt.Sprintf("%.1fG", float64(b)/(1<<30))
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1fM", float64(b)/(1<<20))
 	default:
-		return fmt.Sprintf("%dB", d.Bytes)
+		return fmt.Sprintf("%dB", b)
 	}
 }
 

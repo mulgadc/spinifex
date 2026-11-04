@@ -23,6 +23,12 @@ type Signer struct {
 	provider aws.CredentialsProvider
 }
 
+// New returns a Signer over provider. Wrap a provider that fetches remotely in
+// aws.NewCredentialsCache, since Sign retrieves on every call.
+func New(provider aws.CredentialsProvider) *Signer {
+	return &Signer{provider: provider}
+}
+
 // NewStatic returns a Signer using fixed long-lived keys (no session token).
 func NewStatic(accessKey, secretKey string) *Signer {
 	return &Signer{provider: credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")}

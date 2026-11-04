@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/mulgadc/spinifex/internal/ecrauth"
 	"github.com/mulgadc/spinifex/internal/stsauth"
-	"github.com/mulgadc/spinifex/spinifex/agents/ecs/credentials"
 )
 
 const (
@@ -56,7 +56,7 @@ type credRole struct {
 
 type credEntry struct {
 	roleARN string
-	creds   stsauth.Credentials
+	creds   aws.Credentials
 }
 
 // credEndpoint is the host-netns HTTP server that hands a task its IAM role
@@ -64,7 +64,7 @@ type credEntry struct {
 // mints/caches credentials on demand by assuming the role over the gateway with
 // the agent's instance credentials.
 type credEndpoint struct {
-	provider   credentials.CredentialsProvider
+	provider   aws.CredentialsProvider
 	region     string
 	gatewayURL string
 	caPath     string
@@ -75,7 +75,7 @@ type credEndpoint struct {
 
 	// assume mints fresh credentials for a role; defaults to AssumeRole over the
 	// gateway and is overridable in tests.
-	assume func(ctx context.Context, roleARN, sessionName string) (stsauth.Credentials, error)
+	assume func(ctx context.Context, roleARN, sessionName string) (aws.Credentials, error)
 
 	mu         sync.Mutex
 	roles      map[string]credRole  // credID -> task role
@@ -89,7 +89,7 @@ type credEndpoint struct {
 // newCredEndpoint builds the endpoint. An empty ip/port falls back to the
 // AWS-reserved 169.254.170.2:80; tests pass loopback + an ephemeral port. run
 // adds the link-local address to the dummy interface (real or fake).
-func newCredEndpoint(provider credentials.CredentialsProvider, region, gatewayURL, caPath, ip string, port int, run netCmdRunner) *credEndpoint {
+func newCredEndpoint(provider aws.CredentialsProvider, region, gatewayURL, caPath, ip string, port int, run netCmdRunner) *credEndpoint {
 	if ip == "" {
 		ip = defaultCredEndpointIP
 	}
@@ -165,7 +165,7 @@ func (c *credEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		AccessKeyID:     creds.AccessKeyID,
 		SecretAccessKey: creds.SecretAccessKey,
 		Token:           creds.SessionToken,
-		Expiration:      creds.Expiration.UTC().Format(time.RFC3339),
+		Expiration:      creds.Expires.UTC().Format(time.RFC3339),
 	}); err != nil {
 		slog.Warn("ecs-agent: encode credential response", "task", role.taskID, "err", err)
 	}
@@ -176,12 +176,12 @@ var errUnknownCredID = fmt.Errorf("unknown credId")
 
 // fetch returns valid credentials for credID, reusing the cache until within the
 // refresh margin and otherwise assuming the task role over the gateway.
-func (c *credEndpoint) fetch(ctx context.Context, credID string) (stsauth.Credentials, credRole, error) {
+func (c *credEndpoint) fetch(ctx context.Context, credID string) (aws.Credentials, credRole, error) {
 	c.mu.Lock()
 	role, known := c.roles[credID]
 	if !known {
 		c.mu.Unlock()
-		return stsauth.Credentials{}, credRole{}, errUnknownCredID
+		return aws.Credentials{}, credRole{}, errUnknownCredID
 	}
 	if e, ok := c.cache[credID]; ok && e.roleARN == role.roleARN && credValid(e.creds, credRefreshMargin) {
 		c.mu.Unlock()
@@ -191,7 +191,7 @@ func (c *credEndpoint) fetch(ctx context.Context, credID string) (stsauth.Creden
 
 	creds, err := c.assume(ctx, role.roleARN, sessionName(role.taskID))
 	if err != nil {
-		return stsauth.Credentials{}, role, err
+		return aws.Credentials{}, role, err
 	}
 
 	c.mu.Lock()
@@ -204,7 +204,7 @@ func (c *credEndpoint) fetch(ctx context.Context, credID string) (stsauth.Creden
 // roleARN over the gateway — the execution-role path for ECR image pulls. It
 // caches the assumed set and re-assumes within the refresh margin. session scopes
 // the STS session name.
-func (c *credEndpoint) AssumeProvider(roleARN, session string) credentials.CredentialsProvider {
+func (c *credEndpoint) AssumeProvider(roleARN, session string) aws.CredentialsProvider {
 	return &assumeProvider{ep: c, roleARN: roleARN, session: session}
 }
 
@@ -216,39 +216,34 @@ type assumeProvider struct {
 	session string
 
 	mu     sync.Mutex
-	cached stsauth.Credentials
+	cached aws.Credentials
 }
 
-var _ credentials.CredentialsProvider = (*assumeProvider)(nil)
+var _ aws.CredentialsProvider = (*assumeProvider)(nil)
 
-func (p *assumeProvider) Retrieve(ctx context.Context) (credentials.Credentials, error) {
+func (p *assumeProvider) Retrieve(ctx context.Context) (aws.Credentials, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !credValid(p.cached, credRefreshMargin) {
 		creds, err := p.ep.assume(ctx, p.roleARN, p.session)
 		if err != nil {
-			return credentials.Credentials{}, err
+			return aws.Credentials{}, err
 		}
 		p.cached = creds
 	}
-	return credentials.Credentials{
-		AccessKeyID:     p.cached.AccessKeyID,
-		SecretAccessKey: p.cached.SecretAccessKey,
-		SessionToken:    p.cached.SessionToken,
-		Expiration:      p.cached.Expiration,
-	}, nil
+	return p.cached, nil
 }
 
 // assumeOverGateway mints credentials for roleARN by SigV4-signing AssumeRole
 // against the gateway with the agent's instance credentials.
-func (c *credEndpoint) assumeOverGateway(ctx context.Context, roleARN, sessionName string) (stsauth.Credentials, error) {
+func (c *credEndpoint) assumeOverGateway(ctx context.Context, roleARN, sessionName string) (aws.Credentials, error) {
 	instCreds, err := c.provider.Retrieve(ctx)
 	if err != nil {
-		return stsauth.Credentials{}, fmt.Errorf("instance credentials: %w", err)
+		return aws.Credentials{}, fmt.Errorf("instance credentials: %w", err)
 	}
 	client, err := c.client()
 	if err != nil {
-		return stsauth.Credentials{}, err
+		return aws.Credentials{}, err
 	}
 	return stsauth.AssumeRole(c.region, c.gatewayURL, client,
 		instCreds.AccessKeyID, instCreds.SecretAccessKey, instCreds.SessionToken,
@@ -387,14 +382,14 @@ func (c *credEndpoint) delEndpointAddr() {
 }
 
 // credValid reports whether creds are usable now with margin to spare.
-func credValid(c stsauth.Credentials, margin time.Duration) bool {
+func credValid(c aws.Credentials, margin time.Duration) bool {
 	if c.AccessKeyID == "" || c.SecretAccessKey == "" {
 		return false
 	}
-	if c.Expiration.IsZero() {
+	if c.Expires.IsZero() {
 		return true
 	}
-	return time.Now().Add(margin).Before(c.Expiration)
+	return time.Now().Add(margin).Before(c.Expires)
 }
 
 // sessionName derives an AssumeRole RoleSessionName from the task ID, satisfying the

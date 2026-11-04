@@ -559,3 +559,31 @@ func subnetIDsOfLB(lb *elbv2.LoadBalancer) []string {
 	}
 	return out
 }
+
+func TestCreateLoadBalancer_IpAddressTypeIPv4Only(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+		Name: aws.String("ipt-create-v4"), IpAddressType: aws.String("ipv4"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "ipv4", aws.StringValue(out.LoadBalancers[0].IpAddressType))
+
+	for _, ipType := range []string{"dualstack", "dualstack-without-public-ipv4"} {
+		_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+			Name: aws.String("ipt-create-ds"), IpAddressType: aws.String(ipType),
+		}, testAccountID)
+		assert.EqualError(t, err, awserrors.ErrorELBv2InvalidConfigurationRequest, ipType)
+	}
+}
+
+func TestCreateLoadBalancer_CustomerOwnedIpv4PoolRefused(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+		Name: aws.String("coip-lb"), CustomerOwnedIpv4Pool: aws.String("ipv4pool-coip-abc123"),
+	}, testAccountID)
+	assert.EqualError(t, err, awserrors.ErrorELBv2InvalidConfigurationRequest)
+}

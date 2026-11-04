@@ -836,23 +836,6 @@ func TestRolesOverviewNamesTheHardware(t *testing.T) {
 	}
 }
 
-func TestHumanBytes(t *testing.T) {
-	tests := []struct {
-		bytes int64
-		want  string
-	}{
-		{512, "512B"},
-		{2 << 20, "2.0M"},
-		{3 << 30, "3.0G"},
-		{2 << 40, "2.0T"},
-	}
-	for _, tt := range tests {
-		if got := humanBytes(tt.bytes); got != tt.want {
-			t.Errorf("humanBytes(%d) = %q, want %q", tt.bytes, got, tt.want)
-		}
-	}
-}
-
 // The overview writes an address the way an operator does, and falls back to
 // the raw mask rather than dropping it when it is not dotted-decimal.
 func TestFormatCIDR(t *testing.T) {

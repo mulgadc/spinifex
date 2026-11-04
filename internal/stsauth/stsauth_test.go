@@ -41,8 +41,8 @@ func TestAssumeRole_DecodesCredentials(t *testing.T) {
 		t.Errorf("bad creds: %+v", creds)
 	}
 	want, _ := time.Parse(time.RFC3339, "2031-01-02T03:04:05Z")
-	if !creds.Expiration.Equal(want) {
-		t.Errorf("Expiration = %v, want %v", creds.Expiration, want)
+	if !creds.Expires.Equal(want) {
+		t.Errorf("Expires = %v, want %v", creds.Expires, want)
 	}
 	// The request must carry the AssumeRole action and the role ARN we asked for.
 	if !strings.Contains(gotBody, "Action=AssumeRole") {

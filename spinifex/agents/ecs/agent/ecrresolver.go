@@ -7,8 +7,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/mulgadc/spinifex/internal/ecrauth"
-	"github.com/mulgadc/spinifex/spinifex/agents/ecs/credentials"
 	"github.com/mulgadc/spinifex/spinifex/agents/ecs/runtime"
 )
 
@@ -22,7 +22,7 @@ import (
 // pulled, so the agent can still register + heartbeat on a host with absent or
 // wrong ECR config.
 type ecrResolver struct {
-	creds      credentials.CredentialsProvider
+	creds      aws.CredentialsProvider
 	region     string
 	gatewayURL string
 	caPath     string
@@ -35,13 +35,13 @@ var _ runtime.Resolver = (*ecrResolver)(nil)
 
 // newECRResolver builds a resolver with an injected HTTP client (tests). The
 // client is used as-is and never rebuilt from caPath.
-func newECRResolver(creds credentials.CredentialsProvider, region, gatewayURL string, httpClient *http.Client) *ecrResolver {
+func newECRResolver(creds aws.CredentialsProvider, region, gatewayURL string, httpClient *http.Client) *ecrResolver {
 	return &ecrResolver{creds: creds, region: region, gatewayURL: gatewayURL, httpClient: httpClient}
 }
 
 // newLazyECRResolver builds a resolver that constructs its gateway HTTP client
 // from caPath on first use (production path).
-func newLazyECRResolver(creds credentials.CredentialsProvider, region, gatewayURL, caPath string) *ecrResolver {
+func newLazyECRResolver(creds aws.CredentialsProvider, region, gatewayURL, caPath string) *ecrResolver {
 	return &ecrResolver{creds: creds, region: region, gatewayURL: gatewayURL, caPath: caPath}
 }
 

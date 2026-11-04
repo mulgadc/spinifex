@@ -214,19 +214,6 @@ func DeleteNodegroupRecord(ctx context.Context, kv jetstream.KeyValue, cluster, 
 	return nil
 }
 
-// nodegroupAcctKV opens the per-account bucket for nodegroup handlers.
-func (s *EKSServiceImpl) nodegroupAcctKV(ctx context.Context, accountID string) (jetstream.KeyValue, error) {
-	js, err := jetstream.New(s.deps.NATSConn)
-	if err != nil {
-		return nil, fmt.Errorf("jetstream: %w", err)
-	}
-	acctKV, err := GetOrCreateAccountBucket(ctx, js, accountID)
-	if err != nil {
-		return nil, fmt.Errorf("get account bucket: %w", err)
-	}
-	return acctKV, nil
-}
-
 func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV jetstream.KeyValue, input *eks.CreateNodegroupInput, accountID string) (*eks.CreateNodegroupOutput, error) {
 	if input == nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)

@@ -21,14 +21,18 @@ type ModifyListenerAttributesOutput struct {
 	Attributes []ListenerAttribute `locationName:"Attributes" locationNameList:"member" type:"list"`
 }
 
-// ValidateModifyListenerAttributesInput rejects a nil input with InvalidParameterValue and a
-// missing ListenerArn with MissingParameter.
+// ValidateModifyListenerAttributesInput rejects a nil input with InvalidParameterValue, a
+// missing ListenerArn with MissingParameter and missing Attributes with ValidationError.
 func ValidateModifyListenerAttributesInput(input *ModifyListenerAttributesInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	if input.ListenerArn == nil || *input.ListenerArn == "" {
 		return errors.New(awserrors.ErrorMissingParameter)
+	}
+	if len(input.Attributes) == 0 {
+		return awserrors.Errorf(awserrors.ErrorValidationError,
+			"1 validation error detected: Value null at 'attributes' failed to satisfy constraint: Member must not be null")
 	}
 	return nil
 }

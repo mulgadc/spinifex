@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"slices"
 	"strconv"
@@ -827,7 +826,7 @@ func (m model) geometryPreview() string {
 		return styleLabel.Render("  " + roleLayoutLine(cfg))
 	}
 	line := fmt.Sprintf("  %s across %d disk(s) — %s usable",
-		cfg.FS.Label(), len(cfg.Disks), humanBytes(cfg.UsableBytes()))
+		cfg.FS.Label(), len(cfg.Disks), install.HumanSize(cfg.UsableBytes()))
 	if n := cfg.Tolerated(); n > 0 {
 		line += fmt.Sprintf(", survives %d disk failure(s)", n)
 	}
@@ -1039,20 +1038,6 @@ func parseDNS(raw string) []string {
 	return out
 }
 
-// humanBytes renders a capacity for the geometry preview.
-func humanBytes(b int64) string {
-	switch {
-	case b >= 1<<40:
-		return fmt.Sprintf("%.1fT", float64(b)/(1<<40))
-	case b >= 1<<30:
-		return fmt.Sprintf("%.1fG", float64(b)/(1<<30))
-	case b >= 1<<20:
-		return fmt.Sprintf("%.1fM", float64(b)/(1<<20))
-	default:
-		return fmt.Sprintf("%dB", b)
-	}
-}
-
 // truncate shortens a field so a long drive or NIC model does not wrap the
 // table it sits in. It counts runes, since vendor strings are not all ASCII.
 func truncate(s string, n int) string {
@@ -1061,18 +1046,4 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(r[:n-1]) + "…"
-}
-
-// validSubnetMask accepts dotted-decimal only (255.255.255.0). Prefix length is
-// deliberately rejected: netgen converts the mask with net.ParseIP, so a "24"
-// accepted here passed validation and then failed the install itself with
-// "invalid mask: 24" — after the disk had already been partitioned.
-func validSubnetMask(s string) bool {
-	ip := net.ParseIP(strings.TrimSpace(s))
-	if ip == nil || ip.To4() == nil {
-		return false
-	}
-	_, bits := net.IPMask(ip.To4()).Size()
-	// Size reports zero bits for a non-contiguous mask, which netgen rejects too.
-	return bits != 0
 }

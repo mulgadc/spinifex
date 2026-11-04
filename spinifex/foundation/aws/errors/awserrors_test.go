@@ -50,28 +50,6 @@ func TestErrorLookup_Structure(t *testing.T) {
 	}
 }
 
-func TestValidErrorCode(t *testing.T) {
-	tests := []struct {
-		name string
-		code string
-		want string
-	}{
-		{name: "known error code", code: ErrorAuthFailure, want: ErrorAuthFailure},
-		{name: "another known code", code: ErrorInvalidParameterValue, want: ErrorInvalidParameterValue},
-		{name: "unknown code returns ServerInternal", code: "CompletelyMadeUp", want: ErrorServerInternal},
-		{name: "empty string returns ServerInternal", code: "", want: ErrorServerInternal},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := ValidErrorCode(tt.code)
-			if got != tt.want {
-				t.Errorf("ValidErrorCode(%q) = %q, want %q", tt.code, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestResolveErrorCode(t *testing.T) {
 	known := errors.New(ErrorInsufficientAddressCapacity)
 	tests := []struct {
@@ -281,28 +259,6 @@ func TestValidErrorCodeFromError(t *testing.T) {
 	}
 }
 
-func TestHasErrorCode(t *testing.T) {
-	tests := []struct {
-		name string
-		code string
-		want bool
-	}{
-		{"known code", ErrorInsufficientInstanceCapacity, true},
-		{"another known code", ErrorAuthFailure, true},
-		{"wrapped code is not exact", "launch workers: " + ErrorInsufficientInstanceCapacity, false},
-		{"unknown code", "CompletelyMadeUp", false},
-		{"empty string", "", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := HasErrorCode(tt.code); got != tt.want {
-				t.Errorf("HasErrorCode(%q) = %v, want %v", tt.code, got, tt.want)
-			}
-		})
-	}
-}
-
 // TestIsNotFound covers the destroy-orchestration tolerance helper: it matches
 // any AWS canonical InvalidX.NotFound (so teardown converges on already-gone
 // resources) and only those — a nil error or a non-NotFound failure is not
@@ -333,23 +289,5 @@ func TestIsNotFound(t *testing.T) {
 				t.Errorf("IsNotFound(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestWithFields_SurvivesWrappingAndKeepsTheCode(t *testing.T) {
-	err := fmt.Errorf("handler: %w", WithFields(Errorf(ErrorInvalidParameterValue, "bad"), map[string]string{"Reason": "R"}))
-
-	code, message, ok := ResolveErrorDetail(err)
-	if !ok || code != ErrorInvalidParameterValue || message != "bad" {
-		t.Errorf("ResolveErrorDetail = %q, %q, %v", code, message, ok)
-	}
-	if got := ResolveFields(err); len(got) != 1 || got["Reason"] != "R" {
-		t.Errorf("ResolveFields = %v", got)
-	}
-	if got := ResolveFields(errors.New(ErrorInvalidParameterValue)); got != nil {
-		t.Errorf("unattached ResolveFields = %v", got)
-	}
-	if WithFields(nil, map[string]string{"a": "b"}) != nil {
-		t.Error("WithFields(nil) must stay nil")
 	}
 }

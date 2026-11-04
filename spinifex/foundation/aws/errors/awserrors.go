@@ -629,16 +629,6 @@ var (
 	ErrorServiceException          = "ServiceException"
 )
 
-// ValidErrorCode returns the error code if it exists in ErrorLookup,
-// otherwise returns ErrorServerInternal. Use this to sanitize error strings
-// before sending them to clients.
-func ValidErrorCode(code string) string {
-	if _, ok := ErrorLookup[code]; ok {
-		return code
-	}
-	return ErrorServerInternal
-}
-
 // ResolveErrorCode returns the first registered AWS error code in err's unwrap tree.
 func ResolveErrorCode(err error) (string, bool) {
 	code, _, ok := ResolveErrorDetail(err)
@@ -775,33 +765,6 @@ func ResolveRetryAfter(err error) (time.Duration, bool) {
 	return 0, false
 }
 
-// fieldsError attaches extra response-body fields to an error without changing
-// its text, for protocols that carry them (e.g. a REST-JSON throttle Reason).
-type fieldsError struct {
-	err    error
-	fields map[string]string
-}
-
-func (e *fieldsError) Error() string { return e.err.Error() }
-func (e *fieldsError) Unwrap() error { return e.err }
-
-// WithFields attaches extra top-level response-body fields to err. Protocols
-// without extra fields ignore them.
-func WithFields(err error, fields map[string]string) error {
-	if err == nil || len(fields) == 0 {
-		return err
-	}
-	return &fieldsError{err: err, fields: fields}
-}
-
-// ResolveFields returns the fields attached to err via WithFields, if any.
-func ResolveFields(err error) map[string]string {
-	if fe, ok := errors.AsType[*fieldsError](err); ok {
-		return fe.fields
-	}
-	return nil
-}
-
 // errorLookupByService overrides ErrorLookup's message and HTTP status for a
 // (service, code) pair whose wire code is shared by services with different
 // canonical wording — e.g. ACM and EKS both use "ResourceInUseException".
@@ -897,14 +860,6 @@ func HTTPStatusForError(err error) int {
 		return status
 	}
 	return http.StatusInternalServerError
-}
-
-// HasErrorCode reports whether s is exactly a registered AWS error code.
-// Use it to decide whether an error string may be surfaced to clients verbatim
-// (mapped to its real HTTP status) rather than wrapped/sanitized to 500.
-func HasErrorCode(s string) bool {
-	_, ok := ErrorLookup[s]
-	return ok
 }
 
 // IsErrorCode reports whether err carries the named AWS error code.

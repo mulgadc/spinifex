@@ -74,12 +74,12 @@ func (r *OrphanQEMUReaper) Sweep(context.Context) (int, error) {
 		if err != nil {
 			continue // no PID file on this node: process is not here
 		}
-		if pid <= 0 {
-			continue // not a PID: unknown state, so the file is kept
-		}
-		if !hostprocess.ProcessAlive(pid) {
+		if hostprocess.ProcessExited(pid) {
 			_ = hostprocess.RemovePidFile(v.ID) // stale PID file for a dead, terminated instance
 			continue
+		}
+		if !hostprocess.ProcessAlive(pid) {
+			continue // not provably gone and not signalable: unknown state, file kept
 		}
 
 		slog.Warn("vm/gc: reaping orphan QEMU for terminated instance (held OVN ports)",
@@ -137,10 +137,7 @@ func pidReadProvesExit(pid int, err error) bool {
 	if err != nil {
 		return errors.Is(err, fs.ErrNotExist)
 	}
-	if pid <= 0 {
-		return false
-	}
-	return !hostprocess.ProcessAlive(pid)
+	return hostprocess.ProcessExited(pid)
 }
 
 // qemuConfirmedDead reports whether the instance's QEMU is provably gone: its
@@ -150,8 +147,8 @@ func pidReadProvesExit(pid int, err error) bool {
 // rather than short-circuiting on an absent file.
 func qemuConfirmedDead(instanceID string) bool {
 	pid, err := hostprocess.ReadPidFile(instanceID)
-	if err != nil || pid <= 0 {
+	if err != nil {
 		return false
 	}
-	return !hostprocess.ProcessAlive(pid)
+	return hostprocess.ProcessExited(pid)
 }

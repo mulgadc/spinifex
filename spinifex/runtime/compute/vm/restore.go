@@ -304,6 +304,11 @@ func killOrphanedQEMU(instance *VM) bool {
 			"instanceId", instance.ID, "pid", pid, "err", err)
 		return false
 	}
+	if !hostprocess.ProcessExited(pid) {
+		slog.Error("Orphaned QEMU not provably gone after SIGKILL, skipping relaunch",
+			"instanceId", instance.ID, "pid", pid)
+		return false
+	}
 	_ = hostprocess.RemovePidFile(instance.ID)
 	return true
 }

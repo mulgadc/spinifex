@@ -491,3 +491,25 @@ func TestWaitForProcessExit_Timeout(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "timeout")
 }
+
+func TestProcessExited(t *testing.T) {
+	assert.False(t, ProcessExited(os.Getpid()), "a running process has not exited")
+	assert.False(t, ProcessExited(0))
+	assert.False(t, ProcessExited(-1))
+	assert.True(t, ProcessExited(deadpid.PID), "a non-existent pid has exited")
+
+	cmd := exec.Command("true")
+	require.NoError(t, cmd.Run())
+	assert.True(t, ProcessExited(cmd.Process.Pid), "a reaped child has exited")
+
+	t.Run("injected EPERM is not an exit", func(t *testing.T) {
+		SetSignalProbeForTest(t, func(int) error { return syscall.EPERM })
+		assert.False(t, ProcessExited(deadpid.PID))
+	})
+	t.Run("pid 1 as non-root gives EPERM", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root can signal pid 1")
+		}
+		assert.False(t, ProcessExited(1))
+	})
+}

@@ -10,9 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/internal/testkit/deadpid"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -335,4 +337,38 @@ func TestS7_PidFileDeletionSitesKeepNonPositivePids(t *testing.T) {
 			assert.False(t, qemuConfirmedDead(id))
 		})
 	}
+}
+
+// TestS7_UnsignalablePidIsNotProofOfExit enforces ADR-0003:S7: a signal-0 probe
+// that fails with EPERM (a live process of another user, or a reused PID) is not
+// exit, so the PID file and the volumes survive backstop -> orphan -> teardown.
+func TestS7_UnsignalablePidIsNotProofOfExit(t *testing.T) {
+	hostprocess.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
+	hostprocess.SetSignalProbeForTest(t, func(int) error { return syscall.EPERM })
+
+	cleaner := &recordingInstanceCleaner{}
+	stuck, store := newStuckTerminateReaper(t, cleaner)
+	const id = "i-eperm-pid-sequence"
+	require.NoError(t, hostprocess.WritePidFile(id, deadpid.PID))
+	stuck.m.InsertIfAbsent(&VM{
+		ID:             id,
+		Status:         StateShuttingDown,
+		LastNode:       "test-node",
+		ShuttingDownAt: time.Now().Add(-(stuckTerminateTimeout + time.Minute)),
+	})
+
+	_, err := stuck.Sweep(context.Background())
+	require.NoError(t, err)
+	require.Contains(t, store.terminated, id)
+	assert.True(t, pidFileExists(t, id), "backstop must keep the file")
+
+	_, err = stuck.m.NewOrphanQEMUReaper().Sweep(context.Background())
+	require.NoError(t, err)
+	assert.True(t, pidFileExists(t, id), "orphan reaper must keep the file")
+
+	_, err = stuck.m.NewTerminatedTeardownReaper().Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, cleaner.deleteVolumes)
+
+	assert.False(t, qemuConfirmedDead(id))
 }

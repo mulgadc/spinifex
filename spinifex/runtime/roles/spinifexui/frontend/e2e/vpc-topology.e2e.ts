@@ -144,6 +144,12 @@ test.describe("VPC topology", () => {
     await expect(page).toHaveURL(
       new RegExp(`/ec2/describe-subnets\\?selected=${PRIVATE}`, "u"),
     )
+    await expect(
+      page
+        .getByRole("region", { name: "Subnet details" })
+        .getByText("10.0.2.0/24")
+        .first(),
+    ).toBeVisible()
   })
 
   test("has no control that edits the network", async ({ page }) => {

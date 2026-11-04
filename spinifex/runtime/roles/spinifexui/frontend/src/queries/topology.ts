@@ -14,8 +14,10 @@ import { queryOptions } from "@tanstack/react-query"
 import { getEc2Client, getElbv2Client, getRdsClient } from "@/lib/aws-client"
 import type { MapResource, NetworkInputs } from "@/lib/network-map"
 
-// The map reads at most this many pages of each resource type.
+// The map reads at most this many pages of each resource type, each of a
+// fixed size, so an account's size never sets how much it reads.
 export const MAP_PAGE_LIMIT = 5
+export const MAP_PAGE_SIZE = 100
 
 interface Page<T> {
   items: T[]
@@ -82,14 +84,22 @@ async function readVpc(vpcId: string) {
   return await Promise.allSettled([
     readPages(async (NextToken) => {
       const r = await ec2.send(
-        new DescribeSubnetsCommand({ Filters: inVpc, NextToken }),
+        new DescribeSubnetsCommand({
+          Filters: inVpc,
+          MaxResults: MAP_PAGE_SIZE,
+          NextToken,
+        }),
       )
 
       return { items: r.Subnets ?? [], next: r.NextToken }
     }),
     readPages(async (NextToken) => {
       const r = await ec2.send(
-        new DescribeRouteTablesCommand({ Filters: inVpc, NextToken }),
+        new DescribeRouteTablesCommand({
+          Filters: inVpc,
+          MaxResults: MAP_PAGE_SIZE,
+          NextToken,
+        }),
       )
 
       return { items: r.RouteTables ?? [], next: r.NextToken }
@@ -98,6 +108,7 @@ async function readVpc(vpcId: string) {
       const r = await ec2.send(
         new DescribeInternetGatewaysCommand({
           Filters: [{ Name: "attachment.vpc-id", Values: [vpcId] }],
+          MaxResults: MAP_PAGE_SIZE,
           NextToken,
         }),
       )
@@ -106,7 +117,11 @@ async function readVpc(vpcId: string) {
     }),
     readPages(async (NextToken) => {
       const r = await ec2.send(
-        new DescribeNatGatewaysCommand({ Filter: inVpc, NextToken }),
+        new DescribeNatGatewaysCommand({
+          Filter: inVpc,
+          MaxResults: MAP_PAGE_SIZE,
+          NextToken,
+        }),
       )
 
       return { items: r.NatGateways ?? [], next: r.NextToken }
@@ -119,7 +134,11 @@ async function readVpc(vpcId: string) {
     }),
     readPages(async (NextToken) => {
       const r = await ec2.send(
-        new DescribeInstancesCommand({ Filters: inVpc, NextToken }),
+        new DescribeInstancesCommand({
+          Filters: inVpc,
+          MaxResults: MAP_PAGE_SIZE,
+          NextToken,
+        }),
       )
 
       return {
@@ -130,14 +149,17 @@ async function readVpc(vpcId: string) {
     // Neither service filters by VPC, so the builder does.
     readPages(async (Marker) => {
       const r = await getElbv2Client().send(
-        new DescribeLoadBalancersCommand({ Marker }),
+        new DescribeLoadBalancersCommand({ Marker, PageSize: MAP_PAGE_SIZE }),
       )
 
       return { items: r.LoadBalancers ?? [], next: r.NextMarker }
     }),
     readPages(async (Marker) => {
       const r = await getRdsClient().send(
-        new DescribeDBInstancesCommand({ Marker }),
+        new DescribeDBInstancesCommand({
+          Marker,
+          MaxRecords: MAP_PAGE_SIZE,
+        }),
       )
 
       return { items: r.DBInstances ?? [], next: r.Marker }

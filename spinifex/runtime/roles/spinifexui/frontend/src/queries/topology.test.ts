@@ -10,7 +10,12 @@ vi.mock("@/lib/aws-client", async () => {
 
 import { callQueryFn } from "@/test/query"
 
-import { MAP_PAGE_LIMIT, networkMapQueryOptions, readPages } from "./topology"
+import {
+  MAP_PAGE_LIMIT,
+  MAP_PAGE_SIZE,
+  networkMapQueryOptions,
+  readPages,
+} from "./topology"
 
 describe("readPages", () => {
   it("follows markers until a page has none", async () => {
@@ -79,5 +84,28 @@ describe("networkMapQueryOptions", () => {
     ])
     expect(result.incomplete).toStrictEqual(["instances"])
     expect(result.failed).toStrictEqual(["dbInstances"])
+  })
+
+  it("asks for a fixed page size wherever the API takes one", async () => {
+    mockSend.mockResolvedValue({})
+    await callQueryFn(networkMapQueryOptions("vpc-1"))
+
+    const sizes = Object.fromEntries(
+      mockSend.mock.calls.map(([c]) => [
+        c.constructor.name,
+        c.input.MaxResults ?? c.input.PageSize ?? c.input.MaxRecords,
+      ]),
+    )
+
+    expect(sizes).toStrictEqual({
+      DescribeAddressesCommand: undefined,
+      DescribeDBInstancesCommand: MAP_PAGE_SIZE,
+      DescribeInstancesCommand: MAP_PAGE_SIZE,
+      DescribeInternetGatewaysCommand: MAP_PAGE_SIZE,
+      DescribeLoadBalancersCommand: MAP_PAGE_SIZE,
+      DescribeNatGatewaysCommand: MAP_PAGE_SIZE,
+      DescribeRouteTablesCommand: MAP_PAGE_SIZE,
+      DescribeSubnetsCommand: MAP_PAGE_SIZE,
+    })
   })
 })

@@ -287,6 +287,22 @@ describe("buildNetworkMap", () => {
       }
     })
 
+    it("holds the budget at the most the queries can read", () => {
+      // Five pages of 100 for each paged type.
+      const largest = inputs({
+        subnets: Array.from({ length: 500 }, (_, n) => subnet(n + 1)),
+        instances: Array.from({ length: 500 }, (_, n) =>
+          instance(n + 1, `subnet-${n + 1}`),
+        ),
+      })
+
+      const map = buildNetworkMap(largest, VPC_FOCUS)
+
+      expect(map.cards.length).toBeLessThanOrEqual(MAP_BUDGET.cards)
+      expect(map.links.length).toBeLessThanOrEqual(MAP_BUDGET.edges)
+      expect(map.omitted).toBeGreaterThan(800)
+    })
+
     it("only draws lines between cards it placed", () => {
       const map = buildNetworkMap(crowded, VPC_FOCUS)
       const placed = new Set(map.cards.map((c) => c.id))

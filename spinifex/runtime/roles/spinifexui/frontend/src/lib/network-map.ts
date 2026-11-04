@@ -437,20 +437,16 @@ function claimOrder(cards: Draft[], links: MapLink[], selected: string) {
     .toSorted(byRankThenName)
 
   const rest = cards.toSorted(byRankThenName)
-  const order: string[] = []
 
-  for (const card of [
-    ...cards.filter((c) => c.id === selected),
-    ...frame,
-    ...neighbours,
-    ...rest,
-  ]) {
-    if (!order.includes(card.id)) {
-      order.push(card.id)
-    }
-  }
-
-  return order
+  // A set keeps each card's first, highest-priority place.
+  return new Set(
+    [
+      ...cards.filter((c) => c.id === selected),
+      ...frame,
+      ...neighbours,
+      ...rest,
+    ].map((c) => c.id),
+  )
 }
 
 // What a tier's "+N more" card hangs from, which the frame always places.
@@ -470,14 +466,23 @@ export function buildNetworkMap(
   const cardRoom = budget.cards - MAP_TIERS.length
   const edgeRoom = budget.edges - MAP_TIERS.length
 
+  const ends = new Map<string, MapLink[]>()
+
+  for (const l of links) {
+    ends.set(l.source, [...(ends.get(l.source) ?? []), l])
+
+    if (l.target !== l.source) {
+      ends.set(l.target, [...(ends.get(l.target) ?? []), l])
+    }
+  }
+
   const placed = new Set<string>()
   let lines = 0
 
   for (const id of claimOrder(cards, links, selected)) {
-    const joining = links.filter(
-      (l) =>
-        (l.source === id && (placed.has(l.target) || l.target === id)) ||
-        (l.target === id && placed.has(l.source)),
+    // The lines this card adds: those whose other end is already placed.
+    const joining = (ends.get(id) ?? []).filter((l) =>
+      placed.has(l.source === id ? l.target : l.source),
     ).length
 
     if (placed.size + 1 > cardRoom || lines + joining > edgeRoom) {

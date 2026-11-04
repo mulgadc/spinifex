@@ -107,7 +107,7 @@ func TestS7_TerminateSystemInstanceRefusesCustomerInstance(t *testing.T) {
 		{"running customer", &vm.VM{ID: "i-c-running", Status: vm.StateRunning, AccountID: testAccountID}, atLive},
 		{"stopped customer", &vm.VM{ID: "i-c-stopped", Status: vm.StateStopped, AccountID: testAccountID}, atStopped},
 		{"terminated customer", &vm.VM{ID: "i-c-terminated", Status: vm.StateTerminated, AccountID: testAccountID}, atTerminated},
-		{"system manager in a customer account", &vm.VM{ID: "i-c-mgr", Status: vm.StateRunning, AccountID: testAccountID, ManagedBy: tags.ManagedByEKS}, atLive},
+		{"system manager in a customer account", &vm.VM{ID: "i-c-mgr", Status: vm.StateRunning, AccountID: testAccountID, ManagedBy: tags.ManagedByELBv2}, atLive},
 		{"system account without a manager", &vm.VM{ID: "i-c-nomgr", Status: vm.StateRunning, AccountID: awsidentifiers.GlobalAccountID}, atLive},
 		{"system account, unknown manager", &vm.VM{ID: "i-c-unknown", Status: vm.StateRunning, AccountID: awsidentifiers.GlobalAccountID, ManagedBy: "somebody"}, atLive},
 	}
@@ -429,4 +429,96 @@ func TestTerminateSystemInstance_RoutedNotSystemMapsBack(t *testing.T) {
 	require.ErrorIs(t, err, systeminstance.ErrSystemInstanceNotSystem)
 	assert.NotErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound)
 	assert.NotErrorIs(t, err, systeminstance.ErrSystemInstanceOwnershipUnknown)
+}
+
+// A VM this node runs whose record has vanished is not gone: reporting NotFound
+// would send a caller on to clean up under a live guest.
+func TestS7_HeldVMWithAbsentRecordIsOwnershipUnknown(t *testing.T) {
+	d := guardDaemon(t)
+	terminated := countTerminations(d)
+	sys := &vm.VM{ID: "i-sys-norecord", Status: vm.StateRunning, AccountID: awsidentifiers.GlobalAccountID, ManagedBy: tags.ManagedByELBv2}
+	stage(t, d, sys, atNone)
+	d.vmMgr.Insert(sys)
+
+	for _, err := range []error{d.TerminateSystemInstance(sys.ID), d.terminateSystemInstanceLocal(sys.ID)} {
+		require.ErrorIs(t, err, systeminstance.ErrSystemInstanceOwnershipUnknown)
+		assert.NotErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound)
+	}
+	assert.Equal(t, vm.StateRunning, d.vmMgr.Status(sys))
+	assert.Zero(t, terminated.Load())
+}
+
+// absentAfterFirst classifies as a system VM once, then reports the record gone.
+type absentAfterFirst struct {
+	first systeminstance.Classification
+	calls *atomic.Int32
+}
+
+func (f absentAfterFirst) Classify(string) (systeminstance.Classification, error) {
+	if f.calls.Add(1) == 1 {
+		return f.first, nil
+	}
+	return systeminstance.Classification{Ownership: systeminstance.OwnershipAbsent}, nil
+}
+
+func TestS7_SystemThenAbsentKeepsLaunchEIP(t *testing.T) {
+	d := createVPCTestDaemon(t)
+	_, nc, js := testutil.StartTestJetStream(t)
+	ipam, err := ec2vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
+		{Name: "wan-test", RangeStart: "203.0.113.10", RangeEnd: "203.0.113.20", Gateway: "203.0.113.1", PrefixLen: 24},
+	})
+	require.NoError(t, err)
+	svc, err := ec2eip.NewEIPServiceImpl(t.Context(), nc, ipam, d.vpcService)
+	require.NoError(t, err)
+	d.eipService = svc
+	kv, err := js.KeyValue(t.Context(), ec2eip.KVBucketEIPs)
+	require.NoError(t, err)
+	launch, err := svc.AllocateAddress(t.Context(), &ec2.AllocateAddressInput{}, testAccountID)
+	require.NoError(t, err)
+	launchID := aws.StringValue(launch.AllocationId)
+	associateEIP(t, kv, launchID, "eni-alb")
+
+	sys := &vm.VM{ID: "i-alb-vanish", Status: vm.StateRunning, AccountID: awsidentifiers.GlobalAccountID, ManagedBy: tags.ManagedByELBv2}
+	d.vmMgr.Insert(sys)
+	d.ownership = absentAfterFirst{
+		first: systeminstance.Classification{Ownership: systeminstance.OwnershipSystem, PublicIPAllocID: launchID, ENIID: "eni-alb"},
+		calls: &atomic.Int32{},
+	}
+
+	err = d.TerminateSystemInstance(sys.ID)
+
+	require.ErrorIs(t, err, systeminstance.ErrSystemInstanceOwnershipUnknown)
+	assert.NotErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound)
+	assert.Equal(t, vm.StateRunning, d.vmMgr.Status(sys), "the VM is still running")
+	assert.True(t, addressKept(t, svc, launchID), "a running VM keeps its launch address")
+}
+
+// Control-plane VMs launched before EKS moved to the system account carry the
+// manager in a customer account; they stay terminable. Other managers do not.
+func TestClassify_LegacyEKSControlPlaneInCustomerAccountIsSystem(t *testing.T) {
+	d := guardDaemon(t)
+	for _, loc := range []recordLocation{atLive, atStopped, atTerminated} {
+		legacy := &vm.VM{ID: "i-legacy-cp", Status: vm.StateRunning, AccountID: testAccountID, ManagedBy: tags.ManagedByEKS}
+		if loc == atStopped {
+			legacy.Status = vm.StateStopped
+		}
+		if loc == atTerminated {
+			legacy.Status = vm.StateTerminated
+		}
+		stage(t, d, legacy, loc)
+		c, err := d.jsManager.Classify(legacy.ID)
+		require.NoError(t, err)
+		assert.Equal(t, systeminstance.OwnershipSystem, c.Ownership, "location %d", loc)
+	}
+
+	other := &vm.VM{ID: "i-cust-elb", Status: vm.StateRunning, AccountID: testAccountID, ManagedBy: tags.ManagedByELBv2}
+	stage(t, d, other, atLive)
+	c, err := d.jsManager.Classify(other.ID)
+	require.NoError(t, err)
+	assert.Equal(t, systeminstance.OwnershipCustomer, c.Ownership, "only EKS keeps the legacy exception")
+
+	live := &vm.VM{ID: "i-legacy-cp-live", Status: vm.StateRunning, AccountID: testAccountID, ManagedBy: tags.ManagedByEKS}
+	stage(t, d, live, atLive)
+	require.NoError(t, d.TerminateSystemInstance(live.ID))
+	assert.Equal(t, vm.StateTerminated, d.vmMgr.Status(live))
 }

@@ -692,6 +692,10 @@ func (d *Daemon) requireSystemInstance(instanceID string) (systeminstance.Classi
 		if cls.Ownership == systeminstance.OwnershipCustomer {
 			return cls, fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotSystem, instanceID)
 		}
+		// A VM this node runs with no record is not gone: callers must retry, not clean up.
+		if _, held := d.vmMgr.Get(instanceID); held {
+			return cls, fmt.Errorf("%w: %s: no record for a VM this node runs", systeminstance.ErrSystemInstanceOwnershipUnknown, instanceID)
+		}
 		return cls, fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotFound, instanceID)
 	}
 	return cls, nil

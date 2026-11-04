@@ -1535,6 +1535,12 @@ func (s *EKSServiceImpl) teardownClusterInfra(ctx context.Context, accountID, na
 		if err := TerminateK3sServerVM(ctx, s.deps.VPCK3s, s.deps.Instance,
 			infraAcct, cp.InstanceID, cp.ENIID); err != nil {
 			fail(stepControlPlane, fmt.Errorf("terminate K3s VM %s: %w", cp.InstanceID, err))
+			// The VM may still be running or is not ours to end, so its egress,
+			// ENIs and network must stay for the retry.
+			if errors.Is(err, systeminstance.ErrSystemInstanceOwnershipUnknown) ||
+				errors.Is(err, systeminstance.ErrSystemInstanceNotSystem) {
+				return failedSteps, errors.Join(teardownErrs...)
+			}
 		}
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -550,4 +552,38 @@ func TestDeleteClusterCPVPC_OVNGCSelection(t *testing.T) {
 		_, err = sub.NextMsg(50 * time.Millisecond)
 		assert.ErrorIs(t, err, nats.ErrTimeout, "no known vpc id: nothing to GC, must not publish")
 	})
+}
+
+// A control-plane VM that may still be running, or is not a system VM at all,
+// must stop the whole teardown: the egress address, ENIs and network it leans on
+// stay for the retry. An ordinary terminate failure keeps going, as before.
+func TestDeleteCluster_RefusedControlPlaneTerminateStopsTeardown(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		err  error
+		stop bool
+	}{
+		{"ownership unknown", fmt.Errorf("%w: i-cp", systeminstance.ErrSystemInstanceOwnershipUnknown), true},
+		{"not a system instance", fmt.Errorf("%w: i-cp", systeminstance.ErrSystemInstanceNotSystem), true},
+		{"ordinary failure", errors.New("hypervisor unreachable"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newDeleteClusterFixture(t, "alpha")
+			f.inst.terminateErr = tc.err
+
+			deleteAndSettle(t, f.svc, "alpha")
+
+			meta := requireTeardownRetained(t, f.kv, "alpha")
+			assert.Equal(t, stepControlPlane, meta.DeleteFailedStep)
+			if tc.stop {
+				assert.Empty(t, f.eip.releaseCalls, "egress address must be left alone")
+				assert.Empty(t, f.vpc.deleteCalls, "no ENI may be deleted under a VM that may be running")
+				assert.Empty(t, f.vpc.detachCalls)
+				return
+			}
+			assert.NotEmpty(t, f.eip.releaseCalls, "an ordinary failure still runs the later steps")
+		})
+	}
 }

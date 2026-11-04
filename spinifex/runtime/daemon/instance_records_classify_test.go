@@ -25,7 +25,7 @@ func TestClassify_MapsEachRecordLocationAndShape(t *testing.T) {
 	require.NoError(t, m.WriteTerminatedInstanceRecord(term.ID, term.Record()))
 	termSys := &vm.VM{ID: "i-term-sys", AccountID: awsidentifiers.GlobalAccountID, ManagedBy: tags.ManagedByELBv2, Status: vm.StateTerminated}
 	require.NoError(t, m.WriteTerminatedInstanceRecord(termSys.ID, termSys.Record()))
-	mgrInCustomer := &vm.VM{ID: "i-mgr-cust", AccountID: "111122223333", ManagedBy: tags.ManagedByEKS, Status: vm.StateRunning}
+	mgrInCustomer := &vm.VM{ID: "i-mgr-cust", AccountID: "111122223333", ManagedBy: tags.ManagedByRDS, Status: vm.StateRunning}
 	require.NoError(t, m.WriteInstanceRecord(mgrInCustomer.ID, mgrInCustomer.Record()))
 	sysNoMgr := &vm.VM{ID: "i-sys-nomgr", AccountID: awsidentifiers.GlobalAccountID, Status: vm.StateRunning}
 	require.NoError(t, m.WriteInstanceRecord(sysNoMgr.ID, sysNoMgr.Record()))

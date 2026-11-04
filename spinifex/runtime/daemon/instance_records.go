@@ -241,7 +241,7 @@ func (m *JetStreamManager) Classify(instanceID string) (systeminstance.Classific
 	switch {
 	case record == nil:
 		return systeminstance.Classification{Ownership: systeminstance.OwnershipAbsent}, nil
-	case tags.IsSystemManaged(record.Spec.ManagedBy) && record.Metadata.AccountID == awsidentifiers.GlobalAccountID:
+	case isSystemRecord(record.Spec.ManagedBy, record.Metadata.AccountID):
 		return systeminstance.Classification{
 			Ownership:       systeminstance.OwnershipSystem,
 			PublicIPAllocID: record.Status.PublicIPAllocID,
@@ -249,6 +249,16 @@ func (m *JetStreamManager) Classify(instanceID string) (systeminstance.Classific
 		}, nil
 	}
 	return systeminstance.Classification{Ownership: systeminstance.OwnershipCustomer}, nil
+}
+
+// isSystemRecord reports a system VM. Control-plane VMs from before EKS moved to
+// the system account carry the manager but a customer account, so EKS alone
+// counts in either; no customer path can set the manager.
+func isSystemRecord(managedBy, accountID string) bool {
+	if !tags.IsSystemManaged(managedBy) {
+		return false
+	}
+	return accountID == awsidentifiers.GlobalAccountID || managedBy == tags.ManagedByEKS
 }
 
 var _ systeminstance.OwnershipClassifier = (*JetStreamManager)(nil)

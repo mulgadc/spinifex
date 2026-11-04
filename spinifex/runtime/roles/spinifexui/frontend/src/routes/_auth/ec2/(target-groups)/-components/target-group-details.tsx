@@ -135,6 +135,8 @@ function Overview({ tg, active }: { tg: TargetGroup; active: boolean }) {
 function AttributesSection({ arn }: { arn: string }) {
   const { data } = useSuspenseQuery(elbv2TargetGroupAttributesQueryOptions(arn))
   const modify = useModifyTargetGroupAttributes()
+  // Each protocol reports its own key set, so show only the keys this group has.
+  const keys = new Set(data.Attributes?.map((a) => a.Key))
 
   return (
     <AttributesEditor
@@ -145,7 +147,7 @@ function AttributesSection({ arn }: { arn: string }) {
       onSubmit={(changed) => {
         modify.mutate({ targetGroupArn: arn, attributes: changed })
       }}
-      specs={targetGroupAttributeSpecs}
+      specs={targetGroupAttributeSpecs.filter((s) => keys.has(s.key))}
     />
   )
 }

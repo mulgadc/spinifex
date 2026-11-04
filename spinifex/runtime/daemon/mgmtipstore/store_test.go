@@ -1,3 +1,6 @@
+//test:in-package — forges stored bytes through the unexported kv handle and
+// stubs the unexported stream-status seam (stat) to reach the revalidation paths.
+
 package mgmtipstore
 
 import (

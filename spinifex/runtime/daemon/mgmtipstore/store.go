@@ -87,7 +87,8 @@ type Snapshot struct {
 	raw      []byte
 }
 
-// Record returns a copy of the record the snapshot captured.
+// Record returns a copy of the record the snapshot captured. It is as current
+// as the read: possibly stale unless the snapshot has been confirmed.
 func (s *Snapshot) Record() Record {
 	rec, err := decode(s.raw, s.prefix)
 	if err != nil {
@@ -183,6 +184,7 @@ func keyOf(p netip.Prefix) string { return p.String() }
 
 // Load reads and validates a subnet's record. A missing key, or a record with
 // a missing or unsupported schema or authority state, is not authoritative.
+// The snapshot is unconfirmed and may be stale until Confirm succeeds.
 func (s *Store) Load(ctx context.Context, prefix netip.Prefix) (*Snapshot, error) {
 	if err := validPrefix(prefix); err != nil {
 		return nil, err
@@ -310,7 +312,8 @@ func (s *Store) owns(snap *Snapshot) (Record, error) {
 
 // Confirm proves a snapshot is current with an acknowledged revision-conditional
 // write of the same bytes, because a plain read can be served by a lagging
-// follower. A conflict means the read was stale.
+// follower. A conflict means the read was stale. The revision is current only
+// at that instant; it does not fence anything between it and a later launch.
 func (s *Store) Confirm(ctx context.Context, snap *Snapshot) error {
 	if _, err := s.owns(snap); err != nil {
 		return err
@@ -329,7 +332,7 @@ func (s *Store) Confirm(ctx context.Context, snap *Snapshot) error {
 }
 
 // Lookup returns the entry matching instance, node and address, only after the
-// read has been confirmed current.
+// read has been confirmed current at that instant (see Confirm).
 func (s *Store) Lookup(ctx context.Context, prefix netip.Prefix, instanceID, node, ip string) (Entry, error) {
 	if instanceID == "" || node == "" {
 		return Entry{}, fmt.Errorf("%w: instance and node are required", ErrInvalidArgument)

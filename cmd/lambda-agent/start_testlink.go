@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -106,7 +107,11 @@ func (t testlink) run(parent context.Context) (int, error) {
 	go func() {
 		defer close(exited)
 		err := cmd.Wait()
-		cancel(fmt.Errorf("bootstrap exited: %w", err))
+		// Once a response is being received the result stands, so only an
+		// exit before that cancels the invocation.
+		if srv.BootstrapExited() {
+			cancel(fmt.Errorf("bootstrap exited: %w", err))
+		}
 	}()
 
 	err = agent.Run(ctx, &oneInvocation{Link: link, first: &first}, srv)
@@ -118,11 +123,18 @@ func (t testlink) run(parent context.Context) (int, error) {
 	return exitClosed, nil
 }
 
+// shutdownGrace is how long past the invocation deadline the agent waits for
+// the host's shutdown frame once its result is written.
+const shutdownGrace = 2 * time.Second
+
 // oneInvocation serves the host's first request and then stops the agent:
-// each test VM runs a single invocation.
+// each test VM runs a single invocation. After the result is written it waits
+// for the host's shutdown frame or EOF, so the result is not cut off by the
+// poweroff that follows the agent's exit.
 type oneInvocation struct {
 	hostlink.Link
-	first *hostlink.Request
+	first      *hostlink.Request
+	deadlineMs int64
 }
 
 var _ hostlink.Link = (*oneInvocation)(nil)
@@ -131,10 +143,36 @@ func (o *oneInvocation) Next(ctx context.Context) (hostlink.Request, error) {
 	if err := ctx.Err(); err != nil {
 		return hostlink.Request{}, err
 	}
-	if o.first == nil {
-		return hostlink.Request{}, hostlink.ErrShutdown
+	if o.first != nil {
+		req := *o.first
+		o.first = nil
+		o.deadlineMs = req.DeadlineMs
+		return req, nil
 	}
-	req := *o.first
-	o.first = nil
-	return req, nil
+	return hostlink.Request{}, o.awaitShutdown(ctx)
+}
+
+// awaitShutdown reads the host's next frame and always ends the agent: with
+// ErrShutdown for a shutdown frame, EOF, a stray frame or an expired wait.
+func (o *oneInvocation) awaitShutdown(ctx context.Context) error {
+	end := time.UnixMilli(o.deadlineMs)
+	if now := time.Now(); end.Before(now) {
+		end = now
+	}
+	wctx, cancel := context.WithDeadline(ctx, end.Add(shutdownGrace))
+	defer cancel()
+	_, err := o.Link.Next(wctx)
+	switch {
+	case errors.Is(err, hostlink.ErrShutdown), errors.Is(err, io.EOF):
+		return hostlink.ErrShutdown
+	case err == nil:
+		slog.Warn("lambda-agent: frame after the invocation was not dispatched")
+		return hostlink.ErrShutdown
+	case ctx.Err() != nil:
+		return err
+	case wctx.Err() != nil:
+		slog.Warn("lambda-agent: no shutdown from the host; exiting")
+		return hostlink.ErrShutdown
+	}
+	return err
 }

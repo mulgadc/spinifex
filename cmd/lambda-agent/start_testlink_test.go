@@ -47,8 +47,14 @@ func TestHelperBootstrap(t *testing.T) {
 	post, err := http.Post(base+id+"/response", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
 	post.Body.Close()
+	if os.Getenv(helperExitAfterPost) == "1" {
+		return
+	}
 	_, _ = http.Get(base + "next")
 }
+
+// helperExitAfterPost makes the helper bootstrap exit once its response is posted.
+const helperExitAfterPost = "LAMBDA_AGENT_TEST_EXIT_AFTER_POST"
 
 // testGrantEntry grants g-1 for attempt a-1 on the fixture scope's env-1/1.
 const testGrantEntry = "g-1\na-1\nenv-1\n1\n"
@@ -159,6 +165,98 @@ func TestTestlinkServesOneInvocationThenStops(t *testing.T) {
 	assert.True(t, b.sealed, "task dir not made read-only")
 	assert.FileExists(t, filepath.Join(b.task, "lib", "data.txt"))
 }
+
+// A bootstrap that posts its response and exits at once does not cost the
+// host the result; the agent then waits for the host's shutdown.
+func TestTestlinkBootstrapExitingAfterResponseStillDelivers(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	h := newHost(t)
+	h.accept(ctx)
+	var b bootstrapStarts
+	tl := b.testlink(t, h.entries())
+	start := tl.startBootstrap
+	tl.startBootstrap = func(ctx context.Context, env []string) (*exec.Cmd, error) {
+		return start(ctx, append(env, helperExitAfterPost+"=1"))
+	}
+	done := runTestlinkAsync(ctx, tl)
+
+	conn := h.guest(t)
+	defer conn.Close()
+	hs := hostlink.NewTestStream(conn)
+	payload := bytes.Repeat([]byte("0123456789"), 300_000)
+	req := hostlink.Request{GrantID: "g-1", AttemptID: "a-1", RequestID: "r-1", DeadlineMs: time.Now().Add(5 * time.Second).UnixMilli(), Payload: payload}
+	require.NoError(t, hs.HostSend(req))
+	got, err := hs.HostResult(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, hostlink.Response{GrantID: "g-1", AttemptID: "a-1", RequestID: "r-1", Payload: payload}, got)
+
+	require.NoError(t, hs.HostShutdown())
+	res := wait(t, done, "agent to stop after the host's shutdown")
+	assert.Equal(t, exitClosed, res.code)
+	assert.NoError(t, res.err)
+}
+
+// The agent stays up for the host's shutdown rather than exiting as soon as
+// its result is written, and never dispatches a stray frame.
+func TestOneInvocationAfterResult(t *testing.T) {
+	first := hostlink.Request{RequestID: "r-1", DeadlineMs: time.Now().Add(time.Minute).UnixMilli()}
+	cases := map[string]struct {
+		next func(context.Context) (hostlink.Request, error)
+		want error
+	}{
+		"shutdown frame": {func(context.Context) (hostlink.Request, error) { return hostlink.Request{}, hostlink.ErrShutdown }, hostlink.ErrShutdown},
+		"eof":            {func(context.Context) (hostlink.Request, error) { return hostlink.Request{}, io.EOF }, hostlink.ErrShutdown},
+		"a second request is not dispatched": {func(context.Context) (hostlink.Request, error) {
+			return hostlink.Request{RequestID: "r-2"}, nil
+		}, hostlink.ErrShutdown},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			o := &oneInvocation{Link: stubLink{tc.next}, first: &first}
+			_, err := o.Next(context.Background())
+			require.NoError(t, err)
+			req, err := o.Next(context.Background())
+			require.ErrorIs(t, err, tc.want)
+			assert.Empty(t, req.RequestID)
+		})
+	}
+	t.Run("host never sends shutdown", func(t *testing.T) {
+		past := first
+		past.DeadlineMs = time.Now().Add(-time.Second).UnixMilli()
+		o := &oneInvocation{Link: stubLink{func(ctx context.Context) (hostlink.Request, error) {
+			<-ctx.Done()
+			return hostlink.Request{}, ctx.Err()
+		}}, first: &past}
+		_, err := o.Next(context.Background())
+		require.NoError(t, err)
+		start := time.Now()
+		_, err = o.Next(context.Background())
+		require.ErrorIs(t, err, hostlink.ErrShutdown)
+		assert.GreaterOrEqual(t, time.Since(start), shutdownGrace-100*time.Millisecond, "waited the grace")
+	})
+	t.Run("parent cancel is not a shutdown", func(t *testing.T) {
+		o := &oneInvocation{Link: stubLink{func(ctx context.Context) (hostlink.Request, error) {
+			<-ctx.Done()
+			return hostlink.Request{}, ctx.Err()
+		}}, first: &first}
+		_, _ = o.Next(context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := o.Next(ctx)
+		require.ErrorIs(t, err, context.Canceled)
+	})
+}
+
+type stubLink struct {
+	next func(context.Context) (hostlink.Request, error)
+}
+
+var _ hostlink.Link = stubLink{}
+
+func (l stubLink) Next(ctx context.Context) (hostlink.Request, error) { return l.next(ctx) }
+
+func (stubLink) Complete(context.Context, hostlink.Response) error { return nil }
 
 func TestTestlinkShutdownBeforeInvocationNeverStartsBootstrap(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

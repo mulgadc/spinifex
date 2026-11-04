@@ -647,18 +647,27 @@ func (m *Manager) shutdownAndUnmount(instance *VM) error {
 
 // unmountVolumes unmounts the instance's volumes and records the ones the
 // unmount left exported, which a terminate clearing their attachments then
-// owes an unpublish. Every unmount replaces the record.
+// owes an unpublish. Every unmount replaces the record, and until it answers
+// every volume counts as still exported.
 func (m *Manager) unmountVolumes(ctx context.Context, instance *VM) error {
+	names := instanceVolumeNames(instance)
+	m.Inspect(instance, func(v *VM) { v.UnpublishOwed = names })
 	err := m.deps.VolumeMounter.Unmount(ctx, instance)
-	owed := volumesLeftPublished(err, instanceVolumeNames(instance))
+	owed := volumesLeftPublished(err, names)
 	m.Inspect(instance, func(v *VM) { v.UnpublishOwed = owed })
 	return err
 }
 
 // markAllVolumesOwed records every volume as still exported, for a terminate
-// finished without an unmount that is known to have completed.
+// finished without an unmount that is known to have completed. It never waits
+// on a stalled unmount, which has already recorded every volume.
 func (m *Manager) markAllVolumesOwed(instance *VM) {
-	owed := instanceVolumeNames(instance)
+	if !instance.EBSRequests.Mu.TryLock() {
+		slog.Warn("Volume requests are held, keeping the recorded unpublish obligations", "id", instance.ID)
+		return
+	}
+	owed := requestNames(instance.EBSRequests.Requests)
+	instance.EBSRequests.Mu.Unlock()
 	m.Inspect(instance, func(v *VM) { v.UnpublishOwed = owed })
 }
 
@@ -666,8 +675,12 @@ func (m *Manager) markAllVolumesOwed(instance *VM) {
 func instanceVolumeNames(instance *VM) []string {
 	instance.EBSRequests.Mu.Lock()
 	defer instance.EBSRequests.Mu.Unlock()
-	names := make([]string, 0, len(instance.EBSRequests.Requests))
-	for _, req := range instance.EBSRequests.Requests {
+	return requestNames(instance.EBSRequests.Requests)
+}
+
+func requestNames(requests []EBSRequest) []string {
+	names := make([]string, 0, len(requests))
+	for _, req := range requests {
 		names = append(names, req.Name)
 	}
 	return names

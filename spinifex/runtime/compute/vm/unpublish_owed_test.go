@@ -94,3 +94,49 @@ func TestReconcileVanishedQEMU_OwesAnUnpublishForEveryVolume(t *testing.T) {
 
 	assert.Equal(t, []string{"vol-root"}, store.terminated["i-vanished-owed"].UnpublishOwed)
 }
+
+// stalledMounter's Unmount holds the instance's requests until released, as a
+// seal stalled in the provider does.
+type stalledMounter struct {
+	fakeVolumeMounter
+
+	unmounting chan struct{}
+	release    chan struct{}
+}
+
+func (s *stalledMounter) Unmount(_ context.Context, v *VM) error {
+	v.EBSRequests.Mu.Lock()
+	defer v.EBSRequests.Mu.Unlock()
+	close(s.unmounting)
+	<-s.release
+	return nil
+}
+
+// Recovery from a wedged terminate never waits on the stalled unmount, and the
+// record it leaves still owes an unpublish for every volume.
+func TestReconcileVanishedQEMU_DoesNotWaitOnAStalledUnmount(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	store := newFakeStateStore()
+	mounter := &stalledMounter{unmounting: make(chan struct{}), release: make(chan struct{})}
+	m := NewManager()
+	m.SetDeps(Deps{NodeID: "test-node", StateStore: store, VolumeMounter: mounter})
+	instance := withVolumes(&VM{ID: "i-stalled-owed", Status: StateShuttingDown}, "vol-root", "vol-data")
+	m.InsertIfAbsent(instance)
+
+	unmounted := make(chan error, 1)
+	go func() { unmounted <- m.unmountVolumes(context.Background(), instance) }()
+	<-mounter.unmounting
+
+	reconciled := make(chan error, 1)
+	go func() { reconciled <- m.reconcileVanishedQEMU(instance) }()
+	select {
+	case err := <-reconciled:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovery waited on the stalled unmount")
+	}
+	assert.Equal(t, []string{"vol-root", "vol-data"}, store.terminated["i-stalled-owed"].UnpublishOwed)
+
+	close(mounter.release)
+	require.NoError(t, <-unmounted)
+}

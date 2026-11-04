@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -107,6 +108,59 @@ func TestDescribeAccountInstancesStrict_FrameFromUnconfiguredNodeFails(t *testin
 	subscribeAccountRecords(t, nc, mustMarshalDescribeOutput(t, strictReservations()))
 	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-1", []byte(`{}`))
 	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-stray", mustMarshalDescribeOutput(t, strictReservations(strictInstance("i-on-stray", "running"))))
+	nc.Flush()
+
+	out, err := strictList(nc, "node-1")
+
+	assertIncompleteListing(t, out, err)
+}
+
+// A stray node that answers with an error is still a node outside the set, and
+// its instances are unaccounted for.
+func TestDescribeAccountInstancesStrict_ErrorFromUnconfiguredNodeFails(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeAccountRecords(t, nc, mustMarshalDescribeOutput(t, strictReservations()))
+	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-1", []byte(`{}`))
+	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-stray", awserrors.GenerateErrorPayload(awserrors.ErrorServerInternal))
+	nc.Flush()
+
+	out, err := strictList(nc, "node-1")
+
+	assertIncompleteListing(t, out, err)
+}
+
+// The configured nodes answer at once, so a reply that lands later but inside
+// the fan-out deadline must still be seen.
+func TestDescribeAccountInstancesStrict_LateFrameFromUnconfiguredNodeFails(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeAccountRecords(t, nc, mustMarshalDescribeOutput(t, strictReservations()))
+	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-1", []byte(`{}`))
+	late := mustMarshalDescribeOutput(t, strictReservations(strictInstance("i-on-stray", "running")))
+	_, err := nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
+		time.AfterFunc(600*time.Millisecond, func() {
+			reply := nats.NewMsg(msg.Reply)
+			reply.Data = late
+			reply.Header.Set(natsmsg.NodeIDHeader, "node-stray")
+			_ = msg.RespondMsg(reply)
+		})
+	})
+	require.NoError(t, err)
+	nc.Flush()
+
+	out, err := strictList(nc, "node-1")
+
+	assertIncompleteListing(t, out, err)
+}
+
+// A record with no instance ID cannot be listed or counted, so it must fail
+// the read rather than vanish from it.
+func TestDescribeAccountInstancesStrict_RecordWithoutInstanceIDFails(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+	subscribeAccountRecords(t, nc, mustMarshalDescribeOutput(t, strictReservations(&ec2.Instance{State: &ec2.InstanceState{Name: aws.String("stopped")}})))
+	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-1", []byte(`{}`))
 	nc.Flush()
 
 	out, err := strictList(nc, "node-1")

@@ -45,20 +45,19 @@ func DescribeAccountInstancesStrict(ctx context.Context, natsConn *nats.Conn, no
 		return nil, incompleteListingError()
 	}
 
-	// Collect past the point where every configured node has answered, so a
-	// frame from a node outside the set is seen rather than raced against.
+	// Collect to the deadline with no responder grace, so a reply from a node
+	// outside the set that lands after the configured nodes is still seen.
 	frames, sum, err := natsmsg.Gather(ctx, natsConn, "ec2.DescribeInstances", jsonData, natsmsg.GatherOpts{
 		Timeout:            cfg.fanoutTimeout,
 		AccountID:          accountID,
 		ExpectedResponders: len(nodeIDs),
 		Mode:               natsmsg.CollectUntilDeadline,
-		ResponderGrace:     describeResponderGrace,
 	})
 	if err != nil {
 		return nil, err
 	}
 	live, complete := judgeIdentityCompleteness(ctx, frames, sum, nodeIDs)
-	if stray := unconfiguredNodes(frames, nodeIDs); len(stray) > 0 {
+	if stray := unconfiguredNodes(frames, sum, nodeIDs); len(stray) > 0 {
 		slog.WarnContext(ctx, "DescribeInstances: strict listing refused, frame from a node outside the configured set",
 			"unconfigured_nodes", stray)
 		return nil, incompleteListingError()
@@ -68,7 +67,11 @@ func DescribeAccountInstancesStrict(ctx context.Context, natsConn *nats.Conn, no
 		return nil, incompleteListingError()
 	}
 
-	joined, nodeOnly := joinLiveOntoRecords(records, live)
+	joined, nodeOnly, malformed := joinLiveOntoRecords(records, live)
+	if malformed {
+		slog.WarnContext(ctx, "DescribeInstances: strict listing refused, a reservation or instance has no usable identity")
+		return nil, incompleteListingError()
+	}
 	if len(nodeOnly) > 0 {
 		slog.WarnContext(ctx, "DescribeInstances: strict listing refused, node reports instances with no record",
 			"instances", nodeOnly)
@@ -77,34 +80,46 @@ func DescribeAccountInstancesStrict(ctx context.Context, natsConn *nats.Conn, no
 	return &ec2.DescribeInstancesOutput{Reservations: joined}, nil
 }
 
-// unconfiguredNodes returns the node IDs that answered but are not in nodeIDs.
-func unconfiguredNodes(frames []natsmsg.Frame, nodeIDs []string) []string {
+// unconfiguredNodes returns the node IDs that answered, with a success or an
+// error, but are not in nodeIDs.
+func unconfiguredNodes(frames []natsmsg.Frame, sum natsmsg.Summary, nodeIDs []string) []string {
 	var stray []string
-	for _, frame := range frames {
-		if frame.NodeID != "" && !slices.Contains(nodeIDs, frame.NodeID) && !slices.Contains(stray, frame.NodeID) {
-			stray = append(stray, frame.NodeID)
+	note := func(id string) {
+		if id != "" && !slices.Contains(nodeIDs, id) && !slices.Contains(stray, id) {
+			stray = append(stray, id)
 		}
 	}
+	for _, frame := range frames {
+		note(frame.NodeID)
+	}
+	for id := range sum.Responders {
+		note(id)
+	}
+	slices.Sort(stray)
 	return stray
 }
 
 // joinLiveOntoRecords starts from the recorded instances and replaces each with
 // the answering node's view of it. Instances only a node reports are returned
-// by ID: a lost record write can cause one, and it must not be dropped.
-func joinLiveOntoRecords(records, live []*ec2.Reservation) ([]*ec2.Reservation, []string) {
+// by ID: a lost record write can cause one, and it must not be dropped. A nil
+// reservation, instance or instance ID is reported as malformed, never skipped.
+func joinLiveOntoRecords(records, live []*ec2.Reservation) ([]*ec2.Reservation, []string, bool) {
 	type entry struct {
 		reservation *ec2.Reservation
 		instance    *ec2.Instance
 	}
 	byID := map[string]*entry{}
 	var order []string
+	malformed := false
 	add := func(reservations []*ec2.Reservation) {
 		for _, res := range reservations {
 			if res == nil {
+				malformed = true
 				continue
 			}
 			for _, inst := range res.Instances {
-				if inst == nil || inst.InstanceId == nil {
+				if inst == nil || aws.StringValue(inst.InstanceId) == "" {
+					malformed = true
 					continue
 				}
 				id := aws.StringValue(inst.InstanceId)
@@ -132,5 +147,5 @@ func joinLiveOntoRecords(records, live []*ec2.Reservation) ([]*ec2.Reservation, 
 			Instances:     []*ec2.Instance{e.instance},
 		})
 	}
-	return mergeReservationsByID(out), nodeOnly
+	return mergeReservationsByID(out), nodeOnly, malformed
 }

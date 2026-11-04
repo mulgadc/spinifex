@@ -241,10 +241,6 @@ func (r *unpublishObligationReaper) settle(ctx context.Context, o ebsobligation.
 	}
 	defer hold.Release()
 
-	if hold.PublishedSince(obligationSince(o)) {
-		return false, nil
-	}
-
 	var current *ebsmetadata.Volume
 	meta, err := r.svc.metadata.GetVolume(ctx, o.AccountID, o.VolumeID)
 	switch {
@@ -256,6 +252,11 @@ func (r *unpublishObligationReaper) settle(ctx context.Context, o ebsobligation.
 	}
 
 	action := decideObligation(o, current)
+	// A newer publish here may own the export, so only a superseded obligation,
+	// which sends nothing, closes past it.
+	if action != obligationSuperseded && hold.PublishedSince(obligationSince(o)) {
+		return false, nil
+	}
 	switch action {
 	case obligationWait:
 		return false, nil

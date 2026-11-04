@@ -398,6 +398,9 @@ func TestS7_ObligationReaperNeverUnpublishesACurrentAttachment(t *testing.T) {
 		"attachment not yet cleared": {state: "in-use", attachedTo: "i-old", attachedAt: cleared, stillOpen: true},
 		// A hot attach published here and has not yet written in-use.
 		"newer publish here, record not yet in-use": {state: "available", publishedAt: cleared.Add(time.Hour), stillOpen: true},
+		// Force detach, then attach again on this node: the new publish is here.
+		"attached again here after a newer publish": {state: "in-use", attachedTo: "i-new", attachedAt: cleared.Add(time.Hour), publishedAt: cleared.Add(time.Hour)},
+		"same instance attached again here":         {state: "in-use", attachedTo: "i-old", attachedAt: cleared.Add(time.Hour), publishedAt: cleared.Add(time.Hour)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			svc := newTestVolumeService("ap-southeast-2a")

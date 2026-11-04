@@ -111,7 +111,7 @@ type AWSConfig struct {
 // ExternalPool defines a range of routable IPs that Spinifex manages for public subnets.
 type ExternalPool struct {
 	Name       string   `mapstructure:"name"`        // Pool identifier (e.g., "wan", "dc1-primary")
-	Source     string   `mapstructure:"source"`      // IP source: "static" (default), "dhcp", "oci", "exoscale" or "vultr"
+	Source     string   `mapstructure:"source"`      // IP source: "static" (default), "dhcp", "oci", "exoscale", "vultr" or "latitude"
 	BindBridge string   `mapstructure:"bind_bridge"` // Linux bridge for DHCP DORA (source=dhcp only)
 	DHCPMAC    string   `mapstructure:"dhcp_mac"`    // DHCP client MAC strategy: "derived" (default) or "interface" (source=dhcp only)
 	RangeStart string   `mapstructure:"range_start"` // First IP in range (static source only)
@@ -155,6 +155,17 @@ type ExternalPool struct {
 	VultrRegion  string `mapstructure:"vultr_region"`   // Vultr region ID, e.g. "ord"; never derived from the Spinifex region
 	VultrKeyFile string `mapstructure:"vultr_key_file"` // API key file (optional; see vultr.DefaultKeyFile)
 	LabelPrefix  string `mapstructure:"label_prefix"`   // Marks this deployment's addresses, e.g. "spinifex-prod"
+
+	// Latitude names the project, token file and fixed set of Elastic IPs
+	// (source=latitude only). Each node's server ID is provider_host_id on the node.
+	LatitudeProjectID    string   `mapstructure:"latitude_project_id"`     // latitude.sh project ID the Elastic IPs belong to
+	LatitudeKeyFile      string   `mapstructure:"latitude_key_file"`       // API token file (optional; see latitude.DefaultKeyFile)
+	LatitudeElasticIPIDs []string `mapstructure:"latitude_elastic_ip_ids"` // Elastic IP IDs the pool hands out
+}
+
+// hasLatitudeKeys reports whether any latitude_* key is set.
+func (p ExternalPool) hasLatitudeKeys() bool {
+	return p.LatitudeProjectID != "" || p.LatitudeKeyFile != "" || len(p.LatitudeElasticIPIDs) > 0
 }
 
 // hasVultrKeys reports whether any vultr_* key, or the label prefix only a
@@ -251,7 +262,7 @@ type Config struct {
 
 	// ProviderHostID is this node's instance ID at its cloud provider, which a
 	// floating public address is attached to. Required on every node when a
-	// source="vultr" pool exists.
+	// source="vultr" or source="latitude" pool exists.
 	ProviderHostID string `json:"ProviderHostID,omitempty" mapstructure:"provider_host_id"`
 
 	Daemon      DaemonConfig      `json:"Daemon" mapstructure:"daemon"`
@@ -807,6 +818,46 @@ func validateVultrPool(cc *ClusterConfig, p ExternalPool) error {
 	return nil
 }
 
+// validateLatitudePool checks a source="latitude" pool. The Elastic IPs are
+// bought ahead of time and named here, the API picks nothing, so the range,
+// gateway and label keys mean nothing, and every node must name its server.
+func validateLatitudePool(cc *ClusterConfig, p ExternalPool) error {
+	if p.LatitudeProjectID == "" || len(p.LatitudeElasticIPIDs) == 0 {
+		return fmt.Errorf("config: [[network.external_pools]] %q: source=\"latitude\" requires latitude_project_id and latitude_elastic_ip_ids", p.Name)
+	}
+	seen := map[string]struct{}{}
+	for _, id := range p.LatitudeElasticIPIDs {
+		if id == "" {
+			return fmt.Errorf("config: [[network.external_pools]] %q: latitude_elastic_ip_ids has an empty entry", p.Name)
+		}
+		if _, dup := seen[id]; dup {
+			return fmt.Errorf("config: [[network.external_pools]] %q: latitude_elastic_ip_ids lists %q twice", p.Name, id)
+		}
+		seen[id] = struct{}{}
+	}
+	if p.LatitudeKeyFile != "" && !filepath.IsAbs(p.LatitudeKeyFile) {
+		return fmt.Errorf("config: [[network.external_pools]] %q: latitude_key_file must be an absolute path, got %q", p.Name, p.LatitudeKeyFile)
+	}
+	if p.BindBridge != "" || p.DHCPMAC != "" {
+		return fmt.Errorf("config: [[network.external_pools]] %q: bind_bridge/dhcp_mac are only valid with source=\"dhcp\"", p.Name)
+	}
+	if p.RangeStart != "" || p.RangeEnd != "" || p.Gateway != "" || p.GatewayIP != "" {
+		return fmt.Errorf("config: [[network.external_pools]] %q: range_start/range_end/gateway/gateway_ip not allowed with source=\"latitude\" (the Elastic IPs are listed by ID)", p.Name)
+	}
+	if p.GwLrpRangeStart != "" || p.GwLrpRangeEnd != "" {
+		return fmt.Errorf("config: [[network.external_pools]] %q: gw_lrp_range_start/gw_lrp_range_end not allowed with source=\"latitude\" (a gateway address per VPC would use up the Elastic IP limit)", p.Name)
+	}
+	if cc.Network.ExternalMode != "nat" {
+		return fmt.Errorf("config: [[network.external_pools]] %q: source=\"latitude\" requires [network] external_mode = \"nat\" (routed); a routed Elastic IP is delivered to the server's own MAC", p.Name)
+	}
+	for name, n := range cc.Nodes {
+		if n.ProviderHostID == "" {
+			return fmt.Errorf("config: [nodes.%s] provider_host_id is required with a source=\"latitude\" pool (%q): it is the latitude.sh server ID the node's Elastic IPs move to", name, p.Name)
+		}
+	}
+	return nil
+}
+
 // validateSingleEBSProvider refuses nodes whose explicit [nodes.<name>.ebs]
 // providers differ. A peer stanza without one is unknown, not the default: the
 // generated config omits it, and the cluster's KV lock is the authoritative check.
@@ -879,12 +930,18 @@ func validateClusterConfig(cc *ClusterConfig) error {
 		end   netip.Addr
 	}
 	var ranges []poolRange
+	// latitudeIDs maps each Elastic IP ID to the pool naming it. Every pool keeps its own
+	// record of what it handed out, so an ID in two pools would be given to two guests.
+	latitudeIDs := map[string]string{}
 	for _, p := range cc.Network.ExternalPools {
 		if p.Source != "oci" && (p.OCICompartmentID != "" || p.OCIVNICID != "" || p.OCIVNICIface != "" || p.OCISubnetID != "" || p.OCIPublicIPPool != "" || p.OCIConfigFile != "" || p.OCIConfigProfile != "") {
 			return fmt.Errorf("config: [[network.external_pools]] %q: oci_* keys are only valid with source=\"oci\"", p.Name)
 		}
 		if p.Source != "exoscale" && p.hasExoscaleKeys() {
 			return fmt.Errorf("config: [[network.external_pools]] %q: exoscale_* keys are only valid with source=\"exoscale\"", p.Name)
+		}
+		if p.Source != "latitude" && p.hasLatitudeKeys() {
+			return fmt.Errorf("config: [[network.external_pools]] %q: latitude_* keys are only valid with source=\"latitude\"", p.Name)
 		}
 		if p.Source != "vultr" && p.hasVultrKeys() {
 			return fmt.Errorf("config: [[network.external_pools]] %q: vultr_* and label_prefix keys are only valid with source=\"vultr\"", p.Name)
@@ -985,8 +1042,19 @@ func validateClusterConfig(cc *ClusterConfig) error {
 				return err
 			}
 			continue
+		case "latitude":
+			if err := validateLatitudePool(cc, p); err != nil {
+				return err
+			}
+			for _, id := range p.LatitudeElasticIPIDs {
+				if other, dup := latitudeIDs[id]; dup {
+					return fmt.Errorf("config: [[network.external_pools]] %q: Elastic IP %q is also named by pool %q; each Elastic IP may belong to one pool", p.Name, id, other)
+				}
+				latitudeIDs[id] = p.Name
+			}
+			continue
 		default:
-			return fmt.Errorf("config: [[network.external_pools]] %q: source=%q unsupported; use \"static\", \"dhcp\", \"oci\", \"exoscale\" or \"vultr\"", p.Name, p.Source)
+			return fmt.Errorf("config: [[network.external_pools]] %q: source=%q unsupported; use \"static\", \"dhcp\", \"oci\", \"exoscale\", \"vultr\" or \"latitude\"", p.Name, p.Source)
 		}
 		if p.RangeStart == "" || p.RangeEnd == "" {
 			continue

@@ -250,6 +250,11 @@ test-build-scripts:
 		echo "-- $$t"; \
 		sh "$$t" || exit 1; \
 	done
+	@echo -e "\n....Running scripts/terraform/latitude-spx/*_test.sh...."
+	@for t in $$(find scripts/terraform/latitude-spx -maxdepth 1 -name '*_test.sh' | sort); do \
+		echo "-- $$t"; \
+		sh "$$t" || exit 1; \
+	done
 	@echo -e "\n....Running .github/scripts/*_test.sh...."
 	@for t in $$(find .github/scripts -maxdepth 1 -name '*_test.sh' | sort); do \
 		echo "-- $$t"; \

@@ -52,6 +52,12 @@ type ExternalPoolConfig struct {
 	VultrRegion  string
 	VultrKeyFile string
 	LabelPrefix  string
+	// Latitude* configure a source="latitude" pool: the project the Elastic IPs
+	// belong to, the file holding the API token, and the fixed set of Elastic IP
+	// IDs the pool hands out. latitude.sh has no labels, so the set is named.
+	LatitudeProjectID    string
+	LatitudeKeyFile      string
+	LatitudeElasticIPIDs []string
 	// ProviderHostID is this node's instance ID at the provider, which a
 	// floating address is attached to. Per node, so it is filled from the
 	// node's own config rather than the shared pool section.
@@ -84,6 +90,17 @@ func (p *ExternalPoolConfig) IsVultr() bool {
 	return p != nil && p.Source == SourceVultr
 }
 
+// IsLatitude reports whether the pool sources IPs from latitude.sh Elastic IPs.
+func (p *ExternalPoolConfig) IsLatitude() bool {
+	return p != nil && p.Source == SourceLatitude
+}
+
+// IsFloating reports whether the pool's addresses are provider objects moved
+// between nodes by the floating engine.
+func (p *ExternalPoolConfig) IsFloating() bool {
+	return p.IsVultr() || p.IsLatitude()
+}
+
 const (
 	// SourceStatic is the default pool source (inline range math, KV-backed).
 	SourceStatic = "static"
@@ -102,6 +119,9 @@ const (
 	// holder addressed to itself, so like Exoscale there is no private half.
 	// A VM is routed it by MAC; bare metal is ARPed for it on the public NIC.
 	SourceVultr = "vultr"
+	// SourceLatitude hands out a fixed set of latitude.sh Elastic IPs, moved
+	// between servers. A routed Elastic IP arrives addressed to the host's MAC.
+	SourceLatitude = "latitude"
 
 	// OCIAuthConfigFile authenticates from an API-key config file. The default,
 	// because it is what an operator already has from `oci setup config`.

@@ -1,24 +1,29 @@
 package ecsgw
 
 import (
-	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/mulgadc/bluebottle/pkg/sigv4"
+	"github.com/mulgadc/spinifex/internal/gwsign"
 )
 
-// testCreds returns a fixed temporary credential set (with a session token, as
-// IMDS instance-role creds carry).
-func testCreds(context.Context) (string, string, string, error) {
-	return "ASIATEST", "secret", "session-token-xyz", nil
+const testSecret = "secret"
+
+// testSigner signs with a fixed temporary credential set (with a session token,
+// as IMDS instance-role creds carry).
+func testSigner() *gwsign.Signer {
+	return gwsign.New(credentials.NewStaticCredentialsProvider("ASIATEST", testSecret, "session-token-xyz"))
 }
 
 func newTestClient(t *testing.T, srv *httptest.Server) *Client {
 	t.Helper()
-	c, err := New(srv.URL, "", testCreds, "ap-southeast-2", time.Second)
+	c, err := New(srv.URL, "", testSigner(), "ap-southeast-2", time.Second)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -30,7 +35,14 @@ func newTestClient(t *testing.T, srv *httptest.Server) *Client {
 // 2xx body.
 func TestClient_CallSignsAndTargets(t *testing.T) {
 	var gotTarget, gotAuth, gotBody, gotToken string
+	var verifyErr error
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// sigv4.Parse reads and hashes the body itself, then restores it.
+		sr, err := sigv4.Parse(r)
+		if err == nil {
+			_, err = sr.Verify(testSecret, "ap-southeast-2", "ecs")
+		}
+		verifyErr = err
 		gotTarget = r.Header.Get("X-Amz-Target")
 		gotAuth = r.Header.Get("Authorization")
 		gotToken = r.Header.Get("X-Amz-Security-Token")
@@ -44,6 +56,9 @@ func TestClient_CallSignsAndTargets(t *testing.T) {
 	out, err := c.Call("RegisterContainerInstance", []byte(`{"instanceId":"i-1"}`))
 	if err != nil {
 		t.Fatalf("Call: %v", err)
+	}
+	if verifyErr != nil {
+		t.Fatalf("gateway-side SigV4 verify failed: %v", verifyErr)
 	}
 	if string(out) != `{"ok":true}` {
 		t.Errorf("body = %q", out)
@@ -78,10 +93,10 @@ func TestClient_CallErrorStatus(t *testing.T) {
 }
 
 func TestNew_Validation(t *testing.T) {
-	if _, err := New("", "", testCreds, "r", 0); err == nil {
+	if _, err := New("", "", testSigner(), "r", 0); err == nil {
 		t.Error("want error for empty baseURL")
 	}
 	if _, err := New("https://gw:9999", "", nil, "r", 0); err == nil {
-		t.Error("want error for nil credentials func")
+		t.Error("want error for nil signer")
 	}
 }

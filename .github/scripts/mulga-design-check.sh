@@ -36,5 +36,5 @@ filled() {
 if filled "${PR_BODY:-}"; then
   echo "The Mulga design line is filled in."
 else
-  echo '::warning title=Mulga design::Add a line under "## Mulga design": "Updated: <mulga PR or bead id>" or "Not needed: <reason>".'
+  echo '::warning title=Mulga design::Add a "## Mulga design" section with one line: "Updated: <mulga PR>" or "Not needed: <reason>".'
 fi

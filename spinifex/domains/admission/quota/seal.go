@@ -62,20 +62,6 @@ func (s *Service) checkTerminating(ctx context.Context, accountID string) error 
 	return nil
 }
 
-// isRevisionConflict reports a lost CAS race to retry, including the bare
-// wrong-last-sequence APIError from Create's retry against a delete marker.
-// A private copy of domains/ec2/account's helper, which this package may not import.
-func isRevisionConflict(err error) bool {
-	if errors.Is(err, jetstream.ErrKeyExists) || errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
-		return true
-	}
-	if apiErr, ok := errors.AsType[*jetstream.APIError](err); ok {
-		return apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence ||
-			apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequenceConstant
-	}
-	return false
-}
-
 // sealBucket returns this gateway's override bucket, or get-or-creates it
 // when quotas are disabled here. Called only after checkTerminating accepts,
 // so a refused seal never creates the bucket.
@@ -150,7 +136,7 @@ func (s *Service) SealAccountOverrides(ctx context.Context, accountID string) (*
 		switch {
 		case writeErr == nil:
 			return &OverrideSeal{Revision: newRev}, nil
-		case isRevisionConflict(writeErr):
+		case kvutil.IsRevisionConflict(writeErr):
 			continue
 		default:
 			slog.ErrorContext(ctx, "Failed to write sealed quota override record", "accountID", accountID, "err", writeErr)

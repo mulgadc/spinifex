@@ -214,3 +214,14 @@ func TestDeleteIf_AbsentKeyReturnsCallerError(t *testing.T) {
 
 	assert.ErrorIs(t, err, sentinel)
 }
+
+func TestIsRevisionConflictRecognisesTombstoneRetry(t *testing.T) {
+	assert.True(t, kvutil.IsRevisionConflict(jetstream.ErrKeyExists))
+	assert.True(t, kvutil.IsRevisionConflict(jetstream.ErrKeyRevisionMismatch))
+	assert.True(t, kvutil.IsRevisionConflict(&jetstream.APIError{ErrorCode: jetstream.JSErrCodeStreamWrongLastSequence}))
+	assert.True(t, kvutil.IsRevisionConflict(&jetstream.APIError{ErrorCode: jetstream.JSErrCodeStreamWrongLastSequenceConstant}))
+	assert.True(t, kvutil.IsRevisionConflict(fmt.Errorf("wrapped: %w", &jetstream.APIError{ErrorCode: jetstream.JSErrCodeStreamWrongLastSequence})))
+	assert.False(t, kvutil.IsRevisionConflict(&jetstream.APIError{ErrorCode: jetstream.JSErrCodeStreamNotFound}))
+	assert.False(t, kvutil.IsRevisionConflict(errors.New("unrelated failure")))
+	assert.False(t, kvutil.IsRevisionConflict(nil))
+}

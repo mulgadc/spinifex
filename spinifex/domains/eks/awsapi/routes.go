@@ -25,7 +25,7 @@ var routes = []route{
 		}},
 	{Method: "GET", Pattern: "/clusters", Action: "ListClusters",
 		Handler: func(ctx context.Context, nc *nats.Conn, acct, callerARN string, p []string, b []byte) (any, error) {
-			return ListClusters(ctx, nc, acct)
+			return ListClusters(ctx, nc, acct, b)
 		}},
 	// Control-plane VM broker: relays bootstrap/state/addon POSTs onto eks.bus/state/addon subjects.
 	// acct and callerARN are ignored; the cluster account comes from the body, and

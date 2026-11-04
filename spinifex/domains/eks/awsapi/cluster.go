@@ -27,8 +27,16 @@ func DescribeCluster(ctx context.Context, natsConn *nats.Conn, accountID, name s
 }
 
 // ListClusters — GET /clusters.
-func ListClusters(ctx context.Context, natsConn *nats.Conn, accountID string) (*eks.ListClustersOutput, error) {
-	return ekscluster.NewNATSEKSService(natsConn).ListClusters(ctx, &eks.ListClustersInput{}, accountID)
+func ListClusters(ctx context.Context, natsConn *nats.Conn, accountID string, query []byte) (*eks.ListClustersOutput, error) {
+	q, err := parseListQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	input := &eks.ListClustersInput{NextToken: q.str("nextToken")}
+	if input.MaxResults, err = q.int64("maxResults"); err != nil {
+		return nil, err
+	}
+	return ekscluster.NewNATSEKSService(natsConn).ListClusters(ctx, input, accountID)
 }
 
 // DeleteCluster — DELETE /clusters/{name}.

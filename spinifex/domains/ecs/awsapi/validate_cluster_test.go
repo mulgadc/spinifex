@@ -121,12 +121,21 @@ func TestCreateService_CapacityProviderStrategyRange(t *testing.T) {
 // AWS resolves the task definition before range-checking the strategy, so a
 // missing task definition wins over a bad weight.
 func TestLaunch_TaskDefinitionResolvedBeforeStrategy(t *testing.T) {
-	notFound := errors.New(awserrors.ErrorECSClientException)
-	svc := &fakeECSService{describeErr: notFound}
+	svc := &fakeECSService{describeErr: errors.New(awserrors.ErrorECSClientException)}
 	_, err := runTask(context.Background(), svc, "123456789012",
 		&ecs.RunTaskInput{TaskDefinition: aws.String("ghost:1"), CapacityProviderStrategy: strategy(1001, 0)}, allowCheck(t, testTaskRoleARN))
-	assert.Equal(t, notFound, err)
+	assertTaskDefinitionNotFound(t, err)
 	_, err = createService(context.Background(), svc, "123456789012",
 		&ecs.CreateServiceInput{TaskDefinition: aws.String("ghost:1"), CapacityProviderStrategy: strategy(1001, 0)}, allowCheck(t, testTaskRoleARN))
-	assert.Equal(t, notFound, err)
+	assertTaskDefinitionNotFound(t, err)
+	assert.False(t, svc.runCalled)
+	assert.False(t, svc.createCalled)
+}
+
+func assertTaskDefinitionNotFound(t *testing.T, err error) {
+	t.Helper()
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "err = %v", err)
+	assert.Equal(t, awserrors.ErrorECSClientException, code)
+	assert.Equal(t, "TaskDefinition not found.", msg)
 }

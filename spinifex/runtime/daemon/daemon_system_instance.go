@@ -635,7 +635,8 @@ func (d *Daemon) attachSystemMgmtNIC(inst *vm.VM) error {
 // stop qemu and free the ENI — otherwise the local-only path returns NotFound
 // and the teardown deletes a still-attached ENI (InvalidNetworkInterface.InUse).
 func (d *Daemon) TerminateSystemInstance(instanceID string) error {
-	if err := d.requireSystemInstance(instanceID); err != nil {
+	cls, err := d.requireSystemInstance(instanceID)
+	if err != nil {
 		return err
 	}
 	var termErr error
@@ -645,56 +646,64 @@ func (d *Daemon) TerminateSystemInstance(instanceID string) error {
 		termErr = d.terminateSystemInstanceRemote(instanceID)
 	}
 
-	// Backstop for the no-owner case: terminateSystemInstanceLocal runs the
-	// reclaim on the owning node, but when no node owns the VM (already gone) the
-	// remote route returns NotFound and never reaches it, so an internet-facing
-	// ALB's EIP would orphan. Idempotent — a no-op once the record is released.
-	d.reclaimSystemInstanceEIP(instanceID)
+	// Backstop for the no-owner case: when no node owns the VM the remote route
+	// returns NotFound and never reaches the owner's release, so an internet-facing
+	// ALB's launch EIP would orphan. Idempotent — a no-op once released.
+	d.reclaimSystemInstanceEIP(instanceID, cls)
 	return termErr
 }
 
-// reclaimSystemInstanceEIP releases any EIP still recorded against instanceID via
-// the authoritative EIP KV, independent of the cached fields on the VM record.
-// Idempotent and nil-safe; logs on failure.
-func (d *Daemon) reclaimSystemInstanceEIP(instanceID string) {
-	releaser, ok := d.eipService.(interface{ ReleaseAddressByInstanceID(string) error })
+// allocationOnENIReleaser is the KV-backed backstop release of the EIP service.
+type allocationOnENIReleaser interface {
+	ReleaseAllocationOnENI(allocID, eniID string) error
+}
+
+// reclaimSystemInstanceEIP releases only the allocation recorded on the system
+// VM at launch, and only while it is still associated with the VM's ENI. Any
+// other address on that ENI is left alone.
+func (d *Daemon) reclaimSystemInstanceEIP(instanceID string, cls systeminstance.Classification) {
+	if cls.PublicIPAllocID == "" || cls.ENIID == "" {
+		return
+	}
+	releaser, ok := d.eipService.(allocationOnENIReleaser)
 	if !ok {
 		return
 	}
-	if err := releaser.ReleaseAddressByInstanceID(instanceID); err != nil {
-		slog.Warn("reclaimSystemInstanceEIP: backstop release failed", "instanceId", instanceID, "err", err)
+	if err := releaser.ReleaseAllocationOnENI(cls.PublicIPAllocID, cls.ENIID); err != nil {
+		slog.Warn("reclaimSystemInstanceEIP: backstop release failed", "instanceId", instanceID, "allocationId", cls.PublicIPAllocID, "err", err)
 	}
 }
 
 // requireSystemInstance lets a terminate go ahead only for a system VM. A
 // customer or unknown ID is answered as gone and an unreadable record as
 // ownership unknown; either way nothing is touched.
-func (d *Daemon) requireSystemInstance(instanceID string) error {
-	ownership, err := d.classifySystemInstance(instanceID)
+func (d *Daemon) requireSystemInstance(instanceID string) (systeminstance.Classification, error) {
+	cls, err := d.classifySystemInstance(instanceID)
 	if err != nil {
 		slog.Warn("TerminateSystemInstance: refused, ownership could not be read", "instanceId", instanceID, "err", err)
-		return fmt.Errorf("%w: %s: %w", systeminstance.ErrSystemInstanceOwnershipUnknown, instanceID, err)
+		return cls, fmt.Errorf("%w: %s: %w", systeminstance.ErrSystemInstanceOwnershipUnknown, instanceID, err)
 	}
-	if ownership != systeminstance.OwnershipSystem {
-		slog.Warn("TerminateSystemInstance: refused, not a system instance", "instanceId", instanceID, "ownership", ownership)
-		return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotFound, instanceID)
+	if cls.Ownership != systeminstance.OwnershipSystem {
+		slog.Warn("TerminateSystemInstance: refused, not a system instance", "instanceId", instanceID, "ownership", cls.Ownership)
+		return cls, fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotFound, instanceID)
 	}
-	return nil
+	return cls, nil
 }
 
-func (d *Daemon) classifySystemInstance(instanceID string) (systeminstance.Ownership, error) {
+func (d *Daemon) classifySystemInstance(instanceID string) (systeminstance.Classification, error) {
 	if d.ownership != nil {
 		return d.ownership.Classify(instanceID)
 	}
 	if d.jsManager == nil {
-		return "", errors.New("instance state not available")
+		return systeminstance.Classification{}, errors.New("instance state not available")
 	}
 	return d.jsManager.Classify(instanceID)
 }
 
 // terminateSystemInstanceLocal stops a VM owned by this node.
 func (d *Daemon) terminateSystemInstanceLocal(instanceID string) error {
-	if err := d.requireSystemInstance(instanceID); err != nil {
+	cls, err := d.requireSystemInstance(instanceID)
+	if err != nil {
 		return err
 	}
 	instance, exists := d.vmMgr.Get(instanceID)
@@ -705,10 +714,9 @@ func (d *Daemon) terminateSystemInstanceLocal(instanceID string) error {
 	// Release EIP through the EIP service for system VMs whose public IP was
 	// allocated via AllocateAddress (internet-facing ALBs). releaseSystemInstanceEIP
 	// uses the VM's cached allocation; reclaimSystemInstanceEIP then reconciles
-	// against the EIP KV in case the cache was empty (the authoritative path — this
-	// runs on the owning node, including the NATS terminate handler).
+	// the launch allocation recorded in the instance record in case the cache was empty.
 	d.releaseSystemInstanceEIP(instance)
-	d.reclaimSystemInstanceEIP(instanceID)
+	d.reclaimSystemInstanceEIP(instanceID, cls)
 
 	if err := d.vmMgr.Terminate(instanceID); err != nil {
 		slog.Error("TerminateSystemInstance: vmMgr.Terminate failed", "instanceId", instanceID, "err", err)

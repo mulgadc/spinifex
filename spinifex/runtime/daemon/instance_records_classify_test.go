@@ -14,7 +14,8 @@ import (
 
 func TestClassify_MapsEachRecordLocationAndShape(t *testing.T) {
 	m := newRecordManager(t)
-	sys := &vm.VM{ID: "i-sys", AccountID: awsidentifiers.GlobalAccountID, ManagedBy: tags.ManagedByRDS, Status: vm.StateRunning}
+	sys := &vm.VM{ID: "i-sys", AccountID: awsidentifiers.GlobalAccountID, ManagedBy: tags.ManagedByRDS, Status: vm.StateRunning,
+		ENIId: "eni-sys", PublicIPAllocID: "eipalloc-sys"}
 	require.NoError(t, m.WriteInstanceRecord(sys.ID, sys.Record()))
 	live := &vm.VM{ID: "i-live", AccountID: "111122223333", Status: vm.StateRunning}
 	require.NoError(t, m.WriteInstanceRecord(live.ID, live.Record()))
@@ -41,7 +42,11 @@ func TestClassify_MapsEachRecordLocationAndShape(t *testing.T) {
 	} {
 		got, err := m.Classify(id)
 		require.NoError(t, err, id)
-		assert.Equal(t, want, got, id)
+		assert.Equal(t, want, got.Ownership, id)
+		if id == "i-sys" {
+			assert.Equal(t, "eipalloc-sys", got.PublicIPAllocID)
+			assert.Equal(t, "eni-sys", got.ENIID)
+		}
 	}
 }
 
@@ -52,6 +57,6 @@ func TestClassify_ReturnsReadFailuresInsteadOfMappingThem(t *testing.T) {
 	} {
 		got, err := m.Classify("i-any")
 		require.Error(t, err, name)
-		assert.Empty(t, got, name)
+		assert.Empty(t, got.Ownership, name)
 	}
 }

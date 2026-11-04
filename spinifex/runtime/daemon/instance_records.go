@@ -225,26 +225,30 @@ func loadRecord[T any](store *kvstore.Store[T], key string) (*T, error) {
 // Classify implements systeminstance.OwnershipClassifier from the live or
 // stopped record, then the terminated one; the first record found decides. A
 // failed read is returned, never mapped to Absent.
-func (m *JetStreamManager) Classify(instanceID string) (systeminstance.Ownership, error) {
+func (m *JetStreamManager) Classify(instanceID string) (systeminstance.Classification, error) {
 	if m == nil {
-		return "", errors.New("instance state not initialized")
+		return systeminstance.Classification{}, errors.New("instance state not initialized")
 	}
 	record, err := m.LoadInstanceRecord(instanceID)
 	if err != nil {
-		return "", err
+		return systeminstance.Classification{}, err
 	}
 	if record == nil {
 		if record, err = m.LoadTerminatedInstanceRecord(instanceID); err != nil {
-			return "", err
+			return systeminstance.Classification{}, err
 		}
 	}
 	switch {
 	case record == nil:
-		return systeminstance.OwnershipAbsent, nil
+		return systeminstance.Classification{Ownership: systeminstance.OwnershipAbsent}, nil
 	case tags.IsSystemManaged(record.Spec.ManagedBy) && record.Metadata.AccountID == awsidentifiers.GlobalAccountID:
-		return systeminstance.OwnershipSystem, nil
+		return systeminstance.Classification{
+			Ownership:       systeminstance.OwnershipSystem,
+			PublicIPAllocID: record.Status.PublicIPAllocID,
+			ENIID:           record.Status.ENIId,
+		}, nil
 	}
-	return systeminstance.OwnershipCustomer, nil
+	return systeminstance.Classification{Ownership: systeminstance.OwnershipCustomer}, nil
 }
 
 var _ systeminstance.OwnershipClassifier = (*JetStreamManager)(nil)

@@ -27,10 +27,18 @@ const (
 	OwnershipAbsent Ownership = "absent"
 )
 
+// Classification is what the system terminate path learns about an ID. For a
+// system VM it also carries the public IP allocation and ENI recorded at launch.
+type Classification struct {
+	Ownership       Ownership
+	PublicIPAllocID string
+	ENIID           string
+}
+
 // OwnershipClassifier tells the system terminate path whether an ID is a
 // system VM, without exposing instance records to it.
 type OwnershipClassifier interface {
-	Classify(instanceID string) (Ownership, error)
+	Classify(instanceID string) (Classification, error)
 }
 
 // BootMode selects how a system instance boots.

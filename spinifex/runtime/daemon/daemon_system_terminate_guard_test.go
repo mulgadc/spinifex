@@ -18,25 +18,30 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // fakeOwnership answers Classify from a fixed table; an ID it does not know is
-// Absent, and err, when set, fails every read.
+// Absent, and err, when set, fails every read. launch supplies the allocation
+// and ENI recorded for a system VM.
 type fakeOwnership struct {
-	byID map[string]systeminstance.Ownership
-	err  error
+	byID   map[string]systeminstance.Ownership
+	launch map[string]systeminstance.Classification
+	err    error
 }
 
-func (f fakeOwnership) Classify(id string) (systeminstance.Ownership, error) {
+func (f fakeOwnership) Classify(id string) (systeminstance.Classification, error) {
 	if f.err != nil {
-		return "", f.err
+		return systeminstance.Classification{}, f.err
 	}
+	cls := f.launch[id]
 	if o, ok := f.byID[id]; ok {
-		return o, nil
+		cls.Ownership = o
+		return cls, nil
 	}
-	return systeminstance.OwnershipAbsent, nil
+	return systeminstance.Classification{Ownership: systeminstance.OwnershipAbsent}, nil
 }
 
 var _ systeminstance.OwnershipClassifier = fakeOwnership{}
@@ -224,7 +229,7 @@ func TestS7_TerminateSystemInstanceStillTerminatesEverySystemKind(t *testing.T) 
 
 // bindRealEIP gives d a real EIP service and allocates an address, tags it as
 // the customer chose, then records instanceID against it.
-func bindRealEIP(t *testing.T, d *Daemon, instanceID, customerTag string) (allocID string, svc *ec2eip.EIPServiceImpl) {
+func bindRealEIP(t *testing.T, d *Daemon, instanceID string) (allocID string, svc *ec2eip.EIPServiceImpl) {
 	t.Helper()
 	_, nc, js := testutil.StartTestJetStream(t)
 	ipam, err := ec2vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
@@ -236,14 +241,7 @@ func bindRealEIP(t *testing.T, d *Daemon, instanceID, customerTag string) (alloc
 	require.NoError(t, err)
 	d.eipService = svc
 
-	in := &ec2.AllocateAddressInput{}
-	if customerTag != "" {
-		in.TagSpecifications = []*ec2.TagSpecification{{
-			ResourceType: aws.String("elastic-ip"),
-			Tags:         []*ec2.Tag{{Key: aws.String(tags.ManagedByKey), Value: aws.String(customerTag)}},
-		}}
-	}
-	out, err := svc.AllocateAddress(t.Context(), in, testAccountID)
+	out, err := svc.AllocateAddress(t.Context(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 
 	kv, err := js.KeyValue(t.Context(), ec2eip.KVBucketEIPs)
@@ -259,6 +257,58 @@ func bindRealEIP(t *testing.T, d *Daemon, instanceID, customerTag string) (alloc
 	_, err = kv.Update(t.Context(), key, data, entry.Revision())
 	require.NoError(t, err)
 	return aws.StringValue(out.AllocationId), svc
+}
+
+// associateEIP records allocID as associated with eniID, as AssociateAddress would.
+func associateEIP(t *testing.T, kv jetstream.KeyValue, allocID, eniID string) {
+	t.Helper()
+	key := testAccountID + "." + allocID
+	entry, err := kv.Get(t.Context(), key)
+	require.NoError(t, err)
+	var rec ec2eip.EIPRecord
+	require.NoError(t, json.Unmarshal(entry.Value(), &rec))
+	rec.State, rec.AssociationId, rec.ENIId = "associated", "eipassoc-"+allocID, eniID
+	data, err := json.Marshal(rec)
+	require.NoError(t, err)
+	_, err = kv.Update(t.Context(), key, data, entry.Revision())
+	require.NoError(t, err)
+}
+
+func TestS7_BackstopNeverReleasesCustomerAssociatedAddress(t *testing.T) {
+	d := createVPCTestDaemon(t)
+	_, nc, js := testutil.StartTestJetStream(t)
+	var err error
+	d.jsManager, err = NewJetStreamManager(nc)
+	require.NoError(t, err)
+	require.NoError(t, d.jsManager.InitKVBucket())
+	require.NoError(t, d.jsManager.InitTerminatedInstanceBucket())
+
+	ipam, err := ec2vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
+		{Name: "wan-test", RangeStart: "203.0.113.10", RangeEnd: "203.0.113.20", Gateway: "203.0.113.1", PrefixLen: 24},
+	})
+	require.NoError(t, err)
+	svc, err := ec2eip.NewEIPServiceImpl(t.Context(), nc, ipam, d.vpcService)
+	require.NoError(t, err)
+	d.eipService = svc
+	kv, err := js.KeyValue(t.Context(), ec2eip.KVBucketEIPs)
+	require.NoError(t, err)
+
+	launch, err := svc.AllocateAddress(t.Context(), &ec2.AllocateAddressInput{}, testAccountID)
+	require.NoError(t, err)
+	customer, err := svc.AllocateAddress(t.Context(), &ec2.AllocateAddressInput{}, testAccountID)
+	require.NoError(t, err)
+	launchID, customerID := aws.StringValue(launch.AllocationId), aws.StringValue(customer.AllocationId)
+	associateEIP(t, kv, launchID, "eni-alb")
+	associateEIP(t, kv, customerID, "eni-alb")
+
+	// No node owns the VM, so the wrapper's backstop is the only release.
+	alb := &vm.VM{ID: "i-alb-backstop", Status: vm.StateTerminated, AccountID: awsidentifiers.GlobalAccountID,
+		ManagedBy: tags.ManagedByELBv2, ENIId: "eni-alb", PublicIPAllocID: launchID}
+	stage(t, d, alb, atTerminated)
+
+	require.ErrorIs(t, d.TerminateSystemInstance(alb.ID), systeminstance.ErrSystemInstanceNotFound)
+	assert.False(t, addressKept(t, svc, launchID), "the launch allocation is released")
+	assert.True(t, addressKept(t, svc, customerID), "a customer address associated to the same ENI survives")
 }
 
 func addressKept(t *testing.T, svc *ec2eip.EIPServiceImpl, allocID string) bool {
@@ -277,23 +327,21 @@ func TestS7_TerminateSystemInstanceNeverReleasesCustomerEIP(t *testing.T) {
 		"customer terminated instance":                 {&vm.VM{ID: "i-cust-term-eip", Status: vm.StateTerminated, AccountID: testAccountID}, atTerminated},
 	}
 	for name, c := range cases {
-		for _, customerTag := range []string{"", tags.ManagedByELBv2} {
-			t.Run(name+" tag="+customerTag, func(t *testing.T) {
-				d := createVPCTestDaemon(t)
-				_, nc, _ := testutil.StartTestJetStream(t)
-				var err error
-				d.jsManager, err = NewJetStreamManager(nc)
-				require.NoError(t, err)
-				require.NoError(t, d.jsManager.InitKVBucket())
-				require.NoError(t, d.jsManager.InitTerminatedInstanceBucket())
-				stage(t, d, c.inst, c.loc)
-				allocID, svc := bindRealEIP(t, d, c.inst.ID, customerTag)
+		t.Run(name, func(t *testing.T) {
+			d := createVPCTestDaemon(t)
+			_, nc, _ := testutil.StartTestJetStream(t)
+			var err error
+			d.jsManager, err = NewJetStreamManager(nc)
+			require.NoError(t, err)
+			require.NoError(t, d.jsManager.InitKVBucket())
+			require.NoError(t, d.jsManager.InitTerminatedInstanceBucket())
+			stage(t, d, c.inst, c.loc)
+			allocID, svc := bindRealEIP(t, d, c.inst.ID)
 
-				err = d.TerminateSystemInstance(c.inst.ID)
+			err = d.TerminateSystemInstance(c.inst.ID)
 
-				require.ErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound)
-				assert.True(t, addressKept(t, svc, allocID), "a customer's address survives a wrong system instance ID")
-			})
-		}
+			require.ErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound)
+			assert.True(t, addressKept(t, svc, allocID), "a customer's address survives a wrong system instance ID")
+		})
 	}
 }

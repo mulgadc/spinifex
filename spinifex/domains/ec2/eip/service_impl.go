@@ -875,14 +875,14 @@ func (s *EIPServiceImpl) AssociatedPublicIPForInstance(ctx context.Context, acco
 	return "", false
 }
 
-// ReleaseAddressByInstanceID disassociates and releases every EIP still recorded
-// against instanceID, across all accounts. Idempotent backstop for system-VM
-// teardown paths that lose the cached allocation ID — when the VM is already
-// gone from the manager the per-instance release never runs, so an
-// internet-facing ALB's EIP would otherwise orphan. No-op when nothing matches.
-func (s *EIPServiceImpl) ReleaseAddressByInstanceID(instanceID string) error {
+// ReleaseAllocationOnENI disassociates and releases allocID, wherever its record
+// lives across accounts, but only while it is still associated with eniID. It is
+// the idempotent backstop for the launch allocation of a system VM whose owning
+// node never ran the per-instance release. Any other address, including one a
+// customer associated to the same ENI, is left alone. No-op when nothing matches.
+func (s *EIPServiceImpl) ReleaseAllocationOnENI(allocID, eniID string) error {
 	ctx := context.Background()
-	if instanceID == "" {
+	if allocID == "" || eniID == "" {
 		return nil
 	}
 	keys, err := s.eipKV.Keys(ctx)
@@ -892,9 +892,9 @@ func (s *EIPServiceImpl) ReleaseAddressByInstanceID(instanceID string) error {
 		}
 		return fmt.Errorf("list eip keys: %w", err)
 	}
-	var errs []error
 	for _, k := range keys {
-		if k == kvutil.VersionKey {
+		accountID, keyAlloc, found := strings.Cut(k, ".")
+		if !found || keyAlloc != allocID {
 			continue
 		}
 		entry, err := s.eipKV.Get(ctx, k)
@@ -905,28 +905,23 @@ func (s *EIPServiceImpl) ReleaseAddressByInstanceID(instanceID string) error {
 		if err := json.Unmarshal(entry.Value(), &record); err != nil {
 			continue
 		}
-		if record.InstanceId != instanceID || record.AllocationId == "" {
+		if record.AllocationId != allocID || record.ENIId != eniID || record.AssociationId == "" {
 			continue
 		}
-		// Key is "{accountID}.{allocID}"; the account scopes the release calls.
-		accountID, _, found := strings.Cut(k, ".")
-		if !found {
-			continue
-		}
-		if record.AssociationId != "" {
-			if _, err := s.DisassociateAddress(ctx, &ec2.DisassociateAddressInput{
-				AssociationId: aws.String(record.AssociationId),
-			}, accountID); err != nil {
-				errs = append(errs, fmt.Errorf("disassociate %s: %w", record.AllocationId, err))
-			}
+		var errs []error
+		if _, err := s.DisassociateAddress(ctx, &ec2.DisassociateAddressInput{
+			AssociationId: aws.String(record.AssociationId),
+		}, accountID); err != nil {
+			errs = append(errs, fmt.Errorf("disassociate %s: %w", allocID, err))
 		}
 		if _, err := s.ReleaseAddress(ctx, &ec2.ReleaseAddressInput{
-			AllocationId: aws.String(record.AllocationId),
+			AllocationId: aws.String(allocID),
 		}, accountID); err != nil {
-			errs = append(errs, fmt.Errorf("release %s: %w", record.AllocationId, err))
+			errs = append(errs, fmt.Errorf("release %s: %w", allocID, err))
 		}
+		return errors.Join(errs...)
 	}
-	return errors.Join(errs...)
+	return nil
 }
 
 // publishNATEvent publishes a NAT lifecycle event to NATS for vpcd (fire-and-forget).

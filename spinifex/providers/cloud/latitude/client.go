@@ -212,7 +212,14 @@ func (c *Client) GetElasticIP(ctx context.Context, id string) (ElasticIP, error)
 	if err := c.do(ctx, http.MethodGet, "/elastic_ips/"+url.PathEscape(id), nil, &out); err != nil {
 		return ElasticIP{}, err
 	}
-	return out.Data.toElasticIP()
+	got, err := out.Data.toElasticIP()
+	if err != nil {
+		return ElasticIP{}, err
+	}
+	if got.ID != id {
+		return ElasticIP{}, errors.New("latitude: Elastic IP response is for a different id than requested")
+	}
+	return got, nil
 }
 
 // MoveElasticIP points id at serverID and waits until it is active there.

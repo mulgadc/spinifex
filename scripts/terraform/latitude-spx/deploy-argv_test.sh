@@ -139,13 +139,30 @@ check_result "an undocumented code is not logged" "$(grep -c "$AUTH" <<<"$logged
 # shellcheck disable=SC2034 # read by the sourced functions
 NAME=demo
 latitude() { printf '%s' "$FAKE_LAT"; }
-srv() { printf '{"data":{"id":"sv_1","attributes":{"hostname":"%s"}}}' "$1"; }
+expected_project_id() { echo proj_1; }
+srv() {
+    local frag=',"project":{"id":"proj_1"}'
+    [ "$#" -lt 2 ] || frag="$2"
+    printf '{"data":{"id":"sv_1","attributes":{"hostname":"%s"%s}}}' "$1" "$frag"
+}
 FAKE_LAT="$(srv spx-demo-node2)"
 check_result "a recorded server with our hostname is ours" "$(recorded_identity server sv_1 && echo ours || echo "rc=$?")" ours
 FAKE_LAT="$(srv spx-other-node1)"
 check_result "a recorded server with another hostname is not" "$(recorded_identity server sv_1 && echo ours || echo "rc=$?")" rc=1
 FAKE_LAT="$(srv spx-demo2-node1)"
 check_result "a hostname that only starts like ours is not" "$(recorded_identity server sv_1 && echo ours || echo "rc=$?")" rc=1
+FAKE_LAT="$(srv spx-demo-node1 ',"project":{"id":"proj_other"}')"
+check_result "our hostname in another project is not ours" "$(recorded_identity server sv_1 && echo ours || echo "rc=$?")" rc=1
+FAKE_LAT="$(srv spx-demo-node1 '')"
+check_result "a server with no project is unknown" "$(recorded_identity server sv_1 && echo ours || echo "rc=$?")" rc=2
+FAKE_LAT="$(srv spx-demo-node1 ',"project":{}')"
+check_result "a project with no id is unknown" "$(recorded_identity server sv_1 && echo ours || echo "rc=$?")" rc=2
+FAKE_LAT="$(srv spx-demo-node1 ',"project":null')"
+check_result "a null project is unknown" "$(recorded_identity server sv_1 && echo ours || echo "rc=$?")" rc=2
+expected_project_id() { return 1; }
+FAKE_LAT="$(srv spx-demo-node1)"
+check_result "no known project id is unknown" "$(recorded_identity server sv_1 && echo ours || echo "rc=$?")" rc=2
+expected_project_id() { echo proj_1; }
 FAKE_LAT='not json'
 check_result "an unreadable object is unknown" "$(recorded_identity server sv_1 && echo ours || echo "rc=$?")" rc=2
 KNOWN_IDS="$work/ids"
@@ -153,6 +170,10 @@ printf 'server sv_1\n' > "$KNOWN_IDS"
 lat_exists() { return 0; }
 FAKE_LAT="$(srv spx-other-node1)"
 check_result "destroy stops before Terraform when a recorded ID was reused" "$( (check_recorded_identity) >/dev/null 2>&1 && echo went || echo stopped)" stopped
+FAKE_LAT="$(srv spx-demo-node1 ',"project":{"id":"proj_other"}')"
+check_result "destroy stops when the same hostname is in another project" "$( (check_recorded_identity) >/dev/null 2>&1 && echo went || echo stopped)" stopped
+FAKE_LAT="$(srv spx-demo-node1 '')"
+check_result "destroy stops when the project cannot be read" "$( (check_recorded_identity) >/dev/null 2>&1 && echo went || echo stopped)" stopped
 FAKE_LAT="$(srv spx-demo-node1)"
 check_result "destroy goes on when the recorded server is ours" "$( (check_recorded_identity) >/dev/null 2>&1 && echo went || echo stopped)" went
 leftovers_out="$( (lat_match() { return 0; }; FAKE_LAT="$(srv spx-other-node1)" leftovers) 2>/dev/null || true)"

@@ -406,6 +406,16 @@ func TestMove_RedirectsAreNotFollowed(t *testing.T) {
 	}
 }
 
+// A response for another ID, or one whose ID is the token, is refused and its ID is not shown.
+func TestGet_ARespondedIDThatIsNotTheRequestedOneIsRefused(t *testing.T) {
+	for _, got := range []string{"eip_other", testToken} {
+		_, c := newClient(t, map[string][]reply{"GET /elastic_ips/eip_1": {{200, one(got, "203.0.113.1", "active", "sv_a")}}})
+		_, err := c.GetElasticIP(t.Context(), "eip_1")
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), got)
+	}
+}
+
 // IDs are opaque: whatever the API sends is returned unchanged, so equality against a
 // configured ID stays exact. Short IDs and ones that look like the token are not rewritten.
 func TestIDs_ReadFromAResponseAreReturnedUnchanged(t *testing.T) {

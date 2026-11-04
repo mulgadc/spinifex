@@ -905,24 +905,38 @@ for i in json.load(sys.stdin):
 
 # recorded_identity KIND ID answers whether a recorded object still carries this deployment's name:
 # 0 yes, 1 it belongs to something else (an ID can be reused after a delete), 2 it cannot be read.
-# Elastic IPs have no name, so they are not checked here.
+# Elastic IPs have no name, so they are not checked here. A server must also sit in the project this
+# deployment's Terraform made or was given: a recycled ID with the same hostname can exist elsewhere.
 recorded_identity() {
-    local kind="$1" id="$2" field rx out
+    local kind="$1" id="$2" field rx out want=""
     case "$kind" in
         server) field=hostname rx="spx-$NAME-node[1-3]" ;;
         ssh-key|project) field=name rx="spinifex-$NAME" ;;
         user-data|virtual-network) field=description rx="spinifex-$NAME" ;;
         *) return 0 ;;
     esac
+    if [ "$kind" = server ]; then want="$(expected_project_id)" && [ -n "$want" ] || return 2; fi
     out="$(latitude GET "$(kind_path "$kind")/$id")" || return 2
     printf '%s' "$out" | python3 -I -c '
 import json, re, sys
-field, rx = sys.argv[1:]
+field, rx, want = sys.argv[1:]
 try:
-    v = json.load(sys.stdin)["data"]["attributes"].get(field) or ""
+    attrs = json.load(sys.stdin)["data"]["attributes"]
+    v = attrs.get(field) or ""
+    got = ""
+    if want:
+        got = attrs["project"]["id"]
+        if not isinstance(got, str) or not got:
+            sys.exit(2)
 except Exception:
     sys.exit(2)
-sys.exit(0 if re.fullmatch(rx, v) else 1)' "$field" "$rx"
+sys.exit(0 if re.fullmatch(rx, v) and (not want or got == want) else 1)' "$field" "$rx" "$want"
+}
+
+# expected_project_id prints the ID of the project this deployment's Terraform made or was given, as
+# its state holds it. It is never the slug the person typed, which the API does not return.
+expected_project_id() {
+    "$TF_BIN" -chdir="$SCRIPT_DIR" output -state="$TF_STATE" -raw project_id 2>/dev/null
 }
 
 # check_recorded_identity stops a destroy before Terraform runs when a recorded object that still
@@ -937,8 +951,8 @@ check_recorded_identity() {
         recorded_identity "$kind" "$id" && rc=0 || rc=$?
         case "$rc" in
             0) ;;
-            1) die "$kind $id is recorded for '$NAME' but now belongs to something else (the ID was reused); nothing was destroyed. Remove its line from $KNOWN_IDS and its entry from the Terraform state, then run destroy again" ;;
-            *) die "could not read $kind $id; nothing was destroyed" ;;
+            1) die "$kind $id is recorded for '$NAME' but its name or project does not match this deployment (the ID may have been reused); nothing was destroyed. If the record is known good, destroy with $TF_BIN directly" ;;
+            *) die "could not confirm the name and project of $kind $id; nothing was destroyed. If the record is known good, destroy with $TF_BIN directly" ;;
         esac
     done < "$KNOWN_IDS"
 }

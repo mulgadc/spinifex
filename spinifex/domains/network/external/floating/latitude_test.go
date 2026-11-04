@@ -313,6 +313,28 @@ func TestHolderPass_UnrecognisedHolderIDNeverReachesTheLog(t *testing.T) {
 	assert.Contains(t, logs.String(), "unrecognised holder")
 }
 
+// A successful response whose id is the token must not reach the bindings or the log.
+func TestMembers_AResponseIDThatIsTheTokenIsRefusedAndNeverLogged(t *testing.T) {
+	const token = "FAKESECRET"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"data":{"id":"`+token+`","attributes":{"address":"203.0.113.1","status":"active","mode":"routed","family":"IPv4","prefix_length":32}}}`)
+	}))
+	t.Cleanup(srv.Close)
+	keyFile := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(keyFile, []byte(token), 0o600))
+	client, err := latitude.New(latitude.Config{BaseURL: srv.URL, KeyFile: keyFile, ProjectID: "p", HTTPClient: srv.Client(), PollInterval: time.Millisecond})
+	require.NoError(t, err)
+	p, err := NewLatitudeProvider(client, []string{"eip_aaaaaa"})
+	require.NoError(t, err)
+
+	n := latitudeNode(t, p, newMemStore(), "sv_b")
+	logs := captureLog(t)
+	_, err = n.alloc.Allocate(context.Background(), external.AllocateRequest{PoolName: pool, Purpose: "eni-public", ENIID: "eni-1"})
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), token)
+	assert.NotContains(t, logs.String(), token)
+}
+
 // A short server ID that is ours is a real holder: the address is settled, with no move.
 func TestHolderPass_ShortConfiguredHolderIDIsSettled(t *testing.T) {
 	f := latitudeFake()

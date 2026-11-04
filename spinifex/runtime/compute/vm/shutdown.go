@@ -442,6 +442,9 @@ func (m *Manager) reconcileVanishedQEMU(instance *VM) error {
 	return m.finalizeTerminated(instance)
 }
 
+// forceKillQEMU is replaced in tests to model a kill that fails.
+var forceKillQEMU = hostprocess.ForceKillProcess
+
 // forceFinalizeStuckTerminate force-completes a terminate wedged in
 // shutting-down past the backstop timeout. Unlike reconcileVanishedQEMU, which
 // fires only once QEMU is already gone, the process may still be alive and
@@ -451,15 +454,26 @@ func (m *Manager) reconcileVanishedQEMU(instance *VM) error {
 // teardown failed for TerminatedTeardownReaper, and drives the record to
 // terminated. The cleaner is idempotent, so racing the wedged goroutine is safe.
 func (m *Manager) forceFinalizeStuckTerminate(instance *VM) error {
-	if pid, err := hostprocess.ReadPidFile(instance.ID); err == nil && hostprocess.ProcessAlive(pid) {
+	pid, readErr := hostprocess.ReadPidFile(instance.ID)
+	if readErr == nil && pid > 0 && hostprocess.ProcessAlive(pid) {
 		slog.Warn("Force-killing wedged QEMU for stuck terminate",
 			"instanceId", instance.ID, "pid", pid)
-		if err := hostprocess.ForceKillProcess(pid, orphanQEMUKillTimeout); err != nil {
-			slog.Error("Failed to kill wedged QEMU, continuing finalize",
+		if err := forceKillQEMU(pid, orphanQEMUKillTimeout); err != nil {
+			slog.Error("Failed to kill wedged QEMU",
 				"instanceId", instance.ID, "pid", pid, "err", err)
 		}
-		_ = hostprocess.RemovePidFile(instance.ID)
 	}
+	// Volumes are deleted only once QEMU is proven gone, judged on the PID seen
+	// before the kill; otherwise the record is left for TerminatedTeardownReaper.
+	if !pidReadProvesExit(pid, readErr) {
+		m.markTeardown(instance, TeardownQEMU, TeardownFailed)
+		if m.deps.UEFIStores != nil {
+			m.markTeardown(instance, TeardownUEFI, TeardownFailed)
+		}
+		m.stampOutstandingTeardownFailed(instance)
+		return m.finalizeTerminated(instance)
+	}
+	_ = hostprocess.RemovePidFile(instance.ID)
 	m.markTeardown(instance, TeardownQEMU, TeardownDone)
 
 	// No unmount ran here, so every attachment the cleaner clears leaves its

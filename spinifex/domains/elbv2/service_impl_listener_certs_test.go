@@ -117,6 +117,29 @@ func TestCreateListener_UnknownSslPolicy(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorELBv2SSLPolicyNotFound)
 }
 
+func TestDescribeSSLPolicies_FiltersOnLoadBalancerType(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	for _, lbType := range []string{LoadBalancerTypeApplication, LoadBalancerTypeNetwork} {
+		out, err := svc.DescribeSSLPolicies(context.Background(), &elbv2.DescribeSSLPoliciesInput{
+			LoadBalancerType: aws.String(lbType),
+		}, testAccountID)
+		require.NoError(t, err)
+		require.Len(t, out.SslPolicies, len(sslPolicyOrder), lbType)
+		for _, p := range out.SslPolicies {
+			assert.Contains(t, aws.StringValueSlice(p.SupportedLoadBalancerTypes), lbType)
+		}
+	}
+
+	out, err := svc.DescribeSSLPolicies(context.Background(), &elbv2.DescribeSSLPoliciesInput{
+		Names:            []*string{aws.String(DefaultSslPolicy)},
+		LoadBalancerType: aws.String("gateway"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, out.SslPolicies)
+}
+
 func TestModifyListener_SwitchToHTTPSRequiresCert(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)

@@ -1382,6 +1382,15 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 		}
 	}
 
+	// Only ipv4 front ends are served, as SetIpAddressType enforces, and
+	// Spinifex has no Outposts customer-owned address pools.
+	if t := aws.StringValue(input.IpAddressType); t != "" && t != IPAddressTypeIPv4 {
+		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
+	}
+	if aws.StringValue(input.CustomerOwnedIpv4Pool) != "" {
+		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
+	}
+
 	lbID := awsidentifiers.GenerateResourceID("lb")
 	lbArn := resourcearn.FormatELBv2LoadBalancer(s.region, accountID, name, lbID, lbType)
 	arnPathSegment := resourcearn.ELBv2LBPathSegment(lbType)

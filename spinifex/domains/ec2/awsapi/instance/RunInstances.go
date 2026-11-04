@@ -8,7 +8,6 @@ import (
 	"errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
-	"log/slog"
 	"math"
 	"slices"
 	"strings"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2idemapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/idem"
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
 	ec2launchtemplate "github.com/mulgadc/spinifex/spinifex/domains/ec2/launchtemplate"
@@ -126,12 +126,13 @@ func hasPinnedPrivateIP(input *ec2.RunInstancesInput) bool {
 
 // RunInstances validates input, resolves any IAM instance profile (normalising
 // to ARN for daemons), enforces iam:PassRole, then dispatches via NATS.
-// When ClientToken is set, wraps the launch in idempotency via the KV store.
+// When ClientToken is set, wraps the launch in idempotency via tokenBucket,
+// which may be nil only when no ClientToken is supplied.
 // iamSvc may be nil only when no IamInstanceProfile is supplied.
 // passRoleCheck may be nil to skip PassRole enforcement.
 // launchQuotaCheck may be nil to skip quota enforcement; when present it runs
 // after validation and PassRole authorization, but before any launch dispatch.
-func RunInstances(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, iamSvc InstanceProfiles, accountID string, passRoleCheck PassRoleChecker, launchQuotaCheck LaunchQuotaChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
+func RunInstances(ctx context.Context, input *ec2.RunInstancesInput, natsConn *nats.Conn, tokenBucket ec2idemapi.Bucket, iamSvc InstanceProfiles, accountID string, passRoleCheck PassRoleChecker, launchQuotaCheck LaunchQuotaChecker, expectedNodes int) (reservation ec2.Reservation, err error) {
 	// Expand a referenced launch template before validation so validation, quota,
 	// and downstream routing all see the effective (post-merge) parameters.
 	if err = ExpandLaunchTemplate(ctx, natsConn, input, accountID); err != nil {
@@ -142,21 +143,10 @@ func RunInstances(ctx context.Context, input *ec2.RunInstancesInput, natsConn *n
 		return reservation, err
 	}
 
-	token := aws.StringValue(input.ClientToken)
-	if token == "" {
-		return runInstancesInner(ctx, input, natsConn, iamSvc, accountID, passRoleCheck, launchQuotaCheck, expectedNodes)
-	}
-
-	// ClientToken set: dedup concurrent/retried launches; store failure is fatal
-	// to avoid a double launch on retry.
-	store, serr := getClientTokenStore(ctx, natsConn)
-	if serr != nil {
-		slog.ErrorContext(ctx, "RunInstances: client-token store unavailable", "err", serr)
-		return reservation, errors.New(awserrors.ErrorServerInternal)
-	}
-	// Hash before any mutation so the same token+params always matches.
-	paramHash := clientTokenParamHash(input)
-	return runInstancesWithClientToken(ctx, store, accountID, token, paramHash, func() (ec2.Reservation, error) {
+	// Unnamespaced: every other EC2 action namespaces its keys by action, but
+	// RunInstances predates that, and re-keying live records would make a retry
+	// re-launch instead of replay. Hashed here, after template expansion.
+	return ec2idemapi.Run(ctx, tokenBucket, "", accountID, input, func() (ec2.Reservation, error) {
 		return runInstancesInner(ctx, input, natsConn, iamSvc, accountID, passRoleCheck, launchQuotaCheck, expectedNodes)
 	})
 }

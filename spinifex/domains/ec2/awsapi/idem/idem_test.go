@@ -1,11 +1,18 @@
 package idem_test
 
 import (
+	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	ec2idemapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/idem"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -78,4 +85,49 @@ func TestTokenAndParams_LeavesTheInputIntact(t *testing.T) {
 
 	require.NotNil(t, input.ClientToken)
 	assert.Equal(t, "tok", *input.ClientToken)
+}
+
+func runTestBucket(t *testing.T) ec2idemapi.Bucket {
+	t.Helper()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	kv, err := idempotency.OpenBucket(t.Context(), testutil.NewJetStream(t, nc), "ec2-tokens", time.Minute)
+	require.NoError(t, err)
+	return func(context.Context) (jetstream.KeyValue, error) { return kv, nil }
+}
+
+// Reusing a token with different parameters maps to the AWS error and never
+// runs the work a second time.
+func TestRun_ParamMismatchMapsAWSError(t *testing.T) {
+	t.Parallel()
+	bucket := runTestBucket(t)
+	calls := 0
+	work := func() (string, error) { calls++; return "vol-1", nil }
+
+	out, err := ec2idemapi.Run(t.Context(), bucket, "CreateVolume", "acct",
+		&ec2.CreateVolumeInput{Size: aws.Int64(8), ClientToken: aws.String("tok")}, work)
+	require.NoError(t, err)
+	assert.Equal(t, "vol-1", out)
+
+	_, err = ec2idemapi.Run(t.Context(), bucket, "CreateVolume", "acct",
+		&ec2.CreateVolumeInput{Size: aws.Int64(9), ClientToken: aws.String("tok")}, work)
+	require.EqualError(t, err, awserrors.ErrorIdempotentParameterMismatch)
+	assert.Equal(t, 1, calls)
+}
+
+// A token the store cannot honour fails the request rather than running it
+// unprotected; a request without a token never touches the store.
+func TestRun_BucketFailure(t *testing.T) {
+	t.Parallel()
+	broken := func(context.Context) (jetstream.KeyValue, error) { return nil, errors.New("no jetstream") }
+	ran := false
+	work := func() (string, error) { ran = true; return "ok", nil }
+
+	_, err := ec2idemapi.Run(t.Context(), broken, "", "acct",
+		&ec2.RunInstancesInput{ClientToken: aws.String("tok")}, work)
+	require.EqualError(t, err, awserrors.ErrorServerInternal)
+	assert.False(t, ran)
+
+	out, err := ec2idemapi.Run(t.Context(), broken, "", "acct", &ec2.RunInstancesInput{}, work)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", out)
 }

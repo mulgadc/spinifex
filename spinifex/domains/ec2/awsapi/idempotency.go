@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 
 	ec2idemapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/idem"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -43,7 +42,9 @@ func ec2IdempotentHandler[In, Out any](handler func(ctx context.Context, input *
 			if !ok {
 				return nil, errors.New(awserrors.ErrorInternalError)
 			}
-			output, err := runEC2Idempotent(ctx, action, c, accountID, input, func() (Out, error) {
+			// Namespaced by action: one bucket holds every EC2 action's records, and
+			// without the prefix one action's payload could be decoded as another's Out.
+			output, err := ec2idemapi.Run(ctx, c.clientTokenBucket, action, accountID, input, func() (Out, error) {
 				return handler(ctx, input, c, accountID)
 			})
 			if err != nil {
@@ -52,44 +53,4 @@ func ec2IdempotentHandler[In, Out any](handler func(ctx context.Context, input *
 			return marshalEC2Response(action, output)
 		},
 	}
-}
-
-// runEC2Idempotent runs work under the input's ClientToken. Requests without one
-// run unwrapped, which is what AWS does: the token is how a client opts in.
-func runEC2Idempotent[In, Out any](
-	ctx context.Context,
-	action string,
-	c *call,
-	accountID string,
-	input *In,
-	work func() (Out, error),
-) (Out, error) {
-	var zero Out
-	// Hashed before the handler runs, so a handler that mutates its input cannot
-	// change what a retry of the same token hashes to.
-	token, paramHash, ok := ec2idemapi.TokenAndParams(input)
-	if !ok {
-		return work()
-	}
-
-	kv, kerr := c.clientTokenBucket(ctx)
-	if kerr != nil {
-		// Running anyway would create the duplicate the token was sent to
-		// prevent, so this fails rather than degrading to no idempotency.
-		slog.ErrorContext(ctx, "client-token store unavailable", "action", action, "err", kerr)
-		return zero, errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Namespaced by action: one bucket holds every EC2 action's records, and
-	// without the prefix one action's payload could be decoded as another's Out.
-	store := idempotency.NewStore[Out](kv, action)
-	output, err := idempotency.Do(ctx, store, accountID, token, paramHash, work)
-	switch {
-	case errors.Is(err, idempotency.ErrParamMismatch):
-		return zero, errors.New(awserrors.ErrorIdempotentParameterMismatch)
-	case errors.Is(err, idempotency.ErrUnavailable):
-		slog.ErrorContext(ctx, "client-token replay unavailable", "action", action, "token", token, "err", err)
-		return zero, errors.New(awserrors.ErrorServerInternal)
-	}
-	return output, err
 }

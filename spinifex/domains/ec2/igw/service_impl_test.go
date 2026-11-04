@@ -619,6 +619,12 @@ func TestDetachInternetGateway_MappedPublicAddress(t *testing.T) {
 	putEIP(ec2eip.EIPRecord{AllocationId: "eipalloc-other", AssociationId: "eipassoc-other", VpcId: "vpc-other", State: "associated"})
 	putEIP(ec2eip.EIPRecord{AllocationId: "eipalloc-mapped", AssociationId: "eipassoc-mapped", ENIId: "eni-1", VpcId: "vpc-test123", State: "associated"})
 
+	// Another account's address naming the same VPC ID is not this account's dependency.
+	foreign, err := json.Marshal(ec2eip.EIPRecord{AllocationId: "eipalloc-foreign", AssociationId: "eipassoc-foreign", VpcId: "vpc-test123", State: "associated"})
+	require.NoError(t, err)
+	_, err = svc.eipKV.Put(context.Background(), kvutil.AccountKey("999999999999", "eipalloc-foreign"), foreign)
+	require.NoError(t, err)
+
 	detach := func() error {
 		_, err := svc.DetachInternetGateway(context.Background(), &ec2.DetachInternetGatewayInput{
 			InternetGatewayId: aws.String(igwID),

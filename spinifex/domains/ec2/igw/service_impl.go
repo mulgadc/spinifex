@@ -451,20 +451,22 @@ func (s *IGWServiceImpl) DetachInternetGateway(ctx context.Context, input *ec2.D
 }
 
 // vpcHasMappedAddress reports whether any of the account's elastic IPs is
-// associated into vpcID, whether to an interface or a NAT gateway.
+// associated into vpcID, whether to an interface or a NAT gateway. The listing
+// is filtered server-side to the account's keys.
 func (s *IGWServiceImpl) vpcHasMappedAddress(ctx context.Context, accountID, vpcID string) (bool, error) {
-	keys, err := s.eipKV.Keys(ctx)
+	lister, err := s.eipKV.ListKeysFiltered(ctx, kvutil.AccountKey(accountID, "*"))
 	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return false, nil
-		}
 		return false, err
 	}
-	prefix := accountID + "."
+	var keys []string
+	for k := range lister.Keys() {
+		keys = append(keys, k)
+	}
+	// Cancellation closes the lister early, and a short list must not read as unmapped.
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	for _, k := range keys {
-		if k == kvutil.VersionKey || !strings.HasPrefix(k, prefix) {
-			continue
-		}
 		entry, err := s.eipKV.Get(ctx, k)
 		if err != nil {
 			if errors.Is(err, jetstream.ErrKeyNotFound) {

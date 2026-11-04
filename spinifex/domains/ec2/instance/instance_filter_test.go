@@ -164,6 +164,20 @@ func TestInstanceMatchesFilters_TagKey(t *testing.T) {
 	assert.False(t, instanceMatchesFilters(inst, ic, filters))
 }
 
+// A tag launched without a value carries an empty value in AWS, so tag-key
+// and an empty tag:Key filter still find it.
+func TestInstanceMatchesFilters_NilValueTag(t *testing.T) {
+	inst := &vm.VM{ID: "i-abc"}
+	ic := &ec2.Instance{
+		InstanceId: aws.String("i-abc"),
+		State:      &ec2.InstanceState{Name: aws.String("running")},
+		Tags:       []*ec2.Tag{{Key: aws.String("Name")}},
+	}
+	assert.True(t, instanceMatchesFilters(inst, ic, map[string][]string{"tag-key": {"Name"}}))
+	assert.True(t, instanceMatchesFilters(inst, ic, map[string][]string{"tag:Name": {""}}))
+	assert.False(t, instanceMatchesFilters(inst, ic, map[string][]string{"tag-key": {"Other"}}))
+}
+
 func TestInstanceMatchesFilters_TagValue(t *testing.T) {
 	inst := &vm.VM{ID: "i-abc"}
 	ic := &ec2.Instance{

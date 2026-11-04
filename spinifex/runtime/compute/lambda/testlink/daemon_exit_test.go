@@ -102,7 +102,9 @@ func startExitingGuest(t *testing.T, ctx context.Context, guest net.Conn, gate c
 		// would; the stream is then read to its end so its reader returns.
 		_ = guest.Close()
 		for {
-			if _, err := stream.Next(context.Background()); err != nil {
+			// A shutdown frame is a consumed frame; only the terminal read
+			// error means the reader has exited.
+			if _, err := stream.Next(context.Background()); err != nil && !errors.Is(err, hostlink.ErrShutdown) {
 				return
 			}
 		}
@@ -428,6 +430,12 @@ func TestSession_SlowAdmittedBodyHeldPastTheDeadlineIsUnknown(t *testing.T) {
 	var e sessionEnd
 	select {
 	case <-g.admitted:
+		// A ready select picks at random, so confirm the host is still waiting.
+		select {
+		case e = <-done:
+			t.Fatalf("the host finished before the POST was admitted: %v", e.err)
+		default:
+		}
 	case e = <-done:
 		t.Fatalf("the host finished before the POST was admitted: %v", e.err)
 	case <-time.After(10 * time.Second):
@@ -439,7 +447,7 @@ func TestSession_SlowAdmittedBodyHeldPastTheDeadlineIsUnknown(t *testing.T) {
 	require.Zero(t, accepts.Load())
 
 	// The agent ends with the timeout or a link error, whichever lands first.
-	recv(t, g.runErr, "agent.Run to return")
+	require.Error(t, recv(t, g.runErr, "agent.Run to return"), "a clean return cannot pass")
 	recv(t, g.bdone, "the bootstrap to return")
 	recv(t, g.drained, "the guest stream's reader to finish")
 	_ = (<-held).Close()

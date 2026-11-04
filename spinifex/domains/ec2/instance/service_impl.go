@@ -1997,8 +1997,7 @@ func IsInstanceVisibleToCaller(accountID string, v *vm.VM) bool {
 // instanceMatchesFilters checks whether a VM + its built ec2.Instance copy satisfy all parsed awsfilters.
 func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
-			// tag:Key filters are handled after all field awsfilters.
+		if awsfilters.IsTagFilter(name) {
 			continue
 		}
 
@@ -2020,16 +2019,6 @@ func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]
 			if ic.SubnetId != nil {
 				field = *ic.SubnetId
 			}
-		case "tag-key":
-			if !matchTagKey(ic.Tags, values) {
-				return false
-			}
-			continue
-		case "tag-value":
-			if !matchTagValue(ic.Tags, values) {
-				return false
-			}
-			continue
 		default:
 			// Filter name passed ParseFilters but has no case — treat as non-match
 			// to avoid silently ignoring it.
@@ -2041,23 +2030,8 @@ func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]
 		}
 	}
 
-	// Check tag:Key filters via the instance's Tag slice.
 	tags := awsfilters.EC2TagsToMap(ic.Tags)
 	return awsfilters.MatchesTags(filters, tags)
-}
-
-// matchTagKey returns true if any tag key on the resource matches any of the filter values.
-func matchTagKey(tags []*ec2.Tag, values []string) bool {
-	return slices.ContainsFunc(tags, func(t *ec2.Tag) bool {
-		return t.Key != nil && awsfilters.MatchesAny(values, *t.Key)
-	})
-}
-
-// matchTagValue returns true if any tag value on the resource matches any of the filter values.
-func matchTagValue(tags []*ec2.Tag, values []string) bool {
-	return slices.ContainsFunc(tags, func(t *ec2.Tag) bool {
-		return t.Value != nil && awsfilters.MatchesAny(values, *t.Value)
-	})
 }
 
 // DescribeInstances returns instances on this node visible to the caller's account.

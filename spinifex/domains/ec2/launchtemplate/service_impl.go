@@ -944,7 +944,7 @@ func (s *LaunchTemplateServiceImpl) DescribeLaunchTemplates(ctx context.Context,
 
 func templateMatchesFilters(h *LaunchTemplateHeader, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if awsfilters.IsTagFilter(name) {
 			continue
 		}
 		switch name {
@@ -958,17 +958,6 @@ func templateMatchesFilters(h *LaunchTemplateHeader, filters map[string][]string
 			}
 		case "create-time":
 			if !awsfilters.MatchesAny(values, h.CreateTime.Format(time.RFC3339)) {
-				return false
-			}
-		case "tag-key":
-			matched := false
-			for k := range h.Tags {
-				if awsfilters.MatchesAny(values, k) {
-					matched = true
-					break
-				}
-			}
-			if !matched {
 				return false
 			}
 		default:

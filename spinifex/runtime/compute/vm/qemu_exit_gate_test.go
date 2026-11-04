@@ -103,11 +103,14 @@ func TestS7_StuckTerminateDeletesVolumesOnceQEMUIsProvenGone(t *testing.T) {
 	assert.Equal(t, string(TeardownDone), store.terminated[id].Teardown[TeardownQEMU])
 }
 
-func writeCorruptPidFile(t *testing.T, id string) {
+// unknownPidContents are PID file contents that are not proof of a dead process.
+var unknownPidContents = []string{"not-a-pid", "0", "-1"}
+
+func writeCorruptPidFile(t *testing.T, id, content string) {
 	t.Helper()
 	path, err := hostprocess.GeneratePidFile(id)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(path, []byte("not-a-pid"), 0o600))
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 }
 
 // TestS7_UnknownQEMUStateNeverPermitsVolumeDeletion enforces ADR-0003:S7: a PID
@@ -116,38 +119,42 @@ func writeCorruptPidFile(t *testing.T, id string) {
 func TestS7_UnknownQEMUStateNeverPermitsVolumeDeletion(t *testing.T) {
 	hostprocess.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
 
-	t.Run("stuck terminate backstop", func(t *testing.T) {
-		cleaner := &recordingInstanceCleaner{}
-		stuck, store := newStuckTerminateReaper(t, cleaner)
-		const id = "i-corrupt-pid-stuck"
-		writeCorruptPidFile(t, id)
-		stuck.m.InsertIfAbsent(&VM{
-			ID:             id,
-			Status:         StateShuttingDown,
-			ShuttingDownAt: time.Now().Add(-(stuckTerminateTimeout + time.Minute)),
-		})
-		_, err := stuck.Sweep(context.Background())
-		require.NoError(t, err)
-		assert.Empty(t, cleaner.deleteVolumes)
-		assert.Equal(t, string(TeardownFailed), store.terminated[id].Teardown[TeardownQEMU])
-	})
+	for _, content := range unknownPidContents {
+		t.Run(content, func(t *testing.T) {
+			t.Run("stuck terminate backstop", func(t *testing.T) {
+				cleaner := &recordingInstanceCleaner{}
+				stuck, store := newStuckTerminateReaper(t, cleaner)
+				const id = "i-corrupt-pid-stuck"
+				writeCorruptPidFile(t, id, content)
+				stuck.m.InsertIfAbsent(&VM{
+					ID:             id,
+					Status:         StateShuttingDown,
+					ShuttingDownAt: time.Now().Add(-(stuckTerminateTimeout + time.Minute)),
+				})
+				_, err := stuck.Sweep(context.Background())
+				require.NoError(t, err)
+				assert.Empty(t, cleaner.deleteVolumes)
+				assert.Equal(t, string(TeardownFailed), store.terminated[id].Teardown[TeardownQEMU])
+			})
 
-	t.Run("teardown reaper", func(t *testing.T) {
-		cleaner := &recordingInstanceCleaner{}
-		stuck, store := newStuckTerminateReaper(t, cleaner)
-		const id = "i-corrupt-pid-reaper"
-		writeCorruptPidFile(t, id)
-		require.NoError(t, store.WriteTerminatedInstance(id, &VM{
-			ID:       id,
-			Status:   StateTerminated,
-			LastNode: "test-node",
-			Teardown: map[string]string{TeardownQEMU: string(TeardownFailed), TeardownVolumes: string(TeardownFailed)},
-		}))
-		_, err := stuck.m.NewTerminatedTeardownReaper().Sweep(context.Background())
-		require.NoError(t, err)
-		assert.Empty(t, cleaner.deleteVolumes)
-		assert.Equal(t, string(TeardownFailed), store.terminated[id].Teardown[TeardownQEMU])
-	})
+			t.Run("teardown reaper", func(t *testing.T) {
+				cleaner := &recordingInstanceCleaner{}
+				stuck, store := newStuckTerminateReaper(t, cleaner)
+				const id = "i-corrupt-pid-reaper"
+				writeCorruptPidFile(t, id, content)
+				require.NoError(t, store.WriteTerminatedInstance(id, &VM{
+					ID:       id,
+					Status:   StateTerminated,
+					LastNode: "test-node",
+					Teardown: map[string]string{TeardownQEMU: string(TeardownFailed), TeardownVolumes: string(TeardownFailed)},
+				}))
+				_, err := stuck.m.NewTerminatedTeardownReaper().Sweep(context.Background())
+				require.NoError(t, err)
+				assert.Empty(t, cleaner.deleteVolumes)
+				assert.Equal(t, string(TeardownFailed), store.terminated[id].Teardown[TeardownQEMU])
+			})
+		})
+	}
 }
 
 // TestStuckTerminateKillFailureKeepsTheUEFIObligation checks the failed-kill
@@ -201,12 +208,21 @@ func TestS7_TeardownReaperDoesNotJudgeQEMUOnAnotherNode(t *testing.T) {
 // ADR-0003:S7 across reapers: the orphan reaper must not turn an unreadable PID
 // file into a missing one, which the teardown reaper reads as proof of exit.
 func TestS7_CorruptPidFileSurvivesTheOrphanReaperAndKeepsVolumes(t *testing.T) {
+	for _, content := range unknownPidContents {
+		t.Run(content, func(t *testing.T) {
+			corruptPidFileSurvivesTheOrphanReaper(t, content)
+		})
+	}
+}
+
+func corruptPidFileSurvivesTheOrphanReaper(t *testing.T, content string) {
+	t.Helper()
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	store := newFakeStateStore()
 	cleaner := &recordingInstanceCleaner{}
 	m := NewManagerWithDeps(Deps{NodeID: "test-node", StateStore: store, InstanceCleaner: cleaner})
 	const id = "i-corrupt-pid-orphan"
-	writeCorruptPidFile(t, id)
+	writeCorruptPidFile(t, id, content)
 	m.InsertIfAbsent(&VM{
 		ID:             id,
 		Status:         StateShuttingDown,

@@ -125,8 +125,17 @@ func (r *OrphanQEMUReaper) Sweep(context.Context) (int, error) {
 // unknown state, not proof, so callers gating data deletion must not proceed.
 func qemuProvenGone(instanceID string) bool {
 	pid, err := hostprocess.ReadPidFile(instanceID)
+	return pidReadProvesExit(pid, err)
+}
+
+// pidReadProvesExit judges a PID file read: absent or naming a dead process is
+// proof of exit; an unreadable file or a non-positive PID is unknown state.
+func pidReadProvesExit(pid int, err error) bool {
 	if err != nil {
 		return errors.Is(err, fs.ErrNotExist)
+	}
+	if pid <= 0 {
+		return false
 	}
 	return !hostprocess.ProcessAlive(pid)
 }

@@ -1,7 +1,9 @@
 package awsapi
 
 import (
+	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -23,6 +25,18 @@ const (
 	maxImageTagLength     = 300
 	maxMediaTypeListItems = 100
 	maxRepositoryNameList = 100
+
+	minMaxResults           = 1
+	maxMaxResults           = 1000
+	maxKMSKeyLength         = 2048
+	maxExclusionFilter      = 5
+	maxExclusionFilterValue = 128
+	maxRegistryIDList       = 10
+)
+
+var (
+	exclusionFilterPattern = regexp.MustCompile(`^[0-9a-zA-Z._*-]{1,128}$`)
+	registryIDPattern      = regexp.MustCompile(`^[0-9]{12}$`)
 )
 
 // ValidateRepositoryName returns InvalidParameterException naming the first
@@ -154,3 +168,89 @@ var ImageTagMutabilityValues = []string{"IMMUTABLE", "MUTABLE", "MUTABLE_WITH_EX
 
 // TagStatusValues is the filter tagStatus enum AWS's model declares.
 var TagStatusValues = []string{"TAGGED", "UNTAGGED", "ANY"}
+
+// ImageStatusValues is the filter imageStatus enum, in the order AWS lists it
+// when refusing a value.
+var ImageStatusValues = []string{"ARCHIVED", "ACTIVE", "ANY", "ACTIVATING"}
+
+// validateMaxResults refuses a maxResults outside MaxResults' range of
+// 1-1000; an omitted value is valid.
+func validateMaxResults(n *int64) error {
+	switch {
+	case n == nil:
+		return nil
+	case *n < minMaxResults:
+		return ConstraintError("maxResults", fmt.Sprintf("Member must have value greater than or equal to %d", minMaxResults))
+	case *n > maxMaxResults:
+		return ConstraintError("maxResults", fmt.Sprintf("Member must have value less than or equal to %d", maxMaxResults))
+	}
+	return nil
+}
+
+// exclusionFilter is one imageTagMutabilityExclusionFilters member.
+type exclusionFilter struct {
+	FilterType *string `json:"filterType"`
+	Filter     *string `json:"filter"`
+}
+
+// validateExclusionFilters checks imageTagMutabilityExclusionFilters against
+// its model: 1-5 members, each a WILDCARD filterType and a filter matching the
+// model's pattern. The filters are checked only, never applied.
+func validateExclusionFilters(filters []exclusionFilter) error {
+	const field = "imageTagMutabilityExclusionFilters"
+	if filters == nil {
+		return nil
+	}
+	if err := validateListLength(field, len(filters), 1, maxExclusionFilter); err != nil {
+		return err
+	}
+	for i, f := range filters {
+		member := fmt.Sprintf("%s.%d.member", field, i+1)
+		switch {
+		case f.FilterType == nil:
+			return RequiredParameterError(member + ".filterType")
+		case *f.FilterType != "WILDCARD":
+			return EnumValueError(member+".filterType", "WILDCARD")
+		case f.Filter == nil:
+			return RequiredParameterError(member + ".filter")
+		}
+		if exclusionFilterPattern.MatchString(*f.Filter) {
+			continue
+		}
+		constraint := "Member must satisfy regular expression pattern: " + exclusionFilterPattern.String()
+		switch n := utf8.RuneCountInString(*f.Filter); {
+		case n < 1:
+			constraint += "; Member must have length greater than or equal to 1"
+		case n > maxExclusionFilterValue:
+			constraint += fmt.Sprintf("; Member must have length less than or equal to %d", maxExclusionFilterValue)
+		}
+		return ConstraintError(member+".filter", constraint)
+	}
+	return nil
+}
+
+// ValidateAuthorizationTokenRequest checks GetAuthorizationToken's deprecated
+// registryIds against its model: 1-10 members, each 12 digits. The ids carry
+// no meaning, as on AWS, so they are only checked.
+func ValidateAuthorizationTokenRequest(body []byte) error {
+	var req struct {
+		RegistryIDs []string `json:"registryIds"`
+	}
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			return MalformedBodyError()
+		}
+	}
+	if req.RegistryIDs == nil {
+		return nil
+	}
+	if err := validateListLength("registryIds", len(req.RegistryIDs), 1, maxRegistryIDList); err != nil {
+		return err
+	}
+	for _, id := range req.RegistryIDs {
+		if !registryIDPattern.MatchString(id) {
+			return ConstraintError("registryIds", "Member must satisfy constraint: [Member must satisfy regular expression pattern: [0-9]{12}]")
+		}
+	}
+	return nil
+}

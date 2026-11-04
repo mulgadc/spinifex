@@ -596,10 +596,7 @@ func TestExecute_MissingArchitecture(t *testing.T) {
 }
 
 func TestExecute_KVMAndCPUType(t *testing.T) {
-	if _, err := os.Stat("/dev/kvm"); err != nil {
-		t.Skipf("/dev/kvm missing: %v", err)
-	}
-
+	SetKVMAvailableForTest(t, true)
 	cfg := Config{
 		CPUCount:     2,
 		Memory:       1024,
@@ -615,6 +612,25 @@ func TestExecute_KVMAndCPUType(t *testing.T) {
 	args := cmd.Args[1:]
 	assert.True(t, argExists(args, "-enable-kvm"))
 	assert.Equal(t, "host", argValue(args, "-cpu"))
+}
+
+func TestExecute_NoKVMOmitsKVMAndCPUType(t *testing.T) {
+	SetKVMAvailableForTest(t, false)
+	cfg := Config{
+		CPUCount:     2,
+		Memory:       1024,
+		Architecture: "x86_64",
+		EnableKVM:    true,
+		CPUType:      "host",
+		Drives:       []Drive{{File: "disk.img", Format: "raw"}},
+	}
+
+	cmd, err := cfg.Execute()
+	assert.NoError(t, err)
+
+	args := cmd.Args[1:]
+	assert.False(t, argExists(args, "-enable-kvm"))
+	assert.False(t, argExists(args, "-cpu"))
 }
 
 func TestExecute_FullConfig(t *testing.T) {

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -486,6 +487,32 @@ type FwCfgEntry struct {
 // resolveQEMUBinary is a variable so tests run without QEMU installed.
 var resolveQEMUBinary = hostos.QEMUBinary
 
+// kvmOverride pins the /dev/kvm probe for tests: 0 probes the host, 1 reports
+// KVM present, 2 absent. Atomic so a test can set it while others build argv.
+var kvmOverride atomic.Int32
+
+func kvmAvailable() bool {
+	switch kvmOverride.Load() {
+	case 1:
+		return true
+	case 2:
+		return false
+	}
+	_, err := os.Stat("/dev/kvm")
+	return err == nil
+}
+
+// SetKVMAvailableForTest makes Execute see KVM as present or absent for one test.
+func SetKVMAvailableForTest(tb testing.TB, present bool) {
+	tb.Helper()
+	v := int32(2)
+	if present {
+		v = 1
+	}
+	prev := kvmOverride.Swap(v)
+	tb.Cleanup(func() { kvmOverride.Store(prev) })
+}
+
 func (cfg *Config) Execute() (*exec.Cmd, error) {
 	args := []string{}
 
@@ -525,10 +552,7 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		args = append(args, "-smbios", fmt.Sprintf("type=3,asset=%s", cfg.SMBIOSAssetTag))
 	}
 
-	// Validate native kvm support
-	_, err := os.Stat("/dev/kvm")
-
-	if err != nil {
+	if !kvmAvailable() {
 		slog.Warn("Native KVM support not detected on host. Check permissions and host")
 		//slog.Warn("Setting -cpu max, `host` CPU type unavailable")
 		// Use qemu defaults

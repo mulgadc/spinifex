@@ -151,3 +151,51 @@ func TestSplitSANsPartitionsIPsAndDNS(t *testing.T) {
 		}
 	}
 }
+
+func TestMintSelfSignsWithoutParentAndChainsToParentOtherwise(t *testing.T) {
+	tmpl := &x509.Certificate{
+		Subject:               pkix.Name{CommonName: "root"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	rootPEM, rootKeyPEM, err := Mint(tmpl, nil, nil)
+	if err != nil {
+		t.Fatalf("Mint self-signed: %v", err)
+	}
+	if tmpl.SerialNumber != nil {
+		t.Fatal("Mint modified the caller's template")
+	}
+	root, err := x509.ParseCertificate(decodeFirst(rootPEM))
+	if err != nil {
+		t.Fatalf("parse root: %v", err)
+	}
+	if err := root.CheckSignatureFrom(root); err != nil {
+		t.Fatalf("root not self-signed: %v", err)
+	}
+	rootKey, err := x509.ParseECPrivateKey(decodeFirst(rootKeyPEM))
+	if err != nil {
+		t.Fatalf("parse root key: %v", err)
+	}
+
+	leafPEM, _, err := Mint(&x509.Certificate{
+		Subject:   pkix.Name{CommonName: "leaf"},
+		NotBefore: time.Now().Add(-time.Hour),
+		NotAfter:  time.Now().Add(time.Hour),
+	}, root, rootKey)
+	if err != nil {
+		t.Fatalf("Mint leaf: %v", err)
+	}
+	leaf, err := x509.ParseCertificate(decodeFirst(leafPEM))
+	if err != nil {
+		t.Fatalf("parse leaf: %v", err)
+	}
+	if err := leaf.CheckSignatureFrom(root); err != nil {
+		t.Fatalf("leaf not signed by parent: %v", err)
+	}
+	if leaf.SerialNumber.Cmp(root.SerialNumber) == 0 {
+		t.Fatal("serials collide")
+	}
+}

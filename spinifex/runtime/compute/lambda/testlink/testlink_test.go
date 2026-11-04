@@ -80,6 +80,7 @@ type granted struct {
 	store       *execution.Store
 	att         execution.Attempt
 	lib, libSHA string
+	image       *Image
 }
 
 func grant(t *testing.T, code []byte) *granted {
@@ -97,7 +98,7 @@ func grant(t *testing.T, code []byte) *granted {
 	elfLib := elfHeader(elfMachine[runtime.GOARCH])
 	require.NoError(t, os.WriteFile(lib, elfLib, 0o600))
 	sum := sha256.Sum256(elfLib)
-	return &granted{store: store, att: att, lib: lib, libSHA: hex.EncodeToString(sum[:])}
+	return &granted{store: store, att: att, lib: lib, libSHA: hex.EncodeToString(sum[:]), image: preparedImage(t)}
 }
 
 func (g *granted) state(t *testing.T) string {
@@ -111,6 +112,7 @@ func (g *granted) state(t *testing.T) string {
 func (g *granted) daemon(d *Daemon) *Daemon {
 	d.Node, d.Grants = testNode, g.store
 	d.Initializer, d.InitializerSHA256 = g.lib, g.libSHA
+	d.Image = g.image
 	return d
 }
 
@@ -244,7 +246,7 @@ func TestDaemon_FailedCleanupHoldsTheSlotAcrossRestart(t *testing.T) {
 	g := grant(t, code)
 	work := t.TempDir()
 	ips, taps := &fakeIPs{}, &fakeTaps{removeErr: errors.New("busy")}
-	d := g.daemon(&Daemon{IPs: ips, Taps: taps, HTTP: srv.Client(), WorkDir: work, ImageDir: t.TempDir(), HostIP: "127.0.0.1"})
+	d := g.daemon(&Daemon{IPs: ips, Taps: taps, HTTP: srv.Client(), WorkDir: work, HostIP: "127.0.0.1"})
 	// A file where the attempt directory goes fails preparation after the tap exists.
 	require.NoError(t, os.WriteFile(filepath.Join(work, "0123456789ab"), nil, 0o600))
 	rep := d.Handle(context.Background(), g.request(srv.URL, code))
@@ -339,7 +341,7 @@ func TestCheckRequest_RefusesGrantWithoutEnvironmentGeneration(t *testing.T) {
 func TestPrepare_ScopeAndGrantEntryComeFromTheGrant(t *testing.T) {
 	req := baseRequest("https://example.invalid/code", []byte("zip"))
 	req.Grant = execution.Grant{GrantID: "g-7", AttemptID: req.AttemptID, EnvironmentID: "env-x", Generation: 3, Node: testNode}
-	d := &Daemon{ImageDir: t.TempDir(), HostIP: "127.0.0.1"}
+	d := &Daemon{HostIP: "127.0.0.1"}
 	dir := filepath.Join(t.TempDir(), "attempt")
 	_, gen, ln, err := d.prepare(req, []byte("zip"), dir, "tap0", "02:00:00:00:00:01", "10.0.0.2")
 	require.NoError(t, err)

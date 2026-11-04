@@ -85,12 +85,17 @@ go_build:
 # Controlled-test only: builds the tagged daemon and its hard-kill initializer
 # together, pinning the initializer's digest into that daemon build. The daemon
 # keeps its symbols so the pin can be read back from the binary.
+# LAMBDA_IMAGE_DIGEST is the test-link runtime image digest that
+# build-lambda-testlink-image prints; it is read raw and validated before use.
 LAMBDA_TESTLINK_DIR := ./bin/lambda-testlink
-LAMBDA_TESTLINK_PIN := github.com/mulgadc/spinifex/spinifex/runtime/daemon.lambdaHardKillSHA256
+LAMBDA_TESTLINK_PKG := github.com/mulgadc/spinifex/spinifex/runtime/daemon
+LAMBDA_TESTLINK_PIN := $(LAMBDA_TESTLINK_PKG).lambdaHardKillSHA256
+LAMBDA_DIGEST_RE := ^[0-9a-f]{64}$$
+build-lambda-testlink: override export LAMBDA_IMAGE_DIGEST := $(value LAMBDA_IMAGE_DIGEST)
 build-lambda-testlink:
-	@host=$$(uname -m); case "$$host" in x86_64) want=amd64;; aarch64) want=arm64;; *) want=;; esac; \
-	goos=$$(go env GOOS); goarch=$$(go env GOARCH); \
-	test -n "$$want" && test "$$goos/$$goarch" = "linux/$$want" || { echo "host $$host cannot build a matching $$goos/$$goarch pair"; exit 1; }
+	@[[ "$$LAMBDA_IMAGE_DIGEST" =~ $(LAMBDA_DIGEST_RE) ]] || { echo "LAMBDA_IMAGE_DIGEST must be 64 lowercase hex digits"; exit 1; }
+	@host=$$(uname -m); goos=$$(go env GOOS); goarch=$$(go env GOARCH); \
+	test "$$host" = x86_64 && test "$$goos/$$goarch" = linux/amd64 || { echo "the test link supports only an x86_64 host building linux/amd64, not $$host building $$goos/$$goarch"; exit 1; }
 	@rm -f $(LAMBDA_TESTLINK_DIR)/hardkill.so $(LAMBDA_TESTLINK_DIR)/$(GO_PROJECT_NAME)
 	@mkdir -p $(LAMBDA_TESTLINK_DIR).tmp
 	@rm -f $(LAMBDA_TESTLINK_DIR).tmp/hardkill.so $(LAMBDA_TESTLINK_DIR).tmp/$(GO_PROJECT_NAME)
@@ -99,8 +104,8 @@ build-lambda-testlink:
 	@digest=$$(sha256sum $(LAMBDA_TESTLINK_DIR).tmp/hardkill.so | cut -d' ' -f1); \
 	test $${#digest} -eq 64 || { echo "initializer digest missing"; exit 1; }; \
 	echo "initializer sha256 $$digest"; \
-	pin="-X $(LAMBDA_TESTLINK_PIN)=$$digest"; \
-	LAMBDA_TESTLINK_INITIALIZER=$(abspath $(LAMBDA_TESTLINK_DIR).tmp/hardkill.so) go test -count=1 -tags lambdatestlink -ldflags "$$pin" -run '^TestLambdaHardKillPin$$' ./spinifex/runtime/daemon/ && \
+	pin="-X $(LAMBDA_TESTLINK_PIN)=$$digest -X $(LAMBDA_TESTLINK_PKG).lambdaImageDigest=$$LAMBDA_IMAGE_DIGEST"; \
+	LAMBDA_TESTLINK_INITIALIZER=$(abspath $(LAMBDA_TESTLINK_DIR).tmp/hardkill.so) go test -count=1 -tags lambdatestlink -ldflags "$$pin" -run '^TestLambda(HardKillPin|ImageDigestPin)$$' ./spinifex/runtime/daemon/ && \
 	go build $(GO_BUILD_MOD) -tags lambdatestlink -ldflags "$(subst -s -w ,,$(LDFLAGS)) $$pin" -o $(LAMBDA_TESTLINK_DIR).tmp/$(GO_PROJECT_NAME) cmd/spinifex/main.go
 	@mkdir -p $(LAMBDA_TESTLINK_DIR)
 	mv $(LAMBDA_TESTLINK_DIR).tmp/hardkill.so $(LAMBDA_TESTLINK_DIR).tmp/$(GO_PROJECT_NAME) $(LAMBDA_TESTLINK_DIR)/
@@ -221,6 +226,22 @@ bin/lambda-agent: go.mod go.sum $$(call go_local_srcs,./cmd/lambda-agent)
 	GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags '-s -w' -o $@ ./cmd/lambda-agent
 
 build-lambda-runtime-microvm-image: $(LAMBDA_RUNTIME_MICROVM_ARTIFACTS) ## Build the Lambda runtime microVM kernel and initramfs (not shipped)
+
+# Controlled-test only: a separately built guest whose agent has the
+# lambdatestlink tag, in its own outputs, never touching bin/lambda-agent or the
+# default image. It prints the digest to pass as LAMBDA_IMAGE_DIGEST.
+LAMBDA_TESTLINK_IMAGE_DIR := $(MICROVM_OUT_DIR)/lambda-testlink-runtime
+build-lambda-testlink-image: ## Build the test-link Lambda guest image and print its digest (not shipped)
+	@host=$$(uname -m); goos=$$(go env GOOS); goarch=$$(go env GOARCH); \
+	test "$$host" = x86_64 && test "$$goos/$$goarch" = linux/amd64 || { echo "the test link supports only an x86_64 host building linux/amd64, not $$host building $$goos/$$goarch"; exit 1; }
+	$(MAKE) --no-print-directory $(MICROVM_OUT_DIR)/qboot.rom
+	@mkdir -p bin $(LAMBDA_TESTLINK_IMAGE_DIR)
+	GOWORK=off GOFLAGS= CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags lambdatestlink -ldflags '-s -w' -o bin/lambda-agent-testlink ./cmd/lambda-agent
+	./scripts/build-lambda-runtime-microvm-image.sh bin/lambda-agent-testlink $(LAMBDA_TESTLINK_IMAGE_DIR)
+	install -m 0644 $(MICROVM_OUT_DIR)/qboot.rom $(LAMBDA_TESTLINK_IMAGE_DIR)/qboot.rom
+	@digest=$$(GOWORK=off go run -tags lambdatestlink ./cmd/lambda-image-digest $(LAMBDA_TESTLINK_IMAGE_DIR)) && \
+	[[ "$$digest" =~ $(LAMBDA_DIGEST_RE) ]] || { echo "image digest not computed"; exit 1; }; \
+	echo "LAMBDA_IMAGE_DIGEST=$$digest"
 
 # qboot is the microvm firmware. The source tarball ships with each release
 # because qboot is GPL-2.0.
@@ -566,7 +587,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-lambda-testlink build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-worker-microvm-image build-lambda-runtime-microvm-image install-microvm install-sqs-worker-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
+.PHONY: test-package-check build build-lambda-testlink build-lambda-testlink-image build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-worker-microvm-image build-lambda-runtime-microvm-image install-microvm install-sqs-worker-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

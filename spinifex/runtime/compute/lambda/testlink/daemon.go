@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -72,17 +73,18 @@ type IPs interface {
 
 // Daemon runs one test-link invocation at a time on this node.
 type Daemon struct {
-	Node     string
-	Grants   Grants
-	Taps     Taps
-	IPs      IPs
-	Bridge   string
-	HostIP   string
-	MTU      int
-	ImageDir string
-	Firmware string
-	WorkDir  string
-	HTTP     *http.Client
+	Node    string
+	Grants  Grants
+	Taps    Taps
+	IPs     IPs
+	Bridge  string
+	HostIP  string
+	MTU     int
+	WorkDir string
+	HTTP    *http.Client
+	// Image is the prepared runtime image every launch boots; the daemon
+	// prepares it once before serving and keeps it open for its whole life.
+	Image *Image
 	// Initializer is the hard-kill library preloaded into QEMU, and
 	// InitializerSHA256 the digest it must have.
 	Initializer       string
@@ -138,6 +140,9 @@ func (d *Daemon) Handle(ctx context.Context, data []byte) Reply {
 	}
 	if req.Grant.Node != d.Node {
 		return refused("grant names another node")
+	}
+	if d.Image == nil {
+		return refused("runtime image not prepared")
 	}
 	if !d.busy.CompareAndSwap(false, true) {
 		return refused("another test-link attempt holds this node's slot")
@@ -364,7 +369,7 @@ func (d *Daemon) run(ctx context.Context, req Request, code []byte, lib *os.File
 	if expired(hardDeadline) {
 		return refused(ErrDeadlineExpired.Error()), d.release(a), marker
 	}
-	hk, err := armCommand(cmd, lib, hardDeadline)
+	hk, err := armLaunch(cmd, d.Image, lib, hardDeadline)
 	if err != nil {
 		return refused("hard-kill setup failed"), d.release(a), marker
 	}
@@ -423,6 +428,24 @@ func safeRunError(err error) string {
 	return "guest session failed"
 }
 
+// QEMU reads the image only from the sealed copies run passes as fds 3 to 5.
+const (
+	sealedFirmware = "/proc/self/fd/3"
+	sealedKernel   = "/proc/self/fd/4"
+	sealedInitrd   = "/proc/self/fd/5"
+)
+
+// armLaunch gives QEMU the sealed image as fds 3 to 5 and then arms the hard
+// kill, whose ack and initializer fds follow. Any other inherited file would
+// shift those numbers, so it is refused. The daemon keeps the image fds open.
+func armLaunch(cmd *exec.Cmd, img *Image, lib *os.File, deadline time.Duration) (*hardKill, error) {
+	if img == nil || len(cmd.ExtraFiles) != 0 {
+		return nil, errors.New("VM command has unexpected inherited files")
+	}
+	cmd.ExtraFiles = []*os.File{img.Firmware, img.Kernel, img.Initrd}
+	return armCommand(cmd, lib, deadline)
+}
+
 // prepare writes the package disk and fw_cfg files and opens the listener the
 // guest dials.
 func (d *Daemon) prepare(req Request, code []byte, dir, tap, mac, ip string) (*vm.Config, *guestconn.Generation, *net.TCPListener, error) {
@@ -471,12 +494,11 @@ func (d *Daemon) prepare(req Request, code []byte, dir, tap, mac, ip string) (*v
 		Architecture: "x86_64",
 		VCPUs:        1,
 		MemoryMiB:    int(max(req.MemoryMiB, 128)),
-		Firmware:     d.Firmware,
-		ImageDir:     d.ImageDir,
 		LogLevel:     3,
 		FwCfg:        fwCfg,
 		NetDevs:      []vm.NetDev{vm.TapNetDev("net0", tap, 1)},
 	})
+	cfg.BIOS, cfg.KernelImage, cfg.Initrd = sealedFirmware, sealedKernel, sealedInitrd
 	cfg.Devices = append(cfg.Devices, vm.NetDevice(cfg.MachineType, "net0", mac, 1, d.MTU))
 	cfg.Drives = append(cfg.Drives, vm.Drive{File: diskPath, Format: "raw", If: "none", ID: "pkg", ReadOnly: true})
 	blk := "virtio-blk-pci,drive=pkg"

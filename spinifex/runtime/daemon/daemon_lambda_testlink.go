@@ -15,7 +15,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/execution"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/testlink"
-	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -23,6 +22,10 @@ import (
 // lambdaHardKillSHA256 pins the hard-kill initializer; tagged test builds set
 // it with -ldflags -X, and an unset pin means the test link does not serve.
 var lambdaHardKillSHA256 string
+
+// lambdaImageDigest pins the runtime image the same way; it identifies the
+// image bytes and does not authenticate where they came from.
+var lambdaImageDigest string
 
 // startLambdaTestLink serves controlled-test Lambda invocations for this node.
 // Recovery needs only the owner store, taps and addresses, so it starts even
@@ -53,18 +56,17 @@ func (d *Daemon) startLambdaTestLink() {
 		return
 	}
 	httpClient, trustErr := d.lambdaTestLinkHTTP()
+	imageDir := filepath.Join(microvmDir, "lambda-testlink")
 	tl := &testlink.Daemon{
-		Node:     d.node,
-		Grants:   grants,
-		Taps:     taps,
-		IPs:      d.mgmtIPAllocator,
-		Bridge:   d.mgmtBridgeName(),
-		HostIP:   d.mgmtBridgeIP,
-		ImageDir: filepath.Join(microvmDir, "lambda-testlink"),
-		Firmware: filepath.Join(microvmDir, vm.MicroVMFirmware),
-		WorkDir:  workDir,
+		Node:    d.node,
+		Grants:  grants,
+		Taps:    taps,
+		IPs:     d.mgmtIPAllocator,
+		Bridge:  d.mgmtBridgeName(),
+		HostIP:  d.mgmtBridgeIP,
+		WorkDir: workDir,
 
-		Initializer:       filepath.Join(microvmDir, "lambda-testlink", "hardkill.so"),
+		Initializer:       filepath.Join(imageDir, "hardkill.so"),
 		InitializerSHA256: lambdaHardKillSHA256,
 		HTTP:              httpClient,
 	}
@@ -80,25 +82,44 @@ func (d *Daemon) startLambdaTestLink() {
 			if trustErr != nil {
 				return trustErr
 			}
-			return tl.CheckInitializer()
+			if !testlink.ValidDigest(lambdaImageDigest) {
+				return errors.New("runtime image digest not pinned")
+			}
+			if err := tl.CheckInitializer(); err != nil {
+				return err
+			}
+			im, err := testlink.PrepareImage(imageDir, lambdaImageDigest)
+			if err != nil {
+				return err
+			}
+			tl.Image = im
+			return nil
 		},
 		func() error { _, err := tl.Serve(d.ctx, d.natsConn, d.node); return err },
+		func() { tl.Image.Close(); tl.Image = nil },
 	)
 	if err != nil {
 		slog.Error("Lambda test link: not serving new invocations; recovery continues", "err", err)
 		return
 	}
-	slog.Warn("Lambda test link serving: test-only, not for production; the guest does not verify owner grant authority", "node", d.node)
+	slog.Warn("Lambda test link serving: test-only, not for production; the guest does not verify owner grant authority",
+		"node", d.node, "image_digest", tl.Image.Digest)
 }
 
 // runLambdaTestLink starts recovery before any serving check, so a failed
 // check refuses new invocations without stopping cleanup of earlier ones.
-func runLambdaTestLink(startRecovery func(), ready, serve func() error) error {
+// release drops whatever ready prepared when ready or serve fails.
+func runLambdaTestLink(startRecovery func(), ready, serve func() error, release func()) error {
 	startRecovery()
 	if err := ready(); err != nil {
+		release()
 		return err
 	}
-	return serve()
+	if err := serve(); err != nil {
+		release()
+		return err
+	}
+	return nil
 }
 
 // lambdaTestLinkHTTP builds the code-download client trusting the cluster CA.

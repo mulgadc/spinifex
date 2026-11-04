@@ -497,7 +497,7 @@ func TestDescribeNetworkInterfaces_NotFound(t *testing.T) {
 	_, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
 		NetworkInterfaceIds: []*string{aws.String("eni-0000000000000dead")},
 	}, testAccountID)
-	requireAWSError(t, err, awserrors.ErrorInvalidNetworkInterfaceIDNotFound, "The networkInterface ID 'eni-0000000000000dead' does not exist")
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidNetworkInterfaceIDNotFound, "The networkInterface ID 'eni-0000000000000dead' does not exist")
 }
 
 func TestDescribeNetworkInterfaces_MalformedID(t *testing.T) {
@@ -511,9 +511,9 @@ func TestDescribeNetworkInterfaces_MalformedID(t *testing.T) {
 	}
 
 	for _, id := range []string{"eni-xyz", "eni-", "eni-ABC"} {
-		requireAWSError(t, describe(id), awserrors.ErrorInvalidNetworkInterfaceIdMalformed, fmt.Sprintf("Invalid id: %q", id))
+		testutil.RequireAWSError(t, describe(id), awserrors.ErrorInvalidNetworkInterfaceIdMalformed, fmt.Sprintf("Invalid id: %q", id))
 	}
-	requireAWSError(t, describe("foo"), awserrors.ErrorInvalidNetworkInterfaceIdMalformed, `Invalid id: "foo" (expecting "eni-...")`)
+	testutil.RequireAWSError(t, describe("foo"), awserrors.ErrorInvalidNetworkInterfaceIdMalformed, `Invalid id: "foo" (expecting "eni-...")`)
 	// Unlike a group ID, any length of lowercase hex is merely unknown.
 	for _, id := range []string{"eni-12345", "eni-000000000000000000001"} {
 		requireAWSCode(t, describe(id), awserrors.ErrorInvalidNetworkInterfaceIDNotFound)

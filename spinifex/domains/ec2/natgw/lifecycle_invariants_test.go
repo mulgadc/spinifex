@@ -3,6 +3,7 @@ package natgw
 import (
 	"encoding/json"
 	"fmt"
+	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -40,7 +41,7 @@ func TestRLC3_NatGatewayDeletesWhileRouted(t *testing.T) {
 		svc, js := setupTestServiceJS(t)
 		natgwID := createTestNatGateway(t, svc)
 
-		seedKV(t, js, kvBucketRouteTables, map[string][]byte{
+		testutil.SeedKV(t, js, kvBucketRouteTables, map[string][]byte{
 			kvutil.AccountKey(testAccountID, "rtb-routed"): fmt.Appendf(nil,
 				`{"route_table_id":"rtb-routed","vpc_id":"vpc-test1","routes":[{"destination_cidr_block":"0.0.0.0/0","nat_gateway_id":%q}]}`, natgwID),
 		})

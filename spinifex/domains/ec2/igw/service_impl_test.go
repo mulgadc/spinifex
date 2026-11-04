@@ -173,14 +173,14 @@ func TestDeleteInternetGateway_WhileAttached(t *testing.T) {
 	_, err = svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 	}, testAccountID)
-	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "The internetGateway '"+igwID+"' has dependencies and cannot be deleted.")
+	testutil.RequireAWSError(t, err, awserrors.ErrorDependencyViolation, "The internetGateway '"+igwID+"' has dependencies and cannot be deleted.")
 
 	// Attaching again names the gateway and the network it is on
 	_, err = svc.AttachInternetGateway(context.Background(), &ec2.AttachInternetGatewayInput{
 		InternetGatewayId: aws.String(igwID),
 		VpcId:             aws.String("vpc-test123"),
 	}, testAccountID)
-	requireAWSError(t, err, awserrors.ErrorResourceAlreadyAssociated, "resource "+igwID+" is already attached to network vpc-test123")
+	testutil.RequireAWSError(t, err, awserrors.ErrorResourceAlreadyAssociated, "resource "+igwID+" is already attached to network vpc-test123")
 }
 
 func TestInternetGateway_NotFoundNamesTheID(t *testing.T) {
@@ -190,20 +190,12 @@ func TestInternetGateway_NotFoundNamesTheID(t *testing.T) {
 	_, err := svc.DescribeInternetGateways(context.Background(), &ec2.DescribeInternetGatewaysInput{
 		InternetGatewayIds: []*string{aws.String("igw-0000000000000dead")},
 	}, testAccountID)
-	requireAWSError(t, err, awserrors.ErrorInvalidInternetGatewayIDNotFound, "The internetGateway ID 'igw-0000000000000dead' does not exist")
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidInternetGatewayIDNotFound, "The internetGateway ID 'igw-0000000000000dead' does not exist")
 
 	_, err = svc.DeleteInternetGateway(context.Background(), &ec2.DeleteInternetGatewayInput{
 		InternetGatewayId: aws.String("igw-0000000000000dead"),
 	}, testAccountID)
-	requireAWSError(t, err, awserrors.ErrorInvalidInternetGatewayIDNotFound, "The internetGateway ID 'igw-0000000000000dead' does not exist")
-}
-
-func requireAWSError(t *testing.T, err error, code, message string) {
-	t.Helper()
-	got, msg, ok := awserrors.ResolveErrorDetail(err)
-	require.True(t, ok, "error %v carries no AWS code", err)
-	assert.Equal(t, code, got)
-	assert.Equal(t, message, msg)
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidInternetGatewayIDNotFound, "The internetGateway ID 'igw-0000000000000dead' does not exist")
 }
 
 func TestDescribeInternetGateways_All(t *testing.T) {

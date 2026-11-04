@@ -239,14 +239,6 @@ func createBody(name string, mutate func(map[string]any)) map[string]any {
 	return b
 }
 
-func requireCode(t *testing.T, err error, code string) {
-	t.Helper()
-	require.Error(t, err)
-	got, ok := awserrors.ResolveErrorCode(err)
-	require.True(t, ok, "no AWS code on %v", err)
-	assert.Equal(t, code, got)
-}
-
 func TestCreateFunction_Success(t *testing.T) {
 	e := newEnv(t)
 	code := testZip
@@ -311,7 +303,7 @@ func TestCreateFunction_DuplicateNameLeavesFirstUntouched(t *testing.T) {
 	_, err = e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) {
 		b["Code"] = map[string]any{"ZipFile": mustZip(t, "different")}
 	}))
-	requireCode(t, err, awserrors.ErrorResourceConflictException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
 	assert.Contains(t, err.Error(), "Function already exist: hello")
 
 	assert.Equal(t, 1, e.store.count(), "the loser wrote no code")
@@ -324,7 +316,7 @@ func TestCreateFunction_CodePutFailureFreesTheName(t *testing.T) {
 	e := newEnv(t)
 	e.store.putErr = errors.New("predastore down")
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
-	requireCode(t, err, awserrors.ErrorServiceException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorServiceException)
 	assert.NotContains(t, err.Error(), "predastore down")
 	assert.Equal(t, 1, e.meta.rollbacks)
 	_, _, err = e.meta.Get(t.Context(), gwtest.AccountID, gwtest.Region, "hello")
@@ -340,7 +332,7 @@ func TestCreateFunction_CodeStoredFailureRollsBackOnce(t *testing.T) {
 	e := newEnv(t)
 	e.meta.failCodeStored = true
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
-	requireCode(t, err, awserrors.ErrorServiceException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorServiceException)
 	assert.Equal(t, 1, e.meta.rollbacks)
 	assert.Equal(t, 1, e.store.count(), "the code object is left in place, never deleted here")
 	_, _, err = e.meta.Get(t.Context(), gwtest.AccountID, gwtest.Region, "hello")
@@ -376,7 +368,7 @@ func TestCreateFunction_RefusesUnsupportedInput(t *testing.T) {
 		t.Run(field, func(t *testing.T) {
 			e := newEnv(t)
 			_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", mutate))
-			requireCode(t, err, awserrors.ErrorInvalidParameterValueException)
+			testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
 			assert.Zero(t, e.store.count())
 			_, _, getErr := e.meta.Get(t.Context(), gwtest.AccountID, gwtest.Region, "hello")
 			require.ErrorIs(t, getErr, function.ErrNotFound, "a refused request claims nothing")
@@ -409,7 +401,7 @@ func TestCreateFunction_RefusesNonDefaultLoggingConfig(t *testing.T) {
 	} {
 		e := newEnv(t)
 		_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) { b["LoggingConfig"] = cfg }))
-		requireCode(t, err, awserrors.ErrorInvalidParameterValueException)
+		testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
 		_, _, getErr := e.meta.Get(t.Context(), gwtest.AccountID, gwtest.Region, "hello")
 		require.ErrorIs(t, getErr, function.ErrNotFound, "%v claims nothing", cfg)
 	}
@@ -458,7 +450,7 @@ func TestCreateFunction_ParameterValidation(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			e := newEnv(t)
 			_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", mutate))
-			requireCode(t, err, awserrors.ErrorInvalidParameterValueException)
+			testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
 			assert.Zero(t, e.store.count())
 		})
 	}
@@ -467,7 +459,7 @@ func TestCreateFunction_ParameterValidation(t *testing.T) {
 func TestCreateFunction_RoleErrorsDoNotLeakAcrossAccounts(t *testing.T) {
 	e := newEnv(t)
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) { b["Role"] = foreignRoleARN }))
-	requireCode(t, err, awserrors.ErrorInvalidParameterValueException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
 	assert.Contains(t, err.Error(), "cannot be assumed by Lambda")
 }
 
@@ -476,7 +468,7 @@ func TestCreateFunction_RefusesBytesThatAreNotAZip(t *testing.T) {
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) {
 		b["Code"] = map[string]any{"ZipFile": []byte("PK\x03\x04 not really a zip")}
 	}))
-	requireCode(t, err, awserrors.ErrorInvalidParameterValueException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
 	assert.Contains(t, err.Error(), "Could not unzip uploaded file")
 	_, _, err = e.meta.Get(t.Context(), gwtest.AccountID, gwtest.Region, "hello")
 	require.ErrorIs(t, err, function.ErrNotFound)
@@ -487,7 +479,7 @@ func TestCreateFunction_RoleLambdaCannotAssumeRecordsNothing(t *testing.T) {
 	e := newEnv(t)
 	e.deps.Trusts = func(string, string) (bool, error) { return false, nil }
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
-	requireCode(t, err, awserrors.ErrorInvalidParameterValueException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
 	assert.Contains(t, err.Error(), "cannot be assumed by Lambda")
 	_, _, err = e.meta.Get(t.Context(), gwtest.AccountID, gwtest.Region, "hello")
 	require.ErrorIs(t, err, function.ErrNotFound)
@@ -503,7 +495,7 @@ func TestCreateFunction_MissingRoleCheckFailsClosed(t *testing.T) {
 			e := newEnv(t)
 			mutate(&e.deps)
 			_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
-			requireCode(t, err, awserrors.ErrorServiceException)
+			testutil.RequireAWSCode(t, err, awserrors.ErrorServiceException)
 			_, _, err = e.meta.Get(t.Context(), gwtest.AccountID, gwtest.Region, "hello")
 			require.ErrorIs(t, err, function.ErrNotFound)
 		})
@@ -532,7 +524,7 @@ func TestGetFunction_DecryptsEnvAndLocatesStoredCode(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, rec.Code)
 	_, err = e.do(http.MethodGet, "/2015-03-31/functions/hello?Qualifier=3", nil)
-	requireCode(t, err, awserrors.ErrorResourceNotFoundException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceNotFoundException)
 }
 
 func TestGetFunction_AcceptsSameAccountARNForms(t *testing.T) {
@@ -562,14 +554,14 @@ func TestGetFunction_AcceptsSameAccountARNForms(t *testing.T) {
 	for label, name := range notFound {
 		t.Run(label, func(t *testing.T) {
 			_, err := e.do(http.MethodGet, "/2015-03-31/functions/"+esc(name), nil)
-			requireCode(t, err, awserrors.ErrorResourceNotFoundException)
+			testutil.RequireAWSCode(t, err, awserrors.ErrorResourceNotFoundException)
 		})
 	}
 
 	_, err = e.do(http.MethodGet, "/2015-03-31/functions/"+esc(full+":$LATEST")+"?Qualifier=3", nil)
-	requireCode(t, err, awserrors.ErrorInvalidParameterValueException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
 	_, err = e.do(http.MethodGet, "/2015-03-31/functions/"+esc("arn:aws:s3:::bucket"), nil)
-	requireCode(t, err, awserrors.ErrorInvalidParameterValueException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
 }
 
 func TestGetFunction_NoLocationUntilCodeIsStored(t *testing.T) {
@@ -596,14 +588,14 @@ func TestGetFunction_FailsWithoutAnOffHostCodeURL(t *testing.T) {
 	e.store.urlErr = codestore.ErrNoPresignEndpoint
 
 	rec, err := e.do(http.MethodGet, "/2015-03-31/functions/hello", nil)
-	requireCode(t, err, awserrors.ErrorServiceException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorServiceException)
 	assert.NotContains(t, rec.Body.String(), "Location")
 }
 
 func TestGetFunction_NotFoundNamesTheARN(t *testing.T) {
 	e := newEnv(t)
 	_, err := e.do(http.MethodGet, "/2015-03-31/functions/ghost", nil)
-	requireCode(t, err, awserrors.ErrorResourceNotFoundException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceNotFoundException)
 	assert.Contains(t, err.Error(), "Function not found: arn:aws:lambda:"+gwtest.Region+":"+gwtest.AccountID+":function:ghost")
 }
 
@@ -613,7 +605,7 @@ func TestGetFunction_FunctionsAreRegional(t *testing.T) {
 	require.NoError(t, err)
 	e.h.Region = "us-west-2"
 	_, err = e.do(http.MethodGet, "/2015-03-31/functions/hello", nil)
-	requireCode(t, err, awserrors.ErrorResourceNotFoundException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceNotFoundException)
 }
 
 func TestAuthorization(t *testing.T) {
@@ -723,16 +715,16 @@ func TestGetFunctionConfiguration_MissingAndUnsupportedMatchGetFunction(t *testi
 				query = "?" + query
 			}
 			_, getErr := e.do(http.MethodGet, "/2015-03-31/functions/"+path+query, nil)
-			requireCode(t, getErr, tc.code)
+			testutil.RequireAWSCode(t, getErr, tc.code)
 			_, err := e.do(http.MethodGet, "/2015-03-31/functions/"+path+"/configuration"+query, nil)
-			requireCode(t, err, tc.code)
+			testutil.RequireAWSCode(t, err, tc.code)
 			assert.Equal(t, getErr.Error(), err.Error())
 		})
 	}
 
 	e.h.Region = "us-west-2"
 	_, err = e.do(http.MethodGet, "/2015-03-31/functions/hello/configuration", nil)
-	requireCode(t, err, awserrors.ErrorResourceNotFoundException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceNotFoundException)
 }
 
 func TestGetFunctionConfiguration_DoesNotNeedTheCodeStore(t *testing.T) {
@@ -754,7 +746,7 @@ func TestGetFunctionConfiguration_DoesNotNeedTheCodeStore(t *testing.T) {
 			assert.Equal(t, "hello", *cfg.FunctionName)
 
 			_, err = e.do(http.MethodGet, "/2015-03-31/functions/hello", nil)
-			requireCode(t, err, awserrors.ErrorServiceException)
+			testutil.RequireAWSCode(t, err, awserrors.ErrorServiceException)
 		})
 	}
 }
@@ -812,13 +804,13 @@ func TestGetFunctionCodeSigningConfig_MissingFunctionIsNotFound(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = e.do(http.MethodGet, "/2020-06-30/functions/ghost/code-signing-config", nil)
-	requireCode(t, err, awserrors.ErrorResourceNotFoundException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceNotFoundException)
 	_, getErr := e.do(http.MethodGet, "/2015-03-31/functions/ghost", nil)
 	assert.Equal(t, getErr.Error(), err.Error())
 
 	e.h.Region = "us-west-2"
 	_, err = e.do(http.MethodGet, "/2020-06-30/functions/hello/code-signing-config", nil)
-	requireCode(t, err, awserrors.ErrorResourceNotFoundException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceNotFoundException)
 }
 
 func TestGetFunctionCodeSigningConfig_NeedsNeitherCodeStoreNorDecryption(t *testing.T) {
@@ -834,7 +826,7 @@ func TestGetFunctionCodeSigningConfig_NeedsNeitherCodeStoreNorDecryption(t *test
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"CodeSigningConfigArn":null,"FunctionName":null}`, rec.Body.String())
 	_, err = e.do(http.MethodGet, "/2015-03-31/functions/hello/configuration", nil)
-	requireCode(t, err, awserrors.ErrorServiceException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorServiceException)
 
 	e.deps.Codes = nil
 	_, err = e.do(http.MethodGet, "/2020-06-30/functions/hello/code-signing-config", nil)
@@ -914,7 +906,7 @@ func TestListVersionsByFunction_RefusesBadMaxItemsAndAnyMarker(t *testing.T) {
 
 	for _, q := range []string{"MaxItems=0", "MaxItems=10001", "MaxItems=-1", "MaxItems=ten", "MaxItems=", "Marker=not-a-marker", "Marker="} {
 		_, err := e.do(http.MethodGet, "/2015-03-31/functions/hello/versions?"+q, nil)
-		requireCode(t, err, awserrors.ErrorInvalidParameterValueException)
+		testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
 	}
 }
 
@@ -924,13 +916,13 @@ func TestListVersionsByFunction_MissingFunctionIsNotFound(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = e.do(http.MethodGet, "/2015-03-31/functions/ghost/versions", nil)
-	requireCode(t, err, awserrors.ErrorResourceNotFoundException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceNotFoundException)
 	_, getErr := e.do(http.MethodGet, "/2015-03-31/functions/ghost", nil)
 	assert.Equal(t, getErr.Error(), err.Error())
 
 	e.h.Region = "us-west-2"
 	_, err = e.do(http.MethodGet, "/2015-03-31/functions/hello/versions", nil)
-	requireCode(t, err, awserrors.ErrorResourceNotFoundException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceNotFoundException)
 }
 
 func TestListVersionsByFunction_DoesNotNeedTheCodeStore(t *testing.T) {

@@ -160,6 +160,22 @@ describe("recordSetSchema", () => {
     ).toStrictEqual(['"not a host" is not a name server'])
   })
 
+  it("rejects a pathological host value in linear time", () => {
+    const start = performance.now()
+    expect(
+      issues({ type: "CNAME", values: `*${"00".repeat(5000)}!` }),
+    ).toHaveLength(1)
+    expect(performance.now() - start).toBeLessThan(1000)
+  })
+
+  it("accepts a trailing dot, underscores and a wildcard label in a host", () => {
+    expect(
+      issues({ type: "CNAME", values: "_sip._tcp.example.com." }),
+    ).toStrictEqual([])
+    expect(issues({ type: "CNAME", values: "*.example.com" })).toStrictEqual([])
+    expect(issues({ type: "CNAME", values: "a..example.com" })).toHaveLength(1)
+  })
+
   it("accepts a bare MX server, which takes the priority field", () => {
     expect(issues({ type: "MX", values: "mail.example.com" })).toStrictEqual([])
   })

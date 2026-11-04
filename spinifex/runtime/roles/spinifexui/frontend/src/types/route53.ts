@@ -104,7 +104,11 @@ const IPV4_REGEX =
 
 // Lenient: the gateway is the authority, this only catches obvious typos.
 const IPV6_REGEX = /^[0-9a-fA-F:.]+$/
-const HOST_REGEX = /^(?:[a-zA-Z0-9_*](?:[a-zA-Z0-9_-]*[a-zA-Z0-9])?\.?)+$/
+
+// Dots are mandatory between labels so a name splits one way only (no ReDoS).
+const HOST_REGEX =
+  /^(?:[a-zA-Z0-9_*](?:[a-zA-Z0-9_-]*[a-zA-Z0-9])?\.)*[a-zA-Z0-9_*](?:[a-zA-Z0-9_-]*[a-zA-Z0-9])?\.?$/
+
 const MX_REGEX = /^\d{1,5}\s+\S+$/
 const MX_PRIORITY_REGEX = /^(?<priority>\d{1,5})\s+(?<server>\S+)$/
 const SRV_REGEX = /^\d{1,5}\s+\d{1,5}\s+\d{1,5}\s+\S+$/

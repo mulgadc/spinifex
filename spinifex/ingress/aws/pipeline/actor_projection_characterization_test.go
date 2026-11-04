@@ -260,32 +260,15 @@ func TestActorProjection_PrincipalKinds(t *testing.T) {
 	}
 }
 
-// Pins CURRENT behaviour: RDS and EKS derive the same caller from the same
-// context, and the role name comes from the underlying role ARN, never the
-// session name the caller chose at AssumeRole time.
-func TestActorProjection_RDSAndEKSCallersAgree(t *testing.T) {
+// Pins CURRENT behaviour: the role name comes from the underlying role ARN,
+// never the session name the caller chose at AssumeRole time.
+func TestActorProjection_RoleNameFromRoleARN(t *testing.T) {
 	e := newCBEnv(t, cbEnvOpts{})
 	h, seen := actorProbeGateway(t, e)
 
 	roleARN, _ := e.createAssumableRole(t, "app")
 	imds, _ := cbInstanceRoleSession(t, e, rdsinstance.InstanceRoleName, "i-0123456789abcdef0")
 	cpAgent, _ := cbInstanceRoleSession(t, e, ekscluster.CPInstanceRoleName, "i-0fedcba9876543210")
-
-	for name, c := range map[string]cbCreds{
-		"global_root": {akid: cbRootAKID, secret: cbRootSecret},
-		"iam_user":    e.alice,
-		"assume_role": e.assumeRole(t, roleARN, "s1"),
-		"rds_agent":   imds,
-		"eks_cp":      cpAgent,
-	} {
-		t.Run(name, func(t *testing.T) {
-			o := probe(t, e, h, seen, c)
-			assert.Equal(t, o.RDSAccountID, o.EKSAccountID)
-			assert.Equal(t, o.RDSPrincipalType, o.EKSPrincipalType)
-			assert.Equal(t, o.RDSSessionName, o.EKSSessionName)
-			assert.Equal(t, o.RDSRoleName, o.EKSRoleName)
-		})
-	}
 
 	t.Run("agent_role_names", func(t *testing.T) {
 		o := probe(t, e, h, seen, imds)

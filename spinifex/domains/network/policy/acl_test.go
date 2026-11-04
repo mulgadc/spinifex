@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestACL_TCPPortFromCIDR(t *testing.T) {
@@ -45,12 +46,45 @@ func TestACL_PortRange(t *testing.T) {
 func TestACL_ICMP(t *testing.T) {
 	match, err := BuildIngressACLMatch("sg_test", Rule{
 		IPProtocol: "icmp",
+		FromPort:   -1,
+		ToPort:     -1,
 		CIDR:       "0.0.0.0/0",
 	})
 	assert.NoError(t, err)
 	assert.Contains(t, match, "icmp4")
 	assert.NotContains(t, match, "tcp.dst")
 	assert.NotContains(t, match, "udp.dst")
+}
+
+// An ICMP rule opens only the type and code it names, -1 meaning any; the
+// console's ping rule (type 8, code -1) must not open echo reply or redirects.
+func TestACL_ICMPTypeAndCode(t *testing.T) {
+	cases := []struct {
+		name           string
+		fromPort       int64
+		toPort         int64
+		want, wantNone []string
+	}{
+		{"echo request any code", 8, -1, []string{"icmp4", "icmp4.type == 8"}, []string{"icmp4.code"}},
+		{"type and code", 3, 4, []string{"icmp4.type == 3", "icmp4.code == 4"}, nil},
+		{"echo reply", 0, 0, []string{"icmp4.type == 0", "icmp4.code == 0"}, nil},
+		{"all icmp", -1, -1, []string{"icmp4"}, []string{"icmp4.type", "icmp4.code"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rule := Rule{IPProtocol: "icmp", FromPort: tc.fromPort, ToPort: tc.toPort, CIDR: "0.0.0.0/0"}
+			for _, build := range []func(string, Rule) (string, error){BuildIngressACLMatch, BuildEgressACLMatch} {
+				match, err := build("sg_test", rule)
+				require.NoError(t, err)
+				for _, w := range tc.want {
+					assert.Contains(t, match, w)
+				}
+				for _, n := range tc.wantNone {
+					assert.NotContains(t, match, n)
+				}
+			}
+		})
+	}
 }
 
 func TestACL_AllProtocols(t *testing.T) {

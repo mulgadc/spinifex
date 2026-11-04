@@ -40,17 +40,17 @@ func checkRange(v *int64, member string, lo, hi int64) error {
 	return nil
 }
 
-// checkEnum refuses a set, non-empty string outside allowed.
+// checkEnum refuses a set string, empty included, outside allowed.
 func checkEnum(v *string, member string, allowed []string) error {
-	if v == nil || *v == "" || slices.Contains(allowed, *v) {
+	if v == nil || slices.Contains(allowed, *v) {
 		return nil
 	}
 	return constraintError(*v, member, "Member must satisfy enum value set: ["+strings.Join(allowed, ", ")+"]")
 }
 
-// checkLengthPattern refuses a set, non-empty string longer than maxLen characters or not matching re.
+// checkLengthPattern refuses a set string, empty included, longer than maxLen characters or not matching re.
 func checkLengthPattern(v *string, member string, maxLen int, re *regexp.Regexp) error {
-	if v == nil || *v == "" {
+	if v == nil {
 		return nil
 	}
 	if utf8.RuneCountInString(*v) > maxLen {

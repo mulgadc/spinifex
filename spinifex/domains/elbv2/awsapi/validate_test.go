@@ -58,6 +58,7 @@ func TestValidators_ModelConstraints(t *testing.T) {
 		{"ctg unhealthy below", ctg(func(i *elbv2.CreateTargetGroupInput) { i.UnhealthyThresholdCount = aws.Int64(1) }), "unhealthyThresholdCount"},
 		{"ctg unhealthy above", ctg(func(i *elbv2.CreateTargetGroupInput) { i.UnhealthyThresholdCount = aws.Int64(11) }), "unhealthyThresholdCount"},
 		{"ctg protocol", ctg(func(i *elbv2.CreateTargetGroupInput) { i.HealthCheckProtocol = aws.String("ICMP") }), "healthCheckProtocol"},
+		{"ctg protocol empty", ctg(func(i *elbv2.CreateTargetGroupInput) { i.HealthCheckProtocol = aws.String("") }), "healthCheckProtocol"},
 		{"ctg in range", ctg(func(i *elbv2.CreateTargetGroupInput) {
 			i.HealthCheckProtocol = aws.String("TCP_QUIC")
 			i.HealthCheckIntervalSeconds = aws.Int64(300)
@@ -74,6 +75,7 @@ func TestValidators_ModelConstraints(t *testing.T) {
 		{"mtg unhealthy below", mtg(func(i *elbv2.ModifyTargetGroupInput) { i.UnhealthyThresholdCount = aws.Int64(1) }), "unhealthyThresholdCount"},
 		{"mtg unhealthy above", mtg(func(i *elbv2.ModifyTargetGroupInput) { i.UnhealthyThresholdCount = aws.Int64(11) }), "unhealthyThresholdCount"},
 		{"mtg protocol", mtg(func(i *elbv2.ModifyTargetGroupInput) { i.HealthCheckProtocol = aws.String("http") }), "healthCheckProtocol"},
+		{"mtg protocol empty", mtg(func(i *elbv2.ModifyTargetGroupInput) { i.HealthCheckProtocol = aws.String("") }), "healthCheckProtocol"},
 		{"mtg in range", mtg(func(i *elbv2.ModifyTargetGroupInput) {
 			i.HealthCheckProtocol = aws.String("HTTP")
 			i.HealthCheckIntervalSeconds = aws.Int64(5)
@@ -82,15 +84,18 @@ func TestValidators_ModelConstraints(t *testing.T) {
 			i.UnhealthyThresholdCount = aws.Int64(10)
 		}), ""},
 		{"clb ip address type", clb(func(i *elbv2.CreateLoadBalancerInput) { i.IpAddressType = aws.String("ipv6") }), "ipAddressType"},
+		{"clb ip address type empty", clb(func(i *elbv2.CreateLoadBalancerInput) { i.IpAddressType = aws.String("") }), "ipAddressType"},
 		{"clb pool too long", clb(func(i *elbv2.CreateLoadBalancerInput) {
 			i.CustomerOwnedIpv4Pool = aws.String("ipv4pool-coip-" + strings.Repeat("a", 243))
 		}), "customerOwnedIpv4Pool"},
 		{"clb pool pattern", clb(func(i *elbv2.CreateLoadBalancerInput) { i.CustomerOwnedIpv4Pool = aws.String("pool-1") }), "customerOwnedIpv4Pool"},
+		{"clb pool empty", clb(func(i *elbv2.CreateLoadBalancerInput) { i.CustomerOwnedIpv4Pool = aws.String("") }), "customerOwnedIpv4Pool"},
 		{"clb in range", clb(func(i *elbv2.CreateLoadBalancerInput) {
 			i.IpAddressType = aws.String("dualstack-without-public-ipv4")
 			i.CustomerOwnedIpv4Pool = aws.String("ipv4pool-coip-" + strings.Repeat("a", 242))
 		}), ""},
 		{"ssl lb type", ssl("classic"), "loadBalancerType"},
+		{"ssl lb type empty", ssl(""), "loadBalancerType"},
 		{"ssl in range", ssl("gateway"), ""},
 		{"mla attributes omitted", mla(nil), "attributes"},
 		{"mla in range", mla([]ListenerAttribute{{Key: aws.String("tcp.idle_timeout.seconds"), Value: aws.String("350")}}), ""},

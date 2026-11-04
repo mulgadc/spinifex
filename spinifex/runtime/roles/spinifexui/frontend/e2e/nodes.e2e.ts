@@ -1,4 +1,12 @@
-import { expect, json, type JsonValue, NODES, test } from "./console"
+import {
+  expect,
+  json,
+  type JsonValue,
+  NODES,
+  test,
+  type Theme,
+  useTheme,
+} from "./console"
 
 const HOSTS = ["bottlebrush", "ironbark", "casuarina"]
 
@@ -135,4 +143,33 @@ test.describe("Nodes", () => {
       page.getByTestId("port-bottlebrush:enp193s0f1np1"),
     ).toHaveAttribute("data-focus", "off")
   })
+
+  test("lays the map out top down on request", async ({ page }) => {
+    await page.goto("/nodes/topology")
+
+    const internet = page.locator('.react-flow__node[data-id="internet"]')
+    await expect(internet.locator(".react-flow__handle-right")).toHaveCount(1)
+
+    await page.getByRole("button", { name: "Top down" }).click()
+    await expect(internet.locator(".react-flow__handle-bottom")).toHaveCount(1)
+    await expect(internet.locator(".react-flow__handle-right")).toHaveCount(0)
+  })
+
+  test("a node on the map opens its panel", async ({ page }) => {
+    await page.goto("/nodes/topology")
+
+    await page.getByText("ironbark", { exact: true }).click()
+    await expect(page).toHaveURL(/\/nodes\?selected=ironbark&tab=network/u)
+  })
+
+  for (const theme of ["dark", "light"] satisfies Theme[]) {
+    test(`matches the ${theme} topology baseline`, async ({ page }) => {
+      await useTheme(page, theme)
+      await page.setViewportSize({ width: 1440, height: 900 })
+      await page.goto("/nodes/topology")
+      await expect(page.getByTestId("port-ironbark:eno1")).toBeVisible()
+      await page.evaluate(async () => await document.fonts.ready)
+      await expect(page).toHaveScreenshot(`topology-${theme}.png`)
+    })
+  }
 })

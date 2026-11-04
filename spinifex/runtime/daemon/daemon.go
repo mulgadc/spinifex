@@ -2217,6 +2217,9 @@ func (d *Daemon) startCluster() error {
 	}
 
 	d.instanceService.SetTerminationDeps(d.volumeService, d.vpcService, ipReleaser, d.tagsService)
+	if d.jsManager != nil && d.jsManager.UEFIStores() != nil {
+		d.instanceService.SetUEFIStores(d.jsManager.UEFIStores())
+	}
 	d.instanceService.SetVolumeCreator(d.volumeService)
 	d.instanceService.SetRunInstancesDeps(d.imageService, d.keyService, &daemonENICreator{d: d}, ipAllocator)
 	if d.jsManager != nil && d.jsManager.UEFIStores() != nil {
@@ -2590,6 +2593,9 @@ func (d *Daemon) startCluster() error {
 		}
 		if gpuRec := d.newGPUPoolReconciler(); gpuRec != nil {
 			reapers = append(reapers, gpuRec)
+		}
+		if uefiStores := d.newUEFIStoreReaper(); uefiStores != nil {
+			reapers = append(reapers, uefiStores)
 		}
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))

@@ -704,6 +704,15 @@ func IDNotFound(code, kind, id string) error {
 	return Errorf(code, "The %s ID '%s' does not exist", kind, id)
 }
 
+// IDsNotFound is IDNotFound for one or more IDs; several render as EC2's
+// plural "The <kind> IDs '<a>, <b>' do not exist".
+func IDsNotFound(code, kind string, ids []string) error {
+	if len(ids) == 1 {
+		return IDNotFound(code, kind, ids[0])
+	}
+	return Errorf(code, "The %s IDs '%s' do not exist", kind, strings.Join(ids, ", "))
+}
+
 // HasDependencies returns DependencyViolation with EC2's message for a
 // resource that cannot be deleted while others depend on it.
 func HasDependencies(kind, id string) error {
@@ -987,7 +996,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInterfaceInUseByTrafficMirrorSession:                  {HTTPCode: 409, Message: "The Traffic Mirror source that you are trying to create uses an interface that is already associated with a session. An interface can only be associated with a session, or with a target, but not both."},
 	ErrorInterfaceInUseByTrafficMirrorTarget:                   {HTTPCode: 409, Message: "The Traffic Mirror source that you are trying to create uses an interface that is already associated with a target. An interface can only be associated with a session, or with a target, but not both. If the interface is associated with a target, it cannot be associated with another target."},
 	ErrorInternalError:                                         {HTTPCode: 500, Message: "An internal error has occurred. Retry your request, and if the problem persists, contact Mulga support with the details."},
-	ErrorInternalFailure:                                       {HTTPCode: 404, Message: "The request processing has failed because of an unknown error, exception, or failure."},
+	ErrorInternalFailure:                                       {HTTPCode: 500, Message: "The request processing has failed because of an unknown error, exception, or failure."},
 	ErrorInternetGatewayLimitExceeded:                          {HTTPCode: 400, Message: "You've reached the limit on the number of internet gateways that you can create. For more information, see Amazon VPC quotas."},
 	ErrorInvalidAMIAttributeItemValue:                          {HTTPCode: 400, Message: "The value of an item added to, or removed from, an image attribute is not valid. If you are specifying a userId, check that it is in the form of an AWS account ID, without hyphens."},
 	ErrorInvalidAMIIDMalformed:                                 {HTTPCode: 400, Message: "The specified AMI ID is malformed. Ensure that you provide the full AMI ID, in the form ami-xxxxxxxxxxxxxxxxx."},
@@ -1282,7 +1291,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorResourceLimitExceeded:                                 {HTTPCode: 400, Message: "You have exceeded an Amazon EC2 resource limit. For example, you might have too many snapshot copies in progress."},
 	ErrorResourceNotFound:                                      {HTTPCode: 404, Message: "The specified resource was not found."},
 	ErrorEKSResourceInUse:                                      {HTTPCode: 409, Message: "A cluster with this name already exists in this account and Region. Delete the existing cluster, or choose a different name."},
-	ErrorEKSResourceNotFound:                                   {HTTPCode: 404, Message: "The specified cluster could not be found. You can view your available clusters with ListClusters. Amazon EKS clusters are Region specific."},
+	ErrorEKSResourceNotFound:                                   {HTTPCode: 404, Message: "The specified resource could not be found. You can view your available clusters with ListClusters. You can view your available managed node groups with ListNodegroups. Amazon EKS clusters and node groups are Amazon Web Services Region specific."},
 	ErrorEKSInvalidRequest:                                     {HTTPCode: 400, Message: "The request is invalid given the state of the cluster or access entry."},
 	ErrorEKSBadRequest:                                         {HTTPCode: 400, Message: "A parameter of the request is not valid."},
 	ErrorECSClientException:                                    {HTTPCode: 400, Message: "Unable to describe task definition."},

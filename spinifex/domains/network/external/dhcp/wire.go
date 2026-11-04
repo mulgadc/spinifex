@@ -166,7 +166,7 @@ func toWireLease(l *Lease) *wireLease {
 		ClientID:      l.ClientID,
 		Hostname:      l.Hostname,
 		VendorClass:   l.VendorClass,
-		HWAddr:        hwToString(l.HWAddr),
+		HWAddr:        l.HWAddr.String(),
 		UseIfaceMAC:   l.UseIfaceMAC,
 		IP:            ipToString(l.IP),
 		SubnetMask:    maskToString(l.SubnetMask),

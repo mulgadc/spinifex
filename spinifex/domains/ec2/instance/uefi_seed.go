@@ -24,7 +24,7 @@ var _ UEFIStoreRecords = (*uefistore.Store)(nil)
 // SetUEFIVarStore wires where RunInstances records and writes a new UEFI
 // instance's variable store, and the node named as its writer.
 func (s *InstanceServiceImpl) SetUEFIVarStore(records UEFIStoreRecords, node string) {
-	s.uefiStores = records
+	s.uefiRecords = records
 	s.uefiNode = node
 }
 
@@ -36,7 +36,7 @@ func (s *InstanceServiceImpl) seedUEFIVarStore(ctx context.Context, instance *vm
 	if s.config != nil {
 		bucket = s.config.Predastore.Bucket
 	}
-	if s.uefiStores == nil || s.objectStore == nil || bucket == "" || s.uefiNode == "" {
+	if s.uefiRecords == nil || s.objectStore == nil || bucket == "" || s.uefiNode == "" {
 		slog.ErrorContext(ctx, "UEFI variable store seeding is not wired on this node", "instanceId", instance.ID)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
@@ -57,7 +57,7 @@ func (s *InstanceServiceImpl) seedUEFIVarStore(ctx context.Context, instance *vm
 	}
 
 	// The record first, so terminate can reach every object under the prefix.
-	if _, err := s.uefiStores.Create(ctx, &uefistore.UEFIStoreRecord{
+	if _, err := s.uefiRecords.Create(ctx, &uefistore.UEFIStoreRecord{
 		InstanceID: instance.ID,
 		AccountID:  instance.AccountID,
 		State:      uefistore.StateLive,

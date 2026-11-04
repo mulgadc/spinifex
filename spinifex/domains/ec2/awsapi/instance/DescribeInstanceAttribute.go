@@ -80,5 +80,5 @@ func DescribeInstanceAttribute(ctx context.Context, input *ec2.DescribeInstanceA
 	// terraform retries cleanly.
 	slog.WarnContext(ctx, "DescribeInstanceAttribute: instance absent or no responses",
 		"instance_id", *input.InstanceId, "received", sum.Received, "expected", expectedNodes)
-	return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	return nil, awserrors.IDNotFound(awserrors.ErrorInvalidInstanceIDNotFound, "instance", *input.InstanceId)
 }

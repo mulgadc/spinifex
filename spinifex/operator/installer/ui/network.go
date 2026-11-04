@@ -662,7 +662,7 @@ func (m model) validateRole(idx int) string {
 		if net.ParseIP(strings.TrimSpace(f.ip.Value())) == nil {
 			return "Enter a valid IP address"
 		}
-		if !validSubnetMask(f.mask.Value()) {
+		if !install.ValidDottedMask(f.mask.Value()) {
 			return "Enter a dotted-decimal subnet mask, e.g. 255.255.255.0 or 255.255.0.0"
 		}
 		if f.plane == install.PlaneWAN && net.ParseIP(strings.TrimSpace(f.gateway.Value())) == nil {

@@ -140,6 +140,28 @@ func (g *exitingGuest) startPartial(t *testing.T, id string) net.Conn {
 	return conn
 }
 
+// gateRelease returns a function that opens gate exactly once, registered to
+// run at cleanup so a failing test never strands a blocked write.
+func gateRelease(t *testing.T, gate chan struct{}) func() {
+	t.Helper()
+	var once sync.Once
+	release := func() { once.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	return release
+}
+
+// recv bounds a wait so a regression fails promptly instead of hanging.
+func recv[T any](t *testing.T, ch <-chan T, what string) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(15 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+		panic("unreachable")
+	}
+}
+
 func waitFor(t *testing.T, ch <-chan struct{}, what string) bool {
 	t.Helper()
 	select {
@@ -161,6 +183,7 @@ func TestSession_ResponseThenExitWhileHostHasNotReadStillAccepted(t *testing.T) 
 		payload[i] = byte(i)
 	}
 	gate := make(chan struct{})
+	release := gateRelease(t, gate)
 	exited := make(chan struct{})
 	g := startExitingGuest(t, ctx, guest, gate, func(g *exitingGuest) {
 		id, ok := g.next(t)
@@ -173,11 +196,11 @@ func TestSession_ResponseThenExitWhileHostHasNotReadStillAccepted(t *testing.T) 
 	})
 	// The exit has been applied before the host sees a byte of the result.
 	if waitFor(t, exited, "the bootstrap to exit") {
-		close(gate)
+		release()
 	}
 
-	e := <-done
-	<-g.bdone
+	e := recv(t, done, "the host's outcome")
+	recv(t, g.bdone, "the bootstrap to return")
 	require.NoError(t, e.err)
 	require.Equal(t, OutcomeDone, e.reply.Outcome)
 	require.Equal(t, payload, e.reply.Payload)
@@ -200,8 +223,8 @@ func TestSession_LostResponseIsUnknown(t *testing.T) {
 			guest, done := startSession(t, ctx, testRequest(20_000), countAccept(&accepts))
 			g := startExitingGuest(t, ctx, guest, nil, bootstrap)
 
-			e := <-done
-			<-g.bdone
+			e := recv(t, done, "the host's outcome")
+			recv(t, g.bdone, "the bootstrap to return")
 			require.Error(t, e.err)
 			require.False(t, errors.Is(e.err, ErrResultNotAccepted))
 			require.Empty(t, e.reply.Payload)
@@ -241,9 +264,9 @@ func TestSession_AdmittedBodyLostIsUnknown(t *testing.T) {
 				}
 			})
 
-			e := <-done
-			<-g.bdone
-			require.ErrorIs(t, <-g.runErr, runtimeapi.ErrResponseBodyFailed)
+			e := recv(t, done, "the host's outcome")
+			recv(t, g.bdone, "the bootstrap to return")
+			require.ErrorIs(t, recv(t, g.runErr, "agent.Run to return"), runtimeapi.ErrResponseBodyFailed)
 			require.Error(t, e.err)
 			require.Empty(t, e.reply.Payload)
 			require.Zero(t, accepts.Load(), "the owner was asked to accept a lost response")
@@ -264,7 +287,7 @@ func TestSession_AllowedResponseAtCapIsDone(t *testing.T) {
 		}
 		post(base, "invocation/"+id+"/response", make([]byte, runtimeapi.MaxResponseBytes), nil)
 	})
-	e := <-done
+	e := recv(t, done, "the host's outcome")
 	require.NoError(t, e.err)
 	require.Len(t, e.reply.Payload, runtimeapi.MaxResponseBytes)
 	require.Equal(t, int32(1), accepts.Load())

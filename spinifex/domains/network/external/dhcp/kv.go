@@ -206,7 +206,7 @@ func toWireEntry(e Entry) wireEntry {
 		Routers:     ipsToStrings(l.Routers),
 		DNS:         ipsToStrings(l.DNS),
 		ServerID:    ipToString(l.ServerID),
-		HWAddr:      hwToString(l.HWAddr),
+		HWAddr:      l.HWAddr.String(),
 		UseIfaceMAC: l.UseIfaceMAC,
 		Bridge:      l.Bridge,
 		Hostname:    l.Hostname,
@@ -270,13 +270,6 @@ func ipsToStrings(ips []net.IP) []string {
 		}
 	}
 	return out
-}
-
-func hwToString(hw net.HardwareAddr) string {
-	if len(hw) == 0 {
-		return ""
-	}
-	return hw.String()
 }
 
 func maskToString(m net.IPMask) string {

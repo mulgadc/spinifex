@@ -33,6 +33,7 @@ import (
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -2161,27 +2162,20 @@ func (s *EKSServiceImpl) casUpdateNodegroupTags(ctx context.Context, accountID, 
 	if err != nil {
 		return err
 	}
-	for range ngCASMaxRetries {
-		rec, rev, err := getNodegroupEntry(ctx, acctKV, cluster, ng)
-		if err != nil {
-			if errors.Is(err, ErrNodegroupNotFound) {
-				return errors.New(awserrors.ErrorEKSResourceNotFound)
-			}
-			return err
-		}
+	_, err = kvutil.Update(ctx, acctKV, NodegroupKey(cluster, ng), kvutil.CASConfig{
+		Attempts:  ngCASMaxRetries,
+		NotFound:  errors.New(awserrors.ErrorEKSResourceNotFound),
+		Exhausted: func(string, int) error { return errors.New(awserrors.ErrorServerInternal) },
+	}, func(rec *NodegroupRecord) (bool, error) {
 		tags, changed := mutate(rec.Tags)
 		if !changed {
-			return nil
+			return false, nil
 		}
 		rec.Tags = tags
 		rec.ModifiedAt = time.Now().UTC()
-		if ok, err := s.casPutNodegroup(ctx, acctKV, rec, rev); err != nil {
-			return err
-		} else if ok {
-			return nil
-		}
-	}
-	return errors.New(awserrors.ErrorServerInternal)
+		return true, nil
+	})
+	return err
 }
 
 // accountBucket returns the per-account KV bucket for accountID.

@@ -139,7 +139,7 @@ func TestDeclaredOversizeCutShortIsUnknown(t *testing.T) {
 	f := arm(s, "req-1")
 	rec := postTo(s, "response", "req-1", &patterned{n: MaxResponseBytes}, MaxResponseBytes+10)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
-	assert.Empty(t, f.done, "no result is made from a partial body")
+	assert.ErrorIs(t, (<-f.done).err, ErrResponseBodyFailed, "no result is made from a partial body")
 
 	rec = postTo(s, "response", "req-1", &patterned{n: 1}, 1)
 	assert.Equal(t, "InvalidRequestID", errType(t, rec.Body.Bytes()), "the slot stays consumed")
@@ -158,7 +158,9 @@ func TestKnownLengthWithinCapAllocatesOnce(t *testing.T) {
 	f = arm(s, "req-1")
 	rec = postTo(s, "response", "req-1", &patterned{n: 100}, 200)
 	assert.Equal(t, http.StatusBadRequest, rec.Code, "a body ending short of its length is truncated")
-	assert.Empty(t, f.done)
+	out := <-f.done
+	assert.ErrorIs(t, out.err, ErrResponseBodyFailed)
+	assert.Empty(t, out.res.Payload)
 }
 
 func TestChunkedBodyCap(t *testing.T) {
@@ -313,15 +315,32 @@ func invokeReady(t *testing.T, s *Server, ctx context.Context) <-chan invokeOut 
 	return out
 }
 
+func TestLiveBootstrapTruncatedBodyEndsInvokeAtOnce(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	s := New()
+	out := invokeReady(t, s, context.Background()) // a minute-long deadline
+	adm := s.admit("req-1")
+	require.NotNil(t, adm)
+	s.finishResponse(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", &failing{left: 3}), adm)
+	select {
+	case got := <-out:
+		require.ErrorIs(t, got.err, ErrResponseBodyFailed)
+		assert.Empty(t, got.res.Payload)
+		assert.Empty(t, got.res.FunctionError)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Invoke waited for its deadline")
+	}
+}
+
 func TestIncompleteBodyNeverStrandsInvoke(t *testing.T) {
-	// A POST whose body fails after admission loses the result. The flight
-	// must end with an explicit outcome whichever of the read failure, the
-	// bootstrap exit and the invocation cancelling comes first.
+	// A body that fails after admission loses the result. The flight must end
+	// with an explicit outcome whichever of the read failure, the bootstrap
+	// exit and the invocation ending comes first.
 	steps := map[string]func(s *Server, adm *flight, cancel context.CancelFunc){
 		"read fails": func(s *Server, adm *flight, _ context.CancelFunc) {
 			s.finishResponse(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", &failing{left: 3}), adm)
 		},
-		"bootstrap exits": func(s *Server, _ *flight, _ context.CancelFunc) { s.BootstrapExited() },
+		"bootstrap exits":      func(s *Server, _ *flight, _ context.CancelFunc) { s.BootstrapExited() },
 		"invocation cancelled": func(_ *Server, _ *flight, cancel context.CancelFunc) { cancel() },
 	}
 	orders := [][]string{
@@ -341,6 +360,17 @@ func TestIncompleteBodyNeverStrandsInvoke(t *testing.T) {
 			out := invokeReady(t, s, ctx)
 			adm := s.admit("req-1")
 			require.NotNil(t, adm)
+			// Whichever of the read failure and the cancellation comes first
+			// decides the outcome; the exit changes nothing once admitted.
+			want := ErrResponseBodyFailed
+			for _, step := range order {
+				if step == "invocation cancelled" {
+					want = context.Canceled
+				}
+				if step != "bootstrap exits" {
+					break
+				}
+			}
 			var got invokeOut
 			returned := false
 			for _, step := range order {
@@ -362,17 +392,53 @@ func TestIncompleteBodyNeverStrandsInvoke(t *testing.T) {
 					t.Fatal("Invoke did not return")
 				}
 			}
-			require.Error(t, got.err, "no result may be reported")
+			require.ErrorIs(t, got.err, want)
 			assert.Empty(t, got.res.Payload)
 			assert.Empty(t, got.res.FunctionError)
-			if order[0] == "invocation cancelled" {
-				assert.ErrorIs(t, got.err, context.Canceled)
-			}
 			s.mu.Lock()
 			defer s.mu.Unlock()
 			assert.Nil(t, s.cur, "the flight must be detached")
 		})
 	}
+}
+
+func TestIncompleteBodyAndDeadlineInBothOrders(t *testing.T) {
+	t.Run("deadline first", func(t *testing.T) {
+		defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+		s := New()
+		out := make(chan invokeOut, 1)
+		go func() {
+			res, err := s.Invoke(context.Background(), inv("req-1", 20*time.Millisecond))
+			out <- invokeOut{res, err}
+		}()
+		require.Eventually(t, func() bool {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if s.cur != nil && s.cur.state == stWaiting {
+				s.cur.state = stRunning
+			}
+			return s.cur != nil
+		}, time.Second, time.Millisecond)
+		adm := s.admit("req-1")
+		require.NotNil(t, adm)
+		select {
+		case got := <-out:
+			require.ErrorIs(t, got.err, ErrDeadlineExceeded)
+		case <-time.After(5 * time.Second):
+			t.Fatal("Invoke did not time out")
+		}
+		s.finishResponse(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", &failing{left: 1}), adm)
+		assert.Empty(t, adm.done, "a late failure publishes nothing")
+	})
+	t.Run("body failure first", func(t *testing.T) {
+		defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+		s := New()
+		out := invokeReady(t, s, context.Background())
+		adm := s.admit("req-1")
+		require.NotNil(t, adm)
+		s.finishResponse(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", &failing{left: 1}), adm)
+		require.ErrorIs(t, (<-out).err, ErrResponseBodyFailed)
+	})
 }
 
 // The reply a bootstrap sees to an oversize body is recorded here, not

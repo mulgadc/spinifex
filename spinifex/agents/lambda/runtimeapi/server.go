@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -42,9 +43,9 @@ var (
 	ErrDeadlineExceeded = errors.New("runtimeapi: invocation deadline exceeded")
 	// ErrInvalidInvocation is returned by Invoke for an invocation with no request ID.
 	ErrInvalidInvocation = errors.New("runtimeapi: invocation has no request id")
-	// ErrBootstrapExited is returned by Invoke when the runtime exited and the
-	// response it had begun to send was lost.
-	ErrBootstrapExited = errors.New("runtimeapi: runtime exited with its response incomplete")
+	// ErrResponseBodyFailed is returned by Invoke when a response or error
+	// body that was admitted could not be read in full. No result exists.
+	ErrResponseBodyFailed = errors.New("runtimeapi: admitted response body was not received")
 )
 
 // Invocation is one event handed to the runtime.
@@ -90,10 +91,6 @@ type flight struct {
 	inv   Invocation
 	state flightState
 	done  chan outcome
-
-	// exitSeen and readFailed are set only while receiving.
-	exitSeen   bool
-	readFailed bool
 }
 
 // Server implements the Runtime API for a single in-flight invocation.
@@ -188,28 +185,12 @@ func (s *Server) BootstrapExited() bool {
 	switch {
 	case f == nil:
 		return !s.settled
-	case f.state == stReceiving:
-		f.exitSeen = true
-		s.abandonLocked(f)
-		return false
 	case f.state < stReceiving:
 		f.state = stExited
 		return true
 	default:
 		return false
 	}
-}
-
-// abandonLocked ends a receiving flight whose body failed after the runtime
-// exited, since nothing can finish it.
-func (s *Server) abandonLocked(f *flight) {
-	if f.state != stReceiving || !f.exitSeen || !f.readFailed || s.cur != f {
-		return
-	}
-	s.cur = nil
-	s.settled = true
-	f.state = stCompleted
-	f.done <- outcome{err: ErrBootstrapExited}
 }
 
 // Handler returns the Runtime API routes.
@@ -277,12 +258,18 @@ func (s *Server) complete(f *flight, res Result) bool {
 	return true
 }
 
-// readFailed marks an admitted body as lost. The slot stays consumed.
-func (s *Server) readFailed(f *flight) {
+// readFailed ends an admitted flight whose body was lost. The outcome is
+// published before the flight is detached, so Invoke never waits on it.
+func (s *Server) readFailed(f *flight, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	f.readFailed = true
-	s.abandonLocked(f)
+	if s.cur != f {
+		return
+	}
+	s.cur = nil
+	s.settled = true
+	f.state = stCompleted
+	f.done <- outcome{err: fmt.Errorf("%w: %w", ErrResponseBodyFailed, err)}
 }
 
 func (s *Server) response(w http.ResponseWriter, r *http.Request) {
@@ -313,7 +300,7 @@ func (s *Server) finishResponse(w http.ResponseWriter, r *http.Request, f *fligh
 		res.Segments, oversize, err = readSegments(r.Body)
 	}
 	if err != nil {
-		s.readFailed(f)
+		s.readFailed(f, err)
 		writeError(w, http.StatusBadRequest, errTypeInvalidRequest, "read body: "+err.Error())
 		return
 	}
@@ -384,7 +371,7 @@ func (s *Server) invocationError(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, MaxResponseBytes))
 	if err != nil {
-		s.readFailed(f)
+		s.readFailed(f, err)
 		writeError(w, http.StatusBadRequest, errTypeInvalidRequest, "read body: "+err.Error())
 		return
 	}

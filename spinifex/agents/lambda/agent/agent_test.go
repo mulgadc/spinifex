@@ -173,17 +173,15 @@ func TestRunBoundsTheResultWriteByTheDeadlinePlusGrace(t *testing.T) {
 	})
 }
 
-// A response lost mid-body, or a runtime that exits before admission, sends
-// the host nothing, so it reports the outcome unknown.
+// A body lost after admission sends the host nothing, so it reports the
+// outcome unknown, whether or not the bootstrap is still alive.
 func TestRunSendsNoResultWhenTheBodyIsLost(t *testing.T) {
 	srv := runtimeapi.New()
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
-	ctx, cancel := context.WithCancelCause(context.Background())
-	defer cancel(nil)
 	link := &fakeLink{got: make(chan hostlink.Response, 1), reqs: []hostlink.Request{{RequestID: "r", DeadlineMs: deadline(time.Minute)}}}
 	done := make(chan error, 1)
-	go func() { done <- Run(ctx, link, srv) }()
+	go func() { done <- Run(context.Background(), link, srv) }()
 
 	resp, err := http.Get(ts.URL + api + "invocation/next")
 	require.NoError(t, err)
@@ -193,15 +191,12 @@ func TestRunSendsNoResultWhenTheBodyIsLost(t *testing.T) {
 	_, err = conn.Write([]byte("POST " + api + "invocation/r/response HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\npartial"))
 	require.NoError(t, err)
 	conn.Close()
-	if srv.BootstrapExited() {
-		cancel(errors.New("bootstrap exited"))
-	}
 
 	select {
 	case err := <-done:
-		require.Error(t, err)
+		require.ErrorIs(t, err, runtimeapi.ErrResponseBodyFailed)
 	case <-time.After(10 * time.Second):
-		t.Fatal("Run did not end")
+		t.Fatal("Run waited for the invocation deadline")
 	}
 	assert.Empty(t, link.got, "no result may be reported")
 }

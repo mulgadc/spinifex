@@ -57,8 +57,8 @@ func Run(ctx context.Context, link hostlink.Link, srv *runtimeapi.Server) error 
 			Payload:     req.Payload,
 		})
 		timedOut := errors.Is(err, runtimeapi.ErrDeadlineExceeded)
-		if errors.Is(err, runtimeapi.ErrBootstrapExited) {
-			// The response was lost mid-body: report nothing, so the host's
+		if errors.Is(err, runtimeapi.ErrResponseBodyFailed) {
+			// The admitted body was lost: report nothing, so the host's
 			// outcome stays unknown.
 			return err
 		}

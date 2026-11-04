@@ -189,6 +189,44 @@ func TestGetSecurityGroupsForVpc_PagesEveryGroupOnce(t *testing.T) {
 	assert.Len(t, seen, len(expected), "a group was reported on more than one page")
 }
 
+func TestGetSecurityGroupsForVpc_DeleteBetweenPagesSkipsNothing(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	for _, name := range []string{"grp-a", "grp-b", "grp-c", "grp-d", "grp-e", "grp-f", "grp-g"} {
+		createTestSG(t, svc, vpcID, name)
+	}
+
+	first, err := svc.GetSecurityGroupsForVpc(context.Background(), &ec2.GetSecurityGroupsForVpcInput{
+		VpcId:      aws.String(vpcID),
+		MaxResults: aws.Int64(5),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, first.NextToken)
+
+	var deleted string
+	for _, g := range first.SecurityGroupForVpcs {
+		if aws.StringValue(g.GroupName) != "default" {
+			deleted = aws.StringValue(g.GroupId)
+			break
+		}
+	}
+	_, err = svc.DeleteSecurityGroup(context.Background(), &ec2.DeleteSecurityGroupInput{GroupId: aws.String(deleted)}, testAccountID)
+	require.NoError(t, err)
+
+	second, err := svc.GetSecurityGroupsForVpc(context.Background(), &ec2.GetSecurityGroupsForVpcInput{
+		VpcId:      aws.String(vpcID),
+		MaxResults: aws.Int64(5),
+		NextToken:  first.NextToken,
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Nil(t, second.NextToken)
+
+	seen := append(groupIDsForVpc(first), groupIDsForVpc(second)...)
+	expected := append(describedGroupIDsForVpc(t, svc, vpcID), deleted)
+	assert.ElementsMatch(t, expected, seen)
+}
+
 func TestGetSecurityGroupsForVpc_MalformedNextToken(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
@@ -199,7 +237,7 @@ func TestGetSecurityGroupsForVpc_MalformedNextToken(t *testing.T) {
 		NextToken: aws.String("not-a-token"),
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInvalidParameterValue), err.Error())
 }
 
 func TestGetSecurityGroupsForVpc_Filters(t *testing.T) {

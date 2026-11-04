@@ -45,8 +45,8 @@ func TestDescribeInclude(t *testing.T) {
 		for _, v := range tc.valid {
 			t.Run(tc.name+"/"+v, func(t *testing.T) {
 				_, err := tc.handler(context.Background(), nil, "123456789012", []byte(`{"include":["`+v+`"]}`), nil)
-				code, _, _ := awserrors.ResolveErrorDetail(err)
-				assert.NotEqual(t, tc.wantCode, code, "err = %v", err)
+				_, _, refused := awserrors.ResolveErrorDetail(err)
+				assert.False(t, refused, "err = %v", err)
 			})
 		}
 	}

@@ -11,7 +11,14 @@ import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const mockSend = vi.hoisted(() => vi.fn())
+interface SdkCommand {
+  readonly constructor: { name: string }
+  readonly input: { PolicyArn?: string }
+}
+
+const mockSend = vi.hoisted(() =>
+  vi.fn<(command: SdkCommand) => Promise<unknown>>(),
+)
 
 vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
@@ -56,18 +63,15 @@ const POLICY = {
   DefaultVersionId: "v1",
 }
 
-function policyArnsRequested(): unknown[] {
+function policyArnsRequested(): (string | undefined)[] {
   return mockSend.mock.calls
-    .map(([command]: [{ constructor: { name: string }; input: unknown }]) =>
-      command.constructor.name === "GetPolicyCommand"
-        ? (command.input as { PolicyArn?: string }).PolicyArn
-        : undefined,
-    )
-    .filter((arn) => arn !== undefined)
+    .filter(([command]) => command.constructor.name === "GetPolicyCommand")
+    .map(([command]) => command.input.PolicyArn)
 }
 
 function renderAppAt(path: string) {
   const queryClient = createTestQueryClient()
+
   const router = createRouter({
     routeTree,
     context: { queryClient },
@@ -87,10 +91,10 @@ function renderAppAt(path: string) {
   return { router }
 }
 
-beforeEach(() => {
-  mockSend.mockReset()
-  mockSend.mockImplementation(
-    async (command: { constructor: { name: string } }) => {
+describe("policy ARN routing", () => {
+  beforeEach(() => {
+    mockSend.mockReset()
+    mockSend.mockImplementation(async (command) => {
       switch (command.constructor.name) {
         case "GetPolicyCommand": {
           return { Policy: POLICY }
@@ -108,13 +112,12 @@ beforeEach(() => {
           return {}
         }
       }
-    },
-  )
-})
+    })
+  })
 
-describe("policy ARN routing", () => {
   it("opens the policy page from the panel link with the ARN encoded once", async () => {
     const user = userEvent.setup()
+
     const { router } = renderAppAt(
       `/iam/list-policies?selected=${encodeURIComponent(POLICY_ARN)}`,
     )

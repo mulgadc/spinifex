@@ -26,6 +26,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
@@ -1869,14 +1870,15 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(ctx context.Context, input *elbv2.
 	// Reap floating-IP NAT now; conditional VM/ENI teardown paths can miss it.
 	s.reapFloatingIPNAT(lb)
 
-	// Terminate ALB VM in background; shutdown can take seconds (QMP powerdown).
+	// The terminate is awaited: an unreadable ownership record means the VM may
+	// still be running, and its ENIs must not be force-deleted under it.
 	if lb.InstanceID != "" && s.InstanceLauncher != nil {
-		instanceID := lb.InstanceID
-		go func() {
-			if err := s.InstanceLauncher.TerminateSystemInstance(instanceID); err != nil {
-				slog.WarnContext(ctx, "Failed to terminate ALB VM during LB deletion", "lbId", lb.LoadBalancerID, "instanceId", instanceID, "err", err)
+		if err := s.InstanceLauncher.TerminateSystemInstance(lb.InstanceID); err != nil {
+			slog.WarnContext(ctx, "Failed to terminate ALB VM during LB deletion", "lbId", lb.LoadBalancerID, "instanceId", lb.InstanceID, "err", err)
+			if errors.Is(err, systeminstance.ErrSystemInstanceOwnershipUnknown) {
+				return nil, errors.New(awserrors.ErrorServerInternal)
 			}
-		}()
+		}
 	}
 
 	// Delete system-managed ENIs under one detach+delete flow — the LB is the

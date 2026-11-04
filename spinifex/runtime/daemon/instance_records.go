@@ -7,6 +7,9 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go/jetstream"
@@ -218,6 +221,33 @@ func loadRecord[T any](store *kvstore.Store[T], key string) (*T, error) {
 	}
 	return record, nil
 }
+
+// Classify implements systeminstance.OwnershipClassifier from the live or
+// stopped record, then the terminated one; the first record found decides. A
+// failed read is returned, never mapped to Absent.
+func (m *JetStreamManager) Classify(instanceID string) (systeminstance.Ownership, error) {
+	if m == nil {
+		return "", errors.New("instance state not initialized")
+	}
+	record, err := m.LoadInstanceRecord(instanceID)
+	if err != nil {
+		return "", err
+	}
+	if record == nil {
+		if record, err = m.LoadTerminatedInstanceRecord(instanceID); err != nil {
+			return "", err
+		}
+	}
+	switch {
+	case record == nil:
+		return systeminstance.OwnershipAbsent, nil
+	case tags.IsSystemManaged(record.Spec.ManagedBy) && record.Metadata.AccountID == awsidentifiers.GlobalAccountID:
+		return systeminstance.OwnershipSystem, nil
+	}
+	return systeminstance.OwnershipCustomer, nil
+}
+
+var _ systeminstance.OwnershipClassifier = (*JetStreamManager)(nil)
 
 // InstanceLastNode names the node that last ran instanceID, from its live
 // record or, failing that, its terminated one. found is false when neither

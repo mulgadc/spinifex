@@ -301,6 +301,11 @@ func TerminateK3sServerVM(ctx context.Context,
 	if instanceID != "" {
 		// "instance not found" on a retry is idempotent success; proceed to the ENI/SG/KV sweep.
 		if err := instSvc.TerminateSystemInstance(instanceID); err != nil {
+			if errors.Is(err, systeminstance.ErrSystemInstanceOwnershipUnknown) {
+				// The VM may still be running: leave its ENI and the rest of the sweep for the retry.
+				slog.WarnContext(ctx, "TerminateK3sServerVM: ownership unknown, will retry", "instanceId", instanceID, "err", err)
+				return fmt.Errorf("terminate instance %s: %w", instanceID, err)
+			}
 			if errors.Is(err, systeminstance.ErrSystemInstanceNotFound) {
 				slog.DebugContext(ctx, "TerminateK3sServerVM: instance already gone", "instanceId", instanceID)
 			} else {

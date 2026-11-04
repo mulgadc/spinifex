@@ -3,6 +3,7 @@ package elbv2
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/nats-io/nats.go"
@@ -1099,4 +1101,33 @@ func TestCreateClusterNLBSync_CarriesCrossAccountENI(t *testing.T) {
 	require.NotNil(t, record)
 	require.Len(t, record.CrossAccountENIs, 1)
 	assert.Equal(t, "eni-seta-001", record.CrossAccountENIs[0].ENIID)
+}
+
+func TestDeleteLoadBalancer_StopsWhenVMOwnershipUnknown(t *testing.T) {
+	t.Parallel()
+	svc, vpcSvc, subnetID := setupMicrovmTestService(t)
+	mock := &mockSystemInstanceLauncher{
+		launchResult: &SystemInstanceOutput{InstanceID: "i-unknown-own", PrivateIP: "10.0.1.5"},
+	}
+	svc.InstanceLauncher = mock
+
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("own-unknown-alb"),
+		Subnets: []*string{aws.String(subnetID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	svc.WaitLaunches()
+
+	mock.terminateErr = fmt.Errorf("%w: i-unknown-own", systeminstance.ErrSystemInstanceOwnershipUnknown)
+	_, err = svc.DeleteLoadBalancer(context.Background(), &elbv2.DeleteLoadBalancerInput{
+		LoadBalancerArn: lbOut.LoadBalancers[0].LoadBalancerArn,
+	}, testAccountID)
+	require.Error(t, err)
+
+	eniDesc, err := vpcSvc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.NotEmpty(t, eniDesc.NetworkInterfaces, "ENIs must outlive a VM that may still be running")
+	lb, err := svc.store.GetLoadBalancerByArn(context.Background(), *lbOut.LoadBalancers[0].LoadBalancerArn)
+	require.NoError(t, err)
+	assert.NotNil(t, lb, "the record must survive so the delete can be retried")
 }

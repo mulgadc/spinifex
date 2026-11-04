@@ -233,15 +233,16 @@ func LaunchServingVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (out 
 	// The VM is torn down first regardless of creation order: the ENI and
 	// weights volume are attached while it runs, and deleting those is
 	// rejected as InUse.
-	var terminateVM func(context.Context)
+	var terminateVM func(context.Context) (proceed bool)
 
 	// A context detached from the caller's, so a failure caused by the
 	// caller's own deadline expiring can still clean up.
 	unwind := func(ctx context.Context) {
 		rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 		defer cancel()
-		if terminateVM != nil {
-			terminateVM(rbCtx)
+		// Leave the ENIs and volumes alone while the VM may still be running.
+		if terminateVM != nil && !terminateVM(rbCtx) {
+			return
 		}
 		for _, v := range slices.Backward(rollback) {
 			v(rbCtx)
@@ -317,12 +318,13 @@ func LaunchServingVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (out 
 		return nil, fmt.Errorf("bedrock: launch serving VM for %s: launcher returned no instance", in.GroupID)
 	}
 	instanceID := sysOut.InstanceID
-	terminateVM = func(ctx context.Context) {
-		if termErr := deps.Instance.TerminateSystemInstance(instanceID); termErr != nil &&
-			!errors.Is(termErr, systeminstance.ErrSystemInstanceNotFound) {
+	terminateVM = func(ctx context.Context) bool {
+		termErr := deps.Instance.TerminateSystemInstance(instanceID)
+		if termErr != nil && !errors.Is(termErr, systeminstance.ErrSystemInstanceNotFound) {
 			slog.WarnContext(ctx, "bedrock: rollback terminate of failed serving VM failed",
 				"group", in.GroupID, "instanceId", instanceID, "err", termErr)
 		}
+		return !errors.Is(termErr, systeminstance.ErrSystemInstanceOwnershipUnknown)
 	}
 
 	memberOut := make(map[string]LaunchMemberOutput, len(in.Members))
@@ -366,7 +368,12 @@ func TerminateServingVM(ctx context.Context, deps LaunchDeps, rec EndpointRecord
 	if rec.InstanceID != "" {
 		if err := deps.Instance.TerminateSystemInstance(rec.InstanceID); err != nil &&
 			!errors.Is(err, systeminstance.ErrSystemInstanceNotFound) {
-			errs = append(errs, fmt.Errorf("terminate instance %s: %w", rec.InstanceID, err))
+			wrapped := fmt.Errorf("terminate instance %s: %w", rec.InstanceID, err)
+			if errors.Is(err, systeminstance.ErrSystemInstanceOwnershipUnknown) {
+				// The VM may still be running: leave its ENI and volumes for the retry.
+				return wrapped
+			}
+			errs = append(errs, wrapped)
 		}
 	}
 	if rec.ENIID != "" {

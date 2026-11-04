@@ -635,6 +635,9 @@ func (d *Daemon) attachSystemMgmtNIC(inst *vm.VM) error {
 // stop qemu and free the ENI — otherwise the local-only path returns NotFound
 // and the teardown deletes a still-attached ENI (InvalidNetworkInterface.InUse).
 func (d *Daemon) TerminateSystemInstance(instanceID string) error {
+	if err := d.requireSystemInstance(instanceID); err != nil {
+		return err
+	}
 	var termErr error
 	if _, exists := d.vmMgr.Get(instanceID); exists {
 		termErr = d.terminateSystemInstanceLocal(instanceID)
@@ -663,8 +666,37 @@ func (d *Daemon) reclaimSystemInstanceEIP(instanceID string) {
 	}
 }
 
+// requireSystemInstance lets a terminate go ahead only for a system VM. A
+// customer or unknown ID is answered as gone and an unreadable record as
+// ownership unknown; either way nothing is touched.
+func (d *Daemon) requireSystemInstance(instanceID string) error {
+	ownership, err := d.classifySystemInstance(instanceID)
+	if err != nil {
+		slog.Warn("TerminateSystemInstance: refused, ownership could not be read", "instanceId", instanceID, "err", err)
+		return fmt.Errorf("%w: %s: %w", systeminstance.ErrSystemInstanceOwnershipUnknown, instanceID, err)
+	}
+	if ownership != systeminstance.OwnershipSystem {
+		slog.Warn("TerminateSystemInstance: refused, not a system instance", "instanceId", instanceID, "ownership", ownership)
+		return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotFound, instanceID)
+	}
+	return nil
+}
+
+func (d *Daemon) classifySystemInstance(instanceID string) (systeminstance.Ownership, error) {
+	if d.ownership != nil {
+		return d.ownership.Classify(instanceID)
+	}
+	if d.jsManager == nil {
+		return "", errors.New("instance state not available")
+	}
+	return d.jsManager.Classify(instanceID)
+}
+
 // terminateSystemInstanceLocal stops a VM owned by this node.
 func (d *Daemon) terminateSystemInstanceLocal(instanceID string) error {
+	if err := d.requireSystemInstance(instanceID); err != nil {
+		return err
+	}
 	instance, exists := d.vmMgr.Get(instanceID)
 	if !exists {
 		return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotFound, instanceID)

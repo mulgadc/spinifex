@@ -3,6 +3,7 @@ package instance
 import (
 	"context"
 	"errors"
+	"fmt"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"slices"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	iammock "github.com/mulgadc/spinifex/spinifex/domains/iam/mock"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -653,4 +655,20 @@ func TestValidateCreateRequest_AcceptsInertParameters(t *testing.T) {
 	assert.True(t, req.CopyTagsToSnapshot)
 	assert.True(t, req.EnablePerformanceInsights)
 	assert.Equal(t, int64(60), req.MonitoringInterval)
+}
+
+func TestCreateDBInstance_RollbackKeepsResourcesWhenOwnershipUnknown(t *testing.T) {
+	t.Parallel()
+	h := newCreateHarness(t, "")
+	h.launch.launcher.terminateErr = fmt.Errorf("%w: i-rds0001", systeminstance.ErrSystemInstanceOwnershipUnknown)
+	h.launch.launcher.onLaunch = func() {
+		kv, err := h.svc.bucket(t.Context(), testAccountID)
+		require.NoError(t, err)
+		require.NoError(t, kv.Delete(t.Context(), DBInstanceKey(testDBInstanceID)))
+	}
+
+	_, err := h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)
+	require.Error(t, err)
+	assert.Empty(t, h.launch.volumes.deleted, "the VM may still be running; its volume must be left alone")
+	assert.NotContains(t, h.launch.unwind, "delete-eni")
 }

@@ -10,6 +10,29 @@ import "errors"
 // Callers treat it as idempotent success so a retried delete does not block on a gone VM.
 var ErrSystemInstanceNotFound = errors.New("sysinstance: instance not found")
 
+// ErrSystemInstanceOwnershipUnknown is returned by TerminateSystemInstance when
+// the instance's record could not be read. Nothing was terminated; callers must
+// stop and retry, never treat it as the VM being gone.
+var ErrSystemInstanceOwnershipUnknown = errors.New("sysinstance: instance ownership unknown")
+
+// Ownership says who an instance ID belongs to.
+type Ownership string
+
+const (
+	// OwnershipSystem is a platform VM: a known system manager in the system account.
+	OwnershipSystem Ownership = "system"
+	// OwnershipCustomer is any other instance that has a record.
+	OwnershipCustomer Ownership = "customer"
+	// OwnershipAbsent is an ID with no live, stopped or terminated record.
+	OwnershipAbsent Ownership = "absent"
+)
+
+// OwnershipClassifier tells the system terminate path whether an ID is a
+// system VM, without exposing instance records to it.
+type OwnershipClassifier interface {
+	Classify(instanceID string) (Ownership, error)
+}
+
 // BootMode selects how a system instance boots.
 type BootMode string
 

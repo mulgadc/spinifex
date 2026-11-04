@@ -208,15 +208,16 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 
 	// The VM is torn down first regardless of creation order: the ENIs and data
 	// volume are attached while it runs, and deleting those is rejected as InUse.
-	var terminateVM func(context.Context)
+	var terminateVM func(context.Context) (proceed bool)
 
 	// A context detached from the caller's, so a create that failed *because*
 	// the request deadline expired can still clean up.
 	unwind := func(ctx context.Context) {
 		rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
 		defer cancel()
-		if terminateVM != nil {
-			terminateVM(rbCtx)
+		// Leave the ENIs and volumes alone while the VM may still be running.
+		if terminateVM != nil && !terminateVM(rbCtx) {
+			return
 		}
 		for _, undo := range slices.Backward(rollback) {
 			undo(rbCtx)
@@ -295,12 +296,13 @@ func LaunchDBInstanceVM(ctx context.Context, deps LaunchDeps, in LaunchInput) (o
 		return nil, fmt.Errorf("rds: launch DB VM for %s: launcher returned no instance", in.DBInstanceIdentifier)
 	}
 	instanceID := sysOut.InstanceID
-	terminateVM = func(ctx context.Context) {
-		if termErr := deps.Instance.TerminateSystemInstance(instanceID); termErr != nil &&
-			!errors.Is(termErr, systeminstance.ErrSystemInstanceNotFound) {
+	terminateVM = func(ctx context.Context) bool {
+		termErr := deps.Instance.TerminateSystemInstance(instanceID)
+		if termErr != nil && !errors.Is(termErr, systeminstance.ErrSystemInstanceNotFound) {
 			slog.WarnContext(ctx, "rds: rollback terminate of failed DB VM failed",
 				"dbInstance", in.DBInstanceIdentifier, "instanceId", instanceID, "err", termErr)
 		}
+		return !errors.Is(termErr, systeminstance.ErrSystemInstanceOwnershipUnknown)
 	}
 
 	// A replace re-attaches the datadir it already has; only a create makes one,

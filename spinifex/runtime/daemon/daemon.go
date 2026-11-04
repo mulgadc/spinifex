@@ -59,6 +59,7 @@ import (
 	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
@@ -236,6 +237,10 @@ type Daemon struct {
 
 	// JetStream manager for KV state storage (nil if JetStream disabled)
 	jsManager *JetStreamManager
+
+	// ownership decides whether a system terminate may proceed; nil means the
+	// jsManager answers it. Tests set it.
+	ownership systeminstance.OwnershipClassifier
 
 	// stateStore is the vm.StateStore view over jsManager, initialized after
 	// initJetStream succeeds.

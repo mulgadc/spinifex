@@ -727,6 +727,10 @@ func TestAttachSystemMgmtNIC(t *testing.T) {
 func TestTerminateSystemInstance(t *testing.T) {
 	d := createTestDaemon(t, sharedNATSURL)
 	t.Cleanup(d.vmMgr.WaitForBackgroundWork)
+	d.ownership = fakeOwnership{byID: map[string]systeminstance.Ownership{
+		"i-term-ok": systeminstance.OwnershipSystem, "i-term-fail": systeminstance.OwnershipSystem,
+		"i-term-nobody": systeminstance.OwnershipSystem, "i-term-gone": systeminstance.OwnershipSystem,
+	}}
 
 	t.Run("local terminate releases the EIP", func(t *testing.T) {
 		eip := &sysInstReclaimingEIP{fakeEIPService: fakeEIPService{disassociateErr: errInjected}}

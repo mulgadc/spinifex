@@ -598,7 +598,8 @@ interface NetworkSectionProps {
   errors: FormErrors
   otherSubnets: readonly Subnet[]
   register: FormRegister
-  routeTables: readonly RouteTable[]
+  // Undefined until DescribeRouteTables answers, or when it is refused.
+  routeTables: readonly RouteTable[] | undefined
   securityGroups: SecurityGroup[]
   selectedSubnetId: string | undefined
   setValue: UseFormSetValue<RunInstancesFormInput>
@@ -666,14 +667,19 @@ type SubnetFieldProps = Pick<
   | "selectedSubnetId"
 >
 
-// Each group is sorted by its label, and an empty group is left out.
+// Each group is sorted by its label, and an empty group is left out. Without
+// route tables there is one unlabelled group.
 function subnetGroups(
   subnets: readonly Subnet[],
-  routeTables: readonly RouteTable[],
-): { label: string; subnets: Subnet[] }[] {
+  routeTables: readonly RouteTable[] | undefined,
+): { label?: string; subnets: Subnet[] }[] {
   const sorted = subnets.toSorted((a, b) =>
     subnetLabel(a).localeCompare(subnetLabel(b)),
   )
+
+  if (!routeTables) {
+    return [{ subnets: sorted }].filter((group) => group.subnets.length > 0)
+  }
 
   return [
     {
@@ -730,8 +736,8 @@ function SubnetField({
                   : "No subnet"}
               </SelectItem>
               {subnetGroups(otherSubnets, routeTables).map((group) => (
-                <SelectGroup key={group.label}>
-                  <SelectLabel>{group.label}</SelectLabel>
+                <SelectGroup key={group.label ?? "subnets"}>
+                  {group.label && <SelectLabel>{group.label}</SelectLabel>}
                   {group.subnets.map((subnet) => (
                     <SelectItem
                       key={subnet.SubnetId}
@@ -750,7 +756,7 @@ function SubnetField({
         {effectiveSubnet
           ? subnetSummary(
               effectiveSubnet,
-              subnetIsPublic(effectiveSubnet, routeTables),
+              routeTables && subnetIsPublic(effectiveSubnet, routeTables),
             )
           : "This account has no default subnet, so an instance launched without one gets no VPC network interface. Choose a subnet."}
       </FieldDescription>

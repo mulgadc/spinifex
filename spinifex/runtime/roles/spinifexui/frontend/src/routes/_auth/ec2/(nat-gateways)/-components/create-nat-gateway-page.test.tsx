@@ -5,10 +5,12 @@ import { describe, expect, it, vi } from "vitest"
 
 import { createTestQueryClient, renderWithClient } from "@/test/render"
 
+const send = vi.hoisted(() => vi.fn())
+
 vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")
 
-  return mockAwsClients(vi.fn(async () => ({})))
+  return mockAwsClients(send)
 })
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
@@ -41,16 +43,28 @@ const SUBNETS: Subnet[] = [
   },
 ]
 
-function setup(routeTables: RouteTable[]) {
+// "denied" refuses DescribeRouteTables instead of seeding an answer.
+function setup(routeTables: RouteTable[] | "denied") {
   const queryClient = createTestQueryClient()
+
+  send.mockReset()
+  send.mockRejectedValue(
+    Object.assign(new Error("not authorized"), {
+      name: "UnauthorizedOperation",
+    }),
+  )
   queryClient.setQueryData(ec2SubnetsQueryOptions.queryKey, {
     $metadata: {},
     Subnets: SUBNETS,
   })
-  queryClient.setQueryData(ec2RouteTablesQueryOptions.queryKey, {
-    $metadata: {},
-    RouteTables: routeTables,
-  })
+
+  if (routeTables !== "denied") {
+    queryClient.setQueryData(ec2RouteTablesQueryOptions.queryKey, {
+      $metadata: {},
+      RouteTables: routeTables,
+    })
+  }
+
   queryClient.setQueryData(ec2AddressesQueryOptions.queryKey, {
     $metadata: {},
     Addresses: [],
@@ -89,12 +103,16 @@ describe("CreateNatGatewayPage", () => {
     ])
   })
 
-  it("offers every subnet when none routes to an internet gateway", async () => {
-    setup([])
+  it.each([
+    ["none routes to an internet gateway", []],
+    ["route tables cannot be read", "denied"],
+  ] as const)("offers every subnet when %s", async (_, routeTables) => {
+    setup(routeTables === "denied" ? routeTables : [...routeTables])
 
     await expect(subnetOptions()).resolves.toStrictEqual([
       "subnet-pub (10.0.1.0/24)",
       "subnet-priv (10.0.2.0/24)",
     ])
+    expect(send).toHaveBeenCalledTimes(routeTables === "denied" ? 1 : 0)
   })
 })

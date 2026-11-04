@@ -138,7 +138,8 @@ interface SetupOptions {
   instanceTypes?: InstanceTypeInfo[]
   capacity?: Record<string, number>
   subnets?: Subnet[]
-  routeTables?: RouteTable[]
+  // "denied" refuses DescribeRouteTables instead of seeding an answer.
+  routeTables?: RouteTable[] | "denied"
   launchTemplates?: LaunchTemplate[]
   placementGroups?: PlacementGroup[]
   onClose?: (instanceId?: string) => void
@@ -176,10 +177,20 @@ function setup({
     $metadata: {},
     Subnets: subnets,
   })
-  queryClient.setQueryData(ec2RouteTablesQueryOptions.queryKey, {
-    $metadata: {},
-    RouteTables: routeTables,
-  })
+
+  if (routeTables === "denied") {
+    sdk.setHandler("DescribeRouteTablesCommand", () => {
+      throw Object.assign(new Error("not authorized"), {
+        name: "UnauthorizedOperation",
+      })
+    })
+  } else {
+    queryClient.setQueryData(ec2RouteTablesQueryOptions.queryKey, {
+      $metadata: {},
+      RouteTables: routeTables,
+    })
+  }
+
   queryClient.setQueryData(ec2PlacementGroupsQueryOptions.queryKey, {
     $metadata: {},
     PlacementGroups: placementGroups,
@@ -605,6 +616,35 @@ describe("run-instances network", () => {
     await expect(
       screen.findByText("Public subnets"),
     ).resolves.toBeInTheDocument()
+    expect(screen.queryByText("Private subnets")).not.toBeInTheDocument()
+  })
+
+  it("lists subnets ungrouped when route tables cannot be read", async () => {
+    const user = userEvent.setup()
+
+    setup({
+      subnets: [
+        DEFAULT_SUBNET,
+        namedSubnet("subnet-web", "web"),
+        namedSubnet("subnet-app", "app"),
+      ],
+      routeTables: "denied",
+    })
+
+    await expect(
+      screen.findByText(/internet gateway route unknown/u),
+    ).resolves.toBeInTheDocument()
+
+    await user.click(screen.getByLabelText("Subnet"))
+
+    const options = await screen.findAllByRole("option")
+
+    expect(options.map((option) => option.textContent)).toStrictEqual([
+      "Default: subnet-def",
+      "app (subnet-app)",
+      "web (subnet-web)",
+    ])
+    expect(screen.queryByText("Public subnets")).not.toBeInTheDocument()
     expect(screen.queryByText("Private subnets")).not.toBeInTheDocument()
   })
 

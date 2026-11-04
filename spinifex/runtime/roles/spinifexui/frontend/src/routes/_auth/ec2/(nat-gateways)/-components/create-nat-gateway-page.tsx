@@ -1,5 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod"
-import { useSuspenseQuery } from "@tanstack/react-query"
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import {
   Controller,
@@ -46,12 +46,13 @@ interface CreateNatGatewayPageProps {
 
 export function CreateNatGatewayPage({ onClose }: CreateNatGatewayPageProps) {
   const { data: subnetsData } = useSuspenseQuery(ec2SubnetsQueryOptions)
-  const { data: routeTablesData } = useSuspenseQuery(ec2RouteTablesQueryOptions)
+  // Not a suspense query: without route tables the form offers every subnet.
+  const { data: routeTablesData } = useQuery(ec2RouteTablesQueryOptions)
   const { data: addressesData } = useSuspenseQuery(ec2AddressesQueryOptions)
   const createMutation = useCreateNatGateway()
 
   const subnets = subnetsData.Subnets ?? []
-  const routeTables = routeTablesData.RouteTables ?? []
+  const routeTables = routeTablesData?.RouteTables ?? []
   // A public NAT gateway belongs in a public subnet, one that routes to an
   // internet gateway. Fall back to all subnets if none is public.
   const publicSubnets = subnets.filter((s) => subnetIsPublic(s, routeTables))

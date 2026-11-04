@@ -139,6 +139,7 @@ check_result "an undocumented code is not logged" "$(grep -c "$AUTH" <<<"$logged
 # shellcheck disable=SC2034 # read by the sourced functions
 NAME=demo
 latitude() { printf '%s' "$FAKE_LAT"; }
+orig_expected_project_id="$(declare -f expected_project_id)"
 expected_project_id() { echo proj_1; }
 srv() {
     local frag=',"project":{"id":"proj_1"}'
@@ -178,6 +179,28 @@ FAKE_LAT="$(srv spx-demo-node1)"
 check_result "destroy goes on when the recorded server is ours" "$( (check_recorded_identity) >/dev/null 2>&1 && echo went || echo stopped)" went
 leftovers_out="$( (lat_match() { return 0; }; FAKE_LAT="$(srv spx-other-node1)" leftovers) 2>/dev/null || true)"
 check_result "a reused ID is not listed as a leftover to delete" "$(grep -c sv_1 <<<"$leftovers_out" || true)" 0
+
+# After terraform destroy the state's project output is gone; the remembered ID still lets the
+# sweep delete a matching leftover and keep a foreign one.
+eval "$orig_expected_project_id"
+TF_BIN="$work/tofu"
+printf '#!/bin/sh\nif [ -f "%s/gone" ]; then exit 1; fi\nprintf proj_1\n' "$work" > "$TF_BIN"
+chmod +x "$TF_BIN"
+EXPECTED_PROJECT=""
+remember_project_id
+check_result "the project ID is remembered while the state holds it" "$EXPECTED_PROJECT" proj_1
+: > "$work/gone"
+check_result "the state no longer answers after destroy" "$("$TF_BIN" output >/dev/null 2>&1 && echo up || echo gone)" gone
+printf 'server sv_1\nserver sv_2\n' > "$KNOWN_IDS"
+lat_match() { return 1; }
+latitude() { if [ "$2" = /servers/sv_1 ]; then srv spx-demo-node1; else srv spx-other-node1 ',"project":{"id":"proj_other"}'; fi; }
+swept="$(leftovers 2>/dev/null || true)"
+check_result "after destroy a matching leftover is still listed" "$(grep -c 'server sv_1 ' <<<"$swept" || true)" 1
+check_result "after destroy a foreign one is kept out" "$(grep -c 'server sv_2 ' <<<"$swept" || true)" 0
+EXPECTED_PROJECT=""
+swept="$(leftovers 2>/dev/null || true)"
+check_result "without the remembered ID a leftover is unknown, not matched" "$(grep -c 'server sv_1 sv_1 (unknown)' <<<"$swept" || true)" 1
+expected_project_id() { echo proj_1; }
 
 # Cleanup never deletes an object whose ownership could not be read, recorded or not.
 deleted="$work/deleted"

@@ -42,6 +42,7 @@ PLAN="m4-metal-medium"
 OS="ubuntu_26_04_x64_lts"
 PROJECT=""
 PROJECT_ID=""
+EXPECTED_PROJECT=""
 DISTRO=""
 SPX_BIN=/usr/local/bin/spx
 # spx admin init runs under sudo and writes the profile to the invoking user's home, not root's.
@@ -936,7 +937,14 @@ sys.exit(0 if re.fullmatch(rx, v) and (not want or got == want) else 1)' "$field
 # expected_project_id prints the ID of the project this deployment's Terraform made or was given, as
 # its state holds it. It is never the slug the person typed, which the API does not return.
 expected_project_id() {
+    if [ -n "$EXPECTED_PROJECT" ]; then printf '%s' "$EXPECTED_PROJECT"; return 0; fi
     "$TF_BIN" -chdir="$SCRIPT_DIR" output -state="$TF_STATE" -raw project_id 2>/dev/null
+}
+
+# remember_project_id reads the project ID while the state still holds it: after terraform destroy
+# the output is gone, and the sweep that follows still has to tell a matching server from a foreign one.
+remember_project_id() {
+    EXPECTED_PROJECT="$("$TF_BIN" -chdir="$SCRIPT_DIR" output -state="$TF_STATE" -raw project_id 2>/dev/null)" || EXPECTED_PROJECT=""
 }
 
 # check_recorded_identity stops a destroy before Terraform runs when a recorded object that still
@@ -1035,6 +1043,7 @@ cmd_destroy() {
         # Every ID is recorded before teardown, and a failure stops here: an Elastic IP cannot be found
         # again by name once its state entry is gone.
         record_ids || die "could not record the IDs in the Terraform state; nothing was destroyed"
+        remember_project_id
         check_recorded_identity
         log "terraform destroy"
         tf destroy -input=false -auto-approve >"$STATE_DIR/destroy.log" 2>&1 || {

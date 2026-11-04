@@ -64,15 +64,22 @@ type ComputeRequest struct {
 	Force          bool   `json:"force,omitempty"`
 }
 
-// ComputeResult is what one compute run found and did. Clean means nothing was
-// blocked and every read completed; it is a snapshot, not evidence of absence.
-type ComputeResult struct {
+// Outcome is what one compute or storage run found and did. Clean means nothing
+// was blocked or pending and every read completed; it is a snapshot, not
+// evidence of absence.
+type Outcome struct {
 	AccountID         string   `json:"account_id"`
 	CorrelationRef    string   `json:"correlation_ref,omitempty"`
 	Status            string   `json:"status"`
 	IncompleteReasons []string `json:"incomplete_reasons,omitempty"`
 	Items             []Item   `json:"items,omitempty"`
 }
+
+// ComputeResult and StorageResult are the outcomes of the two runs.
+type (
+	ComputeResult = Outcome
+	StorageResult = Outcome
+)
 
 // ComputeCleaner terminates an account's instances and cancels its spot
 // requests. It is destructive; the caller must hold an accepted account deletion.
@@ -331,7 +338,8 @@ func (r *ComputeResult) finish() {
 		r.Status = StatusIncomplete
 	}
 	for _, it := range r.Items {
-		if it.Disposition == DispositionBlocked || it.Disposition == DispositionPending {
+		switch it.Disposition {
+		case DispositionBlocked, DispositionPending, DispositionFailed, DispositionResidue:
 			r.Status = StatusIncomplete
 		}
 	}

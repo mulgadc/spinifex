@@ -1433,7 +1433,7 @@ func TestNodegroupCalls_MissingNodegroupVsMissingCluster(t *testing.T) {
 			code, msg, ok := awserrors.ResolveErrorDetail(call("nope"))
 			require.True(t, ok)
 			assert.Equal(t, awserrors.ErrorEKSResourceNotFound, code)
-			assert.Empty(t, msg, "a missing cluster keeps the default cluster message")
+			assert.Empty(t, msg, "a missing cluster keeps the default resource message")
 		})
 	}
 }

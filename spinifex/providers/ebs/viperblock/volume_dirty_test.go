@@ -31,6 +31,8 @@ func newTestDirty(t *testing.T, natsURL, owner string) *volumeDirty {
 // built for. A node killed mid-write never reaches its seal, so a marker written
 // only when a seal fails is absent in exactly the case it exists to describe.
 func TestVolumeDirty_MarkedOnOpenNotOnSealFailure(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-dirtymarkedonopen"
@@ -53,6 +55,8 @@ func TestVolumeDirty_MarkedOnOpenNotOnSealFailure(t *testing.T) {
 // that node has failed its window, so refusing here would leave the instance
 // unable to run anywhere rather than running with a slightly older copy.
 func TestVolumeDirty_DoesNotPinAVolumeToAGoneNode(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-dirtytakeoverallowed"
@@ -75,6 +79,8 @@ func TestVolumeDirty_DoesNotPinAVolumeToAGoneNode(t *testing.T) {
 // takeover silently loses whatever node-a never sealed, so the marker has to
 // carry who held it and why for the operator who reads it afterwards.
 func TestVolumeDirty_TakeoverNamesThePreviousHolder(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-dirtytakeoverrecorded"
@@ -102,6 +108,8 @@ func TestVolumeDirty_TakeoverNamesThePreviousHolder(t *testing.T) {
 // about itself. Reopening a volume this node already holds is the ordinary
 // restart path, not a lost-writes event.
 func TestVolumeDirty_OwnerReopeningIsNotATakeover(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-dirtyownerreopens"
@@ -125,6 +133,8 @@ func TestVolumeDirty_OwnerReopeningIsNotATakeover(t *testing.T) {
 // one-way door: once the writes reach the backend the volume is clean again and
 // carries no placement preference.
 func TestVolumeDirty_ClearedAfterASuccessfulSeal(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-dirtyclearsonseal"
@@ -141,6 +151,8 @@ func TestVolumeDirty_ClearedAfterASuccessfulSeal(t *testing.T) {
 // TestVolumeDirty_ClearIsIdempotent covers the ordinary path, where every
 // successful unmount clears a marker that may already be gone.
 func TestVolumeDirty_ClearIsIdempotent(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	dirty := newTestDirty(t, natsURL, "node-a")
@@ -153,6 +165,8 @@ func TestVolumeDirty_ClearIsIdempotent(t *testing.T) {
 // state to seal, and its seal says nothing about the copy that moved on —
 // clearing there would erase the record that the winner's writes are unsealed.
 func TestVolumeDirty_ClearDeclinesAMarkerAnotherNodeOwns(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-dirtyclearnotours"
@@ -173,6 +187,8 @@ func TestVolumeDirty_ClearDeclinesAMarkerAnotherNodeOwns(t *testing.T) {
 // node reopening a volume it already held. The stale export's clear must not
 // remove the marker the newer one wrote.
 func TestVolumeDirty_ClearDeclinesAnOlderGenerationOfTheSameNode(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-dirtyclearoldgen"
@@ -191,6 +207,8 @@ func TestVolumeDirty_ClearDeclinesAnOlderGenerationOfTheSameNode(t *testing.T) {
 // renaming itself as the current copy. Placement reads this marker, so an
 // overwrite here would point a later takeover at the stale node.
 func TestVolumeDirty_MarkRefusesToOverwriteALaterGeneration(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-dirtymarkstale"
@@ -212,6 +230,8 @@ func TestVolumeDirty_MarkRefusesToOverwriteALaterGeneration(t *testing.T) {
 // nothing records, so a later takeover could not tell they existed — and the
 // lease has to go back, or the volume is stranded on a node not writing it.
 func TestVolumeDirty_OpenFailsWhenTheMarkerCannotBeWritten(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-dirtymarkunwritable"
@@ -239,6 +259,8 @@ func TestVolumeDirty_OpenFailsWhenTheMarkerCannotBeWritten(t *testing.T) {
 // every mount because the bucket is missing is a worse failure than the one
 // being described.
 func TestVolumeDirty_NoStoreDoesNotBlockMounts(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	cfg := &Config{leases: newTestLeases(t, natsURL, "node-b")}
@@ -252,6 +274,8 @@ func TestVolumeDirty_NoStoreDoesNotBlockMounts(t *testing.T) {
 // 'spx admin volumes unsealed', which is the only way to see a volume whose
 // writes are stranded on a node that is not coming back.
 func TestVolumeDirty_ListReportsTheHolder(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	nc, err := nats.Connect(natsURL)
@@ -272,6 +296,8 @@ func TestVolumeDirty_ListReportsTheHolder(t *testing.T) {
 // A node answers "do you hold unsealed writes" for exactly the volumes whose
 // marker names it, over the subject a start on another node reaches it by.
 func TestHoldsUnsealedWrites_AnswersOverTheNodeSubject(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -299,6 +325,8 @@ func TestHoldsUnsealedWrites_AnswersOverTheNodeSubject(t *testing.T) {
 // A node that cannot read its markers must say so rather than answer none,
 // because the answer decides whether another node may open the volume.
 func TestHoldsUnsealedWrites_UnreadableMarkerIsAnError(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 	dirty := newTestDirty(t, natsURL, "node-a")
 	cfg := &Config{NodeName: "node-a", dirty: dirty}

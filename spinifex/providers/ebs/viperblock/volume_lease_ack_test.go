@@ -110,6 +110,8 @@ func stopRenewals(lease *volumeLease) {
 // when it applies the create, so validity measured from a late reply outlives
 // the entry and lets a holder keep writing after a peer has taken the volume.
 func TestVolumeLease_SlowAcquireAckDoesNotExtendValidity(t *testing.T) {
+	t.Parallel()
+
 	leases, kv := newSlowAckLeases(t, "node-a")
 	kv.createDelay = 30 * time.Second
 	kv.failUpdates = true // the generation publish never lands, so only the create proves the lease
@@ -126,6 +128,8 @@ func TestVolumeLease_SlowAcquireAckDoesNotExtendValidity(t *testing.T) {
 // whole validity window cannot authorize an open, because the server may
 // already have expired the entry and granted it to a peer.
 func TestVolumeLease_AcquireAckedAfterValidityIsRefused(t *testing.T) {
+	t.Parallel()
+
 	leases, kv := newSlowAckLeases(t, "node-a")
 	kv.createDelay = volumeLeaseValidity + time.Second
 	kv.failUpdates = true
@@ -144,6 +148,8 @@ func TestVolumeLease_AcquireAckedAfterValidityIsRefused(t *testing.T) {
 // conditioned on the create's revision, so its success proves the entry is
 // still ours as of when it was sent, however late the create's reply was.
 func TestVolumeLease_GenerationPublishRenewsALateAcquisition(t *testing.T) {
+	t.Parallel()
+
 	leases, kv := newSlowAckLeases(t, "node-a")
 	kv.createDelay = volumeLeaseValidity + time.Second
 
@@ -159,6 +165,8 @@ func TestVolumeLease_GenerationPublishRenewsALateAcquisition(t *testing.T) {
 // TestVolumeLease_SlowRenewalAckDoesNotExtendValidity is the renewal half of
 // the slow-reply overlap.
 func TestVolumeLease_SlowRenewalAckDoesNotExtendValidity(t *testing.T) {
+	t.Parallel()
+
 	leases, kv := newSlowAckLeases(t, "node-a")
 
 	lease, err := leases.acquire(t.Context(), "vol-slowrenewalack")
@@ -176,6 +184,8 @@ func TestVolumeLease_SlowRenewalAckDoesNotExtendValidity(t *testing.T) {
 // export is already being fenced and a peer may hold the volume, so a renewal
 // that lands afterwards must not make the holder valid again.
 func TestVolumeLease_RenewalSucceedingAfterSurrenderDoesNotReviveTheLease(t *testing.T) {
+	t.Parallel()
+
 	leases, kv := newSlowAckLeases(t, "node-a")
 
 	lease, err := leases.acquire(t.Context(), "vol-renewalaftersurrender")
@@ -206,6 +216,8 @@ func TestVolumeLease_RenewalSucceedingAfterSurrenderDoesNotReviveTheLease(t *tes
 // interval equals the margin, so waiting for the next tick to notice a lapse
 // can reach the server's expiry and overlap the next holder.
 func TestVolumeLease_LapseIsFencedAtTheDeadlineNotTheNextCheck(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 	leases := newTestLeases(t, natsURL, "node-a")
 	leases.checkEvery = time.Hour
@@ -237,7 +249,11 @@ func TestVolumeLease_LapseIsFencedAtTheDeadlineNotTheNextCheck(t *testing.T) {
 // fence releases it, and handing it to another open in between would
 // authorize writes the lease no longer covers.
 func TestVolumeLease_LostOrLapsedLeaseIsNotShared(t *testing.T) {
+	t.Parallel()
+
 	t.Run("lost", func(t *testing.T) {
+		t.Parallel()
+
 		leases, _ := newSlowAckLeases(t, "node-a")
 		lease, err := leases.acquire(t.Context(), "vol-sharelost")
 		require.NoError(t, err)
@@ -252,6 +268,8 @@ func TestVolumeLease_LostOrLapsedLeaseIsNotShared(t *testing.T) {
 		assert.Equal(t, 1, lease.refs)
 	})
 	t.Run("lapsed", func(t *testing.T) {
+		t.Parallel()
+
 		leases, kv := newSlowAckLeases(t, "node-a")
 		lease, err := leases.acquire(t.Context(), "vol-sharelapsed")
 		require.NoError(t, err)
@@ -272,6 +290,8 @@ func TestVolumeLease_LostOrLapsedLeaseIsNotShared(t *testing.T) {
 // deadline timer has run. The holder must give the volume up rather than let
 // the new confirmation hide the lapse from the timer.
 func TestVolumeLease_RenewalAckedAfterTheDeadlineDoesNotRevive(t *testing.T) {
+	t.Parallel()
+
 	leases, kv := newSlowAckLeases(t, "node-a")
 	var fences []leaseLossKind
 	var fenceMu sync.Mutex
@@ -324,6 +344,8 @@ func TestVolumeLease_RenewalAckedAfterTheDeadlineDoesNotRevive(t *testing.T) {
 // TestVolumeLease_RenewalAckedJustBeforeTheDeadlineKeepsTheLease is the
 // boundary: a reply that lands while validity still holds is a real renewal.
 func TestVolumeLease_RenewalAckedJustBeforeTheDeadlineKeepsTheLease(t *testing.T) {
+	t.Parallel()
+
 	leases, kv := newSlowAckLeases(t, "node-a")
 	lease, err := leases.acquire(t.Context(), "vol-renewalbeforedeadline")
 	require.NoError(t, err)

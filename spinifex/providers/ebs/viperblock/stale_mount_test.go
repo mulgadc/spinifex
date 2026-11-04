@@ -24,6 +24,8 @@ import (
 // that is gone. Returning its URI is what makes a volume permanently
 // unstartable: every caller then waits for a socket nothing will create.
 func TestMountEntryIsStaleWhenSocketIsGone(t *testing.T) {
+	t.Parallel()
+
 	socket := filepath.Join(t.TempDir(), "nbd.sock")
 
 	stale, why := mountEntryIsStale(MountedVolume{Name: "vol-1", Socket: socket, PID: os.Getpid()})
@@ -38,6 +40,8 @@ func TestMountEntryIsStaleWhenSocketIsGone(t *testing.T) {
 // The pid is the second piece of positive evidence, for an export whose socket
 // file outlived the process that owned it.
 func TestMountEntryIsStaleWhenProcessIsGone(t *testing.T) {
+	t.Parallel()
+
 	socket := filepath.Join(t.TempDir(), "nbd.sock")
 	require.NoError(t, os.WriteFile(socket, nil, 0o600))
 
@@ -53,6 +57,8 @@ func TestMountEntryIsStaleWhenProcessIsGone(t *testing.T) {
 // releaseStaleMount must drop the entry so the remount behind it can proceed,
 // and must be safe to call for a volume that is not mounted at all.
 func TestReleaseStaleMountDropsTheEntry(t *testing.T) {
+	t.Parallel()
+
 	cfg := &Config{MountedVolumes: []MountedVolume{{Name: "vol-1"}, {Name: "vol-2"}}}
 
 	require.NoError(t, releaseStaleMount(t.Context(), cfg, "vol-1"))
@@ -91,6 +97,8 @@ func orphanedConfig(t *testing.T, volumeName string, pid int) *Config {
 // went, so a remount beside it is a second writer. It has to be stopped, and
 // its copy sealed as any unmount would, before the volume is opened again.
 func TestMountVolume_SocketGoneProcessAliveIsStoppedBeforeRemount(t *testing.T) {
+	t.Parallel()
+
 	const volumeName = "vol-orphanalive1"
 	cfg := orphanedConfig(t, volumeName, 0)
 	pid := cfg.MountedVolumes[0].PID
@@ -114,6 +122,8 @@ func TestMountVolume_SocketGoneProcessAliveIsStoppedBeforeRemount(t *testing.T) 
 // An nbdkit that will not stop is still a writer, so the publish is refused as
 // retry-later and the entry kept for the next attempt to retry the stop.
 func TestMountVolume_SocketGoneProcessUnstoppableIsUnavailable(t *testing.T) {
+	t.Parallel()
+
 	const volumeName = "vol-orphanstuck1"
 	cfg := orphanedConfig(t, volumeName, zombiePID(t))
 	cfg.exportStopWait = 50 * time.Millisecond

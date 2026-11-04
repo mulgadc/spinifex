@@ -16,6 +16,8 @@ import (
 // wrong with this node — so the export would be renewed indefinitely and the
 // instance would be stopped here and unable to start anywhere.
 func TestVolumeAbandon_GivesUpTheExportAndTheLease(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-abandoned"
@@ -39,6 +41,8 @@ func TestVolumeAbandon_GivesUpTheExportAndTheLease(t *testing.T) {
 // out the TTL. Here the node still holds it and hands it back, so the winner can
 // open the volume on its next attempt.
 func TestVolumeAbandon_ReleasesTheKeySoTheNewOwnerNeedNotWaitOutTheTTL(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-abandonreleases"
@@ -57,6 +61,8 @@ func TestVolumeAbandon_ReleasesTheKeySoTheNewOwnerNeedNotWaitOutTheTTL(t *testin
 // The one thing it must never do, for the fence's reason: this node's block map
 // is behind the node that took the volume, and sealing publishes it over theirs.
 func TestVolumeAbandon_DoesNotSeal(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-abandonnoseal"
@@ -75,6 +81,8 @@ func TestVolumeAbandon_DoesNotSeal(t *testing.T) {
 // Reporting success on a kill that did not take would tell the caller a writer
 // stopped that is still running, which is worse than refusing.
 func TestVolumeAbandon_KillFailureIsReportedAndLeavesTheVolumeMounted(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-abandonkillfails"
@@ -100,6 +108,8 @@ func TestVolumeAbandon_KillFailureIsReportedAndLeavesTheVolumeMounted(t *testing
 // most of them were never exported here — so this is not a failure, and treating
 // it as one would make every recovery look broken.
 func TestVolumeAbandon_NotExportedHereIsNotAnError(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	cfg := &Config{
@@ -117,6 +127,8 @@ func TestVolumeAbandon_NotExportedHereIsNotAnError(t *testing.T) {
 // it over when it opens the volume, so clearing it here would erase the only
 // note that writes were lost.
 func TestVolumeAbandon_LeavesTheDirtyMarkerToTheNewOwner(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-abandonkeepsmarker"

@@ -87,6 +87,8 @@ func withLocalState(t *testing.T, cfg *Config, volumeName string) {
 // only way to stop being one without a backend that can refuse is to give up
 // the export.
 func TestVolumeFence_TearsDownWhenAnotherNodeHoldsTheLease(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-fencelost"
@@ -114,6 +116,8 @@ func TestVolumeFence_TearsDownWhenAnotherNodeHoldsTheLease(t *testing.T) {
 // it is proof this node cannot tell. Stopping one guest is the cheaper error
 // than leaving two nodes writing one volume.
 func TestVolumeFence_FencesAnEntryNobodyHolds(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-fencelapsed"
@@ -134,6 +138,8 @@ func TestVolumeFence_FencesAnEntryNobodyHolds(t *testing.T) {
 // not take would tell the cluster a writer stopped that is still running, which
 // is worse than not fencing at all.
 func TestVolumeFence_KillFailureLeavesTheVolumeMounted(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-fencekillfails"
@@ -168,6 +174,8 @@ func TestVolumeFence_KillFailureLeavesTheVolumeMounted(t *testing.T) {
 // the lease is held by a node that is no longer writing and the volume cannot
 // start anywhere.
 func TestVolumeFence_CompletesOnceTheWriterFinallyExits(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-fencekilllate"
@@ -205,6 +213,8 @@ func TestVolumeFence_CompletesOnceTheWriterFinallyExits(t *testing.T) {
 // rather than ignored. Nothing then says what became of the writer, so treating
 // the PID's absence as an exit would release the lease on a guess.
 func TestVolumeFence_DoesNotCompleteForAWriterItCannotSee(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-fencekillrefused"
@@ -230,6 +240,8 @@ func TestVolumeFence_DoesNotCompleteForAWriterItCannotSee(t *testing.T) {
 // never do. This node's copy is the stale one, so sealing it would publish an
 // older state over the winner's — the corruption the fence exists to prevent.
 func TestVolumeFence_DoesNotSealOnTheWayOut(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-fencenoseal"
@@ -247,6 +259,8 @@ func TestVolumeFence_DoesNotSealOnTheWayOut(t *testing.T) {
 // reads afterwards. The winner takes the marker over when it opens the volume,
 // so a fencing node clearing it would erase the only note that writes were lost.
 func TestVolumeFence_LeavesTheDirtyMarkerToTheWinner(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-fencekeepsmarker"
@@ -263,6 +277,8 @@ func TestVolumeFence_LeavesTheDirtyMarkerToTheWinner(t *testing.T) {
 // TestVolumeFence_AlreadyUnmountedIsNotAnError covers the ordinary race, where
 // a volume is unmounted normally between losing its lease and the fence running.
 func TestVolumeFence_AlreadyUnmountedIsNotAnError(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	cfg := &Config{
@@ -280,6 +296,8 @@ func TestVolumeFence_AlreadyUnmountedIsNotAnError(t *testing.T) {
 // would publish a state torn between two writers. The entry has to stay
 // mounted so a retry re-attempts both.
 func TestUnmountVolume_RefusesToSealUnderALiveWriter(t *testing.T) {
+	t.Parallel()
+
 	_, natsURL := setupEmbeddedNATS(t)
 
 	const volumeName = "vol-unmountkillfails"

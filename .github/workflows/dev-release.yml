@@ -30,6 +30,10 @@ concurrency:
 jobs:
   prerelease:
     runs-on: ubuntu-26.04
+    env:
+      # Dev prereleases, newest published first: GitHub lists releases by tag name
+      # as text, so list order is not build order. The install Worker uses this rule.
+      DEV_RELEASES_JQ: '[.[] | select(.draft == false and .prerelease and .published_at != null and (.tag_name | test("-dev(\\.|$)")))] | sort_by(.published_at) | reverse'
     steps:
       # Full history and tags, because the tag name is git describe and a shallow
       # clone has no tag to describe against.
@@ -164,12 +168,12 @@ jobs:
               exit 1
           fi
           echo "latest is still $latest"
-          dev="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=20" --jq 'map(select(.prerelease))[0].tag_name')"
+          dev="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq "$DEV_RELEASES_JQ | .[0].tag_name")"
           [ "$dev" = "$TAG" ] || { echo "::error::the dev channel resolves to $dev, not $TAG"; exit 1; }
 
-      # Kept rather than unbounded: the Worker reads the first page of releases to
-      # resolve the channel, so enough prereleases would eventually push the real
-      # ones off it. Five leaves a few recent builds to roll back to.
+      # Kept rather than unbounded: the Worker reads one page of releases to resolve
+      # the channel, so enough prereleases would eventually push the newest off it.
+      # Five leaves a few recent builds to roll back to.
       - name: Prune old dev prereleases
         if: steps.version.outputs.exists != 'true'
         env:
@@ -177,7 +181,7 @@ jobs:
         run: |
           set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-              --jq 'map(select(.prerelease and (.tag_name | endswith("-dev")))) | .[5:] | .[].tag_name' \
+              --jq "$DEV_RELEASES_JQ | .[5:] | .[].tag_name" \
               > stale.txt
           while read -r tag; do
               [ -n "$tag" ] || continue

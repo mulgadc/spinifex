@@ -159,6 +159,7 @@ case "${ROLE}" in
         svc_start mulga-eks-state-report
         svc_start mulga-eks-addon-sync
         svc_start mulga-eks-node-gc
+        svc_optional mulga-eks-log-forward
         svc_optional eks-pod-identity-webhook
         ;;
     server-join)
@@ -178,12 +179,14 @@ case "${ROLE}" in
         svc_start konnectivity-server
         svc_start mulga-eks-state-report
         svc_start mulga-eks-node-gc
+        svc_optional mulga-eks-log-forward
         svc_optional eks-pod-identity-webhook
         ;;
     agent)
         log "configuring agent role"
         svc_enable k3s-agent
         svc_start k3s-agent
+        svc_optional mulga-eks-log-forward
         ;;
     *)
         die "SPINIFEX_K3S_ROLE missing or invalid: '${ROLE}'"

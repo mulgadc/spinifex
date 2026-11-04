@@ -126,7 +126,7 @@ func DescribeInstancesChecked(ctx context.Context, input *ec2.DescribeInstancesI
 		missing := missingInstanceIDs(reservations, input.InstanceIds)
 		if len(missing) > 0 {
 			if complete {
-				return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+				return nil, awserrors.IDsNotFound(awserrors.ErrorInvalidInstanceIDNotFound, "instance", missing)
 			}
 			// An incomplete sweep cannot prove absence, so a missing id is
 			// unresolved, not gone. NotFound would be a false negative and an

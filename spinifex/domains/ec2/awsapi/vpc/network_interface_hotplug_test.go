@@ -92,7 +92,7 @@ func TestAttachNetworkInterface_NoResponders(t *testing.T) {
 		InstanceId:         aws.String("i-no-responder"),
 		DeviceIndex:        aws.Int64(0),
 	}, nc, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidInstanceIDNotFound)
+	assert.EqualError(t, err, "The instance ID 'i-no-responder' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 }
 
 func TestAttachNetworkInterface_Success(t *testing.T) {
@@ -245,7 +245,7 @@ func TestDetachNetworkInterface_NoResponders(t *testing.T) {
 	_, err := DetachNetworkInterface(context.Background(), &ec2.DetachNetworkInterfaceInput{
 		AttachmentId: aws.String("eni-attach-1"),
 	}, nc, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidInstanceIDNotFound)
+	assert.EqualError(t, err, "The instance ID 'i-no-daemon' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 }
 
 func TestDetachNetworkInterface_Success(t *testing.T) {

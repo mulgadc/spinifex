@@ -571,6 +571,28 @@ func TestBridge_OperationAuthorization(t *testing.T) {
 	})
 }
 
+func TestBridge_DenyMessageNamesCallerActionAndRepository(t *testing.T) {
+	cases := []struct {
+		name, method, path, action string
+	}{
+		{"pull", http.MethodGet, "/v2/team/app/manifests/latest", "ecr:BatchGetImage"},
+		{"push", http.MethodPut, "/v2/team/app/manifests/latest", "ecr:PutImage"},
+		{"list", http.MethodGet, "/v2/team/app/tags/list", "ecr:ListImages"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newBridgeEnv(t)
+			e.rehyd.principal = e.roleLive.principal
+			w := e.do(c.method, c.path, "Bearer "+e.roleToken(t, bridgeRoleID))
+			assert.Equal(t, http.StatusForbidden, w.Code)
+			want := "User: " + bridgeRoleSessionARN + " is not authorized to perform: " + c.action + " on resource: " + repoARN("team/app")
+			body, err := json.Marshal(map[string]any{"errors": []map[string]string{{"code": "DENIED", "message": want}}})
+			require.NoError(t, err)
+			assert.JSONEq(t, string(body), w.Body.String())
+		})
+	}
+}
+
 func TestBridge_TokenEndpoint(t *testing.T) {
 	t.Run("exchange mints a fresh token for the same principal", func(t *testing.T) {
 		e := newBridgeEnv(t)

@@ -66,7 +66,7 @@ type ConverseStreamEvent struct {
 
 // payload JSON-marshals the event struct matching Kind via jsonutil.BuildJSON
 // (the SDK's own restjson marshaler), honouring the locationName tags a real
-// SDK consumer's UnmarshalEvent expects — mirroring WriteJSONResponse.
+// SDK consumer's UnmarshalEvent expects — mirroring envelope.WriteJSONResult.
 func (e ConverseStreamEvent) payload() ([]byte, error) {
 	switch e.Kind {
 	case converseStreamEventMessageStart:
@@ -192,35 +192,10 @@ func ConverseStream(ctx context.Context, w http.ResponseWriter, accountID, model
 // client disconnect (ctx.Done), or upstream fault — the deferred closure
 // records exactly one InvocationRecord via rc.recorder.
 func pumpConverseStream(ctx context.Context, fw *frameWriter, src converseStreamSource, modelID string, rc streamRecordCtx) {
-	if rc.recorder == nil {
-		rc.recorder = NoopRecorder
-	}
 	partial := true
 	errCode := ""
 	var outputText strings.Builder
-
-	defer func() {
-		inputTokens, outputTokens, estimated := int64(0), int64(0), true
-		if ur, ok := src.(usageReporter); ok {
-			inputTokens, outputTokens, estimated = ur.usage()
-		}
-		rc.recorder.Record(ctx, InvocationRecord{
-			RequestID:      rc.requestID,
-			AccountID:      rc.accountID,
-			ModelID:        modelID,
-			Operation:      rc.operation,
-			Backend:        rc.backend,
-			LatencyMs:      time.Since(rc.start).Milliseconds(),
-			HTTPStatus:     http.StatusOK, // the 200 header is already committed by the time the pump runs
-			ErrorCode:      errCode,
-			InputTokens:    inputTokens,
-			OutputTokens:   outputTokens,
-			UsageEstimated: estimated,
-			Partial:        partial,
-			InputText:      rc.inputText,
-			OutputText:     outputText.String(),
-		})
-	}()
+	defer func() { rc.record(ctx, src, modelID, errCode, partial, outputText.String()) }()
 
 	for {
 		select {
@@ -232,16 +207,7 @@ func pumpConverseStream(ctx context.Context, fw *frameWriter, src converseStream
 
 		event, ok, err := src.Next(ctx)
 		if err != nil {
-			excType := excInternalServerException
-			if _, ok := errors.AsType[*streamFaultError](err); ok {
-				excType = excModelStreamErrorException
-			}
-			errCode = awserrors.ValidErrorCodeFromError(err)
-			slog.Error("converse-stream: upstream fault", "model", modelID, "err", err)
-			if werr := fw.writeException(excType, exceptionPayload(err)); werr != nil {
-				slog.Error("converse-stream: failed to write exception frame", "model", modelID, "err", werr)
-				errCode = errCodeClientDisconnected
-			}
+			errCode = fw.writeUpstreamFault("converse-stream", modelID, err)
 			return
 		}
 		if !ok {

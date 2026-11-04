@@ -12,6 +12,7 @@ import (
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,7 +28,7 @@ const (
 func agentCaller() Caller {
 	return Caller{
 		AccountID:     awsidentifiers.GlobalAccountID,
-		PrincipalType: principalTypeAssumedRole,
+		PrincipalType: dispatch.PrincipalTypeAssumedRole,
 		RoleName:      rdsinstance.InstanceRoleName,
 		SessionName:   testInstanceID,
 	}
@@ -74,10 +75,10 @@ func TestAuthorizeAgent_RejectsNonAgentCallers(t *testing.T) {
 	}{
 		{"plain IAM user", Caller{AccountID: awsidentifiers.GlobalAccountID, PrincipalType: "user", RoleName: rdsinstance.InstanceRoleName, SessionName: testInstanceID}},
 		{"root", Caller{AccountID: awsidentifiers.GlobalAccountID, PrincipalType: "root", RoleName: rdsinstance.InstanceRoleName, SessionName: testInstanceID}},
-		{"customer account", Caller{AccountID: testAccountID, PrincipalType: principalTypeAssumedRole, RoleName: rdsinstance.InstanceRoleName, SessionName: testInstanceID}},
-		{"another role", Caller{AccountID: awsidentifiers.GlobalAccountID, PrincipalType: principalTypeAssumedRole, RoleName: "ecsInstanceRole", SessionName: testInstanceID}},
-		{"unresolvable role", Caller{AccountID: awsidentifiers.GlobalAccountID, PrincipalType: principalTypeAssumedRole, RoleName: "", SessionName: testInstanceID}},
-		{"no session name", Caller{AccountID: awsidentifiers.GlobalAccountID, PrincipalType: principalTypeAssumedRole, RoleName: rdsinstance.InstanceRoleName, SessionName: ""}},
+		{"customer account", Caller{AccountID: testAccountID, PrincipalType: dispatch.PrincipalTypeAssumedRole, RoleName: rdsinstance.InstanceRoleName, SessionName: testInstanceID}},
+		{"another role", Caller{AccountID: awsidentifiers.GlobalAccountID, PrincipalType: dispatch.PrincipalTypeAssumedRole, RoleName: "ecsInstanceRole", SessionName: testInstanceID}},
+		{"unresolvable role", Caller{AccountID: awsidentifiers.GlobalAccountID, PrincipalType: dispatch.PrincipalTypeAssumedRole, RoleName: "", SessionName: testInstanceID}},
+		{"no session name", Caller{AccountID: awsidentifiers.GlobalAccountID, PrincipalType: dispatch.PrincipalTypeAssumedRole, RoleName: rdsinstance.InstanceRoleName, SessionName: ""}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

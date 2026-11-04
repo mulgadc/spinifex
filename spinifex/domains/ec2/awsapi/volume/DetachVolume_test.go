@@ -152,7 +152,7 @@ func TestDetachVolume_WithoutForceStillReportsTheMissingInstance(t *testing.T) {
 		InstanceId: aws.String("i-gone"),
 	}, nc, "000000000001")
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.EqualError(t, err, "The instance ID 'i-gone' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 }
 
 // The gateway's deadline must outlast the daemon's, or a detach that is still

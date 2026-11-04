@@ -52,14 +52,6 @@ func mustGet(t *testing.T, svc *MetaService, name string) *GetResponse {
 	return resp
 }
 
-func requireCode(t *testing.T, err error, code string) {
-	t.Helper()
-	require.Error(t, err)
-	got, ok := awserrors.ResolveErrorCode(err)
-	require.True(t, ok, "no AWS code on %v", err)
-	assert.Equal(t, code, got)
-}
-
 func TestMeta_CreateOwnsStateAndRejectsDuplicate(t *testing.T) {
 	svc, c := newTestService(t)
 	req := createReq("hello", "f1")
@@ -79,7 +71,7 @@ func TestMeta_CreateOwnsStateAndRejectsDuplicate(t *testing.T) {
 	assert.Equal(t, c.t.Add(ClaimTTL), got.Record.ClaimExpiresAt)
 
 	_, err = svc.Create(t.Context(), createReq("hello", "f2"), testAccount)
-	requireCode(t, err, awserrors.ErrorResourceConflictException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
 	assert.Equal(t, "f1", mustGet(t, svc, "hello").Record.FunctionID, "the first record is untouched")
 
 	other, err := svc.Create(t.Context(), createReq("hello", "f3"), "000000000002")
@@ -98,7 +90,7 @@ func TestMeta_CreateRefusesIncompleteRecords(t *testing.T) {
 			req := createReq("ok", "f1")
 			mutate(&req.Record)
 			_, err := svc.Create(t.Context(), req, testAccount)
-			requireCode(t, err, awserrors.ErrorInvalidParameterValueException)
+			testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
 		})
 	}
 }
@@ -108,11 +100,11 @@ func TestMeta_CodeStoredUsesCAS(t *testing.T) {
 	rev := mustCreate(t, svc, "hello", "f1")
 
 	_, err := svc.CodeStored(t.Context(), &CodeStoredRequest{Region: testRegion, FunctionName: "hello", Revision: rev + 5, SHA256: testDigest, Size: 9}, testAccount)
-	requireCode(t, err, awserrors.ErrorResourceConflictException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
 	assert.Equal(t, CodeStoring, mustGet(t, svc, "hello").Record.Code.State, "a stale revision changes nothing")
 
 	_, err = svc.CodeStored(t.Context(), &CodeStoredRequest{Region: testRegion, FunctionName: "hello", Revision: rev, SHA256: "xyz", Size: 9}, testAccount)
-	requireCode(t, err, awserrors.ErrorInvalidParameterValueException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
 
 	resp, err := svc.CodeStored(t.Context(), &CodeStoredRequest{Region: testRegion, FunctionName: "hello", Revision: rev, SHA256: testDigest, Size: 9}, testAccount)
 	require.NoError(t, err)
@@ -126,10 +118,10 @@ func TestMeta_CodeStoredUsesCAS(t *testing.T) {
 	assert.Equal(t, ReasonCreating, got.Record.StateReason)
 
 	_, err = svc.CodeStored(t.Context(), &CodeStoredRequest{Region: testRegion, FunctionName: "hello", Revision: resp.Revision, SHA256: testDigest, Size: 9}, testAccount)
-	requireCode(t, err, awserrors.ErrorResourceConflictException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
 
 	_, err = svc.CodeStored(t.Context(), &CodeStoredRequest{Region: testRegion, FunctionName: "ghost", Revision: 1, SHA256: testDigest}, testAccount)
-	requireCode(t, err, awserrors.ErrorResourceNotFoundException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceNotFoundException)
 }
 
 func TestMeta_RollbackDeletesOnlyStoringAtTheRightRevision(t *testing.T) {
@@ -137,7 +129,7 @@ func TestMeta_RollbackDeletesOnlyStoringAtTheRightRevision(t *testing.T) {
 	rev := mustCreate(t, svc, "hello", "f1")
 
 	_, err := svc.RollbackCreate(t.Context(), &RollbackCreateRequest{Region: testRegion, FunctionName: "hello", Revision: rev + 1}, testAccount)
-	requireCode(t, err, awserrors.ErrorResourceConflictException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
 	require.True(t, mustGet(t, svc, "hello").Found)
 
 	_, err = svc.RollbackCreate(t.Context(), &RollbackCreateRequest{Region: testRegion, FunctionName: "hello", Revision: rev}, testAccount)
@@ -152,7 +144,7 @@ func TestMeta_RollbackDeletesOnlyStoringAtTheRightRevision(t *testing.T) {
 	stored, err := svc.CodeStored(t.Context(), &CodeStoredRequest{Region: testRegion, FunctionName: "hello", Revision: rev, SHA256: testDigest, Size: 1}, testAccount)
 	require.NoError(t, err)
 	_, err = svc.RollbackCreate(t.Context(), &RollbackCreateRequest{Region: testRegion, FunctionName: "hello", Revision: stored.Revision}, testAccount)
-	requireCode(t, err, awserrors.ErrorResourceConflictException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
 	assert.True(t, mustGet(t, svc, "hello").Found, "a stored record is never rolled back")
 }
 
@@ -168,11 +160,11 @@ func TestMeta_GetMissingAndUnknownFormat(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = svc.Get(t.Context(), &GetRequest{Region: testRegion, FunctionName: "future"}, testAccount)
-	requireCode(t, err, awserrors.ErrorServiceException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorServiceException)
 	_, err = svc.Create(t.Context(), createReq("future", "f1"), testAccount)
-	requireCode(t, err, awserrors.ErrorResourceConflictException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
 	_, err = svc.RollbackCreate(t.Context(), &RollbackCreateRequest{Region: testRegion, FunctionName: "future", Revision: 1}, testAccount)
-	requireCode(t, err, awserrors.ErrorServiceException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorServiceException)
 }
 
 func TestMeta_ExpiredStoringClaimIsTakenOver(t *testing.T) {
@@ -181,7 +173,7 @@ func TestMeta_ExpiredStoringClaimIsTakenOver(t *testing.T) {
 
 	c.t = c.t.Add(ClaimTTL - time.Second)
 	_, err := svc.Create(t.Context(), createReq("hello", "new"), testAccount)
-	requireCode(t, err, awserrors.ErrorResourceConflictException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
 	assert.Equal(t, "old", mustGet(t, svc, "hello").Record.FunctionID, "an unexpired claim holds the name")
 
 	c.t = c.t.Add(2 * time.Second)
@@ -193,9 +185,9 @@ func TestMeta_ExpiredStoringClaimIsTakenOver(t *testing.T) {
 	assert.Equal(t, c.t.Add(ClaimTTL), got.Record.ClaimExpiresAt)
 
 	_, err = svc.CodeStored(t.Context(), &CodeStoredRequest{Region: testRegion, FunctionName: "hello", Revision: oldRev, SHA256: testDigest, Size: 1}, testAccount)
-	requireCode(t, err, awserrors.ErrorResourceConflictException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
 	_, err = svc.RollbackCreate(t.Context(), &RollbackCreateRequest{Region: testRegion, FunctionName: "hello", Revision: oldRev}, testAccount)
-	requireCode(t, err, awserrors.ErrorResourceConflictException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
 	got = mustGet(t, svc, "hello")
 	assert.Equal(t, "new", got.Record.FunctionID, "the stale gateway cannot resurrect or free the old claim")
 	assert.Equal(t, CodeStoring, got.Record.Code.State)
@@ -209,7 +201,7 @@ func TestMeta_StoredRecordIsNeverTakenOver(t *testing.T) {
 
 	c.t = c.t.Add(10 * ClaimTTL)
 	_, err = svc.Create(t.Context(), createReq("hello", "f2"), testAccount)
-	requireCode(t, err, awserrors.ErrorResourceConflictException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
 	assert.Equal(t, "f1", mustGet(t, svc, "hello").Record.FunctionID)
 }
 
@@ -219,7 +211,7 @@ func TestMeta_CodeStoredAfterExpiryIsRefused(t *testing.T) {
 
 	c.t = c.t.Add(ClaimTTL + time.Second)
 	_, err := svc.CodeStored(t.Context(), &CodeStoredRequest{Region: testRegion, FunctionName: "hello", Revision: rev, SHA256: testDigest, Size: 1}, testAccount)
-	requireCode(t, err, awserrors.ErrorResourceConflictException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
 	got := mustGet(t, svc, "hello")
 	assert.Equal(t, CodeStoring, got.Record.Code.State, "a refused update leaves the record unchanged")
 	assert.Equal(t, rev, got.Revision)
@@ -243,7 +235,7 @@ func TestMeta_RegionsAreIndependent(t *testing.T) {
 	assert.Equal(t, testRegion, mustGet(t, svc, "hello").Record.Region)
 
 	_, err = svc.Create(t.Context(), createReq("hello", "again"), testAccount)
-	requireCode(t, err, awserrors.ErrorResourceConflictException)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
 }
 
 func TestMeta_RefusesBadRegion(t *testing.T) {
@@ -252,12 +244,12 @@ func TestMeta_RefusesBadRegion(t *testing.T) {
 		req := createReq("hello", "f1")
 		req.Region = region
 		_, err := svc.Create(t.Context(), req, testAccount)
-		requireCode(t, err, awserrors.ErrorInvalidParameterValueException)
+		testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
 		_, err = svc.Get(t.Context(), &GetRequest{Region: region, FunctionName: "hello"}, testAccount)
-		requireCode(t, err, awserrors.ErrorInvalidParameterValueException)
+		testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
 		_, err = svc.CodeStored(t.Context(), &CodeStoredRequest{Region: region, FunctionName: "hello", Revision: 1, SHA256: testDigest}, testAccount)
-		requireCode(t, err, awserrors.ErrorInvalidParameterValueException)
+		testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
 		_, err = svc.RollbackCreate(t.Context(), &RollbackCreateRequest{Region: region, FunctionName: "hello", Revision: 1}, testAccount)
-		requireCode(t, err, awserrors.ErrorInvalidParameterValueException)
+		testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
 	}
 }

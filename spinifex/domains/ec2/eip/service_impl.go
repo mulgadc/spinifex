@@ -572,19 +572,9 @@ var describeAddressesValidFilters = map[string]bool{
 
 // DescribeAddresses lists Elastic IPs with optional filtering by allocation ID.
 func (s *EIPServiceImpl) DescribeAddresses(ctx context.Context, input *ec2.DescribeAddressesInput, accountID string) (*ec2.DescribeAddressesOutput, error) {
-	allocIDs := make(map[string]bool)
-	for _, id := range input.AllocationIds {
-		if id != nil {
-			allocIDs[*id] = true
-		}
-	}
+	allocIDs := awsidentifiers.Set(input.AllocationIds)
 
-	publicIPs := make(map[string]bool)
-	for _, ip := range input.PublicIps {
-		if ip != nil {
-			publicIPs[*ip] = true
-		}
-	}
+	publicIPs := awsidentifiers.Set(input.PublicIps)
 
 	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeAddressesValidFilters)
 	if err != nil {

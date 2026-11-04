@@ -10,7 +10,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
-// Principal-type values an authenticated caller carries.
+// Principal-type values an authenticated caller carries, as stored in
+// SessionCredential.PrincipalType. An empty stored value reads as a role session.
 const (
 	PrincipalTypeUser        = "user"
 	PrincipalTypeAssumedRole = "assumed-role"

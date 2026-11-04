@@ -106,8 +106,8 @@ func runGuestChurnDurability(t *testing.T, fix *Fixture) {
 	scenarioT := t
 
 	az := needAZ(t, fix)
-	origType, _ := needInstanceTypeArch(t, fix)
-	_, keyPath := needKeyPair(t, fix)
+	origType, _ := harness.DiscoverNanoInstanceType(t, fix.Harness)
+	_, keyPath := harness.EnsureKeyPair(t, fix.Harness)
 
 	var instanceID string
 

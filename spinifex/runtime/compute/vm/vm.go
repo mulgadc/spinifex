@@ -19,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/runtime/host/hostos"
@@ -135,6 +136,10 @@ type VM struct {
 	// QEMU replaced. The heartbeat leaves the guest alone for that window, and
 	// claiming the flag serialises reboots of one instance.
 	rebooting atomic.Bool `json:"-"`
+
+	// guestPoweroff is set once the heartbeat has seen the guest power itself off
+	// and asked QEMU to quit, so the exit that follows is a stop, not a crash.
+	guestPoweroff atomic.Bool `json:"-"`
 
 	// relaunchMu is held while a reboot swaps this guest's QEMU process, so a
 	// stop or terminate never unmounts volumes under a process being started.
@@ -308,6 +313,20 @@ type VM struct {
 	// tolerated by migrate.
 	InstanceLifecycle     string `json:"instance_lifecycle,omitempty"`
 	SpotInstanceRequestId string `json:"spot_instance_request_id,omitempty"`
+
+	// UEFIVarStore points at the object holding this instance's UEFI variable
+	// store. Status, so written only by the node; nil for a BIOS instance.
+	UEFIVarStore *UEFIVarStoreRef `json:"uefi_var_store,omitempty"`
+}
+
+// UEFIVarStoreRef names the store object an instance launches from, with the
+// firmware it was written under, so a launch can check it without reading the
+// object's metadata.
+type UEFIVarStoreRef struct {
+	Key        string                     `json:"key"`
+	Firmware   uefistore.FirmwareIdentity `json:"firmware"`
+	WriterNode string                     `json:"writer_node"`
+	WrittenAt  time.Time                  `json:"written_at"`
 }
 
 // UnmarshalJSON folds the fields of legacy records that mixed a request with an
@@ -372,7 +391,7 @@ type Device struct {
 }
 
 // Drive is one QEMU -drive entry, used for the pflash firmware drives (the
-// CODE blob and the EFI volume). Each set field becomes a key=value option.
+// CODE blob and the variable store). Each set field becomes a key=value option.
 type Drive struct {
 	File   string `json:"file"`
 	Format string `json:"format"`
@@ -381,7 +400,7 @@ type Drive struct {
 	ID     string `json:"id"`
 	Cache  string `json:"cache,omitempty"`
 	// Unit selects the pflash slot when If=="pflash": 0 is the CODE blob,
-	// 1 is the per-VM VARS volume. Ignored for non-pflash drives.
+	// 1 is the per-VM variable store. Ignored for non-pflash drives.
 	Unit int `json:"unit,omitempty"`
 	// ReadOnly emits readonly=on; used for the pflash CODE blob.
 	ReadOnly bool `json:"readonly,omitempty"`
@@ -417,13 +436,10 @@ type Config struct {
 	NoGraphic          bool   `json:"no_graphic"`
 	MachineType        string `json:"machine_type"`
 	ConsoleLogPath     string `json:"console_log_path,omitempty"`
-	// ConsoleLogAppend keeps the existing console log rather than truncating
-	// it, for a reboot that replaces the process.
-	ConsoleLogAppend bool   `json:"-"`
-	SerialSocket     string `json:"serial_socket,omitempty"`
-	CPUType          string `json:"cpu_type"`
-	CPUCount         int    `json:"cpu_count"`
-	Memory           int    `json:"memory"`
+	SerialSocket       string `json:"serial_socket,omitempty"`
+	CPUType            string `json:"cpu_type"`
+	CPUCount           int    `json:"cpu_count"`
+	Memory             int    `json:"memory"`
 
 	Drives    []Drive    `json:"drives"`
 	IOThreads []IOThread `json:"io_threads,omitempty"`
@@ -537,11 +553,11 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		// -serial chardev:console0 wires it to the existing device (not a new one).
 		// Do NOT use -device isa-serial here — that adds a second device (ttyS1)
 		// while the kernel talks to ttyS0.
-		args = append(args, "-chardev", fmt.Sprintf("file,id=console0,path=%s%s", cfg.ConsoleLogPath, appendOpt(",append", cfg.ConsoleLogAppend)))
+		args = append(args, "-chardev", fmt.Sprintf("file,id=console0,path=%s,append=on", cfg.ConsoleLogPath))
 		args = append(args, "-serial", "chardev:console0")
 	} else if cfg.SerialSocket != "" && cfg.ConsoleLogPath != "" {
-		chardevOpts := fmt.Sprintf("socket,id=console0,path=%s,server=on,wait=off,logfile=%s%s",
-			cfg.SerialSocket, cfg.ConsoleLogPath, appendOpt(",logappend", cfg.ConsoleLogAppend))
+		chardevOpts := fmt.Sprintf("socket,id=console0,path=%s,server=on,wait=off,logfile=%s,logappend=on",
+			cfg.SerialSocket, cfg.ConsoleLogPath)
 		args = append(args, "-chardev", chardevOpts)
 		args = append(args, "-serial", "chardev:console0")
 	}
@@ -573,8 +589,8 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 			return nil, fwErr
 		}
 		// pflash CODE must come before VARS so QEMU loads firmware into the
-		// readonly slot first; buildDrives emits the VARS drive (unit 1) from
-		// the per-VM EFI viperblock volume.
+		// readonly slot first; startQEMU emits the VARS drive (unit 1) from
+		// the node's copy of the variable store or the EFI volume.
 		drives = append([]Drive{{If: "pflash", Format: "raw", Unit: 0, ReadOnly: true, File: codePath}}, drives...)
 	}
 
@@ -677,13 +693,4 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 	//cmd.Stderr = os.Stderr
 
 	return cmd, nil
-}
-
-// appendOpt renders a chardev append option, or nothing when off, so a
-// fresh launch keeps the command line it always had.
-func appendOpt(key string, on bool) string {
-	if !on {
-		return ""
-	}
-	return key + "=on"
 }

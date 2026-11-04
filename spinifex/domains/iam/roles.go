@@ -320,23 +320,12 @@ func (s *IAMServiceImpl) AttachRolePolicy(accountID string, input *iam.AttachRol
 	roleName := *input.RoleName
 	policyARN := *input.PolicyArn
 
-	// AWS-managed policy ARNs (arn:aws:iam::aws:policy/...) are never provisioned
-	// in Spinifex; stock EKS tooling attaches them (AmazonEKSClusterPolicy,
-	// AmazonEKSWorkerNodePolicy, AmazonEKS_CNI_Policy, ...). Store them opaquely
-	// so ListAttachedRolePolicies / DescribeNodegroup round-trip instead of
-	// failing NoSuchEntity. Customer-managed ARNs must still exist.
-	if !iamarn.IsAWSManagedPolicyARN(policyARN) {
-		if err := s.attachablePolicy(ctx, accountID, policyARN); err != nil {
-			return nil, err
-		}
+	if err := s.attachablePolicy(ctx, accountID, policyARN); err != nil {
+		return nil, err
 	}
 
 	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
-		if slices.Contains(role.AttachedPolicies, policyARN) {
-			return false, nil
-		}
-		role.AttachedPolicies = append(role.AttachedPolicies, policyARN)
-		return true, nil
+		return attachPolicyARN(&role.AttachedPolicies, policyARN), nil
 	})
 	if err != nil {
 		return nil, err
@@ -352,12 +341,7 @@ func (s *IAMServiceImpl) DetachRolePolicy(accountID string, input *iam.DetachRol
 	policyARN := *input.PolicyArn
 
 	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
-		idx := slices.Index(role.AttachedPolicies, policyARN)
-		if idx < 0 {
-			return false, policyNotFound(policyARN)
-		}
-		role.AttachedPolicies = slices.Delete(role.AttachedPolicies, idx, idx+1)
-		return true, nil
+		return true, detachPolicyARN(&role.AttachedPolicies, policyARN)
 	})
 	if err != nil {
 		return nil, err
@@ -393,33 +377,19 @@ func (s *IAMServiceImpl) PutRolePolicy(accountID string, input *iam.PutRolePolic
 	policyName := *input.PolicyName
 	policyDoc := *input.PolicyDocument
 
-	if err := validateIAMName("policyName", policyName, 128); err != nil {
+	if err := validateInlinePolicy("role", roleName, policyName, policyDoc); err != nil {
 		return nil, err
-	}
-	if err := checkPolicyDocumentLength(policyDoc); err != nil {
-		return nil, err
-	}
-	if _, err := ValidatePolicyDocument(policyDoc); err != nil {
-		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
-			"policy %q on role %q: %w", policyName, roleName, err)
 	}
 
 	// An unchanged document writes nothing: converge loops re-assert the same
 	// policy on every pass, and each write would burn a KV revision.
 	changed := false
 	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
-		if role.InlinePolicies == nil {
-			role.InlinePolicies = map[string]string{}
-		}
 		changed = role.InlinePolicies[policyName] != policyDoc
 		if !changed {
 			return false, nil
 		}
-		if err := checkInlinePolicySize("role", roleName, rolePolicySizeQuota, role.InlinePolicies, policyName, policyDoc); err != nil {
-			return false, err
-		}
-		role.InlinePolicies[policyName] = policyDoc
-		return true, nil
+		return true, putInlinePolicy(&role.InlinePolicies, "role", roleName, rolePolicySizeQuota, policyName, policyDoc)
 	})
 	if err != nil {
 		return nil, err
@@ -462,11 +432,7 @@ func (s *IAMServiceImpl) DeleteRolePolicy(accountID string, input *iam.DeleteRol
 	policyName := *input.PolicyName
 
 	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
-		if _, ok := role.InlinePolicies[policyName]; !ok {
-			return false, noSuchEntity("role policy", policyName)
-		}
-		delete(role.InlinePolicies, policyName)
-		return true, nil
+		return true, deleteInlinePolicy(role.InlinePolicies, "role policy", policyName)
 	})
 	if err != nil {
 		return nil, err
@@ -485,15 +451,8 @@ func (s *IAMServiceImpl) ListRolePolicies(accountID string, input *iam.ListRoleP
 		return nil, err
 	}
 
-	rawNames := slices.Sorted(maps.Keys(role.InlinePolicies))
-
-	names := make([]*string, 0, len(rawNames))
-	for _, name := range rawNames {
-		names = append(names, aws.String(name))
-	}
-
 	return &iam.ListRolePoliciesOutput{
-		PolicyNames: names,
+		PolicyNames: inlinePolicyNames(role.InlinePolicies),
 		IsTruncated: aws.Bool(false),
 	}, nil
 }
@@ -507,12 +466,7 @@ func (s *IAMServiceImpl) TagRole(accountID string, input *iam.TagRoleInput) (*ia
 
 	roleName := *input.RoleName
 	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
-		merged := mergeTags(role.Tags, input.Tags, foldedKeys)
-		if len(merged) > maxTagsPerResource {
-			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
-		}
-		role.Tags = merged
-		return true, nil
+		return true, applyTags(&role.Tags, input.Tags, foldedKeys)
 	})
 	if err != nil {
 		return nil, err

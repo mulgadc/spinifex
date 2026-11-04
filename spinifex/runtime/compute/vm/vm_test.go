@@ -463,7 +463,7 @@ func TestExecute_MicrovmFileChardev(t *testing.T) {
 
 	args := cmd.Args[1:]
 	chardev := argValue(args, "-chardev")
-	assert.Equal(t, "file,id=console0,path=/var/log/console.log", chardev)
+	assert.Equal(t, "file,id=console0,path=/var/log/console.log,append=on", chardev)
 	// -serial chardev:console0 attaches to the isa-serial=on device (ttyS0).
 	assert.Equal(t, "chardev:console0", argValue(args, "-serial"))
 	// No explicit isa-serial device addition (would create ttyS1, not ttyS0).
@@ -699,6 +699,6 @@ func TestExecute_MicrovmWithPCIEFileChardev(t *testing.T) {
 	require.NoError(t, err)
 
 	args := cmd.Args[1:]
-	assert.Equal(t, "file,id=console0,path=/var/log/console.log", argValue(args, "-chardev"))
+	assert.Equal(t, "file,id=console0,path=/var/log/console.log,append=on", argValue(args, "-chardev"))
 	assert.Equal(t, "chardev:console0", argValue(args, "-serial"))
 }

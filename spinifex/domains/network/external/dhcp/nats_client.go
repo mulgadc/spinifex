@@ -62,7 +62,7 @@ func (c *NATSClient) RequestAcquire(ctx context.Context, p AcquireParams) (*Leas
 		ClientID:    p.ClientID,
 		Hostname:    p.Hostname,
 		VendorClass: p.VendorClass,
-		HWAddr:      hwToString(p.HWAddr),
+		HWAddr:      p.HWAddr.String(),
 		UseIfaceMAC: p.UseIfaceMAC,
 		Purpose:     p.Purpose,
 		PoolName:    p.PoolName,

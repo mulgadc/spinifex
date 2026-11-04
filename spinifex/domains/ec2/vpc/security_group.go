@@ -538,12 +538,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroups(ctx context.Context, input *ec2.
 		return nil, err
 	}
 
-	groupIDs := make(map[string]bool)
-	for _, id := range input.GroupIds {
-		if id != nil {
-			groupIDs[*id] = true
-		}
-	}
+	groupIDs := awsidentifiers.Set(input.GroupIds)
 
 	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeSecurityGroupsValidFilters)
 	if err != nil {
@@ -675,9 +670,11 @@ var getSecurityGroupsForVpcValidFilters = map[string]bool{
 	"primary-vpc-id": true,
 }
 
-// defaultSGForVpcPerPage caps a request that names no MaxResults, matching the
-// model's ceiling.
-const defaultSGForVpcPerPage = 1000
+var getSecurityGroupsForVpcPaging = paging.EC2{
+	MaxResults: 1000,
+	TooLarge:   "Value ( %d ) for parameter maxResults is invalid. Expecting a value smaller than 1000.",
+	TooSmall:   "Value ( %d ) for parameter maxResults is invalid. Expecting a value greater than 5.",
+}
 
 // GetSecurityGroupsForVpc lists the security groups an interface in the named
 // VPC can be associated with. It is the same account-prefixed scan
@@ -689,6 +686,11 @@ func (s *VPCServiceImpl) GetSecurityGroupsForVpc(ctx context.Context, input *ec2
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 	vpcID := *input.VpcId
+
+	pageReq, err := getSecurityGroupsForVpcPaging.Parse(input.MaxResults, input.NextToken, 0)
+	if err != nil {
+		return nil, err
+	}
 
 	// An unknown VPC is not-found rather than an empty list: an empty list is
 	// indistinguishable from a VPC that genuinely holds no groups, and would
@@ -742,17 +744,7 @@ func (s *VPCServiceImpl) GetSecurityGroupsForVpc(ctx context.Context, input *ec2
 		})
 	}
 
-	// The KV key order is not guaranteed stable across calls, so a token
-	// addressing an offset into an unsorted set could skip or repeat a group.
-	slices.SortFunc(groups, func(a, b *ec2.SecurityGroupForVpc) int {
-		return strings.Compare(aws.StringValue(a.GroupId), aws.StringValue(b.GroupId))
-	})
-
-	page, nextToken, err := pageSecurityGroupsForVpc(groups, input.NextToken, input.MaxResults)
-	if err != nil {
-		slog.WarnContext(ctx, "GetSecurityGroupsForVpc: invalid NextToken", "next_token", aws.StringValue(input.NextToken))
-		return nil, err
-	}
+	page, nextToken := paging.EC2Page(groups, func(g *ec2.SecurityGroupForVpc) string { return *g.GroupId }, pageReq)
 
 	slog.InfoContext(ctx, "GetSecurityGroupsForVpc completed",
 		"count", len(page), "total", len(groups), "vpcId", vpcID, "accountID", accountID)
@@ -799,33 +791,6 @@ func sgForVpcMatchesFilters(record *SecurityGroupRecord, accountID string, filte
 	}
 
 	return awsfilters.MatchesTags(filters, record.Tags)
-}
-
-// pageSecurityGroupsForVpc slices one page out of a sorted group set, using an
-// opaque integer offset as the token. The last page carries a nil token.
-func pageSecurityGroupsForVpc(groups []*ec2.SecurityGroupForVpc, token *string, maxResults *int64) ([]*ec2.SecurityGroupForVpc, *string, error) {
-	start := 0
-	if aws.StringValue(token) != "" {
-		n, err := strconv.Atoi(*token)
-		if err != nil || n < 0 {
-			return nil, nil, errors.New(awserrors.ErrorInvalidParameterValue)
-		}
-		start = n
-	}
-	if start > len(groups) {
-		start = len(groups)
-	}
-
-	size := defaultSGForVpcPerPage
-	if maxResults != nil && *maxResults > 0 {
-		size = int(*maxResults)
-	}
-
-	end := start + size
-	if end >= len(groups) {
-		return groups[start:], nil, nil
-	}
-	return groups[start:end], aws.String(strconv.Itoa(end)), nil
 }
 
 // describeSecurityGroupRulesValidFilters defines the set of filter names accepted by DescribeSecurityGroupRules.

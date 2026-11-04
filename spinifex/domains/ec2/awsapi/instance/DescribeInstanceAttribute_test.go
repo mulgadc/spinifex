@@ -184,7 +184,7 @@ func TestDescribeInstanceAttribute_AllNodesNotFound(t *testing.T) {
 
 	_, err = DescribeInstanceAttribute(context.Background(), input, nc, 2, "123456789012")
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.EqualError(t, err, "The instance ID 'i-missing' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 }
 
 // TestDescribeInstanceAttribute_ClientErrorPropagates ensures that a
@@ -254,7 +254,7 @@ func TestDescribeInstanceAttribute_NoResponders(t *testing.T) {
 	duration := time.Since(start)
 
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.EqualError(t, err, "The instance ID 'i-nowhere' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 	// Must not block the caller past the 3 s deadline.
 	assert.Less(t, duration, 4*time.Second)
 }

@@ -159,23 +159,6 @@ func TestPassedRoleARNs(t *testing.T) {
 	}
 }
 
-func TestCallerFromActor_RoleNameComesFromTheRoleNotTheSession(t *testing.T) {
-	actor := dispatch.Actor{
-		AccountID:     dispatchAccount,
-		PrincipalType: "assumed-role",
-		SessionName:   "i-123",
-		PrincipalARN:  "arn:aws:iam::123456789012:role/real-role",
-	}
-	caller := eksawsapi.CallerFromActor(actor)
-
-	assert.Equal(t, "i-123", caller.SessionName)
-	assert.Equal(t, "real-role", caller.RoleName)
-
-	user := eksawsapi.CallerFromActor(dispatch.Actor{AccountID: dispatchAccount, PrincipalType: "user", UserName: "alice"})
-	assert.Equal(t, "alice", user.SessionName)
-	assert.Empty(t, user.RoleName)
-}
-
 // The addon role is not a cluster or nodegroup role, so a foreign one is a
 // parameter fault, reported under the code EKS declares.
 func TestRegistration_AddonForeignRoleIsInvalidParameter(t *testing.T) {

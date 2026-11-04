@@ -59,7 +59,7 @@ func NewRegistration(deps Deps) dispatch.Registration {
 		ResolveAction: resolveAction,
 		Dispatch:      deps.dispatch,
 		Errors:        dispatch.ErrorEnvelopeRESTJSON,
-		Inventory:     dispatch.Inventory{Registered: actionNames()},
+		Inventory:     dispatch.Inventory{Registered: router.Actions()},
 	}
 }
 

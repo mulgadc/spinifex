@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/acm"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/nats-io/nats.go"
 )
 
@@ -17,7 +18,7 @@ const natsTimeout = 30 * time.Second
 // RequestCertificate — CertificateManager.RequestCertificate.
 func RequestCertificate(ctx context.Context, natsConn *nats.Conn, accountID string, body []byte) (*acm.RequestCertificateOutput, error) {
 	input := new(acm.RequestCertificateInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 	return natsmsg.NATSRequest[acm.RequestCertificateOutput](ctx, natsConn, "acm.RequestCertificate", input, natsTimeout, accountID)
@@ -26,7 +27,7 @@ func RequestCertificate(ctx context.Context, natsConn *nats.Conn, accountID stri
 // ImportCertificate — CertificateManager.ImportCertificate.
 func ImportCertificate(ctx context.Context, natsConn *nats.Conn, accountID string, body []byte) (*acm.ImportCertificateOutput, error) {
 	input := new(acm.ImportCertificateInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
 	return natsmsg.NATSRequest[acm.ImportCertificateOutput](ctx, natsConn, "acm.ImportCertificate", input, natsTimeout, accountID)
@@ -35,7 +36,7 @@ func ImportCertificate(ctx context.Context, natsConn *nats.Conn, accountID strin
 // DescribeCertificate — CertificateManager.DescribeCertificate.
 func DescribeCertificate(ctx context.Context, natsConn *nats.Conn, accountID string, body []byte) (*acm.DescribeCertificateOutput, error) {
 	input := new(acm.DescribeCertificateInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
 	return natsmsg.NATSRequest[acm.DescribeCertificateOutput](ctx, natsConn, "acm.DescribeCertificate", input, natsTimeout, accountID)
@@ -44,7 +45,7 @@ func DescribeCertificate(ctx context.Context, natsConn *nats.Conn, accountID str
 // GetCertificate — CertificateManager.GetCertificate.
 func GetCertificate(ctx context.Context, natsConn *nats.Conn, accountID string, body []byte) (*acm.GetCertificateOutput, error) {
 	input := new(acm.GetCertificateInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
 	return natsmsg.NATSRequest[acm.GetCertificateOutput](ctx, natsConn, "acm.GetCertificate", input, natsTimeout, accountID)
@@ -53,7 +54,7 @@ func GetCertificate(ctx context.Context, natsConn *nats.Conn, accountID string, 
 // ListCertificates — CertificateManager.ListCertificates.
 func ListCertificates(ctx context.Context, natsConn *nats.Conn, accountID string, body []byte) (*acm.ListCertificatesOutput, error) {
 	input := new(acm.ListCertificatesInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
 	return natsmsg.NATSRequest[acm.ListCertificatesOutput](ctx, natsConn, "acm.ListCertificates", input, natsTimeout, accountID)
@@ -62,7 +63,7 @@ func ListCertificates(ctx context.Context, natsConn *nats.Conn, accountID string
 // DeleteCertificate — CertificateManager.DeleteCertificate.
 func DeleteCertificate(ctx context.Context, natsConn *nats.Conn, accountID string, body []byte) (*acm.DeleteCertificateOutput, error) {
 	input := new(acm.DeleteCertificateInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
 	return natsmsg.NATSRequest[acm.DeleteCertificateOutput](ctx, natsConn, "acm.DeleteCertificate", input, natsTimeout, accountID)
@@ -71,7 +72,7 @@ func DeleteCertificate(ctx context.Context, natsConn *nats.Conn, accountID strin
 // ListTagsForCertificate — CertificateManager.ListTagsForCertificate.
 func ListTagsForCertificate(ctx context.Context, natsConn *nats.Conn, accountID string, body []byte) (*acm.ListTagsForCertificateOutput, error) {
 	input := new(acm.ListTagsForCertificateInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
 	return natsmsg.NATSRequest[acm.ListTagsForCertificateOutput](ctx, natsConn, "acm.ListTagsForCertificate", input, natsTimeout, accountID)
@@ -80,7 +81,7 @@ func ListTagsForCertificate(ctx context.Context, natsConn *nats.Conn, accountID 
 // AddTagsToCertificate — CertificateManager.AddTagsToCertificate.
 func AddTagsToCertificate(ctx context.Context, natsConn *nats.Conn, accountID string, body []byte) (*acm.AddTagsToCertificateOutput, error) {
 	input := new(acm.AddTagsToCertificateInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
 	return natsmsg.NATSRequest[acm.AddTagsToCertificateOutput](ctx, natsConn, "acm.AddTagsToCertificate", input, natsTimeout, accountID)
@@ -89,7 +90,7 @@ func AddTagsToCertificate(ctx context.Context, natsConn *nats.Conn, accountID st
 // RemoveTagsFromCertificate — CertificateManager.RemoveTagsFromCertificate.
 func RemoveTagsFromCertificate(ctx context.Context, natsConn *nats.Conn, accountID string, body []byte) (*acm.RemoveTagsFromCertificateOutput, error) {
 	input := new(acm.RemoveTagsFromCertificateInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameter)
 	}
 	return natsmsg.NATSRequest[acm.RemoveTagsFromCertificateOutput](ctx, natsConn, "acm.RemoveTagsFromCertificate", input, natsTimeout, accountID)

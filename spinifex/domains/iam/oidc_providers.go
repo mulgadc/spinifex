@@ -297,12 +297,7 @@ func (s *IAMServiceImpl) TagOpenIDConnectProvider(accountID string, input *iam.T
 
 	arn := aws.StringValue(input.OpenIDConnectProviderArn)
 	err := s.updateOIDCProviderCAS(ctx, accountID, arn, func(record *OIDCProviderRecord) (bool, error) {
-		merged := mergeTags(record.Tags, input.Tags, exactKeys)
-		if len(merged) > maxTagsPerResource {
-			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
-		}
-		record.Tags = merged
-		return true, nil
+		return true, applyTags(&record.Tags, input.Tags, exactKeys)
 	})
 	if err != nil {
 		return nil, err

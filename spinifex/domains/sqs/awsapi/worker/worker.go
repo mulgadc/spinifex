@@ -55,8 +55,6 @@ var (
 	fingerprintPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
-const principalTypeAssumedRole = "assumed-role"
-
 // params lists the only parameters each action accepts. Identity is never a
 // parameter: it is derived from the session and the current worker record.
 var params = map[string][]string{
@@ -231,7 +229,7 @@ func (d Deps) claimReceiptKey(ctx context.Context, w http.ResponseWriter, ident 
 // role, and returns its session name: the instance ID STS set. It says the
 // caller is a VM under that role, not that it is the current one.
 func requirePrincipal(ctx context.Context, accountID string, actor dispatch.Actor, role string) (string, error) {
-	if actor.PrincipalType != principalTypeAssumedRole ||
+	if actor.PrincipalType != dispatch.PrincipalTypeAssumedRole ||
 		accountID != awsidentifiers.GlobalAccountID || actor.AccountID != awsidentifiers.GlobalAccountID ||
 		actor.RoleName() != role || actor.SessionName == "" {
 		slog.DebugContext(ctx, "SQS internal: rejected non-worker caller",

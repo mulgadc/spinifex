@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -133,12 +134,7 @@ var operations = map[string]handler{
 
 // OperationNames lists every operation the registration dispatches, sorted.
 func OperationNames() []string {
-	names := make([]string, 0, len(operations))
-	for n := range operations {
-		names = append(names, n)
-	}
-	slices.Sort(names)
-	return names
+	return slices.Sorted(maps.Keys(operations))
 }
 
 // OperationInventory lists the AWS model actions the registration serves.

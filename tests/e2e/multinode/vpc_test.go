@@ -24,8 +24,8 @@ func runVPCNetworking(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Multinode — VPC Networking")
 
 	amiID := needAMI(t, fix, needArch(t, fix))
-	instType, _ := needInstanceTypeArch(t, fix)
-	keyName, _ := needKeyPair(t, fix)
+	instType, _ := harness.DiscoverNanoInstanceType(t, fix.Harness)
+	keyName, _ := harness.EnsureKeyPair(t, fix.Harness)
 	c := fix.AWS
 
 	// --- VPC ---------------------------------------------------------------
@@ -176,6 +176,6 @@ func describeAndCollectIPs(t *testing.T, c *harness.AWSClient, instIDs []string,
 // needArch returns the architecture for the discovered nano instance type.
 func needArch(t *testing.T, fix *Fixture) string {
 	t.Helper()
-	_, arch := needInstanceTypeArch(t, fix)
+	_, arch := harness.DiscoverNanoInstanceType(t, fix.Harness)
 	return arch
 }

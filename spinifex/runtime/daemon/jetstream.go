@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
@@ -88,6 +89,7 @@ type JetStreamManager struct {
 	termRecords   *kvstore.Store[vm.InstanceRecord] // i.<id>, terminated bucket
 	clusterKV     jetstream.KeyValue                // spinifex-cluster-state
 	clusterConfig *kvstore.Bucket                   // spinifex-cluster-config
+	uefiStores    *uefistore.Store                  // spinifex-uefi-stores
 	obs           KVSyncObserver
 	running       runningSetState
 }
@@ -230,6 +232,18 @@ func (m *JetStreamManager) InitClusterConfigBucket() error {
 	m.clusterConfig = kvstore.NewBucket(m.js, clusterConfigConfig())
 	_, err := m.clusterConfig.KV(context.Background())
 	return err
+}
+
+// InitUEFIStoreBucket opens the UEFI store-record bucket, creating it if it
+// doesn't exist, so a bucket that cannot be created fails startup.
+func (m *JetStreamManager) InitUEFIStoreBucket() error {
+	m.uefiStores = uefistore.NewStore(m.js)
+	return m.uefiStores.Open(context.Background())
+}
+
+// UEFIStores returns the store-record bucket opened by InitUEFIStoreBucket.
+func (m *JetStreamManager) UEFIStores() *uefistore.Store {
+	return m.uefiStores
 }
 
 // InitTerminatedInstanceBucket initializes the terminated-instances KV bucket with a 1-hour TTL.

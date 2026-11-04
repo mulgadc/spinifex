@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"log/slog"
 	"slices"
@@ -14,6 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/addon"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 )
 
 // ListAddons returns the names of every managed add-on installed on a cluster.
@@ -84,26 +84,31 @@ func matchesAny(filter []*string, value string) bool {
 // maxAddonPage bounds maxResults, the model's range being 1 to 100.
 const maxAddonPage = 100
 
-// pageAddons returns the add-ons after the token, at most maxResults of them.
-// The token is the base64 name of the last add-on returned, opaque to clients.
+// pageAddons returns the add-ons from the token on, at most maxResults of them.
 func pageAddons(specs []addon.Spec, maxResults *int64, token *string) ([]addon.Spec, *string, error) {
-	if t := aws.StringValue(token); t != "" {
-		raw, err := base64.RawURLEncoding.DecodeString(t)
-		if err != nil {
-			return nil, nil, awserrors.Errorf(awserrors.ErrorEKSInvalidParameter, "nextToken is not valid")
-		}
-		after := string(raw)
-		specs = slices.DeleteFunc(slices.Clone(specs), func(sp addon.Spec) bool { return sp.Name <= after })
+	from, err := decodeEKSToken(token)
+	if err != nil {
+		return nil, nil, err
 	}
-	limit := len(specs)
+	req := paging.Request{From: from}
 	if maxResults != nil {
-		limit = min(max(int(*maxResults), 1), maxAddonPage)
+		req.Limit = min(max(int(*maxResults), 1), maxAddonPage)
 	}
-	if limit >= len(specs) {
-		return specs, nil, nil
+	page, next := paging.Page(specs, func(sp addon.Spec) string { return sp.Name }, req)
+	if next == "" {
+		return page, nil, nil
 	}
-	next := base64.RawURLEncoding.EncodeToString([]byte(specs[limit-1].Name))
-	return specs[:limit], &next, nil
+	return page, &next, nil
+}
+
+// decodeEKSToken returns the key a nextToken resumes at, rejecting any token
+// this service did not issue.
+func decodeEKSToken(token *string) (string, error) {
+	from, err := paging.DecodeToken(aws.StringValue(token))
+	if err != nil {
+		return "", awserrors.Errorf(awserrors.ErrorEKSInvalidParameter, "nextToken is not valid")
+	}
+	return from, nil
 }
 
 // validateAddonServiceAccountRoleArn rejects a non-empty value that is not

@@ -3,6 +3,8 @@ package elbv2
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -139,18 +141,133 @@ func TestAddTags_MissingParams(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorMissingParameter)
 }
 
-func TestAddTags_EmptyKeyRejected(t *testing.T) {
+func numberedTags(prefix string, n int) []*elbv2.Tag {
+	out := make([]*elbv2.Tag, 0, n)
+	for i := range n {
+		out = append(out, &elbv2.Tag{Key: aws.String(fmt.Sprintf("%s-%02d", prefix, i)), Value: aws.String("v")})
+	}
+	return out
+}
+
+// badTagCases are tag lists the ELBv2 model or service limits refuse, with
+// the error code AWS returns for each.
+var badTagCases = []struct {
+	name string
+	tags []*elbv2.Tag
+	code string
+}{
+	{"EmptyList", []*elbv2.Tag{}, awserrors.ErrorValidationError},
+	{"NilKey", []*elbv2.Tag{{Value: aws.String("v")}}, awserrors.ErrorValidationError},
+	{"EmptyKey", []*elbv2.Tag{{Key: aws.String(""), Value: aws.String("v")}}, awserrors.ErrorValidationError},
+	{"KeyTooLong", []*elbv2.Tag{{Key: aws.String(strings.Repeat("k", 129)), Value: aws.String("v")}}, awserrors.ErrorValidationError},
+	{"ValueTooLong", []*elbv2.Tag{{Key: aws.String("k"), Value: aws.String(strings.Repeat("v", 257))}}, awserrors.ErrorValidationError},
+	{"KeyPattern", []*elbv2.Tag{{Key: aws.String("bad*key"), Value: aws.String("v")}}, awserrors.ErrorValidationError},
+	{"ValuePattern", []*elbv2.Tag{{Key: aws.String("k"), Value: aws.String("bad;value")}}, awserrors.ErrorValidationError},
+	{"DuplicateKey", []*elbv2.Tag{{Key: aws.String("k"), Value: aws.String("a")}, {Key: aws.String("k"), Value: aws.String("b")}}, awserrors.ErrorELBv2DuplicateTagKeys},
+	{"TooMany", numberedTags("k", 51), awserrors.ErrorELBv2TooManyTags},
+}
+
+func TestAddTags_RejectsBadTags(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)
-	lbOut, _ := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("addtags-ek")}, testAccountID)
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("addtags-bad")}, testAccountID)
+	require.NoError(t, err)
 	arn := lbOut.LoadBalancers[0].LoadBalancerArn
 
-	_, err := svc.AddTags(context.Background(), &elbv2.AddTagsInput{
-		ResourceArns: []*string{arn},
-		Tags:         []*elbv2.Tag{{Key: aws.String(""), Value: aws.String("v")}},
+	for _, tc := range badTagCases {
+		if tc.name == "EmptyList" {
+			continue // AddTags requires Tags, so an empty list is MissingParameter
+		}
+		_, err := svc.AddTags(context.Background(), &elbv2.AddTagsInput{ResourceArns: []*string{arn}, Tags: tc.tags}, testAccountID)
+		assert.Equal(t, tc.code, awserrors.ValidErrorCodeFromError(err), tc.name)
+	}
+	assert.Empty(t, tagsFor(t, svc, *arn))
+}
+
+// The 50-tag limit counts the resource's existing tags; overwriting an
+// existing key does not add to the total.
+func TestAddTags_LimitCountsExistingTags(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+		Name: aws.String("addtags-limit"),
+		Tags: numberedTags("old", 49),
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+	require.NoError(t, err)
+	arn := lbOut.LoadBalancers[0].LoadBalancerArn
+
+	_, err = svc.AddTags(context.Background(), &elbv2.AddTagsInput{ResourceArns: []*string{arn}, Tags: numberedTags("new", 2)}, testAccountID)
+	assert.Equal(t, awserrors.ErrorELBv2TooManyTags, awserrors.ValidErrorCodeFromError(err))
+	assert.Len(t, tagsFor(t, svc, *arn), 49)
+
+	tags := append(numberedTags("old", 1), numberedTags("new", 1)...)
+	_, err = svc.AddTags(context.Background(), &elbv2.AddTagsInput{ResourceArns: []*string{arn}, Tags: tags}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, tagsFor(t, svc, *arn), 50)
+}
+
+func TestAddTags_MissingValueStoredEmpty(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("addtags-noval")}, testAccountID)
+	require.NoError(t, err)
+	arn := lbOut.LoadBalancers[0].LoadBalancerArn
+
+	_, err = svc.AddTags(context.Background(), &elbv2.AddTagsInput{ResourceArns: []*string{arn}, Tags: []*elbv2.Tag{{Key: aws.String("k")}}}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"k": ""}, tagsFor(t, svc, *arn))
+}
+
+func TestCreateLoadBalancer_RejectsBadTags(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	for _, tc := range badTagCases {
+		_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("badtags-lb"), Tags: tc.tags}, testAccountID)
+		assert.Equal(t, tc.code, awserrors.ValidErrorCodeFromError(err), tc.name)
+	}
+
+	// No rejected create may have claimed the name.
+	out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+		Name: aws.String("badtags-lb"),
+		Tags: []*elbv2.Tag{{Key: aws.String("k")}},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"k": ""}, tagsFor(t, svc, *out.LoadBalancers[0].LoadBalancerArn))
+}
+
+// Each other create call that accepts tags runs them through the same validator.
+func TestCreateTaggedResources_RejectBadTags(t *testing.T) {
+	t.Parallel()
+	env := newRuleTestEnv(t, "badtags")
+	cases := []struct {
+		tags []*elbv2.Tag
+		code string
+	}{
+		{numberedTags("k", 51), awserrors.ErrorELBv2TooManyTags},
+		{[]*elbv2.Tag{{Key: aws.String("k"), Value: aws.String("a")}, {Key: aws.String("k"), Value: aws.String("b")}}, awserrors.ErrorELBv2DuplicateTagKeys},
+		{[]*elbv2.Tag{{Key: aws.String("bad*key")}}, awserrors.ErrorValidationError},
+	}
+
+	for _, tc := range cases {
+		_, err := env.svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{Name: aws.String("badtags-tg3"), Tags: tc.tags}, testAccountID)
+		assert.Equal(t, tc.code, awserrors.ValidErrorCodeFromError(err), "CreateTargetGroup")
+		_, err = env.svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
+			LoadBalancerArn: aws.String(env.lbArn),
+			Protocol:        aws.String("HTTP"),
+			Port:            aws.Int64(8080),
+			DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: aws.String(env.tgArn)}},
+			Tags:            tc.tags,
+		}, testAccountID)
+		assert.Equal(t, tc.code, awserrors.ValidErrorCodeFromError(err), "CreateListener")
+		_, err = env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
+			ListenerArn: aws.String(env.listenerArn),
+			Priority:    aws.Int64(10),
+			Conditions:  []*elbv2.RuleCondition{{Field: aws.String("path-pattern"), Values: aws.StringSlice([]string{"/x"})}},
+			Actions:     []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: aws.String(env.tgArn)}},
+			Tags:        tc.tags,
+		}, testAccountID)
+		assert.Equal(t, tc.code, awserrors.ValidErrorCodeFromError(err), "CreateRule")
+	}
 }
 
 func TestRemoveTags_LoadBalancer(t *testing.T) {

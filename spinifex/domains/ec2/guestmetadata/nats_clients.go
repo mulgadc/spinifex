@@ -151,3 +151,14 @@ func (c *ttlCache[V]) put(key string, v V) {
 	defer c.mu.Unlock()
 	c.m[key] = ttlCacheEntry[V]{val: v, expiresAt: c.now().Add(c.ttl)}
 }
+
+// sweep evicts every entry that has expired as of now.
+func (c *ttlCache[V]) sweep(now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k, e := range c.m {
+		if now.After(e.expiresAt) {
+			delete(c.m, k)
+		}
+	}
+}

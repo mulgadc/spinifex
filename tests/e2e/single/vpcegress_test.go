@@ -99,8 +99,8 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 
 	c := fix.AWS
 	amiID := needAMI(t, fix)
-	instType, _ := needInstanceTypeArch(t, fix)
-	keyName, keyPath := needKeyPair(t, fix)
+	instType, _ := harness.DiscoverNanoInstanceType(t, fix.Harness)
+	keyName, keyPath := harness.EnsureKeyPair(t, fix.Harness)
 
 	// --- VPC A: public + private subnet, explicit route table, normal ordering (subnet before route) ---
 

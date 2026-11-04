@@ -931,7 +931,6 @@ func TestUpdateNodegroupConfig_CapacityErrorSurfacesCode(t *testing.T) {
 	t.Run("capacity code preserved", func(t *testing.T) {
 		err := scaleUpWithRunErr(t, errors.New(awserrors.ErrorInsufficientInstanceCapacity))
 		require.EqualError(t, err, awserrors.ErrorInsufficientInstanceCapacity)
-		assert.True(t, awserrors.HasErrorCode(err.Error()))
 	})
 
 	t.Run("wrapped capacity code preserved", func(t *testing.T) {
@@ -947,7 +946,7 @@ func TestUpdateNodegroupConfig_CapacityErrorSurfacesCode(t *testing.T) {
 		err := scaleUpWithRunErr(t, errors.New("kvm: out of host memory"))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "launch workers:")
-		assert.False(t, awserrors.HasErrorCode(err.Error()))
+		assert.NotContains(t, awserrors.ErrorLookup, err.Error())
 	})
 }
 
@@ -1433,7 +1432,7 @@ func TestNodegroupCalls_MissingNodegroupVsMissingCluster(t *testing.T) {
 			code, msg, ok := awserrors.ResolveErrorDetail(call("nope"))
 			require.True(t, ok)
 			assert.Equal(t, awserrors.ErrorEKSResourceNotFound, code)
-			assert.Empty(t, msg, "a missing cluster keeps the default cluster message")
+			assert.Empty(t, msg, "a missing cluster keeps the default resource message")
 		})
 	}
 }

@@ -436,7 +436,7 @@ func (gw *Config) ErrorHandler(w http.ResponseWriter, r *http.Request, err error
 		gw.writeJSONError(w, p, svc, envelope.JSONError{
 			Code: code, Verbatim: p != envelope.ProtocolJSON11,
 			Message: errorMsg.Message, Status: errorMsg.HTTPCode,
-			Fields: awserrors.ResolveFields(err), RequestID: requestId,
+			RequestID: requestId,
 		})
 		return
 	}

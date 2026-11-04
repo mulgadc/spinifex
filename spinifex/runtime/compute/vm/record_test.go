@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -114,6 +115,37 @@ func TestRecord_RoundTripThroughJSON(t *testing.T) {
 	assertVMFieldsEqual(t, original, vm.VMFromRecord(&decoded))
 }
 
+// The pointer is optional: a record written before it existed decodes with
+// none, and a record without one writes no key, so the bucket schema holds.
+func TestRecord_UEFIVarStoreIsOptional(t *testing.T) {
+	var decoded vm.InstanceRecord
+	require.NoError(t, json.Unmarshal([]byte(`{"metadata":{"name":"i-old"},"spec":{"config":{}},"status":{"status":"stopped"}}`), &decoded))
+	assert.Nil(t, decoded.Status.UEFIVarStore)
+
+	encoded, err := json.Marshal((&vm.VM{ID: "i-bios"}).Record())
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "uefi_var_store")
+}
+
+// The pointer's wire names are what the record carries across releases, so
+// they are pinned rather than left to follow the Go field names.
+func TestRecord_UEFIVarStoreWireShape(t *testing.T) {
+	encoded, err := json.Marshal(populatedVM().Record())
+	require.NoError(t, err)
+
+	var wire struct {
+		Status struct {
+			UEFIVarStore map[string]json.RawMessage `json:"uefi_var_store"`
+		} `json:"status"`
+	}
+	require.NoError(t, json.Unmarshal(encoded, &wire))
+	ref := wire.Status.UEFIVarStore
+	assert.JSONEq(t, `"uefi/i-round-trip/0d6f3c1e-5b7a-4f43-9a8e-2c1d4e5f6a7b"`, string(ref["key"]))
+	assert.JSONEq(t, `{"arch":"arm64","vars_size":67108864,"code_sha256":"ab12"}`, string(ref["firmware"]))
+	assert.JSONEq(t, `"node-3"`, string(ref["writer_node"]))
+	assert.JSONEq(t, `"2026-08-28T04:00:00Z"`, string(ref["written_at"]))
+}
+
 // The mutexes are dropped on the way out, so the rebuilt instance must arrive
 // with usable zero-value locks rather than ones somebody else left held.
 func TestVMFromRecord_RequestWrappersAreUsable(t *testing.T) {
@@ -206,6 +238,12 @@ func populatedVM() *vm.VM {
 		CapacityReservationId: "cr-1",
 		InstanceLifecycle:     "spot",
 		SpotInstanceRequestId: "sir-1",
+		UEFIVarStore: &vm.UEFIVarStoreRef{
+			Key:        "uefi/i-round-trip/0d6f3c1e-5b7a-4f43-9a8e-2c1d4e5f6a7b",
+			Firmware:   uefistore.FirmwareIdentity{Arch: "arm64", VarsSize: 67108864, CodeSHA256: "ab12"},
+			WriterNode: "node-3",
+			WrittenAt:  time.Date(2026, 8, 28, 4, 0, 0, 0, time.UTC),
+		},
 
 		Status:                          vm.StateRunning,
 		Instance:                        &ec2.Instance{InstanceId: aws.String("i-round-trip")},

@@ -389,6 +389,8 @@ func (m *Manager) finalizeTerminated(instance *VM) error {
 		instance.TerminatedAt = time.Now()
 	}
 
+	retireConsoleLog(instance.Config.ConsoleLogPath)
+
 	if m.deps.StateStore != nil {
 		if err := m.deps.StateStore.WriteTerminatedInstance(instance.ID, instance); err != nil {
 			slog.Error("Failed to write terminated instance to KV, keeping in local state for retry",
@@ -433,6 +435,7 @@ func (m *Manager) finalizeTerminated(instance *VM) error {
 // already spent and terminated is terminal.
 func (m *Manager) reconcileVanishedQEMU(instance *VM) error {
 	m.markTeardown(instance, TeardownQEMU, TeardownDone)
+	m.markUEFIStoreForDeletion(instance)
 	m.stampOutstandingTeardownFailed(instance)
 	return m.finalizeTerminated(instance)
 }
@@ -460,6 +463,7 @@ func (m *Manager) forceFinalizeStuckTerminate(instance *VM) error {
 	if m.deps.InstanceCleaner != nil {
 		m.markTeardownResult(instance, TeardownVolumes, m.deps.InstanceCleaner.DeleteVolumes(instance))
 	}
+	m.markUEFIStoreForDeletion(instance)
 	m.stampOutstandingTeardownFailed(instance)
 	return m.finalizeTerminated(instance)
 }
@@ -548,8 +552,8 @@ func (m *Manager) releaseAutoAssignedPublicIP(instance *VM) {
 }
 
 // terminateCleanup is stopCleanup plus the AWS-resource cleanup that
-// only applies on terminate: volume deletion, public IP release, ENI
-// deletion, placement-group removal.
+// only applies on terminate: volume deletion, the UEFI store's deletion
+// record, public IP release, ENI deletion, placement-group removal.
 func (m *Manager) terminateCleanup(instance *VM) {
 	// Terminate deletes the volumes next, so an unsealed block map loses
 	// nothing a caller can still ask for. Tolerated to keep terminate
@@ -560,6 +564,7 @@ func (m *Manager) terminateCleanup(instance *VM) {
 	if m.deps.InstanceCleaner != nil {
 		m.markTeardownResult(instance, TeardownVolumes, m.deps.InstanceCleaner.DeleteVolumes(instance))
 	}
+	m.markUEFIStoreForDeletion(instance)
 
 	m.cleanupTapDevices(instance)
 	m.markTeardown(instance, TeardownTap, TeardownDone)

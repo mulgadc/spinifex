@@ -336,19 +336,6 @@ func TestWarningsFlagASmallPredastoreDrive(t *testing.T) {
 	}
 }
 
-func TestRolesForDisksAssignsPositionally(t *testing.T) {
-	got := RolesForDisks(disks(3, 40))
-	for i, rm := range got {
-		if want := AllDiskRoles[i]; rm.Role != want {
-			t.Errorf("disk %d got role %s, want %s", i, rm.Role, want)
-		}
-	}
-	// A fourth disk has no role, which Validate is left to reject by name.
-	if extra := RolesForDisks(disks(4, 40)); extra[3].Role != "" {
-		t.Errorf("disk 4 got role %q, want none", extra[3].Role)
-	}
-}
-
 func TestFourKnDataDriveIsAllowedWhereABootDriveIsNot(t *testing.T) {
 	if bootedEFI() {
 		t.Skip("machine booted in EFI mode; the 4Kn rule does not apply")

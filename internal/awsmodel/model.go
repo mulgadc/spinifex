@@ -92,6 +92,7 @@ type Shape struct {
 	Min             *float64
 	Max             *float64
 	Pattern         string
+	Documentation   string
 	LocationName    string
 	TimestampFormat string
 	XMLNamespace    XMLNamespace

@@ -69,7 +69,7 @@ func DetachNetworkInterface(ctx context.Context, input *ec2.DetachNetworkInterfa
 		slog.ErrorContext(ctx, "DetachNetworkInterface: NATS request failed",
 			"instanceId", instanceID, "attachmentId", attachmentID, "err", err)
 		if errors.Is(err, nats.ErrNoResponders) {
-			return output, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+			return output, awserrors.IDNotFound(awserrors.ErrorInvalidInstanceIDNotFound, "instance", instanceID)
 		}
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}

@@ -1017,7 +1017,7 @@ jobs:
         id: siblings
         env:
           BRANCH: ${{ env.GIT_BRANCH }}
-        run: bash .github/resolve-sibling-refs.sh
+        run: bash .github/scripts/resolve-sibling-refs.sh
         working-directory: mulga/spinifex
 
       - uses: actions/checkout@v7.0.1
@@ -1275,7 +1275,7 @@ jobs:
         id: siblings
         env:
           BRANCH: ${{ env.GIT_BRANCH }}
-        run: bash .github/resolve-sibling-refs.sh
+        run: bash .github/scripts/resolve-sibling-refs.sh
         working-directory: mulga/spinifex
 
       - uses: actions/checkout@v7.0.1
@@ -1423,7 +1423,7 @@ jobs:
         id: siblings
         env:
           BRANCH: ${{ github.ref_name }}
-        run: bash .github/resolve-sibling-refs.sh
+        run: bash .github/scripts/resolve-sibling-refs.sh
         working-directory: spinifex
 
       - name: Checkout Predastore
@@ -1547,7 +1547,7 @@ jobs:
         id: siblings
         env:
           BRANCH: ${{ github.ref_name }}
-        run: bash .github/resolve-sibling-refs.sh
+        run: bash .github/scripts/resolve-sibling-refs.sh
         working-directory: spinifex
 
       - name: Checkout Predastore

@@ -96,6 +96,7 @@ type InstanceStatus struct {
 	IamInstanceProfileAssociationId string              `json:"iam_instance_profile_association_id,omitempty"`
 
 	Teardown       map[string]string `json:"teardown,omitempty"`
+	UnpublishOwed  []string          `json:"unpublish_owed,omitempty"`
 	TerminatedAt   time.Time         `json:"terminated_at,omitzero"`
 	ShuttingDownAt time.Time         `json:"shutting_down_at,omitzero"`
 	FirstLaunch    bool              `json:"first_launch,omitempty"`
@@ -164,6 +165,7 @@ func (v *VM) Record() *InstanceRecord {
 			GPUAttachments:                  v.GPUAttachments,
 			IamInstanceProfileAssociationId: v.IamInstanceProfileAssociationId,
 			Teardown:                        v.Teardown,
+			UnpublishOwed:                   v.UnpublishOwed,
 			TerminatedAt:                    v.TerminatedAt,
 			ShuttingDownAt:                  v.ShuttingDownAt,
 			FirstLaunch:                     v.FirstLaunch,
@@ -224,6 +226,7 @@ func VMFromRecord(r *InstanceRecord) *VM {
 		GPUAttachments:                  r.Status.GPUAttachments,
 		IamInstanceProfileAssociationId: r.Status.IamInstanceProfileAssociationId,
 		Teardown:                        r.Status.Teardown,
+		UnpublishOwed:                   r.Status.UnpublishOwed,
 		TerminatedAt:                    r.Status.TerminatedAt,
 		ShuttingDownAt:                  r.Status.ShuttingDownAt,
 		FirstLaunch:                     r.Status.FirstLaunch,

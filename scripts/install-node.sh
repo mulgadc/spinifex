@@ -260,6 +260,14 @@ out() {
     ssh "${SSH_OPTS[@]}" "$SSH_USER@$host" "$@" 2>/dev/null || true
 }
 
+# remote_join_cmd prints the command that joins one node. The token is not in it: it arrives on
+# stdin and is read after sudo has logged its command, so sudo's log never holds it. The other
+# values are positional arguments of a literal script, never spliced into it.
+remote_join_cmd() {
+    local script='exec spx admin join --force --node "$1" --bind "$2" --cluster-bind "$2" --advertise "$3" --host "$4" --token "$(cat)" --region "$5" --az "$6"'
+    printf 'sudo bash -c %q _ %q %q %q %q %q %q' "$script" "$@"
+}
+
 SETUP_OVN="/usr/local/share/spinifex/setup-ovn.sh"
 
 # --- Preflight -------------------------------------------------------------
@@ -652,14 +660,18 @@ fi
 [ -n "$EXT_IFACE" ] && init_args+=(--external-iface="$EXT_IFACE")
 [ -n "$EMAIL" ] && init_args+=(--email="$EMAIL")
 
-INIT_LOG=/tmp/spx-init.log
+# init prints the join token, so its log is root-only and outside the world-writable /tmp.
+INIT_LOG=/var/log/spx-init.log
+
+# redact_tokens hides join tokens in text about to be shown to the operator.
+redact_tokens() { sed -E 's/spx_join_[A-Za-z0-9_-]+/spx_join_[redacted]/g'; }
 
 log "initializing ${HOSTS[0]} as ${NODE_NAMES[0]} (waiting for $((N - 1)) node(s) to join)"
 
 # init blocks in a formation server until every node has joined, so it runs
 # detached and the token is read back out of its output.
 on "${HOSTS[0]}" "sudo rm -f $INIT_LOG; \
-    sudo setsid sh -c 'spx admin init ${init_args[*]} >$INIT_LOG 2>&1' </dev/null >/dev/null 2>&1 & \
+    sudo setsid sh -c 'umask 077; spx admin init ${init_args[*]} >$INIT_LOG 2>&1' </dev/null >/dev/null 2>&1 & \
     exit 0" || fail "${HOSTS[0]}: could not start spx admin init"
 
 TOKEN=""
@@ -675,7 +687,7 @@ else
         elapsed=$((elapsed + 5))
     done
     if [ -z "$TOKEN" ]; then
-        out "${HOSTS[0]}" "sudo tail -40 $INIT_LOG" | sed 's/^/  | /' >&2
+        out "${HOSTS[0]}" "sudo tail -40 $INIT_LOG" | redact_tokens | sed 's/^/  | /' >&2
         fail "${HOSTS[0]}: spx admin init produced no join token within ${TOKEN_TIMEOUT}s"
     fi
     log "  join token issued"
@@ -691,11 +703,9 @@ fi
 # waiting on a shell that node 2 is still holding.
 JOIN_PIDS=()
 for i in $(seq 1 $((N - 1))); do
-    on "${HOSTS[$i]}" "sudo spx admin join --force \
-        --node ${NODE_NAMES[$i]} \
-        --bind ${LAN_IPS[$i]} --cluster-bind ${LAN_IPS[$i]} --advertise ${WAN_IPS[$i]} \
-        --host ${LAN_IPS[0]}:$PORT --token $TOKEN \
-        --region $REGION --az $AZ" &
+    # The token goes to the node on stdin, so it is in no ssh argument and not in sudo's log.
+    # spx admin join takes it only as --token, so it is still in that process's arguments.
+    on "${HOSTS[$i]}" "$(remote_join_cmd "${NODE_NAMES[$i]}" "${LAN_IPS[$i]}" "${WAN_IPS[$i]}" "${LAN_IPS[0]}:$PORT" "$REGION" "$AZ")" <<<"$TOKEN" &
     JOIN_PIDS+=("$!")
 done
 
@@ -724,7 +734,7 @@ if ! $DRY_RUN; then
         elapsed=$((elapsed + 5))
     done
     if [ "$elapsed" -ge "$FORMATION_TIMEOUT" ]; then
-        out "${HOSTS[0]}" "sudo tail -40 $INIT_LOG" | sed 's/^/  | /' >&2
+        out "${HOSTS[0]}" "sudo tail -40 $INIT_LOG" | redact_tokens | sed 's/^/  | /' >&2
         fail "${HOSTS[0]}: formation did not complete within ${FORMATION_TIMEOUT}s"
     fi
     log "  formation complete"

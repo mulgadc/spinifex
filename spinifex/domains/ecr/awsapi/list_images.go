@@ -12,20 +12,27 @@ import (
 type listImagesRequest struct {
 	RepositoryName string           `json:"repositoryName"`
 	RegistryID     string           `json:"registryId"`
+	MaxResults     *int64           `json:"maxResults"`
 	Filter         *tagStatusFilter `json:"filter"`
 }
 
 type tagStatusFilter struct {
-	TagStatus string `json:"tagStatus"`
+	TagStatus   string  `json:"tagStatus"`
+	ImageStatus *string `json:"imageStatus"`
 }
 
-// validate refuses a tagStatus outside the TagStatus enum; an omitted filter
-// or tagStatus is valid.
+// validate refuses a tagStatus or imageStatus outside its enum; an omitted
+// filter or member is valid. imageStatus is checked but not applied.
 func (f *tagStatusFilter) validate() error {
-	if f == nil || f.TagStatus == "" || slices.Contains(TagStatusValues, f.TagStatus) {
+	switch {
+	case f == nil:
 		return nil
+	case f.TagStatus != "" && !slices.Contains(TagStatusValues, f.TagStatus):
+		return EnumValueError("filter.tagStatus", TagStatusValues...)
+	case f.ImageStatus != nil && !slices.Contains(ImageStatusValues, *f.ImageStatus):
+		return EnumValueError("filter.imageStatus", ImageStatusValues...)
 	}
-	return EnumValueError("filter.tagStatus", TagStatusValues...)
+	return nil
 }
 
 // ListImages returns every image identifier in the caller's repository,
@@ -37,6 +44,9 @@ func ListImages(ctx context.Context, catalog ImageCatalog, accountID string, bod
 		return nil, MalformedBodyError()
 	}
 	if err := ValidateRepositoryScope(req.RepositoryName, req.RegistryID, accountID); err != nil {
+		return nil, err
+	}
+	if err := validateMaxResults(req.MaxResults); err != nil {
 		return nil, err
 	}
 	if err := req.Filter.validate(); err != nil {

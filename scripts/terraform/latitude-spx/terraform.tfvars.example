@@ -1,0 +1,5 @@
+deployment_name     = "l1"
+site                = "DAL"
+plan                = "m4-metal-medium"
+node_count          = 1
+ssh_public_key_path = "~/.ssh/id_ed25519.pub"

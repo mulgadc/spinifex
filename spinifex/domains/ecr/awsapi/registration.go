@@ -116,6 +116,9 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 			slog.Error("ECR authorization-token action: capabilities not configured")
 			return errors.New(awserrors.ErrorServerInternal)
 		}
+		if err := ValidateAuthorizationTokenRequest(body); err != nil {
+			return err
+		}
 		principal, perr := tokenPrincipal(inv)
 		if perr != nil {
 			slog.Error("GetAuthorizationToken: cannot build canonical caller ARN", "err", perr)

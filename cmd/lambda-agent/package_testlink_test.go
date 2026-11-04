@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -165,19 +166,23 @@ func TestUnpackChecksSizeAndHash(t *testing.T) {
 func TestReadPackageSpecBounds(t *testing.T) {
 	sum := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 	cases := map[string]struct {
-		size, hash string
-		want       string
+		size, hash, handler string
+		want                string
 	}{
-		"valid":     {"10", sum, ""},
-		"zero":      {"0", sum, "outside"},
-		"too large": {"16777217", sum, "outside"},
-		"not hex":   {"10", "zz", "64 hex digits"},
-		"short":     {"10", sum[:62], "64 hex digits"},
+		"valid":            {"10", sum, "bootstrap.h", ""},
+		"zero":             {"0", sum, "bootstrap.h", "outside"},
+		"too large":        {"16777217", sum, "bootstrap.h", "outside"},
+		"not hex":          {"10", "zz", "bootstrap.h", "64 hex digits"},
+		"short":            {"10", sum[:62], "bootstrap.h", "64 hex digits"},
+		"empty handler":    {"10", sum, "", "handler"},
+		"handler space":    {"10", sum, "a b", "handler"},
+		"128-char handler": {"10", sum, strings.Repeat("h", 128), ""},
+		"129-char handler": {"10", sum, strings.Repeat("h", 129), "handler"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
-			for n, v := range map[string]string{entryPackageSize: tc.size, entryPackageSHA256: tc.hash} {
+			for n, v := range map[string]string{entryPackageSize: tc.size, entryPackageSHA256: tc.hash, entryHandler: tc.handler} {
 				require.NoError(t, os.MkdirAll(filepath.Join(dir, n), 0o700))
 				require.NoError(t, os.WriteFile(filepath.Join(dir, n, "raw"), []byte(v), 0o600))
 			}
@@ -185,6 +190,7 @@ func TestReadPackageSpecBounds(t *testing.T) {
 			if tc.want == "" {
 				require.NoError(t, err)
 				assert.Equal(t, int64(10), spec.size)
+				assert.Equal(t, tc.handler, spec.handler)
 				return
 			}
 			assert.ErrorContains(t, err, tc.want)

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -958,5 +959,136 @@ func TestMgmtIPAllocator_RebuildTakesOverAnEntryFromAnotherNode(t *testing.T) {
 	}
 	if entry.Node != "node-2" {
 		t.Errorf("holder after rebuild = %q, want node-2, or nothing can ever release this address", entry.Node)
+	}
+}
+
+// A checked release proves this node held the address. An entry naming no node
+// is unknown ownership, so it stays reserved and the caller keeps the obligation.
+func TestMgmtIPAllocator_ReleaseCheckedRefusesAnEntryThatNamesNoNode(t *testing.T) {
+	jsm := newTestMgmtJSM(t)
+
+	a, err := NewMgmtIPAllocator("10.35.8.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.BindKV(jsm, "node-a")
+	cleanupMgmtIPAM(t, jsm, a)
+
+	if _, err := updateMgmtIPAMWithRetry(jsm, a.subnet, func(r *MgmtIPRecord) {
+		r.Subnet = a.subnet
+		r.Allocated = append(r.Allocated, MgmtIPEntry{IP: "10.35.8.10", InstanceID: "i-ownerless"})
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	a.mu.Lock()
+	a.allocated["i-ownerless"] = "10.35.8.10"
+	a.mu.Unlock()
+
+	err = a.ReleaseChecked("i-ownerless")
+	if !errors.Is(err, errMgmtIPOwnerless) {
+		t.Fatalf("ReleaseChecked on an ownerless entry = %v, want errMgmtIPOwnerless", err)
+	}
+	entry, present := mgmtIPEntryFor(t, jsm, a, "i-ownerless")
+	if !present || entry.IP != "10.35.8.10" || entry.Node != "" {
+		t.Errorf("ownerless entry after refusal = %+v (present %v), want it unchanged", entry, present)
+	}
+	a.mu.Lock()
+	local := a.allocated["i-ownerless"]
+	a.mu.Unlock()
+	if local != "10.35.8.10" {
+		t.Errorf("local record after refusal = %q, want it kept", local)
+	}
+}
+
+func TestMgmtIPAllocator_ReleaseCheckedFreesOwnAndRefusesForeign(t *testing.T) {
+	jsm := newTestMgmtJSM(t)
+
+	node1, err := NewMgmtIPAllocator("10.36.8.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node1.BindKV(jsm, "node-1")
+	cleanupMgmtIPAM(t, jsm, node1)
+	node2, err := NewMgmtIPAllocator("10.36.8.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node2.BindKV(jsm, "node-2")
+
+	if _, err := node1.Allocate("i-own"); err != nil {
+		t.Fatal(err)
+	}
+	if err := node1.ReleaseChecked("i-own"); err != nil {
+		t.Fatalf("ReleaseChecked on this node's entry = %v", err)
+	}
+	if entry, present := mgmtIPEntryFor(t, jsm, node1, "i-own"); present {
+		t.Errorf("own entry still reserved: %+v", entry)
+	}
+
+	ip, err := node2.Allocate("i-theirs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := node1.ReleaseChecked("i-theirs"); err == nil {
+		t.Fatal("ReleaseChecked freed another node's address without error")
+	}
+	if entry, present := mgmtIPEntryFor(t, jsm, node1, "i-theirs"); !present || entry.Node != "node-2" || entry.IP != ip {
+		t.Errorf("foreign entry after refusal = %+v (present %v), want node-2 holding %s", entry, present, ip)
+	}
+}
+
+// Release, unlike ReleaseChecked, always drops the local entry: a foreign holder
+// keeps its cluster entry and a failed KV write is only logged, matching what its
+// callers relied on before ReleaseChecked existed.
+func TestMgmtIPAllocator_ReleaseDropsLocalOnForeignHolderAndKVFailure(t *testing.T) {
+	jsm := newTestMgmtJSM(t)
+	node1, err := NewMgmtIPAllocator("10.33.8.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node1.BindKV(jsm, "node-1")
+	cleanupMgmtIPAM(t, jsm, node1)
+	node2, err := NewMgmtIPAllocator("10.33.8.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node2.BindKV(jsm, "node-2")
+
+	ip, err := node1.Allocate("i-moved")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node2.Claim("i-moved", ip)
+	node1.Release("i-moved")
+	if node1.AllocatedCount() != 0 {
+		t.Errorf("local entries after release with a foreign holder = %d, want 0", node1.AllocatedCount())
+	}
+	if entry, present := mgmtIPEntryFor(t, jsm, node1, "i-moved"); !present || entry.Node != "node-2" {
+		t.Errorf("foreign entry after release = %+v (present %v), want node-2 kept", entry, present)
+	}
+
+	nc, err := nats.Connect(sharedJSNATSURL)
+	if err != nil {
+		t.Fatalf("connect NATS: %v", err)
+	}
+	broken, err := NewJetStreamManager(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := broken.InitClusterStateBucket(); err != nil {
+		t.Fatal(err)
+	}
+	node3, err := NewMgmtIPAllocator("10.33.8.3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node3.BindKV(broken, "node-3")
+	if _, err := node3.Allocate("i-lost-kv"); err != nil {
+		t.Fatal(err)
+	}
+	nc.Close()
+	node3.Release("i-lost-kv")
+	if node3.AllocatedCount() != 0 {
+		t.Errorf("local entries after release with KV down = %d, want 0", node3.AllocatedCount())
 	}
 }

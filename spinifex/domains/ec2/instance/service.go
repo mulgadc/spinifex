@@ -141,6 +141,17 @@ type InstanceTagWriter interface {
 	DeleteAllTags(ctx context.Context, accountID, resourceID string) error
 }
 
+// OwedUnpublish names the publish a terminate leaves in place when its unmount
+// did not complete: the node still exporting the volume and the instance it
+// served. The zero value means the unmount completed and nothing is owed.
+type OwedUnpublish struct {
+	NodeID     string
+	InstanceID string
+}
+
+// Owed reports whether a publish is left in place.
+func (o OwedUnpublish) Owed() bool { return o.NodeID != "" }
+
 // VolumeDeleter deletes EBS volumes. Implemented by domains/ec2/volume's
 // VolumeServiceImpl (used by the daemon).
 type VolumeDeleter interface {
@@ -149,14 +160,16 @@ type VolumeDeleter interface {
 	// DeleteVolumeOnTerminate deletes a DeleteOnTermination volume as part of
 	// an instance terminate: it clears any stale attachment (terminate
 	// implies detach) before deleting, so a still-attached boot volume left
-	// over from Stop is not rejected by DeleteVolume's in-use guard.
-	DeleteVolumeOnTerminate(ctx context.Context, volumeID, accountID string) error
+	// over from Stop is not rejected by DeleteVolume's in-use guard. When owed
+	// names a publish, an unpublish obligation is recorded before the clear.
+	DeleteVolumeOnTerminate(ctx context.Context, volumeID, accountID string, owed OwedUnpublish) error
 
 	// DetachVolumeOnTerminate clears a still-attached volume's attachment on
 	// terminate without deleting it, matching AWS semantics for a
 	// DeleteOnTermination=false volume: terminate still implies detach, it
 	// just leaves the volume behind as available rather than deleting it.
-	DetachVolumeOnTerminate(ctx context.Context, volumeID, accountID string) error
+	// When owed names a publish, an unpublish obligation is recorded first.
+	DetachVolumeOnTerminate(ctx context.Context, volumeID, accountID string, owed OwedUnpublish) error
 }
 
 // VolumeCreator creates the volumes a launch names beyond the root device, and

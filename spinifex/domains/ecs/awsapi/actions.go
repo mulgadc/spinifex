@@ -38,6 +38,10 @@ func checkTaskLaunchRoles(ctx context.Context, svc ecsdomain.ECSService, account
 		return nil
 	}
 	out, err := svc.DescribeTaskDefinition(ctx, &ecs.DescribeTaskDefinitionInput{TaskDefinition: taskDefinition}, accountID)
+	if code, _ := awserrors.ResolveErrorCode(err); code == awserrors.ErrorECSClientException {
+		// DescribeTaskDefinition's not-found message is not the one launches get.
+		return ecsdomain.TaskDefinitionNotFound()
+	}
 	if err != nil {
 		return err
 	}

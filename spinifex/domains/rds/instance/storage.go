@@ -23,6 +23,8 @@ import (
 type volumeResizer interface {
 	DescribeVolumes(ctx context.Context, input *ec2.DescribeVolumesInput, accountID string) (*ec2.DescribeVolumesOutput, error)
 	ModifyVolume(ctx context.Context, input *ec2.ModifyVolumeInput, accountID string) (*ec2.ModifyVolumeOutput, error)
+	ExpandAttachedToStopped(ctx context.Context, accountID, volumeID, instanceID string, sizeGiB int64) (*ec2.ModifyVolumeOutput, error)
+	ForceDetachVolume(ctx context.Context, input *ec2.DetachVolumeInput, accountID string) (*ec2.VolumeAttachment, error)
 }
 
 // Everything a resize request can be wrong about, checked before the instance
@@ -65,7 +67,7 @@ func (s *Service) growInstanceStorage(ctx context.Context, accountID string, rec
 	if err := context.Cause(ctx); err != nil {
 		return err
 	}
-	if err := s.growDataVolume(ctx, rec.DataVolumeID, targetGiB); err != nil {
+	if err := s.growDataVolume(ctx, rec.DataVolumeID, rec.InstanceID, targetGiB); err != nil {
 		return s.restartAfterStorageGrowFailure(ctx, accountID, rec, err)
 	}
 	if err := context.Cause(ctx); err != nil {
@@ -101,10 +103,10 @@ func (s *Service) restartAfterStorageGrowFailure(
 	return growErr
 }
 
-// Grows the data volume itself. Idempotent: a resumed grow re-reads the volume
-// and returns without a second modify once it is already at the target, which
-// ModifyVolume would otherwise reject as a shrink.
-func (s *Service) growDataVolume(ctx context.Context, volumeID string, targetGiB int64) error {
+// Grows the data volume itself, idempotently: a resumed grow already at the
+// target returns without a modify. An attached volume is grown only as
+// stoppedVM's, the VM the caller stopped; an empty stoppedVM requires it detached.
+func (s *Service) growDataVolume(ctx context.Context, volumeID, stoppedVM string, targetGiB int64) error {
 	if volumeID == "" {
 		return errors.New("rds: the DB instance has no data volume to grow")
 	}
@@ -112,7 +114,7 @@ func (s *Service) growDataVolume(ctx context.Context, volumeID string, targetGiB
 		return errors.New("rds: no volume resize path configured")
 	}
 
-	current, err := s.dataVolumeSize(ctx, volumeID)
+	current, attachedTo, err := s.dataVolumeState(ctx, volumeID)
 	if err != nil {
 		return err
 	}
@@ -125,31 +127,45 @@ func (s *Service) growDataVolume(ctx context.Context, volumeID string, targetGiB
 		return err
 	}
 
-	if _, err := s.deps.Storage.ModifyVolume(ctx, &ec2.ModifyVolumeInput{
-		VolumeId: aws.String(volumeID),
-		Size:     aws.Int64(targetGiB),
-	}, awsidentifiers.GlobalAccountID); err != nil {
+	if attachedTo != "" && stoppedVM != "" {
+		_, err = s.deps.Storage.ExpandAttachedToStopped(ctx, awsidentifiers.GlobalAccountID, volumeID, stoppedVM, targetGiB)
+	} else {
+		_, err = s.deps.Storage.ModifyVolume(ctx, &ec2.ModifyVolumeInput{
+			VolumeId: aws.String(volumeID),
+			Size:     aws.Int64(targetGiB),
+		}, awsidentifiers.GlobalAccountID)
+	}
+	if err != nil {
 		return fmt.Errorf("grow the data volume %s to %d GiB: %w", volumeID, targetGiB, err)
 	}
 	slog.InfoContext(ctx, "rds: data volume grown",
-		"volumeId", volumeID, "fromGiB", current, "toGiB", targetGiB)
+		"volumeId", volumeID, "fromGiB", current, "toGiB", targetGiB, "attachedTo", attachedTo)
 	return nil
 }
 
-// The volume's own reported size, which is what makes the grow idempotent. A
-// volume the store cannot describe is an error rather than a zero, since zero
-// would read as "smaller than the target" and trigger a modify.
-func (s *Service) dataVolumeSize(ctx context.Context, volumeID string) (int64, error) {
+// The volume's own reported size, which is what makes the grow idempotent, and
+// the instance it is attached to. A volume the store cannot describe is an error
+// rather than a zero, since zero would read as "smaller than the target".
+func (s *Service) dataVolumeState(ctx context.Context, volumeID string) (int64, string, error) {
 	out, err := s.deps.Storage.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
 		VolumeIds: aws.StringSlice([]string{volumeID}),
 	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
-		return 0, fmt.Errorf("read the data volume %s: %w", volumeID, err)
+		return 0, "", fmt.Errorf("read the data volume %s: %w", volumeID, err)
 	}
 	for _, volume := range out.Volumes {
-		if aws.StringValue(volume.VolumeId) == volumeID {
-			return aws.Int64Value(volume.Size), nil
+		if aws.StringValue(volume.VolumeId) != volumeID {
+			continue
 		}
+		attachedTo := ""
+		if aws.StringValue(volume.State) == ec2.VolumeStateInUse {
+			for _, a := range volume.Attachments {
+				attachedTo = aws.StringValue(a.InstanceId)
+			}
+		}
+		return aws.Int64Value(volume.Size), attachedTo, nil
 	}
-	return 0, fmt.Errorf("rds: data volume %s no longer exists", volumeID)
+	return 0, "", fmt.Errorf("%w: %s", errDataVolumeGone, volumeID)
 }
+
+var errDataVolumeGone = errors.New("rds: data volume no longer exists")

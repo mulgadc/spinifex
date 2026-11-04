@@ -2,7 +2,9 @@ package vm
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"time"
 
@@ -72,9 +74,12 @@ func (r *OrphanQEMUReaper) Sweep(context.Context) (int, error) {
 		if err != nil {
 			continue // no PID file on this node: process is not here
 		}
-		if !hostprocess.ProcessAlive(pid) {
+		if hostprocess.ProcessExited(pid) {
 			_ = hostprocess.RemovePidFile(v.ID) // stale PID file for a dead, terminated instance
 			continue
+		}
+		if !hostprocess.ProcessAlive(pid) {
+			continue // not provably gone and not signalable: unknown state, file kept
 		}
 
 		slog.Warn("vm/gc: reaping orphan QEMU for terminated instance (held OVN ports)",
@@ -96,7 +101,7 @@ func (r *OrphanQEMUReaper) Sweep(context.Context) (int, error) {
 		if r.m.Status(v) != StateShuttingDown {
 			continue
 		}
-		if qemuProcessAlive(v.ID) {
+		if !qemuProvenGone(v.ID) {
 			continue
 		}
 		// Finalizing early reports terminated while the terminate is still
@@ -118,21 +123,25 @@ func (r *OrphanQEMUReaper) Sweep(context.Context) (int, error) {
 	return reaped, nil
 }
 
-// qemuProcessAlive reports whether the instance's QEMU process is running on
-// this node, read via its local PID file. A missing PID file (process not on
-// this node, or already reaped) or a dead PID both read as not-alive. Used by
-// the reaper, where a terminated/shutting-down instance's absent PID file
-// legitimately means the process is gone.
-func qemuProcessAlive(instanceID string) bool {
+// qemuProvenGone reports whether the instance's QEMU is provably gone: its PID
+// file is absent or names a dead process. An unreadable or corrupt PID file is
+// unknown state, not proof, so callers gating data deletion must not proceed.
+func qemuProvenGone(instanceID string) bool {
 	pid, err := hostprocess.ReadPidFile(instanceID)
+	return pidReadProvesExit(pid, err)
+}
+
+// pidReadProvesExit judges a PID file read: absent or naming a dead process is
+// proof of exit; an unreadable file or a non-positive PID is unknown state.
+func pidReadProvesExit(pid int, err error) bool {
 	if err != nil {
-		return false
+		return errors.Is(err, fs.ErrNotExist)
 	}
-	return hostprocess.ProcessAlive(pid)
+	return hostprocess.ProcessExited(pid)
 }
 
 // qemuConfirmedDead reports whether the instance's QEMU is provably gone: its
-// PID file is present but the process is not alive. Unlike qemuProcessAlive, a
+// PID file is present but the process is not alive. Unlike qemuProvenGone, a
 // missing PID file reads as NOT confirmed-dead (ambiguous), so a caller on a
 // still-running instance (DetachVolume) falls through to its normal QMP path
 // rather than short-circuiting on an absent file.
@@ -141,5 +150,5 @@ func qemuConfirmedDead(instanceID string) bool {
 	if err != nil {
 		return false
 	}
-	return !hostprocess.ProcessAlive(pid)
+	return hostprocess.ProcessExited(pid)
 }

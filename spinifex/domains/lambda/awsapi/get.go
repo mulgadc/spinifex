@@ -40,6 +40,12 @@ func (d Deps) lookup(ctx context.Context, c *call, query string) (function.Recor
 		}
 		q = query
 	}
+	return d.lookupTarget(ctx, c, name, q)
+}
+
+// lookupTarget reads the record for an already resolved name and qualifier;
+// only $LATEST exists.
+func (d Deps) lookupTarget(ctx context.Context, c *call, name, q string) (function.Record, uint64, error) {
 	if q != "" && q != "$LATEST" {
 		return function.Record{}, 0, notFound(c.Region, c.AccountID, name+":"+q)
 	}

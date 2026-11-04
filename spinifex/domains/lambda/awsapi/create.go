@@ -110,7 +110,7 @@ func (d Deps) createFunction(ctx context.Context, c *call) (reply, error) {
 
 // rollback makes one compare-and-swap attempt to free the name. It cannot undo
 // a create that completed, because the revision it holds has moved on. The code
-// object, if one landed, is left in place and recorded as a cleanup obligation.
+// object, if one landed, stays in place under its owed upload record.
 func (d Deps) rollback(ctx context.Context, c *call, name string, createRev uint64, ref codestore.Ref, why string, cause error) {
 	slog.ErrorContext(ctx, "Lambda: create did not complete", "reason", why, "function_name", name,
 		"function_id", ref.FunctionID, "err", cause)

@@ -53,6 +53,9 @@ func (s *Service) CreateCapacityProvider(ctx context.Context, input *ecs.CreateC
 		aws.StringValue(input.AutoScalingGroupProvider.AutoScalingGroupArn) == "" {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
+	if err := validateTags(input.Tags); err != nil {
+		return nil, err
+	}
 	name := aws.StringValue(input.Name)
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {

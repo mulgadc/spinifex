@@ -65,7 +65,7 @@ func (a *PoolAllocator) ClaimLocalAddresses(ctx context.Context) (external.Claim
 		case local:
 			res.Local++
 			a.claim(ctx, key, b, addr, &res)
-		case !b.owned() && addr.HolderID == a.cfg.HostID:
+		case !b.owned() && addr.HolderID == a.cfg.HostID && !a.fixed:
 			a.surrender(ctx, key, b)
 		}
 	}
@@ -77,18 +77,41 @@ func (a *PoolAllocator) ClaimLocalAddresses(ctx context.Context) (external.Claim
 // unreachable as this one if the pass gives up here.
 func (a *PoolAllocator) claim(ctx context.Context, key string, b Binding, addr Address, res *external.ClaimResult) {
 	host := a.cfg.HostID
-	if addr.HolderID == host {
-		a.recordHolder(ctx, key, b.AddrID, host)
-		return
-	}
 	stall := func(reason string) {
 		res.Stalled = append(res.Stalled, external.StalledAddress{PublicIP: key, ENIID: b.ENIID, Reason: reason})
 	}
-	if addr.HolderID != "" {
-		if err := a.provider.Detach(ctx, b.AddrID); err != nil && !errors.Is(err, ErrNotFound) {
-			stall(fmt.Sprintf("detach %s from %s: %v", b.AddrID, addr.HolderID, err))
+	if addr.HolderID == host {
+		if addr.Failed {
+			stall(fmt.Sprintf("%s is on %s but the provider reports it in an error state", b.AddrID, host))
 			return
 		}
+		a.recordHolder(ctx, key, b, host)
+		return
+	}
+	// ok is false when the binding changed, which needs no report: the new
+	// allocation is handled on its own. A failed re-read is reported, since the
+	// address was not moved and the pass must not read as complete.
+	stillOurs := func() bool {
+		if !a.fixed {
+			return true
+		}
+		ok, err := a.unchanged(ctx, key, b)
+		if err != nil {
+			stall(fmt.Sprintf("re-read binding for %s before moving it: %v", b.AddrID, err))
+		}
+		return ok
+	}
+	if addr.HolderID != "" {
+		if !stillOurs() {
+			return
+		}
+		if err := a.provider.Detach(ctx, b.AddrID); err != nil && !errors.Is(err, ErrNotFound) {
+			stall(fmt.Sprintf("detach %s from %s: %v", b.AddrID, a.holderLabel(addr.HolderID), err))
+			return
+		}
+	}
+	if !stillOurs() {
+		return
 	}
 	if err := a.provider.Attach(ctx, b.AddrID, host); err != nil {
 		stall(fmt.Sprintf("attach %s to %s: %v", b.AddrID, host, err))
@@ -100,7 +123,7 @@ func (a *PoolAllocator) claim(ctx context.Context, key string, b Binding, addr A
 		return
 	}
 	if got.HolderID != host {
-		stall(fmt.Sprintf("provider accepted the attach of %s to %s and reports holder %q", b.AddrID, host, got.HolderID))
+		stall(fmt.Sprintf("provider accepted the attach of %s to %s and reports holder %q", b.AddrID, host, a.holderLabel(got.HolderID)))
 		return
 	}
 	// A move from another host is worth an operator's attention; a first
@@ -111,8 +134,8 @@ func (a *PoolAllocator) claim(ctx context.Context, key string, b Binding, addr A
 	}
 	slog.Log(ctx, level, "floating claimed an address whose owner runs here",
 		"pool", a.cfg.Pool.Name, "public_ip", key, "addr_id", b.AddrID,
-		"eni_id", b.ENIID, "gateway_vpc_id", b.GatewayVPCID, "from_host", addr.HolderID, "to_host", host)
-	a.recordHolder(ctx, key, b.AddrID, host)
+		"eni_id", b.ENIID, "gateway_vpc_id", b.GatewayVPCID, "from_host", a.holderLabel(addr.HolderID), "to_host", host)
+	a.recordHolder(ctx, key, b, host)
 	res.Claimed = append(res.Claimed, key)
 }
 
@@ -126,7 +149,7 @@ func (a *PoolAllocator) surrender(ctx context.Context, key string, b Binding) {
 	}
 	slog.InfoContext(ctx, "floating detached an address with no owner",
 		"pool", a.cfg.Pool.Name, "public_ip", key, "addr_id", b.AddrID)
-	a.recordHolder(ctx, key, b.AddrID, "")
+	a.recordHolder(ctx, key, b, "")
 }
 
 // ownsBinding answers whether this node is where b's traffic is handled. An
@@ -146,13 +169,33 @@ func (a *PoolAllocator) ownsBinding(ctx context.Context, b Binding, plugged map[
 	return local, nil
 }
 
+// unchanged reads the binding again and reports whether it is still the one
+// this pass snapshotted: same allocation, owner and gateway. A release and
+// re-allocation reuses the address and its provider ID, so the allocation
+// token is what tells them apart. The re-read narrows the window before the
+// provider call but does not close it: a stale move is repaired only when the
+// owning node next runs its claim pass and the provider accepts the move.
+func (a *PoolAllocator) unchanged(ctx context.Context, key string, snap Binding) (bool, error) {
+	rec, err := a.store.Get(ctx, a.cfg.Pool.Name)
+	if err != nil {
+		return false, err
+	}
+	cur, ok := rec.Bindings[key]
+	if ok && cur.Gen == snap.Gen && cur.AddrID == snap.AddrID && cur.ENIID == snap.ENIID && cur.GatewayVPCID == snap.GatewayVPCID {
+		return true, nil
+	}
+	slog.InfoContext(ctx, "floating holder skipped an address whose binding changed during the pass",
+		"pool", a.cfg.Pool.Name, "public_ip", key, "addr_id", snap.AddrID)
+	return false, nil
+}
+
 // recordHolder writes the observed holder under CAS, only while the binding
-// still names the address this pass acted on. A failed write is logged: the
+// is still the allocation this pass acted on. A failed write is logged: the
 // provider already agrees, and the next pass rewrites it.
-func (a *PoolAllocator) recordHolder(ctx context.Context, key, addrID, holder string) {
+func (a *PoolAllocator) recordHolder(ctx context.Context, key string, snap Binding, holder string) {
 	err := a.store.Mutate(ctx, a.cfg.Pool.Name, func(r *Record) (bool, error) {
 		b, ok := r.Bindings[key]
-		if !ok || b.AddrID != addrID || b.Holder == holder {
+		if !ok || b.AddrID != snap.AddrID || b.Gen != snap.Gen || b.Holder == holder {
 			return false, nil
 		}
 		b.Holder = holder

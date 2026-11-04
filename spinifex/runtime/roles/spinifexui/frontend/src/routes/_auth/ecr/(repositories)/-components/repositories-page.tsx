@@ -35,7 +35,7 @@ function repositoryColumns(
         return (
           <Link
             className="font-medium text-primary hover:underline"
-            params={{ id: encodeURIComponent(name) }}
+            params={{ id: name }}
             to="/ecr/list-repositories/$id"
           >
             {name}
@@ -147,7 +147,7 @@ export function RepositoriesPage({
         onRowClick={(name) => {
           void navigate({
             to: "/ecr/list-repositories/$id",
-            params: { id: encodeURIComponent(name) },
+            params: { id: name },
           })
         }}
         onSortChange={setSort}

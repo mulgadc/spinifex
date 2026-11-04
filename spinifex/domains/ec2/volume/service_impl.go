@@ -20,6 +20,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ebsencryption "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/encryption"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	ebsobligation "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/obligation"
 	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -59,6 +60,12 @@ type VolumeServiceImpl struct {
 	snapshotKV jetstream.KeyValue
 	provider   ebsprovider.EBSProvider
 	metadata   *ebsmetadata.Store
+
+	// The unpublish obligations a cleared attachment records, and what names
+	// the node holding the publish. Unset, a detach that leaves one fails.
+	obligations   *ebsobligation.Store
+	instanceNodes InstanceNodeLocator
+	members       func() []string
 }
 
 // SetEBSProvider injects the provider boundary used by the control plane. It
@@ -996,8 +1003,23 @@ func (s *VolumeServiceImpl) UpdateVolumeState(accountID, volumeID, state, attach
 	return nil
 }
 
-// ModifyVolume modifies an EBS volume (grow-only, requires stopped instance).
+// ModifyVolume modifies an EBS volume (grow-only, refused while attached).
 func (s *VolumeServiceImpl) ModifyVolume(ctx context.Context, input *ec2.ModifyVolumeInput, accountID string) (*ec2.ModifyVolumeOutput, error) {
+	return s.modifyVolume(ctx, input, accountID, "")
+}
+
+// ExpandAttachedToStopped grows a volume still attached to instanceID, which the
+// caller has stopped and holds exclusively. Not reachable from the AWS API.
+func (s *VolumeServiceImpl) ExpandAttachedToStopped(ctx context.Context, accountID, volumeID, instanceID string, sizeGiB int64) (*ec2.ModifyVolumeOutput, error) {
+	if instanceID == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	return s.modifyVolume(ctx, &ec2.ModifyVolumeInput{VolumeId: aws.String(volumeID), Size: aws.Int64(sizeGiB)}, accountID, instanceID)
+}
+
+// modifyVolume grows a volume. An empty stoppedOwner refuses any attached
+// volume; otherwise only a volume attached to that instance is accepted.
+func (s *VolumeServiceImpl) modifyVolume(ctx context.Context, input *ec2.ModifyVolumeInput, accountID, stoppedOwner string) (*ec2.ModifyVolumeOutput, error) {
 	if input == nil || input.VolumeId == nil || *input.VolumeId == "" {
 		return nil, errors.New(awserrors.ErrorInvalidVolumeIDMalformed)
 	}
@@ -1017,7 +1039,9 @@ func (s *VolumeServiceImpl) ModifyVolume(ctx context.Context, input *ec2.ModifyV
 	if input.Size == nil || *input.Size <= originalSize {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	if (meta.AttachedInstance != "" && meta.State == "in-use") || meta.State == string(ebsprovider.VolumeStateCreating) {
+	attached := meta.AttachedInstance != "" && meta.State == "in-use"
+	if meta.State == string(ebsprovider.VolumeStateCreating) || attached != (stoppedOwner != "") ||
+		(attached && meta.AttachedInstance != stoppedOwner) {
 		return nil, errors.New(awserrors.ErrorIncorrectState)
 	}
 	originalType := meta.VolumeType
@@ -1083,13 +1107,16 @@ func (s *VolumeServiceImpl) ModifyVolume(ctx context.Context, input *ec2.ModifyV
 // terminating instance's QEMU has already been asked to shut down — so this
 // is always a metadata-only clear, never a QMP call. Errors from either step
 // are returned, not swallowed.
-func (s *VolumeServiceImpl) DeleteVolumeOnTerminate(ctx context.Context, volumeID, accountID string) error {
+func (s *VolumeServiceImpl) DeleteVolumeOnTerminate(ctx context.Context, volumeID, accountID string, owed ec2instance.OwedUnpublish) error {
 	// Clearing the attachment would overwrite a recorded deletion, so a volume
 	// already owed is left alone: the reclaimer owns it from here, and resetting
 	// it to available would let a second teardown run against the same data.
 	meta, err := s.metadata.GetVolume(ctx, accountID, volumeID)
 	if err == nil && meta.State == volumeStateDeleting {
 		return nil
+	}
+	if err := s.recordTerminateObligation(ctx, accountID, volumeID, owed); err != nil {
+		return err
 	}
 
 	if err := s.UpdateVolumeState(accountID, volumeID, "available", "", ""); err != nil {
@@ -1110,7 +1137,10 @@ func (s *VolumeServiceImpl) DeleteVolumeOnTerminate(ctx context.Context, volumeI
 // available rather than deleting it. Metadata-only, no QMP — same rationale
 // as DeleteVolumeOnTerminate: there is no live QEMU to hot-unplug on either
 // terminate path.
-func (s *VolumeServiceImpl) DetachVolumeOnTerminate(_ context.Context, volumeID, accountID string) error {
+func (s *VolumeServiceImpl) DetachVolumeOnTerminate(ctx context.Context, volumeID, accountID string, owed ec2instance.OwedUnpublish) error {
+	if err := s.recordTerminateObligation(ctx, accountID, volumeID, owed); err != nil {
+		return err
+	}
 	if err := s.UpdateVolumeState(accountID, volumeID, "available", "", ""); err != nil {
 		// No metadata doc means the volume is already gone, per GetVolume's own
 		// contract, so absence here is success, not a teardown failure.
@@ -1129,8 +1159,12 @@ func (s *VolumeServiceImpl) DetachVolumeOnTerminate(_ context.Context, volumeID,
 // The ordinary DetachVolume routes to ec2.cmd.{instanceID} for the QMP unplug,
 // so a volume attached to an instance whose host stopped answering can never be
 // detached and therefore never deleted. This exists for that deadlock and for
-// nothing else: it leaves a live guest holding a device the control plane no
-// longer believes in, which is only safe once that guest is being destroyed.
+// nothing else.
+//
+// That host still exports the volume, and the unpublish has to go to it, so
+// it cannot be made here. The request records an unpublish obligation naming
+// the publish before it clears the attachment, and returns; the node settles
+// it once it answers. A failed record clears nothing.
 func (s *VolumeServiceImpl) ForceDetachVolume(ctx context.Context, input *ec2.DetachVolumeInput, accountID string) (*ec2.VolumeAttachment, error) {
 	if input == nil || input.VolumeId == nil || *input.VolumeId == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
@@ -1154,18 +1188,48 @@ func (s *VolumeServiceImpl) ForceDetachVolume(ctx context.Context, input *ec2.De
 	}
 
 	previous := meta.AttachedInstance
+	if previous != "" {
+		nodes, err := s.publishingNodes(previous)
+		if err != nil {
+			slog.ErrorContext(ctx, "ForceDetachVolume: cannot name the node holding the publish, clearing nothing",
+				"volumeId", volumeID, "instanceId", previous, "err", err)
+			return nil, errors.New(awserrors.ErrorInternalError)
+		}
+		if err := s.recordObligations(ctx, meta, nodes); err != nil {
+			slog.ErrorContext(ctx, "ForceDetachVolume: failed to record the unpublish obligation, clearing nothing",
+				"volumeId", volumeID, "instanceId", previous, "err", err)
+			return nil, errors.New(awserrors.ErrorInternalError)
+		}
+	}
+
 	if err := s.UpdateVolumeState(accountID, volumeID, "available", "", ""); err != nil {
 		slog.ErrorContext(ctx, "ForceDetachVolume: failed to clear attachment", "volumeId", volumeID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	slog.WarnContext(ctx, "ForceDetachVolume: attachment cleared in the control plane only",
+
+	if previous == "" {
+		return &ec2.VolumeAttachment{
+			VolumeId: aws.String(volumeID),
+			State:    aws.String("detached"),
+		}, nil
+	}
+	slog.WarnContext(ctx, "ForceDetachVolume: attachment cleared, unpublish left to the node holding it",
 		"volumeId", volumeID, "previousInstance", previous, "accountId", accountID)
 
-	return &ec2.VolumeAttachment{
+	// AWS answers a detach with the attachment it is tearing down, in state
+	// detaching; the export here goes when the node settles the obligation.
+	attachment := &ec2.VolumeAttachment{
 		VolumeId:   aws.String(volumeID),
 		InstanceId: aws.String(previous),
-		State:      aws.String("detached"),
-	}, nil
+		State:      aws.String("detaching"),
+	}
+	if meta.DeviceName != "" {
+		attachment.Device = aws.String(meta.DeviceName)
+	}
+	if !meta.AttachedAt.IsZero() {
+		attachment.AttachTime = aws.Time(meta.AttachedAt)
+	}
+	return attachment, nil
 }
 
 // DeleteVolume records a durable obligation to destroy an EBS volume and

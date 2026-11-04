@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const scope lambdav1.Scope = "ap-southeast-2/000000000001/fn-1/env-1/gen-1"
+const scope lambdav1.Scope = "ap-southeast-2/000000000001/fn-1/env-1/1"
 
 // guest is a fake fw_cfg tree; unload removes it as unloading the module would.
 type guest struct {

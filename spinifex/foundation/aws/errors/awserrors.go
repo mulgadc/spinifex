@@ -625,8 +625,10 @@ var (
 	ErrorSerializationException            = "SerializationException"
 	ErrorUnknownOperationException         = "UnknownOperationException"
 	// Lambda wire codes that no other service shares.
-	ErrorResourceConflictException = "ResourceConflictException"
-	ErrorServiceException          = "ServiceException"
+	ErrorResourceConflictException      = "ResourceConflictException"
+	ErrorServiceException               = "ServiceException"
+	ErrorRequestEntityTooLargeException = "RequestEntityTooLargeException"
+	ErrorInvalidRequestContentException = "InvalidRequestContentException"
 )
 
 // ResolveErrorCode returns the first registered AWS error code in err's unwrap tree.
@@ -1426,6 +1428,8 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorUnknownOperationException:         {HTTPCode: 400, Message: "The requested operation is not recognized."},
 	ErrorResourceConflictException:         {HTTPCode: 409, Message: "The resource already exists or is in a state that does not allow this operation."},
 	ErrorServiceException:                  {HTTPCode: 500, Message: "The Lambda service encountered an internal error."},
+	ErrorRequestEntityTooLargeException:    {HTTPCode: 413, Message: "The request payload exceeded the Invoke request body JSON input quota."},
+	ErrorInvalidRequestContentException:    {HTTPCode: 400, Message: "The request body could not be parsed as JSON."},
 
 	// Route 53.
 	ErrorNoSuchHostedZone:          {HTTPCode: 404, Message: "No hosted zone exists with the ID that you specified."},

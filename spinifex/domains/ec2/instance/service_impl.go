@@ -3048,6 +3048,15 @@ func (s *InstanceServiceImpl) deleteInstanceVolumes(ctx context.Context, instanc
 	// stopped-path delete failure.
 	var lastErr error
 
+	// A volume whose seal failed at stop is still exported on the node that
+	// stopped it, so clearing its attachment owes that node an unpublish.
+	owedFor := func(volumeID string) OwedUnpublish {
+		if instance.LastNode == "" || !slices.Contains(instance.UnpublishOwed, volumeID) {
+			return OwedUnpublish{}
+		}
+		return OwedUnpublish{NodeID: instance.LastNode, InstanceID: instance.ID}
+	}
+
 	for _, ebsRequest := range instance.EBSRequests.Requests {
 		// Internal volumes (EFI) are always cleaned up via ebs.delete.
 		if ebsRequest.EFI {
@@ -3078,7 +3087,7 @@ func (s *InstanceServiceImpl) deleteInstanceVolumes(ctx context.Context, instanc
 				continue
 			}
 			// A volume already gone is the detach's own goal, not a failure.
-			if err := s.volumeDeleter.DetachVolumeOnTerminate(ctx, ebsRequest.Name, instance.AccountID); err != nil &&
+			if err := s.volumeDeleter.DetachVolumeOnTerminate(ctx, ebsRequest.Name, instance.AccountID, owedFor(ebsRequest.Name)); err != nil &&
 				!awserrors.IsNotFound(err) && !objectstore.IsNoSuchKeyError(err) {
 				slog.ErrorContext(ctx, "TerminateStoppedInstance: failed to detach volume", "name", ebsRequest.Name, "err", err)
 				lastErr = err
@@ -3097,7 +3106,7 @@ func (s *InstanceServiceImpl) deleteInstanceVolumes(ctx context.Context, instanc
 		// clears a Boot volume, runtime/daemon/vm_adapters.go) before deleting, so
 		// DeleteVolume's in-use guard does not reject an otherwise-legitimate
 		// delete. The resulting error is surfaced into lastErr, not swallowed.
-		if err := s.volumeDeleter.DeleteVolumeOnTerminate(ctx, ebsRequest.Name, instance.AccountID); err != nil {
+		if err := s.volumeDeleter.DeleteVolumeOnTerminate(ctx, ebsRequest.Name, instance.AccountID, owedFor(ebsRequest.Name)); err != nil {
 			slog.ErrorContext(ctx, "TerminateStoppedInstance: failed to delete volume", "name", ebsRequest.Name, "err", err)
 			lastErr = err
 		}

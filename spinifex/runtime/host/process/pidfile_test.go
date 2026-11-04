@@ -503,7 +503,7 @@ func TestProcessExited(t *testing.T) {
 	assert.True(t, ProcessExited(cmd.Process.Pid), "a reaped child has exited")
 
 	t.Run("injected EPERM is not an exit", func(t *testing.T) {
-		SetSignalProbeForTest(t, func(int) error { return syscall.EPERM })
+		t.Cleanup(SetSignalProbe(func(int) error { return syscall.EPERM }))
 		assert.False(t, ProcessExited(deadpid.PID))
 	})
 	t.Run("pid 1 as non-root gives EPERM", func(t *testing.T) {

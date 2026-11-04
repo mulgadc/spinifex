@@ -344,7 +344,7 @@ func TestS7_PidFileDeletionSitesKeepNonPositivePids(t *testing.T) {
 // exit, so the PID file and the volumes survive backstop -> orphan -> teardown.
 func TestS7_UnsignalablePidIsNotProofOfExit(t *testing.T) {
 	hostprocess.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
-	hostprocess.SetSignalProbeForTest(t, func(int) error { return syscall.EPERM })
+	t.Cleanup(hostprocess.SetSignalProbe(func(int) error { return syscall.EPERM }))
 
 	cleaner := &recordingInstanceCleaner{}
 	stuck, store := newStuckTerminateReaper(t, cleaner)

@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"sync/atomic"
 	"syscall"
-	"testing"
 	"time"
 )
 
@@ -53,11 +52,11 @@ func init() {
 	signalProbe.Store(&probe)
 }
 
-// SetSignalProbeForTest replaces the signal-0 probe behind ProcessExited for one test.
-func SetSignalProbeForTest(tb testing.TB, probe func(pid int) error) {
-	tb.Helper()
+// SetSignalProbe replaces the signal-0 probe behind ProcessExited and returns
+// a func that restores the previous one. It exists for tests.
+func SetSignalProbe(probe func(pid int) error) (restore func()) {
 	prev := signalProbe.Swap(&probe)
-	tb.Cleanup(func() { signalProbe.Store(prev) })
+	return func() { signalProbe.Store(prev) }
 }
 
 // ProcessExited reports whether pid is provably gone: the signal-0 probe fails

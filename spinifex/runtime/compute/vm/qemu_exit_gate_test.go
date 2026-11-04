@@ -177,3 +177,21 @@ func TestStuckTerminateKillFailureKeepsTheUEFIObligation(t *testing.T) {
 	assert.Equal(t, string(TeardownFailed), store.terminated[id].Teardown[TeardownUEFI],
 		"the UEFI obligation must survive the failed-kill handoff")
 }
+
+// TestS7_TeardownReaperDoesNotJudgeQEMUOnAnotherNode checks a record with no
+// recorded node keeps its volumes while QEMU teardown is outstanding: a node
+// that never ran the guest finds no PID file, which is not proof of exit.
+func TestS7_TeardownReaperDoesNotJudgeQEMUOnAnotherNode(t *testing.T) {
+	cleaner := &recordingInstanceCleaner{}
+	stuck, store := newStuckTerminateReaper(t, cleaner)
+	const id = "i-no-last-node"
+	require.NoError(t, store.WriteTerminatedInstance(id, &VM{
+		ID:       id,
+		Status:   StateTerminated,
+		Teardown: map[string]string{TeardownQEMU: string(TeardownFailed), TeardownVolumes: string(TeardownFailed)},
+	}))
+	_, err := stuck.m.NewTerminatedTeardownReaper().Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, cleaner.deleteVolumes)
+	assert.Equal(t, string(TeardownFailed), store.terminated[id].Teardown[TeardownQEMU])
+}

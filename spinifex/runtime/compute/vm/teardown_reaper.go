@@ -190,7 +190,10 @@ func (r *TerminatedTeardownReaper) retryOutstanding(v *VM) map[string]TeardownSt
 
 	// Volumes stay outstanding until no QEMU process for the instance is alive
 	// on this node; that proof is also what completes the QEMU teardown.
-	if qemuProvenGone(v.ID) {
+	// An outstanding QEMU teardown is judged only on the node that ran it: a
+	// missing PID file elsewhere proves nothing.
+	home := v.LastNode == r.m.deps.NodeID
+	if qemuProvenGone(v.ID) && (home || !outstanding(v, TeardownQEMU)) {
 		if outstanding(v, TeardownQEMU) {
 			results[TeardownQEMU] = TeardownDone
 		}

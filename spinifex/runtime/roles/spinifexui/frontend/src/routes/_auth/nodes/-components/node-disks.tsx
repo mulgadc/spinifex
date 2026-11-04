@@ -134,7 +134,7 @@ function Usage({ fs }: { fs: FilesystemFacts }) {
       )}
       {fs.usage && (
         <span className="text-2xs text-muted-foreground tabular-nums">
-          {formatDiskSize(fs.usage.used_bytes)} used of{" "}
+          {formatDiskSize(fs.usage.used_bytes)} /{" "}
           {formatDiskSize(fs.usage.size_bytes)}
         </span>
       )}
@@ -143,8 +143,57 @@ function Usage({ fs }: { fs: FilesystemFacts }) {
   )
 }
 
+const SPINIFEX_DATA = "/var/lib/spinifex"
+
+function underSpinifexData(fs: FilesystemFacts): boolean {
+  return fs.mount === SPINIFEX_DATA || fs.mount.startsWith(`${SPINIFEX_DATA}/`)
+}
+
+interface MountGroups {
+  spinifex: FilesystemFacts[]
+  system: FilesystemFacts[]
+}
+
+// Spinifex's own mounts: its data directory and what is mounted under it, and
+// any other path that binds the same directory, as shared propagation does.
+export function splitSpinifexMounts(
+  filesystems: FilesystemFacts[],
+): MountGroups {
+  const dataBinds = new Set(
+    filesystems.filter(underSpinifexData).flatMap((fs) => fs.bind_of ?? []),
+  )
+
+  const isSpinifex = (fs: FilesystemFacts) =>
+    underSpinifexData(fs) ||
+    (fs.bind_of !== undefined && dataBinds.has(fs.bind_of))
+
+  return {
+    spinifex: filesystems.filter(isSpinifex),
+    system: filesystems.filter((fs) => !isSpinifex(fs)),
+  }
+}
+
+function MountTable({
+  caption,
+  rows,
+}: {
+  caption: string
+  rows: FilesystemFacts[]
+}) {
+  return (
+    <DataTable
+      caption={caption}
+      columns={FILESYSTEM_COLUMNS}
+      empty="No filesystems reported."
+      getRowId={(fs) => `${fs.mount} ${fs.source} ${fs.bind_of ?? ""}`}
+      rows={rows}
+    />
+  )
+}
+
 // The node's drives as lsblk -d lists them, then its mounted filesystems as
-// df does. Pseudo filesystems such as tmpfs and efivarfs are not reported.
+// df does, Spinifex's apart from the system's. Pseudo filesystems such as
+// tmpfs and efivarfs are not reported.
 export function NodeDisks({ facts }: { facts: NodeFacts | undefined }) {
   if (!facts) {
     return (
@@ -155,6 +204,8 @@ export function NodeDisks({ facts }: { facts: NodeFacts | undefined }) {
       </PanelSection>
     )
   }
+
+  const { spinifex, system } = splitSpinifexMounts(facts.filesystems ?? [])
 
   return (
     <>
@@ -167,14 +218,13 @@ export function NodeDisks({ facts }: { facts: NodeFacts | undefined }) {
           rows={facts.disks ?? []}
         />
       </PanelSection>
-      <PanelSection title="Filesystems">
-        <DataTable
-          caption="Mounted filesystems"
-          columns={FILESYSTEM_COLUMNS}
-          empty="No filesystems reported."
-          getRowId={(fs) => fs.mount}
-          rows={facts.filesystems ?? []}
-        />
+      {spinifex.length > 0 && (
+        <PanelSection title="Spinifex mounts">
+          <MountTable caption="Spinifex mounts" rows={spinifex} />
+        </PanelSection>
+      )}
+      <PanelSection title="System mounts">
+        <MountTable caption="System mounts" rows={system} />
       </PanelSection>
     </>
   )

@@ -3,7 +3,12 @@ import { describe, expect, it } from "vitest"
 
 import type { NodeFacts } from "@/queries/nodes"
 
-import { formatDiskSize, NodeDisks, percentUsed } from "./node-disks"
+import {
+  formatDiskSize,
+  NodeDisks,
+  percentUsed,
+  splitSpinifexMounts,
+} from "./node-disks"
 
 const GIB = 1024 ** 3
 
@@ -109,21 +114,17 @@ describe("NodeDisks", () => {
       "Size",
       "Transport",
     ])
-    expect(headersOf("Mounted filesystems")).toStrictEqual([
-      "Mount",
-      "Drive",
-      "Use%",
-    ])
+    expect(headersOf("System mounts")).toStrictEqual(["Mount", "Drive", "Use%"])
   })
 
   it("lists filesystems with df's figures and names a bind by what it shows", () => {
     render(<NodeDisks facts={node} />)
 
-    const root = rowOf("Mounted filesystems", "/")
+    const root = rowOf("System mounts", "/")
 
     expect(root).toHaveTextContent("64%")
-    expect(root).toHaveTextContent("60.0 GiB used of 100.0 GiB")
-    expect(rowOf("Mounted filesystems", "/var/lib/spinifex")).toHaveTextContent(
+    expect(root).toHaveTextContent("60.0 GiB / 100.0 GiB")
+    expect(rowOf("Spinifex mounts", "/var/lib/spinifex")).toHaveTextContent(
       "bind of /mnt/disk2/spinifex",
     )
   })
@@ -131,19 +132,63 @@ describe("NodeDisks", () => {
   it("shows a full filesystem as full rather than blank", () => {
     render(<NodeDisks facts={node} />)
 
-    const full = rowOf("Mounted filesystems", "/srv")
+    const full = rowOf("System mounts", "/srv")
 
     expect(full).toHaveTextContent("100%")
-    expect(full).toHaveTextContent("47.0 GiB used of 50.0 GiB")
+    expect(full).toHaveTextContent("47.0 GiB / 50.0 GiB")
+  })
+
+  it("groups Spinifex's mounts apart from the system's", () => {
+    expect(
+      splitSpinifexMounts([
+        { mount: "/", source: "/dev/nvme0n1p2", type: "ext4" },
+        { mount: "/mnt/disk3", source: "/dev/sdb1", type: "ext4" },
+        {
+          mount: "/var/lib/spinifex/predastore",
+          source: "/dev/sdb1",
+          type: "ext4",
+          bind_of: "/mnt/disk3/predastore",
+        },
+        {
+          mount: "/mnt/disk2/spinifex/predastore",
+          source: "/dev/sdb1",
+          type: "ext4",
+          bind_of: "/mnt/disk3/predastore",
+        },
+        { mount: "/var/lib/spinifex-old", source: "/dev/sdc1", type: "ext4" },
+      ]),
+    ).toStrictEqual({
+      spinifex: [
+        expect.objectContaining({ mount: "/var/lib/spinifex/predastore" }),
+        expect.objectContaining({ mount: "/mnt/disk2/spinifex/predastore" }),
+      ],
+      system: [
+        expect.objectContaining({ mount: "/" }),
+        expect.objectContaining({ mount: "/mnt/disk3" }),
+        expect.objectContaining({ mount: "/var/lib/spinifex-old" }),
+      ],
+    })
+  })
+
+  it("leaves out the Spinifex section on a node with no Spinifex mounts", () => {
+    render(
+      <NodeDisks
+        facts={{ ...node, filesystems: node.filesystems?.slice(0, 1) }}
+      />,
+    )
+
+    expect(
+      screen.queryByRole("table", { name: "Spinifex mounts" }),
+    ).not.toBeInTheDocument()
   })
 
   it("says why a filesystem has no sizes", () => {
     render(<NodeDisks facts={node} />)
 
-    const hung = rowOf("Mounted filesystems", "/mnt/nfs")
+    const hung = rowOf("System mounts", "/mnt/nfs")
 
     expect(hung).toHaveTextContent("not answering")
-    expect(hung).not.toHaveTextContent("used of")
+    expect(hung).not.toHaveTextContent("GiB /")
     expect(within(hung).queryByRole("progressbar")).not.toBeInTheDocument()
   })
 

@@ -33,6 +33,7 @@ func sampleQuiescence(fence uint64) operatorv1.IAMQuiescence {
 // A normal deletion leaves the evaluation on the record, read back from the real
 // IAM account record, and DescribeAccountDeletion returns it.
 func TestDeletionRecordCarriesTheIAMQuiescence(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 

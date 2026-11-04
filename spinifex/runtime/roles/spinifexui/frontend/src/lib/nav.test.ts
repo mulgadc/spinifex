@@ -119,6 +119,16 @@ describe("breadcrumbTrail", () => {
     })
   })
 
+  it("names a policy by its ARN from the singly encoded path", () => {
+    const arn = "arn:aws:iam::000000000001:policy/AdministratorAccess"
+
+    expect(
+      breadcrumbTrail(NAV, `/iam/list-policies/${encodeURIComponent(arn)}`).at(
+        -1,
+      ),
+    ).toStrictEqual({ label: arn })
+  })
+
   it("is empty off the nav", () => {
     expect(breadcrumbTrail(NAV, "/login")).toStrictEqual([])
   })

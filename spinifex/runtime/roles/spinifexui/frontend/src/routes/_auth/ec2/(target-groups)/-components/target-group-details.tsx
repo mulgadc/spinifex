@@ -72,7 +72,7 @@ function Overview({ tg, active }: { tg: TargetGroup; active: boolean }) {
               <PanelField key={lbArn} label="Load balancer">
                 <Link
                   className="text-primary hover:underline"
-                  params={{ id: encodeURIComponent(lbArn) }}
+                  params={{ id: lbArn }}
                   to="/ec2/describe-load-balancers/$id"
                 >
                   {loadBalancerName(lbArn)}
@@ -232,7 +232,7 @@ export function TargetGroupDetails({
           <Link
             aria-label="Open target group page"
             className={buttonVariants({ size: "icon-sm", variant: "ghost" })}
-            params={{ id: encodeURIComponent(arn) }}
+            params={{ id: arn }}
             search={{ tab }}
             to="/ec2/describe-target-groups/$id"
           >

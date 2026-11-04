@@ -169,7 +169,7 @@ export function AttachedPoliciesPanel({
                 <Link
                   className="text-primary hover:underline"
                   params={{
-                    policyArn: encodeURIComponent(policy.PolicyArn ?? ""),
+                    policyArn: policy.PolicyArn ?? "",
                   }}
                   to="/iam/list-policies/$policyArn"
                 >

@@ -21,7 +21,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   const { mockRouter } = await import("@/test/router")
 
   return await mockRouter(importOriginal, {
-    params: { id: encodeURIComponent("arn:tg:1") },
+    params: { id: "arn:tg:1" },
   })
 })
 

@@ -315,7 +315,7 @@ export function LoadBalancerDetails({
           <Link
             aria-label="Open load balancer page"
             className={buttonVariants({ size: "icon-sm", variant: "ghost" })}
-            params={{ id: encodeURIComponent(arn) }}
+            params={{ id: arn }}
             search={{ tab }}
             to="/ec2/describe-load-balancers/$id"
           >

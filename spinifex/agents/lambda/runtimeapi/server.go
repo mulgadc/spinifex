@@ -212,7 +212,7 @@ func (s *Server) response(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(body) > MaxResponseBytes {
 		msg := "Response payload size exceeded maximum allowed payload size (" + strconv.Itoa(MaxResponseBytes) + " bytes)."
-		s.complete(id, Result{Payload: ErrorBody(msg, ErrTypeResponseTooLarge), FunctionError: ErrTypeResponseTooLarge})
+		s.complete(id, Result{Payload: ErrorBody(msg, ErrTypeResponseTooLarge), FunctionError: ErrTypeUnhandled})
 		writeError(w, http.StatusRequestEntityTooLarge, errTypeTooLarge, msg)
 		return
 	}

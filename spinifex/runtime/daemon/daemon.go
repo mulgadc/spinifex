@@ -2536,6 +2536,7 @@ func (d *Daemon) startCluster() error {
 	if err := d.subscribeAll(); err != nil {
 		return fmt.Errorf("failed to subscribe to NATS topics: %w", err)
 	}
+	d.startLambdaTestLink()
 
 	// Ochre vector store platform appliance + VectorService, backgrounded:
 	// launching the appliance can block on a cold RDS VM boot for minutes, and

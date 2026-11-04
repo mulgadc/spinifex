@@ -3,24 +3,28 @@
 # + initramfs: a guest running the Lambda guest agent, with virtio-net for its
 # host control connection. It is not shipped.
 #
+# Usage: build-lambda-runtime-microvm-image.sh [agent-binary [output-dir]]
+#
 # Inputs:
 #   $REPO_ROOT/build/microvm/lambda-runtime/{init.sh,inittab,run-agent}
-#   $REPO_ROOT/bin/lambda-agent  (make bin/lambda-agent)
+#   agent binary, default $REPO_ROOT/bin/lambda-agent (make bin/lambda-agent)
 #
-# Outputs:
-#   $REPO_ROOT/build/microvm/lambda-runtime/vmlinuz
-#   $REPO_ROOT/build/microvm/lambda-runtime/initramfs.cpio.gz
+# Outputs, in output-dir (default $REPO_ROOT/build/microvm/lambda-runtime):
+#   vmlinuz
+#   initramfs.cpio.gz
 #
 # Rootfs strategy and module stripping: scripts/lib/microvm-image.sh.
 # shellcheck disable=SC2034 # variables are consumed by the sourced library
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD_DIR="$REPO_ROOT/build/microvm/lambda-runtime"
-INIT_SH="$BUILD_DIR/init.sh"
-INITTAB="$BUILD_DIR/inittab"
-RUN_AGENT="$BUILD_DIR/run-agent"
-LAMBDA_AGENT_BIN="$REPO_ROOT/bin/lambda-agent"
+INPUT_DIR="$REPO_ROOT/build/microvm/lambda-runtime"
+INIT_SH="$INPUT_DIR/init.sh"
+INITTAB="$INPUT_DIR/inittab"
+RUN_AGENT="$INPUT_DIR/run-agent"
+LAMBDA_AGENT_BIN="${1:-$REPO_ROOT/bin/lambda-agent}"
+# The library stages beside BUILD_DIR, so it names the output, not the inputs.
+BUILD_DIR="${2:-$INPUT_DIR}"
 TAG="[build-lambda-runtime-microvm-image]"
 
 ALPINE_VERSION="${ALPINE_VERSION:-3.24}"
@@ -38,7 +42,8 @@ MICROVM_GATE_MODULES="qemu_fw_cfg virtio_net"
 source "$REPO_ROOT/scripts/lib/microvm-image.sh"
 
 echo "$TAG repo root: $REPO_ROOT"
-echo "$TAG build dir: $BUILD_DIR"
+echo "$TAG input dir: $INPUT_DIR"
+echo "$TAG output dir: $BUILD_DIR"
 
 microvm_check_tools
 
@@ -57,6 +62,9 @@ if ! file -b "$LAMBDA_AGENT_BIN" | grep -q "statically linked"; then
     exit 1
 fi
 
+# Absolute, because packing the initramfs runs from inside the chroot.
+mkdir -p "$BUILD_DIR"
+BUILD_DIR=$(cd "$BUILD_DIR" && pwd)
 microvm_init_dirs
 microvm_make_rootfs
 microvm_empty_dev

@@ -279,7 +279,9 @@ func TestService_CreateCluster_RefusesTagBreaks(t *testing.T) {
 
 	_, err = svc.CreateCluster(ctx, &ecs.CreateClusterInput{
 		ClusterName: aws.String("web"),
-		Tags:        append(tagN(49), &ecs.Tag{Key: aws.String(strings.Repeat("é", 128)), Value: aws.String("ü _.:/=+-@ 1")}),
+		Tags: append(tagN(48),
+			&ecs.Tag{Key: aws.String(strings.Repeat("é", 128)), Value: aws.String("ü _.:/=+-@ 1")},
+			&ecs.Tag{Key: aws.String("long"), Value: aws.String(strings.Repeat("é", 256))}),
 	}, testAccountID)
 	require.NoError(t, err)
 }

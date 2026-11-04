@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
 	"strings"
 	"time"
@@ -120,12 +121,7 @@ func (s *SpotInstanceServiceImpl) DescribeSpotInstanceRequests(ctx context.Conte
 		return nil, err
 	}
 
-	idSet := make(map[string]bool)
-	for _, id := range input.SpotInstanceRequestIds {
-		if id != nil {
-			idSet[*id] = true
-		}
-	}
+	idSet := identifiers.Set(input.SpotInstanceRequestIds)
 
 	active, err := s.listRequests(ctx, s.activeKV, accountID)
 	if err != nil {

@@ -877,8 +877,8 @@ func (s *LaunchTemplateServiceImpl) DescribeLaunchTemplates(ctx context.Context,
 		}
 	}
 
-	nameSet := stringSet(input.LaunchTemplateNames)
-	idSet := stringSet(input.LaunchTemplateIds)
+	nameSet := awsidentifiers.Set(input.LaunchTemplateNames)
+	idSet := awsidentifiers.Set(input.LaunchTemplateIds)
 
 	prefix := accountID + "."
 	keys, err := s.kv.Keys(ctx)
@@ -1159,19 +1159,6 @@ func isHeaderKey(k, prefix string) bool {
 	}
 	rest := k[len(prefix):]
 	return strings.HasPrefix(rest, "lt-") && !strings.Contains(rest, ".")
-}
-
-func stringSet(in []*string) map[string]bool {
-	if len(in) == 0 {
-		return nil
-	}
-	set := make(map[string]bool, len(in))
-	for _, s := range in {
-		if s != nil {
-			set[*s] = true
-		}
-	}
-	return set
 }
 
 // validateTemplateID enforces the lt- id prefix so a syntactically invalid id

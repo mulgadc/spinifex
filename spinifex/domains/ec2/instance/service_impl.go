@@ -1507,7 +1507,7 @@ func (s *InstanceServiceImpl) ReplaceIamProfileAssociation(ctx context.Context, 
 // the caller. Supports "instance-id" and "state" filters; unknown filters return
 // InvalidParameterValue.
 func (s *InstanceServiceImpl) DescribeIamProfileAssociations(ctx context.Context, input *ec2.DescribeIamInstanceProfileAssociationsInput, accountID string) (*ec2.DescribeIamInstanceProfileAssociationsOutput, error) {
-	assocFilter := stringPtrSliceToSet(input.AssociationIds)
+	assocFilter := awsidentifiers.Set(input.AssociationIds)
 	instFilter := make(map[string]bool)
 	stateFilter := make(map[string]bool)
 	for _, f := range input.Filters {
@@ -1578,19 +1578,6 @@ func (s *InstanceServiceImpl) findInstanceByAssociationID(associationID, account
 		return "", false
 	}
 	return owner, true
-}
-
-func stringPtrSliceToSet(in []*string) map[string]bool {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]bool, len(in))
-	for _, s := range in {
-		if s != nil && *s != "" {
-			out[*s] = true
-		}
-	}
-	return out
 }
 
 func (s *InstanceServiceImpl) GenerateVolumes(ctx context.Context, input *ec2.RunInstancesInput, instance *vm.VM) ([]VolumeInfo, error) {

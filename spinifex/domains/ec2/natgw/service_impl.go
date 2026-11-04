@@ -368,12 +368,7 @@ func (s *NatGatewayServiceImpl) DescribeNatGateways(ctx context.Context, input *
 		return nil, err
 	}
 
-	natgwIDs := make(map[string]bool)
-	for _, id := range input.NatGatewayIds {
-		if id != nil {
-			natgwIDs[*id] = true
-		}
-	}
+	natgwIDs := awsidentifiers.Set(input.NatGatewayIds)
 
 	prefix := accountID + "."
 	keys, err := s.natgwKV.Keys(ctx)

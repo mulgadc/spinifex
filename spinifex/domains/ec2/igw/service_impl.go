@@ -219,12 +219,7 @@ func (s *IGWServiceImpl) DescribeInternetGateways(ctx context.Context, input *ec
 		return nil, err
 	}
 
-	igwIDs := make(map[string]bool)
-	for _, id := range input.InternetGatewayIds {
-		if id != nil {
-			igwIDs[*id] = true
-		}
-	}
+	igwIDs := awsidentifiers.Set(input.InternetGatewayIds)
 
 	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeIGWValidFilters)
 	if err != nil {

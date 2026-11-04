@@ -538,12 +538,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroups(ctx context.Context, input *ec2.
 		return nil, err
 	}
 
-	groupIDs := make(map[string]bool)
-	for _, id := range input.GroupIds {
-		if id != nil {
-			groupIDs[*id] = true
-		}
-	}
+	groupIDs := awsidentifiers.Set(input.GroupIds)
 
 	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeSecurityGroupsValidFilters)
 	if err != nil {

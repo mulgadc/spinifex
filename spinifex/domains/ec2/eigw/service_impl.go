@@ -158,12 +158,7 @@ var describeEIGWValidFilters = map[string]bool{
 func (s *EgressOnlyIGWServiceImpl) DescribeEgressOnlyInternetGateways(ctx context.Context, input *ec2.DescribeEgressOnlyInternetGatewaysInput, accountID string) (*ec2.DescribeEgressOnlyInternetGatewaysOutput, error) {
 	var egressOnlyIGWs []*ec2.EgressOnlyInternetGateway
 
-	eigwIDs := make(map[string]bool)
-	for _, id := range input.EgressOnlyInternetGatewayIds {
-		if id != nil {
-			eigwIDs[*id] = true
-		}
-	}
+	eigwIDs := awsidentifiers.Set(input.EgressOnlyInternetGatewayIds)
 
 	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeEIGWValidFilters)
 	if err != nil {

@@ -295,6 +295,6 @@ func TestHungMountLeavesFactsAndNetTestSetupAnswering(t *testing.T) {
 		require.Less(t, time.Since(start), time.Second, "neither waits on the hung mount")
 
 		require.Len(t, got.Filesystems, 2)
-		return got.Filesystems[0].SizeBytes == 100*4096 && got.Filesystems[1].Error == "not answering"
+		return got.Filesystems[0].Usage != nil && got.Filesystems[0].Usage.SizeBytes == 100*4096 && got.Filesystems[1].Error == "not answering"
 	}, 5*time.Second, 20*time.Millisecond)
 }

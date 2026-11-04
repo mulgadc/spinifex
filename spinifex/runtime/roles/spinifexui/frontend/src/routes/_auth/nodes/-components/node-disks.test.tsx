@@ -34,9 +34,11 @@ const node = {
       source: "/dev/nvme0n1p2",
       disk: "nvme0n1",
       type: "ext4",
-      size_bytes: 100 * GIB,
-      used_bytes: 60 * GIB,
-      avail_bytes: 35 * GIB,
+      usage: {
+        size_bytes: 100 * GIB,
+        used_bytes: 60 * GIB,
+        avail_bytes: 35 * GIB,
+      },
     },
     {
       mount: "/var/lib/spinifex",
@@ -44,9 +46,18 @@ const node = {
       disk: "sda",
       type: "xfs",
       bind_of: "/mnt/disk2/spinifex",
-      size_bytes: 7000 * GIB,
-      used_bytes: 1000 * GIB,
-      avail_bytes: 6000 * GIB,
+      usage: {
+        size_bytes: 7000 * GIB,
+        used_bytes: 1000 * GIB,
+        avail_bytes: 6000 * GIB,
+      },
+    },
+    {
+      mount: "/srv",
+      source: "/dev/sda2",
+      disk: "sda",
+      type: "ext4",
+      usage: { size_bytes: 50 * GIB, used_bytes: 47 * GIB, avail_bytes: 0 },
     },
     {
       mount: "/mnt/nfs",
@@ -97,6 +108,15 @@ describe("NodeDisks", () => {
     )
   })
 
+  it("shows no space left on a full filesystem rather than a blank", () => {
+    render(<NodeDisks facts={node} />)
+
+    const full = rowOf("Mounted filesystems", "/srv")
+
+    expect(full).toHaveTextContent("0.0 GiB")
+    expect(full).toHaveTextContent("100%")
+  })
+
   it("says why a filesystem has no sizes", () => {
     render(<NodeDisks facts={node} />)
 
@@ -127,9 +147,7 @@ describe("disk figures", () => {
         mount: "/",
         source: "",
         type: "ext4",
-        size_bytes: 1000,
-        used_bytes: 901,
-        avail_bytes: 99,
+        usage: { size_bytes: 1000, used_bytes: 901, avail_bytes: 99 },
       }),
     ).toBe(91)
   })

@@ -24,10 +24,13 @@ const TRANSPORT_LABELS = new Map([
 // Use% as df reports it: used over what an unprivileged user could hold,
 // rounded up so a nearly full filesystem never reads as having room.
 export function percentUsed(fs: FilesystemFacts): number | undefined {
-  const used = fs.used_bytes ?? 0
-  const room = used + (fs.avail_bytes ?? 0)
+  if (!fs.usage) {
+    return undefined
+  }
 
-  return fs.size_bytes && room > 0 ? Math.ceil((used / room) * 100) : undefined
+  const { used_bytes: used, avail_bytes: avail } = fs.usage
+
+  return used + avail > 0 ? Math.ceil((used / (used + avail)) * 100) : undefined
 }
 
 const DRIVE_COLUMNS: DataColumn<DiskFacts>[] = [
@@ -110,21 +113,21 @@ const FILESYSTEM_COLUMNS: DataColumn<FilesystemFacts>[] = [
   {
     id: "size",
     header: "Size",
-    sortValue: (fs) => fs.size_bytes,
-    cell: (fs) => <Bytes value={fs.size_bytes} />,
+    sortValue: (fs) => fs.usage?.size_bytes,
+    cell: (fs) => <Bytes value={fs.usage?.size_bytes} />,
   },
   {
     id: "used",
     header: "Used",
     hideBelow: "lg",
-    sortValue: (fs) => fs.used_bytes,
-    cell: (fs) => <Bytes value={fs.size_bytes && fs.used_bytes} />,
+    sortValue: (fs) => fs.usage?.used_bytes,
+    cell: (fs) => <Bytes value={fs.usage?.used_bytes} />,
   },
   {
     id: "avail",
     header: "Available",
-    sortValue: (fs) => fs.avail_bytes,
-    cell: (fs) => <Bytes value={fs.size_bytes && fs.avail_bytes} />,
+    sortValue: (fs) => fs.usage?.avail_bytes,
+    cell: (fs) => <Bytes value={fs.usage?.avail_bytes} />,
   },
   {
     id: "use",

@@ -126,10 +126,15 @@ export interface FilesystemFacts {
   disk?: string
   type: string
   bind_of?: string
-  size_bytes?: number
-  used_bytes?: number
-  avail_bytes?: number
+  usage?: FilesystemUsage
   error?: string
+}
+
+// Absent until the filesystem has been read; a full one reports avail_bytes 0.
+export interface FilesystemUsage {
+  size_bytes: number
+  used_bytes: number
+  avail_bytes: number
 }
 
 export type FormFactor =

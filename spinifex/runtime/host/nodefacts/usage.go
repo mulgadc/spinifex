@@ -26,9 +26,14 @@ type usageReading struct {
 	stalled           bool
 }
 
-// UsageProber keeps the last statfs reading of each mount. A context cannot
-// cancel statfs on a hung mount, so a probe runs in its own goroutine and a
-// mount is not probed again until its previous call returns.
+// Mount is one filesystem to probe: its ID from FilesystemFacts and its path.
+type Mount struct {
+	ID, Path string
+}
+
+// UsageProber keeps the last statfs reading of each mount, by mount ID. A
+// context cannot cancel statfs on a hung mount, so a probe runs in its own
+// goroutine and a mount is not probed again until its previous call returns.
 type UsageProber struct {
 	// Statfs reads one mount; nil means unix.Statfs.
 	Statfs   func(path string, st *unix.Statfs_t) error
@@ -40,7 +45,7 @@ type UsageProber struct {
 }
 
 // Run probes the mounts Mounts returns now and every interval until ctx ends.
-func (p *UsageProber) Run(ctx context.Context, mounts func() []string, interval time.Duration) {
+func (p *UsageProber) Run(ctx context.Context, mounts func() []Mount, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -54,8 +59,9 @@ func (p *UsageProber) Run(ctx context.Context, mounts func() []string, interval 
 }
 
 // Probe reads every mount at once and returns when each has answered or the
-// deadline has passed. A mount that misses it keeps its last good reading.
-func (p *UsageProber) Probe(mounts []string) {
+// deadline has passed. A mount that misses it keeps its last good reading,
+// and a mount no longer listed is forgotten once it is not being read.
+func (p *UsageProber) Probe(mounts []Mount) {
 	statfs := p.Statfs
 	if statfs == nil {
 		statfs = unix.Statfs
@@ -69,18 +75,25 @@ func (p *UsageProber) Probe(mounts []string) {
 	if p.readings == nil {
 		p.readings, p.inflight = map[string]usageReading{}, map[string]bool{}
 	}
+	listed := map[string]bool{}
 	done := map[string]chan struct{}{}
 	for _, m := range mounts {
-		if p.inflight[m] {
-			r := p.readings[m]
+		listed[m.ID] = true
+		if p.inflight[m.ID] {
+			r := p.readings[m.ID]
 			r.stalled = true
-			p.readings[m] = r
+			p.readings[m.ID] = r
 			continue
 		}
-		p.inflight[m] = true
+		p.inflight[m.ID] = true
 		ch := make(chan struct{})
-		done[m] = ch
+		done[m.ID] = ch
 		go p.read(m, statfs, ch)
+	}
+	for id := range p.readings {
+		if !listed[id] && !p.inflight[id] {
+			delete(p.readings, id)
+		}
 	}
 	p.mu.Unlock()
 
@@ -111,19 +124,19 @@ func (p *UsageProber) markStalled(done map[string]chan struct{}) {
 	}
 }
 
-func (p *UsageProber) read(mount string, statfs func(string, *unix.Statfs_t) error, done chan struct{}) {
+func (p *UsageProber) read(m Mount, statfs func(string, *unix.Statfs_t) error, done chan struct{}) {
 	var st unix.Statfs_t
-	err := statfs(mount, &st)
+	err := statfs(m.Path, &st)
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	defer close(done)
-	p.inflight[mount] = false
-	r := p.readings[mount]
+	delete(p.inflight, m.ID)
+	r := p.readings[m.ID]
 	r.stalled = false
 	if err != nil {
 		r.err = err
-		p.readings[mount] = r
+		p.readings[m.ID] = r
 		return
 	}
 	block := st.Frsize
@@ -132,7 +145,7 @@ func (p *UsageProber) read(mount string, statfs func(string, *unix.Statfs_t) err
 	}
 	if block <= 0 {
 		r.err = errNoBlockSize
-		p.readings[mount] = r
+		p.readings[m.ID] = r
 		return
 	}
 	r = usageReading{
@@ -141,14 +154,16 @@ func (p *UsageProber) read(mount string, statfs func(string, *unix.Statfs_t) err
 		avail: st.Bavail * uint64(block),
 		at:    time.Now(),
 	}
-	p.readings[mount] = r
+	p.readings[m.ID] = r
 }
 
-// Mounts lists the mounts of fs, the paths Probe takes.
-func Mounts(fs []clusterv1.FilesystemFacts) []string {
-	out := make([]string, 0, len(fs))
+// Mounts lists the mounts of fs that the daemon can see, as Probe takes them.
+func Mounts(fs []clusterv1.FilesystemFacts) []Mount {
+	out := make([]Mount, 0, len(fs))
 	for _, f := range fs {
-		out = append(out, f.Mount)
+		if f.ID != "" {
+			out = append(out, Mount{ID: f.ID, Path: f.Mount})
+		}
 	}
 	return out
 }
@@ -159,19 +174,23 @@ func (p *UsageProber) Apply(fs []clusterv1.FilesystemFacts) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for i := range fs {
-		r, ok := p.readings[fs[i].Mount]
+		if fs[i].ID == "" {
+			continue
+		}
+		r, ok := p.readings[fs[i].ID]
 		switch {
 		case !ok:
 			fs[i].Error = "not read yet"
 			continue
 		case r.stalled && r.at.IsZero():
 			fs[i].Error = "not answering"
+			continue
 		case r.stalled:
 			fs[i].Error = "not answering; sizes as of " + r.at.UTC().Format(time.RFC3339)
 		case r.err != nil:
 			fs[i].Error = r.err.Error()
 			continue
 		}
-		fs[i].SizeBytes, fs[i].UsedBytes, fs[i].AvailBytes = r.size, r.used, r.avail
+		fs[i].Usage = &clusterv1.FilesystemUsage{SizeBytes: r.size, UsedBytes: r.used, AvailBytes: r.avail}
 	}
 }

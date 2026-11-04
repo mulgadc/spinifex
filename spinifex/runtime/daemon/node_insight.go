@@ -74,7 +74,7 @@ func (n *nodeInsight) currentFacts(ctx context.Context) clusterv1.NodeFacts {
 
 // probeUsage reads every filesystem's usage now and each interval until ctx ends.
 func (n *nodeInsight) probeUsage(ctx context.Context) {
-	n.usage.Run(ctx, func() []string {
+	n.usage.Run(ctx, func() []nodefacts.Mount {
 		return nodefacts.Mounts(nodefacts.Filesystems(n.env))
 	}, nodefacts.UsageInterval)
 }

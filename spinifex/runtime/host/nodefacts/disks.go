@@ -89,13 +89,20 @@ func readTrimmed(parts ...string) string {
 	return strings.TrimSpace(string(data))
 }
 
+// notVisible is the Error of a mount another mount covers in the daemon's
+// namespace, as ProtectHome covers /home, so its usage cannot be read here.
+const notVisible = "not visible to the daemon"
+
 // mountEntry is one line of mountinfo.
 type mountEntry struct {
+	id     string
+	parent string
 	device string // major:minor
 	root   string
 	mount  string
 	fsType string
 	source string
+	hidden bool
 }
 
 // Filesystems lists mounted filesystems from mountinfo, without usage. A bind
@@ -120,7 +127,10 @@ func Filesystems(env Env) []clusterv1.FilesystemFacts {
 			continue
 		}
 		seen[key] = true
-		fs := clusterv1.FilesystemFacts{Mount: m.mount, Source: m.source, Type: m.fsType}
+		fs := clusterv1.FilesystemFacts{Mount: m.mount, Source: m.source, Type: m.fsType, ID: m.id + " " + key}
+		if m.hidden {
+			fs.ID, fs.Error = "", notVisible
+		}
 		if base, ok := whole[m.device]; ok && m.root != "/" {
 			fs.BindOf = filepath.Join(base, m.root)
 			if fs.BindOf == m.mount {
@@ -133,13 +143,15 @@ func Filesystems(env Env) []clusterv1.FilesystemFacts {
 	return out
 }
 
+// mountEntries reads the real filesystems from mountinfo, marking those a
+// different filesystem covers, and every mount beneath them, as hidden.
 func mountEntries(path string) []mountEntry {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil
 	}
 	defer f.Close()
-	var out []mountEntry
+	var all []mountEntry
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		fields := strings.Fields(sc.Text())
@@ -147,15 +159,38 @@ func mountEntries(path string) []mountEntry {
 		if sep < 6 || len(fields) < sep+3 {
 			continue
 		}
-		m := mountEntry{
+		all = append(all, mountEntry{
+			id:     fields[0],
+			parent: fields[1],
 			device: fields[2],
 			root:   unescapeMount(fields[3]),
 			mount:  unescapeMount(fields[4]),
 			fsType: fields[sep+1],
 			source: unescapeMount(fields[sep+2]),
+		})
+	}
+	covered := map[string]bool{}
+	parentOf := map[string]string{}
+	byID := map[string]mountEntry{}
+	for _, m := range all {
+		parentOf[m.id], byID[m.id] = m.parent, m
+	}
+	for _, m := range all {
+		// A re-mount of the same directory over itself still shows it.
+		if p, ok := byID[m.parent]; ok && p.mount == m.mount && (p.device != m.device || p.root != m.root) {
+			covered[p.id] = true
 		}
+	}
+	var out []mountEntry
+	for _, m := range all {
 		if pseudoFSTypes[m.fsType] || (m.fsType != "zfs" && !strings.HasPrefix(m.source, "/dev/")) {
 			continue
+		}
+		for id, depth := m.id, 0; id != "" && depth < len(all); id, depth = parentOf[id], depth+1 {
+			if covered[id] {
+				m.hidden = true
+				break
+			}
 		}
 		out = append(out, m)
 	}

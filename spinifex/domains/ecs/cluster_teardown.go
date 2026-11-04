@@ -56,7 +56,9 @@ func (s *Service) DeleteCluster(ctx context.Context, input *ecs.DeleteClusterInp
 	}
 
 	rec.Status = ClusterStatusInactive
-	return &ecs.DeleteClusterOutput{Cluster: rec.toAWS()}, nil
+	c := rec.toAWS()
+	c.Tags = []*ecs.Tag{}
+	return &ecs.DeleteClusterOutput{Cluster: c}, nil
 }
 
 // DeregisterContainerInstance removes a container instance from a cluster. With

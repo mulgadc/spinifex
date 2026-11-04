@@ -137,11 +137,9 @@ func TestErrorEnvelope_ThrottleOverride(t *testing.T) {
 }
 
 func TestErrorEnvelope_DispatcherError(t *testing.T) {
-	notFound := awserrors.WithFields(
-		awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "bad value"),
-		map[string]string{"Reason": "Because"})
+	notFound := awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "bad value")
 
-	t.Run("REST-JSON uses the code as the type and carries service fields", func(t *testing.T) {
+	t.Run("REST-JSON uses the code as the type", func(t *testing.T) {
 		c := &dispatchCapture{dispatchErr: notFound}
 		_, app := dispatchSeamApp(t, allowAllECRDocs(), envelopeRegistration(restJSONService, dispatch.ErrorEnvelopeRESTJSON, c, nil))
 		resp := doRequest(app, signDispatchRequest(t, restJSONService, []byte("{}")))
@@ -149,7 +147,7 @@ func TestErrorEnvelope_DispatcherError(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 		assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 		assert.Equal(t, "InvalidParameterValue", resp.Header.Get("X-Amzn-Errortype"))
-		assert.Equal(t, `{"Reason":"Because","Type":"User","message":"bad value"}`, bodyString(t, resp))
+		assert.Equal(t, `{"Type":"User","message":"bad value"}`, bodyString(t, resp))
 	})
 
 	t.Run("REST-JSON server fault is Type Service with its own status", func(t *testing.T) {

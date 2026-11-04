@@ -443,6 +443,9 @@ func (t *smithyTranslator) applyShapeTraits(shape *Shape, traits smithyTraits) e
 	if shape.Pattern, err = traits.string("smithy.api#pattern"); err != nil {
 		return err
 	}
+	if shape.Documentation, err = traits.string("smithy.api#documentation"); err != nil {
+		return err
+	}
 	if shape.LocationName, err = traits.string("smithy.api#xmlName"); err != nil {
 		return err
 	}

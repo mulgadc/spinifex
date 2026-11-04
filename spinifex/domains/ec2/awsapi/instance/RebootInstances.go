@@ -87,7 +87,7 @@ func RebootInstances(ctx context.Context, input *ec2.RebootInstancesInput, natsC
 			case state != bucketStateAbsent:
 				return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
 			case queryOK:
-				return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+				return nil, awserrors.IDNotFound(awserrors.ErrorInvalidInstanceIDNotFound, "instance", instanceID)
 			default:
 				return nil, errors.New(awserrors.ErrorServerInternal)
 			}

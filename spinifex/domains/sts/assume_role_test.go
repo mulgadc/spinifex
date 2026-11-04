@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"strings"
 	"testing"
@@ -195,7 +196,7 @@ func TestAssumeRole_ExplicitDenyWinsOverAllow(t *testing.T) {
 
 	_, err := svc.AssumeRole(testCallerAccountID, caller, testCallerUserName,
 		basicAssumeRoleInput(*role.Arn, "sess"))
-	requireAWSError(t, err, awserrors.ErrorAccessDenied, assumeRoleDeniedMessage(caller, *role.Arn))
+	testutil.RequireAWSError(t, err, awserrors.ErrorAccessDenied, assumeRoleDeniedMessage(caller, *role.Arn))
 
 	// And in the opposite order: Deny first, Allow second — same result.
 	policyDenyThenAllow := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[
@@ -216,7 +217,7 @@ func TestAssumeRole_NoMatchingAllow_AccessDenied(t *testing.T) {
 
 	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
 		basicAssumeRoleInput(*role.Arn, "sess"))
-	requireAWSError(t, err, awserrors.ErrorAccessDenied, assumeRoleDeniedMessage(testCallerARN(), *role.Arn))
+	testutil.RequireAWSError(t, err, awserrors.ErrorAccessDenied, assumeRoleDeniedMessage(testCallerARN(), *role.Arn))
 }
 
 func TestAssumeRole_SameAccountRoleNotFound_AccessDenied(t *testing.T) {
@@ -227,7 +228,7 @@ func TestAssumeRole_SameAccountRoleNotFound_AccessDenied(t *testing.T) {
 	roleARN := fmt.Sprintf("arn:aws:iam::%s:role/team/ghost", testCallerAccountID)
 	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
 		basicAssumeRoleInput(roleARN, "sess"))
-	requireAWSError(t, err, awserrors.ErrorAccessDenied, assumeRoleDeniedMessage(testCallerARN(), roleARN))
+	testutil.RequireAWSError(t, err, awserrors.ErrorAccessDenied, assumeRoleDeniedMessage(testCallerARN(), roleARN))
 }
 
 func TestAssumeRole_CrossAccountRoleNotFound_AccessDenied(t *testing.T) {
@@ -239,7 +240,7 @@ func TestAssumeRole_CrossAccountRoleNotFound_AccessDenied(t *testing.T) {
 	roleARN := fmt.Sprintf("arn:aws:iam::%s:role/ghost", testCrossAccountID)
 	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
 		basicAssumeRoleInput(roleARN, "sess"))
-	requireAWSError(t, err, awserrors.ErrorAccessDenied, assumeRoleDeniedMessage(testCallerARN(), roleARN))
+	testutil.RequireAWSError(t, err, awserrors.ErrorAccessDenied, assumeRoleDeniedMessage(testCallerARN(), roleARN))
 }
 
 func TestAssumeRole_DurationBounds(t *testing.T) {
@@ -270,7 +271,7 @@ func TestAssumeRole_DurationBounds(t *testing.T) {
 			}
 			_, err := svc.AssumeRole(testCallerAccountID, caller, testCallerUserName, input)
 			if tc.wantErr {
-				requireAWSError(t, err, awserrors.ErrorValidationError, tc.wantMessage)
+				testutil.RequireAWSError(t, err, awserrors.ErrorValidationError, tc.wantMessage)
 				return
 			}
 			require.NoError(t, err)
@@ -305,7 +306,7 @@ func TestAssumeRole_LongerMaxSessionDuration_CapAtTwelveHours(t *testing.T) {
 			RoleSessionName: aws.String("sess2"),
 			DurationSeconds: aws.Int64(maxDurationSeconds + 1),
 		})
-	requireAWSError(t, err, awserrors.ErrorValidationError,
+	testutil.RequireAWSError(t, err, awserrors.ErrorValidationError,
 		"1 validation error detected: Value '43201' at 'durationSeconds' failed to satisfy constraint: "+
 			"Member must have value less than or equal to 43200")
 }
@@ -319,14 +320,14 @@ func TestAssumeRole_ConstraintsCheckedBeforeRoleAndReportedTogether(t *testing.T
 	input := basicAssumeRoleInput(missing, "sess")
 	input.DurationSeconds = aws.Int64(899)
 	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, input)
-	requireAWSError(t, err, awserrors.ErrorValidationError,
+	testutil.RequireAWSError(t, err, awserrors.ErrorValidationError,
 		"1 validation error detected: Value '899' at 'durationSeconds' failed to satisfy constraint: "+
 			"Member must have value greater than or equal to 900")
 
 	input = basicAssumeRoleInput(missing, "bad name!")
 	input.DurationSeconds = aws.Int64(43201)
 	_, err = svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, input)
-	requireAWSError(t, err, awserrors.ErrorValidationError,
+	testutil.RequireAWSError(t, err, awserrors.ErrorValidationError,
 		"2 validation errors detected: Value '43201' at 'durationSeconds' failed to satisfy constraint: "+
 			"Member must have value less than or equal to 43200; "+
 			"Value 'bad name!' at 'roleSessionName' failed to satisfy constraint: "+
@@ -411,17 +412,6 @@ func assertErrorCode(t *testing.T, err error, wantCode string) {
 	assert.Equal(t, wantCode, code)
 }
 
-// requireAWSError pins the code and the exact client-facing message; an empty
-// wantMessage asserts the bare code with no message attached.
-func requireAWSError(t *testing.T, err error, wantCode, wantMessage string) {
-	t.Helper()
-	require.Error(t, err)
-	code, message, ok := awserrors.ResolveErrorDetail(err)
-	require.True(t, ok, "error must carry a registered code: %v", err)
-	assert.Equal(t, wantCode, code)
-	assert.Equal(t, wantMessage, message)
-}
-
 // assumeRoleDeniedMessage is AWS's AccessDenied text, naming the RoleArn as supplied.
 func assumeRoleDeniedMessage(callerARN, roleARN string) string {
 	return fmt.Sprintf("User: %s is not authorized to perform: sts:AssumeRole on resource: %s", callerARN, roleARN)
@@ -503,7 +493,7 @@ func TestAssumeRole_RejectsMFA(t *testing.T) {
 			input := basicAssumeRoleInput(*role.Arn, "sess")
 			input.SerialNumber, input.TokenCode = tc.serialNumber, tc.tokenCode
 			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, input)
-			requireAWSError(t, err, awserrors.ErrorValidationError, tc.wantMessage)
+			testutil.RequireAWSError(t, err, awserrors.ErrorValidationError, tc.wantMessage)
 		})
 	}
 }
@@ -582,13 +572,13 @@ func TestAssumeRole_RejectsInvalidSessionName(t *testing.T) {
 		t.Run("session_"+tc.name, func(t *testing.T) {
 			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
 				basicAssumeRoleInput(*role.Arn, tc.name))
-			requireAWSError(t, err, awserrors.ErrorValidationError, tc.wantMessage)
+			testutil.RequireAWSError(t, err, awserrors.ErrorValidationError, tc.wantMessage)
 		})
 	}
 
 	_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
 		basicAssumeRoleInput(*role.Arn, ""))
-	requireAWSError(t, err, awserrors.ErrorMissingParameter, "")
+	testutil.RequireAWSError(t, err, awserrors.ErrorMissingParameter, "")
 }
 
 func TestAssumeRole_RejectsMissingRequiredFields(t *testing.T) {
@@ -984,7 +974,7 @@ func TestAssumeRoleForInstance_AWSOnlyPrincipal_Denied(t *testing.T) {
 
 	// IMDS has no caller ARN to name, so the denial carries the bare code.
 	_, err := svc.AssumeRoleForInstance(testCallerAccountID, *role.Arn, testInstanceID, defaultDurationSeconds)
-	requireAWSError(t, err, awserrors.ErrorAccessDenied, "")
+	testutil.RequireAWSError(t, err, awserrors.ErrorAccessDenied, "")
 }
 
 // Regression: the EC2 service principal must remain unreachable over the HTTPS
@@ -1030,7 +1020,7 @@ func TestAssumeRoleForInstance_CrossAccountRoleMiss_AccessDenied(t *testing.T) {
 	// missing — masked to AccessDenied to prevent cross-account enumeration.
 	_, err := svc.AssumeRoleForInstance(testCallerAccountID,
 		fmt.Sprintf("arn:aws:iam::%s:role/ghost", testCrossAccountID), testInstanceID, defaultDurationSeconds)
-	requireAWSError(t, err, awserrors.ErrorAccessDenied, "")
+	testutil.RequireAWSError(t, err, awserrors.ErrorAccessDenied, "")
 }
 
 func TestAssumeRole_RetriesOnAKIDCollision(t *testing.T) {

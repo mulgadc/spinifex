@@ -960,10 +960,10 @@ func shardFilter(shard message.Shard) string {
 // (after, bound] until fn returns false. Each match is a leader message get,
 // which returns the whole body: a follower's consumer may lag applied purges.
 func readRange(ctx context.Context, js jsapi.JetStream, stream, filter string, after, bound uint64, fn func(*jsapi.RawStreamMsg) (bool, error)) (uint64, bool, error) {
-	req := msgGetRequest{NextFor: filter}
+	req := kvutil.MsgGetRequest{NextFor: filter}
 	for after < bound {
 		req.Seq = after + 1
-		msg, err := leaderMsgGet(ctx, js, stream, req)
+		msg, err := kvutil.LeaderMsgGet(ctx, js, stream, req)
 		switch {
 		case errors.Is(err, jsapi.ErrMsgNotFound):
 			return bound, true, nil

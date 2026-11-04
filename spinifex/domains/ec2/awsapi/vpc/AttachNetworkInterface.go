@@ -69,7 +69,7 @@ func AttachNetworkInterface(ctx context.Context, input *ec2.AttachNetworkInterfa
 		slog.ErrorContext(ctx, "AttachNetworkInterface: NATS request failed",
 			"instanceId", instanceID, "eniId", eniID, "err", err)
 		if errors.Is(err, nats.ErrNoResponders) {
-			return output, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+			return output, awserrors.IDNotFound(awserrors.ErrorInvalidInstanceIDNotFound, "instance", instanceID)
 		}
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}

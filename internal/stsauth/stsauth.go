@@ -8,8 +8,8 @@ package stsauth
 import (
 	"fmt"
 	"net/http"
-	"time"
 
+	awsv2 "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go/aws"
 	awscreds "github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -20,24 +20,15 @@ import (
 // scope and the gateway does not enforce a specific value.
 const defaultRegion = "us-east-1"
 
-// Credentials is the decoded result of AssumeRole: a SigV4 credential set bound
-// to the assumed role, with its expiry.
-type Credentials struct {
-	AccessKeyID     string
-	SecretAccessKey string
-	SessionToken    string
-	Expiration      time.Time
-}
-
 // AssumeRole builds an aws-sdk STS client pointed at the gateway and calls
 // AssumeRole with the supplied static (instance-role) credentials, returning the
 // assumed-role credential set. httpClient must trust the gateway CA.
-func AssumeRole(region, gatewayURL string, httpClient *http.Client, akid, secret, sessionToken, roleARN, sessionName string) (Credentials, error) {
+func AssumeRole(region, gatewayURL string, httpClient *http.Client, akid, secret, sessionToken, roleARN, sessionName string) (awsv2.Credentials, error) {
 	if region == "" {
 		region = defaultRegion
 	}
 	if roleARN == "" || sessionName == "" {
-		return Credentials{}, fmt.Errorf("stsauth: roleARN and sessionName are required")
+		return awsv2.Credentials{}, fmt.Errorf("stsauth: roleARN and sessionName are required")
 	}
 	sess, err := session.NewSession(&aws.Config{
 		Region:      aws.String(region),
@@ -47,7 +38,7 @@ func AssumeRole(region, gatewayURL string, httpClient *http.Client, akid, secret
 		DisableSSL:  aws.Bool(false),
 	})
 	if err != nil {
-		return Credentials{}, fmt.Errorf("new session: %w", err)
+		return awsv2.Credentials{}, fmt.Errorf("new session: %w", err)
 	}
 
 	out, err := sts.New(sess).AssumeRole(&sts.AssumeRoleInput{
@@ -55,16 +46,17 @@ func AssumeRole(region, gatewayURL string, httpClient *http.Client, akid, secret
 		RoleSessionName: aws.String(sessionName),
 	})
 	if err != nil {
-		return Credentials{}, fmt.Errorf("AssumeRole: %w", err)
+		return awsv2.Credentials{}, fmt.Errorf("AssumeRole: %w", err)
 	}
 	if out.Credentials == nil {
-		return Credentials{}, fmt.Errorf("AssumeRole returned no credentials")
+		return awsv2.Credentials{}, fmt.Errorf("AssumeRole returned no credentials")
 	}
 	c := out.Credentials
-	return Credentials{
+	return awsv2.Credentials{
 		AccessKeyID:     aws.StringValue(c.AccessKeyId),
 		SecretAccessKey: aws.StringValue(c.SecretAccessKey),
 		SessionToken:    aws.StringValue(c.SessionToken),
-		Expiration:      aws.TimeValue(c.Expiration),
+		CanExpire:       c.Expiration != nil,
+		Expires:         aws.TimeValue(c.Expiration),
 	}, nil
 }

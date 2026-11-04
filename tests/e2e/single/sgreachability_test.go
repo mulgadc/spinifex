@@ -60,8 +60,8 @@ func runSGReachabilityPolicy(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — SG reachability policy: deny, authorize, resolve, and egress-enforce around one guest")
 
 	vpcID, _, subnetID := harness.DiscoverDefaultVPC(t, fix.AWS)
-	instType, _ := needInstanceTypeArch(t, fix)
-	keyName, keyPath := needKeyPair(t, fix)
+	instType, _ := harness.DiscoverNanoInstanceType(t, fix.Harness)
+	keyName, keyPath := harness.EnsureKeyPair(t, fix.Harness)
 	ami := needAMI(t, fix)
 
 	// Dedicated SG, mutated by this scenario alone (its own egress is

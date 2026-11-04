@@ -110,7 +110,7 @@ func DetachVolume(ctx context.Context, input *ec2.DetachVolumeInput, natsConn *n
 			if force {
 				return forceDetach(ctx, natsConn, accountID, volumeID, instanceID)
 			}
-			return output, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+			return output, awserrors.IDNotFound(awserrors.ErrorInvalidInstanceIDNotFound, "instance", instanceID)
 		}
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}

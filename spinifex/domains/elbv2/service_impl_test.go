@@ -357,6 +357,42 @@ func TestDescribeLoadBalancers_UnknownNameReturnsNotFound(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorELBv2LoadBalancerNotFound, code)
 }
 
+func TestDescribeLoadBalancers_UnknownArnReturnsNotFound(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	lbOut, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String("nf-arn-alb")}, testAccountID)
+	require.NoError(t, err)
+	lbArn := aws.StringValue(lbOut.LoadBalancers[0].LoadBalancerArn)
+	missing := "arn:aws:elasticloadbalancing:ap-southeast-2:" + testAccountID + ":loadbalancer/app/nosuchlb/0123456789abcdef"
+
+	for _, arns := range [][]string{{missing}, {lbArn, missing}} {
+		_, err = svc.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{
+			LoadBalancerArns: aws.StringSlice(arns),
+		}, testAccountID)
+		code, msg, _ := awserrors.ResolveErrorDetail(err)
+		assert.Equal(t, awserrors.ErrorELBv2LoadBalancerNotFound, code, "arns %v", arns)
+		assert.Equal(t, "One or more load balancers not found", msg)
+	}
+
+	// Another account's load balancer is not visible by ARN.
+	_, err = svc.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{
+		LoadBalancerArns: aws.StringSlice([]string{lbArn}),
+	}, "999999999999")
+	code, _, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorELBv2LoadBalancerNotFound, code)
+}
+
+func TestDescribeLoadBalancers_NoFilterEmptyAccountReturnsEmptyList(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	desc, err := svc.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.NotNil(t, desc.LoadBalancers)
+	assert.Empty(t, desc.LoadBalancers)
+}
+
 func TestDescribeListeners_UnknownLoadBalancerReturnsNotFound(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)

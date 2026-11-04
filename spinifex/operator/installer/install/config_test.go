@@ -461,3 +461,19 @@ func TestBridgeInheritsPortMAC(t *testing.T) {
 		}
 	}
 }
+
+// The mask field must accept only what netgen can consume. It previously
+// advertised and accepted a prefix length, which passed the TUI and then failed
+// the install itself with "invalid mask: 24".
+func TestValidDottedMaskRejectsPrefixLength(t *testing.T) {
+	for _, bad := range []string{"24", "/24", "8", "", "255.255.0", "255.0.255.0", "::1"} {
+		if ValidDottedMask(bad) {
+			t.Errorf("ValidDottedMask(%q) = true, want false", bad)
+		}
+	}
+	for _, good := range []string{"255.255.255.0", "255.255.0.0", "255.0.0.0", "255.255.255.252"} {
+		if !ValidDottedMask(good) {
+			t.Errorf("ValidDottedMask(%q) = false, want true", good)
+		}
+	}
+}

@@ -1,21 +1,17 @@
 package tokenwebhook
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
-	"encoding/pem"
 	"fmt"
-	"math/big"
 	"net"
 	"os"
 	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/tlsconfig"
+	"github.com/mulgadc/spinifex/spinifex/agents/eks/konnectivitycert"
 )
 
 // serverTLSConfig is the webhook's loopback serving TLS config.
@@ -41,7 +37,18 @@ func ensureServingCert(certPath, keyPath string) (tls.Certificate, []byte, error
 		}
 	}
 
-	certPEM, keyPEM, err := generateSelfSigned()
+	now := time.Now().UTC()
+	certPEM, keyPEM, err := konnectivitycert.Mint(&x509.Certificate{
+		Subject:               pkix.Name{CommonName: "eks-token-webhook"},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.AddDate(10, 0, 0),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		IPAddresses:           []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
+		DNSNames:              []string{"localhost"},
+	}, nil, nil)
 	if err != nil {
 		return tls.Certificate{}, nil, err
 	}
@@ -56,41 +63,6 @@ func ensureServingCert(certPath, keyPath string) (tls.Certificate, []byte, error
 		return tls.Certificate{}, nil, fmt.Errorf("parse minted keypair: %w", err)
 	}
 	return cert, certPEM, nil
-}
-
-func generateSelfSigned() (certPEM, keyPEM []byte, err error) {
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, nil, fmt.Errorf("generate key: %w", err)
-	}
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return nil, nil, fmt.Errorf("serial: %w", err)
-	}
-	now := time.Now().UTC()
-	tmpl := x509.Certificate{
-		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "eks-token-webhook"},
-		NotBefore:             now.Add(-time.Hour),
-		NotAfter:              now.AddDate(10, 0, 0),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment | x509.KeyUsageCertSign,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-		IPAddresses:           []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
-		DNSNames:              []string{"localhost"},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &priv.PublicKey, priv)
-	if err != nil {
-		return nil, nil, fmt.Errorf("create cert: %w", err)
-	}
-	keyDER, err := x509.MarshalECPrivateKey(priv)
-	if err != nil {
-		return nil, nil, fmt.Errorf("marshal key: %w", err)
-	}
-	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-	return certPEM, keyPEM, nil
 }
 
 // writeAPIServerKubeconfig writes the kubeconfig kube-apiserver loads via

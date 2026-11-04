@@ -157,13 +157,6 @@ func (c *Config) PlaneAddress(p Plane) string {
 	return role.Address
 }
 
-// PlaneBridge returns the bridge carrying a plane after collapsing, so callers
-// asking for the vpc bridge on a single-NIC node correctly get br-wan.
-func (c *Config) PlaneBridge(p Plane) string {
-	_, landed := c.Resolve(p)
-	return landed.Bridge()
-}
-
 // RoleBinding pairs a plane with the role that carries it.
 type RoleBinding struct {
 	Plane Plane
@@ -214,17 +207,17 @@ func (c *Config) Validate() error {
 		// Netgen converts the mask with net.ParseIP, so a prefix length reaches
 		// it as garbage and fails the install after the disk is partitioned.
 		// Catch it here, where the operator can still fix it.
-		if m := strings.TrimSpace(r.Role.Mask); m != "" && !validDottedMask(m) {
+		if m := strings.TrimSpace(r.Role.Mask); m != "" && !ValidDottedMask(m) {
 			return fmt.Errorf("%s: subnet mask %q must be dotted-decimal, e.g. 255.255.255.0", r.Plane, m)
 		}
 	}
 	return nil
 }
 
-// validDottedMask reports whether s is a contiguous dotted-decimal IPv4 subnet
+// ValidDottedMask reports whether s is a contiguous dotted-decimal IPv4 subnet
 // mask. Prefix-length form ("24", "/24") is deliberately not accepted: netgen
 // parses the mask with net.ParseIP, so anything else fails the install itself.
-func validDottedMask(s string) bool {
+func ValidDottedMask(s string) bool {
 	ip := net.ParseIP(strings.TrimSpace(s))
 	if ip == nil || ip.To4() == nil {
 		return false

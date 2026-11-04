@@ -2,7 +2,6 @@ package awsapi
 
 import (
 	"context"
-	"slices"
 
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/rest"
 	"github.com/nats-io/nats.go"
@@ -25,7 +24,7 @@ var routes = []route{
 		}},
 	{Method: "GET", Pattern: "/clusters", Action: "ListClusters",
 		Handler: func(ctx context.Context, nc *nats.Conn, acct, callerARN string, p []string, b []byte) (any, error) {
-			return ListClusters(ctx, nc, acct)
+			return ListClusters(ctx, nc, acct, b)
 		}},
 	// Control-plane VM broker: relays bootstrap/state/addon POSTs onto eks.bus/state/addon subjects.
 	// acct and callerARN are ignored; the cluster account comes from the body, and
@@ -177,17 +176,6 @@ var routes = []route{
 		Handler: func(ctx context.Context, nc *nats.Conn, acct, callerARN string, p []string, b []byte) (any, error) {
 			return ListTagsForResource(ctx, nc, acct, p[0])
 		}},
-}
-
-// actionNames returns the distinct actions in routes in stable order.
-// Deduplicated because an action may be reachable by more than one route.
-func actionNames() []string {
-	names := make([]string, 0, len(routes))
-	for _, route := range routes {
-		names = append(names, route.Action)
-	}
-	slices.Sort(names)
-	return slices.Compact(names)
 }
 
 // router matches an escaped request path against routes.

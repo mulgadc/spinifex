@@ -107,6 +107,33 @@ func (a Actor) RoleName() string {
 	return roleName
 }
 
+// Caller is the actor projected for a principal gate that has to tell an
+// instance role's session apart from a user and one instance from another.
+type Caller struct {
+	AccountID     string
+	PrincipalType string
+	RoleName      string
+	// The RoleSessionName of an assumed-role session, the user name otherwise.
+	// For IMDS instance-role credentials it is the internal EC2 instance ID.
+	SessionName string
+}
+
+// Caller projects the actor for a principal gate. The role name comes from the
+// role ARN, never the session name, which the caller picks at AssumeRole time
+// and could name its way past the gate.
+func (a Actor) Caller() Caller {
+	name := a.UserName
+	if a.PrincipalType == PrincipalTypeAssumedRole {
+		name = a.SessionName
+	}
+	return Caller{
+		AccountID:     a.AccountID,
+		PrincipalType: a.PrincipalType,
+		SessionName:   name,
+		RoleName:      a.RoleName(),
+	}
+}
+
 // AuthorizeFunc asks ingress for an IAM decision on the authenticated caller.
 // A nil error permits the operation; otherwise the error is the AWS result.
 type AuthorizeFunc func(service, action string, resources []string, keys iampolicy.ConditionKeys) error

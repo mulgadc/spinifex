@@ -134,7 +134,7 @@ func TestRegistration_GetCallerIdentityReadsActor(t *testing.T) {
 	t.Run("assumed role", func(t *testing.T) {
 		a := dispatch.Actor{
 			AccountID: regAccount, CallerARN: "arn:aws:sts::000000000001:assumed-role/demo/s1",
-			PrincipalType: principalTypeAssumedRole, SessionName: "s1", UserID: "AROAX:s1",
+			PrincipalType: dispatch.PrincipalTypeAssumedRole, SessionName: "s1", UserID: "AROAX:s1",
 		}
 		w, calls, err := invoke(t, Deps{STS: svc, IAM: &stubIAMService{}}, regAccount, a, nil, nil, "Action=GetCallerIdentity")
 		require.NoError(t, err)
@@ -228,7 +228,7 @@ func TestDetailedDenial_CallerFallback(t *testing.T) {
 		assert.Contains(t, err.Error(), "User: alice is not")
 	})
 	t.Run("session without ARN names the session", func(t *testing.T) {
-		err := detailedDenial(dispatch.Actor{SessionName: "s1", PrincipalType: principalTypeAssumedRole}, denial)
+		err := detailedDenial(dispatch.Actor{SessionName: "s1", PrincipalType: dispatch.PrincipalTypeAssumedRole}, denial)
 		assert.Contains(t, err.Error(), "User: s1 is not")
 	})
 }

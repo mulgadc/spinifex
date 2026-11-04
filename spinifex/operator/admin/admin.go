@@ -29,7 +29,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
 	"github.com/mulgadc/spinifex/spinifex/runtime/host/hostos"
-	toml "github.com/pelletier/go-toml/v2"
 	"gopkg.in/ini.v1"
 )
 
@@ -1095,29 +1094,6 @@ func FindNodeIDByIP(nodes []formation.PredastoreNodeConfig, ip string) int {
 	for _, n := range nodes {
 		if n.Host == ip {
 			return n.ID
-		}
-	}
-	return 0
-}
-
-// ParsePredastoreHostIDFromConfig parses a predastore.toml string and returns
-// the ID of the [[host]] whose addr matches the given IP, or 0 if not found.
-// A host addr names one machine and never carries a port; the ports belong to
-// the nodes pinned to it.
-func ParsePredastoreHostIDFromConfig(tomlContent string, ip string) int {
-	var cfg struct {
-		Hosts []struct {
-			ID   int    `toml:"id"`
-			Addr string `toml:"addr"`
-		} `toml:"host"`
-	}
-	if err := toml.Unmarshal([]byte(tomlContent), &cfg); err != nil {
-		slog.Warn("Failed to parse predastore.toml content", "error", err)
-		return 0
-	}
-	for _, h := range cfg.Hosts {
-		if h.Addr == ip {
-			return h.ID
 		}
 	}
 	return 0

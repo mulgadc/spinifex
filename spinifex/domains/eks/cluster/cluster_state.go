@@ -435,23 +435,11 @@ func putIfGeneration(ctx context.Context, kv jetstream.KeyValue, meta *ClusterMe
 		if err == nil {
 			return nil
 		}
-		if !isRevisionConflict(err) {
+		if !kvutil.IsRevisionConflict(err) {
 			return fmt.Errorf("kv write %s: %w", key, err)
 		}
 	}
 	return fmt.Errorf("eks: write %s kept conflicting", key)
-}
-
-// isRevisionConflict reports a revision-conditional write losing its race.
-func isRevisionConflict(err error) bool {
-	if errors.Is(err, jetstream.ErrKeyExists) || errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
-		return true
-	}
-	if apiErr, ok := errors.AsType[*jetstream.APIError](err); ok {
-		return apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence ||
-			apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequenceConstant
-	}
-	return false
 }
 
 // clusterOwnershipRefs lists every resource ID the teardown reads from meta to

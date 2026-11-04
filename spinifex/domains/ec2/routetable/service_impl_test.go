@@ -15,7 +15,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -28,23 +27,23 @@ func setupTestService(t *testing.T) *RouteTableServiceImpl {
 	js := testutil.NewJetStream(t, nc)
 
 	// Seed VPC KV
-	seedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
 		kvutil.AccountKey(testAccountID, "vpc-test1"): []byte(`{"vpc_id":"vpc-test1","cidr_block":"10.0.0.0/16","state":"available"}`),
 	})
 
 	// Seed IGW KV (attached to vpc-test1)
-	seedKV(t, js, ec2igw.KVBucketIGW, map[string][]byte{
+	testutil.SeedKV(t, js, ec2igw.KVBucketIGW, map[string][]byte{
 		kvutil.AccountKey(testAccountID, "igw-test1"): []byte(`{"internet_gateway_id":"igw-test1","vpc_id":"vpc-test1","state":"available"}`),
 	})
 
 	// Seed subnet KV
-	seedKV(t, js, ec2vpc.KVBucketSubnets, map[string][]byte{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketSubnets, map[string][]byte{
 		kvutil.AccountKey(testAccountID, "subnet-test1"): []byte(`{"subnet_id":"subnet-test1","vpc_id":"vpc-test1","cidr_block":"10.0.1.0/24","state":"available"}`),
 		kvutil.AccountKey(testAccountID, "subnet-priv1"): []byte(`{"subnet_id":"subnet-priv1","vpc_id":"vpc-test1","cidr_block":"10.0.11.0/24","state":"available"}`),
 	})
 
 	// Seed NAT Gateway KV
-	seedKV(t, js, ec2natgw.KVBucketNatGateways, map[string][]byte{
+	testutil.SeedKV(t, js, ec2natgw.KVBucketNatGateways, map[string][]byte{
 		kvutil.AccountKey(testAccountID, "nat-test1"): []byte(`{"nat_gateway_id":"nat-test1","vpc_id":"vpc-test1","subnet_id":"subnet-test1","public_ip":"192.168.1.100","state":"available"}`),
 	})
 
@@ -77,17 +76,6 @@ func drainEvents(t *testing.T, svc *RouteTableServiceImpl, sub *nats.Subscriptio
 		_, err := sub.NextMsg(time.Second)
 		require.NoError(t, err)
 	}
-}
-
-func seedKV(t *testing.T, js jetstream.JetStream, bucket string, entries map[string][]byte) jetstream.KeyValue {
-	t.Helper()
-	kv, err := js.CreateOrUpdateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: bucket, History: 1})
-	require.NoError(t, err)
-	for key, value := range entries {
-		_, err := kv.Put(t.Context(), key, value)
-		require.NoError(t, err)
-	}
-	return kv
 }
 
 func createTestRtb(t *testing.T, svc *RouteTableServiceImpl) string {
@@ -192,7 +180,7 @@ func TestCreateRouteTable_VpcNotFound(t *testing.T) {
 	_, err := svc.CreateRouteTable(t.Context(), &ec2.CreateRouteTableInput{
 		VpcId: aws.String("vpc-nonexistent"),
 	}, testAccountID)
-	requireAWSError(t, err, awserrors.ErrorInvalidVpcIDNotFound, "The vpc ID 'vpc-nonexistent' does not exist")
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidVpcIDNotFound, "The vpc ID 'vpc-nonexistent' does not exist")
 }
 
 func TestDeleteRouteTable(t *testing.T) {
@@ -207,7 +195,7 @@ func TestDeleteRouteTable(t *testing.T) {
 
 	// Should be gone
 	_, err = svc.getRouteTable(t.Context(), testAccountID, rtbID)
-	requireAWSError(t, err, awserrors.ErrorInvalidRouteTableIDNotFound, "The routeTable ID '"+rtbID+"' does not exist")
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidRouteTableIDNotFound, "The routeTable ID '"+rtbID+"' does not exist")
 }
 
 func TestDeleteRouteTable_Main(t *testing.T) {
@@ -219,7 +207,7 @@ func TestDeleteRouteTable_Main(t *testing.T) {
 	_, err = svc.DeleteRouteTable(t.Context(), &ec2.DeleteRouteTableInput{
 		RouteTableId: aws.String(record.RouteTableId),
 	}, testAccountID)
-	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "The routeTable '"+record.RouteTableId+"' has dependencies and cannot be deleted.")
+	testutil.RequireAWSError(t, err, awserrors.ErrorDependencyViolation, "The routeTable '"+record.RouteTableId+"' has dependencies and cannot be deleted.")
 }
 
 func TestDeleteRouteTable_WithAssociations(t *testing.T) {
@@ -238,7 +226,7 @@ func TestDeleteRouteTable_WithAssociations(t *testing.T) {
 	_, err = svc.DeleteRouteTable(t.Context(), &ec2.DeleteRouteTableInput{
 		RouteTableId: aws.String(rtbID),
 	}, testAccountID)
-	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "The routeTable '"+rtbID+"' has dependencies and cannot be deleted.")
+	testutil.RequireAWSError(t, err, awserrors.ErrorDependencyViolation, "The routeTable '"+rtbID+"' has dependencies and cannot be deleted.")
 }
 
 func TestDescribeRouteTables(t *testing.T) {
@@ -427,7 +415,7 @@ func TestCreateRoute_DuplicateDestination(t *testing.T) {
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		NatGatewayId:         aws.String("nat-test1"),
 	}, testAccountID)
-	requireAWSError(t, err, awserrors.ErrorRouteAlreadyExists, "The route identified by 0.0.0.0/0 already exists.")
+	testutil.RequireAWSError(t, err, awserrors.ErrorRouteAlreadyExists, "The route identified by 0.0.0.0/0 already exists.")
 
 	// AWS checks the target before the destination: "local" is no gateway
 	_, err = svc.CreateRoute(t.Context(), &ec2.CreateRouteInput{
@@ -435,7 +423,7 @@ func TestCreateRoute_DuplicateDestination(t *testing.T) {
 		DestinationCidrBlock: aws.String("10.0.0.0/16"),
 		GatewayId:            aws.String("local"),
 	}, testAccountID)
-	requireAWSError(t, err, awserrors.ErrorInvalidGatewayIDNotFound, "The gateway ID 'local' does not exist")
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidGatewayIDNotFound, "The gateway ID 'local' does not exist")
 
 	// A gateway route to the VPC's CIDR, or inside it, is refused before the
 	// existing local route is considered
@@ -445,7 +433,7 @@ func TestCreateRoute_DuplicateDestination(t *testing.T) {
 			DestinationCidrBlock: aws.String(dest),
 			GatewayId:            aws.String("igw-test1"),
 		}, testAccountID)
-		requireAWSError(t, err, awserrors.ErrorInvalidParameterValue,
+		testutil.RequireAWSError(t, err, awserrors.ErrorInvalidParameterValue,
 			"The destination CIDR block "+dest+" is equal to or more specific than one of this VPC's CIDR blocks. This route can target only an interface or an instance.")
 	}
 
@@ -502,7 +490,7 @@ func TestDeleteRoute_NotFound(t *testing.T) {
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("192.168.0.0/16"),
 	}, testAccountID)
-	requireAWSError(t, err, awserrors.ErrorInvalidRouteNotFound, "no route with destination-cidr-block 192.168.0.0/16 in route table "+rtbID)
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidRouteNotFound, "no route with destination-cidr-block 192.168.0.0/16 in route table "+rtbID)
 }
 
 func TestReplaceRoute(t *testing.T) {
@@ -526,14 +514,6 @@ func TestReplaceRoute(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func requireAWSError(t *testing.T, err error, code, message string) {
-	t.Helper()
-	got, msg, ok := awserrors.ResolveErrorDetail(err)
-	require.True(t, ok, "error %v carries no AWS code", err)
-	assert.Equal(t, code, got)
-	assert.Equal(t, message, msg)
-}
-
 func TestCreateRoute_MissingGateway(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)
@@ -544,7 +524,7 @@ func TestCreateRoute_MissingGateway(t *testing.T) {
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
 		GatewayId:            aws.String("igw-0000000000000dead"),
 	}, testAccountID)
-	requireAWSError(t, err, awserrors.ErrorInvalidGatewayIDNotFound, "The gateway ID 'igw-0000000000000dead' does not exist")
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidGatewayIDNotFound, "The gateway ID 'igw-0000000000000dead' does not exist")
 }
 
 func TestReplaceRoute_MissingRouteOrGateway(t *testing.T) {
@@ -557,7 +537,7 @@ func TestReplaceRoute_MissingRouteOrGateway(t *testing.T) {
 		DestinationCidrBlock: aws.String("198.51.100.0/24"),
 		GatewayId:            aws.String("igw-test1"),
 	}, testAccountID)
-	requireAWSError(t, err, awserrors.ErrorInvalidParameterValue,
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidParameterValue,
 		"There is no route defined for '198.51.100.0/24' in the route table. Use CreateRoute instead.")
 
 	// AWS reports the missing gateway ahead of the missing route.
@@ -566,7 +546,7 @@ func TestReplaceRoute_MissingRouteOrGateway(t *testing.T) {
 		DestinationCidrBlock: aws.String("198.51.100.0/24"),
 		GatewayId:            aws.String("igw-0000000000000dead"),
 	}, testAccountID)
-	requireAWSError(t, err, awserrors.ErrorInvalidGatewayIDNotFound, "The gateway ID 'igw-0000000000000dead' does not exist")
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidGatewayIDNotFound, "The gateway ID 'igw-0000000000000dead' does not exist")
 }
 
 func TestAssociateRouteTable(t *testing.T) {

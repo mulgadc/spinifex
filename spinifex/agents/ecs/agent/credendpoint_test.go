@@ -9,15 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/internal/stsauth"
+	"github.com/aws/aws-sdk-go-v2/aws"
 )
 
 // newTestCredEndpoint builds an endpoint whose assume seam returns canned creds,
 // counting calls so cache behaviour is observable. run is nil (no iface plumbing).
-func newTestCredEndpoint(creds stsauth.Credentials) (*credEndpoint, *int32) {
+func newTestCredEndpoint(creds aws.Credentials) (*credEndpoint, *int32) {
 	c := newCredEndpoint(nil, "us-east-1", "https://gw", "", "127.0.0.1", 0, nil)
 	var calls int32
-	c.assume = func(ctx context.Context, roleARN, sessionName string) (stsauth.Credentials, error) {
+	c.assume = func(ctx context.Context, roleARN, sessionName string) (aws.Credentials, error) {
 		atomic.AddInt32(&calls, 1)
 		return creds, nil
 	}
@@ -26,8 +26,8 @@ func newTestCredEndpoint(creds stsauth.Credentials) (*credEndpoint, *int32) {
 
 func TestCredEndpoint_ServesRegisteredCredID(t *testing.T) {
 	exp := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
-	c, _ := newTestCredEndpoint(stsauth.Credentials{
-		AccessKeyID: "AKIA", SecretAccessKey: "secret", SessionToken: "tok", Expiration: exp,
+	c, _ := newTestCredEndpoint(aws.Credentials{
+		AccessKeyID: "AKIA", SecretAccessKey: "secret", SessionToken: "tok", Expires: exp,
 	})
 	c.Register("cred-1", "task-1", "arn:aws:iam::111122223333:role/task")
 
@@ -54,11 +54,11 @@ func TestCredEndpoint_ServesRegisteredCredID(t *testing.T) {
 // The STS session name lands in the assumed-role ARN and in STS logs, so it is
 // built from the public task ID and never from the secret credID.
 func TestCredEndpoint_SessionNameIsTaskIDNotCredID(t *testing.T) {
-	c, _ := newTestCredEndpoint(stsauth.Credentials{})
+	c, _ := newTestCredEndpoint(aws.Credentials{})
 	var gotSession string
-	c.assume = func(ctx context.Context, roleARN, session string) (stsauth.Credentials, error) {
+	c.assume = func(ctx context.Context, roleARN, session string) (aws.Credentials, error) {
 		gotSession = session
-		return stsauth.Credentials{AccessKeyID: "AKIA", SecretAccessKey: "secret"}, nil
+		return aws.Credentials{AccessKeyID: "AKIA", SecretAccessKey: "secret"}, nil
 	}
 	c.Register("secret-cred", "task-1", "arn:role")
 	rr := httptest.NewRecorder()
@@ -72,7 +72,7 @@ func TestCredEndpoint_SessionNameIsTaskIDNotCredID(t *testing.T) {
 }
 
 func TestCredEndpoint_UnknownCredIDIs404(t *testing.T) {
-	c, calls := newTestCredEndpoint(stsauth.Credentials{AccessKeyID: "x", SecretAccessKey: "y"})
+	c, calls := newTestCredEndpoint(aws.Credentials{AccessKeyID: "x", SecretAccessKey: "y"})
 	rr := httptest.NewRecorder()
 	c.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v2/credentials/nope", nil))
 	if rr.Code != http.StatusNotFound {
@@ -84,7 +84,7 @@ func TestCredEndpoint_UnknownCredIDIs404(t *testing.T) {
 }
 
 func TestCredEndpoint_WrongMethodIs405(t *testing.T) {
-	c, _ := newTestCredEndpoint(stsauth.Credentials{AccessKeyID: "x", SecretAccessKey: "y"})
+	c, _ := newTestCredEndpoint(aws.Credentials{AccessKeyID: "x", SecretAccessKey: "y"})
 	c.Register("cred-1", "task-1", "arn:role")
 	rr := httptest.NewRecorder()
 	c.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v2/credentials/cred-1", nil))
@@ -94,8 +94,8 @@ func TestCredEndpoint_WrongMethodIs405(t *testing.T) {
 }
 
 func TestCredEndpoint_CachesUntilExpiry(t *testing.T) {
-	c, calls := newTestCredEndpoint(stsauth.Credentials{
-		AccessKeyID: "AKIA", SecretAccessKey: "secret", Expiration: time.Now().Add(time.Hour),
+	c, calls := newTestCredEndpoint(aws.Credentials{
+		AccessKeyID: "AKIA", SecretAccessKey: "secret", Expires: time.Now().Add(time.Hour),
 	})
 	c.Register("cred-1", "task-1", "arn:role")
 	for hit := range 3 {
@@ -112,8 +112,8 @@ func TestCredEndpoint_CachesUntilExpiry(t *testing.T) {
 
 func TestCredEndpoint_RefreshesNearExpiry(t *testing.T) {
 	// Expiry inside the refresh margin -> every hit re-assumes.
-	c, calls := newTestCredEndpoint(stsauth.Credentials{
-		AccessKeyID: "AKIA", SecretAccessKey: "secret", Expiration: time.Now().Add(time.Minute),
+	c, calls := newTestCredEndpoint(aws.Credentials{
+		AccessKeyID: "AKIA", SecretAccessKey: "secret", Expires: time.Now().Add(time.Minute),
 	})
 	c.Register("cred-1", "task-1", "arn:role")
 	for range 2 {
@@ -126,7 +126,7 @@ func TestCredEndpoint_RefreshesNearExpiry(t *testing.T) {
 }
 
 func TestCredEndpoint_DeregisterDropsCredID(t *testing.T) {
-	c, _ := newTestCredEndpoint(stsauth.Credentials{AccessKeyID: "x", SecretAccessKey: "y"})
+	c, _ := newTestCredEndpoint(aws.Credentials{AccessKeyID: "x", SecretAccessKey: "y"})
 	c.Register("cred-1", "task-1", "arn:role")
 	c.Deregister("cred-1")
 	rr := httptest.NewRecorder()
@@ -137,9 +137,9 @@ func TestCredEndpoint_DeregisterDropsCredID(t *testing.T) {
 }
 
 func TestCredEndpoint_AssumeFailureIs502(t *testing.T) {
-	c, _ := newTestCredEndpoint(stsauth.Credentials{})
-	c.assume = func(ctx context.Context, roleARN, sessionName string) (stsauth.Credentials, error) {
-		return stsauth.Credentials{}, context.DeadlineExceeded
+	c, _ := newTestCredEndpoint(aws.Credentials{})
+	c.assume = func(ctx context.Context, roleARN, sessionName string) (aws.Credentials, error) {
+		return aws.Credentials{}, context.DeadlineExceeded
 	}
 	c.Register("cred-1", "task-1", "arn:role")
 	rr := httptest.NewRecorder()
@@ -150,8 +150,8 @@ func TestCredEndpoint_AssumeFailureIs502(t *testing.T) {
 }
 
 func TestCredEndpoint_StartServesOverLoopback(t *testing.T) {
-	c, _ := newTestCredEndpoint(stsauth.Credentials{
-		AccessKeyID: "AKIA", SecretAccessKey: "secret", Expiration: time.Now().Add(time.Hour),
+	c, _ := newTestCredEndpoint(aws.Credentials{
+		AccessKeyID: "AKIA", SecretAccessKey: "secret", Expires: time.Now().Add(time.Hour),
 	})
 	c.Register("cred-1", "task-1", "arn:role")
 	c.port = 0 // bind an ephemeral port instead of privileged 80

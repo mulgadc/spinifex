@@ -2,6 +2,7 @@ package tagging
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"maps"
 	"slices"
@@ -38,8 +39,10 @@ func NewAggregator(listers ...TaggedLister) *Aggregator {
 // integer offset into a deterministically ARN-sorted result set.
 func (a *Aggregator) GetResources(ctx context.Context, accountID string, body []byte) (any, error) {
 	var input rgt.GetResourcesInput
-	if err := unmarshalIfBody(body, &input); err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &input); err != nil {
+			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		}
 	}
 
 	typeFilters := lowerStringSlice(input.ResourceTypeFilters)

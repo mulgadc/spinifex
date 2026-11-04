@@ -291,7 +291,7 @@ func TestTerminateInstances_NeverExistedIsNotFound(t *testing.T) {
 	}, nc, "123456789012")
 
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.EqualError(t, err, "The instance ID 'i-d419ad3c922169e6e' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 	assert.Nil(t, output)
 }
 
@@ -380,6 +380,6 @@ func TestTerminateInstances_MixedBatchWithUnknownIDFails(t *testing.T) {
 	}, nc, "123456789012")
 
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.EqualError(t, err, "The instance ID 'i-0ee1ff203142536a7' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 	assert.Nil(t, output)
 }

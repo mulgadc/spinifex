@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
-	"slices"
 	"strings"
 	"time"
 
@@ -121,12 +121,7 @@ func (s *SpotInstanceServiceImpl) DescribeSpotInstanceRequests(ctx context.Conte
 		return nil, err
 	}
 
-	idSet := make(map[string]bool)
-	for _, id := range input.SpotInstanceRequestIds {
-		if id != nil {
-			idSet[*id] = true
-		}
-	}
+	idSet := identifiers.Set(input.SpotInstanceRequestIds)
 
 	active, err := s.listRequests(ctx, s.activeKV, accountID)
 	if err != nil {
@@ -310,7 +305,7 @@ func setSpotStatus(req *ec2.SpotInstanceRequest, code, message string) {
 }
 
 // sirMatchesFilters reports whether a request matches all non-tag awsfilters.
-// tag:* filters are handled separately via awsfilters.MatchesTags.
+// Tag filters are handled separately via awsfilters.MatchesTags.
 func sirMatchesFilters(req *ec2.SpotInstanceRequest, filters map[string][]string) bool {
 	for name, values := range filters {
 		switch {
@@ -346,23 +341,13 @@ func sirMatchesFilters(req *ec2.SpotInstanceRequest, filters map[string][]string
 			if !awsfilters.MatchesAny(values, aws.StringValue(launchSpec(req).KeyName)) {
 				return false
 			}
-		case name == "tag-key":
-			if !sirMatchesTagKey(req.Tags, values) {
-				return false
-			}
-		case strings.HasPrefix(name, "tag:"):
+		case awsfilters.IsTagFilter(name):
 			// Handled by awsfilters.MatchesTags.
 		default:
 			return false
 		}
 	}
 	return true
-}
-
-func sirMatchesTagKey(tags []*ec2.Tag, values []string) bool {
-	return slices.ContainsFunc(tags, func(t *ec2.Tag) bool {
-		return t.Key != nil && awsfilters.MatchesAny(values, *t.Key)
-	})
 }
 
 // launchSpec returns the request's launch specification, or an empty one when

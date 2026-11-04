@@ -5,6 +5,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/nats-io/nats.go"
 )
 
@@ -38,7 +39,7 @@ func DescribeAddonVersions(ctx context.Context, natsConn *nats.Conn, accountID s
 // CreateAddon — POST /clusters/{name}/addons.
 func CreateAddon(ctx context.Context, natsConn *nats.Conn, accountID, cluster string, body []byte) (*eks.CreateAddonOutput, error) {
 	input := new(eks.CreateAddonInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	input.ClusterName = aws.String(cluster)
@@ -66,7 +67,7 @@ func DescribeAddon(ctx context.Context, natsConn *nats.Conn, accountID, cluster,
 // UpdateAddon — POST /clusters/{name}/addons/{addon}/update.
 func UpdateAddon(ctx context.Context, natsConn *nats.Conn, accountID, cluster, addon string, body []byte) (*eks.UpdateAddonOutput, error) {
 	input := new(eks.UpdateAddonInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	input.ClusterName = aws.String(cluster)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -175,7 +176,8 @@ func (s *ELBv2ServiceImpl) DescribeListenerCertificates(ctx context.Context, inp
 }
 
 // DescribeSSLPolicies returns the fixed catalog of supported security policies.
-// An explicit Names filter selects a subset; an unknown name is rejected.
+// An explicit Names filter selects a subset; an unknown name is rejected. A
+// LoadBalancerType keeps only the policies that type supports.
 func (s *ELBv2ServiceImpl) DescribeSSLPolicies(ctx context.Context, input *elbv2.DescribeSSLPoliciesInput, _ string) (*elbv2.DescribeSSLPoliciesOutput, error) {
 	var names []string
 	if input != nil && len(input.Names) > 0 {
@@ -193,8 +195,16 @@ func (s *ELBv2ServiceImpl) DescribeSSLPolicies(ctx context.Context, input *elbv2
 	}
 
 	policies := make([]*elbv2.SslPolicy, 0, len(names))
+	lbType := ""
+	if input != nil {
+		lbType = aws.StringValue(input.LoadBalancerType)
+	}
 	for _, n := range names {
-		policies = append(policies, sslPolicyToSDK(sslPolicyCatalog[n]))
+		def := sslPolicyCatalog[n]
+		if lbType != "" && !slices.Contains(def.lbTypes, lbType) {
+			continue
+		}
+		policies = append(policies, sslPolicyToSDK(def))
 	}
 
 	return &elbv2.DescribeSSLPoliciesOutput{SslPolicies: policies}, nil

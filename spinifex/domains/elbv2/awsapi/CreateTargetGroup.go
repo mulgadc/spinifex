@@ -11,7 +11,7 @@ import (
 )
 
 // ValidateCreateTargetGroupInput rejects a nil input with InvalidParameterValue and a missing
-// Name with MissingParameter.
+// Name with MissingParameter, and health check settings outside the model with ValidationError.
 func ValidateCreateTargetGroupInput(input *elbv2.CreateTargetGroupInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -19,7 +19,8 @@ func ValidateCreateTargetGroupInput(input *elbv2.CreateTargetGroupInput) error {
 	if input.Name == nil || *input.Name == "" {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
-	return nil
+	return validateHealthCheck(input.HealthCheckProtocol, input.HealthCheckIntervalSeconds,
+		input.HealthCheckTimeoutSeconds, input.HealthyThresholdCount, input.UnhealthyThresholdCount)
 }
 
 // CreateTargetGroup handles the ELBv2 CreateTargetGroup API call.

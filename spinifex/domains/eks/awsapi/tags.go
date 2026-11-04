@@ -5,13 +5,14 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/nats-io/nats.go"
 )
 
 // TagResource — POST /tags/{arn}.
 func TagResource(ctx context.Context, natsConn *nats.Conn, accountID, resourceARN string, body []byte) (*eks.TagResourceOutput, error) {
 	input := new(eks.TagResourceInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	input.ResourceArn = aws.String(resourceARN)
@@ -21,7 +22,7 @@ func TagResource(ctx context.Context, natsConn *nats.Conn, accountID, resourceAR
 // UntagResource — DELETE /tags/{arn}.
 func UntagResource(ctx context.Context, natsConn *nats.Conn, accountID, resourceARN string, body []byte) (*eks.UntagResourceOutput, error) {
 	input := new(eks.UntagResourceInput)
-	if err := unmarshalIfBody(body, input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
 	input.ResourceArn = aws.String(resourceARN)

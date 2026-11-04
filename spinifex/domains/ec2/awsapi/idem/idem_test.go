@@ -1,11 +1,15 @@
 package idem_test
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	ec2idemapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/idem"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -78,4 +82,22 @@ func TestTokenAndParams_LeavesTheInputIntact(t *testing.T) {
 
 	require.NotNil(t, input.ClientToken)
 	assert.Equal(t, "tok", *input.ClientToken)
+}
+
+// A token the store cannot honour fails the request rather than running it
+// unprotected; a request without a token never touches the store.
+func TestRun_BucketFailure(t *testing.T) {
+	t.Parallel()
+	broken := func(context.Context) (jetstream.KeyValue, error) { return nil, errors.New("no jetstream") }
+	ran := false
+	work := func() (string, error) { ran = true; return "ok", nil }
+
+	_, err := ec2idemapi.Run(t.Context(), broken, "", "acct",
+		&ec2.RunInstancesInput{ClientToken: aws.String("tok")}, work)
+	require.EqualError(t, err, awserrors.ErrorServerInternal)
+	assert.False(t, ran)
+
+	out, err := ec2idemapi.Run(t.Context(), broken, "", "acct", &ec2.RunInstancesInput{}, work)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", out)
 }

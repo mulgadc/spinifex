@@ -30,17 +30,17 @@ func setupTestServiceJS(t *testing.T) (*NatGatewayServiceImpl, jetstream.JetStre
 	js := testutil.NewJetStream(t, nc)
 
 	// Seed VPC KV
-	seedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
 		kvutil.AccountKey(testAccountID, "vpc-test1"): []byte(`{"vpc_id":"vpc-test1","cidr_block":"10.0.0.0/16","state":"available"}`),
 	})
 
 	// Seed subnet KV (public subnet)
-	seedKV(t, js, ec2vpc.KVBucketSubnets, map[string][]byte{
+	testutil.SeedKV(t, js, ec2vpc.KVBucketSubnets, map[string][]byte{
 		kvutil.AccountKey(testAccountID, "subnet-pub1"): []byte(`{"subnet_id":"subnet-pub1","vpc_id":"vpc-test1","cidr_block":"10.0.1.0/24","state":"available","map_public_ip_on_launch":true}`),
 	})
 
 	// Seed EIP KV
-	seedKV(t, js, ec2eip.KVBucketEIPs, map[string][]byte{
+	testutil.SeedKV(t, js, ec2eip.KVBucketEIPs, map[string][]byte{
 		kvutil.AccountKey(testAccountID, "eipalloc-test1"): []byte(`{"allocation_id":"eipalloc-test1","public_ip":"203.0.113.50","state":"allocated"}`),
 		kvutil.AccountKey(testAccountID, "eipalloc-used"):  []byte(`{"allocation_id":"eipalloc-used","public_ip":"203.0.113.51","state":"associated","association_id":"eipassoc-xxx"}`),
 	})
@@ -48,17 +48,6 @@ func setupTestServiceJS(t *testing.T) (*NatGatewayServiceImpl, jetstream.JetStre
 	svc, err := NewNatGatewayServiceImplWithNATS(t.Context(), nc)
 	require.NoError(t, err)
 	return svc, js
-}
-
-func seedKV(t *testing.T, js jetstream.JetStream, bucket string, entries map[string][]byte) jetstream.KeyValue {
-	t.Helper()
-	kv, err := js.CreateOrUpdateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: bucket, History: 1})
-	require.NoError(t, err)
-	for key, value := range entries {
-		_, err := kv.Put(t.Context(), key, value)
-		require.NoError(t, err)
-	}
-	return kv
 }
 
 func TestDeletedBucketTTL(t *testing.T) {
@@ -181,8 +170,8 @@ func TestDeleteNatGateway(t *testing.T) {
 	assert.Equal(t, natgwID, *deleteOut.NatGatewayId)
 
 	// Should be gone
-	_, err = svc.GetNatGateway(testAccountID, natgwID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidNatGatewayIDNotFound)
+	_, err = svc.natgwKV.Get(t.Context(), kvutil.AccountKey(testAccountID, natgwID))
+	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
 }
 
 func TestDescribeNatGateways(t *testing.T) {
@@ -243,28 +232,6 @@ func TestDescribeNatGateways_FilterByState(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, out.NatGateways)
-}
-
-func TestGetNatGateway(t *testing.T) {
-	svc := setupTestService(t)
-	createOut, err := svc.CreateNatGateway(t.Context(), &ec2.CreateNatGatewayInput{
-		SubnetId:     aws.String("subnet-pub1"),
-		AllocationId: aws.String("eipalloc-test1"),
-	}, testAccountID)
-	require.NoError(t, err)
-	natgwID := *createOut.NatGateway.NatGatewayId
-
-	record, err := svc.GetNatGateway(testAccountID, natgwID)
-	require.NoError(t, err)
-	assert.Equal(t, natgwID, record.NatGatewayId)
-	assert.Equal(t, "203.0.113.50", record.PublicIp)
-	assert.Equal(t, "eipalloc-test1", record.AllocationId)
-}
-
-func TestGetNatGateway_NotFound(t *testing.T) {
-	svc := setupTestService(t)
-	_, err := svc.GetNatGateway(testAccountID, "nat-nope")
-	assert.EqualError(t, err, awserrors.ErrorInvalidNatGatewayIDNotFound)
 }
 
 func TestCreateNatGateway_MissingParams(t *testing.T) {

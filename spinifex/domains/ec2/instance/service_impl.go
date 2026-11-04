@@ -234,6 +234,7 @@ type InstanceServiceImpl struct {
 	eniDeleter        ENIDeleter
 	ipReleaser        PublicIPReleaser
 	tagWriter         InstanceTagWriter
+	uefiStores        UEFIStoreMarker
 	gpuClaimer        GPUClaimer
 	amiLoader         AMIMetaLoader
 	ebsProvider       ebsprovider.EBSProvider
@@ -312,6 +313,12 @@ func (s *InstanceServiceImpl) SetTerminationDeps(vd VolumeDeleter, ed ENIDeleter
 	s.eniDeleter = ed
 	s.ipReleaser = pr
 	s.tagWriter = tw
+}
+
+// SetUEFIStores wires the store records a stopped instance's terminate marks
+// for deletion. nil leaves terminate recording no UEFI store obligation.
+func (s *InstanceServiceImpl) SetUEFIStores(m UEFIStoreMarker) {
+	s.uefiStores = m
 }
 
 // SetGPUClaimer wires the GPU passthrough claim/release dependency used by
@@ -679,6 +686,10 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 	if amiOwner != "" && amiOwner != accountID && awsidentifiers.IsAccountID(amiOwner) {
 		slog.WarnContext(ctx, "PrepareRunInstances: AMI not owned by caller", "imageId", *input.ImageId, "amiOwner", amiOwner, "accountID", accountID)
 		return nil, nil, nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
+	}
+	if err := checkImageArchitecture(instanceType, amiMeta.Architecture); err != nil {
+		slog.WarnContext(ctx, "PrepareRunInstances: AMI architecture does not match instance type", "imageId", *input.ImageId, "InstanceType", *input.InstanceType, "amiArchitecture", amiMeta.Architecture)
+		return nil, nil, nil, err
 	}
 
 	if input.KeyName != nil && *input.KeyName != "" {
@@ -1237,7 +1248,12 @@ func (s *InstanceServiceImpl) StartInstance(ctx context.Context, instance *vm.VM
 				"instanceId", command.ID, "err", err)
 			return errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 		default:
-			slog.ErrorContext(ctx, "StartInstance: vmMgr.Start failed", "err", err)
+			// A volume held elsewhere is the caller's 400, not a fault on this node.
+			if refusal := volumeHeldElsewhereError(err); refusal != nil {
+				slog.WarnContext(ctx, "StartInstance: vmMgr.Start failed", "instanceId", command.ID, "err", err)
+				return refusal
+			}
+			slog.ErrorContext(ctx, "StartInstance: vmMgr.Start failed", "instanceId", command.ID, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
 	}
@@ -1491,7 +1507,7 @@ func (s *InstanceServiceImpl) ReplaceIamProfileAssociation(ctx context.Context, 
 // the caller. Supports "instance-id" and "state" filters; unknown filters return
 // InvalidParameterValue.
 func (s *InstanceServiceImpl) DescribeIamProfileAssociations(ctx context.Context, input *ec2.DescribeIamInstanceProfileAssociationsInput, accountID string) (*ec2.DescribeIamInstanceProfileAssociationsOutput, error) {
-	assocFilter := stringPtrSliceToSet(input.AssociationIds)
+	assocFilter := awsidentifiers.Set(input.AssociationIds)
 	instFilter := make(map[string]bool)
 	stateFilter := make(map[string]bool)
 	for _, f := range input.Filters {
@@ -1562,19 +1578,6 @@ func (s *InstanceServiceImpl) findInstanceByAssociationID(associationID, account
 		return "", false
 	}
 	return owner, true
-}
-
-func stringPtrSliceToSet(in []*string) map[string]bool {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]bool, len(in))
-	for _, s := range in {
-		if s != nil && *s != "" {
-			out[*s] = true
-		}
-	}
-	return out
 }
 
 func (s *InstanceServiceImpl) GenerateVolumes(ctx context.Context, input *ec2.RunInstancesInput, instance *vm.VM) ([]VolumeInfo, error) {
@@ -1945,6 +1948,24 @@ func (s *InstanceServiceImpl) createEFIVolumeViaProvider(ctx context.Context, ef
 	return nil
 }
 
+// checkImageArchitecture refuses an AMI whose architecture the instance type
+// does not support, as AWS does. An unrecorded architecture on either side is
+// not a mismatch.
+func checkImageArchitecture(it *ec2.InstanceTypeInfo, amiArch string) error {
+	if amiArch == "aarch64" { // admin image import accepts it as an alias
+		amiArch = "arm64"
+	}
+	if amiArch == "" || it == nil || it.ProcessorInfo == nil || len(it.ProcessorInfo.SupportedArchitectures) == 0 {
+		return nil
+	}
+	if slices.Contains(aws.StringValueSlice(it.ProcessorInfo.SupportedArchitectures), amiArch) {
+		return nil
+	}
+	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+		"The architecture '%s' of the specified instance type does not match the architecture '%s' of the specified AMI. Specify an instance type and an AMI that have matching architectures, and try again. You can use 'describe-instance-types' or 'describe-images' to discover the architecture of the instance type or AMI.",
+		instanceArchitecture(it), amiArch)
+}
+
 // instanceArchitecture returns the AWS architecture string from the instance type.
 // Returns "" on nil/malformed spec; the caller's firmware probe surfaces the error.
 func instanceArchitecture(it *ec2.InstanceTypeInfo) string {
@@ -1964,6 +1985,10 @@ var DescribeInstancesValidFilters = map[string]bool{
 	"subnet-id":           true,
 	"tag-key":             true,
 	"tag-value":           true,
+	"private-ip-address":  true,
+
+	"network-interface.private-ip-address":           true,
+	"network-interface.addresses.private-ip-address": true,
 }
 
 // DescribeInstanceStatusValidFilters lists the filter names accepted by
@@ -1997,9 +2022,13 @@ func IsInstanceVisibleToCaller(accountID string, v *vm.VM) bool {
 // instanceMatchesFilters checks whether a VM + its built ec2.Instance copy satisfy all parsed awsfilters.
 func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
-			// tag:Key filters are handled after all field awsfilters.
+		if awsfilters.IsTagFilter(name) {
 			continue
+		}
+
+		// A terminated instance has released its addresses, so AWS matches none.
+		if strings.HasSuffix(name, "private-ip-address") && ic.State != nil && aws.StringValue(ic.State.Name) == ec2.InstanceStateNameTerminated {
+			return false
 		}
 
 		var field string
@@ -2020,13 +2049,15 @@ func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]
 			if ic.SubnetId != nil {
 				field = *ic.SubnetId
 			}
-		case "tag-key":
-			if !matchTagKey(ic.Tags, values) {
+		case "private-ip-address":
+			field = aws.StringValue(ic.PrivateIpAddress)
+		case "network-interface.private-ip-address":
+			if !matchNICPrivateIP(ic.NetworkInterfaces, values) {
 				return false
 			}
 			continue
-		case "tag-value":
-			if !matchTagValue(ic.Tags, values) {
+		case "network-interface.addresses.private-ip-address":
+			if !matchNICAnyPrivateIP(ic.NetworkInterfaces, values) {
 				return false
 			}
 			continue
@@ -2041,22 +2072,32 @@ func instanceMatchesFilters(inst *vm.VM, ic *ec2.Instance, filters map[string][]
 		}
 	}
 
-	// Check tag:Key filters via the instance's Tag slice.
 	tags := awsfilters.EC2TagsToMap(ic.Tags)
 	return awsfilters.MatchesTags(filters, tags)
 }
 
-// matchTagKey returns true if any tag key on the resource matches any of the filter values.
-func matchTagKey(tags []*ec2.Tag, values []string) bool {
-	return slices.ContainsFunc(tags, func(t *ec2.Tag) bool {
-		return t.Key != nil && awsfilters.MatchesAny(values, *t.Key)
+// matchNICPrivateIP reports whether any interface's private IPv4 address
+// matches the values. Interfaces carry only a primary address.
+func matchNICPrivateIP(nics []*ec2.InstanceNetworkInterface, values []string) bool {
+	return slices.ContainsFunc(nics, func(nic *ec2.InstanceNetworkInterface) bool {
+		return nic != nil && nic.PrivateIpAddress != nil && awsfilters.MatchesAny(values, *nic.PrivateIpAddress)
 	})
 }
 
-// matchTagValue returns true if any tag value on the resource matches any of the filter values.
-func matchTagValue(tags []*ec2.Tag, values []string) bool {
-	return slices.ContainsFunc(tags, func(t *ec2.Tag) bool {
-		return t.Value != nil && awsfilters.MatchesAny(values, *t.Value)
+// matchNICAnyPrivateIP matches any address an interface carries: its primary
+// address, checked directly because the stored list can omit it, and every
+// PrivateIpAddresses entry.
+func matchNICAnyPrivateIP(nics []*ec2.InstanceNetworkInterface, values []string) bool {
+	return slices.ContainsFunc(nics, func(nic *ec2.InstanceNetworkInterface) bool {
+		if nic == nil {
+			return false
+		}
+		if nic.PrivateIpAddress != nil && awsfilters.MatchesAny(values, *nic.PrivateIpAddress) {
+			return true
+		}
+		return slices.ContainsFunc(nic.PrivateIpAddresses, func(a *ec2.InstancePrivateIpAddress) bool {
+			return a != nil && a.PrivateIpAddress != nil && awsfilters.MatchesAny(values, *a.PrivateIpAddress)
+		})
 	})
 }
 
@@ -2193,7 +2234,18 @@ func (s *InstanceServiceImpl) DescribeStoppedInstances(ctx context.Context, inpu
 	if s.stoppedStore == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListStoppedInstances, 80, "stopped", "DescribeStoppedInstances")
+	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListStoppedInstances, 80, "stopped", "DescribeStoppedInstances", false)
+}
+
+// DescribeAccountInstanceRecords returns every non-terminated instance record
+// the account owns, whichever node holds it. It is the existence source for the
+// strict account inventory, so a record it cannot project fails the call rather
+// than being skipped.
+func (s *InstanceServiceImpl) DescribeAccountInstanceRecords(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string) (*ec2.DescribeInstancesOutput, error) {
+	if s.stoppedStore == nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListNonTerminatedInstances, 0, "pending", "DescribeAccountInstanceRecords", true)
 }
 
 // DescribeTerminatedInstances returns terminated instances from the terminated KV bucket.
@@ -2201,10 +2253,10 @@ func (s *InstanceServiceImpl) DescribeTerminatedInstances(ctx context.Context, i
 	if s.stoppedStore == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListTerminatedInstances, 48, "terminated", "DescribeTerminatedInstances")
+	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListTerminatedInstances, 48, "terminated", "DescribeTerminatedInstances", false)
 }
 
-func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string, listFn func() ([]*vm.VM, error), fallbackCode int64, fallbackName, opName string) (*ec2.DescribeInstancesOutput, error) {
+func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string, listFn func() ([]*vm.VM, error), fallbackCode int64, fallbackName, opName string, strict bool) (*ec2.DescribeInstancesOutput, error) {
 	instanceIDFilter, err := ParseInstanceIDFilter(input.InstanceIds)
 	if err != nil {
 		return nil, err
@@ -2232,6 +2284,11 @@ func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input
 			continue
 		}
 		if instance.Reservation == nil || instance.Instance == nil {
+			if strict {
+				slog.ErrorContext(ctx, opName+": record has nil Reservation/Instance, refusing a listing that would omit it",
+					"instanceId", instance.ID)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
 			slog.WarnContext(ctx, opName+": skipping instance with nil Reservation/Instance (data integrity issue)",
 				"instanceId", instance.ID)
 			continue
@@ -2530,7 +2587,7 @@ func (s *InstanceServiceImpl) startLocalRecord(ctx context.Context, local *vm.VM
 	if !IsInstanceVisible(accountID, local.AccountID) {
 		slog.WarnContext(ctx, "StartStoppedInstance: instance not visible",
 			"instanceId", local.ID, "callerAccount", accountID, "ownerAccount", local.AccountID)
-		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidInstanceIDNotFound, "instance", local.ID)
 	}
 
 	status := s.vmMgr.Status(local)
@@ -2544,7 +2601,7 @@ func (s *InstanceServiceImpl) startLocalRecord(ctx context.Context, local *vm.VM
 		return &StartStoppedInstanceOutput{Status: "running", InstanceID: local.ID}, nil
 	case vm.StateTerminated:
 		slog.WarnContext(ctx, "StartStoppedInstance: local record is terminated", "instanceId", local.ID)
-		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidInstanceIDNotFound, "instance", local.ID)
 	default:
 		slog.WarnContext(ctx, "StartStoppedInstance: instance already being started locally",
 			"instanceId", local.ID, "status", string(status))
@@ -2584,7 +2641,7 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 			return s.startLocalRecord(ctx, local, accountID)
 		}
 		slog.WarnContext(ctx, "StartStoppedInstance: instance not found in shared KV", "instanceId", input.InstanceID)
-		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidInstanceIDNotFound, "instance", input.InstanceID)
 	}
 	if instance.Status != vm.StateStopped {
 		slog.ErrorContext(ctx, "StartStoppedInstance: instance not in stopped state", "instanceId", input.InstanceID, "status", instance.Status)
@@ -2593,7 +2650,7 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 	if !IsInstanceVisible(accountID, instance.AccountID) {
 		slog.WarnContext(ctx, "StartStoppedInstance: instance not visible",
 			"instanceId", input.InstanceID, "callerAccount", accountID, "ownerAccount", instance.AccountID)
-		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidInstanceIDNotFound, "instance", input.InstanceID)
 	}
 
 	// Atomic claim: at most one caller across the cluster can win this race
@@ -2689,6 +2746,15 @@ func (s *InstanceServiceImpl) capacityRefusal(ctx context.Context, instance *vm.
 // start returns it to the stopped store, a recovery returns it to the node it
 // was taken from.
 func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instance *vm.VM, undo func()) error {
+	// Before anything is stamped or claimed, so the record handed back is the
+	// one that was claimed.
+	if err := vm.CheckUEFIVarStore(instance); err != nil {
+		slog.ErrorContext(ctx, "launchClaimedInstance: refusing to launch a UEFI instance without exactly one variable store",
+			"instanceId", instance.ID, "err", err)
+		undo()
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
 	instance.ResetNodeLocalState()
 
 	// AWS restamps LaunchTime on every start. The pending watchdog times a
@@ -2844,40 +2910,15 @@ func (s *InstanceServiceImpl) RecoverInstance(ctx context.Context, instance *vm.
 	return s.launchClaimedInstance(ctx, instance, undo)
 }
 
-// volumeExclusionMarkers are the refusals that mean another node is writing this
-// volume right now, or is still live and holds its unsealed writes. A previous
-// owner that has stopped heartbeating is opened over with a warning instead. The
-// text arrives having crossed NATS from viperblockd.
-var volumeExclusionMarkers = []string{
-	ec2v1.VolumeHeldElsewhereText,
-}
-
-// ErrVolumeHeldElsewhere reports a launch refused because another node still
-// holds one of the instance's volume leases.
-//
-// Recovery treats it differently from every other failure — it clears on the
-// lease's own clock rather than needing anything fixed — so it has to be
-// recognisable with errors.Is rather than inferred from text that has already
-// crossed NATS once.
-var ErrVolumeHeldElsewhere = errors.New("a volume is leased by another node")
-
-// volumeHeldElsewhereError converts a mount refused because another node holds
-// the volume into a client-facing error carrying that reason. Returns nil for
-// anything else. Without it the caller gets ServerInternal and is told to
-// retry, which cannot succeed while the holder is down, and the text naming the
-// holder never leaves the node's log.
+// volumeHeldElsewhereError converts a mount the EBS provider refused with its
+// held-elsewhere code into IncorrectState naming the holder, wrapping
+// ec2v1.ErrVolumeHeldElsewhere, and returns nil for anything else.
 func volumeHeldElsewhereError(err error) error {
-	if err == nil {
+	if !errors.Is(err, ebsprovider.ErrVolumeHeldElsewhere) {
 		return nil
 	}
-	msg := err.Error()
-	for _, marker := range volumeExclusionMarkers {
-		if strings.Contains(msg, marker) {
-			return fmt.Errorf("%w: %w", ErrVolumeHeldElsewhere,
-				awserrors.Errorf(awserrors.ErrorIncorrectState, "%s", msg))
-		}
-	}
-	return nil
+	return fmt.Errorf("%w: %w", ec2v1.ErrVolumeHeldElsewhere,
+		awserrors.Errorf(awserrors.ErrorIncorrectState, "%s", err.Error()))
 }
 
 // restoreClaimedStoppedInstance writes instance back to the shared
@@ -2933,6 +2974,7 @@ func (s *InstanceServiceImpl) TerminateStoppedInstance(ctx context.Context, inpu
 	s.deleteInstanceVolumes(ctx, instance, input.InstanceID)
 	s.releaseInstancePublicIP(ctx, instance, input.InstanceID)
 	s.deleteInstanceENI(ctx, instance, input.InstanceID)
+	hasUEFIStore := s.stampUEFIStoreTeardown(ctx, instance)
 
 	// Write to terminated KV FIRST so the instance is visible in DescribeInstances.
 	// If this fails the instance stays in the stopped bucket — safe to retry.
@@ -2940,6 +2982,16 @@ func (s *InstanceServiceImpl) TerminateStoppedInstance(ctx context.Context, inpu
 	if err := s.stoppedStore.WriteTerminatedInstance(input.InstanceID, instance); err != nil {
 		slog.ErrorContext(ctx, "TerminateStoppedInstance: failed to write to terminated KV, aborting", "instanceId", input.InstanceID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	// Marked only once the terminate is durable: a stopped instance whose
+	// terminate failed keeps its store. A failed mark leaves the teardown entry
+	// pending, from which the store reaper completes it.
+	if hasUEFIStore {
+		if _, err := s.uefiStores.MarkDeleting(ctx, input.InstanceID); err != nil {
+			slog.WarnContext(ctx, "TerminateStoppedInstance: failed to record UEFI variable store for deletion",
+				"instanceId", input.InstanceID, "err", err)
+		}
 	}
 
 	// Now safe to remove from stopped KV. Retry once on failure so the instance
@@ -2957,6 +3009,29 @@ func (s *InstanceServiceImpl) TerminateStoppedInstance(ctx context.Context, inpu
 
 	slog.InfoContext(ctx, "Terminated stopped instance from shared KV", "instanceId", input.InstanceID)
 	return &TerminateStoppedInstanceOutput{Status: "terminated", InstanceID: input.InstanceID}, nil
+}
+
+// stampUEFIStoreTeardown records the UEFI store teardown entry the terminated
+// record carries, and reports whether the instance has a store to mark. An
+// unreadable bucket is stamped failed, which the store reaper resolves.
+func (s *InstanceServiceImpl) stampUEFIStoreTeardown(ctx context.Context, instance *vm.VM) bool {
+	if s.uefiStores == nil {
+		return false
+	}
+	has, err := s.uefiStores.Exists(ctx, instance.ID)
+	state := vm.TeardownPending
+	switch {
+	case err != nil:
+		slog.WarnContext(ctx, "TerminateStoppedInstance: failed to read UEFI store record", "instanceId", instance.ID, "err", err)
+		state = vm.TeardownFailed
+	case !has:
+		return false
+	}
+	if instance.Teardown == nil {
+		instance.Teardown = make(map[string]string)
+	}
+	instance.Teardown[vm.TeardownUEFI] = string(state)
+	return has
 }
 
 func (s *InstanceServiceImpl) deleteInstanceVolumes(ctx context.Context, instance *vm.VM, instanceID string) {

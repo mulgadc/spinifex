@@ -257,7 +257,7 @@ func TestHandleNATSRequest_ServiceError(t *testing.T) {
 	require.NoError(t, err)
 
 	// "something went wrong" is not in awserrors.ErrorLookup, so
-	// ValidErrorCode falls back to ServerInternal.
+	// ValidErrorCodeFromError falls back to ServerInternal.
 	var errResp map[string]any
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)

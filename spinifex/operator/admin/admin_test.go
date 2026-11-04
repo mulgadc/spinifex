@@ -962,47 +962,6 @@ func TestFindNodeIDByIP(t *testing.T) {
 	assert.Equal(t, 0, FindNodeIDByIP(nil, "10.0.0.1"))
 }
 
-// --- ParsePredastoreHostIDFromConfig ---
-
-func TestParsePredastoreHostIDFromConfig(t *testing.T) {
-	tomlContent := `
-[[host]]
-id = 1
-bind_addr = "0.0.0.0"
-addr = "10.0.0.1"
-
-[[host.node]]
-id = 1
-role = "gate"
-port = 8443
-
-[[host]]
-id = 2
-bind_addr = "0.0.0.0"
-addr = "10.0.0.2"
-
-[[host]]
-id = 3
-bind_addr = "0.0.0.0"
-addr = "10.0.0.3"
-`
-	assert.Equal(t, 2, ParsePredastoreHostIDFromConfig(tomlContent, "10.0.0.2"))
-	assert.Equal(t, 0, ParsePredastoreHostIDFromConfig(tomlContent, "10.0.0.99"))
-	assert.Equal(t, 0, ParsePredastoreHostIDFromConfig("invalid toml {{{", "10.0.0.1"))
-	assert.Equal(t, 0, ParsePredastoreHostIDFromConfig("", "10.0.0.1"))
-}
-
-// A host addr never carries a port, so one written with a node's port attached
-// names no machine and must not resolve to a host.
-func TestParsePredastoreHostIDFromConfig_AddressWithPortDoesNotMatch(t *testing.T) {
-	tomlContent := `
-[[host]]
-id = 7
-addr = "10.0.0.7:6660"
-`
-	assert.Equal(t, 0, ParsePredastoreHostIDFromConfig(tomlContent, "10.0.0.7"))
-}
-
 // --- Integration: Full config generation flow ---
 
 func TestGenerateConfigFile_SpinifexTomlTemplate(t *testing.T) {

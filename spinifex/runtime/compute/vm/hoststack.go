@@ -31,16 +31,10 @@ type HostVirtStack struct {
 // database cannot hold up daemon start.
 const hostStackCommandTimeout = 5 * time.Second
 
-var (
-	hostStackOnce   sync.Once
-	hostStackCached HostVirtStack
-)
-
 // CurrentHostVirtStack returns the host stack, probed once per process.
-func CurrentHostVirtStack() HostVirtStack {
-	hostStackOnce.Do(func() { hostStackCached = detectHostVirtStack(qemuArch(runtime.GOARCH)) })
-	return hostStackCached
-}
+var CurrentHostVirtStack = sync.OnceValue(func() HostVirtStack {
+	return detectHostVirtStack(qemuArch(runtime.GOARCH))
+})
 
 // LogHostVirtStack records the host stack at daemon start.
 func LogHostVirtStack() {

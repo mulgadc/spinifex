@@ -424,6 +424,19 @@ func TestExtractClientError_NestedWrappedCode(t *testing.T) {
 	require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
+func TestExtractClientError_KeepsMessage(t *testing.T) {
+	t.Parallel()
+	inner := awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "architecture mismatch")
+	results := []nodeLaunchResult{
+		{NodeID: "node-1", Err: fmt.Errorf("launch on node-1: %w", inner)},
+	}
+
+	code, msg, ok := awserrors.ResolveErrorDetail(extractClientError(results))
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "architecture mismatch", msg)
+}
+
 func TestExtractClientError_JoinedCode(t *testing.T) {
 	t.Parallel()
 	joined := errors.Join(assert.AnError, errors.New(awserrors.ErrorInvalidGroupNotFound))
@@ -817,7 +830,7 @@ func TestRunInstances_SingleInstanceDistributes(t *testing.T) {
 		MaxCount:     aws.Int64(1),
 	}
 
-	reservation, err := RunInstances(context.Background(), input, nc, nil, "test-account", nil, nil, 1)
+	reservation, err := RunInstances(context.Background(), input, nc, nil, nil, "test-account", nil, nil, 1)
 	require.NoError(t, err)
 	assert.Len(t, reservation.Instances, 1)
 	assert.Equal(t, "i-single", aws.StringValue(reservation.Instances[0].InstanceId))
@@ -1370,7 +1383,7 @@ func TestRunInstances_ClusterPlacementGroupRouting(t *testing.T) {
 		},
 	}
 
-	reservation, err := RunInstances(context.Background(), input, nc, nil, "test-account", nil, nil, 1)
+	reservation, err := RunInstances(context.Background(), input, nc, nil, nil, "test-account", nil, nil, 1)
 	require.NoError(t, err)
 	assert.Len(t, reservation.Instances, 2)
 }
@@ -1419,7 +1432,7 @@ func TestRunInstances_MultiInstanceUsesDistribution(t *testing.T) {
 		MaxCount:     aws.Int64(2),
 	}
 
-	reservation, err := RunInstances(context.Background(), input, nc, nil, "test-account", nil, nil, 1)
+	reservation, err := RunInstances(context.Background(), input, nc, nil, nil, "test-account", nil, nil, 1)
 	require.NoError(t, err)
 	assert.Len(t, reservation.Instances, 2)
 	assert.True(t, statusQueried, "multi-instance launch should query node status")

@@ -61,6 +61,8 @@ type Inventory struct {
 	groups    PlacementGroupScanner
 	templates LaunchTemplateScanner
 	tags      TagIndexScanner
+	spot      SpotRequestScanner
+	volumes   VolumeScanner
 	now       func() time.Time
 }
 

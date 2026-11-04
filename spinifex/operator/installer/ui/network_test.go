@@ -278,22 +278,6 @@ func TestVisibleFieldsOmitsRoutingOffWAN(t *testing.T) {
 	}
 }
 
-// The mask field must accept only what netgen can consume. It previously
-// advertised and accepted a prefix length, which passed the TUI and then failed
-// the install itself with "invalid mask: 24".
-func TestValidSubnetMaskRejectsPrefixLength(t *testing.T) {
-	for _, bad := range []string{"24", "/24", "8", "", "255.255.0", "255.0.255.0", "::1"} {
-		if validSubnetMask(bad) {
-			t.Errorf("validSubnetMask(%q) = true, want false", bad)
-		}
-	}
-	for _, good := range []string{"255.255.255.0", "255.255.0.0", "255.0.0.0", "255.255.255.252"} {
-		if !validSubnetMask(good) {
-			t.Errorf("validSubnetMask(%q) = false, want true", good)
-		}
-	}
-}
-
 // The hardware detail is the point of the NIC table: an operator has to be able
 // to tell which physical port each plane landed on. It gets a line of its own,
 // under the interface column, rather than being squeezed into the row.

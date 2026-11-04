@@ -151,6 +151,7 @@ type Daemon struct {
 	natsConn          *nats.Conn
 	resourceMgr       *ResourceManager
 	instanceService   *ec2instance.InstanceServiceImpl
+	instanceObjects   objectstore.ObjectStore
 	dnsWriter         *dns.Writer
 	dnsReconciler     *dns.Reconciler
 	dnsBaseDomain     string
@@ -1038,6 +1039,7 @@ func (d *Daemon) subscribeAll() error {
 		{fmt.Sprintf("ec2.start.%s", d.node), handleNATSRequest(d.node, d.instanceService.StartStoppedInstance), ""},
 		{"ec2.terminate", handleNATSRequest(d.node, d.instanceService.TerminateStoppedInstance), "spinifex-workers"},
 		{"ec2.DescribeStoppedInstances", handleNATSRequest(d.node, d.instanceService.DescribeStoppedInstances), "spinifex-workers"},
+		{"ec2.DescribeAccountInstanceRecords", handleNATSRequest(d.node, d.instanceService.DescribeAccountInstanceRecords), "spinifex-workers"},
 		{"ec2.DescribeTerminatedInstances", handleNATSRequest(d.node, d.instanceService.DescribeTerminatedInstances), "spinifex-workers"},
 		// these fan out to all nodes and gateway aggregates the results. The
 		// handler only sees per-daemon local state (vmMgr/stoppedStore), so
@@ -2025,6 +2027,7 @@ func (d *Daemon) startCluster() error {
 
 	// Create services before loading/launching instances, since LaunchInstance depends on them
 	store := objectstore.NewS3ObjectStoreFromConfig(netaddr.DialTarget(d.config.Predastore.Host), d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey)
+	d.instanceObjects = store
 	d.instanceService = ec2instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store, d.vmMgr, d.resourceMgr, d.jsManager)
 	d.dnsWriter = dns.NewWriter(d.config, d.clusterConfig, d.natsConn)
 	d.dnsReconciler = dns.NewReconciler(d.config, d.clusterConfig, d.natsConn, d.dnsWriter, d.dnsDesiredSet, d.dnsWatchSources()...)
@@ -2222,6 +2225,9 @@ func (d *Daemon) startCluster() error {
 	}
 
 	d.instanceService.SetTerminationDeps(d.volumeService, d.vpcService, ipReleaser, d.tagsService)
+	if d.jsManager != nil && d.jsManager.UEFIStores() != nil {
+		d.instanceService.SetUEFIStores(d.jsManager.UEFIStores())
+	}
 	d.instanceService.SetVolumeCreator(d.volumeService)
 	d.instanceService.SetRunInstancesDeps(d.imageService, d.keyService, &daemonENICreator{d: d}, ipAllocator)
 
@@ -2592,6 +2598,9 @@ func (d *Daemon) startCluster() error {
 		}
 		if gpuRec := d.newGPUPoolReconciler(); gpuRec != nil {
 			reapers = append(reapers, gpuRec)
+		}
+		if uefiStores := d.newUEFIStoreReaper(); uefiStores != nil {
+			reapers = append(reapers, uefiStores)
 		}
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))

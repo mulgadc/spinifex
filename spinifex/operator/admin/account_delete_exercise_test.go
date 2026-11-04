@@ -47,6 +47,7 @@ func awaitState(t *testing.T, gw Deps, accountID, state string) *accountDeletion
 // An exercise ends EXERCISED with the account still TERMINATING, and a later
 // ordinary delete takes the same operation over to finish it.
 func TestNonFinalizingDeleteEndsExercisedAndALaterDeleteTakesItOver(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 

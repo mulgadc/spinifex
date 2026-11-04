@@ -23,6 +23,9 @@ const (
 	TeardownENI       = "eni"
 	TeardownOVN       = "ovn"
 	TeardownPlacement = "placement"
+	// TeardownUEFI is pending once the variable store is recorded for
+	// deletion; the cluster-wide store reaper marks it done.
+	TeardownUEFI = "uefi"
 )
 
 // markTeardown records dep → state on the VM under the manager lock. Inspect

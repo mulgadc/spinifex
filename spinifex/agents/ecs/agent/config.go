@@ -21,17 +21,14 @@ const (
 
 // Config holds the static settings the agent reads at boot. Cluster identity
 // (account ID, instance ID) is discovered at runtime from IMDS, not configured;
-// only the cluster *name* the instance was launched into is static. AccessKey /
-// SecretKey are legacy seeded creds, optional now that the agent SigV4-signs
-// gateway calls with instance-role credentials from IMDS; the agent never holds
-// a NATS token.
+// only the cluster *name* the instance was launched into is static. The agent
+// SigV4-signs gateway calls with instance-role credentials from IMDS and never
+// holds a NATS token.
 type Config struct {
 	GatewayURL       string
 	GatewayCA        string
 	Region           string
 	ClusterName      string
-	AccessKey        string
-	SecretKey        string
 	IMDSBase         string
 	ContainerdSocket string
 	Heartbeat        time.Duration
@@ -53,8 +50,6 @@ func LoadConfig(envFile string) Config {
 		GatewayCA:        get("ECS_GATEWAY_CA"),
 		Region:           get("ECS_REGION"),
 		ClusterName:      get("ECS_CLUSTER"),
-		AccessKey:        get("ECS_ACCESS_KEY"),
-		SecretKey:        get("ECS_SECRET_KEY"),
 		IMDSBase:         get("ECS_IMDS_BASE"),
 		ContainerdSocket: get("ECS_CONTAINERD_SOCKET"),
 	}

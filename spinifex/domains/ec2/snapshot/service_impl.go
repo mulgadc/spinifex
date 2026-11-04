@@ -254,6 +254,8 @@ var describeSnapshotsValidFilters = map[string]bool{
 	"volume-id":   true,
 	"volume-size": true,
 	"owner-id":    true,
+	"tag-key":     true,
+	"tag-value":   true,
 }
 
 // DescribeSnapshots lists snapshots matching the specified criteria, scoped to the caller's account.
@@ -455,7 +457,7 @@ func ownerIDsIncludeCaller(ownerIDs []*string, accountID string) bool {
 // snapshotMatchesFilters checks whether a snapshot document satisfies all parsed awsfilters.
 func snapshotMatchesFilters(cfg ebsmetadata.Snapshot, filters map[string][]string) bool {
 	for name, values := range filters {
-		if strings.HasPrefix(name, "tag:") {
+		if awsfilters.IsTagFilter(name) {
 			continue
 		}
 

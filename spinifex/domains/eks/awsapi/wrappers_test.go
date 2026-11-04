@@ -2,8 +2,12 @@ package awsapi
 
 import (
 	"context"
+	"encoding/json"
+	"slices"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -43,13 +47,35 @@ func TestGatewayWrappers_Cluster(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, out3)
 
-	out4, err := ListClusters(context.Background(), nc, acct)
+	out4, err := ListClusters(context.Background(), nc, acct, nil)
 	require.NoError(t, err)
 	assert.NotNil(t, out4)
 
 	out5, err := DeleteCluster(context.Background(), nc, acct, "alpha")
 	require.NoError(t, err)
 	assert.NotNil(t, out5)
+}
+
+// The route must hand the folded query to the service, or a paginator never advances.
+func TestListClustersRoute_PassesTheQuery(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	got := make(chan eks.ListClustersInput, 1)
+	sub, err := nc.Subscribe("eks.ListClusters", func(m *nats.Msg) {
+		var in eks.ListClustersInput
+		_ = json.Unmarshal(m.Data, &in)
+		got <- in
+		_ = m.Respond([]byte(`{}`))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	i := slices.IndexFunc(routes, func(r route) bool { return r.Action == "ListClusters" })
+	require.GreaterOrEqual(t, i, 0)
+	_, err = routes[i].Handler(context.Background(), nc, acct, "", nil, []byte(`{"maxResults":["2"],"nextToken":["tok"]}`))
+	require.NoError(t, err)
+	in := <-got
+	assert.Equal(t, int64(2), aws.Int64Value(in.MaxResults))
+	assert.Equal(t, "tok", aws.StringValue(in.NextToken))
 }
 
 func TestGatewayWrappers_Cluster_BadJSON(t *testing.T) {

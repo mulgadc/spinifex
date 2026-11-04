@@ -12,8 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
-	"github.com/mulgadc/spinifex/spinifex/agents/ecs/credentials"
+	"github.com/mulgadc/spinifex/internal/imdscreds"
 	ctrruntime "github.com/mulgadc/spinifex/spinifex/agents/ecs/runtime"
 )
 
@@ -102,7 +103,9 @@ func New(cfg Config) (*Agent, error) {
 		AgentVersion: cfg.AgentVersion,
 	}
 
-	creds := credentials.NewIMDSProvider(imdsClient, cfg.IMDSBase)
+	// The cache refetches only once the real expiry passes, and a failed
+	// refresh is an error rather than an extended expiry.
+	creds := aws.NewCredentialsCache(imdscreds.NewProvider(imdsClient, cfg.IMDSBase))
 	resolver := newLazyECRResolver(creds, cfg.Region, cfg.GatewayURL, cfg.GatewayCA)
 
 	// A dial that fails here is not fatal and not final: the node starts the

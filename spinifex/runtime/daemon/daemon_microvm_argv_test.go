@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -13,6 +14,7 @@ import (
 // microVM builder moved to runtime/compute/vm. Any change here is a change
 // to how existing system instances boot.
 func TestBuildDirectBootConfig_ArgvUnchanged(t *testing.T) {
+	vm.SetKVMAvailableForTest(t, true)
 	mdir := microvmDir
 	nics := []string{
 		"-device", "virtio-net-pci,netdev=net0,mac=02:aa:bb:cc:dd:01,rx_queue_size=1024",

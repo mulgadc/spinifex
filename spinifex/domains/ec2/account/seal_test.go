@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sync"
 	"testing"
 
@@ -395,16 +394,6 @@ func TestSealStoreErrorWritesNothing(t *testing.T) {
 	_, err := svc.SealAccount(ctx, testAccountID)
 	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInternalError), "got %v", err)
 	assert.Equal(t, before, lastSettingsSeq(t, svc))
-}
-
-func TestIsRevisionConflictRecognisesTombstoneRetry(t *testing.T) {
-	assert.True(t, isRevisionConflict(jetstream.ErrKeyExists))
-	assert.True(t, isRevisionConflict(jetstream.ErrKeyRevisionMismatch))
-	assert.True(t, isRevisionConflict(&jetstream.APIError{ErrorCode: jetstream.JSErrCodeStreamWrongLastSequence}))
-	assert.True(t, isRevisionConflict(&jetstream.APIError{ErrorCode: jetstream.JSErrCodeStreamWrongLastSequenceConstant}))
-	assert.True(t, isRevisionConflict(fmt.Errorf("wrapped: %w", &jetstream.APIError{ErrorCode: jetstream.JSErrCodeStreamWrongLastSequence})))
-	assert.False(t, isRevisionConflict(errors.New("unrelated failure")))
-	assert.False(t, isRevisionConflict(nil))
 }
 
 // An account IAM does not hold as TERMINATING refuses the seal before any

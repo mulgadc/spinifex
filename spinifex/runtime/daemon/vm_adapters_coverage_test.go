@@ -180,6 +180,24 @@ func TestBuildVMManagerDeps_BackingStoreReady(t *testing.T) {
 		"no predastore configured and JetStream answering is ready")
 }
 
+// Variable stores live in the instance domain's bucket, read through the
+// same object store, with the live copy under the persistent data directory.
+func TestBuildVMManagerDeps_UEFIVarStore(t *testing.T) {
+	objects := objectstore.NewMemoryObjectStore()
+	d := &Daemon{
+		config:          &config.Config{DataDir: "/srv/spinifex", Predastore: config.PredastoreConfig{Bucket: "spinifex-instances"}},
+		vmMgr:           vm.NewManager(),
+		instanceObjects: objects,
+	}
+	got := d.buildVMManagerDeps().UEFIVarStore
+	assert.Same(t, objects, got.Objects)
+	assert.Equal(t, "spinifex-instances", got.Bucket)
+	assert.Equal(t, "/srv/spinifex", got.DataDir)
+
+	d.config.DataDir = ""
+	assert.Equal(t, DefaultDataDir, d.buildVMManagerDeps().UEFIVarStore.DataDir)
+}
+
 // --- volumeMounterAdapter ---
 
 // A connection that is down refuses the publish before sending it, so restore

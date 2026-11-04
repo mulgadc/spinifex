@@ -8,12 +8,9 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
-
-// casRetries bounds casUpdate's revision-checked retry loop. Matches the
-// shared EKS cluster-state CAS retry count.
-const casRetries = 5
 
 // manifestSuffix names the staged-manifest sub-key under a record key.
 const manifestSuffix = "/manifest"
@@ -196,36 +193,9 @@ func deleteRecord(ctx context.Context, kv jetstream.KeyValue, cluster, addon str
 // casUpdate does a revision-checked read-modify-write. mutate returns true
 // when a field changed. Returns ErrNotFound if absent.
 func casUpdate(ctx context.Context, kv jetstream.KeyValue, cluster, addon string, mutate func(*Record) bool) (*Record, error) {
-	key := Key(cluster, addon)
-	for range casRetries {
-		entry, err := kv.Get(ctx, key)
-		if err != nil {
-			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				return nil, ErrNotFound
-			}
-			return nil, fmt.Errorf("kv get %s: %w", key, err)
-		}
-		var rec Record
-		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
-			return nil, fmt.Errorf("unmarshal addon %s: %w", addon, err)
-		}
-		if !mutate(&rec) {
-			return &rec, nil
-		}
-		data, err := json.Marshal(&rec)
-		if err != nil {
-			return nil, fmt.Errorf("marshal addon %s: %w", addon, err)
-		}
-		_, err = kv.Update(ctx, key, data, entry.Revision())
-		if err == nil {
-			return &rec, nil
-		}
-		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
-			continue
-		}
-		return nil, fmt.Errorf("kv update %s: %w", key, err)
-	}
-	return nil, fmt.Errorf("eks: casUpdateAddon %s exhausted CAS retries", addon)
+	return kvutil.Update(ctx, kv, Key(cluster, addon), kvutil.CASConfig{NotFound: ErrNotFound}, func(r *Record) (bool, error) {
+		return mutate(r), nil
+	})
 }
 
 // sortRecords orders records by add-on name. One record exists per add-on

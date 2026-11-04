@@ -66,7 +66,7 @@ type ConverseStreamEvent struct {
 
 // payload JSON-marshals the event struct matching Kind via jsonutil.BuildJSON
 // (the SDK's own restjson marshaler), honouring the locationName tags a real
-// SDK consumer's UnmarshalEvent expects — mirroring WriteJSONResponse.
+// SDK consumer's UnmarshalEvent expects — mirroring envelope.WriteJSONResult.
 func (e ConverseStreamEvent) payload() ([]byte, error) {
 	switch e.Kind {
 	case converseStreamEventMessageStart:

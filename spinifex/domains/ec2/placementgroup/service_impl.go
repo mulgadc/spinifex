@@ -227,18 +227,8 @@ func (s *PlacementGroupServiceImpl) DescribePlacementGroups(ctx context.Context,
 	}
 
 	// Build filter maps for GroupNames/GroupIds parameters
-	nameSet := make(map[string]bool)
-	for _, name := range input.GroupNames {
-		if name != nil {
-			nameSet[*name] = true
-		}
-	}
-	idSet := make(map[string]bool)
-	for _, id := range input.GroupIds {
-		if id != nil {
-			idSet[*id] = true
-		}
-	}
+	nameSet := awsidentifiers.Set(input.GroupNames)
+	idSet := awsidentifiers.Set(input.GroupIds)
 
 	prefix := accountID + "."
 	keys, err := s.kv.Keys(ctx)

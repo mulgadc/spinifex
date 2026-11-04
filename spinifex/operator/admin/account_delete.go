@@ -421,7 +421,7 @@ func (t *deletionTracker) persist(ctx context.Context) {
 			t.revision = revision
 			return
 		}
-		if !isRevisionConflict(err) {
+		if !kvutil.IsRevisionConflict(err) {
 			// The teardown itself is unaffected; only its progress report is. Losing
 			// the run over a KV write would be the worse outcome.
 			slog.Error("DeleteAccount: failed to store job progress", "accountID", t.job.AccountID, "err", err)
@@ -446,10 +446,6 @@ func (t *deletionTracker) persist(ctx context.Context) {
 		t.revision = currentRevision
 	}
 	slog.Error("DeleteAccount: job progress kept conflicting", "accountID", t.job.AccountID)
-}
-
-func isRevisionConflict(err error) bool {
-	return errors.Is(err, jetstream.ErrKeyExists) || errors.Is(err, jetstream.ErrKeyRevisionMismatch)
 }
 
 // claimDeletionJob CAS-creates the job record, which is what stops two
@@ -568,7 +564,7 @@ func takeOverDeletionJob(
 
 	revision, err := jobs.Update(ctx, req.AccountID, record, existingRevision)
 	if err != nil {
-		if isRevisionConflict(err) {
+		if kvutil.IsRevisionConflict(err) {
 			// Another taker won the same expired lease.
 			return nil, 0, nil, errors.New(awserrors.ErrorOperationInProgress)
 		}

@@ -293,7 +293,7 @@ func TestAssociateIamInstanceProfile_NoResponders(t *testing.T) {
 	// a raw NATS timeout.
 	_, err := AssociateIamInstanceProfile(context.Background(), in, nc, svc, testGwAccountID, nil)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.EqualError(t, err, "The instance ID 'i-no-daemon' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 }
 
 func TestAssociateIamInstanceProfile_Success(t *testing.T) {

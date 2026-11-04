@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -396,7 +397,7 @@ type Device struct {
 }
 
 // Drive is one QEMU -drive entry, used for the pflash firmware drives (the
-// CODE blob and the EFI volume). Each set field becomes a key=value option.
+// CODE blob and the variable store). Each set field becomes a key=value option.
 type Drive struct {
 	File   string `json:"file"`
 	Format string `json:"format"`
@@ -405,7 +406,7 @@ type Drive struct {
 	ID     string `json:"id"`
 	Cache  string `json:"cache,omitempty"`
 	// Unit selects the pflash slot when If=="pflash": 0 is the CODE blob,
-	// 1 is the per-VM VARS volume. Ignored for non-pflash drives.
+	// 1 is the per-VM variable store. Ignored for non-pflash drives.
 	Unit int `json:"unit,omitempty"`
 	// ReadOnly emits readonly=on; used for the pflash CODE blob.
 	ReadOnly bool `json:"readonly,omitempty"`
@@ -491,6 +492,32 @@ type FwCfgEntry struct {
 // resolveQEMUBinary is a variable so tests run without QEMU installed.
 var resolveQEMUBinary = hostos.QEMUBinary
 
+// kvmOverride pins the /dev/kvm probe for tests: 0 probes the host, 1 reports
+// KVM present, 2 absent. Atomic so a test can set it while others build argv.
+var kvmOverride atomic.Int32
+
+func kvmAvailable() bool {
+	switch kvmOverride.Load() {
+	case 1:
+		return true
+	case 2:
+		return false
+	}
+	_, err := os.Stat("/dev/kvm")
+	return err == nil
+}
+
+// SetKVMAvailableForTest makes Execute see KVM as present or absent for one test.
+func SetKVMAvailableForTest(tb testing.TB, present bool) {
+	tb.Helper()
+	v := int32(2)
+	if present {
+		v = 1
+	}
+	prev := kvmOverride.Swap(v)
+	tb.Cleanup(func() { kvmOverride.Store(prev) })
+}
+
 func (cfg *Config) Execute() (*exec.Cmd, error) {
 	args := []string{}
 
@@ -530,10 +557,7 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		args = append(args, "-smbios", fmt.Sprintf("type=3,asset=%s", cfg.SMBIOSAssetTag))
 	}
 
-	// Validate native kvm support
-	_, err := os.Stat("/dev/kvm")
-
-	if err != nil {
+	if !kvmAvailable() {
 		slog.Warn("Native KVM support not detected on host. Check permissions and host")
 		//slog.Warn("Setting -cpu max, `host` CPU type unavailable")
 		// Use qemu defaults
@@ -594,8 +618,8 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 			return nil, fwErr
 		}
 		// pflash CODE must come before VARS so QEMU loads firmware into the
-		// readonly slot first; buildDrives emits the VARS drive (unit 1) from
-		// the per-VM EFI viperblock volume.
+		// readonly slot first; startQEMU emits the VARS drive (unit 1) from
+		// the node's copy of the variable store or the EFI volume.
 		drives = append([]Drive{{If: "pflash", Format: "raw", Unit: 0, ReadOnly: true, File: codePath}}, drives...)
 	}
 

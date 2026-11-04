@@ -16,6 +16,7 @@ import (
 	ecrregistry "github.com/mulgadc/spinifex/spinifex/domains/ecr/registry"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -318,7 +319,7 @@ func TestDispatch_GetAuthorizationTokenMintsForTheVerifiedActor(t *testing.T) {
 		RoleID:      "AROAROLEID0000000001",
 	}, be.minted[0])
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, JSONContentType, w.Header().Get("Content-Type"))
+	assert.Equal(t, envelope.JSONContentType, w.Header().Get("Content-Type"))
 }
 
 // Only a role session names a role, and the ID is the part of aws:userid before the

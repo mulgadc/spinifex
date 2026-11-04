@@ -93,6 +93,13 @@ func TestDescribeListenerCertificates_DelegatesNoResponder(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestDescribeSSLPolicies_BadLoadBalancerType(t *testing.T) {
+	_, err := DescribeSSLPolicies(context.Background(), &elbv2.DescribeSSLPoliciesInput{
+		LoadBalancerType: aws.String("classic"),
+	}, nil, "123456789012")
+	assert.Equal(t, awserrors.ErrorValidationError, awserrors.ValidErrorCodeFromError(err))
+}
+
 func TestDescribeSSLPolicies_DelegatesNoResponder(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	_, err := DescribeSSLPolicies(context.Background(), &elbv2.DescribeSSLPoliciesInput{}, nc, "123456789012")

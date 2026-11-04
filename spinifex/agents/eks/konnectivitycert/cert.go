@@ -80,7 +80,17 @@ func ensureCert(dir, caCertPath, caKeyPath, cn string, dns []string, ips []net.I
 	if err != nil {
 		return "", "", err
 	}
-	certPEM, keyPEM, err := issueLeaf(caCert, caKey, cn, dns, ips)
+	now := time.Now().UTC()
+	certPEM, keyPEM, err := Mint(&x509.Certificate{
+		Subject:               pkix.Name{CommonName: cn},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.AddDate(10, 0, 0),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              dns,
+		IPAddresses:           ips,
+	}, caCert, caKey)
 	if err != nil {
 		return "", "", err
 	}
@@ -181,8 +191,9 @@ func parseECKey(der []byte) (*ecdsa.PrivateKey, error) {
 	return ec, nil
 }
 
-// issueLeaf mints an ECDSA-P256 ServerAuth leaf for cn + SANs, signed by caCert/caKey.
-func issueLeaf(caCert *x509.Certificate, caKey *ecdsa.PrivateKey, cn string, dns []string, ips []net.IP) (certPEM, keyPEM []byte, err error) {
+// Mint generates an ECDSA-P256 key, issues tmpl for it with a random serial and
+// signs it with parentKey, or self-signs when parent is nil. tmpl is not modified.
+func Mint(tmpl, parent *x509.Certificate, parentKey *ecdsa.PrivateKey) (certPEM, keyPEM []byte, err error) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate key: %w", err)
@@ -191,19 +202,12 @@ func issueLeaf(caCert *x509.Certificate, caKey *ecdsa.PrivateKey, cn string, dns
 	if err != nil {
 		return nil, nil, fmt.Errorf("serial: %w", err)
 	}
-	now := time.Now().UTC()
-	tmpl := x509.Certificate{
-		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: cn},
-		NotBefore:             now.Add(-time.Hour),
-		NotAfter:              now.AddDate(10, 0, 0),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-		DNSNames:              dns,
-		IPAddresses:           ips,
+	t := *tmpl
+	t.SerialNumber = serial
+	if parent == nil {
+		parent, parentKey = &t, priv
 	}
-	der, err := x509.CreateCertificate(rand.Reader, &tmpl, caCert, &priv.PublicKey, caKey)
+	der, err := x509.CreateCertificate(rand.Reader, &t, parent, &priv.PublicKey, parentKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create cert: %w", err)
 	}

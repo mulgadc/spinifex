@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -618,11 +619,7 @@ func changeInfo(c *ChangeRecord) *route53.ChangeInfo {
 }
 
 func tagSet(z *ZoneRecord) *route53.ResourceTagSet {
-	keys := make([]string, 0, len(z.Tags))
-	for k := range z.Tags {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
+	keys := slices.Sorted(maps.Keys(z.Tags))
 	tags := make([]*route53.Tag, 0, len(keys))
 	for _, k := range keys {
 		tags = append(tags, &route53.Tag{Key: aws.String(k), Value: aws.String(z.Tags[k])})

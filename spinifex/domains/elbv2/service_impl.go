@@ -1230,10 +1230,11 @@ func certFilesToSDK(certFiles map[string]string) []*CertFile {
 }
 
 // resolveTargetIP looks up the private IP for an instance by finding its primary ENI.
-// Returns empty string if VPC service is unavailable or no ENI found.
-func (s *ELBv2ServiceImpl) resolveTargetIP(ctx context.Context, instanceID, accountID string) string {
+// found is false when no ENI in the account is attached to the instance, which
+// is how a non-existent instance shows; without a VPC service nothing is checked.
+func (s *ELBv2ServiceImpl) resolveTargetIP(ctx context.Context, instanceID, accountID string) (ip string, found bool, err error) {
 	if s.VPCService == nil {
-		return ""
+		return "", true, nil
 	}
 
 	result, err := s.VPCService.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
@@ -1241,35 +1242,35 @@ func (s *ELBv2ServiceImpl) resolveTargetIP(ctx context.Context, instanceID, acco
 			{Name: aws.String("attachment.instance-id"), Values: []*string{aws.String(instanceID)}},
 		},
 	}, accountID)
-	if err != nil || len(result.NetworkInterfaces) == 0 {
-		slog.WarnContext(ctx, "Could not resolve target IP — target will not receive traffic until ENI is attached", "instanceId", instanceID, "err", err)
-		return ""
+	if err != nil {
+		slog.ErrorContext(ctx, "RegisterTargets: ENI lookup failed", "instanceId", instanceID, "err", err)
+		return "", false, errors.New(awserrors.ErrorServerInternal)
 	}
-
-	// Use the first (primary) ENI's private IP
-	if result.NetworkInterfaces[0].PrivateIpAddress != nil {
-		return *result.NetworkInterfaces[0].PrivateIpAddress
+	// The filter matches wildcards, so require the attachment to name this exact instance.
+	if len(result.NetworkInterfaces) == 0 || result.NetworkInterfaces[0].Attachment == nil ||
+		aws.StringValue(result.NetworkInterfaces[0].Attachment.InstanceId) != instanceID {
+		return "", false, nil
 	}
-	return ""
+	return aws.StringValue(result.NetworkInterfaces[0].PrivateIpAddress), true, nil
 }
 
 // resolveRegisteredTargetIP returns the private IP for a target being registered.
 // For ip-type targets the ID is the IP; for instance targets it is resolved via
-// the primary ENI. Returns an error if the ID doesn't match the target type.
-func (s *ELBv2ServiceImpl) resolveRegisteredTargetIP(ctx context.Context, targetType, id, accountID string) (string, error) {
+// the primary ENI, and found is false when the instance does not exist.
+func (s *ELBv2ServiceImpl) resolveRegisteredTargetIP(ctx context.Context, targetType, id, accountID string) (ip string, found bool, err error) {
 	switch targetType {
 	case TargetTypeIP:
 		if net.ParseIP(id) == nil {
 			slog.WarnContext(ctx, "RegisterTargets: ip target id is not a valid IP", "id", id)
-			return "", errors.New(awserrors.ErrorInvalidParameterValue)
+			return "", false, errors.New(awserrors.ErrorInvalidParameterValue)
 		}
-		return id, nil
+		return id, true, nil
 	default: // instance
 		if net.ParseIP(id) != nil {
 			slog.WarnContext(ctx, "RegisterTargets: instance target group given an IP address", "id", id)
-			return "", errors.New(awserrors.ErrorInvalidParameterValue)
+			return "", false, errors.New(awserrors.ErrorInvalidParameterValue)
 		}
-		return s.resolveTargetIP(ctx, id, accountID), nil
+		return s.resolveTargetIP(ctx, id, accountID)
 	}
 }
 
@@ -1379,6 +1380,15 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 		if scheme != SchemeInternetFacing && scheme != SchemeInternal {
 			return nil, errors.New(awserrors.ErrorELBv2InvalidScheme)
 		}
+	}
+
+	// Only ipv4 front ends are served, as SetIpAddressType enforces, and
+	// Spinifex has no Outposts customer-owned address pools.
+	if t := aws.StringValue(input.IpAddressType); t != "" && t != IPAddressTypeIPv4 {
+		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
+	}
+	if aws.StringValue(input.CustomerOwnedIpv4Pool) != "" {
+		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
 	}
 
 	lbID := awsidentifiers.GenerateResourceID("lb")
@@ -1975,7 +1985,16 @@ func (s *ELBv2ServiceImpl) DescribeLoadBalancers(ctx context.Context, input *elb
 		result = append(result, s.lbRecordToSDK(ctx, lb))
 	}
 
-	// AWS fails the whole call when any requested name is unknown.
+	// AWS fails the whole call when any requested ARN or name is unknown.
+	if len(arnFilter) > 0 {
+		for _, lb := range result {
+			delete(arnFilter, aws.StringValue(lb.LoadBalancerArn))
+		}
+		if len(arnFilter) > 0 {
+			return nil, awserrors.Errorf(awserrors.ErrorELBv2LoadBalancerNotFound,
+				"One or more load balancers not found")
+		}
+	}
 	if len(nameFilter) > 0 {
 		for _, lb := range result {
 			delete(nameFilter, aws.StringValue(lb.LoadBalancerName))
@@ -2460,6 +2479,7 @@ func (s *ELBv2ServiceImpl) RegisterTargets(ctx context.Context, input *elbv2.Reg
 		registered[targetKey(t.Id, t.Port)] = true
 	}
 	pending := make([]Target, 0, len(input.Targets))
+	var invalid []string
 	for _, td := range input.Targets {
 		if td.Id == nil {
 			continue
@@ -2471,9 +2491,13 @@ func (s *ELBv2ServiceImpl) RegisterTargets(ctx context.Context, input *elbv2.Reg
 		if registered[targetKey(*td.Id, port)] {
 			continue // Already registered
 		}
-		privateIP, err := s.resolveRegisteredTargetIP(ctx, tg.TargetType, *td.Id, accountID)
+		privateIP, found, err := s.resolveRegisteredTargetIP(ctx, tg.TargetType, *td.Id, accountID)
 		if err != nil {
 			return nil, err
+		}
+		if !found {
+			invalid = append(invalid, "'"+*td.Id+"'")
+			continue
 		}
 		pending = append(pending, Target{
 			Id:          *td.Id,
@@ -2482,6 +2506,10 @@ func (s *ELBv2ServiceImpl) RegisterTargets(ctx context.Context, input *elbv2.Reg
 			HealthDesc:  "Target registration is in progress",
 			PrivateIP:   privateIP,
 		})
+	}
+
+	if len(invalid) > 0 {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError, "The following targets are not valid instances: %s", strings.Join(invalid, ", "))
 	}
 
 	// The append runs against the record as committed, not the copy read above,

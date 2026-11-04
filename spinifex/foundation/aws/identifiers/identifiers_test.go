@@ -29,3 +29,25 @@ func TestDistinct(t *testing.T) {
 		})
 	}
 }
+
+// An empty string is kept so a request naming "" matches nothing rather than
+// widening into an unfiltered describe.
+func TestSet(t *testing.T) {
+	first, second, empty := "vpc-1", "vpc-2", ""
+	tests := []struct {
+		name string
+		ids  []*string
+		want map[string]bool
+	}{
+		{name: "nil slice", ids: nil, want: map[string]bool{}},
+		{name: "nil entries dropped", ids: []*string{nil, &first, nil}, want: map[string]bool{"vpc-1": true}},
+		{name: "duplicates collapse", ids: []*string{&first, &second, &first}, want: map[string]bool{"vpc-1": true, "vpc-2": true}},
+		{name: "empty string kept", ids: []*string{&empty}, want: map[string]bool{"": true}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, Set(tt.ids))
+		})
+	}
+}

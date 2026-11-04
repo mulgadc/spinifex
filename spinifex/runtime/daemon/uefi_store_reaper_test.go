@@ -281,3 +281,33 @@ func TestUEFIStoreTerminator_MarksTheRecordAndRemovesOnlyTheInstanceDirectory(t 
 	}
 	assert.FileExists(t, filepath.Join(other, "vars.fd"))
 }
+
+// TestS7_UEFIStoreReaperWaitsForQEMUBeforeCompletingATerminatedMark enforces
+// ADR-0003:S7: a failed kill leaves the terminated record with the QEMU and uefi
+// entries failed, and the store must survive every sweep until QEMU is proven
+// gone, then be deleted.
+func TestS7_UEFIStoreReaperWaitsForQEMUBeforeCompletingATerminatedMark(t *testing.T) {
+	f := newUEFIReaperFixture(t)
+	const id = "i-0000000000failedkill"
+	v := &vm.VM{ID: id, Status: vm.StateTerminated, AccountID: "111122223333", Instance: &ec2.Instance{InstanceId: aws.String(id)},
+		Teardown: map[string]string{vm.TeardownQEMU: string(vm.TeardownFailed), vm.TeardownUEFI: string(vm.TeardownFailed)}}
+	require.NoError(t, f.m.WriteTerminatedInstance(id, v))
+	f.seedStore(t, id, 3, false)
+
+	for range 2 {
+		reaped, err := f.r.Sweep(t.Context())
+		require.NoError(t, err)
+		assert.Zero(t, reaped)
+		assert.Equal(t, 3, f.objectCount(t, id), "ADR-0003:S7: store objects deleted before QEMU was proven gone")
+		assert.Equal(t, uefistore.StateLive, f.recordState(t, id), "the store must not be marked deleting before QEMU is proven gone")
+		assert.Equal(t, string(vm.TeardownFailed), f.terminatedUEFIMark(t, id))
+	}
+
+	require.NoError(t, f.m.MarkTeardownDone(id, vm.TeardownQEMU))
+	reaped, err := f.r.Sweep(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 1, reaped)
+	assert.Zero(t, f.objectCount(t, id))
+	assert.Equal(t, "absent", f.recordState(t, id))
+	assert.Equal(t, string(vm.TeardownDone), f.terminatedUEFIMark(t, id))
+}

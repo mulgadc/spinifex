@@ -322,6 +322,15 @@ func TestDispatch_GetAuthorizationTokenMintsForTheVerifiedActor(t *testing.T) {
 	assert.Equal(t, envelope.JSONContentType, w.Header().Get("Content-Type"))
 }
 
+// A registryIds break is refused before any token is minted.
+func TestDispatch_GetAuthorizationTokenRefusesRegistryIDsOutsideModel(t *testing.T) {
+	f := &fakeInvocation{actor: dispatch.Actor{AccountID: regAccount}}
+	be := &backend{log: &f.log}
+	_, err := dispatchWith(t, be.deps(), f.invocation(TargetPrefix+".GetAuthorizationToken", `{"registryIds":["abc"]}`))
+	requireECRInvalidParameter(t, err, "Invalid parameter at 'registryIds' failed to satisfy constraint: 'Member must satisfy constraint: [Member must satisfy regular expression pattern: [0-9]{12}]'")
+	assert.Empty(t, be.minted)
+}
+
 // Only a role session names a role, and the ID is the part of aws:userid before the
 // session name. Every other caller gets a token without the claim.
 func TestDispatch_GetAuthorizationTokenCarriesTheRoleIDOfARoleSessionOnly(t *testing.T) {

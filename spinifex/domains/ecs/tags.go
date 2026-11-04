@@ -138,7 +138,7 @@ func (s *Service) resourceTags(ctx context.Context, kv jetstream.KeyValue, kind 
 // mutateResourceTags reads the ARN-identified resource, applies mutate to its
 // tag map, and re-puts the record. Used by TagResource (merge) and
 // UntagResource (delete).
-func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue, kind ecsResourceKind, cluster, id string, mutate func(map[string]string) map[string]string) error {
+func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue, kind ecsResourceKind, cluster, id string, mutate func(map[string]string) (map[string]string, error)) error {
 	switch kind {
 	case ecsResourceCluster:
 		var rec ClusterRecord
@@ -149,7 +149,11 @@ func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue,
 		if !found {
 			return errors.New(awserrors.ErrorECSClusterNotFound)
 		}
-		rec.Tags = mutate(rec.Tags)
+		tags, err := mutate(rec.Tags)
+		if err != nil {
+			return err
+		}
+		rec.Tags = tags
 		return taskdefinition.PutJSON(ctx, kv, ClusterMetaKey(id), &rec)
 	case ecsResourceTaskDefinition:
 		family, rev := taskdefinition.ParseRef(id)
@@ -164,7 +168,11 @@ func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue,
 		if !found {
 			return errors.New(awserrors.ErrorECSInvalidParameter)
 		}
-		rec.Tags = mutate(rec.Tags)
+		tags, err := mutate(rec.Tags)
+		if err != nil {
+			return err
+		}
+		rec.Tags = tags
 		return taskdefinition.PutJSON(ctx, kv, taskdefinition.RevKey(family, rev), &rec)
 	case ecsResourceService:
 		var rec ServiceRecord
@@ -175,7 +183,11 @@ func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue,
 		if !found {
 			return errors.New(awserrors.ErrorECSServiceNotFound)
 		}
-		rec.Tags = mutate(rec.Tags)
+		tags, err := mutate(rec.Tags)
+		if err != nil {
+			return err
+		}
+		rec.Tags = tags
 		return taskdefinition.PutJSON(ctx, kv, ServiceKey(cluster, id), &rec)
 	case ecsResourceTask:
 		var rec TaskRecord
@@ -186,7 +198,11 @@ func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue,
 		if !found {
 			return errors.New(awserrors.ErrorECSInvalidParameter)
 		}
-		rec.Tags = mutate(rec.Tags)
+		tags, err := mutate(rec.Tags)
+		if err != nil {
+			return err
+		}
+		rec.Tags = tags
 		return taskdefinition.PutJSON(ctx, kv, TaskKey(cluster, id), &rec)
 	case ecsResourceContainerInstance:
 		var rec InstanceRecord
@@ -197,7 +213,11 @@ func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue,
 		if !found {
 			return errors.New(awserrors.ErrorECSInvalidParameter)
 		}
-		rec.Tags = mutate(rec.Tags)
+		tags, err := mutate(rec.Tags)
+		if err != nil {
+			return err
+		}
+		rec.Tags = tags
 		return taskdefinition.PutJSON(ctx, kv, InstanceKey(cluster, id), &rec)
 	default:
 		return errors.New(awserrors.ErrorECSInvalidParameter)
@@ -237,13 +257,19 @@ func (s *Service) TagResource(ctx context.Context, input *ecs.TagResourceInput, 
 	if err != nil {
 		return nil, err
 	}
+	if err := validateTags(input.Tags); err != nil {
+		return nil, err
+	}
 	add := tagsToMap(input.Tags)
-	err = s.mutateResourceTags(ctx, kv, kind, cluster, id, func(existing map[string]string) map[string]string {
+	err = s.mutateResourceTags(ctx, kv, kind, cluster, id, func(existing map[string]string) (map[string]string, error) {
 		if existing == nil {
 			existing = map[string]string{}
 		}
 		maps.Copy(existing, add)
-		return existing
+		if len(existing) > maxTags {
+			return nil, errTagLimitExceeded()
+		}
+		return existing, nil
 	})
 	if err != nil {
 		return nil, err
@@ -264,12 +290,17 @@ func (s *Service) UntagResource(ctx context.Context, input *ecs.UntagResourceInp
 	if err != nil {
 		return nil, err
 	}
+	for _, k := range input.TagKeys {
+		if err := validateTagKey(aws.StringValue(k)); err != nil {
+			return nil, err
+		}
+	}
 	keys := awsStringSlice(input.TagKeys)
-	err = s.mutateResourceTags(ctx, kv, kind, cluster, id, func(existing map[string]string) map[string]string {
+	err = s.mutateResourceTags(ctx, kv, kind, cluster, id, func(existing map[string]string) (map[string]string, error) {
 		for _, k := range keys {
 			delete(existing, k)
 		}
-		return existing
+		return existing, nil
 	})
 	if err != nil {
 		return nil, err

@@ -268,6 +268,7 @@ func populatedVM() *vm.VM {
 		GPUAttachments:                  []gpu.GPUAttachment{{PCIAddress: "0000:81:00.0"}},
 		IamInstanceProfileAssociationId: "iip-assoc-1",
 		Teardown:                        map[string]string{"volume": "done"},
+		UnpublishOwed:                   []string{"vol-1"},
 		TerminatedAt:                    time.Date(2026, 8, 28, 2, 0, 0, 0, time.UTC),
 		ShuttingDownAt:                  time.Date(2026, 8, 28, 3, 0, 0, 0, time.UTC),
 		FirstLaunch:                     true,

@@ -18,6 +18,7 @@ import (
 type describeRepositoriesRequest struct {
 	RegistryID      string   `json:"registryId"`
 	RepositoryNames []string `json:"repositoryNames"`
+	MaxResults      *int64   `json:"maxResults"`
 }
 
 // DescribeRepositories lists repositories visible in the caller's account.
@@ -46,6 +47,10 @@ func DescribeRepositories(ctx context.Context, store RepositoryStore, endpoint R
 		return nil, ConstraintError("RepositoryNameList", "Must not be empty")
 	case len(req.RepositoryNames) > maxRepositoryNameList:
 		return nil, ConstraintError("RepositoryNameList", fmt.Sprintf("Must have length less than or equal to %d", maxRepositoryNameList))
+	}
+
+	if err := validateMaxResults(req.MaxResults); err != nil {
+		return nil, err
 	}
 
 	names := req.RepositoryNames

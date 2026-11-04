@@ -2,6 +2,8 @@ package ecs
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -237,4 +239,152 @@ func TestService_RunTask_TagsPersisted(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, described.Tasks, 1)
 	require.Len(t, described.Tasks[0].Tags, 1)
+}
+
+func tagN(n int) []*ecs.Tag {
+	tags := make([]*ecs.Tag, n)
+	for i := range tags {
+		tags[i] = &ecs.Tag{Key: aws.String(fmt.Sprintf("k%d", i)), Value: aws.String("v")}
+	}
+	return tags
+}
+
+// tagBreaks are the model's tag constraints with the error AWS answers each with.
+var tagBreaks = []struct {
+	name string
+	tags []*ecs.Tag
+	want string
+}{
+	{"empty key", []*ecs.Tag{{Key: aws.String(""), Value: aws.String("v")}}, "Tag key can not be null or empty.: InvalidParameterException"},
+	{"key over 128", []*ecs.Tag{{Key: aws.String(strings.Repeat("é", 129)), Value: aws.String("v")}}, "Tag key must have length less than or equal to 128: InvalidParameterException"},
+	{"key pattern", []*ecs.Tag{{Key: aws.String("a*b"), Value: aws.String("v")}}, "Some tags contain invalid characters. Valid characters: UTF-8 letters, spaces, numbers and _ . / = + - : @.: InvalidParameterException"},
+	{"value over 256", []*ecs.Tag{{Key: aws.String("k"), Value: aws.String(strings.Repeat("é", 257))}}, "Tag value must have length less than or equal to 256: InvalidParameterException"},
+	{"value pattern", []*ecs.Tag{{Key: aws.String("k"), Value: aws.String("a#b")}}, "Some tags contain invalid characters. Valid characters: UTF-8 letters, spaces, numbers and _ . / = + - : @.: InvalidParameterException"},
+	{"51 tags", tagN(51), "Tag Limit Exceeded.: ClientException"},
+}
+
+func TestService_CreateCluster_RefusesTagBreaks(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	for _, tc := range tagBreaks {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.CreateCluster(ctx, &ecs.CreateClusterInput{ClusterName: aws.String("web"), Tags: tc.tags}, testAccountID)
+			require.Error(t, err)
+			assert.Equal(t, tc.want, err.Error())
+		})
+	}
+	listed, err := svc.ListClusters(ctx, &ecs.ListClustersInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, listed.ClusterArns)
+
+	_, err = svc.CreateCluster(ctx, &ecs.CreateClusterInput{
+		ClusterName: aws.String("web"),
+		Tags: append(tagN(48),
+			&ecs.Tag{Key: aws.String(strings.Repeat("é", 128)), Value: aws.String("ü _.:/=+-@ 1")},
+			&ecs.Tag{Key: aws.String("long"), Value: aws.String(strings.Repeat("é", 256))}),
+	}, testAccountID)
+	require.NoError(t, err)
+}
+
+func TestService_TagResource_RefusesTagBreaks(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	created, err := svc.CreateCluster(ctx, &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	arn := created.Cluster.ClusterArn
+	for _, tc := range tagBreaks {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.TagResource(ctx, &ecs.TagResourceInput{ResourceArn: arn, Tags: tc.tags}, testAccountID)
+			require.Error(t, err)
+			assert.Equal(t, tc.want, err.Error())
+		})
+	}
+	listed, err := svc.ListTagsForResource(ctx, &ecs.ListTagsForResourceInput{ResourceArn: arn}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, listed.Tags)
+}
+
+// The limit counts the resource's tags after the merge: overwriting an
+// existing key does not add to it, a new key past 50 does.
+func TestService_TagResource_RefusesMergedTotalOver50(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	created, err := svc.CreateCluster(ctx, &ecs.CreateClusterInput{ClusterName: aws.String("web"), Tags: tagN(50)}, testAccountID)
+	require.NoError(t, err)
+	arn := created.Cluster.ClusterArn
+
+	_, err = svc.TagResource(ctx, &ecs.TagResourceInput{ResourceArn: arn, Tags: []*ecs.Tag{{Key: aws.String("k0"), Value: aws.String("new")}}}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.TagResource(ctx, &ecs.TagResourceInput{ResourceArn: arn, Tags: []*ecs.Tag{{Key: aws.String("extra"), Value: aws.String("v")}}}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, "Tag Limit Exceeded.: ClientException", err.Error())
+
+	listed, err := svc.ListTagsForResource(ctx, &ecs.ListTagsForResourceInput{ResourceArn: arn}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, listed.Tags, 50)
+}
+
+func TestService_UntagResource_RefusesBadKey(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	created, err := svc.CreateCluster(ctx, &ecs.CreateClusterInput{ClusterName: aws.String("web"), Tags: tagN(1)}, testAccountID)
+	require.NoError(t, err)
+	for _, tc := range tagBreaks[:3] {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.UntagResource(ctx, &ecs.UntagResourceInput{
+				ResourceArn: created.Cluster.ClusterArn,
+				TagKeys:     []*string{aws.String("k0"), tc.tags[0].Key},
+			}, testAccountID)
+			require.Error(t, err)
+			assert.Equal(t, tc.want, err.Error())
+		})
+	}
+	listed, err := svc.ListTagsForResource(ctx, &ecs.ListTagsForResourceInput{ResourceArn: created.Cluster.ClusterArn}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, listed.Tags, 1)
+}
+
+// Every other call that takes tags refuses a break before acting on it.
+func TestService_TaggedCreates_RefuseTagBreaks(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+	bad := []*ecs.Tag{{Key: aws.String("a*b"), Value: aws.String("v")}}
+	calls := map[string]func() error{
+		"RegisterTaskDefinition": func() error {
+			_, err := svc.RegisterTaskDefinition(ctx, &ecs.RegisterTaskDefinitionInput{Family: aws.String("f"), Tags: bad}, testAccountID)
+			return err
+		},
+		"CreateService": func() error {
+			_, err := svc.CreateService(ctx, &ecs.CreateServiceInput{ServiceName: aws.String("s"), Tags: bad}, testAccountID)
+			return err
+		},
+		"RunTask": func() error {
+			_, err := svc.RunTask(ctx, &ecs.RunTaskInput{Tags: bad}, testAccountID)
+			return err
+		},
+		"StartTask": func() error {
+			_, err := svc.StartTask(ctx, &ecs.StartTaskInput{Tags: bad}, testAccountID)
+			return err
+		},
+		"RegisterContainerInstance": func() error {
+			_, err := svc.RegisterContainerInstance(ctx, &ecs.RegisterContainerInstanceInput{Tags: bad}, testAccountID)
+			return err
+		},
+		"CreateCapacityProvider": func() error {
+			_, err := svc.CreateCapacityProvider(ctx, &ecs.CreateCapacityProviderInput{
+				Name:                     aws.String("cp"),
+				AutoScalingGroupProvider: &ecs.AutoScalingGroupProvider{AutoScalingGroupArn: aws.String("arn:aws:autoscaling:::x")},
+				Tags:                     bad,
+			}, testAccountID)
+			return err
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			err := call()
+			require.Error(t, err)
+			assert.Equal(t, tagBreaks[2].want, err.Error())
+		})
+	}
 }

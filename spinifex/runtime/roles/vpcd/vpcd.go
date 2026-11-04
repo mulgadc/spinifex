@@ -1026,7 +1026,7 @@ func selectExternalPools(externalMode string, pools []external.ExternalPoolConfi
 func floatingPoolNames(pools []external.ExternalPoolConfig) []string {
 	var names []string
 	for _, p := range pools {
-		if p.IsVultr() {
+		if p.IsFloating() {
 			names = append(names, p.Name)
 		}
 	}
@@ -1070,9 +1070,9 @@ func ociPoolNames(pools []external.ExternalPoolConfig) []string {
 
 // eipUplinkLocator returns what EnsureEIPIngress resolves the proxy-ARP uplink
 // from. Vultr bare metal ARPs for a reserved IP on the public segment, so a
-// Vultr pool uses the interface the node routes the internet through.
+// floating pool uses the interface the node routes the internet through.
 func eipUplinkLocator(pool *external.ExternalPoolConfig) (gateway, uplinkHint string) {
-	if pool.IsVultr() {
+	if pool.IsFloating() {
 		return host.InternetRouteProbe, ""
 	}
 	return pool.Gateway, pool.BindBridge

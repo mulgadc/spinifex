@@ -56,6 +56,8 @@ type NodeFacts struct {
 	Memory      MemoryFacts       `json:"memory"`
 	NICs        []NICFacts        `json:"nics"`
 	Planes      []PlaneFacts      `json:"planes"`
+	Disks       []DiskFacts       `json:"disks,omitempty"`
+	Filesystems []FilesystemFacts `json:"filesystems,omitempty"`
 	Sources     map[string]string `json:"sources"`
 }
 
@@ -132,6 +134,42 @@ type MemoryGroup struct {
 	PartNumber    string   `json:"part_number,omitempty"`
 	Rank          string   `json:"rank,omitempty"`
 	Serials       []string `json:"serials,omitempty"`
+}
+
+// DiskFacts is one physical drive as sysfs reports it. Transport is nvme, sata,
+// usb or virtio, and empty when the device path names none, as a RAID
+// controller's virtual disk does.
+type DiskFacts struct {
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	SizeBytes  uint64 `json:"size_bytes"`
+	Model      string `json:"model,omitempty"`
+	Transport  string `json:"transport,omitempty"`
+	Rotational bool   `json:"rotational,omitempty"`
+	Removable  bool   `json:"removable,omitempty"`
+}
+
+// FilesystemFacts is one mounted block-device or ZFS filesystem. BindOf names
+// the directory a bind mount shows; Disk names the drives under it. Error says
+// why Usage is missing or stale.
+type FilesystemFacts struct {
+	Mount  string           `json:"mount"`
+	Source string           `json:"source"`
+	Disk   string           `json:"disk,omitempty"`
+	Type   string           `json:"type"`
+	BindOf string           `json:"bind_of,omitempty"`
+	Usage  *FilesystemUsage `json:"usage,omitempty"`
+	Error  string           `json:"error,omitempty"`
+	// ID identifies the mount on its node, so a filesystem replaced at the
+	// same path is read afresh. Empty for a mount the daemon cannot see.
+	ID string `json:"-"`
+}
+
+// FilesystemUsage is a filesystem's last statfs reading, as df counts it.
+type FilesystemUsage struct {
+	SizeBytes  uint64 `json:"size_bytes"`
+	UsedBytes  uint64 `json:"used_bytes"`
+	AvailBytes uint64 `json:"avail_bytes"`
 }
 
 // NICFacts is one physical network interface and, where LLDP reports it, the

@@ -217,6 +217,9 @@ type recordingInstanceCleaner struct {
 	releaseGPU          []string
 	releaseAutoAssigned []string
 
+	// owedAtDelete is each DeleteVolumes call's UnpublishOwed as passed in.
+	owedAtDelete [][]string
+
 	// releaseAutoAssignedOK is what ReleaseAutoAssignedPublicIP reports: false is
 	// an Elastic IP the cleaner refuses to free, true an auto-assigned address.
 	releaseAutoAssignedOK bool
@@ -235,6 +238,7 @@ func (c *recordingInstanceCleaner) DeleteVolumes(v *VM) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.deleteVolumes = append(c.deleteVolumes, v.ID)
+	c.owedAtDelete = append(c.owedAtDelete, append([]string(nil), v.UnpublishOwed...))
 	return c.deleteVolumesErr
 }
 

@@ -55,6 +55,7 @@ func TestEIPUplinkLocator(t *testing.T) {
 		{"static pool routes toward its gateway", external.ExternalPoolConfig{Source: external.SourceStatic, Gateway: "192.168.1.1"}, "192.168.1.1", ""},
 		{"dhcp pool names its bind bridge", external.ExternalPoolConfig{Source: external.SourceDHCP, BindBridge: "br-wan"}, "", "br-wan"},
 		{"vultr pool follows the internet route", external.ExternalPoolConfig{Source: external.SourceVultr}, host.InternetRouteProbe, ""},
+		{"latitude pool follows the internet route", external.ExternalPoolConfig{Source: external.SourceLatitude}, host.InternetRouteProbe, ""},
 		{"exoscale pool gets no proxy-ARP", external.ExternalPoolConfig{Source: external.SourceExoscale}, "", ""},
 	}
 	for _, tc := range cases {

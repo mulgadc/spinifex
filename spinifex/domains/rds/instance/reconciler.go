@@ -611,7 +611,7 @@ func (r *Reconciler) reconcileStopping(ctx context.Context, kv *kvstore.Bucket, 
 // what lets the customer retry the delete.
 func (r *Reconciler) reconcileDeleting(ctx context.Context, kv *kvstore.Bucket, rev uint64, accountID string, rec *DBInstanceRecord) error {
 	err := r.svc.teardownDBInstance(ctx, kv, accountID, rec, false)
-	if err == nil || errors.Is(err, errFinalSnapshotInProgress) {
+	if err == nil || errors.Is(err, errFinalSnapshotInProgress) || errors.Is(err, errModifyInProgress) {
 		return nil
 	}
 	if time.Since(transitionStarted(rec)) > transitionTimeout {
@@ -860,6 +860,10 @@ func (r *Reconciler) transitionFresh(ctx context.Context, kv *kvstore.Bucket, id
 	rev, found, err := getJSONRevision(ctx, kv, DBInstanceKey(id), &rec)
 	if err != nil || !found {
 		return err
+	}
+	// A delete accepted since this pass read the record now owns it.
+	if rec.Status == StatusDeleting {
+		return nil
 	}
 	return r.transition(ctx, kv, rev, &rec, to, reason)
 }

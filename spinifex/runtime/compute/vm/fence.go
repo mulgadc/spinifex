@@ -111,7 +111,7 @@ func (m *Manager) killFencedQEMU(ctx context.Context, instance *VM) {
 		}
 		return
 	}
-	if !hostprocess.ProcessAlive(pid) {
+	if hostprocess.ProcessExited(pid) {
 		_ = hostprocess.RemovePidFile(instance.ID)
 		return
 	}

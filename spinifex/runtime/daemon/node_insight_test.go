@@ -14,9 +14,11 @@ import (
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/runtime/host/nodefacts"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 )
 
 func insightFacts() clusterv1.NodeFacts {
@@ -256,4 +258,43 @@ func TestHandleNodeLiveWatch_ReturnsRing(t *testing.T) {
 	ring := callHandler[telemetryv1.NodeLiveRing](t, nc, d.handleNodeLiveWatch, telemetryv1.LiveWatch{SinceMillis: 10})
 	require.Len(t, ring.Samples, 1)
 	assert.Equal(t, int64(20), ring.Samples[0].TimeMillis)
+}
+
+// A hung mount blocks statfs where no context can reach it. The facts and the
+// network-test lookups must still answer, with the mount reported on its row.
+func TestHungMountLeavesFactsAndNetTestSetupAnswering(t *testing.T) {
+	d, nc := insightDaemon(t, clusterv1.NodeFacts{})
+	root := t.TempDir()
+	mountinfo := "22 1 259:2 / / rw - ext4 /dev/nvme0n1p2 rw\n" +
+		"23 22 259:3 / /hung rw - ext4 /dev/nvme0n1p3 rw\n"
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "proc", "self"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "proc", "self", "mountinfo"), []byte(mountinfo), 0o644))
+	d.insight.env = nodefacts.Env{Dir: root, SysRoot: filepath.Join(root, "sys"), ProcRoot: filepath.Join(root, "proc"), EtcRoot: filepath.Join(root, "etc")}
+	d.insight.factsAt = time.Time{}
+
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	d.insight.usage.Deadline = 20 * time.Millisecond
+	d.insight.usage.Statfs = func(path string, st *unix.Statfs_t) error {
+		if path == "/hung" {
+			<-release
+		}
+		st.Bsize, st.Frsize, st.Blocks, st.Bfree, st.Bavail = 4096, 4096, 100, 50, 50
+		return nil
+	}
+	go d.insight.probeUsage(t.Context())
+
+	require.Eventually(t, func() bool {
+		d.insight.mu.Lock()
+		d.insight.factsAt = time.Time{}
+		d.insight.mu.Unlock()
+
+		start := time.Now()
+		got := callHandler[clusterv1.NodeFacts](t, nc, d.handleNodeFacts, struct{}{})
+		d.insight.planeAddress(t.Context(), clusterv1.PlaneLAN)
+		require.Less(t, time.Since(start), time.Second, "neither waits on the hung mount")
+
+		require.Len(t, got.Filesystems, 2)
+		return got.Filesystems[0].Usage != nil && got.Filesystems[0].Usage.SizeBytes == 100*4096 && got.Filesystems[1].Error == "not answering"
+	}, 5*time.Second, 20*time.Millisecond)
 }

@@ -55,7 +55,7 @@ func (a *PoolAllocator) Reconcile(ctx context.Context) (ReconcileResult, error) 
 	var errs []error
 	for _, addr := range live {
 		liveIDs[addr.ID] = struct{}{}
-		if !a.ours(addr) {
+		if a.fixed || !a.ours(addr) {
 			res.Skipped++
 			continue
 		}
@@ -73,7 +73,7 @@ func (a *PoolAllocator) Reconcile(ctx context.Context) (ReconcileResult, error) 
 		}
 		slog.WarnContext(ctx, "floating reconcile collected a leaked address",
 			"pool", a.cfg.Pool.Name, "addr_id", addr.ID, "public_ip", addr.IP.String(),
-			"label", addr.Label, "holder", addr.HolderID)
+			"label", addr.Label, "holder", a.holderLabel(addr.HolderID))
 		res.Collected = append(res.Collected, addr.ID)
 	}
 	a.suspects = suspects

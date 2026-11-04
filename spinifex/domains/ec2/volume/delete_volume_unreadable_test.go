@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	ebsprovider "github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -194,7 +195,7 @@ func TestDeleteVolumeOnTerminate_DeleteReadFailureIsNotSuccess(t *testing.T) {
 	svc.store = failing
 	svc.metadata = ebsmetadata.NewStore(failing, "test-bucket")
 
-	err := svc.DeleteVolumeOnTerminate(context.Background(), volumeID, testVolAccountID)
+	err := svc.DeleteVolumeOnTerminate(context.Background(), volumeID, testVolAccountID, ec2instance.OwedUnpublish{})
 
 	require.Error(t, err, "a delete-read failure after a successful attachment clear must not be reported as success")
 	assert.False(t, awserrors.IsNotFound(err),

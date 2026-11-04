@@ -38,6 +38,10 @@ func checkTaskLaunchRoles(ctx context.Context, svc ecsdomain.ECSService, account
 		return nil
 	}
 	out, err := svc.DescribeTaskDefinition(ctx, &ecs.DescribeTaskDefinitionInput{TaskDefinition: taskDefinition}, accountID)
+	if code, _ := awserrors.ResolveErrorCode(err); code == awserrors.ErrorECSClientException {
+		// DescribeTaskDefinition's not-found message is not the one launches get.
+		return ecsdomain.TaskDefinitionNotFound()
+	}
 	if err != nil {
 		return err
 	}
@@ -524,6 +528,9 @@ func PutClusterCapacityProviders(ctx context.Context, nc *nats.Conn, accountID s
 func CreateCapacityProvider(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.CreateCapacityProviderInput)
 	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
+		return nil, err
+	}
+	if err := checkAutoScalingGroupProvider(input.AutoScalingGroupProvider); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).CreateCapacityProvider(ctx, input, accountID)

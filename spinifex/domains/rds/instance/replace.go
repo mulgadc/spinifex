@@ -86,7 +86,7 @@ func (s *Service) replaceInstanceVM(ctx context.Context, kv *kvstore.Bucket, acc
 	if err := context.Cause(ctx); err != nil {
 		return err
 	}
-	if err := s.terminateInstanceVM(ctx, oldInstanceID); err != nil {
+	if err := s.terminateInstanceVM(ctx, oldInstanceID, rec.DataVolumeID); err != nil {
 		return fmt.Errorf("terminate the VM behind %s: %w", rec.DBInstanceIdentifier, err)
 	}
 	if err := s.requireDataVolumeDetached(ctx, rec.DataVolumeID, oldInstanceID); err != nil {

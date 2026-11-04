@@ -3002,7 +3002,7 @@ func (s *InstanceServiceImpl) deleteInstanceVolumes(ctx context.Context, instanc
 				continue
 			}
 			// A volume already gone is the detach's own goal, not a failure.
-			if err := s.volumeDeleter.DetachVolumeOnTerminate(ctx, ebsRequest.Name, instanceID, instance.AccountID); err != nil &&
+			if err := s.volumeDeleter.DetachVolumeOnTerminate(ctx, ebsRequest.Name, instance.AccountID); err != nil &&
 				!awserrors.IsNotFound(err) && !objectstore.IsNoSuchKeyError(err) {
 				slog.ErrorContext(ctx, "TerminateStoppedInstance: failed to detach volume", "name", ebsRequest.Name, "err", err)
 				lastErr = err

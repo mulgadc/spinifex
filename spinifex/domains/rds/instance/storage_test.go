@@ -101,15 +101,12 @@ func (f *fakeVolumeResizer) ExpandAttachedToStopped(ctx context.Context, _, volu
 	return &ec2.ModifyVolumeOutput{}, nil
 }
 
-// Mirrors the store: only the terminated instance's own attachment is cleared.
-func (f *fakeVolumeResizer) DetachVolumeOnTerminate(_ context.Context, volumeID, instanceID, _ string) error {
+func (f *fakeVolumeResizer) DetachVolumeOnTerminate(_ context.Context, volumeID, _ string) error {
 	if f.detachErr != nil {
 		return f.detachErr
 	}
-	if f.attachedTo[volumeID] == instanceID {
-		delete(f.attachedTo, volumeID)
-		f.detached = append(f.detached, volumeID+":"+instanceID)
-	}
+	delete(f.attachedTo, volumeID)
+	f.detached = append(f.detached, volumeID)
 	return nil
 }
 

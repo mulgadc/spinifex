@@ -209,13 +209,14 @@ func TestReplaceInstanceVM_TerminatesAStoppedOldVMBeforeGrowing(t *testing.T) {
 	rec := seedReplaceable(t, h, modifiableRecord())
 	h.launch.launcher.terminateErr = systeminstance.ErrSystemInstanceNotFound
 	h.storage.attachedTo = map[string]string{testDataVolume: testInstance}
-	h.cmdr.onTerminateStopped = func(string) { delete(h.storage.attachedTo, testDataVolume) }
 
 	require.NoError(t, h.svc.replaceInstanceVM(t.Context(), h.kv(t), testAccountID, &rec, replaceInput{
 		InstanceClass: "db.m5.large", InstanceType: "m5.large", GrowStorageToGiB: 80, Reason: "the instance class changed",
 	}))
 
+	assert.Contains(t, h.cmdr.calls, "detach-stopped:"+testInstance+":"+testDataVolume)
 	assert.Contains(t, h.cmdr.calls, "terminate-stopped:"+testInstance)
+	assert.Equal(t, []string{testDataVolume}, h.storage.detached)
 	assert.Equal(t, int64(80), h.storage.sizes[testDataVolume])
 	assert.NotEqual(t, testInstance, h.record(t).InstanceID)
 }
@@ -232,7 +233,7 @@ func TestReplaceInstanceVM_StopsWhileTheDataVolumeIsStillOnTheOldVM(t *testing.T
 
 	err := h.svc.replaceInstanceVM(t.Context(), h.kv(t), testAccountID, &rec, replaceInput{Reason: "recovery"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "detach the data volume")
+	assert.Contains(t, err.Error(), "release the data volume")
 	assert.Nil(t, h.launch.launcher.input, "no replacement may launch without the data volume")
 	assert.Equal(t, testInstance, h.record(t).InstanceID)
 }

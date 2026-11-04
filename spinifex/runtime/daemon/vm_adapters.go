@@ -750,7 +750,7 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 					"name", ebsRequest.Name, "id", instance.ID)
 				continue
 			}
-			if err := a.d.volumeService.DetachVolumeOnTerminate(context.Background(), ebsRequest.Name, instance.ID, instance.AccountID); err != nil && !awserrors.IsNotFound(err) && !objectstore.IsNoSuchKeyError(err) {
+			if err := a.d.volumeService.DetachVolumeOnTerminate(context.Background(), ebsRequest.Name, instance.AccountID); err != nil && !awserrors.IsNotFound(err) && !objectstore.IsNoSuchKeyError(err) {
 				slog.Error("Failed to detach volume on termination",
 					"name", ebsRequest.Name, "id", instance.ID, "err", err)
 				firstErr = cmp.Or(firstErr, err)

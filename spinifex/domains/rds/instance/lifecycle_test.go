@@ -59,6 +59,8 @@ type fakeInstanceCommander struct {
 	// runs first, so a test can model what the terminate does to the data volume.
 	terminateStoppedErr error
 	onTerminateStopped  func(instanceID string)
+	// detachStoppedErr is what removing a volume from a stopped VM's record returns.
+	detachStoppedErr error
 }
 
 var _ instanceCommander = (*fakeInstanceCommander)(nil)
@@ -104,6 +106,11 @@ func (f *fakeInstanceCommander) TerminateStoppedInstance(_ context.Context, inst
 		f.onTerminateStopped(instanceID)
 	}
 	return f.terminateStoppedErr
+}
+
+func (f *fakeInstanceCommander) DetachVolumeFromStopped(_ context.Context, instanceID, volumeID string) error {
+	f.calls = append(f.calls, "detach-stopped:"+instanceID+":"+volumeID)
+	return f.detachStoppedErr
 }
 
 // fakeSnapshots stands in for the EC2 snapshot service. holding is what
@@ -875,8 +882,9 @@ func TestUncleanStopMessage_IsEngineAware(t *testing.T) {
 	assert.Equal(t, "The database engine could not be shut down cleanly before stopping the instance.", unknown)
 }
 
-// A stopped DB VM is terminated over ec2.terminate as the system account. Gone
-// in either form is done; a refusal is returned so the teardown retries.
+// A stopped DB VM is terminated over ec2.terminate as the system account. A VM
+// already gone is done; a refusal or no terminate service is returned so the
+// teardown retries.
 func TestNATSInstanceCommander_TerminateStoppedInstance(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -887,7 +895,7 @@ func TestNATSInstanceCommander_TerminateStoppedInstance(t *testing.T) {
 	}{
 		{name: "terminated", reply: []byte(`{}`)},
 		{name: "already gone", reply: awserrors.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound)},
-		{name: "no responder", noReply: true},
+		{name: "no responder", noReply: true, wantErr: "no responders"},
 		{name: "refused", reply: awserrors.GenerateErrorPayload(awserrors.ErrorIncorrectInstanceState), wantErr: awserrors.ErrorIncorrectInstanceState},
 	}
 	for _, tc := range cases {
@@ -918,6 +926,58 @@ func TestNATSInstanceCommander_TerminateStoppedInstance(t *testing.T) {
 			}
 			if !tc.noReply {
 				assert.Equal(t, testInstance, got.InstanceID)
+				assert.Equal(t, awsidentifiers.GlobalAccountID, got.Account)
+			}
+		})
+	}
+}
+
+// The data volume leaves a stopped DB VM's record over ec2.DetachVolumeFromStopped
+// as the system account. A record that no longer names the volume, or a VM
+// already gone, is done; anything else is returned so the teardown retries.
+func TestNATSInstanceCommander_DetachVolumeFromStopped(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		reply   []byte
+		noReply bool
+		wantErr string
+	}{
+		{name: "detached", reply: []byte(`{}`)},
+		{name: "already out of the record", reply: awserrors.GenerateErrorPayload(awserrors.ErrorIncorrectState)},
+		{name: "already gone", reply: awserrors.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound)},
+		{name: "no responder", noReply: true, wantErr: "no responders"},
+		{name: "claimed by a start", reply: awserrors.GenerateErrorPayload(awserrors.ErrorIncorrectInstanceState), wantErr: awserrors.ErrorIncorrectInstanceState},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, nc := testutil.StartTestNATS(t)
+			var got struct {
+				InstanceID, VolumeID, Account string
+			}
+			if !tc.noReply {
+				_, err := nc.Subscribe("ec2.DetachVolumeFromStopped", func(msg *nats.Msg) {
+					var in ec2.DetachVolumeInput
+					_ = json.Unmarshal(msg.Data, &in)
+					got.InstanceID, got.VolumeID = aws.StringValue(in.InstanceId), aws.StringValue(in.VolumeId)
+					got.Account = msg.Header.Get(natsmsg.AccountIDHeader)
+					_ = msg.Respond(tc.reply)
+				})
+				require.NoError(t, err)
+				require.NoError(t, nc.Flush())
+			}
+
+			err := NewNATSInstanceCommander(nc).DetachVolumeFromStopped(t.Context(), testInstance, testDataVolume)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			if !tc.noReply {
+				assert.Equal(t, testInstance, got.InstanceID)
+				assert.Equal(t, testDataVolume, got.VolumeID)
 				assert.Equal(t, awsidentifiers.GlobalAccountID, got.Account)
 			}
 		})

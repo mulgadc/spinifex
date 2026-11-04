@@ -381,44 +381,54 @@ func TestReconciler_ResumesAnInterruptedStop(t *testing.T) {
 	assert.Equal(t, StatusStopped, h.record(t).Status)
 }
 
-// A stopped DB VM is held by no node, so the system terminate finds nothing; it
-// is terminated from its shared record instead, which releases the data volume.
+// A stopped DB VM is held by no node, so the system terminate finds nothing. Its
+// data volume leaves the shared record and is released before the record is
+// terminated, so no later terminate of that record can detach the volume again.
 func TestDeleteDBInstance_TerminatesAStoppedVMFromItsRecord(t *testing.T) {
 	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	h.launcher.terminateErr = systeminstance.ErrSystemInstanceNotFound
 	h.storage.attachedTo = map[string]string{"vol-rdsdata01": testInstance}
-	h.cmdr.onTerminateStopped = func(string) { delete(h.storage.attachedTo, "vol-rdsdata01") }
+	h.cmdr.onTerminateStopped = func(string) {
+		assert.Empty(t, h.storage.attachedTo, "the data volume is released before the record is terminated")
+	}
 	seedInstance(t, h.svc, availableRecord())
 
 	_, err := h.svc.DeleteDBInstance(t.Context(), skipFinalSnapshot(), testAccountID)
 	require.NoError(t, err)
 
-	assert.Contains(t, h.cmdr.calls, "terminate-stopped:"+testInstance)
+	assert.Equal(t, []string{
+		"detach-stopped:" + testInstance + ":vol-rdsdata01",
+		"terminate-stopped:" + testInstance,
+	}, h.cmdr.calls)
+	assert.Equal(t, []string{"vol-rdsdata01"}, h.storage.detached)
 	assert.Equal(t, []string{"vol-rdsdata01"}, h.volumes.deleted)
 	assert.False(t, h.recordExists(t, testDBID))
 }
 
-// The stopped terminate reports success even when its detach failed, and a
-// retried teardown finds the record gone, so the teardown repeats the detach.
-func TestDeleteDBInstance_DetachesWhatTheStoppedTerminateLeftAttached(t *testing.T) {
+// A record edit that fails leaves the record naming the volume, so neither the
+// release nor the terminate may run; the teardown stops and is retried.
+func TestDeleteDBInstance_StopsWhileTheStoppedRecordStillNamesTheVolume(t *testing.T) {
 	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	h.launcher.terminateErr = systeminstance.ErrSystemInstanceNotFound
 	h.storage.attachedTo = map[string]string{"vol-rdsdata01": testInstance}
+	h.cmdr.detachStoppedErr = errors.New(awserrors.ErrorIncorrectInstanceState)
 	seedInstance(t, h.svc, availableRecord())
 
 	_, err := h.svc.DeleteDBInstance(t.Context(), skipFinalSnapshot(), testAccountID)
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "remove the data volume")
 
-	assert.Equal(t, []string{"vol-rdsdata01:" + testInstance}, h.storage.detached)
-	assert.Equal(t, []string{"vol-rdsdata01"}, h.volumes.deleted)
-	assert.False(t, h.recordExists(t, testDBID))
+	assert.NotContains(t, h.cmdr.calls, "terminate-stopped:"+testInstance)
+	assert.Empty(t, h.storage.detached)
+	assert.Empty(t, h.volumes.deleted)
+	assert.True(t, h.recordExists(t, testDBID), "the record stays so the teardown can be resumed")
 }
 
-// A detach that keeps failing must not let the release read the volume as
-// snapshot-held: the teardown stops with the record kept, and is retried.
-func TestDeleteDBInstance_StopsWhileTheDataVolumeCannotBeDetached(t *testing.T) {
+// A release that keeps failing must not let the volume be read as snapshot-held:
+// the teardown stops with the record kept, and is retried.
+func TestDeleteDBInstance_StopsWhileTheDataVolumeCannotBeReleased(t *testing.T) {
 	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	h.launcher.terminateErr = systeminstance.ErrSystemInstanceNotFound
@@ -428,12 +438,37 @@ func TestDeleteDBInstance_StopsWhileTheDataVolumeCannotBeDetached(t *testing.T) 
 
 	_, err := h.svc.DeleteDBInstance(t.Context(), skipFinalSnapshot(), testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "detach the data volume")
+	assert.Contains(t, err.Error(), "release the data volume")
 
+	assert.NotContains(t, h.cmdr.calls, "terminate-stopped:"+testInstance)
 	assert.Empty(t, h.volumes.deleted)
 	_, retained := h.retainedVolume(t, "vol-rdsdata01")
 	assert.False(t, retained, "an attached volume must not be recorded as retained")
 	assert.True(t, h.recordExists(t, testDBID), "the record stays so the teardown can be resumed")
+}
+
+// A terminate that left the data volume attached stops the teardown before the
+// release; the retry finds no VM and releases the volume itself.
+func TestDeleteDBInstance_RetryReleasesWhatATerminateLeftAttached(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	h.storage.attachedTo = map[string]string{"vol-rdsdata01": testInstance}
+	seedInstance(t, h.svc, availableRecord())
+
+	_, err := h.svc.DeleteDBInstance(t.Context(), skipFinalSnapshot(), testAccountID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "still attached to the terminated VM")
+	assert.Empty(t, h.volumes.deleted)
+	assert.True(t, h.recordExists(t, testDBID))
+
+	h.launcher.terminateErr = systeminstance.ErrSystemInstanceNotFound
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	rec := h.record(t)
+	require.NoError(t, h.svc.teardownDBInstance(t.Context(), kv, testAccountID, &rec, false))
+	assert.Equal(t, []string{"vol-rdsdata01"}, h.storage.detached)
+	assert.Equal(t, []string{"vol-rdsdata01"}, h.volumes.deleted)
+	assert.False(t, h.recordExists(t, testDBID))
 }
 
 // A stopped VM that refuses the terminate is not gone, so the teardown must not

@@ -199,7 +199,7 @@ func (s *Service) teardownDBInstance(ctx context.Context, kv *kvstore.Bucket, ac
 		s.stopEngineOrRecordFallback(ctx, accountID, rec, "deleting")
 	}
 
-	if err := s.terminateInstanceVM(ctx, rec.InstanceID); err != nil {
+	if err := s.terminateInstanceVM(ctx, rec.InstanceID, rec.DataVolumeID); err != nil {
 		return fmt.Errorf("rds: terminate the VM behind %s: %w", rec.DBInstanceIdentifier, err)
 	}
 	if err := s.requireDataVolumeDetached(ctx, rec.DataVolumeID, rec.InstanceID); err != nil {
@@ -244,8 +244,8 @@ func (s *Service) teardownDBInstance(ctx context.Context, kv *kvstore.Bucket, ac
 }
 
 // A VM no node owns is either already gone or stopped, and a stopped one is
-// terminated from its shared record, which also detaches the data volume.
-func (s *Service) terminateInstanceVM(ctx context.Context, instanceID string) error {
+// terminated from its shared record once its data volume is out of that record.
+func (s *Service) terminateInstanceVM(ctx context.Context, instanceID, dataVolumeID string) error {
 	if instanceID == "" {
 		return nil
 	}
@@ -263,44 +263,65 @@ func (s *Service) terminateInstanceVM(ctx context.Context, instanceID string) er
 	if s.deps.Instances == nil {
 		return nil
 	}
+	if err := s.releaseDataVolumeFromStopped(ctx, instanceID, dataVolumeID); err != nil {
+		return err
+	}
 	if err := s.deps.Instances.TerminateStoppedInstance(ctx, instanceID); err != nil {
 		return fmt.Errorf("terminate the stopped VM %s: %w", instanceID, err)
 	}
 	return nil
 }
 
-// A stopped-VM terminate records a failed detach without failing, and a volume
-// left attached would be retained as if a snapshot held it. The VM is gone by
-// now, so the detach is repeated here, on every retry, until it lands.
-func (s *Service) requireDataVolumeDetached(ctx context.Context, volumeID, instanceID string) error {
-	if volumeID == "" || instanceID == "" || s.deps.Storage == nil {
+// Anything that later terminates the stopped record, or retries its teardown,
+// detaches every volume the record names, whatever that volume is attached to
+// by then. So the data volume leaves the record before the volume is released.
+func (s *Service) releaseDataVolumeFromStopped(ctx context.Context, instanceID, volumeID string) error {
+	if volumeID == "" {
 		return nil
 	}
-	out, err := s.deps.Storage.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
-		VolumeIds: aws.StringSlice([]string{volumeID}),
-	}, awsidentifiers.GlobalAccountID)
-	if err != nil {
-		if awserrors.IsErrorCode(err, awserrors.ErrorInvalidVolumeNotFound) {
-			return nil
-		}
-		return fmt.Errorf("rds: read the data volume %s: %w", volumeID, err)
+	if err := s.deps.Instances.DetachVolumeFromStopped(ctx, instanceID, volumeID); err != nil {
+		return fmt.Errorf("rds: remove the data volume %s from the stopped VM %s: %w", volumeID, instanceID, err)
 	}
-	for _, volume := range out.Volumes {
-		if aws.StringValue(volume.VolumeId) != volumeID || aws.StringValue(volume.State) != ec2.VolumeStateInUse {
-			continue
-		}
-		for _, a := range volume.Attachments {
-			if aws.StringValue(a.InstanceId) != instanceID {
-				continue
-			}
-			if err := s.deps.Storage.DetachVolumeOnTerminate(ctx, volumeID, instanceID, awsidentifiers.GlobalAccountID); err != nil {
-				return fmt.Errorf("rds: detach the data volume %s from the terminated VM %s: %w", volumeID, instanceID, err)
-			}
-			slog.InfoContext(ctx, "rds: detached the data volume the VM's terminate left attached",
-				"volumeId", volumeID, "instanceId", instanceID)
-		}
+	attachedTo, err := s.dataVolumeAttachment(ctx, volumeID)
+	if err != nil || attachedTo != instanceID {
+		return err
+	}
+	if err := s.deps.Storage.DetachVolumeOnTerminate(ctx, volumeID, awsidentifiers.GlobalAccountID); err != nil {
+		return fmt.Errorf("rds: release the data volume %s from the stopped VM %s: %w", volumeID, instanceID, err)
 	}
 	return nil
+}
+
+// A volume left attached would be retained as if a snapshot held it, so the
+// teardown stops here and its retry releases the volume.
+func (s *Service) requireDataVolumeDetached(ctx context.Context, volumeID, instanceID string) error {
+	if volumeID == "" || instanceID == "" {
+		return nil
+	}
+	attachedTo, err := s.dataVolumeAttachment(ctx, volumeID)
+	if err != nil {
+		return err
+	}
+	if attachedTo == instanceID {
+		return fmt.Errorf("rds: the data volume %s is still attached to the terminated VM %s", volumeID, instanceID)
+	}
+	return nil
+}
+
+// The instance the data volume is attached to, empty when it is detached, gone
+// or there is no volume service to ask.
+func (s *Service) dataVolumeAttachment(ctx context.Context, volumeID string) (string, error) {
+	if volumeID == "" || s.deps.Storage == nil {
+		return "", nil
+	}
+	_, attachedTo, err := s.dataVolumeState(ctx, volumeID)
+	if err != nil {
+		if awserrors.IsErrorCode(err, awserrors.ErrorInvalidVolumeNotFound) || errors.Is(err, errDataVolumeGone) {
+			return "", nil
+		}
+		return "", fmt.Errorf("rds: read the data volume %s: %w", volumeID, err)
+	}
+	return attachedTo, nil
 }
 
 // Reserves the final snapshot name before deletion becomes destructive. The

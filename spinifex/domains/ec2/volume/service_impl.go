@@ -1126,24 +1126,7 @@ func (s *VolumeServiceImpl) DeleteVolumeOnTerminate(ctx context.Context, volumeI
 // available rather than deleting it. Metadata-only, no QMP — same rationale
 // as DeleteVolumeOnTerminate: there is no live QEMU to hot-unplug on either
 // terminate path.
-//
-// A volume since attached to another instance is left alone, so a delayed
-// teardown retry never clears a newer attachment.
-func (s *VolumeServiceImpl) DetachVolumeOnTerminate(ctx context.Context, volumeID, instanceID, accountID string) error {
-	if s.metadata != nil && instanceID != "" {
-		meta, err := s.metadata.GetVolume(ctx, accountID, volumeID)
-		if err != nil {
-			if objectstore.IsNoSuchKeyError(err) {
-				return nil
-			}
-			return err
-		}
-		if meta.AttachedInstance != "" && meta.AttachedInstance != instanceID {
-			slog.InfoContext(ctx, "DetachVolumeOnTerminate: volume is attached elsewhere; leaving it",
-				"volumeId", volumeID, "terminated", instanceID, "attachedTo", meta.AttachedInstance)
-			return nil
-		}
-	}
+func (s *VolumeServiceImpl) DetachVolumeOnTerminate(_ context.Context, volumeID, accountID string) error {
 	if err := s.UpdateVolumeState(accountID, volumeID, "available", "", ""); err != nil {
 		// No metadata doc means the volume is already gone, per GetVolume's own
 		// contract, so absence here is success, not a teardown failure.

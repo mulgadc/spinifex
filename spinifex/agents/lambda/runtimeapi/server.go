@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -42,6 +43,9 @@ var (
 	ErrDeadlineExceeded = errors.New("runtimeapi: invocation deadline exceeded")
 	// ErrInvalidInvocation is returned by Invoke for an invocation with no request ID.
 	ErrInvalidInvocation = errors.New("runtimeapi: invocation has no request id")
+	// ErrResponseBodyFailed is returned by Invoke when a response or error
+	// body that was admitted could not be read in full. No result exists.
+	ErrResponseBodyFailed = errors.New("runtimeapi: admitted response body was not received")
 )
 
 // Invocation is one event handed to the runtime.
@@ -54,9 +58,11 @@ type Invocation struct {
 }
 
 // Result is what the runtime answered. FunctionError is empty on success and
-// otherwise the error type.
+// otherwise the error type. A non-nil Segments is the payload, in order, and
+// takes precedence over Payload.
 type Result struct {
 	Payload       []byte
+	Segments      [][]byte
 	FunctionError string
 }
 
@@ -66,10 +72,25 @@ type InitError struct {
 	Body []byte
 }
 
+type flightState int
+
+const (
+	stWaiting flightState = iota
+	stRunning
+	stReceiving
+	stCompleted
+	stExited
+)
+
+type outcome struct {
+	res Result
+	err error
+}
+
 type flight struct {
 	inv   Invocation
-	taken bool
-	done  chan Result
+	state flightState
+	done  chan outcome
 }
 
 // Server implements the Runtime API for a single in-flight invocation.
@@ -77,6 +98,11 @@ type Server struct {
 	mu   sync.Mutex
 	cur  *flight
 	wake chan struct{}
+
+	// exited records that the bootstrap process has ended; settled that the
+	// last flight has its result, so a later exit no longer matters.
+	exited  bool
+	settled bool
 
 	initOnce sync.Once
 	initDone chan struct{}
@@ -107,12 +133,16 @@ func (s *Server) Invoke(ctx context.Context, inv Invocation) (Result, error) {
 	if inv.RequestID == "" {
 		return Result{}, ErrInvalidInvocation
 	}
-	f := &flight{inv: inv, done: make(chan Result, 1)}
+	f := &flight{inv: inv, done: make(chan outcome, 1)}
 	s.mu.Lock()
 	if s.cur != nil {
 		s.mu.Unlock()
 		return Result{}, ErrBusy
 	}
+	if s.exited {
+		f.state = stExited
+	}
+	s.settled = false
 	s.cur = f
 	s.mu.Unlock()
 	select {
@@ -124,8 +154,8 @@ func (s *Server) Invoke(ctx context.Context, inv Invocation) (Result, error) {
 	defer timer.Stop()
 	var cause error
 	select {
-	case res := <-f.done:
-		return res, nil
+	case out := <-f.done:
+		return out.res, out.err
 	case <-timer.C:
 		cause = ErrDeadlineExceeded
 	case <-ctx.Done():
@@ -140,7 +170,27 @@ func (s *Server) Invoke(ctx context.Context, inv Invocation) (Result, error) {
 	}
 	s.mu.Unlock()
 	// Completed while we were giving up; the result is already queued.
-	return <-f.done, nil
+	out := <-f.done
+	return out.res, out.err
+}
+
+// BootstrapExited records that the runtime process has ended and reports
+// whether the caller should cancel the invocation. Before the response is
+// admitted it should; afterwards the result stands.
+func (s *Server) BootstrapExited() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.exited = true
+	f := s.cur
+	switch {
+	case f == nil:
+		return !s.settled
+	case f.state < stReceiving:
+		f.state = stExited
+		return true
+	default:
+		return false
+	}
 }
 
 // Handler returns the Runtime API routes.
@@ -157,8 +207,8 @@ func (s *Server) next(w http.ResponseWriter, r *http.Request) {
 	for {
 		s.mu.Lock()
 		f := s.cur
-		if f != nil && !f.taken {
-			f.taken = true
+		if f != nil && f.state == stWaiting {
+			f.state = stRunning
 			s.mu.Unlock()
 			h := w.Header()
 			h.Set(headerRequestID, f.inv.RequestID)
@@ -179,58 +229,149 @@ func (s *Server) next(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// claimable reports whether id names the delivered, uncompleted invocation.
-func (s *Server) claimable(id string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.cur != nil && s.cur.taken && s.cur.inv.RequestID == id
-}
-
-// complete finishes the invocation named id, reporting whether it was live.
-func (s *Server) complete(id string, res Result) bool {
+// admit claims the single response slot of the invocation named id, so only
+// one POST per invocation is ever read. It returns nil if id is not the
+// delivered, unclaimed invocation of a runtime that is still running.
+func (s *Server) admit(id string) *flight {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	f := s.cur
-	if f == nil || !f.taken || f.inv.RequestID != id {
+	if f == nil || f.state != stRunning || f.inv.RequestID != id {
+		return nil
+	}
+	f.state = stReceiving
+	return f
+}
+
+// complete records res for an admitted flight, reporting whether the
+// invocation was still waiting for it.
+func (s *Server) complete(f *flight, res Result) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cur != f {
 		return false
 	}
 	s.cur = nil
-	f.done <- res
+	s.settled = true
+	f.state = stCompleted
+	f.done <- outcome{res: res}
 	return true
+}
+
+// readFailed ends an admitted flight whose body was lost. The outcome is
+// published before the flight is detached, so Invoke never waits on it.
+func (s *Server) readFailed(f *flight, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cur != f {
+		return
+	}
+	s.cur = nil
+	s.settled = true
+	f.state = stCompleted
+	f.done <- outcome{err: fmt.Errorf("%w: %w", ErrResponseBodyFailed, err)}
 }
 
 func (s *Server) response(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if !s.claimable(id) {
+	f := s.admit(id)
+	if f == nil {
 		invalidID(w, id)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, MaxResponseBytes+1))
+	s.finishResponse(w, r, f)
+}
+
+// segmentBytes is the largest piece an undeclared-length body is read into.
+const segmentBytes = 256 << 10
+
+// finishResponse reads the admitted response body and completes f.
+func (s *Server) finishResponse(w http.ResponseWriter, r *http.Request, f *flight) {
+	var res Result
+	var oversize bool
+	var err error
+	switch cl := r.ContentLength; {
+	case cl > MaxResponseBytes:
+		oversize, err = discardToCap(r.Body)
+	case cl >= 0:
+		res.Payload = make([]byte, cl)
+		_, err = io.ReadFull(r.Body, res.Payload)
+	default:
+		res.Segments, oversize, err = readSegments(r.Body)
+	}
 	if err != nil {
+		s.readFailed(f, err)
 		writeError(w, http.StatusBadRequest, errTypeInvalidRequest, "read body: "+err.Error())
 		return
 	}
-	if len(body) > MaxResponseBytes {
+	if oversize {
 		msg := "Response payload size exceeded maximum allowed payload size (" + strconv.Itoa(MaxResponseBytes) + " bytes)."
-		s.complete(id, Result{Payload: ErrorBody(msg, ErrTypeResponseTooLarge), FunctionError: ErrTypeUnhandled})
+		s.complete(f, Result{Payload: ErrorBody(msg, ErrTypeResponseTooLarge), FunctionError: ErrTypeUnhandled})
 		writeError(w, http.StatusRequestEntityTooLarge, errTypeTooLarge, msg)
 		return
 	}
-	if !s.complete(id, Result{Payload: body}) {
-		invalidID(w, id)
+	if !s.complete(f, res) {
+		invalidID(w, f.inv.RequestID)
 		return
 	}
 	writeStatus(w)
 }
 
+// discardToCap counts body through a small buffer. It reports oversize once
+// byte MaxResponseBytes+1 arrives and an error if the body ends first.
+func discardToCap(body io.Reader) (bool, error) {
+	n, err := io.CopyN(io.Discard, body, MaxResponseBytes+1)
+	if n == MaxResponseBytes+1 {
+		return true, nil
+	}
+	if err == nil || errors.Is(err, io.EOF) {
+		err = io.ErrUnexpectedEOF
+	}
+	return false, err
+}
+
+// readSegments reads body into segments of at most segmentBytes, never
+// concatenating them. It reports oversize and drops them at byte
+// MaxResponseBytes+1.
+func readSegments(body io.Reader) ([][]byte, bool, error) {
+	segs := [][]byte{}
+	total := 0
+	for {
+		n := min(segmentBytes, MaxResponseBytes+1-total)
+		seg := make([]byte, n)
+		got := 0
+		var err error
+		for got < n && err == nil {
+			var c int
+			c, err = body.Read(seg[got:])
+			got += c
+		}
+		total += got
+		if total > MaxResponseBytes {
+			return nil, true, nil
+		}
+		if got > 0 {
+			segs = append(segs, seg[:got])
+		}
+		if errors.Is(err, io.EOF) {
+			return segs, false, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+	}
+}
+
 func (s *Server) invocationError(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if !s.claimable(id) {
+	f := s.admit(id)
+	if f == nil {
 		invalidID(w, id)
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, MaxResponseBytes))
 	if err != nil {
+		s.readFailed(f, err)
 		writeError(w, http.StatusBadRequest, errTypeInvalidRequest, "read body: "+err.Error())
 		return
 	}
@@ -238,7 +379,7 @@ func (s *Server) invocationError(w http.ResponseWriter, r *http.Request) {
 	if errType == "" {
 		errType = ErrTypeUnhandled
 	}
-	if !s.complete(id, Result{Payload: body, FunctionError: errType}) {
+	if !s.complete(f, Result{Payload: body, FunctionError: errType}) {
 		invalidID(w, id)
 		return
 	}

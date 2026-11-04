@@ -20,16 +20,18 @@ type createRepositoryRequest struct {
 	RepositoryName             string                           `json:"repositoryName"`
 	RegistryID                 string                           `json:"registryId"`
 	ImageTagMutability         string                           `json:"imageTagMutability"`
+	ExclusionFilters           []exclusionFilter                `json:"imageTagMutabilityExclusionFilters"`
 	Tags                       []*ecr.Tag                       `json:"tags"`
 	EncryptionConfiguration    *encryptionConfigurationInput    `json:"encryptionConfiguration"`
 	ImageScanningConfiguration *imageScanningConfigurationInput `json:"imageScanningConfiguration"`
 }
 
 // encryptionConfigurationInput is the camelCase input shape for
-// encryptionConfiguration. kmsKey is not decoded: KMS is rejected outright,
-// so any key supplied alongside it is never used.
+// encryptionConfiguration. kmsKey is length-checked and then always refused:
+// KMS is rejected outright and AES256 takes no key.
 type encryptionConfigurationInput struct {
-	EncryptionType string `json:"encryptionType"`
+	EncryptionType string  `json:"encryptionType"`
+	KMSKey         *string `json:"kmsKey"`
 }
 
 // CreateRepository creates only the account-scoped ECR metadata record. The
@@ -55,6 +57,9 @@ func CreateRepository(ctx context.Context, store RepositoryStore, endpoint Repos
 	}
 	mutability, err := normalizeTagMutability(req.ImageTagMutability)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateExclusionFilters(req.ExclusionFilters); err != nil {
 		return nil, err
 	}
 	encryptionType, err := normalizeEncryptionType(req.EncryptionConfiguration)
@@ -115,10 +120,19 @@ func normalizeEncryptionType(cfg *encryptionConfigurationInput) (string, error) 
 	if cfg == nil {
 		return ecrdomain.EncryptionTypeAES256, nil
 	}
+	if cfg.KMSKey != nil {
+		if err := ValidateTextLength("encryptionConfiguration.kmsKey", *cfg.KMSKey, 1, maxKMSKeyLength); err != nil {
+			return "", err
+		}
+	}
 	switch cfg.EncryptionType {
 	case "":
 		return "", RequiredParameterError("encryptionConfiguration.encryptionType")
 	case ecrdomain.EncryptionTypeAES256:
+		if cfg.KMSKey != nil {
+			return "", ConstraintError("encryptionConfiguration",
+				"Invalid encryption configuration: Encryption key should not be set for AES256 encryption.")
+		}
 		return cfg.EncryptionType, nil
 	case ecrdomain.EncryptionTypeKMS:
 		return "", awserrors.Errorf(awserrors.ErrorECRInvalidParameter,

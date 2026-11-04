@@ -15,9 +15,10 @@ import (
 
 // putImageTagMutabilityRequest is the camelCase AWS JSON 1.1 input shape.
 type putImageTagMutabilityRequest struct {
-	RepositoryName     string `json:"repositoryName"`
-	RegistryID         string `json:"registryId"`
-	ImageTagMutability string `json:"imageTagMutability"`
+	RepositoryName     string            `json:"repositoryName"`
+	RegistryID         string            `json:"registryId"`
+	ImageTagMutability string            `json:"imageTagMutability"`
+	ExclusionFilters   []exclusionFilter `json:"imageTagMutabilityExclusionFilters"`
 }
 
 // PutImageTagMutability changes a repository between MUTABLE and IMMUTABLE.
@@ -40,6 +41,9 @@ func PutImageTagMutability(ctx context.Context, nc *nats.Conn, accountID string,
 		return nil, RequiredParameterError("imageTagMutability")
 	default:
 		return nil, EnumValueError("imageTagMutability", ImageTagMutabilityValues...)
+	}
+	if err := validateExclusionFilters(req.ExclusionFilters); err != nil {
+		return nil, err
 	}
 
 	store := ecrdomain.NewNATSMetaStore(nc)

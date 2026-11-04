@@ -81,6 +81,12 @@ function rowOf(table: string, name: string): HTMLElement {
   return row
 }
 
+function headersOf(table: string): (string | null)[] {
+  return within(screen.getByRole("table", { name: table }))
+    .getAllByRole("columnheader")
+    .map((th) => th.textContent)
+}
+
 describe("NodeDisks", () => {
   it("lists drives with size, transport and media", () => {
     render(<NodeDisks facts={node} />)
@@ -92,7 +98,22 @@ describe("NodeDisks", () => {
     expect(nvme).toHaveTextContent("NVMe")
     expect(nvme).toHaveTextContent("SSD")
     expect(rowOf("Physical drives", "sda")).toHaveTextContent("SATAHDD")
-    expect(rowOf("Physical drives", "sdc")).toHaveTextContent("893.8 GiB-SSD")
+    expect(rowOf("Physical drives", "sdc")).toHaveTextContent("893.8 GiBSSD")
+  })
+
+  it("fits each table in the panel with no media or size columns", () => {
+    render(<NodeDisks facts={node} />)
+
+    expect(headersOf("Physical drives")).toStrictEqual([
+      "Drive",
+      "Size",
+      "Transport",
+    ])
+    expect(headersOf("Mounted filesystems")).toStrictEqual([
+      "Mount",
+      "Drive",
+      "Use%",
+    ])
   })
 
   it("lists filesystems with df's figures and names a bind by what it shows", () => {
@@ -100,21 +121,20 @@ describe("NodeDisks", () => {
 
     const root = rowOf("Mounted filesystems", "/")
 
-    expect(root).toHaveTextContent("100.0 GiB")
-    expect(root).toHaveTextContent("35.0 GiB")
     expect(root).toHaveTextContent("64%")
+    expect(root).toHaveTextContent("60.0 GiB used of 100.0 GiB")
     expect(rowOf("Mounted filesystems", "/var/lib/spinifex")).toHaveTextContent(
       "bind of /mnt/disk2/spinifex",
     )
   })
 
-  it("shows no space left on a full filesystem rather than a blank", () => {
+  it("shows a full filesystem as full rather than blank", () => {
     render(<NodeDisks facts={node} />)
 
     const full = rowOf("Mounted filesystems", "/srv")
 
-    expect(full).toHaveTextContent("0.0 GiB")
     expect(full).toHaveTextContent("100%")
+    expect(full).toHaveTextContent("47.0 GiB used of 50.0 GiB")
   })
 
   it("says why a filesystem has no sizes", () => {
@@ -123,6 +143,7 @@ describe("NodeDisks", () => {
     const hung = rowOf("Mounted filesystems", "/mnt/nfs")
 
     expect(hung).toHaveTextContent("not answering")
+    expect(hung).not.toHaveTextContent("used of")
     expect(within(hung).queryByRole("progressbar")).not.toBeInTheDocument()
   })
 

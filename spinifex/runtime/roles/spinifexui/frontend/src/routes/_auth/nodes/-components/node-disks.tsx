@@ -42,7 +42,10 @@ const DRIVE_COLUMNS: DataColumn<DiskFacts>[] = [
       <div className="flex flex-col">
         <span className="font-mono text-xs font-medium">{disk.name}</span>
         {disk.model && (
-          <span className="max-w-56 truncate text-2xs text-muted-foreground">
+          <span
+            className="max-w-40 truncate text-2xs text-muted-foreground"
+            title={disk.model}
+          >
             {disk.model}
           </span>
         )}
@@ -64,20 +67,12 @@ const DRIVE_COLUMNS: DataColumn<DiskFacts>[] = [
     header: "Transport",
     sortValue: (disk) => disk.transport,
     cell: (disk) => (
-      <span className="text-xs">
-        {disk.transport
-          ? (TRANSPORT_LABELS.get(disk.transport) ?? disk.transport)
-          : "-"}
-      </span>
-    ),
-  },
-  {
-    id: "media",
-    header: "Media",
-    sortValue: (disk) => (disk.rotational ? "HDD" : "SSD"),
-    cell: (disk) => (
       <span className="flex items-center gap-1.5 text-xs">
-        {disk.rotational ? "HDD" : "SSD"}
+        {disk.transport &&
+          (TRANSPORT_LABELS.get(disk.transport) ?? disk.transport)}
+        <span className="text-muted-foreground">
+          {disk.rotational ? "HDD" : "SSD"}
+        </span>
         {disk.removable && <Badge variant="secondary">removable</Badge>}
       </span>
     ),
@@ -92,7 +87,10 @@ const FILESYSTEM_COLUMNS: DataColumn<FilesystemFacts>[] = [
     cell: (fs) => (
       <div className="flex flex-col">
         <span className="font-mono text-xs font-medium">{fs.mount}</span>
-        <span className="max-w-64 truncate font-mono text-2xs text-muted-foreground">
+        <span
+          className="max-w-48 truncate font-mono text-2xs text-muted-foreground"
+          title={fs.bind_of ? `bind of ${fs.bind_of}` : fs.source}
+        >
           {fs.bind_of ? `bind of ${fs.bind_of}` : fs.source}
         </span>
       </div>
@@ -111,39 +109,12 @@ const FILESYSTEM_COLUMNS: DataColumn<FilesystemFacts>[] = [
     ),
   },
   {
-    id: "size",
-    header: "Size",
-    sortValue: (fs) => fs.usage?.size_bytes,
-    cell: (fs) => <Bytes value={fs.usage?.size_bytes} />,
-  },
-  {
-    id: "used",
-    header: "Used",
-    hideBelow: "lg",
-    sortValue: (fs) => fs.usage?.used_bytes,
-    cell: (fs) => <Bytes value={fs.usage?.used_bytes} />,
-  },
-  {
-    id: "avail",
-    header: "Available",
-    sortValue: (fs) => fs.usage?.avail_bytes,
-    cell: (fs) => <Bytes value={fs.usage?.avail_bytes} />,
-  },
-  {
     id: "use",
     header: "Use%",
     sortValue: (fs) => percentUsed(fs),
     cell: (fs) => <Usage fs={fs} />,
   },
 ]
-
-function Bytes({ value }: { value: number | undefined }) {
-  return (
-    <span className="text-xs tabular-nums">
-      {value === undefined ? "-" : formatDiskSize(value)}
-    </span>
-  )
-}
 
 function Usage({ fs }: { fs: FilesystemFacts }) {
   const percent = percentUsed(fs)
@@ -160,6 +131,12 @@ function Usage({ fs }: { fs: FilesystemFacts }) {
           />
           <span className="text-xs tabular-nums">{percent}%</span>
         </div>
+      )}
+      {fs.usage && (
+        <span className="text-2xs text-muted-foreground tabular-nums">
+          {formatDiskSize(fs.usage.used_bytes)} used of{" "}
+          {formatDiskSize(fs.usage.size_bytes)}
+        </span>
       )}
       {fs.error && <span className="text-2xs text-warning">{fs.error}</span>}
     </div>

@@ -505,6 +505,9 @@ func CreateCapacityProvider(ctx context.Context, nc *nats.Conn, accountID string
 	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
+	if err := checkAutoScalingGroupProvider(input.AutoScalingGroupProvider); err != nil {
+		return nil, err
+	}
 	return ecsdomain.NewNATSECSService(nc).CreateCapacityProvider(ctx, input, accountID)
 }
 

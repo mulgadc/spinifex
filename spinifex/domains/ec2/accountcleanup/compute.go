@@ -166,6 +166,12 @@ func (c *ComputeCleanup) CleanupCompute(ctx context.Context, req *ComputeRequest
 		return res, nil
 	}
 
+	if !inventoryUsable(inventory) {
+		slog.WarnContext(ctx, "CleanupCompute: inventory holds an entry with no identity, nothing terminated", "account_id", req.AccountID)
+		res.incomplete(ReasonInstanceInventoryIncomplete)
+		return res, nil
+	}
+
 	asked := c.terminateAll(ctx, req.AccountID, inventory, managed, res)
 	c.reportTeardown(req.AccountID, asked, res)
 	return res, nil
@@ -235,18 +241,31 @@ func terminalSpotState(state string) bool {
 	return state == ec2.SpotInstanceStateClosed || state == ec2.SpotInstanceStateCancelled || state == ec2.SpotInstanceStateFailed
 }
 
+// inventoryUsable reports whether every entry names an instance. An entry that
+// does not could be a live instance, so the run terminates nothing.
+func inventoryUsable(out *ec2.DescribeInstancesOutput) bool {
+	if out == nil {
+		return false
+	}
+	for _, reservation := range out.Reservations {
+		if reservation == nil {
+			return false
+		}
+		for _, in := range reservation.Instances {
+			if in == nil || aws.StringValue(in.InstanceId) == "" {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // terminateAll terminates every listed instance that is not terminating and
 // not managed, and returns the IDs whose terminate is in hand.
 func (c *ComputeCleanup) terminateAll(ctx context.Context, accountID string, inventory *ec2.DescribeInstancesOutput, managed map[string]bool, res *ComputeResult) map[string]bool {
 	asked := map[string]bool{}
 	for _, reservation := range inventory.Reservations {
-		if reservation == nil {
-			continue
-		}
 		for _, in := range reservation.Instances {
-			if in == nil || aws.StringValue(in.InstanceId) == "" {
-				continue
-			}
 			id := aws.StringValue(in.InstanceId)
 			state := ""
 			if in.State != nil {

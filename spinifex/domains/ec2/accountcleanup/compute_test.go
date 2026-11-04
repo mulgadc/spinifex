@@ -366,3 +366,31 @@ func TestS7_CleanupComputeSpotStateIsFailClosed(t *testing.T) {
 	assert.Empty(t, unknown.terminator.terminated, "ADR-0003:S7: an unrecognised spot state could still launch, so nothing is terminated")
 	assert.Equal(t, StatusIncomplete, res.Status)
 }
+
+// ADR-0003:S7. An inventory entry with no identity could be a live instance,
+// so the run terminates nothing and is not clean.
+func TestS7_CleanupComputeUnidentifiedInventoryEntryTerminatesNothing(t *testing.T) {
+	bad := map[string]*ec2.DescribeInstancesOutput{
+		"nil output":      nil,
+		"nil reservation": {Reservations: []*ec2.Reservation{nil}},
+		"nil instance":    {Reservations: []*ec2.Reservation{{Instances: []*ec2.Instance{nil}}}},
+		"empty id":        {Reservations: []*ec2.Reservation{{Instances: []*ec2.Instance{{InstanceId: aws.String("")}}}}},
+	}
+	for name, out := range bad {
+		for _, force := range []bool{false, true} {
+			t.Run(name, func(t *testing.T) {
+				rig := newComputeRig()
+				if out != nil {
+					out.Reservations = append(out.Reservations, listing(map[string]string{runningID: ec2.InstanceStateNameRunning}).Reservations...)
+				}
+				rig.inventory.out = out
+
+				res := rig.run(t, force)
+
+				assert.Empty(t, rig.terminator.terminated, "ADR-0003:S7: nothing is terminated from a list with an unidentified entry (force=%v)", force)
+				assert.Equal(t, StatusIncomplete, res.Status)
+				assert.Contains(t, res.IncompleteReasons, ReasonInstanceInventoryIncomplete)
+			})
+		}
+	}
+}

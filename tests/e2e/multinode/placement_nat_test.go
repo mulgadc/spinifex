@@ -315,8 +315,8 @@ func spreadSetupBastion(t *testing.T, fix *Fixture, v spreadVPC) spreadBastion {
 	c := fix.AWS
 
 	amiID := needAMI(t, fix, needArch(t, fix))
-	instType, _ := needInstanceTypeArch(t, fix)
-	keyName, keyPath := needKeyPair(t, fix)
+	instType, _ := harness.DiscoverNanoInstanceType(t, fix.Harness)
+	keyName, keyPath := harness.EnsureKeyPair(t, fix.Harness)
 
 	harness.Step(t, "launch bastion in public subnet")
 	bastionOut, err := c.EC2.RunInstances(&ec2.RunInstancesInput{
@@ -382,7 +382,7 @@ func spreadSetupPrivateTrio(t *testing.T, fix *Fixture, b spreadBastion) spreadP
 	c := fix.AWS
 
 	amiID := needAMI(t, fix, needArch(t, fix))
-	instType, _ := needInstanceTypeArch(t, fix)
+	instType, _ := harness.DiscoverNanoInstanceType(t, fix.Harness)
 
 	harness.Step(t, "create spread placement group + 3 private VMs")
 	pgName := "nat-spread"

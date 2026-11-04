@@ -1,7 +1,6 @@
 package awsapi
 
 import (
-	"slices"
 	"strings"
 	"testing"
 
@@ -223,11 +222,4 @@ func TestRESTRouter_NoDuplicateEKSRoutes(t *testing.T) {
 		assert.NotContains(t, seen, key, "%s shadows %s on %s", route.Action, seen[key], key)
 		seen[key] = route.Action
 	}
-}
-
-func TestActionNamesAreSortedAndDistinct(t *testing.T) {
-	names := actionNames()
-
-	require.True(t, slices.IsSorted(names), "actions are not sorted: %v", names)
-	require.Len(t, slices.Compact(slices.Clone(names)), len(names), "actions contain duplicates: %v", names)
 }

@@ -109,8 +109,8 @@ func runBootVerifyAMI(t *testing.T, fix *Fixture, amiID, label string) {
 	t.Helper()
 	harness.Step(t, "boot-verify %s ami=%s", label, amiID)
 
-	instType, _ := needInstanceTypeArch(t, fix)
-	keyName, keyPath := needKeyPair(t, fix)
+	instType, _ := harness.DiscoverNanoInstanceType(t, fix.Harness)
+	keyName, keyPath := harness.EnsureKeyPair(t, fix.Harness)
 	vpc := harness.EnsureDefaultVPC(t, fix.Harness)
 	require.NotEmpty(t, vpc.SGID, "default SG ID required")
 	harness.AuthorizeSSHIngress(t, fix.AWS, vpc.SGID)

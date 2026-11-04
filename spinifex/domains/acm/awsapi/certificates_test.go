@@ -2,7 +2,6 @@ package awsapi
 
 import (
 	"context"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
@@ -10,23 +9,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestUnmarshalIfBody(t *testing.T) {
-	var out struct {
-		A string `json:"a"`
-	}
-	require.NoError(t, unmarshalIfBody(nil, &out))
-	require.NoError(t, unmarshalIfBody([]byte(`{"a":"x"}`), &out))
-	assert.Equal(t, "x", out.A)
-	require.Error(t, unmarshalIfBody([]byte("{bad"), &out))
-}
-
-func TestWriteJSONResponse(t *testing.T) {
-	w := httptest.NewRecorder()
-	WriteJSONResponse(w, map[string]string{"CertificateArn": "arn:aws:acm:x"})
-	assert.Equal(t, JSONContentType, w.Header().Get("Content-Type"))
-	assert.Contains(t, w.Body.String(), "CertificateArn")
-}
 
 // Invalid JSON bodies are rejected before any NATS round-trip.
 func TestOps_InvalidBodyRejected(t *testing.T) {

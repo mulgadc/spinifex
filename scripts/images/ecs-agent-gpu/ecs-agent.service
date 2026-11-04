@@ -9,8 +9,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Static config (gateway URL, CA, region, cluster, seeded IAM creds,
-# containerd socket) comes from /etc/spinifex-ecs/agent.env, dropped by
+# Static config (gateway URL, CA, region, cluster, containerd socket) comes from /etc/spinifex-ecs/agent.env, dropped by
 # cloud-init at launch. Absent file is tolerated — the agent falls back to
 # its built-in defaults.
 EnvironmentFile=-/etc/spinifex-ecs/agent.env

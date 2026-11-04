@@ -13,20 +13,7 @@ import (
 
 // TestMain amortises the embedded NATS+JetStream server across every test in
 // this package instead of each StartGateway call booting (and tearing down)
-// its own, for two reasons:
-//
-//  1. spinifex/domains/ec2/awsapi/instance's ClientTokenStore is a process-wide
-//     sync.Once singleton bound to whichever *nats.Conn first initialises it.
-//     In production a gateway holds one long-lived connection for its whole
-//     life, so the singleton is correct there. But this test binary runs
-//     every test in one process, so a per-test embedded server closes that
-//     first connection the moment its owning test ends — every later
-//     RunInstances-calling test then inherits a KV handle bound to a dead
-//     connection. Keeping one server, and never closing an individual
-//     test's connection early, keeps whichever connection wins the
-//     singleton alive for the life of the whole binary.
-//  2. It cuts per-test startup cost: standing up an embedded JetStream
-//     server is the dominant fixed cost of StartGateway.
+// its own: standing one up is the dominant fixed cost of StartGateway.
 //
 // Per-test state isolation is preserved despite the shared server — see the
 // accountAuthenticator doc comment in shared_nats.go for how.

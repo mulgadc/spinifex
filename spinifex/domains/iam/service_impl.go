@@ -9,7 +9,6 @@ import (
 	"fmt"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
-	"maps"
 	"net/netip"
 	"regexp"
 	"slices"
@@ -1820,22 +1819,12 @@ func (s *IAMServiceImpl) AttachUserPolicy(accountID string, input *iam.AttachUse
 	userName := *input.UserName
 	policyARN := *input.PolicyArn
 
-	// AWS-managed policy ARNs (arn:aws:iam::aws:policy/...) are never provisioned
-	// in Spinifex, so store them opaquely rather than failing NoSuchEntity — the
-	// grant document is modeled in builtinManagedPolicyDoc and resolved at
-	// evaluation time. Customer-managed ARNs must still exist.
-	if !iamarn.IsAWSManagedPolicyARN(policyARN) {
-		if err := s.attachablePolicy(ctx, accountID, policyARN); err != nil {
-			return nil, err
-		}
+	if err := s.attachablePolicy(ctx, accountID, policyARN); err != nil {
+		return nil, err
 	}
 
 	err := s.updateUserCAS(ctx, accountID, userName, func(u *User) (bool, error) {
-		if slices.Contains(u.AttachedPolicies, policyARN) { // idempotent
-			return false, nil
-		}
-		u.AttachedPolicies = append(u.AttachedPolicies, policyARN)
-		return true, nil
+		return attachPolicyARN(&u.AttachedPolicies, policyARN), nil
 	})
 	if err != nil {
 		return nil, err
@@ -1851,12 +1840,7 @@ func (s *IAMServiceImpl) DetachUserPolicy(accountID string, input *iam.DetachUse
 	policyARN := *input.PolicyArn
 
 	err := s.updateUserCAS(ctx, accountID, userName, func(u *User) (bool, error) {
-		idx := slices.Index(u.AttachedPolicies, policyARN)
-		if idx < 0 {
-			return false, policyNotFound(policyARN)
-		}
-		u.AttachedPolicies = slices.Delete(u.AttachedPolicies, idx, idx+1)
-		return true, nil
+		return true, detachPolicyARN(&u.AttachedPolicies, policyARN)
 	})
 	if err != nil {
 		return nil, err
@@ -1944,26 +1928,12 @@ func (s *IAMServiceImpl) PutUserPolicy(accountID string, input *iam.PutUserPolic
 	policyName := *input.PolicyName
 	policyDoc := *input.PolicyDocument
 
-	if err := validateIAMName("policyName", policyName, 128); err != nil {
+	if err := validateInlinePolicy("user", userName, policyName, policyDoc); err != nil {
 		return nil, err
-	}
-	if err := checkPolicyDocumentLength(policyDoc); err != nil {
-		return nil, err
-	}
-	if _, err := ValidatePolicyDocument(policyDoc); err != nil {
-		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
-			"policy %q on user %q: %w", policyName, userName, err)
 	}
 
 	err := s.updateUserCAS(ctx, accountID, userName, func(u *User) (bool, error) {
-		if err := checkInlinePolicySize("user", userName, userPolicySizeQuota, u.InlinePolicies, policyName, policyDoc); err != nil {
-			return false, err
-		}
-		if u.InlinePolicies == nil {
-			u.InlinePolicies = map[string]string{}
-		}
-		u.InlinePolicies[policyName] = policyDoc
-		return true, nil
+		return true, putInlinePolicy(&u.InlinePolicies, "user", userName, userPolicySizeQuota, policyName, policyDoc)
 	})
 	if err != nil {
 		return nil, err
@@ -2005,11 +1975,7 @@ func (s *IAMServiceImpl) DeleteUserPolicy(accountID string, input *iam.DeleteUse
 	policyName := *input.PolicyName
 
 	err := s.updateUserCAS(ctx, accountID, userName, func(u *User) (bool, error) {
-		if _, ok := u.InlinePolicies[policyName]; !ok {
-			return false, noSuchEntity("user policy", policyName)
-		}
-		delete(u.InlinePolicies, policyName)
-		return true, nil
+		return true, deleteInlinePolicy(u.InlinePolicies, "user policy", policyName)
 	})
 	if err != nil {
 		return nil, err
@@ -2028,15 +1994,8 @@ func (s *IAMServiceImpl) ListUserPolicies(accountID string, input *iam.ListUserP
 		return nil, err
 	}
 
-	rawNames := slices.Sorted(maps.Keys(user.InlinePolicies))
-
-	names := make([]*string, 0, len(rawNames))
-	for _, name := range rawNames {
-		names = append(names, aws.String(name))
-	}
-
 	return &iam.ListUserPoliciesOutput{
-		PolicyNames: names,
+		PolicyNames: inlinePolicyNames(user.InlinePolicies),
 		IsTruncated: aws.Bool(false),
 	}, nil
 }
@@ -2054,12 +2013,7 @@ func (s *IAMServiceImpl) TagUser(accountID string, input *iam.TagUserInput) (*ia
 
 	userName := *input.UserName
 	err := s.updateUserCAS(ctx, accountID, userName, func(u *User) (bool, error) {
-		merged := mergeTags(u.Tags, input.Tags, foldedKeys)
-		if len(merged) > maxTagsPerResource {
-			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
-		}
-		u.Tags = merged
-		return true, nil
+		return true, applyTags(&u.Tags, input.Tags, foldedKeys)
 	})
 	if err != nil {
 		return nil, err
@@ -2110,12 +2064,7 @@ func (s *IAMServiceImpl) TagPolicy(accountID string, input *iam.TagPolicyInput) 
 	}
 
 	err := s.updatePolicyCAS(ctx, accountID, *input.PolicyArn, func(policy *Policy) (bool, error) {
-		merged := mergeTags(policy.Tags, input.Tags, exactKeys)
-		if len(merged) > maxTagsPerResource {
-			return false, errors.New(awserrors.ErrorIAMLimitExceeded)
-		}
-		policy.Tags = merged
-		return true, nil
+		return true, applyTags(&policy.Tags, input.Tags, exactKeys)
 	})
 	if err != nil {
 		return nil, err
@@ -2402,9 +2351,13 @@ var (
 	errDeletePoliciesFirst = awserrors.Errorf(awserrors.ErrorIAMDeleteConflict, "Cannot delete entity, must delete policies first.")
 )
 
-// attachablePolicy refuses a customer-managed policy ARN that names no stored
-// policy, with the message AWS gives on attach.
+// attachablePolicy refuses, with AWS's attach message, a customer-managed ARN
+// naming no stored policy. AWS-managed ARNs are never provisioned, so they
+// attach opaquely and resolve through builtinManagedPolicyDoc at evaluation.
 func (s *IAMServiceImpl) attachablePolicy(ctx context.Context, accountID, policyARN string) error {
+	if iamarn.IsAWSManagedPolicyARN(policyARN) {
+		return nil
+	}
 	_, err := s.getPolicyByARN(ctx, accountID, policyARN)
 	if code, _ := awserrors.ResolveErrorCode(err); code == awserrors.ErrorIAMNoSuchEntity {
 		return awserrors.Errorf(awserrors.ErrorIAMNoSuchEntity, "Policy %s does not exist or is not attachable.", policyARN)

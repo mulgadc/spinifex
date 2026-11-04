@@ -26,23 +26,11 @@ func needAZ(t *testing.T, fix *Fixture) string {
 	return harness.DiscoverDefaultAZ(t, fix.Harness)
 }
 
-// needInstanceTypeArch returns the nano instance type and its architecture.
-func needInstanceTypeArch(t *testing.T, fix *Fixture) (instanceType, arch string) {
-	t.Helper()
-	return harness.DiscoverNanoInstanceType(t, fix.Harness)
-}
-
 // needAMI returns the discovered architecture-appropriate Ubuntu AMI ID.
 func needAMI(t *testing.T, fix *Fixture) string {
 	t.Helper()
-	_, arch := needInstanceTypeArch(t, fix)
+	_, arch := harness.DiscoverNanoInstanceType(t, fix.Harness)
 	return harness.DiscoverUbuntuAMI(t, fix.Harness, arch)
-}
-
-// needKeyPair returns the memoized primary EC2 key pair name + PEM path.
-func needKeyPair(t *testing.T, fix *Fixture) (name, pemPath string) {
-	t.Helper()
-	return harness.EnsureKeyPair(t, fix.Harness)
 }
 
 // customAMIName is the well-known AMI name used by CreateImage tests.
@@ -76,8 +64,8 @@ func ensureCustomAMI(t *testing.T, fix *Fixture, sourceInstanceID, name, desc st
 // the *ec2.Instance plus its root volume ID. Idempotent via harness.EnsureInstance.
 func needInstance(t *testing.T, fix *Fixture) (inst *ec2.Instance, rootVolumeID string) {
 	t.Helper()
-	instType, _ := needInstanceTypeArch(t, fix)
-	keyName, _ := needKeyPair(t, fix)
+	instType, _ := harness.DiscoverNanoInstanceType(t, fix.Harness)
+	keyName, _ := harness.EnsureKeyPair(t, fix.Harness)
 	ami := needAMI(t, fix)
 	vpc := harness.EnsureDefaultVPC(t, fix.Harness)
 	require.NotEmpty(t, vpc.SGID, "default SG ID required")

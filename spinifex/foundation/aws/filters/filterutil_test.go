@@ -303,6 +303,13 @@ func TestEC2TagsToMap(t *testing.T) {
 	}
 }
 
+func TestEC2TagsToMap_NilValueIsEmpty(t *testing.T) {
+	m := EC2TagsToMap([]*ec2.Tag{{Key: aws.String("Name")}, {Value: aws.String("orphan")}})
+	if v, ok := m["Name"]; !ok || v != "" || len(m) != 1 {
+		t.Fatalf("expected only Name with an empty value, got %v", m)
+	}
+}
+
 func TestEC2TagsToMap_NilAndEmpty(t *testing.T) {
 	if EC2TagsToMap(nil) != nil {
 		t.Fatal("expected nil for nil tags")

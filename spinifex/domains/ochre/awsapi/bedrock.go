@@ -13,6 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 )
 
 // bedrockRoute maps one HTTP method + chi path pattern to an AWS action and handler.
@@ -212,6 +213,6 @@ func (d Deps) bedrock(w http.ResponseWriter, inv dispatch.Invocation) error {
 		return err
 	}
 
-	ochre.WriteJSONResponse(w, output)
+	envelope.WriteJSONResult(w, output)
 	return nil
 }

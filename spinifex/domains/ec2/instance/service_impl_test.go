@@ -2424,7 +2424,7 @@ func TestStartStoppedInstance_NotFound(t *testing.T) {
 	}
 	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: "i-missing"}, "acc")
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.EqualError(t, err, "The instance ID 'i-missing' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 }
 
 // TestStartStoppedInstance_NotFoundButRunningLocally covers the local-race
@@ -2526,7 +2526,7 @@ func TestStartStoppedInstance_LocalTerminatedRecordIsNotFound(t *testing.T) {
 	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
 
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.EqualError(t, err, "The instance ID 'i-gone' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 }
 
 // TestStartStoppedInstance_LocalRecordOfAnotherAccount holds the visibility
@@ -2546,7 +2546,7 @@ func TestStartStoppedInstance_LocalRecordOfAnotherAccount(t *testing.T) {
 	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "other-acc")
 
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.EqualError(t, err, "The instance ID 'i-someone-elses' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 }
 
 func TestStartStoppedInstance_NotStopped(t *testing.T) {
@@ -2576,7 +2576,7 @@ func TestStartStoppedInstance_NotVisible(t *testing.T) {
 	}
 	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "other-acc")
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, err.Error())
+	assert.EqualError(t, err, "The instance ID 'i-foreign' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 
 	// Cross-tenant rejection must not delete from KV.
 	assert.Empty(t, store.DeletedStopped, "cross-tenant rejection must not delete stopped instance")
@@ -2603,6 +2603,34 @@ func TestStartStoppedInstance_InstanceTypeUnknown(t *testing.T) {
 	assert.Contains(t, store.ClaimedStopped, id, "claim must run before the instance-type check")
 	require.NotNil(t, store.WroteStopped[id], "claimed instance must be restored to KV after a downstream failure")
 	assert.Equal(t, vm.StateStopped, store.WroteStopped[id].Status)
+}
+
+// A UEFI instance with no variable store pointer is refused before anything is
+// stamped or claimed, so the record handed back is the one that was claimed.
+func TestStartStoppedInstance_UEFIInstanceWithoutAPointerIsRefused(t *testing.T) {
+	id := "i-uefi-nopointer"
+	itype := "t3.micro"
+	launched := time.Unix(1700000000, 0).UTC()
+	stopped := &vm.VM{
+		ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: itype, BootMode: "uefi",
+		Instance: &ec2.Instance{LaunchTime: aws.Time(launched)},
+	}
+	before := stopped.Record()
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: stopped}}
+	prov := &fakeResourceCapacityProvider{instanceTypes: map[string]*ec2.InstanceTypeInfo{
+		itype: {InstanceType: aws.String(itype)},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store, resourceMgr: prov, vmMgr: vm.NewManager()}
+
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Empty(t, prov.allocated, "nothing is allocated for a start that cannot boot")
+	require.NotNil(t, store.WroteStopped[id], "the claimed instance is handed back")
+	assert.Equal(t, before, store.WroteStopped[id].Record(), "the record is unchanged")
+	_, inManager := svc.vmMgr.Get(id)
+	assert.False(t, inManager)
 }
 
 func TestStartStoppedInstance_AllocateFails(t *testing.T) {
@@ -2771,7 +2799,7 @@ func TestStartStoppedInstance_ConcurrentClaimRace(t *testing.T) {
 	var conflicted, winnerFailed int
 	for _, err := range errs {
 		require.Error(t, err, "vmMgr.Run is wired to fail fast — no caller should succeed end-to-end")
-		switch err.Error() {
+		switch code, _ := awserrors.ResolveErrorCode(err); code {
 		case awserrors.ErrorIncorrectInstanceState, awserrors.ErrorInvalidInstanceIDNotFound:
 			conflicted++
 		case awserrors.ErrorServerInternal:
@@ -5118,4 +5146,53 @@ func TestDescribeInstanceAttribute_UserDataUnsetCarriesNoValue(t *testing.T) {
 			assert.Nil(t, out.UserData.Value, "an instance with no user data carries no Value, not an empty one")
 		})
 	}
+}
+
+// AWS refuses an AMI built for another architecture than the instance type
+// with InvalidParameterValue, before any capacity or ENI is touched.
+func TestPrepareRunInstances_ArchitectureMismatch(t *testing.T) {
+	types := map[string]*ec2.InstanceTypeInfo{
+		"t3.micro": {
+			InstanceType:  aws.String("t3.micro"),
+			ProcessorInfo: &ec2.ProcessorInfo{SupportedArchitectures: []*string{aws.String("x86_64")}},
+		},
+		"t4g.micro": {
+			InstanceType:  aws.String("t4g.micro"),
+			ProcessorInfo: &ec2.ProcessorInfo{SupportedArchitectures: []*string{aws.String("arm64")}},
+		},
+	}
+	for _, tc := range []struct{ instanceType, amiArch, typeArch string }{
+		{"t3.micro", "arm64", "x86_64"},
+		{"t4g.micro", "x86_64", "arm64"},
+	} {
+		t.Run(tc.instanceType, func(t *testing.T) {
+			prov := &fakeResourceCapacityProvider{
+				instanceTypes: types,
+				canAllocFn: func(*ec2.InstanceTypeInfo, int) int {
+					t.Fatal("capacity consulted for a mismatched architecture")
+					return 0
+				},
+			}
+			svc := &InstanceServiceImpl{
+				instanceTypes: types,
+				amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+					"ami-1": {ImageOwnerAlias: "acc", Architecture: tc.amiArch},
+				}},
+				resourceMgr: prov,
+			}
+			_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+				InstanceType: aws.String(tc.instanceType),
+				ImageId:      aws.String("ami-1"),
+				MinCount:     aws.Int64(1),
+				MaxCount:     aws.Int64(1),
+			}, "acc", "")
+			require.Error(t, err)
+			assert.Nil(t, instances)
+			code, message, ok := awserrors.ResolveErrorDetail(err)
+			require.True(t, ok)
+			assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+			assert.Contains(t, message, "The architecture '"+tc.typeArch+"' of the specified instance type does not match the architecture '"+tc.amiArch+"' of the specified AMI.")
+		})
+	}
+	assert.NoError(t, checkImageArchitecture(types["t4g.micro"], "aarch64"))
 }

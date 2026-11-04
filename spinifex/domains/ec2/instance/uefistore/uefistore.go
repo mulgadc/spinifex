@@ -28,12 +28,18 @@ const (
 	// StateDeleting is a store whose objects are to be deleted, and then the record.
 	StateDeleting = "deleting"
 
-	objectRoot = "uefi/"
+	// ObjectRoot is the object-store prefix every store object is under.
+	ObjectRoot = "uefi/"
 )
 
 // ErrInvalidRecord is returned for a store record that breaks its invariants,
 // whether it is about to be written or was just read.
 var ErrInvalidRecord = errors.New("uefistore: invalid store record")
+
+// ErrDeleting is returned for a change that would return a deleting store to
+// live. Deletion follows only a terminate or an operator's forget, and both are
+// final, so a writer that meets it drops whatever it was about to record.
+var ErrDeleting = errors.New("uefistore: store is being deleted")
 
 // FirmwareIdentity names the firmware a variable store was written under. A
 // store only boots where Arch and VarsSize match the node's firmware, because
@@ -68,7 +74,7 @@ type UEFIWriteBack struct {
 // KeyPrefix is the object-store prefix every store object of ownerID (an
 // instance or image ID) is written under.
 func KeyPrefix(ownerID string) string {
-	return objectRoot + ownerID + "/"
+	return ObjectRoot + ownerID + "/"
 }
 
 // ownsKey reports whether key names one object directly under ownerID's prefix.
@@ -92,6 +98,9 @@ func (rec *UEFIStoreRecord) validate(key string) error {
 		return fmt.Errorf("%w: instance_id %s stored at key %s", ErrInvalidRecord, rec.InstanceID, key)
 	case rec.State != StateLive && rec.State != StateDeleting:
 		return fmt.Errorf("%w: %s has state %q", ErrInvalidRecord, key, rec.State)
+	case rec.State == StateDeleting && rec.WriteBack != nil:
+		// A write-back retry puts an object, which would land behind the delete.
+		return fmt.Errorf("%w: %s is deleting with a write-back still owed", ErrInvalidRecord, key)
 	}
 	if wb := rec.WriteBack; wb != nil {
 		switch {
@@ -134,6 +143,15 @@ func NewStore(js jetstream.JetStream) *Store {
 	return &Store{kv: kvstore.New[UEFIStoreRecord](js, bucketConfig())}
 }
 
+// NewReader returns a Store over the existing bucket that neither creates it
+// nor migrates it, for an operator report that must not change the cluster.
+func NewReader(js jetstream.JetStream) *Store {
+	cfg := bucketConfig()
+	cfg.AttachOnly = true
+	cfg.OnOpen = nil
+	return &Store{kv: kvstore.New[UEFIStoreRecord](js, cfg)}
+}
+
 // Open creates the bucket if it is missing and stamps its schema version.
 func (s *Store) Open(ctx context.Context) error {
 	_, err := s.kv.KV(ctx)
@@ -169,11 +187,23 @@ func (s *Store) Create(ctx context.Context, rec *UEFIStoreRecord) (uint64, error
 }
 
 // CompareAndSet replaces the record only if it is still at rev, returning
-// kvstore.ErrConflict when it is not, and the revision written otherwise.
+// kvstore.ErrConflict when it is not, and the revision written otherwise. A
+// record at rev that is deleting cannot be set live again: that is ErrDeleting.
 func (s *Store) CompareAndSet(ctx context.Context, rec *UEFIStoreRecord, rev uint64) (uint64, error) {
 	rec.SchemaVersion = RecordSchemaVersion
 	if err := rec.validate(rec.InstanceID); err != nil {
 		return 0, err
+	}
+	if rec.State == StateLive {
+		// Read unvalidated: only the state at rev matters, and any other
+		// revision fails the guarded write below anyway.
+		cur, curRev, err := s.kv.Get(ctx, rec.InstanceID)
+		if err != nil && !errors.Is(err, kvstore.ErrNotFound) {
+			return 0, err
+		}
+		if err == nil && curRev == rev && cur.State == StateDeleting {
+			return 0, fmt.Errorf("%w: %s", ErrDeleting, rec.InstanceID)
+		}
 	}
 	return s.kv.CompareAndSet(ctx, rec.InstanceID, rec, rev)
 }

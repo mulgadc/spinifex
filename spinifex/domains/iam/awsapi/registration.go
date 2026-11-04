@@ -24,9 +24,8 @@ import (
 const ServiceName = "iam"
 
 const (
-	principalTypeUser        = "user"
-	principalTypeRoot        = "root"
-	principalTypeAssumedRole = "assumed-role"
+	principalTypeUser = "user"
+	principalTypeRoot = "root"
 
 	// ec2ServicePrincipal is the service an instance profile's role is passed to.
 	ec2ServicePrincipal = "ec2.amazonaws.com"
@@ -474,7 +473,7 @@ func getUserForCaller(ctx context.Context, inv dispatch.Invocation, accountID st
 		return actions["GetUser"], nil
 	case principalTypeRoot:
 		return getRootUser, nil
-	case principalTypeAssumedRole:
+	case dispatch.PrincipalTypeAssumedRole:
 		return action{}, awserrors.Errorf(awserrors.ErrorValidationError,
 			"Must specify userName when calling with non-User credentials")
 	default:

@@ -46,8 +46,8 @@ const instStatusGraceProbe = 90 * time.Second
 func runInstanceStatus(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — DescribeInstanceStatus + SDK status waiter")
 
-	instType, _ := needInstanceTypeArch(t, fix)
-	keyName, _ := needKeyPair(t, fix)
+	instType, _ := harness.DiscoverNanoInstanceType(t, fix.Harness)
+	keyName, _ := harness.EnsureKeyPair(t, fix.Harness)
 	amiID := needAMI(t, fix)
 	az := needAZ(t, fix)
 	vpc := harness.EnsureDefaultVPC(t, fix.Harness)

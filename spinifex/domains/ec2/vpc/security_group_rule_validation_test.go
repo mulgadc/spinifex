@@ -7,6 +7,7 @@ package vpc
 import (
 	"context"
 	"encoding/json"
+	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -53,12 +54,12 @@ func TestAuthorizeSecurityGroup_RequiresProtocol(t *testing.T) {
 			IpProtocol: proto, FromPort: aws.Int64(80), ToPort: aws.Int64(80),
 			IpRanges: []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/24")}},
 		}
-		requireAWSError(t, authorizeIngress(svc, sgID, perm), awserrors.ErrorInvalidParameterValue, msg)
+		testutil.RequireAWSError(t, authorizeIngress(svc, sgID, perm), awserrors.ErrorInvalidParameterValue, msg)
 
 		_, err := svc.AuthorizeSecurityGroupEgress(context.Background(), &ec2.AuthorizeSecurityGroupEgressInput{
 			GroupId: aws.String(sgID), IpPermissions: []*ec2.IpPermission{perm},
 		}, testAccountID)
-		requireAWSError(t, err, awserrors.ErrorInvalidParameterValue, msg)
+		testutil.RequireAWSError(t, err, awserrors.ErrorInvalidParameterValue, msg)
 	}
 	assert.Equal(t, before, storedSGRecord(t, svc, sgID), "a rejected authorize must store nothing")
 }
@@ -94,7 +95,7 @@ func TestAuthorizeSecurityGroupIngress_TCPUDPRequireBothPorts(t *testing.T) {
 				IpProtocol: aws.String(proto), FromPort: ports[0], ToPort: ports[1],
 				IpRanges: []*ec2.IpRange{{CidrIp: aws.String("10.0.0.0/24")}},
 			})
-			requireAWSError(t, err, awserrors.ErrorInvalidParameterValue,
+			testutil.RequireAWSError(t, err, awserrors.ErrorInvalidParameterValue,
 				"Invalid value for portRange. Must specify both from and to ports with TCP/UDP.")
 		}
 	}

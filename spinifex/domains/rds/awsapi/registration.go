@@ -48,22 +48,6 @@ func OperationInventory() dispatch.Inventory {
 	}
 }
 
-// CallerFromActor projects the verified actor onto the RDS caller. The role name
-// comes from the underlying role ARN, never the session name, which the caller
-// picks at AssumeRole time and could name its way past the agent gate.
-func CallerFromActor(actor dispatch.Actor) Caller {
-	name := actor.UserName
-	if actor.PrincipalType == principalTypeAssumedRole {
-		name = actor.SessionName
-	}
-	return Caller{
-		AccountID:     actor.AccountID,
-		PrincipalType: actor.PrincipalType,
-		SessionName:   name,
-		RoleName:      actor.RoleName(),
-	}
-}
-
 // dispatch parses, scopes and authorizes the request, then runs the action.
 // The principal-class gate runs before the policy check so no customer grant is
 // ever evaluated against an internal agent action. Errors are awserrors codes
@@ -94,7 +78,7 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 	// An error means no caller ARN could be composed; the actor is then empty,
 	// which no internal action admits and the policy check below refuses.
 	actor, _ := inv.Actor()
-	caller := CallerFromActor(actor)
+	caller := actor.Caller()
 	caller.AccountID = inv.AccountID
 
 	if err := AuthorizeCaller(r.Context(), action, caller); err != nil {

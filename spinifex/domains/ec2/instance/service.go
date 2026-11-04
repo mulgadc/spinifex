@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
@@ -121,6 +122,15 @@ type StoppedInstanceStore interface {
 	// if a concurrent caller already claimed (or otherwise removed) the record.
 	ClaimStoppedInstance(instanceID string) (*vm.VM, error)
 }
+
+// UEFIStoreMarker records a terminated instance's UEFI variable store for
+// deletion. Implemented by uefistore.Store.
+type UEFIStoreMarker interface {
+	Exists(ctx context.Context, instanceID string) (bool, error)
+	MarkDeleting(ctx context.Context, instanceID string) (bool, error)
+}
+
+var _ UEFIStoreMarker = (*uefistore.Store)(nil)
 
 // InstanceTagWriter projects an instance record's full tag set into the
 // central tag store, and removes it on terminate. Implemented by

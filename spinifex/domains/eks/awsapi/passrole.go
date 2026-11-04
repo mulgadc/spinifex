@@ -3,6 +3,7 @@ package awsapi
 import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 )
 
 // PassedRoleARNs returns the role ARNs action hands to EKS, each needing
@@ -13,25 +14,25 @@ func PassedRoleARNs(action string, body []byte) []string {
 	switch action {
 	case "CreateCluster":
 		input := new(eks.CreateClusterInput)
-		if unmarshalIfBody(body, input) != nil {
+		if envelope.UnmarshalJSONBody(body, input) != nil {
 			return nil
 		}
 		roleARN = input.RoleArn
 	case "CreateNodegroup":
 		input := new(eks.CreateNodegroupInput)
-		if unmarshalIfBody(body, input) != nil {
+		if envelope.UnmarshalJSONBody(body, input) != nil {
 			return nil
 		}
 		roleARN = input.NodeRole
 	case "CreateAddon":
 		input := new(eks.CreateAddonInput)
-		if unmarshalIfBody(body, input) != nil {
+		if envelope.UnmarshalJSONBody(body, input) != nil {
 			return nil
 		}
 		roleARN = input.ServiceAccountRoleArn
 	case "UpdateAddon":
 		input := new(eks.UpdateAddonInput)
-		if unmarshalIfBody(body, input) != nil {
+		if envelope.UnmarshalJSONBody(body, input) != nil {
 			return nil
 		}
 		roleARN = input.ServiceAccountRoleArn

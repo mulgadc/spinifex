@@ -125,7 +125,7 @@ func TestRequestSpotInstances_QuotaGateRunsBeforeDispatchAndLaunch(t *testing.T)
 		InstanceCount: aws.Int64(1),
 	}
 
-	_, err = RequestSpotInstances(context.Background(), input, nc, nil, "test-account", "ap-southeast-2a", nil, quota, 1)
+	_, err = RequestSpotInstances(context.Background(), input, nc, nil, nil, "test-account", "ap-southeast-2a", nil, quota, 1)
 	require.NoError(t, err)
 
 	quotaIdx := order.indexOf("quota-check")

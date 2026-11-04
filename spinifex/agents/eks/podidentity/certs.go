@@ -1,15 +1,11 @@
 package podidentity
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
-	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -83,17 +79,8 @@ func ensureLeaf(certPath, keyPath, caCertPath, caKeyPath string, spec leafSpec) 
 	if leafCurrent(certPath, keyPath, ca, spec) {
 		return nil
 	}
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return fmt.Errorf("generate key: %w", err)
-	}
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return fmt.Errorf("serial: %w", err)
-	}
 	now := time.Now().UTC()
-	tmpl := x509.Certificate{
-		SerialNumber:          serial,
+	certPEM, keyPEM, err := konnectivitycert.Mint(&x509.Certificate{
 		Subject:               pkix.Name{CommonName: spec.cn},
 		NotBefore:             now.Add(-time.Hour),
 		NotAfter:              now.Add(certValidity),
@@ -101,20 +88,15 @@ func ensureLeaf(certPath, keyPath, caCertPath, caKeyPath string, spec leafSpec) 
 		ExtKeyUsage:           []x509.ExtKeyUsage{spec.usage},
 		BasicConstraintsValid: true,
 		IPAddresses:           spec.ips,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, &tmpl, ca, &priv.PublicKey, caKey)
+	}, ca, caKey)
 	if err != nil {
-		return fmt.Errorf("create certificate: %w", err)
-	}
-	keyDER, err := x509.MarshalECPrivateKey(priv)
-	if err != nil {
-		return fmt.Errorf("marshal key: %w", err)
-	}
-	// Key first: a cert without its key is never published.
-	if err := writeAtomic(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
 		return err
 	}
-	return writeAtomic(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644)
+	// Key first: a cert without its key is never published.
+	if err := writeAtomic(keyPath, keyPEM, 0o600); err != nil {
+		return err
+	}
+	return writeAtomic(certPath, certPEM, 0o644)
 }
 
 // leafCurrent reports whether the cached pair loads, matches, was signed by ca,

@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 
@@ -96,12 +97,7 @@ func (s *Selector) Validate() error {
 	if s.registry == nil {
 		return nil
 	}
-	names := make([]string, 0, len(s.registry.entries))
-	for n := range s.registry.entries {
-		names = append(names, n)
-	}
-	slices.Sort(names)
-	for _, n := range names {
+	for _, n := range slices.Sorted(maps.Keys(s.registry.entries)) {
 		if s.legacy.Serves(n) {
 			return fmt.Errorf("dispatch: service %q is registered and also served by the legacy dispatch table", n)
 		}

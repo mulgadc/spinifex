@@ -45,6 +45,19 @@ func isConflict(err error) bool {
 	return errors.Is(err, jetstream.ErrKeyExists) || errors.Is(err, jetstream.ErrKeyRevisionMismatch)
 }
 
+// IsRevisionConflict reports a revision-conditional write that lost its race. Besides the two sentinels, a Create retried
+// against a delete marker returns a bare *jetstream.APIError carrying a wrong-last-sequence code.
+func IsRevisionConflict(err error) bool {
+	if isConflict(err) {
+		return true
+	}
+	if apiErr, ok := errors.AsType[*jetstream.APIError](err); ok {
+		return apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence ||
+			apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequenceConstant
+	}
+	return false
+}
+
 // retryCAS runs attempt until it succeeds, returns a non-conflict error, or spends its budget. It pauses between attempts,
 // jittered so contending writers do not re-collide on the same revision.
 func retryCAS(ctx context.Context, cfg CASConfig, op, key string, attempt func() error) error {

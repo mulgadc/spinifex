@@ -615,12 +615,7 @@ func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *
 		return nil, err
 	}
 
-	rtbIDs := make(map[string]bool)
-	for _, id := range input.RouteTableIds {
-		if id != nil {
-			rtbIDs[*id] = true
-		}
-	}
+	rtbIDs := awsidentifiers.Set(input.RouteTableIds)
 
 	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeRouteTablesValidFilters)
 	if err != nil {

@@ -111,8 +111,8 @@ func runSGPolicyDatapath(t *testing.T, fix *Fixture) {
 	// `fix.AMIID / InstanceType / KeyName / KeyPath` indirectly; resolve
 	// once and pass into the local helpers.
 	_ = needAMI(t, fix)
-	_, _ = needInstanceTypeArch(t, fix)
-	_, keyPath := needKeyPair(t, fix)
+	_, _ = harness.DiscoverNanoInstanceType(t, fix.Harness)
+	_, keyPath := harness.EnsureKeyPair(t, fix.Harness)
 
 	def := harness.EnsureDefaultVPC(t, fix.Harness)
 	require.NotEmpty(t, def.VPCID, "default VPC ID required")
@@ -610,8 +610,8 @@ func createSG(t *testing.T, fix *Fixture, vpcID, name, desc string) string {
 func runSGEInstance(t *testing.T, fix *Fixture, subnetID, sgID, userData string) string {
 	t.Helper()
 	amiID := needAMI(t, fix)
-	instType, _ := needInstanceTypeArch(t, fix)
-	keyName, _ := needKeyPair(t, fix)
+	instType, _ := harness.DiscoverNanoInstanceType(t, fix.Harness)
+	keyName, _ := harness.EnsureKeyPair(t, fix.Harness)
 	in := &ec2.RunInstancesInput{
 		ImageId:          aws.String(amiID),
 		InstanceType:     aws.String(instType),

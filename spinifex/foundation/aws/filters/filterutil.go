@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
@@ -103,15 +104,16 @@ func matchesAnyTag(tags map[string]string, values []string, field func(k, v stri
 	return false
 }
 
-// EC2TagsToMap converts []*ec2.Tag to map[string]string for MatchesTags.
+// EC2TagsToMap converts []*ec2.Tag to map[string]string for MatchesTags. A
+// nil Value maps to "", the value AWS stores for a tag created without one.
 func EC2TagsToMap(tags []*ec2.Tag) map[string]string {
 	if len(tags) == 0 {
 		return nil
 	}
 	m := make(map[string]string, len(tags))
 	for _, t := range tags {
-		if t.Key != nil && t.Value != nil {
-			m[*t.Key] = *t.Value
+		if t.Key != nil {
+			m[*t.Key] = aws.StringValue(t.Value)
 		}
 	}
 	return m

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/viper"
@@ -1566,6 +1567,24 @@ func TestLoadConfig_NetworkPoolLatitudeSourceAccepted(t *testing.T) {
 	assert.Equal(t, []string{"eip_1", "eip_2"}, p.LatitudeElasticIPIDs)
 	assert.Equal(t, "/etc/spinifex/latitude/api-token", p.LatitudeKeyFile)
 	assert.Equal(t, "sv_a", cfg.Nodes["n1"].ProviderHostID)
+}
+
+func latitudeIDs(n int) string {
+	ids := make([]string, n)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("%q", fmt.Sprintf("eip_%d", i))
+	}
+	return "source = \"latitude\"\nlatitude_project_id = \"p\"\nlatitude_elastic_ip_ids = [" + strings.Join(ids, ", ") + "]\n"
+}
+
+func TestLoadConfig_NetworkPoolLatitudeSetIsCapped(t *testing.T) {
+	cfg, err := loadVultrPool(t, "nat", latitudeIDs(MaxLatitudeElasticIPs), [2]string{"a", "b"})
+	require.NoError(t, err)
+	assert.Len(t, cfg.Network.ExternalPools[0].LatitudeElasticIPIDs, MaxLatitudeElasticIPs)
+
+	_, err = loadVultrPool(t, "nat", latitudeIDs(MaxLatitudeElasticIPs+1), [2]string{"a", "b"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "at most 5 are allowed")
 }
 
 func TestLoadConfig_NetworkPoolLatitudeRejections(t *testing.T) {

@@ -818,12 +818,19 @@ func validateVultrPool(cc *ClusterConfig, p ExternalPool) error {
 	return nil
 }
 
+// MaxLatitudeElasticIPs bounds a latitude pool: latitude.sh allows five Elastic IPs per team, and
+// every allocation reads each configured address from the API.
+const MaxLatitudeElasticIPs = 5
+
 // validateLatitudePool checks a source="latitude" pool. The Elastic IPs are
 // bought ahead of time and named here, the API picks nothing, so the range,
 // gateway and label keys mean nothing, and every node must name its server.
 func validateLatitudePool(cc *ClusterConfig, p ExternalPool) error {
 	if p.LatitudeProjectID == "" || len(p.LatitudeElasticIPIDs) == 0 {
 		return fmt.Errorf("config: [[network.external_pools]] %q: source=\"latitude\" requires latitude_project_id and latitude_elastic_ip_ids", p.Name)
+	}
+	if len(p.LatitudeElasticIPIDs) > MaxLatitudeElasticIPs {
+		return fmt.Errorf("config: [[network.external_pools]] %q: latitude_elastic_ip_ids lists %d addresses, at most %d are allowed", p.Name, len(p.LatitudeElasticIPIDs), MaxLatitudeElasticIPs)
 	}
 	seen := map[string]struct{}{}
 	for _, id := range p.LatitudeElasticIPIDs {

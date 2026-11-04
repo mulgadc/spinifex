@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/mulgadc/bluebottle/pkg/safecast"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 )
 
@@ -106,10 +108,27 @@ func (s parameterStore) chownToEngine(path string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Chown(path, int(credential.Uid), int(credential.Gid)); err != nil {
+	uid, err := ownerID(credential.Uid)
+	if err != nil {
+		return fmt.Errorf("uid of %s: %w", s.osUser, err)
+	}
+	gid, err := ownerID(credential.Gid)
+	if err != nil {
+		return fmt.Errorf("gid of %s: %w", s.osUser, err)
+	}
+	if err := os.Chown(path, uid, gid); err != nil {
 		return fmt.Errorf("hand %s to %s: %w", path, s.osUser, err)
 	}
 	return nil
+}
+
+// Rejects rather than saturates: a clamped ID would hand the file to another
+// account while the engine still runs as the real one.
+func ownerID(id uint32) (int, error) {
+	if uint64(id) > math.MaxInt {
+		return 0, fmt.Errorf("%d does not fit an int", id)
+	}
+	return safecast.Uint64ToInt(uint64(id)), nil
 }
 
 // Snapshots the installed set as the rollback target, but only once the engine

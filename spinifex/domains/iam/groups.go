@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -15,7 +14,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/nats-io/nats.go/jetstream"
 
-	iamarn "github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
@@ -301,19 +299,12 @@ func (s *IAMServiceImpl) AttachGroupPolicy(accountID string, input *iam.AttachGr
 	groupName := *input.GroupName
 	policyARN := *input.PolicyArn
 
-	// AWS-managed ARNs are stored opaquely (like roles); customer-managed ARNs must exist.
-	if !iamarn.IsAWSManagedPolicyARN(policyARN) {
-		if err := s.attachablePolicy(ctx, accountID, policyARN); err != nil {
-			return nil, err
-		}
+	if err := s.attachablePolicy(ctx, accountID, policyARN); err != nil {
+		return nil, err
 	}
 
 	err := s.updateGroupCAS(ctx, accountID, groupName, func(g *Group) (bool, error) {
-		if slices.Contains(g.AttachedPolicies, policyARN) { // idempotent
-			return false, nil
-		}
-		g.AttachedPolicies = append(g.AttachedPolicies, policyARN)
-		return true, nil
+		return attachPolicyARN(&g.AttachedPolicies, policyARN), nil
 	})
 	if err != nil {
 		return nil, err
@@ -329,12 +320,7 @@ func (s *IAMServiceImpl) DetachGroupPolicy(accountID string, input *iam.DetachGr
 	policyARN := *input.PolicyArn
 
 	err := s.updateGroupCAS(ctx, accountID, groupName, func(g *Group) (bool, error) {
-		idx := slices.Index(g.AttachedPolicies, policyARN)
-		if idx < 0 {
-			return false, policyNotFound(policyARN)
-		}
-		g.AttachedPolicies = slices.Delete(g.AttachedPolicies, idx, idx+1)
-		return true, nil
+		return true, detachPolicyARN(&g.AttachedPolicies, policyARN)
 	})
 	if err != nil {
 		return nil, err
@@ -374,26 +360,12 @@ func (s *IAMServiceImpl) PutGroupPolicy(accountID string, input *iam.PutGroupPol
 	policyName := *input.PolicyName
 	policyDoc := *input.PolicyDocument
 
-	if err := validateIAMName("policyName", policyName, 128); err != nil {
+	if err := validateInlinePolicy("group", groupName, policyName, policyDoc); err != nil {
 		return nil, err
-	}
-	if err := checkPolicyDocumentLength(policyDoc); err != nil {
-		return nil, err
-	}
-	if _, err := ValidatePolicyDocument(policyDoc); err != nil {
-		return nil, awserrors.Errorf(awserrors.ErrorIAMMalformedPolicyDocument,
-			"policy %q on group %q: %w", policyName, groupName, err)
 	}
 
 	err := s.updateGroupCAS(ctx, accountID, groupName, func(g *Group) (bool, error) {
-		if err := checkInlinePolicySize("group", groupName, groupPolicySizeQuota, g.InlinePolicies, policyName, policyDoc); err != nil {
-			return false, err
-		}
-		if g.InlinePolicies == nil {
-			g.InlinePolicies = map[string]string{}
-		}
-		g.InlinePolicies[policyName] = policyDoc
-		return true, nil
+		return true, putInlinePolicy(&g.InlinePolicies, "group", groupName, groupPolicySizeQuota, policyName, policyDoc)
 	})
 	if err != nil {
 		return nil, err
@@ -435,11 +407,7 @@ func (s *IAMServiceImpl) DeleteGroupPolicy(accountID string, input *iam.DeleteGr
 	policyName := *input.PolicyName
 
 	err := s.updateGroupCAS(ctx, accountID, groupName, func(g *Group) (bool, error) {
-		if _, ok := g.InlinePolicies[policyName]; !ok {
-			return false, noSuchEntity("group policy", policyName)
-		}
-		delete(g.InlinePolicies, policyName)
-		return true, nil
+		return true, deleteInlinePolicy(g.InlinePolicies, "group policy", policyName)
 	})
 	if err != nil {
 		return nil, err
@@ -458,15 +426,8 @@ func (s *IAMServiceImpl) ListGroupPolicies(accountID string, input *iam.ListGrou
 		return nil, err
 	}
 
-	rawNames := slices.Sorted(maps.Keys(group.InlinePolicies))
-
-	names := make([]*string, 0, len(rawNames))
-	for _, name := range rawNames {
-		names = append(names, aws.String(name))
-	}
-
 	return &iam.ListGroupPoliciesOutput{
-		PolicyNames: names,
+		PolicyNames: inlinePolicyNames(group.InlinePolicies),
 		IsTruncated: aws.Bool(false),
 	}, nil
 }

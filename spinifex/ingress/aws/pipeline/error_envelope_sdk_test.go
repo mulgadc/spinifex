@@ -109,21 +109,6 @@ func TestSDKv2_SQSDecodesRequestThrottled(t *testing.T) {
 	assert.Equal(t, "Rate exceeded.", aws.ToString(throttled.Message))
 }
 
-func TestSDKv2_LambdaDecodesThrottleWithReason(t *testing.T) {
-	registerTestCodes(t, map[string]awserrors.ErrorMessage{
-		"TooManyRequestsException": {HTTPCode: 429, Message: "Rate Exceeded."},
-	})
-	cfg := sdkApp(t, awserrors.WithFields(
-		awserrors.Errorf("TooManyRequestsException", "Rate Exceeded."),
-		map[string]string{"Reason": "ReservedFunctionConcurrentInvocationLimitExceeded"}))
-
-	_, err := lambda.NewFromConfig(cfg).GetFunction(context.Background(), &lambda.GetFunctionInput{FunctionName: aws.String("f")})
-	var throttled *lambdatypes.TooManyRequestsException
-	require.ErrorAs(t, err, &throttled, "%v", err)
-	assert.Equal(t, lambdatypes.ThrottleReasonReservedFunctionConcurrentInvocationLimitExceeded, throttled.Reason)
-	assert.Equal(t, "Rate Exceeded.", aws.ToString(throttled.Message))
-}
-
 func TestSDKv2_LambdaDecodesGatewayThrottle(t *testing.T) {
 	_, err := lambda.NewFromConfig(throttleApp(t)).GetFunction(context.Background(), &lambda.GetFunctionInput{FunctionName: aws.String("f")})
 

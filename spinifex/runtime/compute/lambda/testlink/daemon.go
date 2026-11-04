@@ -173,14 +173,24 @@ func (d *Daemon) Handle(ctx context.Context, data []byte) Reply {
 		return refused(err.Error())
 	}
 	hardDeadline := hardDeadlineFrom(boot, req)
+	rep, free := d.attempt(ctx, req, func(code []byte) (Reply, bool, string) {
+		return d.run(ctx, req, code, lib, hardDeadline)
+	})
+	held = !free
+	return rep
+}
+
+// attempt starts the grant, fetches the code, runs it with launch and tells
+// the owner how it ended. It reports whether the node is free afterwards.
+func (d *Daemon) attempt(ctx context.Context, req Request, launch func(code []byte) (Reply, bool, string)) (Reply, bool) {
 	// The owner refuses a stale, replayed or mismatched grant before anything
 	// is taken; a write it cannot confirm leaves the attempt possibly started.
 	if err := d.Grants.Start(ctx, req.Grant, req.Identity()); err != nil {
 		if errors.Is(err, execution.ErrOutcomeUnknown) {
 			slog.Error("Lambda test link: grant start outcome unknown; node held", "attempt", req.AttemptID, "err", err)
-			return Reply{Outcome: OutcomeUnknown, Error: "grant start outcome unknown"}
+			return Reply{Outcome: OutcomeUnknown, Error: "grant start outcome unknown"}, true
 		}
-		return refused(err.Error())
+		return refused(err.Error()), true
 	}
 
 	var rep Reply
@@ -189,10 +199,9 @@ func (d *Daemon) Handle(ctx context.Context, data []byte) Reply {
 	if code, err := d.fetch(ctx, req); err != nil {
 		rep = refused(err.Error())
 	} else {
-		rep, resolved, marker = d.run(ctx, req, code, lib, hardDeadline)
+		rep, resolved, marker = launch(code)
 	}
-	held = !d.finish(ctx, req.Grant, resolved, marker)
-	return rep
+	return rep, d.finish(ctx, req.Grant, resolved, marker)
 }
 
 // finish tells the owner how the attempt ended, ambiguous unless the VM stop
@@ -297,13 +306,11 @@ func (d *Daemon) fetch(ctx context.Context, req Request) ([]byte, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
+	// Transport errors are dropped: a redirect's Location can echo the
+	// presigned URL inside them.
 	resp, err := client.Do(hreq)
 	if err != nil {
-		var ue *url.Error
-		if errors.As(err, &ue) {
-			err = ue.Err
-		}
-		return nil, fmt.Errorf("code download: %w", err)
+		return nil, errors.New("code download: request failed")
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
@@ -414,9 +421,17 @@ func (d *Daemon) run(ctx context.Context, req Request, code []byte, lib *os.File
 	resolved = d.release(a)
 	if runErr != nil {
 		slog.Warn("Lambda test link: attempt ended without a result", "attempt", req.AttemptID, "timed_out", out.TimedOut, "err", runErr)
-		return Reply{Outcome: OutcomeUnknown, Error: safeRunError(runErr)}, resolved, marker
 	}
-	return result, resolved, marker
+	return sessionReply(result, runErr), resolved, marker
+}
+
+// sessionReply is what the caller is told once the VM is proven stopped: the
+// session's result, or an unknown outcome carrying only a known error name.
+func sessionReply(result Reply, runErr error) Reply {
+	if runErr != nil {
+		return Reply{Outcome: OutcomeUnknown, Error: safeRunError(runErr)}
+	}
+	return result
 }
 
 func safeRunError(err error) string {

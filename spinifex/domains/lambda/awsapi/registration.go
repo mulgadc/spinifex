@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -92,6 +93,17 @@ func functionARN(region, accountID, name string) string {
 	return arn.FormatLambdaFunction(region, accountID, name)
 }
 
+// qualifiedFunctionARN names the version or alias a validated request selects,
+// since Lambda matches a qualified request only against a qualified policy
+// resource.
+func qualifiedFunctionARN(region, accountID, name, qualifier string) string {
+	base := functionARN(region, accountID, name)
+	if base == "*" || qualifier == "" {
+		return base
+	}
+	return base + ":" + qualifier
+}
+
 // serve resolves the route, authorizes the request, then runs the action.
 func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 	r := inv.Request
@@ -120,10 +132,21 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 		if decodeErr == nil {
 			resource = functionARN(inv.Region, inv.AccountID, aws.StringValue(c.Create.FunctionName))
 		}
-	case "GetFunction", "GetFunctionConfiguration", "GetFunctionCodeSigningConfig", "ListVersionsByFunction", "Invoke":
+	case "GetFunction", "GetFunctionConfiguration", "GetFunctionCodeSigningConfig", "ListVersionsByFunction":
 		if name, _, err := resolveFunctionName(inv.Region, inv.AccountID, params[0]); err == nil {
 			resource = functionARN(inv.Region, inv.AccountID, name)
 		}
+	case "Invoke":
+		// Invoke validates deterministically before authorizing, and its
+		// resource comes from that same validated target. URL.Query drops
+		// malformed pairs, so the raw query is parsed strictly here.
+		if c.Query, err = url.ParseQuery(r.URL.RawQuery); err != nil {
+			return invalid("The request query string could not be parsed.")
+		}
+		if c.Invoke, err = validateInvoke(c); err != nil {
+			return err
+		}
+		resource = qualifiedFunctionARN(inv.Region, inv.AccountID, c.Invoke.Name, c.Invoke.Qualifier)
 	}
 	if err := inv.Authorize(ServiceName, iamAction(action), []string{resource}, nil); err != nil {
 		return err

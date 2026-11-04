@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -231,6 +232,37 @@ func TestInvoke_MissingAndUnsupportedFunctions(t *testing.T) {
 	assert.Equal(t, 1, ex.count())
 }
 
+// Each form follows its own documented Invoke pattern; a documented value this
+// prototype does not serve passes validation and fails closed at lookup.
+func TestInvoke_QualifierFormsAndLengths(t *testing.T) {
+	fn := "/2015-03-31/functions/"
+	long := func(n int) string { return strings.Repeat("a", n) }
+	cases := []struct {
+		name, path, code string
+	}{
+		{"path $LATEST.PUBLISHED", fn + "hello:$LATEST.PUBLISHED/invocations", awserrors.ErrorResourceNotFoundException},
+		{"query $LATEST.PUBLISHED", invokePath + "?Qualifier=%24LATEST.PUBLISHED", awserrors.ErrorResourceNotFoundException},
+		{"query $foo", invokePath + "?Qualifier=%24foo", awserrors.ErrorResourceNotFoundException},
+		{"query of 128 characters", invokePath + "?Qualifier=" + long(128), awserrors.ErrorResourceNotFoundException},
+		{"query of 129 characters", invokePath + "?Qualifier=" + long(129), awserrors.ErrorInvalidParameterValueException},
+		{"empty query", invokePath + "?Qualifier=", awserrors.ErrorInvalidParameterValueException},
+		{"query with a dot", invokePath + "?Qualifier=a.b", awserrors.ErrorInvalidParameterValueException},
+		{"query $LATEST.OTHER", invokePath + "?Qualifier=%24LATEST.OTHER", awserrors.ErrorInvalidParameterValueException},
+		{"path $foo", fn + "hello:$foo/invocations", awserrors.ErrorInvalidParameterValueException},
+		{"path with a dot", fn + "hello:a.b/invocations", awserrors.ErrorInvalidParameterValueException},
+		{"function name of 256 characters", fn + "hello:" + long(250) + "/invocations", awserrors.ErrorResourceNotFoundException},
+		{"function name of 257 characters", fn + "hello:" + long(251) + "/invocations", awserrors.ErrorInvalidParameterValueException},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e, ex := newInvokeEnv(t)
+			_, err := e.invoke(t.Context(), tc.path, nil, nil)
+			testutil.RequireAWSCode(t, err, tc.code)
+			assert.Equal(t, 0, ex.count())
+		})
+	}
+}
+
 func TestInvoke_CancelledBeforeDispatchNeverReachesTheExecutor(t *testing.T) {
 	e, ex := newInvokeEnv(t)
 	ctx, cancel := context.WithCancel(t.Context())
@@ -270,22 +302,8 @@ func TestInvoke_CallerDisconnectDoesNotCancelAnAcceptedAttempt(t *testing.T) {
 func TestInvoke_Authorization(t *testing.T) {
 	arn := "arn:aws:lambda:" + gwtest.Region + ":" + gwtest.AccountID + ":function:hello"
 	run := func(t *testing.T, statements ...iamdomain.Statement) (*fakeExec, error) {
-		e := newEnv(t, statements...)
-		sum := sha256.Sum256(testZip)
-		rev, err := e.meta.Create(t.Context(), gwtest.AccountID, gwtest.Region, function.Record{
-			FunctionID: "f1", FunctionName: "hello", Role: roleARN, Runtime: "provided.al2023", Handler: "h",
-			Timeout: 3, MemorySize: 128, Code: function.Code{RevisionID: "r1"},
-		})
-		require.NoError(t, err)
-		_, _, err = e.meta.CodeStored(t.Context(), gwtest.AccountID, gwtest.Region, "hello", rev, hex.EncodeToString(sum[:]), int64(len(testZip)))
-		require.NoError(t, err)
-		e.meta.forceActive = true
-		ex := &fakeExec{result: okResult}
-		e.deps.Exec = ex
-		_, err = e.invoke(t.Context(), invokePath, nil, nil)
-		return ex, err
+		return runPath(t, invokePath, statements...)
 	}
-
 	t.Run("lambda:GetFunction alone is not enough", func(t *testing.T) {
 		ex, err := run(t, gwtest.Statement("Allow", "lambda:GetFunction", "*"))
 		gwtest.AssertDenied(t, err)
@@ -307,4 +325,131 @@ func TestInvoke_Authorization(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, 1, ex.count())
 	})
+	t.Run("an unqualified call does not match a qualified-only allow", func(t *testing.T) {
+		ex, err := run(t, gwtest.Statement("Allow", "lambda:InvokeFunction", arn+":$LATEST"))
+		gwtest.AssertDenied(t, err)
+		assert.Equal(t, 0, ex.count())
+	})
+	t.Run("an unqualified call does not match an allow on any qualified ARN", func(t *testing.T) {
+		_, err := run(t, gwtest.Statement("Allow", "lambda:InvokeFunction", arn+":*"))
+		gwtest.AssertDenied(t, err)
+	})
+	t.Run("an unqualified call matches a wildcard allow", func(t *testing.T) {
+		ex, err := run(t, gwtest.Statement("Allow", "lambda:InvokeFunction", arn+"*"))
+		require.NoError(t, err)
+		assert.Equal(t, 1, ex.count())
+	})
+
+	// Lambda compares the policy resource with both the name's qualifier and
+	// the Qualifier parameter, so both forms are checked the same way.
+	qualified := map[string]string{
+		"path qualifier":  "/2015-03-31/functions/hello:$LATEST/invocations",
+		"query qualifier": invokePath + "?Qualifier=%24LATEST",
+	}
+	for form, path := range qualified {
+		t.Run(form, func(t *testing.T) {
+			t.Run("a qualified allow passes", func(t *testing.T) {
+				ex, err := runPath(t, path, gwtest.Statement("Allow", "lambda:InvokeFunction", arn+":$LATEST"))
+				require.NoError(t, err)
+				assert.Equal(t, 1, ex.count())
+			})
+			t.Run("an explicit qualified deny overrides the matching qualified allow", func(t *testing.T) {
+				ex, err := runPath(t, path,
+					gwtest.Statement("Allow", "lambda:InvokeFunction", arn+":$LATEST"),
+					gwtest.Statement("Deny", "lambda:InvokeFunction", arn+":$LATEST"))
+				gwtest.AssertDenied(t, err)
+				assert.Equal(t, 0, ex.count())
+			})
+			t.Run("an unqualified-only allow does not match", func(t *testing.T) {
+				ex, err := runPath(t, path, gwtest.Statement("Allow", "lambda:InvokeFunction", arn))
+				gwtest.AssertDenied(t, err)
+				assert.Equal(t, 0, ex.count())
+			})
+			t.Run("an allow on any qualified ARN passes", func(t *testing.T) {
+				ex, err := runPath(t, path, gwtest.Statement("Allow", "lambda:InvokeFunction", arn+":*"))
+				require.NoError(t, err)
+				assert.Equal(t, 1, ex.count())
+			})
+			t.Run("a wildcard allow passes", func(t *testing.T) {
+				ex, err := runPath(t, path, gwtest.Statement("Allow", "lambda:InvokeFunction", arn+"*"))
+				require.NoError(t, err)
+				assert.Equal(t, 1, ex.count())
+			})
+		})
+	}
+}
+
+func runPath(t *testing.T, path string, statements ...iamdomain.Statement) (*fakeExec, error) {
+	t.Helper()
+	e := newEnv(t, statements...)
+	sum := sha256.Sum256(testZip)
+	rev, err := e.meta.Create(t.Context(), gwtest.AccountID, gwtest.Region, function.Record{
+		FunctionID: "f1", FunctionName: "hello", Role: roleARN, Runtime: "provided.al2023", Handler: "h",
+		Timeout: 3, MemorySize: 128, Code: function.Code{RevisionID: "r1"},
+	})
+	require.NoError(t, err)
+	_, _, err = e.meta.CodeStored(t.Context(), gwtest.AccountID, gwtest.Region, "hello", rev, hex.EncodeToString(sum[:]), int64(len(testZip)))
+	require.NoError(t, err)
+	e.meta.forceActive = true
+	ex := &fakeExec{result: okResult}
+	e.deps.Exec = ex
+	_, err = e.invoke(t.Context(), path, nil, nil)
+	return ex, err
+}
+
+// countingMeta counts metadata reads, to show a request never got that far.
+type countingMeta struct {
+	function.Client
+
+	gets atomic.Int32
+}
+
+func (m *countingMeta) Get(ctx context.Context, account, region, name string) (function.Record, uint64, error) {
+	m.gets.Add(1)
+	return m.Client.Get(ctx, account, region, name)
+}
+
+// Every deterministic check runs before authorization, so a caller with no
+// Invoke access still gets the validation error, and neither the metadata
+// store nor the executor is reached. Whether AWS orders these the same way
+// is not verified.
+func TestInvoke_ValidationPrecedesAuthorization(t *testing.T) {
+	big := append([]byte(`"`), bytes.Repeat([]byte("a"), 6*1024*1024)...)
+	cases := []struct {
+		name    string
+		path    string
+		header  http.Header
+		payload []byte
+		code    string
+	}{
+		{"unsupported invocation type", invokePath, http.Header{"X-Amz-Invocation-Type": {"Event"}}, nil, awserrors.ErrorInvalidParameterValueException},
+		{"invalid invocation type", invokePath, http.Header{"X-Amz-Invocation-Type": {"Later"}}, nil, awserrors.ErrorInvalidParameterValueException},
+		{"payload too large", invokePath, nil, append(big, '"'), awserrors.ErrorRequestEntityTooLargeException},
+		{"payload not JSON", invokePath, nil, []byte(`{`), awserrors.ErrorInvalidRequestContentException},
+		{"malformed function name", "/2015-03-31/functions/bad%20name/invocations", nil, nil, awserrors.ErrorInvalidParameterValueException},
+		{"malformed path qualifier", "/2015-03-31/functions/hello:a.b/invocations", nil, nil, awserrors.ErrorInvalidParameterValueException},
+		{"malformed query qualifier", invokePath + "?Qualifier=a.b", nil, nil, awserrors.ErrorInvalidParameterValueException},
+		{"empty query qualifier", invokePath + "?Qualifier=", nil, nil, awserrors.ErrorInvalidParameterValueException},
+		{"conflicting qualifiers", "/2015-03-31/functions/hello:$LATEST/invocations?Qualifier=2", nil, nil, awserrors.ErrorInvalidParameterValueException},
+		{"malformed query encoding", invokePath + "?Qualifier=%ZZ", nil, nil, awserrors.ErrorInvalidParameterValueException},
+		{"malformed pair beside a valid qualifier", invokePath + "?Qualifier=%24LATEST&x=%ZZ", nil, nil, awserrors.ErrorInvalidParameterValueException},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for access, statement := range map[string]iamdomain.Statement{
+				"denied":  gwtest.Statement("Allow", "lambda:GetFunction", "*"),
+				"allowed": gwtest.Statement("Allow", "lambda:InvokeFunction", "*"),
+			} {
+				e := newEnv(t, statement)
+				meta := &countingMeta{Client: e.meta}
+				e.deps.Meta = meta
+				ex := &fakeExec{result: okResult}
+				e.deps.Exec = ex
+				_, err := e.invoke(t.Context(), tc.path, tc.header, tc.payload)
+				testutil.RequireAWSCode(t, err, tc.code)
+				assert.Zero(t, meta.gets.Load(), "%s: metadata was read", access)
+				assert.Equal(t, 0, ex.count(), "%s: the executor ran", access)
+			}
+		})
+	}
 }

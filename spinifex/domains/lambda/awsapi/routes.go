@@ -20,6 +20,9 @@ type call struct {
 	// Create is the decoded CreateFunction body, decoded once ahead of the
 	// authorization gate and the PassRole check that both read it.
 	Create *lambda.CreateFunctionInput
+	// Invoke is Invoke's validated target, resolved ahead of the
+	// authorization gate whose resource it names.
+	Invoke *invokeTarget
 }
 
 // rawJSON is a response body written as is, for a shape the SDK encoder

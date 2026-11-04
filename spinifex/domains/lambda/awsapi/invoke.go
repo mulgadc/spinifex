@@ -55,21 +55,60 @@ func (r *RefusalError) Error() string { return "invocation refused before dispat
 
 func (r *RefusalError) Unwrap() error { return r.Err }
 
-// invoke implements Invoke for RequestResponse on $LATEST.
-func (d Deps) invoke(ctx context.Context, c *call) (reply, error) {
+// invokeTarget is the function and qualifier an Invoke request names, once
+// every deterministic check on the request has passed.
+type invokeTarget struct{ Name, Qualifier string }
+
+// validateInvoke runs every check that needs no stored state: options, size,
+// payload JSON, function name and qualifier. Nothing here reads metadata.
+func validateInvoke(c *call) (*invokeTarget, error) {
 	if err := checkInvokeOptions(c.Header); err != nil {
-		return reply{}, err
+		return nil, err
 	}
 	if len(c.Body) > maxSyncPayload {
-		return reply{}, awserrors.Errorf(awserrors.ErrorRequestEntityTooLargeException,
+		return nil, awserrors.Errorf(awserrors.ErrorRequestEntityTooLargeException,
 			"Request must be smaller than %d bytes for the InvokeFunction operation", maxSyncPayload)
 	}
 	// An empty body is dispatched as it is; anything else must be JSON.
 	if len(c.Body) > 0 && !json.Valid(c.Body) {
-		return reply{}, awserrors.Errorf(awserrors.ErrorInvalidRequestContentException,
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidRequestContentException,
 			"Could not parse request body into json")
 	}
-	rec, revision, err := d.lookup(ctx, c, c.Query.Get("Qualifier"))
+	if len(c.Params[0]) > maxFunctionNameLen {
+		return nil, invalid("1 validation error detected: Value at 'functionName' failed to satisfy constraint: Member must have length less than or equal to 256")
+	}
+	name, q, err := resolveFunctionName(c.Region, c.AccountID, c.Params[0])
+	if err != nil {
+		return nil, err
+	}
+	if q != "" && !nameQualifierRE.MatchString(q) {
+		return nil, invalidFunctionName()
+	}
+	if query, ok := c.Query["Qualifier"]; ok {
+		if len(query) != 1 || query[0] == "" {
+			return nil, invalid("1 validation error detected: Value at 'qualifier' failed to satisfy constraint: Member must have length greater than or equal to 1")
+		}
+		if len(query[0]) > maxQualifierLen {
+			return nil, invalid("1 validation error detected: Value at 'qualifier' failed to satisfy constraint: Member must have length less than or equal to 128")
+		}
+		if !queryQualifierRE.MatchString(query[0]) {
+			return nil, invalid("1 validation error detected: Value at 'qualifier' failed to satisfy constraint: Member must satisfy regular expression pattern: \\$(LATEST(\\.PUBLISHED)?)|[a-zA-Z0-9-_$]+")
+		}
+		if q != "" && q != query[0] {
+			return nil, invalid("The derived qualifier from the function name does not match the specified qualifier.")
+		}
+		q = query[0]
+	}
+	return &invokeTarget{Name: name, Qualifier: q}, nil
+}
+
+// invoke implements Invoke for RequestResponse on $LATEST. serve has already
+// validated the request into c.Invoke and authorized it.
+func (d Deps) invoke(ctx context.Context, c *call) (reply, error) {
+	if c.Invoke == nil {
+		return reply{}, serviceError("invoke request was not validated")
+	}
+	rec, revision, err := d.lookupTarget(ctx, c, c.Invoke.Name, c.Invoke.Qualifier)
 	if err != nil {
 		return reply{}, err
 	}

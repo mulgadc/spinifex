@@ -611,8 +611,8 @@ func (s *Service) DescribeTaskDefinition(ctx context.Context, input *ecs.Describ
 	if family, _ := taskdefinition.ParseRef(ref); family == "" {
 		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
 	}
-	// AWS answers an unknown revision with ClientException, not the
-	// InvalidParameterException that launches get for the same reference.
+	// AWS answers an unknown revision with ClientException; launches get the
+	// same code with TaskDefinitionNotFound's message instead.
 	rec, err := s.taskDefs.Resolve(ctx, kv, ref)
 	if err != nil && err.Error() == awserrors.ErrorECSInvalidParameter {
 		return nil, errors.New(awserrors.ErrorECSClientException)
@@ -654,9 +654,22 @@ type taskDefinitionResolver interface {
 
 var _ taskDefinitionResolver = (*taskdefinition.Owner)(nil)
 
+// TaskDefinitionNotFound is AWS's answer when RunTask, StartTask, CreateService
+// or UpdateService names a well-formed but unknown task definition.
+func TaskDefinitionNotFound() error {
+	return awserrors.Errorf(awserrors.ErrorECSClientException, "TaskDefinition not found.")
+}
+
 // resolveTaskDef is how task and service launches reach task definitions.
+// A malformed reference (no family) keeps InvalidParameterException.
 func (s *Service) resolveTaskDef(ctx context.Context, kv jetstream.KeyValue, ref string) (*taskdefinition.Record, error) {
-	return s.launchDefs.Resolve(ctx, kv, ref)
+	rec, err := s.launchDefs.Resolve(ctx, kv, ref)
+	if err != nil && err.Error() == awserrors.ErrorECSInvalidParameter {
+		if family, _ := taskdefinition.ParseRef(ref); family != "" {
+			return nil, TaskDefinitionNotFound()
+		}
+	}
+	return rec, err
 }
 
 func taskDefToAWS(r *taskdefinition.Record) *ecs.TaskDefinition {

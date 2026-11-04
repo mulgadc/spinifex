@@ -178,6 +178,12 @@ func TestDescribeLaunchTemplates_TagFilter(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, out.LaunchTemplates)
+
+	out, err = svc.DescribeLaunchTemplates(context.Background(), &ec2.DescribeLaunchTemplatesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("tag-key"), Values: []*string{aws.String("env")}}},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, out.LaunchTemplates, 1)
 }
 
 func TestDescribeLaunchTemplates_AccountIsolation(t *testing.T) {

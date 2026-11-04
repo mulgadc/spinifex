@@ -112,7 +112,7 @@ func EC2TagsToMap(tags []*ec2.Tag) map[string]string {
 	}
 	m := make(map[string]string, len(tags))
 	for _, t := range tags {
-		if t != nil && t.Key != nil {
+		if t.Key != nil {
 			m[*t.Key] = aws.StringValue(t.Value)
 		}
 	}

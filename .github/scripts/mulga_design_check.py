@@ -28,7 +28,7 @@ def main():
     if filled(os.environ.get("PR_BODY", "")):
         print("The Mulga design line is filled in.")
     else:
-        print('::warning title=Mulga design::Add a line under "## Mulga design": "Updated: <mulga PR or bead id>" or "Not needed: <reason>".')
+        print('::warning title=Mulga design::Add a "## Mulga design" section with one line: "Updated: <mulga PR>" or "Not needed: <reason>".')
     return 0
 
 

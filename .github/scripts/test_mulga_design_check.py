@@ -11,7 +11,7 @@ class FilledTest(unittest.TestCase):
     def test_rejects_unanswered(self):
         self.assertFalse(filled(""))
         self.assertFalse(filled("## Mulga design\n<!-- Updated: x -->"))
-        self.assertFalse(filled("## Mulga design\nUpdated: <mulga PR or bead id>"))
+        self.assertFalse(filled("## Mulga design\nUpdated: <mulga PR>"))
         self.assertFalse(filled("## Mulga design\nUpdated:"))
 
     def test_scoped_to_the_section(self):

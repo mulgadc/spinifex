@@ -2,7 +2,8 @@ name: Mulga design
 
 # Reminds the author to say whether the Mulga design records need to change.
 # It reads only the pull request body, uses no secrets, and warns without ever
-# failing: the check is a prompt, not a gate.
+# failing: the check is a prompt, not a gate. Fork PRs are skipped because their
+# authors cannot see the design records.
 
 on:
   pull_request:
@@ -16,7 +17,7 @@ permissions:
 jobs:
   mulga_design:
     name: Mulga design line
-    if: ${{ !endsWith(github.actor, '[bot]') }}
+    if: ${{ !endsWith(github.actor, '[bot]') && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-26.04
     steps:
       - name: Checkout Code

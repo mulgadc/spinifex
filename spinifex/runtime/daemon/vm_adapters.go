@@ -696,33 +696,34 @@ func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
 		// fails partway through, every topic already bound in this call is
 		// unwound so the instance never comes up Running with only some of
 		// its topics reachable.
-		topics := []struct {
+		type topic struct {
 			key     string
 			subject string
 			handler nats.MsgHandler
-		}{
+		}
+		topics := []topic{
 			{instance.ID, ec2v1.InstanceCommandSubject(instance.ID), d.handleEC2Events},
 			{consoleSubKey, fmt.Sprintf("ec2.%s.GetConsoleOutput", instance.ID), d.handleEC2GetConsoleOutput},
 			{passwordSubKey, fmt.Sprintf("ec2.%s.GetPasswordData", instance.ID), d.handleEC2GetPasswordData},
 		}
 
-		bound := make([]string, 0, len(topics))
+		bound := make([]topic, 0, len(topics))
 		for _, t := range topics {
 			sub, err := d.natsConn.Subscribe(t.subject, t.handler)
 			if err != nil {
 				slog.Error("OnInstanceUp: failed to subscribe to per-instance topic",
 					"instanceId", instance.ID, "subject", t.subject, "err", err)
-				for _, key := range bound {
-					if unsubErr := d.natsSubscriptions[key].Unsubscribe(); unsubErr != nil {
+				for _, b := range bound {
+					if unsubErr := d.natsSubscriptions[b.key].Unsubscribe(); unsubErr != nil {
 						slog.Warn("OnInstanceUp: failed to unsubscribe during rollback",
-							"instanceId", instance.ID, "key", key, "err", unsubErr)
+							"instanceId", instance.ID, "subject", b.subject, "err", unsubErr)
 					}
-					delete(d.natsSubscriptions, key)
+					delete(d.natsSubscriptions, b.key)
 				}
 				return fmt.Errorf("subscribe %s: %w", t.subject, err)
 			}
 			d.natsSubscriptions[t.key] = sub
-			bound = append(bound, t.key)
+			bound = append(bound, t)
 		}
 
 		// Bind the per-instance terminate subscription for any system-managed VM

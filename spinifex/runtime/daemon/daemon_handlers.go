@@ -115,7 +115,7 @@ func respondServiceErrorOutcome(nodeID string, msg *nats.Msg, err error) string 
 func respondWithJSON(nodeID string, msg *nats.Msg, data any) {
 	jsonResponse, err := json.Marshal(data)
 	if err != nil {
-		slog.Error("Failed to marshal response", "type", fmt.Sprintf("%T", data), "err", err)
+		slog.Error("Failed to marshal response", "err", err)
 		respondWithError(nodeID, msg, awserrors.ErrorServerInternal)
 		return
 	}

@@ -36,8 +36,13 @@ func BatchGetImage(ctx context.Context, reader ManifestReader, accountID string,
 	if err := ValidateRepositoryScope(req.RepositoryName, req.RegistryID, accountID); err != nil {
 		return nil, err
 	}
-	if len(req.ImageIDs) > maxImageBatch {
-		return nil, MaxItemsError("imageIds", maxImageBatch)
+	if err := validateImageIDs(req.ImageIDs, true); err != nil {
+		return nil, err
+	}
+	if req.AcceptedMediaTypes != nil {
+		if err := validateListLength("acceptedMediaTypes", len(req.AcceptedMediaTypes), 1, maxMediaTypeListItems); err != nil {
+			return nil, err
+		}
 	}
 
 	images := make([]*ecr.Image, 0, len(req.ImageIDs))
@@ -45,7 +50,7 @@ func BatchGetImage(ctx context.Context, reader ManifestReader, accountID string,
 	for _, imageID := range req.ImageIDs {
 		reference := imageID.ImageDigest
 		if reference == "" {
-			reference = imageID.ImageTag
+			reference = imageID.tag()
 		}
 		if reference == "" {
 			failures = append(failures, imageFailure(imageID, ecr.ImageFailureCodeMissingDigestAndTag, "no digest or tag specified"))
@@ -69,8 +74,8 @@ func BatchGetImage(ctx context.Context, reader ManifestReader, accountID string,
 			ImageManifest:          aws.String(string(manifest)),
 			ImageManifestMediaType: aws.String(mediaType),
 		}
-		if imageID.ImageTag != "" {
-			image.ImageId.ImageTag = aws.String(imageID.ImageTag)
+		if imageID.ImageTag != nil {
+			image.ImageId.ImageTag = imageID.ImageTag
 		}
 		images = append(images, image)
 	}
@@ -87,8 +92,8 @@ func imageFailure(imageID imageIdentifier, code, reason string) *ecr.ImageFailur
 	if imageID.ImageDigest != "" {
 		failure.ImageId.ImageDigest = aws.String(imageID.ImageDigest)
 	}
-	if imageID.ImageTag != "" {
-		failure.ImageId.ImageTag = aws.String(imageID.ImageTag)
+	if imageID.ImageTag != nil {
+		failure.ImageId.ImageTag = imageID.ImageTag
 	}
 	return failure
 }

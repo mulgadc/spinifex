@@ -33,13 +33,14 @@ func sampleQuiescence(fence uint64) operatorv1.IAMQuiescence {
 // A normal deletion leaves the evaluation on the record, read back from the real
 // IAM account record, and DescribeAccountDeletion returns it.
 func TestDeletionRecordCarriesTheIAMQuiescence(t *testing.T) {
-	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 
 	_, err := gw.deleteAccount(t.Context(),
 		deleteAccountBody(t, account.AccountID, "tenant@example.com", deleteClientToken))
 	require.NoError(t, err)
+	// Parallel only once the teardown is running, so its drain poll overlaps the serial tests.
+	t.Parallel()
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted
 	}, 30*time.Second, 100*time.Millisecond)

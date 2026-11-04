@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// TestMain lowers the RSA key size for the whole admin test package. 2048-bit
-// keys are still valid and generate several times faster than the 4096-bit
-// production default, which dominates the admin suite runtime.
+// TestMain lowers the RSA key size for the whole admin test package. 1024 bits
+// is the smallest size crypto/rsa generates, and it runs the same certificate
+// code as the 4096-bit production default at a fraction of the CPU.
 func TestMain(m *testing.M) {
-	certKeyBits = 2048
+	certKeyBits = 1024
 	os.Exit(m.Run())
 }

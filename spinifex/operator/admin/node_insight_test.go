@@ -195,7 +195,6 @@ func TestNetworkTestRunsEveryDirectionAndRecordsEachResult(t *testing.T) {
 }
 
 func TestNetworkTestFailsARunWhoseServerNeverAnswers(t *testing.T) {
-	t.Parallel()
 	_, nc, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
 	d := Deps{NATS: nc, NetworkTests: NewKVNetworkTests(js), NodeIDs: []string{"a", "b"}}
@@ -206,6 +205,8 @@ func TestNetworkTestFailsARunWhoseServerNeverAnswers(t *testing.T) {
 
 	started, err := d.StartNetworkTest(ctx, map[string]string{"Plane": "lan", "Source": "a", "Target": "b", "DurationSeconds": "5"})
 	require.NoError(t, err)
+	// Parallel only once the test is running, so its serve timeout overlaps the serial tests.
+	t.Parallel()
 
 	var done NetworkTest
 	require.Eventually(t, func() bool {

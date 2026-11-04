@@ -194,7 +194,7 @@ func (r *TerminatedTeardownReaper) retryOutstanding(v *VM) map[string]TeardownSt
 	// missing PID file elsewhere proves nothing.
 	home := v.LastNode == r.m.deps.NodeID
 	if qemuProvenGone(v.ID) && (home || !outstanding(v, TeardownQEMU)) {
-		if outstanding(v, TeardownQEMU) {
+		if outstanding(v, TeardownQEMU) && r.removeLocalUEFIStore(v) {
 			results[TeardownQEMU] = TeardownDone
 		}
 		retry(TeardownVolumes, func() error { return c.DeleteVolumes(v) })
@@ -237,4 +237,17 @@ func (r *TerminatedTeardownReaper) purge(v *VM) bool {
 func outstanding(v *VM, dep string) bool {
 	state, ok := v.Teardown[dep]
 	return ok && TeardownState(state) != TeardownDone
+}
+
+// removeLocalUEFIStore removes this node's UEFI store copy once QEMU is gone,
+// as the failed-kill handoff left it in place. It reports whether to proceed.
+func (r *TerminatedTeardownReaper) removeLocalUEFIStore(v *VM) bool {
+	if r.m.deps.UEFIStores == nil {
+		return true
+	}
+	if err := r.m.deps.UEFIStores.RemoveLocalUEFIStore(v.ID); err != nil {
+		slog.Warn("vm/gc: failed to remove local UEFI variable store, will retry", "instanceId", v.ID, "err", err)
+		return false
+	}
+	return true
 }

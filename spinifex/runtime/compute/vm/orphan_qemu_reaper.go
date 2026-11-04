@@ -98,7 +98,7 @@ func (r *OrphanQEMUReaper) Sweep(context.Context) (int, error) {
 		if r.m.Status(v) != StateShuttingDown {
 			continue
 		}
-		if qemuProcessAlive(v.ID) {
+		if !qemuProvenGone(v.ID) {
 			continue
 		}
 		// Finalizing early reports terminated while the terminate is still
@@ -120,19 +120,6 @@ func (r *OrphanQEMUReaper) Sweep(context.Context) (int, error) {
 	return reaped, nil
 }
 
-// qemuProcessAlive reports whether the instance's QEMU process is running on
-// this node, read via its local PID file. A missing PID file (process not on
-// this node, or already reaped) or a dead PID both read as not-alive. Used by
-// the reaper, where a terminated/shutting-down instance's absent PID file
-// legitimately means the process is gone.
-func qemuProcessAlive(instanceID string) bool {
-	pid, err := hostprocess.ReadPidFile(instanceID)
-	if err != nil {
-		return false
-	}
-	return hostprocess.ProcessAlive(pid)
-}
-
 // qemuProvenGone reports whether the instance's QEMU is provably gone: its PID
 // file is absent or names a dead process. An unreadable or corrupt PID file is
 // unknown state, not proof, so callers gating data deletion must not proceed.
@@ -145,7 +132,7 @@ func qemuProvenGone(instanceID string) bool {
 }
 
 // qemuConfirmedDead reports whether the instance's QEMU is provably gone: its
-// PID file is present but the process is not alive. Unlike qemuProcessAlive, a
+// PID file is present but the process is not alive. Unlike qemuProvenGone, a
 // missing PID file reads as NOT confirmed-dead (ambiguous), so a caller on a
 // still-running instance (DetachVolume) falls through to its normal QMP path
 // rather than short-circuiting on an absent file.

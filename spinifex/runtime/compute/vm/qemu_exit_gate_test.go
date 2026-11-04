@@ -6,6 +6,7 @@ package vm
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"sync"
@@ -194,4 +195,60 @@ func TestS7_TeardownReaperDoesNotJudgeQEMUOnAnotherNode(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, cleaner.deleteVolumes)
 	assert.Equal(t, string(TeardownFailed), store.terminated[id].Teardown[TeardownQEMU])
+}
+
+// TestS7_CorruptPidFileSurvivesTheOrphanReaperAndKeepsVolumes enforces
+// ADR-0003:S7 across reapers: the orphan reaper must not turn an unreadable PID
+// file into a missing one, which the teardown reaper reads as proof of exit.
+func TestS7_CorruptPidFileSurvivesTheOrphanReaperAndKeepsVolumes(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	store := newFakeStateStore()
+	cleaner := &recordingInstanceCleaner{}
+	m := NewManagerWithDeps(Deps{NodeID: "test-node", StateStore: store, InstanceCleaner: cleaner})
+	const id = "i-corrupt-pid-orphan"
+	writeCorruptPidFile(t, id)
+	m.InsertIfAbsent(&VM{
+		ID:             id,
+		Status:         StateShuttingDown,
+		LastNode:       "test-node",
+		ShuttingDownAt: time.Now().Add(-vanishedQEMUGrace - time.Minute),
+		Teardown:       map[string]string{TeardownQEMU: string(TeardownFailed), TeardownVolumes: string(TeardownFailed)},
+	})
+
+	reaped, err := m.NewOrphanQEMUReaper().Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, reaped)
+	_, perr := hostprocess.ReadPidFile(id)
+	assert.NotErrorIs(t, perr, fs.ErrNotExist, "the unreadable PID file must not be removed")
+	assert.NotContains(t, store.terminated, id, "unknown QEMU state must not finalize the instance")
+
+	_, err = m.NewTerminatedTeardownReaper().Sweep(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, cleaner.deleteVolumes)
+}
+
+// TestTeardownReaperRemovesTheLocalUEFIStoreOnceQEMUIsGone checks the failed-kill
+// handoff's local store copy is removed after proven exit, not left behind.
+func TestTeardownReaperRemovesTheLocalUEFIStoreOnceQEMUIsGone(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	store := newFakeStateStore()
+	uefi := &fakeUEFIStores{}
+	m := NewManagerWithDeps(Deps{
+		NodeID:          "test-node",
+		StateStore:      store,
+		InstanceCleaner: &recordingInstanceCleaner{},
+		UEFIStores:      uefi,
+	})
+	const id = "i-uefi-local"
+	require.NoError(t, store.WriteTerminatedInstance(id, &VM{
+		ID:       id,
+		Status:   StateTerminated,
+		LastNode: "test-node",
+		Teardown: map[string]string{TeardownQEMU: string(TeardownFailed), TeardownUEFI: string(TeardownFailed)},
+	}))
+	_, err := m.NewTerminatedTeardownReaper().Sweep(context.Background())
+	require.NoError(t, err)
+	_, removed := uefi.calls()
+	assert.Equal(t, []string{id}, removed)
+	assert.Equal(t, string(TeardownDone), store.terminated[id].Teardown[TeardownQEMU])
 }

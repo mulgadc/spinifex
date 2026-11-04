@@ -52,6 +52,9 @@ func (s *Service) StopTask(ctx context.Context, input *ecs.StopTaskInput, accoun
 // StartTask places one task per named container instance (explicit placement, no
 // scheduler bin-pack). Mirrors RunTask's reserve → record → ENI → assign flow.
 func (s *Service) StartTask(ctx context.Context, input *ecs.StartTaskInput, accountID string) (*ecs.StartTaskOutput, error) {
+	if err := validateTags(input.Tags); err != nil {
+		return nil, err
+	}
 	cluster := ClusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {

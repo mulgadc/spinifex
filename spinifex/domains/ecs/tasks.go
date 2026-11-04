@@ -27,6 +27,9 @@ const reservePlacementRetries = 5
 // publishes an assign on the Layer-2 bus for each. Placement failures for a task
 // are returned as RunTask failures; already-placed tasks in the same call stay.
 func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountID string) (*ecs.RunTaskOutput, error) {
+	if err := validateTags(input.Tags); err != nil {
+		return nil, err
+	}
 	cluster := ClusterShortName(aws.StringValue(input.Cluster))
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {

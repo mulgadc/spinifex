@@ -188,7 +188,14 @@ func (r *TerminatedTeardownReaper) retryOutstanding(v *VM) map[string]TeardownSt
 		r.recordRetry(v.ID, dep, state)
 	}
 
-	retry(TeardownVolumes, func() error { return c.DeleteVolumes(v) })
+	// Volumes stay outstanding until no QEMU process for the instance is alive
+	// on this node; that proof is also what completes the QEMU teardown.
+	if !qemuProcessAlive(v.ID) {
+		if outstanding(v, TeardownQEMU) {
+			results[TeardownQEMU] = TeardownDone
+		}
+		retry(TeardownVolumes, func() error { return c.DeleteVolumes(v) })
+	}
 	retry(TeardownGPU, func() error { return c.ReleaseGPU(v) })
 	retry(TeardownPlacement, func() error { return c.RemoveFromPlacementGroup(v) })
 

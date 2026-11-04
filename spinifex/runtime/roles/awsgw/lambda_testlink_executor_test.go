@@ -49,7 +49,7 @@ func (f *fakeNATS) RequestWithContext(_ context.Context, _ string, data []byte) 
 func invocation(payload []byte) awsapi.SyncInvocation {
 	return awsapi.SyncInvocation{Payload: payload, Function: function.Record{
 		FunctionID: "fn1", AccountID: "123456789012", Region: "ap-southeast-2", FunctionName: "f",
-		Timeout: 3, MemorySize: 128,
+		Handler: "bootstrap.h", Timeout: 3, MemorySize: 128,
 		Code: function.Code{RevisionID: "r1", SHA256: strings.Repeat("ab", 32), Size: 100},
 	}}
 }
@@ -170,6 +170,7 @@ func TestLambdaTestLinkExecutor_DaemonRefusalAndResult(t *testing.T) {
 	require.NoError(t, json.Unmarshal(n.sent[0], &sent))
 	require.Equal(t, secretURL, sent.CodeURL)
 	require.Equal(t, int64(3000), sent.TimeoutMs)
+	require.Equal(t, "bootstrap.h", sent.Handler)
 	require.Regexp(t, `^[0-9a-f]{12}$`, sent.AttemptID)
 	require.NoError(t, testlink.CheckRequest(sent))
 

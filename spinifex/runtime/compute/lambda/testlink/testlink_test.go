@@ -120,7 +120,7 @@ func baseRequest(url string, code []byte) Request {
 	sum := sha256.Sum256(code)
 	return Request{
 		AttemptID: "0123456789ab", RequestID: "r", Region: "ap-southeast-2", AccountID: "123456789012",
-		FunctionID: "fn1", RevisionID: "rev1", TimeoutMs: 3000, CodeURL: url, CodeSize: int64(len(code)),
+		FunctionID: "fn1", RevisionID: "rev1", Handler: "bootstrap.handler", TimeoutMs: 3000, CodeURL: url, CodeSize: int64(len(code)),
 		CodeSHA256: hex.EncodeToString(sum[:]),
 	}
 }
@@ -350,6 +350,9 @@ func TestPrepare_ScopeAndGrantEntryComeFromTheGrant(t *testing.T) {
 	entry, err := os.ReadFile(filepath.Join(dir, "fwcfg-test-grant"))
 	require.NoError(t, err)
 	require.Equal(t, "g-7\n0123456789ab\nenv-x\n3\n", string(entry))
+	handler, err := os.ReadFile(filepath.Join(dir, "fwcfg-test-handler"))
+	require.NoError(t, err)
+	require.Equal(t, req.Handler, string(handler))
 	expect := gen.GuestEntries(ln.Addr().String())[lambdav1.EntryScope]
 	require.Equal(t, "ap-southeast-2/123456789012/fn1/env-x/3", strings.TrimSpace(string(expect)))
 }
@@ -427,4 +430,20 @@ func TestHardDeadline_SlowFetchKeepsTheFullFunctionTimeout(t *testing.T) {
 
 	require.False(t, expired(deadline), "a full-allowance fetch must not expire the attempt")
 	require.Equal(t, timeoutFor(req)+HardKillMargin, deadline-afterFetch)
+}
+
+// The handler becomes the guest's _HANDLER, so it must be one AWS-shaped token.
+func TestCheckRequest_RefusesUnusableHandler(t *testing.T) {
+	for name, h := range map[string]string{
+		"empty": "", "space": "a b", "newline": "a\nb", "nul": "a\x00b", "129 characters": strings.Repeat("h", 129),
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := baseRequest("https://example.invalid/code", []byte("zip"))
+			req.Grant = execution.Grant{GrantID: "g1", AttemptID: req.AttemptID, EnvironmentID: "env-1", Generation: 3, Node: testNode}
+			req.Handler = strings.Repeat("h", 128)
+			require.NoError(t, CheckRequest(req))
+			req.Handler = h
+			require.ErrorContains(t, CheckRequest(req), "handler")
+		})
+	}
 }

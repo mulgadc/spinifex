@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	lambdav1 "github.com/mulgadc/spinifex/contracts/lambda/v1"
 	"github.com/mulgadc/spinifex/spinifex/agents/lambda/hostlink"
@@ -261,6 +262,10 @@ func CheckRequest(req Request) error {
 	if req.RequestID == "" || req.RevisionID == "" {
 		return errors.New("request and revision IDs are required")
 	}
+	if req.Handler == "" || len(req.Handler) > 128 || strings.IndexFunc(req.Handler, unicode.IsSpace) >= 0 ||
+		strings.ContainsRune(req.Handler, 0) {
+		return errors.New("handler must be 1..128 characters with no whitespace")
+	}
 	if req.TimeoutMs <= 0 || req.TimeoutMs > maxTimeoutMs {
 		return fmt.Errorf("timeout %d ms outside 1..%d", req.TimeoutMs, maxTimeoutMs)
 	}
@@ -490,6 +495,7 @@ func (d *Daemon) prepare(req Request, code []byte, dir, tap, mac, ip string) (*v
 	entries["test-package-size"] = []byte(strconv.FormatInt(req.CodeSize, 10))
 	entries["test-package-sha256"] = []byte(req.CodeSHA256)
 	entries["test-grant"] = grantEntry(req.Grant)
+	entries["test-handler"] = []byte(req.Handler)
 	var fwCfg []vm.FwCfgEntry
 	for name, value := range entries {
 		path := filepath.Join(dir, "fwcfg-"+name)

@@ -26,7 +26,9 @@ type SyncInvocation struct {
 	// binds; the environment stays sealed in Function.EnvCipher.
 	Function function.Record
 	Revision uint64
-	Payload  []byte
+	// Qualifier is the validated qualifier the request named, or "".
+	Qualifier string
+	Payload   []byte
 	// WaitUntil is when the request stops waiting. Code may still be running
 	// after it; it proves nothing about stop and releases no slot.
 	WaitUntil time.Time
@@ -131,6 +133,7 @@ func (d Deps) invoke(ctx context.Context, c *call) (reply, error) {
 	out, err := d.Exec.InvokeSync(actx, SyncInvocation{
 		Function:  rec,
 		Revision:  revision,
+		Qualifier: c.Invoke.Qualifier,
 		Payload:   c.Body,
 		WaitUntil: waitUntil,
 	})

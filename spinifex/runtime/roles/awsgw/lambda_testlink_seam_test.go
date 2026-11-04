@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,7 +25,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/agents/lambda/runtimeapi"
 	lambdaawsapi "github.com/mulgadc/spinifex/spinifex/domains/lambda/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/codestore"
+	"github.com/mulgadc/spinifex/spinifex/domains/lambda/execution"
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/function"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/testlink"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
@@ -35,8 +38,14 @@ const seamCredential = "AKIASYNTHETICSEAMKEY"
 
 var seamCode = []byte("synthetic function code")
 
+// seamHandler is the configured handler of the seam's function.
+const seamHandler = "bootstrap.seam"
+
 // seamFunction serves one Active function "f" whose stored code is seamCode.
-type seamFunction struct{ timeout int64 }
+type seamFunction struct {
+	timeout   int64
+	envCipher string
+}
 
 var _ function.Client = seamFunction{}
 
@@ -46,7 +55,7 @@ func (s seamFunction) Get(_ context.Context, account, region, name string) (func
 	}
 	sum := sha256.Sum256(seamCode)
 	return function.Record{FunctionID: "fn1", AccountID: account, Region: region, FunctionName: name,
-		Runtime: "provided.al2023", Timeout: s.timeout, MemorySize: 128, State: function.StateActive,
+		Runtime: "provided.al2023", Handler: seamHandler, EnvCipher: s.envCipher, Timeout: s.timeout, MemorySize: 128, State: function.StateActive,
 		Code: function.Code{RevisionID: "r1", State: function.CodeStored, SHA256: hex.EncodeToString(sum[:]), Size: int64(len(seamCode))},
 	}, 1, nil
 }
@@ -63,20 +72,38 @@ func (seamFunction) RollbackCreate(context.Context, string, string, string, uint
 	return errors.New("unused")
 }
 
-type urlPresigner struct{ url string }
+type urlPresigner struct {
+	url   string
+	calls *atomic.Int32
+}
 
 func (p urlPresigner) PresignGet(context.Context, codestore.Ref, string, time.Duration) (string, error) {
+	if p.calls != nil {
+		p.calls.Add(1)
+	}
 	return p.url, nil
+}
+
+// countedGrants counts the grants the executor issues.
+type countedGrants struct {
+	grantIssuer
+	issued atomic.Int32
+}
+
+func (c *countedGrants) Issue(ctx context.Context, a execution.Attempt) (execution.Attempt, error) {
+	c.issued.Add(1)
+	return c.grantIssuer.Issue(ctx, a)
 }
 
 // seamNATS is the transport only: it hands the executor's encoded request to
 // the daemon's real attempt steps and returns the daemon's encoded reply.
 type seamNATS struct {
-	t       *testing.T
-	d       *testlink.Daemon
-	guest   func(context.Context, net.Conn)
-	mu      sync.Mutex
-	replies [][]byte
+	t        *testing.T
+	d        *testlink.Daemon
+	guest    func(context.Context, net.Conn)
+	mu       sync.Mutex
+	requests [][]byte
+	replies  [][]byte
 }
 
 func (*seamNATS) MaxPayload() int64 { return 1 << 20 }
@@ -85,6 +112,7 @@ func (n *seamNATS) RequestWithContext(ctx context.Context, subj string, data []b
 	require.Equal(n.t, testlink.Subject("node1"), subj)
 	body, err := json.Marshal(n.d.HandleWithGuest(ctx, data, n.guest))
 	n.mu.Lock()
+	n.requests = append(n.requests, data)
 	n.replies = append(n.replies, body)
 	n.mu.Unlock()
 	return &nats.Msg{Data: body}, err
@@ -150,15 +178,26 @@ func (l *lockedBuffer) String() string {
 }
 
 type seamRun struct {
-	resp    *http.Response
-	body    []byte
-	replies [][]byte
-	log     string
+	resp     *http.Response
+	body     []byte
+	requests [][]byte
+	replies  [][]byte
+	log      string
+	presigns int32
+	grants   int32
 }
 
 // invokeComposed sends one signed Invoke through the composed gateway, the
 // Lambda handler and the real test-link executor into the daemon's attempt.
 func invokeComposed(t *testing.T, timeout int64, codeURL string, client *http.Client, guest func(context.Context, net.Conn)) seamRun {
+	t.Helper()
+	run := invokeComposedAt(t, "/2015-03-31/functions/f/invocations", seamFunction{timeout: timeout}, codeURL, client, guest)
+	require.Len(t, run.replies, 1, "the request reached the daemon once")
+	return run
+}
+
+// invokeComposedAt is invokeComposed for one target and function configuration.
+func invokeComposedAt(t *testing.T, target string, fn seamFunction, codeURL string, client *http.Client, guest func(context.Context, net.Conn)) seamRun {
 	t.Helper()
 	logs := &lockedBuffer{}
 	prev := slog.Default()
@@ -166,19 +205,21 @@ func invokeComposed(t *testing.T, timeout int64, codeURL string, client *http.Cl
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	store := grantStore(t)
+	grants := &countedGrants{grantIssuer: store}
+	var presigns atomic.Int32
 	n := &seamNATS{t: t, d: &testlink.Daemon{Node: "node1", Grants: store, HTTP: client}, guest: guest}
 	exec := &testLinkExecutor{NATS: n, Node: "node1",
-		Codes:  func(context.Context) (codePresigner, error) { return urlPresigner{codeURL}, nil },
-		Grants: func(context.Context) (grantIssuer, error) { return store, nil },
+		Codes:  func(context.Context) (codePresigner, error) { return urlPresigner{codeURL, &presigns}, nil },
+		Grants: func(context.Context) (grantIssuer, error) { return grants, nil },
 	}
-	reg := lambdaawsapi.NewRegistration(lambdaawsapi.Deps{Meta: seamFunction{timeout: timeout}, Exec: exec})
-	resp := signedLambdaInvoke(t, defaultGateway(t, lambdaTestRoutes(reg)...))
+	reg := lambdaawsapi.NewRegistration(lambdaawsapi.Deps{Meta: fn, Exec: exec})
+	resp := signedLambdaInvokeAt(t, defaultGateway(t, lambdaTestRoutes(reg)...), target)
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	require.Len(t, n.replies, 1, "the request reached the daemon once")
-	return seamRun{resp: resp, body: body, replies: n.replies, log: logs.String()}
+	return seamRun{resp: resp, body: body, requests: n.requests, replies: n.replies, log: logs.String(),
+		presigns: presigns.Load(), grants: grants.issued.Load()}
 }
 
 func codeServer(t *testing.T) *httptest.Server {
@@ -281,4 +322,55 @@ func TestLambdaTestLinkSeam_RedirectCredentialNotLeaked(t *testing.T) {
 	require.NotContains(t, string(run.body), seamCredential)
 	require.NotContains(t, run.log, seamCredential)
 	require.Equal(t, http.StatusInternalServerError, run.resp.StatusCode)
+}
+
+// The bootstrap sees the ARN the caller invoked, qualifier included, and the
+// daemon is asked to run the function's configured handler.
+func TestLambdaTestLinkSeam_RuntimeSeesInvokedARNAndHandler(t *testing.T) {
+	cases := map[string]struct{ target, suffix string }{
+		"unqualified":     {"/2015-03-31/functions/f/invocations", ""},
+		"path qualifier":  {"/2015-03-31/functions/f:$LATEST/invocations", ":$LATEST"},
+		"query qualifier": {"/2015-03-31/functions/f/invocations?Qualifier=%24LATEST", ":$LATEST"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			srv := codeServer(t)
+			seen := make(chan string, 1)
+			run := invokeComposedAt(t, tc.target, seamFunction{timeout: 10}, srv.URL+"/code", srv.Client(), agentGuest(0, func(base string) {
+				resp, err := http.Get(base + "invocation/next")
+				if err != nil {
+					seen <- ""
+					return
+				}
+				_ = resp.Body.Close()
+				seen <- resp.Header.Get("Lambda-Runtime-Invoked-Function-Arn")
+				id := resp.Header.Get("Lambda-Runtime-Aws-Request-Id")
+				if post, err := http.Post(base+"invocation/"+id+"/response", "application/json", strings.NewReader(`{}`)); err == nil {
+					_ = post.Body.Close()
+				}
+			}))
+			require.Len(t, run.replies, 1)
+			require.Equal(t, testlink.OutcomeDone, daemonReply(t, run.replies[0]).Outcome)
+			require.Equal(t, http.StatusOK, run.resp.StatusCode)
+			var req testlink.Request
+			require.NoError(t, json.Unmarshal(run.requests[0], &req))
+			require.Equal(t, seamHandler, req.Handler)
+			want := arn.FormatLambdaFunction(req.Region, req.AccountID, "f") + tc.suffix
+			require.Equal(t, want, <-seen)
+		})
+	}
+}
+
+// A function with environment variables is refused before any code link is
+// presigned, any grant is issued or anything is sent to a node.
+func TestLambdaTestLinkSeam_EnvironmentVariablesRefusedBeforeDispatch(t *testing.T) {
+	srv := codeServer(t)
+	run := invokeComposedAt(t, "/2015-03-31/functions/f/invocations", seamFunction{timeout: 10, envCipher: "sealed"},
+		srv.URL+"/code", srv.Client(), func(ctx context.Context, _ net.Conn) { <-ctx.Done() })
+	require.Equal(t, http.StatusInternalServerError, run.resp.StatusCode)
+	require.Equal(t, "ServiceException", run.resp.Header.Get("X-Amzn-Errortype"))
+	require.Contains(t, string(run.body), "does not support function environment variables")
+	require.Zero(t, run.presigns, "a code link was presigned")
+	require.Zero(t, run.grants, "a grant was issued")
+	require.Empty(t, run.requests, "the request reached a node")
 }

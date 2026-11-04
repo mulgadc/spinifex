@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net"
@@ -23,8 +22,6 @@ const (
 	runtimeAddr = "127.0.0.1:9001"
 	taskRoot    = "/var/task"
 )
-
-var handler = flag.String("handler", os.Getenv("_HANDLER"), "function handler passed to the bootstrap")
 
 // testlink relays one invocation over the test carrier on the authenticated
 // connection; the carrier is not the guest protocol.
@@ -98,7 +95,7 @@ func (t testlink) run(parent context.Context) (int, error) {
 	defer cancel(nil)
 	cmd, err := t.startBootstrap(ctx, []string{
 		"AWS_LAMBDA_RUNTIME_API=" + ln.Addr().String(),
-		"_HANDLER=" + *handler,
+		"_HANDLER=" + spec.handler,
 		"LAMBDA_TASK_ROOT=" + taskRoot,
 		"PATH=/bin:/sbin:/usr/bin",
 	})

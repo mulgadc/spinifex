@@ -59,8 +59,14 @@ func defaultGateway(t *testing.T, regs ...dispatch.Registration) http.Handler {
 
 func signedLambdaInvoke(t *testing.T, app http.Handler) *http.Response {
 	t.Helper()
+	return signedLambdaInvokeAt(t, app, "/2015-03-31/functions/f/invocations")
+}
+
+// signedLambdaInvokeAt sends a signed Invoke to target, a path with any query.
+func signedLambdaInvokeAt(t *testing.T, app http.Handler, target string) *http.Response {
+	t.Helper()
 	body := []byte(`{}`)
-	req := httptest.NewRequest(http.MethodPost, "/2015-03-31/functions/f/invocations", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, target, bytes.NewReader(body))
 	req.Host = "localhost:9999"
 	gwfix.SignRequestAs(t, req, body, gwfix.AccessKey, gwfix.SecretKey, lambdaawsapi.ServiceName, time.Now().UTC())
 	w := httptest.NewRecorder()

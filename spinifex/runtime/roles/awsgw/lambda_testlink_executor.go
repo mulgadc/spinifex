@@ -14,7 +14,9 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/codestore"
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/execution"
+	"github.com/mulgadc/spinifex/spinifex/domains/lambda/function"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/testlink"
 	"github.com/nats-io/nats.go"
 )
@@ -56,6 +58,12 @@ var _ awsapi.Executor = (*testLinkExecutor)(nil)
 // unknown outcome, never a refusal.
 func (e *testLinkExecutor) InvokeSync(ctx context.Context, in awsapi.SyncInvocation) (awsapi.SyncResult, error) {
 	rec := in.Function
+	// The test link cannot deliver environment variables, so it refuses a
+	// function that has any before presigning, granting or sending.
+	if rec.EnvCipher != "" {
+		return awsapi.SyncResult{}, &awsapi.RefusalError{Err: awserrors.Errorf(awserrors.ErrorServiceException,
+			"the test execution path does not support function environment variables")}
+	}
 	if rec.Code.SHA256 == "" || rec.Code.Size <= 0 || rec.Code.Size > testlink.MaxCodeBytes {
 		return awsapi.SyncResult{}, &awsapi.RefusalError{Err: fmt.Errorf("code copy of %d bytes is outside the test bound", rec.Code.Size)}
 	}
@@ -105,7 +113,8 @@ func (e *testLinkExecutor) InvokeSync(ctx context.Context, in awsapi.SyncInvocat
 		Grant:       att.Grant,
 		AttemptID:   attemptID,
 		RequestID:   requestID,
-		FunctionARN: arn.FormatLambdaFunction(rec.Region, rec.AccountID, rec.FunctionName),
+		FunctionARN: invokedARN(rec, in.Qualifier),
+		Handler:     rec.Handler,
 		Region:      rec.Region,
 		AccountID:   rec.AccountID,
 		FunctionID:  rec.FunctionID,
@@ -151,4 +160,13 @@ func testLinkID() (string, error) {
 		return "", fmt.Errorf("attempt ID: %w", err)
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// invokedARN is the function ARN the caller invoked, with its qualifier.
+func invokedARN(rec function.Record, qualifier string) string {
+	a := arn.FormatLambdaFunction(rec.Region, rec.AccountID, rec.FunctionName)
+	if qualifier != "" {
+		a += ":" + qualifier
+	}
+	return a
 }

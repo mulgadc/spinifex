@@ -1,8 +1,9 @@
 //go:build lambdatestlink
 
 // Package testlink runs one controlled-test Lambda invocation in a fresh guest
-// VM on the gateway's node. It exists only in lambdatestlink builds, is not the
-// production executor, and does not yet bind the guest to the grant.
+// VM on the gateway's node. It exists only in lambdatestlink builds and is not
+// the production executor. The guest checks the grant it is given but cannot
+// verify that the grant's owner holds authority.
 package testlink
 
 import (
@@ -41,6 +42,7 @@ type Request struct {
 	AttemptID   string          `json:"attempt_id"`
 	RequestID   string          `json:"request_id"`
 	FunctionARN string          `json:"function_arn"`
+	Handler     string          `json:"handler"`
 	Region      string          `json:"region"`
 	AccountID   string          `json:"account_id"`
 	FunctionID  string          `json:"function_id"`

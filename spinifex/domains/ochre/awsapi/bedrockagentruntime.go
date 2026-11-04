@@ -18,6 +18,7 @@ import (
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 )
 
 // converseFn is ochre.Converse partially applied over the request's
@@ -132,7 +133,7 @@ func (d Deps) bedrockAgentRuntime(w http.ResponseWriter, inv dispatch.Invocation
 		return err
 	}
 
-	ochre.WriteJSONResponse(w, output)
+	envelope.WriteJSONResult(w, output)
 	return nil
 }
 

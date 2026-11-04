@@ -150,7 +150,7 @@ func TestECRPipeline_GetAuthorizationToken_200JSONContentType(t *testing.T) {
 	resp := doRequest(app, signECRRequest(t, target, []byte("{}")))
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, awsapi.JSONContentType, resp.Header.Get("Content-Type"))
+	assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"))
 }
 
 // --- Target parsing today --------------------------------------------------

@@ -1,6 +1,6 @@
-// Package envelope renders the EC2, IAM-style and S3 XML error envelopes and
-// the AWS JSON 1.1 error body. It reads no request context and holds no
-// per-service table: callers choose the shape.
+// Package envelope renders the EC2, IAM-style and S3 XML error envelopes, the
+// AWS JSON 1.1 error body and AWS JSON 1.1 results. It reads no request context
+// and holds no per-service table: callers choose the shape.
 package envelope
 
 import (
@@ -11,10 +11,13 @@ import (
 	"maps"
 	"net/http"
 	"strings"
+
+	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
-// JSONContentType is the AWS JSON 1.1 content type JSON-protocol error bodies
-// use (EKS, ECS, ACM, tagging, the bedrock family, and any unserved scope a
+// JSONContentType is the AWS JSON 1.1 content type JSON-protocol responses use
+// (ECR, EKS, ECS, ACM, tagging, the bedrock family, and any unserved scope a
 // client signals JSON for).
 const JSONContentType = "application/x-amz-json-1.1"
 
@@ -328,5 +331,37 @@ func WriteTooLargeText(w http.ResponseWriter, limit int64) {
 	w.WriteHeader(http.StatusRequestEntityTooLarge)
 	if _, err := fmt.Fprintf(w, "HTTP content length exceeded %d bytes.", limit); err != nil {
 		slog.Error("envelope: failed to write oversize response", "err", err)
+	}
+}
+
+// UnmarshalJSONBody decodes a JSON request body into out, leaving out untouched
+// when the body is empty.
+func UnmarshalJSONBody(body []byte, out any) error {
+	if len(body) == 0 {
+		return nil
+	}
+	return json.Unmarshal(body, out)
+}
+
+// WriteJSONResult writes obj as a 200 AWS JSON 1.1 response. It encodes with
+// the SDK's jsonutil, which honours locationName tags and writes time.Time as
+// epoch seconds where encoding/json writes RFC3339 strings the SDK rejects.
+func WriteJSONResult(w http.ResponseWriter, obj any) {
+	body, err := jsonutil.BuildJSON(obj)
+	WriteJSONBody(w, body, err)
+}
+
+// WriteJSONBody writes an encoded result as a 200 AWS JSON 1.1 response, or a
+// 500 InternalError JSON 1.1 error when encoding it failed with err.
+func WriteJSONBody(w http.ResponseWriter, body []byte, err error) {
+	status := http.StatusOK
+	if err != nil {
+		slog.Error("envelope: failed to marshal JSON result", "err", err)
+		body, status = JSONBody(awserrors.ErrorInternalError, "failed to marshal response"), http.StatusInternalServerError
+	}
+	w.Header().Set("Content-Type", JSONContentType)
+	w.WriteHeader(status)
+	if _, err := w.Write(body); err != nil {
+		slog.Error("envelope: failed to write JSON response", "err", err)
 	}
 }

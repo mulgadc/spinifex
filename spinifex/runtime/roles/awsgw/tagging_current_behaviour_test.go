@@ -21,6 +21,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 )
 
 // The TestCurrentBehaviour_Tagging_GetResources tests pin today's Resource
@@ -107,7 +108,7 @@ func getResources(t *testing.T, agg *tagging.Aggregator, body string) (getResour
 		return getResourcesPage{}, err
 	}
 	w := httptest.NewRecorder()
-	tagging.WriteJSONResponse(w, out)
+	envelope.WriteJSONResult(w, out)
 	var page getResourcesPage
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &page))
 	return page, nil

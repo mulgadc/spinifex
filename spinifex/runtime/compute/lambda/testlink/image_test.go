@@ -341,3 +341,60 @@ func TestDirDigest_IgnoresFirmwareOutsideTheDirectory(t *testing.T) {
 	require.NoError(t, err)
 	im.Close()
 }
+
+// Each loader step that can fail on a real kernel fails the kernel file, the
+// second one sealed, so the firmware copy already made must be closed too.
+func TestPrepareImage_LoaderStepFailuresLeaveNothingOpen(t *testing.T) {
+	orig := memfdCreate
+	cases := map[string]struct {
+		create func(t *testing.T, dir, name string, flags int) (int, error)
+		want   string
+	}{
+		"file grows after fstat": {func(t *testing.T, dir, name string, flags int) (int, error) {
+			f, err := os.OpenFile(filepath.Join(dir, FileKernel), os.O_APPEND|os.O_WRONLY, 0)
+			require.NoError(t, err)
+			_, err = f.Write([]byte("x"))
+			require.NoError(t, errors.Join(err, f.Close()))
+			return orig(name, flags)
+		}, "file longer than its size"},
+		"file shrinks after fstat": {func(t *testing.T, dir, name string, flags int) (int, error) {
+			require.NoError(t, os.Truncate(filepath.Join(dir, FileKernel), 1))
+			return orig(name, flags)
+		}, "copied"},
+		"copy into the memfd fails": {func(t *testing.T, _, _ string, _ int) (int, error) {
+			return unix.Open("/dev/null", unix.O_RDONLY|unix.O_CLOEXEC, 0)
+		}, "copied"},
+		"sealing refused": {func(t *testing.T, _, name string, _ int) (int, error) {
+			return orig(name, unix.MFD_CLOEXEC)
+		}, "seal memfd"},
+		"sealed size differs": {func(t *testing.T, _, name string, flags int) (int, error) {
+			fd, err := orig(name, flags)
+			require.NoError(t, err)
+			_, err = unix.Write(fd, []byte("x"))
+			require.NoError(t, err)
+			return fd, nil
+		}, "sealed size differs"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := writeImage(t)
+			calls := 0
+			t.Cleanup(func() { memfdCreate = orig })
+			memfdCreate = func(n string, flags int) (int, error) {
+				calls++
+				if calls == 2 {
+					return tc.create(t, dir, n, flags)
+				}
+				return orig(n, flags)
+			}
+			before := openFDs(t)
+			im, err := PrepareImage(dir, testImageDigest)
+			require.ErrorIs(t, err, ErrImage)
+			require.Nil(t, im)
+			require.Contains(t, err.Error(), FileKernel)
+			require.Contains(t, err.Error(), tc.want)
+			require.Equal(t, 2, calls, "failure did not come from the kernel file")
+			require.Equal(t, before, openFDs(t), "a failed step leaves a descriptor open")
+		})
+	}
+}

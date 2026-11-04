@@ -72,31 +72,9 @@ func (d *Daemon) startLambdaTestLink() {
 	}
 	err = runLambdaTestLink(
 		func() { go tl.RecoverLoop(d.ctx, testlink.RecoverFirst, testlink.RecoverMax) },
-		func() error {
-			if d.mgmtBridgeIP == "" {
-				return errors.New("management bridge address unavailable")
-			}
-			if lambdaHardKillSHA256 == "" {
-				return errors.New("hard-kill initializer digest not pinned")
-			}
-			if trustErr != nil {
-				return trustErr
-			}
-			if !testlink.ValidDigest(lambdaImageDigest) {
-				return errors.New("runtime image digest not pinned")
-			}
-			if err := tl.CheckInitializer(); err != nil {
-				return err
-			}
-			im, err := testlink.PrepareImage(imageDir, lambdaImageDigest)
-			if err != nil {
-				return err
-			}
-			tl.Image = im
-			return nil
-		},
+		func() error { return lambdaTestLinkReady(tl, imageDir, lambdaImageDigest, trustErr) },
 		func() error { _, err := tl.Serve(d.ctx, d.natsConn, d.node); return err },
-		func() { tl.Image.Close(); tl.Image = nil },
+		func() { releaseLambdaTestLinkImage(tl) },
 	)
 	if err != nil {
 		slog.Error("Lambda test link: not serving new invocations; recovery continues", "err", err)
@@ -104,6 +82,38 @@ func (d *Daemon) startLambdaTestLink() {
 	}
 	slog.Warn("Lambda test link serving: test-only, not for production; the guest does not verify owner grant authority",
 		"node", d.node, "image_digest", tl.Image.Digest)
+}
+
+// lambdaTestLinkReady runs the serving checks and, only once they pass,
+// prepares the pinned image into tl; a refusal leaves tl.Image nil.
+func lambdaTestLinkReady(tl *testlink.Daemon, imageDir, imagePin string, trustErr error) error {
+	if tl.HostIP == "" {
+		return errors.New("management bridge address unavailable")
+	}
+	if tl.InitializerSHA256 == "" {
+		return errors.New("hard-kill initializer digest not pinned")
+	}
+	if trustErr != nil {
+		return trustErr
+	}
+	if !testlink.ValidDigest(imagePin) {
+		return errors.New("runtime image digest not pinned")
+	}
+	if err := tl.CheckInitializer(); err != nil {
+		return err
+	}
+	im, err := testlink.PrepareImage(imageDir, imagePin)
+	if err != nil {
+		return err
+	}
+	tl.Image = im
+	return nil
+}
+
+// releaseLambdaTestLinkImage closes whatever ready prepared.
+func releaseLambdaTestLinkImage(tl *testlink.Daemon) {
+	tl.Image.Close()
+	tl.Image = nil
 }
 
 // runLambdaTestLink starts recovery before any serving check, so a failed

@@ -101,13 +101,14 @@ func (f *fakeVolumeResizer) ExpandAttachedToStopped(ctx context.Context, _, volu
 	return &ec2.ModifyVolumeOutput{}, nil
 }
 
-func (f *fakeVolumeResizer) DetachVolumeOnTerminate(_ context.Context, volumeID, _ string) error {
+func (f *fakeVolumeResizer) ForceDetachVolume(_ context.Context, in *ec2.DetachVolumeInput, _ string) (*ec2.VolumeAttachment, error) {
 	if f.detachErr != nil {
-		return f.detachErr
+		return nil, f.detachErr
 	}
+	volumeID := aws.StringValue(in.VolumeId)
 	delete(f.attachedTo, volumeID)
 	f.detached = append(f.detached, volumeID)
-	return nil
+	return &ec2.VolumeAttachment{VolumeId: in.VolumeId}, nil
 }
 
 // The whole rule set a resize is checked against, ahead of any state change.

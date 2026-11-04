@@ -289,7 +289,11 @@ func (s *Service) releaseDataVolumeFromStopped(ctx context.Context, instanceID, 
 	if err != nil || attachedTo != instanceID {
 		return err
 	}
-	if err := s.deps.Storage.DetachVolumeOnTerminate(ctx, volumeID, awsidentifiers.GlobalAccountID); err != nil {
+	// The release a customer's detach from a stopped instance makes, which owes
+	// the node still exporting the volume an unpublish.
+	if _, err := s.deps.Storage.ForceDetachVolume(ctx, &ec2.DetachVolumeInput{
+		VolumeId: aws.String(volumeID), Force: aws.Bool(true),
+	}, awsidentifiers.GlobalAccountID); err != nil && !awserrors.IsErrorCode(err, awserrors.ErrorInvalidVolumeNotFound) {
 		return fmt.Errorf("rds: release the data volume %s from the stopped VM %s: %w", volumeID, instanceID, err)
 	}
 	return nil

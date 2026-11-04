@@ -450,7 +450,7 @@ func TestSession_SlowAdmittedBodyHeldPastTheDeadlineIsUnknown(t *testing.T) {
 	require.Error(t, recv(t, g.runErr, "agent.Run to return"), "a clean return cannot pass")
 	recv(t, g.bdone, "the bootstrap to return")
 	recv(t, g.drained, "the guest stream's reader to finish")
-	_ = (<-held).Close()
+	_ = recv(t, held, "the held connection").Close()
 	closed := make(chan struct{})
 	go func() { g.ts.Close(); close(closed) }()
 	recv(t, closed, "the HTTP handler to finish")

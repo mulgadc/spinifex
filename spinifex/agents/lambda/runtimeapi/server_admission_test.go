@@ -15,6 +15,18 @@ import (
 	"go.uber.org/goleak"
 )
 
+// await bounds a receive so a regression fails promptly instead of hanging.
+func await[T any](t *testing.T, ch <-chan T) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(15 * time.Second):
+		t.Fatal("timed out waiting on a channel")
+		panic("unreachable")
+	}
+}
+
 // arm puts a delivered, unclaimed flight in place without any HTTP traffic.
 func arm(s *Server, id string) *flight {
 	f := &flight{inv: inv(id, time.Minute), state: stRunning, done: make(chan outcome, 1)}
@@ -95,7 +107,7 @@ func TestOnlyOnePostPerInvocationIsRead(t *testing.T) {
 				g := &gated{started: make(chan struct{}), release: make(chan struct{}), rest: bytes.NewReader([]byte("body"))}
 				firstDone := make(chan *httptest.ResponseRecorder, 1)
 				go func() { firstDone <- postTo(s, first, "req-1", g, 4) }()
-				<-g.started
+				await(t, g.started)
 
 				c := &counting{}
 				rec := postTo(s, second, "req-1", c, 4)
@@ -105,8 +117,8 @@ func TestOnlyOnePostPerInvocationIsRead(t *testing.T) {
 				assert.Empty(t, f.done, "nothing completes while the admitted body is still arriving")
 
 				close(g.release)
-				assert.Equal(t, http.StatusAccepted, (<-firstDone).Code)
-				assert.Equal(t, "body", string(concat((<-f.done).res)))
+				assert.Equal(t, http.StatusAccepted, (await(t, firstDone)).Code)
+				assert.Equal(t, "body", string(concat((await(t, f.done)).res)))
 			})
 		}
 	}
@@ -118,7 +130,7 @@ func TestDeclaredOversizeCompletesWithoutPayloadBuffer(t *testing.T) {
 	n := MaxResponseBytes + 10
 	rec := postTo(s, "response", "req-1", &patterned{n: n}, int64(n))
 	assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
-	res := (<-f.done).res
+	res := (await(t, f.done)).res
 	assert.Equal(t, ErrTypeUnhandled, res.FunctionError)
 	assert.Equal(t, ErrTypeResponseTooLarge, errType(t, res.Payload))
 
@@ -128,7 +140,7 @@ func TestDeclaredOversizeCompletesWithoutPayloadBuffer(t *testing.T) {
 			s := New()
 			f := arm(s, "req-1")
 			postTo(s, "response", "req-1", &patterned{n: n}, int64(n))
-			<-f.done
+			await(t, f.done)
 		}
 	})
 	assert.Less(t, br.AllocedBytesPerOp(), int64(256<<10), "an oversize body must not be buffered")
@@ -139,7 +151,7 @@ func TestDeclaredOversizeCutShortIsUnknown(t *testing.T) {
 	f := arm(s, "req-1")
 	rec := postTo(s, "response", "req-1", &patterned{n: MaxResponseBytes}, MaxResponseBytes+10)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
-	assert.ErrorIs(t, (<-f.done).err, ErrResponseBodyFailed, "no result is made from a partial body")
+	assert.ErrorIs(t, (await(t, f.done)).err, ErrResponseBodyFailed, "no result is made from a partial body")
 
 	rec = postTo(s, "response", "req-1", &patterned{n: 1}, 1)
 	assert.Equal(t, "InvalidRequestID", errType(t, rec.Body.Bytes()), "the slot stays consumed")
@@ -150,7 +162,7 @@ func TestKnownLengthWithinCapAllocatesOnce(t *testing.T) {
 	f := arm(s, "req-1")
 	rec := postTo(s, "response", "req-1", &patterned{n: MaxResponseBytes}, MaxResponseBytes)
 	assert.Equal(t, http.StatusAccepted, rec.Code)
-	res := (<-f.done).res
+	res := (await(t, f.done)).res
 	assert.Nil(t, res.Segments)
 	assert.Equal(t, pattern(MaxResponseBytes), res.Payload)
 
@@ -158,7 +170,7 @@ func TestKnownLengthWithinCapAllocatesOnce(t *testing.T) {
 	f = arm(s, "req-1")
 	rec = postTo(s, "response", "req-1", &patterned{n: 100}, 200)
 	assert.Equal(t, http.StatusBadRequest, rec.Code, "a body ending short of its length is truncated")
-	out := <-f.done
+	out := await(t, f.done)
 	assert.ErrorIs(t, out.err, ErrResponseBodyFailed)
 	assert.Empty(t, out.res.Payload)
 }
@@ -169,7 +181,7 @@ func TestChunkedBodyCap(t *testing.T) {
 		f := arm(s, "req-1")
 		rec := postTo(s, "response", "req-1", &patterned{n: MaxResponseBytes}, -1)
 		assert.Equal(t, http.StatusAccepted, rec.Code)
-		res := (<-f.done).res
+		res := (await(t, f.done)).res
 		assert.Empty(t, res.FunctionError)
 		require.NotNil(t, res.Segments)
 		for _, seg := range res.Segments {
@@ -182,14 +194,14 @@ func TestChunkedBodyCap(t *testing.T) {
 		f := arm(s, "req-1")
 		rec := postTo(s, "response", "req-1", &patterned{n: MaxResponseBytes + 1}, -1)
 		assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
-		res := (<-f.done).res
+		res := (await(t, f.done)).res
 		assert.Equal(t, ErrTypeResponseTooLarge, errType(t, res.Payload))
 	})
 	t.Run("empty body is an empty non-nil payload", func(t *testing.T) {
 		s := New()
 		f := arm(s, "req-1")
 		postTo(s, "response", "req-1", &patterned{}, -1)
-		res := (<-f.done).res
+		res := (await(t, f.done)).res
 		require.NotNil(t, res.Segments)
 		assert.Empty(t, concat(res))
 	})
@@ -201,7 +213,7 @@ func TestChunkedBodyCap(t *testing.T) {
 					s := New()
 					f := arm(s, "req-1")
 					postTo(s, "response", "req-1", &patterned{n: n}, -1)
-					<-f.done
+					await(t, f.done)
 				}
 			})
 			assert.Less(t, br.AllocedBytesPerOp(), int64(MaxResponseBytes+segmentBytes+64<<10), "body of %d bytes", n)
@@ -215,7 +227,7 @@ func TestErrorPostOverCapKeepsTruncatedPayload(t *testing.T) {
 	n := MaxResponseBytes + 100
 	rec := postTo(s, "error", "req-1", &patterned{n: n}, int64(n))
 	assert.Equal(t, http.StatusAccepted, rec.Code)
-	res := (<-f.done).res
+	res := (await(t, f.done)).res
 	assert.Equal(t, ErrTypeUnhandled, res.FunctionError)
 	assert.Equal(t, pattern(MaxResponseBytes), res.Payload)
 }
@@ -271,7 +283,7 @@ func TestAdmissionWinsTheRace(t *testing.T) {
 	rec := httptest.NewRecorder()
 	s.finishResponse(rec, r, adm)
 	assert.Equal(t, http.StatusAccepted, rec.Code)
-	assert.Equal(t, "late body", string((<-f.done).res.Payload))
+	assert.Equal(t, "late body", string((await(t, f.done)).res.Payload))
 	assert.False(t, s.BootstrapExited(), "a recorded result stands")
 }
 
@@ -279,7 +291,7 @@ func TestExitedAfterResultIsIgnored(t *testing.T) {
 	s := New()
 	f := arm(s, "req-1")
 	postTo(s, "response", "req-1", bytes.NewReader([]byte("ok")), 2)
-	<-f.done
+	await(t, f.done)
 	assert.False(t, s.BootstrapExited())
 }
 
@@ -436,7 +448,7 @@ func TestIncompleteBodyAndDeadlineInBothOrders(t *testing.T) {
 		adm := s.admit("req-1")
 		require.NotNil(t, adm)
 		s.finishResponse(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", &failing{left: 1}), adm)
-		require.ErrorIs(t, (<-out).err, ErrResponseBodyFailed)
+		require.ErrorIs(t, (await(t, out)).err, ErrResponseBodyFailed)
 	})
 }
 
@@ -466,7 +478,7 @@ func TestOversizeBootstrapVisibleReply(t *testing.T) {
 				t.Logf("bootstrap-visible: status %d", resp.StatusCode)
 				assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
 			}
-			got := <-out
+			got := await(t, out)
 			require.NoError(t, got.err)
 			assert.Equal(t, ErrTypeResponseTooLarge, errType(t, got.res.Payload))
 		})

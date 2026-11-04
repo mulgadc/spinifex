@@ -104,6 +104,18 @@ func (c *fakeConn) deadlineLog() []time.Time {
 	return append([]time.Time(nil), c.deadlines...)
 }
 
+// await bounds a receive so a regression fails promptly instead of hanging.
+func await[T any](t *testing.T, ch <-chan T) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(15 * time.Second):
+		t.Fatal("timed out waiting on a channel")
+		panic("unreachable")
+	}
+}
+
 // pattern returns n deterministic bytes.
 func pattern(n int) []byte {
 	b := make([]byte, n)
@@ -301,9 +313,9 @@ func TestCompleteCancelledWhileAnotherWriteHoldsTheSlot(t *testing.T) {
 	ctx := &sigCtx{Context: base, waiting: make(chan struct{})}
 	done := make(chan error, 1)
 	go func() { done <- s.Complete(ctx, Response{Payload: []byte("x")}) }()
-	<-ctx.waiting
+	await(t, ctx.waiting)
 	cancel()
-	require.ErrorIs(t, <-done, context.Canceled)
+	require.ErrorIs(t, await(t, done), context.Canceled)
 	assert.Empty(t, c.written(), "the peer receives no bytes")
 	assert.Empty(t, c.deadlineLog())
 
@@ -348,7 +360,7 @@ func TestCompleteInterruptFailureClosesAndReportsLinkError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- s.Complete(ctx, Response{Payload: []byte("x")}) }()
-	<-c.started
+	await(t, c.started)
 	cancel()
 	var err error
 	select {
@@ -396,19 +408,19 @@ func TestCompleteReleasesSlotOnlyAfterDeadlineCleared(t *testing.T) {
 	defer cancelA()
 	aDone := make(chan error, 1)
 	go func() { aDone <- s.Complete(ctxA, Response{Payload: []byte("a")}) }()
-	<-clearing
+	await(t, clearing)
 
 	base, cancelB := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancelB()
 	ctxB := &sigCtx{Context: base, waiting: make(chan struct{})}
 	bDone := make(chan error, 1)
 	go func() { bDone <- s.Complete(ctxB, Response{Payload: []byte("b")}) }()
-	<-ctxB.waiting
+	await(t, ctxB.waiting)
 	assert.Len(t, c.deadlineLog(), 2, "B has set no deadline while A is still cleaning up")
 
 	close(proceed)
-	require.NoError(t, <-aDone)
-	require.NoError(t, <-bDone)
+	require.NoError(t, await(t, aDone))
+	require.NoError(t, await(t, bDone))
 	log := c.deadlineLog()
 	require.Len(t, log, 4)
 	assert.False(t, log[0].IsZero())
@@ -444,9 +456,9 @@ func TestCompleteCancelInterruptsBlockedWrite(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- s.Complete(ctx, Response{Payload: []byte("x")}) }()
-	<-c.started
+	await(t, c.started)
 	cancel()
-	require.ErrorIs(t, <-done, os.ErrDeadlineExceeded)
+	require.ErrorIs(t, await(t, done), os.ErrDeadlineExceeded)
 	assert.Equal(t, int32(1), c.closes.Load(), "a frame may be half sent, so the connection is closed")
 	assert.ErrorIs(t, s.Complete(context.Background(), Response{Payload: []byte("x")}), ErrStreamClosed)
 }

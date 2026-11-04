@@ -106,8 +106,8 @@ type mountEntry struct {
 }
 
 // Filesystems lists mounted filesystems from mountinfo, without usage. A bind
-// is named as one, and a mount that only re-mounts a directory over itself, as
-// systemd's ProtectSystem does, is left out.
+// is named as one. The daemon's own sandbox is left out: directories systemd
+// binds over themselves, and its PrivateTmp directories.
 func Filesystems(env Env) []clusterv1.FilesystemFacts {
 	sysRoot := env.SysRoot
 	entries := mountEntries(filepath.Join(env.ProcRoot, "self", "mountinfo"))
@@ -119,11 +119,15 @@ func Filesystems(env Env) []clusterv1.FilesystemFacts {
 			whole[m.device] = m.mount
 		}
 	}
+	byID := map[string]mountEntry{}
+	for _, m := range entries {
+		byID[m.id] = m
+	}
 	seen := map[string]bool{}
 	var out []clusterv1.FilesystemFacts
 	for _, m := range entries {
 		key := m.device + " " + m.root + " " + m.mount
-		if seen[key] {
+		if seen[key] || showsItsParent(byID[m.parent], m) || strings.Contains(m.root, "/systemd-private-") {
 			continue
 		}
 		seen[key] = true
@@ -133,9 +137,6 @@ func Filesystems(env Env) []clusterv1.FilesystemFacts {
 		}
 		if base, ok := whole[m.device]; ok && m.root != "/" {
 			fs.BindOf = filepath.Join(base, m.root)
-			if fs.BindOf == m.mount {
-				continue
-			}
 		}
 		fs.Disk = strings.Join(drivesUnder(sysRoot, m.device), ", ")
 		out = append(out, fs)
@@ -145,6 +146,16 @@ func Filesystems(env Env) []clusterv1.FilesystemFacts {
 
 // mountEntries reads the real filesystems from mountinfo, marking those a
 // different filesystem covers, and every mount beneath them, as hidden.
+// showsItsParent reports whether m mounts the directory its parent already
+// shows at that path, as ProtectSystem and ReadWritePaths do.
+func showsItsParent(parent, m mountEntry) bool {
+	rel, err := filepath.Rel(parent.mount, m.mount)
+	if parent.id == "" || err != nil || strings.HasPrefix(rel, "..") {
+		return false
+	}
+	return parent.device == m.device && filepath.Join(parent.root, rel) == m.root
+}
+
 func mountEntries(path string) []mountEntry {
 	f, err := os.Open(path)
 	if err != nil {

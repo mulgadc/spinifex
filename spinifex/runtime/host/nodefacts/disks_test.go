@@ -82,8 +82,8 @@ func diskHost(t *testing.T) Env {
 	// The volume group's one physical volume is sda's partition.
 	linkTree(t, sys, map[string]string{dmDev + "/slaves/sda1": "../../../../../" + sataDev + "/sda1"})
 	// The daemon's own view: ProtectSystem=full re-mounts /usr and /boot/efi
-	// read-only over themselves, and ProtectHome=yes covers /home and the
-	// mount beneath it.
+	// over themselves, ReadWritePaths does the same to /var/lib/spinifex/spinifex,
+	// PrivateTmp binds /var/tmp, and ProtectHome covers /home and a mount beneath it.
 	writeTree(t, root, map[string]string{"proc/self/mountinfo": `22 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw
 23 22 259:1 / /boot/efi rw,relatime shared:2 - vfat /dev/nvme0n1p1 rw
 24 22 253:0 / /mnt/disk2 rw,relatime shared:3 - xfs /dev/mapper/vg-data rw
@@ -98,6 +98,8 @@ func diskHost(t *testing.T) Env {
 33 22 259:3 / /home rw shared:10 - ext4 /dev/nvme0n1p3 rw
 35 33 8:1 /backup /home/backup rw shared:8 - ext4 /dev/sda1 rw
 34 33 0:25 /systemd/inaccessible/dir /home ro - tmpfs tmpfs rw
+36 25 253:0 /spinifex/spinifex /var/lib/spinifex/spinifex rw - xfs /dev/mapper/vg-data rw
+37 22 259:2 /var/tmp/systemd-private-0a2b-spinifex-daemon.service-ebu7EK/tmp /var/tmp rw - ext4 /dev/nvme0n1p2 rw
 `})
 	return Env{SysRoot: sys, ProcRoot: filepath.Join(root, "proc")}
 }

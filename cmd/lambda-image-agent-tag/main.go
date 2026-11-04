@@ -159,6 +159,9 @@ func parseEntry(raw []byte, off int) (entry, int, error) {
 	}
 	nameEnd := off + newcHeader + int(nameSize)
 	dataOff := align4(nameEnd)
+	if dataOff > len(raw) || size > uint64(len(raw)-dataOff) {
+		return entry{}, 0, errors.New("truncated entry")
+	}
 	dataEnd := dataOff + int(size)
 	if dataEnd > len(raw) || align4(dataEnd) > len(raw) {
 		return entry{}, 0, errors.New("truncated entry")

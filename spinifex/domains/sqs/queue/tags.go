@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -30,7 +31,7 @@ func ValidateTags(tags map[string]string, allowEmpty bool) error {
 	if len(tags) > maxTags {
 		return fmt.Errorf("%w: at most %d tags", ErrInvalidTag, maxTags)
 	}
-	for _, k := range sortedKeys(tags) {
+	for _, k := range slices.Sorted(maps.Keys(tags)) {
 		if err := validTagKey(k); err != nil {
 			return err
 		}

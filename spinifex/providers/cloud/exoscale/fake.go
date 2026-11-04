@@ -3,6 +3,7 @@ package exoscale
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"sync"
@@ -60,12 +61,7 @@ func (f *Fake) AttachedTo(eipID string) (string, bool) {
 func (f *Fake) IDs() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	ids := make([]string, 0, len(f.eips))
-	for id := range f.eips {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
-	return ids
+	return slices.Sorted(maps.Keys(f.eips))
 }
 
 func (f *Fake) fail(op string) error {

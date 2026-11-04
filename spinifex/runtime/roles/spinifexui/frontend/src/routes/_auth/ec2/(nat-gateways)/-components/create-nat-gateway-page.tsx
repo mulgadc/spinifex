@@ -1,5 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod"
-import { useSuspenseQuery } from "@tanstack/react-query"
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
 import {
   Controller,
@@ -26,9 +26,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { subnetIsPublic } from "@/lib/subnet-routing"
 import { getNameTag } from "@/lib/utils"
 import { useCreateNatGateway } from "@/mutations/ec2"
-import { ec2AddressesQueryOptions, ec2SubnetsQueryOptions } from "@/queries/ec2"
+import {
+  ec2AddressesQueryOptions,
+  ec2RouteTablesQueryOptions,
+  ec2SubnetsQueryOptions,
+} from "@/queries/ec2"
 import {
   type CreateNatGatewayFormData,
   createNatGatewaySchema,
@@ -41,13 +46,16 @@ interface CreateNatGatewayPageProps {
 
 export function CreateNatGatewayPage({ onClose }: CreateNatGatewayPageProps) {
   const { data: subnetsData } = useSuspenseQuery(ec2SubnetsQueryOptions)
+  // Not a suspense query: without route tables the form offers every subnet.
+  const { data: routeTablesData } = useQuery(ec2RouteTablesQueryOptions)
   const { data: addressesData } = useSuspenseQuery(ec2AddressesQueryOptions)
   const createMutation = useCreateNatGateway()
 
   const subnets = subnetsData.Subnets ?? []
-  // A NAT gateway must live in a public subnet (one with auto-assigned public
-  // IP). Fall back to all subnets if none are flagged public.
-  const publicSubnets = subnets.filter((s) => s.MapPublicIpOnLaunch)
+  const routeTables = routeTablesData?.RouteTables ?? []
+  // A public NAT gateway belongs in a public subnet, one that routes to an
+  // internet gateway. Fall back to all subnets if none is public.
+  const publicSubnets = subnets.filter((s) => subnetIsPublic(s, routeTables))
   const subnetOptions = publicSubnets.length > 0 ? publicSubnets : subnets
 
   // Only Elastic IPs that are not already associated can back a NAT gateway.

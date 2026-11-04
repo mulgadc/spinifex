@@ -65,14 +65,29 @@ export function subnetLabel(subnet: Subnet): string {
   return name ? `${name} (${subnet.SubnetId})` : (subnet.SubnetId ?? "")
 }
 
-export function subnetSummary(subnet: Subnet): string {
+function routePhrase(isPublic: boolean | undefined): string {
+  if (isPublic === undefined) {
+    return "internet gateway route unknown"
+  }
+
+  return isPublic
+    ? "public: routes to an internet gateway"
+    : "private: no internet gateway route"
+}
+
+// isPublic is undefined when the subnet's route tables could not be read.
+export function subnetSummary(
+  subnet: Subnet,
+  isPublic: boolean | undefined,
+): string {
   return [
     subnet.CidrBlock,
     subnet.AvailabilityZone,
     subnet.VpcId,
+    routePhrase(isPublic),
     subnet.MapPublicIpOnLaunch
       ? "public IP assigned on launch"
-      : "private address only",
+      : "no public IP on launch",
   ]
     .filter(Boolean)
     .join(" · ")

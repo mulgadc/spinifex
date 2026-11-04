@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	rgt "github.com/aws/aws-sdk-go/service/resourcegroupstaggingapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 )
 
 // ResourcesPerPage bounds, from the AWS API reference; the default applies
@@ -38,7 +39,7 @@ func NewAggregator(listers ...TaggedLister) *Aggregator {
 // integer offset into a deterministically ARN-sorted result set.
 func (a *Aggregator) GetResources(ctx context.Context, accountID string, body []byte) (any, error) {
 	var input rgt.GetResourcesInput
-	if err := unmarshalIfBody(body, &input); err != nil {
+	if err := envelope.UnmarshalJSONBody(body, &input); err != nil {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 

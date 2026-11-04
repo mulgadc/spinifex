@@ -3,10 +3,12 @@ package awsapi
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -57,9 +59,24 @@ func TestWriteJSONResponse(t *testing.T) {
 	WriteJSONResponse(w, map[string]string{"clusterArn": "arn:aws:ecs:::cluster/x"})
 
 	assert.Equal(t, 200, w.Code)
-	assert.Equal(t, JSONContentType, w.Header().Get("Content-Type"))
+	assert.Equal(t, envelope.JSONContentType, w.Header().Get("Content-Type"))
 
 	var got map[string]string
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
 	assert.Equal(t, "arn:aws:ecs:::cluster/x", got["clusterArn"])
+}
+
+// A response jsonutil cannot encode still reaches the SDK as an AWS JSON 1.1
+// error it can parse, not a plain-text body.
+func TestWriteJSONResponse_MarshalFailureIsJSONError(t *testing.T) {
+	w := httptest.NewRecorder()
+	WriteJSONResponse(w, struct{ C chan int }{C: make(chan int)})
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Equal(t, envelope.JSONContentType, w.Header().Get("Content-Type"))
+	var got struct {
+		Type string `json:"__type"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Equal(t, "InternalErrorException", got.Type)
 }

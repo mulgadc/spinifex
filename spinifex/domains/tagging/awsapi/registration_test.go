@@ -12,6 +12,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/tagging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -157,6 +158,6 @@ func TestDispatch_WiredAggregatorServesGetResources(t *testing.T) {
 	w, err := dispatchWith(Deps{Aggregator: tagging.NewAggregator()}, rec.invocation(getTarget, "{}", regAccount))
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, tagging.JSONContentType, w.Header().Get("Content-Type"))
+	assert.Equal(t, envelope.JSONContentType, w.Header().Get("Content-Type"))
 	assert.JSONEq(t, `{"PaginationToken":""}`, w.Body.String())
 }

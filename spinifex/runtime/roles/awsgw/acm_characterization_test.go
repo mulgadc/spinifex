@@ -145,7 +145,7 @@ func TestACMPipeline_ListCertificates_200JSONContentType(t *testing.T) {
 	resp := doRequest(app, signACMRequest(t, target, []byte("{}")))
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, acmawsapi.JSONContentType, resp.Header.Get("Content-Type"))
+	assert.Equal(t, envelope.JSONContentType, resp.Header.Get("Content-Type"))
 }
 
 // --- Target parsing today --------------------------------------------------

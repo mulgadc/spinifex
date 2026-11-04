@@ -136,7 +136,7 @@ func (fw *frameWriter) writeException(excType string, payload []byte) error {
 // writeChunk frames a provider-native chunk as the
 // InvokeModelWithResponseStream "chunk" event, base64-encoding nativeChunk
 // into Bedrock's PayloadPart{Bytes} shape via the SDK's own restjson
-// marshaler (jsonutil.BuildJSON), matching WriteJSONResponse's convention.
+// marshaler (jsonutil.BuildJSON), matching envelope.WriteJSONResult's convention.
 func (fw *frameWriter) writeChunk(nativeChunk []byte) error {
 	payload, err := jsonutil.BuildJSON(&bedrockruntime.PayloadPart{Bytes: nativeChunk})
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/eks"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,7 +17,7 @@ func TestWriteJSONError_SetsContentTypeAndStatus(t *testing.T) {
 	w := httptest.NewRecorder()
 	WriteJSONError(w, "NotImplemented", "Operation not implemented", http.StatusNotImplemented)
 	assert.Equal(t, http.StatusNotImplemented, w.Code)
-	assert.Equal(t, JSONContentType, w.Header().Get("Content-Type"))
+	assert.Equal(t, envelope.JSONContentType, w.Header().Get("Content-Type"))
 
 	var env struct {
 		Type    string `json:"__type"`
@@ -25,17 +26,6 @@ func TestWriteJSONError_SetsContentTypeAndStatus(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &env))
 	assert.Equal(t, "NotImplementedException", env.Type)
 	assert.Equal(t, "Operation not implemented", env.Message)
-}
-
-func TestWriteJSONResponse_SerializesObject(t *testing.T) {
-	w := httptest.NewRecorder()
-	WriteJSONResponse(w, map[string]string{"foo": "bar"})
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, JSONContentType, w.Header().Get("Content-Type"))
-
-	var got map[string]string
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
-	assert.Equal(t, "bar", got["foo"])
 }
 
 // TestWriteJSONResponse_RestJSONWireShape guards against regressing to
@@ -54,7 +44,7 @@ func TestWriteJSONResponse_RestJSONWireShape(t *testing.T) {
 			},
 		},
 	}
-	WriteJSONResponse(w, out)
+	envelope.WriteJSONResult(w, out)
 	require.Equal(t, http.StatusOK, w.Code)
 
 	body := w.Body.String()
@@ -85,7 +75,7 @@ func TestWriteJSONResponse_RestJSONWireShape(t *testing.T) {
 
 func TestWriteJSONResponse_ListClustersWireShape(t *testing.T) {
 	w := httptest.NewRecorder()
-	WriteJSONResponse(w, &eks.ListClustersOutput{
+	envelope.WriteJSONResult(w, &eks.ListClustersOutput{
 		Clusters:  aws.StringSlice([]string{"alpha", "beta"}),
 		NextToken: aws.String("tok"),
 	})

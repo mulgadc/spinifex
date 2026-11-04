@@ -13,6 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 )
 
 // InvokeModel/InvokeModelWithResponseStream carry their guardrail selection
@@ -150,6 +151,6 @@ func (d Deps) bedrockRuntime(w http.ResponseWriter, inv dispatch.Invocation) err
 		return err
 	}
 
-	ochre.WriteJSONResponse(w, output)
+	envelope.WriteJSONResult(w, output)
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
@@ -412,4 +413,31 @@ func TestWriteJSON_WireBytesPerProtocol(t *testing.T) {
 			assert.Equal(t, tc.body, w.Body.String())
 		})
 	}
+}
+
+func TestWriteJSONResult_EncodesWithJSONUtil(t *testing.T) {
+	w := httptest.NewRecorder()
+	WriteJSONResult(w, &eks.Cluster{Name: aws.String("c1"), CreatedAt: aws.Time(time.Unix(1700000000, 0))})
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, JSONContentType, w.Header().Get("Content-Type"))
+	assert.JSONEq(t, `{"name":"c1","createdAt":1700000000}`, w.Body.String())
+}
+
+func TestWriteJSONBody_EncodeErrorIsJSONInternalError(t *testing.T) {
+	w := httptest.NewRecorder()
+	WriteJSONBody(w, []byte(`{"partial":`), errors.New("boom"))
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Equal(t, JSONContentType, w.Header().Get("Content-Type"))
+	assert.JSONEq(t, `{"__type":"InternalErrorException","message":"failed to marshal response"}`, w.Body.String())
+}
+
+func TestUnmarshalJSONBody(t *testing.T) {
+	out := map[string]string{"kept": "yes"}
+	require.NoError(t, UnmarshalJSONBody(nil, &out))
+	assert.Equal(t, map[string]string{"kept": "yes"}, out)
+	require.NoError(t, UnmarshalJSONBody([]byte(`{"a":"x"}`), &out))
+	assert.Equal(t, "x", out["a"])
+	require.Error(t, UnmarshalJSONBody([]byte("{bad"), &out))
 }

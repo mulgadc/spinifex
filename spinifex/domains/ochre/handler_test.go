@@ -7,25 +7,10 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestWriteJSONResponse_WritesBodyAndContentType(t *testing.T) {
-	type payload struct {
-		Foo string `json:"foo"`
-	}
-
-	w := httptest.NewRecorder()
-	WriteJSONResponse(w, payload{Foo: "bar"})
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, JSONContentType, w.Header().Get("Content-Type"))
-
-	var out payload
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &out))
-	assert.Equal(t, "bar", out.Foo)
-}
 
 func TestWriteJSONError_WritesEnvelopeAndStatus(t *testing.T) {
 	cases := []struct {
@@ -44,32 +29,15 @@ func TestWriteJSONError_WritesEnvelopeAndStatus(t *testing.T) {
 			WriteJSONError(w, tc.code, "boom", tc.httpStatus)
 
 			assert.Equal(t, tc.wantStatus, w.Code)
-			assert.Equal(t, JSONContentType, w.Header().Get("Content-Type"))
+			assert.Equal(t, envelope.JSONContentType, w.Header().Get("Content-Type"))
 
-			var env jsonError
+			var env struct {
+				Type    string `json:"__type"`
+				Message string `json:"message"`
+			}
 			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &env))
 			assert.Equal(t, tc.wantType, env.Type)
 			assert.Equal(t, "boom", env.Message)
-		})
-	}
-}
-
-func TestGenerateJSONError_AppendsExceptionSuffixIdempotently(t *testing.T) {
-	cases := []struct {
-		name     string
-		code     string
-		wantType string
-	}{
-		{"bare code gets suffix", "Validation", "ValidationException"},
-		{"already-suffixed code unchanged", "ValidationException", "ValidationException"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			body := generateJSONError(tc.code, "msg")
-			var env jsonError
-			require.NoError(t, json.Unmarshal(body, &env))
-			assert.Equal(t, tc.wantType, env.Type)
-			assert.Equal(t, "msg", env.Message)
 		})
 	}
 }

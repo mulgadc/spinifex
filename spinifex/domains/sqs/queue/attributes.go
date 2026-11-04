@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -86,7 +86,7 @@ func ValidateSet(in map[string]string) (Attributes, error) {
 
 func validate(in map[string]string, create bool) (Attributes, error) {
 	out := make(Attributes, len(in))
-	for _, name := range sortedKeys(in) {
+	for _, name := range slices.Sorted(maps.Keys(in)) {
 		value := in[name]
 		if r, ok := intAttributes[name]; ok {
 			n, err := parseInt(value)
@@ -167,13 +167,4 @@ func parseBool(name, s string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("%w: %s must be true or false", ErrInvalidAttributeValue, name)
-}
-
-func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

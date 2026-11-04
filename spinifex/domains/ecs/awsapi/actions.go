@@ -137,6 +137,9 @@ func ListTaskDefinitions(ctx context.Context, nc *nats.Conn, accountID string, b
 	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
+	if err := checkListTaskDefinitions(input); err != nil {
+		return nil, err
+	}
 	return ecsdomain.NewNATSECSService(nc).ListTaskDefinitions(ctx, input, accountID)
 }
 
@@ -332,6 +335,9 @@ func ListTasks(ctx context.Context, nc *nats.Conn, accountID string, body []byte
 	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
 		return nil, err
 	}
+	if err := checkListTasks(input); err != nil {
+		return nil, err
+	}
 	return ecsdomain.NewNATSECSService(nc).ListTasks(ctx, input, accountID)
 }
 
@@ -411,6 +417,9 @@ func DescribeServices(ctx context.Context, nc *nats.Conn, accountID string, body
 func ListServices(ctx context.Context, nc *nats.Conn, accountID string, body []byte, passRoleCheck PassRoleChecker) (any, error) {
 	input := new(ecs.ListServicesInput)
 	if err := envelope.UnmarshalJSONBody(body, input); err != nil {
+		return nil, err
+	}
+	if err := checkListServices(body, input); err != nil {
 		return nil, err
 	}
 	return ecsdomain.NewNATSECSService(nc).ListServices(ctx, input, accountID)

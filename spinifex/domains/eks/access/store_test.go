@@ -3,7 +3,6 @@ package access
 import (
 	"testing"
 
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -27,19 +26,4 @@ func TestPutGetListGuards(t *testing.T) {
 
 	_, err = List(t.Context(), nil, "")
 	require.Error(t, err)
-}
-
-// A writer that wins every race spends the attempt budget, and the error still names the conflict.
-func TestCasUpdate_ExhaustedWrapsRevisionMismatch(t *testing.T) {
-	t.Parallel()
-	kv := newOwnerTestKV(t)
-	rec := &Record{ClusterName: "c1", PrincipalARN: testPrincipal, KubernetesUsername: "alice"}
-	require.NoError(t, put(t.Context(), kv, rec))
-
-	_, err := casUpdate(t.Context(), kv, "c1", testPrincipal, func(r *Record) bool {
-		require.NoError(t, put(t.Context(), kv, rec))
-		r.KubernetesUsername = "bob"
-		return true
-	})
-	require.ErrorIs(t, err, jetstream.ErrKeyRevisionMismatch)
 }

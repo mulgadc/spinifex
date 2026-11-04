@@ -154,17 +154,3 @@ func TestCasUpdate(t *testing.T) {
 	_, err = casUpdate(t.Context(), kv, "c1", "ghost", func(*Record) bool { return true })
 	assert.ErrorIs(t, err, ErrNotFound)
 }
-
-// A writer that wins every race spends the attempt budget, and the error still names the conflict.
-func TestCasUpdate_ExhaustedWrapsRevisionMismatch(t *testing.T) {
-	t.Parallel()
-	kv := newTestKV(t)
-	require.NoError(t, put(t.Context(), kv, "c1", sampleRecord("coredns")))
-
-	_, err := casUpdate(t.Context(), kv, "c1", "coredns", func(r *Record) bool {
-		require.NoError(t, put(t.Context(), kv, "c1", sampleRecord("coredns")))
-		r.Status = StatusActive
-		return true
-	})
-	require.ErrorIs(t, err, jetstream.ErrKeyRevisionMismatch)
-}

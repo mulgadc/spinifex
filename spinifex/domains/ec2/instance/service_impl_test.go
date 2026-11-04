@@ -2605,6 +2605,34 @@ func TestStartStoppedInstance_InstanceTypeUnknown(t *testing.T) {
 	assert.Equal(t, vm.StateStopped, store.WroteStopped[id].Status)
 }
 
+// A UEFI instance with no variable store pointer is refused before anything is
+// stamped or claimed, so the record handed back is the one that was claimed.
+func TestStartStoppedInstance_UEFIInstanceWithoutAPointerIsRefused(t *testing.T) {
+	id := "i-uefi-nopointer"
+	itype := "t3.micro"
+	launched := time.Unix(1700000000, 0).UTC()
+	stopped := &vm.VM{
+		ID: id, Status: vm.StateStopped, AccountID: "acc", InstanceType: itype, BootMode: "uefi",
+		Instance: &ec2.Instance{LaunchTime: aws.Time(launched)},
+	}
+	before := stopped.Record()
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: stopped}}
+	prov := &fakeResourceCapacityProvider{instanceTypes: map[string]*ec2.InstanceTypeInfo{
+		itype: {InstanceType: aws.String(itype)},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store, resourceMgr: prov, vmMgr: vm.NewManager()}
+
+	_, err := svc.StartStoppedInstance(context.Background(), &StartStoppedInstanceInput{InstanceID: id}, "acc")
+
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Empty(t, prov.allocated, "nothing is allocated for a start that cannot boot")
+	require.NotNil(t, store.WroteStopped[id], "the claimed instance is handed back")
+	assert.Equal(t, before, store.WroteStopped[id].Record(), "the record is unchanged")
+	_, inManager := svc.vmMgr.Get(id)
+	assert.False(t, inManager)
+}
+
 func TestStartStoppedInstance_AllocateFails(t *testing.T) {
 	id := "i-alloc-fail"
 	itype := "t3.micro"

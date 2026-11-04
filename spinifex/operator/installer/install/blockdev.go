@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/mulgadc/bluebottle/pkg/safecast"
 )
 
 // Disk is one candidate block device with every attribute the installer needs
@@ -388,7 +390,7 @@ func sysfsInt(dev, file string) int64 {
 
 func sysfsIntDefault(dev, file string, def int) int {
 	if n := sysfsInt(dev, file); n > 0 {
-		return int(n)
+		return safecast.Uint64ToInt(uint64(n))
 	}
 	return def
 }

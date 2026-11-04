@@ -13,19 +13,6 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// Backward-compatible aliases so callers (daemon, EIP, EC2 handlers, tests)
-// keep importing record + allocation shapes from this package while the
-// allocator implementation lives in network/external.
-type (
-	ExternalIPAllocation = external.ExternalIPAllocation
-	ExternalIPAMRecord   = external.PoolRecord
-)
-
-const (
-	KVBucketExternalIPAM        = external.KVBucketStaticPool
-	KVBucketExternalIPAMVersion = external.KVBucketStaticPoolVersion
-)
-
 // ExternalIPAM is the AWS-facing entry point for external IP allocation,
 // dispatching per pool name to the static allocator or to whatever the wiring
 // installed for that pool.
@@ -200,11 +187,11 @@ func (m *ExternalIPAM) BindOwner(ctx context.Context, poolName, ip, eniID string
 
 // GetPoolRecord returns the current IPAM record for a pool. DHCP-sourced
 // pools have no static record — the per-AZ lease bucket is authoritative.
-func (m *ExternalIPAM) GetPoolRecord(poolName string) (*ExternalIPAMRecord, error) {
+func (m *ExternalIPAM) GetPoolRecord(poolName string) (*external.PoolRecord, error) {
 	return m.getPoolRecord(context.Background(), poolName)
 }
 
-func (m *ExternalIPAM) getPoolRecord(ctx context.Context, poolName string) (*ExternalIPAMRecord, error) {
+func (m *ExternalIPAM) getPoolRecord(ctx context.Context, poolName string) (*external.PoolRecord, error) {
 	if m.static == nil {
 		return nil, fmt.Errorf("pool record unavailable: no static allocator")
 	}

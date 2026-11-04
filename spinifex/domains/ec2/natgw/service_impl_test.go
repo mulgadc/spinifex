@@ -170,8 +170,8 @@ func TestDeleteNatGateway(t *testing.T) {
 	assert.Equal(t, natgwID, *deleteOut.NatGatewayId)
 
 	// Should be gone
-	_, err = svc.GetNatGateway(testAccountID, natgwID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidNatGatewayIDNotFound)
+	_, err = svc.natgwKV.Get(t.Context(), kvutil.AccountKey(testAccountID, natgwID))
+	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
 }
 
 func TestDescribeNatGateways(t *testing.T) {
@@ -232,28 +232,6 @@ func TestDescribeNatGateways_FilterByState(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, out.NatGateways)
-}
-
-func TestGetNatGateway(t *testing.T) {
-	svc := setupTestService(t)
-	createOut, err := svc.CreateNatGateway(t.Context(), &ec2.CreateNatGatewayInput{
-		SubnetId:     aws.String("subnet-pub1"),
-		AllocationId: aws.String("eipalloc-test1"),
-	}, testAccountID)
-	require.NoError(t, err)
-	natgwID := *createOut.NatGateway.NatGatewayId
-
-	record, err := svc.GetNatGateway(testAccountID, natgwID)
-	require.NoError(t, err)
-	assert.Equal(t, natgwID, record.NatGatewayId)
-	assert.Equal(t, "203.0.113.50", record.PublicIp)
-	assert.Equal(t, "eipalloc-test1", record.AllocationId)
-}
-
-func TestGetNatGateway_NotFound(t *testing.T) {
-	svc := setupTestService(t)
-	_, err := svc.GetNatGateway(testAccountID, "nat-nope")
-	assert.EqualError(t, err, awserrors.ErrorInvalidNatGatewayIDNotFound)
 }
 
 func TestCreateNatGateway_MissingParams(t *testing.T) {

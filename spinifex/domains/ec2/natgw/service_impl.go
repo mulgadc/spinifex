@@ -238,7 +238,7 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(ctx context.Context, input *ec2
 
 // kvBucketRouteTables is the route-table KV bucket. Duplicated as a literal
 // (not imported from the routetable package) because routetable imports this
-// package for PublishAddEvent — importing it back would be a cycle.
+// package for KVBucketNatGateways — importing it back would be a cycle.
 const kvBucketRouteTables = "spinifex-vpc-route-tables"
 
 // publishDeleteEventsForNatGateway tears down the SNAT for every private subnet
@@ -470,17 +470,6 @@ func natgwMatchesFilters(record *NatGatewayRecord, filters map[string][]string) 
 	return awsfilters.MatchesTags(filters, record.Tags)
 }
 
-// PublishAddEvent publishes a vpc.add-nat-gateway event for vpcd to create the SNAT rule.
-// Called by the route table service when CreateRoute targets a NAT GW.
-func (s *NatGatewayServiceImpl) PublishAddEvent(vpcId, natGatewayId, publicIp, subnetCidr string) {
-	projection.New(s.natsConn).AddNATGateway(networkv1.NATGatewayEvent{
-		VpcId:        vpcId,
-		NatGatewayId: natGatewayId,
-		PublicIp:     publicIp,
-		SubnetCidr:   subnetCidr,
-	})
-}
-
 // PublishDeleteEvent publishes a vpc.delete-nat-gateway event for vpcd to remove the SNAT rule.
 func (s *NatGatewayServiceImpl) PublishDeleteEvent(vpcId, natGatewayId, publicIp, subnetCidr string) {
 	projection.New(s.natsConn).RemoveNATGateway(networkv1.NATGatewayEvent{
@@ -489,23 +478,6 @@ func (s *NatGatewayServiceImpl) PublishDeleteEvent(vpcId, natGatewayId, publicIp
 		PublicIp:     publicIp,
 		SubnetCidr:   subnetCidr,
 	})
-}
-
-// GetNatGateway retrieves a NAT Gateway record by ID.
-func (s *NatGatewayServiceImpl) GetNatGateway(accountID, natgwID string) (*NatGatewayRecord, error) {
-	ctx := context.Background()
-	entry, err := s.natgwKV.Get(ctx, kvutil.AccountKey(accountID, natgwID))
-	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, errors.New(awserrors.ErrorInvalidNatGatewayIDNotFound)
-		}
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	var record NatGatewayRecord
-	if err := json.Unmarshal(entry.Value(), &record); err != nil {
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	return &record, nil
 }
 
 func recordToEC2(record *NatGatewayRecord) *ec2.NatGateway {

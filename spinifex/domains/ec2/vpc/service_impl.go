@@ -631,12 +631,7 @@ func (s *VPCServiceImpl) DescribeVpcs(ctx context.Context, input *ec2.DescribeVp
 		return nil, err
 	}
 
-	vpcIDs := make(map[string]bool)
-	for _, id := range input.VpcIds {
-		if id != nil {
-			vpcIDs[*id] = true
-		}
-	}
+	vpcIDs := awsidentifiers.Set(input.VpcIds)
 
 	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeVpcsValidFilters)
 	if err != nil {
@@ -1010,12 +1005,7 @@ func (s *VPCServiceImpl) DescribeSubnets(ctx context.Context, input *ec2.Describ
 		return nil, err
 	}
 
-	subnetIDs := make(map[string]bool)
-	for _, id := range input.SubnetIds {
-		if id != nil {
-			subnetIDs[*id] = true
-		}
-	}
+	subnetIDs := awsidentifiers.Set(input.SubnetIds)
 
 	parsedFilters, err := awsfilters.ParseFilters(input.Filters, describeSubnetsValidFilters)
 	if err != nil {

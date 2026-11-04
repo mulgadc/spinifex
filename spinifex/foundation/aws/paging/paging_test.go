@@ -3,6 +3,7 @@ package paging_test
 import (
 	"encoding/base64"
 	"fmt"
+	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -62,14 +63,6 @@ func TestDecodeToken_RejectsTokensItDidNotIssue(t *testing.T) {
 	}
 }
 
-func requireAWSError(t *testing.T, err error, code, message string) {
-	t.Helper()
-	got, msg, ok := awserrors.ResolveErrorDetail(err)
-	require.True(t, ok, "error %v carries no AWS code", err)
-	assert.Equal(t, code, got)
-	assert.Equal(t, message, msg)
-}
-
 func TestEC2Parse(t *testing.T) {
 	p := paging.EC2{
 		MaxResults: 1000,
@@ -90,22 +83,22 @@ func TestEC2Parse(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = p.Parse(aws.Int64(1001), nil, 0)
-	requireAWSError(t, err, awserrors.ErrorInvalidParameterValue, "too large 1001")
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidParameterValue, "too large 1001")
 	for _, n := range []int64{4, 0, -1} {
 		_, err = p.Parse(aws.Int64(n), nil, 0)
-		requireAWSError(t, err, awserrors.ErrorInvalidParameterValue, fmt.Sprintf("too small %d", n))
+		testutil.RequireAWSError(t, err, awserrors.ErrorInvalidParameterValue, fmt.Sprintf("too small %d", n))
 	}
 
 	_, err = p.Parse(aws.Int64(2000), nil, 1)
-	requireAWSError(t, err, awserrors.ErrorInvalidParameterValue, "too large 2000")
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidParameterValue, "too large 2000")
 	_, err = p.Parse(aws.Int64(5), nil, 1)
-	requireAWSError(t, err, awserrors.ErrorInvalidParameterCombination, "ids and max")
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidParameterCombination, "ids and max")
 
 	_, err = p.Parse(nil, aws.String("garbage"), 0)
-	requireAWSError(t, err, awserrors.ErrorInvalidParameterValue,
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidParameterValue,
 		"Value ( garbage ) for parameter NextToken is invalid. The token is invalid.")
 
 	p.PaginationTokenError = true
 	_, err = p.Parse(nil, aws.String("garbage"), 0)
-	requireAWSError(t, err, awserrors.ErrorInvalidPaginationToken, "Next token 'garbage' is invalid")
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidPaginationToken, "Next token 'garbage' is invalid")
 }

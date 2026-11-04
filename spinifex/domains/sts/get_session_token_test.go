@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"strings"
 	"testing"
 	"time"
@@ -104,7 +105,7 @@ func TestGetSessionToken_DurationBounds(t *testing.T) {
 		t.Run(fmt.Sprintf("refuses_%d", tc.seconds), func(t *testing.T) {
 			out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, testCallerAccessKeyID,
 				&sts.GetSessionTokenInput{DurationSeconds: aws.Int64(tc.seconds)})
-			requireAWSError(t, err, awserrors.ErrorValidationError, fmt.Sprintf(
+			testutil.RequireAWSError(t, err, awserrors.ErrorValidationError, fmt.Sprintf(
 				"1 validation error detected: Value '%d' at 'durationSeconds' failed to satisfy constraint: %s", tc.seconds, tc.constraint))
 			assert.Nil(t, out)
 		})
@@ -117,7 +118,7 @@ func TestGetSessionToken_ConstraintsCheckedBeforeCaller(t *testing.T) {
 
 	_, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, "ASIAEXAMPLEAAAAAAAAA",
 		&sts.GetSessionTokenInput{DurationSeconds: aws.Int64(899), TokenCode: aws.String("")})
-	requireAWSError(t, err, awserrors.ErrorValidationError,
+	testutil.RequireAWSError(t, err, awserrors.ErrorValidationError,
 		"2 validation errors detected: Value '899' at 'durationSeconds' failed to satisfy constraint: "+
 			"Member must have value greater than or equal to 900; "+
 			"Value '' at 'tokenCode' failed to satisfy constraint: Member must have length greater than or equal to 6")
@@ -173,7 +174,7 @@ func TestGetSessionToken_RejectsMFAParameters(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, testCallerAccessKeyID,
 				&sts.GetSessionTokenInput{SerialNumber: tc.serialNumber, TokenCode: tc.tokenCode})
-			requireAWSError(t, err, awserrors.ErrorValidationError, tc.wantMessage)
+			testutil.RequireAWSError(t, err, awserrors.ErrorValidationError, tc.wantMessage)
 			assert.Nil(t, out)
 		})
 	}

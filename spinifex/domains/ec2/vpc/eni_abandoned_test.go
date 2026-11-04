@@ -2,6 +2,7 @@ package vpc
 
 import (
 	"context"
+	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"testing"
 	"time"
 
@@ -137,7 +138,7 @@ func TestAbandonedENIBlocksSecurityGroupDelete(t *testing.T) {
 		GroupId: aws.String(sgID),
 	}, testAccountID)
 	require.Error(t, err)
-	requireAWSError(t, err, awserrors.ErrorDependencyViolation, "resource "+sgID+" has a dependent object")
+	testutil.RequireAWSError(t, err, awserrors.ErrorDependencyViolation, "resource "+sgID+" has a dependent object")
 
 	orphans, err := svc.ListAbandonedInstanceENIs(context.Background(), 15*time.Minute)
 	require.NoError(t, err)

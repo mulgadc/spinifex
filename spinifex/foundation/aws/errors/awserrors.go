@@ -1291,7 +1291,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorResourceLimitExceeded:                                 {HTTPCode: 400, Message: "You have exceeded an Amazon EC2 resource limit. For example, you might have too many snapshot copies in progress."},
 	ErrorResourceNotFound:                                      {HTTPCode: 404, Message: "The specified resource was not found."},
 	ErrorEKSResourceInUse:                                      {HTTPCode: 409, Message: "A cluster with this name already exists in this account and Region. Delete the existing cluster, or choose a different name."},
-	ErrorEKSResourceNotFound:                                   {HTTPCode: 404, Message: "The specified cluster could not be found. You can view your available clusters with ListClusters. Amazon EKS clusters are Region specific."},
+	ErrorEKSResourceNotFound:                                   {HTTPCode: 404, Message: "The specified resource could not be found. You can view your available clusters with ListClusters. You can view your available managed node groups with ListNodegroups. Amazon EKS clusters and node groups are Amazon Web Services Region specific."},
 	ErrorEKSInvalidRequest:                                     {HTTPCode: 400, Message: "The request is invalid given the state of the cluster or access entry."},
 	ErrorEKSBadRequest:                                         {HTTPCode: 400, Message: "A parameter of the request is not valid."},
 	ErrorECSClientException:                                    {HTTPCode: 400, Message: "Unable to describe task definition."},

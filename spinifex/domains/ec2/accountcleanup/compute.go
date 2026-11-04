@@ -23,8 +23,9 @@ const (
 	DispositionCancelled = "cancelled"
 	// DispositionTerminal: a spot request that was already closed, cancelled or failed.
 	DispositionTerminal = "terminal"
-	// DispositionTerminated: an instance whose record shows terminated with every dependent done.
-	DispositionTerminated = "terminated"
+	// DispositionPending: a terminate was acknowledged but the teardown read cannot
+	// confirm completion, because terminated records expire.
+	DispositionPending = "pending"
 
 	// ReasonTerminating: a terminate is in progress or its teardown is unfinished.
 	ReasonTerminating = "terminating"
@@ -33,8 +34,13 @@ const (
 	ReasonTerminationUnproven = "termination-unproven"
 	// ReasonManagedServiceOwner: a managed service still owns the instance.
 	ReasonManagedServiceOwner = "managed-service-owner"
-	// ReasonSpotCancelFailed: an open or active spot request could not be cancelled.
+	// ReasonSpotCancelFailed: a spot request that can still launch could not be cancelled.
 	ReasonSpotCancelFailed = "spot-cancel-failed"
+	// ReasonSpotStateUnrecognised: a spot request in a state outside the EC2 model.
+	ReasonSpotStateUnrecognised = "spot-state-unrecognised"
+	// ReasonTeardownUnconfirmed: no unfinished teardown was observed, which is
+	// not proof the teardown finished.
+	ReasonTeardownUnconfirmed = "teardown-unconfirmed"
 
 	// Incomplete reasons: the run stopped or could not prove a part of its result.
 	ReasonSpotInventoryIncomplete     = "spot-inventory-incomplete"
@@ -177,7 +183,7 @@ func (c *ComputeCleanup) cancelSpot(ctx context.Context, accountID string, res *
 	var open []*string
 	cancelled := map[string]bool{}
 	for _, r := range scan.Active {
-		if cancellableSpotState(r.State) {
+		if !terminalSpotState(r.State) {
 			open = append(open, aws.String(r.RequestID))
 			cancelled[r.RequestID] = true
 		}
@@ -200,12 +206,17 @@ func (c *ComputeCleanup) cancelSpot(ctx context.Context, accountID string, res *
 	}
 	proven := true
 	for _, r := range scan.Active {
-		if cancellableSpotState(r.State) {
+		if !terminalSpotState(r.State) {
 			proven = false
 			res.Items = append(res.Items, Item{ResourceID: r.RequestID, Kind: KindSpotRequest, State: r.State, Disposition: DispositionBlocked, Reason: ReasonSpotCancelFailed})
 		}
 	}
 	for _, r := range scan.Terminal {
+		if !terminalSpotState(r.State) {
+			proven = false
+			res.Items = append(res.Items, Item{ResourceID: r.RequestID, Kind: KindSpotRequest, State: r.State, Disposition: DispositionBlocked, Reason: ReasonSpotStateUnrecognised})
+			continue
+		}
 		disposition := DispositionTerminal
 		if cancelled[r.RequestID] {
 			disposition = DispositionCancelled
@@ -218,10 +229,10 @@ func (c *ComputeCleanup) cancelSpot(ctx context.Context, accountID string, res *
 	return proven
 }
 
-// cancellableSpotState: open and active requests can still launch an instance;
-// closed, cancelled and failed are terminal.
-func cancellableSpotState(state string) bool {
-	return state == ec2.SpotInstanceStateOpen || state == ec2.SpotInstanceStateActive
+// terminalSpotState: closed, cancelled and failed requests launch nothing more.
+// Every other state, disabled and unknown ones included, must be cancelled.
+func terminalSpotState(state string) bool {
+	return state == ec2.SpotInstanceStateClosed || state == ec2.SpotInstanceStateCancelled || state == ec2.SpotInstanceStateFailed
 }
 
 // terminateAll terminates every listed instance that is not terminating and
@@ -280,7 +291,7 @@ func (c *ComputeCleanup) reportTeardown(accountID string, asked map[string]bool,
 	}
 	for id := range asked {
 		if !open[id] {
-			res.Items = append(res.Items, Item{ResourceID: id, Kind: KindInstance, Disposition: DispositionTerminated})
+			res.Items = append(res.Items, Item{ResourceID: id, Kind: KindInstance, Disposition: DispositionPending, Reason: ReasonTeardownUnconfirmed})
 		}
 	}
 }
@@ -301,7 +312,7 @@ func (r *ComputeResult) finish() {
 		r.Status = StatusIncomplete
 	}
 	for _, it := range r.Items {
-		if it.Disposition == DispositionBlocked {
+		if it.Disposition == DispositionBlocked || it.Disposition == DispositionPending {
 			r.Status = StatusIncomplete
 		}
 	}

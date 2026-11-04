@@ -146,8 +146,9 @@ func TestCleanupCompute_TerminatesEveryLiveInstance(t *testing.T) {
 	res := rig.run(t, false)
 
 	assert.ElementsMatch(t, []string{runningID, stoppedID}, rig.terminator.terminated)
-	assert.Equal(t, StatusClean, res.Status)
-	assert.Equal(t, DispositionTerminated, itemFor(res, runningID).Disposition)
+	assert.Equal(t, StatusIncomplete, res.Status, "an absent teardown record is not proof of completion")
+	assert.Equal(t, DispositionPending, itemFor(res, runningID).Disposition)
+	assert.Equal(t, ReasonTeardownUnconfirmed, itemFor(res, runningID).Reason)
 }
 
 func TestCleanupCompute_SkipsInstanceAlreadyTerminating(t *testing.T) {
@@ -175,7 +176,7 @@ func TestCleanupCompute_UnacknowledgedTerminateIsUnproven(t *testing.T) {
 	require.NotNil(t, item)
 	assert.Equal(t, DispositionBlocked, item.Disposition)
 	assert.Equal(t, ReasonTerminationUnproven, item.Reason)
-	assert.Equal(t, DispositionTerminated, itemFor(res, stoppedID).Disposition, "one unproven instance does not stop the others")
+	assert.Equal(t, DispositionPending, itemFor(res, stoppedID).Disposition, "one unproven instance does not stop the others")
 	assert.Equal(t, StatusIncomplete, res.Status)
 }
 
@@ -190,7 +191,7 @@ func TestCleanupCompute_TeardownOutstandingIsBlockedTerminating(t *testing.T) {
 	item := itemFor(res, runningID)
 	assert.Equal(t, DispositionBlocked, item.Disposition)
 	assert.Equal(t, ReasonTerminating, item.Reason)
-	assert.Equal(t, DispositionTerminated, itemFor(res, stoppedID).Disposition)
+	assert.Equal(t, DispositionPending, itemFor(res, stoppedID).Disposition)
 }
 
 func TestCleanupCompute_UnreadableTeardownLeavesTerminatesUnproven(t *testing.T) {
@@ -218,7 +219,7 @@ func TestCleanupCompute_CancelsOpenAndActiveSpotRequests(t *testing.T) {
 	assert.ElementsMatch(t, []string{"sir-open", "sir-active"}, rig.spot.cancelled)
 	assert.Equal(t, DispositionCancelled, itemFor(res, "sir-open").Disposition)
 	assert.Equal(t, DispositionTerminal, itemFor(res, "sir-old").Disposition)
-	assert.Equal(t, StatusClean, res.Status)
+	assert.NotContains(t, res.IncompleteReasons, ReasonSpotInventoryIncomplete)
 }
 
 // A failed request is terminal, like closed and cancelled: it is neither
@@ -233,7 +234,7 @@ func TestCleanupCompute_FailedSpotRequestIsTerminal(t *testing.T) {
 	res := rig.run(t, false)
 
 	assert.Zero(t, rig.spot.cancelCall, "a failed request is not cancelled")
-	assert.Equal(t, StatusClean, res.Status)
+	assert.NotContains(t, res.IncompleteReasons, ReasonSpotInventoryIncomplete)
 	assert.Equal(t, DispositionTerminal, itemFor(res, "sir-failed").Disposition)
 	assert.ElementsMatch(t, []string{runningID, stoppedID}, rig.terminator.terminated, "a failed spot request does not hold up the terminate")
 }
@@ -332,4 +333,36 @@ func TestCleanupCompute_RejectsBadRequest(t *testing.T) {
 		_, err := c.CleanupCompute(t.Context(), req)
 		assert.Error(t, err)
 	}
+}
+
+// Terminated records expire, so a missing one is never read as a finished teardown.
+func TestCleanupCompute_NoOutstandingRecordIsNotProofOfCompletion(t *testing.T) {
+	rig := newComputeRig()
+	res := rig.run(t, false)
+
+	for _, id := range []string{runningID, stoppedID} {
+		assert.Equal(t, DispositionPending, itemFor(res, id).Disposition)
+	}
+	assert.Equal(t, StatusIncomplete, res.Status)
+
+	rig.inventory.out = listing(nil)
+	assert.Equal(t, StatusClean, rig.run(t, false).Status, "a rerun that finds no instance converges")
+}
+
+// A disabled request can resume, so it is cancelled; an unknown state is never drained.
+func TestS7_CleanupComputeSpotStateIsFailClosed(t *testing.T) {
+	rig := newComputeRig()
+	rig.spot.scans = []*ec2spotinstance.AccountScan{
+		{Active: []ec2spotinstance.AccountSpotRequest{{RequestID: "sir-disabled", State: ec2.SpotInstanceStateDisabled}}},
+		{Terminal: []ec2spotinstance.AccountSpotRequest{{RequestID: "sir-disabled", State: ec2.SpotInstanceStateCancelled}}},
+	}
+	rig.run(t, false)
+	assert.Equal(t, []string{"sir-disabled"}, rig.spot.cancelled)
+
+	unknown := newComputeRig()
+	unknown.spot.scans = []*ec2spotinstance.AccountScan{{Terminal: []ec2spotinstance.AccountSpotRequest{{RequestID: "sir-odd", State: "mystery"}}}}
+	res := unknown.run(t, false)
+	assert.Equal(t, ReasonSpotStateUnrecognised, itemFor(res, "sir-odd").Reason)
+	assert.Empty(t, unknown.terminator.terminated, "ADR-0003:S7: an unrecognised spot state could still launch, so nothing is terminated")
+	assert.Equal(t, StatusIncomplete, res.Status)
 }

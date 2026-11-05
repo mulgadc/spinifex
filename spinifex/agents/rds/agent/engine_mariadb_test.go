@@ -883,6 +883,7 @@ func TestMariaDBProbe_SeparatesRecoveringFromAbsent(t *testing.T) {
 // mariadbd will not accept makes it exit during startup, so the pidfile names a
 // process that is gone and the deadline runs.
 func TestMariaDBProbe_BoundsAStalledClient(t *testing.T) {
+	t.Parallel()
 	cfg := mariadbTestProbeConfig(t)
 	cfg.EngineProbeTimeout = 20 * time.Millisecond
 	writePid(t, cfg.EnginePidFile, 4242)
@@ -946,6 +947,7 @@ func TestMariaDBProbe_MapsToTheHealthTheControlPlaneReads(t *testing.T) {
 // the server mid-recovery — a rollback that exists to break a boot loop would
 // create one, on an instance whose parameters were never at fault.
 func TestMariaDBProbe_LiveButUnreachableEngineResetsTheRollbackDeadline(t *testing.T) {
+	t.Parallel()
 	cfg := mariadbTestProbeConfig(t)
 	writePid(t, cfg.EnginePidFile, 4242)
 	probe := newEngineProbe(cfg.EnginePort, mariadbProbeState(cfg,
@@ -1156,6 +1158,7 @@ func TestMariaDBEngine_EveryResolvedDynamicValueRenders(t *testing.T) {
 // waits at its commit, so a rotation issued mid-backup must not reach the
 // engine until the hold is released.
 func TestMariaDBEngine_SetPasswordWaitsForTheBackupHoldToEnd(t *testing.T) {
+	t.Parallel()
 	runner := &recordingRunner{}
 	engine := newTestMariaDBEngine(t, runner.run)
 	engine.startSess = func(context.Context, command) (engineSession, error) { return &fakeSession{}, nil }
@@ -1190,6 +1193,7 @@ func TestMariaDBEngine_SetPasswordWaitsForTheBackupHoldToEnd(t *testing.T) {
 // A hold that outlasts the wait fails the rotation before anything is sent, so
 // the control plane's error is the truth rather than half of it.
 func TestMariaDBEngine_SetPasswordFailsUntouchedWhenTheHoldOutlastsItsWait(t *testing.T) {
+	t.Parallel()
 	runner := &recordingRunner{}
 	engine := newTestMariaDBEngine(t, runner.run)
 	engine.holdWait = 3 * holdPollInterval
@@ -1246,6 +1250,7 @@ func TestMariaDBEngine_SetPasswordBoundsTheStatementByTheRemainingBudget(t *test
 // A quiesce that cannot get the hold bookkeeping must give up with its command,
 // not wait on the mutex after its issuer has moved on.
 func TestMariaDBEngine_QuiesceGivesUpWaitingForTheBookkeepingWithItsContext(t *testing.T) {
+	t.Parallel()
 	engine := newTestMariaDBEngine(t, (&recordingRunner{}).run)
 	started := 0
 	engine.startSess = func(context.Context, command) (engineSession, error) {

@@ -158,6 +158,7 @@ func TestCommander_RetainsAndRetriesTheCompletePendingBatch(t *testing.T) {
 // A poll error must not spin the loop: without a backoff a gateway that is down
 // would be re-polled at line rate for as long as it stayed down.
 func TestCommander_BacksOffAfterAFailedPoll(t *testing.T) {
+	t.Parallel()
 	cp := newFakeControlPlane()
 	cp.pollErr = errors.New("gateway unreachable")
 
@@ -306,6 +307,7 @@ func TestCommander_ACopyArrivingBeforeTheReplyIsCarriedDoesNotRunAgain(t *testin
 // A quiesce that waited out its issuer's budget behind another command would
 // put the engine in backup mode for a snapshot nobody is taking.
 func TestCommander_AStaleQuiesceNeverTakesAHold(t *testing.T) {
+	t.Parallel()
 	cp := newFakeControlPlane()
 	cp.pollQueue = [][]rdsinstance.Command{
 		{{CommandID: "cmd-apply", Type: rdsinstance.CommandApplyParams}},
@@ -351,6 +353,7 @@ func TestCommander_AStaleQuiesceNeverTakesAHold(t *testing.T) {
 // Engine commands still run one at a time: a parameter apply rewrites the
 // option file a graceful stop would otherwise race.
 func TestCommander_AParameterApplyNeverRunsAlongsideAnEngineStop(t *testing.T) {
+	t.Parallel()
 	cp := newFakeControlPlane()
 	cp.pollQueue = [][]rdsinstance.Command{
 		{{CommandID: "cmd-apply", Type: rdsinstance.CommandApplyParams}},
@@ -414,6 +417,7 @@ func (c *commander) pendingReplies() []rdsinstance.CommandReply {
 // its issuer about to give up. A quiesce granted a fresh budget then would take
 // a hold nobody is left to release.
 func TestCommander_AQuiesceStampedNearlyOutOfBudgetNeverTakesAHold(t *testing.T) {
+	t.Parallel()
 	cp := newFakeControlPlane()
 	cp.pollQueue = [][]rdsinstance.Command{
 		{{CommandID: "cmd-apply", Type: rdsinstance.CommandApplyParams}},

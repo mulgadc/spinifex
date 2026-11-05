@@ -15,14 +15,35 @@ import (
 	"go.uber.org/goleak"
 )
 
+// waitClosed fails the test if ch is not closed within d.
+func waitClosed(t *testing.T, ch <-chan struct{}, d time.Duration, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(d):
+		t.Fatal(what)
+	}
+}
+
+// waitGroupBounded fails the test if wg does not finish within d.
+func waitGroupBounded(t *testing.T, wg *sync.WaitGroup, d time.Duration) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	waitClosed(t, done, d, "goroutines did not finish")
+}
+
 // A stop after the callback has started waits for it to finish, so no
 // close is still running when its caller releases a slot or returns.
 func TestJoinAfterFunc_StopWaitsForAStartedCallback(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	started, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
 	stop := joinAfterFunc(ctx, func() { close(started); <-release })
 	cancel()
-	<-started
+	waitClosed(t, started, 5*time.Second, "callback never started")
 
 	returned := make(chan struct{})
 	go func() { stop(); close(returned) }()
@@ -31,12 +52,8 @@ func TestJoinAfterFunc_StopWaitsForAStartedCallback(t *testing.T) {
 		t.Fatal("stop returned while the callback was still running")
 	case <-time.After(100 * time.Millisecond):
 	}
-	close(release)
-	select {
-	case <-returned:
-	case <-time.After(5 * time.Second):
-		t.Fatal("stop never returned after the callback finished")
-	}
+	unblock()
+	waitClosed(t, returned, 5*time.Second, "stop never returned after the callback finished")
 }
 
 func TestJoinAfterFunc_StopBeforeCancelNeverRunsTheCallback(t *testing.T) {
@@ -146,7 +163,7 @@ func TestServe_CancellationRacingCompletionLeavesNothingRunning(t *testing.T) {
 		if i%3 == 1 {
 			stop()
 		}
-		wg.Wait()
+		waitGroupBounded(t, &wg, 15*time.Second)
 		stop()
 	}
 }

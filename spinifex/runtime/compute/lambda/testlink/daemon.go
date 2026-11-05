@@ -144,11 +144,6 @@ func (d *Daemon) Handle(ctx context.Context, data []byte, cred Credential) Reply
 	if err := CheckRequest(req); err != nil {
 		return refused(err.Error())
 	}
-	// The guest frame is checked at its longest deadline encoding before the
-	// grant starts, since control and guest frames bound different fields.
-	if err := hostlink.CheckInvokeFits(guestRequest(req, math.MaxInt64)); err != nil {
-		return refused("request does not fit the guest link")
-	}
 	if req.Grant.Node != d.Node {
 		return refused("grant names another node")
 	}
@@ -170,6 +165,12 @@ func (d *Daemon) Handle(ctx context.Context, data []byte, cred Credential) Reply
 	}()
 	if id, err := d.unresolved(); err != nil || id != "" {
 		return refused("an unresolved test-link attempt holds this node's slot")
+	}
+	// The guest frame is checked at its longest deadline encoding, MinInt64,
+	// before Start: control and guest frames bound different fields. It runs
+	// after the slot is taken so a busy refusal never encodes the payload.
+	if err := hostlink.CheckInvokeFits(guestRequest(req, math.MinInt64)); err != nil {
+		return refused("request does not fit the guest link")
 	}
 	// Without pidfs a restarted daemon could not identify the VM it left.
 	if _, err := selfInode(); err != nil {

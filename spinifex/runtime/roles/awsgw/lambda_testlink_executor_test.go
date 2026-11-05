@@ -114,8 +114,11 @@ func executor(n *fakeControl, presignErr error, store *execution.Store) *testLin
 	return executorWith(n, &fakeSessions{}, presignErr, store)
 }
 
+// testImageDigest stands in for the build's pinned runtime image digest.
+const testImageDigest = "ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+
 func executorWith(n *fakeControl, sessions *fakeSessions, presignErr error, store *execution.Store) *testLinkExecutor {
-	return &testLinkExecutor{Control: n, RequestLimit: n.max, Sessions: sessions, Node: "node1",
+	return &testLinkExecutor{Control: n, RequestLimit: n.max, Sessions: sessions, Node: "node1", ImageDigest: testImageDigest,
 		Codes:  func(context.Context) (codePresigner, error) { return fakePresigner{err: presignErr}, nil },
 		Grants: func(context.Context) (grantIssuer, error) { return store, nil },
 	}
@@ -157,6 +160,25 @@ func TestLambdaTestLinkExecutor_RefusesWithoutSending(t *testing.T) {
 			require.Empty(t, n.sent, "a refusal must send nothing")
 			require.NotContains(t, err.Error(), "secret-signature")
 			require.Equal(t, tc.state, grantState(t, store), "no grant, or one withdrawn unsent")
+		})
+	}
+}
+
+// A gateway built without a valid image pin refuses before presigning,
+// granting, issuing or connecting.
+func TestLambdaTestLinkExecutor_InvalidImagePinRefusesBeforeConnecting(t *testing.T) {
+	for name, pin := range map[string]string{"missing": "", "malformed": "not-a-digest"} {
+		t.Run(name, func(t *testing.T) {
+			n, store := &fakeControl{max: 1 << 20, reply: &testlink.Reply{Outcome: testlink.OutcomeDone}}, grantStore(t)
+			sessions := &fakeSessions{}
+			e := executorWith(n, sessions, nil, store)
+			e.ImageDigest = pin
+			_, err := e.InvokeSync(context.Background(), invocation(nil))
+			var refusal *awsapi.RefusalError
+			require.ErrorAs(t, err, &refusal)
+			require.Empty(t, n.sent)
+			require.Empty(t, sessions.issued)
+			require.Empty(t, grantState(t, store), "no grant taken")
 		})
 	}
 }
@@ -277,6 +299,7 @@ func TestLambdaTestLinkExecutor_IssuesForTheAttemptAndSendsOnTheSocket(t *testin
 	var sent testlink.Request
 	require.NoError(t, json.Unmarshal(n.sent[0], &sent))
 	require.Equal(t, testScope.FunctionARN+":$LATEST", sent.FunctionARN, "the runtime still sees the invoked ARN")
+	require.Equal(t, testImageDigest, sent.ImageDigest, "the daemon checks the gateway's pinned image")
 	require.NotContains(t, string(n.sent[0]), testSecret, "the credential travels beside the request, not in it")
 	require.Equal(t, testSecret, n.creds[0].SecretAccessKey)
 
@@ -398,4 +421,76 @@ func TestLambdaTestLinkExecutor_SilentDaemonIsUnknownAndRevoked(t *testing.T) {
 	require.False(t, errors.As(err, &refusal), "a delivered request is unknown")
 	require.Less(t, time.Since(start), 10*time.Second)
 	require.Len(t, sessions.revoked, 1)
+}
+
+// withdrawFault fails Withdraw before or after the owner writes it.
+type withdrawFault struct {
+	*execution.Store
+	afterWrite bool
+}
+
+func (w withdrawFault) Withdraw(ctx context.Context, g execution.Grant) error {
+	if !w.afterWrite {
+		return errors.New("owner unavailable")
+	}
+	if err := w.Store.Withdraw(ctx, g); err != nil {
+		return err
+	}
+	return execution.ErrOutcomeUnknown
+}
+
+// A daemon refusal with a failed Withdraw leaves the grant startable: a
+// replayed Start succeeds. A lost Withdraw acknowledgement leaves it fenced.
+func TestLambdaTestLinkExecutor_RefusalWithdrawFaults(t *testing.T) {
+	for name, tc := range map[string]struct {
+		afterWrite bool
+		state      string
+		replay     bool
+	}{
+		"fails before write": {state: execution.StateGranted, replay: true},
+		"ack lost":           {afterWrite: true, state: execution.StateWithdrawn},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := grantStore(t)
+			n := &fakeControl{max: 1 << 20, reply: &testlink.Reply{Outcome: testlink.OutcomeRefused, Error: "image differs"}}
+			e := executor(n, nil, store)
+			e.Grants = func(context.Context) (grantIssuer, error) { return withdrawFault{store, tc.afterWrite}, nil }
+			_, err := e.InvokeSync(context.Background(), invocation(nil))
+			require.Error(t, err)
+			require.Len(t, n.sent, 1)
+			require.Equal(t, tc.state, grantState(t, store))
+
+			var sent testlink.Request
+			require.NoError(t, json.Unmarshal(n.sent[0], &sent))
+			err = store.Start(context.Background(), sent.Grant, sent.Identity())
+			if tc.replay {
+				require.NoError(t, err, "an unwithdrawn grant can still start")
+			} else {
+				require.Error(t, err, "a withdrawn grant cannot start")
+			}
+		})
+	}
+}
+
+// The digest field counts toward the request bound: the exact encoded size
+// is sent and one byte less is refused unsent.
+func TestLambdaTestLinkExecutor_RequestBoundIncludesImageDigest(t *testing.T) {
+	probe := &fakeControl{max: 1 << 20, reply: &testlink.Reply{Outcome: testlink.OutcomeDone}}
+	_, err := executor(probe, nil, grantStore(t)).InvokeSync(context.Background(), invocation(make([]byte, 1000)))
+	require.NoError(t, err)
+	require.Len(t, probe.sent, 1)
+	require.Contains(t, string(probe.sent[0]), `"image_digest":"`+testImageDigest+`"`)
+	size := int64(len(probe.sent[0]))
+
+	at := &fakeControl{max: size, reply: &testlink.Reply{Outcome: testlink.OutcomeDone}}
+	_, err = executor(at, nil, grantStore(t)).InvokeSync(context.Background(), invocation(make([]byte, 1000)))
+	require.NoError(t, err)
+	require.Len(t, at.sent, 1)
+	require.Equal(t, size, int64(len(at.sent[0])), "the generated IDs are fixed-length, so the at-limit request is the probed size")
+
+	under := &fakeControl{max: size - 1}
+	_, err = executor(under, nil, grantStore(t)).InvokeSync(context.Background(), invocation(make([]byte, 1000)))
+	var refusal *awsapi.RefusalError
+	require.ErrorAs(t, err, &refusal)
+	require.Empty(t, under.sent)
 }

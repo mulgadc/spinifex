@@ -49,6 +49,8 @@ type Request struct {
 	CodeURL     string          `json:"code_url"`
 	CodeSize    int64           `json:"code_size"`
 	CodeSHA256  string          `json:"code_sha256"`
+	// ImageDigest is the runtime image the gateway expects to run the code.
+	ImageDigest string `json:"image_digest"`
 	Payload     []byte          `json:"payload"`
 
 	// cred arrives beside the request on the control socket, never inside it.

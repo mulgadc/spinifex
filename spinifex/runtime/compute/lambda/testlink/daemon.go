@@ -149,6 +149,9 @@ func (d *Daemon) Handle(ctx context.Context, data []byte, cred Credential) Reply
 	if d.Image == nil {
 		return refused("runtime image not prepared")
 	}
+	if req.ImageDigest != d.Image.Digest {
+		return refused("runtime image digest differs from the prepared image")
+	}
 	if !d.busy.CompareAndSwap(false, true) {
 		return refused("another test-link attempt holds this node's slot")
 	}
@@ -193,7 +196,7 @@ func (d *Daemon) attempt(ctx context.Context, req Request, launch func(code []by
 	if err := d.Grants.Start(ctx, req.Grant, req.Identity()); err != nil {
 		if errors.Is(err, execution.ErrOutcomeUnknown) {
 			slog.Error("Lambda test link: grant start outcome unknown; node held", "attempt", req.AttemptID, "err", err)
-			return Reply{Outcome: OutcomeUnknown, Error: "grant start outcome unknown"}, true
+			return Reply{Outcome: OutcomeUnknown, Error: "grant start outcome unknown"}, false
 		}
 		return refused(err.Error()), true
 	}

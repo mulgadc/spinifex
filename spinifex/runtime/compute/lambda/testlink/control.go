@@ -23,7 +23,7 @@ import (
 // ControlName is the abstract Unix socket name the node's daemon serves. An
 // abstract name has no directory entry; the kernel frees it when the last
 // reference to the listening socket closes.
-const ControlName = "spinifex-lambda-testlink-control"
+const ControlName = "spinifex-lambda-testlink-control/2"
 
 // Service accounts at each end of the control socket.
 const (

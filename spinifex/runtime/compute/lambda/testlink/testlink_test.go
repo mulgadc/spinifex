@@ -121,13 +121,18 @@ func baseRequest(url string, code []byte) Request {
 	return Request{
 		AttemptID: "0123456789ab", RequestID: "r", Region: "ap-southeast-2", AccountID: "123456789012",
 		FunctionID: "fn1", RevisionID: "rev1", Handler: "bootstrap.handler", TimeoutMs: 3000, CodeURL: url, CodeSize: int64(len(code)),
-		CodeSHA256: hex.EncodeToString(sum[:]),
+		CodeSHA256: hex.EncodeToString(sum[:]), ImageDigest: testImageDigest,
 	}
 }
 
 func (g *granted) request(url string, code []byte) []byte {
+	return g.requestFor(url, code, g.image.Digest)
+}
+
+func (g *granted) requestFor(url string, code []byte, imageDigest string) []byte {
 	req := baseRequest(url, code)
 	req.Grant = g.att.Grant
+	req.ImageDigest = imageDigest
 	b, _ := json.Marshal(req)
 	return b
 }
@@ -148,6 +153,10 @@ func TestDaemon_RefusesBeforeAllocating(t *testing.T) {
 			b, _ := json.Marshal(baseRequest(good.URL, code))
 			return b
 		}, execution.StateGranted},
+		// A gateway built for another runtime image, or an old one that sends
+		// no digest, is refused before Start.
+		"image digest differs": {func(g *granted) []byte { return g.requestFor(good.URL, code, strings.Repeat("0", 64)) }, execution.StateGranted},
+		"image digest missing": {func(g *granted) []byte { return g.requestFor(good.URL, code, "") }, execution.StateGranted},
 		// Refused after Start with nothing launched: the daemon records the end.
 		"digest mismatch": {func(g *granted) []byte { return g.request(wrong.URL, code) }, execution.StateEnded},
 		"size mismatch":   {func(g *granted) []byte { return g.request(short.URL, code) }, execution.StateEnded},
@@ -164,6 +173,7 @@ func TestDaemon_RefusesBeforeAllocating(t *testing.T) {
 			rep := g.daemon(&Daemon{IPs: ips, Taps: taps, HTTP: client, WorkDir: t.TempDir()}).Handle(context.Background(), tc.data(g), testCred)
 			require.Equal(t, OutcomeRefused, rep.Outcome, rep.Error)
 			require.Empty(t, ips.allocated)
+			require.Empty(t, taps.created)
 			require.NotContains(t, rep.Error, good.URL)
 			require.Equal(t, tc.state, g.state(t))
 		})
@@ -198,6 +208,7 @@ func TestDaemon_OwnerRefusalComesBeforeAnyAllocation(t *testing.T) {
 			ips := &fakeIPs{}
 			rep := g.daemon(&Daemon{IPs: ips, Taps: &fakeTaps{}, HTTP: srv.Client(), WorkDir: t.TempDir()}).Handle(context.Background(), data, testCred)
 			require.Equal(t, OutcomeRefused, rep.Outcome)
+			require.NotContains(t, rep.Error, "image digest", "the owner, not the digest check, refuses")
 			require.False(t, fetched)
 			require.Empty(t, ips.allocated)
 			require.Equal(t, execution.StateGranted, g.state(t))
@@ -446,4 +457,66 @@ func TestCheckRequest_RefusesUnusableHandler(t *testing.T) {
 			require.ErrorContains(t, CheckRequest(req), "handler")
 		})
 	}
+}
+
+// unconfirmedStart lets the owner write the start, then reports the outcome
+// as unknown, as a lost acknowledgement would.
+type unconfirmedStart struct{ *execution.Store }
+
+func (u unconfirmedStart) Start(ctx context.Context, g execution.Grant, want execution.Identity) error {
+	if err := u.Store.Start(ctx, g, want); err != nil {
+		return err
+	}
+	return execution.ErrOutcomeUnknown
+}
+
+func TestDaemon_UnknownStartOutcomeHoldsTheSlot(t *testing.T) {
+	code := []byte("x")
+	g := grant(t, code)
+	ips, taps := &fakeIPs{}, &fakeTaps{}
+	d := g.daemon(&Daemon{IPs: ips, Taps: taps, WorkDir: t.TempDir()})
+	d.Grants = unconfirmedStart{g.store}
+
+	rep := d.Handle(context.Background(), g.request("https://h/x", code), testCred)
+	require.Equal(t, OutcomeUnknown, rep.Outcome)
+	require.True(t, d.busy.Load(), "an unconfirmed start may have taken the node")
+	require.Empty(t, ips.allocated)
+	require.Equal(t, execution.StateRunning, g.state(t))
+
+	rep = d.Handle(context.Background(), g.request("https://h/x", code), testCred)
+	require.Equal(t, OutcomeRefused, rep.Outcome)
+	require.Contains(t, rep.Error, "holds this node's slot")
+}
+
+// A daemon whose image is replaced between two Invokes refuses the second
+// before Start, though the first passed the digest check.
+func TestDaemon_ImageReplacedBetweenInvokesRefusesBeforeStart(t *testing.T) {
+	code := []byte("zip bytes")
+	wrong := codeServer(t, []byte("other one"))
+	g := grant(t, code)
+	ips, taps := &fakeIPs{}, &fakeTaps{}
+	d := g.daemon(&Daemon{IPs: ips, Taps: taps, HTTP: wrong.Client(), WorkDir: t.TempDir()})
+
+	rep := d.Handle(context.Background(), g.request(wrong.URL, code), testCred)
+	require.Equal(t, OutcomeRefused, rep.Outcome)
+	require.Equal(t, execution.StateEnded, g.state(t), "the first request passed the digest check and started")
+
+	second, err := g.store.Issue(context.Background(), execution.Attempt{
+		Grant:    execution.Grant{AttemptID: "0123456789ac", EnvironmentID: "env-0123456789ac", Generation: 1, Node: testNode},
+		Identity: baseRequest("", code).Identity(),
+		LaunchBy: time.Now().Add(time.Minute),
+	})
+	require.NoError(t, err)
+	d.Image = &Image{Digest: strings.Repeat("1", 64)}
+	req := baseRequest(wrong.URL, code)
+	req.AttemptID, req.Grant, req.ImageDigest = second.Grant.AttemptID, second.Grant, g.image.Digest
+	b, err := json.Marshal(req)
+	require.NoError(t, err)
+
+	rep = d.Handle(context.Background(), b, testCred)
+	require.Equal(t, OutcomeRefused, rep.Outcome)
+	require.Contains(t, rep.Error, "image digest differs")
+	require.Equal(t, execution.StateGranted, g.state(t), "the second grant was never started")
+	require.Empty(t, ips.allocated)
+	require.Empty(t, taps.created)
 }

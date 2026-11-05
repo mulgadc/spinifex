@@ -435,3 +435,25 @@ func TestControl_WriteErrorAfterDeliveryIsUnknown(t *testing.T) {
 	require.Equal(t, []byte(`{"attempt_id":"a"}`), s.req.Load())
 	require.Equal(t, testCred, s.cred.Load())
 }
+
+// legacyControlName is the protocol name before the request carried the image
+// digest; an old daemon still serves it and ignores the field.
+const legacyControlName = "spinifex-lambda-testlink-control"
+
+// A gateway and daemon on different control protocol names never connect, in
+// either direction. The scratch prefix isolates the binds; the names after it
+// are the production constant and its predecessor.
+func TestControl_MixedProtocolNamesNeverConnect(t *testing.T) {
+	prefix := controlName(t) + "/"
+	for name, tc := range map[string]struct{ daemon, gateway string }{
+		"old daemon, new gateway": {prefix + legacyControlName, prefix + ControlName},
+		"new daemon, old gateway": {prefix + ControlName, prefix + legacyControlName},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _ := serveControl(t, tc.daemon, os.Getuid(), nil)
+			_, err := client(tc.gateway, os.Getuid()).Exchange(t.Context(), []byte(`{"attempt_id":"a"}`), testCred, soon())
+			require.ErrorIs(t, err, ErrNotSent)
+			assert.Equal(t, int32(0), s.calls.Load())
+		})
+	}
+}

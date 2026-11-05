@@ -85,6 +85,7 @@ func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
 		GatewayBaseURL:      "https://gw.local:9999",
 		Region:              "us-east-1",
 		HolderID:            "node-1",
+		Leases:              NewClusterLeases(kvstore.OpenSyncBucket(js), "node-1"),
 		SystemGatewayURL:    "https://gw.local:9999",
 		SystemAccessKey:     "AKIAEXAMPLE",
 		SystemSecretKey:     "s3cr3t-key",

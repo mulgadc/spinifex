@@ -63,34 +63,6 @@ func TestReconcilerRegistry_SpawnFnErrorRemovesEntry(t *testing.T) {
 	assert.False(t, reg.Has("111122223333", "alpha"), "entry must not linger after spawn failure")
 }
 
-func TestReconcilerRegistry_LeaseHeldDropsEntryAndRetries(t *testing.T) {
-	t.Parallel()
-	reg := NewReconcilerRegistry()
-	var spawnCalls atomic.Int32
-	leaseHeld := atomic.Bool{}
-	leaseHeld.Store(true)
-	fn := func(ctx context.Context, _, _ string) (func(), <-chan struct{}, error) {
-		spawnCalls.Add(1)
-		if leaseHeld.Load() {
-			return nil, nil, ErrLeaseHeld
-		}
-		go func() { <-ctx.Done() }()
-		return func() {}, nil, nil
-	}
-
-	// Lease held elsewhere: Spawn is benign (nil), records no phantom holder.
-	require.NoError(t, reg.Spawn(t.Context(), "111122223333", "alpha", fn))
-	assert.False(t, reg.Has("111122223333", "alpha"), "lease-held must not leave a holder")
-
-	// Holder's TTL lapses; a later Spawn re-invokes fn and now takes over —
-	// no daemon restart needed.
-	leaseHeld.Store(false)
-	require.NoError(t, reg.Spawn(t.Context(), "111122223333", "alpha", fn))
-	assert.True(t, reg.Has("111122223333", "alpha"))
-	assert.EqualValues(t, 2, spawnCalls.Load(), "second Spawn must re-attempt after lease-held")
-	reg.StopAll()
-}
-
 // TestReconcilerRegistry_SelfExitDropsEntryAndRespawns covers a reconciler that
 // exits on its own — a terminal cluster state or a lost lease — with no Stop()
 // to cancel its ctx. The registry must drop the entry (and release the lease) so

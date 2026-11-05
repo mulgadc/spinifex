@@ -56,8 +56,7 @@ type EKSServiceDeps struct {
 	Region         string
 	HolderID       string
 
-	// Leases is the per-cluster lease group, from NewClusterLeases. Nil builds
-	// one on a sync bucket of this service's own, which only a test should need.
+	// Leases is the per-cluster lease group, from NewClusterLeases.
 	Leases *kvsync.LeaseGroup
 
 	// InternalSuffix is the AWS-parity internal DNS suffix (e.g. spinifex.internal)
@@ -353,18 +352,13 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 	if deps.NATSConn == nil {
 		return nil, errors.New("eks: NewEKSServiceImpl nil NATSConn")
 	}
-	js, err := jetstream.New(deps.NATSConn)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
-	}
-	leases := deps.Leases
-	if leases == nil {
-		leases = NewClusterLeases(kvstore.OpenSyncBucket(js), launchOwnerID(deps.HolderID))
+	if deps.Leases == nil {
+		return nil, errors.New("eks: NewEKSServiceImpl nil Leases")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &EKSServiceImpl{
 		deps:                     deps,
-		leases:                   leases,
+		leases:                   deps.Leases,
 		registry:                 NewReconcilerRegistry(),
 		owner:                    access.New(deps.Region),
 		bgCtx:                    ctx,
@@ -804,11 +798,9 @@ func (s *EKSServiceImpl) launchSuperseded(ctx context.Context, kv jetstream.KeyV
 }
 
 // launchOwnerID names this process as a launch owner in the record.
-func (s *EKSServiceImpl) launchOwnerID() string { return launchOwnerID(s.deps.HolderID) }
-
-func launchOwnerID(holderID string) string {
-	if holderID != "" {
-		return holderID
+func (s *EKSServiceImpl) launchOwnerID() string {
+	if s.deps.HolderID != "" {
+		return s.deps.HolderID
 	}
 	return "local"
 }

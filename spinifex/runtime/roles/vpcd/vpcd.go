@@ -706,7 +706,7 @@ func launchService(cfg *Config) error {
 	// produces duplicate rows that ovn-nbctl rejects. The drift loop shares the lease, so the two
 	// passes exclude each other on this node too. Runtime events still fan out via queue groups.
 	holder, _ := os.Hostname()
-	leader := reconcile.NewVPCDLease(kvstore.OpenSyncBucket(js), holder)
+	leader := reconcile.NewLeaderLease(kvstore.OpenSyncBucket(js), reconcile.KeyVPCDReconcile, holder)
 	releaseLeader, isLeader := reconcile.AcquireLeaderAtStart(ctx, leader)
 
 	subscriber, err := subscribers.New(subscribers.Config{

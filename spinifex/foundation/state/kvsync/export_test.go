@@ -2,6 +2,7 @@ package kvsync
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 )
@@ -134,7 +135,7 @@ func (c *FakeClock) notifyLocked() {
 
 // NewLeaseWithClock is NewLease measuring time on c.
 func NewLeaseWithClock(store KVStore, key, holder string, ttl time.Duration, c *FakeClock) *Lease {
-	registerKey(store, key)
+	mustWire(errors.Join(validHolder(holder), validTTL(ttl), registerKey(store, key)))
 	return newLease(store, key, holder, ttl, c)
 }
 

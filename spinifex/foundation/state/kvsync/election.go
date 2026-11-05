@@ -15,8 +15,8 @@ import (
 // set up its work is worse than none; onLost does not fire for it. On return
 // the lease is unlocked.
 func RunElection(ctx context.Context, l *Lease, onGained func(context.Context) error, onLost func()) {
+	// lost is nil while the lease is not held.
 	var (
-		held bool
 		tok  Token
 		lost <-chan struct{}
 	)
@@ -39,10 +39,10 @@ func RunElection(ctx context.Context, l *Lease, onGained func(context.Context) e
 				return
 			}
 		}
-		held, tok, lost = true, t, ch
+		tok, lost = t, ch
 	}
 	stepDown := func() {
-		held, lost = false, nil
+		lost = nil
 		if onLost != nil {
 			onLost()
 		}
@@ -51,12 +51,12 @@ func RunElection(ctx context.Context, l *Lease, onGained func(context.Context) e
 	try()
 	for {
 		var retry <-chan time.Time
-		if !held {
+		if lost == nil {
 			retry = l.clock.After(l.ttl / 3)
 		}
 		select {
 		case <-ctx.Done():
-			if held {
+			if lost != nil {
 				l.Unlock(ctx, tok)
 				stepDown()
 			}

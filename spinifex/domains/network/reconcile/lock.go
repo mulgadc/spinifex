@@ -26,11 +26,6 @@ func NewLeaderLease(store kvsync.KVStore, key, holder string) *kvsync.Lease {
 	return kvsync.NewLease(store, key, holder, LeaderTTL)
 }
 
-// NewVPCDLease returns vpcd's network reconcile lease.
-func NewVPCDLease(store kvsync.KVStore, holder string) *kvsync.Lease {
-	return NewLeaderLease(store, KeyVPCDReconcile, holder)
-}
-
 // takeoverRetry is when a pass that found the lease held asks to run again. A
 // dead holder's key is taken over once a follower has seen its revision sit for
 // a TTL, so retrying at the renewal interval takes over within about 4*TTL/3.
@@ -45,16 +40,18 @@ var (
 
 // ElectPass is AcquireLeader for a pass in a loop, adding a revisit deadline:
 // a pass that found the lease held asks to run again once a dead holder could
-// have been waited out, rather than waiting for the loop's next resync.
+// have been waited out, rather than waiting for the loop's next resync. The
+// release survives a cancelled ctx.
 func ElectPass(ctx context.Context, lease *kvsync.Lease) (release func(), revisit time.Duration, ok bool) {
-	release, err := tryLeader(ctx, lease)
+	tok, err := lease.TryLock(ctx)
 	if err != nil {
+		logFailure(ctx, lease, err)
 		if _, held := errors.AsType[*kvsync.HeldError](err); held {
 			return nil, takeoverRetry, false
 		}
 		return nil, 0, false
 	}
-	return release, 0, true
+	return func() { lease.Unlock(ctx, tok) }, 0, true
 }
 
 // AcquireLeaderAtStart is AcquireLeader for a one-shot election at start,
@@ -65,7 +62,7 @@ func AcquireLeaderAtStart(ctx context.Context, lease *kvsync.Lease) (func(), boo
 	for {
 		tok, err := lease.TryLock(ctx)
 		if err == nil {
-			return releaser(ctx, lease, tok), true
+			return func() { lease.Unlock(ctx, tok) }, true
 		}
 		if _, held := errors.AsType[*kvsync.HeldError](err); held || clustersize.Permanent(err) {
 			logFailure(ctx, lease, err)
@@ -89,23 +86,8 @@ func AcquireLeaderAtStart(ctx context.Context, lease *kvsync.Lease) (func(), boo
 // reconcile loops hold distinct leases, so the gateway quota reconcile never
 // blocks vpcd's network reconcile. The release survives a cancelled ctx.
 func AcquireLeader(ctx context.Context, lease *kvsync.Lease) (func(), bool) {
-	release, err := tryLeader(ctx, lease)
-	return release, err == nil
-}
-
-// tryLeader makes one attempt and logs a failure. The release survives a
-// cancelled ctx.
-func tryLeader(ctx context.Context, lease *kvsync.Lease) (func(), error) {
-	tok, err := lease.TryLock(ctx)
-	if err != nil {
-		logFailure(ctx, lease, err)
-		return nil, err
-	}
-	return releaser(ctx, lease, tok), nil
-}
-
-func releaser(ctx context.Context, lease *kvsync.Lease, tok kvsync.Token) func() {
-	return func() { lease.Unlock(ctx, tok) }
+	release, _, ok := ElectPass(ctx, lease)
+	return release, ok
 }
 
 func logFailure(ctx context.Context, lease *kvsync.Lease, err error) {

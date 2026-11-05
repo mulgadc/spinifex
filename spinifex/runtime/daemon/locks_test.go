@@ -20,7 +20,7 @@ func TestDaemonLocks_EveryOwnerHasItsOwnKey(t *testing.T) {
 	store := kvstore.OpenSyncBucket(testutil.NewJetStream(t, nc))
 	assert.NotPanics(t, func() {
 		locks := newDaemonLocks(store, "node-1")
-		reconcilelock.NewVPCDLease(store, "node-1")
+		reconcilelock.NewLeaderLease(store, reconcilelock.KeyVPCDReconcile, "node-1")
 		reconcilelock.NewLeaderLease(store, admissionquota.KeyReconcile, "node-1")
 		locks.eks.Get("123456789012/alpha")
 		locks.eks.Get("123456789012/alpha/teardown")

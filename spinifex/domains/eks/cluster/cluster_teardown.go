@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	telemetry "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -38,15 +37,8 @@ type teardownLease struct {
 // acquireTeardownLease takes the per-cluster teardown lease, renewing it until
 // released. It refuses when another node holds it or another goroutine here does.
 func (s *EKSServiceImpl) acquireTeardownLease(ctx context.Context, accountID, clusterName string) (teardownLease, bool) {
-	lease := s.leases.Get(teardownLeaseName(accountID, clusterName))
-	tok, err := lease.TryLock(ctx)
-	if err != nil {
-		if _, held := errors.AsType[*kvsync.HeldError](err); !held {
-			slog.WarnContext(ctx, "eks: teardown lease attempt failed", "key", lease.Key(), "err", err)
-		}
-		return teardownLease{}, false
-	}
-	return teardownLease{release: func() { lease.Unlock(ctx, tok) }, lost: lease.Lost()}, true
+	release, lost, ok := tryLease(ctx, s.leases.Get(teardownLeaseName(accountID, clusterName)))
+	return teardownLease{release: release, lost: lost}, ok
 }
 
 // teardownPassTimeout bounds one converger run, so a step that hangs cannot

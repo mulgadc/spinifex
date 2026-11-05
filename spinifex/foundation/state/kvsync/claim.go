@@ -18,10 +18,7 @@ type Claim struct {
 // NewClaim returns the claim on key for holder. It panics if key is invalid or
 // already constructed against store, or if holder is empty.
 func NewClaim(store KVStore, key, holder string) *Claim {
-	if holder == "" {
-		panic("kvsync: empty holder") //nolint:forbidigo // Constructing a lock wrongly is a wiring error that must fail at startup, not at the first election.
-	}
-	registerKey(store, key)
+	mustWire(errors.Join(validHolder(holder), registerKey(store, key)))
 	return &Claim{store: store, key: key, holder: holder}
 }
 
@@ -122,18 +119,13 @@ type ClaimGroup struct {
 // NewClaimGroup registers prefix, which ends in ".", against store. It panics
 // on an invalid or overlapping prefix, or an empty holder.
 func NewClaimGroup(store KVStore, prefix, holder string) *ClaimGroup {
-	if holder == "" {
-		panic("kvsync: empty holder") //nolint:forbidigo // Constructing a lock wrongly is a wiring error that must fail at startup, not at the first election.
-	}
-	registerPrefix(store, prefix)
+	mustWire(errors.Join(validHolder(holder), registerPrefix(store, prefix)))
 	return &ClaimGroup{store: store, prefix: prefix, holder: holder}
 }
 
 // Get returns the claim on prefix+name. A Claim keeps no state, so a fresh
 // value for the same name is equivalent to an earlier one.
 func (g *ClaimGroup) Get(name string) *Claim {
-	if err := validName("name", name); err != nil {
-		panic(err) //nolint:forbidigo // Constructing a lock wrongly is a wiring error that must fail at startup, not at the first election.
-	}
+	mustWire(validName("name", name))
 	return &Claim{store: g.store, key: g.prefix + name, holder: g.holder}
 }

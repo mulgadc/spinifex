@@ -11,10 +11,6 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// ErrLeaseHeld signals the leader lease is held by another node, and Spawn
-// treats it as benign. RunClusterReconciler never returns it: it keeps contending.
-var ErrLeaseHeld = errors.New("eks: reconciler lease held by another node")
-
 // ReconcilerRegistry tracks active per-cluster reconciler goroutines; one entry per (accountID, clusterName).
 type ReconcilerRegistry struct {
 	mu      sync.Mutex
@@ -66,9 +62,6 @@ func (r *ReconcilerRegistry) Spawn(parent context.Context, accountID, clusterNam
 		r.mu.Unlock()
 		cancel()
 		close(done)
-		if errors.Is(err, ErrLeaseHeld) {
-			return nil
-		}
 		return err
 	}
 
@@ -167,7 +160,8 @@ func RunClusterReconciler(
 	newRun := func() (*ClusterReconciler, error) {
 		return NewClusterReconciler(lease, acctKV, accountID, clusterName, healthURL, opts...)
 	}
-	if _, err := newRun(); err != nil {
+	r, err := newRun()
+	if err != nil {
 		return nil, nil, err
 	}
 	runCtx, cancel := context.WithCancel(ctx)
@@ -175,8 +169,6 @@ func RunClusterReconciler(
 	go func() {
 		defer close(finished)
 		for {
-			// A fresh reconciler per holding: a finished Run keeps its exit reason.
-			r, _ := newRun()
 			if release, ok := r.AcquireLease(runCtx); ok {
 				err := r.Run(runCtx)
 				release()
@@ -198,6 +190,8 @@ func RunClusterReconciler(
 				return
 			case <-time.After(lease.TTL() / 3):
 			}
+			// A fresh reconciler per holding: a finished Run keeps its exit reason.
+			r, _ = newRun()
 		}
 	}()
 	return func() { cancel(); <-finished }, finished, nil

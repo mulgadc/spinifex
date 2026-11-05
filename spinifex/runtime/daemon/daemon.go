@@ -2719,23 +2719,16 @@ func (d *Daemon) clusterSweepLease() (func(), bool) {
 	return d.rdsReconciler.AcquireClusterLease()
 }
 
-// leakedVolumeInstances returns the set of instance IDs this node owns whose
-// teardown leaked a volume — terminated here with a failed volumes-teardown.
-// The volume data-safety reaper marks (never deletes) volumes still attached to
-// these definitively-gone instances. Keying on this node's terminated set keeps
-// the shared-store scan from false-marking another node's live-instance volume.
+// leakedVolumeInstances returns the instances this node owns that were terminated
+// with a failed volumes teardown and whose QEMU is proven gone. The volume
+// data-safety reaper marks (never deletes) volumes still attached to them, so an
+// instance whose QEMU may still run is left out until it is proven gone.
 func (d *Daemon) leakedVolumeInstances() (map[string]bool, error) {
 	terminated, err := d.jsManager.ListTerminatedInstances()
 	if err != nil {
 		return nil, err
 	}
-	leaked := make(map[string]bool)
-	for _, v := range terminated {
-		if v.LastNode == d.node && v.Teardown[vm.TeardownVolumes] == string(vm.TeardownFailed) {
-			leaked[v.ID] = true
-		}
-	}
-	return leaked, nil
+	return vm.LeakedVolumeInstances(terminated, d.node), nil
 }
 
 // nodeRunningVMs returns this node's running VMs for the EKS billable reaper to

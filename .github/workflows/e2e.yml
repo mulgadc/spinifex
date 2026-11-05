@@ -263,13 +263,16 @@ jobs:
           SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}")
           VM=tf-user@${{ steps.vm.outputs.wan_ip }}
           banner "import eks-node AMI to VM image store"
+          # The VM's /tmp is a tmpfs and scp writes each raw at its full size,
+          # so every import removes its file before the next image arrives.
           scp "${SSH_OPTS[@]}" \
             "${SYSTEM_IMAGE_BUILD_DIR}/eks-node-image-build/eks-node-alpine.raw" \
             "$VM":/tmp/eks-node-alpine.raw
           ssh "${SSH_OPTS[@]}" "$VM" \
             "spx admin images import --file /tmp/eks-node-alpine.raw \
                --distro alpine --version ${ALPINE_VERSION} --arch x86_64 \
-               --boot-mode bios --ami-name ${AMI_NAME} --tag ${SYSTEM_TAG}" >/dev/null 2>&1
+               --boot-mode bios --ami-name ${AMI_NAME} --tag ${SYSTEM_TAG}; \
+               rc=\$?; rm -f /tmp/eks-node-alpine.raw; exit \$rc" >/dev/null 2>&1
           ok "eks-node AMI imported"
 
       # The eks data-plane subtest (TestEKS/KubectlGetNodes) drives the full
@@ -333,7 +336,8 @@ jobs:
           ssh "${SSH_OPTS[@]}" "$VM" \
             "spx admin images import --file /tmp/ecs-agent-alpine.raw \
                --distro alpine --version ${ALPINE_VERSION} --arch x86_64 \
-               --boot-mode bios --ami-name ${AMI_NAME} --tag ${SYSTEM_TAG}" >/dev/null 2>&1
+               --boot-mode bios --ami-name ${AMI_NAME} --tag ${SYSTEM_TAG}; \
+               rc=\$?; rm -f /tmp/ecs-agent-alpine.raw; exit \$rc" >/dev/null 2>&1
           ok "ecs-node AMI imported"
 
       # CreateDBInstance boots the DB VM from an RDS AMI, so both engines' images
@@ -385,7 +389,8 @@ jobs:
             ssh "${SSH_OPTS[@]}" "$VM" \
               "spx admin images import --file /tmp/${IMAGE}-alpine.raw \
                  --distro alpine --version ${ALPINE_VERSION} --arch x86_64 \
-                 --boot-mode bios --ami-name ${AMI_NAME}${TAG_ARGS}" >/dev/null 2>&1
+                 --boot-mode bios --ami-name ${AMI_NAME}${TAG_ARGS}; \
+                 rc=\$?; rm -f /tmp/${IMAGE}-alpine.raw; exit \$rc" >/dev/null 2>&1
             ok "${IMAGE} AMI imported"
           done
 

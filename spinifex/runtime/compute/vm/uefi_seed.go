@@ -51,6 +51,9 @@ func (m *Manager) SeedUEFIVarStore(ctx context.Context, instance *VM) error {
 	if err != nil {
 		return err
 	}
+	// Until the record is created, any store under this ID belongs to
+	// something else, which a failed RunInstances must not delete.
+	m.Inspect(instance, func(v *VM) { v.UEFIStoreUnowned = true })
 	template, err := os.ReadFile(fw.VarsTemplate)
 	if err != nil {
 		return fmt.Errorf("read VARS template %s: %w", fw.VarsTemplate, err)
@@ -85,6 +88,7 @@ func (m *Manager) SeedUEFIVarStore(ctx context.Context, instance *VM) error {
 
 	// From here the record exists, so terminate reaches every object put
 	// under the prefix, and a failed RunInstances terminates the instance.
+	m.Inspect(instance, func(v *VM) { v.UEFIStoreUnowned = false })
 	start := time.Now()
 	key, err := uefistore.NewObjectKey(instance.ID)
 	if err != nil {

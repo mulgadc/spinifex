@@ -306,6 +306,10 @@ type VM struct {
 	// other instance holds data the customer owns (ADR-0003:S7).
 	FirstLaunch bool `json:"first_launch,omitempty"`
 
+	// UEFIStoreUnowned is set while a seed has not created this instance's
+	// store record, so a store already under its ID is not its to delete.
+	UEFIStoreUnowned bool `json:"uefi_store_unowned,omitempty"`
+
 	// CapacityReservationId is the On-Demand Capacity Reservation this instance
 	// was launched into (targeted launch). Empty for instances on general
 	// capacity. Drives slot restore to the reservation on stop/terminate.

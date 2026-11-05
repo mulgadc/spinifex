@@ -23,6 +23,13 @@ func (m *Manager) markUEFIStoreForDeletion(instance *VM) {
 	if m.deps.UEFIStores == nil {
 		return
 	}
+	unowned := false
+	m.Inspect(instance, func(v *VM) { unowned = v.UEFIStoreUnowned })
+	if unowned {
+		slog.Warn("Leaving the UEFI variable store under a terminating instance's ID; its seed never created it",
+			"instanceId", instance.ID)
+		return
+	}
 	has, err := m.deps.UEFIStores.MarkUEFIStoreDeleting(instance.ID)
 	switch {
 	case err != nil:

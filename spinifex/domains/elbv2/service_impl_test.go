@@ -659,22 +659,55 @@ func TestCreateTargetGroup_AcceptsHealthCheckBoundaryLengths(t *testing.T) {
 	assert.Equal(t, maxMatcher, *out.TargetGroups[0].Matcher.HttpCode)
 }
 
-func TestCreateTargetGroup_DuplicateName(t *testing.T) {
+// A repeat with the same settings, once defaults apply, returns the existing group.
+func TestCreateTargetGroup_DuplicateNameSameSettingsReturnsExisting(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	first, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
+		Name:     aws.String("dup-tg"),
+		VpcId:    aws.String("vpc-1"),
+		Protocol: aws.String(ProtocolHTTP),
+		Port:     aws.Int64(80),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	second, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
+		Name:       aws.String("dup-tg"),
+		VpcId:      aws.String("vpc-1"),
+		Protocol:   aws.String(ProtocolHTTP),
+		Port:       aws.Int64(80),
+		TargetType: aws.String(TargetTypeInstance),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, second.TargetGroups, 1)
+	assert.Equal(t, *first.TargetGroups[0].TargetGroupArn, *second.TargetGroups[0].TargetGroupArn)
+
+	desc, err := svc.DescribeTargetGroups(context.Background(), &elbv2.DescribeTargetGroupsInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, desc.TargetGroups, 1)
+}
+
+func TestCreateTargetGroup_DuplicateNameDifferentSettings(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:  aws.String("dup-tg"),
 		VpcId: aws.String("vpc-1"),
+		Port:  aws.Int64(80),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	_, err = svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
 		Name:  aws.String("dup-tg"),
 		VpcId: aws.String("vpc-1"),
+		Port:  aws.Int64(81),
 	}, testAccountID)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "DuplicateTargetGroupName")
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorELBv2DuplicateTargetGroup, code)
+	assert.Equal(t, "A target group with the same name 'dup-tg' exists, but with different settings", msg)
 }
 
 func TestModifyTargetGroup(t *testing.T) {

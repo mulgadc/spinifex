@@ -322,7 +322,7 @@ func TestReaper_Awsvpc_ReleasesENI(t *testing.T) {
 	rec.LastSeen = time.Now().UTC().Add(-2 * heartbeatTimeout)
 	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec))
 
-	sc := NewScheduler(nc, svc, "test-holder")
+	sc := testScheduler(t, nc, svc, "test-holder")
 	sc.reapBucket(context.Background(), kv, testAccountID, time.Now().UTC())
 
 	assert.Equal(t, 1, eni.releaseCalls)

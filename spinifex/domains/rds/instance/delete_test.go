@@ -359,7 +359,7 @@ func TestReconciler_ResumesAnInterruptedDelete(t *testing.T) {
 	rec.Status = StatusDeleting
 	seedInstance(t, h.svc, rec)
 
-	reconciler := NewReconciler(h.svc, "node-a")
+	reconciler := testReconciler(t, h.svc, "node-a")
 	require.NoError(t, onePass(t, reconciler))
 
 	assert.Equal(t, []string{testInstance}, h.launcher.terminated)
@@ -375,7 +375,7 @@ func TestReconciler_ResumesAnInterruptedStop(t *testing.T) {
 	rec.Status = StatusStopping
 	seedInstance(t, h.svc, rec)
 
-	reconciler := NewReconciler(h.svc, "node-a")
+	reconciler := testReconciler(t, h.svc, "node-a")
 	require.NoError(t, onePass(t, reconciler))
 
 	assert.Equal(t, []string{"stop:" + testInstance}, h.cmdr.calls)

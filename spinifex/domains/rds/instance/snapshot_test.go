@@ -568,7 +568,7 @@ func TestProjectDBSnapshot_ReportsProgressOnlyWhenTheDataExists(t *testing.T) {
 func TestReconciler_AdoptsTheEC2SnapshotOfAnUnfinishedDBSnapshot(t *testing.T) {
 	t.Parallel()
 	h := newSnapshotHarness(t, false)
-	rec := NewReconciler(h.svc, "node-a")
+	rec := testReconciler(t, h.svc, "node-a")
 
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
@@ -601,7 +601,7 @@ func TestReconciler_AdoptsTheEC2SnapshotOfAnUnfinishedDBSnapshot(t *testing.T) {
 func TestReconciler_DoesNotAdoptAnotherAccountsSnapshot(t *testing.T) {
 	t.Parallel()
 	h := newSnapshotHarness(t, false)
-	reconciler := NewReconciler(h.svc, "node-a")
+	reconciler := testReconciler(t, h.svc, "node-a")
 
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
@@ -636,7 +636,7 @@ func TestReconciler_KeepsCreatingSnapshotWhenEC2LookupIsIncomplete(t *testing.T)
 	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.snaps.describeErr = errors.New("snapshot metadata temporarily unavailable")
-	reconciler := NewReconciler(h.svc, "node-a")
+	reconciler := testReconciler(t, h.svc, "node-a")
 
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
@@ -660,7 +660,7 @@ func TestReconciler_KeepsCreatingSnapshotWhenEC2LookupIsIncomplete(t *testing.T)
 func TestReconciler_DoesNotDeleteAConcurrentlyCompletedSnapshot(t *testing.T) {
 	t.Parallel()
 	h := newSnapshotHarness(t, false)
-	reconciler := NewReconciler(h.svc, "node-a")
+	reconciler := testReconciler(t, h.svc, "node-a")
 
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
@@ -693,7 +693,7 @@ func TestReconciler_DoesNotDeleteAConcurrentlyCompletedSnapshot(t *testing.T) {
 func TestReconciler_RejectsAmbiguousEC2Snapshots(t *testing.T) {
 	t.Parallel()
 	h := newSnapshotHarness(t, false)
-	reconciler := NewReconciler(h.svc, "node-a")
+	reconciler := testReconciler(t, h.svc, "node-a")
 
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
@@ -728,7 +728,7 @@ func TestReconciler_RejectsAmbiguousEC2Snapshots(t *testing.T) {
 func TestReconciler_WithdrawsADBSnapshotWhoseDataWasNeverCut(t *testing.T) {
 	t.Parallel()
 	h := newSnapshotHarness(t, false)
-	rec := NewReconciler(h.svc, "node-a")
+	rec := testReconciler(t, h.svc, "node-a")
 
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
@@ -753,7 +753,7 @@ func TestReconciler_WithdrawsADBSnapshotWhoseDataWasNeverCut(t *testing.T) {
 func TestReconciler_LeavesAFreshCreatingSnapshotAlone(t *testing.T) {
 	t.Parallel()
 	h := newSnapshotHarness(t, false)
-	rec := NewReconciler(h.svc, "node-a")
+	rec := testReconciler(t, h.svc, "node-a")
 
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
@@ -780,7 +780,7 @@ func TestReconciler_ReturnsAnInstanceStuckInBackingUp(t *testing.T) {
 		t.Run(string(resume), func(t *testing.T) {
 			t.Parallel()
 			h := newSnapshotHarness(t, false)
-			reconciler := NewReconciler(h.svc, "node-a")
+			reconciler := testReconciler(t, h.svc, "node-a")
 
 			started := time.Now().UTC().Add(-2 * transitionTimeout)
 			rec := availableRecord()
@@ -807,7 +807,7 @@ func TestReconciler_ReturnsAnInstanceStuckInBackingUp(t *testing.T) {
 func TestReconciler_LeavesAnInFlightSnapshotAlone(t *testing.T) {
 	t.Parallel()
 	h := newSnapshotHarness(t, false)
-	reconciler := NewReconciler(h.svc, "node-a")
+	reconciler := testReconciler(t, h.svc, "node-a")
 
 	started := time.Now().UTC()
 	rec := availableRecord()

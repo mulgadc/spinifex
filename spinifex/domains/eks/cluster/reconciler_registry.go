@@ -5,13 +5,11 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/nats-io/nats.go/jetstream"
 )
-
-// ErrLeaseHeld signals the leader lease is held by another node.
-// Spawn treats it as benign and retries on the next tick.
-var ErrLeaseHeld = errors.New("eks: reconciler lease held by another node")
 
 // ReconcilerRegistry tracks active per-cluster reconciler goroutines; one entry per (accountID, clusterName).
 type ReconcilerRegistry struct {
@@ -64,9 +62,6 @@ func (r *ReconcilerRegistry) Spawn(parent context.Context, accountID, clusterNam
 		r.mu.Unlock()
 		cancel()
 		close(done)
-		if errors.Is(err, ErrLeaseHeld) {
-			return nil
-		}
 		return err
 	}
 
@@ -151,33 +146,67 @@ func registryKey(accountID, clusterName string) string {
 	return accountID + "/" + clusterName
 }
 
-// RunClusterReconciler is the production SpawnReconcilerFn: constructs a ClusterReconciler,
-// acquires the lease, and drives Run in a goroutine. Returns ErrLeaseHeld if another node wins.
+// RunClusterReconciler contends for the cluster's lease and drives Run while it
+// holds it, in a goroutine, until ctx ends or the cluster leaves CREATING and
+// ACTIVE. A held lease is asked for again every ttl/3, so a dead holder's key is
+// taken over once it has sat a TTL, and a lost one is contended for again.
+// release stops the goroutine and returns once the lease is unlocked.
 func RunClusterReconciler(
 	ctx context.Context,
-	leaderKV, acctKV jetstream.KeyValue,
-	accountID, clusterName, holderID, healthURL string,
+	lease *kvsync.Lease, acctKV jetstream.KeyValue,
+	accountID, clusterName, healthURL string,
 	opts ...ReconcilerOption,
 ) (func(), <-chan struct{}, error) {
-	r, err := NewClusterReconciler(leaderKV, acctKV, accountID, clusterName, holderID, healthURL, opts...)
+	newRun := func() (*ClusterReconciler, error) {
+		return NewClusterReconciler(lease, acctKV, accountID, clusterName, healthURL, opts...)
+	}
+	r, err := newRun()
 	if err != nil {
 		return nil, nil, err
 	}
-	release, ok := r.AcquireLease(ctx)
-	if !ok {
-		slog.Info("RunClusterReconciler: lease held elsewhere, skipping spawn",
-			"accountID", accountID, "cluster", clusterName)
-		return nil, nil, ErrLeaseHeld
-	}
-	// Closed when Run returns so the registry can drop this entry on a self-exit
-	// (terminal state / lost lease), letting a later same-name create re-spawn.
+	runCtx, cancel := context.WithCancel(ctx)
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		if runErr := r.Run(ctx); runErr != nil && !errors.Is(runErr, context.Canceled) {
-			slog.Info("RunClusterReconciler: Run exited",
-				"accountID", accountID, "cluster", clusterName, "err", runErr)
+		for {
+			if release, ok := r.AcquireLease(runCtx); ok {
+				err := r.Run(runCtx)
+				release()
+				if !errors.Is(err, ErrReconcilerLeaseLost) {
+					if err != nil && !errors.Is(err, context.Canceled) {
+						slog.Info("RunClusterReconciler: Run exited",
+							"accountID", accountID, "cluster", clusterName, "err", err)
+					}
+					return
+				}
+				slog.Info("RunClusterReconciler: lease lost, contending again",
+					"accountID", accountID, "cluster", clusterName)
+			}
+			if !clusterContended(runCtx, acctKV, clusterName) {
+				return
+			}
+			select {
+			case <-runCtx.Done():
+				return
+			case <-time.After(lease.TTL() / 3):
+			}
+			// A fresh reconciler per holding: a finished Run keeps its exit reason.
+			r, _ = newRun()
 		}
 	}()
-	return release, finished, nil
+	return func() { cancel(); <-finished }, finished, nil
+}
+
+// clusterContended reports whether the cluster is still one a reconciler is
+// wanted for. A read that fails is not evidence it is gone, so it keeps trying.
+func clusterContended(ctx context.Context, acctKV jetstream.KeyValue, clusterName string) bool {
+	meta, err := GetClusterMeta(ctx, acctKV, clusterName)
+	switch {
+	case errors.Is(err, ErrClusterNotFound):
+		return false
+	case err != nil:
+		return ctx.Err() == nil
+	default:
+		return meta.Status == ClusterStatusCreating || meta.Status == ClusterStatusActive
+	}
 }

@@ -45,8 +45,9 @@ type Verifier struct {
 	Platform func(ctx context.Context, name string) (d Delegation, ok bool, err error)
 	// Public asks the parent's authoritative servers, without recursion.
 	Public func(ctx context.Context, name string) (Delegation, error)
-	// Elect wins this pass for the calling node; nil means always.
-	Elect func(ctx context.Context) (release func(), ok bool)
+	// Elect wins this pass for the calling node; nil means always. A lost
+	// election's revisit is the pass's own.
+	Elect func(ctx context.Context) (release func(), revisit time.Duration, ok bool)
 	Now   func() time.Time
 	// Interval is the pass period; zero means one minute.
 	Interval time.Duration
@@ -72,9 +73,9 @@ func (v *Verifier) Run(ctx context.Context) {
 // Reconcile checks every zone that is due.
 func (v *Verifier) Reconcile(ctx context.Context) (time.Duration, error) {
 	if v.Elect != nil {
-		release, ok := v.Elect(ctx)
+		release, revisit, ok := v.Elect(ctx)
 		if !ok {
-			return 0, nil
+			return revisit, nil
 		}
 		defer release()
 	}

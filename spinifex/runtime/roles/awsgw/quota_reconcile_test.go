@@ -9,7 +9,10 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/resource"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
@@ -29,6 +32,11 @@ func TestOpenAccountUsageBucketPreservesExistingConfiguration(t *testing.T) {
 	status, err := bucket.Status(t.Context())
 	require.NoError(t, err)
 	require.EqualValues(t, 5, status.History())
+}
+
+// quotaLease is one gateway's quota reconcile lease on its own sync bucket.
+func quotaLease(js jetstream.JetStream) *kvsync.Lease {
+	return reconcile.NewLeaderLease(kvstore.OpenSyncBucket(js), admissionquota.KeyReconcile, "gw-test")
 }
 
 // putInstanceRecord writes one instance record at the key the sweep reads, so a
@@ -78,7 +86,7 @@ func TestRunQuotaReconcileCountsFromTheRecordSpace(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		runQuotaReconcile(ctx, quota, nc, js, accounts, 1)
+		runQuotaReconcile(ctx, quota, quotaLease(js), js, accounts, 1)
 		close(done)
 	}()
 
@@ -110,7 +118,7 @@ func TestRunQuotaReconcileFollowsARecordChange(t *testing.T) {
 	accounts := func() ([]string, error) { return []string{account}, nil }
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go runQuotaReconcile(ctx, quota, nc, js, accounts, 1)
+	go runQuotaReconcile(ctx, quota, quotaLease(js), js, accounts, 1)
 
 	require.Eventually(t, func() bool {
 		return readUsageCounter(t, bucket, account) == 4
@@ -146,7 +154,7 @@ func TestRunQuotaReconcileRecomputesOnlyTheChangedAccount(t *testing.T) {
 	accounts := func() ([]string, error) { return []string{changed, untouched}, nil }
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go runQuotaReconcile(ctx, quota, nc, js, accounts, 1)
+	go runQuotaReconcile(ctx, quota, quotaLease(js), js, accounts, 1)
 
 	require.Eventually(t, func() bool {
 		return readUsageCounter(t, bucket, changed) == 4
@@ -162,6 +170,42 @@ func TestRunQuotaReconcileRecomputesOnlyTheChangedAccount(t *testing.T) {
 
 	require.Equal(t, 32, readUsageCounter(t, bucket, untouched),
 		"a change to one account must not recompute another; the resync is what eventually corrects it")
+}
+
+// The quota counters are written by one gateway at a time: while a peer holds
+// the reconcile lease this gateway leaves them alone, even when a record change
+// wakes it, and takes the work up once the lease is free.
+func TestRunQuotaReconcileLeavesTheCountersToTheLeaseHolder(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	bucket, err := openAccountUsageBucket(t.Context(), js)
+	require.NoError(t, err)
+	quota := admissionquota.New(admissionquota.Limits{Enabled: true, VCPUs: 100}, bucket)
+
+	syncKV, err := kvstore.OpenSyncBucket(js).KV(t.Context())
+	require.NoError(t, err)
+	_, err = syncKV.Put(t.Context(), admissionquota.KeyReconcile, []byte(`{"holder":"gw-peer","generation":1}`))
+	require.NoError(t, err)
+
+	const account = "123456789012"
+	records := instanceRecordBucket(t, js)
+	putInstanceRecord(t, records, "i-aaa", account, "m5.xlarge", vm.StateRunning)
+
+	accounts := func() ([]string, error) { return []string{account}, nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go runQuotaReconcile(ctx, quota, quotaLease(js), js, accounts, 1)
+
+	putInstanceRecord(t, records, "i-bbb", account, "t3.micro", vm.StateRunning)
+	require.Never(t, func() bool {
+		return readUsageCounter(t, bucket, account) != -1
+	}, 500*time.Millisecond, 20*time.Millisecond, "a gateway that does not hold the lease must not write the counter")
+
+	require.NoError(t, syncKV.Delete(t.Context(), admissionquota.KeyReconcile))
+	putInstanceRecord(t, records, "i-ccc", account, "t3.micro", vm.StateRunning)
+	require.Eventually(t, func() bool {
+		return readUsageCounter(t, bucket, account) == 8
+	}, 10*time.Second, 20*time.Millisecond, "with the lease free, the next change reconciles the account")
 }
 
 // readUsageCounter reads an account's integer vCPU counter from the usage bucket,

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
@@ -51,8 +52,8 @@ func (d *Daemon) startRoute53Realizer() {
 		return
 	}
 	r := route53domain.NewRealizer(d.route53Service.Store(), pub)
-	r.Elect = func(ctx context.Context) (func(), bool) {
-		return reconcilelock.AcquireLeader(ctx, d.natsConn, route53domain.KVBucketRoute53Realize, d.node)
+	r.Elect = func(ctx context.Context) (func(), time.Duration, bool) {
+		return reconcilelock.ElectPass(ctx, d.locks.route53Realize)
 	}
 	r.Reserved = d.route53Service.Reserved
 	go r.Run(d.ctx)
@@ -75,8 +76,8 @@ func (d *Daemon) newRoute53Verifier() *route53domain.Verifier {
 		servers, parent, err := lookup.Delegation(ctx, name)
 		return route53domain.Delegation{Source: "the " + parent + " name servers", Servers: servers}, err
 	}
-	v.Elect = func(ctx context.Context) (func(), bool) {
-		return reconcilelock.AcquireLeader(ctx, d.natsConn, route53domain.KVBucketRoute53Verify, d.node)
+	v.Elect = func(ctx context.Context) (func(), time.Duration, bool) {
+		return reconcilelock.ElectPass(ctx, d.locks.route53Verify)
 	}
 	return v
 }
@@ -87,7 +88,7 @@ func (d *Daemon) route53Delegate(ctx context.Context, in *route53domain.AdminDel
 	if len(in.Names) == 0 {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidInput, "no names to delegate")
 	}
-	res, err := d.dnsWriter.Delegate(ctx, d.natsConn, d.node, in.Names, in.Remove)
+	res, err := d.dnsWriter.Delegate(ctx, d.locks.dns, in.Names, in.Remove)
 	if err != nil {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidInput, "%v", err)
 	}

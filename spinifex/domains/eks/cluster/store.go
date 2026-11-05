@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats.go"
@@ -19,10 +17,6 @@ import (
 // Per-account bucket "eks-account-{accountID}" holds all customer-visible
 // cluster state. It is created lazily on first cluster touch (no daemon-boot
 // pre-creation) so accounts without any EKS clusters never grow a bucket.
-//
-// Shared leader bucket "spinifex-eks-leader" holds 60s-TTL CAS locks
-// keyed by "{accountID}/{clusterName}" for the per-cluster reconciler
-// leader election. Created once at daemon boot.
 const (
 	KVBucketEKSAccountPrefix  = "eks-account-"
 	KVBucketEKSAccountVersion = 1
@@ -33,10 +27,6 @@ const (
 	// survives a DeleteCluster. Keep this decoupled from the schema version so a
 	// future version bump can't silently widen history and resurrect ciphertext.
 	KVBucketEKSAccountHistory = 1
-
-	KVBucketEKSLeader        = "spinifex-eks-leader"
-	KVBucketEKSLeaderVersion = 1
-	KVBucketEKSLeaderTTL     = 60 * time.Second
 )
 
 // Key-path helpers for the per-account bucket. The layout matches the
@@ -123,15 +113,15 @@ func RecoveryDirectiveKey(cluster, instanceID string) string {
 	return RecoveryPrefix(cluster) + instanceID
 }
 
-// Store is the per-daemon EKS KV handle. Per-account and leader buckets are
-// accessed via the package-level factories below.
+// Store is the per-daemon EKS KV handle. Per-account buckets are accessed via
+// the package-level factories below.
 type Store struct {
 	nc *nats.Conn
 }
 
 // NewStore constructs a Store bound to the supplied NATS connection. It does
 // not touch JetStream — per-account buckets are created lazily by
-// GetOrCreateAccountBucket and the leader bucket by InitLeaderBucket.
+// GetOrCreateAccountBucket.
 func NewStore(nc *nats.Conn) (*Store, error) {
 	if nc == nil {
 		return nil, errors.New("eks store: nats connection is nil")
@@ -203,14 +193,4 @@ func GetOrCreateAccountBucket(ctx context.Context, js jetstream.JetStream, accou
 		return nil, fmt.Errorf("migrate %s: %w", bucket, err)
 	}
 	return kv, nil
-}
-
-// InitLeaderBucket creates (or attaches to) the shared spinifex-eks-leader
-// bucket used for per-cluster reconciler leader-lease CAS locks.
-func InitLeaderBucket(ctx context.Context, js jetstream.JetStream) (jetstream.KeyValue, error) {
-	return kvlease.OpenBucket(ctx, js, kvlease.BucketConfig{
-		Name:    KVBucketEKSLeader,
-		TTL:     KVBucketEKSLeaderTTL,
-		Version: KVBucketEKSLeaderVersion,
-	})
 }

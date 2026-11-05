@@ -13,17 +13,19 @@ import (
 
 	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// Scheduler timing. The leader lease lives in spinifex-ecs-leader (60s TTL); the
-// holder refreshes well inside that. The reaper marks an instance DRAINING after
-// three missed 30s heartbeats.
+// KeyScheduler is the ECS scheduler's leader lease in the sync bucket.
+const KeyScheduler = "ecs.scheduler"
+
+// Scheduler timing. A follower asks again at the lease's renewal rate. The
+// reaper marks an instance DRAINING after three missed 30s heartbeats.
 const (
-	schedulerLeaderKey  = "scheduler"
-	leaseRefresh        = 20 * time.Second
+	schedulerLeaseTTL   = 60 * time.Second
+	leaseRefresh        = schedulerLeaseTTL / 3
 	reaperInterval      = 30 * time.Second
 	heartbeatTimeout    = 90 * time.Second
 	stoppedReasonReaped = "ContainerInstance disconnected"
@@ -59,17 +61,14 @@ const (
 	reconcileResync = 5 * time.Minute
 )
 
-// Scheduler is the per-daemon ECS control loop. A single leader (elected via the
-// shared leader bucket) owns the Layer-2 bus subscriptions and the heartbeat
+// Scheduler is the per-daemon ECS control loop. A single leader (elected on its
+// lease) owns the Layer-2 bus subscriptions and the heartbeat
 // reaper; losers idle and retry. Placement itself happens synchronously in the
 // RunTask handler, so a brief leaderless gap never blocks RunTask.
 type Scheduler struct {
-	nc     *nats.Conn
-	svc    *Service
-	holder string
-
-	lease    *kvlease.Lease
-	leaseErr error
+	nc    *nats.Conn
+	svc   *Service
+	lease *kvsync.Lease
 
 	// wake carries a bus message that changed something the service reconcile
 	// reads. Fed by the task-state subscription and not by the heartbeat one:
@@ -89,47 +88,28 @@ type Scheduler struct {
 	subs []*nats.Subscription
 }
 
-// NewScheduler constructs a Scheduler. holder identifies this daemon in the lease.
-func NewScheduler(nc *nats.Conn, svc *Service, holder string) *Scheduler {
-	// One slot: it means "something the reconcile reads has changed", and a
-	// second arriving before the pass runs says nothing the first did not.
-	sc := &Scheduler{nc: nc, svc: svc, holder: holder, wake: make(chan struct{}, 1)}
-	sc.lease, sc.leaseErr = kvlease.New(kvlease.Config{
-		Name:   "ecs/scheduler",
-		Bucket: sc.leaderBucket,
-		Key:    schedulerLeaderKey,
-		Holder: holder,
-		TTL:    KVBucketECSLeaderTTL,
-		Renew:  leaseRefresh,
-		Retry:  leaseRefresh,
-		// The leader owns the Layer-2 bus subscriptions and the instance-role
-		// converge pass. A node that can do neither stands down rather than hold
-		// the lease and process nothing.
-		OnGained: sc.onGained,
-		OnLost:   sc.unsubscribeBus,
-	})
-	return sc
+// NewSchedulerLease returns the ECS scheduler's leader lease for holder.
+func NewSchedulerLease(store kvsync.KVStore, holder string) *kvsync.Lease {
+	return kvsync.NewLease(store, KeyScheduler, holder, schedulerLeaseTTL)
 }
 
-func (sc *Scheduler) leaderBucket(ctx context.Context) (jetstream.KeyValue, error) {
-	js, err := jetstream.New(sc.nc)
-	if err != nil {
-		return nil, err
-	}
-	return InitLeaderBucket(ctx, js)
+// NewScheduler constructs a Scheduler that leads while it holds lease.
+func NewScheduler(nc *nats.Conn, svc *Service, lease *kvsync.Lease) *Scheduler {
+	// One slot: it means "something the reconcile reads has changed", and a
+	// second arriving before the pass runs says nothing the first did not.
+	return &Scheduler{nc: nc, svc: svc, lease: lease, wake: make(chan struct{}, 1)}
 }
 
 // Run drives the leadership + reaper loop until ctx is cancelled. It is intended
 // to run as a daemon-boot goroutine; panics are the caller's recover concern.
 func (sc *Scheduler) Run(ctx context.Context) {
-	if sc.leaseErr != nil {
-		slog.ErrorContext(ctx, "ECS scheduler: lease config invalid", "holder", sc.holder, "err", sc.leaseErr)
-		return
-	}
 	leaseDone := make(chan struct{})
 	go func() {
 		defer close(leaseDone)
-		sc.lease.Run(ctx)
+		// The leader owns the Layer-2 bus subscriptions and the instance-role
+		// converge pass. A node that can do neither stands down rather than hold
+		// the lease and process nothing.
+		kvsync.RunElection(ctx, sc.lease, sc.onGained, sc.unsubscribeBus)
 	}()
 
 	// Two loops rather than four tickers, split by what wakes them. Services are

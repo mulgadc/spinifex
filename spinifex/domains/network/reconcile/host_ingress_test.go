@@ -358,7 +358,7 @@ func TestHostIngress_IntentReadFailureNeverPrunes(t *testing.T) {
 // while another node holds the drift lease and no event arrives, well inside
 // its resync.
 func TestRunHostIngress_IntentWriteConvergesEveryNodeWithoutLeaseOrEvent(t *testing.T) {
-	_, nc, js := testutil.StartTestJetStream(t)
+	_, _, js := testutil.StartTestJetStream(t)
 	ctx := t.Context()
 	vpcs, err := kvstore.GetOrCreateBucket(ctx, js, ec2vpc.KVBucketVPCs, 1)
 	if err != nil {
@@ -369,7 +369,7 @@ func TestRunHostIngress_IntentWriteConvergesEveryNodeWithoutLeaseOrEvent(t *test
 		t.Fatalf("create IGW bucket: %v", err)
 	}
 	put(t, vpcs, "acct/vpc-1", ec2vpc.VPCRecord{VpcId: "vpc-1", CidrBlock: "10.1.0.0/16"})
-	release, elected := reconcile.AcquireLeader(ctx, nc, reconcile.KVBucketVPCDReconcile, "node-elsewhere")
+	release, elected := reconcile.AcquireLeader(ctx, reconcile.NewLeaderLease(kvstore.OpenSyncBucket(js), reconcile.KeyVPCDReconcile, "node-elsewhere"))
 	if !elected {
 		t.Fatal("could not take the drift lease for another node")
 	}

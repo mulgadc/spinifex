@@ -10,10 +10,31 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// testReconciler is holder's reconciler on a sync bucket of its own, as a
+// separate daemon's would be.
+func testReconciler(t *testing.T, svc *Service, holder string) *Reconciler {
+	t.Helper()
+	js, err := svc.js()
+	require.NoError(t, err)
+	return NewReconciler(svc, NewReconcilerLease(kvstore.OpenSyncBucket(js), holder))
+}
+
+// lead takes r's lease, and unlocks it when the test ends.
+func lead(t *testing.T, r *Reconciler) (kvsync.Token, error) {
+	t.Helper()
+	tok, err := r.lease.TryLock(t.Context())
+	if err == nil {
+		t.Cleanup(func() { r.lease.Unlock(context.Background(), tok) })
+	}
+	return tok, err
+}
 
 // onePass runs one reconcile and keeps only its error, for the tests that assert
 // on what converged rather than on when the loop should next run. The tests that
@@ -70,7 +91,7 @@ func newReconcileHarness(t *testing.T, opts ...func(*Deps)) *reconcileHarness {
 		opt(&deps)
 	}
 	svc := NewService(nc, testRegion).WithDeps(deps)
-	return &reconcileHarness{svc: svc, rec: NewReconciler(svc, "node-a"), state: state, nc: nc}
+	return &reconcileHarness{svc: svc, rec: testReconciler(t, svc, "node-a"), state: state, nc: nc}
 }
 
 // healthyRecord is a creating instance whose agent has just reported a healthy
@@ -377,18 +398,21 @@ func TestReconciler_RetriesTheSystemNICMoveAfterAFailure(t *testing.T) {
 func TestReconciler_ElectsASingleLeader(t *testing.T) {
 	t.Parallel()
 	h := newReconcileHarness(t)
-	other := NewReconciler(h.svc, "node-b")
+	other := testReconciler(t, h.svc, "node-b")
 
-	assert.True(t, h.rec.lease.TryAcquire(t.Context()))
-	assert.False(t, other.lease.TryAcquire(t.Context()))
-
-	// The holder reports the leasership it already holds, and does not hand it away.
-	assert.True(t, h.rec.lease.TryAcquire(t.Context()))
+	tok, err := lead(t, h.rec)
+	require.NoError(t, err)
+	_, err = lead(t, other)
+	assert.ErrorAs(t, err, new(*kvsync.HeldError))
+	assert.True(t, h.rec.lease.Held())
+	assert.False(t, other.lease.Held())
 
 	// Releasing on shutdown hands over immediately instead of after the TTL.
-	h.rec.lease.Release(t.Context())
-	assert.True(t, other.lease.TryAcquire(t.Context()))
-	assert.False(t, h.rec.lease.TryAcquire(t.Context()))
+	h.rec.lease.Unlock(t.Context(), tok)
+	_, err = lead(t, other)
+	require.NoError(t, err)
+	_, err = lead(t, h.rec)
+	assert.ErrorAs(t, err, new(*kvsync.HeldError))
 }
 
 func TestReconciler_RunHoldsLeadershipIndependentlyOfTheReconcileLoop(t *testing.T) {
@@ -404,21 +428,23 @@ func TestReconciler_RunHoldsLeadershipIndependentlyOfTheReconcileLoop(t *testing
 	cancel()
 	<-done
 
-	other := NewReconciler(h.svc, "node-b")
-	assert.True(t, other.lease.TryAcquire(t.Context()),
-		"Run returned with the lease key still present")
+	other := testReconciler(t, h.svc, "node-b")
+	_, err := lead(t, other)
+	assert.NoError(t, err, "Run returned with the lease key still present")
 }
 
 // A node that never won the lease must not delete the holder's key on shutdown.
 func TestReconciler_RelinquishOnlyReleasesItsOwnLease(t *testing.T) {
 	t.Parallel()
 	h := newReconcileHarness(t)
-	other := NewReconciler(h.svc, "node-b")
+	other := testReconciler(t, h.svc, "node-b")
 
-	require.True(t, h.rec.lease.TryAcquire(t.Context()))
-	other.lease.Release(t.Context())
+	tok, err := lead(t, h.rec)
+	require.NoError(t, err)
+	other.lease.Unlock(t.Context(), tok)
 
-	assert.False(t, other.lease.TryAcquire(t.Context()), "the original holder still owns the lease")
+	_, err = lead(t, other)
+	assert.ErrorAs(t, err, new(*kvsync.HeldError), "the original holder still owns the lease")
 }
 
 // An overrun modify failed on a fresh read must not fail a delete accepted since
@@ -439,4 +465,47 @@ func TestTransitionFresh_LeavesAnAcceptedDelete(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, StatusDeleting, stored.Status)
+}
+
+// The retention sweep deletes customer snapshots under AcquireClusterLease, so
+// a node whose lease was taken over must stop sweeping and reconciling at once,
+// and only start again once it is re-elected.
+func TestReconciler_ATakenOverLeaseStopsTheSweepUntilReElection(t *testing.T) {
+	t.Parallel()
+	h := newReconcileHarness(t)
+	js, err := h.svc.js()
+	require.NoError(t, err)
+	store := kvstore.OpenSyncBucket(js)
+	h.rec.lease = kvsync.NewLease(store, KeyReconciler, "node-a", 300*time.Millisecond)
+	seedInstance(t, h.svc, healthyRecord())
+
+	_, err = lead(t, h.rec)
+	require.NoError(t, err)
+	_, ok := h.rec.AcquireClusterLease()
+	require.True(t, ok)
+
+	syncKV, err := store.KV(t.Context())
+	require.NoError(t, err)
+	_, err = syncKV.Put(t.Context(), KeyReconciler, []byte(`{"holder":"node-b","generation":0}`))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return !h.rec.lease.Held() }, 5*time.Second, 10*time.Millisecond,
+		"the takeover must cost this node the lease")
+
+	_, ok = h.rec.AcquireClusterLease()
+	assert.False(t, ok, "a node that lost the lease must not sweep snapshots")
+	revisit, err := h.rec.reconcilePass(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, leaseRefresh, revisit)
+	status, _ := h.statusOf(t, testDBID)
+	assert.Equal(t, StatusCreating, status, "a node that lost the lease must not reconcile")
+
+	require.NoError(t, syncKV.Delete(t.Context(), KeyReconciler))
+	_, err = lead(t, h.rec)
+	require.NoError(t, err, "re-election")
+	_, ok = h.rec.AcquireClusterLease()
+	assert.True(t, ok)
+	_, err = h.rec.reconcilePass(t.Context())
+	require.NoError(t, err)
+	status, _ = h.statusOf(t, testDBID)
+	assert.NotEqual(t, StatusCreating, status, "the re-elected node reconciles again")
 }

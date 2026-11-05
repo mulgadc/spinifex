@@ -14,6 +14,9 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -95,11 +98,29 @@ func newReaperFixture(t *testing.T, deps ReaperDeps) *reaperFixture {
 	})
 	return &reaperFixture{
 		svc:       svc,
-		reaper:    NewReaper(svc, "node-a", deps),
+		reaper:    testReaper(t, svc, "node-a", deps),
 		harness:   h,
 		transport: transport,
 		store:     svc.store,
 	}
+}
+
+// testReaper is holder's reaper on a sync bucket of its own, as a separate
+// daemon's would be.
+func testReaper(t *testing.T, svc *Service, holder string, deps ReaperDeps) *Reaper {
+	t.Helper()
+	js, err := jetstream.New(svc.nc)
+	require.NoError(t, err)
+	return NewReaper(svc, NewReaperLease(kvstore.OpenSyncBucket(js), holder), deps)
+}
+
+// lead takes r's lease, and unlocks it when the test ends.
+func lead(t *testing.T, r *Reaper) kvsync.Token {
+	t.Helper()
+	tok, err := r.lease.TryLock(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { r.lease.Unlock(context.Background(), tok) })
+	return tok
 }
 
 // ready launches testModelID and waits for its record to reach READY.
@@ -393,31 +414,28 @@ func TestReaper_SkipsNonReadyRecords(t *testing.T) {
 
 func TestReaper_LeaseAdmitsOneLeader(t *testing.T) {
 	f := newReaperFixture(t, ReaperDeps{})
-	other := NewReaper(f.svc, "node-b", ReaperDeps{})
+	other := testReaper(t, f.svc, "node-b", ReaperDeps{})
 
-	require.True(t, f.reaper.lease.TryAcquire(t.Context()))
-	require.False(t, other.lease.TryAcquire(t.Context()),
+	lead(t, f.reaper)
+	_, err := other.lease.TryLock(t.Context())
+	require.ErrorAs(t, err, new(*kvsync.HeldError),
 		"two nodes must never sweep the same endpoints at once")
 
 	assert.True(t, f.reaper.IsLeader())
 	assert.False(t, other.IsLeader())
-
-	// A refresh by the holder keeps it, and does not hand it away.
-	require.True(t, f.reaper.lease.TryAcquire(t.Context()))
-	assert.True(t, f.reaper.IsLeader())
 }
 
 // Releasing on shutdown is what makes a rolling restart cost seconds rather
 // than a full lease TTL of no reclaim.
 func TestReaper_ReleaseFreesTheLeaseImmediately(t *testing.T) {
 	f := newReaperFixture(t, ReaperDeps{})
-	other := NewReaper(f.svc, "node-b", ReaperDeps{})
+	other := testReaper(t, f.svc, "node-b", ReaperDeps{})
 
-	f.reaper.lease.TryAcquire(t.Context())
+	tok := lead(t, f.reaper)
 	require.True(t, f.reaper.IsLeader())
 
-	f.reaper.lease.Release(t.Context())
-	other.lease.TryAcquire(t.Context())
+	f.reaper.lease.Unlock(t.Context(), tok)
+	lead(t, other)
 	assert.True(t, other.IsLeader())
 }
 
@@ -428,8 +446,8 @@ func TestReaper_NonLeaderSweepsNothing(t *testing.T) {
 	f.ready(t)
 	f.age(t, time.Hour, time.Hour)
 
-	holder := NewReaper(f.svc, "node-b", ReaperDeps{})
-	holder.lease.TryAcquire(t.Context())
+	holder := testReaper(t, f.svc, "node-b", ReaperDeps{})
+	lead(t, holder)
 	require.True(t, holder.IsLeader())
 
 	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Millisecond)
@@ -457,7 +475,6 @@ func TestEndpointRecord_LastActive(t *testing.T) {
 // full TTL rather than freeing it immediately.
 func TestReaper_RunReleasesLeaseOnShutdown(t *testing.T) {
 	f := newReaperFixture(t, ReaperDeps{Interval: time.Hour})
-	require.NoError(t, f.reaper.leaseErr)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
@@ -467,7 +484,45 @@ func TestReaper_RunReleasesLeaseOnShutdown(t *testing.T) {
 	cancel()
 	<-done
 
-	other := NewReaper(f.svc, "node-b", ReaperDeps{})
-	assert.True(t, other.lease.TryAcquire(t.Context()),
-		"Run returned with the lease key still present")
+	other := testReaper(t, f.svc, "node-b", ReaperDeps{})
+	tok, err := other.lease.TryLock(t.Context())
+	require.NoError(t, err, "Run returned with the lease key still present")
+	other.lease.Unlock(t.Context(), tok)
+}
+
+// A reaper whose lease is taken over must stop reclaiming at once, or two
+// nodes would tear the same endpoint down; re-elected, it reclaims again.
+func TestReaper_LosingTheLeaseStopsReclaimUntilReElection(t *testing.T) {
+	deps := ReaperDeps{Interval: 5 * time.Millisecond, IdleTTL: time.Minute}
+	f := newReaperFixture(t, deps)
+	js, err := jetstream.New(f.svc.nc)
+	require.NoError(t, err)
+	store := kvstore.OpenSyncBucket(js)
+	f.reaper = NewReaper(f.svc, kvsync.NewLease(store, KeyReaper, "node-a", 300*time.Millisecond), deps)
+	f.ready(t)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); f.reaper.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+	require.Eventually(t, f.reaper.IsLeader, 5*time.Second, 5*time.Millisecond)
+
+	syncKV, err := store.KV(t.Context())
+	require.NoError(t, err)
+	_, err = syncKV.Put(t.Context(), KeyReaper, []byte(`{"holder":"node-b","generation":0}`))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return !f.reaper.IsLeader() }, 5*time.Second, 5*time.Millisecond)
+
+	// Idle from here on, so only the lost lease keeps it from being reaped.
+	f.age(t, 10*time.Minute, 10*time.Minute)
+	time.Sleep(20 * time.Millisecond) // a sweep already running when the lease went
+	scrapes := f.transport.scrapeCount()
+	time.Sleep(100 * time.Millisecond)
+	_, found := f.current(t)
+	assert.True(t, found, "a reaper that lost the lease must not reclaim")
+	assert.Equal(t, scrapes, f.transport.scrapeCount(), "a reaper that lost the lease must not even scrape")
+
+	require.NoError(t, syncKV.Delete(t.Context(), KeyReaper))
+	require.Eventually(t, func() bool { _, found := f.current(t); return !found }, 5*time.Second, 5*time.Millisecond,
+		"re-elected, the reaper reclaims the idle endpoint")
 }

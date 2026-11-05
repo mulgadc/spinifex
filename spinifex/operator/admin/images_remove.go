@@ -191,8 +191,8 @@ func FindAMIDependents(store objectstore.ObjectStore, bucket, imageID string) (D
 }
 
 // RemoveSystemImage deletes an admin-imported AMI after re-validating that it
-// is system-owned and has no dependents (bypassed by --force). config.json is
-// deleted first so the AMI vanishes from DescribeImages before block cleanup.
+// is system-owned and has no dependents (bypassed by --force). Its UEFI store
+// and then config.json go first, so the AMI vanishes before block cleanup.
 func RemoveSystemImage(store objectstore.ObjectStore, bucket string, opts RemoveImageOpts) (*RemoveImageResult, error) {
 	if !strings.HasPrefix(opts.ImageID, "ami-") {
 		return nil, errors.New(awserrors.ErrorInvalidAMIIDMalformed)

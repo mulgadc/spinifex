@@ -18,7 +18,7 @@ on:
       suites:
         description: "Space-separated Make targets to run (e.g. 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-eks e2e-iam e2e-rds')"
         required: false
-        default: "e2e-single e2e-multinode e2e-cert e2e-lb e2e-iam"
+        default: "e2e-single e2e-multinode e2e-cert e2e-iam"
       test_run:
         description: "Optional regex for -test.run (e.g. '^TestMultinodeIPSec$'). Empty = run all tests in suite."
         required: false
@@ -31,7 +31,9 @@ permissions:
 
 env:
   GIT_BRANCH: ${{ github.ref_name }}
-  SUITES: ${{ inputs.suites || 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-iam e2e-partialblock' }}
+  # lb is out of the push default: it runs in the nightly multi cells and on
+  # dispatch (suites=e2e-lb), which keeps the multi job to multinode and cert.
+  SUITES: ${{ inputs.suites || 'e2e-single e2e-multinode e2e-cert e2e-iam e2e-partialblock' }}
   TEST_RUN: ${{ inputs.test_run || '' }}
   SPINIFEX_OTLP_ENDPOINT: ${{ vars.SPINIFEX_OTLP_ENDPOINT || 'http://192.168.1.13:8200' }}
   SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }}

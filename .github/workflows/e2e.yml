@@ -1155,6 +1155,11 @@ jobs:
       # this host, so no credentials are needed for the POST.
       MULGA_ES_SINK: ${{ vars.MULGA_ES_SINK || '192.168.1.13:9200' }}
     steps:
+      # The workspace outlives the run on a self-hosted runner, and the status
+      # files are collected recursively, so an earlier run's would count here.
+      - name: Clear previous summary downloads
+        run: rm -rf "${GITHUB_WORKSPACE}/es-summary-single" "${GITHUB_WORKSPACE}/es-summary-multi"
+
       # Either leg may not have run (e.g. a workflow_dispatch that only
       # requested single-node suites), so a missing artifact is tolerated —
       # the aggregation script below treats an absent suite-status.txt as

@@ -61,9 +61,12 @@ multi_timeout=60" suites "e2e-lb"
 # A real repository for the push mode.
 git init -q "$TMP/repo"
 g() { git -C "$TMP/repo" -c user.name=t -c user.email=t@t "$@"; }
-mkdir -p "$TMP/repo/spinifex/domains/ecs" "$TMP/repo/docs"
+mkdir -p "$TMP/repo/spinifex/domains/ecs" "$TMP/repo/spinifex/domains/rds" "$TMP/repo/docs"
 echo a > "$TMP/repo/docs/a.md"; g add -A; g commit -qm one; one=$(g rev-parse HEAD)
-echo b > "$TMP/repo/spinifex/domains/ecs/b.go"; g add -A; g commit -qm two; two=$(g rev-parse HEAD)
+seq 1 50 > "$TMP/repo/spinifex/domains/ecs/b.go"; g add -A; g commit -qm two; two=$(g rev-parse HEAD)
+g mv spinifex/domains/ecs/b.go docs/b.go; g commit -qm three; three=$(g rev-parse HEAD)
+seq 1 50 > "$TMP/repo/docs/c.go"; g add -A; g commit -qm four; four=$(g rev-parse HEAD)
+g mv docs/c.go spinifex/domains/rds/c.go; g commit -qm five; five=$(g rev-parse HEAD)
 
 ALL="single_legs=[$BASE,{\"leg\":\"service\",\"runner\":\"ci-pseudo\",\"suites\":\"e2e-rds e2e-ecs e2e-eks e2e-route53\",\"timeout\":120}]
 multi_suites=e2e-multinode e2e-cert e2e-lb
@@ -78,6 +81,14 @@ check "a push with no previous commit selects every mapped suite" "$ALL" \
   push 0000000000000000000000000000000000000000 "$two"
 check "a push whose previous commit is gone selects every mapped suite" "$ALL" \
   push 1111111111111111111111111111111111111111 "$two"
+check "moving code out of a service selects that service" \
+"single_legs=[$BASE,{\"leg\":\"service\",\"runner\":\"ci-pseudo\",\"suites\":\"e2e-ecs\",\"timeout\":60}]
+multi_suites=e2e-multinode e2e-cert
+multi_timeout=60" push "$two" "$three"
+check "moving code into a service selects that service" \
+"single_legs=[$BASE,{\"leg\":\"service\",\"runner\":\"ci-pseudo\",\"suites\":\"e2e-rds\",\"timeout\":120}]
+multi_suites=e2e-multinode e2e-cert
+multi_timeout=60" push "$four" "$five"
 
 if bash "$SELECT" push "$one" 2222222222222222222222222222222222222222 >/dev/null 2>&1; then
   fail "a push to a commit not in the checkout fails"

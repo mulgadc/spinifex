@@ -128,7 +128,8 @@ case "$mode" in
       select_for_paths "" all
       exit 0
     fi
-    changed=$(git diff --name-only "${before}" "${sha}") || die "git diff ${before} ${sha} failed"
+    # A rename counts as both paths, so moving code out of a service selects it.
+    changed=$(git diff --no-renames --name-only "${before}" "${sha}") || die "git diff ${before} ${sha} failed"
     log "$(printf '%s\n' "$changed" | grep -c . || true) paths changed ${before:0:9}..${sha:0:9}"
     select_for_paths "$changed"
     ;;

@@ -16,6 +16,9 @@ func (d *Daemon) Readiness(imagePin string, nodes int) function.Readiness {
 		if rec.EnvCipher != "" {
 			return notReady("The function cannot run here: test-link Lambda does not support environment variables.")
 		}
+		if !validHandler(rec.Handler) {
+			return notReady("The function cannot run here: test-link Lambda runs only a handler of 1 to 128 characters with no whitespace.")
+		}
 		if rec.Code.Size <= 0 || rec.Code.Size > MaxCodeBytes {
 			return notReady("The function cannot run here: its code is larger than test-link Lambda accepts.")
 		}

@@ -22,6 +22,7 @@ const (
 	defaultMemory     = 128
 	maxMemory         = 10240
 	maxDescription    = 256
+	maxHandler        = 128
 	maxEnvironmentLen = 4096
 	// maxBodyBytes bounds a CreateFunction body: the base64 of the largest
 	// code copy plus room for the rest of the document.
@@ -221,6 +222,9 @@ func validateCreate(in *lambda.CreateFunctionInput) (*createParams, error) {
 	handler := aws.StringValue(in.Handler)
 	if handler == "" {
 		return nil, invalid("Handler is required")
+	}
+	if len(handler) > maxHandler || strings.ContainsAny(handler, " \t\n\v\f\r") {
+		return nil, invalid("Handler must be at most %d characters with no whitespace", maxHandler)
 	}
 	role := aws.StringValue(in.Role)
 	if role == "" {

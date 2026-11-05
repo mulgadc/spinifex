@@ -351,6 +351,16 @@ func TestCreateFunction_RendersTheStoredTimestamps(t *testing.T) {
 	assert.Equal(t, *got.Configuration.RevisionId, *created.RevisionId)
 }
 
+func TestCreateFunction_AcceptsTheLongestHandler(t *testing.T) {
+	e := newEnv(t)
+	handler := strings.Repeat("h", 128)
+	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) { b["Handler"] = handler }))
+	require.NoError(t, err)
+	got, _, err := e.meta.Get(t.Context(), gwtest.AccountID, gwtest.Region, "hello")
+	require.NoError(t, err)
+	assert.Equal(t, handler, got.Handler)
+}
+
 func TestCreateFunction_DuplicateNameLeavesFirstUntouched(t *testing.T) {
 	e := newEnv(t)
 	_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", nil))
@@ -544,6 +554,9 @@ func TestCreateFunction_ParameterValidation(t *testing.T) {
 		"no code":         func(b map[string]any) { delete(b, "Code") },
 		"empty zip":       func(b map[string]any) { b["Code"] = map[string]any{"ZipFile": []byte{}} },
 		"no handler":      func(b map[string]any) { delete(b, "Handler") },
+		"long handler":    func(b map[string]any) { b["Handler"] = strings.Repeat("h", 129) },
+		"handler space":   func(b map[string]any) { b["Handler"] = "boot strap" },
+		"handler tab":     func(b map[string]any) { b["Handler"] = "boot\tstrap" },
 		"no role":         func(b map[string]any) { delete(b, "Role") },
 		"timeout low":     func(b map[string]any) { b["Timeout"] = 0 },
 		"timeout high":    func(b map[string]any) { b["Timeout"] = 901 },

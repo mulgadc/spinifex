@@ -6,6 +6,7 @@ package testlink
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,9 +30,14 @@ func storedFunction(t *testing.T, svc *function.MetaService, name string) {
 
 func storedFunctionWith(t *testing.T, svc *function.MetaService, name, envCipher string, size int64) {
 	t.Helper()
+	storedFunctionHandler(t, svc, name, "bootstrap", envCipher, size)
+}
+
+func storedFunctionHandler(t *testing.T, svc *function.MetaService, name, handler, envCipher string, size int64) {
+	t.Helper()
 	created, err := svc.Create(t.Context(), &function.CreateRequest{Region: readyRegion, Record: function.Record{
 		FunctionID: "id-" + name, FunctionName: name, Role: "arn:aws:iam::000000000001:role/r",
-		Runtime: "provided.al2023", Handler: "bootstrap", Timeout: 3, MemorySize: 128, EnvCipher: envCipher,
+		Runtime: "provided.al2023", Handler: handler, Timeout: 3, MemorySize: 128, EnvCipher: envCipher,
 		Code: function.Code{RevisionID: "rev-" + name},
 	}}, readyAccount)
 	require.NoError(t, err)
@@ -122,6 +128,9 @@ func TestReadiness_RefusesFunctionsTheTestLinkCannotRun(t *testing.T) {
 	storedFunctionWith(t, svc, "env", "sealed", 9)
 	storedFunctionWith(t, svc, "huge", "", MaxCodeBytes+1)
 	storedFunctionWith(t, svc, "edge", "", MaxCodeBytes)
+	storedFunctionHandler(t, svc, "spaced", "boot\u00a0strap", "", 9)
+	storedFunctionHandler(t, svc, "longhandler", strings.Repeat("h", 129), "", 9)
+	storedFunctionHandler(t, svc, "edgehandler", strings.Repeat("h", 128), "", 9)
 
 	require.NoError(t, svc.ActivatePending(t.Context()))
 	assert.Equal(t, "The function cannot run here: test-link Lambda does not support environment variables.", functionState(t, svc, "env").StateReason)
@@ -129,4 +138,9 @@ func TestReadiness_RefusesFunctionsTheTestLinkCannotRun(t *testing.T) {
 	assert.Equal(t, "The function cannot run here: its code is larger than test-link Lambda accepts.", functionState(t, svc, "huge").StateReason)
 	assert.Equal(t, function.StatePending, functionState(t, svc, "huge").State)
 	assert.Equal(t, function.StateActive, functionState(t, svc, "edge").State, "the largest accepted code copy activates")
+	for _, name := range []string{"spaced", "longhandler"} {
+		assert.Equal(t, function.StatePending, functionState(t, svc, name).State, name)
+		assert.Equal(t, "The function cannot run here: test-link Lambda runs only a handler of 1 to 128 characters with no whitespace.", functionState(t, svc, name).StateReason, name)
+	}
+	assert.Equal(t, function.StateActive, functionState(t, svc, "edgehandler").State, "the longest accepted handler activates")
 }

@@ -112,6 +112,12 @@ func (d *Daemon) unresolved() (string, error) {
 	return strings.TrimSuffix(filepath.Base(markers[0]), markerSuffix), nil
 }
 
+// validHandler is the handler a guest run accepts: 1..128 bytes, no
+// whitespace or NUL.
+func validHandler(h string) bool {
+	return h != "" && len(h) <= 128 && strings.IndexFunc(h, unicode.IsSpace) < 0 && !strings.ContainsRune(h, 0)
+}
+
 // controlIOTimeout bounds reading a request from, and writing a reply to, the
 // gateway on the control socket.
 const controlIOTimeout = 30 * time.Second
@@ -299,8 +305,7 @@ func CheckRequest(req Request) error {
 	if req.RequestID == "" || req.RevisionID == "" {
 		return errors.New("request and revision IDs are required")
 	}
-	if req.Handler == "" || len(req.Handler) > 128 || strings.IndexFunc(req.Handler, unicode.IsSpace) >= 0 ||
-		strings.ContainsRune(req.Handler, 0) {
+	if !validHandler(req.Handler) {
 		return errors.New("handler must be 1..128 characters with no whitespace")
 	}
 	if req.TimeoutMs <= 0 || req.TimeoutMs > maxTimeoutMs {

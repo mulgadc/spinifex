@@ -96,4 +96,25 @@ func (l *natsSystemInstanceLauncher) TerminateSystemInstance(instanceID string) 
 	return nil
 }
 
+func (l *natsSystemInstanceLauncher) RebootSystemInstance(instanceID string) error {
+	if instanceID == "" {
+		return fmt.Errorf("system instance reboot: empty instance ID")
+	}
+
+	subject := fmt.Sprintf("system.RebootInstance.%s", instanceID)
+	reply, err := l.nc.Request(subject, nil, l.timeout)
+	if err != nil {
+		return fmt.Errorf("nats request %s: %w", subject, err)
+	}
+
+	var env natsSystemInstanceTerminateEnvelope
+	if err := json.Unmarshal(reply.Data, &env); err != nil {
+		return fmt.Errorf("decode reboot reply: %w", err)
+	}
+	if env.Error != "" {
+		return fmt.Errorf("%s", env.Error)
+	}
+	return nil
+}
+
 var _ SystemInstanceLauncher = (*natsSystemInstanceLauncher)(nil)

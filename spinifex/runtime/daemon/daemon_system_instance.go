@@ -682,13 +682,19 @@ func (d *Daemon) reclaimSystemInstanceEIP(instanceID string, cls systeminstance.
 // customer ID is refused as not a system instance, an unknown ID answered as
 // gone and an unreadable record as ownership unknown; nothing is touched.
 func (d *Daemon) requireSystemInstance(instanceID string) (systeminstance.Classification, error) {
+	return d.requireSystemInstanceFor("TerminateSystemInstance", instanceID)
+}
+
+// requireSystemInstanceFor is requireSystemInstance with the calling operation
+// named in the refusal log.
+func (d *Daemon) requireSystemInstanceFor(op, instanceID string) (systeminstance.Classification, error) {
 	cls, err := d.classifySystemInstance(instanceID)
 	if err != nil {
-		slog.Warn("TerminateSystemInstance: refused, ownership could not be read", "instanceId", instanceID, "err", err)
+		slog.Warn(op+": refused, ownership could not be read", "instanceId", instanceID, "err", err)
 		return cls, fmt.Errorf("%w: %s: %w", systeminstance.ErrSystemInstanceOwnershipUnknown, instanceID, err)
 	}
 	if cls.Ownership != systeminstance.OwnershipSystem {
-		slog.Warn("TerminateSystemInstance: refused, not a system instance", "instanceId", instanceID, "ownership", cls.Ownership)
+		slog.Warn(op+": refused, not a system instance", "instanceId", instanceID, "ownership", cls.Ownership)
 		if cls.Ownership == systeminstance.OwnershipCustomer {
 			return cls, fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotSystem, instanceID)
 		}
@@ -735,6 +741,43 @@ func (d *Daemon) terminateSystemInstanceLocal(instanceID string) error {
 	}
 
 	slog.Info("TerminateSystemInstance completed", "instanceId", instanceID)
+	return nil
+}
+
+// RebootSystemInstance restarts a load balancer VM into a fresh QEMU, keeping
+// its instance ID, ENIs and addresses. When this node does not run the VM the
+// request is routed to the owning daemon; no responder means the owner is
+// unreachable, reported as ErrSystemInstanceNotFound for the caller to retry.
+func (d *Daemon) RebootSystemInstance(instanceID string) error {
+	if _, err := d.requireSystemInstanceFor("RebootSystemInstance", instanceID); err != nil {
+		return err
+	}
+	if _, exists := d.vmMgr.Get(instanceID); exists {
+		return d.rebootSystemInstanceLocal(instanceID)
+	}
+	return d.rebootSystemInstanceRemote(instanceID)
+}
+
+// rebootSystemInstanceLocal restarts a VM owned by this node. It refuses unless
+// the VM is a load balancer in the system account, and never terminates.
+func (d *Daemon) rebootSystemInstanceLocal(instanceID string) error {
+	if _, err := d.requireSystemInstanceFor("RebootSystemInstance", instanceID); err != nil {
+		return err
+	}
+	instance, exists := d.vmMgr.Get(instanceID)
+	if !exists {
+		return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotFound, instanceID)
+	}
+	if instance.ManagedBy != tags.ManagedByELBv2 || instance.AccountID != awsidentifiers.GlobalAccountID {
+		slog.Warn("RebootSystemInstance: refused, not a load balancer system VM",
+			"instanceId", instanceID, "managedBy", instance.ManagedBy)
+		return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotSystem, instanceID)
+	}
+	if err := d.vmMgr.Reboot(context.Background(), instanceID); err != nil {
+		slog.Error("RebootSystemInstance: vmMgr.Reboot failed", "instanceId", instanceID, "err", err)
+		return fmt.Errorf("reboot: %w", err)
+	}
+	slog.Info("RebootSystemInstance admitted", "instanceId", instanceID)
 	return nil
 }
 
@@ -1093,3 +1136,5 @@ func buildNetcfgBlob(nics []elbv2domain.NICConfig) (string, error) {
 	}
 	return sb.String(), nil
 }
+
+var _ systeminstance.SystemInstanceLauncher = (*Daemon)(nil)

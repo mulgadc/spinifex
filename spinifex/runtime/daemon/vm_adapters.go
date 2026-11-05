@@ -739,6 +739,10 @@ func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
 				slog.Error("OnInstanceUp: failed to re-arm system terminate subscription",
 					"instanceId", instance.ID, "err", subErr)
 			}
+			if subErr := d.subscribeSystemRebootLocked(instance.ID); subErr != nil {
+				slog.Error("OnInstanceUp: failed to re-arm system reboot subscription",
+					"instanceId", instance.ID, "err", subErr)
+			}
 		}
 
 		// Re-claim GPU(s) after a daemon restart with a still-running QEMU
@@ -842,6 +846,13 @@ func (d *Daemon) onInstanceDownHook() func(string) {
 					"instanceId", instanceID, "err", err)
 			}
 			delete(d.natsSubscriptions, terminateSubKey)
+		}
+		if sub, ok := d.natsSubscriptions[systemRebootSubject(instanceID)]; ok {
+			if err := sub.Unsubscribe(); err != nil {
+				slog.Error("OnInstanceDown: failed to unsubscribe system reboot topic",
+					"instanceId", instanceID, "err", err)
+			}
+			delete(d.natsSubscriptions, systemRebootSubject(instanceID))
 		}
 	}
 }

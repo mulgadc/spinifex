@@ -360,6 +360,8 @@ func (f *fakeInstanceLauncher) TerminateSystemInstance(instanceID string) error 
 	return nil
 }
 
+func (f *fakeInstanceLauncher) RebootSystemInstance(string) error { return nil }
+
 // fakeAMIResolver always resolves the same serving AMI.
 type fakeAMIResolver struct{}
 

@@ -97,6 +97,14 @@ func (d *Daemon) serveSystemLaunch(msg *nats.Msg, launch systemLaunchFunc) strin
 			"instanceId", output.InstanceID, "err", subErr)
 	}
 
+	d.mu.Lock()
+	rebootErr := d.subscribeSystemRebootLocked(output.InstanceID)
+	d.mu.Unlock()
+	if rebootErr != nil {
+		slog.Error("system.LaunchInstance: failed to subscribe reboot subject",
+			"instanceId", output.InstanceID, "err", rebootErr)
+	}
+
 	respondWithSystemLaunchOutput(msg, output)
 	return outcomeSuccess
 }
@@ -175,19 +183,119 @@ func (d *Daemon) terminateSystemInstanceRemote(instanceID string) error {
 		return fmt.Errorf("decode routed terminate reply %s: %w", instanceID, err)
 	}
 	if env.Error != "" {
-		if strings.Contains(env.Error, systeminstance.ErrSystemInstanceNotFound.Error()) {
-			return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotFound, instanceID)
-		}
-		if strings.Contains(env.Error, systeminstance.ErrSystemInstanceNotSystem.Error()) {
-			return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotSystem, instanceID)
-		}
-		if strings.Contains(env.Error, systeminstance.ErrSystemInstanceOwnershipUnknown.Error()) {
-			return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceOwnershipUnknown, instanceID)
-		}
-		return fmt.Errorf("routed terminate %s: %s", instanceID, env.Error)
+		return routedSystemError("terminate", instanceID, env.Error)
 	}
 	slog.Info("terminateSystemInstanceRemote: owner terminated VM", "instanceId", instanceID)
 	return nil
+}
+
+// routedSystemError maps an owner's error text back to the sentinel it carried,
+// so callers keep telling gone, customer-owned and unreadable apart.
+func routedSystemError(op, instanceID, text string) error {
+	for _, sentinel := range []error{
+		systeminstance.ErrSystemInstanceNotFound,
+		systeminstance.ErrSystemInstanceNotSystem,
+		systeminstance.ErrSystemInstanceOwnershipUnknown,
+	} {
+		if strings.Contains(text, sentinel.Error()) {
+			return fmt.Errorf("%w: %s", sentinel, instanceID)
+		}
+	}
+	return fmt.Errorf("routed %s %s: %s", op, instanceID, text)
+}
+
+// rebootSystemInstanceRemote routes a reboot to the owning daemon over
+// system.RebootInstance.{id}. No responder means the owner is unreachable and
+// is reported as ErrSystemInstanceNotFound; the caller retries and must not
+// count it as a repair.
+func (d *Daemon) rebootSystemInstanceRemote(instanceID string) error {
+	if d.natsConn == nil {
+		return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotFound, instanceID)
+	}
+	subject := systemRebootSubject(instanceID)
+	reply, err := d.natsConn.Request(subject, nil, systemRebootRemoteTimeout)
+	if err != nil {
+		if errors.Is(err, nats.ErrNoResponders) {
+			return fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotFound, instanceID)
+		}
+		return fmt.Errorf("route reboot %s: %w", instanceID, err)
+	}
+	var env systemInstanceTerminateEnvelope
+	if err := json.Unmarshal(reply.Data, &env); err != nil {
+		return fmt.Errorf("decode routed reboot reply %s: %w", instanceID, err)
+	}
+	if env.Error != "" {
+		return routedSystemError("reboot", instanceID, env.Error)
+	}
+	return nil
+}
+
+// systemRebootRemoteTimeout caps a routed reboot round trip. The owner admits
+// the reboot and returns; the guest restart runs in the background.
+const systemRebootRemoteTimeout = 15 * time.Second
+
+func systemRebootSubject(instanceID string) string {
+	return "system.RebootInstance." + instanceID
+}
+
+// subscribeSystemRebootLocked registers the owning-node subscription for
+// system.RebootInstance.{instanceID}. Idempotent; the caller holds d.mu.
+func (d *Daemon) subscribeSystemRebootLocked(instanceID string) error {
+	if d.natsConn == nil {
+		return nil
+	}
+	subject := systemRebootSubject(instanceID)
+	if _, exists := d.natsSubscriptions[subject]; exists {
+		return nil
+	}
+	sub, err := d.natsConn.Subscribe(subject, d.handleSystemRebootInstance)
+	if err != nil {
+		return fmt.Errorf("subscribe %s: %w", subject, err)
+	}
+	d.natsSubscriptions[subject] = sub
+	return nil
+}
+
+// subscribeSystemReboot is subscribeSystemRebootLocked for callers without d.mu.
+func (d *Daemon) subscribeSystemReboot(instanceID string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.subscribeSystemRebootLocked(instanceID)
+}
+
+// handleSystemRebootInstance is the NATS subscriber for
+// system.RebootInstance.{instanceID}. Only the owning daemon subscribes.
+func (d *Daemon) handleSystemRebootInstance(msg *nats.Msg) {
+	d.systemDispatchWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("system.RebootInstance: handler panic", "subject", msg.Subject, "panic", r)
+				respondWithSystemRebootReply(msg, awserrors.ErrorServerInternal)
+			}
+		}()
+		id, ok := strings.CutPrefix(msg.Subject, "system.RebootInstance.")
+		if !ok || id == "" {
+			respondWithSystemRebootReply(msg, awserrors.ErrorInvalidInstanceIDNotFound)
+			return
+		}
+		// The local body, not the routing wrapper: only the owner subscribes.
+		if err := d.rebootSystemInstanceLocal(id); err != nil {
+			respondWithSystemRebootReply(msg, err.Error())
+			return
+		}
+		respondWithSystemRebootReply(msg, "")
+	})
+}
+
+func respondWithSystemRebootReply(msg *nats.Msg, errMsg string) {
+	payload, err := json.Marshal(systemInstanceTerminateEnvelope{Error: errMsg})
+	if err != nil {
+		slog.Error("system.RebootInstance: marshal reply failed", "err", err)
+		return
+	}
+	if err := msg.Respond(payload); err != nil {
+		slog.Error("system.RebootInstance: respond failed", "err", err)
+	}
 }
 
 // subscribeSystemTerminate registers an owning-node subscription for
@@ -265,6 +373,10 @@ func (d *Daemon) serveSystemTerminateInstance(msg *nats.Msg) {
 			slog.Warn("system.TerminateInstance: failed to unsubscribe", "subject", subject, "err", unsubErr)
 		}
 		delete(d.natsSubscriptions, subject)
+	}
+	if sub, exists := d.natsSubscriptions[systemRebootSubject(parts)]; exists {
+		_ = sub.Unsubscribe()
+		delete(d.natsSubscriptions, systemRebootSubject(parts))
 	}
 	d.mu.Unlock()
 

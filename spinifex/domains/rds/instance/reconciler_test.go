@@ -142,6 +142,7 @@ func TestReconciler_HoldsCreatingWhenTheVMIsNotRunning(t *testing.T) {
 }
 
 func TestReconciler_HoldsCreatingUntilTheEngineIsHealthy(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		mutate func(*DBInstanceRecord)
@@ -162,6 +163,7 @@ func TestReconciler_HoldsCreatingUntilTheEngineIsHealthy(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			h := newReconcileHarness(t)
 			rec := healthyRecord()
 			tc.mutate(&rec)

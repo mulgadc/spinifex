@@ -86,7 +86,9 @@ func TestReconciler_ResumesAModifyWhoseHolderIsGone(t *testing.T) {
 // out, or the pass that has to finish the grow inside the guest would wait a
 // whole TTL for a change that already landed.
 func TestApplyPendingModifications_ReleasesTheLeaseWhateverTheOutcome(t *testing.T) {
+	t.Parallel()
 	t.Run("applied", func(t *testing.T) {
+		t.Parallel()
 		h := newModifyHarness(t)
 		seedInstance(t, h.svc, modifyingRecord(
 			&PendingModifiedValues{AllocatedStorage: aws.Int64(50), RequestedAt: time.Now().UTC()}))
@@ -96,6 +98,7 @@ func TestApplyPendingModifications_ReleasesTheLeaseWhateverTheOutcome(t *testing
 	})
 
 	t.Run("failed", func(t *testing.T) {
+		t.Parallel()
 		h := newModifyHarness(t)
 		h.storage.modifyErr = errors.New("the volume store is unavailable")
 		seedInstance(t, h.svc, modifyingRecord(

@@ -14,6 +14,7 @@ import (
 // The admin API dry run answers exactly as the plain inventory would, runs no
 // cleanup and leaves no job record.
 func TestAdminDeleteAccountDryRunAnswersTheInventoryAndCleansNothing(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	cleaner := &panicCleaner{}
 	gw.PlatformCleaner = cleaner

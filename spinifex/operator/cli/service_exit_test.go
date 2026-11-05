@@ -362,6 +362,7 @@ func TestServiceStartExitsNonZeroOnFailure(t *testing.T) {
 		Execute()
 		return
 	}
+	t.Parallel()
 
 	execCmd := exec.Command(os.Args[0], "-test.run=^TestServiceStartExitsNonZeroOnFailure$")
 	execCmd.Env = append(os.Environ(), "SPX_EXIT_CODE_TEST_HELPER=1")

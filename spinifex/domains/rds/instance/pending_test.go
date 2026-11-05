@@ -449,6 +449,7 @@ func TestApplyPendingModifications_AFailedParameterApplyIsRecordedOnTheInstance(
 // unreachable old agent must not abort it: the class-correct set lands on the
 // record directly for the replacement's fresh agent to adopt on boot.
 func TestApplyPendingModifications_ClassChangeSurvivesAnUnreachableAgent(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.silenceApplyParams()
 	rec := modifyingRecord(&PendingModifiedValues{
@@ -481,6 +482,7 @@ func TestApplyPendingModifications_ClassChangeSurvivesAnUnreachableAgent(t *test
 // unreachable agent still fails it exactly as before — the class-change
 // tolerance must not leak into the path a live-agent rollback owns.
 func TestApplyPendingModifications_ParameterGroupOnlyStillFailsOnAnUnreachableAgent(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.silenceApplyParams()
 	rec := modifyingRecord(&PendingModifiedValues{

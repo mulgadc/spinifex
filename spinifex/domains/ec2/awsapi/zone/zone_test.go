@@ -3,6 +3,9 @@ package zone
 import (
 	"testing"
 
+	testutil "github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/zoneid"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -10,28 +13,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func newIDs(t *testing.T, region, override string) *zoneid.Resolver {
+	t.Helper()
+	_, _, js := testutil.StartTestJetStream(t)
+	r, err := zoneid.NewResolver(js, region, override)
+	require.NoError(t, err)
+	return r
+}
+
 func TestDescribeAvailabilityZones(t *testing.T) {
 	tests := []struct {
 		name   string
 		region string
 		az     string
+		zoneID string
 	}{
 		{
 			name:   "Sydney",
 			region: "ap-southeast-2",
 			az:     "ap-southeast-2a",
+			zoneID: "apse2-az1",
 		},
 		{
 			name:   "US East",
 			region: "us-east-1",
 			az:     "us-east-1a",
+			zoneID: "use1-az1",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			input := &ec2.DescribeAvailabilityZonesInput{}
-			output, err := DescribeAvailabilityZones(input, tt.region, tt.az)
+			output, err := DescribeAvailabilityZones(t.Context(), input, tt.region, tt.az, newIDs(t, tt.region, ""))
 
 			require.NoError(t, err)
 			require.NotNil(t, output)
@@ -42,13 +56,21 @@ func TestDescribeAvailabilityZones(t *testing.T) {
 			assert.Equal(t, "opt-in-not-required", *zone.OptInStatus)
 			assert.Equal(t, tt.region, *zone.RegionName)
 			assert.Equal(t, tt.az, *zone.ZoneName)
-			assert.Equal(t, "spinifexz1", *zone.ZoneId)
+			assert.Equal(t, tt.zoneID, *zone.ZoneId)
 			assert.Equal(t, tt.region, *zone.GroupName)
 			assert.Equal(t, tt.region, *zone.NetworkBorderGroup)
 			assert.Equal(t, "availability-zone", *zone.ZoneType)
 			assert.Empty(t, zone.Messages)
 		})
 	}
+}
+
+func TestDescribeAvailabilityZones_ZoneIDsSelectBySydneyID(t *testing.T) {
+	ids := newIDs(t, "ap-southeast-2", "")
+	out, err := DescribeAvailabilityZones(t.Context(), &ec2.DescribeAvailabilityZonesInput{ZoneIds: aws.StringSlice([]string{"apse2-az1"})}, "ap-southeast-2", "ap-southeast-2a", ids)
+	require.NoError(t, err)
+	require.Len(t, out.AvailabilityZones, 1)
+	assert.Equal(t, "ap-southeast-2a", aws.StringValue(out.AvailabilityZones[0].ZoneName))
 }
 
 func TestDescribeRegions(t *testing.T) {
@@ -104,6 +126,7 @@ func requireInvalidParameterValue(t *testing.T, err error, msg string) {
 // is as valid as an AWS one. The messages are AWS's own.
 func TestDescribeAvailabilityZones_Selection(t *testing.T) {
 	const region, az = "mulga-west", "mulga-west-a"
+	ids := newIDs(t, region, "")
 
 	for _, tc := range []struct {
 		name  string
@@ -111,7 +134,7 @@ func TestDescribeAvailabilityZones_Selection(t *testing.T) {
 		want  int
 	}{
 		{"zone name", &ec2.DescribeAvailabilityZonesInput{ZoneNames: aws.StringSlice([]string{az})}, 1},
-		{"zone id", &ec2.DescribeAvailabilityZonesInput{ZoneIds: aws.StringSlice([]string{"spinifexz1"})}, 1},
+		{"zone id", &ec2.DescribeAvailabilityZonesInput{ZoneIds: aws.StringSlice([]string{"muw1-az1"})}, 1},
 		{"zone-name filter", &ec2.DescribeAvailabilityZonesInput{Filters: filter("zone-name", az)}, 1},
 		{"wildcard filter", &ec2.DescribeAvailabilityZonesInput{Filters: filter("region-name", "mulga-*")}, 1},
 		{"state filter", &ec2.DescribeAvailabilityZonesInput{Filters: filter("state", "available")}, 1},
@@ -119,7 +142,7 @@ func TestDescribeAvailabilityZones_Selection(t *testing.T) {
 		{"filter on an absent field", &ec2.DescribeAvailabilityZonesInput{Filters: filter("parent-zone-id", "*")}, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, err := DescribeAvailabilityZones(tc.input, region, az)
+			out, err := DescribeAvailabilityZones(t.Context(), tc.input, region, az, ids)
 			require.NoError(t, err)
 			assert.Len(t, out.AvailabilityZones, tc.want)
 		})
@@ -134,10 +157,11 @@ func TestDescribeAvailabilityZones_Selection(t *testing.T) {
 		{"tag filter", &ec2.DescribeAvailabilityZonesInput{Filters: filter("tag:Name", "x")}, "The filter 'tag:Name' is invalid"},
 		{"network-border-group filter", &ec2.DescribeAvailabilityZonesInput{Filters: filter("network-border-group", "x")}, "The filter 'network-border-group' is invalid"},
 		{"first unknown name in request order", &ec2.DescribeAvailabilityZonesInput{ZoneNames: aws.StringSlice([]string{az, "zz-nowhere-9z", "yy-nowhere-8y"})}, "Invalid availability zone: [zz-nowhere-9z]"},
-		{"unknown zone id", &ec2.DescribeAvailabilityZonesInput{ZoneIds: aws.StringSlice([]string{"spinifexz1", "zz-az9"})}, "Invalid availability zone-id: [zz-az9]"},
+		{"unknown zone id", &ec2.DescribeAvailabilityZonesInput{ZoneIds: aws.StringSlice([]string{"muw1-az1", "zz-az9"})}, "Invalid availability zone-id: [zz-az9]"},
+		{"the retired constant is an unknown zone id", &ec2.DescribeAvailabilityZonesInput{ZoneIds: aws.StringSlice([]string{"spinifexz1"})}, "Invalid availability zone-id: [spinifexz1]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := DescribeAvailabilityZones(tc.input, region, az)
+			_, err := DescribeAvailabilityZones(t.Context(), tc.input, region, az, ids)
 			requireInvalidParameterValue(t, err, tc.msg)
 		})
 	}
@@ -179,4 +203,10 @@ func TestDescribeRegions_Selection(t *testing.T) {
 			requireInvalidParameterValue(t, err, tc.msg)
 		})
 	}
+}
+
+func TestDescribeAvailabilityZones_NoIDSourceFailsClosed(t *testing.T) {
+	_, err := DescribeAvailabilityZones(t.Context(), &ec2.DescribeAvailabilityZonesInput{}, "mulga-lab", "mulga-laba", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorServerInternal)
 }

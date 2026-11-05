@@ -69,6 +69,9 @@ type Deps struct {
 	// Overrides how long an apply-params command waits for the agent to
 	// answer. Zero takes defaultApplyParamsTimeout.
 	ApplyParamsTimeout time.Duration
+	// Overrides how often an unanswered agent command is re-published.
+	// Zero takes defaultCommandRepublishEvery.
+	CommandRepublishEvery time.Duration
 	// Override the modify lease lifetime and renewal cadence in tests. A zero
 	// TTL takes the default; a refresh outside (0, TTL) derives as TTL/3.
 	ModifyLeaseTTL     time.Duration
@@ -136,6 +139,13 @@ func (s *Service) applyParamsTimeout() time.Duration {
 		return s.deps.ApplyParamsTimeout
 	}
 	return defaultApplyParamsTimeout
+}
+
+func (s *Service) commandRepublishEvery() time.Duration {
+	if s.deps.CommandRepublishEvery > 0 {
+		return s.deps.CommandRepublishEvery
+	}
+	return defaultCommandRepublishEvery
 }
 
 func (s *Service) failureGrace() time.Duration {

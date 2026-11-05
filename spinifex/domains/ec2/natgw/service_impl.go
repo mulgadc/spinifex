@@ -190,9 +190,9 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(ctx context.Context, input *ec2
 	entry, err := s.natgwKV.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			// AWS-faithful: an absent NAT gateway is NotFound (provider
+			// AWS-faithful: an absent NAT gateway is NatGatewayNotFound (provider
 			// tolerates it on destroy); destroy orchestration tolerates it too.
-			return nil, errors.New(awserrors.ErrorInvalidNatGatewayIDNotFound)
+			return nil, errors.New(awserrors.ErrorNatGatewayNotFound)
 		}
 		slog.ErrorContext(ctx, "Failed to read NAT Gateway", "natGatewayId", natgwID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -419,7 +419,7 @@ func (s *NatGatewayServiceImpl) DescribeNatGateways(ctx context.Context, input *
 		entry, err := s.deletedNatgwKV.Get(ctx, key)
 		if err != nil {
 			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				return nil, errors.New(awserrors.ErrorInvalidNatGatewayIDNotFound)
+				return nil, errors.New(awserrors.ErrorNatGatewayNotFound)
 			}
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}

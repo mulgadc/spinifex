@@ -16,8 +16,9 @@ import (
 )
 
 // pidFileRemovalTimeout is how long Stop/Terminate wait for the PID file to
-// disappear after system_powerdown before resorting to SIGKILL.
-const pidFileRemovalTimeout = 20 * time.Second
+// disappear after system_powerdown before resorting to SIGKILL. A variable so
+// tests can shorten it.
+var pidFileRemovalTimeout = 20 * time.Second
 
 const (
 	// powerdownResendInterval re-presses the virtual power button. A guest
@@ -578,12 +579,7 @@ func (m *Manager) terminateCleanup(instance *VM) {
 	// nothing a caller can still ask for. Tolerated to keep terminate
 	// idempotent; only stop and DRAIN treat a failed seal as fatal.
 	_ = m.shutdownAndUnmount(instance)
-	m.markTeardown(instance, TeardownQEMU, TeardownDone)
-
-	if m.deps.InstanceCleaner != nil {
-		m.markTeardownResult(instance, TeardownVolumes, m.deps.InstanceCleaner.DeleteVolumes(instance))
-	}
-	m.markUEFIStoreForDeletion(instance)
+	m.cleanupAfterQEMU(instance)
 
 	m.cleanupTapDevices(instance)
 	m.markTeardown(instance, TeardownTap, TeardownDone)
@@ -628,6 +624,29 @@ func (m *Manager) terminateCleanup(instance *VM) {
 	}
 
 	m.deallocateResources(instance)
+}
+
+// cleanupAfterQEMU deletes the volumes and the UEFI store only once QEMU is
+// proven gone on this node. Otherwise the guest may still be writing them, so
+// QEMU, volumes and UEFI are recorded failed and TerminatedTeardownReaper
+// finishes them after it proves exit (ADR-0003:S7).
+func (m *Manager) cleanupAfterQEMU(instance *VM) {
+	if !qemuProvenGone(instance.ID) {
+		slog.Error("QEMU not proven gone after terminate, leaving volumes and UEFI store to the teardown reaper",
+			"instanceId", instance.ID)
+		m.markTeardown(instance, TeardownQEMU, TeardownFailed)
+		m.markTeardown(instance, TeardownVolumes, TeardownFailed)
+		if m.deps.UEFIStores != nil {
+			m.markTeardown(instance, TeardownUEFI, TeardownFailed)
+		}
+		return
+	}
+	m.markTeardown(instance, TeardownQEMU, TeardownDone)
+
+	if m.deps.InstanceCleaner != nil {
+		m.markTeardownResult(instance, TeardownVolumes, m.deps.InstanceCleaner.DeleteVolumes(instance))
+	}
+	m.markUEFIStoreForDeletion(instance)
 }
 
 // shutdownAndUnmount asks QEMU to power down via QMP, waits for the PID
@@ -770,9 +789,9 @@ func (m *Manager) shutdownQEMU(instance *VM) {
 
 	// The PID file persisting past the timeout means QEMU did not exit on its
 	// own; force-kill it then. A PID file that disappears is the clean-exit
-	// signal — do not kill on that path (the PID may be stale or reused). The
-	// wrong-node terminate case, where this never runs on the hosting node, is
-	// the OrphanQEMUReaper's job.
+	// signal — do not kill on that path (the PID may be stale or reused). A
+	// terminate only runs on the node holding the instance record, so an absent
+	// PID file here means QEMU is not running on this node.
 	if err := hostprocess.WaitForPidFileRemoval(instance.ID, pidFileRemovalTimeout); err != nil {
 		slog.Warn("Timeout waiting for PID file removal", "id", instance.ID, "err", err)
 		pid, readErr := hostprocess.ReadPidFile(instance.ID)

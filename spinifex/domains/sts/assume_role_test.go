@@ -69,6 +69,8 @@ func basicAssumeRoleInput(roleARN, sessionName string) *sts.AssumeRoleInput {
 }
 
 func TestAssumeRole_HappyPath_PersistsRecord(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	caller := testCallerARN()
 	role := createRoleInAccount(t, svc, testCallerAccountID, "app", trustPolicyAllowingUser(caller))
@@ -117,6 +119,8 @@ func TestAssumeRole_HappyPath_PersistsRecord(t *testing.T) {
 }
 
 func TestAssumeRole_WildcardPrincipal_Allowed(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "open", trustPolicyAllowingWildcard())
 
@@ -126,6 +130,8 @@ func TestAssumeRole_WildcardPrincipal_Allowed(t *testing.T) {
 }
 
 func TestAssumeRole_RootPrincipal_MatchesAnyPrincipalInAccount(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "rooted", trustPolicyAllowingRoot(testCallerAccountID))
 
@@ -138,6 +144,8 @@ func TestAssumeRole_RootPrincipal_MatchesAnyPrincipalInAccount(t *testing.T) {
 // scoped to arn:aws:iam — a malformed ARN like arn:aws:s3::A:root pasted into
 // a trust policy must fail closed, not silently grant the account.
 func TestAssumeRole_NonIAMRootARN_DoesNotMatch(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	trustPolicy := fmt.Sprintf(
 		`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:s3::%s:root"},"Action":"sts:AssumeRole"}]}`,
@@ -151,6 +159,8 @@ func TestAssumeRole_NonIAMRootARN_DoesNotMatch(t *testing.T) {
 }
 
 func TestAssumeRole_BareAccountIDPrincipal_TreatedAsRoot(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "bare", trustPolicyAllowingBareAccount(testCallerAccountID))
 
@@ -160,6 +170,8 @@ func TestAssumeRole_BareAccountIDPrincipal_TreatedAsRoot(t *testing.T) {
 }
 
 func TestAssumeRole_ActionWildcards(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	caller := testCallerARN()
 
@@ -173,6 +185,8 @@ func TestAssumeRole_ActionWildcards(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			policy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":%q},"Action":%s}]}`, caller, tc.action)
 			role := createRoleInAccount(t, svc, testCallerAccountID, "wild-"+tc.name, policy)
 			_, err := svc.AssumeRole(testCallerAccountID, caller, testCallerUserName,
@@ -183,6 +197,8 @@ func TestAssumeRole_ActionWildcards(t *testing.T) {
 }
 
 func TestAssumeRole_ExplicitDenyWinsOverAllow(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	caller := testCallerARN()
 
@@ -211,6 +227,8 @@ func TestAssumeRole_ExplicitDenyWinsOverAllow(t *testing.T) {
 }
 
 func TestAssumeRole_NoMatchingAllow_AccessDenied(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	other := fmt.Sprintf("arn:aws:iam::%s:user/bob", testCallerAccountID)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "narrow", trustPolicyAllowingUser(other))
@@ -221,6 +239,8 @@ func TestAssumeRole_NoMatchingAllow_AccessDenied(t *testing.T) {
 }
 
 func TestAssumeRole_SameAccountRoleNotFound_AccessDenied(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 
 	// AWS masks missing roles to AccessDenied regardless of account, naming the
@@ -232,6 +252,8 @@ func TestAssumeRole_SameAccountRoleNotFound_AccessDenied(t *testing.T) {
 }
 
 func TestAssumeRole_CrossAccountRoleNotFound_AccessDenied(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 
 	// Caller is in callerAccountID; missing role is in testCrossAccountID.
@@ -244,6 +266,8 @@ func TestAssumeRole_CrossAccountRoleNotFound_AccessDenied(t *testing.T) {
 }
 
 func TestAssumeRole_DurationBounds(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	caller := testCallerARN()
 	role := createRoleInAccount(t, svc, testCallerAccountID, "dur", trustPolicyAllowingUser(caller))
@@ -265,6 +289,8 @@ func TestAssumeRole_DurationBounds(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			input := basicAssumeRoleInput(*role.Arn, "sess")
 			if tc.seconds != 0 {
 				input.DurationSeconds = aws.Int64(tc.seconds)
@@ -280,6 +306,8 @@ func TestAssumeRole_DurationBounds(t *testing.T) {
 }
 
 func TestAssumeRole_LongerMaxSessionDuration_CapAtTwelveHours(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	caller := testCallerARN()
 	out, err := svc.iamSvc.CreateRole(testCallerAccountID, &iam.CreateRoleInput{
@@ -314,6 +342,8 @@ func TestAssumeRole_LongerMaxSessionDuration_CapAtTwelveHours(t *testing.T) {
 // AWS checks input constraints before the role, so a bad value against a missing
 // role is a ValidationError, and every failed constraint is reported at once.
 func TestAssumeRole_ConstraintsCheckedBeforeRoleAndReportedTogether(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	missing := fmt.Sprintf("arn:aws:iam::%s:role/ghost", testCallerAccountID)
 
@@ -335,6 +365,8 @@ func TestAssumeRole_ConstraintsCheckedBeforeRoleAndReportedTogether(t *testing.T
 }
 
 func TestAssumeRole_RejectsSessionPolicies(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "nopol", trustPolicyAllowingUser(testCallerARN()))
 
@@ -363,6 +395,8 @@ func TestAssumeRole_RejectsSessionPolicies(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, tc.input)
 			requireUnsupportedSessionInput(t, err, "Session policies are not supported")
 		})
@@ -370,6 +404,8 @@ func TestAssumeRole_RejectsSessionPolicies(t *testing.T) {
 }
 
 func TestAssumeRole_RejectsSessionTags(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "notag", trustPolicyAllowingUser(testCallerARN()))
 
@@ -396,6 +432,8 @@ func TestAssumeRole_RejectsSessionTags(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, tc.input)
 			requireUnsupportedSessionInput(t, err, "Session tags are not supported")
 		})
@@ -438,6 +476,8 @@ func requireMFANotSupported(t *testing.T, err error) {
 }
 
 func TestAssumeRole_EchoesSourceIdentity(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	caller := testCallerARN()
 	role := createRoleInAccount(t, svc, testCallerAccountID, "srcid", trustPolicyAllowingUser(caller))
@@ -457,6 +497,8 @@ func TestAssumeRole_EchoesSourceIdentity(t *testing.T) {
 }
 
 func TestAssumeRole_RejectsMFA(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "nomfa", trustPolicyAllowingUser(testCallerARN()))
 
@@ -483,6 +525,8 @@ func TestAssumeRole_RejectsMFA(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, tc.input)
 			requireMFANotSupported(t, err)
 		})
@@ -490,6 +534,8 @@ func TestAssumeRole_RejectsMFA(t *testing.T) {
 
 	for _, tc := range mfaConstraintCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			input := basicAssumeRoleInput(*role.Arn, "sess")
 			input.SerialNumber, input.TokenCode = tc.serialNumber, tc.tokenCode
 			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, input)
@@ -582,6 +628,8 @@ func TestAssumeRole_RejectsInvalidSessionName(t *testing.T) {
 }
 
 func TestAssumeRole_RejectsMissingRequiredFields(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 
 	cases := []struct {
@@ -594,6 +642,8 @@ func TestAssumeRole_RejectsMissingRequiredFields(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName, tc.input)
 			require.Error(t, err)
 			assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
@@ -602,6 +652,8 @@ func TestAssumeRole_RejectsMissingRequiredFields(t *testing.T) {
 }
 
 func TestAssumeRole_RejectsMalformedRoleARN(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 
 	bad := []string{
@@ -613,6 +665,8 @@ func TestAssumeRole_RejectsMalformedRoleARN(t *testing.T) {
 	}
 	for _, badARN := range bad {
 		t.Run(badARN, func(t *testing.T) {
+			t.Parallel()
+
 			_, err := svc.AssumeRole(testCallerAccountID, testCallerARN(), testCallerUserName,
 				basicAssumeRoleInput(badARN, "sess"))
 			require.Error(t, err)
@@ -622,6 +676,8 @@ func TestAssumeRole_RejectsMalformedRoleARN(t *testing.T) {
 }
 
 func TestAssumeRole_CrossAccountSuccess(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	caller := testCallerARN()
 	// Role lives in account B, trust policy allows account-A user.
@@ -639,6 +695,8 @@ func TestAssumeRole_CrossAccountSuccess(t *testing.T) {
 }
 
 func TestAssumeRole_ChainedAssume_RoleArnAutoExpansion(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	// Caller is already an assumed-role session of SourceRole in account A.
 	callerSession := fmt.Sprintf("arn:aws:sts::%s:assumed-role/SourceRole/orig-sess", testCallerAccountID)
@@ -652,6 +710,8 @@ func TestAssumeRole_ChainedAssume_RoleArnAutoExpansion(t *testing.T) {
 }
 
 func TestAssumeRole_ChainedAssume_LiteralSessionARN(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	exactSession := fmt.Sprintf("arn:aws:sts::%s:assumed-role/SourceRole/named", testCallerAccountID)
 	clausePolicy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":%q},"Action":"sts:AssumeRole"}]}`, exactSession)
@@ -671,6 +731,8 @@ func TestAssumeRole_ChainedAssume_LiteralSessionARN(t *testing.T) {
 }
 
 func TestAssumeRole_PrincipalArray_AnyEntryMatches(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	caller := testCallerARN()
 	bob := fmt.Sprintf("arn:aws:iam::%s:user/bob", testCallerAccountID)
@@ -683,6 +745,8 @@ func TestAssumeRole_PrincipalArray_AnyEntryMatches(t *testing.T) {
 }
 
 func TestAssumeRole_ServicePrincipal_NotMatchedByUserCaller(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	// AWS-only Principal alongside Service entry — an IAM user is attributed no
 	// service principal, so the Service entry skips and the AWS entry decides.
@@ -716,6 +780,8 @@ func instanceRoleCallerARN(accountID, instanceID string) string {
 }
 
 func TestAssumeRole_ECSTasks_ContainerInstanceCaller_Allowed(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role", trustPolicyAllowingECSTasks())
 
@@ -729,6 +795,8 @@ func TestAssumeRole_ECSTasks_ContainerInstanceCaller_Allowed(t *testing.T) {
 }
 
 func TestAssumeRole_ECSTasks_ServiceArrayForm_Allowed(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":["lambda.amazonaws.com","ecs-tasks.amazonaws.com"]},"Action":"sts:AssumeRole"}]}`
 	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role-arr", policy)
@@ -742,6 +810,8 @@ func TestAssumeRole_ECSTasks_ServiceArrayForm_Allowed(t *testing.T) {
 // the container-instance role, so it cannot claim ecs-tasks.amazonaws.com and
 // reach a sibling task's role.
 func TestAssumeRole_ECSTasks_TaskRoleCallerDenied(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	victim := createRoleInAccount(t, svc, testCallerAccountID, "victim-task-role", trustPolicyAllowingECSTasks())
 
@@ -753,6 +823,8 @@ func TestAssumeRole_ECSTasks_TaskRoleCallerDenied(t *testing.T) {
 }
 
 func TestAssumeRole_ECSTasks_UserCallerDenied(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role-user", trustPolicyAllowingECSTasks())
 
@@ -765,6 +837,8 @@ func TestAssumeRole_ECSTasks_UserCallerDenied(t *testing.T) {
 // A container instance is attributed the service principal only for roles in its
 // own account, so one account's agent cannot reach another's task roles.
 func TestAssumeRole_ECSTasks_CrossAccountInstanceCallerDenied(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCrossAccountID, "task-role-x", trustPolicyAllowingECSTasks())
 
@@ -777,6 +851,8 @@ func TestAssumeRole_ECSTasks_CrossAccountInstanceCallerDenied(t *testing.T) {
 // Attribution is per-principal, not blanket: a container instance is ecs-tasks
 // only, so an EC2-trusting role stays reachable from IMDS alone.
 func TestAssumeRole_ECSTasks_InstanceCallerCannotClaimEC2(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "ec2-trust", trustPolicyAllowingEC2Service())
 
@@ -787,6 +863,8 @@ func TestAssumeRole_ECSTasks_InstanceCallerCannotClaimEC2(t *testing.T) {
 }
 
 func TestAssumeRole_ECSTasks_ExplicitDenyWins(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	policy := `{"Version":"2012-10-17","Statement":[` +
 		`{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"},` +
@@ -812,6 +890,8 @@ func trustPolicyAllowingECSTasksWithSourceAccount(accountID string) string {
 // aws:SourceAccount condition — it is evaluated, and a caller attributed to the
 // role's own account (the only shape serviceSourcesForCaller ever attributes) grants.
 func TestAssumeRole_SourceAccountCondition_MatchingAccountGrants(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role-sa-match",
 		trustPolicyAllowingECSTasksWithSourceAccount(testCallerAccountID))
@@ -826,6 +906,8 @@ func TestAssumeRole_SourceAccountCondition_MatchingAccountGrants(t *testing.T) {
 // discriminating case: the condition names an account other than the caller's
 // own, so it must not be satisfied even though the Service principal matches.
 func TestAssumeRole_SourceAccountCondition_NonMatchingAccountDenies(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role-sa-mismatch",
 		trustPolicyAllowingECSTasksWithSourceAccount(testCrossAccountID))
@@ -841,6 +923,8 @@ func TestAssumeRole_SourceAccountCondition_NonMatchingAccountDenies(t *testing.T
 // Allow is listed first, but a conditioned Deny matching the caller's account
 // must still win.
 func TestAssumeRole_SourceAccountCondition_DenyEvaluatedBeforeAllow(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	policy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[
         {"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"},
@@ -860,6 +944,8 @@ func TestAssumeRole_SourceAccountCondition_DenyEvaluatedBeforeAllow(t *testing.T
 // branch is a stored document the current gate would no longer accept —
 // exactly the corruption case evalTrustPolicy's own doc comment names.
 func TestAssumeRoleConditionsHold_UnknownKeyFailsClosed(t *testing.T) {
+	t.Parallel()
+
 	raw := json.RawMessage(`{"StringEquals":{"aws:PrincipalTag/team":"platform"}}`)
 	assert.False(t, assumeRoleConditionsHold(raw, testCallerAccountID),
 		"an unrecognised condition key must fail closed, not be silently ignored")
@@ -869,6 +955,8 @@ func TestAssumeRoleConditionsHold_UnknownKeyFailsClosed(t *testing.T) {
 // no-condition-arm behaviour: an absent Condition must keep matching, exactly
 // as it did before this evaluator existed.
 func TestAssumeRoleConditionsHold_NoConditionAlwaysHolds(t *testing.T) {
+	t.Parallel()
+
 	assert.True(t, assumeRoleConditionsHold(nil, ""))
 	assert.True(t, assumeRoleConditionsHold(json.RawMessage(`{}`), ""))
 }
@@ -878,6 +966,8 @@ func TestAssumeRoleConditionsHold_NoConditionAlwaysHolds(t *testing.T) {
 // change sits on top of must keep working for a trust policy that carries no
 // Condition at all.
 func TestAssumeRole_ECSTasks_Regression_NoConditionStillGrants(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "task-role-regression", trustPolicyAllowingECSTasks())
 
@@ -919,6 +1009,8 @@ func trustPolicyAllowingEC2Service() string {
 }
 
 func TestAssumeRoleForInstance_EC2ServicePrincipal_Allowed(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "app-role", trustPolicyAllowingEC2Service())
 
@@ -946,6 +1038,8 @@ func TestAssumeRoleForInstance_EC2ServicePrincipal_Allowed(t *testing.T) {
 // even though the caller is synthesised as the EC2 service principal, a
 // lambda.amazonaws.com trust statement must not match.
 func TestAssumeRoleForInstance_NonWhitelistedService_Denied(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	policy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
 	role := createRoleInAccount(t, svc, testCallerAccountID, "lambda-role", policy)
@@ -958,6 +1052,8 @@ func TestAssumeRoleForInstance_NonWhitelistedService_Denied(t *testing.T) {
 // Attribution does not leak between entry points: IMDS is ec2.amazonaws.com only,
 // so an ECS task role is not assumable as an instance role.
 func TestAssumeRoleForInstance_ECSTasksService_Denied(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "imds-task-role", trustPolicyAllowingECSTasks())
 
@@ -969,6 +1065,8 @@ func TestAssumeRoleForInstance_ECSTasksService_Denied(t *testing.T) {
 // A role that only trusts an AWS principal (no Service entry) must not be
 // assumable by an instance — the synthesised EC2 caller has no ARN to match.
 func TestAssumeRoleForInstance_AWSOnlyPrincipal_Denied(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "user-role", trustPolicyAllowingUser(testCallerARN()))
 
@@ -982,6 +1080,8 @@ func TestAssumeRoleForInstance_AWSOnlyPrincipal_Denied(t *testing.T) {
 // a normal SigV4 caller, no matter what — the security boundary between the two
 // entry points.
 func TestAssumeRoleForInstance_EC2ServiceUnreachableViaHTTPS(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "ec2-only", trustPolicyAllowingEC2Service())
 
@@ -992,6 +1092,8 @@ func TestAssumeRoleForInstance_EC2ServiceUnreachableViaHTTPS(t *testing.T) {
 }
 
 func TestAssumeRoleForInstance_RejectsMissingFields(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "fields", trustPolicyAllowingEC2Service())
 
@@ -1007,6 +1109,8 @@ func TestAssumeRoleForInstance_RejectsMissingFields(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			_, err := svc.AssumeRoleForInstance(tc.accountID, tc.roleARN, tc.instanceID, defaultDurationSeconds)
 			require.Error(t, err)
 			assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
@@ -1015,6 +1119,8 @@ func TestAssumeRoleForInstance_RejectsMissingFields(t *testing.T) {
 }
 
 func TestAssumeRoleForInstance_CrossAccountRoleMiss_AccessDenied(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	// Instance's account differs from the role's account and the role is
 	// missing — masked to AccessDenied to prevent cross-account enumeration.
@@ -1024,6 +1130,8 @@ func TestAssumeRoleForInstance_CrossAccountRoleMiss_AccessDenied(t *testing.T) {
 }
 
 func TestAssumeRole_RetriesOnAKIDCollision(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	caller := testCallerARN()
 	role := createRoleInAccount(t, svc, testCallerAccountID, "collide", trustPolicyAllowingUser(caller))
@@ -1052,6 +1160,8 @@ func TestAssumeRole_RetriesOnAKIDCollision(t *testing.T) {
 // ----- Unit tests for the trust-policy helpers ---------------------------
 
 func TestComputeTokenHMAC_Deterministic(t *testing.T) {
+	t.Parallel()
+
 	key := []byte("0123456789abcdef0123456789abcdef")
 	a := computeTokenHMAC(key, "wire-token")
 	b := computeTokenHMAC(key, "wire-token")
@@ -1066,6 +1176,8 @@ func TestComputeTokenHMAC_Deterministic(t *testing.T) {
 }
 
 func TestGenerateSessionAKID_FormatAndUniqueness(t *testing.T) {
+	t.Parallel()
+
 	seen := map[string]bool{}
 	for i := range 64 {
 		akid, err := generateSessionAKID()
@@ -1078,6 +1190,8 @@ func TestGenerateSessionAKID_FormatAndUniqueness(t *testing.T) {
 }
 
 func TestEvalTrustPolicy_CorruptDocReturnsError(t *testing.T) {
+	t.Parallel()
+
 	// Stored docs are validated upstream; reaching evalTrustPolicy with a
 	// malformed doc indicates corruption — must fail closed and NOT collapse
 	// to AccessDenied (which would hide the corruption from operators).

@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"slices"
 	"strconv"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -24,9 +23,13 @@ const (
 // also augments from the stopped-instance KV bucket. The aggregator propagates
 // the first deterministic 4xx only when no data was collected, matching
 // DescribeInstances.
-func DescribeInstanceStatus(ctx context.Context, input *ec2.DescribeInstanceStatusInput, natsConn *nats.Conn, expectedNodes int, accountID, az string, synthesis StatusSynthesis) (*ec2.DescribeInstanceStatusOutput, error) {
+func DescribeInstanceStatus(ctx context.Context, input *ec2.DescribeInstanceStatusInput, natsConn *nats.Conn, expectedNodes int, accountID, az string, synthesis StatusSynthesis, opts ...DescribeOption) (*ec2.DescribeInstanceStatusOutput, error) {
 	if input == nil {
 		input = &ec2.DescribeInstanceStatusInput{}
+	}
+	cfg := describeConfig{fanoutTimeout: defaultDescribeFanoutTimeout}
+	for _, opt := range opts {
+		opt(&cfg)
 	}
 
 	jsonData, err := json.Marshal(input)
@@ -36,7 +39,7 @@ func DescribeInstanceStatus(ctx context.Context, input *ec2.DescribeInstanceStat
 	}
 
 	frames, sum, err := natsmsg.Gather(ctx, natsConn, "ec2.DescribeInstanceStatus", jsonData,
-		natsmsg.GatherOpts{Timeout: 3 * time.Second, ExpectedResponders: expectedNodes, AccountID: accountID})
+		natsmsg.GatherOpts{Timeout: cfg.fanoutTimeout, ExpectedResponders: expectedNodes, AccountID: accountID})
 	if err != nil {
 		return nil, err
 	}

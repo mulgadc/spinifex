@@ -100,7 +100,7 @@ func startTestNATSOnPortForTest(t *testing.T, port int) *server.Server {
 	opts := &server.Options{Host: "127.0.0.1", Port: port, NoLog: true, NoSigs: true}
 	ns, err := server.NewServer(opts)
 	require.NoError(t, err)
-	go ns.Start()
+	ns.Start()
 	require.True(t, ns.ReadyForConnections(5*time.Second))
 	t.Cleanup(func() { ns.Shutdown() })
 	return ns

@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -159,8 +160,10 @@ func TestCreateTags_NotFoundNamesIDsForSkipRetry(t *testing.T) {
 // An owner that is subscribed but never answers has not proven the instance
 // absent, so the NotFound message must not name it for the retry to drop.
 func TestCreateTags_SlowOwnerNotNamedMissing(t *testing.T) {
+	t.Parallel()
 	const slow = "i-tag-slow"
 	d := tagTestDaemon(t, slow, nil)
+	d.ownerCommandTimeout = 250 * time.Millisecond
 	sub, err := d.natsConn.Subscribe("ec2.cmd."+slow, func(*nats.Msg) {})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })

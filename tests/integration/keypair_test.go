@@ -53,12 +53,12 @@ func TestKeyPairs(t *testing.T) {
 	assert.NotContains(t, remaining, key2, "describe-key-pairs still lists %s after delete", key2)
 }
 
-// generateImportPubKey returns an OpenSSH-formatted public key (matching the
-// `ssh-keygen -t rsa` output the E2E source's import-key-pair step feeds in).
-// 2048-bit to match the E2E key length.
+// generateImportPubKey returns an OpenSSH-formatted RSA public key, the shape
+// `ssh-keygen -t rsa` output takes. 1024 bits is the smallest size AWS imports
+// and crypto/rsa generates; the test checks listing, not key strength.
 func generateImportPubKey(t *testing.T) []byte {
 	t.Helper()
-	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	priv, err := rsa.GenerateKey(rand.Reader, 1024)
 	require.NoError(t, err, "generate RSA key")
 	pub, err := ssh.NewPublicKey(&priv.PublicKey)
 	require.NoError(t, err, "ssh.NewPublicKey")

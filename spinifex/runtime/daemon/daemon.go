@@ -262,6 +262,10 @@ type Daemon struct {
 	// SPINIFEX_REQUIRE_NATS=1. Default 30s; tests use a shorter value.
 	requireNATSTimeout time.Duration
 
+	// ownerCommandTimeout bounds each ec2.cmd owner request; zero means
+	// instanceOwnerCommandTimeout. Tests use a shorter value.
+	ownerCommandTimeout time.Duration
+
 	// exitFunc is called when SPINIFEX_REQUIRE_NATS=1 and the first connect
 	// times out. Defaults to os.Exit; tests override to avoid killing the process.
 	exitFunc func(int)
@@ -2144,6 +2148,7 @@ func (d *Daemon) startCluster() error {
 	// describe-tags agrees with each resource's own describe from birth and
 	// stops answering for it once it is deleted.
 	d.vpcService.SetCentralTagStore(d.tagsService)
+	d.startZoneIDBackfill()
 	// Name interfaces as their instances are named, so the two agree.
 	region, internalDomain := d.config.Region, dns.ResolveInternalDomain(d.config)
 	d.vpcService.SetPrivateDNSNamer(func(privateIP string) string {

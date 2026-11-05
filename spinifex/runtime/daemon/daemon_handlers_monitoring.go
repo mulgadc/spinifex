@@ -102,7 +102,7 @@ func (d *Daemon) setOneInstanceMonitoring(ctx context.Context, instanceID string
 	reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
 	natsmsg.InjectTraceContext(ctx, reqMsg.Header)
 
-	msg, err := d.natsConn.RequestMsg(reqMsg, instanceOwnerCommandTimeout)
+	msg, err := d.natsConn.RequestMsg(reqMsg, d.ownerCommandWait())
 	switch {
 	case errors.Is(err, nats.ErrNoResponders):
 		return d.instanceService.SetStoppedInstanceMonitoring(ctx, instanceID, enabled, accountID)

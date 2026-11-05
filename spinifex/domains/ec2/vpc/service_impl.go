@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/tagmirror"
 	"log/slog"
+	"maps"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +25,7 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/zoneid"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats.go"
@@ -43,11 +46,6 @@ const (
 	KVBucketVPCsVersion       = 1
 	KVBucketSubnetsVersion    = 1
 	KVBucketVNICounterVersion = 1
-
-	// SingleZoneID is the only availability-zone id the gateway exposes. The
-	// deployment is single-AZ, so every subnet and every DescribeAvailabilityZones
-	// result reports it (AWS clients resolve AZ topology by zone-id, not name).
-	SingleZoneID = "spinifexz1"
 )
 
 // VPCRecord represents a stored VPC. AZ is stamped at create time; empty AZ
@@ -85,6 +83,7 @@ type VPCServiceImpl struct {
 	natsConn   *nats.Conn
 	vpcKV      jetstream.KeyValue
 	subnetKV   jetstream.KeyValue
+	zoneIDs    ZoneIDSource
 	vniKV      jetstream.KeyValue
 	eniKV      jetstream.KeyValue
 	sgKV       jetstream.KeyValue
@@ -132,6 +131,14 @@ func (s *VPCServiceImpl) SetExternalIPAM(ipam *ExternalIPAM, eipKV jetstream.Key
 func (s *VPCServiceImpl) SetPrivateDNSNamer(namer func(privateIP string) string) {
 	s.privateDNSName = namer
 }
+
+// ZoneIDSource returns the stored availability-zone ID for a zone name.
+type ZoneIDSource interface {
+	ZoneID(ctx context.Context, az string) (string, error)
+}
+
+// SetZoneIDSource sets where subnets read their availability-zone ID. Without one the ID is omitted.
+func (s *VPCServiceImpl) SetZoneIDSource(src ZoneIDSource) { s.zoneIDs = src }
 
 // SetCentralTagStore injects the central tag store so create paths project
 // their record tags into it and delete paths clear them. Nil leaves both
@@ -784,6 +791,16 @@ func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubn
 		az = s.config.AZ
 	}
 
+	// Pin the zone's ID before anything is written, so a refused zone leaves no subnet behind.
+	zoneID, err := s.zoneIDFor(ctx, az)
+	if err != nil {
+		if errors.Is(err, zoneid.ErrTooManyZones) {
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "The Region already has the maximum of %d distinct availability zones", zoneid.MaxZones)
+		}
+		slog.ErrorContext(ctx, "CreateSubnet: zone id pin failed", "az", az, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	subnetID := awsidentifiers.GenerateResourceID("subnet")
 
 	// Calculate available IPs (total hosts minus AWS reserved: network, router, DNS, future, broadcast)
@@ -816,9 +833,7 @@ func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubn
 	// Publish vpc.create-subnet event for vpcd topology translation
 	s.publishSubnetEvent(networkv1.SubnetCreateSubject, record.SubnetId, record.VpcId, record.CidrBlock)
 
-	return &ec2.CreateSubnetOutput{
-		Subnet: s.subnetRecordToEC2(&record, totalHosts, accountID),
-	}, nil
+	return &ec2.CreateSubnetOutput{Subnet: s.subnetRecordToEC2(&record, totalHosts, accountID, zoneID)}, nil
 }
 
 // DeleteSubnet deletes a subnet.
@@ -1043,7 +1058,12 @@ func (s *VPCServiceImpl) DescribeSubnets(ctx context.Context, input *ec2.Describ
 			continue
 		}
 
-		if len(parsedFilters) > 0 && !subnetMatchesFilters(&record, parsedFilters) {
+		zoneID, err := s.zoneIDFor(ctx, record.AvailabilityZone)
+		if err != nil {
+			slog.ErrorContext(ctx, "subnet zone id lookup failed", "subnetId", record.SubnetId, "az", record.AvailabilityZone, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		if len(parsedFilters) > 0 && !subnetMatchesFilters(&record, parsedFilters, aws.StringValue(zoneID)) {
 			continue
 		}
 
@@ -1055,7 +1075,7 @@ func (s *VPCServiceImpl) DescribeSubnets(ctx context.Context, input *ec2.Describ
 			availableIPs = max((1<<(32-ones))-5, 0) //#nosec G115 - ones from validated CIDR
 		}
 
-		subnets = append(subnets, s.subnetRecordToEC2(&record, availableIPs, accountID))
+		subnets = append(subnets, s.subnetRecordToEC2(&record, availableIPs, accountID, zoneID))
 	}
 
 	// If specific subnet IDs were requested but not found, return error
@@ -1245,18 +1265,19 @@ var describeSubnetsPaging = paging.EC2{
 
 // describeSubnetsValidFilters defines the set of filter names accepted by DescribeSubnets.
 var describeSubnetsValidFilters = map[string]bool{
-	"subnet-id":         true,
-	"vpc-id":            true,
-	"availability-zone": true,
-	"cidr-block":        true,
-	"state":             true,
-	"default-for-az":    true,
-	"tag-key":           true,
-	"tag-value":         true,
+	"subnet-id":            true,
+	"vpc-id":               true,
+	"availability-zone":    true,
+	"availability-zone-id": true,
+	"cidr-block":           true,
+	"state":                true,
+	"default-for-az":       true,
+	"tag-key":              true,
+	"tag-value":            true,
 }
 
 // subnetMatchesFilters checks whether a SubnetRecord satisfies all parsed awsfilters.
-func subnetMatchesFilters(record *SubnetRecord, filters map[string][]string) bool {
+func subnetMatchesFilters(record *SubnetRecord, filters map[string][]string, zoneID string) bool {
 	for name, values := range filters {
 		if awsfilters.IsTagFilter(name) {
 			continue
@@ -1270,6 +1291,8 @@ func subnetMatchesFilters(record *SubnetRecord, filters map[string][]string) boo
 			field = record.VpcId
 		case "availability-zone":
 			field = record.AvailabilityZone
+		case "availability-zone-id":
+			field = zoneID
 		case "cidr-block":
 			field = record.CidrBlock
 		case "state":
@@ -1313,13 +1336,25 @@ func (s *VPCServiceImpl) vpcRecordToEC2(record *VPCRecord, accountID string) *ec
 	return vpc
 }
 
-func (s *VPCServiceImpl) subnetRecordToEC2(record *SubnetRecord, availableIPs int, accountID string) *ec2.Subnet {
+// zoneIDFor returns the stored zone ID for az, pinning it if needed. It is nil when there is no source or no zone name.
+func (s *VPCServiceImpl) zoneIDFor(ctx context.Context, az string) (*string, error) {
+	if s.zoneIDs == nil || az == "" {
+		return nil, nil
+	}
+	id, err := s.zoneIDs.ZoneID(ctx, az)
+	if err != nil {
+		return nil, err
+	}
+	return aws.String(id), nil
+}
+
+func (s *VPCServiceImpl) subnetRecordToEC2(record *SubnetRecord, availableIPs int, accountID string, zoneID *string) *ec2.Subnet {
 	subnet := &ec2.Subnet{
 		SubnetId:                aws.String(record.SubnetId),
 		VpcId:                   aws.String(record.VpcId),
 		CidrBlock:               aws.String(record.CidrBlock),
 		AvailabilityZone:        aws.String(record.AvailabilityZone),
-		AvailabilityZoneId:      aws.String(SingleZoneID),
+		AvailabilityZoneId:      zoneID,
 		State:                   aws.String(record.State),
 		DefaultForAz:            aws.Bool(record.IsDefault),
 		AvailableIpAddressCount: aws.Int64(int64(availableIPs)),
@@ -1678,4 +1713,36 @@ func (s *VPCServiceImpl) publishSubnetEvent(topic, subnetId, vpcId, cidrBlock st
 		return
 	}
 	client.CreateSubnet(evt)
+}
+
+// SubnetAvailabilityZones returns the distinct zone names held by subnet records of every account, sorted.
+func (s *VPCServiceImpl) SubnetAvailabilityZones(ctx context.Context) ([]string, error) {
+	keys, err := s.subnetKV.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list subnets: %w", err)
+	}
+	seen := map[string]struct{}{}
+	for _, k := range keys {
+		if k == kvutil.VersionKey {
+			continue
+		}
+		entry, err := s.subnetKV.Get(ctx, k)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read subnet %s: %w", k, err)
+		}
+		var rec SubnetRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			return nil, fmt.Errorf("decode subnet %s: %w", k, err)
+		}
+		if rec.AvailabilityZone != "" {
+			seen[rec.AvailabilityZone] = struct{}{}
+		}
+	}
+	return slices.Sorted(maps.Keys(seen)), nil
 }

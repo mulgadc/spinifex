@@ -45,7 +45,8 @@ func TestDispatchSeam_ErrorLevelFollowsTheStatusTheCallerGets(t *testing.T) {
 		level  string
 	}{
 		{"a dry run is the answer AWS documents for one", awserrors.ErrorDryRunOperation, http.StatusPreconditionFailed, "INFO"},
-		{"a volume the caller named does not exist", awserrors.ErrorInvalidVolumeNotFound, http.StatusNotFound, "INFO"},
+		{"a volume the caller named does not exist", awserrors.ErrorInvalidVolumeNotFound, http.StatusBadRequest, "INFO"},
+		{"an entity the caller named does not exist", awserrors.ErrorIAMNoSuchEntity, http.StatusNotFound, "INFO"},
 		{"a malformed parameter is the caller's request", awserrors.ErrorInvalidParameterValue, http.StatusBadRequest, "INFO"},
 		{"an internal failure is ours", awserrors.ErrorInternalError, http.StatusInternalServerError, "ERROR"},
 	}

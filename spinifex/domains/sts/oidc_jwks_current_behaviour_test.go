@@ -90,6 +90,8 @@ func requireInvalidIdentityToken(t *testing.T, out *sts.AssumeRoleWithWebIdentit
 // The IAM provider-registration check runs before any JWKS resolver call, so
 // an unregistered issuer never reaches the resolver.
 func TestCurrentBehaviour_UnregisteredIssuerNeverCallsResolver(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	role := charRole(t, svc, f)
@@ -104,6 +106,8 @@ func TestCurrentBehaviour_UnregisteredIssuerNeverCallsResolver(t *testing.T) {
 
 // JWKS is resolved against the issuer's account, not the role's account.
 func TestCurrentBehaviour_CrossAccountIssuerQueriesIssuerAccount(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	const issuerAccount = "111122223333"
 	issuer := charIssuer(issuerAccount, "remote")
@@ -127,6 +131,8 @@ func TestCurrentBehaviour_CrossAccountIssuerQueriesIssuerAccount(t *testing.T) {
 // A resolver "not found" result — whatever storage-layer reason produced it,
 // pinned separately in the EKS package — fails closed as InvalidIdentityToken.
 func TestCurrentBehaviour_ClusterMissingIsInvalidIdentityToken(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	role := charRole(t, svc, f)
@@ -143,6 +149,8 @@ func TestCurrentBehaviour_ClusterMissingIsInvalidIdentityToken(t *testing.T) {
 // the failure is FetchClusterJWKS's own JSON decode or the later JWK-to-key
 // conversion.
 func TestCurrentBehaviour_JWKSMalformedIsInvalidIdentityToken(t *testing.T) {
+	t.Parallel()
+
 	cases := map[string]string{
 		"not_json":    `not-json`,
 		"json_null":   `null`,
@@ -153,6 +161,8 @@ func TestCurrentBehaviour_JWKSMalformedIsInvalidIdentityToken(t *testing.T) {
 	}
 	for name, value := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
 			svc, _ := newTestSetup(t)
 			f := newWebIdentityFixture(t, svc, testCallerAccountID)
 			role := charRole(t, svc, f)
@@ -168,6 +178,8 @@ func TestCurrentBehaviour_JWKSMalformedIsInvalidIdentityToken(t *testing.T) {
 // same InvalidIdentityToken as a not-found result; STS cannot distinguish
 // them without leaking internal storage detail to an anonymous caller.
 func TestCurrentBehaviour_ResolverErrorIsInvalidIdentityToken(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	role := charRole(t, svc, f)
@@ -180,6 +192,8 @@ func TestCurrentBehaviour_ResolverErrorIsInvalidIdentityToken(t *testing.T) {
 // No caching: each call re-reads the JWKS, so an overwrite takes effect on the
 // next request and a key dropped from the set stops verifying immediately.
 func TestCurrentBehaviour_JWKSRotationIsReadFreshEachRequest(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	role := charRole(t, svc, f)

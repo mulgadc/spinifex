@@ -125,6 +125,7 @@ func TestKVDigest(t *testing.T) {
 }
 
 func TestKVDigestStreamFilterAndDeletedSeq(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	parent := t.TempDir()
 	// The KV bucket is only there to be excluded by the stream filter.
@@ -172,6 +173,7 @@ func TestKVDigestStreamFilterAndDeletedSeq(t *testing.T) {
 // A replicated stream's meta.inf carries num_replicas > 1, which a standalone
 // server refuses to load; this is the case every production node presents.
 func TestKVDigestClusteredReplicas(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const n = 3
 	// Servers bind their own route ports, so none is ever free to be taken.
@@ -275,6 +277,7 @@ func localLastSeq(srv *server.Server, stream string) uint64 {
 // Recovery applies MaxAge, so without the rewrite an expired bucket copy
 // would read as empty and mask whatever the replica holds.
 func TestKVDigestIgnoresExpiry(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	parent := t.TempDir()
 	ns, err := server.NewServer(&server.Options{JetStream: true, StoreDir: parent, DontListen: true, NoLog: true, NoSigs: true})

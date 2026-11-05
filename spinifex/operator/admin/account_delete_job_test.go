@@ -240,6 +240,7 @@ func describeDeletion(t *testing.T, gw Deps, accountID string) *accountDeletionJ
 // go and leave the account untouched — including its status, since TERMINATING
 // is a one-way door.
 func TestAdminDeleteAccountDryRunChangesNothing(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 
@@ -337,6 +338,7 @@ func TestAdminDeleteAccountReplaysAfterTheAccountIsGone(t *testing.T) {
 // Reusing a token for a different account name is a client bug. Treating it as
 // a retry would confirm the stored name to a caller who guessed the wrong one.
 func TestAdminDeleteAccountRejectsATokenBoundToAnotherName(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	storeDeletionJob(t, gw, &accountDeletionJob{
@@ -358,6 +360,7 @@ func TestAdminDeleteAccountRejectsATokenBoundToAnotherName(t *testing.T) {
 // Two teardowns on one account would race the reapers against each other, so a
 // live job refuses a second caller rather than joining it.
 func TestAdminDeleteAccountRefusesAConcurrentTeardown(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	storeDeletionJob(t, gw, &accountDeletionJob{
@@ -379,6 +382,7 @@ func TestAdminDeleteAccountRefusesAConcurrentTeardown(t *testing.T) {
 // A gateway restarted mid-teardown leaves a job that looks live forever.
 // Without takeover the account could never be retried through the API.
 func TestAdminDeleteAccountTakesOverAStaleJob(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	storeDeletionJob(t, gw, &accountDeletionJob{
@@ -403,6 +407,7 @@ func TestAdminDeleteAccountTakesOverAStaleJob(t *testing.T) {
 // A teardown that failed is retried rather than left wedged: the engine
 // re-lists what is still there, so running it again is safe.
 func TestAdminDeleteAccountRetriesAFailedJob(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	storeDeletionJob(t, gw, &accountDeletionJob{
@@ -429,6 +434,7 @@ func TestAdminDeleteAccountRetriesAFailedJob(t *testing.T) {
 // error a fresh token would otherwise get, which is what a harness retrying a
 // lost response actually does.
 func TestAdminDeleteAccountReportsACompletedJobToANewToken(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	storeDeletionJob(t, gw, &accountDeletionJob{
@@ -474,6 +480,7 @@ func TestAdminDeleteAccountRefusesProtectedAccounts(t *testing.T) {
 // The name confirmation is what makes a mistyped account id fail closed rather
 // than empty a live tenant, so it is checked before anything is deleted.
 func TestAdminDeleteAccountRefusesAMismatchedName(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 
@@ -489,6 +496,7 @@ func TestAdminDeleteAccountRefusesAMismatchedName(t *testing.T) {
 }
 
 func TestAdminDeleteAccountRejectsAnUnknownAccount(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	newTenantAccount(t, gw, "tenant@example.com")
 
@@ -500,6 +508,7 @@ func TestAdminDeleteAccountRejectsAnUnknownAccount(t *testing.T) {
 }
 
 func TestAdminDeleteAccountRejectsAMalformedBody(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 
 	_, err := gw.deleteAccount(t.Context(), []byte(`{`))
@@ -511,6 +520,7 @@ func TestAdminDeleteAccountRejectsAMalformedBody(t *testing.T) {
 // Without an IAM service there is no way to check what the account owns, and
 // deleting on a guess is worse than refusing.
 func TestAdminDeleteAccountRefusesWithoutAnIAMService(t *testing.T) {
+	t.Parallel()
 	gw := Deps{}
 
 	_, err := gw.deleteAccount(context.Background(),
@@ -521,6 +531,7 @@ func TestAdminDeleteAccountRefusesWithoutAnIAMService(t *testing.T) {
 }
 
 func TestAdminDescribeAccountDeletionRejectsAMalformedBody(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 
 	_, err := gw.describeAccountDeletion(t.Context(), []byte(`{`))
@@ -532,6 +543,7 @@ func TestAdminDescribeAccountDeletionRejectsAMalformedBody(t *testing.T) {
 // The stored stages are what an operator reads while a teardown runs, so the
 // tracker has to write them as they finish rather than only at the end.
 func TestDeletionTrackerRecordsEachStageAsItFinishes(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	job := &accountDeletionJob{
 		DeletionID: "d-1",
@@ -558,6 +570,7 @@ func TestDeletionTrackerRecordsEachStageAsItFinishes(t *testing.T) {
 // A teardown that gives up has to say so in the record. A job left RUNNING
 // forever is indistinguishable from one still working.
 func TestDeletionTrackerRecordsFailure(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	job := &accountDeletionJob{
 		DeletionID: "d-1",
@@ -578,6 +591,7 @@ func TestDeletionTrackerRecordsFailure(t *testing.T) {
 // The heartbeat is what lets another gateway tell an abandoned job from a live
 // one, so stopping it must not leave the goroutine writing.
 func TestDeletionTrackerHeartbeatStops(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	job := &accountDeletionJob{
 		DeletionID: "d-1",

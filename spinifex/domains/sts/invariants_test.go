@@ -18,6 +18,8 @@ import (
 // also fails CI.
 
 func TestInvariant_SessionCredentialsBucket_RejectsNonASIAPrefix(t *testing.T) {
+	t.Parallel()
+
 	bucket := setupBucket(t)
 
 	cases := []struct {
@@ -33,6 +35,8 @@ func TestInvariant_SessionCredentialsBucket_RejectsNonASIAPrefix(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			cred := newTestSessionCredential(tc.akid)
 			err := putSessionCredential(t.Context(), bucket, cred)
 			require.Error(t, err, "putSessionCredential accepted invalid prefix %q", tc.akid)
@@ -42,6 +46,8 @@ func TestInvariant_SessionCredentialsBucket_RejectsNonASIAPrefix(t *testing.T) {
 }
 
 func TestInvariant_SessionCredentialsBucket_AcceptsASIAPrefix(t *testing.T) {
+	t.Parallel()
+
 	bucket := setupBucket(t)
 
 	akid := SessionAccessKeyIDPrefix + "0123456789ABCDEF"
@@ -57,6 +63,8 @@ func TestInvariant_SessionCredentialsBucket_AcceptsASIAPrefix(t *testing.T) {
 // principal type, or a user session could land in the wrong bucket and bypass
 // the ASIA dispatch path's invariants.
 func TestInvariant_SessionCredentialsBucket_UserSessionPrefixEnforced(t *testing.T) {
+	t.Parallel()
+
 	bucket := setupBucket(t)
 
 	userCred := func(akid string) *SessionCredential {

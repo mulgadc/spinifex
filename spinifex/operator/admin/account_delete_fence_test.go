@@ -47,6 +47,7 @@ func claimAs(t *testing.T, jobs jetstream.KeyValue, accountID, token, holder str
 // A holder that has been taken over must not write again: its next write finds
 // the new holder's fence, and it stops and cancels its teardown.
 func TestSupersededHolderStopsAndLeavesTheNewHoldersRecord(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	jobs, err := gw.accountDeletionStore(t.Context())
 	require.NoError(t, err)
@@ -81,6 +82,7 @@ func TestSupersededHolderStopsAndLeavesTheNewHoldersRecord(t *testing.T) {
 // A retry carrying the stored token against a RUNNING job whose lease has
 // lapsed has no holder to follow, so it takes the job over and resumes it.
 func TestSameTokenRetryResumesAStaleRunningJob(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	past := time.Now().UTC().Add(-2 * accountDeletionStale).Format(time.RFC3339)
@@ -115,6 +117,7 @@ func TestSameTokenRetryResumesAStaleRunningJob(t *testing.T) {
 
 // A same-token retry against a job whose lease is live still follows it.
 func TestSameTokenRetryFollowsALiveJob(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	now := time.Now().UTC()
@@ -143,6 +146,7 @@ func TestSameTokenRetryFollowsALiveJob(t *testing.T) {
 // Two gateways racing for one expired lease: the conditional write lets exactly
 // one through, and the other is told the operation is in progress.
 func TestConcurrentTakeoverHasExactlyOneWinner(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	jobs, err := gw.accountDeletionStore(t.Context())
 	require.NoError(t, err)
@@ -186,6 +190,7 @@ func TestConcurrentTakeoverHasExactlyOneWinner(t *testing.T) {
 // A record from a binary that wrote no fence reads as fence 0 and is taken over
 // to fence 1.
 func TestLegacyRecordWithoutAFenceIsTakenOverToFenceOne(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	jobs := storeDeletionJob(t, gw, &accountDeletionJob{
 		DeletionID:  "d-legacy",
@@ -209,6 +214,7 @@ func TestLegacyRecordWithoutAFenceIsTakenOverToFenceOne(t *testing.T) {
 // A revision conflict caused by this holder's own fence is not a takeover: the
 // write is retried at the new revision and the holder carries on.
 func TestHeartbeatConflictWithOwnFenceRetries(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	jobs, err := gw.accountDeletionStore(t.Context())
 	require.NoError(t, err)

@@ -68,6 +68,10 @@ import (
 // "directory not empty" when they write a final state/WAL file.
 func drainAndClose(t *testing.T, nc *nats.Conn) {
 	t.Helper()
+	// A connection someone else already closed never fires the closed handler.
+	if nc.IsClosed() {
+		return
+	}
 	done := make(chan struct{})
 	var once sync.Once
 	nc.SetClosedHandler(func(*nats.Conn) { once.Do(func() { close(done) }) })

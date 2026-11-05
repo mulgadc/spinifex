@@ -1680,3 +1680,24 @@ func TestNodesRunning(t *testing.T) {
 	assert.Equal(t, []string{"a", "c", "d"}, c.NodesRunning("daemon"))
 	assert.Empty(t, c.NodesRunning("nonesuch"))
 }
+
+func TestLoadConfig_AZShortCodeParsedAndInvalidRefused(t *testing.T) {
+	load := func(t *testing.T, code string) (*ClusterConfig, error) {
+		t.Helper()
+		resetViper(t)
+		path := filepath.Join(t.TempDir(), "spinifex.toml")
+		toml := fmt.Sprintf("node = \"n1\"\n\n[nodes.n1]\nregion = \"mulga-lab\"\naz = \"mulga-laba\"\naz_short_code = %q\n", code)
+		require.NoError(t, os.WriteFile(path, []byte(toml), 0600))
+		return LoadConfig(path)
+	}
+
+	cfg, err := load(t, "lab1")
+	require.NoError(t, err)
+	assert.Equal(t, "lab1", cfg.Nodes["n1"].AZShortCode)
+
+	for _, bad := range []string{"a", "UPPER", "has-dash", "toolongcode"} {
+		_, err := load(t, bad)
+		require.Error(t, err, bad)
+		assert.Contains(t, err.Error(), "az_short_code")
+	}
+}

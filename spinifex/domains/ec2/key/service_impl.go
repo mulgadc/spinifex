@@ -48,7 +48,14 @@ type KeyServiceImpl struct {
 	// Optional: injected after construction. Nil leaves the central tag store
 	// untouched by create, import and delete.
 	centralTags CentralTagStore
+
+	// rsaKeyBits sizes the RSA keys CreateKeyPair generates. Zero takes
+	// defaultRSAKeyBits, which is what production runs; only tests set it.
+	rsaKeyBits int
 }
+
+// defaultRSAKeyBits is the size of the RSA key pairs AWS CreateKeyPair returns.
+const defaultRSAKeyBits = 2048
 
 // CentralTagStore keeps the central tag index in step with key-pair records, so
 // DescribeTags sees creation tags. Implemented by domains/ec2/tags.TagsServiceImpl.
@@ -169,7 +176,7 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 	}
 
 	// Generate the key in process; the private half never reaches local disk.
-	privateKeyData, publicKey, err := generateKeyPair(keyType)
+	privateKeyData, publicKey, err := generateKeyPair(keyType, s.rsaBits())
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to generate key pair", "keyName", keyName, "keyType", keyType, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -255,10 +262,18 @@ func (s *KeyServiceImpl) CreateKeyPair(ctx context.Context, input *ec2.CreateKey
 	return output, nil
 }
 
+// rsaBits returns the RSA key size CreateKeyPair generates.
+func (s *KeyServiceImpl) rsaBits() int {
+	if s.rsaKeyBits > 0 {
+		return s.rsaKeyBits
+	}
+	return defaultRSAKeyBits
+}
+
 // generateKeyPair generates a key pair of the given EC2 key type, returning the
 // private key in the PEM container AWS hands back for that type alongside the
-// public half.
-func generateKeyPair(keyType string) ([]byte, ssh.PublicKey, error) {
+// public half. rsaBits sizes an RSA key and is ignored for ED25519.
+func generateKeyPair(keyType string, rsaBits int) ([]byte, ssh.PublicKey, error) {
 	var block *pem.Block
 	var cryptoPub crypto.PublicKey
 
@@ -275,10 +290,10 @@ func generateKeyPair(keyType string) ([]byte, ssh.PublicKey, error) {
 		cryptoPub = pub
 
 	case "rsa":
-		// RSA 2048-bit in PKCS#1 PEM, as AWS returns it. OpenSSH reads that format
-		// for SSH either way, but GetPasswordData's --priv-launch-key cannot read
-		// the OpenSSH container at all.
-		priv, err := rsa.GenerateKey(rand.Reader, 2048)
+		// RSA in PKCS#1 PEM, as AWS returns it. OpenSSH reads that format for SSH
+		// either way, but GetPasswordData's --priv-launch-key cannot read the
+		// OpenSSH container at all.
+		priv, err := rsa.GenerateKey(rand.Reader, rsaBits)
 		if err != nil {
 			return nil, nil, fmt.Errorf("generate rsa key: %w", err)
 		}

@@ -883,6 +883,7 @@ func TestMariaDBProbe_SeparatesRecoveringFromAbsent(t *testing.T) {
 // mariadbd will not accept makes it exit during startup, so the pidfile names a
 // process that is gone and the deadline runs.
 func TestMariaDBProbe_BoundsAStalledClient(t *testing.T) {
+	t.Parallel()
 	cfg := mariadbTestProbeConfig(t)
 	cfg.EngineProbeTimeout = 20 * time.Millisecond
 	writePid(t, cfg.EnginePidFile, 4242)
@@ -946,6 +947,7 @@ func TestMariaDBProbe_MapsToTheHealthTheControlPlaneReads(t *testing.T) {
 // the server mid-recovery — a rollback that exists to break a boot loop would
 // create one, on an instance whose parameters were never at fault.
 func TestMariaDBProbe_LiveButUnreachableEngineResetsTheRollbackDeadline(t *testing.T) {
+	t.Parallel()
 	cfg := mariadbTestProbeConfig(t)
 	writePid(t, cfg.EnginePidFile, 4242)
 	probe := newEngineProbe(cfg.EnginePort, mariadbProbeState(cfg,
@@ -1152,12 +1154,18 @@ func TestMariaDBEngine_EveryResolvedDynamicValueRenders(t *testing.T) {
 	}
 }
 
+// Far below the production interval, so a hold test can wait out several polls
+// cheaply.
+const testHoldPoll = 5 * time.Millisecond
+
 // ALTER USER under a held BACKUP STAGE swaps the password in memory and then
 // waits at its commit, so a rotation issued mid-backup must not reach the
 // engine until the hold is released.
 func TestMariaDBEngine_SetPasswordWaitsForTheBackupHoldToEnd(t *testing.T) {
+	t.Parallel()
 	runner := &recordingRunner{}
 	engine := newTestMariaDBEngine(t, runner.run)
+	engine.holdPoll = testHoldPoll
 	engine.startSess = func(context.Context, command) (engineSession, error) { return &fakeSession{}, nil }
 	if err := engine.Quiesce(context.Background(), "orders-db-automated", time.Minute); err != nil {
 		t.Fatalf("Quiesce: %v", err)
@@ -1168,7 +1176,7 @@ func TestMariaDBEngine_SetPasswordWaitsForTheBackupHoldToEnd(t *testing.T) {
 	select {
 	case err := <-rotated:
 		t.Fatalf("SetPassword returned %v while the engine was held for a backup", err)
-	case <-time.After(3 * holdPollInterval):
+	case <-time.After(10 * testHoldPoll):
 	}
 
 	if err := engine.Unquiesce(context.Background()); err != nil {
@@ -1190,9 +1198,11 @@ func TestMariaDBEngine_SetPasswordWaitsForTheBackupHoldToEnd(t *testing.T) {
 // A hold that outlasts the wait fails the rotation before anything is sent, so
 // the control plane's error is the truth rather than half of it.
 func TestMariaDBEngine_SetPasswordFailsUntouchedWhenTheHoldOutlastsItsWait(t *testing.T) {
+	t.Parallel()
 	runner := &recordingRunner{}
 	engine := newTestMariaDBEngine(t, runner.run)
-	engine.holdWait = 3 * holdPollInterval
+	engine.holdPoll = testHoldPoll
+	engine.holdWait = 3 * testHoldPoll
 	engine.startSess = func(context.Context, command) (engineSession, error) { return &fakeSession{}, nil }
 	if err := engine.Quiesce(context.Background(), "orders-db-automated", time.Minute); err != nil {
 		t.Fatalf("Quiesce: %v", err)
@@ -1246,7 +1256,9 @@ func TestMariaDBEngine_SetPasswordBoundsTheStatementByTheRemainingBudget(t *test
 // A quiesce that cannot get the hold bookkeeping must give up with its command,
 // not wait on the mutex after its issuer has moved on.
 func TestMariaDBEngine_QuiesceGivesUpWaitingForTheBookkeepingWithItsContext(t *testing.T) {
+	t.Parallel()
 	engine := newTestMariaDBEngine(t, (&recordingRunner{}).run)
+	engine.holdPoll = testHoldPoll
 	started := 0
 	engine.startSess = func(context.Context, command) (engineSession, error) {
 		started++
@@ -1255,7 +1267,7 @@ func TestMariaDBEngine_QuiesceGivesUpWaitingForTheBookkeepingWithItsContext(t *t
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*holdPollInterval)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*testHoldPoll)
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- engine.Quiesce(ctx, "orders-db-automated", time.Minute) }()

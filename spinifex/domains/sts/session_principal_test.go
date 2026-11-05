@@ -66,6 +66,8 @@ func mintRoleSession(t *testing.T, svc *STSServiceImpl, accountID, roleARN, sess
 // ----- Unchanged principals verify ---------------------------------------
 
 func TestVerifySessionPrincipal_UnchangedUser_ReturnsLiveID(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	userID := seedUser(t, svc, testCallerAccountID, testCallerUserName)
 	cred := mintUserSession(t, svc, testCallerAccountID, testCallerUserName)
@@ -80,6 +82,8 @@ func TestVerifySessionPrincipal_UnchangedUser_ReturnsLiveID(t *testing.T) {
 // A user session reports the stored ARN, path included, so a door naming the
 // session's principal agrees with the IAM record.
 func TestVerifySessionPrincipal_PathedUser_ReturnsStoredARN(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	_, err := svc.iamSvc.CreateUser(testCallerAccountID, &iam.CreateUserInput{
 		UserName: aws.String(testCallerUserName), Path: aws.String("/eng/"),
@@ -93,6 +97,8 @@ func TestVerifySessionPrincipal_PathedUser_ReturnsStoredARN(t *testing.T) {
 }
 
 func TestVerifySessionPrincipal_UnchangedRole_ReturnsLiveRecord(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "app", trustPolicyAllowingUser(testCallerARN()))
 	cred := mintRoleSession(t, svc, testCallerAccountID, aws.StringValue(role.Arn), "session-1")
@@ -112,6 +118,8 @@ func TestVerifySessionPrincipal_UnchangedRole_ReturnsLiveRecord(t *testing.T) {
 // the replacement's permissions. The replacement's UserId differs, so the
 // session must die on that.
 func TestVerifySessionPrincipal_UserRecreatedSameName_Rejected(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	originalID := seedUser(t, svc, testCallerAccountID, testCallerUserName)
 	cred := mintUserSession(t, svc, testCallerAccountID, testCallerUserName)
@@ -136,6 +144,8 @@ func TestVerifySessionPrincipal_UserRecreatedSameName_Rejected(t *testing.T) {
 }
 
 func TestVerifySessionPrincipal_RoleRecreatedSameName_Rejected(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	caller := testCallerARN()
 	original := createRoleInAccount(t, svc, testCallerAccountID, "app", trustPolicyAllowingUser(caller))
@@ -165,6 +175,8 @@ func TestVerifySessionPrincipal_RoleRecreatedSameName_Rejected(t *testing.T) {
 // keep serving that caller's session. Trust is evaluated once, at AssumeRole,
 // so the ID mismatch is the only thing standing between the two.
 func TestVerifySessionPrincipal_RoleReplacedWithExcludingTrustPolicy_Rejected(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	original := createRoleInAccount(t, svc, testCallerAccountID, "app", trustPolicyAllowingUser(testCallerARN()))
 	cred := mintRoleSession(t, svc, testCallerAccountID, aws.StringValue(original.Arn), "session-1")
@@ -180,6 +192,8 @@ func TestVerifySessionPrincipal_RoleReplacedWithExcludingTrustPolicy_Rejected(t 
 // ----- Deleted and not recreated -----------------------------------------
 
 func TestVerifySessionPrincipal_UserDeleted_Gone(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	seedUser(t, svc, testCallerAccountID, testCallerUserName)
 	cred := mintUserSession(t, svc, testCallerAccountID, testCallerUserName)
@@ -191,6 +205,8 @@ func TestVerifySessionPrincipal_UserDeleted_Gone(t *testing.T) {
 }
 
 func TestVerifySessionPrincipal_RoleDeleted_Gone(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "app", trustPolicyAllowingUser(testCallerARN()))
 	cred := mintRoleSession(t, svc, testCallerAccountID, aws.StringValue(role.Arn), "session-1")
@@ -204,6 +220,8 @@ func TestVerifySessionPrincipal_RoleDeleted_Gone(t *testing.T) {
 // A session whose stored underlying role ARN names another account resolves to
 // no role this account can vouch for, so it must not verify.
 func TestVerifySessionPrincipal_CrossAccountRoleARN_Rejected(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "app", trustPolicyAllowingUser(testCallerARN()))
 	cred := mintRoleSession(t, svc, testCallerAccountID, aws.StringValue(role.Arn), "session-1")
@@ -219,6 +237,8 @@ func TestVerifySessionPrincipal_CrossAccountRoleARN_Rejected(t *testing.T) {
 // would tell the client to retry a credential that can never resolve, and on
 // the SigV4 door that answer also skips the rate limiter.
 func TestVerifySessionPrincipal_MalformedRoleARN_Gone(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "app", trustPolicyAllowingUser(testCallerARN()))
 	cred := mintRoleSession(t, svc, testCallerAccountID, aws.StringValue(role.Arn), "session-1")
@@ -236,6 +256,8 @@ func TestVerifySessionPrincipal_MalformedRoleARN_Gone(t *testing.T) {
 // exactly the gap this check closes, and would swallow any future mint path that
 // failed to populate the field.
 func TestVerifySessionPrincipal_LegacyRecord_Rejected(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	seedUser(t, svc, testCallerAccountID, testCallerUserName)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "app", trustPolicyAllowingUser(testCallerARN()))
@@ -266,6 +288,8 @@ func TestVerifySessionPrincipal_LegacyRecord_Rejected(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			got, err := svc.VerifySessionPrincipal(tc.cred)
 			assert.ErrorIs(t, err, ErrSessionPrincipalLegacy)
 			assert.Nil(t, got)
@@ -279,6 +303,8 @@ func TestVerifySessionPrincipal_LegacyRecord_Rejected(t *testing.T) {
 // on one. No special case is needed: the seeded record's constant ID matches
 // while root exists, and its removal fails closed like any other principal.
 func TestVerifySessionPrincipal_Root(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	rootID := seedUser(t, svc, testCallerAccountID, "root")
 	cred := mintUserSession(t, svc, testCallerAccountID, "root")
@@ -299,6 +325,8 @@ func TestVerifySessionPrincipal_Root(t *testing.T) {
 // InternalError for the first and a token error for the second, and collapsing
 // them would let an IAM outage look like a revoked principal.
 func TestVerifySessionPrincipal_DependencyFault_NotAVerdict(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	boom := errors.New("jetstream unavailable")
 	svc.iamSvc = faultingIAMService{err: boom}
@@ -320,6 +348,8 @@ func TestVerifySessionPrincipal_DependencyFault_NotAVerdict(t *testing.T) {
 }
 
 func TestVerifySessionPrincipal_NilCredential_IsAFault(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 
 	got, err := svc.VerifySessionPrincipal(nil)

@@ -33,7 +33,7 @@ func startServer(t *testing.T, dir string) (*server.Server, jsapi.JetStream) {
 		Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: dir, NoLog: true, NoSigs: true,
 	})
 	require.NoError(t, err)
-	go srv.Start()
+	srv.Start()
 	require.True(t, srv.ReadyForConnections(10*time.Second), "server not ready")
 	t.Cleanup(srv.Shutdown)
 	nc, err := nats.Connect(srv.ClientURL())

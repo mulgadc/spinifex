@@ -22,6 +22,7 @@ func requireFamilyMismatch(t *testing.T, err error) {
 // another engine would boot the database on a configuration file it cannot
 // parse. Proven with the two shipped engines rather than a fake third one.
 func TestCreateDBInstance_RefusesAGroupOfAnotherEnginesFamily(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), mariadbParameterGroupInput(testMariaDBParameterGroup), testAccountID)
 	require.NoError(t, err)
@@ -46,6 +47,7 @@ func TestCreateDBInstance_RefusesAGroupOfAnotherEnginesFamily(t *testing.T) {
 }
 
 func TestModifyDBInstance_RefusesAGroupOfAnotherEnginesFamily(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), mariadbParameterGroupInput(testMariaDBParameterGroup), testAccountID)
 	require.NoError(t, err)
@@ -63,6 +65,7 @@ func TestModifyDBInstance_RefusesAGroupOfAnotherEnginesFamily(t *testing.T) {
 // The deferred half of a modify re-resolves at apply time, so the check has to
 // hold there too rather than only at the request that recorded it.
 func TestApplyPendingModifications_RefusesAGroupOfAnotherEnginesFamily(t *testing.T) {
+	t.Parallel()
 	h := newModifyHarness(t)
 	h.agent.replyWith("")
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), mariadbParameterGroupInput(testMariaDBParameterGroup), testAccountID)
@@ -85,6 +88,7 @@ func TestApplyPendingModifications_RefusesAGroupOfAnotherEnginesFamily(t *testin
 // A restore takes its engine from the snapshot rather than the request, so the
 // group named alongside it is checked against what the restored data is.
 func TestRestoreDBInstanceFromDBSnapshot_RefusesAGroupOfAnotherEnginesFamily(t *testing.T) {
+	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshot(t)
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), mariadbParameterGroupInput(testMariaDBParameterGroup), testAccountID)
@@ -101,6 +105,7 @@ func TestRestoreDBInstanceFromDBSnapshot_RefusesAGroupOfAnotherEnginesFamily(t *
 // alternative stores one engine's setting into another's group and defers the
 // failure to whichever instance next attaches it.
 func TestModifyDBParameterGroup_ValidatesAgainstTheGroupsOwnEngine(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), mariadbParameterGroupInput(testMariaDBParameterGroup), testAccountID)
 	require.NoError(t, err)
@@ -126,6 +131,7 @@ func TestModifyDBParameterGroup_ValidatesAgainstTheGroupsOwnEngine(t *testing.T)
 }
 
 func TestDescribeDBParameters_ListsTheGroupsOwnEngineCatalog(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, testBaseDomain)
 	_, err := h.svc.CreateDBParameterGroup(t.Context(), mariadbParameterGroupInput(testMariaDBParameterGroup), testAccountID)
 	require.NoError(t, err)

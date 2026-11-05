@@ -455,6 +455,7 @@ func TestModifyDBParameterGroup_WritesNothingWhenOneValueIsBad(t *testing.T) {
 }
 
 func TestModifyDBParameterGroup_RejectsBadRequests(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		input *rds.ModifyDBParameterGroupInput
@@ -477,6 +478,7 @@ func TestModifyDBParameterGroup_RejectsBadRequests(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			h := newCreateHarness(t, testBaseDomain)
 			_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
 			require.NoError(t, err)
@@ -719,8 +721,10 @@ func TestDeleteDBParameterGroup_RefusesTheDefaultGroup(t *testing.T) {
 // Including a group only a deleting instance still names, so a destroy that
 // races the teardown fails cleanly rather than stranding a live engine.
 func TestDeleteDBParameterGroup_RefusesWhileAnInstanceReferencesIt(t *testing.T) {
+	t.Parallel()
 	for _, status := range []Status{StatusAvailable, StatusDeleting} {
 		t.Run(string(status), func(t *testing.T) {
+			t.Parallel()
 			h := newCreateHarness(t, testBaseDomain)
 			_, err := h.svc.CreateDBParameterGroup(t.Context(), parameterGroupInput(testParameterGroup), testAccountID)
 			require.NoError(t, err)

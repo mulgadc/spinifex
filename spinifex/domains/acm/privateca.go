@@ -14,6 +14,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"testing"
 	"time"
 )
 
@@ -24,6 +25,16 @@ var (
 	caKeyBits   = 4096
 	leafKeyBits = 2048
 )
+
+// ShortenKeyBitsForTest generates tenant CA and leaf keys at bits for the rest
+// of one test and restores the previous sizes afterwards. There is one size per
+// process, so the test must not run in parallel with anything generating keys.
+func ShortenKeyBitsForTest(tb testing.TB, bits int) {
+	tb.Helper()
+	prevCA, prevLeaf := caKeyBits, leafKeyBits
+	caKeyBits, leafKeyBits = bits, bits
+	tb.Cleanup(func() { caKeyBits, leafKeyBits = prevCA, prevLeaf })
+}
 
 const (
 	// tenantCAValidity is long because the root is a one-time trust-store

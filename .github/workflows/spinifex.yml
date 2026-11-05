@@ -160,6 +160,7 @@ jobs:
 
   race_detection:
     name: Race Detection
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-26.04
 
     steps:
@@ -362,6 +363,10 @@ jobs:
       - name: Run Integration Tests
         if: ${{ !cancelled() }}
         run: make -C spinifex test-integration
+
+      - name: Run Gated Suites
+        if: ${{ !cancelled() }}
+        run: make -C spinifex test-gated GOTESTFLAGS=-count=1
 
       # Keeps what this run read or wrote and drops the rest, so the saved entry
       # is one run's working set however often dev is pushed. A red run may have

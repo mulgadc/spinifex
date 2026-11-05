@@ -10,6 +10,8 @@ import (
 )
 
 func TestSTSServiceImpl_GetCallerIdentity_IAMUser(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	out, err := svc.GetCallerIdentity(
 		"000000000000",
@@ -25,6 +27,8 @@ func TestSTSServiceImpl_GetCallerIdentity_IAMUser(t *testing.T) {
 }
 
 func TestSTSServiceImpl_GetCallerIdentity_AssumedRole(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	out, err := svc.GetCallerIdentity(
 		"000000000000",
@@ -40,6 +44,8 @@ func TestSTSServiceImpl_GetCallerIdentity_AssumedRole(t *testing.T) {
 }
 
 func TestSTSServiceImpl_GetCallerIdentity_Root(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	out, err := svc.GetCallerIdentity(
 		"000000000000",
@@ -55,6 +61,8 @@ func TestSTSServiceImpl_GetCallerIdentity_Root(t *testing.T) {
 }
 
 func TestSTSServiceImpl_GetCallerIdentity_NilInput(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	out, err := svc.GetCallerIdentity(
 		"000000000000",

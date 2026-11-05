@@ -1112,3 +1112,43 @@ func TestWriteSigV4Error_BedrockEmitsJSON(t *testing.T) {
 	// SDKs resolve the modelled exception type from this header, not the body.
 	assert.Equal(t, "SignatureDoesNotMatchException", resp.Header.Get("X-Amzn-Errortype"))
 }
+
+// A caller that names an absent VPC or NAT gateway is answered with 400 and the
+// code in the XML body, as AWS does; the provider decides "gone" from the code.
+func TestErrorHandler_EC2AbsentResourceIs400WithCode(t *testing.T) {
+	gw := withEC2Verifier(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()}))
+
+	for _, code := range []string{awserrors.ErrorInvalidVpcIDNotFound, awserrors.ErrorNatGatewayNotFound} {
+		t.Run(code, func(t *testing.T) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				r = r.WithContext(reqctx.WithService(r.Context(), "ec2"))
+				gw.ErrorHandler(w, r, errors.New(code))
+			})
+
+			resp := doRequest(handler, httptest.NewRequest(http.MethodPost, "/", nil))
+
+			assert.Equal(t, 400, resp.StatusCode)
+			body, _ := io.ReadAll(resp.Body)
+			assert.Contains(t, string(body), "<Code>"+code+"</Code>")
+		})
+	}
+}
+
+// ACM answers an absent certificate with 400 and ResourceNotFoundException; the
+// override is scoped to ACM, so the shared code keeps its 404 for other services.
+func TestErrorHandler_ACMResourceNotFound_Is400OnTheWire(t *testing.T) {
+	gw := withACM(withEC2Verifier(gwfix.WithDeps(&Config{DisableLogging: true}, gwfix.Deps{IAM: allowAllIAMService()})), acmawsapi.Deps{})
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req = req.WithContext(reqctx.WithService(req.Context(), "acm"))
+	w := httptest.NewRecorder()
+
+	gw.ErrorHandler(w, req, errors.New(awserrors.ErrorResourceNotFound))
+
+	assert.Equal(t, 400, w.Code)
+	var env struct {
+		Type string `json:"__type"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &env))
+	assert.Equal(t, "ResourceNotFoundException", env.Type)
+	assert.Equal(t, 404, awserrors.ErrorLookup[awserrors.ErrorResourceNotFound].HTTPCode, "the override must not change the shared code")
+}

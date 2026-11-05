@@ -16,8 +16,16 @@ func testLoadConfig(t *testing.T, engine string) Config {
 	if err := os.WriteFile(stamp, []byte(engine+"\n"), 0o444); err != nil {
 		t.Fatalf("write the engine stamp: %v", err)
 	}
-	t.Setenv("RDS_ENGINE_FILE", stamp)
-	cfg := LoadConfig(filepath.Join(t.TempDir(), "absent.env"))
+	// Delivered through the env file rather than t.Setenv, so callers can run in
+	// parallel.
+	envFile := filepath.Join(t.TempDir(), "agent.env")
+	if err := os.WriteFile(envFile, []byte("RDS_ENGINE_FILE="+stamp+"\n"), 0o600); err != nil {
+		t.Fatalf("write the env file: %v", err)
+	}
+	cfg := LoadConfig(envFile)
+	if cfg.EngineFile != stamp {
+		t.Fatalf("engine file = %q, want the stamp %q; is RDS_ENGINE_FILE set in the environment?", cfg.EngineFile, stamp)
+	}
 	cfg.EngineCatalog = testEngineCatalogLookup
 	return cfg
 }

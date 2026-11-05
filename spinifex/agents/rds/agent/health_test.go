@@ -83,6 +83,7 @@ func TestEngineProbe_ProbesTheAssignedPort(t *testing.T) {
 }
 
 func TestExecProbeRunner_PreservesTheProbeDeadline(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
 	defer cancel()
 

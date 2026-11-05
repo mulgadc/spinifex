@@ -475,6 +475,7 @@ func TestVolumeMounterAdapter_AmbiguousPublishIsTornDown(t *testing.T) {
 	}
 	for name, tt := range replies {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			nc := connectMounterTest(t)
 			node := newMounterTestNode()
 			fake := serveFakeNodeProvider(t, nc, node)

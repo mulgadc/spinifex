@@ -30,6 +30,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 })
 
 import { CLOSED_PANEL } from "@/lib/panel-search"
+import { ec2RouteTablesQueryOptions } from "@/queries/ec2"
 
 import { SubnetDetails } from "./subnet-details"
 import { SubnetsPage } from "./subnets-page"
@@ -91,6 +92,55 @@ describe("SubnetsPage", () => {
     expect(
       screen.getByRole("cell", { name: "10.0.1.0/24" }),
     ).toBeInTheDocument()
+    sdk.send.mockReset()
+  })
+
+  it("shows - again when a refresh of the route tables fails", async () => {
+    sdk.send.mockImplementation(
+      async (command) =>
+        await Promise.resolve(
+          command.constructor.name === "DescribeRouteTablesCommand"
+            ? {
+                RouteTables: [
+                  {
+                    VpcId: "vpc-1",
+                    Associations: [{ Main: true }],
+                    Routes: [
+                      { DestinationCidrBlock: "0.0.0.0/0", GatewayId: "igw-1" },
+                    ],
+                  },
+                ],
+              }
+            : {},
+        ),
+    )
+
+    const client = createTestQueryClient()
+
+    renderWithClient(
+      <SubnetsPage
+        onSearchChange={vi.fn()}
+        search={{ ...CLOSED_PANEL, selected: "subnet-1" }}
+        subnets={[SUBNET]}
+      />,
+      client,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByRole("cell", { name: "Public" })).toBeInTheDocument()
+    })
+
+    sdk.send.mockRejectedValue(new Error("denied"))
+    await client.refetchQueries({
+      queryKey: ec2RouteTablesQueryOptions.queryKey,
+    })
+
+    const panel = within(screen.getByRole("region", { name: "Subnet details" }))
+
+    await waitFor(() => {
+      expect(screen.getByRole("cell", { name: "-" })).toBeInTheDocument()
+    })
+    expect(panel.getByText("Type").nextSibling).toHaveTextContent("-")
     sdk.send.mockReset()
   })
 

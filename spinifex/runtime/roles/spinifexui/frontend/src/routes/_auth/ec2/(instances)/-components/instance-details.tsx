@@ -87,7 +87,7 @@ export function InstanceDetails({
     vpcId: instance.VpcId,
     focus: { kind: "instance", id },
     noVpc: "This instance is in no VPC, so it has no map.",
-    pin: instance,
+    pin: { instance },
   })
 
   return (

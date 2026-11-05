@@ -138,6 +138,7 @@ export function SubnetDetails({
     vpcId: subnet.VpcId,
     focus: { kind: "subnet", id },
     noVpc: "This subnet belongs to no VPC.",
+    pin: { subnet },
   })
 
   return (

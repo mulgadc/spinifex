@@ -1,4 +1,7 @@
-import { DescribeAddressesCommand } from "@aws-sdk/client-ec2"
+import {
+  DescribeAddressesCommand,
+  DescribeSubnetsCommand,
+} from "@aws-sdk/client-ec2"
 import { describe, expect, it, vi } from "vitest"
 
 const mockSend = vi.hoisted(() => vi.fn())
@@ -150,7 +153,9 @@ describe("networkMapQueryOptions", () => {
   })
 
   it("draws the panel's own instance and its subnet past a capped read", async () => {
-    const pin = { InstanceId: "i-far", SubnetId: "subnet-far", VpcId: "vpc-1" }
+    const pin = {
+      instance: { InstanceId: "i-far", SubnetId: "subnet-far", VpcId: "vpc-1" },
+    }
 
     mockSend.mockImplementation(
       async (command: { constructor: { name: string }; input: object }) => {
@@ -184,5 +189,68 @@ describe("networkMapQueryOptions", () => {
     expect(result.subnets.map((s) => s.SubnetId)).toStrictEqual(["subnet-far"])
     expect(asked).toContain("i-far")
     expect(result.incomplete).toStrictEqual(["instances"])
+  })
+
+  it("draws the panel's own subnet, NAT gateway and route table past a capped read", async () => {
+    const pin = {
+      subnet: { SubnetId: "subnet-own", VpcId: "vpc-1" },
+      natGateway: { NatGatewayId: "nat-far", SubnetId: "subnet-nat" },
+      routeTable: {
+        RouteTableId: "rtb-far",
+        Associations: [{ SubnetId: "subnet-own" }, { SubnetId: "subnet-rtb" }],
+      },
+    }
+
+    mockSend.mockImplementation(async (command: { input: object }) => {
+      if (command instanceof DescribeSubnetsCommand) {
+        const { SubnetIds } = command.input
+
+        return await Promise.resolve(
+          SubnetIds
+            ? { Subnets: SubnetIds.map((SubnetId) => ({ SubnetId })) }
+            : { Subnets: [{ SubnetId: "subnet-near" }], NextToken: "more" },
+        )
+      }
+
+      return await Promise.resolve({})
+    })
+
+    const result = await callQueryFn(networkMapQueryOptions("vpc-1", pin))
+
+    expect(result.subnets.slice(-3).map((s) => s.SubnetId)).toStrictEqual([
+      "subnet-own",
+      "subnet-nat",
+      "subnet-rtb",
+    ])
+    expect(result.natGateways.map((n) => n.NatGatewayId)).toStrictEqual([
+      "nat-far",
+    ])
+    expect(result.routeTables.map((rt) => rt.RouteTableId)).toStrictEqual([
+      "rtb-far",
+    ])
+    expect(result.incomplete).toStrictEqual(["subnets"])
+  })
+
+  it("says the subnets are short when the pinned resource's subnet cannot be read", async () => {
+    mockSend.mockImplementation(
+      async (command: { constructor: { name: string }; input: object }) => {
+        if ("SubnetIds" in command.input) {
+          throw new Error("denied")
+        }
+
+        return await Promise.resolve({})
+      },
+    )
+
+    const result = await callQueryFn(
+      networkMapQueryOptions("vpc-1", {
+        natGateway: { NatGatewayId: "nat-1", SubnetId: "subnet-gone" },
+      }),
+    )
+
+    expect(result.natGateways.map((n) => n.NatGatewayId)).toStrictEqual([
+      "nat-1",
+    ])
+    expect(result.incomplete).toStrictEqual(["subnets"])
   })
 })

@@ -1,4 +1,3 @@
-import type { Instance } from "@aws-sdk/client-ec2"
 import { useQuery } from "@tanstack/react-query"
 import { Workflow } from "lucide-react"
 import { type ReactNode, useState } from "react"
@@ -10,6 +9,7 @@ import type { MapFocus } from "@/lib/network-map"
 import type { LayoutDirection } from "@/lib/node-topology"
 import type { PanelTab } from "@/lib/panel-search"
 import { ec2VpcQueryOptions } from "@/queries/ec2"
+import type { MapAnchor } from "@/queries/topology"
 
 interface ResourceTopologyProps {
   vpcId: string | undefined
@@ -17,7 +17,7 @@ interface ResourceTopologyProps {
   direction: LayoutDirection
   // Said when the resource belongs to no VPC, in place of a map.
   noVpc: string
-  pin?: Instance
+  pin?: MapAnchor
 }
 
 // A resource's Topology tab: its whole VPC, with the resource highlighted.

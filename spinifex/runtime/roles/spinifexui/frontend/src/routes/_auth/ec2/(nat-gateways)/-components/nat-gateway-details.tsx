@@ -166,6 +166,7 @@ export function NatGatewayDetails({
     vpcId: nat.VpcId,
     focus: { kind: "nat", id },
     noVpc: "This NAT gateway belongs to no VPC.",
+    pin: { natGateway: nat },
   })
 
   return (

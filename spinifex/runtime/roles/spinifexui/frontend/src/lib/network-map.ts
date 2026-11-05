@@ -604,9 +604,14 @@ function routeTableSet(
   return new Set([...served.map((c) => c.id), ...targets])
 }
 
-// The order cards claim the budget: the selection, the map's frame, the
-// selection's neighbours, then everything else, each kind sorted by name.
-function claimOrder(cards: Draft[], links: MapLink[], focused: Set<string>) {
+// The order cards claim the budget: the selection, the map's frame, what the
+// selection lights, its neighbours, then everything else, each kind by name.
+function claimOrder(
+  cards: Draft[],
+  links: MapLink[],
+  selected: string,
+  focused: Set<string>,
+) {
   const frame = cards
     .filter((c) => ["internet", "vpc", "igw", "nat"].includes(c.kind))
     .toSorted(byRankThenName)
@@ -630,8 +635,9 @@ function claimOrder(cards: Draft[], links: MapLink[], focused: Set<string>) {
   // A set keeps each card's first, highest-priority place.
   return new Set(
     [
-      ...cards.filter((c) => focused.has(c.id)).toSorted(byRankThenName),
+      ...cards.filter((c) => c.id === selected),
       ...frame,
+      ...cards.filter((c) => focused.has(c.id)).toSorted(byRankThenName),
       ...neighbours,
       ...rest,
     ].map((c) => c.id),
@@ -679,7 +685,12 @@ export function buildNetworkMap(
   const placed = new Set<string>()
   let lines = 0
 
-  for (const id of claimOrder(cards, links, highlight)) {
+  for (const id of claimOrder(
+    cards,
+    links,
+    `${focus.kind}:${focus.id}`,
+    highlight,
+  )) {
     // The lines this card adds: those whose other end is already placed.
     const joining = (ends.get(id) ?? []).filter((l) =>
       placed.has(l.source === id ? l.target : l.source),

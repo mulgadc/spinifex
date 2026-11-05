@@ -136,6 +136,7 @@ export function RouteTableDetails({
     vpcId: rtb.VpcId,
     focus: { kind: "routeTable", id },
     noVpc: "This route table belongs to no VPC.",
+    pin: { routeTable: rtb },
   })
 
   return (

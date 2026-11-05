@@ -1,4 +1,4 @@
-import type { Instance, Vpc } from "@aws-sdk/client-ec2"
+import type { Vpc } from "@aws-sdk/client-ec2"
 import { useQuery } from "@tanstack/react-query"
 import { Link, useNavigate } from "@tanstack/react-router"
 import { Handle, type Node, type NodeProps, Position } from "@xyflow/react"
@@ -36,7 +36,7 @@ import {
 } from "@/lib/network-map"
 import type { LayoutDirection } from "@/lib/node-topology"
 import { cn } from "@/lib/utils"
-import { networkMapQueryOptions } from "@/queries/topology"
+import { type MapAnchor, networkMapQueryOptions } from "@/queries/topology"
 
 const ICONS: Record<MapKind, LucideIcon> = {
   internet: Cloud,
@@ -314,7 +314,7 @@ interface NetworkTopologyProps {
   focus: MapFocus
   direction?: LayoutDirection
   // An instance panel's own instance, drawn even past the read's page limit.
-  pin?: Instance
+  pin?: MapAnchor
 }
 
 // A read-only map of one VPC: what reaches the internet, its subnets by zone,

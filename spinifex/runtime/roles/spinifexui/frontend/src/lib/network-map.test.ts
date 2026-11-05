@@ -661,4 +661,30 @@ describe("a resource's focus", () => {
     expect(cardOf(map, "instance:i-0400")?.highlighted).toBeTruthy()
     expect(map.cards.length).toBeLessThanOrEqual(MAP_BUDGET.cards)
   })
+
+  it.each<MapFocus>([
+    { kind: "subnet", id: "subnet-1" },
+    { kind: "igw", id: "igw-1" },
+    { kind: "routeTable", id: "rtb-main" },
+  ])(
+    "keeps the map's frame when $kind lights more than the budget",
+    (focus) => {
+      const crowd = inputs({
+        subnets: Array.from({ length: 200 }, (_, n) => subnet(n + 1)),
+        instances: Array.from({ length: 500 }, (_, n) =>
+          instance(n + 1, "subnet-1"),
+        ),
+      })
+
+      const map = buildNetworkMap(crowd, focus)
+      const placed = new Set(map.cards.map((c) => c.id))
+
+      expect(placed.has("internet")).toBeTruthy()
+      expect(placed.has("vpc:vpc-1")).toBeTruthy()
+      expect(
+        map.links.every((l) => placed.has(l.source) && placed.has(l.target)),
+      ).toBeTruthy()
+      expect(map.cards.length).toBeLessThanOrEqual(MAP_BUDGET.cards)
+    },
+  )
 })

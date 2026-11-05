@@ -9,6 +9,7 @@ import {
   type Filter,
   type Instance,
   type NatGateway,
+  type RouteTable,
   type Subnet,
 } from "@aws-sdk/client-ec2"
 import { DescribeLoadBalancersCommand } from "@aws-sdk/client-elastic-load-balancing-v2"
@@ -214,72 +215,106 @@ async function readAddresses(
   }
 }
 
-// The panel's own instance is drawn even past the page limit, so its map is
-// never without it; its subnet is read by ID when the VPC's read missed it.
+// The resource whose panel draws the map, held by that panel already.
+export interface MapAnchor {
+  instance?: Instance
+  subnet?: Subnet
+  natGateway?: NatGateway
+  routeTable?: RouteTable
+}
+
+// Puts the pinned resource in its list, replacing any copy read.
+function withPin<T>(
+  read: T[],
+  pin: T | undefined,
+  key: (item: T) => string | undefined,
+) {
+  return pin ? [...read.filter((item) => key(item) !== key(pin)), pin] : read
+}
+
+// The panel's own resource is drawn even past the page limit, so its map is
+// never without it; the subnets it names are read by ID when the VPC's read
+// missed them, at most a page of them.
 async function pinned(
-  pin: Instance | undefined,
-  read: Instance[],
-  subnets: Subnet[],
+  pin: MapAnchor | undefined,
+  read: Paged<Subnet>["items"],
   gaps: Gaps,
-): Promise<{ instances: Instance[]; subnets: Subnet[] }> {
-  if (!pin?.InstanceId) {
-    return { instances: read, subnets }
-  }
+): Promise<Subnet[]> {
+  const named = compactIds([
+    pin?.instance?.SubnetId,
+    pin?.natGateway?.SubnetId,
+    ...(pin?.routeTable?.Associations ?? []).map((a) => a.SubnetId),
+  ])
 
-  const instances = [
-    ...read.filter((i) => i.InstanceId !== pin.InstanceId),
-    pin,
-  ]
+  const subnets = withPin(read, pin?.subnet, (s) => s.SubnetId)
 
-  if (!pin.SubnetId || subnets.some((s) => s.SubnetId === pin.SubnetId)) {
-    return { instances, subnets }
+  const missing = named
+    .filter((id) => !subnets.some((s) => s.SubnetId === id))
+    .slice(0, MAP_PAGE_SIZE)
+
+  if (missing.length === 0) {
+    return subnets
   }
 
   try {
     const r = await getEc2Client().send(
-      new DescribeSubnetsCommand({ SubnetIds: [pin.SubnetId] }),
+      new DescribeSubnetsCommand({ SubnetIds: missing }),
     )
 
-    return { instances, subnets: [...subnets, ...(r.Subnets ?? [])] }
+    return [...subnets, ...(r.Subnets ?? [])]
   } catch {
     // The map still draws, and says its subnets are not all there.
     gaps.incomplete.push("subnets")
 
-    return { instances, subnets }
+    return subnets
   }
+}
+
+function compactIds(ids: (string | undefined)[]): string[] {
+  return [...new Set(ids.filter((id) => id !== undefined))]
 }
 
 // Every read is settled on its own, so one failing service leaves the rest of
 // the map drawn and names what is missing.
-export const networkMapQueryOptions = (vpcId: string, pin?: Instance) =>
+export const networkMapQueryOptions = (vpcId: string, pin?: MapAnchor) =>
   queryOptions({
-    // The whole instance, so a change to its subnet or address reads again.
+    // The whole pin, so a change to the resource reads the map again.
     queryKey: ["topology", "network", vpcId, pin ?? null],
     queryFn: async (): Promise<Omit<NetworkInputs, "vpc">> => {
       const [subnets, routeTables, igws, nats, instances, lbs, dbs] =
         await readVpc(vpcId)
 
       const gaps: Gaps = { incomplete: [], failed: [] }
-      const natGateways = take("natGateways", nats, gaps)
 
-      const mine = await pinned(
-        pin,
-        take("instances", instances, gaps),
-        take("subnets", subnets, gaps),
-        gaps,
+      const natGateways = withPin(
+        take("natGateways", nats, gaps),
+        pin?.natGateway,
+        (n) => n.NatGatewayId,
       )
 
+      const held = withPin(
+        take("instances", instances, gaps),
+        pin?.instance,
+        (i) => i.InstanceId,
+      )
+
+      const allSubnets = await pinned(pin, take("subnets", subnets, gaps), gaps)
+
       const [addresses] = await Promise.allSettled([
-        readAddresses(mine.instances, natGateways),
+        readAddresses(held, natGateways),
       ])
 
       return {
-        subnets: mine.subnets,
-        routeTables: take("routeTables", routeTables, gaps),
+        subnets: allSubnets,
+        routeTables: withPin(
+          take("routeTables", routeTables, gaps),
+          pin?.routeTable,
+          (rt) => rt.RouteTableId,
+        ),
         internetGateways: take("internetGateways", igws, gaps),
         natGateways,
         addresses: take("addresses", addresses, gaps),
-        instances: mine.instances,
+        instances: held,
         loadBalancers: take("loadBalancers", lbs, gaps),
         dbInstances: take("dbInstances", dbs, gaps),
         ...gaps,

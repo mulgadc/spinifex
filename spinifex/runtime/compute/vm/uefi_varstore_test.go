@@ -253,10 +253,15 @@ func (f *uefiFixture) instance(t *testing.T, key string, fw uefistore.FirmwareId
 	return v
 }
 
-// prepare runs the launch's store step and returns the claim it acquired.
+// prepare runs the launch's store check and store step and returns the claim
+// the step acquired.
 func (f *uefiFixture) prepare(t *testing.T, v *VM) (*uefiClaim, error) {
 	t.Helper()
-	return f.m.prepareUEFIVarStore(t.Context(), v)
+	rec, err := f.m.checkUEFIVarStore(t.Context(), v)
+	if err != nil {
+		return nil, err
+	}
+	return f.m.prepareUEFIVarStore(t.Context(), v, rec)
 }
 
 func keyFor(name string) string { return uefistore.KeyPrefix(testUEFIInstance) + name }
@@ -329,8 +334,8 @@ func TestPrepareUEFIVarStore_RefetchesWhenTheLocalCopyIsNotTheCurrentStore(t *te
 		{name: "vars.fd of the wrong size", local: func(f *uefiFixture, t *testing.T) {
 			f.writeLocal(t, keyFor("current"), 0, []byte("short"))
 		}},
-		{name: "seeded.json unreadable", local: func(f *uefiFixture, t *testing.T) {
-			f.writeLocal(t, keyFor("current"), 0, region("stale"))
+		{name: "seeded.json unreadable with no vars.fd", local: func(f *uefiFixture, t *testing.T) {
+			require.NoError(t, os.MkdirAll(f.instanceDir(), 0o700))
 			require.NoError(t, os.WriteFile(filepath.Join(f.instanceDir(), "seeded.json"), []byte("{"), 0o600))
 		}},
 		{name: "no vars.fd", local: func(f *uefiFixture, t *testing.T) {
@@ -526,15 +531,12 @@ func TestPrepareUEFIVarStore_NoStoreObjectIsANoOp(t *testing.T) {
 	assert.NoDirExists(t, filepath.Join(f.dataDir, "uefi"))
 }
 
-// A UEFI instance with no usable store record, or both a record and an EFI
-// volume, is refused before the launch clears or changes anything on its
-// record, and before any claim is taken.
-func TestRun_UEFIInstanceWithoutExactlyOneStoreIsRefused(t *testing.T) {
-	efiVolume := EBSRequest{Name: "vol-1-efi", EFI: true}
+// A UEFI instance with no usable store record is refused before the launch
+// clears or changes anything on its record, and before any claim is taken.
+func TestRun_UEFIInstanceWithoutAUsableStoreIsRefused(t *testing.T) {
 	tests := []struct {
 		name   string
 		record func(f *uefiFixture, t *testing.T)
-		efi    bool
 		want   error
 	}{
 		{name: "no record and no EFI volume", want: ErrUEFIVarStoreMissing},
@@ -547,9 +549,6 @@ func TestRun_UEFIInstanceWithoutExactlyOneStoreIsRefused(t *testing.T) {
 			_, err := f.records.MarkDeleting(t.Context(), testUEFIInstance)
 			require.NoError(t, err)
 		}},
-		{name: "a record and an EFI volume", efi: true, want: ErrUEFIVarStoreConflict, record: func(f *uefiFixture, t *testing.T) {
-			f.instance(t, keyFor("p"), f.identity)
-		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -558,9 +557,6 @@ func TestRun_UEFIInstanceWithoutExactlyOneStoreIsRefused(t *testing.T) {
 				tt.record(f, t)
 			}
 			instance := f.instance(t, "", f.identity)
-			if tt.efi {
-				instance.EBSRequests.Requests = []EBSRequest{efiVolume}
-			}
 			stale := &ec2.StateReason{Code: aws.String("Client.UserInitiatedShutdown"), Message: aws.String("Client.UserInitiatedShutdown: User initiated shutdown")}
 			instance.Instance.StateReason = stale
 			before := instance.Record()
@@ -600,12 +596,14 @@ func TestCheckUEFIVarStore_Accepts(t *testing.T) {
 		return &VM{ID: testUEFIInstance, BootMode: "uefi", EBSRequests: EBSRequests{Requests: []EBSRequest{{Name: "vol-efi", EFI: true}}}}
 	}
 	tests := []struct {
-		name  string
-		v     func(f *uefiFixture, t *testing.T) *VM
-		unwir bool
+		name       string
+		v          func(f *uefiFixture, t *testing.T) *VM
+		unwir      bool
+		unreadable bool
 	}{
 		{name: "EFI volume", v: func(*uefiFixture, *testing.T) *VM { return efi() }},
 		{name: "EFI volume on a node with no store records", unwir: true, v: func(*uefiFixture, *testing.T) *VM { return efi() }},
+		{name: "EFI volume while the store bucket cannot be read", unreadable: true, v: func(*uefiFixture, *testing.T) *VM { return efi() }},
 		{name: "store record", v: func(f *uefiFixture, t *testing.T) *VM {
 			v := f.instance(t, keyFor("k"), f.identity)
 			v.BootMode = "uefi-preferred"
@@ -622,6 +620,9 @@ func TestCheckUEFIVarStore_Accepts(t *testing.T) {
 			f := newUEFIFixture(t)
 			if tt.unwir {
 				f.m.deps.UEFIVarStore.Records = nil
+			}
+			if tt.unreadable {
+				f.m.deps.UEFIVarStore.Records = failingRecordGet{f.records}
 			}
 			assert.NoError(t, f.m.CheckUEFIVarStore(t.Context(), tt.v(f, t)))
 		})
@@ -753,4 +754,67 @@ func TestNodeFirmwareFor_HashesTheCodeBlobAgainAfterItChanges(t *testing.T) {
 	sum := sha256.Sum256(updated)
 	assert.Equal(t, hex.EncodeToString(sum[:]), second.Identity.CodeSHA256)
 	assert.Equal(t, f.codePath, second.Code)
+}
+
+// failingRecordGet is a store record bucket whose reads fail.
+type failingRecordGet struct{ UEFIStoreRecords }
+
+func (failingRecordGet) Get(context.Context, string) (*uefistore.UEFIStoreRecord, uint64, error) {
+	return nil, 0, errors.New("uefi stores: no responders")
+}
+
+// At one generation only this node moves the pointer, and only from vars.fd,
+// so a crash between a move and the seeded.json rewrite leaves a file newer
+// than the key seeded.json names. It is booted, not refetched over.
+func TestPrepareUEFIVarStore_ReusesTheCopyOfTheClaimsGenerationWhateverItsKey(t *testing.T) {
+	f := newUEFIFixture(t)
+	key := keyFor("moved")
+	f.putObject(t, key, gzipped(t, region("object")))
+	instance := f.instance(t, key, f.identity)
+	tok, err := f.peerClaim("node-a").TryLock(t.Context())
+	require.NoError(t, err)
+	f.writeLocal(t, keyFor("before-move"), tok.Generation, region("newer than the object"))
+
+	held, err := f.prepare(t, instance)
+
+	require.NoError(t, err)
+	assert.True(t, held.reused)
+	assert.Equal(t, region("newer than the object"), f.localVars(t))
+}
+
+// A launch that fails inside startQEMU before the process starts ran no
+// guest, so it gives back a claim it fetched the store under.
+func TestRun_LaunchFailingBeforeQEMUExecsReleasesAFetchedClaim(t *testing.T) {
+	f := newUEFIFixture(t)
+	key := keyFor("fetched")
+	f.putObject(t, key, gzipped(t, region("object")))
+	instance := f.instance(t, key, f.identity)
+
+	err := f.m.Run(t.Context(), instance)
+
+	require.ErrorIs(t, err, errQEMUNotStarted, "an instance with no boot volume fails before QEMU execs")
+	_, held := f.claimHolder(t)
+	assert.False(t, held, "another node may start the instance at once")
+}
+
+// A node that cannot boot the store refuses before it touches the claim, so
+// it never takes the store from a holder that is coming back.
+func TestRun_FirmwareMismatchRefusesBeforeTakingTheClaim(t *testing.T) {
+	f := newUEFIFixture(t)
+	key := keyFor("arm")
+	stored := f.identity
+	stored.Arch = "arm64"
+	instance := f.instance(t, key, stored)
+	tok, err := f.peerClaim("node-b").TryLock(t.Context())
+	require.NoError(t, err)
+	f.liveness.heartbeat("node-b", 10*time.Minute)
+
+	err = f.m.Run(t.Context(), instance)
+
+	require.ErrorIs(t, err, ErrUEFIFirmwareMismatch)
+	holder, held := f.claimHolder(t)
+	require.True(t, held)
+	assert.Equal(t, tok, holder, "the claim stays with node-b")
+	rec, _ := f.record(t)
+	assert.Zero(t, rec.Generation, "the record is not stamped")
 }

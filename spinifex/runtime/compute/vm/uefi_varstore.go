@@ -59,10 +59,6 @@ const (
 // its variables from.
 var ErrUEFIVarStoreMissing = errors.New("UEFI instance has no variable store")
 
-// ErrUEFIVarStoreConflict is a UEFI instance that has a store record and also
-// carries an EFI volume, so either one would be ignored.
-var ErrUEFIVarStoreConflict = errors.New("UEFI instance has both a variable store record and an EFI volume")
-
 // ErrUEFIFirmwareMismatch is a variable store written under firmware whose
 // architecture or VARS size differs from this node's, which pflash cannot load.
 var ErrUEFIFirmwareMismatch = errors.New("UEFI variable store firmware does not match this node")
@@ -85,9 +81,9 @@ type UEFIStoreRecords interface {
 
 var _ UEFIStoreRecords = (*uefistore.Store)(nil)
 
-// NodeLiveness reports when a node last heartbeated. found is false for a node
-// with no heartbeat or one that cannot be dated; an error means the answer is
-// unknown, which a takeover must not read as dead.
+// NodeLiveness reports when a node last heartbeated. found is false only for
+// a node with no heartbeat. A heartbeat that exists but cannot be dated is an
+// error, as is a failed read: the answer is unknown, and never reads as dead.
 type NodeLiveness interface {
 	LastSeen(ctx context.Context, node string) (seen time.Time, found bool, err error)
 }
@@ -116,15 +112,14 @@ type uefiSeed struct {
 }
 
 // uefiClaim is the claim a launch acquired. reused is set when the launch
-// booted this node's copy, which may hold changes no object has, so a launch
-// that rolls back keeps the claim rather than let another node start stale.
+// boots this node's copy. keep is set when this node held a copy under token
+// before the launch, which may carry changes no object has, so a rollback
+// must not release the claim.
 type uefiClaim struct {
 	claim  *kvsync.Claim
 	token  kvsync.Token
 	reused bool
-	// keep is set when this node holds a copy seeded under token, which may
-	// carry changes no object has, so a rollback must not release the claim.
-	keep bool
+	keep   bool
 }
 
 // isUEFIBootMode reports whether bootMode boots the guest through UEFI firmware.
@@ -152,39 +147,37 @@ func usesStoreObject(v *VM) bool {
 }
 
 // CheckUEFIVarStore refuses a UEFI instance that has no variable store, or
-// two, before anything about it is changed. An EFI volume still counts as a
-// store until RunInstances seeds store records instead. It only reads.
+// two, before anything about it is changed. It only reads.
 func (m *Manager) CheckUEFIVarStore(ctx context.Context, v *VM) error {
-	if !usesUEFIVarStore(v) {
-		return nil
+	_, err := m.checkUEFIVarStore(ctx, v)
+	return err
+}
+
+// checkUEFIVarStore is CheckUEFIVarStore returning the store record it read,
+// or nil for an instance that boots no store object. An EFI volume is the
+// instance's store until RunInstances seeds store records, so it reads none.
+func (m *Manager) checkUEFIVarStore(ctx context.Context, v *VM) (*uefistore.UEFIStoreRecord, error) {
+	if !usesStoreObject(v) {
+		return nil, nil
 	}
-	efi := hasEFIVolume(v)
 	records := m.deps.UEFIVarStore.Records
 	if records == nil {
-		if efi {
-			return nil
-		}
-		return fmt.Errorf("%w: %s, and no store records are wired on this node", ErrUEFIVarStoreMissing, v.ID)
+		return nil, fmt.Errorf("%w: %s, and no store records are wired on this node", ErrUEFIVarStoreMissing, v.ID)
 	}
 	rec, _, err := records.Get(ctx, v.ID)
 	switch {
 	case errors.Is(err, kvstore.ErrNotFound):
-		if efi {
-			return nil
-		}
-		return fmt.Errorf("%w: %s has no store record", ErrUEFIVarStoreMissing, v.ID)
+		return nil, fmt.Errorf("%w: %s has no store record", ErrUEFIVarStoreMissing, v.ID)
 	case errors.Is(err, uefistore.ErrInvalidRecord):
-		return fmt.Errorf("%w: %w", ErrUEFIVarStoreUnusable, err)
+		return nil, fmt.Errorf("%w: %w", ErrUEFIVarStoreUnusable, err)
 	case err != nil:
-		return fmt.Errorf("read UEFI store record for %s: %w: %w", v.ID, err, ErrMountRetryable)
-	case efi:
-		return fmt.Errorf("%w: %s", ErrUEFIVarStoreConflict, v.ID)
+		return nil, fmt.Errorf("read UEFI store record for %s: %w: %w", v.ID, err, ErrMountRetryable)
 	case rec.State != uefistore.StateLive:
-		return fmt.Errorf("%w: %s store record is %s", ErrUEFIVarStoreMissing, v.ID, rec.State)
+		return nil, fmt.Errorf("%w: %s store record is %s", ErrUEFIVarStoreMissing, v.ID, rec.State)
 	case rec.Pointer == nil:
-		return fmt.Errorf("%w: %s store record names no pointer", ErrUEFIVarStoreMissing, v.ID)
+		return nil, fmt.Errorf("%w: %s store record names no pointer", ErrUEFIVarStoreMissing, v.ID)
 	}
-	return nil
+	return rec, nil
 }
 
 // uefiInstanceDir is the directory holding instanceID's vars.fd and
@@ -222,18 +215,18 @@ func (m *Manager) uefiVarsDrive(instance *VM) (*Drive, error) {
 	return &Drive{File: path, Format: "raw", If: "pflash", Unit: 1}, nil
 }
 
-// prepareUEFIVarStore takes the store's claim, stamps the store record with
-// its generation and leaves vars.fd holding the store the stamped record
-// points at, reusing this node's copy when seeded.json names that pointer and
-// generation. The object is only read. A non-nil claim is returned once one is
-// acquired, failed or not, so the caller can release it on a rollback.
-func (m *Manager) prepareUEFIVarStore(ctx context.Context, instance *VM) (*uefiClaim, error) {
+// prepareUEFIVarStore checks this node can boot the store rec points at, then
+// takes the store's claim, stamps the store record with its generation and
+// leaves vars.fd holding the store to boot. rec is the record checkUEFIVarStore
+// read. A non-nil claim is returned once one is acquired, failed or not, so
+// the caller can release it on a rollback.
+func (m *Manager) prepareUEFIVarStore(ctx context.Context, instance *VM, rec *uefistore.UEFIStoreRecord) (*uefiClaim, error) {
 	if !usesStoreObject(instance) {
 		return nil, nil
 	}
 
 	deps := m.deps.UEFIVarStore
-	if deps.Objects == nil || deps.Bucket == "" || deps.DataDir == "" || deps.Records == nil || deps.Claims == nil || deps.Liveness == nil {
+	if rec == nil || deps.Objects == nil || deps.Bucket == "" || deps.DataDir == "" || deps.Records == nil || deps.Claims == nil || deps.Liveness == nil {
 		return nil, errors.New("UEFI variable store access is not wired on this node")
 	}
 	if m.deps.InstanceTypes == nil {
@@ -251,13 +244,22 @@ func (m *Manager) prepareUEFIVarStore(ctx context.Context, instance *VM) (*uefiC
 	if err != nil {
 		return nil, err
 	}
+	// Before the claim, so a node that cannot boot the store never takes it
+	// from a holder that is coming back.
+	if err := m.checkUEFIFirmware(instance, rec.Pointer, fw); err != nil {
+		return nil, err
+	}
 
 	held, err := m.acquireUEFIClaim(ctx, instance.ID)
 	if err != nil {
 		return nil, err
 	}
-	held.keep = heldLocalCopy(dir, held.token.Generation)
-	rec, err := deps.Records.Stamp(ctx, instance.ID, held.token.Generation)
+	// Before anything that can fail, so a rollback keeps a claim this node's
+	// copy may owe a write-back under.
+	local := readLocalUEFICopy(dir)
+	held.keep = local.owedUnder(held.token.Generation)
+	checked := rec.Pointer.Firmware
+	rec, err = deps.Records.Stamp(ctx, instance.ID, held.token.Generation)
 	switch {
 	case errors.Is(err, uefistore.ErrFenced):
 		recordUEFIClaimRefusal("fenced")
@@ -276,15 +278,28 @@ func (m *Manager) prepareUEFIVarStore(ctx context.Context, instance *VM) (*uefiC
 	// The record validated its pointer as one object under this instance's prefix.
 	ref := rec.Pointer
 
-	held.reused = reuseUEFIVars(dir, ref.Key, held.token.Generation, fw.Identity.VarsSize)
-	held.keep = held.keep || held.reused
-	if err := m.checkUEFIFirmware(instance, ref, fw); err != nil {
-		return held, err
+	if ref.Firmware != checked {
+		if err := m.checkUEFIFirmware(instance, ref, fw); err != nil {
+			return held, err
+		}
 	}
-	if held.reused {
+	switch {
+	case local.hasVars && local.seedErr != nil:
+		slog.ErrorContext(ctx, "This node's UEFI variable store cannot be vouched for; keeping it and refusing the start",
+			"instanceId", instance.ID, "path", filepath.Join(dir, uefiSeededFileName), "err", local.seedErr)
+		return held, fmt.Errorf("UEFI variable store for %s has a %s this node cannot read: %w: %w",
+			instance.ID, uefiSeededFileName, local.seedErr, ErrMountRetryable)
+	case held.keep && local.varsSize != fw.Identity.VarsSize:
+		slog.ErrorContext(ctx, "This node's UEFI variable store is not the VARS size; keeping it and refusing the start",
+			"instanceId", instance.ID, "path", filepath.Join(dir, uefiVarsFileName),
+			"size", local.varsSize, "want", fw.Identity.VarsSize)
+		return held, fmt.Errorf("%w: %s for %s is %d bytes, not %d",
+			ErrUEFIVarStoreUnusable, uefiVarsFileName, instance.ID, local.varsSize, fw.Identity.VarsSize)
+	case held.keep:
+		held.reused = true
 		recordUEFIStoreSeed("local")
 		slog.InfoContext(ctx, "Reusing this node's UEFI variable store",
-			"instanceId", instance.ID, "key", ref.Key, "generation", held.token.Generation)
+			"instanceId", instance.ID, "key", ref.Key, "seededKey", local.seed.Key, "generation", held.token.Generation)
 		return held, nil
 	}
 
@@ -415,40 +430,45 @@ func (m *Manager) checkUEFIFirmware(instance *VM, ref *uefistore.UEFIVarStoreRef
 	return fmt.Errorf("%w: %s", ErrUEFIFirmwareMismatch, msg)
 }
 
-// reuseUEFIVars reports whether dir already holds the store key names at
-// generation: a seeded.json naming both beside a vars.fd of the region's size.
-// A copy from an earlier generation predates another node's claim or a
-// restore, so it is not this store's latest.
-func reuseUEFIVars(dir, key string, generation uint64, varsSize int64) bool {
-	data, err := os.ReadFile(filepath.Join(dir, uefiSeededFileName))
-	if err != nil {
-		return false
-	}
-	var seed uefiSeed
-	if err := json.Unmarshal(data, &seed); err != nil || seed.Key != key || seed.Generation != generation {
-		return false
-	}
-	info, err := os.Stat(filepath.Join(dir, uefiVarsFileName))
-	if err != nil || info.Size() != varsSize {
-		slog.Warn("UEFI variable store seeded here has no usable vars.fd; fetching it again", "dir", dir, "key", key)
-		return false
-	}
-	return true
+// localUEFICopy is what this node holds for an instance: whether vars.fd
+// exists and its size, and seeded.json or the error reading it.
+type localUEFICopy struct {
+	hasVars  bool
+	varsSize int64
+	hasSeed  bool
+	seed     uefiSeed
+	seedErr  error
 }
 
-// heldLocalCopy reports whether dir holds a copy this node seeded under the
-// claim generation, or a seeded.json it cannot read, which may be one. Either
-// may hold changes no object has, so the claim that guards it is kept.
-func heldLocalCopy(dir string, generation uint64) bool {
+// readLocalUEFICopy reads dir's vars.fd and seeded.json. Only a seeded.json
+// that exists and cannot be read or decoded sets seedErr.
+func readLocalUEFICopy(dir string) localUEFICopy {
+	var c localUEFICopy
+	if info, err := os.Stat(filepath.Join(dir, uefiVarsFileName)); err == nil {
+		c.hasVars, c.varsSize = true, info.Size()
+	}
 	data, err := os.ReadFile(filepath.Join(dir, uefiSeededFileName))
-	if errors.Is(err, fs.ErrNotExist) {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return c
+	case err != nil:
+		c.seedErr = err
+	default:
+		c.seedErr = json.Unmarshal(data, &c.seed)
+	}
+	c.hasSeed = c.seedErr == nil
+	return c
+}
+
+// owedUnder reports whether the copy may hold changes no object has under the
+// claim generation: vars.fd exists and seeded.json names generation, or cannot
+// be read. At one generation only this node moves the pointer, and only from
+// vars.fd, so such a file is never older than the pointer whatever key it names.
+func (c localUEFICopy) owedUnder(generation uint64) bool {
+	if !c.hasVars {
 		return false
 	}
-	var seed uefiSeed
-	if err != nil || json.Unmarshal(data, &seed) != nil {
-		return true
-	}
-	return seed.Generation == generation
+	return c.seedErr != nil || (c.hasSeed && c.seed.Generation == generation)
 }
 
 // fetchUEFIVars gets key and returns its decompressed region, which must be

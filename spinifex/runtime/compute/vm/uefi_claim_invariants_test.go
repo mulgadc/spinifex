@@ -146,7 +146,7 @@ func TestS7_UEFIClaimGuardingALocalCopyIsKeptWhenALaunchRollsBack(t *testing.T) 
 
 			require.ErrorIs(t, err, ErrMountRetryable)
 			holder, held := f.claimHolder(t)
-			require.True(t, held, "ADR-0003:S7 (uefi_varstore.go heldLocalCopy): a rolled-back launch released the claim guarding this node's copy; keep it whenever seeded.json names the claim's generation")
+			require.True(t, held, "ADR-0003:S7 (uefi_varstore.go owedUnder): a rolled-back launch released the claim guarding this node's copy; keep it whenever seeded.json names the claim's generation")
 			assert.Equal(t, tok, holder)
 			_, refused := f.peerClaim("node-b").TryLock(t.Context())
 			assert.ErrorAs(t, refused, new(*kvsync.HeldError), "ADR-0003:S7: another node could take the claim while this node's copy held unwritten changes")
@@ -169,4 +169,29 @@ func TestUEFIClaim_RollbackReleasesAClaimNoLocalCopyNeeds(t *testing.T) {
 	require.ErrorIs(t, f.m.Run(t.Context(), instance), ErrMountRetryable)
 	_, held := f.claimHolder(t)
 	assert.False(t, held)
+}
+
+// TestS7_UEFICopyThatCannotBeVouchedForIsNeverOverwritten enforces
+// ADR-0003:S7: a vars.fd whose seeded.json cannot be read may hold changes no
+// object has, so the start is refused as retryable and the file and the claim
+// are kept rather than the object fetched over it.
+func TestS7_UEFICopyThatCannotBeVouchedForIsNeverOverwritten(t *testing.T) {
+	f := newUEFIFixture(t)
+	key := keyFor("pointed")
+	f.putObject(t, key, gzipped(t, region("object")))
+	instance := f.instance(t, key, f.identity)
+	tok, err := f.peerClaim("node-a").TryLock(t.Context())
+	require.NoError(t, err)
+	f.writeLocal(t, key, tok.Generation, region("guest wrote this"))
+	require.NoError(t, os.WriteFile(filepath.Join(f.instanceDir(), uefiSeededFileName), []byte("{"), 0o600))
+
+	err = f.m.Run(t.Context(), instance)
+
+	require.ErrorIs(t, err, ErrMountRetryable)
+	assert.Equal(t, region("guest wrote this"), f.localVars(t),
+		"ADR-0003:S7 (uefi_varstore.go prepareUEFIVarStore): a copy that cannot be vouched for was overwritten; refuse the start and keep it")
+	holder, held := f.claimHolder(t)
+	require.True(t, held, "ADR-0003:S7: the claim guarding an unvouched copy was released")
+	assert.Equal(t, tok, holder)
+	assert.Empty(t, f.mounter.mounted)
 }

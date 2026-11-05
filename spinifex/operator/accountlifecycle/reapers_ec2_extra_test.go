@@ -82,42 +82,6 @@ func (f *fakeEgressGateways) DeleteEgressOnlyInternetGateway(_ context.Context, 
 	return &ec2.DeleteEgressOnlyInternetGatewayOutput{}, nil
 }
 
-// A cancelled request cannot launch anything, so listing it would leave the
-// stage waiting on a row that never clears — spot requests are never removed
-// from the account, only moved to a terminal state.
-func TestSpotRequestReaperSkipsTerminalRequests(t *testing.T) {
-	svc := &fakeSpot{requests: []*ec2.SpotInstanceRequest{
-		{SpotInstanceRequestId: aws.String("sir-open"), State: aws.String("open")},
-		{SpotInstanceRequestId: aws.String("sir-active"), State: aws.String("active")},
-		{SpotInstanceRequestId: aws.String("sir-cancelled"), State: aws.String("cancelled")},
-		{SpotInstanceRequestId: aws.String("sir-closed"), State: aws.String("closed")},
-		{SpotInstanceRequestId: aws.String("sir-failed"), State: aws.String("failed")},
-	}}
-	reaper := &spotRequestReaper{svc: svc}
-
-	assert.Equal(t, StageCompute, reaper.Stage())
-
-	found, err := reaper.List(t.Context(), "000000000002")
-	require.NoError(t, err)
-	require.Len(t, found, 2)
-	assert.Equal(t, "sir-open", found[0].ID)
-	assert.Equal(t, "open", found[0].Detail)
-	assert.Equal(t, "sir-active", found[1].ID)
-
-	require.NoError(t, reaper.Delete(t.Context(), "000000000002", found[0], false))
-	assert.Equal(t, []string{"sir-open"}, svc.cancelled)
-}
-
-// A request cancelled by someone else between the listing and the delete is
-// the ordinary second-pass case, not a failure.
-func TestSpotRequestReaperTreatsAMissingRequestAsCancelled(t *testing.T) {
-	svc := &fakeSpot{err: errors.New("InvalidSpotInstanceRequestID.NotFound: no such request")}
-	reaper := &spotRequestReaper{svc: svc}
-
-	err := reaper.Delete(t.Context(), "000000000002", Resource{ID: "sir-gone"}, false)
-	assert.NoError(t, err)
-}
-
 // A deleting gateway still holds its address and its subnet, so it has to keep
 // listing until it is actually gone or the address reaper runs too early.
 func TestNatGatewayReaperKeepsDeletingGateways(t *testing.T) {

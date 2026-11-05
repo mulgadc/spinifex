@@ -78,6 +78,34 @@ type pollResult struct {
 	took time.Duration
 }
 
+// scanned signals once its first Scan has returned: the receiver's wake
+// feed is open and its first poll's bound is fixed, so it is now waiting.
+type scanned struct {
+	message.Store
+
+	once *sync.Once
+	done chan struct{}
+}
+
+func signalScan(s message.Store) scanned {
+	return scanned{Store: s, once: new(sync.Once), done: make(chan struct{})}
+}
+
+func (s scanned) Scan(ctx context.Context, shard message.Shard, from message.ScanCursor, limit int) (message.ScanPage, error) {
+	page, err := s.Store.Scan(ctx, shard, from, limit)
+	s.once.Do(func() { close(s.done) })
+	return page, err
+}
+
+func (s scanned) polled(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the receiver never completed a scan")
+	}
+}
+
 func goReceive(r *message.Receiver, ctx context.Context, in message.ReceiveInput) <-chan pollResult {
 	out := make(chan pollResult, 1)
 	go func() {
@@ -93,8 +121,9 @@ func TestLongPollWakesOnSend(t *testing.T) {
 	t.Parallel()
 	e := newLongPollEnv(t)
 	e.create(t, "orders", nil)
-	res := goReceive(e.receiver(nil, noRecheck), context.Background(), wait("orders", 10))
-	time.Sleep(300 * time.Millisecond)
+	s := signalScan(e.store)
+	res := goReceive(e.receiver(s, noRecheck), context.Background(), wait("orders", 10))
+	s.polled(t)
 	sent := e.send(t, "orders", "hello", nil)
 
 	r := <-res
@@ -112,8 +141,9 @@ func TestLongPollIgnoresOtherQueues(t *testing.T) {
 	e := newLongPollEnv(t)
 	e.create(t, "orders", nil)
 	e.create(t, "other", nil)
-	res := goReceive(e.receiver(nil, noRecheck), context.Background(), wait("orders", 1))
-	time.Sleep(200 * time.Millisecond)
+	s := signalScan(e.store)
+	res := goReceive(e.receiver(s, noRecheck), context.Background(), wait("orders", 1))
+	s.polled(t)
 	e.send(t, "other", "not yours", nil)
 
 	r := <-res
@@ -127,12 +157,12 @@ func TestLongPollEmptyTimesOut(t *testing.T) {
 	e := newLongPollEnv(t)
 	e.create(t, "orders", nil)
 	start := time.Now()
-	got, err := e.receiver(nil, 0).Receive(context.Background(), wait("orders", 2))
+	got, err := e.receiver(nil, 0).Receive(context.Background(), wait("orders", 1))
 	require.NoError(t, err)
 	assert.Empty(t, got)
 	took := time.Since(start)
-	assert.GreaterOrEqual(t, took, 2*time.Second)
-	assert.Less(t, took, 4*time.Second, "the wait is bounded")
+	assert.GreaterOrEqual(t, took, time.Second)
+	assert.Less(t, took, 3*time.Second, "the wait is bounded")
 	e.noConsumers(t)
 }
 
@@ -141,9 +171,11 @@ func TestLongPollCompetingReceivers(t *testing.T) {
 	t.Parallel()
 	e := newLongPollEnv(t)
 	e.create(t, "orders", nil)
-	a := goReceive(e.receiver(nil, noRecheck), context.Background(), wait("orders", 3))
-	b := goReceive(e.receiver(nil, noRecheck), context.Background(), wait("orders", 3))
-	time.Sleep(300 * time.Millisecond)
+	sa, sb := signalScan(e.store), signalScan(e.store)
+	a := goReceive(e.receiver(sa, noRecheck), context.Background(), wait("orders", 2))
+	b := goReceive(e.receiver(sb, noRecheck), context.Background(), wait("orders", 2))
+	sa.polled(t)
+	sb.polled(t)
 	sent := e.send(t, "orders", "one", nil)
 
 	ra, rb := <-a, <-b
@@ -161,8 +193,9 @@ func TestLongPollStopsOnCancel(t *testing.T) {
 	e := newLongPollEnv(t)
 	e.create(t, "orders", nil)
 	ctx, cancel := context.WithCancel(context.Background())
-	res := goReceive(e.receiver(nil, noRecheck), ctx, wait("orders", 20))
-	time.Sleep(300 * time.Millisecond)
+	s := signalScan(e.store)
+	res := goReceive(e.receiver(s, noRecheck), ctx, wait("orders", 20))
+	s.polled(t)
 	cancel()
 
 	r := <-res
@@ -209,8 +242,9 @@ func TestLongPollFeedFailureAfterOpen(t *testing.T) {
 	e := newLongPollEnv(t)
 	e.create(t, "orders", nil)
 	lose := make(chan struct{})
-	res := goReceive(e.receiver(lostFeed{Store: e.store, lose: lose}, noRecheck), context.Background(), wait("orders", 20))
-	time.Sleep(300 * time.Millisecond)
+	s := signalScan(lostFeed{Store: e.store, lose: lose})
+	res := goReceive(e.receiver(s, noRecheck), context.Background(), wait("orders", 20))
+	s.polled(t)
 	close(lose)
 
 	r := <-res
@@ -263,14 +297,18 @@ func TestLongPollHeldScan(t *testing.T) {
 	e := newLongPollEnv(t)
 	e.create(t, "orders", nil)
 
+	// The two waits are independent, so they run side by side.
 	after := &heldStore{Store: e.store, heldAfter: 1}
-	r := <-goReceive(e.receiver(after, 100*time.Millisecond), context.Background(), wait("orders", 1))
+	never := &heldStore{Store: e.store, heldAfter: 0}
+	afterRes := goReceive(e.receiver(after, 100*time.Millisecond), context.Background(), wait("orders", 1))
+	neverRes := goReceive(e.receiver(never, noRecheck), context.Background(), wait("orders", 1))
+
+	r := <-afterRes
 	require.NoError(t, r.err)
 	assert.Empty(t, r.got)
 	assert.Less(t, r.took, 2*time.Second, "bounded by the wait")
 
-	never := &heldStore{Store: e.store, heldAfter: 0}
-	r = <-goReceive(e.receiver(never, noRecheck), context.Background(), wait("orders", 1))
+	r = <-neverRes
 	require.ErrorIs(t, r.err, message.ErrUnavailable)
 	assert.Empty(t, r.got)
 	assert.Less(t, r.took, 2*time.Second, "bounded by the wait")

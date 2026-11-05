@@ -16,6 +16,8 @@ import (
 // is asserted on the stream config directly instead.
 func r1Harness(t *testing.T) conformance.Harness {
 	t.Helper()
+	// No two cases share a server, so they run in parallel.
+	t.Parallel()
 	dir := t.TempDir()
 	srv, js := startServer(t, dir)
 	s, err := sqsjs.New(context.Background(), js, testConfig)

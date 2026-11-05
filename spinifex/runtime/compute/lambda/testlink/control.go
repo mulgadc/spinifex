@@ -31,6 +31,18 @@ const (
 	DaemonUser  = "spinifex-daemon"
 )
 
+// joinAfterFunc arms f on ctx's cancellation and returns a stop that, unlike
+// context.AfterFunc's, waits for f when it has already started.
+func joinAfterFunc(ctx context.Context, f func()) func() {
+	done := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { defer close(done); f() })
+	return func() {
+		if !stop() {
+			<-done
+		}
+	}
+}
+
 // MaxCredentialBytes bounds the encoded credential; a session's three values
 // fit well inside it.
 const MaxCredentialBytes = 8 << 10
@@ -146,9 +158,9 @@ type ControlServer struct {
 // At most MaxAdmitted connections are held at once, each from accept to
 // close; others wait unaccepted in the kernel's listen backlog.
 func (s *ControlServer) Serve(ctx context.Context, ln *net.UnixListener) error {
-	stop := context.AfterFunc(ctx, func() { _ = ln.Close() })
-	defer stop()
-	// Serve may return before the AfterFunc runs, so it closes the listener too.
+	// Serve may return before the callback runs, so it closes the listener
+	// too, and joins a callback already started before returning.
+	defer joinAfterFunc(ctx, func() { _ = ln.Close() })()
 	defer func() { _ = ln.Close() }()
 	var wg sync.WaitGroup
 	defer wg.Wait()
@@ -171,9 +183,9 @@ func (s *ControlServer) Serve(ctx context.Context, ln *net.UnixListener) error {
 		go func() {
 			defer wg.Done()
 			defer func() { <-slots }()
-			// Closing on cancellation unblocks a read or write in progress.
-			closeOnCancel := context.AfterFunc(ctx, func() { _ = c.Close() })
-			defer closeOnCancel()
+			// Closing on cancellation unblocks a read or write in progress; the
+			// close is joined before the slot is released.
+			defer joinAfterFunc(ctx, func() { _ = c.Close() })()
 			s.serveConn(ctx, c)
 		}()
 	}

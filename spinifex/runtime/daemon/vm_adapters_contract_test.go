@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -208,30 +209,37 @@ func unpublishRefusal(code ebsprovider.ErrorCode, message string) ebsprovider.Un
 
 // spyOn records every request sent on subject without answering it, so a
 // request the mounter sends there is seen even when another subscriber
-// answers it.
+// answers it. A read sees every request published on nc before it.
 func spyOn(t *testing.T, nc *nats.Conn, subject string) func() []contractCall {
 	t.Helper()
 	var (
 		mu    sync.Mutex
 		calls []contractCall
 	)
-	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
-		var req ebsprovider.UnpublishVolumeRequest
-		_ = json.Unmarshal(msg.Data, &req)
-		mu.Lock()
-		calls = append(calls, contractCall{
-			subject: msg.Subject, version: req.SchemaVersion, volume: req.VolumeID,
-			noSeal: req.NoSeal, account: natsmsg.AccountIDFromMsg(msg),
-		})
-		mu.Unlock()
-	})
+	sub, err := nc.SubscribeSync(subject)
 	require.NoError(t, err)
 	require.NoError(t, nc.Flush())
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 	return func() []contractCall {
 		mu.Lock()
 		defer mu.Unlock()
-		return append([]contractCall(nil), calls...)
+		// The server sends this flush's PONG after every earlier request from
+		// nc, and the read loop queues each request on sub before reading on.
+		if !assert.NoError(t, nc.Flush()) {
+			return append([]contractCall(nil), calls...)
+		}
+		for {
+			msg, err := sub.NextMsg(0)
+			if errors.Is(err, nats.ErrTimeout) || !assert.NoError(t, err) {
+				return append([]contractCall(nil), calls...)
+			}
+			var req ebsprovider.UnpublishVolumeRequest
+			_ = json.Unmarshal(msg.Data, &req)
+			calls = append(calls, contractCall{
+				subject: msg.Subject, version: req.SchemaVersion, volume: req.VolumeID,
+				noSeal: req.NoSeal, account: natsmsg.AccountIDFromMsg(msg),
+			})
+		}
 	}
 }
 

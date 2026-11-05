@@ -12,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 )
 
@@ -124,27 +125,41 @@ func TestNewIMDS_BuildsProvider(t *testing.T) {
 	}
 }
 
+// imdsStub serves one instance-role credential over IMDSv2. It echoes the token
+// TTL header as real IMDS does, so the SDK client caches the token rather than
+// re-fetching it, through the retry backoff, on every later call.
+func imdsStub(t *testing.T, accessKey, expiration string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/latest/api/token":
+			w.Header().Set("X-Aws-Ec2-Metadata-Token-Ttl-Seconds", "21600")
+			_, _ = w.Write([]byte("token"))
+		case "/latest/meta-data/iam/security-credentials/":
+			_, _ = w.Write([]byte("sqsWorkerRole"))
+		case "/latest/meta-data/iam/security-credentials/sqsWorkerRole":
+			_, _ = w.Write([]byte(`{"Code":"Success","AccessKeyId":"` + accessKey + `","SecretAccessKey":"s","Token":"t","Expiration":"` + expiration + `"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// singleAttempt disables IMDS client retries so an unreachable endpoint fails
+// on the first attempt instead of after the SDK's 1s-per-retry backoff.
+func singleAttempt(o *imds.Options) { o.Retryer = aws.NopRetryer{} }
+
 // The instance-role signer ignores environment keys and signs only with the
 // credentials the metadata service issues.
 func TestNewInstanceRole_UsesOnlyIMDS(t *testing.T) {
 	t.Setenv("AWS_ACCESS_KEY_ID", testAccessKey)
 	t.Setenv("AWS_SECRET_ACCESS_KEY", testSecretKey)
 	const imdsKey = "ASIAIMDSONLYEXAMPLE1"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/latest/api/token":
-			_, _ = w.Write([]byte("token"))
-		case "/latest/meta-data/iam/security-credentials/":
-			_, _ = w.Write([]byte("sqsWorkerRole"))
-		case "/latest/meta-data/iam/security-credentials/sqsWorkerRole":
-			_, _ = w.Write([]byte(`{"Code":"Success","AccessKeyId":"` + imdsKey + `","SecretAccessKey":"s","Token":"t","Expiration":"2099-01-01T00:00:00Z"}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(srv.Close)
+	srv := imdsStub(t, imdsKey, "2099-01-01T00:00:00Z")
 
-	s := newInstanceRole(srv.URL)
+	s := newInstanceRole(srv.URL, singleAttempt)
 	req := httptest.NewRequest(http.MethodPost, "https://gw.example/", nil)
 	if err := s.Sign(req, emptySHA, testService, testRegion); err != nil {
 		t.Fatal(err)
@@ -154,7 +169,7 @@ func TestNewInstanceRole_UsesOnlyIMDS(t *testing.T) {
 	}
 
 	srv.Close()
-	cold := newInstanceRole(srv.URL)
+	cold := newInstanceRole(srv.URL, singleAttempt)
 	if err := cold.EnsureCredentials(context.Background()); err == nil {
 		t.Fatal("environment keys were used when IMDS was unreachable")
 	}
@@ -164,19 +179,8 @@ func TestNewInstanceRole_UsesOnlyIMDS(t *testing.T) {
 // IMDS must fail the sign rather than reuse the expired key with a new expiry.
 func TestNewInstanceRole_FailedRefreshErrorsInsteadOfStaleKey(t *testing.T) {
 	const staleKey = "ASIASTALEEXAMPLE0001"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/latest/api/token":
-			_, _ = w.Write([]byte("token"))
-		case "/latest/meta-data/iam/security-credentials/":
-			_, _ = w.Write([]byte("sqsWorkerRole"))
-		case "/latest/meta-data/iam/security-credentials/sqsWorkerRole":
-			_, _ = w.Write([]byte(`{"Code":"Success","AccessKeyId":"` + staleKey + `","SecretAccessKey":"s","Token":"t","Expiration":"2000-01-01T00:00:00Z"}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	s := newInstanceRole(srv.URL)
+	srv := imdsStub(t, staleKey, "2000-01-01T00:00:00Z")
+	s := newInstanceRole(srv.URL, singleAttempt)
 	if err := s.EnsureCredentials(t.Context()); err != nil {
 		t.Fatalf("first retrieve: %v", err)
 	}

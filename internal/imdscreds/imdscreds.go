@@ -36,10 +36,10 @@ func Fetch(client *http.Client, base string) (aws.Credentials, error) {
 }
 
 // NewProvider builds an ec2rolecreds provider against base, an IMDS root URL
-// such as http://169.254.169.254/latest. A nil client uses the SDK IMDS
-// client's default HTTP client.
-func NewProvider(client *http.Client, base string) aws.CredentialsProvider {
-	imdsClient := NewClient(client, base)
+// such as http://169.254.169.254/latest. client and optFns are passed to
+// NewClient.
+func NewProvider(client *http.Client, base string, optFns ...func(*imds.Options)) aws.CredentialsProvider {
+	imdsClient := NewClient(client, base, optFns...)
 	return noExtendOnFailure{provider: ec2rolecreds.New(func(o *ec2rolecreds.Options) {
 		o.Client = imdsClient
 	})}
@@ -71,16 +71,15 @@ func (p noExtendOnFailure) AdjustExpiresBy(creds aws.Credentials, dur time.Durat
 	return p.provider.AdjustExpiresBy(creds, dur)
 }
 
-// NewClient builds an SDK IMDS client against base, an IMDS root URL such as
-// http://169.254.169.254/latest. A trailing /latest is stripped since the
-// client appends its own; both forms of base keep working. A nil client uses
-// the SDK IMDS client's default HTTP client.
-func NewClient(client *http.Client, base string) *imds.Client {
+// NewClient builds an SDK IMDS client against base, an IMDS root URL with or
+// without a trailing /latest. A nil client uses the SDK's default HTTP client;
+// optFns adjust the options after the defaults here, as imds.New applies them.
+func NewClient(client *http.Client, base string, optFns ...func(*imds.Options)) *imds.Client {
 	opts := imds.Options{Endpoint: rootEndpoint(base)}
 	if client != nil {
 		opts.HTTPClient = client
 	}
-	return imds.New(opts)
+	return imds.New(opts, optFns...)
 }
 
 // rootEndpoint strips a trailing /latest from base so it can be used as the

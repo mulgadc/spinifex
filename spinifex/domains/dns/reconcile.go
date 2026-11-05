@@ -169,25 +169,24 @@ func (r *Reconciler) Run(ctx context.Context) {
 		// No revisit deadline: the desired set is a function of the buckets
 		// being watched, so a change is the only reason to run early.
 		Reconcile: func(ctx context.Context) (time.Duration, error) {
-			r.reconcileOnce(ctx)
-			return 0, nil
+			return r.reconcileOnce(ctx), nil
 		},
 		Resync: r.interval,
 	})
 }
 
 // reconcileOnce computes the converging batch and applies it, on whichever node
-// wins this cycle's election. The read that finds the stale records and the
+// wins this cycle's election, and returns the election's revisit when it lost. The read that finds the stale records and the
 // write that removes them now happen in one process, so a record re-added
 // between them is no longer deleted by a batch that predates it.
-func (r *Reconciler) reconcileOnce(ctx context.Context) {
+func (r *Reconciler) reconcileOnce(ctx context.Context) time.Duration {
 	if !r.enabled {
-		return
+		return 0
 	}
 	if r.lease != nil {
-		release, elected := reconcilelock.AcquireLeader(ctx, r.lease)
+		release, retry, elected := reconcilelock.ElectPass(ctx, r.lease)
 		if !elected {
-			return
+			return retry
 		}
 		defer release()
 	}
@@ -196,18 +195,19 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 		// A corrupt zone is handled in readZone; anything reaching here left the
 		// desired state unapplied, so surface it rather than burying it in WARN.
 		slog.Error("dns reconcile: compute batch failed, retrying next cycle", "error", err)
-		return
+		return 0
 	}
 	if len(batch) == 0 {
-		return
+		return 0
 	}
 	slog.Debug("dns reconcile: converging", "changes", len(batch))
 	res, err := r.writer.ApplyBatch(&ChangeBatch{Changes: batch})
 	if err != nil {
 		slog.Warn("dns reconcile: apply failed, retrying next cycle", "changes", len(batch), "error", err)
-		return
+		return 0
 	}
 	slog.Debug("dns reconcile: converged", "changes", res.Applied, "zones", res.Zones)
+	return 0
 }
 
 // computeBatchBounded runs computeBatch with a deadline, so a pass that never

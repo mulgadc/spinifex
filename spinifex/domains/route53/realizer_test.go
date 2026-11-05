@@ -279,13 +279,14 @@ func TestRealizerDoesNothingWhenNotElected(t *testing.T) {
 	svc := newService(t)
 	ns := newFakeNorthstar(1)
 	r := newRealizer(svc, ns)
-	r.Elect = func(context.Context) (func(), bool) { return nil, false }
+	r.Elect = func(context.Context) (func(), time.Duration, bool) { return nil, 61 * time.Second, false }
 	id := createZone(t, svc, acctA, "example.com")
 	setState(t, svc, acctA, id, route53.StateActive)
 
-	_, err := r.Reconcile(ctx)
+	revisit, err := r.Reconcile(ctx)
 	require.NoError(t, err)
 	assert.False(t, ns.has("example.com"))
+	assert.Equal(t, 61*time.Second, revisit, "a lost election's revisit is the pass's, so a dead leader is replaced")
 }
 
 func TestRealizerRendersEveryRecordType(t *testing.T) {

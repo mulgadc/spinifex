@@ -174,13 +174,13 @@ func TestRunDriftCycle_ReportsReconcileOutcome(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 
 	rec := &stubReconciler{outcomes: []error{incompleteErr()}}
-	err := runDriftCycle(t.Context(), rec, vpcdLease(js, "node-1"), js, "us-east-1a")
+	_, err := runDriftCycle(t.Context(), rec, vpcdLease(js, "node-1"), js, "us-east-1a")
 	if !errors.Is(err, ErrPassIncomplete) {
 		t.Fatalf("runDriftCycle = %v, want ErrPassIncomplete propagated from the pass", err)
 	}
 
 	converged := &stubReconciler{outcomes: []error{nil}}
-	if err := runDriftCycle(t.Context(), converged, vpcdLease(js, "node-1"), js, "us-east-1a"); err != nil {
+	if _, err := runDriftCycle(t.Context(), converged, vpcdLease(js, "node-1"), js, "us-east-1a"); err != nil {
 		t.Errorf("runDriftCycle = %v, want nil for a converged pass", err)
 	}
 }
@@ -196,8 +196,12 @@ func TestRunDriftCycle_SkipsWhenNotElected(t *testing.T) {
 	defer release()
 
 	rec := &stubReconciler{outcomes: []error{incompleteErr()}}
-	if err := runDriftCycle(t.Context(), rec, vpcdLease(js, "node-1"), js, "us-east-1a"); err != nil {
+	retry, err := runDriftCycle(t.Context(), rec, vpcdLease(js, "node-1"), js, "us-east-1a")
+	if err != nil {
 		t.Errorf("runDriftCycle = %v, want nil when not elected", err)
+	}
+	if retry <= LeaderTTL {
+		t.Errorf("revisit = %v, want past the %v TTL so a dead holder is taken over", retry, LeaderTTL)
 	}
 	if got := rec.callCount(); got != 0 {
 		t.Errorf("reconcile ran %d times without winning the election, want 0", got)

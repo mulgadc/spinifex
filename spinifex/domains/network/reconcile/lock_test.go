@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/nats-io/nats.go/jetstream"
@@ -102,4 +105,100 @@ func TestAcquireLeader_NotLeaderLogNamesTheHolder(t *testing.T) {
 	require.NotNil(t, line, "a losing acquire must log that it is skipping")
 	assert.Equal(t, "node-1", line["holder"])
 	assert.Equal(t, KeyVPCDReconcile, line["key"])
+}
+
+// coldStore answers every Load with ErrUnavailable until down reaches zero,
+// standing in for a JetStream still forming quorum.
+type coldStore struct {
+	kvsync.KVStore
+
+	down atomic.Int32
+}
+
+func (c *coldStore) Load(ctx context.Context, key string) ([]byte, uint64, error) {
+	if c.down.Add(-1) >= 0 {
+		return nil, 0, kvsync.ErrUnavailable
+	}
+	return c.KVStore.Load(ctx, key)
+}
+
+func shrinkStartRetry(t *testing.T, retryFor, step time.Duration) {
+	t.Helper()
+	prevFor, prevStep := startRetryFor, startRetryStep
+	startRetryFor, startRetryStep = retryFor, step
+	t.Cleanup(func() { startRetryFor, startRetryStep = prevFor, prevStep })
+}
+
+// A pass that loses to a peer asks to run again once that peer, if dead, could
+// be taken over: strictly after a full TTL, so the second sighting qualifies.
+func TestElectPass_AHeldLeaseAsksForATakeoverRevisit(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	release, ok := AcquireLeader(t.Context(), vpcdLease(js, "node-1"))
+	require.True(t, ok)
+	defer release()
+
+	_, revisit, ok := ElectPass(t.Context(), vpcdLease(js, "node-2"))
+	assert.False(t, ok)
+	assert.Greater(t, revisit, LeaderTTL)
+	assert.Less(t, revisit, 2*LeaderTTL, "the retry is one TTL out, not a resync")
+}
+
+func TestElectPass_AWonPassAsksForNoRevisit(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	release, revisit, ok := ElectPass(t.Context(), vpcdLease(js, "node-1"))
+	require.True(t, ok)
+	release()
+	assert.Zero(t, revisit)
+}
+
+// A cold multi-node start has no quorum yet, and the one startup election
+// must wait for it rather than skip the startup reconcile.
+func TestAcquireLeaderAtStart_WaitsOutAnUnavailableStore(t *testing.T) {
+	shrinkStartRetry(t, 10*time.Second, 5*time.Millisecond)
+	_, _, js := testutil.StartTestJetStream(t)
+	cold := &coldStore{KVStore: kvstore.OpenSyncBucket(js)}
+	cold.down.Store(3)
+
+	release, ok := AcquireLeaderAtStart(t.Context(), NewVPCDLease(cold, "node-1"))
+	require.True(t, ok, "the election must be won once the store answers")
+	release()
+}
+
+func TestAcquireLeaderAtStart_GivesUpWhenTheWaitRunsOut(t *testing.T) {
+	shrinkStartRetry(t, 50*time.Millisecond, 5*time.Millisecond)
+	_, _, js := testutil.StartTestJetStream(t)
+	cold := &coldStore{KVStore: kvstore.OpenSyncBucket(js)}
+	cold.down.Store(1 << 30)
+
+	start := time.Now()
+	_, ok := AcquireLeaderAtStart(t.Context(), NewVPCDLease(cold, "node-1"))
+	assert.False(t, ok)
+	assert.Less(t, time.Since(start), 5*time.Second)
+}
+
+// A held lease is an answer, not an outage, so it is not waited on.
+func TestAcquireLeaderAtStart_AHeldLeaseAnswersAtOnce(t *testing.T) {
+	shrinkStartRetry(t, time.Minute, time.Second)
+	_, _, js := testutil.StartTestJetStream(t)
+	release, ok := AcquireLeader(t.Context(), vpcdLease(js, "node-1"))
+	require.True(t, ok)
+	defer release()
+
+	start := time.Now()
+	_, ok = AcquireLeaderAtStart(t.Context(), vpcdLease(js, "node-2"))
+	assert.False(t, ok)
+	assert.Less(t, time.Since(start), 5*time.Second, "a held lease must not consume the retry window")
+}
+
+// An undeclared cluster size never becomes declared by waiting, so it ends the
+// wait at once instead of holding the startup reconcile for the whole window.
+func TestAcquireLeaderAtStart_StopsOnAConfigFault(t *testing.T) {
+	shrinkStartRetry(t, time.Minute, time.Second)
+	_, _, js := testutil.StartTestJetStream(t)
+	clustersize.RedeclareForTest(t, 0)
+
+	start := time.Now()
+	_, ok := AcquireLeaderAtStart(t.Context(), vpcdLease(js, "node-1"))
+	assert.False(t, ok)
+	assert.Less(t, time.Since(start), 10*time.Second, "a permanent fault must not consume the retry window")
 }

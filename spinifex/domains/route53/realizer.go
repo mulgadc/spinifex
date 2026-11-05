@@ -39,8 +39,9 @@ type Realizer struct {
 	store *Store
 	pub   Publisher
 
-	// Elect wins this pass for the calling node; nil means always.
-	Elect func(ctx context.Context) (release func(), ok bool)
+	// Elect wins this pass for the calling node; nil means always. A lost
+	// election's revisit is the pass's own.
+	Elect func(ctx context.Context) (release func(), revisit time.Duration, ok bool)
 	// Reserved reports platform zone names, which are never written or deleted.
 	Reserved func(name string) bool
 	// Now is the clock; tests replace it.
@@ -75,9 +76,9 @@ func (r *Realizer) Run(ctx context.Context) {
 // a prompt revisit, since nothing in KV changes when it does.
 func (r *Realizer) Reconcile(ctx context.Context) (time.Duration, error) {
 	if r.Elect != nil {
-		release, ok := r.Elect(ctx)
+		release, revisit, ok := r.Elect(ctx)
 		if !ok {
-			return 0, nil
+			return revisit, nil
 		}
 		defer release()
 	}

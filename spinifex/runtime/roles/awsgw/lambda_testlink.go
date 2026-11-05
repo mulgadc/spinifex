@@ -28,8 +28,8 @@ func lambdaTestExecutor(nc *nats.Conn, node string, codes *codestore.Manager, se
 		slog.Error("Lambda test link: runtime image pin missing or malformed; every Invoke is refused")
 	}
 	return &testLinkExecutor{
-		Control:      testLinkControl(daemonUID, nc.MaxPayload()),
-		RequestLimit: nc.MaxPayload(),
+		Control:      testLinkControl(daemonUID),
+		RequestLimit: testlink.MaxFrameBytes,
 		Sessions:     sessions,
 		Node:         node,
 		ImageDigest:  lambdaImageDigest,
@@ -51,12 +51,12 @@ func lambdaTestExecutor(nc *nats.Conn, node string, codes *codestore.Manager, se
 }
 
 // testLinkControl is the gateway's client for this node's daemon socket.
-func testLinkControl(daemonUID int, limit int64) *testlink.ControlClient {
+func testLinkControl(daemonUID int) *testlink.ControlClient {
 	return &testlink.ControlClient{
 		Name:         testlink.ControlName,
 		DaemonUID:    daemonUID,
-		RequestLimit: limit,
-		ReplyLimit:   limit,
+		RequestLimit: testlink.MaxFrameBytes,
+		ReplyLimit:   testlink.MaxFrameBytes,
 		IOTimeout:    controlWriteTimeout,
 	}
 }

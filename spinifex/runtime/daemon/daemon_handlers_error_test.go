@@ -49,6 +49,7 @@ func requestErrorEnvelope(t *testing.T, subject string, fn func(context.Context,
 // caller wrapped in for its own logs onto the wire, which is the disclosure
 // risk this contract exists to prevent.
 func TestHandleNATSRequest_UncodedErrorOmitsMessage(t *testing.T) {
+	t.Parallel()
 	const reason = "acm renewal: arn:aws:acm:ap-southeast-2:000000000001:certificate/abc is a AMAZON_ISSUED certificate; only PRIVATE_CA certificates can be force-renewed"
 
 	errResp := requestErrorEnvelope(t, "test.err.msg.uncoded", func(context.Context, *testInput, string) (*testOutput, error) {
@@ -64,6 +65,7 @@ func TestHandleNATSRequest_UncodedErrorOmitsMessage(t *testing.T) {
 // instead of a bare "ServerInternal", without relying on the rejected
 // err.Error() fallback.
 func TestHandleNATSRequest_ErrorfMessageOnUnregisteredCodeCarriesMessage(t *testing.T) {
+	t.Parallel()
 	const reason = "acm renewal: arn:aws:acm:ap-southeast-2:000000000001:certificate/abc is a AMAZON_ISSUED certificate; only PRIVATE_CA certificates can be force-renewed"
 
 	errResp := requestErrorEnvelope(t, "test.err.msg.uncoded.errorf", func(context.Context, *testInput, string) (*testOutput, error) {
@@ -80,6 +82,7 @@ func TestHandleNATSRequest_ErrorfMessageOnUnregisteredCodeCarriesMessage(t *test
 // wrapping context onto the wire — that context is internal detail, not a
 // message the producing call site attached via awserrors.Errorf.
 func TestHandleNATSRequest_WrappedCodedErrorOmitsWrapperContext(t *testing.T) {
+	t.Parallel()
 	errResp := requestErrorEnvelope(t, "test.err.msg.wrapped", func(context.Context, *testInput, string) (*testOutput, error) {
 		return nil, fmt.Errorf("vol-123 is attached to i-456: %w", errors.New(awserrors.ErrorVolumeInUse))
 	})
@@ -91,6 +94,7 @@ func TestHandleNATSRequest_WrappedCodedErrorOmitsWrapperContext(t *testing.T) {
 // A wrapped Errorf-built error keeps its curated message across the wire, but
 // drops an outer wrapper added purely for the handler's own log line.
 func TestHandleNATSRequest_WrappedErrorfCarriesMessageNotWrapperContext(t *testing.T) {
+	t.Parallel()
 	const curated = "vol-123 is attached to i-456"
 	errResp := requestErrorEnvelope(t, "test.err.msg.wrapped.errorf", func(context.Context, *testInput, string) (*testOutput, error) {
 		cause := awserrors.Errorf(awserrors.ErrorVolumeInUse, "%s", curated)
@@ -104,6 +108,7 @@ func TestHandleNATSRequest_WrappedErrorfCarriesMessageNotWrapperContext(t *testi
 // A bare code carries no message. Handlers returning errors.New(awserrors.X) are
 // the common case, and echoing the code back as its own message is noise.
 func TestHandleNATSRequest_BareCodeOmitsMessage(t *testing.T) {
+	t.Parallel()
 	errResp := requestErrorEnvelope(t, "test.err.msg.bare", func(context.Context, *testInput, string) (*testOutput, error) {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	})

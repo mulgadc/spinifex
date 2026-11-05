@@ -52,6 +52,8 @@ func newTestSessionCredential(akid string) *SessionCredential {
 }
 
 func TestInitSessionCredentialsBucket_StampsVersion(t *testing.T) {
+	t.Parallel()
+
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
@@ -66,6 +68,8 @@ func TestInitSessionCredentialsBucket_StampsVersion(t *testing.T) {
 }
 
 func TestInitSessionCredentialsBucket_Idempotent(t *testing.T) {
+	t.Parallel()
+
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 
@@ -79,6 +83,8 @@ func TestInitSessionCredentialsBucket_Idempotent(t *testing.T) {
 }
 
 func TestPutSessionCredential_RoundTrip(t *testing.T) {
+	t.Parallel()
+
 	bucket := setupBucket(t)
 	cred := newTestSessionCredential("ASIAEXAMPLEAAAAAAAAA")
 
@@ -134,12 +140,16 @@ func TestPutSessionCredential_RejectsNonASIAPrefix(t *testing.T) {
 }
 
 func TestPutSessionCredential_NilCredential(t *testing.T) {
+	t.Parallel()
+
 	bucket := setupBucket(t)
 	err := putSessionCredential(t.Context(), bucket, nil)
 	require.Error(t, err)
 }
 
 func TestPutSessionCredential_CollisionReturnsKeyExists(t *testing.T) {
+	t.Parallel()
+
 	bucket := setupBucket(t)
 	cred := newTestSessionCredential("ASIACOLLISIONAAAAAAA")
 
@@ -153,6 +163,8 @@ func TestPutSessionCredential_CollisionReturnsKeyExists(t *testing.T) {
 }
 
 func TestVerifySessionToken_MatchAndMismatch(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 
 	const wireToken = "the-original-wire-token"
@@ -172,6 +184,8 @@ func TestVerifySessionToken_MatchAndMismatch(t *testing.T) {
 }
 
 func TestVerifySessionToken_CorruptStoredHMACRejects(t *testing.T) {
+	t.Parallel()
+
 	// A SessionTokenHMAC field that fails base64 decode is data corruption.
 	// VerifySessionToken must reject rather than fall through with a zero
 	// expected slice and accidentally match an empty HMAC.
@@ -193,6 +207,8 @@ func putCredWithExpiry(t *testing.T, svc *STSServiceImpl, akid string, expiresAt
 }
 
 func TestSweepExpired_DeletesPastGraceOnly(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	// The fixture's role must exist, or the sweep reaps its unexpired records as orphans.
 	role := createRoleInAccount(t, svc, awsidentifiers.GlobalAccountID, "app-role", trustPolicyAllowingWildcard())
@@ -225,11 +241,15 @@ func TestSweepExpired_DeletesPastGraceOnly(t *testing.T) {
 }
 
 func TestSweepExpired_EmptyBucketIsNoop(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	assert.Equal(t, 0, svc.sweep(t.Context(), time.Now().UTC()))
 }
 
 func TestSweepExpired_SkipsCorruptRecord(t *testing.T) {
+	t.Parallel()
+
 	// A single unmarshalable record must not stall the sweep — neighbouring
 	// expired records still need to be cleaned up. Asserts the per-key error
 	// path in sweep is log-and-continue, not abort.
@@ -252,6 +272,8 @@ func TestSweepExpired_SkipsCorruptRecord(t *testing.T) {
 }
 
 func TestSweepExpired_IgnoresVersionKey(t *testing.T) {
+	t.Parallel()
+
 	// The bucket version stamp shares the key namespace; the janitor's
 	// iterator must skip it (it's not a SessionCredential and unmarshal
 	// would fail every sweep).
@@ -263,6 +285,8 @@ func TestSweepExpired_IgnoresVersionKey(t *testing.T) {
 }
 
 func TestRunJanitor_StopsOnContextCancel(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -319,6 +343,8 @@ func assertSessionsKept(t *testing.T, svc *STSServiceImpl, akids ...string) {
 // else: a role session the user assumed belongs to the role, as on AWS, and a
 // role session that merely shares the user's name is not the user's.
 func TestDeleteUser_RevokesOnlyTheUsersSessions(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	wireRevoker(t, svc)
 	seedUser(t, svc, testCallerAccountID, testCallerUserName)
@@ -345,6 +371,8 @@ func TestDeleteUser_RevokesOnlyTheUsersSessions(t *testing.T) {
 }
 
 func TestDeleteRole_RevokesOnlyTheRolesSessions(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	wireRevoker(t, svc)
 	seedUser(t, svc, testCallerAccountID, testCallerUserName)
@@ -372,6 +400,8 @@ func TestDeleteRole_RevokesOnlyTheRolesSessions(t *testing.T) {
 // a failed revocation or a mint racing the delete produces. The sweep must reap
 // them well before they expire, and leave a live principal's sessions alone.
 func TestSweep_ReapsSessionsOfDeletedPrincipals(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	seedUser(t, svc, testCallerAccountID, testCallerUserName)
 	seedUser(t, svc, testCallerAccountID, "bob")
@@ -393,6 +423,8 @@ func TestSweep_ReapsSessionsOfDeletedPrincipals(t *testing.T) {
 // An IAM outage is not evidence the principal is gone; reaping on it would
 // revoke every live session in the cluster.
 func TestSweep_KeepsSessionsWhenVerificationFaults(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	akid := putSession(t, svc, &SessionCredential{
 		AccessKeyID: "ASIAFAULTUSER0000001", AccountID: testCallerAccountID,

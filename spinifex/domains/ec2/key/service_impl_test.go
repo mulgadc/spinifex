@@ -2,6 +2,7 @@ package key
 
 import (
 	"context"
+	"crypto/rsa"
 	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/x509"
@@ -100,9 +101,12 @@ const (
 	testRSAPrivKeyImportedFingerprint = "66:81:50:28:0a:74:9e:48:9f:d8:79:da:27:86:22:79"
 )
 
+// newTestKeyService generates RSA keys at 1024 bits, the smallest crypto/rsa
+// accepts, since only TestCreateKeyPair_RSA checks the production size.
 func newTestKeyService() (*KeyServiceImpl, *objectstore.MemoryObjectStore) {
 	store := objectstore.NewMemoryObjectStore()
 	svc := NewKeyServiceImplWithStore(store, testBucket)
+	svc.rsaKeyBits = 1024
 	return svc, store
 }
 
@@ -183,7 +187,7 @@ func TestCreateKeyPair_ED25519(t *testing.T) {
 }
 
 func TestCreateKeyPair_RSA(t *testing.T) {
-	svc, _ := newTestKeyService()
+	svc := NewKeyServiceImplWithStore(objectstore.NewMemoryObjectStore(), testBucket)
 
 	out, err := svc.CreateKeyPair(context.Background(), &ec2.CreateKeyPairInput{
 		KeyName: aws.String("my-rsa-key"),
@@ -207,6 +211,11 @@ func TestCreateKeyPair_RSA(t *testing.T) {
 	der, err := x509.MarshalPKCS8PrivateKey(rawKey)
 	require.NoError(t, err)
 	sum := sha1.Sum(der)
+
+	// AWS generates 2048-bit RSA key pairs.
+	rsaKey, ok := rawKey.(*rsa.PrivateKey)
+	require.True(t, ok, "RSA key material parsed as %T", rawKey)
+	assert.Equal(t, 2048, rsaKey.N.BitLen())
 
 	assert.Equal(t, colonHex(sum[:]), *out.KeyFingerprint)
 	// 20 hex pairs -- a SHA-1, not the 16-pair MD5 this used to return.

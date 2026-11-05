@@ -99,6 +99,7 @@ func storageConfigResponse(t *testing.T, cfg string, reply string) []byte {
 // storage report from: every node at its host address and own port, meta and
 // blob apart, no gate, and no admin address since a multi-host cluster has QUIC.
 func TestHandleStorageConfig_SplitsNodesByRole(t *testing.T) {
+	t.Parallel()
 	payload := storageConfigResponse(t, clusterTOML, "test.storage.config.ok")
 
 	var resp operatorv1.StorageConfigResponse
@@ -163,6 +164,7 @@ func TestHandleStorageConfig_SingleHostNamesTheAdminListener(t *testing.T) {
 // predastore config: the report is an error rather than an empty topology,
 // which would read as a cluster with no storage at all.
 func TestHandleStorageConfig_ReportsAMissingConfig(t *testing.T) {
+	t.Parallel()
 	payload := storageConfigResponse(t, "", "test.storage.config.absent")
 
 	assert.Contains(t, string(payload), "InternalError")
@@ -172,6 +174,7 @@ func TestHandleStorageConfig_ReportsAMissingConfig(t *testing.T) {
 // as neither the current schema nor anything else: the same error, rather than
 // a half-read topology.
 func TestHandleStorageConfig_ReportsAMalformedConfig(t *testing.T) {
+	t.Parallel()
 	payload := storageConfigResponse(t, "not = [toml", "test.storage.config.malformed")
 
 	assert.Contains(t, string(payload), "InternalError")
@@ -182,6 +185,7 @@ func TestHandleStorageConfig_ReportsAMalformedConfig(t *testing.T) {
 // matches yields an empty topology rather than an error. This pins the parse
 // to the [[host]]/[[host.node]] dialect the templates actually emit.
 func TestPredastoreTOML_ParsesClusterTopology(t *testing.T) {
+	t.Parallel()
 	var cfg predastoreTOML
 	require.NoError(t, toml.Unmarshal([]byte(clusterTOML), &cfg))
 

@@ -19,6 +19,7 @@ import (
 // Another account's ID and a well-formed ID naming nothing both succeed and are
 // stored under the caller's account; an unrecognised prefix is InvalidID.
 func TestCurrentBehaviour_Tagging_EC2CreateTagsStoresUnresolvedIDsInCallerNamespace(t *testing.T) {
+	t.Parallel()
 	const caller = "999999999999"
 	d := tagTestDaemon(t, "i-tag-cb-unrelated", nil)
 

@@ -52,6 +52,7 @@ func TestENIHotplugErrorCode(t *testing.T) {
 // --- publishENIHotplugEvent ---
 
 func TestPublishENIHotplugEvent_Publishes(t *testing.T) {
+	t.Parallel()
 	d := createVPCTestDaemon(t)
 
 	got := make(chan *nats.Msg, 1)

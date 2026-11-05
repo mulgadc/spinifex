@@ -28,12 +28,12 @@ func TestErrorLookup_Structure(t *testing.T) {
 	// Spot-check business-critical codes that the AWS SDK surfaces by name.
 	critical := map[string]int{
 		ErrorAuthFailure:                  403,
-		ErrorInvalidInstanceIDNotFound:    404,
+		ErrorInvalidInstanceIDNotFound:    400,
 		ErrorInvalidAMIIDNotFound:         400,
-		ErrorInvalidKeyPairNotFound:       404,
-		ErrorInvalidVpcIDNotFound:         404,
-		ErrorInvalidGroupNotFound:         404,
-		ErrorInvalidSubnetIDNotFound:      404,
+		ErrorInvalidKeyPairNotFound:       400,
+		ErrorInvalidVpcIDNotFound:         400,
+		ErrorInvalidGroupNotFound:         400,
+		ErrorInvalidSubnetIDNotFound:      400,
 		ErrorServerInternal:               500,
 		ErrorInsufficientInstanceCapacity: 503,
 		ErrorUnauthorizedOperation:        403,
@@ -289,5 +289,57 @@ func TestIsNotFound(t *testing.T) {
 				t.Errorf("IsNotFound(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
+	}
+}
+
+// capturedNotFound400 are the EC2 not-found codes a real AWS account answered
+// with HTTP 400 in the read-only captures of 2026-11-04. Codes outside this list
+// are deliberately not asserted.
+var capturedNotFound400 = []string{
+	// First capture, 2026-11-04.
+	ErrorNatGatewayNotFound,
+	ErrorInvalidNatGatewayIDNotFound,
+	ErrorInvalidInstanceIDNotFound,
+	ErrorInvalidVpcIDNotFound,
+	// Second capture, 2026-11-04.
+	ErrorInvalidSubnetIDNotFound,
+	ErrorInvalidGroupNotFound,
+	ErrorInvalidInternetGatewayIDNotFound,
+	ErrorInvalidRouteTableIDNotFound,
+	ErrorInvalidNetworkInterfaceIDNotFound,
+	ErrorInvalidVolumeNotFound,
+	ErrorInvalidSnapshotNotFound,
+	ErrorInvalidKeyPairNotFound,
+	ErrorInvalidAllocationIDNotFound,
+	ErrorInvalidAssociationIDNotFound,
+	ErrorInvalidLaunchTemplateIdNotFound,
+	ErrorInvalidLaunchTemplateNameNotFoundException,
+	ErrorInvalidNetworkAclIDNotFound,
+	ErrorInvalidDhcpOptionIDNotFound,
+	ErrorInvalidPrefixListIDNotFound,
+	ErrorInvalidVpcEndpointIdNotFound,
+	ErrorInvalidVpcPeeringConnectionIDNotFound,
+	ErrorInvalidAMIIDNotFound,
+	ErrorInvalidCapacityReservationIdNotFound,
+	ErrorInvalidSecurityGroupRuleIdNotFound,
+	ErrorInvalidFlowLogIdNotFound,
+}
+
+func TestCapturedNotFoundCodesAre400(t *testing.T) {
+	if len(capturedNotFound400) != 25 {
+		t.Fatalf("captured set has %d codes, want 25", len(capturedNotFound400))
+	}
+	for _, code := range capturedNotFound400 {
+		entry, ok := ErrorLookup[code]
+		if !ok {
+			t.Errorf("%s has no ErrorLookup entry", code)
+			continue
+		}
+		if entry.HTTPCode != 400 {
+			t.Errorf("%s: ErrorLookup status %d, want 400", code, entry.HTTPCode)
+		}
+		if got := HTTPStatusForError(errors.New(code)); got != 400 {
+			t.Errorf("%s: HTTPStatusForError %d, want 400", code, got)
+		}
 	}
 }

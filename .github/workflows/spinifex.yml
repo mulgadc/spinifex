@@ -105,6 +105,13 @@ jobs:
           key: gobuild-${{ github.job }}-${{ github.run_id }}
           restore-keys: gobuild-${{ github.job }}-
 
+      # Go refreshes an entry's mtime on use only when it is over an hour old, so
+      # restored entries are backdated past that before any Go command runs and
+      # the trim below can tell this run's working set from the last run's.
+      - name: Mark Go build cache
+        if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+        run: spinifex/.github/scripts/go-build-cache.sh mark
+
       - name: Setup Go Workspace
         run: go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle
 
@@ -137,19 +144,12 @@ jobs:
       - name: Check Diff Coverage
         run: cd spinifex && scripts/diff-coverage.sh coverage.out --base HEAD~1
 
-      # Compiled output stays valid whatever the tests said, and skipping the
-      # save on a red run would leave the next one rebuilding it, so this is
-      # gated on the branch rather than on success.
-      # Go bumps an entry's mtime when a run uses it, so this run's working set
-      # survives and objects superseded by later commits do not. Runs after the
-      # work, so it costs this job nothing and only shrinks what the next reads.
+      # Keeps what this run read or wrote and drops the rest, so the saved entry
+      # is one run's working set however often dev is pushed. A red run may have
+      # stopped early and used only part of the set, so it saves untrimmed.
       - name: Trim Go build cache
-        if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
-        run: |
-          C="$(go env GOCACHE)"
-          before=$(du -sm "$C" | cut -f1)
-          find "$C" -type f -mmin +240 -delete
-          echo "trimmed ${before}MB -> $(du -sm "$C" | cut -f1)MB"
+        if: ${{ success() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+        run: spinifex/.github/scripts/go-build-cache.sh trim
 
       - name: Save Go build cache
         if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
@@ -160,6 +160,7 @@ jobs:
 
   race_detection:
     name: Race Detection
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-26.04
 
     steps:
@@ -235,22 +236,25 @@ jobs:
           key: gobuild-${{ github.job }}-${{ github.run_id }}
           restore-keys: gobuild-${{ github.job }}-
 
+      # Go refreshes an entry's mtime on use only when it is over an hour old, so
+      # restored entries are backdated past that before any Go command runs and
+      # the trim below can tell this run's working set from the last run's.
+      - name: Mark Go build cache
+        if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+        run: spinifex/.github/scripts/go-build-cache.sh mark
+
       - name: Setup Go Workspace
         run: go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle
 
       - name: Run Tests with Race Detector
         run: make -C spinifex test-race GOTESTFLAGS=-count=1
 
-      # Go bumps an entry's mtime when a run uses it, so this run's working set
-      # survives and objects superseded by later commits do not. Runs after the
-      # work, so it costs this job nothing and only shrinks what the next reads.
+      # Keeps what this run read or wrote and drops the rest, so the saved entry
+      # is one run's working set however often dev is pushed. A red run may have
+      # stopped early and used only part of the set, so it saves untrimmed.
       - name: Trim Go build cache
-        if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
-        run: |
-          C="$(go env GOCACHE)"
-          before=$(du -sm "$C" | cut -f1)
-          find "$C" -type f -mmin +240 -delete
-          echo "trimmed ${before}MB -> $(du -sm "$C" | cut -f1)MB"
+        if: ${{ success() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+        run: spinifex/.github/scripts/go-build-cache.sh trim
 
       - name: Save Go build cache
         if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
@@ -337,6 +341,13 @@ jobs:
           key: gobuild-${{ github.job }}-${{ github.run_id }}
           restore-keys: gobuild-${{ github.job }}-
 
+      # Go refreshes an entry's mtime on use only when it is over an hour old, so
+      # restored entries are backdated past that before any Go command runs and
+      # the trim below can tell this run's working set from the last run's.
+      - name: Mark Go build cache
+        if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+        run: spinifex/.github/scripts/go-build-cache.sh mark
+
       - name: Setup Go Workspace
         run: go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle
 
@@ -353,16 +364,16 @@ jobs:
         if: ${{ !cancelled() }}
         run: make -C spinifex test-integration
 
-      # Go bumps an entry's mtime when a run uses it, so this run's working set
-      # survives and objects superseded by later commits do not. Runs after the
-      # work, so it costs this job nothing and only shrinks what the next reads.
+      - name: Run Gated Suites
+        if: ${{ !cancelled() }}
+        run: make -C spinifex test-gated GOTESTFLAGS=-count=1
+
+      # Keeps what this run read or wrote and drops the rest, so the saved entry
+      # is one run's working set however often dev is pushed. A red run may have
+      # stopped early and used only part of the set, so it saves untrimmed.
       - name: Trim Go build cache
-        if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
-        run: |
-          C="$(go env GOCACHE)"
-          before=$(du -sm "$C" | cut -f1)
-          find "$C" -type f -mmin +240 -delete
-          echo "trimmed ${before}MB -> $(du -sm "$C" | cut -f1)MB"
+        if: ${{ success() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+        run: spinifex/.github/scripts/go-build-cache.sh trim
 
       - name: Save Go build cache
         if: ${{ !cancelled() && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}

@@ -66,6 +66,67 @@ E2E_SUITES_MULTI="multinode lb cert quota route53 kvquorum lbrecovery instancere
 E2E_SUITES_SINGLE_RE="$(printf '%s' "${E2E_SUITES_SINGLE}" | tr ' ' '|')"
 E2E_SUITES_MULTI_RE="$(printf '%s' "${E2E_SUITES_MULTI}" | tr ' ' '|')"
 
+# The push gate always runs this set. A push adds to it the suites whose code
+# it changed, by E2E_PATH_SUITES below; a dispatch names its own set instead.
+E2E_SUITES_PUSH_BASE="single multinode cert iam partialblock"
+
+# "suite prefix" pairs: a push changing a path under prefix adds suite. The
+# recovery and fault suites stay nightly, and shared code adds nothing because
+# the base set covers it. Image directories carry each guest's own scripts.
+E2E_PATH_SUITES="
+rds cmd/rds-agent/
+rds internal/rdsgw/
+rds spinifex/agents/rds/
+rds spinifex/domains/rds/
+rds tests/e2e/rds/
+rds scripts/images/rds-mariadb/
+rds scripts/images/rds-postgres/
+ecs cmd/ecs-agent/
+ecs contracts/ecs/
+ecs internal/ecsgw/
+ecs spinifex/agents/ecs/
+ecs spinifex/domains/ecs/
+ecs tests/e2e/ecs/
+ecs scripts/images/ecs-agent/
+eks cmd/eks-
+eks contracts/eks/
+eks internal/eksgw/
+eks spinifex/agents/eks/
+eks spinifex/domains/eks/
+eks tests/e2e/eks/
+eks scripts/images/eks-node/
+rds scripts/images/common/
+ecs scripts/images/common/
+eks scripts/images/common/
+rds scripts/build-system-image.sh
+ecs scripts/build-system-image.sh
+eks scripts/build-system-image.sh
+route53 spinifex/domains/route53/
+route53 tests/e2e/route53/
+lb cmd/lb-agent/
+lb spinifex/agents/elbv2/
+lb spinifex/domains/elbv2/
+lb tests/e2e/lb/
+"
+
+# Every suite E2E_PATH_SUITES can name, once each, in table order.
+#   e2e_path_suites_all
+e2e_path_suites_all() {
+  printf '%s\n' "${E2E_PATH_SUITES}" | awk 'NF == 2 && !seen[$1]++ { print $1 }'
+}
+
+# The suites a change to <path> triggers, one per line.
+#   e2e_suites_for_path <path>
+e2e_suites_for_path() {
+  local path="$1" suite prefix
+  while read -r suite prefix; do
+    [ -n "${prefix}" ] || continue
+    case "${path}" in
+      "${prefix}"*) printf '%s\n' "${suite}" ;;
+    esac
+  done <<<"${E2E_PATH_SUITES}"
+}
+
 # What every e2e-nightly permutation cell must prove, deliberately narrower
 # than the two sets above: those cells have a 35-minute budget and exist to show
 # that every install / network / host-OS combination boots and serves. The

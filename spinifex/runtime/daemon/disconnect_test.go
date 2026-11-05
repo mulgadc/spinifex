@@ -26,6 +26,7 @@ var testReconnectWait = natsmsg.WithReconnectWait(50 * time.Millisecond)
 
 // TestDaemonModeDefaultStandalone — Mode() returns standalone before Start().
 func TestDaemonModeDefaultStandalone(t *testing.T) {
+	t.Parallel()
 	clusterCfg := &config.ClusterConfig{
 		Node:  "node-1",
 		Nodes: map[string]config.Config{"node-1": {}},
@@ -100,7 +101,7 @@ func startTestNATSOnPortForTest(t *testing.T, port int) *server.Server {
 	opts := &server.Options{Host: "127.0.0.1", Port: port, NoLog: true, NoSigs: true}
 	ns, err := server.NewServer(opts)
 	require.NoError(t, err)
-	go ns.Start()
+	ns.Start()
 	require.True(t, ns.ReadyForConnections(5*time.Second))
 	t.Cleanup(func() { ns.Shutdown() })
 	return ns
@@ -109,6 +110,7 @@ func startTestNATSOnPortForTest(t *testing.T, port int) *server.Server {
 // TestMode_DefaultStandalone — both signals false ⇒ standalone (zero-value
 // guard for callers reading Mode() before any initialisation).
 func TestMode_DefaultStandalone(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{}
 	assert.Equal(t, DaemonModeStandalone, d.Mode())
 }
@@ -116,6 +118,7 @@ func TestMode_DefaultStandalone(t *testing.T) {
 // TestMode_RequiresBothSignals — Mode() reports cluster only when both NATS
 // is connected and peers are reachable.
 func TestMode_RequiresBothSignals(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{}
 
 	d.natsConnected.Store(true)
@@ -134,6 +137,7 @@ func TestMode_RequiresBothSignals(t *testing.T) {
 // TestOnNATSDisconnect_FlipsMode — direct unit test of the disconnect callback
 // without needing an actual NATS disconnect roundtrip.
 func TestOnNATSDisconnect_FlipsMode(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{}
 	d.natsConnected.Store(true)
 	d.peersReachable.Store(true)
@@ -149,6 +153,7 @@ func TestOnNATSDisconnect_FlipsMode(t *testing.T) {
 // goroutine WriteState. peersReachable is forced true so the derived mode
 // flips back to cluster.
 func TestOnNATSReconnect_NoJetStreamManager_DoesNotPanic(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{}
 	d.peersReachable.Store(true)
 
@@ -161,12 +166,14 @@ func TestOnNATSReconnect_NoJetStreamManager_DoesNotPanic(t *testing.T) {
 // TestLocalStatePath_NilConfig_UsesDefault — defensive path used by callers
 // that build a Daemon without populating Config (older test fixtures, etc).
 func TestLocalStatePath_NilConfig_UsesDefault(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{}
 	assert.Equal(t, "/var/lib/spinifex/state/instance-state.json", d.localStatePath())
 }
 
 // TestLocalStatePath_RootedAtDataDir — verifies 1a's DataDir-rooted layout.
 func TestLocalStatePath_RootedAtDataDir(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{config: &config.Config{DataDir: "/var/lib/spinifex/n1"}}
 	assert.Equal(t, "/var/lib/spinifex/n1/state/instance-state.json", d.localStatePath())
 }
@@ -175,6 +182,7 @@ func TestLocalStatePath_RootedAtDataDir(t *testing.T) {
 // even with a nil jsManager (best-effort KV is the second half; local file
 // must succeed standalone).
 func TestDaemonWriteState_LocalFile(t *testing.T) {
+	t.Parallel()
 	dataDir := t.TempDir()
 	d := &Daemon{
 		config: &config.Config{DataDir: dataDir},
@@ -192,6 +200,7 @@ func TestDaemonWriteState_LocalFile(t *testing.T) {
 
 // TestDaemonLoadState_MissingFile — fresh-install path: empty map, no error.
 func TestDaemonLoadState_MissingFile(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{
 		config: &config.Config{DataDir: t.TempDir()},
 		vmMgr:  vm.NewManager(),
@@ -203,6 +212,7 @@ func TestDaemonLoadState_MissingFile(t *testing.T) {
 // TestDaemonLoadState_RoundTrip — write, then read back into a fresh daemon
 // rooted at the same DataDir.
 func TestDaemonLoadState_RoundTrip(t *testing.T) {
+	t.Parallel()
 	dataDir := t.TempDir()
 	writer := &Daemon{
 		config: &config.Config{DataDir: dataDir},
@@ -224,6 +234,7 @@ func TestDaemonLoadState_RoundTrip(t *testing.T) {
 
 // TestDaemonLoadState_CorruptFile — corruption is fatal, daemon refuses start.
 func TestDaemonLoadState_CorruptFile(t *testing.T) {
+	t.Parallel()
 	dataDir := t.TempDir()
 	d := &Daemon{config: &config.Config{DataDir: dataDir}}
 
@@ -246,6 +257,7 @@ func writeCorruptStateFile(path string) error {
 // (cluster manager HTTPS, local state load, ready flag) without contacting
 // NATS. /local/status reports standalone mode immediately.
 func TestStartLocal_SucceedsWithoutNATS(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	certPEM, keyPEM := generateTestCert(t)
 	certPath := filepath.Join(tmpDir, "server.pem")
@@ -309,6 +321,7 @@ func TestStartLocal_SucceedsWithoutNATS(t *testing.T) {
 // re-introduce the boot-time NATS dependency that 1d removed; this test
 // pins the regression.
 func TestAssertNoClusterServicesInitialised_GuardsTier1Invariant(t *testing.T) {
+	t.Parallel()
 	clean := &Daemon{}
 	require.NoError(t, clean.assertNoClusterServicesInitialised(),
 		"freshly-constructed daemon must satisfy the Tier 1 invariant")

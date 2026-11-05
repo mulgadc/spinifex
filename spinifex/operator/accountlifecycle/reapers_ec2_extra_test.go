@@ -12,34 +12,10 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
 	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
-	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// The embedded interfaces are deliberately nil: a reaper that calls anything
-// beyond the two methods it is supposed to use panics rather than passing.
-type fakeSpot struct {
-	ec2spotinstance.SpotInstanceService
-
-	requests  []*ec2.SpotInstanceRequest
-	cancelled []string
-	err       error
-}
-
-func (f *fakeSpot) DescribeSpotInstanceRequests(_ context.Context, _ *ec2.DescribeSpotInstanceRequestsInput, _ string) (*ec2.DescribeSpotInstanceRequestsOutput, error) {
-	return &ec2.DescribeSpotInstanceRequestsOutput{SpotInstanceRequests: f.requests}, nil
-}
-
-func (f *fakeSpot) CancelSpotInstanceRequests(_ context.Context, in *ec2.CancelSpotInstanceRequestsInput, _ string) (*ec2.CancelSpotInstanceRequestsOutput, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
-	for _, id := range in.SpotInstanceRequestIds {
-		f.cancelled = append(f.cancelled, aws.StringValue(id))
-	}
-	return &ec2.CancelSpotInstanceRequestsOutput{}, nil
-}
 
 type fakeNatGateways struct {
 	ec2natgw.NatGatewayService
@@ -81,42 +57,6 @@ func (f *fakeEgressGateways) DeleteEgressOnlyInternetGateway(_ context.Context, 
 	return &ec2.DeleteEgressOnlyInternetGatewayOutput{}, nil
 }
 
-// A cancelled request cannot launch anything, so listing it would leave the
-// stage waiting on a row that never clears — spot requests are never removed
-// from the account, only moved to a terminal state.
-func TestSpotRequestReaperSkipsTerminalRequests(t *testing.T) {
-	svc := &fakeSpot{requests: []*ec2.SpotInstanceRequest{
-		{SpotInstanceRequestId: aws.String("sir-open"), State: aws.String("open")},
-		{SpotInstanceRequestId: aws.String("sir-active"), State: aws.String("active")},
-		{SpotInstanceRequestId: aws.String("sir-cancelled"), State: aws.String("cancelled")},
-		{SpotInstanceRequestId: aws.String("sir-closed"), State: aws.String("closed")},
-		{SpotInstanceRequestId: aws.String("sir-failed"), State: aws.String("failed")},
-	}}
-	reaper := &spotRequestReaper{svc: svc}
-
-	assert.Equal(t, StageCompute, reaper.Stage())
-
-	found, err := reaper.List(t.Context(), "000000000002")
-	require.NoError(t, err)
-	require.Len(t, found, 2)
-	assert.Equal(t, "sir-open", found[0].ID)
-	assert.Equal(t, "open", found[0].Detail)
-	assert.Equal(t, "sir-active", found[1].ID)
-
-	require.NoError(t, reaper.Delete(t.Context(), "000000000002", found[0], false))
-	assert.Equal(t, []string{"sir-open"}, svc.cancelled)
-}
-
-// A request cancelled by someone else between the listing and the delete is
-// the ordinary second-pass case, not a failure.
-func TestSpotRequestReaperTreatsAMissingRequestAsCancelled(t *testing.T) {
-	svc := &fakeSpot{err: errors.New("InvalidSpotInstanceRequestID.NotFound: no such request")}
-	reaper := &spotRequestReaper{svc: svc}
-
-	err := reaper.Delete(t.Context(), "000000000002", Resource{ID: "sir-gone"}, false)
-	assert.NoError(t, err)
-}
-
 // A deleting gateway still holds its address and its subnet, so it has to keep
 // listing until it is actually gone or the address reaper runs too early.
 func TestNatGatewayReaperKeepsDeletingGateways(t *testing.T) {
@@ -141,10 +81,14 @@ func TestNatGatewayReaperKeepsDeletingGateways(t *testing.T) {
 }
 
 func TestNatGatewayReaperTreatsAMissingGatewayAsDeleted(t *testing.T) {
-	svc := &fakeNatGateways{err: errors.New("InvalidNatGatewayID.NotFound: no such gateway")}
-	reaper := &natGatewayReaper{svc: svc}
+	for _, code := range []string{awserrors.ErrorNatGatewayNotFound, "InvalidNatGatewayID.NotFound"} {
+		t.Run(code, func(t *testing.T) {
+			svc := &fakeNatGateways{err: errors.New(code + ": no such gateway")}
+			reaper := &natGatewayReaper{svc: svc}
 
-	assert.NoError(t, reaper.Delete(t.Context(), "000000000002", Resource{ID: "nat-gone"}, false))
+			assert.NoError(t, reaper.Delete(t.Context(), "000000000002", Resource{ID: "nat-gone"}, false))
+		})
+	}
 }
 
 func TestEgressOnlyIGWReaperCarriesItsVPC(t *testing.T) {

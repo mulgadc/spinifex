@@ -103,6 +103,7 @@ func (f *uefiReaperFixture) terminatedUEFIMark(t *testing.T, id string) string {
 // store a terminate set deleting, and never a live store, whether its
 // instance runs, is stopped, or has no record the reaper could judge it by.
 func TestS7_UEFIStoreReaperDeletesOnlyAStoreATerminateMarkedDeleting(t *testing.T) {
+	t.Parallel()
 	f := newUEFIReaperFixture(t)
 	const (
 		running     = "i-0000000000000running"
@@ -202,6 +203,7 @@ func (failingObjects) DeleteObject(context.Context, *s3.DeleteObjectInput) (*s3.
 // still completes when predastore is down for longer than the terminated
 // record lives.
 func TestUEFIStoreReaper_CompletesAfterTheTerminatedRecordExpires(t *testing.T) {
+	t.Parallel()
 	f := newUEFIReaperFixture(t)
 	const id = "i-0000000000000000a"
 	f.writeTerminated(t, id, vm.TeardownPending)
@@ -228,6 +230,7 @@ func TestUEFIStoreReaper_CompletesAfterTheTerminatedRecordExpires(t *testing.T) 
 // A terminate whose mark failed left the store live and the terminated
 // record's entry failed; the reaper completes that terminate.
 func TestUEFIStoreReaper_CompletesATerminateWhoseMarkFailed(t *testing.T) {
+	t.Parallel()
 	f := newUEFIReaperFixture(t)
 	const id = "i-0000000000000000a"
 	f.seedStore(t, id, 3, false)
@@ -244,6 +247,7 @@ func TestUEFIStoreReaper_CompletesATerminateWhoseMarkFailed(t *testing.T) {
 // A pending entry whose store record is already gone has nothing left to
 // delete, so the entry is closed and the terminated record can be purged.
 func TestUEFIStoreReaper_ClosesAPendingEntryWithNoStore(t *testing.T) {
+	t.Parallel()
 	f := newUEFIReaperFixture(t)
 	const id = "i-0000000000000000a"
 	f.writeTerminated(t, id, vm.TeardownPending)
@@ -254,6 +258,7 @@ func TestUEFIStoreReaper_ClosesAPendingEntryWithNoStore(t *testing.T) {
 }
 
 func TestUEFIStoreTerminator_MarksTheRecordAndRemovesOnlyTheInstanceDirectory(t *testing.T) {
+	t.Parallel()
 	f := newUEFIReaperFixture(t)
 	const id = "i-0000000000000000a"
 	f.seedStore(t, id, 1, false)
@@ -287,6 +292,7 @@ func TestUEFIStoreTerminator_MarksTheRecordAndRemovesOnlyTheInstanceDirectory(t 
 // entries failed, and the store must survive every sweep until QEMU is proven
 // gone, then be deleted.
 func TestS7_UEFIStoreReaperWaitsForQEMUBeforeCompletingATerminatedMark(t *testing.T) {
+	t.Parallel()
 	f := newUEFIReaperFixture(t)
 	const id = "i-0000000000failedkill"
 	v := &vm.VM{ID: id, Status: vm.StateTerminated, AccountID: "111122223333", Instance: &ec2.Instance{InstanceId: aws.String(id)},
@@ -326,6 +332,7 @@ func (l listsMissingRecord) OpenTeardowns(string) ([]string, error) { return []s
 // ADR-0003:S7: with the record gone nothing proves QEMU exited, so the store is
 // neither marked deleting nor deleted.
 func TestS7_UEFIStoreReaperLeavesTheStoreWhenTheTerminatedRecordExpired(t *testing.T) {
+	t.Parallel()
 	f := newUEFIReaperFixture(t)
 	const id = "i-00000000000expired"
 	f.seedStore(t, id, 3, false)

@@ -144,6 +144,7 @@ func newIdempotencyBucket(t *testing.T) jetstream.KeyValue {
 }
 
 func TestClaimClientToken(t *testing.T) {
+	t.Parallel()
 	idem := newIdempotencyBucket(t)
 	ctx := t.Context()
 
@@ -164,6 +165,7 @@ func TestClaimClientToken(t *testing.T) {
 }
 
 func TestClaimClientTokenReplaysCompletedResult(t *testing.T) {
+	t.Parallel()
 	idem := newIdempotencyBucket(t)
 	ctx := t.Context()
 
@@ -264,6 +266,7 @@ func createAccountBody(t *testing.T, name, clientToken string) []byte {
 }
 
 func TestAdminCreateAccountProvisionsAndReplays(t *testing.T) {
+	t.Parallel()
 	gw := newCreateAccountGateway(t)
 	ctx := t.Context()
 	body := createAccountBody(t, "ben@example.com", testClientToken)
@@ -290,6 +293,7 @@ func TestAdminCreateAccountProvisionsAndReplays(t *testing.T) {
 }
 
 func TestAdminCreateAccountRejectsDuplicateName(t *testing.T) {
+	t.Parallel()
 	gw := newCreateAccountGateway(t)
 	ctx := t.Context()
 
@@ -304,6 +308,7 @@ func TestAdminCreateAccountRejectsDuplicateName(t *testing.T) {
 }
 
 func TestAdminCreateAccountEnforcesCap(t *testing.T) {
+	t.Parallel()
 	gw := newCreateAccountGateway(t)
 	gw.SignupMaxAccounts = 1
 	ctx := t.Context()
@@ -319,6 +324,7 @@ func TestAdminCreateAccountEnforcesCap(t *testing.T) {
 // A rejected request must release its token claim, or the caller is told
 // OperationInProgress until the TTL expires.
 func TestAdminCreateAccountReleasesTokenAfterFailure(t *testing.T) {
+	t.Parallel()
 	gw := newCreateAccountGateway(t)
 	gw.SignupMaxAccounts = 1
 	ctx := t.Context()
@@ -336,6 +342,7 @@ func TestAdminCreateAccountReleasesTokenAfterFailure(t *testing.T) {
 }
 
 func TestAdminCreateAccountMalformedBody(t *testing.T) {
+	t.Parallel()
 	gw := newCreateAccountGateway(t)
 
 	_, err := gw.createAccount(t.Context(), []byte("not json"))

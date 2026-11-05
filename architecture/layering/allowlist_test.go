@@ -17,7 +17,6 @@ var allowlist = []allowance{
 	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/instance", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
 	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/routetable", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
 	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/snapshot", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
-	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/volume", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
 	{From: "operator/accountlifecycle", To: "domains/ec2/awsapi/vpc", Debt: "accountteardown (dependency)", Reason: "EC2 reapers call the awsapi action adapters; needs domain-owned cleanup capabilities"},
 
 	{From: "agents/ecs/agent", To: "domains/ecs", Debt: "agents/ecs/agent", Reason: "assignment/state wire types from the ECS implementation; needs a guest/controller contract"},

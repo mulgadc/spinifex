@@ -27,8 +27,7 @@ func StartTestNATS(t testing.TB) (*server.Server, *nats.Conn) {
 	}
 	ns, err := server.NewServer(opts)
 	require.NoError(t, err)
-	go ns.Start()
-	waitReadyForConnections(t, ns)
+	startServer(t, ns)
 	t.Cleanup(func() { ns.Shutdown() })
 
 	nc, err := nats.Connect(ns.ClientURL())
@@ -37,17 +36,14 @@ func StartTestNATS(t testing.TB) (*server.Server, *nats.Conn) {
 	return ns, nc
 }
 
-// waitReadyForConnections spins until the server accepts connections. Calling
-// ReadyForConnections with a longer timeout makes it sleep 25ms per attempt,
-// which every embedded server in the suite would otherwise pay.
-func waitReadyForConnections(t testing.TB, ns *server.Server) {
+// startServer runs Start in this goroutine: it returns once JetStream is
+// enabled and the client listener is bound, so the readiness check passes on
+// its first look instead of spinning or sleeping while the server comes up.
+func startServer(t testing.TB, ns *server.Server) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for !ns.ReadyForConnections(time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("embedded NATS server not ready for connections within 5s")
-		}
-		time.Sleep(200 * time.Microsecond)
+	ns.Start()
+	if !ns.ReadyForConnections(5 * time.Second) {
+		t.Fatal("embedded NATS server not ready for connections within 5s")
 	}
 }
 
@@ -66,8 +62,7 @@ func StartTestJetStream(t *testing.T) (*server.Server, *nats.Conn, jetstream.Jet
 	}
 	ns, err := server.NewServer(opts)
 	require.NoError(t, err)
-	go ns.Start()
-	waitReadyForConnections(t, ns)
+	startServer(t, ns)
 	t.Cleanup(func() { ns.Shutdown() })
 
 	nc, err := nats.Connect(ns.ClientURL())

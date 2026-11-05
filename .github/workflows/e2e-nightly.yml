@@ -6,11 +6,32 @@ name: E2E Nightly
 # `main` and `dev` as separate nightlies, and it would always execute `main`'s
 # copy of this file — leaving a fix to the workflow itself untestable until it
 # had already shipped. A dispatch takes both the file and the source from its ref.
+#
+# Cells (matrix cells are defined in .github/e2e-cells.json):
+#
+#   Single node                       Three nodes
+#    1  Debian 13, DHCP                 8  Debian 13, DHCP
+#    2  Ubuntu 26.04, static            9  Ubuntu 26.04, static
+#    3  Ubuntu 26.04, DHCP             10  Ubuntu 26.04, DHCP
+#   17  tofu examples                  29  storage fault injection
+#   18  reboot                         30  routed NAT
+#   19  routed NAT                     31  instance recovery
+#   25  eks                            32  load balancer recovery
+#   26  ecs                            33  KV bucket quorum under node loss
+#   27  rds                            37  Oracle Linux 10, DHCP
+#   34  Oracle Linux 10, DHCP          38  Oracle Linux 10, routed NAT
+#   35  Oracle Linux 10, reboot
+#   36  Oracle Linux 10, routed NAT
+#
+#   Standalone jobs
+#   20  bare metal (PXE)               23  predastore throughput
+#   21  ISO, single node               24  predastore fault injection
+#   22  ISO, three nodes               28  guest disk performance (bare metal)
 on:
   workflow_dispatch:
     inputs:
       cells:
-        description: "Comma-separated cell numbers to run, no spaces (blank = all). 1-3, 8-10, 17-19 tofu permutation matrix, 34-36 Oracle Linux single node (basic, reboot, routed NAT), 37-38 Oracle Linux on three nodes (multi-node subset with IPsec, routed NAT), 20 baremetal, 21-22 ISO, 23 predastore throughput, 24 predastore fault injection, 25-27 service suites (eks, ecs, rds), 28 guest disk performance, 29 storage fault injection, 30 routed NAT on three nodes, 31 instance recovery on three nodes, 32 load balancer recovery on three nodes, 33 KV bucket quorum under node loss on three nodes"
+        description: "Comma-separated cell numbers, no spaces, e.g. 1,25,27 (blank = all). The cell list is at the top of .github/workflows/e2e-nightly.yml."
         required: false
 
 permissions:

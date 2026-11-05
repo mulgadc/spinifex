@@ -3,11 +3,11 @@ package instance
 import (
 	"context"
 	"errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"strings"
-	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 )
@@ -22,5 +22,16 @@ func ModifyInstanceMetadataOptions(ctx context.Context, input *ec2.ModifyInstanc
 	if !strings.HasPrefix(*input.InstanceId, "i-") {
 		return nil, errors.New(awserrors.ErrorInvalidInstanceIDMalformed)
 	}
-	return natsmsg.NATSRequest[ec2.ModifyInstanceMetadataOptionsOutput](ctx, natsConn, "ec2.ModifyInstanceMetadataOptions", input, 30*time.Second, accountID)
+	cmd := ec2v1.EC2InstanceCommand{
+		ID:         *input.InstanceId,
+		Attributes: ec2v1.EC2CommandAttributes{ModifyInstanceMetadataOptions: true},
+		InstanceMetadataOptionsData: &ec2v1.InstanceMetadataOptionsData{
+			HttpTokens:              aws.StringValue(input.HttpTokens),
+			HttpEndpoint:            aws.StringValue(input.HttpEndpoint),
+			HttpProtocolIpv6:        aws.StringValue(input.HttpProtocolIpv6),
+			InstanceMetadataTags:    aws.StringValue(input.InstanceMetadataTags),
+			HttpPutResponseHopLimit: input.HttpPutResponseHopLimit,
+		},
+	}
+	return routeInstanceMutation[ec2.ModifyInstanceMetadataOptionsOutput](ctx, natsConn, *input.InstanceId, accountID, cmd, "ec2.ModifyInstanceMetadataOptions", input)
 }

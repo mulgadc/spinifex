@@ -327,12 +327,17 @@ func TestGetTargetGroupByName(t *testing.T) {
 	tg := newTestTG("tgname", "named-tg")
 	require.NoError(t, store.PutTargetGroup(t.Context(), tg))
 
-	got, err := store.GetTargetGroupByName(t.Context(), "named-tg", "vpc-test123")
+	got, err := store.GetTargetGroupByName(t.Context(), testAccountID, "named-tg", "vpc-test123")
 	require.NoError(t, err)
 	require.NotNil(t, got)
 
 	// Wrong VPC should not find it
-	got, err = store.GetTargetGroupByName(t.Context(), "named-tg", "vpc-other")
+	got, err = store.GetTargetGroupByName(t.Context(), testAccountID, "named-tg", "vpc-other")
+	require.NoError(t, err)
+	assert.Nil(t, got)
+
+	// Another account's group with the same name and VPC is not a match
+	got, err = store.GetTargetGroupByName(t.Context(), "210987654321", "named-tg", "vpc-test123")
 	require.NoError(t, err)
 	assert.Nil(t, got)
 }

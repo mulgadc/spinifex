@@ -2,6 +2,7 @@ package instance
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -404,6 +405,25 @@ func TestDeleteDBInstance_TerminatesAStoppedVMFromItsRecord(t *testing.T) {
 	assert.Equal(t, []string{"vol-rdsdata01"}, h.storage.detached)
 	assert.Equal(t, []string{"vol-rdsdata01"}, h.volumes.deleted)
 	assert.False(t, h.recordExists(t, testDBID))
+}
+
+// A DB record whose InstanceID is a customer instance must leave that instance
+// alone: stopped, its volumes still attached, nothing released or terminated.
+func TestS7_DeleteDBInstanceNeverTouchesACustomerInstance(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	h.launcher.terminateErr = fmt.Errorf("%w: %s", systeminstance.ErrSystemInstanceNotSystem, testInstance)
+	h.storage.attachedTo = map[string]string{"vol-rdsdata01": testInstance}
+	seedInstance(t, h.svc, availableRecord())
+
+	_, err := h.svc.DeleteDBInstance(t.Context(), skipFinalSnapshot(), testAccountID)
+
+	require.ErrorIs(t, err, systeminstance.ErrSystemInstanceNotSystem)
+	assert.Empty(t, h.cmdr.calls, "the customer instance's record is never edited or terminated")
+	assert.Empty(t, h.storage.detached, "its volumes stay attached")
+	assert.Equal(t, map[string]string{"vol-rdsdata01": testInstance}, h.storage.attachedTo)
+	assert.Empty(t, h.volumes.deleted)
+	assert.True(t, h.recordExists(t, testDBID), "the record stays so the delete can be inspected")
 }
 
 // A record edit that fails leaves the record naming the volume, so neither the

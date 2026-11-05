@@ -86,11 +86,11 @@ func (id Identity) ClientConfig() *tls.Config {
 		MinVersion:         tls.VersionTLS13,
 		MaxVersion:         tls.VersionTLS13,
 		Certificates:       []tls.Certificate{id.Cert},
-		NextProtos:         []string{lambdav1.ALPNv1},
+		NextProtos:         []string{Protocol},
 		InsecureSkipVerify: true, //nolint:gosec // VerifyConnection performs full validation against the pinned host certificate.
 		VerifyConnection: func(cs tls.ConnectionState) error {
-			if cs.NegotiatedProtocol != lambdav1.ALPNv1 {
-				return fmt.Errorf("hostlink: application protocol %q, want %q", cs.NegotiatedProtocol, lambdav1.ALPNv1)
+			if cs.NegotiatedProtocol != Protocol {
+				return fmt.Errorf("hostlink: application protocol %q, want %q", cs.NegotiatedProtocol, Protocol)
 			}
 			return pki.VerifyPinned(cs.PeerCertificates, id.HostCert, x509.ExtKeyUsageServerAuth, id.Scope.URI(lambdav1.RoleHost))
 		},

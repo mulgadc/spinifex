@@ -808,7 +808,7 @@ func TestRequestCertificate_NoTenantCAIsAClientErrorNamingTheCause(t *testing.T)
 	assert.Equal(t, awserrors.ErrorResourceNotFound, code)
 	assert.NotEqual(t, awserrors.ErrorInternalError, code, "a retryable 500 hangs the provider's create")
 
-	assert.Equal(t, 404, awserrors.ErrorLookup[code].HTTPCode)
+	assert.Equal(t, 400, awserrors.LookupErrorMessage("acm", code).HTTPCode, "AWS answers a missing ACM resource with 400")
 	assert.True(t, awserrors.IsTerminal(err), "the provider must fail fast, not retry with backoff")
 
 	assert.Contains(t, message, "tenant CA", "the message must name the missing tenant CA")

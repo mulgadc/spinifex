@@ -49,10 +49,10 @@ func (storedFunction) RollbackCreate(context.Context, string, string, string, ui
 }
 
 // invokeThrough sends one Invoke through the Lambda handler to the real
-// test-link executor; fakeNATS stands in for the daemon and answers with rep.
+// test-link executor; fakeControl stands in for the daemon and answers with rep.
 func invokeThrough(t *testing.T, rep testlink.Reply) (*httptest.ResponseRecorder, error) {
 	t.Helper()
-	n := &fakeNATS{max: 1 << 20, reply: &rep}
+	n := &fakeControl{max: 1 << 20, reply: &rep}
 	reg := awsapi.NewRegistration(awsapi.Deps{Meta: storedFunction{}, Exec: executor(n, nil, grantStore(t))})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/2015-03-31/functions/f/invocations", strings.NewReader(`{}`))

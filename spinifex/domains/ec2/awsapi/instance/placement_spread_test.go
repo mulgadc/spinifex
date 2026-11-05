@@ -180,8 +180,19 @@ func TestDistributeInstancesSpread_NoEligibleNodes(t *testing.T) {
 
 	// Capacity exists for a different instance type only, so nothing is eligible.
 	h := mockSpreadCluster(t, nc, map[string]int{}, nil, nil, "")
+	otherTypeSub, err := nc.Subscribe("spinifex.node.status", func(msg *nats.Msg) {
+		for _, node := range []string{"node-1", "node-2"} {
+			data, _ := json.Marshal(types.NodeStatusResponse{
+				Node:          node,
+				InstanceTypes: []types.InstanceTypeCap{{Name: "m5.large", Available: 4}},
+			})
+			_ = nc.Publish(msg.Reply, data)
+		}
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = otherTypeSub.Unsubscribe() })
 
-	_, err := distributeInstancesSpread(context.Background(), spreadInput(2, 2), nc, "test-account", "my-spread", 2)
+	_, err = distributeInstancesSpread(context.Background(), spreadInput(2, 2), nc, "test-account", "my-spread", 2)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, err.Error())
 

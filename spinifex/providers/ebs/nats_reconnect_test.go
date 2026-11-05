@@ -51,7 +51,7 @@ func startNATS(t *testing.T) *server.Server {
 	t.Helper()
 	ns, err := server.NewServer(&server.Options{Host: "127.0.0.1", Port: -1, NoLog: true, NoSigs: true})
 	require.NoError(t, err)
-	go ns.Start()
+	ns.Start()
 	require.True(t, ns.ReadyForConnections(5*time.Second))
 	t.Cleanup(ns.Shutdown)
 	return ns

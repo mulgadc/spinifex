@@ -136,11 +136,10 @@ func isEphemeralMapping(bdm *ec2.BlockDeviceMapping) bool {
 }
 
 // SelectRootBlockDeviceMapping returns the index of the mapping addressing the
-// root device, which is the one naming ebsmetadata.RootDeviceName. Position
-// decides only when no mapping names it, so a caller addressing a device this
-// platform's images do not have still gets the volume they sized.
+// root device, which is the one naming ebsmetadata.RootDeviceName, or -1 when
+// none does. A mapping naming any other device is an additional volume and the
+// root keeps the image's own mapping, as AWS does.
 func SelectRootBlockDeviceMapping(mappings []*ec2.BlockDeviceMapping) int {
-	first := -1
 	for i, bdm := range mappings {
 		if bdm == nil || isEphemeralMapping(bdm) {
 			continue
@@ -148,11 +147,23 @@ func SelectRootBlockDeviceMapping(mappings []*ec2.BlockDeviceMapping) int {
 		if aws.StringValue(bdm.DeviceName) == ebsmetadata.RootDeviceName {
 			return i
 		}
-		if first < 0 {
-			first = i
+	}
+	return -1
+}
+
+// UnnamedBlockDeviceMapping reports whether a non-root EBS mapping names no
+// device, which would leave its volume attached at an empty device name.
+func UnnamedBlockDeviceMapping(mappings []*ec2.BlockDeviceMapping) bool {
+	root := SelectRootBlockDeviceMapping(mappings)
+	for i, bdm := range mappings {
+		if i == root || bdm == nil || bdm.Ebs == nil || isEphemeralMapping(bdm) {
+			continue
+		}
+		if aws.StringValue(bdm.DeviceName) == "" {
+			return true
 		}
 	}
-	return first
+	return false
 }
 
 // UnservedBlockDeviceMappings names the non-root EBS mappings the launch path

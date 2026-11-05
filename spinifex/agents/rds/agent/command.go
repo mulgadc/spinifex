@@ -126,6 +126,8 @@ type commander struct {
 	id       identity
 	registry commandRegistry
 	wait     time.Duration
+	// The wait after a failed poll, pollErrorBackoff unless a test shortens it.
+	pollBackoff time.Duration
 	// The control plane's budget per type, capped by the remaining budget the
 	// issuer stamps on each copy and measured from receipt. IssuedAt is not
 	// compared: the guest clock is not trusted against the host's.
@@ -152,12 +154,13 @@ func newCommander(cp controlPlane, registry commandRegistry, wait time.Duration)
 		wait = defaultPollWait
 	}
 	return &commander{
-		cp:       cp,
-		registry: registry,
-		wait:     wait,
-		budget:   controlPlaneBudget,
-		serial:   make(chan queuedCommand, serialQueueDepth),
-		inFlight: make(map[string]struct{}),
+		cp:          cp,
+		registry:    registry,
+		wait:        wait,
+		pollBackoff: pollErrorBackoff,
+		budget:      controlPlaneBudget,
+		serial:      make(chan queuedCommand, serialQueueDepth),
+		inFlight:    make(map[string]struct{}),
 	}
 }
 
@@ -187,7 +190,7 @@ func (c *commander) Run(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(pollErrorBackoff):
+			case <-time.After(c.pollBackoff):
 			}
 			continue
 		}

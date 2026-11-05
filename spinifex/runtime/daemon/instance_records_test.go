@@ -45,6 +45,7 @@ func testRecord(id string) *vm.InstanceRecord {
 }
 
 func TestInstanceRecord_RoundTrips(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 
 	require.NoError(t, m.WriteInstanceRecord("i-1", testRecord("i-1")))
@@ -62,6 +63,7 @@ func TestInstanceRecord_RoundTrips(t *testing.T) {
 // manager answers that way, and the callers that will move onto these are
 // written against it.
 func TestLoadInstanceRecord_AbsentIsNil(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 
 	got, err := m.LoadInstanceRecord("i-never-written")
@@ -73,6 +75,7 @@ func TestLoadInstanceRecord_AbsentIsNil(t *testing.T) {
 // A stopped instance is written once, to the record key, and read back from
 // there through both the instance accessors and the record accessors.
 func TestStoppedInstances_LiveAtTheRecordKey(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 
 	require.NoError(t, m.WriteStoppedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
@@ -95,6 +98,7 @@ func TestStoppedInstances_LiveAtTheRecordKey(t *testing.T) {
 }
 
 func TestTerminatedInstances_LiveAtTheRecordKey(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 
 	require.NoError(t, m.WriteTerminatedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
@@ -121,6 +125,7 @@ func TestTerminatedInstances_LiveAtTheRecordKey(t *testing.T) {
 // here and nothing else is a prefix of it, which is the whole of what keeps a
 // record listing from picking up a frozen key or a node's marker.
 func TestInstanceRecords_ThePrefixesInOneBucketAreDisjoint(t *testing.T) {
+	t.Parallel()
 	m, nc := newRecordManagerConn(t)
 
 	require.NoError(t, m.WriteInstanceRecord("i-1", testRecord("i-1")))
@@ -138,6 +143,7 @@ func TestInstanceRecords_ThePrefixesInOneBucketAreDisjoint(t *testing.T) {
 // The two buckets are separate stores over the same prefix, so a record in one
 // must not be visible through the other.
 func TestInstanceRecords_TheTwoBucketsDoNotShareRecords(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 
 	require.NoError(t, m.WriteInstanceRecord("i-1", testRecord("i-1")))
@@ -152,6 +158,7 @@ func TestInstanceRecords_TheTwoBucketsDoNotShareRecords(t *testing.T) {
 }
 
 func TestUpdateInstanceRecord_CommitsTheMutation(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	require.NoError(t, m.WriteInstanceRecord("i-1", testRecord("i-1")))
 
@@ -171,6 +178,7 @@ func TestUpdateInstanceRecord_CommitsTheMutation(t *testing.T) {
 // A mutation racing a delete must fail rather than resurrect what the delete
 // removed. This is the guarantee the claim in the next change is built on.
 func TestUpdateInstanceRecord_AbsentDoesNotResurrect(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 
 	_, err := m.UpdateInstanceRecord("i-gone", func(r *vm.InstanceRecord) {
@@ -185,6 +193,7 @@ func TestUpdateInstanceRecord_AbsentDoesNotResurrect(t *testing.T) {
 }
 
 func TestDeleteInstanceRecord_IsIdempotent(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	require.NoError(t, m.WriteInstanceRecord("i-1", testRecord("i-1")))
 
@@ -199,6 +208,7 @@ func TestDeleteInstanceRecord_IsIdempotent(t *testing.T) {
 // An empty listing is nil and no error, matching the listings these replace —
 // a caller distinguishing "no instances" from "could not read" reads the error.
 func TestListInstanceRecords_EmptyIsNotAnError(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 
 	records, err := m.ListInstanceRecords()
@@ -208,6 +218,7 @@ func TestListInstanceRecords_EmptyIsNotAnError(t *testing.T) {
 }
 
 func TestListInstanceRecords_ReturnsEveryRecord(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	for _, id := range []string{"i-1", "i-2", "i-3"} {
 		require.NoError(t, m.WriteInstanceRecord(id, testRecord(id)))
@@ -226,6 +237,7 @@ func TestListInstanceRecords_ReturnsEveryRecord(t *testing.T) {
 // A write replaces the record wholesale rather than merging into it, so a field
 // cleared by the writer stays cleared.
 func TestWriteInstanceRecord_ReplacesWholesale(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	require.NoError(t, m.WriteInstanceRecord("i-1", testRecord("i-1")))
 
@@ -241,6 +253,7 @@ func TestWriteInstanceRecord_ReplacesWholesale(t *testing.T) {
 // The DeletionTimestamp the envelope carries has to survive the round trip, or
 // the teardown path cannot tell a deleting instance from a live one.
 func TestInstanceRecord_CarriesDeletionTimestamp(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	record := testRecord("i-1")
 	deleted := time.Date(2026, 8, 28, 1, 0, 0, 0, time.UTC)
@@ -258,6 +271,7 @@ func TestInstanceRecord_CarriesDeletionTimestamp(t *testing.T) {
 // Every accessor must report an unopened bucket rather than panic on a nil
 // store: Tier 1 boot runs before cluster KV exists.
 func TestInstanceRecordAccessors_ReportAnUnopenedBucket(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	m, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)

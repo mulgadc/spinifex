@@ -73,6 +73,8 @@ func fakeResolver(t *testing.T, svc *STSServiceImpl) *fakeJWKSResolver {
 }
 
 func TestNewSTSServiceImpl_RejectsNilNATSConn(t *testing.T) {
+	t.Parallel()
+
 	masterKey := bytes.Repeat([]byte{0x01}, masterKeySize)
 	_, err := NewSTSServiceImpl(t.Context(), nil, nopIAMService{}, masterKey, nopJWKSResolver{})
 	require.Error(t, err)
@@ -80,6 +82,8 @@ func TestNewSTSServiceImpl_RejectsNilNATSConn(t *testing.T) {
 }
 
 func TestNewSTSServiceImpl_RejectsNilIAMService(t *testing.T) {
+	t.Parallel()
+
 	_, nc, _ := testutil.StartTestJetStream(t)
 	masterKey := bytes.Repeat([]byte{0x01}, masterKeySize)
 	_, err := NewSTSServiceImpl(t.Context(), nc, nil, masterKey, nopJWKSResolver{})
@@ -88,6 +92,8 @@ func TestNewSTSServiceImpl_RejectsNilIAMService(t *testing.T) {
 }
 
 func TestNewSTSServiceImpl_RejectsNilJWKSResolver(t *testing.T) {
+	t.Parallel()
+
 	_, nc, _ := testutil.StartTestJetStream(t)
 	masterKey := bytes.Repeat([]byte{0x01}, masterKeySize)
 	_, err := NewSTSServiceImpl(t.Context(), nc, nopIAMService{}, masterKey, nil)
@@ -96,9 +102,13 @@ func TestNewSTSServiceImpl_RejectsNilJWKSResolver(t *testing.T) {
 }
 
 func TestNewSTSServiceImpl_RejectsWrongMasterKeySize(t *testing.T) {
+	t.Parallel()
+
 	_, nc, _ := testutil.StartTestJetStream(t)
 	for _, size := range []int{0, 1, 16, 31, 33, 64} {
 		t.Run("size", func(t *testing.T) {
+			t.Parallel()
+
 			_, err := NewSTSServiceImpl(t.Context(), nc, nopIAMService{}, bytes.Repeat([]byte{0xaa}, size), nopJWKSResolver{})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "master key")
@@ -107,12 +117,16 @@ func TestNewSTSServiceImpl_RejectsWrongMasterKeySize(t *testing.T) {
 }
 
 func TestNewSTSServiceImpl_InitializesBucket(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	require.NotNil(t, svc.sessions)
 	assert.Equal(t, KVBucketSessionCredentials, svc.sessions.Name())
 }
 
 func TestNewSTSServiceImpl_NormalisesNegativeClusterSize(t *testing.T) {
+	t.Parallel()
+
 	_, nc, _ := testutil.StartTestJetStream(t)
 	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
@@ -125,6 +139,8 @@ func TestNewSTSServiceImpl_NormalisesNegativeClusterSize(t *testing.T) {
 }
 
 func TestLookupSessionCredential_NonASIAPrefixReturnsNilNil(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 
 	cases := []string{
@@ -141,6 +157,8 @@ func TestLookupSessionCredential_NonASIAPrefixReturnsNilNil(t *testing.T) {
 }
 
 func TestLookupSessionCredential_MissingASIAReturnsNilNil(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	got, err := svc.LookupSessionCredential("ASIAMISSINGAAAAAAAAA")
 	require.NoError(t, err)
@@ -148,6 +166,8 @@ func TestLookupSessionCredential_MissingASIAReturnsNilNil(t *testing.T) {
 }
 
 func TestLookupSessionCredential_HitRoundTrips(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 
 	now := time.Now().UTC().Truncate(time.Second)
@@ -176,6 +196,8 @@ func TestLookupSessionCredential_HitRoundTrips(t *testing.T) {
 }
 
 func TestLookupSessionCredential_UnmarshalFailureSurfacesError(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	akid := "ASIACORRUPTAAAAAAAAA"
 	// Bypass putSessionCredential to inject a deliberately malformed payload —
@@ -194,6 +216,8 @@ func TestLookupSessionCredential_UnmarshalFailureSurfacesError(t *testing.T) {
 // Sanity check: the production marshaller round-trips through the lookup
 // path. Catches struct-tag regressions early.
 func TestSessionCredential_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
 	cred := SessionCredential{
 		AccessKeyID:    "ASIAJSONROUNDAAAAAAA",
 		AccountID:      "000000000000",

@@ -248,7 +248,7 @@ func TestHandle_NoPreparedImageFailsClosed(t *testing.T) {
 	ips := &fakeIPs{}
 	d := g.daemon(&Daemon{IPs: ips, Taps: &fakeTaps{}, HTTP: srv.Client(), WorkDir: t.TempDir()})
 	d.Image = nil
-	rep := d.Handle(context.Background(), g.request(srv.URL, code))
+	rep := d.Handle(context.Background(), g.request(srv.URL, code), testCred)
 	require.Equal(t, OutcomeRefused, rep.Outcome)
 	require.Contains(t, rep.Error, "runtime image not prepared")
 	require.False(t, d.busy.Load())
@@ -281,7 +281,7 @@ func TestHandle_BootFilesRemovedAfterPreparation(t *testing.T) {
 	require.NoError(t, json.Unmarshal(req, &parsed))
 	stepBoot(t, time.Hour, hardDeadlineFrom(time.Hour, parsed))
 
-	rep := d.Handle(context.Background(), req)
+	rep := d.Handle(context.Background(), req, testCred)
 	require.Equal(t, OutcomeRefused, rep.Outcome)
 	require.Equal(t, ErrDeadlineExpired.Error(), rep.Error, "refused for a reason other than the deadline")
 	require.Len(t, taps.removed, 1)

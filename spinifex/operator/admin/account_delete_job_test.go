@@ -8,7 +8,9 @@ import (
 	"context"
 	"encoding/json"
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountcleanup"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -148,6 +150,8 @@ func newDeleteAccountGateway(t *testing.T) Deps {
 		GatewayNodeIDs:  []string{"node-1"},
 		BucketStore:     emptyBucketStore{},
 		PlatformCleaner: &panicCleaner{},
+		ComputeCleaner:  emptyCompute{},
+		StorageCleaner:  emptyStorage{},
 	}
 }
 
@@ -240,6 +244,7 @@ func describeDeletion(t *testing.T, gw Deps, accountID string) *accountDeletionJ
 // go and leave the account untouched — including its status, since TERMINATING
 // is a one-way door.
 func TestAdminDeleteAccountDryRunChangesNothing(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 
@@ -337,6 +342,7 @@ func TestAdminDeleteAccountReplaysAfterTheAccountIsGone(t *testing.T) {
 // Reusing a token for a different account name is a client bug. Treating it as
 // a retry would confirm the stored name to a caller who guessed the wrong one.
 func TestAdminDeleteAccountRejectsATokenBoundToAnotherName(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	storeDeletionJob(t, gw, &accountDeletionJob{
@@ -358,6 +364,7 @@ func TestAdminDeleteAccountRejectsATokenBoundToAnotherName(t *testing.T) {
 // Two teardowns on one account would race the reapers against each other, so a
 // live job refuses a second caller rather than joining it.
 func TestAdminDeleteAccountRefusesAConcurrentTeardown(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	storeDeletionJob(t, gw, &accountDeletionJob{
@@ -379,6 +386,7 @@ func TestAdminDeleteAccountRefusesAConcurrentTeardown(t *testing.T) {
 // A gateway restarted mid-teardown leaves a job that looks live forever.
 // Without takeover the account could never be retried through the API.
 func TestAdminDeleteAccountTakesOverAStaleJob(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	storeDeletionJob(t, gw, &accountDeletionJob{
@@ -403,6 +411,7 @@ func TestAdminDeleteAccountTakesOverAStaleJob(t *testing.T) {
 // A teardown that failed is retried rather than left wedged: the engine
 // re-lists what is still there, so running it again is safe.
 func TestAdminDeleteAccountRetriesAFailedJob(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	storeDeletionJob(t, gw, &accountDeletionJob{
@@ -429,6 +438,7 @@ func TestAdminDeleteAccountRetriesAFailedJob(t *testing.T) {
 // error a fresh token would otherwise get, which is what a harness retrying a
 // lost response actually does.
 func TestAdminDeleteAccountReportsACompletedJobToANewToken(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	storeDeletionJob(t, gw, &accountDeletionJob{
@@ -474,6 +484,7 @@ func TestAdminDeleteAccountRefusesProtectedAccounts(t *testing.T) {
 // The name confirmation is what makes a mistyped account id fail closed rather
 // than empty a live tenant, so it is checked before anything is deleted.
 func TestAdminDeleteAccountRefusesAMismatchedName(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 
@@ -489,6 +500,7 @@ func TestAdminDeleteAccountRefusesAMismatchedName(t *testing.T) {
 }
 
 func TestAdminDeleteAccountRejectsAnUnknownAccount(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	newTenantAccount(t, gw, "tenant@example.com")
 
@@ -500,6 +512,7 @@ func TestAdminDeleteAccountRejectsAnUnknownAccount(t *testing.T) {
 }
 
 func TestAdminDeleteAccountRejectsAMalformedBody(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 
 	_, err := gw.deleteAccount(t.Context(), []byte(`{`))
@@ -511,6 +524,7 @@ func TestAdminDeleteAccountRejectsAMalformedBody(t *testing.T) {
 // Without an IAM service there is no way to check what the account owns, and
 // deleting on a guess is worse than refusing.
 func TestAdminDeleteAccountRefusesWithoutAnIAMService(t *testing.T) {
+	t.Parallel()
 	gw := Deps{}
 
 	_, err := gw.deleteAccount(context.Background(),
@@ -521,6 +535,7 @@ func TestAdminDeleteAccountRefusesWithoutAnIAMService(t *testing.T) {
 }
 
 func TestAdminDescribeAccountDeletionRejectsAMalformedBody(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 
 	_, err := gw.describeAccountDeletion(t.Context(), []byte(`{`))
@@ -532,6 +547,7 @@ func TestAdminDescribeAccountDeletionRejectsAMalformedBody(t *testing.T) {
 // The stored stages are what an operator reads while a teardown runs, so the
 // tracker has to write them as they finish rather than only at the end.
 func TestDeletionTrackerRecordsEachStageAsItFinishes(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	job := &accountDeletionJob{
 		DeletionID: "d-1",
@@ -558,6 +574,7 @@ func TestDeletionTrackerRecordsEachStageAsItFinishes(t *testing.T) {
 // A teardown that gives up has to say so in the record. A job left RUNNING
 // forever is indistinguishable from one still working.
 func TestDeletionTrackerRecordsFailure(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	job := &accountDeletionJob{
 		DeletionID: "d-1",
@@ -578,6 +595,7 @@ func TestDeletionTrackerRecordsFailure(t *testing.T) {
 // The heartbeat is what lets another gateway tell an abandoned job from a live
 // one, so stopping it must not leave the goroutine writing.
 func TestDeletionTrackerHeartbeatStops(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	job := &accountDeletionJob{
 		DeletionID: "d-1",
@@ -592,4 +610,86 @@ func TestDeletionTrackerHeartbeatStops(t *testing.T) {
 
 	tracker.persist(t.Context())
 	assert.NotEmpty(t, describeDeletion(t, gw, "000000000042").UpdatedAt)
+}
+
+// emptyCompute and emptyStorage stand in for the EC2 cleanup of an account that
+// holds no instance, spot request or volume.
+type (
+	emptyCompute struct{}
+	emptyStorage struct{}
+)
+
+func cleanOutcome(accountID string) *accountcleanup.Outcome {
+	return &accountcleanup.Outcome{AccountID: accountID, Status: accountcleanup.StatusClean}
+}
+
+func (emptyCompute) CleanupCompute(_ context.Context, req *accountcleanup.ComputeRequest) (*accountcleanup.ComputeResult, error) {
+	return cleanOutcome(req.AccountID), nil
+}
+
+func (emptyCompute) ComputeRemaining(_ context.Context, accountID string) (*accountcleanup.Outcome, error) {
+	return cleanOutcome(accountID), nil
+}
+
+func (emptyStorage) CleanupStorage(_ context.Context, req *accountcleanup.StorageRequest) (*accountcleanup.StorageResult, error) {
+	return cleanOutcome(req.AccountID), nil
+}
+
+func (emptyStorage) StorageRemaining(_ context.Context, accountID string) (*accountcleanup.Outcome, error) {
+	return cleanOutcome(accountID), nil
+}
+
+// blockedCompute holds an instance the cleanup cannot release until unblocked,
+// the way a managed service still owning a worker does.
+type blockedCompute struct {
+	blocked atomic.Bool
+}
+
+func (b *blockedCompute) outcome(accountID string) *accountcleanup.Outcome {
+	out := cleanOutcome(accountID)
+	if b.blocked.Load() {
+		out.Items = []accountcleanup.Item{{
+			Kind: accountcleanup.KindInstance, ResourceID: "i-held", State: "running",
+			Disposition: accountcleanup.DispositionBlocked, Reason: accountcleanup.ReasonManagedServiceOwner,
+		}}
+	}
+	return out
+}
+
+func (b *blockedCompute) CleanupCompute(_ context.Context, req *accountcleanup.ComputeRequest) (*accountcleanup.ComputeResult, error) {
+	return b.outcome(req.AccountID), nil
+}
+
+func (b *blockedCompute) ComputeRemaining(_ context.Context, accountID string) (*accountcleanup.Outcome, error) {
+	return b.outcome(accountID), nil
+}
+
+// A job that ends FAILED naming a blocker the loop cannot clear keeps the
+// account, and an operator rerun after the blocker clears converges it.
+func TestAdminDeleteAccountFailedJobConvergesOnOperatorRerun(t *testing.T) {
+	t.Parallel()
+	gw := newDeleteAccountGateway(t)
+	compute := &blockedCompute{}
+	compute.blocked.Store(true)
+	gw.ComputeCleaner = compute
+	account := newTenantAccount(t, gw, "tenant@example.com")
+
+	_, err := gw.deleteAccount(t.Context(),
+		deleteAccountBody(t, account.AccountID, "tenant@example.com", strings.Repeat("a", 32)))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateFailed
+	}, 60*time.Second, 50*time.Millisecond)
+	failed := describeDeletion(t, gw, account.AccountID)
+	assert.NotEmpty(t, failed.Error)
+	_, stillThere := gw.IAM.GetAccount(account.AccountID)
+	require.NoError(t, stillThere, "a FAILED job must keep the account")
+
+	compute.blocked.Store(false)
+	_, err = gw.deleteAccount(t.Context(),
+		deleteAccountBody(t, account.AccountID, "tenant@example.com", strings.Repeat("b", 32)))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted
+	}, 60*time.Second, 50*time.Millisecond)
 }

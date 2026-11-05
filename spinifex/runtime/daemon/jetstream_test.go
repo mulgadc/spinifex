@@ -36,6 +36,7 @@ func writeNodeState(t *testing.T, m *JetStreamManager, nodeID string, vms map[st
 
 // TestJetStreamManager_WriteAndLoadState tests round-trip write and load of instance state.
 func TestJetStreamManager_WriteAndLoadState(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedJSNATSURL
 
 	// Connect to NATS
@@ -88,6 +89,7 @@ func TestJetStreamManager_WriteAndLoadState(t *testing.T) {
 
 // TestJetStreamManager_LoadState_KeyNotFound tests that LoadState returns empty state when key doesn't exist.
 func TestJetStreamManager_LoadState_KeyNotFound(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedJSNATSURL
 
 	nc, err := nats.Connect(natsURL)
@@ -110,6 +112,7 @@ func TestJetStreamManager_LoadState_KeyNotFound(t *testing.T) {
 
 // TestJetStreamManager_BucketCreation tests that InitKVBucket creates the bucket when it doesn't exist.
 func TestJetStreamManager_BucketCreation(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedJSNATSURL
 
 	nc, err := nats.Connect(natsURL)
@@ -132,6 +135,7 @@ func TestJetStreamManager_BucketCreation(t *testing.T) {
 
 // TestJetStreamManager_BucketReconnection tests that InitKVBucket connects to existing bucket.
 func TestJetStreamManager_BucketReconnection(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedJSNATSURL
 
 	// First connection - create the bucket
@@ -178,6 +182,7 @@ func TestJetStreamManager_BucketReconnection(t *testing.T) {
 
 // TestJetStreamManager_DeleteState tests deleting state from the KV store.
 func TestJetStreamManager_DeleteState(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedJSNATSURL
 
 	nc, err := nats.Connect(natsURL)
@@ -220,6 +225,7 @@ func TestJetStreamManager_DeleteState(t *testing.T) {
 
 // TestJetStreamManager_DeleteState_NonExistent tests deleting state that doesn't exist.
 func TestJetStreamManager_DeleteState_NonExistent(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedJSNATSURL
 
 	nc, err := nats.Connect(natsURL)
@@ -239,6 +245,7 @@ func TestJetStreamManager_DeleteState_NonExistent(t *testing.T) {
 
 // TestJetStreamManager_WriteState_UpdateExisting tests that writing state updates existing entry.
 func TestJetStreamManager_WriteState_UpdateExisting(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedJSNATSURL
 
 	nc, err := nats.Connect(natsURL)
@@ -287,7 +294,8 @@ func TestJetStreamManager_WriteState_UpdateExisting(t *testing.T) {
 
 // TestJetStreamManager_MultipleNodes tests storing state for multiple nodes.
 func TestJetStreamManager_MultipleNodes(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 
 	nc, err := nats.Connect(natsURL)
 	require.NoError(t, err)
@@ -334,6 +342,7 @@ func TestJetStreamManager_MultipleNodes(t *testing.T) {
 
 // TestJetStreamManager_KVNotInitialized tests error handling when KV is not initialized.
 func TestJetStreamManager_KVNotInitialized(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedJSNATSURL
 
 	nc, err := nats.Connect(natsURL)
@@ -359,6 +368,7 @@ func TestJetStreamManager_KVNotInitialized(t *testing.T) {
 
 // TestJetStreamManager_WriteAndLoadStoppedInstance tests round-trip write and load of a stopped instance.
 func TestJetStreamManager_WriteAndLoadStoppedInstance(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -394,6 +404,7 @@ func TestJetStreamManager_WriteAndLoadStoppedInstance(t *testing.T) {
 
 // TestJetStreamManager_LoadStoppedInstance_NotFound tests that LoadStoppedInstance returns nil for missing key.
 func TestJetStreamManager_LoadStoppedInstance_NotFound(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -410,6 +421,7 @@ func TestJetStreamManager_LoadStoppedInstance_NotFound(t *testing.T) {
 
 // TestJetStreamManager_DeleteStoppedInstance tests deleting a stopped instance (including non-existent).
 func TestJetStreamManager_DeleteStoppedInstance(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -444,6 +456,7 @@ func TestJetStreamManager_DeleteStoppedInstance(t *testing.T) {
 // TestJetStreamManager_ClaimStoppedInstance_HappyPath verifies a claim
 // atomically removes the record and hands back the VM it held.
 func TestJetStreamManager_ClaimStoppedInstance_HappyPath(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -472,6 +485,7 @@ func TestJetStreamManager_ClaimStoppedInstance_HappyPath(t *testing.T) {
 // with no record returns vm.ErrStoppedInstanceClaimed rather than a bare
 // nats not-found error, so callers can map it directly to the API error.
 func TestJetStreamManager_ClaimStoppedInstance_NotFound(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -492,6 +506,7 @@ func TestJetStreamManager_ClaimStoppedInstance_NotFound(t *testing.T) {
 // mutual-exclusion primitive under real NATS wire semantics, not just at
 // the fake/mock layer exercised by the handlers-level test.
 func TestJetStreamManager_ClaimStoppedInstance_ConcurrentClaim(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -543,6 +558,7 @@ func TestJetStreamManager_ClaimStoppedInstance_ConcurrentClaim(t *testing.T) {
 // concurrent writer landing between Get and Update must be detected via a
 // revision conflict and retried, and both updates must land.
 func TestJetStreamManager_UpdateStoppedInstance_ConflictRetry(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -586,6 +602,7 @@ func TestJetStreamManager_UpdateStoppedInstance_ConflictRetry(t *testing.T) {
 // UpdateStoppedInstance surfaces kvstore.ErrNotFound rather than silently
 // creating a record when nothing exists to update.
 func TestJetStreamManager_UpdateStoppedInstance_NotFound(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -607,6 +624,7 @@ func TestJetStreamManager_UpdateStoppedInstance_NotFound(t *testing.T) {
 // test — the record it reads is no longer stopped, and to this API an instance
 // that is not stopped is one that is not there.
 func TestJetStreamManager_UpdateStoppedInstance_NoResurrectAfterClaim(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -651,6 +669,7 @@ func TestJetStreamManager_UpdateStoppedInstance_NoResurrectAfterClaim(t *testing
 
 // TestJetStreamManager_ListStoppedInstances tests listing multiple stopped instances.
 func TestJetStreamManager_ListStoppedInstances(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -693,6 +712,7 @@ func TestJetStreamManager_ListStoppedInstances(t *testing.T) {
 
 // TestJetStreamManager_StoppedInstances_NoInterference tests that stopped instances don't interfere with per-node state.
 func TestJetStreamManager_StoppedInstances_NoInterference(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -733,6 +753,7 @@ func TestJetStreamManager_StoppedInstances_NoInterference(t *testing.T) {
 
 // TestJetStreamManager_StoppedInstance_KVNotInitialized tests error handling when KV is not initialized.
 func TestJetStreamManager_StoppedInstance_KVNotInitialized(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -758,6 +779,7 @@ func TestJetStreamManager_StoppedInstance_KVNotInitialized(t *testing.T) {
 
 // TestJetStreamManager_WriteServiceManifest tests writing a service manifest to the cluster-state KV.
 func TestJetStreamManager_WriteServiceManifest(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -795,6 +817,7 @@ func TestJetStreamManager_WriteServiceManifest(t *testing.T) {
 
 // TestJetStreamManager_WriteServiceManifest_EmptyServices tests writing a manifest with no services.
 func TestJetStreamManager_WriteServiceManifest_EmptyServices(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -822,6 +845,7 @@ func TestJetStreamManager_WriteServiceManifest_EmptyServices(t *testing.T) {
 
 // TestJetStreamManager_WriteServiceManifest_ClusterKVNotInitialized tests error when clusterKV is nil.
 func TestJetStreamManager_WriteServiceManifest_ClusterKVNotInitialized(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -1145,6 +1169,7 @@ func TestJetStreamManager_ListStoppedInstances_RecoveryFailure(t *testing.T) {
 // --- Terminated instance KV tests ---
 
 func TestJetStreamManager_WriteAndLoadTerminatedInstance(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -1175,6 +1200,7 @@ func TestJetStreamManager_WriteAndLoadTerminatedInstance(t *testing.T) {
 }
 
 func TestJetStreamManager_LoadTerminatedInstance_NotFound(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -1189,6 +1215,7 @@ func TestJetStreamManager_LoadTerminatedInstance_NotFound(t *testing.T) {
 }
 
 func TestJetStreamManager_DeleteTerminatedInstance(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -1218,6 +1245,7 @@ func TestJetStreamManager_DeleteTerminatedInstance(t *testing.T) {
 }
 
 func TestJetStreamManager_ListTerminatedInstances(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -1254,6 +1282,7 @@ func TestJetStreamManager_ListTerminatedInstances(t *testing.T) {
 }
 
 func TestJetStreamManager_WriteLoadDeleteTerminatedInstance_RoundTrip(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -1286,6 +1315,7 @@ func TestJetStreamManager_WriteLoadDeleteTerminatedInstance_RoundTrip(t *testing
 }
 
 func TestJetStreamManager_TerminatedInstance_KVNotInitialized(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -1315,6 +1345,7 @@ func TestJetStreamManager_TerminatedInstance_KVNotInitialized(t *testing.T) {
 // revision conflict and retried, and BOTH updates — the injected concurrent
 // one and the retried one — must land, none silently dropped.
 func TestJetStreamManager_UpdateTerminatedInstance_ConflictRetry(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -1364,6 +1395,7 @@ func TestJetStreamManager_UpdateTerminatedInstance_ConflictRetry(t *testing.T) {
 // UpdateTerminatedInstance surfaces a clear error rather than silently
 // creating a record when there is nothing to merge into.
 func TestJetStreamManager_UpdateTerminatedInstance_NotFound(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -1382,6 +1414,7 @@ func TestJetStreamManager_UpdateTerminatedInstance_NotFound(t *testing.T) {
 // conflict-retry loop must not surface a spurious error for the common,
 // non-merging "replace wholesale" write path.
 func TestJetStreamManager_WriteStoppedInstance_OverwritesConcurrentValue(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -1486,6 +1519,7 @@ func TestJetStreamManager_ListTerminatedInstances_RecoverAfterStreamLost(t *test
 }
 
 func TestJetStreamManager_InitBuckets_WritesVersion(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -1576,6 +1610,7 @@ func (f *fakeKVObserver) snapshot() ([]string, []fakeKVObserverFailure) {
 }
 
 func TestJetStreamManager_BestEffort_Success_NotifiesObserver(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -1596,6 +1631,7 @@ func TestJetStreamManager_BestEffort_Success_NotifiesObserver(t *testing.T) {
 }
 
 func TestJetStreamManager_BestEffort_PutError_NotifiesObserver(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 
@@ -1619,6 +1655,7 @@ func TestJetStreamManager_BestEffort_PutError_NotifiesObserver(t *testing.T) {
 }
 
 func TestJetStreamManager_BestEffort_NilObserver_NoPanic(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -1640,6 +1677,7 @@ func TestJetStreamManager_BestEffort_NilObserver_NoPanic(t *testing.T) {
 // UpdateStoppedInstance/UpdateTerminatedInstance's conflict-retry tests,
 // applied to the allocator's backing store.
 func TestJetStreamManager_UpdateMgmtIPAM_ConflictRetry(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -1690,6 +1728,7 @@ func TestJetStreamManager_UpdateMgmtIPAM_ConflictRetry(t *testing.T) {
 // MgmtIPAllocator.Release relies on this to no-op cleanly when there is
 // nothing to release.
 func TestJetStreamManager_UpdateMgmtIPAM_NotFound(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -1705,6 +1744,7 @@ func TestJetStreamManager_UpdateMgmtIPAM_NotFound(t *testing.T) {
 // TestJetStreamManager_UpdateMgmtIPAM_ClusterKVNotInitialized tests error
 // handling when the cluster-state KV bucket has not been initialized.
 func TestJetStreamManager_UpdateMgmtIPAM_ClusterKVNotInitialized(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -1727,6 +1767,7 @@ func TestJetStreamManager_UpdateMgmtIPAM_ClusterKVNotInitialized(t *testing.T) {
 // instance now, so an undecodable record fails every listing that reads it and
 // not just the one under test.
 func TestJetStreamManager_ListStoppedInstances_FailsOnAnUndecodableRecord(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	jsm, err := NewJetStreamManager(nc)
@@ -1750,6 +1791,7 @@ func TestJetStreamManager_ListStoppedInstances_FailsOnAnUndecodableRecord(t *tes
 // terminated stores alike. Mutating an absent key must report it, not create
 // the record.
 func TestJetStreamManager_UpdateStoppedInstance_AbsentKeyIsNotFound(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -1786,6 +1828,7 @@ func seedNodeRecord(t *testing.T, jsm *JetStreamManager, nodeID string, raw []by
 // The instances come from the records, not from the marker, so a marker that
 // still carries a vms member is read for its presence and nothing else.
 func TestJetStreamManager_LoadState_UnversionedRecordStillReads(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -1811,6 +1854,7 @@ func TestJetStreamManager_LoadState_UnversionedRecordStillReads(t *testing.T) {
 // is the per-record guard the bucket-level version key cannot provide, since
 // that is checked once at open by whichever node opened it.
 func TestJetStreamManager_LoadState_FutureRecordIsRefused(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -1831,6 +1875,7 @@ func TestJetStreamManager_LoadState_FutureRecordIsRefused(t *testing.T) {
 // Both writers stamp the version: the typed WriteState and the best-effort
 // marker path, which is the one that would silently skip it.
 func TestJetStreamManager_WriteState_StampsSchemaVersion(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -1952,6 +1997,7 @@ func TestJetStreamManager_NilGuards(t *testing.T) {
 }
 
 func TestJetStreamManager_InitClusterStateBucket_NoJetStream(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -2017,6 +2063,7 @@ func TestJetStreamManager_ClusterStateReads(t *testing.T) {
 }
 
 func TestJetStreamManager_WriteNodeMarkerBestEffort_Timeout(t *testing.T) {
+	t.Parallel()
 	clustersize.DeclareForTest(t, 1)
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)

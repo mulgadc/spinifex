@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -27,6 +28,20 @@ func await[T any](t *testing.T, ch <-chan T) T {
 		t.Fatal("timed out waiting on a channel")
 		panic("unreachable")
 	}
+}
+
+// allocBytesPerOp is the mean heap allocated per call of f, measured the same
+// way testing.Benchmark does but over a fixed number of runs.
+func allocBytesPerOp(runs int, f func()) int64 {
+	f()
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	for range runs {
+		f()
+	}
+	runtime.ReadMemStats(&after)
+	return int64(after.TotalAlloc-before.TotalAlloc) / int64(runs)
 }
 
 // arm puts a delivered, unclaimed flight in place without any HTTP traffic.
@@ -136,16 +151,13 @@ func TestDeclaredOversizeCompletesWithoutPayloadBuffer(t *testing.T) {
 	assert.Equal(t, ErrTypeUnhandled, res.FunctionError)
 	assert.Equal(t, ErrTypeResponseTooLarge, errType(t, res.Payload))
 
-	br := testing.Benchmark(func(b *testing.B) {
-		b.ReportAllocs()
-		for range b.N {
-			s := New()
-			f := arm(s, "req-1")
-			postTo(s, "response", "req-1", &patterned{n: n}, int64(n))
-			await(t, f.done)
-		}
+	perOp := allocBytesPerOp(8, func() {
+		s := New()
+		f := arm(s, "req-1")
+		postTo(s, "response", "req-1", &patterned{n: n}, int64(n))
+		await(t, f.done)
 	})
-	assert.Less(t, br.AllocedBytesPerOp(), int64(256<<10), "an oversize body must not be buffered")
+	assert.Less(t, perOp, int64(256<<10), "an oversize body must not be buffered")
 }
 
 func TestDeclaredOversizeCutShortIsUnknown(t *testing.T) {
@@ -209,16 +221,13 @@ func TestChunkedBodyCap(t *testing.T) {
 	})
 	t.Run("peak allocation stays within the cap plus one segment", func(t *testing.T) {
 		for _, n := range []int{MaxResponseBytes, MaxResponseBytes + 1} {
-			br := testing.Benchmark(func(b *testing.B) {
-				b.ReportAllocs()
-				for range b.N {
-					s := New()
-					f := arm(s, "req-1")
-					postTo(s, "response", "req-1", &patterned{n: n}, -1)
-					await(t, f.done)
-				}
+			perOp := allocBytesPerOp(8, func() {
+				s := New()
+				f := arm(s, "req-1")
+				postTo(s, "response", "req-1", &patterned{n: n}, -1)
+				await(t, f.done)
 			})
-			assert.Less(t, br.AllocedBytesPerOp(), int64(MaxResponseBytes+segmentBytes+64<<10), "body of %d bytes", n)
+			assert.Less(t, perOp, int64(MaxResponseBytes+segmentBytes+64<<10), "body of %d bytes", n)
 		}
 	})
 }

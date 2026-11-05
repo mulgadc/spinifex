@@ -24,6 +24,7 @@ import (
 // prefix rather than widen to ">" — a rule change is not a DNS change, and
 // every write anywhere in that bucket would otherwise wake the reconcile.
 func TestDNSWatchSources_OneSourcePerDesiredSetInput(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{}
 	sources := d.dnsWatchSources()
 	require.Len(t, sources, 4)
@@ -61,6 +62,7 @@ func TestDNSWatchBuckets_ZeroValueDaemonIsNilSafe(t *testing.T) {
 }
 
 func TestInstanceStateWatchBuckets_ReturnsSharedBucket(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	d := &Daemon{jsManager: &JetStreamManager{js: js}}
 
@@ -73,6 +75,7 @@ func TestInstanceStateWatchBuckets_ReturnsSharedBucket(t *testing.T) {
 // TestElbv2WatchBuckets_NoStoreIsNilSafe covers a service that exists but has
 // not opened a store, distinct from the elbv2Service field itself being nil.
 func TestElbv2WatchBuckets_NoStoreIsNilSafe(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{elbv2Service: &elbv2domain.ELBv2ServiceImpl{}}
 	buckets, err := d.elbv2WatchBuckets(t.Context())
 	require.NoError(t, err)
@@ -80,6 +83,7 @@ func TestElbv2WatchBuckets_NoStoreIsNilSafe(t *testing.T) {
 }
 
 func TestElbv2WatchBuckets_WithStoreReturnsWatchBucket(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
@@ -97,6 +101,7 @@ func TestElbv2WatchBuckets_WithStoreReturnsWatchBucket(t *testing.T) {
 // TestEksWatchBuckets_NilGuards exercises the two halves of the guard clause
 // independently: a natsConn with no service, and a service with no natsConn.
 func TestEksWatchBuckets_NilGuards(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	buckets, err := (&Daemon{natsConn: nc}).eksWatchBuckets(t.Context())
@@ -109,6 +114,7 @@ func TestEksWatchBuckets_NilGuards(t *testing.T) {
 }
 
 func TestEksWatchBuckets_DelegatesToAccountWatchBuckets(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	_, err := ekscluster.GetOrCreateAccountBucket(t.Context(), js, "111111111111")
@@ -124,6 +130,7 @@ func TestEksWatchBuckets_DelegatesToAccountWatchBuckets(t *testing.T) {
 // TestRdsWatchBuckets_NilGuards exercises the two halves of the guard clause
 // independently: a jsManager with no service, and a service with no jsManager.
 func TestRdsWatchBuckets_NilGuards(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 
 	buckets, err := (&Daemon{jsManager: &JetStreamManager{js: js}}).rdsWatchBuckets(t.Context())
@@ -136,6 +143,7 @@ func TestRdsWatchBuckets_NilGuards(t *testing.T) {
 }
 
 func TestRdsWatchBuckets_DelegatesToAccountWatchBuckets(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	_, err := rdsinstance.GetOrCreateAccountBucket(t.Context(), js, "111111111111")
 	require.NoError(t, err)

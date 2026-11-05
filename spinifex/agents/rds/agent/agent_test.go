@@ -459,6 +459,7 @@ func TestAcknowledgeBootstrap_WaitsForTheReceiptThenRetiresIt(t *testing.T) {
 // instance's volume carries the source instance's receipt. Acknowledging on one
 // would destroy the ciphertext this instance still needs.
 func TestAcknowledgeBootstrap_IgnoresAForeignReceipt(t *testing.T) {
+	t.Parallel()
 	tests := map[string]struct{ payloadID, dbID string }{
 		"another payload":  {payloadID: "bp-somebody-else", dbID: "db-resolved"},
 		"another instance": {payloadID: testPayloadID, dbID: "db-the-snapshot-source"},
@@ -466,6 +467,7 @@ func TestAcknowledgeBootstrap_IgnoresAForeignReceipt(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			cp := newFakeControlPlane()
 			cfg := testConfig(t)
 			cfg.DataMount = t.TempDir()
@@ -568,6 +570,7 @@ func TestRun_SendsConfiguredIdentifier(t *testing.T) {
 }
 
 func TestRun_WaitsForDataMountBeforePollingCommands(t *testing.T) {
+	t.Parallel()
 	cp := newFakeControlPlane()
 	cp.bootstrapOut = bootstrapOutput(nil)
 	cfg := testConfig(t)
@@ -854,6 +857,7 @@ func TestAcknowledgeBootstrap_StopsOnATerminalDenial(t *testing.T) {
 // window. Reporting that would put a failure on every healthy create's beat, and
 // then into the reason a create that timed out for some other cause records.
 func TestAcknowledgeBootstrap_DoesNotReportAnAbsentReceiptAsAFailure(t *testing.T) {
+	t.Parallel()
 	cp := newFakeControlPlane()
 	cfg := testConfig(t)
 	cfg.DataMount = t.TempDir()

@@ -7,64 +7,19 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
 	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
-	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
 	"github.com/nats-io/nats.go"
 )
 
 // EC2ExtraReapers returns the EC2 reapers that hang off the VPC rather than off
 // an instance.
 //
-// Spot requests come first and in the compute stage: a live request can launch
-// a replacement after the instance reaper has drained, so leaving one running
-// makes teardown race its own fulfilment rather than merely leak.
+// Spot requests are not here: the EC2 compute cleanup cancels them before it
+// terminates anything, so none can launch a replacement.
 func EC2ExtraReapers(nc *nats.Conn) []Reaper {
 	return []Reaper{
-		&spotRequestReaper{svc: ec2spotinstance.NewNATSSpotInstanceService(nc)},
 		&natGatewayReaper{svc: ec2natgw.NewNATSNatGatewayService(nc)},
 		&egressOnlyIGWReaper{svc: ec2eigw.NewNATSEgressOnlyIGWService(nc)},
 	}
-}
-
-// terminalSpotStates are the states a request can no longer launch from.
-// Anything else may still produce an instance.
-var terminalSpotStates = map[string]bool{"cancelled": true, "closed": true, "failed": true}
-
-type spotRequestReaper struct {
-	svc ec2spotinstance.SpotInstanceService
-}
-
-func (r *spotRequestReaper) Kind() string { return "spot-request" }
-func (r *spotRequestReaper) Stage() Stage { return StageCompute }
-
-func (r *spotRequestReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	out, err := r.svc.DescribeSpotInstanceRequests(ctx, &ec2.DescribeSpotInstanceRequestsInput{}, accountID)
-	if err != nil {
-		return nil, err
-	}
-
-	var found []Resource
-	for _, request := range out.SpotInstanceRequests {
-		if request == nil || request.SpotInstanceRequestId == nil {
-			continue
-		}
-		state := aws.StringValue(request.State)
-		if terminalSpotStates[state] {
-			continue
-		}
-		found = append(found, Resource{
-			Kind:   r.Kind(),
-			ID:     aws.StringValue(request.SpotInstanceRequestId),
-			Detail: state,
-		})
-	}
-	return found, nil
-}
-
-func (r *spotRequestReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
-	_, err := r.svc.CancelSpotInstanceRequests(ctx, &ec2.CancelSpotInstanceRequestsInput{
-		SpotInstanceRequestIds: []*string{aws.String(resource.ID)},
-	}, accountID)
-	return ignoreAlreadyGone(err)
 }
 
 // deletedNatGatewayStates are the states a NAT gateway has already released its

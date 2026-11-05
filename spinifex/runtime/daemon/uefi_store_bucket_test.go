@@ -14,6 +14,7 @@ import (
 // The daemon creates the store-record bucket at startup and hands out the
 // store it opened, so later readers share one handle.
 func TestInitUEFIStoreBucket_CreatesBucketAndServesTheStore(t *testing.T) {
+	t.Parallel()
 	_, nc, js := testutil.StartTestJetStream(t)
 	m, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)

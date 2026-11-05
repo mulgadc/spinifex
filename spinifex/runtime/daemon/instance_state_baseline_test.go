@@ -38,6 +38,7 @@ func baselineVM() *vm.VM {
 const baselineLocalFile = `{"schema_version":1,"vms":{"i-0123456789abcdef0":{"id":"i-0123456789abcdef0","status":"running","instance_type":"t3.micro","config":{"name":"","pid_file":"","qmp_socket":"","enable_kvm":false,"no_graphic":false,"machine_type":"","cpu_type":"","cpu_count":0,"memory":0,"drives":null,"devices":null,"net_devs":null,"instance_type":"","architecture":""},"ebs_requests":{"Requests":null},"eni_requests":{"available_slots":null,"attached_by_eni_id":null},"last_node":"node-1","az":"us-east-1a","health":{"crash_count":0,"last_crash_time":"0001-01-01T00:00:00Z","restart_count":0,"first_crash_time":"0001-01-01T00:00:00Z","qmp_consecutive_failures":0},"account_id":"111122223333"}}}`
 
 func TestCurrentBehaviour_LocalStateFileExactBytes(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state", "instance-state.json")
 	data, err := daemon.MarshalLocalState(map[string]*vm.VM{"i-0123456789abcdef0": baselineVM()})
 	require.NoError(t, err)
@@ -77,6 +78,7 @@ func TestCurrentBehaviour_LocalStateSchemaVersionFailures(t *testing.T) {
 // A file written by a newer binary at the same schema version is read, and the
 // fields this binary does not know are gone after the next rewrite.
 func TestCurrentBehaviour_LocalStateUnknownFieldsAreDroppedOnRewrite(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "instance-state.json")
 	newer := `{"schema_version":1,"journal":{"seq":9},"vms":{"i-1":{"id":"i-1","status":"running","assignment_generation":4}}}`
 	require.NoError(t, os.WriteFile(path, []byte(newer), 0o600))
@@ -92,6 +94,7 @@ func TestCurrentBehaviour_LocalStateUnknownFieldsAreDroppedOnRewrite(t *testing.
 }
 
 func TestCurrentBehaviour_InstanceBucketConfiguration(t *testing.T) {
+	t.Parallel()
 	_, nc := newRecordManagerConn(t)
 	js, err := jetstream.New(nc)
 	require.NoError(t, err)
@@ -127,6 +130,7 @@ const baselineRecord = `{"metadata":{"name":"i-0123456789abcdef0","account_id":"
 // The running-set writer stamps the node and AZ it was given over whatever the
 // instance carried, writes at i.<id> and carries no schema version per record.
 func TestCurrentBehaviour_RecordKeyAndWireForm(t *testing.T) {
+	t.Parallel()
 	m, nc := newRecordManagerConn(t)
 	m.WriteRunningSet("node-2", "us-east-1b", map[string]*vm.VM{"i-0123456789abcdef0": baselineVM()})
 
@@ -158,6 +162,7 @@ func bucketKV(t *testing.T, nc *nats.Conn, bucket string) jetstream.KeyValue {
 // bucket. A handle already open keeps writing after a newer binary stamps it,
 // and readers that open the bucket by name see no gate at all.
 func TestCurrentBehaviour_BucketVersionGate(t *testing.T) {
+	t.Parallel()
 	oldWriter, nc := newRecordManagerConn(t)
 	kv := instanceStateKV(t, nc)
 	require.NoError(t, kvutil.WriteVersion(t.Context(), kv, daemon.InstanceStateBucketVersion+1))
@@ -195,6 +200,7 @@ func seedNewerRecord(t *testing.T, kv jetstream.KeyValue, desired vm.DesiredStat
 // writer of an instance record: does the generation pair a record already
 // carries survive the write, and does a field this binary does not know?
 func TestCurrentBehaviour_GenerationAcrossKVWriters(t *testing.T) {
+	t.Parallel()
 	stopped := func(t *testing.T, kv jetstream.KeyValue) { seedNewerRecord(t, kv, vm.DesiredStopped, vm.StateStopped) }
 	running := func(t *testing.T, kv jetstream.KeyValue) { seedNewerRecord(t, kv, vm.DesiredRunning, vm.StateRunning) }
 
@@ -271,6 +277,7 @@ func TestCurrentBehaviour_GenerationAcrossKVWriters(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			m, nc := newRecordManagerConn(t)
 			bucket := daemon.InstanceStateBucket
 			if tc.terminated {
@@ -306,6 +313,7 @@ func TestCurrentBehaviour_GenerationAcrossKVWriters(t *testing.T) {
 // Characterises current behaviour: reading a record into the running set goes
 // through vm.VM, so the generation pair is gone before the recovery merge.
 func TestCurrentBehaviour_LoadStateDropsGeneration(t *testing.T) {
+	t.Parallel()
 	m, nc := newRecordManagerConn(t)
 	require.NoError(t, m.WriteNodeMarker("node-1"))
 	seedNewerRecord(t, instanceStateKV(t, nc), vm.DesiredRunning, vm.StateRunning)

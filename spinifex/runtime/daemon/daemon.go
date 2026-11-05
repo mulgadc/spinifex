@@ -46,6 +46,7 @@ import (
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	ec2account "github.com/mulgadc/spinifex/spinifex/domains/ec2/account"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
@@ -59,6 +60,7 @@ import (
 	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
@@ -237,6 +239,10 @@ type Daemon struct {
 	// JetStream manager for KV state storage (nil if JetStream disabled)
 	jsManager *JetStreamManager
 
+	// ownership decides whether a system terminate may proceed; nil means the
+	// jsManager answers it. Tests set it.
+	ownership systeminstance.OwnershipClassifier
+
 	// stateStore is the vm.StateStore view over jsManager, initialized after
 	// initJetStream succeeds.
 	stateStore vm.StateStore
@@ -256,6 +262,10 @@ type Daemon struct {
 	// requireNATSTimeout caps the first connectNATS attempt under
 	// SPINIFEX_REQUIRE_NATS=1. Default 30s; tests use a shorter value.
 	requireNATSTimeout time.Duration
+
+	// ownerCommandTimeout bounds each ec2.cmd owner request; zero means
+	// instanceOwnerCommandTimeout. Tests use a shorter value.
+	ownerCommandTimeout time.Duration
 
 	// exitFunc is called when SPINIFEX_REQUIRE_NATS=1 and the first connect
 	// times out. Defaults to os.Exit; tests override to avoid killing the process.
@@ -1043,6 +1053,7 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.terminate", handleNATSRequest(d.node, d.instanceService.TerminateStoppedInstance), "spinifex-workers"},
 		{"ec2.DescribeStoppedInstances", handleNATSRequest(d.node, d.instanceService.DescribeStoppedInstances), "spinifex-workers"},
 		{"ec2.DescribeAccountInstanceRecords", handleNATSRequest(d.node, d.instanceService.DescribeAccountInstanceRecords), "spinifex-workers"},
+		{ec2instanceapi.AccountTeardownOutstandingSubject, handleNATSRequest(d.node, d.instanceService.AccountTeardownOutstandingRPC), "spinifex-workers"},
 		{"ec2.DescribeTerminatedInstances", handleNATSRequest(d.node, d.instanceService.DescribeTerminatedInstances), "spinifex-workers"},
 		// these fan out to all nodes and gateway aggregates the results. The
 		// handler only sees per-daemon local state (vmMgr/stoppedStore), so
@@ -2139,6 +2150,7 @@ func (d *Daemon) startCluster() error {
 	// describe-tags agrees with each resource's own describe from birth and
 	// stops answering for it once it is deleted.
 	d.vpcService.SetCentralTagStore(d.tagsService)
+	d.startZoneIDBackfill()
 	// Name interfaces as their instances are named, so the two agree.
 	region, internalDomain := d.config.Region, dns.ResolveInternalDomain(d.config)
 	d.vpcService.SetPrivateDNSNamer(func(privateIP string) string {
@@ -2714,23 +2726,16 @@ func (d *Daemon) clusterSweepLease() (func(), bool) {
 	return d.rdsReconciler.AcquireClusterLease()
 }
 
-// leakedVolumeInstances returns the set of instance IDs this node owns whose
-// teardown leaked a volume — terminated here with a failed volumes-teardown.
-// The volume data-safety reaper marks (never deletes) volumes still attached to
-// these definitively-gone instances. Keying on this node's terminated set keeps
-// the shared-store scan from false-marking another node's live-instance volume.
+// leakedVolumeInstances returns the instances this node owns that were terminated
+// with a failed volumes teardown and whose QEMU is proven gone. The volume
+// data-safety reaper marks (never deletes) volumes still attached to them, so an
+// instance whose QEMU may still run is left out until it is proven gone.
 func (d *Daemon) leakedVolumeInstances() (map[string]bool, error) {
 	terminated, err := d.jsManager.ListTerminatedInstances()
 	if err != nil {
 		return nil, err
 	}
-	leaked := make(map[string]bool)
-	for _, v := range terminated {
-		if v.LastNode == d.node && v.Teardown[vm.TeardownVolumes] == string(vm.TeardownFailed) {
-			leaked[v.ID] = true
-		}
-	}
-	return leaked, nil
+	return vm.LeakedVolumeInstances(terminated, d.node), nil
 }
 
 // nodeRunningVMs returns this node's running VMs for the EKS billable reaper to

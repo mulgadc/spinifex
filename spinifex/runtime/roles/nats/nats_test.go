@@ -76,7 +76,7 @@ func TestRenderedConfig_EnforcesAuth(t *testing.T) {
 
 	ns, err := server.NewServer(opts)
 	require.NoError(t, err)
-	go ns.Start()
+	ns.Start()
 	require.True(t, ns.ReadyForConnections(5*time.Second))
 	t.Cleanup(func() { ns.Shutdown() })
 

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -208,36 +209,44 @@ func unpublishRefusal(code ebsprovider.ErrorCode, message string) ebsprovider.Un
 
 // spyOn records every request sent on subject without answering it, so a
 // request the mounter sends there is seen even when another subscriber
-// answers it.
+// answers it. A read sees every request published on nc before it.
 func spyOn(t *testing.T, nc *nats.Conn, subject string) func() []contractCall {
 	t.Helper()
 	var (
 		mu    sync.Mutex
 		calls []contractCall
 	)
-	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
-		var req ebsprovider.UnpublishVolumeRequest
-		_ = json.Unmarshal(msg.Data, &req)
-		mu.Lock()
-		calls = append(calls, contractCall{
-			subject: msg.Subject, version: req.SchemaVersion, volume: req.VolumeID,
-			noSeal: req.NoSeal, account: natsmsg.AccountIDFromMsg(msg),
-		})
-		mu.Unlock()
-	})
+	sub, err := nc.SubscribeSync(subject)
 	require.NoError(t, err)
 	require.NoError(t, nc.Flush())
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 	return func() []contractCall {
 		mu.Lock()
 		defer mu.Unlock()
-		return append([]contractCall(nil), calls...)
+		// The server sends this flush's PONG after every earlier request from
+		// nc, and the read loop queues each request on sub before reading on.
+		if !assert.NoError(t, nc.Flush()) {
+			return append([]contractCall(nil), calls...)
+		}
+		for {
+			msg, err := sub.NextMsg(0)
+			if errors.Is(err, nats.ErrTimeout) || !assert.NoError(t, err) {
+				return append([]contractCall(nil), calls...)
+			}
+			var req ebsprovider.UnpublishVolumeRequest
+			_ = json.Unmarshal(msg.Data, &req)
+			calls = append(calls, contractCall{
+				subject: msg.Subject, version: req.SchemaVersion, volume: req.VolumeID,
+				noSeal: req.NoSeal, account: natsmsg.AccountIDFromMsg(msg),
+			})
+		}
 	}
 }
 
 // Every mount, unmount and abandon goes to the node's provider over the
 // contract at the cluster's one version, and none uses a legacy subject.
 func TestVolumeMounterAdapter_EveryRequestAtVersion3OverTheContract(t *testing.T) {
+	t.Parallel()
 	nc := connectMounterTest(t)
 	node := newMounterTestNode()
 	provider := newMemoryProvider(t, "vol-a", "vol-b", "vol-hot", "vol-moved")
@@ -332,6 +341,7 @@ func TestVolumeMounterAdapter_PermanentRefusalIsNotRetryable(t *testing.T) {
 // a provider only sends at version 3, and the refusal reaches Mount's caller
 // as the sentinel that tells it apart from an ordinary volume in use.
 func TestVolumeMounterAdapter_HeldElsewhereReachesTheMountCaller(t *testing.T) {
+	t.Parallel()
 	nc := connectMounterTest(t)
 	owner, other := newMounterTestNode(), newMounterTestNode()
 	provider := newMemoryProvider(t, "vol-held")
@@ -352,6 +362,7 @@ func TestVolumeMounterAdapter_HeldElsewhereReachesTheMountCaller(t *testing.T) {
 // request timeout every other call gets: a seal that outlasts the request
 // timeout still completes, where a publish that slow fails.
 func TestVolumeMounterAdapter_UnpublishOutlastingRequestTimeoutCompletes(t *testing.T) {
+	t.Parallel()
 	const requestTimeout = 100 * time.Millisecond
 	const sealTime = 4 * requestTimeout
 
@@ -380,6 +391,7 @@ func TestVolumeMounterAdapter_UnpublishOutlastingRequestTimeoutCompletes(t *test
 // A failed volume rolls back the volumes this Mount already published, and a
 // missing volume backs off rather than failing the relaunch.
 func TestVolumeMounterAdapter_MountRollsBackOnFailure(t *testing.T) {
+	t.Parallel()
 	nc := connectMounterTest(t)
 	node := newMounterTestNode()
 	provider := newMemoryProvider(t, "vol-present")
@@ -410,6 +422,7 @@ func (s *stubMounterProvider) UnpublishVolume(context.Context, ebsprovider.Unpub
 // A block export replaces whatever export the request carried before, so a
 // relaunch never leaves both an NBD URI and a block device set.
 func TestVolumeMounterAdapter_BlockExportReplacesNBDURI(t *testing.T) {
+	t.Parallel()
 	adapter := newVolumeMounterAdapter(&stubMounterProvider{export: ebsprovider.VolumeExport{
 		Kind:  ebsprovider.ExportKindBlock,
 		Block: &ebsprovider.BlockExport{DevicePath: "/dev/sdx", SizeBytes: 1 << 30},
@@ -432,6 +445,7 @@ func TestVolumeMounterAdapter_BlockExportReplacesNBDURI(t *testing.T) {
 // reply carried no usable export, could not be read, or never came. Hot attach
 // gets ErrMountAmbiguous with the request untouched, and Mount tears it down.
 func TestVolumeMounterAdapter_AmbiguousPublishIsTornDown(t *testing.T) {
+	t.Parallel()
 	const requestTimeout = 100 * time.Millisecond
 	replies := map[string]struct {
 		reply   func() ebsprovider.PublishVolumeResponse
@@ -465,6 +479,7 @@ func TestVolumeMounterAdapter_AmbiguousPublishIsTornDown(t *testing.T) {
 	}
 	for name, tt := range replies {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			nc := connectMounterTest(t)
 			node := newMounterTestNode()
 			fake := serveFakeNodeProvider(t, nc, node)
@@ -491,6 +506,7 @@ func TestVolumeMounterAdapter_AmbiguousPublishIsTornDown(t *testing.T) {
 // A caller that gives up during a later volume's publish still gets that volume
 // and the ones already published unpublished, rather than left exported.
 func TestVolumeMounterAdapter_MountRollbackOutlivesCancelledCaller(t *testing.T) {
+	t.Parallel()
 	nc := connectMounterTest(t)
 	node := newMounterTestNode()
 	fake := serveFakeNodeProvider(t, nc, node)
@@ -523,6 +539,7 @@ func TestVolumeMounterAdapter_MountRollbackOutlivesCancelledCaller(t *testing.T)
 // is ambiguous, so the attach unpublishes it, and that teardown still reaches
 // the provider under the cancelled context.
 func TestVolumeMounterAdapter_MountOneCancelledAfterSendIsAmbiguous(t *testing.T) {
+	t.Parallel()
 	nc := connectMounterTest(t)
 	node := newMounterTestNode()
 	fake := serveFakeNodeProvider(t, nc, node)
@@ -555,6 +572,7 @@ func TestVolumeMounterAdapter_MountOneCancelledAfterSendIsAmbiguous(t *testing.T
 // A caller already gone when a publish would start sends nothing, so neither
 // call is ambiguous and Mount unpublishes only the volumes it published.
 func TestVolumeMounterAdapter_PublishAfterCallerGoneSendsNothing(t *testing.T) {
+	t.Parallel()
 	nc := connectMounterTest(t)
 	node := newMounterTestNode()
 	fake := serveFakeNodeProvider(t, nc, node)
@@ -575,6 +593,7 @@ func TestVolumeMounterAdapter_PublishAfterCallerGoneSendsNothing(t *testing.T) {
 // Every contract request names the account it acts for on the wire, so the
 // provider's server span is attributable, and an unattributed one names none.
 func TestVolumeMounterAdapter_ContractRequestsCarryTheAccount(t *testing.T) {
+	t.Parallel()
 	nc := connectMounterTest(t)
 	node := newMounterTestNode()
 	serveFakeNodeProvider(t, nc, node)
@@ -623,6 +642,7 @@ func TestVolumeMounterAdapter_RequestSpanCarriesTheAccountUnderTheCaller(t *test
 // inherit what is left: a caller context already cancelled, or one shorter
 // than the seal, still gets the seal completed.
 func TestVolumeMounterAdapter_UnpublishOutlivesCallerContext(t *testing.T) {
+	t.Parallel()
 	const sealTime = 200 * time.Millisecond
 
 	nc := connectMounterTest(t)
@@ -688,6 +708,7 @@ func TestVolumeMounterAdapter_AbandonUnpublishesWithoutSealing(t *testing.T) {
 
 // An abandon that finds no provider has not let go, so the caller is told.
 func TestVolumeMounterAdapter_AbandonNoResponderFails(t *testing.T) {
+	t.Parallel()
 	nc := connectMounterTest(t)
 	adapter := newNATSMounter(nc, newMounterTestNode())
 
@@ -700,6 +721,7 @@ func TestVolumeMounterAdapter_AbandonNoResponderFails(t *testing.T) {
 // An abandon that is never answered gives up within its own bound rather
 // than the provider's data-movement budget for an unpublish.
 func TestVolumeMounterAdapter_AbandonGivesUpWithinItsBound(t *testing.T) {
+	t.Parallel()
 	const bound = 200 * time.Millisecond
 	nc := connectMounterTest(t)
 	node := newMounterTestNode()

@@ -79,6 +79,12 @@ func (t testlink) run(parent context.Context) (int, error) {
 	if err := checkBinding(scope, grant, first, time.Now()); err != nil {
 		return exitRefused, err
 	}
+	// A host that sent no credential is refused before anything is installed.
+	if first.Credential == nil || !first.Credential.Complete() {
+		return exitRefused, errors.New("first frame carries no execution credential")
+	}
+	cred := *first.Credential
+	first.Credential = nil
 	if err := t.pkg.install(spec); err != nil {
 		return exitRefused, fmt.Errorf("install package: %w", err)
 	}
@@ -94,12 +100,7 @@ func (t testlink) run(parent context.Context) (int, error) {
 
 	ctx, cancel := context.WithCancelCause(parent)
 	defer cancel(nil)
-	cmd, err := t.startBootstrap(ctx, []string{
-		"AWS_LAMBDA_RUNTIME_API=" + ln.Addr().String(),
-		"_HANDLER=" + spec.handler,
-		"LAMBDA_TASK_ROOT=" + taskRoot,
-		"PATH=/bin:/sbin:/usr/bin",
-	})
+	cmd, err := t.startBootstrap(ctx, bootstrapEnv(ln.Addr().String(), spec.handler, cred))
 	if err != nil {
 		return exitLink, fmt.Errorf("start bootstrap: %w", err)
 	}
@@ -121,6 +122,20 @@ func (t testlink) run(parent context.Context) (int, error) {
 		return exitLink, err
 	}
 	return exitClosed, nil
+}
+
+// bootstrapEnv is the bootstrap's whole environment: the runtime variables and
+// the execution role's three credential variables.
+func bootstrapEnv(runtimeAPI, handler string, cred hostlink.Credential) []string {
+	return []string{
+		"AWS_LAMBDA_RUNTIME_API=" + runtimeAPI,
+		"_HANDLER=" + handler,
+		"LAMBDA_TASK_ROOT=" + taskRoot,
+		"PATH=/bin:/sbin:/usr/bin",
+		"AWS_ACCESS_KEY_ID=" + cred.AccessKeyID,
+		"AWS_SECRET_ACCESS_KEY=" + cred.SecretAccessKey,
+		"AWS_SESSION_TOKEN=" + cred.SessionToken,
+	}
 }
 
 // shutdownGrace is how long past the invocation deadline the agent waits for

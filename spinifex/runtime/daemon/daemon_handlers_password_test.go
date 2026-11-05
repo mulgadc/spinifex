@@ -68,6 +68,7 @@ func TestExtractLastPasswordData(t *testing.T) {
 }
 
 func TestHandleEC2GetPasswordData(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 	daemon := createFullTestDaemon(t, natsURL)
 
@@ -108,6 +109,7 @@ func TestHandleEC2GetPasswordData(t *testing.T) {
 }
 
 func TestHandleEC2GetPasswordData_EmptyLog(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 	daemon := createFullTestDaemon(t, natsURL)
 
@@ -143,6 +145,7 @@ func TestHandleEC2GetPasswordData_EmptyLog(t *testing.T) {
 }
 
 func TestHandleEC2GetPasswordData_MissingInstanceId(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 	daemon := createFullTestDaemon(t, natsURL)
 
@@ -160,6 +163,7 @@ func TestHandleEC2GetPasswordData_MissingInstanceId(t *testing.T) {
 }
 
 func TestHandleEC2GetPasswordData_MalformedInput(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 	daemon := createFullTestDaemon(t, natsURL)
 
@@ -175,6 +179,7 @@ func TestHandleEC2GetPasswordData_MalformedInput(t *testing.T) {
 }
 
 func TestHandleEC2GetPasswordData_OwnershipDenied(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 	daemon := createFullTestDaemon(t, natsURL)
 
@@ -207,6 +212,7 @@ func TestHandleEC2GetPasswordData_OwnershipDenied(t *testing.T) {
 }
 
 func TestHandleEC2GetPasswordData_NotFound(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 	daemon := createFullTestDaemon(t, natsURL)
 
@@ -309,6 +315,7 @@ func TestLaunchKeyCannotEncrypt(t *testing.T) {
 // End to end: the caller sees InvalidKeyPair.Type rather than an empty string
 // they would otherwise keep polling.
 func TestHandleEC2GetPasswordData_NonRSALaunchKey(t *testing.T) {
+	t.Parallel()
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 	instanceID := "i-password-ed25519-001"
 
@@ -339,6 +346,7 @@ func TestHandleEC2GetPasswordData_NonRSALaunchKey(t *testing.T) {
 // A populated blob always wins: the key-type check only ever replaces an empty
 // result, so a Windows guest that did emit one is never second-guessed.
 func TestHandleEC2GetPasswordData_BlobBeatsKeyTypeCheck(t *testing.T) {
+	t.Parallel()
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 	instanceID := "i-password-blob-wins-001"
 

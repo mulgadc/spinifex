@@ -43,6 +43,7 @@ func TestOutcomeForErrorSeparatesCallerFromDaemon(t *testing.T) {
 // The NATS and HTTP paths must give the same word to the same failure, or a
 // dashboard that spans both counts one service's client errors as faults.
 func TestOutcomeForErrorAgreesWithTheHTTPMiddleware(t *testing.T) {
+	t.Parallel()
 	for _, code := range []string{
 		awserrors.ErrorInvalidInstanceIDNotFound,
 		awserrors.ErrorVolumeInUse,
@@ -57,6 +58,7 @@ func TestOutcomeForErrorAgreesWithTheHTTPMiddleware(t *testing.T) {
 // An error carrying no AWS code counts against the daemon. Defaulting the other
 // way would let an unclassifiable failure disappear into the caller's column.
 func TestHTTPStatusForErrorDefaultsToServerFault(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, http.StatusInternalServerError,
 		awserrors.HTTPStatusForError(errors.New("no code in here")))
 }
@@ -135,6 +137,8 @@ func TestEC2CommandNameCoversEveryCommand(t *testing.T) {
 		{"SetInstanceTags", func(a *ec2v1.EC2CommandAttributes) { a.SetInstanceTags = true }},
 		{"RemoveInstanceTags", func(a *ec2v1.EC2CommandAttributes) { a.RemoveInstanceTags = true }},
 		{"SetInstanceMonitoring", func(a *ec2v1.EC2CommandAttributes) { a.SetInstanceMonitoring = true }},
+		{"ModifyInstanceMetadataOptions", func(a *ec2v1.EC2CommandAttributes) { a.ModifyInstanceMetadataOptions = true }},
+		{"SetDisableApiTermination", func(a *ec2v1.EC2CommandAttributes) { a.SetDisableApiTermination = true }},
 		{"StartInstance", func(a *ec2v1.EC2CommandAttributes) { a.StartInstance = true }},
 		{"RebootInstance", func(a *ec2v1.EC2CommandAttributes) { a.RebootInstance = true }},
 		{"StopInstance", func(a *ec2v1.EC2CommandAttributes) { a.StopInstance = true }},

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 )
@@ -64,6 +65,20 @@ func ModifyInstanceAttribute(ctx context.Context, input *ec2.ModifyInstanceAttri
 	}
 
 	slog.InfoContext(ctx, "ModifyInstanceAttribute: Processing request", "instance_id", *input.InstanceId)
+
+	// Termination protection on a running instance lives on its owner, so it
+	// goes there first. A nil value is not a value and keeps the queue path.
+	if input.DisableApiTermination != nil && input.DisableApiTermination.Value != nil {
+		cmd := ec2v1.EC2InstanceCommand{
+			ID:                        *input.InstanceId,
+			Attributes:                ec2v1.EC2CommandAttributes{SetDisableApiTermination: true},
+			DisableApiTerminationData: &ec2v1.DisableApiTerminationData{Value: *input.DisableApiTermination.Value},
+		}
+		if _, err := routeInstanceMutation[ec2.ModifyInstanceAttributeOutput](ctx, natsConn, *input.InstanceId, accountID, cmd, "ec2.ModifyInstanceAttribute", input); err != nil {
+			return ec2.ModifyInstanceAttributeOutput{}, err
+		}
+		return ec2.ModifyInstanceAttributeOutput{}, nil
+	}
 
 	jsonData, err := json.Marshal(input)
 	if err != nil {

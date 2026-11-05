@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -25,19 +26,26 @@ func TestWorkerStillPresent(t *testing.T) {
 	assert.True(t, workerStillPresent(&ec2.DescribeInstancesOutput{Reservations: []*ec2.Reservation{{Instances: []*ec2.Instance{{}}}}}))
 }
 
-// answerBucket serves one instance-bucket describe subject, answering only
-// requests that name id so tests sharing the NATS server do not see each other.
-func answerBucket(t *testing.T, nc *nats.Conn, subject, id, state string) {
+// answerBucket serves one instance-bucket describe subject like a real bucket:
+// held ids answer with their state, other known ids answer empty. Unknown ids
+// are ignored so tests sharing the NATS server do not see each other.
+func answerBucket(t *testing.T, nc *nats.Conn, subject string, held map[string]string, known ...string) {
 	t.Helper()
 	sub, err := nc.Subscribe(subject, func(msg *nats.Msg) {
 		var in ec2.DescribeInstancesInput
-		if json.Unmarshal(msg.Data, &in) != nil || len(in.InstanceIds) != 1 || aws.StringValue(in.InstanceIds[0]) != id {
+		if json.Unmarshal(msg.Data, &in) != nil || len(in.InstanceIds) != 1 {
 			return
 		}
-		out := ec2.DescribeInstancesOutput{Reservations: []*ec2.Reservation{{
-			ReservationId: aws.String("r-" + id),
-			Instances:     []*ec2.Instance{{InstanceId: aws.String(id), State: &ec2.InstanceState{Name: aws.String(state)}}},
-		}}}
+		id := aws.StringValue(in.InstanceIds[0])
+		var out ec2.DescribeInstancesOutput
+		if state, ok := held[id]; ok {
+			out.Reservations = []*ec2.Reservation{{
+				ReservationId: aws.String("r-" + id),
+				Instances:     []*ec2.Instance{{InstanceId: aws.String(id), State: &ec2.InstanceState{Name: aws.String(state)}}},
+			}}
+		} else if !slices.Contains(known, id) {
+			return
+		}
 		data, _ := json.Marshal(out)
 		_ = msg.Respond(data)
 	})
@@ -69,8 +77,9 @@ func TestLiveWorkerInstances_ReportsOnlyWorkersNotYetTerminated(t *testing.T) {
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
-	answerBucket(t, nc, "ec2.DescribeStoppedInstances", "i-live-stopped", ec2.InstanceStateNameStopped)
-	answerBucket(t, nc, "ec2.DescribeTerminatedInstances", "i-live-done", ec2.InstanceStateNameTerminated)
+	known := []string{"i-live-stopped", "i-live-done"}
+	answerBucket(t, nc, "ec2.DescribeStoppedInstances", map[string]string{"i-live-stopped": ec2.InstanceStateNameStopped}, known...)
+	answerBucket(t, nc, "ec2.DescribeTerminatedInstances", map[string]string{"i-live-done": ec2.InstanceStateNameTerminated}, known...)
 
 	live, err := (&Daemon{natsConn: nc}).LiveWorkerInstances(t.Context(),
 		[]string{"i-live-stopped", "i-live-done"}, "111122223333")

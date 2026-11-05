@@ -122,6 +122,7 @@ func TestAccountDeleteDryRunNeverIssuesDeleteAccount(t *testing.T) {
 // holds the fenced deletion record. No non-test file in this package may build
 // the engine or call Teardown.
 func TestCLIHasNoPathToTeardown(t *testing.T) {
+	t.Parallel()
 	files, err := filepath.Glob("*.go")
 	require.NoError(t, err)
 	require.NotEmpty(t, files)

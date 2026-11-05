@@ -245,6 +245,7 @@ func setNodeStatusFn(t *testing.T, fn func(context.Context, *pds.Config, pds.Nod
 }
 
 func TestProbeServiceHealth_UnprobedServiceDefaultsToOK(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{config: &config.Config{Services: []string{"viperblock"}}}
 	health := d.probeServiceHealth(t.Context())
 	assert.Equal(t, "ok", health["viperblock"])
@@ -264,6 +265,7 @@ func TestComputePredastoreHealth_NoMetaNodeOnHost(t *testing.T) {
 }
 
 func TestComputePredastoreHealth_NoHostIDConfigured(t *testing.T) {
+	t.Parallel()
 	// HostID <= 0: this node runs no predastore at all.
 	d := newHealthTestDaemon(t, 0)
 	got := computePredastoreHealth(t.Context(), d)
@@ -323,6 +325,7 @@ func TestComputePredastoreHealth_UnreachableOnTimeout(t *testing.T) {
 }
 
 func TestComputePredastoreHealth_NoCAConfigured(t *testing.T) {
+	t.Parallel()
 	d := newHealthTestDaemon(t, 1)
 	d.config.NATS.CACert = ""
 
@@ -463,6 +466,7 @@ func TestProbePredastore_CachesReadyzWithinTTL(t *testing.T) {
 }
 
 func TestLocalAdminAddr(t *testing.T) {
+	t.Parallel()
 	// A wildcard host bind is dialled on the loopback the daemon shares.
 	cfg := &pds.Config{Hosts: []pds.HostConfig{{ID: 1, BindAddr: "0.0.0.0", AdminPort: 8660}}}
 	addr, ok := localAdminAddr(cfg, 1)
@@ -476,6 +480,7 @@ func TestLocalAdminAddr(t *testing.T) {
 }
 
 func TestLocalGateAddr(t *testing.T) {
+	t.Parallel()
 	// A wildcard gate bind is dialled on the loopback the daemon shares.
 	cfg := &pds.Config{Hosts: []pds.HostConfig{{
 		ID: 1,

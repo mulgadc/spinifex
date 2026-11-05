@@ -227,6 +227,7 @@ func crossTenantCases() []crossTenantCase {
 //	               exactly that foreign ARN and nothing else. A permit here is
 //	               a grant on another tenant's resource taking effect.
 func TestCrossTenant_ForeignResourceARNNeverAuthorizes(t *testing.T) {
+	shortenACMKeys(t)
 	gw := StartGateway(t)
 	// Without the services behind NATS, the own/allowed probes end in
 	// no-responders, which the gateway renders as InternalError.

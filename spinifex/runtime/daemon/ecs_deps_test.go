@@ -17,6 +17,7 @@ import (
 // provisioning is the only thing the IAM service gates, so disabling it must
 // not take the gateway URL, the image resolver or the launcher with it.
 func TestBuildECSServiceDeps_NoMasterKeyDisablesOnlyCapacity(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{
 		config:     &config.Config{},
 		configPath: filepath.Join(t.TempDir(), "spinifex.toml"),

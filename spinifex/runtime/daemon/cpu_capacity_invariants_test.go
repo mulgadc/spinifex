@@ -67,6 +67,7 @@ func TestS2_ReserveTiers(t *testing.T) {
 // TestS3_OneInstanceVCPUPerSchedulableCPU enforces ADR-0015:S3: there is no CPU
 // overcommit, so instance vCPUs never exceed the CPUs left after the reserve.
 func TestS3_OneInstanceVCPUPerSchedulableCPU(t *testing.T) {
+	t.Parallel()
 	const host = 16
 	schedulable := host - reservedVCPUFor(host)
 
@@ -79,6 +80,7 @@ func TestS3_OneInstanceVCPUPerSchedulableCPU(t *testing.T) {
 // TestS5_OverridesAreOperatorChoices enforces ADR-0015:S5: SPINIFEX_HOST_VCPU and
 // SPINIFEX_RESERVED_VCPU replace the detected values only when an operator sets them.
 func TestS5_OverridesAreOperatorChoices(t *testing.T) {
+	t.Parallel()
 	none := func(string) string { return "" }
 	assert.Equal(t, 16, resolveHostVCPU(none, 16), "ADR-0015:S5: with no override the online CPU count is used")
 	assert.Equal(t, reservedVCPUFor(16), resolveHostReserve(none, 16).vCPU, "ADR-0015:S5: with no override the S2 tier is used")

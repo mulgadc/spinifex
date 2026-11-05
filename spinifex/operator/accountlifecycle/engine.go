@@ -7,9 +7,11 @@ import (
 	"log/slog"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountcleanup"
 )
 
 // AccountStatusTerminating mirrors iamdomain.AccountStatusTerminating.
@@ -40,6 +42,21 @@ type Engine struct {
 
 	// OnExercised receives what a non-finalizing run did after quiescence.
 	OnExercised func(ctx context.Context, result operatorv1.ExerciseResult)
+
+	// Compute and Storage are EC2's instance, spot request and volume cleanup.
+	// When set, Teardown repeats them within Converge's bounds in place of the
+	// legacy attachments and storage stages.
+	Compute ComputeStage
+	Storage StorageStage
+
+	// Converge bounds the repeat loop. The zero value uses DefaultConverge.
+	Converge Converge
+
+	// OnPass reports each finished pass of the loop so the caller can persist progress.
+	OnPass func(ctx context.Context, pass int)
+
+	// wait replaces the backoff delay in tests.
+	wait func(ctx context.Context, d time.Duration) error
 
 	// ec2Inventory is EC2's read-only platform inventory: Inventory lists the
 	// L09 kinds from it, and the quiescence evaluation and final re-read use it.
@@ -104,9 +121,42 @@ func (e *Engine) Inventory(ctx context.Context, accountID string) (*Result, erro
 			}
 			stageResult.Deleted = append(stageResult.Deleted, listed...)
 		}
+		if stage == StageAttachments || stage == StageStorage {
+			listed, err := e.listComputeStorage(ctx, stage, accountID)
+			if err != nil {
+				return nil, err
+			}
+			stageResult.Deleted = append(stageResult.Deleted, listed...)
+		}
 		result.Stages = append(result.Stages, stageResult)
 	}
 	return result, nil
+}
+
+// listComputeStorage reads what the EC2 compute and storage owners still hold.
+// An unanswered or incomplete read is an error, never a shorter list.
+func (e *Engine) listComputeStorage(ctx context.Context, stage Stage, accountID string) ([]Resource, error) {
+	if e.Compute == nil || e.Storage == nil {
+		return nil, errComputeCleanupMissing
+	}
+	var out *accountcleanup.Outcome
+	var err error
+	if stage == StageAttachments {
+		out, err = e.Compute.ComputeRemaining(ctx, accountID)
+	} else {
+		out, err = e.Storage.StorageRemaining(ctx, accountID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inventory %s: %w", stage, err)
+	}
+	if len(out.IncompleteReasons) > 0 {
+		return nil, fmt.Errorf("inventory %s incomplete: %s", stage, strings.Join(out.IncompleteReasons, ","))
+	}
+	var found []Resource
+	for _, it := range out.Items {
+		found = append(found, Resource{Kind: it.Kind, ID: it.ResourceID, Detail: it.State})
+	}
+	return found, nil
 }
 
 // DryRun is the explicit operator dry run: exactly what Inventory returns.
@@ -130,6 +180,9 @@ func (e *Engine) Teardown(ctx context.Context, req Request) (*Result, error) {
 	if e.Cleanup == nil || e.ec2Inventory == nil {
 		return nil, errPlatformCleanupMissing
 	}
+	if e.Compute == nil || e.Storage == nil {
+		return nil, errComputeCleanupMissing
+	}
 
 	generation, err := e.Accounts.QuiesceAccount(req.AccountID, req.OperationID, req.Fence)
 	if err != nil {
@@ -148,6 +201,9 @@ func (e *Engine) Teardown(ctx context.Context, req Request) (*Result, error) {
 	}
 	var platform *platformRun
 	for _, stage := range Stages() {
+		if stage == StageAttachments || stage == StageStorage {
+			continue
+		}
 		if stage == StagePlatform {
 			var err error
 			if platform, err = e.cleanPlatform(ctx, req, generation); err != nil {
@@ -165,8 +221,21 @@ func (e *Engine) Teardown(ctx context.Context, req Request) (*Result, error) {
 		if e.OnStage != nil {
 			e.OnStage(ctx, stageResult)
 		}
+		if stage == StageCompute {
+			if len(stageResult.Stuck) > 0 {
+				// An ECS, EKS or RDS owner that still holds resources may be
+				// running on these instances, so none is terminated under it.
+				e.logger().WarnContext(ctx, "Account teardown: compute owners still hold resources, instances left alone",
+					"accountID", account.AccountID, "stuck", len(stageResult.Stuck))
+				continue
+			}
+			if err := e.convergeCompute(ctx, req, result); err != nil {
+				return result, err
+			}
+		}
 	}
 	e.rereadPlatform(ctx, req, platform, result)
+	e.rereadComputeStorage(ctx, req.AccountID, result)
 
 	if stuck := result.StuckCount(); stuck > 0 {
 		// The account stays TERMINATING on purpose. Removing the record now

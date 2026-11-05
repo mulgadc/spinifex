@@ -120,6 +120,7 @@ func TestDescribeDBInstances_ReportsAStableResourceID(t *testing.T) {
 // on the resource ID, and a filter that is parsed but not applied answers with
 // every instance in the account instead of the one asked for.
 func TestDescribeDBInstances_FiltersOnResourceIDAndIdentifier(t *testing.T) {
+	t.Parallel()
 	h := newCreateHarness(t, "")
 	want := seedCreated(t, h, testDBInstanceID)
 	seedCreated(t, h, "other-db")
@@ -129,6 +130,7 @@ func TestDescribeDBInstances_FiltersOnResourceIDAndIdentifier(t *testing.T) {
 		filterDBInstanceID:  {Name: aws.String(filterDBInstanceID), Values: aws.StringSlice([]string{testDBInstanceID})},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			out, err := h.svc.DescribeDBInstances(t.Context(), &rds.DescribeDBInstancesInput{
 				Filters: []*rds.Filter{filter},
 			}, testAccountID)

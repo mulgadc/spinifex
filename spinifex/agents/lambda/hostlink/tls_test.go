@@ -69,7 +69,7 @@ func newTestIdent(t *testing.T, scope lambdav1.Scope, role string) testIdent {
 func hostConfig(host testIdent, pinGuest *x509.Certificate, scope lambdav1.Scope) *tls.Config {
 	return &tls.Config{
 		MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{host.cert},
-		ClientAuth: tls.RequireAnyClientCert, NextProtos: []string{lambdav1.ALPNv1},
+		ClientAuth: tls.RequireAnyClientCert, NextProtos: []string{Protocol},
 		VerifyConnection: func(cs tls.ConnectionState) error {
 			return pki.VerifyPinned(cs.PeerCertificates, pinGuest, x509.ExtKeyUsageClientAuth, scope.URI(lambdav1.RoleGuest))
 		},

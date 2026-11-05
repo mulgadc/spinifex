@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountcleanup"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountinventory"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -206,6 +207,21 @@ func TestTheDryRunFailsWhenTheOwnerInventoryIsIncomplete(t *testing.T) {
 func TestNoLegacyReaperOwnsAnL09Kind(t *testing.T) {
 	for _, reaper := range EC2Reapers(nil, 1, nil) {
 		assert.NotContains(t, ec2PlatformKinds, reaper.Kind())
+	}
+}
+
+// Instances, spot requests and volumes are the EC2 compute and storage
+// owners', so no legacy reaper may list or delete them either.
+func TestNoLegacyReaperOwnsAnL03L05Kind(t *testing.T) {
+	var reapers []Reaper
+	reapers = append(reapers, ECSReapers(nil)...)
+	reapers = append(reapers, EKSReapers(nil)...)
+	reapers = append(reapers, RDSReapers(nil)...)
+	reapers = append(reapers, ELBv2Reapers(nil)...)
+	reapers = append(reapers, EC2ExtraReapers(nil)...)
+	reapers = append(reapers, EC2Reapers(nil, 1, nil)...)
+	for _, reaper := range reapers {
+		assert.NotContains(t, []string{accountcleanup.KindInstance, accountcleanup.KindSpotRequest, accountcleanup.KindVolume}, reaper.Kind())
 	}
 }
 

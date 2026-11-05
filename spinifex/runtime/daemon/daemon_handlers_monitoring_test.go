@@ -52,6 +52,7 @@ func recordMonitoring(t *testing.T, d *Daemon, instanceID string) bool {
 }
 
 func TestMonitorInstances_RoutedViaOwner(t *testing.T) {
+	t.Parallel()
 	const id = "i-mon-owner"
 	d, _ := monitoringTestDaemon(t, id, false)
 	subscribeOwner(t, d, id)
@@ -68,6 +69,7 @@ func TestMonitorInstances_RoutedViaOwner(t *testing.T) {
 }
 
 func TestUnmonitorInstances_RoutedViaOwner(t *testing.T) {
+	t.Parallel()
 	const id = "i-mon-unowner"
 	d, _ := monitoringTestDaemon(t, id, true)
 	subscribeOwner(t, d, id)
@@ -85,6 +87,7 @@ func TestUnmonitorInstances_RoutedViaOwner(t *testing.T) {
 // A launch that never asked for monitoring has no Monitoring block, so the
 // running path has to create one rather than skip the instance.
 func TestMonitorInstances_CreatesMissingBlock(t *testing.T) {
+	t.Parallel()
 	const id = "i-mon-noblock"
 	d, _ := monitoringTestDaemon(t, id, false)
 	d.vmMgr.Insert(&vm.VM{
@@ -106,6 +109,7 @@ func TestMonitorInstances_CreatesMissingBlock(t *testing.T) {
 // With no running owner the call falls back to the shared stopped store, so a
 // stopped instance can still be moved between tiers.
 func TestMonitorInstances_StoppedFallback(t *testing.T) {
+	t.Parallel()
 	const id = "i-mon-stopped"
 	d, stopped := monitoringTestDaemon(t, "i-mon-unrelated", false)
 	stopped.Stopped[id] = &vm.VM{
@@ -126,6 +130,7 @@ func TestMonitorInstances_StoppedFallback(t *testing.T) {
 // An instance nobody owns and no stopped record covers is NotFound, not a
 // silent success that leaves the caller believing the tier changed.
 func TestMonitorInstances_NoOwnerNotFound(t *testing.T) {
+	t.Parallel()
 	d, _ := monitoringTestDaemon(t, "i-mon-unrelated2", false)
 
 	_, err := d.monitorInstances(context.Background(), &ec2.MonitorInstancesInput{
@@ -137,6 +142,7 @@ func TestMonitorInstances_NoOwnerNotFound(t *testing.T) {
 
 // The owner's cross-account rejection is relayed and the tier is untouched.
 func TestMonitorInstances_OwnerErrorRelayed(t *testing.T) {
+	t.Parallel()
 	const id = "i-mon-crossacct"
 	const attacker = "999999999999"
 	d, _ := monitoringTestDaemon(t, id, false)
@@ -153,6 +159,7 @@ func TestMonitorInstances_OwnerErrorRelayed(t *testing.T) {
 // One unreachable instance in a batch fails the whole call rather than
 // reporting a tier for the instances that did apply.
 func TestMonitorInstances_PartialFailureReportsNoState(t *testing.T) {
+	t.Parallel()
 	const id = "i-mon-partial"
 	d, _ := monitoringTestDaemon(t, id, false)
 	subscribeOwner(t, d, id)
@@ -166,6 +173,7 @@ func TestMonitorInstances_PartialFailureReportsNoState(t *testing.T) {
 }
 
 func TestMonitorInstances_Validation(t *testing.T) {
+	t.Parallel()
 	d, _ := monitoringTestDaemon(t, "i-mon-valid", false)
 
 	_, err := d.monitorInstances(context.Background(), nil, testAccountID)

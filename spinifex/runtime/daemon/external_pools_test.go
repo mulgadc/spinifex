@@ -17,6 +17,7 @@ func daemonWithPools(pools ...config.ExternalPool) *Daemon {
 }
 
 func TestExternalPoolConfigsCopiesEveryField(t *testing.T) {
+	t.Parallel()
 	d := daemonWithPools(config.ExternalPool{
 		Name:            "wan",
 		Source:          "static",
@@ -56,6 +57,7 @@ func TestExternalPoolConfigsCopiesEveryField(t *testing.T) {
 // The transit pool's addresses are gateway-LRP plumbing. Handing them to IPAM
 // would let a tenant allocate one as an EIP and break the router.
 func TestExternalPoolConfigsExcludesTheTransitPool(t *testing.T) {
+	t.Parallel()
 	d := daemonWithPools(
 		config.ExternalPool{Name: host.NATTransitPoolName, Source: "static"},
 		config.ExternalPool{Name: "wan", Source: "static"},
@@ -67,6 +69,7 @@ func TestExternalPoolConfigsExcludesTheTransitPool(t *testing.T) {
 }
 
 func TestExternalPoolConfigsReportsDHCP(t *testing.T) {
+	t.Parallel()
 	d := daemonWithPools(
 		config.ExternalPool{Name: "wan", Source: "static"},
 		config.ExternalPool{Name: "wan2", Source: "dhcp", BindBridge: "br-wan"},
@@ -80,6 +83,7 @@ func TestExternalPoolConfigsReportsDHCP(t *testing.T) {
 // A transit-only config yields no pools, which is what keeps nat mode off the
 // EIP path without a separate mode check at the call site.
 func TestExternalPoolConfigsTransitOnlyYieldsNothing(t *testing.T) {
+	t.Parallel()
 	d := daemonWithPools(config.ExternalPool{Name: host.NATTransitPoolName, Source: "static"})
 
 	pools, anyDHCP := d.externalPoolConfigs()

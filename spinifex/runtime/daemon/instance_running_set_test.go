@@ -53,6 +53,7 @@ func recordRevision(t *testing.T, nc *nats.Conn, instanceID string) uint64 {
 }
 
 func TestWriteRunningSet_WritesARecordPerMember(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 
 	writeRunningSet(t, m, runningVM("i-1", "t3.nano"), runningVM("i-2", "t3.micro"))
@@ -68,6 +69,7 @@ func TestWriteRunningSet_WritesARecordPerMember(t *testing.T) {
 }
 
 func TestLoadState_ReadsTheNodesRecords(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	writeRunningSet(t, m, runningVM("i-1", "t3.nano"), runningVM("i-2", "t3.micro"))
 
@@ -83,6 +85,7 @@ func TestLoadState_ReadsTheNodesRecords(t *testing.T) {
 // The key space is shared by every node, so a listing is not a running set
 // until it is filtered by who owns each record.
 func TestLoadState_IgnoresAnotherNodesRecords(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	writeRunningSet(t, m, runningVM("i-1", "t3.nano"))
 
@@ -103,6 +106,7 @@ func TestLoadState_IgnoresAnotherNodesRecords(t *testing.T) {
 // "no such node", or the reverse, is the difference between a node coming back
 // with its instances and coming back empty.
 func TestLoadState_FoundIsTheMarkerNotTheRecordCount(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 
 	loaded, found, err := m.LoadState(localNode)
@@ -121,6 +125,7 @@ func TestLoadState_FoundIsTheMarkerNotTheRecordCount(t *testing.T) {
 // An operator-stopped instance belongs to the stopped set, and the running set
 // is the same keys filtered. Returning it here would relaunch it on restore.
 func TestLoadState_OmitsAnOperatorStoppedRecord(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	writeRunningSet(t, m, runningVM("i-1", "t3.nano"))
 	require.NoError(t, m.WriteStoppedInstance("i-1", runningVM("i-1", "t3.nano")))
@@ -136,6 +141,7 @@ func TestLoadState_OmitsAnOperatorStoppedRecord(t *testing.T) {
 // that the running-set path actually routes through it, on fields from both
 // halves of the record rather than the instance type alone.
 func TestWriteRunningSet_CarriesBothHalvesOfTheRecord(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	instance := runningVM("i-1", "t3.nano")
 	instance.DesiredState = vm.DesiredRunning
@@ -159,6 +165,7 @@ func TestWriteRunningSet_CarriesBothHalvesOfTheRecord(t *testing.T) {
 // Ownership is stamped by the write rather than carried in from the caller:
 // this is the only place that knows whose running set is being written.
 func TestWriteRunningSet_StampsOwnership(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	unowned := &vm.VM{ID: "i-1", InstanceType: "t3.nano", Status: vm.StateRunning}
 
@@ -173,6 +180,7 @@ func TestWriteRunningSet_StampsOwnership(t *testing.T) {
 }
 
 func TestWriteRunningSet_RetiresAMemberThatLeft(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	writeRunningSet(t, m, runningVM("i-1", "t3.nano"), runningVM("i-2", "t3.micro"))
 
@@ -191,6 +199,7 @@ func TestWriteRunningSet_RetiresAMemberThatLeft(t *testing.T) {
 // leaves the running set with is the same one the stopped set has just taken
 // over. An unconditional retire would delete the stopped instance it became.
 func TestWriteRunningSet_HandsOverAMemberThatStopped(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	writeRunningSet(t, m, runningVM("i-1", "t3.nano"))
 
@@ -210,6 +219,7 @@ func TestWriteRunningSet_HandsOverAMemberThatStopped(t *testing.T) {
 // Rewriting every record on every state change would reintroduce, one key at a
 // time, the contention splitting the blob exists to remove.
 func TestWriteRunningSet_WritesOnlyWhatChanged(t *testing.T) {
+	t.Parallel()
 	m, nc := newRecordManagerConn(t)
 	writeRunningSet(t, m, runningVM("i-1", "t3.nano"), runningVM("i-2", "t3.micro"))
 	before1, before2 := recordRevision(t, nc, "i-1"), recordRevision(t, nc, "i-2")
@@ -230,6 +240,7 @@ func TestWriteRunningSet_WritesOnlyWhatChanged(t *testing.T) {
 // A restarted process has no memory of what it last wrote, so it primes itself
 // from the bucket rather than rewriting every record to find out.
 func TestWriteRunningSet_SeedsFromWhatIsAlreadyThere(t *testing.T) {
+	t.Parallel()
 	first, nc := newRecordManagerConn(t)
 	writeRunningSet(t, first, runningVM("i-1", "t3.nano"))
 	before := recordRevision(t, nc, "i-1")
@@ -245,6 +256,7 @@ func TestWriteRunningSet_SeedsFromWhatIsAlreadyThere(t *testing.T) {
 // Ownership is read from status.LastNode, the same field the GC uses. A node
 // must not retire a record for an instance that is running somewhere else.
 func TestWriteRunningSet_LeavesAnotherNodesRecordsAlone(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	elsewhere := &vm.VM{ID: "i-elsewhere", InstanceType: "t3.nano", Status: vm.StateRunning, LastNode: "node-2"}
 	require.NoError(t, m.WriteInstanceRecord("i-elsewhere", elsewhere.Record()))
@@ -290,6 +302,7 @@ func readNodeBlob(t *testing.T, kv jetstream.KeyValue, nodeID string) *daemon.Lo
 }
 
 func TestInstanceStateMigration_SplitsTheNodeBlob(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	seedNodeBlobBucket(t, nc, localNode, runningSet(runningVM("i-1", "t3.nano"), runningVM("i-2", "t3.micro")))
 
@@ -311,6 +324,7 @@ func TestInstanceStateMigration_SplitsTheNodeBlob(t *testing.T) {
 // the cutover reads to find out what it was running, so leaving it intact is
 // the whole of what makes the crossing reversible.
 func TestInstanceStateMigration_LeavesTheNodeBlobIntact(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	kv := seedNodeBlobBucket(t, nc, localNode, runningSet(runningVM("i-1", "t3.nano")))
 
@@ -327,6 +341,7 @@ func TestInstanceStateMigration_LeavesTheNodeBlobIntact(t *testing.T) {
 // The marker is a key of its own for that reason: written onto the blob it
 // would answer the presence question by destroying the answer to the other one.
 func TestInstanceStateMigration_SeedsAPresenceMarkerPerNode(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	kv := seedNodeBlobBucket(t, nc, localNode, runningSet(runningVM("i-1", "t3.nano")))
 
@@ -347,6 +362,7 @@ func TestInstanceStateMigration_SeedsAPresenceMarkerPerNode(t *testing.T) {
 // once per bucket, and a node that is down would otherwise have no records
 // until it came back.
 func TestInstanceStateMigration_SplitsEveryNodesBlob(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	kv := seedNodeBlobBucket(t, nc, localNode, runningSet(runningVM("i-1", "t3.nano")))
 
@@ -380,6 +396,7 @@ func unownedVM(id, instanceType string) *vm.VM {
 // and the half a reader cannot do without: after the cutover an unowned record
 // is one no node lists.
 func TestInstanceStateMigration_CarriesOwnershipOffTheBlobKey(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	seedNodeBlobBucket(t, nc, localNode, runningSet(unownedVM("i-1", "t3.nano")))
 
@@ -398,6 +415,7 @@ func TestInstanceStateMigration_CarriesOwnershipOffTheBlobKey(t *testing.T) {
 // unowned running set comes back empty, which it would then adopt over the
 // instances the node is actually running.
 func TestInstanceStateMigration_ANodeRecoversAnUnownedRunningSet(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	seedNodeBlobBucket(t, nc, localNode, runningSet(unownedVM("i-1", "t3.nano"), unownedVM("i-2", "t3.micro")))
 
@@ -415,6 +433,7 @@ func TestInstanceStateMigration_ANodeRecoversAnUnownedRunningSet(t *testing.T) {
 // An owner already on the record is the newer fact. The blob it would be
 // overwritten from stopped being written when the cutover landed.
 func TestInstanceStateMigration_LeavesAnOwnedRecordAlone(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	moved := &vm.VM{ID: "i-1", InstanceType: "t3.nano", Status: vm.StateRunning, LastNode: "node-2"}
 	seedNodeBlobBucket(t, nc, localNode, runningSet(moved))
@@ -430,6 +449,7 @@ func TestInstanceStateMigration_LeavesAnOwnedRecordAlone(t *testing.T) {
 }
 
 func TestInstanceStateMigration_OwnershipStampIsSafeToRunTwice(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	kv := seedNodeBlobBucket(t, nc, localNode, runningSet(unownedVM("i-1", "t3.nano")))
 
@@ -447,6 +467,7 @@ func TestInstanceStateMigration_OwnershipStampIsSafeToRunTwice(t *testing.T) {
 }
 
 func TestInstanceStateMigration_BlobSplitIsSafeToRunTwice(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	kv := seedNodeBlobBucket(t, nc, localNode, runningSet(runningVM("i-1", "t3.nano")))
 

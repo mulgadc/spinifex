@@ -62,6 +62,7 @@ func dirNames(t *testing.T, dir string) []string {
 // The catalog dir doubles as the download cache, so the source lives there
 // as it does for a --name import, with the images dir as the scratch root.
 func TestExtractToScratch_LeavesNoIntermediateInCatalog(t *testing.T) {
+	t.Parallel()
 	raw := readRawDiskFixture(t)
 
 	cases := []struct {
@@ -90,6 +91,7 @@ func TestExtractToScratch_LeavesNoIntermediateInCatalog(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			imagesDir := t.TempDir()
 			catalogDir := filepath.Join(imagesDir, "debian", "13", "x86_64")
 			require.NoError(t, os.MkdirAll(catalogDir, 0o770))

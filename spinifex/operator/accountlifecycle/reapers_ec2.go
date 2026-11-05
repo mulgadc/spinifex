@@ -2,11 +2,8 @@ package accountlifecycle
 
 import (
 	"context"
-	"fmt"
-	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -14,10 +11,8 @@ import (
 	ec2eipapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/eip"
 	ec2igwapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/igw"
 	ec2imageapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/image"
-	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ec2routetableapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/routetable"
 	ec2snapshotapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/snapshot"
-	ec2volumeapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/volume"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
@@ -30,13 +25,10 @@ import (
 // accounting correct without teardown having to reimplement any of it.
 func EC2Reapers(nc *nats.Conn, expectedNodes int, nodeIDs []string) []Reaper {
 	return []Reaper{
-		&instanceReaper{nc: nc, nodeIDs: nodeIDs},
-
 		// Snapshots before volumes: a volume with a live snapshot refuses to
 		// delete, because snapshot-backed clones read from its chunk prefix.
 		&snapshotReaper{nc: nc},
 		&imageReaper{nc: nc},
-		&volumeReaper{nc: nc, nodeIDs: nodeIDs},
 
 		// Reverse of creation order. The VPC cannot go until everything
 		// inside it has, and the gateway enforces that.
@@ -53,107 +45,6 @@ func EC2Reapers(nc *nats.Conn, expectedNodes int, nodeIDs []string) []Reaper {
 		&securityGroupReaper{nc: nc},
 		&vpcReaper{nc: nc},
 	}
-}
-
-// terminalInstanceStates are the states an instance no longer holds anything
-// in. Anything else is still occupying a volume, an address and a host.
-var terminalInstanceStates = map[string]bool{"terminated": true, "shutting-down": true}
-
-type instanceReaper struct {
-	nc *nats.Conn
-	// nodeIDs is the configured node set; all must answer before an empty
-	// listing counts as drained.
-	nodeIDs []string
-
-	// describeOpts tunes the inventory fan-out; production leaves it empty.
-	describeOpts []ec2instanceapi.DescribeOption
-}
-
-func (r *instanceReaper) Kind() string { return "instance" }
-func (r *instanceReaper) Stage() Stage { return StageCompute }
-
-func (r *instanceReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	// Complete or nothing: a partial answer would read as "no instances left"
-	// and let storage deletion start while a guest still holds a volume.
-	out, err := ec2instanceapi.DescribeAccountInstancesComplete(ctx, r.nc, r.nodeIDs, accountID, r.describeOpts...)
-	if err != nil {
-		return nil, err
-	}
-
-	var found []Resource
-	for _, reservation := range out.Reservations {
-		for _, instance := range reservation.Instances {
-			if instance == nil || instance.InstanceId == nil {
-				continue
-			}
-			state := ""
-			if instance.State != nil && instance.State.Name != nil {
-				state = *instance.State.Name
-			}
-			if terminalInstanceStates[state] {
-				continue
-			}
-			found = append(found, Resource{Kind: r.Kind(), ID: *instance.InstanceId, Detail: state})
-		}
-	}
-	return found, nil
-}
-
-func (r *instanceReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
-	_, err := ec2instanceapi.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
-		InstanceIds: []*string{aws.String(resource.ID)},
-	}, r.nc, accountID)
-	return ignoreAlreadyGone(err)
-}
-
-type volumeReaper struct {
-	nc *nats.Conn
-	// nodeIDs is the configured node set; every one must answer, by identity,
-	// before a volume's holder can be proven gone or the delete guard passes.
-	nodeIDs []string
-}
-
-func (r *volumeReaper) Kind() string { return "volume" }
-func (r *volumeReaper) Stage() Stage { return StageStorage }
-
-func (r *volumeReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
-	out, err := ec2volumeapi.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{}, r.nc, accountID)
-	if err != nil {
-		return nil, err
-	}
-
-	var found []Resource
-	for _, volume := range out.Volumes {
-		if volume == nil || volume.VolumeId == nil {
-			continue
-		}
-		resource := Resource{Kind: r.Kind(), ID: *volume.VolumeId}
-		// The attachment is the reason a volume will not go, so carry it: it
-		// is the difference between "stuck" and "stuck on i-abc".
-		for _, attachment := range volume.Attachments {
-			if attachment != nil && attachment.InstanceId != nil {
-				resource.Detail = "attached to " + *attachment.InstanceId
-				break
-			}
-		}
-		found = append(found, resource)
-	}
-	return found, nil
-}
-
-func (r *volumeReaper) Delete(ctx context.Context, accountID string, resource Resource, force bool) error {
-	_, err := ec2volumeapi.DeleteVolume(ctx, &ec2.DeleteVolumeInput{
-		VolumeId: aws.String(resource.ID),
-	}, r.nc, r.nodeIDs, accountID)
-	if isAlreadyGone(err) {
-		return nil
-	}
-	if !force {
-		return err
-	}
-	// Force path: the ordinary delete refuses an attached volume, and a holder
-	// that is gone but still on the record would otherwise strand it forever.
-	return forceDeleteVolume(ctx, r.nc, r.nodeIDs, accountID, resource.ID, err)
 }
 
 type snapshotReaper struct{ nc *nats.Conn }
@@ -567,6 +458,7 @@ func (r *vpcReaper) Delete(ctx context.Context, accountID string, resource Resou
 // would make a second pass unable to finish what the first one started.
 var notFoundMarkers = []string{
 	".NotFound", "NoSuchEntity", "InvalidAllocationID.NotFound",
+	awserrors.ErrorNatGatewayNotFound,
 	awserrors.ErrorECSClusterNotFound, awserrors.ErrorECSServiceNotFound,
 	awserrors.ErrorEKSResourceNotFound,
 	awserrors.ErrorDBInstanceNotFound,
@@ -597,132 +489,4 @@ func ignoreAlreadyGone(err error) error {
 		return nil
 	}
 	return err
-}
-
-// forceDetachSubject clears a volume's attachment in the control plane only.
-// It is answered by any node, unlike the ordinary detach, which routes to the
-// host running the instance and so cannot help when that host is the problem.
-const forceDetachSubject = "ec2.ForceDetachVolume"
-
-// forceDetachTimeout bounds the metadata-only detach. It touches one document
-// and needs nothing from the guest, so a slow answer means the cluster is
-// unwell rather than that the work is large.
-const forceDetachTimeout = 30 * time.Second
-
-// forceDeleteVolume clears an attachment the ordinary delete refuses to
-// override, then deletes, but only once every instance the volume names is
-// proven absent. Anything short of proof leaves the volume and its record alone.
-func forceDeleteVolume(ctx context.Context, nc *nats.Conn, nodeIDs []string, accountID, volumeID string, refusal error) error {
-	holders, err := volumeHolders(ctx, nc, accountID, volumeID)
-	if err != nil {
-		if isAlreadyGone(err) {
-			return nil
-		}
-		return fmt.Errorf("volume %s retained: cannot read its attachment: %w", volumeID, err)
-	}
-	if len(holders) == 0 {
-		// No holder on record, so the refusal is not an attachment and
-		// clearing the record would change nothing but the evidence.
-		return refusal
-	}
-	for _, instanceID := range holders {
-		if err := proveInstanceAbsent(ctx, nc, nodeIDs, accountID, instanceID); err != nil {
-			return fmt.Errorf("volume %s retained: %w", volumeID, err)
-		}
-	}
-
-	_, err = natsmsg.NATSRequest[ec2.VolumeAttachment](ctx, nc, forceDetachSubject,
-		&ec2.DetachVolumeInput{VolumeId: aws.String(volumeID), Force: aws.Bool(true)},
-		forceDetachTimeout, accountID)
-	if err != nil && !isAlreadyGone(err) {
-		return fmt.Errorf("force detach %s: %w", volumeID, err)
-	}
-
-	// The ordinary delete re-checks that the record is unattached and that no
-	// live instance maps the volume, so a re-attach in between still refuses.
-	_, err = ec2volumeapi.DeleteVolume(ctx, &ec2.DeleteVolumeInput{
-		VolumeId: aws.String(volumeID),
-	}, nc, nodeIDs, accountID)
-	return ignoreAlreadyGone(err)
-}
-
-// volumeHolders returns the instances the volume's own record says hold it,
-// read fresh rather than from the listing that queued the delete.
-func volumeHolders(ctx context.Context, nc *nats.Conn, accountID, volumeID string) ([]string, error) {
-	out, err := ec2volumeapi.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
-		VolumeIds: []*string{aws.String(volumeID)},
-	}, nc, accountID)
-	if err != nil {
-		return nil, err
-	}
-	var holders []string
-	for _, volume := range out.Volumes {
-		if volume == nil || aws.StringValue(volume.VolumeId) != volumeID {
-			continue
-		}
-		for _, attachment := range volume.Attachments {
-			if attachment != nil && aws.StringValue(attachment.InstanceId) != "" {
-				holders = append(holders, aws.StringValue(attachment.InstanceId))
-			}
-		}
-	}
-	return holders, nil
-}
-
-// proveInstanceAbsent accepts only a definitive InvalidInstanceID.NotFound or
-// a terminated copy from a describe naming the instance, then confirms both on
-// a listing every configured node answered by identity. Anything else is not proof.
-func proveInstanceAbsent(ctx context.Context, nc *nats.Conn, nodeIDs []string, accountID, instanceID string) error {
-	if len(nodeIDs) == 0 {
-		return fmt.Errorf("cannot prove holding instance %s is gone: the configured node set is unknown", instanceID)
-	}
-	named, err := ec2instanceapi.DescribeInstancesChecked(ctx, &ec2.DescribeInstancesInput{
-		InstanceIds: []*string{aws.String(instanceID)},
-	}, nc, 0, nodeIDs, accountID)
-	if err != nil {
-		if code, ok := awserrors.ResolveErrorCode(err); !ok || code != awserrors.ErrorInvalidInstanceIDNotFound {
-			return fmt.Errorf("cannot prove holding instance %s is gone: %w", instanceID, err)
-		}
-	} else {
-		found, err := requireTerminated(named.Reservations, instanceID)
-		if err != nil {
-			return err
-		}
-		if !found {
-			return fmt.Errorf("cannot prove holding instance %s is gone: the describe naming it returned neither the instance nor NotFound", instanceID)
-		}
-	}
-
-	// The named describe stops collecting once the id turns up, and a lone
-	// node's 4xx can surface as NotFound, so neither answer is complete alone.
-	listing, err := ec2instanceapi.DescribeAccountInstancesComplete(ctx, nc, nodeIDs, accountID)
-	if err != nil {
-		return fmt.Errorf("cannot prove holding instance %s is gone: %w", instanceID, err)
-	}
-	_, err = requireTerminated(listing.Reservations, instanceID)
-	return err
-}
-
-// requireTerminated reports whether instanceID appears in reservations, and
-// fails if any copy of it is in a state other than terminated.
-func requireTerminated(reservations []*ec2.Reservation, instanceID string) (found bool, err error) {
-	for _, reservation := range reservations {
-		if reservation == nil {
-			continue
-		}
-		for _, instance := range reservation.Instances {
-			if instance == nil || aws.StringValue(instance.InstanceId) != instanceID {
-				continue
-			}
-			found = true
-			state := "in an unknown state"
-			if instance.State != nil && aws.StringValue(instance.State.Name) != "" {
-				state = aws.StringValue(instance.State.Name)
-			}
-			if state != ec2.InstanceStateNameTerminated {
-				return true, fmt.Errorf("holding instance %s is still %s", instanceID, state)
-			}
-		}
-	}
-	return found, nil
 }

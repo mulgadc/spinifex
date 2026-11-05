@@ -90,6 +90,7 @@ go_build:
 LAMBDA_TESTLINK_DIR := ./bin/lambda-testlink
 LAMBDA_TESTLINK_PKG := github.com/mulgadc/spinifex/spinifex/runtime/daemon
 LAMBDA_TESTLINK_PIN := $(LAMBDA_TESTLINK_PKG).lambdaHardKillSHA256
+LAMBDA_TESTLINK_GW := github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw
 LAMBDA_DIGEST_RE := ^[0-9a-f]{64}$$
 build-lambda-testlink: override export LAMBDA_IMAGE_DIGEST := $(value LAMBDA_IMAGE_DIGEST)
 build-lambda-testlink:
@@ -104,8 +105,8 @@ build-lambda-testlink:
 	@digest=$$(sha256sum $(LAMBDA_TESTLINK_DIR).tmp/hardkill.so | cut -d' ' -f1); \
 	test $${#digest} -eq 64 || { echo "initializer digest missing"; exit 1; }; \
 	echo "initializer sha256 $$digest"; \
-	pin="-X $(LAMBDA_TESTLINK_PIN)=$$digest -X $(LAMBDA_TESTLINK_PKG).lambdaImageDigest=$$LAMBDA_IMAGE_DIGEST"; \
-	LAMBDA_TESTLINK_INITIALIZER=$(abspath $(LAMBDA_TESTLINK_DIR).tmp/hardkill.so) go test -count=1 -tags lambdatestlink -ldflags "$$pin" -run '^TestLambda(HardKillPin|ImageDigestPin)$$' ./spinifex/runtime/daemon/ && \
+	pin="-X $(LAMBDA_TESTLINK_PIN)=$$digest -X $(LAMBDA_TESTLINK_PKG).lambdaImageDigest=$$LAMBDA_IMAGE_DIGEST -X $(LAMBDA_TESTLINK_GW).lambdaImageDigest=$$LAMBDA_IMAGE_DIGEST"; \
+	LAMBDA_TESTLINK_INITIALIZER=$(abspath $(LAMBDA_TESTLINK_DIR).tmp/hardkill.so) go test -count=1 -tags lambdatestlink -ldflags "$$pin" -run '^TestLambda(HardKillPin|ImageDigestPin)$$' ./spinifex/runtime/daemon/ ./spinifex/runtime/roles/awsgw/ && \
 	go build $(GO_BUILD_MOD) -tags lambdatestlink -ldflags "$(subst -s -w ,,$(LDFLAGS)) $$pin" -o $(LAMBDA_TESTLINK_DIR).tmp/$(GO_PROJECT_NAME) cmd/spinifex/main.go
 	@mkdir -p $(LAMBDA_TESTLINK_DIR)
 	mv $(LAMBDA_TESTLINK_DIR).tmp/hardkill.so $(LAMBDA_TESTLINK_DIR).tmp/$(GO_PROJECT_NAME) $(LAMBDA_TESTLINK_DIR)/
@@ -309,7 +310,8 @@ test-build-scripts:
 	done
 	$(_Q)shellcheck -S warning .github/scripts/hypervisor-disk-preflight.sh \
 		.github/scripts/wait-for-memory.sh \
-		.github/scripts/mulga-design-check.sh
+		.github/scripts/go-build-cache.sh \
+		.github/scripts/e2e-select.sh
 	@$(_HDR) "\n....Running shellcheck over build/scripts/**/*.sh + the node scripts...."
 	$(_Q)shellcheck -S warning $$(find build/scripts -name '*.sh' | sort) $(NODE_SCRIPTS)
 	$(_Q)shellcheck -S warning -x scripts/build-oracle-appliance.sh $$(find scripts/appliance -name '*.sh' | sort)
@@ -343,6 +345,16 @@ test-integration:
 	@cat $(AWS_MODEL_CONFORMANCE_REPORT)
 	@$(MAKE) --no-print-directory generate-aws-model-coverage
 	@echo "AWS operation coverage: $(AWS_MODEL_OPERATION_COVERAGE_DIR)"
+
+# Suites the unit tiers skip: the three-node SQS R3 scenarios behind
+# SPINIFEX_SQS_R3 and the lambdatestlink-tagged tests. CI runs these on every PR.
+test-gated:
+	@echo -e "\n....Running env- and tag-gated suites...."
+	$(_Q)LOG_IGNORE=1 SPINIFEX_SQS_R3=1 go test $(GOTESTFLAGS) -timeout 180s -run '^TestR3$$' ./spinifex/domains/sqs/message/jetstream/ $(_RACEQ)
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -tags=lambdatestlink -timeout 120s ./cmd/lambda-agent/ ./spinifex/agents/lambda/hostlink/ ./spinifex/runtime/compute/lambda/guestconn/ ./spinifex/runtime/compute/lambda/testlink/ ./spinifex/domains/network/host/ $(_RACEQ)
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -tags=lambdatestlink -timeout 120s -run '^TestLambdaTestLink(Executor|Reply)_' ./spinifex/runtime/roles/awsgw/ $(_RACEQ)
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -tags=lambdatestlink,lambdatestlinkseam -timeout 120s -run '^TestLambdaTestLinkSeam_' ./spinifex/runtime/roles/awsgw/ $(_RACEQ)
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -tags=lambdatestlink -timeout 120s -run '^TestLambdaTestLink' ./spinifex/runtime/daemon/ $(_RACEQ)
 
 generate-aws-model-coverage:
 	@go run ./cmd/aws-model-coverage -out $(AWS_MODEL_OPERATION_COVERAGE_DIR) -json $(AWS_MODEL_OPERATION_COVERAGE_DIR)/coverage.json
@@ -379,11 +391,7 @@ test-cover:
 # Run unit tests with race detector
 test-race:
 	@echo -e "\n....Running tests with race detector for $(GO_PROJECT_NAME)...."
-	$(_Q)LOG_IGNORE=1 SPINIFEX_SQS_R3=1 go test $(GOTESTFLAGS) -race -timeout 300s ./spinifex/... ./cmd/... ./internal/... ./contracts/... ./architecture/... $(_RACEQ)
-	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -tags=lambdatestlink -timeout 120s ./cmd/lambda-agent/ ./spinifex/agents/lambda/hostlink/ ./spinifex/runtime/compute/lambda/testlink/ ./spinifex/domains/network/host/ $(_RACEQ)
-	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -tags=lambdatestlink -timeout 120s -run '^TestLambdaTestLink(Executor|Reply)_' ./spinifex/runtime/roles/awsgw/ $(_RACEQ)
-	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -tags=lambdatestlink,lambdatestlinkseam -timeout 120s -run '^TestLambdaTestLinkSeam_' ./spinifex/runtime/roles/awsgw/ $(_RACEQ)
-	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -tags=lambdatestlink -timeout 120s -run '^TestLambdaTestLink' ./spinifex/runtime/daemon/ $(_RACEQ)
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -timeout 300s ./spinifex/... ./cmd/... ./internal/... ./contracts/... ./architecture/... $(_RACEQ)
 
 # Unit tests for in-repo GitHub Actions (e.g. .github/actions/e2e-analyze).
 # Kept out of `test-cover` so coverage % isn't diluted by CI-only tooling.
@@ -594,7 +602,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-lambda-testlink build-lambda-testlink-image build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-worker-microvm-image build-lambda-runtime-microvm-image install-microvm install-sqs-worker-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
+.PHONY: test-package-check build build-lambda-testlink build-lambda-testlink-image build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-worker-microvm-image build-lambda-runtime-microvm-image install-microvm install-sqs-worker-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration test-gated generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

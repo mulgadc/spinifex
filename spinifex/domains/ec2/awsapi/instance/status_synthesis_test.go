@@ -22,6 +22,10 @@ import (
 
 const synthAccount = "123456789012"
 
+// synthSilentNodeWindow bounds a fan-out that must time out because an expected
+// node never identifies itself; the answering replies are local and immediate.
+const synthSilentNodeWindow = 500 * time.Millisecond
+
 // fakeRecords is a cache stand-in: a fixed record set plus a readiness flag,
 // so a test can assert the cold-cache case as well as the warm one.
 type fakeRecords struct {
@@ -342,7 +346,8 @@ func TestSynthesis_SilentButLiveNodeShowsInsufficientData(t *testing.T) {
 		}},
 	}
 
-	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 2, synthAccount, "az-a", synth)
+	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 2, synthAccount, "az-a", synth,
+		WithFanoutTimeout(synthSilentNodeWindow))
 	require.NoError(t, err)
 
 	byID := statusByID(out)
@@ -418,7 +423,8 @@ func TestSynthesis_UnidentifiedFrameFallsBackToHeartbeatOnly(t *testing.T) {
 		}},
 	}
 
-	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 1, synthAccount, "az-a", synth)
+	out, err := DescribeInstanceStatus(context.Background(), &ec2.DescribeInstanceStatusInput{}, nc, 1, synthAccount, "az-a", synth,
+		WithFanoutTimeout(synthSilentNodeWindow))
 	require.NoError(t, err)
 	require.Len(t, out.InstanceStatuses, 1,
 		"without responder identity, a live node's instance is skipped by the fallback rule")

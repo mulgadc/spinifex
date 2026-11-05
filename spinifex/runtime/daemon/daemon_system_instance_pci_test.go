@@ -61,6 +61,7 @@ func TestBuildDirectBootConfig_SQSWorkerNICsArePCI(t *testing.T) {
 }
 
 func TestMicrovmMachineType_HasPCIE(t *testing.T) {
+	t.Parallel()
 	assert.Contains(t, vm.MicroVMMachineType(), "pcie=on")
 	assert.Contains(t, vm.MicroVMMachineType(), "isa-serial=on")
 }

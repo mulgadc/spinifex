@@ -60,6 +60,7 @@ var teardownAllDone = map[string]string{
 // Only a terminated record whose every dependent is done is torn down. A live
 // record with an empty Teardown map has recorded no progress and proves nothing.
 func TestAccountTeardownOutstanding_OnlyTerminatedAndCompleteIsOmitted(t *testing.T) {
+	t.Parallel()
 	m, svc := teardownReadFixture(t)
 	liveRecord(t, m, "i-running", teardownAcct, vm.StateRunning, nil)
 	liveRecord(t, m, "i-stopped", teardownAcct, vm.StateStopped, nil)
@@ -85,6 +86,7 @@ func TestAccountTeardownOutstanding_OnlyTerminatedAndCompleteIsOmitted(t *testin
 
 // The dependents are returned, so a caller can say what is still outstanding.
 func TestAccountTeardownOutstanding_ReportsPerDependentState(t *testing.T) {
+	t.Parallel()
 	m, svc := teardownReadFixture(t)
 	terminatedRecord(t, m, "i-failed-dep", teardownAcct, map[string]string{
 		vm.TeardownQEMU:    string(vm.TeardownDone),
@@ -102,6 +104,7 @@ func TestAccountTeardownOutstanding_ReportsPerDependentState(t *testing.T) {
 // TeardownComplete, so it is omitted. This pins that reading rather than
 // endorsing it.
 func TestAccountTeardownOutstanding_TerminatedWithNoRecordedDependentIsOmitted(t *testing.T) {
+	t.Parallel()
 	m, svc := teardownReadFixture(t)
 	terminatedRecord(t, m, "i-no-deps", teardownAcct, nil)
 
@@ -111,6 +114,7 @@ func TestAccountTeardownOutstanding_TerminatedWithNoRecordedDependentIsOmitted(t
 // Another account's instances are never reported, nor is a pre-account record
 // that only the global account may see.
 func TestAccountTeardownOutstanding_OtherAccountsAreNotReported(t *testing.T) {
+	t.Parallel()
 	m, svc := teardownReadFixture(t)
 	liveRecord(t, m, "i-mine", teardownAcct, vm.StateRunning, nil)
 	liveRecord(t, m, "i-theirs", teardownOtherA, vm.StateRunning, nil)
@@ -123,6 +127,7 @@ func TestAccountTeardownOutstanding_OtherAccountsAreNotReported(t *testing.T) {
 // A terminate in flight can leave a record in both stores. The live copy is
 // what is reported, so a complete terminated copy cannot hide it.
 func TestAccountTeardownOutstanding_LiveCopyWinsOverTerminatedCopy(t *testing.T) {
+	t.Parallel()
 	m, svc := teardownReadFixture(t)
 	liveRecord(t, m, "i-both", teardownAcct, vm.StateShuttingDown, nil)
 	terminatedRecord(t, m, "i-both", teardownAcct, map[string]string{vm.TeardownQEMU: string(vm.TeardownFailed)})
@@ -131,6 +136,7 @@ func TestAccountTeardownOutstanding_LiveCopyWinsOverTerminatedCopy(t *testing.T)
 }
 
 func TestAccountTeardownOutstanding_LiveCopyIsReportedEvenIfTerminatedCopyIsComplete(t *testing.T) {
+	t.Parallel()
 	m, svc := teardownReadFixture(t)
 	liveRecord(t, m, "i-both", teardownAcct, vm.StateRunning, nil)
 	terminatedRecord(t, m, "i-both", teardownAcct, teardownAllDone)
@@ -139,6 +145,7 @@ func TestAccountTeardownOutstanding_LiveCopyIsReportedEvenIfTerminatedCopyIsComp
 }
 
 func TestAccountTeardownOutstanding_NothingOutstandingIsEmptyNotAnError(t *testing.T) {
+	t.Parallel()
 	_, svc := teardownReadFixture(t)
 
 	out, err := svc.AccountTeardownOutstanding(teardownAcct)
@@ -150,6 +157,7 @@ func TestAccountTeardownOutstanding_NothingOutstandingIsEmptyNotAnError(t *testi
 // A record that cannot be decoded might be the account's, so the read fails
 // instead of returning a list that omits it.
 func TestAccountTeardownOutstanding_UndecodableLiveRecordFailsTheRead(t *testing.T) {
+	t.Parallel()
 	m, svc := teardownReadFixture(t)
 	liveRecord(t, m, "i-good", teardownAcct, vm.StateRunning, nil)
 	kv, err := m.stateB.KV(t.Context())
@@ -164,6 +172,7 @@ func TestAccountTeardownOutstanding_UndecodableLiveRecordFailsTheRead(t *testing
 }
 
 func TestAccountTeardownOutstanding_UndecodableTerminatedRecordFailsTheRead(t *testing.T) {
+	t.Parallel()
 	m, svc := teardownReadFixture(t)
 	terminatedRecord(t, m, "i-good", teardownAcct, teardownAllDone)
 	kv, err := m.term.KV(t.Context())
@@ -181,6 +190,7 @@ func TestAccountTeardownOutstanding_UndecodableTerminatedRecordFailsTheRead(t *t
 // the terminated bucket is written, and the second write can fail. A record
 // with an unfinished dependent that sits only in the primary store must show.
 func TestAccountTeardownOutstanding_TerminatedOnlyInPrimaryStoreIsReported(t *testing.T) {
+	t.Parallel()
 	m, svc := teardownReadFixture(t)
 	liveRecord(t, m, "i-gap", teardownAcct, vm.StateTerminated, map[string]string{
 		vm.TeardownQEMU:    string(vm.TeardownDone),

@@ -176,29 +176,31 @@ func TestEIP_ReleaseWhileAssociated(t *testing.T) {
 	assert.Equal(t, "Address "+record.PublicIp+" is in use.", message)
 }
 
-func TestEIP_ReleaseByInstanceID_ReclaimsAssociatedEIP(t *testing.T) {
+func TestEIP_ReleaseAllocationOnENI_ReclaimsAssociatedEIP(t *testing.T) {
 	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 	allocID := *out.AllocationId
 
-	// Mark the EIP associated with a system instance, as an internet-facing ALB
-	// leaves it. ENIId stays empty so disassociate skips the VPC-service lookup.
+	// Mark the EIP associated with an ENI, as an internet-facing ALB leaves it.
 	entry, err := svc.eipKV.Get(t.Context(), testAccountID+"."+allocID)
 	require.NoError(t, err)
 	var record EIPRecord
 	require.NoError(t, json.Unmarshal(entry.Value(), &record))
 	record.State = "associated"
 	record.AssociationId = "eipassoc-test"
-	record.InstanceId = "i-alb-test"
+	record.ENIId = "eni-alb"
 	data, err := json.Marshal(record)
 	require.NoError(t, err)
 	_, err = svc.eipKV.Update(t.Context(), testAccountID+"."+allocID, data, entry.Revision())
 	require.NoError(t, err)
 
-	// Backstop release by instance disassociates then frees the allocation.
-	require.NoError(t, svc.ReleaseAddressByInstanceID("i-alb-test"))
+	// The backstop disassociates then frees the allocation, but not for another ENI.
+	require.NoError(t, svc.ReleaseAllocationOnENI(allocID, "eni-other"))
+	_, err = svc.eipKV.Get(t.Context(), testAccountID+"."+allocID)
+	require.NoError(t, err, "an allocation on a different ENI is left alone")
+	require.NoError(t, svc.ReleaseAllocationOnENI(allocID, "eni-alb"))
 
 	_, err = svc.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{AllocationId: aws.String(allocID)}, testAccountID)
 	assert.Error(t, err)
@@ -322,21 +324,22 @@ func TestEIP_DisassociateByENI_SkipsMalformedRecord(t *testing.T) {
 	assert.True(t, found)
 }
 
-func TestEIP_ReleaseByInstanceID_NoMatchIsNoOp(t *testing.T) {
+func TestEIP_ReleaseAllocationOnENI_NoMatchIsNoOp(t *testing.T) {
 	svc, _, _ := setupTestEIP(t)
 
 	out, err := svc.AllocateAddress(context.Background(), &ec2.AllocateAddressInput{}, testAccountID)
 	require.NoError(t, err)
 	allocID := *out.AllocationId
 
-	// An instance with no recorded EIP must leave existing allocations untouched.
-	require.NoError(t, svc.ReleaseAddressByInstanceID("i-unrelated"))
+	// An unknown allocation, or one not associated to the ENI, leaves others untouched.
+	require.NoError(t, svc.ReleaseAllocationOnENI("eipalloc-unrelated", "eni-x"))
+	require.NoError(t, svc.ReleaseAllocationOnENI(allocID, "eni-x"))
 
 	_, err = svc.eipKV.Get(t.Context(), testAccountID+"."+allocID)
 	assert.NoError(t, err)
 
-	// Empty instance ID is a no-op too.
-	require.NoError(t, svc.ReleaseAddressByInstanceID(""))
+	require.NoError(t, svc.ReleaseAllocationOnENI("", "eni-x"))
+	require.NoError(t, svc.ReleaseAllocationOnENI(allocID, ""))
 }
 
 func TestEIP_ReleaseMissingParams(t *testing.T) {

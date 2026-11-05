@@ -124,12 +124,12 @@ func (d Deps) deleteAccount(ctx context.Context, body []byte) (any, error) {
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
 
-	if !req.DryRun && d.PlatformCleaner == nil {
+	if !req.DryRun && (d.PlatformCleaner == nil || d.ComputeCleaner == nil || d.StorageCleaner == nil) {
 		slog.Error("DeleteAccount: platform cleanup not available")
 		return nil, errors.New(awserrors.ErrorServiceUnavailable)
 	}
 
-	engine, err := accountteardown.NewClusterEngine(ctx, d.NATS, accountteardown.ClusterNodes{Expected: d.ExpectedNodes, DaemonIDs: d.NodeIDs, GatewayIDs: d.GatewayNodeIDs}, d.Termination, d.BucketStore, d.PlatformCleaner)
+	engine, err := accountteardown.NewClusterEngine(ctx, d.NATS, accountteardown.ClusterNodes{Expected: d.ExpectedNodes, DaemonIDs: d.NodeIDs, GatewayIDs: d.GatewayNodeIDs}, d.Termination, d.BucketStore, d.PlatformCleaner, accountteardown.WithComputeCleanup(d.ComputeCleaner, d.StorageCleaner))
 	if err != nil {
 		slog.Error("DeleteAccount: failed to build teardown engine", "err", err)
 		return nil, errors.New(awserrors.ErrorServiceUnavailable)

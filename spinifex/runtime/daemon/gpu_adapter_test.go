@@ -31,6 +31,7 @@ func newMIGClaimManager(t *testing.T, count int) *gpu.Manager {
 }
 
 func TestDaemonGPUClaimerClaimsRequestedCount(t *testing.T) {
+	t.Parallel()
 	mgr := newMIGClaimManager(t, 2)
 	claimer := &daemonGPUClaimer{d: &Daemon{gpuManager: mgr}}
 
@@ -45,6 +46,7 @@ func TestDaemonGPUClaimerClaimsRequestedCount(t *testing.T) {
 }
 
 func TestDaemonGPUClaimerRollsBackPartialClaim(t *testing.T) {
+	t.Parallel()
 	mgr := newMIGClaimManager(t, 1)
 	claimer := &daemonGPUClaimer{d: &Daemon{gpuManager: mgr}}
 

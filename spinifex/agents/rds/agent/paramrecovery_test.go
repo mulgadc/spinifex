@@ -385,6 +385,7 @@ func newTestGuard(engine parameterRecovery, probe *engineProbe) *paramGuard {
 // pg_isready exit 2 is an engine that is not there at all, which after a
 // parameter change is the boot-loop shape this breaks.
 func TestParamGuard_RollsBackReportsAndRestartsWhenTheEngineNeverComesUp(t *testing.T) {
+	t.Parallel()
 	engine := &fakeRecovery{restored: true}
 	cp := newFakeControlPlane()
 	guard := newParamGuard(engine, stubProbe(t, 2, nil), cp)
@@ -408,6 +409,7 @@ func TestParamGuard_RollsBackReportsAndRestartsWhenTheEngineNeverComesUp(t *test
 // the file can be replaced and the call still fail. The rollback has happened
 // either way, and the worse outcome is an instance left down and unreported.
 func TestParamGuard_ReportsAndRestartsWhenOnlyTheEnforcementFailed(t *testing.T) {
+	t.Parallel()
 	engine := &fakeRecovery{restored: true, restoreErr: errors.New("write the TLS enforcement rule: read-only file system")}
 	cp := newFakeControlPlane()
 	guard := newParamGuard(engine, stubProbe(t, 2, nil), cp)
@@ -431,6 +433,7 @@ func TestParamGuard_ReportsAndRestartsWhenOnlyTheEnforcementFailed(t *testing.T)
 // the instance on the set it is already failing under, so restarting it would
 // only churn a cluster that is down for a reason the rollback cannot fix.
 func TestParamGuard_DoesNotRestartWhenTheRestoreReplacedNothing(t *testing.T) {
+	t.Parallel()
 	engine := &fakeRecovery{restored: false, restoreErr: errors.New("read the last known good parameters: input/output error")}
 	cp := newFakeControlPlane()
 	guard := newParamGuard(engine, stubProbe(t, 2, nil), cp)
@@ -457,6 +460,7 @@ func TestParamGuard_DoesNothingWhenTheEngineIsServing(t *testing.T) {
 // pg_isready exit 1 is a postmaster that is up and replaying WAL. It is making
 // progress on its own, and restarting it would throw the recovery away.
 func TestParamGuard_LeavesARecoveringEngineAlone(t *testing.T) {
+	t.Parallel()
 	engine := &fakeRecovery{restored: true}
 	guard := newTestGuard(engine, stubProbe(t, 1, nil))
 	// Bounded so the deadline-resetting loop cannot run forever if it stops
@@ -473,6 +477,7 @@ func TestParamGuard_LeavesARecoveringEngineAlone(t *testing.T) {
 // The parameters are only the cause if they differ from the set the engine last
 // accepted; restarting on an identical set would churn for nothing.
 func TestParamGuard_DoesNotRestartWhenTheParametersAreAlreadyTheAcceptedSet(t *testing.T) {
+	t.Parallel()
 	engine := &fakeRecovery{restored: false}
 	newTestGuard(engine, stubProbe(t, 2, nil)).Run(t.Context())
 

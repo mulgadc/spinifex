@@ -87,6 +87,7 @@ func peerFacts() clusterv1.NodeFacts {
 // A shared subnet is not a cluster: on a cloud the WAN subnet holds other
 // tenants, so only the address the target node reports is admitted.
 func TestHandleNetTestRun_RefusesAddressTheTargetDoesNotReport(t *testing.T) {
+	t.Parallel()
 	d, nc := insightDaemon(t, insightFacts())
 	servePeerFacts(t, nc, "node2", peerFacts())
 
@@ -99,6 +100,7 @@ func TestHandleNetTestRun_RefusesAddressTheTargetDoesNotReport(t *testing.T) {
 }
 
 func TestHandleNetTestRun_RefusesATargetThatDoesNotAnswer(t *testing.T) {
+	t.Parallel()
 	d, nc := insightDaemon(t, insightFacts())
 
 	res := callHandler[clusterv1.NetTestRunResponse](t, nc, d.handleNetTestRun, validRun())
@@ -106,6 +108,7 @@ func TestHandleNetTestRun_RefusesATargetThatDoesNotAnswer(t *testing.T) {
 }
 
 func TestHandleNetTestRun_RefusesInvalidRequests(t *testing.T) {
+	t.Parallel()
 	d, nc := insightDaemon(t, insightFacts())
 
 	mutations := map[string]func(*clusterv1.NetTestRunRequest){
@@ -128,6 +131,7 @@ func TestHandleNetTestRun_RefusesInvalidRequests(t *testing.T) {
 }
 
 func TestHandleNetTestRun_RefusesPlaneWithoutAddress(t *testing.T) {
+	t.Parallel()
 	d, nc := insightDaemon(t, insightFacts())
 
 	req := validRun()
@@ -137,6 +141,7 @@ func TestHandleNetTestRun_RefusesPlaneWithoutAddress(t *testing.T) {
 }
 
 func TestHandleNetTestRun_OneTestPerNode(t *testing.T) {
+	t.Parallel()
 	d, nc := insightDaemon(t, insightFacts())
 	servePeerFacts(t, nc, "node2", peerFacts())
 	d.insight.testing.Lock()
@@ -147,6 +152,7 @@ func TestHandleNetTestRun_OneTestPerNode(t *testing.T) {
 }
 
 func TestHandleNetTestServe_RefusesBadRequests(t *testing.T) {
+	t.Parallel()
 	d, nc := insightDaemon(t, insightFacts())
 
 	res := callHandler[clusterv1.NetTestServeResponse](t, nc, d.handleNetTestServe,
@@ -160,6 +166,7 @@ func TestHandleNetTestServe_RefusesBadRequests(t *testing.T) {
 }
 
 func TestHandleNodeFacts_ServesCachedFacts(t *testing.T) {
+	t.Parallel()
 	d, nc := insightDaemon(t, insightFacts())
 
 	got := callHandler[clusterv1.NodeFacts](t, nc, d.handleNodeFacts, struct{}{})
@@ -167,6 +174,7 @@ func TestHandleNodeFacts_ServesCachedFacts(t *testing.T) {
 }
 
 func TestPlaneLink_FastestNICAndMTU(t *testing.T) {
+	t.Parallel()
 	d, _ := insightDaemon(t, insightFacts())
 
 	speed, mtu := d.insight.planeLink(t.Context(), clusterv1.PlaneLAN)
@@ -179,6 +187,7 @@ func TestPlaneLink_FastestNICAndMTU(t *testing.T) {
 }
 
 func TestPlaneNICs_SharedNICsCountedOnce(t *testing.T) {
+	t.Parallel()
 	got := planeNICs(insightFacts())
 	assert.Equal(t, map[string][]string{
 		"lan+vpc": {"eth0", "eth1"},
@@ -210,6 +219,7 @@ func writeHostTree(t *testing.T, root string, stat, rx string) {
 }
 
 func TestHostRates_FromProcAndSysCounters(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	planes := map[string][]string{"lan": {"eth0", "missing0"}}
 
@@ -231,6 +241,7 @@ func TestHostRates_FromProcAndSysCounters(t *testing.T) {
 }
 
 func TestNodeLiveSampler_RingAndLease(t *testing.T) {
+	t.Parallel()
 	l := &nodeLiveSampler{running: true}
 	for i := range telemetryv1.LiveRingSamples + 5 {
 		l.record(telemetryv1.NodeLiveSample{TimeMillis: int64(i)})
@@ -250,6 +261,7 @@ func TestNodeLiveSampler_RingAndLease(t *testing.T) {
 }
 
 func TestHandleNodeLiveWatch_ReturnsRing(t *testing.T) {
+	t.Parallel()
 	d, nc := insightDaemon(t, insightFacts())
 	d.insight.live = &nodeLiveSampler{insight: d.insight, nc: nc, subject: nats.NewInbox(), running: true}
 	d.insight.live.record(telemetryv1.NodeLiveSample{TimeMillis: 10})
@@ -263,6 +275,7 @@ func TestHandleNodeLiveWatch_ReturnsRing(t *testing.T) {
 // A hung mount blocks statfs where no context can reach it. The facts and the
 // network-test lookups must still answer, with the mount reported on its row.
 func TestHungMountLeavesFactsAndNetTestSetupAnswering(t *testing.T) {
+	t.Parallel()
 	d, nc := insightDaemon(t, clusterv1.NodeFacts{})
 	root := t.TempDir()
 	mountinfo := "22 1 259:2 / / rw - ext4 /dev/nvme0n1p2 rw\n" +

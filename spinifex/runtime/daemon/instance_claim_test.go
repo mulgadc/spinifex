@@ -26,6 +26,7 @@ func recoverableRecord(id, node string) *vm.InstanceRecord {
 }
 
 func TestClaimRecoverableInstance_TakesOwnership(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	require.NoError(t, m.WriteInstanceRecord("i-1", recoverableRecord("i-1", "node-1")))
 
@@ -43,6 +44,7 @@ func TestClaimRecoverableInstance_TakesOwnership(t *testing.T) {
 // The CAS is the whole of the mutual exclusion. Several survivors derive the
 // same candidate and race it; exactly one revision may win.
 func TestClaimRecoverableInstance_OnlyOneSurvivorWins(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	require.NoError(t, m.WriteInstanceRecord("i-1", recoverableRecord("i-1", "node-1")))
 
@@ -72,6 +74,7 @@ func TestClaimRecoverableInstance_OnlyOneSurvivorWins(t *testing.T) {
 // A loser reads a record naming a live owner, which is how the candidate
 // disappears from its view without anything telling it so.
 func TestClaimRecoverableInstance_LostWhenTheOwnerAlreadyMoved(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	require.NoError(t, m.WriteInstanceRecord("i-1", recoverableRecord("i-1", "node-3")))
 
@@ -80,6 +83,7 @@ func TestClaimRecoverableInstance_LostWhenTheOwnerAlreadyMoved(t *testing.T) {
 }
 
 func TestClaimRecoverableInstance_LostWhenTheRecordIsGone(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 
 	_, err := m.ClaimRecoverableInstance("i-never-written", "node-1", "node-2")
@@ -90,6 +94,7 @@ func TestClaimRecoverableInstance_LostWhenTheRecordIsGone(t *testing.T) {
 // transfer happens rather than only when the candidate was derived. A terminate
 // that started in between must not be undone by a claim.
 func TestClaimRecoverableInstance_RefusesAnInstanceNobodyWantsRunning(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 
 	stopped := recoverableRecord("i-stopped", "node-1")
@@ -114,6 +119,7 @@ func TestClaimRecoverableInstance_RefusesAnInstanceNobodyWantsRunning(t *testing
 // Without the release a failed attempt parks the instance on a node that has
 // just proved it cannot run it, and no other survivor looks at it again.
 func TestReleaseRecoveredInstance_HandsTheRecordBack(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	require.NoError(t, m.WriteInstanceRecord("i-1", recoverableRecord("i-1", "node-1")))
 
@@ -130,6 +136,7 @@ func TestReleaseRecoveredInstance_HandsTheRecordBack(t *testing.T) {
 // A release that arrives after someone else has taken the record must not pull
 // it back: the current owner may already be running the guest.
 func TestReleaseRecoveredInstance_LeavesAnotherNodesRecordAlone(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	require.NoError(t, m.WriteInstanceRecord("i-1", recoverableRecord("i-1", "node-3")))
 
@@ -143,6 +150,7 @@ func TestReleaseRecoveredInstance_LeavesAnotherNodesRecordAlone(t *testing.T) {
 // The release is best-effort by design — the node making it may itself be
 // failing — so an instance that has been terminated meanwhile is not an error.
 func TestReleaseRecoveredInstance_AbsentRecordIsNotAnError(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 
 	assert.NoError(t, m.ReleaseRecoveredInstance("i-never-written", "node-2", "node-1"))
@@ -152,6 +160,7 @@ func TestReleaseRecoveredInstance_AbsentRecordIsNotAnError(t *testing.T) {
 // answer would be "no instances to recover" and look identical to a healthy
 // cluster.
 func TestClaimAndRelease_RefuseWithoutABucket(t *testing.T) {
+	t.Parallel()
 	m := &daemon.JetStreamManager{}
 
 	_, err := m.ClaimRecoverableInstance("i-1", "node-1", "node-2")
@@ -167,6 +176,7 @@ func TestClaimAndRelease_RefuseWithoutABucket(t *testing.T) {
 // every node because they all derive their work from desired state, and the
 // customer's own StartInstances is the retry.
 func TestAbandonRecovery_LeavesTheInstanceStoppedWithAReason(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	record := recoverableRecord("i-1", "node-1")
 	record.Status.Instance = &ec2.Instance{InstanceId: aws.String("i-1")}
@@ -194,6 +204,7 @@ func TestAbandonRecovery_LeavesTheInstanceStoppedWithAReason(t *testing.T) {
 // survivor has already claimed and launched the instance must not stop a guest
 // that is now running.
 func TestAbandonRecovery_WillNotStopAnInstanceAnotherNodeTook(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	require.NoError(t, m.WriteInstanceRecord("i-1", recoverableRecord("i-1", "node-3")))
 
@@ -211,6 +222,7 @@ func TestAbandonRecovery_WillNotStopAnInstanceAnotherNodeTook(t *testing.T) {
 // reason is lost, which is a worse outcome than having one and a better one than
 // retrying forever.
 func TestAbandonRecovery_WorksWithoutAnEC2Projection(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	require.NoError(t, m.WriteInstanceRecord("i-1", recoverableRecord("i-1", "node-1")))
 
@@ -224,6 +236,7 @@ func TestAbandonRecovery_WorksWithoutAnEC2Projection(t *testing.T) {
 }
 
 func TestAbandonRecovery_AbsentRecordIsNotAnError(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 
 	abandoned, err := m.AbandonRecovery("i-never-written", "node-1", "Server.HostRecoveryFailed", "gave up")
@@ -232,6 +245,7 @@ func TestAbandonRecovery_AbsentRecordIsNotAnError(t *testing.T) {
 }
 
 func TestAbandonRecovery_RefusesWithoutABucket(t *testing.T) {
+	t.Parallel()
 	m := &daemon.JetStreamManager{}
 
 	_, err := m.AbandonRecovery("i-1", "node-1", "Server.HostRecoveryFailed", "gave up")

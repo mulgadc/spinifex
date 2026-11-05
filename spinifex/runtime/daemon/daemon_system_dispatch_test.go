@@ -16,6 +16,7 @@ import (
 )
 
 func TestRespondWithSystemLaunchOutput(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -49,6 +50,7 @@ func TestRespondWithSystemLaunchOutput(t *testing.T) {
 }
 
 func TestRespondWithSystemLaunchError(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -77,6 +79,7 @@ func TestRespondWithSystemLaunchError(t *testing.T) {
 }
 
 func TestRespondWithSystemLaunchError_EmptyDefaultsToServerInternal(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -105,6 +108,7 @@ func TestRespondWithSystemLaunchError_EmptyDefaultsToServerInternal(t *testing.T
 }
 
 func TestRespondWithSystemTerminateOK(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -133,6 +137,7 @@ func TestRespondWithSystemTerminateOK(t *testing.T) {
 }
 
 func TestRespondWithSystemTerminateError(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -161,6 +166,7 @@ func TestRespondWithSystemTerminateError(t *testing.T) {
 }
 
 func TestRespondWithSystemTerminateError_EmptyDefaultsToServerInternal(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -189,6 +195,7 @@ func TestRespondWithSystemTerminateError_EmptyDefaultsToServerInternal(t *testin
 }
 
 func TestHandleSystemLaunchInstance_InvalidJSON(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -224,6 +231,7 @@ func TestHandleSystemLaunchInstance_InvalidJSON(t *testing.T) {
 }
 
 func TestHandleSystemTerminateInstance_MissingID(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -258,12 +266,14 @@ func TestHandleSystemTerminateInstance_MissingID(t *testing.T) {
 }
 
 func TestSubscribeSystemTerminate_NilConn(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{natsSubscriptions: make(map[string]*nats.Subscription)}
 	assert.NoError(t, d.subscribeSystemTerminate("i-noop"), "nil natsConn must short-circuit without error")
 	assert.Empty(t, d.natsSubscriptions, "no subscription should be registered when conn is nil")
 }
 
 func TestSubscribeSystemTerminate_Idempotent(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -280,7 +290,8 @@ func TestSubscribeSystemTerminate_Idempotent(t *testing.T) {
 }
 
 func TestLaunchSystemInstanceOnNode_RemoteRoundTrip(t *testing.T) {
-	nc, err := nats.Connect(sharedNATSURL)
+	t.Parallel()
+	nc, err := nats.Connect(privateNATSURL(t))
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
 
@@ -316,7 +327,8 @@ func TestLaunchSystemInstanceOnNode_RemoteRoundTrip(t *testing.T) {
 }
 
 func TestLaunchSystemInstanceOnNode_RemoteErrorPropagated(t *testing.T) {
-	nc, err := nats.Connect(sharedNATSURL)
+	t.Parallel()
+	nc, err := nats.Connect(privateNATSURL(t))
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
 
@@ -335,6 +347,7 @@ func TestLaunchSystemInstanceOnNode_RemoteErrorPropagated(t *testing.T) {
 }
 
 func TestLaunchSystemInstanceOnNode_RemoteWithoutConn(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{node: "node-a"}
 	_, err := d.LaunchSystemInstanceOnNode("node-b", &elbv2domain.SystemInstanceInput{InstanceType: "sys.medium"})
 	require.Error(t, err, "remote placement requires a NATS connection")
@@ -346,6 +359,7 @@ func TestLaunchSystemInstanceOnNode_RemoteWithoutConn(t *testing.T) {
 // so the cluster-wide teardown actually frees the remote ENI instead of deleting
 // it while still attached (InvalidNetworkInterface.InUse).
 func TestTerminateSystemInstanceRemote_RoundTrip(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -374,6 +388,7 @@ func TestTerminateSystemInstanceRemote_RoundTrip(t *testing.T) {
 // request gets no responders. That means the VM is genuinely gone, reported as
 // ErrSystemInstanceNotFound — which TerminateK3sServerVM treats as idempotent.
 func TestTerminateSystemInstanceRemote_NoResponders(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -390,6 +405,7 @@ func TestTerminateSystemInstanceRemote_NoResponders(t *testing.T) {
 // NotFound (it raced to gone); the routing layer normalizes it back to a typed
 // ErrSystemInstanceNotFound so the teardown still treats it as idempotent.
 func TestTerminateSystemInstanceRemote_NotFoundPropagated(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -414,6 +430,7 @@ func TestTerminateSystemInstanceRemote_NotFoundPropagated(t *testing.T) {
 // the owner surfaces to the caller (not swallowed), so the cluster delete fails
 // loudly and the backstop reaper re-drives it rather than stranding billable infra.
 func TestTerminateSystemInstanceRemote_ErrorPropagated(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -437,6 +454,7 @@ func TestTerminateSystemInstanceRemote_ErrorPropagated(t *testing.T) {
 // TestTerminateSystemInstanceRemote_WithoutConn: with no NATS connection there is
 // no way to reach an owner, so the VM is unreachable — reported as NotFound.
 func TestTerminateSystemInstanceRemote_WithoutConn(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{node: "node-a"}
 	err := d.terminateSystemInstanceRemote("i-x")
 	require.Error(t, err)
@@ -448,6 +466,7 @@ func TestTerminateSystemInstanceRemote_WithoutConn(t *testing.T) {
 // goroutine must recover the panic, reply with an error, and drain the dispatch
 // WaitGroup — a panic in a detached launch must never crash the daemon (267.4).
 func TestHandleSystemLaunchInstance_PanicRecovered(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -495,6 +514,7 @@ func TestHandleSystemLaunchInstance_PanicRecovered(t *testing.T) {
 // goroutine model must not serialize requests on a single subscription
 // goroutine (the head-of-line block this fix removes).
 func TestHandleSystemLaunchInstance_ConcurrentDispatch(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -573,6 +593,7 @@ func nextEnvelopeError(t *testing.T, sub *nats.Subscription) string {
 }
 
 func TestServeSystemLaunchInstance_UnknownType(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -662,6 +683,7 @@ func TestTerminateSystemInstanceRemote_TransportFailures(t *testing.T) {
 }
 
 func TestSubscribeSystemTerminate_ConnFailures(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{natsSubscriptions: make(map[string]*nats.Subscription)}
 	require.NoError(t, d.subscribeSystemTerminateLocked("i-nil"), "nil natsConn must short-circuit")
 
@@ -679,7 +701,7 @@ func TestHandleSystemTerminateInstance_Errors(t *testing.T) {
 	t.Cleanup(nc.Close)
 
 	t.Run("unknown instance", func(t *testing.T) {
-		d := &Daemon{natsConn: nc, vmMgr: vm.NewManager(), natsSubscriptions: make(map[string]*nats.Subscription)}
+		d := &Daemon{natsConn: nc, vmMgr: vm.NewManager(), natsSubscriptions: make(map[string]*nats.Subscription), ownership: fakeOwnership{}}
 		msg, sub := syncReply(t, nc, "system.TerminateInstance.i-unknown", nil)
 		d.serveSystemTerminateInstance(msg)
 		assert.Contains(t, nextEnvelopeError(t, sub), systeminstance.ErrSystemInstanceNotFound.Error())
@@ -688,7 +710,8 @@ func TestHandleSystemTerminateInstance_Errors(t *testing.T) {
 	// No VM manager makes the terminate nil-deref; the dispatch goroutine must
 	// recover and still answer.
 	t.Run("panic is recovered", func(t *testing.T) {
-		d := &Daemon{natsConn: nc, natsSubscriptions: make(map[string]*nats.Subscription)}
+		d := &Daemon{natsConn: nc, natsSubscriptions: make(map[string]*nats.Subscription),
+			ownership: fakeOwnership{byID: map[string]systeminstance.Ownership{"i-panic": systeminstance.OwnershipSystem}}}
 		msg, sub := syncReply(t, nc, "system.TerminateInstance.i-panic", nil)
 		d.handleSystemTerminateInstance(msg)
 		assert.Equal(t, awserrors.ErrorServerInternal, nextEnvelopeError(t, sub))

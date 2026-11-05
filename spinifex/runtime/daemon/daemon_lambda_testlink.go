@@ -73,7 +73,13 @@ func (d *Daemon) startLambdaTestLink() {
 	err = runLambdaTestLink(
 		func() { go tl.RecoverLoop(d.ctx, testlink.RecoverFirst, testlink.RecoverMax) },
 		func() error { return lambdaTestLinkReady(tl, imageDir, lambdaImageDigest, trustErr) },
-		func() error { _, err := tl.Serve(d.ctx, d.natsConn, d.node); return err },
+		func() error {
+			gatewayUID, err := testlink.LookupUID(testlink.GatewayUser)
+			if err != nil {
+				return err
+			}
+			return tl.ServeControl(d.ctx, testlink.ControlName, gatewayUID)
+		},
 		func() { releaseLambdaTestLinkImage(tl) },
 	)
 	if err != nil {

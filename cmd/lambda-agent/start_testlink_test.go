@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,6 +70,8 @@ type bootstrapStarts struct {
 	sealed  bool
 	// handlerOut receives the _HANDLER the bootstrap process itself saw.
 	handlerOut string
+	// env is the environment the agent gave the bootstrap.
+	env []string
 }
 
 // testlink builds a guest whose fw_cfg also carries a controlled package,
@@ -102,6 +105,7 @@ func (b *bootstrapStarts) testlink(t *testing.T, entries map[string][]byte) test
 		runtimeAddr: "127.0.0.1:0",
 		startBootstrap: func(ctx context.Context, env []string) (*exec.Cmd, error) {
 			b.n++
+			b.env = env
 			b.started <- struct{}{}
 			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHelperBootstrap$")
 			cmd.Env = append(env, helperEnv+"=1", helperHandlerOut+"="+b.handlerOut)
@@ -140,7 +144,7 @@ func TestTestlinkServesOneInvocationThenStops(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 	hs := hostlink.NewTestStream(conn)
-	req := hostlink.Request{GrantID: "g-1", AttemptID: "a-1", RequestID: "r-1", DeadlineMs: time.Now().Add(5 * time.Second).UnixMilli(), Payload: []byte(`{"a":40,"b":2}`)}
+	req := hostlink.Request{Credential: &testCredential, GrantID: "g-1", AttemptID: "a-1", RequestID: "r-1", DeadlineMs: time.Now().Add(5 * time.Second).UnixMilli(), Payload: []byte(`{"a":40,"b":2}`)}
 	require.NoError(t, hs.HostSend(req))
 	got, err := hs.HostResult(ctx)
 	require.NoError(t, err)
@@ -164,6 +168,55 @@ func TestTestlinkServesOneInvocationThenStops(t *testing.T) {
 	assert.Equal(t, testHandler, string(seen), "bootstrap process not given the configured handler")
 	assert.True(t, b.sealed, "task dir not made read-only")
 	assert.FileExists(t, filepath.Join(b.task, "lib", "data.txt"))
+	assert.ElementsMatch(t, []string{
+		"AWS_LAMBDA_RUNTIME_API=" + envValue(b.env, "AWS_LAMBDA_RUNTIME_API"),
+		"_HANDLER=" + testHandler,
+		"LAMBDA_TASK_ROOT=" + taskRoot,
+		"PATH=/bin:/sbin:/usr/bin",
+		"AWS_ACCESS_KEY_ID=" + testCredential.AccessKeyID,
+		"AWS_SECRET_ACCESS_KEY=" + testCredential.SecretAccessKey,
+		"AWS_SESSION_TOKEN=" + testCredential.SessionToken,
+	}, b.env, "the bootstrap gets exactly the runtime and credential variables")
+	assert.NotEmpty(t, envValue(b.env, "AWS_LAMBDA_RUNTIME_API"))
+}
+
+var testCredential = hostlink.Credential{AccessKeyID: "ASIAGUESTKEY", SecretAccessKey: "guest-secret", SessionToken: "guest-token"}
+
+func envValue(env []string, name string) string {
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, name+"="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// A first frame without a complete credential installs and runs nothing.
+func TestTestlinkFrameWithoutCredentialNeverStartsBootstrap(t *testing.T) {
+	for name, cred := range map[string]*hostlink.Credential{
+		"none":       nil,
+		"incomplete": {AccessKeyID: "ASIAGUESTKEY"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			h := newHost(t)
+			h.accept(ctx)
+			var b bootstrapStarts
+			done := runTestlinkAsync(ctx, b.testlink(t, h.entries()))
+			conn := h.guest(t)
+			defer conn.Close()
+			require.NoError(t, hostlink.NewTestStream(conn).HostSend(hostlink.Request{Credential: cred, GrantID: "g-1", AttemptID: "a-1",
+				RequestID: "r-1", DeadlineMs: time.Now().Add(5 * time.Second).UnixMilli(), Payload: []byte(`{}`)}))
+
+			res := wait(t, done, "agent to stop")
+			assert.Equal(t, exitRefused, res.code)
+			assert.ErrorContains(t, res.err, "no execution credential")
+			assert.Zero(t, b.n)
+			assert.False(t, b.sealed)
+			assert.NoFileExists(t, filepath.Join(b.task, "bootstrap"), "package installed")
+		})
+	}
 }
 
 // A bootstrap that posts its response and exits at once does not cost the
@@ -185,7 +238,7 @@ func TestTestlinkBootstrapExitingAfterResponseStillDelivers(t *testing.T) {
 	defer conn.Close()
 	hs := hostlink.NewTestStream(conn)
 	payload := bytes.Repeat([]byte("0123456789"), 300_000)
-	req := hostlink.Request{GrantID: "g-1", AttemptID: "a-1", RequestID: "r-1", DeadlineMs: time.Now().Add(5 * time.Second).UnixMilli(), Payload: payload}
+	req := hostlink.Request{Credential: &testCredential, GrantID: "g-1", AttemptID: "a-1", RequestID: "r-1", DeadlineMs: time.Now().Add(5 * time.Second).UnixMilli(), Payload: payload}
 	require.NoError(t, hs.HostSend(req))
 	got, err := hs.HostResult(ctx)
 	require.NoError(t, err)
@@ -340,7 +393,7 @@ func TestTestlinkBadPackageNeverStartsBootstrap(t *testing.T) {
 
 	conn := h.guest(t)
 	defer conn.Close()
-	require.NoError(t, hostlink.NewTestStream(conn).HostSend(hostlink.Request{GrantID: "g-1", AttemptID: "a-1", RequestID: "r-1",
+	require.NoError(t, hostlink.NewTestStream(conn).HostSend(hostlink.Request{Credential: &testCredential, GrantID: "g-1", AttemptID: "a-1", RequestID: "r-1",
 		DeadlineMs: time.Now().Add(5 * time.Second).UnixMilli()}))
 	res := wait(t, done, "agent to stop")
 	assert.Equal(t, exitRefused, res.code)
@@ -405,7 +458,7 @@ func TestTestlinkUnboundRequestNeverStartsBootstrap(t *testing.T) {
 			case tc.deadlineMs > 0:
 				deadline = tc.deadlineMs
 			}
-			req := hostlink.Request{GrantID: tc.grantID, AttemptID: tc.attempt, RequestID: "r-1",
+			req := hostlink.Request{Credential: &testCredential, GrantID: tc.grantID, AttemptID: tc.attempt, RequestID: "r-1",
 				DeadlineMs: deadline, Payload: []byte(`{}`)}
 			require.NoError(t, hostlink.NewTestStream(conn).HostSend(req))
 

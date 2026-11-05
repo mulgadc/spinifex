@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -31,7 +32,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/attempt"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/guestconn"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/nats-io/nats.go"
 )
 
 const (
@@ -108,34 +108,39 @@ func (d *Daemon) unresolved() (string, error) {
 	return strings.TrimSuffix(filepath.Base(markers[0]), markerSuffix), nil
 }
 
-// Serve answers requests on this node's subject until the subscription ends.
-func (d *Daemon) Serve(ctx context.Context, nc *nats.Conn, node string) (*nats.Subscription, error) {
-	return nc.Subscribe(Subject(node), func(m *nats.Msg) {
-		go func() {
-			rep := d.Handle(ctx, m.Data)
-			body, err := json.Marshal(rep)
-			if err == nil && int64(len(body)) > nc.MaxPayload() {
-				body, err = json.Marshal(Reply{Outcome: OutcomeUnknown, Error: "result too large for the test path"})
-			}
-			if err != nil {
-				slog.Error("Lambda test link: encode reply", "err", err)
-				return
-			}
-			if err := m.Respond(body); err != nil {
-				slog.Error("Lambda test link: send reply", "err", err)
-			}
-		}()
-	})
+// controlIOTimeout bounds reading a request from, and writing a reply to, the
+// gateway on the control socket.
+const controlIOTimeout = 30 * time.Second
+
+// ServeControl binds the control socket name and answers the gateway's
+// requests on it until ctx ends. A bind error means this daemon does not serve.
+func (d *Daemon) ServeControl(ctx context.Context, name string, gatewayUID int) error {
+	ln, err := ListenControl(name)
+	if err != nil {
+		return err
+	}
+	srv := &ControlServer{GatewayUID: gatewayUID, RequestLimit: MaxFrameBytes, ReplyLimit: MaxFrameBytes,
+		IOTimeout: controlIOTimeout, Handle: d.Handle}
+	go func() {
+		if err := srv.Serve(ctx, ln); err != nil {
+			slog.Error("Lambda test link: control socket stopped; not serving new invocations", "err", err)
+		}
+	}()
+	return nil
 }
 
-// Handle runs one request under its grant. It refuses before launch when it
-// can; after launch it reports done only with a result the owner accepted and
-// a proven VM stop.
-func (d *Daemon) Handle(ctx context.Context, data []byte) Reply {
+// Handle runs one request under its grant, giving the guest cred in its first
+// frame. It refuses before launch when it can; after launch it reports done
+// only with a result the owner accepted and a proven VM stop.
+func (d *Daemon) Handle(ctx context.Context, data []byte, cred Credential) Reply {
 	var req Request
 	if err := json.Unmarshal(data, &req); err != nil {
 		return refused("unreadable request")
 	}
+	if !cred.Complete() {
+		return refused("no execution credential")
+	}
+	req.cred = cred
 	if err := CheckRequest(req); err != nil {
 		return refused(err.Error())
 	}
@@ -144,6 +149,9 @@ func (d *Daemon) Handle(ctx context.Context, data []byte) Reply {
 	}
 	if d.Image == nil {
 		return refused("runtime image not prepared")
+	}
+	if req.ImageDigest != d.Image.Digest {
+		return refused("runtime image digest differs from the prepared image")
 	}
 	if !d.busy.CompareAndSwap(false, true) {
 		return refused("another test-link attempt holds this node's slot")
@@ -157,6 +165,12 @@ func (d *Daemon) Handle(ctx context.Context, data []byte) Reply {
 	}()
 	if id, err := d.unresolved(); err != nil || id != "" {
 		return refused("an unresolved test-link attempt holds this node's slot")
+	}
+	// The guest frame is checked at its longest deadline encoding, MinInt64,
+	// before Start: control and guest frames bound different fields. It runs
+	// after the slot is taken so a busy refusal never encodes the payload.
+	if err := hostlink.CheckInvokeFits(guestRequest(req, math.MinInt64)); err != nil {
+		return refused("request does not fit the guest link")
 	}
 	// Without pidfs a restarted daemon could not identify the VM it left.
 	if _, err := selfInode(); err != nil {
@@ -189,7 +203,7 @@ func (d *Daemon) attempt(ctx context.Context, req Request, launch func(code []by
 	if err := d.Grants.Start(ctx, req.Grant, req.Identity()); err != nil {
 		if errors.Is(err, execution.ErrOutcomeUnknown) {
 			slog.Error("Lambda test link: grant start outcome unknown; node held", "attempt", req.AttemptID, "err", err)
-			return Reply{Outcome: OutcomeUnknown, Error: "grant start outcome unknown"}, true
+			return Reply{Outcome: OutcomeUnknown, Error: "grant start outcome unknown"}, false
 		}
 		return refused(err.Error()), true
 	}
@@ -247,8 +261,25 @@ func removeMarker(marker string) bool {
 	return true
 }
 
+// guestRequest is the invocation frame sent to the guest; the pre-start fit
+// check and the send share it so they cannot drift.
+func guestRequest(req Request, deadlineMs int64) hostlink.Request {
+	return hostlink.Request{
+		GrantID:     req.Grant.GrantID,
+		AttemptID:   req.AttemptID,
+		RequestID:   req.RequestID,
+		FunctionARN: req.FunctionARN,
+		DeadlineMs:  deadlineMs,
+		Payload:     req.Payload,
+		Credential:  &req.cred,
+	}
+}
+
 // CheckRequest is the daemon's validation of a test-link request.
 func CheckRequest(req Request) error {
+	if len(req.Payload) > MaxPayloadBytes {
+		return fmt.Errorf("payload of %d bytes exceeds %d", len(req.Payload), MaxPayloadBytes)
+	}
 	if !attemptIDPattern.MatchString(req.AttemptID) {
 		return errors.New("attempt ID must be 12 lowercase hex digits")
 	}
@@ -536,6 +567,12 @@ func hardDeadlineFrom(boot time.Duration, req Request) time.Duration {
 	return boot + fetchTimeout + timeoutFor(req) + HardKillMargin
 }
 
+// AttemptLifetime bounds an attempt from grant to hard kill: the launch window,
+// then the code fetch, boot and function timeout, then the kill margin.
+func AttemptLifetime(timeoutMs int64) time.Duration {
+	return LaunchWindow + fetchTimeout + timeoutFor(Request{TimeoutMs: timeoutMs}) + HardKillMargin
+}
+
 func timeoutFor(req Request) time.Duration {
 	return time.Duration(req.TimeoutMs)*time.Millisecond + BootAllowance
 }
@@ -567,14 +604,7 @@ func (d *Daemon) session(ctx context.Context, req Request, gen *guestconn.Genera
 	if expired(hardDeadline) {
 		return Reply{}, ErrDeadlineExpired
 	}
-	if err := stream.HostSend(hostlink.Request{
-		GrantID:     req.Grant.GrantID,
-		AttemptID:   req.AttemptID,
-		RequestID:   req.RequestID,
-		FunctionARN: req.FunctionARN,
-		DeadlineMs:  deadline.UnixMilli(),
-		Payload:     req.Payload,
-	}); err != nil {
+	if err := stream.HostSend(guestRequest(req, deadline.UnixMilli())); err != nil {
 		return Reply{}, pastDeadline(deadline, fmt.Errorf("send invocation: %w", err))
 	}
 	resp, err := stream.HostResult(rctx)

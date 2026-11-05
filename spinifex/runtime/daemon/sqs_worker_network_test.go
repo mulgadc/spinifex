@@ -31,6 +31,7 @@ func sqsWorkerNetworkFixture(t *testing.T, cfg *config.SQSConfig) (*sqsWorkerNet
 
 // The SQS default supernet is disjoint from every other system VPC default.
 func TestSQSSystemVPCSpec_DefaultIsDisjointAndOverridable(t *testing.T) {
+	t.Parallel()
 	spec := sqsSystemVPCSpec(nil, sqsTestRegion)
 	sqs := netip.MustParsePrefix(spec.Supernet)
 	assert.Equal(t, config.SQSDefaultSystemVPCSupernet, spec.Supernet)
@@ -44,6 +45,7 @@ func TestSQSSystemVPCSpec_DefaultIsDisjointAndOverridable(t *testing.T) {
 // group, with a NIC config whose gateway is the subnet router address. The
 // VPC has exactly one subnet and no internet gateway.
 func TestSQSWorkerNetwork_PrivateShape(t *testing.T) {
+	t.Parallel()
 	n, svc := sqsWorkerNetworkFixture(t, nil)
 	ctx := t.Context()
 	net, err := n.CreateWorkerNetwork(ctx, sqsTestRegion, "claim-a")
@@ -84,6 +86,7 @@ func TestSQSWorkerNetwork_PrivateShape(t *testing.T) {
 // A retry of a claim reuses its one ENI, concurrent first calls for a claim
 // create only one, and a new claim gets its own ENI in the same subnet.
 func TestSQSWorkerNetwork_OneENIPerClaim(t *testing.T) {
+	t.Parallel()
 	n, svc := sqsWorkerNetworkFixture(t, nil)
 	ctx := t.Context()
 	first, err := n.CreateWorkerNetwork(ctx, sqsTestRegion, "claim-a")
@@ -121,6 +124,7 @@ func TestSQSWorkerNetwork_OneENIPerClaim(t *testing.T) {
 
 // Two complete ENIs for one claim are refused rather than chosen between.
 func TestSQSWorkerNetwork_RefusesADuplicatedClaim(t *testing.T) {
+	t.Parallel()
 	n, svc := sqsWorkerNetworkFixture(t, nil)
 	ctx := t.Context()
 	net, err := n.CreateWorkerNetwork(ctx, sqsTestRegion, "claim-a")
@@ -135,6 +139,7 @@ func TestSQSWorkerNetwork_RefusesADuplicatedClaim(t *testing.T) {
 // A caller cancelled while another allocation holds the lock gives up and
 // allocates nothing.
 func TestSQSWorkerNetwork_CancelledWaiterAllocatesNothing(t *testing.T) {
+	t.Parallel()
 	n, svc := sqsWorkerNetworkFixture(t, nil)
 	n.sem <- struct{}{}
 	ctx, cancel := context.WithCancel(t.Context())
@@ -148,6 +153,7 @@ func TestSQSWorkerNetwork_CancelledWaiterAllocatesNothing(t *testing.T) {
 }
 
 func TestSQSWorkerNetwork_RefusesIncompleteInput(t *testing.T) {
+	t.Parallel()
 	n, _ := sqsWorkerNetworkFixture(t, nil)
 	_, err := n.CreateWorkerNetwork(t.Context(), "", "claim-a")
 	require.Error(t, err)
@@ -176,6 +182,7 @@ func (v strayENIVPC) DescribeNetworkInterfaces(ctx context.Context, in *ec2.Desc
 
 // An ENI whose address is outside the private subnet is refused.
 func TestSQSWorkerNetwork_RefusesAnAddressOutsideTheSubnet(t *testing.T) {
+	t.Parallel()
 	n, svc := sqsWorkerNetworkFixture(t, nil)
 	_, err := n.CreateWorkerNetwork(t.Context(), sqsTestRegion, "claim-a")
 	require.NoError(t, err)
@@ -220,6 +227,7 @@ func (v *lostCreateVPC) CreateNetworkInterface(ctx context.Context, in *ec2.Crea
 // A create that applied but lost its reply is found by the claim's retry, so
 // the claim still holds exactly one ENI.
 func TestSQSWorkerNetwork_LostCreateReplyReusesTheENI(t *testing.T) {
+	t.Parallel()
 	_, svc := sqsWorkerNetworkFixture(t, nil)
 	n := newSQSWorkerNetwork(&lostCreateVPC{VPCServiceImpl: svc}, nil)
 	_, err := n.CreateWorkerNetwork(t.Context(), sqsTestRegion, "claim-a")

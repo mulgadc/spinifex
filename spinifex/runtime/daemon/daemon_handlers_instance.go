@@ -360,3 +360,76 @@ func relayStartReply(msg, resp *nats.Msg) error {
 	maps.Copy(reply.Header, resp.Header)
 	return msg.RespondMsg(reply)
 }
+
+// handledHeader marks a reply as sent by the instance's owner, so the
+// forwarder can tell an owner's answer from a stale or missing responder.
+func handledHeader() nats.Header {
+	h := nats.Header{}
+	h.Set(ec2v1.HandledHeader, "1")
+	return h
+}
+
+// respondHandledError answers with err and the handled marker.
+func respondHandledError(nodeID string, msg *nats.Msg, err error) string {
+	respondWithServiceErrorHeader(nodeID, msg, err, handledHeader())
+	return outcomeForError(err)
+}
+
+// respondHandledJSON answers with a JSON body and the handled marker.
+func respondHandledJSON(nodeID string, msg *nats.Msg, out any) string {
+	body, err := json.Marshal(out)
+	if err != nil {
+		return respondHandledError(nodeID, msg, errors.New(awserrors.ErrorServerInternal))
+	}
+	respondNATSMsgWithHeader(nodeID, msg, body, handledHeader())
+	return outcomeSuccess
+}
+
+// handleModifyInstanceMetadataOptions applies a metadata-options change on the
+// node that runs the instance, through the same service method as the
+// gateway-local path.
+func (d *Daemon) handleModifyInstanceMetadataOptions(ctx context.Context, msg *nats.Msg, command ec2v1.EC2InstanceCommand, instance *vm.VM) string {
+	data := command.InstanceMetadataOptionsData
+	if data == nil {
+		return respondHandledError(d.node, msg, errors.New(awserrors.ErrorMissingParameter))
+	}
+	input := &ec2.ModifyInstanceMetadataOptionsInput{
+		InstanceId:              aws.String(instance.ID),
+		HttpPutResponseHopLimit: data.HttpPutResponseHopLimit,
+	}
+	if data.HttpTokens != "" {
+		input.HttpTokens = aws.String(data.HttpTokens)
+	}
+	if data.HttpEndpoint != "" {
+		input.HttpEndpoint = aws.String(data.HttpEndpoint)
+	}
+	if data.HttpProtocolIpv6 != "" {
+		input.HttpProtocolIpv6 = aws.String(data.HttpProtocolIpv6)
+	}
+	if data.InstanceMetadataTags != "" {
+		input.InstanceMetadataTags = aws.String(data.InstanceMetadataTags)
+	}
+	out, err := d.instanceService.ModifyInstanceMetadataOptions(ctx, input, natsmsg.AccountIDFromMsg(msg))
+	if err != nil {
+		return respondHandledError(d.node, msg, err)
+	}
+	return respondHandledJSON(d.node, msg, out)
+}
+
+// handleSetDisableApiTermination sets termination protection on the node that
+// runs the instance. Absent data is a validation error, never "false".
+func (d *Daemon) handleSetDisableApiTermination(ctx context.Context, msg *nats.Msg, command ec2v1.EC2InstanceCommand, instance *vm.VM) string {
+	data := command.DisableApiTerminationData
+	if data == nil {
+		return respondHandledError(d.node, msg, errors.New(awserrors.ErrorMissingParameter))
+	}
+	input := &ec2.ModifyInstanceAttributeInput{
+		InstanceId:            aws.String(instance.ID),
+		DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(data.Value)},
+	}
+	out, err := d.instanceService.ModifyInstanceAttribute(ctx, input, natsmsg.AccountIDFromMsg(msg))
+	if err != nil {
+		return respondHandledError(d.node, msg, err)
+	}
+	return respondHandledJSON(d.node, msg, out)
+}

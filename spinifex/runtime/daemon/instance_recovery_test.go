@@ -58,6 +58,7 @@ func twice(r *instanceRecovery, records []*vm.InstanceRecord, state func(string)
 }
 
 func TestARecordOwnedByAStaleNodeIsRecovered(t *testing.T) {
+	t.Parallel()
 	r := recoveryFixture("node-2")
 	got := twice(r, []*vm.InstanceRecord{runningOn("i-1", "node-1")}, stale)
 
@@ -70,6 +71,7 @@ func TestARecordOwnedByAStaleNodeIsRecovered(t *testing.T) {
 // wrote into its own heartbeat, so a single stale reading is as likely to be
 // skew as a failure.
 func TestOneStaleSampleIsNotEnough(t *testing.T) {
+	t.Parallel()
 	r := recoveryFixture("node-2")
 	assert.Empty(t, r.selectCandidates([]*vm.InstanceRecord{runningOn("i-1", "node-1")}, stale))
 }
@@ -77,6 +79,7 @@ func TestOneStaleSampleIsNotEnough(t *testing.T) {
 // A node that came back between the two passes must not still be a candidate
 // on the strength of the first one.
 func TestAnOwnerThatRecoversBetweenPassesIsForgotten(t *testing.T) {
+	t.Parallel()
 	r := recoveryFixture("node-2")
 	records := []*vm.InstanceRecord{runningOn("i-1", "node-1")}
 
@@ -91,6 +94,7 @@ func TestAnOwnerThatRecoversBetweenPassesIsForgotten(t *testing.T) {
 // An unreadable heartbeat store is not evidence that a node is gone. Treating
 // it as one turns a KV outage into a cluster-wide relaunch.
 func TestAnUnknownOwnerIsNeverACandidate(t *testing.T) {
+	t.Parallel()
 	r := recoveryFixture("node-2")
 	got := twice(r, []*vm.InstanceRecord{runningOn("i-1", "node-1")}, func(string) instancecache.NodeState {
 		return instancecache.NodeUnknown
@@ -99,6 +103,7 @@ func TestAnUnknownOwnerIsNeverACandidate(t *testing.T) {
 }
 
 func TestThisNodesOwnInstancesAreNeverCandidates(t *testing.T) {
+	t.Parallel()
 	r := recoveryFixture("node-1")
 	assert.Empty(t, twice(r, []*vm.InstanceRecord{runningOn("i-1", "node-1")}, stale))
 }
@@ -107,6 +112,7 @@ func TestThisNodesOwnInstancesAreNeverCandidates(t *testing.T) {
 // instance stopped but still wanted, and that is a recovery; an operator stop
 // leaves it stopped and not wanted, and that is not.
 func TestWhatDesiredStateAdmits(t *testing.T) {
+	t.Parallel()
 	drained := runningOn("i-drained", "node-1")
 	drained.Status.Status = vm.StateStopped
 
@@ -130,6 +136,7 @@ func TestWhatDesiredStateAdmits(t *testing.T) {
 }
 
 func TestARecordWithNoOwnerIsNotACandidate(t *testing.T) {
+	t.Parallel()
 	r := recoveryFixture("node-2")
 	assert.Empty(t, twice(r, []*vm.InstanceRecord{runningOn("i-1", "")}, stale))
 }
@@ -138,6 +145,7 @@ func TestARecordWithNoOwnerIsNotACandidate(t *testing.T) {
 // and it is the one failure a different host cannot fix: the volumes are the
 // same objects in the same store from anywhere.
 func TestAnInstancePausedOnItsStorageIsNotMoved(t *testing.T) {
+	t.Parallel()
 	faulted := runningOn("i-faulted", "node-1")
 	faulted.Status.Health.IOErrorSince = time.Now().Add(-2 * time.Minute)
 	faulted.Status.Health.IOErrorResumes = 4
@@ -156,6 +164,7 @@ func TestAnInstancePausedOnItsStorageIsNotMoved(t *testing.T) {
 // kills the export rather than pausing the guest, so it publishes no I/O error
 // and reads as an ordinary desired-running instance on a node that has died.
 func TestAFencedInstanceIsNotMoved(t *testing.T) {
+	t.Parallel()
 	fenced := runningOn("i-fenced", "node-1")
 	fenced.Status.Status = vm.StateError
 	fenced.Status.Instance = &ec2.Instance{StateReason: &ec2.StateReason{
@@ -183,6 +192,7 @@ func TestAFencedInstanceIsNotMoved(t *testing.T) {
 // IOErrorSince clears on the first running poll, so a non-zero value means the
 // storage was still failing when the owner last wrote.
 func TestAPastStoragePauseThatClearedDoesNotBlockRecovery(t *testing.T) {
+	t.Parallel()
 	recovered := runningOn("i-1", "node-1")
 	recovered.Status.Health.IOErrorResumes = 0
 
@@ -194,6 +204,7 @@ func TestAPastStoragePauseThatClearedDoesNotBlockRecovery(t *testing.T) {
 // peers, which is answered once. Asked afresh every pass it would become
 // "are the peers live now" and refuse to act on the failure it exists for.
 func TestTheSettleWindowLatchesOnceThePeersHaveBeenSeen(t *testing.T) {
+	t.Parallel()
 	r := recoveryFixture("node-1")
 	r.startedAt = time.Now()
 	r.daemon.clusterConfig = &config.ClusterConfig{
@@ -212,6 +223,7 @@ func TestTheSettleWindowLatchesOnceThePeersHaveBeenSeen(t *testing.T) {
 }
 
 func TestTheSettleWindowHoldsWhileAPeerHasNotBeenSeen(t *testing.T) {
+	t.Parallel()
 	r := recoveryFixture("node-1")
 	r.startedAt = time.Now()
 	r.daemon.clusterConfig = &config.ClusterConfig{
@@ -222,6 +234,7 @@ func TestTheSettleWindowHoldsWhileAPeerHasNotBeenSeen(t *testing.T) {
 }
 
 func TestTheSettleWindowReleasesWhenItExpires(t *testing.T) {
+	t.Parallel()
 	r := recoveryFixture("node-1")
 	r.startedAt = time.Now().Add(-recoverySettleWindow - time.Second)
 	r.daemon.clusterConfig = &config.ClusterConfig{
@@ -279,6 +292,7 @@ func TestWhatStopsTheLoopStarting(t *testing.T) {
 // to reintroduce one is to add a field nobody notices. A guest whose host is
 // gone is down either way, so a switch could only buy leaving it down.
 func TestRecoveryHasNoOffSwitch(t *testing.T) {
+	t.Parallel()
 	for field := range reflect.TypeFor[config.ClusterConfig]().Fields() {
 		assert.NotContains(t, strings.ToLower(field.Name), "recover",
 			"ClusterConfig.%s reads as a recovery setting, and recovery is not configurable", field.Name)
@@ -302,6 +316,7 @@ func TestANodeWhoseObjectStoreIsDownClaimsNothing(t *testing.T) {
 }
 
 func TestANodeWhoseObjectStoreIsHealthyMayClaim(t *testing.T) {
+	t.Parallel()
 	r := recoveryFixture("node-1")
 	r.daemon.predastoreHealth.at = time.Now()
 	r.daemon.predastoreHealth.result = predastoreHealthOK
@@ -313,6 +328,7 @@ func TestANodeWhoseObjectStoreIsHealthyMayClaim(t *testing.T) {
 // verdict is read before the records are, so a node standing down never reaches
 // the reader at all.
 func TestAPassStandsDownBeforeReadingAnything(t *testing.T) {
+	t.Parallel()
 	r := recoveryFixture("node-1")
 	r.settledOnce = true
 	r.daemon.predastoreHealth.at = time.Now()
@@ -325,6 +341,7 @@ func TestAPassStandsDownBeforeReadingAnything(t *testing.T) {
 // An unreadable record is not evidence that an instance moved, so a returning
 // node with no way to ask leaves its local copies alone.
 func TestForgettingSupersededInstancesNeedsAStoreToAsk(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{node: "node-1"}
 	assert.NotPanics(t, d.forgetSupersededInstances)
 }
@@ -333,6 +350,7 @@ func TestForgettingSupersededInstancesNeedsAStoreToAsk(t *testing.T) {
 // causes clear in seconds and some need an operator, and nothing here can tell
 // which, so the retry rate has to suit the second.
 func TestRetriesBackOffAndCapAfterAFailedLaunch(t *testing.T) {
+	t.Parallel()
 	r := recoveryFixture("node-2")
 	now := time.Now()
 
@@ -357,6 +375,7 @@ func TestRetriesBackOffAndCapAfterAFailedLaunch(t *testing.T) {
 // the backoff makes. The old owner's lease lapses on a clock nobody has to act
 // on, so waiting minutes for it is time an instance spends down for nothing.
 func TestALeaseStillHeldIsRetriedFasterThanAnythingElse(t *testing.T) {
+	t.Parallel()
 	r := recoveryFixture("node-2")
 	now := time.Now()
 
@@ -376,6 +395,7 @@ func TestALeaseStillHeldIsRetriedFasterThanAnythingElse(t *testing.T) {
 // unbounded retry under a narrower condition, and the conditions this code can
 // read are not precise enough to be trusted with that.
 func TestTheAttemptBudgetIsSharedByEveryFault(t *testing.T) {
+	t.Parallel()
 	r := recoveryFixture("node-2")
 	now := time.Now()
 

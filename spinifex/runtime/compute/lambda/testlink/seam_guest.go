@@ -19,11 +19,15 @@ import (
 // HandleWithGuest answers one encoded request through Handle's grant, fetch,
 // session and finish steps, serving the session to guest on loopback instead
 // of a launched VM. It exists only for composed tests.
-func (d *Daemon) HandleWithGuest(ctx context.Context, data []byte, guest func(context.Context, net.Conn)) Reply {
+func (d *Daemon) HandleWithGuest(ctx context.Context, data []byte, cred Credential, guest func(context.Context, net.Conn)) Reply {
 	var req Request
 	if err := json.Unmarshal(data, &req); err != nil {
 		return refused("unreadable request")
 	}
+	if !cred.Complete() {
+		return refused("no execution credential")
+	}
+	req.cred = cred
 	if err := CheckRequest(req); err != nil {
 		return refused(err.Error())
 	}

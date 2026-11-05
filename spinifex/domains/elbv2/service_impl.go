@@ -2077,16 +2077,6 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 		}
 	}
 
-	// Check duplicate name within VPC
-	existing, err := s.store.GetTargetGroupByName(ctx, name, vpcID)
-	if err != nil {
-		slog.ErrorContext(ctx, "CreateTargetGroup: failed to check duplicate name", "name", name, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	if existing != nil {
-		return nil, errors.New(awserrors.ErrorELBv2DuplicateTargetGroup)
-	}
-
 	targetType := TargetTypeInstance
 	if input.TargetType != nil && *input.TargetType != "" {
 		targetType = *input.TargetType
@@ -2145,6 +2135,23 @@ func (s *ELBv2ServiceImpl) CreateTargetGroup(ctx context.Context, input *elbv2.C
 			return nil, err
 		}
 		hc.Matcher = *input.Matcher.HttpCode
+	}
+
+	// A repeated create with the same settings, after defaults, returns the existing group.
+	existing, err := s.store.GetTargetGroupByName(ctx, accountID, name, vpcID)
+	if err != nil {
+		slog.ErrorContext(ctx, "CreateTargetGroup: failed to check duplicate name", "name", name, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if existing != nil {
+		if existing.Protocol == protocol && existing.ProtocolVersion == protocolVersion && existing.Port == port &&
+			existing.TargetType == targetType && existing.HealthCheck == hc {
+			return &elbv2.CreateTargetGroupOutput{
+				TargetGroups: []*elbv2.TargetGroup{s.tgRecordToSDK(existing, nil)},
+			}, nil
+		}
+		return nil, awserrors.Errorf(awserrors.ErrorELBv2DuplicateTargetGroup,
+			"A target group with the same name '%s' exists, but with different settings", name)
 	}
 
 	tgID := awsidentifiers.GenerateResourceID("tg")

@@ -62,6 +62,7 @@ func changeNames(changes []dns.Change) []string {
 // by another node is indistinguishable here from one written locally, which is
 // the point.
 func TestDesiredEC2DNSChanges_SpansEveryNode(t *testing.T) {
+	t.Parallel()
 	d, seed := dnsTestDaemon(t)
 	seed("i-local", "203.0.113.10", "172.31.0.10", vm.StateRunning)
 	seed("i-remote", "203.0.113.20", "172.31.0.20", vm.StateRunning)
@@ -81,6 +82,7 @@ func TestDesiredEC2DNSChanges_SpansEveryNode(t *testing.T) {
 // view node-local and pruning unsafe, so a fallback to it would quietly restore
 // the old behaviour while the prune authority claimed otherwise.
 func TestDesiredEC2DNSChanges_IgnoresTheLocalVMManager(t *testing.T) {
+	t.Parallel()
 	d, _ := dnsTestDaemon(t)
 	d.vmMgr.Replace(map[string]*vm.VM{
 		"i-inmemory": {
@@ -101,6 +103,7 @@ func TestDesiredEC2DNSChanges_IgnoresTheLocalVMManager(t *testing.T) {
 // absence from this set is a deletion, the two have to agree — a stopped
 // instance missing here would have its name pruned out from under it.
 func TestDesiredEC2DNSChanges_KeepsStoppedInstancesAndDropsTerminated(t *testing.T) {
+	t.Parallel()
 	d, seed := dnsTestDaemon(t)
 	seed("i-up", "203.0.113.10", "172.31.0.10", vm.StateRunning)
 	seed("i-stopping", "203.0.113.11", "172.31.0.11", vm.StateStopping)
@@ -125,6 +128,7 @@ func TestDesiredEC2DNSChanges_KeepsStoppedInstancesAndDropsTerminated(t *testing
 // still readable: re-upserting it would race the withdrawal the terminate path
 // already published.
 func TestDesiredEC2DNSChanges_SkipsARecordMarkedForDeletion(t *testing.T) {
+	t.Parallel()
 	d, seed := dnsTestDaemon(t)
 	seed("i-doomed", "203.0.113.10", "172.31.0.10", vm.StateRunning)
 	_, err := d.jsManager.UpdateInstanceRecord("i-doomed", func(r *vm.InstanceRecord) {
@@ -158,6 +162,7 @@ func TestDesiredEC2DNSChanges_UnreadableStoreYieldsNoAuthority(t *testing.T) {
 // without EC2 authority would repair but never prune, and one carrying the flag
 // without the changes would prune everything.
 func TestDNSDesiredSet_EC2AuthorityFollowsTheRecords(t *testing.T) {
+	t.Parallel()
 	d, seed := dnsTestDaemon(t)
 	seed("i-up", "203.0.113.10", "172.31.0.10", vm.StateRunning)
 

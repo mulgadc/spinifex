@@ -147,6 +147,7 @@ func TestStateStoreAdapter_DelegatesToJetStream(t *testing.T) {
 // --- consumeCleanShutdownMarker ---
 
 func TestConsumeCleanShutdownMarker(t *testing.T) {
+	t.Parallel()
 	assert.False(t, (&Daemon{}).consumeCleanShutdownMarker()(),
 		"without JetStream there is no marker to trust")
 
@@ -171,6 +172,7 @@ func TestConsumeCleanShutdownMarker(t *testing.T) {
 }
 
 func TestBuildVMManagerDeps_BackingStoreReady(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{config: &config.Config{}, vmMgr: vm.NewManager()}
 	assert.False(t, d.buildVMManagerDeps().BackingStoreReady(),
 		"no NATS connection means viperblock is unreachable")
@@ -183,6 +185,7 @@ func TestBuildVMManagerDeps_BackingStoreReady(t *testing.T) {
 // Variable stores live in the instance domain's bucket, read through the
 // same object store, with the live copy under the persistent data directory.
 func TestBuildVMManagerDeps_UEFIVarStore(t *testing.T) {
+	t.Parallel()
 	objects := objectstore.NewMemoryObjectStore()
 	d := &Daemon{
 		config:          &config.Config{DataDir: "/srv/spinifex", Predastore: config.PredastoreConfig{Bucket: "spinifex-instances"}},
@@ -203,6 +206,7 @@ func TestBuildVMManagerDeps_UEFIVarStore(t *testing.T) {
 // A connection that is down refuses the publish before sending it, so restore
 // backs off and retries, and there is no export to tear down.
 func TestVolumeMounterAdapter_Mount_DisconnectedIsRetryable(t *testing.T) {
+	t.Parallel()
 	adapter := newNATSMounter(closedAdapterTestConn(t), "node-closed")
 	instance := &vm.VM{ID: "i-mount-closed"}
 	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-closed"}}
@@ -293,6 +297,7 @@ func TestOnInstanceRecoveringHook(t *testing.T) {
 }
 
 func TestOnInstanceUpHook_SubscribeFailureReturnsError(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{natsConn: closedAdapterTestConn(t), natsSubscriptions: map[string]*nats.Subscription{}}
 
 	err := d.onInstanceUpHook()(&vm.VM{ID: "i-up-closed"})
@@ -373,6 +378,7 @@ func TestOnInstanceUpHook_RepublishesNAT(t *testing.T) {
 }
 
 func TestOnInstanceUpHook_ReclaimsMIGSlice(t *testing.T) {
+	t.Parallel()
 	mdev := filepath.Join(t.TempDir(), "mdev-uuid")
 	require.NoError(t, os.WriteFile(mdev, nil, 0o600))
 
@@ -396,6 +402,7 @@ func TestOnInstanceUpHook_ReclaimsMIGSlice(t *testing.T) {
 }
 
 func TestOnInstanceDownHook_UnsubscribeErrors(t *testing.T) {
+	t.Parallel()
 	d, nc := newHookTestDaemon(t)
 	id := "i-down-stale"
 	keys := []string{id, id + ".console", id + ".password", "system.TerminateInstance." + id}
@@ -707,6 +714,7 @@ func TestInstanceCleaner_DisassociateEIPFailureDoesNotFailTerminate(t *testing.T
 }
 
 func TestInstanceCleaner_RemoveFromPlacementGroup(t *testing.T) {
+	t.Parallel()
 	inGroup := &vm.VM{ID: "i-pg", AccountID: testAccountID, PlacementGroupName: "pg-spread"}
 
 	require.NoError(t, newInstanceCleanerAdapter(&Daemon{}).RemoveFromPlacementGroup(inGroup),
@@ -720,6 +728,7 @@ func TestInstanceCleaner_RemoveFromPlacementGroup(t *testing.T) {
 }
 
 func TestInstanceCleaner_DetachAndDeleteENI_NoVPCServiceIsNoOp(t *testing.T) {
+	t.Parallel()
 	a := newInstanceCleanerAdapter(&Daemon{})
 	require.NoError(t, a.DetachAndDeleteENI(&vm.VM{ID: "i-novpc", ENIId: "eni-novpc"}))
 }

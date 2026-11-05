@@ -197,6 +197,7 @@ func (c *inventoryCluster) lastSeq(t *testing.T, bucket string) uint64 {
 // with live and tag-index residue IDs, owner-store residue as counts, and no
 // write to any store.
 func TestPlatformInventorySubjectReportsTheAccountsOwnerStores(t *testing.T) {
+	t.Parallel()
 	c := newInventoryCluster(t)
 	pgSeq := c.lastSeq(t, ec2placementgroup.KVBucketPlacementGroups)
 	ltSeq := c.lastSeq(t, ec2launchtemplate.KVBucketLaunchTemplates)
@@ -241,6 +242,7 @@ func TestPlatformInventorySubjectReportsTheAccountsOwnerStores(t *testing.T) {
 // An account with no records is observed clean for every kind, and another
 // account's records never appear.
 func TestPlatformInventorySubjectReportsAnEmptyAccountClean(t *testing.T) {
+	t.Parallel()
 	c := newInventoryCluster(t)
 	var reply ec2v1.PlatformInventoryReply
 	require.NoError(t, json.Unmarshal(c.request(t, ec2v1.PlatformInventoryRequest{AccountID: inventoryEmpty}, inventoryAccount), &reply))
@@ -256,6 +258,7 @@ func TestPlatformInventorySubjectReportsAnEmptyAccountClean(t *testing.T) {
 // A public-key object with no metadata, where no metadata is unreadable, is
 // residue; the other account's records stay out of the reply.
 func TestPlatformInventorySubjectCountsAnOrphanPublicKeyAsResidue(t *testing.T) {
+	t.Parallel()
 	c := newInventoryCluster(t)
 	raw := c.request(t, ec2v1.PlatformInventoryRequest{AccountID: inventoryOther}, inventoryAccount)
 	var reply ec2v1.PlatformInventoryReply
@@ -277,6 +280,7 @@ func TestPlatformInventorySubjectCountsAnOrphanPublicKeyAsResidue(t *testing.T) 
 
 // A request without a valid account in its body is refused, not scanned.
 func TestPlatformInventorySubjectRefusesARequestWithoutAnAccount(t *testing.T) {
+	t.Parallel()
 	c := newInventoryCluster(t)
 	assert.Equal(t, awserrors.ErrorMissingParameter, replyErrCode(t, c.request(t, ec2v1.PlatformInventoryRequest{}, inventoryAccount)))
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, replyErrCode(t, c.request(t, ec2v1.PlatformInventoryRequest{AccountID: "1111"}, "")))
@@ -284,6 +288,7 @@ func TestPlatformInventorySubjectRefusesARequestWithoutAnAccount(t *testing.T) {
 
 // A daemon that does not serve the subject leaves the request with no responder.
 func TestPlatformInventorySubjectHasNoResponderWithoutTheDaemon(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	_, err := natsRequestAs(nc, ec2v1.PlatformInventorySubject, []byte(`{"account_id":"111122223333"}`), "", time.Second)
 	require.ErrorIs(t, err, nats.ErrNoResponders)

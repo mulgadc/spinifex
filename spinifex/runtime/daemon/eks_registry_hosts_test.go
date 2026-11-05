@@ -102,6 +102,7 @@ func TestRegistryHostsForCluster(t *testing.T) {
 }
 
 func TestRegistryHostsForCluster_NilClusterConfig(t *testing.T) {
+	t.Parallel()
 	local := registryTestNode("10.0.0.1", "10.0.0.1", "0.0.0.0:9999")
 	assert.Equal(t, []string{"10.0.0.1:9999"}, registryHostsForCluster(nil, &local))
 }

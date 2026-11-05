@@ -42,6 +42,7 @@ func capabilityRequest(t *testing.T, nc *nats.Conn, node string) *nats.Msg {
 // The responder answers its own node with version 1, the configured node and
 // no KV access (no settings service is wired into the test daemon at all).
 func TestAccountSettingsSealCapabilityAnswersOwnNode(t *testing.T) {
+	t.Parallel()
 	_, caller := newCapabilityTestDaemon(t, "node-1")
 
 	raw := capabilityRequest(t, caller, "node-1")
@@ -57,6 +58,7 @@ func TestAccountSettingsSealCapabilityAnswersOwnNode(t *testing.T) {
 // A request naming a node other than this daemon's own is refused, not
 // answered as if it were this node.
 func TestAccountSettingsSealCapabilityRefusesOtherNode(t *testing.T) {
+	t.Parallel()
 	_, caller := newCapabilityTestDaemon(t, "node-1")
 
 	data, err := json.Marshal(ec2v1.AccountSettingsSealCapabilityRequest{Node: "node-2"})
@@ -69,6 +71,7 @@ func TestAccountSettingsSealCapabilityRefusesOtherNode(t *testing.T) {
 // The subject is per node with no queue group, so two daemons configured
 // with the same node ID both answer a request addressed to that node.
 func TestAccountSettingsSealCapabilityHasNoQueueGroup(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	first := newSubscribeTestDaemon(t, nc, "", "")
@@ -106,6 +109,7 @@ func TestAccountSettingsSealCapabilityHasNoQueueGroup(t *testing.T) {
 // A wildcard node ID must not become a wildcard subscription: built unchecked,
 // "node-*" would answer probes addressed to node-1 on node-1's behalf.
 func TestAccountSettingsSealCapabilityNotServedForInvalidNodeID(t *testing.T) {
+	t.Parallel()
 	_, caller := newCapabilityTestDaemon(t, "node-*")
 
 	data, err := json.Marshal(ec2v1.AccountSettingsSealCapabilityRequest{Node: "node-1"})

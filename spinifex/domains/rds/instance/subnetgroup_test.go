@@ -118,6 +118,7 @@ func TestCreateDBSubnetGroup_RejectsACrossAccountSubnet(t *testing.T) {
 }
 
 func TestCreateDBSubnetGroup_RejectsMalformedRequests(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		mutate func(*rds.CreateDBSubnetGroupInput)
@@ -138,6 +139,7 @@ func TestCreateDBSubnetGroup_RejectsMalformedRequests(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			h := newCreateHarness(t, testBaseDomain)
 			input := subnetGroupInput(testSubnetGroup, "subnet-alpha")
 			tc.mutate(input)
@@ -246,8 +248,10 @@ func TestDeleteDBSubnetGroup_RemovesAnUnusedGroup(t *testing.T) {
 // A group referenced only by a deleting instance is refused too, so teardown
 // ordering stays unambiguous rather than racing the instance's own delete.
 func TestDeleteDBSubnetGroup_RefusesWhileAnInstanceReferencesIt(t *testing.T) {
+	t.Parallel()
 	for _, status := range []Status{StatusAvailable, StatusDeleting} {
 		t.Run(string(status), func(t *testing.T) {
+			t.Parallel()
 			h := newCreateHarness(t, testBaseDomain)
 			_, err := h.svc.CreateDBSubnetGroup(t.Context(), subnetGroupInput(testSubnetGroup, "subnet-alpha"), testAccountID)
 			require.NoError(t, err)
@@ -441,6 +445,7 @@ func TestModifyDBSubnetGroup_KeepsTheDescriptionWhenEmpty(t *testing.T) {
 // A refused modify is checked in full before the write, so the stored group is
 // exactly as it was.
 func TestModifyDBSubnetGroup_RejectsWhatCreateRejects(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		mutate func(*rds.ModifyDBSubnetGroupInput)
@@ -464,6 +469,7 @@ func TestModifyDBSubnetGroup_RejectsWhatCreateRejects(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			h := newCreateHarness(t, testBaseDomain)
 			h.network.subnets = append(h.network.subnets, &ec2.Subnet{
 				SubnetId:         aws.String("subnet-other"),

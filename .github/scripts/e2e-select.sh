@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# e2e-select.sh push <before> <sha> | paths "<list>" | suites "<e2e-x ...>"
+# e2e-select.sh push <before> <sha> | suites "<e2e-x ...>"
 # Prints the e2e gate's single_legs, multi_suites and multi_timeout outputs.
 # Exits non-zero on anything it cannot read, which fails the e2e status.
 set -euo pipefail
@@ -133,17 +133,16 @@ case "$mode" in
     log "$(printf '%s\n' "$changed" | grep -c . || true) paths changed ${before:0:9}..${sha:0:9}"
     select_for_paths "$changed"
     ;;
-  paths)
-    [ $# -eq 2 ] || die "usage: $0 paths \"<p1 p2 ...>\""
-    read -ra given <<<"$2"
-    select_for_paths "$(printf '%s\n' "${given[@]}")"
-    ;;
   suites)
     [ $# -eq 2 ] || die "usage: $0 suites \"<e2e-x ...>\""
+    if [ -z "${2// /}" ]; then
+      select_for_paths ""
+      exit 0
+    fi
     requested=$(printf '%s' "$2" | sed 's/e2e-//g')
     emit "$(keep "$requested" "${E2E_SUITES_SINGLE}")" "" "$(keep "$requested" "${E2E_SUITES_MULTI}")"
     ;;
   *)
-    die "usage: $0 push <before> <sha> | paths \"<list>\" | suites \"<list>\""
+    die "usage: $0 push <before> <sha> | suites \"<list>\""
     ;;
 esac

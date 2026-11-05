@@ -21,10 +21,6 @@ on:
         description: "Space-separated Make targets to run (e.g. 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-eks e2e-iam e2e-rds')"
         required: false
         default: "e2e-single e2e-multinode e2e-cert e2e-iam"
-      paths:
-        description: "Optional space-separated changed paths. When set, suites is ignored and the run selects as a push touching these paths would."
-        required: false
-        default: ""
       test_run:
         description: "Optional regex for -test.run (e.g. '^TestMultinodeIPSec$'). Empty = run all tests in suite."
         required: false
@@ -43,8 +39,8 @@ env:
 
 jobs:
   # A push runs the base set plus the suites its changed paths map to in
-  # suite-sets.sh; a dispatch runs its suites input, or selects for its paths
-  # input as a push would. Budgets come from the suites' own timeouts there.
+  # suite-sets.sh; a dispatch runs its suites input, or the base set if empty.
+  # Budgets come from the suites' own timeouts there.
   plan:
     name: Select Suites
     runs-on: ubuntu-26.04
@@ -69,14 +65,11 @@ jobs:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
           IN_SUITES: ${{ inputs.suites }}
-          IN_PATHS: ${{ inputs.paths }}
         run: |
           set -euo pipefail
           SELECT=.github/scripts/e2e-select.sh
           if [ "${EVENT}" = push ]; then
             bash "${SELECT}" push "${BEFORE}" "${GITHUB_SHA}" | tee -a "$GITHUB_OUTPUT"
-          elif [ -n "${IN_PATHS}" ] || [ -z "${IN_SUITES}" ]; then
-            bash "${SELECT}" paths "${IN_PATHS}" | tee -a "$GITHUB_OUTPUT"
           else
             bash "${SELECT}" suites "${IN_SUITES}" | tee -a "$GITHUB_OUTPUT"
           fi

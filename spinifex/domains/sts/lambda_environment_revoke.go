@@ -23,6 +23,9 @@ var (
 	ErrLambdaSessionNotFound = errors.New("lambda environment session not found")
 	// ErrLambdaSessionScopeMismatch means the record was not issued for the scope.
 	ErrLambdaSessionScopeMismatch = errors.New("lambda environment session scope mismatch")
+	// ErrLambdaSessionRevokeFailed means the record could not be read, decoded or
+	// deleted; the backend's error is dropped because it can name the key.
+	ErrLambdaSessionRevokeFailed = errors.New("lambda environment session revoke failed")
 )
 
 // RevokeLambdaEnvironmentSession deletes one environment session record, only if
@@ -41,12 +44,12 @@ func (s *STSServiceImpl) RevokeLambdaEnvironmentSession(ctx context.Context, acc
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return ErrLambdaSessionNotFound
 		}
-		return fmt.Errorf("get lambda environment session: %w", err)
+		return fmt.Errorf("%w: read", ErrLambdaSessionRevokeFailed)
 	}
 
 	var cred SessionCredential
 	if err := json.Unmarshal(entry.Value(), &cred); err != nil {
-		return fmt.Errorf("decode lambda environment session: %w", err)
+		return fmt.Errorf("%w: decode", ErrLambdaSessionRevokeFailed)
 	}
 	if cred.AccountID != scope.AccountID || cred.LambdaFunctionID != scope.FunctionID ||
 		cred.LambdaFunctionARN != scope.FunctionARN || cred.LambdaEnvironmentID != scope.EnvironmentID ||
@@ -55,7 +58,7 @@ func (s *STSServiceImpl) RevokeLambdaEnvironmentSession(ctx context.Context, acc
 	}
 
 	if err := bucket.Delete(ctx, accessKeyID, jetstream.LastRevision(entry.Revision())); err != nil {
-		return fmt.Errorf("delete lambda environment session at revision %d: %w", entry.Revision(), err)
+		return fmt.Errorf("%w: delete at revision %d", ErrLambdaSessionRevokeFailed, entry.Revision())
 	}
 	return nil
 }

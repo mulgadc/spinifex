@@ -2,7 +2,9 @@
 package sts
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
@@ -86,10 +88,57 @@ func TestRevokeLambdaEnvironmentSession_KeepsARecordReplacedAfterTheRead(t *test
 	svc.sessions = &kvstore.Store[SessionCredential]{Bucket: kvstore.NewOpenBucket(nil, swap, sessionCredentialsConfig())}
 
 	err := svc.RevokeLambdaEnvironmentSession(t.Context(), akid, lambdaScope(testLambdaEnvID))
-	require.Error(t, err)
+	require.ErrorIs(t, err, ErrLambdaSessionRevokeFailed)
 	assert.True(t, swap.replaced)
 	assert.NotContains(t, err.Error(), akid)
 
 	svc.sessions = original
 	assertSessionsKept(t, svc, akid)
+}
+
+// keyLeakingKV fails Get or Delete with an error naming the key, as a backend may.
+type keyLeakingKV struct {
+	jetstream.KeyValue
+	failGet, failDelete bool
+}
+
+func (k *keyLeakingKV) Get(ctx context.Context, key string) (jetstream.KeyValueEntry, error) {
+	if k.failGet {
+		return nil, errors.New("backend: get " + key + " failed")
+	}
+	return k.KeyValue.Get(ctx, key)
+}
+
+func (k *keyLeakingKV) Delete(ctx context.Context, key string, opts ...jetstream.KVDeleteOpt) error {
+	if k.failDelete {
+		return errors.New("backend: delete " + key + " failed")
+	}
+	return k.KeyValue.Delete(ctx, key, opts...)
+}
+
+func TestRevokeLambdaEnvironmentSession_BackendErrorsDoNotCarryTheKey(t *testing.T) {
+	for name, kv := range map[string]*keyLeakingKV{
+		"get":    {failGet: true},
+		"delete": {failDelete: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc, _ := newTestSetup(t)
+			role := createRoleInAccount(t, svc, testCallerAccountID, testLambdaRoleName, lambdaTrustPolicyDoc)
+			akid := issueLambdaSession(t, svc, *role.Arn, testLambdaEnvID, 3600)
+			var logs bytes.Buffer
+			captureSlog(t, &logs)
+
+			original := svc.sessions
+			kv.KeyValue = sessionsKV(t, svc)
+			svc.sessions = &kvstore.Store[SessionCredential]{Bucket: kvstore.NewOpenBucket(nil, kv, sessionCredentialsConfig())}
+
+			err := svc.RevokeLambdaEnvironmentSession(t.Context(), akid, lambdaScope(testLambdaEnvID))
+			require.ErrorIs(t, err, ErrLambdaSessionRevokeFailed)
+			assert.NotContains(t, err.Error(), akid)
+			assert.NotContains(t, logs.String(), akid)
+
+			svc.sessions = original
+			assertSessionsKept(t, svc, akid)
+		})
+	}
 }

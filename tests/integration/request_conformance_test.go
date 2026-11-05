@@ -44,6 +44,8 @@ const slowRequest = 500 * time.Millisecond
 // request for each implemented operation through the real gateway, with every
 // daemon-lite wired, and records each verdict for the suite report.
 func TestRequestConformance(t *testing.T) {
+	// Set before the parallel subtests start and restored after they all end.
+	shortenACMKeys(t)
 	inventory := awsdispatch.AWSOperationInventory(map[string]awsdispatch.Inventory{
 		awsapi.ServiceName:    awsapi.OperationInventory(),
 		acmawsapi.ServiceName:     acmawsapi.OperationInventory(),

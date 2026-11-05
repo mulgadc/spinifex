@@ -34,11 +34,11 @@ const (
 	testVpcCIDR  = "10.20.0.0/16"
 )
 
-// Minted once per package rather than per harness. An RSA-2048 keygen costs
-// ~140ms under GOFIPS140, and every fixture needs a CA, which dominated the
-// package's runtime. The CA is immutable, so sharing it is safe.
+// Minted once per package, at the serving certs' 1024 bits, because every
+// fixture needs a CA and RSA keygen dominated the package's runtime. The CA is
+// immutable, so sharing it is safe.
 var sharedTestCA = sync.OnceValues(func() (*x509.Certificate, *rsa.PrivateKey) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := rsa.GenerateKey(rand.Reader, testServingCertKeyBits)
 	if err != nil {
 		panic(err)
 	}

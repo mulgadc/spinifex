@@ -165,8 +165,8 @@ type sysInstReclaimingEIP struct {
 	reclaimed  []string
 }
 
-func (s *sysInstReclaimingEIP) ReleaseAddressByInstanceID(id string) error {
-	s.reclaimed = append(s.reclaimed, id)
+func (s *sysInstReclaimingEIP) ReleaseAllocationOnENI(allocID, eniID string) error {
+	s.reclaimed = append(s.reclaimed, allocID+"@"+eniID)
 	return s.reclaimErr
 }
 
@@ -727,6 +727,13 @@ func TestAttachSystemMgmtNIC(t *testing.T) {
 func TestTerminateSystemInstance(t *testing.T) {
 	d := createTestDaemon(t, sharedNATSURL)
 	t.Cleanup(d.vmMgr.WaitForBackgroundWork)
+	d.ownership = fakeOwnership{byID: map[string]systeminstance.Ownership{
+		"i-term-ok": systeminstance.OwnershipSystem, "i-term-fail": systeminstance.OwnershipSystem,
+		"i-term-nobody": systeminstance.OwnershipSystem, "i-term-gone": systeminstance.OwnershipSystem,
+	}, launch: map[string]systeminstance.Classification{
+		"i-term-ok":     {PublicIPAllocID: "eipalloc-t", ENIID: "eni-t"},
+		"i-term-nobody": {PublicIPAllocID: "eipalloc-n", ENIID: "eni-n"},
+	}}
 
 	t.Run("local terminate releases the EIP", func(t *testing.T) {
 		eip := &sysInstReclaimingEIP{fakeEIPService: fakeEIPService{disassociateErr: errInjected}}
@@ -739,7 +746,7 @@ func TestTerminateSystemInstance(t *testing.T) {
 		assert.Equal(t, []string{"eipassoc-t"}, eip.disassociated)
 		assert.Equal(t, []string{"eipalloc-t"}, eip.released, "release still runs after a failed disassociate")
 		// Once by the owning-node path and once by the backstop.
-		assert.Equal(t, []string{"i-term-ok", "i-term-ok"}, eip.reclaimed)
+		assert.Equal(t, []string{"eipalloc-t@eni-t", "eipalloc-t@eni-t"}, eip.reclaimed)
 		assert.Equal(t, vm.StateTerminated, d.vmMgr.Status(inst))
 	})
 
@@ -758,7 +765,7 @@ func TestTerminateSystemInstance(t *testing.T) {
 		d.eipService = eip
 		err := d.TerminateSystemInstance("i-term-nobody")
 		require.ErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound)
-		assert.Equal(t, []string{"i-term-nobody"}, eip.reclaimed, "the backstop runs even when no node owns the VM")
+		assert.Equal(t, []string{"eipalloc-n@eni-n"}, eip.reclaimed, "the backstop runs even when no node owns the VM")
 	})
 
 	t.Run("local lookup miss", func(t *testing.T) {

@@ -301,6 +301,12 @@ func TerminateK3sServerVM(ctx context.Context,
 	if instanceID != "" {
 		// "instance not found" on a retry is idempotent success; proceed to the ENI/SG/KV sweep.
 		if err := instSvc.TerminateSystemInstance(instanceID); err != nil {
+			if errors.Is(err, systeminstance.ErrSystemInstanceOwnershipUnknown) ||
+				errors.Is(err, systeminstance.ErrSystemInstanceNotSystem) {
+				// Possibly still running, or not ours to end: leave its ENI and the sweep.
+				slog.WarnContext(ctx, "TerminateK3sServerVM: terminate refused, leaving the ENI", "instanceId", instanceID, "err", err)
+				return fmt.Errorf("terminate instance %s: %w", instanceID, err)
+			}
 			if errors.Is(err, systeminstance.ErrSystemInstanceNotFound) {
 				slog.DebugContext(ctx, "TerminateK3sServerVM: instance already gone", "instanceId", instanceID)
 			} else {

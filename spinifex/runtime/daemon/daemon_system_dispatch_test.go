@@ -679,7 +679,7 @@ func TestHandleSystemTerminateInstance_Errors(t *testing.T) {
 	t.Cleanup(nc.Close)
 
 	t.Run("unknown instance", func(t *testing.T) {
-		d := &Daemon{natsConn: nc, vmMgr: vm.NewManager(), natsSubscriptions: make(map[string]*nats.Subscription)}
+		d := &Daemon{natsConn: nc, vmMgr: vm.NewManager(), natsSubscriptions: make(map[string]*nats.Subscription), ownership: fakeOwnership{}}
 		msg, sub := syncReply(t, nc, "system.TerminateInstance.i-unknown", nil)
 		d.serveSystemTerminateInstance(msg)
 		assert.Contains(t, nextEnvelopeError(t, sub), systeminstance.ErrSystemInstanceNotFound.Error())
@@ -688,7 +688,8 @@ func TestHandleSystemTerminateInstance_Errors(t *testing.T) {
 	// No VM manager makes the terminate nil-deref; the dispatch goroutine must
 	// recover and still answer.
 	t.Run("panic is recovered", func(t *testing.T) {
-		d := &Daemon{natsConn: nc, natsSubscriptions: make(map[string]*nats.Subscription)}
+		d := &Daemon{natsConn: nc, natsSubscriptions: make(map[string]*nats.Subscription),
+			ownership: fakeOwnership{byID: map[string]systeminstance.Ownership{"i-panic": systeminstance.OwnershipSystem}}}
 		msg, sub := syncReply(t, nc, "system.TerminateInstance.i-panic", nil)
 		d.handleSystemTerminateInstance(msg)
 		assert.Equal(t, awserrors.ErrorServerInternal, nextEnvelopeError(t, sub))

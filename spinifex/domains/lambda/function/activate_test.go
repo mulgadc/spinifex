@@ -102,8 +102,10 @@ func TestActivation_ReadyStoredFunctionBecomesActive(t *testing.T) {
 
 func TestActivation_CodeStoredWakesTheLoop(t *testing.T) {
 	svc := newOwner(t)
-	svc.SetReadiness(func(context.Context, function.Record) error { return nil })
 	storeCode(t, svc, "first", create(t, svc, "first"))
+	// Readiness is enabled after first is stored, so no wake is buffered and
+	// only the start pass can activate first.
+	svc.SetReadiness(func(context.Context, function.Record) error { return nil })
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() { defer close(done); svc.RunActivation(ctx, time.Hour) }()

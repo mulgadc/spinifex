@@ -150,3 +150,58 @@ func TestRebootSystemInstance_NoOwnerAndUnreadableRecord(t *testing.T) {
 		require.Error(t, d.RebootSystemInstance(lb.ID))
 	})
 }
+
+func TestRebootSystemInstanceRemote_ReplyAndConnectionFailures(t *testing.T) {
+	t.Run("no connection reads as an unreachable owner", func(t *testing.T) {
+		d := guardDaemon(t)
+		d.natsConn = nil
+		require.ErrorIs(t, d.rebootSystemInstanceRemote("i-lb"), systeminstance.ErrSystemInstanceNotFound)
+	})
+
+	t.Run("an undecodable reply is an error, not a reboot", func(t *testing.T) {
+		d := guardDaemon(t)
+		sub, err := d.natsConn.Subscribe(systemRebootSubject("i-garbled"), func(msg *nats.Msg) {
+			_ = msg.Respond([]byte("{not json"))
+		})
+		require.NoError(t, err)
+		defer func() { _ = sub.Unsubscribe() }()
+
+		err = d.rebootSystemInstanceRemote("i-garbled")
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, systeminstance.ErrSystemInstanceNotFound)
+	})
+
+	t.Run("an owner that refuses is reported to the caller", func(t *testing.T) {
+		d := guardDaemon(t)
+		sub, err := d.natsConn.Subscribe(systemRebootSubject("i-refusing"), func(msg *nats.Msg) {
+			respondWithSystemRebootReply(msg, "not a system instance")
+		})
+		require.NoError(t, err)
+		defer func() { _ = sub.Unsubscribe() }()
+
+		require.Error(t, d.rebootSystemInstanceRemote("i-refusing"))
+	})
+}
+
+func TestHandleSystemRebootInstance_RejectsAMalformedSubject(t *testing.T) {
+	d := guardDaemon(t)
+	sub, err := d.natsConn.Subscribe("system.Elsewhere.i-lb", d.handleSystemRebootInstance)
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	reply, err := d.natsConn.Request("system.Elsewhere.i-lb", nil, 2*time.Second)
+	require.NoError(t, err)
+	assert.Contains(t, string(reply.Data), "InvalidInstanceID.NotFound")
+	d.systemDispatchWg.Wait()
+}
+
+func TestSubscribeSystemReboot_IdempotentAndSkippedWithoutConnection(t *testing.T) {
+	d := guardDaemon(t)
+	require.NoError(t, d.subscribeSystemReboot("i-lb"))
+	require.NoError(t, d.subscribeSystemReboot("i-lb"))
+	assert.Contains(t, d.natsSubscriptions, systemRebootSubject("i-lb"))
+
+	d.natsConn = nil
+	require.NoError(t, d.subscribeSystemReboot("i-other"))
+	assert.NotContains(t, d.natsSubscriptions, systemRebootSubject("i-other"))
+}

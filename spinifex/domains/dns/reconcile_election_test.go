@@ -46,10 +46,11 @@ func TestReconcileOnce_ALoserOfTheElectionDoesNotWriteTheZone(t *testing.T) {
 	r := electingReconcilerFor(w, dnsLease(js, "node1"), func() DesiredSet {
 		return DesiredSet{Changes: []Change{upsert("lb-1.elb."+testBase, "10.200.1.9")}}
 	})
-	r.reconcileOnce(t.Context())
+	revisit := r.reconcileOnce(t.Context())
 
 	assert.Equal(t, before, objects[testBase+".toml"],
 		"a node that did not win the election must leave the zone object exactly as it found it")
+	assert.Greater(t, revisit, reconcilelock.LeaderTTL, "the loser asks to retry once a dead holder could be taken over")
 
 	release()
 }

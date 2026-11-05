@@ -707,7 +707,7 @@ func launchService(cfg *Config) error {
 	// passes exclude each other on this node too. Runtime events still fan out via queue groups.
 	holder, _ := os.Hostname()
 	leader := reconcile.NewVPCDLease(kvstore.OpenSyncBucket(js), holder)
-	releaseLeader, isLeader := reconcile.AcquireLeader(ctx, leader)
+	releaseLeader, isLeader := reconcile.AcquireLeaderAtStart(ctx, leader)
 
 	subscriber, err := subscribers.New(subscribers.Config{
 		Topology: topoMgr,

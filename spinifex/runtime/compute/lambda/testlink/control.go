@@ -206,13 +206,14 @@ type ControlClient struct {
 	DaemonUID    int
 	RequestLimit int64
 	ReplyLimit   int64
-	IOTimeout    time.Duration
+	// IOTimeout bounds writing the request; the reply has its own bound.
+	IOTimeout time.Duration
 }
 
-// Exchange writes one request and its credential and reads the one reply. An
-// error wrapping ErrNotSent means nothing reached the daemon; any other error
-// means the request may have been delivered and its outcome is unknown.
-func (c *ControlClient) Exchange(ctx context.Context, req []byte, cred Credential) (Reply, error) {
+// Exchange writes one request and its credential and waits until replyBy, or
+// ctx's end if earlier, for the one reply. An error wrapping ErrNotSent means
+// nothing reached the daemon; any other error leaves the outcome unknown.
+func (c *ControlClient) Exchange(ctx context.Context, req []byte, cred Credential, replyBy time.Time) (Reply, error) {
 	if int64(len(req)) > c.RequestLimit {
 		return Reply{}, fmt.Errorf("%w: encoded request of %d bytes exceeds the %d-byte limit", ErrNotSent, len(req), c.RequestLimit)
 	}
@@ -236,16 +237,24 @@ func (c *ControlClient) Exchange(ctx context.Context, req []byte, cred Credentia
 		return Reply{}, fmt.Errorf("%w: %w (uid %d)", ErrNotSent, ErrPeer, uid)
 	}
 
-	stop := context.AfterFunc(ctx, func() { _ = uc.SetDeadline(time.Now()) })
-	defer stop()
-	_ = uc.SetWriteDeadline(time.Now().Add(c.IOTimeout))
+	dl := newDeadlines(ctx, uc)
+	defer dl.stop()
+	writeBy := time.Now().Add(c.IOTimeout)
+	if err := dl.set(earliest(ctx, writeBy)); err != nil {
+		return Reply{}, fmt.Errorf("%w: %w", ErrNotSent, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return Reply{}, fmt.Errorf("%w: %w", ErrNotSent, err)
+	}
 	if err := writeFrame(uc, req); err != nil {
 		return Reply{}, fmt.Errorf("send test-link request: %w", err)
 	}
 	if err := writeFrame(uc, rawCred); err != nil {
 		return Reply{}, fmt.Errorf("send test-link request: %w", err)
 	}
-	_ = uc.SetWriteDeadline(time.Time{})
+	if err := dl.set(earliest(ctx, replyBy)); err != nil {
+		return Reply{}, fmt.Errorf("await test-link reply: %w", err)
+	}
 	body, err := readFrame(uc, c.ReplyLimit)
 	if err != nil {
 		return Reply{}, fmt.Errorf("read test-link reply: %w", err)
@@ -255,4 +264,40 @@ func (c *ControlClient) Exchange(ctx context.Context, req []byte, cred Credentia
 		return Reply{}, errors.New("unreadable test-link reply")
 	}
 	return rep, nil
+}
+
+func earliest(ctx context.Context, t time.Time) time.Time {
+	if d, ok := ctx.Deadline(); ok && d.Before(t) {
+		return d
+	}
+	return t
+}
+
+// deadlines serialises deadline changes with ctx's cancellation, so a later
+// set can never move a cancelled connection's deadline back into the future.
+type deadlines struct {
+	mu        sync.Mutex
+	c         *net.UnixConn
+	cancelled error
+	stop      func() bool
+}
+
+func newDeadlines(ctx context.Context, c *net.UnixConn) *deadlines {
+	d := &deadlines{c: c}
+	d.stop = context.AfterFunc(ctx, func() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		d.cancelled = ctx.Err()
+		_ = c.SetDeadline(time.Unix(1, 0))
+	})
+	return d
+}
+
+func (d *deadlines) set(t time.Time) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.cancelled != nil {
+		return d.cancelled
+	}
+	return d.c.SetDeadline(t)
 }

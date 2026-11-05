@@ -67,11 +67,13 @@ func client(name string, daemonUID int) *ControlClient {
 	return &ControlClient{Name: name, DaemonUID: daemonUID, RequestLimit: testRequestLimit, ReplyLimit: 4096, IOTimeout: 5 * time.Second}
 }
 
+func soon() time.Time { return time.Now().Add(5 * time.Second) }
+
 func TestControl_OneRequestOneReply(t *testing.T) {
 	name := controlName(t)
 	s, _ := serveControl(t, name, os.Getuid(), nil)
 
-	rep, err := client(name, os.Getuid()).Exchange(t.Context(), []byte(`{"attempt_id":"a"}`), testCred)
+	rep, err := client(name, os.Getuid()).Exchange(t.Context(), []byte(`{"attempt_id":"a"}`), testCred, soon())
 	require.NoError(t, err)
 	assert.Equal(t, OutcomeDone, rep.Outcome)
 	assert.Equal(t, []byte("ok"), rep.Payload)
@@ -85,17 +87,17 @@ func TestControl_RequestSizeBoundary(t *testing.T) {
 	s, _ := serveControl(t, name, os.Getuid(), nil)
 	c := client(name, os.Getuid())
 
-	_, err := c.Exchange(t.Context(), bytes.Repeat([]byte("x"), testRequestLimit), testCred)
+	_, err := c.Exchange(t.Context(), bytes.Repeat([]byte("x"), testRequestLimit), testCred, soon())
 	require.NoError(t, err, "a request exactly at the limit is delivered with its credential")
 	assert.Equal(t, testCred, s.cred.Load())
 
-	_, err = c.Exchange(t.Context(), bytes.Repeat([]byte("x"), testRequestLimit+1), testCred)
+	_, err = c.Exchange(t.Context(), bytes.Repeat([]byte("x"), testRequestLimit+1), testCred, soon())
 	require.ErrorIs(t, err, ErrNotSent)
 	big := testCred
 	big.SessionToken = string(bytes.Repeat([]byte("t"), MaxCredentialBytes))
-	_, err = c.Exchange(t.Context(), []byte("{}"), big)
+	_, err = c.Exchange(t.Context(), []byte("{}"), big, soon())
 	require.ErrorIs(t, err, ErrNotSent)
-	_, err = c.Exchange(t.Context(), []byte("{}"), Credential{AccessKeyID: "ASIA"})
+	_, err = c.Exchange(t.Context(), []byte("{}"), Credential{AccessKeyID: "ASIA"}, soon())
 	require.ErrorIs(t, err, ErrNotSent)
 	assert.Equal(t, int32(1), s.calls.Load(), "nothing over a bound reaches the daemon")
 }
@@ -106,7 +108,7 @@ func TestControl_NameIsASingleton(t *testing.T) {
 
 	_, err := ListenControl(name)
 	require.ErrorIs(t, err, unix.EADDRINUSE)
-	_, err = client(name, os.Getuid()).Exchange(t.Context(), []byte("{}"), testCred)
+	_, err = client(name, os.Getuid()).Exchange(t.Context(), []byte("{}"), testCred, soon())
 	require.NoError(t, err, "the first owner keeps serving")
 }
 
@@ -131,7 +133,7 @@ func TestControl_RestartAfterOwnerClosesNeedsNoCleanup(t *testing.T) {
 	stop()
 
 	serveControl(t, name, os.Getuid(), nil)
-	_, err := client(name, os.Getuid()).Exchange(t.Context(), []byte("{}"), testCred)
+	_, err := client(name, os.Getuid()).Exchange(t.Context(), []byte("{}"), testCred, soon())
 	require.NoError(t, err)
 }
 
@@ -173,7 +175,7 @@ func TestControl_ClientWithUnexpectedUIDIsClosedUnread(t *testing.T) {
 	name := controlName(t)
 	s, _ := serveControl(t, name, os.Getuid()+1, nil)
 
-	_, err := client(name, os.Getuid()).Exchange(t.Context(), []byte("{}"), testCred)
+	_, err := client(name, os.Getuid()).Exchange(t.Context(), []byte("{}"), testCred, soon())
 	require.Error(t, err)
 	assert.Equal(t, int32(0), s.calls.Load())
 }
@@ -194,7 +196,7 @@ func TestControl_ListenerWithUnexpectedUIDReceivesNothing(t *testing.T) {
 		got <- len(b)
 	}()
 
-	_, err = client(name, os.Getuid()+1).Exchange(t.Context(), []byte("{}"), testCred)
+	_, err = client(name, os.Getuid()+1).Exchange(t.Context(), []byte("{}"), testCred, soon())
 	require.ErrorIs(t, err, ErrNotSent)
 	require.ErrorIs(t, err, ErrPeer)
 	assert.Equal(t, 0, <-got)
@@ -252,12 +254,72 @@ func TestControl_ConnectionLostAfterWriteIsUnknown(t *testing.T) {
 		_ = c.Close()
 	}()
 
-	_, err = client(name, os.Getuid()).Exchange(t.Context(), []byte("{}"), testCred)
+	_, err = client(name, os.Getuid()).Exchange(t.Context(), []byte("{}"), testCred, soon())
 	require.Error(t, err)
 	assert.False(t, errors.Is(err, ErrNotSent))
 }
 
 func TestControl_DialFailureIsNotSent(t *testing.T) {
-	_, err := client(controlName(t), os.Getuid()).Exchange(t.Context(), []byte("{}"), testCred)
+	_, err := client(controlName(t), os.Getuid()).Exchange(t.Context(), []byte("{}"), testCred, soon())
 	require.ErrorIs(t, err, ErrNotSent)
+}
+
+// silentPeer reads both frames, then never replies or closes until the test ends.
+func silentPeer(t *testing.T, name string, read bool) {
+	t.Helper()
+	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: "@" + name, Net: "unix"})
+	require.NoError(t, err)
+	hold := make(chan struct{})
+	t.Cleanup(func() { close(hold); _ = ln.Close() })
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		if read {
+			_, _ = readFrame(c, 64<<20)
+			_, _ = readFrame(c, MaxCredentialBytes)
+		}
+		<-hold
+		_ = c.Close()
+	}()
+}
+
+func TestControl_SilentPeerIsUnknownAtTheReplyBound(t *testing.T) {
+	name := controlName(t)
+	silentPeer(t, name, true)
+	c := client(name, os.Getuid())
+	c.IOTimeout = time.Hour
+
+	start := time.Now()
+	_, err := c.Exchange(context.Background(), []byte("{}"), testCred, time.Now().Add(200*time.Millisecond))
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, ErrNotSent), "the request was delivered")
+	assert.Less(t, time.Since(start), 5*time.Second)
+}
+
+// Cancellation ends a write the peer has stopped reading, however long IOTimeout is.
+func TestControl_CancelEndsABlockedWrite(t *testing.T) {
+	name := controlName(t)
+	silentPeer(t, name, false)
+	c := client(name, os.Getuid())
+	c.IOTimeout, c.RequestLimit = time.Hour, 32<<20
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+	start := time.Now()
+	_, err := c.Exchange(ctx, bytes.Repeat([]byte("x"), 16<<20), testCred, time.Now().Add(time.Hour))
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, ErrNotSent), "part of the request may have been delivered")
+	assert.Less(t, time.Since(start), 5*time.Second)
+}
+
+func TestControl_CancelledBeforeWriteSendsNothing(t *testing.T) {
+	name := controlName(t)
+	s, _ := serveControl(t, name, os.Getuid(), nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := client(name, os.Getuid()).Exchange(ctx, []byte("{}"), testCred, soon())
+	require.ErrorIs(t, err, ErrNotSent)
+	assert.Equal(t, int32(0), s.calls.Load())
 }

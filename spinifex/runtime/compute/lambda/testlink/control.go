@@ -23,7 +23,7 @@ import (
 // ControlName is the abstract Unix socket name the node's daemon serves. An
 // abstract name has no directory entry; the kernel frees it when the last
 // reference to the listening socket closes.
-const ControlName = "spinifex-lambda-testlink-control/2"
+const ControlName = "spinifex-lambda-testlink-control/3"
 
 // Service accounts at each end of the control socket.
 const (
@@ -31,9 +31,35 @@ const (
 	DaemonUser  = "spinifex-daemon"
 )
 
+// joinAfterFunc arms f on ctx's cancellation and returns a stop that, unlike
+// context.AfterFunc's, waits for f when it has already started.
+func joinAfterFunc(ctx context.Context, f func()) func() {
+	done := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { defer close(done); f() })
+	return func() {
+		if !stop() {
+			<-done
+		}
+	}
+}
+
 // MaxCredentialBytes bounds the encoded credential; a session's three values
 // fit well inside it.
 const MaxCredentialBytes = 8 << 10
+
+// Declared control-socket bounds, independent of any message bus. Request and
+// Reply payloads are capped raw; the frame cap leaves MetadataHeadroomBytes
+// beside a full base64 payload, and metadata has no bound of its own.
+const (
+	MaxPayloadBytes       = 6 << 20
+	MetadataHeadroomBytes = 64 << 10
+	// payloadFieldSlack covers the payload key, quotes and comma.
+	payloadFieldSlack = 64
+	MaxFrameBytes     = int64((MaxPayloadBytes+2)/3*4 + MetadataHeadroomBytes + payloadFieldSlack)
+	// MaxAdmitted bounds connections the daemon holds at once, from accept
+	// to close; the daemon runs one attempt, so one more is answered busy.
+	MaxAdmitted = 2
+)
 
 // Credential is one execution-role session for one attempt; it goes to the
 // guest in the first frame and never on NATS, to disk or into a log.
@@ -118,8 +144,8 @@ func readFrame(r io.Reader, limit int64) ([]byte, error) {
 // ControlServer answers one request per connection from the gateway's UID.
 type ControlServer struct {
 	GatewayUID int
-	// RequestLimit bounds the encoded Request alone, as the NATS path did, and
-	// ReplyLimit the encoded Reply; a reply over it becomes unknown.
+	// RequestLimit bounds the encoded Request frame and ReplyLimit the
+	// encoded Reply; a reply over it, or over MaxPayloadBytes, becomes unknown.
 	RequestLimit int64
 	ReplyLimit   int64
 	// IOTimeout bounds reading the request and writing the reply.
@@ -129,14 +155,25 @@ type ControlServer struct {
 
 // Serve accepts until ctx ends or the listener fails, then waits for every
 // connection it started.
+// At most MaxAdmitted connections are held at once, each from accept to
+// close; others wait unaccepted in the kernel's listen backlog.
 func (s *ControlServer) Serve(ctx context.Context, ln *net.UnixListener) error {
-	stop := context.AfterFunc(ctx, func() { _ = ln.Close() })
-	defer stop()
+	// Serve may return before the callback runs, so it closes the listener
+	// too, and joins a callback already started before returning.
+	defer joinAfterFunc(ctx, func() { _ = ln.Close() })()
+	defer func() { _ = ln.Close() }()
 	var wg sync.WaitGroup
 	defer wg.Wait()
+	slots := make(chan struct{}, MaxAdmitted)
 	for {
+		select {
+		case slots <- struct{}{}:
+		case <-ctx.Done():
+			return nil
+		}
 		c, err := ln.AcceptUnix()
 		if err != nil {
+			<-slots
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -145,6 +182,10 @@ func (s *ControlServer) Serve(ctx context.Context, ln *net.UnixListener) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() { <-slots }()
+			// Closing on cancellation unblocks a read or write in progress; the
+			// close is joined before the slot is released.
+			defer joinAfterFunc(ctx, func() { _ = c.Close() })()
 			s.serveConn(ctx, c)
 		}()
 	}
@@ -176,6 +217,10 @@ func (s *ControlServer) serveConn(ctx context.Context, c *net.UnixConn) {
 	_ = c.SetReadDeadline(time.Time{})
 
 	rep := s.Handle(ctx, req, cred)
+	// The raw payload is checked before the reply is encoded.
+	if len(rep.Payload) > MaxPayloadBytes {
+		rep = Reply{Outcome: OutcomeUnknown, Error: "result too large for the test path"}
+	}
 	body, err := json.Marshal(rep)
 	if err == nil && int64(len(body)) > s.ReplyLimit {
 		body, err = json.Marshal(Reply{Outcome: OutcomeUnknown, Error: "result too large for the test path"})
@@ -218,8 +263,11 @@ func (c *ControlClient) Exchange(ctx context.Context, req []byte, cred Credentia
 	if replyBy.IsZero() || !replyBy.After(time.Now()) {
 		return Reply{}, fmt.Errorf("%w: reply bound is zero or already past", ErrNotSent)
 	}
+	// The dial stops at replyBy even when ctx has no deadline.
+	dialCtx, cancelDial := context.WithDeadline(ctx, replyBy)
 	var d net.Dialer
-	conn, err := d.DialContext(ctx, "unix", "@"+c.Name)
+	conn, err := d.DialContext(dialCtx, "unix", "@"+c.Name)
+	cancelDial()
 	if err != nil {
 		return Reply{}, fmt.Errorf("%w: dial test-link control: %w", ErrNotSent, err)
 	}
@@ -268,6 +316,9 @@ func (c *ControlClient) Exchange(ctx context.Context, req []byte, cred Credentia
 	var rep Reply
 	if err := json.Unmarshal(body, &rep); err != nil {
 		return Reply{}, errors.New("unreadable test-link reply")
+	}
+	if len(rep.Payload) > MaxPayloadBytes {
+		return Reply{}, fmt.Errorf("test-link reply payload of %d bytes exceeds %d", len(rep.Payload), MaxPayloadBytes)
 	}
 	return rep, nil
 }

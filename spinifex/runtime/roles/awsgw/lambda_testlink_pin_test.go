@@ -25,8 +25,11 @@ func TestLambdaImageDigestPin(t *testing.T) {
 // The gateway dials the production control name, so a mixed-version daemon on
 // the previous name is never reached.
 func TestLambdaTestLinkControlUsesTheProductionName(t *testing.T) {
-	c := testLinkControl(4242, 1<<20)
+	c := testLinkControl(4242)
 	if c.Name != testlink.ControlName || c.DaemonUID != 4242 {
 		t.Fatalf("control client %q uid %d, want %q uid 4242", c.Name, c.DaemonUID, testlink.ControlName)
+	}
+	if c.RequestLimit != testlink.MaxFrameBytes || c.ReplyLimit != testlink.MaxFrameBytes {
+		t.Fatalf("control limits %d/%d, want the declared frame bound %d", c.RequestLimit, c.ReplyLimit, testlink.MaxFrameBytes)
 	}
 }

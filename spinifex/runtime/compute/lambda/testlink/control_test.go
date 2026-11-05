@@ -436,18 +436,23 @@ func TestControl_WriteErrorAfterDeliveryIsUnknown(t *testing.T) {
 	require.Equal(t, testCred, s.cred.Load())
 }
 
-// legacyControlName is the protocol name before the request carried the image
-// digest; an old daemon still serves it and ignores the field.
-const legacyControlName = "spinifex-lambda-testlink-control"
+// Earlier control protocol names: unversioned, before the request carried the
+// image digest, and /2, before the 6 MiB payload and frame bounds.
+const (
+	legacyControlName = "spinifex-lambda-testlink-control"
+	v2ControlName     = "spinifex-lambda-testlink-control/2"
+)
 
 // A gateway and daemon on different control protocol names never connect, in
 // either direction. The scratch prefix isolates the binds; the names after it
-// are the production constant and its predecessor.
+// are the production constant and its predecessors.
 func TestControl_MixedProtocolNamesNeverConnect(t *testing.T) {
 	prefix := controlName(t) + "/"
 	for name, tc := range map[string]struct{ daemon, gateway string }{
-		"old daemon, new gateway": {prefix + legacyControlName, prefix + ControlName},
-		"new daemon, old gateway": {prefix + ControlName, prefix + legacyControlName},
+		"unversioned daemon, new gateway": {prefix + legacyControlName, prefix + ControlName},
+		"new daemon, unversioned gateway": {prefix + ControlName, prefix + legacyControlName},
+		"/2 daemon, new gateway":          {prefix + v2ControlName, prefix + ControlName},
+		"new daemon, /2 gateway":          {prefix + ControlName, prefix + v2ControlName},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, _ := serveControl(t, tc.daemon, os.Getuid(), nil)

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -113,12 +114,12 @@ const controlIOTimeout = 30 * time.Second
 
 // ServeControl binds the control socket name and answers the gateway's
 // requests on it until ctx ends. A bind error means this daemon does not serve.
-func (d *Daemon) ServeControl(ctx context.Context, name string, gatewayUID int, limit int64) error {
+func (d *Daemon) ServeControl(ctx context.Context, name string, gatewayUID int) error {
 	ln, err := ListenControl(name)
 	if err != nil {
 		return err
 	}
-	srv := &ControlServer{GatewayUID: gatewayUID, RequestLimit: limit, ReplyLimit: limit,
+	srv := &ControlServer{GatewayUID: gatewayUID, RequestLimit: MaxFrameBytes, ReplyLimit: MaxFrameBytes,
 		IOTimeout: controlIOTimeout, Handle: d.Handle}
 	go func() {
 		if err := srv.Serve(ctx, ln); err != nil {
@@ -164,6 +165,12 @@ func (d *Daemon) Handle(ctx context.Context, data []byte, cred Credential) Reply
 	}()
 	if id, err := d.unresolved(); err != nil || id != "" {
 		return refused("an unresolved test-link attempt holds this node's slot")
+	}
+	// The guest frame is checked at its longest deadline encoding, MinInt64,
+	// before Start: control and guest frames bound different fields. It runs
+	// after the slot is taken so a busy refusal never encodes the payload.
+	if err := hostlink.CheckInvokeFits(guestRequest(req, math.MinInt64)); err != nil {
+		return refused("request does not fit the guest link")
 	}
 	// Without pidfs a restarted daemon could not identify the VM it left.
 	if _, err := selfInode(); err != nil {
@@ -254,8 +261,25 @@ func removeMarker(marker string) bool {
 	return true
 }
 
+// guestRequest is the invocation frame sent to the guest; the pre-start fit
+// check and the send share it so they cannot drift.
+func guestRequest(req Request, deadlineMs int64) hostlink.Request {
+	return hostlink.Request{
+		GrantID:     req.Grant.GrantID,
+		AttemptID:   req.AttemptID,
+		RequestID:   req.RequestID,
+		FunctionARN: req.FunctionARN,
+		DeadlineMs:  deadlineMs,
+		Payload:     req.Payload,
+		Credential:  &req.cred,
+	}
+}
+
 // CheckRequest is the daemon's validation of a test-link request.
 func CheckRequest(req Request) error {
+	if len(req.Payload) > MaxPayloadBytes {
+		return fmt.Errorf("payload of %d bytes exceeds %d", len(req.Payload), MaxPayloadBytes)
+	}
 	if !attemptIDPattern.MatchString(req.AttemptID) {
 		return errors.New("attempt ID must be 12 lowercase hex digits")
 	}
@@ -580,15 +604,7 @@ func (d *Daemon) session(ctx context.Context, req Request, gen *guestconn.Genera
 	if expired(hardDeadline) {
 		return Reply{}, ErrDeadlineExpired
 	}
-	if err := stream.HostSend(hostlink.Request{
-		GrantID:     req.Grant.GrantID,
-		AttemptID:   req.AttemptID,
-		RequestID:   req.RequestID,
-		FunctionARN: req.FunctionARN,
-		DeadlineMs:  deadline.UnixMilli(),
-		Payload:     req.Payload,
-		Credential:  &req.cred,
-	}); err != nil {
+	if err := stream.HostSend(guestRequest(req, deadline.UnixMilli())); err != nil {
 		return Reply{}, pastDeadline(deadline, fmt.Errorf("send invocation: %w", err))
 	}
 	resp, err := stream.HostResult(rctx)

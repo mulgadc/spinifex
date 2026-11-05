@@ -9,7 +9,6 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -157,7 +156,7 @@ func accountBucketNames(ctx context.Context, nc *nats.Conn) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	all, err := kvutil.BucketNames(ctx, js)
+	all, err := kvstore.BucketNames(ctx, js)
 	if err != nil {
 		return nil, err
 	}
@@ -196,7 +195,7 @@ func AccountWatchBuckets(ctx context.Context, nc *nats.Conn) ([]*kvstore.Bucket,
 // existing handle.
 func GetOrCreateAccountBucket(ctx context.Context, js jetstream.JetStream, accountID string) (jetstream.KeyValue, error) {
 	bucket := AccountBucketName(accountID)
-	kv, err := kvutil.GetOrCreateBucket(ctx, js, bucket, KVBucketEKSAccountHistory)
+	kv, err := kvstore.GetOrCreateBucket(ctx, js, bucket, KVBucketEKSAccountHistory)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create EKS per-account KV bucket %s: %w", bucket, err)
 	}

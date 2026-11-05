@@ -26,7 +26,7 @@ import (
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 // The TestCurrentBehaviour_ tests in this file pin today's public OIDC discovery
@@ -186,7 +186,7 @@ func TestCurrentBehaviour_WebIdentityJWKSMissingWireResponse(t *testing.T) {
 	require.NoError(t, err)
 
 	issuer := testDiscIssuer
-	iamKV, err := kvutil.GetOrCreateBucket(t.Context(), js,
+	iamKV, err := kvstore.GetOrCreateBucket(t.Context(), js,
 		iamdomain.IAMAccountBucketName(testDiscAccount), iamdomain.KVBucketIAMAccountVersion)
 	require.NoError(t, err)
 	_, err = iamKV.Put(t.Context(), iamdomain.OIDCProviderKey(issuer), []byte(`{"registered":true}`))

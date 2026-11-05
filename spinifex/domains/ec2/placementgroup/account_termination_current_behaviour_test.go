@@ -14,7 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -84,7 +84,7 @@ func TestCurrentBehaviour_AccountTermination_PlacementGroupStorageLayout(t *test
 	}, testAccountID)
 	require.NoError(t, err)
 
-	assert.Equal(t, []string{testAccountID + ".spread-a", kvutil.VersionKey}, bucketKeys(t, svc.kv))
+	assert.Equal(t, []string{testAccountID + ".spread-a", kvstore.VersionKey}, bucketKeys(t, svc.kv))
 
 	entry, err := svc.kv.Get(t.Context(), testAccountID+".spread-a")
 	require.NoError(t, err)
@@ -100,7 +100,7 @@ func TestCurrentBehaviour_AccountTermination_PlacementGroupStorageLayout(t *test
 // a record cannot be removed through DeletePlacementGroup either, and a read
 // failure is an internal error, never an unknown group.
 func TestCurrentBehaviour_AccountTermination_DescribePlacementGroupsHidesUnreadableRecords(t *testing.T) {
-	brokenKey := kvutil.AccountKey(testAccountID, "broken")
+	brokenKey := kvstore.AccountKey(testAccountID, "broken")
 	tests := []struct {
 		name       string
 		seed       func(t *testing.T, svc *PlacementGroupServiceImpl)
@@ -139,7 +139,7 @@ func TestCurrentBehaviour_AccountTermination_DescribePlacementGroupsHidesUnreada
 func TestAccountTermination_DeletePlacementGroupLosesToAConcurrentMember(t *testing.T) {
 	svc := setupTestService(t)
 	createTestGroup(t, svc, "cluster-a", ec2.PlacementStrategyCluster)
-	key := kvutil.AccountKey(testAccountID, "cluster-a")
+	key := kvstore.AccountKey(testAccountID, "cluster-a")
 
 	launcher := &PlacementGroupServiceImpl{kv: svc.kv, region: svc.region}
 	var reserveErr, finalizeErr error
@@ -222,7 +222,7 @@ func TestAccountCleanup_DeletesEmptyGroupsAndBlocksOnMembers(t *testing.T) {
 	empty := createTestGroup(t, svc, "empty", ec2.PlacementStrategySpread)
 	held := createTestGroup(t, svc, "held", ec2.PlacementStrategyCluster)
 	require.NoError(t, addMember(t, svc, "held", "i-0123456789abcdef0"))
-	_, err := svc.kv.Put(t.Context(), kvutil.AccountKey(testAccountID, "broken"), []byte("{not json"))
+	_, err := svc.kv.Put(t.Context(), kvstore.AccountKey(testAccountID, "broken"), []byte("{not json"))
 	require.NoError(t, err)
 	other := "999988887777"
 	_, err = svc.CreatePlacementGroup(context.Background(), &ec2.CreatePlacementGroupInput{
@@ -238,7 +238,7 @@ func TestAccountCleanup_DeletesEmptyGroupsAndBlocksOnMembers(t *testing.T) {
 
 	assert.Equal(t, []string{"held"}, describedGroupNames(t, svc, testAccountID))
 	assert.Equal(t, []string{"theirs"}, describedGroupNames(t, svc, other))
-	_, err = svc.kv.Get(t.Context(), kvutil.AccountKey(testAccountID, "broken"))
+	_, err = svc.kv.Get(t.Context(), kvstore.AccountKey(testAccountID, "broken"))
 	require.NoError(t, err, "an unreadable record is never deleted")
 }
 
@@ -247,7 +247,7 @@ func TestAccountCleanup_DeletesEmptyGroupsAndBlocksOnMembers(t *testing.T) {
 func TestAccountCleanup_ConcurrentMemberBlocksTheDelete(t *testing.T) {
 	svc := setupTestService(t)
 	group := createTestGroup(t, svc, "cluster-a", ec2.PlacementStrategyCluster)
-	key := kvutil.AccountKey(testAccountID, "cluster-a")
+	key := kvstore.AccountKey(testAccountID, "cluster-a")
 	launcher := &PlacementGroupServiceImpl{kv: svc.kv, region: svc.region}
 	var memberErr error
 	// Read 1 is the cleanup's listing read; read 2 is the delete's check.

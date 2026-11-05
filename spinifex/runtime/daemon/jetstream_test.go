@@ -13,7 +13,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/resource"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -1536,15 +1535,15 @@ func TestJetStreamManager_InitBuckets_WritesVersion(t *testing.T) {
 	termKV, err := jsm.term.KV(t.Context())
 	require.NoError(t, err)
 
-	v, err := kvutil.ReadVersion(t.Context(), stateKV)
+	v, err := kvstore.ReadVersion(t.Context(), stateKV)
 	require.NoError(t, err)
 	assert.Equal(t, InstanceStateBucketVersion, v)
 
-	v, err = kvutil.ReadVersion(t.Context(), jsm.clusterKV)
+	v, err = kvstore.ReadVersion(t.Context(), jsm.clusterKV)
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStateBucketVersion, v)
 
-	v, err = kvutil.ReadVersion(t.Context(), termKV)
+	v, err = kvstore.ReadVersion(t.Context(), termKV)
 	require.NoError(t, err)
 	assert.Equal(t, TerminatedInstanceBucketVersion, v)
 }

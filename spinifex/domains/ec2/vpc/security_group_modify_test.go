@@ -15,7 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -62,7 +62,7 @@ func tcpPeerRequest(port int64, peer string) *ec2.SecurityGroupRuleRequest {
 // modify wrote nothing.
 func storedSGRecord(t *testing.T, svc *VPCServiceImpl, sgID string) []byte {
 	t.Helper()
-	entry, err := svc.sgKV.Get(t.Context(), kvutil.AccountKey(testAccountID, sgID))
+	entry, err := svc.sgKV.Get(t.Context(), kvstore.AccountKey(testAccountID, sgID))
 	require.NoError(t, err)
 	return entry.Value()
 }
@@ -689,7 +689,7 @@ func TestRevokeSecurityGroupIngress_InvertedPortRangeStillRevocable(t *testing.T
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
 	sgID := createTestSG(t, svc, vpcID, "stale-inverted-ports")
 
-	key := kvutil.AccountKey(testAccountID, sgID)
+	key := kvstore.AccountKey(testAccountID, sgID)
 	var rec SecurityGroupRecord
 	require.NoError(t, json.Unmarshal(storedSGRecord(t, svc, sgID), &rec))
 	rec.IngressRules = append(rec.IngressRules, SGRule{

@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/internal/testkit/readonlystore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -42,14 +42,14 @@ func TestScanAccountClassifiesPlacementGroupRecords(t *testing.T) {
 		GroupName: "held", NodeInstances: map[string][]string{"node-2": {"i-0bbb", "i-0aaa"}, "node-3": {"i-0aaa"}},
 	}, testAccountID)
 	require.NoError(t, err)
-	_, err = svc.kv.Put(t.Context(), kvutil.AccountKey(testAccountID, "undecodable"), []byte("{not json"))
+	_, err = svc.kv.Put(t.Context(), kvstore.AccountKey(testAccountID, "undecodable"), []byte("{not json"))
 	require.NoError(t, err)
-	_, err = svc.kv.Put(t.Context(), kvutil.AccountKey(testAccountID, "anonymous"), []byte(`{"group_name":"anonymous"}`))
+	_, err = svc.kv.Put(t.Context(), kvstore.AccountKey(testAccountID, "anonymous"), []byte(`{"group_name":"anonymous"}`))
 	require.NoError(t, err)
 	createTestGroup(t, svc, "unreadable", ec2.PlacementStrategySpread)
-	require.Contains(t, bucketKeys(t, svc.kv), kvutil.VersionKey)
+	require.Contains(t, bucketKeys(t, svc.kv), kvstore.VersionKey)
 
-	svc.kv = &hookedKV{KeyValue: readonlystore.NewKV(t, svc.kv), failGet: kvutil.AccountKey(testAccountID, "unreadable")}
+	svc.kv = &hookedKV{KeyValue: readonlystore.NewKV(t, svc.kv), failGet: kvstore.AccountKey(testAccountID, "unreadable")}
 	scan, err := svc.ScanAccount(context.Background(), testAccountID)
 	require.NoError(t, err)
 

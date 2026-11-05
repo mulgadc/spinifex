@@ -17,7 +17,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 // Bound on optimistic-concurrency retries when a concurrent writer wins the
@@ -97,7 +97,7 @@ func (s *IAMServiceImpl) GetInstanceProfile(accountID string, input *iam.GetInst
 
 func (s *IAMServiceImpl) ListInstanceProfiles(accountID string, input *iam.ListInstanceProfilesInput) (*iam.ListInstanceProfilesOutput, error) {
 	ctx := context.Background()
-	keys, err := kvutil.Keys(ctx, s.instanceProfilesBucket)
+	keys, err := kvstore.Keys(ctx, s.instanceProfilesBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return &iam.ListInstanceProfilesOutput{
@@ -118,7 +118,7 @@ func (s *IAMServiceImpl) ListInstanceProfiles(accountID string, input *iam.ListI
 	// to no element at all rather than an empty one.
 	profiles := []*iam.InstanceProfile{}
 	for _, key := range keys {
-		if key == kvutil.VersionKey {
+		if key == kvstore.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, keyPrefix) {
@@ -169,7 +169,7 @@ func (s *IAMServiceImpl) DeleteInstanceProfile(accountID string, input *iam.Dele
 	profileName := *input.InstanceProfileName
 
 	// Revision-guarded, so a role attached after the check sends the delete back through it.
-	_, err := kvutil.DeleteIf(ctx, s.instanceProfilesBucket, accountID+"."+profileName, s.instanceProfileCASConfig(accountID, profileName),
+	_, err := kvstore.DeleteIf(ctx, s.instanceProfilesBucket, accountID+"."+profileName, s.instanceProfileCASConfig(accountID, profileName),
 		func(p *InstanceProfile) error {
 			if p.RoleName != "" {
 				return awserrors.Errorf(awserrors.ErrorIAMDeleteConflict, "Cannot delete entity, must remove roles from instance profile first.")
@@ -378,12 +378,12 @@ func (s *IAMServiceImpl) getInstanceProfile(ctx context.Context, accountID, prof
 // mutate reports whether it changed the record; a false return commits nothing.
 func (s *IAMServiceImpl) updateInstanceProfileCAS(ctx context.Context, accountID, profileName string, mutate func(*InstanceProfile) (bool, error)) error {
 	defer s.recordLocks.lock("instance-profile/" + accountID + "." + profileName)()
-	_, err := kvutil.Update(ctx, s.instanceProfilesBucket, accountID+"."+profileName, s.instanceProfileCASConfig(accountID, profileName), mutate)
+	_, err := kvstore.Update(ctx, s.instanceProfilesBucket, accountID+"."+profileName, s.instanceProfileCASConfig(accountID, profileName), mutate)
 	return err
 }
 
-func (s *IAMServiceImpl) instanceProfileCASConfig(accountID, profileName string) kvutil.CASConfig {
-	return kvutil.CASConfig{
+func (s *IAMServiceImpl) instanceProfileCASConfig(accountID, profileName string) kvstore.CASConfig {
+	return kvstore.CASConfig{
 		Attempts: instanceProfileCASMaxRetries,
 		NotFound: instanceProfileNotFound(profileName),
 		Exhausted: func(string, int) error {

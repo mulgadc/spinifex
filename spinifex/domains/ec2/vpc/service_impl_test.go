@@ -16,7 +16,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/zoneid"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -2689,7 +2689,7 @@ func TestCreateSubnet_ZoneStoreFailureWritesNothingAndPublishesNothing(t *testin
 		require.ErrorIs(t, err, jetstream.ErrNoKeysFound)
 	}
 	for _, k := range keys {
-		assert.Equal(t, kvutil.VersionKey, k, "no subnet record may exist")
+		assert.Equal(t, kvstore.VersionKey, k, "no subnet record may exist")
 	}
 	assert.Zero(t, events.Load(), "no topology event may be published")
 }

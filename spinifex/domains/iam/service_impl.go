@@ -29,7 +29,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	awscredentials "github.com/mulgadc/spinifex/spinifex/foundation/aws/credentials"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 )
 
@@ -143,7 +143,7 @@ func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byt
 		return nil, fmt.Errorf("get JetStream context: %w", err)
 	}
 
-	usersBucket, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketUsers, 10)
+	usersBucket, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketUsers, 10)
 	if err != nil {
 		return nil, fmt.Errorf("init users bucket: %w", err)
 	}
@@ -151,7 +151,7 @@ func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byt
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketUsers, err)
 	}
 
-	accessKeysBucket, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketAccessKeys, 5)
+	accessKeysBucket, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketAccessKeys, 5)
 	if err != nil {
 		return nil, fmt.Errorf("init access keys bucket: %w", err)
 	}
@@ -159,7 +159,7 @@ func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byt
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketAccessKeys, err)
 	}
 
-	policiesBucket, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketPolicies, 10)
+	policiesBucket, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketPolicies, 10)
 	if err != nil {
 		return nil, fmt.Errorf("init policies bucket: %w", err)
 	}
@@ -167,7 +167,7 @@ func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byt
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketPolicies, err)
 	}
 
-	accountsBucket, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketAccounts, 5)
+	accountsBucket, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketAccounts, 5)
 	if err != nil {
 		return nil, fmt.Errorf("init accounts bucket: %w", err)
 	}
@@ -175,7 +175,7 @@ func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byt
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketAccounts, err)
 	}
 
-	accountCounterBucket, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketAccountCounter, 5)
+	accountCounterBucket, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketAccountCounter, 5)
 	if err != nil {
 		return nil, fmt.Errorf("init account counter bucket: %w", err)
 	}
@@ -183,7 +183,7 @@ func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byt
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketAccountCounter, err)
 	}
 
-	rolesBucket, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketRoles, 10)
+	rolesBucket, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketRoles, 10)
 	if err != nil {
 		return nil, fmt.Errorf("init roles bucket: %w", err)
 	}
@@ -191,7 +191,7 @@ func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byt
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketRoles, err)
 	}
 
-	instanceProfilesBucket, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketInstanceProfiles, 10)
+	instanceProfilesBucket, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketInstanceProfiles, 10)
 	if err != nil {
 		return nil, fmt.Errorf("init instance profiles bucket: %w", err)
 	}
@@ -199,7 +199,7 @@ func NewIAMServiceImpl(ctx context.Context, natsConn *nats.Conn, masterKey []byt
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketInstanceProfiles, err)
 	}
 
-	groupsBucket, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketGroups, 10)
+	groupsBucket, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketGroups, 10)
 	if err != nil {
 		return nil, fmt.Errorf("init groups bucket: %w", err)
 	}
@@ -508,7 +508,7 @@ func (s *IAMServiceImpl) GetUser(accountID string, input *iam.GetUserInput) (*ia
 
 func (s *IAMServiceImpl) ListUsers(accountID string, input *iam.ListUsersInput) (*iam.ListUsersOutput, error) {
 	ctx := context.Background()
-	keys, err := kvutil.Keys(ctx, s.usersBucket)
+	keys, err := kvstore.Keys(ctx, s.usersBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return &iam.ListUsersOutput{
@@ -529,7 +529,7 @@ func (s *IAMServiceImpl) ListUsers(accountID string, input *iam.ListUsersInput) 
 	// element at all rather than an empty one.
 	users := []*iam.User{}
 	for _, key := range keys {
-		if key == kvutil.VersionKey {
+		if key == kvstore.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, keyPrefix) {
@@ -732,7 +732,7 @@ func (s *IAMServiceImpl) setAccessKeysOwner(ctx context.Context, accountID strin
 	for _, keyID := range keyIDs {
 		cfg := iamRecordCASConfig("access key", accountID, keyID)
 		cfg.NotFound = nil
-		_, err := kvutil.Update(ctx, s.accessKeysBucket, keyID, cfg, func(ak *AccessKey) (bool, error) {
+		_, err := kvstore.Update(ctx, s.accessKeysBucket, keyID, cfg, func(ak *AccessKey) (bool, error) {
 			if ak.UserName == userName {
 				return false, nil
 			}
@@ -1189,7 +1189,7 @@ func (s *IAMServiceImpl) seedAdminAccount(ctx context.Context, admin *AdminBoots
 // IsEmpty returns true if the users bucket has no entries.
 func (s *IAMServiceImpl) IsEmpty() (bool, error) {
 	ctx := context.Background()
-	keys, err := kvutil.Keys(ctx, s.usersBucket)
+	keys, err := kvstore.Keys(ctx, s.usersBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return true, nil
@@ -1197,7 +1197,7 @@ func (s *IAMServiceImpl) IsEmpty() (bool, error) {
 		return false, fmt.Errorf("check users bucket: %w", err)
 	}
 	for _, key := range keys {
-		if key != kvutil.VersionKey {
+		if key != kvstore.VersionKey {
 			return false, nil
 		}
 	}
@@ -1303,7 +1303,7 @@ func (s *IAMServiceImpl) GetAccount(accountID string) (*Account, error) {
 // ListAccounts returns all accounts.
 func (s *IAMServiceImpl) ListAccounts() ([]*Account, error) {
 	ctx := context.Background()
-	keys, err := kvutil.Keys(ctx, s.accountsBucket)
+	keys, err := kvstore.Keys(ctx, s.accountsBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return []*Account{}, nil
@@ -1313,7 +1313,7 @@ func (s *IAMServiceImpl) ListAccounts() ([]*Account, error) {
 
 	accounts := make([]*Account, 0, len(keys))
 	for _, key := range keys {
-		if key == kvutil.VersionKey {
+		if key == kvstore.VersionKey {
 			continue
 		}
 		entry, err := s.accountsBucket.Get(ctx, key)
@@ -1367,8 +1367,8 @@ func (s *IAMServiceImpl) QuiesceAccount(accountID, operationID string, fence uin
 		return 0, fmt.Errorf("%s (%s) cannot be %s: %w", accountID, reason, AccountStatusTerminating, ErrAccountUndeletable)
 	}
 
-	account, err := kvutil.Update(context.Background(), s.accountsBucket, accountID,
-		kvutil.CASConfig{NotFound: errors.New(awserrors.ErrorIAMNoSuchEntity)},
+	account, err := kvstore.Update(context.Background(), s.accountsBucket, accountID,
+		kvstore.CASConfig{NotFound: errors.New(awserrors.ErrorIAMNoSuchEntity)},
 		func(a *Account) (bool, error) {
 			if a.Status != AccountStatusTerminating {
 				a.Status = AccountStatusTerminating
@@ -1390,7 +1390,7 @@ func (s *IAMServiceImpl) QuiesceAccount(accountID, operationID string, fence uin
 			return false, nil
 		})
 	if err != nil {
-		if errors.Is(err, kvutil.ErrWrite) || errors.Is(err, kvutil.ErrRead) || errors.Is(err, kvutil.ErrDecode) {
+		if errors.Is(err, kvstore.ErrWrite) || errors.Is(err, kvstore.ErrRead) || errors.Is(err, kvstore.ErrDecode) {
 			return 0, fmt.Errorf("store account quiesce: %w", err)
 		}
 		return 0, err
@@ -1421,8 +1421,8 @@ func (s *IAMServiceImpl) SetAccountStatus(accountID, status string) (*Account, e
 		return nil, fmt.Errorf("account %s: %w", accountID, ErrUseQuiesceAccount)
 	}
 
-	account, err := kvutil.Update(context.Background(), s.accountsBucket, accountID,
-		kvutil.CASConfig{NotFound: errors.New(awserrors.ErrorIAMNoSuchEntity)},
+	account, err := kvstore.Update(context.Background(), s.accountsBucket, accountID,
+		kvstore.CASConfig{NotFound: errors.New(awserrors.ErrorIAMNoSuchEntity)},
 		func(a *Account) (bool, error) {
 			if a.Status == AccountStatusTerminating && status != AccountStatusTerminating {
 				return false, fmt.Errorf("account %s is terminating: %w", accountID, ErrAccountUndeletable)
@@ -1435,7 +1435,7 @@ func (s *IAMServiceImpl) SetAccountStatus(accountID, status string) (*Account, e
 			return true, nil
 		})
 	if err != nil {
-		if errors.Is(err, kvutil.ErrWrite) || errors.Is(err, kvutil.ErrRead) || errors.Is(err, kvutil.ErrDecode) {
+		if errors.Is(err, kvstore.ErrWrite) || errors.Is(err, kvstore.ErrRead) || errors.Is(err, kvstore.ErrDecode) {
 			return nil, fmt.Errorf("store account status: %w", err)
 		}
 		return nil, err
@@ -1606,7 +1606,7 @@ func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesI
 	if err := checkEnum("policyUsageFilter", input.PolicyUsageFilter, policyUsageValues); err != nil {
 		return nil, err
 	}
-	keys, err := kvutil.Keys(ctx, s.policiesBucket)
+	keys, err := kvstore.Keys(ctx, s.policiesBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return &iam.ListPoliciesOutput{
@@ -1628,7 +1628,7 @@ func (s *IAMServiceImpl) ListPolicies(accountID string, input *iam.ListPoliciesI
 	onlyAttached := aws.BoolValue(input.OnlyAttached)
 	policies := []*iam.Policy{}
 	for _, key := range keys {
-		if key == kvutil.VersionKey {
+		if key == kvstore.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, keyPrefix) {
@@ -1712,7 +1712,7 @@ func (s *IAMServiceImpl) DeletePolicy(accountID string, input *iam.DeletePolicyI
 	}
 
 	// Revision-guarded, so a version created after the checks cannot be deleted unseen.
-	policy, err := kvutil.DeleteIf(ctx, s.policiesBucket, key, cfg, func(p *Policy) error {
+	policy, err := kvstore.DeleteIf(ctx, s.policiesBucket, key, cfg, func(p *Policy) error {
 		if p.ARN != policyARN {
 			return policyNotFound(policyARN)
 		}
@@ -2267,7 +2267,7 @@ func (s *IAMServiceImpl) buildPolicyAttachments(ctx context.Context, accountID s
 
 	keyPrefix := accountID + "."
 	for _, scan := range scans {
-		keys, err := kvutil.Keys(ctx, scan.bucket)
+		keys, err := kvstore.Keys(ctx, scan.bucket)
 		if err != nil {
 			if errors.Is(err, jetstream.ErrNoKeysFound) {
 				continue
@@ -2276,7 +2276,7 @@ func (s *IAMServiceImpl) buildPolicyAttachments(ctx context.Context, accountID s
 		}
 
 		for _, key := range keys {
-			if key == kvutil.VersionKey {
+			if key == kvstore.VersionKey {
 				continue
 			}
 			if !strings.HasPrefix(key, keyPrefix) {
@@ -2387,18 +2387,18 @@ func (s *IAMServiceImpl) getUser(ctx context.Context, accountID, userName string
 // restore a policy or group membership that a concurrent writer removed.
 func (s *IAMServiceImpl) updateUserCAS(ctx context.Context, accountID, userName string, mutate func(*User) (bool, error)) error {
 	defer s.recordLocks.lock("user/" + accountID + "." + userName)()
-	_, err := kvutil.Update(ctx, s.usersBucket, accountID+"."+userName, iamRecordCASConfig("user", accountID, userName), mutate)
+	_, err := kvstore.Update(ctx, s.usersBucket, accountID+"."+userName, iamRecordCASConfig("user", accountID, userName), mutate)
 	return err
 }
 
 // iamRecordCASConfig is the CAS policy for an IAM user, group or OIDC provider
 // record: a missing record is NoSuchEntity and exhausted retries are logged.
-func iamRecordCASConfig(kind, accountID, name string) kvutil.CASConfig {
+func iamRecordCASConfig(kind, accountID, name string) kvstore.CASConfig {
 	notFound := noSuchEntity(kind, name)
 	if kind == "oidc-provider" {
 		notFound = oidcProviderNotFound(name)
 	}
-	return kvutil.CASConfig{
+	return kvstore.CASConfig{
 		Attempts: roleCASMaxRetries,
 		NotFound: notFound,
 		Exhausted: func(string, int) error {
@@ -2828,7 +2828,7 @@ var summaryQuotaDefaults = map[string]int64{
 // Get/unmarshal so it stays cheap with many resources. The version key is
 // skipped and an empty bucket counts as zero.
 func countBucket(ctx context.Context, bucket jetstream.KeyValue, prefix string) (int64, error) {
-	keys, err := kvutil.Keys(ctx, bucket)
+	keys, err := kvstore.Keys(ctx, bucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return 0, nil
@@ -2838,7 +2838,7 @@ func countBucket(ctx context.Context, bucket jetstream.KeyValue, prefix string) 
 
 	var count int64
 	for _, key := range keys {
-		if key == kvutil.VersionKey {
+		if key == kvstore.VersionKey {
 			continue
 		}
 		if strings.HasPrefix(key, prefix) {

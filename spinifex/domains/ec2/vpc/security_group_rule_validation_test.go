@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -35,7 +35,7 @@ func plantIngressRules(t *testing.T, svc *VPCServiceImpl, sgID string, rules ...
 	rec.IngressRules = append(rec.IngressRules, rules...)
 	data, err := json.Marshal(rec)
 	require.NoError(t, err)
-	_, err = svc.sgKV.Put(t.Context(), kvutil.AccountKey(testAccountID, sgID), data)
+	_, err = svc.sgKV.Put(t.Context(), kvstore.AccountKey(testAccountID, sgID), data)
 	require.NoError(t, err)
 }
 

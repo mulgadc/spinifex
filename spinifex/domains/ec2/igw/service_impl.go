@@ -22,7 +22,7 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -93,7 +93,7 @@ func NewIGWServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
 	}
 
-	igwKV, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketIGW, 10)
+	igwKV, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketIGW, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketIGW, err)
 	}
@@ -102,13 +102,13 @@ func NewIGWServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn
 	}
 
 	// Get or create VPC KV bucket for cross-resource ownership validation
-	vpcKV, err := kvutil.GetOrCreateBucket(ctx, js, ec2vpc.KVBucketVPCs, 10)
+	vpcKV, err := kvstore.GetOrCreateBucket(ctx, js, ec2vpc.KVBucketVPCs, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get VPC KV bucket: %w", err)
 	}
 
 	// Read EIP associations so detach can refuse while addresses are mapped.
-	eipKV, err := kvutil.GetOrCreateBucket(ctx, js, ec2eip.KVBucketEIPs, 10)
+	eipKV, err := kvstore.GetOrCreateBucket(ctx, js, ec2eip.KVBucketEIPs, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get EIP KV bucket: %w", err)
 	}
@@ -142,7 +142,7 @@ func (s *IGWServiceImpl) createIGW(ctx context.Context, input *ec2.CreateInterne
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal IGW record: %w", err)
 	}
-	if _, err := s.igwKV.Put(ctx, kvutil.AccountKey(accountID, igwID), data); err != nil {
+	if _, err := s.igwKV.Put(ctx, kvstore.AccountKey(accountID, igwID), data); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -160,7 +160,7 @@ func (s *IGWServiceImpl) DeleteInternetGateway(ctx context.Context, input *ec2.D
 	}
 
 	igwID := *input.InternetGatewayId
-	key := kvutil.AccountKey(accountID, igwID)
+	key := kvstore.AccountKey(accountID, igwID)
 
 	entry, err := s.igwKV.Get(ctx, key)
 	if err != nil {
@@ -236,7 +236,7 @@ func (s *IGWServiceImpl) DescribeInternetGateways(ctx context.Context, input *ec
 	foundIDs := make(map[string]bool)
 
 	for _, key := range keys {
-		if key == kvutil.VersionKey {
+		if key == kvstore.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, prefix) {
@@ -326,7 +326,7 @@ func (s *IGWServiceImpl) AttachInternetGateway(ctx context.Context, input *ec2.A
 
 	igwID := *input.InternetGatewayId
 	vpcID := *input.VpcId
-	key := kvutil.AccountKey(accountID, igwID)
+	key := kvstore.AccountKey(accountID, igwID)
 
 	entry, err := s.igwKV.Get(ctx, key)
 	if err != nil {
@@ -347,7 +347,7 @@ func (s *IGWServiceImpl) AttachInternetGateway(ctx context.Context, input *ec2.A
 		slog.ErrorContext(ctx, "VPC KV unavailable, cannot verify VPC ownership")
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.vpcKV.Get(ctx, kvutil.AccountKey(accountID, vpcID)); err != nil {
+	if _, err := s.vpcKV.Get(ctx, kvstore.AccountKey(accountID, vpcID)); err != nil {
 		slog.WarnContext(ctx, "AttachInternetGateway: VPC not found for account", "vpcId", vpcID, "accountID", accountID)
 		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidVpcIDNotFound, "vpc", vpcID)
 	}
@@ -388,7 +388,7 @@ func (s *IGWServiceImpl) DetachInternetGateway(ctx context.Context, input *ec2.D
 
 	igwID := *input.InternetGatewayId
 	vpcID := *input.VpcId
-	key := kvutil.AccountKey(accountID, igwID)
+	key := kvstore.AccountKey(accountID, igwID)
 
 	entry, err := s.igwKV.Get(ctx, key)
 	if err != nil {
@@ -449,7 +449,7 @@ func (s *IGWServiceImpl) DetachInternetGateway(ctx context.Context, input *ec2.D
 // associated into vpcID, whether to an interface or a NAT gateway. The listing
 // is filtered server-side to the account's keys.
 func (s *IGWServiceImpl) vpcHasMappedAddress(ctx context.Context, accountID, vpcID string) (bool, error) {
-	lister, err := s.eipKV.ListKeysFiltered(ctx, kvutil.AccountKey(accountID, "*"))
+	lister, err := s.eipKV.ListKeysFiltered(ctx, kvstore.AccountKey(accountID, "*"))
 	if err != nil {
 		return false, err
 	}
@@ -493,11 +493,11 @@ func (s *IGWServiceImpl) CreateAttachedInternetGateway(ctx context.Context, acco
 	if s.vpcKV == nil {
 		return false, errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.vpcKV.Get(ctx, kvutil.AccountKey(accountID, vpcID)); err != nil {
+	if _, err := s.vpcKV.Get(ctx, kvstore.AccountKey(accountID, vpcID)); err != nil {
 		return false, awserrors.IDNotFound(awserrors.ErrorInvalidVpcIDNotFound, "vpc", vpcID)
 	}
 
-	key := kvutil.AccountKey(accountID, igwID)
+	key := kvstore.AccountKey(accountID, igwID)
 	data, err := json.Marshal(IGWRecord{
 		InternetGatewayId: igwID,
 		VpcId:             vpcID,
@@ -558,7 +558,7 @@ func (s *IGWServiceImpl) AttachmentIntent(ctx context.Context, accountID, vpcID 
 	}
 
 	for _, key := range keys {
-		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvstore.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		entry, err := s.igwKV.Get(ctx, key)
@@ -599,7 +599,7 @@ func (s *IGWServiceImpl) AttachmentIntent(ctx context.Context, accountID, vpcID 
 // Writing only on the pending transition keeps a pass from waking the drift loop.
 func MarkAttached(ctx context.Context, kv jetstream.KeyValue, recordKey, vpcID string) error {
 	confirmed := false
-	record, err := kvutil.Update(ctx, kv, recordKey, kvutil.CASConfig{}, func(r *IGWRecord) (bool, error) {
+	record, err := kvstore.Update(ctx, kv, recordKey, kvstore.CASConfig{}, func(r *IGWRecord) (bool, error) {
 		// Reset per attempt: a retried CAS may see a record another writer has
 		// already moved out of pending.
 		confirmed = r.VpcId == vpcID && r.AttachState == AttachStatePending

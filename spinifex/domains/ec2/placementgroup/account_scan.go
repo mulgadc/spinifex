@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -34,7 +34,7 @@ type AccountScan struct {
 // A listing failure is returned as an error; per-record read failures are
 // counted. The bucket's schema-version key belongs to no account.
 func (s *PlacementGroupServiceImpl) ScanAccount(ctx context.Context, accountID string) (*AccountScan, error) {
-	keys, err := kvutil.Keys(ctx, s.kv)
+	keys, err := kvstore.Keys(ctx, s.kv)
 	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, fmt.Errorf("list placement-group keys: %w", err)
 	}
@@ -42,7 +42,7 @@ func (s *PlacementGroupServiceImpl) ScanAccount(ctx context.Context, accountID s
 	prefix := accountID + "."
 	scan := &AccountScan{}
 	for _, key := range keys {
-		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvstore.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		entry, err := s.kv.Get(ctx, key)

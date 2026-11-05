@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -196,7 +195,7 @@ func (s *UsageStore) TokensThisPeriod(ctx context.Context, accountID string) (in
 	if err != nil {
 		return 0, err
 	}
-	keys, err := kvutil.Keys(ctx, kv)
+	keys, err := kvstore.Keys(ctx, kv)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return 0, nil

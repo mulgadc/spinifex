@@ -11,7 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,7 +35,7 @@ func TestLaunchSystemInstance_OwnerStampSurvivesStaleReplicaRead(t *testing.T) {
 
 	// Read the stored record directly: the wrapped bucket would serve the
 	// check itself from a lagging replica.
-	entry, err := inner.Get(context.Background(), kvutil.AccountKey(testAccountID, aws.StringValue(eni.NetworkInterfaceId)))
+	entry, err := inner.Get(context.Background(), kvstore.AccountKey(testAccountID, aws.StringValue(eni.NetworkInterfaceId)))
 	require.NoError(t, err)
 	var rec ec2vpc.ENIRecord
 	require.NoError(t, json.Unmarshal(entry.Value(), &rec))

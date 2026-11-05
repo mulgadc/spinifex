@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -193,7 +193,7 @@ func deleteRecord(ctx context.Context, kv jetstream.KeyValue, cluster, addon str
 // casUpdate does a revision-checked read-modify-write. mutate returns true
 // when a field changed. Returns ErrNotFound if absent.
 func casUpdate(ctx context.Context, kv jetstream.KeyValue, cluster, addon string, mutate func(*Record) bool) (*Record, error) {
-	return kvutil.Update(ctx, kv, Key(cluster, addon), kvutil.CASConfig{NotFound: ErrNotFound}, func(r *Record) (bool, error) {
+	return kvstore.Update(ctx, kv, Key(cluster, addon), kvstore.CASConfig{NotFound: ErrNotFound}, func(r *Record) (bool, error) {
 		return mutate(r), nil
 	})
 }

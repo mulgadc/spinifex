@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 	"github.com/nats-io/nats.go"
@@ -37,7 +37,7 @@ func seedSlashRecord(t *testing.T, nc *nats.Conn, bucket string, version int, in
 	_, err = kv.Put(ctx, slashPrefix+instance.ID, data)
 	require.NoError(t, err)
 
-	require.NoError(t, kvutil.WriteVersion(ctx, kv, version))
+	require.NoError(t, kvstore.WriteVersion(ctx, kv, version))
 	return kv
 }
 

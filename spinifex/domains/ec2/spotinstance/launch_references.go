@@ -8,7 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -24,14 +24,14 @@ type LaunchReferences struct {
 // account. It is complete or an error: an unlistable bucket or an unreadable
 // request is an error, because the unread request may name the resource.
 func (s *SpotInstanceServiceImpl) AccountLaunchReferences(ctx context.Context, accountID string) (*LaunchReferences, error) {
-	keys, err := kvutil.Keys(ctx, s.activeKV)
+	keys, err := kvstore.Keys(ctx, s.activeKV)
 	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, fmt.Errorf("list spot requests: %w", err)
 	}
 	prefix := accountID + "."
 	out := &LaunchReferences{}
 	for _, key := range keys {
-		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvstore.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		record, err := s.readRecord(ctx, s.activeKV, key)

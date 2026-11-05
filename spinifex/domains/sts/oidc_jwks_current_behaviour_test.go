@@ -19,7 +19,7 @@ import (
 
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 // The TestCurrentBehaviour_ tests in this file pin today's AssumeRoleWithWebIdentity
@@ -43,7 +43,7 @@ func assumeWebIdentity(svc *STSServiceImpl, role *iam.Role, token string) (*sts.
 // registerIssuer records issuer as an OIDC provider in the role account's IAM bucket.
 func registerIssuer(t *testing.T, svc *STSServiceImpl, roleAccountID, issuer string) {
 	t.Helper()
-	iamKV, err := kvutil.GetOrCreateBucket(t.Context(), svc.js,
+	iamKV, err := kvstore.GetOrCreateBucket(t.Context(), svc.js,
 		iamdomain.IAMAccountBucketName(roleAccountID), iamdomain.KVBucketIAMAccountVersion)
 	require.NoError(t, err)
 	_, err = iamKV.Put(t.Context(), iamdomain.OIDCProviderKey(issuer), []byte(`{"registered":true}`))

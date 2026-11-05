@@ -13,7 +13,7 @@ import (
 	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,23 +28,23 @@ func setupTestService(t *testing.T) *RouteTableServiceImpl {
 
 	// Seed VPC KV
 	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
-		kvutil.AccountKey(testAccountID, "vpc-test1"): []byte(`{"vpc_id":"vpc-test1","cidr_block":"10.0.0.0/16","state":"available"}`),
+		kvstore.AccountKey(testAccountID, "vpc-test1"): []byte(`{"vpc_id":"vpc-test1","cidr_block":"10.0.0.0/16","state":"available"}`),
 	})
 
 	// Seed IGW KV (attached to vpc-test1)
 	testutil.SeedKV(t, js, ec2igw.KVBucketIGW, map[string][]byte{
-		kvutil.AccountKey(testAccountID, "igw-test1"): []byte(`{"internet_gateway_id":"igw-test1","vpc_id":"vpc-test1","state":"available"}`),
+		kvstore.AccountKey(testAccountID, "igw-test1"): []byte(`{"internet_gateway_id":"igw-test1","vpc_id":"vpc-test1","state":"available"}`),
 	})
 
 	// Seed subnet KV
 	testutil.SeedKV(t, js, ec2vpc.KVBucketSubnets, map[string][]byte{
-		kvutil.AccountKey(testAccountID, "subnet-test1"): []byte(`{"subnet_id":"subnet-test1","vpc_id":"vpc-test1","cidr_block":"10.0.1.0/24","state":"available"}`),
-		kvutil.AccountKey(testAccountID, "subnet-priv1"): []byte(`{"subnet_id":"subnet-priv1","vpc_id":"vpc-test1","cidr_block":"10.0.11.0/24","state":"available"}`),
+		kvstore.AccountKey(testAccountID, "subnet-test1"): []byte(`{"subnet_id":"subnet-test1","vpc_id":"vpc-test1","cidr_block":"10.0.1.0/24","state":"available"}`),
+		kvstore.AccountKey(testAccountID, "subnet-priv1"): []byte(`{"subnet_id":"subnet-priv1","vpc_id":"vpc-test1","cidr_block":"10.0.11.0/24","state":"available"}`),
 	})
 
 	// Seed NAT Gateway KV
 	testutil.SeedKV(t, js, ec2natgw.KVBucketNatGateways, map[string][]byte{
-		kvutil.AccountKey(testAccountID, "nat-test1"): []byte(`{"nat_gateway_id":"nat-test1","vpc_id":"vpc-test1","subnet_id":"subnet-test1","public_ip":"192.168.1.100","state":"available"}`),
+		kvstore.AccountKey(testAccountID, "nat-test1"): []byte(`{"nat_gateway_id":"nat-test1","vpc_id":"vpc-test1","subnet_id":"subnet-test1","public_ip":"192.168.1.100","state":"available"}`),
 	})
 
 	svc, err := NewRouteTableServiceImplWithNATS(t.Context(), nil, nc)

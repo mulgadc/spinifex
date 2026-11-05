@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -27,7 +27,7 @@ type TemplateReferences struct {
 // header or body it cannot read or decode, is an error, because the unread
 // record may name the resource. Headerless bodies resolve from no launch.
 func (s *LaunchTemplateServiceImpl) AccountTemplateReferences(ctx context.Context, accountID string) (*TemplateReferences, error) {
-	keys, err := kvutil.Keys(ctx, s.kv)
+	keys, err := kvstore.Keys(ctx, s.kv)
 	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, fmt.Errorf("list launch-template keys: %w", err)
 	}

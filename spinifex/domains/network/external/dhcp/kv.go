@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -49,7 +49,7 @@ type Store struct {
 // NewStore creates/opens the per-AZ lease bucket and returns a Store. ctx bounds
 // the bucket get-or-create only; each operation carries its own.
 func NewStore(ctx context.Context, js jetstream.KeyValueManager, az string) (*Store, error) {
-	kv, err := kvutil.GetOrCreateBucket(ctx, js, BucketName(az), 5)
+	kv, err := kvstore.GetOrCreateBucket(ctx, js, BucketName(az), 5)
 	if err != nil {
 		return nil, fmt.Errorf("create dhcp lease KV bucket: %w", err)
 	}
@@ -152,7 +152,7 @@ func (s *Store) List(ctx context.Context) ([]Entry, error) {
 	}
 	var out []Entry
 	for _, k := range keys {
-		if k == kvutil.VersionKey {
+		if k == kvstore.VersionKey {
 			continue
 		}
 		e, err := s.Get(ctx, k)

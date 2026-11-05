@@ -1,11 +1,11 @@
-package kvutil_test
+package kvstore_test
 
 import (
 	"errors"
 	"fmt"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -29,7 +29,7 @@ func TestIsStreamUnavailable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, kvutil.IsStreamUnavailable(tt.err))
+			assert.Equal(t, tt.want, kvstore.IsStreamUnavailable(tt.err))
 		})
 	}
 }

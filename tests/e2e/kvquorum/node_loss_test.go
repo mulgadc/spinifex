@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	natssvc "github.com/mulgadc/spinifex/spinifex/runtime/roles/nats"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/require"
@@ -81,7 +81,7 @@ func runBucketsSurviveANodeLoss(t *testing.T, fix *Fixture) {
 // Polling rather than asserting once: a raft group whose leader has gone has to
 // elect a new one, and that is the interval this test is required to tolerate.
 // What it is not required to tolerate is a bucket that never comes back.
-func requireNodeSeesEveryBucket(t *testing.T, node harness.Node, before []kvutil.BucketReport, want int) {
+func requireNodeSeesEveryBucket(t *testing.T, node harness.Node, before []kvstore.BucketReport, want int) {
 	t.Helper()
 	wantBuckets := bucketNames(before)
 
@@ -106,7 +106,7 @@ func requireNodeSeesEveryBucket(t *testing.T, node harness.Node, before []kvutil
 
 // requireNoBucketLostReplicas fails if any bucket came back with fewer replicas
 // than it had, which is a silent downgrade rather than a repair.
-func requireNoBucketLostReplicas(t *testing.T, before, after []kvutil.BucketReport) {
+func requireNoBucketLostReplicas(t *testing.T, before, after []kvstore.BucketReport) {
 	t.Helper()
 	was := make(map[string]int, len(before))
 	for _, r := range before {
@@ -127,7 +127,7 @@ func requireNoBucketLostReplicas(t *testing.T, before, after []kvutil.BucketRepo
 // of the peer list. It is a NATS server name, which is the node name behind a
 // prefix rather than the node name itself, so it goes through the helper that
 // owns that prefix.
-func busiestLeader(nodes []harness.Node, reports []kvutil.BucketReport) (harness.Node, int) {
+func busiestLeader(nodes []harness.Node, reports []kvstore.BucketReport) (harness.Node, int) {
 	led := make(map[string]int, len(nodes))
 	for _, r := range reports {
 		if node, ok := natssvc.NodeFromServerName(r.Leader); ok {
@@ -149,7 +149,7 @@ func busiestLeader(nodes []harness.Node, reports []kvutil.BucketReport) (harness
 }
 
 // bucketNames returns the sorted bucket names in a report set.
-func bucketNames(reports []kvutil.BucketReport) []string {
+func bucketNames(reports []kvstore.BucketReport) []string {
 	out := make([]string, 0, len(reports))
 	for _, r := range reports {
 		out = append(out, r.Bucket)
@@ -175,7 +175,7 @@ func missingFrom(want, got []string) []string {
 
 // peerNames is diagnostic only: it says what the audit did report when no
 // leader could be mapped to a node, which is otherwise an opaque failure.
-func peerNames(reports []kvutil.BucketReport) string {
+func peerNames(reports []kvstore.BucketReport) string {
 	seen := map[string]struct{}{}
 	for _, r := range reports {
 		for _, p := range r.Peers {

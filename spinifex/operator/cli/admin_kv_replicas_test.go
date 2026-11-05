@@ -11,14 +11,14 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestWriteReplicaReport_NamesEveryUnderReplicatedBucket(t *testing.T) {
-	reports := []kvutil.BucketReport{
+	reports := []kvstore.BucketReport{
 		{Bucket: "healthy", Replicas: 3, Want: 3, Online: 3, Leader: "a", Peers: []string{"a", "b", "c"}},
 		{Bucket: "short", Replicas: 1, Want: 3, Online: 1, Leader: "a", Peers: []string{"a"}},
 		{Bucket: "stuck", Replicas: 3, Want: 3, Online: 1, Peers: []string{"a", "b", "c"}},
@@ -42,16 +42,16 @@ func TestWriteReplicaReport_NamesEveryUnderReplicatedBucket(t *testing.T) {
 // are separate because the responses are: a raise fixes an under-replicated
 // bucket, and nothing the command can do fixes one that will not answer.
 func TestReplicaReportExit(t *testing.T) {
-	healthy := kvutil.BucketReport{Bucket: "a", Replicas: 3, Want: 3, Online: 3}
-	short := kvutil.BucketReport{Bucket: "b", Replicas: 1, Want: 3, Online: 1}
-	stuck := kvutil.BucketReport{Bucket: "c", Replicas: 3, Want: 3, Online: 1}
+	healthy := kvstore.BucketReport{Bucket: "a", Replicas: 3, Want: 3, Online: 3}
+	short := kvstore.BucketReport{Bucket: "b", Replicas: 1, Want: 3, Online: 1}
+	stuck := kvstore.BucketReport{Bucket: "c", Replicas: 3, Want: 3, Online: 1}
 
 	assert.Equal(t, exitHealthy, replicaReportExit(nil))
-	assert.Equal(t, exitHealthy, replicaReportExit([]kvutil.BucketReport{healthy}))
-	assert.Equal(t, exitUnderReplicated, replicaReportExit([]kvutil.BucketReport{healthy, short}))
-	assert.Equal(t, exitUnreachable, replicaReportExit([]kvutil.BucketReport{healthy, stuck}))
+	assert.Equal(t, exitHealthy, replicaReportExit([]kvstore.BucketReport{healthy}))
+	assert.Equal(t, exitUnderReplicated, replicaReportExit([]kvstore.BucketReport{healthy, short}))
+	assert.Equal(t, exitUnreachable, replicaReportExit([]kvstore.BucketReport{healthy, stuck}))
 	// Both problems at once sends the operator to the node rather than to --repair.
-	assert.Equal(t, exitUnreachable, replicaReportExit([]kvutil.BucketReport{short, stuck}))
+	assert.Equal(t, exitUnreachable, replicaReportExit([]kvstore.BucketReport{short, stuck}))
 }
 
 // TestWriteReplicaReport_JSONIsWhatTheE2ESuiteDecodes keeps the machine-readable
@@ -59,13 +59,13 @@ func TestReplicaReportExit(t *testing.T) {
 // names, so a rename here breaks them silently.
 func TestWriteReplicaReport_JSONIsWhatTheE2ESuiteDecodes(t *testing.T) {
 	var out bytes.Buffer
-	require.NoError(t, writeReplicaReport(&out, []kvutil.BucketReport{
+	require.NoError(t, writeReplicaReport(&out, []kvstore.BucketReport{
 		{Bucket: "short", Replicas: 1, Want: 3, Cluster: "spinifex", Online: 1, Leader: "a", Peers: []string{"a"}},
 	}, true))
 
 	assert.Contains(t, out.String(), `"bucket":"short"`)
 
-	var decoded []kvutil.BucketReport
+	var decoded []kvstore.BucketReport
 	require.NoError(t, json.Unmarshal(out.Bytes(), &decoded))
 	require.Len(t, decoded, 1)
 	assert.Equal(t, "short", decoded[0].Bucket)
@@ -79,7 +79,7 @@ func TestWriteReplicaReport_JSONIsWhatTheE2ESuiteDecodes(t *testing.T) {
 
 func TestUnderReplicatedCount(t *testing.T) {
 	assert.Equal(t, 0, underReplicatedCount(nil))
-	assert.Equal(t, 2, underReplicatedCount([]kvutil.BucketReport{
+	assert.Equal(t, 2, underReplicatedCount([]kvstore.BucketReport{
 		{Bucket: "a", Replicas: 1, Want: 3},
 		{Bucket: "b", Replicas: 3, Want: 3},
 		{Bucket: "c", Replicas: 2, Want: 3},
@@ -100,7 +100,7 @@ func TestRepairReplicaReports_KeepsGoingPastABucketItCannotPlace(t *testing.T) {
 
 	// One embedded server cannot hold two replicas, so every raise fails — and
 	// every bucket must still have been attempted and named.
-	reports := []kvutil.BucketReport{
+	reports := []kvstore.BucketReport{
 		{Bucket: "repair-alpha", Replicas: 1, Want: 2},
 		{Bucket: "repair-beta", Replicas: 1, Want: 2},
 	}
@@ -124,7 +124,7 @@ func TestRepairReplicaReports_RaisesWhatItCan(t *testing.T) {
 
 	// Want 1 against a bucket already at 1: the raise is a no-op that must still
 	// leave the report reading as healthy rather than as repaired-and-wrong.
-	reports := []kvutil.BucketReport{{Bucket: "repair-ok", Replicas: 1, Want: 1}}
+	reports := []kvstore.BucketReport{{Bucket: "repair-ok", Replicas: 1, Want: 1}}
 	var errOut bytes.Buffer
 	repairReplicaReports(t.Context(), js, reports, &errOut)
 

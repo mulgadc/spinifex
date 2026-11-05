@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go/jetstream"
@@ -210,8 +210,8 @@ func stampBlobOwnership(ctx context.Context, kvc migrate.KVContext, key, nodeID 
 	for id := range state.VMS {
 		recordKey := instanceRecordKey(id)
 		wrote := false
-		_, err := kvutil.Update(ctx, kvc.KV, recordKey,
-			kvutil.CASConfig{NotFound: errRecordAbsent},
+		_, err := kvstore.Update(ctx, kvc.KV, recordKey,
+			kvstore.CASConfig{NotFound: errRecordAbsent},
 			func(record *vm.InstanceRecord) (bool, error) {
 				wrote = false
 				// An owner already on the record is the newer fact, whoever it

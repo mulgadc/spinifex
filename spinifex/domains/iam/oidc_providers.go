@@ -20,7 +20,7 @@ import (
 
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 // Per-account IAM bucket holds account-scoped resources (currently the OIDC provider registry).
@@ -52,7 +52,7 @@ func OIDCProviderARN(accountID, issuerHostPath string) string {
 
 // GetOrCreateIAMAccountBucket opens the per-account IAM bucket, creating it on first use.
 func GetOrCreateIAMAccountBucket(ctx context.Context, js jetstream.JetStream, accountID string) (jetstream.KeyValue, error) {
-	return kvutil.GetOrCreateBucket(ctx, js, IAMAccountBucketName(accountID), 1)
+	return kvstore.GetOrCreateBucket(ctx, js, IAMAccountBucketName(accountID), 1)
 }
 
 // OIDCProviderRecord is the stored shape of a registered OIDC identity provider.
@@ -224,7 +224,7 @@ func (s *IAMServiceImpl) ListOpenIDConnectProviders(accountID string, _ *iam.Lis
 		return nil, fmt.Errorf("open IAM account bucket: %w", err)
 	}
 
-	keys, err := kvutil.Keys(ctx, kv)
+	keys, err := kvstore.Keys(ctx, kv)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return out, nil
@@ -233,7 +233,7 @@ func (s *IAMServiceImpl) ListOpenIDConnectProviders(accountID string, _ *iam.Lis
 	}
 
 	for _, key := range keys {
-		if key == kvutil.VersionKey || !strings.HasPrefix(key, oidcProvidersKeyPrefix) {
+		if key == kvstore.VersionKey || !strings.HasPrefix(key, oidcProvidersKeyPrefix) {
 			continue
 		}
 		entry, err := kv.Get(ctx, key)
@@ -356,7 +356,7 @@ func (s *IAMServiceImpl) updateOIDCProviderCAS(ctx context.Context, accountID, a
 		return fmt.Errorf("open IAM account bucket: %w", err)
 	}
 	defer s.recordLocks.lock("oidc-provider/" + accountID + "/" + OIDCProviderKey(issuer))()
-	_, err = kvutil.Update(ctx, kv, OIDCProviderKey(issuer), iamRecordCASConfig("oidc-provider", accountID, arn), mutate)
+	_, err = kvstore.Update(ctx, kv, OIDCProviderKey(issuer), iamRecordCASConfig("oidc-provider", accountID, arn), mutate)
 	return err
 }
 

@@ -13,7 +13,7 @@ import (
 	ebsencryption "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/encryption"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -57,7 +57,7 @@ func NewAccountSettingsServiceImplWithNATS(ctx context.Context, cfg *config.Conf
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
 	}
 
-	settingsKV, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketAccountSettings, 10)
+	settingsKV, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketAccountSettings, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create account settings KV bucket: %w", err)
 	}
@@ -115,13 +115,13 @@ func mapSettingsError(ctx context.Context, accountID string, err error) error {
 		return errors.New(awserrors.ErrorBlocked)
 	case errors.Is(err, errSettingsContended):
 		slog.ErrorContext(ctx, "Account settings CAS retries exhausted under contention", "accountID", accountID)
-	case errors.Is(err, kvutil.ErrRead):
+	case errors.Is(err, kvstore.ErrRead):
 		slog.ErrorContext(ctx, "Failed to read account settings from KV", "accountID", accountID, "err", err)
-	case errors.Is(err, kvutil.ErrDecode):
+	case errors.Is(err, kvstore.ErrDecode):
 		slog.ErrorContext(ctx, "Corrupt account settings record in KV", "accountID", accountID, "err", err)
-	case errors.Is(err, kvutil.ErrEncode):
+	case errors.Is(err, kvstore.ErrEncode):
 		slog.ErrorContext(ctx, "Failed to marshal account settings record", "accountID", accountID, "err", err)
-	case errors.Is(err, kvutil.ErrWrite):
+	case errors.Is(err, kvstore.ErrWrite):
 		slog.ErrorContext(ctx, "Failed to write account settings to KV", "accountID", accountID, "err", err)
 	default:
 		slog.ErrorContext(ctx, "Account settings operation failed", "accountID", accountID, "err", err)
@@ -133,7 +133,7 @@ func mapSettingsError(ctx context.Context, accountID string, err error) error {
 // changed is always true, so every success is a leader-accepted write over an
 // active value; a seal landing between the read and the write fails the CAS.
 func (s *AccountSettingsServiceImpl) mutateSettings(ctx context.Context, accountID string, set func(*AccountSettingsRecord)) error {
-	_, err := kvutil.Update(ctx, s.settingsKV, settingsKey(accountID), kvutil.CASConfig{
+	_, err := kvstore.Update(ctx, s.settingsKV, settingsKey(accountID), kvstore.CASConfig{
 		CreateIfAbsent: true,
 		Exhausted:      func(string, int) error { return errSettingsContended },
 	}, func(rec *AccountSettingsRecord) (bool, error) {

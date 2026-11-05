@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
@@ -116,7 +115,7 @@ func TestCurrentBehaviour_InstanceBucketConfiguration(t *testing.T) {
 		assert.Equal(t, tc.history, status.History(), tc.bucket)
 		assert.Equal(t, tc.ttl, status.TTL(), tc.bucket)
 
-		v, err := kvutil.ReadVersion(t.Context(), kv)
+		v, err := kvstore.ReadVersion(t.Context(), kv)
 		require.NoError(t, err)
 		assert.Equal(t, tc.version, v, tc.bucket)
 	}
@@ -165,7 +164,7 @@ func TestCurrentBehaviour_BucketVersionGate(t *testing.T) {
 	t.Parallel()
 	oldWriter, nc := newRecordManagerConn(t)
 	kv := instanceStateKV(t, nc)
-	require.NoError(t, kvutil.WriteVersion(t.Context(), kv, daemon.InstanceStateBucketVersion+1))
+	require.NoError(t, kvstore.WriteVersion(t.Context(), kv, daemon.InstanceStateBucketVersion+1))
 
 	fresh, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)

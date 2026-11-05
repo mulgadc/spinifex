@@ -16,7 +16,7 @@ import (
 
 	iamarn "github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 const (
@@ -94,7 +94,7 @@ func (s *IAMServiceImpl) updatePolicyCAS(ctx context.Context, accountID, policyA
 		return err
 	}
 	defer s.recordLocks.lock("policy/" + key)()
-	_, err = kvutil.Update(ctx, s.policiesBucket, key, cfg, func(p *Policy) (bool, error) {
+	_, err = kvstore.Update(ctx, s.policiesBucket, key, cfg, func(p *Policy) (bool, error) {
 		// The key omits the path, so an ARN with the wrong path names no policy.
 		if p.ARN != policyARN {
 			return false, errors.New(awserrors.ErrorIAMNoSuchEntity)
@@ -106,14 +106,14 @@ func (s *IAMServiceImpl) updatePolicyCAS(ctx context.Context, accountID, policyA
 
 // policyCASTarget resolves policyARN to its KV key and the CAS settings every
 // write to a policy record shares.
-func policyCASTarget(accountID, policyARN string) (string, kvutil.CASConfig, error) {
+func policyCASTarget(accountID, policyARN string) (string, kvstore.CASConfig, error) {
 	_, policyName, err := iamarn.ParsePolicyARN(policyARN)
 	if err != nil {
 		slog.Debug("policyCASTarget: unparseable policy ARN",
 			"accountID", accountID, "policyArn", policyARN, "err", err)
-		return "", kvutil.CASConfig{}, policyNotFound(policyARN)
+		return "", kvstore.CASConfig{}, policyNotFound(policyARN)
 	}
-	return accountID + "." + policyName, kvutil.CASConfig{
+	return accountID + "." + policyName, kvstore.CASConfig{
 		Attempts: policyCASMaxRetries,
 		NotFound: policyNotFound(policyARN),
 		Exhausted: func(string, int) error {

@@ -19,7 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -236,7 +236,7 @@ func matchesLocalAZ(vpcAZ, localAZ string) bool {
 	return vpcAZ == "" || vpcAZ == localAZ
 }
 
-func keyIsVersion(key string) bool { return key == kvutil.VersionKey }
+func keyIsVersion(key string) bool { return key == kvstore.VersionKey }
 
 func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out map[string]topology.VPCSpec) (map[string]struct{}, error) {
 	localVPCs := make(map[string]struct{})

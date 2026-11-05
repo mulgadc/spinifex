@@ -13,7 +13,7 @@ import (
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -55,7 +55,7 @@ func setupTestIGWService(t *testing.T) (*IGWServiceImpl, *nats.Conn) {
 	// Create VPC KV bucket and register test VPCs so fail-closed ownership checks pass
 	vpcEntries := map[string][]byte{}
 	for _, vpcID := range []string{"vpc-test123", "vpc-other", "vpc-lifecycle", "vpc-event-test"} {
-		vpcEntries[kvutil.AccountKey(testAccountID, vpcID)] = []byte(`{"vpc_id":"` + vpcID + `","state":"available"}`)
+		vpcEntries[kvstore.AccountKey(testAccountID, vpcID)] = []byte(`{"vpc_id":"` + vpcID + `","state":"available"}`)
 	}
 	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, vpcEntries)
 
@@ -68,7 +68,7 @@ func setupTestIGWService(t *testing.T) (*IGWServiceImpl, *nats.Conn) {
 // gateway come up. Without it an attach stays pending and reports no attachment.
 func confirmAttach(t *testing.T, svc *IGWServiceImpl, igwID, vpcID string) {
 	t.Helper()
-	require.NoError(t, MarkAttached(context.Background(), svc.igwKV, kvutil.AccountKey(testAccountID, igwID), vpcID))
+	require.NoError(t, MarkAttached(context.Background(), svc.igwKV, kvstore.AccountKey(testAccountID, igwID), vpcID))
 }
 
 func createTestIGW(t *testing.T, svc *IGWServiceImpl) string {
@@ -331,7 +331,7 @@ func TestDescribeInternetGateways_LegacyRecordReportsAttachment(t *testing.T) {
 	svc, _ := setupTestIGWService(t)
 	igwID := createTestIGW(t, svc)
 
-	key := kvutil.AccountKey(testAccountID, igwID)
+	key := kvstore.AccountKey(testAccountID, igwID)
 	entry, err := svc.igwKV.Get(context.Background(), key)
 	require.NoError(t, err)
 	var record IGWRecord
@@ -398,7 +398,7 @@ func TestMarkAttached_NoRewriteWhenAlreadyAttached(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	key := kvutil.AccountKey(testAccountID, igwID)
+	key := kvstore.AccountKey(testAccountID, igwID)
 	confirmAttach(t, svc, igwID, "vpc-test123")
 	first, err := svc.igwKV.Get(context.Background(), key)
 	require.NoError(t, err)
@@ -605,7 +605,7 @@ func TestDetachInternetGateway_MappedPublicAddress(t *testing.T) {
 	putEIP := func(rec ec2eip.EIPRecord) {
 		data, err := json.Marshal(rec)
 		require.NoError(t, err)
-		_, err = svc.eipKV.Put(context.Background(), kvutil.AccountKey(testAccountID, rec.AllocationId), data)
+		_, err = svc.eipKV.Put(context.Background(), kvstore.AccountKey(testAccountID, rec.AllocationId), data)
 		require.NoError(t, err)
 	}
 	putEIP(ec2eip.EIPRecord{AllocationId: "eipalloc-other", AssociationId: "eipassoc-other", VpcId: "vpc-other", State: "associated"})
@@ -614,7 +614,7 @@ func TestDetachInternetGateway_MappedPublicAddress(t *testing.T) {
 	// Another account's address naming the same VPC ID is not this account's dependency.
 	foreign, err := json.Marshal(ec2eip.EIPRecord{AllocationId: "eipalloc-foreign", AssociationId: "eipassoc-foreign", VpcId: "vpc-test123", State: "associated"})
 	require.NoError(t, err)
-	_, err = svc.eipKV.Put(context.Background(), kvutil.AccountKey("999999999999", "eipalloc-foreign"), foreign)
+	_, err = svc.eipKV.Put(context.Background(), kvstore.AccountKey("999999999999", "eipalloc-foreign"), foreign)
 	require.NoError(t, err)
 
 	detach := func() error {
@@ -828,7 +828,7 @@ func TestAttachInternetGateway_CrossAccountVPCRejected(t *testing.T) {
 	require.NoError(t, err)
 
 	vpcID := "vpc-alpha123"
-	_, err = vpcKV.Put(t.Context(), kvutil.AccountKey(testAccountID, vpcID), []byte(`{"vpc_id":"vpc-alpha123","state":"available"}`))
+	_, err = vpcKV.Put(t.Context(), kvstore.AccountKey(testAccountID, vpcID), []byte(`{"vpc_id":"vpc-alpha123","state":"available"}`))
 	require.NoError(t, err)
 
 	// Refresh service to pick up the VPC KV bucket

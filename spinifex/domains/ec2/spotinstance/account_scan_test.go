@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 func TestScanAccountListsActiveAndTerminalForOneAccount(t *testing.T) {
@@ -35,7 +35,7 @@ func TestScanAccountListsActiveAndTerminalForOneAccount(t *testing.T) {
 func TestScanAccountFailsOnAnUndecodableRecord(t *testing.T) {
 	svc := setupTestService(t)
 	putSIRs(t, svc, makeSIR("sir-aaa", "i-aaa"))
-	_, err := svc.activeKV.Put(t.Context(), kvutil.AccountKey(testAccountID, "sir-bad"), []byte("{not json"))
+	_, err := svc.activeKV.Put(t.Context(), kvstore.AccountKey(testAccountID, "sir-bad"), []byte("{not json"))
 	require.NoError(t, err)
 
 	scan, err := svc.ScanAccount(t.Context(), testAccountID)
@@ -45,7 +45,7 @@ func TestScanAccountFailsOnAnUndecodableRecord(t *testing.T) {
 
 func TestScanAccountFailsOnARecordWithoutARequest(t *testing.T) {
 	svc := setupTestService(t)
-	_, err := svc.terminalKV.Put(t.Context(), kvutil.AccountKey(testAccountID, "sir-empty"), []byte(`{"account_id":"x"}`))
+	_, err := svc.terminalKV.Put(t.Context(), kvstore.AccountKey(testAccountID, "sir-empty"), []byte(`{"account_id":"x"}`))
 	require.NoError(t, err)
 
 	_, err = svc.ScanAccount(t.Context(), testAccountID)
@@ -76,7 +76,7 @@ func (k failingGetKV) Get(ctx context.Context, key string) (jetstream.KeyValueEn
 func TestScanAccountFailsWhenARecordCannotBeRead(t *testing.T) {
 	svc := setupTestService(t)
 	putSIRs(t, svc, makeSIR("sir-aaa", "i-aaa"), makeSIR("sir-bbb", "i-bbb"))
-	svc.activeKV = failingGetKV{KeyValue: svc.activeKV, key: kvutil.AccountKey(testAccountID, "sir-bbb")}
+	svc.activeKV = failingGetKV{KeyValue: svc.activeKV, key: kvstore.AccountKey(testAccountID, "sir-bbb")}
 
 	scan, err := svc.ScanAccount(t.Context(), testAccountID)
 	require.Error(t, err)

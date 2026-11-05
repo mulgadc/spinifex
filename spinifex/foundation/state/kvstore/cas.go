@@ -1,4 +1,4 @@
-package kvutil
+package kvstore
 
 import (
 	"context"
@@ -19,10 +19,10 @@ const casBackoffBase = 2 * time.Millisecond
 
 // Stage labels for a failed CAS cycle, so a caller can log which step broke.
 var (
-	ErrRead   = errors.New("kvutil: read")
-	ErrDecode = errors.New("kvutil: decode")
-	ErrEncode = errors.New("kvutil: encode")
-	ErrWrite  = errors.New("kvutil: write")
+	ErrRead   = errors.New("kvstore: read")
+	ErrDecode = errors.New("kvstore: decode")
+	ErrEncode = errors.New("kvstore: encode")
+	ErrWrite  = errors.New("kvstore: write")
 )
 
 // CASConfig tunes an optimistic-concurrency loop. The zero value retries casAttempts times and fails when the key is absent.
@@ -204,12 +204,12 @@ func DeleteIf[T any](ctx context.Context, kv jetstream.KeyValue, key string, cfg
 	return result, nil
 }
 
-// Claim atomically removes key, decoding its value first. At most one caller can observe a successful delete at a given revision, so
+// Take atomically removes key, decoding its value first. At most one caller can observe a successful delete at a given revision, so
 // at most one gets a non-nil value back - the primitive an exclusive claim is built on.
-func Claim[T any](ctx context.Context, kv jetstream.KeyValue, key string, cfg CASConfig) (value *T, notFound bool, err error) {
+func Take[T any](ctx context.Context, kv jetstream.KeyValue, key string, cfg CASConfig) (value *T, notFound bool, err error) {
 	var result *T
 	var absent bool
-	rerr := retryCAS(ctx, cfg, "claim", key, func() error {
+	rerr := retryCAS(ctx, cfg, "take", key, func() error {
 		entry, gerr := kv.Get(ctx, key)
 		if gerr != nil {
 			if errors.Is(gerr, jetstream.ErrKeyNotFound) {

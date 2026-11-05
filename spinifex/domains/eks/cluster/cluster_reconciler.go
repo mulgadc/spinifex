@@ -122,6 +122,13 @@ type natsSubscriber interface {
 // ErrReconcilerLeaseLost is returned by Run when the leader lease is lost mid-loop.
 var ErrReconcilerLeaseLost = errors.New("eks: reconciler lease lost")
 
+// closedLost stands in for the Lost channel of a reconciler that never acquired.
+var closedLost = func() <-chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}()
+
 // ErrReconcilerClusterDeleting is returned by Run when meta.Status is DELETING;
 // DeleteCluster owns teardown so the reconciler exits.
 var ErrReconcilerClusterDeleting = errors.New("eks: cluster deleting")
@@ -162,6 +169,9 @@ type ClusterReconciler struct {
 	// terminal records why the loop is ending — a terminal cluster status or a
 	// lost lease — and stopRun cancels it. reconciler.Run has no exit condition
 	// of its own, so ending it is cancelling it, and this is what Run reports.
+	// lost is the Lost channel of the acquisition AcquireLease took.
+	lost <-chan struct{}
+
 	terminalMu sync.Mutex
 	terminal   error
 	stopRun    context.CancelFunc
@@ -390,6 +400,7 @@ func (r *ClusterReconciler) AcquireLease(ctx context.Context) (func(), bool) {
 		}
 		return nil, false
 	}
+	r.lost = r.lease.Lost()
 	return func() { r.lease.Unlock(ctx, tok) }, true
 }
 
@@ -434,11 +445,16 @@ func (r *ClusterReconciler) Run(ctx context.Context) error {
 	}
 
 	// The lease turning over is not a KV write this loop watches, so losing it has
-	// to end the loop from outside it.
+	// to end the loop from outside it. The channel is the acquisition's own, taken
+	// with its token, so a later acquisition's cannot stand in for it.
+	lost := r.lost
+	if lost == nil {
+		lost = closedLost
+	}
 	go func() {
 		select {
 		case <-runCtx.Done():
-		case <-r.lease.Lost():
+		case <-lost:
 			r.endRun(ErrReconcilerLeaseLost)
 		}
 	}()

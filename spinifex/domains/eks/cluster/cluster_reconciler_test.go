@@ -474,3 +474,106 @@ func TestClusterReconciler_ProbeHealthzEmptyURLNoop(t *testing.T) {
 	require.NoError(t, r.probeHealthz(context.Background()))
 	assert.EqualValues(t, 0, stub.calls.Load(), "no HTTP call when URL empty")
 }
+
+// putForeignHolder writes the cluster's lease key in another holder's name and
+// never renews it, standing in for a node that died holding it.
+func putForeignHolder(t *testing.T, js jetstream.JetStream) {
+	t.Helper()
+	syncKV, err := kvstore.OpenSyncBucket(js).KV(t.Context())
+	require.NoError(t, err)
+	_, err = syncKV.Put(t.Context(), KeyPrefixCluster+clusterLeaseName(testAccountID, "alpha"), []byte(`{"holder":"holder-2","generation":0}`))
+	require.NoError(t, err)
+}
+
+func requireStillRunning(t *testing.T, finished <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-finished:
+		t.Fatal("the reconciler goroutine exited while its cluster still wants one")
+	default:
+	}
+}
+
+// A dead node's key is not cleared by the store, so the reconciler has to keep
+// asking until it has sat a TTL; one attempt would leave the cluster unreconciled.
+func TestRunClusterReconciler_TakesOverADeadHoldersKey(t *testing.T) {
+	t.Parallel()
+	r, js, acctKV := newReconcilerHarnessTTL(t, 300*time.Millisecond, "https://nlb.example/healthz",
+		WithHTTPClient(&stubHTTPDoer{status: http.StatusOK}), WithReconcileInterval(10*time.Second))
+	freshenClusterCreatedAt(t, acctKV)
+	seedBootstrapState(t, acctKV)
+	putForeignHolder(t, js)
+
+	release, finished, err := RunClusterReconciler(t.Context(), r.lease, acctKV, testAccountID, "alpha", "https://nlb.example/healthz",
+		WithHTTPClient(&stubHTTPDoer{status: http.StatusOK}), WithReconcileInterval(10*time.Second))
+	require.NoError(t, err, "a held lease is contended for, not an error")
+	defer release()
+
+	require.Eventually(t, r.lease.Held, 5*time.Second, 10*time.Millisecond, "the dead holder's key must be taken over")
+	requireStillRunning(t, finished)
+}
+
+// Losing the lease ends a Run, not the reconciler: it contends again and
+// resumes once it holds the lease once more.
+func TestRunClusterReconciler_ResumesAfterALostLease(t *testing.T) {
+	t.Parallel()
+	r, js, acctKV := newReconcilerHarnessTTL(t, 300*time.Millisecond, "https://nlb.example/healthz")
+	freshenClusterCreatedAt(t, acctKV)
+	seedBootstrapState(t, acctKV)
+	release, finished, err := RunClusterReconciler(t.Context(), r.lease, acctKV, testAccountID, "alpha", "https://nlb.example/healthz",
+		WithHTTPClient(&stubHTTPDoer{status: http.StatusOK}), WithReconcileInterval(10*time.Second))
+	require.NoError(t, err)
+	defer release()
+	require.Eventually(t, r.lease.Held, 5*time.Second, 10*time.Millisecond)
+
+	putForeignHolder(t, js)
+	require.Eventually(t, func() bool { return !r.lease.Held() }, 5*time.Second, 10*time.Millisecond, "the overwrite must cost the lease")
+	require.Eventually(t, r.lease.Held, 5*time.Second, 10*time.Millisecond, "the reconciler must win the lease back")
+	requireStillRunning(t, finished)
+}
+
+// A cluster that has left CREATING and ACTIVE wants no reconciler, so one that
+// cannot get the lease stops asking.
+func TestRunClusterReconciler_StopsContendingForADeletingCluster(t *testing.T) {
+	t.Parallel()
+	r, js, acctKV := newReconcilerHarnessTTL(t, 300*time.Millisecond, "https://nlb.example/healthz")
+	meta, err := GetClusterMeta(t.Context(), acctKV, "alpha")
+	require.NoError(t, err)
+	meta.Status = ClusterStatusDeleting
+	require.NoError(t, PutClusterMeta(t.Context(), acctKV, meta))
+	putForeignHolder(t, js)
+
+	release, finished, err := RunClusterReconciler(t.Context(), r.lease, acctKV, testAccountID, "alpha", "")
+	require.NoError(t, err)
+	defer release()
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the reconciler kept contending for a DELETING cluster")
+	}
+	assert.False(t, r.lease.Held())
+}
+
+// Run watches the Lost channel of the acquisition AcquireLease took. A later
+// acquisition of the same lease must not keep a Run alive whose own was lost.
+func TestClusterReconciler_RunWatchesItsOwnAcquisition(t *testing.T) {
+	t.Parallel()
+	r, js, acctKV := newReconcilerHarnessTTL(t, 300*time.Millisecond, "https://nlb.example/healthz",
+		WithHTTPClient(&stubHTTPDoer{status: http.StatusOK}), WithReconcileInterval(10*time.Second))
+	_, ok := r.AcquireLease(t.Context())
+	require.True(t, ok)
+
+	putForeignHolder(t, js)
+	require.Eventually(t, func() bool { return !r.lease.Held() }, 5*time.Second, 10*time.Millisecond)
+	syncKV, err := kvstore.OpenSyncBucket(js).KV(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, syncKV.Delete(t.Context(), KeyPrefixCluster+clusterLeaseName(testAccountID, "alpha")))
+	tok, err := r.lease.TryLock(t.Context())
+	require.NoError(t, err, "a later acquisition of the same lease")
+	defer r.lease.Unlock(t.Context(), tok)
+
+	seedBootstrapState(t, acctKV)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	assert.ErrorIs(t, r.Run(ctx), ErrReconcilerLeaseLost, "the acquisition this Run was given is gone")
+}

@@ -73,6 +73,9 @@ func newLease(store KVStore, key, holder string, ttl time.Duration, c clock) *Le
 // Key returns the store key the lease is held on.
 func (l *Lease) Key() string { return l.key }
 
+// TTL returns the lease's time to live, which a contender retries a third of.
+func (l *Lease) TTL() time.Duration { return l.ttl }
+
 // TryLock makes one attempt to acquire the key, returning the token of its own
 // write. Absent, the key is created; naming this holder, it is adopted by CAS;
 // naming another, it is taken over once its revision has been seen for a TTL.

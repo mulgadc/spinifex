@@ -525,7 +525,7 @@ func (m *Manager) stampOutstandingTeardownFailed(instance *VM) {
 // volume unmount, tap teardown (main + extra ENI + mgmt), resource
 // deallocation. Every step runs; only a failed volume seal is returned.
 func (m *Manager) stopCleanup(instance *VM) error {
-	sealErr := m.shutdownAndUnmount(instance)
+	sealErr := m.shutdownAndUnmount(instance, m.finishUEFIWriteBack)
 	m.cleanupTapDevices(instance)
 	if m.deps.InstanceCleaner != nil {
 		if err := m.deps.InstanceCleaner.ReleaseGPU(instance); err != nil {
@@ -578,7 +578,7 @@ func (m *Manager) terminateCleanup(instance *VM) {
 	// Terminate deletes the volumes next, so an unsealed block map loses
 	// nothing a caller can still ask for. Tolerated to keep terminate
 	// idempotent; only stop and DRAIN treat a failed seal as fatal.
-	_ = m.shutdownAndUnmount(instance)
+	_ = m.shutdownAndUnmount(instance, func(v *VM) { m.dropUEFIWriter(v.ID, "terminate", false) })
 	m.cleanupAfterQEMU(instance)
 
 	m.cleanupTapDevices(instance)
@@ -650,14 +650,15 @@ func (m *Manager) cleanupAfterQEMU(instance *VM) {
 }
 
 // shutdownAndUnmount asks QEMU to power down via QMP, waits for the PID
-// file to disappear (force-killing on timeout), then unmounts every
-// attached volume. Each step runs regardless of the one before it.
+// file to disappear (force-killing on timeout), runs afterQEMU, then unmounts
+// every attached volume. Each step runs regardless of the one before it.
 //
 // Returns ErrVolumeSealFailed when the unmount did not seal the block map:
 // that is the one step whose failure means data loss. QMP, PID-file, fw_cfg
 // and telemetry cleanup stay best-effort and are logged only.
-func (m *Manager) shutdownAndUnmount(instance *VM) error {
+func (m *Manager) shutdownAndUnmount(instance *VM, afterQEMU func(*VM)) error {
 	m.shutdownQEMU(instance)
+	afterQEMU(instance)
 
 	var sealErr error
 	if m.deps.VolumeMounter != nil {
@@ -746,6 +747,7 @@ func (m *Manager) ForgetSuperseded(instance *VM) {
 		return
 	}
 	m.shutdownQEMU(instance)
+	m.dropUEFIWriter(instance.ID, "superseded", true)
 	m.cleanupTapDevices(instance)
 
 	if m.deps.VolumeMounter != nil {

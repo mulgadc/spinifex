@@ -2632,6 +2632,9 @@ func (d *Daemon) startCluster() error {
 		if uefiStores := d.newUEFIStoreReaper(); uefiStores != nil {
 			reapers = append(reapers, uefiStores)
 		}
+		if uefiWriteBacks := d.vmMgr.NewUEFIWriteBackReaper(); uefiWriteBacks != nil {
+			reapers = append(reapers, uefiWriteBacks)
+		}
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))
 			reapers = append(reapers, d.volumeService.NewVolumeReclaimReaper())

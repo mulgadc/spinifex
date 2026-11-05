@@ -365,7 +365,7 @@ func TestReboot_StopWaitsForTheRelaunchBeforeUnmounting(t *testing.T) {
 	startRelaunchedQEMU = func(m *Manager, instance *VM) error {
 		go func() {
 			defer close(stopDone)
-			_ = m.shutdownAndUnmount(instance)
+			_ = m.shutdownAndUnmount(instance, func(*VM) {})
 		}()
 		select {
 		case <-stopDone:

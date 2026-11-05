@@ -82,6 +82,7 @@ func (m *Manager) FenceVolume(ctx context.Context, volumeID, reason string) stri
 
 	m.goroutineWg.Go(func() {
 		m.killFencedQEMU(ctx, instance)
+		m.dropUEFIWriter(instance.ID, "fence", true)
 		m.cleanupTapDevices(instance)
 		m.Inspect(instance, func(v *VM) { v.LastNode = m.deps.NodeID })
 		if err := m.writeRunningState(); err != nil {

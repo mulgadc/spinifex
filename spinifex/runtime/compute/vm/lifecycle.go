@@ -179,6 +179,9 @@ func (m *Manager) launch(ctx context.Context, instance *VM, pre *uefiPrecheck) (
 	endSpanWithError(uefiSpan, uefiErr)
 	guestMayHaveRun := false
 	defer func() {
+		if !guestMayHaveRun {
+			m.dropUEFIWriter(instance.ID, "rollback", false)
+		}
 		if err != nil && !guestMayHaveRun {
 			m.releaseUEFIClaim(ctx, instance.ID, uefiHeld)
 		}
@@ -216,6 +219,7 @@ func (m *Manager) launch(ctx context.Context, instance *VM, pre *uefiPrecheck) (
 	}
 
 	_, qemuSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.start_qemu")
+	m.startUEFIWriter(instance.ID, uefiHeld != nil && uefiHeld.reused)
 	qemuErr := m.startQEMU(instance)
 	guestMayHaveRun = !errors.Is(qemuErr, errQEMUNotStarted)
 	endSpanWithError(qemuSpan, qemuErr)

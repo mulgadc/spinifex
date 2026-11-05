@@ -107,6 +107,8 @@ type UEFIVarStoreDeps struct {
 	// the holder of a claim this node finds held may be taken over.
 	Claims   *kvsync.ClaimGroup
 	Liveness NodeLiveness
+	// Clock times the write-back's windows and the prune's age; nil is real time.
+	Clock UEFIClock
 }
 
 // uefiSeed is seeded.json: the pointer key vars.fd beside it was seeded from
@@ -259,6 +261,8 @@ func (m *Manager) prepareUEFIVarStore(ctx context.Context, instance *VM, rec *ue
 		return nil, err
 	}
 
+	unlock := m.uefi.locks.lock(instance.ID)
+	defer unlock()
 	held, err := m.acquireUEFIClaim(ctx, instance.ID)
 	if err != nil {
 		return nil, err
@@ -314,6 +318,7 @@ func (m *Manager) prepareUEFIVarStore(ctx context.Context, instance *VM, rec *ue
 		recordUEFIStoreSeed("local")
 		slog.InfoContext(ctx, "Reusing this node's UEFI variable store",
 			"instanceId", instance.ID, "key", ref.Key, "seededKey", local.seed.Key, "generation", held.token.Generation)
+		m.registerUEFIWriter(instance.ID, dir, held.token, ref.Key, fw)
 		return held, nil
 	}
 
@@ -335,6 +340,7 @@ func (m *Manager) prepareUEFIVarStore(ctx context.Context, instance *VM, rec *ue
 	slog.InfoContext(ctx, "Seeded UEFI variable store from the object store",
 		"instanceId", instance.ID, "key", ref.Key, "generation", held.token.Generation,
 		"bytes", len(region), "fetch_ms", otelsetup.Millis(time.Since(start)))
+	m.registerUEFIWriter(instance.ID, dir, held.token, ref.Key, fw)
 	return held, nil
 }
 
@@ -555,6 +561,19 @@ func fetchUEFIVars(ctx context.Context, deps UEFIVarStoreDeps, key string, varsS
 			ErrUEFIVarStoreUnusable, key, len(region), varsSize)
 	}
 	return region, nil
+}
+
+// readUEFISeed reads dir's seeded.json.
+func readUEFISeed(dir string) (uefiSeed, error) {
+	var seed uefiSeed
+	data, err := os.ReadFile(filepath.Join(dir, uefiSeededFileName))
+	if err != nil {
+		return seed, err
+	}
+	if err := json.Unmarshal(data, &seed); err != nil {
+		return seed, fmt.Errorf("decode %s: %w", filepath.Join(dir, uefiSeededFileName), err)
+	}
+	return seed, nil
 }
 
 // writeUEFISeed replaces dir's seeded.json with seed.

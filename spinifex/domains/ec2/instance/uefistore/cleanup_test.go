@@ -37,7 +37,7 @@ func keysUnder(t *testing.T, objects objectstore.ObjectStore, prefix string) []s
 }
 
 // Deletion is final: a writer holding the revision of a deleting record, such
-// as a write-back retry, must not bring the store back to live.
+// as a late pointer move, must not bring the store back to live.
 func TestCompareAndSet_RefusesDeletingToLive(t *testing.T) {
 	s, _ := openStore(t)
 	rev, err := s.Create(t.Context(), liveRecord())
@@ -47,8 +47,7 @@ func TestCompareAndSet_RefusesDeletingToLive(t *testing.T) {
 	rev, err = s.CompareAndSet(t.Context(), deleting, rev)
 	require.NoError(t, err)
 
-	revived := liveRecord()
-	revived.WriteBack = writeBack()
+	revived := pointedRecord()
 	_, err = s.CompareAndSet(t.Context(), revived, rev)
 	require.ErrorIs(t, err, uefistore.ErrDeleting)
 
@@ -58,24 +57,9 @@ func TestCompareAndSet_RefusesDeletingToLive(t *testing.T) {
 	assert.Equal(t, uefistore.StateDeleting, got.State)
 }
 
-// A write-back owed on a deleting store would put an object behind the delete.
-func TestCompareAndSet_RefusesDeletingWithAWriteBack(t *testing.T) {
+func TestMarkDeleting_MovesLiveToDeletingAndKeepsWhatItNames(t *testing.T) {
 	s, _ := openStore(t)
-	rev, err := s.Create(t.Context(), liveRecord())
-	require.NoError(t, err)
-	rec := liveRecord()
-	rec.State = uefistore.StateDeleting
-	rec.WriteBack = writeBack()
-
-	_, err = s.CompareAndSet(t.Context(), rec, rev)
-	require.ErrorIs(t, err, uefistore.ErrInvalidRecord)
-}
-
-func TestMarkDeleting_MovesLiveToDeletingAndDropsTheWriteBack(t *testing.T) {
-	s, _ := openStore(t)
-	rec := liveRecord()
-	rec.WriteBack = writeBack()
-	_, err := s.Create(t.Context(), rec)
+	_, err := s.Create(t.Context(), pointedRecord())
 	require.NoError(t, err)
 
 	has, err := s.MarkDeleting(t.Context(), instanceID)
@@ -85,8 +69,8 @@ func TestMarkDeleting_MovesLiveToDeletingAndDropsTheWriteBack(t *testing.T) {
 	got, rev, err := s.Get(t.Context(), instanceID)
 	require.NoError(t, err)
 	assert.Equal(t, uefistore.StateDeleting, got.State)
-	assert.Nil(t, got.WriteBack)
 	assert.Equal(t, "111122223333", got.AccountID)
+	assert.Equal(t, pointer("b"), got.Pointer, "the pointer stays readable until the prefix is gone")
 
 	has, err = s.MarkDeleting(t.Context(), instanceID)
 	require.NoError(t, err)

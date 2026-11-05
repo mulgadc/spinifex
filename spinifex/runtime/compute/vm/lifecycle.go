@@ -92,7 +92,7 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrInstanceNotFound, id)
 	}
-	if err := CheckUEFIVarStore(instance); err != nil {
+	if err := m.CheckUEFIVarStore(ctx, instance); err != nil {
 		return err
 	}
 	// StateError is rejected by launchStillValid; move to Pending first so
@@ -131,7 +131,7 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 	}
 
 	// Before the reason below is cleared, so a refused start changes nothing.
-	if err := CheckUEFIVarStore(instance); err != nil {
+	if err := m.CheckUEFIVarStore(ctx, instance); err != nil {
 		slog.ErrorContext(ctx, "Refusing to launch a UEFI instance without exactly one variable store",
 			"instanceId", instance.ID, "err", err)
 		return err
@@ -159,10 +159,17 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 	}
 
 	// Before the mount, so a store this node cannot boot fails the launch
-	// with nothing to roll back.
+	// with nothing to roll back but the claim, which a launch that fails
+	// before QEMU starts gives back.
 	uefiCtx, uefiSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.uefi_var_store")
-	uefiErr := m.prepareUEFIVarStore(uefiCtx, instance)
+	uefiHeld, uefiErr := m.prepareUEFIVarStore(uefiCtx, instance)
 	endSpanWithError(uefiSpan, uefiErr)
+	guestMayHaveRun := false
+	defer func() {
+		if err != nil && !guestMayHaveRun {
+			m.releaseUEFIClaim(ctx, instance.ID, uefiHeld)
+		}
+	}()
 	if uefiErr != nil {
 		slog.ErrorContext(ctx, "Failed to prepare the UEFI variable store", "instanceId", instance.ID, "err", uefiErr)
 		return uefiErr
@@ -196,6 +203,7 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 	}
 
 	_, qemuSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.start_qemu")
+	guestMayHaveRun = true
 	qemuErr := m.startQEMU(instance)
 	endSpanWithError(qemuSpan, qemuErr)
 	if qemuErr != nil {

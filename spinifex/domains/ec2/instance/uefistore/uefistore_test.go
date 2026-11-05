@@ -30,13 +30,23 @@ func liveRecord() *uefistore.UEFIStoreRecord {
 	return &uefistore.UEFIStoreRecord{InstanceID: instanceID, AccountID: "111122223333", State: uefistore.StateLive}
 }
 
-func writeBack() *uefistore.UEFIWriteBack {
-	return &uefistore.UEFIWriteBack{
-		Node:       "node-2",
-		Key:        uefistore.KeyPrefix(instanceID) + "b",
-		SeededFrom: uefistore.KeyPrefix(instanceID) + "a",
-		Since:      time.Date(2026, 11, 3, 1, 2, 3, 0, time.UTC),
+func pointer(name string) *uefistore.UEFIVarStoreRef {
+	return &uefistore.UEFIVarStoreRef{
+		Key:        keyOf(name),
+		Firmware:   uefistore.FirmwareIdentity{Arch: "x86_64", VarsSize: 540672, CodeSHA256: "c0de"},
+		WriterNode: "node-2",
+		WrittenAt:  time.Date(2026, 11, 3, 1, 2, 3, 0, time.UTC),
 	}
+}
+
+func keyOf(name string) string { return uefistore.KeyPrefix(instanceID) + name }
+
+// pointedRecord is a live record stamped at generation 7 that points at "b".
+func pointedRecord() *uefistore.UEFIStoreRecord {
+	rec := liveRecord()
+	rec.Generation = 7
+	rec.Pointer = pointer("b")
+	return rec
 }
 
 func rawPut(t *testing.T, js jetstream.JetStream, key, body string) {
@@ -66,8 +76,7 @@ func TestOpen_CreatesBucketWithNoTTLAndStampsVersion(t *testing.T) {
 
 func TestCreate_RoundTripsAndStampsSchemaVersion(t *testing.T) {
 	s, _ := openStore(t)
-	rec := liveRecord()
-	rec.WriteBack = writeBack()
+	rec := pointedRecord()
 
 	rev, err := s.Create(t.Context(), rec)
 	require.NoError(t, err)
@@ -82,9 +91,7 @@ func TestCreate_RoundTripsAndStampsSchemaVersion(t *testing.T) {
 // The wire names are what every release reads, so they are pinned.
 func TestRecord_WireShape(t *testing.T) {
 	s, js := openStore(t)
-	rec := liveRecord()
-	rec.WriteBack = writeBack()
-	_, err := s.Create(t.Context(), rec)
+	_, err := s.Create(t.Context(), pointedRecord())
 	require.NoError(t, err)
 
 	kv, err := js.KeyValue(t.Context(), uefistore.BucketName)
@@ -96,11 +103,12 @@ func TestRecord_WireShape(t *testing.T) {
 		"instance_id": "i-0123456789abcdef0",
 		"account_id": "111122223333",
 		"state": "live",
-		"write_back": {
-			"node": "node-2",
+		"generation": 7,
+		"pointer": {
 			"key": "uefi/i-0123456789abcdef0/b",
-			"seeded_from": "uefi/i-0123456789abcdef0/a",
-			"since": "2026-11-03T01:02:03Z"
+			"firmware": {"arch": "x86_64", "vars_size": 540672, "code_sha256": "c0de"},
+			"writer_node": "node-2",
+			"written_at": "2026-11-03T01:02:03Z"
 		}
 	}`, string(entry.Value()))
 }
@@ -144,8 +152,7 @@ func TestCompareAndSet_StaleRevisionConflictsAndWritesNothing(t *testing.T) {
 	first, err := s.Create(t.Context(), liveRecord())
 	require.NoError(t, err)
 
-	moved := liveRecord()
-	moved.WriteBack = writeBack()
+	moved := pointedRecord()
 	second, err := s.CompareAndSet(t.Context(), moved, first)
 	require.NoError(t, err)
 	assert.Greater(t, second, first)
@@ -159,7 +166,7 @@ func TestCompareAndSet_StaleRevisionConflictsAndWritesNothing(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, second, rev)
 	assert.Equal(t, uefistore.StateLive, got.State)
-	assert.Equal(t, writeBack(), got.WriteBack)
+	assert.Equal(t, pointer("b"), got.Pointer)
 }
 
 // Two actors that read the same revision race to change it; exactly one may
@@ -179,12 +186,11 @@ func TestCompareAndSet_ConcurrentWritersFromOneReadHaveOneWinner(t *testing.T) {
 	)
 	for i := range writers {
 		wg.Go(func() {
-			rec := liveRecord()
-			rec.WriteBack = writeBack()
-			rec.WriteBack.Node = fmt.Sprintf("node-%d", i)
+			rec := pointedRecord()
+			rec.Pointer.WriterNode = fmt.Sprintf("node-%d", i)
 			if _, err := s.CompareAndSet(context.Background(), rec, rev); err == nil {
 				mu.Lock()
-				wins = append(wins, rec.WriteBack.Node)
+				wins = append(wins, rec.Pointer.WriterNode)
 				mu.Unlock()
 			} else {
 				assert.ErrorIs(t, err, kvstore.ErrConflict)
@@ -196,7 +202,7 @@ func TestCompareAndSet_ConcurrentWritersFromOneReadHaveOneWinner(t *testing.T) {
 	require.Len(t, wins, 1)
 	got, _, err := s.Get(t.Context(), instanceID)
 	require.NoError(t, err)
-	assert.Equal(t, wins[0], got.WriteBack.Node)
+	assert.Equal(t, wins[0], got.Pointer.WriterNode)
 }
 
 func TestCompareAndDelete_StaleRevisionKeepsRecord(t *testing.T) {
@@ -217,29 +223,20 @@ func TestCompareAndDelete_StaleRevisionKeepsRecord(t *testing.T) {
 	require.ErrorIs(t, err, kvstore.ErrNotFound)
 }
 
-// A superseded obligation deletes its recorded key, so a key outside the
+// A deletion acts on the key the record points at, so a key outside the
 // instance's own prefix must never reach the bucket.
 func TestCompareAndSet_RefusesInvalidRecords(t *testing.T) {
+	other := uefistore.KeyPrefix("i-0fedcba9876543210") + "b"
 	cases := map[string]func(*uefistore.UEFIStoreRecord){
-		"unknown state":            func(r *uefistore.UEFIStoreRecord) { r.State = "gone" },
-		"not an instance ID":       func(r *uefistore.UEFIStoreRecord) { r.InstanceID = "ami-0123456789abcdef0" },
-		"write-back with no node":  func(r *uefistore.UEFIStoreRecord) { r.WriteBack.Node = "" },
-		"write-back with no since": func(r *uefistore.UEFIStoreRecord) { r.WriteBack.Since = time.Time{} },
-		"write-back key under another instance": func(r *uefistore.UEFIStoreRecord) {
-			r.WriteBack.Key = uefistore.KeyPrefix("i-0fedcba9876543210") + "b"
-		},
-		"write-back key under an image": func(r *uefistore.UEFIStoreRecord) {
-			r.WriteBack.Key = uefistore.KeyPrefix("ami-0123456789abcdef0") + "b"
-		},
-		"write-back key is the prefix itself": func(r *uefistore.UEFIStoreRecord) {
-			r.WriteBack.Key = uefistore.KeyPrefix(instanceID)
-		},
-		"write-back key nested below the prefix": func(r *uefistore.UEFIStoreRecord) {
-			r.WriteBack.Key = uefistore.KeyPrefix(instanceID) + "x/y"
-		},
-		"write-back seeded from another instance": func(r *uefistore.UEFIStoreRecord) {
-			r.WriteBack.SeededFrom = uefistore.KeyPrefix("i-0fedcba9876543210") + "a"
-		},
+		"unknown state":                   func(r *uefistore.UEFIStoreRecord) { r.State = "gone" },
+		"not an instance ID":              func(r *uefistore.UEFIStoreRecord) { r.InstanceID = "ami-0123456789abcdef0" },
+		"pointer under another instance":  func(r *uefistore.UEFIStoreRecord) { r.Pointer.Key = other },
+		"pointer under an image":          func(r *uefistore.UEFIStoreRecord) { r.Pointer.Key = uefistore.KeyPrefix("ami-0123456789abcdef0") + "b" },
+		"pointer is the prefix itself":    func(r *uefistore.UEFIStoreRecord) { r.Pointer.Key = uefistore.KeyPrefix(instanceID) },
+		"pointer nested below the prefix": func(r *uefistore.UEFIStoreRecord) { r.Pointer.Key = keyOf("x/y") },
+		"pointer with no firmware arch":   func(r *uefistore.UEFIStoreRecord) { r.Pointer.Firmware.Arch = "" },
+		"pointer with no VARS size":       func(r *uefistore.UEFIStoreRecord) { r.Pointer.Firmware.VarsSize = 0 },
+		"pointer with no writer node":     func(r *uefistore.UEFIStoreRecord) { r.Pointer.WriterNode = "" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -247,8 +244,7 @@ func TestCompareAndSet_RefusesInvalidRecords(t *testing.T) {
 			rev, err := s.Create(t.Context(), liveRecord())
 			require.NoError(t, err)
 
-			rec := liveRecord()
-			rec.WriteBack = writeBack()
+			rec := pointedRecord()
 			mutate(rec)
 			_, err = s.CompareAndSet(t.Context(), rec, rev)
 			require.ErrorIs(t, err, uefistore.ErrInvalidRecord)
@@ -256,7 +252,7 @@ func TestCompareAndSet_RefusesInvalidRecords(t *testing.T) {
 			got, gotRev, err := s.Get(t.Context(), instanceID)
 			require.NoError(t, err)
 			assert.Equal(t, rev, gotRev, "an invalid record must not be written")
-			assert.Nil(t, got.WriteBack)
+			assert.Nil(t, got.Pointer)
 		})
 	}
 }
@@ -265,11 +261,11 @@ func TestCompareAndSet_RefusesInvalidRecords(t *testing.T) {
 // is reported rather than decoded into something a reaper would act on.
 func TestGet_RefusesRecordsItCannotTrust(t *testing.T) {
 	cases := map[string]string{
-		"newer schema":       `{"schema_version":2,"instance_id":"i-0123456789abcdef0","state":"live"}`,
-		"no schema":          `{"instance_id":"i-0123456789abcdef0","state":"live"}`,
-		"another instance":   `{"schema_version":1,"instance_id":"i-0fedcba9876543210","state":"deleting"}`,
-		"unknown state":      `{"schema_version":1,"instance_id":"i-0123456789abcdef0","state":"purged"}`,
-		"foreign write-back": `{"schema_version":1,"instance_id":"i-0123456789abcdef0","state":"live","write_back":{"node":"n","key":"uefi/i-0fedcba9876543210/b","seeded_from":"uefi/i-0123456789abcdef0/a","since":"2026-11-03T00:00:00Z"}}`,
+		"newer schema":     `{"schema_version":2,"instance_id":"i-0123456789abcdef0","state":"live"}`,
+		"no schema":        `{"instance_id":"i-0123456789abcdef0","state":"live"}`,
+		"another instance": `{"schema_version":1,"instance_id":"i-0fedcba9876543210","state":"deleting"}`,
+		"unknown state":    `{"schema_version":1,"instance_id":"i-0123456789abcdef0","state":"purged"}`,
+		"foreign pointer":  `{"schema_version":1,"instance_id":"i-0123456789abcdef0","state":"live","generation":3,"pointer":{"key":"uefi/i-0fedcba9876543210/b","firmware":{"arch":"x86_64","vars_size":540672},"writer_node":"n"}}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {

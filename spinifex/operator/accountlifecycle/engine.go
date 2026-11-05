@@ -41,6 +41,21 @@ type Engine struct {
 	// OnExercised receives what a non-finalizing run did after quiescence.
 	OnExercised func(ctx context.Context, result operatorv1.ExerciseResult)
 
+	// Compute and Storage are EC2's instance, spot request and volume cleanup.
+	// When set, Teardown repeats them within Converge's bounds in place of the
+	// legacy attachments and storage stages.
+	Compute ComputeStage
+	Storage StorageStage
+
+	// Converge bounds the repeat loop. The zero value uses DefaultConverge.
+	Converge Converge
+
+	// OnPass reports each finished pass of the loop so the caller can persist progress.
+	OnPass func(ctx context.Context, pass int)
+
+	// wait replaces the backoff delay in tests.
+	wait func(ctx context.Context, d time.Duration) error
+
 	// ec2Inventory is EC2's read-only platform inventory: Inventory lists the
 	// L09 kinds from it, and the quiescence evaluation and final re-read use it.
 	ec2Inventory ec2PlatformInventory
@@ -130,6 +145,9 @@ func (e *Engine) Teardown(ctx context.Context, req Request) (*Result, error) {
 	if e.Cleanup == nil || e.ec2Inventory == nil {
 		return nil, errPlatformCleanupMissing
 	}
+	if (e.Compute == nil) != (e.Storage == nil) {
+		return nil, errComputeCleanupMissing
+	}
 
 	generation, err := e.Accounts.QuiesceAccount(req.AccountID, req.OperationID, req.Fence)
 	if err != nil {
@@ -147,7 +165,11 @@ func (e *Engine) Teardown(ctx context.Context, req Request) (*Result, error) {
 		Forced:      req.Force,
 	}
 	var platform *platformRun
+	converging := e.Compute != nil && e.Storage != nil
 	for _, stage := range Stages() {
+		if converging && (stage == StageAttachments || stage == StageStorage) {
+			continue
+		}
 		if stage == StagePlatform {
 			var err error
 			if platform, err = e.cleanPlatform(ctx, req, generation); err != nil {
@@ -164,6 +186,11 @@ func (e *Engine) Teardown(ctx context.Context, req Request) (*Result, error) {
 		result.Stages = append(result.Stages, stageResult)
 		if e.OnStage != nil {
 			e.OnStage(ctx, stageResult)
+		}
+		if converging && stage == StageCompute {
+			if err := e.convergeCompute(ctx, req, result); err != nil {
+				return result, err
+			}
 		}
 	}
 	e.rereadPlatform(ctx, req, platform, result)

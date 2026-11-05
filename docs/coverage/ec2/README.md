@@ -43,6 +43,20 @@ A missing `Name`, `BlockDeviceMappings` or root snapshot answers `MissingParamet
 Registering with `--ena-support`, `--no-ena-support` and neither, copying the image, and three refusals were run on a three-node cluster with the AWS CLI.
 Launching an instance from an `EnaSupport` image was not run, so the launch path is unchanged by construction and not by test.
 
+### CreateSnapshot Refuses an Attached Volume
+
+`CreateSnapshot` drains and snapshots the volume inside the EBS provider.
+A volume the provider reports as in use, such as one that is still attached, is refused with `IncorrectState` and the message `The volume 'vol-...' is in use. Detach it before creating a snapshot.`
+A provider that cannot answer now, for example because another node holds the volume, answers `ServiceUnavailable` so the caller retries.
+Any other provider failure is `ServerInternal`.
+The snapshot taken for `CreateImage` maps these errors the same way.
+
+### EBS Encryption by Default Follows the Platform
+
+Whether new volumes are encrypted is decided by the platform's encryption key, not by the account.
+`GetEbsEncryptionByDefault` and `EnableEbsEncryptionByDefault` report `true` when the platform has an encryption key configured and `false` otherwise, and `EnableEbsEncryptionByDefault` does not change that.
+`DisableEbsEncryptionByDefault` is refused with `OperationNotPermitted` and the message `EBS encryption by default cannot be disabled: this platform encrypts every volume` while the platform encrypts, and answers `false` where it does not.
+
 ### Operations
 
 | Operation |

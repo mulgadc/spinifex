@@ -117,7 +117,8 @@ func runLBSelfHeal(t *testing.T, fix *Fixture, kind shKind) {
 		"the load balancer was not active again %s after the fault; states seen: %v", shRecoveryBudget, states.sequence())
 
 	if internetFacing {
-		lbrRequireServing(t, fix, f.Host, harness.Node{}, f, "after the repair", shRecoveryBudget-time.Since(faultAt)+time.Minute)
+		remaining := max(shRecoveryBudget-time.Since(faultAt), 10*time.Second)
+		lbrRequireServing(t, fix, f.Host, harness.Node{}, f, "after the repair", remaining)
 	}
 	harness.WaitForTargetsHealthy(t, cli, f.TGArn, lbrTargets, "backends after the repair", targetsHealthyBudget)
 

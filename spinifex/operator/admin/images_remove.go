@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 )
@@ -231,6 +232,14 @@ func RemoveSystemImage(store objectstore.ObjectStore, bucket string, opts Remove
 	}
 
 	result := &RemoveImageResult{}
+
+	// Step 0: drop the image's UEFI variable store before the document, as
+	// DeregisterImage does, so a failure here leaves the image for a rerun.
+	n, err := uefistore.DeleteObjects(context.Background(), store, bucket, opts.ImageID)
+	result.ObjectsDeleted += n
+	if err != nil {
+		return nil, fmt.Errorf("delete UEFI variable store: %w", err)
+	}
 
 	// Step 1: drop the ebsmetadata document first — the barrier that hides the
 	// AMI from DescribeImages, so no new launch can land on blocks step 2 is

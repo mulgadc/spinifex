@@ -12,6 +12,8 @@ on:
       - go.sum
       - Makefile
       - tests/e2e/**
+      - scripts/images/**
+      - scripts/build-system-image.sh
       - .github/workflows/e2e.yml
   workflow_dispatch:
     inputs:
@@ -19,6 +21,10 @@ on:
         description: "Space-separated Make targets to run (e.g. 'e2e-single e2e-multinode e2e-cert e2e-lb e2e-eks e2e-iam e2e-rds')"
         required: false
         default: "e2e-single e2e-multinode e2e-cert e2e-iam"
+      paths:
+        description: "Optional space-separated changed paths. When set, suites is ignored and the run selects as a push touching these paths would."
+        required: false
+        default: ""
       test_run:
         description: "Optional regex for -test.run (e.g. '^TestMultinodeIPSec$'). Empty = run all tests in suite."
         required: false
@@ -31,88 +37,78 @@ permissions:
 
 env:
   GIT_BRANCH: ${{ github.ref_name }}
-  # lb is out of the push default: it runs in the nightly multi cells and on
-  # dispatch (suites=e2e-lb), which keeps the multi job to multinode and cert.
-  SUITES: ${{ inputs.suites || 'e2e-single e2e-multinode e2e-cert e2e-iam e2e-partialblock' }}
   TEST_RUN: ${{ inputs.test_run || '' }}
   SPINIFEX_OTLP_ENDPOINT: ${{ vars.SPINIFEX_OTLP_ENDPOINT || 'http://192.168.1.13:8200' }}
   SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }}
 
 jobs:
-  # The inner timeout must fire before the outer one. `go test` reports where it
-  # stopped and the suite's own failure; a job cancelled on timeout reports only
-  # "The operation was canceled" and takes the artifacts with it.
-  #
-  # A job budget cannot be a literal here because the suite set is a dispatch
-  # input: storagefault asks for 90m and diskperf for 180m, both eligible on one
-  # node, so any fixed number is either wrong for them or wasteful for everyone
-  # else. Resolving it from suite-sets.sh keeps the one source of truth and
-  # leaves the default push set at exactly the 60m it has always had.
+  # A push runs the base set plus the suites its changed paths map to in
+  # suite-sets.sh; a dispatch runs its suites input, or selects for its paths
+  # input as a push would. Budgets come from the suites' own timeouts there.
   plan:
-    name: Resolve Job Budgets
+    name: Select Suites
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     outputs:
-      single_timeout: ${{ steps.budgets.outputs.single_timeout }}
-      multi_timeout: ${{ steps.budgets.outputs.multi_timeout }}
+      single_legs: ${{ steps.select.outputs.single_legs }}
+      multi_suites: ${{ steps.select.outputs.multi_suites }}
+      multi_timeout: ${{ steps.select.outputs.multi_timeout }}
     steps:
+      # Full history without file contents: the diff needs both commits' trees.
       - uses: actions/checkout@v7.0.1
         with:
           path: spinifex
+          fetch-depth: 0
+          filter: blob:none
           sparse-checkout: .github/scripts
 
-      - name: Resolve Budgets
-        id: budgets
+      - name: Select suites
+        id: select
+        working-directory: spinifex
         env:
-          # Provision, install and teardown around the suites, plus the headroom
-          # a multi-suite job needs for whatever ran before the one that hangs.
-          SETUP_ALLOWANCE_MIN: 15
-          # What the job has always had. Kept as a floor so resolving the budget
-          # can only ever raise it, never quietly shorten an existing run.
-          FLOOR_MIN: 60
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          IN_SUITES: ${{ inputs.suites }}
+          IN_PATHS: ${{ inputs.paths }}
         run: |
-          . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
-          # Only max() is a sound bound: the suites share one job, so a sum would
-          # demand hours for a set that has never taken them. Max is what makes
-          # the hanging suite panic on its own timeout first, which is the point.
-          budget() {
-            local want="${FLOOR_MIN}" s t
-            for s in $(echo "${SUITES}" | sed 's/e2e-//g' | tr ' ' '\n' | grep -xE "$1"); do
-              t="$(e2e_suite_timeout "${s}")"
-              t=$(( ${t%m} + SETUP_ALLOWANCE_MIN ))
-              [ "${t}" -gt "${want}" ] && want="${t}"
-            done
-            echo "${want}"
-          }
-          single=$(budget "${E2E_SUITES_SINGLE_RE}")
-          multi=$(budget "${E2E_SUITES_MULTI_RE}")
-          echo "single_timeout=${single}" >> "$GITHUB_OUTPUT"
-          echo "multi_timeout=${multi}" >> "$GITHUB_OUTPUT"
-          echo "suites='${SUITES}' -> single ${single}m, multi ${multi}m"
+          set -euo pipefail
+          SELECT=.github/scripts/e2e-select.sh
+          if [ "${EVENT}" = push ]; then
+            bash "${SELECT}" push "${BEFORE}" "${GITHUB_SHA}" | tee -a "$GITHUB_OUTPUT"
+          elif [ -n "${IN_PATHS}" ] || [ -z "${IN_SUITES}" ]; then
+            bash "${SELECT}" paths "${IN_PATHS}" | tee -a "$GITHUB_OUTPUT"
+          else
+            bash "${SELECT}" suites "${IN_SUITES}" | tee -a "$GITHUB_OUTPUT"
+          fi
 
   e2e_single:
-    name: Single-Node E2E
-    # The dispatch check gates on exactly the suites this job's Run step
-    # allow-lists, i.e. E2E_SUITES_SINGLE in .github/scripts/suite-sets.sh —
-    # an `if:` expression cannot source that file, so this one list is
-    # hand-mirrored and must be updated with it. Gating on a suite the job
-    # won't run — lb, which only executes in the multinode job — would
-    # provision a tofu VM and pay the Spinifex install only to run nothing and
-    # tear down. Push triggers keep running via the null-check on
-    # inputs.suites.
-    if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-single') || contains(github.event.inputs.suites, 'e2e-iam') || contains(github.event.inputs.suites, 'e2e-cert') || contains(github.event.inputs.suites, 'e2e-eks') || contains(github.event.inputs.suites, 'e2e-ecs') || contains(github.event.inputs.suites, 'e2e-storagegrowth') || contains(github.event.inputs.suites, 'e2e-partialblock') || contains(github.event.inputs.suites, 'e2e-rds')
+    # The base leg keeps the job and artifact names it always had: mulga's
+    # registry intake finds a run's results by them.
+    name: ${{ matrix.leg == 'base' && 'Single-Node E2E' || format('Single-Node E2E ({0})', matrix.leg) }}
+    # `base` runs on ci-single; `service`, on ci-pseudo, carries the matched
+    # single-node suites so a long one stays off the base leg's critical path.
+    if: needs.plan.outputs.single_legs != '[]'
     needs: plan
-    runs-on: [self-hosted, ci-single]
-    timeout-minutes: ${{ fromJSON(needs.plan.outputs.single_timeout) }}
+    runs-on: [self-hosted, "${{ matrix.runner }}"]
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.single_legs) }}
     env:
-      TOFU_LOG: /tmp/e2e-tofu-single-${{ github.run_id }}.log
-      ARTIFACT_DIR: /tmp/spinifex-e2e-artifacts-${{ github.run_id }}
+      SUITES: ${{ matrix.suites }}
+      # Both legs can run on banksia at once, so every host path carries the leg.
+      TOFU_LOG: /tmp/e2e-tofu-single-${{ github.run_id }}-${{ matrix.leg }}.log
+      ARTIFACT_DIR: /tmp/spinifex-e2e-artifacts-${{ github.run_id }}-${{ matrix.leg }}
+      # The base leg keeps the cell name it always had, so its history in
+      # Elastic and telemetry continues; any other leg appends its name.
+      E2E_CELL: ${{ matrix.leg == 'base' && 'single' || format('single-{0}', matrix.leg) }}
       # Job-level env wins over the workflow-level default. This job and
       # e2e_multi share one run id and both name their hosts node1/node2/node3,
       # so without ci.cell their telemetry collapses into one bucket. This job
       # is where "Bootstrap via Binary Install" bakes SPINIFEX_OTEL_ATTRS into
       # the VM's telemetry.env, so the label has to be set here.
-      SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=single
+      SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=${{ matrix.leg == 'base' && 'single' || format('single-{0}', matrix.leg) }}
     steps:
       - name: Reap Orphan Procs
         run: |
@@ -182,7 +178,7 @@ jobs:
       - name: Resolve CI job id
         uses: $/.github/actions/otel-job-id
         with:
-          job-name: Single-Node E2E
+          job-name: ${{ matrix.leg == 'base' && 'Single-Node E2E' || format('Single-Node E2E ({0})', matrix.leg) }}
 
       - name: Build Install Artifacts
         working-directory: mulga/scripts/tofu-cluster
@@ -226,6 +222,12 @@ jobs:
           echo "wan_ip=${WAN_IP}" >> "$GITHUB_OUTPUT"
           echo "ssh_key=${SSH_KEY}" >> "$GITHUB_OUTPUT"
 
+      # build-system-image.sh reuses a raw image under ten minutes old from
+      # its build directory, and every runner on banksia shares the default
+      # one in /tmp, so a job could test another commit's guest agent.
+      - name: Use a per-job image build directory
+        run: echo "SYSTEM_IMAGE_BUILD_DIR=${RUNNER_TEMP}/system-image-build" >> "$GITHUB_ENV"
+
       # The eks suite's CreateCluster boots a control-plane VM from the
       # eks-node AMI, so that AMI must exist in the VM's image store before the
       # suite runs. build-system-image.sh customizes the image with libguestfs
@@ -249,7 +251,7 @@ jobs:
           group_open "make build-eks-node-image"
           make build-eks-node-image
           group_close
-          ok "raw: $(du -h /tmp/eks-node-image-build/eks-node-alpine.raw | cut -f1)"
+          ok "raw: $(du -h "${SYSTEM_IMAGE_BUILD_DIR}/eks-node-image-build/eks-node-alpine.raw" | cut -f1)"
 
       - name: Import eks-node AMI on VM
         if: contains(env.SUITES, 'e2e-eks')
@@ -262,7 +264,7 @@ jobs:
           VM=tf-user@${{ steps.vm.outputs.wan_ip }}
           banner "import eks-node AMI to VM image store"
           scp "${SSH_OPTS[@]}" \
-            /tmp/eks-node-image-build/eks-node-alpine.raw \
+            "${SYSTEM_IMAGE_BUILD_DIR}/eks-node-image-build/eks-node-alpine.raw" \
             "$VM":/tmp/eks-node-alpine.raw
           ssh "${SSH_OPTS[@]}" "$VM" \
             "spx admin images import --file /tmp/eks-node-alpine.raw \
@@ -301,6 +303,39 @@ jobs:
           EOF
           ok "kubectl installed on VM"
 
+      # The ecs suite boots its container instance from the ecs-node AMI, found
+      # by its managed-by tag, so the tag matters. The build directory is named
+      # for the manifest's IMAGE_NAME (ecs-agent), not for the make target.
+      - name: Build ecs-node AMI (libguestfs, runner)
+        if: contains(env.SUITES, 'e2e-ecs')
+        working-directory: spinifex
+        run: |
+          set -euo pipefail
+          # direct backend = no libvirt. Set here rather than in the script:
+          # it has to be in the environment the build itself runs in.
+          export LIBGUESTFS_BACKEND=direct
+          "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ensure-libguestfs.sh"
+          make build-ecs-node-image
+
+      - name: Import ecs-node AMI on VM
+        if: contains(env.SUITES, 'e2e-ecs')
+        run: |
+          set -euo pipefail
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          eval "$(grep -E '^(ALPINE_VERSION|AMI_NAME|SYSTEM_TAG)=' \
+            spinifex/scripts/images/ecs-agent/manifest.conf)"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}")
+          VM=tf-user@${{ steps.vm.outputs.wan_ip }}
+          banner "import ecs-node AMI to VM image store"
+          scp "${SSH_OPTS[@]}" \
+            "${SYSTEM_IMAGE_BUILD_DIR}/ecs-agent-image-build/ecs-agent-alpine.raw" \
+            "$VM":/tmp/ecs-agent-alpine.raw
+          ssh "${SSH_OPTS[@]}" "$VM" \
+            "spx admin images import --file /tmp/ecs-agent-alpine.raw \
+               --distro alpine --version ${ALPINE_VERSION} --arch x86_64 \
+               --boot-mode bios --ami-name ${AMI_NAME} --tag ${SYSTEM_TAG}" >/dev/null 2>&1
+          ok "ecs-node AMI imported"
+
       # CreateDBInstance boots the DB VM from an RDS AMI, so both engines' images
       # must be in the VM's image store before the suite runs — same split as the
       # eks-node pair above: build on the runner (needs source + network), import
@@ -323,7 +358,7 @@ jobs:
             group_open "make build-${IMAGE}-image"
             make "build-${IMAGE}-image"
             group_close
-            ok "raw: $(du -h "/tmp/${IMAGE}-image-build/${IMAGE}-alpine.raw" | cut -f1)"
+            ok "raw: $(du -h "${SYSTEM_IMAGE_BUILD_DIR}/${IMAGE}-image-build/${IMAGE}-alpine.raw" | cut -f1)"
           done
 
       - name: Import RDS AMIs on VM
@@ -345,7 +380,7 @@ jobs:
             for tag in ${SYSTEM_TAG}; do TAG_ARGS="${TAG_ARGS} --tag ${tag}"; done
             banner "import ${IMAGE} AMI to VM image store"
             scp "${SSH_OPTS[@]}" \
-              "/tmp/${IMAGE}-image-build/${IMAGE}-alpine.raw" \
+              "${SYSTEM_IMAGE_BUILD_DIR}/${IMAGE}-image-build/${IMAGE}-alpine.raw" \
               "$VM":"/tmp/${IMAGE}-alpine.raw"
             ssh "${SSH_OPTS[@]}" "$VM" \
               "spx admin images import --file /tmp/${IMAGE}-alpine.raw \
@@ -528,7 +563,7 @@ jobs:
         uses: $/.github/actions/junit-to-es
         with:
           junit-glob: ${{ env.ARTIFACT_DIR }}/junit-*.xml
-          cell: single
+          cell: ${{ env.E2E_CELL }}
 
       - name: Analyze e2e failures
         if: always()
@@ -548,7 +583,7 @@ jobs:
       - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
-          name: e2e-artifacts-${{ github.run_id }}
+          name: ${{ matrix.leg == 'base' && format('e2e-artifacts-{0}', github.run_id) || format('e2e-artifacts-{0}-{1}', github.run_id, matrix.leg) }}
           path: ${{ env.ARTIFACT_DIR }}
           if-no-files-found: warn
           retention-days: 14
@@ -591,7 +626,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: tofu-log-single-${{ github.run_id }}
+          name: ${{ matrix.leg == 'base' && format('tofu-log-single-{0}', github.run_id) || format('tofu-log-single-{0}-{1}', github.run_id, matrix.leg) }}
           path: ${{ env.TOFU_LOG }}
           if-no-files-found: ignore
           retention-days: 14
@@ -607,15 +642,13 @@ jobs:
 
   e2e_multi:
     name: Multi-Node E2E
-    # The dispatch check gates on exactly the suites this job's Run step
-    # allow-lists (multinode|lb|cert) so lb — which only runs here — still
-    # provisions the 3-node env when requested on its own, and the env stays
-    # unprovisioned when none of them are asked for.
-    if: github.event_name != 'workflow_dispatch' || contains(github.event.inputs.suites, 'e2e-multinode') || contains(github.event.inputs.suites, 'e2e-lb') || contains(github.event.inputs.suites, 'e2e-cert')
+    # Runs when the plan job selected any multi-node suite, and only then.
+    if: needs.plan.outputs.multi_suites != ''
     needs: plan
     runs-on: [self-hosted, ci-multi]
     timeout-minutes: ${{ fromJSON(needs.plan.outputs.multi_timeout) }}
     env:
+      SUITES: ${{ needs.plan.outputs.multi_suites }}
       TOFU_LOG: /tmp/e2e-tofu-multi-${{ github.run_id }}.log
       ARTIFACT_DIR: /tmp/spinifex-e2e-multi-artifacts-${{ github.run_id }}
       # See the matching note on e2e_single: ci.cell is what separates this
@@ -1072,7 +1105,10 @@ jobs:
   e2e_status:
     name: Report E2E Status
     if: always()
-    needs: [e2e_single, e2e_multi]
+    # plan is a dependency because a failed plan skips both e2e jobs, and a
+    # skipped job counts as passed below: without it a broken selection would
+    # report green having run nothing.
+    needs: [plan, e2e_single, e2e_multi]
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
@@ -1081,15 +1117,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPORT_SHA: ${{ github.sha }}
         run: |
-          single_ok=true; multi_ok=true
+          plan_ok=true; single_ok=true; multi_ok=true
+          [ "${{ needs.plan.result }}" = success ] || plan_ok=false
           case "${{ needs.e2e_single.result }}" in success|skipped) ;; *) single_ok=false ;; esac
           case "${{ needs.e2e_multi.result }}" in success|skipped) ;; *) multi_ok=false ;; esac
-          if $single_ok && $multi_ok; then
+          if $plan_ok && $single_ok && $multi_ok; then
             STATE="success"
             DESC="E2E suites passed"
           else
             STATE="failure"
-            DESC="E2E failed: single=${{ needs.e2e_single.result }} multi=${{ needs.e2e_multi.result }}"
+            DESC="E2E failed: plan=${{ needs.plan.result }} single=${{ needs.e2e_single.result }} multi=${{ needs.e2e_multi.result }}"
           fi
           gh api "repos/${{ github.repository }}/statuses/${REPORT_SHA}" \
             -f state="$STATE" \
@@ -1106,7 +1143,7 @@ jobs:
   # status-report check.
   e2e_es_summary:
     name: ES CI Run Summary
-    needs: [e2e_single, e2e_multi]
+    needs: [plan, e2e_single, e2e_multi]
     if: always()
     runs-on: [self-hosted, ci-single]
     timeout-minutes: 5
@@ -1126,7 +1163,7 @@ jobs:
         uses: actions/download-artifact@v8.0.2
         continue-on-error: true
         with:
-          name: e2e-artifacts-${{ github.run_id }}
+          pattern: e2e-artifacts-${{ github.run_id }}*
           path: ${{ github.workspace }}/es-summary-single
 
       - name: Download multi-node artifacts
@@ -1146,6 +1183,7 @@ jobs:
           BRANCH: ${{ github.head_ref || github.ref_name }}
           SHA: ${{ github.sha }}
           SERVER_URL: ${{ github.server_url }}
+          PLAN_RESULT: ${{ needs.plan.result }}
           SINGLE_RESULT: ${{ needs.e2e_single.result }}
           MULTI_RESULT: ${{ needs.e2e_multi.result }}
           SINGLE_DIR: ${{ github.workspace }}/es-summary-single
@@ -1153,7 +1191,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          SINGLE_STATUS="${SINGLE_DIR}/suite-status.txt"
+          # One subdirectory per single-node leg's artifact.
+          SINGLE_STATUS=$(find "${SINGLE_DIR}" -name suite-status.txt 2>/dev/null | sort || true)
           MULTI_STATUS="${MULTI_DIR}/suite-status.txt"
 
           # Collect "<suite>: FAILED" lines from both legs' suite-status.txt
@@ -1162,7 +1201,9 @@ jobs:
           # rather than a bash array so this stays correct under `set -u`
           # even when nothing failed.
           FAILED_SUITES=""
-          for f in "$SINGLE_STATUS" "$MULTI_STATUS"; do
+          # SINGLE_STATUS is a newline-separated list, so it is split here.
+          # shellcheck disable=SC2086
+          for f in ${SINGLE_STATUS} "$MULTI_STATUS"; do
             [ -f "$f" ] || continue
             while IFS= read -r line; do
               case "$line" in
@@ -1182,7 +1223,7 @@ jobs:
           case "$MULTI_RESULT" in success | skipped) ;; *) multi_ok=false ;; esac
 
           STATE=success
-          if [ "$single_ok" != true ] || [ "$multi_ok" != true ] || [ "$FAILED_COUNT" -gt 0 ]; then
+          if [ "$PLAN_RESULT" != success ] || [ "$single_ok" != true ] || [ "$multi_ok" != true ] || [ "$FAILED_COUNT" -gt 0 ]; then
             STATE=failure
           fi
 

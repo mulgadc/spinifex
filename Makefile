@@ -310,7 +310,8 @@ test-build-scripts:
 	$(_Q)shellcheck -S warning .github/scripts/hypervisor-disk-preflight.sh \
 		.github/scripts/wait-for-memory.sh \
 		.github/scripts/mulga-design-check.sh \
-		.github/scripts/go-build-cache.sh
+		.github/scripts/go-build-cache.sh \
+		.github/scripts/e2e-select.sh
 	@$(_HDR) "\n....Running shellcheck over build/scripts/**/*.sh + the node scripts...."
 	$(_Q)shellcheck -S warning $$(find build/scripts -name '*.sh' | sort) $(NODE_SCRIPTS)
 	$(_Q)shellcheck -S warning -x scripts/build-oracle-appliance.sh $$(find scripts/appliance -name '*.sh' | sort)

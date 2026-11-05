@@ -12,6 +12,11 @@ const (
 	// this contract family. It is the NATS permission/subscription pattern for
 	// the per-instance command route, rather than the broader descendant match.
 	InstanceCommandSubjectWildcard = InstanceCommandSubjectPrefix + "*"
+
+	// HandledHeader is set to "1" on every reply an owner sends to a
+	// modify-instance-metadata-options or set-disable-api-termination command.
+	// An owner that predates those commands cannot set it.
+	HandledHeader = "Spinifex-Ec2-Cmd-Handled"
 )
 
 // InstanceCommandSubject returns the targeted command subject for instanceID.
@@ -23,7 +28,9 @@ func InstanceCommandSubject(instanceID string) string {
 }
 
 // EC2InstanceCommand is the NATS wire format for EC2 instance commands
-// (stop, terminate, start, attach/detach-volume, attach/detach-eni).
+// (stop, terminate, start, reboot, attach/detach-volume, attach/detach-eni,
+// IAM profile, spot lineage, tags, monitoring, metadata options and
+// termination protection).
 type EC2InstanceCommand struct {
 	ID                        string                     `json:"id"`
 	Attributes                EC2CommandAttributes       `json:"attributes"`
@@ -35,6 +42,9 @@ type EC2InstanceCommand struct {
 	SpotLineageData           *SpotLineageData           `json:"spot_lineage_data,omitempty"`
 	InstanceTagsData          *InstanceTagsData          `json:"instance_tags_data,omitempty"`
 	InstanceMonitoringData    *InstanceMonitoringData    `json:"instance_monitoring_data,omitempty"`
+
+	InstanceMetadataOptionsData *InstanceMetadataOptionsData `json:"instance_metadata_options_data,omitempty"`
+	DisableApiTerminationData   *DisableApiTerminationData   `json:"disable_api_termination_data,omitempty"`
 }
 
 // EC2CommandAttributes indicates which action the daemon should perform.
@@ -52,6 +62,9 @@ type EC2CommandAttributes struct {
 	SetInstanceTags             bool `json:"set_instance_tags,omitempty"`
 	RemoveInstanceTags          bool `json:"remove_instance_tags,omitempty"`
 	SetInstanceMonitoring       bool `json:"set_instance_monitoring,omitempty"`
+
+	ModifyInstanceMetadataOptions bool `json:"modify_instance_metadata_options,omitempty"`
+	SetDisableApiTermination      bool `json:"set_disable_api_termination,omitempty"`
 }
 
 // AttachVolumeData carries parameters for an attach-volume command.
@@ -101,6 +114,23 @@ type InstanceTagsData struct {
 // explicit value, not the absence of one.
 type InstanceMonitoringData struct {
 	Enabled bool `json:"enabled"`
+}
+
+// InstanceMetadataOptionsData carries the requested metadata options for a
+// modify-instance-metadata-options command. Unset fields are left unchanged.
+type InstanceMetadataOptionsData struct {
+	HttpTokens              string `json:"http_tokens,omitempty"`
+	HttpEndpoint            string `json:"http_endpoint,omitempty"`
+	HttpProtocolIpv6        string `json:"http_protocol_ipv6,omitempty"`
+	InstanceMetadataTags    string `json:"instance_metadata_tags,omitempty"`
+	HttpPutResponseHopLimit *int64 `json:"http_put_response_hop_limit,omitempty"`
+}
+
+// DisableApiTerminationData carries the desired termination-protection value
+// for a set-disable-api-termination command. Carried as data so "false" is an
+// explicit value, not the absence of one.
+type DisableApiTerminationData struct {
+	Value bool `json:"value"`
 }
 
 // SpotLineageData carries the SIR id stamped onto a spot-launched instance.

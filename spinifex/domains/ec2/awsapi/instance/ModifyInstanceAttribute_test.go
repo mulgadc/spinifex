@@ -3,10 +3,13 @@ package instance
 import (
 	"context"
 	"encoding/json"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -225,4 +228,54 @@ func TestModifyInstanceAttribute_ValidationFailure(t *testing.T) {
 	_, err := ModifyInstanceAttribute(context.Background(), nil, nc, "123456789012")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
+}
+
+func TestModifyInstanceAttribute_DisableApiTerminationRouting(t *testing.T) {
+	const id = "i-0123456789abcdef0"
+	_, nc := startTestNATSServer(t)
+
+	var gotValues []bool
+	var mu sync.Mutex
+	_, err := nc.Subscribe(ec2v1.InstanceCommandSubject(id), func(msg *nats.Msg) {
+		var cmd ec2v1.EC2InstanceCommand
+		if json.Unmarshal(msg.Data, &cmd) == nil && cmd.Attributes.SetDisableApiTermination && cmd.DisableApiTerminationData != nil {
+			mu.Lock()
+			gotValues = append(gotValues, cmd.DisableApiTerminationData.Value)
+			mu.Unlock()
+		}
+		reply := nats.NewMsg(msg.Reply)
+		reply.Data = []byte(`{}`)
+		reply.Header.Set(ec2v1.HandledHeader, "1")
+		_ = msg.RespondMsg(reply)
+	})
+	require.NoError(t, err)
+	var queue atomic.Int32
+	_, err = nc.Subscribe("ec2.ModifyInstanceAttribute", func(msg *nats.Msg) {
+		queue.Add(1)
+		_ = msg.Respond([]byte(`{}`))
+	})
+	require.NoError(t, err)
+
+	for _, v := range []bool{true, false} {
+		_, err := ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
+			InstanceId:            aws.String(id),
+			DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(v)},
+		}, nc, "acct")
+		require.NoError(t, err)
+	}
+	mu.Lock()
+	assert.Equal(t, []bool{true, false}, gotValues, "explicit true and false both reach the owner")
+	mu.Unlock()
+	assert.Zero(t, queue.Load())
+
+	// A nil value is not a value: queue path, no owner command.
+	_, err = ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
+		InstanceId:            aws.String(id),
+		DisableApiTermination: &ec2.AttributeBooleanValue{},
+	}, nc, "acct")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), queue.Load())
+	mu.Lock()
+	assert.Len(t, gotValues, 2, "no owner command for a nil value")
+	mu.Unlock()
 }

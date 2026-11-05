@@ -137,6 +137,8 @@ func TestEC2CommandNameCoversEveryCommand(t *testing.T) {
 		{"SetInstanceTags", func(a *ec2v1.EC2CommandAttributes) { a.SetInstanceTags = true }},
 		{"RemoveInstanceTags", func(a *ec2v1.EC2CommandAttributes) { a.RemoveInstanceTags = true }},
 		{"SetInstanceMonitoring", func(a *ec2v1.EC2CommandAttributes) { a.SetInstanceMonitoring = true }},
+		{"ModifyInstanceMetadataOptions", func(a *ec2v1.EC2CommandAttributes) { a.ModifyInstanceMetadataOptions = true }},
+		{"SetDisableApiTermination", func(a *ec2v1.EC2CommandAttributes) { a.SetDisableApiTermination = true }},
 		{"StartInstance", func(a *ec2v1.EC2CommandAttributes) { a.StartInstance = true }},
 		{"RebootInstance", func(a *ec2v1.EC2CommandAttributes) { a.RebootInstance = true }},
 		{"StopInstance", func(a *ec2v1.EC2CommandAttributes) { a.StopInstance = true }},

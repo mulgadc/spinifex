@@ -3,15 +3,22 @@ package vpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/zoneid"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -2553,4 +2560,136 @@ func TestVpc_ModifyVpcAttribute_MultipleAttributes(t *testing.T) {
 	assert.Contains(t, msg, "Fields for multiple attribute types specified: ")
 	assert.Contains(t, msg, "enableDnsSupport")
 	assert.Contains(t, msg, "enableDnsHostnames")
+}
+
+func TestSubnetAvailabilityZones_DistinctSortedAcrossAccounts(t *testing.T) {
+	svc := setupTestVPCService(t)
+	put := func(key, az string) {
+		data, err := json.Marshal(SubnetRecord{SubnetId: key, AvailabilityZone: az})
+		require.NoError(t, err)
+		_, err = svc.subnetKV.Put(t.Context(), key, data)
+		require.NoError(t, err)
+	}
+
+	empty, err := svc.SubnetAvailabilityZones(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, empty)
+
+	put("111111111111.subnet-1", "rack-b")
+	put("222222222222.subnet-2", "rack-a")
+	put("222222222222.subnet-3", "rack-b")
+	put("222222222222.subnet-4", "")
+
+	got, err := svc.SubnetAvailabilityZones(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"rack-a", "rack-b"}, got)
+}
+
+func TestDescribeSubnets_AvailabilityZoneIDFilter(t *testing.T) {
+	_, nc, js := testutil.StartTestJetStream(t)
+	testutil.StubVpcdSGResponder(t, nc)
+	svc, err := NewVPCServiceImplWithNATS(t.Context(), nil, nc)
+	require.NoError(t, err)
+	ids, err := zoneid.NewResolver(js, "mulga-lab", "")
+	require.NoError(t, err)
+	svc.SetZoneIDSource(ids)
+
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	mk := func(cidr, az string) string {
+		out, err := svc.CreateSubnet(t.Context(), &ec2.CreateSubnetInput{
+			VpcId: aws.String(vpcID), CidrBlock: aws.String(cidr), AvailabilityZone: aws.String(az),
+		}, testAccountID)
+		require.NoError(t, err)
+		return aws.StringValue(out.Subnet.SubnetId)
+	}
+	inA := mk("10.0.1.0/24", "mulga-laba")
+	inB := mk("10.0.2.0/24", "mulga-labb")
+	idA, err := ids.ZoneID(t.Context(), "mulga-laba")
+	require.NoError(t, err)
+	idB, err := ids.ZoneID(t.Context(), "mulga-labb")
+	require.NoError(t, err)
+	require.NotEqual(t, idA, idB)
+
+	by := func(id string) []string {
+		out, err := svc.DescribeSubnets(t.Context(), &ec2.DescribeSubnetsInput{
+			Filters: []*ec2.Filter{{Name: aws.String("availability-zone-id"), Values: aws.StringSlice([]string{id})}},
+		}, testAccountID)
+		require.NoError(t, err)
+		var got []string
+		for _, s := range out.Subnets {
+			got = append(got, aws.StringValue(s.SubnetId))
+		}
+		return got
+	}
+	assert.Equal(t, []string{inA}, by(idA))
+	assert.Equal(t, []string{inB}, by(idB))
+	assert.Empty(t, by("zz9-az9"), "an unknown zone id matches nothing and is not an error")
+}
+
+func TestCreateSubnet_RefusesA65thDistinctZone(t *testing.T) {
+	_, nc, js := testutil.StartTestJetStream(t)
+	testutil.StubVpcdSGResponder(t, nc)
+	svc, err := NewVPCServiceImplWithNATS(t.Context(), nil, nc)
+	require.NoError(t, err)
+	ids, err := zoneid.NewResolver(js, "mulga-lab", "")
+	require.NoError(t, err)
+	svc.SetZoneIDSource(ids)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+
+	create := func(i int, az string) error {
+		_, err := svc.CreateSubnet(t.Context(), &ec2.CreateSubnetInput{
+			VpcId: aws.String(vpcID), CidrBlock: aws.String(fmt.Sprintf("10.0.%d.0/24", i)), AvailabilityZone: aws.String(az),
+		}, testAccountID)
+		return err
+	}
+	for i := 1; i <= zoneid.MaxZones; i++ {
+		require.NoError(t, create(i, fmt.Sprintf("rack-%02d", i)))
+	}
+	pinned, err := ids.Pin(t.Context(), "rack-01", "rack-64")
+	require.NoError(t, err)
+
+	err = create(65, "rack-65")
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidParameterValue, "The Region already has the maximum of 64 distinct availability zones")
+
+	out, err := svc.DescribeSubnets(t.Context(), &ec2.DescribeSubnetsInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, out.Subnets, zoneid.MaxZones, "the refused subnet must not exist")
+	again, err := ids.Pin(t.Context(), "rack-01", "rack-64")
+	require.NoError(t, err)
+	assert.Equal(t, pinned, again)
+
+	require.NoError(t, create(66, "rack-01"), "an already pinned zone still takes new subnets")
+}
+
+type failingZoneIDs struct{}
+
+func (failingZoneIDs) ZoneID(context.Context, string) (string, error) {
+	return "", errors.New("zone store down")
+}
+
+func TestCreateSubnet_ZoneStoreFailureWritesNothingAndPublishesNothing(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	svc.SetZoneIDSource(failingZoneIDs{})
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+
+	var events atomic.Int32
+	sub, err := nc.Subscribe(networkv1.SubnetCreateSubject, func(*nats.Msg) { events.Add(1) })
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	require.NoError(t, nc.Flush())
+
+	_, err = svc.CreateSubnet(t.Context(), &ec2.CreateSubnetInput{
+		VpcId: aws.String(vpcID), CidrBlock: aws.String("10.0.1.0/24"), AvailabilityZone: aws.String("mulga-laba"),
+	}, testAccountID)
+	testutil.RequireAWSError(t, err, awserrors.ErrorServerInternal, "")
+
+	require.NoError(t, nc.Flush())
+	keys, err := svc.subnetKV.Keys(t.Context())
+	if err != nil {
+		require.ErrorIs(t, err, jetstream.ErrNoKeysFound)
+	}
+	for _, k := range keys {
+		assert.Equal(t, kvutil.VersionKey, k, "no subnet record may exist")
+	}
+	assert.Zero(t, events.Load(), "no topology event may be published")
 }

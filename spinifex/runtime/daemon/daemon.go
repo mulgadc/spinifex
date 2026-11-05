@@ -2148,6 +2148,7 @@ func (d *Daemon) startCluster() error {
 	// describe-tags agrees with each resource's own describe from birth and
 	// stops answering for it once it is deleted.
 	d.vpcService.SetCentralTagStore(d.tagsService)
+	d.startZoneIDBackfill()
 	// Name interfaces as their instances are named, so the two agree.
 	region, internalDomain := d.config.Region, dns.ResolveInternalDomain(d.config)
 	d.vpcService.SetPrivateDNSNamer(func(privateIP string) string {

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/zoneid"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/spf13/viper"
 )
@@ -254,9 +255,11 @@ type Config struct {
 	Node string `json:"Node" mapstructure:"node"`
 	Host string `json:"Host" mapstructure:"host"` // Unique hostname or IP of this node
 	// AdvertiseIP is the off-host dial target. Empty falls back to Host for backward compat.
-	AdvertiseIP string   `json:"AdvertiseIP" mapstructure:"advertise"`
-	Region      string   `json:"Region" mapstructure:"region"`
-	AZ          string   `json:"AZ" mapstructure:"az"`
+	AdvertiseIP string `json:"AdvertiseIP" mapstructure:"advertise"`
+	Region      string `json:"Region" mapstructure:"region"`
+	AZ          string `json:"AZ" mapstructure:"az"`
+	// AZShortCode overrides the Region's AZ ID prefix (the apse2 in apse2-az1). Empty uses AWS's table or the derived code.
+	AZShortCode string   `json:"AZShortCode" mapstructure:"az_short_code"`
 	DataDir     string   `json:"DataDir" mapstructure:"data_dir"`
 	Services    []string `json:"Services" mapstructure:"services"` // Which services this node runs locally
 
@@ -907,6 +910,9 @@ func validateClusterConfig(cc *ClusterConfig) error {
 		// Range checks only. Both settings are deliberately unbounded above by
 		// anything host-aware: they are operator tunables, and the host cost is
 		// the value times the volume count for the operator to weigh.
+		if c := nodeCfg.AZShortCode; c != "" && !zoneid.ValidShortCode(c) {
+			return fmt.Errorf("config: [nodes.%s] az_short_code=%q must match [a-z0-9]{2,8}; fix it or remove the key to use the Region's default", nodeName, c)
+		}
 		if t := nodeCfg.EBS.DefaultThreads; t < 0 || t > MaxNBDKitThreads {
 			return fmt.Errorf("config: [nodes.%s.ebs] default_threads=%d out of range; use 1-%d, or remove the key for the default of %d", nodeName, t, MaxNBDKitThreads, DefaultNBDKitThreads)
 		}

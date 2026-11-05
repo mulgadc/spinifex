@@ -7,6 +7,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
+	ec2zoneapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/zone"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/ec2quota"
 	"github.com/nats-io/nats.go"
@@ -21,6 +22,7 @@ type ec2Wiring struct {
 	ExpectedNodes  int
 	NodeIDs        []string
 	AZ             string
+	ZoneIDs        ec2zoneapi.IDSource
 	RegistryHost   string
 	RegistryPort   string
 	InstanceStatus ec2instanceapi.StatusSynthesis
@@ -36,6 +38,7 @@ func newEC2Registration(w ec2Wiring) dispatch.Registration {
 		ExpectedNodes:  w.ExpectedNodes,
 		NodeIDs:        w.NodeIDs,
 		AZ:             w.AZ,
+		ZoneIDs:        w.ZoneIDs,
 		Endpoint:       advertisedEndpoint(w.RegistryHost, w.RegistryPort),
 		InstanceStatus: w.InstanceStatus,
 	})

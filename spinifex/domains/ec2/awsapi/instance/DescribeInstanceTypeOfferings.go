@@ -26,7 +26,7 @@ var describeInstanceTypeOfferingsValidFilters = map[string]bool{
 // DescribeInstanceTypeOfferings projects the supported instance type catalogue
 // over the location list. Both inputs are read live on every call, so the answer
 // cannot advertise a type the platform is unable to place.
-func DescribeInstanceTypeOfferings(ctx context.Context, input *ec2.DescribeInstanceTypeOfferingsInput, natsConn *nats.Conn, expectedNodes int, accountID, region, az string) (*ec2.DescribeInstanceTypeOfferingsOutput, error) {
+func DescribeInstanceTypeOfferings(ctx context.Context, input *ec2.DescribeInstanceTypeOfferingsInput, natsConn *nats.Conn, expectedNodes int, accountID, region, az string, ids ec2zoneapi.IDSource) (*ec2.DescribeInstanceTypeOfferingsOutput, error) {
 	if input == nil {
 		input = &ec2.DescribeInstanceTypeOfferingsInput{}
 	}
@@ -36,7 +36,7 @@ func DescribeInstanceTypeOfferings(ctx context.Context, input *ec2.DescribeInsta
 		locationType = ec2.LocationTypeRegion
 	}
 
-	locations, err := offeringLocations(locationType, region, az)
+	locations, err := offeringLocations(ctx, locationType, region, az, ids)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeInstanceTypeOfferings: invalid location type", "location_type", locationType)
 		return nil, err
@@ -96,7 +96,7 @@ func DescribeInstanceTypeOfferings(ctx context.Context, input *ec2.DescribeInsta
 // offeringLocations resolves the locations an offering can be reported at. The
 // zone list is read rather than assumed, so the operation follows the zone model
 // if it ever widens.
-func offeringLocations(locationType, region, az string) ([]string, error) {
+func offeringLocations(ctx context.Context, locationType, region, az string, ids ec2zoneapi.IDSource) ([]string, error) {
 	switch locationType {
 	case ec2.LocationTypeRegion:
 		return []string{region}, nil
@@ -105,7 +105,7 @@ func offeringLocations(locationType, region, az string) ([]string, error) {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	zones, err := ec2zoneapi.DescribeAvailabilityZones(&ec2.DescribeAvailabilityZonesInput{}, region, az)
+	zones, err := ec2zoneapi.DescribeAvailabilityZones(ctx, &ec2.DescribeAvailabilityZonesInput{}, region, az, ids)
 	if err != nil {
 		return nil, err
 	}

@@ -567,6 +567,7 @@ func (r *vpcReaper) Delete(ctx context.Context, accountID string, resource Resou
 // would make a second pass unable to finish what the first one started.
 var notFoundMarkers = []string{
 	".NotFound", "NoSuchEntity", "InvalidAllocationID.NotFound",
+	awserrors.ErrorNatGatewayNotFound,
 	awserrors.ErrorECSClusterNotFound, awserrors.ErrorECSServiceNotFound,
 	awserrors.ErrorEKSResourceNotFound,
 	awserrors.ErrorDBInstanceNotFound,

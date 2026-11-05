@@ -1855,6 +1855,7 @@ func ec2Registration(gw *Config, mutate ...func(*ec2awsapi.Deps)) dispatch.Regis
 		Quota:         ec2quota.Adapter{Service: quotaFor(gw)},
 		ActiveNodes:   activeNodes(gw),
 		ExpectedNodes: gwfix.DepsOf(gw).Nodes,
+		ZoneIDs:       fixedZoneIDs{},
 	}
 	for _, m := range mutate {
 		m(&deps)
@@ -2156,3 +2157,8 @@ func (d *ec2Daemon) reply(subject, body string) {
 func activeNodes(gw *Config) func(context.Context) int {
 	return func(context.Context) int { return gwfix.DepsOf(gw).Nodes }
 }
+
+// fixedZoneIDs answers one stable ID for every zone.
+type fixedZoneIDs struct{}
+
+func (fixedZoneIDs) ZoneID(context.Context, string) (string, error) { return "test1-az1", nil }

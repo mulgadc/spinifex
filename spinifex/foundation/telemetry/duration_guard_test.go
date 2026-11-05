@@ -7,10 +7,12 @@ package otelsetup_test
 
 import (
 	"go/ast"
+	"go/parser"
 	"go/token"
 	"go/types"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"testing"
@@ -44,8 +46,12 @@ func TestSlogDurationConvention(t *testing.T) {
 	cfg := &packages.Config{
 		Mode: packages.NeedName | packages.NeedSyntax | packages.NeedTypes |
 			packages.NeedTypesInfo | packages.NeedImports,
-		Dir: root,
+		Dir:       root,
+		ParseFile: parseCandidateBodies,
 	}
+	// Loading allocates heavily and briefly; collecting less often saves about
+	// a quarter of the CPU at a cost of tens of megabytes of peak heap.
+	defer debug.SetGCPercent(debug.SetGCPercent(400))
 	pkgs, err := packages.Load(cfg, "./spinifex/...", "./cmd/...")
 	if err != nil {
 		t.Fatalf("load packages: %v", err)
@@ -81,6 +87,40 @@ func TestSlogDurationConvention(t *testing.T) {
 		t.Errorf("otelsetup.Millis logged under a key not ending in %q:\n  %s",
 			otelsetup.DurationSuffix, strings.Join(unkeyed, "\n  "))
 	}
+}
+
+// parseCandidateBodies drops every function body with no call shaped like a
+// slog call so the type checker skips it; the soft errors this causes, such as
+// unused imports, leave the types of the kept calls intact.
+func parseCandidateBodies(fset *token.FileSet, filename string, src []byte) (*ast.File, error) {
+	file, err := parser.ParseFile(fset, filename, src, parser.SkipObjectResolution)
+	if err != nil {
+		return file, err
+	}
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Body != nil && !hasCandidateCall(fn.Body) {
+			fn.Body = nil
+		}
+	}
+	return file, nil
+}
+
+// hasCandidateCall reports whether body holds a selector call that isLogCall
+// could accept, judged by name alone since types are not yet known.
+func hasCandidateCall(body *ast.BlockStmt) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		if call, ok := n.(*ast.CallExpr); ok {
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+				found = logMethods[sel.Sel.Name] || sel.Sel.Name == "Duration"
+			}
+		}
+		return !found
+	})
+	return found
 }
 
 // isLogCall reports whether call is a slog logging call or slog.Duration, both

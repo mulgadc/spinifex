@@ -450,6 +450,7 @@ func TestAssumeRoleForLambdaEnvironment_SourceAccountMatchesRoleTrusts(t *testin
 // later, as if the role were replaced between two reads.
 type swappingRoles struct {
 	iamdomain.IAMService
+
 	first, later *iam.Role
 	calls        int
 }

@@ -22,10 +22,10 @@ const ReconcileInterval = 30 * time.Second
 // dimension; the live-counted dimensions need no stored state.
 const KVBucketAccountUsage = "spinifex-account-usage"
 
-// KVBucketQuotaReconcile is the leader-lock bucket for the gateway quota
-// reconcile. It is deliberately distinct from vpcd's network-reconcile lock so
-// the two independent loops never share one mutex and block each other.
-const KVBucketQuotaReconcile = "spinifex-quota-reconcile"
+// KeyReconcile is the sync-bucket leader lease for the gateway quota reconcile.
+// It is deliberately distinct from vpcd's network-reconcile lease so the two
+// independent loops never share one mutex and block each other.
+const KeyReconcile = "quota.reconcile"
 
 // KVBucketAccountQuota holds the per-account limit overrides, keyed by
 // accountID. It is separate from the accounts bucket so a quota write never

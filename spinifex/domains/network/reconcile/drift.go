@@ -14,6 +14,7 @@ import (
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	loop "github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -82,14 +83,14 @@ func intentSource(js jetstream.JetStream) loop.Source {
 }
 
 // DriftLoop reconciles on every intent change and every DriftInterval, gated on
-// AcquireLeader so only one vpcd scans at a time. An incomplete pass asks to be
+// AcquireLeader on lease so only one vpcd scans at a time. An incomplete pass asks to be
 // revisited on a short backoff instead. Returns when ctx is cancelled.
 //
 // startup is the outcome of the bootstrap ReconcileApplyOnly pass, or nil when
 // this node did not run one. It seeds the first deadline rather than triggering
 // a pass: that bootstrap pass is the startup scan, and running a second one here
 // would duplicate it and pull a scan forward on every clean boot.
-func DriftLoop(ctx context.Context, rec Reconciler, nc *nats.Conn, localAZ, holder string, startup error) {
+func DriftLoop(ctx context.Context, rec Reconciler, nc *nats.Conn, lease *kvsync.Lease, localAZ string, startup error) {
 	js, err := jetstream.New(nc)
 	if err != nil {
 		slog.Error("reconcile/drift: JetStream context unavailable, drift loop disabled", "err", err)
@@ -99,7 +100,7 @@ func DriftLoop(ctx context.Context, rec Reconciler, nc *nats.Conn, localAZ, hold
 	loop.Run(ctx, loop.Config{
 		Name:      "vpcd/drift",
 		Sources:   []loop.Source{intentSource(js)},
-		Reconcile: driftPass(rec, nc, js, localAZ, holder, startup),
+		Reconcile: driftPass(rec, lease, js, localAZ, startup),
 		Resync:    DriftInterval,
 		Debounce:  driftDebounce,
 	})
@@ -108,7 +109,7 @@ func DriftLoop(ctx context.Context, rec Reconciler, nc *nats.Conn, localAZ, hold
 // driftPass returns the reconcile pass, closing over the backoff ladder and the
 // last pass time. Run never calls it concurrently with itself, which is why
 // neither needs a lock.
-func driftPass(rec Reconciler, nc *nats.Conn, js jetstream.JetStream, localAZ, holder string, startup error) func(context.Context) (time.Duration, error) {
+func driftPass(rec Reconciler, lease *kvsync.Lease, js jetstream.JetStream, localAZ string, startup error) func(context.Context) (time.Duration, error) {
 	var backoff time.Duration
 	var lastPass time.Time
 	seeded := false
@@ -127,7 +128,7 @@ func driftPass(rec Reconciler, nc *nats.Conn, js jetstream.JetStream, localAZ, h
 			return wait, nil
 		}
 		previous := backoff
-		backoff = nextDriftBackoff(backoff, runDriftCycle(ctx, rec, nc, js, localAZ, holder))
+		backoff = nextDriftBackoff(backoff, runDriftCycle(ctx, rec, lease, js, localAZ))
 		// Stamped after the scan, not before: the floor is a gap between passes,
 		// and a pass slower than the floor would otherwise leave none at all.
 		lastPass = time.Now()
@@ -158,8 +159,8 @@ func nextDriftBackoff(current time.Duration, err error) time.Duration {
 // runDriftCycle is one pass body, split out so tests can drive it directly.
 // Returns the reconcile outcome so the caller can size the next wait; a cycle
 // this node did not win the election for returns nil.
-func runDriftCycle(ctx context.Context, rec Reconciler, nc *nats.Conn, js jetstream.JetStream, localAZ, holder string) error {
-	release, elected := AcquireLeader(ctx, nc, KVBucketVPCDReconcile, holder)
+func runDriftCycle(ctx context.Context, rec Reconciler, lease *kvsync.Lease, js jetstream.JetStream, localAZ string) error {
+	release, elected := AcquireLeader(ctx, lease)
 	if !elected {
 		return nil
 	}

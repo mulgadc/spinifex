@@ -62,8 +62,7 @@ func TestDeletingReaperLeavesAHeldTeardownAlone(t *testing.T) {
 	t.Parallel()
 	f := newDeleteClusterFixture(t, "beta")
 	markDeleting(t, f, "beta", time.Second)
-	_, err := f.svc.leaderKV.Create(t.Context(), teardownLeaderKey(testAccountID, "beta"), []byte("node-2"))
-	require.NoError(t, err)
+	holdElsewhere(t, f.svc, teardownLeaseName(testAccountID, "beta"))
 
 	assert.Equal(t, 0, sweepAndSettle(t, f))
 

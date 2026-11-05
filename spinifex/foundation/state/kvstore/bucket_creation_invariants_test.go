@@ -15,11 +15,9 @@ import (
 var createFuncs = []string{"CreateKeyValue(", "CreateOrUpdateKeyValue("}
 
 // exempt are the only files and packages allowed to call them: the chokepoint
-// itself, the lease-bucket opener it shares its rule with, and the test helpers
-// that build buckets for a single embedded server.
+// itself and the test helpers that build buckets for a single embedded server.
 var exempt = []string{
 	filepath.Join("spinifex", "foundation", "state", "kvstore", "buckets.go"),
-	filepath.Join("spinifex", "foundation", "state", "kvlease"),
 	filepath.Join("internal", "testkit"),
 }
 

@@ -9,7 +9,10 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/resource"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
@@ -29,6 +32,11 @@ func TestOpenAccountUsageBucketPreservesExistingConfiguration(t *testing.T) {
 	status, err := bucket.Status(t.Context())
 	require.NoError(t, err)
 	require.EqualValues(t, 5, status.History())
+}
+
+// quotaLease is one gateway's quota reconcile lease on its own sync bucket.
+func quotaLease(js jetstream.JetStream) *kvsync.Lease {
+	return reconcile.NewLeaderLease(kvstore.OpenSyncBucket(js), admissionquota.KeyReconcile, "gw-test")
 }
 
 // putInstanceRecord writes one instance record at the key the sweep reads, so a
@@ -78,7 +86,7 @@ func TestRunQuotaReconcileCountsFromTheRecordSpace(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		runQuotaReconcile(ctx, quota, nc, js, accounts, 1)
+		runQuotaReconcile(ctx, quota, quotaLease(js), js, accounts, 1)
 		close(done)
 	}()
 
@@ -110,7 +118,7 @@ func TestRunQuotaReconcileFollowsARecordChange(t *testing.T) {
 	accounts := func() ([]string, error) { return []string{account}, nil }
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go runQuotaReconcile(ctx, quota, nc, js, accounts, 1)
+	go runQuotaReconcile(ctx, quota, quotaLease(js), js, accounts, 1)
 
 	require.Eventually(t, func() bool {
 		return readUsageCounter(t, bucket, account) == 4
@@ -146,7 +154,7 @@ func TestRunQuotaReconcileRecomputesOnlyTheChangedAccount(t *testing.T) {
 	accounts := func() ([]string, error) { return []string{changed, untouched}, nil }
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go runQuotaReconcile(ctx, quota, nc, js, accounts, 1)
+	go runQuotaReconcile(ctx, quota, quotaLease(js), js, accounts, 1)
 
 	require.Eventually(t, func() bool {
 		return readUsageCounter(t, bucket, changed) == 4

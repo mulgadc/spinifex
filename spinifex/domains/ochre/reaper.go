@@ -8,16 +8,18 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 )
 
-// Sweep and lease timing. The holder refreshes well inside the bucket's TTL,
-// so a leader that dies is replaced within one TTL rather than one refresh.
+// KeyReaper is the reaper's leader lease in the sync bucket.
+const KeyReaper = "ochre.reaper"
+
+// Sweep and lease timing. A leader that dies is replaced within about one TTL.
 const (
+	reaperLeaseTTL        = 60 * time.Second
 	defaultReaperInterval = 30 * time.Second
-	defaultLeaseRefresh   = 20 * time.Second
 	defaultIdleTTL        = 15 * time.Minute // How long an endpoint must have been idle before its GPU is taken back.
 	maxScrapeFailures     = 5                // How many consecutive failed scrapes mean the serving process is wedged rather than briefly busy.
 	defaultScrapeTimeout  = 5 * time.Second  // Per-scrape budget.
@@ -28,7 +30,6 @@ const (
 type ReaperDeps struct {
 	Interval      time.Duration
 	IdleTTL       time.Duration
-	LeaseRefresh  time.Duration
 	ScrapeTimeout time.Duration
 }
 
@@ -36,26 +37,19 @@ type ReaperDeps struct {
 // does the scraping and reaping; every node keeps serving the API, so a
 // leaderless gap delays a reclaim rather than failing a request.
 type Reaper struct {
-	svc      *Service
-	holder   string
-	deps     ReaperDeps
-	lease    *kvlease.Lease
-	leaseErr error
+	svc   *Service
+	deps  ReaperDeps
+	lease *kvsync.Lease
 }
 
-// NewReaper builds the reaper for svc; holder identifies this daemon in the lease.
-func NewReaper(svc *Service, holder string, deps ReaperDeps) *Reaper {
-	r := &Reaper{svc: svc, holder: holder, deps: deps}
-	r.lease, r.leaseErr = kvlease.New(kvlease.Config{
-		Name:   "bedrock/reaper",
-		Bucket: svc.leader.KV,
-		Key:    leaderKey,
-		Holder: holder,
-		TTL:    KVBucketLeaderTTL,
-		Renew:  r.leaseRefresh(),
-		Retry:  r.leaseRefresh(),
-	})
-	return r
+// NewReaperLease returns the reaper's leader lease for holder.
+func NewReaperLease(store kvsync.KVStore, holder string) *kvsync.Lease {
+	return kvsync.NewLease(store, KeyReaper, holder, reaperLeaseTTL)
+}
+
+// NewReaper builds the reaper for svc, which leads while it holds lease.
+func NewReaper(svc *Service, lease *kvsync.Lease, deps ReaperDeps) *Reaper {
+	return &Reaper{svc: svc, deps: deps, lease: lease}
 }
 
 func (r *Reaper) interval() time.Duration {
@@ -72,13 +66,6 @@ func (r *Reaper) idleTTL() time.Duration {
 	return defaultIdleTTL
 }
 
-func (r *Reaper) leaseRefresh() time.Duration {
-	if r.deps.LeaseRefresh > 0 {
-		return r.deps.LeaseRefresh
-	}
-	return defaultLeaseRefresh
-}
-
 func (r *Reaper) scrapeTimeout() time.Duration {
 	if r.deps.ScrapeTimeout > 0 {
 		return r.deps.ScrapeTimeout
@@ -89,17 +76,13 @@ func (r *Reaper) scrapeTimeout() time.Duration {
 // Run drives the leadership and sweep loop until ctx is cancelled. Intended as
 // a daemon-boot goroutine; panics are the caller's recover concern.
 func (r *Reaper) Run(ctx context.Context) {
-	if r.leaseErr != nil {
-		slog.ErrorContext(ctx, "bedrock reaper: lease config invalid", "holder", r.holder, "err", r.leaseErr)
-		return
-	}
 	sweepTicker := time.NewTicker(r.interval())
 	defer sweepTicker.Stop()
 
 	leaseDone := make(chan struct{})
 	go func() {
 		defer close(leaseDone)
-		r.lease.Run(ctx)
+		kvsync.RunElection(ctx, r.lease, nil, nil)
 	}()
 
 	for {
@@ -112,7 +95,7 @@ func (r *Reaper) Run(ctx context.Context) {
 				continue
 			}
 			if err := r.sweepOnce(ctx); err != nil {
-				slog.ErrorContext(ctx, "bedrock reaper: sweep failed", "holder", r.holder, "err", err)
+				slog.ErrorContext(ctx, "bedrock reaper: sweep failed", "key", r.lease.Key(), "err", err)
 			}
 		}
 	}

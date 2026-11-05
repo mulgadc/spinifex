@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -155,11 +156,11 @@ func registryKey(accountID, clusterName string) string {
 // acquires the lease, and drives Run in a goroutine. Returns ErrLeaseHeld if another node wins.
 func RunClusterReconciler(
 	ctx context.Context,
-	leaderKV, acctKV jetstream.KeyValue,
-	accountID, clusterName, holderID, healthURL string,
+	lease *kvsync.Lease, acctKV jetstream.KeyValue,
+	accountID, clusterName, healthURL string,
 	opts ...ReconcilerOption,
 ) (func(), <-chan struct{}, error) {
-	r, err := NewClusterReconciler(leaderKV, acctKV, accountID, clusterName, holderID, healthURL, opts...)
+	r, err := NewClusterReconciler(lease, acctKV, accountID, clusterName, healthURL, opts...)
 	if err != nil {
 		return nil, nil, err
 	}

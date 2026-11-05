@@ -72,7 +72,7 @@ func newModifyHarnessWithAgent(t *testing.T, agentFails bool) *modifyHarness {
 		ServingCertKeyBits: testServingCertKeyBits,
 		ApplyParamsTimeout: testApplyParamsTimeout,
 	})
-	h.rec = NewReconciler(h.svc, "node-a")
+	h.rec = testReconciler(t, h.svc, "node-a")
 	return h
 }
 

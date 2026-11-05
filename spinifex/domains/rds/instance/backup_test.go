@@ -823,7 +823,7 @@ func TestReconciler_RunsTheBackupWindowOnItsAccountPass(t *testing.T) {
 	rec.Agent = AgentState{InstanceID: testInstance, EngineHealth: EngineHealthHealthy, LastSeen: &now}
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, onePass(t, NewReconciler(h.svc, "node-a")))
+	require.NoError(t, onePass(t, testReconciler(t, h.svc, "node-a")))
 
 	assert.Len(t, h.snaps.created, 1)
 	assert.Len(t, h.automatedStamps(t, testDBID), 1)
@@ -840,7 +840,8 @@ func TestReconciler_ClusterLeaseFollowsLeadership(t *testing.T) {
 	require.NotNil(t, release)
 	assert.False(t, ok, "a node that does not hold the lease does not sweep")
 
-	require.True(t, h.rec.lease.TryAcquire(t.Context()))
+	_, err := lead(t, h.rec)
+	require.NoError(t, err)
 	release, ok = h.rec.AcquireClusterLease()
 	require.True(t, ok)
 

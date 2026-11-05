@@ -106,18 +106,27 @@ func (r *EKSNodegroupDeletingReaper) due(rec *NodegroupRecord) bool {
 // startNodegroupDelete runs one converger pass in the background and reports
 // whether it started; a pass already running here or on another node refuses.
 func (s *EKSServiceImpl) startNodegroupDelete(accountID string, kv jetstream.KeyValue, cluster, ng string) bool {
-	release, _, ok := s.holdTeardown(accountID, cluster+"/nodegroup/"+ng, false)
+	gate := cluster + "/nodegroup/" + ng
+	release, _, ok := s.holdTeardown(accountID, gate, false)
 	if !ok {
 		return false
 	}
 	s.teardownWG.Go(func() {
-		defer release()
+		deleted := false
+		defer func() {
+			release()
+			if deleted {
+				s.leases.Forget(teardownLeaseName(accountID, gate))
+			}
+		}()
 		ctx, cancel := context.WithTimeout(s.bgCtx, teardownPassTimeout)
 		defer cancel()
 		if err := s.convergeNodegroupDeletion(ctx, accountID, kv, cluster, ng); err != nil {
 			slog.Warn("eks: nodegroup delete incomplete, the record stays DELETING for retry",
 				"cluster", cluster, "nodegroup", ng, "account", accountID, "err", err)
+			return
 		}
+		deleted = true
 	})
 	return true
 }

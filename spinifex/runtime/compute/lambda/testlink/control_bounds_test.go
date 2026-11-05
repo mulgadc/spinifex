@@ -484,7 +484,8 @@ func TestControl_FullBacklogConnectIsNotSent(t *testing.T) {
 
 // Test 15 (measurement, not a bound): two admitted full-size lifetimes, each
 // decoding and fit-checking its request as the daemon does and answering with
-// a 6 MiB reply, measured from the first dial until both replies are read.
+// a 6 MiB reply, measured from a post-GC baseline just before the first dial
+// until both replies are read.
 func TestControl_MeasureTwoAdmittedFullSizeLifetimes(t *testing.T) {
 	name := controlName(t)
 	var mu sync.Mutex
@@ -513,8 +514,15 @@ func TestControl_MeasureTwoAdmittedFullSizeLifetimes(t *testing.T) {
 	})
 	req := requestOfSize(t, MaxPayloadBytes, int(MaxFrameBytes))
 
-	// HeapAlloc is sampled every 2 ms, so its maximum is a sampled figure for
-	// the whole process, not a true peak.
+	var wg sync.WaitGroup
+	var reps [MaxAdmitted]Reply
+	var errs [MaxAdmitted]error
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+
+	// HeapAlloc is sampled every 2 ms from the baseline until both replies are
+	// read, so its maximum is a sampled process-wide figure, not a true peak.
 	var heapMax uint64
 	samples := 0
 	stopSampling, sampled := make(chan struct{}), make(chan struct{})
@@ -533,21 +541,21 @@ func TestControl_MeasureTwoAdmittedFullSizeLifetimes(t *testing.T) {
 			}
 		}
 	}()
-	var wg sync.WaitGroup
-	var reps [MaxAdmitted]Reply
-	var errs [MaxAdmitted]error
-	var before, after runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() { close(stopSampling) })
+		<-sampled
+	}
+	t.Cleanup(stop)
+
 	for i := range MaxAdmitted {
 		wg.Go(func() {
 			reps[i], errs[i] = fullClient(name).Exchange(context.Background(), req, testCred, time.Now().Add(60*time.Second))
 		})
 	}
 	waitGroupBounded(t, &wg, 60*time.Second)
+	stop()
 	runtime.ReadMemStats(&after)
-	close(stopSampling)
-	recvBounded(t, sampled)
 
 	for i := range MaxAdmitted {
 		require.NoError(t, errs[i])

@@ -91,8 +91,12 @@ type Daemon struct {
 	Initializer       string
 	InitializerSHA256 string
 
-	busy atomic.Bool
+	busy    atomic.Bool
+	serving atomic.Bool
 }
+
+// Serving reports whether the control socket is accepting invocations.
+func (d *Daemon) Serving() bool { return d.serving.Load() }
 
 // unresolved names an attempt whose marker is still on disk. A marker goes
 // only once the attempt's VM stop is proven and everything it held is
@@ -108,6 +112,12 @@ func (d *Daemon) unresolved() (string, error) {
 	return strings.TrimSuffix(filepath.Base(markers[0]), markerSuffix), nil
 }
 
+// validHandler is the handler a guest run accepts: 1..128 bytes, no
+// whitespace or NUL.
+func validHandler(h string) bool {
+	return h != "" && len(h) <= 128 && strings.IndexFunc(h, unicode.IsSpace) < 0 && !strings.ContainsRune(h, 0)
+}
+
 // controlIOTimeout bounds reading a request from, and writing a reply to, the
 // gateway on the control socket.
 const controlIOTimeout = 30 * time.Second
@@ -119,14 +129,24 @@ func (d *Daemon) ServeControl(ctx context.Context, name string, gatewayUID int) 
 	if err != nil {
 		return err
 	}
-	srv := &ControlServer{GatewayUID: gatewayUID, RequestLimit: MaxFrameBytes, ReplyLimit: MaxFrameBytes,
-		IOTimeout: controlIOTimeout, Handle: d.Handle}
+	d.serve(ctx, ln, d.controlServer(gatewayUID))
+	return nil
+}
+
+// controlServer answers the gateway with d.Handle, and stops d reporting
+// serving as soon as it stops accepting, before its connections drain.
+func (d *Daemon) controlServer(gatewayUID int) *ControlServer {
+	return &ControlServer{GatewayUID: gatewayUID, RequestLimit: MaxFrameBytes, ReplyLimit: MaxFrameBytes,
+		IOTimeout: controlIOTimeout, Handle: d.Handle, AcceptStopped: func() { d.serving.Store(false) }}
+}
+
+func (d *Daemon) serve(ctx context.Context, ln *net.UnixListener, srv *ControlServer) {
+	d.serving.Store(true)
 	go func() {
 		if err := srv.Serve(ctx, ln); err != nil {
 			slog.Error("Lambda test link: control socket stopped; not serving new invocations", "err", err)
 		}
 	}()
-	return nil
 }
 
 // Handle runs one request under its grant, giving the guest cred in its first
@@ -293,8 +313,7 @@ func CheckRequest(req Request) error {
 	if req.RequestID == "" || req.RevisionID == "" {
 		return errors.New("request and revision IDs are required")
 	}
-	if req.Handler == "" || len(req.Handler) > 128 || strings.IndexFunc(req.Handler, unicode.IsSpace) >= 0 ||
-		strings.ContainsRune(req.Handler, 0) {
+	if !validHandler(req.Handler) {
 		return errors.New("handler must be 1..128 characters with no whitespace")
 	}
 	if req.TimeoutMs <= 0 || req.TimeoutMs > maxTimeoutMs {

@@ -44,6 +44,8 @@ type MetaService struct {
 
 	mu      sync.Mutex
 	buckets map[string]jetstream.KeyValue
+	ready   Readiness
+	nudge   chan struct{}
 }
 
 // NewMetaService builds the service over a JetStream handle.
@@ -306,6 +308,7 @@ func (s *MetaService) CodeStored(ctx context.Context, req *CodeStoredRequest, ac
 		return nil, fmt.Errorf("lambda: update function record: %w", err)
 	}
 	attach(ctx, kv, up, upRev, rev)
+	s.wake()
 	return &CodeStoredResponse{Record: rec, Revision: rev}, nil
 }
 

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/execution"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
@@ -88,7 +89,16 @@ func (d *Daemon) startLambdaTestLink() {
 	}
 	slog.Warn("Lambda test link serving: test-only, not for production; the guest does not verify owner grant authority",
 		"node", d.node, "image_digest", tl.Image.Digest)
+	if d.lambdaMetaService != nil && d.clusterConfig != nil {
+		d.lambdaMetaService.SetReadiness(tl.Readiness(lambdaImageDigest, len(d.clusterConfig.Nodes)))
+		go d.lambdaMetaService.RunActivation(d.ctx, lambdaActivationInterval)
+	}
 }
+
+// lambdaActivationInterval bounds how long a function whose activation was
+// missed, by a crash or an earlier refusal, waits for the next pass.
+const lambdaActivationInterval = 30 * time.Second
+
 
 // lambdaTestLinkReady runs the serving checks and, only once they pass,
 // prepares the pinned image into tl; a refusal leaves tl.Image nil.

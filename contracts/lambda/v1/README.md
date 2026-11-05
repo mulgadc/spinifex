@@ -28,6 +28,9 @@ Its encoded frame is at most the base64 length of 6 MiB plus 64 KiB of metadata 
 The credential travels as its own frame of at most 8 KiB, and the reply has the same payload and frame bounds as the request.
 The daemon holds at most two connections at once, from accept to close, and leaves the rest unaccepted in the listen backlog.
 Under TLS 1.3 the guest's handshake can complete before the host refuses its certificate, so the guest treats the connection as accepted only after the host's first message.
+In the same builds, the function owner moves a created function with stored code from `Pending` to `Active` once this node's daemon serves the pinned image and the cluster configuration has exactly one node; a function with environment variables or a code copy over the test-link bound stays `Pending`, and `StateReason` names the unmet condition.
+Release builds never leave `Pending`.
+The Mulga deploy role installs a test-link build with `deploy_lambda_testlink=true`; this profile does not meet Q-199 fail-closed revocation, and its guests take management addresses whose record can expire (mulga-0hsub).
 
 **Bootstrap material:** the executor passes these fw_cfg entries under `opt/spinifex/lambda/`, and the agent reads them as root and unloads `qemu_fw_cfg` before user code starts.
 

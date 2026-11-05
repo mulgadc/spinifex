@@ -462,3 +462,45 @@ func TestControl_MixedProtocolNamesNeverConnect(t *testing.T) {
 		})
 	}
 }
+
+func TestControl_AcceptStoppedRunsBeforeTheDrain(t *testing.T) {
+	name := controlName(t)
+	ln, err := ListenControl(name)
+	require.NoError(t, err)
+	inHandle, release := make(chan struct{}), make(chan struct{})
+	stopped := make(chan struct{})
+	srv := &ControlServer{GatewayUID: os.Getuid(), RequestLimit: testRequestLimit, ReplyLimit: 4096, IOTimeout: 5 * time.Second,
+		Handle: func(context.Context, []byte, Credential) Reply {
+			close(inHandle)
+			<-release
+			return Reply{Outcome: OutcomeDone}
+		},
+		AcceptStopped: func() { close(stopped) }}
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(context.Background(), ln) }()
+	go func() { _, _ = client(name, os.Getuid()).Exchange(context.Background(), []byte("{}"), testCred, soon()) }()
+	select {
+	case <-inHandle:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request never reached Handle")
+	}
+
+	require.NoError(t, ln.Close(), "the listener fails under an outstanding invocation")
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("AcceptStopped did not run while the invocation was outstanding")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Serve returned before its connection finished: %v", err)
+	default:
+	}
+	close(release)
+	select {
+	case err := <-done:
+		require.Error(t, err, "a listener failure is reported")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return after its connection finished")
+	}
+}

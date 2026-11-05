@@ -285,7 +285,7 @@ func TestPrepareUEFIVarStore_ClaimsStampsAndFetchesTheObject(t *testing.T) {
 
 // A daemon restart or host reboot adopts the claim at its generation, and the
 // file it left may hold changes no object has yet, so it is booted without a
-// get and without a write to the record.
+// get and the record keeps the claim's generation.
 func TestPrepareUEFIVarStore_AdoptedClaimReusesTheLocalCopy(t *testing.T) {
 	f := newUEFIFixture(t)
 	key := keyFor("22222222-2222-2222-2222-222222222222")
@@ -295,7 +295,6 @@ func TestPrepareUEFIVarStore_AdoptedClaimReusesTheLocalCopy(t *testing.T) {
 	_, err = f.records.Stamp(t.Context(), testUEFIInstance, held.Generation)
 	require.NoError(t, err)
 	f.writeLocal(t, key, held.Generation, region("guest wrote this"))
-	_, rev := f.record(t)
 	before := uefiCounter(t, "mulga.vm.uefi_store.seeds", "source", "local")
 
 	got, err := f.prepare(t, instance)
@@ -303,8 +302,8 @@ func TestPrepareUEFIVarStore_AdoptedClaimReusesTheLocalCopy(t *testing.T) {
 	require.NoError(t, err, "no object exists, so a get would fail")
 	assert.True(t, got.reused)
 	assert.Equal(t, held, got.token, "a restart adopts the claim at the same generation")
-	_, after := f.record(t)
-	assert.Equal(t, rev, after, "adoption writes nothing to the record")
+	rec, _ := f.record(t)
+	assert.Equal(t, held.Generation, rec.Generation, "adoption keeps the claim's generation")
 	assert.Equal(t, region("guest wrote this"), f.localVars(t))
 	assert.Equal(t, before+1, uefiCounter(t, "mulga.vm.uefi_store.seeds", "source", "local"))
 }

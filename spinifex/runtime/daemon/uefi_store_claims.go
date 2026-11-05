@@ -19,8 +19,9 @@ type clusterHeartbeats struct {
 
 var _ vm.NodeLiveness = clusterHeartbeats{}
 
-// LastSeen returns when node last wrote a heartbeat. No entry, or one that
-// cannot be dated, is found=false; a failed read is an error.
+// LastSeen returns when node last wrote a heartbeat. No entry is found=false;
+// a failed read, or an entry that cannot be dated, is an error, because a beat
+// that exists may be a live node's.
 func (h clusterHeartbeats) LastSeen(ctx context.Context, node string) (time.Time, bool, error) {
 	entry, err := h.kv.Get(ctx, clusterv1.HeartbeatKey(node))
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
@@ -30,7 +31,10 @@ func (h clusterHeartbeats) LastSeen(ctx context.Context, node string) (time.Time
 		return time.Time{}, false, fmt.Errorf("read heartbeat for %s: %w", node, err)
 	}
 	written, ok := clusterv1.HeartbeatWritten(entry.Value())
-	return written, ok, nil
+	if !ok {
+		return time.Time{}, false, fmt.Errorf("heartbeat for %s cannot be dated", node)
+	}
+	return written, true, nil
 }
 
 // heartbeatLiveness returns nil, not a typed nil, before the cluster-state

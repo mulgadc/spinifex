@@ -12,8 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The claim's takeover rule reads the same heartbeat the daemon writes, and
-// a beat that cannot be dated vouches for nothing, as no beat does.
+// The claim's takeover rule reads the same heartbeat the daemon writes. Only
+// an absent beat is not found: one that exists but cannot be dated may be a
+// live node's, so it is an error the claim refuses on (ADR-0003:S7).
 func TestClusterHeartbeats_LastSeen(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: clusterv1.ClusterStateBucket})
@@ -29,11 +30,13 @@ func TestClusterHeartbeats_LastSeen(t *testing.T) {
 	require.True(t, found)
 	assert.True(t, seen.Equal(time.Date(2026, 11, 5, 1, 2, 3, 0, time.UTC)))
 
-	for _, node := range []string{"node-b", "node-c"} {
-		_, found, err = h.LastSeen(t.Context(), node)
-		require.NoError(t, err, node)
-		assert.False(t, found, node)
-	}
+	_, found, err = h.LastSeen(t.Context(), "node-b")
+	require.Error(t, err, "ADR-0003:S7 (uefi_store_claims.go LastSeen): an undecodable heartbeat must not read as absent, or a live holder is taken over")
+	assert.False(t, found)
+
+	_, found, err = h.LastSeen(t.Context(), "node-c")
+	require.NoError(t, err)
+	assert.False(t, found)
 }
 
 // A bucket that cannot be read is an error, which the claim reads as a

@@ -31,8 +31,9 @@ const fenceAttempts = 5
 
 // Stamp raises instanceID's record to generation, the claim token the caller
 // has just acquired or adopted, and returns the record it stamped, whose
-// pointer the caller boots from. A record already at generation is returned
-// without a write; one above it is ErrFenced, and one deleting is ErrDeleting.
+// pointer the caller boots from. One above generation is ErrFenced, and one
+// deleting is ErrDeleting. A record already at generation is still written by
+// CAS, because a follower can answer the read with an older pointer.
 func (s *Store) Stamp(ctx context.Context, instanceID string, generation uint64) (*UEFIStoreRecord, error) {
 	if generation == 0 {
 		return nil, fmt.Errorf("uefistore: stamp %s: generation 0 is no claim", instanceID)
@@ -47,8 +48,6 @@ func (s *Store) Stamp(ctx context.Context, instanceID string, generation uint64)
 			return nil, fmt.Errorf("%w: %s", ErrDeleting, instanceID)
 		case rec.Generation > generation:
 			return nil, fmt.Errorf("%w: %s is at generation %d, above the claim's %d", ErrFenced, instanceID, rec.Generation, generation)
-		case rec.Generation == generation:
-			return rec, nil
 		}
 		rec.Generation = generation
 		_, err = s.CompareAndSet(ctx, rec, rev)

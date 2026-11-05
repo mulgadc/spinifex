@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -121,6 +122,9 @@ type uefiClaim struct {
 	claim  *kvsync.Claim
 	token  kvsync.Token
 	reused bool
+	// keep is set when this node holds a copy seeded under token, which may
+	// carry changes no object has, so a rollback must not release the claim.
+	keep bool
 }
 
 // isUEFIBootMode reports whether bootMode boots the guest through UEFI firmware.
@@ -252,6 +256,7 @@ func (m *Manager) prepareUEFIVarStore(ctx context.Context, instance *VM) (*uefiC
 	if err != nil {
 		return nil, err
 	}
+	held.keep = heldLocalCopy(dir, held.token.Generation)
 	rec, err := deps.Records.Stamp(ctx, instance.ID, held.token.Generation)
 	switch {
 	case errors.Is(err, uefistore.ErrFenced):
@@ -272,6 +277,7 @@ func (m *Manager) prepareUEFIVarStore(ctx context.Context, instance *VM) (*uefiC
 	ref := rec.Pointer
 
 	held.reused = reuseUEFIVars(dir, ref.Key, held.token.Generation, fw.Identity.VarsSize)
+	held.keep = held.keep || held.reused
 	if err := m.checkUEFIFirmware(instance, ref, fw); err != nil {
 		return held, err
 	}
@@ -358,10 +364,10 @@ func (m *Manager) acquireUEFIClaim(ctx context.Context, instanceID string) (*uef
 }
 
 // releaseUEFIClaim unlocks the claim a launch that rolled back before the
-// guest ran acquired. A launch that booted this node's copy keeps it: the copy
+// guest ran acquired. A launch holding this node's copy keeps it: the copy
 // may hold changes no object has, and another node would start without them.
 func (m *Manager) releaseUEFIClaim(ctx context.Context, instanceID string, held *uefiClaim) {
-	if held == nil || held.reused {
+	if held == nil || held.keep {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), uefiClaimReleaseTimeout)
@@ -428,6 +434,21 @@ func reuseUEFIVars(dir, key string, generation uint64, varsSize int64) bool {
 		return false
 	}
 	return true
+}
+
+// heldLocalCopy reports whether dir holds a copy this node seeded under the
+// claim generation, or a seeded.json it cannot read, which may be one. Either
+// may hold changes no object has, so the claim that guards it is kept.
+func heldLocalCopy(dir string, generation uint64) bool {
+	data, err := os.ReadFile(filepath.Join(dir, uefiSeededFileName))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	var seed uefiSeed
+	if err != nil || json.Unmarshal(data, &seed) != nil {
+		return true
+	}
+	return seed.Generation == generation
 }
 
 // fetchUEFIVars gets key and returns its decompressed region, which must be

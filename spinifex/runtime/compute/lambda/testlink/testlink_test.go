@@ -126,8 +126,13 @@ func baseRequest(url string, code []byte) Request {
 }
 
 func (g *granted) request(url string, code []byte) []byte {
+	return g.requestFor(url, code, g.image.Digest)
+}
+
+func (g *granted) requestFor(url string, code []byte, imageDigest string) []byte {
 	req := baseRequest(url, code)
 	req.Grant = g.att.Grant
+	req.ImageDigest = imageDigest
 	b, _ := json.Marshal(req)
 	return b
 }
@@ -148,6 +153,10 @@ func TestDaemon_RefusesBeforeAllocating(t *testing.T) {
 			b, _ := json.Marshal(baseRequest(good.URL, code))
 			return b
 		}, execution.StateGranted},
+		// A gateway built for another runtime image, or an old one that sends
+		// no digest, is refused before Start.
+		"image digest differs": {func(g *granted) []byte { return g.requestFor(good.URL, code, strings.Repeat("0", 64)) }, execution.StateGranted},
+		"image digest missing": {func(g *granted) []byte { return g.requestFor(good.URL, code, "") }, execution.StateGranted},
 		// Refused after Start with nothing launched: the daemon records the end.
 		"digest mismatch": {func(g *granted) []byte { return g.request(wrong.URL, code) }, execution.StateEnded},
 		"size mismatch":   {func(g *granted) []byte { return g.request(short.URL, code) }, execution.StateEnded},
@@ -164,6 +173,7 @@ func TestDaemon_RefusesBeforeAllocating(t *testing.T) {
 			rep := g.daemon(&Daemon{IPs: ips, Taps: taps, HTTP: client, WorkDir: t.TempDir()}).Handle(context.Background(), tc.data(g), testCred)
 			require.Equal(t, OutcomeRefused, rep.Outcome, rep.Error)
 			require.Empty(t, ips.allocated)
+			require.Empty(t, taps.created)
 			require.NotContains(t, rep.Error, good.URL)
 			require.Equal(t, tc.state, g.state(t))
 		})

@@ -35,6 +35,7 @@ func lambdaTestExecutor(nc *nats.Conn, node string, codes *codestore.Manager, se
 		RequestLimit: nc.MaxPayload(),
 		Sessions:     sessions,
 		Node:         node,
+		ImageDigest:  lambdaImageDigest,
 		Codes: func(ctx context.Context) (codePresigner, error) {
 			store, err := codes.Store(ctx)
 			if err != nil {
@@ -51,6 +52,10 @@ func lambdaTestExecutor(nc *nats.Conn, node string, codes *codestore.Manager, se
 		},
 	}
 }
+
+// lambdaImageDigest pins the runtime image this gateway expects the daemon
+// to run; make build-lambda-testlink sets it to the daemon's pin.
+var lambdaImageDigest string
 
 // controlWriteTimeout bounds writing one request to the local daemon.
 const controlWriteTimeout = 30 * time.Second

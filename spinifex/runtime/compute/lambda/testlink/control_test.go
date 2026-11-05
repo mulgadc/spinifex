@@ -435,3 +435,20 @@ func TestControl_WriteErrorAfterDeliveryIsUnknown(t *testing.T) {
 	require.Equal(t, []byte(`{"attempt_id":"a"}`), s.req.Load())
 	require.Equal(t, testCred, s.cred.Load())
 }
+
+// A gateway and daemon on different control protocol names never connect, in
+// either direction: nothing is sent and the daemon handles nothing.
+func TestControl_MixedProtocolNamesNeverConnect(t *testing.T) {
+	base := controlName(t)
+	for name, tc := range map[string]struct{ daemon, gateway string }{
+		"old daemon, new gateway": {base, base + "/2"},
+		"new daemon, old gateway": {base + "/2", base},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _ := serveControl(t, tc.daemon, os.Getuid(), nil)
+			_, err := client(tc.gateway, os.Getuid()).Exchange(t.Context(), []byte(`{"attempt_id":"a"}`), testCred, soon())
+			require.ErrorIs(t, err, ErrNotSent)
+			assert.Equal(t, int32(0), s.calls.Load())
+		})
+	}
+}

@@ -212,7 +212,7 @@ func composedExecutor(t *testing.T, env *seamEnv, codeURL string, client *http.C
 	grants := &countedGrants{grantIssuer: env.grants}
 	presigns := &atomic.Int32{}
 	daemon := startSeamDaemon(t, &testlink.Daemon{Node: "node1", Grants: env.grants, HTTP: client}, guest)
-	exec := &testLinkExecutor{Control: daemon.client, RequestLimit: 1 << 20, Sessions: env.sts, Node: "node1",
+	exec := &testLinkExecutor{Control: daemon.client, RequestLimit: 1 << 20, Sessions: env.sts, Node: "node1", ImageDigest: testImageDigest,
 		Codes:  func(context.Context) (codePresigner, error) { return urlPresigner{codeURL, presigns}, nil },
 		Grants: func(context.Context) (grantIssuer, error) { return grants, nil },
 	}

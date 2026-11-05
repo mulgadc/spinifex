@@ -149,6 +149,9 @@ func (d *Daemon) Handle(ctx context.Context, data []byte, cred Credential) Reply
 	if d.Image == nil {
 		return refused("runtime image not prepared")
 	}
+	if req.ImageDigest != d.Image.Digest {
+		return refused("runtime image digest differs from the prepared image")
+	}
 	if !d.busy.CompareAndSwap(false, true) {
 		return refused("another test-link attempt holds this node's slot")
 	}

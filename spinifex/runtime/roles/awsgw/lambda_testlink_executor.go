@@ -60,6 +60,8 @@ type testLinkExecutor struct {
 	RequestLimit int64
 	Sessions     lambdaEnvironmentRoleIssuer
 	Node         string
+	// ImageDigest is the runtime image every request requires of the daemon.
+	ImageDigest string
 	Codes  func(context.Context) (codePresigner, error)
 	Grants func(context.Context) (grantIssuer, error)
 	now    func() time.Time
@@ -73,6 +75,10 @@ var _ awsapi.Executor = (*testLinkExecutor)(nil)
 // session is revoked on every path after it is issued.
 func (e *testLinkExecutor) InvokeSync(ctx context.Context, in awsapi.SyncInvocation) (awsapi.SyncResult, error) {
 	rec := in.Function
+	if !testlink.ValidDigest(e.ImageDigest) {
+		return awsapi.SyncResult{}, &awsapi.RefusalError{Err: awserrors.Errorf(awserrors.ErrorServiceException,
+			"the test execution path has no valid runtime image pin")}
+	}
 	// The test link cannot deliver environment variables, so it refuses a
 	// function that has any before presigning, granting or sending.
 	if rec.EnvCipher != "" {
@@ -174,6 +180,7 @@ func (e *testLinkExecutor) InvokeSync(ctx context.Context, in awsapi.SyncInvocat
 		CodeURL:     url,
 		CodeSize:    rec.Code.Size,
 		CodeSHA256:  rec.Code.SHA256,
+		ImageDigest: e.ImageDigest,
 		Payload:     in.Payload,
 	})
 	if err != nil {

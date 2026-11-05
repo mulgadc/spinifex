@@ -90,6 +90,7 @@ go_build:
 LAMBDA_TESTLINK_DIR := ./bin/lambda-testlink
 LAMBDA_TESTLINK_PKG := github.com/mulgadc/spinifex/spinifex/runtime/daemon
 LAMBDA_TESTLINK_PIN := $(LAMBDA_TESTLINK_PKG).lambdaHardKillSHA256
+LAMBDA_TESTLINK_GW := github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw
 LAMBDA_DIGEST_RE := ^[0-9a-f]{64}$$
 build-lambda-testlink: override export LAMBDA_IMAGE_DIGEST := $(value LAMBDA_IMAGE_DIGEST)
 build-lambda-testlink:
@@ -104,8 +105,8 @@ build-lambda-testlink:
 	@digest=$$(sha256sum $(LAMBDA_TESTLINK_DIR).tmp/hardkill.so | cut -d' ' -f1); \
 	test $${#digest} -eq 64 || { echo "initializer digest missing"; exit 1; }; \
 	echo "initializer sha256 $$digest"; \
-	pin="-X $(LAMBDA_TESTLINK_PIN)=$$digest -X $(LAMBDA_TESTLINK_PKG).lambdaImageDigest=$$LAMBDA_IMAGE_DIGEST"; \
-	LAMBDA_TESTLINK_INITIALIZER=$(abspath $(LAMBDA_TESTLINK_DIR).tmp/hardkill.so) go test -count=1 -tags lambdatestlink -ldflags "$$pin" -run '^TestLambda(HardKillPin|ImageDigestPin)$$' ./spinifex/runtime/daemon/ && \
+	pin="-X $(LAMBDA_TESTLINK_PIN)=$$digest -X $(LAMBDA_TESTLINK_PKG).lambdaImageDigest=$$LAMBDA_IMAGE_DIGEST -X $(LAMBDA_TESTLINK_GW).lambdaImageDigest=$$LAMBDA_IMAGE_DIGEST"; \
+	LAMBDA_TESTLINK_INITIALIZER=$(abspath $(LAMBDA_TESTLINK_DIR).tmp/hardkill.so) go test -count=1 -tags lambdatestlink -ldflags "$$pin" -run '^TestLambda(HardKillPin|ImageDigestPin)$$' ./spinifex/runtime/daemon/ ./spinifex/runtime/roles/awsgw/ && \
 	go build $(GO_BUILD_MOD) -tags lambdatestlink -ldflags "$(subst -s -w ,,$(LDFLAGS)) $$pin" -o $(LAMBDA_TESTLINK_DIR).tmp/$(GO_PROJECT_NAME) cmd/spinifex/main.go
 	@mkdir -p $(LAMBDA_TESTLINK_DIR)
 	mv $(LAMBDA_TESTLINK_DIR).tmp/hardkill.so $(LAMBDA_TESTLINK_DIR).tmp/$(GO_PROJECT_NAME) $(LAMBDA_TESTLINK_DIR)/

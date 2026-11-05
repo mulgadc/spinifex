@@ -19,6 +19,8 @@ import (
 )
 
 func TestGetSessionToken_HappyPath_MintsUserSession(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	userID := seedUser(t, svc, testCallerAccountID, testCallerUserName)
 
@@ -71,6 +73,8 @@ func TestGetSessionToken_HappyPath_MintsUserSession(t *testing.T) {
 }
 
 func TestGetSessionToken_NilInput_DefaultsToTwelveHours(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	seedUser(t, svc, testCallerAccountID, testCallerUserName)
 
@@ -82,11 +86,15 @@ func TestGetSessionToken_NilInput_DefaultsToTwelveHours(t *testing.T) {
 }
 
 func TestGetSessionToken_DurationBounds(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	seedUser(t, svc, testCallerAccountID, testCallerUserName)
 
 	for _, seconds := range []int64{minDurationSeconds, 7200, getSessionTokenMaxDuration} {
 		t.Run(fmt.Sprintf("accepts_%d", seconds), func(t *testing.T) {
+			t.Parallel()
+
 			out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, testCallerAccessKeyID,
 				&sts.GetSessionTokenInput{DurationSeconds: aws.Int64(seconds)})
 			require.NoError(t, err)
@@ -103,6 +111,8 @@ func TestGetSessionToken_DurationBounds(t *testing.T) {
 	}
 	for _, tc := range refused {
 		t.Run(fmt.Sprintf("refuses_%d", tc.seconds), func(t *testing.T) {
+			t.Parallel()
+
 			out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, testCallerAccessKeyID,
 				&sts.GetSessionTokenInput{DurationSeconds: aws.Int64(tc.seconds)})
 			testutil.RequireAWSError(t, err, awserrors.ErrorValidationError, fmt.Sprintf(
@@ -114,6 +124,8 @@ func TestGetSessionToken_DurationBounds(t *testing.T) {
 
 // A session caller is refused AccessDenied, but only once its input is valid.
 func TestGetSessionToken_ConstraintsCheckedBeforeCaller(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 
 	_, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, "ASIAEXAMPLEAAAAAAAAA",
@@ -125,6 +137,8 @@ func TestGetSessionToken_ConstraintsCheckedBeforeCaller(t *testing.T) {
 }
 
 func TestGetSessionToken_RejectsNonUserAndSessionCallers(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 
 	// Only a long-lived user (AKIA + principalType "user") may call
@@ -143,6 +157,8 @@ func TestGetSessionToken_RejectsNonUserAndSessionCallers(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, tc.principalType, tc.accessKeyID,
 				&sts.GetSessionTokenInput{})
 			require.Error(t, err)
@@ -153,6 +169,8 @@ func TestGetSessionToken_RejectsNonUserAndSessionCallers(t *testing.T) {
 }
 
 func TestGetSessionToken_RejectsMFAParameters(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 
 	cases := []struct {
@@ -164,6 +182,8 @@ func TestGetSessionToken_RejectsMFAParameters(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, testCallerAccessKeyID, tc.input)
 			requireMFANotSupported(t, err)
 			assert.Nil(t, out)
@@ -172,6 +192,8 @@ func TestGetSessionToken_RejectsMFAParameters(t *testing.T) {
 
 	for _, tc := range mfaConstraintCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			out, err := svc.GetSessionToken(testCallerAccountID, testCallerUserName, principalTypeUser, testCallerAccessKeyID,
 				&sts.GetSessionTokenInput{SerialNumber: tc.serialNumber, TokenCode: tc.tokenCode})
 			testutil.RequireAWSError(t, err, awserrors.ErrorValidationError, tc.wantMessage)
@@ -181,6 +203,8 @@ func TestGetSessionToken_RejectsMFAParameters(t *testing.T) {
 }
 
 func TestGetSessionToken_RejectsMissingUserName(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 
 	out, err := svc.GetSessionToken(testCallerAccountID, "", principalTypeUser, testCallerAccessKeyID, &sts.GetSessionTokenInput{})
@@ -192,6 +216,8 @@ func TestGetSessionToken_RejectsMissingUserName(t *testing.T) {
 // A session that cannot be bound to an immutable ID is worse than no session:
 // it would be indistinguishable from a legacy record and rejected at first use.
 func TestGetSessionToken_UnresolvableCaller_FailsLoud(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 
 	out, err := svc.GetSessionToken(testCallerAccountID, "no-such-user", principalTypeUser, testCallerAccessKeyID,

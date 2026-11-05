@@ -66,8 +66,12 @@ func requireAccessDenied(t *testing.T, err error, wantMessage string) {
 }
 
 func TestAssumeRole_AccountNotActive_RefusedLikeTrustDenial(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range notActiveStates {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			svc, nc := newTestSetup(t)
 			role := createRoleInAccount(t, svc, testCallerAccountID, "app", trustPolicyAllowingUser(testCallerARN()))
 			putTestAccount(t, nc, testCallerAccountID, tc.status)
@@ -83,6 +87,8 @@ func TestAssumeRole_AccountNotActive_RefusedLikeTrustDenial(t *testing.T) {
 }
 
 func TestAssumeRole_AccountRecordMissing_Refused(t *testing.T) {
+	t.Parallel()
+
 	svc, nc := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "app", trustPolicyAllowingUser(testCallerARN()))
 	deleteTestAccount(t, nc, testCallerAccountID)
@@ -96,6 +102,8 @@ func TestAssumeRole_AccountRecordMissing_Refused(t *testing.T) {
 // A refusal for an inactive account must not be distinguishable from the one a
 // caller gets for a role whose trust policy does not admit them.
 func TestAssumeRole_AccountNotActive_SameErrorAsTrustPolicyDenial(t *testing.T) {
+	t.Parallel()
+
 	svc, nc := newTestSetup(t)
 	other := "arn:aws:iam::" + testCallerAccountID + ":user/someone-else"
 	denied := createRoleInAccount(t, svc, testCallerAccountID, "denied", trustPolicyAllowingUser(other))
@@ -116,8 +124,12 @@ func TestAssumeRole_AccountNotActive_SameErrorAsTrustPolicyDenial(t *testing.T) 
 
 // The caller's own account is ACTIVE; the role's account decides.
 func TestAssumeRole_CrossAccountIntoNotActiveAccount_Refused(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range notActiveStates {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			svc, nc := newTestSetup(t)
 			role := createRoleInAccount(t, svc, testCrossAccountID, "shared", trustPolicyAllowingUser(testCallerARN()))
 
@@ -136,6 +148,8 @@ func TestAssumeRole_CrossAccountIntoNotActiveAccount_Refused(t *testing.T) {
 }
 
 func TestAssumeRole_AccountReadError_InternalError(t *testing.T) {
+	t.Parallel()
+
 	svc, nc := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, "app", trustPolicyAllowingUser(testCallerARN()))
 	svc.iamSvc = accountReadErrIAM{IAMService: svc.iamSvc}
@@ -149,8 +163,12 @@ func TestAssumeRole_AccountReadError_InternalError(t *testing.T) {
 }
 
 func TestAssumeRoleForInstance_AccountNotActive_BareAccessDenied(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range notActiveStates {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			svc, nc := newTestSetup(t)
 			role := createRoleInAccount(t, svc, testCallerAccountID, "inst", trustPolicyAllowingEC2Service())
 
@@ -168,8 +186,12 @@ func TestAssumeRoleForInstance_AccountNotActive_BareAccessDenied(t *testing.T) {
 }
 
 func TestGetSessionToken_AccountNotActive_AccessDenied(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range notActiveStates {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			svc, nc := newTestSetup(t)
 			seedUser(t, svc, testCallerAccountID, testCallerUserName)
 			putTestAccount(t, nc, testCallerAccountID, tc.status)
@@ -185,8 +207,12 @@ func TestGetSessionToken_AccountNotActive_AccessDenied(t *testing.T) {
 }
 
 func TestAssumeRoleWithWebIdentity_AccountNotActive_AccessDenied(t *testing.T) {
+	t.Parallel()
+
 	for _, tc := range notActiveStates {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			svc, nc := newTestSetup(t)
 			f := newWebIdentityFixture(t, svc, testCallerAccountID)
 			role := createRoleForFixture(t, svc, testCallerAccountID, "irsa-app",
@@ -209,6 +235,8 @@ func TestAssumeRoleWithWebIdentity_AccountNotActive_AccessDenied(t *testing.T) {
 // An invalid token is rejected before account state is read, so an
 // unauthenticated caller learns nothing about the account.
 func TestAssumeRoleWithWebIdentity_BadTokenNotActive_StillInvalidToken(t *testing.T) {
+	t.Parallel()
+
 	svc, nc := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	role := createRoleForFixture(t, svc, testCallerAccountID, "irsa-app",

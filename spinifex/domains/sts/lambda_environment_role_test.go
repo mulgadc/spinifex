@@ -58,6 +58,8 @@ func trustDoc(statements ...string) string {
 }
 
 func TestAssumeRoleForLambdaEnvironment_IssuesUsableCredential(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, testLambdaRoleName, lambdaTrustPolicyDoc)
 
@@ -135,6 +137,8 @@ func installRecorder(t *testing.T, svc *STSServiceImpl) *recordingKV {
 // The labels are part of the create-only write: the one Create carries them and
 // nothing rewrites the record afterwards.
 func TestAssumeRoleForLambdaEnvironment_FirstRecordCarriesLabels(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, testLambdaRoleName, lambdaTrustPolicyDoc)
 	rec := installRecorder(t, svc)
@@ -155,6 +159,8 @@ func TestAssumeRoleForLambdaEnvironment_FirstRecordCarriesLabels(t *testing.T) {
 }
 
 func TestAssumeRoleForLambdaEnvironment_RefusesWithoutLambdaTrust(t *testing.T) {
+	t.Parallel()
+
 	cases := map[string]string{
 		"ec2 only":                  trustPolicyAllowingEC2Service(),
 		"user only":                 trustPolicyAllowingUser(testCallerARN()),
@@ -162,6 +168,8 @@ func TestAssumeRoleForLambdaEnvironment_RefusesWithoutLambdaTrust(t *testing.T) 
 	}
 	for name, trust := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
 			svc, nc := newTestSetup(t)
 			role := createRoleInAccount(t, svc, testCallerAccountID, testLambdaRoleName, trust)
 
@@ -175,6 +183,8 @@ func TestAssumeRoleForLambdaEnvironment_RefusesWithoutLambdaTrust(t *testing.T) 
 
 // A role in another account and a role that does not exist give the same answer.
 func TestAssumeRoleForLambdaEnvironment_RefusesForeignOrMissingRole(t *testing.T) {
+	t.Parallel()
+
 	svc, nc := newTestSetup(t)
 	foreign := createRoleInAccount(t, svc, testCrossAccountID, testLambdaRoleName, lambdaTrustPolicyDoc)
 
@@ -358,6 +368,8 @@ func TestAssumeRoleForLambdaEnvironment_FailedMintIssuesNothingAndHidesSecret(t 
 }
 
 func TestAssumeRoleForLambdaEnvironment_InactiveAccountRefused(t *testing.T) {
+	t.Parallel()
+
 	svc, nc := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, testLambdaRoleName, lambdaTrustPolicyDoc)
 	putTestAccount(t, nc, testCallerAccountID, iamdomain.AccountStatusSuspended)
@@ -370,6 +382,8 @@ func TestAssumeRoleForLambdaEnvironment_InactiveAccountRefused(t *testing.T) {
 
 // Every other minting path leaves the Lambda labels out of the record entirely.
 func TestMintSession_OtherPathsWriteNoLambdaLabels(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	caller := testCallerARN()
 	var akids []string
@@ -417,6 +431,8 @@ func TestMintSession_OtherPathsWriteNoLambdaLabels(t *testing.T) {
 // The issuer's answer for an aws:SourceAccount-conditioned trust matches RoleTrusts,
 // which other Lambda paths use to check the same role.
 func TestAssumeRoleForLambdaEnvironment_SourceAccountMatchesRoleTrusts(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		name  string
 		trust string
@@ -433,6 +449,8 @@ func TestAssumeRoleForLambdaEnvironment_SourceAccountMatchesRoleTrusts(t *testin
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			svc, _ := newTestSetup(t)
 			role := createRoleInAccount(t, svc, testCallerAccountID, testLambdaRoleName, tc.trust)
 
@@ -468,6 +486,8 @@ func (s *swappingRoles) GetRole(string, *iam.GetRoleInput) (*iam.GetRoleOutput, 
 }
 
 func TestAssumeRoleForLambdaEnvironment_SingleRoleResolution(t *testing.T) {
+	t.Parallel()
+
 	trusting := &iam.Role{
 		RoleName: aws.String(testLambdaRoleName), RoleId: aws.String("AROATRUSTSLAMBDA0001"),
 		Arn:                      aws.String(fmt.Sprintf("arn:aws:iam::%s:role/%s", testCallerAccountID, testLambdaRoleName)),
@@ -479,6 +499,8 @@ func TestAssumeRoleForLambdaEnvironment_SingleRoleResolution(t *testing.T) {
 	}
 
 	t.Run("trusting role read first", func(t *testing.T) {
+		t.Parallel()
+
 		svc, _ := newTestSetup(t)
 		swap := &swappingRoles{IAMService: svc.iamSvc, first: trusting, later: untrusting}
 		svc.iamSvc = swap
@@ -492,6 +514,8 @@ func TestAssumeRoleForLambdaEnvironment_SingleRoleResolution(t *testing.T) {
 	})
 
 	t.Run("untrusting role read first", func(t *testing.T) {
+		t.Parallel()
+
 		svc, nc := newTestSetup(t)
 		swap := &swappingRoles{IAMService: svc.iamSvc, first: untrusting, later: trusting}
 		svc.iamSvc = swap
@@ -545,6 +569,8 @@ func issueLambdaSession(t *testing.T, svc *STSServiceImpl, roleARN, environmentI
 // Lambda sessions are role sessions: deleting their role revokes them, and
 // deleting an unrelated user or role leaves them alone.
 func TestLambdaEnvironmentSessions_RevokedWithTheirRoleOnly(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	wireRevoker(t, svc)
 	seedUser(t, svc, testCallerAccountID, testCallerUserName)
@@ -567,6 +593,8 @@ func TestLambdaEnvironmentSessions_RevokedWithTheirRoleOnly(t *testing.T) {
 // With no revoker wired, the janitor reaps a Lambda session whose role is gone,
 // keeps one whose role is live, and reaps any once past expiry and grace.
 func TestLambdaEnvironmentSessions_Sweep(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	fnRole := createRoleInAccount(t, svc, testCallerAccountID, testLambdaRoleName, lambdaTrustPolicyDoc)
 	liveRole := createRoleInAccount(t, svc, testCallerAccountID, "live-exec", lambdaTrustPolicyDoc)

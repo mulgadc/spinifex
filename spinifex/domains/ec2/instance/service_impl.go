@@ -166,6 +166,8 @@ func UnservedBlockDeviceMappings(mappings []*ec2.BlockDeviceMapping) []string {
 			name = "(unnamed)"
 		}
 		switch {
+		case aws.StringValue(bdm.DeviceName) == "":
+			unserved = append(unserved, name+" (names no device)")
 		case aws.StringValue(bdm.Ebs.SnapshotId) != "":
 			unserved = append(unserved, name+" (names a snapshot)")
 		case aws.Int64Value(bdm.Ebs.VolumeSize) < 1:

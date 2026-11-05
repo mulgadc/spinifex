@@ -251,6 +251,16 @@ func TestParseRunInstances(t *testing.T) {
 		}
 	})
 
+	t.Run("MappingNamingNoDeviceIsRefused", func(t *testing.T) {
+		t.Parallel()
+		input := defaults
+		input.BlockDeviceMappings = []*ec2.BlockDeviceMapping{{Ebs: &ec2.EbsBlockDevice{VolumeSize: aws.Int64(6)}}}
+		err := ValidateRunInstancesInput(&input)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), awserrors.ErrorInvalidParameterValue)
+		assert.Contains(t, err.Error(), "names no device")
+	})
+
 	t.Run("MaxCountAtInt32IsValid", func(t *testing.T) {
 		t.Parallel()
 		input := defaults

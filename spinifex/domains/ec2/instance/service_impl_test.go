@@ -671,13 +671,6 @@ func TestUnservedBlockDeviceMappings(t *testing.T) {
 		DeviceName: aws.String("/dev/sdh"),
 		Ebs:        &ec2.EbsBlockDevice{},
 	}
-	unnamed := &ec2.BlockDeviceMapping{
-		Ebs: &ec2.EbsBlockDevice{VolumeSize: aws.Int64(4)},
-	}
-	emptyName := &ec2.BlockDeviceMapping{
-		DeviceName: aws.String(""),
-		Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(4)},
-	}
 
 	tests := []struct {
 		name     string
@@ -692,8 +685,6 @@ func TestUnservedBlockDeviceMappings(t *testing.T) {
 		{name: "ephemeral only", mappings: []*ec2.BlockDeviceMapping{ephemeral}},
 		{name: "data naming a snapshot", mappings: []*ec2.BlockDeviceMapping{root, fromSnapshot}, want: []string{"/dev/sdg (names a snapshot)"}},
 		{name: "data naming no size", mappings: []*ec2.BlockDeviceMapping{root, unsized}, want: []string{"/dev/sdh (names no size)"}},
-		{name: "lone mapping naming no device", mappings: []*ec2.BlockDeviceMapping{unnamed}, want: []string{"(unnamed) (names no device)"}},
-		{name: "data with an empty device name", mappings: []*ec2.BlockDeviceMapping{root, emptyName}, want: []string{"(unnamed) (names no device)"}},
 	}
 
 	for _, tt := range tests {
@@ -5284,4 +5275,20 @@ func TestPrepareRunInstances_ArchitectureMismatch(t *testing.T) {
 		})
 	}
 	assert.NoError(t, checkImageArchitecture(types["t4g.micro"], "aarch64"))
+}
+
+func TestUnnamedBlockDeviceMapping(t *testing.T) {
+	root := &ec2.BlockDeviceMapping{
+		DeviceName: aws.String(ebsmetadata.RootDeviceName),
+		Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(8)},
+	}
+	unnamed := &ec2.BlockDeviceMapping{Ebs: &ec2.EbsBlockDevice{VolumeSize: aws.Int64(4)}}
+	emptyName := &ec2.BlockDeviceMapping{DeviceName: aws.String(""), Ebs: &ec2.EbsBlockDevice{VolumeSize: aws.Int64(4)}}
+	ephemeral := &ec2.BlockDeviceMapping{VirtualName: aws.String("ephemeral0")}
+
+	assert.False(t, UnnamedBlockDeviceMapping(nil))
+	assert.False(t, UnnamedBlockDeviceMapping([]*ec2.BlockDeviceMapping{root}))
+	assert.False(t, UnnamedBlockDeviceMapping([]*ec2.BlockDeviceMapping{root, ephemeral}))
+	assert.True(t, UnnamedBlockDeviceMapping([]*ec2.BlockDeviceMapping{unnamed}))
+	assert.True(t, UnnamedBlockDeviceMapping([]*ec2.BlockDeviceMapping{root, emptyName}))
 }

@@ -151,6 +151,21 @@ func SelectRootBlockDeviceMapping(mappings []*ec2.BlockDeviceMapping) int {
 	return -1
 }
 
+// UnnamedBlockDeviceMapping reports whether a non-root EBS mapping names no
+// device, which would leave its volume attached at an empty device name.
+func UnnamedBlockDeviceMapping(mappings []*ec2.BlockDeviceMapping) bool {
+	root := SelectRootBlockDeviceMapping(mappings)
+	for i, bdm := range mappings {
+		if i == root || bdm == nil || bdm.Ebs == nil || isEphemeralMapping(bdm) {
+			continue
+		}
+		if aws.StringValue(bdm.DeviceName) == "" {
+			return true
+		}
+	}
+	return false
+}
+
 // UnservedBlockDeviceMappings names the non-root EBS mappings the launch path
 // cannot serve, with the reason. A data volume is created empty, so a mapping
 // naming a snapshot is refused rather than served as a blank volume.
@@ -166,8 +181,6 @@ func UnservedBlockDeviceMappings(mappings []*ec2.BlockDeviceMapping) []string {
 			name = "(unnamed)"
 		}
 		switch {
-		case aws.StringValue(bdm.DeviceName) == "":
-			unserved = append(unserved, name+" (names no device)")
 		case aws.StringValue(bdm.Ebs.SnapshotId) != "":
 			unserved = append(unserved, name+" (names a snapshot)")
 		case aws.Int64Value(bdm.Ebs.VolumeSize) < 1:

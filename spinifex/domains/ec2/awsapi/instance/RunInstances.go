@@ -96,6 +96,12 @@ func ValidateRunInstancesInput(input *ec2.RunInstancesInput) (err error) {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
+	// A volume with no device name cannot be attached anywhere, so the mapping
+	// is refused as AWS refuses an invalid device.
+	if ec2instance.UnnamedBlockDeviceMapping(input.BlockDeviceMappings) {
+		return awserrors.Errorf(awserrors.ErrorInvalidBlockDeviceMapping, "BlockDeviceMappings: a mapping names no device")
+	}
+
 	// A volume the launch creates beyond the root is empty and sized by the
 	// request, so a mapping asking for anything else is refused by name rather
 	// than served as something it did not ask for.

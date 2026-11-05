@@ -175,11 +175,12 @@ type InstanceTypeResolver func(accountID, instanceID string) (instanceType strin
 // NATSInstanceTypeResolver builds the production resolver from a node-identity
 // checked describe of the one instance. A found instance resolves even with a node
 // silent; an absence a silent node could hide is a retryable ServiceUnavailable.
-func NATSInstanceTypeResolver(natsConn *nats.Conn, nodeIDs func() []string) InstanceTypeResolver {
+// opts reach the describe fan-out; production passes none.
+func NATSInstanceTypeResolver(natsConn *nats.Conn, nodeIDs func() []string, opts ...ec2instanceapi.DescribeOption) InstanceTypeResolver {
 	return func(accountID, instanceID string) (string, bool, error) {
 		out, err := ec2instanceapi.DescribeInstancesChecked(context.Background(),
 			&ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String(instanceID)}},
-			natsConn, 0, nodeIDs(), accountID)
+			natsConn, 0, nodeIDs(), accountID, opts...)
 		if err != nil {
 			if code, ok := awserrors.ResolveErrorCode(err); ok && code == awserrors.ErrorInvalidInstanceIDNotFound {
 				return "", false, nil

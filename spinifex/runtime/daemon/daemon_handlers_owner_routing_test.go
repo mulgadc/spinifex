@@ -2,8 +2,9 @@ package daemon
 
 import (
 	"bytes"
-	"fmt"
+	"encoding/json"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -164,6 +165,30 @@ func TestModifyInstanceMetadataOptions_NonOwnerReceivesQueueOwnerAnswers(t *test
 	assert.False(t, onA, "the queue-group member never held the instance")
 }
 
+// n1CommandType is EC2InstanceCommand as the previous release defined it: the
+// current type minus the two attributes and two data blocks this change adds.
+func n1CommandType() reflect.Type {
+	newFields := map[string]bool{
+		"ModifyInstanceMetadataOptions": true, "SetDisableApiTermination": true,
+		"InstanceMetadataOptionsData": true, "DisableApiTerminationData": true,
+	}
+	strip := func(t reflect.Type, swap map[string]reflect.Type) reflect.Type {
+		var fields []reflect.StructField
+		for f := range t.Fields() {
+			if newFields[f.Name] {
+				continue
+			}
+			if st, ok := swap[f.Name]; ok {
+				f.Type = st
+			}
+			fields = append(fields, f)
+		}
+		return reflect.StructOf(fields)
+	}
+	attrs := strip(reflect.TypeFor[ec2v1.EC2CommandAttributes](), nil)
+	return strip(reflect.TypeFor[ec2v1.EC2InstanceCommand](), map[string]reflect.Type{"Attributes": attrs})
+}
+
 // An N-1 owner decodes a new-variant payload with the unknown attribute and
 // data dropped, so dispatch sees no attribute and takes the default branch.
 func TestS9_N1DispatchRejectsNewVariantsWithoutWriting(t *testing.T) {
@@ -172,17 +197,31 @@ func TestS9_N1DispatchRejectsNewVariantsWithoutWriting(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	for name, payload := range map[string]string{
-		"metadata options":    `{"id":"%s","attributes":{}}`,
-		"termination protect": `{"id":"%s","attributes":{}}`,
-	} {
+	variants := map[string]func(id string) ec2v1.EC2InstanceCommand{
+		"metadata options": func(id string) ec2v1.EC2InstanceCommand {
+			return metadataCommand(id, &ec2v1.InstanceMetadataOptionsData{HttpPutResponseHopLimit: aws.Int64(3)})
+		},
+		"termination protection": func(id string) ec2v1.EC2InstanceCommand {
+			return terminationCommand(id, &ec2v1.DisableApiTerminationData{Value: true})
+		},
+	}
+	for name, build := range variants {
 		t.Run(name, func(t *testing.T) {
 			id := "i-or-n1-" + strings.ReplaceAll(name, " ", "-")
 			d, _ := monitoringTestDaemon(t, id, false)
 			before, _ := d.vmMgr.Get(id)
 			beforeInstance := *before.Instance
+			logs.Reset()
 
-			reply := requestHandler(t, d.natsConn, "ec2.cmd."+id, d.handleEC2Events, testAccountID, fmt.Appendf(nil, payload, id))
+			// Current encoder -> N-1 decoder -> what the N-1 owner re-dispatches.
+			n1 := reflect.New(n1CommandType())
+			require.NoError(t, json.Unmarshal(mustMarshal(t, build(id)), n1.Interface()))
+			require.Equal(t, id, n1.Elem().FieldByName("ID").String())
+			payload := mustMarshal(t, n1.Interface())
+			assert.NotContains(t, string(payload), "modify_instance_metadata_options")
+			assert.NotContains(t, string(payload), "set_disable_api_termination")
+
+			reply := requestHandler(t, d.natsConn, "ec2.cmd."+id, d.handleEC2Events, testAccountID, payload)
 			assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
 			assert.Empty(t, reply.Header.Get(ec2v1.HandledHeader), "an N-1 rejection carries no handled marker")
 			assert.Contains(t, logs.String(), "Unhandled EC2 instance command")
@@ -192,6 +231,34 @@ func TestS9_N1DispatchRejectsNewVariantsWithoutWriting(t *testing.T) {
 			assert.Nil(t, after.RunInstancesInput.DisableApiTermination)
 		})
 	}
+}
+
+func TestModifyInstanceMetadataOptions_NoOwnerAppliesToRealStoppedRecord(t *testing.T) {
+	const id = "i-or-stopped-real"
+	ns, gateway := testutil.StartTestNATS(t)
+	stopped := vmmock.New()
+	stopped.Stopped[id] = stoppedVMFixture(id, testAccountID)
+
+	// No daemon runs the instance; the only queue-group member is the real service.
+	a := ownerRoutingDaemon(t, ns.ClientURL(), stopped)
+	sub, err := a.natsConn.QueueSubscribe("ec2.ModifyInstanceMetadataOptions", "spinifex-workers",
+		asMsgHandler(handleNATSRequest(a.node, a.instanceService.ModifyInstanceMetadataOptions)))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	require.NoError(t, a.natsConn.Flush())
+
+	out, err := ec2instanceapi.ModifyInstanceMetadataOptions(t.Context(), &ec2.ModifyInstanceMetadataOptionsInput{
+		InstanceId:              aws.String(id),
+		HttpPutResponseHopLimit: aws.Int64(2),
+	}, gateway, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), aws.Int64Value(out.InstanceMetadataOptions.HttpPutResponseHopLimit))
+
+	reloaded, err := stopped.LoadStoppedInstance(id)
+	require.NoError(t, err)
+	require.NotNil(t, reloaded.Instance.MetadataOptions)
+	assert.Equal(t, int64(2), aws.Int64Value(reloaded.Instance.MetadataOptions.HttpPutResponseHopLimit))
+	require.NotNil(t, stopped.WroteStopped[id], "the service persisted the stopped record")
 }
 
 func TestOwnerDispatch_RejectsOtherAccountWithoutWriting(t *testing.T) {

@@ -49,13 +49,6 @@ func (s *EKSServiceImpl) acquireTeardownLease(ctx context.Context, accountID, cl
 	return teardownLease{release: func() { lease.Unlock(ctx, tok) }, lost: lease.Lost()}, true
 }
 
-// forgetClusterLeases drops a deleted cluster's leases from the group, so a
-// cluster recreated under the same name starts from fresh ones.
-func (s *EKSServiceImpl) forgetClusterLeases(accountID, clusterName string) {
-	s.leases.Forget(clusterLeaseName(accountID, clusterName))
-	s.leases.Forget(teardownLeaseName(accountID, clusterName))
-}
-
 // teardownPassTimeout bounds one converger run, so a step that hangs cannot
 // hold the gate and the lease for ever; the reaper retries it. Var for tests.
 var teardownPassTimeout = 15 * time.Minute
@@ -64,7 +57,7 @@ var teardownPassTimeout = 15 * time.Minute
 // in-process gate, which also bounds this node's teardowns, then the cross-node
 // lease. It refuses, without waiting, when either is held, or, if capped, when
 // the node is at teardownConcurrency.
-func (s *EKSServiceImpl) holdTeardown(accountID, name string, capped bool) (release func(), lost <-chan struct{}, ok bool) {
+func (s *EKSServiceImpl) holdTeardown(accountID, name string, capped bool) (release func(retire bool), lost <-chan struct{}, ok bool) {
 	key := teardownLeaseName(accountID, name)
 	s.teardownMu.Lock()
 	if s.teardownRunning == nil {
@@ -90,7 +83,15 @@ func (s *EKSServiceImpl) holdTeardown(accountID, name string, capped bool) (rele
 		leave()
 		return nil, nil, false
 	}
-	return func() { lease.release(); leave() }, lease.lost, true
+	// Retiring drops the teardown lease before the gate opens: every Get of it
+	// is under the gate, so no later teardown of a recreated name can hold it.
+	return func(retire bool) {
+		lease.release()
+		if retire {
+			s.leases.Forget(key)
+		}
+		leave()
+	}, lease.lost, true
 }
 
 // startTeardown hands one DELETING cluster to a background converger and
@@ -103,12 +104,7 @@ func (s *EKSServiceImpl) startTeardown(accountID, name string) bool {
 	}
 	s.teardownWG.Go(func() {
 		deleted := false
-		defer func() {
-			release()
-			if deleted {
-				s.forgetClusterLeases(accountID, name)
-			}
-		}()
+		defer func() { release(deleted) }()
 		ctx, cancel := context.WithTimeout(s.bgCtx, teardownPassTimeout)
 		defer cancel()
 		started := time.Now()
@@ -198,6 +194,9 @@ func (s *EKSServiceImpl) convergeClusterDeletion(ctx context.Context, accountID,
 			return terr
 		}
 
+		// Forgotten while the record still blocks a same-name create, and after
+		// teardownClusterInfra stopped this node's reconciler.
+		s.leases.Forget(clusterLeaseName(accountID, name))
 		done, err := s.removeClusterRecord(ctx, acctKV, name, meta)
 		if err != nil {
 			if !errors.Is(err, errNodegroupsAttached) && !errors.Is(err, errTeardownNotRecorded) {

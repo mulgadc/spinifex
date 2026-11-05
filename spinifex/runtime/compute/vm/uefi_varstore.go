@@ -419,15 +419,16 @@ func (m *Manager) releaseUEFIClaim(ctx context.Context, instanceID string, held 
 // unlockUEFIClaim releases instanceID's claim while it still holds tok. A
 // failed unlock leaves the claim with this node, which only delays a start
 // elsewhere, so it is logged and not returned.
-func (m *Manager) unlockUEFIClaim(ctx context.Context, instanceID string, tok kvsync.Token, why string) {
+func (m *Manager) unlockUEFIClaim(ctx context.Context, instanceID string, tok kvsync.Token, why string) bool {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), uefiClaimReleaseTimeout)
 	defer cancel()
 	if err := m.deps.UEFIVarStore.Claims.Get(instanceID).Unlock(ctx, tok); err != nil {
 		slog.WarnContext(ctx, "Failed to release the UEFI variable store claim",
 			"instanceId", instanceID, "generation", tok.Generation, "why", why, "err", err)
-		return
+		return false
 	}
 	slog.InfoContext(ctx, "Released the UEFI variable store claim", "instanceId", instanceID, "generation", tok.Generation, "why", why)
+	return true
 }
 
 // releaseHeldUEFIClaim releases instanceID's claim when this node holds it, at

@@ -179,11 +179,14 @@ func (m *Manager) launch(ctx context.Context, instance *VM, pre *uefiPrecheck) (
 	endSpanWithError(uefiSpan, uefiErr)
 	guestMayHaveRun := false
 	defer func() {
-		if !guestMayHaveRun {
+		switch {
+		case !guestMayHaveRun:
 			m.dropUEFIWriter(instance.ID, "rollback", false)
-		}
-		if err != nil && !guestMayHaveRun {
-			m.releaseUEFIClaim(ctx, instance.ID, uefiHeld)
+			if err != nil {
+				m.releaseUEFIClaim(ctx, instance.ID, uefiHeld)
+			}
+		case err != nil:
+			m.settleFailedUEFILaunch(instance)
 		}
 	}()
 	if uefiErr != nil {

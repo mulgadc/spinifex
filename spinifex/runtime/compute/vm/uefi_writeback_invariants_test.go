@@ -2,6 +2,7 @@ package vm
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -322,4 +323,34 @@ func TestS7_PruneKeepsTheLeaderPointerWhenAReplicaLags(t *testing.T) {
 
 	assert.Equal(t, []string{current}, f.objectKeys(t),
 		"ADR-0003:S7: a prune must keep the leader's pointer, whatever a replica reports")
+}
+
+// A launch that fails after QEMU started settles the store as a stop does
+// only once that QEMU is provably gone; one that may still run keeps its
+// writer and claim, so no other node boots under a live guest (ADR-0003:S7).
+func TestS7_AFailedLaunchSettlesItsStoreOnlyOnceQEMUIsGone(t *testing.T) {
+	for _, exited := range []bool{true, false} {
+		t.Run(fmt.Sprintf("exited=%t", exited), func(t *testing.T) {
+			f := newUEFIFixture(t)
+			instance, clock := f.running(t)
+			f.m.startUEFIWriter(testUEFIInstance, false)
+			want := f.guestWrites(t, "launch")
+			clock.waitArmed(t)
+			orig := uefiQEMUExited
+			uefiQEMUExited = func(int) bool { return exited }
+			t.Cleanup(func() { uefiQEMUExited = orig })
+
+			f.m.settleFailedUEFILaunch(instance)
+
+			_, held := f.claimHolder(t)
+			if exited {
+				assert.Equal(t, want, f.pointedRegion(t), "the guest's changes are written back")
+				assert.False(t, held)
+				assert.Nil(t, f.m.uefi.get(testUEFIInstance))
+				return
+			}
+			assert.True(t, held, "ADR-0003:S7: a QEMU that may still run keeps the claim")
+			assert.NotNil(t, f.m.uefi.get(testUEFIInstance))
+		})
+	}
 }

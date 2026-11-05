@@ -229,6 +229,9 @@ func vmRunningSince(lb *LoadBalancerRecord, rec *LBDataPathRecord) time.Time {
 // repair reserves the attempt durably, then dispatches it. It reports whether a
 // repair was started, which ends the pass.
 func (r *lbRepairReconciler) repair(ctx context.Context, c lbRepairCandidate) bool {
+	if !r.isLeader() {
+		return false
+	}
 	lb, err := r.svc.store.GetLoadBalancer(ctx, c.lb.LoadBalancerID)
 	if err != nil || lb == nil || lb.State != StateActive || lb.InstanceID != c.lb.InstanceID {
 		return false
@@ -238,6 +241,9 @@ func (r *lbRepairReconciler) repair(ctx context.Context, c lbRepairCandidate) bo
 	var attempt int
 	reserved := false
 	_, err = r.svc.store.UpdateLBHealth(ctx, lb.LoadBalancerID, func(cur *LBDataPathRecord) (bool, error) {
+		// The callback reruns after a conflict, so admission is judged by the run
+		// that wrote the reservation and nothing earlier.
+		reserved, attempt = false, 0
 		nic := cur.NICs[c.mac]
 		if cur.Suspended || cur.InstanceID != lb.InstanceID || nic == nil || now.Sub(nic.FailingSince) < lbRepairMinFailing {
 			return false, nil
@@ -262,6 +268,10 @@ func (r *lbRepairReconciler) repair(ctx context.Context, c lbRepairCandidate) bo
 	}
 
 	attrs := repairLogAttrs(lb, c, attempt, reason, now)
+	if !r.isLeader() {
+		slog.WarnContext(ctx, "ELBv2 data-path repair not dispatched: leadership lost after reservation", attrs...)
+		return true
+	}
 	slog.WarnContext(ctx, "ELBv2 data-path repair started", attrs...)
 	outcome := r.dispatch(lb.InstanceID)
 	if outcome != "" {

@@ -22,6 +22,10 @@ const (
 	// StateActiveImpaired is what DescribeLoadBalancers reports while a data NIC
 	// of the LB's current VM is failing its gateway probe.
 	StateActiveImpaired = "active_impaired"
+
+	// lbSuspendBackstop is how long a suspension may outlive its mutation before
+	// a heartbeat from the current VM lifts it.
+	lbSuspendBackstop = 30 * time.Minute
 )
 
 // Outcomes of a recorded repair. Reserved is written before the repair is
@@ -57,11 +61,12 @@ type LBRepair struct {
 // LBDataPathRecord is the data-path evidence of one load balancer VM. NICs holds
 // only failing NICs, keyed by lower-case MAC; an absent NIC is healthy.
 type LBDataPathRecord struct {
-	InstanceID string                   `json:"instance_id"`
-	Suspended  bool                     `json:"suspended,omitempty"`
-	BoundAt    time.Time                `json:"bound_at,omitzero"`
-	NICs       map[string]*LBNICFailure `json:"nics,omitempty"`
-	Repairs    []LBRepair               `json:"repairs,omitempty"`
+	InstanceID  string                   `json:"instance_id"`
+	Suspended   bool                     `json:"suspended,omitempty"`
+	SuspendedAt time.Time                `json:"suspended_at,omitzero"`
+	BoundAt     time.Time                `json:"bound_at,omitzero"`
+	NICs        map[string]*LBNICFailure `json:"nics,omitempty"`
+	Repairs     []LBRepair               `json:"repairs,omitempty"`
 }
 
 // failing reports whether any NIC of the record is failing.
@@ -115,6 +120,7 @@ func (s *Store) SuspendLBHealth(ctx context.Context, lbID string) error {
 			return false, nil
 		}
 		rec.Suspended = true
+		rec.SuspendedAt = time.Now().UTC()
 		return true, nil
 	})
 	return err
@@ -126,6 +132,7 @@ func (s *Store) ResumeLBHealth(ctx context.Context, lbID, instanceID string) err
 	_, err := s.UpdateLBHealth(ctx, lbID, func(rec *LBDataPathRecord) (bool, error) {
 		changed := rec.Suspended
 		rec.Suspended = false
+		rec.SuspendedAt = time.Time{}
 		if instanceID != "" && rec.InstanceID != instanceID {
 			rec.InstanceID = instanceID
 			rec.BoundAt = time.Now().UTC()
@@ -137,14 +144,20 @@ func (s *Store) ResumeLBHealth(ctx context.Context, lbID, instanceID string) err
 	return err
 }
 
-// failingNICMACs returns the lower-case MACs the agent reports as failing.
-func failingNICMACs(nics []*LBAgentNICStatus) map[string]*LBAgentNICStatus {
+// failingNICMACs returns the lower-case MACs that are failing. A probe that
+// failed starts a failure. An established failure ends only when the latest
+// probe succeeded, because an agent restarted by a repair reports healthy for
+// its first misses.
+func failingNICMACs(nics []*LBAgentNICStatus, established map[string]*LBNICFailure) map[string]*LBAgentNICStatus {
 	out := make(map[string]*LBAgentNICStatus)
 	for _, n := range nics {
-		if n == nil || n.MAC == nil || n.ProbeOK == nil || *n.ProbeOK {
+		if n == nil || n.MAC == nil || n.ProbeOK == nil {
 			continue
 		}
-		out[strings.ToLower(*n.MAC)] = n
+		mac := strings.ToLower(*n.MAC)
+		if !*n.ProbeOK || (established[mac] != nil && aws.Int64Value(n.ConsecutiveFailures) != 0) {
+			out[mac] = n
+		}
 	}
 	return out
 }
@@ -156,36 +169,52 @@ func (s *ELBv2ServiceImpl) recordDataPathEvidence(ctx context.Context, lb *LoadB
 	if lb.InstanceID == "" || input.InstanceID == nil || *input.InstanceID != lb.InstanceID || len(input.NICs) == 0 {
 		return
 	}
-	failing := failingNICMACs(input.NICs)
 
 	rec, err := s.store.GetLBHealth(ctx, lb.LoadBalancerID)
 	if err != nil {
 		slog.WarnContext(ctx, "LBAgentHeartbeat: failed to read data-path evidence", "lbId", lb.LoadBalancerID, "err", err)
 		return
 	}
+	converge := false
 	if rec != nil && rec.Suspended {
-		return
+		if !s.suspensionConverges(ctx, lb, rec, *input.InstanceID) {
+			return
+		}
+		converge = true
 	}
 	var known map[string]*LBNICFailure
 	if rec != nil && rec.InstanceID == lb.InstanceID {
 		known = rec.NICs
 	}
-	if sameMACs(known, failing) && (len(failing) == 0 || rec != nil) {
+	failing := failingNICMACs(input.NICs, known)
+	if !converge && sameMACs(known, failing) && (len(failing) == 0 || rec != nil) {
 		return
 	}
 
 	eniByMAC := s.resolveLBENIs(ctx, lb, failing)
 	now := time.Now().UTC()
 	_, err = s.store.UpdateLBHealth(ctx, lb.LoadBalancerID, func(cur *LBDataPathRecord) (bool, error) {
+		changed := false
 		if cur.Suspended {
-			return false, nil
+			if !converge || !suspensionLifts(cur, lb.InstanceID, now) {
+				return false, nil
+			}
+			cur.Suspended = false
+			cur.SuspendedAt = time.Time{}
+			changed = true
+			if cur.InstanceID != lb.InstanceID {
+				cur.InstanceID = lb.InstanceID
+				cur.BoundAt = now
+				cur.NICs = nil
+			}
+		}
+		if cur.InstanceID != "" && cur.InstanceID != lb.InstanceID {
+			return changed, nil
 		}
 		prev := cur.NICs
-		if cur.InstanceID != lb.InstanceID {
-			prev = nil
-		}
+		failing := failingNICMACs(input.NICs, prev)
 		if cur.InstanceID == lb.InstanceID && sameMACs(prev, failing) {
-			return false, nil
+			return changed, nil
 		}
 		next := make(map[string]*LBNICFailure, len(failing))
 		for mac, n := range failing {
@@ -226,6 +255,26 @@ func (s *ELBv2ServiceImpl) recordDataPathEvidence(ctx context.Context, lb *LoadB
 				"lbArn", lb.LoadBalancerArn, "lbId", lb.LoadBalancerID, "instanceId", lb.InstanceID, "mac", mac)
 		}
 	}
+}
+
+// suspensionLifts reports whether a suspended record may be lifted by a
+// heartbeat from instanceID: it is bound to an older VM, or it has outlived the
+// backstop while bound to the current one.
+func suspensionLifts(rec *LBDataPathRecord, instanceID string, now time.Time) bool {
+	if rec.InstanceID != "" && rec.InstanceID != instanceID {
+		return true
+	}
+	return !rec.SuspendedAt.IsZero() && now.Sub(rec.SuspendedAt) >= lbSuspendBackstop
+}
+
+// suspensionConverges confirms against a fresh read of the LB record that the
+// VM the heartbeat reports is the one the LB currently names.
+func (s *ELBv2ServiceImpl) suspensionConverges(ctx context.Context, lb *LoadBalancerRecord, rec *LBDataPathRecord, heartbeatInstance string) bool {
+	if !suspensionLifts(rec, heartbeatInstance, time.Now().UTC()) {
+		return false
+	}
+	fresh, err := s.store.GetLoadBalancer(ctx, lb.LoadBalancerID)
+	return err == nil && fresh != nil && fresh.InstanceID == heartbeatInstance
 }
 
 // sameMACs reports whether two failing sets name the same NICs.

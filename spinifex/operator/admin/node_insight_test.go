@@ -180,7 +180,13 @@ func TestNetworkTestRunsEveryDirectionAndRecordsEachResult(t *testing.T) {
 	assert.Contains(t, byDirection[[2]string{"a", "c"}].Error, "not installed")
 	assert.Equal(t, NetworkTestComplete, byDirection[[2]string{"c", "a"}].Status, "c can still send")
 
-	again, err := d.StartNetworkTest(ctx, map[string]string{"Plane": "lan", "Source": "a", "Target": "b", "DurationSeconds": "5"})
+	// The run records its result before it releases the claim, so retry while busy.
+	var again *NetworkTest
+	require.Eventually(t, func() bool {
+		again, err = d.StartNetworkTest(ctx, map[string]string{"Plane": "lan", "Source": "a", "Target": "b", "DurationSeconds": "5"})
+		code, _ := awserrors.ResolveErrorCode(err)
+		return err == nil || code != awserrors.ErrorIncorrectState
+	}, 10*time.Second, 20*time.Millisecond)
 	require.NoError(t, err, "the claim is released when the test ends")
 
 	list, err := d.DescribeNetworkTests(ctx, map[string]string{})

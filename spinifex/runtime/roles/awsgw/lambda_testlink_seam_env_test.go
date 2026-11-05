@@ -161,7 +161,7 @@ func startSeamDaemon(t *testing.T, d *testlink.Daemon, guest guestFunc) *seamDae
 	ln, err := testlink.ListenControl(name)
 	require.NoError(t, err)
 	s := &seamDaemon{entered: make(chan testlink.Request, 4), done: make(chan testlink.Reply, 4)}
-	srv := &testlink.ControlServer{GatewayUID: os.Getuid(), RequestLimit: 1 << 20, ReplyLimit: 1 << 20, IOTimeout: 5 * time.Second,
+	srv := &testlink.ControlServer{GatewayUID: os.Getuid(), RequestLimit: testlink.MaxFrameBytes, ReplyLimit: testlink.MaxFrameBytes, IOTimeout: 5 * time.Second,
 		Handle: func(ctx context.Context, req []byte, cred testlink.Credential) testlink.Reply {
 			var parsed testlink.Request
 			_ = json.Unmarshal(req, &parsed)
@@ -189,7 +189,7 @@ func startSeamDaemon(t *testing.T, d *testlink.Daemon, guest guestFunc) *seamDae
 			t.Errorf("control server did not stop within %s", seamWait)
 		}
 	})
-	s.client = &testlink.ControlClient{Name: name, DaemonUID: os.Getuid(), RequestLimit: 1 << 20, ReplyLimit: 1 << 20, IOTimeout: 5 * time.Second}
+	s.client = &testlink.ControlClient{Name: name, DaemonUID: os.Getuid(), RequestLimit: testlink.MaxFrameBytes, ReplyLimit: testlink.MaxFrameBytes, IOTimeout: 5 * time.Second}
 	return s
 }
 

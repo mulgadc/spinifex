@@ -29,13 +29,18 @@ func fullServe(t *testing.T, ln *net.UnixListener, handle func(context.Context, 
 	t.Helper()
 	srv := &ControlServer{GatewayUID: os.Getuid(), RequestLimit: MaxFrameBytes, ReplyLimit: MaxFrameBytes, IOTimeout: 60 * time.Second, Handle: handle}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { _ = srv.Serve(ctx, ln); close(done) }()
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ctx, ln) }()
 	var once sync.Once
 	stop := func() {
 		once.Do(func() {
 			cancel()
-			waitClosed(t, done, 20*time.Second, "Serve did not return")
+			select {
+			case err := <-done:
+				require.NoError(t, err, "Serve returned an error on shutdown")
+			case <-time.After(20 * time.Second):
+				t.Fatal("Serve did not return")
+			}
 		})
 	}
 	t.Cleanup(stop)
@@ -92,6 +97,18 @@ func replyOfSize(t *testing.T, payloadLen, size int) Reply {
 	return rep
 }
 
+func recvBounded[T any](t *testing.T, ch chan T) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(30 * time.Second):
+		t.Fatal("no value within 30 s")
+		var zero T
+		return zero
+	}
+}
+
 func allocatedDuring(f func()) uint64 {
 	var before, after runtime.MemStats
 	runtime.GC()
@@ -124,7 +141,7 @@ func TestControl_LargeMetadataWithinTheFrameIsAccepted(t *testing.T) {
 	req := requestOfSize(t, 16, 1<<20)
 	_, err := fullClient(name).Exchange(context.Background(), req, testCred, time.Now().Add(30*time.Second))
 	require.NoError(t, err)
-	require.Equal(t, req, <-got)
+	require.Equal(t, req, recvBounded(t, got))
 }
 
 // Test 6a: a Request and a Reply of exactly MaxFrameBytes with a full 6 MiB
@@ -140,7 +157,7 @@ func TestControl_AtBoundRequestAndReplyBothFit(t *testing.T) {
 	req := requestOfSize(t, MaxPayloadBytes, int(MaxFrameBytes))
 	rep, err := fullClient(name).Exchange(context.Background(), req, testCred, time.Now().Add(60*time.Second))
 	require.NoError(t, err)
-	require.Equal(t, req, <-got)
+	require.Equal(t, req, recvBounded(t, got))
 	require.Equal(t, want, rep)
 }
 
@@ -183,25 +200,30 @@ func TestControl_ServerReplacesOversizedRepliesWithUnknown(t *testing.T) {
 	require.Less(t, alloc, uint64(4<<20), "the oversized reply was encoded before the payload check")
 }
 
-// directPeer serves one connection by replying with the raw frame body.
-func directPeer(t *testing.T, name string, body func(net.Conn)) {
+// directPeer serves one connection by reading the request and credential,
+// then writing with body; the peer's own error is returned on the channel.
+func directPeer(t *testing.T, name string, body func(net.Conn) error) chan error {
 	t.Helper()
 	ln := fullListen(t, name)
 	t.Cleanup(func() { _ = ln.Close() })
+	peerErr := make(chan error, 1)
 	go func() {
-		c, err := ln.AcceptUnix()
-		if err != nil {
-			return
-		}
-		defer func() { _ = c.Close() }()
-		if _, err := readFrame(c, MaxFrameBytes); err != nil {
-			return
-		}
-		if _, err := readFrame(c, MaxCredentialBytes); err != nil {
-			return
-		}
-		body(c)
+		peerErr <- func() error {
+			c, err := ln.AcceptUnix()
+			if err != nil {
+				return err
+			}
+			defer func() { _ = c.Close() }()
+			if _, err := readFrame(c, MaxFrameBytes); err != nil {
+				return err
+			}
+			if _, err := readFrame(c, MaxCredentialBytes); err != nil {
+				return err
+			}
+			return body(c)
+		}()
 	}()
+	return peerErr
 }
 
 // Test 6: replies from a direct peer daemon over the payload bound or the
@@ -210,19 +232,25 @@ func TestControl_ClientRejectsOversizedReplies(t *testing.T) {
 	overPayload, err := json.Marshal(Reply{Outcome: OutcomeDone, Payload: make([]byte, MaxPayloadBytes+1)})
 	require.NoError(t, err)
 	require.LessOrEqual(t, int64(len(overPayload)), MaxFrameBytes)
-	for name, send := range map[string]func(net.Conn){
-		"payload over 6 MiB": func(c net.Conn) { _ = writeFrame(c, overPayload) },
-		"frame over bound": func(c net.Conn) {
+	cases := map[string]struct {
+		send func(net.Conn) error
+		want string
+	}{
+		"payload over 6 MiB": {func(c net.Conn) error { return writeFrame(c, overPayload) }, "reply payload of 6291457 bytes exceeds 6291456"},
+		"frame over bound": {func(c net.Conn) error {
 			var hdr [4]byte
 			binary.BigEndian.PutUint32(hdr[:], uint32(MaxFrameBytes+1))
-			_, _ = c.Write(hdr[:])
-		},
-	} {
+			_, err := c.Write(hdr[:])
+			return err
+		}, "outside 1.."},
+	}
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			sock := controlName(t)
-			directPeer(t, sock, send)
+			peerErr := directPeer(t, sock, tc.send)
 			_, err := fullClient(sock).Exchange(context.Background(), []byte(`{"attempt_id":"a"}`), testCred, time.Now().Add(30*time.Second))
-			require.Error(t, err)
+			require.NoError(t, recvBounded(t, peerErr), "the peer read the request and wrote its reply")
+			require.ErrorContains(t, err, tc.want)
 			require.NotErrorIs(t, err, ErrNotSent)
 		})
 	}
@@ -411,28 +439,34 @@ func TestControl_FullBacklogConnectIsNotSent(t *testing.T) {
 	require.Equal(t, int32(MaxAdmitted), p.calls.Load(), "no further request reached Handle")
 }
 
-// Test 15 (measurement, not asserted): two admitted full-size requests, each
-// decoded and fit-checked as the daemon does, logged for the plan.
+// Test 15 (measurement, not a bound): each admitted request is decoded and
+// fit-checked as the daemon does; HeapAlloc is sampled once per handler after
+// the fit check, so the logged value is not a peak.
 func TestControl_MeasureTwoAdmittedFullSizeLifetimes(t *testing.T) {
 	name := controlName(t)
 	var peak atomic.Uint64
 	var mu sync.Mutex
 	entered := 0
 	both := make(chan struct{})
-	fullServe(t, fullListen(t, name), func(_ context.Context, b []byte, cred Credential) Reply {
+	fitErrs := make(chan error, MaxAdmitted)
+	fullServe(t, fullListen(t, name), func(ctx context.Context, b []byte, cred Credential) Reply {
 		var req Request
 		if err := json.Unmarshal(b, &req); err != nil {
 			return Reply{Outcome: OutcomeRefused, Error: err.Error()}
 		}
 		req.cred = cred
-		_ = hostlink.CheckInvokeFits(guestRequest(req, 0))
+		fitErrs <- hostlink.CheckInvokeFits(guestRequest(req, 0))
 		mu.Lock()
 		entered++
 		if entered == MaxAdmitted {
 			close(both)
 		}
 		mu.Unlock()
-		<-both
+		select {
+		case <-both:
+		case <-ctx.Done():
+			return Reply{Outcome: OutcomeUnknown}
+		}
 		var m runtime.MemStats
 		runtime.ReadMemStats(&m)
 		for {
@@ -457,6 +491,10 @@ func TestControl_MeasureTwoAdmittedFullSizeLifetimes(t *testing.T) {
 	for _, err := range errs {
 		require.NoError(t, err)
 	}
-	t.Logf("two admitted full-size lifetimes: total allocated %d bytes (client and server), peak heap %d bytes", alloc, peak.Load())
+	for range MaxAdmitted {
+		require.NoError(t, recvBounded(t, fitErrs), "the full-size request fits the guest link")
+	}
+	// Excludes real executor marshaling, HostSend and guest memory.
+	t.Logf("two admitted full-size requests: total allocated %d bytes (client and server); max HeapAlloc of the post-fit samples %d bytes", alloc, peak.Load())
 }
 

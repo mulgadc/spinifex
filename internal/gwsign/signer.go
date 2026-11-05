@@ -15,6 +15,7 @@ import (
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
 	"github.com/mulgadc/spinifex/internal/imdscreds"
 )
 
@@ -57,8 +58,9 @@ func NewInstanceRole() *Signer {
 }
 
 // newInstanceRole reads from the IMDS root base; "" means the default endpoint.
-func newInstanceRole(base string) *Signer {
-	return &Signer{provider: aws.NewCredentialsCache(imdscreds.NewProvider(nil, base))}
+// optFns adjust the SDK IMDS client, e.g. its retryer; none keeps the defaults.
+func newInstanceRole(base string, optFns ...func(*imds.Options)) *Signer {
+	return &Signer{provider: aws.NewCredentialsCache(imdscreds.NewProvider(nil, base, optFns...))}
 }
 
 // EnsureCredentials retrieves once from the provider, surfacing the error so a

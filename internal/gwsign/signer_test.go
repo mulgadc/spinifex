@@ -12,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
 	"github.com/mulgadc/bluebottle/pkg/sigv4"
 )
 
@@ -146,6 +147,10 @@ func imdsStub(t *testing.T, accessKey, expiration string) *httptest.Server {
 	return srv
 }
 
+// singleAttempt disables IMDS client retries so an unreachable endpoint fails
+// on the first attempt instead of after the SDK's 1s-per-retry backoff.
+func singleAttempt(o *imds.Options) { o.Retryer = aws.NopRetryer{} }
+
 // The instance-role signer ignores environment keys and signs only with the
 // credentials the metadata service issues.
 func TestNewInstanceRole_UsesOnlyIMDS(t *testing.T) {
@@ -154,7 +159,7 @@ func TestNewInstanceRole_UsesOnlyIMDS(t *testing.T) {
 	const imdsKey = "ASIAIMDSONLYEXAMPLE1"
 	srv := imdsStub(t, imdsKey, "2099-01-01T00:00:00Z")
 
-	s := newInstanceRole(srv.URL)
+	s := newInstanceRole(srv.URL, singleAttempt)
 	req := httptest.NewRequest(http.MethodPost, "https://gw.example/", nil)
 	if err := s.Sign(req, emptySHA, testService, testRegion); err != nil {
 		t.Fatal(err)
@@ -164,7 +169,7 @@ func TestNewInstanceRole_UsesOnlyIMDS(t *testing.T) {
 	}
 
 	srv.Close()
-	cold := newInstanceRole(srv.URL)
+	cold := newInstanceRole(srv.URL, singleAttempt)
 	if err := cold.EnsureCredentials(context.Background()); err == nil {
 		t.Fatal("environment keys were used when IMDS was unreachable")
 	}
@@ -175,7 +180,7 @@ func TestNewInstanceRole_UsesOnlyIMDS(t *testing.T) {
 func TestNewInstanceRole_FailedRefreshErrorsInsteadOfStaleKey(t *testing.T) {
 	const staleKey = "ASIASTALEEXAMPLE0001"
 	srv := imdsStub(t, staleKey, "2000-01-01T00:00:00Z")
-	s := newInstanceRole(srv.URL)
+	s := newInstanceRole(srv.URL, singleAttempt)
 	if err := s.EnsureCredentials(t.Context()); err != nil {
 		t.Fatalf("first retrieve: %v", err)
 	}

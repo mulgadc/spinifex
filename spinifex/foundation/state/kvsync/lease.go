@@ -160,50 +160,78 @@ func (l *Lease) install(ctx context.Context, rev uint64, sent time.Time) Token {
 	return Token{Holder: l.holder, Generation: rev}
 }
 
-// renew rewrites the key by CAS every ttl/3 until stopped. A mismatch loses the
-// lease at once; an unreachable store is retried until 2*ttl/3 has passed since
-// the last renewal that landed, before any other node can have waited a TTL.
+// renew rewrites the key by CAS ttl/3 after each write that landed was sent,
+// until stopped. A mismatch loses the lease at once. An unreachable store is
+// retried, and the lease is lost at 2*ttl/3 after that send, however long a CAS has been stuck.
 func (l *Lease) renew(ctx context.Context, a *acquisition) {
 	defer close(a.done)
 	interval := l.ttl / 3
+	validity := 2 * l.ttl / 3
 	retry := max(l.ttl/12, time.Millisecond)
-	wait := interval
+	var lastErr error
 	for {
+		l.mu.Lock()
+		rev, landed := a.rev, a.landed
+		l.mu.Unlock()
+		deadline := landed.Add(validity)
+		wait := max(0, landed.Add(interval).Sub(l.clock.Now()))
+		if lastErr != nil {
+			wait = min(retry, deadline.Sub(l.clock.Now()))
+		}
 		select {
 		case <-a.stop:
 			return
 		case <-l.clock.After(wait):
 		}
-		l.mu.Lock()
-		rev, deadline := a.rev, a.landed.Add(2*l.ttl/3)
-		l.mu.Unlock()
 		budget := deadline.Sub(l.clock.Now())
 		if budget <= 0 {
-			l.lose(ctx, a, "renewal unavailable for two thirds of the ttl", nil)
+			l.lose(ctx, a, "renewal unavailable for two thirds of the ttl", lastErr)
 			return
 		}
 		sent := l.clock.Now()
-		attemptCtx, cancel := context.WithTimeout(ctx, min(budget, interval))
-		next, err := l.store.CompareAndSwap(attemptCtx, l.key, encode(l.holder, a.gen), rev)
-		cancel()
+		next, err, inTime := l.swapWithin(ctx, a.gen, rev, budget, min(budget, interval))
+		if !inTime {
+			l.lose(ctx, a, "renewal did not answer within two thirds of the ttl", nil)
+			return
+		}
 		switch {
 		case err == nil:
-			// Stamped at the send: a peer may have seen the revision that early.
 			l.mu.Lock()
+			// Stamped at the send: a peer may have seen the revision that early.
 			a.rev, a.landed = next, sent
 			l.mu.Unlock()
-			wait = interval
+			lastErr = nil
 		case errors.Is(err, ErrRevisionMismatch):
 			l.lose(ctx, a, "renewal lost the key", err)
 			return
 		default:
-			remaining := deadline.Sub(l.clock.Now())
-			if remaining <= 0 {
-				l.lose(ctx, a, "renewal unavailable for two thirds of the ttl", err)
-				return
-			}
-			wait = min(retry, remaining)
+			lastErr = err
 		}
+	}
+}
+
+// swapWithin runs one renewal CAS, giving up on it once budget has passed on
+// the lease's clock, since a CAS can block past its own context. A late
+// result is dropped: by then the lease has been given up.
+func (l *Lease) swapWithin(ctx context.Context, gen, rev uint64, budget, timeout time.Duration) (uint64, error, bool) {
+	type result struct {
+		next uint64
+		err  error
+	}
+	done := make(chan result, 1)
+	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	go func() {
+		next, err := l.store.CompareAndSwap(attemptCtx, l.key, encode(l.holder, gen), rev)
+		done <- result{next, err}
+	}()
+	expired, stop := l.clock.Deadline(budget)
+	defer stop()
+	select {
+	case r := <-done:
+		return r.next, r.err, true
+	case <-expired:
+		return 0, nil, false
 	}
 }
 

@@ -5,6 +5,7 @@ package accountlifecycle
 // registered in.
 
 import (
+	"context"
 	"encoding/json"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountcleanup"
 	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -173,32 +175,37 @@ func TestECSClusterNameFromARN(t *testing.T) {
 	assert.Empty(t, ecsClusterName(""))
 }
 
-// Container instances are ordinary EC2 instances in the tenant's account, so
-// the instance reaper takes them — but the tasks riding on them have to be
-// stopped first, which is what puts ECS ahead of it in the compute stage.
-func TestECSReapersRunBeforeTheInstanceReaper(t *testing.T) {
-	reapers := ECSReapers(nil)
-	reapers = append(reapers, EC2Reapers(nil, 1, []string{"node-1"})...)
+// orderedCompute records when the engine reaches the instance cleanup.
+type orderedCompute struct {
+	ComputeStage
 
-	ecsIndex := indexOfKind(reapers, "ecs-cluster")
-	instanceIndex := indexOfKind(reapers, "instance")
-
-	require.NotEqual(t, -1, ecsIndex)
-	require.NotEqual(t, -1, instanceIndex)
-	assert.Less(t, ecsIndex, instanceIndex)
-	assert.Equal(t, StageCompute, reapers[ecsIndex].Stage())
-
-	// Both are in the same stage, so the engine's within-stage ordering is
-	// what enforces this rather than the stage graph.
-	assert.Equal(t, reapers[instanceIndex].Stage(), reapers[ecsIndex].Stage())
+	order *[]string
 }
 
-// SortReapers is what the engine applies, and a stable sort is the only reason
-// the registration order above survives it.
-func TestSortReapersKeepsECSAheadOfInstances(t *testing.T) {
-	reapers := ECSReapers(nil)
-	reapers = append(reapers, EC2Reapers(nil, 1, []string{"node-1"})...)
-	SortReapers(reapers)
+func (o *orderedCompute) CleanupCompute(ctx context.Context, req *accountcleanup.ComputeRequest) (*accountcleanup.ComputeResult, error) {
+	*o.order = append(*o.order, "instances")
+	return o.ComputeStage.CleanupCompute(ctx, req)
+}
 
-	assert.Less(t, indexOfKind(reapers, "ecs-cluster"), indexOfKind(reapers, "instance"))
+// Container instances are ordinary EC2 instances in the tenant's account, so
+// the compute cleanup terminates them — but the tasks riding on them have to be
+// stopped first, so the compute-stage reapers must run before that cleanup.
+func TestECSClustersAreDeletedBeforeTheInstancesAreTerminated(t *testing.T) {
+	var order []string
+	cluster := &fakeReaper{
+		kind: "ecs-cluster", stage: StageCompute, order: &order,
+		resources: []Resource{{Kind: "ecs-cluster", ID: "web"}},
+	}
+	accounts := newFakeAccounts()
+	engine := quietEngine(accounts, cluster)
+	compute, _ := cleanStages()
+	engine.Compute = &orderedCompute{ComputeStage: compute, order: &order}
+
+	_, err := engine.Teardown(context.Background(), request())
+
+	require.NoError(t, err)
+	require.Equal(t, []string{"ecs-cluster/web", "instances"}, order)
+	for _, reaper := range ECSReapers(nil) {
+		assert.Equal(t, StageCompute, reaper.Stage())
+	}
 }

@@ -157,6 +157,10 @@ type InstanceReferenceReader struct {
 
 var _ accountcleanup.InstanceReferenceReader = (*InstanceReferenceReader)(nil)
 
+// terminalInstanceStates are the states an instance no longer holds anything
+// in. Anything else is still occupying a volume, an address and a host.
+var terminalInstanceStates = map[string]bool{"terminated": true, "shutting-down": true}
+
 // NewInstanceReferenceReader builds the reader over the configured node set.
 func NewInstanceReferenceReader(nc *nats.Conn, nodeIDs []string) *InstanceReferenceReader {
 	return &InstanceReferenceReader{nc: nc, nodeIDs: nodeIDs, budget: ec2PlatformInventoryBudget}
@@ -165,7 +169,7 @@ func NewInstanceReferenceReader(nc *nats.Conn, nodeIDs []string) *InstanceRefere
 func (r *InstanceReferenceReader) AccountInstanceReferences(ctx context.Context, accountID string) (*accountcleanup.References, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.budget)
 	defer cancel()
-	out, err := ec2instanceapi.DescribeAccountInstancesComplete(ctx, r.nc, r.nodeIDs, accountID)
+	out, err := ec2instanceapi.DescribeAccountInstancesStrict(ctx, r.nc, r.nodeIDs, accountID)
 	if err != nil {
 		return nil, err
 	}

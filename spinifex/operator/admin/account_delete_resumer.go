@@ -99,7 +99,7 @@ func (d Deps) resumeDeletion(
 	revision uint64,
 	now time.Time,
 ) bool {
-	engine, err := accountteardown.NewClusterEngine(ctx, d.NATS, accountteardown.ClusterNodes{Expected: d.ExpectedNodes, DaemonIDs: d.NodeIDs, GatewayIDs: d.GatewayNodeIDs}, d.Termination, d.BucketStore, d.PlatformCleaner)
+	engine, err := accountteardown.NewClusterEngine(ctx, d.NATS, accountteardown.ClusterNodes{Expected: d.ExpectedNodes, DaemonIDs: d.NodeIDs, GatewayIDs: d.GatewayNodeIDs}, d.Termination, d.BucketStore, d.PlatformCleaner, accountteardown.WithComputeCleanup(d.ComputeCleaner, d.StorageCleaner))
 	if err != nil {
 		// Nothing was written, so a later scan retries.
 		slog.Error("DeletionResumer: failed to build teardown engine", "account_id", existing.AccountID, "operation_id", existing.OperationID, "err", err)

@@ -1,10 +1,10 @@
-package kvutil_test
+package kvstore_test
 
 import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,7 +27,7 @@ func TestNewBucketReport_TellsConfiguredFromWorking(t *testing.T) {
 		},
 	}
 
-	got := kvutil.NewBucketReportForTest("spinifex-instance-state", 3, info)
+	got := kvstore.NewBucketReportForTest("spinifex-instance-state", 3, info)
 
 	assert.Equal(t, 3, got.Replicas, "the configured count is what the stream asked for")
 	assert.Equal(t, 2, got.Online, "a peer that is not current cannot acknowledge a write")
@@ -54,7 +54,7 @@ func TestNewBucketReport_OfflinePeerIsNotOnline(t *testing.T) {
 		},
 	}
 
-	got := kvutil.NewBucketReportForTest("b", 3, info)
+	got := kvstore.NewBucketReportForTest("b", 3, info)
 
 	assert.Equal(t, 1, got.Online)
 	assert.False(t, got.HasQuorum(), "one of three cannot accept a write")
@@ -72,7 +72,7 @@ func TestNewBucketReport_NoLeaderIsNoQuorum(t *testing.T) {
 		},
 	}
 
-	got := kvutil.NewBucketReportForTest("b", 3, info)
+	got := kvstore.NewBucketReportForTest("b", 3, info)
 
 	assert.Empty(t, got.Leader)
 	assert.Equal(t, 1, got.Online)
@@ -84,7 +84,7 @@ func TestNewBucketReport_NoLeaderIsNoQuorum(t *testing.T) {
 // all, and its one replica is serving — the read that produced this info was
 // answered by it.
 func TestNewBucketReport_SingleNodeServerReportsNoCluster(t *testing.T) {
-	got := kvutil.NewBucketReportForTest("b", 1, &jetstream.StreamInfo{
+	got := kvstore.NewBucketReportForTest("b", 1, &jetstream.StreamInfo{
 		Config: jetstream.StreamConfig{Replicas: 1},
 	})
 
@@ -98,7 +98,7 @@ func TestNewBucketReport_SingleNodeServerReportsNoCluster(t *testing.T) {
 // still able to serve at the size it has, and calling that a quorum failure would
 // confuse a durability shortfall with an outage.
 func TestHasQuorumIsMeasuredAgainstConfiguredReplicas(t *testing.T) {
-	r := kvutil.BucketReport{Bucket: "b", Replicas: 1, Want: 3, Online: 1}
+	r := kvstore.BucketReport{Bucket: "b", Replicas: 1, Want: 3, Online: 1}
 	assert.True(t, r.HasQuorum(), "one of one is a majority even when three are wanted")
 	assert.True(t, r.UnderReplicated())
 	assert.False(t, r.Healthy())
@@ -109,7 +109,7 @@ func TestHasQuorumIsMeasuredAgainstConfiguredReplicas(t *testing.T) {
 // cluster cannot place a replica. The first attempt is never delayed, because the
 // throttle must not slow down a raise that would have succeeded.
 func TestRaiseThrottle_LetsTheFirstAttemptThroughThenWaits(t *testing.T) {
-	th := kvutil.NewRaiseThrottleForTest(time.Minute)
+	th := kvstore.NewRaiseThrottleForTest(time.Minute)
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	require.True(t, th.Allow("alpha", start), "the first attempt must never be throttled")
@@ -121,7 +121,7 @@ func TestRaiseThrottle_LetsTheFirstAttemptThroughThenWaits(t *testing.T) {
 // TestRaiseThrottle_IsPerBucket: one bucket that cannot be placed must not silence
 // the raise for every other bucket on the node.
 func TestRaiseThrottle_IsPerBucket(t *testing.T) {
-	th := kvutil.NewRaiseThrottleForTest(time.Minute)
+	th := kvstore.NewRaiseThrottleForTest(time.Minute)
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	require.True(t, th.Allow("alpha", now))

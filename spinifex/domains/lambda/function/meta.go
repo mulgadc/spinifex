@@ -11,7 +11,7 @@ import (
 	"time"
 
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -60,7 +60,7 @@ func (s *MetaService) bucket(ctx context.Context, accountID string) (jetstream.K
 		return kv, nil
 	}
 	name := KVAccountBucket(accountID)
-	kv, err := kvutil.GetOrCreateBucket(ctx, s.js, name, KVBucketAccountHistory)
+	kv, err := kvstore.GetOrCreateBucket(ctx, s.js, name, KVBucketAccountHistory)
 	if err != nil {
 		return nil, fmt.Errorf("lambda: open account bucket %s: %w", name, err)
 	}

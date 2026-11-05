@@ -10,7 +10,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -39,7 +39,7 @@ func createTestGroup(t *testing.T, svc *PlacementGroupServiceImpl, name, strateg
 // readRecord returns the stored record for assertions.
 func readRecord(t *testing.T, svc *PlacementGroupServiceImpl, groupName string) *PlacementGroupRecord {
 	t.Helper()
-	entry, err := svc.kv.Get(t.Context(), kvutil.AccountKey(testAccountID, groupName))
+	entry, err := svc.kv.Get(t.Context(), kvstore.AccountKey(testAccountID, groupName))
 	require.NoError(t, err)
 	var record PlacementGroupRecord
 	require.NoError(t, json.Unmarshal(entry.Value(), &record))
@@ -50,7 +50,7 @@ func readRecord(t *testing.T, svc *PlacementGroupServiceImpl, groupName string) 
 // starting state the public API cannot produce.
 func seedRecord(t *testing.T, svc *PlacementGroupServiceImpl, groupName string, mutate func(*PlacementGroupRecord)) {
 	t.Helper()
-	_, err := kvutil.Update(t.Context(), svc.kv, kvutil.AccountKey(testAccountID, groupName), kvutil.CASConfig{},
+	_, err := kvstore.Update(t.Context(), svc.kv, kvstore.AccountKey(testAccountID, groupName), kvstore.CASConfig{},
 		func(record *PlacementGroupRecord) (bool, error) {
 			mutate(record)
 			return true, nil

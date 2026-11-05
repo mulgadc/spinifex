@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -39,7 +39,7 @@ type AccountCleanup struct {
 // referenced returns a reason is kept; unreadable records are left for the owner scan to report. A
 // listing failure is returned and nothing is deleted.
 func (s *PlacementGroupServiceImpl) CleanupAccount(ctx context.Context, accountID string, referenced func(groupID, groupName string) string) (*AccountCleanup, error) {
-	keys, err := kvutil.Keys(ctx, s.kv)
+	keys, err := kvstore.Keys(ctx, s.kv)
 	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, fmt.Errorf("list placement-group keys: %w", err)
 	}
@@ -47,7 +47,7 @@ func (s *PlacementGroupServiceImpl) CleanupAccount(ctx context.Context, accountI
 	prefix := accountID + "."
 	out := &AccountCleanup{Referenced: map[string]string{}}
 	for _, key := range keys {
-		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvstore.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		entry, err := s.kv.Get(ctx, key)

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	telemetry "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -292,7 +292,7 @@ func (s *EKSServiceImpl) removeClusterRecord(ctx context.Context, acctKV jetstre
 	}
 
 	errRefsAdded := errors.New("refs added")
-	_, err = kvutil.DeleteIf(ctx, acctKV, ClusterMetaKey(name), kvutil.CASConfig{
+	_, err = kvstore.DeleteIf(ctx, acctKV, ClusterMetaKey(name), kvstore.CASConfig{
 		Attempts: maxClusterStateCASRetries,
 		NotFound: ErrClusterNotFound,
 	}, func(m *ClusterMeta) error {

@@ -20,7 +20,7 @@ import (
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -66,7 +66,7 @@ func NewEIPServiceImpl(ctx context.Context, natsConn *nats.Conn, externalIPAM *e
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
 	}
 
-	eipKV, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketEIPs, 10)
+	eipKV, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketEIPs, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketEIPs, err)
 	}
@@ -76,7 +76,7 @@ func NewEIPServiceImpl(ctx context.Context, natsConn *nats.Conn, externalIPAM *e
 
 	// TTL'd, so a failure to create it is not worth refusing to serve EIPs over:
 	// a nil bucket only costs post-completion dedupe.
-	idemKV, err := kvutil.GetOrCreateBucketWithTTL(ctx, js, KVBucketEIPIdempotency, 1, eipIdempotencyTTL)
+	idemKV, err := kvstore.GetOrCreateBucketWithTTL(ctx, js, KVBucketEIPIdempotency, 1, eipIdempotencyTTL)
 	if err != nil {
 		slog.Warn("EIP service: idempotency bucket unavailable; a retried AllocateAddress may allocate twice",
 			"bucket", KVBucketEIPIdempotency, "err", err)
@@ -146,7 +146,7 @@ func (s *EIPServiceImpl) allocateAddress(ctx context.Context, input *ec2.Allocat
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal EIP record: %w", err)
 	}
-	if _, err := s.eipKV.Put(ctx, kvutil.AccountKey(accountID, allocID), data); err != nil {
+	if _, err := s.eipKV.Put(ctx, kvstore.AccountKey(accountID, allocID), data); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -167,7 +167,7 @@ func (s *EIPServiceImpl) ReleaseAddress(ctx context.Context, input *ec2.ReleaseA
 	}
 
 	allocID := *input.AllocationId
-	key := kvutil.AccountKey(accountID, allocID)
+	key := kvstore.AccountKey(accountID, allocID)
 
 	entry, err := s.eipKV.Get(ctx, key)
 	if err != nil {
@@ -206,7 +206,7 @@ func (s *EIPServiceImpl) AssociateAddress(ctx context.Context, input *ec2.Associ
 	}
 
 	allocID := *input.AllocationId
-	key := kvutil.AccountKey(accountID, allocID)
+	key := kvstore.AccountKey(accountID, allocID)
 
 	entry, err := s.eipKV.Get(ctx, key)
 	if err != nil {
@@ -536,7 +536,7 @@ func (s *EIPServiceImpl) findByENI(ctx context.Context, accountID, eniID string)
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if k == kvutil.VersionKey || !strings.HasPrefix(k, prefix) {
+		if k == kvstore.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
 		}
 		entry, err := s.eipKV.Get(ctx, k)
@@ -590,7 +590,7 @@ func (s *EIPServiceImpl) DescribeAddresses(ctx context.Context, input *ec2.Descr
 
 	var addresses []*ec2.Address
 	for _, k := range keys {
-		if k == kvutil.VersionKey {
+		if k == kvstore.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(k, prefix) {
@@ -699,7 +699,7 @@ func (s *EIPServiceImpl) DescribeAddressesAttribute(ctx context.Context, input *
 			if id == nil {
 				continue
 			}
-			key := kvutil.AccountKey(accountID, *id)
+			key := kvstore.AccountKey(accountID, *id)
 			entry, err := s.eipKV.Get(ctx, key)
 			if err != nil {
 				continue // not found, skip
@@ -722,7 +722,7 @@ func (s *EIPServiceImpl) DescribeAddressesAttribute(ctx context.Context, input *
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 		for _, k := range keys {
-			if k == kvutil.VersionKey {
+			if k == kvstore.VersionKey {
 				continue
 			}
 			if !strings.HasPrefix(k, prefix) {
@@ -819,7 +819,7 @@ func (s *EIPServiceImpl) findByAssociationID(ctx context.Context, accountID, ass
 	}
 
 	for _, k := range keys {
-		if k == kvutil.VersionKey {
+		if k == kvstore.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(k, prefix) {
@@ -857,7 +857,7 @@ func (s *EIPServiceImpl) AssociatedPublicIPForInstance(ctx context.Context, acco
 		return "", false
 	}
 	for _, k := range keys {
-		if k == kvutil.VersionKey || !strings.HasPrefix(k, prefix) {
+		if k == kvstore.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
 		}
 		entry, err := s.eipKV.Get(ctx, k)

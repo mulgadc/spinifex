@@ -10,7 +10,7 @@ import (
 	"log/slog"
 	"sort"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -79,7 +79,7 @@ func (r *Registry) RunKV(ctx context.Context, bucket string, kv jetstream.KeyVal
 }
 
 func (r *Registry) runKV(ctx context.Context, bucket string, kv jetstream.KeyValue, js jetstream.JetStream, targetVersion int) error {
-	current, err := kvutil.ReadVersion(ctx, kv)
+	current, err := kvstore.ReadVersion(ctx, kv)
 	if err != nil {
 		return fmt.Errorf("read version for %s: %w", bucket, err)
 	}
@@ -93,7 +93,7 @@ func (r *Registry) runKV(ctx context.Context, bucket string, kv jetstream.KeyVal
 
 	all := r.kvMigrations[bucket]
 	if current == 0 && len(all) == 0 {
-		return kvutil.WriteVersion(ctx, kv, targetVersion)
+		return kvstore.WriteVersion(ctx, kv, targetVersion)
 	}
 
 	// A fresh bucket has no v0 schema; begin at the lowest registered step.
@@ -129,7 +129,7 @@ func (r *Registry) runKV(ctx context.Context, bucket string, kv jetstream.KeyVal
 		if err := m.Run(ctx, kvc); err != nil {
 			return fmt.Errorf("KV migration %s %d→%d failed: %w", bucket, m.FromVersion, m.ToVersion, err)
 		}
-		if err := kvutil.WriteVersion(ctx, kv, m.ToVersion); err != nil {
+		if err := kvstore.WriteVersion(ctx, kv, m.ToVersion); err != nil {
 			return fmt.Errorf("stamp version %d on %s: %w", m.ToVersion, bucket, err)
 		}
 	}

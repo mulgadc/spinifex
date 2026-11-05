@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -145,11 +144,11 @@ func NewStore(js jetstream.JetStream) *Store {
 	}
 }
 
-func zoneKey(account, id string) string   { return keyPrefixZone + kvutil.AccountKey(account, id) }
-func rrsetsKey(account, id string) string { return keyPrefixRRSets + kvutil.AccountKey(account, id) }
-func changeKey(account, id string) string { return keyPrefixChange + kvutil.AccountKey(account, id) }
+func zoneKey(account, id string) string   { return keyPrefixZone + kvstore.AccountKey(account, id) }
+func rrsetsKey(account, id string) string { return keyPrefixRRSets + kvstore.AccountKey(account, id) }
+func changeKey(account, id string) string { return keyPrefixChange + kvstore.AccountKey(account, id) }
 func refKey(account, ref string) string {
-	return keyPrefixCallerRf + kvutil.AccountKey(account, refDigest(ref))
+	return keyPrefixCallerRf + kvstore.AccountKey(account, refDigest(ref))
 }
 
 // maxIssuedIDLength bounds the IDs a caller can look up. An overlong key

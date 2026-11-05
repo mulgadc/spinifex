@@ -10,7 +10,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -72,7 +71,7 @@ func (s *Store) InstanceIDs(ctx context.Context) ([]string, error) {
 
 	var ids []string
 	for key := range lister.Keys() {
-		if key != kvutil.VersionKey {
+		if key != kvstore.VersionKey {
 			ids = append(ids, key)
 		}
 	}

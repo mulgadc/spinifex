@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -77,7 +76,7 @@ func (s *Store[T]) Mutate(ctx context.Context, key string, fn func(*T) (bool, er
 	// Safe to re-run: Update re-reads the record inside its own CAS loop, so
 	// the second attempt starts from whatever the reopened bucket holds.
 	return s.withKV(ctx, func(kv jetstream.KeyValue) error {
-		_, err := kvutil.Update(ctx, kv, key, kvutil.CASConfig{
+		_, err := Update(ctx, kv, key, CASConfig{
 			Attempts:  s.cfg.Attempts,
 			NotFound:  fmt.Errorf("%w: %s", ErrNotFound, key),
 			Exhausted: s.cfg.Exhausted,
@@ -90,7 +89,7 @@ func (s *Store[T]) Mutate(ctx context.Context, key string, fn func(*T) (bool, er
 // absent key starts fn from the zero value rather than reporting ErrNotFound.
 func (s *Store[T]) Upsert(ctx context.Context, key string, fn func(*T) (bool, error)) error {
 	return s.withKV(ctx, func(kv jetstream.KeyValue) error {
-		_, err := kvutil.Update(ctx, kv, key, kvutil.CASConfig{
+		_, err := Update(ctx, kv, key, CASConfig{
 			Attempts:       s.cfg.Attempts,
 			CreateIfAbsent: true,
 			Exhausted:      s.cfg.Exhausted,
@@ -234,10 +233,10 @@ func On[T any](b *Bucket) *Store[T] {
 // which is the losing racer's answer rather than an error.
 func (s *Store[T]) Claim(ctx context.Context, key string) (v *T, notFound bool, err error) {
 	// Safe to re-run: the read and the revision-guarded delete both happen
-	// inside kvutil.Claim, so a second attempt starts from the reopened bucket.
+	// inside Take, so a second attempt starts from the reopened bucket.
 	err = s.withKV(ctx, func(kv jetstream.KeyValue) error {
 		var claimErr error
-		v, notFound, claimErr = kvutil.Claim[T](ctx, kv, key, kvutil.CASConfig{
+		v, notFound, claimErr = Take[T](ctx, kv, key, CASConfig{
 			Attempts:  s.cfg.Attempts,
 			Exhausted: s.cfg.Exhausted,
 		})
@@ -259,9 +258,9 @@ func (s *Store[T]) Replace(ctx context.Context, key string, v *T) error {
 	if err != nil {
 		return fmt.Errorf("kvstore: encode %s: %w", key, err)
 	}
-	// Safe to re-run: kvutil.Put re-reads the revision inside its own loop.
+	// Safe to re-run: Put re-reads the revision inside its own loop.
 	return s.withKV(ctx, func(kv jetstream.KeyValue) error {
-		if err := kvutil.Put(ctx, kv, key, kvutil.CASConfig{
+		if err := Put(ctx, kv, key, CASConfig{
 			CreateIfAbsent: true,
 			Attempts:       s.cfg.Attempts,
 			Exhausted:      s.cfg.Exhausted,

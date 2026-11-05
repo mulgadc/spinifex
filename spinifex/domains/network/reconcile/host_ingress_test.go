@@ -19,7 +19,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -360,11 +360,11 @@ func TestHostIngress_IntentReadFailureNeverPrunes(t *testing.T) {
 func TestRunHostIngress_IntentWriteConvergesEveryNodeWithoutLeaseOrEvent(t *testing.T) {
 	_, nc, js := testutil.StartTestJetStream(t)
 	ctx := t.Context()
-	vpcs, err := kvutil.GetOrCreateBucket(ctx, js, ec2vpc.KVBucketVPCs, 1)
+	vpcs, err := kvstore.GetOrCreateBucket(ctx, js, ec2vpc.KVBucketVPCs, 1)
 	if err != nil {
 		t.Fatalf("create VPC bucket: %v", err)
 	}
-	igws, err := kvutil.GetOrCreateBucket(ctx, js, ec2igw.KVBucketIGW, 1)
+	igws, err := kvstore.GetOrCreateBucket(ctx, js, ec2igw.KVBucketIGW, 1)
 	if err != nil {
 		t.Fatalf("create IGW bucket: %v", err)
 	}

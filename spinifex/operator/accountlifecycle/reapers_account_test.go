@@ -11,7 +11,7 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -55,7 +55,7 @@ func testKV(t *testing.T, bucket string) (context.Context, jetstream.JetStream, 
 	t.Helper()
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := testCtx(t)
-	kv, err := kvutil.GetOrCreateBucket(ctx, js, bucket, 1)
+	kv, err := kvstore.GetOrCreateBucket(ctx, js, bucket, 1)
 	require.NoError(t, err)
 	return ctx, js, kv
 }

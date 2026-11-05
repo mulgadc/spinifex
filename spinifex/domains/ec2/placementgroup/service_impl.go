@@ -17,7 +17,7 @@ import (
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -87,7 +87,7 @@ func NewPlacementGroupServiceImplWithNATS(ctx context.Context, cfg *config.Confi
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
 	}
 
-	kv, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketPlacementGroups, 10)
+	kv, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketPlacementGroups, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketPlacementGroups, err)
 	}
@@ -137,7 +137,7 @@ func (s *PlacementGroupServiceImpl) CreatePlacementGroup(ctx context.Context, in
 	}
 
 	groupName := *input.GroupName
-	key := kvutil.AccountKey(accountID, groupName)
+	key := kvstore.AccountKey(accountID, groupName)
 	groupID := awsidentifiers.GenerateResourceID("pg")
 
 	record := PlacementGroupRecord{
@@ -175,7 +175,7 @@ func (s *PlacementGroupServiceImpl) DeletePlacementGroup(ctx context.Context, in
 	}
 
 	groupName := *input.GroupName
-	if _, err := s.deleteGroup(ctx, accountID, kvutil.AccountKey(accountID, groupName)); err != nil {
+	if _, err := s.deleteGroup(ctx, accountID, kvstore.AccountKey(accountID, groupName)); err != nil {
 		if errors.Is(err, errPGAbsent) {
 			// Lower case, unlike DescribePlacementGroups' message for the same code.
 			return nil, awserrors.Errorf(awserrors.ErrorInvalidPlacementGroupUnknown, "The placement group '%s' is unknown.", groupName)
@@ -194,7 +194,7 @@ func (s *PlacementGroupServiceImpl) DeletePlacementGroup(ctx context.Context, in
 // The returned count is the members seen by the last check.
 func (s *PlacementGroupServiceImpl) deleteGroup(ctx context.Context, accountID, key string) (int, error) {
 	members := 0
-	record, err := kvutil.DeleteIf(ctx, s.kv, key, casConfig(), func(record *PlacementGroupRecord) error {
+	record, err := kvstore.DeleteIf(ctx, s.kv, key, casConfig(), func(record *PlacementGroupRecord) error {
 		members = memberCount(record.NodeInstances)
 		if members > 0 {
 			return errPGInUse
@@ -238,7 +238,7 @@ func (s *PlacementGroupServiceImpl) DescribePlacementGroups(ctx context.Context,
 
 	var groups []*ec2.PlacementGroup
 	for _, k := range keys {
-		if k == kvutil.VersionKey {
+		if k == kvstore.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(k, prefix) {
@@ -341,7 +341,7 @@ func pgMatchesFilters(record *PlacementGroupRecord, filters map[string][]string)
 
 const maxCASRetries = 5
 
-// errPGAbsent and errPGContended mark the two kvutil outcomes that map to
+// errPGAbsent and errPGContended mark the two kvstore outcomes that map to
 // specific AWS errors rather than a generic internal failure, and neither
 // escapes this file. errPGInUse is the AWS error itself.
 var (
@@ -350,8 +350,8 @@ var (
 	errPGInUse     = errors.New(awserrors.ErrorInvalidPlacementGroupInUse)
 )
 
-// mapCASError turns a kvutil failure into the AWS error the caller returns.
-// A non-kvutil error came from mutate and is already an AWS code.
+// mapCASError turns a kvstore failure into the AWS error the caller returns.
+// A non-kvstore error came from mutate and is already an AWS code.
 func mapCASError(ctx context.Context, op, groupName, accountID string, err error) error {
 	switch {
 	case errors.Is(err, errPGAbsent):
@@ -359,16 +359,16 @@ func mapCASError(ctx context.Context, op, groupName, accountID string, err error
 	case errors.Is(err, errPGContended):
 		slog.ErrorContext(ctx, "Placement group CAS retries exhausted under contention",
 			"op", op, "groupName", groupName, "accountID", accountID)
-	case errors.Is(err, kvutil.ErrRead):
+	case errors.Is(err, kvstore.ErrRead):
 		slog.ErrorContext(ctx, "Failed to read placement group from KV",
 			"op", op, "groupName", groupName, "accountID", accountID, "err", err)
-	case errors.Is(err, kvutil.ErrDecode):
+	case errors.Is(err, kvstore.ErrDecode):
 		slog.ErrorContext(ctx, "Corrupt placement group record in KV",
 			"op", op, "groupName", groupName, "accountID", accountID, "err", err)
-	case errors.Is(err, kvutil.ErrEncode):
+	case errors.Is(err, kvstore.ErrEncode):
 		slog.ErrorContext(ctx, "Failed to marshal placement group record",
 			"op", op, "groupName", groupName, "accountID", accountID, "err", err)
-	case errors.Is(err, kvutil.ErrWrite):
+	case errors.Is(err, kvstore.ErrWrite):
 		slog.ErrorContext(ctx, "Failed to write placement group to KV",
 			"op", op, "groupName", groupName, "accountID", accountID, "err", err)
 	default:
@@ -378,8 +378,8 @@ func mapCASError(ctx context.Context, op, groupName, accountID string, err error
 }
 
 // casConfig is the shared CAS policy for every placement group mutation.
-func casConfig() kvutil.CASConfig {
-	return kvutil.CASConfig{
+func casConfig() kvstore.CASConfig {
+	return kvstore.CASConfig{
 		Attempts:  maxCASRetries,
 		NotFound:  errPGAbsent,
 		Exhausted: func(string, int) error { return errPGContended },
@@ -394,7 +394,7 @@ func (s *PlacementGroupServiceImpl) ReserveSpreadNodes(ctx context.Context, inpu
 	}
 
 	var selected []string
-	_, err := kvutil.Update(ctx, s.kv, kvutil.AccountKey(accountID, input.GroupName), casConfig(),
+	_, err := kvstore.Update(ctx, s.kv, kvstore.AccountKey(accountID, input.GroupName), casConfig(),
 		func(record *PlacementGroupRecord) (bool, error) {
 			if record.State != ec2.PlacementGroupStateAvailable {
 				return false, errors.New(awserrors.ErrorInvalidPlacementGroupUnknown)
@@ -437,7 +437,7 @@ func (s *PlacementGroupServiceImpl) FinalizeSpreadInstances(ctx context.Context,
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	_, err := kvutil.Update(ctx, s.kv, kvutil.AccountKey(accountID, input.GroupName), casConfig(),
+	_, err := kvstore.Update(ctx, s.kv, kvstore.AccountKey(accountID, input.GroupName), casConfig(),
 		func(record *PlacementGroupRecord) (bool, error) {
 			maps.Copy(record.NodeInstances, input.NodeInstances)
 			return true, nil
@@ -462,7 +462,7 @@ func (s *PlacementGroupServiceImpl) ReleaseSpreadNodes(ctx context.Context, inpu
 		releaseSet[n] = true
 	}
 
-	_, err := kvutil.Update(ctx, s.kv, kvutil.AccountKey(accountID, input.GroupName), casConfig(),
+	_, err := kvstore.Update(ctx, s.kv, kvstore.AccountKey(accountID, input.GroupName), casConfig(),
 		func(record *PlacementGroupRecord) (bool, error) {
 			changed := false
 			for node := range releaseSet {
@@ -490,7 +490,7 @@ func (s *PlacementGroupServiceImpl) RemoveInstance(ctx context.Context, input *R
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	_, err := kvutil.Update(ctx, s.kv, kvutil.AccountKey(accountID, input.GroupName), casConfig(),
+	_, err := kvstore.Update(ctx, s.kv, kvstore.AccountKey(accountID, input.GroupName), casConfig(),
 		func(record *PlacementGroupRecord) (bool, error) {
 			instances, exists := record.NodeInstances[input.NodeName]
 			if !exists {
@@ -533,7 +533,7 @@ func (s *PlacementGroupServiceImpl) ReserveClusterNode(ctx context.Context, inpu
 	}
 
 	var targetNode string
-	_, err := kvutil.Update(ctx, s.kv, kvutil.AccountKey(accountID, input.GroupName), casConfig(),
+	_, err := kvstore.Update(ctx, s.kv, kvstore.AccountKey(accountID, input.GroupName), casConfig(),
 		func(record *PlacementGroupRecord) (bool, error) {
 			if record.State != ec2.PlacementGroupStateAvailable {
 				return false, errors.New(awserrors.ErrorInvalidPlacementGroupUnknown)
@@ -570,7 +570,7 @@ func (s *PlacementGroupServiceImpl) FinalizeClusterInstances(ctx context.Context
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
-	_, err := kvutil.Update(ctx, s.kv, kvutil.AccountKey(accountID, input.GroupName), casConfig(),
+	_, err := kvstore.Update(ctx, s.kv, kvstore.AccountKey(accountID, input.GroupName), casConfig(),
 		func(record *PlacementGroupRecord) (bool, error) {
 			// Append rather than replace: a cluster group can have several launches in flight at once.
 			for node, ids := range input.NodeInstances {

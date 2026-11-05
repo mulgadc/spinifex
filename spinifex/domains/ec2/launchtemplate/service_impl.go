@@ -19,7 +19,7 @@ import (
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -64,7 +64,7 @@ func NewLaunchTemplateServiceImplWithNATS(ctx context.Context, cfg *config.Confi
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
 	}
 
-	kv, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketLaunchTemplates, 10)
+	kv, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketLaunchTemplates, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketLaunchTemplates, err)
 	}
@@ -87,24 +87,24 @@ func NewLaunchTemplateServiceImplWithNATS(ctx context.Context, cfg *config.Confi
 // Launch template names allow characters such as parentheses that are not valid
 // in NATS KV keys, so the name must not be used in its raw form here.
 func nameKey(accountID, name string) string {
-	return kvutil.AccountKey(accountID, "name."+hex.EncodeToString([]byte(name)))
+	return kvstore.AccountKey(accountID, "name."+hex.EncodeToString([]byte(name)))
 }
 
 // versionKey returns a version-body key: account.lt-<id>.v<n>.
 func versionKey(accountID, ltID string, n int64) string {
-	return kvutil.AccountKey(accountID, ltID+".v"+strconv.FormatInt(n, 10))
+	return kvstore.AccountKey(accountID, ltID+".v"+strconv.FormatInt(n, 10))
 }
 
 // versionPrefix returns the scan prefix for a template's version bodies.
 func versionPrefix(accountID, ltID string) string {
-	return kvutil.AccountKey(accountID, ltID+".v")
+	return kvstore.AccountKey(accountID, ltID+".v")
 }
 
 // --- record load helpers ---
 
 // getHeaderByID reads a header and its KV entry (for CAS) by launch template id.
 func (s *LaunchTemplateServiceImpl) getHeaderByID(ctx context.Context, accountID, ltID string) (*LaunchTemplateHeader, jetstream.KeyValueEntry, error) {
-	entry, err := s.kv.Get(ctx, kvutil.AccountKey(accountID, ltID))
+	entry, err := s.kv.Get(ctx, kvstore.AccountKey(accountID, ltID))
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, nil, errors.New(awserrors.ErrorInvalidLaunchTemplateIdNotFound)
@@ -386,7 +386,7 @@ func (s *LaunchTemplateServiceImpl) claimName(ctx context.Context, accountID, na
 	// header means the name is taken; any other read error (transient fault, or a
 	// concurrent in-flight create whose header is not yet written) fails closed so
 	// the name is never stolen from a possibly-live template.
-	_, herr := s.kv.Get(ctx, kvutil.AccountKey(accountID, string(entry.Value())))
+	_, herr := s.kv.Get(ctx, kvstore.AccountKey(accountID, string(entry.Value())))
 	switch {
 	case herr == nil:
 		return errNameInUse()
@@ -404,7 +404,7 @@ func (s *LaunchTemplateServiceImpl) putHeader(ctx context.Context, accountID str
 	if err != nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.kv.Put(ctx, kvutil.AccountKey(accountID, h.LaunchTemplateId), data); err != nil {
+	if _, err := s.kv.Put(ctx, kvstore.AccountKey(accountID, h.LaunchTemplateId), data); err != nil {
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	return nil
@@ -510,13 +510,13 @@ func (s *LaunchTemplateServiceImpl) commitVersion(ctx context.Context, accountID
 // re-reading on a conflict. A non-nil check vets each re-read header and
 // stops the commit with its error.
 func (s *LaunchTemplateServiceImpl) commitHeader(ctx context.Context, op, accountID, ltID string, entry jetstream.KeyValueEntry, check func(*LaunchTemplateHeader) error) error {
-	key := kvutil.AccountKey(accountID, ltID)
+	key := kvstore.AccountKey(accountID, ltID)
 	for range maxVersionRetries {
 		_, err := s.kv.Update(ctx, key, entry.Value(), entry.Revision())
 		if err == nil {
 			return nil
 		}
-		if !kvutil.IsRevisionConflict(err) {
+		if !kvstore.IsRevisionConflict(err) {
 			slog.ErrorContext(ctx, op+": header commit failed", "launchTemplateId", ltID, "err", err)
 			return err
 		}
@@ -590,7 +590,7 @@ func (s *LaunchTemplateServiceImpl) ModifyLaunchTemplate(ctx context.Context, in
 // header deleted meanwhile is NotFound for the identifier the request used.
 func (s *LaunchTemplateServiceImpl) setDefaultVersion(ctx context.Context, accountID string, input *ec2.ModifyLaunchTemplateInput, header *LaunchTemplateHeader, entry jetstream.KeyValueEntry, sel string) (*LaunchTemplateHeader, error) {
 	notFound := fmt.Sprintf("The launch template version %s is not found for the specified launch template.", sel)
-	key := kvutil.AccountKey(accountID, header.LaunchTemplateId)
+	key := kvstore.AccountKey(accountID, header.LaunchTemplateId)
 	for range maxVersionRetries {
 		n, err := s.resolveVersionNumber(ctx, accountID, header, sel)
 		if err != nil {
@@ -611,7 +611,7 @@ func (s *LaunchTemplateServiceImpl) setDefaultVersion(ctx context.Context, accou
 		if err == nil {
 			return header, nil
 		}
-		if !kvutil.IsRevisionConflict(err) {
+		if !kvstore.IsRevisionConflict(err) {
 			slog.ErrorContext(ctx, "ModifyLaunchTemplate: header update failed", "launchTemplateId", header.LaunchTemplateId, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
@@ -662,7 +662,7 @@ const maxHeaderDeleteAttempts = 3
 // through the public delete; a header changed in between restarts the sweep.
 func (s *LaunchTemplateServiceImpl) deleteTemplate(ctx context.Context, accountID string, header *LaunchTemplateHeader, entry jetstream.KeyValueEntry) error {
 	ltID := header.LaunchTemplateId
-	headerKey := kvutil.AccountKey(accountID, ltID)
+	headerKey := kvstore.AccountKey(accountID, ltID)
 	for attempt := 1; ; attempt++ {
 		if err := s.deleteVersionBodies(ctx, accountID, ltID); err != nil {
 			return err
@@ -824,7 +824,7 @@ func (s *LaunchTemplateServiceImpl) commitVersionDeletes(ctx context.Context, ac
 	}
 	// A template delete that removed the header before the restore has already
 	// swept its bodies, so the restored ones would be left headerless.
-	if _, gerr := s.kv.Get(ctx, kvutil.AccountKey(accountID, ltID)); errors.Is(gerr, jetstream.ErrKeyNotFound) {
+	if _, gerr := s.kv.Get(ctx, kvstore.AccountKey(accountID, ltID)); errors.Is(gerr, jetstream.ErrKeyNotFound) {
 		for n := range deleted {
 			if derr := s.kv.Delete(ctx, versionKey(accountID, ltID, n)); derr != nil {
 				slog.ErrorContext(ctx, "DeleteLaunchTemplateVersions: failed to remove a restored version", "launchTemplateId", ltID, "version", n, "err", derr)

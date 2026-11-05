@@ -3,7 +3,7 @@
 // nodes each of its JetStream streams is replicated across.
 //
 // It is its own package because the fact is declared in one place,
-// config.LoadConfig, and read in another, kvutil, and those sit either side of
+// config.LoadConfig, and read in another, kvstore, and those sit either side of
 // packages that would otherwise import each other.
 //
 // The number matters because a stream on one replica lives on one

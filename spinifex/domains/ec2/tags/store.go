@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -46,7 +46,7 @@ func resourceIDFromKVKey(key, accountID string) (string, bool) {
 // GetOrCreateTagsBucket opens the tag bucket, creating it at the cluster's
 // replica count if this is the first node to reach it.
 func GetOrCreateTagsBucket(ctx context.Context, js jetstream.KeyValueManager) (jetstream.KeyValue, error) {
-	return kvutil.GetOrCreateBucket(ctx, js, KVBucketTags, kvTagsHistory)
+	return kvstore.GetOrCreateBucket(ctx, js, KVBucketTags, kvTagsHistory)
 }
 
 // readKVTags returns a resource's tags from the bucket, and whether the key
@@ -76,7 +76,7 @@ func (s *TagsServiceImpl) readKVTags(ctx context.Context, accountID, resourceID 
 // before the store moved.
 func (s *TagsServiceImpl) mutateTags(ctx context.Context, accountID, resourceID string, mutate func(map[string]string)) error {
 	key := tagsKVKey(accountID, resourceID)
-	_, err := kvutil.Update(ctx, s.kv, key, kvutil.CASConfig{
+	_, err := kvstore.Update(ctx, s.kv, key, kvstore.CASConfig{
 		Attempts:       tagCASAttempts,
 		CreateIfAbsent: true,
 		Exhausted: func(key string, attempts int) error {
@@ -104,7 +104,7 @@ func (s *TagsServiceImpl) PutResourceTags(ctx context.Context, accountID, resour
 	if err != nil {
 		return err
 	}
-	return kvutil.Put(ctx, s.kv, tagsKVKey(accountID, resourceID), kvutil.CASConfig{
+	return kvstore.Put(ctx, s.kv, tagsKVKey(accountID, resourceID), kvstore.CASConfig{
 		Attempts:       tagCASAttempts,
 		CreateIfAbsent: true,
 	}, data)

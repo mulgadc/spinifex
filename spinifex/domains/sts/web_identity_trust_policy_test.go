@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/sts"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -186,7 +186,7 @@ func TestAssumeRoleWithWebIdentity_TrailingSlashIssuerProviderStillGrants(t *tes
 	hostPath := strings.TrimPrefix(f.issuer, "https://")
 	f.federatedARN = iamdomain.OIDCProviderARN(testCallerAccountID, hostPath)
 
-	iamKV, err := kvutil.GetOrCreateBucket(t.Context(), svc.js,
+	iamKV, err := kvstore.GetOrCreateBucket(t.Context(), svc.js,
 		iamdomain.IAMAccountBucketName(testCallerAccountID), iamdomain.KVBucketIAMAccountVersion)
 	require.NoError(t, err)
 	_, err = iamKV.Put(t.Context(), iamdomain.OIDCProviderKey(f.issuer), []byte(`{"registered":true}`))

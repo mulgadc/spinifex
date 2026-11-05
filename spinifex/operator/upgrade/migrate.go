@@ -11,7 +11,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	statemigrate "github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go/jetstream"
@@ -124,7 +124,7 @@ func (r *Registry) RegisterObject(target string, m ObjectMigration) {
 // read-then-write rather than a compare-and-swap, so two nodes can still race
 // to run a step; each Run must be safe to re-execute for that to be harmless.
 func (r *Registry) RunObject(ctx context.Context, target string, objects objectstore.ObjectStore, bucket string, versionKV jetstream.KeyValue, targetVersion int) error {
-	current, err := kvutil.ReadVersion(ctx, versionKV)
+	current, err := kvstore.ReadVersion(ctx, versionKV)
 	if err != nil {
 		return fmt.Errorf("read version for %s: %w", target, err)
 	}
@@ -140,7 +140,7 @@ func (r *Registry) RunObject(ctx context.Context, target string, objects objects
 
 	// Fresh target, no migrations: stamp directly (common first-init path).
 	if current == 0 && len(all) == 0 {
-		return kvutil.WriteVersion(ctx, versionKV, targetVersion)
+		return kvstore.WriteVersion(ctx, versionKV, targetVersion)
 	}
 
 	// Fresh target with migrations: no v0 schema by convention; start at chain bottom.
@@ -179,7 +179,7 @@ func (r *Registry) RunObject(ctx context.Context, target string, objects objects
 		if err := m.Run(ctx, octx); err != nil {
 			return fmt.Errorf("object migration %s %d→%d failed: %w", target, m.FromVersion, m.ToVersion, err)
 		}
-		if err := kvutil.WriteVersion(ctx, versionKV, m.ToVersion); err != nil {
+		if err := kvstore.WriteVersion(ctx, versionKV, m.ToVersion); err != nil {
 			return fmt.Errorf("stamp version %d on %s: %w", m.ToVersion, target, err)
 		}
 	}

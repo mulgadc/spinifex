@@ -10,7 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -83,8 +83,8 @@ var errRecordAbsent = errors.New("tagmirror: record absent")
 // applying mut and committing at the read revision, retrying on conflict so a
 // concurrent write is never reverted. An absent resource is skipped.
 func UpdateKVRecordTags[R any](ctx context.Context, kv jetstream.KeyValue, accountID, resourceID string, mut func(*R)) error {
-	key := kvutil.AccountKey(accountID, resourceID)
-	_, err := kvutil.Update(ctx, kv, key, kvutil.CASConfig{NotFound: errRecordAbsent}, func(rec *R) (bool, error) {
+	key := kvstore.AccountKey(accountID, resourceID)
+	_, err := kvstore.Update(ctx, kv, key, kvstore.CASConfig{NotFound: errRecordAbsent}, func(rec *R) (bool, error) {
 		mut(rec)
 		return true, nil
 	})

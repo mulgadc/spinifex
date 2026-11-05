@@ -1,11 +1,11 @@
-package kvutil_test
+package kvstore_test
 
 import (
 	"testing"
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,7 +22,7 @@ func durableConfig() jetstream.StreamConfig {
 }
 
 func TestCheckDurable_RefusesEachViolation(t *testing.T) {
-	require.NoError(t, kvutil.CheckDurable(durableConfig(), 1))
+	require.NoError(t, kvstore.CheckDurable(durableConfig(), 1))
 
 	cases := map[string]func(*jetstream.StreamConfig){
 		"retention":      func(c *jetstream.StreamConfig) { c.Retention = jetstream.WorkQueuePolicy },
@@ -51,7 +51,7 @@ func TestCheckDurable_RefusesEachViolation(t *testing.T) {
 			if name == "replicas" {
 				want = 3
 			}
-			assert.Error(t, kvutil.CheckDurable(sc, want))
+			assert.Error(t, kvstore.CheckDurable(sc, want))
 		})
 	}
 }
@@ -60,7 +60,7 @@ func TestBindDurable_AbsentBucketIsNotCreated(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := t.Context()
 
-	_, err := kvutil.BindDurable(ctx, js, "absent")
+	_, err := kvstore.BindDurable(ctx, js, "absent")
 	require.ErrorIs(t, err, jetstream.ErrBucketNotFound)
 
 	_, err = js.KeyValue(ctx, "absent")
@@ -71,13 +71,13 @@ func TestBindDurable_RefusesTTLBucketAcceptsDurable(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := t.Context()
 
-	_, err := kvutil.GetOrCreateBucketWithOptions(ctx, js, kvutil.BucketOptions{Name: "ok", History: 1})
+	_, err := kvstore.GetOrCreateBucketWithOptions(ctx, js, kvstore.BucketOptions{Name: "ok", History: 1})
 	require.NoError(t, err)
-	_, err = kvutil.BindDurable(ctx, js, "ok")
+	_, err = kvstore.BindDurable(ctx, js, "ok")
 	require.NoError(t, err)
 
-	_, err = kvutil.GetOrCreateBucketWithOptions(ctx, js, kvutil.BucketOptions{Name: "ttl", History: 1, TTL: time.Hour})
+	_, err = kvstore.GetOrCreateBucketWithOptions(ctx, js, kvstore.BucketOptions{Name: "ttl", History: 1, TTL: time.Hour})
 	require.NoError(t, err)
-	_, err = kvutil.BindDurable(ctx, js, "ttl")
+	_, err = kvstore.BindDurable(ctx, js, "ttl")
 	require.ErrorContains(t, err, "not durable")
 }

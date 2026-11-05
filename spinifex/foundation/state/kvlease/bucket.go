@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	telemetry "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/nats-io/nats.go"
@@ -65,7 +65,7 @@ func OpenBucket(ctx context.Context, js jetstream.JetStream, cfg BucketConfig) (
 		// tick, so refusing here would stop every reconciler sharing the bucket
 		// — the outage this replica count exists to prevent — over a bucket that
 		// is present and quorate at the count it already has.
-		kvutil.TryRaiseBucketReplicas(ctx, js, cfg.Name, replicas)
+		kvstore.TryRaiseBucketReplicas(ctx, js, cfg.Name, replicas)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("kvlease: open or create lease bucket %s: %w", cfg.Name, err)

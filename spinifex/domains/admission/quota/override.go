@@ -9,7 +9,7 @@ import (
 	"time"
 
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -187,7 +187,7 @@ func (s *Service) PutAccountQuota(ctx context.Context, accountID string, over Ov
 	over.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	over.UpdatedBy = updatedBy
 
-	_, err := kvutil.Update(ctx, s.overrides, accountID, kvutil.CASConfig{
+	_, err := kvstore.Update(ctx, s.overrides, accountID, kvstore.CASConfig{
 		CreateIfAbsent: true,
 		Attempts:       overrideMaxAttempts,
 		Exhausted:      func(string, int) error { return errOverridesContended },
@@ -230,7 +230,7 @@ func (s *Service) clearAccountQuota(ctx context.Context, accountID string) error
 			return nil
 		case errors.Is(err, jetstream.ErrKeyNotFound):
 			return nil
-		case kvutil.IsRevisionConflict(err):
+		case kvstore.IsRevisionConflict(err):
 			// A concurrent write landed between the read and the guarded
 			// delete; retry against whatever revision now holds.
 			continue

@@ -1,4 +1,4 @@
-package kvutil_test
+package kvstore_test
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -84,7 +84,7 @@ func TestCASUpdate_RetriesRevisionConflict(t *testing.T) {
 			require.NoError(t, err)
 
 			stub := &casConflictKV{KeyValue: kv, conflictCode: code, updateFailures: casTestAttempts - 1}
-			got, err := kvutil.Update(t.Context(), stub, "key", kvutil.CASConfig{Attempts: casTestAttempts}, bumpCounter)
+			got, err := kvstore.Update(t.Context(), stub, "key", kvstore.CASConfig{Attempts: casTestAttempts}, bumpCounter)
 			require.NoError(t, err)
 			assert.Equal(t, 2, got.Counter)
 			assert.Zero(t, stub.updateFailures, "all injected conflicts must have been consumed")
@@ -100,7 +100,7 @@ func TestCASUpdate_ExhaustsRetriesOnSustainedConflict(t *testing.T) {
 			require.NoError(t, err)
 
 			stub := &casConflictKV{KeyValue: kv, conflictCode: code, updateFailures: casTestAttempts + 1}
-			_, err = kvutil.Update(t.Context(), stub, "key", kvutil.CASConfig{Attempts: casTestAttempts}, bumpCounter)
+			_, err = kvstore.Update(t.Context(), stub, "key", kvstore.CASConfig{Attempts: casTestAttempts}, bumpCounter)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "CAS update exhausted")
 			assert.ErrorIs(t, err, jetstream.ErrKeyRevisionMismatch)
@@ -116,7 +116,7 @@ func TestCASPut_RetriesRevisionConflict(t *testing.T) {
 			require.NoError(t, err)
 
 			stub := &casConflictKV{KeyValue: kv, conflictCode: code, updateFailures: casTestAttempts - 1}
-			require.NoError(t, kvutil.Put(t.Context(), stub, "key", kvutil.CASConfig{Attempts: casTestAttempts}, []byte(`{"counter":9}`)))
+			require.NoError(t, kvstore.Put(t.Context(), stub, "key", kvstore.CASConfig{Attempts: casTestAttempts}, []byte(`{"counter":9}`)))
 			assert.Zero(t, stub.updateFailures, "all injected conflicts must have been consumed")
 
 			entry, err := kv.Get(t.Context(), "key")
@@ -126,18 +126,18 @@ func TestCASPut_RetriesRevisionConflict(t *testing.T) {
 	}
 }
 
-// Claim's write is a revision-guarded Delete, which reports a lost race only
+// Take's write is a revision-guarded Delete, which reports a lost race only
 // as ErrKeyRevisionMismatch — ErrKeyExists never matches it on a
 // once the conflict carries the replicated code.
-func TestCASClaim_RetriesRevisionConflict(t *testing.T) {
+func TestCASTake_RetriesRevisionConflict(t *testing.T) {
 	for name, code := range conflictCodes {
 		t.Run(name, func(t *testing.T) {
-			kv := casTestBucket(t, "cas-claim-"+jetstreamCodeSuffix(code))
+			kv := casTestBucket(t, "cas-take-"+jetstreamCodeSuffix(code))
 			_, err := kv.Put(t.Context(), "key", []byte(`{"counter":7}`))
 			require.NoError(t, err)
 
 			stub := &casConflictKV{KeyValue: kv, conflictCode: code, deleteFailures: casTestAttempts - 1}
-			got, notFound, err := kvutil.Claim[casRecord](t.Context(), stub, "key", kvutil.CASConfig{Attempts: casTestAttempts})
+			got, notFound, err := kvstore.Take[casRecord](t.Context(), stub, "key", kvstore.CASConfig{Attempts: casTestAttempts})
 			require.NoError(t, err)
 			require.False(t, notFound)
 			require.NotNil(t, got)
@@ -145,7 +145,7 @@ func TestCASClaim_RetriesRevisionConflict(t *testing.T) {
 			assert.Zero(t, stub.deleteFailures, "all injected conflicts must have been consumed")
 
 			_, err = kv.Get(t.Context(), "key")
-			assert.ErrorIs(t, err, jetstream.ErrKeyNotFound, "the claim must have removed the key")
+			assert.ErrorIs(t, err, jetstream.ErrKeyNotFound, "the take must have removed the key")
 		})
 	}
 }
@@ -158,7 +158,7 @@ func TestUpdate_AbsentKeyReturnsCallerError(t *testing.T) {
 	kv := casTestBucket(t, "cas-notfound")
 
 	sentinel := errors.New("no such entity")
-	_, err := kvutil.Update(t.Context(), kv, "missing", kvutil.CASConfig{NotFound: sentinel},
+	_, err := kvstore.Update(t.Context(), kv, "missing", kvstore.CASConfig{NotFound: sentinel},
 		func(*casRecord) (bool, error) { t.Fatal("mutate ran against an absent key"); return false, nil })
 
 	assert.ErrorIs(t, err, sentinel)
@@ -172,7 +172,7 @@ func TestUpdate_ExhaustionUsesCallerError(t *testing.T) {
 	stub := &casConflictKV{KeyValue: kv, conflictCode: jetstream.JSErrCodeStreamWrongLastSequenceConstant,
 		updateFailures: casTestAttempts + 1}
 	sentinel := errors.New("contended")
-	_, err = kvutil.Update(t.Context(), stub, "key", kvutil.CASConfig{
+	_, err = kvstore.Update(t.Context(), stub, "key", kvstore.CASConfig{
 		Attempts:  casTestAttempts,
 		Exhausted: func(string, int) error { return sentinel },
 	}, bumpCounter)
@@ -189,7 +189,7 @@ func TestDeleteIf_RechecksAValueWrittenAfterTheCheck(t *testing.T) {
 
 	refused := errors.New("counter moved")
 	var seen []int
-	_, err = kvutil.DeleteIf(t.Context(), kv, "key", kvutil.CASConfig{Attempts: casTestAttempts}, func(r *casRecord) error {
+	_, err = kvstore.DeleteIf(t.Context(), kv, "key", kvstore.CASConfig{Attempts: casTestAttempts}, func(r *casRecord) error {
 		seen = append(seen, r.Counter)
 		if r.Counter != 1 {
 			return refused
@@ -209,19 +209,19 @@ func TestDeleteIf_AbsentKeyReturnsCallerError(t *testing.T) {
 	kv := casTestBucket(t, "cas-delete-if-notfound")
 
 	sentinel := errors.New("no such entity")
-	_, err := kvutil.DeleteIf(t.Context(), kv, "missing", kvutil.CASConfig{NotFound: sentinel},
+	_, err := kvstore.DeleteIf(t.Context(), kv, "missing", kvstore.CASConfig{NotFound: sentinel},
 		func(*casRecord) error { t.Fatal("check ran against an absent key"); return nil })
 
 	assert.ErrorIs(t, err, sentinel)
 }
 
 func TestIsRevisionConflictRecognisesTombstoneRetry(t *testing.T) {
-	assert.True(t, kvutil.IsRevisionConflict(jetstream.ErrKeyExists))
-	assert.True(t, kvutil.IsRevisionConflict(jetstream.ErrKeyRevisionMismatch))
-	assert.True(t, kvutil.IsRevisionConflict(&jetstream.APIError{ErrorCode: jetstream.JSErrCodeStreamWrongLastSequence}))
-	assert.True(t, kvutil.IsRevisionConflict(&jetstream.APIError{ErrorCode: jetstream.JSErrCodeStreamWrongLastSequenceConstant}))
-	assert.True(t, kvutil.IsRevisionConflict(fmt.Errorf("wrapped: %w", &jetstream.APIError{ErrorCode: jetstream.JSErrCodeStreamWrongLastSequence})))
-	assert.False(t, kvutil.IsRevisionConflict(&jetstream.APIError{ErrorCode: jetstream.JSErrCodeStreamNotFound}))
-	assert.False(t, kvutil.IsRevisionConflict(errors.New("unrelated failure")))
-	assert.False(t, kvutil.IsRevisionConflict(nil))
+	assert.True(t, kvstore.IsRevisionConflict(jetstream.ErrKeyExists))
+	assert.True(t, kvstore.IsRevisionConflict(jetstream.ErrKeyRevisionMismatch))
+	assert.True(t, kvstore.IsRevisionConflict(&jetstream.APIError{ErrorCode: jetstream.JSErrCodeStreamWrongLastSequence}))
+	assert.True(t, kvstore.IsRevisionConflict(&jetstream.APIError{ErrorCode: jetstream.JSErrCodeStreamWrongLastSequenceConstant}))
+	assert.True(t, kvstore.IsRevisionConflict(fmt.Errorf("wrapped: %w", &jetstream.APIError{ErrorCode: jetstream.JSErrCodeStreamWrongLastSequence})))
+	assert.False(t, kvstore.IsRevisionConflict(&jetstream.APIError{ErrorCode: jetstream.JSErrCodeStreamNotFound}))
+	assert.False(t, kvstore.IsRevisionConflict(errors.New("unrelated failure")))
+	assert.False(t, kvstore.IsRevisionConflict(nil))
 }

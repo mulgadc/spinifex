@@ -329,3 +329,53 @@ func TestLeaseGroup_SameLeaseUntilForget(t *testing.T) {
 	assert.Greater(t, again.Generation, tok.Generation)
 	g.Forget("123/alpha")
 }
+
+// A grant whose reply comes back after a peer has already waited out a TTL and
+// taken over must not be reported as held: only one node may think it leads.
+func TestLease_DelayedGrantIsRefusedAfterATakeover(t *testing.T) {
+	s := stores(t, 2)
+	ca, cb := kvsync.NewFakeClock(), kvsync.NewFakeClock()
+	slow := &slowStore{KVStore: s[0]}
+	a := kvsync.NewLeaseWithClock(slow, leaseKey, "node-a", testTTL, ca)
+	b := kvsync.NewLeaseWithClock(s[1], leaseKey, "node-b", testTTL, cb)
+
+	var tokB kvsync.Token
+	slow.afterSwap = func(int64) {
+		_, err := b.TryLock(t.Context())
+		_, held := asHeld(err)
+		require.True(t, held, "b must first observe a's committed write: %v", err)
+		cb.Advance(testTTL)
+		tokB, err = b.TryLock(t.Context())
+		require.NoError(t, err, "b takes over after a full TTL of a's revision")
+		ca.Advance(testTTL)
+	}
+
+	_, err := a.TryLock(t.Context())
+	require.ErrorIs(t, err, kvsync.ErrUnavailable)
+	assert.False(t, a.Held(), "a must not lead on a grant a peer has since taken over")
+	assert.True(t, b.Held())
+	b.Unlock(t.Context(), tokB)
+}
+
+// A renewal's validity runs from when it was sent, since a peer can have seen
+// the revision that early, so a reply delayed by 2*ttl/3 leaves nothing to renew on.
+func TestLease_DelayedRenewalCountsFromItsSend(t *testing.T) {
+	s := stores(t, 1)
+	c := kvsync.NewFakeClock()
+	slow := &slowStore{KVStore: s[0]}
+	a := kvsync.NewLeaseWithClock(slow, leaseKey, "node-a", testTTL, c)
+	tok, err := a.TryLock(t.Context())
+	require.NoError(t, err)
+	stopRenewal(t, a, tok)
+
+	slow.afterSwap = func(n int64) {
+		if n == 2 {
+			c.Advance(2 * testTTL / 3)
+		}
+	}
+	renewOnce(t, c)
+	requireOpen(t, a.Lost(), "the delayed renewal itself landed")
+
+	c.Advance(testTTL / 3)
+	requireClosed(t, a.Lost(), "the next renewal had no validity left from the delayed one's send")
+}

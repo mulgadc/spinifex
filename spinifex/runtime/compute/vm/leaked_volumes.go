@@ -1,12 +1,9 @@
 package vm
 
-// QEMUExitProven reports whether the instance's QEMU is known to have exited:
-// its QEMU teardown is done, or its PID file proves the process gone. It reads
-// this node's PID file, so it is only meaningful on the instance's home node.
+// QEMUExitProven reports whether the instance's QEMU is proven gone by this
+// node's PID file. A completed QEMU teardown stamp is not proof: the terminate
+// path stamps it even when the kill failed. It is only meaningful on the home node.
 func QEMUExitProven(v *VM) bool {
-	if TeardownState(v.Teardown[TeardownQEMU]) == TeardownDone {
-		return true
-	}
 	return qemuProvenGone(v.ID)
 }
 

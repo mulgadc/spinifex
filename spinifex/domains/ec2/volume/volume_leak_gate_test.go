@@ -47,16 +47,29 @@ func isolatedPidDir(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 }
 
+// stamped is the failed-kill record with QEMU teardown set to state.
+func stamped(state vm.TeardownState) *vm.VM {
+	rec := failedKill("i-leakgate", leakGateNode)
+	rec.Teardown[vm.TeardownQEMU] = string(state)
+	return rec
+}
+
 // TestS7_LeakReaperNeverFreesAVolumeWhileQEMUMayBeAlive enforces ADR-0003:S7: a
 // failed kill leaves the volume in-use and attached until QEMU is proven gone.
 func TestS7_LeakReaperNeverFreesAVolumeWhileQEMUMayBeAlive(t *testing.T) {
+	for _, stamp := range []vm.TeardownState{vm.TeardownFailed, vm.TeardownDone} {
+		t.Run("qemu teardown "+string(stamp), func(t *testing.T) { leakGateKeepsVolume(t, stamp) })
+	}
+}
+
+func leakGateKeepsVolume(t *testing.T, stamp vm.TeardownState) {
 	for _, content := range []string{"not-a-pid", "0", "-1"} {
 		t.Run("pid file "+content, func(t *testing.T) {
 			isolatedPidDir(t)
 			path, err := hostprocess.GeneratePidFile("i-leakgate")
 			require.NoError(t, err)
 			require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
-			state, attached, orphaned := sweepAfterFailedKill(t, failedKill("i-leakgate", leakGateNode))
+			state, attached, orphaned := sweepAfterFailedKill(t, stamped(stamp))
 			assert.Equal(t, "in-use", state)
 			assert.Equal(t, "i-leakgate", attached)
 			assert.False(t, orphaned)
@@ -71,7 +84,7 @@ func TestS7_LeakReaperNeverFreesAVolumeWhileQEMUMayBeAlive(t *testing.T) {
 		wg.Go(func() { _ = cmd.Wait() })
 		t.Cleanup(func() { _ = cmd.Process.Kill(); wg.Wait() })
 		require.NoError(t, hostprocess.WritePidFile("i-leakgate", cmd.Process.Pid))
-		state, attached, orphaned := sweepAfterFailedKill(t, failedKill("i-leakgate", leakGateNode))
+		state, attached, orphaned := sweepAfterFailedKill(t, stamped(stamp))
 		assert.Equal(t, "in-use", state)
 		assert.Equal(t, "i-leakgate", attached)
 		assert.False(t, orphaned)
@@ -81,7 +94,7 @@ func TestS7_LeakReaperNeverFreesAVolumeWhileQEMUMayBeAlive(t *testing.T) {
 		isolatedPidDir(t)
 		t.Cleanup(hostprocess.SetSignalProbe(func(int) error { return syscall.EPERM }))
 		require.NoError(t, hostprocess.WritePidFile("i-leakgate", deadpid.PID))
-		state, attached, orphaned := sweepAfterFailedKill(t, failedKill("i-leakgate", leakGateNode))
+		state, attached, orphaned := sweepAfterFailedKill(t, stamped(stamp))
 		assert.Equal(t, "in-use", state)
 		assert.Equal(t, "i-leakgate", attached)
 		assert.False(t, orphaned)
@@ -102,15 +115,6 @@ func TestLeakReaperFreesTheVolumeOnceQEMUIsProvenGone(t *testing.T) {
 	t.Run("absent pid file", func(t *testing.T) {
 		isolatedPidDir(t)
 		state, _, orphaned := sweepAfterFailedKill(t, failedKill("i-leakgate", leakGateNode))
-		assert.Equal(t, "available", state)
-		assert.True(t, orphaned)
-	})
-	t.Run("qemu teardown done", func(t *testing.T) {
-		isolatedPidDir(t)
-		require.NoError(t, os.WriteFile(mustPidPath(t, "i-leakgate"), []byte("not-a-pid"), 0o600))
-		rec := failedKill("i-leakgate", leakGateNode)
-		rec.Teardown[vm.TeardownQEMU] = string(vm.TeardownDone)
-		state, _, orphaned := sweepAfterFailedKill(t, rec)
 		assert.Equal(t, "available", state)
 		assert.True(t, orphaned)
 	})

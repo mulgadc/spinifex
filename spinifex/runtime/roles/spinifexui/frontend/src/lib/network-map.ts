@@ -677,6 +677,7 @@ const SUBNET_HEIGHT = 124
 const BOX_PAD = 12
 const BOX_HEAD = 24
 const BOX_COLUMNS = 2
+const LABEL_ROOM = 96
 
 const ITEM_HEIGHT: Record<BoxKind, number> = { instance: 104, lb: 80 }
 
@@ -864,19 +865,47 @@ export function layoutNetworkMap(
 
   const step = axes.breadth(CARD_WIDTH, CARD_HEIGHT) + GAP
 
-  const upper = (["internet", "gateways", "vpc"] as const).map((tier) => ({
-    tier,
-    ids: map.cards.filter((c) => c.tier === tier).map((c) => c.id),
-  }))
+  const withLabels = new Set(
+    map.links.filter((l) => l.label).map((l) => `${l.source}>${l.target}`),
+  )
 
-  // Every tier is centred on the widest, so none hangs off one side.
-  const span = Math.max(spread, ...upper.map((u) => u.ids.length * step - GAP))
+  const joined = (a: string, b: string) =>
+    withLabels.has(`${a}>${b}`) || withLabels.has(`${b}>${a}`)
 
-  for (const { tier, ids } of upper) {
-    const start = (span - (ids.length * step - GAP)) / 2
+  // Side by side, a labelled line between neighbours needs room for its label.
+  const room = direction === "down" ? LABEL_ROOM : 0
+
+  const upper = (["internet", "gateways", "vpc"] as const).map((tier) => {
+    const ids = map.cards.filter((c) => c.tier === tier).map((c) => c.id)
+    const offsets: number[] = []
+    let along = 0
 
     for (const [i, id] of ids.entries()) {
-      layout.places.set(id, axes.at(start + i * step, depth[tier]))
+      const before = ids[i - 1]
+
+      if (before !== undefined) {
+        along += step + (joined(before, id) ? room : 0)
+      }
+
+      offsets.push(along)
+    }
+
+    return {
+      tier,
+      ids,
+      offsets,
+      breadth: ids.length > 0 ? along + step - GAP : 0,
+    }
+  })
+
+  // Every tier is centred on the widest, so none hangs off one side.
+  const span = Math.max(spread, ...upper.map((u) => u.breadth))
+
+  for (const { tier, ids, offsets, breadth } of upper) {
+    const start = (span - breadth) / 2
+
+    for (const [i, id] of ids.entries()) {
+      layout.places.set(id, axes.at(start + (offsets[i] ?? 0), depth[tier]))
     }
   }
 

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   buildNetworkMap,
+  CARD_WIDTH,
   internetReach,
   layoutNetworkMap,
   MAP_BUDGET,
@@ -529,6 +530,17 @@ describe("layoutNetworkMap", () => {
       "box:instance:subnet-1",
       "box:lb:subnet-1",
     ])
+  })
+
+  it("leaves room for the outbound-only label between the gateways", () => {
+    const at = placeOf(
+      layoutNetworkMap(buildNetworkMap(inputs(), VPC_FOCUS)).places,
+    )
+
+    const between = at("nat:nat-1").x - at("igw:igw-1").x - CARD_WIDTH
+
+    // Wider than "outbound only" at the label's size.
+    expect(between).toBeGreaterThanOrEqual(120)
   })
 
   it("runs the tiers left to right across", () => {

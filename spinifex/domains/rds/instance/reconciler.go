@@ -610,6 +610,11 @@ func (r *Reconciler) reconcileStopping(ctx context.Context, kv *kvstore.Bucket, 
 // did; only a teardown still stuck past the bound is called failed, which is
 // what lets the customer retry the delete.
 func (r *Reconciler) reconcileDeleting(ctx context.Context, kv *kvstore.Bucket, rev uint64, accountID string, rec *DBInstanceRecord) error {
+	// The handler that accepted the delete tears it down for up to its request
+	// budget; a second teardown alongside it sees the VM mid-shutdown as gone.
+	if time.Since(transitionStarted(rec)) <= deleteTimeout {
+		return nil
+	}
 	err := r.svc.teardownDBInstance(ctx, kv, accountID, rec, false)
 	if err == nil || errors.Is(err, errFinalSnapshotInProgress) || errors.Is(err, errModifyInProgress) {
 		return nil

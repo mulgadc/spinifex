@@ -66,6 +66,12 @@ func (s *Service) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInsta
 			"DB instance %s is already being deleted with %s; a retry must repeat that choice", id, snapshotChoice(rec.FinalSnapshotIdentifier))
 	}
 
+	// The handler that accepted the delete tears it down, and the reconciler
+	// resumes one whose handler is gone, so a repeat only reports the state.
+	if rec.Status == StatusDeleting {
+		return &rds.DeleteDBInstanceOutput{DBInstance: s.projectDBInstance(rec)}, nil
+	}
+
 	// Reserve the final snapshot before the instance enters deleting. A collision
 	// therefore fails while the VM and data volume are still intact, and a crash
 	// afterwards leaves a creating record the reconciler can resolve.
@@ -74,29 +80,29 @@ func (s *Service) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInsta
 		return nil, err
 	}
 
-	// A repeat of a delete already under way re-runs the teardown rather than
-	// being rejected: the first call may have died partway through it.
-	if rec.Status != StatusDeleting {
-		now := time.Now().UTC()
-		rec.Status = StatusDeleting
-		rec.FailureReason = ""
-		rec.FinalSnapshotIdentifier = finalSnapshot
-		rec.TransitionStartedAt = &now
-		rec.UpdatedAt = now
-		if err := updateJSON(ctx, kv, DBInstanceKey(id), rev, rec); err != nil {
-			if reservation.creator {
-				s.rollbackFinalSnapshotReservation(ctx, kv, finalSnapshot, reservation.revision)
-			}
-			if errors.Is(err, kvstore.ErrConflict) {
-				return nil, awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState,
-					"DB instance %s changed state concurrently; retry the delete", id)
-			}
-			return nil, err
+	now := time.Now().UTC()
+	rec.Status = StatusDeleting
+	rec.FailureReason = ""
+	rec.FinalSnapshotIdentifier = finalSnapshot
+	rec.TransitionStartedAt = &now
+	rec.UpdatedAt = now
+	if err := updateJSON(ctx, kv, DBInstanceKey(id), rev, rec); err != nil {
+		if reservation.creator {
+			s.rollbackFinalSnapshotReservation(ctx, kv, finalSnapshot, reservation.revision)
 		}
-		s.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, id, "DB instance deleted.", EventCategoryDeletion)
+		if errors.Is(err, kvstore.ErrConflict) {
+			return nil, awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState,
+				"DB instance %s changed state concurrently; retry the delete", id)
+		}
+		return nil, err
 	}
+	s.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, id, "DB instance deleted.", EventCategoryDeletion)
 
-	if err := s.teardownDBInstance(ctx, kv, accountID, rec, reservation.creator); err != nil {
+	// Bounded by the caller's own wait, after which the reconciler owns the
+	// teardown; until then it is this handler's alone.
+	teardownCtx, cancel := context.WithTimeout(ctx, deleteTimeout)
+	defer cancel()
+	if err := s.teardownDBInstance(teardownCtx, kv, accountID, rec, reservation.creator); err != nil {
 		// The reconciler finishes the delete once the modify lets go.
 		if errors.Is(err, errModifyInProgress) {
 			return &rds.DeleteDBInstanceOutput{DBInstance: s.projectDBInstance(rec)}, nil

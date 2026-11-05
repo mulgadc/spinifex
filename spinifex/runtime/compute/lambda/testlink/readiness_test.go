@@ -1,5 +1,6 @@
 //go:build lambdatestlink
 
+//test:in-package — reuses the package fixtures writeImage, testImageDigest and controlName
 package testlink
 
 import (

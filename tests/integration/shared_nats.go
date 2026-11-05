@@ -77,7 +77,7 @@ func startSharedNATS() (*sharedNATS, error) {
 	}
 	auth.srv = ns
 
-	go ns.Start()
+	ns.Start()
 	if !ns.ReadyForConnections(10 * time.Second) {
 		return nil, fmt.Errorf("nats server not ready for connections")
 	}

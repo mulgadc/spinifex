@@ -47,7 +47,7 @@ func guestStore(t *testing.T) (message.Store, *server.Options) {
 	opts.NoLog, opts.NoSigs = true, true
 	ns, err := server.NewServer(opts)
 	require.NoError(t, err)
-	go ns.Start()
+	ns.Start()
 	require.True(t, ns.ReadyForConnections(10*time.Second))
 	t.Cleanup(ns.Shutdown)
 

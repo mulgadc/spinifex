@@ -128,7 +128,7 @@ accounts: {
 	opts.NoLog, opts.NoSigs = true, true
 	srv, err := server.NewServer(opts)
 	require.NoError(t, err)
-	go srv.Start()
+	srv.Start()
 	require.True(t, srv.ReadyForConnections(10*time.Second))
 	t.Cleanup(srv.Shutdown)
 

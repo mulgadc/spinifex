@@ -59,7 +59,7 @@ func TestConnectNATS_WithToken(t *testing.T) {
 
 	ns, err := server.NewServer(opts)
 	require.NoError(t, err)
-	go ns.Start()
+	ns.Start()
 	require.True(t, ns.ReadyForConnections(5*time.Second))
 	t.Cleanup(func() { ns.Shutdown() })
 
@@ -81,7 +81,7 @@ func TestConnectNATS_WrongToken(t *testing.T) {
 
 	ns, err := server.NewServer(opts)
 	require.NoError(t, err)
-	go ns.Start()
+	ns.Start()
 	require.True(t, ns.ReadyForConnections(5*time.Second))
 	t.Cleanup(func() { ns.Shutdown() })
 
@@ -204,7 +204,7 @@ func startTLSNATSServer(t *testing.T, serverCertPath, serverKeyPath, caCertPath 
 
 	ns, err := server.NewServer(opts)
 	require.NoError(t, err)
-	go ns.Start()
+	ns.Start()
 	require.True(t, ns.ReadyForConnections(5*time.Second))
 	t.Cleanup(func() { ns.Shutdown() })
 	return ns
@@ -709,7 +709,7 @@ func startTestNATSOnPort(t *testing.T, port int) *server.Server {
 	}
 	ns, err := server.NewServer(opts)
 	require.NoError(t, err)
-	go ns.Start()
+	ns.Start()
 	require.True(t, ns.ReadyForConnections(5*time.Second))
 	t.Cleanup(func() { ns.Shutdown() })
 	return ns
@@ -922,7 +922,7 @@ func TestGather_OversizedFrameDropped(t *testing.T) {
 	}
 	ns, err := server.NewServer(opts)
 	require.NoError(t, err)
-	go ns.Start()
+	ns.Start()
 	require.True(t, ns.ReadyForConnections(5*time.Second))
 	t.Cleanup(func() { ns.Shutdown() })
 

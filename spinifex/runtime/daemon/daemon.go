@@ -45,6 +45,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/preflight"
 	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ec2account "github.com/mulgadc/spinifex/spinifex/domains/ec2/account"
 	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
@@ -1052,6 +1053,7 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.terminate", handleNATSRequest(d.node, d.instanceService.TerminateStoppedInstance), "spinifex-workers"},
 		{"ec2.DescribeStoppedInstances", handleNATSRequest(d.node, d.instanceService.DescribeStoppedInstances), "spinifex-workers"},
 		{"ec2.DescribeAccountInstanceRecords", handleNATSRequest(d.node, d.instanceService.DescribeAccountInstanceRecords), "spinifex-workers"},
+		{ec2instanceapi.AccountTeardownOutstandingSubject, handleNATSRequest(d.node, d.instanceService.AccountTeardownOutstandingRPC), "spinifex-workers"},
 		{"ec2.DescribeTerminatedInstances", handleNATSRequest(d.node, d.instanceService.DescribeTerminatedInstances), "spinifex-workers"},
 		// these fan out to all nodes and gateway aggregates the results. The
 		// handler only sees per-daemon local state (vmMgr/stoppedStore), so

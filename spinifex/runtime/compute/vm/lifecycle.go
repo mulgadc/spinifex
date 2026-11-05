@@ -19,6 +19,7 @@ import (
 	"time"
 
 	telemetryv1 "github.com/mulgadc/spinifex/contracts/telemetry/v1"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
@@ -82,7 +83,7 @@ func guestOOMScore(managedBy string) int {
 // transition to Running, fire OnInstanceUp. Inserts the instance before
 // transitioning. Used by RunInstances, start-stopped handler, restore, and crash recovery.
 func (m *Manager) Run(ctx context.Context, instance *VM) error {
-	return m.launch(ctx, instance)
+	return m.launch(ctx, instance, nil)
 }
 
 // Start re-launches a stopped instance by id. Returns ErrInstanceNotFound when
@@ -92,7 +93,8 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrInstanceNotFound, id)
 	}
-	if err := m.CheckUEFIVarStore(ctx, instance); err != nil {
+	rec, err := m.checkUEFIVarStore(ctx, instance)
+	if err != nil {
 		return err
 	}
 	// StateError is rejected by launchStillValid; move to Pending first so
@@ -102,7 +104,13 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 			return err
 		}
 	}
-	return m.launch(ctx, instance)
+	return m.launch(ctx, instance, &uefiPrecheck{rec: rec})
+}
+
+// uefiPrecheck is a variable store check a caller of launch already made,
+// so launch does not read the store record again.
+type uefiPrecheck struct {
+	rec *uefistore.UEFIStoreRecord
 }
 
 // launchStillValid returns true when status is still pending/stopped/provisioning.
@@ -117,8 +125,9 @@ func (m *Manager) launchStillValid(instance *VM) bool {
 }
 
 // launch is the orchestrator: pid check, mount volumes, exec QEMU, attach
-// QMP, fire OnInstanceUp, transition to Running.
-func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
+// QMP, fire OnInstanceUp, transition to Running. A nil pre checks the
+// variable store here.
+func (m *Manager) launch(ctx context.Context, instance *VM, pre *uefiPrecheck) (err error) {
 	ctx, span := otel.Tracer(vmTracerName).Start(ctx, "vm.launch",
 		trace.WithAttributes(
 			attribute.String("instance.id", instance.ID),
@@ -131,10 +140,14 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 	}
 
 	// Before the reason below is cleared, so a refused start changes nothing.
-	if err := m.CheckUEFIVarStore(ctx, instance); err != nil {
-		slog.ErrorContext(ctx, "Refusing to launch a UEFI instance without exactly one variable store",
-			"instanceId", instance.ID, "err", err)
-		return err
+	if pre == nil {
+		rec, err := m.checkUEFIVarStore(ctx, instance)
+		if err != nil {
+			slog.ErrorContext(ctx, "Refusing to launch a UEFI instance without exactly one variable store",
+				"instanceId", instance.ID, "err", err)
+			return err
+		}
+		pre = &uefiPrecheck{rec: rec}
 	}
 
 	// A reason left by the stop, or by a restore that found this node could not
@@ -162,7 +175,7 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 	// with nothing to roll back but the claim, which a launch that fails
 	// before QEMU starts gives back.
 	uefiCtx, uefiSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.uefi_var_store")
-	uefiHeld, uefiErr := m.prepareUEFIVarStore(uefiCtx, instance)
+	uefiHeld, uefiErr := m.prepareUEFIVarStore(uefiCtx, instance, pre.rec)
 	endSpanWithError(uefiSpan, uefiErr)
 	guestMayHaveRun := false
 	defer func() {
@@ -203,8 +216,8 @@ func (m *Manager) launch(ctx context.Context, instance *VM) (err error) {
 	}
 
 	_, qemuSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.start_qemu")
-	guestMayHaveRun = true
 	qemuErr := m.startQEMU(instance)
+	guestMayHaveRun = !errors.Is(qemuErr, errQEMUNotStarted)
 	endSpanWithError(qemuSpan, qemuErr)
 	if qemuErr != nil {
 		slog.ErrorContext(ctx, "Failed to launch instance", "err", qemuErr)
@@ -309,10 +322,20 @@ func qemuStderrLevel(line string) slog.Level {
 	return slog.LevelError
 }
 
+// errQEMUNotStarted wraps a startQEMU failure from before the QEMU process
+// started, so no guest can have run.
+var errQEMUNotStarted = errors.New("qemu process was not started")
+
 // startQEMU launches the QEMU process for instance and waits for startup to
 // confirm. The console log is opened in append mode, so a replacement process
 // keeps what the guest printed before it.
-func (m *Manager) startQEMU(instance *VM) error {
+func (m *Manager) startQEMU(instance *VM) (err error) {
+	started := false
+	defer func() {
+		if err != nil && !started {
+			err = fmt.Errorf("%w: %w", errQEMUNotStarted, err)
+		}
+	}()
 	pidFile, err := hostprocess.GeneratePidFile(instance.ID)
 	if err != nil {
 		slog.Error("Failed to generate PID file", "err", err)
@@ -649,6 +672,7 @@ func (m *Manager) startQEMU(instance *VM) error {
 	if pid == 0 {
 		return fmt.Errorf("failed to start qemu")
 	}
+	started = true
 
 	// Race QMP-socket appearance against early process exit; SIGKILL on timeout
 	// so a wedged QEMU does not orphan its tap / volumes.

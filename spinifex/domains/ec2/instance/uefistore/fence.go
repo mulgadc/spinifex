@@ -63,7 +63,8 @@ func (s *Store) Stamp(ctx context.Context, instanceID string, generation uint64)
 
 // MovePointer points instanceID's record at ref only while the record is at
 // generation. A record at any other generation is ErrFenced and is left
-// unchanged. Moving to the key the record already points at writes nothing.
+// unchanged. Every move is a CAS at the revision read, even to the current
+// key, so a read a follower answered stale cannot report success.
 func (s *Store) MovePointer(ctx context.Context, instanceID string, generation uint64, ref UEFIVarStoreRef) error {
 	if err := ref.validate(instanceID); err != nil {
 		return fmt.Errorf("%w: move %s: %w", ErrInvalidRecord, instanceID, err)
@@ -78,8 +79,6 @@ func (s *Store) MovePointer(ctx context.Context, instanceID string, generation u
 			return fmt.Errorf("%w: %s", ErrDeleting, instanceID)
 		case rec.Generation != generation:
 			return fmt.Errorf("%w: %s is at generation %d, and the writer holds %d", ErrFenced, instanceID, rec.Generation, generation)
-		case rec.Pointer != nil && rec.Pointer.Key == ref.Key:
-			return nil
 		}
 		rec.Pointer = &ref
 		_, err = s.CompareAndSet(ctx, rec, rev)

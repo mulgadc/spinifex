@@ -100,14 +100,16 @@ func TestMovePointer_ReplacesThePointer(t *testing.T) {
 	assert.Equal(t, uint64(7), got.Generation)
 }
 
-func TestMovePointer_ToTheCurrentKeyWritesNothing(t *testing.T) {
+// A move to the key the record already names is still a CAS at the revision
+// read, so a fenced writer that read a lagging follower cannot see success.
+func TestMovePointer_ToTheCurrentKeyConfirmsTheReadByCAS(t *testing.T) {
 	s, _ := openStore(t)
 	_, err := s.Create(t.Context(), pointedRecord())
 	require.NoError(t, err)
 	before := revisionOf(t, s)
 
 	require.NoError(t, s.MovePointer(t.Context(), instanceID, 7, *pointer("b")))
-	assert.Equal(t, before, revisionOf(t, s))
+	assert.Greater(t, revisionOf(t, s), before)
 }
 
 func TestMovePointer_RefusesAndChangesNothing(t *testing.T) {

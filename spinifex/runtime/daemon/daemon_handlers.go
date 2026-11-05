@@ -81,11 +81,18 @@ func respondWithError(nodeID string, msg *nats.Msg, errCode string) {
 // an opaque ServerInternal, leaving the reason visible only in the daemon log.
 // Mirrors natsmsg.ServeNATSRequestCtx, which has always preserved the message.
 func respondWithServiceError(nodeID string, msg *nats.Msg, err error) {
+	respondWithServiceErrorHeader(nodeID, msg, err, nil)
+}
+
+// respondWithServiceErrorHeader is respondWithServiceError with headers the
+// caller wants on the reply in addition to the ones the error implies.
+func respondWithServiceErrorHeader(nodeID string, msg *nats.Msg, err error, base nats.Header) {
 	_, message, _ := awserrors.ResolveErrorDetail(err)
 	payload := awserrors.GenerateErrorPayloadWithMessage(awserrors.ValidErrorCodeFromError(err), message)
 	// The AWS body stays as it is; the header is how ec2.start tells its
 	// forwarder this refusal must not be answered by starting elsewhere.
 	extra := nats.Header{}
+	maps.Copy(extra, base)
 	if _, ok := errors.AsType[*ec2instance.UnsealedWritesError](err); ok {
 		extra.Set(natsmsg.UnsealedWritesHeader, "true")
 	}
@@ -246,6 +253,10 @@ func (d *Daemon) dispatchEC2Command(msg *nats.Msg) (string, string) {
 		return name, d.handleSetInstanceTags(ctx, msg, command, instance)
 	case command.Attributes.SetInstanceMonitoring:
 		return name, d.handleSetInstanceMonitoring(ctx, msg, command, instance)
+	case command.Attributes.ModifyInstanceMetadataOptions:
+		return name, d.handleModifyInstanceMetadataOptions(ctx, msg, command, instance)
+	case command.Attributes.SetDisableApiTermination:
+		return name, d.handleSetDisableApiTermination(ctx, msg, command, instance)
 	case command.Attributes.StartInstance:
 		opCtx, opSpan := startOpSpan(ctx, "ec2.StartInstance", instance.ID)
 		err := d.instanceService.StartInstance(opCtx, instance, command)

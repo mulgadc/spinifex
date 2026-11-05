@@ -23,14 +23,19 @@ const (
 // code as stored, leaving it Pending the way CreateFunction does.
 func storedFunction(t *testing.T, svc *function.MetaService, name string) {
 	t.Helper()
+	storedFunctionWith(t, svc, name, "", 9)
+}
+
+func storedFunctionWith(t *testing.T, svc *function.MetaService, name, envCipher string, size int64) {
+	t.Helper()
 	created, err := svc.Create(t.Context(), &function.CreateRequest{Region: readyRegion, Record: function.Record{
 		FunctionID: "id-" + name, FunctionName: name, Role: "arn:aws:iam::000000000001:role/r",
-		Runtime: "provided.al2023", Handler: "bootstrap", Timeout: 3, MemorySize: 128,
+		Runtime: "provided.al2023", Handler: "bootstrap", Timeout: 3, MemorySize: 128, EnvCipher: envCipher,
 		Code: function.Code{RevisionID: "rev-" + name},
 	}}, readyAccount)
 	require.NoError(t, err)
 	_, err = svc.CodeStored(t.Context(), &function.CodeStoredRequest{Region: readyRegion, FunctionName: name,
-		Revision: created.Revision, SHA256: testImageDigest, Size: 9}, readyAccount)
+		Revision: created.Revision, SHA256: testImageDigest, Size: size}, readyAccount)
 	require.NoError(t, err)
 }
 
@@ -103,4 +108,24 @@ func TestReadiness_RefusesAnotherPinOrAnotherNode(t *testing.T) {
 			assert.Equal(t, tc.reason, got.StateReason)
 		})
 	}
+}
+
+func TestReadiness_RefusesFunctionsTheTestLinkCannotRun(t *testing.T) {
+	im, err := PrepareImage(writeImage(t), testImageDigest)
+	require.NoError(t, err)
+	t.Cleanup(im.Close)
+	d := &Daemon{Node: "node1", Image: im}
+	require.NoError(t, d.ServeControl(t.Context(), controlName(t), os.Getuid(), 1<<20))
+	svc := readyOwner(t)
+	svc.SetReadiness(d.Readiness(testImageDigest, 1))
+	storedFunctionWith(t, svc, "env", "sealed", 9)
+	storedFunctionWith(t, svc, "huge", "", MaxCodeBytes+1)
+	storedFunctionWith(t, svc, "edge", "", MaxCodeBytes)
+
+	require.NoError(t, svc.ActivatePending(t.Context()))
+	assert.Equal(t, "The function cannot run here: test-link Lambda does not support environment variables.", functionState(t, svc, "env").StateReason)
+	assert.Equal(t, function.StatePending, functionState(t, svc, "env").State)
+	assert.Equal(t, "The function cannot run here: its code is larger than test-link Lambda accepts.", functionState(t, svc, "huge").StateReason)
+	assert.Equal(t, function.StatePending, functionState(t, svc, "huge").State)
+	assert.Equal(t, function.StateActive, functionState(t, svc, "edge").State, "the largest accepted code copy activates")
 }

@@ -10,6 +10,7 @@ import (
 
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountcleanup"
+	otelsetup "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 )
 
 // ComputeStage is the EC2 compute cleanup and its read-only remainder.
@@ -183,6 +184,10 @@ func (e *Engine) convergeCompute(ctx context.Context, req Request, result *Resul
 		if e.OnPass != nil {
 			e.OnPass(ctx, pass)
 		}
+		e.logger().InfoContext(ctx, "Teardown convergence pass",
+			"account_id", req.AccountID, "pass", pass,
+			"compute_remaining", len(computeLeft.Items), "storage_remaining", len(storageLeft.Items),
+			"legacy_stuck", len(legacy.Stuck), "elapsed_ms", otelsetup.Millis(time.Since(started)))
 
 		if len(computeLeft.Items) == 0 && len(storageLeft.Items) == 0 &&
 			computeLeft.Status == accountcleanup.StatusClean && storageLeft.Status == accountcleanup.StatusClean &&

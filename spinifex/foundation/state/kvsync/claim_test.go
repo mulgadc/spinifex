@@ -99,3 +99,35 @@ func TestClaimGroup_HandsOutKeysUnderItsPrefix(t *testing.T) {
 	assert.NoError(t, err, "a different name is a different key")
 	assert.NotZero(t, revision(t, s[0], "uefi.i-1"))
 }
+
+// A peer that moves the key between the take-over's read and its write wins,
+// and the refusal names that peer rather than the holder judged dead.
+func TestClaim_TakeOverThatLosesTheRaceNamesTheWinner(t *testing.T) {
+	s := stores(t, 3)
+	a := kvsync.NewClaim(s[0], "claim.x", "node-a")
+	b := kvsync.NewClaim(s[1], "claim.x", "node-b")
+
+	first, err := a.TryLock(t.Context())
+	require.NoError(t, err)
+	var winner kvsync.Token
+	racing := &racingStore{KVStore: s[2], race: func() {
+		winner, err = b.TakeOver(t.Context(), first)
+		require.NoError(t, err)
+	}}
+	c := kvsync.NewClaim(racing, "claim.x", "node-c")
+
+	_, err = c.TakeOver(t.Context(), first)
+	he, ok := asHeld(err)
+	require.True(t, ok, "want *HeldError, got %v", err)
+	assert.Equal(t, winner, he.Current)
+}
+
+func TestClaim_UnlockOfAnAbsentKeyIsLost(t *testing.T) {
+	s := stores(t, 1)
+	a := kvsync.NewClaim(s[0], "claim.x", "node-a")
+
+	first, err := a.TryLock(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, a.Unlock(t.Context(), first))
+	require.ErrorIs(t, a.Unlock(t.Context(), first), kvsync.ErrLost, "a key already gone is not this holder's to free")
+}

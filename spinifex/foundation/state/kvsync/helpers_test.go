@@ -3,6 +3,7 @@ package kvsync_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -109,23 +110,52 @@ type gatedStore struct {
 }
 
 func (g *gatedStore) CompareAndSwap(ctx context.Context, key string, value []byte, rev uint64) (uint64, error) {
-	g.gate.wait()
+	if err := g.gate.wait(); err != nil {
+		return 0, err
+	}
 	return g.KVStore.CompareAndSwap(ctx, key, value, rev)
 }
 
+// barrier releases its callers once n have arrived, and fails each of them
+// instead when ctx ends first, so a contender that never arrives fails the test.
 type barrier struct {
-	wg sync.WaitGroup
+	ctx     context.Context
+	mu      sync.Mutex
+	pending int
+	all     chan struct{}
 }
 
-func newBarrier(n int) *barrier {
-	b := &barrier{}
-	b.wg.Add(n)
-	return b
+func newBarrier(ctx context.Context, n int) *barrier {
+	return &barrier{ctx: ctx, pending: n, all: make(chan struct{})}
 }
 
-func (b *barrier) wait() {
-	b.wg.Done()
-	b.wg.Wait()
+func (b *barrier) wait() error {
+	b.mu.Lock()
+	b.pending--
+	if b.pending == 0 {
+		close(b.all)
+	}
+	b.mu.Unlock()
+	select {
+	case <-b.all:
+		return nil
+	case <-b.ctx.Done():
+		return fmt.Errorf("barrier: not every contender arrived: %w", b.ctx.Err())
+	}
+}
+
+// racingStore runs race once, before the first CompareAndSwap, standing in for
+// a peer whose write lands between this caller's read and its write.
+type racingStore struct {
+	kvsync.KVStore
+
+	race func()
+	once sync.Once
+}
+
+func (r *racingStore) CompareAndSwap(ctx context.Context, key string, value []byte, rev uint64) (uint64, error) {
+	r.once.Do(r.race)
+	return r.KVStore.CompareAndSwap(ctx, key, value, rev)
 }
 
 func asHeld(err error) (*kvsync.HeldError, bool) {

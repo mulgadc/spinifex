@@ -159,6 +159,7 @@ func TestCreateTags_NotFoundNamesIDsForSkipRetry(t *testing.T) {
 // An owner that is subscribed but never answers has not proven the instance
 // absent, so the NotFound message must not name it for the retry to drop.
 func TestCreateTags_SlowOwnerNotNamedMissing(t *testing.T) {
+	t.Parallel()
 	const slow = "i-tag-slow"
 	d := tagTestDaemon(t, slow, nil)
 	sub, err := d.natsConn.Subscribe("ec2.cmd."+slow, func(*nats.Msg) {})

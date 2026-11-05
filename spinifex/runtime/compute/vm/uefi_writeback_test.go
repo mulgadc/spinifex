@@ -3,9 +3,12 @@ package vm
 import (
 	"bytes"
 	"context"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -344,4 +347,98 @@ func TestUEFIWriter_PollsWhenItCannotWatch(t *testing.T) {
 		clock.Advance(uefiWriteBackPoll)
 		return bytes.Equal(want, f.pointedRegion(t))
 	}, 10*time.Second, 10*time.Millisecond)
+}
+
+// flakyClaimStore fails as many claim reads and deletes as the test arms, as
+// a NATS election does, then passes through.
+type flakyClaimStore struct {
+	kvsync.KVStore
+
+	failLoads, failDeletes atomic.Int32
+}
+
+func (s *flakyClaimStore) Load(ctx context.Context, key string) ([]byte, uint64, error) {
+	if s.failLoads.Add(-1) >= 0 {
+		return nil, 0, kvsync.ErrUnavailable
+	}
+	return s.KVStore.Load(ctx, key)
+}
+
+func (s *flakyClaimStore) CompareAndDelete(ctx context.Context, key string, rev uint64) error {
+	if s.failDeletes.Add(-1) >= 0 {
+		return kvsync.ErrUnavailable
+	}
+	return s.KVStore.CompareAndDelete(ctx, key, rev)
+}
+
+func (f *uefiFixture) flakyClaims() *flakyClaimStore {
+	store := &flakyClaimStore{KVStore: kvstore.OpenSyncBucket(f.js)}
+	f.m.deps.UEFIVarStore.Claims = uefistore.NewClaims(store, "node-a")
+	return store
+}
+
+// A clean copy's claim that the stop failed to unlock, or that no writer was
+// left to unlock after a restart, is released by the reaper, so another node
+// can start the instance. The copy itself stays.
+func TestUEFIWriteBackReaper_UnlocksTheClaimOverACleanCopy(t *testing.T) {
+	t.Run("unlock failed at stop", func(t *testing.T) {
+		f := newUEFIFixture(t)
+		flaky := f.flakyClaims()
+		instance, _ := f.running(t)
+		flaky.failDeletes.Store(1)
+		f.m.finishUEFIWriteBack(instance)
+		_, held := f.claimHolder(t)
+		require.True(t, held, "the stop's unlock failed")
+		require.True(t, f.m.UpdateState(testUEFIInstance, func(v *VM) { v.Status = StateStopped }))
+		pointer, objects := f.mustRecord(t).Pointer.Key, f.objectKeys(t)
+
+		_, err := f.m.NewUEFIWriteBackReaper().Sweep(t.Context())
+		require.NoError(t, err)
+
+		_, held = f.claimHolder(t)
+		assert.False(t, held)
+		assert.Equal(t, pointer, f.mustRecord(t).Pointer.Key, "a clean copy is not written back")
+		assert.Equal(t, objects, f.objectKeys(t))
+		assert.Equal(t, make([]byte, testUEFIVarsSize), f.localVars(t))
+	})
+	t.Run("no writer after a restart", func(t *testing.T) {
+		f := newUEFIFixture(t)
+		f.running(t)
+		f.m.uefi.take(testUEFIInstance).halt()
+		f.m.dropUEFIWriter(testUEFIInstance, "superseded", true)
+		f.m.Delete(testUEFIInstance)
+		_, held := f.claimHolder(t)
+		require.True(t, held)
+		pointer, objects := f.mustRecord(t).Pointer.Key, f.objectKeys(t)
+
+		_, err := f.m.NewUEFIWriteBackReaper().Sweep(t.Context())
+		require.NoError(t, err)
+
+		_, held = f.claimHolder(t)
+		assert.False(t, held)
+		assert.Equal(t, pointer, f.mustRecord(t).Pointer.Key, "a clean copy is not written back")
+		assert.Equal(t, objects, f.objectKeys(t))
+	})
+}
+
+// A running guest whose reconnect could not read the claim is adopted by the
+// reaper, so its changes land while it runs rather than only at the stop.
+func TestUEFIWriteBackReaper_AdoptsARunningGuestWhoseReconnectFailed(t *testing.T) {
+	f := newUEFIFixture(t)
+	flaky := f.flakyClaims()
+	instance, _ := f.running(t)
+	f.m.uefi.take(testUEFIInstance).halt()
+	flaky.failLoads.Store(1)
+
+	f.m.resumeUEFIWriter(instance)
+	require.Nil(t, f.m.uefi.get(testUEFIInstance), "the reconnect's claim read failed")
+
+	_, err := f.m.NewUEFIWriteBackReaper().Sweep(t.Context())
+	require.NoError(t, err)
+
+	w := f.m.uefi.get(testUEFIInstance)
+	require.NotNil(t, w, "the reaper registers a writer for the running guest")
+	assert.NotNil(t, w.cancel, "and starts it")
+	_, held := f.claimHolder(t)
+	assert.True(t, held, "a running guest's claim is never unlocked by the reaper")
 }

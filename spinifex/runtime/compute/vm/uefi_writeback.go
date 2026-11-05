@@ -18,6 +18,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	otelsetup "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -508,6 +509,32 @@ func (m *Manager) finishUEFIWriteBack(instance *VM) {
 	}
 }
 
+// uefiFailedLaunchExitWait bounds how long a failed launch waits for the QEMU
+// it killed to exit before settling the store it may have written.
+const uefiFailedLaunchExitWait = 10 * time.Second
+
+// settleFailedUEFILaunch settles the store of a launch that failed after QEMU
+// started, as a stop does, once that QEMU is provably gone. A QEMU that may
+// still run keeps its writer, so its changes go on landing.
+func (m *Manager) settleFailedUEFILaunch(instance *VM) {
+	if !usesUEFIVarStore(instance) || !m.uefiWriteBackWired() || m.uefi.get(instance.ID) == nil {
+		return
+	}
+	pid := int(instance.qemuPID.Load())
+	if pid > 0 {
+		_ = hostprocess.WaitForProcessExit(pid, uefiFailedLaunchExitWait)
+	}
+	if !uefiQEMUExited(pid) {
+		slog.Warn("A failed launch's QEMU may still be running; keeping its UEFI variable store writer",
+			"instanceId", instance.ID, "pid", pid)
+		return
+	}
+	m.finishUEFIWriteBack(instance)
+}
+
+// uefiQEMUExited reports whether pid is provably gone; replaced in tests.
+var uefiQEMUExited = hostprocess.ProcessExited
+
 // dropUEFIWriter stops an instance's writer without writing back, for a path
 // that must not or need not, and counts the skip. A writer with nothing owed
 // on a path whose instance moved unlocks the claim, so the new owner can start.
@@ -534,12 +561,24 @@ func (m *Manager) dropUEFIWriter(instanceID, path string, unlockClean bool) {
 
 // resumeUEFIWriter restarts the writer for a guest that outlived a daemon
 // restart, with its window open, since the restart may have missed changes.
-// A claim this node no longer holds at seeded.json's generation is skipped.
+// One that cannot start now is retried by the write-back reaper.
 func (m *Manager) resumeUEFIWriter(instance *VM) {
+	m.startWriterFromSeed(instance, "reconnect")
+}
+
+// startWriterFromSeed registers and starts the writer seeded.json describes
+// for a running guest, while this node holds the claim at its generation. The
+// reaper's adoption logs quietly, since it retries every sweep.
+func (m *Manager) startWriterFromSeed(instance *VM, trigger string) {
 	if !usesUEFIVarStore(instance) || !m.uefiWriteBackWired() {
 		return
 	}
+	reaper := trigger == "reaper"
 	unlock := m.uefi.locks.lock(instance.ID)
+	if reaper && (m.Status(instance) != StateRunning || m.uefi.get(instance.ID) != nil) {
+		unlock()
+		return
+	}
 	w, _, claim, err := m.uefiWriterFromSeed(context.Background(), instance.ID)
 	held := err == nil && claim == uefiClaimOurs
 	if held {
@@ -548,17 +587,19 @@ func (m *Manager) resumeUEFIWriter(instance *VM) {
 		}
 	}
 	unlock()
-	switch {
-	case err != nil:
-		recordUEFIWriteBackSkip("reconnect")
-		slog.Warn("Cannot resume writing the UEFI variable store back after a restart; the stop settles it",
-			"instanceId", instance.ID, "err", err)
+	if !held {
+		if reaper {
+			slog.Debug("Not adopting the running instance's UEFI variable store yet",
+				"instanceId", instance.ID, "claimHeldElsewhere", err == nil, "err", err)
+			return
+		}
+		recordUEFIWriteBackSkip(trigger)
+		slog.Warn("Cannot resume writing the UEFI variable store back after a restart; the write-back reaper retries",
+			"instanceId", instance.ID, "claimHeldElsewhere", err == nil, "err", err)
 		return
-	case !held:
-		recordUEFIWriteBackSkip("reconnect")
-		slog.Warn("This node no longer holds the running instance's UEFI variable store claim; not writing it back",
-			"instanceId", instance.ID)
-		return
+	}
+	if reaper {
+		slog.Info("Adopted a running instance's UEFI variable store writer", "instanceId", instance.ID)
 	}
 	m.startUEFIWriter(instance.ID, true)
 }

@@ -41,7 +41,9 @@ func (r *UEFIWriteBackReaper) Sweep(ctx context.Context) (int, error) {
 	}
 	reaped := 0
 	for _, dir := range dirs {
-		if m.settleOwedUEFIStore(ctx, filepath.Base(dir)) {
+		id := filepath.Base(dir)
+		m.adoptRunningUEFIStore(id)
+		if m.settleOwedUEFIStore(ctx, id) {
 			reaped++
 		}
 	}
@@ -58,9 +60,21 @@ func uefiGuestMayRun(status InstanceState) bool {
 	return false
 }
 
+// adoptRunningUEFIStore starts a writer for a running guest that has none,
+// such as one whose reconnect could not read the claim, so its changes still
+// land while it runs. A claim this node does not hold is left alone.
+func (m *Manager) adoptRunningUEFIStore(id string) {
+	v, ok := m.Get(id)
+	if !ok || m.Status(v) != StateRunning || m.uefi.get(id) != nil {
+		return
+	}
+	m.startWriterFromSeed(v, "reaper")
+}
+
 // settleOwedUEFIStore writes back id's owed store and unlocks its claim. A
 // claim another node holds means that node took the instance over, so the
 // owed changes can never land: the mark and the local copy go (ADR-0003:S7).
+// A clean copy only has its claim unlocked, so another node can start.
 func (m *Manager) settleOwedUEFIStore(ctx context.Context, id string) bool {
 	unlock := m.uefi.locks.lock(id)
 	defer unlock()
@@ -81,13 +95,16 @@ func (m *Manager) settleOwedUEFIStore(ctx context.Context, id string) bool {
 		}
 		return false
 	}
-	if !seed.WriteBackOwed && !uefiCopyChanged(dir, seed.Sum) {
-		return false
-	}
+	clean := !seed.WriteBackOwed && !uefiCopyChanged(dir, seed.Sum)
 	w, _, claim, err := m.uefiWriterFromSeed(ctx, id)
 	if err != nil {
-		slog.Warn("vm/gc: cannot read the claim of an owed UEFI variable store; retrying next sweep", "instanceId", id, "err", err)
+		if !clean {
+			slog.Warn("vm/gc: cannot read the claim of an owed UEFI variable store; retrying next sweep", "instanceId", id, "err", err)
+		}
 		return false
+	}
+	if clean {
+		return claim == uefiClaimOurs && m.unlockCleanUEFIStore(ctx, w)
 	}
 	if claim == uefiClaimElsewhere {
 		m.dropOwedUEFIStore(id, dir, "another node holds the claim")
@@ -104,6 +121,17 @@ func (m *Manager) settleOwedUEFIStore(ctx context.Context, id string) bool {
 		return true
 	}
 	return false
+}
+
+// unlockCleanUEFIStore unlocks the claim over a copy that matches the object
+// seeded.json names, once the leader confirms the record still points there.
+// A copy no longer behind the pointer is written back by the next stop or start.
+func (m *Manager) unlockCleanUEFIStore(ctx context.Context, w *uefiWriter) bool {
+	rec, _, err := m.deps.UEFIVarStore.Records.LeaderGet(ctx, w.id)
+	if err != nil || rec.State != uefistore.StateLive || rec.Pointer == nil || rec.Pointer.Key != w.key {
+		return false
+	}
+	return m.unlockUEFIClaim(ctx, w.id, w.tok, "the stopped instance's copy is clean")
 }
 
 // dropOwedUEFIStore gives up a write-back that can never land because another

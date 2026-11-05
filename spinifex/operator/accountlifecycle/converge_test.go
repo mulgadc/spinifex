@@ -172,7 +172,11 @@ func TestConvergeLostFenceStopsBeforeNextPass(t *testing.T) {
 	accounts := &supersededAccounts{fakeAccounts: newFakeAccounts(), after: compute}
 	engine, _ := convergeEngine(accounts, compute, storage)
 
-	_, err := engine.Teardown(context.Background(), request())
+	// The deadline lets a loop that ignores the lost fence end, so it fails
+	// the pass count below instead of hanging.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_, err := engine.Teardown(ctx, request())
 	if err == nil || errors.Is(err, ErrResourcesStuck) {
 		t.Fatalf("a lost fence must stop the loop with an error, got %v", err)
 	}

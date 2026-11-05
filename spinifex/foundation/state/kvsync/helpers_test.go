@@ -131,3 +131,20 @@ func (b *barrier) wait() {
 func asHeld(err error) (*kvsync.HeldError, bool) {
 	return errors.AsType[*kvsync.HeldError](err)
 }
+
+// slowStore wraps a store so that a CompareAndSwap which has committed can run
+// afterSwap before its response returns, standing in for a delayed reply.
+type slowStore struct {
+	kvsync.KVStore
+
+	swaps     atomic.Int64
+	afterSwap func(n int64)
+}
+
+func (s *slowStore) CompareAndSwap(ctx context.Context, key string, value []byte, rev uint64) (uint64, error) {
+	next, err := s.KVStore.CompareAndSwap(ctx, key, value, rev)
+	if n := s.swaps.Add(1); err == nil && s.afterSwap != nil {
+		s.afterSwap(n)
+	}
+	return next, err
+}

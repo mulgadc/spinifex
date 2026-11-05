@@ -45,7 +45,8 @@ type acquisition struct {
 	lost chan struct{}
 	stop chan struct{}
 	done chan struct{}
-	// rev and landed, guarded by Lease.mu, are the last renewal that landed.
+	// rev and landed, guarded by Lease.mu, are the last write that landed and
+	// when it was sent.
 	rev    uint64
 	landed time.Time
 }
@@ -93,29 +94,39 @@ func (l *Lease) TryLock(ctx context.Context) (Token, error) {
 		l.mu.Unlock()
 	}()
 
-	rev, err := l.acquire(ctx)
+	rev, sent, err := l.acquire(ctx)
 	if err != nil {
 		return Token{}, err
 	}
-	return l.install(ctx, rev), nil
+	return l.install(ctx, rev, sent), nil
 }
 
-func (l *Lease) acquire(ctx context.Context) (uint64, error) {
+// acquire returns the revision of its write and when the write was sent. A
+// peer's TTL starts no earlier than the send, so validity is counted from it,
+// and a grant whose response took 2*ttl/3 is refused rather than installed.
+func (l *Lease) acquire(ctx context.Context) (uint64, time.Time, error) {
 	cur, rev, ok, err := read(ctx, l.store, l.key)
 	if err != nil {
-		return 0, err
+		return 0, time.Time{}, err
 	}
 	if ok && cur.Holder != l.holder && !l.observedFor(rev) {
-		return 0, &HeldError{Current: cur}
+		return 0, time.Time{}, &HeldError{Current: cur}
 	}
-	next, err := l.store.CompareAndSwap(ctx, l.key, encode(l.holder, 0), rev)
+	validity := 2 * l.ttl / 3
+	sent := l.clock.Now()
+	casCtx, cancel := context.WithTimeout(ctx, validity)
+	next, err := l.store.CompareAndSwap(casCtx, l.key, encode(l.holder, 0), rev)
+	cancel()
 	if errors.Is(err, ErrRevisionMismatch) {
-		return 0, heldAfterConflict(ctx, l.store, l.key)
+		return 0, time.Time{}, heldAfterConflict(ctx, l.store, l.key)
 	}
 	if err != nil {
-		return 0, fmt.Errorf("kvsync: lock %s: %w", l.key, err)
+		return 0, time.Time{}, fmt.Errorf("kvsync: lock %s: %w", l.key, err)
 	}
-	return next, nil
+	if l.clock.Now().Sub(sent) >= validity {
+		return 0, time.Time{}, fmt.Errorf("kvsync: lock %s: grant arrived after its validity: %w", l.key, ErrUnavailable)
+	}
+	return next, sent, nil
 }
 
 // observedFor records rev as seen now if it is new, and reports whether it has
@@ -131,13 +142,13 @@ func (l *Lease) observedFor(rev uint64) bool {
 	return now.Sub(l.obsAt) >= l.ttl
 }
 
-// install records an acquisition at rev and starts its renewal. Renewal runs
-// on a context that ignores the caller's cancellation and stops at Unlock.
-func (l *Lease) install(ctx context.Context, rev uint64) Token {
+// install records an acquisition at rev, valid from sent, and starts its
+// renewal, which ignores the caller's cancellation and stops at Unlock.
+func (l *Lease) install(ctx context.Context, rev uint64, sent time.Time) Token {
 	a := &acquisition{
 		gen:    rev,
 		rev:    rev,
-		landed: l.clock.Now(),
+		landed: sent,
 		lost:   make(chan struct{}),
 		stop:   make(chan struct{}),
 		done:   make(chan struct{}),
@@ -171,13 +182,15 @@ func (l *Lease) renew(ctx context.Context, a *acquisition) {
 			l.lose(ctx, a, "renewal unavailable for two thirds of the ttl", nil)
 			return
 		}
+		sent := l.clock.Now()
 		attemptCtx, cancel := context.WithTimeout(ctx, min(budget, interval))
 		next, err := l.store.CompareAndSwap(attemptCtx, l.key, encode(l.holder, a.gen), rev)
 		cancel()
 		switch {
 		case err == nil:
+			// Stamped at the send: a peer may have seen the revision that early.
 			l.mu.Lock()
-			a.rev, a.landed = next, l.clock.Now()
+			a.rev, a.landed = next, sent
 			l.mu.Unlock()
 			wait = interval
 		case errors.Is(err, ErrRevisionMismatch):

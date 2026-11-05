@@ -1,5 +1,6 @@
 //go:build lambdatestlink
 
+//test:in-package — fails a delivered write through ControlClient's unexported writer hook
 package testlink
 
 import (

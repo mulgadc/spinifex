@@ -1,5 +1,6 @@
 //go:build !lambdatestlink
 
+//test:in-package — reuses the package's in-package fixtures newGeneration and gen1
 package guestconn
 
 import (

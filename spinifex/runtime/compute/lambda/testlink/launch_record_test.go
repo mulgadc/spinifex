@@ -1,5 +1,6 @@
 //go:build lambdatestlink
 
+//test:in-package — reuses the package's in-package daemon fixtures fakeTaps, codeServer and grant
 package testlink
 
 import (

@@ -1,5 +1,6 @@
 //go:build lambdatestlink
 
+//test:in-package — reuses the package's in-package handshake fixtures newGeneration, listen and guestFor
 package guestconn
 
 import (

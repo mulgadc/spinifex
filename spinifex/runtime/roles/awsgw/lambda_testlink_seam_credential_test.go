@@ -1,5 +1,6 @@
 //go:build lambdatestlink && lambdatestlinkseam
 
+//test:in-package — drives the unexported test-link executor and seam fixtures
 package awsgw
 
 import (

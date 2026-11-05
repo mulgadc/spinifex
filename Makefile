@@ -350,7 +350,7 @@ test-integration:
 test-gated:
 	@echo -e "\n....Running env- and tag-gated suites...."
 	$(_Q)LOG_IGNORE=1 SPINIFEX_SQS_R3=1 go test $(GOTESTFLAGS) -timeout 180s -run '^TestR3$$' ./spinifex/domains/sqs/message/jetstream/ $(_RACEQ)
-	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -tags=lambdatestlink -timeout 120s ./cmd/lambda-agent/ ./spinifex/agents/lambda/hostlink/ ./spinifex/runtime/compute/lambda/testlink/ ./spinifex/domains/network/host/ $(_RACEQ)
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -tags=lambdatestlink -timeout 120s ./cmd/lambda-agent/ ./spinifex/agents/lambda/hostlink/ ./spinifex/runtime/compute/lambda/guestconn/ ./spinifex/runtime/compute/lambda/testlink/ ./spinifex/domains/network/host/ $(_RACEQ)
 	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -tags=lambdatestlink -timeout 120s -run '^TestLambdaTestLink(Executor|Reply)_' ./spinifex/runtime/roles/awsgw/ $(_RACEQ)
 	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -tags=lambdatestlink,lambdatestlinkseam -timeout 120s -run '^TestLambdaTestLinkSeam_' ./spinifex/runtime/roles/awsgw/ $(_RACEQ)
 	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -tags=lambdatestlink -timeout 120s -run '^TestLambdaTestLink' ./spinifex/runtime/daemon/ $(_RACEQ)

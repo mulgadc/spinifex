@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
@@ -29,10 +30,18 @@ func (noJWKS) LookupClusterJWKS(context.Context, string, string) ([]byte, bool, 
 
 const lambdaTrust = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
 
-// A Lambda environment session passes the real verifier's Authenticate and Resolve,
-// and stops resolving once its role is replaced under the same name. The secret
-// callback stands in for SigV4; no request is signed here.
-func TestResolve_LambdaEnvironmentSessionFailsAfterRoleReplaced(t *testing.T) {
+type lambdaFixture struct {
+	iamSvc      *iamdomain.IAMServiceImpl
+	stsSvc      *stsdomain.STSServiceImpl
+	role        *iam.Role
+	createRole  func() *iam.Role
+	out         *sts.AssumeRoleOutput
+	req         credential.Request
+	matchSecret func(string) error
+}
+
+func newLambdaFixture(t *testing.T) *lambdaFixture {
+	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	masterKey, err := iamdomain.GenerateMasterKey()
 	require.NoError(t, err)
@@ -50,53 +59,84 @@ func TestResolve_LambdaEnvironmentSessionFailsAfterRoleReplaced(t *testing.T) {
 	_, err = accounts.Put(t.Context(), testAccount, acct)
 	require.NoError(t, err)
 
-	createRole := func() *iam.Role {
+	f := &lambdaFixture{iamSvc: iamSvc, stsSvc: stsSvc}
+	f.createRole = func() *iam.Role {
 		out, err := iamSvc.CreateRole(testAccount, &iam.CreateRoleInput{
 			RoleName: aws.String("fn-exec"), AssumeRolePolicyDocument: aws.String(lambdaTrust),
 		})
 		require.NoError(t, err)
 		return out.Role
 	}
-	role := createRole()
+	f.role = f.createRole()
 
-	out, err := stsSvc.AssumeRoleForLambdaEnvironment(t.Context(), stsdomain.LambdaEnvironmentSessionRequest{
+	f.out, err = stsSvc.AssumeRoleForLambdaEnvironment(t.Context(), stsdomain.LambdaEnvironmentSessionRequest{
 		AccountID:          testAccount,
-		RoleARN:            aws.StringValue(role.Arn),
-		FunctionARN:        "arn:aws:lambda:ap-southeast-2:" + testAccount + ":function:hello",
-		FunctionID:         "0123456789abcdef0123456789abcdef",
-		EnvironmentID:      "env-0001",
+		RoleARN:            aws.StringValue(f.role.Arn),
+		FunctionARN:        testFunctionARN,
+		FunctionID:         testFunctionID,
+		EnvironmentID:      testEnvironmentID,
 		MaxLifetimeSeconds: 3600,
 	})
 	require.NoError(t, err)
 
-	v := credverify.New(iamSvc, stsSvc)
-	req := credential.Request{
-		AccessKeyID:   aws.StringValue(out.Credentials.AccessKeyId),
-		SecurityToken: aws.StringValue(out.Credentials.SessionToken),
+	f.req = credential.Request{
+		AccessKeyID:   aws.StringValue(f.out.Credentials.AccessKeyId),
+		SecurityToken: aws.StringValue(f.out.Credentials.SessionToken),
 	}
-	secret := aws.StringValue(out.Credentials.SecretAccessKey)
-	matchSecret := func(got string) error {
+	secret := aws.StringValue(f.out.Credentials.SecretAccessKey)
+	f.matchSecret = func(got string) error {
 		if got != secret {
 			return errors.New(awserrors.ErrorSignatureDoesNotMatch)
 		}
 		return nil
 	}
+	return f
+}
 
-	auth, f := v.Authenticate(req, matchSecret)
-	require.Nil(t, f)
-	p, f := v.Resolve(req, auth)
-	require.Nil(t, f)
-	assert.Equal(t, aws.StringValue(out.AssumedRoleUser.Arn), p.AssumedRoleARN)
+const (
+	testFunctionARN   = "arn:aws:lambda:ap-southeast-2:" + testAccount + ":function:hello"
+	testFunctionID    = "0123456789abcdef0123456789abcdef"
+	testEnvironmentID = "env-0001"
+)
+
+// A Lambda environment session passes the real verifier's Authenticate and Resolve,
+// and stops resolving once its role is replaced under the same name. The secret
+// callback stands in for SigV4; no request is signed here.
+func TestResolve_LambdaEnvironmentSessionFailsAfterRoleReplaced(t *testing.T) {
+	f := newLambdaFixture(t)
+	v := credverify.New(f.iamSvc, f.stsSvc)
+
+	auth, fail := v.Authenticate(f.req, f.matchSecret)
+	require.Nil(t, fail)
+	p, fail := v.Resolve(f.req, auth)
+	require.Nil(t, fail)
+	assert.Equal(t, aws.StringValue(f.out.AssumedRoleUser.Arn), p.AssumedRoleARN)
 	assert.Equal(t, stsdomain.PrincipalTypeAssumedRole, p.PrincipalType)
 
-	_, err = iamSvc.DeleteRole(testAccount, &iam.DeleteRoleInput{RoleName: role.RoleName})
+	_, err := f.iamSvc.DeleteRole(testAccount, &iam.DeleteRoleInput{RoleName: f.role.RoleName})
 	require.NoError(t, err)
-	replaced := createRole()
-	require.NotEqual(t, aws.StringValue(role.RoleId), aws.StringValue(replaced.RoleId))
+	replaced := f.createRole()
+	require.NotEqual(t, aws.StringValue(f.role.RoleId), aws.StringValue(replaced.RoleId))
 
-	auth, f = v.Authenticate(req, matchSecret)
-	require.Nil(t, f, "the record still authenticates; the role check belongs to Resolve")
-	_, f = v.Resolve(req, auth)
-	require.NotNil(t, f)
-	assert.Equal(t, awserrors.ErrorInvalidClientTokenId, f.Code)
+	auth, fail = v.Authenticate(f.req, f.matchSecret)
+	require.Nil(t, fail, "the record still authenticates; the role check belongs to Resolve")
+	_, fail = v.Resolve(f.req, auth)
+	require.NotNil(t, fail)
+	assert.Equal(t, awserrors.ErrorInvalidClientTokenId, fail.Code)
+}
+
+// Once revoked for its environment, the session no longer authenticates.
+func TestAuthenticate_LambdaEnvironmentSessionFailsAfterRevoke(t *testing.T) {
+	f := newLambdaFixture(t)
+	v := credverify.New(f.iamSvc, f.stsSvc)
+	_, fail := v.Authenticate(f.req, f.matchSecret)
+	require.Nil(t, fail)
+
+	require.NoError(t, f.stsSvc.RevokeLambdaEnvironmentSession(t.Context(), f.req.AccessKeyID, stsdomain.LambdaEnvironmentSessionScope{
+		AccountID: testAccount, FunctionID: testFunctionID, FunctionARN: testFunctionARN, EnvironmentID: testEnvironmentID,
+	}))
+
+	_, fail = v.Authenticate(f.req, f.matchSecret)
+	require.NotNil(t, fail)
+	assert.Equal(t, awserrors.ErrorInvalidClientTokenId, fail.Code)
 }

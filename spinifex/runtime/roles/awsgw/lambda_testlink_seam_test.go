@@ -29,7 +29,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/function"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/testlink"
-	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
 
@@ -45,6 +44,7 @@ const seamHandler = "bootstrap.seam"
 type seamFunction struct {
 	timeout   int64
 	envCipher string
+	role      string
 }
 
 var _ function.Client = seamFunction{}
@@ -55,7 +55,7 @@ func (s seamFunction) Get(_ context.Context, account, region, name string) (func
 	}
 	sum := sha256.Sum256(seamCode)
 	return function.Record{FunctionID: "fn1", AccountID: account, Region: region, FunctionName: name,
-		Runtime: "provided.al2023", Handler: seamHandler, EnvCipher: s.envCipher, Timeout: s.timeout, MemorySize: 128, State: function.StateActive,
+		Role: s.role, Runtime: "provided.al2023", Handler: seamHandler, EnvCipher: s.envCipher, Timeout: s.timeout, MemorySize: 128, State: function.StateActive,
 		Code: function.Code{RevisionID: "r1", State: function.CodeStored, SHA256: hex.EncodeToString(sum[:]), Size: int64(len(seamCode))},
 	}, 1, nil
 }
@@ -95,29 +95,6 @@ func (c *countedGrants) Issue(ctx context.Context, a execution.Attempt) (executi
 	return c.grantIssuer.Issue(ctx, a)
 }
 
-// seamNATS is the transport only: it hands the executor's encoded request to
-// the daemon's real attempt steps and returns the daemon's encoded reply.
-type seamNATS struct {
-	t        *testing.T
-	d        *testlink.Daemon
-	guest    func(context.Context, net.Conn)
-	mu       sync.Mutex
-	requests [][]byte
-	replies  [][]byte
-}
-
-func (*seamNATS) MaxPayload() int64 { return 1 << 20 }
-
-func (n *seamNATS) RequestWithContext(ctx context.Context, subj string, data []byte) (*nats.Msg, error) {
-	require.Equal(n.t, testlink.Subject("node1"), subj)
-	body, err := json.Marshal(n.d.HandleWithGuest(ctx, data, n.guest))
-	n.mu.Lock()
-	n.requests = append(n.requests, data)
-	n.replies = append(n.replies, body)
-	n.mu.Unlock()
-	return &nats.Msg{Data: body}, err
-}
-
 // skewAhead moves every deadline the agent sees earlier, as a guest clock
 // running that far ahead of the host's would.
 type skewAhead struct {
@@ -131,9 +108,23 @@ func (l skewAhead) Next(ctx context.Context) (hostlink.Request, error) {
 	return r, err
 }
 
+type guestFunc = func(context.Context, net.Conn)
+
+// guestOpts adjusts the loopback guest: a clock running ahead, a sink for the
+// first frame's credential, and a gate on reading that frame.
+type guestOpts struct {
+	ahead time.Duration
+	creds chan<- hostlink.Credential
+	hold  <-chan struct{}
+}
+
 // agentGuest runs the real guest agent and Runtime API server; bootstrap is
 // an HTTP client standing in for the function runtime.
-func agentGuest(ahead time.Duration, bootstrap func(base string)) func(context.Context, net.Conn) {
+func agentGuest(ahead time.Duration, bootstrap func(base string)) guestFunc {
+	return agentGuestWith(guestOpts{ahead: ahead}, bootstrap)
+}
+
+func agentGuestWith(o guestOpts, bootstrap func(base string)) guestFunc {
 	return func(ctx context.Context, conn net.Conn) {
 		srv := runtimeapi.New()
 		ts := httptest.NewServer(srv.Handler())
@@ -141,9 +132,9 @@ func agentGuest(ahead time.Duration, bootstrap func(base string)) func(context.C
 		if bootstrap != nil {
 			go bootstrap(ts.URL + "/2018-06-01/runtime/")
 		}
-		var link hostlink.Link = hostlink.NewTestStream(conn)
-		if ahead > 0 {
-			link = skewAhead{link, ahead}
+		var link hostlink.Link = &credTap{Link: hostlink.NewTestStream(conn), creds: o.creds, hold: o.hold}
+		if o.ahead > 0 {
+			link = skewAhead{link, o.ahead}
 		}
 		_ = agent.Run(ctx, link, srv)
 	}
@@ -178,6 +169,7 @@ func (l *lockedBuffer) String() string {
 }
 
 type seamRun struct {
+	env      *seamEnv
 	resp     *http.Response
 	body     []byte
 	requests [][]byte
@@ -188,8 +180,9 @@ type seamRun struct {
 }
 
 // invokeComposed sends one signed Invoke through the composed gateway, the
-// Lambda handler and the real test-link executor into the daemon's attempt.
-func invokeComposed(t *testing.T, timeout int64, codeURL string, client *http.Client, guest func(context.Context, net.Conn)) seamRun {
+// Lambda handler and the real test-link executor, over a real control socket,
+// into the daemon's attempt, with real IAM and STS issuing the session.
+func invokeComposed(t *testing.T, timeout int64, codeURL string, client *http.Client, guest guestFunc) seamRun {
 	t.Helper()
 	run := invokeComposedAt(t, "/2015-03-31/functions/f/invocations", seamFunction{timeout: timeout}, codeURL, client, guest)
 	require.Len(t, run.replies, 1, "the request reached the daemon once")
@@ -197,28 +190,49 @@ func invokeComposed(t *testing.T, timeout int64, codeURL string, client *http.Cl
 }
 
 // invokeComposedAt is invokeComposed for one target and function configuration.
-func invokeComposedAt(t *testing.T, target string, fn seamFunction, codeURL string, client *http.Client, guest func(context.Context, net.Conn)) seamRun {
+func invokeComposedAt(t *testing.T, target string, fn seamFunction, codeURL string, client *http.Client, guest guestFunc) seamRun {
+	t.Helper()
+	return invokeComposedIn(t, newSeamEnv(t), target, fn, codeURL, client, guest)
+}
+
+// captureLogs sends the default logger to a buffer for the test's duration.
+func captureLogs(t *testing.T) *lockedBuffer {
 	t.Helper()
 	logs := &lockedBuffer{}
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
+	return logs
+}
 
-	store := grantStore(t)
-	grants := &countedGrants{grantIssuer: store}
-	var presigns atomic.Int32
-	n := &seamNATS{t: t, d: &testlink.Daemon{Node: "node1", Grants: store, HTTP: client}, guest: guest}
-	exec := &testLinkExecutor{NATS: n, Node: "node1",
-		Codes:  func(context.Context) (codePresigner, error) { return urlPresigner{codeURL, &presigns}, nil },
+// composedExecutor is the real test-link executor wired to env's STS and
+// owner and to a seam daemon serving guest on a real control socket.
+func composedExecutor(t *testing.T, env *seamEnv, codeURL string, client *http.Client, guest guestFunc) (*testLinkExecutor, *seamDaemon, *countedGrants, *atomic.Int32) {
+	t.Helper()
+	grants := &countedGrants{grantIssuer: env.grants}
+	presigns := &atomic.Int32{}
+	daemon := startSeamDaemon(t, &testlink.Daemon{Node: "node1", Grants: env.grants, HTTP: client}, guest)
+	exec := &testLinkExecutor{Control: daemon.client, RequestLimit: 1 << 20, Sessions: env.sts, Node: "node1",
+		Codes:  func(context.Context) (codePresigner, error) { return urlPresigner{codeURL, presigns}, nil },
 		Grants: func(context.Context) (grantIssuer, error) { return grants, nil },
 	}
+	return exec, daemon, grants, presigns
+}
+
+// invokeComposedIn is invokeComposedAt against an existing environment.
+func invokeComposedIn(t *testing.T, env *seamEnv, target string, fn seamFunction, codeURL string, client *http.Client, guest guestFunc) seamRun {
+	t.Helper()
+	logs := captureLogs(t)
+	if fn.role == "" {
+		fn.role = env.roleARN
+	}
+	exec, daemon, grants, presigns := composedExecutor(t, env, codeURL, client, guest)
 	reg := lambdaawsapi.NewRegistration(lambdaawsapi.Deps{Meta: fn, Exec: exec})
 	resp := signedLambdaInvokeAt(t, defaultGateway(t, lambdaTestRoutes(reg)...), target)
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return seamRun{resp: resp, body: body, requests: n.requests, replies: n.replies, log: logs.String(),
+	reqs, replies := daemon.recorded()
+	return seamRun{env: env, resp: resp, body: body, requests: reqs, replies: replies, log: logs.String(),
 		presigns: presigns.Load(), grants: grants.issued.Load()}
 }
 

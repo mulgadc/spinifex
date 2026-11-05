@@ -161,7 +161,7 @@ func TestDaemon_RefusesBeforeAllocating(t *testing.T) {
 			if name == "untrusted TLS" {
 				client = &http.Client{}
 			}
-			rep := g.daemon(&Daemon{IPs: ips, Taps: taps, HTTP: client, WorkDir: t.TempDir()}).Handle(context.Background(), tc.data(g))
+			rep := g.daemon(&Daemon{IPs: ips, Taps: taps, HTTP: client, WorkDir: t.TempDir()}).Handle(context.Background(), tc.data(g), testCred)
 			require.Equal(t, OutcomeRefused, rep.Outcome, rep.Error)
 			require.Empty(t, ips.allocated)
 			require.NotContains(t, rep.Error, good.URL)
@@ -196,7 +196,7 @@ func TestDaemon_OwnerRefusalComesBeforeAnyAllocation(t *testing.T) {
 			mutate(&req)
 			data, _ := json.Marshal(req)
 			ips := &fakeIPs{}
-			rep := g.daemon(&Daemon{IPs: ips, Taps: &fakeTaps{}, HTTP: srv.Client(), WorkDir: t.TempDir()}).Handle(context.Background(), data)
+			rep := g.daemon(&Daemon{IPs: ips, Taps: &fakeTaps{}, HTTP: srv.Client(), WorkDir: t.TempDir()}).Handle(context.Background(), data, testCred)
 			require.Equal(t, OutcomeRefused, rep.Outcome)
 			require.False(t, fetched)
 			require.Empty(t, ips.allocated)
@@ -212,11 +212,11 @@ func TestDaemon_ReplayedGrantIsRefused(t *testing.T) {
 	ips := &fakeIPs{}
 	taps := &fakeTaps{createErr: fmt.Errorf("%w: %w", host.ErrTapNotCreated, host.ErrTapExists)}
 	d := g.daemon(&Daemon{IPs: ips, Taps: taps, HTTP: srv.Client(), WorkDir: t.TempDir()})
-	require.Equal(t, OutcomeRefused, d.Handle(context.Background(), g.request(srv.URL, code)).Outcome)
+	require.Equal(t, OutcomeRefused, d.Handle(context.Background(), g.request(srv.URL, code), testCred).Outcome)
 	require.Equal(t, execution.StateEnded, g.state(t))
 
 	ips.allocated = nil
-	rep := d.Handle(context.Background(), g.request(srv.URL, code))
+	rep := d.Handle(context.Background(), g.request(srv.URL, code), testCred)
 	require.Equal(t, OutcomeRefused, rep.Outcome)
 	require.Empty(t, ips.allocated, "an ended grant never starts again")
 }
@@ -227,7 +227,7 @@ func TestDaemon_TapNotCreatedRemovesNothingAndResolves(t *testing.T) {
 	g := grant(t, code)
 	ips, taps := &fakeIPs{}, &fakeTaps{createErr: fmt.Errorf("%w: %w", host.ErrTapNotCreated, host.ErrTapExists)}
 	d := g.daemon(&Daemon{IPs: ips, Taps: taps, HTTP: srv.Client(), WorkDir: t.TempDir()})
-	rep := d.Handle(context.Background(), g.request(srv.URL, code))
+	rep := d.Handle(context.Background(), g.request(srv.URL, code), testCred)
 	require.Equal(t, OutcomeRefused, rep.Outcome)
 	require.Empty(t, taps.removed, "a tap this attempt did not create is never removed")
 	require.Equal(t, []string{"lambda-0123456789ab"}, ips.released)
@@ -249,7 +249,7 @@ func TestDaemon_FailedCleanupHoldsTheSlotAcrossRestart(t *testing.T) {
 	d := g.daemon(&Daemon{IPs: ips, Taps: taps, HTTP: srv.Client(), WorkDir: work, HostIP: "127.0.0.1"})
 	// A file where the attempt directory goes fails preparation after the tap exists.
 	require.NoError(t, os.WriteFile(filepath.Join(work, "0123456789ab"), nil, 0o600))
-	rep := d.Handle(context.Background(), g.request(srv.URL, code))
+	rep := d.Handle(context.Background(), g.request(srv.URL, code), testCred)
 	require.Equal(t, OutcomeRefused, rep.Outcome)
 	require.Len(t, taps.removed, 1)
 	require.Empty(t, ips.released)
@@ -258,7 +258,7 @@ func TestDaemon_FailedCleanupHoldsTheSlotAcrossRestart(t *testing.T) {
 	require.Equal(t, execution.StateAmbiguous, g.state(t))
 
 	fresh := g.daemon(&Daemon{IPs: &fakeIPs{}, Taps: &fakeTaps{}, HTTP: srv.Client(), WorkDir: work})
-	rep = fresh.Handle(context.Background(), g.request(srv.URL, code))
+	rep = fresh.Handle(context.Background(), g.request(srv.URL, code), testCred)
 	require.Equal(t, OutcomeRefused, rep.Outcome)
 	require.Contains(t, rep.Error, "unresolved")
 	require.Equal(t, execution.StateAmbiguous, g.state(t))
@@ -281,7 +281,7 @@ func TestDaemon_UnprovenOwnershipHoldsTheAttempt(t *testing.T) {
 			g := grant(t, code)
 			work := t.TempDir()
 			d := g.daemon(&Daemon{IPs: tc.ips, Taps: tc.taps, HTTP: srv.Client(), WorkDir: work})
-			rep := d.Handle(context.Background(), g.request(srv.URL, code))
+			rep := d.Handle(context.Background(), g.request(srv.URL, code), testCred)
 			require.Equal(t, OutcomeRefused, rep.Outcome)
 			require.Empty(t, tc.ips.released)
 			require.Empty(t, tc.taps.removed)
@@ -300,7 +300,7 @@ func TestDaemon_MarkerBlocksBeforeAnyAllocation(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(work, "aaaaaaaaaaaa"+markerSuffix), nil, 0o600))
 	ips := &fakeIPs{}
 	d := g.daemon(&Daemon{IPs: ips, Taps: &fakeTaps{}, HTTP: srv.Client(), WorkDir: work})
-	rep := d.Handle(context.Background(), g.request(srv.URL, code))
+	rep := d.Handle(context.Background(), g.request(srv.URL, code), testCred)
 	require.Equal(t, OutcomeRefused, rep.Outcome)
 	require.Empty(t, ips.allocated)
 	require.False(t, d.busy.Load(), "a refused request takes no slot of its own")
@@ -312,7 +312,7 @@ func TestDaemon_OneAttemptAtATime(t *testing.T) {
 	g := grant(t, code)
 	d := g.daemon(&Daemon{})
 	d.busy.Store(true)
-	rep := d.Handle(context.Background(), g.request("https://h/x", code))
+	rep := d.Handle(context.Background(), g.request("https://h/x", code), testCred)
 	require.Equal(t, OutcomeRefused, rep.Outcome)
 	require.Contains(t, rep.Error, "another")
 	require.Equal(t, execution.StateGranted, g.state(t))
@@ -407,7 +407,7 @@ func TestDaemon_DelayedLaunchPastTheFixedDeadlineIsRefused(t *testing.T) {
 	require.NoError(t, json.Unmarshal(req, &parsed))
 	stepBoot(t, time.Hour, hardDeadlineFrom(time.Hour, parsed))
 
-	rep := d.Handle(context.Background(), req)
+	rep := d.Handle(context.Background(), req, testCred)
 	require.Equal(t, OutcomeRefused, rep.Outcome)
 	require.Equal(t, ErrDeadlineExpired.Error(), rep.Error)
 	require.Equal(t, []string{"lambda-0123456789ab"}, ips.released)

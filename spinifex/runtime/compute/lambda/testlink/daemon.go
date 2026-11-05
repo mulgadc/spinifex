@@ -31,7 +31,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/attempt"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/guestconn"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"github.com/nats-io/nats.go"
 )
 
 const (
@@ -108,34 +107,39 @@ func (d *Daemon) unresolved() (string, error) {
 	return strings.TrimSuffix(filepath.Base(markers[0]), markerSuffix), nil
 }
 
-// Serve answers requests on this node's subject until the subscription ends.
-func (d *Daemon) Serve(ctx context.Context, nc *nats.Conn, node string) (*nats.Subscription, error) {
-	return nc.Subscribe(Subject(node), func(m *nats.Msg) {
-		go func() {
-			rep := d.Handle(ctx, m.Data)
-			body, err := json.Marshal(rep)
-			if err == nil && int64(len(body)) > nc.MaxPayload() {
-				body, err = json.Marshal(Reply{Outcome: OutcomeUnknown, Error: "result too large for the test path"})
-			}
-			if err != nil {
-				slog.Error("Lambda test link: encode reply", "err", err)
-				return
-			}
-			if err := m.Respond(body); err != nil {
-				slog.Error("Lambda test link: send reply", "err", err)
-			}
-		}()
-	})
+// controlIOTimeout bounds reading a request from, and writing a reply to, the
+// gateway on the control socket.
+const controlIOTimeout = 30 * time.Second
+
+// ServeControl binds the control socket name and answers the gateway's
+// requests on it until ctx ends. A bind error means this daemon does not serve.
+func (d *Daemon) ServeControl(ctx context.Context, name string, gatewayUID int, limit int64) error {
+	ln, err := ListenControl(name)
+	if err != nil {
+		return err
+	}
+	srv := &ControlServer{GatewayUID: gatewayUID, RequestLimit: limit, ReplyLimit: limit,
+		IOTimeout: controlIOTimeout, Handle: d.Handle}
+	go func() {
+		if err := srv.Serve(ctx, ln); err != nil {
+			slog.Error("Lambda test link: control socket stopped; not serving new invocations", "err", err)
+		}
+	}()
+	return nil
 }
 
-// Handle runs one request under its grant. It refuses before launch when it
-// can; after launch it reports done only with a result the owner accepted and
-// a proven VM stop.
-func (d *Daemon) Handle(ctx context.Context, data []byte) Reply {
+// Handle runs one request under its grant, giving the guest cred in its first
+// frame. It refuses before launch when it can; after launch it reports done
+// only with a result the owner accepted and a proven VM stop.
+func (d *Daemon) Handle(ctx context.Context, data []byte, cred Credential) Reply {
 	var req Request
 	if err := json.Unmarshal(data, &req); err != nil {
 		return refused("unreadable request")
 	}
+	if !cred.Complete() {
+		return refused("no execution credential")
+	}
+	req.cred = cred
 	if err := CheckRequest(req); err != nil {
 		return refused(err.Error())
 	}
@@ -536,6 +540,12 @@ func hardDeadlineFrom(boot time.Duration, req Request) time.Duration {
 	return boot + fetchTimeout + timeoutFor(req) + HardKillMargin
 }
 
+// AttemptLifetime bounds an attempt from grant to hard kill: the launch window,
+// then the code fetch, boot and function timeout, then the kill margin.
+func AttemptLifetime(timeoutMs int64) time.Duration {
+	return LaunchWindow + fetchTimeout + timeoutFor(Request{TimeoutMs: timeoutMs}) + HardKillMargin
+}
+
 func timeoutFor(req Request) time.Duration {
 	return time.Duration(req.TimeoutMs)*time.Millisecond + BootAllowance
 }
@@ -574,6 +584,7 @@ func (d *Daemon) session(ctx context.Context, req Request, gen *guestconn.Genera
 		FunctionARN: req.FunctionARN,
 		DeadlineMs:  deadline.UnixMilli(),
 		Payload:     req.Payload,
+		Credential:  &req.cred,
 	}); err != nil {
 		return Reply{}, pastDeadline(deadline, fmt.Errorf("send invocation: %w", err))
 	}

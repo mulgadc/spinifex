@@ -340,7 +340,7 @@ func TestDaemon_InitializerCheckRefusesBeforeTheGrantStarts(t *testing.T) {
 			d := g.daemon(&Daemon{IPs: ips, Taps: &fakeTaps{}, HTTP: srv.Client(), WorkDir: t.TempDir()})
 			d.Initializer, d.InitializerSHA256 = lib, hex.EncodeToString(sum[:])
 			mutate(d)
-			rep := d.Handle(context.Background(), g.request(srv.URL, code))
+			rep := d.Handle(context.Background(), g.request(srv.URL, code), testCred)
 			require.Equal(t, OutcomeRefused, rep.Outcome)
 			require.Contains(t, rep.Error, "hard-kill initializer")
 			require.Empty(t, ips.allocated)

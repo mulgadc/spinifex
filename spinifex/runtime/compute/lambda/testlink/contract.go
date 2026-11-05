@@ -12,9 +12,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/execution"
 )
 
-// Subject is the request subject for one node's test-link daemon.
-func Subject(node string) string { return "spinifex.lambda.testlink.invoke." + node }
-
 // Outcomes a daemon reply can carry.
 const (
 	// OutcomeDone means the guest returned a result and the VM stop is proven.
@@ -53,6 +50,9 @@ type Request struct {
 	CodeSize    int64           `json:"code_size"`
 	CodeSHA256  string          `json:"code_sha256"`
 	Payload     []byte          `json:"payload"`
+
+	// cred arrives beside the request on the control socket, never inside it.
+	cred Credential
 }
 
 // Reply is the daemon's answer. Error is a reason safe to log.

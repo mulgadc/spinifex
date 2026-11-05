@@ -11,6 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/zoneid"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -2576,4 +2577,45 @@ func TestSubnetAvailabilityZones_DistinctSortedAcrossAccounts(t *testing.T) {
 	got, err := svc.SubnetAvailabilityZones(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, []string{"rack-a", "rack-b"}, got)
+}
+
+func TestDescribeSubnets_AvailabilityZoneIDFilter(t *testing.T) {
+	_, nc, js := testutil.StartTestJetStream(t)
+	testutil.StubVpcdSGResponder(t, nc)
+	svc, err := NewVPCServiceImplWithNATS(t.Context(), nil, nc)
+	require.NoError(t, err)
+	ids, err := zoneid.NewResolver(js, "mulga-lab", "")
+	require.NoError(t, err)
+	svc.SetZoneIDSource(ids)
+
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	mk := func(cidr, az string) string {
+		out, err := svc.CreateSubnet(t.Context(), &ec2.CreateSubnetInput{
+			VpcId: aws.String(vpcID), CidrBlock: aws.String(cidr), AvailabilityZone: aws.String(az),
+		}, testAccountID)
+		require.NoError(t, err)
+		return aws.StringValue(out.Subnet.SubnetId)
+	}
+	inA := mk("10.0.1.0/24", "mulga-laba")
+	inB := mk("10.0.2.0/24", "mulga-labb")
+	idA, err := ids.ZoneID(t.Context(), "mulga-laba")
+	require.NoError(t, err)
+	idB, err := ids.ZoneID(t.Context(), "mulga-labb")
+	require.NoError(t, err)
+	require.NotEqual(t, idA, idB)
+
+	by := func(id string) []string {
+		out, err := svc.DescribeSubnets(t.Context(), &ec2.DescribeSubnetsInput{
+			Filters: []*ec2.Filter{{Name: aws.String("availability-zone-id"), Values: aws.StringSlice([]string{id})}},
+		}, testAccountID)
+		require.NoError(t, err)
+		var got []string
+		for _, s := range out.Subnets {
+			got = append(got, aws.StringValue(s.SubnetId))
+		}
+		return got
+	}
+	assert.Equal(t, []string{inA}, by(idA))
+	assert.Equal(t, []string{inB}, by(idB))
+	assert.Empty(t, by("zz9-az9"), "an unknown zone id matches nothing and is not an error")
 }

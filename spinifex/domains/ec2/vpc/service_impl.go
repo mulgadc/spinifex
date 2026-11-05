@@ -1051,7 +1051,15 @@ func (s *VPCServiceImpl) DescribeSubnets(ctx context.Context, input *ec2.Describ
 			continue
 		}
 
-		if len(parsedFilters) > 0 && !subnetMatchesFilters(&record, parsedFilters) {
+		var zoneID string
+		if _, ok := parsedFilters["availability-zone-id"]; ok && s.zoneIDs != nil {
+			zoneID, err = s.zoneIDs.ZoneID(ctx, record.AvailabilityZone)
+			if err != nil {
+				slog.ErrorContext(ctx, "subnet zone id lookup failed", "subnetId", record.SubnetId, "az", record.AvailabilityZone, "err", err)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+		}
+		if len(parsedFilters) > 0 && !subnetMatchesFilters(&record, parsedFilters, zoneID) {
 			continue
 		}
 
@@ -1257,18 +1265,19 @@ var describeSubnetsPaging = paging.EC2{
 
 // describeSubnetsValidFilters defines the set of filter names accepted by DescribeSubnets.
 var describeSubnetsValidFilters = map[string]bool{
-	"subnet-id":         true,
-	"vpc-id":            true,
-	"availability-zone": true,
-	"cidr-block":        true,
-	"state":             true,
-	"default-for-az":    true,
-	"tag-key":           true,
-	"tag-value":         true,
+	"subnet-id":            true,
+	"vpc-id":               true,
+	"availability-zone":    true,
+	"availability-zone-id": true,
+	"cidr-block":           true,
+	"state":                true,
+	"default-for-az":       true,
+	"tag-key":              true,
+	"tag-value":            true,
 }
 
 // subnetMatchesFilters checks whether a SubnetRecord satisfies all parsed awsfilters.
-func subnetMatchesFilters(record *SubnetRecord, filters map[string][]string) bool {
+func subnetMatchesFilters(record *SubnetRecord, filters map[string][]string, zoneID string) bool {
 	for name, values := range filters {
 		if awsfilters.IsTagFilter(name) {
 			continue
@@ -1282,6 +1291,8 @@ func subnetMatchesFilters(record *SubnetRecord, filters map[string][]string) boo
 			field = record.VpcId
 		case "availability-zone":
 			field = record.AvailabilityZone
+		case "availability-zone-id":
+			field = zoneID
 		case "cidr-block":
 			field = record.CidrBlock
 		case "state":

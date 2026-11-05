@@ -633,6 +633,7 @@ func TestRunMaintenanceWindow_OpensADeferredModify(t *testing.T) {
 }
 
 func TestRunMaintenanceWindow_StandsDownWhenThereIsNothingToApply(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	cases := map[string]func(*DBInstanceRecord){
 		"NothingPending": func(rec *DBInstanceRecord) { rec.PendingModifiedValues = nil },
@@ -650,6 +651,7 @@ func TestRunMaintenanceWindow_StandsDownWhenThereIsNothingToApply(t *testing.T) 
 
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			h := newSnapshotHarness(t, false)
 			rec := backupReadyRecord()
 			rec.PreferredMaintenanceWindow = openMaintenanceWindow(now)

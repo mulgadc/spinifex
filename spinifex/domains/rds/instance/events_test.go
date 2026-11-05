@@ -142,6 +142,7 @@ func TestDescribeEvents_PagesOldestFirst(t *testing.T) {
 }
 
 func TestDescribeEvents_RejectsMalformedRequests(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		input   *rds.DescribeEventsInput
@@ -163,6 +164,7 @@ func TestDescribeEvents_RejectsMalformedRequests(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			svc := newTestService(t)
 			_, err := svc.DescribeEvents(t.Context(), tc.input, testAccountID)
 			require.Error(t, err)

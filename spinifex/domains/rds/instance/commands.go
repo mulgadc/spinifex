@@ -72,7 +72,7 @@ const (
 	// The channel is a live subscription rather than a durable queue, so a
 	// command published between two of the agent's polls reaches nobody.
 	// Re-publishing on this interval closes that gap without queueing anything.
-	commandRepublishEvery = 2 * time.Second
+	defaultCommandRepublishEvery = 2 * time.Second
 )
 
 // How long the control plane waits for each command type by default. The agent
@@ -199,7 +199,7 @@ func (s *Service) issueCommand(ctx context.Context, accountID, dbInstanceIdentif
 		if err := s.nc.Publish(subject, data); err != nil {
 			return nil, fmt.Errorf("rds: publish %s command to %s: %w", commandType, dbInstanceIdentifier, err)
 		}
-		reply, err := waitForReply(deadlineCtx, sub, cmd.CommandID)
+		reply, err := waitForReply(deadlineCtx, sub, cmd.CommandID, s.commandRepublishEvery())
 		if err != nil {
 			return nil, err
 		}
@@ -220,8 +220,8 @@ func (s *Service) issueCommand(ctx context.Context, accountID, dbInstanceIdentif
 // reply, so the caller re-publishes; ErrCommandUnreachable once the whole
 // budget is gone. Replies for other command IDs are stale answers to an earlier
 // issuer and are skipped.
-func waitForReply(ctx context.Context, sub *nats.Subscription, commandID string) (*CommandReply, error) {
-	window, cancel := context.WithTimeout(ctx, commandRepublishEvery)
+func waitForReply(ctx context.Context, sub *nats.Subscription, commandID string, republishEvery time.Duration) (*CommandReply, error) {
+	window, cancel := context.WithTimeout(ctx, republishEvery)
 	defer cancel()
 
 	for {

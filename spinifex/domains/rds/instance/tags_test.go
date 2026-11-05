@@ -141,6 +141,7 @@ func TestRemoveTagsFromResource_RemovesNamedKeysAndIgnoresAbsentOnes(t *testing.
 }
 
 func TestTagActions_RejectInvalidTags(t *testing.T) {
+	t.Parallel()
 	overLimit := make([]string, 0, (maxTagsPerResource+1)*2)
 	for i := 0; i <= maxTagsPerResource; i++ {
 		overLimit = append(overLimit, fmt.Sprintf("key-%d", i), "v")
@@ -160,6 +161,7 @@ func TestTagActions_RejectInvalidTags(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			h := newCreateHarness(t, "")
 			seedCreated(t, h, testDBInstanceID)
 

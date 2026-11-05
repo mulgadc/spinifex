@@ -144,6 +144,7 @@ func TestReconciler_LeavesAHealthyInstanceUntouchedWithoutAVMLookup(t *testing.T
 
 // Both halves must hold, never either alone.
 func TestReconciler_HoldsAvailableOnHalfTheEvidence(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		vm     string
@@ -165,6 +166,7 @@ func TestReconciler_HoldsAvailableOnHalfTheEvidence(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			h := newReconcileHarness(t, func(d *Deps) { d.FailureGrace = time.Nanosecond })
 			h.state.state = tc.vm
 			rec := darkRecord()

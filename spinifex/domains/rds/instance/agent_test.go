@@ -161,6 +161,7 @@ func TestGetDBBootstrapConfig_ServesTheFullBootMaterial(t *testing.T) {
 }
 
 func TestGetDBBootstrapConfig_FormatGrantRequiresExactCurrentIdentity(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		generation int64
@@ -178,6 +179,7 @@ func TestGetDBBootstrapConfig_FormatGrantRequiresExactCurrentIdentity(t *testing
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			svc := newTestService(t)
 			rec := defaultRecord()
 			rec.DataVolumeID = "vol-data-01"

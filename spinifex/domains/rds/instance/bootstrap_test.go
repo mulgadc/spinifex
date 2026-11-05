@@ -139,6 +139,7 @@ func TestBootstrapPayload_WrongMasterKeyIsReportedLegibly(t *testing.T) {
 // Every claim is validated after decrypting, so ciphertext lifted from another
 // account, instance, resource or generation is refused rather than replayed.
 func TestBootstrapPayload_ClaimsBindItToOneInstanceGeneration(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		accountID string
@@ -158,6 +159,7 @@ func TestBootstrapPayload_ClaimsBindItToOneInstanceGeneration(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			svc := newTestService(t)
 			rec := defaultRecord()
 			seedPending(t, svc, rec)
@@ -221,6 +223,7 @@ func acknowledge(t *testing.T, svc *Service, payloadID string) error {
 }
 
 func TestAcknowledgeDBBootstrap_Resolution(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		prepare   func(t *testing.T, svc *Service, payloadID string) string
@@ -269,6 +272,7 @@ func TestAcknowledgeDBBootstrap_Resolution(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			svc := newTestService(t)
 			payloadID := seedPending(t, svc, defaultRecord())
 			requested := tc.prepare(t, svc, payloadID)
@@ -529,6 +533,7 @@ func TestModifyDBInstance_RejectsADisruptiveChangeWhileTheBootstrapIsStaged(t *t
 // has to recreate. A serving one applied its master role and merely never
 // acknowledged, so withdrawing its payload must not read as a failure.
 func TestReplaceInstanceVM_DiscardsAStagedBootstrap(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		status    Status
@@ -542,6 +547,7 @@ func TestReplaceInstanceVM_DiscardsAStagedBootstrap(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			h := newModifyHarness(t)
 			seed := modifiableRecord()
 			seed.Status = tc.status
@@ -640,6 +646,7 @@ func TestProjectDBInstance_ReportsTheBootstrapState(t *testing.T) {
 // merely never acknowledged, so refusing its class change would be telling the
 // customer to destroy a working database.
 func TestModifyDBInstance_PendingBootstrapGateIsScopedToFailed(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		status  Status
@@ -651,6 +658,7 @@ func TestModifyDBInstance_PendingBootstrapGateIsScopedToFailed(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			h := newModifyHarness(t)
 			rec := modifiableRecord()
 			rec.Status = tc.status

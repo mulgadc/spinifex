@@ -8,6 +8,7 @@ import {
   formatLinkSpeed,
   layoutTopology,
   rateThroughput,
+  wanReach,
 } from "./node-topology"
 
 function node(name: string, nics: NICFacts[]): NodeFacts {
@@ -144,6 +145,36 @@ describe("buildTopology", () => {
     )
     expect(at("node:node1")?.x).toBeGreaterThan(at("switch:aa:aa")?.x ?? 0)
     expect(at("node:node1")?.y).toBeLessThan(at("node:node2")?.y ?? 0)
+  })
+})
+
+function down(facts: NodeFacts): NodeFacts {
+  return {
+    ...facts,
+    nics: (facts.nics ?? []).map((nic) =>
+      nic.planes?.includes("wan") ? { ...nic, state: "down" } : nic,
+    ),
+  }
+}
+
+describe("wanReach", () => {
+  it("is reachable while any node has a WAN port up", () => {
+    expect(wanReach(prod)).toBe("reachable")
+    expect(wanReach([down(prod[0] ?? node("x", [])), ...prod.slice(1)])).toBe(
+      "reachable",
+    )
+  })
+
+  it("is unreachable when every node that answered has its WAN ports down", () => {
+    expect(wanReach(prod.map(down))).toBe("unreachable")
+    expect(
+      buildTopology(prod.map(down)).devices.find((d) => d.id === "internet")
+        ?.reach,
+    ).toBe("unreachable")
+  })
+
+  it("is unknown when no node reported a WAN port", () => {
+    expect(wanReach([node("node1", [])])).toBe("unknown")
   })
 })
 

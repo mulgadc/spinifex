@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest"
 
 import {
   buildNetworkMap,
+  internetReach,
   layoutNetworkMap,
   MAP_BUDGET,
   MAP_TIERS,
   type NetworkInputs,
+  scaleLayout,
 } from "./network-map"
 
 const VPC = "vpc-1"
@@ -164,7 +166,7 @@ describe("buildNetworkMap", () => {
     const map = buildNetworkMap(inputs(), VPC_FOCUS)
 
     const routes = map.links
-      .filter((l) => l.label)
+      .filter((l) => l.label && !l.heavy)
       .map((l) => `${l.target} ${l.label} ${l.source}`)
       .toSorted()
 
@@ -314,17 +316,206 @@ describe("buildNetworkMap", () => {
   })
 })
 
-describe("layoutNetworkMap", () => {
-  it("columns subnets by zone and stacks each subnet's resources under it", () => {
-    const map = buildNetworkMap(inputs(), VPC_FOCUS)
-    const places = layoutNetworkMap(map)
-    const at = (id: string) => places.get(id)
+function cardOf(map: ReturnType<typeof buildNetworkMap>, id: string) {
+  return map.cards.find((c) => c.id === id)
+}
 
-    expect(at("subnet:subnet-1")?.x).toBeLessThan(at("subnet:subnet-2")?.x ?? 0)
-    expect(at("instance:i-0002")?.x).toBe(at("subnet:subnet-2")?.x)
-    expect(at("internet")?.y).toBeLessThan(at("igw:igw-1")?.y ?? 0)
-    expect(at("igw:igw-1")?.y).toBeLessThan(at("vpc:vpc-1")?.y ?? 0)
-    expect(at("vpc:vpc-1")?.y).toBeLessThan(at("subnet:subnet-1")?.y ?? 0)
+describe("the internet path", () => {
+  it("joins a NAT gateway to the internet gateway its own subnet routes to, outbound only", () => {
+    const { links } = buildNetworkMap(inputs(), VPC_FOCUS)
+    const egress = links.find((l) => l.target === "nat:nat-1" && l.heavy)
+
+    expect(egress).toMatchObject({
+      source: "igw:igw-1",
+      label: "outbound only",
+    })
+  })
+
+  it("draws no egress for a NAT gateway whose subnet has no internet route", () => {
+    const { links } = buildNetworkMap(
+      inputs({
+        natGateways: [
+          {
+            NatGatewayId: "nat-1",
+            VpcId: VPC,
+            SubnetId: "subnet-2",
+            State: "available",
+          },
+        ],
+        routeTables: [
+          { ...PRIVATE_TABLE, Routes: PRIVATE_TABLE.Routes?.slice(0, 2) },
+          PUBLIC_TABLE,
+        ],
+      }),
+      VPC_FOCUS,
+    )
+
+    expect(links.some((l) => l.label === "outbound only")).toBeFalsy()
+  })
+
+  it("names each subnet's type from the table it routes by", () => {
+    const map = buildNetworkMap(
+      inputs({ routeTables: [PUBLIC_TABLE, noIgw(PRIVATE_TABLE)] }),
+      VPC_FOCUS,
+    )
+
+    expect(cardOf(map, "subnet:subnet-1")?.rows).toStrictEqual([
+      { label: "Type", value: "public" },
+    ])
+    expect(cardOf(map, "subnet:subnet-2")?.rows?.[0]?.value).toBe("private")
+  })
+
+  it("says a subnet's type is unknown when route tables did not read", () => {
+    const map = buildNetworkMap(
+      inputs({ routeTables: [], failed: ["routeTables"] }),
+      VPC_FOCUS,
+    )
+
+    expect(cardOf(map, "subnet:subnet-1")?.rows?.[0]?.value).toBe("unknown")
+  })
+
+  it("lists an instance's public and private addresses", () => {
+    const map = buildNetworkMap(
+      inputs({
+        instances: [
+          { ...instance(1, "subnet-1"), PublicIpAddress: "203.0.113.11" },
+          instance(2, "subnet-2"),
+        ],
+      }),
+      VPC_FOCUS,
+    )
+
+    expect(cardOf(map, "instance:i-0001")?.rows).toStrictEqual([
+      { label: "Public IP", value: "203.0.113.11" },
+      { label: "Private IP", value: "10.0.0.1" },
+    ])
+    expect(cardOf(map, "instance:i-0002")?.rows?.[0]?.value).toBe("-")
+  })
+})
+
+describe("internetReach", () => {
+  it("is reachable with an attached internet gateway that a route uses", () => {
+    expect(internetReach(inputs())).toBe("reachable")
+  })
+
+  it("is unreachable with no attached internet gateway", () => {
+    expect(internetReach(inputs({ internetGateways: [] }))).toBe("unreachable")
+  })
+
+  it("is unreachable with an attached gateway that no route uses", () => {
+    expect(
+      internetReach(inputs({ routeTables: [PRIVATE_TABLE].map(noIgw) })),
+    ).toBe("unreachable")
+  })
+
+  it("is unknown, not unreachable, when route tables were denied or cut short", () => {
+    expect(
+      internetReach(inputs({ routeTables: [], failed: ["routeTables"] })),
+    ).toBe("unknown")
+    expect(
+      internetReach(inputs({ routeTables: [], incomplete: ["routeTables"] })),
+    ).toBe("unknown")
+    expect(
+      internetReach(
+        inputs({ internetGateways: [], failed: ["internetGateways"] }),
+      ),
+    ).toBe("unknown")
+  })
+
+  it("is drawn on the Internet card", () => {
+    const map = buildNetworkMap(inputs({ internetGateways: [] }), VPC_FOCUS)
+
+    expect(map.cards.find((c) => c.kind === "internet")?.reach).toBe(
+      "unreachable",
+    )
+  })
+})
+
+function noIgw(table: RouteTable): RouteTable {
+  return {
+    ...table,
+    Routes: table.Routes?.filter((r) => !r.GatewayId?.startsWith("igw-")),
+  }
+}
+
+function crowdedMap() {
+  return buildNetworkMap(
+    inputs({
+      instances: [1, 2, 3].map((n) => instance(n, "subnet-1")),
+    }),
+    VPC_FOCUS,
+  )
+}
+
+function placeOf(places: Map<string, { x: number; y: number }>) {
+  return (id: string) => places.get(id) ?? { x: Number.NaN, y: Number.NaN }
+}
+
+describe("layoutNetworkMap", () => {
+  it("puts subnets side by side by zone, each subnet's resources boxed beneath it", () => {
+    const map = crowdedMap()
+    const { places, boxes } = layoutNetworkMap(map)
+    const at = placeOf(places)
+
+    expect(at("subnet:subnet-1").x).toBeLessThan(at("subnet:subnet-2").x)
+    expect(at("internet").y).toBeLessThan(at("igw:igw-1").y)
+    expect(at("igw:igw-1").y).toBeLessThan(at("vpc:vpc-1").y)
+    expect(at("vpc:vpc-1").y).toBeLessThan(at("subnet:subnet-1").y)
     expect(places.size).toBe(map.cards.length)
+
+    const box = boxes.find((b) => b.id === "box:instance:subnet-1")
+
+    expect(box).toMatchObject({ label: "Instances" })
+    expect(box?.y).toBeGreaterThan(at("subnet:subnet-1").y)
+    // Two to a row: the third starts a second row under the first.
+    expect(at("instance:i-0002").y).toBe(at("instance:i-0001").y)
+    expect(at("instance:i-0002").x).toBeGreaterThan(at("instance:i-0001").x)
+    expect(at("instance:i-0003").x).toBe(at("instance:i-0001").x)
+    expect(at("instance:i-0003").y).toBeGreaterThan(at("instance:i-0001").y)
+
+    for (const n of [1, 2, 3]) {
+      const p = at(`instance:i-000${n}`)
+
+      expect(p.x).toBeGreaterThanOrEqual(box?.x ?? Infinity)
+      expect(p.x).toBeLessThan((box?.x ?? 0) + (box?.width ?? 0))
+      expect(p.y).toBeLessThan((box?.y ?? 0) + (box?.height ?? 0))
+    }
+  })
+
+  it("boxes load balancers apart from instances", () => {
+    const { boxes } = layoutNetworkMap(crowdedMap())
+
+    expect(boxes.map((b) => b.id).toSorted()).toStrictEqual([
+      "box:instance:subnet-1",
+      "box:lb:subnet-1",
+    ])
+  })
+
+  it("runs the tiers left to right across", () => {
+    const { places, boxes } = layoutNetworkMap(crowdedMap(), "across")
+    const at = placeOf(places)
+
+    expect(at("internet").x).toBeLessThan(at("igw:igw-1").x)
+    expect(at("igw:igw-1").x).toBeLessThan(at("vpc:vpc-1").x)
+    expect(at("vpc:vpc-1").x).toBeLessThan(at("subnet:subnet-1").x)
+    expect(at("subnet:subnet-1").y).toBeLessThan(at("subnet:subnet-2").y)
+    expect(
+      boxes.find((b) => b.id === "box:instance:subnet-1")?.x,
+    ).toBeGreaterThan(at("subnet:subnet-1").x)
+  })
+
+  it("spreads every place and box by the root font's factor", () => {
+    const layout = layoutNetworkMap(crowdedMap())
+    const scaled = scaleLayout(layout, 1.1)
+    const [box] = layout.boxes
+    const [big] = scaled.boxes
+    const web = layout.places.get("instance:i-0002")
+
+    expect(big?.width).toBeCloseTo((box?.width ?? 0) * 1.1)
+    expect(big?.height).toBeCloseTo((box?.height ?? 0) * 1.1)
+    expect(scaled.places.get("instance:i-0002")?.x).toBeCloseTo(
+      (web?.x ?? 0) * 1.1,
+    )
+    expect(scaleLayout(layout, 1)).toBe(layout)
   })
 })

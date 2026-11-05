@@ -8,6 +8,7 @@ import { ErrorBanner } from "@/components/error-banner"
 import { PageHeading } from "@/components/page-heading"
 import {
   DirectionToggle,
+  InternetCard,
   TopologyCanvas,
   type TopologyEdge,
   useTopologyHover,
@@ -183,12 +184,24 @@ function DeviceCard({ data }: NodeProps<DeviceNode>) {
     return <NodeCard data={data} />
   }
 
+  if (device.kind === "internet") {
+    return (
+      <InternetCard reach={device.reach ?? "unknown"} testId="device-internet">
+        <Handle
+          className="opacity-0"
+          isConnectable={false}
+          position={sides.out}
+          type="source"
+        />
+      </InternetCard>
+    )
+  }
+
   return (
     <div
       className={cn(
         "flex w-56 items-center gap-3 rounded-lg border bg-muted p-3 text-card-foreground",
         device.kind === "segment" && "border-dashed",
-        device.kind === "internet" && "w-40 justify-center rounded-full",
       )}
     >
       <Handle
@@ -217,7 +230,7 @@ function DeviceCard({ data }: NodeProps<DeviceNode>) {
             {[...new Set(data.speeds)].join(", ")}
           </span>
         )}
-        {device.kind !== "internet" && device.planes.length > 0 && (
+        {device.planes.length > 0 && (
           <span className="text-2xs text-muted-foreground">
             {planesLabel(device.planes)}
           </span>

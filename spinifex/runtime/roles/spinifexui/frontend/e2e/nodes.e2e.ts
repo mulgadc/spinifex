@@ -144,6 +144,34 @@ test.describe("Nodes", () => {
     ).toHaveAttribute("data-focus", "off")
   })
 
+  test("marks the internet reached while a WAN port is up", async ({
+    page,
+  }) => {
+    await page.goto("/nodes/topology")
+    await expect(page.getByTestId("device-internet")).toHaveAttribute(
+      "data-reach",
+      "reachable",
+    )
+  })
+
+  test("keeps a hovered node's lines beneath the other cards", async ({
+    page,
+  }) => {
+    await page.goto("/nodes/topology")
+    await page.getByText("ironbark", { exact: true }).hover()
+
+    const raised = await page.evaluate(
+      () =>
+        [...document.querySelectorAll(".react-flow__edge")].filter(
+          (edge) =>
+            Number(getComputedStyle(edge.closest("svg") ?? edge).zIndex || 0) >
+            0,
+        ).length,
+    )
+
+    expect(raised).toBe(0)
+  })
+
   test("lays the map out top down on request", async ({ page }) => {
     await page.goto("/nodes/topology")
 

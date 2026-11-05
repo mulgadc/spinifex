@@ -19,17 +19,22 @@ import { useMemo } from "react"
 
 import { ErrorBanner } from "@/components/error-banner"
 import {
+  InternetCard,
   TopologyCanvas,
   type TopologyEdge,
 } from "@/components/topology/topology-canvas"
 import {
   buildNetworkMap,
   layoutNetworkMap,
+  scaleLayout,
+  type MapBox,
   type MapCard,
   type MapFocus,
   type MapKind,
+  type MapPlace,
   type MapResource,
 } from "@/lib/network-map"
+import type { LayoutDirection } from "@/lib/node-topology"
 import { cn } from "@/lib/utils"
 import { networkMapQueryOptions } from "@/queries/topology"
 
@@ -88,11 +93,71 @@ const RESOURCE_NAMES: Record<MapResource, string> = {
 
 interface CardData extends Record<string, unknown> {
   card: MapCard
-  // Cards beside the VPC are joined to its side, not its foot.
-  side: "none" | "source" | "target"
+  direction: LayoutDirection
 }
 
 type CardNode = Node<CardData, "card">
+
+interface BoxData extends Record<string, unknown> {
+  box: MapBox
+}
+
+type BoxNode = Node<BoxData, "box">
+
+// A line runs from a card's out side to the next tier's in side; a line
+// within one tier runs between the cards' neighbouring sides.
+const SIDES: Record<
+  LayoutDirection,
+  { in: Position; out: Position; before: Position; after: Position }
+> = {
+  down: {
+    in: Position.Top,
+    out: Position.Bottom,
+    before: Position.Left,
+    after: Position.Right,
+  },
+  across: {
+    in: Position.Left,
+    out: Position.Right,
+    before: Position.Top,
+    after: Position.Bottom,
+  },
+}
+
+function Handles({ direction }: { direction: LayoutDirection }) {
+  const sides = SIDES[direction]
+
+  return (
+    <>
+      <Handle
+        className="opacity-0"
+        isConnectable={false}
+        position={sides.in}
+        type="target"
+      />
+      <Handle
+        className="opacity-0"
+        id="side"
+        isConnectable={false}
+        position={sides.before}
+        type="target"
+      />
+      <Handle
+        className="opacity-0"
+        isConnectable={false}
+        position={sides.out}
+        type="source"
+      />
+      <Handle
+        className="opacity-0"
+        id="side"
+        isConnectable={false}
+        position={sides.after}
+        type="source"
+      />
+    </>
+  )
+}
 
 // A collapsed tier lists what it holds, each kind linking to its list.
 function MoreLinks({ card }: { card: MapCard }) {
@@ -115,14 +180,21 @@ function MoreLinks({ card }: { card: MapCard }) {
 }
 
 function Card({ data }: NodeProps<CardNode>) {
-  const { card, side } = data
+  const { card, direction } = data
   const Icon = ICONS[card.kind]
+
+  if (card.kind === "internet") {
+    return (
+      <InternetCard reach={card.reach ?? "unknown"} testId="card-internet">
+        <Handles direction={direction} />
+      </InternetCard>
+    )
+  }
 
   return (
     <div
       className={cn(
         "flex w-55 items-start gap-2 rounded-lg border bg-card p-2.5 text-card-foreground transition-opacity motion-reduce:transition-none",
-        card.kind === "internet" && "justify-center rounded-full bg-muted",
         card.kind === "more" && "border-dashed bg-muted",
         isListed(card.kind) && "cursor-pointer hover:border-primary",
         card.highlighted && "border-primary ring-2 ring-primary/30",
@@ -131,26 +203,12 @@ function Card({ data }: NodeProps<CardNode>) {
       data-highlighted={card.highlighted}
       data-testid={`card-${card.id}`}
     >
-      <Handle
-        className="opacity-0"
-        isConnectable={false}
-        position={Position.Top}
-        type="target"
-      />
-      {side === "target" && (
-        <Handle
-          className="opacity-0"
-          id="side"
-          isConnectable={false}
-          position={Position.Left}
-          type="target"
-        />
-      )}
+      <Handles direction={direction} />
       <Icon
         aria-hidden
         className="mt-0.5 size-4 shrink-0 text-muted-foreground"
       />
-      <div className="flex min-w-0 flex-col gap-0.5">
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className="truncate font-mono text-xs font-medium">
           {card.label}
         </span>
@@ -166,34 +224,53 @@ function Card({ data }: NodeProps<CardNode>) {
             </span>
           ))
         )}
+        {card.rows && card.rows.length > 0 && (
+          <dl className="mt-1 border-t pt-1">
+            {card.rows.map((row) => (
+              <div
+                className="flex justify-between gap-2 font-mono text-2xs"
+                key={row.label}
+              >
+                <dt className="text-muted-foreground">{row.label}</dt>
+                <dd className="truncate">{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
       </div>
-      <Handle
-        className="opacity-0"
-        isConnectable={false}
-        position={Position.Bottom}
-        type="source"
-      />
-      {side === "source" && (
-        <Handle
-          className="opacity-0"
-          id="side"
-          isConnectable={false}
-          position={Position.Right}
-          type="source"
-        />
-      )}
     </div>
   )
 }
 
-const NODE_TYPES = { card: Card }
+// A subnet's resources of one kind, on a fill and dashed border of their own.
+function Box({ data }: NodeProps<BoxNode>) {
+  const { box } = data
 
-function sideOf(card: MapCard): CardData["side"] {
-  if (card.kind === "vpc") {
-    return "source"
-  }
+  return (
+    <div
+      className="size-full rounded-lg border border-dashed border-muted-foreground/40 bg-muted/40 px-3 py-1"
+      data-testid={box.id}
+    >
+      <span className="text-2xs font-medium text-muted-foreground">
+        {box.label}
+      </span>
+    </div>
+  )
+}
 
-  return card.tier === "vpc" ? "target" : "none"
+const NODE_TYPES = { card: Card, box: Box }
+
+// The root font size over the 16px the layout is measured in.
+function rootUnit(): number {
+  const { fontSize } = getComputedStyle(document.documentElement)
+  const size = Number(fontSize.replace(/px$/, ""))
+
+  return Number.isFinite(size) && size > 0 ? size / 16 : 1
+}
+
+// Along a tier, the earlier of two places: left going down, above going across.
+function before(a: MapPlace, b: MapPlace, direction: LayoutDirection) {
+  return direction === "down" ? a.x <= b.x : a.y <= b.y
 }
 
 function names(resources: MapResource[]): string {
@@ -231,9 +308,22 @@ function Notices({
   )
 }
 
+interface NetworkTopologyProps {
+  vpc: Vpc
+  focus: MapFocus
+  // The resource's own page has the room to lay the map out either way.
+  page?: boolean
+  direction?: LayoutDirection
+}
+
 // A read-only map of one VPC: what reaches the internet, its subnets by zone,
 // and what runs in each. A click opens the resource's own panel.
-export function NetworkTopology({ vpc, focus }: { vpc: Vpc; focus: MapFocus }) {
+export function NetworkTopology({
+  vpc,
+  focus,
+  page = false,
+  direction = "down",
+}: NetworkTopologyProps) {
   const vpcId = vpc.VpcId ?? ""
   const { data, error, isPending } = useQuery(networkMapQueryOptions(vpcId))
   const navigate = useNavigate()
@@ -247,42 +337,66 @@ export function NetworkTopology({ vpc, focus }: { vpc: Vpc; focus: MapFocus }) {
     [data, vpc, kind, id],
   )
 
+  const layout = useMemo(
+    () =>
+      map
+        ? scaleLayout(layoutNetworkMap(map, direction), rootUnit())
+        : undefined,
+    [map, direction],
+  )
+
   const nodes = useMemo(() => {
-    if (!map) {
+    if (!map || !layout) {
       return []
     }
 
-    const places = layoutNetworkMap(map)
+    // Boxes come first and sit beneath the lines, so they never hide one.
+    const boxes = layout.boxes.map((box): BoxNode => ({
+      id: box.id,
+      type: "box",
+      position: { x: box.x, y: box.y },
+      width: box.width,
+      height: box.height,
+      data: { box },
+      className: "pointer-events-none",
+      draggable: false,
+      selectable: false,
+      connectable: false,
+      zIndex: -1,
+    }))
 
-    return map.cards.map((card): CardNode => ({
+    const cards = map.cards.map((card): CardNode => ({
       id: card.id,
       type: "card",
-      position: places.get(card.id) ?? { x: 0, y: 0 },
-      data: { card, side: sideOf(card) },
+      position: layout.places.get(card.id) ?? { x: 0, y: 0 },
+      data: { card, direction },
       draggable: true,
       connectable: false,
     }))
-  }, [map])
+
+    return [...boxes, ...cards]
+  }, [map, layout, direction])
 
   const edges = useMemo(() => {
-    const vpcTier = new Set(
-      map?.cards.filter((c) => c.tier === "vpc").map((c) => c.id),
-    )
+    const tierOf = new Map(map?.cards.map((c) => [c.id, c.tier]))
+    const at = (cardId: string) => layout?.places.get(cardId) ?? { x: 0, y: 0 }
 
     return (map?.links ?? []).map((link): TopologyEdge => {
-      const beside = vpcTier.has(link.source) && vpcTier.has(link.target)
+      const within = tierOf.get(link.source) === tierOf.get(link.target)
+      const forward = before(at(link.source), at(link.target), direction)
+      const flip = within && !forward
 
       return {
         id: link.id,
         type: "line",
-        source: link.source,
-        target: link.target,
-        sourceHandle: beside ? "side" : undefined,
-        targetHandle: beside ? "side" : undefined,
+        source: flip ? link.target : link.source,
+        target: flip ? link.source : link.target,
+        sourceHandle: within ? "side" : undefined,
+        targetHandle: within ? "side" : undefined,
         data: { heavy: link.heavy, label: link.label },
       }
     })
-  }, [map])
+  }, [map, layout, direction])
 
   if (error) {
     return <ErrorBanner error={error} msg="The VPC's resources did not load." />
@@ -291,7 +405,12 @@ export function NetworkTopology({ vpc, focus }: { vpc: Vpc; focus: MapFocus }) {
   return (
     <div className="flex flex-col gap-3">
       {map && <Notices {...map} />}
-      <div className="h-[28rem] overflow-hidden rounded-lg border">
+      <div
+        className={cn(
+          "overflow-hidden rounded-lg border",
+          page ? "h-[72vh]" : "h-[80vh]",
+        )}
+      >
         {isPending || !map ? (
           <p className="p-4 text-xs text-muted-foreground">
             Reading the VPC&apos;s resources…
@@ -299,10 +418,15 @@ export function NetworkTopology({ vpc, focus }: { vpc: Vpc; focus: MapFocus }) {
         ) : (
           <TopologyCanvas
             edges={edges}
+            layoutKey={direction}
             links={map.links}
             nodeTypes={NODE_TYPES}
             nodes={nodes}
-            onNodeClick={(node: CardNode) => {
+            onNodeClick={(node: CardNode | BoxNode) => {
+              if (node.type !== "card") {
+                return
+              }
+
               const { card } = node.data
 
               if (isListed(card.kind) && card.resourceId) {
@@ -316,8 +440,7 @@ export function NetworkTopology({ vpc, focus }: { vpc: Vpc; focus: MapFocus }) {
         )}
       </div>
       <p className="text-2xs text-muted-foreground">
-        A thick line reaches the internet; a labelled line is a route, by its
-        destination. Hover a card to trace its links, or click it to open it.
+        Hover a card to trace its links, or click it to open it.
       </p>
     </div>
   )

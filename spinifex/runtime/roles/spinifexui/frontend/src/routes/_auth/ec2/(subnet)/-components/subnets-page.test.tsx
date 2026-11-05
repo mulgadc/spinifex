@@ -44,6 +44,56 @@ const SUBNET = {
 }
 
 describe("SubnetsPage", () => {
+  it("types each subnet by its route table, and shows - when they fail to read", async () => {
+    sdk.send.mockImplementation(async (command) => {
+      if (command.constructor.name !== "DescribeRouteTablesCommand") {
+        return {}
+      }
+
+      return await Promise.resolve({
+        RouteTables: [
+          {
+            VpcId: "vpc-1",
+            Associations: [{ Main: true }],
+            Routes: [{ DestinationCidrBlock: "0.0.0.0/0", GatewayId: "igw-1" }],
+          },
+        ],
+      })
+    })
+
+    const { unmount } = renderWithClient(
+      <SubnetsPage
+        onSearchChange={vi.fn()}
+        search={{ ...CLOSED_PANEL, selected: "subnet-1" }}
+        subnets={[SUBNET]}
+      />,
+      createTestQueryClient(),
+    )
+
+    await waitFor(() => {
+      expect(screen.getByRole("cell", { name: "Public" })).toBeInTheDocument()
+    })
+    const panel = within(screen.getByRole("region", { name: "Subnet details" }))
+    expect(panel.getByText("Type").nextSibling).toHaveTextContent("Public")
+    unmount()
+
+    sdk.send.mockRejectedValue(new Error("denied"))
+    renderWithClient(
+      <SubnetsPage
+        onSearchChange={vi.fn()}
+        search={CLOSED_PANEL}
+        subnets={[SUBNET]}
+      />,
+      createTestQueryClient(),
+    )
+
+    expect(screen.getByRole("cell", { name: "-" })).toBeInTheDocument()
+    expect(
+      screen.getByRole("cell", { name: "10.0.1.0/24" }),
+    ).toBeInTheDocument()
+    sdk.send.mockReset()
+  })
+
   it("opens the panel for a clicked row", async () => {
     const user = userEvent.setup()
     const onSearchChange = vi.fn()

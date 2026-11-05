@@ -11,7 +11,9 @@ import type {
 import type { LoadBalancer } from "@aws-sdk/client-elastic-load-balancing-v2"
 import type { DBInstance } from "@aws-sdk/client-rds"
 
-import { routeTableFor } from "@/lib/subnet-routing"
+import type { LayoutDirection } from "@/lib/node-topology"
+import type { Reachability } from "@/lib/reachability"
+import { routeTableFor, subnetType } from "@/lib/subnet-routing"
 
 // The map never draws more than this, whatever the account holds.
 export const MAP_BUDGET = { cards: 120, edges: 240 }
@@ -49,12 +51,21 @@ export type MapResource =
   | "loadBalancers"
   | "dbInstances"
 
+// A labelled value on a card, as a node card lists its ports.
+export interface MapRow {
+  label: string
+  value: string
+}
+
 export interface MapCard {
   id: string
   kind: MapKind
   tier: MapTier
   label: string
   details: string[]
+  rows?: MapRow[]
+  // The Internet card's state.
+  reach?: Reachability
   // The resource's own id, which its panel opens on.
   resourceId?: string
   // The subnet a resource stacks under, or a subnet's availability zone.
@@ -145,6 +156,8 @@ interface Sketch {
   vpcId: string
   cards: Draft[]
   links: MapLink[]
+  // Every route table was read, so a subnet's type can be decided.
+  routesKnown: boolean
 }
 
 function link(
@@ -206,7 +219,37 @@ function sketchInternetGateways(sketch: Sketch, igws: InternetGateway[]) {
   }
 }
 
-function sketchNatGateways(sketch: Sketch, nats: NatGateway[]) {
+// A NAT gateway reaches the internet only through its own subnet's route to
+// an internet gateway, and only outbound.
+function sketchNatEgress(
+  sketch: Sketch,
+  nat: NatGateway,
+  subnets: Subnet[],
+  routeTables: RouteTable[],
+) {
+  const home = subnets.find((s) => s.SubnetId === nat.SubnetId)
+  const table = home && routeTableFor(home, routeTables)
+
+  const igws = new Set(
+    compact((table?.Routes ?? []).map((r) => r.GatewayId)).filter((g) =>
+      g.startsWith("igw-"),
+    ),
+  )
+
+  for (const igw of igws) {
+    link(sketch, `igw:${igw}`, `nat:${nat.NatGatewayId ?? ""}`, {
+      label: "outbound only",
+      heavy: true,
+    })
+  }
+}
+
+function sketchNatGateways(
+  sketch: Sketch,
+  nats: NatGateway[],
+  subnets: Subnet[],
+  routeTables: RouteTable[],
+) {
   for (const nat of nats) {
     const id = nat.NatGatewayId ?? ""
     const named = labelled(id, nat.Tags)
@@ -222,6 +265,10 @@ function sketchNatGateways(sketch: Sketch, nats: NatGateway[]) {
 
     if (nat.SubnetId) {
       link(sketch, `nat:${id}`, `subnet:${nat.SubnetId}`)
+    }
+
+    if (nat.ConnectivityType !== "private") {
+      sketchNatEgress(sketch, nat, subnets, routeTables)
     }
   }
 }
@@ -261,6 +308,12 @@ function sketchSubnets(
         `${subnet.CidrBlock ?? ""} · ${subnet.AvailabilityZone ?? ""}`,
         table?.RouteTableId,
       ]),
+      rows: [
+        {
+          label: "Type",
+          value: subnetType(subnet, routeTables, sketch.routesKnown),
+        },
+      ],
     })
     link(sketch, `vpc:${sketch.vpcId}`, `subnet:${id}`)
 
@@ -282,7 +335,11 @@ function sketchInstances(sketch: Sketch, instances: Instance[]) {
       resourceId: id,
       column: instance.SubnetId,
       label: named.label,
-      details: compact([...named.details, instance.PrivateIpAddress]),
+      details: named.details,
+      rows: [
+        { label: "Public IP", value: instance.PublicIpAddress ?? "-" },
+        { label: "Private IP", value: instance.PrivateIpAddress ?? "-" },
+      ],
     })
 
     if (instance.SubnetId) {
@@ -389,7 +446,15 @@ function sketchAddresses(
 
 function sketchMap(inputs: NetworkInputs): Sketch {
   const vpcId = inputs.vpc.VpcId ?? ""
-  const sketch: Sketch = { vpcId, cards: [], links: [] }
+  const gaps = new Set([...inputs.incomplete, ...inputs.failed])
+  const subnets = inputs.subnets.filter((subnet) => subnet.VpcId === vpcId)
+
+  const sketch: Sketch = {
+    vpcId,
+    cards: [],
+    links: [],
+    routesKnown: !gaps.has("routeTables"),
+  }
 
   const nats = inputs.natGateways.filter(
     (nat) => nat.VpcId === vpcId && LIVE_NAT.has(nat.State ?? ""),
@@ -401,18 +466,42 @@ function sketchMap(inputs: NetworkInputs): Sketch {
 
   sketchFrame(sketch, inputs.vpc)
   sketchInternetGateways(sketch, inputs.internetGateways)
-  sketchNatGateways(sketch, nats)
-  sketchSubnets(
-    sketch,
-    inputs.subnets.filter((subnet) => subnet.VpcId === vpcId),
-    inputs.routeTables,
-  )
+  sketchNatGateways(sketch, nats, subnets, inputs.routeTables)
+  sketchSubnets(sketch, subnets, inputs.routeTables)
   sketchInstances(sketch, instances)
   sketchLoadBalancers(sketch, inputs.loadBalancers)
   sketchDatabases(sketch, inputs.dbInstances)
   sketchAddresses(sketch, inputs.addresses, nats, instances)
 
   return sketch
+}
+
+// Reachable when an attached internet gateway is the target of some route.
+// Short of that, a gap in either read leaves it unknown, not unreachable.
+export function internetReach(inputs: NetworkInputs): Reachability {
+  const vpcId = inputs.vpc.VpcId
+
+  const attached = new Set(
+    inputs.internetGateways
+      .filter((igw) => igw.Attachments?.some((a) => a.VpcId === vpcId))
+      .map((igw) => igw.InternetGatewayId),
+  )
+
+  const routed = inputs.routeTables.some(
+    (rt) =>
+      rt.VpcId === vpcId &&
+      rt.Routes?.some((r) => r.GatewayId && attached.has(r.GatewayId)),
+  )
+
+  if (routed) {
+    return "reachable"
+  }
+
+  const gaps = new Set([...inputs.incomplete, ...inputs.failed])
+
+  return gaps.has("internetGateways") || gaps.has("routeTables")
+    ? "unknown"
+    : "unreachable"
 }
 
 // The order cards claim the budget: the selection, the map's frame, the
@@ -531,10 +620,12 @@ export function buildNetworkMap(
 
   // The VPC is the whole map, so selecting it dims nothing.
   const highlight = new Set([selected])
+  const reach = internetReach(inputs)
 
   return {
     cards: [...kept, ...more].map((card) => ({
       ...card,
+      ...(card.kind === "internet" && { reach }),
       highlighted: highlight.has(card.id),
       dimmed: false,
     })),
@@ -550,85 +641,265 @@ export interface MapPlace {
   y: number
 }
 
+export type BoxKind = "instance" | "lb"
+
+// A dashed container holding one subnet's resources of one kind.
+export interface MapBox {
+  id: string
+  kind: BoxKind
+  label: string
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface MapLayout {
+  places: Map<string, MapPlace>
+  boxes: MapBox[]
+}
+
+// Sizes are px at a 16px root; scaleLayout fits them to the console's own.
 export const CARD_WIDTH = 220
 const GAP = 32
-const STEP = CARD_WIDTH + GAP
+const CARD_HEIGHT = 80
+const SUBNET_HEIGHT = 124
+const BOX_PAD = 12
+const BOX_HEAD = 24
+const BOX_COLUMNS = 2
 
-const TIER_Y: Record<MapTier, number> = {
-  internet: 0,
-  gateways: 130,
-  vpc: 270,
-  subnets: 410,
-  resources: 560,
+const ITEM_HEIGHT: Record<BoxKind, number> = { instance: 104, lb: 80 }
+
+const BOX_LABELS: Record<BoxKind, string> = {
+  instance: "Instances",
+  lb: "Load balancers",
 }
 
-const RESOURCE_STEP = 100
-
-function row(ids: string[], width: number, y: number): [string, MapPlace][] {
-  const start = (width - (ids.length * STEP - GAP)) / 2
-
-  return ids.map((id, i) => [id, { x: start + i * STEP, y }])
+// How far each tier sits from the internet, down the map or across it.
+const DEPTH: Record<LayoutDirection, Record<MapTier, number>> = {
+  down: { internet: 0, gateways: 130, vpc: 270, subnets: 410, resources: 570 },
+  across: {
+    internet: 0,
+    gateways: 300,
+    vpc: 600,
+    subnets: 900,
+    resources: 1200,
+  },
 }
 
-function stack(cards: MapCard[], x: number, places: Map<string, MapPlace>) {
-  for (const [j, card] of cards.toSorted(byRankThenName).entries()) {
-    places.set(card.id, { x, y: TIER_Y.resources + j * RESOURCE_STEP })
+interface Grid {
+  kind: BoxKind
+  width: number
+  height: number
+  // Each card's offset from the box's corner.
+  cells: [string, MapPlace][]
+}
+
+function grid(kind: BoxKind, cards: MapCard[]): Grid {
+  const columns = Math.min(cards.length, BOX_COLUMNS)
+  const rows = Math.ceil(cards.length / columns)
+  const item = ITEM_HEIGHT[kind]
+
+  return {
+    kind,
+    width: 2 * BOX_PAD + columns * CARD_WIDTH + (columns - 1) * BOX_PAD,
+    height: BOX_HEAD + rows * item + rows * BOX_PAD,
+    cells: cards.toSorted(byRankThenName).map((card, i) => [
+      card.id,
+      {
+        x: BOX_PAD + (i % columns) * (CARD_WIDTH + BOX_PAD),
+        y: BOX_HEAD + Math.floor(i / columns) * (item + BOX_PAD),
+      },
+    ]),
   }
 }
 
-// Hand-placed tiers, top down: subnets in columns by availability zone, and
-// each subnet's resources stacked beneath it.
-export function layoutNetworkMap(map: NetworkMap): Map<string, MapPlace> {
-  const of = (tier: MapTier) => map.cards.filter((c) => c.tier === tier)
+// One subnet and its boxes, or the resources no subnet on the map holds.
+interface Block {
+  subnet?: MapCard
+  grids: Grid[]
+  loose: MapCard[]
+  breadth: number
+}
 
-  const subnets = of("subnets").toSorted(
-    (a, b) =>
-      Number(a.kind === "more") - Number(b.kind === "more") ||
-      (a.column ?? "").localeCompare(b.column ?? "") ||
-      a.label.localeCompare(b.label),
-  )
+// The two axes of a direction: along a tier, and from tier to tier.
+interface Axes {
+  at: (along: number, deep: number) => MapPlace
+  breadth: (width: number, height: number) => number
+  depth: (width: number, height: number) => number
+}
+
+function axesOf(direction: LayoutDirection): Axes {
+  return direction === "across"
+    ? {
+        at: (along, deep) => ({ x: deep, y: along }),
+        breadth: (_, height) => height,
+        depth: (width) => width,
+      }
+    : {
+        at: (along, deep) => ({ x: along, y: deep }),
+        breadth: (width) => width,
+        depth: (_, height) => height,
+      }
+}
+
+function blocksOf(map: NetworkMap, axes: Axes): Block[] {
+  const subnets = map.cards
+    .filter((c) => c.tier === "subnets")
+    .toSorted(
+      (a, b) =>
+        Number(a.kind === "more") - Number(b.kind === "more") ||
+        (a.column ?? "").localeCompare(b.column ?? "") ||
+        a.label.localeCompare(b.label),
+    )
 
   const homes = new Set(subnets.flatMap((s) => s.resourceId ?? []))
-  const resources = of("resources")
+  const resources = map.cards.filter((c) => c.tier === "resources")
+
+  const blocks = subnets.map((subnet): Block => {
+    const mine = resources.filter(
+      (r) => subnet.resourceId !== undefined && r.column === subnet.resourceId,
+    )
+
+    const grids = (["instance", "lb"] as const).flatMap((kind) => {
+      const cards = mine.filter((c) => c.kind === kind)
+
+      return cards.length > 0 ? [grid(kind, cards)] : []
+    })
+
+    return {
+      subnet,
+      grids,
+      loose: [],
+      breadth: Math.max(
+        axes.breadth(CARD_WIDTH, SUBNET_HEIGHT),
+        ...grids.map((g) => axes.breadth(g.width, g.height)),
+      ),
+    }
+  })
 
   const loose = resources.filter(
     (r) => r.column === undefined || !homes.has(r.column),
   )
 
-  const columns = subnets.length + (loose.length > 0 ? 1 : 0)
+  if (loose.length > 0) {
+    blocks.push({
+      grids: [],
+      loose,
+      breadth: axes.breadth(CARD_WIDTH, CARD_HEIGHT),
+    })
+  }
 
-  // Every row is centred on the widest, so no tier hangs off one side.
-  const widest = Math.max(columns, of("gateways").length, of("vpc").length, 1)
+  return blocks
+}
 
-  const width = widest * STEP - GAP
-  const left = (width - (columns * STEP - GAP)) / 2
-  const places = new Map<string, MapPlace>()
+function placeBlock(
+  block: Block,
+  start: number,
+  depth: Record<MapTier, number>,
+  axes: Axes,
+  layout: MapLayout,
+) {
+  const centred = (breadth: number) => start + (block.breadth - breadth) / 2
 
-  for (const tier of ["internet", "gateways", "vpc"] as const) {
-    const ids = of(tier).map((c) => c.id)
+  if (block.subnet) {
+    layout.places.set(
+      block.subnet.id,
+      axes.at(centred(axes.breadth(CARD_WIDTH, SUBNET_HEIGHT)), depth.subnets),
+    )
+  }
 
-    for (const [id, place] of row(ids, width, TIER_Y[tier])) {
-      places.set(id, place)
+  let deep = depth.resources
+
+  for (const g of block.grids) {
+    const corner = axes.at(centred(axes.breadth(g.width, g.height)), deep)
+
+    layout.boxes.push({
+      id: `box:${g.kind}:${block.subnet?.resourceId ?? ""}`,
+      kind: g.kind,
+      label: BOX_LABELS[g.kind],
+      ...corner,
+      width: g.width,
+      height: g.height,
+    })
+
+    for (const [id, cell] of g.cells) {
+      layout.places.set(id, { x: corner.x + cell.x, y: corner.y + cell.y })
+    }
+
+    deep += axes.depth(g.width, g.height) + GAP / 2
+  }
+
+  const step = axes.depth(CARD_WIDTH, CARD_HEIGHT) + GAP / 2
+
+  for (const [j, card] of block.loose.toSorted(byRankThenName).entries()) {
+    layout.places.set(card.id, axes.at(start, depth.resources + j * step))
+  }
+}
+
+// Hand-placed tiers, top down or left to right: subnets side by side by
+// availability zone, each subnet's resources boxed by kind beyond it.
+export function layoutNetworkMap(
+  map: NetworkMap,
+  direction: LayoutDirection = "down",
+): MapLayout {
+  const axes = axesOf(direction)
+  const depth = DEPTH[direction]
+  const blocks = blocksOf(map, axes)
+  const layout: MapLayout = { places: new Map(), boxes: [] }
+
+  const spread =
+    blocks.reduce((sum, b) => sum + b.breadth, 0) +
+    GAP * Math.max(blocks.length - 1, 0)
+
+  const step = axes.breadth(CARD_WIDTH, CARD_HEIGHT) + GAP
+
+  const upper = (["internet", "gateways", "vpc"] as const).map((tier) => ({
+    tier,
+    ids: map.cards.filter((c) => c.tier === tier).map((c) => c.id),
+  }))
+
+  // Every tier is centred on the widest, so none hangs off one side.
+  const span = Math.max(spread, ...upper.map((u) => u.ids.length * step - GAP))
+
+  for (const { tier, ids } of upper) {
+    const start = (span - (ids.length * step - GAP)) / 2
+
+    for (const [i, id] of ids.entries()) {
+      layout.places.set(id, axes.at(start + i * step, depth[tier]))
     }
   }
 
-  for (const [i, subnet] of subnets.entries()) {
-    const x = left + i * STEP
+  let start = (span - spread) / 2
 
-    places.set(subnet.id, { x, y: TIER_Y.subnets })
-
-    const home = subnet.resourceId
-
-    if (home !== undefined) {
-      stack(
-        resources.filter((r) => r.column === home),
-        x,
-        places,
-      )
-    }
+  for (const block of blocks) {
+    placeBlock(block, start, depth, axes, layout)
+    start += block.breadth + GAP
   }
 
-  stack(loose, left + subnets.length * STEP, places)
+  return layout
+}
 
-  return places
+// The cards are sized in rem, so a larger root font needs the layout spread by
+// the same factor for the boxes and gaps to still fit them.
+export function scaleLayout(layout: MapLayout, unit: number): MapLayout {
+  if (unit === 1) {
+    return layout
+  }
+
+  return {
+    places: new Map(
+      [...layout.places].map(([id, p]) => [
+        id,
+        { x: p.x * unit, y: p.y * unit },
+      ]),
+    ),
+    boxes: layout.boxes.map((b) => ({
+      ...b,
+      x: b.x * unit,
+      y: b.y * unit,
+      width: b.width * unit,
+      height: b.height * unit,
+    })),
+  }
 }

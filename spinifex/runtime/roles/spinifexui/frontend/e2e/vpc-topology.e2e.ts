@@ -1,3 +1,5 @@
+import type { Locator, Page } from "@playwright/test"
+
 import {
   type ApiHandler,
   ec2,
@@ -14,6 +16,39 @@ const PRIVATE = "subnet-0e2e00000000000b"
 const IGW_ID = "igw-0e2e000000000001"
 const NAT_ID = "nat-0e2e000000000001"
 const MAP = `/ec2/describe-vpcs?selected=${VPC_ID}&tab=topology`
+const PAGE = `/ec2/describe-vpcs/${VPC_ID}?tab=topology`
+
+// A lifted line keeps its layer: no line is raised over the cards.
+async function linesStayBeneathCards(page: Page) {
+  const raised = await page.evaluate(
+    () =>
+      [...document.querySelectorAll(".react-flow__edge")].filter(
+        (edge) =>
+          Number(getComputedStyle(edge.closest("svg") ?? edge).zIndex || 0) > 0,
+      ).length,
+  )
+
+  expect(raised).toBe(0)
+}
+
+// The box's border lies outside its card on every side.
+async function boxEncloses(box: Locator, card: Locator) {
+  const [outer, inner] = await Promise.all([
+    box.boundingBox(),
+    card.boundingBox(),
+  ])
+
+  expect(outer && inner).toBeTruthy()
+
+  if (!outer || !inner) {
+    return
+  }
+
+  expect(inner.x).toBeGreaterThan(outer.x)
+  expect(inner.y).toBeGreaterThan(outer.y)
+  expect(inner.x + inner.width).toBeLessThan(outer.x + outer.width)
+  expect(inner.y + inner.height).toBeLessThan(outer.y + outer.height)
+}
 
 function named(name: string): string {
   return `<tagSet><item><key>Name</key><value>${name}</value></item></tagSet>`
@@ -138,6 +173,103 @@ test.describe("VPC topology", () => {
     )
   })
 
+  test("shows reachability, subnet type and the NAT gateway's way out", async ({
+    page,
+  }) => {
+    await page.goto(MAP)
+
+    const panel = page.getByRole("region", { name: "VPC details" })
+    await expect(panel.getByTestId("card-internet")).toHaveAttribute(
+      "data-reach",
+      "reachable",
+    )
+    await expect(panel.getByTestId(`card-subnet:${PUBLIC}`)).toContainText(
+      "Typepublic",
+    )
+    await expect(panel.getByTestId(`card-subnet:${PRIVATE}`)).toContainText(
+      "Typeprivate",
+    )
+    await expect(
+      panel.getByTestId(`line-label-igw:${IGW_ID}>nat:${NAT_ID}:outbound only`),
+    ).toHaveText("outbound only")
+    await expect(
+      panel.getByTestId("card-instance:i-0e2e00000000000a"),
+    ).toContainText("Private IP10.0.1.10")
+    await expect(panel.getByTestId(`box:instance:${PUBLIC}`)).toContainText(
+      "Instances",
+    )
+    await expect(panel.getByTestId(`box:lb:${PUBLIC}`)).toContainText(
+      "Load balancers",
+    )
+    await boxEncloses(
+      panel.getByTestId(`box:instance:${PUBLIC}`),
+      panel.getByTestId("card-instance:i-0e2e00000000000a"),
+    )
+    await boxEncloses(
+      panel.getByTestId(`box:lb:${PUBLIC}`),
+      panel.locator('[data-testid^="card-lb:"]'),
+    )
+  })
+
+  test("says the internet is unreachable without a gateway, and unknown when it cannot tell", async ({
+    api,
+    page,
+  }) => {
+    api.handle(
+      "DescribeInternetGateways",
+      ec2("DescribeInternetGateways", "<internetGatewaySet/>"),
+    )
+    await page.goto(MAP)
+    await expect(page.getByTestId("card-internet")).toHaveAttribute(
+      "data-reach",
+      "unreachable",
+    )
+    await expect(page.getByTestId("card-internet")).toContainText(
+      "No internet access",
+    )
+
+    api.handle("DescribeRouteTables", () => ({
+      status: 403,
+      contentType: "text/xml",
+      body: `<Response><Errors><Error><Code>UnauthorizedOperation</Code><Message>denied</Message></Error></Errors><RequestID>e2e</RequestID></Response>`,
+    }))
+    await page.reload()
+    await expect(page.getByTestId("card-internet")).toHaveAttribute(
+      "data-reach",
+      "unknown",
+    )
+    await expect(page.getByTestId(`card-subnet:${PUBLIC}`)).toContainText(
+      "Typeunknown",
+    )
+  })
+
+  test("keeps a hovered card's lines beneath the other cards", async ({
+    page,
+  }) => {
+    await page.goto(MAP)
+    await page.getByTestId(`card-subnet:${PRIVATE}`).hover()
+    await linesStayBeneathCards(page)
+    await page.getByTestId(`card-igw:${IGW_ID}`).hover()
+    await linesStayBeneathCards(page)
+  })
+
+  test("lays the full page out left to right or top down", async ({ page }) => {
+    await page.goto(PAGE)
+
+    const internet = page.getByTestId("card-internet")
+    const igw = page.getByTestId(`card-igw:${IGW_ID}`)
+    await expect(igw).toBeVisible()
+
+    const down = [await internet.boundingBox(), await igw.boundingBox()]
+    expect(down[0]?.y ?? 0).toBeLessThan(down[1]?.y ?? 0)
+
+    await page.getByRole("button", { name: "Left to right" }).click()
+    await expect(page.getByTestId(`box:instance:${PUBLIC}`)).toBeVisible()
+
+    const across = [await internet.boundingBox(), await igw.boundingBox()]
+    expect(across[0]?.x ?? 0).toBeLessThan(across[1]?.x ?? 0)
+  })
+
   test("a card opens the resource's own panel", async ({ page }) => {
     await page.goto(MAP)
     await page.getByTestId(`card-subnet:${PRIVATE}`).click()
@@ -187,6 +319,16 @@ test.describe("VPC topology", () => {
       await expect(page.getByTestId(`card-vpc:${VPC_ID}`)).toBeVisible()
       await page.evaluate(async () => await document.fonts.ready)
       await expect(page).toHaveScreenshot(`vpc-topology-${theme}.png`)
+    })
+
+    test(`matches the ${theme} left-to-right baseline`, async ({ page }) => {
+      await useTheme(page, theme)
+      await page.setViewportSize({ width: 1440, height: 900 })
+      await page.goto(PAGE)
+      await page.getByRole("button", { name: "Left to right" }).click()
+      await expect(page.getByTestId(`box:instance:${PUBLIC}`)).toBeVisible()
+      await page.evaluate(async () => await document.fonts.ready)
+      await expect(page).toHaveScreenshot(`vpc-topology-across-${theme}.png`)
     })
   }
 })

@@ -1,1 +1,0 @@
-function e(e,t){let{SubnetId:n,VpcId:r}=e;return(n===void 0?void 0:t.find(e=>e.Associations?.some(e=>e.SubnetId===n)))??t.find(e=>e.VpcId===r&&e.Associations?.some(e=>e.Main))}function t(t,n){return e(t,n)?.Routes?.some(e=>e.GatewayId?.startsWith(`igw-`))??!1}export{t as n,e as t};

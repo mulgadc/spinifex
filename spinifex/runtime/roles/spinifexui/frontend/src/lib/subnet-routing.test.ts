@@ -1,7 +1,7 @@
 import type { RouteTable, Subnet } from "@aws-sdk/client-ec2"
 import { describe, expect, it } from "vitest"
 
-import { subnetIsPublic } from "./subnet-routing"
+import { subnetIsPublic, subnetType } from "./subnet-routing"
 
 const SUBNET: Subnet = { SubnetId: "subnet-a", VpcId: "vpc-1" }
 
@@ -57,5 +57,24 @@ describe("subnetIsPublic", () => {
 
   it("is private with no table to route by", () => {
     expect(subnetIsPublic(SUBNET, [])).toBeFalsy()
+  })
+})
+
+describe("subnetType", () => {
+  it("is public or private from a complete read", () => {
+    expect(subnetType(SUBNET, [MAIN_TO_IGW])).toBe("public")
+    expect(subnetType(SUBNET, [MAIN_TO_IGW, EXPLICIT_TO_NAT])).toBe("private")
+  })
+
+  it("is unknown when the tables were not read", () => {
+    expect(subnetType(SUBNET, undefined)).toBe("unknown")
+  })
+
+  it("is unknown from a partial read that holds no table of its own", () => {
+    expect(subnetType(SUBNET, [MAIN_TO_IGW], false)).toBe("unknown")
+  })
+
+  it("trusts its own table from a partial read", () => {
+    expect(subnetType(SUBNET, [EXPLICIT_TO_NAT], false)).toBe("private")
   })
 })

@@ -1,3 +1,4 @@
+import type { Reachability } from "@/lib/reachability"
 import type { FormFactor, NodeFacts, Plane } from "@/queries/nodes"
 
 export const PLANE_LABELS: Record<Plane, string> = {
@@ -95,6 +96,8 @@ export interface TopologyDevice {
   detail?: string
   formFactor?: FormFactor
   planes: string[]
+  // The Internet card's state.
+  reach?: Reachability
 }
 
 export interface TopologyLink {
@@ -192,6 +195,7 @@ export function buildTopology(facts: readonly NodeFacts[]): Topology {
       kind: "internet",
       label: "Internet",
       planes: ["wan"],
+      reach: wanReach(facts),
     })
 
     for (const upstream of reachesWAN) {
@@ -205,6 +209,20 @@ export function buildTopology(facts: readonly NodeFacts[]): Topology {
   }
 
   return { devices: [...devices.values()], links }
+}
+
+// Reached while any node that answered has a WAN port up. Only nodes that
+// answered are listed, so one that did not counts as neither up nor down.
+export function wanReach(facts: readonly NodeFacts[]): Reachability {
+  const wan = facts.flatMap((node) =>
+    (node.nics ?? []).filter((nic) => nic.planes?.includes("wan")),
+  )
+
+  if (wan.some((nic) => nic.state === "up")) {
+    return "reachable"
+  }
+
+  return wan.length > 0 ? "unreachable" : "unknown"
 }
 
 function union(a: readonly string[], b: readonly string[]): string[] {

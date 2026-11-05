@@ -20,6 +20,7 @@ import { PickerNoticeText } from "@/components/picker-notice"
 import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
 import {
+  InternetCard,
   TopologyCanvas,
   type TopologyEdge,
 } from "@/components/topology/topology-canvas"
@@ -286,6 +287,13 @@ export function PatternsSection() {
             nodeTypes={SAMPLE_NODE_TYPES}
             nodes={SAMPLE_NODES}
           />
+        </div>
+      </Specimen>
+      <Specimen label="Internet card: reached, not reached, and unknown when its reads failed">
+        <div className="flex flex-wrap gap-3">
+          <InternetCard reach="reachable" />
+          <InternetCard reach="unreachable" />
+          <InternetCard reach="unknown" />
         </div>
       </Specimen>
       <Specimen label="Typed confirmation">

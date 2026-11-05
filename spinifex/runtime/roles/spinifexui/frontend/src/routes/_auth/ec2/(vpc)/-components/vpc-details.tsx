@@ -20,7 +20,9 @@ import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
 import { Ec2Tags } from "@/components/resource-tags"
 import { StateBadge } from "@/components/state-badge"
 import { NetworkTopology } from "@/components/topology/network-topology"
+import { DirectionToggle } from "@/components/topology/topology-canvas"
 import { Button, buttonVariants } from "@/components/ui/button"
+import type { LayoutDirection } from "@/lib/node-topology"
 import type { PanelTab } from "@/lib/panel-search"
 import { getNameTag } from "@/lib/utils"
 import { useDeleteVpc } from "@/mutations/ec2"
@@ -134,6 +136,8 @@ export function VpcDetails({
 }: VpcDetailsProps) {
   const id = vpc.VpcId ?? ""
   const name = getNameTag(vpc.Tags)
+  const page = layout === "page"
+  const [direction, setDirection] = useState<LayoutDirection>("down")
 
   return (
     <DetailPanel
@@ -156,7 +160,14 @@ export function VpcDetails({
       onClose={onClose}
       onTabChange={onTabChange}
       subtitle={name ? id : undefined}
-      summary={<StateBadge state={vpc.State} />}
+      summary={
+        <>
+          <StateBadge state={vpc.State} />
+          {page && tab === "topology" && (
+            <DirectionToggle onChange={setDirection} value={direction} />
+          )}
+        </>
+      }
       tab={tab}
       tabs={[
         {
@@ -169,7 +180,14 @@ export function VpcDetails({
           id: "topology",
           label: "Topology",
           icon: Workflow,
-          content: <NetworkTopology focus={{ kind: "vpc", id }} vpc={vpc} />,
+          content: (
+            <NetworkTopology
+              direction={page ? direction : "down"}
+              focus={{ kind: "vpc", id }}
+              page={page}
+              vpc={vpc}
+            />
+          ),
         },
         {
           id: "settings",

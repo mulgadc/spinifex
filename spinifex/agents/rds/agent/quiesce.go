@@ -50,6 +50,8 @@ type quiesceState struct {
 	// Guarded because the expiry timer releases the hold on its own goroutine.
 	mu   sync.Mutex
 	held *quiesceHold
+	// How often a waiter looks again; zero means defaultHoldPollInterval.
+	holdPoll time.Duration
 }
 
 // The two things every quiesce needs, checked before a session is opened so a
@@ -121,14 +123,21 @@ func (q *quiesceState) lockWithin(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("wait for the backup bookkeeping: %w", ctx.Err())
-		case <-time.After(holdPollInterval):
+		case <-time.After(q.holdPollInterval()):
 		}
 	}
 	return nil
 }
 
 // How often a statement waiting for a backup hold to end looks again.
-const holdPollInterval = 100 * time.Millisecond
+const defaultHoldPollInterval = 100 * time.Millisecond
+
+func (q *quiesceState) holdPollInterval() time.Duration {
+	if q.holdPoll > 0 {
+		return q.holdPoll
+	}
+	return defaultHoldPollInterval
+}
 
 // Runs fn while no backup hold is on the engine, and keeps a new one from
 // starting until it returns. A hold that outlasts wait fails the call before fn
@@ -151,7 +160,7 @@ func (q *quiesceState) outsideHold(ctx context.Context, wait time.Duration, fn f
 			return ctx.Err()
 		case <-deadline.C:
 			return fmt.Errorf("the engine is still held for a backup after %s", wait)
-		case <-time.After(holdPollInterval):
+		case <-time.After(q.holdPollInterval()):
 		}
 	}
 }

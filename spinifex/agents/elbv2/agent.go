@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -94,6 +95,17 @@ type Agent struct {
 	statsFn func(socketPath string) ([]ServerStatus, error)
 	// For testing: override the active health prober (nginx/NLB).
 	probeFn func(targets []HealthTarget) []ServerStatus
+
+	// Data-path probe: netcfg and sysfs locations, the ARP exchange, the
+	// instance ID lookup and per-NIC miss counters (overridable in tests).
+	netcfgPath   string
+	sysNetDir    string
+	probeWait    time.Duration
+	arpProbeFn   arpProbeFn
+	instanceIDFn func() (string, error)
+	instanceID   string
+	probeMu      sync.Mutex
+	probeStates  map[string]*nicProbeState
 }
 
 // New creates a new LB agent for the given load balancer.
@@ -150,6 +162,12 @@ func New(lbID, gatewayURL, accessKey, secretKey, region string) (*Agent, error) 
 		reloadNginxFn: reloadNginx,
 		statsFn:       queryHAProxyStats,
 		probeFn:       probeHealthTargets,
+		netcfgPath:    netcfgPath,
+		sysNetDir:     sysClassNet,
+		probeWait:     probeWait,
+		arpProbeFn:    arpProbe,
+		instanceIDFn:  fetchInstanceID,
+		probeStates:   map[string]*nicProbeState{},
 	}, nil
 }
 
@@ -207,7 +225,7 @@ func (a *Agent) tick() {
 		}
 	}
 
-	resp, err := a.sendHeartbeat(servers)
+	resp, err := a.sendHeartbeat(servers, a.dataPathEvidence())
 	if err != nil {
 		// Include the dial target so the serial console disambiguates a
 		// transport failure (never reached AWSGW — "send request: dial ...")
@@ -288,7 +306,7 @@ func (a *Agent) enginePaths(engine string) (configPath, pidPath, certDir string,
 }
 
 // sendHeartbeat sends a heartbeat with health report to the gateway.
-func (a *Agent) sendHeartbeat(servers []ServerStatus) (*heartbeatResponse, error) {
+func (a *Agent) sendHeartbeat(servers []ServerStatus, ev dataPathEvidence) (*heartbeatResponse, error) {
 	params := url.Values{}
 	params.Set("Action", "LBAgentHeartbeat")
 	params.Set("Version", "2015-12-01")
@@ -300,6 +318,7 @@ func (a *Agent) sendHeartbeat(servers []ServerStatus) (*heartbeatResponse, error
 		params.Set("Servers.member."+idx+".Server", s.Server)
 		params.Set("Servers.member."+idx+".Status", s.Status)
 	}
+	ev.addTo(params)
 
 	body, err := a.signedPost(params)
 	if err != nil {

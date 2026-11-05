@@ -7,9 +7,25 @@ import (
 
 // LBAgentHeartbeatInput is sent by the LB agent on each heartbeat tick,
 // including its health report so the daemon can update target health.
+//
+// InstanceID and NICs are optional: an older agent sends neither.
 type LBAgentHeartbeatInput struct {
-	LBID    *string                `locationName:"LBID" type:"string"`
-	Servers []*LBAgentServerStatus `locationName:"Servers" type:"list"`
+	LBID       *string                `locationName:"LBID" type:"string"`
+	Servers    []*LBAgentServerStatus `locationName:"Servers" type:"list"`
+	InstanceID *string                `locationName:"InstanceID" type:"string"`
+	NICs       []*LBAgentNICStatus    `locationName:"NICs" type:"list"`
+}
+
+// LBAgentNICStatus is the gateway probe result and interface counters of one
+// data NIC, as reported by the LB agent.
+type LBAgentNICStatus struct {
+	MAC                 *string `locationName:"MAC" type:"string"`
+	ProbeOK             *bool   `locationName:"ProbeOK" type:"boolean"`
+	ConsecutiveFailures *int64  `locationName:"ConsecutiveFailures" type:"long"`
+	RxPackets           *int64  `locationName:"RxPackets" type:"long"`
+	TxPackets           *int64  `locationName:"TxPackets" type:"long"`
+	RxDropped           *int64  `locationName:"RxDropped" type:"long"`
+	TxDropped           *int64  `locationName:"TxDropped" type:"long"`
 }
 
 // LBAgentServerStatus represents a single backend server's health status as reported by the LB agent.

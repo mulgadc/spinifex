@@ -26,6 +26,7 @@ import (
 	ebsencryption "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/encryption"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	ec2platform "github.com/mulgadc/spinifex/spinifex/domains/ec2/platform"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
@@ -1617,7 +1618,13 @@ func (s *InstanceServiceImpl) GenerateVolumes(ctx context.Context, input *ec2.Ru
 
 	// Step 2: Seed the UEFI variable store, which is not a volume. A failure
 	// terminates the instance, and terminate deletes whatever store it left.
-	if err := s.vmMgr.SeedUEFIVarStore(ctx, instance); err != nil {
+	image, err := s.imageUEFIVarStore(ctx, instance, aws.StringValue(input.ImageId))
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to read the image's UEFI variable store", "instanceId", instance.ID,
+			"imageId", aws.StringValue(input.ImageId), "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if err := s.vmMgr.SeedUEFIVarStore(ctx, instance, image); err != nil {
 		slog.ErrorContext(ctx, "Failed to seed the UEFI variable store", "instanceId", instance.ID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -1640,6 +1647,23 @@ func (s *InstanceServiceImpl) GenerateVolumes(ctx context.Context, input *ec2.Ru
 	volumeInfos = append(volumeInfos, data...)
 
 	return volumeInfos, nil
+}
+
+// imageUEFIVarStore returns the store the launching AMI names for a UEFI
+// instance to seed from, or nil when the instance boots without UEFI or the
+// AMI names none.
+func (s *InstanceServiceImpl) imageUEFIVarStore(ctx context.Context, instance *vm.VM, imageID string) (*uefistore.ImageVarStore, error) {
+	if !vm.UsesUEFIVarStore(instance) || !strings.HasPrefix(imageID, "ami-") {
+		return nil, nil
+	}
+	if s.amiLoader == nil {
+		return nil, errors.New("AMI loader not initialized")
+	}
+	ami, err := s.amiLoader.GetAMIConfig(ctx, imageID)
+	if err != nil {
+		return nil, err
+	}
+	return uefistore.ImageVarStoreFromAMI(ami)
 }
 
 // prepareDataVolumes creates an empty volume for every EBS mapping that is not

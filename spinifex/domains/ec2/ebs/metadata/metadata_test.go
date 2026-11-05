@@ -73,6 +73,16 @@ func TestAMIWithoutSourceDigestStillDecodes(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "ami-1", got.ImageID)
 	assert.Nil(t, got.SourceDigest)
+	assert.Nil(t, got.UEFIData, "a document with no uefi_data launches from the template")
+}
+
+// The UEFI store reference rides at schema version 2 under its JSON names.
+func TestAMIUEFIDataDecodesAtSchemaVersion2(t *testing.T) {
+	got, err := UnmarshalAMI([]byte(`{"schema_version":2,"image_id":"ami-1","uefi_data":` +
+		`{"key":"uefi/ami-1/k","firmware":{"arch":"x86_64","vars_size":540672,"code_sha256":"abc"}}}`))
+	require.NoError(t, err)
+	require.NotNil(t, got.UEFIData)
+	assert.Equal(t, UEFIDataRef{Key: "uefi/ami-1/k", Firmware: UEFIFirmware{Arch: "x86_64", VarsSize: 540672, CodeSHA256: "abc"}}, *got.UEFIData)
 }
 
 func TestMetadataRejectsUnknownSchemaVersion(t *testing.T) {

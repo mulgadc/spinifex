@@ -120,3 +120,52 @@ func TestGenerateVolumes_FailedSeedIsInternalError(t *testing.T) {
 		assert.False(t, strings.HasSuffix(v.ID, "-efi"), v.ID)
 	}
 }
+
+// putImageStore gives ami-1 a store object holding vars and names it in the
+// AMI document the launch reads.
+func putImageStore(t *testing.T, svc *InstanceServiceImpl, objects *objectstore.MemoryObjectStore, key string, vars []byte) {
+	t.Helper()
+	if strings.HasPrefix(key, uefistore.KeyPrefix("ami-1")) {
+		require.NoError(t, uefistore.PutObject(t.Context(), objects, testRootBucket, key, vars, uefistore.ObjectMeta{
+			OwnerID: "ami-1", WriterNode: "node-b", Source: uefistore.SourceInstance("i-0000000000000000a"),
+			Firmware: uefistore.FirmwareIdentity{Arch: "x86_64", VarsSize: int64(len(vars)), CodeSHA256: "other"},
+		}))
+	}
+	loader := svc.amiLoader.(*fakeAMILoader)
+	ami := loader.byID["ami-1"]
+	ami.UEFIData = uefistore.AMIRef(key, uefistore.FirmwareIdentity{Arch: "x86_64", VarsSize: int64(len(vars)), CodeSHA256: "other"})
+	loader.byID["ami-1"] = ami
+}
+
+// An AMI that names a store seeds the new instance's own object from it.
+func TestGenerateVolumes_UEFILaunchSeedsFromTheAMIsStore(t *testing.T) {
+	svc, _, records, objects := uefiSeedingService(t)
+	vars := make([]byte, 4096)
+	copy(vars, "image variables")
+	putImageStore(t, svc, objects, uefistore.KeyPrefix("ami-1")+"k", vars)
+	input, instance := uefiLaunch()
+
+	_, err := svc.GenerateVolumes(t.Context(), input, instance)
+	require.NoError(t, err)
+
+	rec, _, err := records.Get(t.Context(), testSeedInstance)
+	require.NoError(t, err)
+	require.NotNil(t, rec.Pointer)
+	got, _, err := uefistore.ReadObject(t.Context(), objects, testRootBucket, rec.Pointer.Key, 4096)
+	require.NoError(t, err)
+	assert.Equal(t, vars, got)
+}
+
+// An AMI document whose store reference is outside the image's own prefix is
+// refused, and the launch records no store.
+func TestGenerateVolumes_AMIStoreOutsideItsPrefixIsInternalError(t *testing.T) {
+	svc, _, records, objects := uefiSeedingService(t)
+	putImageStore(t, svc, objects, uefistore.KeyPrefix("i-0000000000000000a")+"k", make([]byte, 4096))
+	input, instance := uefiLaunch()
+
+	_, err := svc.GenerateVolumes(t.Context(), input, instance)
+
+	require.EqualError(t, err, awserrors.ErrorServerInternal)
+	_, _, err = records.Get(t.Context(), testSeedInstance)
+	require.ErrorIs(t, err, kvstore.ErrNotFound)
+}

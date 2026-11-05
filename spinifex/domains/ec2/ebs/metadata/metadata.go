@@ -110,6 +110,23 @@ type AMI struct {
 	Tags            map[string]string `json:"tags,omitempty"`
 	SourceDigest    *ImageDigest      `json:"source_digest,omitempty"`
 	State           string            `json:"state,omitempty"`
+	// UEFIData names the image's own UEFI variable store object; nil launches
+	// from the node's VARS template.
+	UEFIData *UEFIDataRef `json:"uefi_data,omitempty"`
+}
+
+// UEFIDataRef names an image's UEFI variable store object and the firmware it
+// was written under, so a launch can check the firmware without reading it.
+type UEFIDataRef struct {
+	Key      string       `json:"key"`
+	Firmware UEFIFirmware `json:"firmware"`
+}
+
+// UEFIFirmware is the firmware a variable store was written under.
+type UEFIFirmware struct {
+	Arch       string `json:"arch"`
+	VarsSize   int64  `json:"vars_size"`
+	CodeSHA256 string `json:"code_sha256"`
 }
 
 // ImageDigest identifies the artifact an AMI was imported from, not the

@@ -1,13 +1,10 @@
 package vm
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -19,7 +16,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/s3"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
@@ -38,16 +34,8 @@ const (
 	uefiVarsFileName   = "vars.fd"
 	uefiSeededFileName = "seeded.json"
 
-	// uefiStoreGetTimeout bounds the one get a launch makes for a fixed-size
-	// object, so a wedged object store fails the start rather than holding it.
-	uefiStoreGetTimeout = 10 * time.Second
-
 	// uefiClaimReleaseTimeout bounds the unlock a rolled-back launch makes.
 	uefiClaimReleaseTimeout = 10 * time.Second
-
-	// uefiStoreBodySlack is how far a compressed body may exceed its region
-	// before it is refused; gzip grows incompressible data by far less.
-	uefiStoreBodySlack = 1 << 20
 
 	// uefiStateReasonCode is the StateReason a launch refused over its
 	// variable store records, as EC2 reports an internal launch failure.
@@ -149,6 +137,10 @@ func isUEFIBootMode(bootMode string) bool {
 func usesUEFIVarStore(v *VM) bool {
 	return !v.DirectBoot && isUEFIBootMode(v.BootMode)
 }
+
+// UsesUEFIVarStore reports whether v boots through UEFI and so has a
+// variable store.
+func UsesUEFIVarStore(v *VM) bool { return usesUEFIVarStore(v) }
 
 // hasEFIVolume reports whether v still names a <root>-efi volume.
 func hasEFIVolume(v *VM) bool {
@@ -537,38 +529,12 @@ func (c localUEFICopy) owedUnder(generation uint64) bool {
 // exactly varsSize bytes. A failed get is retryable; a missing or malformed
 // object is not.
 func fetchUEFIVars(ctx context.Context, deps UEFIVarStoreDeps, key string, varsSize int64) ([]byte, error) {
-	getCtx, cancel := context.WithTimeout(ctx, uefiStoreGetTimeout)
-	defer cancel()
-
-	out, err := deps.Objects.GetObject(getCtx, &s3.GetObjectInput{Bucket: aws.String(deps.Bucket), Key: aws.String(key)})
-	if err != nil {
-		if objectstore.IsNoSuchKeyError(err) {
-			return nil, fmt.Errorf("%w: %s does not exist", ErrUEFIVarStoreUnusable, key)
-		}
-		return nil, fmt.Errorf("get UEFI variable store %s: %w: %w", key, err, ErrMountRetryable)
-	}
-	defer out.Body.Close()
-
-	limit := varsSize + uefiStoreBodySlack
-	raw, err := io.ReadAll(io.LimitReader(out.Body, limit+1))
-	if err != nil {
-		return nil, fmt.Errorf("read UEFI variable store %s: %w: %w", key, err, ErrMountRetryable)
-	}
-	if int64(len(raw)) > limit {
-		return nil, fmt.Errorf("%w: %s is over %d bytes compressed", ErrUEFIVarStoreUnusable, key, limit)
-	}
-
-	gz, err := gzip.NewReader(bytes.NewReader(raw))
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s is not gzip: %w", ErrUEFIVarStoreUnusable, key, err)
-	}
-	region, err := io.ReadAll(io.LimitReader(gz, varsSize+1))
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s does not decompress: %w", ErrUEFIVarStoreUnusable, key, err)
-	}
-	if int64(len(region)) != varsSize {
-		return nil, fmt.Errorf("%w: %s holds a %d-byte region, and this node's VARS template is %d bytes",
-			ErrUEFIVarStoreUnusable, key, len(region), varsSize)
+	region, _, err := uefistore.ReadObject(ctx, deps.Objects, deps.Bucket, key, varsSize)
+	switch {
+	case errors.Is(err, uefistore.ErrObjectNotFound), errors.Is(err, uefistore.ErrInvalidObject):
+		return nil, fmt.Errorf("%w: %w", ErrUEFIVarStoreUnusable, err)
+	case err != nil:
+		return nil, fmt.Errorf("%w: %w", err, ErrMountRetryable)
 	}
 	return region, nil
 }
@@ -654,7 +620,7 @@ func uefiStoreMetrics() {
 			otel.Handle(err)
 		}
 		uefiFirmwareMismatches, err = meter.Int64Counter("mulga.vm.uefi_store.firmware_mismatches",
-			metric.WithDescription("UEFI launches whose variable store was written under different firmware, by what differed. Only kind=code boots."),
+			metric.WithDescription("UEFI launches whose variable store was written under different firmware, by what differed. kind=code boots the store, and kind=image seeds a new instance from the template instead."),
 			metric.WithUnit("{launch}"))
 		if err != nil {
 			otel.Handle(err)

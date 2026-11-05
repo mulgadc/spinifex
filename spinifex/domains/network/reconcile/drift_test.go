@@ -200,8 +200,8 @@ func TestRunDriftCycle_SkipsWhenNotElected(t *testing.T) {
 	if err != nil {
 		t.Errorf("runDriftCycle = %v, want nil when not elected", err)
 	}
-	if retry <= LeaderTTL {
-		t.Errorf("revisit = %v, want past the %v TTL so a dead holder is taken over", retry, LeaderTTL)
+	if retry <= 0 || retry > LeaderTTL/3 {
+		t.Errorf("revisit = %v, want within %v so a dead holder is taken over promptly", retry, LeaderTTL/3)
 	}
 	if got := rec.callCount(); got != 0 {
 		t.Errorf("reconcile ran %d times without winning the election, want 0", got)

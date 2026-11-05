@@ -50,7 +50,8 @@ func TestReconcileOnce_ALoserOfTheElectionDoesNotWriteTheZone(t *testing.T) {
 
 	assert.Equal(t, before, objects[testBase+".toml"],
 		"a node that did not win the election must leave the zone object exactly as it found it")
-	assert.Greater(t, revisit, reconcilelock.LeaderTTL, "the loser asks to retry once a dead holder could be taken over")
+	assert.Positive(t, revisit, "the loser asks to retry so a dead holder is taken over")
+	assert.LessOrEqual(t, revisit, reconcilelock.LeaderTTL/3, "the retry comes within a renewal interval")
 
 	release()
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/nats-io/nats.go"
@@ -92,10 +93,13 @@ func syncError(op, key string, err error) error {
 	}
 }
 
-// isUnreachable is IsStreamUnavailable widened to a connection that is down
-// or a request that went unanswered, since a lock caller retries all alike.
-// A server that has gone away reports nothing but the deadline.
+// isUnreachable is IsStreamUnavailable widened to a connection that is down, a
+// request that went unanswered, or a server answering 503 (10008 while JetStream
+// has no meta leader), since a lock caller retries all alike.
 func isUnreachable(err error) bool {
+	if apiErr, ok := errors.AsType[*jetstream.APIError](err); ok && apiErr.Code == http.StatusServiceUnavailable {
+		return true
+	}
 	return IsStreamUnavailable(err) ||
 		errors.Is(err, context.DeadlineExceeded) ||
 		errors.Is(err, nats.ErrTimeout) ||

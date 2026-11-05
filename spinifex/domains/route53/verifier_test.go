@@ -357,7 +357,8 @@ func TestVerifierChecksNothingWhileAPeerHoldsTheLease(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, dns.lookups, "a node that does not hold the lease must not check delegations")
 	assert.Equal(t, route53.StatePendingNameservers, zone(t, svc, acctA, id).State)
-	assert.Greater(t, revisit, reconcilelock.LeaderTTL, "a held pass comes back after a dead holder could be replaced")
+	assert.Positive(t, revisit, "a held pass comes back so a dead holder is replaced")
+	assert.LessOrEqual(t, revisit, reconcilelock.LeaderTTL/3, "the retry comes within a renewal interval")
 
 	require.NoError(t, syncKV.Delete(ctx, route53.KeyVerify))
 	pass(t, v)

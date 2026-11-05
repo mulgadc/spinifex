@@ -264,53 +264,96 @@ func TestControl_DialFailureIsNotSent(t *testing.T) {
 	require.ErrorIs(t, err, ErrNotSent)
 }
 
-// silentPeer reads both frames, then never replies or closes until the test ends.
-func silentPeer(t *testing.T, name string, read bool) {
+// silentPeer accepts one connection, reads `prefix` bytes (or both whole
+// frames when prefix is 0), signals, then neither reads nor replies until the
+// test ends.
+func silentPeer(t *testing.T, name string, prefix int) <-chan struct{} {
 	t.Helper()
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: "@" + name, Net: "unix"})
 	require.NoError(t, err)
-	hold := make(chan struct{})
+	hold, seen := make(chan struct{}), make(chan struct{})
 	t.Cleanup(func() { close(hold); _ = ln.Close() })
 	go func() {
 		c, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		if read {
-			_, _ = readFrame(c, 64<<20)
-			_, _ = readFrame(c, MaxCredentialBytes)
+		defer func() { _ = c.Close() }()
+		if prefix > 0 {
+			if _, err := io.ReadFull(c, make([]byte, prefix)); err != nil {
+				return
+			}
+		} else {
+			if _, err := readFrame(c, 64<<20); err != nil {
+				return
+			}
+			if _, err := readFrame(c, MaxCredentialBytes); err != nil {
+				return
+			}
 		}
+		close(seen)
 		<-hold
-		_ = c.Close()
 	}()
+	return seen
 }
 
 func TestControl_SilentPeerIsUnknownAtTheReplyBound(t *testing.T) {
 	name := controlName(t)
-	silentPeer(t, name, true)
+	seen := silentPeer(t, name, 0)
 	c := client(name, os.Getuid())
 	c.IOTimeout = time.Hour
 
 	start := time.Now()
-	_, err := c.Exchange(context.Background(), []byte("{}"), testCred, time.Now().Add(200*time.Millisecond))
+	_, err := c.Exchange(context.Background(), []byte("{}"), testCred, time.Now().Add(300*time.Millisecond))
 	require.Error(t, err)
+	select {
+	case <-seen:
+	default:
+		t.Fatal("the peer never received both frames, so this is not a reply timeout")
+	}
 	assert.False(t, errors.Is(err, ErrNotSent), "the request was delivered")
 	assert.Less(t, time.Since(start), 5*time.Second)
+}
+
+// The reply bound also caps the write, so a slow write cannot dispatch after it.
+func TestControl_ReplyBoundCapsTheWrite(t *testing.T) {
+	name := controlName(t)
+	seen := silentPeer(t, name, 64)
+	c := client(name, os.Getuid())
+	c.IOTimeout, c.RequestLimit = time.Hour, 32<<20
+
+	start := time.Now()
+	_, err := c.Exchange(context.Background(), bytes.Repeat([]byte("x"), 16<<20), testCred, time.Now().Add(300*time.Millisecond))
+	require.Error(t, err)
+	<-seen
+	assert.False(t, errors.Is(err, ErrNotSent), "part of the request was delivered")
+	assert.Less(t, time.Since(start), 5*time.Second)
+}
+
+func TestControl_ZeroOrPastReplyBoundSendsNothing(t *testing.T) {
+	name := controlName(t)
+	s, _ := serveControl(t, name, os.Getuid(), nil)
+	for label, by := range map[string]time.Time{"zero": {}, "past": time.Now().Add(-time.Second)} {
+		_, err := client(name, os.Getuid()).Exchange(t.Context(), []byte("{}"), testCred, by)
+		require.ErrorIs(t, err, ErrNotSent, label)
+	}
+	assert.Equal(t, int32(0), s.calls.Load())
 }
 
 // Cancellation ends a write the peer has stopped reading, however long IOTimeout is.
 func TestControl_CancelEndsABlockedWrite(t *testing.T) {
 	name := controlName(t)
-	silentPeer(t, name, false)
+	seen := silentPeer(t, name, 64)
 	c := client(name, os.Getuid())
 	c.IOTimeout, c.RequestLimit = time.Hour, 32<<20
 
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(200*time.Millisecond, cancel)
+	go func() { <-seen; cancel() }()
 	start := time.Now()
 	_, err := c.Exchange(ctx, bytes.Repeat([]byte("x"), 16<<20), testCred, time.Now().Add(time.Hour))
 	require.Error(t, err)
-	assert.False(t, errors.Is(err, ErrNotSent), "part of the request may have been delivered")
+	assert.ErrorIs(t, ctx.Err(), context.Canceled, "the write ended by cancellation after the peer saw a prefix")
+	assert.False(t, errors.Is(err, ErrNotSent), "part of the request was delivered")
 	assert.Less(t, time.Since(start), 5*time.Second)
 }
 

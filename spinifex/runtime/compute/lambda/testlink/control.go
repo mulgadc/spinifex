@@ -221,6 +221,10 @@ func (c *ControlClient) Exchange(ctx context.Context, req []byte, cred Credentia
 	if err != nil || !cred.complete() || len(rawCred) > MaxCredentialBytes {
 		return Reply{}, fmt.Errorf("%w: credential incomplete or over %d bytes", ErrNotSent, MaxCredentialBytes)
 	}
+	// A zero time would disable the deadline, and a past one leaves no time.
+	if replyBy.IsZero() || !replyBy.After(time.Now()) {
+		return Reply{}, fmt.Errorf("%w: reply bound is zero or already past", ErrNotSent)
+	}
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "unix", "@"+c.Name)
 	if err != nil {
@@ -239,7 +243,11 @@ func (c *ControlClient) Exchange(ctx context.Context, req []byte, cred Credentia
 
 	dl := newDeadlines(ctx, uc)
 	defer dl.stop()
+	// The write may not run past the reply bound, so nothing dispatches after it.
 	writeBy := time.Now().Add(c.IOTimeout)
+	if replyBy.Before(writeBy) {
+		writeBy = replyBy
+	}
 	if err := dl.set(earliest(ctx, writeBy)); err != nil {
 		return Reply{}, fmt.Errorf("%w: %w", ErrNotSent, err)
 	}
@@ -288,7 +296,9 @@ func newDeadlines(ctx context.Context, c *net.UnixConn) *deadlines {
 		d.mu.Lock()
 		defer d.mu.Unlock()
 		d.cancelled = ctx.Err()
-		_ = c.SetDeadline(time.Unix(1, 0))
+		if err := c.SetDeadline(time.Unix(1, 0)); err != nil {
+			_ = c.Close()
+		}
 	})
 	return d
 }

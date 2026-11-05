@@ -63,17 +63,24 @@ func (e *Engine) convergeConfig() Converge {
 }
 
 // holdsFence stops a holder that has been superseded or cancelled before it
-// issues another terminate or delete. QuiesceAccount is idempotent for the
-// same operation and fence and refuses any other.
+// issues another terminate or delete. It reads the account back and requires
+// it to still be TERMINATING under this operation and fence.
 func (e *Engine) holdsFence(ctx context.Context, req Request) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if _, err := e.Accounts.QuiesceAccount(req.AccountID, req.OperationID, req.Fence); err != nil {
-		return fmt.Errorf("fence no longer held: %w", err)
+	account, err := e.Accounts.GetAccount(req.AccountID)
+	if err != nil {
+		return fmt.Errorf("read account to confirm the fence: %w", err)
+	}
+	op := account.TerminationOp
+	if account.Status != AccountStatusTerminating || op == nil || op.OperationID != req.OperationID || op.Fence != req.Fence {
+		return errFenceLost
 	}
 	return nil
 }
+
+var errFenceLost = errors.New("the account is no longer held under this operation and fence")
 
 func waitContext(ctx context.Context, d time.Duration) error {
 	timer := time.NewTimer(d)
@@ -100,8 +107,11 @@ func convergent(it accountcleanup.Item) bool {
 
 // passSignature identifies what a pass left, so two identical passes in a row
 // with nothing convergent show the loop is not going anywhere.
-func passSignature(outcomes ...*accountcleanup.Outcome) string {
+func passSignature(legacy []Stuck, outcomes ...*accountcleanup.Outcome) string {
 	var lines []string
+	for _, s := range legacy {
+		lines = append(lines, "legacy/"+s.Resource.Kind+"/"+s.Resource.ID+"/"+s.Reason)
+	}
 	for _, out := range outcomes {
 		for _, it := range out.Items {
 			lines = append(lines, it.Kind+"/"+it.ResourceID+"/"+it.Disposition+"/"+it.Reason+"/"+it.State)
@@ -183,15 +193,12 @@ func (e *Engine) convergeCompute(ctx context.Context, req Request, result *Resul
 		for _, out := range []*accountcleanup.Outcome{computeOut, storageOut} {
 			moving = moving || slices.ContainsFunc(out.Items, convergent)
 		}
-		if len(legacy.Stuck) > 0 {
-			moving = true
-		}
 		if len(computeOut.IncompleteReasons)+len(storageOut.IncompleteReasons)+len(computeLeft.IncompleteReasons)+len(storageLeft.IncompleteReasons) > 0 {
 			incompletePasses++
 		} else {
 			incompletePasses = 0
 		}
-		signature := passSignature(computeOut, storageOut, computeLeft, storageLeft)
+		signature := passSignature(legacy.Stuck, computeOut, storageOut, computeLeft, storageLeft)
 		if signature == lastSignature && !moving {
 			idlePasses++
 		} else {

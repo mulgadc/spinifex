@@ -58,6 +58,10 @@ type Deps struct {
 	// PlatformCleaner is the in-process EC2 platform cleanup every DeleteAccount
 	// runs. Nil refuses a request that is not a dry run.
 	PlatformCleaner   accountteardown.PlatformCleaner
+	// ComputeCleaner and StorageCleaner are the EC2 instance, spot request and
+	// volume cleanup. Nil refuses a request that is not a dry run.
+	ComputeCleaner accountteardown.ComputeStage
+	StorageCleaner accountteardown.StorageStage
 	Quota             *quota.Service
 	ExpectedNodes     int
 	NodeIDs           []string

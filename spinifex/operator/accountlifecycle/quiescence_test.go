@@ -241,9 +241,9 @@ func TestTeardownReportsQuiescenceAfterTheQuiesceAndBeforeTheFirstStage(t *testi
 	assert.True(t, accounts.deleted)
 }
 
-// A fence the read-back does not confirm must not spend an inventory call, and a
-// failed read-back must not stop the teardown: this step records and gates nothing.
-func TestTeardownRecordsAFailedReadbackAndStillRunsEveryStage(t *testing.T) {
+// A fence the read-back does not confirm must not spend an inventory call, and
+// the convergence loop must not run a pass behind a fence it cannot read.
+func TestTeardownRecordsAFailedReadbackAndRunsNoPassBehindIt(t *testing.T) {
 	accounts := newFakeAccounts()
 	engine := quietEngine(accounts)
 	inventory := &stubInventory{reply: *completeInventory()}
@@ -257,11 +257,11 @@ func TestTeardownRecordsAFailedReadbackAndStillRunsEveryStage(t *testing.T) {
 	req.OperationID, req.Fence = "op-1", 1
 	_, err := engine.Teardown(context.Background(), req)
 
-	require.NoError(t, err)
+	require.Error(t, err)
 	require.Len(t, got.Unresolved, 1)
 	assert.Equal(t, operatorv1.ReasonIAMReadbackFailed, got.Unresolved[0].Reason)
-	assert.Equal(t, 1, inventory.calls, "only the final re-read: no evaluation reads inventory behind an unconfirmed fence")
-	assert.True(t, accounts.deleted)
+	assert.Equal(t, 0, inventory.calls, "no evaluation reads inventory behind an unconfirmed fence")
+	assert.False(t, accounts.deleted)
 }
 
 // readbackFails serves the pre-quiesce read and fails the one after it.

@@ -146,18 +146,20 @@ func TestConvergeStopsOnBlockerTimeCannotResolve(t *testing.T) {
 	}
 }
 
-// supersededAccounts loses the fence after a number of quiesce calls.
+// supersededAccounts reports a different holder once the first cleanup ran.
 type supersededAccounts struct {
 	*fakeAccounts
-	allowed, calls int
+	after *scriptedCompute
 }
 
-func (s *supersededAccounts) QuiesceAccount(a, op string, fence uint64) (uint64, error) {
-	s.calls++
-	if s.calls > s.allowed {
-		return 0, errors.New("quiesce superseded")
+func (s *supersededAccounts) GetAccount(id string) (*Account, error) {
+	account, err := s.fakeAccounts.GetAccount(id)
+	if err != nil || s.after.cleanupN == 0 {
+		return account, err
 	}
-	return s.fakeAccounts.QuiesceAccount(a, op, fence)
+	taken := *account
+	taken.TerminationOp = &TerminationOp{OperationID: "other-op", Fence: account.TerminationOp.Fence + 1}
+	return &taken, nil
 }
 
 func TestConvergeLostFenceStopsBeforeNextPass(t *testing.T) {
@@ -166,8 +168,7 @@ func TestConvergeLostFenceStopsBeforeNextPass(t *testing.T) {
 		remainders: []*accountcleanup.Outcome{outcome(item(accountcleanup.KindInstance, "i-1", "shutting-down", accountcleanup.DispositionResidue, accountcleanup.ReasonRecordRemains))},
 	}}
 	storage := &scriptedStorage{scriptedStage{cleanups: []*accountcleanup.Outcome{outcome()}, remainders: []*accountcleanup.Outcome{outcome()}}}
-	// One call for the teardown's own quiesce and one for the first pass.
-	accounts := &supersededAccounts{fakeAccounts: newFakeAccounts(), allowed: 2}
+	accounts := &supersededAccounts{fakeAccounts: newFakeAccounts(), after: compute}
 	engine, _ := convergeEngine(accounts, compute, storage)
 
 	_, err := engine.Teardown(context.Background(), request())
@@ -236,8 +237,14 @@ func TestS7_ExpiredTerminatedRecordKeepsAttachedVolumeAndAccount(t *testing.T) {
 
 func TestConvergeMissingCleanerFailsClosed(t *testing.T) {
 	engine := quietEngine(newFakeAccounts())
-	engine.Compute = &scriptedCompute{}
+	engine.Storage = nil
 	if _, err := engine.Teardown(context.Background(), request()); !errors.Is(err, errComputeCleanupMissing) {
 		t.Fatalf("compute without storage must refuse to start, got %v", err)
 	}
+}
+
+// cleanStages are compute and storage cleanups of an account that holds nothing.
+func cleanStages() (*scriptedCompute, *scriptedStorage) {
+	return &scriptedCompute{scriptedStage{cleanups: []*accountcleanup.Outcome{outcome()}, remainders: []*accountcleanup.Outcome{outcome()}}},
+		&scriptedStorage{scriptedStage{cleanups: []*accountcleanup.Outcome{outcome()}, remainders: []*accountcleanup.Outcome{outcome()}}}
 }

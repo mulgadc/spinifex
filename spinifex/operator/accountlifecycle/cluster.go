@@ -35,6 +35,7 @@ func NewClusterEngine(
 	svc IAMBackend,
 	buckets BucketStore,
 	cleaner PlatformCleaner,
+	options ...ClusterOption,
 ) (*Engine, error) {
 	// Refused rather than skipped. A teardown missing its bucket reaper still
 	// reports every stage drained and still deletes the account record, leaving
@@ -95,5 +96,20 @@ func NewClusterEngine(
 	// May be nil: a dry run needs no cleanup, and Teardown and Exercise refuse
 	// to start without it.
 	engine.Cleanup = cleaner
+	for _, option := range options {
+		option(engine)
+	}
 	return engine, nil
+}
+
+// ClusterOption binds an optional capability to the engine NewClusterEngine builds.
+type ClusterOption func(*Engine)
+
+// WithComputeCleanup binds the EC2 compute and storage cleanup. Teardown
+// refuses to start without both, so an engine built without them can still
+// answer a dry run but never deletes an account.
+func WithComputeCleanup(compute ComputeStage, storage StorageStage) ClusterOption {
+	return func(e *Engine) {
+		e.Compute, e.Storage = compute, storage
+	}
 }

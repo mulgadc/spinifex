@@ -736,6 +736,9 @@ func launchService(config *config.ClusterConfig) error {
 	operatorAdminDeps = withPlatformCleaner(operatorAdminDeps, func() (accountlifecycle.PlatformCleaner, error) {
 		return platformCleaner(janitorCtx, &nodeConfig, natsConn, js, operatorAdminDeps.NodeIDs)
 	})
+	operatorAdminDeps = withComputeCleaners(operatorAdminDeps, func() (accountlifecycle.ComputeStage, accountlifecycle.StorageStage, error) {
+		return computeCleaners(janitorCtx, &nodeConfig, natsConn, js, operatorAdminDeps.NodeIDs, objStore)
+	})
 	operatorControlPlane := operatoradmin.NewRegistration(operatorAdminDeps)
 	// Every gateway scans for account deletions whose holder died; the fenced
 	// takeover makes any number of them safe.

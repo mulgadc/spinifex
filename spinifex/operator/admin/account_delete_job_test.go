@@ -5,10 +5,12 @@ package admin
 // a gateway restart. None of that is observable from the HTTP surface alone.
 
 import (
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountcleanup"
 	"context"
 	"encoding/json"
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -148,6 +150,8 @@ func newDeleteAccountGateway(t *testing.T) Deps {
 		GatewayNodeIDs:  []string{"node-1"},
 		BucketStore:     emptyBucketStore{},
 		PlatformCleaner: &panicCleaner{},
+		ComputeCleaner:  emptyCompute{},
+		StorageCleaner:  emptyStorage{},
 	}
 }
 
@@ -606,4 +610,86 @@ func TestDeletionTrackerHeartbeatStops(t *testing.T) {
 
 	tracker.persist(t.Context())
 	assert.NotEmpty(t, describeDeletion(t, gw, "000000000042").UpdatedAt)
+}
+
+// emptyCompute and emptyStorage stand in for the EC2 cleanup of an account that
+// holds no instance, spot request or volume.
+type (
+	emptyCompute struct{}
+	emptyStorage struct{}
+)
+
+func cleanOutcome(accountID string) *accountcleanup.Outcome {
+	return &accountcleanup.Outcome{AccountID: accountID, Status: accountcleanup.StatusClean}
+}
+
+func (emptyCompute) CleanupCompute(_ context.Context, req *accountcleanup.ComputeRequest) (*accountcleanup.ComputeResult, error) {
+	return cleanOutcome(req.AccountID), nil
+}
+
+func (emptyCompute) ComputeRemaining(_ context.Context, accountID string) (*accountcleanup.Outcome, error) {
+	return cleanOutcome(accountID), nil
+}
+
+func (emptyStorage) CleanupStorage(_ context.Context, req *accountcleanup.StorageRequest) (*accountcleanup.StorageResult, error) {
+	return cleanOutcome(req.AccountID), nil
+}
+
+func (emptyStorage) StorageRemaining(_ context.Context, accountID string) (*accountcleanup.Outcome, error) {
+	return cleanOutcome(accountID), nil
+}
+
+// blockedCompute holds an instance the cleanup cannot release until unblocked,
+// the way a managed service still owning a worker does.
+type blockedCompute struct {
+	blocked atomic.Bool
+}
+
+func (b *blockedCompute) outcome(accountID string) *accountcleanup.Outcome {
+	out := cleanOutcome(accountID)
+	if b.blocked.Load() {
+		out.Items = []accountcleanup.Item{{
+			Kind: accountcleanup.KindInstance, ResourceID: "i-held", State: "running",
+			Disposition: accountcleanup.DispositionBlocked, Reason: accountcleanup.ReasonManagedServiceOwner,
+		}}
+	}
+	return out
+}
+
+func (b *blockedCompute) CleanupCompute(_ context.Context, req *accountcleanup.ComputeRequest) (*accountcleanup.ComputeResult, error) {
+	return b.outcome(req.AccountID), nil
+}
+
+func (b *blockedCompute) ComputeRemaining(_ context.Context, accountID string) (*accountcleanup.Outcome, error) {
+	return b.outcome(accountID), nil
+}
+
+// A job that ends FAILED naming a blocker the loop cannot clear keeps the
+// account, and an operator rerun after the blocker clears converges it.
+func TestAdminDeleteAccountFailedJobConvergesOnOperatorRerun(t *testing.T) {
+	t.Parallel()
+	gw := newDeleteAccountGateway(t)
+	compute := &blockedCompute{}
+	compute.blocked.Store(true)
+	gw.ComputeCleaner = compute
+	account := newTenantAccount(t, gw, "tenant@example.com")
+
+	_, err := gw.deleteAccount(t.Context(),
+		deleteAccountBody(t, account.AccountID, "tenant@example.com", strings.Repeat("a", 32)))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateFailed
+	}, 60*time.Second, 50*time.Millisecond)
+	failed := describeDeletion(t, gw, account.AccountID)
+	assert.NotEmpty(t, failed.Error)
+	_, stillThere := gw.IAM.GetAccount(account.AccountID)
+	require.NoError(t, stillThere, "a FAILED job must keep the account")
+
+	compute.blocked.Store(false)
+	_, err = gw.deleteAccount(t.Context(),
+		deleteAccountBody(t, account.AccountID, "tenant@example.com", strings.Repeat("b", 32)))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted
+	}, 60*time.Second, 50*time.Millisecond)
 }

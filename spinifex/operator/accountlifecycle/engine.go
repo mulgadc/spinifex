@@ -145,7 +145,7 @@ func (e *Engine) Teardown(ctx context.Context, req Request) (*Result, error) {
 	if e.Cleanup == nil || e.ec2Inventory == nil {
 		return nil, errPlatformCleanupMissing
 	}
-	if (e.Compute == nil) != (e.Storage == nil) {
+	if e.Compute == nil || e.Storage == nil {
 		return nil, errComputeCleanupMissing
 	}
 
@@ -165,9 +165,8 @@ func (e *Engine) Teardown(ctx context.Context, req Request) (*Result, error) {
 		Forced:      req.Force,
 	}
 	var platform *platformRun
-	converging := e.Compute != nil && e.Storage != nil
 	for _, stage := range Stages() {
-		if converging && (stage == StageAttachments || stage == StageStorage) {
+		if stage == StageAttachments || stage == StageStorage {
 			continue
 		}
 		if stage == StagePlatform {
@@ -187,7 +186,7 @@ func (e *Engine) Teardown(ctx context.Context, req Request) (*Result, error) {
 		if e.OnStage != nil {
 			e.OnStage(ctx, stageResult)
 		}
-		if converging && stage == StageCompute {
+		if stage == StageCompute {
 			if err := e.convergeCompute(ctx, req, result); err != nil {
 				return result, err
 			}

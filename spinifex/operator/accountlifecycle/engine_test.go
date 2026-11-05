@@ -130,6 +130,7 @@ func quietEngine(accounts AccountStore, reapers ...Reaper) *Engine {
 	// stage need not stand up the EC2 owners.
 	engine.Cleanup = &stubCleaner{result: cleanResult()}
 	engine.ec2Inventory = &stubInventory{reply: *completeInventory()}
+	engine.Compute, engine.Storage = cleanStages()
 	return engine
 }
 

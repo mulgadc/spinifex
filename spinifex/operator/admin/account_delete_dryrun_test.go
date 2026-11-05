@@ -26,7 +26,7 @@ func TestAdminDeleteAccountDryRunAnswersTheInventoryAndCleansNothing(t *testing.
 	gotJSON, err := json.Marshal(got)
 	require.NoError(t, err)
 
-	engine, err := accountteardown.NewClusterEngine(t.Context(), gw.NATS, accountteardown.ClusterNodes{Expected: gw.ExpectedNodes, DaemonIDs: gw.NodeIDs, GatewayIDs: gw.GatewayNodeIDs}, gw.Termination, gw.BucketStore, gw.PlatformCleaner)
+	engine, err := accountteardown.NewClusterEngine(t.Context(), gw.NATS, accountteardown.ClusterNodes{Expected: gw.ExpectedNodes, DaemonIDs: gw.NodeIDs, GatewayIDs: gw.GatewayNodeIDs}, gw.Termination, gw.BucketStore, gw.PlatformCleaner, accountteardown.WithComputeCleanup(gw.ComputeCleaner, gw.StorageCleaner))
 	require.NoError(t, err)
 	inventory, err := engine.Inventory(t.Context(), account.AccountID)
 	require.NoError(t, err)

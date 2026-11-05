@@ -486,3 +486,36 @@ func TestDaemon_UnknownStartOutcomeHoldsTheSlot(t *testing.T) {
 	require.Equal(t, OutcomeRefused, rep.Outcome)
 	require.Contains(t, rep.Error, "holds this node's slot")
 }
+
+// A daemon whose image is replaced between two Invokes refuses the second
+// before Start, though the first passed the digest check.
+func TestDaemon_ImageReplacedBetweenInvokesRefusesBeforeStart(t *testing.T) {
+	code := []byte("zip bytes")
+	wrong := codeServer(t, []byte("other one"))
+	g := grant(t, code)
+	ips, taps := &fakeIPs{}, &fakeTaps{}
+	d := g.daemon(&Daemon{IPs: ips, Taps: taps, HTTP: wrong.Client(), WorkDir: t.TempDir()})
+
+	rep := d.Handle(context.Background(), g.request(wrong.URL, code), testCred)
+	require.Equal(t, OutcomeRefused, rep.Outcome)
+	require.Equal(t, execution.StateEnded, g.state(t), "the first request passed the digest check and started")
+
+	second, err := g.store.Issue(context.Background(), execution.Attempt{
+		Grant:    execution.Grant{AttemptID: "0123456789ac", EnvironmentID: "env-0123456789ac", Generation: 1, Node: testNode},
+		Identity: baseRequest("", code).Identity(),
+		LaunchBy: time.Now().Add(time.Minute),
+	})
+	require.NoError(t, err)
+	d.Image = &Image{Digest: strings.Repeat("1", 64)}
+	req := baseRequest(wrong.URL, code)
+	req.AttemptID, req.Grant, req.ImageDigest = second.Grant.AttemptID, second.Grant, g.image.Digest
+	b, err := json.Marshal(req)
+	require.NoError(t, err)
+
+	rep = d.Handle(context.Background(), b, testCred)
+	require.Equal(t, OutcomeRefused, rep.Outcome)
+	require.Contains(t, rep.Error, "image digest differs")
+	require.Equal(t, execution.StateGranted, g.state(t), "the second grant was never started")
+	require.Empty(t, ips.allocated)
+	require.Empty(t, taps.created)
+}

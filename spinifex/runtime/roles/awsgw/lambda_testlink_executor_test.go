@@ -422,3 +422,74 @@ func TestLambdaTestLinkExecutor_SilentDaemonIsUnknownAndRevoked(t *testing.T) {
 	require.Less(t, time.Since(start), 10*time.Second)
 	require.Len(t, sessions.revoked, 1)
 }
+
+// withdrawFault fails Withdraw before or after the owner writes it.
+type withdrawFault struct {
+	*execution.Store
+	afterWrite bool
+}
+
+func (w withdrawFault) Withdraw(ctx context.Context, g execution.Grant) error {
+	if !w.afterWrite {
+		return errors.New("owner unavailable")
+	}
+	if err := w.Store.Withdraw(ctx, g); err != nil {
+		return err
+	}
+	return execution.ErrOutcomeUnknown
+}
+
+// A daemon refusal with a failed Withdraw leaves the grant startable: a
+// replayed Start succeeds. A lost Withdraw acknowledgement leaves it fenced.
+func TestLambdaTestLinkExecutor_RefusalWithdrawFaults(t *testing.T) {
+	for name, tc := range map[string]struct {
+		afterWrite bool
+		state      string
+		replay     bool
+	}{
+		"fails before write": {state: execution.StateGranted, replay: true},
+		"ack lost":           {afterWrite: true, state: execution.StateWithdrawn},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := grantStore(t)
+			n := &fakeControl{max: 1 << 20, reply: &testlink.Reply{Outcome: testlink.OutcomeRefused, Error: "image differs"}}
+			e := executor(n, nil, store)
+			e.Grants = func(context.Context) (grantIssuer, error) { return withdrawFault{store, tc.afterWrite}, nil }
+			_, err := e.InvokeSync(context.Background(), invocation(nil))
+			require.Error(t, err)
+			require.Len(t, n.sent, 1)
+			require.Equal(t, tc.state, grantState(t, store))
+
+			var sent testlink.Request
+			require.NoError(t, json.Unmarshal(n.sent[0], &sent))
+			err = store.Start(context.Background(), sent.Grant, sent.Identity())
+			if tc.replay {
+				require.NoError(t, err, "an unwithdrawn grant can still start")
+			} else {
+				require.Error(t, err, "a withdrawn grant cannot start")
+			}
+		})
+	}
+}
+
+// The digest field counts toward the request bound: the exact encoded size
+// is sent and one byte less is refused unsent.
+func TestLambdaTestLinkExecutor_RequestBoundIncludesImageDigest(t *testing.T) {
+	probe := &fakeControl{max: 1 << 20, reply: &testlink.Reply{Outcome: testlink.OutcomeDone}}
+	_, err := executor(probe, nil, grantStore(t)).InvokeSync(context.Background(), invocation(make([]byte, 1000)))
+	require.NoError(t, err)
+	require.Len(t, probe.sent, 1)
+	require.Contains(t, string(probe.sent[0]), `"image_digest":"`+testImageDigest+`"`)
+	size := int64(len(probe.sent[0]))
+
+	at := &fakeControl{max: size, reply: &testlink.Reply{Outcome: testlink.OutcomeDone}}
+	_, err = executor(at, nil, grantStore(t)).InvokeSync(context.Background(), invocation(make([]byte, 1000)))
+	require.NoError(t, err)
+	require.Len(t, at.sent, 1)
+
+	under := &fakeControl{max: size - 1}
+	_, err = executor(under, nil, grantStore(t)).InvokeSync(context.Background(), invocation(make([]byte, 1000)))
+	var refusal *awsapi.RefusalError
+	require.ErrorAs(t, err, &refusal)
+	require.Empty(t, under.sent)
+}

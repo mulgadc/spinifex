@@ -14,7 +14,7 @@ import (
 // teardown is not complete, from the shared record store.
 const AccountTeardownOutstandingSubject = "ec2.AccountTeardownOutstanding"
 
-const accountTeardownOutstandingTimeout = 15 * time.Second
+var accountTeardownOutstandingTimeout = 15 * time.Second
 
 // AccountTeardownOutstanding reads the account's unfinished instance teardowns.
 // No responder, a timeout or an error reply is an error, never an empty list.

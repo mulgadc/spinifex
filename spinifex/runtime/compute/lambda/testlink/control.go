@@ -243,7 +243,8 @@ func (c *ControlClient) Exchange(ctx context.Context, req []byte, cred Credentia
 
 	dl := newDeadlines(ctx, uc)
 	defer dl.stop()
-	// The write may not run past the reply bound, so nothing dispatches after it.
+	// The client's write may not run past the reply bound. A frame already
+	// buffered can still be processed later, so a timeout stays unknown.
 	writeBy := time.Now().Add(c.IOTimeout)
 	if replyBy.Before(writeBy) {
 		writeBy = replyBy

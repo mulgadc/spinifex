@@ -267,39 +267,55 @@ func TestControl_DialFailureIsNotSent(t *testing.T) {
 // silentPeer accepts one connection, reads `prefix` bytes (or both whole
 // frames when prefix is 0), signals, then neither reads nor replies until the
 // test ends.
-func silentPeer(t *testing.T, name string, prefix int) <-chan struct{} {
+func silentPeer(t *testing.T, name string, prefix int) *peer {
 	t.Helper()
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: "@" + name, Net: "unix"})
 	require.NoError(t, err)
-	hold, seen := make(chan struct{}), make(chan struct{})
+	p := &peer{seen: make(chan struct{}), failed: make(chan error, 1)}
+	hold := make(chan struct{})
 	t.Cleanup(func() { close(hold); _ = ln.Close() })
 	go func() {
 		c, err := ln.Accept()
 		if err != nil {
+			p.failed <- err
 			return
 		}
 		defer func() { _ = c.Close() }()
 		if prefix > 0 {
-			if _, err := io.ReadFull(c, make([]byte, prefix)); err != nil {
-				return
-			}
-		} else {
-			if _, err := readFrame(c, 64<<20); err != nil {
-				return
-			}
-			if _, err := readFrame(c, MaxCredentialBytes); err != nil {
-				return
-			}
+			_, err = io.ReadFull(c, make([]byte, prefix))
+		} else if _, err = readFrame(c, 64<<20); err == nil {
+			_, err = readFrame(c, MaxCredentialBytes)
 		}
-		close(seen)
+		if err != nil {
+			p.failed <- err
+			return
+		}
+		close(p.seen)
 		<-hold
 	}()
-	return seen
+	return p
+}
+
+type peer struct {
+	seen   chan struct{}
+	failed chan error
+}
+
+// wait fails the test unless the peer read what it was told to within 10 s.
+func (p *peer) wait(t *testing.T) {
+	t.Helper()
+	select {
+	case <-p.seen:
+	case err := <-p.failed:
+		t.Fatalf("peer read failed: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("peer read nothing within 10 s")
+	}
 }
 
 func TestControl_SilentPeerIsUnknownAtTheReplyBound(t *testing.T) {
 	name := controlName(t)
-	seen := silentPeer(t, name, 0)
+	p := silentPeer(t, name, 0)
 	c := client(name, os.Getuid())
 	c.IOTimeout = time.Hour
 
@@ -307,7 +323,7 @@ func TestControl_SilentPeerIsUnknownAtTheReplyBound(t *testing.T) {
 	_, err := c.Exchange(context.Background(), []byte("{}"), testCred, time.Now().Add(300*time.Millisecond))
 	require.Error(t, err)
 	select {
-	case <-seen:
+	case <-p.seen:
 	default:
 		t.Fatal("the peer never received both frames, so this is not a reply timeout")
 	}
@@ -315,17 +331,18 @@ func TestControl_SilentPeerIsUnknownAtTheReplyBound(t *testing.T) {
 	assert.Less(t, time.Since(start), 5*time.Second)
 }
 
-// The reply bound also caps the write, so a slow write cannot dispatch after it.
+// The reply bound also caps the client's write; a frame already buffered may
+// still be processed later, so a post-write timeout stays unknown.
 func TestControl_ReplyBoundCapsTheWrite(t *testing.T) {
 	name := controlName(t)
-	seen := silentPeer(t, name, 64)
+	p := silentPeer(t, name, 64)
 	c := client(name, os.Getuid())
 	c.IOTimeout, c.RequestLimit = time.Hour, 32<<20
 
 	start := time.Now()
 	_, err := c.Exchange(context.Background(), bytes.Repeat([]byte("x"), 16<<20), testCred, time.Now().Add(300*time.Millisecond))
 	require.Error(t, err)
-	<-seen
+	p.wait(t)
 	assert.False(t, errors.Is(err, ErrNotSent), "part of the request was delivered")
 	assert.Less(t, time.Since(start), 5*time.Second)
 }
@@ -343,15 +360,23 @@ func TestControl_ZeroOrPastReplyBoundSendsNothing(t *testing.T) {
 // Cancellation ends a write the peer has stopped reading, however long IOTimeout is.
 func TestControl_CancelEndsABlockedWrite(t *testing.T) {
 	name := controlName(t)
-	seen := silentPeer(t, name, 64)
+	p := silentPeer(t, name, 64)
 	c := client(name, os.Getuid())
 	c.IOTimeout, c.RequestLimit = time.Hour, 32<<20
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { <-seen; cancel() }()
+	t.Cleanup(cancel)
+	go func() {
+		select {
+		case <-p.seen:
+		case <-time.After(10 * time.Second):
+		}
+		cancel()
+	}()
 	start := time.Now()
 	_, err := c.Exchange(ctx, bytes.Repeat([]byte("x"), 16<<20), testCred, time.Now().Add(time.Hour))
 	require.Error(t, err)
+	p.wait(t)
 	assert.ErrorIs(t, ctx.Err(), context.Canceled, "the write ended by cancellation after the peer saw a prefix")
 	assert.False(t, errors.Is(err, ErrNotSent), "part of the request was delivered")
 	assert.Less(t, time.Since(start), 5*time.Second)

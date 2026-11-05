@@ -23,6 +23,14 @@ func shortenPidFileRemovalWait(t *testing.T) {
 	t.Cleanup(func() { pidFileRemovalTimeout = orig })
 }
 
+// seedUnsignalablePid records a dead PID whose signal probe fails with EPERM, as
+// a live process of another user or a reused PID would.
+func seedUnsignalablePid(t *testing.T, id string) {
+	t.Helper()
+	t.Cleanup(hostprocess.SetSignalProbe(func(int) error { return syscall.EPERM }))
+	require.NoError(t, hostprocess.WritePidFile(id, deadpid.PID))
+}
+
 func terminateGateInstance(id string) *VM {
 	v := runningUEFIInstance(id)
 	v.LastNode = "test-node"
@@ -38,13 +46,10 @@ func TestS7_OrdinaryTerminateNeverDeletesVolumesWhileQEMUMayBeAlive(t *testing.T
 	hostprocess.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
 
 	cases := map[string]func(t *testing.T, id string){
-		"corrupt pid file":   func(t *testing.T, id string) { writeCorruptPidFile(t, id, "not-a-pid") },
-		"zero pid":           func(t *testing.T, id string) { writeCorruptPidFile(t, id, "0") },
-		"negative pid":       func(t *testing.T, id string) { writeCorruptPidFile(t, id, "-1") },
-		"unsignalable pid": func(t *testing.T, id string) {
-			t.Cleanup(hostprocess.SetSignalProbe(func(int) error { return syscall.EPERM }))
-			require.NoError(t, hostprocess.WritePidFile(id, deadpid.PID))
-		},
+		"corrupt pid file": func(t *testing.T, id string) { writeCorruptPidFile(t, id, "not-a-pid") },
+		"zero pid":         func(t *testing.T, id string) { writeCorruptPidFile(t, id, "0") },
+		"negative pid":     func(t *testing.T, id string) { writeCorruptPidFile(t, id, "-1") },
+		"unsignalable pid": seedUnsignalablePid,
 	}
 	for name, seed := range cases {
 		t.Run(name, func(t *testing.T) {

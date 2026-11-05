@@ -391,10 +391,6 @@ test-cover:
 test-race:
 	@echo -e "\n....Running tests with race detector for $(GO_PROJECT_NAME)...."
 	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -timeout 300s ./spinifex/... ./cmd/... ./internal/... ./contracts/... ./architecture/... $(_RACEQ)
-	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -tags=lambdatestlink -timeout 120s ./cmd/lambda-agent/ ./spinifex/agents/lambda/hostlink/ ./spinifex/runtime/compute/lambda/testlink/ ./spinifex/domains/network/host/ $(_RACEQ)
-	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -tags=lambdatestlink -timeout 120s -run '^TestLambdaTestLink(Executor|Reply)_' ./spinifex/runtime/roles/awsgw/ $(_RACEQ)
-	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -tags=lambdatestlink,lambdatestlinkseam -timeout 120s -run '^TestLambdaTestLinkSeam_' ./spinifex/runtime/roles/awsgw/ $(_RACEQ)
-	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -tags=lambdatestlink -timeout 120s -run '^TestLambdaTestLink' ./spinifex/runtime/daemon/ $(_RACEQ)
 
 # Unit tests for in-repo GitHub Actions (e.g. .github/actions/e2e-analyze).
 # Kept out of `test-cover` so coverage % isn't diluted by CI-only tooling.

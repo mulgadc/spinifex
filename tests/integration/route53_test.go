@@ -15,6 +15,7 @@ import (
 // NoSuchHostedZone for every call naming it, exactly as for a zone that does
 // not exist, and its own listing stays empty.
 func TestRoute53_HostedZonesAreAccountScoped(t *testing.T) {
+	shortenACMKeys(t)
 	gw := StartGateway(t)
 	StartServiceDaemonLite(t, gw)
 	owner := createTenantAccount(t, gw, "route53-owner").Route53

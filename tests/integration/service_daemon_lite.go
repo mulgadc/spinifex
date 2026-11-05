@@ -18,6 +18,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// shortenACMKeys has ACM generate 1024-bit tenant CA and leaf keys for the rest
+// of t, which no integration check depends on the size of. The size is one per
+// process, so t must not be a parallel test.
+func shortenACMKeys(t *testing.T) {
+	t.Helper()
+	acmdomain.ShortenKeyBitsForTest(t, 1024)
+}
+
 // StartServiceDaemonLite subscribes the real ACM, ECS, EKS, ELBv2, RDS and Route 53
 // services to their "<service>.<Method>" subjects. ECS and RDS run without
 // their provisioning dependencies, so checks that need them do not run.

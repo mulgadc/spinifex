@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -49,13 +50,20 @@ func TestControlDaemon_RawPayloadOverBoundRefusedBeforeStart(t *testing.T) {
 func TestControlDaemon_SecondRequestRefusedWhileAnAttemptIsHeld(t *testing.T) {
 	code := []byte("zip bytes")
 	fetching, release := make(chan struct{}), make(chan struct{})
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		close(fetching)
-		<-release
+	var fetchOnce, releaseOnce sync.Once
+	free := func() { releaseOnce.Do(func() { close(release) }) }
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetchOnce.Do(func() { close(fetching) })
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
 		_, _ = w.Write(code)
 	}))
+	// Cleanups run last-registered first: free the held fetch before Close.
 	t.Cleanup(srv.Close)
-	t.Cleanup(func() { close(release) })
+	t.Cleanup(free)
 	g := grant(t, code)
 	ips, taps := &fakeIPs{}, &fakeTaps{}
 	d := g.daemon(&Daemon{IPs: ips, Taps: taps, HTTP: srv.Client(), WorkDir: t.TempDir()})
@@ -67,6 +75,15 @@ func TestControlDaemon_SecondRequestRefusedWhileAnAttemptIsHeld(t *testing.T) {
 		_, err := fullClient(name).Exchange(context.Background(), g.request(srv.URL, code), testCred, time.Now().Add(60*time.Second))
 		first <- err
 	}()
+	// On every path the held attempt is released and its exchange joined.
+	t.Cleanup(func() {
+		free()
+		select {
+		case <-first:
+		case <-time.After(30 * time.Second):
+			t.Error("the held exchange did not return")
+		}
+	})
 	recvBounded(t, fetching)
 	require.Equal(t, execution.StateRunning, g.state(t), "the first attempt started")
 
@@ -76,4 +93,5 @@ func TestControlDaemon_SecondRequestRefusedWhileAnAttemptIsHeld(t *testing.T) {
 	require.Contains(t, rep.Error, "another")
 	require.Empty(t, ips.allocated, "nothing was allocated for either attempt yet")
 	require.Empty(t, taps.created)
+
 }

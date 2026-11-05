@@ -5,6 +5,7 @@ package awsgw
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -43,39 +44,66 @@ func invokeComposedBody(t *testing.T, body []byte, codeURL string, client *http.
 	return seamRun{env: env, resp: resp, body: out, requests: reqs, replies: replies, presigns: presigns.Load(), grants: grants.issued.Load()}
 }
 
-// echoGuest is a function runtime that returns its event unchanged.
-func echoGuest(base string) {
-	resp, err := http.Get(base + "invocation/next")
-	if err != nil {
-		return
-	}
-	event, _ := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	id := resp.Header.Get("Lambda-Runtime-Aws-Request-Id")
-	if r, err := http.Post(base+"invocation/"+id+"/response", "application/json", bytes.NewReader(event)); err == nil {
-		_ = r.Body.Close()
+// echoGuest is a function runtime that returns its event unchanged and
+// reports its own result on done.
+func echoGuest(done chan<- error) func(base string) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	return func(base string) {
+		done <- func() error {
+			resp, err := client.Get(base + "invocation/next")
+			if err != nil {
+				return err
+			}
+			event, err := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if err != nil {
+				return err
+			}
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("next: status %d", resp.StatusCode)
+			}
+			id := resp.Header.Get("Lambda-Runtime-Aws-Request-Id")
+			r, err := client.Post(base+"invocation/"+id+"/response", "application/json", bytes.NewReader(event))
+			if err != nil {
+				return err
+			}
+			_, _ = io.Copy(io.Discard, r.Body)
+			_ = r.Body.Close()
+			if r.StatusCode != http.StatusAccepted {
+				return fmt.Errorf("response: status %d", r.StatusCode)
+			}
+			return nil
+		}()
 	}
 }
 
 // A 6 MiB event crosses the real gateway, control socket and guest link,
-// and the 6 MiB response returns byte-identical.
+// and the 6 MiB response returns byte-identical. The seam daemon uses
+// HandleWithGuest, so the busy, image and fit checks are tested elsewhere.
 func TestLambdaTestLinkSeam_SixMiBRequestAndResponseRoundTrip(t *testing.T) {
 	require.Equal(t, testlink.MaxPayloadBytes, runtimeapi.MaxResponseBytes)
 	event := jsonString(testlink.MaxPayloadBytes)
 	srv := codeServer(t)
-	run := invokeComposedBody(t, event, srv.URL+"/code", srv.Client(), agentGuest(0, echoGuest))
+	guestDone := make(chan error, 1)
+	run := invokeComposedBody(t, event, srv.URL+"/code", srv.Client(), agentGuest(0, echoGuest(guestDone)))
 	require.Equal(t, http.StatusOK, run.resp.StatusCode, string(run.body[:min(len(run.body), 300)]))
 	require.Empty(t, run.resp.Header.Get("X-Amz-Function-Error"))
 	require.Len(t, run.body, testlink.MaxPayloadBytes)
 	require.True(t, bytes.Equal(event, run.body), "response differs from the event")
 	require.Len(t, run.replies, 1)
+	select {
+	case err := <-guestDone:
+		require.NoError(t, err, "the echo runtime completed")
+	case <-time.After(30 * time.Second):
+		t.Fatal("the echo runtime did not complete")
+	}
 }
 
 // A 6 MiB + 1 event is refused with 413 before anything is presigned,
 // granted or sent to the daemon.
 func TestLambdaTestLinkSeam_OverSixMiBRequestRefusedBeforeDispatch(t *testing.T) {
 	srv := codeServer(t)
-	run := invokeComposedBody(t, jsonString(testlink.MaxPayloadBytes+1), srv.URL+"/code", srv.Client(), agentGuest(0, echoGuest))
+	run := invokeComposedBody(t, jsonString(testlink.MaxPayloadBytes+1), srv.URL+"/code", srv.Client(), agentGuest(0, echoGuest(make(chan error, 1))))
 	require.Equal(t, http.StatusRequestEntityTooLarge, run.resp.StatusCode)
 	require.Contains(t, run.resp.Header.Get("X-Amzn-Errortype"), "RequestEntityTooLargeException")
 	require.Zero(t, run.presigns)

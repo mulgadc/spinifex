@@ -12,35 +12,10 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
 	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
-	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// The embedded interfaces are deliberately nil: a reaper that calls anything
-// beyond the two methods it is supposed to use panics rather than passing.
-type fakeSpot struct {
-	ec2spotinstance.SpotInstanceService
-
-	requests  []*ec2.SpotInstanceRequest
-	cancelled []string
-	err       error
-}
-
-func (f *fakeSpot) DescribeSpotInstanceRequests(_ context.Context, _ *ec2.DescribeSpotInstanceRequestsInput, _ string) (*ec2.DescribeSpotInstanceRequestsOutput, error) {
-	return &ec2.DescribeSpotInstanceRequestsOutput{SpotInstanceRequests: f.requests}, nil
-}
-
-func (f *fakeSpot) CancelSpotInstanceRequests(_ context.Context, in *ec2.CancelSpotInstanceRequestsInput, _ string) (*ec2.CancelSpotInstanceRequestsOutput, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
-	for _, id := range in.SpotInstanceRequestIds {
-		f.cancelled = append(f.cancelled, aws.StringValue(id))
-	}
-	return &ec2.CancelSpotInstanceRequestsOutput{}, nil
-}
 
 type fakeNatGateways struct {
 	ec2natgw.NatGatewayService

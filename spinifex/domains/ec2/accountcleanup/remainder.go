@@ -11,7 +11,7 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 )
 
-// ReasonRecordRemains: the owner still holds a record of the resource.
+// ReasonRecordRemains marks a resource whose record the owner still holds.
 const ReasonRecordRemains = "record-remains"
 
 // ComputeRemainder reads what compute the account still holds, changing nothing.

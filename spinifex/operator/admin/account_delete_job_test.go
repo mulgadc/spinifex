@@ -5,10 +5,10 @@ package admin
 // a gateway restart. None of that is observable from the HTTP surface alone.
 
 import (
-	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountcleanup"
 	"context"
 	"encoding/json"
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountcleanup"
 	"strings"
 	"sync/atomic"
 	"testing"

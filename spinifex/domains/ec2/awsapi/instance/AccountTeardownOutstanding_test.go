@@ -37,6 +37,8 @@ func TestAccountTeardownOutstanding_ReturnsTheServedInstances(t *testing.T) {
 // A read that cannot be answered must never look like an empty list, because an
 // empty list lets the storage cleanup believe no QEMU still holds a volume.
 func TestAccountTeardownOutstanding_UnansweredReadIsAnError(t *testing.T) {
+	t.Parallel()
+
 	t.Run("no responder", func(t *testing.T) {
 		t.Parallel()
 		_, nc := startTestNATSServer(t)

@@ -87,9 +87,9 @@ func convergeEngine(accounts AccountStore, compute *scriptedCompute, storage *sc
 }
 
 var (
-	runningInstance = item(accountcleanup.KindInstance, "i-1", "running", accountcleanup.DispositionPending, accountcleanup.ReasonTerminating)
-	termInstance    = item(accountcleanup.KindInstance, "i-1", "terminated", accountcleanup.DispositionDeleted, "")
-	blockedHolderVolume      = item(accountcleanup.KindVolume, "vol-1", "in-use", accountcleanup.DispositionBlocked, accountcleanup.ReasonHolderPresent)
+	runningInstance     = item(accountcleanup.KindInstance, "i-1", "running", accountcleanup.DispositionPending, accountcleanup.ReasonTerminating)
+	termInstance        = item(accountcleanup.KindInstance, "i-1", "terminated", accountcleanup.DispositionDeleted, "")
+	blockedHolderVolume = item(accountcleanup.KindVolume, "vol-1", "in-use", accountcleanup.DispositionBlocked, accountcleanup.ReasonHolderPresent)
 )
 
 func TestConvergeRunningInstanceFinishesInOneJob(t *testing.T) {
@@ -149,6 +149,7 @@ func TestConvergeStopsOnBlockerTimeCannotResolve(t *testing.T) {
 // supersededAccounts reports a different holder once the first cleanup ran.
 type supersededAccounts struct {
 	*fakeAccounts
+
 	after *scriptedCompute
 }
 

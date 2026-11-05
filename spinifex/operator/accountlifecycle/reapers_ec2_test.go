@@ -106,29 +106,6 @@ func (c *fakeCluster) fail(subject, code string) {
 	c.errorCode[subject] = code
 }
 
-// handle answers subject from state the test owns, for doubles whose answer
-// must change as the reaper acts — an attachment a force detach clears.
-func (c *fakeCluster) handle(subject string, handler func(data []byte) (any, string)) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.handlers[subject] = handler
-}
-
-// echoAsNode adds a second reply to every request on subject, attributed to
-// node, so one node can answer twice while another stays silent.
-func (c *fakeCluster) echoAsNode(t *testing.T, subject, node string) {
-	t.Helper()
-	sub, err := c.nc.Subscribe(subject, func(msg *nats.Msg) {
-		out := nats.NewMsg(msg.Reply)
-		out.Data = []byte(`{}`)
-		out.Header.Set(natsmsg.NodeIDHeader, node)
-		_ = msg.RespondMsg(out)
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	require.NoError(t, c.nc.Flush())
-}
-
 func (c *fakeCluster) called() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -146,13 +123,6 @@ func (c *fakeCluster) request(t *testing.T, subject string, into any) {
 
 func testCtx(t *testing.T) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	t.Cleanup(cancel)
-	return ctx
-}
-
-// silentClusterCtx outlasts the full fan-out deadline a silent node costs.
-func silentClusterCtx(t *testing.T) context.Context {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 	return ctx
 }
@@ -182,32 +152,6 @@ func indexOfKind(reapers []Reaper, kind string) int {
 		}
 	}
 	return -1
-}
-
-// heldVolume is one volume record as its owner keeps it: the ordinary delete
-// refuses while the record names an instance, and a force detach clears it.
-type heldVolume struct {
-	mu       sync.Mutex
-	id       string
-	holder   string
-	deleted  bool
-	detaches int
-}
-
-func (v *heldVolume) state() (deleted bool, holder string, detaches int) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	return v.deleted, v.holder, v.detaches
-}
-
-func instancesIn(state string, instanceIDs ...string) ec2.DescribeInstancesOutput {
-	reservation := &ec2.Reservation{ReservationId: aws.String("r-" + state)}
-	for _, id := range instanceIDs {
-		reservation.Instances = append(reservation.Instances, &ec2.Instance{
-			InstanceId: aws.String(id), State: &ec2.InstanceState{Name: aws.String(state)},
-		})
-	}
-	return ec2.DescribeInstancesOutput{Reservations: []*ec2.Reservation{reservation}}
 }
 
 // Owner-scoped: an image the account can merely see is not its property and
@@ -624,4 +568,3 @@ func TestEC2ReapersRemoveInterfacesBeforeSubnets(t *testing.T) {
 	require.NotEqual(t, -1, eni, "there is no network-interface reaper")
 	require.Less(t, eni, subnet, "interfaces must be reaped before the subnets holding them")
 }
-

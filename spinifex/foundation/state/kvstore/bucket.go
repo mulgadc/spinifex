@@ -219,8 +219,8 @@ func (b *Bucket) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-// CompareAndDelete removes a key only if it is still at rev, returning
-// ErrConflict when it is not.
+// CompareAndDelete removes a key only if it is still at rev, returning an
+// error that is both ErrConflict and kvsync.ErrRevisionMismatch when it is not.
 //
 // Unlike Delete this is not idempotent: a guarded delete carries an expected
 // last sequence, and an absent, tombstoned or purged key fails that check, so
@@ -232,15 +232,12 @@ func (b *Bucket) Delete(ctx context.Context, key string) error {
 func (b *Bucket) CompareAndDelete(ctx context.Context, key string, rev uint64) error {
 	kv, err := b.KV(ctx)
 	if err != nil {
-		return err
+		return syncError("delete", key, err)
 	}
 	// Not through withKV: the revision is the caller's, so a replay against a
 	// reopened bucket would be guarded on a revision from the bucket it lost.
 	if err := kv.Delete(ctx, key, jetstream.LastRevision(rev)); err != nil {
-		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
-			return fmt.Errorf("%w: %s", ErrConflict, key)
-		}
-		return fmt.Errorf("kvstore: delete %s: %w", key, err)
+		return syncError("delete", key, err)
 	}
 	return nil
 }

@@ -16,6 +16,7 @@ import (
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -69,9 +70,15 @@ func formRequest(body string) *http.Request {
 func newTestHandler(t *testing.T) *Handler {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	// A daemon that answers every EC2 subject with an empty result, so each
-	// action reaches its domain call and returns instead of waiting.
-	sub, err := nc.Subscribe("ec2.>", func(m *nats.Msg) { _ = m.Respond([]byte("{}")) })
+	// A daemon that answers every EC2 subject with an empty result as the one
+	// configured node, so each action reaches its domain call and returns, and
+	// identity fan-outs settle on its reply instead of waiting out the deadline.
+	sub, err := nc.Subscribe("ec2.>", func(m *nats.Msg) {
+		reply := nats.NewMsg(m.Reply)
+		reply.Header.Set(natsmsg.NodeIDHeader, "node-1")
+		reply.Data = []byte("{}")
+		_ = m.RespondMsg(reply)
+	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 

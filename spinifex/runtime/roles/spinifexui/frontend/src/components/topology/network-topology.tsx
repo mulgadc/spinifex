@@ -1,4 +1,4 @@
-import type { Vpc } from "@aws-sdk/client-ec2"
+import type { Instance, Vpc } from "@aws-sdk/client-ec2"
 import { useQuery } from "@tanstack/react-query"
 import { Link, useNavigate } from "@tanstack/react-router"
 import { Handle, type Node, type NodeProps, Position } from "@xyflow/react"
@@ -200,6 +200,7 @@ function Card({ data }: NodeProps<CardNode>) {
         card.highlighted && "border-primary ring-2 ring-primary/30",
         card.dimmed && "opacity-40",
       )}
+      data-dimmed={card.dimmed}
       data-highlighted={card.highlighted}
       data-testid={`card-${card.id}`}
     >
@@ -312,6 +313,8 @@ interface NetworkTopologyProps {
   vpc: Vpc
   focus: MapFocus
   direction?: LayoutDirection
+  // An instance panel's own instance, drawn even past the read's page limit.
+  pin?: Instance
 }
 
 // A read-only map of one VPC: what reaches the internet, its subnets by zone,
@@ -320,9 +323,14 @@ export function NetworkTopology({
   vpc,
   focus,
   direction = "down",
+  pin,
 }: NetworkTopologyProps) {
   const vpcId = vpc.VpcId ?? ""
-  const { data, error, isPending } = useQuery(networkMapQueryOptions(vpcId))
+
+  const { data, error, isPending } = useQuery(
+    networkMapQueryOptions(vpcId, pin),
+  )
+
   const navigate = useNavigate()
 
   // Keyed on the focus's fields, so a parent's fresh literal does not rebuild
@@ -376,6 +384,7 @@ export function NetworkTopology({
 
   const edges = useMemo(() => {
     const tierOf = new Map(map?.cards.map((c) => [c.id, c.tier]))
+    const dimmed = new Set(map?.cards.filter((c) => c.dimmed).map((c) => c.id))
     const at = (cardId: string) => layout?.places.get(cardId) ?? { x: 0, y: 0 }
 
     return (map?.links ?? []).map((link): TopologyEdge => {
@@ -390,7 +399,12 @@ export function NetworkTopology({
         target: flip ? link.source : link.target,
         sourceHandle: within ? "side" : undefined,
         targetHandle: within ? "side" : undefined,
-        data: { heavy: link.heavy, label: link.label },
+        data: {
+          heavy: link.heavy,
+          label: link.label,
+          // A line to a dimmed card fades with it.
+          muted: dimmed.has(link.source) || dimmed.has(link.target),
+        },
       }
     })
   }, [map, layout, direction])

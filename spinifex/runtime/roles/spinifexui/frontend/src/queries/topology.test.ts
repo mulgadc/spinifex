@@ -148,4 +148,41 @@ describe("networkMapQueryOptions", () => {
     ])
     expect(result.addresses).toHaveLength(1)
   })
+
+  it("draws the panel's own instance and its subnet past a capped read", async () => {
+    const pin = { InstanceId: "i-far", SubnetId: "subnet-far", VpcId: "vpc-1" }
+
+    mockSend.mockImplementation(
+      async (command: { constructor: { name: string }; input: object }) => {
+        const { name } = command.constructor
+
+        if (name === "DescribeSubnetsCommand" && "SubnetIds" in command.input) {
+          return await Promise.resolve({
+            Subnets: [{ SubnetId: "subnet-far", VpcId: "vpc-1" }],
+          })
+        }
+
+        return await Promise.resolve(
+          name === "DescribeInstancesCommand"
+            ? {
+                Reservations: [{ Instances: [{ InstanceId: "i-near" }] }],
+                NextToken: "more",
+              }
+            : {},
+        )
+      },
+    )
+
+    const result = await callQueryFn(networkMapQueryOptions("vpc-1", pin))
+
+    const asked = mockSend.mock.calls
+      .map(([c]: unknown[]) => c)
+      .filter((c) => c instanceof DescribeAddressesCommand)
+      .flatMap((c) => c.input.Filters?.flatMap((f) => f.Values ?? []) ?? [])
+
+    expect(result.instances.at(-1)?.InstanceId).toBe("i-far")
+    expect(result.subnets.map((s) => s.SubnetId)).toStrictEqual(["subnet-far"])
+    expect(asked).toContain("i-far")
+    expect(result.incomplete).toStrictEqual(["instances"])
+  })
 })

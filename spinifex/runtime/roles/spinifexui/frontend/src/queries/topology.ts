@@ -9,6 +9,7 @@ import {
   type Filter,
   type Instance,
   type NatGateway,
+  type Subnet,
 } from "@aws-sdk/client-ec2"
 import { DescribeLoadBalancersCommand } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { DescribeDBInstancesCommand } from "@aws-sdk/client-rds"
@@ -213,30 +214,72 @@ async function readAddresses(
   }
 }
 
+// The panel's own instance is drawn even past the page limit, so its map is
+// never without it; its subnet is read by ID when the VPC's read missed it.
+async function pinned(
+  pin: Instance | undefined,
+  read: Instance[],
+  subnets: Subnet[],
+  gaps: Gaps,
+): Promise<{ instances: Instance[]; subnets: Subnet[] }> {
+  if (!pin?.InstanceId) {
+    return { instances: read, subnets }
+  }
+
+  const instances = [
+    ...read.filter((i) => i.InstanceId !== pin.InstanceId),
+    pin,
+  ]
+
+  if (!pin.SubnetId || subnets.some((s) => s.SubnetId === pin.SubnetId)) {
+    return { instances, subnets }
+  }
+
+  try {
+    const r = await getEc2Client().send(
+      new DescribeSubnetsCommand({ SubnetIds: [pin.SubnetId] }),
+    )
+
+    return { instances, subnets: [...subnets, ...(r.Subnets ?? [])] }
+  } catch {
+    // The map still draws, and says its subnets are not all there.
+    gaps.incomplete.push("subnets")
+
+    return { instances, subnets }
+  }
+}
+
 // Every read is settled on its own, so one failing service leaves the rest of
 // the map drawn and names what is missing.
-export const networkMapQueryOptions = (vpcId: string) =>
+export const networkMapQueryOptions = (vpcId: string, pin?: Instance) =>
   queryOptions({
-    queryKey: ["topology", "network", vpcId],
+    // The whole instance, so a change to its subnet or address reads again.
+    queryKey: ["topology", "network", vpcId, pin ?? null],
     queryFn: async (): Promise<Omit<NetworkInputs, "vpc">> => {
       const [subnets, routeTables, igws, nats, instances, lbs, dbs] =
         await readVpc(vpcId)
 
       const gaps: Gaps = { incomplete: [], failed: [] }
       const natGateways = take("natGateways", nats, gaps)
-      const held = take("instances", instances, gaps)
+
+      const mine = await pinned(
+        pin,
+        take("instances", instances, gaps),
+        take("subnets", subnets, gaps),
+        gaps,
+      )
 
       const [addresses] = await Promise.allSettled([
-        readAddresses(held, natGateways),
+        readAddresses(mine.instances, natGateways),
       ])
 
       return {
-        subnets: take("subnets", subnets, gaps),
+        subnets: mine.subnets,
         routeTables: take("routeTables", routeTables, gaps),
         internetGateways: take("internetGateways", igws, gaps),
         natGateways,
         addresses: take("addresses", addresses, gaps),
-        instances: held,
+        instances: mine.instances,
         loadBalancers: take("loadBalancers", lbs, gaps),
         dbInstances: take("dbInstances", dbs, gaps),
         ...gaps,

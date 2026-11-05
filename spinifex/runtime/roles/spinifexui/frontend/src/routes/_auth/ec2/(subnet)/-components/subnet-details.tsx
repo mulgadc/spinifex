@@ -12,6 +12,7 @@ import {
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
 import { Ec2Tags } from "@/components/resource-tags"
 import { StateBadge } from "@/components/state-badge"
+import { useTopologyTab } from "@/components/topology/resource-topology"
 import { Button, buttonVariants } from "@/components/ui/button"
 import type { PanelTab } from "@/lib/panel-search"
 import { getNameTag } from "@/lib/utils"
@@ -131,6 +132,14 @@ export function SubnetDetails({
   const id = subnet.SubnetId ?? ""
   const name = getNameTag(subnet.Tags)
 
+  const topology = useTopologyTab({
+    page: layout === "page",
+    tab,
+    vpcId: subnet.VpcId,
+    focus: { kind: "subnet", id },
+    noVpc: "This subnet belongs to no VPC.",
+  })
+
   return (
     <DetailPanel
       closeLabel={
@@ -154,7 +163,12 @@ export function SubnetDetails({
       onClose={onClose}
       onTabChange={onTabChange}
       subtitle={name ? id : undefined}
-      summary={<StateBadge state={subnet.State} />}
+      summary={
+        <>
+          <StateBadge state={subnet.State} />
+          {topology.toggle}
+        </>
+      }
       tab={tab}
       tabs={[
         {
@@ -163,6 +177,7 @@ export function SubnetDetails({
           icon: Eye,
           content: <Overview subnet={subnet} />,
         },
+        topology.spec,
         {
           id: "settings",
           label: "Settings",

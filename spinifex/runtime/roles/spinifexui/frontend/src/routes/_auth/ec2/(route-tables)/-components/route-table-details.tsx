@@ -12,6 +12,7 @@ import {
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
 import { Ec2Tags } from "@/components/resource-tags"
 import { StateBadge } from "@/components/state-badge"
+import { useTopologyTab } from "@/components/topology/resource-topology"
 import { Button, buttonVariants } from "@/components/ui/button"
 import type { PanelTab } from "@/lib/panel-search"
 import { getNameTag } from "@/lib/utils"
@@ -129,6 +130,14 @@ export function RouteTableDetails({
   const id = rtb.RouteTableId ?? ""
   const name = getNameTag(rtb.Tags)
 
+  const topology = useTopologyTab({
+    page: layout === "page",
+    tab,
+    vpcId: rtb.VpcId,
+    focus: { kind: "routeTable", id },
+    noVpc: "This route table belongs to no VPC.",
+  })
+
   return (
     <DetailPanel
       closeLabel={
@@ -152,7 +161,12 @@ export function RouteTableDetails({
       onClose={onClose}
       onTabChange={onTabChange}
       subtitle={name ? id : undefined}
-      summary={isMainRouteTable(rtb) ? <StateBadge state="main" /> : null}
+      summary={
+        <>
+          {isMainRouteTable(rtb) && <StateBadge state="main" />}
+          {topology.toggle}
+        </>
+      }
       tab={tab}
       tabs={[
         {
@@ -161,6 +175,7 @@ export function RouteTableDetails({
           icon: Eye,
           content: <Overview rtb={rtb} />,
         },
+        topology.spec,
         {
           id: "settings",
           label: "Settings",

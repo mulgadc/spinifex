@@ -8,6 +8,7 @@ import {
   layoutNetworkMap,
   MAP_BUDGET,
   MAP_TIERS,
+  type MapFocus,
   type NetworkInputs,
   scaleLayout,
 } from "./network-map"
@@ -569,5 +570,95 @@ describe("layoutNetworkMap", () => {
       (web?.x ?? 0) * 1.1,
     )
     expect(scaleLayout(layout, 1)).toBe(layout)
+  })
+})
+
+function lit(focus: MapFocus) {
+  return buildNetworkMap(inputs(), focus)
+    .cards.filter((c) => c.highlighted)
+    .map((c) => c.id)
+    .toSorted()
+}
+
+describe("a resource's focus", () => {
+  it("lights a subnet and what sits in it", () => {
+    expect(lit({ kind: "subnet", id: "subnet-1" })).toStrictEqual([
+      "instance:i-0001",
+      "lb:arn:lb/web",
+      "nat:nat-1",
+      "subnet:subnet-1",
+    ])
+  })
+
+  it("lights an internet gateway and the subnets routing to it", () => {
+    expect(lit({ kind: "igw", id: "igw-1" })).toStrictEqual([
+      "igw:igw-1",
+      "subnet:subnet-1",
+      "subnet:subnet-2",
+    ])
+  })
+
+  it("lights a NAT gateway, its subnet, its address and the subnets routing to it", () => {
+    expect(lit({ kind: "nat", id: "nat-1" })).toStrictEqual([
+      "eip:eipalloc-nat",
+      "nat:nat-1",
+      "subnet:subnet-1",
+      "subnet:subnet-2",
+    ])
+  })
+
+  it("lights an instance, its subnet and its address", () => {
+    expect(lit({ kind: "instance", id: "i-0001" })).toStrictEqual([
+      "eip:eipalloc-web",
+      "instance:i-0001",
+      "subnet:subnet-1",
+    ])
+  })
+
+  it("lights a route table's subnets and targets, the main one serving the rest", () => {
+    expect(lit({ kind: "routeTable", id: "rtb-main" })).toStrictEqual([
+      "igw:igw-1",
+      "subnet:subnet-1",
+    ])
+    expect(lit({ kind: "routeTable", id: "rtb-private" })).toStrictEqual([
+      "igw:igw-1",
+      "nat:nat-1",
+      "subnet:subnet-2",
+    ])
+  })
+
+  it("leaves the main table's fallback subnets unlit from a partial read", () => {
+    const map = buildNetworkMap(inputs({ incomplete: ["routeTables"] }), {
+      kind: "routeTable",
+      id: "rtb-main",
+    })
+
+    expect(
+      map.cards.filter((c) => c.highlighted).map((c) => c.id),
+    ).toStrictEqual(["igw:igw-1"])
+  })
+
+  it("dims the rest of the VPC, and dims nothing for the VPC itself", () => {
+    const map = buildNetworkMap(inputs(), { kind: "subnet", id: "subnet-1" })
+
+    expect(cardOf(map, "vpc:vpc-1")?.dimmed).toBeTruthy()
+    expect(cardOf(map, "subnet:subnet-1")?.dimmed).toBeFalsy()
+    expect(
+      buildNetworkMap(inputs(), VPC_FOCUS).cards.some((c) => c.dimmed),
+    ).toBeFalsy()
+  })
+
+  it("keeps the instance it is drawn for when the budget is full", () => {
+    const map = buildNetworkMap(
+      inputs({
+        instances: Array.from({ length: 500 }, (_, n) =>
+          instance(n + 1, "subnet-1"),
+        ),
+      }),
+      { kind: "instance", id: "i-0400" },
+    )
+
+    expect(cardOf(map, "instance:i-0400")?.highlighted).toBeTruthy()
+    expect(map.cards.length).toBeLessThanOrEqual(MAP_BUDGET.cards)
   })
 })

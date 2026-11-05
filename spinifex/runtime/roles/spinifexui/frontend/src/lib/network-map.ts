@@ -109,8 +109,9 @@ export interface NetworkInputs {
   failed: MapResource[]
 }
 
+// The resource whose panel draws the map; all but the VPC dim the rest.
 export interface MapFocus {
-  kind: "vpc"
+  kind: "vpc" | "subnet" | "routeTable" | "igw" | "nat" | "instance"
   id: string
 }
 
@@ -504,20 +505,119 @@ export function internetReach(inputs: NetworkInputs): Reachability {
     : "unreachable"
 }
 
+// A route line carries its destination; a resource's line to its subnet does not.
+const isRoute = (l: MapLink) => l.label !== undefined && !l.heavy
+
+// The cards a panel highlights: what the resource is, and what it touches.
+function focusSet(
+  focus: MapFocus,
+  sketch: Sketch,
+  routeTables: RouteTable[],
+): Set<string> {
+  const self = `${focus.kind}:${focus.id}`
+
+  const from = (id: string, keep: (l: MapLink) => boolean) =>
+    sketch.links
+      .filter((l) => keep(l) && (l.source === id || l.target === id))
+      .map((l) => (l.source === id ? l.target : l.source))
+
+  if (focus.kind === "subnet") {
+    const mine = sketch.cards.filter(
+      (c) => c.tier === "resources" && c.column === focus.id,
+    )
+
+    const nats = from(self, (l) => !isRoute(l)).filter((id) =>
+      id.startsWith("nat:"),
+    )
+
+    return new Set([self, ...mine.map((c) => c.id), ...nats])
+  }
+
+  if (focus.kind === "igw") {
+    return new Set([self, ...from(self, isRoute)])
+  }
+
+  if (focus.kind === "nat") {
+    const near = from(self, (l) => !l.heavy).filter(
+      (id) => !id.startsWith("vpc:"),
+    )
+
+    return new Set([self, ...near])
+  }
+
+  if (focus.kind === "instance") {
+    const subnet = sketch.cards.find((c) => c.id === self)?.column
+
+    const eips = from(self, () => true).filter((id) => id.startsWith("eip:"))
+
+    return new Set([self, ...(subnet ? [`subnet:${subnet}`] : []), ...eips])
+  }
+
+  if (focus.kind === "routeTable") {
+    return routeTableSet(focus.id, sketch, routeTables)
+  }
+
+  return new Set([self])
+}
+
+// A route table has no card: it lights the subnets it serves and its targets.
+function routeTableSet(
+  id: string,
+  sketch: Sketch,
+  routeTables: RouteTable[],
+): Set<string> {
+  const table = routeTables.find((rt) => rt.RouteTableId === id)
+
+  if (!table) {
+    return new Set()
+  }
+
+  const explicit = new Set(
+    routeTables.flatMap((rt) =>
+      compact((rt.Associations ?? []).map((a) => a.SubnetId)),
+    ),
+  )
+
+  const main = table.Associations?.some((a) => a.Main) ?? false
+
+  const mine = new Set(
+    compact((table.Associations ?? []).map((a) => a.SubnetId)),
+  )
+
+  // Only a complete read says which subnets fall back to the main table.
+  const served = sketch.cards.filter(
+    (c) =>
+      c.kind === "subnet" &&
+      c.resourceId !== undefined &&
+      (mine.has(c.resourceId) ||
+        (main && sketch.routesKnown && !explicit.has(c.resourceId))),
+  )
+
+  const targets = (table.Routes ?? []).flatMap((r) => {
+    if (r.GatewayId?.startsWith("igw-")) {
+      return [`igw:${r.GatewayId}`]
+    }
+
+    return r.NatGatewayId ? [`nat:${r.NatGatewayId}`] : []
+  })
+
+  return new Set([...served.map((c) => c.id), ...targets])
+}
+
 // The order cards claim the budget: the selection, the map's frame, the
 // selection's neighbours, then everything else, each kind sorted by name.
-function claimOrder(cards: Draft[], links: MapLink[], selected: string) {
+function claimOrder(cards: Draft[], links: MapLink[], focused: Set<string>) {
   const frame = cards
     .filter((c) => ["internet", "vpc", "igw", "nat"].includes(c.kind))
     .toSorted(byRankThenName)
 
   const touching = new Set(
     links.flatMap((l) => {
-      if (l.source === selected) {
+      if (focused.has(l.source)) {
         return [l.target]
       }
 
-      return l.target === selected ? [l.source] : []
+      return focused.has(l.target) ? [l.source] : []
     }),
   )
 
@@ -530,7 +630,7 @@ function claimOrder(cards: Draft[], links: MapLink[], selected: string) {
   // A set keeps each card's first, highest-priority place.
   return new Set(
     [
-      ...cards.filter((c) => c.id === selected),
+      ...cards.filter((c) => focused.has(c.id)).toSorted(byRankThenName),
       ...frame,
       ...neighbours,
       ...rest,
@@ -548,9 +648,10 @@ export function buildNetworkMap(
   focus: MapFocus,
   budget = MAP_BUDGET,
 ): NetworkMap {
-  const { cards, links } = sketchMap(inputs)
+  const sketch = sketchMap(inputs)
+  const { cards, links } = sketch
   const vpcCard = `vpc:${inputs.vpc.VpcId ?? ""}`
-  const selected = `${focus.kind}:${focus.id}`
+  const highlight = focusSet(focus, sketch, inputs.routeTables)
   // One card and one line in each tier are kept back for its "+N more".
   const cardRoom = budget.cards - MAP_TIERS.length
   const edgeRoom = budget.edges - MAP_TIERS.length
@@ -578,7 +679,7 @@ export function buildNetworkMap(
   const placed = new Set<string>()
   let lines = 0
 
-  for (const id of claimOrder(cards, links, selected)) {
+  for (const id of claimOrder(cards, links, highlight)) {
     // The lines this card adds: those whose other end is already placed.
     const joining = (ends.get(id) ?? []).filter((l) =>
       placed.has(l.source === id ? l.target : l.source),
@@ -629,7 +730,7 @@ export function buildNetworkMap(
   }
 
   // The VPC is the whole map, so selecting it dims nothing.
-  const highlight = new Set([selected])
+  const dims = focus.kind !== "vpc"
   const reach = internetReach(inputs)
 
   return {
@@ -637,7 +738,7 @@ export function buildNetworkMap(
       ...card,
       ...(card.kind === "internet" && { reach }),
       highlighted: highlight.has(card.id),
-      dimmed: false,
+      dimmed: dims && !highlight.has(card.id),
     })),
     links: keptLinks,
     omitted: left.length,

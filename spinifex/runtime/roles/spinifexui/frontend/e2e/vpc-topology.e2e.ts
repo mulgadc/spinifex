@@ -351,3 +351,103 @@ test.describe("VPC topology", () => {
     })
   }
 })
+
+const RESOURCE_MAPS = [
+  {
+    name: "subnet",
+    url: `/ec2/describe-subnets?selected=${PUBLIC}&tab=topology`,
+    region: "Subnet details",
+    lit: [`subnet:${PUBLIC}`, "instance:i-0e2e00000000000a", `nat:${NAT_ID}`],
+  },
+  {
+    name: "route table",
+    url: "/ec2/describe-route-tables?selected=rtb-0e2e0000000priv&tab=topology",
+    region: "Route table details",
+    lit: [`subnet:${PRIVATE}`, `nat:${NAT_ID}`],
+  },
+  {
+    name: "internet gateway",
+    url: `/ec2/describe-internet-gateways?selected=${IGW_ID}&tab=topology`,
+    region: "Internet gateway details",
+    lit: [`igw:${IGW_ID}`, `subnet:${PUBLIC}`],
+  },
+  {
+    name: "NAT gateway",
+    url: `/ec2/describe-nat-gateways?selected=${NAT_ID}&tab=topology`,
+    region: "NAT gateway details",
+    lit: [
+      `nat:${NAT_ID}`,
+      `subnet:${PUBLIC}`,
+      `subnet:${PRIVATE}`,
+      "eip:eipalloc-0e2e0000000nat",
+    ],
+  },
+  {
+    name: "instance",
+    url: "/ec2/describe-instances?selected=i-0e2e00000000000a&tab=topology",
+    region: "Instance details",
+    lit: [
+      "instance:i-0e2e00000000000a",
+      `subnet:${PUBLIC}`,
+      "eip:eipalloc-0e2e0000000web",
+    ],
+  },
+] as const
+
+test.describe("A resource's topology tab", () => {
+  for (const { name, url, region, lit } of RESOURCE_MAPS) {
+    test(`draws the ${name}'s VPC with it highlighted and the rest dimmed`, async ({
+      page,
+    }) => {
+      await page.goto(url)
+
+      const panel = page.getByRole("region", { name: region })
+
+      await Promise.all(
+        lit.map(async (id) => {
+          await expect(panel.getByTestId(`card-${id}`)).toHaveAttribute(
+            "data-highlighted",
+            "true",
+          )
+        }),
+      )
+      await expect(panel.getByTestId(`card-vpc:${VPC_ID}`)).toHaveAttribute(
+        "data-dimmed",
+        "true",
+      )
+    })
+  }
+
+  test("says a detached internet gateway has no map", async ({ api, page }) => {
+    api.handle(
+      "DescribeInternetGateways",
+      ec2(
+        "DescribeInternetGateways",
+        `<internetGatewaySet><item><internetGatewayId>${IGW_ID}</internetGatewayId>
+<attachmentSet/></item></internetGatewaySet>`,
+      ),
+    )
+
+    await page.goto(
+      `/ec2/describe-internet-gateways?selected=${IGW_ID}&tab=topology`,
+    )
+    await expect(
+      page.getByText(
+        "This internet gateway is attached to no VPC, so it has no map.",
+      ),
+    ).toBeVisible()
+  })
+
+  test("offers the direction toggle on the instance's own page", async ({
+    page,
+  }) => {
+    await page.goto("/ec2/describe-instances/i-0e2e00000000000a?tab=topology")
+    await expect(
+      page.getByTestId("card-instance:i-0e2e00000000000a"),
+    ).toHaveAttribute("data-highlighted", "true")
+    await page.getByRole("button", { name: "Left to right" }).click()
+    await expect(
+      page.getByTestId("card-instance:i-0e2e00000000000a"),
+    ).toBeVisible()
+  })
+})

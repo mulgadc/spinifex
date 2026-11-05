@@ -438,7 +438,7 @@ func TestParseVolumeParams_BlockDeviceMappingNoEbs(t *testing.T) {
 
 	p := parseVolumeParams(input)
 
-	assert.Equal(t, "/dev/xvda", p.deviceName)
+	assert.Equal(t, ebsmetadata.RootDeviceName, p.deviceName, "a mapping not naming the root leaves the root device alone")
 	assert.Equal(t, 4*1024*1024*1024, p.size, "size should stay at default without Ebs")
 	assert.True(t, p.deleteOnTermination)
 }
@@ -469,7 +469,7 @@ func TestParseVolumeParams_PartialEbs(t *testing.T) {
 
 	p := parseVolumeParams(input)
 
-	assert.Equal(t, 8*1024*1024*1024, p.size)
+	assert.Equal(t, 4*1024*1024*1024, p.size, "an unnamed mapping does not size the root")
 	assert.Equal(t, ebsmetadata.RootDeviceName, p.deviceName, "device should stay at default")
 	assert.Empty(t, p.volumeType, "volumeType should stay empty")
 	assert.Zero(t, p.iops, "iops should stay zero")
@@ -593,23 +593,61 @@ func TestParseVolumeParams_RootMappingSelectedByName(t *testing.T) {
 	assert.Equal(t, "gp3", p.volumeType)
 }
 
-func TestParseVolumeParams_SingleNonRootMappingStillLaunches(t *testing.T) {
-	// ECS and EKS both launch with one mapping named /dev/vda, which is not the
-	// AMI root device name. Position decides when nothing names the root.
+func TestParseVolumeParams_LoneNonRootMappingIsADataVolume(t *testing.T) {
+	// A mapping that does not name the AMI root device adds a volume; the root
+	// keeps the image's own mapping, as AWS does.
 	input := &ec2.RunInstancesInput{
-		ImageId: aws.String("ami-vda"),
+		ImageId: aws.String("ami-lone"),
 		BlockDeviceMappings: []*ec2.BlockDeviceMapping{
 			{
-				DeviceName: aws.String("/dev/vda"),
+				DeviceName: aws.String("/dev/sdf"),
+				Ebs: &ec2.EbsBlockDevice{
+					VolumeSize:          aws.Int64(6),
+					DeleteOnTermination: aws.Bool(false),
+				},
+			},
+		},
+	}
+
+	assert.Equal(t, -1, SelectRootBlockDeviceMapping(input.BlockDeviceMappings))
+
+	p := parseVolumeParams(input)
+	assert.Equal(t, 4*1024*1024*1024, p.size, "root keeps its default size")
+	assert.Equal(t, ebsmetadata.RootDeviceName, p.deviceName)
+	assert.True(t, p.deleteOnTermination, "root keeps its default")
+
+	data := parseDataVolumeParams(input)
+	require.Len(t, data, 1)
+	assert.Equal(t, "/dev/sdf", data[0].deviceName)
+	assert.Equal(t, int64(6), data[0].sizeGiB)
+	assert.False(t, data[0].deleteOnTermination)
+	assert.Empty(t, UnservedBlockDeviceMappings(input.BlockDeviceMappings))
+}
+
+func TestParseVolumeParams_LoneNonRootMappingWithoutSizeIsRefused(t *testing.T) {
+	mappings := []*ec2.BlockDeviceMapping{
+		{DeviceName: aws.String("/dev/sdf"), Ebs: &ec2.EbsBlockDevice{}},
+	}
+
+	assert.Equal(t, []string{"/dev/sdf (names no size)"}, UnservedBlockDeviceMappings(mappings))
+}
+
+func TestParseVolumeParams_LoneRootNamedMappingIsTheRoot(t *testing.T) {
+	input := &ec2.RunInstancesInput{
+		ImageId: aws.String("ami-lone-root"),
+		BlockDeviceMappings: []*ec2.BlockDeviceMapping{
+			{
+				DeviceName: aws.String(ebsmetadata.RootDeviceName),
 				Ebs:        &ec2.EbsBlockDevice{VolumeSize: aws.Int64(20)},
 			},
 		},
 	}
 
+	assert.Equal(t, 0, SelectRootBlockDeviceMapping(input.BlockDeviceMappings))
 	p := parseVolumeParams(input)
 	assert.Equal(t, 20*1024*1024*1024, p.size)
-	assert.Equal(t, "/dev/vda", p.deviceName)
-	assert.Empty(t, UnservedBlockDeviceMappings(input.BlockDeviceMappings))
+	assert.Equal(t, ebsmetadata.RootDeviceName, p.deviceName)
+	assert.Empty(t, parseDataVolumeParams(input))
 }
 
 func TestUnservedBlockDeviceMappings(t *testing.T) {

@@ -62,10 +62,12 @@ func (d *Daemon) handleEC2CreateImage(msg *nats.Msg) string {
 		status        vm.InstanceState
 		rootVolumeID  string
 		sourceImageID string
+		uefi          bool
 	)
 	ok := d.vmMgr.UpdateState(instanceID, func(v *vm.VM) {
 		instance = v
 		status = v.Status
+		uefi = vm.UsesUEFIVarStore(v)
 		if v.Instance != nil {
 			for _, bdm := range v.Instance.BlockDeviceMappings {
 				if bdm.Ebs != nil && bdm.Ebs.VolumeId != nil {
@@ -131,6 +133,7 @@ func (d *Daemon) handleEC2CreateImage(msg *nats.Msg) string {
 
 		instance = stopped
 		status = stopped.Status
+		uefi = vm.UsesUEFIVarStore(stopped)
 		if stopped.Instance != nil {
 			for _, bdm := range stopped.Instance.BlockDeviceMappings {
 				if bdm.Ebs != nil && bdm.Ebs.VolumeId != nil {
@@ -166,6 +169,7 @@ func (d *Daemon) handleEC2CreateImage(msg *nats.Msg) string {
 		RootVolumeID:  rootVolumeID,
 		SourceImageID: sourceImageID,
 		IsRunning:     status == vm.StateRunning,
+		UEFI:          uefi,
 	}
 
 	output, err := d.imageService.CreateImageFromInstance(params, accountID)

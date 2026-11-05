@@ -16,7 +16,7 @@ func TestS7_FailedRunInstancesDeletesOnlyTheStoreItSeeded(t *testing.T) {
 	f := newUEFIFixture(t)
 	rt := f.withLifecycle(t)
 	instance := f.newInstance()
-	require.NoError(t, f.m.SeedUEFIVarStore(t.Context(), instance))
+	require.NoError(t, f.m.SeedUEFIVarStore(t.Context(), instance, nil))
 	f.m.Insert(instance)
 	terminated := rt.waitFor(instance.ID, StateTerminated)
 
@@ -86,7 +86,7 @@ func TestS7_SeedingNeverWritesOverAnExistingStore(t *testing.T) {
 		want, wantRev := f.record(t)
 		instance := f.newInstance()
 
-		err = f.m.SeedUEFIVarStore(t.Context(), instance)
+		err = f.m.SeedUEFIVarStore(t.Context(), instance, nil)
 		require.ErrorIs(t, err, ErrUEFIVarStoreExists)
 		failRunInstances(t, f, rt, instance)
 
@@ -108,7 +108,7 @@ func TestS7_SeedingNeverWritesOverAnExistingStore(t *testing.T) {
 		require.NoError(t, err)
 		instance := f.newInstance()
 
-		err = f.m.SeedUEFIVarStore(t.Context(), instance)
+		err = f.m.SeedUEFIVarStore(t.Context(), instance, nil)
 		require.ErrorIs(t, err, ErrUEFIVarStoreExists)
 		failRunInstances(t, f, rt, instance)
 

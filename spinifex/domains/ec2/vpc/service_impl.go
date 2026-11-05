@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/tagmirror"
 	"log/slog"
+	"maps"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -1678,4 +1680,36 @@ func (s *VPCServiceImpl) publishSubnetEvent(topic, subnetId, vpcId, cidrBlock st
 		return
 	}
 	client.CreateSubnet(evt)
+}
+
+// SubnetAvailabilityZones returns the distinct zone names held by subnet records of every account, sorted.
+func (s *VPCServiceImpl) SubnetAvailabilityZones(ctx context.Context) ([]string, error) {
+	keys, err := s.subnetKV.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list subnets: %w", err)
+	}
+	seen := map[string]struct{}{}
+	for _, k := range keys {
+		if k == kvutil.VersionKey {
+			continue
+		}
+		entry, err := s.subnetKV.Get(ctx, k)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read subnet %s: %w", k, err)
+		}
+		var rec SubnetRecord
+		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
+			return nil, fmt.Errorf("decode subnet %s: %w", k, err)
+		}
+		if rec.AvailabilityZone != "" {
+			seen[rec.AvailabilityZone] = struct{}{}
+		}
+	}
+	return slices.Sorted(maps.Keys(seen)), nil
 }

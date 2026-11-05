@@ -2554,3 +2554,26 @@ func TestVpc_ModifyVpcAttribute_MultipleAttributes(t *testing.T) {
 	assert.Contains(t, msg, "enableDnsSupport")
 	assert.Contains(t, msg, "enableDnsHostnames")
 }
+
+func TestSubnetAvailabilityZones_DistinctSortedAcrossAccounts(t *testing.T) {
+	svc := setupTestVPCService(t)
+	put := func(key, az string) {
+		data, err := json.Marshal(SubnetRecord{SubnetId: key, AvailabilityZone: az})
+		require.NoError(t, err)
+		_, err = svc.subnetKV.Put(t.Context(), key, data)
+		require.NoError(t, err)
+	}
+
+	empty, err := svc.SubnetAvailabilityZones(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, empty)
+
+	put("111111111111.subnet-1", "rack-b")
+	put("222222222222.subnet-2", "rack-a")
+	put("222222222222.subnet-3", "rack-b")
+	put("222222222222.subnet-4", "")
+
+	got, err := svc.SubnetAvailabilityZones(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"rack-a", "rack-b"}, got)
+}

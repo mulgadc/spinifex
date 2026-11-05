@@ -89,7 +89,9 @@ func TestIssueCommand_StampsEachCopyWithTheBudgetLeft(t *testing.T) {
 	h := newLifecycleHarness(t, false)
 	h.agent.silenceType(CommandQuiesce)
 
-	const budget = 4500 * time.Millisecond
+	// One republish interval plus a second of slack: enough for exactly one
+	// re-publish before the budget runs out, without waiting out a third copy.
+	const budget = commandRepublishEvery + time.Second
 	_, err := h.svc.issueCommand(t.Context(), testAccountID, testDBID, CommandQuiesce, budget, nil)
 	require.ErrorIs(t, err, ErrCommandUnreachable)
 

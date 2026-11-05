@@ -162,8 +162,10 @@ func TestCreateDBSnapshot_QuiescesTheEngineAndRecordsTheSnapshot(t *testing.T) {
 // The hold has to be released before the instance settles, so the deadline the
 // agent enforces is never what ends a successful snapshot.
 func TestCreateDBSnapshot_ReturnsTheInstanceToWhereItWasFound(t *testing.T) {
+	t.Parallel()
 	for _, resume := range []Status{StatusAvailable, StatusStopped} {
 		t.Run(string(resume), func(t *testing.T) {
+			t.Parallel()
 			h := newSnapshotHarness(t, false)
 			rec := availableRecord()
 			rec.Status = resume
@@ -773,8 +775,10 @@ func TestReconciler_LeavesAFreshCreatingSnapshotAlone(t *testing.T) {
 // A snapshot holds its instance in backing-up for the length of the snapshot and
 // no longer, so one still there past the bound belongs to a worker that died.
 func TestReconciler_ReturnsAnInstanceStuckInBackingUp(t *testing.T) {
+	t.Parallel()
 	for _, resume := range []Status{StatusAvailable, StatusStopped} {
 		t.Run(string(resume), func(t *testing.T) {
+			t.Parallel()
 			h := newSnapshotHarness(t, false)
 			reconciler := NewReconciler(h.svc, "node-a")
 

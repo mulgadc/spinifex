@@ -676,6 +676,7 @@ func TestStartDBInstance_FallsBackWhenNoNodeHoldsTheVM(t *testing.T) {
 
 // The transition is rejected rather than racing an operation already running.
 func TestLifecycleOps_RejectAnIllegalStartingState(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		from Status
@@ -700,6 +701,7 @@ func TestLifecycleOps_RejectAnIllegalStartingState(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			h := newLifecycleHarness(t, false)
 			rec := availableRecord()
 			rec.Status = tc.from
@@ -757,8 +759,10 @@ func restartingRecord(status Status, started, lastSeen time.Time) DBInstanceReco
 // The API call that begins a reboot or a start returns before the engine is
 // back, so this is what actually lands the instance in available.
 func TestReconciler_CompletesARestartOnAHeartbeatFromTheRestartedEngine(t *testing.T) {
+	t.Parallel()
 	for _, status := range []Status{StatusRebooting, StatusStarting} {
 		t.Run(string(status), func(t *testing.T) {
+			t.Parallel()
 			h := newLifecycleHarness(t, false)
 			now := time.Now().UTC()
 			seedInstance(t, h.svc, restartingRecord(status, now.Add(-time.Minute), now))

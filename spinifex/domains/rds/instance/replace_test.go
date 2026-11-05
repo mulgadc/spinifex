@@ -255,11 +255,13 @@ func TestReplaceInstanceVM_RefusesAnUnmappedRecordedClass(t *testing.T) {
 // Without the persisted ENI and volume there is nothing to replace *onto*: a
 // launch from here would mint a new address and an empty datadir.
 func TestReplaceInstanceVM_RefusesWithoutThePersistedIdentity(t *testing.T) {
+	t.Parallel()
 	for name, mutate := range map[string]func(*DBInstanceRecord){
 		"no endpoint ENI": func(rec *DBInstanceRecord) { rec.ENIID = "" },
 		"no data volume":  func(rec *DBInstanceRecord) { rec.DataVolumeID = "" },
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			h := newModifyHarness(t)
 			seed := modifiableRecord()
 			mutate(&seed)
@@ -292,6 +294,7 @@ func TestReplaceInstanceVM_RefusesToMintAReplacementEndpoint(t *testing.T) {
 // it had, so the reconciler resumes from a state it can read rather than from
 // one that half-describes two VMs.
 func TestReplaceInstanceVM_LeavesTheRecordRecoverableOnEveryFailure(t *testing.T) {
+	t.Parallel()
 	cases := map[string]func(*modifyHarness){
 		"the old VM will not terminate": func(h *modifyHarness) {
 			h.launch.launcher.terminateErr = errors.New("the node did not answer")
@@ -305,6 +308,7 @@ func TestReplaceInstanceVM_LeavesTheRecordRecoverableOnEveryFailure(t *testing.T
 	}
 	for name, breakIt := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			h := newModifyHarness(t)
 			rec := seedReplaceable(t, h, modifiableRecord())
 			breakIt(h)

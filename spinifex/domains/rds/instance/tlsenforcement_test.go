@@ -71,6 +71,7 @@ func TestTLSAvailable_ReportsWhetherTheDeploymentCanServeTLS(t *testing.T) {
 // The whole of the migration story: an instance created with no parameter group
 // of its own requires TLS, on both engines, with no customer action.
 func TestCreateDBInstance_EnforcesTLSWithNoParameterGroupOfItsOwn(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		engine    rdsengine.Engine
 		parameter string
@@ -80,6 +81,7 @@ func TestCreateDBInstance_EnforcesTLSWithNoParameterGroupOfItsOwn(t *testing.T) 
 	}
 	for _, tc := range tests {
 		t.Run(tc.engine.Name, func(t *testing.T) {
+			t.Parallel()
 			h := newCreateHarness(t, testBaseDomain)
 			input := validCreateInput()
 			input.Engine = aws.String(tc.engine.Name)
@@ -115,6 +117,7 @@ func TestCreateDBInstance_RefusesEnforcementWithNoClusterCA(t *testing.T) {
 // The customer keeps the AWS-visible way out, which is the reason enforcement is
 // a modifiable parameter rather than a platform constant.
 func TestCreateDBInstance_AcceptsEnforcementTurnedOffWithNoClusterCA(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		engine    rdsengine.Engine
 		group     string
@@ -126,6 +129,7 @@ func TestCreateDBInstance_AcceptsEnforcementTurnedOffWithNoClusterCA(t *testing.
 	}
 	for _, tc := range tests {
 		t.Run(tc.engine.Name, func(t *testing.T) {
+			t.Parallel()
 			h := newCreateHarness(t, testBaseDomain)
 			_, err := h.svc.CreateDBParameterGroup(t.Context(), tc.input, testAccountID)
 			require.NoError(t, err)

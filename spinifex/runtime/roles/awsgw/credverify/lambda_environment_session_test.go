@@ -1,4 +1,4 @@
-package credverify
+package credverify_test
 
 import (
 	"context"
@@ -13,10 +13,13 @@ import (
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+const testAccount = "000000000001"
 
 type noJWKS struct{}
 
@@ -66,7 +69,7 @@ func TestResolve_LambdaEnvironmentSessionFailsAfterRoleReplaced(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	v := New(iamSvc, stsSvc)
+	v := credverify.New(iamSvc, stsSvc)
 	req := credential.Request{
 		AccessKeyID:   aws.StringValue(out.Credentials.AccessKeyId),
 		SecurityToken: aws.StringValue(out.Credentials.SessionToken),

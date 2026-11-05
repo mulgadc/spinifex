@@ -1,3 +1,7 @@
+// The issuer is tested against the real minting core, so these tests swap the
+// unexported sessions store and IAM backend and call the unexported validator.
+//
+//test:in-package — fault injection reaches STSServiceImpl.sessions and iamSvc
 package sts
 
 import (

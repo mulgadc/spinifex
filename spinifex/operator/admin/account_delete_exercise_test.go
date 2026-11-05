@@ -40,7 +40,7 @@ func awaitState(t *testing.T, gw Deps, accountID, state string) *accountDeletion
 	t.Helper()
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, accountID).State == state
-	}, 30*time.Second, 100*time.Millisecond)
+	}, 30*time.Second, 10*time.Millisecond)
 	return describeDeletion(t, gw, accountID)
 }
 
@@ -79,6 +79,7 @@ func TestNonFinalizingDeleteEndsExercisedAndALaterDeleteTakesItOver(t *testing.T
 }
 
 func TestNonFinalizingIsPartOfTheIdempotencyKeyAndRefusesForce(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 
@@ -99,6 +100,7 @@ func TestNonFinalizingIsPartOfTheIdempotencyKeyAndRefusesForce(t *testing.T) {
 }
 
 func TestDeleteWithoutACleanupIsRefusedBeforeAnyJobExists(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	gw.PlatformCleaner = nil
 	account := newTenantAccount(t, gw, "tenant@example.com")
@@ -116,6 +118,7 @@ func TestDeleteWithoutACleanupIsRefusedBeforeAnyJobExists(t *testing.T) {
 // A resumed exercise stays an exercise: the resumer must not turn a recorded
 // non-finalizing decision into a deletion.
 func TestResumerKeepsAnAbandonedExerciseNonFinalizing(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	account := newTenantAccount(t, gw, "tenant@example.com")
 	job := abandonedJob(account.AccountID, "tenant@example.com")

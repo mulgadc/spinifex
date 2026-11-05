@@ -43,7 +43,7 @@ func TestDeletionRecordCarriesTheIAMQuiescence(t *testing.T) {
 	t.Parallel()
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted
-	}, 30*time.Second, 100*time.Millisecond)
+	}, 30*time.Second, 10*time.Millisecond)
 
 	stored := describeDeletion(t, gw, account.AccountID)
 	require.NotNil(t, stored.IAM)
@@ -61,6 +61,7 @@ func TestDeletionRecordCarriesTheIAMQuiescence(t *testing.T) {
 // The evaluation belongs to a fence: a holder that has been taken over cannot
 // write it into the new holder's record.
 func TestSupersededHolderCannotWriteTheQuiescence(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	jobs, err := gw.accountDeletionStore(t.Context())
 	require.NoError(t, err)
@@ -86,6 +87,7 @@ func TestSupersededHolderCannotWriteTheQuiescence(t *testing.T) {
 // A takeover starts without the previous fence's evaluation, and the new holder
 // records its own under the new fence.
 func TestTakeoverClearsTheQuiescenceAndTheNewHolderRecordsItsOwn(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	jobs, err := gw.accountDeletionStore(t.Context())
 	require.NoError(t, err)

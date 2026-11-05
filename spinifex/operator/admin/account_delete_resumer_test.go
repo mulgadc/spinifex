@@ -34,6 +34,7 @@ func abandonedJob(accountID, name string) *accountDeletionJob {
 // accepted. No operation id or fence, a live lease, or a finished or failed job
 // means it must not act.
 func TestS7_DeletionResumerActsOnlyOnAnAcceptedOperationWithoutALiveLease(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	future := now.Add(accountDeletionStale).Format(time.RFC3339)
 
@@ -88,7 +89,7 @@ func TestDeletionResumerFinishesAnAbandonedJobWithoutARequest(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted
-	}, 30*time.Second, 100*time.Millisecond)
+	}, 30*time.Second, 10*time.Millisecond)
 
 	stored := describeDeletion(t, gw, account.AccountID)
 	assert.Equal(t, "op-abandoned", stored.OperationID)
@@ -119,13 +120,14 @@ func TestConcurrentResumersProduceOneTakeover(t *testing.T) {
 	t.Parallel()
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted
-	}, 30*time.Second, 100*time.Millisecond)
+	}, 30*time.Second, 10*time.Millisecond)
 	stored := describeDeletion(t, gw, account.AccountID)
 	assert.Equal(t, uint64(2), stored.Fence)
 	assert.Len(t, stored.Takeovers, 1)
 }
 
 func TestDeletionResumerStopsWithItsContext(t *testing.T) {
+	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	stop := gw.StartDeletionResumer(t.Context())
 	done := make(chan struct{})

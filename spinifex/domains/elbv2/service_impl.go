@@ -1865,11 +1865,13 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(ctx context.Context, input *elbv2.
 	listeners, err := s.store.ListListenersByLB(ctx, lb.LoadBalancerArn)
 	if err != nil {
 		slog.ErrorContext(ctx, "DeleteLoadBalancer: failed to list listeners for cascade", "lbArn", lb.LoadBalancerArn, "err", err)
+		s.resumeLBHealth(ctx, lb.LoadBalancerID)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	for _, l := range listeners {
 		if err := s.deleteListenerCascade(ctx, l); err != nil {
 			slog.ErrorContext(ctx, "DeleteLoadBalancer: failed to cascade listener delete", "listenerID", l.ListenerID, "err", err)
+			s.resumeLBHealth(ctx, lb.LoadBalancerID)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 	}

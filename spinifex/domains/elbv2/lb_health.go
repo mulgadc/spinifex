@@ -273,3 +273,10 @@ func (s *ELBv2ServiceImpl) impairedByEvidence(ctx context.Context, r *LoadBalanc
 	}
 	return rec != nil && !rec.Suspended && rec.InstanceID == r.InstanceID && rec.failing()
 }
+
+// resumeLBHealth lifts a suspension after a failure that left the VM untouched.
+func (s *ELBv2ServiceImpl) resumeLBHealth(ctx context.Context, lbID string) {
+	if err := s.store.ResumeLBHealth(ctx, lbID, ""); err != nil {
+		slog.WarnContext(ctx, "failed to lift data-path suspension", "lbId", lbID, "err", err)
+	}
+}

@@ -2,11 +2,14 @@ package elbv2
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -326,4 +329,42 @@ func TestLBHealth_DescribeShowsImpairedOnlyForFailingNICOfCurrentVM(t *testing.T
 	})
 	require.NoError(t, err)
 	assert.Equal(t, StateFailed, code())
+}
+
+// failKeysKV fails key listing once armed, which is what the listener cascade
+// of DeleteLoadBalancer reads first.
+type failKeysKV struct {
+	jetstream.KeyValue
+
+	armed atomic.Bool
+}
+
+func (k *failKeysKV) Keys(ctx context.Context, opts ...jetstream.WatchOpt) ([]string, error) {
+	if k.armed.Load() {
+		return nil, errors.New("injected key listing failure")
+	}
+	return k.KeyValue.Keys(ctx, opts...)
+}
+
+func TestLBHealth_DeleteLoadBalancerListenerCascadeFailureResumes(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	lb := seedHealthLB(t, svc)
+	kv := &failKeysKV{KeyValue: svc.store.kv}
+	svc.store.kv = kv
+	mock := &mockSystemInstanceLauncher{}
+	svc.InstanceLauncher = mock
+	kv.armed.Store(true)
+
+	_, err := svc.DeleteLoadBalancer(context.Background(), &elbv2.DeleteLoadBalancerInput{
+		LoadBalancerArn: aws.String(lb.LoadBalancerArn),
+	}, testAccountID)
+	require.Error(t, err)
+	kv.armed.Store(false)
+
+	rec, err := svc.store.GetLBHealth(context.Background(), healthLBID)
+	require.NoError(t, err)
+	require.NotNil(t, rec)
+	assert.False(t, rec.Suspended, "a delete that failed before touching the VM must not leave repair excluded")
+	assert.Empty(t, mock.terminateCalls)
 }

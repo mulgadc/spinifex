@@ -10,6 +10,8 @@ import (
 )
 
 func TestParseEKSIssuerURL_Valid(t *testing.T) {
+	t.Parallel()
+
 	accountID, clusterName, err := ParseEKSIssuerURL("https://10.0.0.1:9999/oidc/eks/au-mel-1/123456789012/my-cluster")
 	require.NoError(t, err)
 	assert.Equal(t, "123456789012", accountID)
@@ -40,6 +42,8 @@ func TestParseEKSIssuerURL_Invalid(t *testing.T) {
 }
 
 func TestJWKS_FindByKID(t *testing.T) {
+	t.Parallel()
+
 	jwks := &JWKS{Keys: []JWK{
 		{Kid: "key-a", Kty: "EC", Crv: "P-256", X: "x", Y: "y"},
 		{Kid: "key-b", Kty: "EC", Crv: "P-256", X: "x2", Y: "y2"},
@@ -54,12 +58,16 @@ func TestJWKS_FindByKID(t *testing.T) {
 }
 
 func TestFetchClusterJWKS_NotFoundReturnsNil(t *testing.T) {
+	t.Parallel()
+
 	jwks, err := FetchClusterJWKS(t.Context(), newFakeJWKSResolver(), "123456789012", "missing-cluster")
 	require.NoError(t, err)
 	assert.Nil(t, jwks)
 }
 
 func TestFetchClusterJWKS_RoundTrip(t *testing.T) {
+	t.Parallel()
+
 	want := &JWKS{Keys: []JWK{
 		{Kid: "abc123", Kty: "EC", Crv: "P-256", Alg: "ES256", Use: "sig", X: "x-coord", Y: "y-coord"},
 	}}
@@ -78,6 +86,8 @@ func TestFetchClusterJWKS_RoundTrip(t *testing.T) {
 }
 
 func TestFetchClusterJWKS_EmptyKeysIsError(t *testing.T) {
+	t.Parallel()
+
 	resolver := newFakeJWKSResolver()
 	resolver.seed("123456789012", "empty-cluster", []byte(`{"keys":[]}`))
 	jwks, err := FetchClusterJWKS(t.Context(), resolver, "123456789012", "empty-cluster")
@@ -88,6 +98,8 @@ func TestFetchClusterJWKS_EmptyKeysIsError(t *testing.T) {
 // Malformed stored bytes fail JSON decode; this is the STS-owned half of the
 // error semantics, the resolver's half is pinned in the EKS package.
 func TestFetchClusterJWKS_MalformedIsDecodeError(t *testing.T) {
+	t.Parallel()
+
 	resolver := newFakeJWKSResolver()
 	resolver.seed("123456789012", "my-cluster", []byte(`not-json`))
 	jwks, err := FetchClusterJWKS(t.Context(), resolver, "123456789012", "my-cluster")
@@ -99,6 +111,8 @@ func TestFetchClusterJWKS_MalformedIsDecodeError(t *testing.T) {
 // A resolver dependency failure is returned unchanged, not wrapped or
 // swallowed: the caller sees the exact error value the resolver raised.
 func TestFetchClusterJWKS_PropagatesResolverErrorUnchanged(t *testing.T) {
+	t.Parallel()
+
 	resolverErr := errors.New("kv dependency failure")
 	resolver := newFakeJWKSResolver()
 	resolver.seedErr("123456789012", "my-cluster", resolverErr)
@@ -111,11 +125,15 @@ func TestFetchClusterJWKS_PropagatesResolverErrorUnchanged(t *testing.T) {
 }
 
 func TestFetchClusterJWKS_NilResolver(t *testing.T) {
+	t.Parallel()
+
 	_, err := FetchClusterJWKS(t.Context(), nil, "123456789012", "c1")
 	require.Error(t, err)
 }
 
 func TestFetchClusterJWKS_EmptyArgs(t *testing.T) {
+	t.Parallel()
+
 	resolver := newFakeJWKSResolver()
 	_, err := FetchClusterJWKS(t.Context(), resolver, "", "c1")
 	require.Error(t, err)
@@ -127,6 +145,8 @@ func TestFetchClusterJWKS_EmptyArgs(t *testing.T) {
 // the optional RSA fields. The EKS-issued keys are EC P-256, but the decoder
 // must remain permissive so a non-EKS issuer registered later still parses.
 func TestJWK_RSAFieldsRoundTrip(t *testing.T) {
+	t.Parallel()
+
 	src := JWK{Kty: "RSA", Kid: "rsa-1", Use: "sig", Alg: "RS256", N: "modulus-base64", E: "AQAB"}
 	raw, err := json.Marshal(src)
 	require.NoError(t, err)

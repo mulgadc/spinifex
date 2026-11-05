@@ -158,6 +158,8 @@ func createRoleForFixture(t *testing.T, svc *STSServiceImpl, accountID, name, tr
 // ----- Happy path + claim/output round-trip --------------------------------
 
 func TestAssumeRoleWithWebIdentity_HappyPath(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	role := createRoleForFixture(t, svc, testCallerAccountID, "irsa-app",
@@ -188,6 +190,8 @@ func TestAssumeRoleWithWebIdentity_HappyPath(t *testing.T) {
 }
 
 func TestAssumeRoleWithWebIdentity_NoConditionTrustPolicy(t *testing.T) {
+	t.Parallel()
+
 	// A trust policy that names Federated but omits Condition still grants —
 	// AWS allows this shape ("trust any pod under this issuer"). The handler
 	// must not refuse on missing Condition.
@@ -208,6 +212,8 @@ func TestAssumeRoleWithWebIdentity_NoConditionTrustPolicy(t *testing.T) {
 // ----- JWT verification failures ------------------------------------------
 
 func TestAssumeRoleWithWebIdentity_TamperedSignature(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	role := createRoleForFixture(t, svc, testCallerAccountID, "irsa-tamper",
@@ -233,6 +239,8 @@ func TestAssumeRoleWithWebIdentity_TamperedSignature(t *testing.T) {
 }
 
 func TestAssumeRoleWithWebIdentity_Expired(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	role := createRoleForFixture(t, svc, testCallerAccountID, "irsa-expired",
@@ -253,6 +261,8 @@ func TestAssumeRoleWithWebIdentity_Expired(t *testing.T) {
 }
 
 func TestAssumeRoleWithWebIdentity_MissingExp(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	role := createRoleForFixture(t, svc, testCallerAccountID, "irsa-no-exp",
@@ -272,6 +282,8 @@ func TestAssumeRoleWithWebIdentity_MissingExp(t *testing.T) {
 }
 
 func TestAssumeRoleWithWebIdentity_WrongAudience(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	role := createRoleForFixture(t, svc, testCallerAccountID, "irsa-wrong-aud",
@@ -291,6 +303,8 @@ func TestAssumeRoleWithWebIdentity_WrongAudience(t *testing.T) {
 }
 
 func TestAssumeRoleWithWebIdentity_UnknownKID(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	role := createRoleForFixture(t, svc, testCallerAccountID, "irsa-bad-kid",
@@ -311,6 +325,8 @@ func TestAssumeRoleWithWebIdentity_UnknownKID(t *testing.T) {
 }
 
 func TestAssumeRoleWithWebIdentity_WrongSigningAlgorithm(t *testing.T) {
+	t.Parallel()
+
 	// HS256-signed token must be rejected — the keyfunc only honours ES256
 	// and accepting HS256 with a "key" return value would degrade the
 	// security model to symmetric.
@@ -334,6 +350,8 @@ func TestAssumeRoleWithWebIdentity_WrongSigningAlgorithm(t *testing.T) {
 }
 
 func TestAssumeRoleWithWebIdentity_IssuerNotEKSShape(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	role := createRoleForFixture(t, svc, testCallerAccountID, "irsa-bad-iss",
@@ -353,6 +371,8 @@ func TestAssumeRoleWithWebIdentity_IssuerNotEKSShape(t *testing.T) {
 }
 
 func TestAssumeRoleWithWebIdentity_ProviderNotRegistered(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
@@ -398,6 +418,8 @@ func TestAssumeRoleWithWebIdentity_ProviderNotRegistered(t *testing.T) {
 // ----- Trust-policy condition checks --------------------------------------
 
 func TestAssumeRoleWithWebIdentity_SubjectMismatch(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	role := createRoleForFixture(t, svc, testCallerAccountID, "irsa-sub",
@@ -417,6 +439,8 @@ func TestAssumeRoleWithWebIdentity_SubjectMismatch(t *testing.T) {
 }
 
 func TestAssumeRoleWithWebIdentity_FederatedPrincipalMismatch(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	otherARN := iamdomain.OIDCProviderARN(testCallerAccountID, "oidc.eks.other.example.com/000000000000/other-cluster")
@@ -434,6 +458,8 @@ func TestAssumeRoleWithWebIdentity_FederatedPrincipalMismatch(t *testing.T) {
 }
 
 func TestAssumeRoleWithWebIdentity_FederatedWildcardDoesNotMatch(t *testing.T) {
+	t.Parallel()
+
 	// Principal: "*" must NOT grant a Federated principal — distinguishing
 	// authenticated-anyone (AssumeRole) from anonymous-anyone (no analogue
 	// for AssumeRoleWithWebIdentity) is load-bearing for IRSA security.
@@ -453,6 +479,8 @@ func TestAssumeRoleWithWebIdentity_FederatedWildcardDoesNotMatch(t *testing.T) {
 }
 
 func TestAssumeRoleWithWebIdentity_ExplicitDenyWinsOverAllow(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	const sub = "system:serviceaccount:default:my-sa"
@@ -481,6 +509,8 @@ func TestAssumeRoleWithWebIdentity_ExplicitDenyWinsOverAllow(t *testing.T) {
 // ----- Input validation ---------------------------------------------------
 
 func TestAssumeRoleWithWebIdentity_RejectsMissingFields(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 
 	cases := []struct {
@@ -500,6 +530,8 @@ func TestAssumeRoleWithWebIdentity_RejectsMissingFields(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			_, err := svc.AssumeRoleWithWebIdentity(tc.input)
 			require.Error(t, err)
 			assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
@@ -508,6 +540,8 @@ func TestAssumeRoleWithWebIdentity_RejectsMissingFields(t *testing.T) {
 }
 
 func TestAssumeRoleWithWebIdentity_RejectsSessionPolicies(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	role := createRoleForFixture(t, svc, testCallerAccountID, "irsa-pol",
@@ -524,6 +558,8 @@ func TestAssumeRoleWithWebIdentity_RejectsSessionPolicies(t *testing.T) {
 }
 
 func TestAssumeRoleWithWebIdentity_RejectsBadRoleARN(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	token := f.signToken(f.defaultClaims())
@@ -538,6 +574,8 @@ func TestAssumeRoleWithWebIdentity_RejectsBadRoleARN(t *testing.T) {
 }
 
 func TestAssumeRoleWithWebIdentity_RejectsInvalidSessionName(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	role := createRoleForFixture(t, svc, testCallerAccountID, "irsa-name",
@@ -554,6 +592,8 @@ func TestAssumeRoleWithWebIdentity_RejectsInvalidSessionName(t *testing.T) {
 }
 
 func TestAssumeRoleWithWebIdentity_DurationBounds(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	role := createRoleForFixture(t, svc, testCallerAccountID, "irsa-dur",
@@ -573,6 +613,8 @@ func TestAssumeRoleWithWebIdentity_DurationBounds(t *testing.T) {
 // ----- JWK decoding unit tests --------------------------------------------
 
 func TestJWKToECDSAPublicKey_RoundTrip(t *testing.T) {
+	t.Parallel()
+
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 	jwk := signingJWK(t, &priv.PublicKey)
@@ -615,6 +657,8 @@ func TestJWKToECDSAPublicKey_RejectsUnsupportedShapes(t *testing.T) {
 // A RoleArn carrying a path the stored role does not have must not reach the
 // role its final segment names, even when the token and trust policy are valid.
 func TestAssumeRoleWithWebIdentity_RejectsFabricatedPath(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	role := createRoleForFixture(t, svc, testCallerAccountID, "irsa-app",

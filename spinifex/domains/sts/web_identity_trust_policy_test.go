@@ -133,6 +133,8 @@ func TestEvalWebIdentity_ConditionKeys(t *testing.T) {
 
 // An explicit Deny with a StringLike condition on the AWS-form key must still win over an Allow.
 func TestEvalWebIdentity_ExplicitDenyAWSFormStringLike(t *testing.T) {
+	t.Parallel()
+
 	awsKey := strings.TrimPrefix(testIRSAIssuer, "https://")
 	policy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[
 		{"Effect":"Allow","Principal":{"Federated":%q},"Action":"sts:AssumeRoleWithWebIdentity"},
@@ -146,6 +148,8 @@ func TestEvalWebIdentity_ExplicitDenyAWSFormStringLike(t *testing.T) {
 
 // The stock Terraform IRSA trust policy keys on the issuer without its scheme.
 func TestAssumeRoleWithWebIdentity_AWSFormConditionKeys(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	prefix := strings.TrimPrefix(f.issuer, "https://")
@@ -174,6 +178,8 @@ func TestAssumeRoleWithWebIdentity_AWSFormConditionKeys(t *testing.T) {
 
 // A provider registered with a trailing-slash issuer keeps matching Principal.Federated.
 func TestAssumeRoleWithWebIdentity_TrailingSlashIssuerProviderStillGrants(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	f := newWebIdentityFixture(t, svc, testCallerAccountID)
 	f.issuer += "/"

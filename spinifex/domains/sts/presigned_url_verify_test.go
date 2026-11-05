@@ -369,6 +369,8 @@ func TestVerifyPresignedGetCallerIdentity_TamperedQueryParameter(t *testing.T) {
 // ----- Bad envelope / input edges ----------------------------------------
 
 func TestVerifyPresignedGetCallerIdentity_MissingInput(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	_, err := svc.VerifyPresignedGetCallerIdentity("", "c")
 	require.Error(t, err)
@@ -379,6 +381,8 @@ func TestVerifyPresignedGetCallerIdentity_MissingInput(t *testing.T) {
 }
 
 func TestVerifyPresignedGetCallerIdentity_RejectsHTTP(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	_, err := svc.VerifyPresignedGetCallerIdentity("http://sts.local/?X-Amz-Algorithm=AWS4-HMAC-SHA256", "c")
 	require.Error(t, err)
@@ -386,6 +390,8 @@ func TestVerifyPresignedGetCallerIdentity_RejectsHTTP(t *testing.T) {
 }
 
 func TestVerifyPresignedGetCallerIdentity_BadAlgorithm(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	u := "https://sts.local/?X-Amz-Algorithm=foo&X-Amz-Credential=a/20240101/r/sts/aws4_request&X-Amz-Date=20240101T000000Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host;x-k8s-aws-id&X-Amz-Signature=00"
 	_, err := svc.VerifyPresignedGetCallerIdentity(u, "c")

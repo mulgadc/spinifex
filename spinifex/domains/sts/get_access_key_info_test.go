@@ -31,6 +31,8 @@ func (s *lookupStubIAMService) LookupAccessKey(string) (*iamdomain.AccessKey, er
 }
 
 func TestGetAccessKeyInfo_ResolvesOwningAccount(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	akid, _ := seedAccessKey(t, svc, testCallerAccountID, "alice")
 
@@ -43,6 +45,8 @@ func TestGetAccessKeyInfo_ResolvesOwningAccount(t *testing.T) {
 // AWS does not scope this call to the caller, so a key owned by another account
 // resolves normally rather than reporting not-found.
 func TestGetAccessKeyInfo_ResolvesKeyFromAnotherAccount(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	const otherAccount = "111122223333"
 	akid, _ := seedAccessKey(t, svc, otherAccount, "bob")
@@ -55,6 +59,8 @@ func TestGetAccessKeyInfo_ResolvesKeyFromAnotherAccount(t *testing.T) {
 // An ASIA key lives in the session bucket, which the IAM lookup never sees. It
 // must resolve through the fallback instead of coming back as unknown.
 func TestGetAccessKeyInfo_ResolvesSessionCredential(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	seedUser(t, svc, testCallerAccountID, "carol")
 
@@ -69,6 +75,8 @@ func TestGetAccessKeyInfo_ResolvesSessionCredential(t *testing.T) {
 }
 
 func TestGetAccessKeyInfo_UnknownKeyIsValidationError(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 
 	cases := []struct {
@@ -84,6 +92,8 @@ func TestGetAccessKeyInfo_UnknownKeyIsValidationError(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			out, err := svc.GetAccessKeyInfo(&sts.GetAccessKeyInfoInput{AccessKeyId: aws.String(tc.akid)})
 			require.Error(t, err)
 			assert.Nil(t, out)
@@ -133,6 +143,8 @@ func TestGetAccessKeyInfo_MalformedKeyRejectedWithoutLookup(t *testing.T) {
 }
 
 func TestGetAccessKeyInfo_NilInputIsMissingParameter(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	_, err := svc.GetAccessKeyInfo(nil)
 	require.Error(t, err)
@@ -142,6 +154,8 @@ func TestGetAccessKeyInfo_NilInputIsMissingParameter(t *testing.T) {
 // A dependency outage must not collapse into not-found, or every key would be
 // reported as nonexistent for the duration of the outage.
 func TestGetAccessKeyInfo_KVFaultIsInternalError(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	svc.iamSvc = &lookupStubIAMService{err: errors.New("nats: connection closed")}
 
@@ -154,6 +168,8 @@ func TestGetAccessKeyInfo_KVFaultIsInternalError(t *testing.T) {
 // A stored record with no account is a corrupt record, not an answer: reporting
 // a blank account would read to a caller as a mismatch with their own.
 func TestGetAccessKeyInfo_RecordWithoutAccountIsInternalError(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newTestSetup(t)
 	svc.iamSvc = &lookupStubIAMService{key: &iamdomain.AccessKey{AccessKeyID: "AKIA0123456789ABCDEF"}}
 

@@ -25,6 +25,8 @@ func newCodeStoreSetup(t *testing.T, trust string) *STSServiceImpl {
 }
 
 func TestAssumeCodeStoreRole_IssuesRegionalSystemRole(t *testing.T) {
+	t.Parallel()
+
 	svc := newCodeStoreSetup(t, lambdaTrustPolicyDoc)
 
 	out, err := svc.AssumeCodeStoreRole(testCodeStoreRegion, "node-1")
@@ -40,6 +42,8 @@ func TestAssumeCodeStoreRole_IssuesRegionalSystemRole(t *testing.T) {
 // The entry point asserts only lambda.amazonaws.com, so a role whose trust names
 // another principal is refused even though its name is the code-store name.
 func TestAssumeCodeStoreRole_RefusesOtherTrust(t *testing.T) {
+	t.Parallel()
+
 	svc := newCodeStoreSetup(t, trustPolicyAllowingEC2Service())
 
 	_, err := svc.AssumeCodeStoreRole(testCodeStoreRegion, "node-1")
@@ -48,6 +52,8 @@ func TestAssumeCodeStoreRole_RefusesOtherTrust(t *testing.T) {
 
 // No Region has a role yet, so another Region's name resolves to nothing.
 func TestAssumeCodeStoreRole_OtherRegionHasNoRole(t *testing.T) {
+	t.Parallel()
+
 	svc := newCodeStoreSetup(t, lambdaTrustPolicyDoc)
 
 	_, err := svc.AssumeCodeStoreRole("us-east-1", "node-1")
@@ -57,6 +63,8 @@ func TestAssumeCodeStoreRole_OtherRegionHasNoRole(t *testing.T) {
 // An HTTPS caller is never attributed lambda.amazonaws.com, so even a system
 // account principal cannot assume the code-store role over AssumeRole.
 func TestAssumeCodeStoreRole_HTTPSAssumeRoleCannotMatch(t *testing.T) {
+	t.Parallel()
+
 	svc := newCodeStoreSetup(t, lambdaTrustPolicyDoc)
 
 	caller := "arn:aws:iam::000000000000:user/operator"
@@ -66,6 +74,8 @@ func TestAssumeCodeStoreRole_HTTPSAssumeRoleCannotMatch(t *testing.T) {
 }
 
 func TestAssumeCodeStoreRole_ValidatesInputs(t *testing.T) {
+	t.Parallel()
+
 	svc := newCodeStoreSetup(t, lambdaTrustPolicyDoc)
 
 	_, err := svc.AssumeCodeStoreRole("", "node-1")

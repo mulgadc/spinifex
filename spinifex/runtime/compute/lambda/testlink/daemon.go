@@ -193,7 +193,7 @@ func (d *Daemon) attempt(ctx context.Context, req Request, launch func(code []by
 	if err := d.Grants.Start(ctx, req.Grant, req.Identity()); err != nil {
 		if errors.Is(err, execution.ErrOutcomeUnknown) {
 			slog.Error("Lambda test link: grant start outcome unknown; node held", "attempt", req.AttemptID, "err", err)
-			return Reply{Outcome: OutcomeUnknown, Error: "grant start outcome unknown"}, true
+			return Reply{Outcome: OutcomeUnknown, Error: "grant start outcome unknown"}, false
 		}
 		return refused(err.Error()), true
 	}

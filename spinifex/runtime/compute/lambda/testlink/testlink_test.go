@@ -447,3 +447,32 @@ func TestCheckRequest_RefusesUnusableHandler(t *testing.T) {
 		})
 	}
 }
+
+// unconfirmedStart lets the owner write the start, then reports the outcome
+// as unknown, as a lost acknowledgement would.
+type unconfirmedStart struct{ *execution.Store }
+
+func (u unconfirmedStart) Start(ctx context.Context, g execution.Grant, want execution.Identity) error {
+	if err := u.Store.Start(ctx, g, want); err != nil {
+		return err
+	}
+	return execution.ErrOutcomeUnknown
+}
+
+func TestDaemon_UnknownStartOutcomeHoldsTheSlot(t *testing.T) {
+	code := []byte("x")
+	g := grant(t, code)
+	ips, taps := &fakeIPs{}, &fakeTaps{}
+	d := g.daemon(&Daemon{IPs: ips, Taps: taps, WorkDir: t.TempDir()})
+	d.Grants = unconfirmedStart{g.store}
+
+	rep := d.Handle(context.Background(), g.request("https://h/x", code), testCred)
+	require.Equal(t, OutcomeUnknown, rep.Outcome)
+	require.True(t, d.busy.Load(), "an unconfirmed start may have taken the node")
+	require.Empty(t, ips.allocated)
+	require.Equal(t, execution.StateRunning, g.state(t))
+
+	rep = d.Handle(context.Background(), g.request("https://h/x", code), testCred)
+	require.Equal(t, OutcomeRefused, rep.Outcome)
+	require.Contains(t, rep.Error, "holds this node's slot")
+}

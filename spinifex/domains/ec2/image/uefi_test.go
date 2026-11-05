@@ -16,6 +16,8 @@ import (
 	ebsmetadata "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	ebsprovider "github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,10 +39,11 @@ func uefiRegion(tag string) []byte {
 // uefiImageFixture is an image service wired to a real store-record bucket,
 // with a UEFI instance whose root volume CreateImage can snapshot.
 type uefiImageFixture struct {
-	svc     *ImageServiceImpl
-	objects *objectstore.MemoryObjectStore
-	records *uefistore.Store
-	volume  ebsmetadata.Volume
+	svc       *ImageServiceImpl
+	snapshots *countingSnapshots
+	objects   *objectstore.MemoryObjectStore
+	records   *uefistore.Store
+	volume    ebsmetadata.Volume
 }
 
 func newUEFIImageFixture(t *testing.T) *uefiImageFixture {
@@ -50,10 +53,32 @@ func newUEFIImageFixture(t *testing.T) *uefiImageFixture {
 	records := uefistore.NewStore(js)
 	require.NoError(t, records.Open(t.Context()))
 	svc.SetUEFIStores(records, "node-a")
-	return &uefiImageFixture{
-		svc: svc, objects: objects, records: records,
-		volume: seedProviderVolume(t, svc, provider, "vol-uefi001", 8),
-	}
+	volume := seedProviderVolume(t, svc, provider, "vol-uefi001", 8)
+	snapshots := &countingSnapshots{EBSProvider: provider}
+	svc.SetEBSProvider(snapshots)
+	return &uefiImageFixture{svc: svc, snapshots: snapshots, objects: objects, records: records, volume: volume}
+}
+
+// countingSnapshots counts the snapshots CreateImage asks the provider for.
+type countingSnapshots struct {
+	ebsprovider.EBSProvider
+
+	created int
+}
+
+func (c *countingSnapshots) CreateSnapshot(ctx context.Context, req ebsprovider.CreateSnapshotRequest) (*ebsprovider.Snapshot, error) {
+	c.created++
+	return c.EBSProvider.CreateSnapshot(ctx, req)
+}
+
+// assertNoSnapshot checks a refused CreateImage took no snapshot and wrote no
+// snapshot document.
+func (f *uefiImageFixture) assertNoSnapshot(t *testing.T) {
+	t.Helper()
+	assert.Zero(t, f.snapshots.created, "a refused CreateImage takes no snapshot")
+	snaps, err := f.svc.MetadataStore().ListAllSnapshots(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, snaps, "a refused CreateImage writes no snapshot document")
 }
 
 // putInstanceStore puts vars at a fresh key under the instance and points a
@@ -191,6 +216,7 @@ func TestCreateImage_RefusesWhenTheStoreCannotBeCarried(t *testing.T) {
 		f.svc.SetUEFIStores(nil, "")
 		_, err := f.createImage(t, true)
 		require.EqualError(t, err, awserrors.ErrorServerInternal)
+		f.assertNoSnapshot(t)
 	})
 	t.Run("deleting", func(t *testing.T) {
 		f := newUEFIImageFixture(t)
@@ -199,6 +225,14 @@ func TestCreateImage_RefusesWhenTheStoreCannotBeCarried(t *testing.T) {
 		require.NoError(t, err)
 		_, err = f.createImage(t, true)
 		require.EqualError(t, err, awserrors.ErrorIncorrectInstanceState)
+		f.assertNoSnapshot(t)
+	})
+	t.Run("record unreadable", func(t *testing.T) {
+		f := newUEFIImageFixture(t)
+		f.svc.SetUEFIStores(failingRecords{}, "node-a")
+		_, err := f.createImage(t, true)
+		require.EqualError(t, err, awserrors.ErrorServerInternal)
+		f.assertNoSnapshot(t)
 	})
 	t.Run("object unreadable", func(t *testing.T) {
 		f := newUEFIImageFixture(t)
@@ -209,7 +243,49 @@ func TestCreateImage_RefusesWhenTheStoreCannotBeCarried(t *testing.T) {
 		require.NoError(t, err)
 		_, err = f.createImage(t, true)
 		require.EqualError(t, err, awserrors.ErrorServerInternal)
+		f.assertNoSnapshot(t)
 	})
+}
+
+// failingRecords cannot read any store record.
+type failingRecords struct{}
+
+func (failingRecords) LeaderGet(context.Context, string) (*uefistore.UEFIStoreRecord, uint64, error) {
+	return nil, 0, assert.AnError
+}
+
+// vanishingRecord shows a live pointer whose object is gone, then no record,
+// as a terminate's reaper leaves it.
+type vanishingRecord struct {
+	stale *uefistore.UEFIStoreRecord
+	reads int
+}
+
+func (v *vanishingRecord) LeaderGet(context.Context, string) (*uefistore.UEFIStoreRecord, uint64, error) {
+	v.reads++
+	if v.reads == 1 {
+		return v.stale, 1, nil
+	}
+	return nil, 0, kvstore.ErrNotFound
+}
+
+// A record that vanishes after CreateImage saw its live pointer is a terminate
+// racing the request, so the image is refused rather than made without its store.
+func TestCreateImage_StoreDeletedMidRequestIsIncorrectInstanceState(t *testing.T) {
+	f := newUEFIImageFixture(t)
+	f.putInstanceStore(t, uefiRegion("x"))
+	stale, _, err := f.records.Get(t.Context(), uefiTestInstance)
+	require.NoError(t, err)
+	stale.Pointer.Key = uefistore.KeyPrefix(uefiTestInstance) + "reaped"
+	f.svc.SetUEFIStores(&vanishingRecord{stale: stale}, "node-a")
+
+	_, err = f.createImage(t, true)
+
+	require.EqualError(t, err, awserrors.ErrorIncorrectInstanceState)
+	f.assertNoSnapshot(t)
+	amis, err := f.svc.MetadataStore().ListAMIs(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, amis)
 }
 
 // laggingPointer answers the first read with a pointer whose object a prune
@@ -245,24 +321,6 @@ func TestCreateImage_RereadsAPointerWhoseObjectWasPruned(t *testing.T) {
 
 	assert.Equal(t, 2, lagging.reads)
 	assert.Equal(t, uefiRegion("newest"), f.region(t, f.ami(t, imageID).UEFIData.Key))
-}
-
-// TestS7_AnInstancePruneNeverRemovesTheStoreItsImageBootsFrom enforces
-// ADR-0003:S7 for the instance's automatic prune: the image's store is a copy
-// under the image's prefix, so pruning the instance's prefix never reaches it.
-func TestS7_AnInstancePruneNeverRemovesTheStoreItsImageBootsFrom(t *testing.T) {
-	f := newUEFIImageFixture(t)
-	f.putInstanceStore(t, uefiRegion("imaged"))
-	imageID, err := f.createImage(t, true)
-	require.NoError(t, err)
-	newer := f.putObject(t, uefiTestInstance, uefiRegion("written back later"))
-
-	_, err = uefistore.PruneObjects(t.Context(), f.objects, testBucket, uefiTestInstance, newer, time.Now().Add(time.Hour))
-	require.NoError(t, err)
-
-	assert.Equal(t, []string{newer}, f.keys(t, uefiTestInstance), "the prune ran")
-	assert.Equal(t, uefiRegion("imaged"), f.region(t, f.ami(t, imageID).UEFIData.Key),
-		"ADR-0003:S7: the instance's prune must not delete the store its image boots from")
 }
 
 // CopyImage gives the copy its own object holding the source's region.

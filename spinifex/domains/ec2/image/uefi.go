@@ -39,9 +39,14 @@ func (s *ImageServiceImpl) copyInstanceUEFIStore(ctx context.Context, instanceID
 		slog.ErrorContext(ctx, "CreateImage: no UEFI store records are wired on this node", "instanceId", instanceID)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	// Once a live pointer is seen, a record that then vanishes is a terminate
+	// racing this request, not an instance without a store.
+	sawPointer := false
 	for range uefiPointerAttempts {
 		rec, _, err := s.uefiRecords.LeaderGet(ctx, instanceID)
 		switch {
+		case errors.Is(err, kvstore.ErrNotFound) && sawPointer:
+			return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
 		case errors.Is(err, kvstore.ErrNotFound):
 			return nil, nil
 		case err != nil:
@@ -52,6 +57,7 @@ func (s *ImageServiceImpl) copyInstanceUEFIStore(ctx context.Context, instanceID
 		case rec.Pointer == nil:
 			return nil, nil
 		}
+		sawPointer = true
 		ptr := rec.Pointer
 		key, err := uefistore.CopyObject(ctx, s.store, s.bucketName, ptr.Key, uefistore.ObjectMeta{
 			OwnerID: imageID, WriterNode: s.nodeID, Firmware: ptr.Firmware, Source: uefistore.SourceInstance(instanceID),

@@ -120,6 +120,7 @@ func (m *Manager) HandleCrash(instance *VM, waitErr error) {
 
 	reason := ClassifyCrashReason(waitErr)
 	slog.Error("VM process crashed", "instance", instance.ID, "reason", reason, "err", waitErr)
+	m.dropUEFIWriter(instance.ID, "crash", false)
 
 	if m.deps.TransitionState != nil {
 		if err := m.deps.TransitionState(instance, StateError); err != nil {

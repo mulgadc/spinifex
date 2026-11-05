@@ -16,6 +16,7 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/route53"
 )
@@ -415,11 +416,16 @@ func TestRealizerPublishesEveryZoneAtScale(t *testing.T) {
 	r := newRealizer(svc, ns)
 	accounts := []string{acctA, acctB, "000000000013"}
 	ids := make([]string, zones)
+	var seed errgroup.Group
+	seed.SetLimit(8)
 	for i := range zones {
-		account := accounts[i%len(accounts)]
-		ids[i] = createZone(t, svc, account, fmt.Sprintf("d%04d.example.com", i+1))
-		setState(t, svc, account, ids[i], route53.StateActive)
+		seed.Go(func() (err error) {
+			name := fmt.Sprintf("d%04d.example.com", i+1)
+			ids[i], err = svc.SeedActiveZone(ctx, accounts[i%len(accounts)], name, "ref-"+name)
+			return err
+		})
 	}
+	require.NoError(t, seed.Wait())
 
 	revisit, err := r.Reconcile(ctx)
 	require.NoError(t, err)

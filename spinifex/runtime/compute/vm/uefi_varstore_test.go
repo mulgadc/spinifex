@@ -287,6 +287,7 @@ func TestPrepareUEFIVarStore_ClaimsStampsAndFetchesTheObject(t *testing.T) {
 	assert.Equal(t, region("converted"), f.localVars(t), "vars.fd must hold the decompressed region")
 	assert.Equal(t, uefiSeed{
 		Key: key, Generation: holder.Generation, SeededAt: f.seed(t).SeededAt, Firmware: f.identity, CodePath: f.codePath,
+		Sum: uefiRegionSum(region("converted")),
 	}, f.seed(t))
 	assert.Equal(t, before+1, uefiCounter(t, "mulga.vm.uefi_store.seeds", "source", "object"))
 }

@@ -80,6 +80,7 @@ var ErrUEFIClaimHeld = errors.New("UEFI variable store is claimed by another nod
 // moves the pointer of.
 type UEFIStoreRecords interface {
 	Get(ctx context.Context, instanceID string) (*uefistore.UEFIStoreRecord, uint64, error)
+	LeaderGet(ctx context.Context, instanceID string) (*uefistore.UEFIStoreRecord, uint64, error)
 	Create(ctx context.Context, rec *uefistore.UEFIStoreRecord) (uint64, error)
 	Stamp(ctx context.Context, instanceID string, generation uint64) (*uefistore.UEFIStoreRecord, error)
 	MovePointer(ctx context.Context, instanceID string, generation uint64, ref uefistore.UEFIVarStoreRef) error
@@ -122,6 +123,9 @@ type uefiSeed struct {
 	CodePath   string                     `json:"code_path,omitempty"`
 	// WriteBackOwed is set while vars.fd may hold changes no object has.
 	WriteBackOwed bool `json:"write_back_owed,omitempty"`
+	// Sum is the SHA-256 of the region Key holds, so a stop that missed a
+	// write event still sees vars.fd differ. Empty is unknown.
+	Sum string `json:"sum,omitempty"`
 }
 
 // uefiClaim is the claim a launch acquired. reused is set when the launch
@@ -318,7 +322,11 @@ func (m *Manager) prepareUEFIVarStore(ctx context.Context, instance *VM, rec *ue
 		recordUEFIStoreSeed("local")
 		slog.InfoContext(ctx, "Reusing this node's UEFI variable store",
 			"instanceId", instance.ID, "key", ref.Key, "seededKey", local.seed.Key, "generation", held.token.Generation)
-		m.registerUEFIWriter(instance.ID, dir, held.token, ref.Key, fw)
+		sum := ""
+		if local.seed.Key == ref.Key {
+			sum = local.seed.Sum
+		}
+		m.registerUEFIWriter(instance.ID, dir, held.token, ref.Key, sum, fw)
 		return held, nil
 	}
 
@@ -330,9 +338,10 @@ func (m *Manager) prepareUEFIVarStore(ctx context.Context, instance *VM, rec *ue
 	if err := writeFileAtomic(dir, uefiVarsFileName, region); err != nil {
 		return held, fmt.Errorf("write UEFI variable store for %s: %w", instance.ID, err)
 	}
+	sum := uefiRegionSum(region)
 	if err := writeUEFISeed(dir, uefiSeed{
 		Key: ref.Key, Generation: held.token.Generation, SeededAt: time.Now().UTC(),
-		Firmware: fw.Identity, CodePath: fw.Code,
+		Firmware: fw.Identity, CodePath: fw.Code, Sum: sum,
 	}); err != nil {
 		return held, fmt.Errorf("write %s for %s: %w", uefiSeededFileName, instance.ID, err)
 	}
@@ -340,7 +349,7 @@ func (m *Manager) prepareUEFIVarStore(ctx context.Context, instance *VM, rec *ue
 	slog.InfoContext(ctx, "Seeded UEFI variable store from the object store",
 		"instanceId", instance.ID, "key", ref.Key, "generation", held.token.Generation,
 		"bytes", len(region), "fetch_ms", otelsetup.Millis(time.Since(start)))
-	m.registerUEFIWriter(instance.ID, dir, held.token, ref.Key, fw)
+	m.registerUEFIWriter(instance.ID, dir, held.token, ref.Key, sum, fw)
 	return held, nil
 }
 

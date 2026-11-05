@@ -180,6 +180,19 @@ func (s *Store) Get(ctx context.Context, instanceID string) (*UEFIStoreRecord, u
 	return rec, rev, nil
 }
 
+// LeaderGet is Get answered by the stream leader, for a caller that deletes
+// objects by what the record does not point at.
+func (s *Store) LeaderGet(ctx context.Context, instanceID string) (*UEFIStoreRecord, uint64, error) {
+	rec, rev, err := s.kv.LeaderGet(ctx, instanceID)
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := rec.validate(instanceID); err != nil {
+		return nil, 0, err
+	}
+	return rec, rev, nil
+}
+
 // Create writes a new record, which must be live: a store is recorded before
 // its first object is written. An existing record is kvstore.ErrExists. Every
 // write stamps rec with RecordSchemaVersion.

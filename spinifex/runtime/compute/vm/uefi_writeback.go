@@ -2,6 +2,8 @@ package vm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -32,7 +34,26 @@ const (
 	uefiWriteBackRetry = 30 * time.Second
 	// uefiRecordTimeout bounds one store record move a write-back makes.
 	uefiRecordTimeout = 10 * time.Second
+	// uefiWriteBackPoll is how often a writer without a working watcher
+	// compares vars.fd with what last landed.
+	uefiWriteBackPoll = 10 * time.Second
 )
+
+// uefiRegionSum is the hex SHA-256 of a VARS region.
+func uefiRegionSum(region []byte) string {
+	sum := sha256.Sum256(region)
+	return hex.EncodeToString(sum[:])
+}
+
+// uefiCopyChanged reports whether dir's vars.fd may differ from the region
+// that sums to sum. An unknown sum or an unreadable file counts as changed.
+func uefiCopyChanged(dir, sum string) bool {
+	if sum == "" {
+		return true
+	}
+	region, err := os.ReadFile(filepath.Join(dir, uefiVarsFileName))
+	return err != nil || uefiRegionSum(region) != sum
+}
 
 // UEFIClock is the clock the write-back's quiet period, cap and prune age run
 // on. Nil in UEFIVarStoreDeps means the real clock.
@@ -109,6 +130,8 @@ type uefiWriter struct {
 	key      string
 	fw       uefistore.FirmwareIdentity
 	codePath string
+	// sum is the SHA-256 of the region key holds, or empty when unknown.
+	sum string
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -193,8 +216,8 @@ func (m *Manager) uefiWriteBackWired() bool {
 // registerUEFIWriter records the writer for a store a launch has claimed and
 // prepared, before the guest runs, so neither the reaper nor a stop settles
 // the store under the launch. The caller holds the instance's lock.
-func (m *Manager) registerUEFIWriter(id, dir string, tok kvsync.Token, key string, fw NodeFirmware) {
-	w := &uefiWriter{id: id, dir: dir, tok: tok, key: key, fw: fw.Identity, codePath: fw.Code}
+func (m *Manager) registerUEFIWriter(id, dir string, tok kvsync.Token, key, sum string, fw NodeFirmware) {
+	w := &uefiWriter{id: id, dir: dir, tok: tok, key: key, sum: sum, fw: fw.Identity, codePath: fw.Code}
 	if old := m.uefi.put(w); old != nil {
 		old.halt()
 		slog.Warn("Replaced a UEFI variable store writer a new launch found registered", "instanceId", id)
@@ -218,10 +241,9 @@ func (m *Manager) startUEFIWriter(id string, open bool) {
 		}
 	}
 	if err != nil {
-		w.dirty = true
-		slog.Error("Cannot watch the UEFI variable store; it is written back only when the instance stops",
+		watcher = nil
+		slog.Warn("Cannot watch the UEFI variable store; polling it for changes instead",
 			"instanceId", id, "err", err)
-		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	w.cancel, w.done = cancel, make(chan struct{})
@@ -233,7 +255,14 @@ func (m *Manager) startUEFIWriter(id string, open bool) {
 // inotify merges identical unread events.
 func (m *Manager) runUEFIWriter(ctx context.Context, w *uefiWriter, watcher *fsnotify.Watcher, open bool) {
 	defer close(w.done)
-	defer func() { _ = watcher.Close() }()
+	var (
+		events <-chan fsnotify.Event
+		errs   <-chan error
+	)
+	if watcher != nil {
+		defer func() { _ = watcher.Close() }()
+		events, errs = watcher.Events, watcher.Errors
+	}
 	clock := m.uefiClock()
 	var win uefiWindow
 	change := func() {
@@ -244,13 +273,19 @@ func (m *Manager) runUEFIWriter(ctx context.Context, w *uefiWriter, watcher *fsn
 	if open {
 		change()
 	}
-	events, errs := watcher.Events, watcher.Errors
 	for {
-		var fire <-chan time.Time
+		var fire, poll <-chan time.Time
 		if win.open {
 			fire = clock.After(win.due().Sub(clock.Now()))
 		}
+		if events == nil {
+			poll = clock.After(uefiWriteBackPoll)
+		}
 		select {
+		case <-poll:
+			if uefiCopyChanged(w.dir, w.sum) {
+				change()
+			}
 		case <-ctx.Done():
 			w.dirty = w.dirty || win.open
 			return
@@ -292,13 +327,13 @@ func (m *Manager) runUEFIWriter(ctx context.Context, w *uefiWriter, watcher *fsn
 // depends on that rewrite landing.
 func (m *Manager) writeBackUEFI(ctx context.Context, w *uefiWriter, trigger string) uefiWriteBackOutcome {
 	start := time.Now()
-	out, key, err := m.putAndMoveUEFI(ctx, w)
+	out, key, sum, err := m.putAndMoveUEFI(ctx, w)
 	recordUEFIWriteBack(out, trigger)
 	attrs := []any{"instanceId", w.id, "generation", w.tok.Generation, "trigger", trigger,
 		"writeback_ms", otelsetup.Millis(time.Since(start))}
 	switch out {
 	case uefiWriteBackLanded:
-		w.key = key
+		w.key, w.sum = key, sum
 		m.uefi.queuePrune(w.id)
 		m.writeUEFIOwed(w, false)
 		slog.Info("Wrote the UEFI variable store back", append(attrs, "key", key)...)
@@ -316,23 +351,23 @@ func (m *Manager) writeBackUEFI(ctx context.Context, w *uefiWriter, trigger stri
 	return out
 }
 
-func (m *Manager) putAndMoveUEFI(ctx context.Context, w *uefiWriter) (uefiWriteBackOutcome, string, error) {
+func (m *Manager) putAndMoveUEFI(ctx context.Context, w *uefiWriter) (uefiWriteBackOutcome, string, string, error) {
 	deps := m.deps.UEFIVarStore
 	region, err := os.ReadFile(filepath.Join(w.dir, uefiVarsFileName))
 	if err != nil {
-		return uefiWriteBackFailed, "", fmt.Errorf("read UEFI variable store: %w", err)
+		return uefiWriteBackFailed, "", "", fmt.Errorf("read UEFI variable store: %w", err)
 	}
 	if int64(len(region)) != w.fw.VarsSize {
-		return uefiWriteBackFailed, "", fmt.Errorf("vars.fd is %d bytes, and the store's VARS size is %d", len(region), w.fw.VarsSize)
+		return uefiWriteBackFailed, "", "", fmt.Errorf("vars.fd is %d bytes, and the store's VARS size is %d", len(region), w.fw.VarsSize)
 	}
 	key, err := uefistore.NewObjectKey(w.id)
 	if err != nil {
-		return uefiWriteBackFailed, "", err
+		return uefiWriteBackFailed, "", "", err
 	}
 	if err := uefistore.PutObject(ctx, deps.Objects, deps.Bucket, key, region, uefistore.ObjectMeta{
 		OwnerID: w.id, WriterNode: m.deps.NodeID, Firmware: w.fw, CodePath: w.codePath, Source: uefistore.SourceWriteBack,
 	}); err != nil {
-		return uefiWriteBackFailed, key, err
+		return uefiWriteBackFailed, key, "", err
 	}
 	ref := uefistore.UEFIVarStoreRef{Key: key, Firmware: w.fw, WriterNode: m.deps.NodeID, WrittenAt: time.Now().UTC()}
 	moveCtx, cancel := context.WithTimeout(ctx, uefiRecordTimeout)
@@ -340,13 +375,13 @@ func (m *Manager) putAndMoveUEFI(ctx context.Context, w *uefiWriter) (uefiWriteB
 	err = deps.Records.MovePointer(moveCtx, w.id, w.tok.Generation, ref)
 	switch {
 	case err == nil:
-		return uefiWriteBackLanded, key, nil
+		return uefiWriteBackLanded, key, uefiRegionSum(region), nil
 	case errors.Is(err, uefistore.ErrFenced):
-		return uefiWriteBackFenced, key, err
+		return uefiWriteBackFenced, key, "", err
 	case errors.Is(err, uefistore.ErrDeleting), errors.Is(err, kvstore.ErrNotFound):
-		return uefiWriteBackGone, key, err
+		return uefiWriteBackGone, key, "", err
 	default:
-		return uefiWriteBackFailed, key, err
+		return uefiWriteBackFailed, key, "", err
 	}
 }
 
@@ -356,7 +391,7 @@ func (m *Manager) putAndMoveUEFI(ctx context.Context, w *uefiWriter) (uefiWriteB
 func (m *Manager) writeUEFIOwed(w *uefiWriter, owed bool) {
 	if err := writeUEFISeed(w.dir, uefiSeed{
 		Key: w.key, Generation: w.tok.Generation, SeededAt: time.Now().UTC(),
-		Firmware: w.fw, CodePath: w.codePath, WriteBackOwed: owed,
+		Firmware: w.fw, CodePath: w.codePath, WriteBackOwed: owed, Sum: w.sum,
 	}); err != nil {
 		slog.Warn("Failed to rewrite the local UEFI variable store record", "instanceId", w.id, "owed", owed, "err", err)
 	}
@@ -370,7 +405,8 @@ const (
 	uefiClaimOurs uefiClaimState = iota
 	// uefiClaimFree is no holder: the fence on the store record decides.
 	uefiClaimFree
-	// uefiClaimElsewhere is another node, or this node at a later generation.
+	// uefiClaimElsewhere is a later generation than seeded.json's, held by
+	// any node: a lagging read can only show an older one.
 	uefiClaimElsewhere
 )
 
@@ -396,10 +432,15 @@ func (m *Manager) uefiWriterFromSeed(ctx context.Context, id string) (*uefiWrite
 	switch {
 	case !held:
 		state = uefiClaimFree
-	case holder != tok:
+	case holder == tok:
+	case holder.Generation > tok.Generation:
 		state = uefiClaimElsewhere
+	default:
+		// Generations only grow, so an older one is a lagging read, not an owner.
+		return nil, seed, uefiClaimElsewhere, fmt.Errorf("UEFI store claim for %s reads as %s at generation %d, older than this node's %d: %w",
+			id, holder.Holder, holder.Generation, tok.Generation, ErrMountRetryable)
 	}
-	return &uefiWriter{id: id, dir: dir, tok: tok, key: seed.Key, fw: seed.Firmware, codePath: seed.CodePath}, seed, state, nil
+	return &uefiWriter{id: id, dir: dir, tok: tok, key: seed.Key, sum: seed.Sum, fw: seed.Firmware, codePath: seed.CodePath}, seed, state, nil
 }
 
 // settleUEFIStore writes w back when dirty and then unlocks its claim. A
@@ -440,7 +481,7 @@ func (m *Manager) finishUEFIWriteBack(instance *VM) {
 			return
 		}
 		seed, err := readUEFISeed(w.dir)
-		dirty = w.dirty || err != nil || seed.WriteBackOwed
+		dirty = w.dirty || err != nil || seed.WriteBackOwed || uefiCopyChanged(w.dir, w.sum)
 	} else {
 		var (
 			seed  uefiSeed
@@ -456,10 +497,10 @@ func (m *Manager) finishUEFIWriteBack(instance *VM) {
 				"instanceId", instance.ID, "err", err)
 			return
 		}
-		if claim == uefiClaimFree && !seed.WriteBackOwed {
+		dirty = seed.WriteBackOwed || uefiCopyChanged(w.dir, seed.Sum)
+		if claim == uefiClaimFree && !dirty {
 			return
 		}
-		dirty = seed.WriteBackOwed
 	}
 	if out := m.settleUEFIStore(ctx, w, dirty, "stop", "the instance stopped with its variables written back"); out == uefiWriteBackFailed {
 		slog.Warn("The stop could not write the UEFI variable store back; this node keeps its claim and retries",
@@ -484,7 +525,7 @@ func (m *Manager) dropUEFIWriter(instanceID, path string, unlockClean bool) {
 	recordUEFIWriteBackSkip(path)
 	slog.Info("Stopped writing the UEFI variable store back", "instanceId", instanceID, "path", path,
 		"dirty", w.dirty, "stopped", string(w.stopped))
-	if unlockClean && !w.dirty && w.stopped == "" {
+	if unlockClean && !w.dirty && w.stopped == "" && !uefiCopyChanged(w.dir, w.sum) {
 		if seed, err := readUEFISeed(w.dir); err == nil && !seed.WriteBackOwed {
 			m.unlockUEFIClaim(context.Background(), instanceID, w.tok, "the instance moved to another node")
 		}

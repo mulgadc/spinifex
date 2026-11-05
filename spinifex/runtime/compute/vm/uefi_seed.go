@@ -106,6 +106,7 @@ func (m *Manager) SeedUEFIVarStore(ctx context.Context, instance *VM) error {
 			"instanceId", instance.ID, "err", err)
 	} else if err := writeUEFISeed(dir, uefiSeed{
 		Key: key, Generation: tok.Generation, SeededAt: time.Now().UTC(), Firmware: fw.Identity, CodePath: fw.Code,
+		Sum: uefiRegionSum(template),
 	}); err != nil {
 		slog.WarnContext(ctx, "Failed to record the seeded UEFI variable store locally; the launch fetches it",
 			"instanceId", instance.ID, "err", err)

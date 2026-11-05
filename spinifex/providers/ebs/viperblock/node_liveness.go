@@ -2,7 +2,6 @@ package viperblock
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -14,9 +13,8 @@ import (
 )
 
 // nodeLivenessWindow is how recently a node must have been seen for its dirty
-// marker to bar a takeover. It is six heartbeats and above volumeLeaseTTL, and is
-// compared across node clocks, where NTP skew is small against 60s.
-const nodeLivenessWindow = 60 * time.Second
+// marker to bar a takeover: the cluster's heartbeat rule, above volumeLeaseTTL.
+const nodeLivenessWindow = clusterv1.LivenessWindow
 
 // nodeLiveness reports when a node was last seen alive. found is false for a
 // node that has never been seen or whose record has expired; an error means the
@@ -75,16 +73,6 @@ func (l *heartbeatLiveness) LastSeen(ctx context.Context, node string) (time.Tim
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("read heartbeat for %s: %w", node, err)
 	}
-	written, ok := heartbeatTime(entry.Value())
+	written, ok := clusterv1.HeartbeatWritten(entry.Value())
 	return written, ok, nil
-}
-
-// heartbeatTime dates a stored heartbeat. One that cannot be read vouches for
-// nothing, which is an answer rather than a fault.
-func heartbeatTime(data []byte) (time.Time, bool) {
-	var beat clusterv1.HeartbeatTimestamp
-	if json.Unmarshal(data, &beat) != nil {
-		return time.Time{}, false
-	}
-	return beat.Time()
 }

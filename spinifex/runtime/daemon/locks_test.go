@@ -24,6 +24,7 @@ func TestDaemonLocks_EveryOwnerHasItsOwnKey(t *testing.T) {
 		reconcilelock.NewLeaderLease(store, admissionquota.KeyReconcile, "node-1")
 		locks.eks.Get("123456789012/alpha")
 		locks.eks.Get("123456789012/alpha/teardown")
+		locks.uefi.Get("i-0123456789abcdef0")
 	})
 }
 

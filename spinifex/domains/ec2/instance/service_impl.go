@@ -2760,7 +2760,7 @@ func (s *InstanceServiceImpl) capacityRefusal(ctx context.Context, instance *vm.
 func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instance *vm.VM, undo func()) error {
 	// Before anything is stamped or claimed, so the record handed back is the
 	// one that was claimed.
-	if err := vm.CheckUEFIVarStore(instance); err != nil {
+	if err := s.vmMgr.CheckUEFIVarStore(ctx, instance); err != nil {
 		slog.ErrorContext(ctx, "launchClaimedInstance: refusing to launch a UEFI instance without exactly one variable store",
 			"instanceId", instance.ID, "err", err)
 		undo()

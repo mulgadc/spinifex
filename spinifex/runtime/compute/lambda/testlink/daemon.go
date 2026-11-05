@@ -91,8 +91,12 @@ type Daemon struct {
 	Initializer       string
 	InitializerSHA256 string
 
-	busy atomic.Bool
+	busy    atomic.Bool
+	serving atomic.Bool
 }
+
+// Serving reports whether the control socket is accepting invocations.
+func (d *Daemon) Serving() bool { return d.serving.Load() }
 
 // unresolved names an attempt whose marker is still on disk. A marker goes
 // only once the attempt's VM stop is proven and everything it held is
@@ -121,7 +125,9 @@ func (d *Daemon) ServeControl(ctx context.Context, name string, gatewayUID int) 
 	}
 	srv := &ControlServer{GatewayUID: gatewayUID, RequestLimit: MaxFrameBytes, ReplyLimit: MaxFrameBytes,
 		IOTimeout: controlIOTimeout, Handle: d.Handle}
+	d.serving.Store(true)
 	go func() {
+		defer d.serving.Store(false)
 		if err := srv.Serve(ctx, ln); err != nil {
 			slog.Error("Lambda test link: control socket stopped; not serving new invocations", "err", err)
 		}

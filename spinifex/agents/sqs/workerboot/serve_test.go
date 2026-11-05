@@ -90,7 +90,7 @@ func localStore(t *testing.T, g *guest, port int) *server.Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go ns.Start()
+	ns.Start()
 	if !ns.ReadyForConnections(10 * time.Second) {
 		t.Fatal("store server did not start")
 	}

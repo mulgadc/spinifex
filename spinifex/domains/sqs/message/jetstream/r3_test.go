@@ -75,7 +75,7 @@ func (c *cluster) start() {
 		if c.logDir != "" {
 			srv.ConfigureLogger()
 		}
-		go srv.Start()
+		srv.Start()
 		require.True(t, srv.ReadyForConnections(10*time.Second), "node %d not ready", i)
 		if i == 0 {
 			seed = []*url.URL{{Scheme: "nats", Host: srv.ClusterAddr().String()}}

@@ -62,7 +62,7 @@ func openStoreJS(t *testing.T, maxPayload int32) (message.Store, jetstream.JetSt
 		NoLog: true, NoSigs: true, MaxPayload: maxPayload,
 	})
 	require.NoError(t, err)
-	go ns.Start()
+	ns.Start()
 	require.True(t, ns.ReadyForConnections(10*time.Second))
 	t.Cleanup(ns.Shutdown)
 	nc, err := nats.Connect(ns.ClientURL())

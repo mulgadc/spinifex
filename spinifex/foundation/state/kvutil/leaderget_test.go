@@ -18,7 +18,7 @@ import (
 func TestLeaderMsgGetBoundsAContextWithoutDeadline(t *testing.T) {
 	srv, err := server.NewServer(&server.Options{Host: "127.0.0.1", Port: -1, NoLog: true, NoSigs: true})
 	require.NoError(t, err)
-	go srv.Start()
+	srv.Start()
 	require.True(t, srv.ReadyForConnections(10*time.Second))
 	t.Cleanup(srv.Shutdown)
 	nc, err := nats.Connect(srv.ClientURL())
@@ -49,7 +49,7 @@ func TestLeaderMsgGetBoundsAContextWithoutDeadline(t *testing.T) {
 func TestAPIPrefixMatchesNatsGo(t *testing.T) {
 	srv, err := server.NewServer(&server.Options{Host: "127.0.0.1", Port: -1, NoLog: true, NoSigs: true})
 	require.NoError(t, err)
-	go srv.Start()
+	srv.Start()
 	require.True(t, srv.ReadyForConnections(10*time.Second))
 	t.Cleanup(srv.Shutdown)
 	nc, err := nats.Connect(srv.ClientURL())

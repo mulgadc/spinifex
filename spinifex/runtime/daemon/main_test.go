@@ -53,7 +53,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "Failed to create shared NATS server: %v\n", err)
 		os.Exit(1)
 	}
-	go ns.Start()
+	ns.Start()
 	if !ns.ReadyForConnections(5 * time.Second) {
 		fmt.Fprintln(os.Stderr, "Shared NATS server failed to start")
 		os.Exit(1)
@@ -79,7 +79,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "Failed to create shared JetStream NATS server: %v\n", err)
 		os.Exit(1)
 	}
-	go jsNS.Start()
+	jsNS.Start()
 	if !jsNS.ReadyForConnections(5 * time.Second) {
 		fmt.Fprintln(os.Stderr, "Shared JetStream NATS server failed to start")
 		os.Exit(1)

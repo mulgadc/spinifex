@@ -240,7 +240,7 @@ func TestGetStateHonoursAPIPrefix(t *testing.T) {
 		StoreDir: t.TempDir(), NoLog: true, NoSigs: true,
 	})
 	require.NoError(t, err)
-	go srv.Start()
+	srv.Start()
 	require.True(t, srv.ReadyForConnections(10*time.Second))
 	t.Cleanup(srv.Shutdown)
 	clustersize.DeclareForTest(t, 1)

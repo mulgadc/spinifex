@@ -460,7 +460,6 @@ func TestAdminDeleteAccountReportsACompletedJobToANewToken(t *testing.T) {
 // The protected accounts are refused the same way an unauthorized caller is:
 // no credential grants deleting them, so the answer describes nothing.
 func TestAdminDeleteAccountRefusesProtectedAccounts(t *testing.T) {
-	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	newTenantAccount(t, gw, "tenant@example.com")
 

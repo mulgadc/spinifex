@@ -51,6 +51,7 @@ func TestS7_DeletionResumerActsOnlyOnAnAcceptedOperationWithoutALiveLease(t *tes
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			gw := newDeleteAccountGateway(t)
 			account := newTenantAccount(t, gw, "tenant@example.com")
 			job := abandonedJob(account.AccountID, "tenant@example.com")
@@ -68,6 +69,7 @@ func TestS7_DeletionResumerActsOnlyOnAnAcceptedOperationWithoutALiveLease(t *tes
 	}
 
 	t.Run("control: accepted operation with an expired lease is resumed", func(t *testing.T) {
+		t.Parallel()
 		gw := newDeleteAccountGateway(t)
 		account := newTenantAccount(t, gw, "tenant@example.com")
 		storeDeletionJob(t, gw, abandonedJob(account.AccountID, "tenant@example.com"))

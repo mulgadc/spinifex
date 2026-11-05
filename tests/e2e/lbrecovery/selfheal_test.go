@@ -3,8 +3,10 @@
 package lbrecovery
 
 import (
+	"encoding/base64"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -81,6 +83,11 @@ func runLBSelfHeal(t *testing.T, fix *Fixture, kind shKind) {
 
 	harness.Step(t, "wait until every customer instance is older than %s", shTargetAge)
 	customers := append(slices.Clone(f.TargetIDs), bystander)
+	var client string
+	if !internetFacing {
+		client = shLaunchInVPCClient(t, fix, f)
+		customers = append(customers, client)
+	}
 	shWaitOlderThan(t, cli, customers, shTargetAge)
 
 	before := shSnapshot(t, fix, customers)
@@ -119,6 +126,9 @@ func runLBSelfHeal(t *testing.T, fix *Fixture, kind shKind) {
 	if internetFacing {
 		remaining := max(shRecoveryBudget-time.Since(faultAt), 10*time.Second)
 		lbrRequireServing(t, fix, f.Host, harness.Node{}, f, "after the repair", remaining)
+	} else {
+		harness.Step(t, "the in-VPC client reaches the internal ALB again within %s of the fault", shRecoveryBudget)
+		shRequireClientServed(t, cli, client, faultAt)
 	}
 	harness.WaitForTargetsHealthy(t, cli, f.TGArn, lbrTargets, "backends after the repair", targetsHealthyBudget)
 
@@ -158,6 +168,101 @@ func runLBSelfHeal(t *testing.T, fix *Fixture, kind shKind) {
 		assert.Containsf(t, line, field, "the repair line lacks %s: %s", field, line)
 	}
 	assert.Containsf(t, line, f.SysInstanceID, "the repair line names another guest: %s", line)
+}
+
+const shClientMarker = "SHCLIENT"
+
+// shClientUserData curls the internal load balancer every five seconds from
+// inside the VPC and prints a timestamped verdict on the serial console, the
+// only channel back from a guest.
+func shClientUserData(dnsName string) string {
+	return fmt.Sprintf(`#!/bin/bash
+while true; do
+  if curl -fsS -m 3 -o /dev/null http://%s:%d/index.html 2>/dev/null; then
+    echo "%s $(date +%%s) OK" | tee /dev/console
+  else
+    echo "%s $(date +%%s) FAIL" | tee /dev/console
+  fi
+  sleep 5
+done
+`, dnsName, lbrHTTPPort, shClientMarker, shClientMarker)
+}
+
+func shLaunchInVPCClient(t *testing.T, fix *Fixture, f *albFixture) string {
+	t.Helper()
+	out, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{
+		ImageId:          aws.String(f.AMIID),
+		InstanceType:     aws.String(f.InstanceType),
+		KeyName:          aws.String(f.KeyName),
+		SubnetId:         aws.String(f.SubnetID),
+		SecurityGroupIds: []*string{aws.String(f.SGID)},
+		MinCount:         aws.Int64(1),
+		MaxCount:         aws.Int64(1),
+		UserData:         aws.String(base64.StdEncoding.EncodeToString([]byte(shClientUserData(f.DNSName)))),
+	})
+	require.NoError(t, err, "launch the in-VPC client")
+	require.NotEmpty(t, out.Instances, "RunInstances returned no instance")
+	id := aws.StringValue(out.Instances[0].InstanceId)
+	t.Cleanup(func() { lbrTerminate(t, fix.AWS, []string{id}) })
+	harness.WaitForInstanceRunning(t, fix.AWS, id, 3*time.Minute)
+	harness.Detail(t, "in-VPC client", id)
+	return id
+}
+
+func shConsole(c *harness.AWSClient, id string) string {
+	out, err := c.EC2.GetConsoleOutput(&ec2.GetConsoleOutputInput{InstanceId: aws.String(id)})
+	if err != nil || aws.StringValue(out.Output) == "" {
+		return ""
+	}
+	raw, derr := base64.StdEncoding.DecodeString(aws.StringValue(out.Output))
+	if derr != nil {
+		return aws.StringValue(out.Output)
+	}
+	return string(raw)
+}
+
+// shClientVerdicts returns the client's verdict lines as unix seconds and
+// whether each succeeded.
+func shClientVerdicts(console string) (times []int64, oks []bool) {
+	for line := range strings.SplitSeq(console, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 || fields[0] != shClientMarker {
+			continue
+		}
+		ts, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		times = append(times, ts)
+		oks = append(oks, fields[2] == "OK")
+	}
+	return times, oks
+}
+
+// shRequireClientServed fails unless the client's first success after the
+// fault was reported no later than one absolute deadline after the fault.
+func shRequireClientServed(t *testing.T, c *harness.AWSClient, client string, faultAt time.Time) {
+	t.Helper()
+	deadline := faultAt.Add(shRecoveryBudget)
+	var console string
+	for time.Now().Before(deadline.Add(15 * time.Second)) {
+		console = shConsole(c, client)
+		times, oks := shClientVerdicts(console)
+		for i, ts := range times {
+			if oks[i] && ts >= faultAt.Unix() {
+				require.LessOrEqualf(t, ts, deadline.Unix(),
+					"the client's first success after the fault came at %d, after the %s deadline %d",
+					ts, shRecoveryBudget, deadline.Unix())
+				harness.Detail(t, "first success after the fault", time.Unix(ts, 0).Sub(faultAt).Round(time.Second).String())
+				return
+			}
+		}
+		time.Sleep(5 * time.Second)
+	}
+	lines := strings.Split(strings.TrimSpace(console), "\n")
+	require.Failf(t, "in-VPC client never reached the internal ALB",
+		"no success within %s of the fault; last console lines:\n%s", shRecoveryBudget,
+		strings.Join(lines[max(0, len(lines)-15):], "\n"))
 }
 
 // stateWatch samples a load balancer's reported state continuously and keeps the

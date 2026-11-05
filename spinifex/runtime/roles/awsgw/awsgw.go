@@ -404,7 +404,7 @@ func launchService(config *config.ClusterConfig) error {
 		Roles:  iamdomain.NewRoleResolver(iamService),
 		Trusts: lambdaRoleTrusts(iamService),
 		AEAD:   lambdaKey.AEAD,
-		Exec:   lambdaTestExecutor(natsConn, config.Node, lambdaCodeStore),
+		Exec:   lambdaTestExecutor(natsConn, config.Node, lambdaCodeStore, stsService),
 	})
 
 	// ECR auth bridge: load (or first-run create) the ES256 signing key from the

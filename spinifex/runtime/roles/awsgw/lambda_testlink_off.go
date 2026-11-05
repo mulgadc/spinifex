@@ -11,6 +11,8 @@ import (
 
 // Without the test link there is no executor, so Invoke refuses before it
 // presigns, sends or allocates anything, and Lambda stays unrouted.
-func lambdaTestExecutor(*nats.Conn, string, *codestore.Manager) awsapi.Executor { return nil }
+func lambdaTestExecutor(*nats.Conn, string, *codestore.Manager, lambdaEnvironmentRoleIssuer) awsapi.Executor {
+	return nil
+}
 
 func lambdaTestRoutes(dispatch.Registration) []dispatch.Registration { return nil }

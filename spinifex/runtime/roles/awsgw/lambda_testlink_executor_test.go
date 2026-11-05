@@ -6,17 +6,23 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/sts"
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/codestore"
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/execution"
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/function"
+	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/testlink"
-	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,27 +34,69 @@ func (f fakePresigner) PresignGet(context.Context, codestore.Ref, string, time.D
 	return secretURL, f.err
 }
 
-type fakeNATS struct {
-	max   int64
-	sent  [][]byte
-	reply *testlink.Reply
-	err   error
+// fakeControl stands in for the daemon's socket. An ErrNotSent error is
+// returned before recording, as the real client does.
+type fakeControl struct {
+	max     int64
+	sent    [][]byte
+	creds   []testlink.Credential
+	replyBy time.Time
+	reply   *testlink.Reply
+	err     error
+	// during runs inside the exchange, after the request is recorded.
+	during func()
 }
 
-func (f *fakeNATS) MaxPayload() int64 { return f.max }
-
-func (f *fakeNATS) RequestWithContext(_ context.Context, _ string, data []byte) (*nats.Msg, error) {
-	f.sent = append(f.sent, data)
-	if f.err != nil {
-		return nil, f.err
+func (f *fakeControl) Exchange(ctx context.Context, req []byte, cred testlink.Credential, replyBy time.Time) (testlink.Reply, error) {
+	if errors.Is(f.err, testlink.ErrNotSent) {
+		return testlink.Reply{}, f.err
 	}
-	body, _ := json.Marshal(f.reply)
-	return &nats.Msg{Data: body}, nil
+	f.sent = append(f.sent, req)
+	f.creds = append(f.creds, cred)
+	f.replyBy = replyBy
+	if f.during != nil {
+		f.during()
+	}
+	if f.err != nil {
+		return testlink.Reply{}, f.err
+	}
+	return *f.reply, nil
+}
+
+const testSecret = "fake-secret-access-key"
+
+// fakeSessions issues one fixed session and records revokes.
+type fakeSessions struct {
+	issued    []stsdomain.LambdaEnvironmentSessionRequest
+	revoked   []stsdomain.LambdaEnvironmentSessionScope
+	revokeCtx error
+	issueErr  error
+	revokeErr error
+}
+
+func (f *fakeSessions) AssumeRoleForLambdaEnvironment(_ context.Context, req stsdomain.LambdaEnvironmentSessionRequest) (*sts.AssumeRoleOutput, error) {
+	f.issued = append(f.issued, req)
+	if f.issueErr != nil {
+		return nil, f.issueErr
+	}
+	return &sts.AssumeRoleOutput{Credentials: &sts.Credentials{
+		AccessKeyId: aws.String("ASIAFAKEKEY"), SecretAccessKey: aws.String(testSecret), SessionToken: aws.String("fake-token"),
+	}}, nil
+}
+
+func (f *fakeSessions) RevokeLambdaEnvironmentSession(ctx context.Context, accessKeyID string, scope stsdomain.LambdaEnvironmentSessionScope) error {
+	if accessKeyID != "ASIAFAKEKEY" {
+		return errors.New("revoked an unknown key")
+	}
+	f.revokeCtx = ctx.Err()
+	f.revoked = append(f.revoked, scope)
+	return f.revokeErr
 }
 
 func invocation(payload []byte) awsapi.SyncInvocation {
 	return awsapi.SyncInvocation{Payload: payload, Function: function.Record{
 		FunctionID: "fn1", AccountID: "123456789012", Region: "ap-southeast-2", FunctionName: "f",
+		Role:    "arn:aws:iam::123456789012:role/fn-exec",
 		Handler: "bootstrap.h", Timeout: 3, MemorySize: 128,
 		Code: function.Code{RevisionID: "r1", SHA256: strings.Repeat("ab", 32), Size: 100},
 	}}
@@ -62,8 +110,12 @@ func grantStore(t *testing.T) *execution.Store {
 	return store
 }
 
-func executor(n *fakeNATS, presignErr error, store *execution.Store) *testLinkExecutor {
-	return &testLinkExecutor{NATS: n, Node: "node1",
+func executor(n *fakeControl, presignErr error, store *execution.Store) *testLinkExecutor {
+	return executorWith(n, &fakeSessions{}, presignErr, store)
+}
+
+func executorWith(n *fakeControl, sessions *fakeSessions, presignErr error, store *execution.Store) *testLinkExecutor {
+	return &testLinkExecutor{Control: n, RequestLimit: n.max, Sessions: sessions, Node: "node1",
 		Codes:  func(context.Context) (codePresigner, error) { return fakePresigner{err: presignErr}, nil },
 		Grants: func(context.Context) (grantIssuer, error) { return store, nil },
 	}
@@ -98,7 +150,7 @@ func TestLambdaTestLinkExecutor_RefusesWithoutSending(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			n, store := &fakeNATS{max: tc.max}, grantStore(t)
+			n, store := &fakeControl{max: tc.max}, grantStore(t)
 			_, err := executor(n, tc.presignErr, store).InvokeSync(context.Background(), tc.in)
 			var refusal *awsapi.RefusalError
 			require.ErrorAs(t, err, &refusal)
@@ -111,11 +163,11 @@ func TestLambdaTestLinkExecutor_RefusesWithoutSending(t *testing.T) {
 
 func TestLambdaTestLinkExecutor_BusyNodeSendsNothing(t *testing.T) {
 	store := grantStore(t)
-	held := &fakeNATS{max: 1 << 20, err: nats.ErrTimeout}
+	held := &fakeControl{max: 1 << 20, err: errors.New("no reply")}
 	_, err := executor(held, nil, store).InvokeSync(context.Background(), invocation(nil))
 	require.Error(t, err)
 
-	n := &fakeNATS{max: 1 << 20, reply: &testlink.Reply{Outcome: testlink.OutcomeDone}}
+	n := &fakeControl{max: 1 << 20, reply: &testlink.Reply{Outcome: testlink.OutcomeDone}}
 	_, err = executor(n, nil, store).InvokeSync(context.Background(), invocation(nil))
 	var refusal *awsapi.RefusalError
 	require.ErrorAs(t, err, &refusal)
@@ -125,7 +177,7 @@ func TestLambdaTestLinkExecutor_BusyNodeSendsNothing(t *testing.T) {
 
 // 3000 payload bytes are 4000 as base64: the bound counts the encoding.
 func TestLambdaTestLinkExecutor_BoundCountsEncodedPayload(t *testing.T) {
-	n := &fakeNATS{max: 3500, reply: &testlink.Reply{Outcome: testlink.OutcomeDone}}
+	n := &fakeControl{max: 3500, reply: &testlink.Reply{Outcome: testlink.OutcomeDone}}
 	_, err := executor(n, nil, grantStore(t)).InvokeSync(context.Background(), invocation(make([]byte, 3000)))
 	var refusal *awsapi.RefusalError
 	require.ErrorAs(t, err, &refusal)
@@ -133,9 +185,9 @@ func TestLambdaTestLinkExecutor_BoundCountsEncodedPayload(t *testing.T) {
 }
 
 func TestLambdaTestLinkExecutor_PostDispatchFailureIsNeverARefusal(t *testing.T) {
-	cases := map[string]*fakeNATS{
-		"no reply":      {max: 1 << 20, err: nats.ErrTimeout},
-		"no responders": {max: 1 << 20, err: nats.ErrNoResponders},
+	cases := map[string]*fakeControl{
+		"no reply":      {max: 1 << 20, err: errors.New("read test-link reply: i/o timeout")},
+		"partial write": {max: 1 << 20, err: errors.New("send test-link request: broken pipe")},
 		"unknown":       {max: 1 << 20, reply: &testlink.Reply{Outcome: testlink.OutcomeUnknown, Error: "VM stop not proven"}},
 		"unrecognised":  {max: 1 << 20, reply: &testlink.Reply{Outcome: "later"}},
 	}
@@ -155,13 +207,13 @@ func TestLambdaTestLinkExecutor_PostDispatchFailureIsNeverARefusal(t *testing.T)
 
 func TestLambdaTestLinkExecutor_DaemonRefusalAndResult(t *testing.T) {
 	store := grantStore(t)
-	n := &fakeNATS{max: 1 << 20, reply: &testlink.Reply{Outcome: testlink.OutcomeRefused, Error: "busy"}}
+	n := &fakeControl{max: 1 << 20, reply: &testlink.Reply{Outcome: testlink.OutcomeRefused, Error: "busy"}}
 	_, err := executor(n, nil, store).InvokeSync(context.Background(), invocation(nil))
 	var refusal *awsapi.RefusalError
 	require.ErrorAs(t, err, &refusal)
 	require.Equal(t, execution.StateWithdrawn, grantState(t, store), "an unstarted grant the daemon refused is withdrawn")
 
-	n = &fakeNATS{max: 1 << 20, reply: &testlink.Reply{Outcome: testlink.OutcomeDone, Payload: []byte(`{"sum":42}`), FunctionError: "Unhandled"}}
+	n = &fakeControl{max: 1 << 20, reply: &testlink.Reply{Outcome: testlink.OutcomeDone, Payload: []byte(`{"sum":42}`), FunctionError: "Unhandled"}}
 	out, err := executor(n, nil, store).InvokeSync(context.Background(), invocation([]byte(`{"a":1}`)))
 	require.NoError(t, err)
 	require.Equal(t, awsapi.SyncResult{Payload: []byte(`{"sum":42}`), FunctionError: "Unhandled", ExecutedVersion: "$LATEST"}, out)
@@ -180,4 +232,161 @@ func TestLambdaTestLinkExecutor_DaemonRefusalAndResult(t *testing.T) {
 	require.Equal(t, cur.Grant, sent.Grant)
 	require.Equal(t, cur.Identity, sent.Identity())
 	require.Equal(t, "r1", cur.Identity.RevisionID)
+}
+
+var testScope = stsdomain.LambdaEnvironmentSessionScope{
+	AccountID: "123456789012", FunctionID: "fn1",
+	FunctionARN: "arn:aws:lambda:ap-southeast-2:123456789012:function:f",
+}
+
+func TestLambdaTestLinkExecutor_IssuerFailureRefusesUnsent(t *testing.T) {
+	store := grantStore(t)
+	n := &fakeControl{max: 1 << 20, reply: &testlink.Reply{Outcome: testlink.OutcomeDone}}
+	sessions := &fakeSessions{issueErr: errors.New("AccessDenied")}
+	_, err := executorWith(n, sessions, nil, store).InvokeSync(context.Background(), invocation(nil))
+	var refusal *awsapi.RefusalError
+	require.ErrorAs(t, err, &refusal)
+	require.Empty(t, n.sent, "nothing is sent without a session")
+	require.Empty(t, sessions.revoked)
+	require.Equal(t, execution.StateWithdrawn, grantState(t, store))
+}
+
+// The session is issued for the attempt's own environment under the base ARN,
+// with the attempt's whole lifetime, and goes only on the socket.
+func TestLambdaTestLinkExecutor_IssuesForTheAttemptAndSendsOnTheSocket(t *testing.T) {
+	store := grantStore(t)
+	n := &fakeControl{max: 1 << 20, reply: &testlink.Reply{Outcome: testlink.OutcomeDone}}
+	sessions := &fakeSessions{}
+	in := invocation(nil)
+	in.Qualifier = "$LATEST"
+	start := time.Now()
+	_, err := executorWith(n, sessions, nil, store).InvokeSync(context.Background(), in)
+	require.NoError(t, err)
+
+	require.Len(t, sessions.issued, 1)
+	got := sessions.issued[0]
+	cur, err := store.Current(context.Background(), "node1")
+	require.NoError(t, err)
+	require.Equal(t, cur.Grant.EnvironmentID, got.EnvironmentID)
+	require.Equal(t, "arn:aws:iam::123456789012:role/fn-exec", got.RoleARN)
+	require.Equal(t, testScope.FunctionARN, got.FunctionARN, "STS sees the base ARN, never the qualified one")
+	lifetime := testlink.AttemptLifetime(3000)
+	require.Equal(t, int64(lifetime/time.Second), got.MaxLifetimeSeconds)
+	require.WithinDuration(t, start.Add(lifetime+replyGrace), n.replyBy, 5*time.Second)
+
+	var sent testlink.Request
+	require.NoError(t, json.Unmarshal(n.sent[0], &sent))
+	require.Equal(t, testScope.FunctionARN+":$LATEST", sent.FunctionARN, "the runtime still sees the invoked ARN")
+	require.NotContains(t, string(n.sent[0]), testSecret, "the credential travels beside the request, not in it")
+	require.Equal(t, testSecret, n.creds[0].SecretAccessKey)
+
+	want := testScope
+	want.EnvironmentID = cur.Grant.EnvironmentID
+	require.Equal(t, []stsdomain.LambdaEnvironmentSessionScope{want}, sessions.revoked)
+}
+
+func TestLambdaTestLinkExecutor_RevokesOnEveryOutcome(t *testing.T) {
+	cases := map[string]struct {
+		n       *fakeControl
+		refusal bool
+	}{
+		"done":          {n: &fakeControl{reply: &testlink.Reply{Outcome: testlink.OutcomeDone}}},
+		"refused":       {n: &fakeControl{reply: &testlink.Reply{Outcome: testlink.OutcomeRefused}}, refusal: true},
+		"unknown":       {n: &fakeControl{reply: &testlink.Reply{Outcome: testlink.OutcomeUnknown}}},
+		"lost":          {n: &fakeControl{err: errors.New("read test-link reply: EOF")}},
+		"partial write": {n: &fakeControl{err: errors.New("send test-link request: broken pipe")}},
+		"not sent":      {n: &fakeControl{err: fmt.Errorf("%w: dial", testlink.ErrNotSent)}, refusal: true},
+		"wrong peer":    {n: &fakeControl{err: fmt.Errorf("%w: %w", testlink.ErrNotSent, testlink.ErrPeer)}, refusal: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			store := grantStore(t)
+			tc.n.max = 1 << 20
+			sessions := &fakeSessions{}
+			_, err := executorWith(tc.n, sessions, nil, store).InvokeSync(context.Background(), invocation(nil))
+			var refusal *awsapi.RefusalError
+			require.Equal(t, tc.refusal, errors.As(err, &refusal), "err: %v", err)
+			require.Len(t, sessions.revoked, 1, "revoked exactly once")
+			if tc.refusal {
+				require.Equal(t, execution.StateWithdrawn, grantState(t, store))
+			}
+		})
+	}
+}
+
+// A cancelled Invoke still revokes, under a context of its own.
+func TestLambdaTestLinkExecutor_CancelledInvokeStillRevokes(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	n := &fakeControl{max: 1 << 20, err: errors.New("read test-link reply: canceled"), during: cancel}
+	sessions := &fakeSessions{}
+	_, err := executorWith(n, sessions, nil, grantStore(t)).InvokeSync(ctx, invocation(nil))
+	require.Error(t, err)
+	require.Len(t, sessions.revoked, 1)
+	require.NoError(t, sessions.revokeCtx, "the revoke ran under a live context")
+}
+
+func TestLambdaTestLinkExecutor_FailedRevokeIsNeverSuccess(t *testing.T) {
+	n := &fakeControl{max: 1 << 20, reply: &testlink.Reply{Outcome: testlink.OutcomeDone, Payload: []byte("ok")}}
+	sessions := &fakeSessions{revokeErr: stsdomain.ErrLambdaSessionRevokeFailed}
+	out, err := executorWith(n, sessions, nil, grantStore(t)).InvokeSync(context.Background(), invocation(nil))
+	require.Error(t, err)
+	var refusal *awsapi.RefusalError
+	require.False(t, errors.As(err, &refusal))
+	require.Empty(t, out.Payload)
+	require.NotContains(t, err.Error(), "ASIAFAKEKEY")
+	require.NotContains(t, err.Error(), testSecret)
+}
+
+func TestLambdaTestLinkExecutor_OversizeRequestRevokesUnsent(t *testing.T) {
+	store := grantStore(t)
+	n := &fakeControl{max: 4000, reply: &testlink.Reply{Outcome: testlink.OutcomeDone}}
+	sessions := &fakeSessions{}
+	_, err := executorWith(n, sessions, nil, store).InvokeSync(context.Background(), invocation(make([]byte, 3000)))
+	var refusal *awsapi.RefusalError
+	require.ErrorAs(t, err, &refusal)
+	require.Empty(t, n.sent)
+	require.Len(t, sessions.revoked, 1)
+	require.Equal(t, execution.StateWithdrawn, grantState(t, store))
+}
+
+// With the real client, a daemon that reads the request and never answers is
+// unknown at the reply bound, and the session is revoked.
+func TestLambdaTestLinkExecutor_SilentDaemonIsUnknownAndRevoked(t *testing.T) {
+	name := fmt.Sprintf("spinifex-test-exec-%d", time.Now().UnixNano())
+	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: "@" + name, Net: "unix"})
+	require.NoError(t, err)
+	hold, read := make(chan struct{}), make(chan error, 1)
+	t.Cleanup(func() { close(hold); _ = ln.Close() })
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			read <- err
+			return
+		}
+		defer func() { _ = c.Close() }()
+		_, err = io.Copy(io.Discard, io.LimitReader(c, 64))
+		read <- err
+		<-hold
+	}()
+
+	e := executorWith(&fakeControl{max: 1 << 20}, &fakeSessions{}, nil, grantStore(t))
+	sessions := e.Sessions.(*fakeSessions)
+	e.Control = &testlink.ControlClient{Name: name, DaemonUID: os.Getuid(), RequestLimit: 1 << 20, ReplyLimit: 1 << 20, IOTimeout: time.Hour}
+	// Shift the clock so the reply bound falls 300 ms from now.
+	shift := testlink.AttemptLifetime(3000) + replyGrace - 300*time.Millisecond
+	e.now = func() time.Time { return time.Now().Add(-shift) }
+
+	start := time.Now()
+	_, err = e.InvokeSync(context.Background(), invocation(nil))
+	require.Error(t, err)
+	select {
+	case rerr := <-read:
+		require.NoError(t, rerr)
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon read nothing")
+	}
+	var refusal *awsapi.RefusalError
+	require.False(t, errors.As(err, &refusal), "a delivered request is unknown")
+	require.Less(t, time.Since(start), 10*time.Second)
+	require.Len(t, sessions.revoked, 1)
 }

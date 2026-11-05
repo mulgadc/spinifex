@@ -536,6 +536,12 @@ func hardDeadlineFrom(boot time.Duration, req Request) time.Duration {
 	return boot + fetchTimeout + timeoutFor(req) + HardKillMargin
 }
 
+// AttemptLifetime bounds an attempt from grant to hard kill: the launch window,
+// then the code fetch, boot and function timeout, then the kill margin.
+func AttemptLifetime(timeoutMs int64) time.Duration {
+	return LaunchWindow + fetchTimeout + timeoutFor(Request{TimeoutMs: timeoutMs}) + HardKillMargin
+}
+
 func timeoutFor(req Request) time.Duration {
 	return time.Duration(req.TimeoutMs)*time.Millisecond + BootAllowance
 }

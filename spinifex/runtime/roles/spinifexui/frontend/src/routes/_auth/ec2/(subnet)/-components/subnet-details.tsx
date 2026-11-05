@@ -17,7 +17,11 @@ import type { PanelTab } from "@/lib/panel-search"
 import { getNameTag } from "@/lib/utils"
 import { useDeleteSubnet } from "@/mutations/ec2"
 
+import { SUBNET_TYPE_LABELS, useSubnetType } from "./subnet-type"
+
 function Overview({ subnet }: { subnet: Subnet }) {
+  const typeOf = useSubnetType()
+
   return (
     <PanelSection title="Details">
       <PanelFields>
@@ -34,6 +38,9 @@ function Overview({ subnet }: { subnet: Subnet }) {
               {subnet.VpcId}
             </Link>
           )}
+        </PanelField>
+        <PanelField label="Type">
+          {SUBNET_TYPE_LABELS[typeOf(subnet)]}
         </PanelField>
         <PanelField copy={subnet.CidrBlock} label="CIDR" mono>
           {subnet.CidrBlock}

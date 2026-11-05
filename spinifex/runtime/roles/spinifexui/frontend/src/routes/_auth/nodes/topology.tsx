@@ -1,26 +1,18 @@
-import "@xyflow/react/dist/style.css"
 import { useQuery } from "@tanstack/react-query"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import {
-  Background,
-  BaseEdge,
-  Controls,
-  type Edge,
-  type EdgeProps,
-  getBezierPath,
-  Handle,
-  type Node,
-  type NodeProps,
-  Position,
-  ReactFlow,
-} from "@xyflow/react"
-import { createContext, use, useMemo, useState } from "react"
+import { Handle, type Node, type NodeProps, Position } from "@xyflow/react"
+import { useMemo, useState } from "react"
 
 import { DeviceArt } from "@/components/device-art"
 import { ErrorBanner } from "@/components/error-banner"
 import { PageHeading } from "@/components/page-heading"
-import { useTheme } from "@/components/theme-provider"
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import {
+  DirectionToggle,
+  InternetCard,
+  TopologyCanvas,
+  type TopologyEdge,
+  useTopologyHover,
+} from "@/components/topology/topology-canvas"
 import {
   buildTopology,
   formatLinkSpeed,
@@ -28,10 +20,10 @@ import {
   layoutTopology,
   planesLabel,
   type TopologyDevice,
-  type TopologyLink,
 } from "@/lib/node-topology"
 import { requireAdmin } from "@/lib/require-admin"
 import { cn } from "@/lib/utils"
+import { adminNodesQueryOptions } from "@/queries/admin"
 import { type NICFacts, nodeFactsQueryOptions } from "@/queries/nodes"
 
 export const Route = createFileRoute("/_auth/nodes/topology")({
@@ -42,11 +34,6 @@ export const Route = createFileRoute("/_auth/nodes/topology")({
   component: TopologyPage,
 })
 
-// A hovered link lifts its line and its port row and dims every other link.
-type Focus = "on" | "off" | "idle"
-
-type Hover = { kind: "node" | "link"; id: string } | undefined
-
 interface DeviceData extends Record<string, unknown> {
   device: TopologyDevice
   direction: LayoutDirection
@@ -55,26 +42,7 @@ interface DeviceData extends Record<string, unknown> {
   speeds: string[]
 }
 
-// Hover lives in context, not in node data: a new nodes array makes React
-// Flow re-measure every card, which drops the hover it was showing.
-const HoverContext = createContext<{
-  focus: (linkId: string) => Focus
-  setHover: (hover: Hover) => void
-}>({
-  focus: () => "idle",
-  setHover: () => {
-    // No provider, nothing to highlight.
-  },
-})
-
-interface LinkData extends Record<string, unknown> {
-  focus: Focus
-  wan: boolean
-}
-
 type DeviceNode = Node<DeviceData, "device">
-
-type LinkEdge = Edge<LinkData, "link">
 
 const SIDES: Record<LayoutDirection, { in: Position; out: Position }> = {
   down: { in: Position.Top, out: Position.Bottom },
@@ -105,7 +73,7 @@ function PortRow({
   linkId: string
   data: DeviceData
 }) {
-  const hover = use(HoverContext)
+  const hover = useTopologyHover()
   const linked = isLinked(nic)
   const focus = linked ? hover.focus(linkId) : "idle"
 
@@ -217,12 +185,24 @@ function DeviceCard({ data }: NodeProps<DeviceNode>) {
     return <NodeCard data={data} />
   }
 
+  if (device.kind === "internet") {
+    return (
+      <InternetCard reach={device.reach ?? "unknown"} testId="device-internet">
+        <Handle
+          className="opacity-0"
+          isConnectable={false}
+          position={sides.out}
+          type="source"
+        />
+      </InternetCard>
+    )
+  }
+
   return (
     <div
       className={cn(
         "flex w-56 items-center gap-3 rounded-lg border bg-muted p-3 text-card-foreground",
         device.kind === "segment" && "border-dashed",
-        device.kind === "internet" && "w-40 justify-center rounded-full",
       )}
     >
       <Handle
@@ -251,7 +231,7 @@ function DeviceCard({ data }: NodeProps<DeviceNode>) {
             {[...new Set(data.speeds)].join(", ")}
           </span>
         )}
-        {device.kind !== "internet" && device.planes.length > 0 && (
+        {device.planes.length > 0 && (
           <span className="text-2xs text-muted-foreground">
             {planesLabel(device.planes)}
           </span>
@@ -267,70 +247,18 @@ function DeviceCard({ data }: NodeProps<DeviceNode>) {
   )
 }
 
-function LinkLine({
-  id,
-  sourceX,
-  sourceY,
-  targetX,
-  targetY,
-  sourcePosition,
-  targetPosition,
-  data,
-}: EdgeProps<LinkEdge>) {
-  const [path] = getBezierPath({
-    sourceX,
-    sourceY,
-    sourcePosition,
-    targetX,
-    targetY,
-    targetPosition,
-  })
-
-  const focus = data?.focus ?? "idle"
-
-  return (
-    <BaseEdge
-      className={cn(
-        "transition-opacity motion-reduce:transition-none",
-        data?.wan
-          ? "[--xy-edge-stroke-width:2.5]"
-          : "[--xy-edge-stroke-width:1.5]",
-        focus === "on" &&
-          "[--xy-edge-stroke-width:3] [--xy-edge-stroke:var(--color-primary)]",
-        focus === "off" && "opacity-20",
-      )}
-      id={id}
-      interactionWidth={16}
-      path={path}
-    />
-  )
-}
-
-function focusOf(link: TopologyLink | undefined, hover: Hover): Focus {
-  if (!hover || !link) {
-    return "idle"
-  }
-
-  const touches =
-    hover.kind === "link"
-      ? hover.id === link.id
-      : hover.id === link.source || hover.id === link.target
-
-  return touches ? "on" : "off"
-}
-
 const NODE_TYPES = { device: DeviceCard }
-const EDGE_TYPES = { link: LinkLine }
 
 function TopologyPage() {
   const { data, error, isPending } = useQuery(nodeFactsQueryOptions)
-  const { theme } = useTheme()
   const navigate = useNavigate()
   const [direction, setDirection] = useState<LayoutDirection>("across")
-  const [hover, setHover] = useState<Hover>()
+
+  const { data: cluster } = useQuery(adminNodesQueryOptions)
 
   const facts = useMemo(() => data?.nodes ?? [], [data])
-  const topology = useMemo(() => buildTopology(facts), [facts])
+  const names = useMemo(() => cluster?.nodes.map((n) => n.node), [cluster])
+  const topology = useMemo(() => buildTopology(facts, names), [facts, names])
 
   const placed = useMemo(
     () =>
@@ -373,59 +301,31 @@ function TopologyPage() {
     }))
   }, [topology, facts, placed, direction])
 
-  const hoverContext = useMemo(() => {
-    const byId = new Map(topology.links.map((link) => [link.id, link]))
-
-    return {
-      focus: (linkId: string) => focusOf(byId.get(linkId), hover),
-      setHover,
-    }
-  }, [topology, hover])
-
   // A node link runs from its switch into the node's own port row; the
   // internet's links run into the switches.
   const edges = useMemo(
     () =>
-      topology.links.map((link): LinkEdge => {
+      topology.links.map((link): TopologyEdge => {
         const fromNode = link.source.startsWith("node:")
         // Both kinds are recorded upstream-last, so draw them reversed.
         const flip = fromNode || link.target === "internet"
 
-        const focus = focusOf(link, hover)
-
         return {
           id: link.id,
-          type: "link",
+          type: "line",
           source: flip ? link.target : link.source,
           target: flip ? link.source : link.target,
           targetHandle: fromNode ? link.nic : undefined,
-          data: { focus, wan: link.planes.includes("wan") },
-          zIndex: focus === "on" ? 1 : 0,
+          data: { heavy: link.planes.includes("wan") },
         }
       }),
-    [topology, hover],
+    [topology],
   )
 
   return (
     <>
       <PageHeading
-        actions={
-          <ToggleGroup
-            aria-label="Layout"
-            onValueChange={(value: string[]) => {
-              const [next] = value
-
-              if (next === "down" || next === "across") {
-                setDirection(next)
-              }
-            }}
-            value={[direction]}
-            variant="outline"
-          >
-            <ToggleGroupItem value="across">Left to right</ToggleGroupItem>
-            <ToggleGroupItem value="down">Top down</ToggleGroupItem>
-          </ToggleGroup>
-        }
+        actions={<DirectionToggle onChange={setDirection} value={direction} />}
         subtitle="The Spinifex nodes, the switches they detect, and the speed and plane of every port that joins them. Hover a port or a node to trace its links."
         title="Topology"
       />
@@ -436,45 +336,24 @@ function TopologyPage() {
             Reading node facts…
           </p>
         ) : (
-          <HoverContext value={hoverContext}>
-            <ReactFlow
-              colorMode={theme === "dark" ? "dark" : "light"}
-              edgeTypes={EDGE_TYPES}
-              edges={edges}
-              fitView
-              key={direction}
-              nodeTypes={NODE_TYPES}
-              nodes={nodes}
-              nodesConnectable={false}
-              onEdgeMouseEnter={(_, edge) => {
-                setHover({ kind: "link", id: edge.id })
-              }}
-              onEdgeMouseLeave={() => {
-                setHover(undefined)
-              }}
-              onNodeClick={(_, node) => {
-                if (node.data.device.kind === "node") {
-                  void navigate({
-                    to: "/nodes",
-                    search: {
-                      selected: node.id.replace(/^node:/, ""),
-                      tab: "network",
-                    },
-                  })
-                }
-              }}
-              onNodeMouseEnter={(_, node) => {
-                setHover({ kind: "node", id: node.id })
-              }}
-              onNodeMouseLeave={() => {
-                setHover(undefined)
-              }}
-              proOptions={{ hideAttribution: true }}
-            >
-              <Background />
-              <Controls showInteractive={false} />
-            </ReactFlow>
-          </HoverContext>
+          <TopologyCanvas
+            edges={edges}
+            layoutKey={direction}
+            links={topology.links}
+            nodeTypes={NODE_TYPES}
+            nodes={nodes}
+            onNodeClick={(node: DeviceNode) => {
+              if (node.data.device.kind === "node") {
+                void navigate({
+                  to: "/nodes",
+                  search: {
+                    selected: node.id.replace(/^node:/, ""),
+                    tab: "network",
+                  },
+                })
+              }
+            }}
+          />
         )}
       </div>
     </>

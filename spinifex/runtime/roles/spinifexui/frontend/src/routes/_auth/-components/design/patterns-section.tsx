@@ -1,3 +1,4 @@
+import { Handle, type Node, type NodeProps, Position } from "@xyflow/react"
 import { Plus, Trash2 } from "lucide-react"
 import { useState } from "react"
 
@@ -18,6 +19,11 @@ import { PageHeading } from "@/components/page-heading"
 import { PickerNoticeText } from "@/components/picker-notice"
 import { SelectionBar } from "@/components/selection-bar"
 import { StateBadge } from "@/components/state-badge"
+import {
+  InternetCard,
+  TopologyCanvas,
+  type TopologyEdge,
+} from "@/components/topology/topology-canvas"
 import { Button } from "@/components/ui/button"
 import { WizardFailureBanner } from "@/components/wizard-failure-banner"
 
@@ -74,6 +80,57 @@ const REFUSED = Object.assign(
   new Error("The subnet CIDR overlaps 10.0.1.0/24."),
   { name: "InvalidSubnet.Conflict" },
 )
+
+type SampleNode = Node<{ label: string }, "sample">
+
+function SampleCard({ data }: NodeProps<SampleNode>) {
+  return (
+    <div className="w-40 rounded-lg border bg-card p-2 font-mono text-xs">
+      <Handle
+        className="opacity-0"
+        isConnectable={false}
+        position={Position.Top}
+        type="target"
+      />
+      {data.label}
+      <Handle
+        className="opacity-0"
+        isConnectable={false}
+        position={Position.Bottom}
+        type="source"
+      />
+    </div>
+  )
+}
+
+const SAMPLE_NODE_TYPES = { sample: SampleCard }
+
+const SAMPLE_NODES: SampleNode[] = [
+  ["internet", "Internet", 100, 0],
+  ["igw", "igw-0a1b2c3d", 100, 90],
+  ["public", "public-a", 0, 180],
+  ["private", "private-b", 200, 180],
+].map(([id, label, x, y]) => ({
+  id: String(id),
+  type: "sample",
+  position: { x: Number(x), y: Number(y) },
+  data: { label: String(label) },
+}))
+
+const SAMPLE_LINKS = [
+  { id: "internet>igw", source: "internet", target: "igw" },
+  { id: "igw>public", source: "igw", target: "public" },
+  { id: "igw>private", source: "igw", target: "private" },
+]
+
+const SAMPLE_EDGES: TopologyEdge[] = SAMPLE_LINKS.map((link) => ({
+  ...link,
+  type: "line",
+  data: {
+    heavy: link.source === "internet",
+    label: link.source === "igw" ? "0.0.0.0/0" : undefined,
+  },
+}))
 
 export function PatternsSection() {
   const [phrase, setPhrase] = useState("")
@@ -221,6 +278,23 @@ export function PatternsSection() {
         <PickerNoticeText
           notice={{ tone: "error", text: "Could not load subnets." }}
         />
+      </Specimen>
+      <Specimen label="Topology canvas: read-only, hover a card to trace its lines">
+        <div className="h-72 w-full overflow-hidden rounded-lg border">
+          <TopologyCanvas
+            edges={SAMPLE_EDGES}
+            links={SAMPLE_LINKS}
+            nodeTypes={SAMPLE_NODE_TYPES}
+            nodes={SAMPLE_NODES}
+          />
+        </div>
+      </Specimen>
+      <Specimen label="Internet card: reached, not reached, and unknown when its reads failed">
+        <div className="flex flex-wrap gap-3">
+          <InternetCard reach="reachable" />
+          <InternetCard reach="unreachable" />
+          <InternetCard reach="unknown" />
+        </div>
       </Specimen>
       <Specimen label="Typed confirmation">
         <div className="w-full max-w-md">

@@ -236,6 +236,7 @@ func TestRefreshSQSWorkerState_SameNodeOnly(t *testing.T) {
 // The spec maps onto a launch the worker validator accepts, with the VPC ENI
 // as the default NIC and an empty mgmt slot for the daemon to fill.
 func TestSQSWorkerInput_MapsSpec(t *testing.T) {
+	t.Parallel()
 	spec := workerlaunch.Spec{InstanceType: "sys.test", ProfileARN: testWorkerProfile, DataVolumeID: "vol-0123456789abcdef0",
 		Region: testWorkerRegion, Network: workerlaunch.Network{SubnetID: "subnet-1", ENIID: "eni-1", ENIMac: "02:00:00:00:00:01",
 			ENIIP: "10.240.0.10", CIDR: "10.240.0.10/22", Gateway: "10.240.0.1"}}
@@ -310,6 +311,7 @@ var broadWorkerTrust = strings.Replace(iamdomain.EC2InstanceTrustPolicy, `{"Serv
 // The role is created with EC2-only trust and granted exactly the gateway's
 // internal actions, and the new profile carries exactly that role.
 func TestSQSWorkerRoles_EC2OnlyTrustAndMinimalPolicy(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeRoleIAM{}
 	arn, err := sqsWorkerRolesWith(fake).EnsureWorkerProfile(ctx)
@@ -372,6 +374,7 @@ func TestSQSWorkerRoles_RefusesAMismatchedProfile(t *testing.T) {
 // Without a cluster storage key the volume adapter refuses before the
 // preparer runs, so no unencrypted volume is allocated.
 func TestSQSWorkerVolumes_RefusesBeforeAllocatingWithoutAStorageKey(t *testing.T) {
+	t.Parallel()
 	v := sqsWorkerVolumes{prep: &storevolume.Preparer{}, availabilityZone: "az-1"}
 	_, err := v.Prepare(t.Context(), 1)
 	require.ErrorIs(t, err, workerlaunch.ErrUnencrypted)

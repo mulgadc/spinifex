@@ -13,6 +13,7 @@ import (
 )
 
 func TestClassify_MapsEachRecordLocationAndShape(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	sys := &vm.VM{ID: "i-sys", AccountID: awsidentifiers.GlobalAccountID, ManagedBy: tags.ManagedByRDS, Status: vm.StateRunning,
 		ENIId: "eni-sys", PublicIPAllocID: "eipalloc-sys"}
@@ -51,6 +52,7 @@ func TestClassify_MapsEachRecordLocationAndShape(t *testing.T) {
 }
 
 func TestClassify_ReturnsReadFailuresInsteadOfMappingThem(t *testing.T) {
+	t.Parallel()
 	for name, m := range map[string]*daemon.JetStreamManager{
 		"buckets not initialised": {},
 		"nil manager":             nil,

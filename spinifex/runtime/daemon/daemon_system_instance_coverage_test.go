@@ -775,6 +775,7 @@ func TestTerminateSystemInstance(t *testing.T) {
 }
 
 func TestReleaseSystemInstanceEIP_Errors(t *testing.T) {
+	t.Parallel()
 	d := newDaemonWithVMs()
 	eip := &fakeEIPService{disassociateErr: errInjected, releaseErr: errInjected}
 	d.eipService = eip

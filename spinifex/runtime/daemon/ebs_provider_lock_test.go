@@ -44,6 +44,7 @@ func recordedEBSProvider(t *testing.T, js jetstream.JetStream) (EBSProviderRecor
 }
 
 func TestClusterConfigBucket_NoTTLAndSchemaVersion(t *testing.T) {
+	t.Parallel()
 	ns, _, js := testutil.StartTestJetStream(t)
 	newLockManager(t, ns.ClientURL())
 
@@ -60,6 +61,7 @@ func TestClusterConfigBucket_NoTTLAndSchemaVersion(t *testing.T) {
 }
 
 func TestClaimEBSProvider_FirstClaimRecordsAndMatchingNodesJoin(t *testing.T) {
+	t.Parallel()
 	ns, _, js := testutil.StartTestJetStream(t)
 	first := newLockManager(t, ns.ClientURL())
 	second := newLockManager(t, ns.ClientURL())
@@ -80,6 +82,7 @@ func TestClaimEBSProvider_FirstClaimRecordsAndMatchingNodesJoin(t *testing.T) {
 }
 
 func TestClaimEBSProvider_DifferentProviderRefused(t *testing.T) {
+	t.Parallel()
 	ns, _, js := testutil.StartTestJetStream(t)
 	first := newLockManager(t, ns.ClientURL())
 	second := newLockManager(t, ns.ClientURL())
@@ -138,6 +141,7 @@ func TestClaimEBSProvider_InvalidRecordRefused(t *testing.T) {
 // Two daemons on different providers starting together: whichever Create wins
 // is recorded, and the other is refused.
 func TestClaimEBSProvider_ConcurrentDifferentProvidersLeaveOneKeyAndOneRefusal(t *testing.T) {
+	t.Parallel()
 	for range 20 {
 		ns, _, js := testutil.StartTestJetStream(t)
 		managers := []*JetStreamManager{newLockManager(t, ns.ClientURL()), newLockManager(t, ns.ClientURL())}

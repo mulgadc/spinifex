@@ -17,6 +17,7 @@ import (
 // against panics in tests + single-node deployments where the manager is
 // optional.
 func TestReconcileOnHeal_NilJetStream(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{}
 	d.reconcileOnHeal("test") // must not panic
 	assert.Equal(t, uint64(0), d.Revision())
@@ -26,6 +27,7 @@ func TestReconcileOnHeal_NilJetStream(t *testing.T) {
 // stateRevision increments. Uses the same local-file path TestDaemonWriteState
 // exercises so we don't need a live NATS server.
 func TestReconcileOnHeal_BumpsRevision(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{
 		config:    &config.Config{DataDir: t.TempDir()},
 		vmMgr:     vm.NewManager(),
@@ -45,6 +47,7 @@ func TestReconcileOnHeal_BumpsRevision(t *testing.T) {
 // observe the flag and return without re-running WriteState. Simulated by
 // pre-setting the flag.
 func TestReconcileOnHeal_Coalesces(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{
 		config:    &config.Config{DataDir: t.TempDir()},
 		vmMgr:     vm.NewManager(),
@@ -64,6 +67,7 @@ func TestReconcileOnHeal_Coalesces(t *testing.T) {
 // overlapping window. The looser bound is enough — we assert no panics and
 // at least one write succeeded.
 func TestReconcileOnHeal_ConcurrentRaceCoalesces(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{
 		config:    &config.Config{DataDir: t.TempDir()},
 		vmMgr:     vm.NewManager(),
@@ -95,6 +99,7 @@ func TestReconcileOnHeal_ConcurrentRaceCoalesces(t *testing.T) {
 // loopback so onNATSReconnect is the wrong signal). Waits up to 1s for the
 // goroutine to bump Revision.
 func TestProbePeersOnce_TriggersReconcileOnHeal(t *testing.T) {
+	t.Parallel()
 	f := newPeerHealthFixture(t, 1)
 	d, _ := daemonForPeerHealth(t, f.cfg)
 	d.config = &config.Config{DataDir: t.TempDir()}

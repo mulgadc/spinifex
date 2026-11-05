@@ -122,6 +122,7 @@ func TestCanAllocateCount(t *testing.T) {
 }
 
 func TestCanAllocateCount_GPU(t *testing.T) {
+	t.Parallel()
 	// Base resource params: plenty of CPU and memory, 1 GPU available.
 	const (
 		avCPU  = 32
@@ -378,6 +379,7 @@ func TestAllocateForLaunch(t *testing.T) {
 }
 
 func TestCanAllocateLocked_MIGvsWholeGPU(t *testing.T) {
+	t.Parallel()
 	gpuInfo := &ec2.GpuInfo{
 		Gpus: []*ec2.GpuDeviceInfo{{
 			Count:        aws.Int64(1),
@@ -734,6 +736,7 @@ func TestResolveNbdkitCharge(t *testing.T) {
 }
 
 func TestNbdkitChargeMiB(t *testing.T) {
+	t.Parallel()
 	// Default layout: 1 main + 2 aux at the measured per-class figures.
 	assert.Equal(t, int64(768+2*96), nbdkitChargeMiB(1, 2, 768, 96))
 	// Aux-only / main-only decompose linearly.
@@ -748,6 +751,7 @@ func TestNbdkitChargeMiB(t *testing.T) {
 // default 1-main+2-aux layout), and an allocate/deallocate round-trip restores
 // the exact baseline with no drift.
 func TestRG6_FullCostCharge(t *testing.T) {
+	t.Parallel()
 	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
 

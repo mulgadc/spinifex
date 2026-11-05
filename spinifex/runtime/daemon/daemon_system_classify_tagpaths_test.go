@@ -33,6 +33,7 @@ func attachClassifierStore(t *testing.T, d *Daemon) {
 }
 
 func TestClassify_RunInstancesTagSpecificationsCannotMakeSystem(t *testing.T) {
+	t.Parallel()
 	ns, _, _ := testutil.StartTestJetStream(t)
 	d, memStore := createFullTestDaemonWithStore(t, ns.ClientURL())
 	seedTestAMI(t, memStore, d.config.Predastore.Bucket, "ami-tagpath")
@@ -85,6 +86,7 @@ func TestClassify_RunInstancesTagSpecificationsCannotMakeSystem(t *testing.T) {
 }
 
 func TestClassify_CreateTagsCannotMakeRunningInstanceSystem(t *testing.T) {
+	t.Parallel()
 	const id = "i-tagpath-running"
 	d := tagTestDaemon(t, id, nil)
 	attachClassifierStore(t, d)
@@ -110,6 +112,7 @@ func TestClassify_CreateTagsCannotMakeRunningInstanceSystem(t *testing.T) {
 }
 
 func TestClassify_CreateTagsCannotMakeStoppedInstanceSystem(t *testing.T) {
+	t.Parallel()
 	const id = "i-tagpath-stopped"
 	d, stopped := tagTestDaemonWithStopped(t, "i-tagpath-unrelated", nil)
 	attachClassifierStore(t, d)

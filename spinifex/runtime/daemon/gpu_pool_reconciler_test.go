@@ -34,6 +34,7 @@ func claimMIGSliceForReconcilerTest(t *testing.T, instanceID string) *gpu.Manage
 // A GPU pool entry whose InstanceID names an instance absent
 // from the running map entirely must be released.
 func TestGPUPoolReconciler_FreesOrphanedSlot(t *testing.T) {
+	t.Parallel()
 	mgr := claimMIGSliceForReconcilerTest(t, "i-orphan")
 	d := &Daemon{vmMgr: vm.NewManager(), gpuManager: mgr}
 	r := d.newGPUPoolReconciler()
@@ -49,6 +50,7 @@ func TestGPUPoolReconciler_FreesOrphanedSlot(t *testing.T) {
 // TestGPUPoolReconciler_LeavesRunningInstanceAlone verifies the reconciler
 // does not touch a slot whose instance is actively running.
 func TestGPUPoolReconciler_LeavesRunningInstanceAlone(t *testing.T) {
+	t.Parallel()
 	mgr := claimMIGSliceForReconcilerTest(t, "i-running")
 	vmMgr := vm.NewManager()
 	vmMgr.Insert(&vm.VM{ID: "i-running", Status: vm.StateRunning})
@@ -68,6 +70,7 @@ func TestGPUPoolReconciler_LeavesRunningInstanceAlone(t *testing.T) {
 // scenario the synchronous crash-recovery release targets directly, here
 // caught by the reconciler as a second line of defense.
 func TestGPUPoolReconciler_FreesSlotForTerminalInstance(t *testing.T) {
+	t.Parallel()
 	mgr := claimMIGSliceForReconcilerTest(t, "i-error")
 	vmMgr := vm.NewManager()
 	vmMgr.Insert(&vm.VM{ID: "i-error", Status: vm.StateError})
@@ -85,6 +88,7 @@ func TestGPUPoolReconciler_FreesSlotForTerminalInstance(t *testing.T) {
 // TestGPUPoolReconciler_NoGPUManager_NoOp verifies the reconciler is a
 // harmless no-op when GPU passthrough is disabled.
 func TestGPUPoolReconciler_NoGPUManager_NoOp(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{vmMgr: vm.NewManager()}
 	r := d.newGPUPoolReconciler()
 	require.NotNil(t, r)
@@ -98,6 +102,7 @@ func TestGPUPoolReconciler_NoGPUManager_NoOp(t *testing.T) {
 // TestNewGPUPoolReconciler_NilWithoutVMManager verifies the constructor
 // refuses to build a reconciler with no VM manager to query.
 func TestNewGPUPoolReconciler_NilWithoutVMManager(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{}
 	assert.Nil(t, d.newGPUPoolReconciler())
 }

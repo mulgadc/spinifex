@@ -33,6 +33,7 @@ func newWireLBTestDaemon(t *testing.T, cfg *config.Config) *Daemon {
 }
 
 func TestWireLBAgentConfig_Credentials(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{
 		Predastore: config.PredastoreConfig{
 			AccessKey: "AKID-test",
@@ -48,6 +49,7 @@ func TestWireLBAgentConfig_Credentials(t *testing.T) {
 }
 
 func TestWireLBAgentConfig_NoCredentials(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{}
 	d := newWireLBTestDaemon(t, cfg)
 
@@ -58,6 +60,7 @@ func TestWireLBAgentConfig_NoCredentials(t *testing.T) {
 }
 
 func TestWireLBAgentConfig_GatewayURL_MultiNode(t *testing.T) {
+	t.Parallel()
 	// Multi-node: mgmtBridgeIP set, AWSGW binds to a specific WAN IP.
 	// Gateway should use the AWSGW bind IP, not br-mgmt.
 	cfg := &config.Config{
@@ -72,6 +75,7 @@ func TestWireLBAgentConfig_GatewayURL_MultiNode(t *testing.T) {
 }
 
 func TestWireLBAgentConfig_GatewayURL_SingleNode(t *testing.T) {
+	t.Parallel()
 	// Single-node: mgmtBridgeIP set, AWSGW on 0.0.0.0 → use br-mgmt IP.
 	cfg := &config.Config{
 		AWSGW: config.AWSGWConfig{Host: "0.0.0.0:9999"},
@@ -85,6 +89,7 @@ func TestWireLBAgentConfig_GatewayURL_SingleNode(t *testing.T) {
 }
 
 func TestWireLBAgentConfig_GatewayURL_MgmtNoAWSGW(t *testing.T) {
+	t.Parallel()
 	// mgmtBridgeIP set, no AWSGW Host → use br-mgmt IP.
 	cfg := &config.Config{}
 	d := newWireLBTestDaemon(t, cfg)
@@ -96,6 +101,7 @@ func TestWireLBAgentConfig_GatewayURL_MgmtNoAWSGW(t *testing.T) {
 }
 
 func TestWireLBAgentConfig_GatewayURL_DevNetworking(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{
 		Daemon: config.DaemonConfig{DevNetworking: true},
 	}
@@ -108,6 +114,7 @@ func TestWireLBAgentConfig_GatewayURL_DevNetworking(t *testing.T) {
 }
 
 func TestWireLBAgentConfig_GatewayURL_AWSGWBindOnly(t *testing.T) {
+	t.Parallel()
 	// No mgmtBridgeIP, no DevNetworking, AWSGW binds to specific IP.
 	cfg := &config.Config{
 		AWSGW: config.AWSGWConfig{Host: "192.168.1.10:8443"},
@@ -120,6 +127,7 @@ func TestWireLBAgentConfig_GatewayURL_AWSGWBindOnly(t *testing.T) {
 }
 
 func TestWireLBAgentConfig_GatewayURL_NoHost(t *testing.T) {
+	t.Parallel()
 	// No mgmtBridgeIP, no DevNetworking, no AWSGW → no gateway URL.
 	cfg := &config.Config{}
 	d := newWireLBTestDaemon(t, cfg)
@@ -133,6 +141,7 @@ func TestWireLBAgentConfig_GatewayURL_NoHost(t *testing.T) {
 // wildcard): the gateway URL falls back to the node's advertised off-host IP.
 // Covers the "empty gateway URL" failure.
 func TestWireLBAgentConfig_GatewayURL_AdvertiseFallback(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{
 		AdvertiseIP: "192.168.1.21",
 		AWSGW:       config.AWSGWConfig{Host: "0.0.0.0:9999"},
@@ -149,6 +158,7 @@ func TestWireLBAgentConfig_GatewayURL_AdvertiseFallback(t *testing.T) {
 // the wildcard, the gateway URL must stay empty and the daemon must log an
 // error rather than silently assigning a broken URL.
 func TestWireLBAgentConfig_GatewayURL_NoAdvertiseNoBridge(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{
 		AWSGW: config.AWSGWConfig{Host: "0.0.0.0:9999"},
 	}
@@ -163,6 +173,7 @@ func TestWireLBAgentConfig_GatewayURL_NoAdvertiseNoBridge(t *testing.T) {
 // Gateway must be AdvertiseIP (reachable via the VM's WAN NIC), NOT the
 // br-mgmt IP (guest has no DHCP on br-mgmt so that subnet is unreachable).
 func TestWireLBAgentConfig_GatewayURL_AdvertiseOverMgmtBridge(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{
 		AdvertiseIP: "192.168.1.32",
 		AWSGW:       config.AWSGWConfig{Host: "0.0.0.0:9999"},
@@ -185,6 +196,7 @@ func TestWireLBAgentConfig_GatewayURL_AdvertiseOverMgmtBridge(t *testing.T) {
 // connections out br-mgmt, bypassing OVN SNAT and arriving at the host with a
 // source that doesn't match the open TCP socket.
 func TestWireLBAgentConfig_GatewayURL_SingleNodeBindMatchesAdvertise(t *testing.T) {
+	t.Parallel()
 	cfg := &config.Config{
 		AdvertiseIP: "192.168.0.17",
 		AWSGW:       config.AWSGWConfig{Host: "192.168.0.17:9999"},
@@ -234,6 +246,7 @@ func hasELBv2Subs(subs map[string]*nats.Subscription) bool {
 }
 
 func TestSubscribeAll_SkipsELBv2WhenGatewayURLEmpty(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	d := newSubscribeTestDaemon(t, nc, "", "AKID-test")
 
@@ -245,6 +258,7 @@ func TestSubscribeAll_SkipsELBv2WhenGatewayURLEmpty(t *testing.T) {
 }
 
 func TestSubscribeAll_RegistersELBv2WhenConfigured(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	d := newSubscribeTestDaemon(t, nc, "https://10.0.0.1:9999", "AKID-test")
 

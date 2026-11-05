@@ -42,6 +42,7 @@ func TestHasPublicIPPools(t *testing.T) {
 }
 
 func TestPublicExternalPools_FiltersTransit(t *testing.T) {
+	t.Parallel()
 	pools := []config.ExternalPool{
 		{Name: host.NATTransitPoolName},
 		{Name: "wan", Source: "dhcp", BindBridge: "wlan0"},

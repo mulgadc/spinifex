@@ -99,6 +99,7 @@ func stoppedVMFixture(id, accountID string) *vm.VM {
 // --- handleEC2StartStoppedInstance ---
 
 func TestHandleEC2StartStoppedInstance_LoadError(t *testing.T) {
+	t.Parallel()
 	store := vmmock.New()
 	store.LoadStoppedErr = errors.New("kv unavailable")
 	d := daemonWithFakeStateStore(t, store)
@@ -109,6 +110,7 @@ func TestHandleEC2StartStoppedInstance_LoadError(t *testing.T) {
 }
 
 func TestHandleEC2StartStoppedInstance_StateStoreNil(t *testing.T) {
+	t.Parallel()
 	d := createTestDaemon(t, sharedNATSURL)
 	// d.stateStore intentionally left nil.
 
@@ -118,6 +120,7 @@ func TestHandleEC2StartStoppedInstance_StateStoreNil(t *testing.T) {
 }
 
 func TestHandleEC2StartStoppedInstance_CrossTenantRejected(t *testing.T) {
+	t.Parallel()
 	store := vmmock.New()
 	store.Stopped["i-foreign"] = stoppedVMFixture("i-foreign", "999988887777")
 	d := daemonWithFakeStateStore(t, store)
@@ -133,6 +136,7 @@ func TestHandleEC2StartStoppedInstance_CrossTenantRejected(t *testing.T) {
 }
 
 func TestHandleEC2StartStoppedInstance_InstanceTypeUnknown(t *testing.T) {
+	t.Parallel()
 	store := vmmock.New()
 	v := stoppedVMFixture("i-unknown-type", testAccountID)
 	v.InstanceType = "definitely.not.a.real.type"
@@ -222,6 +226,7 @@ func TestHandleEC2StartStoppedInstance_ForwardTimeoutAfterRemoteClaim_NoDoubleSt
 // --- handleEC2TerminateStoppedInstance ---
 
 func TestHandleEC2TerminateStoppedInstance_LoadError(t *testing.T) {
+	t.Parallel()
 	store := vmmock.New()
 	store.LoadStoppedErr = errors.New("kv unavailable")
 	d := daemonWithFakeStateStore(t, store)
@@ -232,6 +237,7 @@ func TestHandleEC2TerminateStoppedInstance_LoadError(t *testing.T) {
 }
 
 func TestHandleEC2TerminateStoppedInstance_StateStoreNil(t *testing.T) {
+	t.Parallel()
 	d := createTestDaemon(t, sharedNATSURL)
 
 	body, _ := json.Marshal(ec2instance.TerminateStoppedInstanceInput{InstanceID: "i-no-store"})
@@ -242,6 +248,7 @@ func TestHandleEC2TerminateStoppedInstance_StateStoreNil(t *testing.T) {
 // WriteTerminatedInstance failure must abort BEFORE the stopped-bucket
 // delete — otherwise an instance can vanish from both buckets.
 func TestHandleEC2TerminateStoppedInstance_WriteTerminatedFailureAborts(t *testing.T) {
+	t.Parallel()
 	store := vmmock.New()
 	store.WriteTerminatedErr = errors.New("terminated bucket write failed")
 	v := stoppedVMFixture("i-write-term-fail", testAccountID)
@@ -263,6 +270,7 @@ func TestHandleEC2TerminateStoppedInstance_WriteTerminatedFailureAborts(t *testi
 // First stopped-bucket delete fails, second succeeds — instance must end up
 // only in the terminated bucket and the handler must still respond success.
 func TestHandleEC2TerminateStoppedInstance_DeleteRetrySucceeds(t *testing.T) {
+	t.Parallel()
 	store := vmmock.New()
 	store.DeleteFailFirst = true
 	v := stoppedVMFixture("i-retry-success", testAccountID)
@@ -288,6 +296,7 @@ func TestHandleEC2TerminateStoppedInstance_DeleteRetrySucceeds(t *testing.T) {
 // (the terminated-bucket write is the source of truth) and must NOT roll back
 // the terminated write.
 func TestHandleEC2TerminateStoppedInstance_DeleteAlwaysFailsKeepsTerminated(t *testing.T) {
+	t.Parallel()
 	store := vmmock.New()
 	store.DeleteStoppedErr = errors.New("delete persistently broken")
 	v := stoppedVMFixture("i-retry-fail", testAccountID)
@@ -306,6 +315,7 @@ func TestHandleEC2TerminateStoppedInstance_DeleteAlwaysFailsKeepsTerminated(t *t
 }
 
 func TestHandleEC2TerminateStoppedInstance_CrossTenantRejected(t *testing.T) {
+	t.Parallel()
 	store := vmmock.New()
 	store.Stopped["i-foreign-term"] = stoppedVMFixture("i-foreign-term", "999988887777")
 	d := daemonWithFakeStateStore(t, store)
@@ -323,6 +333,7 @@ func TestHandleEC2TerminateStoppedInstance_CrossTenantRejected(t *testing.T) {
 // --- handleEC2ModifyInstanceAttribute ---
 
 func TestHandleEC2ModifyInstanceAttribute_WriteFailureReturnsServerInternal(t *testing.T) {
+	t.Parallel()
 	store := vmmock.New()
 	store.UpdateStoppedErr = errors.New("kv write failed")
 	v := stoppedVMFixture("i-mod-write-fail", testAccountID)
@@ -339,6 +350,7 @@ func TestHandleEC2ModifyInstanceAttribute_WriteFailureReturnsServerInternal(t *t
 }
 
 func TestHandleEC2ModifyInstanceAttribute_LoadFailureReturnsServerInternal(t *testing.T) {
+	t.Parallel()
 	store := vmmock.New()
 	store.LoadStoppedErr = errors.New("kv unavailable")
 	d := daemonWithFakeStateStore(t, store)
@@ -353,6 +365,7 @@ func TestHandleEC2ModifyInstanceAttribute_LoadFailureReturnsServerInternal(t *te
 }
 
 func TestHandleEC2ModifyInstanceAttribute_NilInstanceFieldGuard(t *testing.T) {
+	t.Parallel()
 	// Stored VM with a valid status but a nil Instance pointer — the handler
 	// must reject this as a data-integrity violation rather than NPE.
 	store := vmmock.New()
@@ -377,6 +390,7 @@ func TestHandleEC2ModifyInstanceAttribute_NilInstanceFieldGuard(t *testing.T) {
 }
 
 func TestHandleEC2ModifyInstanceAttribute_EmptyInstanceTypeRejected(t *testing.T) {
+	t.Parallel()
 	store := vmmock.New()
 	v := stoppedVMFixture("i-mod-empty-type", testAccountID)
 	store.Stopped[v.ID] = v
@@ -392,6 +406,7 @@ func TestHandleEC2ModifyInstanceAttribute_EmptyInstanceTypeRejected(t *testing.T
 }
 
 func TestHandleEC2ModifyInstanceAttribute_CrossTenantRejected(t *testing.T) {
+	t.Parallel()
 	store := vmmock.New()
 	store.Stopped["i-mod-foreign"] = stoppedVMFixture("i-mod-foreign", "999988887777")
 	d := daemonWithFakeStateStore(t, store)
@@ -408,6 +423,7 @@ func TestHandleEC2ModifyInstanceAttribute_CrossTenantRejected(t *testing.T) {
 // --- handleEC2DescribeInstanceAttribute ---
 
 func TestHandleEC2DescribeInstanceAttribute_StoppedFallback_LoadError(t *testing.T) {
+	t.Parallel()
 	store := vmmock.New()
 	store.LoadStoppedErr = errors.New("kv unavailable")
 	d := daemonWithFakeStateStore(t, store)
@@ -424,6 +440,7 @@ func TestHandleEC2DescribeInstanceAttribute_StoppedFallback_LoadError(t *testing
 }
 
 func TestHandleEC2DescribeInstanceAttribute_StoppedFallback_HitsKV(t *testing.T) {
+	t.Parallel()
 	store := vmmock.New()
 	v := stoppedVMFixture("i-describe-stopped", testAccountID)
 	v.InstanceType = "t3.medium"
@@ -446,6 +463,7 @@ func TestHandleEC2DescribeInstanceAttribute_StoppedFallback_HitsKV(t *testing.T)
 }
 
 func TestHandleEC2DescribeInstanceAttribute_StateStoreNil(t *testing.T) {
+	t.Parallel()
 	d := createTestDaemon(t, sharedNATSURL)
 	// d.stateStore left nil; vmMgr also empty -> falls through to KV branch
 	// which short-circuits with ServerInternal.
@@ -462,6 +480,7 @@ func TestHandleEC2DescribeInstanceAttribute_StateStoreNil(t *testing.T) {
 // --- handleEC2DescribeStoppedInstances / handleEC2DescribeTerminatedInstances ---
 
 func TestHandleEC2DescribeStoppedInstances_ListError(t *testing.T) {
+	t.Parallel()
 	store := vmmock.New()
 	store.ListStoppedErr = errors.New("list failed")
 	d := daemonWithFakeStateStore(t, store)
@@ -471,6 +490,7 @@ func TestHandleEC2DescribeStoppedInstances_ListError(t *testing.T) {
 }
 
 func TestHandleEC2DescribeTerminatedInstances_ListError(t *testing.T) {
+	t.Parallel()
 	store := vmmock.New()
 	store.ListTerminatedErr = errors.New("list failed")
 	d := daemonWithFakeStateStore(t, store)
@@ -480,6 +500,7 @@ func TestHandleEC2DescribeTerminatedInstances_ListError(t *testing.T) {
 }
 
 func TestHandleEC2DescribeStoppedInstances_CrossAccountIsolation(t *testing.T) {
+	t.Parallel()
 	store := vmmock.New()
 	store.Stopped["i-mine"] = stoppedVMFixture("i-mine", testAccountID)
 	store.Stopped["i-yours"] = stoppedVMFixture("i-yours", "999988887777")
@@ -504,6 +525,7 @@ func TestHandleEC2DescribeStoppedInstances_CrossAccountIsolation(t *testing.T) {
 // --- handleEC2RunInstances ---
 
 func TestHandleEC2RunInstances_MissingAccountHeader(t *testing.T) {
+	t.Parallel()
 	d := createTestDaemon(t, sharedNATSURL)
 	body := mustMarshal(t, &ec2.RunInstancesInput{InstanceType: aws.String(getTestInstanceType(t))})
 
@@ -513,6 +535,7 @@ func TestHandleEC2RunInstances_MissingAccountHeader(t *testing.T) {
 }
 
 func TestHandleEC2RunInstances_InvalidReservationTarget(t *testing.T) {
+	t.Parallel()
 	d := createTestDaemon(t, sharedNATSURL)
 	body := mustMarshal(t, &ec2.RunInstancesInput{
 		InstanceType: aws.String(getTestInstanceType(t)),
@@ -531,6 +554,7 @@ func TestHandleEC2RunInstances_InvalidReservationTarget(t *testing.T) {
 // A gateway-minted reservation ID replaces the one prepare generated, and a
 // central tag store that cannot take the launch tags does not fail the launch.
 func TestHandleEC2RunInstances_GatewayReservationAndTagStoreFailure(t *testing.T) {
+	t.Parallel()
 	d := createTestDaemon(t, sharedNATSURL)
 	images := objectstore.NewMemoryObjectStore()
 	seedTestAMI(t, images, d.config.Predastore.Bucket, "ami-p1-gateway")
@@ -665,6 +689,7 @@ func TestHandleEC2StartStoppedInstance_Forwarding(t *testing.T) {
 // reply, the ec2.start forwarder's relay and the StartInstances client, and
 // must still match the sentinel at the end, whatever words the provider used.
 func TestStartInstances_VolumeHeldElsewhereSurvivesTheForward(t *testing.T) {
+	t.Parallel()
 	ns, nc := testutil.StartTestNATS(t)
 	store := vmmock.New()
 	v := stoppedVMFixture("i-0abc0000000000001", testAccountID)

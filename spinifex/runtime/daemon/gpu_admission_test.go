@@ -62,6 +62,7 @@ func carvedMIGManager(t *testing.T, slices int) *gpu.Manager {
 // A node with free slices and no free whole GPU must refuse a whole-GPU type at
 // admission, not fail it later at Claim.
 func TestAdmission_FreeSlicesDoNotBackAWholeGPUType(t *testing.T) {
+	t.Parallel()
 	rm := &ResourceManager{
 		hostVCPU:   64,
 		hostMemGB:  256.0,
@@ -78,6 +79,7 @@ func TestAdmission_FreeSlicesDoNotBackAWholeGPUType(t *testing.T) {
 
 // A multi-GPU type divides the free whole GPUs by its own count.
 func TestAdmission_MultiGPUTypeDividesTheWholePool(t *testing.T) {
+	t.Parallel()
 	devices := make([]gpu.GPUDevice, 8)
 	for i := range devices {
 		devices[i] = gpu.GPUDevice{PCIAddress: string(rune('a' + i)), IOMMUGroup: i}
@@ -96,6 +98,7 @@ func TestAdmission_MultiGPUTypeDividesTheWholePool(t *testing.T) {
 // A reservation is a counter over vCPU and memory slots and reserves no pool
 // entry, so its free slots say nothing about whether a GPU is there to claim.
 func TestReservationAvailable_GatesOnFreeGPUs(t *testing.T) {
+	t.Parallel()
 	gpuType := gpuTypeForTest("gpu.4x4c", 4)
 	devices := make([]gpu.GPUDevice, 4)
 	for i := range devices {
@@ -140,6 +143,7 @@ func TestReservationAvailable_GatesOnFreeGPUs(t *testing.T) {
 // clear it. Without the write-lock re-check the loser consumes a reservation
 // slot and then dies at claim time with no GPU to take.
 func TestAllocateFromReservation_RechecksFreeGPUs(t *testing.T) {
+	t.Parallel()
 	gpuType := gpuTypeForTest("gpu.4x4c", 4)
 	devices := make([]gpu.GPUDevice, 4)
 	for i := range devices {
@@ -187,6 +191,7 @@ func TestAllocateFromReservation_RechecksFreeGPUs(t *testing.T) {
 // gpu.* shapes is never the binding constraint. EKS host selection and
 // CreateCapacityReservation both size themselves from this figure.
 func TestGetResourceStats_GPUTypesAreGatedOnGPUs(t *testing.T) {
+	t.Parallel()
 	gpuType := gpuTypeForTest("gpu.4x4c", 4)
 	devices := []gpu.GPUDevice{
 		{PCIAddress: "a", IOMMUGroup: 0},
@@ -226,6 +231,7 @@ func TestGetResourceStats_GPUTypesAreGatedOnGPUs(t *testing.T) {
 
 // A non-GPU reservation keeps answering on slots alone.
 func TestReservationAvailable_NonGPUTypeIsUngated(t *testing.T) {
+	t.Parallel()
 	rm := newReservationTestRM()
 	rm.gpuManager = gpu.NewManager(nil)
 	require.NoError(t, rm.CreateReservation(microReservation("cr-1", "acct-a", 2)))

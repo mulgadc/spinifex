@@ -12,6 +12,7 @@ import (
 // and cannot import this package to learn where they live. If these drift apart
 // it silently probes every stopped instance's port again.
 func TestInstanceRecordLocationMatchesVPCD(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, daemon.InstanceStateBucket, reconcile.InstanceRecordBucket)
 	assert.Equal(t, daemon.InstanceRecordPrefix, reconcile.InstanceRecordPrefix)
 }

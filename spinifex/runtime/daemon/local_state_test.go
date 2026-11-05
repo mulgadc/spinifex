@@ -22,16 +22,19 @@ func writeLocalState(path string, vms map[string]*vm.VM) error {
 }
 
 func TestLocalStatePath_UsesDataDir(t *testing.T) {
+	t.Parallel()
 	got := LocalStatePath("/data")
 	assert.Equal(t, "/data/state/instance-state.json", got)
 }
 
 func TestLocalStatePath_DefaultWhenEmpty(t *testing.T) {
+	t.Parallel()
 	got := LocalStatePath("")
 	assert.Equal(t, "/var/lib/spinifex/state/instance-state.json", got)
 }
 
 func TestWriteLocalState_RoundTrip(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "state", "instance-state.json")
 
 	vms := map[string]*vm.VM{
@@ -51,6 +54,7 @@ func TestWriteLocalState_RoundTrip(t *testing.T) {
 }
 
 func TestWriteLocalState_MkdirParent(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "deep", "nested", "state", "instance-state.json")
 	require.NoError(t, writeLocalState(path, map[string]*vm.VM{}))
 	_, err := os.Stat(path)
@@ -62,6 +66,7 @@ func TestWriteLocalState_MkdirParent(t *testing.T) {
 // mode denies every local lookup and each guest boot falls back to the record
 // space -- where a miss is served as "this instance has no key pair".
 func TestWriteLocalState_GroupReadable(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "instance-state.json")
 	require.NoError(t, writeLocalState(path, map[string]*vm.VM{}))
 
@@ -71,6 +76,7 @@ func TestWriteLocalState_GroupReadable(t *testing.T) {
 }
 
 func TestWriteLocalState_NoTmpLeftBehind(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "instance-state.json")
 	require.NoError(t, writeLocalState(path, map[string]*vm.VM{}))
@@ -83,6 +89,7 @@ func TestWriteLocalState_NoTmpLeftBehind(t *testing.T) {
 }
 
 func TestWriteLocalState_AtomicReplace(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "instance-state.json")
 
 	require.NoError(t, writeLocalState(path, map[string]*vm.VM{
@@ -102,12 +109,14 @@ func TestWriteLocalState_AtomicReplace(t *testing.T) {
 }
 
 func TestReadLocalState_Missing(t *testing.T) {
+	t.Parallel()
 	state, err := ReadLocalState(filepath.Join(t.TempDir(), "absent.json"))
 	require.NoError(t, err)
 	assert.Nil(t, state, "missing file is the fresh-install signal")
 }
 
 func TestReadLocalState_CorruptJSON(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "instance-state.json")
 	require.NoError(t, os.WriteFile(path, []byte("{not json"), 0o600))
 
@@ -117,6 +126,7 @@ func TestReadLocalState_CorruptJSON(t *testing.T) {
 }
 
 func TestReadLocalState_UnknownSchema(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "instance-state.json")
 	data, _ := json.Marshal(map[string]any{"schema_version": 99, "vms": map[string]any{}})
 	require.NoError(t, os.WriteFile(path, data, 0o600))
@@ -127,6 +137,7 @@ func TestReadLocalState_UnknownSchema(t *testing.T) {
 }
 
 func TestReadLocalState_RetainsV1ForNBDRequests(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "instance-state.json")
 	legacy := &vm.VM{ID: "i-v1"}
 	legacy.EBSRequests.Requests = []vm.EBSRequest{{Name: "vol-v1", NBDURI: "nbd+unix:///?socket=/run/vol-v1.sock"}}
@@ -150,6 +161,7 @@ func TestReadLocalState_RetainsV1ForNBDRequests(t *testing.T) {
 }
 
 func TestWriteLocalState_PersistsBlockExportAsV2(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "instance-state.json")
 	instance := &vm.VM{ID: "i-v2"}
 	instance.EBSRequests.Requests = []vm.EBSRequest{{
@@ -169,6 +181,7 @@ func TestWriteLocalState_PersistsBlockExportAsV2(t *testing.T) {
 }
 
 func TestReadLocalState_NilVMSMapInitialized(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "instance-state.json")
 	data, _ := json.Marshal(map[string]any{"schema_version": LocalStateSchemaVersion})
 	require.NoError(t, os.WriteFile(path, data, 0o600))
@@ -208,6 +221,7 @@ func TestWriteLocalState_Failures(t *testing.T) {
 }
 
 func TestReadLocalState_Unreadable(t *testing.T) {
+	t.Parallel()
 	state, err := ReadLocalState(t.TempDir())
 	assert.ErrorContains(t, err, "read local state")
 	assert.Nil(t, state, "an unreadable file is not a fresh install")

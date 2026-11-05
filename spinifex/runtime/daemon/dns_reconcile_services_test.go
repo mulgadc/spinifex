@@ -17,6 +17,7 @@ import (
 // Without a base domain no service can name its records, so none of them may
 // claim prune authority over the zone.
 func TestDNSDesiredSet_ServicesWithoutBaseDomain(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{
 		elbv2Service: &elbv2domain.ELBv2ServiceImpl{},
 		eksService:   &ekscluster.EKSServiceImpl{},
@@ -31,6 +32,7 @@ func TestDNSDesiredSet_ServicesWithoutBaseDomain(t *testing.T) {
 }
 
 func TestDNSDesiredSet_ServicesEnumerateCompletely(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	cfg := &config.Config{Region: "ap-southeast-2"}
 	cfg.Northstar.DefaultDomain = "example.internal"

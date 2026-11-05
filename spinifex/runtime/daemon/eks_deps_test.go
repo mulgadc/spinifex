@@ -147,6 +147,7 @@ func TestResolveSystemPredastoreURL(t *testing.T) {
 // silently can't resolve "latest snapshot" without SnapshotStore, and CP launch
 // silently can't write etcd-snapshot.env without SystemPredastoreURL.
 func TestBuildEKSServiceDeps(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{
 		mgmtBridgeIP: "10.15.8.1",
 		config: &config.Config{
@@ -244,6 +245,7 @@ func TestBuildEKSServiceDeps_ConfigDerivedFields(t *testing.T) {
 // hands EKS the launch-template service; a missed wire would make every
 // template-backed nodegroup fail to launch.
 func TestBuildEKSServiceDeps_WiresLaunchTemplates(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{
 		config:                &config.Config{},
 		launchTemplateService: &ec2launchtemplate.LaunchTemplateServiceImpl{},

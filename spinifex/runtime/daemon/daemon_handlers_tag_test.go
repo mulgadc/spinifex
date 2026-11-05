@@ -40,6 +40,7 @@ func subscribeOwner(t *testing.T, d *Daemon, instanceID string) {
 // A mixed create-tags writes the instance via the owner-gated co-located path
 // and the non-instance resource via the generic central write.
 func TestCreateTags_MixedResourceDispatch(t *testing.T) {
+	t.Parallel()
 	const id = "i-tag-mixed"
 	d := tagTestDaemon(t, id, map[string]string{"Name": "web"})
 	subscribeOwner(t, d, id)
@@ -60,6 +61,7 @@ func TestCreateTags_MixedResourceDispatch(t *testing.T) {
 // delete-tags routes instance removals via the owner: bare keys delete
 // unconditionally, valued keys only on match, and both stores agree after.
 func TestDeleteTags_InstanceRoutedViaOwner(t *testing.T) {
+	t.Parallel()
 	const id = "i-tag-del"
 	d := tagTestDaemon(t, id, map[string]string{"Name": "web", "env": "dev", "team": "infra"})
 	subscribeOwner(t, d, id)
@@ -83,6 +85,7 @@ func TestDeleteTags_InstanceRoutedViaOwner(t *testing.T) {
 
 // delete-tags with no Tags clears every tag on the instance in both stores.
 func TestDeleteTags_InstanceClearAll(t *testing.T) {
+	t.Parallel()
 	const id = "i-tag-delall"
 	d := tagTestDaemon(t, id, map[string]string{"Name": "web", "env": "dev"})
 	subscribeOwner(t, d, id)
@@ -101,6 +104,7 @@ func TestDeleteTags_InstanceClearAll(t *testing.T) {
 // An instance with no responding owner returns InvalidID.NotFound and no
 // central entry is created for it, while co-listed resources still land.
 func TestCreateTags_NoOwnerNotFound(t *testing.T) {
+	t.Parallel()
 	const absent = "i-tag-absent"
 	d := tagTestDaemon(t, "i-tag-unrelated", nil)
 
@@ -127,6 +131,7 @@ func assertInstancesNotFound(t *testing.T, err error, wantMessage string) {
 // out of the message, drops them from the batch and retries the rest, so
 // every missing instance must be named for the retry to tag the live one.
 func TestCreateTags_NotFoundNamesIDsForSkipRetry(t *testing.T) {
+	t.Parallel()
 	const live = "i-tag-live"
 	d := tagTestDaemon(t, live, nil)
 	subscribeOwner(t, d, live)
@@ -175,6 +180,7 @@ func TestCreateTags_SlowOwnerNotNamedMissing(t *testing.T) {
 // A many-instance call fans out concurrently: absent owners all fail fast
 // with NotFound rather than serialising owner requests.
 func TestDeleteTags_NoOwnerNotFound(t *testing.T) {
+	t.Parallel()
 	d := tagTestDaemon(t, "i-tag-unrelated2", nil)
 
 	_, err := d.deleteTags(context.Background(), &ec2.DeleteTagsInput{
@@ -186,6 +192,7 @@ func TestDeleteTags_NoOwnerNotFound(t *testing.T) {
 // With no running owner, create-tags falls back to the shared stopped store
 // and the mutation lands on both the stopped record and the central store.
 func TestCreateTags_StoppedFallback(t *testing.T) {
+	t.Parallel()
 	const id = "i-tag-stopfall"
 	d, stopped := tagTestDaemonWithStopped(t, "i-tag-unrelated3", nil)
 	stopped.Stopped[id] = &vm.VM{
@@ -210,6 +217,7 @@ func TestCreateTags_StoppedFallback(t *testing.T) {
 // A stopped instance owned by another account is rejected via the fallback's
 // owner check and nothing is written to either store.
 func TestDeleteTags_StoppedCrossAccountRejected(t *testing.T) {
+	t.Parallel()
 	const id = "i-tag-stopcross"
 	const attacker = "999999999999"
 	d, stopped := tagTestDaemonWithStopped(t, "i-tag-unrelated4", nil)
@@ -233,6 +241,7 @@ func TestDeleteTags_StoppedCrossAccountRejected(t *testing.T) {
 // A daemon-side error reply from the owner (cross-account NotFound) is
 // relayed to the caller and nothing lands in either central namespace.
 func TestCreateTags_OwnerErrorRelayed(t *testing.T) {
+	t.Parallel()
 	const id = "i-tag-crossacct"
 	const attacker = "999999999999"
 	d := tagTestDaemon(t, id, map[string]string{"Name": "web"})
@@ -250,6 +259,7 @@ func TestCreateTags_OwnerErrorRelayed(t *testing.T) {
 }
 
 func TestCreateTags_Validation(t *testing.T) {
+	t.Parallel()
 	d := tagTestDaemon(t, "i-tag-valid", nil)
 
 	_, err := d.createTags(context.Background(), nil, testAccountID)
@@ -267,6 +277,7 @@ func TestCreateTags_Validation(t *testing.T) {
 }
 
 func TestDeleteTags_Validation(t *testing.T) {
+	t.Parallel()
 	d := tagTestDaemon(t, "i-tag-valid2", nil)
 
 	_, err := d.deleteTags(context.Background(), nil, testAccountID)
@@ -279,6 +290,7 @@ func TestDeleteTags_Validation(t *testing.T) {
 // Every service that stores tags on its own record must be mirrored, or a
 // create-tags reaches the central store and leaves that record stale.
 func TestRecordTagMirrors_IncludesEveryRecordStore(t *testing.T) {
+	t.Parallel()
 	assert.Empty(t, (&Daemon{eipService: ec2eip.NewDisabledEIPService()}).recordTagMirrors(),
 		"the disabled EIP service holds no records to mirror")
 
@@ -298,6 +310,7 @@ func TestRecordTagMirrors_IncludesEveryRecordStore(t *testing.T) {
 }
 
 func TestDeleteTags_NonInstanceResource(t *testing.T) {
+	t.Parallel()
 	d := tagTestDaemon(t, "i-p1-tag-unused", nil)
 	require.NoError(t, d.tagsService.PutResourceTags(t.Context(), testAccountID, "vol-p1-tagdel",
 		map[string]string{"env": "dev", "team": "infra"}))
@@ -311,6 +324,7 @@ func TestDeleteTags_NonInstanceResource(t *testing.T) {
 }
 
 func TestTags_CentralStoreFailure(t *testing.T) {
+	t.Parallel()
 	d := tagTestDaemon(t, "i-p1-tag-unused2", nil)
 	_, tagKV := faultBucket(t)
 	for _, m := range []string{"Get", "Put", "Create", "Update", "Delete", "Purge"} {
@@ -329,6 +343,7 @@ func TestTags_CentralStoreFailure(t *testing.T) {
 }
 
 func TestCreateTags_OwnerRequestFails(t *testing.T) {
+	t.Parallel()
 	d := tagTestDaemon(t, "i-p1-tag-closed", nil)
 	closed, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)

@@ -11,11 +11,13 @@ import (
 // --- buildGPUInventory ---
 
 func TestBuildGPUInventory_Empty(t *testing.T) {
+	t.Parallel()
 	assert.Empty(t, buildGPUInventory(nil))
 	assert.Empty(t, buildGPUInventory([]gpu.PoolEntry{}))
 }
 
 func TestBuildGPUInventory_WholeGPU_Free(t *testing.T) {
+	t.Parallel()
 	snap := []gpu.PoolEntry{
 		{
 			Device:    gpu.GPUDevice{PCIAddress: "0000:01:00.0", Model: "NVIDIA A10", MemoryMiB: 23028},
@@ -33,6 +35,7 @@ func TestBuildGPUInventory_WholeGPU_Free(t *testing.T) {
 }
 
 func TestBuildGPUInventory_WholeGPU_Claimed(t *testing.T) {
+	t.Parallel()
 	snap := []gpu.PoolEntry{
 		{
 			Device:     gpu.GPUDevice{PCIAddress: "0000:01:00.0", Model: "NVIDIA A10", MemoryMiB: 23028},
@@ -46,6 +49,7 @@ func TestBuildGPUInventory_WholeGPU_Claimed(t *testing.T) {
 }
 
 func TestBuildGPUInventory_MIG_FourSlices(t *testing.T) {
+	t.Parallel()
 	dev := gpu.GPUDevice{
 		PCIAddress: "0000:01:00.0",
 		Model:      "NVIDIA RTX Pro 6000 Blackwell Server Edition",
@@ -79,6 +83,7 @@ func TestBuildGPUInventory_MIG_FourSlices(t *testing.T) {
 }
 
 func TestBuildGPUInventory_MultiplePhysicalGPUs(t *testing.T) {
+	t.Parallel()
 	dev1 := gpu.GPUDevice{PCIAddress: "0000:01:00.0", Model: "NVIDIA A10", MemoryMiB: 23028}
 	dev2 := gpu.GPUDevice{PCIAddress: "0000:02:00.0", Model: "NVIDIA A10", MemoryMiB: 23028}
 	snap := []gpu.PoolEntry{
@@ -92,6 +97,7 @@ func TestBuildGPUInventory_MultiplePhysicalGPUs(t *testing.T) {
 }
 
 func TestBuildGPUInventory_PreservesOrder(t *testing.T) {
+	t.Parallel()
 	addresses := []string{"0000:03:00.0", "0000:01:00.0", "0000:02:00.0"}
 	var snap []gpu.PoolEntry
 	for _, addr := range addresses {
@@ -110,6 +116,7 @@ func TestBuildGPUInventory_PreservesOrder(t *testing.T) {
 // --- buildPoolLookup ---
 
 func TestBuildPoolLookup_NilManager(t *testing.T) {
+	t.Parallel()
 	byMdev, byPCI := buildPoolLookup(nil)
 	assert.Nil(t, byMdev)
 	assert.Nil(t, byPCI)
@@ -118,6 +125,7 @@ func TestBuildPoolLookup_NilManager(t *testing.T) {
 // --- resolveVMGPU ---
 
 func TestResolveVMGPU_MIGAttachment(t *testing.T) {
+	t.Parallel()
 	profile := gpu.MIGProfile{Name: "1g.24gb", MemoryMiB: 24576}
 	dev := gpu.GPUDevice{PCIAddress: "0000:01:00.0", Model: "NVIDIA RTX Pro 6000 Blackwell Server Edition", MemoryMiB: 98304}
 	entry := gpu.PoolEntry{
@@ -137,6 +145,7 @@ func TestResolveVMGPU_MIGAttachment(t *testing.T) {
 }
 
 func TestResolveVMGPU_WholeGPUAttachment(t *testing.T) {
+	t.Parallel()
 	dev := gpu.GPUDevice{PCIAddress: "0000:01:00.0", Model: "NVIDIA A10", MemoryMiB: 23028}
 	entry := gpu.PoolEntry{Device: dev, InstanceID: "i-abc"}
 	byPCI := map[string]gpu.PoolEntry{"0000:01:00.0": entry}
@@ -151,21 +160,25 @@ func TestResolveVMGPU_WholeGPUAttachment(t *testing.T) {
 }
 
 func TestResolveVMGPU_UnknownMdev_ReturnsNil(t *testing.T) {
+	t.Parallel()
 	att := gpu.GPUAttachment{MdevPath: "/dev/mdev/unknown"}
 	assert.Nil(t, resolveVMGPU(att, map[string]gpu.PoolEntry{}, nil))
 }
 
 func TestResolveVMGPU_UnknownPCI_ReturnsNil(t *testing.T) {
+	t.Parallel()
 	att := gpu.GPUAttachment{PCIAddress: "0000:99:00.0"}
 	assert.Nil(t, resolveVMGPU(att, nil, map[string]gpu.PoolEntry{}))
 }
 
 func TestResolveVMGPU_EmptyAttachment_ReturnsNil(t *testing.T) {
+	t.Parallel()
 	assert.Nil(t, resolveVMGPU(gpu.GPUAttachment{}, nil, nil))
 }
 
 // A partly resolved set is reported short rather than padded or dropped.
 func TestResolveVMGPUs_SkipsUnresolvedAttachments(t *testing.T) {
+	t.Parallel()
 	dev := gpu.GPUDevice{PCIAddress: "0000:01:00.0", Model: "NVIDIA A10", MemoryMiB: 23028}
 	byPCI := map[string]gpu.PoolEntry{"0000:01:00.0": {Device: dev, InstanceID: "i-abc"}}
 

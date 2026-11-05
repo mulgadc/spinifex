@@ -114,6 +114,7 @@ func (f *reconcileFakeBackend) ensureAccountCallCount() int {
 // register past the Enabled check would panic (nil natsConn, nil ctx, or a
 // nil-map write) -- the test passing at all is itself part of the pin.
 func TestStartOchreVector_DisabledSkipsConstruction(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{
 		config: &config.Config{},
 	}
@@ -128,6 +129,7 @@ func TestStartOchreVector_DisabledSkipsConstruction(t *testing.T) {
 // loop no longer gives up after the old fixed ceiling: it keeps retrying until
 // the appliance is reachable, so RAG heals once a re-adopted appliance returns.
 func TestRetryUntilContext_RetriesPastOldCeilingThenSucceeds(t *testing.T) {
+	t.Parallel()
 	const failuresBeforeSuccess = 7 // deliberately > the old 5-attempt ceiling
 
 	calls, logged := 0, 0
@@ -151,6 +153,7 @@ func TestRetryUntilContext_RetriesPastOldCeilingThenSucceeds(t *testing.T) {
 // loop's exit: a cancel while it is backing off returns context.Canceled
 // promptly rather than sleeping out the backoff or starting another attempt.
 func TestRetryUntilContext_StopsOnContextCancel(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 
 	calls := 0
@@ -171,6 +174,7 @@ func TestRetryUntilContext_StopsOnContextCancel(t *testing.T) {
 // appliance never came up (disabled, still starting, or already torn down by
 // an earlier call) -- it must never touch d.ochreVectorService in that case.
 func TestHandleOchreApplianceTeardown_NilApplianceRefuses(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{}
 
 	out, err := d.handleOchreApplianceTeardown(context.Background(), &ochrevector.TeardownApplianceRequest{}, "")
@@ -187,6 +191,7 @@ const reconcileTestAccount = "111111111111"
 // state a fresh, teardown-and-rebuilt appliance leaves) and enqueues exactly
 // one PENDING ingest job per persisted SourceSpec.
 func TestReconcileOchreIndexes_RecreatesMissingIndexAndEnqueuesJob(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	registry := ochrevector.NewRegistry(js)
 	jobs := ochrevector.NewJobStore(js)
@@ -219,6 +224,7 @@ func TestReconcileOchreIndexes_RecreatesMissingIndexAndEnqueuesJob(t *testing.T)
 // table already exists (a plain restart, not a teardown) is left alone: no
 // EnsureAccount/CreateIndex call and no ingest job enqueued for it.
 func TestReconcileOchreIndexes_ExistingIndexIsNoOp(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	registry := ochrevector.NewRegistry(js)
 	jobs := ochrevector.NewJobStore(js)

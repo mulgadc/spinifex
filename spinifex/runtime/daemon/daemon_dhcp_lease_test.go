@@ -83,6 +83,7 @@ func TestLeaseOwnerStatusEIP(t *testing.T) {
 // A stub EIP service (no external IPAM) can prove nothing about an allocation,
 // so it must not be read as a deletion.
 func TestLeaseOwnerStatusEIPWithoutIPAMIsUnknown(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{eipService: &stubEIPService{}}
 	status, err := d.leaseOwnerStatus(t.Context(), dhcp.OwnerCheckRequest{
 		ClientID: "eipalloc-1", Purpose: dhcp.PurposeEIP,
@@ -92,6 +93,7 @@ func TestLeaseOwnerStatusEIPWithoutIPAMIsUnknown(t *testing.T) {
 }
 
 func TestLeaseOwnerStatusWithoutVPCServiceIsUnknown(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{}
 	for _, req := range []dhcp.OwnerCheckRequest{
 		{ClientID: "eni-1", Purpose: dhcp.PurposeENIPublic},
@@ -105,6 +107,7 @@ func TestLeaseOwnerStatusWithoutVPCServiceIsUnknown(t *testing.T) {
 
 // An unrecognised purpose may well have a live owner this daemon cannot see.
 func TestLeaseOwnerStatusUnknownPurposeIsUnknown(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{}
 	status, err := d.leaseOwnerStatus(t.Context(), dhcp.OwnerCheckRequest{
 		ClientID: "x-1", Purpose: "natgw-external",
@@ -114,6 +117,7 @@ func TestLeaseOwnerStatusUnknownPurposeIsUnknown(t *testing.T) {
 }
 
 func TestLeaseOwnerStatusVPCRecords(t *testing.T) {
+	t.Parallel()
 	d := createVPCTestDaemon(t)
 
 	out, err := d.vpcService.CreateVpc(t.Context(), &ec2.CreateVpcInput{
@@ -146,6 +150,7 @@ func TestLeaseOwnerStatusVPCRecords(t *testing.T) {
 // Without a vpc_id there is nothing to look up, and guessing would risk
 // releasing a live gateway's address.
 func TestLeaseOwnerStatusGatewayWithoutVPCIDIsUnknown(t *testing.T) {
+	t.Parallel()
 	d := createVPCTestDaemon(t)
 
 	status, err := d.leaseOwnerStatus(t.Context(), dhcp.OwnerCheckRequest{
@@ -173,6 +178,7 @@ func ownerCheckRoundTrip(t *testing.T, d *Daemon, payload []byte) dhcp.OwnerChec
 }
 
 func TestHandleDHCPOwnerCheckAnswersRequests(t *testing.T) {
+	t.Parallel()
 	d := createTestDaemon(t, sharedNATSURL)
 	d.eipService = &stubEIPChecker{exists: true}
 
@@ -185,6 +191,7 @@ func TestHandleDHCPOwnerCheckAnswersRequests(t *testing.T) {
 }
 
 func TestHandleDHCPOwnerCheckRejectsGarbage(t *testing.T) {
+	t.Parallel()
 	d := createTestDaemon(t, sharedNATSURL)
 
 	reply := ownerCheckRoundTrip(t, d, []byte("not json"))
@@ -195,6 +202,7 @@ func TestHandleDHCPOwnerCheckRejectsGarbage(t *testing.T) {
 // A published (rather than requested) check has nowhere to reply; it must be
 // logged instead of panicking on an empty subject.
 func TestRespondOwnerCheckWithoutReplySubject(t *testing.T) {
+	t.Parallel()
 	assert.NotPanics(t, func() {
 		respondOwnerCheck(&nats.Msg{}, dhcp.OwnerStatusGone, nil)
 		respondOwnerCheck(&nats.Msg{}, dhcp.OwnerStatusUnknown, errors.New("kv timeout"))
@@ -202,6 +210,7 @@ func TestRespondOwnerCheckWithoutReplySubject(t *testing.T) {
 }
 
 func TestRebindLeaseRecordEIP(t *testing.T) {
+	t.Parallel()
 	rebinder := &stubEIPRebinder{}
 	d := &Daemon{eipService: rebinder}
 
@@ -263,6 +272,7 @@ func leaseChangedRoundTrip(t *testing.T, d *Daemon, payload []byte) dhcp.LeaseCh
 }
 
 func TestHandleDHCPLeaseChangedRebinds(t *testing.T) {
+	t.Parallel()
 	d := createTestDaemon(t, sharedNATSURL)
 	rebinder := &stubEIPRebinder{}
 	d.eipService = rebinder
@@ -281,6 +291,7 @@ func TestHandleDHCPLeaseChangedRebinds(t *testing.T) {
 // vpcd needs the failure back on the reply: it has already released the old
 // address, so a silent error leaves a record naming an address nobody holds.
 func TestHandleDHCPLeaseChangedReportsFailures(t *testing.T) {
+	t.Parallel()
 	d := createTestDaemon(t, sharedNATSURL)
 	d.eipService = &stubEIPRebinder{err: errors.New("record vanished")}
 
@@ -294,6 +305,7 @@ func TestHandleDHCPLeaseChangedReportsFailures(t *testing.T) {
 }
 
 func TestHandleDHCPLeaseChangedRejectsIncompleteRequests(t *testing.T) {
+	t.Parallel()
 	d := createTestDaemon(t, sharedNATSURL)
 
 	assert.Contains(t, leaseChangedRoundTrip(t, d, []byte("not json")).Error, "decode lease-changed request")
@@ -304,6 +316,7 @@ func TestHandleDHCPLeaseChangedRejectsIncompleteRequests(t *testing.T) {
 }
 
 func TestRespondLeaseChangedWithoutReplySubject(t *testing.T) {
+	t.Parallel()
 	assert.NotPanics(t, func() {
 		respondLeaseChanged(&nats.Msg{}, nil)
 		respondLeaseChanged(&nats.Msg{}, errors.New("rebind failed"))

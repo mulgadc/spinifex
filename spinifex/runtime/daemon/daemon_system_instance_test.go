@@ -36,6 +36,7 @@ func newDaemonWithVMs(vms ...*vm.VM) *Daemon {
 }
 
 func TestWaitForSystemInstance_AlreadyRunning(t *testing.T) {
+	t.Parallel()
 	d := newDaemonWithVMs(&vm.VM{ID: "i-test1", Status: vm.StateRunning})
 
 	err := d.WaitForSystemInstance("i-test1", 1*time.Second)
@@ -45,6 +46,7 @@ func TestWaitForSystemInstance_AlreadyRunning(t *testing.T) {
 }
 
 func TestWaitForSystemInstance_NotFound(t *testing.T) {
+	t.Parallel()
 	d := newDaemonWithVMs()
 
 	err := d.WaitForSystemInstance("i-nonexistent", 500*time.Millisecond)
@@ -54,6 +56,7 @@ func TestWaitForSystemInstance_NotFound(t *testing.T) {
 }
 
 func TestWaitForSystemInstance_ErrorState(t *testing.T) {
+	t.Parallel()
 	d := newDaemonWithVMs(&vm.VM{ID: "i-failed", Status: vm.StateError})
 
 	err := d.WaitForSystemInstance("i-failed", 1*time.Second)
@@ -117,6 +120,7 @@ func TestWaitForSystemInstance_Timeout(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestVerifySystemInstanceLaunched_Running(t *testing.T) {
+	t.Parallel()
 	inst := &vm.VM{ID: "i-up", Status: vm.StateRunning}
 	d := newDaemonWithVMs(inst)
 
@@ -149,6 +153,7 @@ func TestVerifySystemInstanceLaunched_NonRunningStatesFail(t *testing.T) {
 // MarkFailed transitions synchronously before running its cleanup goroutine, so
 // the check sees the failure without racing the teardown.
 func TestVerifySystemInstanceLaunched_AfterMarkFailedIsAnError(t *testing.T) {
+	t.Parallel()
 	inst := &vm.VM{ID: "i-gpu-claim-failed", Status: vm.StateProvisioning}
 	d := newDaemonWithVMs(inst)
 	d.vmMgr.MarkFailed(context.Background(), inst, "gpu_claim_failed")
@@ -161,6 +166,7 @@ func TestVerifySystemInstanceLaunched_AfterMarkFailedIsAnError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildNetcfgBlob_NoDefault(t *testing.T) {
+	t.Parallel()
 	nics := []elbv2domain.NICConfig{
 		{MAC: "02:aa:bb:cc:dd:01", CIDR: "10.0.1.5/24", IsDefault: false},
 	}
@@ -170,6 +176,7 @@ func TestBuildNetcfgBlob_NoDefault(t *testing.T) {
 }
 
 func TestBuildNetcfgBlob_TwoDefaults(t *testing.T) {
+	t.Parallel()
 	nics := []elbv2domain.NICConfig{
 		{MAC: "02:aa:bb:cc:dd:01", IsDefault: true},
 		{MAC: "02:aa:bb:cc:dd:02", IsDefault: true},
@@ -180,6 +187,7 @@ func TestBuildNetcfgBlob_TwoDefaults(t *testing.T) {
 }
 
 func TestBuildNetcfgBlob_SingleNICMinimal(t *testing.T) {
+	t.Parallel()
 	nics := []elbv2domain.NICConfig{
 		{MAC: "02:aa:bb:cc:dd:01", IsDefault: true},
 	}
@@ -193,6 +201,7 @@ func TestBuildNetcfgBlob_SingleNICMinimal(t *testing.T) {
 }
 
 func TestBuildNetcfgBlob_FullNIC(t *testing.T) {
+	t.Parallel()
 	nics := []elbv2domain.NICConfig{
 		{
 			MAC:       "02:aa:bb:cc:dd:01",
@@ -214,6 +223,7 @@ func TestBuildNetcfgBlob_FullNIC(t *testing.T) {
 }
 
 func TestBuildNetcfgBlob_MultiNIC_DefaultFlags(t *testing.T) {
+	t.Parallel()
 	nics := []elbv2domain.NICConfig{
 		{MAC: "02:aa:bb:cc:dd:01", CIDR: "10.0.1.5/24", Gateway: "10.0.1.1", IsDefault: true},
 		{MAC: "02:aa:bb:cc:dd:02", CIDR: "192.168.100.5/24", IsDefault: false},
@@ -230,16 +240,19 @@ func TestBuildNetcfgBlob_MultiNIC_DefaultFlags(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResolveENIAccount_OwnerWhenSet(t *testing.T) {
+	t.Parallel()
 	// A cross-account extra ENI attaches under its own account.
 	assert.Equal(t, "999988887777", resolveENIAccount("999988887777", "000000000000"))
 }
 
 func TestResolveENIAccount_FallsBackWhenEmpty(t *testing.T) {
+	t.Parallel()
 	// A same-account extra ENI (empty AccountID) inherits the primary account.
 	assert.Equal(t, "000000000000", resolveENIAccount("", "000000000000"))
 }
 
 func TestTapNameForNIC_PrimaryENI(t *testing.T) {
+	t.Parallel()
 	input := &elbv2domain.SystemInstanceInput{
 		ENIID: "eni-0123456789abcdef0",
 	}
@@ -250,6 +263,7 @@ func TestTapNameForNIC_PrimaryENI(t *testing.T) {
 }
 
 func TestTapNameForNIC_MgmtNIC(t *testing.T) {
+	t.Parallel()
 	input := &elbv2domain.SystemInstanceInput{ENIID: "eni-aaa"}
 	got := tapNameForNIC(1, elbv2domain.NICConfig{}, "i-deadbeef", input)
 	// MgmtTapName strips "i-" prefix → "mgdeadbeef" (10 chars)
@@ -258,6 +272,7 @@ func TestTapNameForNIC_MgmtNIC(t *testing.T) {
 }
 
 func TestTapNameForNIC_ExtraENI(t *testing.T) {
+	t.Parallel()
 	input := &elbv2domain.SystemInstanceInput{
 		ENIID: "eni-primary",
 		ExtraENIs: []elbv2domain.ExtraENIInput{
@@ -270,6 +285,7 @@ func TestTapNameForNIC_ExtraENI(t *testing.T) {
 }
 
 func TestTapNameForNIC_ExtraENI_OutOfRange(t *testing.T) {
+	t.Parallel()
 	input := &elbv2domain.SystemInstanceInput{
 		ENIID:     "eni-primary",
 		ExtraENIs: []elbv2domain.ExtraENIInput{},
@@ -284,6 +300,7 @@ func TestTapNameForNIC_ExtraENI_OutOfRange(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBuildNICNetdevs_SingleNIC(t *testing.T) {
+	t.Parallel()
 	input := &elbv2domain.SystemInstanceInput{
 		ENIID: "eni-000000000000000a",
 		NICs: []elbv2domain.NICConfig{
@@ -300,6 +317,7 @@ func TestBuildNICNetdevs_SingleNIC(t *testing.T) {
 }
 
 func TestBuildNICNetdevs_TwoNICs(t *testing.T) {
+	t.Parallel()
 	input := &elbv2domain.SystemInstanceInput{
 		ENIID: "eni-000000000000000b",
 		NICs: []elbv2domain.NICConfig{
@@ -317,6 +335,7 @@ func TestBuildNICNetdevs_TwoNICs(t *testing.T) {
 }
 
 func TestBuildNICNetdevs_EmptyNICs(t *testing.T) {
+	t.Parallel()
 	input := &elbv2domain.SystemInstanceInput{ENIID: "eni-empty"}
 	res := buildNICNetdevs("i-empty", input, vm.MicroVMMachineType(), 0)
 	assert.Empty(t, res.netdevs)
@@ -324,6 +343,7 @@ func TestBuildNICNetdevs_EmptyNICs(t *testing.T) {
 }
 
 func TestBuildNICNetdevs_UnprovisionedMgmtNIC_Skipped(t *testing.T) {
+	t.Parallel()
 	// Single-node host with no br-mgmt: NIC[1] (mgmt) never got a MAC/tap.
 	input := &elbv2domain.SystemInstanceInput{
 		ENIID: "eni-000000000000000c",
@@ -340,6 +360,7 @@ func TestBuildNICNetdevs_UnprovisionedMgmtNIC_Skipped(t *testing.T) {
 }
 
 func TestBuildNICNetdevs_ProvisionedMgmtNIC_Included(t *testing.T) {
+	t.Parallel()
 	// Multi-node host with br-mgmt: NIC[1] (mgmt) has a real MAC/tap.
 	input := &elbv2domain.SystemInstanceInput{
 		ENIID: "eni-000000000000000d",
@@ -357,6 +378,7 @@ func TestBuildNICNetdevs_ProvisionedMgmtNIC_Included(t *testing.T) {
 }
 
 func TestBuildNICNetdevs_UnprovisionedMgmtNIC_ExtraENIUnaffected(t *testing.T) {
+	t.Parallel()
 	// NIC[1] mgmt unprovisioned + NIC[2] extra ENI provisioned: net1 must be
 	// skipped but the extra ENI's tap name resolution (index-based) must not
 	// be shifted/renumbered.
@@ -389,14 +411,17 @@ func TestBuildNICNetdevs_UnprovisionedMgmtNIC_ExtraENIUnaffected(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNicProvisioned_MgmtSlotEmptyMAC(t *testing.T) {
+	t.Parallel()
 	assert.False(t, nicProvisioned(1, elbv2domain.NICConfig{MAC: ""}))
 }
 
 func TestNicProvisioned_MgmtSlotWithMAC(t *testing.T) {
+	t.Parallel()
 	assert.True(t, nicProvisioned(1, elbv2domain.NICConfig{MAC: "02:aa:bb:cc:dd:02"}))
 }
 
 func TestNicProvisioned_NonMgmtSlotsAlwaysTrue(t *testing.T) {
+	t.Parallel()
 	// Only the mgmt slot (index 1) is ever gated on MAC presence — an empty
 	// MAC anywhere else (e.g. primary, not expected in practice) is not
 	// treated as "unprovisioned" by this guard.
@@ -409,6 +434,7 @@ func TestNicProvisioned_NonMgmtSlotsAlwaysTrue(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMicrovmMachineType(t *testing.T) {
+	t.Parallel()
 	mt := vm.MicroVMMachineType()
 	assert.Contains(t, mt, "microvm,")
 	assert.Contains(t, mt, "isa-serial=on")
@@ -635,11 +661,13 @@ func newRefreshTestDaemon(t *testing.T) (*Daemon, *nats.Conn, string) {
 }
 
 func TestRefreshSystemInstanceState_NonELBv2IsNoop(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{vmMgr: vm.NewManager()}
 	require.NoError(t, d.refreshSystemInstanceState(&vm.VM{ID: "i-customer", ManagedBy: ""}))
 }
 
 func TestRefreshSystemInstanceState_NilELBv2ServiceErrors(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{vmMgr: vm.NewManager(), elbv2Service: nil}
 	err := d.refreshSystemInstanceState(&vm.VM{ID: "i-no-svc", ManagedBy: tags.ManagedByELBv2})
 	require.Error(t, err)
@@ -758,6 +786,7 @@ func TestRefreshSystemInstanceState_WriteErrorPropagates(t *testing.T) {
 // public IP black-holed with no reconciler. With the fix, NAT NACK must roll
 // back the ENI public IP and release the IPAM lease before returning.
 func TestLaunchSystemInstance_NATFailureRollsBackPublicIP(t *testing.T) {
+	t.Parallel()
 	d := createVPCTestDaemon(t)
 
 	// Wire an ExternalIPAM against a fresh JS server. The pool gives us a
@@ -866,6 +895,7 @@ func TestLaunchSystemInstance_NATFailureRollsBackPublicIP(t *testing.T) {
 // without this an internet-facing system VM's allocated+associated EIP would
 // leak when its instance is torn down.
 func TestReleaseSystemInstanceEIP_ReleasesEipServiceAllocation(t *testing.T) {
+	t.Parallel()
 	d := createVPCTestDaemon(t)
 
 	_, jsNC, js := testutil.StartTestJetStream(t)

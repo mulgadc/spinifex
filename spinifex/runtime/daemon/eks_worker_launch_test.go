@@ -45,6 +45,7 @@ func TestTerminateWorkerInstances_NotFoundIsIdempotent(t *testing.T) {
 // not a local-only vmMgr lookup; the owner runs the full teardown (incl. ENI
 // detach+delete) so no dangling ENI pins the VPC undeletable.
 func TestTerminateWorkerInstances_RoutesToOwner(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -75,6 +76,7 @@ func TestTerminateWorkerInstances_RoutesToOwner(t *testing.T) {
 // A NotFound error payload from the owner (instance already drained between
 // enumerate and terminate) is idempotent success, not a teardown failure.
 func TestTerminateWorkerInstances_OwnerNotFoundPayloadIdempotent(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -92,6 +94,7 @@ func TestTerminateWorkerInstances_OwnerNotFoundPayloadIdempotent(t *testing.T) {
 // A non-NotFound error payload from the owner must surface so the teardown
 // backstop retries rather than silently leaving the worker (and its ENI) alive.
 func TestTerminateWorkerInstances_OwnerErrorSurfaces(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)
@@ -181,6 +184,7 @@ func TestTerminateWorkerInstances_StoppedFallbackErrorSurfaces(t *testing.T) {
 // Both worker methods must guard against an uninitialized daemon rather than
 // nil-panic.
 func TestWorkerLauncher_NilInstanceService(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{}
 
 	_, err := d.RunWorkerInstance(t.Context(), &ec2.RunInstancesInput{ImageId: aws.String("ami-1")}, "111122223333")
@@ -193,6 +197,7 @@ func TestWorkerLauncher_NilInstanceService(t *testing.T) {
 // request the owning node handles, base64-encoding user-data on the way out, so
 // nodegroup workers spread across hosts instead of all landing locally.
 func TestRunWorkerInstanceOnNode_RoutesToTargetNode(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(nc.Close)

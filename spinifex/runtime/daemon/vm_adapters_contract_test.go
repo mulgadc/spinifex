@@ -246,6 +246,7 @@ func spyOn(t *testing.T, nc *nats.Conn, subject string) func() []contractCall {
 // Every mount, unmount and abandon goes to the node's provider over the
 // contract at the cluster's one version, and none uses a legacy subject.
 func TestVolumeMounterAdapter_EveryRequestAtVersion3OverTheContract(t *testing.T) {
+	t.Parallel()
 	nc := connectMounterTest(t)
 	node := newMounterTestNode()
 	provider := newMemoryProvider(t, "vol-a", "vol-b", "vol-hot", "vol-moved")
@@ -340,6 +341,7 @@ func TestVolumeMounterAdapter_PermanentRefusalIsNotRetryable(t *testing.T) {
 // a provider only sends at version 3, and the refusal reaches Mount's caller
 // as the sentinel that tells it apart from an ordinary volume in use.
 func TestVolumeMounterAdapter_HeldElsewhereReachesTheMountCaller(t *testing.T) {
+	t.Parallel()
 	nc := connectMounterTest(t)
 	owner, other := newMounterTestNode(), newMounterTestNode()
 	provider := newMemoryProvider(t, "vol-held")
@@ -389,6 +391,7 @@ func TestVolumeMounterAdapter_UnpublishOutlastingRequestTimeoutCompletes(t *test
 // A failed volume rolls back the volumes this Mount already published, and a
 // missing volume backs off rather than failing the relaunch.
 func TestVolumeMounterAdapter_MountRollsBackOnFailure(t *testing.T) {
+	t.Parallel()
 	nc := connectMounterTest(t)
 	node := newMounterTestNode()
 	provider := newMemoryProvider(t, "vol-present")
@@ -419,6 +422,7 @@ func (s *stubMounterProvider) UnpublishVolume(context.Context, ebsprovider.Unpub
 // A block export replaces whatever export the request carried before, so a
 // relaunch never leaves both an NBD URI and a block device set.
 func TestVolumeMounterAdapter_BlockExportReplacesNBDURI(t *testing.T) {
+	t.Parallel()
 	adapter := newVolumeMounterAdapter(&stubMounterProvider{export: ebsprovider.VolumeExport{
 		Kind:  ebsprovider.ExportKindBlock,
 		Block: &ebsprovider.BlockExport{DevicePath: "/dev/sdx", SizeBytes: 1 << 30},
@@ -502,6 +506,7 @@ func TestVolumeMounterAdapter_AmbiguousPublishIsTornDown(t *testing.T) {
 // A caller that gives up during a later volume's publish still gets that volume
 // and the ones already published unpublished, rather than left exported.
 func TestVolumeMounterAdapter_MountRollbackOutlivesCancelledCaller(t *testing.T) {
+	t.Parallel()
 	nc := connectMounterTest(t)
 	node := newMounterTestNode()
 	fake := serveFakeNodeProvider(t, nc, node)
@@ -534,6 +539,7 @@ func TestVolumeMounterAdapter_MountRollbackOutlivesCancelledCaller(t *testing.T)
 // is ambiguous, so the attach unpublishes it, and that teardown still reaches
 // the provider under the cancelled context.
 func TestVolumeMounterAdapter_MountOneCancelledAfterSendIsAmbiguous(t *testing.T) {
+	t.Parallel()
 	nc := connectMounterTest(t)
 	node := newMounterTestNode()
 	fake := serveFakeNodeProvider(t, nc, node)
@@ -566,6 +572,7 @@ func TestVolumeMounterAdapter_MountOneCancelledAfterSendIsAmbiguous(t *testing.T
 // A caller already gone when a publish would start sends nothing, so neither
 // call is ambiguous and Mount unpublishes only the volumes it published.
 func TestVolumeMounterAdapter_PublishAfterCallerGoneSendsNothing(t *testing.T) {
+	t.Parallel()
 	nc := connectMounterTest(t)
 	node := newMounterTestNode()
 	fake := serveFakeNodeProvider(t, nc, node)
@@ -586,6 +593,7 @@ func TestVolumeMounterAdapter_PublishAfterCallerGoneSendsNothing(t *testing.T) {
 // Every contract request names the account it acts for on the wire, so the
 // provider's server span is attributable, and an unattributed one names none.
 func TestVolumeMounterAdapter_ContractRequestsCarryTheAccount(t *testing.T) {
+	t.Parallel()
 	nc := connectMounterTest(t)
 	node := newMounterTestNode()
 	serveFakeNodeProvider(t, nc, node)
@@ -700,6 +708,7 @@ func TestVolumeMounterAdapter_AbandonUnpublishesWithoutSealing(t *testing.T) {
 
 // An abandon that finds no provider has not let go, so the caller is told.
 func TestVolumeMounterAdapter_AbandonNoResponderFails(t *testing.T) {
+	t.Parallel()
 	nc := connectMounterTest(t)
 	adapter := newNATSMounter(nc, newMounterTestNode())
 

@@ -40,6 +40,7 @@ func beat(t *testing.T, jsm *JetStreamManager, node string) {
 }
 
 func TestKVIPSecBarrier_ReportsEveryLiveNodesState(t *testing.T) {
+	t.Parallel()
 	barrier, jsm := newTestIPSecBarrier(t)
 	a, b := uniqueAdapterID("ipsec-a"), uniqueAdapterID("ipsec-b")
 	nodes := []string{a, b}
@@ -69,6 +70,7 @@ func TestKVIPSecBarrier_ReportsEveryLiveNodesState(t *testing.T) {
 // A node that publishes Ready=false has said its own setup is incomplete, which
 // is exactly the case the flag must not be asserted over.
 func TestKVIPSecBarrier_ExplicitlyUnreadyNodeIsReported(t *testing.T) {
+	t.Parallel()
 	barrier, jsm := newTestIPSecBarrier(t)
 	node := uniqueAdapterID("ipsec-unready")
 	beat(t, jsm, node)
@@ -84,6 +86,7 @@ func TestKVIPSecBarrier_ExplicitlyUnreadyNodeIsReported(t *testing.T) {
 // to it to black-hole. Reporting it as unconfigured would strip encryption from
 // the peers that are still talking to each other.
 func TestKVIPSecBarrier_NodeThatStoppedHeartbeatingDropsOutOfTheSet(t *testing.T) {
+	t.Parallel()
 	barrier, jsm := newTestIPSecBarrier(t)
 	node := uniqueAdapterID("ipsec-gone")
 	beat(t, jsm, node)
@@ -101,6 +104,7 @@ func TestKVIPSecBarrier_NodeThatStoppedHeartbeatingDropsOutOfTheSet(t *testing.T
 // Still heartbeating but its status has gone stale: the node is up and can no
 // longer vouch for its own configuration, so it counts as not ready.
 func TestKVIPSecBarrier_LiveNodeWithAStaleStatusIsNotReady(t *testing.T) {
+	t.Parallel()
 	barrier, jsm := newTestIPSecBarrier(t)
 	node := uniqueAdapterID("ipsec-stale")
 
@@ -122,6 +126,7 @@ func TestKVIPSecBarrier_LiveNodeWithAStaleStatusIsNotReady(t *testing.T) {
 // A node that has never published anything and never heartbeated is not part of
 // the running cluster yet.
 func TestKVIPSecBarrier_UnknownNodeIsAbsent(t *testing.T) {
+	t.Parallel()
 	barrier, _ := newTestIPSecBarrier(t)
 	node := uniqueAdapterID("ipsec-never-seen")
 
@@ -131,6 +136,7 @@ func TestKVIPSecBarrier_UnknownNodeIsAbsent(t *testing.T) {
 }
 
 func TestKVIPSecBarrier_PublishRequiresANodeName(t *testing.T) {
+	t.Parallel()
 	barrier, _ := newTestIPSecBarrier(t)
 
 	err := barrier.Publish(t.Context(), "", host.IPSecNodeStatus{Ready: true})
@@ -141,12 +147,14 @@ func TestKVIPSecBarrier_PublishRequiresANodeName(t *testing.T) {
 // A nil KV means no cluster to be out of step with, and the caller relies on a
 // nil interface rather than a typed nil to tell.
 func TestNewKVIPSecBarrier_NilKVYieldsNoBarrier(t *testing.T) {
+	t.Parallel()
 	assert.Nil(t, NewKVIPSecBarrier(nil))
 }
 
 // assert.Nil passes for a typed nil, so the interface conversion is checked with
 // == instead: a non-nil interface holding a nil pointer panics in host.
 func TestDaemonIPSecBarrier_NilManagerYieldsANilInterface(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{}
 	assert.Equal(t, host.IPSecBarrier(nil), d.ipsecBarrier())
 }
@@ -154,5 +162,6 @@ func TestDaemonIPSecBarrier_NilManagerYieldsANilInterface(t *testing.T) {
 // The heartbeat that keeps a node in the set must be refreshed far more often
 // than it is allowed to age, or a healthy node drops out between beats.
 func TestIPSecLivenessWindowExceedsHeartbeatInterval(t *testing.T) {
+	t.Parallel()
 	assert.Greater(t, ipsecLivenessWindow, 3*heartbeatInterval)
 }

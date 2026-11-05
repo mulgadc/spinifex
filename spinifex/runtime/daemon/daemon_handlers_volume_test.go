@@ -206,6 +206,7 @@ func TestAttachVolume_IdempotentSameInstance(t *testing.T) {
 // returns VolumeInUse unchanged, distinguishing it from the same-instance
 // idempotent short-circuit.
 func TestAttachVolume_InUseDifferentInstance(t *testing.T) {
+	t.Parallel()
 	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
 
 	instanceID := "i-attach-vol-other-instance"
@@ -266,6 +267,7 @@ func TestAttachVolume_InUseDifferentInstance(t *testing.T) {
 // reclaimer finishing it the volume is detached and would otherwise look
 // attachable.
 func TestAttachVolume_DeletingVolumeRefused(t *testing.T) {
+	t.Parallel()
 	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
 
 	instanceID := "i-attach-vol-deleting"
@@ -318,6 +320,7 @@ func TestAttachVolume_DeletingVolumeRefused(t *testing.T) {
 // already attached is treated as a real CSI conflict — AWS returns
 // VolumeInUse for this case — not silently echoed back or accepted.
 func TestAttachVolume_IdempotentSameInstance_DeviceMismatch(t *testing.T) {
+	t.Parallel()
 	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
 
 	instanceID := "i-attach-device-mismatch"
@@ -388,6 +391,7 @@ func seedProviderVolume(t *testing.T, daemon *Daemon, volumeID string, sizeGiB i
 // A volume still being prepared is never attachable: the request is refused
 // before any mount and the record keeps no attachment.
 func TestAttachVolume_RefusesACreatingVolume(t *testing.T) {
+	t.Parallel()
 	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
 
 	instanceID := "i-attach-creating"

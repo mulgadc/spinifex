@@ -86,7 +86,7 @@ func (s *recoveryStore) load(t *testing.T, id string) *vm.InstanceRecord {
 	return record
 }
 
-// recoveryDaemon is a node-1 daemon whose recovery loop reads s, has already
+// recoveryDaemon is a daemon whose recovery loop reads s, has already
 // settled, and finds its own object store healthy.
 func recoveryDaemon(t *testing.T, s *recoveryStore) (*Daemon, *instanceRecovery) {
 	t.Helper()
@@ -271,7 +271,7 @@ func TestRecoveryAttemptSucceeds(t *testing.T) {
 
 	r.attempt(t.Context(), recoveryCandidate{record: s.load(t, "i-recovered"), from: "node-dead"})
 
-	assert.Equal(t, "node-1", s.load(t, "i-recovered").Status.LastNode, "the claim stands once the launch succeeds")
+	assert.Equal(t, d.node, s.load(t, "i-recovered").Status.LastNode, "the claim stands once the launch succeeds")
 	assertVMPresent(t, d, "i-recovered")
 	assert.NotContains(t, r.backoff, "i-recovered", "a recovered instance starts a fresh budget")
 	assert.NotContains(t, r.staleOnce, "i-recovered")
@@ -328,6 +328,7 @@ func TestAbandonOutcomes(t *testing.T) {
 // Every survivor derives the same candidates, so each has to try them in an
 // order of its own or they all race the same instance first.
 func TestCandidateOrderingIsPerNode(t *testing.T) {
+	t.Parallel()
 	var records []*vm.InstanceRecord
 	for i := range 8 {
 		records = append(records, runningOn(fmt.Sprintf("i-%d", i), "node-dead"))
@@ -360,7 +361,7 @@ func TestForgetSupersededInstances(t *testing.T) {
 	d, _ := recoveryDaemon(t, s)
 
 	s.put(t, "i-moved", "node-3", "")
-	s.put(t, "i-mine", "node-1", "")
+	s.put(t, "i-mine", d.node, "")
 	kv, err := s.m.stateB.KV(t.Context())
 	require.NoError(t, err)
 	_, err = kv.Put(t.Context(), instanceRecordKey("i-corrupt"), []byte("{"))

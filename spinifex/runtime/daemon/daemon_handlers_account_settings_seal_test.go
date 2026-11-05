@@ -64,6 +64,7 @@ func sealRequest(t *testing.T, nc *nats.Conn, body any, header string) []byte {
 // The header is ignored: the body account is what gets sealed, even when
 // X-Account-ID names a different one.
 func TestSealAccountSettingsSubjectSealsTheBodyAccount(t *testing.T) {
+	t.Parallel()
 	_, nc := newSealTestDaemon(t, &sealTestChecker{terminating: map[string]bool{sealTestTerminating: true}})
 
 	raw := sealRequest(t, nc, ec2v1.SealAccountSettingsRequest{AccountID: sealTestTerminating, CorrelationRef: "req-1"}, sealTestActive)
@@ -80,6 +81,7 @@ func TestSealAccountSettingsSubjectSealsTheBodyAccount(t *testing.T) {
 // Only an account IAM holds as TERMINATING may be sealed; ACTIVE is refused
 // before any write.
 func TestSealAccountSettingsSubjectRefusesAnActiveAccount(t *testing.T) {
+	t.Parallel()
 	_, nc := newSealTestDaemon(t, &sealTestChecker{terminating: map[string]bool{sealTestTerminating: true}})
 
 	raw := sealRequest(t, nc, ec2v1.SealAccountSettingsRequest{AccountID: sealTestActive}, "")
@@ -88,6 +90,7 @@ func TestSealAccountSettingsSubjectRefusesAnActiveAccount(t *testing.T) {
 
 // A request without a valid account is refused, not sealed.
 func TestSealAccountSettingsSubjectRefusesAMissingAccount(t *testing.T) {
+	t.Parallel()
 	_, nc := newSealTestDaemon(t, &sealTestChecker{terminating: map[string]bool{sealTestTerminating: true}})
 
 	assert.Equal(t, awserrors.ErrorMissingParameter, replyErrCode(t, sealRequest(t, nc, ec2v1.SealAccountSettingsRequest{}, "")))
@@ -95,6 +98,7 @@ func TestSealAccountSettingsSubjectRefusesAMissingAccount(t *testing.T) {
 
 // A daemon that does not serve the subject leaves the request with no responder.
 func TestSealAccountSettingsSubjectHasNoResponderWithoutTheDaemon(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	_, err := natsRequestAs(nc, ec2v1.SealAccountSettingsSubject, []byte(`{"account_id":"111122223333"}`), "", time.Second)
 	require.ErrorIs(t, err, nats.ErrNoResponders)

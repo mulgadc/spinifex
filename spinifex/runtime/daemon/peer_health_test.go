@@ -122,6 +122,7 @@ func writePEMCert(t *testing.T, der []byte) string {
 }
 
 func TestPeerCount_SingleNode(t *testing.T) {
+	t.Parallel()
 	cfg := &config.ClusterConfig{
 		Node:  "only",
 		Nodes: map[string]config.Config{"only": {}},
@@ -131,11 +132,13 @@ func TestPeerCount_SingleNode(t *testing.T) {
 }
 
 func TestPeerCount_NilConfig(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{}
 	assert.Equal(t, 0, d.peerCount())
 }
 
 func TestPeerCount_ThreeNodes(t *testing.T) {
+	t.Parallel()
 	cfg := &config.ClusterConfig{
 		Node: "node-1",
 		Nodes: map[string]config.Config{
@@ -152,6 +155,7 @@ func TestPeerCount_ThreeNodes(t *testing.T) {
 // config — the goroutine must not spin waiting on a ticker for a probe set
 // that will always be empty.
 func TestMonitorPeerReachability_NoPeers(t *testing.T) {
+	t.Parallel()
 	cfg := &config.ClusterConfig{
 		Node:  "only",
 		Nodes: map[string]config.Config{"only": {}},
@@ -174,6 +178,7 @@ func TestMonitorPeerReachability_NoPeers(t *testing.T) {
 // logic — no ticker, no goroutine — so flaky-timing failures stay outside the
 // scope of what we're asserting.
 func TestProbePeersOnce_FlipsOnHealthChange(t *testing.T) {
+	t.Parallel()
 	f := newPeerHealthFixture(t, 2)
 	d, _ := daemonForPeerHealth(t, f.cfg)
 
@@ -202,6 +207,7 @@ func TestProbePeersOnce_FlipsOnHealthChange(t *testing.T) {
 // TestProbePeerHealth_RejectsBadAddr asserts the helper fails closed on
 // missing addressing rather than panicking or treating "" as reachable.
 func TestProbePeerHealth_RejectsBadAddr(t *testing.T) {
+	t.Parallel()
 	d, _ := daemonForPeerHealth(t, &config.ClusterConfig{})
 	d.config = &config.Config{}
 	client := &http.Client{Timeout: 100 * time.Millisecond}
@@ -214,6 +220,7 @@ func TestProbePeerHealth_RejectsBadAddr(t *testing.T) {
 // only for the local node, so peer.Daemon.Host is usually empty. The peer
 // probe must reuse the local daemon's port (clusters are symmetric).
 func TestPeerDaemonPort_FallbackToSelf(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{config: &config.Config{Daemon: config.DaemonConfig{Host: "0.0.0.0:4432"}}}
 
 	// Peer with no Daemon block — use local port.
@@ -234,6 +241,7 @@ func TestPeerDaemonPort_FallbackToSelf(t *testing.T) {
 // fixture and asserts the false→true→false transitions arrive inside one
 // probe cycle plus slack.
 func TestMonitorPeerReachability_EndToEnd(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping ticker-driven peer probe test in short mode")
 	}
@@ -261,6 +269,7 @@ func TestMonitorPeerReachability_EndToEnd(t *testing.T) {
 // TestMonitorPeerReachability_UntrustedPeerCert asserts a peer whose cert the
 // cluster CA did not sign counts as unreachable, even while serving 200.
 func TestMonitorPeerReachability_UntrustedPeerCert(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping ticker-driven peer probe test in short mode")
 	}
@@ -281,6 +290,7 @@ func TestMonitorPeerReachability_UntrustedPeerCert(t *testing.T) {
 // cannot load the cluster CA stops probing rather than declaring every peer
 // unreachable and dropping out of cluster mode.
 func TestMonitorPeerReachability_NoCAKeepsPeersReachable(t *testing.T) {
+	t.Parallel()
 	f := newPeerHealthFixture(t, 2)
 	for _, p := range f.peers {
 		p.setHealthy(false)

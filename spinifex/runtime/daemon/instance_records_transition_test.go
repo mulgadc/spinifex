@@ -41,6 +41,7 @@ func frozenKeyExists(t *testing.T, nc *nats.Conn, bucket, key string) bool {
 }
 
 func TestUpdateStoppedInstance_CommitsToTheRecord(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	require.NoError(t, m.WriteStoppedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
 
@@ -56,6 +57,7 @@ func TestUpdateStoppedInstance_CommitsToTheRecord(t *testing.T) {
 // A mutation that finds nothing to mutate must not create it. The record would
 // then hold an instance nothing ever stopped.
 func TestUpdateStoppedInstance_AbsentCreatesNothing(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 
 	_, err := m.UpdateStoppedInstance("i-gone", func(v *vm.VM) { v.LastNode = "node-2" })
@@ -71,6 +73,7 @@ func TestUpdateStoppedInstance_AbsentCreatesNothing(t *testing.T) {
 // is gone should not be recoverable from it, and draining on this path is what
 // stops it growing without bound.
 func TestDeleteStoppedInstance_DrainsTheFrozenKey(t *testing.T) {
+	t.Parallel()
 	m, nc := newRecordManagerConn(t)
 	require.NoError(t, m.WriteStoppedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
 	seedFrozenKey(t, nc, daemon.InstanceStateBucket, daemon.StoppedInstancePrefix+"i-1")
@@ -93,6 +96,7 @@ func TestDeleteStoppedInstance_DrainsTheFrozenKey(t *testing.T) {
 // it. One key holds an instance for its whole life, so a claim that deleted
 // would be deleting the instance it is about to start.
 func TestClaimStoppedInstance_OnlyOneCallerWins(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	require.NoError(t, m.WriteStoppedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
 
@@ -109,6 +113,7 @@ func TestClaimStoppedInstance_OnlyOneCallerWins(t *testing.T) {
 // is what makes the record no longer claimable and no longer stopped, and it is
 // the same edit that stops it reading back as an instance nobody started.
 func TestClaimStoppedInstance_KeepsTheRecordAndClearsTheStopIntent(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	require.NoError(t, m.WriteStoppedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
 
@@ -133,6 +138,7 @@ func TestClaimStoppedInstance_KeepsTheRecordAndClearsTheStopIntent(t *testing.T)
 // yet, and the node that last did is the one that should recover it if the
 // launch that follows this claim never happens.
 func TestClaimStoppedInstance_LeavesOwnershipWithTheLastNodeToRunIt(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	require.NoError(t, m.WriteStoppedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano", LastNode: "node-2"}))
 
@@ -146,6 +152,7 @@ func TestClaimStoppedInstance_LeavesOwnershipWithTheLastNodeToRunIt(t *testing.T
 }
 
 func TestClaimStoppedInstance_AbsentIsNotClaimable(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 
 	_, err := m.ClaimStoppedInstance("i-never-existed")
@@ -153,6 +160,7 @@ func TestClaimStoppedInstance_AbsentIsNotClaimable(t *testing.T) {
 }
 
 func TestWriteTerminatedInstance_WritesTheRecord(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 
 	require.NoError(t, m.WriteTerminatedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
@@ -164,6 +172,7 @@ func TestWriteTerminatedInstance_WritesTheRecord(t *testing.T) {
 }
 
 func TestUpdateTerminatedInstance_CommitsToTheRecord(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	require.NoError(t, m.WriteTerminatedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
 
@@ -179,6 +188,7 @@ func TestUpdateTerminatedInstance_CommitsToTheRecord(t *testing.T) {
 }
 
 func TestDeleteTerminatedInstance_DrainsTheFrozenKey(t *testing.T) {
+	t.Parallel()
 	m, nc := newRecordManagerConn(t)
 	require.NoError(t, m.InitTerminatedInstanceBucket())
 	require.NoError(t, m.WriteTerminatedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
@@ -219,6 +229,7 @@ func seedLegacyBucket(t *testing.T, nc *nats.Conn, bucket, prefix string, instan
 }
 
 func TestInstanceStateMigration_CopiesStoppedInstancesForward(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	seedLegacyBucket(t, nc, daemon.InstanceStateBucket, daemon.StoppedInstancePrefix,
 		&vm.VM{ID: "i-1", InstanceType: "t3.nano"})
@@ -238,6 +249,7 @@ func TestInstanceStateMigration_CopiesStoppedInstancesForward(t *testing.T) {
 // covered by TestInstanceStateMigration_SplitsTheNodeBlob; what this pins is
 // that an empty one does not make the stopped copy-forward skip or duplicate.
 func TestInstanceStateMigration_RunsEveryStepFromTheOldestVersion(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	kv := seedLegacyBucket(t, nc, daemon.InstanceStateBucket, daemon.StoppedInstancePrefix,
 		&vm.VM{ID: "i-1", InstanceType: "t3.nano"})
@@ -261,6 +273,7 @@ func TestInstanceStateMigration_RunsEveryStepFromTheOldestVersion(t *testing.T) 
 // scan runs, and the version stamp is a read-then-write rather than a CAS, so
 // two nodes can run this at once. Neither may lose a fresher record.
 func TestInstanceStateMigration_DoesNotOverwriteAFresherRecord(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	kv := seedLegacyBucket(t, nc, daemon.InstanceStateBucket, daemon.StoppedInstancePrefix,
 		&vm.VM{ID: "i-1", InstanceType: "t3.nano"})
@@ -293,6 +306,7 @@ func TestInstanceStateMigration_DoesNotOverwriteAFresherRecord(t *testing.T) {
 }
 
 func TestInstanceStateMigration_IsSafeToRunTwice(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	kv := seedLegacyBucket(t, nc, daemon.InstanceStateBucket, daemon.StoppedInstancePrefix,
 		&vm.VM{ID: "i-1", InstanceType: "t3.nano"})
@@ -313,6 +327,7 @@ func TestInstanceStateMigration_IsSafeToRunTwice(t *testing.T) {
 }
 
 func TestTerminatedInstanceMigration_CopiesTerminatedInstancesForward(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	seedLegacyBucket(t, nc, daemon.TerminatedInstanceBucket, daemon.TerminatedInstancePrefix,
 		&vm.VM{ID: "i-1", InstanceType: "t3.nano"})

@@ -16,6 +16,7 @@ import (
 // handleSetSpotLineage stamps InstanceLifecycle=spot + the SIR id onto the VM,
 // dispatched through handleEC2Events on ec2.cmd.{id} after the ownership check.
 func TestHandleSetSpotLineage_Stamps(t *testing.T) {
+	t.Parallel()
 	d := createTestDaemon(t, sharedNATSURL)
 
 	d.vmMgr.Insert(&vm.VM{
@@ -42,6 +43,7 @@ func TestHandleSetSpotLineage_Stamps(t *testing.T) {
 
 // Missing SpotLineageData is rejected with MissingParameter and leaves the VM unmarked.
 func TestHandleSetSpotLineage_RejectsMissingData(t *testing.T) {
+	t.Parallel()
 	d := createTestDaemon(t, sharedNATSURL)
 
 	d.vmMgr.Insert(&vm.VM{

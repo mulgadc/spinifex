@@ -38,6 +38,7 @@ func newHookTestDaemon(t *testing.T) (*Daemon, *nats.Conn) {
 }
 
 func TestOnInstanceUpHook_RegistersAllPerInstanceTopics(t *testing.T) {
+	t.Parallel()
 	d, _ := newHookTestDaemon(t)
 	instance := &vm.VM{ID: "i-up-basic"}
 
@@ -57,6 +58,7 @@ func TestOnInstanceUpHook_RegistersAllPerInstanceTopics(t *testing.T) {
 }
 
 func TestOnInstanceUpHook_ReArmsSystemTerminateForELBv2(t *testing.T) {
+	t.Parallel()
 	d, _ := newHookTestDaemon(t)
 	instance := &vm.VM{ID: "i-up-sys", ManagedBy: tags.ManagedByELBv2}
 
@@ -76,6 +78,7 @@ func TestOnInstanceUpHook_ReArmsSystemTerminateForELBv2(t *testing.T) {
 // OnInstanceUp funnel — otherwise a cluster-wide teardown invoked on another node
 // finds no responder, treats the VM as gone, and deletes its still-attached ENI.
 func TestOnInstanceUpHook_ReArmsSystemTerminateForEKS(t *testing.T) {
+	t.Parallel()
 	d, _ := newHookTestDaemon(t)
 	instance := &vm.VM{ID: "i-up-eks", ManagedBy: tags.ManagedByEKS}
 
@@ -87,6 +90,7 @@ func TestOnInstanceUpHook_ReArmsSystemTerminateForEKS(t *testing.T) {
 }
 
 func TestOnInstanceUpHook_NoSystemTerminateForRegularInstance(t *testing.T) {
+	t.Parallel()
 	d, _ := newHookTestDaemon(t)
 	instance := &vm.VM{ID: "i-up-regular"}
 
@@ -97,6 +101,7 @@ func TestOnInstanceUpHook_NoSystemTerminateForRegularInstance(t *testing.T) {
 }
 
 func TestOnInstanceDownHook_DropsSystemTerminateSubscription(t *testing.T) {
+	t.Parallel()
 	d, _ := newHookTestDaemon(t)
 	instance := &vm.VM{ID: "i-down-sys", ManagedBy: tags.ManagedByELBv2}
 
@@ -112,6 +117,7 @@ func TestOnInstanceDownHook_DropsSystemTerminateSubscription(t *testing.T) {
 }
 
 func TestOnInstanceUpHook_ReplacesExistingSubsOnDoubleUp(t *testing.T) {
+	t.Parallel()
 	d, _ := newHookTestDaemon(t)
 	instance := &vm.VM{ID: "i-up-twice"}
 
@@ -145,6 +151,7 @@ func TestOnInstanceUpHook_ReplacesExistingSubsOnDoubleUp(t *testing.T) {
 }
 
 func TestOnInstanceDownHook_UnsubscribesAndDeletes(t *testing.T) {
+	t.Parallel()
 	d, _ := newHookTestDaemon(t)
 	instance := &vm.VM{ID: "i-down"}
 
@@ -170,6 +177,7 @@ func TestOnInstanceDownHook_UnsubscribesAndDeletes(t *testing.T) {
 }
 
 func TestOnInstanceDownHook_NoOpWhenAbsent(t *testing.T) {
+	t.Parallel()
 	d, _ := newHookTestDaemon(t)
 
 	// Down on an unknown instance must not panic and must leave the map empty.
@@ -181,6 +189,7 @@ func TestOnInstanceDownHook_NoOpWhenAbsent(t *testing.T) {
 // When the daemon's gpuManager is unset, the hook must still register NATS
 // subscriptions and ignore the GPUPCIAddresses on the VM.
 func TestOnInstanceUpHook_NoGPUManager_SkipsReclaim(t *testing.T) {
+	t.Parallel()
 	d, _ := newHookTestDaemon(t)
 	instance := &vm.VM{ID: "i-up-nogpu", GPUAttachments: []gpu.GPUAttachment{{PCIAddress: "0000:01:00.0"}}}
 
@@ -192,6 +201,7 @@ func TestOnInstanceUpHook_NoGPUManager_SkipsReclaim(t *testing.T) {
 // touch the GPU pool. We use the AllocatedCount as the observable: an
 // unintended Reclaim would bump it.
 func TestOnInstanceUpHook_NoGPUAddress_SkipsReclaim(t *testing.T) {
+	t.Parallel()
 	d, _ := newHookTestDaemon(t)
 	d.gpuManager = gpu.NewManager(nil)
 	instance := &vm.VM{ID: "i-up-cpu"}
@@ -206,6 +216,7 @@ func TestOnInstanceUpHook_NoGPUAddress_SkipsReclaim(t *testing.T) {
 // and returns nil — the NATS subscriptions must still register so the
 // reconnect path doesn't roll back.
 func TestOnInstanceUpHook_GPUReclaimError_DoesNotPropagate(t *testing.T) {
+	t.Parallel()
 	d, _ := newHookTestDaemon(t)
 	d.gpuManager = gpu.NewManager(nil)
 	instance := &vm.VM{ID: "i-up-gpu-missing", GPUAttachments: []gpu.GPUAttachment{{PCIAddress: "0000:99:00.0"}}}
@@ -215,6 +226,7 @@ func TestOnInstanceUpHook_GPUReclaimError_DoesNotPropagate(t *testing.T) {
 }
 
 func TestOnInstanceDownHook_OnlyRemovesTargetedInstance(t *testing.T) {
+	t.Parallel()
 	d, _ := newHookTestDaemon(t)
 	keep := &vm.VM{ID: "i-keep"}
 	drop := &vm.VM{ID: "i-drop"}
@@ -237,6 +249,7 @@ func TestOnInstanceDownHook_OnlyRemovesTargetedInstance(t *testing.T) {
 
 // ReleaseGPU is a no-op when the daemon has no GPU manager.
 func TestReleaseGPU_NoManager_NoOp(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{}
 	a := newInstanceCleanerAdapter(d)
 	instance := &vm.VM{ID: "i-nogpu", GPUAttachments: []gpu.GPUAttachment{{PCIAddress: "0000:03:00.0"}}}
@@ -246,6 +259,7 @@ func TestReleaseGPU_NoManager_NoOp(t *testing.T) {
 
 // ReleaseGPU is a no-op for instances without a GPU allocation.
 func TestReleaseGPU_NoAddresses_NoOp(t *testing.T) {
+	t.Parallel()
 	mgr := gpu.NewManager(nil)
 	d := &Daemon{gpuManager: mgr}
 	a := newInstanceCleanerAdapter(d)
@@ -260,6 +274,7 @@ func TestReleaseGPU_NoAddresses_NoOp(t *testing.T) {
 // short of done, so the record was never purged and the GC re-drove it every
 // two minutes indefinitely, failing identically each time.
 func TestReleaseGPU_AlreadyReleased_IsSuccess(t *testing.T) {
+	t.Parallel()
 	mgr := gpu.NewManager(nil)
 	d := &Daemon{gpuManager: mgr}
 	a := newInstanceCleanerAdapter(d)
@@ -278,6 +293,7 @@ func TestReleaseGPU_AlreadyReleased_IsSuccess(t *testing.T) {
 // configured. The service-present path is just a delegation to the spot
 // service's CloseForInstance, which is covered by the service's own tests.
 func TestRemoveFromSpotRequest_NoService_NoOp(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{}
 	a := newInstanceCleanerAdapter(d)
 	require.NoError(t, a.RemoveFromSpotRequest(&vm.VM{ID: "i-x", AccountID: "111111111111"}))
@@ -287,6 +303,7 @@ func TestRemoveFromSpotRequest_NoService_NoOp(t *testing.T) {
 // in buildVMManagerDeps that routes the recovery hook to
 // prepareInstanceRelaunch. Dropping it would surface only in cell-18.
 func TestBuildVMManagerDeps_WiresBeforeInstanceRelaunch(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{config: &config.Config{}, vmMgr: vm.NewManager()}
 	deps := d.buildVMManagerDeps()
 	require.NotNil(t, deps.Hooks.BeforeInstanceRelaunch)
@@ -306,6 +323,7 @@ func TestBuildVMManagerDeps_WiresBeforeInstanceRelaunch(t *testing.T) {
 // reservation keeps naming the node it left, and the node running it could never
 // give the address back.
 func TestPrepareInstanceRelaunch_ClaimsTheManagementAddress(t *testing.T) {
+	t.Parallel()
 	alloc, err := NewMgmtIPAllocator("10.36.8.1")
 	require.NoError(t, err)
 
@@ -544,6 +562,7 @@ func TestInstanceCleanerAdapter_DetachAndDeleteENI_AbsentPrimaryDoesNotLogFalseS
 // connection error. The sweep must log and return rather than panic or
 // propagate the error as the primary terminate failure.
 func TestInstanceCleanerAdapter_ReleaseAttachedENIs_ListInstanceENIsErrorTolerated(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 
 	_, nc, _ := testutil.StartTestJetStream(t)
@@ -562,6 +581,7 @@ func TestInstanceCleanerAdapter_ReleaseAttachedENIs_ListInstanceENIsErrorTolerat
 }
 
 func TestVolumeMounterAdapter_Mount_NoResponderIsRetryable(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 	adapter := newNATSMounter(daemon.natsConn, daemon.node)
 

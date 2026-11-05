@@ -18,6 +18,7 @@ import (
 
 // TestBuildHeartbeat verifies that buildHeartbeat populates the struct from daemon state.
 func TestBuildHeartbeat(t *testing.T) {
+	t.Parallel()
 	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
 
@@ -51,6 +52,7 @@ func TestBuildHeartbeat(t *testing.T) {
 
 // TestHeartbeatReflectsAllocation verifies that allocating resources changes the heartbeat values.
 func TestHeartbeatReflectsAllocation(t *testing.T) {
+	t.Parallel()
 	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
 
@@ -103,6 +105,7 @@ func TestHeartbeatReflectsAllocation(t *testing.T) {
 // prefix would break cross-version cluster reads — a pure round-trip would
 // not catch either, so we assert against the raw KV bytes.
 func TestHeartbeatKVContract(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -157,6 +160,7 @@ func TestHeartbeatKVContract(t *testing.T) {
 // its own copy because it cannot import this package. Lengthening the publish
 // cadence without moving that copy would flap every instance to impaired.
 func TestHeartbeatIntervalMatchesLivenessCopy(t *testing.T) {
+	t.Parallel()
 	if heartbeatInterval != instancecache.HeartbeatInterval {
 		t.Fatalf("heartbeat publish interval %v != instancecache.HeartbeatInterval %v; "+
 			"the gateway's staleness threshold is derived from its copy, so the two must move together",
@@ -178,6 +182,7 @@ func heartbeatDaemon(t *testing.T, node string) *Daemon {
 }
 
 func TestStartHeartbeat_PublishesImmediately(t *testing.T) {
+	t.Parallel()
 	jsm, _ := newFaultInjectedJSM(t)
 	d := heartbeatDaemon(t, "hb-start-node")
 	d.jsManager = jsm
@@ -198,6 +203,7 @@ func TestStartHeartbeat_PublishesImmediately(t *testing.T) {
 }
 
 func TestPublishHeartbeat_WriteFailure(t *testing.T) {
+	t.Parallel()
 	jsm, f := newFaultInjectedJSM(t)
 	d := heartbeatDaemon(t, "hb-fail-node")
 	d.jsManager = jsm

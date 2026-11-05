@@ -28,6 +28,7 @@ func membershipRecord(status vm.InstanceState, desired vm.DesiredState, node str
 }
 
 func TestOperatorStopped_OnlyStoppedAndAskedFor(t *testing.T) {
+	t.Parallel()
 	for _, status := range allInstanceStates {
 		for _, desired := range []vm.DesiredState{vm.DesiredRunning, vm.DesiredStopped} {
 			want := status == vm.StateStopped && desired == vm.DesiredStopped
@@ -41,12 +42,14 @@ func TestOperatorStopped_OnlyStoppedAndAskedFor(t *testing.T) {
 // stop leaves StateStopped with DesiredRunning, and restore relaunches it. Read
 // as operator-stopped it would be listed as stopped and never come back.
 func TestOperatorStopped_DrainStoppedIsNotOperatorStopped(t *testing.T) {
+	t.Parallel()
 	drained := membershipRecord(vm.StateStopped, vm.DesiredRunning, "node-1")
 	assert.False(t, daemon.OperatorStopped(drained))
 	assert.True(t, daemon.RunsOn(drained, "node-1"), "a drain-stopped instance is still the node's to relaunch")
 }
 
 func TestRunsOn_EverythingTheNodeOwnsExceptOperatorStopped(t *testing.T) {
+	t.Parallel()
 	for _, status := range allInstanceStates {
 		stopped := status == vm.StateStopped
 		assert.Equal(t, !stopped, daemon.RunsOn(membershipRecord(status, vm.DesiredStopped, "node-1"), "node-1"),
@@ -60,10 +63,12 @@ func TestRunsOn_EverythingTheNodeOwnsExceptOperatorStopped(t *testing.T) {
 // the terminated bucket. Excluding them here is what its own comment calls a
 // void: gone from the running set and not yet anywhere else.
 func TestRunsOn_TerminatedIsStillTheNodesToMigrate(t *testing.T) {
+	t.Parallel()
 	assert.True(t, daemon.RunsOn(membershipRecord(vm.StateTerminated, vm.DesiredRunning, "node-1"), "node-1"))
 }
 
 func TestRunsOn_AnotherNodesRecordIsNotOurs(t *testing.T) {
+	t.Parallel()
 	assert.False(t, daemon.RunsOn(membershipRecord(vm.StateRunning, vm.DesiredRunning, "node-2"), "node-1"))
 	assert.False(t, daemon.RunsOn(membershipRecord(vm.StateRunning, vm.DesiredRunning, ""), "node-1"))
 	assert.False(t, daemon.RunsOn(membershipRecord(vm.StateRunning, vm.DesiredRunning, "node-1"), ""))

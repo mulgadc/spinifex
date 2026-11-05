@@ -18,6 +18,7 @@ import (
 // the instance still owns it splits the volume-state record (describe-instances
 // "attached" vs describe-volumes "available").
 func TestUnmountNeverReleasesBootVolume(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 	adapter := newNATSMounter(daemon.natsConn, daemon.node)
 

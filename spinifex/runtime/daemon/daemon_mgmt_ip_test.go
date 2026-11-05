@@ -14,12 +14,12 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// newTestMgmtJSM returns a JetStreamManager backed by the shared per-package
-// JetStream test server, with the cluster-state bucket initialised — the
+// newTestMgmtJSM returns a JetStreamManager backed by a JetStream server of its
+// own, with the cluster-state bucket initialised — the
 // same bucket UpdateMgmtIPAM writes into (namespaced under "mgmt-ipam.").
 func newTestMgmtJSM(t *testing.T) *JetStreamManager {
 	t.Helper()
-	nc, err := nats.Connect(sharedJSNATSURL)
+	nc, err := nats.Connect(privateJSNATSURL(t))
 	if err != nil {
 		t.Fatalf("connect NATS: %v", err)
 	}
@@ -135,6 +135,7 @@ func TestMgmtIPAllocator_Allocate(t *testing.T) {
 }
 
 func TestMgmtIPAllocator_Release(t *testing.T) {
+	t.Parallel()
 	jsm := newTestMgmtJSM(t)
 	a, err := NewMgmtIPAllocator("10.16.8.1")
 	if err != nil {
@@ -165,6 +166,7 @@ func TestMgmtIPAllocator_Release(t *testing.T) {
 // blocks on an instance ID with no allocation — including with no KV bound
 // at all, the shape startLocal constructs.
 func TestMgmtIPAllocator_ReleaseNonexistent(t *testing.T) {
+	t.Parallel()
 	a, err := NewMgmtIPAllocator("10.15.8.1")
 	if err != nil {
 		t.Fatal(err)
@@ -215,6 +217,7 @@ func TestMgmtIPAllocator_Exhaustion(t *testing.T) {
 // reconcile path (CAS-inserting local VMs into the shared record), not just
 // the local-cache refresh that runs unbound in startLocal.
 func TestMgmtIPAllocator_Rebuild(t *testing.T) {
+	t.Parallel()
 	jsm := newTestMgmtJSM(t)
 	a, err := NewMgmtIPAllocator("10.18.8.1")
 	if err != nil {
@@ -250,6 +253,7 @@ func TestMgmtIPAllocator_Rebuild(t *testing.T) {
 // Rebuild with no KV bound must only refresh the local cache and must never
 // panic or block waiting on a cluster that doesn't exist yet.
 func TestMgmtIPAllocator_Rebuild_UnboundIsCacheOnly(t *testing.T) {
+	t.Parallel()
 	a, err := NewMgmtIPAllocator("10.19.8.1")
 	if err != nil {
 		t.Fatal(err)
@@ -274,6 +278,7 @@ func TestMgmtIPAllocator_Rebuild_UnboundIsCacheOnly(t *testing.T) {
 }
 
 func TestMgmtIPAllocator_Concurrent(t *testing.T) {
+	t.Parallel()
 	jsm := newTestMgmtJSM(t)
 	a, err := NewMgmtIPAllocator("10.20.8.1")
 	if err != nil {
@@ -327,6 +332,7 @@ func TestMgmtIPAllocator_Concurrent(t *testing.T) {
 // two allocators standing in for two nodes, sharing one KV, must never both
 // hand out the same address even though each scans from .10 independently.
 func TestMgmtIPAllocator_SharedKV_NoDuplicates(t *testing.T) {
+	t.Parallel()
 	jsm := newTestMgmtJSM(t)
 
 	node1, err := NewMgmtIPAllocator("10.21.8.1")
@@ -434,6 +440,7 @@ func TestMgmtIPAllocator_ConcurrentAcrossNodes(t *testing.T) {
 // inside a partition and losing its cache) re-requesting a known instance ID
 // gets back the same address rather than a new one.
 func TestMgmtIPAllocator_Allocate_IdempotentAcrossNodes(t *testing.T) {
+	t.Parallel()
 	jsm := newTestMgmtJSM(t)
 
 	node1, err := NewMgmtIPAllocator("10.23.8.1")
@@ -469,6 +476,7 @@ func TestMgmtIPAllocator_Allocate_IdempotentAcrossNodes(t *testing.T) {
 // effect is visible cluster-wide: a second allocator, not the one that
 // released the address, can immediately take it.
 func TestMgmtIPAllocator_Release_FreesAddressClusterWide(t *testing.T) {
+	t.Parallel()
 	jsm := newTestMgmtJSM(t)
 
 	node1, err := NewMgmtIPAllocator("10.24.8.1")
@@ -552,6 +560,7 @@ func TestMgmtIPAllocator_Exhaustion_ClusterWide(t *testing.T) {
 // an instance ID already resolved (and cached) before the outage keeps
 // resolving from the local cache without touching KV at all.
 func TestMgmtIPAllocator_Allocate_RefusedWhenKVUnhealthy(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	if err != nil {
 		t.Fatal(err)
@@ -605,6 +614,7 @@ func TestMgmtIPAllocator_Allocate_RefusedWhenKVUnhealthy(t *testing.T) {
 // startCluster runs) must refuse new allocations exactly like an unhealthy
 // bound KV, while still serving whatever Rebuild already cached.
 func TestMgmtIPAllocator_Allocate_RefusedWhenKVNeverBound(t *testing.T) {
+	t.Parallel()
 	a, err := NewMgmtIPAllocator("10.27.8.1")
 	if err != nil {
 		t.Fatal(err)
@@ -789,6 +799,7 @@ func mgmtIPEntryFor(t *testing.T, jsm *JetStreamManager, a *MgmtIPAllocator, ins
 // back in the pool for any node's next instance, so only the node the entry
 // names may free it.
 func TestMgmtIPAllocator_ReleaseWillNotFreeAnAddressAnotherNodeHolds(t *testing.T) {
+	t.Parallel()
 	jsm := newTestMgmtJSM(t)
 
 	node1, err := NewMgmtIPAllocator("10.31.8.1")
@@ -829,6 +840,7 @@ func TestMgmtIPAllocator_ReleaseWillNotFreeAnAddressAnotherNodeHolds(t *testing.
 // node actually running it could never give the address back and it would stay
 // reserved for good.
 func TestMgmtIPAllocator_ClaimLetsTheNewHolderReleaseItLater(t *testing.T) {
+	t.Parallel()
 	jsm := newTestMgmtJSM(t)
 
 	node1, err := NewMgmtIPAllocator("10.32.8.1")
@@ -869,6 +881,7 @@ func TestMgmtIPAllocator_ClaimLetsTheNewHolderReleaseItLater(t *testing.T) {
 // Claim is idempotent and does not allocate: an instance carrying an address
 // nothing wrote down still holds it on the segment, so the record has to say so.
 func TestMgmtIPAllocator_ClaimRecordsAnAddressWithNoEntry(t *testing.T) {
+	t.Parallel()
 	jsm := newTestMgmtJSM(t)
 
 	a, err := NewMgmtIPAllocator("10.33.8.1")
@@ -904,6 +917,7 @@ func TestMgmtIPAllocator_ClaimRecordsAnAddressWithNoEntry(t *testing.T) {
 // collision the check exists to prevent — there is no other holder to collide
 // with.
 func TestMgmtIPAllocator_ReleaseFreesAnEntryThatNamesNoNode(t *testing.T) {
+	t.Parallel()
 	jsm := newTestMgmtJSM(t)
 
 	a, err := NewMgmtIPAllocator("10.34.8.1")
@@ -931,6 +945,7 @@ func TestMgmtIPAllocator_ReleaseFreesAnEntryThatNamesNoNode(t *testing.T) {
 // other place the record can be told the address moved — the case where the
 // recovery happened while this node was down.
 func TestMgmtIPAllocator_RebuildTakesOverAnEntryFromAnotherNode(t *testing.T) {
+	t.Parallel()
 	jsm := newTestMgmtJSM(t)
 
 	node1, err := NewMgmtIPAllocator("10.35.8.1")
@@ -965,6 +980,7 @@ func TestMgmtIPAllocator_RebuildTakesOverAnEntryFromAnotherNode(t *testing.T) {
 // A checked release proves this node held the address. An entry naming no node
 // is unknown ownership, so it stays reserved and the caller keeps the obligation.
 func TestMgmtIPAllocator_ReleaseCheckedRefusesAnEntryThatNamesNoNode(t *testing.T) {
+	t.Parallel()
 	jsm := newTestMgmtJSM(t)
 
 	a, err := NewMgmtIPAllocator("10.35.8.1")
@@ -1001,6 +1017,7 @@ func TestMgmtIPAllocator_ReleaseCheckedRefusesAnEntryThatNamesNoNode(t *testing.
 }
 
 func TestMgmtIPAllocator_ReleaseCheckedFreesOwnAndRefusesForeign(t *testing.T) {
+	t.Parallel()
 	jsm := newTestMgmtJSM(t)
 
 	node1, err := NewMgmtIPAllocator("10.36.8.1")
@@ -1041,6 +1058,7 @@ func TestMgmtIPAllocator_ReleaseCheckedFreesOwnAndRefusesForeign(t *testing.T) {
 // keeps its cluster entry and a failed KV write is only logged, matching what its
 // callers relied on before ReleaseChecked existed.
 func TestMgmtIPAllocator_ReleaseDropsLocalOnForeignHolderAndKVFailure(t *testing.T) {
+	t.Parallel()
 	jsm := newTestMgmtJSM(t)
 	node1, err := NewMgmtIPAllocator("10.33.8.1")
 	if err != nil {

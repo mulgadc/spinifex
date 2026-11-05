@@ -72,6 +72,7 @@ func ociPoolWithLeak(t *testing.T, store ocinet.Store) (ociPool, *oci.Fake) {
 // A node that starts before the bindings KV has a responder must still run its
 // startup reconcile once the KV answers, not give up after one attempt.
 func TestOCIStartupReconcileRetriesUntilTheBindingsKVAnswers(t *testing.T) {
+	t.Parallel()
 	store := &lateKVStore{MemStore: ocinet.NewMemStore(), unreachable: 3, err: nats.ErrNoResponders}
 	pool, fake := ociPoolWithLeak(t, store)
 
@@ -88,6 +89,7 @@ func TestOCIStartupReconcileRetriesUntilTheBindingsKVAnswers(t *testing.T) {
 // A failure that is not the KV being unreachable is the periodic loop's to
 // retry; the startup retry reports it once and stops.
 func TestOCIStartupReconcileStopsOnAFailureThatReachedTheKV(t *testing.T) {
+	t.Parallel()
 	store := &lateKVStore{MemStore: ocinet.NewMemStore()}
 	pool, fake := ociPoolWithLeak(t, store)
 	fake.FailOp("ListPrivateIPs", errors.New("oci: 500 InternalError"))

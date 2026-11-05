@@ -22,6 +22,7 @@ const natsMaxPayload = 1 << 20
 // one. An earlier form sent one copy of the type per free slot, which an idle
 // host grew past the NATS maximum payload.
 func TestDescribeInstanceTypesCapacityReplyFitsTheNATSPayloadWhenHostIsIdle(t *testing.T) {
+	t.Parallel()
 	catalogue := instancetypes.DetectAndGenerate(instancetypes.HostCPU{}, "x86_64", nil)
 	require.NotEmpty(t, catalogue)
 

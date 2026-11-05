@@ -16,6 +16,7 @@ import (
 // leader election for a given cycle has to compute the identical full set, or
 // the next cycle's winner would erase what a previous winner published.
 func TestDesiredServiceEndpointDNSChanges_SpansEveryNode(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{
 		mgmtBridgeIP: "10.15.8.1",
 		config:       &config.Config{Node: "node1", Region: "ap-southeast-2"},
@@ -41,6 +42,7 @@ func TestDesiredServiceEndpointDNSChanges_SpansEveryNode(t *testing.T) {
 // The local node uses its own live-detected mgmt-bridge IP when nothing more
 // specific is configured; peers only carry their gossiped AdvertiseIP.
 func TestDesiredServiceEndpointDNSChanges_LocalNodeUsesLiveMgmtBridge(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{
 		mgmtBridgeIP: "10.15.8.1",
 		config:       &config.Config{Node: "node1", Region: "us-east-1"},
@@ -64,6 +66,7 @@ func TestDesiredServiceEndpointDNSChanges_LocalNodeUsesLiveMgmtBridge(t *testing
 // A non-IP host (AdvertiseIP/Host are free-form) must be skipped rather than
 // published as a malformed A record — the writer supports only IP literals.
 func TestDesiredServiceEndpointDNSChanges_SkipsNonIPHosts(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{
 		config: &config.Config{Node: "node1", Region: "us-east-1"},
 		clusterConfig: &config.ClusterConfig{
@@ -106,6 +109,7 @@ func TestDesiredServiceEndpointDNSChanges_NoAuthorityWithoutTopologyOrSuffix(t *
 // The flag and the records travel together in the full desired set, the same
 // contract EC2/ELB/EKS/RDS already hold.
 func TestDNSDesiredSet_ServiceEndpointAuthorityFollowsTheRecords(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{
 		config: &config.Config{Node: "node1", Region: "us-east-1"},
 		clusterConfig: &config.ClusterConfig{

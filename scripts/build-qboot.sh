@@ -9,7 +9,8 @@
 #
 # The build runs in a digest-pinned Debian container, so its output is
 # reproducible and is checked against a recorded hash. That hash is also the
-# sha256 of Debian 13's /usr/share/qemu/qboot.rom, which is built from the same commit.
+# sha256 of Debian 13's /usr/share/qemu/qboot.rom, which is built from the same
+# commit, so a host whose copy matches installs it and skips the container.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -20,18 +21,13 @@ QBOOT_REPO="${QBOOT_REPO:-https://gitlab.com/qemu-project/qboot.git}"
 QBOOT_COMMIT="8ca302e86d685fa05b16e2b208888243da319941"
 QBOOT_SHA256="5c9c4b12c4438e3cf11d087263afe6519c8c05dd5896727b8b169b8f5dbf9877"
 BUILD_IMAGE="debian:trixie@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308"
+# Debian 13's qemu-system-data ships this exact ROM, so a host that has it
+# skips the container. QBOOT_HOST_ROM moves the path for tests.
+QBOOT_HOST_ROM="${QBOOT_HOST_ROM:-/usr/share/qemu/qboot.rom}"
 
 log() { echo "[build-qboot] $*"; }
 fail() { echo "ERROR: $*" >&2; exit 1; }
 
-CONTAINER_TOOL=""
-for tool in docker podman; do
-    if command -v "$tool" >/dev/null 2>&1 && "$tool" info >/dev/null 2>&1; then
-        CONTAINER_TOOL=$tool
-        break
-    fi
-done
-[ -n "$CONTAINER_TOOL" ] || fail "qboot builds in a container; install docker or podman"
 command -v git >/dev/null 2>&1 || fail "required tool not found: git"
 
 WORK=$(mktemp -d)
@@ -48,19 +44,42 @@ mkdir -p "$SRC_DIR"
 src_tarball="$SRC_DIR/qboot-${QBOOT_COMMIT}.tar.gz"
 git -C "$WORK/src" archive --format=tar.gz --prefix="qboot-${QBOOT_COMMIT}/" -o "$src_tarball" "$QBOOT_COMMIT"
 
-log "building in $BUILD_IMAGE with $CONTAINER_TOOL"
-# The firmware comes back on stdout, so nothing the container writes is left
-# root-owned on the host.
-"$CONTAINER_TOOL" run --rm --platform linux/amd64 -v "$WORK/src:/src:ro" \
-    -e DEBIAN_FRONTEND=noninteractive "$BUILD_IMAGE" sh -euc '
-        {
-            apt-get update -qq
-            apt-get install -y -qq --no-install-recommends gcc libc6-dev meson ninja-build binutils
-            meson setup /tmp/build /src
-            ninja -C /tmp/build
-        } >/dev/null
-        cat /tmp/build/bios.bin
-    ' > "$WORK/qboot.rom"
+build_in_container() {
+    local CONTAINER_TOOL=""
+    for tool in docker podman; do
+        if command -v "$tool" >/dev/null 2>&1 && "$tool" info >/dev/null 2>&1; then
+            CONTAINER_TOOL=$tool
+            break
+        fi
+    done
+    [ -n "$CONTAINER_TOOL" ] || fail "qboot builds in a container; install docker or podman"
+    log "building in $BUILD_IMAGE with $CONTAINER_TOOL"
+    # The firmware comes back on stdout, so nothing the container writes is left
+    # root-owned on the host.
+    "$CONTAINER_TOOL" run --rm --platform linux/amd64 -v "$WORK/src:/src:ro" \
+        -e DEBIAN_FRONTEND=noninteractive "$BUILD_IMAGE" sh -euc '
+            {
+                apt-get update -qq
+                apt-get install -y -qq --no-install-recommends gcc libc6-dev meson ninja-build binutils
+                meson setup /tmp/build /src
+                ninja -C /tmp/build
+            } >/dev/null
+            cat /tmp/build/bios.bin
+        ' > "$WORK/qboot.rom"
+}
+
+host_sha=""
+[ -r "$QBOOT_HOST_ROM" ] && host_sha=$(sha256sum "$QBOOT_HOST_ROM" | cut -d' ' -f1)
+if [ "$host_sha" = "$QBOOT_SHA256" ]; then
+    log "using host ROM $QBOOT_HOST_ROM (sha256 matches)"
+    cp "$QBOOT_HOST_ROM" "$WORK/qboot.rom"
+elif [ -n "$host_sha" ]; then
+    log "host ROM $QBOOT_HOST_ROM has sha256 $host_sha, not $QBOOT_SHA256; building"
+    build_in_container
+else
+    log "no host ROM at $QBOOT_HOST_ROM; building"
+    build_in_container
+fi
 
 got_sha=$(sha256sum "$WORK/qboot.rom" | cut -d' ' -f1)
 if [ "$got_sha" != "$QBOOT_SHA256" ]; then

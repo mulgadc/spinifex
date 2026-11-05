@@ -140,19 +140,18 @@ func drainHeldVolumes(t *testing.T, provider ebsprovider.EBSProvider) []string {
 	return nil
 }
 
-// explainedBy reports whether an injection recorded for volumeID accounts for
-// the provider still holding it: work that was done and then reported failed.
-func explainedBy(injections []hostile.Injection, volumeID string) bool {
+// explainedTargets is the set of volumes whose recorded injections account for
+// the provider still holding them: work that was done and then reported failed.
+// It is built once because a soak logs tens of thousands of injections.
+func explainedTargets(injections []hostile.Injection) map[string]bool {
+	explained := map[string]bool{}
 	for _, injection := range injections {
-		if injection.Target != volumeID {
-			continue
-		}
 		switch injection.Fault {
 		case hostile.FaultErrorAfterWork, hostile.FaultLatency, hostile.FaultLie:
-			return true
+			explained[injection.Target] = true
 		}
 	}
-	return false
+	return explained
 }
 
 // TestSoak_EveryLeakIsAttributable is the oracle. Injecting faults proves
@@ -161,6 +160,7 @@ func explainedBy(injections []hostile.Injection, volumeID string) bool {
 // with no injection behind it is the control plane losing track of storage on
 // its own, which is the bug worth finding.
 func TestSoak_EveryLeakIsAttributable(t *testing.T) {
+	t.Parallel()
 	result := runSoak(t, 20260811, 8, soakDuration(t))
 	require.NotEmpty(t, result.injections, "the run injected nothing, so it proves nothing")
 	require.NotEmpty(t, result.beliefs)
@@ -169,15 +169,16 @@ func TestSoak_EveryLeakIsAttributable(t *testing.T) {
 	for _, id := range result.held {
 		held[id] = true
 	}
+	explained := explainedTargets(result.injections)
 
 	var unexplained []string
 	for volumeID, state := range result.beliefs {
 		switch {
 		case state.deletedOK && held[volumeID]:
 			unexplained = append(unexplained, volumeID+" (delete reported success, still held)")
-		case !state.createdOK && held[volumeID] && !explainedBy(result.injections, volumeID):
+		case !state.createdOK && held[volumeID] && !explained[volumeID]:
 			unexplained = append(unexplained, volumeID+" (create reported failure, held anyway)")
-		case state.createdOK && !state.deletedOK && !held[volumeID] && !explainedBy(result.injections, volumeID):
+		case state.createdOK && !state.deletedOK && !held[volumeID] && !explained[volumeID]:
 			unexplained = append(unexplained, volumeID+" (created and not deleted, gone anyway)")
 		}
 	}
@@ -189,6 +190,7 @@ func TestSoak_EveryLeakIsAttributable(t *testing.T) {
 // running: reproducing hour six needs the faults to be a function of the seed
 // and the calls, not of how the workers happened to interleave.
 func TestSoak_ConcurrentRunsWithTheSameSeedMatch(t *testing.T) {
+	t.Parallel()
 	const seed = 99
 	const duration = 500 * time.Millisecond
 

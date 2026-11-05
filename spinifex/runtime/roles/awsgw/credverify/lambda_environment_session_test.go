@@ -26,8 +26,9 @@ func (noJWKS) LookupClusterJWKS(context.Context, string, string) ([]byte, bool, 
 
 const lambdaTrust = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}`
 
-// A Lambda environment session resolves through the real verifier, and stops
-// resolving once its role is replaced under the same name.
+// A Lambda environment session passes the real verifier's Authenticate and Resolve,
+// and stops resolving once its role is replaced under the same name. The secret
+// callback stands in for SigV4; no request is signed here.
 func TestResolve_LambdaEnvironmentSessionFailsAfterRoleReplaced(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	masterKey, err := iamdomain.GenerateMasterKey()

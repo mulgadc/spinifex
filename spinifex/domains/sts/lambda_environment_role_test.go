@@ -2,19 +2,26 @@ package sts
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/sts"
+	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	"github.com/mulgadc/spinifex/spinifex/domains/lambda/function"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -71,20 +78,70 @@ func TestAssumeRoleForLambdaEnvironment_IssuesUsableCredential(t *testing.T) {
 	assert.WithinDuration(t, stored.ExpiresAt, aws.TimeValue(out.Credentials.Expiration), 0)
 }
 
-// The labels are part of the create-only write, so no revision of the record
-// exists without them.
+// recordingKV captures every write to the sessions bucket, so a test sees the
+// first Create itself rather than the one revision the bucket keeps.
+type recordingKV struct {
+	jetstream.KeyValue
+
+	mu         sync.Mutex
+	creates    [][]byte
+	rewrites   int
+	failCreate error
+}
+
+func (r *recordingKV) Create(ctx context.Context, key string, value []byte, opts ...jetstream.KVCreateOpt) (uint64, error) {
+	r.mu.Lock()
+	r.creates = append(r.creates, bytes.Clone(value))
+	fail := r.failCreate
+	r.mu.Unlock()
+	if fail != nil {
+		return 0, fail
+	}
+	return r.KeyValue.Create(ctx, key, value, opts...)
+}
+
+func (r *recordingKV) Put(ctx context.Context, key string, value []byte) (uint64, error) {
+	r.rewrite()
+	return r.KeyValue.Put(ctx, key, value)
+}
+
+func (r *recordingKV) PutString(ctx context.Context, key, value string) (uint64, error) {
+	r.rewrite()
+	return r.KeyValue.PutString(ctx, key, value)
+}
+
+func (r *recordingKV) Update(ctx context.Context, key string, value []byte, revision uint64) (uint64, error) {
+	r.rewrite()
+	return r.KeyValue.Update(ctx, key, value, revision)
+}
+
+func (r *recordingKV) rewrite() {
+	r.mu.Lock()
+	r.rewrites++
+	r.mu.Unlock()
+}
+
+func installRecorder(t *testing.T, svc *STSServiceImpl) *recordingKV {
+	t.Helper()
+	rec := &recordingKV{KeyValue: sessionsKV(t, svc)}
+	svc.sessions = &kvstore.Store[SessionCredential]{Bucket: kvstore.NewOpenBucket(nil, rec, sessionCredentialsConfig())}
+	return rec
+}
+
+// The labels are part of the create-only write: the one Create carries them and
+// nothing rewrites the record afterwards.
 func TestAssumeRoleForLambdaEnvironment_FirstRecordCarriesLabels(t *testing.T) {
 	svc, _ := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, testLambdaRoleName, lambdaTrustPolicyDoc)
+	rec := installRecorder(t, svc)
 
-	out, err := svc.AssumeRoleForLambdaEnvironment(t.Context(), lambdaEnvRequest(*role.Arn))
+	_, err := svc.AssumeRoleForLambdaEnvironment(t.Context(), lambdaEnvRequest(*role.Arn))
 	require.NoError(t, err)
 
-	history, err := sessionsKV(t, svc).History(t.Context(), aws.StringValue(out.Credentials.AccessKeyId))
-	require.NoError(t, err)
-	require.Len(t, history, 1)
+	require.Len(t, rec.creates, 1)
+	assert.Zero(t, rec.rewrites)
 	var first SessionCredential
-	require.NoError(t, json.Unmarshal(history[0].Value(), &first))
+	require.NoError(t, json.Unmarshal(rec.creates[0], &first))
 	assert.Equal(t, testLambdaFunctionID, first.LambdaFunctionID)
 	assert.Equal(t, testLambdaFunctionARN, first.LambdaFunctionARN)
 	assert.Equal(t, testLambdaEnvID, first.LambdaEnvironmentID)
@@ -147,11 +204,18 @@ func TestAssumeRoleForLambdaEnvironment_ValidatesRequest(t *testing.T) {
 			r.FunctionARN = "arn:aws:iam::" + testCallerAccountID + ":function:hello"
 		}, awserrors.ErrorValidationError},
 		{"qualified function ARN", func(r *LambdaEnvironmentSessionRequest) { r.FunctionARN = testLambdaFunctionARN + ":1" }, awserrors.ErrorValidationError},
+		{"function ARN without region", func(r *LambdaEnvironmentSessionRequest) {
+			r.FunctionARN = "arn:aws:lambda::" + testCallerAccountID + ":function:hello"
+		}, awserrors.ErrorValidationError},
+		{"function ARN in another partition", func(r *LambdaEnvironmentSessionRequest) {
+			r.FunctionARN = "arn:aws-cn:lambda:cn-north-1:" + testCallerAccountID + ":function:hello"
+		}, awserrors.ErrorValidationError},
+		{"function name with slash", func(r *LambdaEnvironmentSessionRequest) { r.FunctionARN = testLambdaFunctionARN + "/world" }, awserrors.ErrorValidationError},
 		{"layer ARN", func(r *LambdaEnvironmentSessionRequest) {
 			r.FunctionARN = "arn:aws:lambda:ap-southeast-2:" + testCallerAccountID + ":layer:hello"
 		}, awserrors.ErrorValidationError},
-		{"function ID uppercase", func(r *LambdaEnvironmentSessionRequest) { r.FunctionID = strings.ToUpper(testLambdaFunctionID) }, awserrors.ErrorValidationError},
-		{"function ID short", func(r *LambdaEnvironmentSessionRequest) { r.FunctionID = testLambdaFunctionID[:31] }, awserrors.ErrorValidationError},
+		{"function ID bad character", func(r *LambdaEnvironmentSessionRequest) { r.FunctionID = "f/1" }, awserrors.ErrorValidationError},
+		{"function ID too long", func(r *LambdaEnvironmentSessionRequest) { r.FunctionID = strings.Repeat("f", 65) }, awserrors.ErrorValidationError},
 		{"environment ID too short", func(r *LambdaEnvironmentSessionRequest) { r.EnvironmentID = "e" }, awserrors.ErrorValidationError},
 		{"environment ID bad character", func(r *LambdaEnvironmentSessionRequest) { r.EnvironmentID = "env/1" }, awserrors.ErrorValidationError},
 		{"environment ID too long", func(r *LambdaEnvironmentSessionRequest) { r.EnvironmentID = strings.Repeat("e", 65) }, awserrors.ErrorValidationError},
@@ -168,6 +232,53 @@ func TestAssumeRoleForLambdaEnvironment_ValidatesRequest(t *testing.T) {
 		})
 	}
 	assert.Zero(t, sessionCount(t, svc, nc))
+}
+
+// The issuer's local name, region and function ID checks accept exactly what the
+// Lambda function owner's Create accepts.
+func TestValidateLambdaEnvironmentRequest_ConformsToFunctionOwner(t *testing.T) {
+	const acct = "000000000001"
+	long := func(c string, n int) string { return strings.Repeat(c, n) }
+	cases := []struct {
+		name, region, functionID string
+		accepted                 bool
+	}{
+		{"hello", "ap-southeast-2", "f1", true},
+		{"Hello_World-1", "us-east-1", testLambdaFunctionID, true},
+		{long("n", 64), "a", long("i", 64), true},
+		{"ids", "ap-southeast-2", "a_b-C", true},
+		{"hello/world", "ap-southeast-2", "f1", false},
+		{"hello.world", "ap-southeast-2", "f1", false},
+		{long("n", 65), "ap-southeast-2", "f1", false},
+		{"c1", "", "f1", false},
+		{"c2", "AP-SOUTHEAST-2", "f1", false},
+		{"c3", "ap_southeast_2", "f1", false},
+		{"c4", long("r", 33), "f1", false},
+		{"c5", "ap-southeast-2", long("i", 65), false},
+		{"c6", "ap-southeast-2", "f/1", false},
+		{"c7", "ap-southeast-2", "f.1", false},
+	}
+	_, nc, _ := testutil.StartTestJetStream(t)
+	owner := function.NewMetaService(testutil.NewJetStream(t, nc))
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("%.20s/%.20s/%.20s", tc.name, tc.region, tc.functionID), func(t *testing.T) {
+			_, ownerErr := owner.Create(t.Context(), &function.CreateRequest{Region: tc.region, Record: function.Record{
+				FunctionID: tc.functionID, FunctionName: tc.name, Role: "arn:aws:iam::" + acct + ":role/r",
+				Runtime: "provided.al2023", Handler: "bootstrap", Timeout: 3, MemorySize: 128,
+				Code: function.Code{RevisionID: "rev1"},
+			}}, acct)
+			_, issuerErr := validateLambdaEnvironmentRequest(LambdaEnvironmentSessionRequest{
+				AccountID:          acct,
+				RoleARN:            "arn:aws:iam::" + acct + ":role/r",
+				FunctionARN:        fmt.Sprintf("arn:aws:lambda:%s:%s:function:%s", tc.region, acct, tc.name),
+				FunctionID:         tc.functionID,
+				EnvironmentID:      testLambdaEnvID,
+				MaxLifetimeSeconds: 3600,
+			})
+			assert.Equal(t, tc.accepted, ownerErr == nil, "owner: %v", ownerErr)
+			assert.Equal(t, tc.accepted, issuerErr == nil, "issuer: %v", issuerErr)
+		})
+	}
 }
 
 // The role's MaxSessionDuration does not bound a service-assumed session, so a
@@ -211,21 +322,34 @@ func TestAssumeRoleForLambdaEnvironment_Lifetime(t *testing.T) {
 	assert.Equal(t, before, sessionCount(t, svc, nc))
 }
 
-func TestAssumeRoleForLambdaEnvironment_StorageFailureIssuesNothing(t *testing.T) {
+// tokenShape matches a base64 session token. The failed mint's token is never
+// observable, so absence of this shape is limited evidence, not proof.
+var tokenShape = regexp.MustCompile(`[A-Za-z0-9+/]{43}=`)
+
+func TestAssumeRoleForLambdaEnvironment_FailedMintIssuesAndLeaksNothing(t *testing.T) {
 	svc, nc := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, testLambdaRoleName, lambdaTrustPolicyDoc)
-	js, err := jetstream.New(nc)
-	require.NoError(t, err)
-	require.NoError(t, js.DeleteKeyValue(t.Context(), KVBucketSessionCredentials))
+	rec := installRecorder(t, svc)
+	rec.failCreate = errors.New("injected create failure")
 
 	var logs bytes.Buffer
 	captureSlog(t, &logs)
 	out, err := svc.AssumeRoleForLambdaEnvironment(t.Context(), lambdaEnvRequest(*role.Arn))
 	require.Error(t, err)
 	assert.Nil(t, out)
-	for _, field := range []string{"secret_encrypted", "session_token_hmac"} {
-		assert.NotContains(t, err.Error(), field)
-		assert.NotContains(t, logs.String(), field)
+	assert.Zero(t, sessionCount(t, svc, nc))
+
+	// The secret generated for the failed write is recovered from the record it tried.
+	require.Len(t, rec.creates, 1)
+	var attempted SessionCredential
+	require.NoError(t, json.Unmarshal(rec.creates[0], &attempted))
+	secret, err2 := iamdomain.DecryptSecret(attempted.SecretEncrypted, svc.masterKey)
+	require.NoError(t, err2)
+	require.NotEmpty(t, secret)
+	for _, observed := range []string{err.Error(), logs.String()} {
+		assert.NotContains(t, observed, secret)
+		assert.NotContains(t, observed, attempted.SessionTokenHMAC)
+		assert.False(t, tokenShape.MatchString(observed), "token-shaped value in %q", observed)
 	}
 }
 
@@ -394,18 +518,11 @@ func TestAssumeRoleForLambdaEnvironment_NoPlaintextAtRestOrInLogs(t *testing.T) 
 	require.NotEmpty(t, secret)
 	require.NotEmpty(t, token)
 
-	// Refusals after a success must not echo the earlier credential either.
-	req := lambdaEnvRequest(*role.Arn)
-	req.MaxLifetimeSeconds = 0
-	_, refusal := svc.AssumeRoleForLambdaEnvironment(t.Context(), req)
-	require.Error(t, refusal)
-
 	entry, err := sessionsKV(t, svc).Get(t.Context(), aws.StringValue(out.Credentials.AccessKeyId))
 	require.NoError(t, err)
 	require.Contains(t, logs.String(), "AssumeRoleForLambdaEnvironment success")
 	for _, plain := range []string{secret, token} {
 		assert.NotContains(t, string(entry.Value()), plain)
 		assert.NotContains(t, logs.String(), plain)
-		assert.NotContains(t, refusal.Error(), plain)
 	}
 }

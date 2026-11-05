@@ -21,15 +21,25 @@ const (
 	lambdaCredentialMarginSeconds = 60
 )
 
-// lambdaFunctionIDRegex is the form CreateFunction generates: 16 random bytes in hex.
-var lambdaFunctionIDRegex = regexp.MustCompile(`^[0-9a-f]{32}$`)
+// These copy the Lambda function owner's accepted ID, name and region syntax, kept
+// local so STS does not depend on the owner; a conformance test pins them to it.
+var (
+	lambdaFunctionIDRegex   = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+	lambdaFunctionNameRegex = regexp.MustCompile(`^[a-zA-Z0-9-_]{1,64}$`)
+	lambdaRegionRegex       = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
+)
 
 // LambdaEnvironmentSessionRequest names the execution environment a session is for.
 // Every field is trusted as given: the caller is in-process, not authenticated here.
 type LambdaEnvironmentSessionRequest struct {
-	AccountID     string
-	RoleARN       string
-	FunctionARN   string
+	AccountID string
+	RoleARN   string
+
+	// FunctionARN is the function's unqualified base ARN, as
+	// arn.FormatLambdaFunction(region, account, name) builds it; no version or alias.
+	FunctionARN string
+
+	// FunctionID is the owner's internal lifecycle ID for that function, not an ARN part.
 	FunctionID    string
 	EnvironmentID string
 
@@ -112,11 +122,12 @@ func validateLambdaEnvironmentRequest(req LambdaEnvironmentSessionRequest) (int6
 		return 0, errors.New(awserrors.ErrorValidationError)
 	}
 	fn, err := awsarn.Parse(req.FunctionARN)
-	if err != nil || fn.Service != "lambda" || fn.AccountID != req.AccountID {
+	if err != nil || fn.Partition != "aws" || fn.Service != "lambda" || fn.AccountID != req.AccountID ||
+		!lambdaRegionRegex.MatchString(fn.Region) {
 		return 0, errors.New(awserrors.ErrorValidationError)
 	}
 	name, ok := strings.CutPrefix(fn.Resource, "function:")
-	if !ok || name == "" || strings.Contains(name, ":") {
+	if !ok || !lambdaFunctionNameRegex.MatchString(name) {
 		return 0, errors.New(awserrors.ErrorValidationError)
 	}
 

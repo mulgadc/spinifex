@@ -33,9 +33,10 @@ func TestStamp_RaisesTheGenerationAndReturnsThePointerToBootFrom(t *testing.T) {
 	assert.Equal(t, rec, got, "the returned record is the one stored")
 }
 
-// A daemon restart adopts its claim at the same generation, which must not
-// look like a new acquisition to anything watching the record.
-func TestStamp_AtTheRecordsGenerationWritesNothing(t *testing.T) {
+// A daemon restart adopts its claim at the same generation. The stamp still
+// writes by CAS, so a pointer read from a lagging follower fails the write and
+// is read again rather than booted from.
+func TestStamp_AtTheRecordsGenerationConfirmsTheReadByCAS(t *testing.T) {
 	s, _ := openStore(t)
 	_, err := s.Create(t.Context(), pointedRecord())
 	require.NoError(t, err)
@@ -44,7 +45,8 @@ func TestStamp_AtTheRecordsGenerationWritesNothing(t *testing.T) {
 	rec, err := s.Stamp(t.Context(), instanceID, 7)
 	require.NoError(t, err)
 	assert.Equal(t, pointer("b"), rec.Pointer)
-	assert.Equal(t, before, revisionOf(t, s))
+	assert.Equal(t, uint64(7), rec.Generation)
+	assert.Greater(t, revisionOf(t, s), before, "the read must be confirmed by a revision-checked write")
 }
 
 func TestStamp_RefusesAndChangesNothing(t *testing.T) {

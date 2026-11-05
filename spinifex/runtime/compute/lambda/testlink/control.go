@@ -198,6 +198,9 @@ type ControlClient struct {
 	ReplyLimit   int64
 	// IOTimeout bounds writing the request; the reply has its own bound.
 	IOTimeout time.Duration
+	// writer, when set, wraps the connection the frames are written to; only
+	// tests set it, to fail a write the daemon has already received.
+	writer func(io.Writer) io.Writer
 }
 
 // Exchange writes one request and its credential and waits until replyBy, or
@@ -245,10 +248,14 @@ func (c *ControlClient) Exchange(ctx context.Context, req []byte, cred Credentia
 	if err := ctx.Err(); err != nil {
 		return Reply{}, fmt.Errorf("%w: %w", ErrNotSent, err)
 	}
-	if err := writeFrame(uc, req); err != nil {
+	var w io.Writer = uc
+	if c.writer != nil {
+		w = c.writer(uc)
+	}
+	if err := writeFrame(w, req); err != nil {
 		return Reply{}, fmt.Errorf("send test-link request: %w", err)
 	}
-	if err := writeFrame(uc, rawCred); err != nil {
+	if err := writeFrame(w, rawCred); err != nil {
 		return Reply{}, fmt.Errorf("send test-link request: %w", err)
 	}
 	if err := dl.set(earliest(ctx, replyBy)); err != nil {

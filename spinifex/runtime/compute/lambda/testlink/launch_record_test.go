@@ -94,8 +94,9 @@ func TestDaemon_StartThenFailedLaunchedWriteIsUnknown(t *testing.T) {
 	}
 }
 
-// Every refused reply in the attempt's launch path is written before the call
-// that starts QEMU, and the session after it never builds one.
+// Each direct refused() call in run sits before its one attempt.Run, and
+// session and sessionReply make none. Indirect constructors are not covered;
+// the injected post-start failure above is the behavioural check.
 func TestDaemon_RefusedRepliesPrecedeTheVMStart(t *testing.T) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "daemon.go", nil, 0)

@@ -79,7 +79,12 @@ func TestLambdaTestLinkSeam_GuestHoldsTheRoleSessionOnlyUntilInvokeReturns(t *te
 						return
 					}
 					_ = resp.Body.Close()
-					v := guestView{cred: <-creds, arn: resp.Header.Get("Lambda-Runtime-Invoked-Function-Arn")}
+					c, ok := within(creds)
+					if !ok {
+						seen <- guestView{err: errors.New("no first-frame credential")}
+						return
+					}
+					v := guestView{cred: c, arn: resp.Header.Get("Lambda-Runtime-Invoked-Function-Arn")}
 					v.principal, v.fail = env.resolve(v.cred)
 					v.labels, v.found, v.err = env.labels(v.cred.AccessKeyID)
 					seen <- v
@@ -93,7 +98,7 @@ func TestLambdaTestLinkSeam_GuestHoldsTheRoleSessionOnlyUntilInvokeReturns(t *te
 			envID := req.Grant.EnvironmentID
 			base := arn.FormatLambdaFunction(req.Region, seamAccount, "f")
 
-			v := <-seen
+			v := recv(t, seen, "the guest's view of its credential")
 			require.NoError(t, v.err)
 			require.Nil(t, v.fail, "the guest's credential did not resolve during the run")
 			require.Equal(t, stsdomain.PrincipalTypeAssumedRole, v.principal.PrincipalType)
@@ -147,7 +152,12 @@ func TestLambdaTestLinkSeam_LegacyNATSForgeriesNeverReachTheCaller(t *testing.T)
 			published <- errors.New("no invocation")
 			return
 		}
-		published <- publishForgeries(env.nc, <-daemon.entered, forged.URL+"/code", inbox)
+		live, ok := within(daemon.entered)
+		if !ok {
+			published <- errors.New("the daemon never received the request")
+			return
+		}
+		published <- publishForgeries(env.nc, live, forged.URL+"/code", inbox)
 		postResponse(base, id, `{"real":true}`)
 	}))
 	reg := lambdaawsapi.NewRegistration(lambdaawsapi.Deps{Meta: seamFunction{timeout: 10, role: env.roleARN}, Exec: exec})
@@ -156,7 +166,7 @@ func TestLambdaTestLinkSeam_LegacyNATSForgeriesNeverReachTheCaller(t *testing.T)
 	require.NoError(t, err)
 	body := string(raw)
 
-	require.NoError(t, <-published)
+	require.NoError(t, recv(t, published, "the forgeries"))
 	require.Equal(t, http.StatusOK, resp.StatusCode, body)
 	require.JSONEq(t, `{"real":true}`, body, "the caller's result did not come from the socket")
 	require.Empty(t, resp.Header.Get("X-Amz-Function-Error"))
@@ -234,7 +244,7 @@ func TestLambdaTestLinkSeam_GiveUpRevokeOrdering(t *testing.T) {
 	t.Run("revoke completes before the first frame is read", func(t *testing.T) {
 		env := newSeamEnv(t)
 		srv := codeServer(t)
-		hold := make(chan struct{})
+		hold, openHold := gate(t)
 		creds := make(chan hostlink.Credential, 1)
 		after := make(chan *credential.Failure, 1)
 		exec, daemon, _, _ := composedExecutor(t, env, srv.URL+"/code", srv.Client(),
@@ -244,23 +254,31 @@ func TestLambdaTestLinkSeam_GiveUpRevokeOrdering(t *testing.T) {
 					after <- nil
 					return
 				}
-				_, fail := env.resolve(<-creds)
+				c, ok := within(creds)
+				if !ok {
+					after <- nil
+					return
+				}
+				_, fail := env.resolve(c)
 				after <- fail
 				postResponse(base, id, `{}`)
 			}))
+		// Cleanups run last-first: the gate opens before the daemon is stopped.
+		t.Cleanup(openHold)
 		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
 		go func() {
-			<-daemon.entered
-			cancel()
+			defer cancel()
+			_, _ = within(daemon.entered)
 		}()
 		requireUnknown(t, directInvoke(t, env, exec, ctx))
 		require.Zero(t, env.sessionCount(t), "the revoke had not completed when Invoke returned")
-		close(hold)
+		openHold()
 
-		fail := <-after
+		fail := recv(t, after, "the guest's resolve after the gate opened")
 		require.NotNil(t, fail, "a credential revoked before the first frame still resolved")
 		require.Equal(t, awserrors.ErrorInvalidClientTokenId, fail.Code)
-		require.Equal(t, testlink.OutcomeDone, (<-daemon.done).Outcome, "the daemon's run did not continue")
+		require.Equal(t, testlink.OutcomeDone, recv(t, daemon.done, "the daemon's reply").Outcome, "the daemon's run did not continue")
 	})
 
 	t.Run("revoke follows confirmed first-frame receipt", func(t *testing.T) {
@@ -268,7 +286,7 @@ func TestLambdaTestLinkSeam_GiveUpRevokeOrdering(t *testing.T) {
 		srv := codeServer(t)
 		creds := make(chan hostlink.Credential, 1)
 		received := make(chan *credential.Failure, 1)
-		revoked := make(chan struct{})
+		revoked, openRevoked := gate(t)
 		after := make(chan *credential.Failure, 1)
 		exec, daemon, _, _ := composedExecutor(t, env, srv.URL+"/code", srv.Client(),
 			agentGuestWith(guestOpts{creds: creds}, func(base string) {
@@ -277,28 +295,41 @@ func TestLambdaTestLinkSeam_GiveUpRevokeOrdering(t *testing.T) {
 					received <- nil
 					return
 				}
-				c := <-creds
+				c, ok := within(creds)
+				if !ok {
+					received <- nil
+					return
+				}
 				_, fail := env.resolve(c)
 				received <- fail
-				<-revoked
+				if _, ok := within(revoked); !ok {
+					after <- nil
+					return
+				}
 				_, fail = env.resolve(c)
 				after <- fail
 				postResponse(base, id, `{}`)
 			}))
+		t.Cleanup(openRevoked)
 		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
 		before := make(chan *credential.Failure, 1)
 		go func() {
-			before <- <-received
-			cancel()
+			defer cancel()
+			fail, ok := within(received)
+			if !ok {
+				fail = &credential.Failure{Code: "no first-frame receipt"}
+			}
+			before <- fail
 		}()
 		requireUnknown(t, directInvoke(t, env, exec, ctx))
-		require.Nil(t, <-before, "the credential did not resolve once the guest had it")
-		close(revoked)
+		require.Nil(t, recv(t, before, "the guest's first-frame receipt"), "the credential did not resolve once the guest had it")
+		openRevoked()
 
-		fail := <-after
+		fail := recv(t, after, "the guest's resolve after the revoke")
 		require.NotNil(t, fail, "the credential still resolved after the revoke")
 		require.Equal(t, awserrors.ErrorInvalidClientTokenId, fail.Code)
-		require.Equal(t, testlink.OutcomeDone, (<-daemon.done).Outcome, "the daemon's run did not continue")
+		require.Equal(t, testlink.OutcomeDone, recv(t, daemon.done, "the daemon's reply").Outcome, "the daemon's run did not continue")
 	})
 }
 
@@ -323,8 +354,8 @@ func TestLambdaTestLinkSeam_FailedRevokeIsUnknownAndKeepsTheKeyOutOfLogs(t *test
 
 	err := directInvoke(t, env, exec, context.Background())
 	requireUnknown(t, err)
-	require.Equal(t, testlink.OutcomeDone, (<-daemon.done).Outcome)
-	c := <-creds
+	require.Equal(t, testlink.OutcomeDone, recv(t, daemon.done, "the daemon's reply").Outcome)
+	c := recv(t, creds, "the guest's credential")
 	require.Contains(t, logs.String(), "may remain valid until expiry")
 	for _, secret := range []string{c.AccessKeyID, c.SecretAccessKey, c.SessionToken} {
 		require.NotContains(t, err.Error(), secret)
@@ -334,37 +365,43 @@ func TestLambdaTestLinkSeam_FailedRevokeIsUnknownAndKeepsTheKeyOutOfLogs(t *test
 	require.Nil(t, fail, "an unrevoked credential stays valid until it expires")
 }
 
-// deliveredThenFailed forwards the whole request and credential over the real
-// socket, waits until the daemon has read both, then reports a write error.
+// deliveredThenFailed hands the whole request and credential to the real
+// client, waits until the daemon has read both, then reports an exchanger
+// error. It tests the executor's handling of that error; the client's own
+// classification of a failed write is tested in the testlink package.
 type deliveredThenFailed struct {
 	inner   controlExchanger
-	entered <-chan testlink.Request
+	entered chan testlink.Request
+	joined  chan struct{}
 }
 
-func (d deliveredThenFailed) Exchange(ctx context.Context, req []byte, cred testlink.Credential, replyBy time.Time) (testlink.Reply, error) {
-	go func() { _, _ = d.inner.Exchange(context.WithoutCancel(ctx), req, cred, replyBy) }()
-	select {
-	case <-d.entered:
-	case <-ctx.Done():
-		return testlink.Reply{}, ctx.Err()
+func (d *deliveredThenFailed) Exchange(ctx context.Context, req []byte, cred testlink.Credential, replyBy time.Time) (testlink.Reply, error) {
+	go func() {
+		defer close(d.joined)
+		_, _ = d.inner.Exchange(context.WithoutCancel(ctx), req, cred, replyBy)
+	}()
+	if _, ok := within(d.entered); !ok {
+		return testlink.Reply{}, errors.New("the daemon never received the request")
 	}
 	return testlink.Reply{}, errors.New("send test-link request: write: broken pipe")
 }
 
-// A write error reported after the daemon has read the complete request is
-// unknown, never a refusal, and the session is revoked.
+// An exchanger error reported after the daemon has read the complete request
+// is unknown at the executor, never a refusal, and the session is revoked.
 func TestLambdaTestLinkSeam_WriteErrorAfterDeliveryIsUnknownAndRevoked(t *testing.T) {
 	env := newSeamEnv(t)
 	srv := codeServer(t)
 	creds := make(chan hostlink.Credential, 1)
 	exec, daemon, _, _ := composedExecutor(t, env, srv.URL+"/code", srv.Client(),
 		agentGuestWith(guestOpts{creds: creds}, func(base string) { respond(base, `{}`) }))
-	exec.Control = deliveredThenFailed{inner: daemon.client, entered: daemon.entered}
+	wrapped := &deliveredThenFailed{inner: daemon.client, entered: daemon.entered, joined: make(chan struct{})}
+	exec.Control = wrapped
 
 	requireUnknown(t, directInvoke(t, env, exec, context.Background()))
 	require.Zero(t, env.sessionCount(t), "the session was not revoked")
-	require.Equal(t, testlink.OutcomeDone, (<-daemon.done).Outcome, "the daemon did not run the delivered request")
-	_, fail := env.resolve(<-creds)
+	require.Equal(t, testlink.OutcomeDone, recv(t, daemon.done, "the daemon's reply").Outcome, "the daemon did not run the delivered request")
+	recv(t, wrapped.joined, "the inner exchange")
+	_, fail := env.resolve(recv(t, creds, "the guest's credential"))
 	require.NotNil(t, fail)
 	require.Equal(t, awserrors.ErrorInvalidClientTokenId, fail.Code)
 }

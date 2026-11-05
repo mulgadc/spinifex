@@ -391,3 +391,46 @@ func TestControl_CancelledBeforeWriteSendsNothing(t *testing.T) {
 	require.ErrorIs(t, err, ErrNotSent)
 	assert.Equal(t, int32(0), s.calls.Load())
 }
+
+// failAfterDelivery forwards every write to the real connection. Once the
+// credential frame, the fourth write, is out it waits until the daemon has
+// read both frames, then reports a failure.
+type failAfterDelivery struct {
+	w        io.Writer
+	writes   int
+	received <-chan struct{}
+}
+
+func (f *failAfterDelivery) Write(b []byte) (int, error) {
+	n, err := f.w.Write(b)
+	f.writes++
+	if err != nil || f.writes < 4 {
+		return n, err
+	}
+	select {
+	case <-f.received:
+		return n, errors.New("injected write failure after delivery")
+	case <-time.After(5 * time.Second):
+		return n, errors.New("daemon never confirmed receipt")
+	}
+}
+
+// A write that reports failure after the daemon has read the whole request and
+// credential is unknown, never ErrNotSent, and the daemon still handles it.
+func TestControl_WriteErrorAfterDeliveryIsUnknown(t *testing.T) {
+	name := controlName(t)
+	received := make(chan struct{})
+	s, _ := serveControl(t, name, os.Getuid(), func(context.Context, []byte, Credential) Reply {
+		close(received)
+		return Reply{Outcome: OutcomeDone}
+	})
+	c := client(name, os.Getuid())
+	c.writer = func(w io.Writer) io.Writer { return &failAfterDelivery{w: w, received: received} }
+
+	_, err := c.Exchange(t.Context(), []byte(`{"attempt_id":"a"}`), testCred, soon())
+	require.ErrorContains(t, err, "injected write failure after delivery")
+	require.NotErrorIs(t, err, ErrNotSent)
+	require.Equal(t, int32(1), s.calls.Load())
+	require.Equal(t, []byte(`{"attempt_id":"a"}`), s.req.Load())
+	require.Equal(t, testCred, s.cred.Load())
+}

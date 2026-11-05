@@ -181,7 +181,12 @@ func startSeamDaemon(t *testing.T, d *testlink.Daemon, guest guestFunc) *seamDae
 	go func() { served <- srv.Serve(ctx, ln) }()
 	t.Cleanup(func() {
 		cancel()
-		require.NoError(t, <-served)
+		select {
+		case err := <-served:
+			require.NoError(t, err)
+		case <-time.After(seamWait):
+			t.Errorf("control server did not stop within %s", seamWait)
+		}
 	})
 	s.client = &testlink.ControlClient{Name: name, DaemonUID: os.Getuid(), RequestLimit: 1 << 20, ReplyLimit: 1 << 20, IOTimeout: 5 * time.Second}
 	return s
@@ -218,4 +223,42 @@ func (l *credTap) Next(ctx context.Context) (hostlink.Request, error) {
 		l.creds <- *r.Credential
 	}
 	return r, err
+}
+
+// seamWait bounds every wait in the composed seam tests.
+const seamWait = 10 * time.Second
+
+// recv receives one value from ch or fails the test after seamWait.
+func recv[T any](t *testing.T, ch chan T, what string) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(seamWait):
+		t.Fatalf("timed out waiting for %s", what)
+		panic("unreachable")
+	}
+}
+
+// within receives one value from ch, giving up after seamWait; guest
+// goroutines use it because they cannot fail the test.
+func within[T any](ch chan T) (T, bool) {
+	select {
+	case v := <-ch:
+		return v, true
+	case <-time.After(seamWait):
+		var zero T
+		return zero, false
+	}
+}
+
+// gate is a channel the test opens when ready; open is idempotent and is also
+// registered at cleanup, so a failed test never leaves a guest waiting on it.
+func gate(t *testing.T) (ch chan struct{}, open func()) {
+	t.Helper()
+	ch = make(chan struct{})
+	var once sync.Once
+	open = func() { once.Do(func() { close(ch) }) }
+	t.Cleanup(open)
+	return ch, open
 }

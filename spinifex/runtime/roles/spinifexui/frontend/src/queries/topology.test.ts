@@ -1,3 +1,4 @@
+import { DescribeAddressesCommand } from "@aws-sdk/client-ec2"
 import { describe, expect, it, vi } from "vitest"
 
 const mockSend = vi.hoisted(() => vi.fn())
@@ -98,7 +99,6 @@ describe("networkMapQueryOptions", () => {
     )
 
     expect(sizes).toStrictEqual({
-      DescribeAddressesCommand: undefined,
       DescribeDBInstancesCommand: MAP_PAGE_SIZE,
       DescribeInstancesCommand: MAP_PAGE_SIZE,
       DescribeInternetGatewaysCommand: MAP_PAGE_SIZE,
@@ -107,5 +107,45 @@ describe("networkMapQueryOptions", () => {
       DescribeRouteTablesCommand: MAP_PAGE_SIZE,
       DescribeSubnetsCommand: MAP_PAGE_SIZE,
     })
+  })
+
+  it("asks for addresses only by the instances and NAT gateways it read", async () => {
+    const instances = Array.from({ length: 150 }, (_, n) => ({
+      InstanceId: `i-${n}`,
+    }))
+
+    mockSend.mockImplementation(
+      async (command: { constructor: { name: string } }) =>
+        await Promise.resolve(
+          {
+            DescribeInstancesCommand: {
+              Reservations: [{ Instances: instances }],
+            },
+            DescribeAddressesCommand: {
+              Addresses: [
+                { AllocationId: "eipalloc-1", PublicIp: "203.0.113.1" },
+              ],
+            },
+            DescribeNatGatewaysCommand: {
+              NatGateways: [
+                { NatGatewayAddresses: [{ AllocationId: "eipalloc-1" }] },
+              ],
+            },
+          }[command.constructor.name] ?? {},
+        ),
+    )
+    const result = await callQueryFn(networkMapQueryOptions("vpc-1"))
+
+    const asked = mockSend.mock.calls
+      .map(([c]: unknown[]) => c)
+      .filter((c) => c instanceof DescribeAddressesCommand)
+      .map((c) => c.input.Filters?.map((f) => [f.Name, f.Values?.length]))
+
+    expect(asked).toStrictEqual([
+      [["instance-id", MAP_PAGE_SIZE]],
+      [["instance-id", 50]],
+      [["allocation-id", 1]],
+    ])
+    expect(result.addresses).toHaveLength(1)
   })
 })

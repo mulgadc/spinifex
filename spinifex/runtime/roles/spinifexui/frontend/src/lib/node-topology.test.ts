@@ -165,12 +165,22 @@ describe("wanReach", () => {
     )
   })
 
-  it("is unreachable when every node that answered has its WAN ports down", () => {
-    expect(wanReach(prod.map(down))).toBe("unreachable")
+  it("is unreachable when every node in the cluster answered with its WAN ports down", () => {
+    const cluster = ["node1", "node2"]
+
+    expect(wanReach(prod.map(down), cluster)).toBe("unreachable")
     expect(
-      buildTopology(prod.map(down)).devices.find((d) => d.id === "internet")
-        ?.reach,
+      buildTopology(prod.map(down), cluster).devices.find(
+        (d) => d.id === "internet",
+      )?.reach,
     ).toBe("unreachable")
+  })
+
+  it("is unknown when a node did not answer, or the cluster's list is missing", () => {
+    const answered = prod.slice(0, 1).map(down)
+
+    expect(wanReach(answered, ["node1", "node2"])).toBe("unknown")
+    expect(wanReach(prod.map(down))).toBe("unknown")
   })
 
   it("is unknown when no node reported a WAN port", () => {

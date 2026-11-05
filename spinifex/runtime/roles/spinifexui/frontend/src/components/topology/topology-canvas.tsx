@@ -297,6 +297,8 @@ export function TopologyCanvas<N extends Node>({
         edges={focused}
         fitView
         key={layoutKey}
+        // Low enough for a wide map to fit a side panel whole.
+        minZoom={0.2}
         nodeTypes={nodeTypes}
         nodes={nodes}
         nodesConnectable={false}

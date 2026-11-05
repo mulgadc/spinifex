@@ -305,6 +305,28 @@ describe("buildNetworkMap", () => {
       expect(map.omitted).toBeGreaterThan(800)
     })
 
+    it("holds the budget when every subnet shares many routes to one gateway", () => {
+      // 500 subnets each drawing 100 routes put 50,000 lines on the gateway.
+      const shared: RouteTable = {
+        ...PUBLIC_TABLE,
+        Routes: Array.from({ length: 100 }, (_, n) => ({
+          DestinationCidrBlock: `198.51.${n}.0/24`,
+          GatewayId: "igw-1",
+        })),
+      }
+
+      const map = buildNetworkMap(
+        inputs({
+          subnets: Array.from({ length: 500 }, (_, n) => subnet(n + 1)),
+          routeTables: [shared],
+        }),
+        VPC_FOCUS,
+      )
+
+      expect(map.cards.length).toBeLessThanOrEqual(MAP_BUDGET.cards)
+      expect(map.links.length).toBeLessThanOrEqual(MAP_BUDGET.edges)
+    })
+
     it("only draws lines between cards it placed", () => {
       const map = buildNetworkMap(crowded, VPC_FOCUS)
       const placed = new Set(map.cards.map((c) => c.id))
@@ -329,6 +351,24 @@ describe("the internet path", () => {
       source: "igw:igw-1",
       label: "outbound only",
     })
+  })
+
+  it("draws no route from a main table a partial read cannot confirm", () => {
+    // subnet-1 has no explicit table among those read, so its own may be unread.
+    const { links } = buildNetworkMap(
+      inputs({ incomplete: ["routeTables"] }),
+      VPC_FOCUS,
+    )
+
+    expect(
+      links.filter((l) => l.target === "subnet:subnet-1" && l.label),
+    ).toStrictEqual([])
+    expect(
+      links.find((l) => l.target === "nat:nat-1" && l.heavy),
+    ).toBeUndefined()
+    expect(
+      links.some((l) => l.target === "subnet:subnet-2" && l.label),
+    ).toBeTruthy()
   })
 
   it("draws no egress for a NAT gateway whose subnet has no internet route", () => {

@@ -228,7 +228,7 @@ function sketchNatEgress(
   routeTables: RouteTable[],
 ) {
   const home = subnets.find((s) => s.SubnetId === nat.SubnetId)
-  const table = home && routeTableFor(home, routeTables)
+  const table = home && routeTableFor(home, routeTables, sketch.routesKnown)
 
   const igws = new Set(
     compact((table?.Routes ?? []).map((r) => r.GatewayId)).filter((g) =>
@@ -294,7 +294,7 @@ function sketchSubnets(
   for (const subnet of subnets) {
     const id = subnet.SubnetId ?? ""
     const named = labelled(id, subnet.Tags)
-    const table = routeTableFor(subnet, routeTables)
+    const table = routeTableFor(subnet, routeTables, sketch.routesKnown)
 
     sketch.cards.push({
       id: `subnet:${id}`,
@@ -557,11 +557,21 @@ export function buildNetworkMap(
 
   const ends = new Map<string, MapLink[]>()
 
+  const endAt = (id: string, l: MapLink) => {
+    const list = ends.get(id)
+
+    if (list) {
+      list.push(l)
+    } else {
+      ends.set(id, [l])
+    }
+  }
+
   for (const l of links) {
-    ends.set(l.source, [...(ends.get(l.source) ?? []), l])
+    endAt(l.source, l)
 
     if (l.target !== l.source) {
-      ends.set(l.target, [...(ends.get(l.target) ?? []), l])
+      endAt(l.target, l)
     }
   }
 

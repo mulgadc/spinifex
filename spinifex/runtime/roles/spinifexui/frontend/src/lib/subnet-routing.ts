@@ -12,17 +12,22 @@ function explicitTable(
 }
 
 // The table a subnet routes by: its explicit association, else its VPC's main.
+// From a partial read only an explicit association is sure, since the subnet's
+// own table may be among those unread.
 export function routeTableFor(
   subnet: Subnet,
   routeTables: readonly RouteTable[],
+  complete = true,
 ): RouteTable | undefined {
   const { SubnetId: subnetId, VpcId: vpcId } = subnet
+  const explicit = explicitTable(subnetId, routeTables)
 
-  return (
-    explicitTable(subnetId, routeTables) ??
-    routeTables.find(
-      (rt) => rt.VpcId === vpcId && rt.Associations?.some((a) => a.Main),
-    )
+  if (explicit || !complete) {
+    return explicit
+  }
+
+  return routeTables.find(
+    (rt) => rt.VpcId === vpcId && rt.Associations?.some((a) => a.Main),
   )
 }
 

@@ -23,6 +23,7 @@ import {
 } from "@/lib/node-topology"
 import { requireAdmin } from "@/lib/require-admin"
 import { cn } from "@/lib/utils"
+import { adminNodesQueryOptions } from "@/queries/admin"
 import { type NICFacts, nodeFactsQueryOptions } from "@/queries/nodes"
 
 export const Route = createFileRoute("/_auth/nodes/topology")({
@@ -253,8 +254,11 @@ function TopologyPage() {
   const navigate = useNavigate()
   const [direction, setDirection] = useState<LayoutDirection>("across")
 
+  const { data: cluster } = useQuery(adminNodesQueryOptions)
+
   const facts = useMemo(() => data?.nodes ?? [], [data])
-  const topology = useMemo(() => buildTopology(facts), [facts])
+  const names = useMemo(() => cluster?.nodes.map((n) => n.node), [cluster])
+  const topology = useMemo(() => buildTopology(facts, names), [facts, names])
 
   const placed = useMemo(
     () =>

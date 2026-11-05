@@ -118,7 +118,10 @@ export interface Topology {
 
 // Draws what the nodes report: a switch for every LLDP chassis, deduplicated
 // across nodes, and a generic network per plane set where LLDP is silent.
-export function buildTopology(facts: readonly NodeFacts[]): Topology {
+export function buildTopology(
+  facts: readonly NodeFacts[],
+  cluster?: readonly string[],
+): Topology {
   const devices = new Map<string, TopologyDevice>()
   const links: TopologyLink[] = []
   const reachesWAN = new Set<string>()
@@ -195,7 +198,7 @@ export function buildTopology(facts: readonly NodeFacts[]): Topology {
       kind: "internet",
       label: "Internet",
       planes: ["wan"],
-      reach: wanReach(facts),
+      reach: wanReach(facts, cluster),
     })
 
     for (const upstream of reachesWAN) {
@@ -211,9 +214,13 @@ export function buildTopology(facts: readonly NodeFacts[]): Topology {
   return { devices: [...devices.values()], links }
 }
 
-// Reached while any node that answered has a WAN port up. Only nodes that
-// answered are listed, so one that did not counts as neither up nor down.
-export function wanReach(facts: readonly NodeFacts[]): Reachability {
+// Reached while any node that answered has a WAN port up, and unreachable only
+// when every node in the cluster answered with none up. A node that did not
+// answer counts as neither, and without the cluster's list nothing is sure.
+export function wanReach(
+  facts: readonly NodeFacts[],
+  cluster?: readonly string[],
+): Reachability {
   const wan = facts.flatMap((node) =>
     (node.nics ?? []).filter((nic) => nic.planes?.includes("wan")),
   )
@@ -222,7 +229,10 @@ export function wanReach(facts: readonly NodeFacts[]): Reachability {
     return "reachable"
   }
 
-  return wan.length > 0 ? "unreachable" : "unknown"
+  const answered = new Set(facts.map((f) => f.node))
+  const everyone = cluster?.every((name) => answered.has(name)) ?? false
+
+  return wan.length > 0 && everyone ? "unreachable" : "unknown"
 }
 
 function union(a: readonly string[], b: readonly string[]): string[] {

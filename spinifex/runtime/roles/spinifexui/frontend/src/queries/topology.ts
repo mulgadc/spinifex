@@ -1,4 +1,5 @@
 import {
+  type Address,
   DescribeAddressesCommand,
   DescribeInstancesCommand,
   DescribeInternetGatewaysCommand,
@@ -6,6 +7,8 @@ import {
   DescribeRouteTablesCommand,
   DescribeSubnetsCommand,
   type Filter,
+  type Instance,
+  type NatGateway,
 } from "@aws-sdk/client-ec2"
 import { DescribeLoadBalancersCommand } from "@aws-sdk/client-elastic-load-balancing-v2"
 import { DescribeDBInstancesCommand } from "@aws-sdk/client-rds"
@@ -126,12 +129,6 @@ async function readVpc(vpcId: string) {
 
       return { items: r.NatGateways ?? [], next: r.NextToken }
     }),
-    // DescribeAddresses does not paginate.
-    readPages(async () => {
-      const r = await ec2.send(new DescribeAddressesCommand({}))
-
-      return { items: r.Addresses ?? [] }
-    }),
     readPages(async (NextToken) => {
       const r = await ec2.send(
         new DescribeInstancesCommand({
@@ -167,24 +164,79 @@ async function readVpc(vpcId: string) {
   ])
 }
 
+// DescribeAddresses does not paginate and cannot filter by VPC, so it is asked
+// only for what the map already holds, a page's worth of values at a time.
+async function readAddresses(
+  instances: Instance[],
+  nats: NatGateway[],
+): Promise<Paged<Address>> {
+  const ec2 = getEc2Client()
+  const asks: Filter[] = []
+
+  const batch = (name: string, values: (string | undefined)[]) => {
+    const ids = [...new Set(values.filter((v) => v !== undefined))]
+
+    for (let i = 0; i < ids.length; i += MAP_PAGE_SIZE) {
+      asks.push({ Name: name, Values: ids.slice(i, i + MAP_PAGE_SIZE) })
+    }
+  }
+
+  batch(
+    "instance-id",
+    instances.map((i) => i.InstanceId),
+  )
+  batch(
+    "allocation-id",
+    nats.flatMap((n) =>
+      (n.NatGatewayAddresses ?? []).map((a) => a.AllocationId),
+    ),
+  )
+
+  const pages = await Promise.all(
+    asks.slice(0, MAP_PAGE_LIMIT * 2).map(async (filter) => {
+      const r = await ec2.send(
+        new DescribeAddressesCommand({ Filters: [filter] }),
+      )
+
+      return r.Addresses ?? []
+    }),
+  )
+
+  // An address held by both an instance and a NAT gateway is drawn once.
+  const unique = new Map(
+    pages.flat().map((a) => [a.AllocationId ?? a.PublicIp, a]),
+  )
+
+  return {
+    items: [...unique.values()],
+    incomplete: asks.length > MAP_PAGE_LIMIT * 2,
+  }
+}
+
 // Every read is settled on its own, so one failing service leaves the rest of
 // the map drawn and names what is missing.
 export const networkMapQueryOptions = (vpcId: string) =>
   queryOptions({
     queryKey: ["topology", "network", vpcId],
     queryFn: async (): Promise<Omit<NetworkInputs, "vpc">> => {
-      const [subnets, routeTables, igws, nats, addresses, instances, lbs, dbs] =
+      const [subnets, routeTables, igws, nats, instances, lbs, dbs] =
         await readVpc(vpcId)
 
       const gaps: Gaps = { incomplete: [], failed: [] }
+      const natGateways = take("natGateways", nats, gaps)
+      const held = take("instances", instances, gaps)
+
+      const [addresses] = await Promise.allSettled([
+        readAddresses(held, natGateways),
+      ])
 
       return {
         subnets: take("subnets", subnets, gaps),
         routeTables: take("routeTables", routeTables, gaps),
         internetGateways: take("internetGateways", igws, gaps),
-        natGateways: take("natGateways", nats, gaps),
+        natGateways,
         addresses: take("addresses", addresses, gaps),
-        instances: take("instances", instances, gaps),
+        instances: held,
         loadBalancers: take("loadBalancers", lbs, gaps),
         dbInstances: take("dbInstances", dbs, gaps),
         ...gaps,

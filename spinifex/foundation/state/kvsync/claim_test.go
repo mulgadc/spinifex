@@ -22,11 +22,38 @@ func TestClaim_SecondHolderIsRefusedAndSameHolderAdoptsWithoutAWrite(t *testing.
 	require.True(t, ok, "want *HeldError, got %v", err)
 	assert.Equal(t, held, he.Current, "the refusal must name the holder and its generation")
 
-	before := revision(t, s[0], "claim.x")
 	adopted, err := restarted.TryLock(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, held, adopted, "adoption keeps the generation")
-	assert.Equal(t, before, revision(t, s[0], "claim.x"), "adoption must not write")
+	cur, ok, err := a.Holder(t.Context())
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, held, cur, "the adoption's confirming write keeps the generation in the key")
+}
+
+// A replica that has not seen a take-over still names the old holder. Its read
+// alone must not let that holder adopt the key back from the new one.
+func TestClaim_AStaleReadCannotAdoptATakenOverKey(t *testing.T) {
+	s := stores(t, 3)
+	a := kvsync.NewClaim(s[0], "claim.x", "node-a")
+	b := kvsync.NewClaim(s[1], "claim.x", "node-b")
+
+	first, err := a.TryLock(t.Context())
+	require.NoError(t, err)
+	value, rev, err := s[0].Load(t.Context(), "claim.x")
+	require.NoError(t, err)
+	second, err := b.TakeOver(t.Context(), first)
+	require.NoError(t, err)
+
+	stale := &staleStore{KVStore: s[2], value: value, rev: rev}
+	restarted := kvsync.NewClaim(stale, "claim.x", "node-a")
+	_, err = restarted.TryLock(t.Context())
+	_, held := asHeld(err)
+	assert.True(t, held, "a stale read must not adopt the key, got %v", err)
+	cur, ok, err := b.Holder(t.Context())
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, second, cur, "the key must still name the holder that took it over")
 }
 
 func TestClaim_TakeOverNeedsTheCurrentToken(t *testing.T) {

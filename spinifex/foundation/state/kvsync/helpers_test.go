@@ -191,3 +191,20 @@ func waitForSwaps(t *testing.T, s *slowStore, n int64) {
 		}
 	}
 }
+
+// staleStore answers its first Load with value at rev, as a replica behind the
+// leader would, and every later Load from the store itself.
+type staleStore struct {
+	kvsync.KVStore
+
+	value []byte
+	rev   uint64
+	used  atomic.Bool
+}
+
+func (s *staleStore) Load(ctx context.Context, key string) ([]byte, uint64, error) {
+	if s.used.CompareAndSwap(false, true) {
+		return s.value, s.rev, nil
+	}
+	return s.KVStore.Load(ctx, key)
+}

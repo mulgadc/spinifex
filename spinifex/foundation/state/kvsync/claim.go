@@ -25,9 +25,9 @@ func NewClaim(store KVStore, key, holder string) *Claim {
 	return &Claim{store: store, key: key, holder: holder}
 }
 
-// TryLock takes the key when it is absent, and adopts it without a write when
-// it already names this holder, keeping its generation. Otherwise it returns
-// *HeldError naming the holder.
+// TryLock takes the key when it is absent, and adopts it when it already names
+// this holder, keeping its generation. Otherwise it returns *HeldError naming
+// the holder.
 func (c *Claim) TryLock(ctx context.Context) (Token, error) {
 	var err error
 	for range casAttempts {
@@ -39,7 +39,7 @@ func (c *Claim) TryLock(ctx context.Context) (Token, error) {
 		if !errors.Is(err, ErrRevisionMismatch) {
 			return Token{}, fmt.Errorf("kvsync: claim %s: %w", c.key, err)
 		}
-		cur, _, ok, rerr := read(ctx, c.store, c.key)
+		cur, rev, ok, rerr := read(ctx, c.store, c.key)
 		if rerr != nil {
 			return Token{}, rerr
 		}
@@ -47,10 +47,18 @@ func (c *Claim) TryLock(ctx context.Context) (Token, error) {
 			// Unlocked between the create and the read; try again.
 			continue
 		}
-		if cur.Holder == c.holder {
+		if cur.Holder != c.holder {
+			return Token{}, &HeldError{Current: cur}
+		}
+		// A read can be answered by a lagging replica, so adoption is confirmed
+		// by a write at the revision read, which only the leader accepts.
+		_, err = c.store.CompareAndSwap(ctx, c.key, encode(c.holder, cur.Generation), rev)
+		if err == nil {
 			return cur, nil
 		}
-		return Token{}, &HeldError{Current: cur}
+		if !errors.Is(err, ErrRevisionMismatch) {
+			return Token{}, fmt.Errorf("kvsync: claim %s: %w", c.key, err)
+		}
 	}
 	return Token{}, fmt.Errorf("kvsync: claim %s: %w", c.key, err)
 }

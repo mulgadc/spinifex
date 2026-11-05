@@ -18,6 +18,7 @@ import (
 // prune's age rule can be exercised without waiting.
 type agedObjectStore struct {
 	*objectstore.MemoryObjectStore
+
 	modified map[string]time.Time
 }
 
@@ -288,6 +289,7 @@ func TestS7_ReaperKeepsAnOwedCopyWhenTheClaimReadIsOlder(t *testing.T) {
 // while the leader read sees the current one.
 type staleRecordGet struct {
 	UEFIStoreRecords
+
 	stale *uefistore.UEFIStoreRecord
 }
 

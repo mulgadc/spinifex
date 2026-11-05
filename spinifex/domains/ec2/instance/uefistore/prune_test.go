@@ -17,6 +17,7 @@ import (
 // key it has none for is listed with none.
 type datedStore struct {
 	*objectstore.MemoryObjectStore
+
 	modified map[string]time.Time
 }
 

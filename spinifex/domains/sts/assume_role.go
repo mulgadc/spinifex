@@ -527,6 +527,11 @@ type sessionEnvelope struct {
 	UnderlyingRoleARN string
 	RoleID            string
 	AssumedRoleID     string
+
+	// Lambda-environment-only; empty on every other path.
+	LambdaFunctionID    string
+	LambdaFunctionARN   string
+	LambdaEnvironmentID string
 }
 
 // assumedRoleEnvelope derives the session envelope for a role session, shared by all
@@ -603,20 +608,23 @@ func (s *STSServiceImpl) mintSession(ctx context.Context, env sessionEnvelope, d
 			return nil, "", "", err
 		}
 		cred := &SessionCredential{
-			AccessKeyID:       akid,
-			SecretEncrypted:   secretEncrypted,
-			SessionTokenHMAC:  tokenHMAC,
-			AccountID:         env.AccountID,
-			PrincipalType:     env.PrincipalType,
-			AssumedRoleARN:    env.AssumedRoleARN,
-			UnderlyingRoleARN: env.UnderlyingRoleARN,
-			RoleID:            env.RoleID,
-			AssumedRoleID:     env.AssumedRoleID,
-			SessionName:       env.SessionName,
-			UserID:            env.UserID,
-			SourceIdentity:    env.SourceIdentity,
-			ExpiresAt:         expiresAt,
-			CreatedAt:         now,
+			AccessKeyID:         akid,
+			SecretEncrypted:     secretEncrypted,
+			SessionTokenHMAC:    tokenHMAC,
+			AccountID:           env.AccountID,
+			PrincipalType:       env.PrincipalType,
+			AssumedRoleARN:      env.AssumedRoleARN,
+			UnderlyingRoleARN:   env.UnderlyingRoleARN,
+			RoleID:              env.RoleID,
+			AssumedRoleID:       env.AssumedRoleID,
+			SessionName:         env.SessionName,
+			UserID:              env.UserID,
+			SourceIdentity:      env.SourceIdentity,
+			LambdaFunctionID:    env.LambdaFunctionID,
+			LambdaFunctionARN:   env.LambdaFunctionARN,
+			LambdaEnvironmentID: env.LambdaEnvironmentID,
+			ExpiresAt:           expiresAt,
+			CreatedAt:           now,
 		}
 		if err := putSessionCredential(ctx, s.sessions, cred); err != nil {
 			if errors.Is(err, kvstore.ErrExists) {

@@ -59,6 +59,13 @@ type SessionCredential struct {
 	UserID string `json:"user_id,omitempty"`
 
 	SourceIdentity string    `json:"source_identity,omitempty"`
+
+	// The Lambda execution environment a session was issued for, set in the
+	// same create-only write as the credential; empty on every other path.
+	LambdaFunctionID    string `json:"lambda_function_id,omitempty"`
+	LambdaFunctionARN   string `json:"lambda_function_arn,omitempty"`
+	LambdaEnvironmentID string `json:"lambda_environment_id,omitempty"`
+
 	ExpiresAt      time.Time `json:"expires_at"`
 	CreatedAt      time.Time `json:"created_at"`
 }

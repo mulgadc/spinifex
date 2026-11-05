@@ -93,5 +93,4 @@ func TestControlDaemon_SecondRequestRefusedWhileAnAttemptIsHeld(t *testing.T) {
 	require.Contains(t, rep.Error, "another")
 	require.Empty(t, ips.allocated, "nothing was allocated for either attempt yet")
 	require.Empty(t, taps.created)
-
 }

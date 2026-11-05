@@ -55,8 +55,7 @@ var _ grantIssuer = (*execution.Store)(nil)
 // testLinkExecutor sends each invocation to the test-link daemon on Node.
 type testLinkExecutor struct {
 	Control controlExchanger
-	// RequestLimit bounds the encoded request without its credential: the
-	// NATS message limit the path used before the socket.
+	// RequestLimit bounds the encoded request frame, without its credential.
 	RequestLimit int64
 	Sessions     lambdaEnvironmentRoleIssuer
 	Node         string

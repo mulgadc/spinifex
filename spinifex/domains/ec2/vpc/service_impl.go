@@ -25,6 +25,7 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/zoneid"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats.go"
@@ -788,6 +789,17 @@ func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubn
 		az = *input.AvailabilityZone
 	} else if s.config != nil {
 		az = s.config.AZ
+	}
+
+	// Pin the zone's ID before anything is written, so a refused zone leaves no subnet behind.
+	if s.zoneIDs != nil && az != "" {
+		if _, err := s.zoneIDs.ZoneID(ctx, az); err != nil {
+			if errors.Is(err, zoneid.ErrTooManyZones) {
+				return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "The Region already has the maximum of %d distinct availability zones", zoneid.MaxZones)
+			}
+			slog.ErrorContext(ctx, "CreateSubnet: zone id pin failed", "az", az, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
 	}
 
 	subnetID := awsidentifiers.GenerateResourceID("subnet")

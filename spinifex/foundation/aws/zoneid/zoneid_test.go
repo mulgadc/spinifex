@@ -3,6 +3,7 @@ package zoneid
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"testing"
@@ -235,4 +236,25 @@ func TestBackfill_OwnZoneFirstThenOthersSorted(t *testing.T) {
 	again, err := r.ZoneID(ctx, "rack-a")
 	require.NoError(t, err)
 	assert.Equal(t, "mul1-az1", again, "a second backfill must not move any ID")
+}
+
+func TestPin_RegionRecordCappedAtMaxZones(t *testing.T) {
+	r := newResolver(t, newJS(t), "mulga-lab", "")
+	ctx := context.Background()
+	names := make([]string, MaxZones)
+	for i := range names {
+		names[i] = fmt.Sprintf("rack-%02d", i)
+	}
+	before, err := r.Pin(ctx, names...)
+	require.NoError(t, err)
+	assert.Len(t, before, MaxZones)
+
+	_, err = r.Pin(ctx, "one-too-many")
+	require.ErrorIs(t, err, ErrTooManyZones)
+	_, err = r.ZoneID(ctx, "one-too-many")
+	require.ErrorIs(t, err, ErrTooManyZones)
+
+	after, err := r.Pin(ctx, names...)
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "a refused pin must not change or remove any pinned ID")
 }

@@ -17,6 +17,12 @@ import (
 // BucketName holds one pinned record per Region.
 const BucketName = "spinifex-zone-ids"
 
+// MaxZones bounds the zones one Region record holds, so the record stays small and a pin stays one bounded write.
+const MaxZones = 64
+
+// ErrTooManyZones reports a pin that would take the Region record past MaxZones.
+var ErrTooManyZones = errors.New("zoneid: region already holds the maximum number of zones")
+
 // Record is the pinned mapping for one Region.
 type Record struct {
 	ShortCode string            `json:"shortCode"`
@@ -70,6 +76,15 @@ func (r *Resolver) Pin(ctx context.Context, azNames ...string) (map[string]strin
 				slog.Error("zone id short code differs from the pinned one; keeping the pinned code",
 					"region", r.region, "configured", r.shortCode, "pinned", rec.ShortCode)
 			})
+		}
+		missing := 0
+		for _, name := range names {
+			if _, ok := rec.Zones[name]; !ok {
+				missing++
+			}
+		}
+		if len(rec.Zones)+missing > MaxZones {
+			return false, fmt.Errorf("%w (%d)", ErrTooManyZones, MaxZones)
 		}
 		for _, name := range names {
 			if _, ok := rec.Zones[name]; ok {

@@ -3,6 +3,7 @@ package vpc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -2618,4 +2619,39 @@ func TestDescribeSubnets_AvailabilityZoneIDFilter(t *testing.T) {
 	assert.Equal(t, []string{inA}, by(idA))
 	assert.Equal(t, []string{inB}, by(idB))
 	assert.Empty(t, by("zz9-az9"), "an unknown zone id matches nothing and is not an error")
+}
+
+func TestCreateSubnet_RefusesA65thDistinctZone(t *testing.T) {
+	_, nc, js := testutil.StartTestJetStream(t)
+	testutil.StubVpcdSGResponder(t, nc)
+	svc, err := NewVPCServiceImplWithNATS(t.Context(), nil, nc)
+	require.NoError(t, err)
+	ids, err := zoneid.NewResolver(js, "mulga-lab", "")
+	require.NoError(t, err)
+	svc.SetZoneIDSource(ids)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+
+	create := func(i int, az string) error {
+		_, err := svc.CreateSubnet(t.Context(), &ec2.CreateSubnetInput{
+			VpcId: aws.String(vpcID), CidrBlock: aws.String(fmt.Sprintf("10.0.%d.0/24", i)), AvailabilityZone: aws.String(az),
+		}, testAccountID)
+		return err
+	}
+	for i := 1; i <= zoneid.MaxZones; i++ {
+		require.NoError(t, create(i, fmt.Sprintf("rack-%02d", i)))
+	}
+	pinned, err := ids.Pin(t.Context(), "rack-01", "rack-64")
+	require.NoError(t, err)
+
+	err = create(65, "rack-65")
+	testutil.RequireAWSError(t, err, awserrors.ErrorInvalidParameterValue, "The Region already has the maximum of 64 distinct availability zones")
+
+	out, err := svc.DescribeSubnets(t.Context(), &ec2.DescribeSubnetsInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, out.Subnets, zoneid.MaxZones, "the refused subnet must not exist")
+	again, err := ids.Pin(t.Context(), "rack-01", "rack-64")
+	require.NoError(t, err)
+	assert.Equal(t, pinned, again)
+
+	require.NoError(t, create(66, "rack-01"), "an already pinned zone still takes new subnets")
 }

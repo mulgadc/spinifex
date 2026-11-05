@@ -143,7 +143,7 @@ func (m *Manager) launch(ctx context.Context, instance *VM, pre *uefiPrecheck) (
 	if pre == nil {
 		rec, err := m.checkUEFIVarStore(ctx, instance)
 		if err != nil {
-			slog.ErrorContext(ctx, "Refusing to launch a UEFI instance without exactly one variable store",
+			slog.ErrorContext(ctx, "Refusing to launch a UEFI instance without a variable store",
 				"instanceId", instance.ID, "err", err)
 			return err
 		}
@@ -290,10 +290,6 @@ func (m *Manager) markAttachedVolumesInUse(instance *VM) error {
 	instance.EBSRequests.Mu.Unlock()
 
 	for _, ebsReq := range requests {
-		// EFI pflash is not a KV-tracked EBS volume; skip it like the unmount gate.
-		if ebsReq.EFI {
-			continue
-		}
 		if m.deps.VolumeStateUpdater == nil {
 			return errors.New("volume state updater not wired")
 		}
@@ -1469,8 +1465,9 @@ func buildDiskBootDrives(requests []EBSRequest, cpuCount int, machineType string
 //
 // The boot volume is a -blockdev node named "os" under a bootindex=1 device
 // that carries werror/rerror; it is never detached, so it keeps fixed names.
-// EFI volumes emit pflash unit=1, as uefiVarsDrive does for a variable store
-// pointer; Config.Execute adds the CODE blob (unit=0).
+// The UEFI variable store is not a volume: uefiVarsDrive adds it as pflash
+// unit=1, Config.Execute adds the CODE blob (unit=0), and an EFI request is
+// refused rather than attached as a data volume.
 //
 // Every other (data) volume is given the same named node-name/device-id/
 // iothread-id shape AttachVolume's hot-plug path uses, via a -blockdev entry
@@ -1495,9 +1492,8 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 		}
 
 		switch {
-		case kind == volumeExportBlock && v.EFI:
-			// The VARS store is a pflash -drive, which has no host_device form.
-			return driveConfig{}, fmt.Errorf("volume %s: block device export is not supported for an EFI volume", v.Name)
+		case v.EFI:
+			return driveConfig{}, fmt.Errorf("volume %s: %w", v.Name, ErrUEFIEFIVolume)
 
 		case v.Boot:
 			blockdev, err := exportBlockdev(*v, kind, bootNodeName, bootNBDBlockdev)
@@ -1519,18 +1515,10 @@ func buildDrives(requests []EBSRequest, cpuCount int, machineType string) (drive
 			cfg.Blockdevs = append(cfg.Blockdevs, blockdev)
 			cfg.Devices = append(cfg.Devices, dev)
 
-		case v.EFI:
-			cfg.Drives = append(cfg.Drives, Drive{
-				File:   v.NBDURI,
-				Format: "raw",
-				If:     "pflash",
-				Unit:   1,
-			})
-
 		default:
 			// microvm has no PCIe root ports, so its data volumes take none.
 			microvm := IsMicrovm(machineType)
-			// A data (non-boot, non-EFI) volume. Allocate a stable hot-plug
+			// A data (non-boot) volume. Allocate a stable hot-plug
 			// port when the persisted state predates port accounting, or the
 			// volume was attached at RunInstances time without one;
 			// freeHotplugEBSPort re-scans requests as mutated so far in this

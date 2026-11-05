@@ -1,6 +1,9 @@
 package vm
 
-import "log/slog"
+import (
+	"context"
+	"log/slog"
+)
 
 // UEFIStoreTerminator settles a terminated instance's UEFI variable store. The
 // objects are deleted by a cluster-wide reaper, so terminate only records the
@@ -28,6 +31,7 @@ func (m *Manager) markUEFIStoreForDeletion(instance *VM) {
 		m.markTeardown(instance, TeardownUEFI, TeardownFailed)
 	case has:
 		m.markTeardown(instance, TeardownUEFI, TeardownPending)
+		m.releaseHeldUEFIClaim(context.Background(), instance.ID, "the instance is terminating")
 	}
 	if err := m.deps.UEFIStores.RemoveLocalUEFIStore(instance.ID); err != nil {
 		slog.Warn("Failed to remove local UEFI variable store", "instanceId", instance.ID, "err", err)

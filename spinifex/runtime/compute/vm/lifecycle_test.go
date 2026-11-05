@@ -157,14 +157,14 @@ func TestBuildDrives(t *testing.T) {
 			},
 		},
 		{
-			name: "EFI volume emits pflash unit=1",
+			// The variable store is a local file now, so an EFI request is
+			// refused rather than attached as a data volume.
+			name: "EFI volume is refused",
 			requests: []EBSRequest{
 				{Name: "vol-efi", NBDURI: "nbd:unix:/tmp/efi.sock", EFI: true},
 			},
 			cpuCount: 2,
-			wantDrives: []Drive{
-				{File: "nbd:unix:/tmp/efi.sock", Format: "raw", If: "pflash", Unit: 1},
-			},
+			wantErr:  "volume vol-efi: UEFI instance still carries an EFI volume",
 		},
 		{
 			name: "missing NBDURI returns error",
@@ -249,19 +249,15 @@ func TestBuildDrives(t *testing.T) {
 			wantErr:  "no free EBS hot-plug port for volume vol-overflow",
 		},
 		{
-			name: "mixed boot + EFI + data: boot is a -blockdev node and EFI keeps the pflash -drive",
+			name: "mixed boot + data: boot is a -blockdev node and no pflash -drive is emitted",
 			requests: []EBSRequest{
 				{Name: "vol-boot", NBDURI: "nbd:unix:/tmp/boot.sock", Boot: true},
-				{Name: "vol-efi", NBDURI: "nbd:unix:/tmp/efi.sock", EFI: true},
 				{Name: "vol-data-a", NBDURI: "nbd:unix:/tmp/data-a.sock", HotplugPort: 3},
 			},
 			// 2 vCPUs, so the boot disk keeps the legacy scalar shape and this
 			// case still asserts what its name says it does. Data volumes are
 			// unaffected by the pool either way — they keep one IOThread each.
 			cpuCount: 2,
-			wantDrives: []Drive{
-				{File: "nbd:unix:/tmp/efi.sock", Format: "raw", If: "pflash", Unit: 1},
-			},
 			wantIOThreads: []IOThread{
 				{ID: "ioth-os"},
 				{ID: "ioth-vol-data-a"},
@@ -274,7 +270,7 @@ func TestBuildDrives(t *testing.T) {
 				{Value: "virtio-blk-pci,drive=os,iothread=ioth-os,num-queues=2,bootindex=1,werror=stop,rerror=stop"},
 				{Value: "virtio-blk-pci,id=vdisk-vol-data-a,drive=nbd-vol-data-a,iothread=ioth-vol-data-a,serial=voldataa,bus=hotplug-ebs3,werror=stop,rerror=stop"},
 			},
-			wantHotplugPorts: []int{0, 0, 3},
+			wantHotplugPorts: []int{0, 3},
 		},
 		{
 			name: "block data volume emits a raw node over host_device with the same device wiring",
@@ -408,12 +404,6 @@ func TestBuildDrives(t *testing.T) {
 			requests: []EBSRequest{{Name: "vol-boot", NBDURI: "http://example/boot", Boot: true}},
 			cpuCount: 2,
 			wantErr:  "parse NBDURI for volume vol-boot",
-		},
-		{
-			name:     "block EFI volume is rejected",
-			requests: []EBSRequest{{Name: "vol-efi", BlockDevice: "/dev/sdx", BlockSizeBytes: 1 << 20, EFI: true}},
-			cpuCount: 2,
-			wantErr:  "volume vol-efi: block device export is not supported for an EFI volume",
 		},
 		{
 			name:     "both NBDURI and BlockDevice set is rejected",

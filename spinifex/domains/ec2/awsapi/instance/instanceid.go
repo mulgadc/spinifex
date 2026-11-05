@@ -99,3 +99,46 @@ func classifyUnownedInstance(ctx context.Context, natsConn *nats.Conn, instanceI
 	}
 	return bucketStateAbsent, allOK
 }
+
+// routeInstanceMutation sends cmd to the instance's owner first and falls back
+// to the queue-group subject only when that is safe: no daemon runs the
+// instance (ErrNoResponders after every retry), or the owner is N-1 and
+// rejected the command without writing (ServerInternal with no HandledHeader).
+// A timeout or other transport error is an unknown outcome and never falls back.
+func routeInstanceMutation[Out any](ctx context.Context, natsConn *nats.Conn, instanceID, accountID string, cmd ec2v1.EC2InstanceCommand, queueSubject string, queueInput any) (*Out, error) {
+	queue := func() (*Out, error) {
+		return natsmsg.NATSRequest[Out](ctx, natsConn, queueSubject, queueInput, 30*time.Second, accountID)
+	}
+
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	msg, err := requestInstanceCmd(ctx, natsConn, instanceID, accountID, data)
+	if err != nil {
+		if errors.Is(err, nats.ErrNoResponders) {
+			return queue()
+		}
+		slog.ErrorContext(ctx, "Owner request failed, outcome unknown", "instance_id", instanceID, "subject", queueSubject, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	responseError, parseErr := awserrors.ValidateErrorPayload(msg.Data)
+	if parseErr != nil {
+		handled := msg.Header.Get(ec2v1.HandledHeader) == "1"
+		if !handled && *responseError.Code == awserrors.ErrorServerInternal {
+			slog.WarnContext(ctx, "Owner did not recognise the command, using the queue group", "instance_id", instanceID, "subject", queueSubject)
+			return queue()
+		}
+		if responseError.Message != nil && *responseError.Message != "" {
+			return nil, awserrors.Errorf(*responseError.Code, "%s", *responseError.Message)
+		}
+		return nil, errors.New(*responseError.Code)
+	}
+
+	var out Out
+	if err := json.Unmarshal(msg.Data, &out); err != nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	return &out, nil
+}

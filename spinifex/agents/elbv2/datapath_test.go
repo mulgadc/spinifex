@@ -333,13 +333,90 @@ func TestDataPathEvidence_InstanceIDRetriedUntilKnown(t *testing.T) {
 		return "i-late", nil
 	}
 
-	for i, want := range []string{"", "", "i-late", "i-late"} {
-		if got := a.dataPathEvidence().InstanceID; got != want {
-			t.Fatalf("call %d: InstanceID = %q, want %q", i, got, want)
+	// A failure backs the lookup off for imdsRetryTicks-1 ticks.
+	ticks := func(n int) string {
+		var id string
+		for range n {
+			id = a.dataPathEvidence().InstanceID
 		}
+		return id
 	}
+	if got := ticks(imdsRetryTicks); got != "" || calls.Load() != 1 {
+		t.Fatalf("after %d ticks: id %q, calls %d; want no id and one lookup", imdsRetryTicks, got, calls.Load())
+	}
+	if got := ticks(imdsRetryTicks); got != "" || calls.Load() != 2 {
+		t.Fatalf("second window: id %q, calls %d; want no id and two lookups", got, calls.Load())
+	}
+	if got := ticks(imdsRetryTicks); got != "i-late" || calls.Load() != 3 {
+		t.Fatalf("third window: id %q, calls %d; want i-late and three lookups", got, calls.Load())
+	}
+	ticks(imdsRetryTicks)
 	if calls.Load() != 3 {
 		t.Errorf("metadata asked %d times, want 3 (stop once known)", calls.Load())
+	}
+}
+
+func TestTick_BlockedInstanceIDLookupDoesNotDelayHeartbeat(t *testing.T) {
+	var got atomic.Pointer[url.Values]
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		if r.FormValue("Action") == "LBAgentHeartbeat" {
+			v := r.Form
+			got.Store(&v)
+		}
+		fmt.Fprint(w, `<LBAgentHeartbeatResponse><LBAgentHeartbeatResult><Status>active</Status><ConfigHash>h1</ConfigHash></LBAgentHeartbeatResult></LBAgentHeartbeatResponse>`)
+	}))
+	defer gw.Close()
+
+	a := datapathAgent(t, gw.URL, testNetcfg)
+	a.localConfigHash = "h1"
+	a.arpProbeFn = func(string, net.HardwareAddr, netip.Addr, netip.Addr, time.Duration) error { return nil }
+	release := make(chan struct{})
+	defer close(release)
+	var calls atomic.Int32
+	a.instanceIDFn = func() (string, error) {
+		calls.Add(1)
+		<-release
+		return "", errors.New("unreachable")
+	}
+
+	for i := range 3 {
+		start := time.Now()
+		a.tick()
+		if d := time.Since(start); d >= pollInterval {
+			t.Fatalf("tick %d took %s with IMDS blocked, want under one %s tick", i, d, pollInterval)
+		}
+	}
+	v := got.Load()
+	if v == nil {
+		t.Fatal("the heartbeat was never sent")
+	}
+	if v.Get("InstanceID") != "" {
+		t.Error("InstanceID must be omitted while the lookup fails")
+	}
+	if v.Get("NICs.member.1.MAC") == "" {
+		t.Error("NIC evidence must still be sent")
+	}
+	if calls.Load() != 1 {
+		t.Errorf("blocked lookup started %d times in 3 ticks, want 1 (backoff)", calls.Load())
+	}
+}
+
+func TestFetchInstanceID_SharesOneDeadline(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(3 * imdsWait)
+	}))
+	defer srv.Close()
+	old := imdsBase
+	imdsBase = srv.URL + "/latest"
+	defer func() { imdsBase = old }()
+
+	start := time.Now()
+	if _, err := fetchInstanceID(); err == nil {
+		t.Fatal("a hung metadata service must fail the lookup")
+	}
+	if d := time.Since(start); d > imdsWait+imdsWait/2 {
+		t.Fatalf("lookup took %s, want about one %s deadline", d, imdsWait)
 	}
 }
 

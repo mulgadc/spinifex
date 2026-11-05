@@ -32,17 +32,20 @@ func arpProbe(iface string, mac net.HardwareAddr, src, gateway netip.Addr, wait 
 	}
 
 	deadline := time.Now().Add(wait)
-	tv := syscall.NsecToTimeval(int64(wait))
-	if err := syscall.SetsockoptTimeval(fd, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &tv); err != nil {
-		return fmt.Errorf("set receive deadline: %w", err)
-	}
-
 	if err := syscall.Sendto(fd, buildARPRequest(mac, src, gateway), 0, addr); err != nil {
 		return fmt.Errorf("send ARP request: %w", err)
 	}
 
 	buf := make([]byte, 128)
-	for time.Now().Before(deadline) {
+	for {
+		left := time.Until(deadline)
+		if left <= 0 {
+			return errARPNoReply
+		}
+		tv := syscall.NsecToTimeval(int64(left))
+		if err := syscall.SetsockoptTimeval(fd, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &tv); err != nil {
+			return fmt.Errorf("set receive deadline: %w", err)
+		}
 		n, _, err := syscall.Recvfrom(fd, buf, 0)
 		if err != nil {
 			if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EINTR) {
@@ -54,7 +57,6 @@ func arpProbe(iface string, mac net.HardwareAddr, src, gateway netip.Addr, wait 
 			return nil
 		}
 	}
-	return errARPNoReply
 }
 
 func htons(v uint16) uint16 { return v<<8 | v>>8 }

@@ -104,6 +104,7 @@ type Agent struct {
 	arpProbeFn   arpProbeFn
 	instanceIDFn func() (string, error)
 	instanceID   string
+	idSkip       int
 	probeMu      sync.Mutex
 	probeStates  map[string]*nicProbeState
 }

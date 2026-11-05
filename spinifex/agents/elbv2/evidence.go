@@ -1,6 +1,7 @@
 package elbv2
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,7 +11,10 @@ import (
 	"time"
 )
 
-const imdsWait = 2 * time.Second
+const (
+	imdsWait       = time.Second
+	imdsRetryTicks = 6
+)
 
 // imdsBase is the in-VM metadata endpoint (a variable so tests can point it at a fake).
 var imdsBase = "http://169.254.169.254/latest"
@@ -48,19 +52,50 @@ func (a *Agent) dataPathEvidence() dataPathEvidence {
 		return dataPathEvidence{}
 	}
 	if a.instanceID == "" {
-		if id, err := a.instanceIDFn(); err == nil {
-			a.instanceID = id
-		}
+		a.lookupInstanceID()
 	}
 	return dataPathEvidence{InstanceID: a.instanceID, NICs: nics}
 }
 
-// fetchInstanceID reads the instance ID from the in-VM metadata service.
+// lookupInstanceID asks for the instance ID without ever holding up a tick: the
+// call is bounded by imdsWait and, after a failure, retried only every
+// imdsRetryTicks ticks.
+func (a *Agent) lookupInstanceID() {
+	if a.idSkip > 0 {
+		a.idSkip--
+		return
+	}
+	type result struct {
+		id  string
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		id, err := a.instanceIDFn()
+		ch <- result{id, err}
+	}()
+	timer := time.NewTimer(imdsWait)
+	defer timer.Stop()
+	select {
+	case r := <-ch:
+		if r.err == nil && r.id != "" {
+			a.instanceID = r.id
+			return
+		}
+	case <-timer.C:
+	}
+	a.idSkip = imdsRetryTicks - 1
+}
+
+// fetchInstanceID reads the instance ID from the in-VM metadata service. The
+// token request and the read share one deadline.
 func fetchInstanceID() (string, error) {
-	c := &http.Client{Timeout: imdsWait}
+	ctx, cancel := context.WithTimeout(context.Background(), imdsWait)
+	defer cancel()
+	c := &http.Client{}
 
 	var token string
-	if req, err := http.NewRequest(http.MethodPut, imdsBase+"/api/token", nil); err == nil {
+	if req, err := http.NewRequestWithContext(ctx, http.MethodPut, imdsBase+"/api/token", nil); err == nil {
 		req.Header.Set("X-Aws-Ec2-Metadata-Token-Ttl-Seconds", "60")
 		if resp, err := c.Do(req); err == nil {
 			b, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
@@ -71,7 +106,7 @@ func fetchInstanceID() (string, error) {
 		}
 	}
 
-	req, err := http.NewRequest(http.MethodGet, imdsBase+"/meta-data/instance-id", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, imdsBase+"/meta-data/instance-id", nil)
 	if err != nil {
 		return "", err
 	}

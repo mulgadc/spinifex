@@ -9,6 +9,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,8 +20,8 @@ import (
 // the rest of the Daemon graph can stay nil.
 func setupEKSDaemon(t *testing.T) (*Daemon, *nats.Conn) {
 	t.Helper()
-	_, nc, _ := testutil.StartTestJetStream(t)
-	svc, err := ekscluster.NewEKSServiceImpl(ekscluster.EKSServiceDeps{NATSConn: nc})
+	_, nc, js := testutil.StartTestJetStream(t)
+	svc, err := ekscluster.NewEKSServiceImpl(ekscluster.EKSServiceDeps{NATSConn: nc, Leases: ekscluster.NewClusterLeases(kvstore.OpenSyncBucket(js), "test")})
 	require.NoError(t, err)
 	return &Daemon{eksService: svc}, nc
 }

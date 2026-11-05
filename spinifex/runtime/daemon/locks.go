@@ -64,12 +64,3 @@ func deleteObsoleteBuckets(ctx context.Context, js jetstream.JetStream) {
 		}
 	}
 }
-
-// eksLeases is the EKS lease group, or nil before startCluster has built the
-// daemon's locks, which leaves the EKS service to build its own.
-func (d *Daemon) eksLeases() *kvsync.LeaseGroup {
-	if d.locks == nil {
-		return nil
-	}
-	return d.locks.eks
-}

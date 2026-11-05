@@ -149,6 +149,7 @@ func TestResolveSystemPredastoreURL(t *testing.T) {
 func TestBuildEKSServiceDeps(t *testing.T) {
 	t.Parallel()
 	d := &Daemon{
+		locks:        &daemonLocks{},
 		mgmtBridgeIP: "10.15.8.1",
 		config: &config.Config{
 			Predastore: config.PredastoreConfig{
@@ -213,6 +214,7 @@ func TestBuildEKSServiceDeps_ConfigDerivedFields(t *testing.T) {
 
 	base := func() *Daemon {
 		return &Daemon{
+			locks:         &daemonLocks{},
 			mgmtBridgeIP:  "10.15.8.1",
 			clusterConfig: &config.ClusterConfig{AWS: config.AWSConfig{ServicesDomain: "svc.example"}},
 			volumeService: &ec2volume.VolumeServiceImpl{},
@@ -247,6 +249,7 @@ func TestBuildEKSServiceDeps_ConfigDerivedFields(t *testing.T) {
 func TestBuildEKSServiceDeps_WiresLaunchTemplates(t *testing.T) {
 	t.Parallel()
 	d := &Daemon{
+		locks:                 &daemonLocks{},
 		config:                &config.Config{},
 		launchTemplateService: &ec2launchtemplate.LaunchTemplateServiceImpl{},
 	}

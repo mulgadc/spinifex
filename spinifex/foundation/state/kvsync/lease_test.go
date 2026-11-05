@@ -165,38 +165,6 @@ func takeKey(t *testing.T, other kvsync.KVStore) {
 	require.NoError(t, err)
 }
 
-func TestLease_ReusableAfterUnlockAndAfterLoss(t *testing.T) {
-	s := stores(t, 2)
-	c := kvsync.NewFakeClock()
-	l := kvsync.NewLeaseWithClock(s[0], leaseKey, "node-a", testTTL, c)
-
-	first, err := l.TryLock(t.Context())
-	require.NoError(t, err)
-	firstLost := l.Lost()
-	l.Unlock(t.Context(), first)
-	requireClosed(t, firstLost, "Unlock must close the acquisition's Lost")
-
-	second, err := l.TryLock(t.Context())
-	require.NoError(t, err)
-	secondLost := l.Lost()
-	requireOpen(t, secondLost, "a new acquisition needs a fresh Lost channel")
-
-	takeKey(t, s[1])
-	waitForWaiters(t, c, 1)
-	c.Advance(testTTL / 3)
-	requireClosed(t, secondLost, "a renewal that lost its CAS must close Lost")
-	require.False(t, l.Held())
-
-	// With the taker's key deleted the key is free, so the lease takes it at once
-	// and at a higher generation than any before.
-	require.NoError(t, s[1].CompareAndDelete(t.Context(), leaseKey, revision(t, s[1], leaseKey)))
-	third, err := l.TryLock(t.Context())
-	require.NoError(t, err)
-	requireOpen(t, l.Lost(), "a new acquisition needs a fresh Lost channel")
-	assert.Greater(t, third.Generation, second.Generation)
-	l.Unlock(t.Context(), third)
-}
-
 func TestLease_StaleUnlockLeavesTheLaterAcquisition(t *testing.T) {
 	s := stores(t, 2)
 	c := kvsync.NewFakeClock()
@@ -220,58 +188,46 @@ func TestLease_StaleUnlockLeavesTheLaterAcquisition(t *testing.T) {
 
 	l.Unlock(t.Context(), siteA)
 	assert.True(t, l.Held(), "site A's stale unlock released site B's acquisition")
-	cur, ok, err := l.Holder(t.Context())
-	require.NoError(t, err)
-	require.True(t, ok, "site A's stale unlock deleted site B's key")
-	assert.Equal(t, siteB, cur)
+	assert.Equal(t, siteB.Generation, revision(t, s[0], leaseKey), "site A's stale unlock deleted site B's key")
 	l.Unlock(t.Context(), siteB)
 }
 
-func TestLease_ReadoptionAfterUnavailableLossTakesANewGeneration(t *testing.T) {
-	s := stores(t, 1)
-	f := &faultyStore{KVStore: s[0]}
-	c := kvsync.NewFakeClock()
-	l := kvsync.NewLeaseWithClock(f, leaseKey, "node-a", testTTL, c)
-
-	lost, err := l.TryLock(t.Context())
-	require.NoError(t, err)
-	lostCh := l.Lost()
-
-	f.down.Store(true)
-	failRenewalsUntilDeadline(t, c, lostCh)
-	requireClosed(t, lostCh, "renewals unavailable for 2*ttl/3 must lose the lease")
-	f.down.Store(false)
-
-	readopted, err := l.TryLock(t.Context())
-	require.NoError(t, err, "the surviving key names this holder, so it is adopted at once")
-	assert.Greater(t, readopted.Generation, lost.Generation, "an adoption takes the generation of its own write")
-
-	l.Unlock(t.Context(), lost)
-	cur, ok, err := l.Holder(t.Context())
-	require.NoError(t, err)
-	require.True(t, ok, "the lost acquisition's unlock deleted the readopted key")
-	assert.Equal(t, readopted, cur)
-	l.Unlock(t.Context(), readopted)
-}
-
+// A Lease is reusable after Unlock and after a renewal loses the key, each
+// acquisition with a fresh Lost and a higher generation.
 func TestLease_MismatchClosesLostOnceAndStopsRenewing(t *testing.T) {
 	s := stores(t, 2)
 	f := &faultyStore{KVStore: s[0]}
 	c := kvsync.NewFakeClock()
 	l := kvsync.NewLeaseWithClock(f, leaseKey, "node-a", testTTL, c)
 
-	_, err := l.TryLock(t.Context())
+	first, err := l.TryLock(t.Context())
+	require.NoError(t, err)
+	firstLost := l.Lost()
+	l.Unlock(t.Context(), first)
+	requireClosed(t, firstLost, "Unlock must close the acquisition's Lost")
+
+	second, err := l.TryLock(t.Context())
 	require.NoError(t, err)
 	lost := l.Lost()
+	requireOpen(t, lost, "a new acquisition needs a fresh Lost channel")
 	takeKey(t, s[1])
 	waitForWaiters(t, c, 1)
 	c.Advance(testTTL / 3)
 	requireClosed(t, lost, "a renewal that lost its CAS must close Lost")
+	require.False(t, l.Held())
 
 	swaps := f.swaps.Load()
 	c.Advance(10 * testTTL)
 	assert.Zero(t, c.Waiters(), "a lost lease must not schedule another renewal")
 	assert.Equal(t, swaps, f.swaps.Load(), "a lost lease must not renew again")
+
+	// With the taker's key deleted the key is free, so the lease takes it at once.
+	require.NoError(t, s[1].CompareAndDelete(t.Context(), leaseKey, revision(t, s[1], leaseKey)))
+	third, err := l.TryLock(t.Context())
+	require.NoError(t, err)
+	requireOpen(t, l.Lost(), "a new acquisition needs a fresh Lost channel")
+	assert.Greater(t, third.Generation, second.Generation)
+	l.Unlock(t.Context(), third)
 }
 
 // failRenewalsUntilDeadline drives a lease whose last renewal landed now
@@ -295,7 +251,7 @@ func TestLease_UnavailableRenewalsLoseAtTwoThirdsOfTheTTL(t *testing.T) {
 	c := kvsync.NewFakeClock()
 	l := kvsync.NewLeaseWithClock(f, leaseKey, "node-a", testTTL, c)
 
-	_, err := l.TryLock(t.Context())
+	gone, err := l.TryLock(t.Context())
 	require.NoError(t, err)
 	lost := l.Lost()
 	renewOnce(t, c) // lands, so the deadline counts from here
@@ -306,6 +262,14 @@ func TestLease_UnavailableRenewalsLoseAtTwoThirdsOfTheTTL(t *testing.T) {
 	requireClosed(t, lost, "Lost must close once 2*ttl/3 has passed since the last landed renewal")
 	assert.False(t, l.Held())
 	assert.Greater(t, f.swaps.Load()-before, int64(1), "an unavailable renewal must be retried before the lease is given up")
+	f.down.Store(false)
+
+	readopted, err := l.TryLock(t.Context())
+	require.NoError(t, err, "the surviving key names this holder, so it is adopted at once")
+	assert.Greater(t, readopted.Generation, gone.Generation, "an adoption takes the generation of its own write")
+	l.Unlock(t.Context(), gone)
+	assert.Equal(t, readopted.Generation, revision(t, f, leaseKey), "the lost acquisition's unlock deleted the readopted key")
+	l.Unlock(t.Context(), readopted)
 }
 
 func TestLeaseGroup_SameLeaseUntilForget(t *testing.T) {

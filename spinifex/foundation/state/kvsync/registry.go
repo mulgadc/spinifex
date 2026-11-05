@@ -1,9 +1,11 @@
 package kvsync
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // registries holds, per store value, every key and prefix constructed against
@@ -18,50 +20,58 @@ type keySet struct {
 	prefixes map[string]struct{}
 }
 
-// registerKey panics unless key is valid and neither registered nor under a
-// registered prefix of store.
-func registerKey(store KVStore, key string) {
+// registerKey records key against store unless it is invalid, already
+// registered, or under a registered prefix.
+func registerKey(store KVStore, key string) error {
 	if err := validKey(key); err != nil {
-		panic(err) //nolint:forbidigo // Constructing a lock wrongly is a wiring error that must fail at startup, not at the first election.
+		return err
 	}
-	set := keySetFor(store)
+	set, err := keySetFor(store)
+	if err != nil {
+		return err
+	}
 	defer registries.mu.Unlock()
 	if _, dup := set.keys[key]; dup {
-		panic(fmt.Sprintf("kvsync: key %q constructed twice against one store", key)) //nolint:forbidigo // Constructing a lock wrongly is a wiring error that must fail at startup, not at the first election.
+		return fmt.Errorf("kvsync: key %q constructed twice against one store", key)
 	}
 	for p := range set.prefixes {
 		if strings.HasPrefix(key, p) {
-			panic(fmt.Sprintf("kvsync: key %q is under registered prefix %q", key, p)) //nolint:forbidigo // Constructing a lock wrongly is a wiring error that must fail at startup, not at the first election.
+			return fmt.Errorf("kvsync: key %q is under registered prefix %q", key, p)
 		}
 	}
 	set.keys[key] = struct{}{}
+	return nil
 }
 
-// registerPrefix panics unless prefix is valid, no registered prefix contains
-// it or is contained by it, and no registered key falls under it.
-func registerPrefix(store KVStore, prefix string) {
+// registerPrefix records prefix against store unless it is invalid, overlaps a
+// registered prefix, or covers a registered key.
+func registerPrefix(store KVStore, prefix string) error {
 	if err := validPrefix(prefix); err != nil {
-		panic(err) //nolint:forbidigo // Constructing a lock wrongly is a wiring error that must fail at startup, not at the first election.
+		return err
 	}
-	set := keySetFor(store)
+	set, err := keySetFor(store)
+	if err != nil {
+		return err
+	}
 	defer registries.mu.Unlock()
 	for p := range set.prefixes {
 		if strings.HasPrefix(prefix, p) || strings.HasPrefix(p, prefix) {
-			panic(fmt.Sprintf("kvsync: prefix %q overlaps registered prefix %q", prefix, p)) //nolint:forbidigo // Constructing a lock wrongly is a wiring error that must fail at startup, not at the first election.
+			return fmt.Errorf("kvsync: prefix %q overlaps registered prefix %q", prefix, p)
 		}
 	}
 	for k := range set.keys {
 		if strings.HasPrefix(k, prefix) {
-			panic(fmt.Sprintf("kvsync: prefix %q covers registered key %q", prefix, k)) //nolint:forbidigo // Constructing a lock wrongly is a wiring error that must fail at startup, not at the first election.
+			return fmt.Errorf("kvsync: prefix %q covers registered key %q", prefix, k)
 		}
 	}
 	set.prefixes[prefix] = struct{}{}
+	return nil
 }
 
 // keySetFor returns store's key set with registries.mu held; the caller unlocks.
-func keySetFor(store KVStore) *keySet {
+func keySetFor(store KVStore) (*keySet, error) {
 	if store == nil {
-		panic("kvsync: nil store") //nolint:forbidigo // Constructing a lock wrongly is a wiring error that must fail at startup, not at the first election.
+		return nil, errors.New("kvsync: nil store")
 	}
 	registries.mu.Lock()
 	set, ok := registries.m[store]
@@ -69,7 +79,28 @@ func keySetFor(store KVStore) *keySet {
 		set = &keySet{keys: map[string]struct{}{}, prefixes: map[string]struct{}{}}
 		registries.m[store] = set
 	}
-	return set
+	return set, nil
+}
+
+// mustWire panics on a construction error, the one place this package panics.
+func mustWire(err error) {
+	if err != nil {
+		panic(err.Error()) //nolint:forbidigo // Constructing a lock wrongly is a wiring error that must fail at startup, not at the first election.
+	}
+}
+
+func validHolder(holder string) error {
+	if holder == "" {
+		return errors.New("kvsync: empty holder")
+	}
+	return nil
+}
+
+func validTTL(ttl time.Duration) error {
+	if ttl <= 0 {
+		return errors.New("kvsync: lease ttl must be positive")
+	}
+	return nil
 }
 
 // validChars reports whether s holds only characters JetStream KV accepts in a key.

@@ -10,6 +10,7 @@ import (
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,14 +34,14 @@ func TestDNSDesiredSet_ServicesWithoutBaseDomain(t *testing.T) {
 
 func TestDNSDesiredSet_ServicesEnumerateCompletely(t *testing.T) {
 	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
+	_, nc, js := testutil.StartTestJetStream(t)
 	cfg := &config.Config{Region: "ap-southeast-2"}
 	cfg.Northstar.DefaultDomain = "example.internal"
 
 	elb, err := elbv2domain.NewELBv2ServiceImplWithNATS(cfg, nc, bytes.Repeat([]byte{0x42}, masterkey.MasterKeySize))
 	require.NoError(t, err)
 	t.Cleanup(elb.Close)
-	eks, err := ekscluster.NewEKSServiceImpl(ekscluster.EKSServiceDeps{NATSConn: nc, Config: cfg})
+	eks, err := ekscluster.NewEKSServiceImpl(ekscluster.EKSServiceDeps{NATSConn: nc, Config: cfg, Leases: ekscluster.NewClusterLeases(kvstore.OpenSyncBucket(js), "test")})
 	require.NoError(t, err)
 	t.Cleanup(eks.Shutdown)
 	rds := rdsinstance.NewService(nc, cfg.Region).WithDeps(rdsinstance.Deps{BaseDomain: "example.internal"})

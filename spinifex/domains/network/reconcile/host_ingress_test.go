@@ -369,7 +369,7 @@ func TestRunHostIngress_IntentWriteConvergesEveryNodeWithoutLeaseOrEvent(t *test
 		t.Fatalf("create IGW bucket: %v", err)
 	}
 	put(t, vpcs, "acct/vpc-1", ec2vpc.VPCRecord{VpcId: "vpc-1", CidrBlock: "10.1.0.0/16"})
-	release, elected := reconcile.AcquireLeader(ctx, reconcile.NewVPCDLease(kvstore.OpenSyncBucket(js), "node-elsewhere"))
+	release, elected := reconcile.AcquireLeader(ctx, reconcile.NewLeaderLease(kvstore.OpenSyncBucket(js), reconcile.KeyVPCDReconcile, "node-elsewhere"))
 	if !elected {
 		t.Fatal("could not take the drift lease for another node")
 	}

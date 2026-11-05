@@ -43,7 +43,6 @@ type Lease struct {
 type acquisition struct {
 	gen  uint64
 	lost chan struct{}
-	stop chan struct{}
 	done chan struct{}
 	// rev and landed, guarded by Lease.mu, are the last write that landed and
 	// when it was sent.
@@ -54,17 +53,12 @@ type acquisition struct {
 // NewLease returns the lease on key for holder. It panics if key is invalid or
 // already constructed against store, if holder is empty, or if ttl is not positive.
 func NewLease(store KVStore, key, holder string, ttl time.Duration) *Lease {
-	registerKey(store, key)
+	mustWire(errors.Join(validHolder(holder), validTTL(ttl), registerKey(store, key)))
 	return newLease(store, key, holder, ttl, realClock{})
 }
 
+// newLease builds a Lease whose holder and ttl the caller has checked.
 func newLease(store KVStore, key, holder string, ttl time.Duration, c clock) *Lease {
-	if holder == "" {
-		panic("kvsync: empty holder") //nolint:forbidigo // Constructing a lock wrongly is a wiring error that must fail at startup, not at the first election.
-	}
-	if ttl <= 0 {
-		panic("kvsync: lease ttl must be positive") //nolint:forbidigo // Constructing a lock wrongly is a wiring error that must fail at startup, not at the first election.
-	}
 	closed := make(chan struct{})
 	close(closed)
 	return &Lease{store: store, key: key, holder: holder, ttl: ttl, clock: c, lost: closed}
@@ -146,14 +140,13 @@ func (l *Lease) observedFor(rev uint64) bool {
 }
 
 // install records an acquisition at rev, valid from sent, and starts its
-// renewal, which ignores the caller's cancellation and stops at Unlock.
+// renewal, which ignores the caller's cancellation and stops when Lost closes.
 func (l *Lease) install(ctx context.Context, rev uint64, sent time.Time) Token {
 	a := &acquisition{
 		gen:    rev,
 		rev:    rev,
 		landed: sent,
 		lost:   make(chan struct{}),
-		stop:   make(chan struct{}),
 		done:   make(chan struct{}),
 	}
 	l.mu.Lock()
@@ -164,7 +157,7 @@ func (l *Lease) install(ctx context.Context, rev uint64, sent time.Time) Token {
 }
 
 // renew rewrites the key by CAS ttl/3 after each write that landed was sent,
-// until stopped. A mismatch loses the lease at once. An unreachable store is
+// until Lost closes. A mismatch loses the lease at once. An unreachable store is
 // retried, and the lease is lost at 2*ttl/3 after that send, however long a CAS has been stuck.
 func (l *Lease) renew(ctx context.Context, a *acquisition) {
 	defer close(a.done)
@@ -182,7 +175,7 @@ func (l *Lease) renew(ctx context.Context, a *acquisition) {
 			wait = min(retry, deadline.Sub(l.clock.Now()))
 		}
 		select {
-		case <-a.stop:
+		case <-a.lost:
 			return
 		case <-l.clock.After(wait):
 		}
@@ -192,15 +185,13 @@ func (l *Lease) renew(ctx context.Context, a *acquisition) {
 			return
 		}
 		sent := l.clock.Now()
-		next, err, inTime := l.swapWithin(ctx, a, rev, budget, min(budget, interval))
-		if errors.Is(err, errRenewalStopped) {
+		next, err := l.swapWithin(ctx, a, rev, budget, min(budget, interval))
+		switch {
+		case errors.Is(err, errRenewalStopped):
 			return
-		}
-		if !inTime {
+		case errors.Is(err, errRenewalLate):
 			l.lose(ctx, a, "renewal did not answer within two thirds of the ttl", nil)
 			return
-		}
-		switch {
 		case err == nil:
 			l.mu.Lock()
 			// Stamped at the send: a peer may have seen the revision that early.
@@ -216,13 +207,17 @@ func (l *Lease) renew(ctx context.Context, a *acquisition) {
 	}
 }
 
-// errRenewalStopped reports a renewal CAS abandoned because Unlock stopped it.
-var errRenewalStopped = errors.New("kvsync: renewal stopped")
+var (
+	// errRenewalStopped reports a renewal CAS abandoned because Unlock stopped it.
+	errRenewalStopped = errors.New("kvsync: renewal stopped")
+	// errRenewalLate reports a renewal CAS that did not answer within its budget.
+	errRenewalLate = errors.New("kvsync: renewal late")
+)
 
 // swapWithin runs one renewal CAS, giving up on it at Unlock or once budget has
 // passed on the lease's clock, since a CAS can block past its own context. A
 // late result is dropped; it cannot land after Unlock's delete at a.rev.
-func (l *Lease) swapWithin(ctx context.Context, a *acquisition, rev uint64, budget, timeout time.Duration) (uint64, error, bool) {
+func (l *Lease) swapWithin(ctx context.Context, a *acquisition, rev uint64, budget, timeout time.Duration) (uint64, error) {
 	type result struct {
 		next uint64
 		err  error
@@ -238,11 +233,11 @@ func (l *Lease) swapWithin(ctx context.Context, a *acquisition, rev uint64, budg
 	defer stop()
 	select {
 	case r := <-done:
-		return r.next, r.err, true
+		return r.next, r.err
 	case <-expired:
-		return 0, nil, false
-	case <-a.stop:
-		return 0, errRenewalStopped, true
+		return 0, errRenewalLate
+	case <-a.lost:
+		return 0, errRenewalStopped
 	}
 }
 
@@ -273,7 +268,6 @@ func (l *Lease) Unlock(ctx context.Context, held Token) {
 	}
 	l.cur = nil
 	close(a.lost)
-	close(a.stop)
 	l.mu.Unlock()
 
 	// Waited for so that no renewal lands after the revision is read; a renewal
@@ -306,23 +300,6 @@ func (l *Lease) Held() bool {
 	return l.cur != nil
 }
 
-// Holder reports the token stored at the key, and false when nobody holds it.
-// A key whose holder has stopped renewing still reports that holder.
-func (l *Lease) Holder(ctx context.Context) (Token, bool, error) {
-	cur, _, ok, err := read(ctx, l.store, l.key)
-	return cur, ok, err
-}
-
-// release unlocks the current acquisition, if any.
-func (l *Lease) release(ctx context.Context) {
-	l.mu.Lock()
-	a := l.cur
-	l.mu.Unlock()
-	if a != nil {
-		l.Unlock(ctx, Token{Holder: l.holder, Generation: a.gen})
-	}
-}
-
 // LeaseGroup hands out per-resource leases under one registered prefix, one
 // Lease per name for as long as the owner keeps it.
 type LeaseGroup struct {
@@ -340,21 +317,13 @@ type LeaseGroup struct {
 // NewLeaseGroup registers prefix, which ends in ".", against store. It panics
 // on an invalid or overlapping prefix, an empty holder or a non-positive ttl.
 func NewLeaseGroup(store KVStore, prefix, holder string, ttl time.Duration) *LeaseGroup {
-	if holder == "" {
-		panic("kvsync: empty holder") //nolint:forbidigo // Constructing a lock wrongly is a wiring error that must fail at startup, not at the first election.
-	}
-	if ttl <= 0 {
-		panic("kvsync: lease ttl must be positive") //nolint:forbidigo // Constructing a lock wrongly is a wiring error that must fail at startup, not at the first election.
-	}
-	registerPrefix(store, prefix)
+	mustWire(errors.Join(validHolder(holder), validTTL(ttl), registerPrefix(store, prefix)))
 	return &LeaseGroup{store: store, prefix: prefix, holder: holder, ttl: ttl, clock: realClock{}, leases: map[string]*Lease{}}
 }
 
 // Get returns the Lease for prefix+name, the same one until Forget.
 func (g *LeaseGroup) Get(name string) *Lease {
-	if err := validName("name", name); err != nil {
-		panic(err) //nolint:forbidigo // Constructing a lock wrongly is a wiring error that must fail at startup, not at the first election.
-	}
+	mustWire(validName("name", name))
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if l, ok := g.leases[name]; ok {
@@ -372,7 +341,13 @@ func (g *LeaseGroup) Forget(name string) {
 	l := g.leases[name]
 	delete(g.leases, name)
 	g.mu.Unlock()
-	if l != nil {
-		l.release(context.Background())
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	a := l.cur
+	l.mu.Unlock()
+	if a != nil {
+		l.Unlock(context.Background(), Token{Holder: l.holder, Generation: a.gen})
 	}
 }

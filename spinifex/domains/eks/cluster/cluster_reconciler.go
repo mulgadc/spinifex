@@ -392,16 +392,11 @@ func NewClusterReconciler(lease *kvsync.Lease, acctKV jetstream.KeyValue, accoun
 // AcquireLease takes the cluster's lease. Returns (release, true) on success;
 // (nil, false) when another holder, or another run in this process, has it.
 func (r *ClusterReconciler) AcquireLease(ctx context.Context) (func(), bool) {
-	tok, err := r.lease.TryLock(ctx)
-	if err != nil {
-		if _, held := errors.AsType[*kvsync.HeldError](err); !held {
-			slog.WarnContext(ctx, "ClusterReconciler: lease attempt failed",
-				"account", r.accountID, "cluster", r.clusterName, "err", err)
-		}
-		return nil, false
+	release, lost, ok := tryLease(ctx, r.lease)
+	if ok {
+		r.lost = lost
 	}
-	r.lost = r.lease.Lost()
-	return func() { r.lease.Unlock(ctx, tok) }, true
+	return release, ok
 }
 
 // Run drives reconcile until ctx is cancelled, the lease is lost, or the cluster

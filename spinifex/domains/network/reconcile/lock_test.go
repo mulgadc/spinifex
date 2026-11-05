@@ -21,7 +21,7 @@ import (
 // vpcdLease returns holder's vpcd lease on a store of its own, standing in for
 // a separate process.
 func vpcdLease(js jetstream.JetStream, holder string) *kvsync.Lease {
-	return NewVPCDLease(kvstore.OpenSyncBucket(js), holder)
+	return NewLeaderLease(kvstore.OpenSyncBucket(js), KeyVPCDReconcile, holder)
 }
 
 func TestAcquireLeader_OneHolderAtATimeAcrossProcesses(t *testing.T) {
@@ -160,7 +160,7 @@ func TestAcquireLeaderAtStart_WaitsOutAnUnavailableStore(t *testing.T) {
 	cold := &coldStore{KVStore: kvstore.OpenSyncBucket(js)}
 	cold.down.Store(3)
 
-	release, ok := AcquireLeaderAtStart(t.Context(), NewVPCDLease(cold, "node-1"))
+	release, ok := AcquireLeaderAtStart(t.Context(), NewLeaderLease(cold, KeyVPCDReconcile, "node-1"))
 	require.True(t, ok, "the election must be won once the store answers")
 	release()
 }
@@ -203,7 +203,7 @@ func TestAcquireLeaderAtStart_WaitsOutAFormingCluster(t *testing.T) {
 			forming := &formingJS{JetStream: js, err: failure}
 			forming.down.Store(4)
 
-			release, ok := AcquireLeaderAtStart(t.Context(), NewVPCDLease(kvstore.OpenSyncBucket(forming), "node-1"))
+			release, ok := AcquireLeaderAtStart(t.Context(), NewLeaderLease(kvstore.OpenSyncBucket(forming), KeyVPCDReconcile, "node-1"))
 			require.True(t, ok, "the election must be won once the cluster has formed")
 			release()
 		})
@@ -217,7 +217,7 @@ func TestAcquireLeaderAtStart_GivesUpWhenTheWaitRunsOut(t *testing.T) {
 	cold.down.Store(1 << 30)
 
 	start := time.Now()
-	_, ok := AcquireLeaderAtStart(t.Context(), NewVPCDLease(cold, "node-1"))
+	_, ok := AcquireLeaderAtStart(t.Context(), NewLeaderLease(cold, KeyVPCDReconcile, "node-1"))
 	assert.False(t, ok)
 	assert.Less(t, time.Since(start), 5*time.Second)
 }

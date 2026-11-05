@@ -12,6 +12,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/eks/access"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -20,10 +21,18 @@ import (
 
 func setupTestService(t *testing.T) *EKSServiceImpl {
 	t.Helper()
-	_, nc, _ := testutil.StartTestJetStream(t)
-	svc, err := NewEKSServiceImpl(EKSServiceDeps{NATSConn: nc})
+	_, nc, js := testutil.StartTestJetStream(t)
+	svc, err := NewEKSServiceImpl(EKSServiceDeps{NATSConn: nc, Leases: NewClusterLeases(kvstore.OpenSyncBucket(js), "test")})
 	require.NoError(t, err)
 	return svc
+}
+
+// A service without the daemon's lease group would contend on keys no other
+// owner sees, so construction refuses it.
+func TestNewEKSServiceImpl_RequiresLeases(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	_, err := NewEKSServiceImpl(EKSServiceDeps{NATSConn: nc})
+	require.ErrorContains(t, err, "nil Leases")
 }
 
 // TestEKSServiceImpl_ClusterLifecycleShimMode covers the four lifecycle

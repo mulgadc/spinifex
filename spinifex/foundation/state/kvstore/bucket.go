@@ -55,6 +55,9 @@ type Bucket struct {
 
 	mu sync.Mutex
 	kv jetstream.KeyValue
+	// opened is set once a handle has been held, after which a missing bucket
+	// is a lost one, and only RecreateIfMissing may create it again.
+	opened bool
 }
 
 // NewBucket returns a Bucket over js. A nil js is permitted: every call to KV then
@@ -68,7 +71,7 @@ func NewBucket(js jetstream.JetStream, cfg Config) *Bucket {
 // rather than on first use. js is what recovery reopens against; pass nil to
 // keep the handle fixed for a caller not ready to recover.
 func NewOpenBucket(js jetstream.JetStream, kv jetstream.KeyValue, cfg Config) *Bucket {
-	return &Bucket{js: js, kv: kv, cfg: cfg}
+	return &Bucket{js: js, kv: kv, cfg: cfg, opened: kv != nil}
 }
 
 // Name returns the configured bucket name, for callers holding several buckets
@@ -96,14 +99,21 @@ func (b *Bucket) KV(ctx context.Context) (jetstream.KeyValue, error) {
 		}
 		return nil, errors.New(b.cfg.Missing)
 	}
-	kv, err := b.open(ctx)
-	if err != nil {
+	var (
+		kv  jetstream.KeyValue
+		err error
+	)
+	if b.opened && !b.cfg.RecreateIfMissing {
+		if kv, err = b.js.KeyValue(ctx, b.cfg.Name); err != nil {
+			return nil, fmt.Errorf("kvstore: reopen %s: %w", b.cfg.Name, err)
+		}
+	} else if kv, err = b.open(ctx); err != nil {
 		return nil, err
 	}
 	if err := b.onOpen(ctx, kv); err != nil {
 		return nil, err
 	}
-	b.kv = kv
+	b.kv, b.opened = kv, true
 	return kv, nil
 }
 
@@ -173,7 +183,7 @@ func (b *Bucket) Reopen(ctx context.Context) (jetstream.KeyValue, error) {
 	if err := b.onOpen(ctx, kv); err != nil {
 		return nil, err
 	}
-	b.kv = kv
+	b.kv, b.opened = kv, true
 	slog.InfoContext(ctx, "kvstore: bucket reopened", "bucket", b.cfg.Name)
 	return kv, nil
 }

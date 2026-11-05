@@ -21,6 +21,14 @@ import (
 // only a partitioned-but-subscribed owner pays the full timeout.
 const instanceOwnerCommandTimeout = 5 * time.Second
 
+// ownerCommandWait is the ec2.cmd owner request bound this daemon uses.
+func (d *Daemon) ownerCommandWait() time.Duration {
+	if d.ownerCommandTimeout > 0 {
+		return d.ownerCommandTimeout
+	}
+	return instanceOwnerCommandTimeout
+}
+
 // recordTagMirror is implemented by every service whose resource records
 // mirror the central tag store, so tag-filtered describes observe tags
 // written through create-tags/delete-tags.
@@ -221,7 +229,7 @@ func (d *Daemon) tagInstance(ctx context.Context, instanceID string, data *ec2v1
 	reqMsg.Data = body
 	reqMsg.Header.Set(natsmsg.AccountIDHeader, accountID)
 
-	msg, err := d.natsConn.RequestMsg(reqMsg, instanceOwnerCommandTimeout)
+	msg, err := d.natsConn.RequestMsg(reqMsg, d.ownerCommandWait())
 	switch {
 	case errors.Is(err, nats.ErrNoResponders):
 		return d.instanceService.TagStoppedInstance(ctx, instanceID, data, remove, d.tagsService, accountID)

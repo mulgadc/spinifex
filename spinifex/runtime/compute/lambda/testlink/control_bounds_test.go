@@ -319,8 +319,40 @@ func (p *pausedHandlers) waitEntered(t *testing.T, n int) {
 	}
 }
 
+// serverConns reads the kernel's socket table for the abstract name: server
+// ends Accept returned are connected and held by this process; a connection
+// still in the listen backlog is connecting, with no inode until accepted.
+func serverConns(t *testing.T, name string) (accepted, backlog int) {
+	t.Helper()
+	held := map[string]bool{}
+	fds, err := os.ReadDir("/proc/self/fd")
+	require.NoError(t, err)
+	for _, fd := range fds {
+		if target, err := os.Readlink("/proc/self/fd/" + fd.Name()); err == nil && strings.HasPrefix(target, "socket:[") {
+			held[strings.TrimSuffix(strings.TrimPrefix(target, "socket:["), "]")] = true
+		}
+	}
+	table, err := os.ReadFile("/proc/net/unix")
+	require.NoError(t, err)
+	for _, line := range strings.Split(string(table), "\n")[1:] {
+		f := strings.Fields(line)
+		// Num RefCount Protocol Flags Type St Inode Path.
+		if len(f) != 8 || f[7] != "@"+name {
+			continue
+		}
+		switch {
+		case f[5] == "03" && held[f[6]]:
+			accepted++
+		case f[5] == "02" && f[6] == "0":
+			backlog++
+		}
+	}
+	return accepted, backlog
+}
+
 // Test 8: eight full-size requests at once; with two admitted connections
-// paused in Handle, the other six are never handled, and at most two run at once.
+// paused in Handle, the kernel shows two accepted and six still in the
+// backlog, and at most two Handle calls ever run at once.
 func TestControl_AdmissionHoldsAtMostTwoFullSizeRequests(t *testing.T) {
 	name := controlName(t)
 	p := newPaused(t)
@@ -336,10 +368,21 @@ func TestControl_AdmissionHoldsAtMostTwoFullSizeRequests(t *testing.T) {
 		})
 	}
 	p.waitEntered(t, MaxAdmitted)
-	select {
-	case <-p.entered:
-		t.Fatal("a third connection reached Handle while two were admitted")
-	case <-time.After(time.Second):
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		accepted, backlog := serverConns(t, name)
+		require.LessOrEqual(t, accepted, MaxAdmitted, "a third connection was accepted")
+		if backlog == 8-MaxAdmitted {
+			break
+		}
+		require.True(t, time.Now().Before(deadline), "the other clients never reached the backlog: %d accepted, %d waiting", accepted, backlog)
+		runtime.Gosched()
+	}
+	for range 20 {
+		accepted, backlog := serverConns(t, name)
+		require.Equal(t, MaxAdmitted, accepted, "only the admitted connections are accepted")
+		require.Equal(t, 8-MaxAdmitted, backlog, "the other six stay unaccepted")
+		<-time.After(50 * time.Millisecond)
 	}
 	require.Equal(t, int32(MaxAdmitted), p.calls.Load())
 
@@ -439,12 +482,11 @@ func TestControl_FullBacklogConnectIsNotSent(t *testing.T) {
 	require.Equal(t, int32(MaxAdmitted), p.calls.Load(), "no further request reached Handle")
 }
 
-// Test 15 (measurement, not a bound): each admitted request is decoded and
-// fit-checked as the daemon does; HeapAlloc is sampled once per handler after
-// the fit check, so the logged value is not a peak.
+// Test 15 (measurement, not a bound): two admitted full-size lifetimes, each
+// decoding and fit-checking its request as the daemon does and answering with
+// a 6 MiB reply, measured from the first dial until both replies are read.
 func TestControl_MeasureTwoAdmittedFullSizeLifetimes(t *testing.T) {
 	name := controlName(t)
-	var peak atomic.Uint64
 	var mu sync.Mutex
 	entered := 0
 	both := make(chan struct{})
@@ -467,34 +509,53 @@ func TestControl_MeasureTwoAdmittedFullSizeLifetimes(t *testing.T) {
 		case <-ctx.Done():
 			return Reply{Outcome: OutcomeUnknown}
 		}
-		var m runtime.MemStats
-		runtime.ReadMemStats(&m)
-		for {
-			v := peak.Load()
-			if m.HeapAlloc <= v || peak.CompareAndSwap(v, m.HeapAlloc) {
-				break
-			}
-		}
-		return Reply{Outcome: OutcomeDone}
+		return Reply{Outcome: OutcomeDone, Payload: bytes.Repeat([]byte{9}, MaxPayloadBytes)}
 	})
 	req := requestOfSize(t, MaxPayloadBytes, int(MaxFrameBytes))
-	var wg sync.WaitGroup
-	var errs [MaxAdmitted]error
-	alloc := allocatedDuring(func() {
-		for i := range MaxAdmitted {
-			wg.Go(func() {
-				_, errs[i] = fullClient(name).Exchange(context.Background(), req, testCred, time.Now().Add(60*time.Second))
-			})
+
+	// HeapAlloc is sampled every 2 ms, so its maximum is a sampled figure for
+	// the whole process, not a true peak.
+	var heapMax uint64
+	samples := 0
+	stopSampling, sampled := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(sampled)
+		tick := time.NewTicker(2 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+			heapMax, samples = max(heapMax, m.HeapAlloc), samples+1
+			select {
+			case <-tick.C:
+			case <-stopSampling:
+				return
+			}
 		}
-		waitGroupBounded(t, &wg, 60*time.Second)
-	})
-	for _, err := range errs {
-		require.NoError(t, err)
+	}()
+	var wg sync.WaitGroup
+	var reps [MaxAdmitted]Reply
+	var errs [MaxAdmitted]error
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	for i := range MaxAdmitted {
+		wg.Go(func() {
+			reps[i], errs[i] = fullClient(name).Exchange(context.Background(), req, testCred, time.Now().Add(60*time.Second))
+		})
 	}
-	for range MaxAdmitted {
+	waitGroupBounded(t, &wg, 60*time.Second)
+	runtime.ReadMemStats(&after)
+	close(stopSampling)
+	recvBounded(t, sampled)
+
+	for i := range MaxAdmitted {
+		require.NoError(t, errs[i])
+		require.Equal(t, OutcomeDone, reps[i].Outcome)
+		require.Len(t, reps[i].Payload, MaxPayloadBytes, "each lifetime ends with its full-size reply read")
 		require.NoError(t, recvBounded(t, fitErrs), "the full-size request fits the guest link")
 	}
-	// Excludes real executor marshaling, HostSend and guest memory.
-	t.Logf("two admitted full-size requests: total allocated %d bytes (client and server); max HeapAlloc of the post-fit samples %d bytes", alloc, peak.Load())
+	// Excludes the executor's marshaling, HostSend, the guest and QEMU.
+	t.Logf("two admitted full-size lifetimes, process-wide (client and server): %d bytes in %d allocations; sampled max HeapAlloc %d bytes over %d samples",
+		after.TotalAlloc-before.TotalAlloc, after.Mallocs-before.Mallocs, heapMax, samples)
 }
-

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -493,4 +494,90 @@ func TestLambdaTestLinkExecutor_RequestBoundIncludesImageDigest(t *testing.T) {
 	var refusal *awsapi.RefusalError
 	require.ErrorAs(t, err, &refusal)
 	require.Empty(t, under.sent)
+}
+
+// realCodeStore signs download links with the production code store, using a
+// session of the shape STS issues and the longest form of off-host endpoint.
+func realCodeStore(t *testing.T) *codestore.Store {
+	t.Helper()
+	store, err := codestore.Open(codestore.OpenConfig{
+		Region: "ap-southeast-2", Endpoint: "http://127.0.0.1:1", SigningRegion: "ap-southeast-2",
+		PresignEndpoint: "https://[2001:db8:ffff:ffff:ffff:ffff:ffff:ffff]:65535",
+		Assume: func() (*sts.AssumeRoleOutput, error) {
+			return &sts.AssumeRoleOutput{Credentials: &sts.Credentials{
+				AccessKeyId: aws.String("ASIA" + strings.Repeat("K", 16)), SecretAccessKey: aws.String(strings.Repeat("s", 40)),
+				SessionToken: aws.String(strings.Repeat("t", 44)), Expiration: aws.Time(time.Now().Add(time.Hour)),
+			}}, nil
+		},
+	})
+	require.NoError(t, err)
+	return store
+}
+
+// longestInvocation carries the longest function name and qualifier Invoke
+// accepts, full-length generated IDs, and the given payload and handler.
+func longestInvocation(payload []byte, handler string) awsapi.SyncInvocation {
+	in := invocation(payload)
+	in.Qualifier = strings.Repeat("q", 128)
+	in.Function.FunctionName = strings.Repeat("n", 64)
+	in.Function.FunctionID = strings.Repeat("f", 32)
+	in.Function.Code.RevisionID = strings.Repeat("r", 32)
+	in.Function.Handler = handler
+	return in
+}
+
+func TestLambdaTestLinkExecutor_SenderBoundsAtFrameLimit(t *testing.T) {
+	codes := realCodeStore(t)
+	run := func(in awsapi.SyncInvocation) (*fakeControl, *fakeSessions, *execution.Store, error) {
+		n := &fakeControl{max: testlink.MaxFrameBytes, reply: &testlink.Reply{Outcome: testlink.OutcomeDone}}
+		sessions, store := &fakeSessions{}, grantStore(t)
+		e := executorWith(n, sessions, nil, store)
+		e.Codes = func(context.Context) (codePresigner, error) { return codes, nil }
+		_, err := e.InvokeSync(context.Background(), in)
+		return n, sessions, store, err
+	}
+	refusedUnsent := func(n *fakeControl, sessions *fakeSessions, store *execution.Store, err error) {
+		t.Helper()
+		var refusal *awsapi.RefusalError
+		require.ErrorAs(t, err, &refusal)
+		require.Empty(t, n.sent)
+		require.Len(t, sessions.revoked, 1, "the issued session is revoked")
+		require.Equal(t, execution.StateWithdrawn, grantState(t, store))
+	}
+
+	full, _, _, err := run(longestInvocation(make([]byte, testlink.MaxPayloadBytes), "bootstrap.h"))
+	require.NoError(t, err)
+	require.Len(t, full.sent, 1)
+	sent := string(full.sent[0])
+	// Asserted without printing, since the frame holds a signed URL.
+	require.True(t, strings.Contains(sent, `"code_url":"https://[2001:db8:ffff:ffff:ffff:ffff:ffff:ffff]:65535/`), "the off-host endpoint is signed")
+	require.True(t, strings.Contains(sent, "X-Amz-Signature="), "the code URL is a real presigned link")
+	headroom := testlink.MaxFrameBytes - int64(len(full.sent[0]))
+	t.Logf("full-size request: %d of %d frame bytes, %d bytes of headroom", len(full.sent[0]), testlink.MaxFrameBytes, headroom)
+
+	// The generated IDs and signed URL are fixed-length, so a longer handler
+	// moves the frame by exactly its extra bytes.
+	atLimit := "bootstrap.h" + strings.Repeat("h", int(headroom))
+	at, _, _, err := run(longestInvocation(make([]byte, testlink.MaxPayloadBytes), atLimit))
+	require.NoError(t, err)
+	require.Len(t, at.sent, 1)
+	require.Equal(t, testlink.MaxFrameBytes, int64(len(at.sent[0])))
+
+	refusedUnsent(run(longestInvocation(make([]byte, testlink.MaxPayloadBytes), atLimit+"h")))
+
+	// Refused before encoding: base64 alone would allocate 8 MiB, so a run
+	// that allocates under the payload size never encoded it.
+	over := longestInvocation(make([]byte, testlink.MaxPayloadBytes+1), "bootstrap.h")
+	n := &fakeControl{max: testlink.MaxFrameBytes}
+	sessions, store := &fakeSessions{}, grantStore(t)
+	e := executorWith(n, sessions, nil, store)
+	e.Codes = func(context.Context) (codePresigner, error) { return codes, nil }
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err = e.InvokeSync(context.Background(), over)
+	runtime.ReadMemStats(&after)
+	allocated := after.TotalAlloc - before.TotalAlloc
+	t.Logf("6 MiB + 1 refusal: %d bytes in %d allocations, process-wide", allocated, after.Mallocs-before.Mallocs)
+	require.Less(t, allocated, uint64(testlink.MaxPayloadBytes))
+	refusedUnsent(n, sessions, store, err)
 }

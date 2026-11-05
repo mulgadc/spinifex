@@ -321,6 +321,19 @@ func (s *TestStream) HostSend(req Request) error {
 	return s.write(frame{Type: typeInvoke, Request: &req})
 }
 
+// CheckInvokeFits encodes req as HostSend would and returns ErrFrameTooLarge
+// when the frame exceeds the bound, so a caller can refuse before launch.
+func CheckInvokeFits(req Request) error {
+	b, err := json.Marshal(frame{Type: typeInvoke, Request: &req})
+	if err != nil {
+		return err
+	}
+	if len(b) > maxFrame {
+		return ErrFrameTooLarge
+	}
+	return nil
+}
+
 // HostShutdown writes a shutdown frame, as the host side of the carrier.
 func (s *TestStream) HostShutdown() error {
 	return s.write(frame{Type: typeShutdown})

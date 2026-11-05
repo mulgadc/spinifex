@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -143,6 +144,11 @@ func (d *Daemon) Handle(ctx context.Context, data []byte, cred Credential) Reply
 	if err := CheckRequest(req); err != nil {
 		return refused(err.Error())
 	}
+	// The guest frame is checked at its longest deadline encoding before the
+	// grant starts, since control and guest frames bound different fields.
+	if err := hostlink.CheckInvokeFits(guestRequest(req, math.MaxInt64)); err != nil {
+		return refused("request does not fit the guest link")
+	}
 	if req.Grant.Node != d.Node {
 		return refused("grant names another node")
 	}
@@ -252,6 +258,20 @@ func removeMarker(marker string) bool {
 		return false
 	}
 	return true
+}
+
+// guestRequest is the invocation frame sent to the guest; the pre-start fit
+// check and the send share it so they cannot drift.
+func guestRequest(req Request, deadlineMs int64) hostlink.Request {
+	return hostlink.Request{
+		GrantID:     req.Grant.GrantID,
+		AttemptID:   req.AttemptID,
+		RequestID:   req.RequestID,
+		FunctionARN: req.FunctionARN,
+		DeadlineMs:  deadlineMs,
+		Payload:     req.Payload,
+		Credential:  &req.cred,
+	}
 }
 
 // CheckRequest is the daemon's validation of a test-link request.
@@ -583,15 +603,7 @@ func (d *Daemon) session(ctx context.Context, req Request, gen *guestconn.Genera
 	if expired(hardDeadline) {
 		return Reply{}, ErrDeadlineExpired
 	}
-	if err := stream.HostSend(hostlink.Request{
-		GrantID:     req.Grant.GrantID,
-		AttemptID:   req.AttemptID,
-		RequestID:   req.RequestID,
-		FunctionARN: req.FunctionARN,
-		DeadlineMs:  deadline.UnixMilli(),
-		Payload:     req.Payload,
-		Credential:  &req.cred,
-	}); err != nil {
+	if err := stream.HostSend(guestRequest(req, deadline.UnixMilli())); err != nil {
 		return Reply{}, pastDeadline(deadline, fmt.Errorf("send invocation: %w", err))
 	}
 	resp, err := stream.HostResult(rctx)

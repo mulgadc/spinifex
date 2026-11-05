@@ -192,7 +192,10 @@ func (l *Lease) renew(ctx context.Context, a *acquisition) {
 			return
 		}
 		sent := l.clock.Now()
-		next, err, inTime := l.swapWithin(ctx, a.gen, rev, budget, min(budget, interval))
+		next, err, inTime := l.swapWithin(ctx, a, rev, budget, min(budget, interval))
+		if errors.Is(err, errRenewalStopped) {
+			return
+		}
 		if !inTime {
 			l.lose(ctx, a, "renewal did not answer within two thirds of the ttl", nil)
 			return
@@ -213,10 +216,13 @@ func (l *Lease) renew(ctx context.Context, a *acquisition) {
 	}
 }
 
-// swapWithin runs one renewal CAS, giving up on it once budget has passed on
-// the lease's clock, since a CAS can block past its own context. A late
-// result is dropped: by then the lease has been given up.
-func (l *Lease) swapWithin(ctx context.Context, gen, rev uint64, budget, timeout time.Duration) (uint64, error, bool) {
+// errRenewalStopped reports a renewal CAS abandoned because Unlock stopped it.
+var errRenewalStopped = errors.New("kvsync: renewal stopped")
+
+// swapWithin runs one renewal CAS, giving up on it at Unlock or once budget has
+// passed on the lease's clock, since a CAS can block past its own context. A
+// late result is dropped; it cannot land after Unlock's delete at a.rev.
+func (l *Lease) swapWithin(ctx context.Context, a *acquisition, rev uint64, budget, timeout time.Duration) (uint64, error, bool) {
 	type result struct {
 		next uint64
 		err  error
@@ -225,7 +231,7 @@ func (l *Lease) swapWithin(ctx context.Context, gen, rev uint64, budget, timeout
 	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	go func() {
-		next, err := l.store.CompareAndSwap(attemptCtx, l.key, encode(l.holder, gen), rev)
+		next, err := l.store.CompareAndSwap(attemptCtx, l.key, encode(l.holder, a.gen), rev)
 		done <- result{next, err}
 	}()
 	expired, stop := l.clock.Deadline(budget)
@@ -235,6 +241,8 @@ func (l *Lease) swapWithin(ctx context.Context, gen, rev uint64, budget, timeout
 		return r.next, r.err, true
 	case <-expired:
 		return 0, nil, false
+	case <-a.stop:
+		return 0, errRenewalStopped, true
 	}
 }
 
@@ -268,7 +276,8 @@ func (l *Lease) Unlock(ctx context.Context, held Token) {
 	close(a.stop)
 	l.mu.Unlock()
 
-	// Waited for so that no renewal lands after the revision is read.
+	// Waited for so that no renewal lands after the revision is read; a renewal
+	// in flight is abandoned rather than waited out.
 	<-a.done
 	l.mu.Lock()
 	rev := a.rev

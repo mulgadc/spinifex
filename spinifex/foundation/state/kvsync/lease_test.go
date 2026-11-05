@@ -426,6 +426,48 @@ func TestLease_StuckRenewalLosesAtTheDeadline(t *testing.T) {
 	assert.False(t, a.Held())
 }
 
+// Unlock does not wait out a renewal stuck in flight: it deletes the key at the
+// last revision that landed, and the stuck write cannot bring the key back.
+func TestLease_UnlockAbandonsAStuckRenewal(t *testing.T) {
+	s := stores(t, 1)
+	c := kvsync.NewFakeClock()
+	slow := &slowStore{KVStore: s[0]}
+	a := kvsync.NewLeaseWithClock(slow, leaseKey, "node-a", testTTL, c)
+	tok, err := a.TryLock(t.Context())
+	require.NoError(t, err)
+
+	entered, stuck := make(chan struct{}), make(chan struct{})
+	slow.beforeSwap = func(n int64) {
+		if n == 2 {
+			close(entered)
+			<-stuck
+		}
+	}
+	waitForWaiters(t, c, 1)
+	c.Advance(testTTL / 3)
+	select {
+	case <-entered:
+	case <-waitCtx(t).Done():
+		t.Fatal("the renewal never started")
+	}
+
+	unlocked := make(chan struct{})
+	go func() { defer close(unlocked); a.Unlock(t.Context(), tok) }()
+	select {
+	case <-unlocked:
+	case <-waitCtx(t).Done():
+		close(stuck)
+		t.Fatal("Unlock waited for a renewal stuck in flight")
+	}
+	_, _, err = s[0].Load(t.Context(), leaseKey)
+	require.ErrorIs(t, err, kvsync.ErrNotFound, "Unlock must delete the key at the last landed revision")
+
+	close(stuck)
+	waitForSwaps(t, slow, 2)
+	_, _, err = s[0].Load(t.Context(), leaseKey)
+	require.ErrorIs(t, err, kvsync.ErrNotFound, "the abandoned renewal must not recreate the key")
+}
+
 func TestLease_ConstructionRefusesAnEmptyHolderOrANonPositiveTTL(t *testing.T) {
 	s := stores(t, 1)
 	assert.PanicsWithValue(t, "kvsync: empty holder", func() { kvsync.NewLease(s[0], "lease.noholder", "", testTTL) })

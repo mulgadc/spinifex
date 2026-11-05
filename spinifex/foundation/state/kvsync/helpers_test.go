@@ -148,3 +148,16 @@ func (s *slowStore) CompareAndSwap(ctx context.Context, key string, value []byte
 	}
 	return next, err
 }
+
+// waitForSwaps fails the test unless s has seen n CompareAndSwap calls in time.
+func waitForSwaps(t *testing.T, s *slowStore, n int64) {
+	t.Helper()
+	ctx := waitCtx(t)
+	for s.swaps.Load() < n {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("only %d of %d swaps happened", s.swaps.Load(), n)
+		case <-time.After(time.Millisecond):
+		}
+	}
+}

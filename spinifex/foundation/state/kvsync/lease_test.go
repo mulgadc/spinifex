@@ -357,8 +357,8 @@ func TestLease_DelayedGrantIsRefusedAfterATakeover(t *testing.T) {
 	b.Unlock(t.Context(), tokB)
 }
 
-// A renewal's validity runs from when it was sent, since a peer can have seen
-// the revision that early, so a reply delayed by 2*ttl/3 leaves nothing to renew on.
+// A renewal counts from when it was sent, since a peer can have seen the
+// revision that early, so the next renewal is due ttl/3 after that send.
 func TestLease_DelayedRenewalCountsFromItsSend(t *testing.T) {
 	s := stores(t, 1)
 	c := kvsync.NewFakeClock()
@@ -370,12 +370,57 @@ func TestLease_DelayedRenewalCountsFromItsSend(t *testing.T) {
 
 	slow.afterSwap = func(n int64) {
 		if n == 2 {
-			c.Advance(2 * testTTL / 3)
+			c.Advance(testTTL / 4)
 		}
 	}
 	renewOnce(t, c)
-	requireOpen(t, a.Lost(), "the delayed renewal itself landed")
+	c.Advance(testTTL/3 - testTTL/4)
+	waitForSwaps(t, slow, 3)
+	requireOpen(t, a.Lost(), "a renewal that landed in time keeps the lease")
+}
 
+// A grant that took most of its validity to answer is renewed at once,
+// rather than ttl/3 after install, when its validity would already be gone.
+func TestLease_SlowGrantIsRenewedFromItsSend(t *testing.T) {
+	s := stores(t, 1)
+	c := kvsync.NewFakeClock()
+	slow := &slowStore{KVStore: s[0]}
+	slow.afterSwap = func(n int64) {
+		if n == 1 {
+			c.Advance(testTTL / 2)
+		}
+	}
+	a := kvsync.NewLeaseWithClock(slow, leaseKey, "node-a", testTTL, c)
+	tok, err := a.TryLock(t.Context())
+	require.NoError(t, err, "a grant inside its validity is installed")
+	stopRenewal(t, a, tok)
+
+	waitForSwaps(t, slow, 2)
+	requireOpen(t, a.Lost(), "the prompt renewal keeps the lease")
+}
+
+// A renewal stuck where its context cannot reach still loses the lease at the
+// deadline, before a peer that waited a TTL can take over.
+func TestLease_StuckRenewalLosesAtTheDeadline(t *testing.T) {
+	s := stores(t, 1)
+	c := kvsync.NewFakeClock()
+	slow := &slowStore{KVStore: s[0]}
+	a := kvsync.NewLeaseWithClock(slow, leaseKey, "node-a", testTTL, c)
+	tok, err := a.TryLock(t.Context())
+	require.NoError(t, err)
+	stopRenewal(t, a, tok)
+
+	stuck := make(chan struct{})
+	t.Cleanup(func() { close(stuck) })
+	slow.afterSwap = func(n int64) {
+		if n == 2 {
+			<-stuck
+		}
+	}
+	waitForWaiters(t, c, 1)
 	c.Advance(testTTL / 3)
-	requireClosed(t, a.Lost(), "the next renewal had no validity left from the delayed one's send")
+	require.True(t, c.WaitForDeadlines(waitCtx(t), 1), "the renewal must arm its deadline")
+	c.Advance(testTTL / 3)
+	requireClosed(t, a.Lost(), "the lease must be lost at 2*ttl/3 after the last send, stuck CAS or not")
+	assert.False(t, a.Held())
 }

@@ -18,6 +18,8 @@ type FakeClock struct {
 type fakeWaiter struct {
 	at time.Time
 	ch chan time.Time
+	// deadline marks a Deadline timer, which the waiter counts leave out.
+	deadline bool
 }
 
 // NewFakeClock returns a clock reading an arbitrary fixed instant.
@@ -32,6 +34,26 @@ func (c *FakeClock) Now() time.Time {
 }
 
 func (c *FakeClock) After(d time.Duration) <-chan time.Time {
+	return c.add(d, false)
+}
+
+func (c *FakeClock) Deadline(d time.Duration) (<-chan time.Time, func()) {
+	ch := c.add(d, true)
+	return ch, func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		kept := c.waiters[:0]
+		for _, w := range c.waiters {
+			if w.ch != ch {
+				kept = append(kept, w)
+			}
+		}
+		c.waiters = kept
+		c.notifyLocked()
+	}
+}
+
+func (c *FakeClock) add(d time.Duration, deadline bool) chan time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	ch := make(chan time.Time, 1)
@@ -39,7 +61,7 @@ func (c *FakeClock) After(d time.Duration) <-chan time.Time {
 		ch <- c.now
 		return ch
 	}
-	c.waiters = append(c.waiters, fakeWaiter{at: c.now.Add(d), ch: ch})
+	c.waiters = append(c.waiters, fakeWaiter{at: c.now.Add(d), ch: ch, deadline: deadline})
 	c.notifyLocked()
 	return ch
 }
@@ -61,12 +83,21 @@ func (c *FakeClock) Advance(d time.Duration) {
 	c.notifyLocked()
 }
 
-// WaitForWaiters blocks until at least n waiters are pending or ctx ends, and
-// reports whether they were.
+// WaitForWaiters blocks until at least n After waiters are pending or ctx
+// ends, and reports whether they were.
 func (c *FakeClock) WaitForWaiters(ctx context.Context, n int) bool {
+	return c.waitFor(ctx, n, false)
+}
+
+// WaitForDeadlines is WaitForWaiters for Deadline timers.
+func (c *FakeClock) WaitForDeadlines(ctx context.Context, n int) bool {
+	return c.waitFor(ctx, n, true)
+}
+
+func (c *FakeClock) waitFor(ctx context.Context, n int, deadline bool) bool {
 	for {
 		c.mu.Lock()
-		count, changed := len(c.waiters), c.changed
+		count, changed := c.countLocked(deadline), c.changed
 		c.mu.Unlock()
 		if count >= n {
 			return true
@@ -79,11 +110,21 @@ func (c *FakeClock) WaitForWaiters(ctx context.Context, n int) bool {
 	}
 }
 
-// Waiters reports how many waiters are pending.
+// Waiters reports how many After waiters are pending.
 func (c *FakeClock) Waiters() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return len(c.waiters)
+	return c.countLocked(false)
+}
+
+func (c *FakeClock) countLocked(deadline bool) int {
+	n := 0
+	for _, w := range c.waiters {
+		if w.deadline == deadline {
+			n++
+		}
+	}
+	return n
 }
 
 func (c *FakeClock) notifyLocked() {

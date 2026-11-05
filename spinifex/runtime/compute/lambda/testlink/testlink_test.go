@@ -121,7 +121,7 @@ func baseRequest(url string, code []byte) Request {
 	return Request{
 		AttemptID: "0123456789ab", RequestID: "r", Region: "ap-southeast-2", AccountID: "123456789012",
 		FunctionID: "fn1", RevisionID: "rev1", Handler: "bootstrap.handler", TimeoutMs: 3000, CodeURL: url, CodeSize: int64(len(code)),
-		CodeSHA256: hex.EncodeToString(sum[:]),
+		CodeSHA256: hex.EncodeToString(sum[:]), ImageDigest: testImageDigest,
 	}
 }
 
@@ -208,6 +208,7 @@ func TestDaemon_OwnerRefusalComesBeforeAnyAllocation(t *testing.T) {
 			ips := &fakeIPs{}
 			rep := g.daemon(&Daemon{IPs: ips, Taps: &fakeTaps{}, HTTP: srv.Client(), WorkDir: t.TempDir()}).Handle(context.Background(), data, testCred)
 			require.Equal(t, OutcomeRefused, rep.Outcome)
+			require.NotContains(t, rep.Error, "image digest", "the owner, not the digest check, refuses")
 			require.False(t, fetched)
 			require.Empty(t, ips.allocated)
 			require.Equal(t, execution.StateGranted, g.state(t))

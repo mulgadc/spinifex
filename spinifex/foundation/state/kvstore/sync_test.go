@@ -185,3 +185,33 @@ func TestSyncBucket_AWaiterOnAStuckOpenStopsAtItsContext(t *testing.T) {
 		t.Fatal("the swap waited on another caller's open past its own context")
 	}
 }
+
+// leaderlessJS answers every bucket lookup and create with the 503 a cluster
+// gives while JetStream has no meta leader.
+type leaderlessJS struct {
+	jetstream.JetStream
+}
+
+func errNoMetaLeader() error {
+	return &jetstream.APIError{Code: 503, ErrorCode: 10008, Description: "JetStream system temporarily unavailable"}
+}
+
+func (leaderlessJS) KeyValue(context.Context, string) (jetstream.KeyValue, error) {
+	return nil, errNoMetaLeader()
+}
+
+func (leaderlessJS) CreateKeyValue(context.Context, jetstream.KeyValueConfig) (jetstream.KeyValue, error) {
+	return nil, errNoMetaLeader()
+}
+
+// A cold cluster still electing its meta leader is an outage a lock caller
+// waits out, not a fault that ends its election.
+func TestSyncBucket_ALeaderlessJetStreamIsUnavailable(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	b := kvstore.OpenSyncBucket(leaderlessJS{JetStream: js})
+
+	_, _, err := b.Load(t.Context(), "k")
+	require.ErrorIs(t, err, kvsync.ErrUnavailable)
+	_, err = b.CompareAndSwap(t.Context(), "k", []byte("a"), 0)
+	require.ErrorIs(t, err, kvsync.ErrUnavailable)
+}

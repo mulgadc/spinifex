@@ -129,8 +129,9 @@ func shrinkStartRetry(t *testing.T, retryFor, step time.Duration) {
 	t.Cleanup(func() { startRetryFor, startRetryStep = prevFor, prevStep })
 }
 
-// A pass that loses to a peer asks to run again once that peer, if dead, could
-// be taken over: strictly after a full TTL, so the second sighting qualifies.
+// A pass that loses to a peer asks to run again within a renewal interval, so a
+// follower that first saw a dead holder's revision sees it a TTL later and takes
+// over about 4*TTL/3 after the last renewal rather than up to 2*TTL.
 func TestElectPass_AHeldLeaseAsksForATakeoverRevisit(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 	release, ok := AcquireLeader(t.Context(), vpcdLease(js, "node-1"))
@@ -139,8 +140,8 @@ func TestElectPass_AHeldLeaseAsksForATakeoverRevisit(t *testing.T) {
 
 	_, revisit, ok := ElectPass(t.Context(), vpcdLease(js, "node-2"))
 	assert.False(t, ok)
-	assert.Greater(t, revisit, LeaderTTL)
-	assert.Less(t, revisit, 2*LeaderTTL, "the retry is one TTL out, not a resync")
+	assert.Positive(t, revisit, "a held pass must ask to run again, not wait for a resync")
+	assert.LessOrEqual(t, revisit, LeaderTTL/3, "the retry is a renewal interval out, so takeover is not delayed a further TTL")
 }
 
 func TestElectPass_AWonPassAsksForNoRevisit(t *testing.T) {
@@ -162,6 +163,51 @@ func TestAcquireLeaderAtStart_WaitsOutAnUnavailableStore(t *testing.T) {
 	release, ok := AcquireLeaderAtStart(t.Context(), NewVPCDLease(cold, "node-1"))
 	require.True(t, ok, "the election must be won once the store answers")
 	release()
+}
+
+// formingJS fails its first down bucket lookups and creates with err, as a
+// cluster still electing its meta leader or placing replicas does.
+type formingJS struct {
+	jetstream.JetStream
+
+	err  error
+	down atomic.Int32
+}
+
+func (f *formingJS) KeyValue(ctx context.Context, name string) (jetstream.KeyValue, error) {
+	if f.down.Add(-1) >= 0 {
+		return nil, f.err
+	}
+	return f.JetStream.KeyValue(ctx, name)
+}
+
+func (f *formingJS) CreateKeyValue(ctx context.Context, cfg jetstream.KeyValueConfig) (jetstream.KeyValue, error) {
+	if f.down.Add(-1) >= 0 {
+		return nil, f.err
+	}
+	return f.JetStream.CreateKeyValue(ctx, cfg)
+}
+
+// The startup election waits out each shape a forming cluster fails in, as the
+// real bucket reports it, not only the errors already classed as unavailable.
+func TestAcquireLeaderAtStart_WaitsOutAFormingCluster(t *testing.T) {
+	cases := map[string]error{
+		"no meta leader":       &jetstream.APIError{Code: 503, ErrorCode: 10008, Description: "JetStream system temporarily unavailable"},
+		"no suitable peers":    &jetstream.APIError{Code: 400, ErrorCode: 10005, Description: "no suitable peers for placement"},
+		"insufficient storage": &jetstream.APIError{Code: 503, ErrorCode: 10023, Description: "insufficient resources"},
+	}
+	for name, failure := range cases {
+		t.Run(name, func(t *testing.T) {
+			shrinkStartRetry(t, 10*time.Second, 5*time.Millisecond)
+			_, _, js := testutil.StartTestJetStream(t)
+			forming := &formingJS{JetStream: js, err: failure}
+			forming.down.Store(4)
+
+			release, ok := AcquireLeaderAtStart(t.Context(), NewVPCDLease(kvstore.OpenSyncBucket(forming), "node-1"))
+			require.True(t, ok, "the election must be won once the cluster has formed")
+			release()
+		})
+	}
 }
 
 func TestAcquireLeaderAtStart_GivesUpWhenTheWaitRunsOut(t *testing.T) {

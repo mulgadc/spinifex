@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"time"
 
+	otelsetup "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 )
 
@@ -29,9 +31,10 @@ func NewVPCDLease(store kvsync.KVStore, holder string) *kvsync.Lease {
 	return NewLeaderLease(store, KeyVPCDReconcile, holder)
 }
 
-// takeoverRetry is when a pass that found the lease held asks to run again: a
-// dead holder's key is taken over once its revision has sat for a full TTL.
-const takeoverRetry = LeaderTTL + time.Second
+// takeoverRetry is when a pass that found the lease held asks to run again. A
+// dead holder's key is taken over once a follower has seen its revision sit for
+// a TTL, so retrying at the renewal interval takes over within about 4*TTL/3.
+const takeoverRetry = LeaderTTL / 3
 
 // Bounded wait for JetStream quorum on a cold multi-node start, for a one-shot
 // election that has no later pass to retry it. Vars so tests can shrink them.
@@ -55,18 +58,25 @@ func ElectPass(ctx context.Context, lease *kvsync.Lease) (release func(), revisi
 }
 
 // AcquireLeaderAtStart is AcquireLeader for a one-shot election at start,
-// retrying an unavailable store until JetStream has formed quorum or the wait
-// runs out. A held lease or any other fault is the answer at once.
+// retrying until JetStream has formed quorum or the wait runs out, since a cold
+// cluster fails in many shapes. A held lease or a config fault answers at once.
 func AcquireLeaderAtStart(ctx context.Context, lease *kvsync.Lease) (func(), bool) {
 	deadline := time.Now().Add(startRetryFor)
 	for {
-		release, err := tryLeader(ctx, lease)
+		tok, err := lease.TryLock(ctx)
 		if err == nil {
-			return release, true
+			return releaser(ctx, lease, tok), true
 		}
-		if !errors.Is(err, kvsync.ErrUnavailable) || !time.Now().Before(deadline) {
+		if _, held := errors.AsType[*kvsync.HeldError](err); held || clustersize.Permanent(err) {
+			logFailure(ctx, lease, err)
 			return nil, false
 		}
+		if !time.Now().Before(deadline) {
+			slog.WarnContext(ctx, "reconcile/lock: election failed until the start wait ran out, skipping reconcile",
+				"key", lease.Key(), "wait_ms", otelsetup.Millis(startRetryFor), "err", err)
+			return nil, false
+		}
+		slog.DebugContext(ctx, "reconcile/lock: election failed at start, retrying", "key", lease.Key(), "err", err)
 		select {
 		case <-ctx.Done():
 			return nil, false
@@ -88,14 +98,22 @@ func AcquireLeader(ctx context.Context, lease *kvsync.Lease) (func(), bool) {
 func tryLeader(ctx context.Context, lease *kvsync.Lease) (func(), error) {
 	tok, err := lease.TryLock(ctx)
 	if err != nil {
-		if held, ok := errors.AsType[*kvsync.HeldError](err); ok {
-			slog.InfoContext(ctx, "reconcile/lock: not leader, skipping reconcile",
-				"key", lease.Key(), "holder", held.Current.Holder)
-		} else {
-			slog.WarnContext(ctx, "reconcile/lock: election failed, skipping reconcile",
-				"key", lease.Key(), "err", err)
-		}
+		logFailure(ctx, lease, err)
 		return nil, err
 	}
-	return func() { lease.Unlock(ctx, tok) }, nil
+	return releaser(ctx, lease, tok), nil
+}
+
+func releaser(ctx context.Context, lease *kvsync.Lease, tok kvsync.Token) func() {
+	return func() { lease.Unlock(ctx, tok) }
+}
+
+func logFailure(ctx context.Context, lease *kvsync.Lease, err error) {
+	if held, ok := errors.AsType[*kvsync.HeldError](err); ok {
+		slog.InfoContext(ctx, "reconcile/lock: not leader, skipping reconcile",
+			"key", lease.Key(), "holder", held.Current.Holder)
+		return
+	}
+	slog.WarnContext(ctx, "reconcile/lock: election failed, skipping reconcile",
+		"key", lease.Key(), "err", err)
 }

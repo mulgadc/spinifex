@@ -24,11 +24,6 @@ const (
 	ltUDMarker   = "e2e-lt-userdata-marker-4b19d7"
 	ltUDDoneFile = "/run/e2e-lt-userdata.done"
 
-	// ltRootDevice is the guest-visible root device name. parseVolumeParams
-	// reads BlockDeviceMappings[0].DeviceName straight off the RunInstances
-	// request and defaults to exactly this string.
-	ltRootDevice = "/dev/vda"
-
 	// ltRootGrowthGiB is how far above the AMI's own root size the template
 	// sizes the root volume. floorVolumeSizeToAMI rounds a smaller request up
 	// to the AMI snapshot size, so a dropped BlockDeviceMappings and an
@@ -78,6 +73,7 @@ func runLaunchTemplateBoot(t *testing.T, fix *Fixture) {
 	harness.AuthorizeSSHIngress(t, fix.AWS, vpc.SGID)
 
 	rootGiB := ltRootVolumeGiB(t, fix, amiID)
+	rootDevice := ltRootDeviceName(t, fix, amiID)
 	tagValue := fmt.Sprintf("e2e-lt-%d", time.Now().UnixNano())
 	harness.Detail(t, "root_gib", rootGiB, "tag_value", tagValue)
 
@@ -97,7 +93,7 @@ func runLaunchTemplateBoot(t *testing.T, fix *Fixture) {
 				AssociatePublicIpAddress: aws.Bool(true),
 			}},
 			BlockDeviceMappings: []*ec2.LaunchTemplateBlockDeviceMappingRequest{{
-				DeviceName: aws.String(ltRootDevice),
+				DeviceName: aws.String(rootDevice),
 				Ebs: &ec2.LaunchTemplateEbsBlockDeviceRequest{
 					VolumeSize:          aws.Int64(int64(rootGiB)),
 					DeleteOnTermination: aws.Bool(true),
@@ -224,6 +220,20 @@ func launchFromTemplate(t *testing.T, fix *Fixture, spec *ec2.LaunchTemplateSpec
 	})
 	harness.WaitForInstanceState(t, fix.AWS, id, "running")
 	return id
+}
+
+// ltRootDeviceName returns the root device name amiID reports. A mapping only
+// sizes the root when it names that device; any other name adds a volume.
+func ltRootDeviceName(t *testing.T, fix *Fixture, amiID string) string {
+	t.Helper()
+	out, err := fix.AWS.EC2.DescribeImages(&ec2.DescribeImagesInput{
+		ImageIds: []*string{aws.String(amiID)},
+	})
+	require.NoError(t, err, "describe-images %s", amiID)
+	require.NotEmpty(t, out.Images, "no image for %s", amiID)
+	name := aws.StringValue(out.Images[0].RootDeviceName)
+	require.NotEmptyf(t, name, "AMI %s reports no RootDeviceName", amiID)
+	return name
 }
 
 // ltRootVolumeGiB returns a root size strictly larger than amiID's own, so an

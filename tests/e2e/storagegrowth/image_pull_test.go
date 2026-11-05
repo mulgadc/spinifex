@@ -74,14 +74,6 @@ const (
 	// see imagePullTarget's doc.
 	imagePullTargetRoot = "root"
 
-	// imagePullRootDevice is the root volume's guest-visible device name in
-	// root mode. service_impl.go's parseVolumeParams defaults to exactly this
-	// string when BlockDeviceMappings[0].DeviceName is unset on a
-	// RunInstances request, and DescribeInstances reports the same name back
-	// for a virtio-blk-pci root volume. This constant is used both to request
-	// the mapping and to re-identify it afterward.
-	imagePullRootDevice = "/dev/vda"
-
 	// imagePullPullCyclesEnv selects how many pull-then-free cycles the guest
 	// script drives — see imagePullPullCycles's doc for what a value above 1
 	// changes and why it is root-mode only.
@@ -762,6 +754,14 @@ func createImagePullVolume(t *testing.T, fix *Fixture, az string, sizeGiB int, r
 func launchImagePullRootInstance(t *testing.T, fix *Fixture, ami, instType, keyName, subnetID, sgID string, rootGiB int, retain bool) string {
 	t.Helper()
 
+	// A mapping only sizes the root when it names the device the image reports
+	// as its root; any other name adds a volume.
+	images, err := fix.AWS.EC2.DescribeImages(&ec2.DescribeImagesInput{ImageIds: []*string{aws.String(ami)}})
+	require.NoError(t, err, "describe-images %s", ami)
+	require.NotEmpty(t, images.Images, "no image for %s", ami)
+	rootDevice := aws.StringValue(images.Images[0].RootDeviceName)
+	require.NotEmptyf(t, rootDevice, "AMI %s reports no RootDeviceName", ami)
+
 	out, err := fix.AWS.EC2.RunInstances(&ec2.RunInstancesInput{
 		ImageId:          aws.String(ami),
 		InstanceType:     aws.String(instType),
@@ -772,7 +772,7 @@ func launchImagePullRootInstance(t *testing.T, fix *Fixture, ami, instType, keyN
 		MaxCount:         aws.Int64(1),
 		BlockDeviceMappings: []*ec2.BlockDeviceMapping{
 			{
-				DeviceName: aws.String(imagePullRootDevice),
+				DeviceName: aws.String(rootDevice),
 				Ebs: &ec2.EbsBlockDevice{
 					VolumeSize:          aws.Int64(int64(rootGiB)),
 					DeleteOnTermination: aws.Bool(!retain),
@@ -863,6 +863,8 @@ func imagePullRootVolumeID(t *testing.T, inst *ec2.Instance, retain bool) string
 	t.Helper()
 	instanceID := aws.StringValue(inst.InstanceId)
 	require.NotEmptyf(t, inst.BlockDeviceMappings, "instance %s: DescribeInstances reported no BlockDeviceMappings — root mode cannot identify which volume the pull landed on", instanceID)
+	imagePullRootDevice := aws.StringValue(inst.RootDeviceName)
+	require.NotEmptyf(t, imagePullRootDevice, "instance %s: DescribeInstances reported no RootDeviceName — root mode cannot identify the root volume", instanceID)
 
 	for _, bdm := range inst.BlockDeviceMappings {
 		if aws.StringValue(bdm.DeviceName) != imagePullRootDevice {

@@ -14,6 +14,7 @@ type mockSystemInstanceLauncher struct {
 	launchErr      error
 	terminateErr   error
 	terminateDone  chan struct{} // closed after TerminateSystemInstance completes
+	onTerminate    func(instanceID string)
 	rebootCalls    []string
 	rebootErr      error
 }
@@ -27,6 +28,9 @@ func (m *mockSystemInstanceLauncher) TerminateSystemInstance(instanceID string) 
 	m.mu.Lock()
 	m.terminateCalls = append(m.terminateCalls, instanceID)
 	m.mu.Unlock()
+	if m.onTerminate != nil {
+		m.onTerminate(instanceID)
+	}
 	if m.terminateDone != nil {
 		close(m.terminateDone)
 	}

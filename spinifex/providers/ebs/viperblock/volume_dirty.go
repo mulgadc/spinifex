@@ -10,7 +10,6 @@ import (
 
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	telemetry "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -36,7 +35,7 @@ func newVolumeDirty(ctx context.Context, nc *nats.Conn, owner string) (*volumeDi
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	kv, err := kvutil.GetOrCreateBucketWithOptions(ctx, js, kvutil.BucketOptions{
+	kv, err := kvstore.GetOrCreateBucketWithOptions(ctx, js, kvstore.BucketOptions{
 		Name:        viperblocklegacyv1.DirtyBucket,
 		Description: "volumes whose last seal failed, keyed by volume, naming the node holding the current copy",
 		History:     1,

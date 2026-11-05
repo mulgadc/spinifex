@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -158,7 +158,7 @@ func accountBuckets(ctx context.Context, nc *nats.Conn) ([]accountBucket, error)
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	names, err := kvutil.BucketNames(ctx, js)
+	names, err := kvstore.BucketNames(ctx, js)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +176,7 @@ func accountBuckets(ctx context.Context, nc *nats.Conn) ([]accountBucket, error)
 // return the existing handle.
 func GetOrCreateAccountBucket(ctx context.Context, js jetstream.JetStream, accountID string) (jetstream.KeyValue, error) {
 	bucket := AccountBucketName(accountID)
-	kv, err := kvutil.GetOrCreateBucket(ctx, js, bucket, KVBucketECSAccountHistory)
+	kv, err := kvstore.GetOrCreateBucket(ctx, js, bucket, KVBucketECSAccountHistory)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ECS per-account KV bucket %s: %w", bucket, err)
 	}

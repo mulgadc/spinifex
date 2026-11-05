@@ -83,7 +83,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerlaunch"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -1627,7 +1627,7 @@ func (d *Daemon) installOCIAllocators(ipam *ec2vpc.ExternalIPAM, js jetstream.Je
 		// error. The pool joins the loops either way, so a later pass covers it.
 		pool := ociPool{name: p.Name, alloc: alloc}
 		d.ociAllocators = append(d.ociAllocators, pool)
-		if err := pool.reconcile(d.ctx, true); kvutil.IsStreamUnavailable(err) {
+		if err := pool.reconcile(d.ctx, true); kvstore.IsStreamUnavailable(err) {
 			// On a cluster starting together the bindings KV can lag vpcd by
 			// moments; waiting ten minutes for the loop would leave leaks billing.
 			go pool.retryStartupReconcile(d.ctx, ociStartupReconcileInitialBackoff, ociStartupReconcileMaxBackoff)
@@ -1817,7 +1817,7 @@ const (
 func (p ociPool) reconcile(ctx context.Context, startup bool) error {
 	res, err := p.alloc.Reconcile(ctx)
 	switch {
-	case kvutil.IsStreamUnavailable(err) && len(res.Collected) == 0 && len(res.Orphaned) == 0:
+	case kvstore.IsStreamUnavailable(err) && len(res.Collected) == 0 && len(res.Orphaned) == 0:
 		slog.Warn("OCI allocator reconcile deferred: bindings KV store not reachable",
 			"pool", p.name, "err", err)
 	case err != nil:
@@ -1842,7 +1842,7 @@ func (p ociPool) retryStartupReconcile(ctx context.Context, initialBackoff, maxB
 	_, _ = retryUntilContext(ctx, initialBackoff, maxBackoff,
 		func(int, time.Duration, error) {},
 		func() (struct{}, error) {
-			if err := p.reconcile(ctx, true); kvutil.IsStreamUnavailable(err) {
+			if err := p.reconcile(ctx, true); kvstore.IsStreamUnavailable(err) {
 				return struct{}{}, err
 			}
 			return struct{}{}, nil
@@ -2024,7 +2024,7 @@ func (d *Daemon) startCluster() error {
 
 	// Remove the obsolete spinifex-dhcp-leases bucket (idempotent).
 	if js, jsErr := jetstream.New(d.natsConn); jsErr == nil {
-		if err := kvutil.DeleteBucketIfExists(d.ctx, js, "spinifex-dhcp-leases"); err != nil {
+		if err := kvstore.DeleteBucketIfExists(d.ctx, js, "spinifex-dhcp-leases"); err != nil {
 			slog.Warn("Failed to delete obsolete spinifex-dhcp-leases KV bucket", "err", err)
 		}
 	}
@@ -2228,7 +2228,7 @@ func (d *Daemon) startCluster() error {
 			if jsErr != nil {
 				return nil, fmt.Errorf("jetstream handle: %w", jsErr)
 			}
-			return kvutil.GetOrCreateBucket(d.ctx, eipJS, ec2eip.KVBucketEIPs, 10)
+			return kvstore.GetOrCreateBucket(d.ctx, eipJS, ec2eip.KVBucketEIPs, 10)
 		})
 		if eipKVErr != nil {
 			return fmt.Errorf("failed to get EIP KV bucket for VPC service: %w", eipKVErr)
@@ -2844,7 +2844,7 @@ func (d *Daemon) upgradeJetStreamReplicas() {
 	if d.jsManager == nil || d.jsManager.js == nil {
 		return
 	}
-	raised, err := kvutil.RaiseAllBucketReplicas(d.ctx, d.jsManager.js)
+	raised, err := kvstore.RaiseAllBucketReplicas(d.ctx, d.jsManager.js)
 	if err != nil {
 		slog.Warn("Failed to raise KV bucket replicas to the cluster's node count", "error", err)
 		return

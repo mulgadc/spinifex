@@ -6,7 +6,7 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,7 +23,7 @@ func TestAccountWatchBuckets_ReturnsOnePerAccountBucket(t *testing.T) {
 	require.NoError(t, err)
 	_, err = ekscluster.GetOrCreateAccountBucket(t.Context(), js, "222222222222")
 	require.NoError(t, err)
-	_, err = kvutil.GetOrCreateBucket(t.Context(), js, "something-else", 1)
+	_, err = kvstore.GetOrCreateBucket(t.Context(), js, "something-else", 1)
 	require.NoError(t, err)
 
 	buckets, err := ekscluster.AccountWatchBuckets(t.Context(), nc)

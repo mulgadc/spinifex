@@ -1,4 +1,4 @@
-package kvutil
+package kvstore
 
 import "testing"
 

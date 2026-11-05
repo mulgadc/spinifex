@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/require"
 )
@@ -54,7 +54,7 @@ func runBucketsAreReplicated(t *testing.T, fix *Fixture) {
 
 // leaseBuckets returns the names of the reconciler leader-lease buckets, which
 // are the ones a reconciler must acquire before it can do anything at all.
-func leaseBuckets(reports []kvutil.BucketReport) []string {
+func leaseBuckets(reports []kvstore.BucketReport) []string {
 	var out []string
 	for _, r := range reports {
 		if strings.HasSuffix(r.Bucket, "-leader") || strings.HasSuffix(r.Bucket, "-reconcile") {
@@ -104,7 +104,7 @@ func runReplicasCommand(t *testing.T, fix *Fixture) {
 // nodeReplicaReport runs the replica audit on one node and decodes it. A
 // non-zero exit is returned as an error rather than fatalled, because callers
 // polling a recovering cluster need to retry it.
-func nodeReplicaReport(t *testing.T, node harness.Node) ([]kvutil.BucketReport, error) {
+func nodeReplicaReport(t *testing.T, node harness.Node) ([]kvstore.BucketReport, error) {
 	t.Helper()
 	ssh := harness.NewPeerSSH()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -119,7 +119,7 @@ func nodeReplicaReport(t *testing.T, node harness.Node) ([]kvutil.BucketReport, 
 			return nil, fmt.Errorf("%s: %w", node.Name, err)
 		}
 	}
-	var reports []kvutil.BucketReport
+	var reports []kvstore.BucketReport
 	if jsonErr := json.Unmarshal(trimToJSON(out), &reports); jsonErr != nil {
 		return nil, fmt.Errorf("%s: decode replica report (%q): %w", node.Name, string(out), jsonErr)
 	}
@@ -136,7 +136,7 @@ func trimToJSON(out []byte) []byte {
 }
 
 // underReplicated names every bucket below want replicas.
-func underReplicated(reports []kvutil.BucketReport, want int) []string {
+func underReplicated(reports []kvstore.BucketReport, want int) []string {
 	var out []string
 	for _, r := range reports {
 		if r.Replicas < want {

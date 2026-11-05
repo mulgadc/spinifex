@@ -21,7 +21,7 @@ import (
 	"time"
 
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -111,7 +111,7 @@ func openSigningBucket(ctx context.Context, js jetstream.JetStream, masterKey []
 	if len(masterKey) == 0 {
 		return nil, errors.New("ecrauth: empty master key")
 	}
-	return kvutil.GetOrCreateBucket(ctx, js, SigningBucket, signingKeyHistory)
+	return kvstore.GetOrCreateBucket(ctx, js, SigningBucket, signingKeyHistory)
 }
 
 // reloadKeys reads every stored signing key, returning the verify set, each
@@ -125,7 +125,7 @@ func openSigningBucket(ctx context.Context, js jetstream.JetStream, masterKey []
 // load instead takes the gateway down on every node, permanently, over a key no
 // live request needs.
 func reloadKeys(ctx context.Context, kv jetstream.KeyValue, masterKey []byte) (active *SigningKey, verify map[string]*ecdsa.PublicKey, metas []keyMeta, undecodable int, err error) {
-	names, err := kvutil.Keys(ctx, kv)
+	names, err := kvstore.Keys(ctx, kv)
 	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, nil, nil, 0, fmt.Errorf("list signing keys: %w", err)
 	}

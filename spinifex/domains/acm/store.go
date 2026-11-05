@@ -14,7 +14,6 @@ import (
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -184,7 +183,7 @@ func NewStore(ctx context.Context, nc *nats.Conn, masterKey []byte) (*Store, err
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
 	}
 
-	kv, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketACM, KVBucketACMVersion)
+	kv, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketACM, KVBucketACMVersion)
 	if err != nil {
 		return nil, err
 	}

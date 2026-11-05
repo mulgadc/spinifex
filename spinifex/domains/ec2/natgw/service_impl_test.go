@@ -11,7 +11,7 @@ import (
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,18 +31,18 @@ func setupTestServiceJS(t *testing.T) (*NatGatewayServiceImpl, jetstream.JetStre
 
 	// Seed VPC KV
 	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
-		kvutil.AccountKey(testAccountID, "vpc-test1"): []byte(`{"vpc_id":"vpc-test1","cidr_block":"10.0.0.0/16","state":"available"}`),
+		kvstore.AccountKey(testAccountID, "vpc-test1"): []byte(`{"vpc_id":"vpc-test1","cidr_block":"10.0.0.0/16","state":"available"}`),
 	})
 
 	// Seed subnet KV (public subnet)
 	testutil.SeedKV(t, js, ec2vpc.KVBucketSubnets, map[string][]byte{
-		kvutil.AccountKey(testAccountID, "subnet-pub1"): []byte(`{"subnet_id":"subnet-pub1","vpc_id":"vpc-test1","cidr_block":"10.0.1.0/24","state":"available","map_public_ip_on_launch":true}`),
+		kvstore.AccountKey(testAccountID, "subnet-pub1"): []byte(`{"subnet_id":"subnet-pub1","vpc_id":"vpc-test1","cidr_block":"10.0.1.0/24","state":"available","map_public_ip_on_launch":true}`),
 	})
 
 	// Seed EIP KV
 	testutil.SeedKV(t, js, ec2eip.KVBucketEIPs, map[string][]byte{
-		kvutil.AccountKey(testAccountID, "eipalloc-test1"): []byte(`{"allocation_id":"eipalloc-test1","public_ip":"203.0.113.50","state":"allocated"}`),
-		kvutil.AccountKey(testAccountID, "eipalloc-used"):  []byte(`{"allocation_id":"eipalloc-used","public_ip":"203.0.113.51","state":"associated","association_id":"eipassoc-xxx"}`),
+		kvstore.AccountKey(testAccountID, "eipalloc-test1"): []byte(`{"allocation_id":"eipalloc-test1","public_ip":"203.0.113.50","state":"allocated"}`),
+		kvstore.AccountKey(testAccountID, "eipalloc-used"):  []byte(`{"allocation_id":"eipalloc-used","public_ip":"203.0.113.51","state":"associated","association_id":"eipassoc-xxx"}`),
 	})
 
 	svc, err := NewNatGatewayServiceImplWithNATS(t.Context(), nc)
@@ -170,7 +170,7 @@ func TestDeleteNatGateway(t *testing.T) {
 	assert.Equal(t, natgwID, *deleteOut.NatGatewayId)
 
 	// Should be gone
-	_, err = svc.natgwKV.Get(t.Context(), kvutil.AccountKey(testAccountID, natgwID))
+	_, err = svc.natgwKV.Get(t.Context(), kvstore.AccountKey(testAccountID, natgwID))
 	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
 }
 

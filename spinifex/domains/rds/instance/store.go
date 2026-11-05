@@ -13,7 +13,6 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -244,7 +243,7 @@ func InitLeaderBucket(ctx context.Context, js jetstream.JetStream) (jetstream.Ke
 // AccountBucketNames lists every RDS per-account bucket in the cluster. The reconciler and the DNS
 // desired-set both need a cross-tenant view, which only this provides.
 func AccountBucketNames(ctx context.Context, js jetstream.JetStream) ([]string, error) {
-	all, err := kvutil.BucketNames(ctx, js)
+	all, err := kvstore.BucketNames(ctx, js)
 	if err != nil {
 		return nil, err
 	}

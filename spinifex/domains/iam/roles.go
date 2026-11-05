@@ -18,7 +18,7 @@ import (
 	iamarn "github.com/mulgadc/bluebottle/pkg/auth"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 const (
@@ -128,7 +128,7 @@ func (s *IAMServiceImpl) GetRole(accountID string, input *iam.GetRoleInput) (*ia
 
 func (s *IAMServiceImpl) ListRoles(accountID string, input *iam.ListRolesInput) (*iam.ListRolesOutput, error) {
 	ctx := context.Background()
-	keys, err := kvutil.Keys(ctx, s.rolesBucket)
+	keys, err := kvstore.Keys(ctx, s.rolesBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return &iam.ListRolesOutput{
@@ -149,7 +149,7 @@ func (s *IAMServiceImpl) ListRoles(accountID string, input *iam.ListRolesInput) 
 	// element at all rather than an empty one.
 	roles := []*iam.Role{}
 	for _, key := range keys {
-		if key == kvutil.VersionKey {
+		if key == kvstore.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, keyPrefix) {
@@ -574,7 +574,7 @@ func (s *IAMServiceImpl) getRole(ctx context.Context, accountID, roleName string
 // whether it changed the record; a false return commits nothing.
 func (s *IAMServiceImpl) updateRoleCAS(ctx context.Context, accountID, roleName string, mutate func(*Role) (bool, error)) error {
 	defer s.recordLocks.lock("role/" + accountID + "." + roleName)()
-	_, err := kvutil.Update(ctx, s.rolesBucket, accountID+"."+roleName, kvutil.CASConfig{
+	_, err := kvstore.Update(ctx, s.rolesBucket, accountID+"."+roleName, kvstore.CASConfig{
 		Attempts: roleCASMaxRetries,
 		NotFound: noSuchEntity("role", roleName),
 		Exhausted: func(string, int) error {
@@ -593,7 +593,7 @@ func (s *IAMServiceImpl) updateRoleCAS(ctx context.Context, accountID, roleName 
 // per-key Get or unmarshal errors so DeleteRole cannot succeed while a
 // real-but-unreadable reference exists.
 func (s *IAMServiceImpl) findInstanceProfilesForRole(ctx context.Context, accountID, roleName string) ([]*InstanceProfile, error) {
-	keys, err := kvutil.Keys(ctx, s.instanceProfilesBucket)
+	keys, err := kvstore.Keys(ctx, s.instanceProfilesBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
@@ -604,7 +604,7 @@ func (s *IAMServiceImpl) findInstanceProfilesForRole(ctx context.Context, accoun
 	keyPrefix := accountID + "."
 	var profiles []*InstanceProfile
 	for _, key := range keys {
-		if key == kvutil.VersionKey {
+		if key == kvstore.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, keyPrefix) {

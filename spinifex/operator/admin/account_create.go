@@ -16,7 +16,7 @@ import (
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -336,7 +336,7 @@ func (d Deps) stores(ctx context.Context) (*iamdomain.AccountNameIndex, jetstrea
 		return nil, nil, errors.New(awserrors.ErrorServiceUnavailable)
 	}
 
-	idem, err := kvutil.GetOrCreateBucketWithTTL(ctx, js, KVBucketAdminIdempotency, 1, adminIdempotencyTTL)
+	idem, err := kvstore.GetOrCreateBucketWithTTL(ctx, js, KVBucketAdminIdempotency, 1, adminIdempotencyTTL)
 	if err != nil {
 		slog.Error("CreateAccount: failed to open idempotency bucket", "err", err)
 		return nil, nil, errors.New(awserrors.ErrorServiceUnavailable)

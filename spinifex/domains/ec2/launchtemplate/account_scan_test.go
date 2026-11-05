@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/internal/testkit/readonlystore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -45,7 +45,7 @@ func TestScanAccountClassifiesLaunchTemplateRecords(t *testing.T) {
 	// A header removed alone, as a delete interrupted after it leaves the rest.
 	deleted := createWithUserData(t, svc, "deleted")
 	inner := svc.kv
-	require.NoError(t, inner.Delete(t.Context(), kvutil.AccountKey(testAccountID, deleted)))
+	require.NoError(t, inner.Delete(t.Context(), kvstore.AccountKey(testAccountID, deleted)))
 
 	// A create whose header write and clean-up both fail.
 	svc.kv = &faultyKV{KeyValue: inner,
@@ -59,16 +59,16 @@ func TestScanAccountClassifiesLaunchTemplateRecords(t *testing.T) {
 	require.Error(t, err)
 	svc.kv = inner
 
-	putRaw(t, inner, kvutil.AccountKey(testAccountID, "lt-0badbadbadbadbad0"), "{not json")
-	putRaw(t, inner, kvutil.AccountKey(testAccountID, "lt-0badbadbadbadbad0.v1"), `{"version_number":1}`)
-	putRaw(t, inner, kvutil.AccountKey(testAccountID, "lt-0mismatch00000000"), `{"launch_template_id":"lt-0other"}`)
-	putRaw(t, inner, kvutil.AccountKey(testAccountID, "lt-0unreadable000000"), `{"launch_template_id":"lt-0unreadable000000"}`)
+	putRaw(t, inner, kvstore.AccountKey(testAccountID, "lt-0badbadbadbadbad0"), "{not json")
+	putRaw(t, inner, kvstore.AccountKey(testAccountID, "lt-0badbadbadbadbad0.v1"), `{"version_number":1}`)
+	putRaw(t, inner, kvstore.AccountKey(testAccountID, "lt-0mismatch00000000"), `{"launch_template_id":"lt-0other"}`)
+	putRaw(t, inner, kvstore.AccountKey(testAccountID, "lt-0unreadable000000"), `{"launch_template_id":"lt-0unreadable000000"}`)
 	putRaw(t, inner, nameKey(testAccountID, "unreadable"), "lt-0unreadable000000")
-	putRaw(t, inner, kvutil.AccountKey(testAccountID, "lt-0bad.vx"), "{}")
+	putRaw(t, inner, kvstore.AccountKey(testAccountID, "lt-0bad.vx"), "{}")
 
 	recorder := &readRecordingKV{KeyValue: readonlystore.NewKV(t, inner)}
 	svc.kv = &faultyKV{KeyValue: recorder, failGet: func(key string) bool {
-		return key == kvutil.AccountKey(testAccountID, "lt-0unreadable000000")
+		return key == kvstore.AccountKey(testAccountID, "lt-0unreadable000000")
 	}}
 	scan, err := svc.ScanAccount(context.Background(), testAccountID)
 	require.NoError(t, err)

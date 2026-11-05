@@ -9,7 +9,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/spf13/cobra"
 )
@@ -74,7 +74,7 @@ func runKVReplicas(cmd *cobra.Command, _ []string) {
 	// Background: this runs at CLI top level, where there is no request to
 	// inherit a deadline from and the process exits after the one command.
 	ctx := context.Background()
-	reports, err := kvutil.AuditBucketReplicas(ctx, js)
+	reports, err := kvstore.AuditBucketReplicas(ctx, js)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "audit KV bucket replicas: %v\n", err)
 		os.Exit(exitUnreachable)
@@ -109,7 +109,7 @@ const (
 // No quorum outranks under-replicated because they need different responses: one
 // is fixed by raising a count, the other by finding out why a node is not
 // answering. A bucket that is both should send the operator to the node.
-func replicaReportExit(reports []kvutil.BucketReport) int {
+func replicaReportExit(reports []kvstore.BucketReport) int {
 	status := exitHealthy
 	for _, r := range reports {
 		if !r.HasQuorum() {
@@ -129,12 +129,12 @@ func replicaReportExit(reports []kvutil.BucketReport) int {
 // failure is named on errOut and the sweep continues. The bucket it failed on
 // stays UNDER-REPLICATED in the report, which is already what makes the exit
 // status non-zero, so nothing is lost by not returning an error here.
-func repairReplicaReports(ctx context.Context, js jetstream.JetStream, reports []kvutil.BucketReport, errOut io.Writer) {
+func repairReplicaReports(ctx context.Context, js jetstream.JetStream, reports []kvstore.BucketReport, errOut io.Writer) {
 	for i, r := range reports {
 		if !r.UnderReplicated() {
 			continue
 		}
-		if err := kvutil.RaiseBucketReplicas(ctx, js, r.Bucket, r.Want); err != nil {
+		if err := kvstore.RaiseBucketReplicas(ctx, js, r.Bucket, r.Want); err != nil {
 			fmt.Fprintf(errOut, "repair %s: %v\n", r.Bucket, err)
 			continue
 		}
@@ -143,7 +143,7 @@ func repairReplicaReports(ctx context.Context, js jetstream.JetStream, reports [
 }
 
 // underReplicatedCount is how many buckets are below the cluster's replica count.
-func underReplicatedCount(reports []kvutil.BucketReport) int {
+func underReplicatedCount(reports []kvstore.BucketReport) int {
 	under := 0
 	for _, r := range reports {
 		if r.UnderReplicated() {
@@ -154,7 +154,7 @@ func underReplicatedCount(reports []kvutil.BucketReport) int {
 }
 
 // noQuorumCount is how many buckets cannot currently accept a write.
-func noQuorumCount(reports []kvutil.BucketReport) int {
+func noQuorumCount(reports []kvstore.BucketReport) int {
 	stuck := 0
 	for _, r := range reports {
 		if !r.HasQuorum() {
@@ -169,7 +169,7 @@ func noQuorumCount(reports []kvutil.BucketReport) int {
 // No quorum wins over under-replicated when both are true, matching the exit
 // status: a bucket that cannot serve is the more urgent of the two and is not
 // what --repair is for.
-func replicaStatus(r kvutil.BucketReport) string {
+func replicaStatus(r kvstore.BucketReport) string {
 	switch {
 	case !r.HasQuorum():
 		return "NO-QUORUM"
@@ -181,7 +181,7 @@ func replicaStatus(r kvutil.BucketReport) string {
 }
 
 // writeReplicaReport renders reports as a table, or as JSON when asJSON.
-func writeReplicaReport(out io.Writer, reports []kvutil.BucketReport, asJSON bool) error {
+func writeReplicaReport(out io.Writer, reports []kvstore.BucketReport, asJSON bool) error {
 	if asJSON {
 		return json.NewEncoder(out).Encode(reports)
 	}

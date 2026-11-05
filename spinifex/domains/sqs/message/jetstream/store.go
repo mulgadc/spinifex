@@ -16,7 +16,7 @@ import (
 	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/message"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 	jsapi "github.com/nats-io/nats.go/jetstream"
 )
@@ -101,7 +101,7 @@ func New(ctx context.Context, js jsapi.JetStream, cfg Config) (*Store, error) {
 	}
 	for i := range cfg.StateBuckets {
 		shard := message.Shard(safecast.IntToUint32(i))
-		kv, err := kvutil.GetOrCreateBucketWithOptions(ctx, js, kvutil.BucketOptions{
+		kv, err := kvstore.GetOrCreateBucketWithOptions(ctx, js, kvstore.BucketOptions{
 			Name:        BucketName(shard),
 			Description: "SQS per-message state, shared by every queue allocated this state shard",
 			History:     1,
@@ -960,10 +960,10 @@ func shardFilter(shard message.Shard) string {
 // (after, bound] until fn returns false. Each match is a leader message get,
 // which returns the whole body: a follower's consumer may lag applied purges.
 func readRange(ctx context.Context, js jsapi.JetStream, stream, filter string, after, bound uint64, fn func(*jsapi.RawStreamMsg) (bool, error)) (uint64, bool, error) {
-	req := kvutil.MsgGetRequest{NextFor: filter}
+	req := kvstore.MsgGetRequest{NextFor: filter}
 	for after < bound {
 		req.Seq = after + 1
-		msg, err := kvutil.LeaderMsgGet(ctx, js, stream, req)
+		msg, err := kvstore.LeaderMsgGet(ctx, js, stream, req)
 		switch {
 		case errors.Is(err, jsapi.ErrMsgNotFound):
 			return bound, true, nil

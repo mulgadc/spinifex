@@ -17,7 +17,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -82,7 +82,7 @@ func newWebIdentityFixture(t *testing.T, svc *STSServiceImpl, accountID string) 
 	// Register the OIDC provider on the role-account's IAM bucket. Bucket is
 	// created on-the-fly here — the IAM CreateOpenIDConnectProvider API lands
 	// in Sprint 6e.
-	iamKV, err := kvutil.GetOrCreateBucket(t.Context(), svc.js,
+	iamKV, err := kvstore.GetOrCreateBucket(t.Context(), svc.js,
 		iamdomain.IAMAccountBucketName(accountID), iamdomain.KVBucketIAMAccountVersion)
 	require.NoError(t, err)
 	_, err = iamKV.Put(t.Context(), iamdomain.OIDCProviderKey(issuer), []byte(`{"registered":true}`))

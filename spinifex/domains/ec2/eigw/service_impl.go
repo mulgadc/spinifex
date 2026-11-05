@@ -19,7 +19,7 @@ import (
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -56,7 +56,7 @@ func NewEgressOnlyIGWServiceImplWithNATS(ctx context.Context, cfg *config.Config
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
 	}
 
-	eigwKV, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketEgressOnlyIGW, 10)
+	eigwKV, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketEgressOnlyIGW, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketEgressOnlyIGW, err)
 	}
@@ -65,7 +65,7 @@ func NewEgressOnlyIGWServiceImplWithNATS(ctx context.Context, cfg *config.Config
 	}
 
 	// Get or create VPC KV bucket for cross-resource ownership validation
-	vpcKV, err := kvutil.GetOrCreateBucket(ctx, js, ec2vpc.KVBucketVPCs, 10)
+	vpcKV, err := kvstore.GetOrCreateBucket(ctx, js, ec2vpc.KVBucketVPCs, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get VPC KV bucket: %w", err)
 	}
@@ -90,7 +90,7 @@ func (s *EgressOnlyIGWServiceImpl) CreateEgressOnlyInternetGateway(ctx context.C
 		slog.ErrorContext(ctx, "VPC KV unavailable, cannot verify VPC ownership")
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if _, err := s.vpcKV.Get(ctx, kvutil.AccountKey(accountID, *input.VpcId)); err != nil {
+	if _, err := s.vpcKV.Get(ctx, kvstore.AccountKey(accountID, *input.VpcId)); err != nil {
 		slog.WarnContext(ctx, "CreateEgressOnlyInternetGateway: VPC not found for account", "vpcId", *input.VpcId, "accountID", accountID)
 		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidVpcIDNotFound, "vpc", *input.VpcId)
 	}
@@ -109,7 +109,7 @@ func (s *EgressOnlyIGWServiceImpl) CreateEgressOnlyInternetGateway(ctx context.C
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal Egress-only IGW record: %w", err)
 	}
-	if _, err := s.eigwKV.Put(ctx, kvutil.AccountKey(accountID, eigwID), data); err != nil {
+	if _, err := s.eigwKV.Put(ctx, kvstore.AccountKey(accountID, eigwID), data); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -127,7 +127,7 @@ func (s *EgressOnlyIGWServiceImpl) DeleteEgressOnlyInternetGateway(ctx context.C
 	}
 
 	eigwID := *input.EgressOnlyInternetGatewayId
-	key := kvutil.AccountKey(accountID, eigwID)
+	key := kvstore.AccountKey(accountID, eigwID)
 
 	// Verify the EIGW exists before deleting
 	if _, err := s.eigwKV.Get(ctx, key); err != nil {
@@ -178,7 +178,7 @@ func (s *EgressOnlyIGWServiceImpl) DescribeEgressOnlyInternetGateways(ctx contex
 	}
 
 	for _, key := range keys {
-		if key == kvutil.VersionKey {
+		if key == kvstore.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, prefix) {

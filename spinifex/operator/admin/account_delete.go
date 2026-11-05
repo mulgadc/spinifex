@@ -14,7 +14,7 @@ import (
 	"uuid"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	accountteardown "github.com/mulgadc/spinifex/spinifex/operator/accountlifecycle"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -421,7 +421,7 @@ func (t *deletionTracker) persist(ctx context.Context) {
 			t.revision = revision
 			return
 		}
-		if !kvutil.IsRevisionConflict(err) {
+		if !kvstore.IsRevisionConflict(err) {
 			// The teardown itself is unaffected; only its progress report is. Losing
 			// the run over a KV write would be the worse outcome.
 			slog.Error("DeleteAccount: failed to store job progress", "accountID", t.job.AccountID, "err", err)
@@ -564,7 +564,7 @@ func takeOverDeletionJob(
 
 	revision, err := jobs.Update(ctx, req.AccountID, record, existingRevision)
 	if err != nil {
-		if kvutil.IsRevisionConflict(err) {
+		if kvstore.IsRevisionConflict(err) {
 			// Another taker won the same expired lease.
 			return nil, 0, nil, errors.New(awserrors.ErrorOperationInProgress)
 		}
@@ -681,7 +681,7 @@ func (d Deps) accountDeletionStore(ctx context.Context) (jetstream.KeyValue, err
 		return nil, errors.New(awserrors.ErrorServiceUnavailable)
 	}
 
-	jobs, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketAccountDeletions, 5)
+	jobs, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketAccountDeletions, 5)
 	if err != nil {
 		slog.Error("DeleteAccount: failed to open deletion job bucket", "err", err)
 		return nil, errors.New(awserrors.ErrorServiceUnavailable)

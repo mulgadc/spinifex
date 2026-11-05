@@ -8,7 +8,7 @@ import (
 
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -109,7 +109,7 @@ func (s *AccountSettingsServiceImpl) SealAccount(ctx context.Context, accountID 
 		switch {
 		case writeErr == nil:
 			return &AccountSettingsSeal{Revision: newRev}, nil
-		case kvutil.IsRevisionConflict(writeErr):
+		case kvstore.IsRevisionConflict(writeErr):
 			continue
 		default:
 			slog.ErrorContext(ctx, "Failed to write sealed account settings record", "accountID", accountID, "err", writeErr)

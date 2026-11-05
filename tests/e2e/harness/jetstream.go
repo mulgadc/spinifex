@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -79,7 +79,7 @@ func DialClusterNATS(t *testing.T, env *Env) *nats.Conn {
 // config, and the audit refuses to guess one rather than assuming a single
 // replica. Declaring is write-once, so the reset makes a second call with the
 // same count safe and a third with a different one a visible failure.
-func KVReplication(t *testing.T, env *Env, nodes int) []kvutil.BucketReport {
+func KVReplication(t *testing.T, env *Env, nodes int) []kvstore.BucketReport {
 	t.Helper()
 	clustersize.ResetForTest()
 	if err := clustersize.Declare(nodes); err != nil {
@@ -89,7 +89,7 @@ func KVReplication(t *testing.T, env *Env, nodes int) []kvutil.BucketReport {
 	if err != nil {
 		t.Fatalf("jetstream context: %v", err)
 	}
-	reports, err := kvutil.AuditBucketReplicas(t.Context(), js)
+	reports, err := kvstore.AuditBucketReplicas(t.Context(), js)
 	if err != nil {
 		t.Fatalf("audit KV bucket replicas: %v", err)
 	}

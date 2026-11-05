@@ -1,11 +1,11 @@
-package kvutil_test
+package kvstore_test
 
 import (
 	"context"
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	jsapi "github.com/nats-io/nats.go/jetstream"
@@ -33,7 +33,7 @@ func TestLeaderMsgGetBoundsAContextWithoutDeadline(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := kvutil.LeaderMsgGet(context.Background(), js, "KV_x", kvutil.MsgGetRequest{LastFor: "$KV.x.k"})
+		_, err := kvstore.LeaderMsgGet(context.Background(), js, "KV_x", kvstore.MsgGetRequest{LastFor: "$KV.x.k"})
 		done <- err
 	}()
 	select {
@@ -76,6 +76,6 @@ func TestAPIPrefixMatchesNatsGo(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		_, _ = js.AccountInfo(ctx)
 		cancel()
-		require.Equal(t, sent, kvutil.APIPrefix(js.Options())+"INFO", name)
+		require.Equal(t, sent, kvstore.APIPrefix(js.Options())+"INFO", name)
 	}
 }

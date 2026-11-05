@@ -8,7 +8,7 @@ import (
 
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -73,7 +73,7 @@ func (s *Service) sealBucket(ctx context.Context) (jetstream.KeyValue, error) {
 		slog.ErrorContext(ctx, "Quota override seal has no JetStream client wired to open the override bucket")
 		return nil, errors.New(awserrors.ErrorInternalError)
 	}
-	kv, err := kvutil.GetOrCreateBucket(ctx, s.js, KVBucketAccountQuota, 1)
+	kv, err := kvstore.GetOrCreateBucket(ctx, s.js, KVBucketAccountQuota, 1)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to open quota override bucket for seal", "err", err)
 		return nil, errors.New(awserrors.ErrorInternalError)
@@ -136,7 +136,7 @@ func (s *Service) SealAccountOverrides(ctx context.Context, accountID string) (*
 		switch {
 		case writeErr == nil:
 			return &OverrideSeal{Revision: newRev}, nil
-		case kvutil.IsRevisionConflict(writeErr):
+		case kvstore.IsRevisionConflict(writeErr):
 			continue
 		default:
 			slog.ErrorContext(ctx, "Failed to write sealed quota override record", "accountID", accountID, "err", writeErr)

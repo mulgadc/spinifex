@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/time/rate"
 )
@@ -171,7 +171,7 @@ func (s *Service) RunBedrockRPMSync(ctx context.Context, js jetstream.JetStream)
 	if s == nil || !s.limits.RequestsPerMinuteEnabled {
 		return
 	}
-	kv, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketBedrockRPMUsage, 1)
+	kv, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketBedrockRPMUsage, 1)
 	if err != nil {
 		slog.Warn("bedrock rpm sync: open usage bucket failed, sync disabled", "err", err)
 		return

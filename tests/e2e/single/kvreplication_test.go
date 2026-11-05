@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/require"
 )
@@ -65,9 +65,9 @@ func runKVReplication(t *testing.T, fix *Fixture) {
 
 // requireSameReplication fails if any bucket's replication changed across the
 // repair passes, naming the bucket rather than reporting that two lists differ.
-func requireSameReplication(t *testing.T, before, after []kvutil.BucketReport) {
+func requireSameReplication(t *testing.T, before, after []kvstore.BucketReport) {
 	t.Helper()
-	was := make(map[string]kvutil.BucketReport, len(before))
+	was := make(map[string]kvstore.BucketReport, len(before))
 	for _, r := range before {
 		was[r.Bucket] = r
 	}
@@ -85,13 +85,13 @@ func requireSameReplication(t *testing.T, before, after []kvutil.BucketReport) {
 
 // localReplicaReport runs the replica audit on this node and decodes it. The
 // suite runs on the node it is testing, so there is no ssh hop.
-func localReplicaReport(t *testing.T) ([]kvutil.BucketReport, error) {
+func localReplicaReport(t *testing.T) ([]kvstore.BucketReport, error) {
 	t.Helper()
 	out, err := runLocal(t, "sudo -n spx admin kv replicas --json")
 	if err != nil && len(out) == 0 {
 		return nil, err
 	}
-	var reports []kvutil.BucketReport
+	var reports []kvstore.BucketReport
 	if jsonErr := json.Unmarshal(trimToJSON(out), &reports); jsonErr != nil {
 		return nil, fmt.Errorf("decode replica report (%q): %w", string(out), jsonErr)
 	}

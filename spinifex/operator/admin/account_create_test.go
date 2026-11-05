@@ -17,7 +17,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -138,7 +138,7 @@ func newIdempotencyBucket(t *testing.T) jetstream.KeyValue {
 	t.Helper()
 	_, _, js := testutil.StartTestJetStream(t)
 
-	kv, err := kvutil.GetOrCreateBucketWithTTL(t.Context(), js, KVBucketAdminIdempotency, 1, adminIdempotencyTTL)
+	kv, err := kvstore.GetOrCreateBucketWithTTL(t.Context(), js, KVBucketAdminIdempotency, 1, adminIdempotencyTTL)
 	require.NoError(t, err)
 	return kv
 }

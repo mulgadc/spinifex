@@ -13,7 +13,7 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -132,7 +132,7 @@ type Store struct {
 
 // Open opens (or creates) the execution bucket.
 func Open(ctx context.Context, js jetstream.KeyValueManager) (*Store, error) {
-	kv, err := kvutil.GetOrCreateBucket(ctx, js, KVBucket, 1)
+	kv, err := kvstore.GetOrCreateBucket(ctx, js, KVBucket, 1)
 	if err != nil {
 		return nil, fmt.Errorf("execution: open bucket: %w", err)
 	}

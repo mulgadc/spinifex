@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,7 +30,7 @@ func newStaleReadENI(t *testing.T) (*VPCServiceImpl, string, func() ENIRecord) {
 	// Reads the stored record directly: the wrapped bucket would serve the
 	// check itself from a lagging replica.
 	stored := func() ENIRecord {
-		entry, err := inner.Get(context.Background(), kvutil.AccountKey(testAccountID, eniID))
+		entry, err := inner.Get(context.Background(), kvstore.AccountKey(testAccountID, eniID))
 		require.NoError(t, err)
 		var rec ENIRecord
 		require.NoError(t, json.Unmarshal(entry.Value(), &rec))
@@ -114,7 +114,7 @@ func TestCASENIGivesUpAfterBoundedConflicts(t *testing.T) {
 	t.Parallel()
 	svc, eniID, _ := newStaleReadENI(t)
 	conflicts := 0
-	err := svc.casENI(t.Context(), kvutil.AccountKey(testAccountID, eniID), eniID, func(*ENIRecord) error {
+	err := svc.casENI(t.Context(), kvstore.AccountKey(testAccountID, eniID), eniID, func(*ENIRecord) error {
 		conflicts++
 		// Move the record under the next compare-and-swap, as a competing writer does.
 		return svc.UpdateENI(testAccountID, eniID, func(r *ENIRecord) { r.Description = "other writer" })

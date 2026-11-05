@@ -15,7 +15,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 const (
@@ -61,7 +61,7 @@ type Store[T any] struct {
 // from NewStore so several typed stores can share one bucket without rebinding
 // it per request.
 func OpenBucket(ctx context.Context, js jetstream.JetStream, bucket string, ttl time.Duration) (jetstream.KeyValue, error) {
-	kv, err := kvutil.GetOrCreateBucketWithTTL(ctx, js, bucket, 1, ttl)
+	kv, err := kvstore.GetOrCreateBucketWithTTL(ctx, js, bucket, 1, ttl)
 	if err != nil {
 		return nil, fmt.Errorf("open idempotency bucket %s: %w", bucket, err)
 	}

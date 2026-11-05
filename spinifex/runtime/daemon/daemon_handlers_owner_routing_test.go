@@ -1,6 +1,10 @@
 package daemon
 
 import (
+	"bytes"
+	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -158,4 +162,54 @@ func TestModifyInstanceMetadataOptions_NonOwnerReceivesQueueOwnerAnswers(t *test
 	assert.Equal(t, int64(3), aws.Int64Value(got.Instance.MetadataOptions.HttpPutResponseHopLimit))
 	_, onA := a.vmMgr.Get(id)
 	assert.False(t, onA, "the queue-group member never held the instance")
+}
+
+// An N-1 owner decodes a new-variant payload with the unknown attribute and
+// data dropped, so dispatch sees no attribute and takes the default branch.
+func TestS9_N1DispatchRejectsNewVariantsWithoutWriting(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	for name, payload := range map[string]string{
+		"metadata options":    `{"id":"%s","attributes":{}}`,
+		"termination protect": `{"id":"%s","attributes":{}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			id := "i-or-n1-" + strings.ReplaceAll(name, " ", "-")
+			d, _ := monitoringTestDaemon(t, id, false)
+			before, _ := d.vmMgr.Get(id)
+			beforeInstance := *before.Instance
+
+			reply := requestHandler(t, d.natsConn, "ec2.cmd."+id, d.handleEC2Events, testAccountID, fmt.Appendf(nil, payload, id))
+			assert.Equal(t, awserrors.ErrorServerInternal, decodeError(t, reply.Data)["Code"])
+			assert.Empty(t, reply.Header.Get(ec2v1.HandledHeader), "an N-1 rejection carries no handled marker")
+			assert.Contains(t, logs.String(), "Unhandled EC2 instance command")
+
+			after, _ := d.vmMgr.Get(id)
+			assert.Equal(t, beforeInstance, *after.Instance)
+			assert.Nil(t, after.RunInstancesInput.DisableApiTermination)
+		})
+	}
+}
+
+func TestOwnerDispatch_RejectsOtherAccountWithoutWriting(t *testing.T) {
+	const id = "i-or-otheracct"
+	d, _ := monitoringTestDaemon(t, id, false)
+	before, _ := d.vmMgr.Get(id)
+	beforeInstance := *before.Instance
+
+	cmds := map[string]ec2v1.EC2InstanceCommand{
+		"metadata options": metadataCommand(id, &ec2v1.InstanceMetadataOptionsData{HttpPutResponseHopLimit: aws.Int64(3)}),
+		"termination":      terminationCommand(id, &ec2v1.DisableApiTerminationData{Value: true}),
+	}
+	for name, cmd := range cmds {
+		reply := requestHandler(t, d.natsConn, "ec2.cmd."+id, d.handleEC2Events, "999999999999", mustMarshal(t, cmd))
+		assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, decodeError(t, reply.Data)["Code"], name)
+	}
+
+	after, _ := d.vmMgr.Get(id)
+	assert.Equal(t, beforeInstance, *after.Instance)
+	assert.Nil(t, after.RunInstancesInput.DisableApiTermination)
 }

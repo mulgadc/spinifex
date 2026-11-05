@@ -186,3 +186,28 @@ func TestModifyInstanceMetadataOptions_OwnerTimeoutIsServerInternalWithoutFallba
 	assert.Equal(t, int32(1), applied.Load(), "the owner saw the command, so the outcome is unknown")
 	assert.Zero(t, queue.Load(), "a timeout never falls back to the queue group")
 }
+
+func TestModifyInstanceMetadataOptions_TimeoutAfterApplyIsUnknownNotRolledBack(t *testing.T) {
+	_, nc := startTestNATSServer(t)
+	prev := instanceCmdTimeout
+	instanceCmdTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { instanceCmdTimeout = prev })
+
+	// The owner persists the change, then the reply is lost.
+	var persisted atomic.Int64
+	_, err := nc.Subscribe(ec2v1.InstanceCommandSubject(metaTestID), func(msg *nats.Msg) {
+		var cmd ec2v1.EC2InstanceCommand
+		if json.Unmarshal(msg.Data, &cmd) == nil && cmd.InstanceMetadataOptionsData != nil {
+			persisted.Store(aws.Int64Value(cmd.InstanceMetadataOptionsData.HttpPutResponseHopLimit))
+		}
+	})
+	require.NoError(t, err)
+	var queue atomic.Int32
+	queueReply(t, nc, metaOutputJSON(t, 1), &queue)
+
+	_, err = ModifyInstanceMetadataOptions(context.Background(), metaInput(3), nc, "acct")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	assert.Zero(t, queue.Load(), "no fallback that could race a live owner")
+	assert.Equal(t, int64(3), persisted.Load(), "the gateway error does not undo what the owner stored")
+}

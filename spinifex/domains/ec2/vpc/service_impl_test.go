@@ -3,17 +3,22 @@ package vpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/zoneid"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -2654,4 +2659,37 @@ func TestCreateSubnet_RefusesA65thDistinctZone(t *testing.T) {
 	assert.Equal(t, pinned, again)
 
 	require.NoError(t, create(66, "rack-01"), "an already pinned zone still takes new subnets")
+}
+
+type failingZoneIDs struct{}
+
+func (failingZoneIDs) ZoneID(context.Context, string) (string, error) {
+	return "", errors.New("zone store down")
+}
+
+func TestCreateSubnet_ZoneStoreFailureWritesNothingAndPublishesNothing(t *testing.T) {
+	svc, nc := setupTestVPCServiceWithNC(t)
+	svc.SetZoneIDSource(failingZoneIDs{})
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+
+	var events atomic.Int32
+	sub, err := nc.Subscribe(networkv1.SubnetCreateSubject, func(*nats.Msg) { events.Add(1) })
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	require.NoError(t, nc.Flush())
+
+	_, err = svc.CreateSubnet(t.Context(), &ec2.CreateSubnetInput{
+		VpcId: aws.String(vpcID), CidrBlock: aws.String("10.0.1.0/24"), AvailabilityZone: aws.String("mulga-laba"),
+	}, testAccountID)
+	testutil.RequireAWSError(t, err, awserrors.ErrorServerInternal, "")
+
+	require.NoError(t, nc.Flush())
+	keys, err := svc.subnetKV.Keys(t.Context())
+	if err != nil {
+		require.ErrorIs(t, err, jetstream.ErrNoKeysFound)
+	}
+	for _, k := range keys {
+		assert.Equal(t, kvutil.VersionKey, k, "no subnet record may exist")
+	}
+	assert.Zero(t, events.Load(), "no topology event may be published")
 }

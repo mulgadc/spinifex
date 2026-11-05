@@ -792,14 +792,13 @@ func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubn
 	}
 
 	// Pin the zone's ID before anything is written, so a refused zone leaves no subnet behind.
-	if s.zoneIDs != nil && az != "" {
-		if _, err := s.zoneIDs.ZoneID(ctx, az); err != nil {
-			if errors.Is(err, zoneid.ErrTooManyZones) {
-				return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "The Region already has the maximum of %d distinct availability zones", zoneid.MaxZones)
-			}
-			slog.ErrorContext(ctx, "CreateSubnet: zone id pin failed", "az", az, "err", err)
-			return nil, errors.New(awserrors.ErrorServerInternal)
+	zoneID, err := s.zoneIDFor(ctx, az)
+	if err != nil {
+		if errors.Is(err, zoneid.ErrTooManyZones) {
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "The Region already has the maximum of %d distinct availability zones", zoneid.MaxZones)
 		}
+		slog.ErrorContext(ctx, "CreateSubnet: zone id pin failed", "az", az, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	subnetID := awsidentifiers.GenerateResourceID("subnet")
@@ -834,11 +833,7 @@ func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubn
 	// Publish vpc.create-subnet event for vpcd topology translation
 	s.publishSubnetEvent(networkv1.SubnetCreateSubject, record.SubnetId, record.VpcId, record.CidrBlock)
 
-	subnet, err := s.subnetRecordToEC2(ctx, &record, totalHosts, accountID)
-	if err != nil {
-		return nil, err
-	}
-	return &ec2.CreateSubnetOutput{Subnet: subnet}, nil
+	return &ec2.CreateSubnetOutput{Subnet: s.subnetRecordToEC2(&record, totalHosts, accountID, zoneID)}, nil
 }
 
 // DeleteSubnet deletes a subnet.
@@ -1063,15 +1058,12 @@ func (s *VPCServiceImpl) DescribeSubnets(ctx context.Context, input *ec2.Describ
 			continue
 		}
 
-		var zoneID string
-		if _, ok := parsedFilters["availability-zone-id"]; ok && s.zoneIDs != nil {
-			zoneID, err = s.zoneIDs.ZoneID(ctx, record.AvailabilityZone)
-			if err != nil {
-				slog.ErrorContext(ctx, "subnet zone id lookup failed", "subnetId", record.SubnetId, "az", record.AvailabilityZone, "err", err)
-				return nil, errors.New(awserrors.ErrorServerInternal)
-			}
+		zoneID, err := s.zoneIDFor(ctx, record.AvailabilityZone)
+		if err != nil {
+			slog.ErrorContext(ctx, "subnet zone id lookup failed", "subnetId", record.SubnetId, "az", record.AvailabilityZone, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
-		if len(parsedFilters) > 0 && !subnetMatchesFilters(&record, parsedFilters, zoneID) {
+		if len(parsedFilters) > 0 && !subnetMatchesFilters(&record, parsedFilters, aws.StringValue(zoneID)) {
 			continue
 		}
 
@@ -1083,11 +1075,7 @@ func (s *VPCServiceImpl) DescribeSubnets(ctx context.Context, input *ec2.Describ
 			availableIPs = max((1<<(32-ones))-5, 0) //#nosec G115 - ones from validated CIDR
 		}
 
-		subnet, err := s.subnetRecordToEC2(ctx, &record, availableIPs, accountID)
-		if err != nil {
-			return nil, err
-		}
-		subnets = append(subnets, subnet)
+		subnets = append(subnets, s.subnetRecordToEC2(&record, availableIPs, accountID, zoneID))
 	}
 
 	// If specific subnet IDs were requested but not found, return error
@@ -1348,16 +1336,19 @@ func (s *VPCServiceImpl) vpcRecordToEC2(record *VPCRecord, accountID string) *ec
 	return vpc
 }
 
-func (s *VPCServiceImpl) subnetRecordToEC2(ctx context.Context, record *SubnetRecord, availableIPs int, accountID string) (*ec2.Subnet, error) {
-	var zoneID *string
-	if s.zoneIDs != nil {
-		id, err := s.zoneIDs.ZoneID(ctx, record.AvailabilityZone)
-		if err != nil {
-			slog.ErrorContext(ctx, "subnet zone id lookup failed", "subnetId", record.SubnetId, "az", record.AvailabilityZone, "err", err)
-			return nil, errors.New(awserrors.ErrorServerInternal)
-		}
-		zoneID = aws.String(id)
+// zoneIDFor returns the stored zone ID for az, pinning it if needed. It is nil when there is no source or no zone name.
+func (s *VPCServiceImpl) zoneIDFor(ctx context.Context, az string) (*string, error) {
+	if s.zoneIDs == nil || az == "" {
+		return nil, nil
 	}
+	id, err := s.zoneIDs.ZoneID(ctx, az)
+	if err != nil {
+		return nil, err
+	}
+	return aws.String(id), nil
+}
+
+func (s *VPCServiceImpl) subnetRecordToEC2(record *SubnetRecord, availableIPs int, accountID string, zoneID *string) *ec2.Subnet {
 	subnet := &ec2.Subnet{
 		SubnetId:                aws.String(record.SubnetId),
 		VpcId:                   aws.String(record.VpcId),
@@ -1385,7 +1376,7 @@ func (s *VPCServiceImpl) subnetRecordToEC2(ctx context.Context, record *SubnetRe
 
 	subnet.Tags = awstags.MapToEC2(record.Tags)
 
-	return subnet, nil
+	return subnet
 }
 
 // ModifySubnetAttribute modifies a subnet's attributes (e.g. MapPublicIpOnLaunch).

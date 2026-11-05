@@ -1,6 +1,7 @@
 package instance
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -380,6 +381,47 @@ func TestDeleteDBInstance_ARepeatStartsNoTeardown(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, string(StatusDeleting), aws.StringValue(out.DBInstance.DBInstanceStatus))
+	assert.Empty(t, h.launcher.terminated)
+	assert.True(t, h.recordExists(t, testDBID))
+}
+
+// The reconciler resumes a delete from the persisted stamp, so the handler's
+// teardown must stop at that same instant, however long the acceptance took.
+func TestDeleteDBInstance_TeardownEndsWhenTheClaimDoes(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	seedInstance(t, h.svc, availableRecord())
+	var claimEnds time.Time
+	h.snaps.beforeCreate = func() { stored := h.record(t); claimEnds = deleteClaimEnds(&stored) }
+
+	_, err := h.svc.DeleteDBInstance(t.Context(), &rds.DeleteDBInstanceInput{
+		DBInstanceIdentifier:      aws.String(testDBID),
+		FinalDBSnapshotIdentifier: aws.String("orders-db-final"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	require.False(t, claimEnds.IsZero())
+	assert.True(t, h.snaps.deadline.Equal(claimEnds), "deadline %s, claim ends %s", h.snaps.deadline, claimEnds)
+}
+
+// A graceful stop that runs into the claim's end is swallowed, so the teardown
+// itself has to notice and leave the terminate to the reconciler.
+func TestTeardownDBInstance_StartsNoTerminatePastItsDeadline(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	h.agent.silenceType(CommandStopEngine)
+	rec := availableRecord()
+	rec.Status = StatusDeleting
+	rec.FinalSnapshotIdentifier = "orders-db-final"
+	seedInstance(t, h.svc, rec)
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	err = h.svc.teardownDBInstance(ctx, kv, testAccountID, &rec, true)
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
 	assert.Empty(t, h.launcher.terminated)
 	assert.True(t, h.recordExists(t, testDBID))
 }

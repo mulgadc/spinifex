@@ -98,9 +98,9 @@ func (s *Service) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInsta
 	}
 	s.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, id, "DB instance deleted.", EventCategoryDeletion)
 
-	// Bounded by the caller's own wait, after which the reconciler owns the
-	// teardown; until then it is this handler's alone.
-	teardownCtx, cancel := context.WithTimeout(ctx, deleteTimeout)
+	// Ends exactly when the reconciler's guard does, so the teardown is this
+	// handler's alone until the reconciler may resume it.
+	teardownCtx, cancel := context.WithDeadline(ctx, deleteClaimEnds(rec))
 	defer cancel()
 	if err := s.teardownDBInstance(teardownCtx, kv, accountID, rec, reservation.creator); err != nil {
 		// The reconciler finishes the delete once the modify lets go.
@@ -208,6 +208,11 @@ func (s *Service) teardownDBInstance(ctx context.Context, kv *kvstore.Bucket, ac
 		s.stopEngineOrRecordFallback(ctx, accountID, rec, "deleting")
 	}
 
+	// The engine stop swallows a deadline, and a handler past its claim must not
+	// start a terminate the reconciler may already be running.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := s.terminateInstanceVM(ctx, rec.InstanceID, rec.DataVolumeID); err != nil {
 		return fmt.Errorf("rds: terminate the VM behind %s: %w", rec.DBInstanceIdentifier, err)
 	}

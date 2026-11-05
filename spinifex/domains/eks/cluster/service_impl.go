@@ -1388,7 +1388,7 @@ func (s *EKSServiceImpl) claimClusterName(ctx context.Context, accountID string,
 		if !held {
 			return errors.New(awserrors.ErrorEKSResourceInUse)
 		}
-		defer release()
+		defer release(false)
 	}
 	var oldRefs *ClusterMeta
 	reclaimed := false

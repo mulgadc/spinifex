@@ -113,12 +113,7 @@ func (s *EKSServiceImpl) startNodegroupDelete(accountID string, kv jetstream.Key
 	}
 	s.teardownWG.Go(func() {
 		deleted := false
-		defer func() {
-			release()
-			if deleted {
-				s.leases.Forget(teardownLeaseName(accountID, gate))
-			}
-		}()
+		defer func() { release(deleted) }()
 		ctx, cancel := context.WithTimeout(s.bgCtx, teardownPassTimeout)
 		defer cancel()
 		if err := s.convergeNodegroupDeletion(ctx, accountID, kv, cluster, ng); err != nil {

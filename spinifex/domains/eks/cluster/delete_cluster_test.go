@@ -452,6 +452,35 @@ func TestDeleteClusterForgetsTheClusterLeases(t *testing.T) {
 	}
 }
 
+// TestDeleteClusterCleanupLeavesARecreatedClustersLease: once the record is
+// gone a same-name cluster may lead, and the old teardown's cleanup, still
+// running, must not release the lease it took.
+func TestDeleteClusterCleanupLeavesARecreatedClustersLease(t *testing.T) {
+	t.Parallel()
+	f := newDeleteClusterFixture(t, "alpha")
+	entered, release := blockTerminate(t, f.inst)
+	_, err := f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
+	require.NoError(t, err)
+	waitEntered(t, entered)
+
+	// Holding the gate's mutex parks the old teardown before its gate opens.
+	f.svc.teardownMu.Lock()
+	release()
+	require.Eventually(t, func() bool {
+		_, err := GetClusterMeta(t.Context(), f.kv, "alpha")
+		return errors.Is(err, ErrClusterNotFound)
+	}, 10*time.Second, 10*time.Millisecond, "the old teardown must remove the record")
+
+	replacement := f.svc.leases.Get(clusterLeaseName(testAccountID, "alpha"))
+	tok, err := replacement.TryLock(t.Context())
+	require.NoError(t, err, "the recreated cluster's reconciler takes the free lease")
+	f.svc.teardownMu.Unlock()
+	f.svc.WaitTeardowns()
+
+	assert.True(t, replacement.Held(), "the old teardown's cleanup released the recreated cluster's lease")
+	replacement.Unlock(t.Context(), tok)
+}
+
 // TestDeleteClusterKeepsTheLeasesOfAnIncompleteTeardown: a teardown that
 // fails leaves the record DELETING for retry, so its leases stay in the group.
 func TestDeleteClusterKeepsTheLeasesOfAnIncompleteTeardown(t *testing.T) {

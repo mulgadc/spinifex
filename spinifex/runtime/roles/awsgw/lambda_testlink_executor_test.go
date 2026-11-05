@@ -486,6 +486,7 @@ func TestLambdaTestLinkExecutor_RequestBoundIncludesImageDigest(t *testing.T) {
 	_, err = executor(at, nil, grantStore(t)).InvokeSync(context.Background(), invocation(make([]byte, 1000)))
 	require.NoError(t, err)
 	require.Len(t, at.sent, 1)
+	require.Equal(t, size, int64(len(at.sent[0])), "the generated IDs are fixed-length, so the at-limit request is the probed size")
 
 	under := &fakeControl{max: size - 1}
 	_, err = executor(under, nil, grantStore(t)).InvokeSync(context.Background(), invocation(make([]byte, 1000)))

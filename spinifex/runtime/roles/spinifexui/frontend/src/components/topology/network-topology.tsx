@@ -311,8 +311,6 @@ function Notices({
 interface NetworkTopologyProps {
   vpc: Vpc
   focus: MapFocus
-  // The resource's own page has the room to lay the map out either way.
-  page?: boolean
   direction?: LayoutDirection
 }
 
@@ -321,7 +319,6 @@ interface NetworkTopologyProps {
 export function NetworkTopology({
   vpc,
   focus,
-  page = false,
   direction = "down",
 }: NetworkTopologyProps) {
   const vpcId = vpc.VpcId ?? ""
@@ -405,12 +402,8 @@ export function NetworkTopology({
   return (
     <div className="flex flex-col gap-3">
       {map && <Notices {...map} />}
-      <div
-        className={cn(
-          "overflow-hidden rounded-lg border",
-          page ? "h-[72vh]" : "h-[80vh]",
-        )}
-      >
+      {/* The panel's or page's header takes about 17rem, leaving the legend in view. */}
+      <div className="h-[calc(100dvh-17rem)] min-h-96 overflow-hidden rounded-lg border">
         {isPending || !map ? (
           <p className="p-4 text-xs text-muted-foreground">
             Reading the VPC&apos;s resources…

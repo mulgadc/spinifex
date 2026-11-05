@@ -184,7 +184,6 @@ export function VpcDetails({
             <NetworkTopology
               direction={page ? direction : "down"}
               focus={{ kind: "vpc", id }}
-              page={page}
               vpc={vpc}
             />
           ),

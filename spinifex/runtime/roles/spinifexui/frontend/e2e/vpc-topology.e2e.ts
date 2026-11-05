@@ -253,6 +253,25 @@ test.describe("VPC topology", () => {
     await linesStayBeneathCards(page)
   })
 
+  for (const [where, url] of [
+    ["panel", MAP],
+    ["page", PAGE],
+  ] as const) {
+    test(`fits the map, its controls and its legend in the ${where}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: 1440, height: 900 })
+      await page.goto(url)
+      await expect(page.getByTestId(`card-vpc:${VPC_ID}`)).toBeVisible()
+      await expect(page.getByText(/^Hover a card/u)).toBeInViewport({
+        ratio: 1,
+      })
+      await expect(page.locator(".react-flow__controls")).toBeInViewport({
+        ratio: 1,
+      })
+    })
+  }
+
   test("lays the full page out left to right or top down", async ({ page }) => {
     await page.goto(PAGE)
 

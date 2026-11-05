@@ -29,7 +29,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/function"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/testlink"
-	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
 
@@ -95,10 +94,9 @@ func (c *countedGrants) Issue(ctx context.Context, a execution.Attempt) (executi
 	return c.grantIssuer.Issue(ctx, a)
 }
 
-// seamNATS is the transport only: it hands the executor's encoded request to
-// the daemon's real attempt steps and returns the daemon's encoded reply.
-type seamNATS struct {
-	t        *testing.T
+// seamControl is the transport only: it hands the executor's encoded request
+// and credential to the daemon's real attempt steps and returns its reply.
+type seamControl struct {
 	d        *testlink.Daemon
 	guest    func(context.Context, net.Conn)
 	mu       sync.Mutex
@@ -106,16 +104,14 @@ type seamNATS struct {
 	replies  [][]byte
 }
 
-func (*seamNATS) MaxPayload() int64 { return 1 << 20 }
-
-func (n *seamNATS) RequestWithContext(ctx context.Context, subj string, data []byte) (*nats.Msg, error) {
-	require.Equal(n.t, testlink.Subject("node1"), subj)
-	body, err := json.Marshal(n.d.HandleWithGuest(ctx, data, n.guest))
+func (n *seamControl) Exchange(ctx context.Context, req []byte, cred testlink.Credential, _ time.Time) (testlink.Reply, error) {
+	rep := n.d.HandleWithGuest(ctx, req, cred, n.guest)
+	body, err := json.Marshal(rep)
 	n.mu.Lock()
-	n.requests = append(n.requests, data)
+	n.requests = append(n.requests, req)
 	n.replies = append(n.replies, body)
 	n.mu.Unlock()
-	return &nats.Msg{Data: body}, err
+	return rep, err
 }
 
 // skewAhead moves every deadline the agent sees earlier, as a guest clock
@@ -207,8 +203,8 @@ func invokeComposedAt(t *testing.T, target string, fn seamFunction, codeURL stri
 	store := grantStore(t)
 	grants := &countedGrants{grantIssuer: store}
 	var presigns atomic.Int32
-	n := &seamNATS{t: t, d: &testlink.Daemon{Node: "node1", Grants: store, HTTP: client}, guest: guest}
-	exec := &testLinkExecutor{NATS: n, Node: "node1",
+	n := &seamControl{d: &testlink.Daemon{Node: "node1", Grants: store, HTTP: client}, guest: guest}
+	exec := &testLinkExecutor{Control: n, RequestLimit: 1 << 20, Sessions: &fakeSessions{}, Node: "node1",
 		Codes:  func(context.Context) (codePresigner, error) { return urlPresigner{codeURL, &presigns}, nil },
 		Grants: func(context.Context) (grantIssuer, error) { return grants, nil },
 	}

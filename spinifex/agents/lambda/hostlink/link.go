@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 )
 
 // ErrShutdown is returned by Link.Next when the host asks the agent to stop.
@@ -22,6 +23,24 @@ type Request struct {
 	TraceID     string `json:"trace_id,omitempty"`
 	DeadlineMs  int64  `json:"deadline_ms"`
 	Payload     []byte `json:"payload"`
+	// Credential is the environment's execution-role session. Only test-link
+	// hosts send it; release hosts leave it nil.
+	Credential *Credential `json:"credential,omitempty"`
+}
+
+// Credential is one execution-role session. It is never logged or stored.
+type Credential struct {
+	AccessKeyID     string `json:"access_key_id"`
+	SecretAccessKey string `json:"secret_access_key"`
+	SessionToken    string `json:"session_token"`
+}
+
+// LogValue keeps every value out of logs.
+func (Credential) LogValue() slog.Value { return slog.StringValue("[redacted]") }
+
+// Complete reports whether all three values are present.
+func (c Credential) Complete() bool {
+	return c.AccessKeyID != "" && c.SecretAccessKey != "" && c.SessionToken != ""
 }
 
 // Response is the outcome of a Request. FunctionError is empty on success. A

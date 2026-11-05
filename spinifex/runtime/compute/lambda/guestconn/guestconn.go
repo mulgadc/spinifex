@@ -20,6 +20,7 @@ import (
 	"time"
 
 	lambdav1 "github.com/mulgadc/spinifex/contracts/lambda/v1"
+	"github.com/mulgadc/spinifex/spinifex/agents/lambda/hostlink"
 	"github.com/mulgadc/spinifex/spinifex/foundation/pki"
 )
 
@@ -117,11 +118,11 @@ func (g *Generation) ServerConfig() *tls.Config {
 		MinVersion:   tls.VersionTLS13,
 		MaxVersion:   tls.VersionTLS13,
 		Certificates: []tls.Certificate{g.host},
-		NextProtos:   []string{lambdav1.ALPNv1},
+		NextProtos:   []string{hostlink.Protocol},
 		ClientAuth:   tls.RequireAnyClientCert,
 		VerifyConnection: func(cs tls.ConnectionState) error {
-			if cs.NegotiatedProtocol != lambdav1.ALPNv1 {
-				return fmt.Errorf("guestconn: application protocol %q, want %q", cs.NegotiatedProtocol, lambdav1.ALPNv1)
+			if cs.NegotiatedProtocol != hostlink.Protocol {
+				return fmt.Errorf("guestconn: application protocol %q, want %q", cs.NegotiatedProtocol, hostlink.Protocol)
 			}
 			return pki.VerifyPinned(cs.PeerCertificates, g.guestCert, x509.ExtKeyUsageClientAuth, g.Scope.URI(lambdav1.RoleGuest))
 		},

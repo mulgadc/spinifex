@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/agents/lambda/hostlink"
 	"golang.org/x/sys/unix"
 )
 
@@ -34,20 +35,9 @@ const (
 // fit well inside it.
 const MaxCredentialBytes = 8 << 10
 
-// Credential is one execution-role session for one attempt. It never goes on
-// NATS, to disk or into a log.
-type Credential struct {
-	AccessKeyID     string `json:"access_key_id"`
-	SecretAccessKey string `json:"secret_access_key"`
-	SessionToken    string `json:"session_token"`
-}
-
-// LogValue keeps every value out of logs.
-func (Credential) LogValue() slog.Value { return slog.StringValue("[redacted]") }
-
-func (c Credential) complete() bool {
-	return c.AccessKeyID != "" && c.SecretAccessKey != "" && c.SessionToken != ""
-}
+// Credential is one execution-role session for one attempt; it goes to the
+// guest in the first frame and never on NATS, to disk or into a log.
+type Credential = hostlink.Credential
 
 // ErrNotSent means the exchange failed before any request byte was written, so
 // the daemon cannot have received it.
@@ -179,7 +169,7 @@ func (s *ControlServer) serveConn(ctx context.Context, c *net.UnixConn) {
 		return
 	}
 	var cred Credential
-	if err := json.Unmarshal(rawCred, &cred); err != nil || !cred.complete() {
+	if err := json.Unmarshal(rawCred, &cred); err != nil || !cred.Complete() {
 		slog.Warn("Lambda test link: control credential malformed")
 		return
 	}
@@ -218,7 +208,7 @@ func (c *ControlClient) Exchange(ctx context.Context, req []byte, cred Credentia
 		return Reply{}, fmt.Errorf("%w: encoded request of %d bytes exceeds the %d-byte limit", ErrNotSent, len(req), c.RequestLimit)
 	}
 	rawCred, err := json.Marshal(cred)
-	if err != nil || !cred.complete() || len(rawCred) > MaxCredentialBytes {
+	if err != nil || !cred.Complete() || len(rawCred) > MaxCredentialBytes {
 		return Reply{}, fmt.Errorf("%w: credential incomplete or over %d bytes", ErrNotSent, MaxCredentialBytes)
 	}
 	// A zero time would disable the deadline, and a past one leaves no time.

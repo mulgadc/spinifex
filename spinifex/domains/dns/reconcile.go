@@ -11,7 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	reconcilelock "github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
-	"github.com/nats-io/nats.go"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 )
 
 // DefaultReconcileInterval is how often the drift backstop rebuilds managed
@@ -32,6 +32,12 @@ const DefaultReconcileInterval = reconciler.DefaultResync
 // every account's KV across the cluster, and a pass abandoned for being slow
 // costs a cycle for nothing.
 const DefaultComputeTimeout = 2 * time.Minute
+
+// NewReconcileLease returns the zone writer's election lease, shared by the
+// drift reconcile and Delegate so the two never write the zone together.
+func NewReconcileLease(store kvsync.KVStore, holder string) *kvsync.Lease {
+	return reconcilelock.NewLeaderLease(store, KeyReconcile, holder)
+}
 
 // DesiredFunc returns the full desired managed record set built from the live
 // resource inventory across all tenants. The daemon supplies it by enumerating
@@ -102,7 +108,8 @@ type Reconciler struct {
 	// lands in. Distinct from both baseDomain and internalDomain, so pruning it
 	// needs its own read the same way internalDomain does for EC2.
 	serviceZone string
-	nc          *nats.Conn
+	// lease elects the one node that writes the zones; nil skips the election.
+	lease *kvsync.Lease
 	// writer applies the converged batch. The reconcile owns the zone object on
 	// the node that won the election, so the batch never leaves this process.
 	writer   *Writer
@@ -111,7 +118,6 @@ type Reconciler struct {
 	// computeTimeout bounds how long one pass spends building the desired set.
 	// A field rather than a constant so a test can shrink it.
 	computeTimeout time.Duration
-	holder         string
 	sources        []reconciler.Source
 }
 
@@ -121,17 +127,14 @@ type Reconciler struct {
 // changes should wake the loop. They are optional: with none supplied the loop
 // falls back to the interval alone, which is the behaviour that predates the
 // watch.
-func NewReconciler(cfg *config.Config, cluster *config.ClusterConfig, nc *nats.Conn, writer *Writer, desired DesiredFunc, sources ...reconciler.Source) *Reconciler {
+func NewReconciler(cfg *config.Config, cluster *config.ClusterConfig, lease *kvsync.Lease, writer *Writer, desired DesiredFunc, sources ...reconciler.Source) *Reconciler {
 	r := &Reconciler{
-		nc:             nc,
+		lease:          lease,
 		writer:         writer,
 		desired:        desired,
 		interval:       DefaultReconcileInterval,
 		computeTimeout: DefaultComputeTimeout,
 		sources:        sources,
-	}
-	if cfg != nil {
-		r.holder = cfg.Node
 	}
 	zoneCfg, ok := zoneS3Config(cfg)
 	if !ok || desired == nil || !writer.Enabled() {
@@ -181,8 +184,8 @@ func (r *Reconciler) reconcileOnce(ctx context.Context) {
 	if !r.enabled {
 		return
 	}
-	if r.nc != nil {
-		release, elected := reconcilelock.AcquireLeader(ctx, r.nc, KVBucketDNSReconcile, r.holder)
+	if r.lease != nil {
+		release, elected := reconcilelock.AcquireLeader(ctx, r.lease)
 		if !elected {
 			return
 		}

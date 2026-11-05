@@ -8,7 +8,7 @@ import (
 	"time"
 
 	nsconfig "github.com/mulgadc/northstar/pkg/config"
-	"github.com/nats-io/nats.go"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 
 	reconcilelock "github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 )
@@ -48,7 +48,7 @@ func (w *Writer) PlatformDelegation(name string) (servers []string, zone string,
 // Delegate writes, or with remove withdraws, an NS set in the base zone that
 // delegates each name to this cluster's nameservers. It takes the zone-writer
 // election first, so it never races the reconcile's own writes to the zone.
-func (w *Writer) Delegate(ctx context.Context, nc *nats.Conn, holder string, names []string, remove bool) (*ChangeResult, error) {
+func (w *Writer) Delegate(ctx context.Context, lease *kvsync.Lease, names []string, remove bool) (*ChangeResult, error) {
 	if !w.Enabled() {
 		return nil, errors.New("northstar is not configured on this node")
 	}
@@ -77,7 +77,7 @@ func (w *Writer) Delegate(ctx context.Context, nc *nats.Conn, holder string, nam
 	if len(batch.Changes) == 0 {
 		return &ChangeResult{}, nil
 	}
-	release, err := w.awaitWriterElection(ctx, nc, holder)
+	release, err := w.awaitWriterElection(ctx, lease)
 	if err != nil {
 		return nil, err
 	}
@@ -85,19 +85,19 @@ func (w *Writer) Delegate(ctx context.Context, nc *nats.Conn, holder string, nam
 	return w.ApplyBatch(batch)
 }
 
-func (w *Writer) awaitWriterElection(ctx context.Context, nc *nats.Conn, holder string) (func(), error) {
-	if nc == nil {
+func (w *Writer) awaitWriterElection(ctx context.Context, lease *kvsync.Lease) (func(), error) {
+	if lease == nil {
 		return func() {}, nil
 	}
 	tick := time.NewTicker(delegateLockPoll)
 	defer tick.Stop()
 	for {
-		if release, ok := reconcilelock.AcquireLeader(ctx, nc, KVBucketDNSReconcile, holder); ok {
+		if release, ok := reconcilelock.AcquireLeader(ctx, lease); ok {
 			return release, nil
 		}
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf("another node is writing the zone: %w", ctx.Err())
+			return nil, fmt.Errorf("another writer has the zone: %w", ctx.Err())
 		case <-tick.C:
 		}
 	}

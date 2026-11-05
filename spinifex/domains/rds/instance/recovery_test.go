@@ -211,7 +211,7 @@ func TestReconciler_FailsOnAClockStampedByAnEarlierLeader(t *testing.T) {
 	seedInstance(t, h.svc, rec)
 
 	// A different node holding the lease, with no beats of its own in memory.
-	other := NewReconciler(h.svc, "node-b")
+	other := testReconciler(t, h.svc, "node-b")
 	require.NoError(t, onePass(t, other))
 
 	stored := h.recordOf(t, testDBID)

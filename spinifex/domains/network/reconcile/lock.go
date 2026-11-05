@@ -2,52 +2,47 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
-	"github.com/nats-io/nats.go"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 )
 
-// Single CAS-elected leader key; TTL bounds crash-recovery.
-const (
-	KVBucketVPCDReconcile = "spinifex-vpcd-reconcile"
-	reconcileLeaderKey    = "leader"
-)
+// KeyVPCDReconcile is vpcd's network reconcile lease in the sync bucket.
+const KeyVPCDReconcile = "vpcd.reconcile"
 
-// Leader-key lifetime. Vars (not consts) so tests can shrink them.
-//
-// reconcileLeaderRenew is the gap between refreshes: a pass can outlive the TTL
-// on its own — one stalled gw-lrp DORA runs ~64s — so the key is renewed while
-// the pass runs rather than left to expire underneath it.
-var (
-	reconcileLeaderTTL   = 60 * time.Second
-	reconcileLeaderRenew = 20 * time.Second
-)
+// LeaderTTL is the per-pass leader leases' time to live. A pass can outlive it
+// on its own (one stalled gw-lrp DORA runs ~64s), so the lease renews itself
+// while the pass runs rather than lapsing underneath it.
+const LeaderTTL = 60 * time.Second
 
-// AcquireLeader elects one leader on the named lock bucket. Independent
-// reconcile loops pass distinct buckets so they never share a single mutex: the
-// gateway quota reconcile must not block vpcd's network reconcile, and vice
-// versa.
-func AcquireLeader(ctx context.Context, nc *nats.Conn, bucket, holder string) (func(), bool) {
-	lease, err := kvlease.New(kvlease.Config{
-		Name:   "reconcile/lock",
-		Bucket: kvlease.NATSBucket(nc, bucket, reconcileLeaderTTL),
-		Key:    reconcileLeaderKey,
-		Holder: holder,
-		Attrs:  []any{"bucket", bucket},
-		TTL:    reconcileLeaderTTL,
-		Renew:  reconcileLeaderRenew,
-	})
+// NewLeaderLease returns a per-pass leader lease on key. Each is built once per
+// process and shared by every site that reconciles under it, so those sites
+// exclude each other on one node as well as across nodes.
+func NewLeaderLease(store kvsync.KVStore, key, holder string) *kvsync.Lease {
+	return kvsync.NewLease(store, key, holder, LeaderTTL)
+}
+
+// NewVPCDLease returns vpcd's network reconcile lease.
+func NewVPCDLease(store kvsync.KVStore, holder string) *kvsync.Lease {
+	return NewLeaderLease(store, KeyVPCDReconcile, holder)
+}
+
+// AcquireLeader makes one attempt to take lease for a pass. Independent
+// reconcile loops hold distinct leases, so the gateway quota reconcile never
+// blocks vpcd's network reconcile. The release survives a cancelled ctx.
+func AcquireLeader(ctx context.Context, lease *kvsync.Lease) (func(), bool) {
+	tok, err := lease.TryLock(ctx)
 	if err != nil {
-		slog.ErrorContext(ctx, "reconcile/lock: lease config invalid",
-			"node", holder, "bucket", bucket, "err", err)
+		if held, ok := errors.AsType[*kvsync.HeldError](err); ok {
+			slog.InfoContext(ctx, "reconcile/lock: not leader, skipping reconcile",
+				"key", lease.Key(), "holder", held.Current.Holder)
+		} else {
+			slog.WarnContext(ctx, "reconcile/lock: election failed, skipping reconcile",
+				"key", lease.Key(), "err", err)
+		}
 		return nil, false
 	}
-	if !lease.TryAcquire(ctx) {
-		slog.InfoContext(ctx, "reconcile/lock: not leader, skipping reconcile",
-			"node", holder, "bucket", bucket)
-		return nil, false
-	}
-	return func() { lease.Release(ctx) }, true
+	return func() { lease.Unlock(ctx, tok) }, true
 }

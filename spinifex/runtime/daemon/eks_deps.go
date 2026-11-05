@@ -78,6 +78,7 @@ func (d *Daemon) buildEKSServiceDeps() ekscluster.EKSServiceDeps {
 		GatewayBaseURL:      d.resolveGatewayBaseURL(),
 		Region:              d.config.Region,
 		HolderID:            d.node,
+		Leases:              d.eksLeases(),
 		InternalSuffix:      internalSuffix,
 		RegistryHosts:       d.registryHosts,
 		SystemGatewayURL:    d.resolveSystemGatewayBaseURL(),

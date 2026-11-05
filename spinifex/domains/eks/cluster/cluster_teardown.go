@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	telemetry "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -22,12 +22,6 @@ var teardownConcurrency = 4
 // writer added refs to the record while it was tearing down.
 const maxTeardownPasses = 5
 
-// Teardown lease timing. TTL must match the leader bucket's TTL; vars for tests.
-var (
-	teardownLeaseTTL   = KVBucketEKSLeaderTTL
-	teardownLeaseRenew = defaultReconcileLeaseRefresh
-)
-
 var (
 	errTeardownNotRecorded = errors.New("eks: cluster is not DELETING, teardown refused")
 	errTeardownLeaseLost   = errors.New("eks: teardown lease lost")
@@ -35,45 +29,31 @@ var (
 	errLaunchInFlight      = errors.New("eks: cluster create launch still running")
 )
 
-// teardownLeaderKey is the per-cluster cross-node gate for a DELETING
-// teardown. It is distinct from reconcilerLeaderKey so a delete never contends
-// with the still-live reconciler, which holds that lease until it reads DELETING.
-func teardownLeaderKey(accountID, clusterName string) string {
-	return reconcilerLeaderKey(accountID, clusterName) + "/teardown"
-}
-
 // teardownLease is a held teardown lease: lost closes if renewal loses the key.
 type teardownLease struct {
 	release func()
 	lost    <-chan struct{}
 }
 
-// acquireTeardownLease takes the per-cluster teardown lease, renewing it on
-// ctx. The lease re-adopts a key its own holder already has, so it serialises
-// nodes, not goroutines; startTeardown's in-process gate covers the latter. A
-// nil leaderKV (single-node/test) skips gating.
+// acquireTeardownLease takes the per-cluster teardown lease, renewing it until
+// released. It refuses when another node holds it or another goroutine here does.
 func (s *EKSServiceImpl) acquireTeardownLease(ctx context.Context, accountID, clusterName string) (teardownLease, bool) {
-	if s.leaderKV == nil {
-		return teardownLease{release: func() {}}, true
-	}
-	key := teardownLeaderKey(accountID, clusterName)
-	lease, err := kvlease.New(kvlease.Config{
-		Name:   "eks/teardown",
-		Bucket: kvlease.StaticBucket(s.leaderKV),
-		Key:    key,
-		Holder: s.deps.HolderID,
-		Attrs:  []any{"account", accountID, "cluster", clusterName},
-		TTL:    teardownLeaseTTL,
-		Renew:  teardownLeaseRenew,
-	})
+	lease := s.leases.Get(teardownLeaseName(accountID, clusterName))
+	tok, err := lease.TryLock(ctx)
 	if err != nil {
-		slog.ErrorContext(ctx, "eks: teardown lease config invalid", "key", key, "err", err)
+		if _, held := errors.AsType[*kvsync.HeldError](err); !held {
+			slog.WarnContext(ctx, "eks: teardown lease attempt failed", "key", lease.Key(), "err", err)
+		}
 		return teardownLease{}, false
 	}
-	if !lease.TryAcquire(ctx) {
-		return teardownLease{}, false
-	}
-	return teardownLease{release: func() { lease.Release(ctx) }, lost: lease.Lost()}, true
+	return teardownLease{release: func() { lease.Unlock(ctx, tok) }, lost: lease.Lost()}, true
+}
+
+// forgetClusterLeases drops a deleted cluster's leases from the group, so a
+// cluster recreated under the same name starts from fresh ones.
+func (s *EKSServiceImpl) forgetClusterLeases(accountID, clusterName string) {
+	s.leases.Forget(clusterLeaseName(accountID, clusterName))
+	s.leases.Forget(teardownLeaseName(accountID, clusterName))
 }
 
 // teardownPassTimeout bounds one converger run, so a step that hangs cannot
@@ -81,11 +61,11 @@ func (s *EKSServiceImpl) acquireTeardownLease(ctx context.Context, accountID, cl
 var teardownPassTimeout = 15 * time.Minute
 
 // holdTeardown claims the right to tear a cluster down on this node: the
-// in-process gate, which the lease cannot provide because it re-adopts a key
-// its own node holds, then the cross-node lease. It refuses, without waiting,
-// when either is held, or, if capped, when the node is at teardownConcurrency.
+// in-process gate, which also bounds this node's teardowns, then the cross-node
+// lease. It refuses, without waiting, when either is held, or, if capped, when
+// the node is at teardownConcurrency.
 func (s *EKSServiceImpl) holdTeardown(accountID, name string, capped bool) (release func(), lost <-chan struct{}, ok bool) {
-	key := teardownLeaderKey(accountID, name)
+	key := teardownLeaseName(accountID, name)
 	s.teardownMu.Lock()
 	if s.teardownRunning == nil {
 		s.teardownRunning = map[string]struct{}{}
@@ -122,7 +102,13 @@ func (s *EKSServiceImpl) startTeardown(accountID, name string) bool {
 		return false
 	}
 	s.teardownWG.Go(func() {
-		defer release()
+		deleted := false
+		defer func() {
+			release()
+			if deleted {
+				s.forgetClusterLeases(accountID, name)
+			}
+		}()
 		ctx, cancel := context.WithTimeout(s.bgCtx, teardownPassTimeout)
 		defer cancel()
 		started := time.Now()
@@ -131,6 +117,7 @@ func (s *EKSServiceImpl) startTeardown(accountID, name string) bool {
 				"cluster", name, "account", accountID, "err", err)
 			return
 		}
+		deleted = true
 		slog.Info("eks: cluster teardown complete", "cluster", name, "account", accountID,
 			"duration_ms", telemetry.Millis(time.Since(started)))
 	})

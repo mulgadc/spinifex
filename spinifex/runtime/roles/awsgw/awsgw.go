@@ -58,6 +58,7 @@ import (
 	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
@@ -68,7 +69,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	toml "github.com/pelletier/go-toml/v2"
 )
@@ -775,7 +775,9 @@ func launchService(config *config.ClusterConfig) error {
 	// terminations free quota. Started only when quotas are enabled so default-off
 	// gateways spin no ticker.
 	if quotaCfg.Enabled {
-		go runQuotaReconcile(janitorCtx, quotaSvc, natsConn, js, activeAccountIDs(iamService), len(config.Nodes))
+		holder, _ := os.Hostname()
+		lease := reconcile.NewLeaderLease(kvstore.OpenSyncBucket(js), admissionquota.KeyReconcile, holder)
+		go runQuotaReconcile(janitorCtx, quotaSvc, lease, js, activeAccountIDs(iamService), len(config.Nodes))
 	}
 
 	// Bedrock RPM enforcement is local and immediate (never gated on
@@ -820,13 +822,12 @@ func launchService(config *config.ClusterConfig) error {
 // runQuotaReconcile drives the per-account vCPU reconcile off changes to the
 // instance record space rather than a ticker: a change to one instance costs
 // that one account's recompute, and the resync sweeps every account as the
-// backstop. Each pass is guarded by the dedicated quota reconcile leader lock
-// so exactly one gateway sweeps at a time across a multi-gateway deployment.
-// The lock is distinct from vpcd's network-reconcile lock so the two loops
-// never block each other. It runs until ctx is cancelled.
-func runQuotaReconcile(ctx context.Context, quota *admissionquota.Service, natsConn *nats.Conn,
+// backstop. Each pass is guarded by lease, the quota reconcile leader lease, so
+// exactly one gateway sweeps at a time across a multi-gateway deployment. The
+// lease is distinct from vpcd's so the two loops never block each other. It
+// runs until ctx is cancelled.
+func runQuotaReconcile(ctx context.Context, quota *admissionquota.Service, lease *kvsync.Lease,
 	js jetstream.JetStream, accounts admissionquota.AccountLister, replicas int) {
-	holder, _ := os.Hostname()
 	cfg := kvstore.Config{Name: daemon.InstanceStateBucket, History: 1}
 	list := admissionquota.RecordVCPULister(
 		kvstore.New[vm.InstanceRecord](js, cfg), daemon.InstanceRecordPrefix)
@@ -835,7 +836,7 @@ func runQuotaReconcile(ctx context.Context, quota *admissionquota.Service, natsC
 	// reconcile loops: the lock keeps two gateways off the same counters, it is
 	// not what keeps this loop alive.
 	underLeader := func(run func() error) error {
-		release, elected := reconcile.AcquireLeader(ctx, natsConn, admissionquota.KVBucketQuotaReconcile, holder)
+		release, elected := reconcile.AcquireLeader(ctx, lease)
 		if !elected {
 			return nil
 		}

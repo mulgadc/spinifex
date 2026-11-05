@@ -156,6 +156,7 @@ type Daemon struct {
 	instanceObjects   objectstore.ObjectStore
 	dnsWriter         *dns.Writer
 	dnsReconciler     *dns.Reconciler
+	locks             *daemonLocks
 	dnsBaseDomain     string
 	dnsInternalDomain string
 	keyService        *ec2key.KeyServiceImpl
@@ -2024,12 +2025,12 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("EBS provider lock: %w", err)
 	}
 
-	// Remove the obsolete spinifex-dhcp-leases bucket (idempotent).
-	if js, jsErr := jetstream.New(d.natsConn); jsErr == nil {
-		if err := kvstore.DeleteBucketIfExists(d.ctx, js, "spinifex-dhcp-leases"); err != nil {
-			slog.Warn("Failed to delete obsolete spinifex-dhcp-leases KV bucket", "err", err)
-		}
+	syncJS, err := jetstream.New(d.natsConn)
+	if err != nil {
+		return fmt.Errorf("initialize JetStream for leases: %w", err)
 	}
+	deleteObsoleteBuckets(d.ctx, syncJS)
+	d.locks = newDaemonLocks(kvstore.OpenSyncBucket(syncJS), d.node)
 
 	// Reconcile OVN native IPsec both ways (idempotent): a node that does not
 	// use it should not be left running charon on 500/4500 either. Runs in the
@@ -2062,7 +2063,7 @@ func (d *Daemon) startCluster() error {
 	d.instanceObjects = store
 	d.instanceService = ec2instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store, d.vmMgr, d.resourceMgr, d.jsManager)
 	d.dnsWriter = dns.NewWriter(d.config, d.clusterConfig, d.natsConn)
-	d.dnsReconciler = dns.NewReconciler(d.config, d.clusterConfig, d.natsConn, d.dnsWriter, d.dnsDesiredSet, d.dnsWatchSources()...)
+	d.dnsReconciler = dns.NewReconciler(d.config, d.clusterConfig, d.locks.dns, d.dnsWriter, d.dnsDesiredSet, d.dnsWatchSources()...)
 	d.dnsBaseDomain = dns.ResolveBaseDomain(d.config)
 	d.dnsInternalDomain = dns.ResolveInternalDomain(d.config)
 	d.keyService = ec2key.NewKeyServiceImpl(d.config)
@@ -2347,21 +2348,15 @@ func (d *Daemon) startCluster() error {
 	// reaper. The scheduler is disabled (handlers still serve) when JetStream is
 	// unavailable.
 	d.ecsService = ecsdomain.NewService(d.natsConn, d.config.Region, d.clusterConfig.AWS.ServicesDomain).WithDeps(d.buildECSServiceDeps())
-	if js, jsErr := jetstream.New(d.natsConn); jsErr != nil {
-		slog.Warn("ECS scheduler disabled: JetStream unavailable", "err", jsErr)
-	} else if _, lbErr := ecsdomain.InitLeaderBucket(d.ctx, js); lbErr != nil {
-		slog.Warn("ECS scheduler disabled: leader bucket init failed", "err", lbErr)
-	} else {
-		d.ecsScheduler = ecsdomain.NewScheduler(d.natsConn, d.ecsService, d.node)
-		d.shutdownWg.Go(func() {
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("ECS scheduler goroutine panicked", "recover", r)
-				}
-			}()
-			d.ecsScheduler.Run(d.ctx)
-		})
-	}
+	d.ecsScheduler = ecsdomain.NewScheduler(d.natsConn, d.ecsService, d.locks.ecs)
+	d.shutdownWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("ECS scheduler goroutine panicked", "recover", r)
+			}
+		}()
+		d.ecsScheduler.Run(d.ctx)
+	})
 
 	// RDS control plane: KV-backed agent-protocol handlers plus the customer
 	// actions. The cluster CA signs the per-instance serving certs, minted per
@@ -2387,7 +2382,7 @@ func (d *Daemon) startCluster() error {
 
 	// One leader across the cluster derives DB instance status from the agent
 	// heartbeat; every node keeps serving the API.
-	d.rdsReconciler = rdsinstance.NewReconciler(d.rdsService, d.node)
+	d.rdsReconciler = rdsinstance.NewReconciler(d.rdsService, d.locks.rds)
 	d.shutdownWg.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -2405,7 +2400,7 @@ func (d *Daemon) startCluster() error {
 	// One leader across the cluster scrapes each serving endpoint's vLLM metrics
 	// and hands an idle GPU back; every node keeps serving the API. Without it a
 	// launched model owns its device until an operator deletes the endpoint.
-	d.bedrockReaper = ochre.NewReaper(d.bedrockService, d.node, ochre.ReaperDeps{})
+	d.bedrockReaper = ochre.NewReaper(d.bedrockService, d.locks.ochre, ochre.ReaperDeps{})
 	d.shutdownWg.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {

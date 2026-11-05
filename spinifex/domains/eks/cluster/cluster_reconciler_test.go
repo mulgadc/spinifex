@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -54,39 +56,47 @@ func onePass(t *testing.T, r *ClusterReconciler) error {
 	return err
 }
 
-func newReconcilerHarness(t *testing.T, healthURL string, opts ...ReconcilerOption) (*ClusterReconciler, jetstream.KeyValue, jetstream.KeyValue) {
+func newReconcilerHarness(t *testing.T, healthURL string, opts ...ReconcilerOption) (*ClusterReconciler, jetstream.JetStream, jetstream.KeyValue) {
+	t.Helper()
+	return newReconcilerHarnessTTL(t, clusterLeaseTTL, healthURL, opts...)
+}
+
+// newReconcilerHarnessTTL is newReconcilerHarness with a lease of the given ttl,
+// for a test that has to see a renewal.
+func newReconcilerHarnessTTL(t *testing.T, ttl time.Duration, healthURL string, opts ...ReconcilerOption) (*ClusterReconciler, jetstream.JetStream, jetstream.KeyValue) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	leaderKV, err := InitLeaderBucket(t.Context(), js)
-	require.NoError(t, err)
 	acctKV, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 	require.NoError(t, PutClusterMeta(t.Context(), acctKV, sampleClusterMeta("alpha")))
 
-	r, err := NewClusterReconciler(leaderKV, acctKV, testAccountID, "alpha", "holder-1", healthURL, opts...)
+	leases := kvsync.NewLeaseGroup(kvstore.OpenSyncBucket(js), KeyPrefixCluster, "holder-1", ttl)
+	r, err := NewClusterReconciler(leases.Get(clusterLeaseName(testAccountID, "alpha")), acctKV, testAccountID, "alpha", healthURL, opts...)
 	require.NoError(t, err)
-	return r, leaderKV, acctKV
+	return r, js, acctKV
+}
+
+// otherNodeLease is the cluster's reconciler lease as another node sees it.
+func otherNodeLease(js jetstream.JetStream, holder string) *kvsync.Lease {
+	return NewClusterLeases(kvstore.OpenSyncBucket(js), holder).Get(clusterLeaseName(testAccountID, "alpha"))
 }
 
 func TestNewClusterReconciler_EmptyInputsRejected(t *testing.T) {
 	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	leaderKV, err := InitLeaderBucket(t.Context(), js)
-	require.NoError(t, err)
 	acctKV, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
+	lease := otherNodeLease(js, "h")
 
-	_, err = NewClusterReconciler(nil, acctKV, testAccountID, "alpha", "h", "")
+	_, err = NewClusterReconciler(nil, acctKV, testAccountID, "alpha", "")
 	require.Error(t, err)
-	_, err = NewClusterReconciler(leaderKV, nil, testAccountID, "alpha", "h", "")
+	_, err = NewClusterReconciler(lease, nil, testAccountID, "alpha", "")
 	require.Error(t, err)
-	_, err = NewClusterReconciler(leaderKV, acctKV, "", "alpha", "h", "")
+	_, err = NewClusterReconciler(lease, acctKV, "", "alpha", "")
 	require.Error(t, err)
-	_, err = NewClusterReconciler(leaderKV, acctKV, testAccountID, "", "h", "")
-	require.Error(t, err)
-	_, err = NewClusterReconciler(leaderKV, acctKV, testAccountID, "alpha", "", "")
+	_, err = NewClusterReconciler(lease, acctKV, testAccountID, "", "")
 	require.Error(t, err)
 }
 
@@ -99,21 +109,21 @@ func TestClusterReconciler_AcquireLeaseFirstHolderWins(t *testing.T) {
 	require.NotNil(t, release)
 	defer release()
 
-	// Re-acquiring from the same holder succeeds: the lease is already held.
+	// A second run in the same process is refused while the first holds it.
 	release2, ok2 := r.AcquireLease(t.Context())
-	assert.True(t, ok2)
-	assert.NotNil(t, release2)
+	assert.False(t, ok2)
+	assert.Nil(t, release2)
 }
 
 func TestClusterReconciler_AcquireLeaseSecondHolderLoses(t *testing.T) {
 	t.Parallel()
-	r1, leaderKV, acctKV := newReconcilerHarness(t, "")
+	r1, js, acctKV := newReconcilerHarness(t, "")
 
 	release, ok := r1.AcquireLease(t.Context())
 	require.True(t, ok)
 	defer release()
 
-	r2, err := NewClusterReconciler(leaderKV, acctKV, testAccountID, "alpha", "holder-2", "")
+	r2, err := NewClusterReconciler(otherNodeLease(js, "holder-2"), acctKV, testAccountID, "alpha", "")
 	require.NoError(t, err)
 	release2, ok2 := r2.AcquireLease(t.Context())
 	assert.False(t, ok2)
@@ -154,7 +164,6 @@ func TestClusterReconciler_CreatingTransitionsToActiveOnReadyAndHealthz(t *testi
 		"https://nlb.example/healthz",
 		WithHTTPClient(stub),
 		WithReconcileInterval(10*time.Millisecond),
-		WithLeaseRefresh(10*time.Second),
 	)
 	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
@@ -193,7 +202,6 @@ func TestClusterReconciler_CreatingStaysWhenBootstrapMissing(t *testing.T) {
 		"https://nlb.example/healthz",
 		WithHTTPClient(stub),
 		WithReconcileInterval(10*time.Millisecond),
-		WithLeaseRefresh(10*time.Second),
 	)
 	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
@@ -228,7 +236,6 @@ func TestClusterReconciler_CreatingStaysWhenJWKSUnverified(t *testing.T) {
 		"https://nlb.example/healthz",
 		WithHTTPClient(stub),
 		WithReconcileInterval(10*time.Millisecond),
-		WithLeaseRefresh(10*time.Second),
 	)
 	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
@@ -262,7 +269,6 @@ func TestClusterReconciler_CreatingStaysWhenHealthzFails(t *testing.T) {
 		"https://nlb.example/healthz",
 		WithHTTPClient(stub),
 		WithReconcileInterval(10*time.Millisecond),
-		WithLeaseRefresh(10*time.Second),
 	)
 	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
@@ -287,7 +293,6 @@ func TestClusterReconciler_CreatingTimesOutToFailed(t *testing.T) {
 		"https://nlb.example/healthz",
 		WithHTTPClient(stub),
 		WithReconcileInterval(10*time.Millisecond),
-		WithLeaseRefresh(10*time.Second),
 		WithCreateTimeout(1*time.Millisecond),
 	)
 	release, ok := r.AcquireLease(t.Context())
@@ -320,7 +325,6 @@ func TestClusterReconciler_CreatingWithinDeadlineStaysCreating(t *testing.T) {
 		"https://nlb.example/healthz",
 		WithHTTPClient(stub),
 		WithReconcileInterval(10*time.Millisecond),
-		WithLeaseRefresh(10*time.Second),
 		WithCreateTimeout(time.Hour),
 	)
 	release, ok := r.AcquireLease(t.Context())
@@ -345,7 +349,6 @@ func TestClusterReconciler_DeletingExitsLoop(t *testing.T) {
 		"https://nlb.example/healthz",
 		WithHTTPClient(stub),
 		WithReconcileInterval(10*time.Millisecond),
-		WithLeaseRefresh(10*time.Second),
 	)
 	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
@@ -363,11 +366,10 @@ func TestClusterReconciler_DeletingExitsLoop(t *testing.T) {
 func TestClusterReconciler_LostLeaseExitsLoop(t *testing.T) {
 	t.Parallel()
 	stub := &stubHTTPDoer{status: http.StatusOK}
-	r, leaderKV, acctKV := newReconcilerHarness(t,
+	r, js, acctKV := newReconcilerHarnessTTL(t, 300*time.Millisecond,
 		"https://nlb.example/healthz",
 		WithHTTPClient(stub),
 		WithReconcileInterval(10*time.Second),
-		WithLeaseRefresh(20*time.Millisecond),
 	)
 	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
@@ -381,16 +383,17 @@ func TestClusterReconciler_LostLeaseExitsLoop(t *testing.T) {
 	runErr := make(chan error, 1)
 	go func() { runErr <- r.Run(ctx) }()
 
-	// Steal the lease in another holder's name. The renewal loses its CAS at the
-	// stale revision, which closes Lost and exits Run.
-	time.Sleep(40 * time.Millisecond)
-	_, err := leaderKV.Put(t.Context(), reconcilerLeaderKey(testAccountID, "alpha"), []byte("holder-2"))
+	// Overwrite the key in another holder's name. The next renewal loses its
+	// CAS at the stale revision, which closes Lost and exits Run.
+	syncKV, err := kvstore.OpenSyncBucket(js).KV(t.Context())
+	require.NoError(t, err)
+	_, err = syncKV.Put(t.Context(), KeyPrefixCluster+clusterLeaseName(testAccountID, "alpha"), []byte(`{"holder":"holder-2","generation":0}`))
 	require.NoError(t, err)
 
 	select {
 	case err := <-runErr:
 		assert.ErrorIs(t, err, ErrReconcilerLeaseLost)
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not exit after lease loss")
 	}
 }
@@ -402,7 +405,6 @@ func TestClusterReconciler_ActiveProbesAndWarnsOnHealthzFail(t *testing.T) {
 		"https://nlb.example/healthz",
 		WithHTTPClient(stub),
 		WithReconcileInterval(10*time.Millisecond),
-		WithLeaseRefresh(10*time.Second),
 	)
 	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
@@ -438,7 +440,6 @@ func TestClusterReconciler_ActiveHealthRecoversClearsIssue(t *testing.T) {
 		"https://nlb.example/healthz",
 		WithHTTPClient(stub),
 		WithReconcileInterval(10*time.Millisecond),
-		WithLeaseRefresh(10*time.Second),
 	)
 	release, ok := r.AcquireLease(t.Context())
 	require.True(t, ok)
@@ -468,7 +469,6 @@ func TestClusterReconciler_ProbeHealthzEmptyURLNoop(t *testing.T) {
 		"",
 		WithHTTPClient(stub),
 		WithReconcileInterval(10*time.Millisecond),
-		WithLeaseRefresh(10*time.Second),
 	)
 
 	require.NoError(t, r.probeHealthz(context.Background()))

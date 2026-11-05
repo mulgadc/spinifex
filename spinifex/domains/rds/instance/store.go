@@ -9,9 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats.go"
@@ -29,13 +27,6 @@ const (
 	KVBucketRDSSystem        = "rds-system"
 	KVBucketRDSSystemVersion = 1
 	KVBucketRDSSystemHistory = 1
-
-	// "spinifex-rds-leader" holds the single reconciler lease. Its TTL expires a
-	// lease whose holder died mid-cycle, so control work resumes without an
-	// operator.
-	KVBucketRDSLeader        = "spinifex-rds-leader"
-	KVBucketRDSLeaderVersion = 1
-	KVBucketRDSLeaderTTL     = 60 * time.Second
 )
 
 // Key-path helpers for the per-account bucket:
@@ -228,16 +219,6 @@ func GetOrCreateSystemBucket(ctx context.Context, js jetstream.JetStream) (jetst
 		return nil, fmt.Errorf("failed to create RDS system KV bucket %s: %w", KVBucketRDSSystem, err)
 	}
 	return kv, nil
-}
-
-// InitLeaderBucket creates (or attaches to) the shared spinifex-rds-leader
-// bucket used for the reconciler's leader-lease CAS lock.
-func InitLeaderBucket(ctx context.Context, js jetstream.JetStream) (jetstream.KeyValue, error) {
-	return kvlease.OpenBucket(ctx, js, kvlease.BucketConfig{
-		Name:    KVBucketRDSLeader,
-		TTL:     KVBucketRDSLeaderTTL,
-		Version: KVBucketRDSLeaderVersion,
-	})
 }
 
 // AccountBucketNames lists every RDS per-account bucket in the cluster. The reconciler and the DNS

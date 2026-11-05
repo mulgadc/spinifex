@@ -12,6 +12,8 @@ import (
 	"github.com/aws/aws-sdk-go/service/eks"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -132,22 +134,18 @@ func TestS8_EKSSecondDeleteAnswersFromTheRecordWithoutASecondTeardown(t *testing
 	assert.Len(t, f.inst.terminated(), 1, "the repeat request must start no teardown of its own")
 }
 
-// TestS8_EKSTeardownLeaseOutlivesTheRequest: the teardown lease renews on the
-// service's context, so cancelling the request context mid-teardown does not
-// let the lease expire and a second node start a duplicate teardown.
+// TestS8_EKSTeardownLeaseOutlivesTheRequest: the teardown lease renews on its
+// own, so cancelling the request context mid-teardown does not let the lease
+// lapse and a second node start a duplicate teardown.
 func TestS8_EKSTeardownLeaseOutlivesTheRequest(t *testing.T) {
 	f := newDeleteClusterFixture(t, "alpha")
-	_, nc, _ := testutil.StartTestJetStream(t)
-	js := testutil.NewJetStream(t, nc)
-	// A short TTL with frequent renewals keeps the wait brief while leaving
-	// several renewal chances inside each TTL window.
+	// A short TTL keeps the wait brief while leaving several renewal chances
+	// inside each TTL window.
 	const ttl = 400 * time.Millisecond
-	short, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: "eks-teardown-short-ttl", TTL: ttl})
-	require.NoError(t, err)
-	f.svc.leaderKV = short
-	origTTL, origRenew := teardownLeaseTTL, teardownLeaseRenew
-	teardownLeaseTTL, teardownLeaseRenew = ttl, 50*time.Millisecond
-	t.Cleanup(func() { teardownLeaseTTL, teardownLeaseRenew = origTTL, origRenew })
+	js := testutil.NewJetStream(t, f.svc.deps.NATSConn)
+	f.svc.leases = kvsync.NewLeaseGroup(kvstore.OpenSyncBucket(js), KeyPrefixCluster, "node-1", ttl)
+	other := kvsync.NewLeaseGroup(kvstore.OpenSyncBucket(js), KeyPrefixCluster, "node-2", ttl).
+		Get(teardownLeaseName(testAccountID, "alpha"))
 
 	entered, release := blockTerminate(t, f.inst)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -155,19 +153,22 @@ func TestS8_EKSTeardownLeaseOutlivesTheRequest(t *testing.T) {
 	waitEntered(t, entered)
 	cancel()
 
+	// The other node first sees the key, then sees it again past a full TTL: it
+	// takes over only if no renewal moved the key in between.
+	_, err := other.TryLock(t.Context())
+	require.ErrorAs(t, err, new(*kvsync.HeldError))
 	time.Sleep(ttl * 5 / 2)
-	_, err = short.Create(t.Context(), teardownLeaderKey(testAccountID, "alpha"), []byte("node-2"))
-	require.ErrorIs(t, err, jetstream.ErrKeyExists,
+	_, err = other.TryLock(t.Context())
+	require.ErrorAs(t, err, new(*kvsync.HeldError),
 		"the running teardown must still hold its lease after the request context is gone")
 
 	release()
 	f.svc.WaitTeardowns()
 }
 
-// TestS8_EKSKickAndSameNodeSweepRunOneTeardown: the teardown lease re-adopts a
-// key its own node holds, so only the in-process gate stops a same-node reaper
-// sweep from starting a second teardown beside the request's. Each member must
-// be terminated exactly once.
+// TestS8_EKSKickAndSameNodeSweepRunOneTeardown: a same-node reaper sweep must
+// not start a second teardown beside the request's. Each member must be
+// terminated exactly once.
 func TestS8_EKSKickAndSameNodeSweepRunOneTeardown(t *testing.T) {
 	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")

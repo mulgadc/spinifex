@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
@@ -21,29 +20,9 @@ const KVBucketEndpoints = "bedrock-endpoints"
 // not meaningful to retain, only the current one CAS-guards against races.
 const KVBucketEndpointsHistory = 1
 
-// KVBucketLeader holds the reaper's leader lease. Its TTL is what makes the
-// lease self-healing: a leader that dies without releasing it is replaced
-// within one TTL rather than never.
-const (
-	KVBucketLeader    = "bedrock-leader"
-	KVBucketLeaderTTL = 60 * time.Second
-	leaderKey         = "reaper"
-)
-
 // missingJetStream is the error every accessor reports when the Service was
 // built without a NATS connection to derive a JetStream client from.
 const missingJetStream = "bedrock service: nil nats connection"
-
-// newLeaderBucket returns the reaper's TTL-backed leader bucket. The lease
-// carries no value of its own, so it is a Bucket rather than a Store[T].
-func newLeaderBucket(js jetstream.JetStream) *kvstore.Bucket {
-	return kvstore.NewBucket(js, kvstore.Config{
-		Name:    KVBucketLeader,
-		History: 1,
-		TTL:     KVBucketLeaderTTL,
-		Missing: missingJetStream,
-	})
-}
 
 // EndpointKey returns the KV key for accountID's modelID endpoint record.
 // Model IDs contain ':' (e.g. "meta.llama3-2-1b-instruct-v1:0"), which NATS

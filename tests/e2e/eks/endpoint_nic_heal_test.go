@@ -18,10 +18,6 @@ import (
 )
 
 const (
-	// The private-endpoint NIC is the cross-account ENI the cluster's endpoint
-	// NLB carries after its data and management NICs.
-	endpointNIC = "net2"
-
 	// Workers must be Ready again this long after the NIC is disabled.
 	endpointHealBudget = 10 * time.Minute
 )
@@ -30,7 +26,16 @@ const (
 // endpoint NLB, the failure that left every worker NotReady, and asserts the
 // platform repairs it: every worker is Ready again within ten minutes, the
 // cluster stays ACTIVE, and the NLB guest is the same instance.
-func runEndpointNICSelfHeal(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts string, fx *clusterFixture) {
+//
+// The shared cluster has no private endpoint, as in AWS where it is off by
+// default, so this check builds its own cluster with private access on.
+func runEndpointNICSelfHeal(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts string) {
+	fx := setupClusterFixtureShaped(t, c, env, artifacts, clusterShape{
+		vpcCIDR: "10.211.0.0/16", subnetCIDR: "10.211.1.0/24", publicSubnetCIDR: "10.211.2.0/24", privateAccess: true,
+	})
+	t.Cleanup(func() { deleteClusterBestEffort(t, c, fx) })
+	fx.Cluster = harness.WaitForEKSClusterActive(t, c, fx.ClusterName)
+
 	nodeRoleArn, _ := ensureNodeRole(t, c, fx)
 	createWorkerNodegroup(t, c, fx, "nic-heal-ng", nodeRoleArn, nil)
 
@@ -43,6 +48,12 @@ func runEndpointNICSelfHeal(t *testing.T, c *harness.AWSClient, env *harness.Env
 
 	procBefore, err := harness.ProcessIdentity(node, sysInstance)
 	require.NoError(t, err, "the endpoint NLB's guest must be running on %s", node.Name)
+
+	// The NIC frontend name depends on how the guest was built and whether the
+	// ENI was attached at launch, so it is found from the guest's own NICs: the
+	// one that carries an interface of the customer's cluster VPC.
+	endpointNIC, endpointMAC := endpointNICName(t, c, sys, node, sysInstance, fx)
+	harness.Detail(t, "endpoint_eni_mac", endpointMAC, "nic", endpointNIC)
 
 	faultAt := time.Now()
 	harness.Step(t, "disable %s of %s on %s", endpointNIC, sysInstance, node.Name)
@@ -93,6 +104,58 @@ func runEndpointNICSelfHeal(t *testing.T, c *harness.AWSClient, env *harness.Env
 		total += len(lines)
 	}
 	assert.Equalf(t, 1, total, "want exactly one repair of %s, got %d: %v", sysInstance, total, started)
+}
+
+// endpointNICName returns the guest NIC name and MAC of the endpoint NLB's
+// interface in the cluster's own VPC, the one workers reach the API server
+// through. It fails unless exactly one NIC of the guest is an interface of that
+// VPC, so a guest without the endpoint ENI is reported rather than guessed at.
+func endpointNICName(t *testing.T, c, sys *harness.AWSClient, node harness.Node, instanceID string, fx *clusterFixture) (string, string) {
+	t.Helper()
+	nics, err := harness.LBNICsByMAC(t, node, instanceID)
+	require.NoError(t, err, "read the NICs of the endpoint NLB's guest")
+	out, err := c.EC2.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{
+		Filters: []*ec2.Filter{{Name: aws.String("vpc-id"), Values: []*string{aws.String(fx.VPCID)}}},
+	})
+	require.NoError(t, err, "describe the cluster VPC's interfaces")
+	var names, macs []string
+	for _, eni := range out.NetworkInterfaces {
+		mac := strings.ToLower(aws.StringValue(eni.MacAddress))
+		if name, ok := nics[mac]; ok {
+			names = append(names, name)
+			macs = append(macs, mac)
+		}
+	}
+	if len(names) != 1 {
+		logEndpointENIs(t, c, sys, instanceID, fx)
+	}
+	require.Lenf(t, names, 1, "want exactly one NIC of %s in cluster VPC %s, the guest has %v and the VPC matched %v", instanceID, fx.VPCID, nics, macs)
+	return names[0], macs[0]
+}
+
+// logEndpointENIs records every interface the system account sees on the
+// endpoint NLB's guest and every interface the customer sees in the cluster VPC,
+// so a missing endpoint NIC can be told from an invisible one.
+func logEndpointENIs(t *testing.T, c, sys *harness.AWSClient, instanceID string, fx *clusterFixture) {
+	t.Helper()
+	dump := func(who string, cl *harness.AWSClient, filter *ec2.Filter) {
+		out, err := cl.EC2.DescribeNetworkInterfaces(&ec2.DescribeNetworkInterfacesInput{Filters: []*ec2.Filter{filter}})
+		if err != nil {
+			t.Logf("%s view: describe-network-interfaces: %v", who, err)
+			return
+		}
+		for _, eni := range out.NetworkInterfaces {
+			attached := ""
+			if eni.Attachment != nil {
+				attached = aws.StringValue(eni.Attachment.InstanceId)
+			}
+			t.Logf("%s view: %s mac=%s subnet=%s vpc=%s status=%s attached=%q desc=%q", who,
+				aws.StringValue(eni.NetworkInterfaceId), aws.StringValue(eni.MacAddress), aws.StringValue(eni.SubnetId),
+				aws.StringValue(eni.VpcId), aws.StringValue(eni.Status), attached, aws.StringValue(eni.Description))
+		}
+	}
+	dump("system, attached to guest", sys, &ec2.Filter{Name: aws.String("attachment.instance-id"), Values: []*string{aws.String(instanceID)}})
+	dump("customer, cluster VPC", c, &ec2.Filter{Name: aws.String("vpc-id"), Values: []*string{aws.String(fx.VPCID)}})
 }
 
 // workersReady reports whether every registered node is Ready, and that at

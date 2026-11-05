@@ -4,6 +4,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -34,9 +35,31 @@ print(json.dumps(r))
 sys.exit(0 if "return" in r else 1)
 `
 
+// qmpRxFilterScript prints query-rx-filter for every NIC frontend of a guest, so
+// a caller can map an ENI's MAC to the device name set_link needs.
+const qmpRxFilterScript = `import json, socket, sys
+path = "/run/spinifex/qmp-telemetry-%s.sock" % sys.argv[1]
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(5)
+s.connect(path)
+f = s.makefile("rw")
+f.readline()
+def rpc(c):
+    f.write(json.dumps(c) + "\n")
+    f.flush()
+    while True:
+        l = json.loads(f.readline())
+        if "return" in l or "error" in l:
+            return l
+rpc({"execute": "qmp_capabilities"})
+r = rpc({"execute": "query-rx-filter"})
+print(json.dumps(r))
+sys.exit(0 if "return" in r else 1)
+`
+
 var (
 	instanceIDShape = regexp.MustCompile(`^i-[0-9a-f]+$`)
-	nicNameShape    = regexp.MustCompile(`^net[0-9]+$`)
+	nicNameShape    = regexp.MustCompile(`^(net|virtio-net-pci\.)[0-9]+$`)
 )
 
 // LBSetLink sets one data NIC of a running load balancer guest up or down
@@ -47,7 +70,7 @@ var (
 func LBSetLink(t *testing.T, node Node, instanceID, nic string, up bool) error {
 	t.Helper()
 	if !instanceIDShape.MatchString(instanceID) || !nicNameShape.MatchString(nic) {
-		return fmt.Errorf("refusing to inject on %q/%q: not an instance id and a netN name", instanceID, nic)
+		return fmt.Errorf("refusing to inject on %q/%q: not an instance id and a netN or virtio-net-pci.N name", instanceID, nic)
 	}
 	state := "down"
 	if up {
@@ -68,6 +91,41 @@ func LBSetLink(t *testing.T, node Node, instanceID, nic string, up bool) error {
 		time.Sleep(time.Second)
 	}
 	return fmt.Errorf("set_link %s %s on %s: %w", nic, state, node.Name, lastErr)
+}
+
+// LBNICsByMAC returns a guest's NIC frontend names keyed by lower-case main MAC,
+// read from the guest's own QMP query-rx-filter.
+func LBNICsByMAC(t *testing.T, node Node, instanceID string) (map[string]string, error) {
+	t.Helper()
+	if !instanceIDShape.MatchString(instanceID) {
+		return nil, fmt.Errorf("%q is not an instance id", instanceID)
+	}
+	cmd := fmt.Sprintf("sudo python3 - %s <<'PY'\n%sPY", instanceID, qmpRxFilterScript)
+	var lastErr error
+	for attempt := 1; attempt <= 20; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		out, err := NewPeerSSH().Run(ctx, node.Addr, cmd)
+		cancel()
+		if err == nil {
+			var resp struct {
+				Return []struct {
+					Name    string `json:"name"`
+					MainMAC string `json:"main-mac"`
+				} `json:"return"`
+			}
+			if jerr := json.Unmarshal([]byte(strings.TrimSpace(string(out))), &resp); jerr != nil {
+				return nil, fmt.Errorf("parse query-rx-filter: %w: %s", jerr, strings.TrimSpace(string(out)))
+			}
+			nics := map[string]string{}
+			for _, nic := range resp.Return {
+				nics[strings.ToLower(nic.MainMAC)] = nic.Name
+			}
+			return nics, nil
+		}
+		lastErr = err
+		time.Sleep(time.Second)
+	}
+	return nil, fmt.Errorf("query-rx-filter on %s: %w", node.Name, lastErr)
 }
 
 // ProcessIdentity returns the pid and start time of the QEMU process running an

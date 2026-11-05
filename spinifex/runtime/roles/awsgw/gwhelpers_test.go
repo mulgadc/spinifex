@@ -187,6 +187,7 @@ func ec2Registration(gw *pipeline.Config, mutate ...func(*ec2awsapi.Deps)) dispa
 		Quota:         ec2quota.Adapter{Service: quotaFor(gw)},
 		ActiveNodes:   (&awsgw.NodeDiscovery{NATS: gwfix.DepsOf(gw).NATS, Expected: gwfix.DepsOf(gw).Nodes}).ActiveNodes,
 		ExpectedNodes: gwfix.DepsOf(gw).Nodes,
+		ZoneIDs:       fixedZoneIDs{},
 	}
 	for _, m := range mutate {
 		m(&deps)
@@ -746,3 +747,8 @@ func withEC2Verifier(gw *pipeline.Config) *pipeline.Config {
 func withEC2(gw *pipeline.Config, mutate ...func(*ec2awsapi.Deps)) *pipeline.Config {
 	return withServices(gw, ec2Registration(gw, mutate...))
 }
+
+// fixedZoneIDs answers one stable ID for every zone.
+type fixedZoneIDs struct{}
+
+func (fixedZoneIDs) ZoneID(context.Context, string) (string, error) { return "test1-az1", nil }

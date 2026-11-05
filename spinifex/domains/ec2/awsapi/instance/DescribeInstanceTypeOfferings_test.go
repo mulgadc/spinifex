@@ -46,12 +46,12 @@ func TestDescribeInstanceTypeOfferings_AvailabilityZone(t *testing.T) {
 
 	types, err := DescribeInstanceTypes(context.Background(), &ec2.DescribeInstanceTypesInput{}, nc, 1, nil, "")
 	require.NoError(t, err)
-	zones, err := ec2zoneapi.DescribeAvailabilityZones(&ec2.DescribeAvailabilityZonesInput{}, offeringsTestRegion, offeringsTestAZ)
+	zones, err := ec2zoneapi.DescribeAvailabilityZones(context.Background(), &ec2.DescribeAvailabilityZonesInput{}, offeringsTestRegion, offeringsTestAZ, offeringsTestIDs)
 	require.NoError(t, err)
 
 	output, err := DescribeInstanceTypeOfferings(context.Background(), &ec2.DescribeInstanceTypeOfferingsInput{
 		LocationType: aws.String(ec2.LocationTypeAvailabilityZone),
-	}, nc, 1, "", offeringsTestRegion, offeringsTestAZ)
+	}, nc, 1, "", offeringsTestRegion, offeringsTestAZ, offeringsTestIDs)
 	require.NoError(t, err)
 
 	var want []*ec2.InstanceTypeOffering
@@ -76,7 +76,7 @@ func TestDescribeInstanceTypeOfferings_Region(t *testing.T) {
 
 	output, err := DescribeInstanceTypeOfferings(context.Background(), &ec2.DescribeInstanceTypeOfferingsInput{
 		LocationType: aws.String(ec2.LocationTypeRegion),
-	}, nc, 1, "", offeringsTestRegion, offeringsTestAZ)
+	}, nc, 1, "", offeringsTestRegion, offeringsTestAZ, offeringsTestIDs)
 	require.NoError(t, err)
 
 	require.Len(t, output.InstanceTypeOfferings, 2)
@@ -93,7 +93,7 @@ func TestDescribeInstanceTypeOfferings_DefaultLocationTypeIsRegion(t *testing.T)
 	_, nc := startTestNATSServer(t)
 	serveInstanceTypes(t, nc, "t3.micro")
 
-	output, err := DescribeInstanceTypeOfferings(context.Background(), &ec2.DescribeInstanceTypeOfferingsInput{}, nc, 1, "", offeringsTestRegion, offeringsTestAZ)
+	output, err := DescribeInstanceTypeOfferings(context.Background(), &ec2.DescribeInstanceTypeOfferingsInput{}, nc, 1, "", offeringsTestRegion, offeringsTestAZ, offeringsTestIDs)
 	require.NoError(t, err)
 
 	require.Len(t, output.InstanceTypeOfferings, 1)
@@ -106,14 +106,14 @@ func TestDescribeInstanceTypeOfferings_AvailabilityZoneID(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 	serveInstanceTypes(t, nc, "t3.micro")
 
-	zones, err := ec2zoneapi.DescribeAvailabilityZones(&ec2.DescribeAvailabilityZonesInput{}, offeringsTestRegion, offeringsTestAZ)
+	zones, err := ec2zoneapi.DescribeAvailabilityZones(context.Background(), &ec2.DescribeAvailabilityZonesInput{}, offeringsTestRegion, offeringsTestAZ, offeringsTestIDs)
 	require.NoError(t, err)
 	zoneID := aws.StringValue(zones.AvailabilityZones[0].ZoneId)
 	require.NotEqual(t, offeringsTestAZ, zoneID, "zone ID must differ from zone name for this assertion to mean anything")
 
 	output, err := DescribeInstanceTypeOfferings(context.Background(), &ec2.DescribeInstanceTypeOfferingsInput{
 		LocationType: aws.String(ec2.LocationTypeAvailabilityZoneId),
-	}, nc, 1, "", offeringsTestRegion, offeringsTestAZ)
+	}, nc, 1, "", offeringsTestRegion, offeringsTestAZ, offeringsTestIDs)
 	require.NoError(t, err)
 
 	require.Len(t, output.InstanceTypeOfferings, 1)
@@ -127,7 +127,7 @@ func TestDescribeInstanceTypeOfferings_UnknownLocationType(t *testing.T) {
 
 	_, err := DescribeInstanceTypeOfferings(context.Background(), &ec2.DescribeInstanceTypeOfferingsInput{
 		LocationType: aws.String("outpost"),
-	}, nc, 1, "", offeringsTestRegion, offeringsTestAZ)
+	}, nc, 1, "", offeringsTestRegion, offeringsTestAZ, offeringsTestIDs)
 
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
@@ -177,7 +177,7 @@ func TestDescribeInstanceTypeOfferings_Filters(t *testing.T) {
 			output, err := DescribeInstanceTypeOfferings(context.Background(), &ec2.DescribeInstanceTypeOfferingsInput{
 				LocationType: aws.String(ec2.LocationTypeAvailabilityZone),
 				Filters:      tc.filters,
-			}, nc, 1, "", offeringsTestRegion, offeringsTestAZ)
+			}, nc, 1, "", offeringsTestRegion, offeringsTestAZ, offeringsTestIDs)
 			require.NoError(t, err)
 
 			var got []string
@@ -198,7 +198,7 @@ func TestDescribeInstanceTypeOfferings_UnknownFilter(t *testing.T) {
 	_, err := DescribeInstanceTypeOfferings(context.Background(), &ec2.DescribeInstanceTypeOfferingsInput{
 		LocationType: aws.String(ec2.LocationTypeAvailabilityZone),
 		Filters:      []*ec2.Filter{{Name: aws.String("not-a-filter"), Values: []*string{aws.String("x")}}},
-	}, nc, 1, "", offeringsTestRegion, offeringsTestAZ)
+	}, nc, 1, "", offeringsTestRegion, offeringsTestAZ, offeringsTestIDs)
 
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
@@ -221,7 +221,7 @@ func TestDescribeInstanceTypeOfferings_FullTraversal(t *testing.T) {
 			LocationType: aws.String(ec2.LocationTypeAvailabilityZone),
 			MaxResults:   aws.Int64(2),
 			NextToken:    token,
-		}, nc, 1, "", offeringsTestRegion, offeringsTestAZ)
+		}, nc, 1, "", offeringsTestRegion, offeringsTestAZ, offeringsTestIDs)
 		require.NoError(t, err)
 
 		for _, offering := range output.InstanceTypeOfferings {
@@ -252,7 +252,7 @@ func TestDescribeInstanceTypeOfferings_MalformedNextToken(t *testing.T) {
 	_, err := DescribeInstanceTypeOfferings(context.Background(), &ec2.DescribeInstanceTypeOfferingsInput{
 		LocationType: aws.String(ec2.LocationTypeAvailabilityZone),
 		NextToken:    aws.String("not-a-token"),
-	}, nc, 1, "", offeringsTestRegion, offeringsTestAZ)
+	}, nc, 1, "", offeringsTestRegion, offeringsTestAZ, offeringsTestIDs)
 
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
@@ -268,7 +268,7 @@ func TestDescribeInstanceTypeOfferings_TokenPastEnd(t *testing.T) {
 	output, err := DescribeInstanceTypeOfferings(context.Background(), &ec2.DescribeInstanceTypeOfferingsInput{
 		LocationType: aws.String(ec2.LocationTypeAvailabilityZone),
 		NextToken:    aws.String("99"),
-	}, nc, 1, "", offeringsTestRegion, offeringsTestAZ)
+	}, nc, 1, "", offeringsTestRegion, offeringsTestAZ, offeringsTestIDs)
 
 	require.NoError(t, err)
 	assert.Empty(t, output.InstanceTypeOfferings)
@@ -281,7 +281,7 @@ func TestDescribeInstanceTypeOfferings_EmptyCatalogue(t *testing.T) {
 
 	output, err := DescribeInstanceTypeOfferings(context.Background(), &ec2.DescribeInstanceTypeOfferingsInput{
 		LocationType: aws.String(ec2.LocationTypeAvailabilityZone),
-	}, nc, 0, "", offeringsTestRegion, offeringsTestAZ)
+	}, nc, 0, "", offeringsTestRegion, offeringsTestAZ, offeringsTestIDs)
 
 	require.NoError(t, err)
 	require.NotNil(t, output.InstanceTypeOfferings)
@@ -299,7 +299,7 @@ func TestDescribeInstanceTypeOfferings_CatalogueError(t *testing.T) {
 
 	_, err = DescribeInstanceTypeOfferings(context.Background(), &ec2.DescribeInstanceTypeOfferingsInput{
 		LocationType: aws.String(ec2.LocationTypeAvailabilityZone),
-	}, closedNC, 1, "", offeringsTestRegion, offeringsTestAZ)
+	}, closedNC, 1, "", offeringsTestRegion, offeringsTestAZ, offeringsTestIDs)
 
 	require.Error(t, err)
 }
@@ -309,9 +309,16 @@ func TestDescribeInstanceTypeOfferings_NilInput(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 	serveInstanceTypes(t, nc, "t3.micro")
 
-	output, err := DescribeInstanceTypeOfferings(context.Background(), nil, nc, 1, "", offeringsTestRegion, offeringsTestAZ)
+	output, err := DescribeInstanceTypeOfferings(context.Background(), nil, nc, 1, "", offeringsTestRegion, offeringsTestAZ, offeringsTestIDs)
 
 	require.NoError(t, err)
 	require.Len(t, output.InstanceTypeOfferings, 1)
 	assert.Equal(t, offeringsTestRegion, aws.StringValue(output.InstanceTypeOfferings[0].Location))
 }
+
+// stubZoneIDs answers one fixed ID for every zone.
+type stubZoneIDs string
+
+func (s stubZoneIDs) ZoneID(context.Context, string) (string, error) { return string(s), nil }
+
+var offeringsTestIDs ec2zoneapi.IDSource = stubZoneIDs("apse2-az1")

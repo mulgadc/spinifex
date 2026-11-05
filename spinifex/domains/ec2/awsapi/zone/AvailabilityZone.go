@@ -4,15 +4,23 @@
 package zone
 
 import (
+	"context"
 	"slices"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	filterutil "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/zoneid"
 )
+
+// IDSource returns the stored availability-zone ID for a zone name, pinning it first if needed.
+type IDSource interface {
+	ZoneID(ctx context.Context, az string) (string, error)
+}
+
+var _ IDSource = (*zoneid.Resolver)(nil)
 
 // The filter names AWS accepts on each call; any other, tag filters included,
 // is refused.
@@ -39,10 +47,17 @@ var (
 
 // DescribeAvailabilityZones implements the EC2 action for the single zone az in region. Unknown
 // ZoneNames or ZoneIds return InvalidParameterValue; non-matching filters yield an empty list.
-func DescribeAvailabilityZones(input *ec2.DescribeAvailabilityZonesInput, region string, az string) (output *ec2.DescribeAvailabilityZonesOutput, err error) {
+func DescribeAvailabilityZones(ctx context.Context, input *ec2.DescribeAvailabilityZonesInput, region string, az string, ids IDSource) (output *ec2.DescribeAvailabilityZonesOutput, err error) {
 	filters, err := parseFilters(input.Filters, describeAvailabilityZonesValidFilters)
 	if err != nil {
 		return nil, err
+	}
+	if ids == nil {
+		return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "availability zone ids are not configured")
+	}
+	zoneID, err := ids.ZoneID(ctx, az)
+	if err != nil {
+		return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "availability zone id: %v", err)
 	}
 
 	zone := &ec2.AvailabilityZone{
@@ -50,7 +65,7 @@ func DescribeAvailabilityZones(input *ec2.DescribeAvailabilityZonesInput, region
 		OptInStatus:        aws.String("opt-in-not-required"),
 		RegionName:         aws.String(region),
 		ZoneName:           aws.String(az),
-		ZoneId:             aws.String(ec2vpc.SingleZoneID),
+		ZoneId:             aws.String(zoneID),
 		GroupName:          aws.String(region),
 		NetworkBorderGroup: aws.String(region),
 		ZoneType:           aws.String("availability-zone"),
@@ -64,7 +79,7 @@ func DescribeAvailabilityZones(input *ec2.DescribeAvailabilityZonesInput, region
 		}
 	}
 	for _, id := range aws.StringValueSlice(input.ZoneIds) {
-		if id != ec2vpc.SingleZoneID {
+		if id != zoneID {
 			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "Invalid availability zone-id: [%s]", id)
 		}
 	}

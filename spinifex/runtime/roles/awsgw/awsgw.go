@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/zoneid"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
@@ -658,6 +659,10 @@ func launchService(config *config.ClusterConfig) error {
 	// Without the status synthesis a node that stops answering takes its
 	// instances out of DescribeInstanceStatus entirely, so a dead host reads as
 	// no host.
+	zoneIDs, err := zoneid.NewResolver(js, nodeConfig.Region, nodeConfig.AZShortCode)
+	if err != nil {
+		return fmt.Errorf("zone id resolver: %w", err)
+	}
 	ec2ControlPlane := newEC2Registration(ec2Wiring{
 		NATS:           natsConn,
 		IAM:            iamService,
@@ -666,6 +671,7 @@ func launchService(config *config.ClusterConfig) error {
 		ExpectedNodes:  len(config.Nodes),
 		NodeIDs:        nodeIDs,
 		AZ:             nodeConfig.AZ,
+		ZoneIDs:        zoneIDs,
 		RegistryHost:   registryHost,
 		RegistryPort:   registryPort,
 		InstanceStatus: startInstanceStatus(janitorCtx, js),

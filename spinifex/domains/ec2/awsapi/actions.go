@@ -202,7 +202,7 @@ var ec2Actions = map[string]ec2Action{
 		return ec2instanceapi.DescribeInstanceTypes(ctx, input, c.NATS, c.ExpectedNodes, c.NodeIDs, accountID)
 	}),
 	"DescribeInstanceTypeOfferings": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceTypeOfferingsInput, c *call, accountID string) (any, error) {
-		return ec2instanceapi.DescribeInstanceTypeOfferings(ctx, input, c.NATS, c.ExpectedNodes, accountID, c.Region, c.AZ)
+		return ec2instanceapi.DescribeInstanceTypeOfferings(ctx, input, c.NATS, c.ExpectedNodes, accountID, c.Region, c.AZ, c.ZoneIDs)
 	}),
 	"DescribeInstanceStatus": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceStatusInput, c *call, accountID string) (any, error) {
 		return ec2instanceapi.DescribeInstanceStatus(ctx, input, c.NATS, c.ActiveNodes(ctx), accountID, c.AZ, c.InstanceStatus)
@@ -290,7 +290,7 @@ var ec2Actions = map[string]ec2Action{
 		return ec2zoneapi.DescribeRegions(input, c.Region, c.Endpoint)
 	}),
 	"DescribeAvailabilityZones": ec2Handler(func(ctx context.Context, input *ec2.DescribeAvailabilityZonesInput, c *call, accountID string) (any, error) {
-		return ec2zoneapi.DescribeAvailabilityZones(input, c.Region, c.AZ)
+		return ec2zoneapi.DescribeAvailabilityZones(ctx, input, c.Region, c.AZ, c.ZoneIDs)
 	}),
 	"DescribeVolumes": ec2Handler(func(ctx context.Context, input *ec2.DescribeVolumesInput, c *call, accountID string) (any, error) {
 		if err := ec2volumeapi.ValidateDescribeVolumesInput(input); err != nil {

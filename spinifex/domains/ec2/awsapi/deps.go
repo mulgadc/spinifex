@@ -6,6 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
+	ec2zoneapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/zone"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -37,6 +38,8 @@ type Deps struct {
 	ExpectedNodes int
 	NodeIDs       []string
 	AZ            string
+	// ZoneIDs supplies the pinned availability-zone IDs every zone-reporting call reads.
+	ZoneIDs ec2zoneapi.IDSource
 	// Endpoint is the gateway's own dialable base URL DescribeRegions advertises.
 	Endpoint       string
 	InstanceStatus ec2instanceapi.StatusSynthesis

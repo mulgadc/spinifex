@@ -7,7 +7,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// startZoneIDBackfill pins this node's zone and every zone already named by a
+// startZoneIDBackfill hands the VPC service its resolver, then pins this node's zone and every zone already named by a
 // subnet record, off the request path, so an ID exists before anything reads it.
 func (d *Daemon) startZoneIDBackfill() {
 	if d.config.Region == "" || d.vpcService == nil {
@@ -23,6 +23,7 @@ func (d *Daemon) startZoneIDBackfill() {
 		slog.Error("zone ids: resolver not created, backfill skipped", "err", err)
 		return
 	}
+	d.vpcService.SetZoneIDSource(resolver)
 	go func() {
 		others, err := d.vpcService.SubnetAvailabilityZones(d.ctx)
 		if err != nil {

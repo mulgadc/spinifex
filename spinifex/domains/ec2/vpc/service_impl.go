@@ -45,11 +45,6 @@ const (
 	KVBucketVPCsVersion       = 1
 	KVBucketSubnetsVersion    = 1
 	KVBucketVNICounterVersion = 1
-
-	// SingleZoneID is the only availability-zone id the gateway exposes. The
-	// deployment is single-AZ, so every subnet and every DescribeAvailabilityZones
-	// result reports it (AWS clients resolve AZ topology by zone-id, not name).
-	SingleZoneID = "spinifexz1"
 )
 
 // VPCRecord represents a stored VPC. AZ is stamped at create time; empty AZ
@@ -87,6 +82,7 @@ type VPCServiceImpl struct {
 	natsConn   *nats.Conn
 	vpcKV      jetstream.KeyValue
 	subnetKV   jetstream.KeyValue
+	zoneIDs    ZoneIDSource
 	vniKV      jetstream.KeyValue
 	eniKV      jetstream.KeyValue
 	sgKV       jetstream.KeyValue
@@ -134,6 +130,14 @@ func (s *VPCServiceImpl) SetExternalIPAM(ipam *ExternalIPAM, eipKV jetstream.Key
 func (s *VPCServiceImpl) SetPrivateDNSNamer(namer func(privateIP string) string) {
 	s.privateDNSName = namer
 }
+
+// ZoneIDSource returns the stored availability-zone ID for a zone name.
+type ZoneIDSource interface {
+	ZoneID(ctx context.Context, az string) (string, error)
+}
+
+// SetZoneIDSource sets where subnets read their availability-zone ID. Without one the ID is omitted.
+func (s *VPCServiceImpl) SetZoneIDSource(src ZoneIDSource) { s.zoneIDs = src }
 
 // SetCentralTagStore injects the central tag store so create paths project
 // their record tags into it and delete paths clear them. Nil leaves both
@@ -818,9 +822,11 @@ func (s *VPCServiceImpl) CreateSubnet(ctx context.Context, input *ec2.CreateSubn
 	// Publish vpc.create-subnet event for vpcd topology translation
 	s.publishSubnetEvent(networkv1.SubnetCreateSubject, record.SubnetId, record.VpcId, record.CidrBlock)
 
-	return &ec2.CreateSubnetOutput{
-		Subnet: s.subnetRecordToEC2(&record, totalHosts, accountID),
-	}, nil
+	subnet, err := s.subnetRecordToEC2(ctx, &record, totalHosts, accountID)
+	if err != nil {
+		return nil, err
+	}
+	return &ec2.CreateSubnetOutput{Subnet: subnet}, nil
 }
 
 // DeleteSubnet deletes a subnet.
@@ -1057,7 +1063,11 @@ func (s *VPCServiceImpl) DescribeSubnets(ctx context.Context, input *ec2.Describ
 			availableIPs = max((1<<(32-ones))-5, 0) //#nosec G115 - ones from validated CIDR
 		}
 
-		subnets = append(subnets, s.subnetRecordToEC2(&record, availableIPs, accountID))
+		subnet, err := s.subnetRecordToEC2(ctx, &record, availableIPs, accountID)
+		if err != nil {
+			return nil, err
+		}
+		subnets = append(subnets, subnet)
 	}
 
 	// If specific subnet IDs were requested but not found, return error
@@ -1315,13 +1325,22 @@ func (s *VPCServiceImpl) vpcRecordToEC2(record *VPCRecord, accountID string) *ec
 	return vpc
 }
 
-func (s *VPCServiceImpl) subnetRecordToEC2(record *SubnetRecord, availableIPs int, accountID string) *ec2.Subnet {
+func (s *VPCServiceImpl) subnetRecordToEC2(ctx context.Context, record *SubnetRecord, availableIPs int, accountID string) (*ec2.Subnet, error) {
+	var zoneID *string
+	if s.zoneIDs != nil {
+		id, err := s.zoneIDs.ZoneID(ctx, record.AvailabilityZone)
+		if err != nil {
+			slog.ErrorContext(ctx, "subnet zone id lookup failed", "subnetId", record.SubnetId, "az", record.AvailabilityZone, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		zoneID = aws.String(id)
+	}
 	subnet := &ec2.Subnet{
 		SubnetId:                aws.String(record.SubnetId),
 		VpcId:                   aws.String(record.VpcId),
 		CidrBlock:               aws.String(record.CidrBlock),
 		AvailabilityZone:        aws.String(record.AvailabilityZone),
-		AvailabilityZoneId:      aws.String(SingleZoneID),
+		AvailabilityZoneId:      zoneID,
 		State:                   aws.String(record.State),
 		DefaultForAz:            aws.Bool(record.IsDefault),
 		AvailableIpAddressCount: aws.Int64(int64(availableIPs)),
@@ -1343,7 +1362,7 @@ func (s *VPCServiceImpl) subnetRecordToEC2(record *SubnetRecord, availableIPs in
 
 	subnet.Tags = awstags.MapToEC2(record.Tags)
 
-	return subnet
+	return subnet, nil
 }
 
 // ModifySubnetAttribute modifies a subnet's attributes (e.g. MapPublicIpOnLaunch).

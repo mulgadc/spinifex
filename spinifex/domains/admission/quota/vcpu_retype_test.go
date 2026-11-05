@@ -5,10 +5,12 @@ import (
 	"errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/internal/testkit"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/nats-io/nats.go"
@@ -206,6 +208,11 @@ func TestInstanceTypeFromReservations(t *testing.T) {
 	}
 }
 
+// silentNodeFanoutTimeout bounds the describe fan-out in tests where a node never
+// answers, so they wait this long instead of the 3s production deadline. Local
+// replies land in milliseconds, leaving wide margin under -race.
+const silentNodeFanoutTimeout = 500 * time.Millisecond
+
 // replyAsNode answers every request on subject with reply, attributed to node.
 func replyAsNode(t *testing.T, nc *nats.Conn, subject, node string, reply any) {
 	t.Helper()
@@ -231,6 +238,7 @@ func replyAsNode(t *testing.T, nc *nats.Conn, subject, node string, reply any) {
 // Counting replies reads that as every node heard from and the instance as
 // absent, waving the retype past the cap; the gate must see node-2 is missing.
 func TestNATSInstanceTypeResolver_RefusesWhenOneNodeAnswersTwiceAndAnotherIsSilent(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
 	if err := s.AddVCPU(t.Context(), testAccount, 7); err != nil {
 		t.Fatalf("seed AddVCPU: %v", err)
@@ -244,7 +252,8 @@ func TestNATSInstanceTypeResolver_RefusesWhenOneNodeAnswersTwiceAndAnotherIsSile
 		t.Fatalf("flush: %v", err)
 	}
 
-	resolve := NATSInstanceTypeResolver(nc, func() []string { return []string{"node-1", "node-2"} })
+	resolve := NATSInstanceTypeResolver(nc, func() []string { return []string{"node-1", "node-2"} },
+		ec2instanceapi.WithFanoutTimeout(silentNodeFanoutTimeout))
 	delta, err := s.EnforceRetype(t.Context(), resolve, testAccount, "i-on-node2", "m5.xlarge")
 	if err == nil {
 		t.Fatalf("EnforceRetype = (%d, nil), want a refusal while node-2 is silent", delta)
@@ -258,6 +267,7 @@ func TestNATSInstanceTypeResolver_RefusesWhenOneNodeAnswersTwiceAndAnotherIsSile
 // With every node answering, the resolver finds the instance on node-2 and the
 // gate judges the retype against the cap.
 func TestNATSInstanceTypeResolver_FindsInstanceWhenEveryNodeAnswers(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
 	if err := s.AddVCPU(t.Context(), testAccount, 7); err != nil {
 		t.Fatalf("seed AddVCPU: %v", err)
@@ -283,6 +293,7 @@ func TestNATSInstanceTypeResolver_FindsInstanceWhenEveryNodeAnswers(t *testing.T
 // An instance absent from a complete listing charges nothing and returns no
 // error, so the daemon rejects the modify with the AWS NotFound error.
 func TestNATSInstanceTypeResolver_AbsentOnCompleteListingDefersToDaemon(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
 	if err := s.AddVCPU(t.Context(), testAccount, 7); err != nil {
 		t.Fatalf("seed AddVCPU: %v", err)
@@ -306,6 +317,7 @@ func TestNATSInstanceTypeResolver_AbsentOnCompleteListingDefersToDaemon(t *testi
 // A retype targets a stopped instance, which the shared stopped bucket serves
 // whatever the node fan-out does, so a silent node must not block judging it.
 func TestNATSInstanceTypeResolver_FindsStoppedInstanceWhileANodeIsSilent(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
 	if err := s.AddVCPU(t.Context(), testAccount, 7); err != nil {
 		t.Fatalf("seed AddVCPU: %v", err)
@@ -320,7 +332,8 @@ func TestNATSInstanceTypeResolver_FindsStoppedInstanceWhileANodeIsSilent(t *test
 		t.Fatalf("flush: %v", err)
 	}
 
-	resolve := NATSInstanceTypeResolver(nc, func() []string { return []string{"node-1", "node-2"} })
+	resolve := NATSInstanceTypeResolver(nc, func() []string { return []string{"node-1", "node-2"} },
+		ec2instanceapi.WithFanoutTimeout(silentNodeFanoutTimeout))
 	_, err := s.EnforceRetype(t.Context(), resolve, testAccount, "i-stopped", "m5.xlarge")
 	if err == nil || err.Error() != awserrors.ErrorResourceLimitExceeded {
 		t.Fatalf("EnforceRetype err = %v, want %q", err, awserrors.ErrorResourceLimitExceeded)

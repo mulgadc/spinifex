@@ -78,7 +78,7 @@ func (d *Daemon) startLambdaTestLink() {
 			if err != nil {
 				return err
 			}
-			return tl.ServeControl(d.ctx, testlink.ControlName, gatewayUID, d.natsConn.MaxPayload())
+			return tl.ServeControl(d.ctx, testlink.ControlName, gatewayUID)
 		},
 		func() { releaseLambdaTestLinkImage(tl) },
 	)

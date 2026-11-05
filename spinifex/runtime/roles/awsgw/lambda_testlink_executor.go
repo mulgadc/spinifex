@@ -165,6 +165,11 @@ func (e *testLinkExecutor) InvokeSync(ctx context.Context, in awsapi.SyncInvocat
 		return err
 	}
 
+	// The raw payload is checked before encoding allocates its base64 copy.
+	if len(in.Payload) > testlink.MaxPayloadBytes {
+		_ = revoke()
+		return refuse(fmt.Errorf("payload of %d bytes exceeds %d", len(in.Payload), testlink.MaxPayloadBytes))
+	}
 	body, err := json.Marshal(testlink.Request{
 		Grant:       att.Grant,
 		AttemptID:   attemptID,
@@ -187,7 +192,7 @@ func (e *testLinkExecutor) InvokeSync(ctx context.Context, in awsapi.SyncInvocat
 		_ = revoke()
 		return refuse(errors.New("encode test-link request"))
 	}
-	// The encoded request, base64 payload included, keeps the NATS-era bound.
+	// The encoded frame, base64 payload included, is checked after encoding.
 	if int64(len(body)) > e.RequestLimit {
 		_ = revoke()
 		return refuse(fmt.Errorf("encoded request of %d bytes exceeds the %d-byte message limit", len(body), e.RequestLimit))

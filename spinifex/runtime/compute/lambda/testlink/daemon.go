@@ -113,12 +113,12 @@ const controlIOTimeout = 30 * time.Second
 
 // ServeControl binds the control socket name and answers the gateway's
 // requests on it until ctx ends. A bind error means this daemon does not serve.
-func (d *Daemon) ServeControl(ctx context.Context, name string, gatewayUID int, limit int64) error {
+func (d *Daemon) ServeControl(ctx context.Context, name string, gatewayUID int) error {
 	ln, err := ListenControl(name)
 	if err != nil {
 		return err
 	}
-	srv := &ControlServer{GatewayUID: gatewayUID, RequestLimit: limit, ReplyLimit: limit,
+	srv := &ControlServer{GatewayUID: gatewayUID, RequestLimit: MaxFrameBytes, ReplyLimit: MaxFrameBytes,
 		IOTimeout: controlIOTimeout, Handle: d.Handle}
 	go func() {
 		if err := srv.Serve(ctx, ln); err != nil {
@@ -256,6 +256,9 @@ func removeMarker(marker string) bool {
 
 // CheckRequest is the daemon's validation of a test-link request.
 func CheckRequest(req Request) error {
+	if len(req.Payload) > MaxPayloadBytes {
+		return fmt.Errorf("payload of %d bytes exceeds %d", len(req.Payload), MaxPayloadBytes)
+	}
 	if !attemptIDPattern.MatchString(req.AttemptID) {
 		return errors.New("attempt ID must be 12 lowercase hex digits")
 	}

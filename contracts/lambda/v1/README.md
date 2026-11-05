@@ -21,7 +21,7 @@ Tenant code may be able to reach the listener, but it cannot open the agent's co
 **Authentication:** mutual TLS 1.3, bound to the environment ID and realization generation, using material the user runtime cannot read (ADR-0009:S17).
 For each generation the executor creates ephemeral self-signed host and guest certificates whose single URI SAN is `spinifex-lambda://<Region>/<account>/<function ID>/<environment ID>/<generation>/<role>`, with role `host` or `guest`.
 Each end validates the peer certificate against the one pinned peer certificate and separately requires that URI SAN with the opposite role; hostname verification is not relied on.
-ALPN carries the L-GUEST major version, `spinifex-lambda-guest/1`, and an unsupported version fails the handshake.
+ALPN carries the L-GUEST major version, `spinifex-lambda-guest/1`, and an unsupported version fails the handshake. Builds with the `lambdatestlink` tag offer only `spinifex-lambda-testlink/2` on both host and guest, whose first frame carries the execution-role credential, so a test-link end and a release end fail the handshake; release builds are unchanged.
 Under TLS 1.3 the guest's handshake can complete before the host refuses its certificate, so the guest treats the connection as accepted only after the host's first message.
 
 **Bootstrap material:** the executor passes these fw_cfg entries under `opt/spinifex/lambda/`, and the agent reads them as root and unloads `qemu_fw_cfg` before user code starts.

@@ -231,3 +231,93 @@ func TestDropUEFIWriter_InstanceThatMovedWithNothingOwedUnlocks(t *testing.T) {
 	_, held := f.claimHolder(t)
 	assert.False(t, held)
 }
+
+// A stop whose writer never consumed the guest's last write still sees vars.fd
+// differ from the pointed object, writes it back and only then unlocks; a
+// drop that skips the write-back keeps the claim (ADR-0003:S7).
+func TestS7_AnUnseenFinalWriteIsNeverLeftBehindAnUnlockedClaim(t *testing.T) {
+	t.Run("stop", func(t *testing.T) {
+		f := newUEFIFixture(t)
+		instance, _ := f.running(t)
+		want := f.guestWrites(t, "final")
+
+		f.m.finishUEFIWriteBack(instance)
+
+		assert.Equal(t, want, f.pointedRegion(t), "ADR-0003:S7: the stop must write back a change no event reported")
+		_, held := f.claimHolder(t)
+		assert.False(t, held)
+	})
+	t.Run("drop", func(t *testing.T) {
+		f := newUEFIFixture(t)
+		f.running(t)
+		tok, _ := f.claimHolder(t)
+		f.guestWrites(t, "final")
+
+		f.m.dropUEFIWriter(testUEFIInstance, "superseded", true)
+
+		holder, held := f.claimHolder(t)
+		require.True(t, held, "ADR-0003:S7: a drop must not unlock a claim whose copy differs from the pointer")
+		assert.Equal(t, tok, holder)
+		assert.Equal(t, region("final"), f.localVars(t))
+	})
+}
+
+// A claim read showing a generation older than this node's copy is a lagging
+// replica, not a new owner: the reaper keeps the owed copy and its mark
+// (ADR-0003:S7).
+func TestS7_ReaperKeepsAnOwedCopyWhenTheClaimReadIsOlder(t *testing.T) {
+	f := oweUEFIWriteBack(t)
+	f.m.deps.UEFIVarStore.Objects = f.objects
+	old, _ := f.claimHolder(t)
+	peer, err := f.peerClaim("node-b").TakeOver(t.Context(), old)
+	require.NoError(t, err)
+	seed := f.seed(t)
+	seed.Generation = peer.Generation + 1
+	require.NoError(t, writeUEFISeed(f.instanceDir(), seed))
+	lost := uefiCounter(t, "mulga.vm.uefi_store.write_backs_lost", "", "")
+
+	_, err = f.m.NewUEFIWriteBackReaper().Sweep(t.Context())
+	require.NoError(t, err)
+
+	assert.True(t, f.seed(t).WriteBackOwed, "ADR-0003:S7: an older claim read must not drop an owed write-back")
+	assert.Equal(t, region("owed"), f.localVars(t))
+	assert.Equal(t, lost, uefiCounter(t, "mulga.vm.uefi_store.write_backs_lost", "", ""))
+}
+
+// staleRecordGet answers Get with a record a lagging replica still holds,
+// while the leader read sees the current one.
+type staleRecordGet struct {
+	UEFIStoreRecords
+	stale *uefistore.UEFIStoreRecord
+}
+
+func (s staleRecordGet) Get(context.Context, string) (*uefistore.UEFIStoreRecord, uint64, error) {
+	rec := *s.stale
+	return &rec, 1, nil
+}
+
+// A prune protects the pointer the stream leader reports, so a replica still
+// naming an older pointer cannot expose the current object (ADR-0003:S7).
+func TestS7_PruneKeepsTheLeaderPointerWhenAReplicaLags(t *testing.T) {
+	f := newUEFIFixture(t)
+	_, clock := f.running(t)
+	stale := f.mustRecord(t)
+	current := keyFor("current")
+	f.putObject(t, current, gzipped(t, region("current")))
+	ref := *stale.Pointer
+	ref.Key = current
+	require.NoError(t, f.records.MovePointer(t.Context(), testUEFIInstance, stale.Generation, ref))
+	now := clock.Now()
+	f.m.deps.UEFIVarStore.Objects = &agedObjectStore{MemoryObjectStore: f.objects, modified: map[string]time.Time{
+		stale.Pointer.Key: now.Add(-24 * time.Hour),
+		current:           now.Add(-24 * time.Hour),
+	}}
+	f.m.deps.UEFIVarStore.Records = staleRecordGet{UEFIStoreRecords: f.records, stale: stale}
+	f.m.uefi.queuePrune(testUEFIInstance)
+
+	_, err := f.m.NewUEFIWriteBackReaper().Sweep(t.Context())
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{current}, f.objectKeys(t),
+		"ADR-0003:S7: a prune must keep the leader's pointer, whatever a replica reports")
+}

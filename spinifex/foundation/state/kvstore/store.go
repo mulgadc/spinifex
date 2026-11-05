@@ -43,6 +43,35 @@ func (s *Store[T]) Get(ctx context.Context, key string) (*T, uint64, error) {
 	return v, rev, err
 }
 
+// LeaderGet is Get answered by the stream leader, for a caller that must not
+// act on a lagging replica's older value. The revision is the stream sequence.
+func (s *Store[T]) LeaderGet(ctx context.Context, key string) (*T, uint64, error) {
+	if _, err := s.KV(ctx); err != nil {
+		return nil, 0, err
+	}
+	s.mu.Lock()
+	js, name := s.js, s.cfg.Name
+	s.mu.Unlock()
+	msg, err := LeaderMsgGet(ctx, js, "KV_"+name, MsgGetRequest{LastFor: "$KV." + name + "." + key})
+	if errors.Is(err, jetstream.ErrMsgNotFound) {
+		return nil, 0, fmt.Errorf("%w: %s", ErrNotFound, key)
+	}
+	if err != nil {
+		return nil, 0, fmt.Errorf("kvstore: leader get %s: %w", key, err)
+	}
+	if op := msg.Header.Get(kvOperationHeader); op == "DEL" || op == "PURGE" {
+		return nil, 0, fmt.Errorf("%w: %s", ErrNotFound, key)
+	}
+	var v T
+	if err := json.Unmarshal(msg.Data, &v); err != nil {
+		return nil, 0, fmt.Errorf("kvstore: decode %s: %w", key, err)
+	}
+	return &v, msg.Sequence, nil
+}
+
+// kvOperationHeader marks a KV stream message that deletes or purges its key.
+const kvOperationHeader = "KV-Operation"
+
 // Create writes a record only if the key is absent, returning ErrExists when
 // it is not. The create-only write is the single-writer claim, and the
 // returned revision is the CAS precondition for the claim's own first update.

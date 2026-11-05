@@ -63,14 +63,14 @@ func (s *Store) Stamp(ctx context.Context, instanceID string, generation uint64)
 
 // MovePointer points instanceID's record at ref only while the record is at
 // generation. A record at any other generation is ErrFenced and is left
-// unchanged. Every move is a CAS at the revision read, even to the current
-// key, so a read a follower answered stale cannot report success.
+// unchanged. The leader answers the read, because a caller drops its copy on
+// ErrFenced or ErrDeleting, and the CAS keeps a lost race from succeeding.
 func (s *Store) MovePointer(ctx context.Context, instanceID string, generation uint64, ref UEFIVarStoreRef) error {
 	if err := ref.validate(instanceID); err != nil {
 		return fmt.Errorf("%w: move %s: %w", ErrInvalidRecord, instanceID, err)
 	}
 	for range fenceAttempts {
-		rec, rev, err := s.Get(ctx, instanceID)
+		rec, rev, err := s.LeaderGet(ctx, instanceID)
 		if err != nil {
 			return err
 		}

@@ -81,7 +81,7 @@ func (m *Manager) settleOwedUEFIStore(ctx context.Context, id string) bool {
 		}
 		return false
 	}
-	if !seed.WriteBackOwed {
+	if !seed.WriteBackOwed && !uefiCopyChanged(dir, seed.Sum) {
 		return false
 	}
 	w, _, claim, err := m.uefiWriterFromSeed(ctx, id)
@@ -129,7 +129,9 @@ func (m *Manager) pruneUEFIStores(ctx context.Context) int {
 	cutoff := m.uefiClock().Now().Add(-uefistore.PruneMinAge)
 	deleted := 0
 	for _, id := range m.uefi.drainPrune() {
-		rec, _, err := deps.Records.Get(ctx, id)
+		// From the leader: a lagging replica's older pointer would leave the
+		// current object unprotected.
+		rec, _, err := deps.Records.LeaderGet(ctx, id)
 		if errors.Is(err, kvstore.ErrNotFound) {
 			continue
 		}

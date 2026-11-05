@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -325,4 +326,22 @@ func TestResumeUEFIWriter_WritesBackWhatARestartMayHaveMissed(t *testing.T) {
 		return string(f.pointedRegion(t)[:6]) == "missed"
 	}, 10*time.Second, 10*time.Millisecond)
 	assert.Equal(t, want, f.pointedRegion(t))
+}
+
+// A writer that cannot watch vars.fd polls it against what last landed, so a
+// change still lands while the guest runs rather than only at the stop.
+func TestUEFIWriter_PollsWhenItCannotWatch(t *testing.T) {
+	f := newUEFIFixture(t)
+	_, clock := f.running(t)
+	w := f.m.uefi.get(testUEFIInstance)
+	ctx, cancel := context.WithCancel(t.Context())
+	w.cancel, w.done = cancel, make(chan struct{})
+	go f.m.runUEFIWriter(ctx, w, nil, false)
+	clock.waitArmed(t)
+	want := f.guestWrites(t, "polled")
+
+	require.Eventually(t, func() bool {
+		clock.Advance(uefiWriteBackPoll)
+		return bytes.Equal(want, f.pointedRegion(t))
+	}, 10*time.Second, 10*time.Millisecond)
 }

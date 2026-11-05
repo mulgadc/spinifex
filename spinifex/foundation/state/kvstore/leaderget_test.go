@@ -9,6 +9,7 @@ import (
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	jsapi "github.com/nats-io/nats.go/jetstream"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -78,4 +79,27 @@ func TestAPIPrefixMatchesNatsGo(t *testing.T) {
 		cancel()
 		require.Equal(t, sent, kvstore.APIPrefix(js.Options())+"INFO", name)
 	}
+}
+
+// LeaderGet returns the newest value and its revision, and a deleted or
+// absent key as ErrNotFound rather than the tombstone's empty payload.
+func TestStore_LeaderGetReadsTheNewestValueAndTombstones(t *testing.T) {
+	t.Parallel()
+	store := newStore(t)
+
+	_, _, err := store.LeaderGet(t.Context(), "k")
+	require.ErrorIs(t, err, kvstore.ErrNotFound)
+
+	mustCreate(t, store, "k", record{Name: "a", Count: 1})
+	seedRaw(t, store, "k", record{Name: "b", Count: 2})
+	got, rev, err := store.LeaderGet(t.Context(), "k")
+	require.NoError(t, err)
+	assert.Equal(t, record{Name: "b", Count: 2}, *got)
+	_, wantRev, err := store.Get(t.Context(), "k")
+	require.NoError(t, err)
+	assert.Equal(t, wantRev, rev)
+
+	require.NoError(t, store.Delete(t.Context(), "k"))
+	_, _, err = store.LeaderGet(t.Context(), "k")
+	require.ErrorIs(t, err, kvstore.ErrNotFound)
 }

@@ -112,6 +112,8 @@ When a daemon handles `RunInstances`:
 
 1. **Resource Check**: Validates CPU/memory availability via `ResourceManager`
 2. **Volume Generation**: Creates boot and EFI volumes via Viperblock
+   A UEFI instance whose record carries a variable store pointer has no EFI volume: its `vars.fd` is fetched from the object under `uefi/` in the configured Predastore bucket that the pointer names, recorded in the `spinifex-uefi-stores` JetStream bucket (or reused when `seeded.json` on this node already names the same object) after a firmware architecture and VARS size check, and a record with both or neither is refused.
+   RunInstances still creates the EFI volume, nothing writes `vars.fd` back to the object store yet, and a terminated instance's store is removed by a cluster-wide reaper.
 3. **Volume Mount**: Publishes each volume through the EBS provider contract (`PublishVolume` on `ebs.provider.v1.{node}.mount`), receives its export
 4. **QEMU Launch**: Builds and executes QEMU command with NBD-backed disks
 5. **QMP Monitoring**: Establishes QEMU Machine Protocol connection for VM management
@@ -225,6 +227,9 @@ It may keep writing for 40 seconds after the last write the store acknowledged, 
 A slow acknowledgement therefore shortens the remaining validity rather than extending it, and an acquisition acknowledged after its validity has already run out is refused as retryable.
 
 For a holder that cannot renew, a timer is armed for the validity deadline, leaving a nominal 5 seconds before the entry can expire; when it fires, the export's nbdkit is fenced with SIGKILL (`volume_fence.go`).
+The kill comes first: the read that names the winner (bounded at 2 seconds) and the notice to the daemon follow it, so a hung lease store cannot hold the writer alive.
+The notice is a request that viperblockd repeats every 2 seconds until the local daemon replies with `VolumeFencedAck`, because the fence often runs while the node's NATS server is restarting.
+On the notice the daemon moves the guest using the volume to `error` with state reason `Server.VolumeFenced` and SIGKILLs its QEMU immediately rather than shutting it down gracefully, because there is no disk left to flush to; it only stops the guest process and removes its taps, and never terminates the instance or deletes a volume.
 The fence runs on its own goroutine, so Go scheduling, that goroutine and process termination all delay the kill, and enough delay can use up the whole margin; a kill held in uninterruptible sleep, which the fence waits up to 30 seconds for, is the extreme case.
 Once a lease is lost or has lapsed it stays lost: a renewal that succeeds afterwards is ignored, and another open on the same node cannot share it while the fence runs.
 

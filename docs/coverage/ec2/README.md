@@ -43,10 +43,11 @@ A missing `Name`, `BlockDeviceMappings` or root snapshot answers `MissingParamet
 Registering with `--ena-support`, `--no-ena-support` and neither, copying the image, and three refusals were run on a three-node cluster with the AWS CLI.
 Launching an instance from an `EnaSupport` image was not run, so the launch path is unchanged by construction and not by test.
 
-### CreateSnapshot Refuses an Attached Volume
+### CreateSnapshot Error Mapping
 
 `CreateSnapshot` drains and snapshots the volume inside the EBS provider.
-A volume the provider reports as in use, such as one that is still attached, is refused with `IncorrectState` and the message `The volume 'vol-...' is in use. Detach it before creating a snapshot.`
+A provider that cannot snapshot a volume because it is in use, as the `qemunbd` provider cannot for an attached volume, answers `ErrVolumeInUse`, which becomes `IncorrectState` with the message `The volume 'vol-...' is in use. Detach it before creating a snapshot.`
+The `viperblockd` provider drains a mounted export and snapshots it, so an attached volume succeeds there.
 A provider that cannot answer now, for example because another node holds the volume, answers `ServiceUnavailable` so the caller retries.
 Any other provider failure is `ServerInternal`.
 The snapshot taken for `CreateImage` maps these errors the same way.

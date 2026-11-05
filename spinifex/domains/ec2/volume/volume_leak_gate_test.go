@@ -134,10 +134,3 @@ func TestS7_LeakedSetJudgesOnlyTheHomeNode(t *testing.T) {
 	assert.Empty(t, leaked)
 	assert.Zero(t, probes, "a PID file was judged on a node that does not own the instance")
 }
-
-func mustPidPath(t *testing.T, id string) string {
-	t.Helper()
-	path, err := hostprocess.GeneratePidFile(id)
-	require.NoError(t, err)
-	return path
-}

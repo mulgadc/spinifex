@@ -46,12 +46,30 @@ func (l *fakeLink) Complete(ctx context.Context, r hostlink.Response) error {
 	return nil
 }
 
-// runtime polls next and answers using reply.
-func runtime(t *testing.T, base string, reply func(id string, body []byte) (path string, out string)) {
+// runtime serves srv and polls next, answering using reply. Cleanup cancels the
+// poll before closing the server: an in-flight next long-poll otherwise holds
+// its connection active and blocks Close forever.
+func runtime(t *testing.T, srv *runtimeapi.Server, reply func(id string, body []byte) (path string, out string)) {
 	t.Helper()
+	ts := httptest.NewServer(srv.Handler())
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		<-done
+		ts.Close()
+	})
+	do := func(method, url string, body io.Reader) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, method, url, body)
+		if err != nil {
+			return nil, err
+		}
+		return ts.Client().Do(req)
+	}
 	go func() {
+		defer close(done)
 		for {
-			resp, err := http.Get(base + api + "invocation/next")
+			resp, err := do(http.MethodGet, ts.URL+api+"invocation/next", nil)
 			if err != nil {
 				return
 			}
@@ -59,7 +77,7 @@ func runtime(t *testing.T, base string, reply func(id string, body []byte) (path
 			resp.Body.Close()
 			id := resp.Header.Get("Lambda-Runtime-Aws-Request-Id")
 			path, out := reply(id, body)
-			r, err := http.Post(base+api+"invocation/"+id+path, "application/json", strings.NewReader(out))
+			r, err := do(http.MethodPost, ts.URL+api+"invocation/"+id+path, strings.NewReader(out))
 			if err != nil {
 				return
 			}
@@ -72,9 +90,7 @@ func deadline(d time.Duration) int64 { return time.Now().Add(d).UnixMilli() }
 
 func TestRunServesRequestsAndEchoesIDs(t *testing.T) {
 	srv := runtimeapi.New()
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-	runtime(t, ts.URL, func(id string, body []byte) (string, string) {
+	runtime(t, srv, func(id string, body []byte) (string, string) {
 		if string(body) == "bad" {
 			return "/error", `{"errorMessage":"no"}`
 		}
@@ -149,9 +165,7 @@ func TestRunReturnsLinkError(t *testing.T) {
 func TestRunBoundsTheResultWriteByTheDeadlinePlusGrace(t *testing.T) {
 	t.Run("on time", func(t *testing.T) {
 		srv := runtimeapi.New()
-		ts := httptest.NewServer(srv.Handler())
-		defer ts.Close()
-		runtime(t, ts.URL, func(string, []byte) (string, string) { return "/response", "ok" })
+		runtime(t, srv, func(string, []byte) (string, string) { return "/response", "ok" })
 		dl := deadline(time.Minute)
 		link := &fakeLink{got: make(chan hostlink.Response, 1), ctxs: make(chan context.Context, 1),
 			reqs: []hostlink.Request{{RequestID: "r", DeadlineMs: dl}}}

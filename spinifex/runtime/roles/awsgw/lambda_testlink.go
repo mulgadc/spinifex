@@ -24,14 +24,11 @@ func lambdaTestExecutor(nc *nats.Conn, node string, codes *codestore.Manager, se
 		slog.Error("Lambda test link: control peer account unavailable; Invoke is not served", "err", err)
 		return nil
 	}
+	if !testlink.ValidDigest(lambdaImageDigest) {
+		slog.Error("Lambda test link: runtime image pin missing or malformed; every Invoke is refused")
+	}
 	return &testLinkExecutor{
-		Control: &testlink.ControlClient{
-			Name:         testlink.ControlName,
-			DaemonUID:    daemonUID,
-			RequestLimit: nc.MaxPayload(),
-			ReplyLimit:   nc.MaxPayload(),
-			IOTimeout:    controlWriteTimeout,
-		},
+		Control:      testLinkControl(daemonUID, nc.MaxPayload()),
 		RequestLimit: nc.MaxPayload(),
 		Sessions:     sessions,
 		Node:         node,
@@ -50,6 +47,17 @@ func lambdaTestExecutor(nc *nats.Conn, node string, codes *codestore.Manager, se
 			}
 			return execution.Open(ctx, js)
 		},
+	}
+}
+
+// testLinkControl is the gateway's client for this node's daemon socket.
+func testLinkControl(daemonUID int, limit int64) *testlink.ControlClient {
+	return &testlink.ControlClient{
+		Name:         testlink.ControlName,
+		DaemonUID:    daemonUID,
+		RequestLimit: limit,
+		ReplyLimit:   limit,
+		IOTimeout:    controlWriteTimeout,
 	}
 }
 

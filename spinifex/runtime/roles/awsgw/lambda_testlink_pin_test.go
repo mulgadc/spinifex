@@ -21,3 +21,12 @@ func TestLambdaImageDigestPin(t *testing.T) {
 		t.Fatalf("pinned image digest %q, want %q", lambdaImageDigest, want)
 	}
 }
+
+// The gateway dials the production control name, so a mixed-version daemon on
+// the previous name is never reached.
+func TestLambdaTestLinkControlUsesTheProductionName(t *testing.T) {
+	c := testLinkControl(4242, 1<<20)
+	if c.Name != testlink.ControlName || c.DaemonUID != 4242 {
+		t.Fatalf("control client %q uid %d, want %q uid 4242", c.Name, c.DaemonUID, testlink.ControlName)
+	}
+}

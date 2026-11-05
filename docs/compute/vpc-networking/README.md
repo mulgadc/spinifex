@@ -315,7 +315,7 @@ prefix_len = 24
 
 ### Host access to instances (jumpbox pattern)
 
-The spinifex host automatically reaches every instance's **private IP**: IGW attach installs a host route into OVN (`<vpc-cidr> via <gateway-transit-ip> dev spx-nat-host`) and exempts the transit net from SNAT, so replies to host-initiated connections come back un-NATted. No per-instance setup.
+The spinifex host automatically reaches every instance's **private IP**: each node converges a host route into OVN (`<vpc-cidr> via <gateway-transit-ip> dev spx-nat-host`) for every attached VPC, and the IGW attach exempts the transit net from SNAT, so replies to host-initiated connections come back un-NATted. No per-instance setup. Every node runs this loop itself, on each intent change, on a nudge from the local IGW hooks and every 30 seconds, so a node that missed the attach event still gets the route. A route is removed on every node when no attached VPC holds its CIDR any more, such as after a detach. When several attached VPCs share one CIDR, the bootstrap VPC wins, then the lowest VPC ID.
 
 Security groups still apply and the default SG is closed to the host, same as AWS — open SSH/ICMP from the transit net first:
 

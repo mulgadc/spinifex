@@ -314,6 +314,10 @@ func ec2CommandName(command ec2v1.EC2InstanceCommand) string {
 		return "RemoveInstanceTags"
 	case command.Attributes.SetInstanceMonitoring:
 		return "SetInstanceMonitoring"
+	case command.Attributes.ModifyInstanceMetadataOptions:
+		return "ModifyInstanceMetadataOptions"
+	case command.Attributes.SetDisableApiTermination:
+		return "SetDisableApiTermination"
 	case command.Attributes.StartInstance:
 		return "StartInstance"
 	case command.Attributes.RebootInstance:

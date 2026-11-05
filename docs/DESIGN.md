@@ -112,7 +112,7 @@ When a daemon handles `RunInstances`:
 
 1. **Resource Check**: Validates CPU/memory availability via `ResourceManager`
 2. **Volume Generation**: Creates the boot volume through the EBS provider and, for a UEFI guest, seeds its variable store as an object under `uefi/<instance-id>/` with a store record in `spinifex-uefi-stores` that points at it
-   At launch a UEFI instance's `vars.fd` is fetched from the object its store pointer names (or reused when `seeded.json` on this node already names the same object) after a firmware architecture and VARS size check, and a UEFI instance that still carries an EFI volume request is refused.
+   At launch a UEFI instance's `vars.fd` is fetched from the object its store pointer names (or reused when `seeded.json` on this node already names the same object) after a firmware architecture and VARS size check, and a UEFI instance with no live store record naming a pointer, or one that still carries an EFI volume request, is refused.
    The store is written back to the object store on write and at stop, and a terminated instance's store is removed by a cluster-wide reaper.
 3. **Volume Mount**: Publishes each volume through the EBS provider contract (`PublishVolume` on `ebs.provider.v1.{node}.mount`), receives its export
 4. **QEMU Launch**: Builds and executes QEMU command with NBD-backed disks

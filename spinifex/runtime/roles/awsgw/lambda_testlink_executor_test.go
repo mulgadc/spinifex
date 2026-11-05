@@ -497,7 +497,7 @@ func TestLambdaTestLinkExecutor_RequestBoundIncludesImageDigest(t *testing.T) {
 }
 
 // realCodeStore signs download links with the production code store, using a
-// session of the shape STS issues and the longest form of off-host endpoint.
+// session of the shape STS issues and a representative IPv6 off-host endpoint.
 func realCodeStore(t *testing.T) *codestore.Store {
 	t.Helper()
 	store, err := codestore.Open(codestore.OpenConfig{

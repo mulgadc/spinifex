@@ -18,6 +18,7 @@ import (
 // probe treated a bare listening socket as ready and raced predastore's TLS
 // handshake; this proves the replacement actually waits for HTTP.
 func TestCheckPredastoreReady_HTTPSServing(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
@@ -36,6 +37,7 @@ func TestCheckPredastoreReady_HTTPSServing(t *testing.T) {
 // TestCheckPredastoreReady_UntrustedCert asserts an endpoint whose cert the
 // cluster CA did not sign is not ready, even though it answers HTTPS.
 func TestCheckPredastoreReady_UntrustedCert(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
@@ -54,6 +56,7 @@ func TestCheckPredastoreReady_UntrustedCert(t *testing.T) {
 // TestCheckPredastoreReady_NoClusterCA asserts a node without a configured
 // cluster CA fails closed instead of probing unverified.
 func TestCheckPredastoreReady_NoClusterCA(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
@@ -69,6 +72,7 @@ func TestCheckPredastoreReady_NoClusterCA(t *testing.T) {
 // TestCheckPredastoreReady_ClosedPort asserts a port nothing is listening on
 // is reported not-ready, rather than panicking or failing open.
 func TestCheckPredastoreReady_ClosedPort(t *testing.T) {
+	t.Parallel()
 	// Bind then immediately close to get a real, currently-unused port.
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -83,6 +87,7 @@ func TestCheckPredastoreReady_ClosedPort(t *testing.T) {
 // an empty Predastore.Host means no predastore runs on this node, and the
 // check must return ready without dialling anything.
 func TestCheckPredastoreReady_NoPredastoreConfigured(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{config: &config.Config{}}
 	assert.True(t, d.checkPredastoreReady())
 }

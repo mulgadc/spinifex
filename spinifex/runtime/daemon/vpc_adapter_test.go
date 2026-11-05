@@ -18,6 +18,7 @@ import (
 // mapping onto ENIInfo.DeleteOnTermination: a nil ENIRecord flag (never attached)
 // must read as true, matching what DescribeNetworkInterfaces already advertises.
 func TestDaemonENICreator_GetENI_DeleteOnTerminationMapping(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		dot  *bool
@@ -30,6 +31,7 @@ func TestDaemonENICreator_GetENI_DeleteOnTerminationMapping(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			d := createVPCTestDaemon(t)
 			vpcOut, err := d.vpcService.CreateVpc(t.Context(), &ec2.CreateVpcInput{
 				CidrBlock: aws.String("10.0.0.0/16"),
@@ -86,6 +88,7 @@ func TestDaemonENICreator_ListInstanceENIs_HappyPath(t *testing.T) {
 // TestDaemonENICreator_ListInstanceENIs_NoAttachments confirms an instance with no
 // KV-recorded ENIs returns an empty, non-error result.
 func TestDaemonENICreator_ListInstanceENIs_NoAttachments(t *testing.T) {
+	t.Parallel()
 	d := createVPCTestDaemon(t)
 	creator := &daemonENICreator{d: d}
 
@@ -98,6 +101,7 @@ func TestDaemonENICreator_ListInstanceENIs_NoAttachments(t *testing.T) {
 // the connection backing vpcService's KV is closed before enumerating, so Keys()
 // fails with a real connection error rather than jetstream.ErrNoKeysFound.
 func TestDaemonENICreator_ListInstanceENIs_KVError(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 
 	_, nc, _ := testutil.StartTestJetStream(t)

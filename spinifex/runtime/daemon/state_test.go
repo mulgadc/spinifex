@@ -204,6 +204,7 @@ var transitionalStates = []vm.InstanceState{
 // except StateTerminated has at least one valid outgoing transition. A missing
 // entry would mean an instance could get permanently stuck.
 func TestValidTransitions_MapCoversAllNonTerminalStates(t *testing.T) {
+	t.Parallel()
 	for _, state := range allStates {
 		if state == vm.StateTerminated {
 			continue
@@ -217,6 +218,7 @@ func TestValidTransitions_MapCoversAllNonTerminalStates(t *testing.T) {
 // TestTerminatedState_HasNoOutgoingTransitions ensures the terminal state is
 // truly terminal — no valid transitions out.
 func TestTerminatedState_HasNoOutgoingTransitions(t *testing.T) {
+	t.Parallel()
 	targets, ok := vm.ValidTransitions[vm.StateTerminated]
 	assert.False(t, ok || len(targets) > 0,
 		"StateTerminated should have no valid transitions, got %v", targets)
@@ -226,6 +228,7 @@ func TestTerminatedState_HasNoOutgoingTransitions(t *testing.T) {
 // state has at least one direct transition to a stable state. This is the
 // structural guarantee that prevents the "stuck in stopping" bug.
 func TestTransitionalStates_CanReachStableState(t *testing.T) {
+	t.Parallel()
 	stableSet := map[vm.InstanceState]bool{}
 	for _, s := range stableStates {
 		stableSet[s] = true
@@ -249,6 +252,7 @@ func TestTransitionalStates_CanReachStableState(t *testing.T) {
 // to confirm there is always a path to StateTerminated. An unreachable terminal
 // state means instances can never be fully cleaned up.
 func TestEveryState_CanReachTerminated(t *testing.T) {
+	t.Parallel()
 	for _, start := range allStates {
 		if start == vm.StateTerminated {
 			continue
@@ -530,6 +534,7 @@ func TestTransitionState_ShuttingDownMustReachTerminatedOrError(t *testing.T) {
 // of only transitional states. Every cycle in the state graph must pass
 // through at least one stable state.
 func TestValidTransitions_NoCyclesWithoutStableState(t *testing.T) {
+	t.Parallel()
 	stableSet := map[vm.InstanceState]bool{}
 	for _, s := range stableStates {
 		stableSet[s] = true
@@ -1283,6 +1288,7 @@ func TestPendingWatchdog_MarksStuckInstanceFailed(t *testing.T) {
 }
 
 func TestAreVolumeSocketsValid_ValidSocket(t *testing.T) {
+	t.Parallel()
 	sockPath := filepath.Join(t.TempDir(), "test.sock")
 	listener, err := net.Listen("unix", sockPath)
 	require.NoError(t, err)
@@ -1300,6 +1306,7 @@ func TestAreVolumeSocketsValid_ValidSocket(t *testing.T) {
 }
 
 func TestAreVolumeSocketsValid_MissingSocket(t *testing.T) {
+	t.Parallel()
 	instance := &vm.VM{
 		ID: "i-missing-sock",
 		EBSRequests: vm.EBSRequests{
@@ -1312,6 +1319,7 @@ func TestAreVolumeSocketsValid_MissingSocket(t *testing.T) {
 }
 
 func TestAreVolumeSocketsValid_StaleSocketFile(t *testing.T) {
+	t.Parallel()
 	// Socket file with no listener — simulates viperblock crash leaving a
 	// stale socket on disk. os.Stat would return true here, but dial fails.
 	sockPath := filepath.Join(t.TempDir(), "stale.sock")
@@ -1331,6 +1339,7 @@ func TestAreVolumeSocketsValid_StaleSocketFile(t *testing.T) {
 }
 
 func TestAreVolumeSocketsValid_EmptyRequests(t *testing.T) {
+	t.Parallel()
 	instance := &vm.VM{
 		ID:          "i-no-vols",
 		EBSRequests: vm.EBSRequests{},
@@ -1339,6 +1348,7 @@ func TestAreVolumeSocketsValid_EmptyRequests(t *testing.T) {
 }
 
 func TestAreVolumeSocketsValid_TCPTransport(t *testing.T) {
+	t.Parallel()
 	// TCP transport can't be validated locally — should return true.
 	instance := &vm.VM{
 		ID: "i-tcp",

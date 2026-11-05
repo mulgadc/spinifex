@@ -79,6 +79,7 @@ func defaultVPCID(t *testing.T, d *Daemon, accountID string) string {
 }
 
 func TestHandleAccountCreated_BuildsDefaultVPCInfrastructure(t *testing.T) {
+	t.Parallel()
 	daemon, _ := createDefaultVPCTestDaemon(t)
 
 	const accountID = "000000000077"
@@ -109,6 +110,7 @@ func TestHandleAccountCreated_BuildsDefaultVPCInfrastructure(t *testing.T) {
 }
 
 func TestHandleAccountCreated_RacingNodesAttachOneGateway(t *testing.T) {
+	t.Parallel()
 	daemons := createDefaultVPCTestDaemons(t, 4)
 
 	const accountID = "000000000066"
@@ -153,6 +155,7 @@ func TestHandleAccountCreated_RacingNodesAttachOneGateway(t *testing.T) {
 }
 
 func TestHandleAccountCreated_RejectsUnusableEvents(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		data []byte
@@ -163,6 +166,7 @@ func TestHandleAccountCreated_RejectsUnusableEvents(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			daemon, _ := createDefaultVPCTestDaemon(t)
 
 			outcome := daemon.handleAccountCreated(&nats.Msg{Subject: "account.created", Data: tt.data})
@@ -177,6 +181,7 @@ func TestHandleAccountCreated_RejectsUnusableEvents(t *testing.T) {
 }
 
 func TestHandleEnsureDefaultVpc_RepliesWithVpcIDAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	daemon, nc := createDefaultVPCTestDaemon(t)
 
 	sub, err := nc.Subscribe("ec2.test.EnsureDefaultVpc", func(msg *nats.Msg) {
@@ -217,6 +222,7 @@ func TestHandleEnsureDefaultVpc_RepliesWithVpcIDAndIsIdempotent(t *testing.T) {
 }
 
 func TestHandleEnsureDefaultVpc_ErrorEnvelopes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		data       []byte
@@ -230,6 +236,7 @@ func TestHandleEnsureDefaultVpc_ErrorEnvelopes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			daemon, nc := createDefaultVPCTestDaemon(t)
 			if tt.nilService {
 				daemon.vpcService = nil
@@ -258,6 +265,7 @@ func TestHandleEnsureDefaultVpc_ErrorEnvelopes(t *testing.T) {
 }
 
 func TestEnsureDefaultVPCInfrastructure_SkipsHalfBuiltAccounts(t *testing.T) {
+	t.Parallel()
 	daemon, _ := createDefaultVPCTestDaemon(t)
 
 	adminAccount := awsidentifiers.DefaultAccountID()
@@ -288,6 +296,7 @@ func TestEnsureDefaultVPCInfrastructure_SkipsHalfBuiltAccounts(t *testing.T) {
 // Without persistence the VPC service reports no default VPC and no error; the
 // handlers must say so rather than reply with an empty ID.
 func TestDefaultVPCHandlers_NoPersistence(t *testing.T) {
+	t.Parallel()
 	d := createTestDaemon(t, sharedNATSURL)
 	d.vpcService = &ec2vpc.VPCServiceImpl{}
 
@@ -302,6 +311,7 @@ func TestDefaultVPCHandlers_NoPersistence(t *testing.T) {
 }
 
 func TestDefaultVPCHandlers_UnreadableClaim(t *testing.T) {
+	t.Parallel()
 	d, nc := createDefaultVPCTestDaemon(t)
 	const account = "000000000772"
 	js, err := jetstream.New(nc)

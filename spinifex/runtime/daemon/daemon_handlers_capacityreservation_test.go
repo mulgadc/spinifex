@@ -61,6 +61,7 @@ func seedReservation(rm *ResourceManager, id, account, instanceType string) {
 // The node-targeted Create handler resolves per-instance compute from the local
 // catalog, mints a cr-id, commits the carve-out, and renders the AWS view.
 func TestHandleEC2CreateCapacityReservation_RoundTrip(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 
 	instType := getTestInstanceType(t)
@@ -174,6 +175,7 @@ func TestHandleEC2CreateCapacityReservation_Rejections(t *testing.T) {
 
 // The fan-out Describe handler returns only the caller's reservations.
 func TestHandleEC2DescribeCapacityReservations_Scoping(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 	seedReservation(daemon.resourceMgr, "cr-aaaaaaaaaaaaaaaaa", testAccountID, getTestInstanceType(t))
 	seedReservation(daemon.resourceMgr, "cr-bbbbbbbbbbbbbbbbb", "999999999999", getTestInstanceType(t))
@@ -201,7 +203,8 @@ func TestHandleEC2DescribeCapacityReservations_Scoping(t *testing.T) {
 // The broadcast Cancel handler releases the carve-out only for the owning
 // account, and every node acks found/not-found so the gateway can disambiguate.
 func TestHandleEC2CancelCapacityReservation_ScopingAndAck(t *testing.T) {
-	daemon := createTestDaemon(t, sharedNATSURL)
+	t.Parallel()
+	daemon := createTestDaemon(t, privateNATSURL(t))
 
 	instType := getTestInstanceType(t)
 	it := daemon.resourceMgr.instanceTypes[instType]
@@ -254,7 +257,8 @@ func TestHandleEC2CancelCapacityReservation_ScopingAndAck(t *testing.T) {
 // a responder) and Cancel drops it (so a launch against the cancelled id returns
 // ErrNoResponders → InvalidCapacityReservationId.NotFound at the gateway).
 func TestHandleEC2CapacityReservation_LaunchSubjectLifecycle(t *testing.T) {
-	daemon := createTestDaemon(t, sharedNATSURL)
+	t.Parallel()
+	daemon := createTestDaemon(t, privateNATSURL(t))
 
 	instType := getTestInstanceType(t)
 	it := daemon.resourceMgr.instanceTypes[instType]

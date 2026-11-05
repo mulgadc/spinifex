@@ -16,6 +16,7 @@ import (
 )
 
 func TestRoute53ServiceDelegatesToThePublishedNameservers(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	ns := config.NorthstarConfig{ConfigPath: "/etc/spinifex/northstar.toml", DefaultDomain: "spx3.net"}
 	nodes := map[string]config.Config{
@@ -39,6 +40,7 @@ func TestRoute53ServiceDelegatesToThePublishedNameservers(t *testing.T) {
 }
 
 func TestRoute53ServiceRefusesZonesWithoutABaseDomain(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	local := config.Config{AdvertiseIP: "10.0.0.1"}
 	d := &Daemon{config: &local, clusterConfig: &config.ClusterConfig{Node: "node1", Nodes: map[string]config.Config{"node1": local}}}

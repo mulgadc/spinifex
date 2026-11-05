@@ -40,6 +40,7 @@ func countVMs(d *Daemon) int {
 // nothing behind: no record in the manager, and the capacity it reserved is
 // returned. The customer is never told "no" about an instance that exists.
 func TestHandleEC2RunInstances_LocalWriteFailureLaunchesNothing(t *testing.T) {
+	t.Parallel()
 	daemon, memStore := createFullTestDaemonWithStore(t, sharedNATSURL)
 	seedTestAMI(t, memStore, daemon.config.Predastore.Bucket, "ami-writefail")
 

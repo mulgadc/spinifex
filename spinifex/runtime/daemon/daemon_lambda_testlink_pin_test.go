@@ -20,6 +20,7 @@ import (
 // TestLambdaHardKillPin runs from make build-lambda-testlink with the same pin
 // as the built daemon: the paired initializer passes and a changed one fails.
 func TestLambdaHardKillPin(t *testing.T) {
+	t.Parallel()
 	lib := os.Getenv("LAMBDA_TESTLINK_INITIALIZER")
 	if lambdaHardKillSHA256 == "" || lib == "" {
 		t.Skip("run by make build-lambda-testlink with a pinned initializer")
@@ -45,6 +46,7 @@ func TestLambdaHardKillPin(t *testing.T) {
 // TestLambdaImageDigestPin runs from make build-lambda-testlink with the same
 // ldflags as the built daemon: the pinned image digest arrives exactly as given.
 func TestLambdaImageDigestPin(t *testing.T) {
+	t.Parallel()
 	want := os.Getenv("LAMBDA_IMAGE_DIGEST")
 	if want == "" {
 		t.Skip("run by make build-lambda-testlink with a pinned image digest")
@@ -57,6 +59,7 @@ func TestLambdaImageDigestPin(t *testing.T) {
 // A failed serving check refuses new invocations but recovery has already
 // started, so an attempt launched before a restart is still cleaned up.
 func TestLambdaTestLinkRecoveryStartsDespiteFailedServingCheck(t *testing.T) {
+	t.Parallel()
 	var recovered, served, released bool
 	refused := errors.New("runtime image refused")
 	err := runLambdaTestLink(

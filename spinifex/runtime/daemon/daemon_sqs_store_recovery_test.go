@@ -58,6 +58,7 @@ func TestSQSStoreIsNeverRecoveredOntoAnotherNode(t *testing.T) {
 // Excluding it from cross-node recovery must not drop it from its own node's
 // restore set.
 func TestSQSStoreStillRestoresOnItsOwnNode(t *testing.T) {
+	t.Parallel()
 	store := runningOn("i-sqs-store", "node-1")
 	store.Spec.ManagedBy = tags.ManagedBySQS
 	assert.True(t, runsOn(store, "node-1"))

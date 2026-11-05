@@ -89,6 +89,7 @@ func tagCommand(instanceID string, attrs ec2v1.EC2CommandAttributes, data *ec2v1
 // SetInstanceTags merges the upsert set into the record and projects the full
 // tag set into the central store in the same call.
 func TestHandleSetInstanceTags_MergesAndWritesCentral(t *testing.T) {
+	t.Parallel()
 	const id = "i-tag-set"
 	d := tagTestDaemon(t, id, map[string]string{"Name": "web", "env": "dev"})
 
@@ -105,6 +106,7 @@ func TestHandleSetInstanceTags_MergesAndWritesCentral(t *testing.T) {
 // RemoveInstanceTags removes named keys unconditionally, value-matched keys
 // only on match, and both stores reflect the result.
 func TestHandleSetInstanceTags_RemoveWritesBothStores(t *testing.T) {
+	t.Parallel()
 	const id = "i-tag-remove"
 	d := tagTestDaemon(t, id, map[string]string{"Name": "web", "env": "dev", "team": "infra"})
 	require.NoError(t, d.tagsService.PutResourceTags(t.Context(), testAccountID, id,
@@ -122,6 +124,7 @@ func TestHandleSetInstanceTags_RemoveWritesBothStores(t *testing.T) {
 
 // RemoveInstanceTags with empty Tags and TagKeys clears every tag.
 func TestHandleSetInstanceTags_RemoveClearAll(t *testing.T) {
+	t.Parallel()
 	const id = "i-tag-clear"
 	d := tagTestDaemon(t, id, map[string]string{"Name": "web", "env": "dev"})
 	require.NoError(t, d.tagsService.PutResourceTags(t.Context(), testAccountID, id,
@@ -138,6 +141,7 @@ func TestHandleSetInstanceTags_RemoveClearAll(t *testing.T) {
 // A cross-account caller is rejected with InvalidID.NotFound before dispatch
 // and neither the record nor either central namespace is written.
 func TestHandleSetInstanceTags_CrossAccountRejected(t *testing.T) {
+	t.Parallel()
 	const id = "i-tag-cross"
 	const attacker = "999999999999"
 	d := tagTestDaemon(t, id, map[string]string{"Name": "web"})
@@ -156,6 +160,7 @@ func TestHandleSetInstanceTags_CrossAccountRejected(t *testing.T) {
 // into the central tag store, so describe-tags sees them from birth. The write
 // is best-effort, so the assertion tolerates it landing slightly late.
 func TestHandleEC2RunInstances_LaunchTagsWriteCentralStore(t *testing.T) {
+	t.Parallel()
 	// The launch fails (the AMI has no snapshot), so the manager needs a
 	// terminated bucket to release the record into for its tags to be checked.
 	// Its own server keeps that record out of the shared terminated bucket.
@@ -210,6 +215,7 @@ func TestHandleEC2RunInstances_LaunchTagsWriteCentralStore(t *testing.T) {
 // Missing InstanceTagsData, and a set with no tags, are rejected with
 // MissingParameter and leave both stores untouched.
 func TestHandleSetInstanceTags_RejectsMissingData(t *testing.T) {
+	t.Parallel()
 	const id = "i-tag-nodata"
 	d := tagTestDaemon(t, id, map[string]string{"Name": "web"})
 

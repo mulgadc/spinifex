@@ -29,6 +29,7 @@ func newDepartedDaemon(t *testing.T) (*Daemon, *failingKV) {
 }
 
 func TestNodeDeparted_AMemberIsNeverDeparted(t *testing.T) {
+	t.Parallel()
 	d, f := newDepartedDaemon(t)
 	f.setFail("Get", true)
 
@@ -61,6 +62,7 @@ func TestNodeDeparted_ANonMemberDepartsOnlyWithNoCurrentHeartbeat(t *testing.T) 
 }
 
 func TestNodeDeparted_AnUnreadableHeartbeatIsAnError(t *testing.T) {
+	t.Parallel()
 	d, f := newDepartedDaemon(t)
 	f.setFail("Get", true)
 
@@ -70,12 +72,14 @@ func TestNodeDeparted_AnUnreadableHeartbeatIsAnError(t *testing.T) {
 }
 
 func TestNodeDeparted_NoClusterViewDepartsNothing(t *testing.T) {
+	t.Parallel()
 	departed, err := (&Daemon{}).nodeDeparted(t.Context(), "node-gone")
 	require.NoError(t, err)
 	assert.False(t, departed)
 }
 
 func TestClusterMembers(t *testing.T) {
+	t.Parallel()
 	d, _ := newDepartedDaemon(t)
 	assert.Equal(t, []string{"node-a", "node-b"}, d.clusterMembers())
 	assert.Nil(t, (&Daemon{}).clusterMembers())
@@ -93,6 +97,7 @@ func newLastNodeManager(t *testing.T) *JetStreamManager {
 }
 
 func TestInstanceLastNode_ReadsTheLiveThenTheTerminatedRecord(t *testing.T) {
+	t.Parallel()
 	m := newLastNodeManager(t)
 	require.NoError(t, m.WriteInstanceRecord("i-live", (&vm.VM{ID: "i-live", LastNode: "node-a"}).Record()))
 	require.NoError(t, m.WriteTerminatedInstanceRecord("i-term", (&vm.VM{ID: "i-term", LastNode: "node-b"}).Record()))
@@ -115,6 +120,7 @@ func TestInstanceLastNode_ReadsTheLiveThenTheTerminatedRecord(t *testing.T) {
 // A record that cannot be read is not a missing one: treating it as missing
 // would name every member rather than fail the request.
 func TestInstanceLastNode_AnUnreadableRecordIsAnError(t *testing.T) {
+	t.Parallel()
 	m, f := newFaultInjectedJSM(t)
 	f.setFail("Get", true)
 
@@ -173,6 +179,7 @@ func (p *holdTestProvider) calls() []ebsprovider.UnpublishVolumeRequest {
 // A hot attach publishes before it writes in-use. The publish stamp is what
 // lets the reaper tell that publish apart from the one an obligation undoes.
 func TestVolumeMounterHold_PublishedSinceTracksThisProcessesPublishes(t *testing.T) {
+	t.Parallel()
 	provider := &holdTestProvider{}
 	adapter := newVolumeMounterAdapter(provider, "node-hold")
 	before := time.Now().Add(-time.Second)
@@ -193,6 +200,7 @@ func TestVolumeMounterHold_PublishedSinceTracksThisProcessesPublishes(t *testing
 }
 
 func TestVolumeMounterHold_RefusedWhileAPublishIsInFlight(t *testing.T) {
+	t.Parallel()
 	provider := &holdTestProvider{publishGate: make(chan struct{}), publishing: make(chan struct{})}
 	adapter := newVolumeMounterAdapter(provider, "node-hold")
 	done := make(chan error, 1)
@@ -219,6 +227,7 @@ func TestVolumeMounterHold_RefusedWhileAPublishIsInFlight(t *testing.T) {
 // a publish arriving while the obligation reaper seals the volume answers at
 // once, retryable, instead of waiting on a seal that scales with the volume.
 func TestS8_AttachRefusesRatherThanWaitBehindTheReapersSeal(t *testing.T) {
+	t.Parallel()
 	provider := &holdTestProvider{unpublishGate: make(chan struct{}), unpublishing: make(chan struct{})}
 	adapter := newVolumeMounterAdapter(provider, "node-hold")
 	hold, ok := adapter.HoldVolume("vol-sealing")
@@ -253,6 +262,7 @@ func TestS8_AttachRefusesRatherThanWaitBehindTheReapersSeal(t *testing.T) {
 // force detach clears the attachment while a stop still seals the volume, and
 // an attach elsewhere on this node answers at once instead of waiting.
 func TestS8_AttachRefusesRatherThanWaitBehindAStopsSeal(t *testing.T) {
+	t.Parallel()
 	provider := &holdTestProvider{unpublishGate: make(chan struct{}), unpublishing: make(chan struct{})}
 	adapter := newVolumeMounterAdapter(provider, "node-hold")
 	sealed := make(chan error, 1)
@@ -286,6 +296,7 @@ func TestS8_AttachRefusesRatherThanWaitBehindAStopsSeal(t *testing.T) {
 // publish waiting on a holder that does not seal is never overtaken by a seal
 // that queued after it, so it never ends up waiting on that seal.
 func TestS8_AWaitingPublishGoesBeforeASealQueuedBehindIt(t *testing.T) {
+	t.Parallel()
 	var locks volumeLocks
 	first, ok := locks.acquire("vol-busy", acquirePublish)
 	require.True(t, ok)
@@ -331,6 +342,7 @@ func TestS8_AWaitingPublishGoesBeforeASealQueuedBehindIt(t *testing.T) {
 }
 
 func TestVolumeMounterHold_UnpublishSealsOrDropsAsAsked(t *testing.T) {
+	t.Parallel()
 	provider := &holdTestProvider{}
 	adapter := newVolumeMounterAdapter(provider, "node-hold")
 
@@ -353,6 +365,7 @@ func TestVolumeMounterHold_UnpublishSealsOrDropsAsAsked(t *testing.T) {
 }
 
 func TestVolumeMounterHold_NotFoundCountsAsDone(t *testing.T) {
+	t.Parallel()
 	for _, noSeal := range []bool{false, true} {
 		provider := &holdTestProvider{unpublishErr: ebsprovider.ErrNotFound}
 		adapter := newVolumeMounterAdapter(provider, "node-hold")
@@ -366,6 +379,7 @@ func TestVolumeMounterHold_NotFoundCountsAsDone(t *testing.T) {
 // --- DeleteVolumes names this node for what the last unmount left ---
 
 func TestInstanceCleaner_DeleteVolumes_RecordsOnlyTheOwedVolumes(t *testing.T) {
+	t.Parallel()
 	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
 	obligations := wireTestUnpublishObligations(t, daemon)
 	const instanceID = "i-owed-cleaner"

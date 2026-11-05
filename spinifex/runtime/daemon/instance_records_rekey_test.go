@@ -42,6 +42,7 @@ func seedSlashRecord(t *testing.T, nc *nats.Conn, bucket string, version int, in
 }
 
 func TestRekey_MovesInstanceStateRecordsOntoTheDot(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	kv := seedSlashRecord(t, nc, daemon.InstanceStateBucket, 3,
 		&vm.VM{ID: "i-1", InstanceType: "t3.nano", LastNode: "node-1"})
@@ -60,6 +61,7 @@ func TestRekey_MovesInstanceStateRecordsOntoTheDot(t *testing.T) {
 }
 
 func TestRekey_MovesTerminatedRecordsOntoTheDot(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	kv := seedSlashRecord(t, nc, daemon.TerminatedInstanceBucket, 2,
 		&vm.VM{ID: "i-1", InstanceType: "t3.nano", LastNode: "node-1"})
@@ -79,6 +81,7 @@ func TestRekey_MovesTerminatedRecordsOntoTheDot(t *testing.T) {
 // A bucket that never held the slash separator must come out the same as one
 // that did, so a fresh install is not a special case.
 func TestRekey_IsANoOpWithNothingToMove(t *testing.T) {
+	t.Parallel()
 	m := newRecordManager(t)
 	require.NoError(t, m.WriteStoppedInstance("i-1", &vm.VM{ID: "i-1", InstanceType: "t3.nano"}))
 
@@ -92,6 +95,7 @@ func TestRekey_IsANoOpWithNothingToMove(t *testing.T) {
 // single token — so "i/*" matched nothing. This asserts the new shape is
 // actually watchable, rather than trusting the reasoning that chose it.
 func TestRecordKeys_AreWatchableByASubjectFilter(t *testing.T) {
+	t.Parallel()
 	m, nc := newRecordManagerConn(t)
 
 	js, err := jetstream.New(nc)

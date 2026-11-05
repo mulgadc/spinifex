@@ -46,6 +46,7 @@ func gpuVMsRequest(t *testing.T, daemon *Daemon, subject string) clusterv1.NodeV
 }
 
 func TestHandleNodeStatus_NoGPU(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 	daemon.gpuManager = nil
 
@@ -57,6 +58,7 @@ func TestHandleNodeStatus_NoGPU(t *testing.T) {
 }
 
 func TestHandleNodeStatus_WholeGPU(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 
 	claimed := gpu.GPUDevice{PCIAddress: "0000:01:00.0", Model: "NVIDIA A10", MemoryMiB: 23028, IOMMUGroup: -1}
@@ -87,6 +89,7 @@ func TestHandleNodeStatus_WholeGPU(t *testing.T) {
 }
 
 func TestHandleNodeStatus_MIG(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 
 	mdevDir := t.TempDir()
@@ -134,6 +137,7 @@ func TestHandleNodeStatus_MIG(t *testing.T) {
 }
 
 func TestHandleNodeVMs_GPUAttachments_WholeGPU(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 	instanceType := getTestInstanceType(t)
 
@@ -167,6 +171,7 @@ func TestHandleNodeVMs_GPUAttachments_WholeGPU(t *testing.T) {
 }
 
 func TestHandleNodeVMs_GPUAttachment_MIG(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 	instanceType := getTestInstanceType(t)
 
@@ -200,6 +205,7 @@ func TestHandleNodeVMs_GPUAttachment_MIG(t *testing.T) {
 }
 
 func TestHandleNodeVMs_GPUAttachment_Absent(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 	instanceType := getTestInstanceType(t)
 

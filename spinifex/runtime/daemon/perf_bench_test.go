@@ -10,6 +10,7 @@ import (
 // Measures a child the test owns: the test binary's own RSS grows with every
 // test that ran before it, so it cannot bound anything.
 func TestMeasureQEMURSSMiB_Self(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("sleep", "60")
 	require.NoError(t, cmd.Start())
 	t.Cleanup(func() {
@@ -30,6 +31,7 @@ func TestMeasureQEMURSSMiB_Self(t *testing.T) {
 }
 
 func TestMeasureQEMURSSMiB_InvalidPID(t *testing.T) {
+	t.Parallel()
 	for _, pid := range []int{0, -1, -999} {
 		_, err := measureQEMURSSMiB(pid)
 		if err == nil {
@@ -39,6 +41,7 @@ func TestMeasureQEMURSSMiB_InvalidPID(t *testing.T) {
 }
 
 func TestMeasureQEMURSSMiB_NonExistentPID(t *testing.T) {
+	t.Parallel()
 	_, err := measureQEMURSSMiB(999999999)
 	if err == nil {
 		t.Error("expected error for non-existent pid, got nil")

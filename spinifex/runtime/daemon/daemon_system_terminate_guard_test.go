@@ -195,6 +195,7 @@ func TestS7_TerminateSystemInstanceRefusesOnAbsentOrError(t *testing.T) {
 // A routed owner that cannot read the record answers ownership-unknown, and the
 // asking node must keep that distinct from the VM being gone.
 func TestTerminateSystemInstance_LookupErrorIsNotNotFound(t *testing.T) {
+	t.Parallel()
 	d := guardDaemon(t)
 	d.ownership = fakeOwnership{err: errors.New("kv down")}
 	require.NoError(t, d.subscribeSystemTerminate("i-lookup-err"))
@@ -210,8 +211,10 @@ func TestTerminateSystemInstance_LookupErrorIsNotNotFound(t *testing.T) {
 }
 
 func TestS7_TerminateSystemInstanceStillTerminatesEverySystemKind(t *testing.T) {
+	t.Parallel()
 	for _, managedBy := range []string{tags.ManagedByELBv2, tags.ManagedByEKS, tags.ManagedByRDS, tags.ManagedByBedrock, tags.ManagedBySQS} {
 		t.Run(managedBy, func(t *testing.T) {
+			t.Parallel()
 			d := guardDaemon(t)
 
 			local := &vm.VM{ID: "i-sys-local-" + managedBy, Status: vm.StateRunning, AccountID: awsidentifiers.GlobalAccountID, ManagedBy: managedBy}
@@ -290,6 +293,7 @@ func associateEIP(t *testing.T, kv jetstream.KeyValue, allocID, eniID string) {
 }
 
 func TestS7_BackstopNeverReleasesCustomerAssociatedAddress(t *testing.T) {
+	t.Parallel()
 	d := createVPCTestDaemon(t)
 	_, nc, js := testutil.StartTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)
@@ -334,6 +338,7 @@ func addressKept(t *testing.T, svc *ec2eip.EIPServiceImpl, allocID string) bool 
 }
 
 func TestS7_TerminateSystemInstanceNeverReleasesCustomerEIP(t *testing.T) {
+	t.Parallel()
 	cases := map[string]struct {
 		inst *vm.VM
 		loc  recordLocation
@@ -344,6 +349,7 @@ func TestS7_TerminateSystemInstanceNeverReleasesCustomerEIP(t *testing.T) {
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			d := createVPCTestDaemon(t)
 			_, nc, _ := testutil.StartTestJetStream(t)
 			var err error
@@ -381,6 +387,7 @@ func (f flipOwnership) Classify(string) (systeminstance.Classification, error) {
 }
 
 func TestS7_WrapperSkipsBackstopWhenOwnerCannotReadRecord(t *testing.T) {
+	t.Parallel()
 	d := createVPCTestDaemon(t)
 	_, nc, js := testutil.StartTestJetStream(t)
 	ipam, err := ec2vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
@@ -414,6 +421,7 @@ func TestS7_WrapperSkipsBackstopWhenOwnerCannotReadRecord(t *testing.T) {
 // A refused customer ID must never read as "gone": callers act on the ID after
 // NotFound, and acting on a customer instance is the hole this guard closes.
 func TestS7_NotSystemIsNeitherNotFoundNorOwnershipUnknown(t *testing.T) {
+	t.Parallel()
 	assert.NotErrorIs(t, systeminstance.ErrSystemInstanceNotSystem, systeminstance.ErrSystemInstanceNotFound)
 	assert.NotErrorIs(t, systeminstance.ErrSystemInstanceNotSystem, systeminstance.ErrSystemInstanceOwnershipUnknown)
 	assert.NotContains(t, systeminstance.ErrSystemInstanceNotSystem.Error(), systeminstance.ErrSystemInstanceNotFound.Error())
@@ -422,6 +430,7 @@ func TestS7_NotSystemIsNeitherNotFoundNorOwnershipUnknown(t *testing.T) {
 
 // The asking node maps a routed customer refusal back to the same sentinel.
 func TestTerminateSystemInstance_RoutedNotSystemMapsBack(t *testing.T) {
+	t.Parallel()
 	d := guardDaemon(t)
 	stage(t, d, &vm.VM{ID: "i-routed-cust", Status: vm.StateStopped, AccountID: testAccountID}, atStopped)
 	require.NoError(t, d.subscribeSystemTerminate("i-routed-cust"))
@@ -435,6 +444,7 @@ func TestTerminateSystemInstance_RoutedNotSystemMapsBack(t *testing.T) {
 // A VM this node runs whose record has vanished is not gone: reporting NotFound
 // would send a caller on to clean up under a live guest.
 func TestS7_HeldVMWithAbsentRecordIsOwnershipUnknown(t *testing.T) {
+	t.Parallel()
 	d := guardDaemon(t)
 	terminated := countTerminations(d)
 	sys := &vm.VM{ID: "i-sys-norecord", Status: vm.StateRunning, AccountID: awsidentifiers.GlobalAccountID, ManagedBy: tags.ManagedByELBv2}
@@ -463,6 +473,7 @@ func (f absentAfterFirst) Classify(string) (systeminstance.Classification, error
 }
 
 func TestS7_SystemThenAbsentKeepsLaunchEIP(t *testing.T) {
+	t.Parallel()
 	d := createVPCTestDaemon(t)
 	_, nc, js := testutil.StartTestJetStream(t)
 	ipam, err := ec2vpc.NewExternalIPAM(t.Context(), js, []external.ExternalPoolConfig{
@@ -497,6 +508,7 @@ func TestS7_SystemThenAbsentKeepsLaunchEIP(t *testing.T) {
 // Control-plane VMs launched before EKS moved to the system account carry the
 // manager in a customer account; they stay terminable. Other managers do not.
 func TestClassify_LegacyEKSControlPlaneInCustomerAccountIsSystem(t *testing.T) {
+	t.Parallel()
 	d := guardDaemon(t)
 	for _, loc := range []recordLocation{atLive, atStopped, atTerminated} {
 		legacy := &vm.VM{ID: "i-legacy-cp", Status: vm.StateRunning, AccountID: testAccountID, ManagedBy: tags.ManagedByEKS}

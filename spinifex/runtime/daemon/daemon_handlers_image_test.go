@@ -46,7 +46,8 @@ func seedStoppedInstance(t *testing.T, daemon *Daemon, id, lastNode string) {
 // node which is not the stopped instance's LastNode declines exactly like
 // an unknown instance ID, instead of proceeding into the image service.
 func TestHandleEC2CreateImage_StoppedInstance_NonOwnerDeclines(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 	// createTestDaemon fixes the cluster config's own node at "node-1".
 	seedStoppedInstance(t, daemon, "i-stopped-nonowner", "node-2")
@@ -73,7 +74,8 @@ func TestHandleEC2CreateImage_StoppedInstance_NonOwnerDeclines(t *testing.T) {
 // node recorded as LastNode is let through the ownership gate into the
 // image service, rather than declining with NotFound.
 func TestHandleEC2CreateImage_StoppedInstance_OwnerProceeds(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 	seedStoppedInstance(t, daemon, "i-stopped-owner", daemon.node)
 
@@ -99,7 +101,8 @@ func TestHandleEC2CreateImage_StoppedInstance_OwnerProceeds(t *testing.T) {
 // running-instance path stays governed solely by vmMgr's local-map filter —
 // a stale VM.LastNode left over from a prior stop must not cause a decline.
 func TestHandleEC2CreateImage_RunningInstance_LastNodeIgnored(t *testing.T) {
-	natsURL := sharedNATSURL
+	t.Parallel()
+	natsURL := privateNATSURL(t)
 	daemon := createFullTestDaemon(t, natsURL)
 
 	daemon.vmMgr.Insert(&vm.VM{
@@ -140,7 +143,8 @@ func TestHandleEC2CreateImage_RunningInstance_LastNodeIgnored(t *testing.T) {
 // pre-LastNode legacy record: the requesting node self-elects via CAS
 // instead of proceeding unconditionally or declining forever.
 func TestHandleEC2CreateImage_StoppedInstance_EmptyLastNodeElectsSelf(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 	seedStoppedInstance(t, daemon, "i-stopped-legacy", "") // no LastNode, as an older build would leave it
 

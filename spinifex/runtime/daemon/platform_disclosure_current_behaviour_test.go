@@ -167,6 +167,7 @@ func sortedIDs(ids ...string) []string {
 // and receives that account's key pair, placement group and launch template
 // IDs and names, and every tagged key-, pg- and lt- ID, scoped to it alone.
 func TestCurrentBehaviour_AccountTermination_DirectNATSCallerReadsAnyAccountsPlatformIdentities(t *testing.T) {
+	t.Parallel()
 	c := newDisclosureCluster(t)
 	a := c.seed(t, disclosureAccount, "a")
 	b := c.seed(t, disclosureOther, "b")
@@ -190,6 +191,7 @@ func TestCurrentBehaviour_AccountTermination_DirectNATSCallerReadsAnyAccountsPla
 // the per-kind subjects: orphan and undecodable key-pair objects, undecodable
 // placement-group records, and launch-template bodies or headers with no live template.
 func TestCurrentBehaviour_AccountTermination_DirectNATSCallerCannotSeeHiddenResidue(t *testing.T) {
+	t.Parallel()
 	c := newDisclosureCluster(t)
 	c.seed(t, disclosureAccount, "a")
 	before := c.describe(t, disclosureAccount)
@@ -230,6 +232,7 @@ func TestCurrentBehaviour_AccountTermination_DirectNATSCallerCannotSeeHiddenResi
 // Deleting a key pair, placement group or launch template clears its
 // tag-index entry, so DescribeTags no longer returns its rows, as in AWS.
 func TestPlatformDeletesClearTagIndexEntries(t *testing.T) {
+	t.Parallel()
 	c := newDisclosureCluster(t)
 	s := c.seed(t, disclosureAccount, "a")
 	before := c.describe(t, disclosureAccount)

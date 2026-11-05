@@ -28,6 +28,7 @@ const noReplyWait = 100 * time.Millisecond
 
 // TestClusterShutdownStateKVRoundTrip verifies cluster shutdown state can be stored and retrieved from KV.
 func TestClusterShutdownStateKVRoundTrip(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -150,7 +151,7 @@ func TestRespondShutdownACK(t *testing.T) {
 
 // TestPublishShutdownProgress verifies publishShutdownProgress publishes correct progress to the NATS topic.
 func TestPublishShutdownProgress(t *testing.T) {
-	nc, err := nats.Connect(sharedNATSURL)
+	nc, err := nats.Connect(privateNATSURL(t))
 	require.NoError(t, err)
 	defer nc.Close()
 
@@ -249,7 +250,7 @@ func TestHandleShutdownGate(t *testing.T) {
 		var ack ShutdownACK
 		require.NoError(t, json.Unmarshal(reply.Data, &ack))
 
-		assert.Equal(t, "node-1", ack.Node)
+		assert.Equal(t, daemon.node, ack.Node)
 		assert.Equal(t, "gate", ack.Phase)
 		assert.Empty(t, ack.Error)
 		assert.Contains(t, ack.Stopped, "awsgw")

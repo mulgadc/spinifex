@@ -189,6 +189,7 @@ type testOutput struct {
 }
 
 func TestHandleNATSRequest_ValidRequest(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 
 	nc, err := nats.Connect(natsURL)
@@ -214,6 +215,7 @@ func TestHandleNATSRequest_ValidRequest(t *testing.T) {
 }
 
 func TestHandleNATSRequest_MalformedJSON(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 
 	nc, err := nats.Connect(natsURL)
@@ -238,6 +240,7 @@ func TestHandleNATSRequest_MalformedJSON(t *testing.T) {
 }
 
 func TestHandleNATSRequest_ServiceError(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 
 	nc, err := nats.Connect(natsURL)
@@ -265,6 +268,7 @@ func TestHandleNATSRequest_ServiceError(t *testing.T) {
 }
 
 func TestHandleNATSRequest_WrappedAWSServiceError(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -291,6 +295,7 @@ func TestHandleNATSRequest_WrappedAWSServiceError(t *testing.T) {
 // --- Handler wrapper tests (representative set via NATS round-trip) ---
 
 func TestHandleEC2CreateKeyPair_RoundTrip(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 
 	daemon := createFullTestDaemon(t, natsURL)
@@ -318,6 +323,7 @@ func TestHandleEC2CreateKeyPair_RoundTrip(t *testing.T) {
 // --- handleHealthCheck tests ---
 
 func TestHandleHealthCheck(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 
 	daemon := createTestDaemon(t, natsURL)
@@ -354,6 +360,7 @@ func TestHandleHealthCheck(t *testing.T) {
 // --- handleNodeDiscover tests ---
 
 func TestHandleNodeDiscover(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 
 	daemon := createTestDaemon(t, natsURL)
@@ -376,7 +383,8 @@ func TestHandleNodeDiscover(t *testing.T) {
 // --- handleEC2RunInstances AMI validation tests ---
 
 func TestHandleEC2RunInstances_InvalidAMI(t *testing.T) {
-	natsURL := sharedNATSURL
+	t.Parallel()
+	natsURL := privateNATSURL(t)
 
 	daemon := createFullTestDaemon(t, natsURL)
 
@@ -399,7 +407,8 @@ func TestHandleEC2RunInstances_InvalidAMI(t *testing.T) {
 }
 
 func TestHandleEC2RunInstances_InvalidKeyPair(t *testing.T) {
-	natsURL := sharedNATSURL
+	t.Parallel()
+	natsURL := privateNATSURL(t)
 
 	daemon, memStore := createFullTestDaemonWithStore(t, natsURL)
 
@@ -462,7 +471,7 @@ func TestHandleEC2RunInstances_MessageParsing(t *testing.T) {
 		},
 	}
 
-	daemon := createFullTestDaemon(t, sharedNATSURL)
+	daemon := createFullTestDaemon(t, privateNATSURL(t))
 	sub, err := daemon.natsConn.QueueSubscribe("ec2.RunInstances", "spinifex-workers", asMsgHandler(daemon.handleEC2RunInstances))
 	require.NoError(t, err)
 	defer sub.Unsubscribe()
@@ -484,7 +493,8 @@ func mustMarshal(t *testing.T, v any) []byte {
 }
 
 func TestHandleEC2RunInstances_ValidKeyPairPassesValidation(t *testing.T) {
-	natsURL := sharedNATSURL
+	t.Parallel()
+	natsURL := privateNATSURL(t)
 
 	daemon, memStore := createFullTestDaemonWithStore(t, natsURL)
 
@@ -528,7 +538,8 @@ func TestHandleEC2RunInstances_ValidKeyPairPassesValidation(t *testing.T) {
 }
 
 func TestHandleEC2RunInstances_EmptyKeyNameSkipsValidation(t *testing.T) {
-	natsURL := sharedNATSURL
+	t.Parallel()
+	natsURL := privateNATSURL(t)
 
 	daemon, memStore := createFullTestDaemonWithStore(t, natsURL)
 	seedTestAMI(t, memStore, daemon.config.Predastore.Bucket, "ami-test789")
@@ -555,7 +566,8 @@ func TestHandleEC2RunInstances_EmptyKeyNameSkipsValidation(t *testing.T) {
 // --- handleEC2RunInstances service-layer error propagation ---
 
 func TestHandleEC2RunInstances_ServiceErrorPropagated(t *testing.T) {
-	natsURL := sharedNATSURL
+	t.Parallel()
+	natsURL := privateNATSURL(t)
 
 	daemon, memStore := createFullTestDaemonWithStore(t, natsURL)
 	seedTestAMI(t, memStore, daemon.config.Predastore.Bucket, "ami-propatest")
@@ -678,6 +690,7 @@ func runInstancesAndCheckENISGs(t *testing.T, mutator func(input *ec2.RunInstanc
 // would silently put the ENI on the default SG and not be caught by the
 // existing service-layer tests.
 func TestRunInstances_PropagatesSGsToENI(t *testing.T) {
+	t.Parallel()
 	sg1, sg2, got := runInstancesAndCheckENISGs(t, func(input *ec2.RunInstancesInput, subnetID, sg1, sg2 string) {
 		input.SubnetId = aws.String(subnetID)
 		input.SecurityGroupIds = []*string{aws.String(sg1), aws.String(sg2)}
@@ -692,6 +705,7 @@ func TestRunInstances_PropagatesSGsToENI(t *testing.T) {
 // block); a regression there would let SGs through but lose the subnet,
 // or vice versa.
 func TestRunInstances_PropagatesSGsToENI_TerraformShape(t *testing.T) {
+	t.Parallel()
 	sg1, sg2, got := runInstancesAndCheckENISGs(t, func(input *ec2.RunInstancesInput, subnetID, sg1, sg2 string) {
 		input.NetworkInterfaces = []*ec2.InstanceNetworkInterfaceSpecification{{
 			SubnetId: aws.String(subnetID),
@@ -704,6 +718,7 @@ func TestRunInstances_PropagatesSGsToENI_TerraformShape(t *testing.T) {
 // --- handleStopOrTerminateInstance tests (JetStream required for TransitionState) ---
 
 func TestHandleEC2Events_StopInstance(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedJSNATSURL
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
@@ -766,6 +781,7 @@ func assertLeavesRunning(t *testing.T, daemon *Daemon, instance *vm.VM, want ...
 }
 
 func TestHandleEC2Events_TerminateInstance(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedJSNATSURL
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
@@ -808,6 +824,7 @@ func TestHandleEC2Events_TerminateInstance(t *testing.T) {
 }
 
 func TestHandleEC2Events_RebootRunningInstance(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 
 	daemon := createTestDaemon(t, natsURL)
@@ -859,6 +876,7 @@ func TestHandleEC2Events_RebootRunningInstance(t *testing.T) {
 }
 
 func TestHandleEC2Events_RebootStoppedInstance(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 
 	daemon := createTestDaemon(t, natsURL)
@@ -903,6 +921,7 @@ func TestHandleEC2Events_RebootStoppedInstance(t *testing.T) {
 }
 
 func TestHandleEC2Events_RebootTerminatedInstance(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 
 	daemon := createTestDaemon(t, natsURL)
@@ -947,6 +966,7 @@ func TestHandleEC2Events_RebootTerminatedInstance(t *testing.T) {
 }
 
 func TestHandleEC2Events_InstanceNotFound(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 
 	daemon := createTestDaemon(t, natsURL)
@@ -971,6 +991,7 @@ func TestHandleEC2Events_InstanceNotFound(t *testing.T) {
 }
 
 func TestHandleEC2Events_MalformedJSON(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 
 	daemon := createTestDaemon(t, natsURL)
@@ -993,6 +1014,7 @@ func TestHandleEC2Events_MalformedJSON(t *testing.T) {
 // --- respondWithVolumeAttachment tests ---
 
 func TestRespondWithVolumeAttachment(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 
 	daemon := createTestDaemon(t, natsURL)
@@ -1021,7 +1043,8 @@ func TestRespondWithVolumeAttachment(t *testing.T) {
 // --- handleEC2ModifyVolume tests ---
 
 func TestHandleEC2ModifyVolume_MalformedInput(t *testing.T) {
-	natsURL := sharedNATSURL
+	t.Parallel()
+	natsURL := privateNATSURL(t)
 
 	daemon := createFullTestDaemon(t, natsURL)
 
@@ -1040,7 +1063,8 @@ func TestHandleEC2ModifyVolume_MalformedInput(t *testing.T) {
 }
 
 func TestHandleEC2ModifyVolume_VolumeNotFound(t *testing.T) {
-	natsURL := sharedNATSURL
+	t.Parallel()
+	natsURL := privateNATSURL(t)
 
 	daemon := createFullTestDaemon(t, natsURL)
 
@@ -1065,7 +1089,8 @@ func TestHandleEC2ModifyVolume_VolumeNotFound(t *testing.T) {
 // --- handleEC2CreateImage tests ---
 
 func TestHandleEC2CreateImage_InstanceNotFound(t *testing.T) {
-	natsURL := sharedNATSURL
+	t.Parallel()
+	natsURL := privateNATSURL(t)
 
 	daemon := createFullTestDaemon(t, natsURL)
 
@@ -1088,7 +1113,8 @@ func TestHandleEC2CreateImage_InstanceNotFound(t *testing.T) {
 }
 
 func TestHandleEC2CreateImage_MissingInstanceId(t *testing.T) {
-	natsURL := sharedNATSURL
+	t.Parallel()
+	natsURL := privateNATSURL(t)
 
 	daemon := createFullTestDaemon(t, natsURL)
 
@@ -1110,7 +1136,8 @@ func TestHandleEC2CreateImage_MissingInstanceId(t *testing.T) {
 }
 
 func TestHandleEC2CreateImage_InvalidState(t *testing.T) {
-	natsURL := sharedNATSURL
+	t.Parallel()
+	natsURL := privateNATSURL(t)
 
 	daemon := createFullTestDaemon(t, natsURL)
 
@@ -1149,7 +1176,8 @@ func TestHandleEC2CreateImage_InvalidState(t *testing.T) {
 }
 
 func TestHandleEC2CreateImage_NoRootVolume(t *testing.T) {
-	natsURL := sharedNATSURL
+	t.Parallel()
+	natsURL := privateNATSURL(t)
 
 	daemon := createFullTestDaemon(t, natsURL)
 
@@ -1185,7 +1213,8 @@ func TestHandleEC2CreateImage_NoRootVolume(t *testing.T) {
 }
 
 func TestHandleEC2CreateImage_MalformedJSON(t *testing.T) {
-	natsURL := sharedNATSURL
+	t.Parallel()
+	natsURL := privateNATSURL(t)
 
 	daemon := createFullTestDaemon(t, natsURL)
 
@@ -1206,7 +1235,8 @@ func TestHandleEC2CreateImage_MalformedJSON(t *testing.T) {
 // --- handleEC2StartStoppedInstance tests ---
 
 func TestHandleEC2StartStoppedInstance_MissingInstance(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
@@ -1226,7 +1256,8 @@ func TestHandleEC2StartStoppedInstance_MissingInstance(t *testing.T) {
 }
 
 func TestHandleEC2StartStoppedInstance_MissingInstanceID(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
@@ -1255,7 +1286,8 @@ func TestHandleEC2StartStoppedInstance_MissingInstanceID(t *testing.T) {
 // What is left is the race the taxonomy was written for — the stopped record is
 // gone because a claim already started the instance here.
 func TestHandleEC2StartStoppedInstance_NotStoppedState(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
@@ -1283,7 +1315,8 @@ func TestHandleEC2StartStoppedInstance_NotStoppedState(t *testing.T) {
 // --- handleEC2DescribeStoppedInstances tests ---
 
 func TestHandleEC2DescribeStoppedInstances_ReturnsStoppedInstances(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
@@ -1337,7 +1370,8 @@ func TestHandleEC2DescribeStoppedInstances_ReturnsStoppedInstances(t *testing.T)
 }
 
 func TestHandleEC2DescribeStoppedInstances_WithFilter(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
@@ -1405,6 +1439,7 @@ func TestHandleEC2DescribeStoppedInstances_WithFilter(t *testing.T) {
 // stays intact end-to-end against real JetStream KV.
 
 func TestHandleEC2GetConsoleOutput(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 	daemon := createFullTestDaemon(t, natsURL)
 
@@ -1451,6 +1486,7 @@ func TestHandleEC2GetConsoleOutput(t *testing.T) {
 }
 
 func TestHandleEC2GetConsoleOutput_ReadsRetiredFileWhenLiveNameIsGone(t *testing.T) {
+	t.Parallel()
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
 	instanceID := "i-console-retired-001"
@@ -1487,6 +1523,7 @@ func TestHandleEC2GetConsoleOutput_ReadsRetiredFileWhenLiveNameIsGone(t *testing
 }
 
 func TestHandleEC2GetConsoleOutput_AfterTrimReturnsNewest64KiB(t *testing.T) {
+	t.Parallel()
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
 	instanceID := "i-console-trim-001"
@@ -1530,6 +1567,7 @@ func TestHandleEC2GetConsoleOutput_AfterTrimReturnsNewest64KiB(t *testing.T) {
 }
 
 func TestHandleEC2GetConsoleOutput_EmptyLog(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 	daemon := createFullTestDaemon(t, natsURL)
 
@@ -1565,6 +1603,7 @@ func TestHandleEC2GetConsoleOutput_EmptyLog(t *testing.T) {
 }
 
 func TestHandleEC2GetConsoleOutput_NotFound(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 	daemon := createFullTestDaemon(t, natsURL)
 
@@ -1588,6 +1627,7 @@ func TestHandleEC2GetConsoleOutput_NotFound(t *testing.T) {
 // TestAttachVolume_ZoneMismatch verifies that attaching a volume in a different AZ
 // returns InvalidVolume.ZoneMismatch instead of proceeding.
 func TestAttachVolume_ZoneMismatch(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 	daemon, store := createFullTestDaemonWithStore(t, natsURL)
 
@@ -1653,6 +1693,7 @@ func TestAttachVolume_ZoneMismatch(t *testing.T) {
 // to confirm the daemon wiring stays intact.
 
 func TestHandleEC2ModifyInstanceAttribute_WrapperRoundTrip(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedJSNATSURL
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
@@ -1695,7 +1736,8 @@ func TestHandleEC2ModifyInstanceAttribute_WrapperRoundTrip(t *testing.T) {
 // --- DescribeInstanceAttribute daemon tests ---
 
 func TestHandleEC2DescribeInstanceAttribute_RunningInstance_InstanceType(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
@@ -1737,7 +1779,8 @@ func TestHandleEC2DescribeInstanceAttribute_RunningInstance_InstanceType(t *test
 }
 
 func TestHandleEC2DescribeInstanceAttribute_StoppedInstance_InstanceType(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
@@ -1777,7 +1820,8 @@ func TestHandleEC2DescribeInstanceAttribute_StoppedInstance_InstanceType(t *test
 }
 
 func TestHandleEC2DescribeInstanceAttribute_UserData(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
@@ -1819,7 +1863,8 @@ func TestHandleEC2DescribeInstanceAttribute_UserData(t *testing.T) {
 }
 
 func TestHandleEC2DescribeInstanceAttribute_DefaultAttribute_DisableApiTermination(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
@@ -1863,7 +1908,8 @@ func TestHandleEC2DescribeInstanceAttribute_DefaultAttribute_DisableApiTerminati
 }
 
 func TestHandleEC2DescribeInstanceAttribute_DefaultAttribute_ShutdownBehavior(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
@@ -1901,7 +1947,8 @@ func TestHandleEC2DescribeInstanceAttribute_DefaultAttribute_ShutdownBehavior(t 
 }
 
 func TestHandleEC2DescribeInstanceAttribute_GroupSet_WithSecurityGroups(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
@@ -1947,7 +1994,8 @@ func TestHandleEC2DescribeInstanceAttribute_GroupSet_WithSecurityGroups(t *testi
 }
 
 func TestHandleEC2DescribeInstanceAttribute_GroupSet_NilInstance(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
@@ -1984,7 +2032,8 @@ func TestHandleEC2DescribeInstanceAttribute_GroupSet_NilInstance(t *testing.T) {
 }
 
 func TestHandleEC2DescribeInstanceAttribute_InstanceNotFound(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
@@ -2007,7 +2056,8 @@ func TestHandleEC2DescribeInstanceAttribute_InstanceNotFound(t *testing.T) {
 }
 
 func TestHandleEC2DescribeInstanceAttribute_UnsupportedAttribute(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
@@ -2043,7 +2093,8 @@ func TestHandleEC2DescribeInstanceAttribute_UnsupportedAttribute(t *testing.T) {
 }
 
 func TestHandleEC2DescribeInstanceAttribute_InvalidJSON(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
@@ -2249,6 +2300,7 @@ func TestDaemonIP(t *testing.T) {
 // --- handleNodeStatus tests ---
 
 func TestHandleNodeStatus(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 
 	// Set identifiable config values
@@ -2271,7 +2323,7 @@ func TestHandleNodeStatus(t *testing.T) {
 	err = json.Unmarshal(reply.Data, &resp)
 	require.NoError(t, err)
 
-	assert.Equal(t, "node-1", resp.Node)
+	assert.Equal(t, daemon.node, resp.Node)
 	assert.Equal(t, "Ready", resp.Status)
 	assert.Equal(t, "10.0.0.5", resp.Host)
 	assert.Equal(t, "us-west-2", resp.Region)
@@ -2287,6 +2339,7 @@ func TestHandleNodeStatus(t *testing.T) {
 }
 
 func TestHandleNodeStatus_NoVMs(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 	daemon.config.Daemon.Host = "192.168.1.1:4432"
 
@@ -2310,6 +2363,7 @@ func TestHandleNodeStatus_NoVMs(t *testing.T) {
 // --- handleNodeVMs tests ---
 
 func TestHandleNodeVMs(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 	daemon.config.Daemon.Host = "10.0.0.5:4432"
 
@@ -2341,7 +2395,7 @@ func TestHandleNodeVMs(t *testing.T) {
 	err = json.Unmarshal(reply.Data, &resp)
 	require.NoError(t, err)
 
-	assert.Equal(t, "node-1", resp.Node)
+	assert.Equal(t, daemon.node, resp.Node)
 	assert.Equal(t, "10.0.0.5", resp.Host)
 	assert.Len(t, resp.VMs, 2)
 
@@ -2364,6 +2418,7 @@ func TestHandleNodeVMs(t *testing.T) {
 }
 
 func TestHandleNodeVMs_Empty(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 	daemon.config.Daemon.Host = "10.0.0.5:4432"
 
@@ -2378,11 +2433,12 @@ func TestHandleNodeVMs_Empty(t *testing.T) {
 	err = json.Unmarshal(reply.Data, &resp)
 	require.NoError(t, err)
 
-	assert.Equal(t, "node-1", resp.Node)
+	assert.Equal(t, daemon.node, resp.Node)
 	assert.Empty(t, resp.VMs)
 }
 
 func TestHandleNodeVMs_UnknownInstanceType(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 	daemon.config.Daemon.Host = "10.0.0.5:4432"
 
@@ -2414,9 +2470,9 @@ func TestHandleNodeVMs_UnknownInstanceType(t *testing.T) {
 func createVPCTestDaemon(t *testing.T) *Daemon {
 	t.Helper()
 
-	daemon := createTestDaemon(t, sharedNATSURL)
-
-	_, nc, _ := testutil.StartTestJetStream(t)
+	// The daemon shares the services' server, so subjects it serves stay private.
+	ns, nc, _ := testutil.StartTestJetStream(t)
+	daemon := createTestDaemon(t, ns.ClientURL())
 
 	testutil.StubVpcdSGResponder(t, nc)
 
@@ -2436,6 +2492,7 @@ func createVPCTestDaemon(t *testing.T) *Daemon {
 // bootstrap derived "does this VPC have a gateway" from the describe
 // projection, which reports only confirmed attachments.
 func TestEnsureDefaultVPCInfrastructure_PendingAttachIsNotReDone(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 
 	// One JetStream for all three services: CreateRoute validates the gateway
@@ -2602,6 +2659,7 @@ func TestDelegateHandlers_IGW(t *testing.T) {
 }
 
 func TestHandleEC2CreateVpc_SuccessPath(t *testing.T) {
+	t.Parallel()
 	daemon := createVPCTestDaemon(t)
 
 	sub, err := daemon.natsConn.QueueSubscribe("ec2.CreateVpc", "spinifex-workers", asMsgHandler(handleNATSRequest(daemon.node, daemon.vpcService.CreateVpc)))
@@ -2623,6 +2681,7 @@ func TestHandleEC2CreateVpc_SuccessPath(t *testing.T) {
 }
 
 func TestHandleEC2CreateAndDescribeVpc_RoundTrip(t *testing.T) {
+	t.Parallel()
 	daemon := createVPCTestDaemon(t)
 
 	createSub, err := daemon.natsConn.QueueSubscribe("ec2.CreateVpc", "spinifex-workers", asMsgHandler(handleNATSRequest(daemon.node, daemon.vpcService.CreateVpc)))
@@ -2663,6 +2722,7 @@ func TestHandleEC2CreateAndDescribeVpc_RoundTrip(t *testing.T) {
 }
 
 func TestHandleEC2CreateInternetGateway_SuccessPath(t *testing.T) {
+	t.Parallel()
 	daemon := createVPCTestDaemon(t)
 
 	sub, err := daemon.natsConn.QueueSubscribe("ec2.CreateInternetGateway", "spinifex-workers", asMsgHandler(handleNATSRequest(daemon.node, daemon.igwService.CreateInternetGateway)))
@@ -2683,6 +2743,7 @@ func TestHandleEC2CreateInternetGateway_SuccessPath(t *testing.T) {
 }
 
 func TestHandleEC2CreateSubnet_SuccessPath(t *testing.T) {
+	t.Parallel()
 	daemon := createVPCTestDaemon(t)
 
 	createVpcSub, err := daemon.natsConn.QueueSubscribe("ec2.CreateVpc", "spinifex-workers", asMsgHandler(handleNATSRequest(daemon.node, daemon.vpcService.CreateVpc)))
@@ -2761,7 +2822,8 @@ func TestDelegateHandlers_EIGW(t *testing.T) {
 // --- handleEC2ModifyVolume success path ---
 
 func TestHandleEC2ModifyVolume_Success(t *testing.T) {
-	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
+	t.Parallel()
+	daemon, store := createFullTestDaemonWithStore(t, privateNATSURL(t))
 
 	// Seed a volume in the store
 	volumeID := "vol-modify-success"
@@ -2804,7 +2866,8 @@ func TestHandleEC2ModifyVolume_Success(t *testing.T) {
 // --- handleEC2DescribeInstanceTypes with capacity filter ---
 
 func TestHandleEC2DescribeInstanceTypes_CapacityFilter(t *testing.T) {
-	daemon := createFullTestDaemon(t, sharedNATSURL)
+	t.Parallel()
+	daemon := createFullTestDaemon(t, privateNATSURL(t))
 
 	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeInstanceTypes", "spinifex-workers", asMsgHandler(handleNATSRequest(daemon.node, daemon.instanceService.DescribeInstanceTypes)))
 	require.NoError(t, err)
@@ -2831,6 +2894,7 @@ func TestHandleEC2DescribeInstanceTypes_CapacityFilter(t *testing.T) {
 }
 
 func TestHandleEC2DescribeInstanceTypes_NoFilter(t *testing.T) {
+	t.Parallel()
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
 	sub, err := daemon.natsConn.QueueSubscribe("ec2.DescribeInstanceTypes.nofilter", "spinifex-workers", asMsgHandler(handleNATSRequest(daemon.node, daemon.instanceService.DescribeInstanceTypes)))
@@ -2852,7 +2916,8 @@ func TestHandleEC2DescribeInstanceTypes_NoFilter(t *testing.T) {
 // --- handleEC2StartStoppedInstance: instance type not available ---
 
 func TestHandleEC2StartStoppedInstance_InstanceTypeNotAvailable(t *testing.T) {
-	daemon := createFullTestDaemonWithJetStream(t, sharedJSNATSURL)
+	t.Parallel()
+	daemon := createFullTestDaemonWithJetStream(t, privateJSNATSURL(t))
 
 	stoppedVM := withBootVolume(&vm.VM{
 		ID:           "i-start-badtype-001",
@@ -2891,6 +2956,7 @@ func TestHandleEC2StartStoppedInstance_InstanceTypeNotAvailable(t *testing.T) {
 // --- handleEC2CreateImage: running instance with valid root volume ---
 
 func TestHandleEC2CreateImage_RunningInstanceReachesService(t *testing.T) {
+	t.Parallel()
 	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
 
 	instanceID := "i-create-image-running"
@@ -2949,6 +3015,7 @@ func TestHandleEC2CreateImage_RunningInstanceReachesService(t *testing.T) {
 // --- handleAttachVolume: missing volume data ---
 
 func TestAttachVolume_MissingVolumeData(t *testing.T) {
+	t.Parallel()
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
 	instanceID := "i-attach-missing-vol"
@@ -2989,6 +3056,7 @@ func TestAttachVolume_MissingVolumeData(t *testing.T) {
 }
 
 func TestAttachVolume_InstanceNotRunning(t *testing.T) {
+	t.Parallel()
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
 	instanceID := "i-attach-stopped"
@@ -3030,6 +3098,7 @@ func TestAttachVolume_InstanceNotRunning(t *testing.T) {
 }
 
 func TestAttachVolume_VolumeNotFound(t *testing.T) {
+	t.Parallel()
 	daemon, _ := createFullTestDaemonWithStore(t, sharedNATSURL)
 
 	instanceID := "i-attach-vol-notfound"
@@ -3071,6 +3140,7 @@ func TestAttachVolume_VolumeNotFound(t *testing.T) {
 }
 
 func TestAttachVolume_VolumeInUse(t *testing.T) {
+	t.Parallel()
 	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
 
 	instanceID := "i-attach-vol-inuse"
@@ -3124,6 +3194,7 @@ func TestAttachVolume_VolumeInUse(t *testing.T) {
 // --- handleEC2Events: detach volume validation ---
 
 func TestDetachVolume_MissingVolumeData(t *testing.T) {
+	t.Parallel()
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
 	instanceID := "i-detach-missing"
@@ -3163,6 +3234,7 @@ func TestDetachVolume_MissingVolumeData(t *testing.T) {
 }
 
 func TestDetachVolume_InstanceNotRunning(t *testing.T) {
+	t.Parallel()
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
 	instanceID := "i-detach-stopped"
@@ -3204,6 +3276,7 @@ func TestDetachVolume_InstanceNotRunning(t *testing.T) {
 }
 
 func TestDetachVolume_VolumeNotAttached(t *testing.T) {
+	t.Parallel()
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
 	instanceID := "i-detach-notattached"
@@ -3245,6 +3318,7 @@ func TestDetachVolume_VolumeNotAttached(t *testing.T) {
 }
 
 func TestDetachVolume_BootVolumeRejected(t *testing.T) {
+	t.Parallel()
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
 	instanceID := "i-detach-boot"
@@ -3289,6 +3363,7 @@ func TestDetachVolume_BootVolumeRejected(t *testing.T) {
 }
 
 func TestDetachVolume_DeviceMismatch(t *testing.T) {
+	t.Parallel()
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
 	instanceID := "i-detach-devmismatch"
@@ -3336,7 +3411,8 @@ func TestDetachVolume_DeviceMismatch(t *testing.T) {
 // --- handleEC2RunInstances: insufficient capacity ---
 
 func TestHandleEC2RunInstances_InsufficientCapacity(t *testing.T) {
-	daemon, memStore := createFullTestDaemonWithStore(t, sharedNATSURL)
+	t.Parallel()
+	daemon, memStore := createFullTestDaemonWithStore(t, privateNATSURL(t))
 	seedTestAMI(t, memStore, daemon.config.Predastore.Bucket, "ami-test")
 
 	sub, err := daemon.natsConn.QueueSubscribe("ec2.RunInstances", "spinifex-workers", asMsgHandler(daemon.handleEC2RunInstances))
@@ -3361,6 +3437,7 @@ func TestHandleEC2RunInstances_InsufficientCapacity(t *testing.T) {
 }
 
 func TestHandleEC2RunInstances_UnsupportedInstanceType(t *testing.T) {
+	t.Parallel()
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
 	sub, err := daemon.natsConn.QueueSubscribe("ec2.RunInstances.badtype", "spinifex-workers", asMsgHandler(daemon.handleEC2RunInstances))
@@ -3384,6 +3461,7 @@ func TestHandleEC2RunInstances_UnsupportedInstanceType(t *testing.T) {
 }
 
 func TestHandleEC2RunInstances_MalformedInput(t *testing.T) {
+	t.Parallel()
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
 	sub, err := daemon.natsConn.QueueSubscribe("ec2.RunInstances.bad", "spinifex-workers", asMsgHandler(daemon.handleEC2RunInstances))
@@ -3403,6 +3481,7 @@ func TestHandleEC2RunInstances_MalformedInput(t *testing.T) {
 // --- handleEC2DescribeInstances: malformed instance ID ---
 
 func TestHandleEC2DescribeInstances_MalformedInstanceID(t *testing.T) {
+	t.Parallel()
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
 	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstances.malformed", asMsgHandler(handleNATSRequest(daemon.node, daemon.instanceService.DescribeInstances)))
@@ -3422,6 +3501,7 @@ func TestHandleEC2DescribeInstances_MalformedInstanceID(t *testing.T) {
 // --- handleEC2DescribeInstanceStatus round-trip ---
 
 func TestHandleEC2DescribeInstanceStatus_RoundTrip(t *testing.T) {
+	t.Parallel()
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
 	runningVM := &vm.VM{
@@ -3461,6 +3541,7 @@ func TestHandleEC2DescribeInstanceStatus_RoundTrip(t *testing.T) {
 }
 
 func TestHandleEC2DescribeInstanceStatus_MalformedInstanceID(t *testing.T) {
+	t.Parallel()
 	daemon := createFullTestDaemon(t, sharedNATSURL)
 
 	sub, err := daemon.natsConn.Subscribe("ec2.DescribeInstanceStatus.malformed", asMsgHandler(handleNATSRequest(daemon.node, daemon.instanceService.DescribeInstanceStatus)))
@@ -3478,7 +3559,8 @@ func TestHandleEC2DescribeInstanceStatus_MalformedInstanceID(t *testing.T) {
 // --- Terminated instance handler tests ---
 
 func TestHandleEC2DescribeTerminatedInstances_ReturnsTerminatedInstances(t *testing.T) {
-	daemon := createFullTestDaemonWithJetStream(t, sharedJSNATSURL)
+	t.Parallel()
+	daemon := createFullTestDaemonWithJetStream(t, privateJSNATSURL(t))
 
 	terminatedVM := &vm.VM{
 		ID:           "i-describe-term-001",
@@ -3527,7 +3609,8 @@ func TestHandleEC2DescribeTerminatedInstances_ReturnsTerminatedInstances(t *test
 }
 
 func TestHandleEC2DescribeTerminatedInstances_WithFilter(t *testing.T) {
-	daemon := createFullTestDaemonWithJetStream(t, sharedJSNATSURL)
+	t.Parallel()
+	daemon := createFullTestDaemonWithJetStream(t, privateJSNATSURL(t))
 
 	for _, id := range []string{"i-tfilter-001", "i-tfilter-002"} {
 		v := &vm.VM{
@@ -3573,7 +3656,8 @@ func TestHandleEC2DescribeTerminatedInstances_WithFilter(t *testing.T) {
 }
 
 func TestHandleEC2TerminateStoppedInstance_WritesToTerminatedKV(t *testing.T) {
-	daemon := createFullTestDaemonWithJetStream(t, sharedJSNATSURL)
+	t.Parallel()
+	daemon := createFullTestDaemonWithJetStream(t, privateJSNATSURL(t))
 
 	stoppedVM := &vm.VM{
 		ID:           "i-stop-to-term-001",
@@ -4012,6 +4096,7 @@ func captureSlogForTest(t *testing.T) *bytes.Buffer {
 }
 
 func TestRespondWithJSON_MarshalSuccess(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	defer nc.Close()
@@ -4097,7 +4182,8 @@ func TestVMHealthLabel(t *testing.T) {
 // --- handleEC2CreateImage stopped-instance KV fallback tests ---
 
 func TestHandleEC2CreateImage_StoppedInstanceFoundInKV(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
@@ -4143,7 +4229,8 @@ func TestHandleEC2CreateImage_StoppedInstanceFoundInKV(t *testing.T) {
 }
 
 func TestHandleEC2CreateImage_StoppedInstanceNotInKV(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 
 	daemon := createFullTestDaemonWithJetStream(t, natsURL)
 
@@ -4246,6 +4333,7 @@ func TestHandleEC2Events_CommandValidation(t *testing.T) {
 // A requester that has gone away cannot be answered, but the admitted reboot
 // still counts as a success rather than an error.
 func TestDispatchEC2Command_RebootWithoutReplySubject(t *testing.T) {
+	t.Parallel()
 	d := createTestDaemon(t, sharedNATSURL)
 	instanceID := "i-p1-reboot-noreply"
 	d.vmMgr.Insert(&vm.VM{
@@ -4273,10 +4361,12 @@ func TestDispatchEC2Command_RebootWithoutReplySubject(t *testing.T) {
 }
 
 func TestIsOVNDBQuorumMember_NoClusterConfig(t *testing.T) {
+	t.Parallel()
 	assert.False(t, (&Daemon{node: "node-1"}).isOVNDBQuorumMember())
 }
 
 func TestQueryNATSRole_NoNATSService(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{config: &config.Config{Services: []string{"daemon"}}}
 	assert.Empty(t, d.queryNATSRole(), "a node without NATS has no JetStream role to probe")
 }

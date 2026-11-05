@@ -55,6 +55,7 @@ func microReservation(id, accountID string, count int) *capacityReservation {
 // A reservation lowers both canAllocate and the GetResourceStats Available count
 // by its headline compute, then cancelling restores them.
 func TestCapacityReservation_CarveOutAndRestore(t *testing.T) {
+	t.Parallel()
 	rm := newReservationTestRM()
 	mt := microType()
 
@@ -89,6 +90,7 @@ func TestCapacityReservation_CarveOutAndRestore(t *testing.T) {
 // A reservation larger than remaining schedulable capacity is rejected and
 // leaves the carve-out untouched.
 func TestCapacityReservation_OverReserveRejected(t *testing.T) {
+	t.Parallel()
 	rm := newReservationTestRM()
 
 	err := rm.CreateReservation(microReservation("cr-big", "acct-a", 5)) // 10 vCPU > 8
@@ -102,6 +104,7 @@ func TestCapacityReservation_OverReserveRejected(t *testing.T) {
 // Cancel is account-scoped: a foreign account cannot release another's hold, and
 // an unknown id is reported missing.
 func TestCapacityReservation_CancelScoping(t *testing.T) {
+	t.Parallel()
 	rm := newReservationTestRM()
 	require.NoError(t, rm.CreateReservation(microReservation("cr-1", "acct-a", 1)))
 
@@ -118,6 +121,7 @@ func TestCapacityReservation_CancelScoping(t *testing.T) {
 
 // ListReservations returns only the account's reservations.
 func TestCapacityReservation_ListScoping(t *testing.T) {
+	t.Parallel()
 	rm := newReservationTestRM()
 	require.NoError(t, rm.CreateReservation(microReservation("cr-1", "acct-a", 1)))
 	require.NoError(t, rm.CreateReservation(microReservation("cr-2", "acct-b", 1)))
@@ -132,6 +136,7 @@ func TestCapacityReservation_ListScoping(t *testing.T) {
 // Concurrent CreateReservation and allocate share the same rm.mu re-check gate,
 // so the combined committed compute can never exceed the host's schedulable pool.
 func TestCapacityReservation_ConcurrentNoOvercommit(t *testing.T) {
+	t.Parallel()
 	rm := newReservationTestRM()
 	mt := microType()
 
@@ -173,6 +178,7 @@ func TestCapacityReservation_ConcurrentNoOvercommit(t *testing.T) {
 // AllocateFromReservation moves a slot reservedCR*->allocated* without touching
 // schedulable capacity, bumps ConsumedCount, and drops AvailableInstanceCount.
 func TestAllocateFromReservation_NetZeroSwap(t *testing.T) {
+	t.Parallel()
 	rm := newReservationTestRM()
 	mt := microType()
 	rec := microReservation("cr-1", "acct-a", 2)
@@ -198,6 +204,7 @@ func TestAllocateFromReservation_NetZeroSwap(t *testing.T) {
 // The semantic checks reject unknown/foreign ids, type mismatch, and over-consume
 // with their mapped AWS error codes, leaving accounting untouched.
 func TestAllocateFromReservation_Errors(t *testing.T) {
+	t.Parallel()
 	rm := newReservationTestRM()
 	mt := microType()
 	require.NoError(t, rm.CreateReservation(microReservation("cr-1", "acct-a", 1)))
@@ -228,6 +235,7 @@ func TestAllocateFromReservation_Errors(t *testing.T) {
 // ReleaseToReservation is the inverse swap when the reservation still exists:
 // allocated*->reservedCR*, ConsumedCount--, AvailableInstanceCount restored.
 func TestReleaseToReservation_RestoresSlot(t *testing.T) {
+	t.Parallel()
 	rm := newReservationTestRM()
 	mt := microType()
 	rec := microReservation("cr-1", "acct-a", 2)
@@ -251,6 +259,7 @@ func TestReleaseToReservation_RestoresSlot(t *testing.T) {
 // the general pool (catalog charge) instead of a now-gone reservedCR*, never
 // overcounting. Cancel itself frees only the unconsumed remainder.
 func TestReleaseToReservation_AfterCancelFreesToGeneralPool(t *testing.T) {
+	t.Parallel()
 	rm := newReservationTestRM()
 	mt := microType()
 	require.NoError(t, rm.CreateReservation(microReservation("cr-1", "acct-a", 2)))
@@ -279,6 +288,7 @@ func TestReleaseToReservation_AfterCancelFreesToGeneralPool(t *testing.T) {
 // ReservationAvailable reports Total-Consumed, and 0 for unknown/foreign-account
 // /type-mismatch so the count site degrades to the daemon's up-front error.
 func TestReservationAvailable(t *testing.T) {
+	t.Parallel()
 	rm := newReservationTestRM()
 	mt := microType()
 	require.NoError(t, rm.CreateReservation(microReservation("cr-1", "acct-a", 2)))
@@ -298,6 +308,7 @@ func TestReservationAvailable(t *testing.T) {
 // map to NotFound, a type mismatch to InvalidParameterValue, and a matching
 // reservation passes (the full case is left to the launch-side count gate).
 func TestValidateReservationTarget(t *testing.T) {
+	t.Parallel()
 	rm := newReservationTestRM()
 	mt := microType()
 	require.NoError(t, rm.CreateReservation(microReservation("cr-1", "acct-a", 1)))
@@ -326,6 +337,7 @@ func TestValidateReservationTarget(t *testing.T) {
 // net-zero on reservedCR*+allocated*, so committed compute never exceeds the host
 // and ConsumedCount never passes Total.
 func TestAllocateFromReservation_ConcurrentNoOvercommit(t *testing.T) {
+	t.Parallel()
 	rm := newReservationTestRM()
 	mt := microType()
 	rec := microReservation("cr-1", "acct-a", 2)

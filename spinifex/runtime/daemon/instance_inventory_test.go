@@ -11,6 +11,7 @@ import (
 // The strict inventory takes existence from this listing, so it has to return
 // the records the stopped listing leaves out and only drop terminated ones.
 func TestListNonTerminatedInstances_ReturnsEveryRecordButTerminated(t *testing.T) {
+	t.Parallel()
 	m, _ := newRecordManagerConn(t)
 	write := func(id string, status vm.InstanceState, desired vm.DesiredState) {
 		record := (&vm.VM{ID: id, AccountID: "111122223333", Status: status, DesiredState: desired, LastNode: "node-gone"}).Record()

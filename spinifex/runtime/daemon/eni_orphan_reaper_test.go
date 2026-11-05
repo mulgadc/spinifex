@@ -22,12 +22,14 @@ const reaperTestAccountID = "123456789012"
 // no instance, so no node owns it; running the sweep node-locally would have
 // every node racing to delete the same records.
 func TestENIOrphanReaperScopeIsClusterWide(t *testing.T) {
+	t.Parallel()
 	r := &eniOrphanReaper{}
 	assert.Equal(t, vm.ScopeClusterWide, r.Scope())
 	assert.Equal(t, "eni-orphan", r.Class())
 }
 
 func TestENIOrphanReaperSweep(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	vpcSvc, err := ec2vpc.NewVPCServiceImplWithNATS(t.Context(), nil, nc)
 	require.NoError(t, err)
@@ -153,6 +155,7 @@ func staleReaperFixture(t *testing.T, instanceID string, index instanceIndex, ei
 // space, so nothing else will ever delete the record — and until it goes, its
 // logical switch port stays unbindable and its EIP stays associated.
 func TestENIOrphanReaperReapsStaleAttachment(t *testing.T) {
+	t.Parallel()
 	index := &fakeInstanceIndex{live: []string{"i-somebody-else"}, terminated: []string{"i-recent"}}
 	eip := &fakeEIPDisassociator{associated: map[string]bool{}}
 	r, vpcSvc, eniID := staleReaperFixture(t, "i-gone", index, eip)
@@ -193,6 +196,7 @@ func TestENIOrphanReaperReapsStaleAttachment(t *testing.T) {
 // an emptied bucket far more often than a cluster with no instances — and
 // reaping against it would cut every guest in the cluster off the network.
 func TestENIOrphanReaperDeclinesOnEmptyInstanceListing(t *testing.T) {
+	t.Parallel()
 	eip := &fakeEIPDisassociator{associated: map[string]bool{}}
 	r, vpcSvc, eniID := staleReaperFixture(t, "i-gone", &fakeInstanceIndex{}, eip)
 
@@ -212,6 +216,7 @@ func TestENIOrphanReaperDeclinesOnEmptyInstanceListing(t *testing.T) {
 // its instance — an RDS endpoint holds its address this way — so a teardown that
 // never finished must not become the thing that destroys it.
 func TestENIOrphanReaperDetachesKeepOnTerminateENI(t *testing.T) {
+	t.Parallel()
 	index := &fakeInstanceIndex{live: []string{"i-somebody-else"}}
 	eip := &fakeEIPDisassociator{associated: map[string]bool{}}
 	r, vpcSvc, eniID := staleReaperFixture(t, "i-gone", index, eip)
@@ -242,11 +247,13 @@ func sweepTwice(t *testing.T, r *eniOrphanReaper) error {
 // ENI whose instance is running, stopped, or recently terminated is in use, and
 // deleting it would cut a live guest off the network.
 func TestENIOrphanReaperSparesKnownInstances(t *testing.T) {
+	t.Parallel()
 	for name, index := range map[string]*fakeInstanceIndex{
 		"running or stopped": {live: []string{"i-known"}},
 		"terminated":         {terminated: []string{"i-known"}},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			eip := &fakeEIPDisassociator{associated: map[string]bool{}}
 			r, vpcSvc, eniID := staleReaperFixture(t, "i-known", index, eip)
 
@@ -263,11 +270,13 @@ func TestENIOrphanReaperSparesKnownInstances(t *testing.T) {
 // listing that errors part-way reads as "the instance is gone" for everything
 // missing from it, so the sweep must decline rather than reap against it.
 func TestENIOrphanReaperSkipsStaleSweepOnListingError(t *testing.T) {
+	t.Parallel()
 	for name, index := range map[string]*fakeInstanceIndex{
 		"live listing failed":       {liveErr: errors.New("kv unavailable")},
 		"terminated listing failed": {live: []string{"i-other"}, termErr: errors.New("kv unavailable")},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			eip := &fakeEIPDisassociator{associated: map[string]bool{}}
 			r, vpcSvc, eniID := staleReaperFixture(t, "i-gone", index, eip)
 
@@ -283,6 +292,7 @@ func TestENIOrphanReaperSkipsStaleSweepOnListingError(t *testing.T) {
 // no instance-record source (no JetStream manager) still runs the
 // abandoned-launch sweep and simply declines the staleness question.
 func TestENIOrphanReaperWithoutInstanceIndexSkipsStaleSweep(t *testing.T) {
+	t.Parallel()
 	r, vpcSvc, eniID := staleReaperFixture(t, "i-gone", nil, nil)
 
 	require.NoError(t, sweepTwice(t, r))
@@ -296,6 +306,7 @@ func TestENIOrphanReaperWithoutInstanceIndexSkipsStaleSweep(t *testing.T) {
 // outcome: the zombie port stays unbindable, while the stranded association is
 // at least logged and recoverable by hand.
 func TestENIOrphanReaperDeletesENIDespiteEIPFailure(t *testing.T) {
+	t.Parallel()
 	index := &fakeInstanceIndex{live: []string{"i-somebody-else"}}
 	eip := &fakeEIPDisassociator{err: errors.New("kv unavailable")}
 	r, vpcSvc, eniID := staleReaperFixture(t, "i-gone", index, eip)

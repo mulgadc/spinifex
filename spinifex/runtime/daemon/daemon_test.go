@@ -88,14 +88,18 @@ func drainAndClose(t *testing.T, nc *nats.Conn) {
 	}
 }
 
+var testDaemonNode atomic.Int64
+
 // createTestDaemon creates a test daemon instance with minimal configuration.
+// Each daemon gets its own node ID so per-node NATS subjects never cross tests.
 func createTestDaemon(t *testing.T, natsURL string) *Daemon {
 	// Create a temporary directory for test data
 	tmpDir := t.TempDir()
+	node := fmt.Sprintf("node-test-%d", testDaemonNode.Add(1))
 
 	// New cluster config
 	clusterCfg := &config.ClusterConfig{
-		Node:  "node-1",
+		Node:  node,
 		Nodes: map[string]config.Config{},
 	}
 
@@ -119,7 +123,7 @@ func createTestDaemon(t *testing.T, natsURL string) *Daemon {
 		},
 	}
 
-	clusterCfg.Nodes["node-1"] = *cfg
+	clusterCfg.Nodes[node] = *cfg
 
 	daemon, err := NewDaemon(clusterCfg)
 	require.NoError(t, err)
@@ -276,6 +280,7 @@ func TestResourceManager(t *testing.T) {
 
 // TestGetInstanceTypeInfos tests the GetInstanceTypeInfos method.
 func TestGetInstanceTypeInfos(t *testing.T) {
+	t.Parallel()
 	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
 
@@ -304,6 +309,7 @@ func TestGetInstanceTypeInfos(t *testing.T) {
 
 // TestGetInstanceTypeAvailability_ResourceFiltering tests that instance types are filtered by available resources.
 func TestGetInstanceTypeAvailability_ResourceFiltering(t *testing.T) {
+	t.Parallel()
 	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
 
@@ -386,7 +392,7 @@ func TestGetInstanceTypeAvailability_ResourceFiltering(t *testing.T) {
 
 // TestHandleEC2DescribeInstanceTypes tests the DescribeInstanceTypes handler.
 func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
-	natsURL := sharedNATSURL
+	natsURL := privateNATSURL(t)
 
 	daemon := createTestDaemon(t, natsURL)
 
@@ -710,7 +716,8 @@ func TestHandleEC2DescribeInstanceTypes(t *testing.T) {
 
 // TestDaemon_BootAllocation verifies that resources are correctly reconstructed on startup.
 func TestDaemon_BootAllocation(t *testing.T) {
-	natsURL := sharedJSNATSURL
+	t.Parallel()
+	natsURL := privateJSNATSURL(t)
 
 	// Create daemon temp directory
 	tmpDir := t.TempDir()
@@ -959,6 +966,7 @@ func TestCanAllocate_CountEdgeCases(t *testing.T) {
 // a check-then-commit gap. Pre-fix this test would intermittently overcommit;
 // post-fix the per-call write-lock acquisition makes it deterministic.
 func TestAllocate_NoOvercommitUnderContention(t *testing.T) {
+	t.Parallel()
 	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
 
@@ -1382,6 +1390,7 @@ func TestInstanceTypeSubscriptions(t *testing.T) {
 
 // TestResourceManager_ConcurrentAccess tests thread safety of resource manager.
 func TestResourceManager_ConcurrentAccess(t *testing.T) {
+	t.Parallel()
 	rm, err := NewResourceManager(nil, nil, nil)
 	require.NoError(t, err)
 
@@ -1569,6 +1578,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False(t *testi
 // directly. DeleteVolumes must now call DeleteVolumeOnTerminate, which clears
 // the stale attachment first, so the delete actually succeeds.
 func TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentClear(t *testing.T) {
+	t.Parallel()
 	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
 
 	// DeleteVolume's snapshot-reference guard requires a non-nil snapshotKV;
@@ -1626,6 +1636,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentCl
 // instance forever. Terminate must still detach it (AWS semantics: it
 // survives as available, it just isn't deleted).
 func TestInstanceCleanerAdapter_DeleteVolumes_NonDoTBootVolumeDetachedNotDeleted(t *testing.T) {
+	t.Parallel()
 	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
 
 	volumeID := "vol-root-nondot-attached"
@@ -1666,6 +1677,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_NonDoTBootVolumeDetachedNotDeleted
 // succeeds and is skipped entirely on the stuck-terminate force-complete
 // path, so that assumption left it stranded attached.
 func TestInstanceCleanerAdapter_DeleteVolumes_NonBootNonDoTVolumeDetachedNotDeleted(t *testing.T) {
+	t.Parallel()
 	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
 
 	volumeID := "vol-data-nondot-attached"
@@ -1706,6 +1718,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_NonBootNonDoTVolumeDetachedNotDele
 // DeleteVolumeOnTerminate. The retry clears the stale attachment, the delete
 // now succeeds, and the mark flips to done — without abandoning the record.
 func TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown(t *testing.T) {
+	t.Parallel()
 	daemon, store := createFullTestDaemonWithStore(t, sharedJSNATSURL)
 
 	// A real terminated-instance KV, so Sweep can list/update/(not yet)purge
@@ -1784,6 +1797,7 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown(t *testing.T) {
 // in-use with no automatic path back — the "no both-calls-fail" recovery
 // requirement.
 func TestTerminatedTeardownReaper_SelfHealsFailedVolumeDetach(t *testing.T) {
+	t.Parallel()
 	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
 
 	fakeStore := vmmock.New()
@@ -2308,6 +2322,7 @@ func newMockQMPClient(t *testing.T, responseFunc func(cmd qmp.QMPCommand) map[st
 // TestDetachVolume_SuccessPath tests the full happy-path detach including QMP commands
 // and state cleanup using a mock QMP server.
 func TestDetachVolume_SuccessPath(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 
 	daemon := createTestDaemon(t, natsURL)
@@ -2442,6 +2457,7 @@ func TestDetachVolume_SuccessPath(t *testing.T) {
 
 // TestDetachVolume_ForceFlag tests that force=true continues past device_del failure.
 func TestDetachVolume_ForceFlag(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 
 	daemon := createTestDaemon(t, natsURL)
@@ -2551,6 +2567,7 @@ func TestDetachVolume_ForceFlag(t *testing.T) {
 // TestDetachVolume_BlockdevDelFailure tests that when blockdev-del fails,
 // state is left intact to prevent double-attach and VM crashes.
 func TestDetachVolume_BlockdevDelFailure(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 
 	daemon := createTestDaemon(t, natsURL)
@@ -2661,6 +2678,7 @@ func TestDetachVolume_BlockdevDelFailure(t *testing.T) {
 
 // TestDetachVolume_SuccessWithDeviceMatch tests detach with correct --device cross-check.
 func TestDetachVolume_SuccessWithDeviceMatch(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 
 	daemon := createTestDaemon(t, natsURL)
@@ -2739,6 +2757,7 @@ func TestDetachVolume_SuccessWithDeviceMatch(t *testing.T) {
 // that already has a stale EBSRequest entry (e.g. from a stop/start cycle)
 // replaces it rather than creating a duplicate.
 func TestAttachVolume_ReplacesStaleEBSRequest(t *testing.T) {
+	t.Parallel()
 	natsURL := sharedNATSURL
 
 	daemon := createTestDaemon(t, natsURL)
@@ -2845,6 +2864,7 @@ func TestAttachVolume_ReplacesStaleEBSRequest(t *testing.T) {
 // --- computeConfigHash ---
 
 func TestComputeConfigHash_Deterministic(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{clusterConfig: &config.ClusterConfig{
 		Epoch:   1,
 		Version: "1.0",
@@ -2862,6 +2882,7 @@ func TestComputeConfigHash_Deterministic(t *testing.T) {
 }
 
 func TestComputeConfigHash_ChangesOnMutation(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{clusterConfig: &config.ClusterConfig{
 		Epoch:   1,
 		Version: "1.0",
@@ -2883,6 +2904,7 @@ func TestComputeConfigHash_ChangesOnMutation(t *testing.T) {
 }
 
 func TestComputeConfigHash_ExcludesNodeField(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{clusterConfig: &config.ClusterConfig{
 		Epoch:   1,
 		Version: "1.0",
@@ -2901,6 +2923,7 @@ func TestComputeConfigHash_ExcludesNodeField(t *testing.T) {
 // --- instanceTypeVCPUs / instanceTypeMemoryMiB nil safety ---
 
 func TestInstanceTypeVCPUs_NilSafety(t *testing.T) {
+	t.Parallel()
 	// Nil VCpuInfo
 	assert.Equal(t, int64(0), instanceTypeVCPUs(&ec2.InstanceTypeInfo{}))
 
@@ -2916,6 +2939,7 @@ func TestInstanceTypeVCPUs_NilSafety(t *testing.T) {
 }
 
 func TestInstanceTypeMemoryMiB_NilSafety(t *testing.T) {
+	t.Parallel()
 	// Nil MemoryInfo
 	assert.Equal(t, int64(0), instanceTypeMemoryMiB(&ec2.InstanceTypeInfo{}))
 
@@ -2937,6 +2961,7 @@ func TestInstanceTypeMemoryMiB_NilSafety(t *testing.T) {
 // before NATS is up) and must not block local persistence.
 
 func TestDaemon_WriteState_NilJSManager(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	d := &Daemon{
 		jsManager: nil,
@@ -2953,6 +2978,7 @@ func TestDaemon_WriteState_NilJSManager(t *testing.T) {
 }
 
 func TestDaemon_LoadState_NilJSManager(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	require.NoError(t, writeLocalState(LocalStatePath(tmpDir), map[string]*vm.VM{
 		"i-seed": {ID: "i-seed"},
@@ -2969,6 +2995,7 @@ func TestDaemon_LoadState_NilJSManager(t *testing.T) {
 }
 
 func TestDaemon_LoadState_MissingFileIsFreshInstall(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{
 		jsManager: nil,
 		config:    &config.Config{DataDir: t.TempDir()},
@@ -2979,6 +3006,7 @@ func TestDaemon_LoadState_MissingFileIsFreshInstall(t *testing.T) {
 }
 
 func TestDaemon_LoadState_CorruptFileFatal(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	path := LocalStatePath(tmpDir)
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o750))
@@ -3013,6 +3041,7 @@ func availableTypeInfos(rm *ResourceManager, showCapacity bool) []*ec2.InstanceT
 // --- GetInstanceTypeAvailability edge cases ---
 
 func TestGetInstanceTypeAvailability_Overcommitted(t *testing.T) {
+	t.Parallel()
 	rm := &ResourceManager{
 		hostVCPU:      4,
 		hostMemGB:     8.0,
@@ -3035,6 +3064,7 @@ func TestGetInstanceTypeAvailability_Overcommitted(t *testing.T) {
 }
 
 func TestGetInstanceTypeAvailability_ShowCapacity(t *testing.T) {
+	t.Parallel()
 	rm := &ResourceManager{
 		hostVCPU:      8,
 		hostMemGB:     16.0,
@@ -3082,6 +3112,7 @@ func makeGPUDevice() gpu.GPUDevice {
 
 // GPU types with no gpuManager are hidden — there is no GPU hardware on this node.
 func TestGetInstanceTypeAvailability_GPUType_NoManager_Hidden(t *testing.T) {
+	t.Parallel()
 	rm := &ResourceManager{
 		hostVCPU:  128,
 		hostMemGB: 1024.0,
@@ -3096,6 +3127,7 @@ func TestGetInstanceTypeAvailability_GPUType_NoManager_Hidden(t *testing.T) {
 // GPU types gate on pool availability, not host CPU/memory — even a tiny host
 // with a GPU pool exposes the type.
 func TestGetInstanceTypeAvailability_GPUType_GatedByPool(t *testing.T) {
+	t.Parallel()
 	mgr := gpu.NewManager([]gpu.GPUDevice{makeGPUDevice(), makeGPUDevice()})
 	rm := &ResourceManager{
 		hostVCPU:  4,   // would normally block a 16-vCPU instance
@@ -3111,6 +3143,7 @@ func TestGetInstanceTypeAvailability_GPUType_GatedByPool(t *testing.T) {
 
 // Multi-GPU type (g7e.12xlarge, needs 2) appears only when pool has ≥ 2 free GPUs.
 func TestGetInstanceTypeAvailability_MultiGPUType_RequiresTwoGPUs(t *testing.T) {
+	t.Parallel()
 	oneGPU := gpu.NewManager([]gpu.GPUDevice{makeGPUDevice()})
 	rm := &ResourceManager{
 		hostVCPU:  128,
@@ -3131,6 +3164,7 @@ func TestGetInstanceTypeAvailability_MultiGPUType_RequiresTwoGPUs(t *testing.T) 
 
 // showCapacity=true for GPU types emits pool/gpuCount slots.
 func TestGetInstanceTypeAvailability_GPUType_ShowCapacity(t *testing.T) {
+	t.Parallel()
 	mgr := gpu.NewManager([]gpu.GPUDevice{makeGPUDevice(), makeGPUDevice(), makeGPUDevice(), makeGPUDevice()})
 	rm := &ResourceManager{
 		hostVCPU:  128,
@@ -3162,6 +3196,7 @@ func TestGetInstanceTypeAvailability_GPUType_ShowCapacity(t *testing.T) {
 // bypass this check entirely, letting a launch proceed on a host with no
 // memory headroom.
 func TestCanAllocate_GPUType_GatedByCPUMemory(t *testing.T) {
+	t.Parallel()
 	rm := &ResourceManager{
 		hostVCPU:      4,   // deliberately tiny
 		hostMemGB:     8.0, // deliberately tiny
@@ -3176,6 +3211,7 @@ func TestCanAllocate_GPUType_GatedByCPUMemory(t *testing.T) {
 // canAllocate for GPU types succeeds once both cpu/mem headroom and a free
 // GPU slot exist.
 func TestCanAllocate_GPUType_SucceedsWithRoomAndSlot(t *testing.T) {
+	t.Parallel()
 	rm := &ResourceManager{
 		hostVCPU:      32,
 		hostMemGB:     256.0,
@@ -3189,6 +3225,7 @@ func TestCanAllocate_GPUType_SucceedsWithRoomAndSlot(t *testing.T) {
 // canAllocate for GPU types is refused up front when the GPU pool has no
 // free slot, even with abundant cpu/mem headroom.
 func TestCanAllocate_GPUType_RefusedWhenGPUPoolExhausted(t *testing.T) {
+	t.Parallel()
 	rm := &ResourceManager{
 		hostVCPU:      32,
 		hostMemGB:     256.0,
@@ -3207,6 +3244,7 @@ func TestCanAllocate_GPUType_RefusedWhenGPUPoolExhausted(t *testing.T) {
 // (e.g. Terraform AWS provider) treat DescribeInstanceTypes as a global
 // metadata lookup, not a "what can fit right now" query.
 func TestGetSupportedInstanceTypeInfos_IgnoresFreeSlots(t *testing.T) {
+	t.Parallel()
 	rm := &ResourceManager{
 		hostVCPU:      4,
 		hostMemGB:     8.0,
@@ -3244,6 +3282,7 @@ func TestGetSupportedInstanceTypeInfos_IgnoresFreeSlots(t *testing.T) {
 // System types and entries missing CPU/memory metadata stay filtered — they
 // would break callers if returned regardless of capacity.
 func TestGetSupportedInstanceTypeInfos_SkipsSystemAndIncomplete(t *testing.T) {
+	t.Parallel()
 	systemTypeName := "sys.micro"
 	require.True(t, instancetypes.IsSystemType(systemTypeName),
 		"sentinel %s must satisfy IsSystemType — update the test if the prefix changes", systemTypeName)
@@ -3279,6 +3318,7 @@ func TestGetSupportedInstanceTypeInfos_SkipsSystemAndIncomplete(t *testing.T) {
 // the goal is to advertise what this node *can* run, not what it can run
 // right now. Capacity gating is the capacity=true path's job.
 func TestGetSupportedInstanceTypeInfos_GPUType_AppearsWithoutPool(t *testing.T) {
+	t.Parallel()
 	rm := &ResourceManager{
 		hostVCPU:  128,
 		hostMemGB: 1024.0,
@@ -3296,6 +3336,7 @@ func TestGetSupportedInstanceTypeInfos_GPUType_AppearsWithoutPool(t *testing.T) 
 // --- NewDaemon ---
 
 func TestNewDaemon_WalDirDefaultsToBaseDir(t *testing.T) {
+	t.Parallel()
 	cfg := &config.ClusterConfig{
 		Node: "n1",
 		Nodes: map[string]config.Config{
@@ -3312,6 +3353,7 @@ func TestNewDaemon_WalDirDefaultsToBaseDir(t *testing.T) {
 }
 
 func TestNewDaemon_WalDirPreservedIfSet(t *testing.T) {
+	t.Parallel()
 	cfg := &config.ClusterConfig{
 		Node: "n1",
 		Nodes: map[string]config.Config{
@@ -3331,6 +3373,7 @@ func TestNewDaemon_WalDirPreservedIfSet(t *testing.T) {
 // propagates an unpublish refusal. DetachVolume gates the volume's available
 // transition on this error, so it must not be swallowed.
 func TestVolumeMounterAdapter_UnmountOne_UnmountError(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 	fake := serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
 	fake.setUnpublish(func(string) ebsprovider.UnpublishVolumeResponse {
@@ -3347,6 +3390,7 @@ func TestVolumeMounterAdapter_UnmountOne_UnmountError(t *testing.T) {
 // surfaces a failed unpublish request as an error. A closed connection fails
 // immediately rather than waiting out the provider's seal budget.
 func TestVolumeMounterAdapter_UnmountOne_RequestFailure(t *testing.T) {
+	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)
 	require.NoError(t, err)
 	nc.Close()
@@ -3362,6 +3406,7 @@ func TestVolumeMounterAdapter_UnmountOne_RequestFailure(t *testing.T) {
 // loop completes. Unmount only seals: it never writes volume state, so every
 // volume stays attached to the stopped instance.
 func TestVolumeMounterAdapter_Unmount_SealFailureIsReported(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 	adapter := newNATSMounter(daemon.natsConn, daemon.node)
 	fake := serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
@@ -3388,6 +3433,7 @@ func TestVolumeMounterAdapter_Unmount_SealFailureIsReported(t *testing.T) {
 // no export of the volume, is not an error and, like every Unmount outcome,
 // writes no volume state.
 func TestVolumeMounterAdapter_Unmount_NotFoundIsASealedOutcome(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 	adapter := newNATSMounter(daemon.natsConn, daemon.node)
 	fake := serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
@@ -3415,6 +3461,7 @@ func TestVolumeMounterAdapter_Unmount_NotFoundIsASealedOutcome(t *testing.T) {
 // it already published in the same Mount() call and nothing else. Without
 // rollback, a launch failure would leave the first volume's export live.
 func TestVolumeMounterAdapter_Mount_PartialFailureRollback(t *testing.T) {
+	t.Parallel()
 	nc := connectMounterTest(t)
 	node := newMounterTestNode()
 	fake := serveFakeNodeProvider(t, nc, node)
@@ -3436,6 +3483,7 @@ func TestVolumeMounterAdapter_Mount_PartialFailureRollback(t *testing.T) {
 // A publish reply that cannot be decoded may still have started an export, so
 // the failing volume is torn down along with the one already published.
 func TestVolumeMounterAdapter_Mount_UndecodableReplyRollsBackBoth(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 	adapter := newNATSMounter(daemon.natsConn, daemon.node)
 
@@ -3485,6 +3533,7 @@ func TestVolumeMounterAdapter_Mount_UndecodableReplyRollsBackBoth(t *testing.T) 
 // instead of swallowing it. A silent rollback failure leaves the volume
 // attached without surfacing the leak to the caller.
 func TestVolumeMounterAdapter_Mount_RollbackFailurePropagates(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 	adapter := newNATSMounter(daemon.natsConn, daemon.node)
 	fake := serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
@@ -3770,6 +3819,7 @@ func TestConnectNATS_RetriesOnFailure(t *testing.T) {
 
 // TestConnectNATS_SucceedsImmediately tests that connectNATS succeeds immediately when NATS is available.
 func TestConnectNATS_SucceedsImmediately(t *testing.T) {
+	t.Parallel()
 	clusterCfg := &config.ClusterConfig{
 		Node:  "node-1",
 		Nodes: map[string]config.Config{},
@@ -3797,6 +3847,7 @@ func TestConnectNATS_SucceedsImmediately(t *testing.T) {
 // --- ClusterManager TLS ---
 
 func TestClusterManager_TLSServesHTTPS(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	// Generate self-signed cert for testing
@@ -3853,6 +3904,7 @@ func TestClusterManager_TLSServesHTTPS(t *testing.T) {
 }
 
 func TestClusterManager_EmptyCertReturnsError(t *testing.T) {
+	t.Parallel()
 	cfg := &config.ClusterConfig{
 		Node: "node-1",
 		Nodes: map[string]config.Config{
@@ -3873,6 +3925,7 @@ func TestClusterManager_EmptyCertReturnsError(t *testing.T) {
 }
 
 func TestClusterManager_InvalidCertReturnsError(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	certPath := filepath.Join(tmpDir, "bad.pem")
 	keyPath := filepath.Join(tmpDir, "bad.key")
@@ -3930,6 +3983,7 @@ func generateTestCert(t *testing.T) (certPEM, keyPEM []byte) {
 }
 
 func TestResolveGPUModel_ProductionModel(t *testing.T) {
+	t.Parallel()
 	dev := gpu.GPUDevice{VendorID: "10de", DeviceID: "2236", Vendor: gpu.VendorNVIDIA}
 	m := resolveGPUModel(dev, nil)
 	assert.Equal(t, "g5", m.Family)
@@ -3937,6 +3991,7 @@ func TestResolveGPUModel_ProductionModel(t *testing.T) {
 }
 
 func TestResolveGPUModel_ConsumerGPUDefaultsToG5(t *testing.T) {
+	t.Parallel()
 	// Unknown PCI ID auto-maps to g5 using discovered specs — no config needed.
 	dev := gpu.GPUDevice{
 		VendorID:  "10de",
@@ -3953,6 +4008,7 @@ func TestResolveGPUModel_ConsumerGPUDefaultsToG5(t *testing.T) {
 }
 
 func TestResolveGPUModel_ConsumerGPUFallbackName(t *testing.T) {
+	t.Parallel()
 	// No Model field: name falls back to "GPU <vendor>:<device>".
 	dev := gpu.GPUDevice{VendorID: "dead", DeviceID: "beef", Vendor: gpu.VendorUnknown}
 	m := resolveGPUModel(dev, nil)
@@ -3962,6 +4018,7 @@ func TestResolveGPUModel_ConsumerGPUFallbackName(t *testing.T) {
 }
 
 func TestResolveGPUModel_OverrideShadowsProduction(t *testing.T) {
+	t.Parallel()
 	// An override for a known production PCI ID shadows the built-in entry.
 	overrides := []config.GPUModelOverride{
 		{VendorID: "10de", DeviceID: "2236", Family: "g6", Manufacturer: "NVIDIA", Name: "Custom", MemoryMiB: 999},
@@ -3973,6 +4030,7 @@ func TestResolveGPUModel_OverrideShadowsProduction(t *testing.T) {
 }
 
 func TestResolveGPUModel_OverrideCustomisesConsumerGPU(t *testing.T) {
+	t.Parallel()
 	// Override can pin specific name/memory for a consumer GPU that would
 	// otherwise be auto-mapped with nvidia-smi-discovered or zero values.
 	overrides := []config.GPUModelOverride{
@@ -3989,6 +4047,7 @@ func TestResolveGPUModel_OverrideCustomisesConsumerGPU(t *testing.T) {
 // instance type, so admission checks that read Device.MemoryMiB directly
 // (e.g. Bedrock capacity) see the override too.
 func TestApplyGPUModelOverrides_SetsDeviceMemory(t *testing.T) {
+	t.Parallel()
 	devices := []gpu.GPUDevice{
 		{VendorID: "10de", DeviceID: "25b0", PCIAddress: "0000:03:00.0", MemoryMiB: 0},
 		{VendorID: "10de", DeviceID: "2236", PCIAddress: "0000:04:00.0", MemoryMiB: 23028},
@@ -4005,6 +4064,7 @@ func TestApplyGPUModelOverrides_SetsDeviceMemory(t *testing.T) {
 // a non-VRAM reason: memory_mib is absent, so it decodes to 0, and applying
 // that would erase discovered VRAM and fail admission on a device that is fine.
 func TestApplyGPUModelOverrides_ZeroMemoryDoesNotWipe(t *testing.T) {
+	t.Parallel()
 	devices := []gpu.GPUDevice{
 		{VendorID: "10de", DeviceID: "25b0", PCIAddress: "0000:03:00.0", MemoryMiB: 8188},
 	}
@@ -4020,6 +4080,7 @@ func TestApplyGPUModelOverrides_ZeroMemoryDoesNotWipe(t *testing.T) {
 // constructing the gpu.Manager, so Manager.Snapshot (what checkCapacity
 // reads) reports the overridden VRAM rather than the raw discovered value.
 func TestBuildGPUPool_OverrideReachesManagerSnapshot(t *testing.T) {
+	t.Parallel()
 	devices := []gpu.GPUDevice{
 		{VendorID: "10de", DeviceID: "25b0", PCIAddress: "0000:03:00.0", MemoryMiB: 0},
 	}
@@ -4236,6 +4297,7 @@ func TestGpuXVGAEnabled(t *testing.T) {
 // --- reloadGPUTypes ---
 
 func TestReloadGPUTypes_EmptyModelsPreservesCPUTypes(t *testing.T) {
+	t.Parallel()
 	rm := &ResourceManager{
 		instanceTypes: map[string]*ec2.InstanceTypeInfo{
 			"t3.micro": {InstanceType: aws.String("t3.micro")},
@@ -4265,6 +4327,7 @@ func TestReloadGPUTypes_EmptyModelsPreservesCPUTypes(t *testing.T) {
 }
 
 func TestReloadGPUTypes_NonEmptyReplacesGPUTypes(t *testing.T) {
+	t.Parallel()
 	rm := &ResourceManager{
 		instanceTypes: map[string]*ec2.InstanceTypeInfo{
 			"t3.micro": {InstanceType: aws.String("t3.micro")},
@@ -4408,6 +4471,7 @@ func newEBSProviderTestDaemon(t *testing.T, provider string) *Daemon {
 // second provider to fall back to, so leaving it nil would silently strand
 // every EBS call on a node whose spinifex.toml predates the key.
 func TestConfigureEBSProvider_UnsetInjectsProviderEverywhere(t *testing.T) {
+	t.Parallel()
 	d := newEBSProviderTestDaemon(t, "")
 	require.NoError(t, d.configureEBSProvider())
 
@@ -4419,6 +4483,7 @@ func TestConfigureEBSProvider_UnsetInjectsProviderEverywhere(t *testing.T) {
 }
 
 func TestConfigureEBSProvider_ViperblockdInjectsSameInstanceEverywhere(t *testing.T) {
+	t.Parallel()
 	d := newEBSProviderTestDaemon(t, config.EBSProviderViperblockd)
 	require.NoError(t, d.configureEBSProvider())
 
@@ -4437,6 +4502,7 @@ func TestConfigureEBSProvider_ViperblockdInjectsSameInstanceEverywhere(t *testin
 // silently never match a configured node, and every fan-out would read as
 // permanently incomplete.
 func TestNodeIDNamespace_Agrees(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 
 	// config.ClusterConfig.Nodes' key for this node must be the node's own ID.

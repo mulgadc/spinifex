@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats-server/v2/server"
@@ -19,6 +20,19 @@ var (
 	sharedJSServer   *server.Server
 	sharedJSNATSURL  string
 )
+
+// privateNATSURL starts a NATS server for one test, so a test serving a fixed
+// API subject never answers another test's request.
+func privateNATSURL(t *testing.T) string {
+	ns, _ := testutil.StartTestNATS(t)
+	return ns.ClientURL()
+}
+
+// privateJSNATSURL is privateNATSURL with JetStream enabled.
+func privateJSNATSURL(t *testing.T) string {
+	ns, _, _ := testutil.StartTestJetStream(t)
+	return ns.ClientURL()
+}
 
 func TestMain(m *testing.M) {
 	// Pin host vCPU so the resource manager is deterministic regardless of the

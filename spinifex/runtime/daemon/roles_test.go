@@ -9,6 +9,7 @@ import (
 )
 
 func TestFetchNATSRole_SingleNode(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{
 			"server_name": "spinifex-nats-node1",
@@ -27,6 +28,7 @@ func TestFetchNATSRole_SingleNode(t *testing.T) {
 }
 
 func TestFetchNATSRole_ClusterLeader(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{
 			"server_name": "spinifex-nats-node1",
@@ -45,6 +47,7 @@ func TestFetchNATSRole_ClusterLeader(t *testing.T) {
 }
 
 func TestFetchNATSRole_ClusterFollower(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{
 			"server_name": "spinifex-nats-node2",
@@ -63,11 +66,13 @@ func TestFetchNATSRole_ClusterFollower(t *testing.T) {
 }
 
 func TestFetchNATSRole_Unreachable(t *testing.T) {
+	t.Parallel()
 	role := fetchNATSRole("http://127.0.0.1:1/varz", &http.Client{})
 	assert.Empty(t, role)
 }
 
 func TestFetchNATSRole_BadJSON(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`not json`))
 	}))

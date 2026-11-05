@@ -60,6 +60,7 @@ func TestShutdownHelpersHaveASingleCallSite(t *testing.T) {
 // and a live guest's backend that survived a daemon restart by design. Cleanup
 // has to work from this node's own pidfiles instead.
 func TestNoPatternKillsInDaemonPackage(t *testing.T) {
+	t.Parallel()
 	banned := []string{"pkill", "killall"}
 
 	entries, err := os.ReadDir(".")

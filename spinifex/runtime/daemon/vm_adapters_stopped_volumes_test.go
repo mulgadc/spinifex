@@ -19,6 +19,7 @@ import (
 // A stopped or crashed instance still owns its data volumes, so Unmount seals
 // them and releases the node-local mount without touching their state.
 func TestUnmount_LeavesDataVolumesAttached(t *testing.T) {
+	t.Parallel()
 	daemon := createTestDaemon(t, sharedNATSURL)
 	adapter := newNATSMounter(daemon.natsConn, daemon.node)
 	fake := serveFakeNodeProvider(t, daemon.natsConn, daemon.node)
@@ -44,6 +45,7 @@ func TestUnmount_LeavesDataVolumesAttached(t *testing.T) {
 // The point of keeping the attachment: after the stopped instance's unmount,
 // another instance cannot take the volume, which is what AWS does.
 func TestStoppedInstanceVolume_CannotBeAttachedElsewhere(t *testing.T) {
+	t.Parallel()
 	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
 
 	const (

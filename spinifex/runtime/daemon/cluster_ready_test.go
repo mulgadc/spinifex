@@ -120,6 +120,7 @@ func TestWaitForClusterReady_PredastoreBecomesReady(t *testing.T) {
 // volume-lease KV was still unavailable, recovery ran into a lease timeout, and
 // the instance was parked in error permanently.
 func TestCheckViperblockReady_ConnectedButJetStreamNotServing(t *testing.T) {
+	t.Parallel()
 	_, nc := testutil.StartTestNATS(t)
 	require.True(t, nc.IsConnected(), "the connection itself must be up, or this proves nothing")
 
@@ -132,6 +133,7 @@ func TestCheckViperblockReady_ConnectedButJetStreamNotServing(t *testing.T) {
 // TestCheckViperblockReady_JetStreamServing is the other half: once JetStream
 // answers, readiness must pass rather than holding startup open.
 func TestCheckViperblockReady_JetStreamServing(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 
 	d := &Daemon{config: &config.Config{}, natsConn: nc}

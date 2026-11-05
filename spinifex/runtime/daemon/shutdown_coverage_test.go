@@ -151,6 +151,7 @@ func TestHandleShutdownPersist(t *testing.T) {
 // A service whose process is already gone still lets GATE complete: the daemon
 // stops taking work either way, and only real stops are reported.
 func TestHandleShutdownGate_DeadServices(t *testing.T) {
+	t.Parallel()
 	d, pidDir := shutdownTestDaemon(t, "ui", "vpcd")
 	require.NoError(t, hostprocess.WritePidFileTo(pidDir, "spinifex-ui", deadPID))
 	require.NoError(t, hostprocess.WritePidFileTo(pidDir, "vpcd", deadPID))
@@ -214,6 +215,7 @@ func TestCleanupOrphanNBDKit_Failures(t *testing.T) {
 }
 
 func TestPidDirEmpty(t *testing.T) {
+	t.Parallel()
 	assert.Empty(t, (&Daemon{config: &config.Config{}}).pidDir(), "no base dir means no pid dir to look in")
 	assert.Equal(t, "/data/logs", (&Daemon{config: &config.Config{BaseDir: "/data/spinifex/"}}).pidDir())
 }

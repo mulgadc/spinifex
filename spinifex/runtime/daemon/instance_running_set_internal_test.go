@@ -17,6 +17,7 @@ func runningSetOf(ids ...string) map[string]*vm.VM {
 }
 
 func TestWriteRunningSet_SeedFailure(t *testing.T) {
+	t.Parallel()
 	m, f := newFaultInjectedJSM(t)
 	f.setFail("ListKeys", true)
 	f.setFail("Keys", true)
@@ -31,6 +32,7 @@ func TestWriteRunningSet_SeedFailure(t *testing.T) {
 }
 
 func TestWriteRunningSet_NilMemberIsSkipped(t *testing.T) {
+	t.Parallel()
 	m, _ := newFaultInjectedJSM(t)
 	set := runningSetOf("i-1")
 	set["i-nil"] = nil
@@ -43,6 +45,7 @@ func TestWriteRunningSet_NilMemberIsSkipped(t *testing.T) {
 
 // A failed publish forgets its digest, so an unchanged set retries the write.
 func TestWriteRunningSet_FailedWriteIsRetried(t *testing.T) {
+	t.Parallel()
 	m, f := newFaultInjectedJSM(t)
 	f.setFail("Create", true)
 	assert.Equal(t, RunningSetResult{Failed: 1}, m.WriteRunningSet("node-1", "", runningSetOf("i-1")))

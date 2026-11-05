@@ -476,14 +476,14 @@ func (s *Store) TargetGroupInUse(ctx context.Context, tgArn string) (bool, error
 	return false, nil
 }
 
-// GetTargetGroupByName finds a target group by name within a VPC.
-func (s *Store) GetTargetGroupByName(ctx context.Context, name, vpcID string) (*TargetGroupRecord, error) {
+// GetTargetGroupByName finds an account's target group by name within a VPC.
+func (s *Store) GetTargetGroupByName(ctx context.Context, accountID, name, vpcID string) (*TargetGroupRecord, error) {
 	tgs, err := s.ListTargetGroups(ctx)
 	if err != nil {
 		return nil, err
 	}
 	for _, tg := range tgs {
-		if tg.Name == name && tg.VpcId == vpcID {
+		if tg.AccountID == accountID && tg.Name == name && tg.VpcId == vpcID {
 			return tg, nil
 		}
 	}

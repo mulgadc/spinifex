@@ -129,15 +129,24 @@ func (d *Daemon) ServeControl(ctx context.Context, name string, gatewayUID int) 
 	if err != nil {
 		return err
 	}
-	srv := &ControlServer{GatewayUID: gatewayUID, RequestLimit: MaxFrameBytes, ReplyLimit: MaxFrameBytes,
+	d.serve(ctx, ln, d.controlServer(gatewayUID))
+	return nil
+}
+
+// controlServer answers the gateway with d.Handle, and stops d reporting
+// serving as soon as it stops accepting, before its connections drain.
+func (d *Daemon) controlServer(gatewayUID int) *ControlServer {
+	return &ControlServer{GatewayUID: gatewayUID, RequestLimit: MaxFrameBytes, ReplyLimit: MaxFrameBytes,
 		IOTimeout: controlIOTimeout, Handle: d.Handle, AcceptStopped: func() { d.serving.Store(false) }}
+}
+
+func (d *Daemon) serve(ctx context.Context, ln *net.UnixListener, srv *ControlServer) {
 	d.serving.Store(true)
 	go func() {
 		if err := srv.Serve(ctx, ln); err != nil {
 			slog.Error("Lambda test link: control socket stopped; not serving new invocations", "err", err)
 		}
 	}()
-	return nil
 }
 
 // Handle runs one request under its grant, giving the guest cred in its first

@@ -5,7 +5,6 @@ package testlink
 
 import (
 	"context"
-	"net"
 	"os"
 	"strings"
 	"testing"
@@ -147,20 +146,28 @@ func TestReadiness_RefusesFunctionsTheTestLinkCannotRun(t *testing.T) {
 }
 
 func TestReadiness_ServingEndsWhenAcceptingStops(t *testing.T) {
-	im, err := PrepareImage(writeImage(t), testImageDigest)
-	require.NoError(t, err)
-	t.Cleanup(im.Close)
-	d := &Daemon{Node: "node1", Image: im}
+	d := &Daemon{Node: "node1"}
 	name := controlName(t)
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	require.NoError(t, d.ServeControl(ctx, name, os.Getuid()))
-	require.True(t, d.Serving())
-	conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: "@" + name, Net: "unix"})
+	ln, err := ListenControl(name)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = conn.Close() })
+	inHandle, release := make(chan struct{}), make(chan struct{})
+	srv := d.controlServer(os.Getuid())
+	srv.Handle = func(context.Context, []byte, Credential) Reply {
+		close(inHandle)
+		<-release
+		return Reply{Outcome: OutcomeDone}
+	}
+	d.serve(t.Context(), ln, srv)
+	require.True(t, d.Serving())
+	go func() { _, _ = (&ControlClient{Name: name, DaemonUID: os.Getuid(), RequestLimit: MaxFrameBytes, ReplyLimit: MaxFrameBytes, IOTimeout: 5 * time.Second}).Exchange(context.Background(), []byte("{}"), testCred, time.Now().Add(5*time.Second)) }()
+	select {
+	case <-inHandle:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request never reached Handle")
+	}
+	defer close(release)
 
-	cancel()
+	require.NoError(t, ln.Close(), "the listener fails under an outstanding invocation")
 	assert.Eventually(t, func() bool { return !d.Serving() }, 2*time.Second, 10*time.Millisecond,
-		"serving ends while a connection is still open, not after the drain")
+		"serving ends while the invocation is still held, not after the drain")
 }

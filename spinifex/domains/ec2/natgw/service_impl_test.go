@@ -205,7 +205,7 @@ func TestDescribeNatGateways_ByID(t *testing.T) {
 
 	// Non-existent ID
 	_, err = svc.DescribeNatGateways(t.Context(), &ec2.DescribeNatGatewaysInput{
-		NatGatewayIds: []*string{aws.String("nat-nope")},
+		NatGatewayIds: []*string{aws.String("nat-0a1b2c3d4e5f60718")},
 	}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorNatGatewayNotFound)
 }
@@ -221,7 +221,7 @@ func TestDescribeNatGateways_UnknownIDAmongKnownFailsWholeCall(t *testing.T) {
 	require.NoError(t, err)
 
 	out, err := svc.DescribeNatGateways(t.Context(), &ec2.DescribeNatGatewaysInput{
-		NatGatewayIds: []*string{createOut.NatGateway.NatGatewayId, aws.String("nat-absent00000000")},
+		NatGatewayIds: []*string{createOut.NatGateway.NatGatewayId, aws.String("nat-0a1b2c3d4e5f60718")},
 	}, testAccountID)
 
 	assert.EqualError(t, err, awserrors.ErrorNatGatewayNotFound)
@@ -295,7 +295,7 @@ func TestDescribeNatGateways_DeletedGatewayVisible(t *testing.T) {
 
 	// Non-existent ID should still error
 	_, err = svc.DescribeNatGateways(t.Context(), &ec2.DescribeNatGatewaysInput{
-		NatGatewayIds: []*string{aws.String("nat-never-existed")},
+		NatGatewayIds: []*string{aws.String("nat-0a1b2c3d4e5f60718")},
 	}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorNatGatewayNotFound)
 }

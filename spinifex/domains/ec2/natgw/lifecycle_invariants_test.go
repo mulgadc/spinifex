@@ -24,7 +24,7 @@ func TestRLC1_NatGatewayDeleteNotFoundOnAbsent(t *testing.T) {
 	svc := setupTestService(t)
 
 	_, err := svc.DeleteNatGateway(t.Context(), &ec2.DeleteNatGatewayInput{
-		NatGatewayId: aws.String("nat-absent00000000"),
+		NatGatewayId: aws.String("nat-0a1b2c3d4e5f60718"),
 	}, testAccountID)
 
 	require.Errorf(t, err, "DeleteNatGateway on an absent NAT gateway must return %s, not success (RLC rule #1 AWS-faithful delete): destroy orchestration tolerates NotFound, the API must not", awserrors.ErrorNatGatewayNotFound)

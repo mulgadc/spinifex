@@ -398,7 +398,7 @@ func TestCreateRoute_UnknownNatGatewayKeepsInvalidIDCode(t *testing.T) {
 	_, err := svc.CreateRoute(t.Context(), &ec2.CreateRouteInput{
 		RouteTableId:         aws.String(rtbID),
 		DestinationCidrBlock: aws.String("0.0.0.0/0"),
-		NatGatewayId:         aws.String("nat-absent00000000"),
+		NatGatewayId:         aws.String("nat-0a1b2c3d4e5f60718"),
 	}, testAccountID)
 
 	assert.EqualError(t, err, awserrors.ErrorInvalidNatGatewayIDNotFound)

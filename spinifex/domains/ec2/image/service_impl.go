@@ -451,12 +451,23 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		"rootVolumeId", params.RootVolumeID, "amiId", amiID, "snapshotId", snapshotID,
 		"isRunning", params.IsRunning)
 
-	// Step 1: Snapshot root volume
+	// Step 1: Copy the instance's UEFI variable store to the image's own key,
+	// before the snapshot, so a refusal here leaves no snapshot behind.
+	var uefiData *ebsmetadata.UEFIDataRef
+	if params.UEFI {
+		var err error
+		uefiData, err = s.copyInstanceUEFIStore(context.Background(), *input.InstanceId, amiID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Step 2: Snapshot root volume
 	if err := s.snapshotVolume(params.RootVolumeID, snapshotID, accountID); err != nil {
 		return nil, err
 	}
 
-	// Step 2: Read source volume config for size
+	// Step 3: Read source volume config for size
 	volMeta, err := s.getVolumeMetadata(context.Background(), accountID, params.RootVolumeID)
 	if err != nil {
 		slog.Error("CreateImageFromInstance: failed to read volume metadata", "volumeId", params.RootVolumeID, "err", err)
@@ -464,7 +475,7 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 	}
 	volumeSizeGiB := volMeta.CapacityGiB
 
-	// Step 3: Read source AMI config for architecture, platform, etc.
+	// Step 4: Read source AMI config for architecture, platform, etc.
 	sourceAMI := ebsmetadata.AMI{
 		Architecture:    "x86_64",
 		PlatformDetails: "Linux/UNIX",
@@ -479,19 +490,10 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		sourceAMI = srcCfg
 	}
 
-	// Step 4: Store snapshot metadata
+	// Step 5: Store snapshot metadata
 	if err := s.putSnapshotMetadata(context.Background(), snapshotID, params.RootVolumeID, volumeSizeGiB, accountID); err != nil {
 		slog.Error("CreateImageFromInstance: failed to write snapshot metadata", "snapshotId", snapshotID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Step 5: Copy the instance's UEFI variable store to the image's own key.
-	var uefiData *ebsmetadata.UEFIDataRef
-	if params.UEFI {
-		uefiData, err = s.copyInstanceUEFIStore(context.Background(), *input.InstanceId, amiID)
-		if err != nil {
-			return nil, err
-		}
 	}
 
 	// Step 6: Build and store AMI config
@@ -910,8 +912,13 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 	}
 
 	if err := s.putAMIConfig(ctx, newImageID, meta); err != nil {
+		var orphanUEFIKey string
+		if uefiData != nil {
+			orphanUEFIKey = uefiData.Key
+		}
+		// The copied UEFI object stays under the new image's prefix; the log names it.
 		slog.ErrorContext(ctx, "CopyImage: failed to write AMI config",
-			"amiId", newImageID, "orphanSnapshotId", newSnapshotID, "err", err)
+			"amiId", newImageID, "orphanSnapshotId", newSnapshotID, "orphanUEFIKey", orphanUEFIKey, "err", err)
 		// Best-effort rollback of the orphaned snapshot metadata.
 		if delErr := s.metadata.DeleteSnapshot(ctx, accountID, newSnapshotID); delErr != nil {
 			slog.ErrorContext(ctx, "CopyImage: failed to roll back orphaned snapshot metadata",

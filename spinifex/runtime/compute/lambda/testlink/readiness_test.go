@@ -76,7 +76,7 @@ func TestReadiness_ActivatesOnlyOnceTheDaemonServesThePinnedImage(t *testing.T) 
 	assert.Equal(t, function.ReasonCreating, waiting.StateReason)
 
 	ctx, cancel := context.WithCancel(t.Context())
-	require.NoError(t, d.ServeControl(ctx, controlName(t), os.Getuid(), 1<<20))
+	require.NoError(t, d.ServeControl(ctx, controlName(t), os.Getuid()))
 	require.NoError(t, svc.ActivatePending(t.Context()))
 	active := functionState(t, svc, "hello")
 	assert.Equal(t, function.StateActive, active.State)
@@ -95,7 +95,7 @@ func TestReadiness_RefusesAnotherPinOrAnotherNode(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(im.Close)
 	d := &Daemon{Node: "node1", Image: im}
-	require.NoError(t, d.ServeControl(t.Context(), controlName(t), os.Getuid(), 1<<20))
+	require.NoError(t, d.ServeControl(t.Context(), controlName(t), os.Getuid()))
 
 	for _, tc := range []struct {
 		name   string
@@ -123,7 +123,7 @@ func TestReadiness_RefusesFunctionsTheTestLinkCannotRun(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(im.Close)
 	d := &Daemon{Node: "node1", Image: im}
-	require.NoError(t, d.ServeControl(t.Context(), controlName(t), os.Getuid(), 1<<20))
+	require.NoError(t, d.ServeControl(t.Context(), controlName(t), os.Getuid()))
 	svc := readyOwner(t)
 	svc.SetReadiness(d.Readiness(testImageDigest, 1))
 	storedFunctionWith(t, svc, "env", "sealed", 9)
@@ -154,7 +154,7 @@ func TestReadiness_ServingEndsWhenAcceptingStops(t *testing.T) {
 	name := controlName(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	require.NoError(t, d.ServeControl(ctx, name, os.Getuid(), 1<<20))
+	require.NoError(t, d.ServeControl(ctx, name, os.Getuid()))
 	require.True(t, d.Serving())
 	conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: "@" + name, Net: "unix"})
 	require.NoError(t, err)

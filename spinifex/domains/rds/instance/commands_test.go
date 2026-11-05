@@ -89,9 +89,13 @@ func TestIssueCommand_StampsEachCopyWithTheBudgetLeft(t *testing.T) {
 	h := newLifecycleHarness(t, false)
 	h.agent.silenceType(CommandQuiesce)
 
-	// One republish interval plus a second of slack: enough for exactly one
-	// re-publish before the budget runs out, without waiting out a third copy.
-	const budget = commandRepublishEvery + time.Second
+	// A republish can only fire late, never early, so consecutive stamps differ
+	// by at least the interval however loaded the runner is. The budget leaves
+	// the second copy most of a second of slack.
+	const republishEvery = 100 * time.Millisecond
+	h.svc.deps.CommandRepublishEvery = republishEvery
+
+	const budget = time.Second
 	_, err := h.svc.issueCommand(t.Context(), testAccountID, testDBID, CommandQuiesce, budget, nil)
 	require.ErrorIs(t, err, ErrCommandUnreachable)
 
@@ -101,7 +105,7 @@ func TestIssueCommand_StampsEachCopyWithTheBudgetLeft(t *testing.T) {
 		assert.Positive(t, copied.RemainingBudgetMs, "copy %d carries no remaining budget", i)
 		assert.LessOrEqual(t, copied.RemainingBudgetMs, budget.Milliseconds(), "copy %d", i)
 		if i > 0 {
-			assert.LessOrEqual(t, copied.RemainingBudgetMs, issued[i-1].RemainingBudgetMs-commandRepublishEvery.Milliseconds()/2,
+			assert.LessOrEqual(t, copied.RemainingBudgetMs, issued[i-1].RemainingBudgetMs-republishEvery.Milliseconds()/2,
 				"copy %d was stamped with as much budget as the copy before it", i)
 		}
 	}

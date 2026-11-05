@@ -3374,7 +3374,7 @@ func (s *ELBv2ServiceImpl) DescribeTags(ctx context.Context, input *elbv2.Descri
 }
 
 // maxResourceTags is AWS's per-resource tag limit for ELBv2 resources.
-const maxResourceTags = 50
+const maxResourceTags = 25
 
 // tagCharsPattern is the ELBv2 model's TagKey and TagValue pattern.
 var tagCharsPattern = regexp.MustCompile(`^([\p{L}\p{Z}\p{N}_.:/=+\-@]*)$`)

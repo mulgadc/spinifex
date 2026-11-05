@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/nats-io/nats.go"
@@ -135,4 +136,60 @@ func TestECSInstanceRolePolicyDoc_GrantsAssumeRole(t *testing.T) {
 	assert.Contains(t, doc, `{"Effect":"Allow","Action":"sts:AssumeRole","Resource":"arn:aws:iam::`+testAccountID+`:role/*"}`)
 	assert.Contains(t, doc, `"ecs:*"`)
 	assert.Contains(t, doc, `"ecr:GetAuthorizationToken"`)
+}
+
+// containerInstanceStatus is i-1's status in the web cluster.
+func containerInstanceStatus(t *testing.T, svc *Service) string {
+	t.Helper()
+	di, err := svc.DescribeContainerInstances(context.Background(), &ecs.DescribeContainerInstancesInput{
+		Cluster: aws.String("web"), ContainerInstances: []*string{aws.String("i-1")},
+	}, testAccountID)
+	require.NoError(t, err)
+	return aws.StringValue(di.ContainerInstances[0].Status)
+}
+
+// A leader that loses the lease must drop the bus and stop reaping, or two
+// nodes would mark instances DRAINING and stop their tasks at once. Re-elected,
+// it takes both back up.
+func TestScheduler_LosingTheLeaseDropsTheBusAndTheReaperUntilReElection(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	svc := NewService(nc, testRegion, "").WithDeps(Deps{IAM: newStubIAM()})
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	registerInstance(t, svc, "web", "i-1", 1024, 2048)
+	kv, err := svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	var rec InstanceRecord
+	_, err = taskdefinition.GetJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec)
+	require.NoError(t, err)
+	rec.LastSeen = time.Now().UTC().Add(-2 * heartbeatTimeout)
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec))
+
+	store := kvstore.OpenSyncBucket(testutil.NewJetStream(t, nc))
+	sc := NewScheduler(nc, svc, kvsync.NewLease(store, KeyScheduler, "holder-a", 300*time.Millisecond))
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); kvsync.RunElection(ctx, sc.lease, sc.onGained, sc.unsubscribeBus) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	held := func() bool { return sc.lease.Held() && sc.subCount() == 4 }
+	require.Eventually(t, held, 5*time.Second, 10*time.Millisecond, "the leader subscribes to the four bus subjects")
+
+	syncKV, err := store.KV(t.Context())
+	require.NoError(t, err)
+	_, err = syncKV.Put(t.Context(), KeyScheduler, []byte(`{"holder":"holder-b","generation":0}`))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return !sc.lease.Held() && sc.subCount() == 0 }, 5*time.Second, 10*time.Millisecond,
+		"a lost lease must drop every bus subscription")
+
+	revisit, err := sc.timerPass(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, leaseRefresh, revisit)
+	assert.Equal(t, "ACTIVE", containerInstanceStatus(t, svc), "a node that lost the lease must not reap")
+
+	require.NoError(t, syncKV.Delete(t.Context(), KeyScheduler))
+	require.Eventually(t, held, 5*time.Second, 10*time.Millisecond, "re-elected, the bus comes back")
+	_, err = sc.timerPass(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "DRAINING", containerInstanceStatus(t, svc), "the re-elected leader reaps again")
 }

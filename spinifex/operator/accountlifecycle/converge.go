@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountcleanup"
 )
 
@@ -278,4 +279,34 @@ func stuckFrom(into []Stuck, cleanup, remainder *accountcleanup.Outcome) []Stuck
 		into = append(into, Stuck{Resource: Resource{Kind: "inventory", ID: reason}, Reason: reason})
 	}
 	return into
+}
+
+// rereadComputeStorage reads the instances, spot requests and volumes the
+// account still holds immediately before the record is removed, so anything
+// that appeared after the convergence loop ended keeps the account. A read
+// that fails or is incomplete is named, never taken as empty.
+func (e *Engine) rereadComputeStorage(ctx context.Context, accountID string, result *Result) {
+	compute, cerr := e.Compute.ComputeRemaining(ctx, accountID)
+	storage, serr := e.Storage.StorageRemaining(ctx, accountID)
+	e.addFinalStuck(result, StageAttachments, accountID, compute, cerr)
+	e.addFinalStuck(result, StageStorage, accountID, storage, serr)
+}
+
+func (e *Engine) addFinalStuck(result *Result, stage Stage, accountID string, out *accountcleanup.Outcome, err error) {
+	var stuck []Stuck
+	if err != nil || out == nil {
+		stuck = []Stuck{{Resource: Resource{Kind: "inventory", ID: stage.String()}, Reason: operatorv1.AccountingReasonRereadIncomplete}}
+	} else {
+		stuck = stuckFrom(nil, &accountcleanup.Outcome{}, out)
+	}
+	if len(stuck) == 0 {
+		return
+	}
+	for i := range result.Stages {
+		if result.Stages[i].Stage == stage {
+			result.Stages[i].Stuck = append(result.Stages[i].Stuck, stuck...)
+			return
+		}
+	}
+	result.Stages = append(result.Stages, StageResult{Stage: stage, Elapsed: "0s", Stuck: stuck})
 }

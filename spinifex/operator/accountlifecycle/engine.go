@@ -7,9 +7,11 @@ import (
 	"log/slog"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	operatorv1 "github.com/mulgadc/spinifex/contracts/operator/v1"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/accountcleanup"
 )
 
 // AccountStatusTerminating mirrors iamdomain.AccountStatusTerminating.
@@ -119,9 +121,42 @@ func (e *Engine) Inventory(ctx context.Context, accountID string) (*Result, erro
 			}
 			stageResult.Deleted = append(stageResult.Deleted, listed...)
 		}
+		if stage == StageAttachments || stage == StageStorage {
+			listed, err := e.listComputeStorage(ctx, stage, accountID)
+			if err != nil {
+				return nil, err
+			}
+			stageResult.Deleted = append(stageResult.Deleted, listed...)
+		}
 		result.Stages = append(result.Stages, stageResult)
 	}
 	return result, nil
+}
+
+// listComputeStorage reads what the EC2 compute and storage owners still hold.
+// An unanswered or incomplete read is an error, never a shorter list.
+func (e *Engine) listComputeStorage(ctx context.Context, stage Stage, accountID string) ([]Resource, error) {
+	if e.Compute == nil || e.Storage == nil {
+		return nil, errComputeCleanupMissing
+	}
+	var out *accountcleanup.Outcome
+	var err error
+	if stage == StageAttachments {
+		out, err = e.Compute.ComputeRemaining(ctx, accountID)
+	} else {
+		out, err = e.Storage.StorageRemaining(ctx, accountID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inventory %s: %w", stage, err)
+	}
+	if len(out.IncompleteReasons) > 0 {
+		return nil, fmt.Errorf("inventory %s incomplete: %s", stage, strings.Join(out.IncompleteReasons, ","))
+	}
+	var found []Resource
+	for _, it := range out.Items {
+		found = append(found, Resource{Kind: it.Kind, ID: it.ResourceID, Detail: it.State})
+	}
+	return found, nil
 }
 
 // DryRun is the explicit operator dry run: exactly what Inventory returns.
@@ -187,12 +222,20 @@ func (e *Engine) Teardown(ctx context.Context, req Request) (*Result, error) {
 			e.OnStage(ctx, stageResult)
 		}
 		if stage == StageCompute {
+			if len(stageResult.Stuck) > 0 {
+				// An ECS, EKS or RDS owner that still holds resources may be
+				// running on these instances, so none is terminated under it.
+				e.logger().WarnContext(ctx, "Account teardown: compute owners still hold resources, instances left alone",
+					"accountID", account.AccountID, "stuck", len(stageResult.Stuck))
+				continue
+			}
 			if err := e.convergeCompute(ctx, req, result); err != nil {
 				return result, err
 			}
 		}
 	}
 	e.rereadPlatform(ctx, req, platform, result)
+	e.rereadComputeStorage(ctx, req.AccountID, result)
 
 	if stuck := result.StuckCount(); stuck > 0 {
 		// The account stays TERMINATING on purpose. Removing the record now

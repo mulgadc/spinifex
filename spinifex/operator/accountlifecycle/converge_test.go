@@ -214,9 +214,10 @@ func TestConvergeIncompleteReadsEndStuckNotClean(t *testing.T) {
 	}
 }
 
-// ADR-0003:S7. An instance whose terminated record has expired leaves its volume
-// recorded attached; the cleanup refuses it and the final re-read still lists it.
-func TestS7_ExpiredTerminatedRecordKeepsAttachedVolumeAndAccount(t *testing.T) {
+// The loop keeps the account while the storage owner reports a volume still
+// recorded attached. That the owner refuses such a volume is the owner's own
+// invariant test in accountcleanup, against its real cleanup.
+func TestConvergeKeepsTheAccountWhileAnAttachedVolumeRemains(t *testing.T) {
 	compute := &scriptedCompute{scriptedStage{cleanups: []*accountcleanup.Outcome{outcome()}, remainders: []*accountcleanup.Outcome{outcome()}}}
 	storage := &scriptedStorage{scriptedStage{
 		cleanups:   []*accountcleanup.Outcome{outcome(blockedHolderVolume)},

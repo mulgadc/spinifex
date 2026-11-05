@@ -121,3 +121,24 @@ func TestSyncBucket_StoppedJetStreamIsUnavailable(t *testing.T) {
 		})
 	}
 }
+
+// A recreated sync stream restarts its revisions, so a stale holder's revision
+// could match a new key. Losing the stream must leave every write failing.
+func TestSyncBucket_LostStreamIsNeverRecreated(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	b := kvstore.OpenSyncBucket(js)
+	rev, err := b.CompareAndSwap(t.Context(), "k", []byte("a"), 0)
+	require.NoError(t, err)
+	require.NoError(t, js.DeleteKeyValue(t.Context(), "spinifex-sync"))
+
+	for range 3 {
+		_, err = b.CompareAndSwap(t.Context(), "k", []byte("b"), 0)
+		require.Error(t, err)
+		_, err = b.CompareAndSwap(t.Context(), "k", []byte("b"), rev)
+		require.Error(t, err)
+		_, _, err = b.Load(t.Context(), "k")
+		require.Error(t, err)
+	}
+	_, err = js.KeyValue(t.Context(), "spinifex-sync")
+	require.ErrorIs(t, err, jetstream.ErrBucketNotFound, "the sync bucket must still be absent")
+}

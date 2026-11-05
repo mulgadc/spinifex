@@ -155,6 +155,7 @@ type LoadBalancerRecord struct {
 	Tags             map[string]string  `json:"tags,omitempty"`
 	AccountID        string             `json:"account_id"`
 	CreatedAt        time.Time          `json:"created_at"`
+	ActiveSince      time.Time          `json:"active_since,omitzero"` // First heartbeat of the current VM generation
 }
 
 // HealthTargetSpec is a backend the nginx agent actively health-checks, computed

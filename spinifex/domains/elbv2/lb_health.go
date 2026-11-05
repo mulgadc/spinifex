@@ -59,6 +59,7 @@ type LBRepair struct {
 type LBDataPathRecord struct {
 	InstanceID string                   `json:"instance_id"`
 	Suspended  bool                     `json:"suspended,omitempty"`
+	BoundAt    time.Time                `json:"bound_at,omitzero"`
 	NICs       map[string]*LBNICFailure `json:"nics,omitempty"`
 	Repairs    []LBRepair               `json:"repairs,omitempty"`
 }
@@ -127,6 +128,7 @@ func (s *Store) ResumeLBHealth(ctx context.Context, lbID, instanceID string) err
 		rec.Suspended = false
 		if instanceID != "" && rec.InstanceID != instanceID {
 			rec.InstanceID = instanceID
+			rec.BoundAt = time.Now().UTC()
 			rec.NICs = nil
 			changed = true
 		}

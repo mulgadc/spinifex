@@ -1138,6 +1138,7 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(ctx context.Context, input *LBAgentH
 			if rec.State == StateProvisioning {
 				rec.State = StateActive
 				rec.StateReason = ""
+				rec.ActiveSince = now
 			}
 			rec.LastHeartbeat = now
 			return true, nil

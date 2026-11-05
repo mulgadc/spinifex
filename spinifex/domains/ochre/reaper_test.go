@@ -489,3 +489,40 @@ func TestReaper_RunReleasesLeaseOnShutdown(t *testing.T) {
 	require.NoError(t, err, "Run returned with the lease key still present")
 	other.lease.Unlock(t.Context(), tok)
 }
+
+// A reaper whose lease is taken over must stop reclaiming at once, or two
+// nodes would tear the same endpoint down; re-elected, it reclaims again.
+func TestReaper_LosingTheLeaseStopsReclaimUntilReElection(t *testing.T) {
+	deps := ReaperDeps{Interval: 5 * time.Millisecond, IdleTTL: time.Minute}
+	f := newReaperFixture(t, deps)
+	js, err := jetstream.New(f.svc.nc)
+	require.NoError(t, err)
+	store := kvstore.OpenSyncBucket(js)
+	f.reaper = NewReaper(f.svc, kvsync.NewLease(store, KeyReaper, "node-a", 300*time.Millisecond), deps)
+	f.ready(t)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); f.reaper.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+	require.Eventually(t, f.reaper.IsLeader, 5*time.Second, 5*time.Millisecond)
+
+	syncKV, err := store.KV(t.Context())
+	require.NoError(t, err)
+	_, err = syncKV.Put(t.Context(), KeyReaper, []byte(`{"holder":"node-b","generation":0}`))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return !f.reaper.IsLeader() }, 5*time.Second, 5*time.Millisecond)
+
+	// Idle from here on, so only the lost lease keeps it from being reaped.
+	f.age(t, 10*time.Minute, 10*time.Minute)
+	time.Sleep(20 * time.Millisecond) // a sweep already running when the lease went
+	scrapes := f.transport.scrapeCount()
+	time.Sleep(100 * time.Millisecond)
+	_, found := f.current(t)
+	assert.True(t, found, "a reaper that lost the lease must not reclaim")
+	assert.Equal(t, scrapes, f.transport.scrapeCount(), "a reaper that lost the lease must not even scrape")
+
+	require.NoError(t, syncKV.Delete(t.Context(), KeyReaper))
+	require.Eventually(t, func() bool { _, found := f.current(t); return !found }, 5*time.Second, 5*time.Millisecond,
+		"re-elected, the reaper reclaims the idle endpoint")
+}

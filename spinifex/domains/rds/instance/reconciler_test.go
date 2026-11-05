@@ -17,9 +17,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// onePass runs one reconcile and keeps only its error, for the tests that assert
-// on what converged rather than on when the loop should next run. The tests that
-// do care about the deadline call reconcileOnce directly.
 // testReconciler is holder's reconciler on a sync bucket of its own, as a
 // separate daemon's would be.
 func testReconciler(t *testing.T, svc *Service, holder string) *Reconciler {
@@ -39,6 +36,9 @@ func lead(t *testing.T, r *Reconciler) (kvsync.Token, error) {
 	return tok, err
 }
 
+// onePass runs one reconcile and keeps only its error, for the tests that assert
+// on what converged rather than on when the loop should next run. The tests that
+// do care about the deadline call reconcileOnce directly.
 func onePass(t *testing.T, r *Reconciler) error {
 	t.Helper()
 	_, err := r.reconcileOnce(t.Context())
@@ -465,4 +465,47 @@ func TestTransitionFresh_LeavesAnAcceptedDelete(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 	assert.Equal(t, StatusDeleting, stored.Status)
+}
+
+// The retention sweep deletes customer snapshots under AcquireClusterLease, so
+// a node whose lease was taken over must stop sweeping and reconciling at once,
+// and only start again once it is re-elected.
+func TestReconciler_ATakenOverLeaseStopsTheSweepUntilReElection(t *testing.T) {
+	t.Parallel()
+	h := newReconcileHarness(t)
+	js, err := h.svc.js()
+	require.NoError(t, err)
+	store := kvstore.OpenSyncBucket(js)
+	h.rec.lease = kvsync.NewLease(store, KeyReconciler, "node-a", 300*time.Millisecond)
+	seedInstance(t, h.svc, healthyRecord())
+
+	_, err = lead(t, h.rec)
+	require.NoError(t, err)
+	_, ok := h.rec.AcquireClusterLease()
+	require.True(t, ok)
+
+	syncKV, err := store.KV(t.Context())
+	require.NoError(t, err)
+	_, err = syncKV.Put(t.Context(), KeyReconciler, []byte(`{"holder":"node-b","generation":0}`))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return !h.rec.lease.Held() }, 5*time.Second, 10*time.Millisecond,
+		"the takeover must cost this node the lease")
+
+	_, ok = h.rec.AcquireClusterLease()
+	assert.False(t, ok, "a node that lost the lease must not sweep snapshots")
+	revisit, err := h.rec.reconcilePass(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, leaseRefresh, revisit)
+	status, _ := h.statusOf(t, testDBID)
+	assert.Equal(t, StatusCreating, status, "a node that lost the lease must not reconcile")
+
+	require.NoError(t, syncKV.Delete(t.Context(), KeyReconciler))
+	_, err = lead(t, h.rec)
+	require.NoError(t, err, "re-election")
+	_, ok = h.rec.AcquireClusterLease()
+	assert.True(t, ok)
+	_, err = h.rec.reconcilePass(t.Context())
+	require.NoError(t, err)
+	status, _ = h.statusOf(t, testDBID)
+	assert.NotEqual(t, StatusCreating, status, "the re-elected node reconciles again")
 }

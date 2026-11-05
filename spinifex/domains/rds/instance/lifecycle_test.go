@@ -117,7 +117,9 @@ func (f *fakeInstanceCommander) DetachVolumeFromStopped(_ context.Context, insta
 // DescribeSnapshots reports against the data volume, which is what decides
 // between deleting the volume and retaining it.
 type fakeSnapshots struct {
-	created       []*ec2.CreateSnapshotInput
+	created []*ec2.CreateSnapshotInput
+	// The context deadline the last CreateSnapshot ran under.
+	deadline      time.Time
 	holding       []string
 	deleted       []string
 	createErr     error
@@ -132,7 +134,8 @@ type fakeSnapshots struct {
 
 var _ snapshotProvider = (*fakeSnapshots)(nil)
 
-func (f *fakeSnapshots) CreateSnapshot(_ context.Context, input *ec2.CreateSnapshotInput, _ string) (*ec2.Snapshot, error) {
+func (f *fakeSnapshots) CreateSnapshot(ctx context.Context, input *ec2.CreateSnapshotInput, _ string) (*ec2.Snapshot, error) {
+	f.deadline, _ = ctx.Deadline()
 	if f.beforeCreate != nil {
 		f.beforeCreate()
 	}

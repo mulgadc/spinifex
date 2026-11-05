@@ -326,7 +326,7 @@ func TestAssumeRoleForLambdaEnvironment_Lifetime(t *testing.T) {
 // observable, so absence of this shape is limited evidence, not proof.
 var tokenShape = regexp.MustCompile(`[A-Za-z0-9+/]{43}=`)
 
-func TestAssumeRoleForLambdaEnvironment_FailedMintIssuesAndLeaksNothing(t *testing.T) {
+func TestAssumeRoleForLambdaEnvironment_FailedMintIssuesNothingAndHidesSecret(t *testing.T) {
 	svc, nc := newTestSetup(t)
 	role := createRoleInAccount(t, svc, testCallerAccountID, testLambdaRoleName, lambdaTrustPolicyDoc)
 	rec := installRecorder(t, svc)

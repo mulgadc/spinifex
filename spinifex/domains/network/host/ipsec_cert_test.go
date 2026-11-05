@@ -17,13 +17,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func init() { ipsecCertKeyBits = 2048 }
+// testIPSecKeyBits sizes every RSA key this package's tests generate. 1024 is
+// the smallest crypto/rsa accepts, and the cert structure is all these check.
+const testIPSecKeyBits = 1024
+
+func init() { ipsecCertKeyBits = testIPSecKeyBits }
 
 // writeTestCA writes a throwaway self-signed RSA CA in the PEM/PKCS8 form the
 // IPsec issuer loads.
 func writeTestCA(t *testing.T, certPath, keyPath string) {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := rsa.GenerateKey(rand.Reader, testIPSecKeyBits)
 	require.NoError(t, err)
 	tmpl := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),

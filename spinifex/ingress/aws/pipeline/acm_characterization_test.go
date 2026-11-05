@@ -1,19 +1,29 @@
 package pipeline
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"testing"
+
+	"github.com/aws/aws-sdk-go/service/acm"
 	"github.com/go-chi/chi/v5"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/internal/testkit/gwfix"
+	acmdomain "github.com/mulgadc/spinifex/spinifex/domains/acm"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
+	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-	"net/http"
-	"net/http/httptest"
-	"slices"
-	"testing"
 )
 
 // TestACMActionFromTarget_FormsAndTelemetryAgree pins how the ACM registration
@@ -73,4 +83,63 @@ func TestACMPipeline_TraceActionEnricher_SpanNamedServiceAction(t *testing.T) {
 	}
 	assert.Equal(t, "ListCertificates", got["aws.action"])
 	assert.Equal(t, "acm", got["aws.service"])
+}
+
+// An absent certificate through the signed gateway, against the real ACM service,
+// answers 400 with ResourceNotFoundException in the JSON 1.1 envelope.
+func TestACMPipeline_DescribeAbsentCertificate_Is400ResourceNotFoundException(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	masterKey, err := iamdomain.GenerateMasterKey()
+	require.NoError(t, err)
+	svc, err := acmdomain.NewACMServiceImplWithNATS(t.Context(), nil, nc, masterKey)
+	require.NoError(t, err)
+
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
+	require.NoError(t, err)
+	gw := withVerifier(gwfix.WithDeps(&Config{DisableLogging: true, Region: gwfix.Region}, gwfix.Deps{NATS: nc, IAM: &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID: gwfix.AccessKey, SecretAccessKey: encryptedSecret,
+					UserName: "alice", AccountID: authzAccountID, Status: "Active",
+				},
+			},
+		},
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return allowAllACMDocs(), nil },
+	}}))
+	withACM(gw, acmawsapi.Deps{})
+
+	sub, err := nc.Subscribe("acm.DescribeCertificate", func(msg *nats.Msg) {
+		var in acm.DescribeCertificateInput
+		if err := json.Unmarshal(msg.Data, &in); err != nil {
+			_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorInvalidParameterValue))
+			return
+		}
+		out, err := svc.DescribeCertificate(t.Context(), &in, natsmsg.AccountIDFromMsg(msg))
+		if err != nil {
+			_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ValidErrorCodeFromError(err)))
+			return
+		}
+		b, _ := json.Marshal(out)
+		_ = msg.Respond(b)
+	})
+	require.NoError(t, err)
+	require.NoError(t, nc.Flush())
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	r := chi.NewRouter()
+	r.Use(gw.SigV4AuthMiddleware())
+	r.HandleFunc("/*", gw.Request)
+
+	arn := "arn:aws:acm:" + gwfix.Region + ":" + authzAccountID + ":certificate/12345678-1234-1234-1234-123456789012"
+	resp := doRequest(r, signACMRequest(t, "CertificateManager.DescribeCertificate", []byte(`{"CertificateArn":"`+arn+`"}`)))
+
+	assert.Equal(t, 400, resp.StatusCode)
+	var env struct {
+		Type string `json:"__type"`
+	}
+	body, _ := io.ReadAll(resp.Body)
+	require.NoError(t, json.Unmarshal(body, &env), string(body))
+	assert.Equal(t, "ResourceNotFoundException", env.Type)
 }

@@ -246,6 +246,19 @@ build-lambda-testlink-image: ## Build the test-link Lambda guest image and print
 	[[ "$$digest" =~ $(LAMBDA_DIGEST_RE) ]] || { echo "image digest not computed"; exit 1; }; \
 	echo "LAMBDA_IMAGE_DIGEST=$$digest"
 
+# Controlled-test only: puts the outputs of build-lambda-testlink-image and
+# build-lambda-testlink where the tagged daemon reads them, then restarts.
+# The daemon re-checks both pins at start and serves nothing on a mismatch.
+LAMBDA_TESTLINK_INSTALL_DIR := /usr/share/spinifex/microvm/lambda-testlink
+install-lambda-testlink: ## Install the test-link Lambda daemon, image and initializer on this host (not shipped)
+	@for f in $(LAMBDA_TESTLINK_IMAGE_DIR)/vmlinuz $(LAMBDA_TESTLINK_IMAGE_DIR)/initramfs.cpio.gz $(LAMBDA_TESTLINK_IMAGE_DIR)/qboot.rom $(LAMBDA_TESTLINK_DIR)/hardkill.so $(LAMBDA_TESTLINK_DIR)/$(GO_PROJECT_NAME); do \
+		test -f $$f || { echo "$$f missing: run make build-lambda-testlink-image and make build-lambda-testlink first"; exit 1; }; \
+	done
+	sudo install -d $(LAMBDA_TESTLINK_INSTALL_DIR)
+	sudo install -m 0644 $(LAMBDA_TESTLINK_IMAGE_DIR)/vmlinuz $(LAMBDA_TESTLINK_IMAGE_DIR)/initramfs.cpio.gz $(LAMBDA_TESTLINK_IMAGE_DIR)/qboot.rom $(LAMBDA_TESTLINK_DIR)/hardkill.so $(LAMBDA_TESTLINK_INSTALL_DIR)/
+	sudo install -m 755 $(LAMBDA_TESTLINK_DIR)/$(GO_PROJECT_NAME) /usr/local/bin/$(GO_PROJECT_NAME)
+	sudo systemctl restart spinifex.target
+
 # qboot is the microvm firmware. The source tarball ships with each release
 # because qboot is GPL-2.0.
 QBOOT_COMMIT := $(shell sed -n 's/^QBOOT_COMMIT="\(.*\)"$$/\1/p' scripts/build-qboot.sh)
@@ -602,7 +615,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-lambda-testlink build-lambda-testlink-image build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-worker-microvm-image build-lambda-runtime-microvm-image install-microvm install-sqs-worker-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration test-gated generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
+.PHONY: test-package-check build build-lambda-testlink build-lambda-testlink-image install-lambda-testlink build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-worker-microvm-image build-lambda-runtime-microvm-image install-microvm install-sqs-worker-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration test-gated generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

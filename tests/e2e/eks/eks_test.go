@@ -242,6 +242,11 @@ func TestEKS(t *testing.T) {
 		runEBSCSIVolume(t, c, env, artifacts, fx)
 	})
 
+	t.Run("EndpointNICSelfHeal", func(t *testing.T) {
+		requireClusterReady(t, fx)
+		runEndpointNICSelfHeal(t, c, env, artifacts, fx)
+	})
+
 	parent := t
 	t.Run("NodegroupDelete", func(t *testing.T) {
 		requireClusterReady(t, fx)

@@ -139,11 +139,14 @@ func TestS8_EKSTeardownLeaseOutlivesTheRequest(t *testing.T) {
 	f := newDeleteClusterFixture(t, "alpha")
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	short, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: "eks-teardown-short-ttl", TTL: time.Second})
+	// A short TTL with frequent renewals keeps the wait brief while leaving
+	// several renewal chances inside each TTL window.
+	const ttl = 400 * time.Millisecond
+	short, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: "eks-teardown-short-ttl", TTL: ttl})
 	require.NoError(t, err)
 	f.svc.leaderKV = short
 	origTTL, origRenew := teardownLeaseTTL, teardownLeaseRenew
-	teardownLeaseTTL, teardownLeaseRenew = time.Second, 200*time.Millisecond
+	teardownLeaseTTL, teardownLeaseRenew = ttl, 50*time.Millisecond
 	t.Cleanup(func() { teardownLeaseTTL, teardownLeaseRenew = origTTL, origRenew })
 
 	entered, release := blockTerminate(t, f.inst)
@@ -152,7 +155,7 @@ func TestS8_EKSTeardownLeaseOutlivesTheRequest(t *testing.T) {
 	waitEntered(t, entered)
 	cancel()
 
-	time.Sleep(2500 * time.Millisecond)
+	time.Sleep(ttl * 5 / 2)
 	_, err = short.Create(t.Context(), teardownLeaderKey(testAccountID, "alpha"), []byte("node-2"))
 	require.ErrorIs(t, err, jetstream.ErrKeyExists,
 		"the running teardown must still hold its lease after the request context is gone")

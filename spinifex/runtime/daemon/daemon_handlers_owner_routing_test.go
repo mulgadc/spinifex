@@ -213,3 +213,44 @@ func TestOwnerDispatch_RejectsOtherAccountWithoutWriting(t *testing.T) {
 	assert.Equal(t, beforeInstance, *after.Instance)
 	assert.Nil(t, after.RunInstancesInput.DisableApiTermination)
 }
+
+func TestModifyInstanceAttribute_DisableApiTerminationRoutedToOwner(t *testing.T) {
+	const id = "i-or-termroute"
+	ns, gateway := testutil.StartTestNATS(t)
+	stopped := vmmock.New()
+
+	b := ownerRoutingDaemon(t, ns.ClientURL(), stopped)
+	b.vmMgr.Insert(&vm.VM{
+		ID:                id,
+		Status:            vm.StateRunning,
+		AccountID:         testAccountID,
+		Instance:          &ec2.Instance{InstanceId: aws.String(id)},
+		RunInstancesInput: &ec2.RunInstancesInput{},
+	})
+	subscribeOwner(t, b, id)
+
+	a := ownerRoutingDaemon(t, ns.ClientURL(), stopped)
+	sub, err := a.natsConn.QueueSubscribe("ec2.ModifyInstanceAttribute", "spinifex-workers",
+		asMsgHandler(handleNATSRequest(a.node, a.instanceService.ModifyInstanceAttribute)))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	require.NoError(t, a.natsConn.Flush())
+
+	for range 9 {
+		_, err := ec2instanceapi.ModifyInstanceAttribute(t.Context(), &ec2.ModifyInstanceAttributeInput{
+			InstanceId:            aws.String(id),
+			DisableApiTermination: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
+		}, gateway, testAccountID)
+		require.NoError(t, err)
+	}
+
+	got, ok := b.vmMgr.Get(id)
+	require.True(t, ok)
+	require.NotNil(t, got.RunInstancesInput.DisableApiTermination)
+	assert.True(t, *got.RunInstancesInput.DisableApiTermination)
+
+	// The node that enforces the guard now refuses the terminate.
+	reply := requestHandler(t, b.natsConn, "ec2.cmd."+id+".enforce", b.handleEC2Events, testAccountID,
+		mustMarshal(t, ec2v1.EC2InstanceCommand{ID: id, Attributes: ec2v1.EC2CommandAttributes{TerminateInstance: true}}))
+	assert.Equal(t, awserrors.ErrorOperationNotPermitted, decodeError(t, reply.Data)["Code"])
+}

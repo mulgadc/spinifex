@@ -531,3 +531,58 @@ func TestAssumeRoleForLambdaEnvironment_NoPlaintextAtRestOrInLogs(t *testing.T) 
 		assert.NotContains(t, logs.String(), plain)
 	}
 }
+
+func issueLambdaSession(t *testing.T, svc *STSServiceImpl, roleARN, environmentID string, lifetime int64) string {
+	t.Helper()
+	req := lambdaEnvRequest(roleARN)
+	req.EnvironmentID = environmentID
+	req.MaxLifetimeSeconds = lifetime
+	out, err := svc.AssumeRoleForLambdaEnvironment(t.Context(), req)
+	require.NoError(t, err)
+	return aws.StringValue(out.Credentials.AccessKeyId)
+}
+
+// Lambda sessions are role sessions: deleting their role revokes them, and
+// deleting an unrelated user or role leaves them alone.
+func TestLambdaEnvironmentSessions_RevokedWithTheirRoleOnly(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	wireRevoker(t, svc)
+	seedUser(t, svc, testCallerAccountID, testCallerUserName)
+	fnRole := createRoleInAccount(t, svc, testCallerAccountID, testLambdaRoleName, lambdaTrustPolicyDoc)
+	otherRole := createRoleInAccount(t, svc, testCallerAccountID, "other-exec", lambdaTrustPolicyDoc)
+
+	fnSession := issueLambdaSession(t, svc, *fnRole.Arn, "env-fn", 3600)
+	otherSession := issueLambdaSession(t, svc, *otherRole.Arn, "env-other", 3600)
+	user := mintUserSession(t, svc, testCallerAccountID, testCallerUserName).AccessKeyID
+
+	deleteRole(t, svc, testCallerAccountID, testLambdaRoleName)
+	assertSessionsGone(t, svc, fnSession)
+	assertSessionsKept(t, svc, otherSession, user)
+
+	deleteUser(t, svc, testCallerAccountID, testCallerUserName)
+	assertSessionsGone(t, svc, user)
+	assertSessionsKept(t, svc, otherSession)
+}
+
+// With no revoker wired, the janitor reaps a Lambda session whose role is gone,
+// keeps one whose role is live, and reaps any once past expiry and grace.
+func TestLambdaEnvironmentSessions_Sweep(t *testing.T) {
+	svc, _ := newTestSetup(t)
+	fnRole := createRoleInAccount(t, svc, testCallerAccountID, testLambdaRoleName, lambdaTrustPolicyDoc)
+	liveRole := createRoleInAccount(t, svc, testCallerAccountID, "live-exec", lambdaTrustPolicyDoc)
+
+	orphan := issueLambdaSession(t, svc, *fnRole.Arn, "env-orphan", 3600)
+	live := issueLambdaSession(t, svc, *liveRole.Arn, "env-live", 1)
+	deleteRole(t, svc, testCallerAccountID, testLambdaRoleName)
+	assertSessionsKept(t, svc, orphan)
+
+	now := time.Now().UTC()
+	assert.Equal(t, 1, svc.sweep(t.Context(), now))
+	assertSessionsGone(t, svc, orphan)
+	assertSessionsKept(t, svc, live)
+
+	stored, err := svc.LookupSessionCredential(live)
+	require.NoError(t, err)
+	assert.Equal(t, 1, svc.sweep(t.Context(), stored.ExpiresAt.Add(janitorGracePeriod+time.Minute)))
+	assertSessionsGone(t, svc, live)
+}

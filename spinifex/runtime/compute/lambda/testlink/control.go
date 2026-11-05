@@ -151,6 +151,9 @@ type ControlServer struct {
 	// IOTimeout bounds reading the request and writing the reply.
 	IOTimeout time.Duration
 	Handle    func(ctx context.Context, req []byte, cred Credential) Reply
+	// AcceptStopped, if set, runs once Serve stops accepting, before it waits
+	// for the connections it started.
+	AcceptStopped func()
 }
 
 // Serve accepts until ctx ends or the listener fails, then waits for every
@@ -164,6 +167,9 @@ func (s *ControlServer) Serve(ctx context.Context, ln *net.UnixListener) error {
 	defer func() { _ = ln.Close() }()
 	var wg sync.WaitGroup
 	defer wg.Wait()
+	if s.AcceptStopped != nil {
+		defer s.AcceptStopped()
+	}
 	slots := make(chan struct{}, MaxAdmitted)
 	for {
 		select {

@@ -5,6 +5,7 @@ package testlink
 
 import (
 	"context"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -143,4 +144,23 @@ func TestReadiness_RefusesFunctionsTheTestLinkCannotRun(t *testing.T) {
 		assert.Equal(t, "The function cannot run here: test-link Lambda runs only a handler of 1 to 128 characters with no whitespace.", functionState(t, svc, name).StateReason, name)
 	}
 	assert.Equal(t, function.StateActive, functionState(t, svc, "edgehandler").State, "the longest accepted handler activates")
+}
+
+func TestReadiness_ServingEndsWhenAcceptingStops(t *testing.T) {
+	im, err := PrepareImage(writeImage(t), testImageDigest)
+	require.NoError(t, err)
+	t.Cleanup(im.Close)
+	d := &Daemon{Node: "node1", Image: im}
+	name := controlName(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	require.NoError(t, d.ServeControl(ctx, name, os.Getuid(), 1<<20))
+	require.True(t, d.Serving())
+	conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: "@" + name, Net: "unix"})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	cancel()
+	assert.Eventually(t, func() bool { return !d.Serving() }, 2*time.Second, 10*time.Millisecond,
+		"serving ends while a connection is still open, not after the drain")
 }

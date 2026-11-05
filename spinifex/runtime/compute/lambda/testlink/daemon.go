@@ -130,10 +130,9 @@ func (d *Daemon) ServeControl(ctx context.Context, name string, gatewayUID int) 
 		return err
 	}
 	srv := &ControlServer{GatewayUID: gatewayUID, RequestLimit: MaxFrameBytes, ReplyLimit: MaxFrameBytes,
-		IOTimeout: controlIOTimeout, Handle: d.Handle}
+		IOTimeout: controlIOTimeout, Handle: d.Handle, AcceptStopped: func() { d.serving.Store(false) }}
 	d.serving.Store(true)
 	go func() {
-		defer d.serving.Store(false)
 		if err := srv.Serve(ctx, ln); err != nil {
 			slog.Error("Lambda test link: control socket stopped; not serving new invocations", "err", err)
 		}

@@ -360,6 +360,7 @@ func TestVolumeMounterAdapter_HeldElsewhereReachesTheMountCaller(t *testing.T) {
 // request timeout every other call gets: a seal that outlasts the request
 // timeout still completes, where a publish that slow fails.
 func TestVolumeMounterAdapter_UnpublishOutlastingRequestTimeoutCompletes(t *testing.T) {
+	t.Parallel()
 	const requestTimeout = 100 * time.Millisecond
 	const sealTime = 4 * requestTimeout
 
@@ -440,6 +441,7 @@ func TestVolumeMounterAdapter_BlockExportReplacesNBDURI(t *testing.T) {
 // reply carried no usable export, could not be read, or never came. Hot attach
 // gets ErrMountAmbiguous with the request untouched, and Mount tears it down.
 func TestVolumeMounterAdapter_AmbiguousPublishIsTornDown(t *testing.T) {
+	t.Parallel()
 	const requestTimeout = 100 * time.Millisecond
 	replies := map[string]struct {
 		reply   func() ebsprovider.PublishVolumeResponse
@@ -631,6 +633,7 @@ func TestVolumeMounterAdapter_RequestSpanCarriesTheAccountUnderTheCaller(t *test
 // inherit what is left: a caller context already cancelled, or one shorter
 // than the seal, still gets the seal completed.
 func TestVolumeMounterAdapter_UnpublishOutlivesCallerContext(t *testing.T) {
+	t.Parallel()
 	const sealTime = 200 * time.Millisecond
 
 	nc := connectMounterTest(t)
@@ -708,6 +711,7 @@ func TestVolumeMounterAdapter_AbandonNoResponderFails(t *testing.T) {
 // An abandon that is never answered gives up within its own bound rather
 // than the provider's data-movement budget for an unpublish.
 func TestVolumeMounterAdapter_AbandonGivesUpWithinItsBound(t *testing.T) {
+	t.Parallel()
 	const bound = 200 * time.Millisecond
 	nc := connectMounterTest(t)
 	node := newMounterTestNode()

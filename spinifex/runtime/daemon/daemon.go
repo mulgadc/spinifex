@@ -262,6 +262,10 @@ type Daemon struct {
 	// SPINIFEX_REQUIRE_NATS=1. Default 30s; tests use a shorter value.
 	requireNATSTimeout time.Duration
 
+	// ownerCommandTimeout bounds each ec2.cmd owner request; zero means
+	// instanceOwnerCommandTimeout. Tests use a shorter value.
+	ownerCommandTimeout time.Duration
+
 	// exitFunc is called when SPINIFEX_REQUIRE_NATS=1 and the first connect
 	// times out. Defaults to os.Exit; tests override to avoid killing the process.
 	exitFunc func(int)

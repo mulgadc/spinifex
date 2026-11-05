@@ -292,6 +292,7 @@ func associateEIP(t *testing.T, kv jetstream.KeyValue, allocID, eniID string) {
 func TestS7_BackstopNeverReleasesCustomerAssociatedAddress(t *testing.T) {
 	d := createVPCTestDaemon(t)
 	_, nc, js := testutil.StartTestJetStream(t)
+	testutil.StubVpcdSGResponder(t, nc)
 	var err error
 	d.jsManager, err = NewJetStreamManager(nc)
 	require.NoError(t, err)

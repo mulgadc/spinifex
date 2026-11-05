@@ -87,7 +87,7 @@ func TestLease_LateStarterWaitsAFullTTLFromItsOwnObservation(t *testing.T) {
 func TestLease_RestartedHolderAndFollowerRaceOnOneRevision(t *testing.T) {
 	s := stores(t, 3)
 	// Each contender's write waits until both have read, so both CAS at one revision.
-	gate := newBarrier(2)
+	gate := newBarrier(waitCtx(t), 2)
 	cDead, cNew, cFollow := kvsync.NewFakeClock(), kvsync.NewFakeClock(), kvsync.NewFakeClock()
 	dead := kvsync.NewLeaseWithClock(s[0], leaseKey, "node-a", testTTL, cDead)
 	restarted := kvsync.NewLeaseWithClock(&gatedStore{KVStore: s[1], gate: gate}, leaseKey, "node-a", testTTL, cNew)
@@ -187,7 +187,8 @@ func TestLease_ReusableAfterUnlockAndAfterLoss(t *testing.T) {
 	requireClosed(t, secondLost, "a renewal that lost its CAS must close Lost")
 	require.False(t, l.Held())
 
-	// The taker's key is adopted only after a TTL, as any other holder's.
+	// With the taker's key deleted the key is free, so the lease takes it at once
+	// and at a higher generation than any before.
 	require.NoError(t, s[1].CompareAndDelete(t.Context(), leaseKey, revision(t, s[1], leaseKey)))
 	third, err := l.TryLock(t.Context())
 	require.NoError(t, err)
@@ -423,4 +424,14 @@ func TestLease_StuckRenewalLosesAtTheDeadline(t *testing.T) {
 	c.Advance(testTTL / 3)
 	requireClosed(t, a.Lost(), "the lease must be lost at 2*ttl/3 after the last send, stuck CAS or not")
 	assert.False(t, a.Held())
+}
+
+func TestLease_ConstructionRefusesAnEmptyHolderOrANonPositiveTTL(t *testing.T) {
+	s := stores(t, 1)
+	assert.PanicsWithValue(t, "kvsync: empty holder", func() { kvsync.NewLease(s[0], "lease.noholder", "", testTTL) })
+	assert.PanicsWithValue(t, "kvsync: lease ttl must be positive", func() { kvsync.NewLease(s[0], "lease.zerottl", "node-a", 0) })
+	assert.PanicsWithValue(t, "kvsync: lease ttl must be positive", func() { kvsync.NewLease(s[0], "lease.negttl", "node-a", -time.Second) })
+	assert.PanicsWithValue(t, "kvsync: empty holder", func() { kvsync.NewLeaseGroup(s[0], "group.noholder.", "", testTTL) })
+	assert.PanicsWithValue(t, "kvsync: lease ttl must be positive", func() { kvsync.NewLeaseGroup(s[0], "group.zerottl.", "node-a", 0) })
+	assert.PanicsWithValue(t, "kvsync: lease ttl must be positive", func() { kvsync.NewLeaseGroup(s[0], "group.negttl.", "node-a", -time.Second) })
 }

@@ -27,12 +27,28 @@ func TestDaemonLocks_EveryOwnerHasItsOwnKey(t *testing.T) {
 	})
 }
 
+// upgradedBuckets are the buckets a cluster upgraded from per-election leases
+// carries, named here rather than read off obsoleteBuckets, so dropping a name
+// from that list fails the test instead of leaving the bucket behind.
+var upgradedBuckets = []string{
+	"spinifex-dhcp-leases",
+	"spinifex-vpcd-reconcile",
+	"spinifex-dns-reconcile",
+	"spinifex-route53-realize",
+	"spinifex-route53-verify",
+	"spinifex-quota-reconcile",
+	"spinifex-rds-leader",
+	"spinifex-ecs-leader",
+	"bedrock-leader",
+	"spinifex-eks-leader",
+}
+
 // A cluster upgraded from the per-election buckets carries each of them, and
 // start removes every one while leaving other buckets alone.
 func TestDeleteObsoleteBuckets_RemovesEveryOldLeaseBucket(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	for _, name := range append([]string{"spinifex-instance-state"}, obsoleteBuckets...) {
+	for _, name := range append([]string{"spinifex-instance-state"}, upgradedBuckets...) {
 		_, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: name})
 		require.NoError(t, err, name)
 	}
@@ -40,7 +56,7 @@ func TestDeleteObsoleteBuckets_RemovesEveryOldLeaseBucket(t *testing.T) {
 	deleteObsoleteBuckets(t.Context(), js)
 	deleteObsoleteBuckets(t.Context(), js) // idempotent once they are gone
 
-	for _, name := range obsoleteBuckets {
+	for _, name := range upgradedBuckets {
 		_, err := js.KeyValue(t.Context(), name)
 		assert.ErrorIs(t, err, jetstream.ErrBucketNotFound, "%s must be deleted", name)
 	}

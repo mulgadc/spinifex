@@ -231,6 +231,7 @@ func replyAsNode(t *testing.T, nc *nats.Conn, subject, node string, reply any) {
 // Counting replies reads that as every node heard from and the instance as
 // absent, waving the retype past the cap; the gate must see node-2 is missing.
 func TestNATSInstanceTypeResolver_RefusesWhenOneNodeAnswersTwiceAndAnotherIsSilent(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
 	if err := s.AddVCPU(t.Context(), testAccount, 7); err != nil {
 		t.Fatalf("seed AddVCPU: %v", err)
@@ -258,6 +259,7 @@ func TestNATSInstanceTypeResolver_RefusesWhenOneNodeAnswersTwiceAndAnotherIsSile
 // With every node answering, the resolver finds the instance on node-2 and the
 // gate judges the retype against the cap.
 func TestNATSInstanceTypeResolver_FindsInstanceWhenEveryNodeAnswers(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
 	if err := s.AddVCPU(t.Context(), testAccount, 7); err != nil {
 		t.Fatalf("seed AddVCPU: %v", err)
@@ -283,6 +285,7 @@ func TestNATSInstanceTypeResolver_FindsInstanceWhenEveryNodeAnswers(t *testing.T
 // An instance absent from a complete listing charges nothing and returns no
 // error, so the daemon rejects the modify with the AWS NotFound error.
 func TestNATSInstanceTypeResolver_AbsentOnCompleteListingDefersToDaemon(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
 	if err := s.AddVCPU(t.Context(), testAccount, 7); err != nil {
 		t.Fatalf("seed AddVCPU: %v", err)
@@ -306,6 +309,7 @@ func TestNATSInstanceTypeResolver_AbsentOnCompleteListingDefersToDaemon(t *testi
 // A retype targets a stopped instance, which the shared stopped bucket serves
 // whatever the node fan-out does, so a silent node must not block judging it.
 func TestNATSInstanceTypeResolver_FindsStoppedInstanceWhileANodeIsSilent(t *testing.T) {
+	t.Parallel()
 	s := newVCPUService(t, Limits{Enabled: true, VCPUs: 8})
 	if err := s.AddVCPU(t.Context(), testAccount, 7); err != nil {
 		t.Fatalf("seed AddVCPU: %v", err)

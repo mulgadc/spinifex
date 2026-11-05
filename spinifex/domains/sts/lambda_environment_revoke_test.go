@@ -64,6 +64,7 @@ func TestRevokeLambdaEnvironmentSession_LeavesOtherSessionKinds(t *testing.T) {
 // replacingKV rewrites the record right after the revoke reads it.
 type replacingKV struct {
 	jetstream.KeyValue
+
 	replaced bool
 }
 
@@ -71,7 +72,7 @@ func (r *replacingKV) Get(ctx context.Context, key string) (jetstream.KeyValueEn
 	entry, err := r.KeyValue.Get(ctx, key)
 	if err == nil && !r.replaced {
 		r.replaced = true
-		if _, perr := r.KeyValue.Put(ctx, key, entry.Value()); perr != nil {
+		if _, perr := r.Put(ctx, key, entry.Value()); perr != nil {
 			return nil, perr
 		}
 	}
@@ -99,6 +100,7 @@ func TestRevokeLambdaEnvironmentSession_KeepsARecordReplacedAfterTheRead(t *test
 // keyLeakingKV fails Get or Delete with an error naming the key, as a backend may.
 type keyLeakingKV struct {
 	jetstream.KeyValue
+
 	failGet, failDelete bool
 }
 

@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"time"
 
-	otelsetup "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
+	otelsetup "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 )
 
 // KeyVPCDReconcile is vpcd's network reconcile lease in the sync bucket.

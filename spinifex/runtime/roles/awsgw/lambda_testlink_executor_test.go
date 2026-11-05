@@ -325,16 +325,25 @@ func TestLambdaTestLinkExecutor_CancelledInvokeStillRevokes(t *testing.T) {
 	require.NoError(t, sessions.revokeCtx, "the revoke ran under a live context")
 }
 
-func TestLambdaTestLinkExecutor_FailedRevokeIsNeverSuccess(t *testing.T) {
-	n := &fakeControl{max: 1 << 20, reply: &testlink.Reply{Outcome: testlink.OutcomeDone, Payload: []byte("ok")}}
-	sessions := &fakeSessions{revokeErr: stsdomain.ErrLambdaSessionRevokeFailed}
-	out, err := executorWith(n, sessions, nil, grantStore(t)).InvokeSync(context.Background(), invocation(nil))
-	require.Error(t, err)
-	var refusal *awsapi.RefusalError
-	require.False(t, errors.As(err, &refusal))
-	require.Empty(t, out.Payload)
-	require.NotContains(t, err.Error(), "ASIAFAKEKEY")
-	require.NotContains(t, err.Error(), testSecret)
+// A revoke that fails after the write makes the outcome unknown, whether the
+// daemon answered done or an authenticated refused.
+func TestLambdaTestLinkExecutor_FailedRevokeIsNeverSuccessOrRefusal(t *testing.T) {
+	for name, rep := range map[string]testlink.Reply{
+		"done":    {Outcome: testlink.OutcomeDone, Payload: []byte("ok")},
+		"refused": {Outcome: testlink.OutcomeRefused, Error: "busy"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			n := &fakeControl{max: 1 << 20, reply: &rep}
+			sessions := &fakeSessions{revokeErr: stsdomain.ErrLambdaSessionRevokeFailed}
+			out, err := executorWith(n, sessions, nil, grantStore(t)).InvokeSync(context.Background(), invocation(nil))
+			require.ErrorIs(t, err, stsdomain.ErrLambdaSessionRevokeFailed)
+			var refusal *awsapi.RefusalError
+			require.False(t, errors.As(err, &refusal))
+			require.Empty(t, out.Payload)
+			require.NotContains(t, err.Error(), "ASIAFAKEKEY")
+			require.NotContains(t, err.Error(), testSecret)
+		})
+	}
 }
 
 func TestLambdaTestLinkExecutor_OversizeRequestRevokesUnsent(t *testing.T) {

@@ -204,6 +204,9 @@ func (e *testLinkExecutor) InvokeSync(ctx context.Context, in awsapi.SyncInvocat
 		// QEMU. A grant it started it has ended itself, so withdrawing then
 		// is refused and changes nothing.
 		_ = grants.Withdraw(ctx, att.Grant)
+		if revokeErr != nil {
+			return awsapi.SyncResult{}, fmt.Errorf("test-link attempt %s: refused, execution session not revoked: %w", attemptID, revokeErr)
+		}
 		return awsapi.SyncResult{}, &awsapi.RefusalError{Err: fmt.Errorf("test-link daemon refused: %s", rep.Error)}
 	default:
 		return awsapi.SyncResult{}, fmt.Errorf("test-link attempt %s: outcome %q: %s", attemptID, rep.Outcome, rep.Error)

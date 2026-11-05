@@ -2,6 +2,7 @@ package kvstore_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -141,4 +142,46 @@ func TestSyncBucket_LostStreamIsNeverRecreated(t *testing.T) {
 	}
 	_, err = js.KeyValue(t.Context(), "spinifex-sync")
 	require.ErrorIs(t, err, jetstream.ErrBucketNotFound, "the sync bucket must still be absent")
+}
+
+// stallingJS holds every bucket lookup until gate closes, standing in for an
+// open stuck on a server that has not formed quorum.
+type stallingJS struct {
+	jetstream.JetStream
+
+	entered chan struct{}
+	once    sync.Once
+	gate    chan struct{}
+}
+
+func (s *stallingJS) KeyValue(ctx context.Context, name string) (jetstream.KeyValue, error) {
+	s.once.Do(func() { close(s.entered) })
+	<-s.gate
+	return s.JetStream.KeyValue(ctx, name)
+}
+
+// One caller's stuck open must not hold another past its own context, or a
+// lease renewal waiting behind it could outlive its deadline.
+func TestSyncBucket_AWaiterOnAStuckOpenStopsAtItsContext(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	stall := &stallingJS{JetStream: js, entered: make(chan struct{}), gate: make(chan struct{})}
+	t.Cleanup(func() { close(stall.gate) })
+	b := kvstore.OpenSyncBucket(stall)
+
+	go func() { _, _, _ = b.Load(context.Background(), "k") }()
+	<-stall.entered
+
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer cancel()
+		_, err := b.CompareAndSwap(ctx, "k", []byte("a"), 0)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, kvsync.ErrUnavailable)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the swap waited on another caller's open past its own context")
+	}
 }

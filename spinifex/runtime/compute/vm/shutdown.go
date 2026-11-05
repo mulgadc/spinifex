@@ -789,9 +789,9 @@ func (m *Manager) shutdownQEMU(instance *VM) {
 
 	// The PID file persisting past the timeout means QEMU did not exit on its
 	// own; force-kill it then. A PID file that disappears is the clean-exit
-	// signal — do not kill on that path (the PID may be stale or reused). The
-	// wrong-node terminate case, where this never runs on the hosting node, is
-	// the OrphanQEMUReaper's job.
+	// signal — do not kill on that path (the PID may be stale or reused). A
+	// terminate only runs on the node holding the instance record, so an absent
+	// PID file here means QEMU is not running on this node.
 	if err := hostprocess.WaitForPidFileRemoval(instance.ID, pidFileRemovalTimeout); err != nil {
 		slog.Warn("Timeout waiting for PID file removal", "id", instance.ID, "err", err)
 		pid, readErr := hostprocess.ReadPidFile(instance.ID)

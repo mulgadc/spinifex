@@ -30,6 +30,7 @@ func monitorDead(q *qmp.QMPClient) bool {
 	return q.Dead
 }
 
+// Verifies: ADR-0003:S7.
 func TestS7_LBRepairRefusesACustomerInstance(t *testing.T) {
 	cases := []struct {
 		name string
@@ -75,6 +76,7 @@ func TestS7_LBRepairRefusesACustomerInstance(t *testing.T) {
 	}
 }
 
+// Verifies: ADR-0003:S7.
 func TestS7_LBRepairRebootsAndNeverTerminates(t *testing.T) {
 	for _, route := range []string{"wrapper", "routed", "nats launcher"} {
 		t.Run(route, func(t *testing.T) {

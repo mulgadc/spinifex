@@ -363,6 +363,7 @@ func (e *repairEnv) candidates() []lbRepairCandidate {
 	return out
 }
 
+// Verifies: ADR-0003:S7.
 func TestS7_LBRepairActsOnlyOnTheLBsOwnVM(t *testing.T) {
 	t.Parallel()
 	e := newRepairEnv(t)

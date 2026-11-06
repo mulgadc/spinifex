@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	reconcilelock "github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
@@ -16,8 +17,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// daemonLocks is every lease the daemon owns, each constructed once against the
-// process's sync bucket and handed to the sites that run under it.
+// daemonLocks is every lease and claim the daemon owns, each constructed once
+// against the process's sync bucket and handed to the sites that run under it.
 type daemonLocks struct {
 	dns            *kvsync.Lease
 	route53Realize *kvsync.Lease
@@ -26,6 +27,7 @@ type daemonLocks struct {
 	ecs            *kvsync.Lease
 	ochre          *kvsync.Lease
 	eks            *kvsync.LeaseGroup
+	uefi           *kvsync.ClaimGroup
 }
 
 func newDaemonLocks(store kvsync.KVStore, node string) *daemonLocks {
@@ -37,6 +39,7 @@ func newDaemonLocks(store kvsync.KVStore, node string) *daemonLocks {
 		ecs:            ecsdomain.NewSchedulerLease(store, node),
 		ochre:          ochre.NewReaperLease(store, node),
 		eks:            ekscluster.NewClusterLeases(store, node),
+		uefi:           uefistore.NewClaims(store, node),
 	}
 }
 
@@ -63,4 +66,13 @@ func deleteObsoleteBuckets(ctx context.Context, js jetstream.JetStream) {
 			slog.WarnContext(ctx, "Failed to delete obsolete KV bucket", "bucket", name, "err", err)
 		}
 	}
+}
+
+// uefiClaims is the UEFI store claim group, or nil before startCluster has
+// built the daemon's locks.
+func (d *Daemon) uefiClaims() *kvsync.ClaimGroup {
+	if d.locks == nil {
+		return nil
+	}
+	return d.locks.uefi
 }

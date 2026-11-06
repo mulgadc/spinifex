@@ -13,6 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -78,8 +79,9 @@ type uefiInstanceRecords interface {
 var _ uefiInstanceRecords = (*JetStreamManager)(nil)
 
 // uefiStoreReaper deletes the variable stores whose record is deleting: each
-// object under the instance's prefix, then the record. Terminate, or an
-// operator's forget, sets deleting and returns, so this decides nothing.
+// object under the instance's prefix, then the store's claim, then the record.
+// Terminate, or an operator's forget, sets deleting and returns, so this
+// decides nothing.
 //
 // It also completes a terminate whose mark failed, from the terminated
 // record's pending or failed uefi entry. That record is the terminate itself,
@@ -94,14 +96,15 @@ type uefiStoreReaper struct {
 	objects   objectstore.ObjectStore
 	bucket    string
 	instances uefiInstanceRecords
+	claims    *kvsync.ClaimGroup
 }
 
 var _ vm.Reaper = (*uefiStoreReaper)(nil)
 
 // newUEFIStoreReaper builds the reaper, or nil when this node has no store
-// bucket or object store to reap with.
+// bucket, claim group or object store to reap with.
 func (d *Daemon) newUEFIStoreReaper() *uefiStoreReaper {
-	if d.jsManager == nil || d.jsManager.UEFIStores() == nil || d.config == nil || d.config.Predastore.Bucket == "" {
+	if d.jsManager == nil || d.jsManager.UEFIStores() == nil || d.uefiClaims() == nil || d.config == nil || d.config.Predastore.Bucket == "" {
 		return nil
 	}
 	return &uefiStoreReaper{
@@ -110,6 +113,7 @@ func (d *Daemon) newUEFIStoreReaper() *uefiStoreReaper {
 			d.config.Predastore.Region, d.config.Predastore.AccessKey, d.config.Predastore.SecretKey),
 		bucket:    d.config.Predastore.Bucket,
 		instances: d.jsManager,
+		claims:    d.uefiClaims(),
 	}
 }
 
@@ -172,6 +176,10 @@ func (r *uefiStoreReaper) reap(ctx context.Context, id string) bool {
 			"instanceId", id, "deleted", deleted, "err", err)
 		return false
 	}
+	if err := r.removeClaim(ctx, id); err != nil {
+		slog.WarnContext(ctx, "uefi-store: failed to remove the store's claim, retrying next sweep", "instanceId", id, "err", err)
+		return false
+	}
 	if err := r.instances.MarkTeardownDone(id, vm.TeardownUEFI); err != nil {
 		slog.WarnContext(ctx, "uefi-store: failed to mark the terminated record, retrying next sweep", "instanceId", id, "err", err)
 		return false
@@ -185,6 +193,43 @@ func (r *uefiStoreReaper) reap(ctx context.Context, id string) bool {
 	slog.InfoContext(ctx, "uefi-store: store deleted", "instanceId", id, "accountId", rec.AccountID,
 		"objects", deleted, "elapsed_ms", otelsetup.Millis(time.Since(start)))
 	return true
+}
+
+// removeClaimAttempts bounds removeClaim's retries against a holder that moves
+// the key on between the read and the takeover.
+const removeClaimAttempts = 3
+
+// removeClaim deletes instanceID's store claim by taking it over from whatever
+// holder it names and unlocking it. The store is deleting, so no stamp or
+// pointer move can follow, and the holder needs no proof of being dead.
+func (r *uefiStoreReaper) removeClaim(ctx context.Context, id string) error {
+	claim := r.claims.Get(id)
+	for range removeClaimAttempts {
+		cur, held, err := claim.Holder(ctx)
+		if err != nil {
+			return err
+		}
+		if !held {
+			return nil
+		}
+		tok, err := claim.TakeOver(ctx, cur)
+		if _, moved := errors.AsType[*kvsync.HeldError](err); moved {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		err = claim.Unlock(ctx, tok)
+		if errors.Is(err, kvsync.ErrLost) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		slog.InfoContext(ctx, "uefi-store: claim removed", "instanceId", id, "holder", cur.Holder, "generation", cur.Generation)
+		return nil
+	}
+	return fmt.Errorf("uefi-store: claim on %s kept moving after %d attempts", id, removeClaimAttempts)
 }
 
 // completeTerminatedMarks finishes the mark of each terminate that recorded a

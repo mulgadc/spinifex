@@ -26,12 +26,12 @@ load_mod virtio_net || echo "[init] virtio_net did not load" >/dev/console
 
 ip link set lo up
 
-# Without fw_cfg the executor attaches the same entries as a tar archive on
-# the second disk; lambda-agent reads them here and erases the disk before the
-# function starts.
+# Without fw_cfg data the executor attaches the same entries as a tar archive
+# on the second disk; lambda-agent reads them here and erases the disk before
+# the function starts. qemu_fw_cfg loads without a device, so test the entry.
 CFG_ROOT=/spinifex-cfg
 FWCFG_ROOT=/sys/firmware/qemu_fw_cfg
-if [ ! -d "$FWCFG_ROOT" ]; then
+if [ ! -f "$FWCFG_ROOT/by_name/opt/spinifex/netcfg/raw" ]; then
     load_mod virtio_blk || echo "[init] virtio_blk did not load" >/dev/console
     i=0
     while [ "$i" -lt 25 ] && [ ! -b /dev/vdb ]; do

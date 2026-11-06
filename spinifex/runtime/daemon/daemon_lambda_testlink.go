@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -82,15 +83,21 @@ func (d *Daemon) startLambdaTestLink() {
 		return
 	}
 	httpClient, trustErr := d.lambdaTestLinkHTTP()
+	sdkEndpoint, sdkCA, sdkErr := d.lambdaTestLinkSDKConfig()
+	if sdkErr != nil {
+		slog.Warn("Lambda test link: SDK gateway settings unavailable", "err", sdkErr)
+	}
 	imageDir := filepath.Join(microvmDir, "lambda-testlink")
 	tl := &testlink.Daemon{
-		Node:    d.node,
-		Grants:  grants,
-		Taps:    taps,
-		IPs:     d.mgmtIPAllocator,
-		Bridge:  d.mgmtBridgeName(),
-		HostIP:  d.mgmtBridgeIP,
-		WorkDir: workDir,
+		Node:        d.node,
+		Grants:      grants,
+		Taps:        taps,
+		IPs:         d.mgmtIPAllocator,
+		Bridge:      d.mgmtBridgeName(),
+		HostIP:      d.mgmtBridgeIP,
+		WorkDir:     workDir,
+		SDKEndpoint: sdkEndpoint,
+		SDKCA:       sdkCA,
 
 		Initializer:       filepath.Join(imageDir, "hardkill.so"),
 		InitializerSHA256: lambdaHardKillSHA256,
@@ -134,7 +141,6 @@ func (d *Daemon) startLambdaTestLink() {
 // lambdaActivationInterval bounds how long a function whose activation was
 // missed, by a crash or an earlier refusal, waits for the next pass.
 const lambdaActivationInterval = 30 * time.Second
-
 
 // lambdaTestLinkReady runs the serving checks and, only once they pass,
 // prepares the pinned image into tl; a refusal leaves tl.Image nil.
@@ -199,6 +205,34 @@ func (d *Daemon) lambdaTestLinkHTTP() (*http.Client, error) {
 	return &http.Client{Transport: &http.Transport{
 		TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
 	}}, nil
+}
+
+// lambdaTestLinkSDKConfig returns public settings for the guest's AWS SDK.
+func (d *Daemon) lambdaTestLinkSDKConfig() (string, []byte, error) {
+	if d.mgmtBridgeIP == "" || d.config.NATS.CACert == "" {
+		return "", nil, errors.New("management address or cluster CA not configured")
+	}
+	ca, err := os.ReadFile(d.config.NATS.CACert)
+	if err != nil {
+		return "", nil, errors.New("cluster CA unreadable")
+	}
+	if len(ca) > 64<<10 || !x509.NewCertPool().AppendCertsFromPEM(ca) {
+		return "", nil, errors.New("cluster CA invalid or too large")
+	}
+	var public []byte
+	for rest := ca; len(rest) != 0; {
+		block, next := pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		rest = next
+		if block.Type == "CERTIFICATE" {
+			if _, err := x509.ParseCertificate(block.Bytes); err == nil {
+				public = append(public, pem.EncodeToMemory(block)...)
+			}
+		}
+	}
+	return d.resolveSystemGatewayBaseURL(), public, nil
 }
 
 var _ testlink.Taps = (*host.OVSPlumber)(nil)

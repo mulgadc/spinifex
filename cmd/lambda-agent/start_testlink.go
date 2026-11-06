@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/agents/lambda/agent"
@@ -31,13 +32,17 @@ type testlink struct {
 	pkg            taskPackage
 	runtimeAddr    string
 	startBootstrap func(ctx context.Context, env []string) (*exec.Cmd, error)
+	caBundlePath   string
+	systemCAPath   string
 }
 
 func start(ctx context.Context) int {
 	t := testlink{
-		startup:     defaultStartup(),
-		pkg:         devTaskPackage(),
-		runtimeAddr: runtimeAddr,
+		startup:      defaultStartup(),
+		pkg:          devTaskPackage(),
+		runtimeAddr:  runtimeAddr,
+		caBundlePath: sdkBundlePath,
+		systemCAPath: systemBundlePath,
 		startBootstrap: func(ctx context.Context, env []string) (*exec.Cmd, error) {
 			return agent.StartBootstrap(ctx, taskRoot+"/bootstrap", env, os.Stdout, os.Stderr)
 		},
@@ -53,6 +58,7 @@ func (t testlink) run(parent context.Context) (int, error) {
 	// The package values are fw_cfg entries, so read them before connect seals it.
 	spec, specErr := readPackageSpec(t.fwCfgDir)
 	grant, grantErr := readGrant(t.fwCfgDir)
+	sdk, sdkErr := readSDKConfig(t.fwCfgDir)
 	conn, scope, code, err := t.connect(parent)
 	if err != nil {
 		return code, errors.Join(err, specErr, grantErr)
@@ -85,6 +91,15 @@ func (t testlink) run(parent context.Context) (int, error) {
 	}
 	cred := *first.Credential
 	first.Credential = nil
+	if sdkErr != nil {
+		slog.Warn("lambda-agent: SDK gateway settings unavailable", "err", sdkErr)
+	}
+	if sdk != nil {
+		if err := sdk.writeBundle(t.caBundlePath, t.systemCAPath); err != nil {
+			slog.Warn("lambda-agent: SDK gateway settings unavailable", "err", err)
+			sdk = nil
+		}
+	}
 	if err := t.pkg.install(spec); err != nil {
 		return exitRefused, fmt.Errorf("install package: %w", err)
 	}
@@ -100,7 +115,8 @@ func (t testlink) run(parent context.Context) (int, error) {
 
 	ctx, cancel := context.WithCancelCause(parent)
 	defer cancel(nil)
-	cmd, err := t.startBootstrap(ctx, bootstrapEnv(ln.Addr().String(), spec.handler, cred))
+	region, _, _ := strings.Cut(string(scope), "/")
+	cmd, err := t.startBootstrap(ctx, bootstrapEnv(ln.Addr().String(), spec.handler, cred, region, sdk, t.caBundlePath))
 	if err != nil {
 		return exitLink, fmt.Errorf("start bootstrap: %w", err)
 	}
@@ -124,10 +140,9 @@ func (t testlink) run(parent context.Context) (int, error) {
 	return exitClosed, nil
 }
 
-// bootstrapEnv is the bootstrap's whole environment: the runtime variables and
-// the execution role's three credential variables.
-func bootstrapEnv(runtimeAPI, handler string, cred hostlink.Credential) []string {
-	return []string{
+// bootstrapEnv supplies the runtime, execution-role and SDK settings.
+func bootstrapEnv(runtimeAPI, handler string, cred hostlink.Credential, region string, sdk *sdkConfig, caPath string) []string {
+	env := []string{
 		"AWS_LAMBDA_RUNTIME_API=" + runtimeAPI,
 		"_HANDLER=" + handler,
 		"LAMBDA_TASK_ROOT=" + taskRoot,
@@ -135,7 +150,13 @@ func bootstrapEnv(runtimeAPI, handler string, cred hostlink.Credential) []string
 		"AWS_ACCESS_KEY_ID=" + cred.AccessKeyID,
 		"AWS_SECRET_ACCESS_KEY=" + cred.SecretAccessKey,
 		"AWS_SESSION_TOKEN=" + cred.SessionToken,
+		"AWS_REGION=" + region,
+		"AWS_DEFAULT_REGION=" + region,
 	}
+	if sdk != nil {
+		env = append(env, "AWS_ENDPOINT_URL="+sdk.endpoint, "AWS_CA_BUNDLE="+caPath)
+	}
+	return env
 }
 
 // shutdownGrace is how long past the invocation deadline the agent waits for

@@ -368,6 +368,36 @@ func TestPrepare_ScopeAndGrantEntryComeFromTheGrant(t *testing.T) {
 	require.Equal(t, "ap-southeast-2/123456789012/fn1/env-x/3", strings.TrimSpace(string(expect)))
 }
 
+func TestPrepare_DeliversSDKSettingsForEachVMM(t *testing.T) {
+	for _, firecracker := range []bool{false, true} {
+		t.Run(fmt.Sprintf("firecracker=%t", firecracker), func(t *testing.T) {
+			req := baseRequest("https://example.invalid/code", []byte("zip"))
+			req.Grant = execution.Grant{GrantID: "g-7", AttemptID: req.AttemptID, EnvironmentID: "env-x", Generation: 3, Node: testNode}
+			d := &Daemon{HostIP: "127.0.0.1", SDKEndpoint: "https://10.15.8.1:9999", SDKCA: []byte("public-ca")}
+			if firecracker {
+				d.Firecracker = "/test/firecracker"
+			}
+			dir := filepath.Join(t.TempDir(), "attempt")
+			_, _, ln, err := d.prepare(req, []byte("zip"), dir, "tap0", "02:00:00:00:00:01", "10.0.0.2")
+			require.NoError(t, err)
+			defer ln.Close()
+			endpointPath, caPath := filepath.Join(dir, "fwcfg-test-sdk-endpoint"), filepath.Join(dir, "fwcfg-test-sdk-ca")
+			if firecracker {
+				root := filepath.Join(t.TempDir(), "config")
+				extract(t, filepath.Join(dir, configArchive), root)
+				entryDir := filepath.Join(root, "by_name", lambdav1.FwCfgPrefix)
+				endpointPath, caPath = filepath.Join(entryDir, "test-sdk-endpoint", "raw"), filepath.Join(entryDir, "test-sdk-ca", "raw")
+			}
+			endpoint, err := os.ReadFile(endpointPath)
+			require.NoError(t, err)
+			ca, err := os.ReadFile(caPath)
+			require.NoError(t, err)
+			require.Equal(t, d.SDKEndpoint, string(endpoint))
+			require.Equal(t, d.SDKCA, ca)
+		})
+	}
+}
+
 // elfHeader is a bare 64-bit little-endian shared-object header for machine.
 func elfHeader(machine elf.Machine) []byte {
 	h := make([]byte, 64)

@@ -50,6 +50,33 @@ async function boxEncloses(box: Locator, card: Locator) {
   expect(inner.y + inner.height).toBeLessThan(outer.y + outer.height)
 }
 
+// No line's label is drawn under a card, where the card would hide it.
+async function labelsClearOfCards(page: Page) {
+  const hidden = await page.evaluate(() => {
+    const cards = [...document.querySelectorAll('[data-testid^="card-"]')].map(
+      (card) => card.getBoundingClientRect(),
+    )
+
+    return [
+      ...document.querySelectorAll<HTMLElement>('[data-testid^="line-label-"]'),
+    ].flatMap((label) => {
+      const l = label.getBoundingClientRect()
+
+      const under = cards.some(
+        (c) =>
+          l.left < c.right &&
+          c.left < l.right &&
+          l.top < c.bottom &&
+          c.top < l.bottom,
+      )
+
+      return under ? [label.dataset.testid] : []
+    })
+  })
+
+  expect(hidden).toStrictEqual([])
+}
+
 function named(name: string): string {
   return `<tagSet><item><key>Name</key><value>${name}</value></item></tagSet>`
 }
@@ -287,6 +314,20 @@ test.describe("VPC topology", () => {
 
     const across = [await internet.boundingBox(), await igw.boundingBox()]
     expect(across[0]?.x ?? 0).toBeLessThan(across[1]?.x ?? 0)
+  })
+
+  test("keeps every line's label clear of the cards, either way round", async ({
+    page,
+  }) => {
+    await page.goto(PAGE)
+    await expect(
+      page.getByTestId(`line-label-igw:${IGW_ID}>subnet:${PUBLIC}:0.0.0.0/0`),
+    ).toBeVisible()
+    await labelsClearOfCards(page)
+
+    await page.getByRole("button", { name: "Left to right" }).click()
+    await expect(page.getByTestId(`box:instance:${PUBLIC}`)).toBeVisible()
+    await labelsClearOfCards(page)
   })
 
   test("a card opens the resource's own panel", async ({ page }) => {

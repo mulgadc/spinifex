@@ -26,6 +26,7 @@ import {
 import {
   buildNetworkMap,
   layoutNetworkMap,
+  MAP_TIERS,
   scaleLayout,
   type MapBox,
   type MapCard,
@@ -387,6 +388,9 @@ export function NetworkTopology({
     const dimmed = new Set(map?.cards.filter((c) => c.dimmed).map((c) => c.id))
     const at = (cardId: string) => layout?.places.get(cardId) ?? { x: 0, y: 0 }
 
+    const depth = (cardId: string) =>
+      MAP_TIERS.indexOf(tierOf.get(cardId) ?? "internet")
+
     return (map?.links ?? []).map((link): TopologyEdge => {
       const within = tierOf.get(link.source) === tierOf.get(link.target)
       const forward = before(at(link.source), at(link.target), direction)
@@ -402,6 +406,8 @@ export function NetworkTopology({
         data: {
           heavy: link.heavy,
           label: link.label,
+          // A line past a tier would put its midpoint label under that tier's card.
+          labelAtEnd: Math.abs(depth(link.source) - depth(link.target)) > 1,
           // A line to a dimmed card fades with it.
           muted: dimmed.has(link.source) || dimmed.has(link.target),
         },

@@ -10,6 +10,7 @@ import {
   getBezierPath,
   type Node,
   type NodeTypes,
+  Position,
   ReactFlow,
 } from "@xyflow/react"
 import {
@@ -80,13 +81,46 @@ export interface LineData extends Record<string, unknown> {
   // On the path to the internet, drawn in its own colour.
   heavy?: boolean
   label?: string
+  // The label sits against the target, clear of any card the line passes.
+  labelAtEnd?: boolean
   // Drawn dimmed whatever the hover, for a map that highlights a selection.
   muted?: boolean
 }
 
 export type TopologyEdge = Edge<LineData, "line">
 
+// The gap, in flow px, between a label set at a line's end and its target.
+const LABEL_CLEARANCE = 6
+
 type CSSVariables = CSSProperties & Record<`--${string}`, string>
+
+interface LabelPlace {
+  x: number
+  y: number
+  shift: string
+}
+
+const CENTRED =
+  "translate-x-[calc(var(--label-x)-50%)] translate-y-[calc(var(--label-y)-50%)]"
+
+// Just short of the target, ending at the point rather than centred on it.
+function labelAtEnd(x: number, y: number, side: Position): LabelPlace {
+  if (side === Position.Left) {
+    return {
+      x: x - LABEL_CLEARANCE,
+      y,
+      shift:
+        "translate-x-[calc(var(--label-x)-100%)] translate-y-[calc(var(--label-y)-50%)]",
+    }
+  }
+
+  return {
+    x,
+    y: y - LABEL_CLEARANCE,
+    shift:
+      "translate-x-[calc(var(--label-x)-50%)] translate-y-[calc(var(--label-y)-100%)]",
+  }
+}
 
 export function TopologyLine({
   id,
@@ -109,10 +143,14 @@ export function TopologyLine({
 
   const focus = data?.focus ?? "idle"
 
+  const label = data?.labelAtEnd
+    ? labelAtEnd(targetX, targetY, targetPosition)
+    : { x: labelX, y: labelY, shift: CENTRED }
+
   // React Flow gives the label's place in flow coordinates.
   const labelAt: CSSVariables = {
-    "--label-x": `${labelX}px`,
-    "--label-y": `${labelY}px`,
+    "--label-x": `${label.x}px`,
+    "--label-y": `${label.y}px`,
   }
 
   return (
@@ -137,7 +175,8 @@ export function TopologyLine({
         <EdgeLabelRenderer>
           <span
             className={cn(
-              "pointer-events-none absolute translate-x-[calc(var(--label-x)-50%)] translate-y-[calc(var(--label-y)-50%)] rounded-sm border bg-background px-1 font-mono text-2xs text-muted-foreground",
+              "pointer-events-none absolute rounded-sm border bg-background px-1 font-mono text-2xs text-muted-foreground",
+              label.shift,
               (focus === "off" || (data.muted && focus !== "on")) &&
                 "opacity-30",
             )}

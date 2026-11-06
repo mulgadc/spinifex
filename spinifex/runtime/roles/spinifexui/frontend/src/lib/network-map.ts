@@ -798,15 +798,16 @@ const BOX_LABELS: Record<BoxKind, string> = {
   lb: "Load balancers",
 }
 
-// How far each tier sits from the internet, down the map or across it.
+// How far each tier sits from the internet, down the map or across it. A
+// route's label sits in the gap before its subnet, so that gap is the widest.
 const DEPTH: Record<LayoutDirection, Record<MapTier, number>> = {
   down: { internet: 0, gateways: 130, vpc: 270, subnets: 410, resources: 570 },
   across: {
     internet: 0,
     gateways: 300,
     vpc: 600,
-    subnets: 900,
-    resources: 1200,
+    subnets: 960,
+    resources: 1260,
   },
 }
 

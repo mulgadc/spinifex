@@ -686,13 +686,6 @@ var AvailableImages = map[string]Images{
 			"rds-data-volume-contract": "format-auth-v1",
 		},
 	},
-}
-
-// WithheldImages are catalog entries whose artifact is not published, so an
-// import of one would fail for every operator. They are kept here rather than
-// deleted because the entry is the definition: moving one back into
-// AvailableImages is the whole of publishing it.
-var WithheldImages = map[string]Images{
 
 	// Bedrock self-host serving AMI. Resolved by spinifex:managed-by=bedrock +
 	// spinifex:bedrock-role=vllm-serving tags — LaunchServingVM's
@@ -704,7 +697,7 @@ var WithheldImages = map[string]Images{
 		Version:      "26.04",
 		Arch:         "x86_64",
 		Platform:     "Linux/UNIX",
-		CreatedAt:    time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC),
+		CreatedAt:    time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC),
 		URL:          "https://iso.mulgadc.com/system-ami/ubuntu-26.04-vllm-serving-x86_64.qcow2",
 		Checksum:     "https://iso.mulgadc.com/system-ami/ubuntu-26.04-vllm-serving-x86_64.qcow2.sha256",
 		ChecksumType: "sha256",
@@ -716,6 +709,12 @@ var WithheldImages = map[string]Images{
 		},
 	},
 }
+
+// WithheldImages are catalog entries whose artifact is not published, so an
+// import of one would fail for every operator. They are kept here rather than
+// deleted because the entry is the definition: moving one back into
+// AvailableImages is the whole of publishing it.
+var WithheldImages = map[string]Images{}
 
 // ExtractDiskImageFromFile turns a downloaded artifact at imagepath into a bootable disk
 // image and returns its path. tar-based archives are expanded into tmpdir and their listing

@@ -154,8 +154,17 @@ func (a *MgmtIPAllocator) BindKV(jsManager *JetStreamManager, node string) {
 // an address is free cluster-wide on its own — and is refused otherwise.
 func (a *MgmtIPAllocator) Allocate(instanceID string) (string, error) {
 	a.mu.Lock()
+	// Addresses this node's own instances hold stay off the table even when the
+	// cluster record has lost their entries.
+	held := make([]MgmtIPEntry, 0, len(a.allocated))
+	for id, ip := range a.allocated {
+		held = append(held, MgmtIPEntry{IP: ip, InstanceID: id})
+	}
 	if ip, ok := a.allocated[instanceID]; ok {
 		a.mu.Unlock()
+		if other := heldByOther(held, ip, instanceID); other != "" {
+			return "", fmt.Errorf("mgmt IP %s for %s is also held locally by %s", ip, instanceID, other)
+		}
 		return ip, nil
 	}
 	jsManager, node, subnet := a.jsManager, a.node, a.subnet
@@ -171,29 +180,7 @@ func (a *MgmtIPAllocator) Allocate(instanceID string) (string, error) {
 	// CAS write that follows is a harmless no-op against the same revision.
 	var allocatedIP string
 	var mutateErr error
-	_, err := updateMgmtIPAMWithRetry(jsManager, subnet, func(r *MgmtIPRecord) {
-		if r.Subnet == "" {
-			r.Subnet = subnet
-		}
-
-		// Idempotent: an instance that already holds an address (allocated
-		// by this node earlier, or by another node before a restart lost
-		// the local cache) keeps it rather than taking a second one.
-		for _, e := range r.Allocated {
-			if e.InstanceID == instanceID {
-				allocatedIP = e.IP
-				return
-			}
-		}
-
-		ip, findErr := nextFreeIP(a.baseIP, a.rangeMin, a.rangeMax, r.Allocated)
-		if findErr != nil {
-			mutateErr = findErr
-			return
-		}
-		r.Allocated = append(r.Allocated, MgmtIPEntry{IP: ip, InstanceID: instanceID, Node: node})
-		allocatedIP = ip
-	}, true)
+	_, err := updateMgmtIPAMWithRetry(jsManager, subnet, a.allocMutate(instanceID, node, subnet, held, &allocatedIP, &mutateErr), true)
 	if err != nil {
 		return "", fmt.Errorf("mgmt IP CAS update for subnet %s: %w", subnet, err)
 	}
@@ -207,6 +194,16 @@ func (a *MgmtIPAllocator) Allocate(instanceID string) (string, error) {
 
 	slog.Debug("Management IP allocated", "instance", instanceID, "ip", allocatedIP, "node", node)
 	return allocatedIP, nil
+}
+
+// heldByOther names a cached instance other than id holding ip, or "".
+func heldByOther(held []MgmtIPEntry, ip, id string) string {
+	for _, e := range held {
+		if e.IP == ip && e.InstanceID != id {
+			return e.InstanceID
+		}
+	}
+	return ""
 }
 
 // nextFreeIP scans rangeMin-rangeMax on the /24 rooted at baseIP, skipping
@@ -509,5 +506,39 @@ func (d *Daemon) primeMgmtNeighEntry(instanceID, mgmtIP, mgmtMAC string) {
 	if err := primeMgmtNeigh(ctx, nil, bridge, mgmtIP, mgmtMAC); err != nil {
 		slog.Warn("Failed to prime mgmt ARP entry; the first dial falls back to ARP resolution",
 			"instanceId", instanceID, "mgmtIP", mgmtIP, "mgmtMAC", mgmtMAC, "bridge", bridge, "err", err)
+	}
+}
+
+// allocMutate returns the CAS callback for Allocate. Results go out through
+// ipOut and errOut because casUpdate's mutate has no return value.
+func (a *MgmtIPAllocator) allocMutate(instanceID, node, subnet string, held []MgmtIPEntry, ipOut *string, errOut *error) func(*MgmtIPRecord) {
+	return func(r *MgmtIPRecord) {
+		// Each CAS attempt starts clean, so a retry never returns an earlier attempt's result.
+		*ipOut, *errOut = "", nil
+		if r.Subnet == "" {
+			r.Subnet = subnet
+		}
+
+		// Idempotent: an instance that already holds an address (allocated
+		// by this node earlier, or by another node before a restart lost
+		// the local cache) keeps it rather than taking a second one.
+		for _, e := range r.Allocated {
+			if e.InstanceID == instanceID {
+				if other := heldByOther(held, e.IP, instanceID); other != "" {
+					*errOut = fmt.Errorf("mgmt IP %s recorded for %s is held locally by %s", e.IP, instanceID, other)
+					return
+				}
+				*ipOut = e.IP
+				return
+			}
+		}
+
+		ip, findErr := nextFreeIP(a.baseIP, a.rangeMin, a.rangeMax, append(held, r.Allocated...))
+		if findErr != nil {
+			*errOut = findErr
+			return
+		}
+		r.Allocated = append(r.Allocated, MgmtIPEntry{IP: ip, InstanceID: instanceID, Node: node})
+		*ipOut = ip
 	}
 }

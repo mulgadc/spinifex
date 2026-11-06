@@ -393,7 +393,9 @@ func launchService(config *config.ClusterConfig) error {
 	}
 	// Built but routed only in test-link builds: Lambda stays out of the public
 	// router until its runtime image exists.
-	lambdaControlPlane := lambdaawsapi.NewRegistration(lambdaawsapi.Deps{
+	lambdaMappings := lambdaMappingStore(natsConn)
+	lambdaEventSources := newESMRuntime(lambdaMappings, stsService, nodeConfig.Region)
+	lambdaDeps := lambdaawsapi.Deps{
 		Meta: lambdafunction.NewNATSClient(natsConn),
 		Codes: func(ctx context.Context) (lambdaawsapi.CodeStore, error) {
 			store, err := lambdaCodeStore.Store(ctx)
@@ -406,7 +408,12 @@ func launchService(config *config.ClusterConfig) error {
 		Trusts: lambdaRoleTrusts(iamService),
 		AEAD:   lambdaKey.AEAD,
 		Exec:   lambdaTestExecutor(natsConn, config.Node, lambdaCodeStore, stsService),
-	})
+		Mappings: func(ctx context.Context) (lambdaawsapi.MappingStore, error) {
+			return lambdaMappings(ctx)
+		},
+		Sources: lambdaEventSources.sources(),
+	}
+	lambdaControlPlane := lambdaawsapi.NewRegistration(lambdaDeps)
 
 	// ECR auth bridge: load (or first-run create) the ES256 signing key from the
 	// cluster-replicated awsgw-keys KV bucket, then build the token issuer
@@ -779,6 +786,7 @@ func launchService(config *config.ClusterConfig) error {
 	go quotaSvc.RunBedrockRPMSync(janitorCtx, js)
 
 	handler := gw.SetupRoutes()
+	lambdaEventSources.start(janitorCtx, handler, lambdaDeps, sqsEndpoint(registryHost, registryPort))
 
 	// Load TLS certificate
 	cert, err := tls.LoadX509KeyPair(nodeConfig.AWSGW.TLSCert, nodeConfig.AWSGW.TLSKey)

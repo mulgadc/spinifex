@@ -3,7 +3,6 @@ package awsapi_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"sync"
 	"testing"
@@ -66,7 +65,7 @@ func decodeMapping(t *testing.T, raw []byte) map[string]any {
 	return out
 }
 
-func TestEventSourceMapping_CreateGetListDelete(t *testing.T) {
+func TestEventSourceMapping_CreateGetDelete(t *testing.T) {
 	e, store, src := newMappingEnv(t)
 	rec, err := e.do(http.MethodPost, mappingsPath, mappingBody(func(b map[string]any) { b["BatchSize"] = 4 }))
 	require.NoError(t, err)
@@ -88,13 +87,6 @@ func TestEventSourceMapping_CreateGetListDelete(t *testing.T) {
 
 	_, err = e.do(http.MethodPost, mappingsPath, mappingBody(nil))
 	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
-
-	rec, err = e.do(http.MethodGet, mappingsPath+"?FunctionName=hello", nil)
-	require.NoError(t, err)
-	assert.Len(t, decodeMapping(t, rec.Body.Bytes())["EventSourceMappings"], 1)
-	rec, err = e.do(http.MethodGet, mappingsPath+"?FunctionName=other", nil)
-	require.NoError(t, err)
-	assert.Empty(t, decodeMapping(t, rec.Body.Bytes())["EventSourceMappings"])
 
 	for range 2 {
 		rec, err = e.do(http.MethodDelete, mappingsPath+uuid, nil)
@@ -143,47 +135,17 @@ func TestEventSourceMapping_ConcurrentDuplicateCreatesYieldOneMapping(t *testing
 	assert.Len(t, entries, 1)
 }
 
-func TestEventSourceMapping_ListPagesSeeEveryMappingOnce(t *testing.T) {
+func TestEventSourceMapping_ListIsRefusedWithoutReadingTheStore(t *testing.T) {
 	e, store, _ := newMappingEnv(t)
-	want := map[string]bool{}
-	for i := range 5 {
-		q := fmt.Sprintf("arn:aws:sqs:ap-southeast-2:123456789012:q%d", i)
-		rec, err := e.do(http.MethodPost, mappingsPath, mappingBody(func(b map[string]any) { b["EventSourceArn"] = q }))
-		require.NoError(t, err)
-		want[decodeMapping(t, rec.Body.Bytes())["UUID"].(string)] = true
+	_, err := e.do(http.MethodPost, mappingsPath, mappingBody(nil))
+	require.NoError(t, err)
+	for _, path := range []string{mappingsPath, mappingsPath + "?FunctionName=hello", mappingsPath + "?MaxItems=2"} {
+		_, err = e.do(http.MethodGet, path, nil)
+		testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
 	}
 	entries, err := store.List(t.Context())
 	require.NoError(t, err)
-	require.Len(t, entries, 5)
-
-	seen := map[string]int{}
-	marker, pages := "", 0
-	for {
-		path := mappingsPath + "?MaxItems=2"
-		if marker != "" {
-			path += "&Marker=" + marker
-		}
-		rec, err := e.do(http.MethodGet, path, nil)
-		require.NoError(t, err)
-		page := decodeMapping(t, rec.Body.Bytes())
-		pages++
-		for _, m := range page["EventSourceMappings"].([]any) {
-			seen[m.(map[string]any)["UUID"].(string)]++
-		}
-		next, _ := page["NextMarker"].(string)
-		if next == "" {
-			break
-		}
-		marker = next
-	}
-	assert.Equal(t, 3, pages)
-	assert.Len(t, seen, 5)
-	for id, n := range seen {
-		assert.True(t, want[id])
-		assert.Equal(t, 1, n, "mapping %s returned once", id)
-	}
-	_, err = e.do(http.MethodGet, mappingsPath+"?Marker=not-a-token", nil)
-	testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
+	assert.Len(t, entries, 1, "the refusal leaves the mapping in place")
 }
 
 func TestEventSourceMapping_RefusesWhatThisBuildDoesNotImplement(t *testing.T) {
@@ -246,9 +208,6 @@ func TestEventSourceMapping_AnotherAccountsMappingIsNotFound(t *testing.T) {
 	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceNotFoundException)
 	_, err = e.do(http.MethodDelete, mappingsPath+m.UUID, nil)
 	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceNotFoundException)
-	rec, err := e.do(http.MethodGet, mappingsPath, nil)
-	require.NoError(t, err)
-	assert.Empty(t, decodeMapping(t, rec.Body.Bytes())["EventSourceMappings"])
 	_, err = e.do(http.MethodGet, mappingsPath+"not-a-uuid", nil)
 	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceNotFoundException)
 }
@@ -268,6 +227,4 @@ func TestEventSourceMapping_GetAndDeleteAuthorizeAgainstTheMappingARN(t *testing
 	m, _, err := store.Get(t.Context(), uuid)
 	require.NoError(t, err)
 	assert.Equal(t, eventsource.StateEnabled, m.State)
-	_, err = e.do(http.MethodGet, mappingsPath, nil)
-	require.NoError(t, err, "List authorizes against *, not the denied mapping")
 }

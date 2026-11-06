@@ -9,8 +9,6 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
-	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -272,51 +270,8 @@ func (d Deps) deleteEventSourceMapping(ctx context.Context, c *call) (reply, err
 	return reply{}, serviceError("the mapping changed concurrently; retry the request")
 }
 
-func (d Deps) listEventSourceMappings(ctx context.Context, c *call) (reply, error) {
-	marker := c.Query.Get("Marker")
-	if marker != "" && !mappingUUIDRE.MatchString(marker) {
-		return reply{}, invalid("Marker is not a valid continuation token")
-	}
-	maxItems := 100
-	if v := c.Query.Get("MaxItems"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 || n > maxListItems {
-			return reply{}, invalid("MaxItems must be between 1 and %d", maxListItems)
-		}
-		maxItems = n
-	}
-	fnName := ""
-	if v := c.Query.Get("FunctionName"); v != "" {
-		name, _, err := resolveFunctionName(c.Region, c.AccountID, v)
-		if err != nil {
-			return reply{}, err
-		}
-		fnName = name
-	}
-	source := c.Query.Get("EventSourceArn")
-	store, err := d.mappings(ctx)
-	if err != nil {
-		return reply{}, err
-	}
-	entries, err := store.List(ctx)
-	if err != nil {
-		return reply{}, err
-	}
-	// Pages run in UUID order; the marker is the last UUID already returned.
-	slices.SortFunc(entries, func(a, b eventsource.Entry) int { return strings.Compare(a.Mapping.UUID, b.Mapping.UUID) })
-	out := []*lambda.EventSourceMappingConfiguration{}
-	var next *string
-	for _, e := range entries {
-		m := e.Mapping
-		if m.AccountID != c.AccountID || m.Region != c.Region || m.UUID <= marker ||
-			(fnName != "" && m.FunctionName != fnName) || (source != "" && m.EventSourceARN != source) {
-			continue
-		}
-		if len(out) == maxItems {
-			next = out[len(out)-1].UUID
-			break
-		}
-		out = append(out, mappingShape(m, m.State))
-	}
-	return reply{Status: http.StatusOK, Body: &lambda.ListEventSourceMappingsOutput{EventSourceMappings: out, NextMarker: next}}, nil
+// listEventSourceMappings is refused: the mapping store can only be listed
+// whole, and a request must not wait on the whole inventory.
+func (d Deps) listEventSourceMappings(_ context.Context, _ *call) (reply, error) {
+	return reply{}, invalid("ListEventSourceMappings is not supported in this build; use GetEventSourceMapping with the mapping UUID")
 }

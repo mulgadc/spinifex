@@ -100,7 +100,7 @@ type Entry struct {
 	Revision uint64
 }
 
-// List returns every mapping in the bucket.
+// List returns every mapping in the bucket once.
 func (s *Store) List(ctx context.Context) ([]Entry, error) {
 	lister, err := s.kv.ListKeys(ctx)
 	if err != nil {
@@ -108,7 +108,13 @@ func (s *Store) List(ctx context.Context) ([]Entry, error) {
 	}
 	defer func() { _ = lister.Stop() }()
 	var out []Entry
+	// A KV listing may repeat a key that changes while it is being listed.
+	seen := map[string]bool{}
 	for k := range lister.Keys() {
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
 		e, err := s.kv.Get(ctx, k)
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			continue

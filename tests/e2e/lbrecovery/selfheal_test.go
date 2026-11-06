@@ -273,21 +273,40 @@ func shRequireClientServed(t *testing.T, c *harness.AWSClient, client string, fa
 	for time.Now().Before(deadline.Add(15 * time.Second)) {
 		console = shConsole(c, client)
 		times, oks := shClientVerdicts(console)
+		failAt := int64(0)
 		for i, ts := range times {
-			if oks[i] && ts >= faultAt.Unix() {
+			if !oks[i] && ts >= faultAt.Unix() {
+				failAt = ts
+				break
+			}
+		}
+		for i, ts := range times {
+			if failAt != 0 && oks[i] && ts > failAt {
 				require.LessOrEqualf(t, ts, deadline.Unix(),
-					"the client's first success after the fault came at %d, after the %s deadline %d",
+					"the client's first success after its first failure came at %d, after the %s deadline %d",
 					ts, shRecoveryBudget, deadline.Unix())
-				harness.Detail(t, "first success after the fault", time.Unix(ts, 0).Sub(faultAt).Round(time.Second).String())
+				harness.Detail(t, "first failure after the fault", time.Unix(failAt, 0).Sub(faultAt).Round(time.Second).String())
+				harness.Detail(t, "first success after that failure", time.Unix(ts, 0).Sub(faultAt).Round(time.Second).String())
 				return
 			}
 		}
 		time.Sleep(5 * time.Second)
 	}
 	lines := strings.Split(strings.TrimSpace(console), "\n")
+	tail := strings.Join(lines[max(0, len(lines)-15):], "\n")
+	times, oks := shClientVerdicts(console)
+	sawFail := false
+	for i, ts := range times {
+		if !oks[i] && ts >= faultAt.Unix() {
+			sawFail = true
+		}
+	}
+	if !sawFail {
+		require.Failf(t, "in-VPC client never failed after the fault",
+			"the client saw no failure after the fault, so it was not on the faulted path and the timing proves nothing; last console lines:\n%s", tail)
+	}
 	require.Failf(t, "in-VPC client never reached the internal ALB",
-		"no success within %s of the fault; last console lines:\n%s", shRecoveryBudget,
-		strings.Join(lines[max(0, len(lines)-15):], "\n"))
+		"no success after the first failure within %s of the fault; last console lines:\n%s", shRecoveryBudget, tail)
 }
 
 // stateWatch samples a load balancer's reported state continuously and keeps the

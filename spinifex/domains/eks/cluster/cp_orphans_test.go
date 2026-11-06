@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,6 +19,7 @@ import (
 func orphanInstance(id, eni string) *ec2.Instance {
 	return &ec2.Instance{
 		InstanceId:        aws.String(id),
+		State:             &ec2.InstanceState{Name: aws.String(ec2.InstanceStateNameRunning)},
 		LaunchTime:        aws.Time(time.Unix(0, 0)),
 		NetworkInterfaces: []*ec2.InstanceNetworkInterface{{NetworkInterfaceId: aws.String(eni)}},
 	}
@@ -150,6 +152,7 @@ func TestNewENITagReader(t *testing.T) {
 	}{
 		{name: "tags read", out: &ec2.DescribeNetworkInterfacesOutput{NetworkInterfaces: []*ec2.NetworkInterface{eni}}, wantFound: true},
 		{name: "eni gone", out: &ec2.DescribeNetworkInterfacesOutput{}},
+		{name: "typed not-found is the ENI gone", err: errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)},
 		{name: "call failed is a read failure", err: errors.New("vpc down"), wantErr: true},
 	}
 	for _, tc := range cases {
@@ -165,4 +168,30 @@ func TestNewENITagReader(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFindControlPlaneOrphansOnlyReportsRunningInstances(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	js := testutil.NewJetStream(t, f.svc.deps.NATSConn)
+	eni := func(context.Context, string) (map[string]string, bool, error) {
+		return cpTags("gone", testAccountID), true, nil
+	}
+	mk := func(id, state string) *ec2.Instance {
+		i := orphanInstance(id, "eni-"+id)
+		i.State = &ec2.InstanceState{Name: aws.String(state)}
+		return i
+	}
+	noState := orphanInstance("i-nostate", "eni-nostate")
+	noState.State = nil
+	res := []*ec2.Reservation{{Instances: []*ec2.Instance{
+		mk("i-running", ec2.InstanceStateNameRunning),
+		mk("i-stopped", ec2.InstanceStateNameStopped),
+		mk("i-pending", ec2.InstanceStateNamePending),
+		noState,
+	}}}
+
+	rows := FindControlPlaneOrphans(t.Context(), js, res, eni, time.Unix(60, 0))
+
+	require.Len(t, rows, 1)
+	assert.Equal(t, "i-running", rows[0].InstanceID)
 }

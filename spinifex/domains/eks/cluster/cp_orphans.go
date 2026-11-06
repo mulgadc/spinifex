@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -59,12 +60,15 @@ func JudgeClusterRecord(ctx context.Context, js jetstream.JetStream, account, cl
 type ENITagReader func(ctx context.Context, eniID string) (tagSet map[string]string, found bool, err error)
 
 // NewENITagReader builds an ENITagReader over a DescribeNetworkInterfaces call.
-// An empty answer means the ENI is gone; a call error is returned as a read
+// An empty answer or an InvalidNetworkInterfaceID.NotFound error means the ENI is gone; a call error is returned as a read
 // failure, so an unreachable service is never read as "no such ENI".
 func NewENITagReader(describe func(ctx context.Context, eniID string) (*ec2.DescribeNetworkInterfacesOutput, error)) ENITagReader {
 	return func(ctx context.Context, eniID string) (map[string]string, bool, error) {
 		out, err := describe(ctx, eniID)
 		if err != nil {
+			if awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceIDNotFound) {
+				return nil, false, nil
+			}
 			return nil, false, err
 		}
 		if out == nil || len(out.NetworkInterfaces) == 0 || out.NetworkInterfaces[0] == nil {
@@ -105,7 +109,7 @@ func FindControlPlaneOrphans(ctx context.Context, js jetstream.JetStream, reserv
 			continue
 		}
 		for _, inst := range res.Instances {
-			if inst == nil || len(inst.NetworkInterfaces) == 0 || inst.NetworkInterfaces[0] == nil {
+			if inst == nil || !instanceRunning(inst) || len(inst.NetworkInterfaces) == 0 || inst.NetworkInterfaces[0] == nil {
 				continue
 			}
 			eniID := aws.StringValue(inst.NetworkInterfaces[0].NetworkInterfaceId)
@@ -169,4 +173,8 @@ func ReportControlPlaneOrphans(ctx context.Context, w io.Writer, js jetstream.Je
 		fmt.Fprintf(w, "ORPHAN      %s  cluster=%s account=%s age=%s  %s\n", r.InstanceID, r.Cluster, r.Account, r.Age, r.Reason)
 	}
 	return orphans, unreadable, nil
+}
+
+func instanceRunning(inst *ec2.Instance) bool {
+	return inst.State != nil && aws.StringValue(inst.State.Name) == ec2.InstanceStateNameRunning
 }

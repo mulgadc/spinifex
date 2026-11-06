@@ -185,7 +185,8 @@ func AccountWatchBuckets(ctx context.Context, nc *nats.Conn) ([]*kvstore.Bucket,
 	}
 	buckets := make([]*kvstore.Bucket, 0, len(names))
 	for _, name := range names {
-		buckets = append(buckets, kvstore.NewBucket(js, kvstore.Config{Name: name, History: 1}))
+		// Attach only: a watch on a deleted bucket must fail and retry, not recreate it.
+		buckets = append(buckets, kvstore.NewBucket(js, kvstore.Config{Name: name, History: 1, AttachOnly: true}))
 	}
 	return buckets, nil
 }

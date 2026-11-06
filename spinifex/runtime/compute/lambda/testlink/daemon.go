@@ -32,6 +32,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/attempt"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/guestconn"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -90,6 +91,9 @@ type Daemon struct {
 	// InitializerSHA256 the digest it must have.
 	Initializer       string
 	InitializerSHA256 string
+	// Firecracker, when set, is the Firecracker binary each attempt boots
+	// under instead of QEMU.
+	Firecracker string
 
 	busy    atomic.Bool
 	serving atomic.Bool
@@ -423,24 +427,50 @@ func (d *Daemon) run(ctx context.Context, req Request, code []byte, lib *os.File
 	}
 	defer func() { _ = ln.Close() }()
 
-	cmd, err := cfg.Execute()
-	if err != nil {
-		return refused("VM command build failed"), d.release(a), marker
-	}
-	// A launch delayed past the fixed deadline is refused before QEMU starts.
+	// A launch delayed past the fixed deadline is refused before the VM starts.
 	if expired(hardDeadline) {
 		return refused(ErrDeadlineExpired.Error()), d.release(a), marker
 	}
-	hk, err := armLaunch(cmd, d.Image, lib, hardDeadline)
-	if err != nil {
-		return refused("hard-kill setup failed"), d.release(a), marker
+	var cmd *exec.Cmd
+	var hk *hardKill
+	var fcAck *net.UnixConn
+	fc := &vmHandle{fd: -1}
+	if d.Firecracker == "" {
+		if cmd, err = cfg.Execute(); err != nil {
+			return refused("VM command build failed"), d.release(a), marker
+		}
+		if hk, err = armLaunch(cmd, d.Image, lib, hardDeadline); err != nil {
+			return refused("hard-kill setup failed"), d.release(a), marker
+		}
+		defer hk.close()
+	} else {
+		var child *os.File
+		if fcAck, child, err = ackPair(); err != nil {
+			return refused("hard-kill setup failed"), d.release(a), marker
+		}
+		defer func() { _ = fcAck.Close() }()
+		cmd, err = d.supervisorCommand(filepath.Join(a.dir, fcConfigFile), hardDeadline, child)
+		defer func() { _ = child.Close() }()
+		if err != nil {
+			return refused("VM command build failed"), d.release(a), marker
+		}
 	}
-	defer hk.close()
 	var result Reply
 	unrecorded := false
 	out, runErr := attempt.Run(ctx, cmd, timeoutFor(req), func(sctx context.Context, pidfd int) error {
+		vmPidfd, vmPID := pidfd, cmd.Process.Pid
+		if fcAck != nil {
+			defer fc.callbackDone()
+			// Firecracker is the VM; its supervisor acks only once both kernel kills are armed.
+			fd, pid, err := awaitFirecracker(sctx, fcAck, cmd.Process.Pid, armWait)
+			if err != nil {
+				return err
+			}
+			fc.set(fd)
+			vmPidfd, vmPID = fd, pid
+		}
 		// The owner holds the launch identity before the guest is sent anything.
-		l, err := launchIdentity(pidfd, cmd.Process.Pid, a.tap)
+		l, err := launchIdentity(vmPidfd, vmPID, a.tap)
 		if err != nil {
 			return err
 		}
@@ -449,13 +479,33 @@ func (d *Daemon) run(ctx context.Context, req Request, code []byte, lib *os.File
 			return fmt.Errorf("%w: %w", ErrLaunchNotRecorded, err)
 		}
 		// No frame reaches the guest until QEMU proves its own kill timer is armed.
-		if err := hk.await(sctx, cmd.Process.Pid, armWait); err != nil {
-			return err
+		if hk != nil {
+			if err := hk.await(sctx, cmd.Process.Pid, armWait); err != nil {
+				return err
+			}
 		}
 		r, err := d.session(sctx, req, gen, ln, a.dir, hardDeadline, d.Grants.Accept)
 		result = r
 		return err
 	})
+	// The supervisor's exit says nothing about Firecracker, which is proven
+	// gone through its own pidfd before anything it used is released.
+	if fcAck != nil {
+		select {
+		case <-out.SessionDone:
+			fd := fc.take()
+			if !stopFirecracker(fd) {
+				out.Stopped = false
+			}
+			if fd >= 0 {
+				_ = unix.Close(fd)
+			}
+		default:
+			// The callback may still receive the pidfd; it closes it, and the attempt is held.
+			fc.abandon()
+			out.Stopped = false
+		}
+	}
 	if !out.Stopped {
 		slog.Error("Lambda test link: VM stop not proven; marker, tap, address and files held",
 			"attempt", req.AttemptID, "tap", tapName, "err", runErr)
@@ -546,6 +596,22 @@ func (d *Daemon) prepare(req Request, code []byte, dir, tap, mac, ip string) (*v
 	entries["test-package-sha256"] = []byte(req.CodeSHA256)
 	entries["test-grant"] = grantEntry(req.Grant)
 	entries["test-handler"] = []byte(req.Handler)
+	netcfgBytes := fmt.Appendf(nil, "NIC0_MAC=%s\nNIC0_CIDR=%s/24\nNIC0_DEFAULT=0\n", mac, ip)
+	if d.Firecracker != "" {
+		archive := make(map[string][]byte, len(entries)+1)
+		for name, value := range entries {
+			archive[lambdav1.FwCfgPrefix+name] = value
+		}
+		archive[fwCfgNetcfg] = netcfgBytes
+		cfgDisk := filepath.Join(dir, configArchive)
+		if err := writeConfigArchive(cfgDisk, archive); err != nil {
+			return fail(err)
+		}
+		if err := writeFirecrackerConfig(filepath.Join(dir, fcConfigFile), diskPath, cfgDisk, tap, mac, int(max(req.MemoryMiB, 128))); err != nil {
+			return fail(err)
+		}
+		return nil, gen, ln, nil
+	}
 	var fwCfg []vm.FwCfgEntry
 	for name, value := range entries {
 		path := filepath.Join(dir, "fwcfg-"+name)
@@ -555,7 +621,7 @@ func (d *Daemon) prepare(req Request, code []byte, dir, tap, mac, ip string) (*v
 		fwCfg = append(fwCfg, vm.FwCfgEntry{Name: lambdav1.FwCfgPrefix + name, File: path})
 	}
 	netcfg := filepath.Join(dir, "netcfg")
-	if err := os.WriteFile(netcfg, fmt.Appendf(nil, "NIC0_MAC=%s\nNIC0_CIDR=%s/24\nNIC0_DEFAULT=0\n", mac, ip), 0o600); err != nil {
+	if err := os.WriteFile(netcfg, netcfgBytes, 0o600); err != nil {
 		return fail(err)
 	}
 	fwCfg = append(fwCfg, vm.FwCfgEntry{Name: fwCfgNetcfg, File: netcfg})
@@ -607,6 +673,7 @@ func (d *Daemon) session(ctx context.Context, req Request, gen *guestconn.Genera
 	}
 	defer func() { _ = conn.Close() }()
 	_ = os.Remove(filepath.Join(dir, "fwcfg-"+lambdav1.EntryGuestKey))
+	_ = os.Remove(filepath.Join(dir, configArchive))
 
 	// The function timeout runs on the host from dispatch; the boot allowance
 	// covers startup only, so a guest that stops answering is cut off here.

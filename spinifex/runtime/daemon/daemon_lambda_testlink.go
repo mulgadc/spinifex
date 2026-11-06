@@ -3,10 +3,13 @@
 package daemon
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -27,6 +30,28 @@ var lambdaHardKillSHA256 string
 // lambdaImageDigest pins the runtime image the same way; it identifies the
 // image bytes and does not authenticate where they came from.
 var lambdaImageDigest string
+
+// lambdaFirecrackerSHA256 pins the Firecracker v1.17.0 x86_64 release binary.
+// A node whose test-link image directory holds a firecracker binary boots
+// every attempt under it, and does not serve unless the binary matches.
+const lambdaFirecrackerSHA256 = "99ad0f5cd0514a88aad0e9ae8cfdb3cc3b4ab9d190e1194602406c786b5de7a5"
+
+// checkFirecracker refuses a Firecracker binary other than the pinned release.
+func checkFirecracker(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("firecracker binary: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return fmt.Errorf("firecracker binary: %w", err)
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); got != lambdaFirecrackerSHA256 {
+		return errors.New("firecracker binary does not match the pinned release")
+	}
+	return nil
+}
 
 // startLambdaTestLink serves controlled-test Lambda invocations for this node.
 // Recovery needs only the owner store, taps and addresses, so it starts even
@@ -71,9 +96,20 @@ func (d *Daemon) startLambdaTestLink() {
 		InitializerSHA256: lambdaHardKillSHA256,
 		HTTP:              httpClient,
 	}
+	fc := filepath.Join(imageDir, "firecracker")
+	if _, err := os.Lstat(fc); err == nil {
+		tl.Firecracker = fc
+	}
 	err = runLambdaTestLink(
 		func() { go tl.RecoverLoop(d.ctx, testlink.RecoverFirst, testlink.RecoverMax) },
-		func() error { return lambdaTestLinkReady(tl, imageDir, lambdaImageDigest, trustErr) },
+		func() error {
+			if tl.Firecracker != "" {
+				if err := checkFirecracker(tl.Firecracker); err != nil {
+					return err
+				}
+			}
+			return lambdaTestLinkReady(tl, imageDir, lambdaImageDigest, trustErr)
+		},
 		func() error {
 			gatewayUID, err := testlink.LookupUID(testlink.GatewayUser)
 			if err != nil {

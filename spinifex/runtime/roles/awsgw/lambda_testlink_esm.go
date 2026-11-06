@@ -5,6 +5,7 @@ package awsgw
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -106,11 +107,13 @@ func (r *esmRuntime) start(ctx context.Context, h http.Handler, deps awsapi.Deps
 }
 
 // handlerTransport carries a signed SDK request straight into the gateway
-// handler, so it is authenticated and authorized exactly as one over TLS.
+// handler. It never leaves the TLS-terminating gateway, so it is marked as
+// received over TLS and is authorized exactly as one from a client.
 type handlerTransport struct{ h http.Handler }
 
 func (t handlerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	in := req.Clone(req.Context())
+	in.TLS = &tls.ConnectionState{Version: tls.VersionTLS13, HandshakeComplete: true}
 	in.RemoteAddr = "127.0.0.1:0"
 	in.RequestURI = req.URL.RequestURI()
 	if in.Host == "" {

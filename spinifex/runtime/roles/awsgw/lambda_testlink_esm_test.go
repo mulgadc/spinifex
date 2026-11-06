@@ -20,11 +20,14 @@ import (
 	"github.com/aws/aws-sdk-go/service/sqs"
 	"github.com/aws/aws-sdk-go/service/sqs/sqsiface"
 	"github.com/aws/aws-sdk-go/service/sts"
+	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/eventsource"
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/function"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
 	"github.com/stretchr/testify/require"
 )
 
@@ -402,4 +405,6 @@ func TestESM_HandlerTransportCarriesSignedRequest(t *testing.T) {
 	require.Equal(t, "token", got.Header.Get("X-Amz-Security-Token"))
 	require.Equal(t, "gw.example:9999", got.Host)
 	require.Contains(t, body, `"QueueUrl":"https://gw.example:9999/123456789012/in"`)
+	keys := policyauth.RequestConditionKeys(got, credential.Principal{})
+	require.Equal(t, "true", keys[iampolicy.KeySecureTransport], "a role requiring TLS must still authorize the poller")
 }

@@ -185,10 +185,10 @@ func (r *esmRuntime) revoke(s *esmSession) {
 	}
 }
 
-// fresh returns s while it is the function's role and far from expiry;
+// fresh returns s while it is the function's role and outlives need;
 // otherwise it issues a replacement and revokes s, which no request holds.
-func (r *esmRuntime) fresh(ctx context.Context, rec function.Record, s *esmSession) (*esmSession, error) {
-	if s != nil && s.role == rec.Role && s.expires.Sub(r.now()) > esmRenewBefore {
+func (r *esmRuntime) fresh(ctx context.Context, rec function.Record, s *esmSession, need time.Duration) (*esmSession, error) {
+	if s != nil && s.role == rec.Role && s.expires.Sub(r.now()) > need {
 		return s, nil
 	}
 	next, err := r.issue(ctx, rec)
@@ -197,6 +197,20 @@ func (r *esmRuntime) fresh(ctx context.Context, rec function.Record, s *esmSessi
 	}
 	r.revoke(s)
 	return next, nil
+}
+
+// eventClient renews *s before each event unless it outlives that event's
+// invocation and delete, so no acknowledgement runs on expired credentials.
+func (r *esmRuntime) eventClient(ctx context.Context, rec function.Record, s **esmSession) func() (sqsiface.SQSAPI, error) {
+	need := time.Duration(rec.Timeout)*time.Second + esmDeleteTimeout + time.Minute
+	return func() (sqsiface.SQSAPI, error) {
+		next, err := r.fresh(ctx, rec, *s, need)
+		*s = next
+		if err != nil {
+			return nil, err
+		}
+		return r.queue(next.cred), nil
+	}
 }
 
 func queueName(queueARN string) (account, name string) {
@@ -416,7 +430,7 @@ func (r *esmRuntime) work(ctx context.Context, m eventsource.Mapping) {
 			fail("Function lookup failed: " + err.Error())
 			continue
 		}
-		next, err := r.fresh(ctx, rec, s)
+		next, err := r.fresh(ctx, rec, s, esmRenewBefore)
 		s = next
 		if err != nil {
 			fail("The execution role could not be assumed: " + err.Error())
@@ -441,9 +455,14 @@ func (r *esmRuntime) work(ctx context.Context, m eventsource.Mapping) {
 			}
 			continue
 		}
-		backoff = base
 		r.setReason(ctx, m.UUID, "")
-		r.process(ctx, m, q, url, out.Messages)
+		if err := r.process(ctx, m, r.eventClient(ctx, rec, &s), url, out.Messages); err != nil {
+			slog.Warn("Lambda event source: batch not processed; messages stay on the queue", "uuid", m.UUID, "err", err)
+			r.wait(ctx, backoff)
+			backoff = min(2*backoff, esmMaxBackoff)
+			continue
+		}
+		backoff = base
 	}
 }
 
@@ -534,7 +553,9 @@ func splitEvents(m eventsource.Mapping, msgs []*sqs.Message) (events []esmEvent,
 
 // process invokes each event and deletes its messages only on a classified
 // success with no function error; anything else leaves them to reappear.
-func (r *esmRuntime) process(ctx context.Context, m eventsource.Mapping, q sqsiface.SQSAPI, url string, msgs []*sqs.Message) {
+// process invokes and acknowledges each event in turn. It returns the first
+// failure, so the worker backs off before receiving again.
+func (r *esmRuntime) process(ctx context.Context, m eventsource.Mapping, client func() (sqsiface.SQSAPI, error), url string, msgs []*sqs.Message) error {
 	events, oversized := splitEvents(m, msgs)
 	if len(oversized) > 0 {
 		r.setReason(ctx, m.UUID, fmt.Sprintf("%d message(s) exceed the %d-byte event limit and are not delivered", len(oversized), esmMaxEvent))
@@ -542,17 +563,18 @@ func (r *esmRuntime) process(ctx context.Context, m eventsource.Mapping, q sqsif
 	for _, ev := range events {
 		// A stopped worker invokes nothing further; delete waits for it.
 		if ctx.Err() != nil {
-			return
+			return nil
+		}
+		q, err := client()
+		if err != nil {
+			return fmt.Errorf("execution role session: %w", err)
 		}
 		res, err := r.invoke.InvokeEventSource(ctx, m.AccountID, m.Region, m.FunctionName, ev.Payload)
 		if err != nil {
-			slog.Warn("Lambda event source: batch not processed; messages stay on the queue", "uuid", m.UUID, "err", err)
-			continue
+			return err
 		}
 		if res.FunctionError != "" {
-			slog.Info("Lambda event source: function error; messages stay on the queue", "uuid", m.UUID,
-				"function_error", res.FunctionError)
-			continue
+			return fmt.Errorf("function error %s", res.FunctionError)
 		}
 		entries := make([]*sqs.DeleteMessageBatchRequestEntry, len(ev.Messages))
 		for i, msg := range ev.Messages {
@@ -567,4 +589,5 @@ func (r *esmRuntime) process(ctx context.Context, m eventsource.Mapping, q sqsif
 			slog.Warn("Lambda event source: some processed messages not deleted", "uuid", m.UUID, "failed", len(out.Failed))
 		}
 	}
+	return nil
 }

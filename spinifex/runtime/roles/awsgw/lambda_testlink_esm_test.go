@@ -43,6 +43,8 @@ type esmQueue struct {
 	receives   int
 	receiveErr error
 	urls       []string
+	// redeliver keeps received messages pending, as an expired visibility would.
+	redeliver bool
 }
 
 func (q *esmQueue) ReceiveMessageWithContext(ctx aws.Context, in *sqs.ReceiveMessageInput, _ ...request.Option) (*sqs.ReceiveMessageOutput, error) {
@@ -52,7 +54,9 @@ func (q *esmQueue) ReceiveMessageWithContext(ctx aws.Context, in *sqs.ReceiveMes
 	err := q.receiveErr
 	n := min(int(aws.Int64Value(in.MaxNumberOfMessages)), len(q.pending))
 	msgs := q.pending[:n]
-	q.pending = q.pending[n:]
+	if !q.redeliver {
+		q.pending = q.pending[n:]
+	}
 	q.mu.Unlock()
 	if err != nil {
 		return nil, err
@@ -93,14 +97,19 @@ type esmInvokes struct {
 	// started, when set, is closed as the first call begins, which then
 	// blocks until release is closed.
 	started, release chan struct{}
+	// during, when set, runs inside every invocation.
+	during func()
 }
 
 func (f *esmInvokes) InvokeEventSource(_ context.Context, _, _, _ string, payload []byte) (awsapi.SyncResult, error) {
 	f.mu.Lock()
 	f.payloads = append(f.payloads, string(payload))
-	started, release := f.started, f.release
+	started, release, during := f.started, f.release, f.during
 	f.started = nil
 	f.mu.Unlock()
+	if during != nil {
+		during()
+	}
 	if started != nil {
 		close(started)
 		<-release
@@ -197,7 +206,9 @@ func TestESM_DeletesOnlyOnClassifiedSuccess(t *testing.T) {
 			q := &esmQueue{}
 			inv := &esmInvokes{result: tc.result, err: tc.err}
 			r, _, _ := newTestESM(t, q, inv)
-			r.process(context.Background(), esmMapping("u1"), q, "url", []*sqs.Message{msg("1", "a"), msg("2", "b")})
+			err := r.process(context.Background(), esmMapping("u1"), func() (sqsiface.SQSAPI, error) { return q, nil }, "url",
+				[]*sqs.Message{msg("1", "a"), msg("2", "b")})
+			require.Equal(t, tc.delete, err == nil, "only a processed batch reports success")
 			require.Equal(t, 1, inv.count())
 			deleted, _ := q.state()
 			if tc.delete {
@@ -238,7 +249,7 @@ func TestESM_EventShapeAndSizeSplit(t *testing.T) {
 	q := &esmQueue{}
 	inv := &esmInvokes{result: awsapi.SyncResult{ExecutedVersion: "$LATEST"}}
 	r, _, _ := newTestESM(t, q, inv)
-	r.process(context.Background(), m, q, "url", []*sqs.Message{msg("big", huge)})
+	require.NoError(t, r.process(context.Background(), m, func() (sqsiface.SQSAPI, error) { return q, nil }, "url", []*sqs.Message{msg("big", huge)}))
 	require.Zero(t, inv.count(), "an oversized message is never invoked")
 	deleted, _ := q.state()
 	require.Empty(t, deleted, "an oversized message is never deleted")
@@ -336,23 +347,70 @@ func TestESM_SessionReissuedBeforeExpiry(t *testing.T) {
 	r, _, sessions := newTestESM(t, &esmQueue{}, &esmInvokes{})
 	rec, _, _ := esmMeta{}.Get(context.Background(), "123456789012", "ap-southeast-2", "f")
 	sessions.life = esmRenewBefore + time.Minute
-	s, err := r.fresh(context.Background(), rec, nil)
+	s, err := r.fresh(context.Background(), rec, nil, esmRenewBefore)
 	require.NoError(t, err)
-	same, err := r.fresh(context.Background(), rec, s)
+	same, err := r.fresh(context.Background(), rec, s, esmRenewBefore)
 	require.NoError(t, err)
 	require.Same(t, s, same, "a session far from expiry is kept")
 
 	r.now = func() time.Time { return time.Now().Add(2 * time.Minute) }
-	next, err := r.fresh(context.Background(), rec, s)
+	next, err := r.fresh(context.Background(), rec, s, esmRenewBefore)
 	require.NoError(t, err)
 	require.NotSame(t, s, next)
 	require.Equal(t, []string{s.keyID}, sessions.revoked, "the replaced session is revoked")
 
 	rec.Role = "arn:aws:iam::123456789012:role/other"
 	r.now = time.Now
-	third, err := r.fresh(context.Background(), rec, next)
+	third, err := r.fresh(context.Background(), rec, next, esmRenewBefore)
 	require.NoError(t, err)
 	require.NotSame(t, next, third, "a changed execution role gets a new session")
+}
+
+// Time passes during each invocation; the second event of one receive must
+// run and be acknowledged on a renewed session, not the one about to expire.
+func TestESM_EachSplitEventRunsOnACoveringSession(t *testing.T) {
+	q := &esmQueue{}
+	var mu sync.Mutex
+	now := time.Now()
+	inv := &esmInvokes{result: awsapi.SyncResult{ExecutedVersion: "$LATEST"}, during: func() {
+		mu.Lock()
+		now = now.Add(29 * time.Minute)
+		mu.Unlock()
+	}}
+	r, _, sessions := newTestESM(t, q, inv)
+	r.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	sessions.life = 30 * time.Minute
+	rec, _, _ := esmMeta{}.Get(context.Background(), "123456789012", "ap-southeast-2", "f")
+	big := strings.Repeat("a", esmMaxEvent/2)
+	var s *esmSession
+	t.Cleanup(func() { r.revoke(s) })
+	err := r.process(context.Background(), esmMapping("u1"), r.eventClient(context.Background(), rec, &s), "url",
+		[]*sqs.Message{msg("1", big), msg("2", big)})
+	require.NoError(t, err)
+	require.Equal(t, 2, inv.count(), "the two messages cannot share one event")
+	require.Equal(t, 2, sessions.issued, "the second event renews the session")
+	require.Equal(t, []string{"ASIAK"}, sessions.revoked)
+	deleted, _ := q.state()
+	require.Len(t, deleted, 2)
+}
+
+// A failed invocation makes the worker back off before it receives again.
+func TestESM_InvocationFailureBacksOff(t *testing.T) {
+	q := &esmQueue{pending: []*sqs.Message{msg("1", "hello")}, redeliver: true}
+	inv := &esmInvokes{err: errors.New("TooManyRequestsException: busy")}
+	r, store, _ := newTestESM(t, q, inv)
+	r.backoff = 300 * time.Millisecond
+	require.NoError(t, store.Create(context.Background(), esmMapping("u1")))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); r.run(ctx) }()
+	time.Sleep(time.Second)
+	cancel()
+	<-done
+	_, receives := q.state()
+	require.LessOrEqual(t, receives, 4, "a failing batch is retried after a back-off, not in a tight loop")
+	deleted, _ := q.state()
+	require.Empty(t, deleted)
 }
 
 func TestESM_ReceiveFailureRecordedAndCleared(t *testing.T) {

@@ -10,7 +10,6 @@ import {
   type LucideIcon,
   Server,
   Shield,
-  ShieldCheck,
   Waypoints,
 } from "lucide-react"
 import { useMemo } from "react"
@@ -29,6 +28,7 @@ import {
 } from "@/components/topology/topology-canvas"
 import type { LayoutDirection } from "@/lib/node-topology"
 import {
+  type AmongRule,
   buildSecurityGroupMap,
   type GroupBox,
   type GroupCard,
@@ -41,7 +41,6 @@ import { securityGroupMapQueryOptions } from "@/queries/topology"
 
 const ICONS: Record<GroupCardKind, LucideIcon> = {
   group: Shield,
-  self: ShieldCheck,
   peer: Shield,
   cidr: Globe,
   prefix: List,
@@ -83,9 +82,22 @@ type CardNode = Node<CardData, "card">
 
 interface BoxData extends Record<string, unknown> {
   box: GroupBox
+  among: AmongRule[]
 }
 
 type BoxNode = Node<BoxData, "box">
+
+interface CaptionData extends Record<string, unknown> {
+  side: "inbound" | "outbound"
+  direction: LayoutDirection
+}
+
+type CaptionNode = Node<CaptionData, "caption">
+
+const CAPTIONS = {
+  inbound: { title: "Inbound", note: "traffic allowed in" },
+  outbound: { title: "Outbound", note: "traffic allowed out" },
+}
 
 function Card({ data }: NodeProps<CardNode>) {
   const { card, direction } = data
@@ -124,21 +136,47 @@ function Card({ data }: NodeProps<CardNode>) {
   )
 }
 
-// The group's members, on a fill and dashed border of their own.
-function Box() {
+// The group's members, on a fill and dashed border of their own, headed by
+// the rules that let them reach each other.
+function Box({ data }: NodeProps<BoxNode>) {
   return (
     <div
-      className="size-full rounded-lg border border-dashed border-muted-foreground/40 bg-muted/40 px-3 py-1"
+      className="flex size-full flex-col rounded-lg border border-dashed border-muted-foreground/40 bg-muted/40 px-3 py-1 text-2xs text-muted-foreground"
       data-testid="box:members"
     >
-      <span className="text-2xs font-medium text-muted-foreground">
-        Members
-      </span>
+      <span className="h-4 font-medium">Members</span>
+      {data.among.length > 0 && (
+        <ul aria-label="Between members" data-testid="among">
+          <li className="h-4">Members reach each other on:</li>
+          {data.among.map((rule) => (
+            <li className="h-4 truncate font-mono" key={rule.label}>
+              {rule.label}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }
 
-const NODE_TYPES = { card: Card, box: Box }
+function Caption({ data }: NodeProps<CaptionNode>) {
+  const { title, note } = CAPTIONS[data.side]
+
+  return (
+    <div
+      className={cn(
+        "flex w-30 flex-col text-2xs text-muted-foreground",
+        data.direction === "down" && "text-right",
+      )}
+      data-testid={`caption:${data.side}`}
+    >
+      <span className="text-xs font-medium text-foreground">{title}</span>
+      <span>{note}</span>
+    </div>
+  )
+}
+
+const NODE_TYPES = { card: Card, box: Box, caption: Caption }
 
 function Legend() {
   return (
@@ -207,7 +245,7 @@ export function SecurityGroupTopology({
             position: { x: layout.members.x, y: layout.members.y },
             width: layout.members.width,
             height: layout.members.height,
-            data: { box: layout.members },
+            data: { box: layout.members, among: map.among },
             className: "pointer-events-none",
             draggable: false,
             selectable: false,
@@ -226,7 +264,18 @@ export function SecurityGroupTopology({
       connectable: false,
     }))
 
-    return [...box, ...cards]
+    const captions = [...layout.captions].map(([side, place]): CaptionNode => ({
+      id: `caption:${side}`,
+      type: "caption",
+      position: place,
+      data: { side, direction },
+      className: "pointer-events-none",
+      draggable: false,
+      selectable: false,
+      connectable: false,
+    }))
+
+    return [...box, ...captions, ...cards]
   }, [map, layout, direction])
 
   const edges = useMemo(
@@ -243,6 +292,7 @@ export function SecurityGroupTopology({
           labelEnd: link.target.startsWith("group:") ? "source" : "target",
           slot: link.slot,
           slots: link.slots,
+          arrow: true,
         },
       })),
     [map],
@@ -270,7 +320,7 @@ export function SecurityGroupTopology({
             links={map.links}
             nodeTypes={NODE_TYPES}
             nodes={nodes}
-            onNodeClick={(node: CardNode | BoxNode) => {
+            onNodeClick={(node: CardNode | BoxNode | CaptionNode) => {
               if (node.type !== "card") {
                 return
               }
@@ -289,8 +339,9 @@ export function SecurityGroupTopology({
       </div>
       <Legend />
       <p className="text-2xs text-muted-foreground">
-        Hover a card to trace its rules, or click it to open it. A rule naming a
-        group admits that group&apos;s members by private address only.
+        Arrows run the way traffic is allowed. Hover a card to trace its rules,
+        or click it to open it. A rule naming a group matches that group&apos;s
+        members by private address only.
       </p>
     </div>
   )

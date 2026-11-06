@@ -32,11 +32,11 @@ const open = (rule: IpPermission): IpPermission => ({
 
 describe("ruleLabel", () => {
   it.each([
-    [{ IpProtocol: "tcp", FromPort: 22, ToPort: 22 }, "tcp 22"],
-    [{ IpProtocol: "udp", FromPort: 1000, ToPort: 2000 }, "udp 1000–2000"],
-    [{ IpProtocol: "tcp", FromPort: 0, ToPort: 65_535 }, "tcp all"],
-    [{ IpProtocol: "6", FromPort: 443, ToPort: 443 }, "tcp 443"],
-    [{ IpProtocol: "17", FromPort: 53, ToPort: 53 }, "udp 53"],
+    [{ IpProtocol: "tcp", FromPort: 22, ToPort: 22 }, "tcp/22"],
+    [{ IpProtocol: "udp", FromPort: 1000, ToPort: 2000 }, "udp/1000–2000"],
+    [{ IpProtocol: "tcp", FromPort: 0, ToPort: 65_535 }, "tcp/all"],
+    [{ IpProtocol: "6", FromPort: 443, ToPort: 443 }, "tcp/443"],
+    [{ IpProtocol: "17", FromPort: 53, ToPort: 53 }, "udp/53"],
     [{ IpProtocol: "-1" }, "all traffic"],
     [{ IpProtocol: "47" }, "protocol 47"],
   ])("labels %o as %s", (rule, label) => {
@@ -44,20 +44,15 @@ describe("ruleLabel", () => {
   })
 
   it.each([
-    [
-      { IpProtocol: "icmp", FromPort: 8, ToPort: -1 },
-      "icmp echo-request (8/-1)",
-    ],
+    [{ IpProtocol: "icmp", FromPort: 8, ToPort: -1 }, "icmp/echo-request"],
     [
       { IpProtocol: "1", FromPort: 3, ToPort: 4 },
-      "icmp destination-unreachable (3/4)",
+      "icmp/destination-unreachable (4)",
     ],
-    [{ IpProtocol: "icmp", FromPort: -1, ToPort: -1 }, "icmp all"],
-    [{ IpProtocol: "icmp", FromPort: 13, ToPort: 0 }, "icmp 13/0"],
-    [
-      { IpProtocol: "58", FromPort: 128, ToPort: -1 },
-      "icmpv6 echo-request (128/-1)",
-    ],
+    [{ IpProtocol: "icmp", FromPort: -1, ToPort: -1 }, "icmp/all"],
+    [{ IpProtocol: "icmp", FromPort: 13, ToPort: 0 }, "icmp/13:0"],
+    [{ IpProtocol: "icmp", FromPort: 13, ToPort: -1 }, "icmp/13:all"],
+    [{ IpProtocol: "58", FromPort: 128, ToPort: -1 }, "icmpv6/echo-request"],
   ])("reads ICMP's ports as type and code: %o is %s", (rule, label) => {
     expect(ruleLabel(rule)).toBe(label)
   })
@@ -124,7 +119,6 @@ describe("buildSecurityGroupMap", () => {
       ["in:cidr:0.0.0.0/0", "inbound"],
       ["in:peer:sg-0000000000000app", "inbound"],
       ["in:prefix:pl-00000000000office", "inbound"],
-      ["in:self", "inbound"],
       ["lb:front", "group"],
       ["instance:i-in", "group"],
       ["rds:orders", "group"],
@@ -132,24 +126,99 @@ describe("buildSecurityGroupMap", () => {
     expect(card(`group:${GROUP_ID}`)?.highlighted).toBeTruthy()
   })
 
-  it("names a group a rule admits, and says it matches private addresses", () => {
+  it("names a group a rule admits, and where its members are", () => {
     expect(card("in:peer:sg-0000000000000app")).toMatchObject({
       label: "app",
-      details: ["sg-0000000000000app", "members, by private address"],
+      details: ["sg-0000000000000app", "members in this VPC"],
       resourceId: "sg-0000000000000app",
     })
-    expect(card("in:self")?.label).toBe("This group")
+  })
+
+  it("draws a rule naming the group itself as one among its members, not a card", () => {
+    expect(map.cards.some((c) => c.label === "")).toBeFalsy()
+    expect(map.among).toStrictEqual([
+      { label: "inbound (all traffic)", protocol: "all" },
+    ])
+  })
+
+  it.each([
+    [{ VpcId: "vpc-other" }, {}, "members in vpc-other"],
+    [{}, { VpcId: "vpc-other" }, "members in vpc-other"],
+    [{ VpcPeeringConnectionId: "pcx-1" }, {}, "via pcx-1"],
+    [{ VpcId: "vpc-home" }, {}, "members in this VPC"],
+  ])(
+    "places a peer group's members: pair %o, peer %o reads %s",
+    (pair, peer, place) => {
+      const peered = buildSecurityGroupMap(
+        inputs(
+          {
+            VpcId: "vpc-home",
+            IpPermissions: [
+              {
+                IpProtocol: "tcp",
+                FromPort: 22,
+                ToPort: 22,
+                UserIdGroupPairs: [{ GroupId: "sg-peer", ...pair }],
+              },
+            ],
+          },
+          { peers: [{ GroupId: "sg-peer", GroupName: "peer", ...peer }] },
+        ),
+      )
+
+      expect(
+        peered.cards.find((c) => c.id === "in:peer:sg-peer")?.details,
+      ).toStrictEqual(["sg-peer", place])
+    },
+  )
+
+  it.each([
+    ["0.0.0.0/0", undefined, ["anywhere"]],
+    ["::/0", undefined, ["anywhere"]],
+    ["10.0.0.0/8", undefined, []],
+    ["0.0.0.0/0", "public web", ["public web"]],
+  ])("notes %s with description %s as %o", (cidr, note, details) => {
+    const one = buildSecurityGroupMap(
+      inputs({
+        IpPermissions: [
+          {
+            IpProtocol: "-1",
+            ...(cidr.includes(":")
+              ? { Ipv6Ranges: [{ CidrIpv6: cidr, Description: note }] }
+              : { IpRanges: [{ CidrIp: cidr, Description: note }] }),
+          },
+        ],
+      }),
+    )
+
+    expect(
+      one.cards.find((c) => c.id === `in:cidr:${cidr}`)?.details,
+    ).toStrictEqual(details)
   })
 
   it("draws one line per rule, into the group inbound and out of it outbound", () => {
     expect(
       map.links.map((l) => [l.source, l.target, l.label, l.protocol]),
     ).toStrictEqual([
-      [`group:${GROUP_ID}`, "out:cidr:0.0.0.0/0", "all traffic", "all"],
-      ["in:cidr:0.0.0.0/0", `group:${GROUP_ID}`, "tcp 443", "tcp"],
-      ["in:peer:sg-0000000000000app", `group:${GROUP_ID}`, "tcp 5432", "tcp"],
-      ["in:prefix:pl-00000000000office", `group:${GROUP_ID}`, "tcp 22", "tcp"],
-      ["in:self", `group:${GROUP_ID}`, "all traffic", "all"],
+      [
+        `group:${GROUP_ID}`,
+        "out:cidr:0.0.0.0/0",
+        "outbound (all traffic)",
+        "all",
+      ],
+      ["in:cidr:0.0.0.0/0", `group:${GROUP_ID}`, "inbound (tcp/443)", "tcp"],
+      [
+        "in:peer:sg-0000000000000app",
+        `group:${GROUP_ID}`,
+        "inbound (tcp/5432)",
+        "tcp",
+      ],
+      [
+        "in:prefix:pl-00000000000office",
+        `group:${GROUP_ID}`,
+        "inbound (tcp/22)",
+        "tcp",
+      ],
     ])
   })
 
@@ -327,5 +396,83 @@ describe("layoutSecurityGroupMap", () => {
     }
 
     expect(gap(map)).toBeGreaterThan(gap(one))
+  })
+
+  it.each(["down", "across"] as const)(
+    "names each row of rules ahead of its first card (%s)",
+    (direction) => {
+      const { places, captions } = layoutSecurityGroupMap(map, direction)
+
+      const row = (prefix: string) =>
+        map.cards
+          .filter((c) => c.id.startsWith(prefix))
+          .map((c) => places.get(c.id) ?? { x: Number.NaN, y: Number.NaN })
+
+      for (const [side, prefix] of [
+        ["inbound", "in:"],
+        ["outbound", "out:"],
+      ] as const) {
+        const caption = captions.get(side) ?? { x: Number.NaN, y: Number.NaN }
+
+        for (const card of row(prefix)) {
+          // Left of the row going down; above it going across.
+          expect(
+            direction === "down" ? card.x - caption.x : card.y - caption.y,
+          ).toBeGreaterThan(direction === "down" ? 120 : 40)
+        }
+      }
+    },
+  )
+
+  it("heads the members' box with the rules among them, above every member", () => {
+    const among = buildSecurityGroupMap(
+      inputs(
+        {
+          IpPermissions: [
+            { IpProtocol: "-1", UserIdGroupPairs: [{ GroupId: GROUP_ID }] },
+          ],
+          IpPermissionsEgress: [
+            { IpProtocol: "-1", UserIdGroupPairs: [{ GroupId: GROUP_ID }] },
+          ],
+        },
+        {
+          instances: [
+            { InstanceId: "i-a", SecurityGroups: [{ GroupId: GROUP_ID }] },
+          ],
+        },
+      ),
+    )
+
+    const plain = layoutSecurityGroupMap(map, "down")
+    const headed = layoutSecurityGroupMap(among, "down")
+
+    const below = (l: typeof plain) =>
+      (l.places.get("instance:i-a")?.y ?? 0) - (l.members?.y ?? 0)
+
+    expect(among.among.map((r) => r.label)).toStrictEqual([
+      "inbound (all traffic)",
+      "outbound (all traffic)",
+    ])
+    // A header line and one line per rule, 16px each.
+    expect(below(headed) - below(plain)).toBe(48)
+  })
+
+  it("widens the gap going across for a long rule label", () => {
+    const long = buildSecurityGroupMap(
+      inputs({
+        IpPermissions: [open({ IpProtocol: "icmp", FromPort: 3, ToPort: 4 })],
+      }),
+    )
+
+    const gap = (m: typeof map) => {
+      const { places } = layoutSecurityGroupMap(m, "across")
+
+      return (
+        (places.get(`group:${GROUP_ID}`)?.x ?? 0) -
+        (places.get("in:cidr:0.0.0.0/0")?.x ?? 0)
+      )
+    }
+
+    expect(gap(long)).toBeGreaterThan(gap(map))
   })
 })

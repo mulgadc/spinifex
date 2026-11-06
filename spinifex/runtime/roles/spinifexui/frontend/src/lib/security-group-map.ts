@@ -3,6 +3,7 @@ import type {
   IpPermission,
   SecurityGroup,
   Tag,
+  UserIdGroupPair,
 } from "@aws-sdk/client-ec2"
 import type { LoadBalancer } from "@aws-sdk/client-elastic-load-balancing-v2"
 import type { DBInstance } from "@aws-sdk/client-rds"
@@ -15,7 +16,6 @@ export type GroupSide = "inbound" | "group" | "outbound"
 
 export type GroupCardKind =
   | "group"
-  | "self"
   | "peer"
   | "cidr"
   | "prefix"
@@ -53,9 +53,16 @@ export interface GroupLink {
   slots: number
 }
 
+// A rule naming the group itself, which lets its members reach each other.
+export interface AmongRule {
+  label: string
+  protocol: RuleProtocol
+}
+
 export interface GroupMap {
   cards: GroupCard[]
   links: GroupLink[]
+  among: AmongRule[]
   // Rule ends and members collapsed into a side's "+N more" card.
   omitted: number
   incomplete: GroupResource[]
@@ -131,27 +138,31 @@ export function protocolOf(rule: IpPermission): RuleProtocol {
 
 function portRange(name: string, from?: number, to?: number): string {
   if (from === undefined || from === -1 || (from === 0 && to === 65_535)) {
-    return `${name} all`
+    return `${name}/all`
   }
 
   return from === to || to === undefined
-    ? `${name} ${from}`
-    : `${name} ${from}–${to}`
+    ? `${name}/${from}`
+    : `${name}/${from}–${to}`
 }
 
 // For ICMP and ICMPv6, FromPort and ToPort are the type and the code.
 function icmpLabel(name: string, type?: number, code?: number): string {
   if (type === undefined || type === -1) {
-    return `${name} all`
+    return `${name}/all`
   }
 
   const typeName = ICMP_TYPES.get(name)?.get(type)
-  const numbers = `${type}/${code ?? -1}`
+  const anyCode = code === undefined || code === -1
 
-  return typeName ? `${name} ${typeName} (${numbers})` : `${name} ${numbers}`
+  if (!typeName) {
+    return `${name}/${type}:${anyCode ? "all" : code}`
+  }
+
+  return anyCode ? `${name}/${typeName}` : `${name}/${typeName} (${code})`
 }
 
-// "tcp 22", "udp 1000–2000", "icmp echo-request (8/-1)", "all traffic".
+// "tcp/22", "udp/1000–2000", "icmp/echo-request", "all traffic".
 export function ruleLabel(rule: IpPermission): string {
   const name = protocolName(rule)
 
@@ -183,9 +194,35 @@ interface RuleEnd {
   resourceId?: string
 }
 
+const ANYWHERE = new Set(["0.0.0.0/0", "::/0"])
+const SELF = "self"
+
+function cidrDetails(cidr: string, note?: string): string[] {
+  if (note) {
+    return [note]
+  }
+
+  return ANYWHERE.has(cidr) ? ["anywhere"] : []
+}
+
+// Where a peer group's members are: this VPC, another, or across a peering.
+function peerPlace(pair: UserIdGroupPair, peer?: SecurityGroup, vpc?: string) {
+  if (pair.VpcPeeringConnectionId) {
+    return `via ${pair.VpcPeeringConnectionId}`
+  }
+
+  const peerVpc = pair.VpcId ?? peer?.VpcId
+
+  if (!peerVpc || peerVpc === vpc) {
+    return "members in this VPC"
+  }
+
+  return `members in ${peerVpc}`
+}
+
 function ruleEnds(
   rule: IpPermission,
-  groupId: string,
+  group: SecurityGroup,
   peers: Map<string, SecurityGroup>,
 ): RuleEnd[] {
   const groups = (rule.UserIdGroupPairs ?? []).flatMap((pair): RuleEnd[] => {
@@ -195,16 +232,9 @@ function ruleEnds(
       return []
     }
 
-    // A group that names itself admits its own members.
-    if (id === groupId) {
-      return [
-        {
-          key: "self",
-          kind: "self",
-          label: "This group",
-          details: ["its members, by private address"],
-        },
-      ]
+    // A group naming itself lets its members reach each other, drawn on their box.
+    if (id === group.GroupId) {
+      return [{ key: SELF, kind: "group", label: "", details: [] }]
     }
 
     const peer = peers.get(id)
@@ -214,7 +244,7 @@ function ruleEnds(
         key: `peer:${id}`,
         kind: "peer",
         label: peer?.GroupName ?? pair.GroupName ?? id,
-        details: [id, "members, by private address"],
+        details: [id, peerPlace(pair, peer, group.VpcId)],
         resourceId: id,
       },
     ]
@@ -236,7 +266,7 @@ function ruleEnds(
             key: `cidr:${cidr}`,
             kind: "cidr",
             label: cidr,
-            details: note ? [note] : [],
+            details: cidrDetails(cidr, note),
           },
         ]
       : [],
@@ -267,16 +297,22 @@ interface Candidate {
 function sideCandidates(
   side: "inbound" | "outbound",
   rules: IpPermission[] | undefined,
-  groupId: string,
+  group: SecurityGroup,
   peers: Map<string, SecurityGroup>,
+  among: AmongRule[],
 ): Candidate[] {
   const byKey = new Map<string, Candidate>()
 
   for (const rule of rules ?? []) {
-    const label = ruleLabel(rule)
+    const label = `${side} (${ruleLabel(rule)})`
     const protocol = protocolOf(rule)
 
-    for (const end of ruleEnds(rule, groupId, peers)) {
+    for (const end of ruleEnds(rule, group, peers)) {
+      if (end.key === SELF) {
+        among.push({ label, protocol })
+        continue
+      }
+
       const id = `${side === "inbound" ? "in" : "out"}:${end.key}`
       const seen = byKey.get(id)
 
@@ -408,19 +444,27 @@ export function buildSecurityGroupMap(inputs: GroupInputs): GroupMap {
   ]
 
   const links: GroupLink[] = []
+  const among: AmongRule[] = []
 
   const rules: [GroupSide, Candidate[]][] = [
     [
       "inbound",
-      sideCandidates("inbound", inputs.group.IpPermissions, groupId, peers),
+      sideCandidates(
+        "inbound",
+        inputs.group.IpPermissions,
+        inputs.group,
+        peers,
+        among,
+      ),
     ],
     [
       "outbound",
       sideCandidates(
         "outbound",
         inputs.group.IpPermissionsEgress,
-        groupId,
+        inputs.group,
         peers,
+        among,
       ),
     ],
   ]
@@ -481,7 +525,7 @@ export function buildSecurityGroupMap(inputs: GroupInputs): GroupMap {
         id: `${more.id}>${groupCard}`,
         source: inbound ? more.id : groupCard,
         target: inbound ? groupCard : more.id,
-        label: "more rules",
+        label: `${side} (more rules)`,
         protocol: "other",
         slot: 0,
         slots: 1,
@@ -492,6 +536,7 @@ export function buildSecurityGroupMap(inputs: GroupInputs): GroupMap {
   return {
     cards,
     links,
+    among,
     omitted,
     incomplete: inputs.incomplete,
     failed: inputs.failed,
@@ -514,6 +559,8 @@ export interface GroupLayout {
   places: Map<string, GroupPlace>
   // The dashed box holding the group's members, when it has any.
   members?: GroupBox
+  // Where each row of rules is named, ahead of its first card.
+  captions: Map<"inbound" | "outbound", GroupPlace>
 }
 
 // Sizes are px at a 16px root, as the network map's are.
@@ -522,6 +569,12 @@ const CARD_HEIGHT = 80
 const GAP = 32
 const BOX_PAD = 12
 const BOX_HEAD = 24
+const AMONG_ROW = 16
+const CAPTION_WIDTH = 120
+const CAPTION_HEIGHT = 40
+
+// A label's width per character, at the 12px monospace labels are set in.
+const LABEL_CHAR = 7.5
 const BOX_COLUMNS = 2
 const MEMBER_HEIGHT = 72
 
@@ -542,8 +595,13 @@ export function layoutSecurityGroupMap(
     down ? { x: along, y: deep } : { x: deep, y: along }
 
   const stack = Math.max(1, ...map.links.map((l) => l.slots))
-  // Going across, labels stack alongside the line, so the gap need only fit one wide label.
-  const gap = down ? LABEL_BASE + stack * LABEL_ROW : 2 * LABEL_BASE + 64
+  const widest = Math.max(0, ...map.links.map((l) => l.label.length))
+
+  // Going across, labels stack alongside the line, so the gap need only fit the widest one.
+  const gap = down
+    ? LABEL_BASE + stack * LABEL_ROW
+    : Math.max(2 * LABEL_BASE + 64, widest * LABEL_CHAR + LABEL_BASE)
+
   const depthOf = down ? CARD_HEIGHT : CARD_WIDTH
 
   // Going across, a card's rule labels stack centred on it, so each card
@@ -561,10 +619,24 @@ export function layoutSecurityGroupMap(
       ? CARD_WIDTH
       : Math.max(CARD_HEIGHT, (slotsOf.get(id) ?? 0) * LABEL_ROW)
 
+  const captions = new Map<"inbound" | "outbound", GroupPlace>()
+
   const row = (side: "inbound" | "outbound", deep: number) => {
     const ids = map.cards.filter((c) => c.side === side).map((c) => c.id)
     const total = ids.reduce((sum, id) => sum + span(id), 0)
     let along = -(total + (ids.length - 1) * GAP) / 2
+
+    if (ids.length > 0) {
+      captions.set(
+        side,
+        down
+          ? {
+              x: along - GAP - CAPTION_WIDTH,
+              y: deep + (CARD_HEIGHT - CAPTION_HEIGHT) / 2,
+            }
+          : { x: deep, y: along - GAP - CAPTION_HEIGHT },
+      )
+    }
 
     for (const id of ids) {
       const size = span(id)
@@ -578,6 +650,10 @@ export function layoutSecurityGroupMap(
   const group = map.cards.find((c) => c.kind === "group")
   const members = map.cards.filter((c) => c.member)
 
+  // The rules among members head their box, under a line of their own.
+  const head =
+    BOX_HEAD + (map.among.length > 0 ? (map.among.length + 1) * AMONG_ROW : 0)
+
   row("inbound", 0)
 
   const groupDeep = depthOf + gap
@@ -589,11 +665,11 @@ export function layoutSecurityGroupMap(
   let middleDepth = depthOf
   let box: GroupBox | undefined
 
-  if (members.length > 0) {
-    const columns = Math.min(members.length, BOX_COLUMNS)
+  if (members.length > 0 || map.among.length > 0) {
+    const columns = Math.max(1, Math.min(members.length, BOX_COLUMNS))
     const rows = Math.ceil(members.length / columns)
     const width = 2 * BOX_PAD + columns * CARD_WIDTH + (columns - 1) * BOX_PAD
-    const height = BOX_HEAD + rows * (MEMBER_HEIGHT + BOX_PAD)
+    const height = head + rows * (MEMBER_HEIGHT + BOX_PAD)
 
     // Beside the group going down, beneath it going across.
     const corner = down
@@ -607,16 +683,14 @@ export function layoutSecurityGroupMap(
       places.set(card.id, {
         x: corner.x + BOX_PAD + (i % columns) * (CARD_WIDTH + BOX_PAD),
         y:
-          corner.y +
-          BOX_HEAD +
-          Math.floor(i / columns) * (MEMBER_HEIGHT + BOX_PAD),
+          corner.y + head + Math.floor(i / columns) * (MEMBER_HEIGHT + BOX_PAD),
       })
     }
   }
 
   row("outbound", groupDeep + middleDepth + gap)
 
-  return { places, members: box }
+  return { places, members: box, captions }
 }
 
 export function scaleGroupLayout(
@@ -631,6 +705,7 @@ export function scaleGroupLayout(
 
   return {
     places: new Map([...layout.places].map(([id, p]) => [id, scale(p)])),
+    captions: new Map([...layout.captions].map(([id, p]) => [id, scale(p)])),
     members: layout.members && {
       ...scale(layout.members),
       width: layout.members.width * unit,

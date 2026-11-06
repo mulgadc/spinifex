@@ -92,6 +92,8 @@ export interface LineData extends Record<string, unknown> {
   protocol?: LineProtocol
   // Drawn dimmed whatever the hover, for a map that highlights a selection.
   muted?: boolean
+  // An arrowhead at the line's middle, pointing from source to target.
+  arrow?: boolean
 }
 
 export type TopologyEdge = Edge<LineData, "line">
@@ -156,24 +158,87 @@ function labelAtEnd(
   }
 }
 
-// A curve bowed off the straight bezier, so lines sharing both ends part.
-function bowedPath(
-  sx: number,
-  sy: number,
-  tx: number,
-  ty: number,
+type Point = [number, number]
+
+// A curve's control points, bowed off the straight bezier so lines sharing
+// both ends part.
+function controls(
+  [sx, sy]: Point,
+  [tx, ty]: Point,
   side: Position,
   bow: number,
-): string {
+): [Point, Point] {
   if (side === Position.Bottom) {
     const d = Math.max(Math.abs(ty - sy) / 2, 20)
 
-    return `M ${sx},${sy} C ${sx + bow},${sy + d} ${tx + bow},${ty - d} ${tx},${ty}`
+    return [
+      [sx + bow, sy + d],
+      [tx + bow, ty - d],
+    ]
   }
 
   const d = Math.max(Math.abs(tx - sx) / 2, 20)
 
-  return `M ${sx},${sy} C ${sx + d},${sy + bow} ${tx - d},${ty + bow} ${tx},${ty}`
+  return [
+    [sx + d, sy + bow],
+    [tx - d, ty + bow],
+  ]
+}
+
+const mid = (a: Point, b: Point): Point => [
+  (a[0] + b[0]) / 2,
+  (a[1] + b[1]) / 2,
+]
+
+const at = (p: Point) => `${p[0]},${p[1]}`
+
+function bowedPath(
+  source: Point,
+  target: Point,
+  side: Position,
+  bow: number,
+): string {
+  const [c1, c2] = controls(source, target, side, bow)
+
+  return `M ${at(source)} C ${at(c1)} ${at(c2)} ${at(target)}`
+}
+
+// The same curve split in two at its middle, where a mid marker then sits.
+function arrowedPath(
+  source: Point,
+  target: Point,
+  side: Position,
+  bow: number,
+): string {
+  const [c1, c2] = controls(source, target, side, bow)
+  const [a, b, c] = [mid(source, c1), mid(c1, c2), mid(c2, target)]
+  const [d, e] = [mid(a, b), mid(b, c)]
+  const m = mid(d, e)
+
+  return `M ${at(source)} C ${at(a)} ${at(d)} ${at(m)} C ${at(e)} ${at(c)} ${at(target)}`
+}
+
+export const ARROW_MARKER = "topology-arrow"
+
+// Filled with each line's own stroke, so an arrow takes its protocol's colour.
+function ArrowMarker() {
+  return (
+    <svg aria-hidden className="absolute size-0">
+      <defs>
+        <marker
+          id={ARROW_MARKER}
+          markerHeight={6}
+          markerWidth={6}
+          orient="auto"
+          refX={5}
+          refY={5}
+          viewBox="0 0 10 10"
+        >
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke" />
+        </marker>
+      </defs>
+    </svg>
+  )
 }
 
 function placeLabel(
@@ -254,10 +319,18 @@ export function TopologyLine(props: EdgeProps<TopologyEdge>) {
 
   const bow = ((data?.slot ?? 0) - ((data?.slots ?? 1) - 1) / 2) * BOW
 
-  const path =
-    bow === 0
-      ? curve
-      : bowedPath(sourceX, sourceY, targetX, targetY, sourcePosition, bow)
+  const ends: [Point, Point] = [
+    [sourceX, sourceY],
+    [targetX, targetY],
+  ]
+
+  let path = curve
+
+  if (data?.arrow) {
+    path = arrowedPath(...ends, sourcePosition, bow)
+  } else if (bow !== 0) {
+    path = bowedPath(...ends, sourcePosition, bow)
+  }
 
   const focus = data?.focus ?? "idle"
   const label = placeLabel(props, [labelX, labelY])
@@ -278,6 +351,7 @@ export function TopologyLine(props: EdgeProps<TopologyEdge>) {
         )}
         id={id}
         interactionWidth={16}
+        markerMid={data?.arrow ? `url(#${ARROW_MARKER})` : undefined}
         path={path}
       />
       {data?.label && (
@@ -467,6 +541,7 @@ export function TopologyCanvas<N extends Node>({
         }}
         proOptions={{ hideAttribution: true }}
       >
+        <ArrowMarker />
         <Background />
         <Controls showInteractive={false} />
       </ReactFlow>

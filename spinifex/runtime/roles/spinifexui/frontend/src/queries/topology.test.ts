@@ -293,9 +293,7 @@ describe("securityGroupMapQueryOptions", () => {
       .filter((c) => c instanceof DescribeSecurityGroupsCommand)
       .map((c) => c.input.GroupIds)
 
-    expect(filters).toStrictEqual([
-      [{ Name: "vpc-id", Values: ["vpc-1"] }],
-    ])
+    expect(filters).toStrictEqual([[{ Name: "vpc-id", Values: ["vpc-1"] }]])
     expect(asked).toStrictEqual([["sg-app"]])
     expect(result.peers.map((p) => p.GroupName)).toStrictEqual(["app"])
     expect(result.failed).toStrictEqual([])

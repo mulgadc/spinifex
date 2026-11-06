@@ -32,6 +32,7 @@ ${rule("tcp", 443, 443, cidrs("0.0.0.0/0"))}
 ${rule("tcp", 80, 80, cidrs("0.0.0.0/0"))}
 ${rule("icmp", 8, -1, cidrs("10.0.0.0/16"))}
 ${rule("tcp", 8080, 8080, `<groups><item><userId>000000000000</userId><groupId>${APP}</groupId></item></groups>`)}
+<item><ipProtocol>-1</ipProtocol><groups><item><userId>000000000000</userId><groupId>${WEB}</groupId></item></groups></item>
 </ipPermissions>
 <ipPermissionsEgress><item><ipProtocol>-1</ipProtocol>${cidrs("0.0.0.0/0")}</item></ipPermissionsEgress>
 </item>
@@ -139,7 +140,7 @@ test.describe("Security group topology", () => {
       "true",
     )
     await expect(panel.getByTestId(`card-in:peer:${APP}`)).toContainText(
-      "members, by private address",
+      "members in this VPC",
     )
     await expect(panel.getByTestId(`card-in:peer:${APP}`)).toContainText("app")
     await expect(panel.getByTestId("card-in:cidr:10.0.0.0/16")).toBeVisible()
@@ -156,21 +157,47 @@ test.describe("Security group topology", () => {
 
     await expect(
       panel.getByTestId(
-        "line-label-in:cidr:10.0.0.0/16>icmp echo-request (8/-1):0",
+        "line-label-in:cidr:10.0.0.0/16>inbound (icmp/echo-request):0",
       ),
     ).toBeVisible()
     await expect(
-      panel.getByTestId("line-label-in:cidr:0.0.0.0/0>tcp 443:0"),
+      panel.getByTestId("line-label-in:cidr:0.0.0.0/0>inbound (tcp/443):0"),
     ).toBeVisible()
     await expect(
-      panel.getByTestId("line-label-in:cidr:0.0.0.0/0>tcp 80:1"),
+      panel.getByTestId("line-label-in:cidr:0.0.0.0/0>inbound (tcp/80):1"),
     ).toBeVisible()
     await expect(
-      panel.getByTestId("line-label-out:cidr:0.0.0.0/0>all traffic:0"),
+      panel.getByTestId(
+        "line-label-out:cidr:0.0.0.0/0>outbound (all traffic):0",
+      ),
     ).toBeVisible()
     await expect(
       panel.getByRole("list", { name: "Rule protocols" }),
     ).toContainText("ICMP")
+  })
+
+  test("names each row's direction and lists the rules among members in their box", async ({
+    page,
+  }) => {
+    await page.goto(PAGE)
+    await expect(page.getByTestId("caption:inbound")).toContainText("Inbound")
+    await expect(page.getByTestId("caption:outbound")).toContainText("Outbound")
+    await expect(page.getByTestId("among")).toContainText(
+      "inbound (all traffic)",
+    )
+    await expect(page.locator('[data-testid^="card-in:self"]')).toHaveCount(0)
+  })
+
+  test("points each rule's line the way its traffic is allowed", async ({
+    page,
+  }) => {
+    await page.goto(PAGE)
+    await expect(page.getByTestId(`card-group:${WEB}`)).toBeVisible()
+
+    const lines = page.locator(".react-flow__edge-path")
+
+    await expect(lines).not.toHaveCount(0)
+    await expect(lines.and(page.locator(":not([marker-mid])"))).toHaveCount(0)
   })
 
   test("keeps every rule's label clear of the cards and of each other, either way round", async ({

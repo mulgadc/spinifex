@@ -138,3 +138,31 @@ func TestReportControlPlaneOrphansPrintsRows(t *testing.T) {
 	assert.Contains(t, buf.String(), "ORPHAN      i-orphan")
 	assert.Contains(t, buf.String(), "UNREADABLE  i-broken")
 }
+
+func TestNewENITagReader(t *testing.T) {
+	eni := &ec2.NetworkInterface{TagSet: []*ec2.Tag{{Key: aws.String("k"), Value: aws.String("v")}}}
+	cases := []struct {
+		name      string
+		out       *ec2.DescribeNetworkInterfacesOutput
+		err       error
+		wantFound bool
+		wantErr   bool
+	}{
+		{name: "tags read", out: &ec2.DescribeNetworkInterfacesOutput{NetworkInterfaces: []*ec2.NetworkInterface{eni}}, wantFound: true},
+		{name: "eni gone", out: &ec2.DescribeNetworkInterfacesOutput{}},
+		{name: "call failed is a read failure", err: errors.New("vpc down"), wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			read := NewENITagReader(func(context.Context, string) (*ec2.DescribeNetworkInterfacesOutput, error) {
+				return tc.out, tc.err
+			})
+			m, found, err := read(t.Context(), "eni-1")
+			assert.Equal(t, tc.wantFound, found)
+			assert.Equal(t, tc.wantErr, err != nil)
+			if tc.wantFound {
+				assert.Equal(t, "v", m["k"])
+			}
+		})
+	}
+}

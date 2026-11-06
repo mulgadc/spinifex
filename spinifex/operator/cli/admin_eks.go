@@ -6,7 +6,6 @@ import (
 	"maps"
 	"os"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -125,25 +124,11 @@ func runAdminEksOrphans(_ *cobra.Command, _ []string) {
 	list := func(ctx context.Context) (*ec2.DescribeInstancesOutput, error) {
 		return ec2inventory.NewNATSInstances(nc, nodeIDs).ListAccountInstances(ctx, awsidentifiers.GlobalAccountID)
 	}
-	eni := func(ctx context.Context, id string) (map[string]string, bool, error) {
-		out, err := ec2vpc.NewNATSVPCService(nc).DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
+	eni := ekscluster.NewENITagReader(func(ctx context.Context, id string) (*ec2.DescribeNetworkInterfacesOutput, error) {
+		return ec2vpc.NewNATSVPCService(nc).DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
 			NetworkInterfaceIds: aws.StringSlice([]string{id}),
 		}, awsidentifiers.GlobalAccountID)
-		if err != nil {
-			if strings.Contains(err.Error(), "NotFound") {
-				return nil, false, nil
-			}
-			return nil, false, err
-		}
-		if len(out.NetworkInterfaces) == 0 {
-			return nil, false, nil
-		}
-		m := map[string]string{}
-		for _, t := range out.NetworkInterfaces[0].TagSet {
-			m[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
-		}
-		return m, true, nil
-	}
+	})
 
 	orphans, unreadable, err := ekscluster.ReportControlPlaneOrphans(ctx, os.Stdout, js, list, eni, time.Now())
 	if err != nil {

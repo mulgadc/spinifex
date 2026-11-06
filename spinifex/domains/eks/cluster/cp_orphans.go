@@ -58,6 +58,28 @@ func JudgeClusterRecord(ctx context.Context, js jetstream.JetStream, account, cl
 // the ENI is gone.
 type ENITagReader func(ctx context.Context, eniID string) (tagSet map[string]string, found bool, err error)
 
+// NewENITagReader builds an ENITagReader over a DescribeNetworkInterfaces call.
+// An empty answer means the ENI is gone; a call error is returned as a read
+// failure, so an unreachable service is never read as "no such ENI".
+func NewENITagReader(describe func(ctx context.Context, eniID string) (*ec2.DescribeNetworkInterfacesOutput, error)) ENITagReader {
+	return func(ctx context.Context, eniID string) (map[string]string, bool, error) {
+		out, err := describe(ctx, eniID)
+		if err != nil {
+			return nil, false, err
+		}
+		if out == nil || len(out.NetworkInterfaces) == 0 || out.NetworkInterfaces[0] == nil {
+			return nil, false, nil
+		}
+		m := map[string]string{}
+		for _, t := range out.NetworkInterfaces[0].TagSet {
+			if t != nil {
+				m[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
+			}
+		}
+		return m, true, nil
+	}
+}
+
 // ControlPlaneRow is one running EKS control-plane VM the report could not tie
 // to a live cluster record. Unreadable rows carry Err and are never omitted.
 type ControlPlaneRow struct {

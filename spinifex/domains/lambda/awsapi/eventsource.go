@@ -3,7 +3,7 @@ package awsapi
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -136,14 +136,13 @@ func checkQueueARN(region, accountID, queueARN string) error {
 	return nil
 }
 
-func newMappingUUID() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	b[6] = b[6]&0x0f | 0x40
+// mappingUUID derives one UUID per account, Region, function and queue, so the
+// keyed create itself refuses a duplicate with no inventory scan or second record.
+func mappingUUID(accountID, region, function, queueARN string) string {
+	b := sha256.Sum256([]byte(accountID + "\x00" + region + "\x00" + function + "\x00" + queueARN))
+	b[6] = b[6]&0x0f | 0x50
 	b[8] = b[8]&0x3f | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func mappingShape(m eventsource.Mapping, state string) *lambda.EventSourceMappingConfiguration {
@@ -204,22 +203,7 @@ func (d Deps) createEventSourceMapping(ctx context.Context, c *call) (reply, err
 	if err != nil {
 		return reply{}, err
 	}
-	entries, err := store.List(ctx)
-	if err != nil {
-		return reply{}, err
-	}
-	for _, e := range entries {
-		m := e.Mapping
-		if m.AccountID == c.AccountID && m.EventSourceARN == in.QueueARN && m.FunctionName == name {
-			return reply{}, awserrors.Errorf(awserrors.ErrorResourceConflictException,
-				"An event source mapping with SQS arn (\" %s \") and function (\" %s \") already exists. Please update or delete the existing mapping with UUID %s",
-				in.QueueARN, name, m.UUID)
-		}
-	}
-	uuid, err := newMappingUUID()
-	if err != nil {
-		return reply{}, err
-	}
+	uuid := mappingUUID(c.AccountID, c.Region, name, in.QueueARN)
 	m := eventsource.Mapping{
 		FormatVersion: eventsource.FormatVersion, UUID: uuid, AccountID: c.AccountID, Region: c.Region,
 		FunctionName: name, FunctionARN: arn.FormatLambdaFunction(c.Region, c.AccountID, name),
@@ -227,6 +211,11 @@ func (d Deps) createEventSourceMapping(ctx context.Context, c *call) (reply, err
 		StateTransitionReason: eventsource.ReasonUserInitiated, LastModified: time.Now().UTC().Truncate(time.Millisecond),
 	}
 	if err := store.Create(ctx, m); err != nil {
+		if errors.Is(err, eventsource.ErrConflict) {
+			return reply{}, awserrors.Errorf(awserrors.ErrorResourceConflictException,
+				"An event source mapping with SQS arn (\" %s \") and function (\" %s \") already exists. Please update or delete the existing mapping with UUID %s",
+				in.QueueARN, name, uuid)
+		}
 		return reply{}, err
 	}
 	return reply{Status: http.StatusAccepted, Body: mappingShape(m, "Creating")}, nil

@@ -106,6 +106,42 @@ func TestEventSourceMapping_CreateGetListDelete(t *testing.T) {
 	assert.Equal(t, eventsource.StateDeleting, stored.State)
 }
 
+func TestEventSourceMapping_ConcurrentDuplicateCreatesYieldOneMapping(t *testing.T) {
+	first, store, src := newMappingEnv(t)
+	const n = 8
+	gateways := []*env{first}
+	for len(gateways) < n {
+		e := newEnv(t)
+		_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) { b["Timeout"] = 30 }))
+		require.NoError(t, err)
+		e.deps.Mappings = first.deps.Mappings
+		e.deps.Sources = src
+		gateways = append(gateways, e)
+	}
+	codes := make(chan error, n)
+	var wg sync.WaitGroup
+	for _, e := range gateways {
+		wg.Go(func() {
+			_, err := e.do(http.MethodPost, mappingsPath, mappingBody(nil))
+			codes <- err
+		})
+	}
+	wg.Wait()
+	close(codes)
+	created := 0
+	for err := range codes {
+		if err == nil {
+			created++
+			continue
+		}
+		testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
+	}
+	assert.Equal(t, 1, created)
+	entries, err := store.List(t.Context())
+	require.NoError(t, err)
+	assert.Len(t, entries, 1)
+}
+
 func TestEventSourceMapping_RefusesWhatThisBuildDoesNotImplement(t *testing.T) {
 	e, store, _ := newMappingEnv(t)
 	cases := map[string]func(map[string]any){

@@ -1,6 +1,6 @@
 //go:build lambdatestlink
 
-// In package awsgw: the poller, its session handling and its in-process
+//test:in-package — the poller, its session handling and its in-process
 // transport are unexported test-link internals.
 package awsgw
 

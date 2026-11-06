@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 
@@ -66,24 +65,15 @@ func (r *EKSBillableReaper) Sweep(ctx context.Context) (int, error) {
 			continue // ENI gone or untagged: cannot tie the VM to a cluster
 		}
 
-		reason := "cluster record missing"
-		acctKV, err := OpenAccountBucket(ctx, js, clusterAccount)
-		switch {
-		case errors.Is(err, jetstream.ErrBucketNotFound):
-			reason = "account bucket missing"
-		case err != nil:
-			slog.WarnContext(ctx, "eks-billable: account bucket lookup failed", "account", clusterAccount, "err", err)
+		verdict := JudgeClusterRecord(ctx, js, clusterAccount, clusterName)
+		switch verdict.State {
+		case ClusterRecordPresent:
+			continue // cluster exists (live, CREATING or DELETING)
+		case ClusterRecordUnreadable:
+			slog.WarnContext(ctx, "eks-billable: "+verdict.Reason, "cluster", clusterName, "account", clusterAccount, "err", verdict.Err)
 			continue
-		default:
-			_, err = GetClusterMeta(ctx, acctKV, clusterName)
-			if err == nil {
-				continue // cluster exists (live, CREATING or DELETING)
-			}
-			if !errors.Is(err, ErrClusterNotFound) {
-				slog.WarnContext(ctx, "eks-billable: cluster record read failed", "cluster", clusterName, "account", clusterAccount, "err", err)
-				continue
-			}
 		}
+		reason := verdict.Reason
 
 		slog.WarnContext(ctx, "DATA-SAFETY ALARM: EKS control-plane VM has no cluster record; retained for an operator",
 			"reason", reason, "instanceId", v.ID, "cluster", clusterName, "account", clusterAccount, "node", v.LastNode)

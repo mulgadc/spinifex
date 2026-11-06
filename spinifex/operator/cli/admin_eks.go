@@ -3,9 +3,17 @@ package cli
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
+	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
+	"github.com/nats-io/nats.go/jetstream"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/spf13/cobra"
@@ -74,4 +82,76 @@ func runAdminEksRestoreSnapshot(cmd *cobra.Command, _ []string) {
 
 	fmt.Printf("New control plane %s launched (snapshot %s)\n", out.NewInstanceID, out.Snapshot)
 	fmt.Printf("Status: %s\n", out.Status)
+}
+
+var adminEksOrphansCmd = &cobra.Command{
+	Use:   "orphans",
+	Short: "List running EKS control-plane VMs that have no cluster record",
+	Long: `orphans reports each running EKS control-plane VM whose cluster record, or whole
+account bucket, is missing (ORPHAN), and each it could not judge because a read
+failed (UNREADABLE). It only reads and never creates or removes anything.
+
+It lists the system account's instances through the strict inventory, so if any
+configured node does not answer it prints "listing incomplete" and exits non-zero
+without a partial list. It cannot say which node was silent. An instance with no
+ENI, or whose ENI is gone or not tagged as an EKS control plane, is skipped.
+
+Exit status is non-zero when the listing is incomplete or any row is ORPHAN or
+UNREADABLE.`,
+	Run: runAdminEksOrphans,
+}
+
+func init() {
+	adminEksCmd.AddCommand(adminEksOrphansCmd)
+}
+
+func runAdminEksOrphans(_ *cobra.Command, _ []string) {
+	cfg, nc, err := loadConfigAndConnect()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer nc.Close()
+
+	js, err := jetstream.New(nc)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	nodeIDs := slices.Sorted(maps.Keys(cfg.Nodes))
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	list := func(ctx context.Context) (*ec2.DescribeInstancesOutput, error) {
+		return ec2instanceapi.DescribeAccountInstancesStrict(ctx, nc, nodeIDs, awsidentifiers.GlobalAccountID)
+	}
+	eni := func(ctx context.Context, id string) (map[string]string, bool, error) {
+		out, err := ec2vpcapi.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
+			NetworkInterfaceIds: aws.StringSlice([]string{id}),
+		}, nc, awsidentifiers.GlobalAccountID)
+		if err != nil {
+			if strings.Contains(err.Error(), "NotFound") {
+				return nil, false, nil
+			}
+			return nil, false, err
+		}
+		if len(out.NetworkInterfaces) == 0 {
+			return nil, false, nil
+		}
+		m := map[string]string{}
+		for _, t := range out.NetworkInterfaces[0].TagSet {
+			m[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
+		}
+		return m, true, nil
+	}
+
+	orphans, unreadable, err := ekscluster.ReportControlPlaneOrphans(ctx, os.Stdout, js, list, eni, time.Now())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("%d orphan(s), %d unreadable\n", orphans, unreadable)
+	if orphans+unreadable > 0 {
+		os.Exit(1)
+	}
 }

@@ -246,6 +246,25 @@ func stopFirecracker(pidfd int) bool {
 	return err == nil && exited
 }
 
+// settleFirecracker reports whether Firecracker is proven gone once Run has
+// returned. A supervisor that never started launched nothing; otherwise only
+// Firecracker's own pidfd proves its exit, since the supervisor's says nothing.
+func settleFirecracker(sessionDone <-chan struct{}, fc *vmHandle, supervisorStarted bool) bool {
+	select {
+	case <-sessionDone:
+	default:
+		// The callback may still receive the pidfd; it closes it, and the attempt is held.
+		fc.abandon()
+		return false
+	}
+	fd := fc.take()
+	if fd < 0 {
+		return !supervisorStarted
+	}
+	defer func() { _ = unix.Close(fd) }()
+	return stopFirecracker(fd)
+}
+
 // writeConfigArchive writes entries as a tar archive in the fw_cfg sysfs
 // layout, by_name/<entry>/raw, which the guest's init extracts.
 func writeConfigArchive(path string, entries map[string][]byte) error {

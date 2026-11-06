@@ -32,7 +32,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/attempt"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/guestconn"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -488,23 +487,10 @@ func (d *Daemon) run(ctx context.Context, req Request, code []byte, lib *os.File
 		result = r
 		return err
 	})
-	// The supervisor's exit says nothing about Firecracker, which is proven
-	// gone through its own pidfd before anything it used is released.
 	if fcAck != nil {
-		select {
-		case <-out.SessionDone:
-			fd := fc.take()
-			if !stopFirecracker(fd) {
-				out.Stopped = false
-			}
-			if fd >= 0 {
-				_ = unix.Close(fd)
-			}
-		default:
-			// The callback may still receive the pidfd; it closes it, and the attempt is held.
-			fc.abandon()
-			out.Stopped = false
-		}
+		// Always settled, so a received pidfd is closed or handed to the callback.
+		fcGone := settleFirecracker(out.SessionDone, fc, cmd.Process != nil)
+		out.Stopped = out.Stopped && fcGone
 	}
 	if !out.Stopped {
 		slog.Error("Lambda test link: VM stop not proven; marker, tap, address and files held",

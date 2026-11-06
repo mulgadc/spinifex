@@ -8,6 +8,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -20,6 +21,7 @@ import (
 
 	lambdav1 "github.com/mulgadc/spinifex/contracts/lambda/v1"
 	"github.com/mulgadc/spinifex/spinifex/agents/lambda/hostlink"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/attempt"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/guestconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -92,8 +94,40 @@ func TestFirecrackerDiesWithItsSupervisor(t *testing.T) {
 
 	require.NoError(t, cmd.Process.Kill())
 	_, _ = cmd.Process.Wait()
-	// The supervisor's exit is not taken as proof: teardown waits on the VMM's own pidfd.
-	assert.True(t, stopFirecracker(pidfd), "VMM exit not proven after its supervisor died")
+	// Only the kernel's parent-death signal can end the VMM here; nothing else signals it.
+	exited, err = pidfdExited(pidfd, 5*time.Second)
+	require.NoError(t, err)
+	assert.True(t, exited, "VMM outlived its supervisor")
+}
+
+// A supervisor that never started launched nothing, so the attempt is
+// released; one that started without handing over a pidfd may have started
+// Firecracker, so the attempt is held.
+func TestSettleFirecracker_OnlyANeverStartedSupervisorIsProvenStopped(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	cases := map[string]struct {
+		ctx  context.Context
+		cmd  func() *exec.Cmd
+		want bool
+	}{
+		"cancelled before Start": {cancelled, func() *exec.Cmd { return exec.Command("/bin/true") }, true},
+		"failed Start":           {context.Background(), func() *exec.Cmd { return exec.Command(filepath.Join(t.TempDir(), "missing")) }, true},
+		"started, no pidfd":      {context.Background(), func() *exec.Cmd { return exec.Command("/bin/true") }, false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			cmd := tc.cmd()
+			fc := &vmHandle{fd: -1}
+			out, _ := attempt.Run(tc.ctx, cmd, 10*time.Second, func(context.Context, int) error {
+				fc.callbackDone()
+				return errors.New("supervisor exited before its ack")
+			})
+			require.True(t, out.Stopped, "the supervisor itself is proven stopped")
+			<-out.SessionDone
+			assert.Equal(t, tc.want, settleFirecracker(out.SessionDone, fc, cmd.Process != nil))
+		})
+	}
 }
 
 func TestFirecrackerAckRequiresTheSupervisorsChild(t *testing.T) {

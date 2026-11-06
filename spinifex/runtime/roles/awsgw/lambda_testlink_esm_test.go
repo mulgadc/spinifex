@@ -27,6 +27,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/function"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/credential"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/testlink"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/policyauth"
 	"github.com/stretchr/testify/require"
 )
@@ -465,4 +466,52 @@ func TestESM_HandlerTransportCarriesSignedRequest(t *testing.T) {
 	require.Contains(t, body, `"QueueUrl":"https://gw.example:9999/123456789012/in"`)
 	keys := policyauth.RequestConditionKeys(got, credential.Principal{})
 	require.Equal(t, "true", keys[iampolicy.KeySecureTransport], "a role requiring TLS must still authorize the poller")
+}
+
+// activeMeta serves the invocation record as an Active function with code.
+type activeMeta struct{ function.Client }
+
+func (activeMeta) Get(_ context.Context, _, _, _ string) (function.Record, uint64, error) {
+	rec := invocation(nil).Function
+	rec.State = function.StateActive
+	rec.Code.State = function.CodeStored
+	return rec, 1, nil
+}
+
+// noVersionExec returns a result with no ExecutedVersion, which Invoke rejects.
+type noVersionExec struct{}
+
+func (noVersionExec) InvokeSync(context.Context, awsapi.SyncInvocation) (awsapi.SyncResult, error) {
+	return awsapi.SyncResult{Payload: []byte(`{}`)}, nil
+}
+
+// Both batches run through Deps.InvokeEventSource: an invalid executor result
+// and a real executor refused by a node that already holds an attempt.
+func TestESM_InvokeEventSourceFailuresDeleteNothing(t *testing.T) {
+	store := grantStore(t)
+	held := &fakeControl{max: 1 << 20, err: errors.New("no reply")}
+	_, err := executor(held, nil, store).InvokeSync(context.Background(), invocation(nil))
+	require.Error(t, err)
+	busy := &fakeControl{max: 1 << 20, reply: &testlink.Reply{Outcome: testlink.OutcomeDone}}
+
+	cases := []struct {
+		name string
+		exec awsapi.Executor
+	}{
+		{name: "missing ExecutedVersion", exec: noVersionExec{}},
+		{name: "node busy", exec: executor(busy, nil, store)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := &esmQueue{}
+			r, _, _ := newTestESM(t, q, nil)
+			r.invoke = awsapi.Deps{Meta: activeMeta{}, Exec: tc.exec}
+			err := r.process(context.Background(), esmMapping("u1"), func() (sqsiface.SQSAPI, error) { return q, nil }, "url",
+				[]*sqs.Message{msg("1", "a")})
+			require.Error(t, err)
+			deleted, _ := q.state()
+			require.Empty(t, deleted)
+		})
+	}
+	require.Empty(t, busy.sent, "the busy node is sent nothing")
 }

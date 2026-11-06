@@ -10,6 +10,8 @@ import {
   type Instance,
   type NatGateway,
   type RouteTable,
+  type SecurityGroup,
+  DescribeSecurityGroupsCommand,
   type Subnet,
 } from "@aws-sdk/client-ec2"
 import { DescribeLoadBalancersCommand } from "@aws-sdk/client-elastic-load-balancing-v2"
@@ -18,6 +20,7 @@ import { queryOptions } from "@tanstack/react-query"
 
 import { getEc2Client, getElbv2Client, getRdsClient } from "@/lib/aws-client"
 import type { MapResource, NetworkInputs } from "@/lib/network-map"
+import type { GroupInputs, GroupResource } from "@/lib/security-group-map"
 
 // The map reads at most this many pages of each resource type, each of a
 // fixed size, so an account's size never sets how much it reads.
@@ -58,16 +61,16 @@ export async function readPages<T>(
   return { items, incomplete: true }
 }
 
-interface Gaps {
-  incomplete: MapResource[]
-  failed: MapResource[]
+interface Gaps<R extends string = MapResource> {
+  incomplete: R[]
+  failed: R[]
 }
 
 // A failed read draws nothing of its type, and says so.
-function take<T>(
-  name: MapResource,
+function take<T, R extends string>(
+  name: R,
   outcome: PromiseSettledResult<Paged<T>>,
-  gaps: Gaps,
+  gaps: Gaps<R>,
 ): T[] {
   if (outcome.status === "rejected") {
     gaps.failed.push(name)
@@ -317,6 +320,95 @@ export const networkMapQueryOptions = (vpcId: string, pin?: MapAnchor) =>
         instances: held,
         loadBalancers: take("loadBalancers", lbs, gaps),
         dbInstances: take("dbInstances", dbs, gaps),
+        ...gaps,
+      }
+    },
+    refetchInterval: 10_000,
+  })
+
+// The groups a group's rules name, read once for their names; a failure
+// leaves each drawn by its ID.
+async function readPeers(group: SecurityGroup): Promise<SecurityGroup[]> {
+  const own = group.GroupId
+
+  const ids = compactIds(
+    [...(group.IpPermissions ?? []), ...(group.IpPermissionsEgress ?? [])]
+      .flatMap((rule) => rule.UserIdGroupPairs ?? [])
+      .map((pair) => pair.GroupId),
+  ).filter((id) => id !== own)
+
+  if (ids.length === 0) {
+    return []
+  }
+
+  try {
+    const r = await getEc2Client().send(
+      new DescribeSecurityGroupsCommand({
+        GroupIds: ids.slice(0, MAP_PAGE_SIZE),
+      }),
+    )
+
+    return r.SecurityGroups ?? []
+  } catch {
+    return []
+  }
+}
+
+// What a security group covers: instances by EC2's own group filter, and load
+// balancers and databases, which their services cannot filter by group, by
+// the builder from the pages read.
+export const securityGroupMapQueryOptions = (group: SecurityGroup) =>
+  queryOptions({
+    // The whole group, so an edited rule reads the map again.
+    queryKey: ["topology", "securityGroup", group],
+    queryFn: async (): Promise<Omit<GroupInputs, "group">> => {
+      const groupId = group.GroupId ?? ""
+
+      const [instances, lbs, dbs, peers] = await Promise.allSettled([
+        readPages(async (NextToken) => {
+          const r = await getEc2Client().send(
+            new DescribeInstancesCommand({
+              Filters: [{ Name: "instance.group-id", Values: [groupId] }],
+              MaxResults: MAP_PAGE_SIZE,
+              NextToken,
+            }),
+          )
+
+          return {
+            items: (r.Reservations ?? []).flatMap((res) => res.Instances ?? []),
+            next: r.NextToken,
+          }
+        }),
+        readPages(async (Marker) => {
+          const r = await getElbv2Client().send(
+            new DescribeLoadBalancersCommand({
+              Marker,
+              PageSize: MAP_PAGE_SIZE,
+            }),
+          )
+
+          return { items: r.LoadBalancers ?? [], next: r.NextMarker }
+        }),
+        readPages(async (Marker) => {
+          const r = await getRdsClient().send(
+            new DescribeDBInstancesCommand({
+              Marker,
+              MaxRecords: MAP_PAGE_SIZE,
+            }),
+          )
+
+          return { items: r.DBInstances ?? [], next: r.Marker }
+        }),
+        readPeers(group),
+      ])
+
+      const gaps: Gaps<GroupResource> = { incomplete: [], failed: [] }
+
+      return {
+        instances: take("instances", instances, gaps),
+        loadBalancers: take("loadBalancers", lbs, gaps),
+        dbInstances: take("dbInstances", dbs, gaps),
+        peers: peers.status === "fulfilled" ? peers.value : [],
         ...gaps,
       }
     },

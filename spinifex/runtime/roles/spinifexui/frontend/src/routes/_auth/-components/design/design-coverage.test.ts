@@ -38,6 +38,8 @@ const NOT_SHOWN = {
   "theme-switch": "part of the shell, in the header",
   "topology/network-topology": "reads a VPC's live resources",
   "topology/resource-topology": "reads a resource's VPC and its live resources",
+  "topology/security-group-topology":
+    "reads what a security group covers from live resources",
   "upload-progress-dialog": "tracks real S3 uploads",
   "vpc-select-field": "reads the account's VPCs",
 } satisfies Record<string, string>

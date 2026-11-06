@@ -1,0 +1,1 @@
+import{rn as e}from"./aws-client-CqvC9t1w.js";import{Y as t,mt as n}from"./fetch-http-handler-6B81XedT.js";var r=n(e,`AWSIdentityManagementV20100508`,`IAMClient`,t),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};

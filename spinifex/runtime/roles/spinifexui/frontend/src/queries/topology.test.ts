@@ -1,5 +1,7 @@
 import {
   DescribeAddressesCommand,
+  DescribeInstancesCommand,
+  DescribeSecurityGroupsCommand,
   DescribeSubnetsCommand,
 } from "@aws-sdk/client-ec2"
 import { describe, expect, it, vi } from "vitest"
@@ -19,6 +21,7 @@ import {
   MAP_PAGE_SIZE,
   networkMapQueryOptions,
   readPages,
+  securityGroupMapQueryOptions,
 } from "./topology"
 
 describe("readPages", () => {
@@ -252,5 +255,71 @@ describe("networkMapQueryOptions", () => {
       "nat-1",
     ])
     expect(result.incomplete).toStrictEqual(["subnets"])
+  })
+})
+
+describe("securityGroupMapQueryOptions", () => {
+  const group = {
+    GroupId: "sg-web",
+    IpPermissions: [
+      {
+        IpProtocol: "tcp",
+        UserIdGroupPairs: [{ GroupId: "sg-app" }, { GroupId: "sg-web" }],
+      },
+    ],
+  }
+
+  it("asks EC2 for the group's instances and names only the other groups its rules name", async () => {
+    mockSend.mockImplementation(async (command: { input: object }) => {
+      if (command instanceof DescribeSecurityGroupsCommand) {
+        return await Promise.resolve({
+          SecurityGroups: [{ GroupId: "sg-app", GroupName: "app" }],
+        })
+      }
+
+      return await Promise.resolve({})
+    })
+
+    const result = await callQueryFn(securityGroupMapQueryOptions(group))
+
+    const sent = mockSend.mock.calls.map(([c]: unknown[]) => c)
+
+    const filters = sent
+      .filter((c) => c instanceof DescribeInstancesCommand)
+      .map((c) => c.input.Filters)
+
+    const asked = sent
+      .filter((c) => c instanceof DescribeSecurityGroupsCommand)
+      .map((c) => c.input.GroupIds)
+
+    expect(filters).toStrictEqual([
+      [{ Name: "instance.group-id", Values: ["sg-web"] }],
+    ])
+    expect(asked).toStrictEqual([["sg-app"]])
+    expect(result.peers.map((p) => p.GroupName)).toStrictEqual(["app"])
+    expect(result.failed).toStrictEqual([])
+  })
+
+  it("names what it could not read and still draws the rest", async () => {
+    mockSend.mockImplementation(
+      async (command: { constructor: { name: string } }) => {
+        const denied = [
+          "DescribeLoadBalancersCommand",
+          "DescribeSecurityGroupsCommand",
+        ]
+
+        if (denied.includes(command.constructor.name)) {
+          throw new Error("denied")
+        }
+
+        return await Promise.resolve({})
+      },
+    )
+
+    const result = await callQueryFn(securityGroupMapQueryOptions(group))
+
+    expect(result.failed).toStrictEqual(["loadBalancers"])
+    expect(result.peers).toStrictEqual([])
+    expect(result.instances).toStrictEqual([])
   })
 })

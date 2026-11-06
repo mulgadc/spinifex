@@ -55,13 +55,13 @@ interface TopologyTabOptions extends Omit<ResourceTopologyProps, "direction"> {
   tab: PanelTab
 }
 
-// The Topology tab for a resource's panel, and the direction toggle its own
-// page shows in the header while that tab is open.
-export function useTopologyTab({
-  page,
-  tab,
-  ...props
-}: TopologyTabOptions): TopologyTab {
+// A Topology tab whose map is drawn by render, and the direction toggle its
+// resource's own page shows in the header while that tab is open.
+export function useDirectionTab(
+  page: boolean,
+  tab: PanelTab,
+  render: (direction: LayoutDirection) => ReactNode,
+): TopologyTab {
   const [direction, setDirection] = useState<LayoutDirection>("down")
 
   return {
@@ -72,9 +72,18 @@ export function useTopologyTab({
       id: "topology",
       label: "Topology",
       icon: Workflow,
-      content: (
-        <ResourceTopology direction={page ? direction : "down"} {...props} />
-      ),
+      content: render(page ? direction : "down"),
     },
   }
+}
+
+// The Topology tab for a resource's network map.
+export function useTopologyTab({
+  page,
+  tab,
+  ...props
+}: TopologyTabOptions): TopologyTab {
+  return useDirectionTab(page, tab, (direction) => (
+    <ResourceTopology direction={direction} {...props} />
+  ))
 }

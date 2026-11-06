@@ -76,63 +76,174 @@ export function useTopologyHover() {
   return use(HoverContext)
 }
 
+export type LineProtocol = "tcp" | "udp" | "icmp" | "all" | "other"
+
 export interface LineData extends Record<string, unknown> {
   focus?: Focus
   // On the path to the internet, drawn in its own colour.
   heavy?: boolean
   label?: string
-  // The label sits against the target, clear of any card the line passes.
-  labelAtEnd?: boolean
+  // The label sits against this end, clear of any card the line passes.
+  labelEnd?: "source" | "target"
+  // Lines sharing an end stack their labels there, and bow apart between.
+  slot?: number
+  slots?: number
+  // A security group rule's protocol, carried by colour and by dash.
+  protocol?: LineProtocol
   // Drawn dimmed whatever the hover, for a map that highlights a selection.
   muted?: boolean
 }
 
 export type TopologyEdge = Edge<LineData, "line">
 
-// The gap, in flow px, between a label set at a line's end and its target.
+// The gap, in flow px, between a label set at a line's end and its card.
 const LABEL_CLEARANCE = 6
+
+// How far, in flow px, each of the lines sharing two ends bows from the next.
+const BOW = 14
+
+// Colour and dash together, so a protocol reads without colour.
+export const PROTOCOL_LINES: Record<LineProtocol, string> = {
+  tcp: "[--xy-edge-stroke:var(--color-chart-1)]",
+  udp: "[--xy-edge-stroke:var(--color-chart-2)] [stroke-dasharray:6_4]",
+  icmp: "[--xy-edge-stroke:var(--color-chart-3)] [stroke-dasharray:1.5_3] [stroke-linecap:round]",
+  all: "[--xy-edge-stroke:var(--color-chart-4)] [stroke-dasharray:10_3_2_3]",
+  other:
+    "[--xy-edge-stroke:var(--color-muted-foreground)] [stroke-dasharray:2_6]",
+}
 
 type CSSVariables = CSSProperties & Record<`--${string}`, string>
 
 interface LabelPlace {
   x: number
   y: number
+  // Labels sharing an end stack by this many rows.
+  rows: number
   shift: string
 }
 
 const CENTRED =
   "translate-x-[calc(var(--label-x)-50%)] translate-y-[calc(var(--label-y)-50%)]"
 
-// Just short of the target, ending at the point rather than centred on it.
-function labelAtEnd(x: number, y: number, side: Position): LabelPlace {
-  if (side === Position.Left) {
-    return {
-      x: x - LABEL_CLEARANCE,
-      y,
-      shift:
-        "translate-x-[calc(var(--label-x)-100%)] translate-y-[calc(var(--label-y)-50%)]",
-    }
-  }
+const END_SHIFTS: Record<Position, string> = {
+  [Position.Top]:
+    "translate-x-[calc(var(--label-x)-50%)] translate-y-[calc(var(--label-y)-100%-var(--label-rows)*1.25rem)]",
+  [Position.Bottom]:
+    "translate-x-[calc(var(--label-x)-50%)] translate-y-[calc(var(--label-y)+var(--label-rows)*1.25rem)]",
+  [Position.Left]:
+    "translate-x-[calc(var(--label-x)-100%)] translate-y-[calc(var(--label-y)-50%+var(--label-rows)*1.25rem)]",
+  [Position.Right]:
+    "translate-y-[calc(var(--label-y)-50%+var(--label-rows)*1.25rem)] translate-x-(--label-x)",
+}
+
+// Just off the card at one end: stacked away from it going down, and centred
+// on the line going across.
+function labelAtEnd(
+  x: number,
+  y: number,
+  side: Position,
+  slot: number,
+  slots: number,
+): LabelPlace {
+  const across = side === Position.Left || side === Position.Right
+  const out = side === Position.Bottom || side === Position.Right ? 1 : -1
 
   return {
-    x,
-    y: y - LABEL_CLEARANCE,
-    shift:
-      "translate-x-[calc(var(--label-x)-50%)] translate-y-[calc(var(--label-y)-100%)]",
+    x: across ? x + out * LABEL_CLEARANCE : x,
+    y: across ? y : y + out * LABEL_CLEARANCE,
+    rows: across ? slot - (slots - 1) / 2 : slot,
+    shift: END_SHIFTS[side],
   }
 }
 
-export function TopologyLine({
-  id,
-  sourceX,
-  sourceY,
-  targetX,
-  targetY,
-  sourcePosition,
-  targetPosition,
-  data,
-}: EdgeProps<TopologyEdge>) {
-  const [path, labelX, labelY] = getBezierPath({
+// A curve bowed off the straight bezier, so lines sharing both ends part.
+function bowedPath(
+  sx: number,
+  sy: number,
+  tx: number,
+  ty: number,
+  side: Position,
+  bow: number,
+): string {
+  if (side === Position.Bottom) {
+    const d = Math.max(Math.abs(ty - sy) / 2, 20)
+
+    return `M ${sx},${sy} C ${sx + bow},${sy + d} ${tx + bow},${ty - d} ${tx},${ty}`
+  }
+
+  const d = Math.max(Math.abs(tx - sx) / 2, 20)
+
+  return `M ${sx},${sy} C ${sx + d},${sy + bow} ${tx - d},${ty + bow} ${tx},${ty}`
+}
+
+function placeLabel(
+  props: EdgeProps<TopologyEdge>,
+  middle: [number, number],
+): LabelPlace {
+  const { data } = props
+  const slot = data?.slot ?? 0
+  const slots = data?.slots ?? 1
+
+  if (data?.labelEnd === "source") {
+    return labelAtEnd(
+      props.sourceX,
+      props.sourceY,
+      props.sourcePosition,
+      slot,
+      slots,
+    )
+  }
+
+  if (data?.labelEnd === "target") {
+    return labelAtEnd(
+      props.targetX,
+      props.targetY,
+      props.targetPosition,
+      slot,
+      slots,
+    )
+  }
+
+  return { x: middle[0], y: middle[1], rows: 0, shift: CENTRED }
+}
+
+function lineClass(data: LineData | undefined, focus: Focus): string {
+  const lifted = focus === "on"
+  const faded = focus === "off" || (data?.muted && !lifted)
+
+  if (data?.protocol) {
+    return cn(
+      PROTOCOL_LINES[data.protocol],
+      lifted ? "[--xy-edge-stroke-width:3]" : "[--xy-edge-stroke-width:1.75]",
+      faded && "opacity-20",
+    )
+  }
+
+  return cn(
+    data?.heavy
+      ? "[--xy-edge-stroke-width:2.5] [--xy-edge-stroke:var(--color-warning)]"
+      : "[--xy-edge-stroke-width:1.5]",
+    lifted &&
+      (data?.heavy
+        ? "[--xy-edge-stroke-width:3.5]"
+        : "[--xy-edge-stroke-width:3] [--xy-edge-stroke:var(--color-primary)]"),
+    faded && "opacity-20",
+  )
+}
+
+export function TopologyLine(props: EdgeProps<TopologyEdge>) {
+  const {
+    id,
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    sourcePosition,
+    targetPosition,
+    data,
+  } = props
+
+  const [curve, labelX, labelY] = getBezierPath({
     sourceX,
     sourceY,
     sourcePosition,
@@ -141,16 +252,21 @@ export function TopologyLine({
     targetPosition,
   })
 
-  const focus = data?.focus ?? "idle"
+  const bow = ((data?.slot ?? 0) - ((data?.slots ?? 1) - 1) / 2) * BOW
 
-  const label = data?.labelAtEnd
-    ? labelAtEnd(targetX, targetY, targetPosition)
-    : { x: labelX, y: labelY, shift: CENTRED }
+  const path =
+    bow === 0
+      ? curve
+      : bowedPath(sourceX, sourceY, targetX, targetY, sourcePosition, bow)
+
+  const focus = data?.focus ?? "idle"
+  const label = placeLabel(props, [labelX, labelY])
 
   // React Flow gives the label's place in flow coordinates.
   const labelAt: CSSVariables = {
     "--label-x": `${label.x}px`,
     "--label-y": `${label.y}px`,
+    "--label-rows": `${label.rows}`,
   }
 
   return (
@@ -158,14 +274,7 @@ export function TopologyLine({
       <BaseEdge
         className={cn(
           "transition-opacity motion-reduce:transition-none",
-          data?.heavy
-            ? "[--xy-edge-stroke-width:2.5] [--xy-edge-stroke:var(--color-warning)]"
-            : "[--xy-edge-stroke-width:1.5]",
-          focus === "on" &&
-            (data?.heavy
-              ? "[--xy-edge-stroke-width:3.5]"
-              : "[--xy-edge-stroke-width:3] [--xy-edge-stroke:var(--color-primary)]"),
-          (focus === "off" || (data?.muted && focus !== "on")) && "opacity-20",
+          lineClass(data, focus),
         )}
         id={id}
         interactionWidth={16}
@@ -175,7 +284,7 @@ export function TopologyLine({
         <EdgeLabelRenderer>
           <span
             className={cn(
-              "pointer-events-none absolute rounded-sm border bg-background px-1 font-mono text-2xs text-muted-foreground",
+              "pointer-events-none absolute rounded-sm border bg-background px-1 font-mono text-2xs whitespace-nowrap text-muted-foreground",
               label.shift,
               (focus === "off" || (data.muted && focus !== "on")) &&
                 "opacity-30",

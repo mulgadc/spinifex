@@ -125,7 +125,7 @@ const SIDES: Record<
   },
 }
 
-function Handles({ direction }: { direction: LayoutDirection }) {
+export function Handles({ direction }: { direction: LayoutDirection }) {
   const sides = SIDES[direction]
 
   return (
@@ -263,7 +263,7 @@ function Box({ data }: NodeProps<BoxNode>) {
 const NODE_TYPES = { card: Card, box: Box }
 
 // The root font size over the 16px the layout is measured in.
-function rootUnit(): number {
+export function rootUnit(): number {
   const { fontSize } = getComputedStyle(document.documentElement)
   const size = Number(fontSize.replace(/px$/, ""))
 
@@ -279,7 +279,7 @@ function names(resources: MapResource[]): string {
   return resources.map((r) => RESOURCE_NAMES[r]).join(", ")
 }
 
-function Notices({
+export function Notices({
   omitted,
   incomplete,
   failed,
@@ -407,7 +407,10 @@ export function NetworkTopology({
           heavy: link.heavy,
           label: link.label,
           // A line past a tier would put its midpoint label under that tier's card.
-          labelAtEnd: Math.abs(depth(link.source) - depth(link.target)) > 1,
+          labelEnd:
+            Math.abs(depth(link.source) - depth(link.target)) > 1
+              ? "target"
+              : undefined,
           // A line to a dimmed card fades with it.
           muted: dimmed.has(link.source) || dimmed.has(link.target),
         },

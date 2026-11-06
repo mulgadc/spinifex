@@ -44,6 +44,8 @@ The Mulga deploy role installs a test-link build with `deploy_lambda_testlink=tr
 
 The guest's own interface settings come from `opt/spinifex/netcfg`, the entry other system VMs use.
 The agent unloads `qemu_fw_cfg` even when an entry is missing, and refuses to start if the fw_cfg tree is still readable afterwards.
+On a VMM without fw_cfg (the test-link Firecracker executor), the executor attaches the same entries as a tar archive on the second, writable virtio-blk disk, laid out as `by_name/<entry>/raw`.
+The runtime image's init extracts it to a root-only tmpfs at `/spinifex-cfg`, and the agent reads the entries there, then overwrites the whole disk with zeros and removes the tree; it refuses to start if the tree is still present.
 Until the message format exists, the agent authenticates and holds the connection but accepts no host message and starts no user code.
 
 **Authority:** one environment's attempt only.

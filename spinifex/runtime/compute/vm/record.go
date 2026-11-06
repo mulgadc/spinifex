@@ -100,6 +100,9 @@ type InstanceStatus struct {
 	TerminatedAt   time.Time         `json:"terminated_at,omitzero"`
 	ShuttingDownAt time.Time         `json:"shutting_down_at,omitzero"`
 	FirstLaunch    bool              `json:"first_launch,omitempty"`
+	// UEFIStoreUnowned keeps a terminate off a store this instance's seed did
+	// not create.
+	UEFIStoreUnowned bool `json:"uefi_store_unowned,omitempty"`
 
 	// The request slices are carried without their mutexes: a lock is process
 	// state, not something a record describes. The wrappers are rebuilt with
@@ -165,6 +168,7 @@ func (v *VM) Record() *InstanceRecord {
 			TerminatedAt:                    v.TerminatedAt,
 			ShuttingDownAt:                  v.ShuttingDownAt,
 			FirstLaunch:                     v.FirstLaunch,
+			UEFIStoreUnowned:                v.UEFIStoreUnowned,
 			EBSRequests:                     v.EBSRequests.Requests,
 			ENIAvailableSlots:               v.ENIRequests.AvailableSlots,
 			ENIAttachedByID:                 v.ENIRequests.AttachedByENIID,
@@ -225,6 +229,7 @@ func VMFromRecord(r *InstanceRecord) *VM {
 		TerminatedAt:                    r.Status.TerminatedAt,
 		ShuttingDownAt:                  r.Status.ShuttingDownAt,
 		FirstLaunch:                     r.Status.FirstLaunch,
+		UEFIStoreUnowned:                r.Status.UEFIStoreUnowned,
 	}
 	v.EBSRequests.Requests = r.Status.EBSRequests
 	v.ENIRequests.AvailableSlots = r.Status.ENIAvailableSlots

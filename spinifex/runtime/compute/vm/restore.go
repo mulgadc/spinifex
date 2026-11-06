@@ -502,6 +502,7 @@ func (m *Manager) reconnectInstance(instance *VM) error {
 		}
 		return fmt.Errorf("persist attached volume state during reconnect: %w", err)
 	}
+	m.resumeUEFIWriter(instance)
 
 	instance.Status = StateRunning
 

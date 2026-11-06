@@ -54,10 +54,13 @@ const (
 	uefiStateReasonCode = "Server.InternalError"
 )
 
-// ErrUEFIVarStoreMissing is a UEFI instance with no EFI volume whose store
-// record is absent, deleting or names no pointer, so it has nothing to boot
-// its variables from.
+// ErrUEFIVarStoreMissing is a UEFI instance whose store record is absent,
+// deleting or names no pointer, so it has nothing to boot its variables from.
 var ErrUEFIVarStoreMissing = errors.New("UEFI instance has no variable store")
+
+// ErrUEFIEFIVolume is a UEFI instance that still carries a <root>-efi volume,
+// which no node boots: the cutover converts every one into a store record.
+var ErrUEFIEFIVolume = errors.New("UEFI instance still carries an EFI volume")
 
 // ErrUEFIFirmwareMismatch is a variable store written under firmware whose
 // architecture or VARS size differs from this node's, which pflash cannot load.
@@ -73,10 +76,14 @@ var ErrUEFIVarStoreUnusable = errors.New("UEFI variable store object is unusable
 // newer variables. It always wraps ErrMountRetryable.
 var ErrUEFIClaimHeld = errors.New("UEFI variable store is claimed by another node that may be live")
 
-// UEFIStoreRecords is the store-record surface a launch reads and stamps.
+// UEFIStoreRecords is the store-record surface a node creates, stamps and
+// moves the pointer of.
 type UEFIStoreRecords interface {
 	Get(ctx context.Context, instanceID string) (*uefistore.UEFIStoreRecord, uint64, error)
+	LeaderGet(ctx context.Context, instanceID string) (*uefistore.UEFIStoreRecord, uint64, error)
+	Create(ctx context.Context, rec *uefistore.UEFIStoreRecord) (uint64, error)
 	Stamp(ctx context.Context, instanceID string, generation uint64) (*uefistore.UEFIStoreRecord, error)
+	MovePointer(ctx context.Context, instanceID string, generation uint64, ref uefistore.UEFIVarStoreRef) error
 }
 
 var _ UEFIStoreRecords = (*uefistore.Store)(nil)
@@ -101,14 +108,24 @@ type UEFIVarStoreDeps struct {
 	// the holder of a claim this node finds held may be taken over.
 	Claims   *kvsync.ClaimGroup
 	Liveness NodeLiveness
+	// Clock times the write-back's windows and the prune's age; nil is real time.
+	Clock UEFIClock
 }
 
-// uefiSeed is seeded.json: the pointer key vars.fd beside it was seeded from,
-// and the claim generation it was seeded or last written back under.
+// uefiSeed is seeded.json: the pointer key vars.fd beside it was seeded from
+// or last written back to, the claim generation it was written under, and the
+// firmware it runs under, so a write-back can name it without the instance.
 type uefiSeed struct {
-	Key        string    `json:"key"`
-	Generation uint64    `json:"generation"`
-	SeededAt   time.Time `json:"seeded_at"`
+	Key        string                     `json:"key"`
+	Generation uint64                     `json:"generation"`
+	SeededAt   time.Time                  `json:"seeded_at"`
+	Firmware   uefistore.FirmwareIdentity `json:"firmware"`
+	CodePath   string                     `json:"code_path,omitempty"`
+	// WriteBackOwed is set while vars.fd may hold changes no object has.
+	WriteBackOwed bool `json:"write_back_owed,omitempty"`
+	// Sum is the SHA-256 of the region Key holds, so a stop that missed a
+	// write event still sees vars.fd differ. Empty is unknown.
+	Sum string `json:"sum,omitempty"`
 }
 
 // uefiClaim is the claim a launch acquired. reused is set when the launch
@@ -133,32 +150,29 @@ func usesUEFIVarStore(v *VM) bool {
 	return !v.DirectBoot && isUEFIBootMode(v.BootMode)
 }
 
-// hasEFIVolume reports whether v keeps its variables on a <root>-efi volume.
+// hasEFIVolume reports whether v still names a <root>-efi volume.
 func hasEFIVolume(v *VM) bool {
 	v.EBSRequests.Mu.Lock()
 	defer v.EBSRequests.Mu.Unlock()
 	return slices.ContainsFunc(v.EBSRequests.Requests, func(r EBSRequest) bool { return r.EFI })
 }
 
-// usesStoreObject reports whether v boots its variables from a store object
-// rather than an EFI volume.
-func usesStoreObject(v *VM) bool {
-	return usesUEFIVarStore(v) && !hasEFIVolume(v)
-}
-
 // CheckUEFIVarStore refuses a UEFI instance that has no variable store, or
-// two, before anything about it is changed. It only reads.
+// still carries an EFI volume, before anything about it is changed. It only
+// reads.
 func (m *Manager) CheckUEFIVarStore(ctx context.Context, v *VM) error {
 	_, err := m.checkUEFIVarStore(ctx, v)
 	return err
 }
 
 // checkUEFIVarStore is CheckUEFIVarStore returning the store record it read,
-// or nil for an instance that boots no store object. An EFI volume is the
-// instance's store until RunInstances seeds store records, so it reads none.
+// or nil for an instance that boots without UEFI.
 func (m *Manager) checkUEFIVarStore(ctx context.Context, v *VM) (*uefistore.UEFIStoreRecord, error) {
-	if !usesStoreObject(v) {
+	if !usesUEFIVarStore(v) {
 		return nil, nil
+	}
+	if hasEFIVolume(v) {
+		return nil, fmt.Errorf("%w: %s", ErrUEFIEFIVolume, v.ID)
 	}
 	records := m.deps.UEFIVarStore.Records
 	if records == nil {
@@ -199,10 +213,11 @@ func (m *Manager) uefiVarsPath(instanceID string) (string, error) {
 }
 
 // uefiVarsDrive is pflash unit 1 from this node's copy of the store, or nil
-// for an instance that boots no store object. Launch seeds the copy and a
-// reboot reuses it, so a missing one fails rather than booting without it.
+// for an instance that boots without UEFI. Launch seeds the copy and a reboot
+// reuses it, so a missing one fails rather than booting without it. The drive
+// never takes aio=native: inotify cannot see Linux AIO writes.
 func (m *Manager) uefiVarsDrive(instance *VM) (*Drive, error) {
-	if !usesStoreObject(instance) {
+	if !usesUEFIVarStore(instance) {
 		return nil, nil
 	}
 	path, err := m.uefiVarsPath(instance.ID)
@@ -221,7 +236,7 @@ func (m *Manager) uefiVarsDrive(instance *VM) (*Drive, error) {
 // read. A non-nil claim is returned once one is acquired, failed or not, so
 // the caller can release it on a rollback.
 func (m *Manager) prepareUEFIVarStore(ctx context.Context, instance *VM, rec *uefistore.UEFIStoreRecord) (*uefiClaim, error) {
-	if !usesStoreObject(instance) {
+	if !usesUEFIVarStore(instance) {
 		return nil, nil
 	}
 
@@ -250,6 +265,8 @@ func (m *Manager) prepareUEFIVarStore(ctx context.Context, instance *VM, rec *ue
 		return nil, err
 	}
 
+	unlock := m.uefi.locks.lock(instance.ID)
+	defer unlock()
 	held, err := m.acquireUEFIClaim(ctx, instance.ID)
 	if err != nil {
 		return nil, err
@@ -300,6 +317,11 @@ func (m *Manager) prepareUEFIVarStore(ctx context.Context, instance *VM, rec *ue
 		recordUEFIStoreSeed("local")
 		slog.InfoContext(ctx, "Reusing this node's UEFI variable store",
 			"instanceId", instance.ID, "key", ref.Key, "seededKey", local.seed.Key, "generation", held.token.Generation)
+		sum := ""
+		if local.seed.Key == ref.Key {
+			sum = local.seed.Sum
+		}
+		m.registerUEFIWriter(instance.ID, dir, held.token, ref.Key, sum, fw)
 		return held, nil
 	}
 
@@ -311,17 +333,18 @@ func (m *Manager) prepareUEFIVarStore(ctx context.Context, instance *VM, rec *ue
 	if err := writeFileAtomic(dir, uefiVarsFileName, region); err != nil {
 		return held, fmt.Errorf("write UEFI variable store for %s: %w", instance.ID, err)
 	}
-	seed, err := json.Marshal(uefiSeed{Key: ref.Key, Generation: held.token.Generation, SeededAt: time.Now().UTC()})
-	if err != nil {
-		return held, fmt.Errorf("encode %s for %s: %w", uefiSeededFileName, instance.ID, err)
-	}
-	if err := writeFileAtomic(dir, uefiSeededFileName, seed); err != nil {
+	sum := uefiRegionSum(region)
+	if err := writeUEFISeed(dir, uefiSeed{
+		Key: ref.Key, Generation: held.token.Generation, SeededAt: time.Now().UTC(),
+		Firmware: fw.Identity, CodePath: fw.Code, Sum: sum,
+	}); err != nil {
 		return held, fmt.Errorf("write %s for %s: %w", uefiSeededFileName, instance.ID, err)
 	}
 	recordUEFIStoreSeed("object")
 	slog.InfoContext(ctx, "Seeded UEFI variable store from the object store",
 		"instanceId", instance.ID, "key", ref.Key, "generation", held.token.Generation,
 		"bytes", len(region), "fetch_ms", otelsetup.Millis(time.Since(start)))
+	m.registerUEFIWriter(instance.ID, dir, held.token, ref.Key, sum, fw)
 	return held, nil
 }
 
@@ -385,11 +408,40 @@ func (m *Manager) releaseUEFIClaim(ctx context.Context, instanceID string, held 
 	if held == nil || held.keep {
 		return
 	}
+	m.unlockUEFIClaim(ctx, instanceID, held.token, "the launch rolled back before the guest ran")
+}
+
+// unlockUEFIClaim releases instanceID's claim while it still holds tok. A
+// failed unlock leaves the claim with this node, which only delays a start
+// elsewhere, so it is logged and not returned.
+func (m *Manager) unlockUEFIClaim(ctx context.Context, instanceID string, tok kvsync.Token, why string) bool {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), uefiClaimReleaseTimeout)
 	defer cancel()
-	if err := held.claim.Unlock(ctx, held.token); err != nil {
-		slog.WarnContext(ctx, "Failed to release the UEFI variable store claim after a launch rolled back",
-			"instanceId", instanceID, "generation", held.token.Generation, "err", err)
+	if err := m.deps.UEFIVarStore.Claims.Get(instanceID).Unlock(ctx, tok); err != nil {
+		slog.WarnContext(ctx, "Failed to release the UEFI variable store claim",
+			"instanceId", instanceID, "generation", tok.Generation, "why", why, "err", err)
+		return false
+	}
+	slog.InfoContext(ctx, "Released the UEFI variable store claim", "instanceId", instanceID, "generation", tok.Generation, "why", why)
+	return true
+}
+
+// releaseHeldUEFIClaim releases instanceID's claim when this node holds it, at
+// whatever generation, for a terminate that has recorded the store's deletion.
+func (m *Manager) releaseHeldUEFIClaim(ctx context.Context, instanceID, why string) {
+	claims := m.deps.UEFIVarStore.Claims
+	if claims == nil {
+		return
+	}
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), uefiClaimTimeout)
+	holder, held, err := claims.Get(instanceID).Holder(readCtx)
+	cancel()
+	switch {
+	case err != nil:
+		slog.WarnContext(ctx, "Failed to read the UEFI variable store claim; the store reaper removes it",
+			"instanceId", instanceID, "err", err)
+	case held && holder.Holder == m.deps.NodeID:
+		m.unlockUEFIClaim(ctx, instanceID, holder, why)
 	}
 }
 
@@ -509,6 +561,28 @@ func fetchUEFIVars(ctx context.Context, deps UEFIVarStoreDeps, key string, varsS
 			ErrUEFIVarStoreUnusable, key, len(region), varsSize)
 	}
 	return region, nil
+}
+
+// readUEFISeed reads dir's seeded.json.
+func readUEFISeed(dir string) (uefiSeed, error) {
+	var seed uefiSeed
+	data, err := os.ReadFile(filepath.Join(dir, uefiSeededFileName))
+	if err != nil {
+		return seed, err
+	}
+	if err := json.Unmarshal(data, &seed); err != nil {
+		return seed, fmt.Errorf("decode %s: %w", filepath.Join(dir, uefiSeededFileName), err)
+	}
+	return seed, nil
+}
+
+// writeUEFISeed replaces dir's seeded.json with seed.
+func writeUEFISeed(dir string, seed uefiSeed) error {
+	data, err := json.Marshal(seed)
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(dir, uefiSeededFileName, data)
 }
 
 // writeFileAtomic replaces dir/name with data by temporary file and rename,

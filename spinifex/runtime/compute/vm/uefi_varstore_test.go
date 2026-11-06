@@ -139,6 +139,7 @@ func newUEFIFixture(t *testing.T) *uefiFixture {
 		identity: uefistore.FirmwareIdentity{Arch: "x86_64", VarsSize: testUEFIVarsSize, CodeSHA256: hex.EncodeToString(sum[:])},
 	}
 	f.m = NewManagerWithDeps(Deps{
+		NodeID:        "node-a",
 		VolumeMounter: f.mounter,
 		InstanceTypes: fakeInstanceTypeResolver{"t3.nano": {Architecture: "x86_64", VCPUs: 1, MemoryMiB: 512}},
 		UEFIVarStore: UEFIVarStoreDeps{
@@ -284,7 +285,10 @@ func TestPrepareUEFIVarStore_ClaimsStampsAndFetchesTheObject(t *testing.T) {
 	assert.Equal(t, holder.Generation, rec.Generation, "the record is stamped with the claim's generation")
 	assert.Equal(t, key, rec.Pointer.Key, "a launch only reads the pointer")
 	assert.Equal(t, region("converted"), f.localVars(t), "vars.fd must hold the decompressed region")
-	assert.Equal(t, uefiSeed{Key: key, Generation: holder.Generation, SeededAt: f.seed(t).SeededAt}, f.seed(t))
+	assert.Equal(t, uefiSeed{
+		Key: key, Generation: holder.Generation, SeededAt: f.seed(t).SeededAt, Firmware: f.identity, CodePath: f.codePath,
+		Sum: uefiRegionSum(region("converted")),
+	}, f.seed(t))
 	assert.Equal(t, before+1, uefiCounter(t, "mulga.vm.uefi_store.seeds", "source", "object"))
 }
 
@@ -505,8 +509,8 @@ func TestRun_UntrustedStoreRecordIsRefused(t *testing.T) {
 	assert.False(t, held)
 }
 
-// A BIOS instance, a microvm and an instance whose variables are on an EFI
-// volume touch neither the claim, the object store nor the data directory.
+// A BIOS instance and a microvm touch neither the claim, the object store nor
+// the data directory.
 func TestPrepareUEFIVarStore_NoStoreObjectIsANoOp(t *testing.T) {
 	f := newUEFIFixture(t)
 	f.m.deps.UEFIVarStore.Objects = &failingGetStore{MemoryObjectStore: f.objects, err: errors.New("must not be called")}
@@ -521,22 +525,20 @@ func TestPrepareUEFIVarStore_NoStoreObjectIsANoOp(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, held)
 
-	efi := &VM{ID: testUEFIInstance, BootMode: "uefi", EBSRequests: EBSRequests{Requests: []EBSRequest{{Name: "vol-efi", EFI: true}}}}
-	held, err = f.prepare(t, efi)
-	require.NoError(t, err)
-	assert.Nil(t, held)
-
 	_, claimed := f.claimHolder(t)
 	assert.False(t, claimed)
 	assert.NoDirExists(t, filepath.Join(f.dataDir, "uefi"))
 }
 
-// A UEFI instance with no usable store record is refused before the launch
-// clears or changes anything on its record, and before any claim is taken.
-func TestRun_UEFIInstanceWithoutAUsableStoreIsRefused(t *testing.T) {
+// A UEFI instance with no usable store record, or one still carrying an EFI
+// volume, is refused before the launch clears or changes anything on its
+// record, and before any claim is taken.
+func TestRun_UEFIInstanceWithoutExactlyOneStoreIsRefused(t *testing.T) {
+	efiVolume := EBSRequest{Name: "vol-1-efi", EFI: true}
 	tests := []struct {
 		name   string
 		record func(f *uefiFixture, t *testing.T)
+		efi    bool
 		want   error
 	}{
 		{name: "no record and no EFI volume", want: ErrUEFIVarStoreMissing},
@@ -549,6 +551,10 @@ func TestRun_UEFIInstanceWithoutAUsableStoreIsRefused(t *testing.T) {
 			_, err := f.records.MarkDeleting(t.Context(), testUEFIInstance)
 			require.NoError(t, err)
 		}},
+		{name: "an EFI volume and no record", efi: true, want: ErrUEFIEFIVolume},
+		{name: "a record and an EFI volume", efi: true, want: ErrUEFIEFIVolume, record: func(f *uefiFixture, t *testing.T) {
+			f.instance(t, keyFor("p"), f.identity)
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -557,6 +563,9 @@ func TestRun_UEFIInstanceWithoutAUsableStoreIsRefused(t *testing.T) {
 				tt.record(f, t)
 			}
 			instance := f.instance(t, "", f.identity)
+			if tt.efi {
+				instance.EBSRequests.Requests = []EBSRequest{efiVolume}
+			}
 			stale := &ec2.StateReason{Code: aws.String("Client.UserInitiatedShutdown"), Message: aws.String("Client.UserInitiatedShutdown: User initiated shutdown")}
 			instance.Instance.StateReason = stale
 			before := instance.Record()
@@ -588,22 +597,22 @@ func TestStart_UEFIInstanceWithoutAStoreIsRefusedBeforeTheTransition(t *testing.
 	assert.Equal(t, StateError, instance.Status)
 }
 
-// Until RunInstances seeds store records, an instance whose variables are on
-// an EFI volume still launches through the volume, and a BIOS or microvm
-// guest needs no store at all.
+// A UEFI instance with a live store record that points at an object launches,
+// and a BIOS or microvm guest needs no store at all, even where no store
+// records are wired.
 func TestCheckUEFIVarStore_Accepts(t *testing.T) {
-	efi := func() *VM {
-		return &VM{ID: testUEFIInstance, BootMode: "uefi", EBSRequests: EBSRequests{Requests: []EBSRequest{{Name: "vol-efi", EFI: true}}}}
-	}
 	tests := []struct {
 		name       string
 		v          func(f *uefiFixture, t *testing.T) *VM
 		unwir      bool
 		unreadable bool
 	}{
-		{name: "EFI volume", v: func(*uefiFixture, *testing.T) *VM { return efi() }},
-		{name: "EFI volume on a node with no store records", unwir: true, v: func(*uefiFixture, *testing.T) *VM { return efi() }},
-		{name: "EFI volume while the store bucket cannot be read", unreadable: true, v: func(*uefiFixture, *testing.T) *VM { return efi() }},
+		{name: "BIOS on a node with no store records", unwir: true, v: func(*uefiFixture, *testing.T) *VM {
+			return &VM{ID: testUEFIInstance, BootMode: "legacy-bios"}
+		}},
+		{name: "BIOS while the store bucket cannot be read", unreadable: true, v: func(*uefiFixture, *testing.T) *VM {
+			return &VM{ID: testUEFIInstance, BootMode: "legacy-bios"}
+		}},
 		{name: "store record", v: func(f *uefiFixture, t *testing.T) *VM {
 			v := f.instance(t, keyFor("k"), f.identity)
 			v.BootMode = "uefi-preferred"

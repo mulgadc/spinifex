@@ -104,6 +104,9 @@ type Manager struct {
 	// imdsLocks serialises each primary ENI's IMDS datapath attach, repair and
 	// teardown, which run outside mu.
 	imdsLocks keyedMutex
+
+	// uefi is each running UEFI instance's variable store writer.
+	uefi uefiWriterState
 }
 
 // NewManager returns a Manager with no collaborators wired. Tests that only

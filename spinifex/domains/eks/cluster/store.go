@@ -206,6 +206,13 @@ func GetOrCreateAccountBucket(ctx context.Context, js jetstream.JetStream, accou
 	return kv, nil
 }
 
+// OpenAccountBucket returns the per-account KV bucket for accountID without
+// creating it. A bucket that does not exist is jetstream.ErrBucketNotFound, so a
+// read-only caller never turns a lost bucket into an empty one.
+func OpenAccountBucket(ctx context.Context, js jetstream.JetStream, accountID string) (jetstream.KeyValue, error) {
+	return js.KeyValue(ctx, AccountBucketName(accountID))
+}
+
 // InitLeaderBucket creates (or attaches to) the shared spinifex-eks-leader
 // bucket used for per-cluster reconciler leader-lease CAS locks.
 func InitLeaderBucket(ctx context.Context, js jetstream.JetStream) (jetstream.KeyValue, error) {

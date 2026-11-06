@@ -3,15 +3,19 @@ package cluster
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
-	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	ec2inventory "github.com/mulgadc/spinifex/spinifex/domains/ec2/inventory"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,6 +25,7 @@ func orphanInstance(id, eni string) *ec2.Instance {
 		InstanceId:        aws.String(id),
 		State:             &ec2.InstanceState{Name: aws.String(ec2.InstanceStateNameRunning)},
 		LaunchTime:        aws.Time(time.Unix(0, 0)),
+		Placement:         &ec2.Placement{AvailabilityZone: aws.String("ap-southeast-2a")},
 		NetworkInterfaces: []*ec2.InstanceNetworkInterface{{NetworkInterfaceId: aws.String(eni)}},
 	}
 }
@@ -139,35 +144,31 @@ func TestReportControlPlaneOrphansPrintsRows(t *testing.T) {
 	assert.Equal(t, 1, unreadable)
 	assert.Contains(t, buf.String(), "ORPHAN      i-orphan")
 	assert.Contains(t, buf.String(), "UNREADABLE  i-broken")
+	assert.Equal(t, 2, strings.Count(buf.String(), "az=ap-southeast-2a"), "both row kinds print the zone")
 }
 
-func TestNewENITagReader(t *testing.T) {
-	eni := &ec2.NetworkInterface{TagSet: []*ec2.Tag{{Key: aws.String("k"), Value: aws.String("v")}}}
-	cases := []struct {
-		name      string
-		out       *ec2.DescribeNetworkInterfacesOutput
-		err       error
-		wantFound bool
-		wantErr   bool
-	}{
-		{name: "tags read", out: &ec2.DescribeNetworkInterfacesOutput{NetworkInterfaces: []*ec2.NetworkInterface{eni}}, wantFound: true},
-		{name: "eni gone", out: &ec2.DescribeNetworkInterfacesOutput{}},
-		{name: "typed not-found is the ENI gone", err: errors.New(awserrors.ErrorInvalidNetworkInterfaceIDNotFound)},
-		{name: "call failed is a read failure", err: errors.New("vpc down"), wantErr: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			read := NewENITagReader(func(context.Context, string) (*ec2.DescribeNetworkInterfacesOutput, error) {
-				return tc.out, tc.err
-			})
-			m, found, err := read(t.Context(), "eni-1")
-			assert.Equal(t, tc.wantFound, found)
-			assert.Equal(t, tc.wantErr, err != nil)
-			if tc.wantFound {
-				assert.Equal(t, "v", m["k"])
-			}
-		})
-	}
+func TestFindControlPlaneOrphansCorruptENIRecordIsUnreadable(t *testing.T) {
+	f := newEKSServiceFixture(t)
+	js := testutil.NewJetStream(t, f.svc.deps.NATSConn)
+	enis, err := kvutil.GetOrCreateBucket(t.Context(), js, ec2vpc.KVBucketENIs, 10)
+	require.NoError(t, err)
+	good, err := json.Marshal(ec2vpc.ENIRecord{NetworkInterfaceId: "eni-good", Tags: cpTags("gone", testAccountID)})
+	require.NoError(t, err)
+	_, err = enis.Put(t.Context(), kvutil.AccountKey("000000000000", "eni-good"), good)
+	require.NoError(t, err)
+	_, err = enis.Put(t.Context(), kvutil.AccountKey("000000000000", "eni-corrupt"), []byte("{not json"))
+	require.NoError(t, err)
+	res := []*ec2.Reservation{{Instances: []*ec2.Instance{
+		orphanInstance("i-good", "eni-good"), orphanInstance("i-corrupt", "eni-corrupt"), orphanInstance("i-absent", "eni-absent"),
+	}}}
+
+	rows := FindControlPlaneOrphans(t.Context(), js, res, ec2inventory.NewENITagReader(js, "000000000000"), time.Unix(60, 0))
+
+	require.Len(t, rows, 2, "an absent ENI is skipped, the other two are reported")
+	assert.Equal(t, "i-corrupt", rows[0].InstanceID)
+	assert.True(t, rows[0].Unreadable, "a corrupt ENI record is unreadable, never gone")
+	assert.Equal(t, "i-good", rows[1].InstanceID)
+	assert.False(t, rows[1].Unreadable)
 }
 
 func TestFindControlPlaneOrphansOnlyReportsRunningInstances(t *testing.T) {

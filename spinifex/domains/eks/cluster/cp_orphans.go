@@ -10,7 +10,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -59,41 +58,17 @@ func JudgeClusterRecord(ctx context.Context, js jetstream.JetStream, account, cl
 // the ENI is gone.
 type ENITagReader func(ctx context.Context, eniID string) (tagSet map[string]string, found bool, err error)
 
-// NewENITagReader builds an ENITagReader over a DescribeNetworkInterfaces call.
-// An empty answer or an InvalidNetworkInterfaceID.NotFound error means the ENI is gone; a call error is returned as a read
-// failure, so an unreachable service is never read as "no such ENI".
-func NewENITagReader(describe func(ctx context.Context, eniID string) (*ec2.DescribeNetworkInterfacesOutput, error)) ENITagReader {
-	return func(ctx context.Context, eniID string) (map[string]string, bool, error) {
-		out, err := describe(ctx, eniID)
-		if err != nil {
-			if awserrors.IsErrorCode(err, awserrors.ErrorInvalidNetworkInterfaceIDNotFound) {
-				return nil, false, nil
-			}
-			return nil, false, err
-		}
-		if out == nil || len(out.NetworkInterfaces) == 0 || out.NetworkInterfaces[0] == nil {
-			return nil, false, nil
-		}
-		m := map[string]string{}
-		for _, t := range out.NetworkInterfaces[0].TagSet {
-			if t != nil {
-				m[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
-			}
-		}
-		return m, true, nil
-	}
-}
-
 // ControlPlaneRow is one running EKS control-plane VM the report could not tie
 // to a live cluster record. Unreadable rows carry Err and are never omitted.
 type ControlPlaneRow struct {
-	InstanceID string
-	Cluster    string
-	Account    string
-	Reason     string
-	Age        time.Duration
-	Unreadable bool
-	Err        error
+	InstanceID       string
+	Cluster          string
+	Account          string
+	Reason           string
+	Age              time.Duration
+	AvailabilityZone string
+	Unreadable       bool
+	Err              error
 }
 
 // FindControlPlaneOrphans classifies the instances in reservations. An instance
@@ -117,6 +92,9 @@ func FindControlPlaneOrphans(ctx context.Context, js jetstream.JetStream, reserv
 				continue
 			}
 			row := ControlPlaneRow{InstanceID: aws.StringValue(inst.InstanceId)}
+			if inst.Placement != nil {
+				row.AvailabilityZone = aws.StringValue(inst.Placement.AvailabilityZone)
+			}
 			if inst.LaunchTime != nil {
 				row.Age = now.Sub(*inst.LaunchTime).Truncate(time.Second)
 			}
@@ -166,11 +144,11 @@ func ReportControlPlaneOrphans(ctx context.Context, w io.Writer, js jetstream.Je
 	for _, r := range rows {
 		if r.Unreadable {
 			unreadable++
-			fmt.Fprintf(w, "UNREADABLE  %s  cluster=%s account=%s age=%s  %s: %v\n", r.InstanceID, r.Cluster, r.Account, r.Age, r.Reason, r.Err)
+			fmt.Fprintf(w, "UNREADABLE  %s  cluster=%s account=%s az=%s age=%s  %s: %v\n", r.InstanceID, r.Cluster, r.Account, r.AvailabilityZone, r.Age, r.Reason, r.Err)
 			continue
 		}
 		orphans++
-		fmt.Fprintf(w, "ORPHAN      %s  cluster=%s account=%s age=%s  %s\n", r.InstanceID, r.Cluster, r.Account, r.Age, r.Reason)
+		fmt.Fprintf(w, "ORPHAN      %s  cluster=%s account=%s az=%s age=%s  %s\n", r.InstanceID, r.Cluster, r.Account, r.AvailabilityZone, r.Age, r.Reason)
 	}
 	return orphans, unreadable, nil
 }

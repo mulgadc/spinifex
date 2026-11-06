@@ -8,10 +8,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	ec2inventory "github.com/mulgadc/spinifex/spinifex/domains/ec2/inventory"
-	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/nats-io/nats.go/jetstream"
@@ -124,11 +122,7 @@ func runAdminEksOrphans(_ *cobra.Command, _ []string) {
 	list := func(ctx context.Context) (*ec2.DescribeInstancesOutput, error) {
 		return ec2inventory.NewNATSInstances(nc, nodeIDs).ListAccountInstances(ctx, awsidentifiers.GlobalAccountID)
 	}
-	eni := ekscluster.NewENITagReader(func(ctx context.Context, id string) (*ec2.DescribeNetworkInterfacesOutput, error) {
-		return ec2vpc.NewNATSVPCService(nc).DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
-			NetworkInterfaceIds: aws.StringSlice([]string{id}),
-		}, awsidentifiers.GlobalAccountID)
-	})
+	eni := ekscluster.ENITagReader(ec2inventory.NewENITagReader(js, awsidentifiers.GlobalAccountID))
 
 	orphans, unreadable, err := ekscluster.ReportControlPlaneOrphans(ctx, os.Stdout, js, list, eni, time.Now())
 	if err != nil {

@@ -16,8 +16,8 @@ load_mod() {
     done
     return 1
 }
-# lambda-agent reads its identity from fw_cfg and unloads qemu_fw_cfg before
-# anything else runs. virtio_net needs net_failover and failover, and the
+# lambda-agent reads its identity from fw_cfg, or the configuration disk, and
+# seals it before anything else runs. virtio_net needs net_failover and failover, and the
 # insmod fallback resolves no dependencies, so load the chain bottom-up.
 load_mod qemu_fw_cfg || echo "[init] qemu_fw_cfg did not load" >/dev/console
 load_mod failover || true
@@ -26,8 +26,30 @@ load_mod virtio_net || echo "[init] virtio_net did not load" >/dev/console
 
 ip link set lo up
 
+# Without fw_cfg the executor attaches the same entries as a tar archive on
+# the second disk; lambda-agent reads them here and erases the disk before the
+# function starts.
+CFG_ROOT=/spinifex-cfg
+FWCFG_ROOT=/sys/firmware/qemu_fw_cfg
+if [ ! -d "$FWCFG_ROOT" ]; then
+    load_mod virtio_blk || echo "[init] virtio_blk did not load" >/dev/console
+    i=0
+    while [ "$i" -lt 25 ] && [ ! -b /dev/vdb ]; do
+        sleep 0.04
+        i=$((i + 1))
+    done
+    if [ -b /dev/vdb ]; then
+        mkdir -m 0700 "$CFG_ROOT"
+        if ! mount -t tmpfs -o mode=0700,size=1m tmpfs "$CFG_ROOT" ||
+            ! tar -xf /dev/vdb -C "$CFG_ROOT"; then
+            echo "[init] configuration disk not readable" >/dev/console
+        fi
+        FWCFG_ROOT=$CFG_ROOT
+    fi
+fi
+
 # The guest's addresses come from the same netcfg entry as other system VMs.
-NETCFG=/sys/firmware/qemu_fw_cfg/by_name/opt/spinifex/netcfg/raw
+NETCFG=$FWCFG_ROOT/by_name/opt/spinifex/netcfg/raw
 i=0
 while [ "$i" -lt 25 ] && [ ! -f "$NETCFG" ]; do
     sleep 0.04

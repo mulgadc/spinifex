@@ -28,11 +28,13 @@ var reserved = map[string]struct{}{
 
 // Validate checks values without including customer names or values in errors.
 func Validate(vars map[string]string) error {
-	size := 0
-	for k, v := range vars {
+	for k := range vars {
 		if !namePattern.MatchString(k) {
 			return ErrName
 		}
+	}
+	size := 0
+	for k, v := range vars {
 		if _, ok := reserved[k]; ok {
 			return ErrReserved
 		}

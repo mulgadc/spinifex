@@ -570,12 +570,13 @@ func TestCreateFunction_EnvironmentValidation(t *testing.T) {
 		vars map[string]string
 		code string
 	}{
-		"empty name":        {map[string]string{"": "secret"}, awserrors.ErrorValidationException},
-		"one character":     {map[string]string{"A": "secret"}, awserrors.ErrorValidationException},
-		"invalid character": {map[string]string{"BAD-NAME": "secret"}, awserrors.ErrorValidationException},
-		"reserved":          {map[string]string{"AWS_SECRET_ACCESS_KEY": "secret"}, awserrors.ErrorInvalidParameterValueException},
-		"nul value":         {map[string]string{"VALUE": "secret\x00"}, awserrors.ErrorInvalidParameterValueException},
-		"too large":         {map[string]string{"VALUE": strings.Repeat("x", 4092)}, awserrors.ErrorInvalidParameterValueException},
+		"empty name":           {map[string]string{"": "secret"}, awserrors.ErrorValidationException},
+		"one character":        {map[string]string{"A": "secret"}, awserrors.ErrorValidationException},
+		"invalid character":    {map[string]string{"BAD-NAME": "secret"}, awserrors.ErrorValidationException},
+		"invalid and reserved": {map[string]string{"A": "secret", "AWS_REGION": "secret"}, awserrors.ErrorValidationException},
+		"reserved":             {map[string]string{"AWS_SECRET_ACCESS_KEY": "secret"}, awserrors.ErrorInvalidParameterValueException},
+		"nul value":            {map[string]string{"VALUE": "secret\x00"}, awserrors.ErrorInvalidParameterValueException},
+		"too large":            {map[string]string{"VALUE": strings.Repeat("x", 4092)}, awserrors.ErrorInvalidParameterValueException},
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := newEnv(t)

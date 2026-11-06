@@ -90,6 +90,9 @@ func runLBSelfHeal(t *testing.T, fix *Fixture, kind shKind) {
 	}
 	shWaitOlderThan(t, cli, customers, shTargetAge)
 
+	if client != "" {
+		shLogClockSkew(t, cli, client)
+	}
 	before := shSnapshot(t, fix, customers)
 	lbBefore := shLBIdentity(t, fix, f)
 	lbProcBefore, err := harness.ProcessIdentity(f.Host, f.SysInstanceID)
@@ -237,6 +240,28 @@ func shClientVerdicts(console string) (times []int64, oks []bool) {
 		oks = append(oks, fields[2] == "OK")
 	}
 	return times, oks
+}
+
+// shClockSkewLimit is the guest-to-host clock offset past which the client's
+// timestamps cannot back the timing assertion.
+const shClockSkewLimit = 10 * time.Second
+
+// shLogClockSkew compares the newest guest timestamp on the console with host
+// time. The offset includes up to one probe interval of console delay, so a
+// healthy pair reads a few seconds.
+func shLogClockSkew(t *testing.T, c *harness.AWSClient, client string) {
+	t.Helper()
+	times, _ := shClientVerdicts(shConsole(c, client))
+	if len(times) == 0 {
+		t.Logf("clock skew: the client has printed no verdict yet, so the guest clock is unmeasured")
+		return
+	}
+	last := time.Unix(times[len(times)-1], 0)
+	skew := time.Since(last)
+	harness.Detail(t, "guest clock offset from host", skew.Round(time.Second).String(), "guest_epoch", strconv.FormatInt(last.Unix(), 10))
+	if skew > shClockSkewLimit || skew < -shClockSkewLimit {
+		t.Logf("clock skew %s exceeds %s: the timing assertion is UNPROVEN", skew.Round(time.Second), shClockSkewLimit)
+	}
 }
 
 // shRequireClientServed fails unless the client's first success after the

@@ -83,6 +83,9 @@ type Daemon struct {
 	MTU     int
 	WorkDir string
 	HTTP    *http.Client
+	// SDKEndpoint and SDKCA are public gateway connection settings for the guest.
+	SDKEndpoint string
+	SDKCA       []byte
 	// Image is the prepared runtime image every launch boots; the daemon
 	// prepares it once before serving and keeps it open for its whole life.
 	Image *Image
@@ -582,6 +585,10 @@ func (d *Daemon) prepare(req Request, code []byte, dir, tap, mac, ip string) (*v
 	entries["test-package-sha256"] = []byte(req.CodeSHA256)
 	entries["test-grant"] = grantEntry(req.Grant)
 	entries["test-handler"] = []byte(req.Handler)
+	if d.SDKEndpoint != "" && len(d.SDKCA) != 0 {
+		entries["test-sdk-endpoint"] = []byte(d.SDKEndpoint)
+		entries["test-sdk-ca"] = d.SDKCA
+	}
 	netcfgBytes := fmt.Appendf(nil, "NIC0_MAC=%s\nNIC0_CIDR=%s/24\nNIC0_DEFAULT=0\n", mac, ip)
 	if d.Firecracker != "" {
 		archive := make(map[string][]byte, len(entries)+1)

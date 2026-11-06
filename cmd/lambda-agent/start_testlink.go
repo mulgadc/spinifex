@@ -12,12 +12,14 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/agents/lambda/agent"
 	"github.com/mulgadc/spinifex/spinifex/agents/lambda/hostlink"
 	"github.com/mulgadc/spinifex/spinifex/agents/lambda/runtimeapi"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/lambdaenv"
 )
 
 const (
@@ -91,6 +93,9 @@ func (t testlink) run(parent context.Context) (int, error) {
 	}
 	cred := *first.Credential
 	first.Credential = nil
+	if err := lambdaenv.Validate(cred.Environment); err != nil {
+		return exitRefused, errors.New("first frame carries an invalid function environment")
+	}
 	if sdkErr != nil {
 		slog.Warn("lambda-agent: SDK gateway settings unavailable", "err", sdkErr)
 	}
@@ -142,19 +147,31 @@ func (t testlink) run(parent context.Context) (int, error) {
 
 // bootstrapEnv supplies the runtime, execution-role and SDK settings.
 func bootstrapEnv(runtimeAPI, handler string, cred hostlink.Credential, region string, sdk *sdkConfig, caPath string) []string {
-	env := []string{
-		"AWS_LAMBDA_RUNTIME_API=" + runtimeAPI,
-		"_HANDLER=" + handler,
-		"LAMBDA_TASK_ROOT=" + taskRoot,
-		"PATH=/bin:/sbin:/usr/bin",
-		"AWS_ACCESS_KEY_ID=" + cred.AccessKeyID,
-		"AWS_SECRET_ACCESS_KEY=" + cred.SecretAccessKey,
-		"AWS_SESSION_TOKEN=" + cred.SessionToken,
-		"AWS_REGION=" + region,
-		"AWS_DEFAULT_REGION=" + region,
+	vars := map[string]string{
+		"AWS_LAMBDA_RUNTIME_API": runtimeAPI,
+		"_HANDLER":               handler,
+		"LAMBDA_TASK_ROOT":       taskRoot,
+		"PATH":                   "/bin:/sbin:/usr/bin",
+		"AWS_ACCESS_KEY_ID":      cred.AccessKeyID,
+		"AWS_SECRET_ACCESS_KEY":  cred.SecretAccessKey,
+		"AWS_SESSION_TOKEN":      cred.SessionToken,
+		"AWS_REGION":             region,
+		"AWS_DEFAULT_REGION":     region,
 	}
 	if sdk != nil {
-		env = append(env, "AWS_ENDPOINT_URL="+sdk.endpoint, "AWS_CA_BUNDLE="+caPath)
+		vars["AWS_ENDPOINT_URL"], vars["AWS_CA_BUNDLE"] = sdk.endpoint, caPath
+	}
+	for k, v := range cred.Environment {
+		vars[k] = v
+	}
+	keys := make([]string, 0, len(vars))
+	for k := range vars {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	env := make([]string, 0, len(keys))
+	for _, k := range keys {
+		env = append(env, k+"="+vars[k])
 	}
 	return env
 }

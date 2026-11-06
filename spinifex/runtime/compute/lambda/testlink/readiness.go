@@ -13,9 +13,6 @@ import (
 // handed an Active function it cannot run.
 func (d *Daemon) Readiness(imagePin string, nodes int) function.Readiness {
 	return func(_ context.Context, rec function.Record) error {
-		if rec.EnvCipher != "" {
-			return notReady("The function cannot run here: test-link Lambda does not support environment variables.")
-		}
 		if !validHandler(rec.Handler) {
 			return notReady("The function cannot run here: test-link Lambda runs only a handler of 1 to 128 characters with no whitespace.")
 		}

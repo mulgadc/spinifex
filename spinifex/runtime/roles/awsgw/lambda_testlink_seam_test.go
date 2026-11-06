@@ -29,6 +29,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/function"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/testlink"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 )
 
@@ -212,7 +213,7 @@ func composedExecutor(t *testing.T, env *seamEnv, codeURL string, client *http.C
 	grants := &countedGrants{grantIssuer: env.grants}
 	presigns := &atomic.Int32{}
 	daemon := startSeamDaemon(t, &testlink.Daemon{Node: "node1", Grants: env.grants, HTTP: client}, guest)
-	exec := &testLinkExecutor{Control: daemon.client, RequestLimit: testlink.MaxFrameBytes, Sessions: env.sts, Node: "node1", ImageDigest: testImageDigest,
+	exec := &testLinkExecutor{Control: daemon.client, RequestLimit: testlink.MaxFrameBytes, Sessions: env.sts, AEAD: env.aead, Node: "node1", ImageDigest: testImageDigest,
 		Codes:  func(context.Context) (codePresigner, error) { return urlPresigner{codeURL, presigns}, nil },
 		Grants: func(context.Context) (grantIssuer, error) { return grants, nil },
 	}
@@ -375,16 +376,42 @@ func TestLambdaTestLinkSeam_RuntimeSeesInvokedARNAndHandler(t *testing.T) {
 	}
 }
 
-// A function with environment variables is refused before any code link is
-// presigned, any grant is issued or anything is sent to a node.
-func TestLambdaTestLinkSeam_EnvironmentVariablesRefusedBeforeDispatch(t *testing.T) {
+func TestLambdaTestLinkSeam_EnvironmentReachesGuestWithoutLeaking(t *testing.T) {
+	env := newSeamEnv(t)
+	var subscriptions []*nats.Subscription
+	for _, subject := range []string{">", "$JS.>", "$KV.>"} {
+		sub, err := env.nc.SubscribeSync(subject)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sub.Unsubscribe() })
+		subscriptions = append(subscriptions, sub)
+	}
+	require.NoError(t, env.nc.Flush())
+	vars := map[string]string{"GREETING": "private-environment-marker"}
+	sealed, err := function.SealEnv(env.aead, seamAccount, "fn1", vars)
+	require.NoError(t, err)
 	srv := codeServer(t)
-	run := invokeComposedAt(t, "/2015-03-31/functions/f/invocations", seamFunction{timeout: 10, envCipher: "sealed"},
-		srv.URL+"/code", srv.Client(), func(ctx context.Context, _ net.Conn) { <-ctx.Done() })
-	require.Equal(t, http.StatusInternalServerError, run.resp.StatusCode)
-	require.Equal(t, "ServiceException", run.resp.Header.Get("X-Amzn-Errortype"))
-	require.Contains(t, string(run.body), "does not support function environment variables")
-	require.Zero(t, run.presigns, "a code link was presigned")
-	require.Zero(t, run.grants, "a grant was issued")
-	require.Empty(t, run.requests, "the request reached a node")
+	creds := make(chan hostlink.Credential, 1)
+	run := invokeComposedIn(t, env, "/2015-03-31/functions/f/invocations", seamFunction{timeout: 10, envCipher: sealed},
+		srv.URL+"/code", srv.Client(), agentGuestWith(guestOpts{creds: creds}, func(base string) { respond(base, `{}`) }))
+	require.Equal(t, http.StatusOK, run.resp.StatusCode, string(run.body))
+	require.Equal(t, vars, recv(t, creds, "guest credential").Environment)
+	for _, request := range run.requests {
+		require.NotContains(t, string(request), vars["GREETING"])
+	}
+	for _, reply := range run.replies {
+		require.NotContains(t, string(reply), vars["GREETING"])
+	}
+	require.NoError(t, env.nc.Flush())
+	for _, sub := range subscriptions {
+		for {
+			msg, err := sub.NextMsg(50 * time.Millisecond)
+			if errors.Is(err, nats.ErrTimeout) {
+				break
+			}
+			require.NoError(t, err)
+			require.NotContains(t, msg.Subject, vars["GREETING"])
+			require.NotContains(t, string(msg.Data), vars["GREETING"])
+		}
+	}
+	require.NotContains(t, run.log, vars["GREETING"])
 }

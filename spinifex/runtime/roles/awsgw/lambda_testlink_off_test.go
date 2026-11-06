@@ -51,7 +51,7 @@ func (e *spyExec) InvokeSync(context.Context, lambdaawsapi.SyncInvocation) (lamb
 // A default build composes the gateway with Lambda unrouted and no executor: a
 // signed Invoke is refused before any Lambda handler runs and starts no attempt.
 func TestDefaultBuild_InvokeNeverReachesLambda(t *testing.T) {
-	require.Nil(t, lambdaTestExecutor(nil, "node1", nil, nil), "a default build has no Lambda executor")
+	require.Nil(t, lambdaTestExecutor(nil, "node1", nil, nil, nil), "a default build has no Lambda executor")
 
 	meta, exec := &spyFunctions{}, &spyExec{}
 	lambda := lambdaawsapi.NewRegistration(lambdaawsapi.Deps{Meta: meta, Exec: exec})

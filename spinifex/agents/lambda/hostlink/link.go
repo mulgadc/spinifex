@@ -28,11 +28,12 @@ type Request struct {
 	Credential *Credential `json:"credential,omitempty"`
 }
 
-// Credential is one execution-role session. It is never logged or stored.
+// Credential holds one execution-role session and its function environment.
 type Credential struct {
-	AccessKeyID     string `json:"access_key_id"`
-	SecretAccessKey string `json:"secret_access_key"`
-	SessionToken    string `json:"session_token"`
+	AccessKeyID     string            `json:"access_key_id"`
+	SecretAccessKey string            `json:"secret_access_key"`
+	SessionToken    string            `json:"session_token"`
+	Environment     map[string]string `json:"environment,omitempty"`
 }
 
 // LogValue keeps every value out of logs.

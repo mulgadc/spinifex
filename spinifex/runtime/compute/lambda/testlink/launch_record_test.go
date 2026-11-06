@@ -64,7 +64,9 @@ func TestDaemon_StartThenFailedLaunchedWriteIsUnknown(t *testing.T) {
 	owner := &failLaunched{Grants: d.Grants}
 	d.Grants = owner
 
-	rep := d.Handle(context.Background(), g.request(srv.URL, code), testCred)
+	cred := testCred
+	cred.Environment = map[string]string{"GREETING": "private-function-environment"}
+	rep := d.Handle(context.Background(), g.request(srv.URL, code), cred)
 	// An identity is read only from a live process's pidfd, so one was started.
 	require.Len(t, owner.got, 1, "no process was started, so this run proves nothing about after-start replies")
 	require.NotZero(t, owner.got[0].PID)
@@ -72,7 +74,7 @@ func TestDaemon_StartThenFailedLaunchedWriteIsUnknown(t *testing.T) {
 	require.Equal(t, OutcomeUnknown, rep.Outcome, rep.Error)
 	require.Equal(t, ErrLaunchNotRecorded.Error(), rep.Error)
 
-	secrets := []string{testCred.AccessKeyID, testCred.SecretAccessKey, testCred.SessionToken, srv.URL}
+	secrets := []string{cred.AccessKeyID, cred.SecretAccessKey, cred.SessionToken, cred.Environment["GREETING"], srv.URL}
 	files := 0
 	require.NoError(t, filepath.WalkDir(d.WorkDir, func(p string, e fs.DirEntry, err error) error {
 		if err != nil || e.IsDir() {

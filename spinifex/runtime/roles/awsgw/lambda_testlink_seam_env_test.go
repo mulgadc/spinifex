@@ -5,6 +5,7 @@ package awsgw
 
 import (
 	"context"
+	"crypto/cipher"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/mulgadc/bluebottle/pkg/masterkey"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/agents/lambda/hostlink"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
@@ -51,12 +53,15 @@ type seamEnv struct {
 	roleARN  string
 	grants   *execution.Store
 	sessions jetstream.KeyValue
+	aead     cipher.AEAD
 }
 
 func newSeamEnv(t *testing.T) *seamEnv {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	masterKey, err := iamdomain.GenerateMasterKey()
+	require.NoError(t, err)
+	lambdaKey, err := masterkey.New(masterKey)
 	require.NoError(t, err)
 	iamSvc, err := iamdomain.NewIAMServiceImpl(t.Context(), nc, masterKey)
 	require.NoError(t, err)
@@ -78,7 +83,7 @@ func newSeamEnv(t *testing.T) *seamEnv {
 	require.NoError(t, err)
 	sessions, err := js.KeyValue(t.Context(), stsdomain.KVBucketSessionCredentials)
 	require.NoError(t, err)
-	return &seamEnv{nc: nc, iam: iamSvc, sts: stsSvc, roleARN: aws.StringValue(role.Role.Arn), grants: grants, sessions: sessions}
+	return &seamEnv{nc: nc, iam: iamSvc, sts: stsSvc, roleARN: aws.StringValue(role.Role.Arn), grants: grants, sessions: sessions, aead: lambdaKey.AEAD}
 }
 
 // resolve authenticates cred through the real verifier and resolves its

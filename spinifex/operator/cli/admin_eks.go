@@ -11,11 +11,11 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
-	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
-	"github.com/nats-io/nats.go/jetstream"
+	ec2inventory "github.com/mulgadc/spinifex/spinifex/domains/ec2/inventory"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/spf13/cobra"
 )
 
@@ -123,12 +123,12 @@ func runAdminEksOrphans(_ *cobra.Command, _ []string) {
 	defer cancel()
 
 	list := func(ctx context.Context) (*ec2.DescribeInstancesOutput, error) {
-		return ec2instanceapi.DescribeAccountInstancesStrict(ctx, nc, nodeIDs, awsidentifiers.GlobalAccountID)
+		return ec2inventory.NewNATSInstances(nc, nodeIDs).ListAccountInstances(ctx, awsidentifiers.GlobalAccountID)
 	}
 	eni := func(ctx context.Context, id string) (map[string]string, bool, error) {
-		out, err := ec2vpcapi.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
+		out, err := ec2vpc.NewNATSVPCService(nc).DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{
 			NetworkInterfaceIds: aws.StringSlice([]string{id}),
-		}, nc, awsidentifiers.GlobalAccountID)
+		}, awsidentifiers.GlobalAccountID)
 		if err != nil {
 			if strings.Contains(err.Error(), "NotFound") {
 				return nil, false, nil

@@ -1,5 +1,7 @@
 //go:build lambdatestlink
 
+//test:in-package drives the unexported supervisor, ack and pidfd helpers against real processes
+
 package testlink
 
 import (

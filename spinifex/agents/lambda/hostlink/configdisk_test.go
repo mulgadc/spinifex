@@ -1,3 +1,5 @@
+//test:in-package reaches the unexported configDisk and fwCfgTree readers to seal and read a real archive
+
 package hostlink
 
 import (

@@ -66,6 +66,30 @@ var routes = []route{
 		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
 			return d.invoke(ctx, c)
 		}},
+	{Method: "POST", Pattern: "/2015-03-31/event-source-mappings/", Action: "CreateEventSourceMapping",
+		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
+			return d.createEventSourceMapping(ctx, c)
+		}},
+	{Method: "POST", Pattern: "/2015-03-31/event-source-mappings", Action: "CreateEventSourceMapping",
+		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
+			return d.createEventSourceMapping(ctx, c)
+		}},
+	{Method: "GET", Pattern: "/2015-03-31/event-source-mappings/", Action: "ListEventSourceMappings",
+		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
+			return d.listEventSourceMappings(ctx, c)
+		}},
+	{Method: "GET", Pattern: "/2015-03-31/event-source-mappings", Action: "ListEventSourceMappings",
+		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
+			return d.listEventSourceMappings(ctx, c)
+		}},
+	{Method: "GET", Pattern: "/2015-03-31/event-source-mappings/{UUID}", Action: "GetEventSourceMapping",
+		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
+			return d.getEventSourceMapping(ctx, c)
+		}},
+	{Method: "DELETE", Pattern: "/2015-03-31/event-source-mappings/{UUID}", Action: "DeleteEventSourceMapping",
+		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
+			return d.deleteEventSourceMapping(ctx, c)
+		}},
 }
 
 var router = rest.NewRouter("lambda", routes)

@@ -765,8 +765,9 @@ func TestAuthorization(t *testing.T) {
 
 func TestRegistration_ResolvesActionsAndInventory(t *testing.T) {
 	reg := awsapi.NewRegistration(awsapi.Deps{})
-	assert.Equal(t, []string{"CreateFunction", "GetFunction", "GetFunctionCodeSigningConfig", "GetFunctionConfiguration", "Invoke", "ListVersionsByFunction"}, reg.Inventory.Registered)
+	assert.Equal(t, []string{"CreateEventSourceMapping", "CreateFunction", "DeleteEventSourceMapping", "GetEventSourceMapping", "GetFunction", "GetFunctionCodeSigningConfig", "GetFunctionConfiguration", "Invoke", "ListEventSourceMappings", "ListVersionsByFunction"}, reg.Inventory.Registered)
 	assert.Equal(t, "ListVersionsByFunction", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2015-03-31/functions/x/versions", nil)))
+	assert.Equal(t, "DeleteEventSourceMapping", reg.ResolveAction(httptest.NewRequest(http.MethodDelete, "/2015-03-31/event-source-mappings/x", nil)))
 	assert.Equal(t, "GetFunctionCodeSigningConfig", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2020-06-30/functions/x/code-signing-config", nil)))
 	assert.Equal(t, "CreateFunction", reg.ResolveAction(httptest.NewRequest(http.MethodPost, "/2015-03-31/functions", nil)))
 	assert.Equal(t, "GetFunction", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2015-03-31/functions/x", nil)))

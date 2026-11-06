@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -272,10 +273,9 @@ func (d Deps) deleteEventSourceMapping(ctx context.Context, c *call) (reply, err
 }
 
 func (d Deps) listEventSourceMappings(ctx context.Context, c *call) (reply, error) {
-	for _, k := range []string{"Marker"} {
-		if _, ok := c.Query[k]; ok {
-			return reply{}, unsupported(k)
-		}
+	marker := c.Query.Get("Marker")
+	if marker != "" && !mappingUUIDRE.MatchString(marker) {
+		return reply{}, invalid("Marker is not a valid continuation token")
 	}
 	maxItems := 100
 	if v := c.Query.Get("MaxItems"); v != "" {
@@ -302,17 +302,21 @@ func (d Deps) listEventSourceMappings(ctx context.Context, c *call) (reply, erro
 	if err != nil {
 		return reply{}, err
 	}
+	// Pages run in UUID order; the marker is the last UUID already returned.
+	slices.SortFunc(entries, func(a, b eventsource.Entry) int { return strings.Compare(a.Mapping.UUID, b.Mapping.UUID) })
 	out := []*lambda.EventSourceMappingConfiguration{}
+	var next *string
 	for _, e := range entries {
 		m := e.Mapping
-		if m.AccountID != c.AccountID || m.Region != c.Region ||
+		if m.AccountID != c.AccountID || m.Region != c.Region || m.UUID <= marker ||
 			(fnName != "" && m.FunctionName != fnName) || (source != "" && m.EventSourceARN != source) {
 			continue
 		}
 		if len(out) == maxItems {
+			next = out[len(out)-1].UUID
 			break
 		}
 		out = append(out, mappingShape(m, m.State))
 	}
-	return reply{Status: http.StatusOK, Body: &lambda.ListEventSourceMappingsOutput{EventSourceMappings: out}}, nil
+	return reply{Status: http.StatusOK, Body: &lambda.ListEventSourceMappingsOutput{EventSourceMappings: out, NextMarker: next}}, nil
 }

@@ -3,6 +3,7 @@ package awsapi_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 	"testing"
@@ -140,6 +141,49 @@ func TestEventSourceMapping_ConcurrentDuplicateCreatesYieldOneMapping(t *testing
 	entries, err := store.List(t.Context())
 	require.NoError(t, err)
 	assert.Len(t, entries, 1)
+}
+
+func TestEventSourceMapping_ListPagesSeeEveryMappingOnce(t *testing.T) {
+	e, store, _ := newMappingEnv(t)
+	want := map[string]bool{}
+	for i := range 5 {
+		q := fmt.Sprintf("arn:aws:sqs:ap-southeast-2:123456789012:q%d", i)
+		rec, err := e.do(http.MethodPost, mappingsPath, mappingBody(func(b map[string]any) { b["EventSourceArn"] = q }))
+		require.NoError(t, err)
+		want[decodeMapping(t, rec.Body.Bytes())["UUID"].(string)] = true
+	}
+	entries, err := store.List(t.Context())
+	require.NoError(t, err)
+	require.Len(t, entries, 5)
+
+	seen := map[string]int{}
+	marker, pages := "", 0
+	for {
+		path := mappingsPath + "?MaxItems=2"
+		if marker != "" {
+			path += "&Marker=" + marker
+		}
+		rec, err := e.do(http.MethodGet, path, nil)
+		require.NoError(t, err)
+		page := decodeMapping(t, rec.Body.Bytes())
+		pages++
+		for _, m := range page["EventSourceMappings"].([]any) {
+			seen[m.(map[string]any)["UUID"].(string)]++
+		}
+		next, _ := page["NextMarker"].(string)
+		if next == "" {
+			break
+		}
+		marker = next
+	}
+	assert.Equal(t, 3, pages)
+	assert.Len(t, seen, 5)
+	for id, n := range seen {
+		assert.True(t, want[id])
+		assert.Equal(t, 1, n, "mapping %s returned once", id)
+	}
+	_, err = e.do(http.MethodGet, mappingsPath+"?Marker=not-a-token", nil)
+	testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
 }
 
 func TestEventSourceMapping_RefusesWhatThisBuildDoesNotImplement(t *testing.T) {

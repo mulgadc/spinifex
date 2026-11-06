@@ -32,6 +32,7 @@ import {
   type MapCard,
   type MapFocus,
   type MapKind,
+  type MapLink,
   type MapPlace,
   type MapResource,
 } from "@/lib/network-map"
@@ -391,6 +392,22 @@ export function NetworkTopology({
     const depth = (cardId: string) =>
       MAP_TIERS.indexOf(tierOf.get(cardId) ?? "internet")
 
+    const atEnd = (link: MapLink) =>
+      Math.abs(depth(link.source) - depth(link.target)) > 1
+
+    // Labels set at one subnet's end each take their own row of the stack.
+    const slotOf = new Map<string, number>()
+    const slotsAt = new Map<string, number>()
+
+    for (const link of map?.links ?? []) {
+      if (link.label && atEnd(link)) {
+        const taken = slotsAt.get(link.target) ?? 0
+
+        slotOf.set(link.id, taken)
+        slotsAt.set(link.target, taken + 1)
+      }
+    }
+
     return (map?.links ?? []).map((link): TopologyEdge => {
       const within = tierOf.get(link.source) === tierOf.get(link.target)
       const forward = before(at(link.source), at(link.target), direction)
@@ -407,10 +424,9 @@ export function NetworkTopology({
           heavy: link.heavy,
           label: link.label,
           // A line past a tier would put its midpoint label under that tier's card.
-          labelEnd:
-            Math.abs(depth(link.source) - depth(link.target)) > 1
-              ? "target"
-              : undefined,
+          labelEnd: atEnd(link) ? "target" : undefined,
+          slot: slotOf.get(link.id),
+          slots: slotsAt.get(link.target),
           // A line to a dimmed card fades with it.
           muted: dimmed.has(link.source) || dimmed.has(link.target),
         },

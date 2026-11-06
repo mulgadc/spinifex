@@ -791,6 +791,9 @@ const BOX_HEAD = 24
 const BOX_COLUMNS = 2
 const LABEL_ROOM = 96
 
+// One stacked route label, as the canvas draws it at 1.25rem.
+const ROUTE_LABEL_ROW = 20
+
 const ITEM_HEIGHT: Record<BoxKind, number> = { instance: 104, lb: 80 }
 
 const BOX_LABELS: Record<BoxKind, string> = {
@@ -961,6 +964,38 @@ function placeBlock(
   }
 }
 
+// Routes into a subnet stack their labels above it going down; past two, the
+// subnets and their resources move down to make room.
+function deepened(
+  map: NetworkMap,
+  direction: LayoutDirection,
+): Record<MapTier, number> {
+  const depth = DEPTH[direction]
+  const tierOf = new Map(map.cards.map((c) => [c.id, c.tier]))
+  const into = new Map<string, number>()
+
+  for (const line of map.links) {
+    if (
+      line.label &&
+      tierOf.get(line.target) === "subnets" &&
+      tierOf.get(line.source) === "gateways"
+    ) {
+      into.set(line.target, (into.get(line.target) ?? 0) + 1)
+    }
+  }
+
+  const stack = Math.max(0, ...into.values())
+
+  const extra =
+    direction === "down" ? Math.max(0, stack - 2) * ROUTE_LABEL_ROW : 0
+
+  return {
+    ...depth,
+    subnets: depth.subnets + extra,
+    resources: depth.resources + extra,
+  }
+}
+
 // Hand-placed tiers, top down or left to right: subnets side by side by
 // availability zone, each subnet's resources boxed by kind beyond it.
 export function layoutNetworkMap(
@@ -968,7 +1003,7 @@ export function layoutNetworkMap(
   direction: LayoutDirection = "down",
 ): MapLayout {
   const axes = axesOf(direction)
-  const depth = DEPTH[direction]
+  const depth = deepened(map, direction)
   const blocks = blocksOf(map, axes)
   const layout: MapLayout = { places: new Map(), boxes: [] }
 

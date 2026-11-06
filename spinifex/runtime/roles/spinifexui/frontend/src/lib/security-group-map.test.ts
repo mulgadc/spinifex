@@ -272,6 +272,46 @@ describe("layoutSecurityGroupMap", () => {
     },
   )
 
+  it("gives each source room for its own stack of labels going across", () => {
+    const ports = Array.from({ length: 12 }, (_, i) =>
+      open({ IpProtocol: "tcp", FromPort: 8000 + i, ToPort: 8000 + i }),
+    )
+
+    const crowded = buildSecurityGroupMap(
+      inputs({
+        IpPermissions: [
+          ...ports,
+          {
+            IpProtocol: "tcp",
+            FromPort: 22,
+            ToPort: 22,
+            IpRanges: [{ CidrIp: "10.0.0.0/8" }, { CidrIp: "192.168.0.0/16" }],
+          },
+        ],
+      }),
+    )
+
+    const { places } = layoutSecurityGroupMap(crowded, "across")
+
+    // A card's centre, and the half-height of its card or its label stack.
+    const reach = (id: string, rules: number) => ({
+      centre: (places.get(id)?.y ?? Number.NaN) + 40,
+      half: Math.max(40, rules * 10),
+    })
+
+    const sources = [
+      reach("in:cidr:0.0.0.0/0", 12),
+      reach("in:cidr:10.0.0.0/8", 1),
+      reach("in:cidr:192.168.0.0/16", 1),
+    ].toSorted((a, b) => a.centre - b.centre)
+
+    for (const [i, next] of sources.slice(1).entries()) {
+      const prev = sources[i] ?? next
+
+      expect(next.centre - next.half).toBeGreaterThan(prev.centre + prev.half)
+    }
+  })
+
   it("leaves more room between the tiers for a taller stack of labels", () => {
     const one = buildSecurityGroupMap(
       inputs({ IpPermissions: [open({ IpProtocol: "-1" })] }),

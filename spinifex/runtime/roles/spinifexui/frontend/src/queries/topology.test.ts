@@ -261,6 +261,7 @@ describe("networkMapQueryOptions", () => {
 describe("securityGroupMapQueryOptions", () => {
   const group = {
     GroupId: "sg-web",
+    VpcId: "vpc-1",
     IpPermissions: [
       {
         IpProtocol: "tcp",
@@ -269,7 +270,7 @@ describe("securityGroupMapQueryOptions", () => {
     ],
   }
 
-  it("asks EC2 for the group's instances and names only the other groups its rules name", async () => {
+  it("reads the group's VPC's instances and names only the other groups its rules name", async () => {
     mockSend.mockImplementation(async (command: { input: object }) => {
       if (command instanceof DescribeSecurityGroupsCommand) {
         return await Promise.resolve({
@@ -293,7 +294,7 @@ describe("securityGroupMapQueryOptions", () => {
       .map((c) => c.input.GroupIds)
 
     expect(filters).toStrictEqual([
-      [{ Name: "instance.group-id", Values: ["sg-web"] }],
+      [{ Name: "vpc-id", Values: ["vpc-1"] }],
     ])
     expect(asked).toStrictEqual([["sg-app"]])
     expect(result.peers.map((p) => p.GroupName)).toStrictEqual(["app"])

@@ -493,6 +493,27 @@ function placeOf(places: Map<string, { x: number; y: number }>) {
   return (id: string) => places.get(id) ?? { x: Number.NaN, y: Number.NaN }
 }
 
+// The main table with n routes to the internet gateway.
+function igwRoutes(n: number): RouteTable {
+  return {
+    ...PUBLIC_TABLE,
+    Routes: Array.from({ length: n }, (_, i) => ({
+      DestinationCidrBlock: `198.51.${i}.0/24`,
+      GatewayId: "igw-1",
+    })),
+  }
+}
+
+// Where the first subnet sits under n stacked route labels.
+function subnetY(n: number): number {
+  const map = buildNetworkMap(
+    inputs({ routeTables: [igwRoutes(n), PRIVATE_TABLE] }),
+    VPC_FOCUS,
+  )
+
+  return placeOf(layoutNetworkMap(map).places)("subnet:subnet-1").y
+}
+
 describe("layoutNetworkMap", () => {
   it("puts subnets side by side by zone, each subnet's resources boxed beneath it", () => {
     const map = crowdedMap()
@@ -542,6 +563,12 @@ describe("layoutNetworkMap", () => {
 
     // Wider than "outbound only" at the label's size.
     expect(between).toBeGreaterThanOrEqual(120)
+  })
+
+  it("drops the subnets to fit more than two route labels stacked into one", () => {
+    expect(subnetY(2)).toBe(subnetY(1))
+    // One 20px row for each label past the two the gap holds.
+    expect(subnetY(4) - subnetY(2)).toBe(40)
   })
 
   it("runs the tiers left to right across", () => {

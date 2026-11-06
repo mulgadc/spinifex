@@ -544,15 +544,34 @@ export function layoutSecurityGroupMap(
   const stack = Math.max(1, ...map.links.map((l) => l.slots))
   // Going across, labels stack alongside the line, so the gap need only fit one wide label.
   const gap = down ? LABEL_BASE + stack * LABEL_ROW : 2 * LABEL_BASE + 64
-  const pitch = down ? CARD_WIDTH + GAP : CARD_HEIGHT + GAP
   const depthOf = down ? CARD_HEIGHT : CARD_WIDTH
+
+  // Going across, a card's rule labels stack centred on it, so each card
+  // takes the taller of itself and its stack.
+  const slotsOf = new Map<string, number>()
+
+  for (const link of map.links) {
+    for (const end of [link.source, link.target]) {
+      slotsOf.set(end, Math.max(slotsOf.get(end) ?? 0, link.slots))
+    }
+  }
+
+  const span = (id: string) =>
+    down
+      ? CARD_WIDTH
+      : Math.max(CARD_HEIGHT, (slotsOf.get(id) ?? 0) * LABEL_ROW)
 
   const row = (side: "inbound" | "outbound", deep: number) => {
     const ids = map.cards.filter((c) => c.side === side).map((c) => c.id)
-    const start = -((ids.length - 1) * pitch) / 2
+    const total = ids.reduce((sum, id) => sum + span(id), 0)
+    let along = -(total + (ids.length - 1) * GAP) / 2
 
-    for (const [i, id] of ids.entries()) {
-      places.set(id, at(start + i * pitch, deep))
+    for (const id of ids) {
+      const size = span(id)
+      const card = down ? CARD_WIDTH : CARD_HEIGHT
+
+      places.set(id, at(along + (size - card) / 2, deep))
+      along += size + GAP
     }
   }
 

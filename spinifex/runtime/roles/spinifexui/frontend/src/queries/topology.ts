@@ -354,21 +354,19 @@ async function readPeers(group: SecurityGroup): Promise<SecurityGroup[]> {
   }
 }
 
-// What a security group covers: instances by EC2's own group filter, and load
-// balancers and databases, which their services cannot filter by group, by
-// the builder from the pages read.
+// What a security group covers: the instances of its VPC, and load balancers
+// and databases, each read to the page limit and kept by the builder only
+// when they hold the group.
 export const securityGroupMapQueryOptions = (group: SecurityGroup) =>
   queryOptions({
     // The whole group, so an edited rule reads the map again.
     queryKey: ["topology", "securityGroup", group],
     queryFn: async (): Promise<Omit<GroupInputs, "group">> => {
-      const groupId = group.GroupId ?? ""
-
       const [instances, lbs, dbs, peers] = await Promise.allSettled([
         readPages(async (NextToken) => {
           const r = await getEc2Client().send(
             new DescribeInstancesCommand({
-              Filters: [{ Name: "instance.group-id", Values: [groupId] }],
+              Filters: [{ Name: "vpc-id", Values: [group.VpcId ?? ""] }],
               MaxResults: MAP_PAGE_SIZE,
               NextToken,
             }),

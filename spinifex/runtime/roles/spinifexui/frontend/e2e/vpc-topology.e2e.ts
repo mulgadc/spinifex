@@ -57,9 +57,11 @@ async function labelsClearOfCards(page: Page) {
       (card) => card.getBoundingClientRect(),
     )
 
-    return [
+    const labels = [
       ...document.querySelectorAll<HTMLElement>('[data-testid^="line-label-"]'),
-    ].flatMap((label) => {
+    ]
+
+    return labels.flatMap((label) => {
       const l = label.getBoundingClientRect()
 
       const under = cards.some(
@@ -70,7 +72,20 @@ async function labelsClearOfCards(page: Page) {
           c.top < l.bottom,
       )
 
-      return under ? [label.dataset.testid] : []
+      // Labels stacked at one line's end must not cover each other either.
+      const covers = labels.some((other) => {
+        const o = other.getBoundingClientRect()
+
+        return (
+          other !== label &&
+          l.left < o.right &&
+          o.left < l.right &&
+          l.top < o.bottom &&
+          o.top < l.bottom
+        )
+      })
+
+      return under || covers ? [label.dataset.testid] : []
     })
   })
 
@@ -322,6 +337,40 @@ test.describe("VPC topology", () => {
     await page.goto(PAGE)
     await expect(
       page.getByTestId(`line-label-igw:${IGW_ID}>subnet:${PUBLIC}:0.0.0.0/0`),
+    ).toBeVisible()
+    await labelsClearOfCards(page)
+
+    await page.getByRole("button", { name: "Left to right" }).click()
+    await expect(page.getByTestId(`box:instance:${PUBLIC}`)).toBeVisible()
+    await labelsClearOfCards(page)
+  })
+
+  test("stacks several routes' labels into one subnet apart, either way round", async ({
+    api,
+    page,
+  }) => {
+    const extra = ["198.51.100.0/24", "203.0.113.0/24"]
+      .map(
+        (cidr) =>
+          `<item><destinationCidrBlock>${cidr}</destinationCidrBlock><gatewayId>${IGW_ID}</gatewayId></item>`,
+      )
+      .join("")
+
+    api.handle(
+      "DescribeRouteTables",
+      ec2(
+        "DescribeRouteTables",
+        ROUTE_TABLES.replace(
+          `<gatewayId>${IGW_ID}</gatewayId></item></routeSet>`,
+          `<gatewayId>${IGW_ID}</gatewayId></item>${extra}</routeSet>`,
+        ),
+      ),
+    )
+    await page.goto(PAGE)
+    await expect(
+      page.getByTestId(
+        `line-label-igw:${IGW_ID}>subnet:${PUBLIC}:203.0.113.0/24`,
+      ),
     ).toBeVisible()
     await labelsClearOfCards(page)
 

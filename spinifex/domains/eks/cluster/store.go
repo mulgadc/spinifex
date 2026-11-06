@@ -185,7 +185,8 @@ func AccountWatchBuckets(ctx context.Context, nc *nats.Conn) ([]*kvstore.Bucket,
 	}
 	buckets := make([]*kvstore.Bucket, 0, len(names))
 	for _, name := range names {
-		buckets = append(buckets, kvstore.NewBucket(js, kvstore.Config{Name: name, History: 1}))
+		// Attach only: a watch on a deleted bucket must fail and retry, not recreate it.
+		buckets = append(buckets, kvstore.NewBucket(js, kvstore.Config{Name: name, History: 1, AttachOnly: true}))
 	}
 	return buckets, nil
 }
@@ -204,6 +205,13 @@ func GetOrCreateAccountBucket(ctx context.Context, js jetstream.JetStream, accou
 		return nil, fmt.Errorf("migrate %s: %w", bucket, err)
 	}
 	return kv, nil
+}
+
+// OpenAccountBucket returns the per-account KV bucket for accountID without
+// creating it. A bucket that does not exist is jetstream.ErrBucketNotFound, so a
+// read-only caller never turns a lost bucket into an empty one.
+func OpenAccountBucket(ctx context.Context, js jetstream.JetStream, accountID string) (jetstream.KeyValue, error) {
+	return js.KeyValue(ctx, AccountBucketName(accountID))
 }
 
 // InitLeaderBucket creates (or attaches to) the shared spinifex-eks-leader

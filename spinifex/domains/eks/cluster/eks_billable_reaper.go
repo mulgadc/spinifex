@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 
@@ -13,13 +12,10 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// EKSBillableReaper is the meta-independent billable cleanup from historic PROP-LIFECYCLE-006 §5 (behaviour per ADR-0003:S2), built on
-// the resource lifecycle GC backstop. A normal DeleteCluster can leave a
-// running control-plane VM behind (terminate completes async; a daemon restart
-// re-launches it from saved running-state) after the cluster meta is already
-// swept — a billable orphan with no owner to drive a retry. This reaper finds a
-// running EKS control-plane VM whose cluster meta is DEFINITIVELY GONE and
-// terminates it. It is node-local: each node reaps the orphans it runs.
+// EKSBillableReaper raises the data-safety alarm for a running EKS control-plane
+// VM whose cluster record cannot be found. It never terminates anything: a
+// missing record cannot tell a completed DeleteCluster from a lost bucket or an
+// out-of-band delete, so removal is an operator decision. It is node-local.
 type EKSBillableReaper struct {
 	svc *EKSServiceImpl
 	// running returns this node's running VMs. The reaper filters to the EKS
@@ -38,10 +34,11 @@ func (s *EKSServiceImpl) NewBillableReaper(running func() ([]*vm.VM, error)) *EK
 func (r *EKSBillableReaper) Class() string         { return "eks-billable" }
 func (r *EKSBillableReaper) Scope() vm.ReaperScope { return vm.ScopeNodeLocal }
 
-// Sweep terminates every running EKS control-plane VM whose cluster meta is
-// absent. A VM whose cluster still exists (CREATING or DELETING) is left to the
-// cluster's own teardown/retry; an ENI that is gone or untagged is skipped, so
-// the reaper never reaps on uncertainty.
+// Sweep alarms on every running EKS control-plane VM whose cluster record, or
+// whole account bucket, is missing, and removes nothing. A VM whose cluster
+// exists is left to the cluster's own teardown; an ENI that is gone or untagged
+// is skipped, and a read that fails is logged and skipped. It returns 0 because
+// it never removes a VM.
 func (r *EKSBillableReaper) Sweep(ctx context.Context) (int, error) {
 	vms, err := r.running()
 	if err != nil {
@@ -53,11 +50,10 @@ func (r *EKSBillableReaper) Sweep(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("jetstream: %w", err)
 	}
 
-	reaped := 0
 	for _, v := range vms {
 		select {
 		case <-ctx.Done():
-			return reaped, ctx.Err()
+			return 0, ctx.Err()
 		default:
 		}
 		if v == nil || v.ManagedBy != tags.ManagedByEKS || v.ENIId == "" {
@@ -66,47 +62,23 @@ func (r *EKSBillableReaper) Sweep(ctx context.Context) (int, error) {
 
 		clusterName, clusterAccount, ok := r.clusterRefFromENI(ctx, v)
 		if !ok {
-			continue // ENI gone or untagged: cannot confirm orphan-hood, never reap
+			continue // ENI gone or untagged: cannot tie the VM to a cluster
 		}
 
-		acctKV, err := GetOrCreateAccountBucket(ctx, js, clusterAccount)
-		if err != nil {
-			slog.WarnContext(ctx, "eks-billable: account bucket lookup failed", "account", clusterAccount, "err", err)
+		verdict := JudgeClusterRecord(ctx, js, clusterAccount, clusterName)
+		switch verdict.State {
+		case ClusterRecordPresent:
+			continue // cluster exists (live, CREATING or DELETING)
+		case ClusterRecordUnreadable:
+			slog.WarnContext(ctx, "eks-billable: "+verdict.Reason, "cluster", clusterName, "account", clusterAccount, "err", verdict.Err)
 			continue
 		}
-		if _, err := GetClusterMeta(ctx, acctKV, clusterName); !errors.Is(err, ErrClusterNotFound) {
-			// Meta present (live/CREATING/DELETING) or unreadable: not a definitive
-			// orphan — leave it to the cluster's own teardown/retry.
-			continue
-		}
+		reason := verdict.Reason
 
-		// ALARM + reap: the cluster is gone but its control-plane VM still runs.
-		slog.WarnContext(ctx, "DATA-SAFETY ALARM: orphaned EKS control-plane VM reaped (cluster meta gone)",
-			"instanceId", v.ID, "cluster", clusterName, "account", clusterAccount, "node", v.LastNode)
-		if err := TerminateK3sServerVM(ctx, r.svc.deps.VPCK3s, r.svc.deps.Instance, v.AccountID, v.ID, v.ENIId); err != nil {
-			slog.WarnContext(ctx, "eks-billable: failed to terminate orphan CP VM", "instanceId", v.ID, "err", err)
-			continue
-		}
-		reaped++
-		r.reclaimOrphanInfra(ctx, v.AccountID, clusterName)
+		slog.WarnContext(ctx, "DATA-SAFETY ALARM: EKS control-plane VM has no cluster record; retained for an operator",
+			"reason", reason, "instanceId", v.ID, "cluster", clusterName, "account", clusterAccount, "node", v.LastNode)
 	}
-	return reaped, nil
-}
-
-// reclaimOrphanInfra tears down the billable infra a reaped orphan's swept meta
-// no longer anchors: the NLB front-end NAT and the managed CP VPC's NAT-GW EIP.
-// Both are keyed by cluster name and idempotent, so a clean prior delete is a
-// no-op. Best-effort — the costliest resource (the VM) is already gone, and
-// DeleteClusterCPVPC releases the NAT-GW EIP before the VPC delete, so the
-// billable address is reclaimed even if the now-empty VPC delete trails. account
-// is the infra account (system account for the managed CP VPC topology).
-func (r *EKSBillableReaper) reclaimOrphanInfra(ctx context.Context, account, clusterName string) {
-	if err := DeleteClusterNLB(ctx, r.svc.deps.NLB, account, clusterName); err != nil {
-		slog.WarnContext(ctx, "eks-billable: reclaim orphan NLB failed", "cluster", clusterName, "err", err)
-	}
-	if err := DeleteClusterCPVPC(ctx, r.svc.cpVPCDeps(), account, clusterName, nil); err != nil {
-		slog.WarnContext(ctx, "eks-billable: reclaim orphan CP VPC (NAT-GW EIP) failed", "cluster", clusterName, "err", err)
-	}
+	return 0, nil
 }
 
 // clusterRefFromENI reads the cluster name + customer account from the VM's

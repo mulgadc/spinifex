@@ -1,14 +1,19 @@
 package cluster
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,53 +38,119 @@ func cpVM(id, eniID string) *vm.VM {
 	return &vm.VM{ID: id, ManagedBy: tags.ManagedByEKS, ENIId: eniID, AccountID: reaperSysAccount, LastNode: "node-1"}
 }
 
-// TestRLC5_EKSBillableReaperTerminatesOrphanCPVM exercises the historic PROP-LIFECYCLE-006 §5 (behaviour per ADR-0003:S2)
-// meta-independent billable cleanup: a running EKS control-plane VM whose
-// cluster meta is DEFINITIVELY GONE is a billable orphan and must be terminated
-// by the GC backstop — the real fix for the orphan CP VM surviving a
-// daemon restart after DeleteCluster swept the meta.
-func TestRLC5_EKSBillableReaperTerminatesOrphanCPVM(t *testing.T) {
-	t.Parallel()
-	f := newEKSServiceFixture(t)
-	f.vpc.describeByENI = map[string]*ec2.NetworkInterface{
-		"eni-orphan": cpENI("eni-orphan", "gone-cluster", testAccountID),
+// ADR-0003:S7. A running control-plane VM whose cluster record cannot be found
+// is retained and alarmed, never terminated and never has its NLB or VPC torn
+// down: a missing record cannot tell a completed DeleteCluster from a lost
+// bucket or an out-of-band delete.
+func TestS7_EKSBillableReaperNeverTerminatesAControlPlane(t *testing.T) {
+	const lostAccount = "999999999999"
+
+	cases := []struct {
+		name      string
+		account   string
+		prepare   func(t *testing.T, f *eksServiceFixture)
+		wantAlarm string
+		wantLog   string
+	}{
+		{
+			name:      "account bucket missing",
+			account:   lostAccount,
+			prepare:   func(*testing.T, *eksServiceFixture) {},
+			wantAlarm: "account bucket missing",
+		},
+		{
+			name:      "bucket has no meta key",
+			account:   testAccountID,
+			prepare:   func(*testing.T, *eksServiceFixture) {},
+			wantAlarm: "cluster record missing",
+		},
+		{
+			name:    "meta removed by the teardown revision-checked delete",
+			account: testAccountID,
+			prepare: func(t *testing.T, f *eksServiceFixture) {
+				require.NoError(t, PutClusterMeta(t.Context(), f.kv, sampleClusterMeta("orphan")))
+				_, err := kvutil.DeleteIf(t.Context(), f.kv, ClusterMetaKey("orphan"), kvutil.CASConfig{
+					Attempts: maxClusterStateCASRetries,
+					NotFound: ErrClusterNotFound,
+				}, func(*ClusterMeta) error { return nil })
+				require.NoError(t, err)
+			},
+			wantAlarm: "cluster record missing",
+		},
+		{
+			name:    "meta removed out of band",
+			account: testAccountID,
+			prepare: func(t *testing.T, f *eksServiceFixture) {
+				require.NoError(t, PutClusterMeta(t.Context(), f.kv, sampleClusterMeta("orphan")))
+				require.NoError(t, f.kv.Delete(t.Context(), ClusterMetaKey("orphan")))
+			},
+			wantAlarm: "cluster record missing",
+		},
+		{
+			name:    "meta unreadable",
+			account: testAccountID,
+			prepare: func(t *testing.T, f *eksServiceFixture) {
+				_, err := f.kv.Put(t.Context(), ClusterMetaKey("orphan"), []byte("{not json"))
+				require.NoError(t, err)
+			},
+			wantLog: "cluster record read failed",
+		},
 	}
-	orphan := cpVM("i-orphan", "eni-orphan")
 
-	// Seed the orphan cluster's name/tag-driven billable infra the swept meta no
-	// longer anchors: an NLB front-end and a tagged NAT gateway holding a billable
-	// EIP. The reaper's post-terminate reclaim must sweep both.
-	nlbName := ClusterNLBName("gone-cluster")
-	f.nlb.lbByName[nlbName] = &elbv2.LoadBalancer{
-		LoadBalancerArn:  aws.String("arn:lb-orphan"),
-		LoadBalancerName: aws.String(nlbName),
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// slog.SetDefault is process-wide, so this test is not parallel.
+			var buf bytes.Buffer
+			restore := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+			t.Cleanup(func() { slog.SetDefault(restore) })
+
+			f := newEKSServiceFixture(t)
+			f.vpc.describeByENI = map[string]*ec2.NetworkInterface{
+				"eni-cp": cpENI("eni-cp", "orphan", tc.account),
+			}
+			nlbName := ClusterNLBName("orphan")
+			f.nlb.lbByName[nlbName] = &elbv2.LoadBalancer{
+				LoadBalancerArn:  aws.String("arn:lb-orphan"),
+				LoadBalancerName: aws.String(nlbName),
+			}
+			f.ngw.gws = []*fakeCPNatGateway{{
+				id:    "nat-orphan",
+				tags:  map[string]string{clusterEKSClusterTagKey: "orphan", clusterEKSRoleTagKey: cpVPCRoles.NatGW},
+				state: "available",
+				addrs: []*ec2.NatGatewayAddress{{AllocationId: aws.String("eipalloc-orphan")}},
+			}}
+			tc.prepare(t, f)
+
+			reaper := f.svc.NewBillableReaper(func() ([]*vm.VM, error) { return []*vm.VM{cpVM("i-cp", "eni-cp")}, nil })
+			for range 2 {
+				removed, err := reaper.Sweep(context.Background())
+				require.NoError(t, err)
+				assert.Zero(t, removed, "ADR-0003:S7: the reaper removes nothing")
+			}
+
+			assert.Empty(t, f.inst.terminateCalls, "ADR-0003:S7: a reaper's judgement is never the decision to terminate")
+			assert.Empty(t, f.vpc.deleteCalls, "the control-plane ENI must stay")
+			assert.Contains(t, f.nlb.lbByName, nlbName, "the NLB must stay")
+			assert.Empty(t, f.eip.releaseCalls, "no EIP may be released")
+
+			js := testutil.NewJetStream(t, f.svc.deps.NATSConn)
+			if tc.account == lostAccount {
+				_, err := OpenAccountBucket(t.Context(), js, lostAccount)
+				assert.ErrorIs(t, err, jetstream.ErrBucketNotFound, "a sweep must not create the bucket it found missing")
+			}
+
+			out := buf.String()
+			if tc.wantAlarm != "" {
+				assert.Contains(t, out, "DATA-SAFETY ALARM")
+				assert.Contains(t, out, tc.wantAlarm)
+				assert.Contains(t, out, "i-cp")
+			} else {
+				assert.NotContains(t, out, "DATA-SAFETY ALARM", "an unreadable record is not a missing one")
+				assert.Contains(t, out, tc.wantLog)
+			}
+		})
 	}
-	f.ngw.gws = []*fakeCPNatGateway{{
-		id:    "nat-orphan",
-		tags:  map[string]string{clusterEKSClusterTagKey: "gone-cluster", clusterEKSRoleTagKey: cpVPCRoles.NatGW},
-		state: "available",
-		addrs: []*ec2.NatGatewayAddress{{AllocationId: aws.String("eipalloc-orphan")}},
-	}}
-
-	reaper := f.svc.NewBillableReaper(func() ([]*vm.VM, error) { return []*vm.VM{orphan}, nil })
-
-	reaped, err := reaper.Sweep(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, 1, reaped, "ADR-0003:S2 behaviour; historic PROP-LIFECYCLE-006 §5 mechanism: a CP VM whose cluster meta is gone must be reaped")
-	assert.Contains(t, f.inst.terminateCalls, "i-orphan", "the orphan CP VM must be terminated")
-	require.Len(t, f.vpc.deleteCalls, 1, "the orphan CP ENI must be deleted")
-	assert.Equal(t, "eni-orphan", aws.StringValue(f.vpc.deleteCalls[0].NetworkInterfaceId))
-
-	// The orphan's billable NLB + NAT-GW EIP must also be reclaimed.
-	assert.NotContains(t, f.nlb.lbByName, nlbName, "the orphan NLB front-end must be reclaimed")
-	require.Len(t, f.eip.releaseCalls, 1, "the orphan NAT-GW EIP must be released")
-	assert.Equal(t, "eipalloc-orphan", aws.StringValue(f.eip.releaseCalls[0].AllocationId))
-
-	// Idempotent: a repeat sweep over the same (still meta-absent) VM is safe —
-	// the terminate + reclaim paths tolerate already-gone infra (no second release).
-	_, err = reaper.Sweep(context.Background())
-	require.NoError(t, err)
-	assert.Len(t, f.eip.releaseCalls, 1, "reclaim must not double-release an already-freed EIP")
 }
 
 // TestRLC5_EKSBillableReaperSpareLiveAndUncertain enforces the reaper's no-false-

@@ -172,6 +172,18 @@ func (s *ELBv2ServiceImpl) SetSubnets(ctx context.Context, input *elbv2.SetSubne
 		return s.setSubnetsOutput(ctx, lb), nil
 	}
 
+	// Exclude data-path repair before any ENI or VM call. It stays excluded once the
+	// VM is terminated and is lifted when the new VM is published.
+	if err := s.store.SuspendLBHealth(ctx, lb.LoadBalancerID); err != nil {
+		slog.ErrorContext(ctx, "SetSubnets: failed to suspend data-path repair", "arn", *input.LoadBalancerArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	resume := func() {
+		if err := s.store.ResumeLBHealth(ctx, lb.LoadBalancerID, ""); err != nil {
+			slog.WarnContext(ctx, "SetSubnets: failed to lift data-path suspension", "lbId", lb.LoadBalancerID, "err", err)
+		}
+	}
+
 	// Create ENIs for added subnets; roll back on failure to avoid leaks.
 	newENIBySubnet := make(map[string]string, len(toAdd))
 	newAZBySubnet := make(map[string]string, len(toAdd))
@@ -188,6 +200,7 @@ func (s *ELBv2ServiceImpl) SetSubnets(ctx context.Context, input *elbv2.SetSubne
 		eniID, az, eniErr := s.createLBENI(ctx, subnetID, lb, accountID)
 		if eniErr != nil {
 			rollbackNewENIs()
+			resume()
 			slog.ErrorContext(ctx, "SetSubnets: failed to create ENI", "subnet", subnetID, "err", eniErr)
 			return nil, errors.New(awserrors.ErrorELBv2SubnetNotFound)
 		}
@@ -209,6 +222,7 @@ func (s *ELBv2ServiceImpl) SetSubnets(ctx context.Context, input *elbv2.SetSubne
 	if lb.InstanceID != "" && s.InstanceLauncher != nil {
 		if err := s.InstanceLauncher.TerminateSystemInstance(lb.InstanceID); err != nil {
 			rollbackNewENIs()
+			resume()
 			slog.ErrorContext(ctx, "SetSubnets: failed to terminate LB VM for relaunch", "arn", *input.LoadBalancerArn, "instanceId", lb.InstanceID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
@@ -267,6 +281,9 @@ func (s *ELBv2ServiceImpl) SetSubnets(ctx context.Context, input *elbv2.SetSubne
 	}); err != nil {
 		slog.ErrorContext(ctx, "SetSubnets: failed to persist LB", "arn", *input.LoadBalancerArn, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if err := s.store.ResumeLBHealth(ctx, lb.LoadBalancerID, lb.InstanceID); err != nil {
+		slog.WarnContext(ctx, "SetSubnets: failed to lift data-path suspension", "lbId", lb.LoadBalancerID, "err", err)
 	}
 
 	slog.InfoContext(ctx, "SetSubnets completed", "arn", *input.LoadBalancerArn, "subnets", len(desired), "added", len(toAdd), "removed", len(toRemove), "state", lb.State)

@@ -209,6 +209,7 @@ echo "[build-microvm-image] nginx: binary + stream module present"
 #   virtio*.ko*    — virtio bus, net, blk, rng, console, and helpers
 #   *fw_cfg*.ko*   — QEMU fw_cfg sysfs driver (delivers boot blobs)
 #   *failover*.ko* — net_failover + failover (virtio_net deps for live migration)
+#   af_packet.ko*  — AF_PACKET sockets (lb-agent's per-NIC gateway ARP probe)
 # All other loadable modules are removed. Drivers compiled into the kernel
 # (CONFIG_VIRTIO_MMIO=y etc.) are unaffected — they live in vmlinuz, not here.
 echo "[build-microvm-image] stripping kernel modules to virtio+fw_cfg only..."
@@ -222,6 +223,7 @@ for kver_dir in "$CHROOT_DIR/lib/modules"/*/; do
     find "$kernel_dir" -name "virtio*.ko.gz" -o -name "virtio*.ko" \
                        -o -name "*fw_cfg*.ko.gz" -o -name "*fw_cfg*.ko" \
                        -o -name "*failover*.ko.gz" -o -name "*failover*.ko" \
+                       -o -name "af_packet.ko.gz" -o -name "af_packet.ko" \
         2>/dev/null | while read -r mod; do
         rel="${mod#"$kernel_dir/"}"
         dest_dir="$tmp_keep/$(dirname "$rel")"
@@ -239,6 +241,15 @@ for kver_dir in "$CHROOT_DIR/lib/modules"/*/; do
         cp "$f" "$dest_dir/"
     done)
     rm -rf "$tmp_keep"
+
+    # lb-agent's data-path probe needs AF_PACKET; without it every LB would
+    # report a dead NIC. Accept a kernel with CONFIG_PACKET built in.
+    if ! find "$kernel_dir" -name "af_packet.ko*" | grep -q .; then
+        if ! grep -q "CONFIG_PACKET=y" "$KERNEL_CONFIG" 2>/dev/null; then
+            echo "ERROR: af_packet.ko missing from the kept modules — lb-agent's data-path probe cannot open its socket" >&2
+            exit 1
+        fi
+    fi
 
     # Decompress kept modules to plain .ko. Alpine ships .ko.gz, but a host
     # kmod that lacks gzip support (e.g. Debian trixie's kmod 34) silently

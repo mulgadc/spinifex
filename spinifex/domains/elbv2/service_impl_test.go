@@ -2108,6 +2108,8 @@ func (m *mockTerminateLauncher) TerminateSystemInstance(instanceID string) error
 	return nil
 }
 
+func (m *mockTerminateLauncher) RebootSystemInstance(_ string) error { return nil }
+
 // --- Scheme unit tests ---
 
 func TestCreateLoadBalancer_InternetFacingScheme_DNSName(t *testing.T) {

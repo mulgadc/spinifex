@@ -2333,6 +2333,7 @@ func (d *Daemon) startCluster() error {
 	}
 
 	d.elbv2Service.StartLifecycleReaper(context.Background())
+	d.elbv2Service.StartDataPathReconciler(d.ctx, d.node)
 
 	d.eksService, err = initServiceWithRetry("EKS service", func() (*ekscluster.EKSServiceImpl, error) {
 		return ekscluster.NewEKSServiceImpl(d.buildEKSServiceDeps())

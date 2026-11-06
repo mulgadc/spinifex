@@ -32,6 +32,8 @@ load_mod qemu_fw_cfg || load_mod fw_cfg_sysfs || true
 load_mod failover || true
 load_mod net_failover || true
 load_mod virtio_net || true
+# lb-agent probes each data NIC's gateway on an AF_PACKET socket.
+load_mod af_packet || true
 
 NETCFG=/sys/firmware/qemu_fw_cfg/by_name/opt/spinifex/netcfg/raw
 i=0

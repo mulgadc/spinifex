@@ -242,6 +242,10 @@ func TestEKS(t *testing.T) {
 		runEBSCSIVolume(t, c, env, artifacts, fx)
 	})
 
+	t.Run("EndpointNICSelfHeal", func(t *testing.T) {
+		runEndpointNICSelfHeal(t, c, env, artifacts)
+	})
+
 	parent := t
 	t.Run("NodegroupDelete", func(t *testing.T) {
 		requireClusterReady(t, fx)
@@ -1060,8 +1064,23 @@ type clusterFixture struct {
 	BystanderProfile string
 }
 
+// clusterShape varies the cluster a fixture builds. The zero value is the
+// shared fixture: public endpoint only, in the suite's own VPC.
+type clusterShape struct {
+	vpcCIDR, subnetCIDR, publicSubnetCIDR string
+	privateAccess                         bool
+}
+
 func setupClusterFixture(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts string) *clusterFixture {
 	t.Helper()
+	return setupClusterFixtureShaped(t, c, env, artifacts, clusterShape{})
+}
+
+func setupClusterFixtureShaped(t *testing.T, c *harness.AWSClient, env *harness.Env, artifacts string, shape clusterShape) *clusterFixture {
+	t.Helper()
+	if shape.vpcCIDR == "" {
+		shape.vpcCIDR, shape.subnetCIDR, shape.publicSubnetCIDR = eksVPCCIDR, eksSubnetCIDR, eksPublicSubnetCIDR
+	}
 	fx := &clusterFixture{ClusterName: fmt.Sprintf("%s-%d", eksClusterPfx, time.Now().Unix())}
 
 	harness.Phase(t, "Resolving caller account")
@@ -1070,12 +1089,12 @@ func setupClusterFixture(t *testing.T, c *harness.AWSClient, env *harness.Env, a
 	fx.AccountID = aws.StringValue(ident.Account)
 	t.Logf("account: %s", fx.AccountID)
 
-	harness.Phase(t, "Creating VPC topology (%s)", eksVPCCIDR)
-	fx.VPCID = harness.CreateVPC(t, c, eksVPCCIDR)
+	harness.Phase(t, "Creating VPC topology (%s)", shape.vpcCIDR)
+	fx.VPCID = harness.CreateVPC(t, c, shape.vpcCIDR)
 	t.Cleanup(func() { harness.DeleteVPC(t, c, fx.VPCID) })
-	fx.SubnetID = harness.CreateSubnet(t, c, fx.VPCID, eksSubnetCIDR)
+	fx.SubnetID = harness.CreateSubnet(t, c, fx.VPCID, shape.subnetCIDR)
 	t.Cleanup(func() { harness.DeleteSubnet(t, c, fx.SubnetID) })
-	fx.Egress = harness.CreateWorkerEgress(t, c, fx.VPCID, fx.SubnetID, eksPublicSubnetCIDR)
+	fx.Egress = harness.CreateWorkerEgress(t, c, fx.VPCID, fx.SubnetID, shape.publicSubnetCIDR)
 	t.Cleanup(func() { harness.DeleteWorkerEgress(t, c, fx.Egress) })
 
 	harness.Phase(t, "Creating cluster %q", fx.ClusterName)
@@ -1088,7 +1107,8 @@ func setupClusterFixture(t *testing.T, c *harness.AWSClient, env *harness.Env, a
 			// Public access (default). The customer VPC has a NAT Gateway
 			// (createWorkerEgress), so the private worker SNATs out to reach
 			// the internet-facing NLB endpoint and pull public CSI images.
-			EndpointPublicAccess: aws.Bool(true),
+			EndpointPublicAccess:  aws.Bool(true),
+			EndpointPrivateAccess: aws.Bool(shape.privateAccess),
 		},
 	})
 	require.NoError(t, err, "create-cluster")

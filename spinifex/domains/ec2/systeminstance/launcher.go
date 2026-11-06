@@ -57,7 +57,7 @@ const (
 	BootAMI BootMode = "ami"
 )
 
-// SystemInstanceLauncher launches and terminates system-managed VMs.
+// SystemInstanceLauncher launches, reboots and terminates system-managed VMs.
 // Defined here to avoid a circular import between elbv2/eks and daemon.
 type SystemInstanceLauncher interface {
 	// LaunchSystemInstance creates and starts a system-managed VM, returning its ID and private IP.
@@ -65,6 +65,10 @@ type SystemInstanceLauncher interface {
 
 	// TerminateSystemInstance stops and cleans up a system-managed VM.
 	TerminateSystemInstance(instanceID string) error
+
+	// RebootSystemInstance restarts a system-managed load balancer VM into a
+	// fresh QEMU on its owning node, keeping its ID, ENIs and addresses.
+	RebootSystemInstance(instanceID string) error
 }
 
 // SystemInstanceInput describes a system VM to launch.

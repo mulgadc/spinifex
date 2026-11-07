@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -51,7 +51,7 @@ func NewENITagReader(js jetstream.JetStream, accountID string) func(ctx context.
 		if err != nil {
 			return nil, false, fmt.Errorf("open ENI bucket: %w", err)
 		}
-		entry, err := kv.Get(ctx, kvutil.AccountKey(accountID, eniID))
+		entry, err := kv.Get(ctx, kvstore.AccountKey(accountID, eniID))
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, false, nil
 		}

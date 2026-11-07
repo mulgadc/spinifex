@@ -11,7 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -69,7 +69,7 @@ func TestS7_EKSBillableReaperNeverTerminatesAControlPlane(t *testing.T) {
 			account: testAccountID,
 			prepare: func(t *testing.T, f *eksServiceFixture) {
 				require.NoError(t, PutClusterMeta(t.Context(), f.kv, sampleClusterMeta("orphan")))
-				_, err := kvutil.DeleteIf(t.Context(), f.kv, ClusterMetaKey("orphan"), kvutil.CASConfig{
+				_, err := kvstore.DeleteIf(t.Context(), f.kv, ClusterMetaKey("orphan"), kvstore.CASConfig{
 					Attempts: maxClusterStateCASRetries,
 					NotFound: ErrClusterNotFound,
 				}, func(*ClusterMeta) error { return nil })

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -94,7 +94,7 @@ func (s *Store) GetLBHealth(ctx context.Context, lbID string) (*LBDataPathRecord
 // UpdateLBHealth applies mutate to the evidence record under optimistic
 // concurrency, creating it when absent. mutate returns false to write nothing.
 func (s *Store) UpdateLBHealth(ctx context.Context, lbID string, mutate func(*LBDataPathRecord) (bool, error)) (*LBDataPathRecord, error) {
-	return kvutil.Update(ctx, s.kv, KeyPrefixLBHealth+lbID, kvutil.CASConfig{
+	return kvstore.Update(ctx, s.kv, KeyPrefixLBHealth+lbID, kvstore.CASConfig{
 		Attempts:       targetGroupCASAttempts,
 		CreateIfAbsent: true,
 		Exhausted: func(_ string, attempts int) error {

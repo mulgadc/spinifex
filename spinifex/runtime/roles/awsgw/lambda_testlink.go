@@ -4,6 +4,7 @@ package awsgw
 
 import (
 	"context"
+	"crypto/cipher"
 	"log/slog"
 	"time"
 
@@ -18,7 +19,7 @@ import (
 
 // lambdaTestExecutor sends each Invoke to this node's test-link daemon over
 // the control socket. Without the daemon's service account it does not serve.
-func lambdaTestExecutor(nc *nats.Conn, node string, codes *codestore.Manager, sessions lambdaEnvironmentRoleIssuer) awsapi.Executor {
+func lambdaTestExecutor(nc *nats.Conn, node string, codes *codestore.Manager, sessions lambdaEnvironmentRoleIssuer, aead cipher.AEAD) awsapi.Executor {
 	daemonUID, err := testlink.LookupUID(testlink.DaemonUser)
 	if err != nil {
 		slog.Error("Lambda test link: control peer account unavailable; Invoke is not served", "err", err)
@@ -31,6 +32,7 @@ func lambdaTestExecutor(nc *nats.Conn, node string, codes *codestore.Manager, se
 		Control:      testLinkControl(daemonUID),
 		RequestLimit: testlink.MaxFrameBytes,
 		Sessions:     sessions,
+		AEAD:         aead,
 		Node:         node,
 		ImageDigest:  lambdaImageDigest,
 		Codes: func(ctx context.Context) (codePresigner, error) {

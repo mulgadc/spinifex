@@ -133,8 +133,7 @@ func TestReadiness_RefusesFunctionsTheTestLinkCannotRun(t *testing.T) {
 	storedFunctionHandler(t, svc, "edgehandler", strings.Repeat("h", 128), "", 9)
 
 	require.NoError(t, svc.ActivatePending(t.Context()))
-	assert.Equal(t, "The function cannot run here: test-link Lambda does not support environment variables.", functionState(t, svc, "env").StateReason)
-	assert.Equal(t, function.StatePending, functionState(t, svc, "env").State)
+	assert.Equal(t, function.StateActive, functionState(t, svc, "env").State)
 	assert.Equal(t, "The function cannot run here: its code is larger than test-link Lambda accepts.", functionState(t, svc, "huge").StateReason)
 	assert.Equal(t, function.StatePending, functionState(t, svc, "huge").State)
 	assert.Equal(t, function.StateActive, functionState(t, svc, "edge").State, "the largest accepted code copy activates")
@@ -159,7 +158,9 @@ func TestReadiness_ServingEndsWhenAcceptingStops(t *testing.T) {
 	}
 	d.serve(t.Context(), ln, srv)
 	require.True(t, d.Serving())
-	go func() { _, _ = (&ControlClient{Name: name, DaemonUID: os.Getuid(), RequestLimit: MaxFrameBytes, ReplyLimit: MaxFrameBytes, IOTimeout: 5 * time.Second}).Exchange(context.Background(), []byte("{}"), testCred, time.Now().Add(5*time.Second)) }()
+	go func() {
+		_, _ = (&ControlClient{Name: name, DaemonUID: os.Getuid(), RequestLimit: MaxFrameBytes, ReplyLimit: MaxFrameBytes, IOTimeout: 5 * time.Second}).Exchange(context.Background(), []byte("{}"), testCred, time.Now().Add(5*time.Second))
+	}()
 	select {
 	case <-inHandle:
 	case <-time.After(5 * time.Second):

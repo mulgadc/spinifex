@@ -23,7 +23,7 @@ import (
 // ControlName is the abstract Unix socket name the node's daemon serves. An
 // abstract name has no directory entry; the kernel frees it when the last
 // reference to the listening socket closes.
-const ControlName = "spinifex-lambda-testlink-control/3"
+const ControlName = "spinifex-lambda-testlink-control/4"
 
 // Service accounts at each end of the control socket.
 const (
@@ -43,9 +43,8 @@ func joinAfterFunc(ctx context.Context, f func()) func() {
 	}
 }
 
-// MaxCredentialBytes bounds the encoded credential; a session's three values
-// fit well inside it.
-const MaxCredentialBytes = 8 << 10
+// MaxCredentialBytes includes the credential and JSON-escaped function environment.
+const MaxCredentialBytes = 40 << 10
 
 // Declared control-socket bounds, independent of any message bus. Request and
 // Reply payloads are capped raw; the frame cap leaves MetadataHeadroomBytes
@@ -61,8 +60,8 @@ const (
 	MaxAdmitted = 2
 )
 
-// Credential is one execution-role session for one attempt; it goes to the
-// guest in the first frame and never on NATS, to disk or into a log.
+// Credential carries one execution-role session and its function environment
+// to the guest, never on NATS, to disk or into a log.
 type Credential = hostlink.Credential
 
 // ErrNotSent means the exchange failed before any request byte was written, so

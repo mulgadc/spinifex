@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"regexp"
 	"strings"
@@ -13,16 +14,16 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/codestore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/lambdaenv"
 )
 
 const (
-	supportedRuntime  = "provided.al2023"
-	defaultTimeout    = 3
-	maxTimeout        = 900
-	defaultMemory     = 128
-	maxMemory         = 10240
-	maxDescription    = 256
-	maxEnvironmentLen = 4096
+	supportedRuntime = "provided.al2023"
+	defaultTimeout   = 3
+	maxTimeout       = 900
+	defaultMemory    = 128
+	maxMemory        = 10240
+	maxDescription   = 256
 	// maxBodyBytes bounds a CreateFunction body: the base64 of the largest
 	// code copy plus room for the rest of the document.
 	maxBodyBytes = (codestore.MaxCodeBytes/3+1)*4 + 1<<20
@@ -258,16 +259,14 @@ func envVars(e *lambda.Environment) (map[string]string, error) {
 		return nil, nil
 	}
 	vars := make(map[string]string, len(e.Variables))
-	size := 0
 	for k, v := range e.Variables {
-		if k == "" {
-			return nil, invalid("Environment variable names must not be empty")
-		}
 		vars[k] = aws.StringValue(v)
-		size += len(k) + len(vars[k])
 	}
-	if size > maxEnvironmentLen {
-		return nil, invalid("Environment variables exceed %d bytes", maxEnvironmentLen)
+	if err := lambdaenv.Validate(vars); err != nil {
+		if errors.Is(err, lambdaenv.ErrName) {
+			return nil, awserrors.Errorf(awserrors.ErrorValidationException, "Environment variable names must match [a-zA-Z][a-zA-Z0-9_]+")
+		}
+		return nil, invalid("%s", err)
 	}
 	return vars, nil
 }

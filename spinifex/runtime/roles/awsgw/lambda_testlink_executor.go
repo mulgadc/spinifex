@@ -4,6 +4,7 @@ package awsgw
 
 import (
 	"context"
+	"crypto/cipher"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -21,6 +22,7 @@ import (
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/lambdaenv"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/lambda/testlink"
 )
 
@@ -58,12 +60,13 @@ type testLinkExecutor struct {
 	// RequestLimit bounds the encoded request frame, without its credential.
 	RequestLimit int64
 	Sessions     lambdaEnvironmentRoleIssuer
+	AEAD         cipher.AEAD
 	Node         string
 	// ImageDigest is the runtime image every request requires of the daemon.
 	ImageDigest string
-	Codes  func(context.Context) (codePresigner, error)
-	Grants func(context.Context) (grantIssuer, error)
-	now    func() time.Time
+	Codes       func(context.Context) (codePresigner, error)
+	Grants      func(context.Context) (grantIssuer, error)
+	now         func() time.Time
 }
 
 var _ awsapi.Executor = (*testLinkExecutor)(nil)
@@ -78,11 +81,16 @@ func (e *testLinkExecutor) InvokeSync(ctx context.Context, in awsapi.SyncInvocat
 		return awsapi.SyncResult{}, &awsapi.RefusalError{Err: awserrors.Errorf(awserrors.ErrorServiceException,
 			"the test execution path has no valid runtime image pin")}
 	}
-	// The test link cannot deliver environment variables, so it refuses a
-	// function that has any before presigning, granting or sending.
+	var environment map[string]string
 	if rec.EnvCipher != "" {
-		return awsapi.SyncResult{}, &awsapi.RefusalError{Err: awserrors.Errorf(awserrors.ErrorServiceException,
-			"the test execution path does not support function environment variables")}
+		if e.AEAD == nil {
+			return awsapi.SyncResult{}, &awsapi.RefusalError{Err: awserrors.Errorf(awserrors.ErrorServiceException, "the function environment is unavailable")}
+		}
+		var err error
+		environment, err = function.OpenEnv(e.AEAD, rec.AccountID, rec.FunctionID, rec.EnvCipher)
+		if err != nil || lambdaenv.Validate(environment) != nil {
+			return awsapi.SyncResult{}, &awsapi.RefusalError{Err: awserrors.Errorf(awserrors.ErrorServiceException, "the function environment is unavailable")}
+		}
 	}
 	if rec.Code.SHA256 == "" || rec.Code.Size <= 0 || rec.Code.Size > testlink.MaxCodeBytes {
 		return awsapi.SyncResult{}, &awsapi.RefusalError{Err: fmt.Errorf("code copy of %d bytes is outside the test bound", rec.Code.Size)}
@@ -152,6 +160,7 @@ func (e *testLinkExecutor) InvokeSync(ctx context.Context, in awsapi.SyncInvocat
 		AccessKeyID:     aws.StringValue(session.Credentials.AccessKeyId),
 		SecretAccessKey: aws.StringValue(session.Credentials.SecretAccessKey),
 		SessionToken:    aws.StringValue(session.Credentials.SessionToken),
+		Environment:     environment,
 	}
 	revoke := func() error {
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), revokeTimeout)

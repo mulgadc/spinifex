@@ -3,6 +3,7 @@
 package awsgw
 
 import (
+	"crypto/cipher"
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/codestore"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
@@ -11,7 +12,7 @@ import (
 
 // Without the test link there is no executor, so Invoke refuses before it
 // presigns, sends or allocates anything, and Lambda stays unrouted.
-func lambdaTestExecutor(*nats.Conn, string, *codestore.Manager, lambdaEnvironmentRoleIssuer) awsapi.Executor {
+func lambdaTestExecutor(*nats.Conn, string, *codestore.Manager, lambdaEnvironmentRoleIssuer, cipher.AEAD) awsapi.Executor {
 	return nil
 }
 

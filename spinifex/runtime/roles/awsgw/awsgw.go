@@ -407,7 +407,7 @@ func launchService(config *config.ClusterConfig) error {
 		Roles:  iamdomain.NewRoleResolver(iamService),
 		Trusts: lambdaRoleTrusts(iamService),
 		AEAD:   lambdaKey.AEAD,
-		Exec:   lambdaTestExecutor(natsConn, config.Node, lambdaCodeStore, stsService),
+		Exec:   lambdaTestExecutor(natsConn, config.Node, lambdaCodeStore, stsService, lambdaKey.AEAD),
 		Mappings: func(ctx context.Context) (lambdaawsapi.MappingStore, error) {
 			return lambdaMappings(ctx)
 		},

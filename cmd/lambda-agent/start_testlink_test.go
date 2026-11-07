@@ -221,6 +221,48 @@ func TestTestlinkProvidesSDKSettingsToBootstrap(t *testing.T) {
 	assert.Equal(t, os.FileMode(0o644), info.Mode().Perm())
 }
 
+func TestTestlinkProvidesFunctionEnvironment(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	h := newHost(t)
+	h.accept(ctx)
+	var b bootstrapStarts
+	done := runTestlinkAsync(ctx, b.testlink(t, h.entries()))
+	conn := h.guest(t)
+	defer conn.Close()
+	hs := hostlink.NewTestStream(conn)
+	cred := testCredential
+	cred.Environment = map[string]string{"GREETING": "hello $WORLD", "PATH": "/my/bin"}
+	req := hostlink.Request{Credential: &cred, GrantID: "g-1", AttemptID: "a-1", RequestID: "r-1", DeadlineMs: time.Now().Add(5 * time.Second).UnixMilli(), Payload: []byte(`{}`)}
+	require.NoError(t, hs.HostSend(req))
+	_, err := hs.HostResult(ctx)
+	require.NoError(t, err)
+	require.NoError(t, wait(t, done, "agent to stop").err)
+	assert.Equal(t, "hello $WORLD", envValue(b.env, "GREETING"))
+	assert.Equal(t, "/my/bin", envValue(b.env, "PATH"))
+	assert.Equal(t, testCredential.SecretAccessKey, envValue(b.env, "AWS_SECRET_ACCESS_KEY"))
+}
+
+func TestTestlinkRejectsReservedFunctionEnvironment(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	h := newHost(t)
+	h.accept(ctx)
+	var b bootstrapStarts
+	done := runTestlinkAsync(ctx, b.testlink(t, h.entries()))
+	conn := h.guest(t)
+	defer conn.Close()
+	cred := testCredential
+	cred.Environment = map[string]string{"AWS_SECRET_ACCESS_KEY": "forged"}
+	req := hostlink.Request{Credential: &cred, GrantID: "g-1", AttemptID: "a-1", RequestID: "r-1", DeadlineMs: time.Now().Add(5 * time.Second).UnixMilli(), Payload: []byte(`{}`)}
+	require.NoError(t, hostlink.NewTestStream(conn).HostSend(req))
+	result := wait(t, done, "agent to refuse the environment")
+	assert.Equal(t, exitRefused, result.code)
+	assert.Error(t, result.err)
+	assert.NotContains(t, result.err.Error(), "forged")
+	assert.Zero(t, b.n)
+}
+
 var testCredential = hostlink.Credential{AccessKeyID: "ASIAGUESTKEY", SecretAccessKey: "guest-secret", SessionToken: "guest-token"}
 
 func envValue(env []string, name string) string {

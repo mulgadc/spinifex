@@ -629,6 +629,7 @@ var (
 	ErrorServiceException               = "ServiceException"
 	ErrorRequestEntityTooLargeException = "RequestEntityTooLargeException"
 	ErrorInvalidRequestContentException = "InvalidRequestContentException"
+	ErrorPreconditionFailedException    = "PreconditionFailedException"
 )
 
 // ResolveErrorCode returns the first registered AWS error code in err's unwrap tree.
@@ -1431,6 +1432,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorServiceException:                  {HTTPCode: 500, Message: "The Lambda service encountered an internal error."},
 	ErrorRequestEntityTooLargeException:    {HTTPCode: 413, Message: "The request payload exceeded the Invoke request body JSON input quota."},
 	ErrorInvalidRequestContentException:    {HTTPCode: 400, Message: "The request body could not be parsed as JSON."},
+	ErrorPreconditionFailedException:       {HTTPCode: 412, Message: "The RevisionId provided does not match the latest RevisionId for the Lambda function or alias."},
 
 	// Route 53.
 	ErrorNoSuchHostedZone:          {HTTPCode: 404, Message: "No hosted zone exists with the ID that you specified."},

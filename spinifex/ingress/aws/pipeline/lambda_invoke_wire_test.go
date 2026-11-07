@@ -47,6 +47,14 @@ func (activeMeta) RollbackCreate(context.Context, string, string, string, uint64
 	return errors.New("unused")
 }
 
+func (activeMeta) BeginCodeUpdate(context.Context, string, string, function.Record, uint64, string) error {
+	return errors.New("unused")
+}
+
+func (activeMeta) CodeUpdated(context.Context, string, string, function.Record, uint64, string, string, int64) (function.Record, uint64, error) {
+	return function.Record{}, 0, errors.New("unused")
+}
+
 // countingExec records how many invocations reached it.
 type countingExec struct{ calls atomic.Int32 }
 

@@ -50,6 +50,10 @@ var routes = []route{
 		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
 			return d.getFunction(ctx, c)
 		}},
+	{Method: "PUT", Pattern: "/2015-03-31/functions/{FunctionName}/code", Action: "UpdateFunctionCode",
+		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
+			return d.updateFunctionCode(ctx, c)
+		}},
 	{Method: "GET", Pattern: "/2015-03-31/functions/{FunctionName}/configuration", Action: "GetFunctionConfiguration",
 		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
 			return d.getFunctionConfiguration(ctx, c)

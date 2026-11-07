@@ -103,10 +103,12 @@ func KVFunctionKey(region, name string) string { return kvFunctionKeyPrefix + re
 
 // NATS subjects served by the daemon's metadata service.
 const (
-	SubjectCreate         = "lambda.function.create"
-	SubjectGet            = "lambda.function.get"
-	SubjectCodeStored     = "lambda.function.code-stored"
-	SubjectRollbackCreate = "lambda.function.rollback-create"
+	SubjectCreate          = "lambda.function.create"
+	SubjectGet             = "lambda.function.get"
+	SubjectCodeStored      = "lambda.function.code-stored"
+	SubjectRollbackCreate  = "lambda.function.rollback-create"
+	SubjectCodeUpdateBegin = "lambda.function.code-update-begin"
+	SubjectCodeUpdated     = "lambda.function.code-updated"
 )
 
 // CreateRequest carries the record the gateway built; the daemon owns the
@@ -158,3 +160,33 @@ type RollbackCreateRequest struct {
 
 // RollbackCreateResponse is empty: success means the name is free.
 type RollbackCreateResponse struct{}
+
+// CodeUpdateBeginRequest asks for an owed upload of new code for the function
+// as it stood at Revision; RevisionID names the new code copy.
+type CodeUpdateBeginRequest struct {
+	Region       string `json:"region"`
+	FunctionName string `json:"functionName"`
+	FunctionID   string `json:"functionId"`
+	Revision     uint64 `json:"revision"`
+	RevisionID   string `json:"revisionId"`
+}
+
+// CodeUpdateBeginResponse is empty: success means the upload is owed.
+type CodeUpdateBeginResponse struct{}
+
+// CodeUpdatedRequest names the stored new copy for the function at Revision.
+type CodeUpdatedRequest struct {
+	Region       string `json:"region"`
+	FunctionName string `json:"functionName"`
+	FunctionID   string `json:"functionId"`
+	Revision     uint64 `json:"revision"`
+	RevisionID   string `json:"revisionId"`
+	SHA256       string `json:"sha256"`
+	Size         int64  `json:"size"`
+}
+
+// CodeUpdatedResponse returns the committed record and its revision.
+type CodeUpdatedResponse struct {
+	Record   Record `json:"record"`
+	Revision uint64 `json:"revision"`
+}

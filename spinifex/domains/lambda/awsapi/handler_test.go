@@ -49,6 +49,12 @@ type localClient struct {
 	failCodeStored bool
 	passOwnerClock bool
 	rollbacks      int
+	// beginErr fails BeginCodeUpdate before the owner sees it.
+	beginErr error
+	// loseUpdatedReply commits CodeUpdated, then reports a transport error.
+	loseUpdatedReply bool
+	// beforeCommit runs once, unlocked, before the next CodeUpdated reaches the owner.
+	beforeCommit func()
 }
 
 var _ function.Client = (*localClient)(nil)
@@ -102,6 +108,37 @@ func (c *localClient) RollbackCreate(ctx context.Context, account, region, name 
 	c.mu.Unlock()
 	_, err := c.svc.RollbackCreate(ctx, &function.RollbackCreateRequest{Region: region, FunctionName: name, Revision: rev}, account)
 	return err
+}
+
+func (c *localClient) BeginCodeUpdate(ctx context.Context, account, region string, rec function.Record, rev uint64, codeRevisionID string) error {
+	c.mu.Lock()
+	fail := c.beginErr
+	c.mu.Unlock()
+	if fail != nil {
+		return fail
+	}
+	_, err := c.svc.BeginCodeUpdate(ctx, &function.CodeUpdateBeginRequest{Region: region, FunctionName: rec.FunctionName,
+		FunctionID: rec.FunctionID, Revision: rev, RevisionID: codeRevisionID}, account)
+	return err
+}
+
+func (c *localClient) CodeUpdated(ctx context.Context, account, region string, rec function.Record, rev uint64, codeRevisionID, sha string, size int64) (function.Record, uint64, error) {
+	c.mu.Lock()
+	hook, lose := c.beforeCommit, c.loseUpdatedReply
+	c.beforeCommit = nil
+	c.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	r, err := c.svc.CodeUpdated(ctx, &function.CodeUpdatedRequest{Region: region, FunctionName: rec.FunctionName, FunctionID: rec.FunctionID,
+		Revision: rev, RevisionID: codeRevisionID, SHA256: sha, Size: size}, account)
+	if err != nil {
+		return function.Record{}, 0, err
+	}
+	if lose {
+		return function.Record{}, 0, errors.New("nats: timeout")
+	}
+	return r.Record, r.Revision, nil
 }
 
 // memStore is an in-memory code store; objects is keyed by Ref.
@@ -182,6 +219,16 @@ func newHarness(t *testing.T, statements ...iamdomain.Statement) (*gwtest.Harnes
 // uploads returns every upload record in the account bucket, by function ID.
 func (e *env) uploads(t *testing.T) map[string]function.Upload {
 	t.Helper()
+	out := map[string]function.Upload{}
+	for _, up := range e.uploadsByRevision(t) {
+		out[up.FunctionID] = up
+	}
+	return out
+}
+
+// uploadsByRevision returns every upload record in the account bucket, by code revision ID.
+func (e *env) uploadsByRevision(t *testing.T) map[string]function.Upload {
+	t.Helper()
 	kv := e.kv(t)
 	keys, err := kv.ListKeys(t.Context())
 	require.NoError(t, err)
@@ -195,7 +242,7 @@ func (e *env) uploads(t *testing.T) map[string]function.Upload {
 		var up function.Upload
 		require.NoError(t, json.Unmarshal(entry.Value(), &up))
 		require.Equal(t, function.KVUploadKey(up.Region, up.FunctionID, up.RevisionID), k)
-		out[up.FunctionID] = up
+		out[up.RevisionID] = up
 	}
 	return out
 }
@@ -203,13 +250,13 @@ func (e *env) uploads(t *testing.T) map[string]function.Upload {
 // requireTracked asserts every code copy in the store has an upload record.
 func (e *env) requireTracked(t *testing.T) {
 	t.Helper()
-	ups := e.uploads(t)
+	ups := e.uploadsByRevision(t)
 	e.store.mu.Lock()
 	defer e.store.mu.Unlock()
 	for ref := range e.store.objects {
-		up, ok := ups[ref.FunctionID]
-		require.True(t, ok, "code copy %s has no upload record", ref.FunctionID)
-		require.Equal(t, ref.RevisionID, up.RevisionID)
+		up, ok := ups[ref.RevisionID]
+		require.True(t, ok, "code copy %s/%s has no upload record", ref.FunctionID, ref.RevisionID)
+		require.Equal(t, ref.FunctionID, up.FunctionID)
 	}
 }
 
@@ -789,13 +836,14 @@ func TestAuthorization(t *testing.T) {
 
 func TestRegistration_ResolvesActionsAndInventory(t *testing.T) {
 	reg := awsapi.NewRegistration(awsapi.Deps{})
-	assert.Equal(t, []string{"CreateEventSourceMapping", "CreateFunction", "DeleteEventSourceMapping", "GetEventSourceMapping", "GetFunction", "GetFunctionCodeSigningConfig", "GetFunctionConfiguration", "Invoke", "ListEventSourceMappings", "ListVersionsByFunction"}, reg.Inventory.Registered)
+	assert.Equal(t, []string{"CreateEventSourceMapping", "CreateFunction", "DeleteEventSourceMapping", "GetEventSourceMapping", "GetFunction", "GetFunctionCodeSigningConfig", "GetFunctionConfiguration", "Invoke", "ListEventSourceMappings", "ListVersionsByFunction", "UpdateFunctionCode"}, reg.Inventory.Registered)
 	assert.Equal(t, "ListVersionsByFunction", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2015-03-31/functions/x/versions", nil)))
 	assert.Equal(t, "DeleteEventSourceMapping", reg.ResolveAction(httptest.NewRequest(http.MethodDelete, "/2015-03-31/event-source-mappings/x", nil)))
 	assert.Equal(t, "GetFunctionCodeSigningConfig", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2020-06-30/functions/x/code-signing-config", nil)))
 	assert.Equal(t, "CreateFunction", reg.ResolveAction(httptest.NewRequest(http.MethodPost, "/2015-03-31/functions", nil)))
 	assert.Equal(t, "GetFunction", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2015-03-31/functions/x", nil)))
 	assert.Equal(t, "GetFunctionConfiguration", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2015-03-31/functions/x/configuration", nil)))
+	assert.Equal(t, "UpdateFunctionCode", reg.ResolveAction(httptest.NewRequest(http.MethodPut, "/2015-03-31/functions/x/code", nil)))
 	assert.Empty(t, reg.ResolveAction(httptest.NewRequest(http.MethodDelete, "/2015-03-31/functions/x", nil)))
 }
 

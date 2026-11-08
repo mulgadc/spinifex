@@ -10,20 +10,16 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 )
 
-const (
-	// KVBucketELBv2Leader holds the lease key of the data-path reconciler.
-	KVBucketELBv2Leader        = "spinifex-elbv2-leader"
-	KVBucketELBv2LeaderVersion = 1
-	KVBucketELBv2LeaderTTL     = 60 * time.Second
+// KeyDataPath is the data-path reconciler's leader lease in the sync bucket.
+const KeyDataPath = "elbv2.datapath"
 
-	lbRepairLeaderKey     = "datapath"
-	lbRepairLeaseRenew    = 20 * time.Second
+const (
+	lbRepairLeaseTTL      = 60 * time.Second
 	lbRepairPassInterval  = 30 * time.Second
 	lbRepairMinFailing    = 60 * time.Second
 	lbRepairMinVMAge      = 5 * time.Minute
@@ -87,34 +83,29 @@ func newLBRepairReconciler(svc *ELBv2ServiceImpl, rebooter SystemInstanceReboote
 	}
 }
 
-// StartDataPathReconciler elects a leader among the daemons and runs the repair
-// pass on it every lbRepairPassInterval until ctx or the service is cancelled.
-func (s *ELBv2ServiceImpl) StartDataPathReconciler(ctx context.Context, holder string) {
-	if s.InstanceLauncher == nil || s.store == nil || s.store.js == nil {
+// NewDataPathLease returns the data-path reconciler's leader lease for holder.
+func NewDataPathLease(store kvsync.KVStore, holder string) *kvsync.Lease {
+	return kvsync.NewLease(store, KeyDataPath, holder, lbRepairLeaseTTL)
+}
+
+// StartDataPathReconciler contends for lease and, while holding it, runs the
+// repair pass every lbRepairPassInterval until ctx or the service is cancelled.
+func (s *ELBv2ServiceImpl) StartDataPathReconciler(ctx context.Context, lease *kvsync.Lease) {
+	if s.InstanceLauncher == nil || s.store == nil || lease == nil {
 		return
 	}
-	lease, err := kvlease.New(kvlease.Config{
-		Name:   "elbv2/datapath",
-		Bucket: s.leaderBucket,
-		Key:    lbRepairLeaderKey,
-		Holder: holder,
-		TTL:    KVBucketELBv2LeaderTTL,
-		Renew:  lbRepairLeaseRenew,
-		Retry:  lbRepairLeaseRenew,
-	})
-	if err != nil {
-		slog.ErrorContext(ctx, "ELBv2 data-path reconciler: lease config invalid", "err", err)
-		return
+	ctx, cancel := context.WithCancel(ctx)
+	if s.ctx != nil {
+		context.AfterFunc(s.ctx, cancel)
 	}
 	rec := newLBRepairReconciler(s, s.InstanceLauncher, lease.Held)
-	go lease.Run(ctx)
+	go kvsync.RunElection(ctx, lease, nil, nil)
 	go func() {
+		defer cancel()
 		ticker := time.NewTicker(lbRepairPassInterval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-s.ctx.Done():
-				return
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
@@ -122,14 +113,6 @@ func (s *ELBv2ServiceImpl) StartDataPathReconciler(ctx context.Context, holder s
 			}
 		}
 	}()
-}
-
-func (s *ELBv2ServiceImpl) leaderBucket(ctx context.Context) (jetstream.KeyValue, error) {
-	return kvlease.OpenBucket(ctx, s.store.js, kvlease.BucketConfig{
-		Name:    KVBucketELBv2Leader,
-		TTL:     KVBucketELBv2LeaderTTL,
-		Version: KVBucketELBv2LeaderVersion,
-	})
 }
 
 // candidate is a load balancer that is failing and may be repaired.

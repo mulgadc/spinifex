@@ -252,8 +252,7 @@ func TestS2_EKSFailedClusterReclaimRunsUnderTheTeardownLease(t *testing.T) {
 	require.NoError(t, err)
 	meta.Status = ClusterStatusFailed
 	require.NoError(t, PutClusterMeta(t.Context(), f.kv, meta))
-	_, err = f.svc.leaderKV.Create(t.Context(), teardownLeaderKey(testAccountID, "alpha"), []byte("node-2"))
-	require.NoError(t, err)
+	holdElsewhere(t, f.svc, teardownLeaseName(testAccountID, "alpha"))
 
 	_, err = f.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, "")
 	code, _, _ := awserrors.ResolveErrorDetail(err)

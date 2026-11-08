@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mulgadc/spinifex/internal/testkit"
+	reconcilelock "github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/domains/route53"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
@@ -329,4 +331,36 @@ func TestDuplicateActiveZoneReturnsToPendingAndItsChangesSettle(t *testing.T) {
 	_, err = newRealizer(svc, newFakeNorthstar(1)).Reconcile(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, "INSYNC", changeStatus(t, svc, acctB, aws.StringValue(out.ChangeInfo.Id)))
+}
+
+// Delegation checks are elected: while a peer holds the verify lease this node
+// looks nothing up and changes no zone, and it asks to come back once a dead
+// holder's lease could be taken over.
+func TestVerifierChecksNothingWhileAPeerHoldsTheLease(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	svc := route53.NewService(route53.NewStore(js))
+	svc.Nameservers = ours
+	dns := &fakeDNS{parents: map[string][]string{"example.com": ours()}}
+	v := route53.NewVerifier(svc.Store())
+	v.Public = dns.lookup
+	store := kvstore.OpenSyncBucket(js)
+	lease := reconcilelock.NewLeaderLease(store, route53.KeyVerify, "node-a")
+	v.Elect = func(ctx context.Context) (func(), time.Duration, bool) { return reconcilelock.ElectPass(ctx, lease) }
+	id := createZone(t, svc, acctA, "example.com")
+
+	syncKV, err := store.KV(ctx)
+	require.NoError(t, err)
+	_, err = syncKV.Put(ctx, route53.KeyVerify, []byte(`{"holder":"node-b","generation":1}`))
+	require.NoError(t, err)
+
+	revisit, err := v.Reconcile(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, dns.lookups, "a node that does not hold the lease must not check delegations")
+	assert.Equal(t, route53.StatePendingNameservers, zone(t, svc, acctA, id).State)
+	assert.Positive(t, revisit, "a held pass comes back so a dead holder is replaced")
+	assert.LessOrEqual(t, revisit, reconcilelock.LeaderTTL/3, "the retry comes within a renewal interval")
+
+	require.NoError(t, syncKV.Delete(ctx, route53.KeyVerify))
+	pass(t, v)
+	assert.Equal(t, route53.StateActive, zone(t, svc, acctA, id).State, "elected, the node checks again")
 }

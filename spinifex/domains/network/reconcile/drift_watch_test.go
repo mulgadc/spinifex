@@ -213,11 +213,11 @@ func TestIntentSource_CoversEveryBucketTheIntentLoadReads(t *testing.T) {
 // The floor is what stops a busy cluster scanning continuously, so it is pinned
 // on the pass rather than inferred from the loop's timing.
 func TestDriftPass_FloorsTheChangeDrivenRate(t *testing.T) {
-	_, nc, js := testutil.StartTestJetStream(t)
+	_, _, js := testutil.StartTestJetStream(t)
 	shrinkDriftTiming(t, time.Minute, time.Hour)
 
 	rec := &stubReconciler{outcomes: []error{nil}}
-	pass := driftPass(rec, nc, js, "us-east-1a", "node-1", nil)
+	pass := driftPass(rec, vpcdLease(js, "node-1"), js, "us-east-1a", nil)
 
 	// The seed pass does no work: the bootstrap ReconcileApplyOnly was the
 	// startup scan and this one must not repeat it.

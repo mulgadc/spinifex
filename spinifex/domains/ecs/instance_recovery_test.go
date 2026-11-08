@@ -49,7 +49,7 @@ func TestRegister_RestoresReapedInstanceToActive(t *testing.T) {
 	rec.LastSeen = time.Now().UTC().Add(-2 * heartbeatTimeout)
 	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec))
 
-	NewScheduler(nc, svc, "test-holder").reapBucket(context.Background(), kv, testAccountID, time.Now().UTC())
+	testScheduler(t, nc, svc, "test-holder").reapBucket(context.Background(), kv, testAccountID, time.Now().UTC())
 
 	reaped := instanceStatus(t, svc, "web", "i-1")
 	require.Equal(t, InstanceStatusDraining, reaped.Status)
@@ -89,7 +89,7 @@ func TestReaper_ReleasesCapacityAndRecoversClean(t *testing.T) {
 	seeded.LastSeen = time.Now().UTC().Add(-2 * heartbeatTimeout)
 	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, InstanceKey("web", "i-1"), &seeded))
 
-	NewScheduler(nc, svc, "test-holder").reapBucket(context.Background(), kv, testAccountID, time.Now().UTC())
+	testScheduler(t, nc, svc, "test-holder").reapBucket(context.Background(), kv, testAccountID, time.Now().UTC())
 
 	reaped := instanceStatus(t, svc, "web", "i-1")
 	require.Equal(t, InstanceStatusDraining, reaped.Status)

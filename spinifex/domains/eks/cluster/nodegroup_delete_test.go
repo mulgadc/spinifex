@@ -662,3 +662,23 @@ func TestDeleteNodegroup_WorkerStuckPastDeadlineEndsDeleteFailedKeepingProfile(t
 	requireErrorCode(t, err, awserrors.ErrorEKSResourceNotFound)
 	assert.NotContains(t, fixtureIAM(t, f).Profiles, rec.InstanceProfileName)
 }
+
+// A finished nodegroup delete drops its teardown lease from the group, so the
+// group does not grow with every nodegroup ever deleted and a recreated
+// nodegroup of the same name starts from a fresh lease.
+func TestNodegroupDelete_RetiresItsTeardownLease(t *testing.T) {
+	t.Parallel()
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+	createReadyNodegroup(t, f, "c1", "ng1", 1)
+	name := teardownLeaseName(testAccountID, "c1/nodegroup/ng1")
+	before := f.svc.leases.Get(name)
+
+	_, err := deleteNodegroupCall(f, "c1", "ng1")
+	require.NoError(t, err)
+	sweepNodegroups(t, f)
+
+	_, err = GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
+	require.ErrorIs(t, err, ErrNodegroupNotFound, "the delete must have completed")
+	assert.NotSame(t, before, f.svc.leases.Get(name), "the finished delete's teardown lease must leave the group")
+}

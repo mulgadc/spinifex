@@ -14,6 +14,7 @@ import (
 	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -571,7 +572,7 @@ func TestScheduler_ReapBucket_StopsStaleInstanceTasks(t *testing.T) {
 	rec.LastSeen = time.Now().UTC().Add(-2 * heartbeatTimeout)
 	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec))
 
-	sc := NewScheduler(nc, svc, "test-holder")
+	sc := testScheduler(t, nc, svc, "test-holder")
 	sc.reapBucket(context.Background(), kv, testAccountID, time.Now().UTC())
 
 	di, err := svc.DescribeContainerInstances(context.Background(), &ecs.DescribeContainerInstancesInput{
@@ -586,32 +587,38 @@ func TestScheduler_ReapBucket_StopsStaleInstanceTasks(t *testing.T) {
 	assert.Equal(t, stoppedReasonReaped, aws.StringValue(dt.Tasks[0].StoppedReason))
 }
 
-// Leader election: first holder wins Create; a second holder is rejected.
+// Leader election: the first holder wins; a second node, and a second attempt
+// in the same process, are both refused while it leads.
 func TestScheduler_AcquireLease_SingleLeader(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	svc := NewService(nc, testRegion, "").WithDeps(Deps{IAM: newStubIAM()})
-	a := NewScheduler(nc, svc, "holder-a")
-	b := NewScheduler(nc, svc, "holder-b")
-	require.True(t, a.lease.TryAcquire(t.Context()))
-	assert.False(t, b.lease.TryAcquire(t.Context()))
-	assert.True(t, a.lease.TryAcquire(t.Context()), "a holder re-attempting keeps leadership")
+	a := testScheduler(t, nc, svc, "holder-a")
+	b := testScheduler(t, nc, svc, "holder-b")
+	tok, err := a.lease.TryLock(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { a.lease.Unlock(context.Background(), tok) })
+
+	_, err = b.lease.TryLock(t.Context())
+	assert.ErrorAs(t, err, new(*kvsync.HeldError))
+	_, err = a.lease.TryLock(t.Context())
+	assert.ErrorAs(t, err, new(*kvsync.HeldError), "a second attempt in the leading process is refused")
+	assert.True(t, a.lease.Held(), "a refused second attempt keeps leadership")
 }
 
-// Leadership owns the Layer-2 bus subscriptions. This pins the wiring — gaining
-// the lease subscribes, losing it unsubscribes — which is the regression this
-// conversion could introduce and the one thing kvlease cannot check itself.
+// Leadership owns the Layer-2 bus subscriptions. This pins the wiring: gaining
+// the lease subscribes, losing it unsubscribes.
 func TestScheduler_LeadershipWiresBusSubscriptions(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	svc := NewService(nc, testRegion, "").WithDeps(Deps{IAM: newStubIAM()})
-	sc := NewScheduler(nc, svc, "holder-a")
-	require.NoError(t, sc.leaseErr)
+	sc := testScheduler(t, nc, svc, "holder-a")
 
 	require.Zero(t, sc.subCount(), "subscriptions must not exist before election")
 
-	require.True(t, sc.lease.TryAcquire(t.Context()))
+	stop, err := electOnce(t, sc)
+	require.NoError(t, err)
 	assert.Equal(t, 4, sc.subCount(), "leader must own the register, heartbeat, task-state and reconcile-wake subscriptions")
 
-	sc.lease.Release(t.Context())
+	stop()
 	assert.Zero(t, sc.subCount(), "a released leader must drop its subscriptions")
 }
 
@@ -620,20 +627,21 @@ func TestScheduler_LeadershipWiresBusSubscriptions(t *testing.T) {
 func TestScheduler_LoserHoldsNoSubscriptions(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	svc := NewService(nc, testRegion, "").WithDeps(Deps{IAM: newStubIAM()})
-	a := NewScheduler(nc, svc, "holder-a")
-	b := NewScheduler(nc, svc, "holder-b")
+	a := testScheduler(t, nc, svc, "holder-a")
+	b := testScheduler(t, nc, svc, "holder-b")
 
-	require.True(t, a.lease.TryAcquire(t.Context()))
-	require.False(t, b.lease.TryAcquire(t.Context()))
+	_, err := electOnce(t, a)
+	require.NoError(t, err)
+	_, err = b.lease.TryLock(t.Context())
+	require.ErrorAs(t, err, new(*kvsync.HeldError))
 	assert.Zero(t, b.subCount())
 	assert.Equal(t, 4, a.subCount())
 }
 
 func TestScheduler_RunReleasesLeaseOnShutdown(t *testing.T) {
-	_, nc, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
 	svc := NewService(nc, testRegion, "").WithDeps(Deps{IAM: newStubIAM()})
-	sc := NewScheduler(nc, svc, "holder-a")
-	require.NoError(t, sc.leaseErr)
+	sc := testScheduler(t, nc, svc, "holder-a")
 
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
@@ -643,10 +651,7 @@ func TestScheduler_RunReleasesLeaseOnShutdown(t *testing.T) {
 	cancel()
 	<-done
 
-	kv, err := InitLeaderBucket(t.Context(), js)
-	require.NoError(t, err)
-	_, err = kv.Get(t.Context(), schedulerLeaderKey)
-	require.Error(t, err, "Run returned with the lease key still present")
+	requireLeaseKeyAbsent(t, nc, "Run returned with the lease key still present")
 }
 
 // --- GPU placement dimension (Epic C2) ---

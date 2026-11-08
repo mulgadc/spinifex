@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -177,6 +179,45 @@ func TestLBRepair_NonHolderNeverRepairs(t *testing.T) {
 	e.leader = true
 	e.pass()
 	assert.Len(t, e.reboots(), 1)
+}
+
+// Leadership comes from the data-path lease: a node repairs nothing while
+// another holds it, repairs once elected, and stops the moment it is taken over.
+func TestLBRepair_ActsOnlyWhileHoldingTheDataPathLease(t *testing.T) {
+	t.Parallel()
+	e := newRepairEnv(t)
+	e.seed("lbr4a", true)
+	e.seed("lbr4b", true)
+	e.fail("lbr4b", 3*time.Minute)
+
+	store := kvstore.OpenSyncBucket(e.svc.store.js)
+	lease := kvsync.NewLease(store, KeyDataPath, "node-a", 300*time.Millisecond)
+	e.rec.isLeader = lease.Held
+	other := NewDataPathLease(kvstore.OpenSyncBucket(e.svc.store.js), "node-b")
+	tok, err := other.TryLock(t.Context())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); kvsync.RunElection(ctx, lease, nil, nil) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	e.pass()
+	assert.False(t, lease.Held())
+	assert.Empty(t, e.reboots(), "a node that lost the election must not repair")
+
+	other.Unlock(t.Context(), tok)
+	require.Eventually(t, lease.Held, 5*time.Second, 5*time.Millisecond)
+	e.pass()
+	assert.Equal(t, []string{"i-lbr4b"}, e.reboots())
+
+	syncKV, err := store.KV(t.Context())
+	require.NoError(t, err)
+	_, err = syncKV.Put(t.Context(), KeyDataPath, []byte(`{"holder":"node-b","generation":0}`))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return !lease.Held() }, 5*time.Second, 5*time.Millisecond)
+	e.pass()
+	assert.Equal(t, []string{"i-lbr4b"}, e.reboots(), "a node whose lease was taken over must not repair")
 }
 
 func TestLBRepair_OneRepairPerPass(t *testing.T) {

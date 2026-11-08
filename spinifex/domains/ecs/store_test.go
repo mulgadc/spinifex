@@ -1,13 +1,9 @@
 package ecs
 
 import (
-	"encoding/json"
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,71 +40,6 @@ func TestGetOrCreateAccountBucket_Idempotent(t *testing.T) {
 
 	assert.Equal(t, AccountBucketName(testAccountID), kv1.Bucket())
 	assert.Equal(t, kv1.Bucket(), kv2.Bucket())
-}
-
-func TestInitLeaderBucket_Idempotent(t *testing.T) {
-	_, nc, _ := testutil.StartTestJetStream(t)
-	js := testutil.NewJetStream(t, nc)
-
-	kv1, err := InitLeaderBucket(t.Context(), js)
-	require.NoError(t, err)
-	require.NotNil(t, kv1)
-	assert.Equal(t, KVBucketECSLeader, kv1.Bucket())
-
-	kv2, err := InitLeaderBucket(t.Context(), js)
-	require.NoError(t, err)
-	require.NotNil(t, kv2)
-	assert.Equal(t, KVBucketECSLeader, kv2.Bucket())
-}
-
-// The scheduler calls InitLeaderBucket on every tick. Creating first and falling
-// back on already-exists reaches the same handle, so idempotency alone cannot
-// tell the two orders apart — only the API traffic can.
-//
-// On a multi-node cluster the stored bucket is replicated while this call asks
-// for the default, and JetStream answers the mismatch with an error rather than
-// a no-op: 10058, once per tick, forever. That is invisible from the caller and
-// showed up only as a 16% JetStream API error rate on the meta leader.
-func TestInitLeaderBucket_AttachesWithoutCreating(t *testing.T) {
-	_, nc, js := testutil.StartTestJetStream(t)
-
-	// Watch from before the first call. The server queues the API advisory after
-	// the reply the caller waits on, so subscribing once the bucket exists can
-	// still catch the create that first call legitimately made.
-	creates := make(chan string, 8)
-	sub, err := nc.Subscribe("$JS.EVENT.ADVISORY.API", func(m *nats.Msg) {
-		var adv struct {
-			Subject string `json:"subject"`
-		}
-		if json.Unmarshal(m.Data, &adv) == nil &&
-			strings.HasPrefix(adv.Subject, "$JS.API.STREAM.CREATE.") {
-			creates <- adv.Subject
-		}
-	})
-	require.NoError(t, err)
-	defer func() { _ = sub.Unsubscribe() }()
-	require.NoError(t, nc.Flush())
-
-	_, err = InitLeaderBucket(t.Context(), js)
-	require.NoError(t, err)
-
-	// Take the first, legitimate create off the channel before the call under
-	// test, so anything left there afterwards can only have come from it.
-	select {
-	case <-creates:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the first InitLeaderBucket must create the bucket")
-	}
-
-	_, err = InitLeaderBucket(t.Context(), js)
-	require.NoError(t, err)
-	require.NoError(t, nc.Flush())
-
-	select {
-	case subject := <-creates:
-		t.Fatalf("InitLeaderBucket issued %s on an existing bucket; attach before create", subject)
-	case <-time.After(250 * time.Millisecond):
-	}
 }
 
 // Key-path helpers must produce the ecs-v1.md Q2 layout exactly: prefixes are

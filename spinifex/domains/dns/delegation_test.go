@@ -14,7 +14,7 @@ import (
 
 func TestDelegateWritesAndWithdrawsPlatformDelegations(t *testing.T) {
 	w, _ := newMultiNodeTestWriter(t)
-	_, err := w.Delegate(t.Context(), nil, "node1", []string{"a.r53e2e.spx3.net", "B.r53e2e.spx3.net."}, false)
+	_, err := w.Delegate(t.Context(), nil, []string{"a.r53e2e.spx3.net", "B.r53e2e.spx3.net."}, false)
 	require.NoError(t, err)
 
 	for _, name := range []string{"a.r53e2e.spx3.net.", "b.r53e2e.spx3.net"} {
@@ -29,7 +29,7 @@ func TestDelegateWritesAndWithdrawsPlatformDelegations(t *testing.T) {
 	assert.True(t, ok, "a name below the base domain is decided by the base zone")
 	assert.Empty(t, servers)
 
-	_, err = w.Delegate(t.Context(), nil, "node1", []string{"a.r53e2e.spx3.net"}, true)
+	_, err = w.Delegate(t.Context(), nil, []string{"a.r53e2e.spx3.net"}, true)
 	require.NoError(t, err)
 	servers, _, _, err = w.PlatformDelegation("a.r53e2e.spx3.net")
 	require.NoError(t, err)
@@ -43,11 +43,11 @@ func TestDelegateWritesAndWithdrawsPlatformDelegations(t *testing.T) {
 // servers written while the cluster published a larger set.
 func TestDelegateRemoveWithdrawsServersFromAnEarlierSet(t *testing.T) {
 	w, _ := newMultiNodeTestWriter(t)
-	_, err := w.Delegate(t.Context(), nil, "node1", []string{"a.r53e2e.spx3.net"}, false)
+	_, err := w.Delegate(t.Context(), nil, []string{"a.r53e2e.spx3.net"}, false)
 	require.NoError(t, err)
 
 	w.nameservers = w.nameservers[:1]
-	_, err = w.Delegate(t.Context(), nil, "node1", []string{"a.r53e2e.spx3.net"}, true)
+	_, err = w.Delegate(t.Context(), nil, []string{"a.r53e2e.spx3.net"}, true)
 	require.NoError(t, err)
 	servers, _, _, err := w.PlatformDelegation("a.r53e2e.spx3.net")
 	require.NoError(t, err)
@@ -66,7 +66,7 @@ func TestPlatformDelegationIgnoresNamesOutsideTheBaseDomain(t *testing.T) {
 func TestDelegateRefusesPlatformAndForeignNames(t *testing.T) {
 	w, _ := newMultiNodeTestWriter(t)
 	for _, name := range []string{"ns1.spx3.net", "x.elb.spx3.net", "compute.spx3.net", "example.com", "spx3.net"} {
-		_, err := w.Delegate(t.Context(), nil, "node1", []string{"ok.spx3.net", name}, false)
+		_, err := w.Delegate(t.Context(), nil, []string{"ok.spx3.net", name}, false)
 		require.Error(t, err, name)
 	}
 	servers, _, _, err := w.PlatformDelegation("ok.spx3.net")
@@ -76,22 +76,45 @@ func TestDelegateRefusesPlatformAndForeignNames(t *testing.T) {
 
 func TestDelegateWaitsForTheZoneWriterElection(t *testing.T) {
 	w, _ := newMultiNodeTestWriter(t)
-	_, nc, _ := testutil.StartTestJetStream(t)
+	_, _, js := testutil.StartTestJetStream(t)
 	prev := delegateLockPoll
 	delegateLockPoll = 10 * time.Millisecond
 	t.Cleanup(func() { delegateLockPoll = prev })
 
-	release, ok := reconcilelock.AcquireLeader(t.Context(), nc, KVBucketDNSReconcile, "node2")
+	release, ok := reconcilelock.AcquireLeader(t.Context(), dnsLease(js, "node2"))
 	require.True(t, ok)
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
-	_, err := w.Delegate(ctx, nc, "node1", []string{"a.spx3.net"}, false)
-	require.ErrorContains(t, err, "another node is writing the zone")
+	node1 := dnsLease(js, "node1")
+	_, err := w.Delegate(ctx, node1, []string{"a.spx3.net"}, false)
+	require.ErrorContains(t, err, "another writer has the zone")
 
 	release()
-	_, err = w.Delegate(t.Context(), nc, "node1", []string{"a.spx3.net"}, false)
+	_, err = w.Delegate(t.Context(), node1, []string{"a.spx3.net"}, false)
 	require.NoError(t, err)
 	servers, _, _, err := w.PlatformDelegation("a.spx3.net")
 	require.NoError(t, err)
 	assert.Len(t, servers, 2)
+}
+
+// The reconcile pass and a delegation on one node share the DNS lease, so a
+// delegation waits for this node's own pass as it would for another node's.
+func TestDelegateWaitsForThisNodesOwnReconcilePass(t *testing.T) {
+	w, _ := newMultiNodeTestWriter(t)
+	_, _, js := testutil.StartTestJetStream(t)
+	prev := delegateLockPoll
+	delegateLockPoll = 10 * time.Millisecond
+	t.Cleanup(func() { delegateLockPoll = prev })
+
+	shared := dnsLease(js, "node1")
+	release, ok := reconcilelock.AcquireLeader(t.Context(), shared)
+	require.True(t, ok, "the reconcile pass holds the lease")
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	_, err := w.Delegate(ctx, shared, []string{"a.spx3.net"}, false)
+	require.ErrorContains(t, err, "another writer has the zone")
+
+	release()
+	_, err = w.Delegate(t.Context(), shared, []string{"a.spx3.net"}, false)
+	require.NoError(t, err)
 }

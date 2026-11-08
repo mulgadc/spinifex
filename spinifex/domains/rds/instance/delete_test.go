@@ -202,7 +202,7 @@ func TestReconciler_AdoptsAnInterruptedFinalSnapshot(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, onePass(t, NewReconciler(h.svc, "node-a")))
+	require.NoError(t, onePass(t, testReconciler(t, h.svc, "node-a")))
 
 	assert.Empty(t, h.snaps.created, "the resumed teardown must adopt the cut snapshot, not create another")
 	stored, found := h.snapshotRecord(t, rec.FinalSnapshotIdentifier)
@@ -328,7 +328,7 @@ func TestReconciler_IsIdempotentAcrossARetriedTeardown(t *testing.T) {
 	rec := abandonedDelete(availableRecord())
 	rec.FinalSnapshotIdentifier = "orders-db-final"
 	seedInstance(t, h.svc, rec)
-	reconciler := NewReconciler(h.svc, "node-a")
+	reconciler := testReconciler(t, h.svc, "node-a")
 	require.NoError(t, onePass(t, reconciler))
 
 	// The record left behind by the interrupted attempt, replayed.
@@ -346,7 +346,7 @@ func TestReconciler_ResumesAnInterruptedDelete(t *testing.T) {
 	h := newLifecycleHarness(t, false)
 	seedInstance(t, h.svc, abandonedDelete(availableRecord()))
 
-	reconciler := NewReconciler(h.svc, "node-a")
+	reconciler := testReconciler(t, h.svc, "node-a")
 	require.NoError(t, onePass(t, reconciler))
 
 	assert.Equal(t, []string{testInstance}, h.launcher.terminated)
@@ -364,7 +364,7 @@ func TestReconciler_LeavesADeleteItsHandlerMayStillBeRunning(t *testing.T) {
 	rec.TransitionStartedAt = &started
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, onePass(t, NewReconciler(h.svc, "node-a")))
+	require.NoError(t, onePass(t, testReconciler(t, h.svc, "node-a")))
 
 	assert.Empty(t, h.launcher.terminated)
 	assert.True(t, h.recordExists(t, testDBID))
@@ -443,7 +443,7 @@ func TestReconciler_ResumesAnInterruptedStop(t *testing.T) {
 	rec.Status = StatusStopping
 	seedInstance(t, h.svc, rec)
 
-	reconciler := NewReconciler(h.svc, "node-a")
+	reconciler := testReconciler(t, h.svc, "node-a")
 	require.NoError(t, onePass(t, reconciler))
 
 	assert.Equal(t, []string{"stop:" + testInstance}, h.cmdr.calls)

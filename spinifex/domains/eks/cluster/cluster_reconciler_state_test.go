@@ -21,14 +21,12 @@ func newStateReconcilerHarness(t *testing.T, opts ...ReconcilerOption) (*Cluster
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
-	leaderKV, err := InitLeaderBucket(t.Context(), js)
-	require.NoError(t, err)
 	acctKV, err := GetOrCreateAccountBucket(t.Context(), js, testAccountID)
 	require.NoError(t, err)
 	require.NoError(t, PutClusterMeta(t.Context(), acctKV, sampleClusterMeta("alpha")))
 
 	base := []ReconcilerOption{WithStateSource(nc, StateSubject(testAccountID, "alpha"))}
-	r, err := NewClusterReconciler(leaderKV, acctKV, testAccountID, "alpha", "holder-1", "", append(base, opts...)...)
+	r, err := NewClusterReconciler(otherNodeLease(js, "holder-1"), acctKV, testAccountID, "alpha", "", append(base, opts...)...)
 	require.NoError(t, err)
 	return r, nc, acctKV
 }
@@ -146,7 +144,6 @@ func TestClusterReconciler_StateReportSubscriptionDrivesActive(t *testing.T) {
 	t.Parallel()
 	r, nc, acctKV := newStateReconcilerHarness(t,
 		WithReconcileInterval(10*time.Millisecond),
-		WithLeaseRefresh(10*time.Second),
 	)
 	freshenClusterCreatedAt(t, acctKV)
 	seedBootstrapState(t, acctKV)

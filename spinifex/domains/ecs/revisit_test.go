@@ -50,7 +50,7 @@ func schedulerRig(t *testing.T) (*Scheduler, *Service, jetstream.KeyValue) {
 	registerInstance(t, svc, "web", "i-1", 4096, 8192)
 	kv, err := svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	return NewScheduler(nc, svc, "test-holder"), svc, kv
+	return testScheduler(t, nc, svc, "test-holder"), svc, kv
 }
 
 // runOneTask places a task and returns its ID, read back from the record rather

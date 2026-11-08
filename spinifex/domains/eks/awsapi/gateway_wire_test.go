@@ -14,6 +14,7 @@ import (
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -55,7 +56,7 @@ func TestEKSRequest_InternalAddonsWireBody(t *testing.T) {
 		ControlPlaneNodes: []ekscluster.ControlPlaneNode{{InstanceID: cpInstanceID}},
 	}))
 
-	svc, err := ekscluster.NewEKSServiceImpl(ekscluster.EKSServiceDeps{NATSConn: nc, Region: authzRegion})
+	svc, err := ekscluster.NewEKSServiceImpl(ekscluster.EKSServiceDeps{NATSConn: nc, Region: authzRegion, Leases: ekscluster.NewClusterLeases(kvstore.OpenSyncBucket(js), "test")})
 	require.NoError(t, err)
 	sub, err := nc.Subscribe("eks.ListStagedAddonManifests", func(m *nats.Msg) {
 		acct := natsmsg.AccountIDFromMsg(m)
@@ -112,7 +113,7 @@ func TestEKSRequest_InternalWorkersWireBody(t *testing.T) {
 		require.NoError(t, ekscluster.PutNodegroupRecord(t.Context(), kv, rec))
 	}
 
-	svc, err := ekscluster.NewEKSServiceImpl(ekscluster.EKSServiceDeps{NATSConn: nc, Region: authzRegion})
+	svc, err := ekscluster.NewEKSServiceImpl(ekscluster.EKSServiceDeps{NATSConn: nc, Region: authzRegion, Leases: ekscluster.NewClusterLeases(kvstore.OpenSyncBucket(js), "test")})
 	require.NoError(t, err)
 	sub, err := nc.Subscribe("eks.ListManagedWorkers", func(m *nats.Msg) {
 		acct := natsmsg.AccountIDFromMsg(m)

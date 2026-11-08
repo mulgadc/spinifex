@@ -49,40 +49,6 @@ func TestGetOrCreateAccountBucket_ReplicasClamped(t *testing.T) {
 	assert.Equal(t, 1, si.Config.Replicas)
 }
 
-func TestInitLeaderBucket_Idempotent(t *testing.T) {
-	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
-	js := testutil.NewJetStream(t, nc)
-
-	kv1, err := InitLeaderBucket(t.Context(), js)
-	require.NoError(t, err)
-	require.NotNil(t, kv1)
-	assert.Equal(t, KVBucketEKSLeader, kv1.Bucket())
-
-	kv2, err := InitLeaderBucket(t.Context(), js)
-	require.NoError(t, err)
-	require.NotNil(t, kv2)
-	assert.Equal(t, KVBucketEKSLeader, kv2.Bucket())
-}
-
-// TestInitLeaderBucket_ReplicasClamped confirms the leader bucket is created
-// with the requested replica count, clamped to a minimum of 1.
-func TestInitLeaderBucket_ReplicasClamped(t *testing.T) {
-	t.Parallel()
-	_, nc, _ := testutil.StartTestJetStream(t)
-	js := testutil.NewJetStream(t, nc)
-
-	kv, err := InitLeaderBucket(t.Context(), js)
-	require.NoError(t, err)
-	require.NotNil(t, kv)
-
-	stream, err := js.Stream(t.Context(), "KV_"+KVBucketEKSLeader)
-	require.NoError(t, err)
-	si, err := stream.Info(t.Context())
-	require.NoError(t, err)
-	assert.Equal(t, 1, si.Config.Replicas)
-}
-
 func TestKeyPaths_MatchQ2Spec(t *testing.T) {
 	cases := []struct {
 		name string

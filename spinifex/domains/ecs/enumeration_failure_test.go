@@ -27,7 +27,7 @@ func dropRevisit(pass func(context.Context) (time.Duration, error)) func(context
 // drained, services never relaunched, stopped tasks never pruned.
 func TestSchedulerPasses_EnumerationFailureIsReported(t *testing.T) {
 	svc, nc := newTestService(t)
-	sc := NewScheduler(nc, svc, "test-holder")
+	sc := testScheduler(t, nc, svc, "test-holder")
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
 

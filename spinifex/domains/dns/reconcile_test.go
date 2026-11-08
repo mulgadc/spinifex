@@ -224,7 +224,7 @@ func TestReconciler_RunReturnsWhenDisabled(t *testing.T) {
 // path of Run: the startup pass must fire before any watch or resync activity,
 // and cancelling ctx must still let the loop return.
 func TestReconciler_RunPerformsStartupPassThenStopsOnCancel(t *testing.T) {
-	_, nc, _ := testutil.StartTestJetStream(t)
+	_, _, js := testutil.StartTestJetStream(t)
 	endpoint, _ := fakeS3(t, "northstar")
 
 	var passes atomic.Int64
@@ -235,8 +235,7 @@ func TestReconciler_RunPerformsStartupPassThenStopsOnCancel(t *testing.T) {
 			Endpoint: endpoint, Bucket: "northstar", Region: "us-east-1",
 			AccessKey: "SYSTEM", SecretKey: "SYSTEMSECRET",
 		},
-		nc:     nc,
-		holder: "test-node",
+		lease: dnsLease(js, "test-node"),
 		desired: func() DesiredSet {
 			passes.Add(1)
 			return DesiredSet{}
@@ -268,7 +267,7 @@ func TestReconciler_RunPerformsStartupPassThenStopsOnCancel(t *testing.T) {
 // acquirable afterwards, not merely on the call returning, since it is the
 // leadership and not the pass that the rest of the cluster waits on.
 func TestReconcileOnce_AStuckPassSurrendersLeadership(t *testing.T) {
-	_, nc, _ := testutil.StartTestJetStream(t)
+	_, _, js := testutil.StartTestJetStream(t)
 	endpoint, _ := fakeS3(t, "northstar")
 
 	blocked := make(chan struct{})
@@ -281,8 +280,7 @@ func TestReconcileOnce_AStuckPassSurrendersLeadership(t *testing.T) {
 			Endpoint: endpoint, Bucket: "northstar", Region: "us-east-1",
 			AccessKey: "SYSTEM", SecretKey: "SYSTEMSECRET",
 		},
-		nc:             nc,
-		holder:         "stuck-node",
+		lease:          dnsLease(js, "stuck-node"),
 		computeTimeout: 100 * time.Millisecond,
 		desired: func() DesiredSet {
 			<-blocked
@@ -302,7 +300,7 @@ func TestReconcileOnce_AStuckPassSurrendersLeadership(t *testing.T) {
 		t.Fatal("reconcileOnce never returned: a stuck pass still holds the lease forever")
 	}
 
-	release, elected := reconcilelock.AcquireLeader(t.Context(), nc, KVBucketDNSReconcile, "next-node")
+	release, elected := reconcilelock.AcquireLeader(t.Context(), dnsLease(js, "next-node"))
 	require.True(t, elected, "another node must be able to take the next cycle")
 	release()
 }

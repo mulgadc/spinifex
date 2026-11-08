@@ -133,6 +133,10 @@ func TestStore_RecreateIfMissingDefaultsOff(t *testing.T) {
 
 	err := store.Set(t.Context(), "acct-a/one", &record{Name: "two"})
 	require.Error(t, err, "recovery must not silently recreate a bucket the caller did not opt into")
+	// The failed recovery dropped the handle, so this one reaches the first-use
+	// open, which must not create either.
+	err = store.Set(t.Context(), "acct-a/one", &record{Name: "three"})
+	require.Error(t, err, "a later operation must not recreate it through the first-use open")
 
 	_, err = js.KeyValue(t.Context(), recoveryBucket)
 	require.Error(t, err, "the bucket must still be absent")

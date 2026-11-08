@@ -15,6 +15,8 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/systeminstance"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -83,6 +85,7 @@ func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
 		GatewayBaseURL:      "https://gw.local:9999",
 		Region:              "us-east-1",
 		HolderID:            "node-1",
+		Leases:              NewClusterLeases(kvstore.OpenSyncBucket(js), "node-1"),
 		SystemGatewayURL:    "https://gw.local:9999",
 		SystemAccessKey:     "AKIAEXAMPLE",
 		SystemSecretKey:     "s3cr3t-key",
@@ -371,6 +374,33 @@ func TestDeleteCluster_EgressEIPReleaseRealErrorLeavesMeta(t *testing.T) {
 	assert.NotEmpty(t, meta.EgressEIPAllocationID, "alloc ID must remain for retry")
 }
 
+// otherNodeLeases is the cluster lease group as another node holding holder
+// sees it, on its own sync bucket over the same JetStream as svc.
+func otherNodeLeases(t *testing.T, svc *EKSServiceImpl, holder string) *kvsync.LeaseGroup {
+	t.Helper()
+	return NewClusterLeases(kvstore.OpenSyncBucket(testutil.NewJetStream(t, svc.deps.NATSConn)), holder)
+}
+
+// holdElsewhere has another node take the named lease until the test ends.
+func holdElsewhere(t *testing.T, svc *EKSServiceImpl, name string) {
+	t.Helper()
+	lease := otherNodeLeases(t, svc, "node-2").Get(name)
+	tok, err := lease.TryLock(t.Context())
+	require.NoError(t, err)
+	t.Cleanup(func() { lease.Unlock(context.Background(), tok) })
+}
+
+// leaseKeyHeld reports whether any node holds the named lease's key.
+func leaseKeyHeld(t *testing.T, svc *EKSServiceImpl, name string) bool {
+	t.Helper()
+	_, _, err := kvstore.OpenSyncBucket(testutil.NewJetStream(t, svc.deps.NATSConn)).Load(t.Context(), KeyPrefixCluster+name)
+	if errors.Is(err, kvsync.ErrNotFound) {
+		return false
+	}
+	require.NoError(t, err)
+	return true
+}
+
 // TestDeleteClusterLeaseHeldElsewhereLeavesTeardownToTheHolder: when another
 // node holds the teardown lease, DeleteCluster still records DELETING and
 // returns it, but runs no teardown of its own and leaves the record for the
@@ -379,8 +409,7 @@ func TestDeleteClusterLeaseHeldElsewhereLeavesTeardownToTheHolder(t *testing.T) 
 	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 
-	_, err := f.svc.leaderKV.Create(t.Context(), teardownLeaderKey(testAccountID, "alpha"), []byte("node-2"))
-	require.NoError(t, err)
+	holdElsewhere(t, f.svc, teardownLeaseName(testAccountID, "alpha"))
 
 	deleteAndSettle(t, f.svc, "alpha")
 
@@ -399,8 +428,73 @@ func TestDeleteClusterTeardownReleasesItsLease(t *testing.T) {
 
 	deleteAndSettle(t, f.svc, "alpha")
 
-	_, getErr := f.svc.leaderKV.Get(t.Context(), teardownLeaderKey(testAccountID, "alpha"))
-	assert.ErrorIs(t, getErr, jetstream.ErrKeyNotFound, "the teardown lease must be released after the teardown")
+	assert.False(t, leaseKeyHeld(t, f.svc, teardownLeaseName(testAccountID, "alpha")),
+		"the teardown lease must be released after the teardown")
+}
+
+// TestDeleteClusterForgetsTheClusterLeases: a deleted cluster's reconciler and
+// teardown leases leave the group, so a cluster recreated under the same name
+// starts from fresh ones.
+func TestDeleteClusterForgetsTheClusterLeases(t *testing.T) {
+	t.Parallel()
+	f := newDeleteClusterFixture(t, "alpha")
+	names := []string{clusterLeaseName(testAccountID, "alpha"), teardownLeaseName(testAccountID, "alpha")}
+	before := make([]*kvsync.Lease, len(names))
+	for i, name := range names {
+		before[i] = f.svc.leases.Get(name)
+	}
+
+	deleteAndSettle(t, f.svc, "alpha")
+
+	_, err := GetClusterMeta(t.Context(), f.kv, "alpha")
+	require.ErrorIs(t, err, ErrClusterNotFound, "the teardown must have completed")
+	for i, name := range names {
+		assert.NotSame(t, before[i], f.svc.leases.Get(name), "%s must be forgotten", name)
+	}
+}
+
+// TestDeleteClusterCleanupLeavesARecreatedClustersLease: once the record is
+// gone a same-name cluster may lead, and the old teardown's cleanup, still
+// running, must not release the lease it took.
+func TestDeleteClusterCleanupLeavesARecreatedClustersLease(t *testing.T) {
+	t.Parallel()
+	f := newDeleteClusterFixture(t, "alpha")
+	entered, release := blockTerminate(t, f.inst)
+	_, err := f.svc.DeleteCluster(context.Background(), deleteInput("alpha"), testAccountID)
+	require.NoError(t, err)
+	waitEntered(t, entered)
+
+	// Holding the gate's mutex parks the old teardown before its gate opens.
+	f.svc.teardownMu.Lock()
+	release()
+	require.Eventually(t, func() bool {
+		_, err := GetClusterMeta(t.Context(), f.kv, "alpha")
+		return errors.Is(err, ErrClusterNotFound)
+	}, 10*time.Second, 10*time.Millisecond, "the old teardown must remove the record")
+
+	replacement := f.svc.leases.Get(clusterLeaseName(testAccountID, "alpha"))
+	tok, err := replacement.TryLock(t.Context())
+	require.NoError(t, err, "the recreated cluster's reconciler takes the free lease")
+	f.svc.teardownMu.Unlock()
+	f.svc.WaitTeardowns()
+
+	assert.True(t, replacement.Held(), "the old teardown's cleanup released the recreated cluster's lease")
+	replacement.Unlock(t.Context(), tok)
+}
+
+// TestDeleteClusterKeepsTheLeasesOfAnIncompleteTeardown: a teardown that
+// fails leaves the record DELETING for retry, so its leases stay in the group.
+func TestDeleteClusterKeepsTheLeasesOfAnIncompleteTeardown(t *testing.T) {
+	t.Parallel()
+	f := newDeleteClusterFixture(t, "alpha")
+	f.eip.releaseErr = errors.New("AddressLimitExceeded")
+	name := teardownLeaseName(testAccountID, "alpha")
+	before := f.svc.leases.Get(name)
+
+	deleteAndSettle(t, f.svc, "alpha")
+
+	requireTeardownRetained(t, f.kv, "alpha")
+	assert.Same(t, before, f.svc.leases.Get(name))
 }
 
 func TestTeardownLeaseReleaseSurvivesCallerCancellation(t *testing.T) {
@@ -413,8 +507,7 @@ func TestTeardownLeaseReleaseSurvivesCallerCancellation(t *testing.T) {
 	cancel()
 	lease.release()
 
-	_, err := f.svc.leaderKV.Get(t.Context(), teardownLeaderKey(testAccountID, "alpha"))
-	require.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+	assert.False(t, leaseKeyHeld(t, f.svc, teardownLeaseName(testAccountID, "alpha")))
 }
 
 // TestDeleteCluster_ManagedCPVPCReclaimsCustomerVPCSGs guards the contract: in

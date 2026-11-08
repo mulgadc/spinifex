@@ -41,6 +41,7 @@ var upgradedBuckets = []string{
 	"spinifex-ecs-leader",
 	"bedrock-leader",
 	"spinifex-eks-leader",
+	"spinifex-elbv2-leader",
 }
 
 // A cluster upgraded from the per-election buckets carries each of them, and

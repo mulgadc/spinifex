@@ -65,6 +65,7 @@ var obsoleteLeaseBuckets = []string{
 	"spinifex-ecs-leader",
 	"bedrock-leader",
 	"spinifex-eks-leader",
+	"spinifex-elbv2-leader",
 }
 
 func findBucket(reports []kvstore.BucketReport, name string) (kvstore.BucketReport, bool) {

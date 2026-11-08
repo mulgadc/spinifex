@@ -7,6 +7,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
+	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	reconcilelock "github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/domains/ochre"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
@@ -25,6 +26,7 @@ type daemonLocks struct {
 	rds            *kvsync.Lease
 	ecs            *kvsync.Lease
 	ochre          *kvsync.Lease
+	elbv2          *kvsync.Lease
 	eks            *kvsync.LeaseGroup
 }
 
@@ -36,6 +38,7 @@ func newDaemonLocks(store kvsync.KVStore, node string) *daemonLocks {
 		rds:            rdsinstance.NewReconcilerLease(store, node),
 		ecs:            ecsdomain.NewSchedulerLease(store, node),
 		ochre:          ochre.NewReaperLease(store, node),
+		elbv2:          elbv2domain.NewDataPathLease(store, node),
 		eks:            ekscluster.NewClusterLeases(store, node),
 	}
 }
@@ -53,6 +56,7 @@ var obsoleteBuckets = []string{
 	"spinifex-ecs-leader",
 	"bedrock-leader",
 	"spinifex-eks-leader",
+	"spinifex-elbv2-leader",
 }
 
 // deleteObsoleteBuckets removes each obsolete bucket that exists. A failure is

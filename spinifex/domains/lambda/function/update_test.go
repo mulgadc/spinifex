@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -103,6 +104,46 @@ func TestCodeUpdate_OnlyOneOfTwoUpdatesFromTheSameRevisionCommits(t *testing.T) 
 	testutil.RequireAWSCode(t, err, awserrors.ErrorResourceConflictException)
 	_, ok := uploadOf(t, svc, "rev-c")
 	assert.False(t, ok, "an update from a stale revision records nothing")
+}
+
+// Both commits read the same record before either writes: the loser is held
+// between its checks and its conditional write while the winner commits.
+func TestCodeUpdate_InterleavedCommitLosesTheConditionalWrite(t *testing.T) {
+	svc, c := newTestService(t)
+	before := mustServe(t, svc)
+	for _, id := range []string{"rev-a", "rev-b"} {
+		_, err := svc.BeginCodeUpdate(t.Context(), beginReq(before.Revision, id), testAccount)
+		require.NoError(t, err)
+	}
+	paused, release := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	svc.now = func() time.Time {
+		if calls.Add(1) == 1 {
+			close(paused)
+			<-release
+		}
+		return c.now()
+	}
+	loserErr := make(chan error, 1)
+	go func() {
+		_, err := svc.CodeUpdated(t.Context(), commitReq(before.Revision, "rev-a"), testAccount)
+		loserErr <- err
+	}()
+	<-paused
+	won, err := svc.CodeUpdated(t.Context(), commitReq(before.Revision, "rev-b"), testAccount)
+	require.NoError(t, err)
+	close(release)
+	testutil.RequireAWSCode(t, <-loserErr, awserrors.ErrorResourceConflictException)
+
+	got := mustGet(t, svc, "hello")
+	assert.Equal(t, won.Revision, got.Revision)
+	assert.Equal(t, "rev-b", got.Record.Code.RevisionID)
+	winner, _ := uploadOf(t, svc, "rev-b")
+	assert.Equal(t, UploadAttached, winner.State)
+	assert.Equal(t, won.Revision, winner.AttachedRevision)
+	loser, ok := uploadOf(t, svc, "rev-a")
+	require.True(t, ok, "the losing copy stays tracked")
+	assert.Equal(t, UploadOwed, loser.State)
 }
 
 func TestCodeUpdate_CommitNeedsItsOwnOwedUpload(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -57,7 +57,7 @@ type Store struct{ kv jetstream.KeyValue }
 
 // Open returns the store, creating its bucket on first use.
 func Open(ctx context.Context, js jetstream.KeyValueManager) (*Store, error) {
-	kv, err := kvutil.GetOrCreateBucket(ctx, js, KVBucket, 1)
+	kv, err := kvstore.GetOrCreateBucket(ctx, js, KVBucket, 1)
 	if err != nil {
 		return nil, fmt.Errorf("eventsource: open bucket: %w", err)
 	}

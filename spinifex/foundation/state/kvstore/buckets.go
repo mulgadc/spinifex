@@ -1,12 +1,4 @@
-// Package kvutil holds the shared NATS KeyValue helpers: bucket get-or-create
-// at the cluster's replica count, bucket enumeration, and schema-version
-// stamping. It is built on github.com/nats-io/nats.go/jetstream, so every
-// operation takes a context and honors the caller's deadline and cancellation
-// rather than the legacy API's fixed internal wait.
-//
-// The helpers take a jetstream.KeyValueManager, which a jetstream.JetStream
-// satisfies, so call sites pass their JetStream handle directly.
-package kvutil
+package kvstore
 
 import (
 	"context"

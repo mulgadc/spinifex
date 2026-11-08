@@ -10,7 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -38,7 +38,7 @@ func TestAccountTermination_VersionCreateRacingADeleteLeavesNoBody(t *testing.T)
 		t.Run(pause, func(t *testing.T) {
 			svc := setupTestService(t)
 			id := createWithUserData(t, svc, "web")
-			header := kvutil.AccountKey(testAccountID, id)
+			header := kvstore.AccountKey(testAccountID, id)
 			raced := false
 			race := func(key string, at string) {
 				if raced || pause != at {
@@ -71,7 +71,7 @@ func TestAccountTermination_DeleteRacingACommittedVersionRemovesIt(t *testing.T)
 	svc := setupTestService(t)
 	id := createWithUserData(t, svc, "web")
 	inner := svc.kv
-	header := kvutil.AccountKey(testAccountID, id)
+	header := kvstore.AccountKey(testAccountID, id)
 	raced := false
 	svc.kv = &faultyKV{KeyValue: inner, beforeDelete: func(key string) {
 		if key != header || raced {
@@ -95,7 +95,7 @@ func TestAccountTermination_FailedVersionCommitRemovesTheBody(t *testing.T) {
 	svc := setupTestService(t)
 	id := createWithUserData(t, svc, "web")
 	before := accountKeys(t, svc.kv, testAccountID)
-	header := kvutil.AccountKey(testAccountID, id)
+	header := kvstore.AccountKey(testAccountID, id)
 	svc.kv = &faultyKV{KeyValue: svc.kv, failUpdate: func(key string) bool { return key == header }}
 
 	_, err := svc.CreateLaunchTemplateVersion(context.Background(), newVersionInput(id), testAccountID)
@@ -110,7 +110,7 @@ func TestAccountTermination_VersionCommitKeepsAConcurrentHeaderChange(t *testing
 	svc := setupTestService(t)
 	id := createWithUserData(t, svc, "web")
 	inner := svc.kv
-	header := kvutil.AccountKey(testAccountID, id)
+	header := kvstore.AccountKey(testAccountID, id)
 	raced := false
 	svc.kv = &faultyKV{KeyValue: inner, beforeUpdate: func(key string) {
 		if key != header || raced {
@@ -215,10 +215,10 @@ func TestAccountTemplateReferences_FailsClosed(t *testing.T) {
 			require.NoError(t, err)
 		},
 		"header unreadable": func(t *testing.T, svc *LaunchTemplateServiceImpl, id string) {
-			svc.kv = &faultyKV{KeyValue: svc.kv, failGet: func(key string) bool { return key == kvutil.AccountKey(testAccountID, id) }}
+			svc.kv = &faultyKV{KeyValue: svc.kv, failGet: func(key string) bool { return key == kvstore.AccountKey(testAccountID, id) }}
 		},
 		"header undecodable": func(t *testing.T, svc *LaunchTemplateServiceImpl, _ string) {
-			_, err := svc.kv.Put(t.Context(), kvutil.AccountKey(testAccountID, "lt-0broken000000000"), []byte("{not json"))
+			_, err := svc.kv.Put(t.Context(), kvstore.AccountKey(testAccountID, "lt-0broken000000000"), []byte("{not json"))
 			require.NoError(t, err)
 		},
 	}
@@ -241,7 +241,7 @@ func TestModifyLaunchTemplate_RacingADeleteIsNotFound(t *testing.T) {
 		t.Run(map[bool]string{false: "by-id", true: "by-name"}[byName], func(t *testing.T) {
 			svc := setupTestService(t)
 			id := createWithUserData(t, svc, "web")
-			header := kvutil.AccountKey(testAccountID, id)
+			header := kvstore.AccountKey(testAccountID, id)
 			raced := false
 			svc.kv = &faultyKV{KeyValue: svc.kv, beforeUpdate: func(key string) {
 				if key == header && !raced {
@@ -275,7 +275,7 @@ func TestModifyLaunchTemplate_RetriesAConcurrentHeaderChange(t *testing.T) {
 	_, err := svc.CreateLaunchTemplateVersion(context.Background(), newVersionInput(id), testAccountID) // v3
 	require.NoError(t, err)
 	inner := svc.kv
-	header := kvutil.AccountKey(testAccountID, id)
+	header := kvstore.AccountKey(testAccountID, id)
 	raced := false
 	svc.kv = &faultyKV{KeyValue: inner, beforeUpdate: func(key string) {
 		if key != header || raced {
@@ -306,7 +306,7 @@ func TestModifyLaunchTemplate_ConflictRetriesAreBounded(t *testing.T) {
 	svc := setupTestService(t)
 	id := createWithUserData(t, svc, "web")
 	inner := svc.kv
-	header := kvutil.AccountKey(testAccountID, id)
+	header := kvstore.AccountKey(testAccountID, id)
 	attempts := 0
 	svc.kv = &faultyKV{KeyValue: inner, beforeUpdate: func(key string) {
 		if key != header {
@@ -333,7 +333,7 @@ func TestModifyLaunchTemplate_ConflictReReadFailureIsInternal(t *testing.T) {
 	svc := setupTestService(t)
 	id := createWithUserData(t, svc, "web")
 	inner := svc.kv
-	header := kvutil.AccountKey(testAccountID, id)
+	header := kvstore.AccountKey(testAccountID, id)
 	conflicted := false
 	svc.kv = &faultyKV{
 		KeyValue: inner,
@@ -410,7 +410,7 @@ func TestDefaultChangeRacingAVersionDeleteFailsNotFound(t *testing.T) {
 	svc := setupTestService(t)
 	id := createWithUserData(t, svc, "web")
 	inner := svc.kv
-	header := kvutil.AccountKey(testAccountID, id)
+	header := kvstore.AccountKey(testAccountID, id)
 	raced := false
 	svc.kv = &faultyKV{KeyValue: inner, beforeUpdate: func(key string) {
 		if key != header || raced {
@@ -460,7 +460,7 @@ func TestFailedVersionDeleteCommitRestoresTheBodies(t *testing.T) {
 	svc := setupTestService(t)
 	id := createWithUserData(t, svc, "web")
 	before := accountKeys(t, svc.kv, testAccountID)
-	header := kvutil.AccountKey(testAccountID, id)
+	header := kvstore.AccountKey(testAccountID, id)
 	svc.kv = &faultyKV{KeyValue: svc.kv, failUpdate: func(key string) bool { return key == header }}
 
 	_, err := deleteVersions(svc, id, "2")
@@ -474,7 +474,7 @@ func TestFailedVersionDeleteCommitRestoresTheBodies(t *testing.T) {
 func TestVersionDeleteRacingATemplateDeleteLeavesNothing(t *testing.T) {
 	svc := setupTestService(t)
 	id := createWithUserData(t, svc, "web")
-	header := kvutil.AccountKey(testAccountID, id)
+	header := kvstore.AccountKey(testAccountID, id)
 	raced := false
 	svc.kv = &faultyKV{KeyValue: svc.kv, beforeUpdate: func(key string) {
 		if key != header || raced {
@@ -531,7 +531,7 @@ func TestDefaultChangeRetriesAfterAConcurrentVersionCreate(t *testing.T) {
 	svc := setupTestService(t)
 	id := createWithUserData(t, svc, "web")
 	inner := svc.kv
-	header := kvutil.AccountKey(testAccountID, id)
+	header := kvstore.AccountKey(testAccountID, id)
 	raced := false
 	svc.kv = &faultyKV{KeyValue: inner, beforeUpdate: func(key string) {
 		if key != header || raced {

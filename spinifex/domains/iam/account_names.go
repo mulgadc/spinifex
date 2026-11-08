@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -41,7 +41,7 @@ type AccountNameIndex struct {
 // NewAccountNameIndex opens (or creates) the reservation bucket at the
 // cluster's replica count.
 func NewAccountNameIndex(ctx context.Context, js jetstream.JetStream) (*AccountNameIndex, error) {
-	kv, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketAccountNames, 5)
+	kv, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketAccountNames, 5)
 	if err != nil {
 		return nil, fmt.Errorf("init account names bucket: %w", err)
 	}

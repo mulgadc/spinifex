@@ -1,4 +1,4 @@
-package kvutil_test
+package kvstore_test
 
 import (
 	"fmt"
@@ -14,11 +14,11 @@ import (
 // a way to create a bucket on a single node without saying so.
 var createFuncs = []string{"CreateKeyValue(", "CreateOrUpdateKeyValue("}
 
-// exempt are the only packages allowed to call them: the chokepoint itself, the
-// lease-bucket opener it shares its rule with, and the test helpers that build
-// buckets for a single embedded server.
+// exempt are the only files and packages allowed to call them: the chokepoint
+// itself, the lease-bucket opener it shares its rule with, and the test helpers
+// that build buckets for a single embedded server.
 var exempt = []string{
-	filepath.Join("spinifex", "foundation", "state", "kvutil"),
+	filepath.Join("spinifex", "foundation", "state", "kvstore", "buckets.go"),
 	filepath.Join("spinifex", "foundation", "state", "kvlease"),
 	filepath.Join("internal", "testkit"),
 }
@@ -62,7 +62,7 @@ func TestKVBuckets_AreOnlyCreatedThroughTheChokepoint(t *testing.T) {
 			return relErr
 		}
 		for _, dir := range exempt {
-			if strings.HasPrefix(rel, dir+string(filepath.Separator)) {
+			if rel == dir || strings.HasPrefix(rel, dir+string(filepath.Separator)) {
 				return nil
 			}
 		}
@@ -89,10 +89,10 @@ func TestKVBuckets_AreOnlyCreatedThroughTheChokepoint(t *testing.T) {
 		for _, h := range hits {
 			fmt.Fprintf(&b, "\n  %s:%d: %s", h.file, h.line, h.call)
 		}
-		t.Fatalf("a KV bucket is created outside kvutil, so its replica count is "+
+		t.Fatalf("a KV bucket is created outside kvstore, so its replica count is "+
 			"whatever the literal happened to say — and an omitted Replicas is one, "+
 			"on a cluster where every node depends on the bucket.\n"+
-			"Use kvutil.GetOrCreateBucket, GetOrCreateBucketWithTTL or "+
+			"Use kvstore.GetOrCreateBucket, GetOrCreateBucketWithTTL or "+
 			"GetOrCreateBucketWithOptions, which take the count from the cluster:%s", b.String())
 	}
 }

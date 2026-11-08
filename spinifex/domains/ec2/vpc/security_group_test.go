@@ -13,7 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1524,7 +1524,7 @@ func findDefaultSGInVPC(t *testing.T, svc *VPCServiceImpl, vpcID string) string 
 	require.NoError(t, err)
 	var matches []string
 	for _, k := range keys {
-		if k == kvutil.VersionKey {
+		if k == kvstore.VersionKey {
 			continue
 		}
 		entry, err := svc.sgKV.Get(t.Context(), k)
@@ -2122,7 +2122,7 @@ func seedAvailableVPC(t *testing.T, svc *VPCServiceImpl, vpcID string) {
 	rec := VPCRecord{VpcId: vpcID, CidrBlock: "10.0.0.0/16", State: "available"}
 	data, err := json.Marshal(rec)
 	require.NoError(t, err)
-	_, err = svc.vpcKV.Put(t.Context(), kvutil.AccountKey(testAccountID, vpcID), data)
+	_, err = svc.vpcKV.Put(t.Context(), kvstore.AccountKey(testAccountID, vpcID), data)
 	require.NoError(t, err)
 }
 
@@ -2359,7 +2359,7 @@ func TestAuthorizeSecurityGroupIngress_AssignsRuleIDs(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 
-	entry, err := svc.sgKV.Get(t.Context(), kvutil.AccountKey(testAccountID, sgID))
+	entry, err := svc.sgKV.Get(t.Context(), kvstore.AccountKey(testAccountID, sgID))
 	require.NoError(t, err)
 	var record SecurityGroupRecord
 	require.NoError(t, json.Unmarshal(entry.Value(), &record))

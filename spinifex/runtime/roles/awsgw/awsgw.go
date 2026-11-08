@@ -58,7 +58,6 @@ import (
 	taggingawsapi "github.com/mulgadc/spinifex/spinifex/domains/tagging/awsapi"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	ingresshttp "github.com/mulgadc/spinifex/spinifex/ingress/http"
@@ -220,14 +219,14 @@ func loadAWSGWConfig(path string) (awsgwTOML, error) {
 // per-account vCPU usage bucket. History is 1: each account key holds a single
 // CAS-updated integer counter, so no revision beyond the latest is worth keeping.
 func openAccountUsageBucket(ctx context.Context, js jetstream.KeyValueManager) (jetstream.KeyValue, error) {
-	return kvutil.GetOrCreateBucket(ctx, js, admissionquota.KVBucketAccountUsage, 1)
+	return kvstore.GetOrCreateBucket(ctx, js, admissionquota.KVBucketAccountUsage, 1)
 }
 
 // openAccountQuotaBucket opens (or idempotently creates) the per-account quota
 // override bucket. History is 1: each key holds the current override set, and
 // no earlier revision of a limit is worth keeping.
 func openAccountQuotaBucket(ctx context.Context, js jetstream.KeyValueManager) (jetstream.KeyValue, error) {
-	return kvutil.GetOrCreateBucket(ctx, js, admissionquota.KVBucketAccountQuota, 1)
+	return kvstore.GetOrCreateBucket(ctx, js, admissionquota.KVBucketAccountQuota, 1)
 }
 
 func launchService(config *config.ClusterConfig) error {

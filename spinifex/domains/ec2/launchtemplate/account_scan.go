@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -37,7 +37,7 @@ type AccountScan struct {
 // Headers and name-index entries are read; version bodies are classified from
 // their keys alone, so template data and user data are never loaded.
 func (s *LaunchTemplateServiceImpl) ScanAccount(ctx context.Context, accountID string) (*AccountScan, error) {
-	keys, err := kvutil.Keys(ctx, s.kv)
+	keys, err := kvstore.Keys(ctx, s.kv)
 	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, fmt.Errorf("list launch-template keys: %w", err)
 	}

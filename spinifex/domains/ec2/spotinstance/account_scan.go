@@ -10,7 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 // AccountSpotRequest is one persisted request in an account scan.
@@ -54,7 +54,7 @@ func scanBucket(ctx context.Context, kv jetstream.KeyValue, accountID string) ([
 	prefix := accountID + "."
 	var out []AccountSpotRequest
 	for _, key := range keys {
-		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvstore.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		entry, err := kv.Get(ctx, key)

@@ -14,7 +14,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -22,7 +22,7 @@ import (
 // so a test can write to it and have the source find it.
 func createIntentBucket(t *testing.T, js jetstream.JetStream, name string) jetstream.KeyValue {
 	t.Helper()
-	kv, err := kvutil.GetOrCreateBucket(t.Context(), js, name, 1)
+	kv, err := kvstore.GetOrCreateBucket(t.Context(), js, name, 1)
 	if err != nil {
 		t.Fatalf("create bucket %s: %v", name, err)
 	}

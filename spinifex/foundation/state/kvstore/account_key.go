@@ -1,4 +1,4 @@
-package kvutil
+package kvstore
 
 // AccountKey returns the conventional account-scoped KV key:
 // "{accountID}.{resourceID}".

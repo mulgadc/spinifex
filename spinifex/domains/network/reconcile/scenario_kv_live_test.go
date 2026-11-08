@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -20,7 +20,7 @@ import (
 // creating the bucket if absent — mirroring how the VPC handlers persist state.
 func seedKV(t *testing.T, js jetstream.JetStream, bucket, key string, rec any) {
 	t.Helper()
-	kv, err := kvutil.GetOrCreateBucket(t.Context(), js, bucket, 10)
+	kv, err := kvstore.GetOrCreateBucket(t.Context(), js, bucket, 10)
 	if err != nil {
 		t.Fatalf("GetOrCreateBucket %s: %v", bucket, err)
 	}

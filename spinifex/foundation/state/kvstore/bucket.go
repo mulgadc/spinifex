@@ -1,6 +1,6 @@
-// Package kvstore provides a typed store over a single JetStream KV bucket:
-// one memoised get-or-create accessor and a JSON codec for the record type,
-// replacing the accessor each caller used to hand-roll.
+// Package kvstore is the shared JetStream KV layer: buckets created at the
+// cluster's replica count, schema versions, CAS loops on any bucket, and a
+// typed store over a single bucket. Every operation honours the caller's context.
 package kvstore
 
 import (
@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -127,7 +126,7 @@ func (b *Bucket) LastSequence(ctx context.Context, filter string) (uint64, error
 		return 0, errors.New(b.cfg.Missing)
 	}
 
-	msg, err := kvutil.LeaderMsgGet(ctx, js, "KV_"+b.cfg.Name, kvutil.MsgGetRequest{LastFor: "$KV." + b.cfg.Name + "." + filter})
+	msg, err := LeaderMsgGet(ctx, js, "KV_"+b.cfg.Name, MsgGetRequest{LastFor: "$KV." + b.cfg.Name + "." + filter})
 	if errors.Is(err, jetstream.ErrMsgNotFound) {
 		return 0, nil
 	}
@@ -162,7 +161,7 @@ func (b *Bucket) Reopen(ctx context.Context) (jetstream.KeyValue, error) {
 		if !b.cfg.RecreateIfMissing {
 			return nil, fmt.Errorf("kvstore: reopen %s: %w", b.cfg.Name, err)
 		}
-		if !errors.Is(err, jetstream.ErrBucketNotFound) && !kvutil.IsStreamUnavailable(err) {
+		if !errors.Is(err, jetstream.ErrBucketNotFound) && !IsStreamUnavailable(err) {
 			return nil, fmt.Errorf("kvstore: reopen %s: %w", b.cfg.Name, err)
 		}
 		slog.WarnContext(ctx, "kvstore: bucket stream lost, recreating", "bucket", b.cfg.Name)
@@ -191,7 +190,7 @@ func (b *Bucket) withKV(ctx context.Context, op func(jetstream.KeyValue) error) 
 		return err
 	}
 	err = op(kv)
-	if err == nil || !kvutil.IsStreamUnavailable(err) {
+	if err == nil || !IsStreamUnavailable(err) {
 		return err
 	}
 
@@ -343,7 +342,7 @@ func (b *Bucket) WatchFrom(ctx context.Context, filter string, revision uint64) 
 	return w, nil
 }
 
-// open attaches to the bucket or creates it through kvutil, which sets the
+// open attaches to the bucket or creates it through GetOrCreateBucket*, which sets the
 // cluster's replica count on every bucket, TTL-backed or not.
 func (b *Bucket) open(ctx context.Context) (jetstream.KeyValue, error) {
 	switch {
@@ -354,19 +353,19 @@ func (b *Bucket) open(ctx context.Context) (jetstream.KeyValue, error) {
 		}
 		return kv, nil
 	case b.cfg.TTL > 0:
-		return kvutil.GetOrCreateBucketWithOptions(ctx, b.js, kvutil.BucketOptions{
+		return GetOrCreateBucketWithOptions(ctx, b.js, BucketOptions{
 			Name:        b.cfg.Name,
 			Description: b.cfg.Description,
 			History:     b.cfg.History,
 			TTL:         b.cfg.TTL,
 		})
 	case b.cfg.Description != "":
-		return kvutil.GetOrCreateBucketWithOptions(ctx, b.js, kvutil.BucketOptions{
+		return GetOrCreateBucketWithOptions(ctx, b.js, BucketOptions{
 			Name:        b.cfg.Name,
 			Description: b.cfg.Description,
 			History:     b.cfg.History,
 		})
 	default:
-		return kvutil.GetOrCreateBucket(ctx, b.js, b.cfg.Name, b.cfg.History)
+		return GetOrCreateBucket(ctx, b.js, b.cfg.Name, b.cfg.History)
 	}
 }

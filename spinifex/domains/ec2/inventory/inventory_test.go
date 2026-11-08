@@ -6,7 +6,7 @@ import (
 
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,13 +25,13 @@ func TestENITagReaderSeparatesGoneFromUnreadable(t *testing.T) {
 	_, _, err := read(t.Context(), "eni-1")
 	require.Error(t, err, "a missing ENI bucket is a read failure, not an absent ENI")
 
-	enis, err := kvutil.GetOrCreateBucket(t.Context(), js, ec2vpc.KVBucketENIs, 10)
+	enis, err := kvstore.GetOrCreateBucket(t.Context(), js, ec2vpc.KVBucketENIs, 10)
 	require.NoError(t, err)
 	good, err := json.Marshal(ec2vpc.ENIRecord{NetworkInterfaceId: "eni-good", Tags: map[string]string{"k": "v"}})
 	require.NoError(t, err)
-	_, err = enis.Put(t.Context(), kvutil.AccountKey("000000000000", "eni-good"), good)
+	_, err = enis.Put(t.Context(), kvstore.AccountKey("000000000000", "eni-good"), good)
 	require.NoError(t, err)
-	_, err = enis.Put(t.Context(), kvutil.AccountKey("000000000000", "eni-corrupt"), []byte("{not json"))
+	_, err = enis.Put(t.Context(), kvstore.AccountKey("000000000000", "eni-corrupt"), []byte("{not json"))
 	require.NoError(t, err)
 
 	tags, found, err := read(t.Context(), "eni-good")

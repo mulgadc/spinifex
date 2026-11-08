@@ -26,7 +26,7 @@ import (
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/pipeline"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/accountadmission"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw/credverify"
@@ -182,7 +182,7 @@ func TestCurrentBehaviour_Session_WebIdentityCredentials(t *testing.T) {
 	e := newCBEnv(t, cbEnvOpts{})
 	issuer := testDiscIssuer
 
-	iamKV, err := kvutil.GetOrCreateBucket(t.Context(), e.js,
+	iamKV, err := kvstore.GetOrCreateBucket(t.Context(), e.js,
 		iamdomain.IAMAccountBucketName(e.accountID), iamdomain.KVBucketIAMAccountVersion)
 	require.NoError(t, err)
 	_, err = iamKV.Put(t.Context(), iamdomain.OIDCProviderKey(issuer), []byte(`{"registered":true}`))

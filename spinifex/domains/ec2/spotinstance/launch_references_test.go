@@ -5,7 +5,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -41,7 +41,7 @@ func TestAccountLaunchReferences_ReadsOpenAndActiveRequests(t *testing.T) {
 func TestAccountLaunchReferences_UnreadableRequestFailsTheCheck(t *testing.T) {
 	svc := setupTestService(t)
 	putSIRs(t, svc, makeSIR("sir-active01", "i-0000000000000001"))
-	_, err := svc.activeKV.Put(t.Context(), kvutil.AccountKey(testAccountID, "sir-broken01"), []byte("{not json"))
+	_, err := svc.activeKV.Put(t.Context(), kvstore.AccountKey(testAccountID, "sir-broken01"), []byte("{not json"))
 	require.NoError(t, err)
 
 	_, err = svc.AccountLaunchReferences(t.Context(), testAccountID)

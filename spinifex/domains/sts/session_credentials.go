@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/nats-io/nats.go/jetstream"
@@ -236,7 +235,7 @@ func (s *STSServiceImpl) deleteSessions(ctx context.Context, match func(*Session
 		return 0, fmt.Errorf("open session credential bucket: %w", err)
 	}
 
-	keys, err := kvutil.Keys(ctx, bucket)
+	keys, err := kvstore.Keys(ctx, bucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return 0, nil
@@ -247,7 +246,7 @@ func (s *STSServiceImpl) deleteSessions(ctx context.Context, match func(*Session
 	var deleted int
 	var errs []error
 	for _, key := range keys {
-		if key == kvutil.VersionKey {
+		if key == kvstore.VersionKey {
 			continue
 		}
 		entry, err := bucket.Get(ctx, key)

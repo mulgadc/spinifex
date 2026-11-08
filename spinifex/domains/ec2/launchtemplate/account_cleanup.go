@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -33,7 +33,7 @@ type AccountCleanup struct {
 // Unreadable headers, their bodies and unrecognised entries are left for the
 // owner scan to report. A listing failure is returned and nothing is removed.
 func (s *LaunchTemplateServiceImpl) CleanupAccountResidue(ctx context.Context, accountID string, settledBefore time.Time) (*AccountCleanup, error) {
-	keys, err := kvutil.Keys(ctx, s.kv)
+	keys, err := kvstore.Keys(ctx, s.kv)
 	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, fmt.Errorf("list launch-template keys: %w", err)
 	}
@@ -145,7 +145,7 @@ type AccountTemplateDeletes struct {
 // it cannot read or decode is left for the owner scan to report. A listing
 // failure is returned and nothing is deleted.
 func (s *LaunchTemplateServiceImpl) DeleteLiveTemplates(ctx context.Context, accountID string, referenced func(id, name string) string) (*AccountTemplateDeletes, error) {
-	keys, err := kvutil.Keys(ctx, s.kv)
+	keys, err := kvstore.Keys(ctx, s.kv)
 	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, fmt.Errorf("list launch-template keys: %w", err)
 	}

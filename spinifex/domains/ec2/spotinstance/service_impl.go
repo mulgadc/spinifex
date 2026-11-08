@@ -15,7 +15,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -41,7 +41,7 @@ func NewSpotInstanceServiceImplWithNATS(ctx context.Context, cfg *config.Config,
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
 	}
 
-	activeKV, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketSpotRequests, 10)
+	activeKV, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketSpotRequests, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketSpotRequests, err)
 	}
@@ -71,7 +71,7 @@ func NewSpotInstanceServiceImplWithNATS(ctx context.Context, cfg *config.Config,
 // getOrCreateTerminalBucket opens the terminal bucket without changing its
 // existing replica or placement configuration, creating it only when absent.
 func getOrCreateTerminalBucket(ctx context.Context, js jetstream.KeyValueManager) (jetstream.KeyValue, error) {
-	return kvutil.GetOrCreateBucketWithOptions(ctx, js, kvutil.BucketOptions{
+	return kvstore.GetOrCreateBucketWithOptions(ctx, js, kvstore.BucketOptions{
 		Name:        KVBucketSpotRequestsTerminal,
 		Description: "Terminal Spot Instance Requests (auto-expire after 1 hour)",
 		History:     1,
@@ -91,7 +91,7 @@ func (s *SpotInstanceServiceImpl) PutSpotInstanceRequests(ctx context.Context, i
 		if err != nil {
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
-		if _, err := s.activeKV.Put(ctx, kvutil.AccountKey(accountID, sirID), data); err != nil {
+		if _, err := s.activeKV.Put(ctx, kvstore.AccountKey(accountID, sirID), data); err != nil {
 			slog.ErrorContext(ctx, "PutSpotInstanceRequests: KV put failed", "sirId", sirID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
@@ -171,7 +171,7 @@ func (s *SpotInstanceServiceImpl) CancelSpotInstanceRequests(ctx context.Context
 	cancelled := make([]*ec2.CancelledSpotInstanceRequest, 0, len(input.SpotInstanceRequestIds))
 	for _, idPtr := range input.SpotInstanceRequestIds {
 		sirID := aws.StringValue(idPtr)
-		key := kvutil.AccountKey(accountID, sirID)
+		key := kvstore.AccountKey(accountID, sirID)
 
 		record, err := s.readRecord(ctx, s.activeKV, key)
 		if err == nil {
@@ -213,7 +213,7 @@ func (s *SpotInstanceServiceImpl) CloseForInstance(ctx context.Context, instance
 
 	prefix := accountID + "."
 	for _, key := range keys {
-		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvstore.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		record, err := s.readRecord(ctx, s.activeKV, key)
@@ -251,7 +251,7 @@ func (s *SpotInstanceServiceImpl) listRequests(ctx context.Context, kv jetstream
 	prefix := accountID + "."
 	var requests []*ec2.SpotInstanceRequest
 	for _, key := range keys {
-		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvstore.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		record, err := s.readRecord(ctx, kv, key)

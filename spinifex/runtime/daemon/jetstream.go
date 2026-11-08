@@ -13,7 +13,6 @@ import (
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -326,8 +325,8 @@ func (m *JetStreamManager) WriteClusterShutdown(state *ClusterShutdownState) err
 	if m.clusterKV == nil {
 		return errors.New("cluster state KV not initialized")
 	}
-	_, err := kvutil.Update(context.Background(), m.clusterKV, "cluster.shutdown",
-		kvutil.CASConfig{CreateIfAbsent: true},
+	_, err := kvstore.Update(context.Background(), m.clusterKV, "cluster.shutdown",
+		kvstore.CASConfig{CreateIfAbsent: true},
 		func(s *ClusterShutdownState) (bool, error) { *s = *state; return true, nil })
 	return err
 }
@@ -340,7 +339,7 @@ func (m *JetStreamManager) UpdateClusterShutdown(mutate func(*ClusterShutdownSta
 	if m.clusterKV == nil {
 		return nil, errors.New("cluster state KV not initialized")
 	}
-	return kvutil.Update(context.Background(), m.clusterKV, "cluster.shutdown", kvutil.CASConfig{},
+	return kvstore.Update(context.Background(), m.clusterKV, "cluster.shutdown", kvstore.CASConfig{},
 		func(s *ClusterShutdownState) (bool, error) { mutate(s); return true, nil })
 }
 
@@ -357,8 +356,8 @@ func (m *JetStreamManager) UpdateMgmtIPAM(subnet string, mutate func(*MgmtIPReco
 	if m.clusterKV == nil {
 		return nil, errors.New("cluster state KV not initialized")
 	}
-	return kvutil.Update(context.Background(), m.clusterKV, mgmtIPAMKeyPrefix+subnet,
-		kvutil.CASConfig{CreateIfAbsent: createIfAbsent},
+	return kvstore.Update(context.Background(), m.clusterKV, mgmtIPAMKeyPrefix+subnet,
+		kvstore.CASConfig{CreateIfAbsent: createIfAbsent},
 		func(r *MgmtIPRecord) (bool, error) { mutate(r); return true, nil })
 }
 

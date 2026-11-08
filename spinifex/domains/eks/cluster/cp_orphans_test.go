@@ -15,7 +15,7 @@ import (
 	ec2inventory "github.com/mulgadc/spinifex/spinifex/domains/ec2/inventory"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -150,13 +150,13 @@ func TestReportControlPlaneOrphansPrintsRows(t *testing.T) {
 func TestFindControlPlaneOrphansCorruptENIRecordIsUnreadable(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	js := testutil.NewJetStream(t, f.svc.deps.NATSConn)
-	enis, err := kvutil.GetOrCreateBucket(t.Context(), js, ec2vpc.KVBucketENIs, 10)
+	enis, err := kvstore.GetOrCreateBucket(t.Context(), js, ec2vpc.KVBucketENIs, 10)
 	require.NoError(t, err)
 	good, err := json.Marshal(ec2vpc.ENIRecord{NetworkInterfaceId: "eni-good", Tags: cpTags("gone", testAccountID)})
 	require.NoError(t, err)
-	_, err = enis.Put(t.Context(), kvutil.AccountKey("000000000000", "eni-good"), good)
+	_, err = enis.Put(t.Context(), kvstore.AccountKey("000000000000", "eni-good"), good)
 	require.NoError(t, err)
-	_, err = enis.Put(t.Context(), kvutil.AccountKey("000000000000", "eni-corrupt"), []byte("{not json"))
+	_, err = enis.Put(t.Context(), kvstore.AccountKey("000000000000", "eni-corrupt"), []byte("{not json"))
 	require.NoError(t, err)
 	res := []*ec2.Reservation{{Instances: []*ec2.Instance{
 		orphanInstance("i-good", "eni-good"), orphanInstance("i-corrupt", "eni-corrupt"), orphanInstance("i-absent", "eni-absent"),

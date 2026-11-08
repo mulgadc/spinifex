@@ -33,7 +33,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -2138,7 +2138,7 @@ func (s *EKSServiceImpl) casUpdateNodegroupTags(ctx context.Context, accountID, 
 	if err != nil {
 		return err
 	}
-	_, err = kvutil.Update(ctx, acctKV, NodegroupKey(cluster, ng), kvutil.CASConfig{
+	_, err = kvstore.Update(ctx, acctKV, NodegroupKey(cluster, ng), kvstore.CASConfig{
 		Attempts:  ngCASMaxRetries,
 		NotFound:  errors.New(awserrors.ErrorEKSResourceNotFound),
 		Exhausted: func(string, int) error { return errors.New(awserrors.ErrorServerInternal) },

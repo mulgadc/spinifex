@@ -16,7 +16,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 // maxGroupsPerUser caps how many groups a single user may belong to. Mirrors the
@@ -106,7 +106,7 @@ func (s *IAMServiceImpl) GetGroup(accountID string, input *iam.GetGroupInput) (*
 
 func (s *IAMServiceImpl) ListGroups(accountID string, input *iam.ListGroupsInput) (*iam.ListGroupsOutput, error) {
 	ctx := context.Background()
-	keys, err := kvutil.Keys(ctx, s.groupsBucket)
+	keys, err := kvstore.Keys(ctx, s.groupsBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return &iam.ListGroupsOutput{
@@ -127,7 +127,7 @@ func (s *IAMServiceImpl) ListGroups(accountID string, input *iam.ListGroupsInput
 	// element at all rather than an empty one.
 	groups := []*iam.Group{}
 	for _, key := range keys {
-		if key == kvutil.VersionKey {
+		if key == kvstore.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, keyPrefix) {
@@ -456,7 +456,7 @@ func (s *IAMServiceImpl) getGroup(ctx context.Context, accountID, groupName stri
 // updateUserCAS.
 func (s *IAMServiceImpl) updateGroupCAS(ctx context.Context, accountID, groupName string, mutate func(*Group) (bool, error)) error {
 	defer s.recordLocks.lock("group/" + accountID + "." + groupName)()
-	_, err := kvutil.Update(ctx, s.groupsBucket, accountID+"."+groupName, iamRecordCASConfig("group", accountID, groupName), mutate)
+	_, err := kvstore.Update(ctx, s.groupsBucket, accountID+"."+groupName, iamRecordCASConfig("group", accountID, groupName), mutate)
 	return err
 }
 
@@ -465,7 +465,7 @@ func (s *IAMServiceImpl) updateGroupCAS(ctx context.Context, accountID, groupNam
 // unmarshal errors so DeleteGroup cannot succeed while a real-but-unreadable
 // member exists. Mirrors findInstanceProfilesForRole.
 func (s *IAMServiceImpl) findGroupMembers(ctx context.Context, accountID, groupName string) ([]*User, error) {
-	keys, err := kvutil.Keys(ctx, s.usersBucket)
+	keys, err := kvstore.Keys(ctx, s.usersBucket)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
 			return nil, nil
@@ -476,7 +476,7 @@ func (s *IAMServiceImpl) findGroupMembers(ctx context.Context, accountID, groupN
 	keyPrefix := accountID + "."
 	var members []*User
 	for _, key := range keys {
-		if key == kvutil.VersionKey {
+		if key == kvstore.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, keyPrefix) {

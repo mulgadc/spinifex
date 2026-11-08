@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 	"github.com/nats-io/nats.go"
@@ -284,7 +284,7 @@ func seedNodeBlobBucket(t *testing.T, nc *nats.Conn, nodeID string, vms map[stri
 	_, err = kv.Put(ctx, daemon.InstanceStatePrefix+nodeID, data)
 	require.NoError(t, err)
 
-	require.NoError(t, kvutil.WriteVersion(ctx, kv, 2))
+	require.NoError(t, kvstore.WriteVersion(ctx, kv, 2))
 	return kv
 }
 
@@ -458,7 +458,7 @@ func TestInstanceStateMigration_OwnershipStampIsSafeToRunTwice(t *testing.T) {
 	require.NoError(t, first.InitKVBucket())
 	before := recordRevision(t, nc, "i-1")
 
-	require.NoError(t, kvutil.WriteVersion(context.Background(), kv, 4))
+	require.NoError(t, kvstore.WriteVersion(context.Background(), kv, 4))
 	second, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, second.InitKVBucket())
@@ -476,7 +476,7 @@ func TestInstanceStateMigration_BlobSplitIsSafeToRunTwice(t *testing.T) {
 	require.NoError(t, first.InitKVBucket())
 	before := recordRevision(t, nc, "i-1")
 
-	require.NoError(t, kvutil.WriteVersion(context.Background(), kv, 2))
+	require.NoError(t, kvstore.WriteVersion(context.Background(), kv, 2))
 	second, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, second.InitKVBucket())

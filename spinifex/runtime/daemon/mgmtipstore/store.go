@@ -23,7 +23,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -111,7 +111,7 @@ type Store struct {
 // Bind attaches to an existing bucket and verifies it. An absent bucket is an
 // error and is never created.
 func Bind(ctx context.Context, js jetstream.KeyValueManager, bucket string) (*Store, error) {
-	kv, err := kvutil.BindDurable(ctx, js, bucket)
+	kv, err := kvstore.BindDurable(ctx, js, bucket)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +121,7 @@ func Bind(ctx context.Context, js jetstream.KeyValueManager, bucket string) (*St
 // Create provisions the bucket and binds it. Only formation calls this; Bind
 // never does.
 func Create(ctx context.Context, js jetstream.JetStream, bucket, description string) (*Store, error) {
-	kv, err := kvutil.GetOrCreateBucketWithOptions(ctx, js, kvutil.BucketOptions{
+	kv, err := kvstore.GetOrCreateBucketWithOptions(ctx, js, kvstore.BucketOptions{
 		Name: bucket, Description: description, History: 1,
 	})
 	if err != nil {
@@ -132,7 +132,7 @@ func Create(ctx context.Context, js jetstream.JetStream, bucket, description str
 
 func attach(ctx context.Context, kv jetstream.KeyValue, bucket string) (*Store, error) {
 	return newStoreWithStat(ctx, kv, bucket, func(ctx context.Context) (*jetstream.StreamInfo, error) {
-		return kvutil.VerifyDurableInfo(ctx, kv, bucket)
+		return kvstore.VerifyDurableInfo(ctx, kv, bucket)
 	})
 }
 
@@ -323,7 +323,7 @@ func (s *Store) Confirm(ctx context.Context, snap *Snapshot) error {
 	}
 	key := keyOf(snap.prefix)
 	if _, err := s.kv.Update(ctx, key, snap.raw, snap.revision); err != nil {
-		if kvutil.IsRevisionConflict(err) {
+		if kvstore.IsRevisionConflict(err) {
 			return fmt.Errorf("%w: subnet %s revision %d", ErrStale, key, snap.revision)
 		}
 		return fmt.Errorf("confirm subnet %s: %w", key, err)
@@ -385,7 +385,7 @@ func (s *Store) Insert(ctx context.Context, snap *Snapshot, instanceID, node str
 		return Entry{}, fmt.Errorf("encode subnet %s: %w", rec.Subnet, err)
 	}
 	if _, err := s.kv.Update(ctx, rec.Subnet, raw, snap.revision); err != nil {
-		if kvutil.IsRevisionConflict(err) {
+		if kvstore.IsRevisionConflict(err) {
 			return Entry{}, fmt.Errorf("%w: subnet %s revision %d", ErrConflict, rec.Subnet, snap.revision)
 		}
 		return Entry{}, fmt.Errorf("insert into subnet %s: %w", rec.Subnet, err)

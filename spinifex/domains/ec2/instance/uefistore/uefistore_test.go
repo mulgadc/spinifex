@@ -11,7 +11,6 @@ import (
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -60,7 +59,7 @@ func TestOpen_CreatesBucketWithNoTTLAndStampsVersion(t *testing.T) {
 	assert.Equal(t, int64(1), status.History())
 	assert.Zero(t, status.TTL(), "a TTL would expire deletion obligations before they are settled")
 
-	v, err := kvutil.ReadVersion(t.Context(), kv)
+	v, err := kvstore.ReadVersion(t.Context(), kv)
 	require.NoError(t, err)
 	assert.Equal(t, uefistore.BucketVersion, v)
 }

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -280,7 +280,7 @@ func casUpdateMeta(ctx context.Context, kv jetstream.KeyValue, name string, muta
 	if name == "" {
 		return errors.New("eks: casUpdateMeta empty name")
 	}
-	_, err := kvutil.Update(ctx, kv, ClusterMetaKey(name), kvutil.CASConfig{
+	_, err := kvstore.Update(ctx, kv, ClusterMetaKey(name), kvstore.CASConfig{
 		Attempts: maxClusterStateCASRetries,
 		NotFound: ErrClusterNotFound,
 		Exhausted: func(string, int) error {
@@ -435,7 +435,7 @@ func putIfGeneration(ctx context.Context, kv jetstream.KeyValue, meta *ClusterMe
 		if err == nil {
 			return nil
 		}
-		if !kvutil.IsRevisionConflict(err) {
+		if !kvstore.IsRevisionConflict(err) {
 			return fmt.Errorf("kv write %s: %w", key, err)
 		}
 	}

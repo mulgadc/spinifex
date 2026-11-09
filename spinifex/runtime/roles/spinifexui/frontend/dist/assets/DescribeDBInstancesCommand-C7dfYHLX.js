@@ -1,0 +1,1 @@
+import{n as e,r as t,t as n}from"./commandBuilder-dSt1UA0H.js";import{F as r}from"./aws-client-DvXrErvJ.js";var i=class extends t(n,e,`DescribeDBInstances`,r){};export{i as t};

@@ -1,0 +1,1 @@
+import{Y as e,pt as t}from"./fetch-http-handler-DApmWand.js";import{wr as n}from"./aws-client-DvXrErvJ.js";var r=t(n,`AmazonEC2ContainerServiceV20141113`,`ECSClient`,e),i={},a=(e,t,n,r)=>[];export{a as n,r,i as t};

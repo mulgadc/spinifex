@@ -20,6 +20,10 @@ type Client interface {
 	CodeStored(ctx context.Context, accountID, region, name string, revision uint64, sha256Hex string, size int64) (Record, uint64, error)
 	// RollbackCreate frees the name while the record is still storing at revision.
 	RollbackCreate(ctx context.Context, accountID, region, name string, revision uint64) error
+	// BeginCodeUpdate records an owed upload of codeRevisionID for the function at revision.
+	BeginCodeUpdate(ctx context.Context, accountID, region string, rec Record, revision uint64, codeRevisionID string) error
+	// CodeUpdated commits the stored copy and returns the updated record and revision.
+	CodeUpdated(ctx context.Context, accountID, region string, rec Record, revision uint64, codeRevisionID, sha256Hex string, size int64) (Record, uint64, error)
 }
 
 // NATSClient is the Client over NATS request/reply to the daemon.
@@ -64,4 +68,21 @@ func (c *NATSClient) RollbackCreate(ctx context.Context, accountID, region, name
 	_, err := natsmsg.NATSRequest[RollbackCreateResponse](ctx, c.conn, SubjectRollbackCreate,
 		&RollbackCreateRequest{Region: region, FunctionName: name, Revision: revision}, metaRequestTimeout, accountID)
 	return err
+}
+
+func (c *NATSClient) BeginCodeUpdate(ctx context.Context, accountID, region string, rec Record, revision uint64, codeRevisionID string) error {
+	_, err := natsmsg.NATSRequest[CodeUpdateBeginResponse](ctx, c.conn, SubjectCodeUpdateBegin,
+		&CodeUpdateBeginRequest{Region: region, FunctionName: rec.FunctionName, FunctionID: rec.FunctionID, Revision: revision, RevisionID: codeRevisionID},
+		metaRequestTimeout, accountID)
+	return err
+}
+
+func (c *NATSClient) CodeUpdated(ctx context.Context, accountID, region string, rec Record, revision uint64, codeRevisionID, sha256Hex string, size int64) (Record, uint64, error) {
+	resp, err := natsmsg.NATSRequest[CodeUpdatedResponse](ctx, c.conn, SubjectCodeUpdated,
+		&CodeUpdatedRequest{Region: region, FunctionName: rec.FunctionName, FunctionID: rec.FunctionID, Revision: revision,
+			RevisionID: codeRevisionID, SHA256: sha256Hex, Size: size}, metaRequestTimeout, accountID)
+	if err != nil {
+		return Record{}, 0, err
+	}
+	return resp.Record, resp.Revision, nil
 }

@@ -40,6 +40,14 @@ func (*spyFunctions) RollbackCreate(context.Context, string, string, string, uin
 	return errors.New("unused")
 }
 
+func (*spyFunctions) BeginCodeUpdate(context.Context, string, string, function.Record, uint64, string) error {
+	return errors.New("unused")
+}
+
+func (*spyFunctions) CodeUpdated(context.Context, string, string, function.Record, uint64, string, string, int64) (function.Record, uint64, error) {
+	return function.Record{}, 0, errors.New("unused")
+}
+
 // spyExec counts invocations that would start an attempt.
 type spyExec struct{ calls atomic.Int32 }
 

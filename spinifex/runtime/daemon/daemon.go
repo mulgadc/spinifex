@@ -1360,6 +1360,8 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{lambdafunction.SubjectGet, handleNATSRequest(d.node, d.lambdaMetaService.Get), "spinifex-workers"},
 			natsSub{lambdafunction.SubjectCodeStored, handleNATSRequest(d.node, d.lambdaMetaService.CodeStored), "spinifex-workers"},
 			natsSub{lambdafunction.SubjectRollbackCreate, handleNATSRequest(d.node, d.lambdaMetaService.RollbackCreate), "spinifex-workers"},
+			natsSub{lambdafunction.SubjectCodeUpdateBegin, handleNATSRequest(d.node, d.lambdaMetaService.BeginCodeUpdate), "spinifex-workers"},
+			natsSub{lambdafunction.SubjectCodeUpdated, handleNATSRequest(d.node, d.lambdaMetaService.CodeUpdated), "spinifex-workers"},
 		)
 	}
 

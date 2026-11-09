@@ -53,6 +53,15 @@ func unsupported(field string) error {
 	return invalid("%s is not supported", field)
 }
 
+// refuseField names a refused member; Publish also says why, since it waits on
+// function versions rather than being out of scope.
+func refuseField(field string) error {
+	if field == "Publish" {
+		return invalid("Publish is not supported: function versions are not yet supported")
+	}
+	return unsupported(field)
+}
+
 // decodeCreate reads a CreateFunction body strictly: a member this build does
 // not model is refused rather than silently dropped.
 func decodeCreate(body []byte) (*lambda.CreateFunctionInput, error) {
@@ -210,14 +219,12 @@ func validateCreate(in *lambda.CreateFunctionInput) (*createParams, error) {
 	if pt := aws.StringValue(in.PackageType); pt != "" && pt != lambda.PackageTypeZip {
 		return nil, invalid("PackageType must be %s", lambda.PackageTypeZip)
 	}
-	if in.Code == nil || len(in.Code.ZipFile) == 0 {
-		return nil, invalid("Code.ZipFile is required")
+	var zipFile []byte
+	if in.Code != nil {
+		zipFile = in.Code.ZipFile
 	}
-	if len(in.Code.ZipFile) > codestore.MaxCodeBytes {
-		return nil, awserrors.Errorf(awserrors.ErrorRequestEntityTooLarge, "Code.ZipFile exceeds %d bytes", codestore.MaxCodeBytes)
-	}
-	if _, err := zip.NewReader(bytes.NewReader(in.Code.ZipFile), int64(len(in.Code.ZipFile))); err != nil {
-		return nil, invalid("Could not unzip uploaded file. Please check your file, then try to upload again.")
+	if err := checkZip("Code.ZipFile", zipFile); err != nil {
+		return nil, err
 	}
 	handler := aws.StringValue(in.Handler)
 	if handler == "" {
@@ -252,6 +259,69 @@ func validateCreate(in *lambda.CreateFunctionInput) (*createParams, error) {
 		Name: name, Role: role, Handler: handler, Description: desc,
 		TimeoutSec: limit, MemorySize: memory, Code: in.Code.ZipFile, Env: env,
 	}, nil
+}
+
+// checkZip applies the inline ZIP rules CreateFunction and UpdateFunctionCode
+// share: present, within the code store bound, and readable as a ZIP.
+func checkZip(field string, code []byte) error {
+	if len(code) == 0 {
+		return invalid("%s is required", field)
+	}
+	if len(code) > codestore.MaxCodeBytes {
+		return awserrors.Errorf(awserrors.ErrorRequestEntityTooLarge, "%s exceeds %d bytes", field, codestore.MaxCodeBytes)
+	}
+	if _, err := zip.NewReader(bytes.NewReader(code), int64(len(code))); err != nil {
+		return invalid("Could not unzip uploaded file. Please check your file, then try to upload again.")
+	}
+	return nil
+}
+
+// decodeUpdateCode reads an UpdateFunctionCode body as strictly as
+// decodeCreate reads CreateFunction.
+func decodeUpdateCode(body []byte) (*lambda.UpdateFunctionCodeInput, error) {
+	in := new(lambda.UpdateFunctionCodeInput)
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(in); err != nil {
+		return nil, invalid("the request body is not a valid UpdateFunctionCode document: %v", err)
+	}
+	return in, nil
+}
+
+// validateUpdateCode refuses every code source but an inline ZIP, publishing
+// and an architecture change, then checks the ZIP.
+func validateUpdateCode(in *lambda.UpdateFunctionCodeInput) error {
+	checks := []struct {
+		field string
+		set   bool
+	}{
+		{"S3Bucket", isSet(in.S3Bucket)},
+		{"S3Key", isSet(in.S3Key)},
+		{"S3ObjectVersion", isSet(in.S3ObjectVersion)},
+		{"ImageUri", isSet(in.ImageUri)},
+		{"Publish", aws.BoolValue(in.Publish)},
+	}
+	for _, c := range checks {
+		if c.set {
+			return refuseField(c.field)
+		}
+	}
+	if in.Architectures != nil {
+		if len(in.Architectures) == 0 {
+			return invalid("1 validation error detected: Value at 'architectures' failed to satisfy constraint: Member must have length greater than or equal to 1")
+		}
+		if len(in.Architectures) > 1 {
+			return invalid("1 validation error detected: Value at 'architectures' failed to satisfy constraint: Member must have length less than or equal to 1")
+		}
+		switch a := aws.StringValue(in.Architectures[0]); a {
+		case lambda.ArchitectureX8664:
+		case lambda.ArchitectureArm64:
+			return unsupported("Architectures " + a)
+		default:
+			return invalid("1 validation error detected: Value at 'architectures' failed to satisfy constraint: Member must satisfy enum value set: [x86_64, arm64]")
+		}
+	}
+	return checkZip("ZipFile", in.ZipFile)
 }
 
 func envVars(e *lambda.Environment) (map[string]string, error) {

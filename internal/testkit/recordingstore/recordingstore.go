@@ -1,8 +1,9 @@
 // Package recordingstore provides an objectstore.ObjectStore fake that records
-// every key it is asked to read and every prefix it is asked to list. It exists
-// so tests can assert an access pattern rather than only an answer: that an
-// account-scoped listing never touched another account's prefix, which an
-// in-memory filter over a whole-cluster read would satisfy just as well.
+// every key it is asked to read, head, write or delete and every prefix it is
+// asked to list. It exists so tests can assert an access pattern rather than
+// only an answer: that an account-scoped listing never touched another
+// account's prefix, which an in-memory filter over a whole-cluster read would
+// satisfy just as well.
 package recordingstore
 
 import (
@@ -16,14 +17,17 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 )
 
-// Store wraps a MemoryObjectStore, appending to Gets and ListPrefixes before
-// delegating. Both slices are safe to read once the call under test returns.
+// Store wraps a MemoryObjectStore, recording each call's key or prefix before
+// delegating. The recordings are safe to read once the call under test returns.
 type Store struct {
 	*objectstore.MemoryObjectStore
 
 	mu           sync.Mutex
 	gets         []string
 	listPrefixes []string
+	heads        []string
+	puts         []string
+	deletes      []string
 }
 
 // New returns a recording store backed by an empty in-memory store.
@@ -47,6 +51,27 @@ func (s *Store) ListObjectsV2(ctx context.Context, input *s3.ListObjectsV2Input)
 	return s.MemoryObjectStore.ListObjectsV2(ctx, input)
 }
 
+func (s *Store) HeadObject(ctx context.Context, input *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
+	s.record(&s.heads, aws.StringValue(input.Key))
+	return s.MemoryObjectStore.HeadObject(ctx, input)
+}
+
+func (s *Store) PutObject(ctx context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+	s.record(&s.puts, aws.StringValue(input.Key))
+	return s.MemoryObjectStore.PutObject(ctx, input)
+}
+
+func (s *Store) DeleteObject(ctx context.Context, input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
+	s.record(&s.deletes, aws.StringValue(input.Key))
+	return s.MemoryObjectStore.DeleteObject(ctx, input)
+}
+
+func (s *Store) record(into *[]string, key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	*into = append(*into, key)
+}
+
 // Gets returns every key read so far.
 func (s *Store) Gets() []string {
 	s.mu.Lock()
@@ -61,12 +86,33 @@ func (s *Store) ListPrefixes() []string {
 	return append([]string(nil), s.listPrefixes...)
 }
 
+// Heads returns every key headed so far.
+func (s *Store) Heads() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.heads...)
+}
+
+// Puts returns every key written so far.
+func (s *Store) Puts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.puts...)
+}
+
+// Deletes returns every key deleted so far.
+func (s *Store) Deletes() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.deletes...)
+}
+
 // Reset drops what has been recorded, so a test can seed fixtures and then
 // assert only on the call it is actually exercising.
 func (s *Store) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.gets, s.listPrefixes = nil, nil
+	s.gets, s.listPrefixes, s.heads, s.puts, s.deletes = nil, nil, nil, nil, nil
 }
 
 // TouchedPrefix reports whether any recorded get or listing named a key under

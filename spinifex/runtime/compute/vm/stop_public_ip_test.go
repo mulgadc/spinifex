@@ -9,6 +9,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -52,6 +53,28 @@ func TestAnOperatorStopReturnsAnAutoAssignedAddressToItsPool(t *testing.T) {
 	assert.Empty(t, stored.PublicIPPool)
 	assert.True(t, stored.AutoAssignPublicIP,
 		"the start that follows has nothing telling it to take a new address")
+}
+
+// Launch stamps the address onto the stored instance as well, and a describe
+// served from the running map in the moment between stopped and the migration
+// reports that stamp whenever the runtime address is empty, so a release clears
+// both.
+func TestAStopReleaseClearsTheLaunchStampedAddress(t *testing.T) {
+	m, store, _, cleaner, _ := shutdownTestManager(t)
+	cleaner.releaseAutoAssignedOK = true
+	v := stoppableWithAddress(t, m, "i-stamped")
+	v.Instance.PublicIpAddress = aws.String("203.0.113.10")
+	v.Instance.PublicDnsName = aws.String("ec2-203-0-113-10.example")
+
+	require.NoError(t, m.Stop(v.ID))
+
+	stored, err := store.LoadStoppedInstance("i-stamped")
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.NotNil(t, stored.Instance)
+	assert.Nil(t, stored.Instance.PublicIpAddress,
+		"the stopped instance still carries the released address as its launch stamp")
+	assert.Nil(t, stored.Instance.PublicDnsName)
 }
 
 // An Elastic IP is the customer's and outlives every stop. The cleaner is what

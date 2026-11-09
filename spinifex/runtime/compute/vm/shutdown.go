@@ -185,6 +185,7 @@ func (m *Manager) stopOne(instance *VM) (bool, error) {
 // Volume seal failures are aggregated and returned so DRAIN fails: the caller
 // must not let the storage layer stop underneath a block map that never sealed.
 func (m *Manager) StopAll() error {
+	m.uefi.stopRetries()
 	snapshot := m.Snapshot()
 	if len(snapshot) == 0 {
 		return nil

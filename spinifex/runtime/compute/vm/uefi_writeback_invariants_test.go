@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -325,17 +326,13 @@ func TestS7_PruneKeepsTheLeaderPointerWhenAReplicaLags(t *testing.T) {
 		"ADR-0003:S7: a prune must keep the leader's pointer, whatever a replica reports")
 }
 
-// A launch that fails after QEMU started settles the store as a stop does
-// only once that QEMU is provably gone; one that may still run keeps its
-// writer and claim, so no other node boots under a live guest (ADR-0003:S7).
-// A stop whose QEMU may still run keeps the claim and owes the write-back; the
-// reaper writes back the guest's last changes only once QEMU is proven gone.
+// A stop whose QEMU may still run leaves its writer running and its claim
+// held, so a live guest's changes keep landing; the reaper settles the store
+// as a stop does only once QEMU is proven gone (ADR-0003:S7).
 func TestS7_AStopSettlesItsStoreOnlyOnceQEMUIsGone(t *testing.T) {
 	f := newUEFIFixture(t)
 	instance, clock := f.running(t)
 	f.m.startUEFIWriter(testUEFIInstance, false)
-	f.guestWrites(t, "before")
-	clock.waitArmed(t)
 	gone := false
 	orig := uefiQEMUGone
 	uefiQEMUGone = func(string) bool { return gone }
@@ -344,25 +341,40 @@ func TestS7_AStopSettlesItsStoreOnlyOnceQEMUIsGone(t *testing.T) {
 
 	f.m.finishStoppedUEFIWriteBack(instance)
 	require.True(t, f.m.UpdateState(testUEFIInstance, func(v *VM) { v.Status = StateStopped }))
+	require.NotNil(t, f.m.uefi.get(testUEFIInstance),
+		"ADR-0003:S7 (uefi_writeback.go finishStoppedUEFIWriteBack): a stop halted write-back while QEMU may still run")
+
 	want := f.guestWrites(t, "after the stop")
+	clock.waitArmed(t)
+	require.Eventually(t, func() bool {
+		clock.Advance(uefiWriteBackQuiet)
+		return bytes.Equal(want, f.pointedRegion(t))
+	}, 10*time.Second, 10*time.Millisecond, "ADR-0003:S7: a change a live guest makes after the stop must land")
+
 	_, err := f.m.NewUEFIWriteBackReaper().Sweep(t.Context())
 	require.NoError(t, err)
-
 	holder, held := f.claimHolder(t)
-	require.True(t, held, "ADR-0003:S7 (uefi_writeback.go finishStoppedUEFIWriteBack): a stop unlocked the claim while QEMU may still write the store")
+	require.True(t, held, "ADR-0003:S7 (uefi_writeback_reaper.go settleOwedUEFIStore): the claim was unlocked while QEMU may still write the store")
 	assert.Equal(t, tok, holder)
-	assert.True(t, f.seed(t).WriteBackOwed)
-	assert.Nil(t, f.m.uefi.get(testUEFIInstance))
+	require.NotNil(t, f.m.uefi.get(testUEFIInstance), "ADR-0003:S7: the reaper settled a writer whose QEMU may still run")
 
+	last := f.guestWrites(t, "the last change")
+	clock.waitArmed(t)
 	gone = true
-	_, err = f.m.NewUEFIWriteBackReaper().Sweep(t.Context())
+	n, err := f.m.NewUEFIWriteBackReaper().Sweep(t.Context())
 	require.NoError(t, err)
 
-	assert.Equal(t, want, f.pointedRegion(t), "ADR-0003:S7: the write-back after QEMU exits carries the guest's last changes")
+	assert.Equal(t, 1, n)
+	assert.Equal(t, last, f.pointedRegion(t), "ADR-0003:S7: the write-back after QEMU exits carries the guest's last changes")
 	_, held = f.claimHolder(t)
-	assert.False(t, held)
+	assert.False(t, held, "once QEMU is gone the store is settled and the claim unlocked")
+	assert.Nil(t, f.m.uefi.get(testUEFIInstance))
+	assert.False(t, f.seed(t).WriteBackOwed)
 }
 
+// A launch that fails after QEMU started settles the store as a stop does
+// only once that QEMU is provably gone; one that may still run keeps its
+// writer and claim, so no other node boots under a live guest (ADR-0003:S7).
 func TestS7_AFailedLaunchSettlesItsStoreOnlyOnceQEMUIsGone(t *testing.T) {
 	for _, exited := range []bool{true, false} {
 		t.Run(fmt.Sprintf("exited=%t", exited), func(t *testing.T) {

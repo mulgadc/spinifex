@@ -38,6 +38,9 @@ const (
 	// uefiWriteBackPoll is how often a writer without a working watcher
 	// compares vars.fd with what last landed.
 	uefiWriteBackPoll = 10 * time.Second
+	// uefiResumeRetry is how often a reconnect that could not read the claim
+	// retries, so recovery plus the cap stays near the 30 s loss budget.
+	uefiResumeRetry = 5 * time.Second
 )
 
 // uefiRegionSum is the hex SHA-256 of a VARS region.
@@ -151,6 +154,24 @@ type uefiWriterState struct {
 	// locks serialises a launch's claim and registration with the stop's and
 	// the reaper's write-back and unlock, per instance.
 	locks keyedMutex
+	// quit closes when the manager stops every instance, ending resume retries.
+	quit     chan struct{}
+	quitOnce sync.Once
+}
+
+func (s *uefiWriterState) quitCh() chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.quit == nil {
+		s.quit = make(chan struct{})
+	}
+	return s.quit
+}
+
+// stopRetries ends every resume retry.
+func (s *uefiWriterState) stopRetries() {
+	ch := s.quitCh()
+	s.quitOnce.Do(func() { close(ch) })
 }
 
 func (s *uefiWriterState) put(w *uefiWriter) *uefiWriter {
@@ -464,22 +485,26 @@ func (m *Manager) settleUEFIStore(ctx context.Context, w *uefiWriter, dirty bool
 
 // finishUEFIWriteBack settles a stopped instance's store once QEMU has exited
 // and before its volumes unmount: the last changes are written back and the
-// claim unlocked, or the claim kept and the write-back owed. A store this
-// launch did not register is settled from seeded.json when the claim is ours.
+// claim unlocked, or the claim kept and the write-back owed.
 func (m *Manager) finishUEFIWriteBack(instance *VM) {
 	if !usesUEFIVarStore(instance) || !m.uefiWriteBackWired() {
 		return
 	}
 	unlock := m.uefi.locks.lock(instance.ID)
 	defer unlock()
-	ctx := context.Background()
+	m.settleStoppedUEFIStore(context.Background(), instance.ID, "stop")
+}
 
-	w := m.uefi.take(instance.ID)
+// settleStoppedUEFIStore halts id's writer and settles its store, reporting
+// whether the store left this node's hands. A store no writer is registered
+// for is settled from seeded.json when the claim is ours. Hold id's lock.
+func (m *Manager) settleStoppedUEFIStore(ctx context.Context, id, trigger string) bool {
+	w := m.uefi.take(id)
 	dirty := false
 	if w != nil {
 		w.halt()
 		if w.stopped != "" {
-			return
+			return true
 		}
 		seed, err := readUEFISeed(w.dir)
 		dirty = w.dirty || err != nil || seed.WriteBackOwed || uefiCopyChanged(w.dir, w.sum)
@@ -489,47 +514,41 @@ func (m *Manager) finishUEFIWriteBack(instance *VM) {
 			claim uefiClaimState
 			err   error
 		)
-		w, seed, claim, err = m.uefiWriterFromSeed(ctx, instance.ID)
+		w, seed, claim, err = m.uefiWriterFromSeed(ctx, id)
 		if errors.Is(err, fs.ErrNotExist) || (err == nil && claim == uefiClaimElsewhere) {
-			return
+			return false
 		}
 		if err != nil {
 			slog.Warn("Cannot settle the stopped instance's UEFI variable store; keeping its claim and copy",
-				"instanceId", instance.ID, "err", err)
-			return
+				"instanceId", id, "err", err)
+			return false
 		}
 		dirty = seed.WriteBackOwed || uefiCopyChanged(w.dir, seed.Sum)
 		if claim == uefiClaimFree && !dirty {
-			return
+			return false
 		}
 	}
-	if out := m.settleUEFIStore(ctx, w, dirty, "stop", "the instance stopped with its variables written back"); out == uefiWriteBackFailed {
-		slog.Warn("The stop could not write the UEFI variable store back; this node keeps its claim and retries",
-			"instanceId", instance.ID, "generation", w.tok.Generation)
+	out := m.settleUEFIStore(ctx, w, dirty, trigger, "the instance stopped with its variables written back")
+	if out == uefiWriteBackFailed {
+		slog.Warn("Could not write the stopped instance's UEFI variable store back; this node keeps its claim and retries",
+			"instanceId", id, "generation", w.tok.Generation, "trigger", trigger)
 	}
+	return out != uefiWriteBackFailed
 }
 
 // finishStoppedUEFIWriteBack settles a stopped instance's store once its QEMU
-// is proven gone. Otherwise the writer stops and the write-back is owed, with
-// the claim kept, so the write-back reaper settles it after QEMU exits.
+// is proven gone. Otherwise the writer keeps running and the claim stays, so a
+// live guest's changes still land; the reaper settles it once QEMU exits.
 func (m *Manager) finishStoppedUEFIWriteBack(instance *VM) {
-	if !usesUEFIVarStore(instance) || !m.uefiWriteBackWired() || uefiQEMUGone(instance.ID) {
+	if !usesUEFIVarStore(instance) || !m.uefiWriteBackWired() {
+		return
+	}
+	if uefiQEMUGone(instance.ID) {
 		m.finishUEFIWriteBack(instance)
 		return
 	}
-	unlock := m.uefi.locks.lock(instance.ID)
-	defer unlock()
-	w := m.uefi.take(instance.ID)
-	if w == nil {
-		return
-	}
-	w.halt()
-	if w.stopped != "" {
-		return
-	}
-	m.writeUEFIOwed(w, true)
-	slog.Warn("The stopped instance's QEMU is not proven gone; keeping the UEFI variable store's claim until it exits",
-		"instanceId", instance.ID, "generation", w.tok.Generation)
+	slog.Warn("The stopped instance's QEMU is not proven gone; its UEFI variable store keeps writing back until it exits",
+		"instanceId", instance.ID)
 }
 
 // uefiQEMUGone reports whether an instance's QEMU is proven gone; replaced in tests.
@@ -587,23 +606,45 @@ func (m *Manager) dropUEFIWriter(instanceID, path string, unlockClean bool) {
 
 // resumeUEFIWriter restarts the writer for a guest that outlived a daemon
 // restart, with its window open, since the restart may have missed changes.
-// One that cannot start now is retried by the write-back reaper.
+// A claim that cannot be read is retried every few seconds, then by the reaper.
 func (m *Manager) resumeUEFIWriter(instance *VM) {
-	m.startWriterFromSeed(instance, "reconnect")
+	if m.startWriterFromSeed(instance, "reconnect") {
+		go m.retryUEFIResume(instance)
+	}
+}
+
+// retryUEFIResume retries a failed reconnect's writer until one is registered,
+// the claim is seen held elsewhere, the guest stops running here, or the
+// daemon shuts down.
+func (m *Manager) retryUEFIResume(instance *VM) {
+	clock, quit := m.uefiClock(), m.uefi.quitCh()
+	for {
+		select {
+		case <-quit:
+			return
+		case <-clock.After(uefiResumeRetry):
+		}
+		if m.deps.ShutdownSignal != nil && m.deps.ShutdownSignal() {
+			return
+		}
+		if !m.startWriterFromSeed(instance, "reconnect-retry") {
+			return
+		}
+	}
 }
 
 // startWriterFromSeed registers and starts the writer seeded.json describes
-// for a running guest, while this node holds the claim at its generation. The
-// reaper's adoption logs quietly, since it retries every sweep.
-func (m *Manager) startWriterFromSeed(instance *VM, trigger string) {
+// for a running guest, while this node holds the claim at its generation. It
+// reports whether the claim could not be read, which is worth retrying.
+func (m *Manager) startWriterFromSeed(instance *VM, trigger string) bool {
 	if !usesUEFIVarStore(instance) || !m.uefiWriteBackWired() {
-		return
+		return false
 	}
-	reaper := trigger == "reaper"
+	retrying := trigger != "reconnect"
 	unlock := m.uefi.locks.lock(instance.ID)
-	if reaper && (m.Status(instance) != StateRunning || m.uefi.get(instance.ID) != nil) {
+	if retrying && (m.Status(instance) != StateRunning || m.uefi.get(instance.ID) != nil) {
 		unlock()
-		return
+		return false
 	}
 	w, _, claim, err := m.uefiWriterFromSeed(context.Background(), instance.ID)
 	held := err == nil && claim == uefiClaimOurs
@@ -614,20 +655,23 @@ func (m *Manager) startWriterFromSeed(instance *VM, trigger string) {
 	}
 	unlock()
 	if !held {
-		if reaper {
-			slog.Debug("Not adopting the running instance's UEFI variable store yet",
-				"instanceId", instance.ID, "claimHeldElsewhere", err == nil, "err", err)
-			return
+		// The claim another node holds, or a missing seeded.json, won't change.
+		retry := err != nil && !errors.Is(err, fs.ErrNotExist)
+		if retrying {
+			slog.Debug("Not starting the running instance's UEFI variable store writer yet",
+				"instanceId", instance.ID, "trigger", trigger, "claimHeldElsewhere", err == nil, "err", err)
+			return retry
 		}
 		recordUEFIWriteBackSkip(trigger)
-		slog.Warn("Cannot resume writing the UEFI variable store back after a restart; the write-back reaper retries",
-			"instanceId", instance.ID, "claimHeldElsewhere", err == nil, "err", err)
-		return
+		slog.Warn("Cannot resume writing the UEFI variable store back after a restart",
+			"instanceId", instance.ID, "claimHeldElsewhere", err == nil, "retry", retry, "err", err)
+		return retry
 	}
-	if reaper {
-		slog.Info("Adopted a running instance's UEFI variable store writer", "instanceId", instance.ID)
+	if retrying {
+		slog.Info("Started a running instance's UEFI variable store writer", "instanceId", instance.ID, "trigger", trigger)
 	}
 	m.startUEFIWriter(instance.ID, true)
+	return false
 }
 
 var (

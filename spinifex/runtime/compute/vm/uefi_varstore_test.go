@@ -147,6 +147,7 @@ func newUEFIFixture(t *testing.T) *uefiFixture {
 			Records: records, Claims: uefistore.NewClaims(kvstore.OpenSyncBucket(js), "node-a"), Liveness: f.liveness,
 		},
 	})
+	t.Cleanup(f.m.uefi.stopRetries)
 	return f
 }
 

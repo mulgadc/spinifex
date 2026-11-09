@@ -71,21 +71,20 @@ func (m *Manager) adoptRunningUEFIStore(id string) {
 	m.startWriterFromSeed(v, "reaper")
 }
 
-// settleOwedUEFIStore writes back id's owed store and unlocks its claim. A
-// claim another node holds means that node took the instance over, so the
-// owed changes can never land: the mark and the local copy go (ADR-0003:S7).
-// A clean copy only has its claim unlocked, so another node can start.
+// settleOwedUEFIStore settles id's store, or the writer a stop left running,
+// once its QEMU is gone. Owed changes another node's claim supersedes can never
+// land, so they go (ADR-0003:S7); a clean copy only has its claim unlocked.
 func (m *Manager) settleOwedUEFIStore(ctx context.Context, id string) bool {
 	unlock := m.uefi.locks.lock(id)
 	defer unlock()
-	if m.uefi.get(id) != nil {
-		return false
-	}
 	if v, ok := m.Get(id); ok && uefiGuestMayRun(m.Status(v)) {
 		return false
 	}
 	if !uefiQEMUGone(id) {
 		return false
+	}
+	if m.uefi.get(id) != nil {
+		return m.settleStoppedUEFIStore(ctx, id, "reaper")
 	}
 	dir, err := uefiInstanceDir(m.deps.UEFIVarStore.DataDir, id)
 	if err != nil {

@@ -354,10 +354,11 @@ func TestUEFIWriter_PollsWhenItCannotWatch(t *testing.T) {
 type flakyClaimStore struct {
 	kvsync.KVStore
 
-	failLoads, failDeletes atomic.Int32
+	failLoads, failDeletes, loads atomic.Int32
 }
 
 func (s *flakyClaimStore) Load(ctx context.Context, key string) ([]byte, uint64, error) {
+	s.loads.Add(1)
 	if s.failLoads.Add(-1) >= 0 {
 		return nil, 0, kvsync.ErrUnavailable
 	}
@@ -441,4 +442,53 @@ func TestUEFIWriteBackReaper_AdoptsARunningGuestWhoseReconnectFailed(t *testing.
 	assert.NotNil(t, w.cancel, "and starts it")
 	_, held := f.claimHolder(t)
 	assert.True(t, held, "a running guest's claim is never unlocked by the reaper")
+}
+
+// A reconnect whose claim read failed retries on its own, so a running guest's
+// writer is back within one retry interval rather than at the next reaper sweep.
+func TestResumeUEFIWriter_RetriesAFailedClaimReadBeforeTheReaper(t *testing.T) {
+	f := newUEFIFixture(t)
+	flaky := f.flakyClaims()
+	instance, clock := f.running(t)
+	f.m.uefi.take(testUEFIInstance).halt()
+	flaky.failLoads.Store(1)
+
+	f.m.resumeUEFIWriter(instance)
+	require.Nil(t, f.m.uefi.get(testUEFIInstance), "the reconnect's claim read failed")
+	clock.waitArmed(t)
+	clock.Advance(uefiResumeRetry)
+
+	require.Eventually(t, func() bool { return f.m.uefi.get(testUEFIInstance) != nil },
+		10*time.Second, 10*time.Millisecond, "one retry interval registers the writer with no reaper sweep")
+	want := f.guestWrites(t, "retried")
+	require.Eventually(t, func() bool {
+		clock.Advance(uefiWriteBackQuiet)
+		return bytes.Equal(want, f.pointedRegion(t))
+	}, 10*time.Second, 10*time.Millisecond)
+}
+
+// A reconnect retry that finds the claim held by another node stops: that node
+// owns the store now, so this one never starts writing it back.
+func TestResumeUEFIWriter_StopsRetryingOnceTheClaimIsHeldElsewhere(t *testing.T) {
+	f := newUEFIFixture(t)
+	flaky := f.flakyClaims()
+	instance, clock := f.running(t)
+	f.m.uefi.take(testUEFIInstance).halt()
+	flaky.failLoads.Store(1)
+
+	f.m.resumeUEFIWriter(instance)
+	clock.waitArmed(t)
+	old, _ := f.claimHolder(t)
+	_, err := f.peerClaim("node-b").TakeOver(t.Context(), old)
+	require.NoError(t, err)
+	loads := flaky.loads.Load()
+	clock.Advance(uefiResumeRetry)
+	require.Eventually(t, func() bool { return flaky.loads.Load() > loads }, 10*time.Second, 10*time.Millisecond)
+	loads = flaky.loads.Load()
+
+	assert.Never(t, func() bool {
+		clock.Advance(uefiResumeRetry)
+		return flaky.loads.Load() > loads
+	}, 500*time.Millisecond, 10*time.Millisecond, "a claim held elsewhere ends the retries")
+	assert.Nil(t, f.m.uefi.get(testUEFIInstance))
 }

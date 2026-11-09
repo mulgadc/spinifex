@@ -20,7 +20,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
-	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/runtime/host/hostos"
@@ -319,20 +318,6 @@ type VM struct {
 	// tolerated by migrate.
 	InstanceLifecycle     string `json:"instance_lifecycle,omitempty"`
 	SpotInstanceRequestId string `json:"spot_instance_request_id,omitempty"`
-
-	// UEFIVarStore points at the object holding this instance's UEFI variable
-	// store. Status, so written only by the node; nil for a BIOS instance.
-	UEFIVarStore *UEFIVarStoreRef `json:"uefi_var_store,omitempty"`
-}
-
-// UEFIVarStoreRef names the store object an instance launches from, with the
-// firmware it was written under, so a launch can check it without reading the
-// object's metadata.
-type UEFIVarStoreRef struct {
-	Key        string                     `json:"key"`
-	Firmware   uefistore.FirmwareIdentity `json:"firmware"`
-	WriterNode string                     `json:"writer_node"`
-	WrittenAt  time.Time                  `json:"written_at"`
 }
 
 // UnmarshalJSON folds the fields of legacy records that mixed a request with an

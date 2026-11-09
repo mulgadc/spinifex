@@ -199,6 +199,11 @@ func TestBuildVMManagerDeps_UEFIVarStore(t *testing.T) {
 
 	d.config.DataDir = ""
 	assert.Equal(t, DefaultDataDir, d.buildVMManagerDeps().UEFIVarStore.DataDir)
+
+	// Before the buckets and locks exist, each is unwired rather than a typed nil.
+	assert.Nil(t, got.Records)
+	assert.Nil(t, got.Claims)
+	assert.Nil(t, got.Liveness)
 }
 
 // --- volumeMounterAdapter ---

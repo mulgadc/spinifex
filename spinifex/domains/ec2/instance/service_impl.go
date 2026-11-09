@@ -1265,6 +1265,10 @@ func (s *InstanceServiceImpl) StartInstance(ctx context.Context, instance *vm.VM
 				slog.WarnContext(ctx, "StartInstance: vmMgr.Start failed", "instanceId", command.ID, "err", err)
 				return refusal
 			}
+			if errors.Is(err, vm.ErrUEFIClaimHeld) {
+				slog.WarnContext(ctx, "StartInstance: vmMgr.Start failed", "instanceId", command.ID, "err", err)
+				return errInsufficientCapacity
+			}
 			slog.ErrorContext(ctx, "StartInstance: vmMgr.Start failed", "instanceId", command.ID, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
@@ -2760,7 +2764,7 @@ func (s *InstanceServiceImpl) capacityRefusal(ctx context.Context, instance *vm.
 func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instance *vm.VM, undo func()) error {
 	// Before anything is stamped or claimed, so the record handed back is the
 	// one that was claimed.
-	if err := vm.CheckUEFIVarStore(instance); err != nil {
+	if err := s.vmMgr.CheckUEFIVarStore(ctx, instance); err != nil {
 		slog.ErrorContext(ctx, "launchClaimedInstance: refusing to launch a UEFI instance without exactly one variable store",
 			"instanceId", instance.ID, "err", err)
 		undo()
@@ -2892,6 +2896,10 @@ func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instanc
 		undo()
 		if refusal := volumeHeldElsewhereError(err); refusal != nil {
 			return refusal
+		}
+		// A live node holds the variable store, so another node may take it.
+		if errors.Is(err, vm.ErrUEFIClaimHeld) {
+			return s.capacityRefusal(ctx, instance)
 		}
 		return errors.New(awserrors.ErrorServerInternal)
 	}

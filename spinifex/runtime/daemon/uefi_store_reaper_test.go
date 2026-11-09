@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/stretchr/testify/assert"
@@ -36,8 +37,14 @@ func newUEFIReaperFixture(t *testing.T) *uefiReaperFixture {
 	return &uefiReaperFixture{
 		m:       m,
 		objects: objects,
-		r:       &uefiStoreReaper{stores: m.UEFIStores(), objects: objects, bucket: uefiTestBucket, instances: m},
+		r: &uefiStoreReaper{stores: m.UEFIStores(), objects: objects, bucket: uefiTestBucket, instances: m,
+			claims: uefistore.NewClaims(kvstore.OpenSyncBucket(m.js), "node-reaper")},
 	}
+}
+
+// claim is id's store claim as node sees it.
+func (f *uefiReaperFixture) claim(id, node string) *kvsync.Claim {
+	return uefistore.NewClaims(kvstore.OpenSyncBucket(f.m.js), node).Get(id)
 }
 
 // seedStore writes a live store record and n objects under its prefix, the
@@ -343,4 +350,74 @@ func TestS7_UEFIStoreReaperLeavesTheStoreWhenTheTerminatedRecordExpired(t *testi
 	assert.Zero(t, reaped)
 	assert.Equal(t, 3, f.objectCount(t, id), "ADR-0003:S7: store objects deleted with no record proving QEMU exited")
 	assert.Equal(t, uefistore.StateLive, f.recordState(t, id))
+}
+
+// The reaper removes a deleted store's claim whoever holds it, so a later
+// instance can never find a stale holder, and leaves every live store's
+// claim to the node that may still hold its unlanded variables.
+func TestUEFIStoreReaper_RemovesOnlyADeletedStoresClaim(t *testing.T) {
+	f := newUEFIReaperFixture(t)
+	const (
+		deleted = "i-00000000000deleted"
+		live    = "i-0000000000000live"
+	)
+	f.writeTerminated(t, deleted, vm.TeardownPending)
+	f.seedStore(t, deleted, 2, true)
+	f.writeInstance(t, live, vm.StateRunning)
+	f.seedStore(t, live, 2, false)
+	for _, id := range []string{deleted, live} {
+		_, err := f.claim(id, "node-b").TryLock(t.Context())
+		require.NoError(t, err)
+	}
+
+	reaped, err := f.r.Sweep(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 1, reaped)
+
+	_, held, err := f.claim(deleted, "observer").Holder(t.Context())
+	require.NoError(t, err)
+	assert.False(t, held, "the deleted store's claim must be removed")
+	assert.Equal(t, "absent", f.recordState(t, deleted))
+	cur, held, err := f.claim(live, "observer").Holder(t.Context())
+	require.NoError(t, err)
+	require.True(t, held, "a live store's claim must survive the sweep")
+	assert.Equal(t, "node-b", cur.Holder)
+}
+
+// failingClaims stands in for a sync bucket that does not answer.
+type failingClaims struct{}
+
+func (failingClaims) Load(context.Context, string) ([]byte, uint64, error) {
+	return nil, 0, kvsync.ErrUnavailable
+}
+
+func (failingClaims) CompareAndSwap(context.Context, string, []byte, uint64) (uint64, error) {
+	return 0, kvsync.ErrUnavailable
+}
+
+func (failingClaims) CompareAndDelete(context.Context, string, uint64) error {
+	return kvsync.ErrUnavailable
+}
+
+// A claim the reaper cannot remove keeps the store record, so the next sweep
+// still finds the obligation and finishes it.
+func TestUEFIStoreReaper_KeepsTheRecordUntilTheClaimIsRemoved(t *testing.T) {
+	f := newUEFIReaperFixture(t)
+	const id = "i-0000000000000000a"
+	f.writeTerminated(t, id, vm.TeardownPending)
+	f.seedStore(t, id, 2, true)
+	healthy := f.r.claims
+	f.r.claims = uefistore.NewClaims(&failingClaims{}, "node-reaper")
+
+	reaped, err := f.r.Sweep(t.Context())
+	require.NoError(t, err)
+	assert.Zero(t, reaped)
+	assert.Equal(t, uefistore.StateDeleting, f.recordState(t, id))
+	assert.Equal(t, string(vm.TeardownPending), f.terminatedUEFIMark(t, id))
+
+	f.r.claims = healthy
+	reaped, err = f.r.Sweep(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 1, reaped)
+	assert.Equal(t, "absent", f.recordState(t, id))
 }

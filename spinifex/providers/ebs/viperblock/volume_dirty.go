@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	telemetry "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
@@ -266,10 +267,11 @@ func (cfg *Config) refuseWhileOwnerLive(ctx context.Context, volumeName string, 
 	if !found {
 		return nil
 	}
-	age := time.Since(seen)
-	if age > nodeLivenessWindow {
+	now := time.Now()
+	if !clusterv1.LiveAt(seen, now) {
 		return nil
 	}
+	age := now.Sub(seen)
 	slog.WarnContext(ctx, "refusing to open a volume whose previous owner is still live",
 		"volume", volumeName, "previous_owner", record.Owner, "last_seen_ms", telemetry.Millis(age))
 	return fmt.Errorf("%w: %s is still live and holds unsealed writes", errVolumeLeaseHeld, record.Owner)

@@ -25,9 +25,9 @@ func (s *Store) Exists(ctx context.Context, instanceID string) (bool, error) {
 	return s.kv.Exists(ctx, instanceID)
 }
 
-// MarkDeleting records that instanceID's store is to be deleted, and drops any
-// write-back still owed. It reports false with no error when the instance has
-// no store record. Only a terminate or an operator's forget may call it.
+// MarkDeleting records that instanceID's store is to be deleted. It reports
+// false with no error when the instance has no store record. Only a decided
+// terminate may call it.
 func (s *Store) MarkDeleting(ctx context.Context, instanceID string) (bool, error) {
 	for range markAttempts {
 		rec, rev, err := s.Get(ctx, instanceID)
@@ -41,7 +41,6 @@ func (s *Store) MarkDeleting(ctx context.Context, instanceID string) (bool, erro
 			return true, nil
 		}
 		rec.State = StateDeleting
-		rec.WriteBack = nil
 		_, err = s.CompareAndSet(ctx, rec, rev)
 		if err == nil {
 			return true, nil

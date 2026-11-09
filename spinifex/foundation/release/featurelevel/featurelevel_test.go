@@ -187,7 +187,7 @@ func TestRollback_StateTransitions(t *testing.T) {
 
 	rec, err := s.CancelRollback(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, Record{Level: 1}, rec, "cancel restores the level, clears the rollback and its hold")
+	assert.Equal(t, Record{Level: 1}, rec, "cancel clears the rollback and the hold it set")
 	_, advanced, err := s.Advance(t.Context(), members(1, true, true))
 	require.NoError(t, err)
 	assert.False(t, advanced, "already at level 1")
@@ -316,4 +316,33 @@ func TestEveryDeclaredLevelHasExactlyOneDrainCheck(t *testing.T) {
 	require.Error(t, RegisterDrain(Baseline, nil))
 	assert.Contains(t, DrainChecks(0), Baseline)
 	assert.NotContains(t, DrainChecks(Baseline), Baseline, "only levels above the target drain")
+}
+
+func TestCancelRollback_RestoresThePriorHold(t *testing.T) {
+	t.Parallel()
+	s, kv := newStore(t)
+	// Held at 1 after an earlier rollback that was never released.
+	_, err := kv.Create(t.Context(), Key, []byte(`{"level":1,"hold":{"held":true,"level":1}}`))
+	require.NoError(t, err)
+
+	rec, _, err := s.StartRollback(t.Context(), 0, Build)
+	require.NoError(t, err)
+	assert.Equal(t, Hold{Held: true, Level: 0}, rec.Hold)
+	assert.Equal(t, Hold{Held: true, Level: 1}, rec.Rollback.PriorHold)
+
+	rec, err = s.CancelRollback(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, Hold{Held: true, Level: 1}, rec.Hold, "the hold that existed before the rollback is back, not cleared")
+	assert.Nil(t, rec.Rollback)
+	assert.Equal(t, 1, rec.Level)
+
+	// A cluster that had no hold goes back to no hold.
+	s2, _ := newStore(t)
+	_, _, err = s2.Advance(t.Context(), members(1, true, true))
+	require.NoError(t, err)
+	_, _, err = s2.StartRollback(t.Context(), 0, Build)
+	require.NoError(t, err)
+	rec, err = s2.CancelRollback(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, Hold{}, rec.Hold)
 }

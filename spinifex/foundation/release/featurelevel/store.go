@@ -27,6 +27,8 @@ type Hold struct {
 // Rollback is a rollback to Target that has not lowered the level yet.
 type Rollback struct {
 	Target int `json:"target"`
+	// PriorHold is the hold in force before the rollback, which a cancel restores.
+	PriorHold Hold `json:"prior_hold"`
 }
 
 // Record is the one cluster record. A missing key reads as the zero Record.
@@ -175,7 +177,7 @@ func (s *Store) StartRollback(ctx context.Context, target, cliBuild int) (Record
 		if target < 0 || target >= r.Level {
 			return false, fmt.Errorf("%w: target %d, level %d", ErrBadTarget, target, r.Level)
 		}
-		r.Rollback = &Rollback{Target: target}
+		r.Rollback = &Rollback{Target: target, PriorHold: r.Hold}
 		r.Hold = Hold{Held: true, Level: target}
 		return true, nil
 	})
@@ -195,15 +197,15 @@ func (s *Store) FinishRollback(ctx context.Context) (Record, error) {
 	return rec, err
 }
 
-// CancelRollback clears a rollback that has not lowered the level, with the hold
-// it set.
+// CancelRollback clears a rollback that has not lowered the level and restores
+// the hold that existed before it started.
 func (s *Store) CancelRollback(ctx context.Context) (Record, error) {
 	rec, _, err := s.mutate(ctx, func(r *Record) (bool, error) {
 		if r.Rollback == nil {
 			return false, ErrNoRollback
 		}
+		r.Hold = r.Rollback.PriorHold
 		r.Rollback = nil
-		r.Hold = Hold{}
 		return true, nil
 	})
 	return rec, err

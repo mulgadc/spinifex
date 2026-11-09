@@ -37,8 +37,8 @@ const (
 var ErrInvalidRecord = errors.New("uefistore: invalid store record")
 
 // ErrDeleting is returned for a change that would return a deleting store to
-// live. Deletion follows only a terminate or an operator's forget, and both are
-// final, so a writer that meets it drops whatever it was about to record.
+// live. Deletion follows only a decided terminate, which is final, so a writer
+// that meets it drops whatever it was about to record.
 var ErrDeleting = errors.New("uefistore: store is being deleted")
 
 // FirmwareIdentity names the firmware a variable store was written under. A

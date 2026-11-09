@@ -26,8 +26,8 @@ func (s *Store) Exists(ctx context.Context, instanceID string) (bool, error) {
 }
 
 // MarkDeleting records that instanceID's store is to be deleted. It reports
-// false with no error when the instance has no store record. Only a terminate
-// or an operator's forget may call it.
+// false with no error when the instance has no store record. Only a decided
+// terminate may call it.
 func (s *Store) MarkDeleting(ctx context.Context, instanceID string) (bool, error) {
 	for range markAttempts {
 		rec, rev, err := s.Get(ctx, instanceID)

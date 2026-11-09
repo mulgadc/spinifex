@@ -80,8 +80,7 @@ var _ uefiInstanceRecords = (*JetStreamManager)(nil)
 
 // uefiStoreReaper deletes the variable stores whose record is deleting: each
 // object under the instance's prefix, then the store's claim, then the record.
-// Terminate, or an operator's forget, sets deleting and returns, so this
-// decides nothing.
+// A decided terminate sets deleting and returns, so this decides nothing.
 //
 // It also completes a terminate whose mark failed, from the terminated
 // record's pending or failed uefi entry. That record is the terminate itself,

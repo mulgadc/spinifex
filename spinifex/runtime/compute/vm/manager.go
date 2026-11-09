@@ -84,10 +84,14 @@ type Deps struct {
 	// shutdown marker, consuming it. Nil is treated as "no marker" (cautious recovery).
 	ConsumeCleanShutdownMarker func() bool
 
-	// BackingStoreReady reports whether this node's block-storage backend
-	// (predastore + viperblock) is confirmed up. Nil is treated as ready,
-	// preserving behaviour for tests and nodes with storage unwired.
+	// BackingStoreReady reports whether predastore and JetStream are confirmed
+	// up. Nil is treated as ready, preserving behaviour for tests and nodes with
+	// storage unwired. The restore-path orphan check reads only this.
 	BackingStoreReady func() bool
+
+	// EBSProviderReady reports whether this node's EBS provider is serving.
+	// Nil is treated as ready. Only the recovery retry reads it.
+	EBSProviderReady func() bool
 
 	// UEFIVarStore is where UEFI variable stores are read from and kept.
 	UEFIVarStore UEFIVarStoreDeps
@@ -132,6 +136,12 @@ func (m *Manager) NodeID() string { return m.deps.NodeID }
 // escalated to a kill when the store as a whole is known to be serving.
 func (m *Manager) backingStoreReady() bool {
 	return m.deps.BackingStoreReady == nil || m.deps.BackingStoreReady()
+}
+
+// ebsProviderReady reports whether this node's EBS provider is serving; a nil
+// probe is treated as ready.
+func (m *Manager) ebsProviderReady() bool {
+	return m.deps.EBSProviderReady == nil || m.deps.EBSProviderReady()
 }
 
 // Get returns the VM for id (and true) or (nil, false).

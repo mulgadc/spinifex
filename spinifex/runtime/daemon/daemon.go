@@ -2922,45 +2922,49 @@ var (
 	clusterReadyMaxWait = 2 * time.Minute
 )
 
-// waitForClusterReady blocks until viperblock and predastore are reachable,
-// preventing races during VM recovery.
+// waitForClusterReady blocks until JetStream, predastore and this node's EBS
+// provider are reachable, preventing races during VM recovery.
 func (d *Daemon) waitForClusterReady() {
 	slog.Info("Waiting for cluster readiness...")
 	maxWait := clusterReadyMaxWait
 	start := time.Now()
 	interval := 2 * time.Second
 
+	var reason string
 	for time.Since(start) < maxWait {
-		ready := true
-		var reason string
-
-		// Viperblock must be reachable (local or remote)
-		if ready && !d.checkViperblockReady() {
-			ready = false
-			reason = "viperblock not ready"
-		}
-
-		// Predastore must be reachable (local or remote)
-		if ready && !d.checkPredastoreReady() {
-			ready = false
-			reason = "predastore not ready"
-		}
-
-		if ready {
+		var err error
+		reason, err = d.clusterNotReadyReason()
+		if reason == "" {
 			slog.Info("Cluster readiness check passed", "elapsed_ms", otelsetup.Millis(time.Since(start)))
 			return
 		}
 
-		slog.Debug("Cluster not ready, waiting...", "reason", reason, "elapsed_ms", otelsetup.Millis(time.Since(start)))
+		slog.Debug("Cluster not ready, waiting...", "reason", reason, "err", err, "elapsed_ms", otelsetup.Millis(time.Since(start)))
 		clusterReadySleep(interval)
 	}
 
-	slog.Warn("Cluster readiness timeout, proceeding with recovery anyway", "max_wait_ms", otelsetup.Millis(maxWait))
+	slog.Warn("Cluster readiness timeout, proceeding with recovery anyway",
+		"reason", reason, "max_wait_ms", otelsetup.Millis(maxWait))
 }
 
-// checkViperblockReady reports whether viperblock can actually serve a mount,
-// which needs more than a live NATS socket: mounting claims a JetStream KV
-// lease before it reads any state, so JetStream must be serving too.
+// clusterNotReadyReason returns why recovery should keep waiting, or "" once
+// every dependency answers. err carries the provider probe's failure, if any.
+func (d *Daemon) clusterNotReadyReason() (reason string, err error) {
+	if !d.checkJetStreamReady() {
+		return "jetstream not ready", nil
+	}
+	if !d.checkPredastoreReady() {
+		return "predastore not ready", nil
+	}
+	if err := d.checkEBSProviderReady(); err != nil {
+		return "ebs provider not ready", err
+	}
+	return "", nil
+}
+
+// checkJetStreamReady reports whether JetStream is serving, which a mount needs
+// beyond a live NATS socket: mounting claims a JetStream KV lease before it
+// reads any state.
 //
 // Testing only IsConnected was why waitForClusterReady did not prevent the
 // race it exists to prevent. The client reconnects as soon as nats-server
@@ -2970,7 +2974,7 @@ func (d *Daemon) waitForClusterReady() {
 //
 // AccountInfo is the probe because it is the cheapest round trip that proves
 // JetStream is answering, and it changes nothing.
-func (d *Daemon) checkViperblockReady() bool {
+func (d *Daemon) checkJetStreamReady() bool {
 	if d.natsConn == nil || !d.natsConn.IsConnected() {
 		return false
 	}
@@ -2985,6 +2989,28 @@ func (d *Daemon) checkViperblockReady() bool {
 
 	_, err = js.AccountInfo(ctx)
 	return err == nil
+}
+
+// ebsProviderReadyTimeout bounds the local provider probe, the same bound the
+// JetStream and predastore checks use.
+const ebsProviderReadyTimeout = 3 * time.Second
+
+// checkEBSProviderReady asks this node's EBS provider, on its per-node subject,
+// which of no volumes it holds unsealed writes for. Any other node's provider
+// cannot answer it, so a reply with no error shows the local provider serves.
+func (d *Daemon) checkEBSProviderReady() error {
+	if d.ebsProvider == nil {
+		return errors.New("no EBS provider configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), ebsProviderReadyTimeout)
+	defer cancel()
+	_, err := d.ebsProvider.HoldsUnsealedWrites(ctx, d.node, nil)
+	return err
+}
+
+// ebsProviderReady reports whether this node's EBS provider is serving.
+func (d *Daemon) ebsProviderReady() bool {
+	return d.checkEBSProviderReady() == nil
 }
 
 // checkPredastoreReady reports whether predastore is serving HTTPS, not just

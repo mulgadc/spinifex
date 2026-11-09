@@ -188,9 +188,10 @@ var imagesListCmd = &cobra.Command{
 var imagesRemoveCmd = &cobra.Command{
 	Use:   "remove",
 	Short: "Remove an admin-imported system AMI",
-	Long: `Delete an AMI imported via 'spx admin images import', including its
-backing block storage and snapshot artefacts. Only operates on AMIs with a
-non-account owner (e.g. "system"); account-owned AMIs must be removed via
+	Long: `Delete an AMI imported via 'spx admin images import': its AMI document,
+then its snapshot and then its volume through the EBS provider, which must be
+answering over NATS. Only operates on AMIs with a non-account owner
+(e.g. "system"); account-owned AMIs must be removed via
 'aws ec2 deregister-image' followed by 'aws ec2 delete-snapshot'.
 
 Refuses to delete an AMI that has dependent volumes or copied snapshots/AMIs
@@ -205,7 +206,7 @@ var imagesPromoteCmd = &cobra.Command{
 visible to all accounts via DescribeImages, matching the behaviour of AMIs
 imported via 'spx admin images import'.
 
-No data is copied — only the config.json owner field is updated. The change
+No data is copied — only the AMI document's owner field is updated. The change
 takes effect immediately. Prompts for confirmation unless --yes is passed.`,
 	Run: runimagesPromoteCmd,
 }
@@ -1044,16 +1045,12 @@ func runimagesRemoveCmd(cmd *cobra.Command, args []string) {
 	force, _ := cmd.Flags().GetBool("force")
 	yes, _ := cmd.Flags().GetBool("yes")
 
-	cfgFile, _ := cmd.Flags().GetString("config")
-	if cfgFile == "" {
-		cfgFile = DefaultConfigFile()
-	}
-
-	appConfig, err := config.LoadConfig(cfgFile)
+	appConfig, nc, err := loadConfigAndConnect()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error loading config file:", err)
+		fmt.Fprintf(os.Stderr, "Could not connect to the cluster: %v\n", err)
 		os.Exit(1)
 	}
+	defer nc.Close()
 
 	node := appConfig.Nodes[appConfig.Node]
 	store := objectstore.NewS3ObjectStoreFromConfig(
@@ -1063,8 +1060,9 @@ func runimagesRemoveCmd(cmd *cobra.Command, args []string) {
 		node.Predastore.SecretKey,
 	)
 	bucket := node.Predastore.Bucket
+	provider := ebsprovider.NewNATSProvider(nc, imageImportTimeout)
 
-	preview, err := admin.PreviewRemoveSystemImage(store, bucket, imageID)
+	preview, err := admin.PreviewRemoveSystemImage(context.Background(), store, provider, bucket, imageID)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to inspect AMI:", err)
 		os.Exit(1)
@@ -1076,10 +1074,10 @@ func runimagesRemoveCmd(cmd *cobra.Command, args []string) {
 	fmt.Printf("  Image ID:        %s\n", preview.ImageID)
 	switch {
 	case !preview.ConfigPresent && !preview.ConfigCorrupt:
-		fmt.Println("  Name:            <unknown — config.json missing>")
+		fmt.Println("  Name:            <unknown — AMI document missing>")
 		fmt.Println("  Owner:           <unknown>")
 	case preview.ConfigCorrupt:
-		fmt.Println("  Name:            <unknown — config.json corrupt>")
+		fmt.Println("  Name:            <unknown — AMI document corrupt>")
 		fmt.Println("  Owner:           <unknown>")
 	default:
 		fmt.Printf("  Name:            %s\n", preview.Name)
@@ -1088,10 +1086,16 @@ func runimagesRemoveCmd(cmd *cobra.Command, args []string) {
 			fmt.Printf("  Created:         %s\n", preview.Created.UTC().Format("2006-01-02T15:04:05Z"))
 		}
 	}
-	fmt.Printf("  Backing storage: %s/      (%d objects, %s)\n",
-		preview.ImageID, preview.AMIObjectCount, operatorprogress.HumanBytes(safecast.Int64ToUint64(preview.AMIBytesTotal)))
-	fmt.Printf("                   %s/ (%d objects, %s)\n",
-		admin.SnapPrefix(preview.ImageID), preview.SnapObjectCount, operatorprogress.HumanBytes(safecast.Int64ToUint64(preview.SnapBytesTotal)))
+	switch preview.VolumeStatus {
+	case admin.VolumePresent:
+		fmt.Printf("  Volume:          %s (capacity %s)\n",
+			preview.ImageID, operatorprogress.HumanBytes(safecast.Int64ToUint64(preview.VolumeCapacityBytes)))
+	case admin.VolumeAbsent:
+		fmt.Printf("  Volume:          %s (absent)\n", preview.ImageID)
+	default:
+		fmt.Printf("  Volume:          %s (capacity unknown: %v)\n", preview.ImageID, preview.VolumeErr)
+	}
+	fmt.Printf("  Snapshot:        %s\n", preview.SnapshotID)
 	fmt.Println()
 
 	// Account-owned guard before salvage / dependents — the AWS-flow hint is
@@ -1105,7 +1109,7 @@ func runimagesRemoveCmd(cmd *cobra.Command, args []string) {
 	}
 
 	if !preview.ConfigPresent && !force {
-		fmt.Fprintln(os.Stderr, "AMI config.json missing or corrupt; re-run with --force to salvage backing blocks.")
+		fmt.Fprintln(os.Stderr, "AMI document missing or corrupt; re-run with --force to salvage its volume and snapshot.")
 		os.Exit(1)
 	}
 
@@ -1135,7 +1139,7 @@ func runimagesRemoveCmd(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	res, err := admin.RemoveSystemImage(store, bucket, admin.RemoveImageOpts{
+	res, err := admin.RemoveSystemImage(context.Background(), store, provider, bucket, admin.RemoveImageOpts{
 		ImageID: imageID,
 		Force:   force,
 	})
@@ -1144,10 +1148,10 @@ func runimagesRemoveCmd(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// BytesDeleted is logical: predastore reclaims the underlying disk space
+	// The provider deletes the objects; predastore reclaims their disk space
 	// asynchronously via background compaction, not at delete time.
-	fmt.Printf("✅ Removed AMI %s (%d objects, %s marked for deletion; disk space is reclaimed by background compaction).\n",
-		imageID, res.ObjectsDeleted, operatorprogress.HumanBytes(safecast.Int64ToUint64(res.BytesDeleted)))
+	fmt.Printf("✅ Removed AMI %s: snapshot %s, volume %s and %d UEFI store object(s) deleted; disk space is reclaimed by background compaction.\n",
+		imageID, res.SnapshotID, res.VolumeID, res.UEFIObjectsDeleted)
 }
 
 func printDependents(w io.Writer, d admin.Dependents) {

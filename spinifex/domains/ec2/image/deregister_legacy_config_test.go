@@ -1,7 +1,9 @@
 package image
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -12,17 +14,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestDeregisterImage_NoLegacyConfig covers every AMI created since the
-// metadata store landed: they have no {imageID}/config.json, so deleting one
-// answers NoSuchKey. Treating that as a failure returned InternalError after
-// the AMI document was already gone, and a retrying caller then saw
-// InvalidAMIID.NotFound for an image it had just been told it could not delete.
+// TestDeregisterImage_NoLegacyConfig: deregistering deletes the AMI document
+// and nothing under {imageID}/, where a system AMI's image volume keeps its
+// own config.json under the same ID.
 func TestDeregisterImage_NoLegacyConfig(t *testing.T) {
 	mem := objectstore.NewMemoryObjectStore()
 	svc := NewImageServiceImplWithStore(mem, testBucket)
 
 	amiID := "ami-nolegacy001"
 	createTestAMIConfigWithOwner(t, mem, amiID, "no-legacy-config", testAccountID)
+	volumeConfigKey := amiID + "/config.json"
+	_, err := mem.PutObject(context.Background(), &awss3.PutObjectInput{
+		Bucket: aws.String(testBucket),
+		Key:    aws.String(volumeConfigKey),
+		Body:   bytes.NewReader([]byte(`{"volume":"state"}`)),
+	})
+	require.NoError(t, err)
 
 	out, err := svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: aws.String(amiID)}, testAccountID)
 	require.NoError(t, err)
@@ -33,7 +40,16 @@ func TestDeregisterImage_NoLegacyConfig(t *testing.T) {
 		Key:    aws.String(amiDocumentKey(t, amiID)),
 	})
 	require.Error(t, getErr)
-	assert.True(t, objectstore.IsNoSuchKeyError(getErr), "the AMI document must still be deleted")
+	assert.True(t, objectstore.IsNoSuchKeyError(getErr), "the AMI document must be deleted")
+
+	kept, err := mem.GetObject(context.Background(), &awss3.GetObjectInput{
+		Bucket: aws.String(testBucket),
+		Key:    aws.String(volumeConfigKey),
+	})
+	require.NoError(t, err, "the object under {imageID}/ must be left alone")
+	body, err := io.ReadAll(kept.Body)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"volume":"state"}`, string(body))
 }
 
 // racingDeleteStore lets a concurrent deleter win every DeleteObject, so the

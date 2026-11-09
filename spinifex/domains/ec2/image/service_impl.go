@@ -13,7 +13,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ebsencryption "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/encryption"
@@ -129,7 +128,7 @@ var describeImagesValidFilters = map[string]bool{
 	"root-device-type":    true,
 }
 
-// DescribeImages lists available AMI images by reading config.json files from S3.
+// DescribeImages lists available AMI images from their AMI metadata documents.
 func (s *ImageServiceImpl) DescribeImages(ctx context.Context, input *ec2.DescribeImagesInput, accountID string) (*ec2.DescribeImagesOutput, error) {
 	if input == nil {
 		input = &ec2.DescribeImagesInput{}
@@ -1163,9 +1162,8 @@ func pickRootSnapshotBDM(mappings []*ec2.BlockDeviceMapping, rootDeviceName *str
 }
 
 // DeregisterImage hard-deletes the image's UEFI store prefix, then the AMI
-// document, so a retry after a failed delete finishes the job. The legacy
-// {imageID}/config.json goes too, or the metadata store's read fallback would
-// resurrect the image. The backing snapshot is untouched, as on AWS.
+// document, so a retry after a failed delete finishes the job. The backing
+// snapshot is untouched, as on AWS.
 func (s *ImageServiceImpl) DeregisterImage(ctx context.Context, input *ec2.DeregisterImageInput, accountID string) (*ec2.DeregisterImageOutput, error) {
 	if input == nil || input.ImageId == nil || *input.ImageId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -1185,15 +1183,6 @@ func (s *ImageServiceImpl) DeregisterImage(ctx context.Context, input *ec2.Dereg
 
 	if err := s.metadata.DeleteAMI(ctx, imageID); err != nil && !objectstore.IsNoSuchKeyError(err) {
 		slog.ErrorContext(ctx, "DeregisterImage: failed to delete AMI document", "imageId", imageID, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-
-	configKey := fmt.Sprintf("%s/config.json", imageID)
-	if _, err := s.store.DeleteObject(ctx, &s3.DeleteObjectInput{
-		Bucket: aws.String(s.bucketName),
-		Key:    aws.String(configKey),
-	}); err != nil && !objectstore.IsNoSuchKeyError(err) {
-		slog.ErrorContext(ctx, "DeregisterImage: failed to delete legacy AMI config", "imageId", imageID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 

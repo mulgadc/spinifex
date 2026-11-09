@@ -11,6 +11,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,8 +23,7 @@ const (
 )
 
 // putAMI registers an AMI the only way the control plane knows one: as an
-// ebsmetadata document. It writes nothing under ami-<id>/, so an object count
-// taken over that prefix sees blocks alone.
+// ebsmetadata document.
 func putAMI(t *testing.T, store *objectstore.MemoryObjectStore, imageID, name, owner, snapshotID string) {
 	t.Helper()
 	require.NoError(t, ebsmetadata.NewStore(store, testRemoveBucket).PutAMI(t.Context(), ebsmetadata.AMI{
@@ -49,32 +49,70 @@ func putCorruptAMI(t *testing.T, store *objectstore.MemoryObjectStore, imageID s
 	require.NoError(t, err)
 }
 
-// putAMIBlocks writes a few dummy chunk objects under ami-<id>/ so deletion
-// has bulk work and byte counts to verify.
-func putAMIBlocks(t *testing.T, store *objectstore.MemoryObjectStore, imageID string, n int, size int) {
-	t.Helper()
-	body := bytes.Repeat([]byte{0xab}, size)
-	for i := range n {
-		_, err := store.PutObject(t.Context(), &awss3.PutObjectInput{
-			Bucket: aws.String(testRemoveBucket),
-			Key:    aws.String(imageID + "/chunks/" + string(rune('a'+i)) + ".dat"),
-			Body:   bytes.NewReader(body),
-		})
-		require.NoError(t, err)
-	}
+// removeProvider is a memory provider that records the deletes it is asked
+// for, in order, and can fail GetVolume or DeleteSnapshot.
+type removeProvider struct {
+	*ebsprovider.MemoryProvider
+	deletes           []string
+	getVolumeErr      error
+	deleteSnapshotErr error
 }
 
-func putSnapBlocks(t *testing.T, store *objectstore.MemoryObjectStore, snapID string, n int, size int) {
-	t.Helper()
-	body := bytes.Repeat([]byte{0xcd}, size)
-	for i := range n {
-		_, err := store.PutObject(t.Context(), &awss3.PutObjectInput{
-			Bucket: aws.String(testRemoveBucket),
-			Key:    aws.String(snapID + "/cp/" + string(rune('a'+i)) + ".bin"),
-			Body:   bytes.NewReader(body),
-		})
-		require.NoError(t, err)
+func newRemoveProvider() *removeProvider {
+	return &removeProvider{MemoryProvider: ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{CrashConsistentSnapshot: true})}
+}
+
+func (p *removeProvider) GetVolume(ctx context.Context, req ebsprovider.GetVolumeRequest) (*ebsprovider.Volume, error) {
+	if p.getVolumeErr != nil {
+		return nil, p.getVolumeErr
 	}
+	return p.MemoryProvider.GetVolume(ctx, req)
+}
+
+func (p *removeProvider) DeleteSnapshot(ctx context.Context, req ebsprovider.DeleteSnapshotRequest) error {
+	p.deletes = append(p.deletes, "snapshot "+req.SnapshotID)
+	if p.deleteSnapshotErr != nil {
+		return p.deleteSnapshotErr
+	}
+	return p.MemoryProvider.DeleteSnapshot(ctx, req)
+}
+
+func (p *removeProvider) DeleteVolume(ctx context.Context, req ebsprovider.DeleteVolumeRequest) error {
+	p.deletes = append(p.deletes, "volume "+req.VolumeID)
+	return p.MemoryProvider.DeleteVolume(ctx, req)
+}
+
+// putImageStorage gives the provider what an admin import leaves: a volume
+// named after the image and its snapshot at SnapPrefix.
+func putImageStorage(t *testing.T, provider *removeProvider, imageID string, capacity int64) {
+	t.Helper()
+	_, err := provider.CreateVolume(t.Context(), ebsprovider.CreateVolumeRequest{
+		Versioned:     ebsprovider.NewVersioned(),
+		VolumeID:      imageID,
+		CapacityRange: ebsprovider.CapacityRange{RequiredBytes: capacity},
+	})
+	require.NoError(t, err)
+	_, err = provider.CreateSnapshot(t.Context(), ebsprovider.CreateSnapshotRequest{
+		Versioned:  ebsprovider.NewVersioned(),
+		SnapshotID: SnapPrefix(imageID),
+		VolumeID:   imageID,
+	})
+	require.NoError(t, err)
+}
+
+// assertImageStorageGone checks the provider holds neither the image's volume
+// nor its snapshot.
+func assertImageStorageGone(t *testing.T, provider *removeProvider, imageID string) {
+	t.Helper()
+	_, err := provider.MemoryProvider.GetVolume(t.Context(), ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: imageID})
+	require.ErrorIs(t, err, ebsprovider.ErrNotFound, "the image volume must be deleted")
+	_, ok := provider.Snapshot(SnapPrefix(imageID))
+	assert.False(t, ok, "the image snapshot must be deleted")
+}
+
+// wantDeletes is the provider calls a removal makes: snapshot, then volume.
+func wantDeletes(imageID string) []string {
+	return []string{"snapshot " + SnapPrefix(imageID), "volume " + imageID}
 }
 
 // putSnapMetadata writes a CopyImage-derived EC2 snapshot metadata that points
@@ -103,132 +141,173 @@ func putVolume(t *testing.T, store *objectstore.MemoryObjectStore, volID, snapsh
 
 func TestRemoveSystemImage_HappyPath(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
+	provider := newRemoveProvider()
 	const id = "ami-sys-deb13"
 	putAMI(t, store, id, "debian-13", "system", SnapPrefix(id))
-	putAMIBlocks(t, store, id, 3, 128)
-	putSnapBlocks(t, store, SnapPrefix(id), 2, 16)
+	putImageStorage(t, provider, id, 8<<30)
 
-	preview, err := PreviewRemoveSystemImage(store, testRemoveBucket, id)
+	preview, err := PreviewRemoveSystemImage(t.Context(), store, provider, testRemoveBucket, id)
 	require.NoError(t, err)
 	assert.True(t, preview.ConfigPresent)
 	assert.True(t, preview.IsSystemOwned)
 	assert.Equal(t, "system", preview.Owner)
-	// Only the 3 chunks: the document lives outside the ami-<id>/ prefix.
-	assert.Equal(t, 3, preview.AMIObjectCount)
-	assert.Equal(t, 2, preview.SnapObjectCount)
+	assert.Equal(t, VolumePresent, preview.VolumeStatus)
+	assert.Equal(t, int64(8<<30), preview.VolumeCapacityBytes)
+	assert.Equal(t, SnapPrefix(id), preview.SnapshotID)
 	assert.True(t, preview.Dependents.Empty())
+	assert.Empty(t, provider.deletes, "the preview deletes nothing")
 
-	res, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
+	res, err := RemoveSystemImage(t.Context(), store, provider, testRemoveBucket, RemoveImageOpts{ImageID: id})
 	require.NoError(t, err)
-	assert.Equal(t, preview.AMIObjectCount+preview.SnapObjectCount, res.ObjectsDeleted)
-	assert.Equal(t, preview.AMIBytesTotal+preview.SnapBytesTotal, res.BytesDeleted)
+	assert.Equal(t, id, res.VolumeID)
+	assert.Equal(t, SnapPrefix(id), res.SnapshotID)
+	assert.Equal(t, wantDeletes(id), provider.deletes, "the snapshot goes before the volume")
+	assertImageStorageGone(t, provider, id)
 	assert.Equal(t, 0, store.Count())
 }
 
 // TestRemoveSystemImage_OrphanedBlocksAreReclaimable covers the state the
-// orphan report points operators at: blocks in the object store with no
-// document. A live env19 run failed here on NoSuchKey, so the one documented
-// way to reclaim an orphan was broken by the very thing that defines one.
+// orphan report points operators at: a provider volume with no document.
 func TestRemoveSystemImage_OrphanedBlocksAreReclaimable(t *testing.T) {
-	memory := objectstore.NewMemoryObjectStore()
+	store := objectstore.NewMemoryObjectStore()
+	provider := newRemoveProvider()
 	const id = "ami-orphaned0001"
-	putAMIBlocks(t, memory, id, 3, 128)
+	putImageStorage(t, provider, id, 1<<30)
 
-	res, err := RemoveSystemImage(memory, testRemoveBucket, RemoveImageOpts{ImageID: id, Force: true})
-	require.NoError(t, err, "an image whose document is already gone must still have its blocks reclaimable")
-	assert.Equal(t, 3, res.ObjectsDeleted)
-	assert.Equal(t, 0, memory.Count(), "the stranded blocks must actually be released")
+	_, err := RemoveSystemImage(t.Context(), store, provider, testRemoveBucket, RemoveImageOpts{ImageID: id, Force: true})
+	require.NoError(t, err, "an image whose document is already gone must still have its storage reclaimable")
+	assert.Equal(t, wantDeletes(id), provider.deletes)
+	assertImageStorageGone(t, provider, id)
 }
 
-// racingDeleteStore lets a concurrent deleter win every DeleteObject, so the
-// caller's own delete answers NoSuchKey as Predastore would.
-type racingDeleteStore struct {
-	*objectstore.MemoryObjectStore
-}
-
-func (s racingDeleteStore) DeleteObject(ctx context.Context, input *awss3.DeleteObjectInput) (*awss3.DeleteObjectOutput, error) {
-	_, _ = s.MemoryObjectStore.DeleteObject(ctx, input)
-	return s.MemoryObjectStore.DeleteObject(ctx, input)
-}
-
-// A block another remover deleted between the listing and this delete is
-// gone, so the sweep carries on rather than stranding the rest of the prefix.
-// It is not counted: this run did not release it.
-func TestRemoveSystemImage_ConcurrentlyDeletedBlocksAreSkipped(t *testing.T) {
-	memory := objectstore.NewMemoryObjectStore()
+// A volume and snapshot another remover already deleted are done: the
+// provider's deletes are idempotent on an absent target.
+func TestRemoveSystemImage_AbsentProviderTargetsAreDone(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	provider := newRemoveProvider()
 	const id = "ami-racing000001"
-	putAMIBlocks(t, memory, id, 3, 128)
 
-	res, err := RemoveSystemImage(racingDeleteStore{MemoryObjectStore: memory}, testRemoveBucket, RemoveImageOpts{ImageID: id, Force: true})
+	res, err := RemoveSystemImage(t.Context(), store, provider, testRemoveBucket, RemoveImageOpts{ImageID: id, Force: true})
 	require.NoError(t, err)
-	assert.Equal(t, 0, res.ObjectsDeleted)
-	assert.Equal(t, 0, memory.Count())
+	assert.Equal(t, wantDeletes(id), provider.deletes)
+	assert.Equal(t, id, res.VolumeID)
+}
+
+// A failed snapshot delete stops the removal before the volume, so the
+// snapshot never outlives the blocks it may refer to.
+func TestRemoveSystemImage_SnapshotDeleteFailureKeepsTheVolume(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	provider := newRemoveProvider()
+	provider.deleteSnapshotErr = &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeInternal, Message: "delete snapshot objects: boom"}
+	const id = "ami-sys-snapfail"
+	putAMI(t, store, id, "debian-13", "system", SnapPrefix(id))
+	putImageStorage(t, provider, id, 1<<30)
+
+	_, err := RemoveSystemImage(t.Context(), store, provider, testRemoveBucket, RemoveImageOpts{ImageID: id})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), SnapPrefix(id))
+	assert.Equal(t, []string{"snapshot " + SnapPrefix(id)}, provider.deletes, "DeleteVolume must not be called")
+	_, err = provider.MemoryProvider.GetVolume(t.Context(), ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: id})
+	require.NoError(t, err, "the volume stays for a rerun")
+}
+
+// viperblockd answers internal when a volume's persisted state is unreadable,
+// the half-removed image --force salvages: the preview reports the capacity
+// as unknown instead of failing, and the removal still deletes both.
+func TestRemoveSystemImage_UnreadableVolumePreviewsUnknownAndForceRemoves(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	provider := newRemoveProvider()
+	const id = "ami-unreadable01"
+	putImageStorage(t, provider, id, 1<<30)
+	providerErr := &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeInternal, Message: "describe volume: state unreadable"}
+	provider.getVolumeErr = providerErr
+
+	preview, err := PreviewRemoveSystemImage(t.Context(), store, provider, testRemoveBucket, id)
+	require.NoError(t, err, "a GetVolume failure must not abort the preview")
+	assert.False(t, preview.ConfigPresent)
+	assert.Equal(t, VolumeUnknown, preview.VolumeStatus)
+	require.ErrorIs(t, preview.VolumeErr, providerErr)
+	assert.Zero(t, preview.VolumeCapacityBytes)
+
+	_, err = RemoveSystemImage(t.Context(), store, provider, testRemoveBucket, RemoveImageOpts{ImageID: id, Force: true})
+	require.NoError(t, err)
+	assert.Equal(t, wantDeletes(id), provider.deletes)
+	assertImageStorageGone(t, provider, id)
 }
 
 func TestRemoveSystemImage_AccountOwned_Refused(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
+	provider := newRemoveProvider()
 	const id = "ami-acct-001"
 	putAMI(t, store, id, "user-ami", testRemoveAccountID, "snap-acct-001")
-	putAMIBlocks(t, store, id, 1, 16)
+	putImageStorage(t, provider, id, 1<<30)
 
-	_, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
+	_, err := RemoveSystemImage(t.Context(), store, provider, testRemoveBucket, RemoveImageOpts{ImageID: id})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), id)
 	assert.Contains(t, err.Error(), testRemoveAccountID)
 	assert.Contains(t, err.Error(), "account-owned")
 	assert.Contains(t, err.Error(), "aws ec2 deregister-image")
-	// Objects untouched.
-	assert.Equal(t, 2, store.Count())
+	assert.Empty(t, provider.deletes, "the provider is not asked to delete anything")
+	assert.Equal(t, 1, store.Count(), "the AMI document stays")
 }
 
 func TestRemoveSystemImage_AccountOwned_ForceBypasses(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
+	provider := newRemoveProvider()
 	const id = "ami-acct-002"
 	putAMI(t, store, id, "user-ami", testRemoveAccountID, "snap-acct-002")
-	putAMIBlocks(t, store, id, 2, 16)
+	putImageStorage(t, provider, id, 1<<30)
 
-	res, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id, Force: true})
+	_, err := RemoveSystemImage(t.Context(), store, provider, testRemoveBucket, RemoveImageOpts{ImageID: id, Force: true})
 	require.NoError(t, err)
-	assert.Positive(t, res.ObjectsDeleted)
+	assertImageStorageGone(t, provider, id)
 	assert.Equal(t, 0, store.Count())
 }
 
 func TestRemoveSystemImage_MissingConfig_NotFound(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
+	provider := newRemoveProvider()
 	const id = "ami-missing"
-	putAMIBlocks(t, store, id, 1, 16)
+	putImageStorage(t, provider, id, 1<<30)
 
-	_, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
+	_, err := RemoveSystemImage(t.Context(), store, provider, testRemoveBucket, RemoveImageOpts{ImageID: id})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
+	assert.Empty(t, provider.deletes)
 }
 
 func TestRemoveSystemImage_CorruptConfig_NotFound(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
+	provider := newRemoveProvider()
 	const id = "ami-corrupt"
 	putCorruptAMI(t, store, id)
 
-	_, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
+	_, err := RemoveSystemImage(t.Context(), store, provider, testRemoveBucket, RemoveImageOpts{ImageID: id})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
+	assert.Empty(t, provider.deletes)
 }
 
 func TestRemoveSystemImage_DependentVolume_Direct_Refused(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
+	provider := newRemoveProvider()
 	const id = "ami-sys-deb13"
 	putAMI(t, store, id, "debian-13", "system", SnapPrefix(id))
 	// Direct dependent: a volume launched from the admin import.
 	putVolume(t, store, "vol-aaa", SnapPrefix(id))
 
-	_, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
+	_, err := RemoveSystemImage(t.Context(), store, provider, testRemoveBucket, RemoveImageOpts{ImageID: id})
 	require.Error(t, err)
 	var depErr *DependentError
 	require.ErrorAs(t, err, &depErr)
+	assert.Empty(t, provider.deletes)
 	assert.Contains(t, depErr.Dependents.Volumes, "vol-aaa")
 }
 
 func TestRemoveSystemImage_DependentVolume_Transitive_Refused(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
+	provider := newRemoveProvider()
 	const id = "ami-sys-deb13"
 	putAMI(t, store, id, "debian-13", "system", SnapPrefix(id))
 
@@ -238,16 +317,18 @@ func TestRemoveSystemImage_DependentVolume_Transitive_Refused(t *testing.T) {
 	// A volume launched from the copied AMI references the derived snap.
 	putVolume(t, store, "vol-bbb", derivedSnap)
 
-	_, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
+	_, err := RemoveSystemImage(t.Context(), store, provider, testRemoveBucket, RemoveImageOpts{ImageID: id})
 	require.Error(t, err)
 	var depErr *DependentError
 	require.ErrorAs(t, err, &depErr)
+	assert.Empty(t, provider.deletes)
 	assert.Contains(t, depErr.Dependents.Volumes, "vol-bbb")
 	assert.Contains(t, depErr.Dependents.Snapshots, derivedSnap)
 }
 
 func TestRemoveSystemImage_DependentAMI_Refused(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
+	provider := newRemoveProvider()
 	const id = "ami-sys-deb13"
 	putAMI(t, store, id, "debian-13", "system", SnapPrefix(id))
 
@@ -256,23 +337,25 @@ func TestRemoveSystemImage_DependentAMI_Refused(t *testing.T) {
 	// Account AMI created via CopyImage; its SnapshotID is the derived snap.
 	putAMI(t, store, "ami-acct-002", "copied", testRemoveAccountID, derivedSnap)
 
-	_, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
+	_, err := RemoveSystemImage(t.Context(), store, provider, testRemoveBucket, RemoveImageOpts{ImageID: id})
 	require.Error(t, err)
 	var depErr *DependentError
 	require.ErrorAs(t, err, &depErr)
+	assert.Empty(t, provider.deletes)
 	assert.Contains(t, depErr.Dependents.AMIs, "ami-acct-002")
 }
 
 func TestRemoveSystemImage_Force_OverridesDependents(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
+	provider := newRemoveProvider()
 	const id = "ami-sys-deb13"
 	putAMI(t, store, id, "debian-13", "system", SnapPrefix(id))
-	putAMIBlocks(t, store, id, 2, 64)
+	putImageStorage(t, provider, id, 1<<30)
 	putVolume(t, store, "vol-orphan", SnapPrefix(id))
 
-	res, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id, Force: true})
+	_, err := RemoveSystemImage(t.Context(), store, provider, testRemoveBucket, RemoveImageOpts{ImageID: id, Force: true})
 	require.NoError(t, err)
-	assert.Positive(t, res.ObjectsDeleted)
+	assertImageStorageGone(t, provider, id)
 	// The dependent volume's document remains; the AMI's is gone.
 	metadata := ebsmetadata.NewStore(store, testRemoveBucket)
 	_, err = metadata.GetAMI(t.Context(), id)
@@ -283,81 +366,97 @@ func TestRemoveSystemImage_Force_OverridesDependents(t *testing.T) {
 
 func TestRemoveSystemImage_Salvage_MissingConfig_ForceCleans(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
+	provider := newRemoveProvider()
 	const id = "ami-salvage-1"
-	// No config.json — just orphaned blocks.
-	putAMIBlocks(t, store, id, 3, 32)
-	putSnapBlocks(t, store, SnapPrefix(id), 1, 8)
+	// No AMI document: only the provider's volume and snapshot.
+	putImageStorage(t, provider, id, 1<<30)
 
 	// Without --force: NotFound.
-	_, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
+	_, err := RemoveSystemImage(t.Context(), store, provider, testRemoveBucket, RemoveImageOpts{ImageID: id})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 
 	// With --force: salvage proceeds.
-	res, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id, Force: true})
+	_, err = RemoveSystemImage(t.Context(), store, provider, testRemoveBucket, RemoveImageOpts{ImageID: id, Force: true})
 	require.NoError(t, err)
-	assert.Equal(t, 4, res.ObjectsDeleted)
-	assert.Equal(t, 0, store.Count())
+	assert.Equal(t, wantDeletes(id), provider.deletes)
+	assertImageStorageGone(t, provider, id)
 }
 
 func TestRemoveSystemImage_Salvage_CorruptConfig_ForceCleans(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
+	provider := newRemoveProvider()
 	const id = "ami-salvage-2"
 	putCorruptAMI(t, store, id)
-	putAMIBlocks(t, store, id, 1, 8)
+	putImageStorage(t, provider, id, 1<<30)
 
 	// Without --force.
-	_, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
+	_, err := RemoveSystemImage(t.Context(), store, provider, testRemoveBucket, RemoveImageOpts{ImageID: id})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 
-	// With --force: the corrupt document and the blocks all go. Only the
-	// block is counted; the document is deleted by key, not by prefix walk.
-	res, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id, Force: true})
+	// With --force: the corrupt document and the provider storage all go.
+	_, err = RemoveSystemImage(t.Context(), store, provider, testRemoveBucket, RemoveImageOpts{ImageID: id, Force: true})
 	require.NoError(t, err)
-	assert.Equal(t, 1, res.ObjectsDeleted)
+	assertImageStorageGone(t, provider, id)
 	assert.Equal(t, 0, store.Count())
 }
 
 func TestRemoveSystemImage_IdempotentRerun(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
+	provider := newRemoveProvider()
 	const id = "ami-rerun"
 	putAMI(t, store, id, "debian-13", "system", SnapPrefix(id))
-	putAMIBlocks(t, store, id, 2, 16)
+	putImageStorage(t, provider, id, 1<<30)
 
-	_, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
+	_, err := RemoveSystemImage(t.Context(), store, provider, testRemoveBucket, RemoveImageOpts{ImageID: id})
 	require.NoError(t, err)
 	require.Equal(t, 0, store.Count())
+	assertImageStorageGone(t, provider, id)
 
 	// Second call without --force should report NotFound.
-	_, err = RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
+	_, err = RemoveSystemImage(t.Context(), store, provider, testRemoveBucket, RemoveImageOpts{ImageID: id})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 
-	// Salvage re-run is a no-op.
-	res, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id, Force: true})
+	// Salvage re-run asks the provider again and succeeds on absent targets.
+	_, err = RemoveSystemImage(t.Context(), store, provider, testRemoveBucket, RemoveImageOpts{ImageID: id, Force: true})
 	require.NoError(t, err)
-	assert.Equal(t, 0, res.ObjectsDeleted)
+	assert.Equal(t, append(wantDeletes(id), wantDeletes(id)...), provider.deletes)
 }
 
 func TestRemoveSystemImage_MalformedID(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
-	_, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: "vol-wrong"})
+	_, err := RemoveSystemImage(t.Context(), store, newRemoveProvider(), testRemoveBucket, RemoveImageOpts{ImageID: "vol-wrong"})
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDMalformed, err.Error())
 }
 
 func TestPreviewRemoveSystemImage_Salvage(t *testing.T) {
 	store := objectstore.NewMemoryObjectStore()
+	provider := newRemoveProvider()
 	const id = "ami-salvage-preview"
-	putAMIBlocks(t, store, id, 2, 4)
+	putImageStorage(t, provider, id, 2<<30)
 
-	preview, err := PreviewRemoveSystemImage(store, testRemoveBucket, id)
+	preview, err := PreviewRemoveSystemImage(t.Context(), store, provider, testRemoveBucket, id)
 	require.NoError(t, err)
 	assert.False(t, preview.ConfigPresent)
 	assert.False(t, preview.ConfigCorrupt)
-	assert.Equal(t, 2, preview.AMIObjectCount)
-	assert.Equal(t, int64(8), preview.AMIBytesTotal)
+	assert.Equal(t, VolumePresent, preview.VolumeStatus)
+	assert.Equal(t, int64(2<<30), preview.VolumeCapacityBytes)
+}
+
+// A provider answering not_found is an absent volume, not an unknown one.
+func TestPreviewRemoveSystemImage_AbsentVolume(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	provider := newRemoveProvider()
+	const id = "ami-sys-novolume"
+	putAMI(t, store, id, "debian-13", "system", SnapPrefix(id))
+
+	preview, err := PreviewRemoveSystemImage(t.Context(), store, provider, testRemoveBucket, id)
+	require.NoError(t, err)
+	assert.Equal(t, VolumeAbsent, preview.VolumeStatus)
+	require.NoError(t, preview.VolumeErr)
 }
 
 func TestPreviewRemoveSystemImage_CorruptConfig(t *testing.T) {
@@ -365,7 +464,7 @@ func TestPreviewRemoveSystemImage_CorruptConfig(t *testing.T) {
 	const id = "ami-corrupt-preview"
 	putCorruptAMI(t, store, id)
 
-	preview, err := PreviewRemoveSystemImage(store, testRemoveBucket, id)
+	preview, err := PreviewRemoveSystemImage(t.Context(), store, newRemoveProvider(), testRemoveBucket, id)
 	require.NoError(t, err)
 	assert.False(t, preview.ConfigPresent)
 	assert.True(t, preview.ConfigCorrupt)
@@ -401,8 +500,9 @@ func TestRemoveSystemImage_DeletesOnlyItsOwnUEFIStore(t *testing.T) {
 	putUEFIStore(t, store, id)
 	otherKey := putUEFIStore(t, store, other)
 
-	_, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
+	res, err := RemoveSystemImage(t.Context(), store, newRemoveProvider(), testRemoveBucket, RemoveImageOpts{ImageID: id})
 	require.NoError(t, err)
+	assert.Equal(t, 1, res.UEFIObjectsDeleted)
 
 	left, err := uefistore.ListObjects(t.Context(), store, testRemoveBucket, id)
 	require.NoError(t, err)
@@ -430,9 +530,11 @@ func TestRemoveSystemImage_FailedUEFIStoreDeleteKeepsTheDocument(t *testing.T) {
 	putAMI(t, mem, id, "debian-13", "system", SnapPrefix(id))
 	putUEFIStore(t, mem, id)
 
-	_, err := RemoveSystemImage(failingUEFIDeletes{mem}, testRemoveBucket, RemoveImageOpts{ImageID: id})
+	provider := newRemoveProvider()
+	_, err := RemoveSystemImage(t.Context(), failingUEFIDeletes{mem}, provider, testRemoveBucket, RemoveImageOpts{ImageID: id})
 
 	require.Error(t, err)
+	assert.Empty(t, provider.deletes)
 	_, err = ebsmetadata.NewStore(mem, testRemoveBucket).GetAMI(t.Context(), id)
 	require.NoError(t, err, "the document stays for the rerun")
 }

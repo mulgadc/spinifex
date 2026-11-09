@@ -38,7 +38,7 @@ type PromoteImageResult struct {
 //
 // Guards:
 //   - ImageID must have "ami-" prefix
-//   - config.json must exist and parse cleanly
+//   - the AMI document must exist and parse cleanly
 //   - AMI must currently be account-owned; already-system AMIs are rejected
 //   - the snapshot document must be readable, so it can be re-keyed
 func PromoteSystemImage(store objectstore.ObjectStore, bucket string, opts PromoteImageOpts) (*PromoteImageResult, error) {

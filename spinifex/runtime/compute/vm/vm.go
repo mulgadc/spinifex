@@ -306,6 +306,10 @@ type VM struct {
 	// other instance holds data the customer owns (ADR-0003:S7).
 	FirstLaunch bool `json:"first_launch,omitempty"`
 
+	// UEFIStoreUnowned is set while a seed has not created this instance's
+	// store record, so a store already under its ID is not its to delete.
+	UEFIStoreUnowned bool `json:"uefi_store_unowned,omitempty"`
+
 	// CapacityReservationId is the On-Demand Capacity Reservation this instance
 	// was launched into (targeted launch). Empty for instances on general
 	// capacity. Drives slot restore to the reservation on stop/terminate.
@@ -408,7 +412,7 @@ type IOThread struct {
 // monitor-owned node addressable by node-name, which is what makes
 // blockdev-del able to remove it later. Used for boot and data volumes, so a
 // cold-booted data volume has the same detachable block-graph shape as a
-// hot-attached one; EFI volumes keep the pflash -drive shape.
+// hot-attached one.
 type Blockdev struct {
 	Value string `json:"value"`
 }
@@ -604,7 +608,7 @@ func (cfg *Config) Execute() (*exec.Cmd, error) {
 		}
 		// pflash CODE must come before VARS so QEMU loads firmware into the
 		// readonly slot first; startQEMU emits the VARS drive (unit 1) from
-		// the node's copy of the variable store or the EFI volume.
+		// the node's copy of the variable store.
 		drives = append([]Drive{{If: "pflash", Format: "raw", Unit: 0, ReadOnly: true, File: codePath}}, drives...)
 	}
 

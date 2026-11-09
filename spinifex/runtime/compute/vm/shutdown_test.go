@@ -1424,7 +1424,7 @@ func TestShutdownAndUnmount_NilQMPClient_ProceedsToUnmount(t *testing.T) {
 	instance := &VM{ID: "i-noqmp", QMPClient: nil}
 
 	require.NotPanics(t, func() {
-		_ = m.shutdownAndUnmount(instance)
+		_ = m.shutdownAndUnmount(instance, func(*VM) {})
 	})
 
 	mounter.mu.Lock()
@@ -1452,7 +1452,7 @@ func TestShutdownAndUnmount_PowerdownSent_NoForceKill(t *testing.T) {
 
 	instance := &VM{ID: "i-powerdown", QMPClient: qmpClient}
 
-	require.NoError(t, m.shutdownAndUnmount(instance))
+	require.NoError(t, m.shutdownAndUnmount(instance, func(*VM) {}))
 
 	assert.Equal(t, []string{"system_powerdown", "query-status", "quit"}, recorder.executes(),
 		"shutdownAndUnmount must ask the guest to power down, then end the paused QEMU")
@@ -1482,7 +1482,7 @@ func TestShutdownAndUnmount_PIDFileRemovedBeforeTimeout_NoForceKill(t *testing.T
 	instance := &VM{ID: "i-pid-removed", QMPClient: nil}
 
 	start := time.Now()
-	require.NoError(t, m.shutdownAndUnmount(instance))
+	require.NoError(t, m.shutdownAndUnmount(instance, func(*VM) {}))
 	elapsed := time.Since(start)
 
 	assert.Less(t, elapsed, pidFileRemovalTimeout,
@@ -1505,7 +1505,7 @@ func TestShutdownAndUnmount_NilVolumeMounter_SkipsUnmount(t *testing.T) {
 	instance := &VM{ID: "i-nomounter", QMPClient: nil}
 
 	require.NotPanics(t, func() {
-		_ = m.shutdownAndUnmount(instance)
+		_ = m.shutdownAndUnmount(instance, func(*VM) {})
 	})
 }
 
@@ -1526,7 +1526,7 @@ func TestShutdownAndUnmount_SealFailure_ReturnsErrorAndCompletesCleanup(t *testi
 	instance := &VM{ID: "i-seal-fail"}
 	instance.Config.FwCfg = []FwCfgEntry{{Name: "opt/spinifex/netcfg", File: fwPath}}
 
-	err := m.shutdownAndUnmount(instance)
+	err := m.shutdownAndUnmount(instance, func(*VM) {})
 
 	require.ErrorIs(t, err, ErrVolumeSealFailed,
 		"a failed volume unmount must be reported as a seal failure")

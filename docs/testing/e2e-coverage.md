@@ -6,7 +6,7 @@ Suites live in `tests/e2e/<name>/` and build to `tests/e2e/_bin/<name>.test`. Ev
 
 | Set | Suites |
 | --- | --- |
-| `E2E_SUITES_SINGLE` | `single iam cert eks ecs storagegrowth partialblock rds quota route53 storagefault` |
+| `E2E_SUITES_SINGLE` | `single iam cert eks ecs storagegrowth partialblock rds quota route53 uefistore storagefault` |
 | `E2E_SUITES_MULTI` | `multinode lb cert quota route53 kvquorum lbrecovery instancerecovery storagefault` |
 | `E2E_SUITES_NIGHTLY_SINGLE` | `single cert iam` |
 | `E2E_SUITES_NIGHTLY_MULTI` | `multinode cert lb` |
@@ -144,6 +144,11 @@ The create/describe/connect path against a live cluster: a DB VM that actually b
 - **`storagegrowth`** — volume growth and image pull. Requires `external_mode=pool`; skips on a nat env, which has no EIP and therefore no guest SSH.
 - **`reboot`** — a slow guest waited for and keeping what it wrote, and a wedged guest forced off and relaunched once its budget expires. Proves a real reboot by requiring a *new* boot ID.
 - **`diskperf`** — guest disk performance gate, pinned fio profile on a dedicated blank volume. Also requires `external_mode=pool` for guest SSH.
+- **`uefistore`** — a real UEFI guest's variable writes reaching the variable store and surviving what it is built to survive. Single-node, and it runs on the node: it restarts that node's daemon and reads the store with the node's own Predastore credentials. Its three tests share one Ubuntu guest, which writes non-volatile variables (attributes 0x7) through efivarfs, and each landing is proved by fetching the object the store record points at and finding the variable's UTF-16 name and its run-unique value in the VARS region.
+  - `TestUEFIGuestVariableSurvivesStopStart`: the pointer moves to a fresh object holding the variable within 60 seconds (the documented bound is 30), the stop leaves the store holding it, and the guest reads it back after the start with a new boot ID.
+  - `TestUEFIWriterResumesAfterDaemonRestart`: a variable lands, `spinifex-daemon` restarts under the guest (whose boot ID must not change), a second variable lands, and both survive a stop and start.
+  - **`TestS7_UEFIStorePruneNeverDeletesThePointedObject` is the ADR-0003:S7 evidence for the prune.** It lands three versions of one variable and requires all three objects to remain, then polls the record and the prefix every 10 seconds until the prefix holds one object, failing if the pointed object or any object under 10 minutes old disappears. The prune must finish on an instance older than the 10-minute prune age, and the last version survives a final stop and start.
+  - Host reboot and node loss are not covered: both need host control or a second node that this suite does not have.
 
 ### Other
 

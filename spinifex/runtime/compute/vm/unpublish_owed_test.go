@@ -52,11 +52,11 @@ func TestShutdownAndUnmount_RecordsTheVolumesTheUnmountLeftExported(t *testing.T
 	m := NewManagerWithDeps(Deps{VolumeMounter: mounter})
 	instance := withVolumes(&VM{ID: "i-owed"}, "vol-root", "vol-data")
 
-	require.ErrorIs(t, m.shutdownAndUnmount(instance), ErrVolumeSealFailed)
+	require.ErrorIs(t, m.shutdownAndUnmount(instance, func(*VM) {}), ErrVolumeSealFailed)
 	assert.Equal(t, []string{"vol-data"}, instance.UnpublishOwed)
 
 	mounter.unmountErr = nil
-	require.NoError(t, m.shutdownAndUnmount(instance))
+	require.NoError(t, m.shutdownAndUnmount(instance, func(*VM) {}))
 	assert.Empty(t, instance.UnpublishOwed)
 }
 

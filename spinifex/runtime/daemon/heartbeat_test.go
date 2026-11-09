@@ -8,6 +8,7 @@ import (
 
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/foundation/release/featurelevel"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
@@ -35,6 +36,7 @@ func TestBuildHeartbeat(t *testing.T) {
 	}
 
 	h := d.buildHeartbeat()
+	assert.Equal(t, featurelevel.Build, h.FeatureLevel, "heartbeat reports this build's feature level")
 
 	assert.Equal(t, "test-node", h.Node)
 	assert.Equal(t, uint64(5), h.Epoch)

@@ -275,6 +275,10 @@ type Heartbeat struct {
 	AvailableMem  float64  `json:"available_mem_gb"`
 	ReservedVCPU  int      `json:"reserved_vcpu"`
 	ReservedMem   float64  `json:"reserved_mem_gb"`
+
+	// FeatureLevel is the highest cluster feature level this build supports.
+	// Heartbeats written before the field existed read as 0.
+	FeatureLevel int `json:"feature_level,omitempty"`
 }
 
 // WriteHeartbeat writes a heartbeat entry for the given node to the cluster-state KV.

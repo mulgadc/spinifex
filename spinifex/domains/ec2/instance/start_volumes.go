@@ -8,7 +8,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	ebsmetadata "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -28,7 +27,7 @@ func (s *InstanceServiceImpl) reconcileStartVolumes(ctx context.Context, instanc
 	requests := slices.Clone(instance.EBSRequests.Requests)
 	instance.EBSRequests.Mu.Unlock()
 
-	if !slices.ContainsFunc(requests, func(r viperblocklegacyv1.EBSRequest) bool { return r.Boot }) {
+	if !slices.ContainsFunc(requests, func(r vm.EBSRequest) bool { return r.Boot }) {
 		return noRootVolumeError(instance)
 	}
 
@@ -65,7 +64,7 @@ func (s *InstanceServiceImpl) reconcileStartVolumes(ctx context.Context, instanc
 	}
 
 	instance.EBSRequests.Mu.Lock()
-	instance.EBSRequests.Requests = slices.DeleteFunc(instance.EBSRequests.Requests, func(r viperblocklegacyv1.EBSRequest) bool {
+	instance.EBSRequests.Requests = slices.DeleteFunc(instance.EBSRequests.Requests, func(r vm.EBSRequest) bool {
 		return slices.Contains(drop, r.Name)
 	})
 	instance.EBSRequests.Mu.Unlock()

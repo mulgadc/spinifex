@@ -15,7 +15,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
@@ -1855,8 +1854,8 @@ func (f *fakePublicIPReleaser) ReleaseIP(_ context.Context, pool, ip, ownerENIID
 }
 
 // embeddedNATS spins up an in-process NATS server scoped to the test and
-// returns a connected client. Used for service tests that exercise the
-// ebs.delete path inside TerminateStoppedInstance.
+// returns a connected client, for service tests that observe what
+// TerminateStoppedInstance sends over NATS.
 func embeddedNATS(t *testing.T) *nats.Conn {
 	t.Helper()
 	_, nc := testutil.StartTestNATS(t)
@@ -1927,7 +1926,7 @@ func TestTerminateStoppedInstance_TerminationProtected(t *testing.T) {
 			DisableApiTermination: aws.Bool(true),
 		},
 	}
-	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+	v.EBSRequests.Requests = []vm.EBSRequest{
 		{Name: "vol-001", DeleteOnTermination: true},
 	}
 	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
@@ -2038,7 +2037,7 @@ func TestTerminateStoppedInstance_RetriesStoppedDelete(t *testing.T) {
 func TestTerminateStoppedInstance_UserVolumeDeleted(t *testing.T) {
 	id := "i-vol"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
-	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+	v.EBSRequests.Requests = []vm.EBSRequest{
 		{Name: "vol-user-001", DeleteOnTermination: true},
 		{Name: "vol-keep-001", DeleteOnTermination: false},
 	}
@@ -2059,7 +2058,7 @@ func TestTerminateStoppedInstance_FailedSealOwesTheStoppingNodeAnUnpublish(t *te
 	id := "i-seal-failed"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc", LastNode: "node-a",
 		UnpublishOwed: []string{"vol-root-001", "vol-keep-001"}}
-	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+	v.EBSRequests.Requests = []vm.EBSRequest{
 		{Name: "vol-root-001", Boot: true, DeleteOnTermination: true},
 		{Name: "vol-keep-001", DeleteOnTermination: false},
 		{Name: "vol-sealed-001", DeleteOnTermination: false},
@@ -2081,7 +2080,7 @@ func TestTerminateStoppedInstance_FailedSealOwesTheStoppingNodeAnUnpublish(t *te
 func TestTerminateStoppedInstance_NoLastNodeOwesNothing(t *testing.T) {
 	id := "i-seal-failed-nonode"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc", UnpublishOwed: []string{"vol-keep-001"}}
-	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-keep-001"}}
+	v.EBSRequests.Requests = []vm.EBSRequest{{Name: "vol-keep-001"}}
 	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
 	vd := &fakeVolumeDeleter{}
 	svc := &InstanceServiceImpl{stoppedStore: store, volumeDeleter: vd}
@@ -2100,7 +2099,7 @@ func TestTerminateStoppedInstance_NoLastNodeOwesNothing(t *testing.T) {
 func TestTerminateStoppedInstance_StampsTeardownVolumesDone(t *testing.T) {
 	id := "i-teardown-done"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
-	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+	v.EBSRequests.Requests = []vm.EBSRequest{
 		{Name: "vol-root-001", Boot: true, DeleteOnTermination: true},
 	}
 	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
@@ -2124,7 +2123,7 @@ func TestTerminateStoppedInstance_StampsTeardownVolumesDone(t *testing.T) {
 func TestTerminateStoppedInstance_StampsTeardownVolumesFailedOnDeleteError(t *testing.T) {
 	id := "i-teardown-failed"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
-	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+	v.EBSRequests.Requests = []vm.EBSRequest{
 		{Name: "vol-root-002", Boot: true, DeleteOnTermination: true},
 	}
 	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
@@ -2149,7 +2148,7 @@ func TestTerminateStoppedInstance_StampsTeardownVolumesFailedOnDeleteError(t *te
 func TestTerminateStoppedInstance_NonDoTBootVolumeDetachedNotDeleted(t *testing.T) {
 	id := "i-nondot-boot"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
-	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+	v.EBSRequests.Requests = []vm.EBSRequest{
 		{Name: "vol-root-nondot", Boot: true, DeleteOnTermination: false},
 	}
 	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
@@ -2173,7 +2172,7 @@ func TestTerminateStoppedInstance_NonDoTBootVolumeDetachedNotDeleted(t *testing.
 func TestTerminateStoppedInstance_NonDoTDataVolumeDetachedNotDeleted(t *testing.T) {
 	id := "i-nondot-data"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
-	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+	v.EBSRequests.Requests = []vm.EBSRequest{
 		{Name: "vol-data-nondot", DeleteOnTermination: false},
 	}
 	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
@@ -2195,7 +2194,7 @@ func TestTerminateStoppedInstance_NonDoTDataVolumeDetachedNotDeleted(t *testing.
 func TestTerminateStoppedInstance_DetachOfAlreadyGoneVolumeIsNotAFailure(t *testing.T) {
 	id := "i-nondot-gone"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
-	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+	v.EBSRequests.Requests = []vm.EBSRequest{
 		{Name: "vol-data-gone", DeleteOnTermination: false},
 	}
 	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
@@ -2213,7 +2212,7 @@ func TestTerminateStoppedInstance_DetachOfAlreadyGoneVolumeIsNotAFailure(t *test
 func TestTerminateStoppedInstance_NoVolumeDeleterSkipsGracefully(t *testing.T) {
 	id := "i-no-vd"
 	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
-	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+	v.EBSRequests.Requests = []vm.EBSRequest{
 		{Name: "vol-user-001", DeleteOnTermination: true},
 	}
 	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
@@ -2224,30 +2223,48 @@ func TestTerminateStoppedInstance_NoVolumeDeleterSkipsGracefully(t *testing.T) {
 	require.NotNil(t, store.WroteTerminated[id])
 }
 
-func TestTerminateStoppedInstance_InternalVolumesViaNATS(t *testing.T) {
-	id := "i-int-vol"
-	v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
-	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
-		{Name: "vol-efi-001", EFI: true},
+// TestTerminateStoppedInstance_SkipsLeftoverEFIRequest pins that an EFI request
+// left on a record sends nothing and touches no volume, so the teardown mark is
+// decided by the instance's other volumes alone.
+func TestTerminateStoppedInstance_SkipsLeftoverEFIRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		deleteErr error
+		want      vm.TeardownState
+	}{
+		{"other volume deleted", nil, vm.TeardownDone},
+		{"other volume failed", errors.New("backend unavailable"), vm.TeardownFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id := "i-int-vol"
+			v := &vm.VM{ID: id, Status: vm.StateStopped, AccountID: "acc"}
+			v.EBSRequests.Requests = []vm.EBSRequest{
+				{Name: "vol-root-001-efi", EFI: true, DeleteOnTermination: true},
+				{Name: "vol-root-001", Boot: true, DeleteOnTermination: true},
+			}
+			store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
+
+			nc := embeddedNATS(t)
+			deleteSub, err := nc.SubscribeSync("ebs.delete")
+			require.NoError(t, err)
+			defer deleteSub.Unsubscribe()
+
+			vd := &fakeVolumeDeleter{err: tc.deleteErr}
+			svc := &InstanceServiceImpl{stoppedStore: store, natsConn: nc, volumeDeleter: vd}
+
+			_, err = svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+			require.NoError(t, err)
+
+			require.NoError(t, nc.Flush())
+			pending, _, err := deleteSub.Pending()
+			require.NoError(t, err)
+			assert.Zero(t, pending, "an EFI request must send nothing on ebs.delete")
+			assert.Equal(t, []string{"vol-root-001"}, vd.calls, "an EFI request must reach neither volume-service call")
+			assert.Empty(t, vd.detached)
+			require.NotNil(t, store.WroteTerminated[id])
+			assert.Equal(t, string(tc.want), store.WroteTerminated[id].Teardown[vm.TeardownVolumes])
+		})
 	}
-	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: v}}
-
-	nc := embeddedNATS(t)
-	var ebsDeleted []string
-	sub, err := nc.Subscribe("ebs.delete", func(msg *nats.Msg) {
-		var req viperblocklegacyv1.EBSDeleteRequest
-		_ = json.Unmarshal(msg.Data, &req)
-		ebsDeleted = append(ebsDeleted, req.Volume)
-		_ = msg.Respond([]byte(`{"Success":true}`))
-	})
-	require.NoError(t, err)
-	defer sub.Unsubscribe()
-
-	svc := &InstanceServiceImpl{stoppedStore: store, natsConn: nc}
-
-	_, err = svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
-	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{"vol-efi-001"}, ebsDeleted)
 }
 
 func TestTerminateStoppedInstance_PublicIPReleased(t *testing.T) {
@@ -2815,10 +2832,10 @@ type raceVolumeMounter struct{}
 func (raceVolumeMounter) Mount(context.Context, *vm.VM) error           { return nil }
 func (raceVolumeMounter) Unmount(context.Context, *vm.VM) error         { return nil }
 func (raceVolumeMounter) Abandon(context.Context, *vm.VM, string) error { return nil }
-func (raceVolumeMounter) MountOne(context.Context, string, *viperblocklegacyv1.EBSRequest) error {
+func (raceVolumeMounter) MountOne(context.Context, string, *vm.EBSRequest) error {
 	return nil
 }
-func (raceVolumeMounter) UnmountOne(context.Context, string, viperblocklegacyv1.EBSRequest) error {
+func (raceVolumeMounter) UnmountOne(context.Context, string, vm.EBSRequest) error {
 	return nil
 }
 

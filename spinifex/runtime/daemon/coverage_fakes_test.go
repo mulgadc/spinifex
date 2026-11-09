@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"errors"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"net/netip"
 	"sync"
 
@@ -217,10 +216,10 @@ func (m *hookVolumeMounter) Mount(_ context.Context, v *vm.VM) error {
 
 func (m *hookVolumeMounter) Unmount(context.Context, *vm.VM) error         { return nil }
 func (m *hookVolumeMounter) Abandon(context.Context, *vm.VM, string) error { return nil }
-func (m *hookVolumeMounter) MountOne(context.Context, string, *viperblocklegacyv1.EBSRequest) error {
+func (m *hookVolumeMounter) MountOne(context.Context, string, *vm.EBSRequest) error {
 	return nil
 }
-func (m *hookVolumeMounter) UnmountOne(context.Context, string, viperblocklegacyv1.EBSRequest) error {
+func (m *hookVolumeMounter) UnmountOne(context.Context, string, vm.EBSRequest) error {
 	return nil
 }
 

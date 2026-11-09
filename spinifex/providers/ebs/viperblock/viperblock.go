@@ -1,5 +1,5 @@
 // Package viperblock is the Viperblock EBS provider adapter: it serves
-// viperblock volumes through nbdkit and answers the ebs.* NATS topics.
+// viperblock volumes through nbdkit and answers the ebs.provider.v1.* subjects.
 // runtime/roles/viperblockd wires this adapter into the runtime role; this package
 // holds no process/role lifecycle of its own.
 package viperblock
@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"io/fs"
 	"log/slog"
@@ -22,7 +21,6 @@ import (
 	"time"
 
 	"github.com/mulgadc/bluebottle/pkg/masterkey"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
@@ -91,19 +89,18 @@ func loadStateWithRetry(ctx context.Context, cfg *Config, vb *viperblock.VB, vol
 // MountedVolume is one volume this node currently exports over NBD: its nbdkit
 // process and endpoint, live viperblock instance, NATS subscriptions and lease.
 type MountedVolume struct {
-	Name      string
-	Port      int    // TCP port (when using TCP transport)
-	Socket    string // Unix socket path (when using socket transport)
-	NBDURI    string // Full NBD URI (nbd:unix:/path.sock or nbd://host:port)
-	PID       int
-	VB        *viperblock.VB     // Reference to viperblock instance for state sync/flush
-	ConfigSub *nats.Subscription // Per-volume config-update subscription (ebs.config.{volumeID})
+	Name   string
+	Port   int    // TCP port (when using TCP transport)
+	Socket string // Unix socket path (when using socket transport)
+	NBDURI string // Full NBD URI (nbd:unix:/path.sock or nbd://host:port)
+	PID    int
+	VB     *viperblock.VB // Reference to viperblock instance for state sync/flush
 
 	// OwnerSubs are the plain (non-queue-group) ebs.provider.v1.owner.{Name}.*
 	// subscriptions registered while this volume is mounted, so
 	// snapshot/expand/describe requests reach this node directly instead of a
 	// random spinifex-workers member. Registered in mountVolume, dropped
-	// alongside ConfigSub whenever this entry leaves cfg.MountedVolumes.
+	// whenever this entry leaves cfg.MountedVolumes.
 	OwnerSubs []*nats.Subscription
 
 	// ReadOnly records the access mode nbdkit was started with. It is fixed
@@ -143,9 +140,8 @@ type Config struct {
 	SecretKey      string
 	BaseDir        string
 
-	// NodeName identifies this node in the cluster (e.g. "node1").
-	// Used for node-specific NATS topics: ebs.{NodeName}.mount / ebs.{NodeName}.unmount.
-	// If empty, falls back to generic ebs.mount / ebs.unmount with queue group (single-node compat).
+	// NodeName identifies this node in the cluster (e.g. "node1") and addresses
+	// its node-specific ebs.provider.v1.<node>.* subjects. It must be set.
 	NodeName string
 
 	// NBDTransport controls the transport type: "socket" (default) or "tcp"
@@ -362,30 +358,6 @@ func applyConfigUpdate(ctx context.Context, vb *viperblock.VB, volumeConfig json
 	return vb.SaveStateCtx(ctx)
 }
 
-// makeConfigUpdateHandler returns a NATS handler for volume-specific config
-// updates (ebs.config.{volumeID}). It runs against the live mounted VB, which is
-// the single writer that owns the volume's StateSeqNum.
-func makeConfigUpdateHandler(vb *viperblock.VB, volumeName string) nats.MsgHandler {
-	return func(msg *nats.Msg) {
-		ctx, span := natsmsg.StartConsumerSpan(msg)
-		defer span.End()
-
-		var req viperblocklegacyv1.EBSConfigUpdateRequest
-		if err := json.Unmarshal(msg.Data, &req); err != nil {
-			slog.ErrorContext(ctx, "Failed to unmarshal ebs.config message", "volume", volumeName, "err", err)
-			respondJSON(msg, viperblocklegacyv1.EBSConfigUpdateResponse{Volume: volumeName, Error: fmt.Sprintf("bad request: %v", err)})
-			return
-		}
-		if err := applyConfigUpdate(ctx, vb, req.VolumeConfig); err != nil {
-			slog.ErrorContext(ctx, "ebs.config: live VB update failed", "volume", volumeName, "err", err)
-			respondJSON(msg, viperblocklegacyv1.EBSConfigUpdateResponse{Volume: volumeName, Error: err.Error()})
-			return
-		}
-		slog.Info("ebs.config: live VB state updated", "volume", volumeName)
-		respondJSON(msg, viperblocklegacyv1.EBSConfigUpdateResponse{Volume: volumeName, Success: true})
-	}
-}
-
 // volumeS3Config builds the backend config for one volume. Every viperblock
 // backend this service constructs goes through here so they all share one
 // connection pool.
@@ -448,7 +420,7 @@ func readVolumeState(ctx context.Context, cfg *Config, volumeName string) (viper
 
 // openVolumeVB constructs and opens an existing viperblock volume with its
 // config state loaded (LoadState) but NOT its block map. Construction mirrors
-// the ebs.mount path so encrypted volumes open with the master key and matching
+// mountVolume's path so encrypted volumes open with the master key and matching
 // encryption state. Callers that Close() the VB MUST go through
 // openLoadedVolumeVB instead, so the block map is restored before Close()
 // flushes it back to predastore.
@@ -517,9 +489,8 @@ func validVolumeName(volume string) bool {
 
 // localVolumeDir validates volume and baseDir, then returns baseDir/volume.
 // Every handler that turns a wire-supplied volume name into a filesystem path
-// (mount, unmount, delete, config) must go through this: the name arrives
-// unmarshalled straight from a NATS message, so an empty or ".."-laden value
-// must never reach a filesystem call. The character checks in validVolumeName
+// must go through this: the name arrives unmarshalled straight from a NATS
+// message, so an empty or ".."-laden value must never reach a filesystem call. The character checks in validVolumeName
 // already rule out an escape, but the path is still resolved and checked
 // against baseDir as a second, independent guard.
 func localVolumeDir(baseDir, volume string) (string, error) {
@@ -751,37 +722,6 @@ func sealVolumeVB(ctx context.Context, cfg *Config, volumeName string) error {
 	return nil
 }
 
-// respondJSON marshals data and sends it as a NATS response. On marshal
-// failure a raw JSON error string is sent instead.
-func respondJSON(msg *nats.Msg, data any) {
-	response, err := json.Marshal(data)
-	if err != nil {
-		slog.Error("Failed to marshal response", "type", fmt.Sprintf("%T", data), "err", err)
-		_ = msg.Respond([]byte(`{"Error":"internal marshal failure"}`))
-		return
-	}
-	if err := msg.Respond(response); err != nil {
-		slog.Error("Failed to respond to NATS request", "err", err)
-	}
-}
-
-// respondAndPublish is like respondJSON but also publishes the marshaled
-// response to the given NATS topic (used for ebs.mount.response etc.).
-func respondAndPublish(msg *nats.Msg, nc *nats.Conn, topic string, data any) {
-	response, err := json.Marshal(data)
-	if err != nil {
-		slog.Error("Failed to marshal response", "type", fmt.Sprintf("%T", data), "err", err)
-		_ = msg.Respond([]byte(`{"Error":"internal marshal failure"}`))
-		return
-	}
-	if err := msg.Respond(response); err != nil {
-		slog.Error("Failed to respond to NATS request", "err", err)
-	}
-	if err := nc.Publish(topic, response); err != nil {
-		slog.Error("Failed to publish response", "topic", topic, "err", err)
-	}
-}
-
 // LoadEncryptionKey loads the shared at-rest master key named by
 // cfg.EncryptionKeyFile. An empty path leaves the volume in cleartext
 // (legacy) mode.
@@ -822,7 +762,7 @@ func (cfg *Config) RecoverMountedVolumes(ctx context.Context, nc *nats.Conn) {
 
 // Run performs the full adapter startup sequence against an established NATS
 // connection: loads the encryption key, binds the lease store, recovers any
-// surviving mounts, and registers every ebs.* subject. Subscriptions are
+// surviving mounts, and registers the provider contract subjects. Subscriptions are
 // written to the server asynchronously, so this flushes before signalling
 // readiness: without the round trip a caller can act on the signal and still
 // have its request arrive before the interest does.
@@ -845,9 +785,6 @@ func (cfg *Config) Run(nc *nats.Conn) error {
 
 	slog.Info("Waiting for EBS events", "node", cfg.NodeName)
 
-	if err := RegisterVolumeLifecycleSubjects(cfg, nc); err != nil {
-		return err
-	}
 	if err := RegisterProviderSubjects(cfg, nc); err != nil {
 		return err
 	}
@@ -881,335 +818,6 @@ func (cfg *Config) Shutdown() {
 	cfg.mu.Unlock()
 
 	shutdownVolumes(volumes, nbdkitInUse)
-}
-
-// RegisterVolumeLifecycleSubjects wires the mount, unmount, delete, sync,
-// abandon and config-update ebs.* subjects onto nc.
-func RegisterVolumeLifecycleSubjects(cfg *Config, nc *nats.Conn) error {
-	if _, err := nc.QueueSubscribe(viperblocklegacyv1.DeleteSubject, "spinifex-workers", func(msg *nats.Msg) {
-		ctx, span := natsmsg.StartConsumerSpan(msg)
-		defer span.End()
-		slog.InfoContext(ctx, "Received ebs.delete message")
-
-		var ebsRequest viperblocklegacyv1.EBSDeleteRequest
-		if err := json.Unmarshal(msg.Data, &ebsRequest); err != nil {
-			slog.ErrorContext(ctx, "Failed to unmarshal ebs.delete message", "err", err)
-			natsmsg.MarkSpanError(span, err)
-			respondJSON(msg, viperblocklegacyv1.EBSDeleteResponse{Error: fmt.Sprintf("bad request: %v", err)})
-			return
-		}
-
-		// Reject before touching anything: an empty or path-traversing name
-		// must never reach the RemoveAll below, which is otherwise wide
-		// enough to wipe BaseDir itself or escape it entirely.
-		localPath, err := localVolumeDir(cfg.BaseDir, ebsRequest.Volume)
-		if err != nil {
-			slog.ErrorContext(ctx, "ebs.delete: refusing invalid volume name", "volume", ebsRequest.Volume, "err", err)
-			natsmsg.MarkSpanError(span, err)
-			respondJSON(msg, viperblocklegacyv1.EBSDeleteResponse{Volume: ebsRequest.Volume, Error: fmt.Sprintf("invalid volume name: %v", err)})
-			return
-		}
-
-		response := viperblocklegacyv1.EBSDeleteResponse{Volume: ebsRequest.Volume, Success: true}
-
-		// Find and clean up the mounted volume if it exists
-		cfg.mu.Lock()
-		var matched MountedVolume
-		matchIdx := -1
-		for i, volume := range cfg.MountedVolumes {
-			if volume.Name == ebsRequest.Volume {
-				matched = volume
-				matchIdx = i
-				cfg.MountedVolumes = append(cfg.MountedVolumes[:i], cfg.MountedVolumes[i+1:]...)
-				break
-			}
-		}
-		cfg.mu.Unlock()
-
-		if matchIdx >= 0 {
-			// Unsubscribe from volume-specific config-update topic
-			if matched.ConfigSub != nil {
-				if err := matched.ConfigSub.Unsubscribe(); err != nil {
-					slog.ErrorContext(ctx, "Failed to unsubscribe config topic", "volume", ebsRequest.Volume, "err", err)
-				}
-			}
-			// Stop background goroutines and kill nbdkit process
-			if matched.VB != nil {
-				matched.VB.Detach()
-			}
-			if err := hostprocess.KillProcess(matched.PID); err != nil {
-				slog.ErrorContext(ctx, "Failed to kill nbdkit process", "pid", matched.PID, "err", err)
-			}
-
-			// Remove the socket file if using socket transport
-			if matched.Socket != "" {
-				slog.InfoContext(ctx, "Removing socket file", "socket", matched.Socket)
-				if err := os.Remove(matched.Socket); err != nil && !os.IsNotExist(err) {
-					slog.ErrorContext(ctx, "Failed to delete nbd socket", "err", err, "socket", matched.Socket)
-				}
-			}
-
-			cfg.releaseVolumeLease(ctx, matched.Lease)
-
-			slog.InfoContext(ctx, "ebs.delete: cleaned up mounted volume", "volume", ebsRequest.Volume, "pid", matched.PID)
-		} else {
-			// Volume not mounted is expected for "available" volumes
-			slog.InfoContext(ctx, "ebs.delete: volume not mounted (expected for available volumes)", "volume", ebsRequest.Volume)
-		}
-
-		// Delete is permanent: remove the on-disk WAL/checkpoint cache
-		// regardless of mount-tracking state. -efi volumes never go through
-		// the unmount seal (isAuxVolume skips it, they carry no durable
-		// data), and a main volume's seal can have been skipped after a
-		// failed flush (e.g. disk full), so this is the only guaranteed
-		// cleanup point for both. localPath was validated above.
-		if err := os.RemoveAll(localPath); err != nil {
-			slog.ErrorContext(ctx, "ebs.delete: failed to remove local volume directory",
-				"volume", ebsRequest.Volume, "path", localPath, "err", err)
-		} else {
-			slog.InfoContext(ctx, "ebs.delete: removed local volume directory",
-				"volume", ebsRequest.Volume, "path", localPath)
-		}
-
-		respondJSON(msg, response)
-	}); err != nil {
-		return fmt.Errorf("failed to subscribe to ebs.delete: %w", err)
-	}
-
-	// Subscribe to node-specific unmount topic if NodeName is set, otherwise fall back to generic queue group
-	unmountTopic := viperblocklegacyv1.UnmountSubject(cfg.NodeName)
-	unmountSubscribe := func(topic string, handler nats.MsgHandler) (*nats.Subscription, error) {
-		if cfg.NodeName != "" {
-			return nc.Subscribe(topic, handler)
-		}
-		return nc.QueueSubscribe(topic, "spinifex-workers", handler)
-	}
-	if _, err := unmountSubscribe(unmountTopic, func(msg *nats.Msg) {
-		ctx, span := natsmsg.StartConsumerSpan(msg)
-		defer span.End()
-		slog.InfoContext(ctx, "Received message")
-
-		var ebsRequest viperblocklegacyv1.EBSRequest
-		if err := json.Unmarshal(msg.Data, &ebsRequest); err != nil {
-			slog.ErrorContext(ctx, "Failed to unmarshal ebs.unmount message", "err", err)
-			natsmsg.MarkSpanError(span, err)
-			respondJSON(msg, viperblocklegacyv1.EBSUnMountResponse{Error: fmt.Sprintf("bad request: %v", err)})
-			return
-		}
-
-		ebsResponse, _ := unmountVolume(ctx, cfg, ebsRequest.Name)
-		respondAndPublish(msg, nc, viperblocklegacyv1.UnmountResponseSubject, ebsResponse)
-	}); err != nil {
-		return fmt.Errorf("failed to subscribe to %s: %w", unmountTopic, err)
-	}
-
-	// Never a queue group, even in single-node mode. Abandoning an export is an
-	// instruction to one specific node about its own volume, and a queue group
-	// would let it land on a node that has nothing to abandon while the one that
-	// does goes on holding the lease.
-	abandonTopic := viperblocklegacyv1.VolumeAbandonSubject(cfg.NodeName)
-	if _, err := nc.Subscribe(abandonTopic, func(msg *nats.Msg) {
-		ctx, span := natsmsg.StartConsumerSpan(msg)
-		defer span.End()
-
-		var req viperblocklegacyv1.VolumeAbandonRequest
-		if err := json.Unmarshal(msg.Data, &req); err != nil {
-			slog.ErrorContext(ctx, "failed to unmarshal volume abandon request", "err", err)
-			natsmsg.MarkSpanError(span, err)
-			respondJSON(msg, viperblocklegacyv1.VolumeAbandonResponse{Error: fmt.Sprintf("bad request: %v", err)})
-			return
-		}
-		// No path is built from this: the name is matched against exports this
-		// node recorded itself. An empty one would match nothing and report
-		// success, which is the wrong answer to a malformed request.
-		if req.Volume == "" {
-			slog.ErrorContext(ctx, "volume abandon: request names no volume")
-			respondJSON(msg, viperblocklegacyv1.VolumeAbandonResponse{Error: "request names no volume"})
-			return
-		}
-
-		abandoned, err := cfg.abandonVolume(ctx, req.Volume, req.Reason)
-		response := viperblocklegacyv1.VolumeAbandonResponse{Abandoned: abandoned}
-		if err != nil {
-			natsmsg.MarkSpanError(span, err)
-			response.Error = err.Error()
-		}
-		respondJSON(msg, response)
-	}); err != nil {
-		return fmt.Errorf("failed to subscribe to %s: %w", abandonTopic, err)
-	}
-
-	if _, err := nc.QueueSubscribe(viperblocklegacyv1.SyncSubject, "spinifex-workers", func(msg *nats.Msg) {
-		ctx, span := natsmsg.StartConsumerSpan(msg)
-		defer span.End()
-		slog.InfoContext(ctx, "Received ebs.sync message")
-
-		var syncRequest viperblocklegacyv1.EBSSyncRequest
-		if err := json.Unmarshal(msg.Data, &syncRequest); err != nil {
-			slog.ErrorContext(ctx, "Failed to unmarshal ebs.sync message", "err", err)
-			natsmsg.MarkSpanError(span, err)
-			respondJSON(msg, viperblocklegacyv1.EBSSyncResponse{Error: fmt.Sprintf("bad request: %v", err)})
-			return
-		}
-
-		syncResponse := viperblocklegacyv1.EBSSyncResponse{Volume: syncRequest.Volume}
-		defer func() {
-			if syncResponse.Error != "" {
-				natsmsg.MarkSpanError(span, errors.New(syncResponse.Error))
-			}
-		}()
-
-		// Find the mounted volume and reload its state from the backend
-		cfg.mu.Lock()
-		var foundVB *viperblock.VB
-		for _, volume := range cfg.MountedVolumes {
-			if volume.Name == syncRequest.Volume && volume.VB != nil {
-				foundVB = volume.VB
-				break
-			}
-		}
-		cfg.mu.Unlock()
-
-		if foundVB == nil {
-			syncResponse.Error = fmt.Sprintf("volume %s not mounted or has no VB instance", syncRequest.Volume)
-			slog.WarnContext(ctx, "ebs.sync: volume not found", "volume", syncRequest.Volume)
-		} else if err := foundVB.LoadState(); err != nil {
-			syncResponse.Error = fmt.Sprintf("failed to reload state: %v", err)
-			slog.ErrorContext(ctx, "ebs.sync: LoadState failed", "volume", syncRequest.Volume, "err", err)
-		} else {
-			syncResponse.Synced = true
-			slog.InfoContext(ctx, "ebs.sync: state reloaded", "volume", syncRequest.Volume,
-				"volumeSize", foundVB.GetVolumeSize())
-		}
-
-		respondJSON(msg, syncResponse)
-	}); err != nil {
-		return fmt.Errorf("failed to subscribe to ebs.sync: %w", err)
-	}
-
-	// ebs.config is the fallback for encrypted-volume config updates whose
-	// per-volume ebs.config.{volumeID} topic had no responder (volume not
-	// mounted anywhere). A detached volume has no live writer, so any worker may
-	// open it exclusively and reseal. A mount that raced in is still handled by
-	// preferring the live VB when this node happens to own it.
-	if _, err := nc.QueueSubscribe(viperblocklegacyv1.ConfigUpdateSubject, "spinifex-workers", func(msg *nats.Msg) {
-		ctx, span := natsmsg.StartConsumerSpan(msg)
-		defer span.End()
-
-		var req viperblocklegacyv1.EBSConfigUpdateRequest
-		if err := json.Unmarshal(msg.Data, &req); err != nil {
-			slog.ErrorContext(ctx, "Failed to unmarshal ebs.config message", "err", err)
-			natsmsg.MarkSpanError(span, err)
-			respondJSON(msg, viperblocklegacyv1.EBSConfigUpdateResponse{Error: fmt.Sprintf("bad request: %v", err)})
-			return
-		}
-
-		// Reject before the not-live branch below can hand this name to
-		// openLoadedVolumeVB, which derives a BaseDir/<volume> path.
-		if !validVolumeName(req.Volume) {
-			err := fmt.Errorf("invalid volume name %q", req.Volume)
-			slog.ErrorContext(ctx, "ebs.config: refusing invalid volume name", "volume", req.Volume)
-			natsmsg.MarkSpanError(span, err)
-			respondJSON(msg, viperblocklegacyv1.EBSConfigUpdateResponse{Volume: req.Volume, Error: err.Error()})
-			return
-		}
-
-		cfg.mu.Lock()
-		var live *viperblock.VB
-		for _, volume := range cfg.MountedVolumes {
-			if volume.Name == req.Volume && volume.VB != nil {
-				live = volume.VB
-				break
-			}
-		}
-		cfg.mu.Unlock()
-
-		if live != nil {
-			if err := applyConfigUpdate(ctx, live, req.VolumeConfig); err != nil {
-				slog.ErrorContext(ctx, "ebs.config: live VB update failed", "volume", req.Volume, "err", err)
-				natsmsg.MarkSpanError(span, err)
-				respondJSON(msg, viperblocklegacyv1.EBSConfigUpdateResponse{Volume: req.Volume, Error: err.Error()})
-				return
-			}
-			slog.InfoContext(ctx, "ebs.config: live VB state updated (fallback path)", "volume", req.Volume)
-			respondJSON(msg, viperblocklegacyv1.EBSConfigUpdateResponse{Volume: req.Volume, Success: true})
-			return
-		}
-
-		vb, lease, err := openLoadedVolumeVB(ctx, cfg, req.Volume)
-		if err != nil {
-			slog.ErrorContext(ctx, "ebs.config: failed to open detached volume", "volume", req.Volume, "err", err)
-			natsmsg.MarkSpanError(span, err)
-			respondJSON(msg, viperblocklegacyv1.EBSConfigUpdateResponse{Volume: req.Volume, Error: fmt.Sprintf("open volume: %v", err)})
-			return
-		}
-		defer cfg.releaseVolumeLease(ctx, lease)
-
-		applyErr := applyConfigUpdate(ctx, vb, req.VolumeConfig)
-		if closeErr := vb.CloseCtx(ctx); closeErr != nil {
-			slog.ErrorContext(ctx, "ebs.config: VB close failed", "volume", req.Volume, "err", closeErr)
-		}
-		if applyErr != nil {
-			slog.ErrorContext(ctx, "ebs.config: detached volume update failed", "volume", req.Volume, "err", applyErr)
-			natsmsg.MarkSpanError(span, applyErr)
-			respondJSON(msg, viperblocklegacyv1.EBSConfigUpdateResponse{Volume: req.Volume, Error: applyErr.Error()})
-			return
-		}
-		slog.InfoContext(ctx, "ebs.config: detached volume state updated", "volume", req.Volume)
-		respondJSON(msg, viperblocklegacyv1.EBSConfigUpdateResponse{Volume: req.Volume, Success: true})
-	}); err != nil {
-		return fmt.Errorf("failed to subscribe to ebs.config: %w", err)
-	}
-
-	// Note: ebs.snapshot is handled per-volume via ebs.snapshot.{volumeID} topics,
-	// subscribed at mount time and unsubscribed at unmount time. This ensures
-	// snapshot requests are routed to the node that owns the volume.
-
-	// Subscribe to node-specific mount topic if NodeName is set, otherwise fall back to generic queue group
-	mountTopic := viperblocklegacyv1.MountSubject(cfg.NodeName)
-	mountSubscribe := func(topic string, handler nats.MsgHandler) (*nats.Subscription, error) {
-		if cfg.NodeName != "" {
-			return nc.Subscribe(topic, handler)
-		}
-		return nc.QueueSubscribe(topic, "spinifex-workers", handler)
-	}
-	if _, err := mountSubscribe(mountTopic, func(msg *nats.Msg) {
-		ctx, span := natsmsg.StartConsumerSpan(msg)
-		defer span.End()
-		slog.InfoContext(ctx, "Received message:")
-
-		var ebsRequest viperblocklegacyv1.EBSRequest
-		if err := json.Unmarshal(msg.Data, &ebsRequest); err != nil {
-			slog.ErrorContext(ctx, "Failed to unmarshal ebs.mount message", "err", err)
-			natsmsg.MarkSpanError(span, err)
-			respondJSON(msg, viperblocklegacyv1.EBSMountResponse{Error: fmt.Sprintf("bad request: %v", err)})
-			return
-		}
-
-		slog.InfoContext(ctx, "ebs.mount", "request", ebsRequest)
-
-		// Reject before any local path is derived from the name: this is the
-		// first point an unvalidated wire name would otherwise reach the
-		// filesystem (clearStaleSealReceipt) and, further down, viperblock's
-		// own BaseDir/<volume> layout.
-		if !validVolumeName(ebsRequest.Name) {
-			err := fmt.Errorf("invalid volume name %q", ebsRequest.Name)
-			slog.ErrorContext(ctx, "ebs.mount: refusing invalid volume name", "volume", ebsRequest.Name)
-			natsmsg.MarkSpanError(span, err)
-			respondJSON(msg, viperblocklegacyv1.EBSMountResponse{Error: err.Error()})
-			return
-		}
-
-		ebsResponse, _ := mountVolume(ctx, cfg, nc, ebsRequest.Name, false)
-		respondAndPublish(msg, nc, viperblocklegacyv1.MountResponseSubject, ebsResponse)
-		if ebsResponse.Mounted {
-			slog.Debug("Sent ebs.mount response")
-		}
-	}); err != nil {
-		return fmt.Errorf("failed to subscribe to %s: %w", mountTopic, err)
-	}
-
-	return nil
 }
 
 // shutdownVolumes flushes each mounted volume's WAL on SIGTERM but only reaps

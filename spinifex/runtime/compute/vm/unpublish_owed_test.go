@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,7 +14,7 @@ import (
 
 func withVolumes(v *VM, names ...string) *VM {
 	for _, name := range names {
-		v.EBSRequests.Requests = append(v.EBSRequests.Requests, viperblocklegacyv1.EBSRequest{Name: name})
+		v.EBSRequests.Requests = append(v.EBSRequests.Requests, EBSRequest{Name: name})
 	}
 	return v
 }

@@ -18,7 +18,6 @@ import (
 	"syscall"
 	"time"
 
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
 	"github.com/mulgadc/viperblock/viperblock"
 	"github.com/nats-io/nats.go"
@@ -175,11 +174,6 @@ func rebuildMountedVolume(ctx context.Context, cfg *Config, nc *nats.Conn, disc 
 		nbdURI = nbd.FormatNBDTCPURI("127.0.0.1", disc.Port)
 	}
 
-	configSub, err := nc.Subscribe(viperblocklegacyv1.VolumeConfigUpdateSubject(disc.Volume), makeConfigUpdateHandler(vb, disc.Volume))
-	if err != nil {
-		slog.ErrorContext(ctx, "recovery: failed to subscribe to volume config topic", "volume", disc.Volume, "err", err)
-	}
-
 	ownerSubs := subscribeOwnerSubjects(ctx, cfg, nc, disc.Volume)
 
 	return MountedVolume{
@@ -189,7 +183,6 @@ func rebuildMountedVolume(ctx context.Context, cfg *Config, nc *nats.Conn, disc 
 		NBDURI:    nbdURI,
 		PID:       disc.PID,
 		VB:        vb,
-		ConfigSub: configSub,
 		OwnerSubs: ownerSubs,
 		Lease:     lease,
 	}, nil

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -238,13 +237,13 @@ func TestVolumeMounterAdapter_Mount_DisconnectedIsRetryable(t *testing.T) {
 	t.Parallel()
 	adapter := newNATSMounter(closedAdapterTestConn(t), "node-closed")
 	instance := &vm.VM{ID: "i-mount-closed"}
-	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-closed"}}
+	instance.EBSRequests.Requests = []vm.EBSRequest{{Name: "vol-closed"}}
 
 	err := adapter.Mount(t.Context(), instance)
 	require.ErrorIs(t, err, nats.ErrConnectionClosed)
 	require.ErrorIs(t, err, vm.ErrMountRetryable, "restore must back off until the connection is back")
 	assert.NotErrorIs(t, err, vm.ErrMountAmbiguous, "a request never sent left nothing to tear down")
-	require.ErrorIs(t, adapter.MountOne(t.Context(), testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-hot"}), vm.ErrMountRetryable)
+	require.ErrorIs(t, adapter.MountOne(t.Context(), testAccountID, &vm.EBSRequest{Name: "vol-hot"}), vm.ErrMountRetryable)
 }
 
 func TestVolumeMounterAdapter_Unmount_Errors(t *testing.T) {
@@ -253,7 +252,7 @@ func TestVolumeMounterAdapter_Unmount_Errors(t *testing.T) {
 	t.Run("no responder fails the seal for every volume", func(t *testing.T) {
 		adapter := newNATSMounter(nc, uniqueAdapterID("node-unmount"))
 		instance := &vm.VM{ID: "i-unmount-none"}
-		instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-a"}, {Name: "vol-b"}}
+		instance.EBSRequests.Requests = []vm.EBSRequest{{Name: "vol-a"}, {Name: "vol-b"}}
 
 		err := adapter.Unmount(t.Context(), instance)
 		require.ErrorIs(t, err, nats.ErrNoResponders)
@@ -266,7 +265,7 @@ func TestVolumeMounterAdapter_Unmount_Errors(t *testing.T) {
 		serveFakeNodeProvider(t, nc, node)
 		adapter := newNATSMounter(nc, node)
 		instance := &vm.VM{ID: "i-unmount-state"}
-		instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-a"}}
+		instance.EBSRequests.Requests = []vm.EBSRequest{{Name: "vol-a"}}
 
 		require.NoError(t, adapter.Unmount(t.Context(), instance))
 	})
@@ -459,23 +458,22 @@ func (getFailingStore) GetObject(context.Context, *s3.GetObjectInput) (*s3.GetOb
 }
 
 func TestInstanceCleaner_DeleteVolumes_Errors(t *testing.T) {
-	instanceWith := func(reqs ...viperblocklegacyv1.EBSRequest) *vm.VM {
+	instanceWith := func(reqs ...vm.EBSRequest) *vm.VM {
 		v := &vm.VM{ID: "i-delvol", AccountID: testAccountID}
 		v.EBSRequests.Requests = reqs
 		return v
 	}
 
-	t.Run("EFI delete with no responder", func(t *testing.T) {
-		a := newInstanceCleanerAdapter(&Daemon{natsConn: connectAdapterTestNATS(t, sharedNATSURL)})
-		err := a.DeleteVolumes(instanceWith(viperblocklegacyv1.EBSRequest{Name: "vol-efi-" + uniqueAdapterID("x"), EFI: true}))
-		assert.ErrorIs(t, err, nats.ErrNoResponders)
+	t.Run("leftover EFI request is skipped without error", func(t *testing.T) {
+		a := newInstanceCleanerAdapter(&Daemon{})
+		require.NoError(t, a.DeleteVolumes(instanceWith(vm.EBSRequest{Name: "vol-efi-" + uniqueAdapterID("x"), EFI: true, DeleteOnTermination: true})))
 	})
 
 	t.Run("no volume service skips both kinds", func(t *testing.T) {
 		a := newInstanceCleanerAdapter(&Daemon{})
 		require.NoError(t, a.DeleteVolumes(instanceWith(
-			viperblocklegacyv1.EBSRequest{Name: "vol-keep", DeleteOnTermination: false},
-			viperblocklegacyv1.EBSRequest{Name: "vol-delete", DeleteOnTermination: true},
+			vm.EBSRequest{Name: "vol-keep", DeleteOnTermination: false},
+			vm.EBSRequest{Name: "vol-delete", DeleteOnTermination: true},
 		)))
 	})
 
@@ -483,10 +481,10 @@ func TestInstanceCleaner_DeleteVolumes_Errors(t *testing.T) {
 		svc := ec2volume.NewVolumeServiceImplWithStore(&config.Config{}, getFailingStore{objectstore.NewMemoryObjectStore()}, nil)
 		a := newInstanceCleanerAdapter(&Daemon{volumeService: svc})
 
-		err := a.DeleteVolumes(instanceWith(viperblocklegacyv1.EBSRequest{Name: "vol-keep", DeleteOnTermination: false}))
+		err := a.DeleteVolumes(instanceWith(vm.EBSRequest{Name: "vol-keep", DeleteOnTermination: false}))
 		require.ErrorIs(t, err, errInjected, "a failed detach must surface")
 
-		err = a.DeleteVolumes(instanceWith(viperblocklegacyv1.EBSRequest{Name: "vol-delete", DeleteOnTermination: true}))
+		err = a.DeleteVolumes(instanceWith(vm.EBSRequest{Name: "vol-delete", DeleteOnTermination: true}))
 		require.ErrorIs(t, err, errInjected, "a failed delete must surface")
 	})
 }

@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/natsserve"
@@ -92,7 +91,7 @@ func volumeState(t *testing.T, provider *ebsprovider.MemoryProvider, volumeID st
 func mounterTestVM(volumeIDs ...string) *vm.VM {
 	instance := &vm.VM{ID: "i-mounter", AccountID: testAccountID}
 	for _, id := range volumeIDs {
-		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, viperblocklegacyv1.EBSRequest{Name: id})
+		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, vm.EBSRequest{Name: id})
 	}
 	return instance
 }
@@ -265,7 +264,7 @@ func TestVolumeMounterAdapter_EveryRequestAtVersion3OverTheContract(t *testing.T
 		assert.Equal(t, ebsprovider.VolumeStateInUse, volumeState(t, provider, req.Name))
 	}
 
-	hot := &viperblocklegacyv1.EBSRequest{Name: "vol-hot"}
+	hot := &vm.EBSRequest{Name: "vol-hot"}
 	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, hot))
 	assert.Equal(t, "nbd+unix:///?socket=/memory/vol-hot.sock", hot.NBDURI)
 	require.NoError(t, adapter.UnmountOne(t.Context(), testAccountID, *hot))
@@ -305,7 +304,7 @@ func TestVolumeMounterAdapter_RetryLaterRefusalBacksOffAndRecovers(t *testing.T)
 			instance := mounterTestVM("vol-relaunch")
 			err := adapter.Mount(t.Context(), instance)
 			require.ErrorIs(t, err, vm.ErrMountRetryable, "restore must back off rather than give up")
-			hot := &viperblocklegacyv1.EBSRequest{Name: "vol-hot"}
+			hot := &vm.EBSRequest{Name: "vol-hot"}
 			require.ErrorIs(t, adapter.MountOne(t.Context(), testAccountID, hot), vm.ErrMountRetryable)
 
 			fake.setPublish(func(string) ebsprovider.PublishVolumeResponse { return publishedNBD("nbd://ready") })
@@ -382,9 +381,9 @@ func TestVolumeMounterAdapter_UnpublishOutlastingRequestTimeoutCompletes(t *test
 	adapter.provider = ebsprovider.NewNATSProvider(nc, requestTimeout)
 
 	require.NoError(t, adapter.Unmount(t.Context(), mounterTestVM("vol-slow-seal")))
-	require.NoError(t, adapter.UnmountOne(t.Context(), testAccountID, viperblocklegacyv1.EBSRequest{Name: "vol-slow-seal"}))
+	require.NoError(t, adapter.UnmountOne(t.Context(), testAccountID, vm.EBSRequest{Name: "vol-slow-seal"}))
 
-	err := adapter.MountOne(t.Context(), testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-slow-seal"})
+	err := adapter.MountOne(t.Context(), testAccountID, &vm.EBSRequest{Name: "vol-slow-seal"})
 	require.ErrorIs(t, err, context.DeadlineExceeded, "the publish must be held to the request timeout")
 }
 
@@ -428,7 +427,7 @@ func TestVolumeMounterAdapter_BlockExportReplacesNBDURI(t *testing.T) {
 		Block: &ebsprovider.BlockExport{DevicePath: "/dev/sdx", SizeBytes: 1 << 30},
 	}}, "node-stub")
 
-	req := &viperblocklegacyv1.EBSRequest{Name: "vol-block", NBDURI: "nbd://stale"}
+	req := &vm.EBSRequest{Name: "vol-block", NBDURI: "nbd://stale"}
 	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, req))
 	assert.Empty(t, req.NBDURI)
 	assert.Equal(t, "/dev/sdx", req.BlockDevice)
@@ -489,7 +488,7 @@ func TestVolumeMounterAdapter_AmbiguousPublishIsTornDown(t *testing.T) {
 				adapter.provider = ebsprovider.NewNATSProvider(nc, tt.timeout)
 			}
 
-			hot := &viperblocklegacyv1.EBSRequest{Name: "vol-hot", NBDURI: "nbd://stale"}
+			hot := &vm.EBSRequest{Name: "vol-hot", NBDURI: "nbd://stale"}
 			err := adapter.MountOne(t.Context(), testAccountID, hot)
 			require.ErrorIs(t, err, vm.ErrMountAmbiguous)
 			require.ErrorIs(t, err, tt.cause)
@@ -558,7 +557,7 @@ func TestVolumeMounterAdapter_MountOneCancelledAfterSendIsAmbiguous(t *testing.T
 		<-arrived
 		cancel()
 	}()
-	req := &viperblocklegacyv1.EBSRequest{Name: "vol-hot", NBDURI: "nbd://stale"}
+	req := &vm.EBSRequest{Name: "vol-hot", NBDURI: "nbd://stale"}
 	err := adapter.MountOne(ctx, testAccountID, req)
 	require.ErrorIs(t, err, context.Canceled)
 	require.ErrorIs(t, err, vm.ErrMountAmbiguous)
@@ -580,7 +579,7 @@ func TestVolumeMounterAdapter_PublishAfterCallerGoneSendsNothing(t *testing.T) {
 
 	cancelled, cancel := context.WithCancel(t.Context())
 	cancel()
-	err := adapter.MountOne(cancelled, testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-hot"})
+	err := adapter.MountOne(cancelled, testAccountID, &vm.EBSRequest{Name: "vol-hot"})
 	require.ErrorIs(t, err, context.Canceled)
 	assert.NotErrorIs(t, err, vm.ErrMountAmbiguous)
 
@@ -604,10 +603,10 @@ func TestVolumeMounterAdapter_ContractRequestsCarryTheAccount(t *testing.T) {
 	require.NoError(t, adapter.Mount(t.Context(), instance))
 	require.NoError(t, adapter.Unmount(t.Context(), instance))
 	require.NoError(t, adapter.Abandon(t.Context(), instance, "superseded"))
-	hot := &viperblocklegacyv1.EBSRequest{Name: "vol-hot"}
+	hot := &vm.EBSRequest{Name: "vol-hot"}
 	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, hot))
 	require.NoError(t, adapter.UnmountOne(t.Context(), testAccountID, *hot))
-	require.NoError(t, adapter.MountOne(t.Context(), "", &viperblocklegacyv1.EBSRequest{Name: "vol-none"}))
+	require.NoError(t, adapter.MountOne(t.Context(), "", &vm.EBSRequest{Name: "vol-none"}))
 
 	require.Eventually(t, func() bool { return len(calls()) == 6 }, 5*time.Second, 10*time.Millisecond)
 	for _, call := range calls() {
@@ -629,7 +628,7 @@ func TestVolumeMounterAdapter_RequestSpanCarriesTheAccountUnderTheCaller(t *test
 	adapter := newNATSMounter(nc, node)
 
 	ctx, caller := otel.Tracer("test").Start(t.Context(), "caller")
-	require.NoError(t, adapter.MountOne(ctx, testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-acct"}))
+	require.NoError(t, adapter.MountOne(ctx, testAccountID, &vm.EBSRequest{Name: "vol-acct"}))
 	caller.End()
 
 	request := clientSpan(t, sr)
@@ -658,7 +657,7 @@ func TestVolumeMounterAdapter_UnpublishOutlivesCallerContext(t *testing.T) {
 
 	short, cancelShort := context.WithTimeout(t.Context(), sealTime/4)
 	defer cancelShort()
-	require.NoError(t, adapter.UnmountOne(short, testAccountID, viperblocklegacyv1.EBSRequest{Name: "vol-detach"}))
+	require.NoError(t, adapter.UnmountOne(short, testAccountID, vm.EBSRequest{Name: "vol-detach"}))
 
 	cancelled, cancel := context.WithCancel(t.Context())
 	cancel()

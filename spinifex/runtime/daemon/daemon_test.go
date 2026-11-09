@@ -31,7 +31,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2account "github.com/mulgadc/spinifex/spinifex/domains/ec2/account"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
@@ -1452,138 +1451,12 @@ func TestResourceManager_ConcurrentAccess(t *testing.T) {
 	assert.Equal(t, float64(0), rm.allocatedMem, "All memory should be deallocated")
 }
 
-// TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination tests that
-// the instanceCleanerAdapter correctly handles DeleteOnTermination for each
-// volume type: internal volumes (EFI) always go through
-// ebs.delete; user volumes only when DeleteOnTermination is true.
-func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination(t *testing.T) {
-	natsURL := sharedNATSURL
-
-	daemon := createTestDaemon(t, natsURL)
-
-	var mu sync.Mutex
-	ebsDeletedVolumes := make(map[string]bool)
-	const expectedDeletes = 1 // EFI; vol-root has no S3 backend
-	allDeletes := make(chan struct{})
-
-	deleteSub, err := daemon.natsConn.Subscribe("ebs.delete", func(msg *nats.Msg) {
-		var req viperblocklegacyv1.EBSDeleteRequest
-		json.Unmarshal(msg.Data, &req)
-		mu.Lock()
-		ebsDeletedVolumes[req.Volume] = true
-		done := len(ebsDeletedVolumes) == expectedDeletes
-		mu.Unlock()
-		resp := viperblocklegacyv1.EBSDeleteResponse{Volume: req.Volume, Success: true}
-		data, _ := json.Marshal(resp)
-		msg.Respond(data)
-		if done {
-			close(allDeletes)
-		}
-	})
-	require.NoError(t, err)
-	defer deleteSub.Unsubscribe()
-
-	instance := &vm.VM{
-		ID:        "i-test-dot",
-		AccountID: testAccountID,
-		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
-				{Name: "vol-root", Boot: true, DeleteOnTermination: true},
-				{Name: "vol-root-efi", EFI: true},
-			},
-		},
-	}
-
-	cleaner := newInstanceCleanerAdapter(daemon)
-	cleaner.DeleteVolumes(instance)
-
-	select {
-	case <-allDeletes:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for ebs.delete fan-out")
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	// Internal volumes (EFI) should receive ebs.delete
-	assert.True(t, ebsDeletedVolumes["vol-root-efi"], "EFI volume should receive ebs.delete")
-}
-
-// TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False verifies
-// that volumes with DeleteOnTermination=false are NOT deleted during
-// termination, while internal volumes still are.
-func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False(t *testing.T) {
-	natsURL := sharedNATSURL
-
-	daemon := createTestDaemon(t, natsURL)
-
-	var mu sync.Mutex
-	ebsDeletedVolumes := make(map[string]bool)
-	const expectedDeletes = 1 // only the EFI internal volume; vol-keep is skipped
-	allDeletes := make(chan struct{})
-
-	deleteSub, err := daemon.natsConn.Subscribe("ebs.delete", func(msg *nats.Msg) {
-		var req viperblocklegacyv1.EBSDeleteRequest
-		json.Unmarshal(msg.Data, &req)
-		mu.Lock()
-		ebsDeletedVolumes[req.Volume] = true
-		done := len(ebsDeletedVolumes) == expectedDeletes
-		mu.Unlock()
-		resp := viperblocklegacyv1.EBSDeleteResponse{Volume: req.Volume, Success: true}
-		data, _ := json.Marshal(resp)
-		msg.Respond(data)
-		if done {
-			close(allDeletes)
-		}
-	})
-	require.NoError(t, err)
-	defer deleteSub.Unsubscribe()
-
-	instance := &vm.VM{
-		ID:        "i-test-no-delete",
-		AccountID: testAccountID,
-		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
-				{Name: "vol-keep", Boot: true, DeleteOnTermination: false},
-				{Name: "vol-keep-efi", EFI: true},
-			},
-		},
-	}
-
-	cleaner := newInstanceCleanerAdapter(daemon)
-	cleaner.DeleteVolumes(instance)
-
-	select {
-	case <-allDeletes:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for ebs.delete fan-out")
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	// Internal volumes still get ebs.delete (always cleaned up)
-	assert.True(t, ebsDeletedVolumes["vol-keep-efi"], "EFI volume should receive ebs.delete even when root has DeleteOnTermination=false")
-
-	// Root volume with DeleteOnTermination=false should NOT receive ebs.delete
-	assert.False(t, ebsDeletedVolumes["vol-keep"], "Root volume with DeleteOnTermination=false should NOT be deleted")
-}
-
-// TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentClear
-// locks the running-instance terminate path: a Boot,
-// DeleteOnTermination root volume left attached (terminateCleanup's
-// shutdownAndUnmount runs Unmount, which deliberately never clears a Boot
-// volume's AttachedInstance) previously hit DeleteVolume's in-use guard
-// directly. DeleteVolumes must now call DeleteVolumeOnTerminate, which clears
-// the stale attachment first, so the delete actually succeeds.
-func TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentClear(t *testing.T) {
-	t.Parallel()
+// newCleanerTestDaemon is a full daemon whose volume service can finish a
+// delete: DeleteVolume's snapshot-reference guard fails closed on a nil KV, so
+// it gets a JetStream-backed one with no snapshot refs recorded.
+func newCleanerTestDaemon(t *testing.T) (*Daemon, *objectstore.MemoryObjectStore) {
+	t.Helper()
 	daemon, store := createFullTestDaemonWithStore(t, sharedNATSURL)
-
-	// DeleteVolume's snapshot-reference guard requires a non-nil snapshotKV;
-	// wire a JetStream-backed one (no snapshot refs recorded) so the delete
-	// reaches the S3 cleanup step instead of failing closed on a nil KV.
 	jsConn, err := nats.Connect(sharedJSNATSURL)
 	require.NoError(t, err)
 	t.Cleanup(func() { jsConn.Close() })
@@ -1595,6 +1468,112 @@ func TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentCl
 	require.NoError(t, err)
 	daemon.volumeService = ec2volume.NewVolumeServiceImplWithStore(daemon.config, store, daemon.natsConn, snapKV)
 	daemon.volumeService.SetEBSProvider(daemon.ebsProvider)
+	return daemon, store
+}
+
+// assertNoEBSDelete fails if anything was published on ebs.delete through
+// sub's connection before this call.
+func assertNoEBSDelete(t *testing.T, daemon *Daemon, sub *nats.Subscription) {
+	t.Helper()
+	require.NoError(t, daemon.natsConn.Flush())
+	pending, _, err := sub.Pending()
+	require.NoError(t, err)
+	assert.Zero(t, pending, "an EFI request must send nothing on ebs.delete")
+}
+
+// TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination pins that a
+// leftover EFI request is skipped: it sends nothing on ebs.delete and is never
+// deleted even when flagged, while the root volume beside it still is.
+func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination(t *testing.T) {
+	t.Parallel()
+	daemon, store := newCleanerTestDaemon(t)
+
+	const instanceID = "i-test-dot"
+	for _, volumeID := range []string{"vol-root-dot", "vol-root-dot-efi"} {
+		seedVolumeConfig(t, daemon, store, ebsmetadata.Volume{
+			VolumeID: volumeID, TenantID: testAccountID, CapacityGiB: 10,
+			State: "in-use", AttachedInstance: instanceID,
+		})
+	}
+	deleteSub, err := daemon.natsConn.SubscribeSync("ebs.delete")
+	require.NoError(t, err)
+	defer deleteSub.Unsubscribe()
+
+	instance := &vm.VM{
+		ID:        instanceID,
+		AccountID: testAccountID,
+		EBSRequests: vm.EBSRequests{
+			Requests: []vm.EBSRequest{
+				{Name: "vol-root-dot", Boot: true, DeleteOnTermination: true},
+				{Name: "vol-root-dot-efi", EFI: true, DeleteOnTermination: true},
+			},
+		},
+	}
+
+	cleaner := newInstanceCleanerAdapter(daemon)
+	require.NoError(t, cleaner.DeleteVolumes(instance), "a skipped EFI request must not fail the volume teardown")
+	assertNoEBSDelete(t, daemon, deleteSub)
+
+	_, err = daemon.volumeService.NewVolumeReclaimReaper().Sweep(context.Background())
+	require.NoError(t, err)
+	_, err = daemon.volumeService.GetVolumeMetadata(testAccountID, "vol-root-dot")
+	require.Error(t, err, "the root volume must still be deleted")
+	meta, err := daemon.volumeService.GetVolumeMetadata(testAccountID, "vol-root-dot-efi")
+	require.NoError(t, err, "an EFI request must never reach DeleteVolumeOnTerminate")
+	assert.Equal(t, instanceID, meta.AttachedInstance)
+}
+
+// TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False verifies
+// that a DeleteOnTermination=false volume is detached, not deleted, and that a
+// leftover EFI request beside it is neither detached nor sent on ebs.delete.
+func TestInstanceCleanerAdapter_DeleteVolumes_DeleteOnTermination_False(t *testing.T) {
+	t.Parallel()
+	daemon, store := newCleanerTestDaemon(t)
+
+	const instanceID = "i-test-no-delete"
+	for _, volumeID := range []string{"vol-keep", "vol-keep-efi"} {
+		seedVolumeConfig(t, daemon, store, ebsmetadata.Volume{
+			VolumeID: volumeID, TenantID: testAccountID, CapacityGiB: 10,
+			State: "in-use", AttachedInstance: instanceID,
+		})
+	}
+	deleteSub, err := daemon.natsConn.SubscribeSync("ebs.delete")
+	require.NoError(t, err)
+	defer deleteSub.Unsubscribe()
+
+	instance := &vm.VM{
+		ID:        instanceID,
+		AccountID: testAccountID,
+		EBSRequests: vm.EBSRequests{
+			Requests: []vm.EBSRequest{
+				{Name: "vol-keep", Boot: true, DeleteOnTermination: false},
+				{Name: "vol-keep-efi", EFI: true},
+			},
+		},
+	}
+
+	cleaner := newInstanceCleanerAdapter(daemon)
+	require.NoError(t, cleaner.DeleteVolumes(instance), "a skipped EFI request must not fail the volume teardown")
+	assertNoEBSDelete(t, daemon, deleteSub)
+
+	meta, err := daemon.volumeService.GetVolumeMetadata(testAccountID, "vol-keep")
+	require.NoError(t, err, "a DeleteOnTermination=false volume must survive terminate")
+	assert.Empty(t, meta.AttachedInstance, "terminate must still detach it")
+	meta, err = daemon.volumeService.GetVolumeMetadata(testAccountID, "vol-keep-efi")
+	require.NoError(t, err)
+	assert.Equal(t, instanceID, meta.AttachedInstance, "an EFI request must never reach DetachVolumeOnTerminate")
+}
+
+// TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentClear
+// locks the running-instance terminate path: a Boot,
+// DeleteOnTermination root volume left attached (terminateCleanup's
+// shutdownAndUnmount runs Unmount, which deliberately never clears a Boot
+// volume's AttachedInstance) previously hit DeleteVolume's in-use guard
+// directly. DeleteVolumes must now call DeleteVolumeOnTerminate, which clears
+// the stale attachment first, so the delete actually succeeds.
+func TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentClear(t *testing.T) {
+	t.Parallel()
+	daemon, store := newCleanerTestDaemon(t)
 
 	volumeID := "vol-root-attached"
 	seedVolumeConfig(t, daemon, store, ebsmetadata.Volume{
@@ -1609,14 +1588,14 @@ func TestInstanceCleanerAdapter_DeleteVolumes_BootVolumeDeletedAfterAttachmentCl
 		ID:        "i-test-boot-delete",
 		AccountID: testAccountID,
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
+			Requests: []vm.EBSRequest{
 				{Name: volumeID, Boot: true, DeleteOnTermination: true},
 			},
 		},
 	}
 
 	cleaner := newInstanceCleanerAdapter(daemon)
-	err = cleaner.DeleteVolumes(instance)
+	err := cleaner.DeleteVolumes(instance)
 	require.NoError(t, err, "the still-attached boot volume must be deleted, not rejected as VolumeInUse")
 
 	// The delete records the obligation and returns, so the reclaimer is what
@@ -1652,7 +1631,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_NonDoTBootVolumeDetachedNotDeleted
 		ID:        "i-test-boot-detach",
 		AccountID: testAccountID,
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
+			Requests: []vm.EBSRequest{
 				{Name: volumeID, Boot: true, DeleteOnTermination: false},
 			},
 		},
@@ -1693,7 +1672,7 @@ func TestInstanceCleanerAdapter_DeleteVolumes_NonBootNonDoTVolumeDetachedNotDele
 		ID:        "i-test-data-detach",
 		AccountID: testAccountID,
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
+			Requests: []vm.EBSRequest{
 				{Name: volumeID, Boot: false, DeleteOnTermination: false},
 			},
 		},
@@ -1758,7 +1737,7 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeTeardown(t *testing.T) {
 			vm.TeardownVolumes: string(vm.TeardownFailed),
 		},
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
+			Requests: []vm.EBSRequest{
 				{Name: volumeID, Boot: true, DeleteOnTermination: true},
 			},
 		},
@@ -1823,7 +1802,7 @@ func TestTerminatedTeardownReaper_SelfHealsFailedVolumeDetach(t *testing.T) {
 			vm.TeardownVolumes: string(vm.TeardownFailed),
 		},
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
+			Requests: []vm.EBSRequest{
 				{Name: volumeID, Boot: false, DeleteOnTermination: false},
 			},
 		},
@@ -1888,7 +1867,7 @@ func TestStuckTerminateReaper_DetachesNonDoTVolumeWithoutUnmount(t *testing.T) {
 		Status:         vm.StateShuttingDown,
 		ShuttingDownAt: time.Now().Add(-15 * time.Minute), // past the stuck-terminate backstop timeout
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
+			Requests: []vm.EBSRequest{
 				{Name: volumeID, Boot: false, DeleteOnTermination: false},
 			},
 		},
@@ -2044,7 +2023,7 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 		},
 		QMPClient: &qmp.QMPClient{}, // nil encoder/decoder
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
+			Requests: []vm.EBSRequest{
 				{
 					Name:       volumeID,
 					DeviceName: "/dev/sdf",
@@ -2134,7 +2113,7 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 
 		// Add a boot volume to the instance
 		instance.EBSRequests.Mu.Lock()
-		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, viperblocklegacyv1.EBSRequest{
+		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, vm.EBSRequest{
 			Name: bootVolumeID,
 			Boot: true,
 		})
@@ -2169,7 +2148,7 @@ func TestHandleEC2Events_DetachVolume(t *testing.T) {
 		efiVolumeID := "vol-efi-protected"
 
 		instance.EBSRequests.Mu.Lock()
-		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, viperblocklegacyv1.EBSRequest{
+		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, vm.EBSRequest{
 			Name: efiVolumeID,
 			EFI:  true,
 		})
@@ -2366,7 +2345,7 @@ func TestDetachVolume_SuccessPath(t *testing.T) {
 		},
 		QMPClient: qmpClient,
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
+			Requests: []vm.EBSRequest{
 				{
 					Name:       "vol-root",
 					Boot:       true,
@@ -2508,7 +2487,7 @@ func TestDetachVolume_ForceFlag(t *testing.T) {
 		},
 		QMPClient: qmpClient,
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
+			Requests: []vm.EBSRequest{
 				{
 					Name:       volumeID,
 					DeviceName: "/dev/sdf",
@@ -2616,7 +2595,7 @@ func TestDetachVolume_BlockdevDelFailure(t *testing.T) {
 		},
 		QMPClient: qmpClient,
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
+			Requests: []vm.EBSRequest{
 				{
 					Name:       volumeID,
 					DeviceName: "/dev/sdf",
@@ -2707,7 +2686,7 @@ func TestDetachVolume_SuccessWithDeviceMatch(t *testing.T) {
 		},
 		QMPClient: qmpClient,
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
+			Requests: []vm.EBSRequest{
 				{
 					Name:       volumeID,
 					DeviceName: "/dev/sdh",
@@ -2778,7 +2757,7 @@ func TestAttachVolume_ReplacesStaleEBSRequest(t *testing.T) {
 		Instance:     &ec2.Instance{},
 		QMPClient:    qmpClient,
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
+			Requests: []vm.EBSRequest{
 				{
 					Name:       volumeID,
 					DeviceName: "/dev/sdf", // stale entry from before stop
@@ -2829,7 +2808,7 @@ func TestAttachVolume_ReplacesStaleEBSRequest(t *testing.T) {
 
 	// Direct unit test: simulate what the fixed attach handler does
 	instance.EBSRequests.Mu.Lock()
-	newReq := viperblocklegacyv1.EBSRequest{
+	newReq := vm.EBSRequest{
 		Name:       volumeID,
 		DeviceName: "/dev/sdg",
 		NBDURI:     "nbd://new:2222",
@@ -3381,7 +3360,7 @@ func TestVolumeMounterAdapter_UnmountOne_UnmountError(t *testing.T) {
 	})
 	adapter := newNATSMounter(daemon.natsConn, daemon.node)
 
-	err := adapter.UnmountOne(t.Context(), "", viperblocklegacyv1.EBSRequest{Name: "vol-rollback-err"})
+	err := adapter.UnmountOne(t.Context(), "", vm.EBSRequest{Name: "vol-rollback-err"})
 	require.Error(t, err, "an unpublish refusal must propagate so DetachVolume can keep the volume attached")
 	assert.Contains(t, err.Error(), "device busy")
 }
@@ -3396,7 +3375,7 @@ func TestVolumeMounterAdapter_UnmountOne_RequestFailure(t *testing.T) {
 	nc.Close()
 
 	adapter := newNATSMounter(nc, "node-1")
-	require.ErrorIs(t, adapter.UnmountOne(t.Context(), "", viperblocklegacyv1.EBSRequest{Name: "vol-timeout"}), nats.ErrConnectionClosed,
+	require.ErrorIs(t, adapter.UnmountOne(t.Context(), "", vm.EBSRequest{Name: "vol-timeout"}), nats.ErrConnectionClosed,
 		"a failed unpublish request must propagate as an error")
 }
 
@@ -3420,7 +3399,7 @@ func TestVolumeMounterAdapter_Unmount_SealFailureIsReported(t *testing.T) {
 	inst := &vm.VM{
 		ID: "i-1",
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{{Name: "vol-fail"}, {Name: "vol-ok"}},
+			Requests: []vm.EBSRequest{{Name: "vol-fail"}, {Name: "vol-ok"}},
 		},
 	}
 	err := adapter.Unmount(t.Context(), inst)
@@ -3445,14 +3424,14 @@ func TestVolumeMounterAdapter_Unmount_NotFoundIsASealedOutcome(t *testing.T) {
 		ID:        "i-unmount-retry",
 		AccountID: "000000000042",
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
+			Requests: []vm.EBSRequest{
 				{Name: "vol-boot-retry", Boot: true, EFI: false},
 				{Name: "vol-data-retry", Boot: false, EFI: false},
 			},
 		},
 	}
 	require.NoError(t, adapter.Unmount(t.Context(), inst))
-	require.NoError(t, adapter.UnmountOne(t.Context(), "000000000042", viperblocklegacyv1.EBSRequest{Name: "vol-data-retry"}),
+	require.NoError(t, adapter.UnmountOne(t.Context(), "000000000042", vm.EBSRequest{Name: "vol-data-retry"}),
 		"a hot detach of a volume the provider no longer holds is already done")
 }
 
@@ -3551,7 +3530,7 @@ func TestVolumeMounterAdapter_Mount_RollbackFailurePropagates(t *testing.T) {
 		ID:        "i-rollback-failure",
 		AccountID: testAccountID,
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
+			Requests: []vm.EBSRequest{
 				{Name: "vol-1"},
 				{Name: "vol-2"},
 			},

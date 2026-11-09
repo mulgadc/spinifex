@@ -6,24 +6,34 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 )
 
 // EBSRequests is the VM-owned attachment collection. Its mutex protects the
 // persisted request list while EC2 lifecycle work, runtime volume operations
-// and recovery inspect it concurrently. The individual entries retain the
-// legacy Viperblockd wire shape because the daemon adapter sends them on the
-// deployed mount and unmount routes.
+// and recovery inspect it concurrently.
 type EBSRequests struct {
 	Requests []EBSRequest `json:"Requests" mapstructure:"ebs_requests"`
 	Mu       sync.Mutex   `json:"-"`
 }
 
-// EBSRequest is the legacy Viperblockd mount/unmount payload retained in the
-// VM's persisted attachment list. The alias keeps the VM state tied to the
-// deployed wire shape without making the old catch-all types package an owner.
-type EBSRequest = viperblocklegacyv1.EBSRequest
+// EBSRequest is one volume in the VM's persisted attachment list. Instance
+// records and local state store it as JSON, so its field names and tags are
+// persisted state.
+type EBSRequest struct {
+	Name                string `json:"Name"`
+	VolType             string `json:"VolType"`
+	Boot                bool   `json:"Boot"`
+	EFI                 bool   `json:"EFI"`
+	DeleteOnTermination bool   `json:"DeleteOnTermination"`
+	NBDURI              string `json:"NBDURI"`
+	DeviceName          string `json:"DeviceName"`
+	HotplugPort         int    `json:"HotplugPort,omitempty"`
+	// BlockDevice and BlockSizeBytes describe a host block device export, the
+	// alternative to NBDURI; the guest sees BlockSizeBytes of it. Exactly one
+	// of NBDURI and BlockDevice may be set.
+	BlockDevice    string `json:"BlockDevice,omitempty"`
+	BlockSizeBytes uint64 `json:"BlockSizeBytes,omitempty"`
+}
 
 // volumeExportKind is how a volume's backing store reaches QEMU.
 type volumeExportKind int

@@ -878,3 +878,21 @@ func TestUnmountVolume_ReapsAnUnregisteredExport(t *testing.T) {
 	require.Eventually(t, func() bool { return !hostprocess.ProcessAlive(pid) }, 2*time.Second, 20*time.Millisecond,
 		"unmount must leave no nbdkit serving the volume it just removed")
 }
+
+// TestUnpublishVolume_ReportsAReapedUnregisteredExport carries the reap to the
+// contract reply: an unpublish that killed an export with no registry entry
+// tore something down, so it must not answer as a no-op.
+func TestUnpublishVolume_ReportsAReapedUnregisteredExport(t *testing.T) {
+	const volumeName = "vol-unreg0006-efi"
+	cfg, pid, _ := unregisteredFixture(t, volumeName)
+	cfg.MountedVolumes = []MountedVolume{}
+
+	tornDown, err := unpublishVolume(context.Background(), cfg, ebsprovider.UnpublishVolumeRequest{
+		Versioned: ebsprovider.Versioned{SchemaVersion: ebsprovider.SchemaVersion},
+		VolumeID:  volumeName,
+	})
+	require.NoError(t, err, "nothing registered here is already the state unpublish asks for")
+	assert.True(t, tornDown, "the export the unpublish reaped must be reported torn down")
+	require.Eventually(t, func() bool { return !hostprocess.ProcessAlive(pid) }, 2*time.Second, 20*time.Millisecond,
+		"unpublish must leave no nbdkit serving the volume")
+}

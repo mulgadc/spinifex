@@ -83,9 +83,7 @@ type versionedErrorResponse struct {
 }
 
 // startProviderSubjects wires RegisterProviderSubjects onto a fresh NATS
-// connection for cfg, without launching the rest of launchService (mount,
-// unmount, sync, config, delete), which are unrelated to the ebs.provider.v1.*
-// contract under test here.
+// connection for cfg, without the rest of Run's startup sequence.
 func startProviderSubjects(t *testing.T, cfg *Config, natsURL string) *nats.Conn {
 	t.Helper()
 	nc, err := nats.Connect(natsURL)
@@ -969,10 +967,9 @@ func TestProviderHandlers_PublishVolume_ReadOnlyModeMismatchRefused(t *testing.T
 	assert.Equal(t, 1, count, "a refused republish must not add a second entry")
 }
 
-// TestProviderHandlers_UnpublishVolume_RemovesMountedVolume mirrors
-// TestIntegration_EBSUnmountRequest (the legacy ebs.unmount handler's happy
-// path) but drives it through the provider subject instead, confirming the
-// shared unmountVolume extraction behaves the same way from either front.
+// TestProviderHandlers_UnpublishVolume_RemovesMountedVolume drives the
+// unpublish happy path through the provider subjects alone and checks the
+// volume leaves MountedVolumes.
 func TestProviderHandlers_UnpublishVolume_RemovesMountedVolume(t *testing.T) {
 	_, natsURL := setupEmbeddedNATS(t)
 	cfg := setupTestConfig(t, natsURL)

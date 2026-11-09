@@ -9,9 +9,9 @@ import (
 	"time"
 
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	telemetry "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/viperblock/dirty"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -37,7 +37,7 @@ func newVolumeDirty(ctx context.Context, nc *nats.Conn, owner string) (*volumeDi
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
 	kv, err := kvstore.GetOrCreateBucketWithOptions(ctx, js, kvstore.BucketOptions{
-		Name:        viperblocklegacyv1.DirtyBucket,
+		Name:        dirty.DirtyBucket,
 		Description: "volumes whose last seal failed, keyed by volume, naming the node holding the current copy",
 		History:     1,
 	})
@@ -51,7 +51,7 @@ func newVolumeDirty(ctx context.Context, nc *nats.Conn, owner string) (*volumeDi
 // same reason as newVolumeLeasesWaiting: a cold cluster has no stream leader
 // yet, and one refused open must not decide that this node has no storage.
 func newVolumeDirtyWaiting(ctx context.Context, nc *nats.Conn, owner string) (*volumeDirty, error) {
-	return kvstore.OpenWithRetry(ctx, viperblocklegacyv1.DirtyBucket, kvstore.DefaultOpenWindow,
+	return kvstore.OpenWithRetry(ctx, dirty.DirtyBucket, kvstore.DefaultOpenWindow,
 		func(ctx context.Context) (*volumeDirty, error) { return newVolumeDirty(ctx, nc, owner) })
 }
 
@@ -63,10 +63,10 @@ func newVolumeDirtyWaiting(ctx context.Context, nc *nats.Conn, owner string) (*v
 // Writing at the same generation is the ordinary case — every open marks, and a
 // later failed seal on the same open refines the reason.
 func (d *volumeDirty) mark(ctx context.Context, volumeName string, generation uint64, reason string) error {
-	if !viperblocklegacyv1.VolumeKeyPattern.MatchString(volumeName) {
+	if !dirty.VolumeKeyPattern.MatchString(volumeName) {
 		return fmt.Errorf("volume name %q cannot be a dirty key", volumeName)
 	}
-	payload, err := json.Marshal(viperblocklegacyv1.DirtyRecord{
+	payload, err := json.Marshal(dirty.DirtyRecord{
 		Owner:      d.owner,
 		Generation: generation,
 		Since:      time.Now().UTC(),
@@ -87,7 +87,7 @@ func (d *volumeDirty) mark(ctx context.Context, volumeName string, generation ui
 		return fmt.Errorf("read dirty mark on %s: %w", volumeName, err)
 	}
 
-	var current viperblocklegacyv1.DirtyRecord
+	var current dirty.DirtyRecord
 	if err := json.Unmarshal(entry.Value(), &current); err == nil && current.Generation > generation {
 		return fmt.Errorf("%w: %s holds generation %d, this node has %d",
 			errDirtyMarkerSuperseded, current.Owner, current.Generation, generation)
@@ -117,7 +117,7 @@ func (d *volumeDirty) clear(ctx context.Context, volumeName string, generation u
 		return fmt.Errorf("read dirty mark on %s: %w", volumeName, err)
 	}
 
-	var current viperblocklegacyv1.DirtyRecord
+	var current dirty.DirtyRecord
 	if err := json.Unmarshal(entry.Value(), &current); err != nil {
 		return fmt.Errorf("unreadable dirty mark on %s: %w", volumeName, err)
 	}
@@ -148,28 +148,28 @@ func (d *volumeDirty) purge(ctx context.Context, volumeName string) error {
 // holder returns the record for volumeName and whether one exists. An entry
 // that cannot be read is reported as absent: refusing every mount because the
 // bucket is unreadable would convert a degraded cluster into a stopped one.
-func (d *volumeDirty) holder(ctx context.Context, volumeName string) (viperblocklegacyv1.DirtyRecord, bool) {
+func (d *volumeDirty) holder(ctx context.Context, volumeName string) (dirty.DirtyRecord, bool) {
 	record, ok, err := d.lookup(ctx, volumeName)
 	if err != nil {
 		slog.Warn("volume dirty: could not read marker", "volume", volumeName, "err", err)
-		return viperblocklegacyv1.DirtyRecord{}, false
+		return dirty.DirtyRecord{}, false
 	}
 	return record, ok
 }
 
 // lookup is holder for a caller that must tell "no marker" from "could not
 // read the marker", because acting on the second as the first is unsafe.
-func (d *volumeDirty) lookup(ctx context.Context, volumeName string) (viperblocklegacyv1.DirtyRecord, bool, error) {
+func (d *volumeDirty) lookup(ctx context.Context, volumeName string) (dirty.DirtyRecord, bool, error) {
 	entry, err := d.kv.Get(ctx, volumeName)
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
-		return viperblocklegacyv1.DirtyRecord{}, false, nil
+		return dirty.DirtyRecord{}, false, nil
 	}
 	if err != nil {
-		return viperblocklegacyv1.DirtyRecord{}, false, err
+		return dirty.DirtyRecord{}, false, err
 	}
-	var record viperblocklegacyv1.DirtyRecord
+	var record dirty.DirtyRecord
 	if err := json.Unmarshal(entry.Value(), &record); err != nil {
-		return viperblocklegacyv1.DirtyRecord{}, false, fmt.Errorf("unreadable marker: %w", err)
+		return dirty.DirtyRecord{}, false, fmt.Errorf("unreadable marker: %w", err)
 	}
 	return record, true, nil
 }
@@ -252,7 +252,7 @@ func (cfg *Config) purgeVolumeDirty(ctx context.Context, volumeName string) {
 // unsealed writes are in its memory, and opening from the backend checkpoint
 // would discard them. A liveness that cannot be read, or is not wired, refuses
 // too, because a guess of "gone" is the unsafe one.
-func (cfg *Config) refuseWhileOwnerLive(ctx context.Context, volumeName string, record viperblocklegacyv1.DirtyRecord) error {
+func (cfg *Config) refuseWhileOwnerLive(ctx context.Context, volumeName string, record dirty.DirtyRecord) error {
 	if cfg.liveness == nil {
 		slog.ErrorContext(ctx, "refusing to open a volume whose previous owner may be live: no node liveness source is wired",
 			"volume", volumeName, "previous_owner", record.Owner)

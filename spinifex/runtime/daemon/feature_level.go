@@ -128,5 +128,9 @@ func (d *Daemon) checkFeatureLevel() error {
 	if err != nil {
 		return err
 	}
-	return enforceFeatureLevel(store)
+	if err := enforceFeatureLevel(store); err != nil {
+		return err
+	}
+	d.featureGate = featurelevel.NewGate(store)
+	return nil
 }

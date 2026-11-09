@@ -83,6 +83,7 @@ import (
 	route53domain "github.com/mulgadc/spinifex/spinifex/domains/route53"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerlaunch"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/release/featurelevel"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
@@ -181,6 +182,7 @@ type Daemon struct {
 	insight               *nodeInsight
 	eipService            ec2eip.EIPService
 	elbv2Service          *elbv2domain.ELBv2ServiceImpl
+	featureGate           *featurelevel.Gate // admission for N-only work; set by checkFeatureLevel
 	eksService            *ekscluster.EKSServiceImpl
 	ecsService            *ecsdomain.Service
 	ecsScheduler          *ecsdomain.Scheduler
@@ -1390,6 +1392,12 @@ func (d *Daemon) subscribeAll() error {
 		subs = append(subs, natsSub{ec2v1.AccountSettingsSealCapabilitySubject(d.node), handleNATSRequest(d.node, d.accountSettingsSealCapability), ""})
 	} else {
 		slog.Error("Not serving account-settings seal capability: node ID is not a single NATS subject token", "node", d.node)
+	}
+	// Per-node, no queue group, like the seal responder above.
+	if d.featureGate != nil && featurelevel.ValidNode(d.node) {
+		subs = append(subs, natsSub{featurelevel.StatusSubject(d.node), handleNATSRequest(d.node, d.featureGate.ServeStatus(d.node, featurelevel.Build)), ""})
+	} else {
+		slog.Error("Not serving feature level status", "node", d.node, "gate_ready", d.featureGate != nil)
 	}
 
 	return d.registerNatsSubs(subs)

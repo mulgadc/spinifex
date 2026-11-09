@@ -12,7 +12,7 @@ import (
 
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -55,7 +55,7 @@ func TestClusterConfigBucket_NoTTLAndSchemaVersion(t *testing.T) {
 	assert.Equal(t, int64(1), status.History())
 	assert.Zero(t, status.TTL(), "a TTL would expire the lock and let a second provider in")
 
-	v, err := kvutil.ReadVersion(t.Context(), kv)
+	v, err := kvstore.ReadVersion(t.Context(), kv)
 	require.NoError(t, err)
 	assert.Equal(t, 1, v)
 }

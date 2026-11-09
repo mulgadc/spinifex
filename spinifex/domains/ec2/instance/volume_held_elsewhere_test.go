@@ -102,3 +102,38 @@ func TestStartPaths_ReportAVolumeHeldElsewhereByCode(t *testing.T) {
 		assert.Equal(t, awserrors.ErrorIncorrectState, awserrors.ValidErrorCodeFromError(err))
 	})
 }
+
+// uefiClaimHeldMounter fails the launch the way a start does while a live
+// node holds the instance's UEFI variable store.
+type uefiClaimHeldMounter struct{ raceVolumeMounter }
+
+func (uefiClaimHeldMounter) Mount(context.Context, *vm.VM) error {
+	return fmt.Errorf("%w: node-a holds i-uefi: %w", vm.ErrUEFIClaimHeld, vm.ErrMountRetryable)
+}
+
+// A held UEFI store is a capacity refusal on both start paths, so the caller
+// tries another node rather than reporting a fault.
+func TestStartPaths_ReportAHeldUEFIStoreAsCapacity(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	types, _ := defaultPrepareInstanceTypes()
+
+	t.Run("claimed relaunch", func(t *testing.T) {
+		mgr := vm.NewManager()
+		mgr.SetDeps(vm.Deps{NodeID: "node-b", VolumeMounter: uefiClaimHeldMounter{}})
+		svc := &InstanceServiceImpl{resourceMgr: &fakeResourceCapacityProvider{instanceTypes: types}, vmMgr: mgr}
+
+		err := svc.launchClaimedInstance(t.Context(), &vm.VM{ID: "i-uefi-claim", AccountID: "acc", InstanceType: "t3.micro", Status: vm.StatePending}, func() {})
+		assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, awserrors.ValidErrorCodeFromError(err))
+	})
+
+	t.Run("live owner", func(t *testing.T) {
+		const id = "i-uefi-live"
+		mgr := mgrWith(map[string]*vm.VM{id: {ID: id, Status: vm.StateStopped, InstanceType: "t3.micro"}})
+		mgr.SetDeps(vm.Deps{NodeID: "node-b", VolumeMounter: uefiClaimHeldMounter{}})
+		v, _ := mgr.Get(id)
+		svc := &InstanceServiceImpl{resourceMgr: &fakeResourceCapacityProvider{instanceTypes: types}, vmMgr: mgr}
+
+		err := svc.StartInstance(t.Context(), v, ec2v1.EC2InstanceCommand{ID: id})
+		assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, awserrors.ValidErrorCodeFromError(err))
+	})
+}

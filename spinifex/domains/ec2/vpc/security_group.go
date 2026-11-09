@@ -23,7 +23,7 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -245,7 +245,7 @@ func (s *VPCServiceImpl) CreateSecurityGroup(ctx context.Context, input *ec2.Cre
 	}
 	sgsInVPC := 0
 	for _, k := range sgKeys {
-		if k == kvutil.VersionKey {
+		if k == kvstore.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(k, prefix) {
@@ -305,7 +305,7 @@ func (s *VPCServiceImpl) CreateSecurityGroup(ctx context.Context, input *ec2.Cre
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal security group record: %w", err)
 	}
-	if _, err := s.sgKV.Put(ctx, kvutil.AccountKey(accountID, groupId), data); err != nil {
+	if _, err := s.sgKV.Put(ctx, kvstore.AccountKey(accountID, groupId), data); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -331,7 +331,7 @@ func (s *VPCServiceImpl) DeleteSecurityGroup(ctx context.Context, input *ec2.Del
 	}
 
 	groupId := *input.GroupId
-	key := kvutil.AccountKey(accountID, groupId)
+	key := kvstore.AccountKey(accountID, groupId)
 
 	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
@@ -380,7 +380,7 @@ func (s *VPCServiceImpl) validateSGRuleReferences(ctx context.Context, accountID
 		if r.SourceSG == "" {
 			continue
 		}
-		entry, err := s.sgKV.Get(ctx, kvutil.AccountKey(accountID, r.SourceSG))
+		entry, err := s.sgKV.Get(ctx, kvstore.AccountKey(accountID, r.SourceSG))
 		if err != nil {
 			return sgNotFoundError(r.SourceSG)
 		}
@@ -406,7 +406,7 @@ func (s *VPCServiceImpl) checkSGDependencies(ctx context.Context, accountID, gro
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	for _, k := range eniKeys {
-		if k == kvutil.VersionKey || !strings.HasPrefix(k, prefix) {
+		if k == kvstore.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
 		}
 		entry, err := s.eniKV.Get(ctx, k)
@@ -435,7 +435,7 @@ func (s *VPCServiceImpl) checkSGDependencies(ctx context.Context, accountID, gro
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 	for _, k := range sgKeys {
-		if k == kvutil.VersionKey || !strings.HasPrefix(k, prefix) {
+		if k == kvstore.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
 		}
 		entry, err := s.sgKV.Get(ctx, k)
@@ -561,7 +561,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroups(ctx context.Context, input *ec2.
 	}
 
 	for _, key := range keys {
-		if key == kvutil.VersionKey {
+		if key == kvstore.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, prefix) {
@@ -713,7 +713,7 @@ func (s *VPCServiceImpl) GetSecurityGroupsForVpc(ctx context.Context, input *ec2
 
 	groups := []*ec2.SecurityGroupForVpc{}
 	for _, key := range keys {
-		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvstore.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		entry, err := s.sgKV.Get(ctx, key)
@@ -844,7 +844,7 @@ func (s *VPCServiceImpl) DescribeSecurityGroupRules(ctx context.Context, input *
 	emitted := make(map[string]bool)
 
 	for _, key := range keys {
-		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvstore.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		entry, err := s.sgKV.Get(ctx, key)
@@ -945,7 +945,7 @@ func (s *VPCServiceImpl) updateSGRuleTags(ctx context.Context, accountID, ruleID
 	}
 
 	for _, key := range keys {
-		if key == kvutil.VersionKey || !strings.HasPrefix(key, prefix) {
+		if key == kvstore.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
 		}
 		entry, err := s.sgKV.Get(ctx, key)
@@ -1056,7 +1056,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(ctx context.Context, inpu
 	}
 
 	groupId := *input.GroupId
-	key := kvutil.AccountKey(accountID, groupId)
+	key := kvstore.AccountKey(accountID, groupId)
 
 	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
@@ -1134,7 +1134,7 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(ctx context.Context, input
 	}
 
 	groupId := *input.GroupId
-	key := kvutil.AccountKey(accountID, groupId)
+	key := kvstore.AccountKey(accountID, groupId)
 
 	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
@@ -1212,7 +1212,7 @@ func (s *VPCServiceImpl) RevokeSecurityGroupIngress(ctx context.Context, input *
 	}
 
 	groupId := *input.GroupId
-	key := kvutil.AccountKey(accountID, groupId)
+	key := kvstore.AccountKey(accountID, groupId)
 
 	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
@@ -1277,7 +1277,7 @@ func (s *VPCServiceImpl) RevokeSecurityGroupEgress(ctx context.Context, input *e
 	}
 
 	groupId := *input.GroupId
-	key := kvutil.AccountKey(accountID, groupId)
+	key := kvstore.AccountKey(accountID, groupId)
 
 	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
@@ -1397,7 +1397,7 @@ func (s *VPCServiceImpl) updateSGRuleDescriptions(ctx context.Context, accountID
 		return errors.New(awserrors.ErrorInvalidParameterCombination)
 	}
 
-	key := kvutil.AccountKey(accountID, req.groupId)
+	key := kvstore.AccountKey(accountID, req.groupId)
 	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
 		return sgNotFoundError(req.groupId)
@@ -1581,7 +1581,7 @@ func (s *VPCServiceImpl) ModifySecurityGroupRules(ctx context.Context, input *ec
 	}
 
 	groupId := *input.GroupId
-	key := kvutil.AccountKey(accountID, groupId)
+	key := kvstore.AccountKey(accountID, groupId)
 
 	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
@@ -2158,7 +2158,7 @@ func (s *VPCServiceImpl) storeDefaultSecurityGroup(ctx context.Context, accountI
 	if err != nil {
 		return nil, false, fmt.Errorf("marshal default security group: %w", err)
 	}
-	if _, err := s.sgKV.Create(ctx, kvutil.AccountKey(accountID, groupId), data); err != nil {
+	if _, err := s.sgKV.Create(ctx, kvstore.AccountKey(accountID, groupId), data); err != nil {
 		if errors.Is(err, jetstream.ErrKeyExists) {
 			return record, false, nil
 		}
@@ -2182,7 +2182,7 @@ func (s *VPCServiceImpl) announceDefaultSecurityGroup(record *SecurityGroupRecor
 // CannotDelete guard for default SGs. Used by DeleteVpc to cascade-delete the
 // per-VPC default SG. Surfaces vpcd tear-down failures to the caller.
 func (s *VPCServiceImpl) deleteSecurityGroupInternal(ctx context.Context, accountID, groupId string) error {
-	key := kvutil.AccountKey(accountID, groupId)
+	key := kvstore.AccountKey(accountID, groupId)
 	entry, err := s.sgKV.Get(ctx, key)
 	if err != nil {
 		return fmt.Errorf("read default security group: %w", err)
@@ -2219,7 +2219,7 @@ func (s *VPCServiceImpl) findDefaultSGForVPC(ctx context.Context, accountID, vpc
 		return "", err
 	}
 	for _, k := range keys {
-		if k == kvutil.VersionKey || !strings.HasPrefix(k, prefix) {
+		if k == kvstore.VersionKey || !strings.HasPrefix(k, prefix) {
 			continue
 		}
 		entry, err := s.sgKV.Get(ctx, k)

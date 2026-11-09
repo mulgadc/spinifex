@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"time"
 
+	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	telemetry "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -36,7 +36,7 @@ func newVolumeDirty(ctx context.Context, nc *nats.Conn, owner string) (*volumeDi
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	kv, err := kvutil.GetOrCreateBucketWithOptions(ctx, js, kvutil.BucketOptions{
+	kv, err := kvstore.GetOrCreateBucketWithOptions(ctx, js, kvstore.BucketOptions{
 		Name:        viperblocklegacyv1.DirtyBucket,
 		Description: "volumes whose last seal failed, keyed by volume, naming the node holding the current copy",
 		History:     1,
@@ -267,10 +267,11 @@ func (cfg *Config) refuseWhileOwnerLive(ctx context.Context, volumeName string, 
 	if !found {
 		return nil
 	}
-	age := time.Since(seen)
-	if age > nodeLivenessWindow {
+	now := time.Now()
+	if !clusterv1.LiveAt(seen, now) {
 		return nil
 	}
+	age := now.Sub(seen)
 	slog.WarnContext(ctx, "refusing to open a volume whose previous owner is still live",
 		"volume", volumeName, "previous_owner", record.Owner, "last_seen_ms", telemetry.Millis(age))
 	return fmt.Errorf("%w: %s is still live and holds unsealed writes", errVolumeLeaseHeld, record.Owner)

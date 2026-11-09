@@ -33,3 +33,23 @@ func TestHeartbeatTimestamp_UndatedBeatVouchesForNothing(t *testing.T) {
 		assert.False(t, ok, "timestamp %q", ts)
 	}
 }
+
+// A beat is live strictly under the window, so one exactly the window old is
+// the first a takeover may treat as stopped.
+func TestLiveAt_IsStrictlyUnderTheWindow(t *testing.T) {
+	now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	assert.True(t, clusterv1.LiveAt(now.Add(-clusterv1.LivenessWindow+time.Nanosecond), now))
+	assert.False(t, clusterv1.LiveAt(now.Add(-clusterv1.LivenessWindow), now))
+	assert.True(t, clusterv1.LiveAt(now.Add(time.Second), now), "a beat from a clock running ahead is live")
+}
+
+func TestHeartbeatWritten_DatesAStoredBeatAndRefusesAnUndecodableOne(t *testing.T) {
+	written, ok := clusterv1.HeartbeatWritten([]byte(`{"node":"node-a","timestamp":"2026-10-30T01:02:03Z"}`))
+	require.True(t, ok)
+	assert.True(t, written.Equal(time.Date(2026, 10, 30, 1, 2, 3, 0, time.UTC)))
+
+	for _, raw := range []string{"not json", `{"node":"node-a"}`} {
+		_, ok := clusterv1.HeartbeatWritten([]byte(raw))
+		assert.False(t, ok, raw)
+	}
+}

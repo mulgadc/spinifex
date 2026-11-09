@@ -1138,6 +1138,7 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(ctx context.Context, input *LBAgentH
 			if rec.State == StateProvisioning {
 				rec.State = StateActive
 				rec.StateReason = ""
+				rec.ActiveSince = now
 			}
 			rec.LastHeartbeat = now
 			return true, nil
@@ -1161,6 +1162,8 @@ func (s *ELBv2ServiceImpl) LBAgentHeartbeat(ctx context.Context, input *LBAgentH
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 	}
+
+	s.recordDataPathEvidence(ctx, lb, input)
 
 	// Process health report directly — no JSON round-trip needed.
 	if len(input.Servers) > 0 {
@@ -1853,15 +1856,23 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(ctx context.Context, input *elbv2.
 		return &elbv2.DeleteLoadBalancerOutput{}, nil
 	}
 
+	// Exclude data-path repair before anything touches the VM or its ENIs.
+	if err := s.store.SuspendLBHealth(ctx, lb.LoadBalancerID); err != nil {
+		slog.ErrorContext(ctx, "DeleteLoadBalancer: failed to suspend data-path repair", "lbId", lb.LoadBalancerID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	// Cascade-delete all listeners and their rules so no orphan pins a TG as ResourceInUse.
 	listeners, err := s.store.ListListenersByLB(ctx, lb.LoadBalancerArn)
 	if err != nil {
 		slog.ErrorContext(ctx, "DeleteLoadBalancer: failed to list listeners for cascade", "lbArn", lb.LoadBalancerArn, "err", err)
+		s.resumeLBHealth(ctx, lb.LoadBalancerID)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	for _, l := range listeners {
 		if err := s.deleteListenerCascade(ctx, l); err != nil {
 			slog.ErrorContext(ctx, "DeleteLoadBalancer: failed to cascade listener delete", "listenerID", l.ListenerID, "err", err)
+			s.resumeLBHealth(ctx, lb.LoadBalancerID)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 	}
@@ -1909,6 +1920,9 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(ctx context.Context, input *elbv2.
 	if err := s.store.DeleteLoadBalancer(ctx, lb.LoadBalancerID); err != nil {
 		slog.ErrorContext(ctx, "DeleteLoadBalancer: failed to delete record", "lbId", lb.LoadBalancerID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if err := s.store.DeleteLBHealth(ctx, lb.LoadBalancerID); err != nil {
+		slog.WarnContext(ctx, "DeleteLoadBalancer: failed to delete data-path evidence", "lbId", lb.LoadBalancerID, "err", err)
 	}
 
 	// Release the name claim so the name is reusable. Idempotent on a missing
@@ -3455,6 +3469,9 @@ func (s *ELBv2ServiceImpl) lbRecordToSDK(ctx context.Context, r *LoadBalancerRec
 	}
 	if r.StateReason != "" {
 		lb.State.Reason = aws.String(r.StateReason)
+	}
+	if s.impairedByEvidence(ctx, r) {
+		lb.State.Code = aws.String(StateActiveImpaired)
 	}
 
 	for _, sg := range r.SecurityGroups {

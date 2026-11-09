@@ -54,6 +54,12 @@ type Deps struct {
 	AEAD cipher.AEAD
 	// Exec runs synchronous attempts; nil refuses every Invoke.
 	Exec Executor
+	// Mappings opens the event-source mapping store; nil refuses every
+	// mapping action.
+	Mappings func(ctx context.Context) (MappingStore, error)
+	// Sources reads a queue as a function's execution role; nil refuses
+	// CreateEventSourceMapping.
+	Sources SourceChecker
 }
 
 // NewRegistration returns the Lambda REST-JSON registration.
@@ -136,6 +142,8 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 		if name, _, err := resolveFunctionName(inv.Region, inv.AccountID, params[0]); err == nil {
 			resource = functionARN(inv.Region, inv.AccountID, name)
 		}
+	case "GetEventSourceMapping", "DeleteEventSourceMapping":
+		resource = mappingARN(inv.Region, inv.AccountID, params[0])
 	case "Invoke":
 		// Invoke validates deterministically before authorizing, and its
 		// resource comes from that same validated target. URL.Query drops
@@ -160,8 +168,7 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 		}
 	}
 	// Only CreateFunction and GetFunction touch the code store.
-	needsCodes := action != "GetFunctionConfiguration" && action != "GetFunctionCodeSigningConfig" &&
-		action != "ListVersionsByFunction" && action != "Invoke"
+	needsCodes := action == "CreateFunction" || action == "GetFunction"
 	if d.Meta == nil || (d.Codes == nil && needsCodes) {
 		return errors.New(awserrors.ErrorServiceException)
 	}

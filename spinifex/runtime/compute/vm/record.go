@@ -100,6 +100,9 @@ type InstanceStatus struct {
 	TerminatedAt   time.Time         `json:"terminated_at,omitzero"`
 	ShuttingDownAt time.Time         `json:"shutting_down_at,omitzero"`
 	FirstLaunch    bool              `json:"first_launch,omitempty"`
+	// UEFIStoreUnowned keeps a terminate off a store this instance's seed did
+	// not create.
+	UEFIStoreUnowned bool `json:"uefi_store_unowned,omitempty"`
 
 	// The request slices are carried without their mutexes: a lock is process
 	// state, not something a record describes. The wrappers are rebuilt with
@@ -107,10 +110,6 @@ type InstanceStatus struct {
 	EBSRequests       []EBSRequest   `json:"ebs_requests,omitempty"`
 	ENIAvailableSlots []int          `json:"eni_available_slots,omitempty"`
 	ENIAttachedByID   map[string]int `json:"eni_attached_by_id,omitempty"`
-
-	// UEFIVarStore is optional, so records written without it still decode
-	// and the bucket schema does not change.
-	UEFIVarStore *UEFIVarStoreRef `json:"uefi_var_store,omitempty"`
 }
 
 // Record projects a VM onto the persisted record. QMPClient and the request
@@ -169,10 +168,10 @@ func (v *VM) Record() *InstanceRecord {
 			TerminatedAt:                    v.TerminatedAt,
 			ShuttingDownAt:                  v.ShuttingDownAt,
 			FirstLaunch:                     v.FirstLaunch,
+			UEFIStoreUnowned:                v.UEFIStoreUnowned,
 			EBSRequests:                     v.EBSRequests.Requests,
 			ENIAvailableSlots:               v.ENIRequests.AvailableSlots,
 			ENIAttachedByID:                 v.ENIRequests.AttachedByENIID,
-			UEFIVarStore:                    v.UEFIVarStore,
 		},
 	}
 }
@@ -230,7 +229,7 @@ func VMFromRecord(r *InstanceRecord) *VM {
 		TerminatedAt:                    r.Status.TerminatedAt,
 		ShuttingDownAt:                  r.Status.ShuttingDownAt,
 		FirstLaunch:                     r.Status.FirstLaunch,
-		UEFIVarStore:                    r.Status.UEFIVarStore,
+		UEFIStoreUnowned:                r.Status.UEFIStoreUnowned,
 	}
 	v.EBSRequests.Requests = r.Status.EBSRequests
 	v.ENIRequests.AvailableSlots = r.Status.ENIAvailableSlots

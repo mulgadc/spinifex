@@ -1129,6 +1129,13 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			require.NoError(t, err, "an error reads as cannot say, which blocks every start elsewhere")
 			assert.Subset(t, asked, held, "a volume nobody asked about is not an answer to the question")
 		})
+
+		t.Run("empty request answers none", func(t *testing.T) {
+			provider := newProvider(t)
+			held, err := provider.HoldsUnsealedWrites(context.Background(), cfg.node(), nil)
+			require.NoError(t, err, "the daemon reads an error here as its node's provider not serving")
+			assert.Empty(t, held)
+		})
 	})
 
 	t.Run("Exclusion", func(t *testing.T) {

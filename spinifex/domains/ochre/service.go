@@ -63,9 +63,6 @@ type Service struct {
 	nc    *nats.Conn
 	deps  ServiceDeps
 	store *endpointStore
-	// leader is the reaper's TTL-backed lease bucket, built alongside the
-	// endpoints store so both share this Service's one JetStream client.
-	leader *kvstore.Bucket
 
 	// ensureMu collapses concurrent Ensure calls FOR THE SAME KEY on THIS
 	// replica into one KV round trip: without it, N concurrent local callers
@@ -82,15 +79,14 @@ type Service struct {
 var _ EndpointService = (*Service)(nil)
 
 // NewService constructs a Service bound to nc, using deps for launch/capacity.
-// Both buckets are resolved lazily but memoised, so the get-or-create round
+// The endpoints bucket is resolved lazily but memoised, so the get-or-create round
 // trip is paid once for the daemon rather than once per KV call.
 func NewService(nc *nats.Conn, deps ServiceDeps) *Service {
 	js := serviceJetStream(nc)
 	return &Service{
-		nc:     nc,
-		deps:   deps,
-		store:  newEndpointStore(js),
-		leader: newLeaderBucket(js),
+		nc:    nc,
+		deps:  deps,
+		store: newEndpointStore(js),
 	}
 }
 

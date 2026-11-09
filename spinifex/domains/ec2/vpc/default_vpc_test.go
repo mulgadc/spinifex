@@ -13,7 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -149,12 +149,12 @@ func TestEnsureDefaultVPC_AdoptsOldestExistingDefault(t *testing.T) {
 	const accountID = "000000000051"
 	created := time.Date(2026, 9, 11, 14, 13, 40, 0, time.UTC)
 	for i, id := range []string{"vpc-0000000000000newer", "vpc-0000000000000older"} {
-		putRecord(t, js, ec2vpc.KVBucketVPCs, kvutil.AccountKey(accountID, id), ec2vpc.VPCRecord{
+		putRecord(t, js, ec2vpc.KVBucketVPCs, kvstore.AccountKey(accountID, id), ec2vpc.VPCRecord{
 			VpcId: id, CidrBlock: ec2vpc.DefaultVPCCidr, IsDefault: true, VNI: int64(200 + i),
 			CreatedAt: created.Add(time.Duration(1-i) * time.Minute),
 		})
 	}
-	putRecord(t, js, ec2vpc.KVBucketSubnets, kvutil.AccountKey(accountID, "subnet-00000000000older"), ec2vpc.SubnetRecord{
+	putRecord(t, js, ec2vpc.KVBucketSubnets, kvstore.AccountKey(accountID, "subnet-00000000000older"), ec2vpc.SubnetRecord{
 		SubnetId: "subnet-00000000000older", VpcId: "vpc-0000000000000older", CidrBlock: ec2vpc.DefaultSubnetCidr,
 		IsDefault: true, CreatedAt: created,
 	})
@@ -183,7 +183,7 @@ func TestEnsureDefaultVPC_FinishesHalfBuiltClaim(t *testing.T) {
 		"route_table_id": "rtb-00000000000half", "internet_gateway_id": "igw-00000000000half",
 		"cidr": ec2vpc.DefaultVPCCidr, "subnet_cidr": ec2vpc.DefaultSubnetCidr, "vni": 4242,
 	})
-	putRecord(t, js, ec2vpc.KVBucketVPCs, kvutil.AccountKey(accountID, "vpc-00000000000000half"), ec2vpc.VPCRecord{
+	putRecord(t, js, ec2vpc.KVBucketVPCs, kvstore.AccountKey(accountID, "vpc-00000000000000half"), ec2vpc.VPCRecord{
 		VpcId: "vpc-00000000000000half", CidrBlock: ec2vpc.DefaultVPCCidr, IsDefault: true, VNI: 4242,
 	})
 

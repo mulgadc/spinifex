@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -44,6 +43,35 @@ func (s *Store[T]) Get(ctx context.Context, key string) (*T, uint64, error) {
 	return v, rev, err
 }
 
+// LeaderGet is Get answered by the stream leader, for a caller that must not
+// act on a lagging replica's older value. The revision is the stream sequence.
+func (s *Store[T]) LeaderGet(ctx context.Context, key string) (*T, uint64, error) {
+	if _, err := s.KV(ctx); err != nil {
+		return nil, 0, err
+	}
+	s.mu.Lock()
+	js, name := s.js, s.cfg.Name
+	s.mu.Unlock()
+	msg, err := LeaderMsgGet(ctx, js, "KV_"+name, MsgGetRequest{LastFor: "$KV." + name + "." + key})
+	if errors.Is(err, jetstream.ErrMsgNotFound) {
+		return nil, 0, fmt.Errorf("%w: %s", ErrNotFound, key)
+	}
+	if err != nil {
+		return nil, 0, fmt.Errorf("kvstore: leader get %s: %w", key, err)
+	}
+	if op := msg.Header.Get(kvOperationHeader); op == "DEL" || op == "PURGE" {
+		return nil, 0, fmt.Errorf("%w: %s", ErrNotFound, key)
+	}
+	var v T
+	if err := json.Unmarshal(msg.Data, &v); err != nil {
+		return nil, 0, fmt.Errorf("kvstore: decode %s: %w", key, err)
+	}
+	return &v, msg.Sequence, nil
+}
+
+// kvOperationHeader marks a KV stream message that deletes or purges its key.
+const kvOperationHeader = "KV-Operation"
+
 // Create writes a record only if the key is absent, returning ErrExists when
 // it is not. The create-only write is the single-writer claim, and the
 // returned revision is the CAS precondition for the claim's own first update.
@@ -77,7 +105,7 @@ func (s *Store[T]) Mutate(ctx context.Context, key string, fn func(*T) (bool, er
 	// Safe to re-run: Update re-reads the record inside its own CAS loop, so
 	// the second attempt starts from whatever the reopened bucket holds.
 	return s.withKV(ctx, func(kv jetstream.KeyValue) error {
-		_, err := kvutil.Update(ctx, kv, key, kvutil.CASConfig{
+		_, err := Update(ctx, kv, key, CASConfig{
 			Attempts:  s.cfg.Attempts,
 			NotFound:  fmt.Errorf("%w: %s", ErrNotFound, key),
 			Exhausted: s.cfg.Exhausted,
@@ -90,7 +118,7 @@ func (s *Store[T]) Mutate(ctx context.Context, key string, fn func(*T) (bool, er
 // absent key starts fn from the zero value rather than reporting ErrNotFound.
 func (s *Store[T]) Upsert(ctx context.Context, key string, fn func(*T) (bool, error)) error {
 	return s.withKV(ctx, func(kv jetstream.KeyValue) error {
-		_, err := kvutil.Update(ctx, kv, key, kvutil.CASConfig{
+		_, err := Update(ctx, kv, key, CASConfig{
 			Attempts:       s.cfg.Attempts,
 			CreateIfAbsent: true,
 			Exhausted:      s.cfg.Exhausted,
@@ -234,10 +262,10 @@ func On[T any](b *Bucket) *Store[T] {
 // which is the losing racer's answer rather than an error.
 func (s *Store[T]) Claim(ctx context.Context, key string) (v *T, notFound bool, err error) {
 	// Safe to re-run: the read and the revision-guarded delete both happen
-	// inside kvutil.Claim, so a second attempt starts from the reopened bucket.
+	// inside Take, so a second attempt starts from the reopened bucket.
 	err = s.withKV(ctx, func(kv jetstream.KeyValue) error {
 		var claimErr error
-		v, notFound, claimErr = kvutil.Claim[T](ctx, kv, key, kvutil.CASConfig{
+		v, notFound, claimErr = Take[T](ctx, kv, key, CASConfig{
 			Attempts:  s.cfg.Attempts,
 			Exhausted: s.cfg.Exhausted,
 		})
@@ -259,9 +287,9 @@ func (s *Store[T]) Replace(ctx context.Context, key string, v *T) error {
 	if err != nil {
 		return fmt.Errorf("kvstore: encode %s: %w", key, err)
 	}
-	// Safe to re-run: kvutil.Put re-reads the revision inside its own loop.
+	// Safe to re-run: Put re-reads the revision inside its own loop.
 	return s.withKV(ctx, func(kv jetstream.KeyValue) error {
-		if err := kvutil.Put(ctx, kv, key, kvutil.CASConfig{
+		if err := Put(ctx, kv, key, CASConfig{
 			CreateIfAbsent: true,
 			Attempts:       s.cfg.Attempts,
 			Exhausted:      s.cfg.Exhausted,

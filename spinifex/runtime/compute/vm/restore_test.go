@@ -324,6 +324,30 @@ func TestClassifyRestoredInstances_StoppingWithLiveQEMUStops(t *testing.T) {
 	assert.NotNil(t, store.stopped[v.ID])
 }
 
+// The orphan check reads the backing store alone: a socket that fails while the
+// provider is down stays failed once it returns, so a stale export under a ready
+// store is still reaped and relaunched with the local provider not answering.
+func TestClassifyRestoredInstances_StaleSocketsKilledWhileProviderDown(t *testing.T) {
+	hostprocess.ShortenProcessExitPollForTest(t, 5*time.Millisecond)
+	m, _, _ := classifyTestManager(t)
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	m.deps.BackingStoreReady = func() bool { return true }
+	m.deps.EBSProviderReady = func() bool { return false }
+
+	dead := filepath.Join(t.TempDir(), "dead.sock")
+	v := withNBDRequests("i-orphan", StateRunning, "nbd:unix:"+dead)
+	v.InstanceType = "t3.micro"
+	v.Instance = &ec2.Instance{}
+	require.NoError(t, hostprocess.WritePidFile(v.ID, spawnLiveChild(t)))
+	m.Replace(map[string]*VM{v.ID: v})
+
+	toLaunch := m.classifyRestoredInstances()
+
+	require.Len(t, toLaunch, 1, "a stale export under a ready store is an orphan, provider or not")
+	assert.Same(t, v, toLaunch[0])
+	assert.False(t, isInstanceProcessRunning(v), "the orphaned QEMU must be killed before its relaunch")
+}
+
 // Belt and braces for the same invariant at its last enforcement point: even if a
 // future caller reaches reconnectInstance with a transitional instance, it must
 // refuse rather than promote it to Running.

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -310,4 +311,70 @@ func TestNATSSystemInstanceLauncher_RefusesNonLoadBalancerKindBeforeSending(t *t
 	mu.Lock()
 	defer mu.Unlock()
 	assert.Equal(t, 1, received, "only the load balancer launch may be sent")
+}
+
+func TestNATSSystemInstanceLauncher_RebootEmptyID(t *testing.T) {
+	t.Parallel()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	defer nc.Close()
+
+	err := NewNATSSystemInstanceLauncher(nc, time.Second).RebootSystemInstance("")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty instance ID")
+}
+
+func TestNATSSystemInstanceLauncher_RebootRoundTrip(t *testing.T) {
+	t.Parallel()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	defer nc.Close()
+
+	var asked atomic.Int32
+	sub, err := nc.Subscribe("system.RebootInstance.i-lb", func(msg *nats.Msg) {
+		asked.Add(1)
+		_ = msg.Respond([]byte(`{}`))
+	})
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	require.NoError(t, NewNATSSystemInstanceLauncher(nc, 2*time.Second).RebootSystemInstance("i-lb"))
+	assert.EqualValues(t, 1, asked.Load())
+}
+
+func TestNATSSystemInstanceLauncher_RebootNoResponderKeepsTransportError(t *testing.T) {
+	t.Parallel()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	defer nc.Close()
+
+	err := NewNATSSystemInstanceLauncher(nc, 250*time.Millisecond).RebootSystemInstance("i-no-one-listens")
+	require.ErrorIs(t, err, nats.ErrNoResponders)
+}
+
+func TestNATSSystemInstanceLauncher_RebootDecodeFailureAndRemoteError(t *testing.T) {
+	t.Parallel()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	defer nc.Close()
+
+	bad, err := nc.Subscribe("system.RebootInstance.i-decode", func(msg *nats.Msg) {
+		_ = msg.Respond([]byte("{not valid json"))
+	})
+	require.NoError(t, err)
+	defer func() { _ = bad.Unsubscribe() }()
+
+	refused, err := nc.Subscribe("system.RebootInstance.i-refused", func(msg *nats.Msg) {
+		payload, _ := json.Marshal(struct {
+			Error string `json:"error,omitempty"`
+		}{Error: "not a system instance"})
+		_ = msg.Respond(payload)
+	})
+	require.NoError(t, err)
+	defer func() { _ = refused.Unsubscribe() }()
+
+	l := NewNATSSystemInstanceLauncher(nc, 2*time.Second)
+	err = l.RebootSystemInstance("i-decode")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode reboot reply")
+
+	err = l.RebootSystemInstance("i-refused")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a system instance")
 }

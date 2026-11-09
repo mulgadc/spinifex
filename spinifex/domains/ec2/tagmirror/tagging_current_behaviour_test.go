@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,7 +39,7 @@ func (k *interleavingKV) Get(ctx context.Context, key string) (jetstream.KeyValu
 // its write both survive alongside its own tag.
 func TestCurrentBehaviour_Tagging_RecordMirrorKeepsInterleavedWrites(t *testing.T) {
 	const acct, id = "123456789012", "sg-0123456789abcdef0"
-	key := kvutil.AccountKey(acct, id)
+	key := kvstore.AccountKey(acct, id)
 	seed, err := json.Marshal(tagMirrorRecord{Name: "original", Tags: map[string]string{}})
 	require.NoError(t, err)
 	kv := seedKV(t, "tagmirror-cb", map[string][]byte{key: seed})

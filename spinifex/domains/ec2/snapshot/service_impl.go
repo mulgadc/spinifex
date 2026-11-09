@@ -13,7 +13,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/bluebottle/pkg/safecast"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
@@ -655,48 +654,15 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 		return nil, providerDeleteError(snapshotID, err)
 	}
 
-	objects, _, err := objectstore.ListAll(ctx, s.store, &s3.ListObjectsV2Input{
-		Bucket: aws.String(s.config.Predastore.Bucket),
-		Prefix: aws.String(snapshotID + "/"),
-	})
-	if err != nil {
-		slog.ErrorContext(ctx, "DeleteSnapshot failed to list objects", "snapshotId", snapshotID, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// A key the sweep could not delete has to keep the document alive. The
-	// listing no longer enumerates snap- prefixes, so deleting the document over
-	// surviving chunks strands them where nothing can see or reclaim them.
-	var sweepErr error
-	for _, obj := range objects {
-		if obj == nil || obj.Key == nil {
-			continue
-		}
-		_, err := s.store.DeleteObject(ctx, &s3.DeleteObjectInput{
-			Bucket: aws.String(s.config.Predastore.Bucket),
-			Key:    obj.Key,
-		})
-		if err != nil && !objectstore.IsNoSuchKeyError(err) {
-			slog.ErrorContext(ctx, "DeleteSnapshot failed to delete object", "key", *obj.Key, "err", err)
-			sweepErr = errors.Join(sweepErr, err)
-		}
-	}
-	if sweepErr != nil {
-		slog.ErrorContext(ctx, "DeleteSnapshot leaving the document in place after an incomplete sweep",
-			"snapshotId", snapshotID, "err", sweepErr)
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// The document no longer sits inside the swept prefix, so it has to go
-	// explicitly, and last: a crash with it still present leaves a snapshot that
-	// DescribeSnapshots shows and DeleteSnapshot can retry, rather than chunks
-	// nothing enumerates.
+	// The provider has removed the snapshot's storage. The document goes after
+	// it, so a provider failure above leaves a snapshot DescribeSnapshots shows
+	// and DeleteSnapshot can retry against an idempotent provider delete.
 	if err := s.metadata.DeleteSnapshot(ctx, accountID, snapshotID); err != nil && !objectstore.IsNoSuchKeyError(err) {
 		slog.ErrorContext(ctx, "DeleteSnapshot failed to delete metadata document", "snapshotId", snapshotID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Remove from KV after S3 cleanup. Failure is logged but not fatal —
+	// Remove from KV after the document. Failure is logged but not fatal —
 	// a phantom entry safely blocks volume deletion rather than allowing it.
 	if err := s.removeSnapshotRefForCleanup(ctx, cfg.VolumeID, snapshotID); err != nil {
 		slog.Warn("DeleteSnapshot failed to remove snapshot ref from KV", "snapshotId", snapshotID, "volumeId", cfg.VolumeID, "err", err)

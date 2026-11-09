@@ -8,7 +8,6 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -226,7 +225,7 @@ func TestStore_NilJetStreamWithNoMessageStillSaysSomething(t *testing.T) {
 func newOpenBucket(t *testing.T) jetstream.KeyValue {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	kv, err := kvutil.GetOrCreateBucket(t.Context(), testutil.NewJetStream(t, nc), "kvstore-over-test", 1)
+	kv, err := kvstore.GetOrCreateBucket(t.Context(), testutil.NewJetStream(t, nc), "kvstore-over-test", 1)
 	require.NoError(t, err)
 	return kv
 }
@@ -397,7 +396,7 @@ func TestStore_CreateReturnsTheClaimRevision(t *testing.T) {
 
 // TestStore_ConfigAttemptsBoundsMutate pins both halves of the per-store budget:
 // the loop stops after Attempts tries, and the caller's Exhausted error is what
-// surfaces rather than kvutil's default message.
+// surfaces rather than the CAS loop's default message.
 func TestStore_ConfigAttemptsBoundsMutate(t *testing.T) {
 	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
@@ -424,7 +423,7 @@ func TestStore_ConfigAttemptsBoundsMutate(t *testing.T) {
 		rec.Count = 100
 		return true, nil
 	})
-	require.ErrorIs(t, err, errBudgetSpent, "the configured error must surface, not kvutil's default")
+	require.ErrorIs(t, err, errBudgetSpent, "the configured error must surface, not the CAS loop's default")
 	assert.Equal(t, 2, calls, "Attempts bounds the loop")
 	assert.Equal(t, "acct-a/one", gotKey)
 	assert.Equal(t, 2, gotAttempts, "Exhausted is told the budget it spent")

@@ -27,7 +27,7 @@ import (
 	stsdomain "github.com/mulgadc/spinifex/spinifex/domains/sts"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 )
 
@@ -119,7 +119,7 @@ func probe(t *testing.T, e *cbEnv, h http.Handler, seen *[]actorObservation, c c
 func cbWebIdentitySession(t *testing.T, e *cbEnv) (cbCreds, string) {
 	t.Helper()
 	issuer := testDiscIssuer
-	iamKV, err := kvutil.GetOrCreateBucket(t.Context(), e.js,
+	iamKV, err := kvstore.GetOrCreateBucket(t.Context(), e.js,
 		iamdomain.IAMAccountBucketName(e.accountID), iamdomain.KVBucketIAMAccountVersion)
 	require.NoError(t, err)
 	_, err = iamKV.Put(t.Context(), iamdomain.OIDCProviderKey(issuer), []byte(`{"registered":true}`))

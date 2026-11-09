@@ -472,6 +472,76 @@ func TestMgmtIPAllocator_Allocate_IdempotentAcrossNodes(t *testing.T) {
 	}
 }
 
+// An instance whose cluster-record entry has gone (the record lost it while the
+// instance kept running) still holds its address on this node, so a new
+// allocation must not be handed that address.
+func TestMgmtIPAllocator_Allocate_SkipsLocallyHeldWhenRecordLost(t *testing.T) {
+	t.Parallel()
+	jsm := newTestMgmtJSM(t)
+
+	a, err := NewMgmtIPAllocator("10.41.8.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.BindKV(jsm, "node-1")
+	cleanupMgmtIPAM(t, jsm, a)
+
+	held, err := a.Allocate("i-system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := jsm.clusterKV.Delete(context.Background(), mgmtIPAMKeyPrefix+a.subnet); err != nil {
+		t.Fatalf("drop record: %v", err)
+	}
+
+	got, err := a.Allocate("lambda-attempt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == held {
+		t.Fatalf("new allocation reused %s, still held by i-system", got)
+	}
+	if again, err := a.Allocate("i-system"); err != nil || again != held {
+		t.Errorf("holder re-allocate = %q, %v; want %q", again, err, held)
+	}
+}
+
+// Allocate refuses a recorded entry whose address another local instance holds.
+func TestMgmtIPAllocator_Allocate_RefusesRecordedConflictWithLocalHolder(t *testing.T) {
+	t.Parallel()
+	jsm := newTestMgmtJSM(t)
+
+	a, err := NewMgmtIPAllocator("10.42.8.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.BindKV(jsm, "node-1")
+	cleanupMgmtIPAM(t, jsm, a)
+
+	held, err := a.Allocate("i-system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := NewMgmtIPAllocator("10.42.8.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other.BindKV(jsm, "node-2")
+	if err := jsm.clusterKV.Delete(context.Background(), mgmtIPAMKeyPrefix+a.subnet); err != nil {
+		t.Fatalf("drop record: %v", err)
+	}
+	// The record now names the held address for a different instance.
+	other.Claim("lambda-attempt", held)
+
+	if got, err := a.Allocate("lambda-attempt"); err == nil {
+		t.Fatalf("Allocate returned %s, which i-system holds locally", got)
+	}
+	a.Claim("i-dup", held)
+	if got, err := a.Allocate("i-dup"); err == nil {
+		t.Fatalf("cached duplicate returned %s, which i-system holds locally", got)
+	}
+}
+
 // TestMgmtIPAllocator_Release_FreesAddressClusterWide proves Release's
 // effect is visible cluster-wide: a second allocator, not the one that
 // released the address, can immediately take it.
@@ -868,8 +938,9 @@ func TestMgmtIPAllocator_ClaimLetsTheNewHolderReleaseItLater(t *testing.T) {
 		t.Errorf("the holder could not release its own address: entry still %+v", entry)
 	}
 
-	// And the address is genuinely back, not merely unrecorded.
-	reused, err := node1.Allocate("i-next")
+	// And the address is genuinely back, not merely unrecorded. node-1's cache
+	// still names its dropped copy, so the holder that released it allocates.
+	reused, err := node2.Allocate("i-next")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1108,5 +1179,36 @@ func TestMgmtIPAllocator_ReleaseDropsLocalOnForeignHolderAndKVFailure(t *testing
 	node3.Release("i-lost-kv")
 	if node3.AllocatedCount() != 0 {
 		t.Errorf("local entries after release with KV down = %d, want 0", node3.AllocatedCount())
+	}
+}
+
+// A CAS retry that sees the conflicting entry gone must report its own
+// result, not the refusal left by the earlier attempt.
+func TestMgmtIPAllocator_AllocMutate_RetryClearsEarlierConflict(t *testing.T) {
+	a, err := NewMgmtIPAllocator("10.30.8.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := []MgmtIPEntry{{IP: "10.30.8.10", InstanceID: "i-sqs"}}
+	var ip string
+	var mutateErr error
+	mutate := a.allocMutate("i-fn", "node1", "10.30.8.0/24", held, &ip, &mutateErr)
+
+	mutate(&MgmtIPRecord{Allocated: []MgmtIPEntry{{IP: "10.30.8.10", InstanceID: "i-fn", Node: "node1"}}})
+	if mutateErr == nil || ip != "" {
+		t.Fatalf("conflicted attempt: ip=%q err=%v, want refusal", ip, mutateErr)
+	}
+
+	clean := &MgmtIPRecord{}
+	mutate(clean)
+	if mutateErr != nil {
+		t.Fatalf("retry kept the earlier refusal: %v", mutateErr)
+	}
+	if ip == "" || ip == "10.30.8.10" {
+		t.Fatalf("retry allocated %q, want a free address other than the held one", ip)
+	}
+	want := MgmtIPEntry{IP: ip, InstanceID: "i-fn", Node: "node1"}
+	if len(clean.Allocated) != 1 || clean.Allocated[0] != want {
+		t.Fatalf("record = %+v, want [%+v]", clean.Allocated, want)
 	}
 }

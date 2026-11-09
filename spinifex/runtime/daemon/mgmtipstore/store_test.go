@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -79,7 +79,7 @@ func TestBind_AbsentBucketIsNotCreated(t *testing.T) {
 
 func TestBind_RefusesTTLBucket(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	_, err := kvutil.GetOrCreateBucketWithOptions(t.Context(), js, kvutil.BucketOptions{Name: testBucket, History: 1, TTL: time.Hour})
+	_, err := kvstore.GetOrCreateBucketWithOptions(t.Context(), js, kvstore.BucketOptions{Name: testBucket, History: 1, TTL: time.Hour})
 	require.NoError(t, err)
 	_, err = Bind(t.Context(), js, testBucket)
 	require.ErrorContains(t, err, "not durable")
@@ -482,13 +482,13 @@ func TestSnapshot_FromAnotherServerWithSameBucketAndRevisionIsRefused(t *testing
 func TestKV_RecreatedBucketSatisfiesOldRevision(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := t.Context()
-	old, err := kvutil.GetOrCreateBucketWithOptions(ctx, js, kvutil.BucketOptions{Name: testBucket, History: 1})
+	old, err := kvstore.GetOrCreateBucketWithOptions(ctx, js, kvstore.BucketOptions{Name: testBucket, History: 1})
 	require.NoError(t, err)
 	oldRev, err := old.Put(ctx, "k", []byte("old holder"))
 	require.NoError(t, err)
 
 	require.NoError(t, js.DeleteKeyValue(ctx, testBucket))
-	fresh, err := kvutil.GetOrCreateBucketWithOptions(ctx, js, kvutil.BucketOptions{Name: testBucket, History: 1})
+	fresh, err := kvstore.GetOrCreateBucketWithOptions(ctx, js, kvstore.BucketOptions{Name: testBucket, History: 1})
 	require.NoError(t, err)
 	newRev, err := fresh.Put(ctx, "k", []byte("new holder"))
 	require.NoError(t, err)

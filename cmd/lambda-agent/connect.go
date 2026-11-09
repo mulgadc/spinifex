@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"os"
 
 	lambdav1 "github.com/mulgadc/spinifex/contracts/lambda/v1"
 	"github.com/mulgadc/spinifex/spinifex/agents/lambda/hostlink"
@@ -25,7 +26,20 @@ type startup struct {
 }
 
 func defaultStartup() startup {
+	if _, err := os.Stat(hostlink.ConfigDiskRoot); err == nil {
+		return configDiskStartup(hostlink.ConfigDiskRoot, hostlink.ConfigDiskDevice)
+	}
 	return startup{fwCfgDir: hostlink.FwCfgDir, fwCfgRoot: hostlink.FwCfgRoot, unload: hostlink.UnloadFwCfg}
+}
+
+// configDiskStartup reads the entries init extracted from the configuration
+// disk, and seals by erasing the disk and removing the extracted tree.
+func configDiskStartup(root, device string) startup {
+	return startup{
+		fwCfgDir:  root + "/by_name/" + lambdav1.FwCfgPrefix,
+		fwCfgRoot: root,
+		unload:    func() error { return hostlink.SealConfigDisk(device, root) },
+	}
 }
 
 // connect loads the identity, seals fw_cfg whether or not the load succeeded,

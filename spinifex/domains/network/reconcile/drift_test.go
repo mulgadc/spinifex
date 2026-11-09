@@ -72,7 +72,7 @@ func startDriftLoop(t *testing.T, rec Reconciler, nc *nats.Conn, startup error) 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		DriftLoop(ctx, rec, nc, "us-east-1a", "node-1", startup)
+		DriftLoop(ctx, rec, nc, vpcdLease(testutil.NewJetStream(t, nc), "node-1"), "us-east-1a", startup)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -171,33 +171,37 @@ func TestDriftLoop_ConvergedPassReturnsToDriftInterval(t *testing.T) {
 // win must not be reported as converged-or-broken; it reports nil and the caller
 // leaves the cadence alone.
 func TestRunDriftCycle_ReportsReconcileOutcome(t *testing.T) {
-	_, nc, js := testutil.StartTestJetStream(t)
+	_, _, js := testutil.StartTestJetStream(t)
 
 	rec := &stubReconciler{outcomes: []error{incompleteErr()}}
-	err := runDriftCycle(t.Context(), rec, nc, js, "us-east-1a", "node-1")
+	_, err := runDriftCycle(t.Context(), rec, vpcdLease(js, "node-1"), js, "us-east-1a")
 	if !errors.Is(err, ErrPassIncomplete) {
 		t.Fatalf("runDriftCycle = %v, want ErrPassIncomplete propagated from the pass", err)
 	}
 
 	converged := &stubReconciler{outcomes: []error{nil}}
-	if err := runDriftCycle(t.Context(), converged, nc, js, "us-east-1a", "node-1"); err != nil {
+	if _, err := runDriftCycle(t.Context(), converged, vpcdLease(js, "node-1"), js, "us-east-1a"); err != nil {
 		t.Errorf("runDriftCycle = %v, want nil for a converged pass", err)
 	}
 }
 
 // A cycle this node loses the election for must not run a pass at all.
 func TestRunDriftCycle_SkipsWhenNotElected(t *testing.T) {
-	_, nc, js := testutil.StartTestJetStream(t)
+	_, _, js := testutil.StartTestJetStream(t)
 
-	release, ok := AcquireLeader(t.Context(), nc, KVBucketVPCDReconcile, "other-node")
+	release, ok := AcquireLeader(t.Context(), vpcdLease(js, "other-node"))
 	if !ok {
 		t.Fatal("failed to take the lock the test needs held")
 	}
 	defer release()
 
 	rec := &stubReconciler{outcomes: []error{incompleteErr()}}
-	if err := runDriftCycle(t.Context(), rec, nc, js, "us-east-1a", "node-1"); err != nil {
+	retry, err := runDriftCycle(t.Context(), rec, vpcdLease(js, "node-1"), js, "us-east-1a")
+	if err != nil {
 		t.Errorf("runDriftCycle = %v, want nil when not elected", err)
+	}
+	if retry <= 0 || retry > LeaderTTL/3 {
+		t.Errorf("revisit = %v, want within %v so a dead holder is taken over promptly", retry, LeaderTTL/3)
 	}
 	if got := rec.callCount(); got != 0 {
 		t.Errorf("reconcile ran %d times without winning the election, want 0", got)

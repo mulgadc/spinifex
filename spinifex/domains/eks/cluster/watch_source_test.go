@@ -6,7 +6,8 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,7 +24,7 @@ func TestAccountWatchBuckets_ReturnsOnePerAccountBucket(t *testing.T) {
 	require.NoError(t, err)
 	_, err = ekscluster.GetOrCreateAccountBucket(t.Context(), js, "222222222222")
 	require.NoError(t, err)
-	_, err = kvutil.GetOrCreateBucket(t.Context(), js, "something-else", 1)
+	_, err = kvstore.GetOrCreateBucket(t.Context(), js, "something-else", 1)
 	require.NoError(t, err)
 
 	buckets, err := ekscluster.AccountWatchBuckets(t.Context(), nc)
@@ -78,4 +79,27 @@ func TestAccountWatchBuckets_EnumerationErrorPropagates(t *testing.T) {
 
 	_, err := ekscluster.AccountWatchBuckets(ctx, nc)
 	require.Error(t, err)
+}
+
+// TestAccountWatchBuckets_WatchOnDeletedBucketDoesNotRecreateIt pins attach-only
+// handles: a DNS watch that outlives its bucket must fail and retry, because
+// recreating it hides a deleted account bucket behind an empty one.
+func TestAccountWatchBuckets_WatchOnDeletedBucketDoesNotRecreateIt(t *testing.T) {
+	t.Parallel()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	_, err := ekscluster.GetOrCreateAccountBucket(t.Context(), js, "111111111111")
+	require.NoError(t, err)
+
+	buckets, err := ekscluster.AccountWatchBuckets(t.Context(), nc)
+	require.NoError(t, err)
+	require.Len(t, buckets, 1)
+
+	require.NoError(t, js.DeleteKeyValue(t.Context(), ekscluster.AccountBucketName("111111111111")))
+
+	_, err = buckets[0].Watch(t.Context(), ">")
+	require.Error(t, err, "a watch on a deleted bucket must fail")
+
+	_, err = ekscluster.OpenAccountBucket(t.Context(), js, "111111111111")
+	assert.ErrorIs(t, err, jetstream.ErrBucketNotFound, "the watch must not have recreated the bucket")
 }

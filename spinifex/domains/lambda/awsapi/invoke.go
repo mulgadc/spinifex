@@ -114,16 +114,32 @@ func (d Deps) invoke(ctx context.Context, c *call) (reply, error) {
 	if err != nil {
 		return reply{}, err
 	}
+	out, err := d.runSync(ctx, rec, revision, c.Invoke.Qualifier, c.Body)
+	if err != nil {
+		return reply{}, err
+	}
+	hdr := http.Header{}
+	hdr.Set("X-Amz-Executed-Version", out.ExecutedVersion)
+	if out.FunctionError != "" {
+		hdr.Set("X-Amz-Function-Error", out.FunctionError)
+	}
+	return reply{Status: http.StatusOK, Body: rawJSON(out.Payload), Header: hdr}, nil
+}
+
+// runSync runs one synchronous attempt on a resolved record and classifies
+// its result; every error is the AWS error Invoke returns. A nil error means
+// the result is valid, with or without a function error.
+func (d Deps) runSync(ctx context.Context, rec function.Record, revision uint64, qualifier string, payload []byte) (SyncResult, error) {
 	if rec.State != function.StateActive {
-		return reply{}, awserrors.Errorf(awserrors.ErrorResourceConflictException,
+		return SyncResult{}, awserrors.Errorf(awserrors.ErrorResourceConflictException,
 			"The operation cannot be performed at this time. The function is currently in the following state: %s", rec.State)
 	}
 	if d.Exec == nil || rec.Code.State != function.CodeStored {
-		return reply{}, serviceError("function execution is unavailable")
+		return SyncResult{}, serviceError("function execution is unavailable")
 	}
 
 	if err := ctx.Err(); err != nil {
-		return reply{}, err
+		return SyncResult{}, err
 	}
 	// Once accepted, a disconnecting caller does not cancel the attempt; only
 	// the wait is bounded, and a late result is discarded.
@@ -133,31 +149,37 @@ func (d Deps) invoke(ctx context.Context, c *call) (reply, error) {
 	out, err := d.Exec.InvokeSync(actx, SyncInvocation{
 		Function:  rec,
 		Revision:  revision,
-		Qualifier: c.Invoke.Qualifier,
-		Payload:   c.Body,
+		Qualifier: qualifier,
+		Payload:   payload,
 		WaitUntil: waitUntil,
 	})
 	if refusal, ok := errors.AsType[*RefusalError](err); ok {
 		if _, coded := awserrors.ResolveErrorCode(refusal.Err); coded {
-			return reply{}, refusal.Err
+			return SyncResult{}, refusal.Err
 		}
 		err = refusal
 	}
 	if err != nil {
 		slog.ErrorContext(ctx, "Lambda: synchronous attempt outcome unknown", "function_id", rec.FunctionID, "err", err)
-		return reply{}, serviceError("the invocation outcome is unknown")
+		return SyncResult{}, serviceError("the invocation outcome is unknown")
 	}
 	if out.ExecutedVersion == "" || len(out.Payload) > maxSyncPayload {
 		slog.ErrorContext(ctx, "Lambda: executor returned an invalid result", "function_id", rec.FunctionID,
 			"payload_bytes", len(out.Payload))
-		return reply{}, serviceError("the invocation outcome is unknown")
+		return SyncResult{}, serviceError("the invocation outcome is unknown")
 	}
-	hdr := http.Header{}
-	hdr.Set("X-Amz-Executed-Version", out.ExecutedVersion)
-	if out.FunctionError != "" {
-		hdr.Set("X-Amz-Function-Error", out.FunctionError)
+	return out, nil
+}
+
+// InvokeEventSource runs one event-source batch on $LATEST through the same
+// state, code and result checks as Invoke, without Invoke's IAM check: the
+// mapping was authorized when it was created.
+func (d Deps) InvokeEventSource(ctx context.Context, accountID, region, name string, payload []byte) (SyncResult, error) {
+	rec, revision, err := d.Meta.Get(ctx, accountID, region, name)
+	if err != nil {
+		return SyncResult{}, err
 	}
-	return reply{Status: http.StatusOK, Body: rawJSON(out.Payload), Header: hdr}, nil
+	return d.runSync(ctx, rec, revision, "", payload)
 }
 
 // checkInvokeOptions refuses every request option this build does not

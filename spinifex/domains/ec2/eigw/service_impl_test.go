@@ -9,7 +9,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,7 +23,7 @@ func setupTestEIGWService(t *testing.T) *EgressOnlyIGWServiceImpl {
 	// Create VPC KV bucket and register test VPCs so fail-closed ownership checks pass
 	vpcEntries := map[string][]byte{}
 	for _, vpcID := range []string{"vpc-test123", "vpc-tagged", "vpc-tagged2"} {
-		vpcEntries[kvutil.AccountKey(testAccountID, vpcID)] = []byte(`{"vpc_id":"` + vpcID + `","state":"available"}`)
+		vpcEntries[kvstore.AccountKey(testAccountID, vpcID)] = []byte(`{"vpc_id":"` + vpcID + `","state":"available"}`)
 	}
 	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, vpcEntries)
 
@@ -312,7 +312,7 @@ func TestCreateEgressOnlyInternetGateway_CrossAccountVPCRejected(t *testing.T) {
 	// Create VPC KV bucket with a VPC owned by testAccountID
 	vpcID := "vpc-alpha456"
 	testutil.SeedKV(t, js, ec2vpc.KVBucketVPCs, map[string][]byte{
-		kvutil.AccountKey(testAccountID, vpcID): []byte(`{"vpc_id":"vpc-alpha456","state":"available"}`),
+		kvstore.AccountKey(testAccountID, vpcID): []byte(`{"vpc_id":"vpc-alpha456","state":"available"}`),
 	})
 
 	var err error

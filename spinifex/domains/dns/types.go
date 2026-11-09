@@ -11,9 +11,9 @@ const (
 	// PUT so every northstar instance reloads just that zone immediately, instead
 	// of waiting for the next S3 sync poll. No queue group: all servers consume.
 	SubjectZoneReload = "dns.zone.reload"
-	// KVBucketDNSReconcile elects the one node that writes the zones for a drift
-	// cycle. Its own bucket, so the election never blocks another reconcile loop.
-	KVBucketDNSReconcile = "spinifex-dns-reconcile"
+	// KeyReconcile elects the one node that writes the zones for a drift cycle.
+	// Its own key, so the election never blocks another reconcile loop.
+	KeyReconcile = "dns.reconcile"
 	// PrivateZone is the fixed AWS-parity private DNS zone (IMDS synthHostname).
 	PrivateZone = "compute.internal"
 	// DefaultTTL is applied when a change omits a TTL.

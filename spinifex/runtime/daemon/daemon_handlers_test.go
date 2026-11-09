@@ -2834,24 +2834,41 @@ func TestHandleEC2ModifyVolume_Success(t *testing.T) {
 		VolumeType:  "gp3",
 	})
 
-	// Subscribe a dummy ebs.sync handler so the NATS Request doesn't time out
-	syncSub, err := daemon.natsConn.Subscribe(viperblocklegacyv1.SyncSubject, func(msg *nats.Msg) {
-		_ = msg.Respond([]byte(`{}`))
-	})
+	syncSub, err := daemon.natsConn.SubscribeSync(viperblocklegacyv1.SyncSubject)
 	require.NoError(t, err)
 	defer syncSub.Unsubscribe()
 
-	sub, err := daemon.natsConn.QueueSubscribe("ec2.ModifyVolume", "spinifex-workers", asMsgHandler(daemon.handleEC2ModifyVolume))
+	// The handler runs synchronously on a bound message, so anything it
+	// publishes is on the connection before the absence check below.
+	reqSub, err := daemon.natsConn.SubscribeSync("ec2.ModifyVolume")
 	require.NoError(t, err)
-	defer sub.Unsubscribe()
+	defer reqSub.Unsubscribe()
+	inbox := nats.NewInbox()
+	replySub, err := daemon.natsConn.SubscribeSync(inbox)
+	require.NoError(t, err)
+	defer replySub.Unsubscribe()
 
 	input := &ec2.ModifyVolumeInput{
 		VolumeId: aws.String(volumeID),
 		Size:     aws.Int64(20),
 	}
 	reqData, _ := json.Marshal(input)
-	reply, err := natsRequest(daemon.natsConn, "ec2.ModifyVolume", reqData, 5*time.Second)
+	req := nats.NewMsg("ec2.ModifyVolume")
+	req.Reply = inbox
+	req.Data = reqData
+	req.Header.Set("X-Account-ID", testAccountID)
+	require.NoError(t, daemon.natsConn.PublishMsg(req))
+
+	bound, err := reqSub.NextMsg(5 * time.Second)
 	require.NoError(t, err)
+	assert.Equal(t, outcomeSuccess, daemon.handleEC2ModifyVolume(bound))
+
+	reply, err := replySub.NextMsg(5 * time.Second)
+	require.NoError(t, err)
+	require.NoError(t, daemon.natsConn.Flush())
+	pending, _, err := syncSub.Pending()
+	require.NoError(t, err)
+	assert.Zero(t, pending, "ModifyVolume must not send ebs.sync")
 
 	var output ec2.ModifyVolumeOutput
 	err = json.Unmarshal(reply.Data, &output)

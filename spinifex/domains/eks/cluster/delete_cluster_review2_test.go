@@ -180,7 +180,7 @@ func TestEKSBootstrapRunRemovesItsOwnEntryOnExit(t *testing.T) {
 	eventually(t, func() bool {
 		f.svc.bootstrapMu.Lock()
 		defer f.svc.bootstrapMu.Unlock()
-		_, ok := f.svc.bootstraps[reconcilerLeaderKey(testAccountID, "alpha")]
+		_, ok := f.svc.bootstraps[clusterLeaseName(testAccountID, "alpha")]
 		return !ok
 	}, "an exited bootstrap must remove its own entry")
 }

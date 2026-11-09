@@ -1,9 +1,11 @@
 package instance
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/rds"
@@ -176,13 +178,12 @@ func TestDeleteDBInstance_ReservesTheFinalSnapshotBeforeCuttingIt(t *testing.T) 
 }
 
 // A dead worker can leave the EC2 snapshot cut while its RDS record still says
-// creating. A retry adopts that exact account-scoped snapshot instead of
-// cutting another one and permanently pinning the source volume twice.
-func TestDeleteDBInstance_AdoptsAnInterruptedFinalSnapshot(t *testing.T) {
+// creating. The resumed teardown adopts that exact account-scoped snapshot
+// instead of cutting another one and permanently pinning the source volume twice.
+func TestReconciler_AdoptsAnInterruptedFinalSnapshot(t *testing.T) {
 	t.Parallel()
 	h := newLifecycleHarness(t, false)
-	rec := availableRecord()
-	rec.Status = StatusDeleting
+	rec := abandonedDelete(availableRecord())
 	rec.FinalSnapshotIdentifier = "orders-db-final"
 	seedInstance(t, h.svc, rec)
 
@@ -201,13 +202,9 @@ func TestDeleteDBInstance_AdoptsAnInterruptedFinalSnapshot(t *testing.T) {
 		},
 	}
 
-	_, err = h.svc.DeleteDBInstance(t.Context(), &rds.DeleteDBInstanceInput{
-		DBInstanceIdentifier:      aws.String(testDBID),
-		FinalDBSnapshotIdentifier: aws.String(rec.FinalSnapshotIdentifier),
-	}, testAccountID)
-	require.NoError(t, err)
+	require.NoError(t, onePass(t, testReconciler(t, h.svc, "node-a")))
 
-	assert.Empty(t, h.snaps.created, "the retry must adopt the cut snapshot, not create another")
+	assert.Empty(t, h.snaps.created, "the resumed teardown must adopt the cut snapshot, not create another")
 	stored, found := h.snapshotRecord(t, rec.FinalSnapshotIdentifier)
 	require.True(t, found)
 	assert.Equal(t, SnapshotStatusAvailable, stored.Status)
@@ -325,26 +322,18 @@ func TestDeleteDBInstance_RetainsTheVolumeWhenTheVolumeStoreReportsItInUse(t *te
 
 // A teardown that died partway through is replayed, so every step has to treat
 // a resource that is already gone as work it has done.
-func TestDeleteDBInstance_IsIdempotentAcrossARetriedTeardown(t *testing.T) {
+func TestReconciler_IsIdempotentAcrossARetriedTeardown(t *testing.T) {
 	t.Parallel()
 	h := newLifecycleHarness(t, false)
-	rec := availableRecord()
-	// The shape a delete leaves behind when its caller died mid-teardown.
-	rec.Status = StatusDeleting
+	rec := abandonedDelete(availableRecord())
 	rec.FinalSnapshotIdentifier = "orders-db-final"
 	seedInstance(t, h.svc, rec)
-
-	input := &rds.DeleteDBInstanceInput{
-		DBInstanceIdentifier:      aws.String(testDBID),
-		FinalDBSnapshotIdentifier: aws.String("orders-db-final"),
-	}
-	_, err := h.svc.DeleteDBInstance(t.Context(), input, testAccountID)
-	require.NoError(t, err)
+	reconciler := testReconciler(t, h.svc, "node-a")
+	require.NoError(t, onePass(t, reconciler))
 
 	// The record left behind by the interrupted attempt, replayed.
 	seedInstance(t, h.svc, rec)
-	_, err = h.svc.DeleteDBInstance(t.Context(), input, testAccountID)
-	require.NoError(t, err)
+	require.NoError(t, onePass(t, reconciler))
 
 	assert.Len(t, h.snaps.created, 1, "a replayed teardown must not take a second final snapshot")
 	assert.False(t, h.recordExists(t, testDBID))
@@ -355,15 +344,94 @@ func TestDeleteDBInstance_IsIdempotentAcrossARetriedTeardown(t *testing.T) {
 func TestReconciler_ResumesAnInterruptedDelete(t *testing.T) {
 	t.Parallel()
 	h := newLifecycleHarness(t, false)
-	rec := availableRecord()
-	rec.Status = StatusDeleting
-	seedInstance(t, h.svc, rec)
+	seedInstance(t, h.svc, abandonedDelete(availableRecord()))
 
-	reconciler := NewReconciler(h.svc, "node-a")
+	reconciler := testReconciler(t, h.svc, "node-a")
 	require.NoError(t, onePass(t, reconciler))
 
 	assert.Equal(t, []string{testInstance}, h.launcher.terminated)
 	assert.False(t, h.recordExists(t, testDBID))
+}
+
+// A second teardown racing the handler's sees the VM mid-shutdown as gone and
+// fails on the still-attached volume, so the handler's delete is left to it.
+func TestReconciler_LeavesADeleteItsHandlerMayStillBeRunning(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	rec := availableRecord()
+	started := time.Now().UTC()
+	rec.Status = StatusDeleting
+	rec.TransitionStartedAt = &started
+	seedInstance(t, h.svc, rec)
+
+	require.NoError(t, onePass(t, testReconciler(t, h.svc, "node-a")))
+
+	assert.Empty(t, h.launcher.terminated)
+	assert.True(t, h.recordExists(t, testDBID))
+}
+
+// A repeat must not start a teardown of its own alongside the one under way;
+// the reconciler is what resumes an abandoned one.
+func TestDeleteDBInstance_ARepeatStartsNoTeardown(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	seedInstance(t, h.svc, abandonedDelete(availableRecord()))
+
+	out, err := h.svc.DeleteDBInstance(t.Context(), skipFinalSnapshot(), testAccountID)
+	require.NoError(t, err)
+
+	assert.Equal(t, string(StatusDeleting), aws.StringValue(out.DBInstance.DBInstanceStatus))
+	assert.Empty(t, h.launcher.terminated)
+	assert.True(t, h.recordExists(t, testDBID))
+}
+
+// The reconciler resumes a delete from the persisted stamp, so the handler's
+// teardown must stop at that same instant, however long the acceptance took.
+func TestDeleteDBInstance_TeardownEndsWhenTheClaimDoes(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	seedInstance(t, h.svc, availableRecord())
+	var claimEnds time.Time
+	h.snaps.beforeCreate = func() { stored := h.record(t); claimEnds = deleteClaimEnds(&stored) }
+
+	_, err := h.svc.DeleteDBInstance(t.Context(), &rds.DeleteDBInstanceInput{
+		DBInstanceIdentifier:      aws.String(testDBID),
+		FinalDBSnapshotIdentifier: aws.String("orders-db-final"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	require.False(t, claimEnds.IsZero())
+	assert.True(t, h.snaps.deadline.Equal(claimEnds), "deadline %s, claim ends %s", h.snaps.deadline, claimEnds)
+}
+
+// A graceful stop that runs into the claim's end is swallowed, so the teardown
+// itself has to notice and leave the terminate to the reconciler.
+func TestTeardownDBInstance_StartsNoTerminatePastItsDeadline(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	h.agent.silenceType(CommandStopEngine)
+	rec := availableRecord()
+	rec.Status = StatusDeleting
+	rec.FinalSnapshotIdentifier = "orders-db-final"
+	seedInstance(t, h.svc, rec)
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	err = h.svc.teardownDBInstance(ctx, kv, testAccountID, &rec, true)
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Empty(t, h.launcher.terminated)
+	assert.True(t, h.recordExists(t, testDBID))
+}
+
+// The shape a delete leaves once its handler's request budget has run out.
+func abandonedDelete(rec DBInstanceRecord) DBInstanceRecord {
+	started := time.Now().UTC().Add(-deleteTimeout - time.Minute)
+	rec.Status = StatusDeleting
+	rec.TransitionStartedAt = &started
+	return rec
 }
 
 // A stop whose caller died leaves the VM possibly still running, so the stop is
@@ -375,7 +443,7 @@ func TestReconciler_ResumesAnInterruptedStop(t *testing.T) {
 	rec.Status = StatusStopping
 	seedInstance(t, h.svc, rec)
 
-	reconciler := NewReconciler(h.svc, "node-a")
+	reconciler := testReconciler(t, h.svc, "node-a")
 	require.NoError(t, onePass(t, reconciler))
 
 	assert.Equal(t, []string{"stop:" + testInstance}, h.cmdr.calls)

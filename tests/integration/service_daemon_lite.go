@@ -14,6 +14,7 @@ import (
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
 	rdsinstance "github.com/mulgadc/spinifex/spinifex/domains/rds/instance"
 	route53domain "github.com/mulgadc/spinifex/spinifex/domains/route53"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 )
@@ -50,8 +51,12 @@ func StartServiceDaemonLite(t *testing.T, gw *Gateway) {
 	t.Cleanup(elbv2.Close)
 	subscribeServiceMethods(t, nc, "elbv2", elbv2)
 
+	js, err := jetstream.New(nc)
+	require.NoError(t, err, "open JetStream")
+
 	eks, err := ekscluster.NewEKSServiceImpl(ekscluster.EKSServiceDeps{
 		Config: cfg, NATSConn: nc, MasterKey: masterKey, Region: testRegion, HolderID: "integration-test-node",
+		Leases: ekscluster.NewClusterLeases(kvstore.OpenSyncBucket(js), "integration-test-node"),
 	})
 	require.NoError(t, err, "construct EKS service")
 	t.Cleanup(eks.Shutdown)
@@ -60,8 +65,6 @@ func StartServiceDaemonLite(t *testing.T, gw *Gateway) {
 	subscribeServiceMethods(t, nc, "ecs", ecsdomain.NewService(nc, testRegion, ""))
 	subscribeServiceMethods(t, nc, "rds", rdsinstance.NewService(nc, testRegion))
 
-	js, err := jetstream.New(nc)
-	require.NoError(t, err, "open JetStream for Route 53")
 	route53 := route53domain.NewService(route53domain.NewStore(js))
 	route53.Nameservers = func() []string { return []string{"ns1.spx3.net"} }
 	subscribeServiceMethods(t, nc, "route53", route53)

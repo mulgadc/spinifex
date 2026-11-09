@@ -84,7 +84,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerlaunch"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -156,6 +156,7 @@ type Daemon struct {
 	instanceObjects   objectstore.ObjectStore
 	dnsWriter         *dns.Writer
 	dnsReconciler     *dns.Reconciler
+	locks             *daemonLocks
 	dnsBaseDomain     string
 	dnsInternalDomain string
 	keyService        *ec2key.KeyServiceImpl
@@ -1629,7 +1630,7 @@ func (d *Daemon) installOCIAllocators(ipam *ec2vpc.ExternalIPAM, js jetstream.Je
 		// error. The pool joins the loops either way, so a later pass covers it.
 		pool := ociPool{name: p.Name, alloc: alloc}
 		d.ociAllocators = append(d.ociAllocators, pool)
-		if err := pool.reconcile(d.ctx, true); kvutil.IsStreamUnavailable(err) {
+		if err := pool.reconcile(d.ctx, true); kvstore.IsStreamUnavailable(err) {
 			// On a cluster starting together the bindings KV can lag vpcd by
 			// moments; waiting ten minutes for the loop would leave leaks billing.
 			go pool.retryStartupReconcile(d.ctx, ociStartupReconcileInitialBackoff, ociStartupReconcileMaxBackoff)
@@ -1819,7 +1820,7 @@ const (
 func (p ociPool) reconcile(ctx context.Context, startup bool) error {
 	res, err := p.alloc.Reconcile(ctx)
 	switch {
-	case kvutil.IsStreamUnavailable(err) && len(res.Collected) == 0 && len(res.Orphaned) == 0:
+	case kvstore.IsStreamUnavailable(err) && len(res.Collected) == 0 && len(res.Orphaned) == 0:
 		slog.Warn("OCI allocator reconcile deferred: bindings KV store not reachable",
 			"pool", p.name, "err", err)
 	case err != nil:
@@ -1844,7 +1845,7 @@ func (p ociPool) retryStartupReconcile(ctx context.Context, initialBackoff, maxB
 	_, _ = retryUntilContext(ctx, initialBackoff, maxBackoff,
 		func(int, time.Duration, error) {},
 		func() (struct{}, error) {
-			if err := p.reconcile(ctx, true); kvutil.IsStreamUnavailable(err) {
+			if err := p.reconcile(ctx, true); kvstore.IsStreamUnavailable(err) {
 				return struct{}{}, err
 			}
 			return struct{}{}, nil
@@ -2024,12 +2025,12 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("EBS provider lock: %w", err)
 	}
 
-	// Remove the obsolete spinifex-dhcp-leases bucket (idempotent).
-	if js, jsErr := jetstream.New(d.natsConn); jsErr == nil {
-		if err := kvutil.DeleteBucketIfExists(d.ctx, js, "spinifex-dhcp-leases"); err != nil {
-			slog.Warn("Failed to delete obsolete spinifex-dhcp-leases KV bucket", "err", err)
-		}
+	syncJS, err := jetstream.New(d.natsConn)
+	if err != nil {
+		return fmt.Errorf("initialize JetStream for leases: %w", err)
 	}
+	deleteObsoleteBuckets(d.ctx, syncJS)
+	d.locks = newDaemonLocks(kvstore.OpenSyncBucket(syncJS), d.node)
 
 	// Reconcile OVN native IPsec both ways (idempotent): a node that does not
 	// use it should not be left running charon on 500/4500 either. Runs in the
@@ -2062,7 +2063,7 @@ func (d *Daemon) startCluster() error {
 	d.instanceObjects = store
 	d.instanceService = ec2instance.NewInstanceServiceImpl(d.config, d.resourceMgr.instanceTypes, d.natsConn, store, d.vmMgr, d.resourceMgr, d.jsManager)
 	d.dnsWriter = dns.NewWriter(d.config, d.clusterConfig, d.natsConn)
-	d.dnsReconciler = dns.NewReconciler(d.config, d.clusterConfig, d.natsConn, d.dnsWriter, d.dnsDesiredSet, d.dnsWatchSources()...)
+	d.dnsReconciler = dns.NewReconciler(d.config, d.clusterConfig, d.locks.dns, d.dnsWriter, d.dnsDesiredSet, d.dnsWatchSources()...)
 	d.dnsBaseDomain = dns.ResolveBaseDomain(d.config)
 	d.dnsInternalDomain = dns.ResolveInternalDomain(d.config)
 	d.keyService = ec2key.NewKeyServiceImpl(d.config)
@@ -2230,7 +2231,7 @@ func (d *Daemon) startCluster() error {
 			if jsErr != nil {
 				return nil, fmt.Errorf("jetstream handle: %w", jsErr)
 			}
-			return kvutil.GetOrCreateBucket(d.ctx, eipJS, ec2eip.KVBucketEIPs, 10)
+			return kvstore.GetOrCreateBucket(d.ctx, eipJS, ec2eip.KVBucketEIPs, 10)
 		})
 		if eipKVErr != nil {
 			return fmt.Errorf("failed to get EIP KV bucket for VPC service: %w", eipKVErr)
@@ -2260,6 +2261,7 @@ func (d *Daemon) startCluster() error {
 	d.instanceService.SetTerminationDeps(d.volumeService, d.vpcService, ipReleaser, d.tagsService)
 	if d.jsManager != nil && d.jsManager.UEFIStores() != nil {
 		d.instanceService.SetUEFIStores(d.jsManager.UEFIStores())
+		d.imageService.SetUEFIStores(d.jsManager.UEFIStores(), d.node)
 	}
 	d.instanceService.SetVolumeCreator(d.volumeService)
 	d.instanceService.SetRunInstancesDeps(d.imageService, d.keyService, &daemonENICreator{d: d}, ipAllocator)
@@ -2333,6 +2335,7 @@ func (d *Daemon) startCluster() error {
 	}
 
 	d.elbv2Service.StartLifecycleReaper(context.Background())
+	d.elbv2Service.StartDataPathReconciler(d.ctx, d.locks.elbv2)
 
 	d.eksService, err = initServiceWithRetry("EKS service", func() (*ekscluster.EKSServiceImpl, error) {
 		return ekscluster.NewEKSServiceImpl(d.buildEKSServiceDeps())
@@ -2346,21 +2349,15 @@ func (d *Daemon) startCluster() error {
 	// reaper. The scheduler is disabled (handlers still serve) when JetStream is
 	// unavailable.
 	d.ecsService = ecsdomain.NewService(d.natsConn, d.config.Region, d.clusterConfig.AWS.ServicesDomain).WithDeps(d.buildECSServiceDeps())
-	if js, jsErr := jetstream.New(d.natsConn); jsErr != nil {
-		slog.Warn("ECS scheduler disabled: JetStream unavailable", "err", jsErr)
-	} else if _, lbErr := ecsdomain.InitLeaderBucket(d.ctx, js); lbErr != nil {
-		slog.Warn("ECS scheduler disabled: leader bucket init failed", "err", lbErr)
-	} else {
-		d.ecsScheduler = ecsdomain.NewScheduler(d.natsConn, d.ecsService, d.node)
-		d.shutdownWg.Go(func() {
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("ECS scheduler goroutine panicked", "recover", r)
-				}
-			}()
-			d.ecsScheduler.Run(d.ctx)
-		})
-	}
+	d.ecsScheduler = ecsdomain.NewScheduler(d.natsConn, d.ecsService, d.locks.ecs)
+	d.shutdownWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("ECS scheduler goroutine panicked", "recover", r)
+			}
+		}()
+		d.ecsScheduler.Run(d.ctx)
+	})
 
 	// RDS control plane: KV-backed agent-protocol handlers plus the customer
 	// actions. The cluster CA signs the per-instance serving certs, minted per
@@ -2386,7 +2383,7 @@ func (d *Daemon) startCluster() error {
 
 	// One leader across the cluster derives DB instance status from the agent
 	// heartbeat; every node keeps serving the API.
-	d.rdsReconciler = rdsinstance.NewReconciler(d.rdsService, d.node)
+	d.rdsReconciler = rdsinstance.NewReconciler(d.rdsService, d.locks.rds)
 	d.shutdownWg.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -2404,7 +2401,7 @@ func (d *Daemon) startCluster() error {
 	// One leader across the cluster scrapes each serving endpoint's vLLM metrics
 	// and hands an idle GPU back; every node keeps serving the API. Without it a
 	// launched model owns its device until an operator deletes the endpoint.
-	d.bedrockReaper = ochre.NewReaper(d.bedrockService, d.node, ochre.ReaperDeps{})
+	d.bedrockReaper = ochre.NewReaper(d.bedrockService, d.locks.ochre, ochre.ReaperDeps{})
 	d.shutdownWg.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -2636,6 +2633,9 @@ func (d *Daemon) startCluster() error {
 		if uefiStores := d.newUEFIStoreReaper(); uefiStores != nil {
 			reapers = append(reapers, uefiStores)
 		}
+		if uefiWriteBacks := d.vmMgr.NewUEFIWriteBackReaper(); uefiWriteBacks != nil {
+			reapers = append(reapers, uefiWriteBacks)
+		}
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))
 			reapers = append(reapers, d.volumeService.NewVolumeReclaimReaper())
@@ -2846,7 +2846,7 @@ func (d *Daemon) upgradeJetStreamReplicas() {
 	if d.jsManager == nil || d.jsManager.js == nil {
 		return
 	}
-	raised, err := kvutil.RaiseAllBucketReplicas(d.ctx, d.jsManager.js)
+	raised, err := kvstore.RaiseAllBucketReplicas(d.ctx, d.jsManager.js)
 	if err != nil {
 		slog.Warn("Failed to raise KV bucket replicas to the cluster's node count", "error", err)
 		return
@@ -2923,45 +2923,49 @@ var (
 	clusterReadyMaxWait = 2 * time.Minute
 )
 
-// waitForClusterReady blocks until viperblock and predastore are reachable,
-// preventing races during VM recovery.
+// waitForClusterReady blocks until JetStream, predastore and this node's EBS
+// provider are reachable, preventing races during VM recovery.
 func (d *Daemon) waitForClusterReady() {
 	slog.Info("Waiting for cluster readiness...")
 	maxWait := clusterReadyMaxWait
 	start := time.Now()
 	interval := 2 * time.Second
 
+	var reason string
 	for time.Since(start) < maxWait {
-		ready := true
-		var reason string
-
-		// Viperblock must be reachable (local or remote)
-		if ready && !d.checkViperblockReady() {
-			ready = false
-			reason = "viperblock not ready"
-		}
-
-		// Predastore must be reachable (local or remote)
-		if ready && !d.checkPredastoreReady() {
-			ready = false
-			reason = "predastore not ready"
-		}
-
-		if ready {
+		var err error
+		reason, err = d.clusterNotReadyReason()
+		if reason == "" {
 			slog.Info("Cluster readiness check passed", "elapsed_ms", otelsetup.Millis(time.Since(start)))
 			return
 		}
 
-		slog.Debug("Cluster not ready, waiting...", "reason", reason, "elapsed_ms", otelsetup.Millis(time.Since(start)))
+		slog.Debug("Cluster not ready, waiting...", "reason", reason, "err", err, "elapsed_ms", otelsetup.Millis(time.Since(start)))
 		clusterReadySleep(interval)
 	}
 
-	slog.Warn("Cluster readiness timeout, proceeding with recovery anyway", "max_wait_ms", otelsetup.Millis(maxWait))
+	slog.Warn("Cluster readiness timeout, proceeding with recovery anyway",
+		"reason", reason, "max_wait_ms", otelsetup.Millis(maxWait))
 }
 
-// checkViperblockReady reports whether viperblock can actually serve a mount,
-// which needs more than a live NATS socket: mounting claims a JetStream KV
-// lease before it reads any state, so JetStream must be serving too.
+// clusterNotReadyReason returns why recovery should keep waiting, or "" once
+// every dependency answers. err carries the provider probe's failure, if any.
+func (d *Daemon) clusterNotReadyReason() (reason string, err error) {
+	if !d.checkJetStreamReady() {
+		return "jetstream not ready", nil
+	}
+	if !d.checkPredastoreReady() {
+		return "predastore not ready", nil
+	}
+	if err := d.checkEBSProviderReady(); err != nil {
+		return "ebs provider not ready", err
+	}
+	return "", nil
+}
+
+// checkJetStreamReady reports whether JetStream is serving, which a mount needs
+// beyond a live NATS socket: mounting claims a JetStream KV lease before it
+// reads any state.
 //
 // Testing only IsConnected was why waitForClusterReady did not prevent the
 // race it exists to prevent. The client reconnects as soon as nats-server
@@ -2971,7 +2975,7 @@ func (d *Daemon) waitForClusterReady() {
 //
 // AccountInfo is the probe because it is the cheapest round trip that proves
 // JetStream is answering, and it changes nothing.
-func (d *Daemon) checkViperblockReady() bool {
+func (d *Daemon) checkJetStreamReady() bool {
 	if d.natsConn == nil || !d.natsConn.IsConnected() {
 		return false
 	}
@@ -2986,6 +2990,28 @@ func (d *Daemon) checkViperblockReady() bool {
 
 	_, err = js.AccountInfo(ctx)
 	return err == nil
+}
+
+// ebsProviderReadyTimeout bounds the local provider probe, the same bound the
+// JetStream and predastore checks use.
+const ebsProviderReadyTimeout = 3 * time.Second
+
+// checkEBSProviderReady asks this node's EBS provider, on its per-node subject,
+// which of no volumes it holds unsealed writes for. Any other node's provider
+// cannot answer it, so a reply with no error shows the local provider serves.
+func (d *Daemon) checkEBSProviderReady() error {
+	if d.ebsProvider == nil {
+		return errors.New("no EBS provider configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), ebsProviderReadyTimeout)
+	defer cancel()
+	_, err := d.ebsProvider.HoldsUnsealedWrites(ctx, d.node, nil)
+	return err
+}
+
+// ebsProviderReady reports whether this node's EBS provider is serving.
+func (d *Daemon) ebsProviderReady() bool {
+	return d.checkEBSProviderReady() == nil
 }
 
 // checkPredastoreReady reports whether predastore is serving HTTPS, not just

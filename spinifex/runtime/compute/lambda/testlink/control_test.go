@@ -83,6 +83,17 @@ func TestControl_OneRequestOneReply(t *testing.T) {
 	assert.Equal(t, testCred, s.cred.Load())
 }
 
+func TestControl_FullEnvironmentFitsWithCredential(t *testing.T) {
+	name := controlName(t)
+	s, _ := serveControl(t, name, os.Getuid(), nil)
+	cred := testCred
+	cred.SessionToken = string(bytes.Repeat([]byte("t"), 8<<10-128))
+	cred.Environment = map[string]string{"AA": string(bytes.Repeat([]byte{1}, 4094))}
+	_, err := client(name, os.Getuid()).Exchange(t.Context(), []byte(`{}`), cred, soon())
+	require.NoError(t, err)
+	assert.Equal(t, cred, s.cred.Load())
+}
+
 func TestControl_RequestSizeBoundary(t *testing.T) {
 	name := controlName(t)
 	s, _ := serveControl(t, name, os.Getuid(), nil)
@@ -219,7 +230,7 @@ func TestControl_BadFramesAreRefused(t *testing.T) {
 		"incomplete credential": append(rawFrame([]byte("{}")),
 			rawFrame([]byte(`{"access_key_id":"ASIA"}`))...),
 		"oversized credential": append(rawFrame([]byte("{}")),
-			rawFrame(bytes.Repeat([]byte("c"), MaxCredentialBytes+1))...),
+			rawFrame(bytes.Repeat([]byte("c"), MaxCredentialBytes+1))[:4]...),
 	}
 	for name, frame := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -441,6 +452,7 @@ func TestControl_WriteErrorAfterDeliveryIsUnknown(t *testing.T) {
 const (
 	legacyControlName = "spinifex-lambda-testlink-control"
 	v2ControlName     = "spinifex-lambda-testlink-control/2"
+	v3ControlName     = "spinifex-lambda-testlink-control/3"
 )
 
 // A gateway and daemon on different control protocol names never connect, in
@@ -453,6 +465,8 @@ func TestControl_MixedProtocolNamesNeverConnect(t *testing.T) {
 		"new daemon, unversioned gateway": {prefix + ControlName, prefix + legacyControlName},
 		"/2 daemon, new gateway":          {prefix + v2ControlName, prefix + ControlName},
 		"new daemon, /2 gateway":          {prefix + ControlName, prefix + v2ControlName},
+		"/3 daemon, new gateway":          {prefix + v3ControlName, prefix + ControlName},
+		"new daemon, /3 gateway":          {prefix + ControlName, prefix + v3ControlName},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, _ := serveControl(t, tc.daemon, os.Getuid(), nil)
@@ -460,5 +474,49 @@ func TestControl_MixedProtocolNamesNeverConnect(t *testing.T) {
 			require.ErrorIs(t, err, ErrNotSent)
 			assert.Equal(t, int32(0), s.calls.Load())
 		})
+	}
+}
+
+func TestControl_AcceptStoppedRunsBeforeTheDrain(t *testing.T) {
+	name := controlName(t)
+	ln, err := ListenControl(name)
+	require.NoError(t, err)
+	inHandle, release := make(chan struct{}), make(chan struct{})
+	stopped := make(chan struct{})
+	srv := &ControlServer{GatewayUID: os.Getuid(), RequestLimit: testRequestLimit, ReplyLimit: 4096, IOTimeout: 5 * time.Second,
+		Handle: func(context.Context, []byte, Credential) Reply {
+			close(inHandle)
+			<-release
+			return Reply{Outcome: OutcomeDone}
+		},
+		AcceptStopped: func() { close(stopped) }}
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(context.Background(), ln) }()
+	go func() {
+		_, _ = client(name, os.Getuid()).Exchange(context.Background(), []byte("{}"), testCred, soon())
+	}()
+	select {
+	case <-inHandle:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request never reached Handle")
+	}
+
+	require.NoError(t, ln.Close(), "the listener fails under an outstanding invocation")
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("AcceptStopped did not run while the invocation was outstanding")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Serve returned before its connection finished: %v", err)
+	default:
+	}
+	close(release)
+	select {
+	case err := <-done:
+		require.Error(t, err, "a listener failure is reported")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return after its connection finished")
 	}
 }

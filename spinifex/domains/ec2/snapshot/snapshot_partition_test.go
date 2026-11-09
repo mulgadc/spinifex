@@ -7,7 +7,7 @@ package snapshot
 import (
 	"context"
 	"errors"
-	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	"slices"
 	"strings"
 	"testing"
 
@@ -18,15 +18,16 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// The document no longer lives inside the prefix DeleteSnapshot sweeps, so it
-// has to be deleted explicitly. Miss that and DescribeSnapshots keeps returning
-// a snapshot whose chunks are gone.
+// The document lives outside the provider's storage, so it has to be deleted
+// explicitly. Miss that and DescribeSnapshots keeps returning a snapshot whose
+// storage is gone.
 func TestDeleteSnapshot_LeavesNoDocument(t *testing.T) {
 	ctx := context.Background()
 	svc, store := setupTestSnapshotService(t)
@@ -101,47 +102,59 @@ func TestDeleteSnapshot_DocumentDeleteFailureSurfaces(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
 
-// A chunk the sweep could not delete has to keep the document alive. The
-// listing no longer enumerates snap- prefixes, so deleting the document over
-// surviving chunks strands them where no API can see or reclaim them, and the
-// delete cannot be retried to finish.
-func TestDeleteSnapshot_ChunkSweepFailureRetainsDocument(t *testing.T) {
+// The provider owns the snapshot's storage and deletes it; the control plane
+// touches only metadata-store keys. An object under the snapshot ID survives
+// because the memory provider never wrote it and nothing else may delete it.
+func TestDeleteSnapshot_TouchesOnlyMetadataStoreKeys(t *testing.T) {
 	ctx := context.Background()
-	objects := &deleteFailingStore{MemoryObjectStore: objectstore.NewMemoryObjectStore()}
+	objects := recordingstore.New()
 	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
 	svc := NewSnapshotServiceImplWithStore(cfg, objects, nil)
 	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
-	createTestVolume(t, svc, objects.MemoryObjectStore, "vol-sweepfail", 8)
+	createTestVolume(t, svc, objects.MemoryObjectStore, "vol-scope", 8)
 
-	snap, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-sweepfail")}, testAccountID)
+	snap, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-scope")}, testAccountID)
 	require.NoError(t, err)
 	snapshotID := aws.StringValue(snap.SnapshotId)
-
-	// A block chunk under the swept prefix, which is viperblock's half of the
-	// snapshot and the thing the document must not outlive.
-	_, err = objects.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String("test-bucket"), Key: aws.String(snapshotID + "/chunk-0"),
-		Body: strings.NewReader("blocks"),
+	providerKey := snapshotID + "/chunk-0"
+	_, err = objects.MemoryObjectStore.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String("test-bucket"), Key: aws.String(providerKey), Body: strings.NewReader("blocks"),
 	})
 	require.NoError(t, err)
-	objects.failPrefix = snapshotID + "/"
 
+	objects.Reset()
 	_, err = svc.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: snap.SnapshotId}, testAccountID)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
-
-	_, err = svc.metadata.GetSnapshot(ctx, testAccountID, snapshotID)
-	require.NoError(t, err, "an incomplete sweep must leave the document so the delete can be retried")
-
-	listed, err := svc.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{}, testAccountID)
 	require.NoError(t, err)
-	require.Len(t, listed.Snapshots, 1, "the snapshot must stay visible while its chunks survive")
-	assert.Equal(t, snapshotID, aws.StringValue(listed.Snapshots[0].SnapshotId))
+
+	// Spelled out rather than derived: this is the layout claim itself.
+	metadataPrefixes := []string{
+		"spinifex/ebsmetadata/v2/snapshots/",
+		"spinifex/ebsmetadata/v2/volumes/",
+		"spinifex/ebsmetadata/v2/amis/",
+	}
+	touched := map[string][]string{
+		"listed":  objects.ListPrefixes(),
+		"read":    objects.Gets(),
+		"headed":  objects.Heads(),
+		"written": objects.Puts(),
+		"deleted": objects.Deletes(),
+	}
+	for verb, keys := range touched {
+		for _, key := range keys {
+			assert.True(t, slices.ContainsFunc(metadataPrefixes, func(prefix string) bool { return strings.HasPrefix(key, prefix) }),
+				"DeleteSnapshot %s %q, outside the metadata store", verb, key)
+		}
+	}
+	snapshotKey, err := ebsmetadata.SnapshotKey(testAccountID, snapshotID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{snapshotKey}, objects.Deletes(), "the snapshot's document is the one key it deletes")
+
+	_, err = objects.MemoryObjectStore.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String("test-bucket"), Key: aws.String(providerKey)})
+	require.NoError(t, err, "an object in the provider's storage must be left to the provider")
 }
 
 // deleteFailingStore fails DeleteObject for keys under failPrefix, leaving
-// every other operation intact. failPrefix is settable after construction so a
-// test can target a generated snapshot ID.
+// every other operation intact.
 type deleteFailingStore struct {
 	*objectstore.MemoryObjectStore
 
@@ -153,48 +166,6 @@ func (s *deleteFailingStore) DeleteObject(ctx context.Context, input *s3.DeleteO
 		return nil, errors.New("simulated document delete failure")
 	}
 	return s.MemoryObjectStore.DeleteObject(ctx, input)
-}
-
-// racingDeleteStore lets a concurrent deleter win every DeleteObject once race
-// is set, so the caller's own delete answers NoSuchKey as Predastore would.
-type racingDeleteStore struct {
-	*objectstore.MemoryObjectStore
-
-	race bool
-}
-
-func (s *racingDeleteStore) DeleteObject(ctx context.Context, input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
-	if s.race {
-		_, _ = s.MemoryObjectStore.DeleteObject(ctx, input)
-	}
-	return s.MemoryObjectStore.DeleteObject(ctx, input)
-}
-
-// A chunk or document another deleter already removed is deleted, not a
-// failure: the sweep and the document delete must both finish.
-func TestDeleteSnapshot_ConcurrentlyDeletedKeysAreDone(t *testing.T) {
-	ctx := context.Background()
-	objects := &racingDeleteStore{MemoryObjectStore: objectstore.NewMemoryObjectStore()}
-	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
-	svc := NewSnapshotServiceImplWithStore(cfg, objects, nil)
-	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
-	createTestVolume(t, svc, objects.MemoryObjectStore, "vol-race", 8)
-
-	snap, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-race")}, testAccountID)
-	require.NoError(t, err)
-	snapshotID := aws.StringValue(snap.SnapshotId)
-	_, err = objects.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String("test-bucket"), Key: aws.String(snapshotID + "/chunk-0"),
-		Body: strings.NewReader("blocks"),
-	})
-	require.NoError(t, err)
-	objects.race = true
-
-	_, err = svc.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: snap.SnapshotId}, testAccountID)
-	require.NoError(t, err)
-
-	_, err = svc.metadata.GetSnapshot(ctx, testAccountID, snapshotID)
-	assert.True(t, objectstore.IsNoSuchKeyError(err), "the document must be gone, got %v", err)
 }
 
 // Isolation must be enforced *by* the read, not by a filter after it. A

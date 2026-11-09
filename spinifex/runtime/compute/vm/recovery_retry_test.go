@@ -85,6 +85,34 @@ func TestRetryRecoveryFailed(t *testing.T) {
 		assert.Equal(t, StateError, m.Status(inst), "the instance must stay parked")
 	})
 
+	t.Run("waits for this node's EBS provider with the backing store up", func(t *testing.T) {
+		m, _, _, _ := relaunchTestManager(t)
+		m.deps.BackingStoreReady = func() bool { return true }
+		providerUp := false
+		m.deps.EBSProviderReady = func() bool { return providerUp }
+
+		origRun := runForRelaunch
+		t.Cleanup(func() { runForRelaunch = origRun })
+		var calls atomic.Int64
+		runForRelaunch = func(_ *Manager, _ context.Context, _ *VM) error {
+			calls.Add(1)
+			return nil
+		}
+
+		inst := erroredInstance("i-provider-down", "recovery_mount_state_unavailable")
+		m.Insert(inst)
+
+		assert.Zero(t, m.RetryRecoveryFailed(), "a mount cannot succeed while the provider does not answer")
+		assert.Zero(t, calls.Load())
+		assert.Equal(t, StateError, m.Status(inst))
+		_, passes := recoveryFailureReason(inst)
+		assert.Zero(t, passes, "a deferred pass must not spend the instance's retry budget")
+
+		providerUp = true
+		assert.Equal(t, 1, m.RetryRecoveryFailed())
+		assert.EqualValues(t, 1, calls.Load(), "once the provider answers the instance is relaunched")
+	})
+
 	t.Run("leaves failures that are not dependency-related alone", func(t *testing.T) {
 		m, _, _, _ := relaunchTestManager(t)
 		m.deps.BackingStoreReady = func() bool { return true }

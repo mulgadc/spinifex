@@ -16,8 +16,8 @@ import (
 	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 
 	"github.com/nats-io/nats.go"
@@ -25,8 +25,7 @@ import (
 )
 
 const (
-	defaultReconcileLeaseRefresh = 20 * time.Second
-	defaultReconcileInterval     = 30 * time.Second
+	defaultReconcileInterval = 30 * time.Second
 	// reconcileResync is the drift backstop for a loop whose signals now arrive as
 	// watch updates and state reports. It also bounds every deadline below it, so
 	// the 15-minute create timeout is served by the resync rather than by a timer.
@@ -123,6 +122,13 @@ type natsSubscriber interface {
 // ErrReconcilerLeaseLost is returned by Run when the leader lease is lost mid-loop.
 var ErrReconcilerLeaseLost = errors.New("eks: reconciler lease lost")
 
+// closedLost stands in for the Lost channel of a reconciler that never acquired.
+var closedLost = func() <-chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}()
+
 // ErrReconcilerClusterDeleting is returned by Run when meta.Status is DELETING;
 // DeleteCluster owns teardown so the reconciler exits.
 var ErrReconcilerClusterDeleting = errors.New("eks: cluster deleting")
@@ -138,15 +144,12 @@ type HTTPDoer interface {
 // ClusterReconciler drives one cluster's CREATING → ACTIVE → DELETING lifecycle
 // under a leader lease. One instance per (accountID, clusterName).
 type ClusterReconciler struct {
-	leaderKV    jetstream.KeyValue
 	acctKV      jetstream.KeyValue
 	accountID   string
 	clusterName string
-	holderID    string
 	healthURL   string
 
-	lease         *kvlease.Lease
-	leaseRefresh  time.Duration
+	lease         *kvsync.Lease
 	interval      time.Duration
 	healthTimeout time.Duration
 	createTimeout time.Duration
@@ -166,6 +169,9 @@ type ClusterReconciler struct {
 	// terminal records why the loop is ending — a terminal cluster status or a
 	// lost lease — and stopRun cancels it. reconciler.Run has no exit condition
 	// of its own, so ending it is cancelling it, and this is what Run reports.
+	// lost is the Lost channel of the acquisition AcquireLease took.
+	lost <-chan struct{}
+
 	terminalMu sync.Mutex
 	terminal   error
 	stopRun    context.CancelFunc
@@ -224,11 +230,6 @@ type ReconcilerOption func(*ClusterReconciler)
 // WithReconcileInterval overrides the default reconcile loop period.
 func WithReconcileInterval(d time.Duration) ReconcilerOption {
 	return func(r *ClusterReconciler) { r.interval = d }
-}
-
-// WithLeaseRefresh overrides the leader-lease refresh period (should be < KVBucketEKSLeaderTTL).
-func WithLeaseRefresh(d time.Duration) ReconcilerOption {
-	return func(r *ClusterReconciler) { r.leaseRefresh = d }
 }
 
 // WithHealthzTimeout overrides the per-probe HTTP timeout.
@@ -335,12 +336,12 @@ func WithEtcdResetRecovery(grace, backoff time.Duration, maxAttempts int) Reconc
 	}
 }
 
-// NewClusterReconciler constructs a ClusterReconciler. healthURL is the
-// fully-qualified probe target (e.g. https://nlb-dns:443/healthz) or empty
-// to skip /healthz probing (CREATING transitions on bootstrap state alone).
-func NewClusterReconciler(leaderKV, acctKV jetstream.KeyValue, accountID, clusterName, holderID, healthURL string, opts ...ReconcilerOption) (*ClusterReconciler, error) {
-	if leaderKV == nil {
-		return nil, errors.New("eks: NewClusterReconciler nil leaderKV")
+// NewClusterReconciler constructs a ClusterReconciler that leads while it holds
+// lease, the cluster's lease from ClusterLeases. healthURL is the probe target
+// (e.g. https://nlb-dns:443/healthz) or empty to skip /healthz probing.
+func NewClusterReconciler(lease *kvsync.Lease, acctKV jetstream.KeyValue, accountID, clusterName, healthURL string, opts ...ReconcilerOption) (*ClusterReconciler, error) {
+	if lease == nil {
+		return nil, errors.New("eks: NewClusterReconciler nil lease")
 	}
 	if acctKV == nil {
 		return nil, errors.New("eks: NewClusterReconciler nil acctKV")
@@ -351,17 +352,12 @@ func NewClusterReconciler(leaderKV, acctKV jetstream.KeyValue, accountID, cluste
 	if clusterName == "" {
 		return nil, errors.New("eks: NewClusterReconciler empty clusterName")
 	}
-	if holderID == "" {
-		return nil, errors.New("eks: NewClusterReconciler empty holderID")
-	}
 	r := &ClusterReconciler{
-		leaderKV:        leaderKV,
 		acctKV:          acctKV,
 		accountID:       accountID,
 		clusterName:     clusterName,
-		holderID:        holderID,
 		healthURL:       healthURL,
-		leaseRefresh:    defaultReconcileLeaseRefresh,
+		lease:           lease,
 		interval:        defaultReconcileInterval,
 		healthTimeout:   defaultHealthzTimeout,
 		createTimeout:   defaultCreateTimeout,
@@ -390,42 +386,23 @@ func NewClusterReconciler(leaderKV, acctKV jetstream.KeyValue, accountID, cluste
 	for _, o := range opts {
 		o(r)
 	}
-	lease, err := kvlease.New(kvlease.Config{
-		Name:   "eks/cluster-reconciler",
-		Bucket: kvlease.StaticBucket(leaderKV),
-		Key:    reconcilerLeaderKey(accountID, clusterName),
-		Holder: holderID,
-		Attrs:  []any{"account", accountID, "cluster", clusterName},
-		TTL:    KVBucketEKSLeaderTTL,
-		Renew:  r.leaseRefresh,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("cluster reconciler lease: %w", err)
-	}
-	r.lease = lease
 	return r, nil
 }
 
-func reconcilerLeaderKey(accountID, clusterName string) string {
-	return accountID + "/" + clusterName
-}
-
-// AcquireLease attempts a CAS Create on the leader bucket. Returns
-// (release, true) on success; (nil, false) otherwise. The bucket TTL reaps
-// stale leases when release does not run.
+// AcquireLease takes the cluster's lease. Returns (release, true) on success;
+// (nil, false) when another holder, or another run in this process, has it.
 func (r *ClusterReconciler) AcquireLease(ctx context.Context) (func(), bool) {
-	if !r.lease.TryAcquire(ctx) {
-		return nil, false
+	release, lost, ok := tryLease(ctx, r.lease)
+	if ok {
+		r.lost = lost
 	}
-	return func() { r.lease.Release(ctx) }, true
+	return release, ok
 }
 
 // Run drives reconcile until ctx is cancelled, the lease is lost, or the cluster
-// reaches a terminal state. Caller must AcquireLease first.
+// reaches a terminal state. Caller must AcquireLease first; without it Run
+// returns ErrReconcilerLeaseLost at once.
 func (r *ClusterReconciler) Run(ctx context.Context) error {
-	if r.lease == nil {
-		return errors.New("ClusterReconciler: Run called without AcquireLease")
-	}
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	r.stopRun = stop
@@ -463,11 +440,16 @@ func (r *ClusterReconciler) Run(ctx context.Context) error {
 	}
 
 	// The lease turning over is not a KV write this loop watches, so losing it has
-	// to end the loop from outside it.
+	// to end the loop from outside it. The channel is the acquisition's own, taken
+	// with its token, so a later acquisition's cannot stand in for it.
+	lost := r.lost
+	if lost == nil {
+		lost = closedLost
+	}
 	go func() {
 		select {
 		case <-runCtx.Done():
-		case <-r.lease.Lost():
+		case <-lost:
 			r.endRun(ErrReconcilerLeaseLost)
 		}
 	}()

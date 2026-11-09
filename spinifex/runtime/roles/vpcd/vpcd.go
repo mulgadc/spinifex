@@ -33,6 +33,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/subscribers"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
@@ -702,9 +703,11 @@ func launchService(cfg *Config) error {
 	}
 
 	// Elect one vpcd for startup reconcile; without this, concurrent Get-then-Create on Logical_Router
-	// produces duplicate rows that ovn-nbctl rejects. Runtime events still fan out via queue groups.
+	// produces duplicate rows that ovn-nbctl rejects. The drift loop shares the lease, so the two
+	// passes exclude each other on this node too. Runtime events still fan out via queue groups.
 	holder, _ := os.Hostname()
-	releaseLeader, isLeader := reconcile.AcquireLeader(ctx, nc, reconcile.KVBucketVPCDReconcile, holder)
+	leader := reconcile.NewLeaderLease(kvstore.OpenSyncBucket(js), reconcile.KeyVPCDReconcile, holder)
+	releaseLeader, isLeader := reconcile.AcquireLeaderAtStart(ctx, leader)
 
 	subscriber, err := subscribers.New(subscribers.Config{
 		Topology: topoMgr,
@@ -788,7 +791,7 @@ func launchService(cfg *Config) error {
 	defer loopCancel()
 	loopDone := make(chan struct{})
 	go func() {
-		reconcile.DriftLoop(loopCtx, rec, nc, cfg.AZ, holder, startupErr)
+		reconcile.DriftLoop(loopCtx, rec, nc, leader, cfg.AZ, startupErr)
 		close(loopDone)
 	}()
 

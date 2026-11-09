@@ -9,7 +9,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,12 +35,12 @@ func TestAccountTermination_QuotaOverrideEndsSealed(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := testCtx(t)
 
-	usage, err := kvutil.GetOrCreateBucket(ctx, js, quota.KVBucketAccountUsage, 1)
+	usage, err := kvstore.GetOrCreateBucket(ctx, js, quota.KVBucketAccountUsage, 1)
 	require.NoError(t, err)
 	_, err = usage.Put(ctx, testAccountID, []byte(`{"vcpus":4}`))
 	require.NoError(t, err)
 
-	overridesKV, err := kvutil.GetOrCreateBucket(ctx, js, quota.KVBucketAccountQuota, 1)
+	overridesKV, err := kvstore.GetOrCreateBucket(ctx, js, quota.KVBucketAccountQuota, 1)
 	require.NoError(t, err)
 	svc := quota.New(quota.Limits{Enabled: true, VCPUs: 16}, usage)
 	svc.SetOverrides(overridesKV)

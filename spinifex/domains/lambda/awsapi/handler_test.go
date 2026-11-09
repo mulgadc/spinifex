@@ -553,7 +553,6 @@ func TestCreateFunction_ParameterValidation(t *testing.T) {
 		"missing role":    func(b map[string]any) { b["Role"] = "arn:aws:iam::" + gwtest.AccountID + ":role/ghost" },
 		"not a role arn":  func(b map[string]any) { b["Role"] = "arn:aws:iam::" + gwtest.AccountID + ":user/alice" },
 		"malformed body":  func(b map[string]any) { b["Timeout"] = "soon" },
-		"empty env name":  func(b map[string]any) { b["Environment"] = map[string]any{"Variables": map[string]string{"": "x"}} },
 		"description len": func(b map[string]any) { b["Description"] = strings.Repeat("d", 257) },
 	}
 	for name, mutate := range cases {
@@ -561,6 +560,31 @@ func TestCreateFunction_ParameterValidation(t *testing.T) {
 			e := newEnv(t)
 			_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", mutate))
 			testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
+			assert.Zero(t, e.store.count())
+		})
+	}
+}
+
+func TestCreateFunction_EnvironmentValidation(t *testing.T) {
+	for name, tc := range map[string]struct {
+		vars map[string]string
+		code string
+	}{
+		"empty name":           {map[string]string{"": "secret"}, awserrors.ErrorValidationException},
+		"one character":        {map[string]string{"A": "secret"}, awserrors.ErrorValidationException},
+		"invalid character":    {map[string]string{"BAD-NAME": "secret"}, awserrors.ErrorValidationException},
+		"invalid and reserved": {map[string]string{"A": "secret", "AWS_REGION": "secret"}, awserrors.ErrorValidationException},
+		"reserved":             {map[string]string{"AWS_SECRET_ACCESS_KEY": "secret"}, awserrors.ErrorInvalidParameterValueException},
+		"nul value":            {map[string]string{"VALUE": "secret\x00"}, awserrors.ErrorInvalidParameterValueException},
+		"too large":            {map[string]string{"VALUE": strings.Repeat("x", 4092)}, awserrors.ErrorInvalidParameterValueException},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			_, err := e.do(http.MethodPost, "/2015-03-31/functions", createBody("hello", func(b map[string]any) {
+				b["Environment"] = map[string]any{"Variables": tc.vars}
+			}))
+			testutil.RequireAWSCode(t, err, tc.code)
+			assert.NotContains(t, err.Error(), "secret")
 			assert.Zero(t, e.store.count())
 		})
 	}
@@ -765,8 +789,9 @@ func TestAuthorization(t *testing.T) {
 
 func TestRegistration_ResolvesActionsAndInventory(t *testing.T) {
 	reg := awsapi.NewRegistration(awsapi.Deps{})
-	assert.Equal(t, []string{"CreateFunction", "GetFunction", "GetFunctionCodeSigningConfig", "GetFunctionConfiguration", "Invoke", "ListVersionsByFunction"}, reg.Inventory.Registered)
+	assert.Equal(t, []string{"CreateEventSourceMapping", "CreateFunction", "DeleteEventSourceMapping", "GetEventSourceMapping", "GetFunction", "GetFunctionCodeSigningConfig", "GetFunctionConfiguration", "Invoke", "ListEventSourceMappings", "ListVersionsByFunction"}, reg.Inventory.Registered)
 	assert.Equal(t, "ListVersionsByFunction", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2015-03-31/functions/x/versions", nil)))
+	assert.Equal(t, "DeleteEventSourceMapping", reg.ResolveAction(httptest.NewRequest(http.MethodDelete, "/2015-03-31/event-source-mappings/x", nil)))
 	assert.Equal(t, "GetFunctionCodeSigningConfig", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2020-06-30/functions/x/code-signing-config", nil)))
 	assert.Equal(t, "CreateFunction", reg.ResolveAction(httptest.NewRequest(http.MethodPost, "/2015-03-31/functions", nil)))
 	assert.Equal(t, "GetFunction", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2015-03-31/functions/x", nil)))

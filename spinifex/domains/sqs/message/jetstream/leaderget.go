@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 	jsapi "github.com/nats-io/nats.go/jetstream"
 )
@@ -15,7 +15,7 @@ import (
 // message get, which only the stream leader answers. nats.go switches to a
 // direct get, which followers also answer, whenever the stream allows it.
 func leaderLastMsg(ctx context.Context, js jsapi.JetStream, stream, subject string) (*jsapi.RawStreamMsg, error) {
-	return kvutil.LeaderMsgGet(ctx, js, stream, kvutil.MsgGetRequest{LastFor: subject})
+	return kvstore.LeaderMsgGet(ctx, js, stream, kvstore.MsgGetRequest{LastFor: subject})
 }
 
 // LeaderKVGet reads key from an SQS KV bucket through the stream leader and
@@ -38,11 +38,11 @@ func LeaderKVGet(ctx context.Context, js jsapi.JetStream, bucket, key string) ([
 // to sequence bound, with one leader message get per record.
 func leaderStateKeys(ctx context.Context, js jsapi.JetStream, bucket, keyPrefix string, bound uint64) (map[string]struct{}, error) {
 	stream, subjectPrefix := "KV_"+bucket, "$KV."+bucket+"."
-	req := kvutil.MsgGetRequest{NextFor: subjectPrefix + keyPrefix + ">"}
+	req := kvstore.MsgGetRequest{NextFor: subjectPrefix + keyPrefix + ">"}
 	keys := map[string]struct{}{}
 	for after := uint64(0); after < bound; {
 		req.Seq = after + 1
-		m, err := kvutil.LeaderMsgGet(ctx, js, stream, req)
+		m, err := kvstore.LeaderMsgGet(ctx, js, stream, req)
 		switch {
 		case errors.Is(err, jsapi.ErrMsgNotFound):
 			return keys, nil

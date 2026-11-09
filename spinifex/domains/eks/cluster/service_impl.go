@@ -33,7 +33,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -54,6 +55,9 @@ type EKSServiceDeps struct {
 	GatewayBaseURL string
 	Region         string
 	HolderID       string
+
+	// Leases is the per-cluster lease group, from NewClusterLeases.
+	Leases *kvsync.LeaseGroup
 
 	// InternalSuffix is the AWS-parity internal DNS suffix (e.g. spinifex.internal)
 	// used to compose the worker's ECR registry host.
@@ -262,7 +266,7 @@ type csiVolumeReclaimer interface {
 // EKSServiceImpl is the daemon-side EKSService implementation.
 type EKSServiceImpl struct {
 	deps     EKSServiceDeps
-	leaderKV jetstream.KeyValue
+	leases   *kvsync.LeaseGroup
 	registry *ReconcilerRegistry
 	owner    *access.Owner
 
@@ -340,7 +344,7 @@ const (
 	defaultLaunchStaleAfter     = 90 * time.Second
 )
 
-// NewEKSServiceImpl initialises EKSServiceImpl, wiring the leader KV and reconciler registry.
+// NewEKSServiceImpl initialises EKSServiceImpl, wiring the lease group and reconciler registry.
 func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 	if err := addon.ValidateCatalog(); err != nil {
 		return nil, fmt.Errorf("eks: validate add-on catalog: %w", err)
@@ -348,21 +352,13 @@ func NewEKSServiceImpl(deps EKSServiceDeps) (*EKSServiceImpl, error) {
 	if deps.NATSConn == nil {
 		return nil, errors.New("eks: NewEKSServiceImpl nil NATSConn")
 	}
-	js, err := jetstream.New(deps.NATSConn)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
+	if deps.Leases == nil {
+		return nil, errors.New("eks: NewEKSServiceImpl nil Leases")
 	}
-	// The leader bucket outlives every request, so its open is bounded by the
-	// service's own background context rather than a caller's.
 	ctx, cancel := context.WithCancel(context.Background())
-	leaderKV, err := InitLeaderBucket(ctx, js)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
 	return &EKSServiceImpl{
 		deps:                     deps,
-		leaderKV:                 leaderKV,
+		leases:                   deps.Leases,
 		registry:                 NewReconcilerRegistry(),
 		owner:                    access.New(deps.Region),
 		bgCtx:                    ctx,
@@ -1384,7 +1380,7 @@ func (s *EKSServiceImpl) claimClusterName(ctx context.Context, accountID string,
 		if !held {
 			return errors.New(awserrors.ErrorEKSResourceInUse)
 		}
-		defer release()
+		defer release(false)
 	}
 	var oldRefs *ClusterMeta
 	reclaimed := false
@@ -2138,7 +2134,7 @@ func (s *EKSServiceImpl) casUpdateNodegroupTags(ctx context.Context, accountID, 
 	if err != nil {
 		return err
 	}
-	_, err = kvutil.Update(ctx, acctKV, NodegroupKey(cluster, ng), kvutil.CASConfig{
+	_, err = kvstore.Update(ctx, acctKV, NodegroupKey(cluster, ng), kvstore.CASConfig{
 		Attempts:  ngCASMaxRetries,
 		NotFound:  errors.New(awserrors.ErrorEKSResourceNotFound),
 		Exhausted: func(string, int) error { return errors.New(awserrors.ErrorServerInternal) },
@@ -2368,7 +2364,7 @@ func (s *EKSServiceImpl) spawnBootstrap(accountID, clusterName string, kv jetstr
 		return
 	}
 	ctx, cancel := context.WithCancel(s.bgCtx)
-	key := reconcilerLeaderKey(accountID, clusterName)
+	key := clusterLeaseName(accountID, clusterName)
 	entry := &bootstrapRun{cancel: cancel}
 	s.bootstrapMu.Lock()
 	if s.bootstraps == nil {
@@ -2413,7 +2409,7 @@ type bootstrapRun struct {
 // stopBootstrap cancels this process's bootstrap subscriber for a cluster, so
 // a cluster being torn down stops collecting artifacts into its prefix.
 func (s *EKSServiceImpl) stopBootstrap(accountID, clusterName string) {
-	key := reconcilerLeaderKey(accountID, clusterName)
+	key := clusterLeaseName(accountID, clusterName)
 	s.bootstrapMu.Lock()
 	run := s.bootstraps[key]
 	delete(s.bootstraps, key)
@@ -2454,7 +2450,7 @@ func (s *EKSServiceImpl) spawnReconciler(accountID, clusterName string, _ *Clust
 		opts = append(opts, WithEtcdResetRecovery(0, 0, 0))
 	}
 	spawn := func(ctx context.Context, _, _ string) (func(), <-chan struct{}, error) {
-		return RunClusterReconciler(ctx, s.leaderKV, acctKV, accountID, clusterName, s.deps.HolderID, "", opts...)
+		return RunClusterReconciler(ctx, s.leases.Get(clusterLeaseName(accountID, clusterName)), acctKV, accountID, clusterName, "", opts...)
 	}
 	if err := s.registry.Spawn(s.bgCtx, accountID, clusterName, spawn); err != nil {
 		slog.Error("spawnReconciler: registry spawn", "cluster", clusterName, "err", err)

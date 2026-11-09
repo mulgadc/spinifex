@@ -5,11 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -20,10 +17,6 @@ import (
 // Per-account bucket "eks-account-{accountID}" holds all customer-visible
 // cluster state. It is created lazily on first cluster touch (no daemon-boot
 // pre-creation) so accounts without any EKS clusters never grow a bucket.
-//
-// Shared leader bucket "spinifex-eks-leader" holds 60s-TTL CAS locks
-// keyed by "{accountID}/{clusterName}" for the per-cluster reconciler
-// leader election. Created once at daemon boot.
 const (
 	KVBucketEKSAccountPrefix  = "eks-account-"
 	KVBucketEKSAccountVersion = 1
@@ -34,10 +27,6 @@ const (
 	// survives a DeleteCluster. Keep this decoupled from the schema version so a
 	// future version bump can't silently widen history and resurrect ciphertext.
 	KVBucketEKSAccountHistory = 1
-
-	KVBucketEKSLeader        = "spinifex-eks-leader"
-	KVBucketEKSLeaderVersion = 1
-	KVBucketEKSLeaderTTL     = 60 * time.Second
 )
 
 // Key-path helpers for the per-account bucket. The layout matches the
@@ -124,15 +113,15 @@ func RecoveryDirectiveKey(cluster, instanceID string) string {
 	return RecoveryPrefix(cluster) + instanceID
 }
 
-// Store is the per-daemon EKS KV handle. Per-account and leader buckets are
-// accessed via the package-level factories below.
+// Store is the per-daemon EKS KV handle. Per-account buckets are accessed via
+// the package-level factories below.
 type Store struct {
 	nc *nats.Conn
 }
 
 // NewStore constructs a Store bound to the supplied NATS connection. It does
 // not touch JetStream — per-account buckets are created lazily by
-// GetOrCreateAccountBucket and the leader bucket by InitLeaderBucket.
+// GetOrCreateAccountBucket.
 func NewStore(nc *nats.Conn) (*Store, error) {
 	if nc == nil {
 		return nil, errors.New("eks store: nats connection is nil")
@@ -157,7 +146,7 @@ func accountBucketNames(ctx context.Context, nc *nats.Conn) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	all, err := kvutil.BucketNames(ctx, js)
+	all, err := kvstore.BucketNames(ctx, js)
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +174,8 @@ func AccountWatchBuckets(ctx context.Context, nc *nats.Conn) ([]*kvstore.Bucket,
 	}
 	buckets := make([]*kvstore.Bucket, 0, len(names))
 	for _, name := range names {
-		buckets = append(buckets, kvstore.NewBucket(js, kvstore.Config{Name: name, History: 1}))
+		// Attach only: a watch on a deleted bucket must fail and retry, not recreate it.
+		buckets = append(buckets, kvstore.NewBucket(js, kvstore.Config{Name: name, History: 1, AttachOnly: true}))
 	}
 	return buckets, nil
 }
@@ -196,7 +186,7 @@ func AccountWatchBuckets(ctx context.Context, nc *nats.Conn) ([]*kvstore.Bucket,
 // existing handle.
 func GetOrCreateAccountBucket(ctx context.Context, js jetstream.JetStream, accountID string) (jetstream.KeyValue, error) {
 	bucket := AccountBucketName(accountID)
-	kv, err := kvutil.GetOrCreateBucket(ctx, js, bucket, KVBucketEKSAccountHistory)
+	kv, err := kvstore.GetOrCreateBucket(ctx, js, bucket, KVBucketEKSAccountHistory)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create EKS per-account KV bucket %s: %w", bucket, err)
 	}
@@ -206,12 +196,9 @@ func GetOrCreateAccountBucket(ctx context.Context, js jetstream.JetStream, accou
 	return kv, nil
 }
 
-// InitLeaderBucket creates (or attaches to) the shared spinifex-eks-leader
-// bucket used for per-cluster reconciler leader-lease CAS locks.
-func InitLeaderBucket(ctx context.Context, js jetstream.JetStream) (jetstream.KeyValue, error) {
-	return kvlease.OpenBucket(ctx, js, kvlease.BucketConfig{
-		Name:    KVBucketEKSLeader,
-		TTL:     KVBucketEKSLeaderTTL,
-		Version: KVBucketEKSLeaderVersion,
-	})
+// OpenAccountBucket returns the per-account KV bucket for accountID without
+// creating it. A bucket that does not exist is jetstream.ErrBucketNotFound, so a
+// read-only caller never turns a lost bucket into an empty one.
+func OpenAccountBucket(ctx context.Context, js jetstream.JetStream, accountID string) (jetstream.KeyValue, error) {
+	return js.KeyValue(ctx, AccountBucketName(accountID))
 }

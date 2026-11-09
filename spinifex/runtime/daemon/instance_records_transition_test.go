@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 	"github.com/nats-io/nats.go"
@@ -224,7 +224,7 @@ func seedLegacyBucket(t *testing.T, nc *nats.Conn, bucket, prefix string, instan
 	_, err = kv.Put(ctx, prefix+instance.ID, data)
 	require.NoError(t, err)
 
-	require.NoError(t, kvutil.WriteVersion(ctx, kv, 1))
+	require.NoError(t, kvstore.WriteVersion(ctx, kv, 1))
 	return kv
 }
 
@@ -315,7 +315,7 @@ func TestInstanceStateMigration_IsSafeToRunTwice(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, first.InitKVBucket())
 
-	require.NoError(t, kvutil.WriteVersion(context.Background(), kv, 1))
+	require.NoError(t, kvstore.WriteVersion(context.Background(), kv, 1))
 	second, err := daemon.NewJetStreamManager(nc)
 	require.NoError(t, err)
 	require.NoError(t, second.InitKVBucket())

@@ -578,6 +578,8 @@ jobs:
              echo \"::group::suite ${SUITE}\"; \
              date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-${SUITE}.start'; \
              GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=single \
+               SPINIFEX_NODES='${{ steps.vm.outputs.wan_ip }}' SPINIFEX_SSH_USER=tf-user \
+               SPINIFEX_SSH_KEY=\$HOME/.ssh/tf-user-ap-southeast-2 \
                ARTIFACT_DIR='${ARTIFACT_DIR}' \
                ./${SUITE}.test -test.v -test.timeout=${TMO} \
                2>&1 | tee '${ARTIFACT_DIR}/test-${SUITE}.log'; \

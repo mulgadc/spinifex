@@ -13,17 +13,19 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvlease"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/nats-io/nats.go/jetstream"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
 )
 
-// Lease and sweep timing. The holder refreshes well inside the bucket's 60s TTL,
-// so a leader that dies is replaced within one TTL rather than one refresh.
+// KeyReconciler is the RDS reconciler's leader lease in the sync bucket.
+const KeyReconciler = "rds.reconciler"
+
+// Lease and sweep timing. A follower asks again at the lease's own renewal
+// rate, so a leader that dies is replaced within about one TTL.
 const (
-	reconcilerLeaderKey = "reconciler"
-	leaseRefresh        = 20 * time.Second
-	reconcileInterval   = 15 * time.Second
+	reconcilerLeaseTTL = 60 * time.Second
+	leaseRefresh       = reconcilerLeaseTTL / 3
+	reconcileInterval  = 15 * time.Second
 
 	// The drift backstop, and so also the cadence on which a backup or
 	// maintenance window is noticed. A window is a half-hour slot, so noticing
@@ -81,11 +83,8 @@ type InstanceStateResolver interface {
 // the failure classifier that gives a settled instance an honest health state.
 // The backup sweep extends the same loop.
 type Reconciler struct {
-	svc    *Service
-	holder string
-
-	lease    *kvlease.Lease
-	leaseErr error
+	svc   *Service
+	lease *kvsync.Lease
 
 	// The payloads already reported as stuck pending. The condition persists
 	// until an operator acts, so without this the event would be re-recorded
@@ -100,34 +99,24 @@ type Reconciler struct {
 	systemSGID string
 }
 
-// NewReconciler returns a Reconciler for svc; holder identifies this daemon in the lease. A bad lease
-// config is kept, and Run logs it and returns.
-func NewReconciler(svc *Service, holder string) *Reconciler {
-	r := &Reconciler{svc: svc, holder: holder, reportedPending: make(map[string]string)}
-	r.lease, r.leaseErr = kvlease.New(kvlease.Config{
-		Name:   "rds/reconciler",
-		Bucket: r.leaderBucket,
-		Key:    reconcilerLeaderKey,
-		Holder: holder,
-		TTL:    KVBucketRDSLeaderTTL,
-		Renew:  leaseRefresh,
-		Retry:  leaseRefresh,
-	})
-	return r
+// NewReconcilerLease returns the RDS reconciler's leader lease for holder.
+func NewReconcilerLease(store kvsync.KVStore, holder string) *kvsync.Lease {
+	return kvsync.NewLease(store, KeyReconciler, holder, reconcilerLeaseTTL)
+}
+
+// NewReconciler returns a Reconciler for svc that leads while it holds lease.
+func NewReconciler(svc *Service, lease *kvsync.Lease) *Reconciler {
+	return &Reconciler{svc: svc, lease: lease, reportedPending: make(map[string]string)}
 }
 
 // Run drives the leadership and reconcile loop until ctx is canceled. Intended as a daemon-boot
 // goroutine; panics are the caller's recover concern.
 func (r *Reconciler) Run(ctx context.Context) {
-	if r.leaseErr != nil {
-		slog.ErrorContext(ctx, "rds reconciler: lease config invalid", "holder", r.holder, "err", r.leaseErr)
-		return
-	}
 	leadershipCtx, cancelLeadership := context.WithCancel(ctx)
 	leadershipDone := make(chan struct{})
 	go func() {
 		defer close(leadershipDone)
-		r.lease.Run(leadershipCtx)
+		kvsync.RunElection(leadershipCtx, r.lease, nil, nil)
 	}()
 	defer func() {
 		cancelLeadership()
@@ -162,7 +151,7 @@ func (r *Reconciler) reconcilePass(ctx context.Context) (time.Duration, error) {
 	}
 	revisit, err := r.reconcileOnce(ctx)
 	if err != nil {
-		slog.ErrorContext(ctx, "rds reconciler: pass failed", "holder", r.holder, "err", err)
+		slog.ErrorContext(ctx, "rds reconciler: pass failed", "key", r.lease.Key(), "err", err)
 	}
 	// Already logged, so it is not returned again: the loop would log it a
 	// second time under its own message.
@@ -174,14 +163,6 @@ func (r *Reconciler) reconcilePass(ctx context.Context) (time.Duration, error) {
 // answer and the returned release func is a no-op.
 func (r *Reconciler) AcquireClusterLease() (func(), bool) {
 	return func() {}, r.lease.Held()
-}
-
-func (r *Reconciler) leaderBucket(ctx context.Context) (jetstream.KeyValue, error) {
-	js, err := r.svc.js()
-	if err != nil {
-		return nil, err
-	}
-	return InitLeaderBucket(ctx, js)
 }
 
 // One pass across every tenant. A bucket that cannot be read stops the pass
@@ -610,6 +591,11 @@ func (r *Reconciler) reconcileStopping(ctx context.Context, kv *kvstore.Bucket, 
 // did; only a teardown still stuck past the bound is called failed, which is
 // what lets the customer retry the delete.
 func (r *Reconciler) reconcileDeleting(ctx context.Context, kv *kvstore.Bucket, rev uint64, accountID string, rec *DBInstanceRecord) error {
+	// The handler that accepted the delete tears it down until its claim ends; a
+	// second teardown alongside it sees the VM mid-shutdown as gone.
+	if time.Now().Before(deleteClaimEnds(rec)) {
+		return nil
+	}
 	err := r.svc.teardownDBInstance(ctx, kv, accountID, rec, false)
 	if err == nil || errors.Is(err, errFinalSnapshotInProgress) || errors.Is(err, errModifyInProgress) {
 		return nil
@@ -795,6 +781,12 @@ func (s *Service) findEC2SnapshotFor(ctx context.Context, accountID, dbSnapshotI
 // When the transition began. A record written by an older control plane carries
 // no stamp, so its last write stands in — it is never earlier than the
 // transition, so the bound cannot be under-counted.
+// When the handler that accepted a delete gives up its teardown, measured from
+// the persisted stamp so the handler and the reconciler agree on it.
+func deleteClaimEnds(rec *DBInstanceRecord) time.Time {
+	return transitionStarted(rec).Add(deleteTimeout)
+}
+
 func transitionStarted(rec *DBInstanceRecord) time.Time {
 	if rec.TransitionStartedAt != nil {
 		return *rec.TransitionStartedAt

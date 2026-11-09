@@ -13,7 +13,6 @@ import (
 	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
 	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -177,7 +176,7 @@ func newVolumeLeases(ctx context.Context, nc *nats.Conn, owner string) (*volumeL
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	kv, err := kvutil.GetOrCreateBucketWithOptions(ctx, js, kvutil.BucketOptions{
+	kv, err := kvstore.GetOrCreateBucketWithOptions(ctx, js, kvstore.BucketOptions{
 		Name:        volumeLeaseBucket,
 		Description: "one entry per volume with a viperblock engine open on it",
 		TTL:         volumeLeaseTTL,

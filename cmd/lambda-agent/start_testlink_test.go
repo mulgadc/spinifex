@@ -7,8 +7,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/pem"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,6 +72,7 @@ type bootstrapStarts struct {
 	sealed  bool
 	// handlerOut receives the _HANDLER the bootstrap process itself saw.
 	handlerOut string
+	caBundle   string
 	// env is the environment the agent gave the bootstrap.
 	env []string
 }
@@ -94,6 +97,7 @@ func (b *bootstrapStarts) testlink(t *testing.T, entries map[string][]byte) test
 	b.started = make(chan struct{}, 1)
 	b.task = t.TempDir()
 	b.handlerOut = filepath.Join(t.TempDir(), "handler")
+	b.caBundle = filepath.Join(t.TempDir(), "sdk", "ca-bundle.pem")
 	return testlink{
 		startup: g.startup(),
 		pkg: taskPackage{
@@ -102,7 +106,9 @@ func (b *bootstrapStarts) testlink(t *testing.T, entries map[string][]byte) test
 			mountDir:   func(string) error { return nil },
 			sealDir:    func(string) error { b.sealed = true; return nil },
 		},
-		runtimeAddr: "127.0.0.1:0",
+		runtimeAddr:  "127.0.0.1:0",
+		caBundlePath: b.caBundle,
+		systemCAPath: filepath.Join(t.TempDir(), "system-ca.pem"),
 		startBootstrap: func(ctx context.Context, env []string) (*exec.Cmd, error) {
 			b.n++
 			b.env = env
@@ -176,8 +182,85 @@ func TestTestlinkServesOneInvocationThenStops(t *testing.T) {
 		"AWS_ACCESS_KEY_ID=" + testCredential.AccessKeyID,
 		"AWS_SECRET_ACCESS_KEY=" + testCredential.SecretAccessKey,
 		"AWS_SESSION_TOKEN=" + testCredential.SessionToken,
+		"AWS_REGION=ap-southeast-2",
+		"AWS_DEFAULT_REGION=ap-southeast-2",
 	}, b.env, "the bootstrap gets exactly the runtime and credential variables")
 	assert.NotEmpty(t, envValue(b.env, "AWS_LAMBDA_RUNTIME_API"))
+}
+
+func TestTestlinkProvidesSDKSettingsToBootstrap(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer server.Close()
+	h := newHost(t)
+	h.accept(ctx)
+	entries := h.entries()
+	entries[sdkEndpointEntry] = []byte(server.URL)
+	entries[sdkCAEntry] = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	var b bootstrapStarts
+	done := runTestlinkAsync(ctx, b.testlink(t, entries))
+	conn := h.guest(t)
+	defer conn.Close()
+	hs := hostlink.NewTestStream(conn)
+	req := hostlink.Request{Credential: &testCredential, GrantID: "g-1", AttemptID: "a-1", RequestID: "r-1", DeadlineMs: time.Now().Add(5 * time.Second).UnixMilli(), Payload: []byte(`{}`)}
+	require.NoError(t, hs.HostSend(req))
+	_, err := hs.HostResult(ctx)
+	require.NoError(t, err)
+	res := wait(t, done, "agent to stop")
+	require.NoError(t, res.err)
+	assert.Equal(t, server.URL, envValue(b.env, "AWS_ENDPOINT_URL"))
+	assert.Equal(t, b.caBundle, envValue(b.env, "AWS_CA_BUNDLE"))
+	assert.Equal(t, "ap-southeast-2", envValue(b.env, "AWS_REGION"))
+	assert.Equal(t, "ap-southeast-2", envValue(b.env, "AWS_DEFAULT_REGION"))
+	ca, err := os.ReadFile(b.caBundle)
+	require.NoError(t, err)
+	assert.Contains(t, string(ca), string(entries[sdkCAEntry]))
+	info, err := os.Stat(b.caBundle)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o644), info.Mode().Perm())
+}
+
+func TestTestlinkProvidesFunctionEnvironment(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	h := newHost(t)
+	h.accept(ctx)
+	var b bootstrapStarts
+	done := runTestlinkAsync(ctx, b.testlink(t, h.entries()))
+	conn := h.guest(t)
+	defer conn.Close()
+	hs := hostlink.NewTestStream(conn)
+	cred := testCredential
+	cred.Environment = map[string]string{"GREETING": "hello $WORLD", "PATH": "/my/bin"}
+	req := hostlink.Request{Credential: &cred, GrantID: "g-1", AttemptID: "a-1", RequestID: "r-1", DeadlineMs: time.Now().Add(5 * time.Second).UnixMilli(), Payload: []byte(`{}`)}
+	require.NoError(t, hs.HostSend(req))
+	_, err := hs.HostResult(ctx)
+	require.NoError(t, err)
+	require.NoError(t, wait(t, done, "agent to stop").err)
+	assert.Equal(t, "hello $WORLD", envValue(b.env, "GREETING"))
+	assert.Equal(t, "/my/bin", envValue(b.env, "PATH"))
+	assert.Equal(t, testCredential.SecretAccessKey, envValue(b.env, "AWS_SECRET_ACCESS_KEY"))
+}
+
+func TestTestlinkRejectsReservedFunctionEnvironment(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	h := newHost(t)
+	h.accept(ctx)
+	var b bootstrapStarts
+	done := runTestlinkAsync(ctx, b.testlink(t, h.entries()))
+	conn := h.guest(t)
+	defer conn.Close()
+	cred := testCredential
+	cred.Environment = map[string]string{"AWS_SECRET_ACCESS_KEY": "forged"}
+	req := hostlink.Request{Credential: &cred, GrantID: "g-1", AttemptID: "a-1", RequestID: "r-1", DeadlineMs: time.Now().Add(5 * time.Second).UnixMilli(), Payload: []byte(`{}`)}
+	require.NoError(t, hostlink.NewTestStream(conn).HostSend(req))
+	result := wait(t, done, "agent to refuse the environment")
+	assert.Equal(t, exitRefused, result.code)
+	assert.Error(t, result.err)
+	assert.NotContains(t, result.err.Error(), "forged")
+	assert.Zero(t, b.n)
 }
 
 var testCredential = hostlink.Credential{AccessKeyID: "ASIAGUESTKEY", SecretAccessKey: "guest-secret", SessionToken: "guest-token"}

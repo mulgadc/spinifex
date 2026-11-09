@@ -24,13 +24,10 @@ changes require a new contract version or an explicit migration plan.
 
 ## State reload route
 
-`SyncSubject` is `ebs.sync`. After a successful EC2 `ModifyVolume`, the daemon
-uses request/reply to ask a `spinifex-workers` queue-group member to reload the
-volume's state from its backend. The selected Viperblockd worker responds with
-`EBSSyncResponse`; it returns an error when it does not own a live mount of the
-volume. The daemon records that error as a warning after the API response has
-already been returned. This is deployed legacy behaviour, not a guarantee that
-every modification has reached its owning mount.
+`SyncSubject` is `ebs.sync`. Every `viperblockd` worker subscribes to it in the `spinifex-workers` queue group, and the selected worker reloads the volume's state from its backend and responds with `EBSSyncResponse`.
+It returns an error when it does not own a live mount of the volume.
+No control-plane code sends this request: `ExpandVolume` persists the new size before it returns and refuses a mounted volume, so every later mount loads the new size at open.
+The subscriber stays until the legacy subjects are retired.
 
 The route carries `EBSSyncRequest` and `EBSSyncResponse`. Their JSON shape and
 the queue-group route are compatibility behaviour.

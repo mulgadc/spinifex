@@ -16,7 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -159,7 +159,7 @@ func TestCurrentBehaviour_AccountTermination_LaunchTemplateStorageLayout(t *test
 
 	header := testAccountID + "." + id
 	name := testAccountID + ".name.776562283129" // hex of "web(1)"
-	assert.Equal(t, sortedKeys(header, header+".v1", header+".v2", name, kvutil.VersionKey), storedKeys(t, svc.kv))
+	assert.Equal(t, sortedKeys(header, header+".v1", header+".v2", name, kvstore.VersionKey), storedKeys(t, svc.kv))
 
 	entry, err := svc.kv.Get(t.Context(), name)
 	require.NoError(t, err)
@@ -223,13 +223,13 @@ func TestAccountTermination_DeleteLaunchTemplateKeepsTheTemplateWhenAStepFails(t
 			assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 
 			svc.kv = inner
-			assert.Equal(t, sortedKeys(append(tc.left(header, nameIdx), kvutil.VersionKey)...), storedKeys(t, inner))
+			assert.Equal(t, sortedKeys(append(tc.left(header, nameIdx), kvstore.VersionKey)...), storedKeys(t, inner))
 			assert.Equal(t, []string{id}, describedTemplateIDs(t, svc, testAccountID))
 
 			out, err := svc.DeleteLaunchTemplate(context.Background(), &ec2.DeleteLaunchTemplateInput{LaunchTemplateId: aws.String(id)}, testAccountID)
 			require.NoError(t, err)
 			assert.Equal(t, id, aws.StringValue(out.LaunchTemplate.LaunchTemplateId))
-			assert.Equal(t, []string{kvutil.VersionKey}, storedKeys(t, inner))
+			assert.Equal(t, []string{kvstore.VersionKey}, storedKeys(t, inner))
 			assert.Empty(t, describedTemplateIDs(t, svc, testAccountID))
 		})
 	}
@@ -260,7 +260,7 @@ func TestAccountTermination_DeleteLaunchTemplateRestartsWhenTheHeaderChanges(t *
 	_, err = svc.DeleteLaunchTemplate(context.Background(), &ec2.DeleteLaunchTemplateInput{LaunchTemplateId: aws.String(id)}, testAccountID)
 	require.NoError(t, err)
 	assert.True(t, raced)
-	assert.Equal(t, []string{kvutil.VersionKey}, storedKeys(t, inner))
+	assert.Equal(t, []string{kvstore.VersionKey}, storedKeys(t, inner))
 }
 
 // A create that fails after claiming the name removes what it wrote, so no
@@ -287,7 +287,7 @@ func TestAccountTermination_FailedCreateRemovesWhatItWrote(t *testing.T) {
 			assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 
 			svc.kv = inner
-			assert.Equal(t, []string{kvutil.VersionKey}, storedKeys(t, inner))
+			assert.Equal(t, []string{kvstore.VersionKey}, storedKeys(t, inner))
 			retried := createTemplate(t, svc, "web", "t3.micro")
 			assert.Equal(t, []string{aws.StringValue(retried.LaunchTemplateId)}, describedTemplateIDs(t, svc, testAccountID))
 		})
@@ -299,7 +299,7 @@ func TestAccountTermination_FailedCreateRemovesWhatItWrote(t *testing.T) {
 // failure is an internal error, never a missing template.
 func TestCurrentBehaviour_AccountTermination_DescribeLaunchTemplatesHidesUnreadableHeaders(t *testing.T) {
 	const brokenID = "lt-0badbadbadbadbad0"
-	brokenHeader := kvutil.AccountKey(testAccountID, brokenID)
+	brokenHeader := kvstore.AccountKey(testAccountID, brokenID)
 	tests := []struct {
 		name       string
 		seed       func(t *testing.T, svc *LaunchTemplateServiceImpl)
@@ -350,7 +350,7 @@ func TestAccountCleanup_KeepsTemplatesAndRemovesSettledResidue(t *testing.T) {
 	require.NoError(t, err)
 	orphanBody := versionKey(testAccountID, "lt-0orphan000000000", 1)
 	orphanName := nameKey(testAccountID, "gone")
-	brokenHeader := kvutil.AccountKey(testAccountID, "lt-0broken000000000")
+	brokenHeader := kvstore.AccountKey(testAccountID, "lt-0broken000000000")
 	brokenBody := versionKey(testAccountID, "lt-0broken000000000", 1)
 	brokenName := nameKey(testAccountID, "broken")
 	for key, value := range map[string]string{
@@ -384,7 +384,7 @@ func TestAccountCleanup_KeepsTemplatesAndRemovesSettledResidue(t *testing.T) {
 func TestAccountCleanup_InterruptedTemplateDeleteIsLeftToThePublicRetry(t *testing.T) {
 	svc := setupTestService(t)
 	id := createWithUserData(t, svc, "web")
-	header := kvutil.AccountKey(testAccountID, id)
+	header := kvstore.AccountKey(testAccountID, id)
 	kv := svc.kv
 	svc.kv = &faultyKV{KeyValue: kv, failDelete: func(key string) bool { return key == header }}
 	_, err := svc.DeleteLaunchTemplate(context.Background(), &ec2.DeleteLaunchTemplateInput{LaunchTemplateId: aws.String(id)}, testAccountID)

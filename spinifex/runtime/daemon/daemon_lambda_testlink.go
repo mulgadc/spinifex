@@ -3,14 +3,19 @@
 package daemon
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/lambda/execution"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
@@ -26,6 +31,28 @@ var lambdaHardKillSHA256 string
 // lambdaImageDigest pins the runtime image the same way; it identifies the
 // image bytes and does not authenticate where they came from.
 var lambdaImageDigest string
+
+// lambdaFirecrackerSHA256 pins the Firecracker v1.17.0 x86_64 release binary.
+// A node whose test-link image directory holds a firecracker binary boots
+// every attempt under it, and does not serve unless the binary matches.
+const lambdaFirecrackerSHA256 = "99ad0f5cd0514a88aad0e9ae8cfdb3cc3b4ab9d190e1194602406c786b5de7a5"
+
+// checkFirecracker refuses a Firecracker binary other than the pinned release.
+func checkFirecracker(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("firecracker binary: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return fmt.Errorf("firecracker binary: %w", err)
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); got != lambdaFirecrackerSHA256 {
+		return errors.New("firecracker binary does not match the pinned release")
+	}
+	return nil
+}
 
 // startLambdaTestLink serves controlled-test Lambda invocations for this node.
 // Recovery needs only the owner store, taps and addresses, so it starts even
@@ -56,23 +83,40 @@ func (d *Daemon) startLambdaTestLink() {
 		return
 	}
 	httpClient, trustErr := d.lambdaTestLinkHTTP()
+	sdkEndpoint, sdkCA, sdkErr := d.lambdaTestLinkSDKConfig()
+	if sdkErr != nil {
+		slog.Warn("Lambda test link: SDK gateway settings unavailable", "err", sdkErr)
+	}
 	imageDir := filepath.Join(microvmDir, "lambda-testlink")
 	tl := &testlink.Daemon{
-		Node:    d.node,
-		Grants:  grants,
-		Taps:    taps,
-		IPs:     d.mgmtIPAllocator,
-		Bridge:  d.mgmtBridgeName(),
-		HostIP:  d.mgmtBridgeIP,
-		WorkDir: workDir,
+		Node:        d.node,
+		Grants:      grants,
+		Taps:        taps,
+		IPs:         d.mgmtIPAllocator,
+		Bridge:      d.mgmtBridgeName(),
+		HostIP:      d.mgmtBridgeIP,
+		WorkDir:     workDir,
+		SDKEndpoint: sdkEndpoint,
+		SDKCA:       sdkCA,
 
 		Initializer:       filepath.Join(imageDir, "hardkill.so"),
 		InitializerSHA256: lambdaHardKillSHA256,
 		HTTP:              httpClient,
 	}
+	fc := filepath.Join(imageDir, "firecracker")
+	if _, err := os.Lstat(fc); err == nil {
+		tl.Firecracker = fc
+	}
 	err = runLambdaTestLink(
 		func() { go tl.RecoverLoop(d.ctx, testlink.RecoverFirst, testlink.RecoverMax) },
-		func() error { return lambdaTestLinkReady(tl, imageDir, lambdaImageDigest, trustErr) },
+		func() error {
+			if tl.Firecracker != "" {
+				if err := checkFirecracker(tl.Firecracker); err != nil {
+					return err
+				}
+			}
+			return lambdaTestLinkReady(tl, imageDir, lambdaImageDigest, trustErr)
+		},
 		func() error {
 			gatewayUID, err := testlink.LookupUID(testlink.GatewayUser)
 			if err != nil {
@@ -88,7 +132,15 @@ func (d *Daemon) startLambdaTestLink() {
 	}
 	slog.Warn("Lambda test link serving: test-only, not for production; the guest does not verify owner grant authority",
 		"node", d.node, "image_digest", tl.Image.Digest)
+	if d.lambdaMetaService != nil && d.clusterConfig != nil {
+		d.lambdaMetaService.SetReadiness(tl.Readiness(lambdaImageDigest, len(d.clusterConfig.Nodes)))
+		go d.lambdaMetaService.RunActivation(d.ctx, lambdaActivationInterval)
+	}
 }
+
+// lambdaActivationInterval bounds how long a function whose activation was
+// missed, by a crash or an earlier refusal, waits for the next pass.
+const lambdaActivationInterval = 30 * time.Second
 
 // lambdaTestLinkReady runs the serving checks and, only once they pass,
 // prepares the pinned image into tl; a refusal leaves tl.Image nil.
@@ -153,6 +205,34 @@ func (d *Daemon) lambdaTestLinkHTTP() (*http.Client, error) {
 	return &http.Client{Transport: &http.Transport{
 		TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
 	}}, nil
+}
+
+// lambdaTestLinkSDKConfig returns public settings for the guest's AWS SDK.
+func (d *Daemon) lambdaTestLinkSDKConfig() (string, []byte, error) {
+	if d.mgmtBridgeIP == "" || d.config.NATS.CACert == "" {
+		return "", nil, errors.New("management address or cluster CA not configured")
+	}
+	ca, err := os.ReadFile(d.config.NATS.CACert)
+	if err != nil {
+		return "", nil, errors.New("cluster CA unreadable")
+	}
+	if len(ca) > 64<<10 || !x509.NewCertPool().AppendCertsFromPEM(ca) {
+		return "", nil, errors.New("cluster CA invalid or too large")
+	}
+	var public []byte
+	for rest := ca; len(rest) != 0; {
+		block, next := pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		rest = next
+		if block.Type == "CERTIFICATE" {
+			if _, err := x509.ParseCertificate(block.Bytes); err == nil {
+				public = append(public, pem.EncodeToMemory(block)...)
+			}
+		}
+	}
+	return d.resolveSystemGatewayBaseURL(), public, nil
 }
 
 var _ testlink.Taps = (*host.OVSPlumber)(nil)

@@ -117,7 +117,9 @@ func (f *fakeInstanceCommander) DetachVolumeFromStopped(_ context.Context, insta
 // DescribeSnapshots reports against the data volume, which is what decides
 // between deleting the volume and retaining it.
 type fakeSnapshots struct {
-	created       []*ec2.CreateSnapshotInput
+	created []*ec2.CreateSnapshotInput
+	// The context deadline the last CreateSnapshot ran under.
+	deadline      time.Time
 	holding       []string
 	deleted       []string
 	createErr     error
@@ -132,7 +134,8 @@ type fakeSnapshots struct {
 
 var _ snapshotProvider = (*fakeSnapshots)(nil)
 
-func (f *fakeSnapshots) CreateSnapshot(_ context.Context, input *ec2.CreateSnapshotInput, _ string) (*ec2.Snapshot, error) {
+func (f *fakeSnapshots) CreateSnapshot(ctx context.Context, input *ec2.CreateSnapshotInput, _ string) (*ec2.Snapshot, error) {
+	f.deadline, _ = ctx.Deadline()
 	if f.beforeCreate != nil {
 		f.beforeCreate()
 	}
@@ -575,7 +578,7 @@ func TestReconciler_DoesNotCallAStillRunningVMStopped(t *testing.T) {
 	rec.TransitionStartedAt = &started
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, onePass(t, NewReconciler(h.svc, "node-a")))
+	require.NoError(t, onePass(t, testReconciler(t, h.svc, "node-a")))
 
 	// Left stopping so the next pass retries; the bound is what ends it.
 	assert.Equal(t, StatusStopping, h.record(t).Status)
@@ -595,7 +598,7 @@ func TestReconciler_ResumesAStopTheLiveCallerIsAlreadyDriving(t *testing.T) {
 	rec.TransitionStartedAt = &started
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, onePass(t, NewReconciler(h.svc, "node-a")))
+	require.NoError(t, onePass(t, testReconciler(t, h.svc, "node-a")))
 
 	assert.Equal(t, StatusStopped, h.record(t).Status)
 }
@@ -767,7 +770,7 @@ func TestReconciler_CompletesARestartOnAHeartbeatFromTheRestartedEngine(t *testi
 			now := time.Now().UTC()
 			seedInstance(t, h.svc, restartingRecord(status, now.Add(-time.Minute), now))
 
-			require.NoError(t, onePass(t, NewReconciler(h.svc, "node-a")))
+			require.NoError(t, onePass(t, testReconciler(t, h.svc, "node-a")))
 
 			rec := h.record(t)
 			assert.Equal(t, StatusAvailable, rec.Status)
@@ -786,7 +789,7 @@ func TestReconciler_CompletesARestartOnAPersistedHeartbeatInsideTheFloor(t *test
 	persisted := time.Now().UTC().Add(-HeartbeatStaleAfter - time.Minute)
 	seedInstance(t, h.svc, restartingRecord(StatusRebooting, persisted.Add(-time.Second), persisted))
 
-	require.NoError(t, onePass(t, NewReconciler(h.svc, "node-a")))
+	require.NoError(t, onePass(t, testReconciler(t, h.svc, "node-a")))
 
 	assert.Equal(t, StatusAvailable, h.record(t).Status)
 }
@@ -800,7 +803,7 @@ func TestReconciler_IgnoresAHeartbeatPredatingTheRestart(t *testing.T) {
 	now := time.Now().UTC()
 	seedInstance(t, h.svc, restartingRecord(StatusRebooting, now, now.Add(-time.Minute)))
 
-	require.NoError(t, onePass(t, NewReconciler(h.svc, "node-a")))
+	require.NoError(t, onePass(t, testReconciler(t, h.svc, "node-a")))
 
 	assert.Equal(t, StatusRebooting, h.record(t).Status)
 }
@@ -818,7 +821,7 @@ func TestReconciler_IgnoresAHeartbeatFromTheAgentTheRestartReplaces(t *testing.T
 	rec.Agent.StartedAt = &predecessor
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, onePass(t, NewReconciler(h.svc, "node-a")))
+	require.NoError(t, onePass(t, testReconciler(t, h.svc, "node-a")))
 	assert.Equal(t, StatusRebooting, h.record(t).Status)
 
 	restarted := started.Add(time.Second)
@@ -826,7 +829,7 @@ func TestReconciler_IgnoresAHeartbeatFromTheAgentTheRestartReplaces(t *testing.T
 	rec.Agent.StartedAt = &restarted
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, onePass(t, NewReconciler(h.svc, "node-a")))
+	require.NoError(t, onePass(t, testReconciler(t, h.svc, "node-a")))
 	assert.Equal(t, StatusAvailable, h.record(t).Status)
 }
 
@@ -839,7 +842,7 @@ func TestReconciler_MarksFailedWhenARestartOverrunsItsBound(t *testing.T) {
 	started := now.Add(-2 * transitionTimeout)
 	seedInstance(t, h.svc, restartingRecord(StatusStarting, started, started.Add(-time.Minute)))
 
-	require.NoError(t, onePass(t, NewReconciler(h.svc, "node-a")))
+	require.NoError(t, onePass(t, testReconciler(t, h.svc, "node-a")))
 
 	rec := h.record(t)
 	assert.Equal(t, StatusFailed, rec.Status)
@@ -858,7 +861,7 @@ func TestReconciler_CarriesTheAgentsReasonIntoAFailedRestart(t *testing.T) {
 		`FATAL: invalid value for parameter "max_connections"`
 	seedInstance(t, h.svc, rec)
 
-	require.NoError(t, onePass(t, NewReconciler(h.svc, "node-a")))
+	require.NoError(t, onePass(t, testReconciler(t, h.svc, "node-a")))
 
 	stored := h.record(t)
 	assert.Equal(t, StatusFailed, stored.Status)

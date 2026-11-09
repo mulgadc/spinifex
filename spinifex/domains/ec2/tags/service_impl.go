@@ -23,7 +23,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -274,7 +274,7 @@ func (s *TagsServiceImpl) CreateTags(ctx context.Context, input *ec2.CreateTagsI
 func (s *TagsServiceImpl) taggedResourceIDs(ctx context.Context, accountID string) ([]string, error) {
 	seen := make(map[string]struct{})
 
-	keys, err := kvutil.Keys(ctx, s.kv)
+	keys, err := kvstore.Keys(ctx, s.kv)
 	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
 		return nil, fmt.Errorf("list tag keys: %w", err)
 	}

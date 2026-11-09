@@ -10,7 +10,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/tagmirror"
 	"log/slog"
 	"maps"
-	"os"
 	"slices"
 	"sort"
 	"strconv"
@@ -27,6 +26,7 @@ import (
 	ebsencryption "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/encryption"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	ec2platform "github.com/mulgadc/spinifex/spinifex/domains/ec2/platform"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
@@ -1265,6 +1265,10 @@ func (s *InstanceServiceImpl) StartInstance(ctx context.Context, instance *vm.VM
 				slog.WarnContext(ctx, "StartInstance: vmMgr.Start failed", "instanceId", command.ID, "err", err)
 				return refusal
 			}
+			if errors.Is(err, vm.ErrUEFIClaimHeld) {
+				slog.WarnContext(ctx, "StartInstance: vmMgr.Start failed", "instanceId", command.ID, "err", err)
+				return errInsufficientCapacity
+			}
 			slog.ErrorContext(ctx, "StartInstance: vmMgr.Start failed", "instanceId", command.ID, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
@@ -1612,18 +1616,20 @@ func (s *InstanceServiceImpl) GenerateVolumes(ctx context.Context, input *ec2.Ru
 		return nil, err
 	}
 
-	// Step 2: Create EFI variable store (only when the AMI is UEFI; BIOS
-	// guests must not allocate an orphan VARS volume).
-	if instance.BootMode == "uefi" || instance.BootMode == "uefi-preferred" {
-		arch := instanceArchitecture(s.instanceTypes[*input.InstanceType])
-		err = s.prepareEFIVolume(ctx, imageId, instance, arch)
-		if err != nil {
-			return nil, err
-		}
+	// Step 2: Seed the UEFI variable store, which is not a volume. A failure
+	// terminates the instance, and terminate deletes whatever store it left.
+	image, err := s.imageUEFIVarStore(ctx, instance, aws.StringValue(input.ImageId))
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to read the image's UEFI variable store", "instanceId", instance.ID,
+			"imageId", aws.StringValue(input.ImageId), "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if err := s.vmMgr.SeedUEFIVarStore(ctx, instance, image); err != nil {
+		slog.ErrorContext(ctx, "Failed to seed the UEFI variable store", "instanceId", instance.ID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// The EFI store is internal, so it is not reported; every volume the
-	// request named is.
+	// Every volume the request named is reported.
 	volumeInfos := []VolumeInfo{
 		{
 			VolumeId:            imageId,
@@ -1641,6 +1647,23 @@ func (s *InstanceServiceImpl) GenerateVolumes(ctx context.Context, input *ec2.Ru
 	volumeInfos = append(volumeInfos, data...)
 
 	return volumeInfos, nil
+}
+
+// imageUEFIVarStore returns the store the launching AMI names for a UEFI
+// instance to seed from, or nil when the instance boots without UEFI or the
+// AMI names none.
+func (s *InstanceServiceImpl) imageUEFIVarStore(ctx context.Context, instance *vm.VM, imageID string) (*uefistore.ImageVarStore, error) {
+	if !vm.UsesUEFIVarStore(instance) || !strings.HasPrefix(imageID, "ami-") {
+		return nil, nil
+	}
+	if s.amiLoader == nil {
+		return nil, errors.New("AMI loader not initialized")
+	}
+	ami, err := s.amiLoader.GetAMIConfig(ctx, imageID)
+	if err != nil {
+		return nil, err
+	}
+	return uefistore.ImageVarStoreFromAMI(ami)
 }
 
 // prepareDataVolumes creates an empty volume for every EBS mapping that is not
@@ -1883,81 +1906,6 @@ func rootVolumeIOPS(requested int) int {
 		return ebspolicy.DefaultGP3IOPS
 	}
 	return requested
-}
-
-// prepareEFIVolume creates the per-VM EFI variable store, sized exactly to the
-// firmware VARS template (pflash requires byte-exact size) and seeded from it.
-// arch is "x86_64" | "arm64".
-func (s *InstanceServiceImpl) prepareEFIVolume(ctx context.Context, volumeID string, instance *vm.VM, arch string) error {
-	codePath, varsTemplate, varsSize, err := vm.FirmwarePaths(arch)
-	if err != nil {
-		slog.ErrorContext(ctx, "UEFI firmware not installed on this host", "arch", arch, "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	template, err := os.ReadFile(varsTemplate)
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to read VARS template", "path", varsTemplate, "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	if int64(len(template)) != varsSize {
-		slog.ErrorContext(ctx, "VARS template size mismatch between stat and read", "path", varsTemplate, "statSize", varsSize, "readSize", len(template))
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	slog.InfoContext(ctx, "Preparing EFI variable store", "arch", arch, "firmwarePath", codePath, "varsTemplate", varsTemplate, "size", varsSize)
-
-	efiVolumeName := fmt.Sprintf("%s-efi", volumeID)
-	if s.ebsProvider == nil {
-		slog.ErrorContext(ctx, "no EBS provider configured", "op", "prepareEFIVolume")
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	if err := s.createEFIVolumeViaProvider(ctx, efiVolumeName, template); err != nil {
-		return err
-	}
-
-	instance.EBSRequests.Mu.Lock()
-	instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, viperblocklegacyv1.EBSRequest{
-		Name: efiVolumeName,
-		Boot: false,
-		EFI:  true,
-	})
-	instance.EBSRequests.Mu.Unlock()
-
-	return nil
-}
-
-// createEFIVolumeViaProvider allocates the EFI variable store through the
-// provider, seeding it with this node's firmware VARS template. The bytes
-// travel with the request so the region matches the firmware that will run.
-func (s *InstanceServiceImpl) createEFIVolumeViaProvider(ctx context.Context, efiVolumeName string, template []byte) error {
-	slog.InfoContext(ctx, "Creating EFI variable store via EBS provider", "name", efiVolumeName, "seedBytes", len(template))
-
-	// The store is internal to the launch, never attachable and filtered out of
-	// DescribeVolumes, so it gets no ebsmetadata document the way a root volume
-	// does. Its lifecycle is the root volume's DeleteVolume.
-	created, err := s.ebsProvider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
-		Versioned:        ebsprovider.NewVersioned(),
-		VolumeID:         efiVolumeName,
-		CapacityRange:    ebsprovider.CapacityRange{RequiredBytes: int64(len(template))},
-		AvailabilityZone: s.config.AZ,
-		SeedData:         template,
-	})
-	if err != nil {
-		slog.ErrorContext(ctx, "Provider EFI volume creation failed", "name", efiVolumeName, "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	if created == nil {
-		slog.ErrorContext(ctx, "Provider returned no volume for the EFI variable store", "name", efiVolumeName)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// pflash rejects a VARS region that is not byte-exact, so a provider that
-	// rounded the capacity up to a GiB boundary yields a guest that cannot boot.
-	if created.CapacityBytes != int64(len(template)) {
-		slog.ErrorContext(ctx, "Provider EFI volume capacity does not match the VARS template",
-			"name", efiVolumeName, "wantBytes", len(template), "gotBytes", created.CapacityBytes)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	return nil
 }
 
 // checkImageArchitecture refuses an AMI whose architecture the instance type
@@ -2760,7 +2708,7 @@ func (s *InstanceServiceImpl) capacityRefusal(ctx context.Context, instance *vm.
 func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instance *vm.VM, undo func()) error {
 	// Before anything is stamped or claimed, so the record handed back is the
 	// one that was claimed.
-	if err := vm.CheckUEFIVarStore(instance); err != nil {
+	if err := s.vmMgr.CheckUEFIVarStore(ctx, instance); err != nil {
 		slog.ErrorContext(ctx, "launchClaimedInstance: refusing to launch a UEFI instance without exactly one variable store",
 			"instanceId", instance.ID, "err", err)
 		undo()
@@ -2892,6 +2840,10 @@ func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instanc
 		undo()
 		if refusal := volumeHeldElsewhereError(err); refusal != nil {
 			return refusal
+		}
+		// A live node holds the variable store, so another node may take it.
+		if errors.Is(err, vm.ErrUEFIClaimHeld) {
+			return s.capacityRefusal(ctx, instance)
 		}
 		return errors.New(awserrors.ErrorServerInternal)
 	}

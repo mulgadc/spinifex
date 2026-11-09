@@ -1,6 +1,6 @@
-// Package kvstore provides a typed store over a single JetStream KV bucket:
-// one memoised get-or-create accessor and a JSON codec for the record type,
-// replacing the accessor each caller used to hand-roll.
+// Package kvstore is the shared JetStream KV layer: buckets created at the
+// cluster's replica count, schema versions, CAS loops on any bucket, and a
+// typed store over a single bucket. Every operation honours the caller's context.
 package kvstore
 
 import (
@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -54,8 +53,14 @@ type Bucket struct {
 	js  jetstream.JetStream
 	cfg Config
 
+	// mu guards the fields below and is never held across a network call.
 	mu sync.Mutex
 	kv jetstream.KeyValue
+	// opened is set once a handle has been held, after which a missing bucket
+	// is a lost one, and only RecreateIfMissing may create it again.
+	opened bool
+	// resolving is closed when the one open or reopen in flight finishes.
+	resolving chan struct{}
 }
 
 // NewBucket returns a Bucket over js. A nil js is permitted: every call to KV then
@@ -69,7 +74,7 @@ func NewBucket(js jetstream.JetStream, cfg Config) *Bucket {
 // rather than on first use. js is what recovery reopens against; pass nil to
 // keep the handle fixed for a caller not ready to recover.
 func NewOpenBucket(js jetstream.JetStream, kv jetstream.KeyValue, cfg Config) *Bucket {
-	return &Bucket{js: js, kv: kv, cfg: cfg}
+	return &Bucket{js: js, kv: kv, cfg: cfg, opened: kv != nil}
 }
 
 // Name returns the configured bucket name, for callers holding several buckets
@@ -85,27 +90,9 @@ func (b *Bucket) Configured() bool {
 }
 
 // KV opens the bucket on first use and returns the cached handle thereafter.
+// Concurrent callers share one open, and each stops waiting when its ctx ends.
 func (b *Bucket) KV(ctx context.Context) (jetstream.KeyValue, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.kv != nil {
-		return b.kv, nil
-	}
-	if b.js == nil {
-		if b.cfg.Missing == "" {
-			return nil, errors.New("kvstore: no JetStream client configured")
-		}
-		return nil, errors.New(b.cfg.Missing)
-	}
-	kv, err := b.open(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if err := b.onOpen(ctx, kv); err != nil {
-		return nil, err
-	}
-	b.kv = kv
-	return kv, nil
+	return b.resolve(ctx, false)
 }
 
 // LastSequence reports the stream sequence of the newest message matching
@@ -127,7 +114,7 @@ func (b *Bucket) LastSequence(ctx context.Context, filter string) (uint64, error
 		return 0, errors.New(b.cfg.Missing)
 	}
 
-	msg, err := kvutil.LeaderMsgGet(ctx, js, "KV_"+b.cfg.Name, kvutil.MsgGetRequest{LastFor: "$KV." + b.cfg.Name + "." + filter})
+	msg, err := LeaderMsgGet(ctx, js, "KV_"+b.cfg.Name, MsgGetRequest{LastFor: "$KV." + b.cfg.Name + "." + filter})
 	if errors.Is(err, jetstream.ErrMsgNotFound) {
 		return 0, nil
 	}
@@ -141,41 +128,115 @@ func (b *Bucket) LastSequence(ctx context.Context, filter string) (uint64, error
 // caller that saw the stream go out from under it. It reconnects; whether it
 // may also recreate an absent bucket is Config.RecreateIfMissing.
 func (b *Bucket) Reopen(ctx context.Context) (jetstream.KeyValue, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	return b.resolve(ctx, true)
+}
 
-	// Checked before the handle is discarded. A Bucket over a fixed handle has
-	// nothing to resolve against, so dropping it would turn one transient
-	// outage into a permanent failure for every later call.
-	if b.js == nil {
-		if b.cfg.Missing == "" {
-			return nil, errors.New("kvstore: cannot reopen without a JetStream client")
+// resolve returns the cached handle, or runs the one open in flight and
+// caches its result. A waiter for a reopen takes whatever handle the flight
+// left, since another goroutine resolving it is the repair this caller wanted.
+func (b *Bucket) resolve(ctx context.Context, reopen bool) (jetstream.KeyValue, error) {
+	for {
+		b.mu.Lock()
+		if !reopen && b.kv != nil {
+			kv := b.kv
+			b.mu.Unlock()
+			return kv, nil
 		}
-		return nil, errors.New(b.cfg.Missing)
+		// Checked before the handle is discarded. A Bucket over a fixed handle
+		// has nothing to resolve against, so dropping it would turn one
+		// transient outage into a permanent failure for every later call.
+		if b.js == nil {
+			b.mu.Unlock()
+			return nil, b.missingErr(reopen)
+		}
+		if wait := b.resolving; wait != nil {
+			b.mu.Unlock()
+			select {
+			case <-wait:
+			case <-ctx.Done():
+				return nil, fmt.Errorf("kvstore: open %s: %w", b.cfg.Name, ctx.Err())
+			}
+			if reopen {
+				b.mu.Lock()
+				kv := b.kv
+				b.mu.Unlock()
+				if kv != nil {
+					return kv, nil
+				}
+			}
+			continue
+		}
+		done := make(chan struct{})
+		b.resolving = done
+		if reopen {
+			b.kv = nil
+		}
+		opened := b.opened
+		b.mu.Unlock()
+
+		kv, err := b.connect(ctx, reopen, opened)
+
+		b.mu.Lock()
+		if err == nil {
+			b.kv, b.opened = kv, true
+		}
+		b.resolving = nil
+		close(done)
+		b.mu.Unlock()
+		return kv, err
 	}
-	b.kv = nil
+}
 
-	// Another goroutine may already have repaired it, so reconnecting comes
-	// first and is the only step that is always safe.
-	kv, err := b.js.KeyValue(ctx, b.cfg.Name)
-	if err != nil {
-		if !b.cfg.RecreateIfMissing {
+func (b *Bucket) missingErr(reopen bool) error {
+	switch {
+	case b.cfg.Missing != "":
+		return errors.New(b.cfg.Missing)
+	case reopen:
+		return errors.New("kvstore: cannot reopen without a JetStream client")
+	default:
+		return errors.New("kvstore: no JetStream client configured")
+	}
+}
+
+// connect does the network half of resolve, with no lock held. A bucket that
+// was open before is only attached to unless RecreateIfMissing allows more.
+func (b *Bucket) connect(ctx context.Context, reopen, opened bool) (jetstream.KeyValue, error) {
+	var (
+		kv  jetstream.KeyValue
+		err error
+	)
+	switch {
+	case reopen:
+		// Another goroutine may already have repaired it, so reconnecting comes
+		// first and is the only step that is always safe.
+		kv, err = b.js.KeyValue(ctx, b.cfg.Name)
+		if err != nil {
+			if !b.cfg.RecreateIfMissing {
+				return nil, fmt.Errorf("kvstore: reopen %s: %w", b.cfg.Name, err)
+			}
+			if !errors.Is(err, jetstream.ErrBucketNotFound) && !IsStreamUnavailable(err) {
+				return nil, fmt.Errorf("kvstore: reopen %s: %w", b.cfg.Name, err)
+			}
+			slog.WarnContext(ctx, "kvstore: bucket stream lost, recreating", "bucket", b.cfg.Name)
+			if kv, err = b.open(ctx); err != nil {
+				return nil, fmt.Errorf("kvstore: recreate %s: %w", b.cfg.Name, err)
+			}
+		}
+	case opened && !b.cfg.RecreateIfMissing:
+		if kv, err = b.js.KeyValue(ctx, b.cfg.Name); err != nil {
 			return nil, fmt.Errorf("kvstore: reopen %s: %w", b.cfg.Name, err)
 		}
-		if !errors.Is(err, jetstream.ErrBucketNotFound) && !kvutil.IsStreamUnavailable(err) {
-			return nil, fmt.Errorf("kvstore: reopen %s: %w", b.cfg.Name, err)
-		}
-		slog.WarnContext(ctx, "kvstore: bucket stream lost, recreating", "bucket", b.cfg.Name)
+	default:
 		if kv, err = b.open(ctx); err != nil {
-			return nil, fmt.Errorf("kvstore: recreate %s: %w", b.cfg.Name, err)
+			return nil, err
 		}
 	}
-
 	if err := b.onOpen(ctx, kv); err != nil {
 		return nil, err
 	}
-	b.kv = kv
-	slog.InfoContext(ctx, "kvstore: bucket reopened", "bucket", b.cfg.Name)
+	if reopen {
+		slog.InfoContext(ctx, "kvstore: bucket reopened", "bucket", b.cfg.Name)
+	}
 	return kv, nil
 }
 
@@ -191,7 +252,7 @@ func (b *Bucket) withKV(ctx context.Context, op func(jetstream.KeyValue) error) 
 		return err
 	}
 	err = op(kv)
-	if err == nil || !kvutil.IsStreamUnavailable(err) {
+	if err == nil || !IsStreamUnavailable(err) {
 		return err
 	}
 
@@ -220,8 +281,8 @@ func (b *Bucket) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
-// CompareAndDelete removes a key only if it is still at rev, returning
-// ErrConflict when it is not.
+// CompareAndDelete removes a key only if it is still at rev, returning an
+// error that is both ErrConflict and kvsync.ErrRevisionMismatch when it is not.
 //
 // Unlike Delete this is not idempotent: a guarded delete carries an expected
 // last sequence, and an absent, tombstoned or purged key fails that check, so
@@ -233,15 +294,12 @@ func (b *Bucket) Delete(ctx context.Context, key string) error {
 func (b *Bucket) CompareAndDelete(ctx context.Context, key string, rev uint64) error {
 	kv, err := b.KV(ctx)
 	if err != nil {
-		return err
+		return syncError("delete", key, err)
 	}
 	// Not through withKV: the revision is the caller's, so a replay against a
 	// reopened bucket would be guarded on a revision from the bucket it lost.
 	if err := kv.Delete(ctx, key, jetstream.LastRevision(rev)); err != nil {
-		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
-			return fmt.Errorf("%w: %s", ErrConflict, key)
-		}
-		return fmt.Errorf("kvstore: delete %s: %w", key, err)
+		return syncError("delete", key, err)
 	}
 	return nil
 }
@@ -343,7 +401,7 @@ func (b *Bucket) WatchFrom(ctx context.Context, filter string, revision uint64) 
 	return w, nil
 }
 
-// open attaches to the bucket or creates it through kvutil, which sets the
+// open attaches to the bucket or creates it through GetOrCreateBucket*, which sets the
 // cluster's replica count on every bucket, TTL-backed or not.
 func (b *Bucket) open(ctx context.Context) (jetstream.KeyValue, error) {
 	switch {
@@ -354,19 +412,19 @@ func (b *Bucket) open(ctx context.Context) (jetstream.KeyValue, error) {
 		}
 		return kv, nil
 	case b.cfg.TTL > 0:
-		return kvutil.GetOrCreateBucketWithOptions(ctx, b.js, kvutil.BucketOptions{
+		return GetOrCreateBucketWithOptions(ctx, b.js, BucketOptions{
 			Name:        b.cfg.Name,
 			Description: b.cfg.Description,
 			History:     b.cfg.History,
 			TTL:         b.cfg.TTL,
 		})
 	case b.cfg.Description != "":
-		return kvutil.GetOrCreateBucketWithOptions(ctx, b.js, kvutil.BucketOptions{
+		return GetOrCreateBucketWithOptions(ctx, b.js, BucketOptions{
 			Name:        b.cfg.Name,
 			Description: b.cfg.Description,
 			History:     b.cfg.History,
 		})
 	default:
-		return kvutil.GetOrCreateBucket(ctx, b.js, b.cfg.Name, b.cfg.History)
+		return GetOrCreateBucket(ctx, b.js, b.cfg.Name, b.cfg.History)
 	}
 }

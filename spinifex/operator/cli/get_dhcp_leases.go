@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/pterm/pterm"
@@ -111,7 +111,7 @@ func listDHCPLeases(ctx context.Context, nc *nats.Conn) ([]azEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	buckets, err := kvutil.BucketNames(ctx, js)
+	buckets, err := kvstore.BucketNames(ctx, js)
 	if err != nil {
 		return nil, fmt.Errorf("enumerate KV buckets: %w", err)
 	}

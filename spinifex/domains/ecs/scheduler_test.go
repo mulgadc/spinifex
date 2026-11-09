@@ -6,7 +6,9 @@ package ecs
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ecs"
@@ -14,26 +16,67 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
+	"github.com/nats-io/nats.go"
 )
+
+// testScheduler is holder's scheduler on a sync bucket of its own, as a
+// separate daemon's would be.
+func testScheduler(t *testing.T, nc *nats.Conn, svc *Service, holder string) *Scheduler {
+	t.Helper()
+	return NewScheduler(nc, svc, NewSchedulerLease(kvstore.OpenSyncBucket(testutil.NewJetStream(t, nc)), holder))
+}
+
+// electOnce runs sc's election with the scheduler's own callbacks and returns
+// what its first onGained returned. stop ends the election and waits for it.
+func electOnce(t *testing.T, sc *Scheduler) (stop func(), gainedErr error) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	gained := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		kvsync.RunElection(ctx, sc.lease, func(ctx context.Context) error {
+			err := sc.onGained(ctx)
+			gained <- err
+			return err
+		}, sc.unsubscribeBus)
+	}()
+	stop = func() { cancel(); <-done }
+	t.Cleanup(stop)
+	select {
+	case gainedErr = <-gained:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the election never gained the lease")
+	}
+	return sync.OnceFunc(stop), gainedErr
+}
+
+// requireLeaseKeyAbsent fails unless no node holds the scheduler's key.
+func requireLeaseKeyAbsent(t *testing.T, nc *nats.Conn, msg string) {
+	t.Helper()
+	_, _, err := kvstore.OpenSyncBucket(testutil.NewJetStream(t, nc)).Load(t.Context(), KeyScheduler)
+	require.ErrorIs(t, err, kvsync.ErrNotFound, msg)
+}
 
 // TestScheduler_StandsDownWithoutIAM is the fleet outage this guards: a leader
 // that cannot converge instance roles holds the lease, writes no sts:AssumeRole
 // grant, and every agent's credentials lapse an hour later.
 func TestScheduler_StandsDownWithoutIAM(t *testing.T) {
-	_, nc, js := testutil.StartTestJetStream(t)
+	_, nc, _ := testutil.StartTestJetStream(t)
 	svc := NewService(nc, testRegion, "")
-	sc := NewScheduler(nc, svc, "holder-a")
-	require.NoError(t, sc.leaseErr)
+	sc := testScheduler(t, nc, svc, "holder-a")
 
-	assert.False(t, sc.lease.TryAcquire(t.Context()), "a node without IAM must refuse the lease")
+	stop, err := electOnce(t, sc)
+	require.Error(t, err, "a node without IAM must refuse the lease")
+	stop()
 	assert.False(t, sc.lease.Held())
 	assert.Zero(t, sc.subCount())
 
 	// The key must be free, or a healthy node waits out the full TTL.
-	kv, err := InitLeaderBucket(t.Context(), js)
-	require.NoError(t, err)
-	_, err = kv.Get(t.Context(), schedulerLeaderKey)
-	require.Error(t, err)
+	requireLeaseKeyAbsent(t, nc, "a node that stood down left its key")
 }
 
 // TestConvergeInstanceRoles_RewritesProvisionedAccounts pins the pass that
@@ -49,7 +92,7 @@ func TestConvergeInstanceRoles_RewritesProvisionedAccounts(t *testing.T) {
 	require.NoError(t, err)
 
 	iam.RolePolicies[ecsInstanceRoleName] = `{"Version":"2012-10-17","Statement":[]}`
-	sc := NewScheduler(nc, svc, "holder-a")
+	sc := testScheduler(t, nc, svc, "holder-a")
 	require.NoError(t, sc.convergeInstanceRoles(t.Context()))
 
 	assert.Contains(t, iam.RolePolicies[ecsInstanceRoleName], "sts:AssumeRole")
@@ -65,7 +108,7 @@ func TestConvergeInstanceRoles_SkipsAccountsWithoutTheRole(t *testing.T) {
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
 
-	sc := NewScheduler(nc, svc, "holder-a")
+	sc := testScheduler(t, nc, svc, "holder-a")
 	require.NoError(t, sc.convergeInstanceRoles(t.Context()))
 
 	assert.Zero(t, iam.CreateRoleCalls)
@@ -77,7 +120,7 @@ func TestConvergeInstanceRoles_SkipsAccountsWithoutTheRole(t *testing.T) {
 // caller that reaches the pass without going through leader election.
 func TestConvergeInstanceRoles_NilIAMIsAnError(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
-	sc := NewScheduler(nc, NewService(nc, testRegion, ""), "holder-a")
+	sc := testScheduler(t, nc, NewService(nc, testRegion, ""), "holder-a")
 
 	err := sc.convergeInstanceRoles(t.Context())
 	require.Error(t, err)
@@ -93,4 +136,60 @@ func TestECSInstanceRolePolicyDoc_GrantsAssumeRole(t *testing.T) {
 	assert.Contains(t, doc, `{"Effect":"Allow","Action":"sts:AssumeRole","Resource":"arn:aws:iam::`+testAccountID+`:role/*"}`)
 	assert.Contains(t, doc, `"ecs:*"`)
 	assert.Contains(t, doc, `"ecr:GetAuthorizationToken"`)
+}
+
+// containerInstanceStatus is i-1's status in the web cluster.
+func containerInstanceStatus(t *testing.T, svc *Service) string {
+	t.Helper()
+	di, err := svc.DescribeContainerInstances(context.Background(), &ecs.DescribeContainerInstancesInput{
+		Cluster: aws.String("web"), ContainerInstances: []*string{aws.String("i-1")},
+	}, testAccountID)
+	require.NoError(t, err)
+	return aws.StringValue(di.ContainerInstances[0].Status)
+}
+
+// A leader that loses the lease must drop the bus and stop reaping, or two
+// nodes would mark instances DRAINING and stop their tasks at once. Re-elected,
+// it takes both back up.
+func TestScheduler_LosingTheLeaseDropsTheBusAndTheReaperUntilReElection(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	svc := NewService(nc, testRegion, "").WithDeps(Deps{IAM: newStubIAM()})
+	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+	registerInstance(t, svc, "web", "i-1", 1024, 2048)
+	kv, err := svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	var rec InstanceRecord
+	_, err = taskdefinition.GetJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec)
+	require.NoError(t, err)
+	rec.LastSeen = time.Now().UTC().Add(-2 * heartbeatTimeout)
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, InstanceKey("web", "i-1"), &rec))
+
+	store := kvstore.OpenSyncBucket(testutil.NewJetStream(t, nc))
+	sc := NewScheduler(nc, svc, kvsync.NewLease(store, KeyScheduler, "holder-a", 300*time.Millisecond))
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); kvsync.RunElection(ctx, sc.lease, sc.onGained, sc.unsubscribeBus) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	held := func() bool { return sc.lease.Held() && sc.subCount() == 4 }
+	require.Eventually(t, held, 5*time.Second, 10*time.Millisecond, "the leader subscribes to the four bus subjects")
+
+	syncKV, err := store.KV(t.Context())
+	require.NoError(t, err)
+	_, err = syncKV.Put(t.Context(), KeyScheduler, []byte(`{"holder":"holder-b","generation":0}`))
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return !sc.lease.Held() && sc.subCount() == 0 }, 5*time.Second, 10*time.Millisecond,
+		"a lost lease must drop every bus subscription")
+
+	revisit, err := sc.timerPass(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, leaseRefresh, revisit)
+	assert.Equal(t, "ACTIVE", containerInstanceStatus(t, svc), "a node that lost the lease must not reap")
+
+	require.NoError(t, syncKV.Delete(t.Context(), KeyScheduler))
+	require.Eventually(t, held, 5*time.Second, 10*time.Millisecond, "re-elected, the bus comes back")
+	_, err = sc.timerPass(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, "DRAINING", containerInstanceStatus(t, svc), "the re-elected leader reaps again")
 }

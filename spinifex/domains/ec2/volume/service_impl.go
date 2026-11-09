@@ -370,7 +370,7 @@ var describeVolumesValidFilters = map[string]bool{
 	"tag-value":              true,
 }
 
-// DescribeVolumes lists EBS volumes by reading config.json files from S3.
+// DescribeVolumes lists EBS volumes from their volume metadata documents.
 func (s *VolumeServiceImpl) DescribeVolumes(ctx context.Context, input *ec2.DescribeVolumesInput, accountID string) (*ec2.DescribeVolumesOutput, error) {
 	if input == nil {
 		input = &ec2.DescribeVolumesInput{}

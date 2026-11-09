@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/tests/e2e/harness"
 	"github.com/stretchr/testify/require"
 )
@@ -41,24 +41,48 @@ func runBucketsAreReplicated(t *testing.T, fix *Fixture) {
 	}
 	harness.RequireKVQuorum(t, fix.Env, nodes)
 
-	// The leader-lease buckets are named as well as swept. They were the worst
-	// case of the defect this suite guards — created with no replica count at
-	// all — and a regression that reached only them would otherwise be one more
-	// line in a long list rather than the headline.
-	harness.Step(t, "confirm the leader-lease buckets are among those checked")
-	leases := leaseBuckets(reports)
-	require.NotEmpty(t, leases,
-		"no leader-lease bucket was found; either the cluster has never run a reconciler or the audit missed them")
-	harness.Detail(t, "lease_buckets", strings.Join(leases, ","))
+	// The sync bucket is named as well as swept: every leader election runs in
+	// it, so if it loses quorum, no reconciler in the cluster can lead.
+	harness.Step(t, "confirm the sync bucket is replicated and the old lease buckets are gone")
+	sync, found := findBucket(reports, syncBucket)
+	require.True(t, found, "no %s bucket was found; either no election has run or the audit missed it", syncBucket)
+	require.Equalf(t, want, sync.Replicas, "%s holds %d replicas, want %d", syncBucket, sync.Replicas, want)
+	require.Empty(t, presentBuckets(reports, obsoleteLeaseBuckets),
+		"the daemon deletes the per-caller lease buckets at start, so none may survive")
 }
 
-// leaseBuckets returns the names of the reconciler leader-lease buckets, which
-// are the ones a reconciler must acquire before it can do anything at all.
-func leaseBuckets(reports []kvutil.BucketReport) []string {
-	var out []string
+// syncBucket is where every kvsync claim and lease lives.
+const syncBucket = "spinifex-sync"
+
+// obsoleteLeaseBuckets are the per-caller lease buckets the sync bucket replaced.
+var obsoleteLeaseBuckets = []string{
+	"spinifex-vpcd-reconcile",
+	"spinifex-dns-reconcile",
+	"spinifex-route53-realize",
+	"spinifex-route53-verify",
+	"spinifex-quota-reconcile",
+	"spinifex-rds-leader",
+	"spinifex-ecs-leader",
+	"bedrock-leader",
+	"spinifex-eks-leader",
+	"spinifex-elbv2-leader",
+}
+
+func findBucket(reports []kvstore.BucketReport, name string) (kvstore.BucketReport, bool) {
 	for _, r := range reports {
-		if strings.HasSuffix(r.Bucket, "-leader") || strings.HasSuffix(r.Bucket, "-reconcile") {
-			out = append(out, r.Bucket)
+		if r.Bucket == name {
+			return r, true
+		}
+	}
+	return kvstore.BucketReport{}, false
+}
+
+// presentBuckets returns those of names that appear in reports, sorted.
+func presentBuckets(reports []kvstore.BucketReport, names []string) []string {
+	var out []string
+	for _, name := range names {
+		if _, ok := findBucket(reports, name); ok {
+			out = append(out, name)
 		}
 	}
 	sort.Strings(out)
@@ -104,7 +128,7 @@ func runReplicasCommand(t *testing.T, fix *Fixture) {
 // nodeReplicaReport runs the replica audit on one node and decodes it. A
 // non-zero exit is returned as an error rather than fatalled, because callers
 // polling a recovering cluster need to retry it.
-func nodeReplicaReport(t *testing.T, node harness.Node) ([]kvutil.BucketReport, error) {
+func nodeReplicaReport(t *testing.T, node harness.Node) ([]kvstore.BucketReport, error) {
 	t.Helper()
 	ssh := harness.NewPeerSSH()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -119,7 +143,7 @@ func nodeReplicaReport(t *testing.T, node harness.Node) ([]kvutil.BucketReport, 
 			return nil, fmt.Errorf("%s: %w", node.Name, err)
 		}
 	}
-	var reports []kvutil.BucketReport
+	var reports []kvstore.BucketReport
 	if jsonErr := json.Unmarshal(trimToJSON(out), &reports); jsonErr != nil {
 		return nil, fmt.Errorf("%s: decode replica report (%q): %w", node.Name, string(out), jsonErr)
 	}
@@ -136,7 +160,7 @@ func trimToJSON(out []byte) []byte {
 }
 
 // underReplicated names every bucket below want replicas.
-func underReplicated(reports []kvutil.BucketReport, want int) []string {
+func underReplicated(reports []kvstore.BucketReport, want int) []string {
 	var out []string
 	for _, r := range reports {
 		if r.Replicas < want {

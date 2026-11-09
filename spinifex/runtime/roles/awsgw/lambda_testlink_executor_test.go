@@ -4,6 +4,8 @@ package awsgw
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -161,6 +163,61 @@ func TestLambdaTestLinkExecutor_RefusesWithoutSending(t *testing.T) {
 			require.Empty(t, n.sent, "a refusal must send nothing")
 			require.NotContains(t, err.Error(), "secret-signature")
 			require.Equal(t, tc.state, grantState(t, store), "no grant, or one withdrawn unsent")
+		})
+	}
+}
+
+func TestLambdaTestLinkExecutor_OpensEnvironmentBeforeDispatch(t *testing.T) {
+	block, err := aes.NewCipher(make([]byte, 32))
+	require.NoError(t, err)
+	aead, err := cipher.NewGCM(block)
+	require.NoError(t, err)
+	vars := map[string]string{"GREETING": "private environment value"}
+	sealed, err := function.SealEnv(aead, "123456789012", "fn1", vars)
+	require.NoError(t, err)
+	input := invocation([]byte(`{}`))
+	input.Function.EnvCipher = sealed
+	n := &fakeControl{max: 1 << 20, reply: &testlink.Reply{Outcome: testlink.OutcomeDone}}
+	e := executor(n, nil, grantStore(t))
+	e.AEAD = aead
+	_, err = e.InvokeSync(t.Context(), input)
+	require.NoError(t, err)
+	require.Len(t, n.creds, 1)
+	require.Equal(t, vars, n.creds[0].Environment)
+	require.NotContains(t, string(n.sent[0]), vars["GREETING"])
+}
+
+func TestLambdaTestLinkExecutor_RefusesUnreadableEnvironment(t *testing.T) {
+	block, err := aes.NewCipher(make([]byte, 32))
+	require.NoError(t, err)
+	aead, err := cipher.NewGCM(block)
+	require.NoError(t, err)
+	wrongAccount, err := function.SealEnv(aead, "000000000001", "fn1", map[string]string{"GREETING": "private value"})
+	require.NoError(t, err)
+	reserved, err := function.SealEnv(aead, "123456789012", "fn1", map[string]string{"AWS_REGION": "private value"})
+	require.NoError(t, err)
+	for name, tc := range map[string]struct {
+		sealed string
+		aead   cipher.AEAD
+	}{
+		"key missing":       {wrongAccount, nil},
+		"wrong account":     {wrongAccount, aead},
+		"reserved variable": {reserved, aead},
+		"unreadable":        {"not ciphertext", aead},
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := invocation(nil)
+			input.Function.EnvCipher = tc.sealed
+			n, store, sessions := &fakeControl{max: 1 << 20}, grantStore(t), &fakeSessions{}
+			e := executorWith(n, sessions, nil, store)
+			e.AEAD = tc.aead
+			_, err := e.InvokeSync(t.Context(), input)
+			var refusal *awsapi.RefusalError
+			require.ErrorAs(t, err, &refusal)
+			require.NotContains(t, err.Error(), "private value")
+			require.Empty(t, n.sent)
+			require.Empty(t, sessions.issued)
+			require.Empty(t, grantState(t, store))
 		})
 	}
 }

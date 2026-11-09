@@ -9,7 +9,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/mulgadc/spinifex/internal/testkit"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -111,7 +111,7 @@ func TestLoadOrCreateSigningKey_FailsWhenNoKeyDecrypts(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "master key does not match")
 
-	entries, err := kvutil.Keys(t.Context(), kv)
+	entries, err := kvstore.Keys(t.Context(), kv)
 	require.NoError(t, err)
 	assert.Len(t, entries, 1, "a failed load must not mint a key alongside the unreadable one")
 }

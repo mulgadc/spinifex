@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -35,7 +34,7 @@ const (
 	maxLBNameClaimRetries = 5
 
 	// targetGroupCASAttempts bounds a target-group read-modify-write. It sits
-	// above the kvutil default because Terraform registers targets at its own
+	// above the kvstore default because Terraform registers targets at its own
 	// parallelism (10 by default), every one contending for the same record.
 	targetGroupCASAttempts = 12
 
@@ -90,7 +89,7 @@ func NewStore(ctx context.Context, nc *nats.Conn) (*Store, error) {
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
 	}
 
-	kv, err := kvutil.GetOrCreateBucket(ctx, js, KVBucketELBv2, 1)
+	kv, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketELBv2, 1)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketELBv2, err)
 	}
@@ -189,7 +188,7 @@ var ErrLoadBalancerNotFound = errors.New("elbv2: load balancer not found")
 // concurrency: a writer that loses the race re-reads and retries instead of
 // overwriting the winner. mutate returns false to commit nothing.
 func (s *Store) UpdateLoadBalancer(ctx context.Context, lbID string, mutate func(*LoadBalancerRecord) (bool, error)) (*LoadBalancerRecord, error) {
-	return kvutil.Update(ctx, s.kv, KeyPrefixLB+lbID, kvutil.CASConfig{
+	return kvstore.Update(ctx, s.kv, KeyPrefixLB+lbID, kvstore.CASConfig{
 		Attempts: targetGroupCASAttempts,
 		NotFound: ErrLoadBalancerNotFound,
 		Exhausted: func(_ string, attempts int) error {
@@ -294,7 +293,7 @@ var ErrTargetGroupNotFound = errors.New("elbv2: target group not found")
 // concurrency: a writer that loses the race re-reads and retries instead of
 // overwriting the winner. mutate returns false to commit nothing.
 func (s *Store) UpdateTargetGroup(ctx context.Context, tgID string, mutate func(*TargetGroupRecord) (bool, error)) (*TargetGroupRecord, error) {
-	return kvutil.Update(ctx, s.kv, KeyPrefixTG+tgID, kvutil.CASConfig{
+	return kvstore.Update(ctx, s.kv, KeyPrefixTG+tgID, kvstore.CASConfig{
 		Attempts: targetGroupCASAttempts,
 		NotFound: ErrTargetGroupNotFound,
 		Exhausted: func(_ string, attempts int) error {
@@ -652,7 +651,7 @@ func listByPrefixOpt[T any](ctx context.Context, kv jetstream.KeyValue, prefix s
 
 	var result []*T
 	for _, key := range keys {
-		if key == kvutil.VersionKey {
+		if key == kvstore.VersionKey {
 			continue
 		}
 		if !strings.HasPrefix(key, prefix) {

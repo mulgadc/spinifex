@@ -1,6 +1,6 @@
 // Package uefistore holds the types that describe an instance's UEFI variable
-// store and the bucket of store records that carry its deletion and write-back
-// obligations past the life of the instance record.
+// store, the bucket of store records that carry its pointer and deletion
+// obligation past the life of the instance record, and the claim that fences it.
 package uefistore
 
 import (
@@ -37,8 +37,8 @@ const (
 var ErrInvalidRecord = errors.New("uefistore: invalid store record")
 
 // ErrDeleting is returned for a change that would return a deleting store to
-// live. Deletion follows only a terminate or an operator's forget, and both are
-// final, so a writer that meets it drops whatever it was about to record.
+// live. Deletion follows only a decided terminate, which is final, so a writer
+// that meets it drops whatever it was about to record.
 var ErrDeleting = errors.New("uefistore: store is being deleted")
 
 // FirmwareIdentity names the firmware a variable store was written under. A
@@ -53,22 +53,27 @@ type FirmwareIdentity struct {
 // UEFIStoreRecord is the durable owner of one instance's variable store
 // objects. It outlives the instance record, so an obligation recorded here is
 // not lost when a terminated record expires.
+//
+// Pointer names the only version of the store the record keeps, the object the
+// instance boots from, and only a writer whose claim token has generation
+// Generation may move it.
 type UEFIStoreRecord struct {
-	SchemaVersion uint16         `json:"schema_version"`
-	InstanceID    string         `json:"instance_id"`
-	AccountID     string         `json:"account_id"`
-	State         string         `json:"state"`
-	WriteBack     *UEFIWriteBack `json:"write_back,omitempty"`
+	SchemaVersion uint16           `json:"schema_version"`
+	InstanceID    string           `json:"instance_id"`
+	AccountID     string           `json:"account_id"`
+	State         string           `json:"state"`
+	Generation    uint64           `json:"generation"`
+	Pointer       *UEFIVarStoreRef `json:"pointer,omitempty"`
 }
 
-// UEFIWriteBack is a write-back that failed and is still owed. Key is the
-// object every retry puts to, so retries leave no extra objects; SeededFrom is
-// the pointer Node seeded from, which a retry must still find on the record.
-type UEFIWriteBack struct {
-	Node       string    `json:"node"`
-	Key        string    `json:"key"`
-	SeededFrom string    `json:"seeded_from"`
-	Since      time.Time `json:"since"`
+// UEFIVarStoreRef names the store object an instance launches from, with the
+// firmware it was written under, so a launch can check it without reading the
+// object's metadata.
+type UEFIVarStoreRef struct {
+	Key        string           `json:"key"`
+	Firmware   FirmwareIdentity `json:"firmware"`
+	WriterNode string           `json:"writer_node"`
+	WrittenAt  time.Time        `json:"written_at"`
 }
 
 // KeyPrefix is the object-store prefix every store object of ownerID (an
@@ -83,8 +88,8 @@ func ownsKey(ownerID, key string) bool {
 	return ok && name != "" && !strings.Contains(name, "/")
 }
 
-// validate checks rec against key. A write-back key outside the instance's own
-// prefix is refused because a superseded obligation deletes that key.
+// validate checks rec against key. The pointer must name one object directly
+// under the instance's own prefix, because a deletion acts on it.
 func (rec *UEFIStoreRecord) validate(key string) error {
 	switch {
 	case rec.SchemaVersion > RecordSchemaVersion:
@@ -98,21 +103,24 @@ func (rec *UEFIStoreRecord) validate(key string) error {
 		return fmt.Errorf("%w: instance_id %s stored at key %s", ErrInvalidRecord, rec.InstanceID, key)
 	case rec.State != StateLive && rec.State != StateDeleting:
 		return fmt.Errorf("%w: %s has state %q", ErrInvalidRecord, key, rec.State)
-	case rec.State == StateDeleting && rec.WriteBack != nil:
-		// A write-back retry puts an object, which would land behind the delete.
-		return fmt.Errorf("%w: %s is deleting with a write-back still owed", ErrInvalidRecord, key)
 	}
-	if wb := rec.WriteBack; wb != nil {
-		switch {
-		case wb.Node == "":
-			return fmt.Errorf("%w: %s write-back names no node", ErrInvalidRecord, key)
-		case wb.Since.IsZero():
-			return fmt.Errorf("%w: %s write-back has no since", ErrInvalidRecord, key)
-		case !ownsKey(rec.InstanceID, wb.Key):
-			return fmt.Errorf("%w: %s write-back key %q is not under %s", ErrInvalidRecord, key, wb.Key, KeyPrefix(rec.InstanceID))
-		case !ownsKey(rec.InstanceID, wb.SeededFrom):
-			return fmt.Errorf("%w: %s write-back seeded_from %q is not under %s", ErrInvalidRecord, key, wb.SeededFrom, KeyPrefix(rec.InstanceID))
+	if p := rec.Pointer; p != nil {
+		if err := p.validate(rec.InstanceID); err != nil {
+			return fmt.Errorf("%w: %s pointer: %w", ErrInvalidRecord, key, err)
 		}
+	}
+	return nil
+}
+
+// validate checks ref as a pointer of instanceID's store.
+func (ref *UEFIVarStoreRef) validate(instanceID string) error {
+	switch {
+	case !ownsKey(instanceID, ref.Key):
+		return fmt.Errorf("key %q is not under %s", ref.Key, KeyPrefix(instanceID))
+	case ref.Firmware.Arch == "" || ref.Firmware.VarsSize <= 0:
+		return fmt.Errorf("key %q names no firmware arch and VARS size", ref.Key)
+	case ref.WriterNode == "":
+		return fmt.Errorf("key %q names no writer node", ref.Key)
 	}
 	return nil
 }
@@ -120,7 +128,7 @@ func (rec *UEFIStoreRecord) validate(key string) error {
 func bucketConfig() kvstore.Config {
 	return kvstore.Config{
 		Name:        BucketName,
-		Description: "Spinifex UEFI variable store records (deletion and write-back obligations)",
+		Description: "Spinifex UEFI variable store records (pointers and deletion obligations)",
 		History:     1,
 		// Left false: a lost bucket has lost obligations, and an empty
 		// recreated one would report every store as having none.
@@ -163,6 +171,19 @@ func (s *Store) Open(ctx context.Context) error {
 // ErrInvalidRecord, so a newer or corrupt record is never acted on.
 func (s *Store) Get(ctx context.Context, instanceID string) (*UEFIStoreRecord, uint64, error) {
 	rec, rev, err := s.kv.Get(ctx, instanceID)
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := rec.validate(instanceID); err != nil {
+		return nil, 0, err
+	}
+	return rec, rev, nil
+}
+
+// LeaderGet is Get answered by the stream leader, for a caller that deletes
+// objects by what the record does not point at.
+func (s *Store) LeaderGet(ctx context.Context, instanceID string) (*UEFIStoreRecord, uint64, error) {
+	rec, rev, err := s.kv.LeaderGet(ctx, instanceID)
 	if err != nil {
 		return nil, 0, err
 	}

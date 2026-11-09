@@ -9,7 +9,6 @@ import (
 
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvutil"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -105,7 +104,7 @@ func TestStore_RecoversAfterStreamLost(t *testing.T) {
 			loseStream(t, js)
 
 			err := tt.op(t.Context(), store)
-			assert.False(t, kvutil.IsStreamUnavailable(err),
+			assert.False(t, kvstore.IsStreamUnavailable(err),
 				"the operation must reach the reopened bucket, not surface the loss: %v", err)
 			if tt.wantErr != nil {
 				require.ErrorIs(t, err, tt.wantErr)
@@ -134,6 +133,10 @@ func TestStore_RecreateIfMissingDefaultsOff(t *testing.T) {
 
 	err := store.Set(t.Context(), "acct-a/one", &record{Name: "two"})
 	require.Error(t, err, "recovery must not silently recreate a bucket the caller did not opt into")
+	// The failed recovery dropped the handle, so this one reaches the first-use
+	// open, which must not create either.
+	err = store.Set(t.Context(), "acct-a/one", &record{Name: "three"})
+	require.Error(t, err, "a later operation must not recreate it through the first-use open")
 
 	_, err = js.KeyValue(t.Context(), recoveryBucket)
 	require.Error(t, err, "the bucket must still be absent")
@@ -219,7 +222,7 @@ func TestBucket_OnOpenRunsOnEveryOpen(t *testing.T) {
 		RecreateIfMissing: true,
 		OnOpen: func(ctx context.Context, kv jetstream.KeyValue) error {
 			opens.Add(1)
-			return kvutil.WriteVersion(ctx, kv, 7)
+			return kvstore.WriteVersion(ctx, kv, 7)
 		},
 	})
 
@@ -234,7 +237,7 @@ func TestBucket_OnOpenRunsOnEveryOpen(t *testing.T) {
 
 	kv, err := store.KV(t.Context())
 	require.NoError(t, err)
-	version, err := kvutil.ReadVersion(t.Context(), kv)
+	version, err := kvstore.ReadVersion(t.Context(), kv)
 	require.NoError(t, err)
 	assert.Equal(t, 7, version, "a recreated bucket must be re-stamped, not left unversioned")
 }

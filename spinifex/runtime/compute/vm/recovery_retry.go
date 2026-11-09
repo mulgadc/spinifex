@@ -40,14 +40,18 @@ var recoveryRetryInterval = 30 * time.Second
 
 // RetryRecoveryFailed reconsiders instances parked in StateError by a
 // dependency-unavailable failure and relaunches them. It is a no-op unless the
-// backing store is ready, because retrying against a store that is still down is
-// how they got here.
+// backing store and this node's EBS provider are ready, because retrying against
+// a dependency that is still down is how they got here.
 //
 // Returns the number of instances it attempted, so a caller can stop polling
 // once there is nothing left to do.
 func (m *Manager) RetryRecoveryFailed() int {
 	if !m.backingStoreReady() {
 		slog.Debug("recovery retry: backing store not ready, deferring")
+		return 0
+	}
+	if !m.ebsProviderReady() {
+		slog.Debug("recovery retry: ebs provider not ready, deferring")
 		return 0
 	}
 

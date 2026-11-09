@@ -83,6 +83,9 @@ type Daemon struct {
 	MTU     int
 	WorkDir string
 	HTTP    *http.Client
+	// SDKEndpoint and SDKCA are public gateway connection settings for the guest.
+	SDKEndpoint string
+	SDKCA       []byte
 	// Image is the prepared runtime image every launch boots; the daemon
 	// prepares it once before serving and keeps it open for its whole life.
 	Image *Image
@@ -90,9 +93,16 @@ type Daemon struct {
 	// InitializerSHA256 the digest it must have.
 	Initializer       string
 	InitializerSHA256 string
+	// Firecracker, when set, is the Firecracker binary each attempt boots
+	// under instead of QEMU.
+	Firecracker string
 
-	busy atomic.Bool
+	busy    atomic.Bool
+	serving atomic.Bool
 }
+
+// Serving reports whether the control socket is accepting invocations.
+func (d *Daemon) Serving() bool { return d.serving.Load() }
 
 // unresolved names an attempt whose marker is still on disk. A marker goes
 // only once the attempt's VM stop is proven and everything it held is
@@ -108,6 +118,12 @@ func (d *Daemon) unresolved() (string, error) {
 	return strings.TrimSuffix(filepath.Base(markers[0]), markerSuffix), nil
 }
 
+// validHandler is the handler a guest run accepts: 1..128 bytes, no
+// whitespace or NUL.
+func validHandler(h string) bool {
+	return h != "" && len(h) <= 128 && strings.IndexFunc(h, unicode.IsSpace) < 0 && !strings.ContainsRune(h, 0)
+}
+
 // controlIOTimeout bounds reading a request from, and writing a reply to, the
 // gateway on the control socket.
 const controlIOTimeout = 30 * time.Second
@@ -119,14 +135,24 @@ func (d *Daemon) ServeControl(ctx context.Context, name string, gatewayUID int) 
 	if err != nil {
 		return err
 	}
-	srv := &ControlServer{GatewayUID: gatewayUID, RequestLimit: MaxFrameBytes, ReplyLimit: MaxFrameBytes,
-		IOTimeout: controlIOTimeout, Handle: d.Handle}
+	d.serve(ctx, ln, d.controlServer(gatewayUID))
+	return nil
+}
+
+// controlServer answers the gateway with d.Handle, and stops d reporting
+// serving as soon as it stops accepting, before its connections drain.
+func (d *Daemon) controlServer(gatewayUID int) *ControlServer {
+	return &ControlServer{GatewayUID: gatewayUID, RequestLimit: MaxFrameBytes, ReplyLimit: MaxFrameBytes,
+		IOTimeout: controlIOTimeout, Handle: d.Handle, AcceptStopped: func() { d.serving.Store(false) }}
+}
+
+func (d *Daemon) serve(ctx context.Context, ln *net.UnixListener, srv *ControlServer) {
+	d.serving.Store(true)
 	go func() {
 		if err := srv.Serve(ctx, ln); err != nil {
 			slog.Error("Lambda test link: control socket stopped; not serving new invocations", "err", err)
 		}
 	}()
-	return nil
 }
 
 // Handle runs one request under its grant, giving the guest cred in its first
@@ -293,8 +319,7 @@ func CheckRequest(req Request) error {
 	if req.RequestID == "" || req.RevisionID == "" {
 		return errors.New("request and revision IDs are required")
 	}
-	if req.Handler == "" || len(req.Handler) > 128 || strings.IndexFunc(req.Handler, unicode.IsSpace) >= 0 ||
-		strings.ContainsRune(req.Handler, 0) {
+	if !validHandler(req.Handler) {
 		return errors.New("handler must be 1..128 characters with no whitespace")
 	}
 	if req.TimeoutMs <= 0 || req.TimeoutMs > maxTimeoutMs {
@@ -404,24 +429,50 @@ func (d *Daemon) run(ctx context.Context, req Request, code []byte, lib *os.File
 	}
 	defer func() { _ = ln.Close() }()
 
-	cmd, err := cfg.Execute()
-	if err != nil {
-		return refused("VM command build failed"), d.release(a), marker
-	}
-	// A launch delayed past the fixed deadline is refused before QEMU starts.
+	// A launch delayed past the fixed deadline is refused before the VM starts.
 	if expired(hardDeadline) {
 		return refused(ErrDeadlineExpired.Error()), d.release(a), marker
 	}
-	hk, err := armLaunch(cmd, d.Image, lib, hardDeadline)
-	if err != nil {
-		return refused("hard-kill setup failed"), d.release(a), marker
+	var cmd *exec.Cmd
+	var hk *hardKill
+	var fcAck *net.UnixConn
+	fc := &vmHandle{fd: -1}
+	if d.Firecracker == "" {
+		if cmd, err = cfg.Execute(); err != nil {
+			return refused("VM command build failed"), d.release(a), marker
+		}
+		if hk, err = armLaunch(cmd, d.Image, lib, hardDeadline); err != nil {
+			return refused("hard-kill setup failed"), d.release(a), marker
+		}
+		defer hk.close()
+	} else {
+		var child *os.File
+		if fcAck, child, err = ackPair(); err != nil {
+			return refused("hard-kill setup failed"), d.release(a), marker
+		}
+		defer func() { _ = fcAck.Close() }()
+		cmd, err = d.supervisorCommand(filepath.Join(a.dir, fcConfigFile), hardDeadline, child)
+		defer func() { _ = child.Close() }()
+		if err != nil {
+			return refused("VM command build failed"), d.release(a), marker
+		}
 	}
-	defer hk.close()
 	var result Reply
 	unrecorded := false
 	out, runErr := attempt.Run(ctx, cmd, timeoutFor(req), func(sctx context.Context, pidfd int) error {
+		vmPidfd, vmPID := pidfd, cmd.Process.Pid
+		if fcAck != nil {
+			defer fc.callbackDone()
+			// Firecracker is the VM; its supervisor acks only once both kernel kills are armed.
+			fd, pid, err := awaitFirecracker(sctx, fcAck, cmd.Process.Pid, armWait)
+			if err != nil {
+				return err
+			}
+			fc.set(fd)
+			vmPidfd, vmPID = fd, pid
+		}
 		// The owner holds the launch identity before the guest is sent anything.
-		l, err := launchIdentity(pidfd, cmd.Process.Pid, a.tap)
+		l, err := launchIdentity(vmPidfd, vmPID, a.tap)
 		if err != nil {
 			return err
 		}
@@ -430,13 +481,20 @@ func (d *Daemon) run(ctx context.Context, req Request, code []byte, lib *os.File
 			return fmt.Errorf("%w: %w", ErrLaunchNotRecorded, err)
 		}
 		// No frame reaches the guest until QEMU proves its own kill timer is armed.
-		if err := hk.await(sctx, cmd.Process.Pid, armWait); err != nil {
-			return err
+		if hk != nil {
+			if err := hk.await(sctx, cmd.Process.Pid, armWait); err != nil {
+				return err
+			}
 		}
 		r, err := d.session(sctx, req, gen, ln, a.dir, hardDeadline, d.Grants.Accept)
 		result = r
 		return err
 	})
+	if fcAck != nil {
+		// Always settled, so a received pidfd is closed or handed to the callback.
+		fcGone := settleFirecracker(out.SessionDone, fc, cmd.Process != nil)
+		out.Stopped = out.Stopped && fcGone
+	}
 	if !out.Stopped {
 		slog.Error("Lambda test link: VM stop not proven; marker, tap, address and files held",
 			"attempt", req.AttemptID, "tap", tapName, "err", runErr)
@@ -527,6 +585,26 @@ func (d *Daemon) prepare(req Request, code []byte, dir, tap, mac, ip string) (*v
 	entries["test-package-sha256"] = []byte(req.CodeSHA256)
 	entries["test-grant"] = grantEntry(req.Grant)
 	entries["test-handler"] = []byte(req.Handler)
+	if d.SDKEndpoint != "" && len(d.SDKCA) != 0 {
+		entries["test-sdk-endpoint"] = []byte(d.SDKEndpoint)
+		entries["test-sdk-ca"] = d.SDKCA
+	}
+	netcfgBytes := fmt.Appendf(nil, "NIC0_MAC=%s\nNIC0_CIDR=%s/24\nNIC0_DEFAULT=0\n", mac, ip)
+	if d.Firecracker != "" {
+		archive := make(map[string][]byte, len(entries)+1)
+		for name, value := range entries {
+			archive[lambdav1.FwCfgPrefix+name] = value
+		}
+		archive[fwCfgNetcfg] = netcfgBytes
+		cfgDisk := filepath.Join(dir, configArchive)
+		if err := writeConfigArchive(cfgDisk, archive); err != nil {
+			return fail(err)
+		}
+		if err := writeFirecrackerConfig(filepath.Join(dir, fcConfigFile), diskPath, cfgDisk, tap, mac, int(max(req.MemoryMiB, 128))); err != nil {
+			return fail(err)
+		}
+		return nil, gen, ln, nil
+	}
 	var fwCfg []vm.FwCfgEntry
 	for name, value := range entries {
 		path := filepath.Join(dir, "fwcfg-"+name)
@@ -536,7 +614,7 @@ func (d *Daemon) prepare(req Request, code []byte, dir, tap, mac, ip string) (*v
 		fwCfg = append(fwCfg, vm.FwCfgEntry{Name: lambdav1.FwCfgPrefix + name, File: path})
 	}
 	netcfg := filepath.Join(dir, "netcfg")
-	if err := os.WriteFile(netcfg, fmt.Appendf(nil, "NIC0_MAC=%s\nNIC0_CIDR=%s/24\nNIC0_DEFAULT=0\n", mac, ip), 0o600); err != nil {
+	if err := os.WriteFile(netcfg, netcfgBytes, 0o600); err != nil {
 		return fail(err)
 	}
 	fwCfg = append(fwCfg, vm.FwCfgEntry{Name: fwCfgNetcfg, File: netcfg})
@@ -588,6 +666,7 @@ func (d *Daemon) session(ctx context.Context, req Request, gen *guestconn.Genera
 	}
 	defer func() { _ = conn.Close() }()
 	_ = os.Remove(filepath.Join(dir, "fwcfg-"+lambdav1.EntryGuestKey))
+	_ = os.Remove(filepath.Join(dir, configArchive))
 
 	// The function timeout runs on the host from dispatch; the boot allowance
 	// covers startup only, so a guest that stops answering is cut off here.

@@ -82,3 +82,51 @@ func (d *Daemon) tickFeatureLevel() {
 		slog.Info("Cluster feature level advanced", "level", rec.Level, "build", featurelevel.Build)
 	}
 }
+
+// FeatureLevelRefusedError is returned when the cluster records a feature level
+// above what this build supports, so an older build cannot join and write what
+// the newer one no longer reads.
+type FeatureLevelRefusedError struct {
+	Build    int
+	Recorded int
+}
+
+func (e *FeatureLevelRefusedError) Error() string {
+	return fmt.Sprintf("cluster feature level is %d but this build supports %d; "+
+		"lower the cluster first with `spx admin cluster rollback --to %d`, then install this build",
+		e.Recorded, e.Build, e.Build)
+}
+
+// Unwrap makes the refusal permanent: no retry clears it.
+func (e *FeatureLevelRefusedError) Unwrap() error { return errStartupPermanent }
+
+// featureLevelReadTimeout bounds one attempt at reading the record.
+const featureLevelReadTimeout = 10 * time.Second
+
+// enforceFeatureLevel refuses when the recorded level is above this build. An
+// absent record is level 0. A read failure retries with backoff and neither
+// starts nor refuses.
+func enforceFeatureLevel(store *featurelevel.Store) error {
+	_, err := initServiceWithRetry("feature level", func() (struct{}, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), featureLevelReadTimeout)
+		defer cancel()
+		rec, _, err := store.Read(ctx)
+		if err != nil {
+			return struct{}{}, err
+		}
+		if rec.Level > featurelevel.Build {
+			return struct{}{}, &FeatureLevelRefusedError{Build: featurelevel.Build, Recorded: rec.Level}
+		}
+		return struct{}{}, nil
+	})
+	return err
+}
+
+// checkFeatureLevel runs the startup refusal against the cluster record.
+func (d *Daemon) checkFeatureLevel() error {
+	store, err := d.jsManager.FeatureLevelStore(d.ctx)
+	if err != nil {
+		return err
+	}
+	return enforceFeatureLevel(store)
+}

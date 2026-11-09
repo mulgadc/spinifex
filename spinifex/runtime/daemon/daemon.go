@@ -2014,6 +2014,17 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("initialize JetStream: %w", err)
 	}
 
+	// Before any cluster state is claimed: a build below the recorded feature
+	// level would write what the newer builds no longer read. A refusal exits so
+	// the unit shows failed rather than a healthy idle daemon.
+	if err := d.checkFeatureLevel(); err != nil {
+		if errors.Is(err, errStartupPermanent) {
+			slog.Error("Refusing to start: cluster feature level", "err", err)
+			d.exitFunc(1)
+		}
+		return fmt.Errorf("feature level: %w", err)
+	}
+
 	// Before any service is built: a node on a different provider from the
 	// cluster's would address existing volumes through the wrong implementation.
 	// A refusal exits so the unit shows failed rather than a healthy idle daemon.

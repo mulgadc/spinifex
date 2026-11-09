@@ -149,12 +149,13 @@ func reachGuest(t *testing.T, fix *Fixture, inst *ec2.Instance, keyPath string) 
 }
 
 // writeVar writes v as a non-volatile, boot-service and runtime variable
-// (attributes 0x7) in one write, as efivarfs requires.
+// (attributes 0x7) in one write, as efivarfs requires; efivarfs cannot seek,
+// so dd is unusable.
 func writeVar(t *testing.T, g guest, v efiVar) time.Time {
 	t.Helper()
 	cmd := fmt.Sprintf(`set -e; f=%s; tmp=$(mktemp); printf '\007\000\000\000%%s' %s > "$tmp"; `+
 		`if [ -e "$f" ]; then sudo chattr -i "$f"; fi; `+
-		`sudo dd if="$tmp" of="$f" bs=4096 conv=notrunc status=none; rm -f "$tmp"`,
+		`sudo tee "$f" < "$tmp" > /dev/null; rm -f "$tmp"`,
 		harness.ShellQuote(v.path()), harness.ShellQuote(v.value))
 	issued := time.Now()
 	if out, err := harness.GuestExecTimeout(g.tgt, cmd, guestCmdBudget); err != nil {

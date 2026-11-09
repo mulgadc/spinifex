@@ -14,8 +14,10 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
+	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -23,6 +25,7 @@ import (
 // holds it: the store record in KV and the objects under the instance's prefix
 // in the node's Predastore bucket. It only reads.
 type UEFIStoreView struct {
+	nc      *nats.Conn
 	records *uefistore.Store
 	objects objectstore.ObjectStore
 	bucket  string
@@ -30,6 +33,7 @@ type UEFIStoreView struct {
 
 // NewUEFIStoreView builds a view from the local node's spinifex.toml, using the
 // same Predastore credentials and bucket the daemon writes the store with.
+// The view outlives the test that builds it, so the caller must Close it.
 func NewUEFIStoreView(t *testing.T, env *Env) *UEFIStoreView {
 	t.Helper()
 	cfgPath := filepath.Join(env.ConfigDir, "spinifex.toml")
@@ -45,16 +49,26 @@ func NewUEFIStoreView(t *testing.T, env *Env) *UEFIStoreView {
 	if p.Host == "" || p.Bucket == "" {
 		t.Fatalf("%s names no Predastore host or bucket, so the UEFI store objects cannot be read", cfgPath)
 	}
-	js, err := jetstream.New(DialClusterNATS(t, env))
+	host, token, ca := natsConn(t, env)
+	nc, err := natsmsg.ConnectNATS(host, token, ca)
 	if err != nil {
+		t.Fatalf("connect NATS %s: %v", host, err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		nc.Close()
 		t.Fatalf("jetstream context: %v", err)
 	}
 	return &UEFIStoreView{
+		nc:      nc,
 		records: uefistore.NewReader(js),
 		objects: objectstore.NewS3ObjectStoreFromConfig(netaddr.DialTarget(p.Host), p.Region, p.AccessKey, p.SecretKey),
 		bucket:  p.Bucket,
 	}
 }
+
+// Close releases the view's NATS connection.
+func (v *UEFIStoreView) Close() { v.nc.Close() }
 
 // Record returns the instance's store record as the KV leader holds it.
 func (v *UEFIStoreView) Record(ctx context.Context, instanceID string) (*uefistore.UEFIStoreRecord, error) {

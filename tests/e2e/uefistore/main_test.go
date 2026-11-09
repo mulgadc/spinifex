@@ -23,6 +23,9 @@ var (
 
 func TestMain(m *testing.M) {
 	code := m.Run()
+	if pkgFix != nil && pkgFix.Store != nil {
+		pkgFix.Store.Close()
+	}
 	if pkgFix != nil && pkgFix.Harness != nil {
 		if err := pkgFix.Harness.Close(); err != nil {
 			fmt.Fprintf(os.Stderr, "e2e teardown: %v\n", err)

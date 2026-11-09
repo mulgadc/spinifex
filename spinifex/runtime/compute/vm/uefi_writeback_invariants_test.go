@@ -328,6 +328,41 @@ func TestS7_PruneKeepsTheLeaderPointerWhenAReplicaLags(t *testing.T) {
 // A launch that fails after QEMU started settles the store as a stop does
 // only once that QEMU is provably gone; one that may still run keeps its
 // writer and claim, so no other node boots under a live guest (ADR-0003:S7).
+// A stop whose QEMU may still run keeps the claim and owes the write-back; the
+// reaper writes back the guest's last changes only once QEMU is proven gone.
+func TestS7_AStopSettlesItsStoreOnlyOnceQEMUIsGone(t *testing.T) {
+	f := newUEFIFixture(t)
+	instance, clock := f.running(t)
+	f.m.startUEFIWriter(testUEFIInstance, false)
+	f.guestWrites(t, "before")
+	clock.waitArmed(t)
+	gone := false
+	orig := uefiQEMUGone
+	uefiQEMUGone = func(string) bool { return gone }
+	t.Cleanup(func() { uefiQEMUGone = orig })
+	tok, _ := f.claimHolder(t)
+
+	f.m.finishStoppedUEFIWriteBack(instance)
+	require.True(t, f.m.UpdateState(testUEFIInstance, func(v *VM) { v.Status = StateStopped }))
+	want := f.guestWrites(t, "after the stop")
+	_, err := f.m.NewUEFIWriteBackReaper().Sweep(t.Context())
+	require.NoError(t, err)
+
+	holder, held := f.claimHolder(t)
+	require.True(t, held, "ADR-0003:S7 (uefi_writeback.go finishStoppedUEFIWriteBack): a stop unlocked the claim while QEMU may still write the store")
+	assert.Equal(t, tok, holder)
+	assert.True(t, f.seed(t).WriteBackOwed)
+	assert.Nil(t, f.m.uefi.get(testUEFIInstance))
+
+	gone = true
+	_, err = f.m.NewUEFIWriteBackReaper().Sweep(t.Context())
+	require.NoError(t, err)
+
+	assert.Equal(t, want, f.pointedRegion(t), "ADR-0003:S7: the write-back after QEMU exits carries the guest's last changes")
+	_, held = f.claimHolder(t)
+	assert.False(t, held)
+}
+
 func TestS7_AFailedLaunchSettlesItsStoreOnlyOnceQEMUIsGone(t *testing.T) {
 	for _, exited := range []bool{true, false} {
 		t.Run(fmt.Sprintf("exited=%t", exited), func(t *testing.T) {

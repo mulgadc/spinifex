@@ -525,7 +525,7 @@ func (m *Manager) stampOutstandingTeardownFailed(instance *VM) {
 // volume unmount, tap teardown (main + extra ENI + mgmt), resource
 // deallocation. Every step runs; only a failed volume seal is returned.
 func (m *Manager) stopCleanup(instance *VM) error {
-	sealErr := m.shutdownAndUnmount(instance, m.finishUEFIWriteBack)
+	sealErr := m.shutdownAndUnmount(instance, m.finishStoppedUEFIWriteBack)
 	m.cleanupTapDevices(instance)
 	if m.deps.InstanceCleaner != nil {
 		if err := m.deps.InstanceCleaner.ReleaseGPU(instance); err != nil {

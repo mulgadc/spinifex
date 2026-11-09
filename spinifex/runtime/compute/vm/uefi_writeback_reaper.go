@@ -84,6 +84,9 @@ func (m *Manager) settleOwedUEFIStore(ctx context.Context, id string) bool {
 	if v, ok := m.Get(id); ok && uefiGuestMayRun(m.Status(v)) {
 		return false
 	}
+	if !uefiQEMUGone(id) {
+		return false
+	}
 	dir, err := uefiInstanceDir(m.deps.UEFIVarStore.DataDir, id)
 	if err != nil {
 		return false

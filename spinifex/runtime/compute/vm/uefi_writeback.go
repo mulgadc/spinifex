@@ -509,6 +509,32 @@ func (m *Manager) finishUEFIWriteBack(instance *VM) {
 	}
 }
 
+// finishStoppedUEFIWriteBack settles a stopped instance's store once its QEMU
+// is proven gone. Otherwise the writer stops and the write-back is owed, with
+// the claim kept, so the write-back reaper settles it after QEMU exits.
+func (m *Manager) finishStoppedUEFIWriteBack(instance *VM) {
+	if !usesUEFIVarStore(instance) || !m.uefiWriteBackWired() || uefiQEMUGone(instance.ID) {
+		m.finishUEFIWriteBack(instance)
+		return
+	}
+	unlock := m.uefi.locks.lock(instance.ID)
+	defer unlock()
+	w := m.uefi.take(instance.ID)
+	if w == nil {
+		return
+	}
+	w.halt()
+	if w.stopped != "" {
+		return
+	}
+	m.writeUEFIOwed(w, true)
+	slog.Warn("The stopped instance's QEMU is not proven gone; keeping the UEFI variable store's claim until it exits",
+		"instanceId", instance.ID, "generation", w.tok.Generation)
+}
+
+// uefiQEMUGone reports whether an instance's QEMU is proven gone; replaced in tests.
+var uefiQEMUGone = qemuProvenGone
+
 // uefiFailedLaunchExitWait bounds how long a failed launch waits for the QEMU
 // it killed to exit before settling the store it may have written.
 const uefiFailedLaunchExitWait = 10 * time.Second

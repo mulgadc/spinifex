@@ -29,6 +29,7 @@ resources:
 - [Firmware Compatibility](#firmware-compatibility)
 - [Instances Refused at Launch](#instances-refused-at-launch)
 - [Terminate](#terminate)
+- [Images](#images)
 - [Inspecting Stores](#inspecting-stores)
 - [Metrics](#metrics)
 
@@ -38,7 +39,7 @@ resources:
 
 An instance whose boot mode is `uefi` or `uefi-preferred` boots through UEFI firmware, which keeps its variables (`BootOrder`, `BootNext`, secure-boot state) in a VARS region. Spinifex gives each such instance its own variable store, so those variables survive a reboot, a stop and start, and a start on a different node. A direct-boot microvm boots without UEFI and has no store.
 
-RunInstances seeds the store from the launching node's VARS template. From then on the node running the instance writes the guest's changes back to the platform object store, and every later start boots from the last change that landed there.
+RunInstances seeds the store from the launching image's store when the image carries one (see [Images](#images)), and from the launching node's VARS template otherwise. From then on the node running the instance writes the guest's changes back to the platform object store, and every later start boots from the last change that landed there.
 
 ## Where the Store Lives
 
@@ -46,7 +47,7 @@ A store has three parts.
 
 | Part | Where | What it holds |
 |---|---|---|
-| Store objects | The platform object store, in the bucket set as the node's Predastore bucket, under `uefi/<instance-id>/` | The VARS region, gzip-compressed, one object per write. Each write goes to a fresh key, so no write replaces an object a record points at. Each object's metadata names the instance, the writer node, the source (`template` or `write-back`) and the firmware it was written under. |
+| Store objects | The platform object store, in the bucket set as the node's Predastore bucket, under `uefi/<instance-id>/` | The VARS region, gzip-compressed, one object per write. Each write goes to a fresh key, so no write replaces an object a record points at. Each object's metadata names the instance, the writer node, the source (`template`, `write-back` or `image:<ami-id>`) and the firmware it was written under. |
 | Store record | KV bucket `spinifex-uefi-stores`, keyed by instance ID | The instance and account, the state (`live` or `deleting`), the claim generation that fences writes, and the pointer: the one object the instance boots from, with the firmware it was written under, the writer node and the write time. |
 | Local copy | `<data-dir>/uefi/<instance-id>/` on the node running the instance (`/var/lib/spinifex/uefi/<instance-id>/` by default) | `vars.fd`, the file QEMU opens as pflash unit 1, and `seeded.json`, which records the key the copy came from or last landed at, the claim generation, the firmware, and whether a write-back is owed. |
 
@@ -117,6 +118,17 @@ These starts fail with `Server.InternalError`, and the node logs `refusing to la
 
 Terminate moves the store record to `deleting`, releases a claim the node holds, and removes the node's local copy. It does not delete objects. A cluster-wide `uefi-store` reaper deletes every object under the instance's prefix, then the claim, then the record, and only for an instance whose terminate is decided. It completes a terminate whose mark failed from the terminated instance record. A `deleting` record whose instance is not terminating is left for an operator and logged as `uefi-store: refusing to delete the store of an instance that is not terminating`.
 
+## Images
+
+An image made from a UEFI instance carries a copy of the instance's variable store, so instances launched from it start with the same variables.
+
+- **CreateImage** reads the instance's store record from the stream leader and copies the object its pointer names to a fresh key under `uefi/<ami-id>/`, before the root snapshot is taken. The AMI document records that key and its firmware. The image therefore carries the last write-back that landed, not changes still waiting in the write-back window. An instance with no store record, or a record with no pointer, gives an image with no store. A store being deleted refuses the request with `IncorrectInstanceState`.
+- **CopyImage** copies the source image's store to a fresh key under the new image's prefix, so deregistering either image leaves the other's store intact.
+- **RunInstances** from an image that carries a store seeds the new instance from it, with the object source `image:<ami-id>`. A store whose CODE hash differs from the node's seeds with a warning and counts `kind=code`. A store whose architecture or VARS size differs cannot boot on the node, so the instance is seeded from the node's VARS template instead, logged as `The image's UEFI variable store cannot boot under this node's firmware; seeding from the VARS template` and counted as `kind=image`.
+- **DeregisterImage** deletes the image's store objects before the AMI document. If that delete fails, the request fails with `Server.InternalError` and the image stays, so a retry finishes it. `spx admin images remove` deletes the store first in the same way.
+
+A CreateImage or CopyImage that fails after copying the store can leave an object under `uefi/<ami-id>/` with no AMI document, which `spx admin volumes orphans` reports.
+
 ## Inspecting Stores
 
 `spx admin volumes orphans` reports UEFI variable stores nothing owns before it reports orphaned volumes:
@@ -143,6 +155,6 @@ nats kv get spinifex-uefi-stores i-0123456789abcdef0
 | `mulga.vm.uefi_store.write_back_skips` | Writers stopped without writing back, by the path that stopped them. |
 | `mulga.vm.uefi_store.write_backs_lost` | Owed write-backs dropped because another node took the claim over. |
 | `mulga.vm.uefi_store.pruned_objects` | Superseded store objects a prune deleted. |
-| `mulga.vm.uefi_store.firmware_mismatches` | Launches whose store was written under different firmware, by `kind`. Only `kind=code` boots. |
+| `mulga.vm.uefi_store.firmware_mismatches` | Launches whose store was written under different firmware, by `kind`. `kind=code` boots the store, and `kind=image` seeds a new instance from the VARS template instead of the image's store. |
 | `mulga.vm.uefi_store.claim_refusals` | Starts refused because another node holds the claim and may be live, by `reason`. |
 | `mulga.vm.uefi_store.claim_takeovers` | Claims taken over from a node whose heartbeat had stopped. |

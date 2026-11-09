@@ -1,0 +1,1 @@
+import{a as e,i as t,n,o as r,r as i}from"./sts-WKTEbFaC.js";import{t as a}from"./queryOptions-BEp1PQsc.js";var o=class extends e(i,t,`GetCallerIdentity`,r){},s=`000000000001`;function c(e){return e===s}var l=a({queryKey:[`sts`,`callerIdentity`],queryFn:async()=>await n().send(new o({})),staleTime:`static`});export{c as n,l as t};

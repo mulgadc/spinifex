@@ -478,7 +478,9 @@ jobs:
                printf '\n%s%s━━ suite %s ━━%s\n' \"\$B\" \"\$C\" \"\$SUITE\" \"\$R\"; \
                date -u +%Y-%m-%dT%H:%M:%SZ > '${ARTIFACT_DIR}/test-'\$SUITE'.start'; \
                TMO=30m; for kv in ${SUITE_TMOS}; do case \$kv in \$SUITE:*) TMO=\${kv#*:} ;; esac; done; \
-               GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=single \
+               NODE_SSH=; if [ \"\$SUITE\" = eks ]; then \
+                 NODE_SSH=\"SPINIFEX_NODES=${{ steps.vm.outputs.wan_ip }} SPINIFEX_SSH_USER=tf-user SPINIFEX_SSH_KEY=\$HOME/.ssh/tf-user-ap-southeast-2\"; fi; \
+               env \$NODE_SSH GITHUB_ACTIONS=true FORCE_COLOR=1 SPINIFEX_E2E=1 SPINIFEX_MODE=single \
                  ARTIFACT_DIR='${ARTIFACT_DIR}' \
                  ./\$SUITE.test -test.v -test.timeout=\$TMO ${TEST_RUN_FLAG} \
                  2>&1 | tee '${ARTIFACT_DIR}/test-'\$SUITE'.log' \

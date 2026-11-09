@@ -213,7 +213,12 @@ function peerPlace(pair: UserIdGroupPair, peer?: SecurityGroup, vpc?: string) {
 
   const peerVpc = pair.VpcId ?? peer?.VpcId
 
-  if (!peerVpc || peerVpc === vpc) {
+  // A peer whose read failed, named without a VPC, is placed nowhere.
+  if (!peerVpc) {
+    return "members, VPC not read"
+  }
+
+  if (peerVpc === vpc) {
     return "members in this VPC"
   }
 

@@ -72,6 +72,7 @@ describe("ruleLabel", () => {
 
 describe("buildSecurityGroupMap", () => {
   const group: SecurityGroup = {
+    VpcId: "vpc-home",
     IpPermissions: [
       open({ IpProtocol: "tcp", FromPort: 443, ToPort: 443 }),
       {
@@ -93,7 +94,9 @@ describe("buildSecurityGroupMap", () => {
 
   const map = buildSecurityGroupMap(
     inputs(group, {
-      peers: [{ GroupId: "sg-0000000000000app", GroupName: "app" }],
+      peers: [
+        { GroupId: "sg-0000000000000app", GroupName: "app", VpcId: "vpc-home" },
+      ],
       instances: [
         { InstanceId: "i-in", SecurityGroups: [{ GroupId: GROUP_ID }] },
         { InstanceId: "i-out", SecurityGroups: [{ GroupId: "sg-other" }] },
@@ -146,6 +149,7 @@ describe("buildSecurityGroupMap", () => {
     [{}, { VpcId: "vpc-other" }, "members in vpc-other"],
     [{ VpcPeeringConnectionId: "pcx-1" }, {}, "via pcx-1"],
     [{ VpcId: "vpc-home" }, {}, "members in this VPC"],
+    [{}, {}, "members, VPC not read"],
   ])(
     "places a peer group's members: pair %o, peer %o reads %s",
     (pair, peer, place) => {

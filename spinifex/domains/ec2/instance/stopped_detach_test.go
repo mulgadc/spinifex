@@ -6,7 +6,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -27,7 +26,7 @@ func stoppedWithVolumes(owner, id string) *vm.VM {
 			},
 		},
 	}
-	v.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+	v.EBSRequests.Requests = []vm.EBSRequest{
 		{Name: "vol-root", Boot: true, DeviceName: "/dev/sda1"},
 		{Name: "vol-data", DeviceName: "/dev/sdf"},
 		{Name: "vol-other", DeviceName: "/dev/sdg"},
@@ -127,7 +126,7 @@ func TestDetachVolumeFromStopped_RefusesTheInternalEFIStore(t *testing.T) {
 	id := "i-stopped-efi"
 	stored := stoppedWithVolumes(owner, id)
 	stored.EBSRequests.Requests = append(stored.EBSRequests.Requests,
-		viperblocklegacyv1.EBSRequest{Name: "vol-efi", EFI: true})
+		vm.EBSRequest{Name: "vol-efi", EFI: true})
 	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{id: stored}}
 	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{}), stoppedStore: store}
 

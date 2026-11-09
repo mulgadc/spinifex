@@ -3,7 +3,6 @@ package daemon
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
@@ -13,7 +12,6 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
@@ -239,7 +237,7 @@ func newVolumeMounterAdapter(provider mounterProvider, node string) *volumeMount
 // publish mounts req's volume on this node through PublishVolume and records
 // the export on req. A failure worth retrying is vm.ErrMountRetryable; one
 // that leaves unknown whether the provider exported it is vm.ErrMountAmbiguous.
-func (a *volumeMounterAdapter) publish(ctx context.Context, accountID string, req *viperblocklegacyv1.EBSRequest) error {
+func (a *volumeMounterAdapter) publish(ctx context.Context, accountID string, req *vm.EBSRequest) error {
 	entry, ok := a.volumes.acquire(req.Name, acquirePublish)
 	if !ok {
 		return fmt.Errorf("publish volume %s: %w: %w", req.Name, vm.ErrVolumeSettling, vm.ErrMountRetryable)
@@ -248,7 +246,7 @@ func (a *volumeMounterAdapter) publish(ctx context.Context, accountID string, re
 	return a.publishLocked(ctx, accountID, req, entry)
 }
 
-func (a *volumeMounterAdapter) publishLocked(ctx context.Context, accountID string, req *viperblocklegacyv1.EBSRequest, entry *volumeLock) error {
+func (a *volumeMounterAdapter) publishLocked(ctx context.Context, accountID string, req *vm.EBSRequest, entry *volumeLock) error {
 	// A caller already gone sends nothing, so there is no export to tear down;
 	// only a cancellation after the request went out leaves the outcome unknown.
 	if err := ctx.Err(); err != nil {
@@ -307,7 +305,7 @@ func publishOutcomeUnknown(err error) bool {
 
 // applyExport records export on req as the one export field QEMU attaches.
 // The provider client has already validated it.
-func applyExport(req *viperblocklegacyv1.EBSRequest, export ebsprovider.VolumeExport) {
+func applyExport(req *vm.EBSRequest, export ebsprovider.VolumeExport) {
 	switch export.Kind {
 	case ebsprovider.ExportKindBlock:
 		req.NBDURI = ""
@@ -323,7 +321,7 @@ func applyExport(req *viperblocklegacyv1.EBSRequest, export ebsprovider.VolumeEx
 // unpublish tears down this node's export of req's volume through
 // UnpublishVolume, which seals first, and returns nil only once its block map
 // is sealed or the provider holds no export of it.
-func (a *volumeMounterAdapter) unpublish(ctx context.Context, accountID string, req viperblocklegacyv1.EBSRequest) error {
+func (a *volumeMounterAdapter) unpublish(ctx context.Context, accountID string, req vm.EBSRequest) error {
 	return a.withVolume(req.Name, acquireSeal, func(entry *volumeLock) error {
 		return a.unpublishLocked(ctx, accountID, req.Name, "", entry)
 	})
@@ -553,14 +551,14 @@ func (a *volumeMounterAdapter) abandonLocked(ctx context.Context, accountID, ins
 
 // MountOne mounts a single request and writes the resolved export back into
 // req. Used by hot-attach (Manager.AttachVolume).
-func (a *volumeMounterAdapter) MountOne(ctx context.Context, accountID string, req *viperblocklegacyv1.EBSRequest) error {
+func (a *volumeMounterAdapter) MountOne(ctx context.Context, accountID string, req *vm.EBSRequest) error {
 	return a.publish(ctx, accountID, req)
 }
 
 // UnmountOne unmounts a single request and returns any error. The unmount
 // seals the volume's block map to the backend, so the caller decides whether
 // a failure blocks the volume's available transition.
-func (a *volumeMounterAdapter) UnmountOne(ctx context.Context, accountID string, req viperblocklegacyv1.EBSRequest) error {
+func (a *volumeMounterAdapter) UnmountOne(ctx context.Context, accountID string, req vm.EBSRequest) error {
 	if err := a.unpublish(ctx, accountID, req); err != nil {
 		slog.Error("UnmountOne failed", "volume", req.Name, "err", err)
 		return err
@@ -914,8 +912,8 @@ func newInstanceCleanerAdapter(d *Daemon) *instanceCleanerAdapter {
 	return &instanceCleanerAdapter{d: d}
 }
 
-// DeleteVolumes deletes EFI internal volumes via ebs.delete and user volumes
-// flagged DeleteOnTermination via the volume service.
+// DeleteVolumes deletes user volumes flagged DeleteOnTermination and detaches
+// the rest via the volume service, skipping a leftover EFI request.
 // Errors are logged per volume; partial failure is tolerated.
 func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 	// Volumes the last unmount here left exported: clearing their attachments
@@ -938,30 +936,11 @@ func (a *instanceCleanerAdapter) DeleteVolumes(instance *vm.VM) error {
 
 	var firstErr error
 	for _, ebsRequest := range instance.EBSRequests.Requests {
-		// Internal volumes (EFI) always go through ebs.delete to stop their
-		// viperblockd processes. S3 data is cleaned up via the parent root
-		// volume's DeleteVolume (which removes the -efi/ prefix).
+		// No release creates an EFI request and start refuses one, so nothing
+		// serves it; its objects go with the root volume or the orphan report.
 		if ebsRequest.EFI {
-			ebsDeleteData, err := json.Marshal(viperblocklegacyv1.EBSDeleteRequest{Volume: ebsRequest.Name})
-			if err != nil {
-				slog.Error("Failed to marshal ebs.delete request for internal volume",
-					"name", ebsRequest.Name, "err", err)
-				firstErr = cmp.Or(firstErr, err)
-				continue
-			}
-			// Teardown runs from the reaper and from terminate cleanup, neither
-			// of which has a caller to inherit a trace from. The account still
-			// comes off the instance, so the work stays attributable.
-			deleteMsg, err := ebsRequestWithTrace(context.Background(), a.d.natsConn, instance.AccountID,
-				viperblocklegacyv1.DeleteSubject, ebsDeleteData, 30*time.Second)
-			if err != nil {
-				slog.Warn("Failed to send ebs.delete for internal volume",
-					"name", ebsRequest.Name, "id", instance.ID, "err", err)
-				firstErr = cmp.Or(firstErr, err)
-			} else {
-				slog.Info("Sent ebs.delete for internal volume",
-					"name", ebsRequest.Name, "id", instance.ID, "data", string(deleteMsg.Data))
-			}
+			slog.Warn("Skipping leftover EFI volume request on terminate",
+				"name", ebsRequest.Name, "id", instance.ID)
 			continue
 		}
 

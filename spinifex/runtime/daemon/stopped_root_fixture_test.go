@@ -5,7 +5,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	ebsmetadata "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -19,7 +18,7 @@ func bootVolumeID(instanceID string) string { return "vol-root-" + instanceID }
 // has: a boot request at the root device and the matching API mapping.
 func withBootVolume(v *vm.VM) *vm.VM {
 	id := bootVolumeID(v.ID)
-	v.EBSRequests.Requests = append(v.EBSRequests.Requests, viperblocklegacyv1.EBSRequest{Name: id, Boot: true, DeviceName: ebsmetadata.RootDeviceName})
+	v.EBSRequests.Requests = append(v.EBSRequests.Requests, vm.EBSRequest{Name: id, Boot: true, DeviceName: ebsmetadata.RootDeviceName})
 	if v.Instance != nil {
 		v.Instance.BlockDeviceMappings = append(v.Instance.BlockDeviceMappings, &ec2.InstanceBlockDeviceMapping{
 			DeviceName: aws.String(ebsmetadata.RootDeviceName),

@@ -3,7 +3,6 @@ package daemon
 import (
 	"testing"
 
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,7 +27,7 @@ func TestUnmountNeverReleasesBootVolume(t *testing.T) {
 	inst := &vm.VM{
 		ID: "i-unmount-boot",
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
+			Requests: []vm.EBSRequest{
 				{Name: "vol-bios-root", Boot: true, EFI: false},
 				{Name: "vol-efi-root", Boot: true, EFI: true},
 				{Name: "vol-data", Boot: false, EFI: false},

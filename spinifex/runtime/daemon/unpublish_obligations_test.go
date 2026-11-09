@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ebsmetadata "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
@@ -184,7 +183,7 @@ func TestVolumeMounterHold_PublishedSinceTracksThisProcessesPublishes(t *testing
 	adapter := newVolumeMounterAdapter(provider, "node-hold")
 	before := time.Now().Add(-time.Second)
 
-	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-hold"}))
+	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, &vm.EBSRequest{Name: "vol-hold"}))
 
 	hold, ok := adapter.HoldVolume("vol-hold")
 	require.True(t, ok)
@@ -192,7 +191,7 @@ func TestVolumeMounterHold_PublishedSinceTracksThisProcessesPublishes(t *testing
 	assert.False(t, hold.PublishedSince(time.Now().Add(time.Second)), "a publish before it is not")
 	hold.Release()
 
-	require.NoError(t, adapter.UnmountOne(t.Context(), testAccountID, viperblocklegacyv1.EBSRequest{Name: "vol-hold"}))
+	require.NoError(t, adapter.UnmountOne(t.Context(), testAccountID, vm.EBSRequest{Name: "vol-hold"}))
 	hold, ok = adapter.HoldVolume("vol-hold")
 	require.True(t, ok)
 	defer hold.Release()
@@ -205,7 +204,7 @@ func TestVolumeMounterHold_RefusedWhileAPublishIsInFlight(t *testing.T) {
 	adapter := newVolumeMounterAdapter(provider, "node-hold")
 	done := make(chan error, 1)
 	go func() {
-		done <- adapter.MountOne(context.Background(), testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-busy"})
+		done <- adapter.MountOne(context.Background(), testAccountID, &vm.EBSRequest{Name: "vol-busy"})
 	}()
 	<-provider.publishing
 
@@ -238,7 +237,7 @@ func TestS8_AttachRefusesRatherThanWaitBehindTheReapersSeal(t *testing.T) {
 
 	refused := make(chan error, 1)
 	go func() {
-		refused <- adapter.MountOne(context.Background(), testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-sealing"})
+		refused <- adapter.MountOne(context.Background(), testAccountID, &vm.EBSRequest{Name: "vol-sealing"})
 	}()
 	select {
 	case err := <-refused:
@@ -254,7 +253,7 @@ func TestS8_AttachRefusesRatherThanWaitBehindTheReapersSeal(t *testing.T) {
 	close(provider.unpublishGate)
 	require.NoError(t, <-sealed)
 	hold.Release()
-	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-sealing"}),
+	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, &vm.EBSRequest{Name: "vol-sealing"}),
 		"the attach goes through once the seal is done")
 }
 
@@ -267,13 +266,13 @@ func TestS8_AttachRefusesRatherThanWaitBehindAStopsSeal(t *testing.T) {
 	adapter := newVolumeMounterAdapter(provider, "node-hold")
 	sealed := make(chan error, 1)
 	go func() {
-		sealed <- adapter.UnmountOne(context.Background(), testAccountID, viperblocklegacyv1.EBSRequest{Name: "vol-stopping"})
+		sealed <- adapter.UnmountOne(context.Background(), testAccountID, vm.EBSRequest{Name: "vol-stopping"})
 	}()
 	<-provider.unpublishing
 
 	refused := make(chan error, 1)
 	go func() {
-		refused <- adapter.MountOne(context.Background(), testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-stopping"})
+		refused <- adapter.MountOne(context.Background(), testAccountID, &vm.EBSRequest{Name: "vol-stopping"})
 	}()
 	select {
 	case err := <-refused:
@@ -288,7 +287,7 @@ func TestS8_AttachRefusesRatherThanWaitBehindAStopsSeal(t *testing.T) {
 
 	close(provider.unpublishGate)
 	require.NoError(t, <-sealed)
-	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-stopping"}),
+	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, &vm.EBSRequest{Name: "vol-stopping"}),
 		"the attach goes through once the seal is done")
 }
 
@@ -390,7 +389,7 @@ func TestInstanceCleaner_DeleteVolumes_RecordsOnlyTheOwedVolumes(t *testing.T) {
 		})
 	}
 	instance := &vm.VM{ID: instanceID, AccountID: testAccountID, UnpublishOwed: []string{"vol-owed-1"}}
-	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-owed-1"}, {Name: "vol-sealed-1"}}
+	instance.EBSRequests.Requests = []vm.EBSRequest{{Name: "vol-owed-1"}, {Name: "vol-sealed-1"}}
 
 	require.NoError(t, newInstanceCleanerAdapter(daemon).DeleteVolumes(instance))
 

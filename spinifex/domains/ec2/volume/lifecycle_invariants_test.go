@@ -2,7 +2,6 @@ package volume
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -10,7 +9,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -162,12 +160,9 @@ func TestVolumeTagMirror_WritesOnlyControlPlaneDocument(t *testing.T) {
 	svc.metadata = ebsmetadata.NewStore(store, "test-bucket")
 
 	var configRequests atomic.Int32
-	sub, err := svc.natsConn.Subscribe(viperblocklegacyv1.ConfigUpdateSubject, func(msg *nats.Msg) {
+	sub, err := svc.natsConn.Subscribe("ebs.config", func(msg *nats.Msg) {
 		configRequests.Add(1)
-		data, marshalErr := json.Marshal(viperblocklegacyv1.EBSConfigUpdateResponse{Volume: volumeID, Success: true})
-		if marshalErr == nil {
-			_ = msg.Respond(data)
-		}
+		_ = msg.Respond([]byte(`{"Success":true}`))
 	})
 	require.NoError(t, err)
 	require.NoError(t, svc.natsConn.Flush())

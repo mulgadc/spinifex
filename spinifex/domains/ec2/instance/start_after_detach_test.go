@@ -7,7 +7,6 @@ import (
 	"sync"
 	"testing"
 
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,7 +30,7 @@ func (r *mountRecorder) Mount(_ context.Context, v *vm.VM) error {
 	return errors.New("stop after recording")
 }
 
-func (r *mountRecorder) MountOne(context.Context, string, *viperblocklegacyv1.EBSRequest) error {
+func (r *mountRecorder) MountOne(context.Context, string, *vm.EBSRequest) error {
 	return nil
 }
 

@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/internal/testkit/deadpid"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -121,6 +121,48 @@ func createMockVolumeState(t *testing.T, baseDir, volumeName string) {
 	assert.NoError(t, err)
 }
 
+// publishOverContract sends PublishVolume for volume to cfg's node and decodes
+// the reply. The error is the request's own, such as a timeout.
+func publishOverContract(t *testing.T, nc *nats.Conn, cfg *Config, volume string, timeout time.Duration) (ebsprovider.PublishVolumeResponse, error) {
+	t.Helper()
+	subject, err := ebsprovider.PublishSubject(cfg.NodeName)
+	require.NoError(t, err)
+	body, err := json.Marshal(ebsprovider.PublishVolumeRequest{
+		Versioned: ebsprovider.Versioned{SchemaVersion: ebsprovider.SchemaVersion},
+		VolumeID:  volume,
+		NodeID:    cfg.NodeName,
+	})
+	require.NoError(t, err)
+
+	var resp ebsprovider.PublishVolumeResponse
+	msg, err := nc.Request(subject, body, timeout)
+	if err != nil {
+		return resp, err
+	}
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	return resp, nil
+}
+
+// unpublishOverContract sends UnpublishVolume for volume to cfg's node and
+// decodes the reply.
+func unpublishOverContract(t *testing.T, nc *nats.Conn, cfg *Config, volume string, timeout time.Duration) ebsprovider.UnpublishVolumeResponse {
+	t.Helper()
+	subject, err := ebsprovider.UnpublishSubject(cfg.NodeName)
+	require.NoError(t, err)
+	body, err := json.Marshal(ebsprovider.UnpublishVolumeRequest{
+		Versioned: ebsprovider.Versioned{SchemaVersion: ebsprovider.SchemaVersion},
+		VolumeID:  volume,
+		NodeID:    cfg.NodeName,
+	})
+	require.NoError(t, err)
+
+	msg, err := nc.Request(subject, body, timeout)
+	require.NoError(t, err)
+	var resp ebsprovider.UnpublishVolumeResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	return resp
+}
+
 // writeSealReceipt writes a valid seal receipt for volumeName, matching the
 // fixed shape the nbdkit plugin produces after a successful seal.
 func writeSealReceipt(t *testing.T, baseDir, volumeName string) {
@@ -199,8 +241,8 @@ func TestIntegration_ServiceStartWithEmbeddedNATS(t *testing.T) {
 	// Test completes, the adapter goroutine will be cleaned up when test ends
 }
 
-// TestIntegration_EBSMountRequest tests EBS mount request handling.
-func TestIntegration_EBSMountRequest(t *testing.T) {
+// TestIntegration_PublishVolumeRequest tests publish request handling.
+func TestIntegration_PublishVolumeRequest(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -226,18 +268,7 @@ func TestIntegration_EBSMountRequest(t *testing.T) {
 	// Flush to ensure subscription is registered
 	nc.Flush()
 
-	// Create mount request
-	request := viperblocklegacyv1.EBSRequest{
-		Name:    "vol-test-001",
-		VolType: "gp3",
-		Boot:    false,
-	}
-
-	requestData, err := json.Marshal(request)
-	assert.NoError(t, err)
-
-	// Use Request instead of Publish to get direct response
-	msg, err := nc.Request("ebs.test-node.mount", requestData, 5*time.Second)
+	response, err := publishOverContract(t, nc, cfg, "vol-test-001", 5*time.Second)
 
 	// We expect to get a response (even if it contains an error)
 	if err != nil {
@@ -246,18 +277,14 @@ func TestIntegration_EBSMountRequest(t *testing.T) {
 		return
 	}
 
-	var response viperblocklegacyv1.EBSMountResponse
-	err = json.Unmarshal(msg.Data, &response)
-	assert.NoError(t, err)
-
 	// We expect an error because viperblock/S3 backend is mocked
 	// But we should get a response
-	assert.NotEmpty(t, response.Error)
-	t.Logf("Received expected error response: %s", response.Error)
+	require.NotNil(t, response.Error)
+	t.Logf("Received expected error response: %s", response.Error.Message)
 }
 
-// TestIntegration_EBSUnmountRequest tests EBS unmount request handling.
-func TestIntegration_EBSUnmountRequest(t *testing.T) {
+// TestIntegration_UnpublishVolumeRequest tests unpublish request handling.
+func TestIntegration_UnpublishVolumeRequest(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -285,43 +312,15 @@ func TestIntegration_EBSUnmountRequest(t *testing.T) {
 	assert.NoError(t, err)
 	defer nc.Close()
 
-	// Subscribe to response topic
-	responseChan := make(chan *nats.Msg, 1)
-	_, err = nc.Subscribe("ebs.unmount.response", func(msg *nats.Msg) {
-		responseChan <- msg
-	})
-	assert.NoError(t, err)
-
-	// Create unmount request
-	request := viperblocklegacyv1.EBSRequest{
-		Name: "vol-test-unmount",
-	}
-
-	requestData, err := json.Marshal(request)
-	assert.NoError(t, err)
-
-	// Send unmount request
-	msg, err := nc.Request("ebs.test-node.unmount", requestData, 3*time.Second)
-	assert.NoError(t, err)
-	assert.NotNil(t, msg)
-
-	// Parse response
-	var response viperblocklegacyv1.EBSUnMountResponse
-	err = json.Unmarshal(msg.Data, &response)
-	assert.NoError(t, err)
+	response := unpublishOverContract(t, nc, cfg, "vol-test-unmount", 3*time.Second)
 
 	// Verify response
-	assert.Equal(t, "vol-test-unmount", response.Volume)
-	assert.False(t, response.Mounted)
-	assert.Empty(t, response.Error) // Should succeed
-
-	// Note: Volume removal from cfg.MountedVolumes happens in the handler
-	// We verified the response indicates success, which is sufficient for this test
-	t.Logf("Unmount successful for volume: %s", response.Volume)
+	assert.Nil(t, response.Error) // Should succeed
+	assert.True(t, response.TornDown, "a mounted volume must be reported torn down")
 }
 
-// TestIntegration_EBSUnmountNonExistentVolume tests unmounting a volume that doesn't exist.
-func TestIntegration_EBSUnmountNonExistentVolume(t *testing.T) {
+// TestIntegration_UnpublishNonExistentVolume tests unpublishing a volume that doesn't exist.
+func TestIntegration_UnpublishNonExistentVolume(t *testing.T) {
 	t.Parallel()
 
 	// Skip
@@ -343,37 +342,17 @@ func TestIntegration_EBSUnmountNonExistentVolume(t *testing.T) {
 	assert.NoError(t, err)
 	defer nc.Close()
 
-	// Create unmount request for non-existent volume
-	request := viperblocklegacyv1.EBSRequest{
-		Name: "vol-does-not-exist",
-	}
+	response := unpublishOverContract(t, nc, cfg, "vol-does-not-exist", 3*time.Second)
 
-	requestData, err := json.Marshal(request)
-	assert.NoError(t, err)
-
-	// Send unmount request
-	msg, err := nc.Request("ebs.test-node.unmount", requestData, 3*time.Second)
-	assert.NoError(t, err)
-	assert.NotNil(t, msg)
-
-	// Parse response
-	var response viperblocklegacyv1.EBSUnMountResponse
-	err = json.Unmarshal(msg.Data, &response)
-	assert.NoError(t, err)
-
-	// Verify error response
-	assert.Equal(t, "vol-does-not-exist", response.Volume)
-	assert.NotEmpty(t, response.Error)
-	assert.Contains(t, response.Error, "not found")
-	assert.True(t, response.NotFound, "a volume absent from MountedVolumes must set NotFound so the caller treats the retry as an idempotent success")
+	// A volume absent from MountedVolumes is an idempotent success with nothing torn down.
+	assert.Nil(t, response.Error, "a volume absent from MountedVolumes must be an idempotent success")
+	assert.False(t, response.TornDown, "nothing was exported, so nothing was torn down")
 }
 
-// TestIntegration_EBSUnmountRetryAfterCompletedSealReportsNotFound verifies the
+// TestIntegration_UnpublishRetryAfterCompletedSealReportsNotFound verifies the
 // idempotency contract a slow-but-completed seal relies on: once a volume has
-// been fully unmounted (removed from MountedVolumes), a second ebs.unmount for
-// the same name reports NotFound=true rather than a bare "not found" the
-// caller could mistake for an unrelated failure.
-func TestIntegration_EBSUnmountRetryAfterCompletedSealReportsNotFound(t *testing.T) {
+// been fully unmounted, a second unpublish succeeds with nothing torn down.
+func TestIntegration_UnpublishRetryAfterCompletedSealReportsNotFound(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -393,35 +372,26 @@ func TestIntegration_EBSUnmountRetryAfterCompletedSealReportsNotFound(t *testing
 	require.NoError(t, err)
 	defer nc.Close()
 
-	requestData, err := json.Marshal(viperblocklegacyv1.EBSRequest{Name: "vol-retry-unmount"})
-	require.NoError(t, err)
-
 	// First call: volume is mounted, no local WAL to seal (not created via
 	// createMockVolumeState), so it completes and is dropped from MountedVolumes.
-	msg, err := nc.Request("ebs.test-node.unmount", requestData, 3*time.Second)
-	require.NoError(t, err)
-	var first viperblocklegacyv1.EBSUnMountResponse
-	require.NoError(t, json.Unmarshal(msg.Data, &first))
-	assert.Empty(t, first.Error)
-	assert.False(t, first.NotFound)
+	first := unpublishOverContract(t, nc, cfg, "vol-retry-unmount", 3*time.Second)
+	assert.Nil(t, first.Error)
+	assert.True(t, first.TornDown)
 
-	// Retry: the volume is gone from MountedVolumes, so this must report
-	// NotFound=true — the signal the caller's adapter treats as a completed,
-	// idempotent seal rather than a hard failure.
-	msg, err = nc.Request("ebs.test-node.unmount", requestData, 3*time.Second)
-	require.NoError(t, err)
-	var retry viperblocklegacyv1.EBSUnMountResponse
-	require.NoError(t, json.Unmarshal(msg.Data, &retry))
-	assert.True(t, retry.NotFound, "a retry after a completed unmount must report NotFound")
+	// Retry: the volume is gone from MountedVolumes, so this must converge as a
+	// completed, idempotent seal rather than a hard failure.
+	retry := unpublishOverContract(t, nc, cfg, "vol-retry-unmount", 3*time.Second)
+	assert.Nil(t, retry.Error, "a retry after a completed unmount must not fail")
+	assert.False(t, retry.TornDown, "a retry after a completed unmount must report not found")
 }
 
-// TestIntegration_EBSUnmountSealFailureKeepsVolumeMounted verifies the
+// TestIntegration_UnpublishSealFailureKeepsVolumeMounted verifies the
 // seal-before-remove reorder: when a volume needs sealing (a local WAL
 // directory exists) and the seal fails, the volume must remain in
-// MountedVolumes rather than being dropped — a caller must never see NotFound
+// MountedVolumes rather than being dropped — a caller must never see success
 // for a seal that actually failed, since that would flip an unattached
 // volume to available with no durable checkpoint.
-func TestIntegration_EBSUnmountSealFailureKeepsVolumeMounted(t *testing.T) {
+func TestIntegration_UnpublishSealFailureKeepsVolumeMounted(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -451,16 +421,9 @@ func TestIntegration_EBSUnmountSealFailureKeepsVolumeMounted(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	requestData, err := json.Marshal(viperblocklegacyv1.EBSRequest{Name: "vol-seal-fail"})
-	require.NoError(t, err)
-
-	msg, err := nc.Request("ebs.test-node.unmount", requestData, 5*time.Second)
-	require.NoError(t, err)
-
-	var resp viperblocklegacyv1.EBSUnMountResponse
-	require.NoError(t, json.Unmarshal(msg.Data, &resp))
-	assert.NotEmpty(t, resp.Error, "a seal failure must surface as an error, not a silent success")
-	assert.False(t, resp.NotFound, "a failed seal must not report NotFound")
+	resp := unpublishOverContract(t, nc, cfg, "vol-seal-fail", 5*time.Second)
+	assert.NotNil(t, resp.Error, "a seal failure must surface as an error, not a silent success")
+	assert.False(t, resp.TornDown, "a failed seal must not report a teardown")
 	// Guards the injection itself: a handler that stopped sealing altogether
 	// would otherwise satisfy every assertion below.
 	assert.Equal(t, int32(1), sealCalls.Load(), "the unmount handler must have attempted the seal")
@@ -471,12 +434,12 @@ func TestIntegration_EBSUnmountSealFailureKeepsVolumeMounted(t *testing.T) {
 	assert.Equal(t, "vol-seal-fail", cfg.MountedVolumes[0].Name)
 }
 
-// TestIntegration_EBSUnmountReceiptSkipsFallbackSeal verifies the healthy
+// TestIntegration_UnpublishReceiptSkipsFallbackSeal verifies the healthy
 // path: a seal receipt with no local WAL directory means the plugin already
 // sealed and cleaned up, so the fallback seal must not run and no WARN
 // should fire. Not parallel: it swaps the process-wide slog default to
 // assert on log output (see captureLogs).
-func TestIntegration_EBSUnmountReceiptSkipsFallbackSeal(t *testing.T) {
+func TestIntegration_UnpublishReceiptSkipsFallbackSeal(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
@@ -503,15 +466,8 @@ func TestIntegration_EBSUnmountReceiptSkipsFallbackSeal(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	requestData, err := json.Marshal(viperblocklegacyv1.EBSRequest{Name: "vol-clean-receipt"})
-	require.NoError(t, err)
-
-	msg, err := nc.Request("ebs.test-node.unmount", requestData, 5*time.Second)
-	require.NoError(t, err)
-
-	var resp viperblocklegacyv1.EBSUnMountResponse
-	require.NoError(t, json.Unmarshal(msg.Data, &resp))
-	assert.Empty(t, resp.Error, "a receipt on the healthy path must not surface as an unmount error")
+	resp := unpublishOverContract(t, nc, cfg, "vol-clean-receipt", 5*time.Second)
+	assert.Nil(t, resp.Error, "a receipt on the healthy path must not surface as an unmount error")
 	assert.Equal(t, int32(0), sealCalls.Load(), "a receipt present with no local WAL must not trigger the fallback seal")
 
 	output := logs.String()
@@ -523,11 +479,11 @@ func TestIntegration_EBSUnmountReceiptSkipsFallbackSeal(t *testing.T) {
 	assert.True(t, os.IsNotExist(statErr), "the receipt must be deleted once consumed")
 }
 
-// TestIntegration_EBSUnmountStateDirSealsRegardlessOfReceipt verifies that a
+// TestIntegration_UnpublishStateDirSealsRegardlessOfReceipt verifies that a
 // surviving local WAL directory always triggers the fallback seal, even when
 // a seal receipt is also present — local state is the durability signal that
 // takes precedence.
-func TestIntegration_EBSUnmountStateDirSealsRegardlessOfReceipt(t *testing.T) {
+func TestIntegration_UnpublishStateDirSealsRegardlessOfReceipt(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -554,23 +510,16 @@ func TestIntegration_EBSUnmountStateDirSealsRegardlessOfReceipt(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	requestData, err := json.Marshal(viperblocklegacyv1.EBSRequest{Name: "vol-state-and-receipt"})
-	require.NoError(t, err)
-
-	msg, err := nc.Request("ebs.test-node.unmount", requestData, 5*time.Second)
-	require.NoError(t, err)
-
-	var resp viperblocklegacyv1.EBSUnMountResponse
-	require.NoError(t, json.Unmarshal(msg.Data, &resp))
-	assert.Empty(t, resp.Error)
+	resp := unpublishOverContract(t, nc, cfg, "vol-state-and-receipt", 5*time.Second)
+	assert.Nil(t, resp.Error)
 	assert.Equal(t, int32(1), sealCalls.Load(), "a surviving local WAL must trigger the fallback seal regardless of any receipt")
 }
 
-// TestIntegration_EBSUnmountAuxVolumeNeverSeals pins that auxiliary volumes
+// TestIntegration_UnpublishAuxVolumeNeverSeals pins that auxiliary volumes
 // stay excluded from sealing even when local state survives. The aux check
 // used to live inside volumeNeedsSeal; splitting it out put branch ordering
 // in play, and an -efi volume must never reach the fallback seal.
-func TestIntegration_EBSUnmountAuxVolumeNeverSeals(t *testing.T) {
+func TestIntegration_UnpublishAuxVolumeNeverSeals(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -596,23 +545,16 @@ func TestIntegration_EBSUnmountAuxVolumeNeverSeals(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	requestData, err := json.Marshal(viperblocklegacyv1.EBSRequest{Name: "vol-aux-efi"})
-	require.NoError(t, err)
-
-	msg, err := nc.Request("ebs.test-node.unmount", requestData, 5*time.Second)
-	require.NoError(t, err)
-
-	var resp viperblocklegacyv1.EBSUnMountResponse
-	require.NoError(t, json.Unmarshal(msg.Data, &resp))
-	assert.Empty(t, resp.Error)
+	resp := unpublishOverContract(t, nc, cfg, "vol-aux-efi", 5*time.Second)
+	assert.Nil(t, resp.Error)
 	assert.Equal(t, int32(0), sealCalls.Load(), "an auxiliary volume must never be sealed, even with local state present")
 }
 
-// TestIntegration_EBSUnmountNoStateNoReceiptWarns verifies the WARN is
+// TestIntegration_UnpublishNoStateNoReceiptWarns verifies the WARN is
 // preserved for the case it actually describes: no local WAL and no seal
 // receipt, meaning this node never held state to seal. Not parallel: it
 // swaps the process-wide slog default to assert on log output.
-func TestIntegration_EBSUnmountNoStateNoReceiptWarns(t *testing.T) {
+func TestIntegration_UnpublishNoStateNoReceiptWarns(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
@@ -638,24 +580,17 @@ func TestIntegration_EBSUnmountNoStateNoReceiptWarns(t *testing.T) {
 	require.NoError(t, err)
 	defer nc.Close()
 
-	requestData, err := json.Marshal(viperblocklegacyv1.EBSRequest{Name: "vol-no-state-no-receipt"})
-	require.NoError(t, err)
-
-	msg, err := nc.Request("ebs.test-node.unmount", requestData, 5*time.Second)
-	require.NoError(t, err)
-
-	var resp viperblocklegacyv1.EBSUnMountResponse
-	require.NoError(t, json.Unmarshal(msg.Data, &resp))
-	assert.Empty(t, resp.Error)
+	resp := unpublishOverContract(t, nc, cfg, "vol-no-state-no-receipt", 5*time.Second)
+	assert.Nil(t, resp.Error)
 	assert.Equal(t, int32(0), sealCalls.Load(), "neither state nor receipt must not trigger the fallback seal")
 	assert.Contains(t, logs.String(), "no local viperblock state for volume, skipping seal")
 }
 
-// TestIntegration_EBSMountClearsStaleSealReceipt verifies staleness is
+// TestIntegration_PublishClearsStaleSealReceipt verifies staleness is
 // handled at mount: a receipt left over from a previous mount of this volume
 // must not survive into a new one, so it can't later be misread as proof
 // this mount's plugin sealed.
-func TestIntegration_EBSMountClearsStaleSealReceipt(t *testing.T) {
+func TestIntegration_PublishClearsStaleSealReceipt(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -675,13 +610,10 @@ func TestIntegration_EBSMountClearsStaleSealReceipt(t *testing.T) {
 	defer nc.Close()
 	nc.Flush()
 
-	requestData, err := json.Marshal(viperblocklegacyv1.EBSRequest{Name: "vol-mount-clear", VolType: "gp3"})
-	require.NoError(t, err)
-
 	// Wait for the reply even though the mount fails in the mocked S3 backend:
 	// until it arrives the handler is still creating the volume's directories
 	// under BaseDir, which would race t.TempDir's cleanup.
-	_, err = nc.Request("ebs.test-node.mount", requestData, 10*time.Second)
+	_, err = publishOverContract(t, nc, cfg, "vol-mount-clear", 10*time.Second)
 	require.NoError(t, err)
 
 	assert.NoFileExists(t, receiptPath, "mount must clear a pre-existing receipt for the volume it is mounting")
@@ -717,17 +649,7 @@ func TestIntegration_ConcurrentMountRequests(t *testing.T) {
 	errorCount := 0
 
 	for _, name := range volumeNames {
-		request := viperblocklegacyv1.EBSRequest{
-			Name:    name,
-			VolType: "gp3",
-		}
-
-		requestData, err := json.Marshal(request)
-		assert.NoError(t, err)
-
-		// Use Request to get synchronous response
-		msg, err := nc.Request("ebs.test-node.mount", requestData, 5*time.Second)
-
+		response, err := publishOverContract(t, nc, cfg, name, 5*time.Second)
 		if err != nil {
 			// Timeout or no response - acceptable for this test
 			errorCount++
@@ -735,12 +657,9 @@ func TestIntegration_ConcurrentMountRequests(t *testing.T) {
 			continue
 		}
 
-		var response viperblocklegacyv1.EBSMountResponse
-		if err := json.Unmarshal(msg.Data, &response); err == nil {
-			successCount++
-			// We expect errors in responses due to mocked backend
-			assert.NotEmpty(t, response.Error)
-		}
+		successCount++
+		// We expect errors in responses due to mocked backend
+		assert.NotNil(t, response.Error)
 	}
 
 	// We should have gotten at least some responses
@@ -748,52 +667,36 @@ func TestIntegration_ConcurrentMountRequests(t *testing.T) {
 	assert.True(t, successCount > 0 || errorCount > 0, "Should have received some responses or timeouts")
 }
 
-// TestIntegration_MessageSubscriptions tests that all expected subscriptions are active.
+// TestIntegration_MessageSubscriptions asserts viperblockd answers none of the
+// retired ebs.* subjects, so the provider contract is its only request route.
 func TestIntegration_MessageSubscriptions(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	// Setup embedded NATS server
 	ns, natsURL := setupEmbeddedNATS(t)
 	defer ns.Shutdown()
 
-	// Create test config
 	cfg := setupTestConfig(t, natsURL)
-
 	startTestService(t, cfg)
 
-	// Connect client to NATS
 	nc, err := nats.Connect(natsURL)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	defer nc.Close()
 
-	nc.Flush()
-
-	// Test unmount (most reliable since it doesn't depend on external services)
-	testMsg := []byte(`{"Name": "test-volume-sub"}`)
-	msg, err := nc.Request("ebs.test-node.unmount", testMsg, 3*time.Second)
-
-	// Should get a response
-	assert.NoError(t, err)
-	assert.NotNil(t, msg)
-
-	var response viperblocklegacyv1.EBSUnMountResponse
-	err = json.Unmarshal(msg.Data, &response)
-	assert.NoError(t, err)
-
-	// Should indicate volume not found
-	assert.NotEmpty(t, response.Error)
-	assert.Contains(t, response.Error, "not found")
-
-	t.Log("Successfully verified ebs.unmount subscription is active")
-
-	// Test delete (publish only, no response expected)
-	err = nc.Publish("ebs.delete", testMsg)
-	assert.NoError(t, err)
-
-	t.Log("Successfully published to ebs.delete subscription")
+	testMsg := []byte(`{"Name": "test-volume-sub", "Volume": "test-volume-sub"}`)
+	for _, subject := range []string{
+		"ebs.test-node.mount",
+		"ebs.test-node.unmount",
+		"ebs.test-node.abandon",
+		"ebs.delete",
+		"ebs.sync",
+		"ebs.config",
+	} {
+		_, err := nc.Request(subject, testMsg, 3*time.Second)
+		assert.ErrorIs(t, err, nats.ErrNoResponders, "viperblockd must not answer %s", subject)
+	}
 }
 
 // TestIntegration_ServiceGracefulShutdown tests graceful shutdown behavior.
@@ -828,11 +731,7 @@ func TestIntegration_ServiceGracefulShutdown(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Test that service is responsive
-	request := viperblocklegacyv1.EBSRequest{Name: "test"}
-	requestData, _ := json.Marshal(request)
-
-	_, err = nc.Request("ebs.test-node.unmount", requestData, 2*time.Second)
-	assert.NoError(t, err)
+	unpublishOverContract(t, nc, cfg, "test", 2*time.Second)
 
 	nc.Close()
 
@@ -861,23 +760,14 @@ func TestIntegration_MountAuxiliaryVolumeSuffix(t *testing.T) {
 	nc.Flush()
 
 	// Send mount request for auxiliary volume (will fail at S3 backend, but validates routing)
-	request := viperblocklegacyv1.EBSRequest{
-		Name:    "vol-test-cloudinit",
-		VolType: "gp3",
-	}
-
-	requestData, _ := json.Marshal(request)
-
-	msg, err := nc.Request("ebs.test-node.mount", requestData, 5*time.Second)
+	response, err := publishOverContract(t, nc, cfg, "vol-test-cloudinit", 5*time.Second)
 	if err != nil {
 		// Timeout is acceptable — service attempted to process but backend failed
 		t.Logf("Request error (expected with mocked S3 backend): %v", err)
 		return
 	}
 
-	var response viperblocklegacyv1.EBSMountResponse
-	assert.NoError(t, json.Unmarshal(msg.Data, &response))
 	// Expect an error because S3 backend is mocked, but the request was processed
-	assert.NotEmpty(t, response.Error)
-	t.Logf("Auxiliary volume mount processed with expected error: %s", response.Error)
+	require.NotNil(t, response.Error)
+	t.Logf("Auxiliary volume mount processed with expected error: %s", response.Error.Message)
 }

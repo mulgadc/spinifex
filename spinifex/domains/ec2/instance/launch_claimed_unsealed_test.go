@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/stretchr/testify/assert"
@@ -37,7 +36,7 @@ func refusedLaunch(t *testing.T, checker *fakeUnsealedChecker) error {
 
 	// An instance type this node does not offer is the simplest capacity refusal.
 	instance := &vm.VM{ID: "i-held", AccountID: "acc", InstanceType: "no.such.type"}
-	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-root", Boot: true}, {Name: "vol-data"}}
+	instance.EBSRequests.Requests = []vm.EBSRequest{{Name: "vol-root", Boot: true}, {Name: "vol-data"}}
 	return svc.launchClaimedInstance(t.Context(), instance, func() {})
 }
 
@@ -87,7 +86,7 @@ func TestLaunchClaimedInstance_UnansweredCheckIsBoundedAndFailsSafe(t *testing.T
 	svc, _ := claimedRelaunchService(t, func(*vm.VM) error { return nil })
 	svc.SetUnsealedWritesChecker(blockingUnsealedChecker{}, "node-a")
 	instance := &vm.VM{ID: "i-wedged", AccountID: "acc", InstanceType: "no.such.type"}
-	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-root", Boot: true}}
+	instance.EBSRequests.Requests = []vm.EBSRequest{{Name: "vol-root", Boot: true}}
 
 	start := time.Now()
 	err := svc.launchClaimedInstance(t.Context(), instance, func() {})

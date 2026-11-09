@@ -20,7 +20,6 @@ import (
 
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/internal/testkit/ebsfake"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
@@ -2834,7 +2833,7 @@ func TestHandleEC2ModifyVolume_Success(t *testing.T) {
 		VolumeType:  "gp3",
 	})
 
-	syncSub, err := daemon.natsConn.SubscribeSync(viperblocklegacyv1.SyncSubject)
+	syncSub, err := daemon.natsConn.SubscribeSync("ebs.sync")
 	require.NoError(t, err)
 	defer syncSub.Unsubscribe()
 
@@ -3347,7 +3346,7 @@ func TestDetachVolume_BootVolumeRejected(t *testing.T) {
 		Instance:     &ec2.Instance{},
 		QMPClient:    &qmp.QMPClient{},
 	}
-	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+	instance.EBSRequests.Requests = []vm.EBSRequest{
 		{Name: "vol-boot-001", Boot: true, DeviceName: "/dev/sda1"},
 	}
 	daemon.vmMgr.Insert(instance)
@@ -3392,7 +3391,7 @@ func TestDetachVolume_DeviceMismatch(t *testing.T) {
 		Instance:     &ec2.Instance{},
 		QMPClient:    &qmp.QMPClient{},
 	}
-	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+	instance.EBSRequests.Requests = []vm.EBSRequest{
 		{Name: "vol-mismatch-001", DeviceName: "/dev/sdf"},
 	}
 	daemon.vmMgr.Insert(instance)

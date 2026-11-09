@@ -7,7 +7,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
@@ -588,7 +587,7 @@ func TestVolumeMounterAdapter_Mount_NoResponderIsRetryable(t *testing.T) {
 	// No subscriber on the mount subject: viperblockd is still starting, so
 	// the request returns nats.ErrNoResponders, which must be retryable.
 	instance := &vm.VM{ID: "i-mount-noresponder"}
-	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-noresponder"}}
+	instance.EBSRequests.Requests = []vm.EBSRequest{{Name: "vol-noresponder"}}
 
 	err := adapter.Mount(t.Context(), instance)
 	require.Error(t, err)

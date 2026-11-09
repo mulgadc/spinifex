@@ -255,11 +255,6 @@ func (cfg *Config) lookupMountedVolume(volumeName string) (MountedVolume, bool) 
 // and reporting a teardown that has not killed nbdkit is the failure that lets a
 // second writer keep going while the cluster believes it stopped.
 func (cfg *Config) tearDownExport(ctx context.Context, matched MountedVolume, why string) error {
-	if matched.ConfigSub != nil {
-		if err := matched.ConfigSub.Unsubscribe(); err != nil {
-			slog.ErrorContext(ctx, why+": unsubscribe config topic", "volume", matched.Name, "err", err)
-		}
-	}
 	unsubscribeOwnerSubjects(matched.Name, matched.OwnerSubs)
 
 	// Detach before the kill so the state-tracking VB stops its background

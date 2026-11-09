@@ -1,4 +1,4 @@
-package viperblocklegacyv1
+package dirty
 
 import (
 	"regexp"

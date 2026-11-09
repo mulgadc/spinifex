@@ -1,11 +1,21 @@
-// Package dirty is a read-only capability over the dirty-volume bucket: which
-// node holds a volume's only current copy. The subjects, DTOs and bucket name
-// it reads are owned by contracts/viperblockd/legacy/v1; this package has no
-// vocabulary of its own and exposes no write, delete or purge operation.
+// Package dirty owns the dirty-volume bucket: which node holds writes for a
+// volume that the backend may not have. Only the Viperblock adapter writes,
+// clears or changes a record; this package's own API is read-only.
 //
-// It is a leaf on purpose. A consumer of the contract -- an operator tool
-// listing unsealed volumes -- should not have to link the storage adapter to
-// read what it published.
+// DirtyBucket is the JetStream KV bucket VIPERBLOCK_VOLUME_DIRTY, keyed by
+// volume name under VolumeKeyPattern, storing DirtyRecord JSON. There is no
+// TTL: a record persists until an adapter-owned recovery or unseal removes it.
+//
+// The bucket name, key rule and JSON shape are persisted state that every
+// node reads, so no field is renamed, retyped or reinterpreted; a breaking
+// change needs a successor bucket and a migration.
+//
+// Consumers are Viperblock recovery and mount logic on any node, and spx
+// admin for a read-only operational view. The CLI is never a writer and must
+// not perform arbitrary bucket operations.
+//
+// It is a leaf on purpose: an operator tool listing unsealed volumes should
+// not have to link the storage adapter to read what it published.
 package dirty
 
 import (
@@ -15,7 +25,6 @@ import (
 	"fmt"
 	"time"
 
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -41,7 +50,7 @@ func bindDirtyBucket(ctx context.Context, nc *nats.Conn) (jetstream.KeyValue, er
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
 	}
-	kv, err := js.KeyValue(ctx, viperblocklegacyv1.DirtyBucket)
+	kv, err := js.KeyValue(ctx, DirtyBucket)
 	if errors.Is(err, jetstream.ErrBucketNotFound) {
 		return nil, nil
 	}
@@ -76,7 +85,7 @@ func ListUnsealedVolumes(ctx context.Context, nc *nats.Conn) ([]UnsealedVolume, 
 		if err != nil {
 			continue
 		}
-		var record viperblocklegacyv1.DirtyRecord
+		var record DirtyRecord
 		if err := json.Unmarshal(entry.Value(), &record); err != nil {
 			// Something holds writes for this volume even if the record cannot
 			// be read, so report it rather than hide it.

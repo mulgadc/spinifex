@@ -11,8 +11,8 @@ import (
 	"time"
 
 	ec2v1 "github.com/mulgadc/spinifex/contracts/ec2/v1"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs/viperblock/dirty"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -231,7 +231,7 @@ type volumeLease struct {
 // acquisitions on this node share one lease: cross-node exclusion is what the
 // lease is for, and the per-node case is already held by the volume flock.
 func (l *volumeLeases) acquire(ctx context.Context, volumeName string) (*volumeLease, error) {
-	if !viperblocklegacyv1.VolumeKeyPattern.MatchString(volumeName) {
+	if !dirty.VolumeKeyPattern.MatchString(volumeName) {
 		return nil, fmt.Errorf("volume name %q cannot be a lease key", volumeName)
 	}
 

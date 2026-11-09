@@ -12,7 +12,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -1297,7 +1296,7 @@ func TestAreVolumeSocketsValid_ValidSocket(t *testing.T) {
 	instance := &vm.VM{
 		ID: "i-valid-sock",
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
+			Requests: []vm.EBSRequest{
 				{Name: "vol-1", NBDURI: "nbd:unix:" + sockPath},
 			},
 		},
@@ -1310,7 +1309,7 @@ func TestAreVolumeSocketsValid_MissingSocket(t *testing.T) {
 	instance := &vm.VM{
 		ID: "i-missing-sock",
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
+			Requests: []vm.EBSRequest{
 				{Name: "vol-1", NBDURI: "nbd:unix:/nonexistent/path.sock"},
 			},
 		},
@@ -1330,7 +1329,7 @@ func TestAreVolumeSocketsValid_StaleSocketFile(t *testing.T) {
 	instance := &vm.VM{
 		ID: "i-stale-sock",
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
+			Requests: []vm.EBSRequest{
 				{Name: "vol-1", NBDURI: "nbd:unix:" + sockPath},
 			},
 		},
@@ -1353,7 +1352,7 @@ func TestAreVolumeSocketsValid_TCPTransport(t *testing.T) {
 	instance := &vm.VM{
 		ID: "i-tcp",
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
+			Requests: []vm.EBSRequest{
 				{Name: "vol-tcp", NBDURI: "nbd://192.168.1.1:10809"},
 			},
 		},

@@ -53,6 +53,7 @@ func putCorruptAMI(t *testing.T, store *objectstore.MemoryObjectStore, imageID s
 // for, in order, and can fail GetVolume or DeleteSnapshot.
 type removeProvider struct {
 	*ebsprovider.MemoryProvider
+
 	deletes           []string
 	getVolumeErr      error
 	deleteSnapshotErr error

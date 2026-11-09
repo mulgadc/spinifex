@@ -50,6 +50,9 @@ type StatusReply struct {
 // request and refuses a request that names another node.
 func (g *Gate) ServeStatus(node string, build int) func(context.Context, *StatusRequest, string) (*StatusReply, error) {
 	return func(ctx context.Context, req *StatusRequest, _ string) (*StatusReply, error) {
+		if g == nil || g.store == nil {
+			return nil, fmt.Errorf("feature level gate on node %q is not ready", node)
+		}
 		if req.Node != node {
 			return nil, fmt.Errorf("feature level status for node %q answered by node %q", req.Node, node)
 		}

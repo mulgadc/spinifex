@@ -243,3 +243,21 @@ func TestStartCluster_BuildBelowFeatureLevelExitsBeforeAnyClaim(t *testing.T) {
 	assert.Nil(t, d.instanceService)
 	assert.Zero(t, d.vmMgr.Count())
 }
+
+// A node that has not set its gate must not answer the status route at all: a
+// reply would read as nothing in flight to the rollback barrier.
+func TestFeatureLevelStatusSubs_NilGateServesNothing(t *testing.T) {
+	t.Parallel()
+	d := &Daemon{node: "node-1"}
+	assert.Empty(t, d.featureLevelStatusSubs())
+
+	_, store := levelManager(t)
+	d.featureGate = featurelevel.NewGate(store)
+	subs := d.featureLevelStatusSubs()
+	require.Len(t, subs, 1)
+	assert.Equal(t, featurelevel.StatusSubject("node-1"), subs[0].topic)
+	assert.Empty(t, subs[0].queueGroup)
+
+	d.node = "a.b"
+	assert.Empty(t, d.featureLevelStatusSubs(), "an invalid node id serves nothing")
+}

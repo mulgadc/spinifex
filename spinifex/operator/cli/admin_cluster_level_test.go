@@ -41,3 +41,15 @@ func TestRenderLevelStatus_HeldAndRollbackStatesAndASilentMember(t *testing.T) {
 	assert.Contains(t, rolling.String(), "Rollback:      to 1 in progress")
 	assert.Contains(t, rolling.String(), "Hold:          held at 1")
 }
+
+func TestDrainChecksCoverEveryDeclaredLevel(t *testing.T) {
+	t.Parallel()
+	assert.NoError(t, registerDrainChecks(), "a level declared without a registered drain check")
+}
+
+func TestCancelError_ExplainsALoweredLevel(t *testing.T) {
+	t.Parallel()
+	assert.ErrorContains(t, cancelError(featurelevel.ErrNoRollback), "already finished")
+	other := assert.AnError
+	assert.Equal(t, other, cancelError(other))
+}

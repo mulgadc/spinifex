@@ -1393,14 +1393,20 @@ func (d *Daemon) subscribeAll() error {
 	} else {
 		slog.Error("Not serving account-settings seal capability: node ID is not a single NATS subject token", "node", d.node)
 	}
-	// Per-node, no queue group, like the seal responder above.
-	if d.featureGate != nil && featurelevel.ValidNode(d.node) {
-		subs = append(subs, natsSub{featurelevel.StatusSubject(d.node), handleNATSRequest(d.node, d.featureGate.ServeStatus(d.node, featurelevel.Build)), ""})
-	} else {
-		slog.Error("Not serving feature level status", "node", d.node, "gate_ready", d.featureGate != nil)
-	}
+	subs = append(subs, d.featureLevelStatusSubs()...)
 
 	return d.registerNatsSubs(subs)
+}
+
+// featureLevelStatusSubs serves the status route only once the gate exists, so a
+// node that has not read the record never answers as having nothing in flight.
+// Per-node, no queue group, like the seal responder.
+func (d *Daemon) featureLevelStatusSubs() []natsSub {
+	if d.featureGate == nil || !featurelevel.ValidNode(d.node) {
+		slog.Error("Not serving feature level status", "node", d.node, "gate_ready", d.featureGate != nil)
+		return nil
+	}
+	return []natsSub{{featurelevel.StatusSubject(d.node), handleNATSRequest(d.node, d.featureGate.ServeStatus(d.node, featurelevel.Build)), ""}}
 }
 
 // registerNatsSubs turns each entry in subs into a live NATS subscription and

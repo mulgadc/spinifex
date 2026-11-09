@@ -3,6 +3,7 @@ package vm
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -131,6 +132,10 @@ func TestS7_UEFIClaimGuardingALocalCopyIsKeptWhenALaunchRollsBack(t *testing.T) 
 			f.writeLocal(t, key, gen, region("guest wrote this"))
 			require.NoError(t, os.WriteFile(filepath.Join(f.instanceDir(), uefiSeededFileName), []byte("{"), 0o600))
 		}},
+		{name: "vars.fd that cannot be checked", local: func(f *uefiFixture, key string, gen uint64) {
+			f.writeLocal(t, key, gen, region("guest wrote this"))
+			uncheckableVars(t, f)
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -192,6 +197,38 @@ func TestS7_UEFICopyThatCannotBeVouchedForIsNeverOverwritten(t *testing.T) {
 		"ADR-0003:S7 (uefi_varstore.go prepareUEFIVarStore): a copy that cannot be vouched for was overwritten; refuse the start and keep it")
 	holder, held := f.claimHolder(t)
 	require.True(t, held, "ADR-0003:S7: the claim guarding an unvouched copy was released")
+	assert.Equal(t, tok, holder)
+	assert.Empty(t, f.mounter.mounted)
+}
+
+// uncheckableVars makes vars.fd a symlink to itself, so stat fails with a
+// loop rather than reporting absence, even when the test runs as root.
+func uncheckableVars(t *testing.T, f *uefiFixture) {
+	t.Helper()
+	path := filepath.Join(f.instanceDir(), uefiVarsFileName)
+	require.NoError(t, os.Remove(path))
+	require.NoError(t, os.Symlink(uefiVarsFileName, path))
+}
+
+func TestS7_UEFIVarsThatCannotBeCheckedAreNeverOverwritten(t *testing.T) {
+	f := newUEFIFixture(t)
+	key := keyFor("pointed")
+	f.putObject(t, key, gzipped(t, region("object")))
+	instance := f.instance(t, key, f.identity)
+	tok, err := f.peerClaim("node-a").TryLock(t.Context())
+	require.NoError(t, err)
+	f.writeLocal(t, key, tok.Generation, region("guest wrote this"))
+	uncheckableVars(t, f)
+
+	err = f.m.Run(t.Context(), instance)
+
+	require.ErrorIs(t, err, ErrMountRetryable)
+	info, err := os.Lstat(filepath.Join(f.instanceDir(), uefiVarsFileName))
+	require.NoError(t, err)
+	assert.Equal(t, fs.ModeSymlink, info.Mode().Type(),
+		"ADR-0003:S7 (uefi_varstore.go readLocalUEFICopy): a vars.fd that could not be checked was replaced; refuse the start and keep it")
+	holder, held := f.claimHolder(t)
+	require.True(t, held, "ADR-0003:S7: the claim guarding an uncheckable copy was released")
 	assert.Equal(t, tok, holder)
 	assert.Empty(t, f.mounter.mounted)
 }

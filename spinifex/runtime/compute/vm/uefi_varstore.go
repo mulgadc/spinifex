@@ -284,6 +284,11 @@ func (m *Manager) prepareUEFIVarStore(ctx context.Context, instance *VM, rec *ue
 		}
 	}
 	switch {
+	case local.varsErr != nil:
+		slog.ErrorContext(ctx, "This node's UEFI variable store cannot be checked; keeping it and refusing the start",
+			"instanceId", instance.ID, "path", filepath.Join(dir, uefiVarsFileName), "err", local.varsErr)
+		return held, fmt.Errorf("UEFI variable store for %s has a %s this node cannot check: %w: %w",
+			instance.ID, uefiVarsFileName, local.varsErr, ErrMountRetryable)
 	case local.hasVars && local.seedErr != nil:
 		slog.ErrorContext(ctx, "This node's UEFI variable store cannot be vouched for; keeping it and refusing the start",
 			"instanceId", instance.ID, "path", filepath.Join(dir, uefiSeededFileName), "err", local.seedErr)
@@ -435,17 +440,22 @@ func (m *Manager) checkUEFIFirmware(instance *VM, ref *uefistore.UEFIVarStoreRef
 type localUEFICopy struct {
 	hasVars  bool
 	varsSize int64
+	varsErr  error
 	hasSeed  bool
 	seed     uefiSeed
 	seedErr  error
 }
 
-// readLocalUEFICopy reads dir's vars.fd and seeded.json. Only a seeded.json
-// that exists and cannot be read or decoded sets seedErr.
+// readLocalUEFICopy reads dir's vars.fd and seeded.json. A vars.fd that may
+// exist but cannot be checked sets varsErr and counts as present; only a
+// seeded.json that exists and cannot be read or decoded sets seedErr.
 func readLocalUEFICopy(dir string) localUEFICopy {
 	var c localUEFICopy
-	if info, err := os.Stat(filepath.Join(dir, uefiVarsFileName)); err == nil {
+	switch info, err := os.Stat(filepath.Join(dir, uefiVarsFileName)); {
+	case err == nil:
 		c.hasVars, c.varsSize = true, info.Size()
+	case !errors.Is(err, fs.ErrNotExist):
+		c.hasVars, c.varsErr = true, err
 	}
 	data, err := os.ReadFile(filepath.Join(dir, uefiSeededFileName))
 	switch {
@@ -468,7 +478,7 @@ func (c localUEFICopy) owedUnder(generation uint64) bool {
 	if !c.hasVars {
 		return false
 	}
-	return c.seedErr != nil || (c.hasSeed && c.seed.Generation == generation)
+	return c.varsErr != nil || c.seedErr != nil || (c.hasSeed && c.seed.Generation == generation)
 }
 
 // fetchUEFIVars gets key and returns its decompressed region, which must be

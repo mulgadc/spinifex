@@ -115,19 +115,21 @@ func nodeSubject(nodeID, verb string) (string, error) {
 
 // PublishSubject returns nodeID's per-node mount subject
 // (ebs.provider.v1.<node>.mount), which serves PublishVolume on that node.
+// The provider subscribes it only after its startup recovery attempt.
 func PublishSubject(nodeID string) (string, error) {
 	return nodeSubject(nodeID, publishVerb)
 }
 
 // UnpublishSubject returns nodeID's per-node unmount subject
 // (ebs.provider.v1.<node>.unmount), which serves UnpublishVolume on that node.
+// The provider subscribes it only after its startup recovery attempt.
 func UnpublishSubject(nodeID string) (string, error) {
 	return nodeSubject(nodeID, unpublishVerb)
 }
 
-// UnsealedWritesSubject returns nodeID's per-node subject
-// (ebs.provider.v1.<node>.unsealed), which answers whether that node holds
-// unsealed writes for a set of volumes.
+// UnsealedWritesSubject returns nodeID's ebs.provider.v1.<node>.unsealed, answering which
+// of a set of volumes the node holds unsealed writes for. Subscribed after startup recovery,
+// an empty request shows the provider serves, not that every surviving export was adopted.
 func UnsealedWritesSubject(nodeID string) (string, error) {
 	return nodeSubject(nodeID, unsealedVerb)
 }

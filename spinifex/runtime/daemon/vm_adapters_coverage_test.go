@@ -26,6 +26,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/clustersize"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -180,6 +181,29 @@ func TestBuildVMManagerDeps_BackingStoreReady(t *testing.T) {
 	d.natsConn = connectAdapterTestNATS(t, sharedJSNATSURL)
 	assert.True(t, d.buildVMManagerDeps().BackingStoreReady(),
 		"no predastore configured and JetStream answering is ready")
+}
+
+// The provider condition is its own dependency: JetStream up with no local
+// provider leaves it false while BackingStoreReady stays true.
+func TestBuildVMManagerDeps_EBSProviderReady(t *testing.T) {
+	t.Parallel()
+	nc := connectAdapterTestNATS(t, sharedJSNATSURL)
+	d := &Daemon{
+		config:      &config.Config{},
+		vmMgr:       vm.NewManager(),
+		natsConn:    nc,
+		node:        newMounterTestNode(),
+		ebsProvider: ebsprovider.NewNATSProvider(nc, ebsProviderRequestTimeout),
+	}
+
+	deps := d.buildVMManagerDeps()
+	assert.False(t, deps.EBSProviderReady(), "no provider serves this node yet")
+	assert.True(t, deps.BackingStoreReady(), "the backing store does not read the provider")
+
+	serveMemoryProvider(t, nc, newMemoryProvider(t), d.node)
+	deps = d.buildVMManagerDeps()
+	assert.True(t, deps.EBSProviderReady(), "this node's provider now answers")
+	assert.True(t, deps.BackingStoreReady())
 }
 
 // Variable stores live in the instance domain's bucket, read through the

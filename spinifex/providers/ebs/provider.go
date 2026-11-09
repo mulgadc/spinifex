@@ -697,6 +697,10 @@ type UnpublishVolumeResponse struct {
 // UnsealedWritesChecker answers, for one node, which of a set of volumes it
 // still holds writes for that the backend may not have. A write-through
 // provider answers with none. Consumers that only ask this depend on it alone.
+//
+// An empty volumeIDs is a valid request and is answered with no volumes and no
+// error. The daemon sends it on its own node's subject to learn that the node's
+// provider is serving.
 type UnsealedWritesChecker interface {
 	HoldsUnsealedWrites(ctx context.Context, nodeID string, volumeIDs []string) ([]string, error)
 }

@@ -887,7 +887,8 @@ func (d *Daemon) buildVMManagerDeps() vm.Deps {
 		DetachDelay:                d.detachDelay,
 		DeviceDeletedTimeout:       d.deviceDeletedTimeout,
 		ConsumeCleanShutdownMarker: d.consumeCleanShutdownMarker(),
-		BackingStoreReady:          func() bool { return d.checkPredastoreReady() && d.checkViperblockReady() },
+		BackingStoreReady:          func() bool { return d.checkPredastoreReady() && d.checkJetStreamReady() },
+		EBSProviderReady:           d.ebsProviderReady,
 		UEFIVarStore: vm.UEFIVarStoreDeps{
 			Objects:  d.instanceObjects,
 			Bucket:   d.config.Predastore.Bucket,

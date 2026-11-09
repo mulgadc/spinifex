@@ -83,7 +83,6 @@ func TestFindOrphanVolumes_FindsAVolumeWhoseDocumentIsGone(t *testing.T) {
 	require.Len(t, orphans, 1, "the scan must report exactly the volume with no document")
 	assert.Equal(t, "vol-stranded00000", orphans[0].VolumeID,
 		"a volume the provider holds with no control-plane document is unreachable through EC2 and must be surfaced")
-	assert.False(t, orphans[0].Derived)
 }
 
 // TestFindOrphanVolumes_NeverDeletes exercises ADR-0003:S2 (behaviour; mechanism from historic PROP-LIFECYCLE-005 §3) for this tool: an
@@ -104,9 +103,9 @@ func TestFindOrphanVolumes_NeverDeletes(t *testing.T) {
 	assert.Equal(t, "vol-stranded00000", got.ID)
 }
 
-// An EFI variable store is created without a document by design, so it is only
-// an orphan when the root volume it belongs to is also undocumented.
-func TestFindOrphanVolumes_DerivedVolumeExcusedByItsBase(t *testing.T) {
+// A <root>-efi volume has no owner once UEFI stores left the provider, so it
+// is listed like any other undocumented volume even beside a documented root.
+func TestFindOrphanVolumes_EFISuffixedVolumeReportedBesideItsDocumentedRoot(t *testing.T) {
 	provider, metadata := newOrphanScanFixture(t)
 	createProviderVolume(t, provider, "vol-live00000000")
 	createProviderVolume(t, provider, "vol-live00000000-efi")
@@ -114,21 +113,9 @@ func TestFindOrphanVolumes_DerivedVolumeExcusedByItsBase(t *testing.T) {
 
 	orphans, err := FindOrphanVolumes(t.Context(), provider, metadata)
 	require.NoError(t, err)
-	assert.Empty(t, orphans, "an EFI store whose root volume is documented is expected, not orphaned")
-}
 
-func TestFindOrphanVolumes_DerivedVolumeReportedWhenItsBaseIsGone(t *testing.T) {
-	provider, metadata := newOrphanScanFixture(t)
-	createProviderVolume(t, provider, "vol-gone00000000")
-	createProviderVolume(t, provider, "vol-gone00000000-efi")
-
-	orphans, err := FindOrphanVolumes(t.Context(), provider, metadata)
-	require.NoError(t, err)
-
-	require.Len(t, orphans, 2, "a stranded pair must both be reported; the EFI store's lifecycle owner is gone too")
-	assert.Equal(t, "vol-gone00000000", orphans[0].VolumeID)
-	assert.Equal(t, "vol-gone00000000-efi", orphans[1].VolumeID)
-	assert.True(t, orphans[1].Derived)
+	require.Len(t, orphans, 1)
+	assert.Equal(t, "vol-live00000000-efi", orphans[0].VolumeID)
 }
 
 // An AMI's blocks live in a provider volume named after the image, recorded as

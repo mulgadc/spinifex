@@ -983,9 +983,6 @@ func runVolumesOrphansCmd(_ *cobra.Command, _ []string) {
 	for _, orphan := range orphans {
 		fmt.Printf("  %s\n", orphan.VolumeID)
 		fmt.Printf("    handle:  %s\n", orphan.Handle)
-		if orphan.Derived {
-			fmt.Println("    note:    derived volume; its base volume is also unknown")
-		}
 	}
 	fmt.Println()
 	fmt.Println("Nothing was deleted. Each of these holds data that cannot be reached")

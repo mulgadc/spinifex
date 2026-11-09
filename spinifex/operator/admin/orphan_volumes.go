@@ -16,22 +16,12 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 )
 
-// efiVolumeSuffix marks a volume derived from another one. An EFI variable
-// store is created alongside its root volume and deliberately gets no
-// control-plane document, so it is only an orphan when its base is one too.
-const efiVolumeSuffix = "-efi"
-
 // OrphanVolume is a volume the provider holds that the control plane has no
 // document for. Its blocks are consuming space with no API handle, so it can
 // be neither described nor deleted through EC2.
 type OrphanVolume struct {
 	VolumeID string
 	Handle   string
-
-	// Derived marks a volume named after another one, such as an EFI variable
-	// store. It is reported only when its base volume is also undocumented,
-	// which means the pair was stranded together.
-	Derived bool
 }
 
 // FindOrphanVolumes reports what storage holds that the control plane cannot
@@ -87,11 +77,7 @@ func FindOrphanVolumes(ctx context.Context, provider ebsprovider.EBSProvider, me
 		if known[ref.ID] {
 			continue
 		}
-		base, derived := strings.CutSuffix(ref.ID, efiVolumeSuffix)
-		if derived && known[base] {
-			continue
-		}
-		orphans = append(orphans, OrphanVolume{VolumeID: ref.ID, Handle: ref.Handle, Derived: derived})
+		orphans = append(orphans, OrphanVolume{VolumeID: ref.ID, Handle: ref.Handle})
 	}
 	sort.Slice(orphans, func(i, j int) bool { return orphans[i].VolumeID < orphans[j].VolumeID })
 	return orphans, nil

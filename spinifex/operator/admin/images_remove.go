@@ -9,11 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 )
 
@@ -21,19 +20,17 @@ import (
 type RemoveImageOpts struct {
 	ImageID string
 	// Force bypasses the dependency check, the ownership-shape check, and
-	// the "config.json missing/corrupt" check. Salvage-mode lever.
+	// the "AMI document missing/corrupt" check. Salvage-mode lever.
 	Force bool
 }
 
-// RemoveImageResult summarises what was deleted from object storage.
-//
-// BytesDeleted is the logical size of the deleted objects, not physical disk
-// space: predastore reclaims a deleted object's bytes asynchronously via
-// background compaction, so this count can be freed well after the call
-// returns, or briefly not at all if compaction is stalled.
+// RemoveImageResult names what RemoveSystemImage deleted. The provider
+// deleted SnapshotID and then VolumeID; either may already have been absent.
 type RemoveImageResult struct {
-	ObjectsDeleted int
-	BytesDeleted   int64
+	VolumeID   string
+	SnapshotID string
+	// UEFIObjectsDeleted counts the image's UEFI variable store objects.
+	UEFIObjectsDeleted int
 }
 
 // Dependents lists every resource that transitively backs an admin-imported
@@ -49,8 +46,22 @@ func (d Dependents) Empty() bool {
 	return len(d.Snapshots) == 0 && len(d.Volumes) == 0 && len(d.AMIs) == 0
 }
 
-// RemovePreview captures AMI metadata, byte counts, and dependents for the
-// CLI confirmation prompt. PreviewRemoveSystemImage performs no deletions.
+// VolumeStatus is what the provider answered about an image's volume.
+type VolumeStatus int
+
+const (
+	// VolumePresent: GetVolume returned the volume and its capacity.
+	VolumePresent VolumeStatus = iota
+	// VolumeAbsent: GetVolume answered not_found.
+	VolumeAbsent
+	// VolumeUnknown: GetVolume failed any other way, as it does for a volume
+	// whose persisted state is unreadable. The removal does not need it.
+	VolumeUnknown
+)
+
+// RemovePreview captures AMI metadata, the provider's view of the image's
+// volume, and dependents for the CLI confirmation prompt.
+// PreviewRemoveSystemImage performs no deletions.
 type RemovePreview struct {
 	ImageID       string
 	Name          string
@@ -60,29 +71,33 @@ type RemovePreview struct {
 	ConfigCorrupt bool // true when the document exists but is undecodable
 	IsSystemOwned bool // ImageOwnerAlias is set and not an account ID
 
-	AMIObjectCount  int
-	AMIBytesTotal   int64
-	SnapObjectCount int
-	SnapBytesTotal  int64
+	// SnapshotID is the provider snapshot the removal deletes first.
+	SnapshotID string
+	// VolumeStatus says whether VolumeCapacityBytes is known; VolumeErr
+	// holds the provider's error when the status is VolumeUnknown.
+	VolumeStatus        VolumeStatus
+	VolumeCapacityBytes int64
+	VolumeErr           error
 
 	Dependents Dependents
 }
 
-// SnapPrefix returns the viperblock-internal snapshot prefix backing an
-// admin-imported AMI. v_utils.ImportDiskImage writes the snapshot as
-// "snap-<volumeName>" where the volume name IS the AMI ID.
+// SnapPrefix returns the provider snapshot ID backing an admin-imported AMI.
+// ImportImage snapshots the volume as "snap-<volumeID>", and the volume ID IS
+// the AMI ID.
 func SnapPrefix(imageID string) string {
 	return "snap-" + imageID
 }
 
-// PreviewRemoveSystemImage gathers AMI metadata and dependents without mutating
-// any state. Not-found, corrupt config, and account-owned AMI are preview fields.
-func PreviewRemoveSystemImage(store objectstore.ObjectStore, bucket, imageID string) (*RemovePreview, error) {
+// PreviewRemoveSystemImage gathers AMI metadata, the image volume's capacity
+// and dependents without mutating any state. Not-found, corrupt config,
+// account-owned AMI and an unreadable volume are preview fields.
+func PreviewRemoveSystemImage(ctx context.Context, store objectstore.ObjectStore, provider ebsprovider.EBSProvider, bucket, imageID string) (*RemovePreview, error) {
 	if !strings.HasPrefix(imageID, "ami-") {
 		return nil, errors.New(awserrors.ErrorInvalidAMIIDMalformed)
 	}
 
-	preview := &RemovePreview{ImageID: imageID}
+	preview := &RemovePreview{ImageID: imageID, SnapshotID: SnapPrefix(imageID)}
 
 	meta, configErr := readAMI(store, bucket, imageID)
 	switch {
@@ -100,19 +115,22 @@ func PreviewRemoveSystemImage(store objectstore.ObjectStore, bucket, imageID str
 		return nil, fmt.Errorf("preview: read AMI config: %w", configErr)
 	}
 
-	amiCount, amiBytes, err := sumPrefix(store, bucket, imageID+"/")
-	if err != nil {
-		return nil, fmt.Errorf("preview: sum ami prefix: %w", err)
+	// A GetVolume failure never aborts the preview: an unreadable volume is
+	// what --force salvages, and the deletes need no readable state.
+	volume, err := provider.GetVolume(ctx, ebsprovider.GetVolumeRequest{
+		Versioned: ebsprovider.NewVersioned(),
+		VolumeID:  imageID,
+	})
+	switch {
+	case err == nil:
+		preview.VolumeStatus = VolumePresent
+		preview.VolumeCapacityBytes = volume.CapacityBytes
+	case errors.Is(err, ebsprovider.ErrNotFound):
+		preview.VolumeStatus = VolumeAbsent
+	default:
+		preview.VolumeStatus = VolumeUnknown
+		preview.VolumeErr = err
 	}
-	preview.AMIObjectCount = amiCount
-	preview.AMIBytesTotal = amiBytes
-
-	snapCount, snapBytes, err := sumPrefix(store, bucket, SnapPrefix(imageID)+"/")
-	if err != nil {
-		return nil, fmt.Errorf("preview: sum snap prefix: %w", err)
-	}
-	preview.SnapObjectCount = snapCount
-	preview.SnapBytesTotal = snapBytes
 
 	deps, err := FindAMIDependents(store, bucket, imageID)
 	if err != nil {
@@ -192,8 +210,9 @@ func FindAMIDependents(store objectstore.ObjectStore, bucket, imageID string) (D
 
 // RemoveSystemImage deletes an admin-imported AMI after re-validating that it
 // is system-owned and has no dependents (bypassed by --force). Its UEFI store
-// and then config.json go first, so the AMI vanishes before block cleanup.
-func RemoveSystemImage(store objectstore.ObjectStore, bucket string, opts RemoveImageOpts) (*RemoveImageResult, error) {
+// and then its document go first, so the AMI vanishes before the provider
+// deletes its snapshot and then its volume.
+func RemoveSystemImage(ctx context.Context, store objectstore.ObjectStore, provider ebsprovider.EBSProvider, bucket string, opts RemoveImageOpts) (*RemoveImageResult, error) {
 	if !strings.HasPrefix(opts.ImageID, "ami-") {
 		return nil, errors.New(awserrors.ErrorInvalidAMIIDMalformed)
 	}
@@ -235,43 +254,48 @@ func RemoveSystemImage(store objectstore.ObjectStore, bucket string, opts Remove
 
 	// Step 0: drop the image's UEFI variable store before the document, as
 	// DeregisterImage does, so a failure here leaves the image for a rerun.
-	n, err := uefistore.DeleteObjects(context.Background(), store, bucket, opts.ImageID)
-	result.ObjectsDeleted += n
+	n, err := uefistore.DeleteObjects(ctx, store, bucket, opts.ImageID)
+	result.UEFIObjectsDeleted = n
 	if err != nil {
 		return nil, fmt.Errorf("delete UEFI variable store: %w", err)
 	}
 
 	// Step 1: drop the ebsmetadata document first — the barrier that hides the
-	// AMI from DescribeImages, so no new launch can land on blocks step 2 is
-	// about to delete. Fatal, unlike the blocks: an AMI still advertised after
+	// AMI from DescribeImages, so no new launch can land on blocks steps 2
+	// and 3 are about to delete. Fatal, unlike the blocks: an AMI still advertised after
 	// its blocks are gone is worse than one whose blocks outlive it.
 	// An already-absent document is the barrier being satisfied, not a failure:
 	// this is exactly the state of an orphaned image, whose blocks are the only
 	// thing left to reclaim and the whole reason --force exists.
-	if err := ebsmetadata.NewStore(store, bucket).DeleteAMI(context.Background(), opts.ImageID); err != nil && !objectstore.IsNoSuchKeyError(err) {
+	if err := ebsmetadata.NewStore(store, bucket).DeleteAMI(ctx, opts.ImageID); err != nil && !objectstore.IsNoSuchKeyError(err) {
 		return nil, fmt.Errorf("delete ebsmetadata document: %w", err)
 	}
 
-	// Step 2: drop ami-<id>/ (chunks, WAL, checkpoints).
-	n, b, err := deletePrefix(store, bucket, opts.ImageID+"/")
-	if err != nil {
-		return nil, fmt.Errorf("delete ami prefix: %w", err)
+	// Step 2: the snapshot before the volume, because a provider snapshot may
+	// refer to its volume's blocks; a failure here leaves both for a rerun.
+	snapshotID := SnapPrefix(opts.ImageID)
+	if err := provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{
+		Versioned:  ebsprovider.NewVersioned(),
+		SnapshotID: snapshotID,
+	}); err != nil {
+		return nil, fmt.Errorf("delete snapshot %s: %w", snapshotID, err)
 	}
-	result.ObjectsDeleted += n
-	result.BytesDeleted += b
+	result.SnapshotID = snapshotID
 
-	// Step 3: drop snap-<amiID>/ (the viperblock-internal snap checkpoint).
-	n, b, err = deletePrefix(store, bucket, SnapPrefix(opts.ImageID)+"/")
-	if err != nil {
-		return nil, fmt.Errorf("delete snap prefix: %w", err)
+	// Step 3: the image's volume, which shares its ID. The provider refuses
+	// a volume that is still published.
+	if err := provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{
+		Versioned: ebsprovider.NewVersioned(),
+		VolumeID:  opts.ImageID,
+	}); err != nil {
+		return nil, fmt.Errorf("delete volume %s: %w", opts.ImageID, err)
 	}
-	result.ObjectsDeleted += n
-	result.BytesDeleted += b
+	result.VolumeID = opts.ImageID
 
 	slog.Info("RemoveSystemImage completed",
 		"imageId", opts.ImageID,
-		"objectsDeleted", result.ObjectsDeleted,
-		"bytesDeleted", result.BytesDeleted,
+		"snapshotId", result.SnapshotID,
+		"uefiObjectsDeleted", result.UEFIObjectsDeleted,
 		"force", opts.Force,
 	)
 	return result, nil
@@ -293,75 +317,4 @@ func (e *DependentError) Error() string {
 // tooling can read an AMI without an ImageServiceImpl, which carries NATS.
 func readAMI(store objectstore.ObjectStore, bucket, imageID string) (ebsmetadata.AMI, error) {
 	return ebsmetadata.NewStore(store, bucket).GetAMI(context.Background(), imageID)
-}
-
-// sumPrefix returns (object count, total bytes) for every object under prefix.
-// Used by the preview to surface what an operator is about to delete.
-func sumPrefix(store objectstore.ObjectStore, bucket, prefix string) (int, int64, error) {
-	var count int
-	var bytes int64
-	var token *string
-	for {
-		out, err := store.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
-			Bucket:            aws.String(bucket),
-			Prefix:            aws.String(prefix),
-			ContinuationToken: token,
-		})
-		if err != nil {
-			return 0, 0, err
-		}
-		for _, obj := range out.Contents {
-			count++
-			if obj.Size != nil {
-				bytes += *obj.Size
-			}
-		}
-		if !aws.BoolValue(out.IsTruncated) {
-			break
-		}
-		token = out.NextContinuationToken
-	}
-	return count, bytes, nil
-}
-
-// deletePrefix removes every object under prefix and returns count+bytes
-// deleted. Used by RemoveSystemImage for both the single-key config.json
-// barrier and the bulk ami-<id>/ and snap-<id>/ teardown.
-func deletePrefix(store objectstore.ObjectStore, bucket, prefix string) (int, int64, error) {
-	var count int
-	var bytes int64
-	var token *string
-	for {
-		out, err := store.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
-			Bucket:            aws.String(bucket),
-			Prefix:            aws.String(prefix),
-			ContinuationToken: token,
-		})
-		if err != nil {
-			return count, bytes, err
-		}
-		for _, obj := range out.Contents {
-			if obj.Key == nil {
-				continue
-			}
-			if _, err := store.DeleteObject(context.Background(), &s3.DeleteObjectInput{
-				Bucket: aws.String(bucket),
-				Key:    obj.Key,
-			}); err != nil {
-				if objectstore.IsNoSuchKeyError(err) {
-					continue
-				}
-				return count, bytes, fmt.Errorf("delete %s: %w", *obj.Key, err)
-			}
-			count++
-			if obj.Size != nil {
-				bytes += *obj.Size
-			}
-		}
-		if !aws.BoolValue(out.IsTruncated) {
-			break
-		}
-		token = out.NextContinuationToken
-	}
-	return count, bytes, nil
 }

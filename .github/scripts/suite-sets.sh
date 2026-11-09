@@ -40,7 +40,11 @@
 # received. It is last because it SIGSTOPs a cluster-wide
 # service: anything sharing the environment would see the same outage and report
 # a failure that says nothing about itself.
-E2E_SUITES_SINGLE="single iam cert eks ecs storagegrowth partialblock rds quota route53 storagefault"
+# uefistore is single-only because it runs on the node it tests: it restarts
+# that node's daemon under a running guest and reads the variable store with
+# the node's own Predastore credentials. Guests outlive a daemon restart, so
+# suites sharing the node see a brief control-plane gap, not an outage.
+E2E_SUITES_SINGLE="single iam cert eks ecs storagegrowth partialblock rds quota route53 uefistore storagefault"
 
 # Suites runnable against a multi-node environment.
 #
@@ -195,6 +199,10 @@ e2e_suite_timeout() {
     # took 24-29m, and an Oracle host ran out at 30m inside the last test's
     # cleanup. The default left it no headroom at all.
     single) echo "40m" ;;
+    # uefistore's prune test has to outwait the 10-minute prune age and a GC
+    # sweep after its last write-back, on top of three stop/starts and a boot.
+    # A pass is estimated at 40 minutes, unmeasured; the rest is the watch's cap.
+    uefistore) echo "60m" ;;
     *) echo "30m" ;;
   esac
 }

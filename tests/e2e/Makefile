@@ -18,9 +18,9 @@ SUITE_TAG   ?= $(notdir $(patsubst %/...,%,$(firstword $(PKG))))
 # BIN_DIR/<suite>.test so CI can ship binaries (not source + go toolchain) to
 # the remote VM.
 BIN_DIR      ?= $(CURDIR)/_bin
-SUITES_BUILD ?= cert lb eks ecs single iam ecr bedrock gpu natuplink multinode storagegrowth partialblock rds quota diskperf storagefault instancerecovery lbrecovery kvquorum route53
+SUITES_BUILD ?= cert lb eks ecs single iam ecr bedrock gpu natuplink multinode storagegrowth partialblock rds quota diskperf storagefault instancerecovery lbrecovery kvquorum route53 uefistore
 
-.PHONY: e2e e2e-quota e2e-route53 e2e-cert e2e-lb e2e-eks e2e-ecs e2e-single e2e-iam e2e-ecr e2e-bedrock e2e-multinode e2e-bm e2e-reboot e2e-tofu e2e-gpu e2e-natuplink e2e-storagegrowth e2e-partialblock e2e-diskperf e2e-rds e2e-storagefault e2e-instancerecovery e2e-lbrecovery e2e-kvquorum e2e-all clean e2e-build
+.PHONY: e2e e2e-quota e2e-route53 e2e-cert e2e-lb e2e-eks e2e-ecs e2e-single e2e-iam e2e-ecr e2e-bedrock e2e-multinode e2e-bm e2e-reboot e2e-tofu e2e-gpu e2e-natuplink e2e-storagegrowth e2e-partialblock e2e-diskperf e2e-rds e2e-storagefault e2e-instancerecovery e2e-lbrecovery e2e-kvquorum e2e-uefistore e2e-all clean e2e-build
 
 RUN_FLAG = $(if $(RUN),-run '$(RUN)',)
 
@@ -78,6 +78,9 @@ e2e-lbrecovery: ; $(MAKE) e2e PKG=./lbrecovery/... TIMEOUT=75m
 # Audits every KV bucket, then takes a node away and brings it back. Most of its
 # budget is the node stopping and starting, not the assertions.
 e2e-kvquorum:   ; $(MAKE) e2e PKG=./kvquorum/... MODE=multinode TIMEOUT=40m
+# Runs on the node: restarts its daemon and outwaits the 10-minute UEFI store
+# prune age, so most of its budget is the prune watch.
+e2e-uefistore:  ; $(MAKE) e2e PKG=./uefistore/... TIMEOUT=60m
 e2e-all:        ; $(MAKE) e2e
 
 e2e-build:

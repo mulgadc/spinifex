@@ -3,11 +3,13 @@ package viperblock
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	awssdk "github.com/aws/aws-sdk-go/aws"
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mulgadc/spinifex/internal/testkit/pagedstore"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -75,4 +77,30 @@ func TestDeleteObjectPrefixRemovesEveryObject(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Empty(t, out.Contents)
+}
+
+// A prefix larger than one listing page is deleted whole: the sweep follows
+// the continuation token rather than stopping after the first page, which would
+// report success over orphaned chunks.
+func TestDeleteObjectPrefixFollowsContinuationAcrossPages(t *testing.T) {
+	const pageSize, objects = 3, 11
+	store := pagedstore.New(pageSize)
+	for i := range objects {
+		_, err := store.PutObject(context.Background(), &awss3.PutObjectInput{
+			Bucket: awssdk.String("test-bucket"),
+			Key:    awssdk.String(fmt.Sprintf("snap-abc/chunks/chunk.%08d.bin", i)),
+			Body:   strings.NewReader("chunk"),
+		})
+		require.NoError(t, err)
+	}
+
+	require.NoError(t, deleteObjectPrefix(context.Background(), store, "test-bucket", "snap-abc/"))
+
+	assert.GreaterOrEqual(t, store.Calls, (objects+pageSize-1)/pageSize, "the listing must span several pages for this test to prove anything")
+	out, err := store.MemoryObjectStore.ListObjectsV2(context.Background(), &awss3.ListObjectsV2Input{
+		Bucket: awssdk.String("test-bucket"),
+		Prefix: awssdk.String("snap-abc/"),
+	})
+	require.NoError(t, err)
+	assert.Empty(t, out.Contents, "every object under the prefix must be deleted, not just the first page")
 }

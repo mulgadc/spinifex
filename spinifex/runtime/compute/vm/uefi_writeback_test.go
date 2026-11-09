@@ -91,7 +91,7 @@ func (f *uefiFixture) running(t *testing.T) (*VM, *fakeUEFIClock) {
 	clock := newFakeUEFIClock(time.Now())
 	f.m.deps.UEFIVarStore.Clock = clock
 	instance := f.newInstance()
-	require.NoError(t, f.m.SeedUEFIVarStore(t.Context(), instance))
+	require.NoError(t, f.m.SeedUEFIVarStore(t.Context(), instance, nil))
 	held, err := f.prepare(t, instance)
 	require.NoError(t, err)
 	require.True(t, held.reused)

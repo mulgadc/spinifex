@@ -22,10 +22,11 @@ var ErrUEFIVarStoreExists = errors.New("UEFI variable store already exists for a
 const uefiClaimTimeout = 10 * time.Second
 
 // SeedUEFIVarStore gives a new UEFI instance its variable store: the claim,
-// the store record live at the claim's generation, this node's VARS template
-// at a fresh key, and the pointer moved to it by the fenced write. The launch
-// that follows reuses the local copy written last. A BIOS guest has none.
-func (m *Manager) SeedUEFIVarStore(ctx context.Context, instance *VM) error {
+// the store record live at the claim's generation, the seed at a fresh key,
+// and the pointer moved to it by the fenced write. The seed is image's store
+// when image is non-nil and its firmware boots here, else this node's VARS
+// template. The launch that follows reuses the local copy. A BIOS guest has none.
+func (m *Manager) SeedUEFIVarStore(ctx context.Context, instance *VM, image *uefistore.ImageVarStore) error {
 	if !usesUEFIVarStore(instance) {
 		return nil
 	}
@@ -54,12 +55,9 @@ func (m *Manager) SeedUEFIVarStore(ctx context.Context, instance *VM) error {
 	// Until the record is created, any store under this ID belongs to
 	// something else, which a failed RunInstances must not delete.
 	m.Inspect(instance, func(v *VM) { v.UEFIStoreUnowned = true })
-	template, err := os.ReadFile(fw.VarsTemplate)
+	seed, source, err := m.uefiSeedRegion(ctx, instance, image, fw)
 	if err != nil {
-		return fmt.Errorf("read VARS template %s: %w", fw.VarsTemplate, err)
-	}
-	if int64(len(template)) != fw.Identity.VarsSize {
-		return fmt.Errorf("VARS template %s is %d bytes, and was %d when stat'd", fw.VarsTemplate, len(template), fw.Identity.VarsSize)
+		return err
 	}
 
 	// A held claim on a brand-new ID is not this launch's, so it is left alone.
@@ -94,8 +92,8 @@ func (m *Manager) SeedUEFIVarStore(ctx context.Context, instance *VM) error {
 	if err != nil {
 		return err
 	}
-	if err := uefistore.PutObject(ctx, deps.Objects, deps.Bucket, key, template, uefistore.ObjectMeta{
-		OwnerID: instance.ID, WriterNode: m.deps.NodeID, Firmware: fw.Identity, CodePath: fw.Code, Source: uefistore.SourceTemplate,
+	if err := uefistore.PutObject(ctx, deps.Objects, deps.Bucket, key, seed, uefistore.ObjectMeta{
+		OwnerID: instance.ID, WriterNode: m.deps.NodeID, Firmware: fw.Identity, CodePath: fw.Code, Source: source,
 	}); err != nil {
 		return err
 	}
@@ -105,18 +103,53 @@ func (m *Manager) SeedUEFIVarStore(ctx context.Context, instance *VM) error {
 	}
 
 	// Only saves the launch a get: without the copy it fetches the object.
-	if err := writeFileAtomic(dir, uefiVarsFileName, template); err != nil {
+	if err := writeFileAtomic(dir, uefiVarsFileName, seed); err != nil {
 		slog.WarnContext(ctx, "Failed to keep the seeded UEFI variable store locally; the launch fetches it",
 			"instanceId", instance.ID, "err", err)
 	} else if err := writeUEFISeed(dir, uefiSeed{
 		Key: key, Generation: tok.Generation, SeededAt: time.Now().UTC(), Firmware: fw.Identity, CodePath: fw.Code,
-		Sum: uefiRegionSum(template),
+		Sum: uefiRegionSum(seed),
 	}); err != nil {
 		slog.WarnContext(ctx, "Failed to record the seeded UEFI variable store locally; the launch fetches it",
 			"instanceId", instance.ID, "err", err)
 	}
 	slog.InfoContext(ctx, "Seeded the UEFI variable store", "instanceId", instance.ID, "key", key,
-		"source", uefistore.SourceTemplate, "generation", tok.Generation, "arch", fw.Identity.Arch,
+		"source", source, "generation", tok.Generation, "arch", fw.Identity.Arch,
 		"varsSize", fw.Identity.VarsSize, "put_ms", otelsetup.Millis(time.Since(start)))
 	return nil
+}
+
+// uefiSeedRegion returns the region a new instance's store starts from and
+// its source. image's store is read before anything is claimed or recorded;
+// one whose arch or VARS size cannot boot here gives way to the template.
+func (m *Manager) uefiSeedRegion(ctx context.Context, instance *VM, image *uefistore.ImageVarStore, fw NodeFirmware) ([]byte, string, error) {
+	if image != nil {
+		stored, node := image.Firmware, fw.Identity
+		if stored.Arch == node.Arch && stored.VarsSize == node.VarsSize {
+			if stored.CodeSHA256 != node.CodeSHA256 {
+				recordUEFIFirmwareMismatch("code")
+				slog.WarnContext(ctx, "The image's UEFI variable store was written under a different CODE build; seeding from it",
+					"instanceId", instance.ID, "imageId", image.ImageID, "key", image.Key,
+					"storeCodeSha256", stored.CodeSHA256, "nodeCodeSha256", node.CodeSHA256, "nodeCodePath", fw.Code)
+			}
+			region, _, err := uefistore.ReadObject(ctx, m.deps.UEFIVarStore.Objects, m.deps.UEFIVarStore.Bucket, image.Key, node.VarsSize)
+			if err != nil {
+				return nil, "", fmt.Errorf("read the UEFI variable store of %s: %w", image.ImageID, err)
+			}
+			return region, uefistore.SourceImage(image.ImageID), nil
+		}
+		recordUEFIFirmwareMismatch("image")
+		slog.WarnContext(ctx, "The image's UEFI variable store cannot boot under this node's firmware; seeding from the VARS template",
+			"instanceId", instance.ID, "imageId", image.ImageID, "key", image.Key,
+			"storeArch", stored.Arch, "storeVarsSize", stored.VarsSize,
+			"nodeArch", node.Arch, "nodeVarsSize", node.VarsSize, "nodeCodePath", fw.Code)
+	}
+	template, err := os.ReadFile(fw.VarsTemplate)
+	if err != nil {
+		return nil, "", fmt.Errorf("read VARS template %s: %w", fw.VarsTemplate, err)
+	}
+	if int64(len(template)) != fw.Identity.VarsSize {
+		return nil, "", fmt.Errorf("VARS template %s is %d bytes, and was %d when stat'd", fw.VarsTemplate, len(template), fw.Identity.VarsSize)
+	}
+	return template, uefistore.SourceTemplate, nil
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ebsencryption "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/encryption"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	ec2platform "github.com/mulgadc/spinifex/spinifex/domains/ec2/platform"
 	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -39,6 +40,9 @@ type CreateImageParams struct {
 	RootVolumeID  string
 	SourceImageID string
 	IsRunning     bool // logged only: the provider's CreateSnapshot drains a live volume itself
+	// UEFI is set for an instance that boots through UEFI, whose variable
+	// store the image carries.
+	UEFI bool
 }
 
 // ImageServiceImpl handles AMI image operations with S3 storage.
@@ -49,6 +53,9 @@ type ImageServiceImpl struct {
 	natsConn   *nats.Conn
 	metadata   *ebsmetadata.Store
 	provider   ebsprovider.EBSProvider
+
+	uefiRecords UEFIStoreRecords
+	nodeID      string
 }
 
 // SetEBSProvider injects the provider boundary used by the control plane.
@@ -444,12 +451,23 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		"rootVolumeId", params.RootVolumeID, "amiId", amiID, "snapshotId", snapshotID,
 		"isRunning", params.IsRunning)
 
-	// Step 1: Snapshot root volume
+	// Step 1: Copy the instance's UEFI variable store to the image's own key,
+	// before the snapshot, so a refusal here leaves no snapshot behind.
+	var uefiData *ebsmetadata.UEFIDataRef
+	if params.UEFI {
+		var err error
+		uefiData, err = s.copyInstanceUEFIStore(context.Background(), *input.InstanceId, amiID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Step 2: Snapshot root volume
 	if err := s.snapshotVolume(params.RootVolumeID, snapshotID, accountID); err != nil {
 		return nil, err
 	}
 
-	// Step 2: Read source volume config for size
+	// Step 3: Read source volume config for size
 	volMeta, err := s.getVolumeMetadata(context.Background(), accountID, params.RootVolumeID)
 	if err != nil {
 		slog.Error("CreateImageFromInstance: failed to read volume metadata", "volumeId", params.RootVolumeID, "err", err)
@@ -457,7 +475,7 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 	}
 	volumeSizeGiB := volMeta.CapacityGiB
 
-	// Step 3: Read source AMI config for architecture, platform, etc.
+	// Step 4: Read source AMI config for architecture, platform, etc.
 	sourceAMI := ebsmetadata.AMI{
 		Architecture:    "x86_64",
 		PlatformDetails: "Linux/UNIX",
@@ -472,13 +490,13 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		sourceAMI = srcCfg
 	}
 
-	// Step 4: Store snapshot metadata
+	// Step 5: Store snapshot metadata
 	if err := s.putSnapshotMetadata(context.Background(), snapshotID, params.RootVolumeID, volumeSizeGiB, accountID); err != nil {
 		slog.Error("CreateImageFromInstance: failed to write snapshot metadata", "snapshotId", snapshotID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	// Step 5: Build and store AMI config
+	// Step 6: Build and store AMI config
 	meta := ebsmetadata.AMI{
 		ImageID:         amiID,
 		Name:            name,
@@ -497,10 +515,12 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		Distro:       sourceAMI.Distro,
 		DistroFamily: sourceAMI.DistroFamily,
 		// Snapshot succeeded before this point, so the image is complete.
-		State: "available",
+		State:    "available",
+		UEFIData: uefiData,
 	}
 
 	if err := s.putAMIConfig(context.Background(), amiID, meta); err != nil {
+		// A UEFI object left under the image's prefix is in the orphan report.
 		slog.Error("CreateImageFromInstance: failed to store AMI config", "amiId", amiID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -856,6 +876,17 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 
 	tags := mergeCopyImageTags(srcMeta.Tags, input.TagSpecifications, aws.BoolValue(input.CopyImageTags))
 
+	uefiData, err := s.copyImageUEFIStore(ctx, srcMeta, newImageID)
+	if err != nil {
+		slog.ErrorContext(ctx, "CopyImage: failed to copy the UEFI variable store",
+			"sourceImageId", sourceImageID, "amiId", newImageID, "orphanSnapshotId", newSnapshotID, "err", err)
+		if delErr := s.metadata.DeleteSnapshot(ctx, accountID, newSnapshotID); delErr != nil {
+			slog.ErrorContext(ctx, "CopyImage: failed to roll back orphaned snapshot metadata",
+				"snapshotId", newSnapshotID, "err", delErr)
+		}
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	meta := ebsmetadata.AMI{
 		ImageID:         newImageID,
 		Name:            name,
@@ -876,12 +907,18 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 		SourceDigest:    srcMeta.SourceDigest,
 		// Zero-copy: the new config shares the source's already-durable
 		// snapshot, so the image is complete as soon as this is written.
-		State: "available",
+		State:    "available",
+		UEFIData: uefiData,
 	}
 
 	if err := s.putAMIConfig(ctx, newImageID, meta); err != nil {
+		var orphanUEFIKey string
+		if uefiData != nil {
+			orphanUEFIKey = uefiData.Key
+		}
+		// The copied UEFI object stays under the new image's prefix; the log names it.
 		slog.ErrorContext(ctx, "CopyImage: failed to write AMI config",
-			"amiId", newImageID, "orphanSnapshotId", newSnapshotID, "err", err)
+			"amiId", newImageID, "orphanSnapshotId", newSnapshotID, "orphanUEFIKey", orphanUEFIKey, "err", err)
 		// Best-effort rollback of the orphaned snapshot metadata.
 		if delErr := s.metadata.DeleteSnapshot(ctx, accountID, newSnapshotID); delErr != nil {
 			slog.ErrorContext(ctx, "CopyImage: failed to roll back orphaned snapshot metadata",
@@ -1125,10 +1162,10 @@ func pickRootSnapshotBDM(mappings []*ec2.BlockDeviceMapping, rootDeviceName *str
 	return nil
 }
 
-// DeregisterImage hard-deletes the AMI document. The pre-provider
-// {imageID}/config.json goes too, or the metadata store's legacy read fallback
-// would resurrect the image. Backing snapshot is untouched, so operators run
-// delete-snapshot separately to reclaim block storage.
+// DeregisterImage hard-deletes the image's UEFI store prefix, then the AMI
+// document, so a retry after a failed delete finishes the job. The legacy
+// {imageID}/config.json goes too, or the metadata store's read fallback would
+// resurrect the image. The backing snapshot is untouched, as on AWS.
 func (s *ImageServiceImpl) DeregisterImage(ctx context.Context, input *ec2.DeregisterImageInput, accountID string) (*ec2.DeregisterImageOutput, error) {
 	if input == nil || input.ImageId == nil || *input.ImageId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -1138,6 +1175,12 @@ func (s *ImageServiceImpl) DeregisterImage(ctx context.Context, input *ec2.Dereg
 
 	if _, err := s.loadAMIForMutation(ctx, imageID, accountID); err != nil {
 		return nil, err
+	}
+
+	// Only the image's own prefix: a copy or a source instance has its own.
+	if n, err := uefistore.DeleteObjects(ctx, s.store, s.bucketName, imageID); err != nil {
+		slog.ErrorContext(ctx, "DeregisterImage: failed to delete the UEFI variable store", "imageId", imageID, "deleted", n, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
 	if err := s.metadata.DeleteAMI(ctx, imageID); err != nil && !objectstore.IsNoSuchKeyError(err) {

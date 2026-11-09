@@ -3,11 +3,13 @@ package admin
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/stretchr/testify/assert"
@@ -377,4 +379,60 @@ func TestFindAMIDependents_SkipsTargetAMI(t *testing.T) {
 	deps, err := FindAMIDependents(store, testRemoveBucket, id)
 	require.NoError(t, err)
 	assert.True(t, deps.Empty())
+}
+
+// putUEFIStore writes one object under imageID's UEFI variable store prefix.
+func putUEFIStore(t *testing.T, store objectstore.ObjectStore, imageID string) string {
+	t.Helper()
+	key := uefistore.KeyPrefix(imageID) + "vars"
+	_, err := store.PutObject(t.Context(), &awss3.PutObjectInput{
+		Bucket: aws.String(testRemoveBucket), Key: aws.String(key), Body: bytes.NewReader([]byte("vars")),
+	})
+	require.NoError(t, err)
+	return key
+}
+
+// RemoveSystemImage deletes the image's UEFI variable store and no other
+// image's.
+func TestRemoveSystemImage_DeletesOnlyItsOwnUEFIStore(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	const id, other = "ami-sys-deb13", "ami-sys-deb13x"
+	putAMI(t, store, id, "debian-13", "system", SnapPrefix(id))
+	putUEFIStore(t, store, id)
+	otherKey := putUEFIStore(t, store, other)
+
+	_, err := RemoveSystemImage(store, testRemoveBucket, RemoveImageOpts{ImageID: id})
+	require.NoError(t, err)
+
+	left, err := uefistore.ListObjects(t.Context(), store, testRemoveBucket, id)
+	require.NoError(t, err)
+	assert.Empty(t, left)
+	kept, err := uefistore.ListObjects(t.Context(), store, testRemoveBucket, other)
+	require.NoError(t, err)
+	assert.Equal(t, []string{otherKey}, kept)
+}
+
+// failingUEFIDeletes fails every delete under the UEFI root.
+type failingUEFIDeletes struct{ *objectstore.MemoryObjectStore }
+
+func (s failingUEFIDeletes) DeleteObject(ctx context.Context, in *awss3.DeleteObjectInput) (*awss3.DeleteObjectOutput, error) {
+	if strings.HasPrefix(aws.StringValue(in.Key), uefistore.ObjectRoot) {
+		return nil, assert.AnError
+	}
+	return s.MemoryObjectStore.DeleteObject(ctx, in)
+}
+
+// The store goes before the document, so a failed delete keeps the image for
+// a rerun to finish.
+func TestRemoveSystemImage_FailedUEFIStoreDeleteKeepsTheDocument(t *testing.T) {
+	mem := objectstore.NewMemoryObjectStore()
+	const id = "ami-sys-deb13"
+	putAMI(t, mem, id, "debian-13", "system", SnapPrefix(id))
+	putUEFIStore(t, mem, id)
+
+	_, err := RemoveSystemImage(failingUEFIDeletes{mem}, testRemoveBucket, RemoveImageOpts{ImageID: id})
+
+	require.Error(t, err)
+	_, err = ebsmetadata.NewStore(mem, testRemoveBucket).GetAMI(t.Context(), id)
+	require.NoError(t, err, "the document stays for the rerun")
 }

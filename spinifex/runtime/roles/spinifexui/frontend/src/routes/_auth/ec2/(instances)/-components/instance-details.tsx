@@ -14,6 +14,7 @@ import { DetailPanel, PanelSection } from "@/components/detail-panel"
 import { ErrorBanner } from "@/components/error-banner"
 import { Ec2Tags } from "@/components/resource-tags"
 import { StateBadge } from "@/components/state-badge"
+import { useTopologyTab } from "@/components/topology/resource-topology"
 import { Button, buttonVariants } from "@/components/ui/button"
 import type { PanelTab } from "@/lib/panel-search"
 import { ec2ConsoleOutputQueryOptions } from "@/queries/ec2"
@@ -80,6 +81,15 @@ export function InstanceDetails({
 }: InstanceDetailsProps) {
   const id = instance.InstanceId ?? ""
 
+  const topology = useTopologyTab({
+    page: layout === "page",
+    tab,
+    vpcId: instance.VpcId,
+    focus: { kind: "instance", id },
+    noVpc: "This instance is in no VPC, so it has no map.",
+    pin: { instance },
+  })
+
   return (
     <DetailPanel
       closeLabel={
@@ -106,6 +116,7 @@ export function InstanceDetails({
       summary={
         <>
           <StateBadge state={instance.State?.Name} />
+          {topology.toggle}
           <InstanceActions
             instance={instance}
             layout={layout}
@@ -134,6 +145,7 @@ export function InstanceDetails({
             />
           ),
         },
+        topology.spec,
         {
           id: "settings",
           label: "Settings",

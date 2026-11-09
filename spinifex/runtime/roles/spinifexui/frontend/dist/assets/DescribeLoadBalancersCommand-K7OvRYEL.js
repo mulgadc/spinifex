@@ -1,0 +1,1 @@
+import{gn as e}from"./aws-client-CqvC9t1w.js";import{c as t,l as n,s as r}from"./tags-D0OFtoei.js";var i=class extends n(r,t,`DescribeLoadBalancers`,e){};export{i as t};

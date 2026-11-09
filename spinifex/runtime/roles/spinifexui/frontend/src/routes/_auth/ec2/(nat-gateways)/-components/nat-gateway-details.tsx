@@ -12,6 +12,7 @@ import {
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
 import { Ec2Tags } from "@/components/resource-tags"
 import { StateBadge } from "@/components/state-badge"
+import { useTopologyTab } from "@/components/topology/resource-topology"
 import { Button, buttonVariants } from "@/components/ui/button"
 import type { PanelTab } from "@/lib/panel-search"
 import { formatDateTime, getNameTag } from "@/lib/utils"
@@ -159,6 +160,15 @@ export function NatGatewayDetails({
   const id = nat.NatGatewayId ?? ""
   const name = getNameTag(nat.Tags)
 
+  const topology = useTopologyTab({
+    page: layout === "page",
+    tab,
+    vpcId: nat.VpcId,
+    focus: { kind: "nat", id },
+    noVpc: "This NAT gateway belongs to no VPC.",
+    pin: { natGateway: nat },
+  })
+
   return (
     <DetailPanel
       closeLabel={
@@ -182,7 +192,12 @@ export function NatGatewayDetails({
       onClose={onClose}
       onTabChange={onTabChange}
       subtitle={name ? id : undefined}
-      summary={<StateBadge state={nat.State} />}
+      summary={
+        <>
+          <StateBadge state={nat.State} />
+          {topology.toggle}
+        </>
+      }
       tab={tab}
       tabs={[
         {
@@ -191,6 +206,7 @@ export function NatGatewayDetails({
           icon: Eye,
           content: <Overview nat={nat} />,
         },
+        topology.spec,
         {
           id: "settings",
           label: "Settings",

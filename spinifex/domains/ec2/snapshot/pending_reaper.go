@@ -8,6 +8,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
@@ -125,8 +126,12 @@ func (r *PendingSnapshotReaper) repeat(ctx context.Context, doc ebsmetadata.Snap
 		return false
 	}
 
+	handle, ok := r.volumeHandle(ctx, current)
+	if !ok {
+		return false
+	}
 	created, err := r.svc.provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{
-		Versioned: ebsprovider.NewVersioned(), SnapshotID: current.SnapshotID, VolumeID: current.VolumeID,
+		Versioned: ebsprovider.NewVersioned(), SnapshotID: current.SnapshotID, VolumeID: current.VolumeID, VolumeHandle: handle,
 	})
 	switch {
 	case err == nil && created != nil:
@@ -142,8 +147,32 @@ func (r *PendingSnapshotReaper) repeat(ctx context.Context, doc ebsmetadata.Snap
 	}
 }
 
+// volumeHandle is the provider handle of doc's source volume, which the
+// repeat sends as the request did. A volume document that is gone gives no
+// handle, and the provider answers for the volume; one unreadable is retried.
+func (r *PendingSnapshotReaper) volumeHandle(ctx context.Context, doc ebsmetadata.Snapshot) (string, bool) {
+	volume, err := r.svc.metadata.GetVolume(ctx, doc.OwnerID, doc.VolumeID)
+	if err == nil {
+		return volume.ProviderHandle, true
+	}
+	if objectstore.IsNoSuchKeyError(err) {
+		return "", true
+	}
+	slog.WarnContext(ctx, "pending-snapshot: source volume document unreadable, retrying next sweep",
+		"snapshotId", doc.SnapshotID, "volumeId", doc.VolumeID, "err", err)
+	return "", false
+}
+
 // write applies mutate to doc's current document while it is still pending.
+// A request that crashed between its document and its reference left the
+// reference missing, so it is restored first and a failure retried next sweep.
 func (r *PendingSnapshotReaper) write(ctx context.Context, doc ebsmetadata.Snapshot, mutate func(*ebsmetadata.Snapshot)) bool {
+	if err := r.svc.ensureSnapshotRef(ctx, doc.VolumeID, doc.SnapshotID); err != nil {
+		slog.WarnContext(ctx, "pending-snapshot: volume reference not restored, retrying next sweep",
+			"snapshotId", doc.SnapshotID, "volumeId", doc.VolumeID, "err", err)
+		return false
+	}
+	defer r.dropRefIfDeleted(ctx, doc)
 	written, ok, err := r.svc.updatePending(ctx, doc.OwnerID, doc.SnapshotID, mutate)
 	if err != nil {
 		slog.WarnContext(ctx, "pending-snapshot: document write failed, retrying next sweep",
@@ -156,9 +185,22 @@ func (r *PendingSnapshotReaper) write(ctx context.Context, doc ebsmetadata.Snaps
 	return ok
 }
 
-// ReleaseNodeClaims releases every claim on a pending snapshot that names this
-// node and no request of this process holds. A daemon runs it as it starts and
-// before it serves requests, since no request of its earlier process survived.
+// dropRefIfDeleted removes doc's reference again when its document is gone: a
+// rollback or DeleteSnapshot may have removed both before write restored it.
+func (r *PendingSnapshotReaper) dropRefIfDeleted(ctx context.Context, doc ebsmetadata.Snapshot) {
+	_, err := r.svc.metadata.GetSnapshot(ctx, doc.OwnerID, doc.SnapshotID)
+	if !objectstore.IsNoSuchKeyError(err) {
+		return
+	}
+	if err := r.svc.removeSnapshotRef(ctx, doc.VolumeID, doc.SnapshotID); err != nil {
+		slog.WarnContext(ctx, "pending-snapshot: reference of a deleted snapshot not removed",
+			"snapshotId", doc.SnapshotID, "volumeId", doc.VolumeID, "err", err)
+	}
+}
+
+// ReleaseNodeClaims releases every snapshot claim that names this node and no
+// request of this process holds, whatever its document's state. A daemon runs
+// it as it starts and before it serves requests: no earlier request survived.
 func (s *SnapshotServiceImpl) ReleaseNodeClaims(ctx context.Context) (int, error) {
 	docs, err := s.metadata.ListAllSnapshotsStrict(ctx)
 	if err != nil {
@@ -167,9 +209,6 @@ func (s *SnapshotServiceImpl) ReleaseNodeClaims(ctx context.Context) (int, error
 	released := 0
 	var errs []error
 	for _, doc := range docs {
-		if doc.State != snapshotStatePending {
-			continue
-		}
 		ok, err := s.claims.releaseOwn(ctx, doc.SnapshotID)
 		if err != nil {
 			errs = append(errs, err)

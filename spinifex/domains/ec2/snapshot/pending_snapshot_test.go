@@ -3,7 +3,6 @@ package snapshot
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -137,9 +136,22 @@ type faultStore struct {
 	objectstore.ObjectStore
 
 	mu         sync.Mutex
-	putsBefore int // snapshot document puts allowed before failPuts applies; -1 never fails
-	failDelete bool
-	deletes    []string
+	putsBefore    int // snapshot document puts allowed before failPuts applies; -1 never fails
+	failDelete    bool
+	failVolumeGet bool
+	deletes       []string
+}
+
+const volumeDocumentPrefix = "spinifex/ebsmetadata/v2/volumes/"
+
+func (s *faultStore) GetObject(ctx context.Context, input *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+	s.mu.Lock()
+	fail := s.failVolumeGet && strings.HasPrefix(aws.StringValue(input.Key), volumeDocumentPrefix)
+	s.mu.Unlock()
+	if fail {
+		return nil, errors.New("simulated volume document read failure")
+	}
+	return s.ObjectStore.GetObject(ctx, input)
 }
 
 func (s *faultStore) PutObject(ctx context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
@@ -304,6 +316,19 @@ func (f *pendingFixture) refsOf(volumeID string) []string {
 
 func (f *pendingFixture) providerHolds(snapshotID string) (*ebsprovider.Snapshot, bool) {
 	return f.mem.Snapshot(snapshotID)
+}
+
+// unreachableRefs is the reference index on a connection that is already closed.
+func (f *pendingFixture) unreachableRefs() *kvstore.Store[[]string] {
+	f.t.Helper()
+	nc, err := nats.Connect(f.natsURL)
+	require.NoError(f.t, err)
+	js, err := jetstream.New(nc)
+	require.NoError(f.t, err)
+	kv, err := js.KeyValue(f.t.Context(), KVBucketVolumeSnapshots)
+	require.NoError(f.t, err)
+	nc.Close()
+	return kvstore.Over[[]string](nil, kv, snapshotRefsConfig())
 }
 
 // unreachableSync is a sync bucket on a connection that is already closed.
@@ -480,16 +505,9 @@ func TestCreateSnapshot_FailsBeforeTheProviderIsCalled(t *testing.T) {
 		{name: "the claim cannot be taken", build: func(f *pendingFixture) *SnapshotServiceImpl {
 			return f.nodeOver(nodeA, f.unreachableSync())
 		}},
-		{name: "the reference cannot be written", build: func(f *pendingFixture) *SnapshotServiceImpl {
+		{name: "the reference cannot be written, so the document is removed", build: func(f *pendingFixture) *SnapshotServiceImpl {
 			svc := f.node(nodeA)
-			nc, err := nats.Connect(f.natsURL)
-			require.NoError(t, err)
-			js, err := jetstream.New(nc)
-			require.NoError(t, err)
-			kv, err := js.KeyValue(t.Context(), KVBucketVolumeSnapshots)
-			require.NoError(t, err)
-			nc.Close()
-			svc.snapRefs = kvstore.Over[[]string](nil, kv, snapshotRefsConfig())
+			svc.snapRefs = f.unreachableRefs()
 			return svc
 		}},
 		{name: "the document cannot be written", build: func(f *pendingFixture) *SnapshotServiceImpl {
@@ -514,21 +532,23 @@ func TestCreateSnapshot_FailsBeforeTheProviderIsCalled(t *testing.T) {
 }
 
 // A crash after any step of the request leaves either nothing the provider
-// holds, or a pending document the reaper settles once the restarted node has
-// released its claims.
+// holds, or a document the reaper settles once the restarted node has released
+// its claims, with the volume reference a crash before it left missing.
 func TestCreateSnapshot_CrashAfterEachStepLeavesADocumentTheReaperSettles(t *testing.T) {
 	cases := []struct {
+		name    string
 		step    createStep
 		wantDoc bool
+		wantRef bool // the reference exists before the reaper runs
 	}{
-		{stepClaimed, false},
-		{stepReferenced, false},
-		{stepRecorded, true},
-		{stepAnswered, true},
-		{stepSettled, true},
+		{"after the claim", stepClaimed, false, false},
+		{"after the document", stepRecorded, true, false},
+		{"after the reference", stepReferenced, true, true},
+		{"after the provider answered", stepAnswered, true, true},
+		{"after the document settled", stepSettled, true, true},
 	}
 	for _, tc := range cases {
-		t.Run(fmt.Sprintf("step %d", tc.step), func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			f := newPendingFixture(t)
 			svc := f.node(nodeA)
 			var id string
@@ -544,29 +564,30 @@ func TestCreateSnapshot_CrashAfterEachStepLeavesADocumentTheReaperSettles(t *tes
 			docs := f.docs()
 			if !tc.wantDoc {
 				assert.Empty(t, docs)
+				assert.Empty(t, f.refsOf(pendingVolumeID))
 				assert.Zero(t, f.provider.createCalls(), "no provider snapshot may exist without a document")
 				return
 			}
 			require.Len(t, docs, 1)
 			doc := docs[0]
 			assert.Equal(t, nodeA, f.claimHolder(doc.SnapshotID), "a crashed request leaves its node's claim")
+			if tc.wantRef {
+				assert.Equal(t, []string{doc.SnapshotID}, f.refsOf(pendingVolumeID))
+			} else {
+				assert.Empty(t, f.refsOf(pendingVolumeID))
+			}
 
 			restarted := f.node(nodeA)
 			released, err := restarted.ReleaseNodeClaims(t.Context())
 			require.NoError(t, err)
-			wasPending := doc.State == snapshotStatePending
+			assert.Equal(t, 1, released, "a crashed request's claim is released whatever its document's state")
+			assert.Empty(t, f.claimHolder(doc.SnapshotID))
 			f.sweep(f.node(nodeB))
 
 			settled, ok := f.doc(doc.SnapshotID)
 			require.True(t, ok)
 			assert.Equal(t, snapshotStateCompleted, settled.State)
-			if wasPending {
-				assert.Equal(t, 1, released)
-				assert.Empty(t, f.claimHolder(doc.SnapshotID))
-			} else {
-				// Release covers only claims a pending document points to.
-				assert.Zero(t, released)
-			}
+			assert.Equal(t, []string{doc.SnapshotID}, f.refsOf(pendingVolumeID), "the settled snapshot has exactly one reference")
 			if id != "" {
 				assert.Equal(t, id, doc.SnapshotID)
 			}
@@ -822,6 +843,81 @@ func TestPendingSnapshotReaper_SettlesEachRow(t *testing.T) {
 	}
 }
 
+// The reaper's repeat sends the source volume's handle as the request did, and
+// a settle restores the reference a request that crashed after its document
+// left missing, removing it again when the document is deleted meanwhile.
+func TestPendingSnapshotReaper_RepeatHandleAndReference(t *testing.T) {
+	const id = "snap-reaperhandle01"
+	volumeHandle := "memory://volume/" + pendingVolumeID
+	deleteVolumeDoc := func(f *pendingFixture) {
+		require.NoError(f.t, f.metadata.DeleteVolume(f.t.Context(), testAccountID, pendingVolumeID))
+	}
+	cases := []struct {
+		name       string
+		setup      func(f *pendingFixture)
+		reaper     func(f *pendingFixture) *SnapshotServiceImpl
+		wantCalls  int
+		wantHandle string
+		wantState  string // empty: the document is gone
+		wantRefs   []string
+	}{
+		{name: "the volume document's handle is sent", wantCalls: 1, wantHandle: volumeHandle,
+			wantState: snapshotStateCompleted, wantRefs: []string{id}},
+		{name: "a gone volume document sends no handle, and the provider holds the volume", setup: deleteVolumeDoc,
+			wantCalls: 1, wantState: snapshotStateCompleted, wantRefs: []string{id}},
+		{name: "a gone volume document sends no handle, and the provider answers not_found", setup: func(f *pendingFixture) {
+			deleteVolumeDoc(f)
+			require.NoError(f.t, f.mem.DeleteVolume(f.t.Context(), ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: pendingVolumeID}))
+		}, wantCalls: 1, wantState: snapshotStateError, wantRefs: []string{id}},
+		{name: "an unreadable volume document is retried", setup: func(f *pendingFixture) { f.store.failVolumeGet = true },
+			wantState: snapshotStatePending},
+		{name: "a reference that cannot be restored leaves the document pending", setup: func(f *pendingFixture) { providerSnapshot(f, id) },
+			reaper: func(f *pendingFixture) *SnapshotServiceImpl {
+				svc := f.node(nodeB)
+				svc.snapRefs = f.unreachableRefs()
+				return svc
+			}, wantState: snapshotStatePending},
+		{name: "a document deleted before the write keeps no restored reference", setup: func(f *pendingFixture) {
+			providerSnapshot(f, id)
+			f.provider.onList = deleteDocFirst(f, id)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPendingFixture(t)
+			f.seedPending(id)
+			if tc.setup != nil {
+				tc.setup(f)
+			}
+			var sent []string
+			f.provider.onCreate = func(_ int, req ebsprovider.CreateSnapshotRequest) (bool, *ebsprovider.Snapshot, error) {
+				sent = append(sent, req.VolumeHandle)
+				return false, nil, nil
+			}
+			reaper := f.node(nodeB)
+			if tc.reaper != nil {
+				reaper = tc.reaper(f)
+			}
+			before := f.provider.createCalls()
+
+			f.sweep(reaper)
+
+			assert.Equal(t, tc.wantCalls, f.provider.createCalls()-before)
+			if tc.wantCalls > 0 {
+				assert.Equal(t, []string{tc.wantHandle}, sent)
+			}
+			doc, ok := f.doc(id)
+			if tc.wantState == "" {
+				assert.False(t, ok)
+			} else {
+				require.True(t, ok)
+				assert.Equal(t, tc.wantState, doc.State)
+			}
+			assert.Equal(t, tc.wantRefs, f.refsOf(pendingVolumeID))
+		})
+	}
+}
+
 // providerSnapshot makes the provider hold id, as an accepted call does.
 func providerSnapshot(f *pendingFixture, id string) {
 	f.t.Helper()
@@ -881,8 +977,8 @@ func TestPendingSnapshotReaper_SweepBoundaries(t *testing.T) {
 	})
 }
 
-// A restarted daemon frees only its own node's claims on pending documents,
-// and none a request of the new process holds; until it does, a live node's
+// A restarted daemon frees only its own node's claims, on documents in any
+// state, and none a request of the new process holds; until it does, a live node's
 // claim holds the reaper off.
 func TestReleaseNodeClaims_FreesARestartedNodesClaims(t *testing.T) {
 	f := newPendingFixture(t)
@@ -907,11 +1003,11 @@ func TestReleaseNodeClaims_FreesARestartedNodesClaims(t *testing.T) {
 	released, err := restarted.ReleaseNodeClaims(t.Context())
 	require.NoError(t, err)
 
-	assert.Equal(t, 1, released)
+	assert.Equal(t, 2, released)
 	assert.Empty(t, f.claimHolder("snap-restartown0001"))
+	assert.Empty(t, f.claimHolder("snap-restartdone001"), "a claim on a settled document is released too")
 	assert.Equal(t, nodeC, f.claimHolder("snap-restartother01"), "another node's claim is not this node's to release")
 	assert.Equal(t, nodeA, f.claimHolder("snap-restartlive001"), "a claim this process holds is not released")
-	assert.Equal(t, nodeA, f.claimHolder("snap-restartdone001"), "only claims a pending document points to are released")
 	inFlight.release(t.Context())
 
 	f.sweep(f.node(nodeB))

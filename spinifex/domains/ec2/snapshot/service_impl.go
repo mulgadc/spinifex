@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/tagmirror"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -239,8 +240,8 @@ type createStep int
 
 const (
 	stepClaimed createStep = iota + 1
-	stepReferenced
 	stepRecorded
+	stepReferenced
 	stepAnswered
 	stepSettled
 )
@@ -273,22 +274,21 @@ func (s *SnapshotServiceImpl) createSnapshot(ctx context.Context, doc ebsmetadat
 		return nil, errCreateCrashed
 	}
 
-	// The reference comes first so no snapshot document is ever untracked.
-	if err := s.addSnapshotRef(ctx, volumeID, snapshotID); err != nil {
-		slog.ErrorContext(ctx, "CreateSnapshot failed to add snapshot ref to KV", "snapshotId", snapshotID, "volumeId", volumeID, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	if crash(stepReferenced) {
-		return nil, errCreateCrashed
-	}
+	// The document comes first because it is what the reaper discovers work
+	// from; a reference with no document would block DeleteVolume for good.
 	if err := s.metadata.PutSnapshot(ctx, doc); err != nil {
 		slog.ErrorContext(ctx, "CreateSnapshot failed to write the pending snapshot document", "snapshotId", snapshotID, "err", err)
-		if rerr := s.removeSnapshotRefForCleanup(ctx, volumeID, snapshotID); rerr != nil {
-			slog.ErrorContext(ctx, "CreateSnapshot failed to remove the snapshot ref", "snapshotId", snapshotID, "volumeId", volumeID, "err", rerr)
-		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if crash(stepRecorded) {
+		return nil, errCreateCrashed
+	}
+	if err := s.addSnapshotRef(ctx, volumeID, snapshotID); err != nil {
+		slog.ErrorContext(ctx, "CreateSnapshot failed to add snapshot ref to KV", "snapshotId", snapshotID, "volumeId", volumeID, "err", err)
+		s.rollBackCreate(ctx, accountID, volumeID, snapshotID)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if crash(stepReferenced) {
 		return nil, errCreateCrashed
 	}
 
@@ -359,7 +359,8 @@ func (s *SnapshotServiceImpl) answerCreate(ctx context.Context, doc ebsmetadata.
 }
 
 // rollBackCreate removes the document and then the reference of a snapshot
-// the provider refused. A document that cannot be deleted keeps its reference.
+// the provider refused or never saw. A document that cannot be deleted keeps
+// its reference.
 func (s *SnapshotServiceImpl) rollBackCreate(ctx context.Context, accountID, volumeID, snapshotID string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), snapshotCleanupTimeout)
 	defer cancel()
@@ -906,6 +907,25 @@ func (s *SnapshotServiceImpl) addSnapshotRef(ctx context.Context, volumeID, snap
 	}
 
 	slog.Info("addSnapshotRef: added snapshot ref", "volumeId", volumeID, "snapshotId", snapshotID)
+	return nil
+}
+
+// ensureSnapshotRef adds snapshotID to the volume's snapshot list unless it
+// is already there, restoring a reference a crashed request did not write.
+func (s *SnapshotServiceImpl) ensureSnapshotRef(ctx context.Context, volumeID, snapshotID string) error {
+	if s.snapRefs == nil {
+		return nil
+	}
+	err := s.snapRefs.Upsert(ctx, volumeID, func(snapshots *[]string) (bool, error) {
+		if slices.Contains(*snapshots, snapshotID) {
+			return false, nil
+		}
+		*snapshots = append(*snapshots, snapshotID)
+		return true, nil
+	})
+	if err != nil {
+		return fmt.Errorf("ensureSnapshotRef: failed to record %s against volume %s: %w", snapshotID, volumeID, err)
+	}
 	return nil
 }
 

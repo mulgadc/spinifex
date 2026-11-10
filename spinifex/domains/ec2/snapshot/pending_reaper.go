@@ -114,15 +114,13 @@ func (r *PendingSnapshotReaper) providerSnapshot(ctx context.Context, doc ebsmet
 // delete, or repeats its CreateSnapshot when the provider holds no snapshot by
 // that ID. It reports whether it wrote.
 func (r *PendingSnapshotReaper) settle(ctx context.Context, doc ebsmetadata.Snapshot) bool {
+	// A marked document is only cleaned up, from a provider read under its claim.
+	if doc.DeleteRequested {
+		return r.underClaim(ctx, doc, nil)
+	}
 	ref, found, err := r.providerSnapshot(ctx, doc)
 	if err != nil {
 		return false
-	}
-	if doc.DeleteRequested {
-		if found && !providerSettled(ref) {
-			return false
-		}
-		return r.underClaim(ctx, doc, func(current ebsmetadata.Snapshot) bool { return r.cleanUp(ctx, current, ref, found) })
 	}
 	if found {
 		return r.follow(ctx, doc, ref)
@@ -136,42 +134,66 @@ func providerSettled(ref ebsprovider.SnapshotRef) bool {
 	return ref.State == ebsprovider.SnapshotStateCompleted || ref.State == ebsprovider.SnapshotStateError
 }
 
-// underClaim takes doc's claim, rereads its document and runs act on it. A
-// document marked since the provider read takes the marked column instead,
-// with the same answer: act is for an unmarked pending document only.
-func (r *PendingSnapshotReaper) underClaim(ctx context.Context, doc ebsmetadata.Snapshot, act func(ebsmetadata.Snapshot) bool) bool {
-	held, err := r.svc.claims.take(ctx, doc.SnapshotID)
+// withClaim runs fn under id's claim, which take acquires, and reports false
+// without running it when the claim is not taken.
+func withClaim(ctx context.Context, id string, take func(context.Context, string) (*heldClaim, error), fn func() bool) bool {
+	held, err := take(ctx, id)
 	if err != nil {
 		level := slog.LevelWarn
 		if errors.Is(err, errClaimHeld) {
 			level = slog.LevelInfo
 		}
-		slog.Log(ctx, level, "pending-snapshot: claim not taken, retrying next sweep",
-			"snapshotId", doc.SnapshotID, "err", err)
+		slog.Log(ctx, level, "pending-snapshot: claim not taken, left for the next sweep", "id", id, "err", err)
 		return false
 	}
 	defer held.release(ctx)
+	return fn()
+}
 
-	// The claim may have been taken after the creating request rolled back or
-	// settled the document, so it is read again before anything is written.
-	current, err := r.svc.metadata.GetSnapshot(ctx, doc.OwnerID, doc.SnapshotID)
-	if err != nil || current.Tombstoned() {
-		return false
-	}
-	if r.interrupted(reapReread, doc.SnapshotID) {
-		return false
-	}
-	if current.DeleteRequested && !doc.DeleteRequested {
-		ref, found, err := r.providerSnapshot(ctx, current)
-		if err != nil || (found && !providerSettled(ref)) {
+// underClaim takes doc's claim, rereads its document and runs act on it while
+// it is unmarked and pending. A marked document, however it was read before,
+// is cleaned up instead.
+func (r *PendingSnapshotReaper) underClaim(ctx context.Context, doc ebsmetadata.Snapshot, act func(ebsmetadata.Snapshot) bool) bool {
+	return withClaim(ctx, doc.SnapshotID, r.svc.claims.take, func() bool {
+		// The claim may have been taken after the creating request rolled back or
+		// settled the document, so it is read again before anything is written.
+		current, err := r.svc.metadata.GetSnapshot(ctx, doc.OwnerID, doc.SnapshotID)
+		if err != nil || current.Tombstoned() {
 			return false
 		}
-		return r.cleanUp(ctx, current, ref, found)
-	}
-	if !current.DeleteRequested && current.State != snapshotStatePending {
+		if r.interrupted(reapReread, doc.SnapshotID) {
+			return false
+		}
+		if current.DeleteRequested {
+			return r.cleanUpIfSettled(ctx, current)
+		}
+		if current.State != snapshotStatePending {
+			return false
+		}
+		return act(current)
+	})
+}
+
+// cleanUpIfSettled reads doc's snapshot from the provider and carries out its
+// accepted delete once the provider no longer holds it pending.
+func (r *PendingSnapshotReaper) cleanUpIfSettled(ctx context.Context, doc ebsmetadata.Snapshot) bool {
+	ref, found, err := r.providerSnapshot(ctx, doc)
+	if err != nil || (found && !providerSettled(ref)) {
 		return false
 	}
-	return act(current)
+	return r.cleanUp(ctx, doc, ref, found)
+}
+
+// deleteAtProvider deletes snapshotID at the provider; one already gone there
+// is deleted.
+func (r *PendingSnapshotReaper) deleteAtProvider(ctx context.Context, snapshotID, handle string) error {
+	err := r.svc.provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{
+		Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, Handle: handle,
+	})
+	if errors.Is(err, ebsprovider.ErrNotFound) {
+		return nil
+	}
+	return err
 }
 
 // follow writes the state the provider reports for a snapshot it holds.
@@ -247,10 +269,7 @@ func (r *PendingSnapshotReaper) cleanUp(ctx context.Context, doc ebsmetadata.Sna
 		if handle == "" {
 			handle = doc.ProviderHandle
 		}
-		err := r.svc.provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{
-			Versioned: ebsprovider.NewVersioned(), SnapshotID: doc.SnapshotID, Handle: handle,
-		})
-		if err != nil && !errors.Is(err, ebsprovider.ErrNotFound) {
+		if err := r.deleteAtProvider(ctx, doc.SnapshotID, handle); err != nil {
 			slog.WarnContext(ctx, "pending-snapshot: provider delete of a deleted snapshot failed, retrying next sweep",
 				"snapshotId", doc.SnapshotID, "err", err)
 			return false
@@ -293,43 +312,35 @@ func (r *PendingSnapshotReaper) cleanUp(ctx context.Context, doc ebsmetadata.Sna
 // create made there once it is no longer pending. A tombstone past its
 // retention, with nothing pending under it, is dropped.
 func (r *PendingSnapshotReaper) sweepTombstone(ctx context.Context, doc ebsmetadata.Snapshot) bool {
-	held, err := r.svc.claims.take(ctx, doc.SnapshotID)
-	if err != nil {
-		slog.InfoContext(ctx, "pending-snapshot: tombstone's claim not taken, retrying next sweep",
-			"snapshotId", doc.SnapshotID, "err", err)
-		return false
-	}
-	defer held.release(ctx)
-	ref, found, err := r.providerSnapshot(ctx, doc)
-	if err != nil {
-		return false
-	}
-	if found {
-		if !providerSettled(ref) {
+	return withClaim(ctx, doc.SnapshotID, r.svc.claims.take, func() bool {
+		ref, found, err := r.providerSnapshot(ctx, doc)
+		if err != nil {
 			return false
 		}
-		err := r.svc.provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{
-			Versioned: ebsprovider.NewVersioned(), SnapshotID: doc.SnapshotID, Handle: ref.Handle,
-		})
-		if err != nil && !errors.Is(err, ebsprovider.ErrNotFound) {
-			slog.WarnContext(ctx, "pending-snapshot: late-accepted snapshot of a deleted ID not deleted, retrying next sweep",
+		if found {
+			if !providerSettled(ref) {
+				return false
+			}
+			if err := r.deleteAtProvider(ctx, doc.SnapshotID, ref.Handle); err != nil {
+				slog.WarnContext(ctx, "pending-snapshot: late-accepted snapshot of a deleted ID not deleted, retrying next sweep",
+					"snapshotId", doc.SnapshotID, "err", err)
+				return false
+			}
+			slog.WarnContext(ctx, "pending-snapshot: deleted a snapshot accepted after the customer deleted it",
+				"snapshotId", doc.SnapshotID)
+		}
+		age := r.svc.clock().Sub(doc.TombstonedAt)
+		if age < tombstoneRetention {
+			return found
+		}
+		if err := r.svc.metadata.DeleteSnapshot(ctx, doc.OwnerID, doc.SnapshotID); err != nil && !objectstore.IsNoSuchKeyError(err) {
+			slog.WarnContext(ctx, "pending-snapshot: expired tombstone not dropped, retrying next sweep",
 				"snapshotId", doc.SnapshotID, "err", err)
-			return false
+			return found
 		}
-		slog.WarnContext(ctx, "pending-snapshot: deleted a snapshot accepted after the customer deleted it",
-			"snapshotId", doc.SnapshotID)
-	}
-	age := r.svc.clock().Sub(doc.TombstonedAt)
-	if age < tombstoneRetention {
-		return found
-	}
-	if err := r.svc.metadata.DeleteSnapshot(ctx, doc.OwnerID, doc.SnapshotID); err != nil && !objectstore.IsNoSuchKeyError(err) {
-		slog.WarnContext(ctx, "pending-snapshot: expired tombstone not dropped, retrying next sweep",
-			"snapshotId", doc.SnapshotID, "err", err)
-		return found
-	}
-	slog.InfoContext(ctx, "pending-snapshot: dropped an expired tombstone", "snapshotId", doc.SnapshotID, "age_ms", otelsetup.Millis(age))
-	return true
+		slog.InfoContext(ctx, "pending-snapshot: dropped an expired tombstone", "snapshotId", doc.SnapshotID, "age_ms", otelsetup.Millis(age))
+		return true
+	})
 }
 
 // settleAMIs moves each pending AMI to its snapshot's state: completed makes it

@@ -309,23 +309,19 @@ func (s *SnapshotServiceImpl) SettlePendingAMI(ctx context.Context, imageID, sta
 // settlePendingAMI writes state to imageID's AMI under the claim take returns,
 // which DeregisterImage also takes, and only while a reread finds it pending.
 func (s *SnapshotServiceImpl) settlePendingAMI(ctx context.Context, imageID, state string, take func(context.Context, string) (*heldClaim, error)) bool {
-	held, err := take(ctx, imageID)
-	if err != nil {
-		slog.InfoContext(ctx, "pending AMI's claim not taken, left for the reaper", "imageId", imageID, "err", err)
-		return false
-	}
-	defer held.release(ctx)
-	current, err := s.metadata.GetAMI(ctx, imageID)
-	if err != nil || current.State != amiStatePending {
-		return false
-	}
-	current.State = state
-	if err := s.metadata.PutAMI(ctx, current); err != nil {
-		slog.WarnContext(ctx, "pending AMI's state not written, left for the reaper", "imageId", imageID, "err", err)
-		return false
-	}
-	slog.InfoContext(ctx, "pending AMI settled", "imageId", imageID, "snapshotId", current.SnapshotID, "state", state)
-	return true
+	return withClaim(ctx, imageID, take, func() bool {
+		current, err := s.metadata.GetAMI(ctx, imageID)
+		if err != nil || current.State != amiStatePending {
+			return false
+		}
+		current.State = state
+		if err := s.metadata.PutAMI(ctx, current); err != nil {
+			slog.WarnContext(ctx, "pending AMI's state not written, left for the reaper", "imageId", imageID, "err", err)
+			return false
+		}
+		slog.InfoContext(ctx, "pending AMI settled", "imageId", imageID, "snapshotId", current.SnapshotID, "state", state)
+		return true
+	})
 }
 
 // CreateImageSnapshot snapshots an image's root volume as CreateSnapshot does,

@@ -279,10 +279,11 @@ type ImageSnapshotCreator interface {
 
 var _ ImageSnapshotCreator = (*SnapshotServiceImpl)(nil)
 
-// ImageClaims serialises the reaper's settling of an AMI with DeregisterImage:
+// ImageClaims serialises the settling of a pending AMI with DeregisterImage:
 // each holds the image's claim, in the snapshot claim group keyed by image ID.
 type ImageClaims interface {
 	LockImage(ctx context.Context, imageID string) (unlock func(), err error)
+	SettlePendingAMI(ctx context.Context, imageID, state string)
 }
 
 var _ ImageClaims = (*SnapshotServiceImpl)(nil)
@@ -295,6 +296,36 @@ func (s *SnapshotServiceImpl) LockImage(ctx context.Context, imageID string) (fu
 		return nil, err
 	}
 	return func() { held.release(ctx) }, nil
+}
+
+// SettlePendingAMI moves imageID's AMI to state for a request, retrying a held
+// claim as LockImage does; an AMI it leaves pending is settled by the reaper.
+func (s *SnapshotServiceImpl) SettlePendingAMI(ctx context.Context, imageID, state string) {
+	s.settlePendingAMI(ctx, imageID, state, func(ctx context.Context, id string) (*heldClaim, error) {
+		return s.takeClaimWithRetry(ctx, "image", id)
+	})
+}
+
+// settlePendingAMI writes state to imageID's AMI under the claim take returns,
+// which DeregisterImage also takes, and only while a reread finds it pending.
+func (s *SnapshotServiceImpl) settlePendingAMI(ctx context.Context, imageID, state string, take func(context.Context, string) (*heldClaim, error)) bool {
+	held, err := take(ctx, imageID)
+	if err != nil {
+		slog.InfoContext(ctx, "pending AMI's claim not taken, left for the reaper", "imageId", imageID, "err", err)
+		return false
+	}
+	defer held.release(ctx)
+	current, err := s.metadata.GetAMI(ctx, imageID)
+	if err != nil || current.State != amiStatePending {
+		return false
+	}
+	current.State = state
+	if err := s.metadata.PutAMI(ctx, current); err != nil {
+		slog.WarnContext(ctx, "pending AMI's state not written, left for the reaper", "imageId", imageID, "err", err)
+		return false
+	}
+	slog.InfoContext(ctx, "pending AMI settled", "imageId", imageID, "snapshotId", current.SnapshotID, "state", state)
+	return true
 }
 
 // CreateImageSnapshot snapshots an image's root volume as CreateSnapshot does,

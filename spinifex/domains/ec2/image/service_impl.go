@@ -59,8 +59,8 @@ type ImageServiceImpl struct {
 	// snapshots takes an image's snapshot through the snapshot service, so the
 	// claim and reference are the ones CreateSnapshot uses.
 	snapshots ec2snapshot.ImageSnapshotCreator
-	// imageClaims is the claim DeregisterImage shares with the reaper that
-	// settles a pending AMI; nil excludes nothing.
+	// imageClaims is the claim DeregisterImage shares with whatever settles a
+	// pending AMI; nil excludes nothing.
 	imageClaims ec2snapshot.ImageClaims
 }
 
@@ -82,6 +82,19 @@ func (s *ImageServiceImpl) snapshotCreator() ec2snapshot.ImageSnapshotCreator {
 	if s.snapshots != nil {
 		return s.snapshots
 	}
+	return s.standaloneSnapshots()
+}
+
+// amiSettler is the wired image claims, or a standalone snapshot service whose
+// claim excludes only within the call, as DeregisterImage then takes none.
+func (s *ImageServiceImpl) amiSettler() ec2snapshot.ImageClaims {
+	if s.imageClaims != nil {
+		return s.imageClaims
+	}
+	return s.standaloneSnapshots()
+}
+
+func (s *ImageServiceImpl) standaloneSnapshots() *ec2snapshot.SnapshotServiceImpl {
 	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: s.bucketName}}
 	if s.config != nil {
 		cfg = s.config
@@ -551,7 +564,7 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		ec2snapshot.ImageSnapshotHooks{
 			Recorded:  func(ctx context.Context) error { return s.putAMIConfig(ctx, amiID, meta) },
 			Refused:   func(ctx context.Context) { s.removePendingAMI(ctx, amiID) },
-			Completed: func(ctx context.Context) { s.settleCreatedAMI(ctx, amiID) },
+			Completed: func(ctx context.Context) { s.amiSettler().SettlePendingAMI(ctx, amiID, ebsmetadata.AMIStateAvailable) },
 		})
 	if err != nil {
 		// A UEFI object left under the image's prefix is in the orphan report.
@@ -564,28 +577,6 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 	return &ec2.CreateImageOutput{
 		ImageId: aws.String(amiID),
 	}, nil
-}
-
-// settleCreatedAMI makes amiID available under the image's claim, which
-// DeregisterImage also takes, and only while a reread finds it still pending;
-// any AMI it leaves pending is settled by the reaper.
-func (s *ImageServiceImpl) settleCreatedAMI(ctx context.Context, amiID string) {
-	if s.imageClaims != nil {
-		unlock, err := s.imageClaims.LockImage(ctx, amiID)
-		if err != nil {
-			slog.WarnContext(ctx, "CreateImageFromInstance: AMI's claim not taken, left pending for the reaper", "amiId", amiID, "err", err)
-			return
-		}
-		defer unlock()
-	}
-	current, err := s.metadata.GetAMI(ctx, amiID)
-	if err != nil || current.State != ec2.ImageStatePending {
-		return
-	}
-	current.State = ebsmetadata.AMIStateAvailable
-	if err := s.putAMIConfig(ctx, amiID, current); err != nil {
-		slog.WarnContext(ctx, "CreateImageFromInstance: AMI left pending for the reaper", "amiId", amiID, "err", err)
-	}
 }
 
 // removePendingAMI deletes the AMI document of a CreateImage whose snapshot

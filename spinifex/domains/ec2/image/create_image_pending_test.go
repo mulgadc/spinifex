@@ -263,7 +263,6 @@ func TestDeregisterImage_DuringTheReapersAMIWriteStaysDeleted(t *testing.T) {
 // and the write making it available is refused retryably, never undone.
 func TestDeregisterImage_DuringCreateImagesAMIWriteStaysDeleted(t *testing.T) {
 	f := newPendingImageFixture(t)
-	f.svc.SetImageClaims(f.snapshots)
 	sample, err := ebsmetadata.AMIKey("ami-0")
 	require.NoError(t, err)
 	amiKeyPrefix := sample[:strings.LastIndex(sample, "ami-0")]
@@ -287,6 +286,10 @@ func TestDeregisterImage_DuringCreateImagesAMIWriteStaysDeleted(t *testing.T) {
 		_, deregErr = f.svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: aws.String(imageID)}, testAccountID)
 	}
 	f.svc.metadata = ebsmetadata.NewStore(hooked, testBucket)
+	settling := ec2snapshot.NewSnapshotServiceImplWithStore(f.svc.config, hooked, nil)
+	settling.SetEBSProvider(f.mem)
+	f.svc.SetSnapshotCreator(settling)
+	f.svc.SetImageClaims(settling)
 
 	out, err := f.createImage(t)
 	require.NoError(t, err)

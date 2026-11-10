@@ -351,35 +351,11 @@ func (r *PendingSnapshotReaper) settleAMIs(ctx context.Context) (int, error) {
 		if !ok {
 			continue
 		}
-		if r.settleAMI(ctx, ami, state) {
+		if r.svc.settlePendingAMI(ctx, ami.ImageID, state, r.svc.claims.take) {
 			written++
 		}
 	}
 	return written, nil
-}
-
-// settleAMI writes state to ami under the image's claim, which DeregisterImage
-// also takes, and only while a reread finds the AMI still pending.
-func (r *PendingSnapshotReaper) settleAMI(ctx context.Context, ami ebsmetadata.AMI, state string) bool {
-	held, err := r.svc.claims.take(ctx, ami.ImageID)
-	if err != nil {
-		slog.InfoContext(ctx, "pending-snapshot: AMI's claim not taken, retrying next sweep",
-			"imageId", ami.ImageID, "err", err)
-		return false
-	}
-	defer held.release(ctx)
-	current, err := r.svc.metadata.GetAMI(ctx, ami.ImageID)
-	if err != nil || current.State != amiStatePending {
-		return false
-	}
-	current.State = state
-	if err := r.svc.metadata.PutAMI(ctx, current); err != nil {
-		slog.WarnContext(ctx, "pending-snapshot: AMI state not written, retrying next sweep",
-			"imageId", ami.ImageID, "err", err)
-		return false
-	}
-	slog.InfoContext(ctx, "pending-snapshot: AMI settled", "imageId", ami.ImageID, "snapshotId", ami.SnapshotID, "state", state)
-	return true
 }
 
 // amiStateFromSnapshot is the state ami's snapshot document gives it, and

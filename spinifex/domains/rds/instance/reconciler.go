@@ -603,12 +603,13 @@ func (r *Reconciler) reconcileDeleting(ctx context.Context, kv *kvstore.Bucket, 
 		errors.Is(err, errModifyInProgress) {
 		return nil
 	}
-	if time.Since(transitionStarted(rec)) > transitionTimeout+r.svc.finalSnapshotWait(ctx, kv, rec) {
+	wait, waitErr := r.svc.finalSnapshotWait(ctx, kv, rec)
+	if waitErr == nil && time.Since(transitionStarted(rec)) > transitionTimeout+wait {
 		return r.transition(ctx, kv, rev, rec, StatusFailed,
 			fmt.Sprintf("the DB instance could not be deleted within %s: %v", transitionTimeout, err))
 	}
 	slog.WarnContext(ctx, "rds reconciler: resuming a delete failed; retrying next pass",
-		"dbInstance", rec.DBInstanceIdentifier, "err", err)
+		"dbInstance", rec.DBInstanceIdentifier, "err", errors.Join(err, waitErr))
 	return nil
 }
 

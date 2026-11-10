@@ -532,18 +532,25 @@ func (s *Service) finalSnapshotCut(ctx context.Context, kv *kvstore.Bucket, rec 
 	return err == nil && found && record.SnapshotID != "" && finalSnapshotIsOurs(&record, rec)
 }
 
-// How long a deletion waited on its final snapshot settling, which does not
-// count toward transitionTimeout. Zero while it has not settled or cannot be read.
-func (s *Service) finalSnapshotWait(ctx context.Context, kv *kvstore.Bucket, rec *DBInstanceRecord) time.Duration {
+// How long a deletion has waited on its final snapshot, which does not count
+// toward transitionTimeout: until it settled, or until now while it has not. A
+// read that fails is returned, so the caller cannot count the wait by mistake.
+func (s *Service) finalSnapshotWait(ctx context.Context, kv *kvstore.Bucket, rec *DBInstanceRecord) (time.Duration, error) {
 	if rec.FinalSnapshotIdentifier == "" {
-		return 0
+		return 0, nil
 	}
 	var record DBSnapshotRecord
 	found, err := getJSON(ctx, kv, DBSnapshotKey(rec.FinalSnapshotIdentifier), &record)
-	if err != nil || !found || record.SettledAt == nil || !finalSnapshotIsOurs(&record, rec) {
-		return 0
+	if err != nil {
+		return 0, fmt.Errorf("rds: read the final snapshot %s: %w", rec.FinalSnapshotIdentifier, err)
 	}
-	return max(record.SettledAt.Sub(record.CreatedAt), 0)
+	if !found || !finalSnapshotIsOurs(&record, rec) {
+		return 0, nil
+	}
+	if record.SettledAt == nil {
+		return max(time.Since(record.CreatedAt), 0), nil
+	}
+	return max(record.SettledAt.Sub(record.CreatedAt), 0), nil
 }
 
 // Writes only the snapshot fields under CAS, preserving tags changed while the

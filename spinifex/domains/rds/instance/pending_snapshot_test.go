@@ -36,6 +36,8 @@ type ec2Snapshots struct {
 	mu          sync.Mutex
 	deleted     []string
 	describeErr error
+	// strictErr fails the strict describe a reconciler reads a snapshot's state by.
+	strictErr error
 }
 
 var _ snapshotProvider = (*ec2Snapshots)(nil)
@@ -48,6 +50,16 @@ func (e *ec2Snapshots) DescribeSnapshots(ctx context.Context, input *ec2.Describ
 		return nil, err
 	}
 	return e.SnapshotServiceImpl.DescribeSnapshots(ctx, input, accountID)
+}
+
+func (e *ec2Snapshots) DescribeSnapshotsStrict(ctx context.Context, input *ec2.DescribeSnapshotsInput, accountID string) (*ec2.DescribeSnapshotsOutput, error) {
+	e.mu.Lock()
+	err := e.strictErr
+	e.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return e.SnapshotServiceImpl.DescribeSnapshotsStrict(ctx, input, accountID)
 }
 
 func (e *ec2Snapshots) DeleteSnapshot(ctx context.Context, input *ec2.DeleteSnapshotInput, accountID string) (*ec2.DeleteSnapshotOutput, error) {
@@ -326,6 +338,36 @@ func TestReconciler_HoldsADeletionWhileItsFinalSnapshotIsPending(t *testing.T) {
 	assert.Equal(t, 1, countContaining(eventsOf(t, h, EventSourceTypeDBSnapshot, pendingFinalSnapshotID), "Final DB snapshot created."))
 }
 
+// A pending final snapshot whose state cannot be read for a while does not
+// fail the deletion past transitionTimeout: the time it has been pending is
+// excluded before it settles, and the deletion finishes once it completes.
+func TestReconciler_PendingFinalSnapshotReadFailureDoesNotFailTheDeletion(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	e := withEC2Snapshots(t, h)
+	ec2ID := startPendingFinalSnapshot(t, h, e, 3*time.Hour)
+	r := testReconciler(t, h.svc, "node-a")
+
+	e.mu.Lock()
+	e.strictErr = errors.New("snapshot metadata temporarily unavailable")
+	e.mu.Unlock()
+	require.ErrorContains(t, onePass(t, r), "temporarily unavailable", "the creating DB snapshot's settle reports the read")
+	assert.Equal(t, StatusDeleting, h.record(t).Status, "a pending backup's wait is excluded even when its state cannot be read")
+	assert.Empty(t, h.volumes.deleted)
+
+	e.mu.Lock()
+	e.strictErr = nil
+	e.mu.Unlock()
+	require.NoError(t, onePass(t, r))
+	assert.Equal(t, StatusDeleting, h.record(t).Status, "still pending, so still waiting")
+
+	e.settle(t, ec2ID, ebsprovider.SnapshotStateCompleted)
+	require.NoError(t, onePass(t, r))
+	assert.False(t, h.recordExists(t, testDBID), "the deletion recovers once the backup completes")
+	final, _ := h.snapshotRecord(t, pendingFinalSnapshotID)
+	assert.Equal(t, SnapshotStatusAvailable, final.Status)
+}
+
 // A final snapshot that errors keeps the instance in deleting, with one event
 // naming the failed snapshot, however many passes follow.
 func TestReconciler_KeepsADeletionWhoseFinalSnapshotFailed(t *testing.T) {
@@ -527,8 +569,12 @@ func TestDeleteDBInstance_FinalSnapshotStateAtCreate(t *testing.T) {
 
 			if tc.wantStatus == SnapshotStatusCreating {
 				rec := h.record(t)
-				assert.Zero(t, h.svc.finalSnapshotWait(t.Context(), mustBucket(t, h), &rec),
-					"an unsettled final snapshot excludes no wait")
+				h.rewriteSnapshotRecord(t, pendingFinalSnapshotID, func(r *DBSnapshotRecord) {
+					r.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+				})
+				wait, err := h.svc.finalSnapshotWait(t.Context(), mustBucket(t, h), &rec)
+				require.NoError(t, err)
+				assert.GreaterOrEqual(t, wait, 2*time.Hour, "an unsettled final snapshot excludes the time since it was reserved")
 			}
 		})
 	}

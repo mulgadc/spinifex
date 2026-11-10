@@ -205,15 +205,12 @@ func TestCreateVolumeFromAFailedSnapshotIsRefused(t *testing.T) {
 
 func TestAVolumeOfAnotherClusterIsNotFound(t *testing.T) {
 	fake := oci.NewBlockFake()
-	other := testConfig("node-1", fake, ocibsd.NewFakeInitiator())
-	other.ClusterID = "cluster-2"
-	theirs, err := ocibsd.New(other)
-	require.NoError(t, err)
+	theirs := newNode(t, fake, ocibsd.NewFakeInitiator(), func(cfg *ocibsd.Config) { cfg.ClusterID = "cluster-2" })
 	v := createVolume(t, theirs, "vol-shared-name", 1<<30)
 
 	ours := newClusterOver(t, fake, nil).router()
 	ctx := context.Background()
-	_, err = ours.GetVolume(ctx, ebsprovider.GetVolumeRequest{Versioned: latest, VolumeID: "vol-shared-name"})
+	_, err := ours.GetVolume(ctx, ebsprovider.GetVolumeRequest{Versioned: latest, VolumeID: "vol-shared-name"})
 	require.ErrorIs(t, err, ebsprovider.ErrNotFound)
 	_, err = ours.GetVolume(ctx, ebsprovider.GetVolumeRequest{Versioned: latest, VolumeID: "vol-shared-name", Handle: v.Handle})
 	require.ErrorIs(t, err, ebsprovider.ErrNotFound, "a handle is honoured only for this cluster's volume")
@@ -419,17 +416,17 @@ func TestPublishOfADetachingAttachmentIsRetryLater(t *testing.T) {
 func TestPublishPastItsBoundIsRetryLaterAndTheRetryReusesTheAttachment(t *testing.T) {
 	fake := oci.NewBlockFake()
 	fake.AttachAfter = 50
-	cfg := testConfig("node-1", fake, ocibsd.NewFakeInitiator())
-	cfg.AttachTimeout = time.Minute
-	cfg.PublishTimeout = 20 * time.Millisecond
-	p, err := ocibsd.New(cfg)
-	require.NoError(t, err)
+	p := newNode(t, fake, ocibsd.NewFakeInitiator(), func(cfg *ocibsd.Config) {
+		cfg.AttachTimeout = time.Minute
+		cfg.PublishTimeout = 20 * time.Millisecond
+	})
 	ctx := context.Background()
 	require.NoError(t, p.Start(ctx))
 	createVolume(t, p, "vol-slow", 1<<30)
 
 	req := ebsprovider.PublishVolumeRequest{Versioned: latest, VolumeID: "vol-slow", NodeID: "node-1"}
 	var published *ebsprovider.PublishedVolume
+	var err error
 	timedOut := 0
 	for published == nil {
 		published, err = p.PublishVolume(ctx, req)

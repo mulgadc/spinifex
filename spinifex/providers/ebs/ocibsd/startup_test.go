@@ -100,8 +100,7 @@ func TestStartLogsOutOnlyThisClustersDetachedSessions(t *testing.T) {
 			tc.arrange(t, fake, tc.target)
 			initiator := ocibsd.NewFakeInitiator()
 			initiator.SeedSession(tc.target)
-			p, err := ocibsd.New(testConfig("node-1", fake, initiator))
-			require.NoError(t, err)
+			p := newNode(t, fake, initiator)
 
 			require.NoError(t, p.Start(context.Background()))
 			if tc.loggedOut {
@@ -121,13 +120,12 @@ func TestPublishWaitsForTheStaleSessionLogout(t *testing.T) {
 	seedAttachment(fake, "att-old", instanceOf("node-1"), seedVolume(t, fake, testCluster), oci.AttachmentDetached, stale)
 	initiator := ocibsd.NewFakeInitiator()
 	initiator.SeedSession(stale)
-	p, err := ocibsd.New(testConfig("node-1", fake, initiator))
-	require.NoError(t, err)
+	p := newNode(t, fake, initiator)
 	ctx := context.Background()
 	createVolume(t, p, "vol-after", 1<<30)
 	publish := ebsprovider.PublishVolumeRequest{Versioned: latest, VolumeID: "vol-after", NodeID: "node-1"}
 
-	_, err = p.PublishVolume(ctx, publish)
+	_, err := p.PublishVolume(ctx, publish)
 	require.ErrorIs(t, err, ebsprovider.ErrUnavailable, "no publish before the stale sessions are gone")
 	assert.Empty(t, initiator.Events(), "and no login")
 
@@ -174,11 +172,10 @@ func TestStartFailures(t *testing.T) {
 			fake := oci.NewBlockFake()
 			initiator := ocibsd.NewFakeInitiator()
 			tc.arrange(fake, initiator)
-			p, err := ocibsd.New(testConfig("node-1", fake, initiator))
-			require.NoError(t, err)
+			p := newNode(t, fake, initiator)
 
 			require.ErrorContains(t, p.Start(context.Background()), tc.want)
-			_, err = p.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{Versioned: latest, VolumeID: "vol-x", NodeID: "node-1"})
+			_, err := p.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{Versioned: latest, VolumeID: "vol-x", NodeID: "node-1"})
 			require.ErrorIs(t, err, ebsprovider.ErrUnavailable, "a node that did not start publishes nothing")
 			assert.Empty(t, initiator.Events())
 		})

@@ -39,6 +39,24 @@ func testConfig(nodeID string, client oci.BlockClient, initiator ocibsd.Initiato
 	}
 }
 
+// newNode builds node-1's provider over client, unstarted, with opts applied
+// to its config.
+func newNode(t *testing.T, client oci.BlockClient, initiator ocibsd.Initiator, opts ...func(*ocibsd.Config)) *ocibsd.Provider {
+	t.Helper()
+	cfg := testConfig("node-1", client, initiator)
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	p, err := ocibsd.New(cfg)
+	require.NoError(t, err)
+	return p
+}
+
+// onNode places a provider on nodeID and its instance.
+func onNode(nodeID string) func(*ocibsd.Config) {
+	return func(cfg *ocibsd.Config) { cfg.NodeID, cfg.InstanceID = nodeID, instanceOf(nodeID) }
+}
+
 func newCluster(t *testing.T) *cluster {
 	t.Helper()
 	return newClusterOver(t, oci.NewBlockFake(), nil)
@@ -54,8 +72,7 @@ func newClusterOver(t *testing.T, fake *oci.BlockFake, client oci.BlockClient) *
 	c := &cluster{fake: fake, nodes: map[string]*ocibsd.Provider{}, initiators: map[string]*ocibsd.FakeInitiator{}}
 	for _, node := range []string{"node-1", "node-2"} {
 		initiator := ocibsd.NewFakeInitiator()
-		p, err := ocibsd.New(testConfig(node, client, initiator))
-		require.NoError(t, err)
+		p := newNode(t, client, initiator, onNode(node))
 		require.NoError(t, p.Start(context.Background()))
 		c.nodes[node], c.initiators[node] = p, initiator
 	}

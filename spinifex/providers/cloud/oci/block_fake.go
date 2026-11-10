@@ -23,6 +23,8 @@ var ErrReplyLost = errors.New("oci fake: reply lost after the call took effect")
 // provider has to handle: the 50 GB floor, retry tokens, backups that stay
 // CREATING until a test settles them, and attachments that move by state.
 type BlockFake struct {
+	stagedFailures
+
 	mu sync.Mutex
 
 	// AttachAfter and DetachAfter are how many GetVolumeAttachment calls an
@@ -40,7 +42,6 @@ type BlockFake struct {
 	attachments map[string]*fakeAttachment
 	tokens      map[string]string // op and retry token -> resource OCID
 	tokenOf     map[string]string // resource OCID -> the retry token it was created with
-	failWith    map[string]error
 	loseReply   map[string]bool
 	seq         int
 }
@@ -64,16 +65,10 @@ func NewBlockFake() *BlockFake {
 		attachments: map[string]*fakeAttachment{},
 		tokens:      map[string]string{},
 		tokenOf:     map[string]string{},
-		failWith:    map[string]error{},
 		loseReply:   map[string]bool{},
-	}
-}
 
-// FailOp stages err for the next call to op, which then changes nothing.
-func (f *BlockFake) FailOp(op string, err error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.failWith[op] = err
+		stagedFailures: stagedFailures{FailWith: map[string]error{}},
+	}
 }
 
 // LoseReply makes the next call to op take effect and return ErrReplyLost.
@@ -299,7 +294,7 @@ func (f *BlockFake) AttachVolume(_ context.Context, in AttachVolumeInput) (Volum
 		VolumeAttachment: VolumeAttachment{
 			ID: id, InstanceID: in.InstanceID, VolumeID: in.VolumeID, AvailabilityDomain: v.AvailabilityDomain,
 			State: AttachmentAttaching, ReadOnly: in.ReadOnly,
-			IQN: "iqn.2015-12.com.oracleiaas:" + id, IPv4: fmt.Sprintf("169.254.2.%d", 2+f.seq%250), Port: 3260,
+			IQN: IQNPrefix + id, IPv4: fmt.Sprintf("169.254.2.%d", 2+f.seq%250), Port: 3260,
 		},
 		countdown: f.AttachAfter,
 	}
@@ -448,15 +443,6 @@ func (f *BlockFake) DeleteVolumeBackup(_ context.Context, backupID string) error
 	b.State = BackupTerminated
 	_, err := answerOf(f, op, struct{}{})
 	return err
-}
-
-// take returns and clears a failure FailOp staged for op.
-func (f *BlockFake) take(op string) error {
-	if err, ok := f.failWith[op]; ok {
-		delete(f.failWith, op)
-		return err
-	}
-	return nil
 }
 
 // answerOf returns out, or ErrReplyLost once if LoseReply staged op.

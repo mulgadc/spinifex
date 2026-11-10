@@ -59,7 +59,7 @@ func (p *Provider) logoutStaleSessions(ctx context.Context) error {
 	}
 	var candidates []Target
 	for _, s := range sessions {
-		if strings.HasPrefix(s.IQN, OCIIQNPrefix) {
+		if strings.HasPrefix(s.IQN, oci.IQNPrefix) {
 			candidates = append(candidates, s)
 		}
 	}

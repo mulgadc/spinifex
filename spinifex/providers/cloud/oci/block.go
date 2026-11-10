@@ -84,6 +84,9 @@ const (
 // MinVolumeSizeGB is the smallest block volume OCI creates.
 const MinVolumeSizeGB = 50
 
+// IQNPrefix starts the IQN of every OCI block volume attachment.
+const IQNPrefix = "iqn.2015-12.com.oracleiaas:"
+
 // BlockVolume is an OCI block volume. SourceBackupID is set on a volume
 // restored from a backup.
 type BlockVolume struct {

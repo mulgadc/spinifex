@@ -17,9 +17,6 @@ import (
 // instead of holding them for the image's default.
 const ReplacementTimeoutSeconds = 120
 
-// OCIIQNPrefix starts the IQN of every OCI block volume attachment.
-const OCIIQNPrefix = "iqn.2015-12.com.oracleiaas:"
-
 // iscsiadm exit codes (open-iscsi iscsi_err.h) that mean the work is done.
 const (
 	iscsiErrSessExists  = 15

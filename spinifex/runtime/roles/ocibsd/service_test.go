@@ -118,7 +118,7 @@ func TestNewProviderLogsOutStaleSessionsOfThisCluster(t *testing.T) {
 			FreeformTags: map[string]string{ebsocibsd.TagCluster: clusterID},
 		})
 		require.NoError(t, err)
-		target := ebsocibsd.Target{IQN: ebsocibsd.OCIIQNPrefix + iqn, IPv4: "169.254.2.2", Port: 3260}
+		target := ebsocibsd.Target{IQN: oci.IQNPrefix + iqn, IPv4: "169.254.2.2", Port: 3260}
 		h.fake.SeedAttachment(oci.VolumeAttachment{ID: "att-" + iqn, InstanceID: testInstance, VolumeID: v.ID, State: oci.AttachmentDetached, IQN: target.IQN, IPv4: target.IPv4, Port: target.Port})
 		h.initiator.SeedSession(target)
 		return target

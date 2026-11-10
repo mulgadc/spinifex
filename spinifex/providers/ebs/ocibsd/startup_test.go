@@ -24,7 +24,7 @@ func seedVolume(t *testing.T, fake *oci.BlockFake, cluster string) string {
 }
 
 func ociTarget(name string) ocibsd.Target {
-	return ocibsd.Target{IQN: ocibsd.OCIIQNPrefix + name, IPv4: "169.254.2.2", Port: 3260}
+	return ocibsd.Target{IQN: oci.IQNPrefix + name, IPv4: "169.254.2.2", Port: 3260}
 }
 
 func seedAttachment(fake *oci.BlockFake, id, instance, volume string, state oci.AttachmentState, target ocibsd.Target) {

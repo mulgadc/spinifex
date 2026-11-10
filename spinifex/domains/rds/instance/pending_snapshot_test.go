@@ -393,9 +393,57 @@ func TestS7_RDSDeletionNeverDeletesTheDataVolumeWithoutACompletedFinalSnapshot(t
 	}
 }
 
-// A creating record naming an EC2 snapshot that is gone, reports no state, or
-// cannot be read is left creating: none of them says the data is restorable
-// or lost.
+// A creating record whose EC2 snapshot is gone fails with an event, once: no
+// pass can make that snapshot again, so creating would wait on it forever. A
+// final snapshot that fails so keeps its deletion in deleting and the volume.
+func TestReconciler_FailsACreatingDBSnapshotWhoseEC2SnapshotIsGone(t *testing.T) {
+	t.Parallel()
+	t.Run("DB snapshot", func(t *testing.T) {
+		t.Parallel()
+		h := newLifecycleHarness(t, false)
+		kv, err := h.svc.bucket(t.Context(), testAccountID)
+		require.NoError(t, err)
+		rec := availableRecord()
+		named := newDBSnapshotRecord(testAccountID, &rec, &validatedSnapshot{DBSnapshotIdentifier: testSnapshotID})
+		named.SnapshotID = "snap-named01"
+		require.NoError(t, putJSON(t.Context(), kv, DBSnapshotKey(testSnapshotID), &named))
+
+		r := testReconciler(t, h.svc, "node-a")
+		for range 3 {
+			require.NoError(t, onePass(t, r))
+		}
+
+		stored, found := h.snapshotRecord(t, testSnapshotID)
+		require.True(t, found, "a failed DB snapshot is kept for the customer to see and delete")
+		assert.Equal(t, SnapshotStatusFailed, stored.Status)
+		assert.NotNil(t, stored.SettledAt)
+		events := eventsOf(t, h, EventSourceTypeDBSnapshot, testSnapshotID)
+		assert.Equal(t, 1, countContaining(events, "snap-named01 no longer exists"), "one failure event: %v", events)
+	})
+	t.Run("final snapshot", func(t *testing.T) {
+		t.Parallel()
+		h := newLifecycleHarness(t, false)
+		e := withEC2Snapshots(t, h)
+		ec2ID := startPendingFinalSnapshot(t, h, e, 3*time.Hour)
+		require.NoError(t, e.MetadataStore().DeleteSnapshot(t.Context(), awsidentifiers.GlobalAccountID, ec2ID))
+
+		r := testReconciler(t, h.svc, "node-a")
+		for range 3 {
+			require.NoError(t, onePass(t, r))
+		}
+
+		assert.Equal(t, StatusDeleting, h.record(t).Status)
+		final, found := h.snapshotRecord(t, pendingFinalSnapshotID)
+		require.True(t, found)
+		assert.Equal(t, SnapshotStatusFailed, final.Status)
+		instanceEvents := eventsOf(t, h, EventSourceTypeDBInstance, testDBID)
+		assert.Equal(t, 1, countContaining(instanceEvents, "The final DB snapshot "+pendingFinalSnapshotID+" failed"), "%v", instanceEvents)
+		assert.Empty(t, h.volumes.deleted, "the data volume is the only copy left")
+	})
+}
+
+// A creating record naming an EC2 snapshot that reports no state, or cannot
+// be read, is left creating: neither says the data is restorable or lost.
 func TestReconciler_LeavesACreatingDBSnapshotItCannotSettle(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -403,7 +451,6 @@ func TestReconciler_LeavesACreatingDBSnapshotItCannotSettle(t *testing.T) {
 		setup   func(f *fakeSnapshots)
 		wantErr bool
 	}{
-		{name: "the EC2 snapshot is gone"},
 		{name: "the EC2 snapshot reports no state", setup: func(f *fakeSnapshots) {
 			f.holding = []string{"snap-named01"}
 			f.states = map[string]string{"snap-named01": ""}

@@ -747,9 +747,13 @@ func (r *Reconciler) settleCreatingSnapshot(ctx context.Context, kv *kvstore.Buc
 	return r.svc.applyEC2SnapshotState(ctx, kv, rev, accountID, rec, state, false)
 }
 
+// ec2SnapshotGone is the state ec2SnapshotState reports for an EC2 snapshot
+// whose document is gone. Nothing recreates one, so it settles the record.
+const ec2SnapshotGone = "gone"
+
 // Moves a creating record, read at rev, to what its EC2 snapshot's state says:
-// completed is available, error is failed, and pending leaves it creating,
-// written only when adopted says the record has changed. Any other is left.
+// completed is available, error or gone is failed, and pending leaves it
+// creating, written only when adopted says the record has changed. Any other is left.
 func (s *Service) applyEC2SnapshotState(ctx context.Context, kv *kvstore.Bucket, rev uint64,
 	accountID string, rec *DBSnapshotRecord, state string, adopted bool) error {
 	now := time.Now().UTC()
@@ -757,7 +761,7 @@ func (s *Service) applyEC2SnapshotState(ctx context.Context, kv *kvstore.Bucket,
 	case ec2.SnapshotStateCompleted:
 		rec.Status = SnapshotStatusAvailable
 		rec.SettledAt = &now
-	case ec2.SnapshotStateError:
+	case ec2.SnapshotStateError, ec2SnapshotGone:
 		rec.Status = SnapshotStatusFailed
 		rec.SettledAt = &now
 	case ec2.SnapshotStatePending:
@@ -765,7 +769,7 @@ func (s *Service) applyEC2SnapshotState(ctx context.Context, kv *kvstore.Bucket,
 			return nil
 		}
 	default:
-		slog.WarnContext(ctx, "rds reconciler: the EC2 snapshot of a creating DB snapshot is unreadable or gone; leaving it creating",
+		slog.WarnContext(ctx, "rds reconciler: the EC2 snapshot of a creating DB snapshot reports an unknown state; leaving it creating",
 			"dbSnapshot", rec.DBSnapshotIdentifier, "snapshotId", rec.SnapshotID, "accountId", accountID, "state", state)
 		return nil
 	}
@@ -784,29 +788,33 @@ func (s *Service) applyEC2SnapshotState(ctx context.Context, kv *kvstore.Bucket,
 		s.RecordEvent(ctx, accountID, EventSourceTypeDBSnapshot, rec.DBSnapshotIdentifier,
 			message, EventCategoryBackup, EventCategoryCreation)
 	case SnapshotStatusFailed:
-		s.recordDBSnapshotFailed(ctx, accountID, rec)
+		s.recordDBSnapshotFailed(ctx, accountID, rec, state)
 	}
 	return nil
 }
 
-// Reports a DB snapshot whose EC2 snapshot settled in error, and for a final
-// snapshot the DB instance its deletion now holds in deleting.
-func (s *Service) recordDBSnapshotFailed(ctx context.Context, accountID string, rec *DBSnapshotRecord) {
+// Reports a DB snapshot whose EC2 snapshot settled in error or is gone, and
+// for a final snapshot the DB instance its deletion now holds in deleting.
+func (s *Service) recordDBSnapshotFailed(ctx context.Context, accountID string, rec *DBSnapshotRecord, state string) {
+	why := " ended in error."
+	if state == ec2SnapshotGone {
+		why = " no longer exists."
+	}
 	s.RecordEvent(ctx, accountID, EventSourceTypeDBSnapshot, rec.DBSnapshotIdentifier,
-		"The DB snapshot failed: its EC2 snapshot "+rec.SnapshotID+" ended in error.",
+		"The DB snapshot failed: its EC2 snapshot "+rec.SnapshotID+why,
 		EventCategoryFailure, EventCategoryBackup)
 	if rec.FinalSnapshot {
 		s.RecordEvent(ctx, accountID, EventSourceTypeDBInstance, rec.DBInstanceIdentifier,
 			"The final DB snapshot "+rec.DBSnapshotIdentifier+" failed; the DB instance stays in deleting and its data volume is kept.",
 			EventCategoryFailure, EventCategoryDeletion)
 	}
-	slog.WarnContext(ctx, "rds: a DB snapshot's EC2 snapshot ended in error",
+	slog.WarnContext(ctx, "rds: a DB snapshot's EC2 snapshot ended in error or is gone",
 		"dbSnapshot", rec.DBSnapshotIdentifier, "snapshotId", rec.SnapshotID, "accountId", accountID,
-		"finalSnapshot", rec.FinalSnapshot)
+		"finalSnapshot", rec.FinalSnapshot, "state", state)
 }
 
-// The state of an EC2 snapshot, empty when it is gone. The strict describe
-// fails on unreadable metadata, so a partial read is never taken for absence.
+// The state of an EC2 snapshot, ec2SnapshotGone when it is gone. The strict
+// describe fails on unreadable metadata, so a partial read is never absence.
 func (s *Service) ec2SnapshotState(ctx context.Context, snapshotID string) (string, error) {
 	if s.deps.Snapshots == nil {
 		return "", errors.New("rds: no snapshot service configured")
@@ -816,19 +824,19 @@ func (s *Service) ec2SnapshotState(ctx context.Context, snapshotID string) (stri
 	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		if awserrors.IsNotFound(err) {
-			return "", nil
+			return ec2SnapshotGone, nil
 		}
 		return "", fmt.Errorf("rds: read the EC2 snapshot %s: %w", snapshotID, err)
 	}
 	if out == nil {
-		return "", nil
+		return ec2SnapshotGone, nil
 	}
 	for _, snapshot := range out.Snapshots {
 		if aws.StringValue(snapshot.SnapshotId) == snapshotID {
 			return aws.StringValue(snapshot.State), nil
 		}
 	}
-	return "", nil
+	return ec2SnapshotGone, nil
 }
 
 // The EC2 snapshot an account-scoped DB snapshot identifier owns and its state,

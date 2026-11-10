@@ -503,7 +503,7 @@ func (s *Service) takeFinalSnapshot(ctx context.Context, kv *kvstore.Bucket, acc
 }
 
 // Records the final snapshot's EC2 snapshot and its state, reporting a pending
-// one as errFinalSnapshotInProgress and an errored one as errFinalSnapshotFailed.
+// one as errFinalSnapshotInProgress and an errored or gone one as errFinalSnapshotFailed.
 func (s *Service) settleFinalSnapshot(ctx context.Context, kv *kvstore.Bucket, accountID string,
 	rec *DBInstanceRecord, snapshotID, state string) error {
 	written, err := s.completeFinalSnapshot(ctx, kv, rec, snapshotID, state)
@@ -513,9 +513,9 @@ func (s *Service) settleFinalSnapshot(ctx context.Context, kv *kvstore.Bucket, a
 	switch {
 	case state == ec2.SnapshotStatePending:
 		return errFinalSnapshotInProgress
-	case state == ec2.SnapshotStateError:
+	case state == ec2.SnapshotStateError || state == ec2SnapshotGone:
 		if written != nil {
-			s.recordDBSnapshotFailed(ctx, accountID, written)
+			s.recordDBSnapshotFailed(ctx, accountID, written, state)
 		}
 		return fmt.Errorf("%w: %s", errFinalSnapshotFailed, rec.FinalSnapshotIdentifier)
 	case written != nil:
@@ -573,7 +573,7 @@ func (s *Service) completeFinalSnapshot(ctx context.Context, kv *kvstore.Bucket,
 		switch state {
 		case ec2.SnapshotStateCompleted:
 			want = SnapshotStatusAvailable
-		case ec2.SnapshotStateError:
+		case ec2.SnapshotStateError, ec2SnapshotGone:
 			want = SnapshotStatusFailed
 		case ec2.SnapshotStatePending:
 		default:

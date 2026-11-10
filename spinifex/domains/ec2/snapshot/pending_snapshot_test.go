@@ -432,6 +432,17 @@ func TestCreateSnapshot_ProviderAnswers(t *testing.T) {
 				}
 			},
 			wantState: snapshotStateCompleted, wantCalls: 2, wantHeld: true},
+		{name: "an answer with no state is not completed, so the reaper follows it",
+			setup: func(f *pendingFixture) {
+				f.provider.onCreate = func(_ int, req ebsprovider.CreateSnapshotRequest) (bool, *ebsprovider.Snapshot, error) {
+					snap, err := f.mem.CreateSnapshot(context.Background(), req)
+					if snap != nil {
+						snap.State = ""
+					}
+					return true, snap, err
+				}
+			},
+			wantState: snapshotStatePending, wantCalls: 1, wantHeld: true},
 		{name: "the answer cannot be written, so the reaper is left to settle it",
 			setup:     func(f *pendingFixture) { f.store.putsBefore = 1 },
 			wantState: snapshotStatePending, wantCalls: 1, wantHeld: true},

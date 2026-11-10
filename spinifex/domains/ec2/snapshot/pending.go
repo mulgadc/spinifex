@@ -40,9 +40,7 @@ func applyProviderAnswer(created *ebsprovider.Snapshot, earlierUnanswered bool) 
 		if created.Handle != "" {
 			doc.ProviderHandle = created.Handle
 		}
-		// A provider that predates pending answers reports no state, and every
-		// such provider finishes the snapshot before it answers.
-		if created.State == ebsprovider.SnapshotStateCompleted || created.State == "" {
+		if created.State == ebsprovider.SnapshotStateCompleted {
 			doc.State = snapshotStateCompleted
 			doc.Progress = "100%"
 		}

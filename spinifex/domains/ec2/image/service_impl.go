@@ -75,35 +75,6 @@ func (s *ImageServiceImpl) SetImageClaims(claims ec2snapshot.ImageClaims) {
 	s.imageClaims = claims
 }
 
-// snapshotCreator is the wired snapshot service, or a standalone one over this
-// service's store and provider, which excludes only within the call and
-// records no volume reference.
-func (s *ImageServiceImpl) snapshotCreator() ec2snapshot.ImageSnapshotCreator {
-	if s.snapshots != nil {
-		return s.snapshots
-	}
-	return s.standaloneSnapshots()
-}
-
-// amiSettler is the wired image claims, or a standalone snapshot service whose
-// claim excludes only within the call, as DeregisterImage then takes none.
-func (s *ImageServiceImpl) amiSettler() ec2snapshot.ImageClaims {
-	if s.imageClaims != nil {
-		return s.imageClaims
-	}
-	return s.standaloneSnapshots()
-}
-
-func (s *ImageServiceImpl) standaloneSnapshots() *ec2snapshot.SnapshotServiceImpl {
-	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: s.bucketName}}
-	if s.config != nil {
-		cfg = s.config
-	}
-	svc := ec2snapshot.NewSnapshotServiceImplWithStore(cfg, s.store, nil)
-	svc.SetEBSProvider(s.provider)
-	return svc
-}
-
 // SetEBSProvider injects the provider boundary used by the control plane.
 // Legacy AMI/snapshot paths remain in place until their metadata migration is complete.
 func (s *ImageServiceImpl) SetEBSProvider(provider ebsprovider.EBSProvider) {
@@ -512,6 +483,10 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 	if s.config == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	if s.snapshots == nil || s.imageClaims == nil {
+		slog.Error("CreateImageFromInstance: no snapshot service wired", "amiId", amiID)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
 	volMeta, err := s.getVolumeMetadata(context.Background(), accountID, params.RootVolumeID)
 	if err != nil {
 		slog.Error("CreateImageFromInstance: failed to read volume metadata", "volumeId", params.RootVolumeID, "err", err)
@@ -560,11 +535,11 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 	// AMI's document, are written pending before the provider is called, so an
 	// accepted snapshot whose answer is lost is still settled by the reaper.
 	ctx := context.Background()
-	snap, err := s.snapshotCreator().CreateImageSnapshot(ctx, volMeta, snapshotID, accountID, "Created by CreateImage("+aws.StringValue(input.InstanceId)+") for "+amiID,
+	snap, err := s.snapshots.CreateImageSnapshot(ctx, volMeta, snapshotID, accountID, "Created by CreateImage("+aws.StringValue(input.InstanceId)+") for "+amiID,
 		ec2snapshot.ImageSnapshotHooks{
 			Recorded:  func(ctx context.Context) error { return s.putAMIConfig(ctx, amiID, meta) },
 			Refused:   func(ctx context.Context) { s.removePendingAMI(ctx, amiID) },
-			Completed: func(ctx context.Context) { s.amiSettler().SettlePendingAMI(ctx, amiID, ebsmetadata.AMIStateAvailable) },
+			Completed: func(ctx context.Context) { s.imageClaims.SettlePendingAMI(ctx, amiID, ebsmetadata.AMIStateAvailable) },
 		})
 	if err != nil {
 		// A UEFI object left under the image's prefix is in the orphan report.
@@ -586,24 +561,6 @@ func (s *ImageServiceImpl) removePendingAMI(ctx context.Context, amiID string) {
 		slog.ErrorContext(ctx, "CreateImageFromInstance: failed to remove a refused image's AMI document; the reaper marks it failed",
 			"amiId", amiID, "err", err)
 	}
-}
-
-// snapshotVolume snapshots the root volume through the snapshot service,
-// whether or not the instance is running. A provider that buffers writes
-// drains the volume inside its own CreateSnapshot, so no drain is issued here.
-func (s *ImageServiceImpl) snapshotVolume(volumeID, snapshotID, accountID string) error {
-	if s.config == nil {
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	volMeta, err := s.getVolumeMetadata(context.Background(), accountID, volumeID)
-	if err != nil {
-		slog.Error("snapshotVolume: failed to read volume metadata", "volumeId", volumeID, "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-
-	_, err = s.snapshotCreator().CreateImageSnapshot(context.Background(), volMeta, snapshotID, accountID, "", ec2snapshot.ImageSnapshotHooks{})
-	return err
 }
 
 // getVolumeMetadata reads a volume's control-plane document, remapping a

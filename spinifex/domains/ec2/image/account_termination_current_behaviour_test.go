@@ -57,6 +57,11 @@ func newStorageServices(t *testing.T) storageServices {
 	snapshots.SetEBSProvider(provider)
 	images := ec2image.NewImageServiceImplWithConfig(cfg, store, nil)
 	images.SetEBSProvider(provider)
+	// CreateImage snapshots through a snapshot service with no index handle.
+	imageSnapshots := ec2snapshot.NewSnapshotServiceImplWithStore(cfg, store, nc)
+	imageSnapshots.SetEBSProvider(provider)
+	images.SetSnapshotCreator(imageSnapshots)
+	images.SetImageClaims(imageSnapshots)
 
 	return storageServices{
 		volumes: volumes, snapshots: snapshots, images: images,

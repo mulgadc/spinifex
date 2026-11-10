@@ -29,12 +29,10 @@ type pendingImageFixture struct {
 
 func newPendingImageFixture(t *testing.T) *pendingImageFixture {
 	t.Helper()
-	svc, store, provider := setupProviderSnapshotImageService(t)
+	svc, _, provider := setupProviderSnapshotImageService(t)
 	mem, ok := provider.(*ebsprovider.MemoryProvider)
 	require.True(t, ok)
-	snapshots := ec2snapshot.NewSnapshotServiceImplWithStore(svc.config, store, nil)
-	snapshots.SetEBSProvider(mem)
-	svc.SetSnapshotCreator(snapshots)
+	snapshots := useProvider(svc, mem)
 	return &pendingImageFixture{
 		svc:       svc,
 		snapshots: snapshots,

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Tests remote_join_cmd from install-node.sh: the join token must reach spx only on stdin, so
-# sudo's log (which holds the command it was given) never contains it, and the other values must
-# arrive as plain arguments even when they hold shell syntax.
+# Tests remote_join_cmd and ebs_init_args from install-node.sh: the join token reaches spx only
+# on stdin, so sudo's log never holds it; other values arrive as plain arguments even when they
+# hold shell syntax; and an EBS flag value that is not an OCID or AD name is refused.
 # preflight runs this with sh
 [ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"
 set -euo pipefail
@@ -37,5 +37,26 @@ check "the token is not in sudo's log" "$(grep -c FAKETOKEN "$FAKE_SUDO_LOG" || 
 check "spx got the token" "$(grep -o '<--token><[^>]*>' "$FAKE_SPX_ARGV")" "<--token><$TOKEN>"
 check "spx got the other values as given" "$(cat "$FAKE_SPX_ARGV")" "<admin><join><--force><--node><node2><--bind><10.0.0.2><--cluster-bind><10.0.0.2><--advertise><203.0.113.2><--host><10.0.0.1:4432;touch PWNED><--token><$TOKEN><--region><us-east-1><--az><az \$(touch PWNED2)>"
 check "no value was run as a command" "$(find "$work" -maxdepth 1 -name 'PWNED*' | wc -l | tr -d ' ')" 0
+
+# ebs_init_args: its values are joined into a remote sh -c unquoted, so anything
+# beyond an OCID's or availability domain's characters is refused, not passed on.
+eval "$(sed -n '/^ebs_init_args()/,/^}/p' "$here/install-node.sh")"
+ebs() { ebs_init_args "$@" 2>&1 | tr '\n' ' '; }
+check "no provider adds no flags" "$(ebs "" "" "")" ""
+check "viperblockd is passed as named" "$(ebs viperblockd "" "")" "--ebs-provider=viperblockd "
+check "ocibsd carries the compartment and AD" \
+    "$(ebs ocibsd ocid1.compartment.oc1..aaaa x:AP-SYDNEY-1-AD-1)" \
+    "--ebs-provider=ocibsd --oci-compartment-id=ocid1.compartment.oc1..aaaa --oci-availability-domain=x:AP-SYDNEY-1-AD-1 "
+check "a compartment with shell syntax is refused" \
+    "$(ebs_init_args ocibsd 'ocid1.c;touch PWNED3' ad >/dev/null 2>&1 && echo accepted || echo refused)" refused
+check "an AD with shell syntax is refused" \
+    "$(ebs_init_args ocibsd ocid1.compartment.oc1..aaaa 'ad $(touch PWNED4)' >/dev/null 2>&1 && echo accepted || echo refused)" refused
+check "ocibsd without a compartment is refused" \
+    "$(ebs_init_args ocibsd "" ad >/dev/null 2>&1 && echo accepted || echo refused)" refused
+check "OCI flags without ocibsd are refused" \
+    "$(ebs_init_args viperblockd ocid1.compartment.oc1..aaaa "" >/dev/null 2>&1 && echo accepted || echo refused)" refused
+check "an unknown provider is refused" \
+    "$(ebs_init_args lvm "" "" >/dev/null 2>&1 && echo accepted || echo refused)" refused
+check "no refused value was run as a command" "$(find "$work" -maxdepth 1 -name 'PWNED*' | wc -l | tr -d ' ')" 0
 
 [ "$fails" -eq 0 ]

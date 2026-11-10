@@ -2,7 +2,6 @@ package ocibsd_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -198,6 +197,6 @@ func TestSessions(t *testing.T) {
 func TestExecRunnerKeepsTheExitCode(t *testing.T) {
 	_, err := ocibsd.ExecRunner{}.Run(context.Background(), "false")
 	var coded interface{ ExitCode() int }
-	require.True(t, errors.As(err, &coded))
+	require.ErrorAs(t, err, &coded)
 	assert.Equal(t, 1, coded.ExitCode())
 }

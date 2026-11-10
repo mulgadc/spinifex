@@ -59,9 +59,13 @@ func (w Writer) writeBlock(ctx context.Context, sourcePath string, export ebspro
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("image write: source %s is not a regular file", sourcePath)
 	}
-	if info.Size() < 0 || uint64(info.Size()) > export.SizeBytes {
+	size := info.Size()
+	if size < 0 {
+		return fmt.Errorf("image write: source %s reports a negative size %d", sourcePath, size)
+	}
+	if uint64(size) > export.SizeBytes {
 		return fmt.Errorf("image write: image %s is %d bytes, larger than the %d-byte export at %s",
-			sourcePath, info.Size(), export.SizeBytes, export.DevicePath)
+			sourcePath, size, export.SizeBytes, export.DevicePath)
 	}
 	run := w.QemuImg
 	if run == nil {

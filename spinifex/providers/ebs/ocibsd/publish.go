@@ -57,6 +57,9 @@ func (p *Provider) PublishVolume(ctx context.Context, req ebsprovider.PublishVol
 	if err != nil {
 		return nil, err
 	}
+	if capacity < 0 {
+		return nil, fmt.Errorf("ocibsd: volume %s has a negative capacity %d", req.VolumeID, capacity)
+	}
 
 	attached, err := p.attachments(ctx, v.ID)
 	if err != nil {

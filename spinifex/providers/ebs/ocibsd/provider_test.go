@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -276,7 +277,7 @@ func TestSnapshots(t *testing.T) {
 	assert.Equal(t, ocibsd.RetryToken("snapshot", testCluster, "snap-1"), c.fake.RetryToken(snap.Handle))
 	backup := c.fake.Backups()[0]
 	assert.Equal(t, map[string]string{
-		ocibsd.TagCluster: testCluster, ocibsd.TagSnapshotID: "snap-1", ocibsd.TagVolumeID: "vol-snap", ocibsd.TagCapacityBytes: fmt.Sprint(3 << 30),
+		ocibsd.TagCluster: testCluster, ocibsd.TagSnapshotID: "snap-1", ocibsd.TagVolumeID: "vol-snap", ocibsd.TagCapacityBytes: strconv.Itoa(3 << 30),
 	}, backup.FreeformTags)
 
 	_, err = p.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: latest, SnapshotID: "snap-1", VolumeID: "vol-other"})
@@ -473,6 +474,7 @@ func TestHoldsUnsealedWritesAnswersNone(t *testing.T) {
 // OCI does for the seconds after a create.
 type provisioningClient struct {
 	*oci.BlockFake
+
 	reads *int
 	state oci.VolumeState
 }

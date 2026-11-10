@@ -18,8 +18,8 @@ import (
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"github.com/mulgadc/spinifex/spinifex/providers/cloud/oci"
-	ebsocibsd "github.com/mulgadc/spinifex/spinifex/providers/ebs/ocibsd"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/natsserve"
+	ebsocibsd "github.com/mulgadc/spinifex/spinifex/providers/ebs/ocibsd"
 	hostprocess "github.com/mulgadc/spinifex/spinifex/runtime/host/process"
 )
 

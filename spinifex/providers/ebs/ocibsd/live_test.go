@@ -216,11 +216,9 @@ func newSSHRunner(t *testing.T, host, user, key, knownHosts string) *sshRunner {
 	if knownHosts == "" {
 		knownHosts = filepath.Join(t.TempDir(), "known_hosts")
 	}
-	control, err := os.MkdirTemp("/tmp", "ocibsd-ssh-")
-	require.NoError(t, err)
+	control := t.TempDir()
 	t.Cleanup(func() {
 		_ = exec.Command("ssh", "-o", "ControlPath="+filepath.Join(control, "c"), "-O", "exit", user+"@"+host).Run()
-		_ = os.RemoveAll(control)
 	})
 	return &sshRunner{base: []string{
 		"-i", key, "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "ConnectTimeout=15",

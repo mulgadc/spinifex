@@ -47,6 +47,7 @@ type BlockFake struct {
 
 type fakeAttachment struct {
 	VolumeAttachment
+
 	countdown int
 }
 

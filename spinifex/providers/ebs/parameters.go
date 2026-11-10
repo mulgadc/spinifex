@@ -15,8 +15,11 @@ type VolumeParameters struct {
 
 // NewVolumeParameters encodes the parameters for a volume of volumeType.
 func NewVolumeParameters(volumeType string) json.RawMessage {
-	// A struct of one string field cannot fail to marshal.
-	raw, _ := json.Marshal(VolumeParameters{VolumeType: volumeType})
+	raw, err := json.Marshal(VolumeParameters{VolumeType: volumeType})
+	if err != nil {
+		// A struct of one string field cannot fail to marshal.
+		panic(fmt.Sprintf("ebsprovider: encode volume parameters: %v", err))
+	}
 	return raw
 }
 
@@ -28,7 +31,7 @@ func ParseVolumeParameters(raw json.RawMessage) (VolumeParameters, error) {
 		return params, nil
 	}
 	if err := json.Unmarshal(raw, &params); err != nil {
-		return VolumeParameters{}, fmt.Errorf("%w: volume parameters: %v", ErrInvalidArgument, err)
+		return VolumeParameters{}, fmt.Errorf("%w: volume parameters: %w", ErrInvalidArgument, err)
 	}
 	return params, nil
 }

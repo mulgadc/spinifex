@@ -79,6 +79,7 @@ func rootVolumeAMILoader() *fakeAMILoader {
 // createCapturingProvider records the last CreateVolume request it served.
 type createCapturingProvider struct {
 	*ebsprovider.MemoryProvider
+
 	last ebsprovider.CreateVolumeRequest
 }
 

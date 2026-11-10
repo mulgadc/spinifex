@@ -36,10 +36,10 @@ func seedAttachment(fake *oci.BlockFake, id, instance, volume string, state oci.
 
 func TestStartLogsOutOnlyThisClustersDetachedSessions(t *testing.T) {
 	cases := []struct {
-		name       string
-		arrange    func(t *testing.T, fake *oci.BlockFake, target ocibsd.Target)
-		target     ocibsd.Target
-		loggedOut  bool
+		name      string
+		arrange   func(t *testing.T, fake *oci.BlockFake, target ocibsd.Target)
+		target    ocibsd.Target
+		loggedOut bool
 	}{
 		{
 			name:   "a tagged volume no longer attached here is logged out",

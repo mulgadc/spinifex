@@ -66,6 +66,7 @@ func newClusterOver(t *testing.T, fake *oci.BlockFake, client oci.BlockClient) *
 // per-node verb to the node it names, as the NATS subjects do.
 type router struct {
 	*ocibsd.Provider
+
 	c *cluster
 }
 
@@ -96,6 +97,7 @@ func (r router) HoldsUnsealedWrites(ctx context.Context, nodeID string, volumeID
 // wait for a pending snapshot is exercised and still ends.
 type settling struct {
 	ebsprovider.EBSProvider
+
 	fake *oci.BlockFake
 }
 

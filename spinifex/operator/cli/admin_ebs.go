@@ -47,6 +47,7 @@ const (
 // to joining nodes, and this node's own OCI credential.
 type nodeEBS struct {
 	formation.EBSConfig
+
 	Auth          string
 	ConfigFile    string
 	ConfigProfile string

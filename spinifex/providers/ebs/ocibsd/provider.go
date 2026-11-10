@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -89,7 +90,7 @@ type Provider struct {
 }
 
 type volumeLock struct {
-	sync.Mutex
+	mu      sync.Mutex
 	holders int
 }
 
@@ -163,10 +164,8 @@ func (p *Provider) HoldsUnsealedWrites(_ context.Context, nodeID string, volumeI
 	if nodeID == "" {
 		return nil, fmt.Errorf("%w: node ID is required", ebsprovider.ErrInvalidArgument)
 	}
-	for _, id := range volumeIDs {
-		if id == "" {
-			return nil, fmt.Errorf("%w: empty volume ID", ebsprovider.ErrInvalidArgument)
-		}
+	if slices.Contains(volumeIDs, "") {
+		return nil, fmt.Errorf("%w: empty volume ID", ebsprovider.ErrInvalidArgument)
 	}
 	return nil, nil
 }
@@ -260,9 +259,9 @@ func (p *Provider) lockVolume(volumeID string) func() {
 	lock.holders++
 	p.mu.Unlock()
 
-	lock.Lock()
+	lock.mu.Lock()
 	return func() {
-		lock.Unlock()
+		lock.mu.Unlock()
 		p.mu.Lock()
 		if lock.holders--; lock.holders == 0 {
 			delete(p.locks, volumeID)

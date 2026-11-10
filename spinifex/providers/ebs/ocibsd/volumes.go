@@ -102,7 +102,7 @@ func (p *Provider) CreateVolume(ctx context.Context, req ebsprovider.CreateVolum
 		return nil, err
 	}
 	required := req.CapacityRange.RequiredBytes
-	if req.VolumeID == "" || required <= 0 || (req.CapacityRange.LimitBytes > 0 && required > req.CapacityRange.LimitBytes) {
+	if req.VolumeID == "" || !req.CapacityRange.Valid() {
 		return nil, fmt.Errorf("%w: volume ID and a positive capacity range are required", ebsprovider.ErrInvalidArgument)
 	}
 	if len(req.SeedData) > 0 {
@@ -292,7 +292,7 @@ func (p *Provider) ExpandVolume(ctx context.Context, req ebsprovider.ExpandVolum
 		return nil, err
 	}
 	required := req.CapacityRange.RequiredBytes
-	if req.VolumeID == "" || required <= 0 || (req.CapacityRange.LimitBytes > 0 && required > req.CapacityRange.LimitBytes) {
+	if req.VolumeID == "" || !req.CapacityRange.Valid() {
 		return nil, fmt.Errorf("%w: volume ID and a positive capacity range are required", ebsprovider.ErrInvalidArgument)
 	}
 	v, ok, err := p.findVolume(ctx, req.VolumeID, req.Handle)

@@ -78,8 +78,7 @@ func (m *MemoryProvider) CreateVolume(_ context.Context, req CreateVolumeRequest
 	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
-	if req.VolumeID == "" || req.CapacityRange.RequiredBytes <= 0 ||
-		(req.CapacityRange.LimitBytes > 0 && req.CapacityRange.RequiredBytes > req.CapacityRange.LimitBytes) {
+	if req.VolumeID == "" || !req.CapacityRange.Valid() {
 		return nil, fmt.Errorf("%w: invalid volume ID or capacity range", ErrInvalidArgument)
 	}
 	if req.SourceSnapshotID != "" && req.SourceSnapshotVolumeID == "" {
@@ -197,8 +196,7 @@ func (m *MemoryProvider) ExpandVolume(_ context.Context, req ExpandVolumeRequest
 	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
-	if req.VolumeID == "" || req.CapacityRange.RequiredBytes <= 0 ||
-		(req.CapacityRange.LimitBytes > 0 && req.CapacityRange.RequiredBytes > req.CapacityRange.LimitBytes) {
+	if req.VolumeID == "" || !req.CapacityRange.Valid() {
 		return nil, fmt.Errorf("%w: invalid volume ID or capacity range", ErrInvalidArgument)
 	}
 	m.mu.Lock()

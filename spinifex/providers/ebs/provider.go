@@ -228,6 +228,12 @@ type CapacityRange struct {
 	LimitBytes    int64 `json:"limit_bytes,omitempty"`
 }
 
+// Valid reports whether the range asks for a positive capacity within its
+// limit. A LimitBytes of zero or less sets no limit.
+func (r CapacityRange) Valid() bool {
+	return r.RequiredBytes > 0 && (r.LimitBytes <= 0 || r.RequiredBytes <= r.LimitBytes)
+}
+
 // VolumeState is a volume's attachment state, using the EC2 volume state names.
 type VolumeState string
 

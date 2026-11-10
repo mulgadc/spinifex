@@ -42,7 +42,7 @@ func levelBeat(t *testing.T, m *JetStreamManager, node string, level int, now ti
 
 func tick(t *testing.T, m *JetStreamManager, store *featurelevel.Store, nodes []string, now time.Time) (featurelevel.Record, bool) {
 	t.Helper()
-	rec, advanced, err := advanceFeatureLevel(t.Context(), store, m.ReadHeartbeatContext, nodes, now)
+	rec, advanced, err := advanceFeatureLevel(t.Context(), store, m.ReadHeartbeatLeader, nodes, now)
 	require.NoError(t, err)
 	return rec, advanced
 }
@@ -408,4 +408,70 @@ func TestEnforceFeatureLevel_RaiseBetweenCheckAndWriteRefuses(t *testing.T) {
 	require.ErrorAs(t, err, &refused)
 	require.ErrorIs(t, err, errStartupPermanent)
 	assert.Equal(t, 2, refused.Recorded)
+}
+
+// Activation reads heartbeats from the stream leader, never a follower.
+func TestReadHeartbeatLeader_UsesTheLeaderPath(t *testing.T) {
+	t.Parallel()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	m, err := NewJetStreamManager(nc)
+	require.NoError(t, err)
+	require.NoError(t, m.InitClusterStateBucket())
+	levelBeat(t, m, "n1", 1, time.Now(), 0)
+
+	var mu sync.Mutex
+	var subjects []string
+	sub, err := nc.Subscribe("$JS.API.>", func(msg *nats.Msg) {
+		mu.Lock()
+		subjects = append(subjects, msg.Subject)
+		mu.Unlock()
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	h, err := m.ReadHeartbeatLeader(t.Context(), "n1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, h.FeatureLevel)
+	_, err = m.ReadHeartbeatLeader(t.Context(), "absent")
+	require.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+	require.NoError(t, nc.Flush())
+	mu.Lock()
+	defer mu.Unlock()
+	gets := 0
+	for _, s := range subjects {
+		assert.False(t, strings.HasPrefix(s, "$JS.API.DIRECT.GET."), "heartbeat read used a direct get: %s", s)
+		if s == "$JS.API.STREAM.MSG.GET.KV_"+ClusterStateBucket {
+			gets++
+		}
+	}
+	assert.Equal(t, 2, gets)
+}
+
+// A level raised above the running build ends the daemon on the next tick.
+func TestTickFeatureLevel_ExitsWhenTheLevelRisesAboveTheBuild(t *testing.T) {
+	t.Parallel()
+	m, _ := levelManager(t)
+	exitCh := make(chan int, 1)
+	d := &Daemon{
+		node:          "n1",
+		ctx:           t.Context(),
+		jsManager:     m,
+		clusterConfig: &config.ClusterConfig{Nodes: map[string]config.Config{"n1": {}}},
+		exitFunc:      func(code int) { exitCh <- code },
+	}
+	d.tickFeatureLevel()
+	select {
+	case <-exitCh:
+		t.Fatal("exited while the level was within the build")
+	default:
+	}
+
+	recordLevel(t, m, `{"level":2}`)
+	d.tickFeatureLevel()
+	select {
+	case code := <-exitCh:
+		assert.Equal(t, 1, code)
+	default:
+		t.Fatal("a level above the build must request exit(1) on the next tick")
+	}
 }

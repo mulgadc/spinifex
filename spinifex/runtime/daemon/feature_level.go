@@ -92,8 +92,19 @@ func (d *Daemon) tickFeatureLevel() {
 		slog.Warn("Feature level: store unavailable", "error", err)
 		return
 	}
+	// A level raised above this build while it runs (a downgrade without a
+	// rollback) ends the daemon within one tick.
+	if err := refuseAboveBuild(ctx, store); err != nil {
+		if errors.Is(err, errStartupPermanent) {
+			slog.Error("Exiting: cluster feature level is above this build", "err", err)
+			d.exitFunc(1)
+			return
+		}
+		slog.Warn("Feature level: fence read failed", "error", err)
+		return
+	}
 	nodes := slices.Sorted(maps.Keys(d.clusterConfig.Nodes))
-	rec, advanced, err := advanceFeatureLevel(ctx, store, d.jsManager.ReadHeartbeatContext, nodes, time.Now())
+	rec, advanced, err := advanceFeatureLevel(ctx, store, d.jsManager.ReadHeartbeatLeader, nodes, time.Now())
 	if err != nil {
 		slog.Warn("Feature level: advance failed", "error", err)
 		return

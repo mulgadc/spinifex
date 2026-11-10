@@ -16,6 +16,7 @@ import (
 	ebsmetadata "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
+	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	ebsprovider "github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -95,6 +96,10 @@ func (f *uefiReaperFixture) createImage(t *testing.T, instanceID string) ebsmeta
 	svc := ec2image.NewImageServiceImplWithConfig(cfg, f.objects, nil)
 	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{})
 	svc.SetEBSProvider(provider)
+	snapshots := ec2snapshot.NewSnapshotServiceImplWithStore(cfg, f.objects, nil)
+	snapshots.SetEBSProvider(provider)
+	svc.SetSnapshotCreator(snapshots)
+	svc.SetImageClaims(snapshots)
 	svc.SetUEFIStores(f.m.UEFIStores(), "node-a")
 	created, err := provider.CreateVolume(t.Context(), ebsprovider.CreateVolumeRequest{
 		Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},

@@ -14,6 +14,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
@@ -566,9 +567,9 @@ func TestDeleteDBInstance_FinalSnapshotStateAtCreate(t *testing.T) {
 				h.rewriteSnapshotRecord(t, pendingFinalSnapshotID, func(r *DBSnapshotRecord) {
 					r.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
 				})
-				wait, err := h.svc.finalSnapshotWait(t.Context(), mustBucket(t, h), &rec)
+				elapsed, err := h.svc.deletionElapsed(t.Context(), mustBucket(t, h), &rec)
 				require.NoError(t, err)
-				assert.GreaterOrEqual(t, wait, 2*time.Hour, "an unsettled final snapshot excludes the time since it was reserved")
+				assert.Less(t, elapsed, time.Minute, "an unsettled final snapshot excludes the time since it was reserved")
 			}
 		})
 	}
@@ -579,4 +580,88 @@ func mustBucket(t *testing.T, h *lifecycleHarness) *kvstore.Bucket {
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
 	return kv
+}
+
+// A failed final snapshot can be deleted, as on AWS, and the deletion then
+// takes it again: the data volume stays until a final snapshot is available,
+// and the failed backup's hours do not count against the retake's timeout.
+func TestDeleteDBSnapshot_AFailedFinalSnapshotIsDeletedAndTakenAgain(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	e := withEC2Snapshots(t, h)
+	failedID := startPendingFinalSnapshot(t, h, e, 3*time.Hour)
+	del := &rds.DeleteDBSnapshotInput{DBSnapshotIdentifier: aws.String(pendingFinalSnapshotID)}
+	r := testReconciler(t, h.svc, "node-a")
+
+	_, err := h.svc.DeleteDBSnapshot(t.Context(), del, testAccountID)
+	require.True(t, awserrors.IsErrorCode(err, awserrors.ErrorDBSnapshotInvalidState), "a creating DB snapshot is refused: %v", err)
+
+	e.settle(t, failedID, ebsprovider.SnapshotStateError)
+	require.NoError(t, onePass(t, r))
+	failed, _ := h.snapshotRecord(t, pendingFinalSnapshotID)
+	require.Equal(t, SnapshotStatusFailed, failed.Status)
+
+	_, err = h.svc.DeleteDBSnapshot(t.Context(), del, testAccountID)
+	require.NoError(t, err)
+	assert.Contains(t, e.deletes(), failedID)
+
+	require.NoError(t, onePass(t, r))
+	retake, found := h.snapshotRecord(t, pendingFinalSnapshotID)
+	require.True(t, found, "the deletion reserves its final snapshot again")
+	assert.Equal(t, SnapshotStatusCreating, retake.Status)
+	require.NotEmpty(t, retake.SnapshotID)
+	assert.NotEqual(t, failedID, retake.SnapshotID)
+	assert.Empty(t, h.volumes.deleted)
+
+	// Completes, but the volume release then fails: the retake starts its own
+	// timeout, so the deletion is retried rather than failed.
+	e.mu.Lock()
+	e.describeErr = errors.New("snapshot metadata temporarily unavailable")
+	e.mu.Unlock()
+	e.settle(t, retake.SnapshotID, ebsprovider.SnapshotStateCompleted)
+	require.NoError(t, onePass(t, r))
+	require.NoError(t, onePass(t, r))
+	final, _ := h.snapshotRecord(t, pendingFinalSnapshotID)
+	require.Equal(t, SnapshotStatusAvailable, final.Status)
+	assert.Equal(t, StatusDeleting, h.record(t).Status, "the failed backup's wait was counted against the retake")
+	assert.Empty(t, h.volumes.deleted)
+
+	e.mu.Lock()
+	e.describeErr = nil
+	e.mu.Unlock()
+	require.NoError(t, onePass(t, r))
+	assert.False(t, h.recordExists(t, testDBID))
+}
+
+// A delete removes only the DB snapshot it read: the same snapshot rewritten
+// since, by a tag write, is still deleted, and a delayed delete of a failed
+// final snapshot leaves the reservation the deletion has since retaken.
+func TestRemoveDBSnapshot_DeletesOnlyTheSnapshotItRead(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	e := withEC2Snapshots(t, h)
+	failedID := startPendingFinalSnapshot(t, h, e, 3*time.Hour)
+	e.settle(t, failedID, ebsprovider.SnapshotStateError)
+	r := testReconciler(t, h.svc, "node-a")
+	require.NoError(t, onePass(t, r))
+	kv := mustBucket(t, h)
+
+	stale, staleRev, err := h.svc.getDBSnapshot(t.Context(), kv, pendingFinalSnapshotID)
+	require.NoError(t, err)
+	require.Equal(t, SnapshotStatusFailed, stale.Status)
+	h.rewriteSnapshotRecord(t, pendingFinalSnapshotID, func(*DBSnapshotRecord) {})
+	require.NoError(t, h.svc.removeDBSnapshot(t.Context(), kv, testAccountID, stale, staleRev))
+	_, found := h.snapshotRecord(t, pendingFinalSnapshotID)
+	require.False(t, found, "a rewrite of the same snapshot does not stop its delete")
+
+	require.NoError(t, onePass(t, r))
+	retake, found := h.snapshotRecord(t, pendingFinalSnapshotID)
+	require.True(t, found)
+
+	err = h.svc.removeDBSnapshot(t.Context(), kv, testAccountID, stale, staleRev)
+	require.True(t, awserrors.IsErrorCode(err, awserrors.ErrorDBSnapshotInvalidState), "%v", err)
+	kept, found := h.snapshotRecord(t, pendingFinalSnapshotID)
+	require.True(t, found, "a delayed delete removed the retaken reservation")
+	assert.Equal(t, retake.SnapshotID, kept.SnapshotID)
+	assert.Empty(t, h.volumes.deleted)
 }

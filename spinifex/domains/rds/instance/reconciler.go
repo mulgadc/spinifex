@@ -603,8 +603,8 @@ func (r *Reconciler) reconcileDeleting(ctx context.Context, kv *kvstore.Bucket, 
 		errors.Is(err, errModifyInProgress) {
 		return nil
 	}
-	wait, waitErr := r.svc.finalSnapshotWait(ctx, kv, rec)
-	if waitErr == nil && time.Since(transitionStarted(rec)) > transitionTimeout+wait {
+	elapsed, waitErr := r.svc.deletionElapsed(ctx, kv, rec)
+	if waitErr == nil && elapsed > transitionTimeout {
 		return r.transition(ctx, kv, rev, rec, StatusFailed,
 			fmt.Sprintf("the DB instance could not be deleted within %s: %v", transitionTimeout, err))
 	}

@@ -157,7 +157,7 @@ func Capabilities() ebsprovider.Capabilities {
 }
 
 func (p *Provider) GetCapabilities(_ context.Context, req ebsprovider.GetCapabilitiesRequest) (*ebsprovider.GetCapabilitiesResponse, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	return &ebsprovider.GetCapabilitiesResponse{
@@ -177,13 +177,6 @@ func (p *Provider) HoldsUnsealedWrites(_ context.Context, nodeID string, volumeI
 		return nil, fmt.Errorf("%w: empty volume ID", ebsprovider.ErrInvalidArgument)
 	}
 	return nil, nil
-}
-
-func checkVersion(version uint16) error {
-	if !ebsprovider.SupportsSchemaVersion(version) {
-		return fmt.Errorf("%w: got %d, %s", ebsprovider.ErrUnsupportedVersion, version, ebsprovider.SupportedVersionsText())
-	}
-	return nil
 }
 
 // RetryToken is the opc-retry-token for creating the resource kind named id

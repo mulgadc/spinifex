@@ -98,7 +98,7 @@ func (p *Provider) volumeOf(ctx context.Context, v oci.BlockVolume) (*ebsprovide
 }
 
 func (p *Provider) CreateVolume(ctx context.Context, req ebsprovider.CreateVolumeRequest) (*ebsprovider.Volume, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	required := req.CapacityRange.RequiredBytes
@@ -243,7 +243,7 @@ func (p *Provider) awaitVolume(ctx context.Context, volumeOCID string) (*ebsprov
 }
 
 func (p *Provider) GetVolume(ctx context.Context, req ebsprovider.GetVolumeRequest) (*ebsprovider.Volume, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if req.VolumeID == "" {
@@ -261,7 +261,7 @@ func (p *Provider) GetVolume(ctx context.Context, req ebsprovider.GetVolumeReque
 
 // ListVolumes lists this cluster's volumes, by EBS volume ID.
 func (p *Provider) ListVolumes(ctx context.Context, req ebsprovider.ListVolumesRequest) (*ebsprovider.ListVolumesResponse, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	found, err := p.cfg.Client.ListVolumes(ctx, oci.VolumeFilter{CompartmentID: p.cfg.CompartmentID, Tags: map[string]string{TagCluster: p.cfg.ClusterID}})
@@ -288,7 +288,7 @@ func (p *Provider) ListVolumes(ctx context.Context, req ebsprovider.ListVolumesR
 // ExpandVolume within the OCI floor changes only the recorded capacity; past
 // it, OCI resizes the volume too. A volume attached anywhere is refused.
 func (p *Provider) ExpandVolume(ctx context.Context, req ebsprovider.ExpandVolumeRequest) (*ebsprovider.Volume, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	required := req.CapacityRange.RequiredBytes
@@ -338,7 +338,7 @@ func (p *Provider) ExpandVolume(ctx context.Context, req ebsprovider.ExpandVolum
 // DeleteVolume refuses a volume attached anywhere, and OCI's refusal while a
 // backup of it is being taken. A volume that does not exist is deleted.
 func (p *Provider) DeleteVolume(ctx context.Context, req ebsprovider.DeleteVolumeRequest) error {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckVersion(req.SchemaVersion); err != nil {
 		return err
 	}
 	if req.VolumeID == "" {

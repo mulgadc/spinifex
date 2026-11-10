@@ -50,7 +50,7 @@ func snapshotOf(b oci.VolumeBackup) (*ebsprovider.Snapshot, error) {
 // OCI accepts it. A repeat is answered from the backup the first call started,
 // which its tags find even once the source volume is gone.
 func (p *Provider) CreateSnapshot(ctx context.Context, req ebsprovider.CreateSnapshotRequest) (*ebsprovider.Snapshot, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if req.SnapshotID == "" || req.VolumeID == "" {
@@ -101,7 +101,7 @@ func (p *Provider) CreateSnapshot(ctx context.Context, req ebsprovider.CreateSna
 // DeleteSnapshot deletes the backup. OCI refuses one still being taken, which
 // is answered retry-later; a backup that does not exist is deleted.
 func (p *Provider) DeleteSnapshot(ctx context.Context, req ebsprovider.DeleteSnapshotRequest) error {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckVersion(req.SchemaVersion); err != nil {
 		return err
 	}
 	if req.SnapshotID == "" {
@@ -119,7 +119,7 @@ func (p *Provider) DeleteSnapshot(ctx context.Context, req ebsprovider.DeleteSna
 
 // CopySnapshot is refused: OCI copies a backup only to another region.
 func (p *Provider) CopySnapshot(_ context.Context, req ebsprovider.CopySnapshotRequest) (*ebsprovider.Snapshot, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	return nil, fmt.Errorf("%w: snapshot copy", ebsprovider.ErrUnsupportedCapability)

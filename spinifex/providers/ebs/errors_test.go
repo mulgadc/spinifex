@@ -72,8 +72,8 @@ func TestErrorCodeRetryable(t *testing.T) {
 }
 
 func TestCheckVersion(t *testing.T) {
-	assert.NoError(t, checkVersion(LegacySchemaVersion))
-	assert.NoError(t, checkVersion(SchemaVersion))
-	assert.ErrorIs(t, checkVersion(SchemaVersion+1), ErrUnsupportedVersion)
-	assert.ErrorIs(t, checkVersion(0), ErrUnsupportedVersion)
+	assert.NoError(t, CheckVersion(LegacySchemaVersion))
+	assert.NoError(t, CheckVersion(SchemaVersion))
+	assert.ErrorIs(t, CheckVersion(SchemaVersion+1), ErrUnsupportedVersion)
+	assert.ErrorIs(t, CheckVersion(0), ErrUnsupportedVersion)
 }

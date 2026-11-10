@@ -509,7 +509,7 @@ type ListSnapshotsRequest struct {
 // SnapshotID filter sent below SnapshotFilterSchemaVersion as unsupported: a
 // provider at that version would drop the filter and list every snapshot.
 func CheckListSnapshotsVersion(req ListSnapshotsRequest) error {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return err
 	}
 	if req.SnapshotID != "" && req.SchemaVersion < SnapshotFilterSchemaVersion {
@@ -737,7 +737,7 @@ type UnpublishVolumeRequest struct {
 // NoSeal sent below NoSealSchemaVersion: a provider at that version would
 // drop the flag and seal, so no provider may honour it there either.
 func CheckUnpublishVersion(req UnpublishVolumeRequest) error {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return err
 	}
 	if req.NoSeal && req.SchemaVersion < NoSealSchemaVersion {

@@ -64,7 +64,7 @@ func NewMemoryProvider(capabilities Capabilities) *MemoryProvider {
 }
 
 func (m *MemoryProvider) GetCapabilities(_ context.Context, req GetCapabilitiesRequest) (*GetCapabilitiesResponse, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	return &GetCapabilitiesResponse{
@@ -75,7 +75,7 @@ func (m *MemoryProvider) GetCapabilities(_ context.Context, req GetCapabilitiesR
 }
 
 func (m *MemoryProvider) CreateVolume(_ context.Context, req CreateVolumeRequest) (*Volume, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if req.VolumeID == "" || req.CapacityRange.RequiredBytes <= 0 ||
@@ -155,7 +155,7 @@ func (m *MemoryProvider) SeedData(volumeID string) ([]byte, bool) {
 }
 
 func (m *MemoryProvider) GetVolume(_ context.Context, req GetVolumeRequest) (*Volume, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if req.VolumeID == "" {
@@ -174,7 +174,7 @@ func (m *MemoryProvider) GetVolume(_ context.Context, req GetVolumeRequest) (*Vo
 // a token stays meaningful across calls. The token is the ID to resume after,
 // which keeps paging correct when volumes are created or deleted mid-walk.
 func (m *MemoryProvider) ListVolumes(_ context.Context, req ListVolumesRequest) (*ListVolumesResponse, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if !m.capabilities.VolumeEnumeration {
@@ -194,7 +194,7 @@ func (m *MemoryProvider) ListVolumes(_ context.Context, req ListVolumesRequest) 
 }
 
 func (m *MemoryProvider) ExpandVolume(_ context.Context, req ExpandVolumeRequest) (*Volume, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if req.VolumeID == "" || req.CapacityRange.RequiredBytes <= 0 ||
@@ -218,7 +218,7 @@ func (m *MemoryProvider) ExpandVolume(_ context.Context, req ExpandVolumeRequest
 }
 
 func (m *MemoryProvider) DeleteVolume(_ context.Context, req DeleteVolumeRequest) error {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return err
 	}
 	if req.VolumeID == "" {
@@ -241,7 +241,7 @@ func (m *MemoryProvider) DeleteVolume(_ context.Context, req DeleteVolumeRequest
 }
 
 func (m *MemoryProvider) CreateSnapshot(_ context.Context, req CreateSnapshotRequest) (*Snapshot, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if req.SnapshotID == "" || req.VolumeID == "" {
@@ -341,7 +341,7 @@ func (m *MemoryProvider) Snapshot(snapshotID string) (*Snapshot, bool) {
 }
 
 func (m *MemoryProvider) DeleteSnapshot(_ context.Context, req DeleteSnapshotRequest) error {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return err
 	}
 	if req.SnapshotID == "" {
@@ -362,7 +362,7 @@ func (m *MemoryProvider) DeleteSnapshot(_ context.Context, req DeleteSnapshotReq
 // destination, an empty or equal ID pair, and a snapshot that does not
 // belong to VolumeID (the caller's claimed source volume).
 func (m *MemoryProvider) CopySnapshot(_ context.Context, req CopySnapshotRequest) (*Snapshot, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if req.SourceSnapshotID == "" || req.DestinationSnapshotID == "" || req.VolumeID == "" {
@@ -445,7 +445,7 @@ func memorySnapshotRef(version uint16, snapshot *Snapshot) SnapshotRef {
 }
 
 func (m *MemoryProvider) PublishVolume(_ context.Context, req PublishVolumeRequest) (*PublishedVolume, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if req.VolumeID == "" || req.NodeID == "" {

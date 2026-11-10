@@ -162,22 +162,12 @@ func (p *Provider) pidFilePath(volumeID string) string {
 	return filepath.Join(p.baseDir, "sockets", volumeID+".pid")
 }
 
-// checkVersion mirrors ebsprovider's supported schema window. qemunbdd's
-// normal operations have the same representation in every version; the NATS
-// server owns the version-specific PublishVolume wire conversion.
-func checkVersion(version uint16) error {
-	if !ebsprovider.SupportsSchemaVersion(version) {
-		return fmt.Errorf("%w: got %d, %s", ebsprovider.ErrUnsupportedVersion, version, ebsprovider.SupportedVersionsText())
-	}
-	return nil
-}
-
 func validCapacityRange(cr ebsprovider.CapacityRange) bool {
 	return cr.RequiredBytes > 0 && (cr.LimitBytes == 0 || cr.RequiredBytes <= cr.LimitBytes)
 }
 
 func (p *Provider) GetCapabilities(_ context.Context, req ebsprovider.GetCapabilitiesRequest) (*ebsprovider.GetCapabilitiesResponse, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	return &ebsprovider.GetCapabilitiesResponse{
@@ -211,7 +201,7 @@ func (p *Provider) imgInfo(ctx context.Context, path string) (*qemuImgInfo, erro
 }
 
 func (p *Provider) CreateVolume(ctx context.Context, req ebsprovider.CreateVolumeRequest) (*ebsprovider.Volume, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if req.VolumeID == "" || !validCapacityRange(req.CapacityRange) {
@@ -346,7 +336,7 @@ func (p *Provider) buildVolume(volumeID string, size int64, az string) *ebsprovi
 }
 
 func (p *Provider) GetVolume(ctx context.Context, req ebsprovider.GetVolumeRequest) (*ebsprovider.Volume, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if req.VolumeID == "" {
@@ -378,7 +368,7 @@ func (p *Provider) GetVolume(ctx context.Context, req ebsprovider.GetVolumeReque
 // restart, and a volume the provider has forgotten is exactly what a caller
 // enumerating is looking for.
 func (p *Provider) ListVolumes(_ context.Context, req ebsprovider.ListVolumesRequest) (*ebsprovider.ListVolumesResponse, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	entries, err := os.ReadDir(filepath.Join(p.baseDir, "volumes"))
@@ -411,7 +401,7 @@ func qcow2IDs(entries []os.DirEntry) []string {
 }
 
 func (p *Provider) ExpandVolume(ctx context.Context, req ebsprovider.ExpandVolumeRequest) (*ebsprovider.Volume, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if req.VolumeID == "" || !validCapacityRange(req.CapacityRange) {
@@ -454,7 +444,7 @@ func (p *Provider) ExpandVolume(ctx context.Context, req ebsprovider.ExpandVolum
 }
 
 func (p *Provider) DeleteVolume(_ context.Context, req ebsprovider.DeleteVolumeRequest) error {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckVersion(req.SchemaVersion); err != nil {
 		return err
 	}
 	if req.VolumeID == "" {
@@ -504,7 +494,7 @@ func (p *Provider) buildSnapshot(ctx context.Context, snapshotID, sourceVolumeID
 }
 
 func (p *Provider) CreateSnapshot(ctx context.Context, req ebsprovider.CreateSnapshotRequest) (*ebsprovider.Snapshot, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if req.SnapshotID == "" || req.VolumeID == "" {
@@ -636,7 +626,7 @@ func (p *Provider) snapshotInUse(ctx context.Context, snapPath string) (bool, er
 }
 
 func (p *Provider) DeleteSnapshot(ctx context.Context, req ebsprovider.DeleteSnapshotRequest) error {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckVersion(req.SchemaVersion); err != nil {
 		return err
 	}
 	if req.SnapshotID == "" {
@@ -674,7 +664,7 @@ func (p *Provider) DeleteSnapshot(ctx context.Context, req ebsprovider.DeleteSna
 }
 
 func (p *Provider) CopySnapshot(ctx context.Context, req ebsprovider.CopySnapshotRequest) (*ebsprovider.Snapshot, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if req.SourceSnapshotID == "" || req.DestinationSnapshotID == "" || req.VolumeID == "" {
@@ -784,7 +774,7 @@ func copyFile(srcPath, dstPath string) error {
 }
 
 func (p *Provider) PublishVolume(ctx context.Context, req ebsprovider.PublishVolumeRequest) (*ebsprovider.PublishedVolume, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if req.VolumeID == "" || req.NodeID == "" {

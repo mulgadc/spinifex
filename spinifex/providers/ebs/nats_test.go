@@ -230,7 +230,7 @@ func TestSubjectBuildersRejectUnsafeTokens(t *testing.T) {
 
 // TestNATSProviderChecksVersionBeforeTransport confirms every EBSProvider
 // method on NATSProvider rejects an unsupported SchemaVersion via
-// checkVersion before it ever touches the connection. A nil *nats.Conn would
+// CheckVersion before it ever touches the connection. A nil *nats.Conn would
 // panic or return nats.ErrConnectionClosed if any method reached transport,
 // so seeing ErrUnsupportedVersion here proves the ordering.
 func TestNATSProviderChecksVersionBeforeTransport(t *testing.T) {

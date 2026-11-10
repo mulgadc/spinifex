@@ -44,7 +44,7 @@ func (p *Provider) PublishVolume(ctx context.Context, req ebsprovider.PublishVol
 }
 
 func (p *Provider) publishVolume(ctx context.Context, req ebsprovider.PublishVolumeRequest) (*ebsprovider.PublishedVolume, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	// A block export has no form below the descriptor version, so refuse

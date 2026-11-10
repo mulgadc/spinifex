@@ -111,7 +111,7 @@ func TestProviderErrorUnwrap(t *testing.T) {
 	assert.Equal(t, "volume disappeared", err.Error())
 }
 
-// TestMemoryProviderChecksVersionOnEveryMethod covers the checkVersion guard
+// TestMemoryProviderChecksVersionOnEveryMethod covers the CheckVersion guard
 // on every one of the nine EBSProvider methods directly on MemoryProvider,
 // independent of NATSProvider's own client-side pre-check.
 func TestMemoryProviderChecksVersionOnEveryMethod(t *testing.T) {

@@ -520,11 +520,10 @@ func (p *Provider) CreateSnapshot(ctx context.Context, req ebsprovider.CreateSna
 		}
 		return p.buildSnapshot(ctx, req.SnapshotID, meta.sourceVolumeID, snapPath)
 	}
-	// A file on disk with no matching snapshotMeta entry means the provider
-	// restarted since it was created: the source-volume link lived only in
-	// memory and cannot be recovered, so the ID is refused rather than silently overwritten or accepted without provenance.
+	// The provider restarted since it took this snapshot, so its source is
+	// unknown; the control plane mints each ID once, so this is a repeat.
 	if _, err := os.Stat(snapPath); err == nil {
-		return nil, fmt.Errorf("%w: snapshot %s", ebsprovider.ErrAlreadyExists, req.SnapshotID)
+		return p.buildSnapshot(ctx, req.SnapshotID, "", snapPath)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}

@@ -527,6 +527,27 @@ func TestCreateSnapshot_IdempotentSameVolume(t *testing.T) {
 	assert.Equal(t, first.SourceVolumeID, second.SourceVolumeID)
 }
 
+func TestCreateSnapshot_RepeatAfterARestartAnswersTheSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	first, err := newProvider(dir, newFakeRunner())
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(first.volumePath("vol-snap-restart"), nil, 0o640))
+	req := ebsprovider.CreateSnapshotRequest{Versioned: versioned(), SnapshotID: "snap-restart", VolumeID: "vol-snap-restart"}
+	_, err = first.CreateSnapshot(context.Background(), req)
+	require.NoError(t, err)
+
+	fr := newFakeRunner()
+	restarted, err := newProvider(dir, fr)
+	require.NoError(t, err)
+	got, err := restarted.CreateSnapshot(context.Background(), req)
+	require.NoError(t, err)
+	assert.Equal(t, "snap-restart", got.ID)
+	assert.Equal(t, ebsprovider.SnapshotStateCompleted, got.State)
+	for _, c := range fr.callsSnapshot() {
+		assert.NotContains(t, c.args, "convert", "a repeat must not copy the volume again")
+	}
+}
+
 func TestCreateSnapshot_ConflictingSourceVolumeIsAlreadyExists(t *testing.T) {
 	p, _ := newTestProvider(t)
 	volA := p.volumePath("vol-snap-a")

@@ -103,6 +103,8 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 
 #### CreateSnapshot
 
+- May a provider forget a snapshot's source?
+  The control plane mints every snapshot ID and records it before the first call, so the ID alone names the request. A provider that no longer knows a snapshot's source, such as qemu-nbd after a restart, answers a retry with the snapshot, and refuses with `already_exists` only when it knows the source differs. The specification models a provider that always knows the source.
 - Must a retry compare the volume handle?
   It is ignored, as in the memory implementation, so a volume deleted and recreated under the same ID returns the old snapshot.
 - Should a copy's ID count as a retry?

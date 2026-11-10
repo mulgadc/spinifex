@@ -409,8 +409,8 @@ type Snapshot struct {
 }
 
 // CreateSnapshotRequest snapshots VolumeID as SnapshotID, owner node first,
-// then SnapshotSubject. A repeat naming the same VolumeID returns the first
-// call's snapshot untaken again; another VolumeID fails with ErrAlreadyExists.
+// then SnapshotSubject. A repeat returns the snapshot held under SnapshotID;
+// ErrAlreadyExists only when the provider knows it came from another volume.
 type CreateSnapshotRequest struct {
 	Versioned
 

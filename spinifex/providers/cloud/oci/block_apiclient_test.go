@@ -197,6 +197,35 @@ func TestBlockListVolumeBackupsFiltersTags(t *testing.T) {
 	assert.Equal(t, "b1", got[0].ID)
 }
 
+// OCI listed one new backup twice in a live run, as it left REQUEST_RECEIVED,
+// and a provider counting the entries saw two backups for one snapshot.
+func TestBlockListsAnswerEachResourceOnce(t *testing.T) {
+	c, _ := testBlockClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "" {
+			w.Header().Set("Opc-Next-Page", "page2")
+			_, _ = w.Write([]byte(`[{"id":"x1","lifecycleState":"REQUEST_RECEIVED"},{"id":"x1","lifecycleState":"CREATING"},{"id":"x2"}]`))
+			return
+		}
+		_, _ = w.Write([]byte(`[{"id":"x2"},{"id":"x3"}]`))
+	})
+
+	backups, err := c.ListVolumeBackups(context.Background(), oci.BackupFilter{CompartmentID: "c1"})
+	require.NoError(t, err)
+	ids := make([]string, 0, len(backups))
+	for _, b := range backups {
+		ids = append(ids, b.ID)
+	}
+	assert.Equal(t, []string{"x1", "x2", "x3"}, ids)
+
+	volumes, err := c.ListVolumes(context.Background(), oci.VolumeFilter{CompartmentID: "c1"})
+	require.NoError(t, err)
+	ids = ids[:0]
+	for _, v := range volumes {
+		ids = append(ids, v.ID)
+	}
+	assert.Equal(t, []string{"x1", "x2", "x3"}, ids)
+}
+
 // The two 409s OCI answers while a backup is in progress are what the provider
 // maps to volume_in_use and unavailable, so they must stay classified.
 func TestBlockConflictsAreClassified(t *testing.T) {

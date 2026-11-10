@@ -19,6 +19,7 @@ type BlockClient interface {
 	GetVolume(ctx context.Context, volumeID string) (BlockVolume, error)
 	// ListVolumes lists the compartment, then keeps only volumes carrying
 	// every tag in the filter: OCI's list call has no tag filter of its own.
+	// Each volume is listed once, though OCI may list one twice.
 	ListVolumes(ctx context.Context, filter VolumeFilter) ([]BlockVolume, error)
 	UpdateVolume(ctx context.Context, volumeID string, in UpdateVolumeInput) (BlockVolume, error)
 	DeleteVolume(ctx context.Context, volumeID string) error
@@ -30,7 +31,7 @@ type BlockClient interface {
 
 	CreateVolumeBackup(ctx context.Context, in CreateVolumeBackupInput) (VolumeBackup, error)
 	GetVolumeBackup(ctx context.Context, backupID string) (VolumeBackup, error)
-	// ListVolumeBackups filters by tag the same way ListVolumes does.
+	// ListVolumeBackups filters and lists each backup once, as ListVolumes does.
 	ListVolumeBackups(ctx context.Context, filter BackupFilter) ([]VolumeBackup, error)
 	DeleteVolumeBackup(ctx context.Context, backupID string) error
 }
@@ -263,6 +264,7 @@ func (c *blockAPIClient) GetVolume(ctx context.Context, volumeID string) (BlockV
 
 func (c *blockAPIClient) ListVolumes(ctx context.Context, filter VolumeFilter) ([]BlockVolume, error) {
 	var out []BlockVolume
+	seen := map[string]bool{}
 	var page *string
 	for {
 		resp, err := c.storage.ListVolumes(ctx, core.ListVolumesRequest{
@@ -275,7 +277,7 @@ func (c *blockAPIClient) ListVolumes(ctx context.Context, filter VolumeFilter) (
 			return nil, wrap("ListVolumes", err)
 		}
 		for _, item := range resp.Items {
-			if hasTags(item.FreeformTags, filter.Tags) {
+			if hasTags(item.FreeformTags, filter.Tags) && firstSight(seen, item.Id) {
 				out = append(out, toBlockVolume(item))
 			}
 		}
@@ -382,6 +384,7 @@ func (c *blockAPIClient) GetVolumeBackup(ctx context.Context, backupID string) (
 
 func (c *blockAPIClient) ListVolumeBackups(ctx context.Context, filter BackupFilter) ([]VolumeBackup, error) {
 	var out []VolumeBackup
+	seen := map[string]bool{}
 	var page *string
 	for {
 		resp, err := c.storage.ListVolumeBackups(ctx, core.ListVolumeBackupsRequest{
@@ -393,7 +396,7 @@ func (c *blockAPIClient) ListVolumeBackups(ctx context.Context, filter BackupFil
 			return nil, wrap("ListVolumeBackups", err)
 		}
 		for _, item := range resp.Items {
-			if hasTags(item.FreeformTags, filter.Tags) {
+			if hasTags(item.FreeformTags, filter.Tags) && firstSight(seen, item.Id) {
 				out = append(out, toVolumeBackup(item))
 			}
 		}
@@ -489,6 +492,18 @@ func hasTags(tags, want map[string]string) bool {
 }
 
 // optional is nil for the empty string, which the SDK omits from a request.
+// firstSight reports whether id is new to seen, and records it. OCI's list
+// calls can return a resource twice while it changes state, as a new backup
+// leaving REQUEST_RECEIVED does.
+func firstSight(seen map[string]bool, id *string) bool {
+	key := deref(id)
+	if seen[key] {
+		return false
+	}
+	seen[key] = true
+	return true
+}
+
 func optional(s string) *string {
 	if s == "" {
 		return nil

@@ -115,7 +115,11 @@ func TestLiveConformanceOverNATS(t *testing.T) {
 	conformance.RunSuiteWithConfig(t, func(t *testing.T) ebsprovider.EBSProvider {
 		t.Helper()
 		_, conn := testutil.StartTestNATS(t)
-		stop, err := natsserve.Serve(t.Context(), conn, env.provider(t), natsserve.Options{NodeID: liveNodeID})
+		// t.Context is cancelled before cleanups run, and the suite's teardown
+		// is served through this server, so it needs a context that outlives it.
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		stop, err := natsserve.Serve(ctx, conn, env.provider(t), natsserve.Options{NodeID: liveNodeID})
 		require.NoError(t, err)
 		t.Cleanup(stop)
 		return ebsprovider.NewNATSProvider(conn, liveNATSDeadline)

@@ -41,6 +41,7 @@ resources:
 - [Harden it before production](#harden-it-before-production)
 - [Next steps](#next-steps)
 - [Removing the deployment](#removing-the-deployment)
+- [Testing the OCI Block Volumes provider live](#testing-the-oci-block-volumes-provider-live)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -772,6 +773,37 @@ Use the limits API rather than a count to judge the headroom, because the two di
 oci limits resource-availability get --service-name vcn \
     --limit-name reserved-public-ip-count --compartment-id "$TENANCY_OCID"
 ```
+
+## Testing the OCI Block Volumes provider live
+
+`providers/ebs/ocibsd/live_test.go` runs the EBS provider conformance suite, in process and over NATS, against a real compartment and one OCI instance.
+It also checks that OCI's GB is 2^30 bytes on the attached device, and that recreating a deleted volume under the same ID never answers with the deleted volume.
+The test runs on your workstation with the API-key profile from `~/.oci/config`, and drives `sudo iscsiadm` and the device check on the instance over SSH, so no credential is placed on the instance.
+Every subtest skips unless `SPINIFEX_OCIBSD_LIVE` is set.
+
+| Variable | Meaning |
+| --- | --- |
+| `SPINIFEX_OCIBSD_LIVE` | Any value runs the live tests |
+| `SPINIFEX_OCIBSD_COMPARTMENT_ID` | Compartment the volumes and backups are created in |
+| `SPINIFEX_OCIBSD_AVAILABILITY_DOMAIN` | The instance's availability domain, where every volume is created |
+| `SPINIFEX_OCIBSD_INSTANCE_ID` | OCID of the instance volumes are attached to |
+| `SPINIFEX_OCIBSD_SSH_HOST` | Address of that instance |
+| `SPINIFEX_OCIBSD_SSH_USER` | SSH user with passwordless `sudo`, `opc` when unset |
+| `SPINIFEX_OCIBSD_SSH_KEY` | Private key for that user |
+| `SPINIFEX_OCIBSD_SSH_KNOWN_HOSTS` | Known-hosts file, a fresh temporary one when unset |
+| `SPINIFEX_OCIBSD_CLUSTER_ID` | `spinifex-cluster` tag value for the run, random when unset and logged either way |
+| `SPINIFEX_OCIBSD_OCI_PROFILE` | OCI config profile, `DEFAULT` when unset |
+
+The instance needs `iscsi-initiator-utils` and the Oracle Cloud Agent "Block Volume Management" plugin disabled, so no agent logs sessions in or out behind the test.
+The profile needs `manage volume-family` and `use instances` in the compartment.
+
+```bash
+cd spinifex
+SPINIFEX_OCIBSD_LIVE=1 go test ./providers/ebs/ocibsd/ -run TestLive -count=1 -v -timeout 60m
+```
+
+The suite deletes what it creates, but a failed run can leave volumes and backups behind, and OCI bills for them.
+Sweep everything tagged `spinifex-cluster=<cluster ID>` in the compartment after every run.
 
 ## Troubleshooting
 

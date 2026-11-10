@@ -3,10 +3,7 @@ package ocibsd
 import (
 	"context"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -23,28 +20,8 @@ const (
 	testCompartment = "ocid1.compartment.oc1..test"
 	testAD          = "Uocm:US-ASHBURN-AD-1"
 	testInstance    = "ocid1.instance.oc1..node-1"
+	testClusterID   = "5f0c3a9e1b7d42c68e2a4f1d9b3c7e05"
 )
-
-func caPEM(der string) []byte {
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte(der)})
-}
-
-func TestClusterIDFromCA(t *testing.T) {
-	a, err := ClusterIDFromCA(caPEM("cluster-a"))
-	require.NoError(t, err)
-	again, err := ClusterIDFromCA(caPEM("cluster-a"))
-	require.NoError(t, err)
-	b, err := ClusterIDFromCA(caPEM("cluster-b"))
-	require.NoError(t, err)
-	assert.Equal(t, a, again, "every node holding the CA derives the same ID")
-	assert.NotEqual(t, a, b, "two clusters never share one")
-	assert.Regexp(t, `^spx-[0-9a-f]{24}$`, a)
-
-	_, err = ClusterIDFromCA([]byte("not pem"))
-	require.Error(t, err)
-	_, err = ClusterIDFromCA(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte("k")}))
-	require.Error(t, err)
-}
 
 func TestBlockClientForSelectsTheCredential(t *testing.T) {
 	cases := []struct {
@@ -91,12 +68,10 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	caPath := filepath.Join(t.TempDir(), "ca.pem")
-	require.NoError(t, os.WriteFile(caPath, caPEM("cluster"), 0o600))
 	return &harness{
 		cfg: &Config{
-			NatsCACert: caPath, NodeName: "node-1", AvailabilityZone: "ap-southeast-2a",
-			CompartmentID: testCompartment, AvailabilityDomain: testAD,
+			NodeName: "node-1", AvailabilityZone: "ap-southeast-2a",
+			ClusterID: testClusterID, CompartmentID: testCompartment, AvailabilityDomain: testAD,
 		},
 		fake:      oci.NewBlockFake(),
 		initiator: ebsocibsd.NewFakeInitiator(),
@@ -122,7 +97,7 @@ func TestNewProviderRefusals(t *testing.T) {
 		{"a host that is not an OCI instance", func(h *harness) { h.mdErr = errors.New("dial 169.254.169.254: no route") }, "instance metadata"},
 		{"a credential that cannot be loaded", func(h *harness) { h.clientErr = errors.New("no such profile") }, "build the OCI block client"},
 		{"a credential without its grants", func(h *harness) { h.fake.FailOp("ListVolumes", errors.New("404 NotAuthorizedOrNotFound")) }, "manage volume-family"},
-		{"no cluster CA", func(h *harness) { h.cfg.NatsCACert = filepath.Join(t.TempDir(), "absent.pem") }, "read the cluster CA"},
+		{"no cluster ID", func(h *harness) { h.cfg.ClusterID = "" }, "cluster_id is unset"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -136,20 +111,23 @@ func TestNewProviderRefusals(t *testing.T) {
 
 func TestNewProviderLogsOutStaleSessionsOfThisCluster(t *testing.T) {
 	h := newHarness(t)
-	clusterID, err := ClusterIDFromCA(caPEM("cluster"))
-	require.NoError(t, err)
-	v, err := h.fake.CreateVolume(context.Background(), oci.CreateVolumeInput{
-		CompartmentID: testCompartment, AvailabilityDomain: testAD, SizeGB: oci.MinVolumeSizeGB,
-		FreeformTags: map[string]string{ebsocibsd.TagCluster: clusterID},
-	})
-	require.NoError(t, err)
-	stale := ebsocibsd.Target{IQN: ebsocibsd.OCIIQNPrefix + "stale", IPv4: "169.254.2.2", Port: 3260}
-	h.fake.SeedAttachment(oci.VolumeAttachment{ID: "att", InstanceID: testInstance, VolumeID: v.ID, State: oci.AttachmentDetached, IQN: stale.IQN, IPv4: stale.IPv4, Port: stale.Port})
-	h.initiator.SeedSession(stale)
+	seed := func(clusterID, iqn string) ebsocibsd.Target {
+		v, err := h.fake.CreateVolume(context.Background(), oci.CreateVolumeInput{
+			CompartmentID: testCompartment, AvailabilityDomain: testAD, SizeGB: oci.MinVolumeSizeGB,
+			FreeformTags: map[string]string{ebsocibsd.TagCluster: clusterID},
+		})
+		require.NoError(t, err)
+		target := ebsocibsd.Target{IQN: ebsocibsd.OCIIQNPrefix + iqn, IPv4: "169.254.2.2", Port: 3260}
+		h.fake.SeedAttachment(oci.VolumeAttachment{ID: "att-" + iqn, InstanceID: testInstance, VolumeID: v.ID, State: oci.AttachmentDetached, IQN: target.IQN, IPv4: target.IPv4, Port: target.Port})
+		h.initiator.SeedSession(target)
+		return target
+	}
+	stale := seed(testClusterID, "stale")
+	seed("0123456789abcdef0123456789abcdef", "other-cluster")
 
-	_, err = newProvider(context.Background(), h.cfg, h.deps())
+	_, err := newProvider(context.Background(), h.cfg, h.deps())
 	require.NoError(t, err)
-	assert.Equal(t, []string{"logout " + stale.IQN}, h.initiator.Events(), "the cluster tag comes from the CA")
+	assert.Equal(t, []string{"logout " + stale.IQN}, h.initiator.Events(), "only the configured cluster_id's sessions are logged out")
 }
 
 func TestServeAnswersOnThisNodesSubjects(t *testing.T) {

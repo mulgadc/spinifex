@@ -127,6 +127,7 @@ type ConfigSettings struct {
 	EBSProvider           string
 	OCICompartmentID      string
 	OCIAvailabilityDomain string
+	OCIClusterID          string
 
 	// GPUPassthrough enables VFIO GPU passthrough in the daemon config.
 	// Sets gpu_passthrough = true under [nodes.<node>.daemon].

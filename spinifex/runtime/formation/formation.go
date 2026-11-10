@@ -127,11 +127,12 @@ type NetworkConfig struct {
 }
 
 // EBSConfig is the EBS provider propagated to joining nodes. The OCI fields
-// are set only for ocibsd. An empty Provider leaves the default.
+// and ClusterID are set only for ocibsd. An empty Provider leaves the default.
 type EBSConfig struct {
 	Provider              string `json:"provider,omitempty"`
 	OCICompartmentID      string `json:"oci_compartment_id,omitempty"`
 	OCIAvailabilityDomain string `json:"oci_availability_domain,omitempty"`
+	ClusterID             string `json:"cluster_id,omitempty"`
 }
 
 // SharedCredentials contains the cluster-wide credentials distributed during formation.

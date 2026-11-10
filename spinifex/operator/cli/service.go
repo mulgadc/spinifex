@@ -498,6 +498,7 @@ var ocibsdStartCmd = &cobra.Command{
 			NatsCACert:         nodeConfig.NATS.CACert,
 			NodeName:           clusterConfig.Node,
 			AvailabilityZone:   nodeConfig.AZ,
+			ClusterID:          oci.ClusterID,
 			CompartmentID:      oci.CompartmentID,
 			AvailabilityDomain: oci.AvailabilityDomain,
 			Auth:               oci.Auth,

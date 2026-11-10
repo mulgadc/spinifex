@@ -382,9 +382,12 @@ type EBSOCIConfig struct {
 	// volume is created there whichever node answers, and attached anywhere.
 	CompartmentID      string `json:"CompartmentID" mapstructure:"compartment_id"`
 	AvailabilityDomain string `json:"AvailabilityDomain" mapstructure:"availability_domain"`
-	Auth               string `json:"Auth" mapstructure:"auth"`
-	ConfigFile         string `json:"ConfigFile" mapstructure:"config_file"`
-	ConfigProfile      string `json:"ConfigProfile" mapstructure:"config_profile"`
+	// ClusterID is generated once by spx admin init and tags every OCI
+	// resource ocibsd creates, so one compartment can hold several clusters.
+	ClusterID     string `json:"ClusterID" mapstructure:"cluster_id"`
+	Auth          string `json:"Auth" mapstructure:"auth"`
+	ConfigFile    string `json:"ConfigFile" mapstructure:"config_file"`
+	ConfigProfile string `json:"ConfigProfile" mapstructure:"config_profile"`
 }
 
 func (c EBSOCIConfig) isZero() bool { return c == EBSOCIConfig{} }
@@ -952,6 +955,10 @@ func validateEBSOCI(cc *ClusterConfig) error {
 		if first == "" {
 			first, want = name, oci
 			continue
+		}
+		if oci.ClusterID != want.ClusterID {
+			return fmt.Errorf("config: [nodes.%s.ebs.oci] cluster_id %q differs from [nodes.%s.ebs.oci] cluster_id %q; every node must carry the cluster's one ID",
+				name, oci.ClusterID, first, want.ClusterID)
 		}
 		if oci.CompartmentID != want.CompartmentID || oci.AvailabilityDomain != want.AvailabilityDomain {
 			return fmt.Errorf("config: [nodes.%s.ebs.oci] names compartment %q in %q but [nodes.%s.ebs.oci] names %q in %q; every node must name the same compartment and availability domain",

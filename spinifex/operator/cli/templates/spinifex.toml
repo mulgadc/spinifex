@@ -158,6 +158,8 @@ provider = "{{or .EBSProvider "viperblockd"}}"
 # Every node names the same compartment and availability domain.
 compartment_id = "{{.OCICompartmentID}}"
 availability_domain = "{{.OCIAvailabilityDomain}}"
+# Generated once at init; tags every OCI volume and backup of this cluster.
+cluster_id = "{{.OCIClusterID}}"
 # auth: "config_file" (the default) reads config_file and config_profile,
 # which default to ~/.oci/config and DEFAULT; "instance_principal" uses the
 # instance's own certificate and takes neither.

@@ -1346,24 +1346,6 @@ func validateNodeCount(nodes int) error {
 	return nil
 }
 
-// ebsInitConfig checks the init flags that choose the cluster's EBS provider,
-// which every node is written with: the OCI flags go with ocibsd and only it.
-func ebsInitConfig(provider, compartmentID, availabilityDomain string) (formation.EBSConfig, error) {
-	if !config.SupportedEBSProvider(provider) {
-		return formation.EBSConfig{}, fmt.Errorf("--ebs-provider %q unsupported; use %q, %q or %q", provider, config.EBSProviderViperblockd, config.EBSProviderQEMUNBD, config.EBSProviderOCIBSD)
-	}
-	if provider != config.EBSProviderOCIBSD {
-		if compartmentID != "" || availabilityDomain != "" {
-			return formation.EBSConfig{}, fmt.Errorf("--oci-compartment-id and --oci-availability-domain are only valid with --ebs-provider %s", config.EBSProviderOCIBSD)
-		}
-		return formation.EBSConfig{Provider: provider}, nil
-	}
-	if compartmentID == "" || availabilityDomain == "" {
-		return formation.EBSConfig{}, fmt.Errorf("--ebs-provider %s requires --oci-compartment-id and --oci-availability-domain", config.EBSProviderOCIBSD)
-	}
-	return formation.EBSConfig{Provider: provider, OCICompartmentID: compartmentID, OCIAvailabilityDomain: availabilityDomain}, nil
-}
-
 // TODO: Move all logic to a module, use minimal application logic in viper commands.
 func runAdminInit(cmd *cobra.Command, args []string) {
 	if os.Getuid() != 0 {
@@ -1409,7 +1391,8 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	ebsProvider, _ := cmd.Flags().GetString("ebs-provider")
 	ociCompartmentID, _ := cmd.Flags().GetString("oci-compartment-id")
 	ociAvailabilityDomain, _ := cmd.Flags().GetString("oci-availability-domain")
-	ebsConfig, err := ebsInitConfig(ebsProvider, ociCompartmentID, ociAvailabilityDomain)
+	priorClusterID := readOCIClusterID(filepath.Join(configDir, "spinifex.toml"), node)
+	ebsConfig, err := ebsInitConfig(ebsProvider, ociCompartmentID, ociAvailabilityDomain, priorClusterID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
@@ -2021,6 +2004,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		EBSProvider:           ebsConfig.Provider,
 		OCICompartmentID:      ebsConfig.OCICompartmentID,
 		OCIAvailabilityDomain: ebsConfig.OCIAvailabilityDomain,
+		OCIClusterID:          ebsConfig.ClusterID,
 
 		EncryptionKeyFile: viperblockKeyPath,
 
@@ -3439,6 +3423,7 @@ func applyNetworkConfig(settings *admin.ConfigSettings, nc *formation.NetworkCon
 	settings.EBSProvider = nc.EBS.Provider
 	settings.OCICompartmentID = nc.EBS.OCICompartmentID
 	settings.OCIAvailabilityDomain = nc.EBS.OCIAvailabilityDomain
+	settings.OCIClusterID = nc.EBS.ClusterID
 	settings.ExternalMode = nc.ExternalMode
 	// A node's own address is northstar itself; forwarding to it would loop.
 	settings.PoolDNSServers = filterDNSServers(nc.PoolDNSServers, settings.AdvertiseIP, settings.BindIP)

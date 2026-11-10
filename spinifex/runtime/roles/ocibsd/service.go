@@ -5,9 +5,6 @@ package ocibsd
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -39,8 +36,8 @@ const (
 )
 
 // Config is the ocibsd service's startup configuration. NodeName scopes the
-// PublishVolume and UnpublishVolume subjects to this node, and the cluster
-// CA at NatsCACert names the cluster on every OCI resource.
+// PublishVolume and UnpublishVolume subjects to this node, and ClusterID
+// names the cluster on every OCI resource.
 type Config struct {
 	BaseDir    string
 	NatsHost   string
@@ -50,6 +47,7 @@ type Config struct {
 	// AvailabilityZone is the EC2 zone the node serves.
 	AvailabilityZone string
 
+	ClusterID          string
 	CompartmentID      string
 	AvailabilityDomain string
 	Auth               string
@@ -121,27 +119,11 @@ func blockClientFor(cfg *Config) (oci.BlockClient, error) {
 	}
 }
 
-// ClusterIDFromCA names the cluster by its CA certificate, which every node
-// holds and no other cluster shares, so one compartment can hold several.
-func ClusterIDFromCA(caPEM []byte) (string, error) {
-	block, _ := pem.Decode(caPEM)
-	if block == nil || block.Type != "CERTIFICATE" {
-		return "", errors.New("ocibsd: the cluster CA file holds no PEM certificate")
-	}
-	sum := sha256.Sum256(block.Bytes)
-	return "spx-" + hex.EncodeToString(sum[:])[:24], nil
-}
-
 // newProvider reads this node's instance, refuses a node outside the
 // cluster's AD, and starts the provider, which logs out stale sessions.
 func newProvider(ctx context.Context, cfg *Config, d deps) (*ebsocibsd.Provider, error) {
-	caPEM, err := os.ReadFile(cfg.NatsCACert)
-	if err != nil {
-		return nil, fmt.Errorf("ocibsd: read the cluster CA: %w", err)
-	}
-	clusterID, err := ClusterIDFromCA(caPEM)
-	if err != nil {
-		return nil, err
+	if cfg.ClusterID == "" {
+		return nil, fmt.Errorf("ocibsd: [nodes.%s.ebs.oci] cluster_id is unset; spx admin init writes it with --ebs-provider ocibsd", cfg.NodeName)
 	}
 	md, err := d.instance(ctx)
 	if err != nil {
@@ -152,7 +134,7 @@ func newProvider(ctx context.Context, cfg *Config, d deps) (*ebsocibsd.Provider,
 		return nil, fmt.Errorf("ocibsd: build the OCI block client: %w", err)
 	}
 	p, err := ebsocibsd.New(ebsocibsd.Config{
-		ClusterID:          clusterID,
+		ClusterID:          cfg.ClusterID,
 		CompartmentID:      cfg.CompartmentID,
 		AvailabilityDomain: cfg.AvailabilityDomain,
 		AvailabilityZone:   cfg.AvailabilityZone,
@@ -169,7 +151,7 @@ func newProvider(ctx context.Context, cfg *Config, d deps) (*ebsocibsd.Provider,
 	if err := p.Start(ctx); err != nil {
 		return nil, err
 	}
-	slog.InfoContext(ctx, "ocibsd: started", "node", cfg.NodeName, "instance", md.ID, "cluster", clusterID)
+	slog.InfoContext(ctx, "ocibsd: started", "node", cfg.NodeName, "instance", md.ID, "cluster", cfg.ClusterID)
 	return p, nil
 }
 

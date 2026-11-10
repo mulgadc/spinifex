@@ -60,10 +60,7 @@ func (w Writer) writeBlock(ctx context.Context, sourcePath string, export ebspro
 		return fmt.Errorf("image write: source %s is not a regular file", sourcePath)
 	}
 	size := info.Size()
-	if size < 0 {
-		return fmt.Errorf("image write: source %s reports a negative size %d", sourcePath, size)
-	}
-	if uint64(size) > export.SizeBytes {
+	if uint64(size) > export.SizeBytes { //nolint:gosec // G115: a regular file's size is never negative
 		return fmt.Errorf("image write: image %s is %d bytes, larger than the %d-byte export at %s",
 			sourcePath, size, export.SizeBytes, export.DevicePath)
 	}

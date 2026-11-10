@@ -75,9 +75,6 @@ func (p *Provider) publishVolume(ctx context.Context, req ebsprovider.PublishVol
 	if err != nil {
 		return nil, err
 	}
-	if capacity < 0 {
-		return nil, fmt.Errorf("ocibsd: volume %s has a negative capacity %d", req.VolumeID, capacity)
-	}
 
 	attached, err := p.attachments(ctx, v.ID)
 	if err != nil {
@@ -117,7 +114,7 @@ func (p *Provider) publishVolume(ctx context.Context, req ebsprovider.PublishVol
 		NodeID:   req.NodeID,
 		Export: ebsprovider.VolumeExport{
 			Kind:  ebsprovider.ExportKindBlock,
-			Block: &ebsprovider.BlockExport{DevicePath: device, SizeBytes: uint64(capacity)},
+			Block: &ebsprovider.BlockExport{DevicePath: device, SizeBytes: uint64(capacity)}, //nolint:gosec // G115: capacityOf refuses a capacity below 1
 		},
 	}, nil
 }

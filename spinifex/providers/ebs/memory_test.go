@@ -364,7 +364,7 @@ func TestMemoryProviderListSnapshotsCarriesSourceVolume(t *testing.T) {
 // case where copying would either lose data or attribute it to the wrong
 // volume.
 func TestMemoryProviderCopySnapshot(t *testing.T) {
-	provider := NewMemoryProvider(Capabilities{})
+	provider := NewMemoryProvider(Capabilities{SnapshotCopy: true})
 	copiedAt := time.Date(2026, 8, 5, 6, 0, 0, 0, time.UTC)
 	provider.now = func() time.Time { return copiedAt }
 	ctx := context.Background()

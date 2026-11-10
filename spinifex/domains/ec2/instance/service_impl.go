@@ -1868,6 +1868,7 @@ func (s *InstanceServiceImpl) createRootVolumeViaProvider(ctx context.Context, s
 		AvailabilityZone:       s.config.AZ,
 		SourceSnapshotID:       amiConfig.SnapshotID,
 		SourceSnapshotVolumeID: sourceVolumeID,
+		Parameters:             ebsprovider.NewVolumeParameters(ebspolicy.VolumeTypeGP3),
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "Provider root volume creation failed",

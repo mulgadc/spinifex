@@ -43,6 +43,7 @@ var capabilities = ebsprovider.Capabilities{
 	OwnerRouting:            false,
 	VolumeEnumeration:       true,
 	SnapshotEnumeration:     true,
+	SnapshotCopy:            true,
 	// Publication is tracked in this process's own map, so a second publish
 	// is refused here and nowhere else. Another node running against the same
 	// baseDir would not be seen, which is why this is node and not cluster.

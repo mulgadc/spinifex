@@ -137,6 +137,11 @@ type Capabilities struct {
 	// can enumerate one without the other.
 	SnapshotEnumeration bool `json:"snapshot_enumeration"`
 
+	// SnapshotCopy advertises that CopySnapshot duplicates a snapshot in place.
+	// A provider leaving this false refuses CopySnapshot as unsupported, so a
+	// caller can tell a copy it cannot have from one that failed.
+	SnapshotCopy bool `json:"snapshot_copy"`
+
 	// OwnerRouting advertises that CreateSnapshot, CopySnapshot, ExpandVolume
 	// and GetVolume are answered directly by a volume's mounting node over
 	// its OwnerSubject when one exists, instead of always fanning out to the

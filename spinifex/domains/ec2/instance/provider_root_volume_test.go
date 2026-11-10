@@ -76,13 +76,24 @@ func rootVolumeAMILoader() *fakeAMILoader {
 	}
 }
 
+// createCapturingProvider records the last CreateVolume request it served.
+type createCapturingProvider struct {
+	*ebsprovider.MemoryProvider
+	last ebsprovider.CreateVolumeRequest
+}
+
+func (p *createCapturingProvider) CreateVolume(ctx context.Context, req ebsprovider.CreateVolumeRequest) (*ebsprovider.Volume, error) {
+	p.last = req
+	return p.MemoryProvider.CreateVolume(ctx, req)
+}
+
 // TestPrepareRootVolume_Provider_CreatesFromAMISnapshot locks that an injected
 // provider owns root-volume creation: the volume is restored from the AMI's
 // snapshot rather than copied block-by-block by the control plane.
 func TestPrepareRootVolume_Provider_CreatesFromAMISnapshot(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
-	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{CrashConsistentSnapshot: true})
+	provider := &createCapturingProvider{MemoryProvider: ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{CrashConsistentSnapshot: true})}
 	seedProviderSnapshot(t, provider, "vol-origin", "snap-source")
 	svc := providerRootVolumeService(t, provider, rootVolumeAMILoader(), objectstore.NewMemoryObjectStore())
 
@@ -97,6 +108,9 @@ func TestPrepareRootVolume_Provider_CreatesFromAMISnapshot(t *testing.T) {
 	})
 	require.NoError(t, err, "the root volume must exist in the provider")
 	assert.Equal(t, int64(testRootVolumeBytes), created.CapacityBytes)
+	params, err := ebsprovider.ParseVolumeParameters(provider.last.Parameters)
+	require.NoError(t, err)
+	assert.Equal(t, ebspolicy.VolumeTypeGP3, params.VolumeType, "the provider must be told the root volume's type")
 
 	require.Len(t, instance.EBSRequests.Requests, 1)
 	assert.Equal(t, "vol-root", instance.EBSRequests.Requests[0].Name)

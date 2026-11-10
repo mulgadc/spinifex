@@ -304,6 +304,7 @@ func (s *VolumeServiceImpl) createVolume(ctx context.Context, input *ec2.CreateV
 		AvailabilityZone:       *input.AvailabilityZone,
 		SourceSnapshotID:       snapshotID,
 		SourceSnapshotVolumeID: sourceVolumeName,
+		Parameters:             ebsprovider.NewVolumeParameters(volumeType),
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "CreateVolume: provider allocation failed", "volumeId", volumeID, "err", err)

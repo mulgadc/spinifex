@@ -30,6 +30,7 @@ var ReferenceCapabilities = ebsprovider.Capabilities{
 	ReadOnlyPublish:         true,
 	VolumeEnumeration:       true,
 	SnapshotEnumeration:     true,
+	SnapshotCopy:            true,
 	// MemoryProvider keeps publication in one process's map, so node is the
 	// honest answer. A reference set that claimed cluster would make the
 	// suite's concurrency subtests pass against something that cannot hold.
@@ -787,6 +788,38 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 	})
 
 	t.Run("CopySnapshot", func(t *testing.T) {
+		t.Run("unsupported_version", func(t *testing.T) {
+			provider := newProvider(t)
+			_, err := provider.CopySnapshot(context.Background(), ebsprovider.CopySnapshotRequest{
+				SourceSnapshotID: cfg.id("snap-a"), DestinationSnapshotID: cfg.id("snap-b"), VolumeID: cfg.id("vol-a"),
+			})
+			require.ErrorIs(t, err, ebsprovider.ErrUnsupportedVersion)
+		})
+
+		// A provider that cannot copy must say so, or a caller reads the
+		// refusal as a failed copy worth retrying.
+		t.Run("unsupported_capability when copy is not advertised", func(t *testing.T) {
+			if capabilities.SnapshotCopy {
+				t.Skip("provider advertises snapshot copy")
+			}
+			provider := newProvider(t)
+			ctx := context.Background()
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-copysnap-unsup"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			createSnapshot(t, provider, cfg.id("snap-copysnap-unsup"), cfg.id("vol-copysnap-unsup"))
+			_, err = provider.CopySnapshot(ctx, ebsprovider.CopySnapshotRequest{
+				Versioned: ebsprovider.NewVersioned(), SourceSnapshotID: cfg.id("snap-copysnap-unsup"), DestinationSnapshotID: cfg.id("snap-copysnap-unsup-dst"), VolumeID: cfg.id("vol-copysnap-unsup"),
+			})
+			require.ErrorIs(t, err, ebsprovider.ErrUnsupportedCapability)
+			if capabilities.SnapshotEnumeration {
+				assert.NotContains(t, drainSnapshotIDs(t, provider, 0), cfg.id("snap-copysnap-unsup-dst"), "a refused copy must leave no snapshot behind")
+			}
+		})
+
+		if !capabilities.SnapshotCopy {
+			return
+		}
+
 		t.Run("success", func(t *testing.T) {
 			provider := newProvider(t)
 			ctx := context.Background()
@@ -863,14 +896,6 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 				Versioned: ebsprovider.NewVersioned(), SourceSnapshotID: cfg.id("snap-copysnap-owned"), DestinationSnapshotID: cfg.id("snap-copysnap-owned-dst"), VolumeID: cfg.id("vol-copysnap-foreign"),
 			})
 			require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
-		})
-
-		t.Run("unsupported_version", func(t *testing.T) {
-			provider := newProvider(t)
-			_, err := provider.CopySnapshot(context.Background(), ebsprovider.CopySnapshotRequest{
-				SourceSnapshotID: cfg.id("snap-a"), DestinationSnapshotID: cfg.id("snap-b"), VolumeID: cfg.id("vol-a"),
-			})
-			require.ErrorIs(t, err, ebsprovider.ErrUnsupportedVersion)
 		})
 	})
 

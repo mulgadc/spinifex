@@ -371,6 +371,9 @@ func (m *MemoryProvider) CopySnapshot(_ context.Context, req CopySnapshotRequest
 	if req.SourceSnapshotID == req.DestinationSnapshotID {
 		return nil, fmt.Errorf("%w: destination snapshot must differ from the source", ErrInvalidArgument)
 	}
+	if !m.capabilities.SnapshotCopy {
+		return nil, fmt.Errorf("%w: snapshot copy", ErrUnsupportedCapability)
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()

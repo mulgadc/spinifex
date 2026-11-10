@@ -1111,6 +1111,12 @@ func (s *SnapshotServiceImpl) CopySnapshot(ctx context.Context, input *ec2.CopyS
 		DestinationSnapshotID: newSnapshotID,
 		VolumeID:              sourceCfg.VolumeID,
 	})
+	// A provider without SnapshotCopy refuses as unsupported, which no retry
+	// changes, so the caller is told the operation is unsupported here.
+	if errors.Is(err, ebsprovider.ErrUnsupportedCapability) {
+		slog.WarnContext(ctx, "CopySnapshot is not supported by the EBS provider", "sourceSnapshotId", sourceSnapshotID)
+		return nil, errors.New(awserrors.ErrorUnsupportedOperation)
+	}
 	if err != nil || copied == nil {
 		slog.ErrorContext(ctx, "CopySnapshot: provider copy failed", "sourceSnapshotId", sourceSnapshotID, "newSnapshotId", newSnapshotID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)

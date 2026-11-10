@@ -317,6 +317,9 @@ func handleProviderCapabilities(ctx context.Context, msg *nats.Msg) {
 			// without any control-plane metadata to consult.
 			VolumeEnumeration:   true,
 			SnapshotEnumeration: true,
+			// A copy writes its own snapshot config over the source's frozen
+			// blocks (see handleCopySnapshot).
+			SnapshotCopy: true,
 			// Every engine open takes a JetStream KV lease keyed by volume and
 			// the KV create is the compare-and-swap, so a second opener on any
 			// node is refused rather than racing. Losing the lease is logged

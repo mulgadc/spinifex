@@ -3424,12 +3424,6 @@ func finalizeNodeSetup(dataDir, certPath, adminAccessKey, adminSecretKey, region
 // NetworkConfig into ConfigSettings and auto-detects the local WAN interface.
 func applyNetworkConfig(settings *admin.ConfigSettings, nc *formation.NetworkConfig) {
 	settings.IPSecEnabled = nc.IPSecEnabled
-	if nc.EBS != nil {
-		settings.EBSProvider = nc.EBS.Provider
-		settings.OCICompartmentID = nc.EBS.OCICompartmentID
-		settings.OCIAvailabilityDomain = nc.EBS.OCIAvailabilityDomain
-		settings.OCIClusterID = nc.EBS.ClusterID
-	}
 	settings.ExternalMode = nc.ExternalMode
 	// A node's own address is northstar itself; forwarding to it would loop.
 	settings.PoolDNSServers = filterDNSServers(nc.PoolDNSServers, settings.AdvertiseIP, settings.BindIP)

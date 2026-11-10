@@ -274,11 +274,7 @@ func (p *Provider) ListVolumes(ctx context.Context, req ebsprovider.ListVolumesR
 			handles[id] = v.ID
 		}
 	}
-	ids := make([]string, 0, len(handles))
-	for id := range handles {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
+	ids := slices.Sorted(maps.Keys(handles))
 	response := &ebsprovider.ListVolumesResponse{Versioned: ebsprovider.ReplyVersioned(req.SchemaVersion)}
 	response.Volumes, response.NextToken = ebsprovider.Page(ids, req.StartingToken, int(req.PageSize()),
 		func(id string) ebsprovider.VolumeRef { return ebsprovider.VolumeRef{ID: id, Handle: handles[id]} })

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 
 	"github.com/mulgadc/spinifex/spinifex/providers/cloud/oci"
@@ -160,11 +161,7 @@ func (p *Provider) ListSnapshots(ctx context.Context, req ebsprovider.ListSnapsh
 			backups[id] = b
 		}
 	}
-	ids := make([]string, 0, len(backups))
-	for id := range backups {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
+	ids := slices.Sorted(maps.Keys(backups))
 	response := &ebsprovider.ListSnapshotsResponse{Versioned: ebsprovider.ReplyVersioned(req.SchemaVersion)}
 	response.Snapshots, response.NextToken = ebsprovider.Page(ids, req.StartingToken, int(req.PageSize()),
 		func(id string) ebsprovider.SnapshotRef { return refOf(backups[id]) })

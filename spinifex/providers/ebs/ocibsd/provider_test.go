@@ -2,6 +2,7 @@ package ocibsd_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -98,7 +99,7 @@ func TestCreateVolumeMapsTheVolumeTypeToVPUs(t *testing.T) {
 			c := newCluster(t)
 			v, err := c.router().CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
 				Versioned: latest, VolumeID: "vol-tier", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
-				Parameters: ebsprovider.NewVolumeParameters(volumeType),
+				Parameters: volumeParams(t, volumeType),
 			})
 			require.NoError(t, err)
 			assert.Equal(t, vpus, ociVolume(t, c.fake, v.Handle).VPUsPerGB)
@@ -109,14 +110,14 @@ func TestCreateVolumeMapsTheVolumeTypeToVPUs(t *testing.T) {
 	ctx := context.Background()
 	_, err := c.router().CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
 		Versioned: latest, VolumeID: "vol-magnetic", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
-		Parameters: ebsprovider.NewVolumeParameters("standard"),
+		Parameters: volumeParams(t, "standard"),
 	})
 	require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
 
 	createVolume(t, c.router(), "vol-retier", 1<<30)
 	_, err = c.router().CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
 		Versioned: latest, VolumeID: "vol-retier", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
-		Parameters: ebsprovider.NewVolumeParameters("io1"),
+		Parameters: volumeParams(t, "io1"),
 	})
 	require.ErrorIs(t, err, ebsprovider.ErrAlreadyExists, "a repeat asking for another tier is not the same volume")
 }
@@ -531,4 +532,11 @@ func TestAttachmentsThatDoNotSettleAreRetryLater(t *testing.T) {
 	c.fake.DetachAfter = 1 << 20
 	_, err = p.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{Versioned: latest, VolumeID: "vol-stuck", NodeID: "node-1"})
 	require.ErrorIs(t, err, ebsprovider.ErrUnavailable, "an attachment still DETACHING at the timeout")
+}
+
+func volumeParams(t *testing.T, volumeType string) json.RawMessage {
+	t.Helper()
+	raw, err := ebsprovider.NewVolumeParameters(volumeType)
+	require.NoError(t, err)
+	return raw
 }

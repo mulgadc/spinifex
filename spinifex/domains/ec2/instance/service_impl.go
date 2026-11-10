@@ -1861,6 +1861,12 @@ func (s *InstanceServiceImpl) createRootVolumeViaProvider(ctx context.Context, s
 	slog.InfoContext(ctx, "Creating root volume from AMI snapshot via EBS provider",
 		"imageId", spec.amiID, "volumeId", spec.volumeID, "snapshotId", amiConfig.SnapshotID, "sourceVolumeId", sourceVolumeID)
 
+	params, err := ebsprovider.NewVolumeParameters(ebspolicy.VolumeTypeGP3)
+	if err != nil {
+		slog.ErrorContext(ctx, "Encode root volume provider parameters failed", "volumeId", spec.volumeID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
 	created, err := s.ebsProvider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
 		Versioned:              ebsprovider.NewVersioned(),
 		VolumeID:               spec.volumeID,
@@ -1868,7 +1874,7 @@ func (s *InstanceServiceImpl) createRootVolumeViaProvider(ctx context.Context, s
 		AvailabilityZone:       s.config.AZ,
 		SourceSnapshotID:       amiConfig.SnapshotID,
 		SourceSnapshotVolumeID: sourceVolumeID,
-		Parameters:             ebsprovider.NewVolumeParameters(ebspolicy.VolumeTypeGP3),
+		Parameters:             params,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "Provider root volume creation failed",

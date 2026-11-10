@@ -294,6 +294,12 @@ func (s *VolumeServiceImpl) createVolume(ctx context.Context, input *ec2.CreateV
 		return nil, err
 	}
 
+	params, err := ebsprovider.NewVolumeParameters(volumeType)
+	if err != nil {
+		slog.ErrorContext(ctx, "CreateVolume: encode provider parameters failed", "volumeId", volumeID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	// SourceVolumeName must travel with the snapshot ID: a clone resolves its
 	// base blocks against the source volume's prefix, and the provider rejects
 	// a snapshot source without it.
@@ -304,7 +310,7 @@ func (s *VolumeServiceImpl) createVolume(ctx context.Context, input *ec2.CreateV
 		AvailabilityZone:       *input.AvailabilityZone,
 		SourceSnapshotID:       snapshotID,
 		SourceSnapshotVolumeID: sourceVolumeName,
-		Parameters:             ebsprovider.NewVolumeParameters(volumeType),
+		Parameters:             params,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "CreateVolume: provider allocation failed", "volumeId", volumeID, "err", err)

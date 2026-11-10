@@ -171,6 +171,8 @@ func TestUpdateFunctionConfiguration_ParameterValidation(t *testing.T) {
 		"empty role":            {map[string]any{"Role": ""}, awserrors.ErrorInvalidParameterValueException},
 		"environment name":      {map[string]any{"Environment": map[string]any{"Variables": map[string]string{"1BAD": "x"}}}, awserrors.ErrorValidationException},
 		"reserved environment":  {map[string]any{"Environment": map[string]any{"Variables": map[string]string{"AWS_REGION": "x"}}}, awserrors.ErrorInvalidParameterValueException},
+		"unknown tracing mode":  {map[string]any{"TracingConfig": map[string]any{"Mode": "Sampled"}}, awserrors.ErrorValidationException},
+		"pass-through tracing":  {map[string]any{"TracingConfig": map[string]any{"Mode": "PassThrough"}}, ""},
 		"qualified name":        {nil, awserrors.ErrorInvalidParameterValueException},
 		"stale revision":        {map[string]any{"Description": "x", "RevisionId": "1"}, awserrors.ErrorPreconditionFailedException},
 		"handler at 128 is new": {map[string]any{"Handler": strings.Repeat("h", 128)}, ""},

@@ -420,6 +420,12 @@ func validateUpdateConfiguration(in *lambda.UpdateFunctionConfigurationInput, na
 			return nil, unsupported(c.field)
 		}
 	}
+	if in.TracingConfig != nil {
+		if m := aws.StringValue(in.TracingConfig.Mode); m != "" && m != lambda.TracingModePassThrough {
+			return nil, awserrors.Errorf(awserrors.ErrorValidationException,
+				"1 validation error detected: Value at 'tracingConfig.mode' failed to satisfy constraint: Member must satisfy enum value set: [Active, PassThrough]")
+		}
+	}
 	if !defaultLogging(in.LoggingConfig, name) {
 		return nil, unsupported("A LoggingConfig other than LogFormat Text with log group " + logGroup(name))
 	}

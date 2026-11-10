@@ -333,6 +333,18 @@ const (
 	EBSProviderOCIBSD      = "ocibsd"
 )
 
+// OCI credential selections, as in oci_auth on an external pool and auth in
+// [nodes.<name>.ebs.oci]. An unset auth reads a config file.
+const (
+	// OCIAuthConfigFile authenticates from an API-key config file. The default,
+	// because it is what an operator already has from `oci setup config`.
+	OCIAuthConfigFile = "config_file"
+	// OCIAuthInstancePrincipal authenticates as the instance, from the
+	// certificate its metadata service serves. No key material on any node and
+	// nothing to rotate, at the cost of a dynamic group and an IAM policy.
+	OCIAuthInstancePrincipal = "instance_principal"
+)
+
 // Per-volume export tunables. Both are applied per nbdkit process, and
 // spinifex runs one of those per volume, so the host-level cost of each is
 // the value multiplied by the volume count.
@@ -918,14 +930,14 @@ func validateOCIAuth(prefix, auth, configFile, configProfile string) error {
 	// use its own identity and has no dynamic group fails at config load
 	// instead of falling back to a key file nobody installed.
 	switch auth {
-	case "", "config_file", "instance_principal":
+	case "", OCIAuthConfigFile, OCIAuthInstancePrincipal:
 	default:
-		return fmt.Errorf("%sauth must be \"config_file\" or \"instance_principal\", got %q", prefix, auth)
+		return fmt.Errorf("%sauth must be %q or %q, got %q", prefix, OCIAuthConfigFile, OCIAuthInstancePrincipal, auth)
 	}
 	// Credentials come from the metadata service under instance principal,
 	// so a config file named beside it is one of two sources of truth and
 	// the one that would be silently ignored.
-	if auth == "instance_principal" && (configFile != "" || configProfile != "") {
+	if auth == OCIAuthInstancePrincipal && (configFile != "" || configProfile != "") {
 		return fmt.Errorf("%[1]sconfig_file/%[1]sconfig_profile are not valid with %[1]sauth=\"instance_principal\" (the instance's own certificate is the credential)", prefix)
 	}
 	return nil

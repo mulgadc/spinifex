@@ -15,6 +15,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/netaddr"
 	"github.com/mulgadc/spinifex/spinifex/providers/cloud/oci"
@@ -28,12 +29,6 @@ var serviceName = "ocibsd"
 
 // startupTimeout bounds reading the instance and the start-time OCI calls.
 const startupTimeout = 2 * time.Minute
-
-// Auth values, as in [nodes.<name>.ebs.oci] auth.
-const (
-	AuthConfigFile        = "config_file"
-	AuthInstancePrincipal = "instance_principal"
-)
 
 // Config is the ocibsd service's startup configuration. NodeName scopes the
 // PublishVolume and UnpublishVolume subjects to this node, and ClusterID
@@ -110,12 +105,12 @@ var (
 // an unset auth reads a config file, as an oci external pool does.
 func BlockClientFor(cfg *Config) (oci.BlockClient, error) {
 	switch cfg.Auth {
-	case AuthInstancePrincipal:
+	case config.OCIAuthInstancePrincipal:
 		return newInstancePrincipalBlockClient()
-	case "", AuthConfigFile:
+	case "", config.OCIAuthConfigFile:
 		return newConfigFileBlockClient(cfg.ConfigFile, cfg.ConfigProfile)
 	default:
-		return nil, fmt.Errorf("ocibsd: auth must be %q or %q, got %q", AuthConfigFile, AuthInstancePrincipal, cfg.Auth)
+		return nil, fmt.Errorf("ocibsd: auth must be %q or %q, got %q", config.OCIAuthConfigFile, config.OCIAuthInstancePrincipal, cfg.Auth)
 	}
 }
 

@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/ocinet"
 	"github.com/mulgadc/spinifex/spinifex/providers/cloud/oci"
 )
@@ -25,21 +25,21 @@ func TestNewClientSelectsTheCredentialThePoolNames(t *testing.T) {
 	}{
 		{
 			name:          "instance principal",
-			auth:          external.OCIAuthInstancePrincipal,
+			auth:          config.OCIAuthInstancePrincipal,
 			wantPrincipal: true,
 		},
 		{
 			// A pool configured for an instance principal still must not fall
 			// back to a key file when one happens to be configured as well.
 			name:          "instance principal with a config file also set",
-			auth:          external.OCIAuthInstancePrincipal,
+			auth:          config.OCIAuthInstancePrincipal,
 			configFile:    "/etc/spinifex/oci/config",
 			profile:       "spinifex",
 			wantPrincipal: true,
 		},
 		{
 			name:       "config file",
-			auth:       external.OCIAuthConfigFile,
+			auth:       config.OCIAuthConfigFile,
 			configFile: "/etc/spinifex/oci/config",
 			profile:    "spinifex",
 		},
@@ -94,6 +94,6 @@ func TestNewClientReturnsTheConstructorError(t *testing.T) {
 	)
 	defer restore()
 
-	_, err := ocinet.NewClient(ocinet.PoolWithAuth(external.OCIAuthConfigFile, "/missing", "spinifex"))
+	_, err := ocinet.NewClient(ocinet.PoolWithAuth(config.OCIAuthConfigFile, "/missing", "spinifex"))
 	require.ErrorIs(t, err, wantErr)
 }

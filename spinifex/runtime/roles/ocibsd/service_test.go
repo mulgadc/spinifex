@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/providers/cloud/oci"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	ebsocibsd "github.com/mulgadc/spinifex/spinifex/providers/ebs/ocibsd"
@@ -30,8 +31,8 @@ func TestBlockClientForSelectsTheCredential(t *testing.T) {
 		wantErr             bool
 	}{
 		{auth: "", file: "/etc/oci/config", profile: "SPX", want: "config_file /etc/oci/config SPX"},
-		{auth: AuthConfigFile, want: "config_file  "},
-		{auth: AuthInstancePrincipal, want: "instance_principal"},
+		{auth: config.OCIAuthConfigFile, want: "config_file  "},
+		{auth: config.OCIAuthInstancePrincipal, want: "instance_principal"},
 		{auth: "api_key", wantErr: true},
 	}
 	for _, tc := range cases {

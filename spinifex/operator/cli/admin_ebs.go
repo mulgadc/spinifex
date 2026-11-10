@@ -206,7 +206,7 @@ func (r ebsResolver) fillOCIBSD(ctx context.Context, e *nodeEBS, existing *exist
 	}
 	e.Auth, e.ConfigFile, e.ConfigProfile = prior.OCI.Auth, prior.OCI.ConfigFile, prior.OCI.ConfigProfile
 	if e.Auth == "" && e.ConfigFile == "" && e.ConfigProfile == "" {
-		e.Auth = ocibsdrole.AuthInstancePrincipal
+		e.Auth = config.OCIAuthInstancePrincipal
 	}
 	if e.ClusterID == "" {
 		e.ClusterID = prior.OCI.ClusterID

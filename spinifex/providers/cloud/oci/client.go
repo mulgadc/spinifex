@@ -94,6 +94,16 @@ const DefaultConfigProfile = "DEFAULT"
 // The default, because it needs nothing from a tenancy admin. It costs a private
 // key on every node, which NewInstancePrincipalClient avoids.
 func NewConfigFileClient(path, profile string) (Client, error) {
+	provider, err := configFileProvider(path, profile)
+	if err != nil {
+		return nil, err
+	}
+	return NewClientWithProvider(provider)
+}
+
+// configFileProvider reads API-key credentials from path and profile, each
+// defaulting as the OCI CLI does.
+func configFileProvider(path, profile string) (common.ConfigurationProvider, error) {
 	if path == "" {
 		path = DefaultConfigFile
 	}
@@ -108,7 +118,7 @@ func NewConfigFileClient(path, profile string) (Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("oci config file %s (profile %s): %w", expanded, profile, err)
 	}
-	return NewClientWithProvider(provider)
+	return provider, nil
 }
 
 // expandHome resolves a leading ~ so operators can configure the conventional
@@ -361,21 +371,21 @@ func wrap(op string, err error) error {
 	if !ok {
 		return fmt.Errorf("oci %s: %w", op, err)
 	}
-	api := &APIError{
-		Op:         op,
-		Code:       svc.GetCode(),
-		Message:    svc.GetMessage(),
-		StatusCode: svc.GetHTTPStatusCode(),
-		RequestID:  svc.GetOpcRequestID(),
-	}
+	return newAPIError(op, svc.GetHTTPStatusCode(), svc.GetCode(), svc.GetMessage(), svc.GetOpcRequestID())
+}
+
+// newAPIError builds an APIError classified by its HTTP status, as wrap does
+// for the SDK's errors and the fakes do for the failures they model.
+func newAPIError(op string, status int, code, message, requestID string) *APIError {
+	api := &APIError{Op: op, Code: code, Message: message, StatusCode: status, RequestID: requestID}
 	switch {
-	case svc.GetHTTPStatusCode() == 404:
+	case status == 404:
 		api.kind = ErrNotFound
-	case svc.GetHTTPStatusCode() == 409, svc.GetHTTPStatusCode() == 412:
+	case status == 409, status == 412:
 		api.kind = ErrConflict
-	case svc.GetHTTPStatusCode() == 400 && svc.GetCode() == "LimitExceeded":
+	case status == 400 && code == "LimitExceeded":
 		api.kind = ErrLimitExceeded
-	case svc.GetHTTPStatusCode() == 429:
+	case status == 429:
 		api.kind = ErrLimitExceeded
 	}
 	return api

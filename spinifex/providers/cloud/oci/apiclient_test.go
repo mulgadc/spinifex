@@ -29,17 +29,27 @@ type capture struct {
 	method string
 	path   string
 	query  url.Values
+	header http.Header
 	body   map[string]any
 }
 
-// testClient wires the real SDK-backed client to a handler. The signing key is
-// generated per test — the SDK refuses to build a client without one, and a
-// throwaway key is enough because nothing verifies the signature here.
+// testClient wires the real SDK-backed client to a handler.
 func testClient(t *testing.T, h http.HandlerFunc) (oci.Client, *[]capture) {
+	t.Helper()
+	provider, endpoint, hc, seen := testEndpoint(t, h)
+	c, err := oci.NewTestClient(provider, endpoint, hc)
+	require.NoError(t, err)
+	return c, seen
+}
+
+// testEndpoint serves h over TLS and returns a configuration provider for it.
+// The signing key is generated per test — the SDK refuses to build a client
+// without one, and nothing verifies the signature here.
+func testEndpoint(t *testing.T, h http.HandlerFunc) (common.ConfigurationProvider, string, *http.Client, *[]capture) {
 	t.Helper()
 	var seen []capture
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c := capture{method: r.Method, path: r.URL.Path, query: r.URL.Query()}
+		c := capture{method: r.Method, path: r.URL.Path, query: r.URL.Query(), header: r.Header.Clone()}
 		if b, _ := io.ReadAll(r.Body); len(b) > 0 {
 			_ = json.Unmarshal(b, &c.body)
 		}
@@ -57,10 +67,7 @@ func testClient(t *testing.T, h http.HandlerFunc) (oci.Client, *[]capture) {
 	provider := common.NewRawConfigurationProvider(
 		"ocid1.tenancy.oc1..t", "ocid1.user.oc1..u", "ap-sydney-1",
 		"aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99", string(pemKey), nil)
-
-	c, err := oci.NewTestClient(provider, strings.TrimPrefix(srv.URL, "https://"), srv.Client())
-	require.NoError(t, err)
-	return c, &seen
+	return provider, strings.TrimPrefix(srv.URL, "https://"), srv.Client(), &seen
 }
 
 // OCI pages list responses and a VNIC can hold 64 addresses. A client that

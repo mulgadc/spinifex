@@ -250,21 +250,44 @@ func TestBlockConflictsAreClassified(t *testing.T) {
 }
 
 func TestBlockNotFoundAndLimitAreClassified(t *testing.T) {
-	status := http.StatusNotFound
-	code := "NotAuthorizedOrNotFound"
+	var status int
+	var code string
 	c, _ := testBlockClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(`{"code":"` + code + `","message":"m"}`))
 	})
 
-	_, err := c.GetVolume(context.Background(), "v1")
-	require.ErrorIs(t, err, oci.ErrNotFound)
-	_, err = c.GetVolumeBackup(context.Background(), "b1")
-	require.ErrorIs(t, err, oci.ErrNotFound)
-	_, err = c.GetVolumeAttachment(context.Background(), "a1")
-	require.ErrorIs(t, err, oci.ErrNotFound)
-
-	status, code = http.StatusBadRequest, "LimitExceeded"
-	_, err = c.AttachVolume(context.Background(), oci.AttachVolumeInput{InstanceID: "i1", VolumeID: "v1"})
-	require.ErrorIs(t, err, oci.ErrLimitExceeded)
+	ctx := context.Background()
+	for name, tc := range map[string]struct {
+		status int
+		code   string
+		want   error
+		call   func() error
+	}{
+		"GetVolume": {http.StatusNotFound, "NotAuthorizedOrNotFound", oci.ErrNotFound, func() error {
+			_, err := c.GetVolume(ctx, "v1")
+			return err
+		}},
+		"GetVolumeBackup": {http.StatusNotFound, "NotAuthorizedOrNotFound", oci.ErrNotFound, func() error {
+			_, err := c.GetVolumeBackup(ctx, "b1")
+			return err
+		}},
+		"GetVolumeAttachment": {http.StatusNotFound, "NotAuthorizedOrNotFound", oci.ErrNotFound, func() error {
+			_, err := c.GetVolumeAttachment(ctx, "a1")
+			return err
+		}},
+		"AttachVolume": {http.StatusBadRequest, "LimitExceeded", oci.ErrLimitExceeded, func() error {
+			_, err := c.AttachVolume(ctx, oci.AttachVolumeInput{InstanceID: "i1", VolumeID: "v1"})
+			return err
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			status, code = tc.status, tc.code
+			err := tc.call()
+			require.ErrorIs(t, err, tc.want)
+			var api *oci.APIError
+			require.ErrorAs(t, err, &api)
+			assert.Equal(t, name, api.Op)
+		})
+	}
 }

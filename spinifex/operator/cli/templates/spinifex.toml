@@ -160,12 +160,18 @@ compartment_id = "{{.OCICompartmentID}}"
 availability_domain = "{{.OCIAvailabilityDomain}}"
 # Generated once at init; tags every OCI volume and backup of this cluster.
 cluster_id = "{{.OCIClusterID}}"
-# auth: "config_file" (the default) reads config_file and config_profile,
-# which default to ~/.oci/config and DEFAULT; "instance_principal" uses the
-# instance's own certificate and takes neither.
-#auth = "instance_principal"
-#config_file = "/etc/spinifex/oci/config"
-#config_profile = "DEFAULT"
+# auth: "config_file" (the default when unset) reads config_file and
+# config_profile, which default to ~/.oci/config and DEFAULT;
+# "instance_principal" uses the instance's own certificate and takes neither.
+{{- if .OCIAuth}}
+auth = "{{.OCIAuth}}"
+{{- end}}
+{{- if .OCIConfigFile}}
+config_file = "{{.OCIConfigFile}}"
+{{- end}}
+{{- if .OCIConfigProfile}}
+config_profile = "{{.OCIConfigProfile}}"
+{{- end}}
 {{- end}}
 
 [nodes.{{.Node}}.vpcd]

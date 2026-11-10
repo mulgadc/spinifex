@@ -45,7 +45,7 @@ func TestBlockClientForSelectsTheCredential(t *testing.T) {
 				return oci.NewBlockFake(), nil
 			}
 
-			_, err := blockClientFor(&Config{Auth: tc.auth, ConfigFile: tc.file, ConfigProfile: tc.profile})
+			_, err := BlockClientFor(&Config{Auth: tc.auth, ConfigFile: tc.file, ConfigProfile: tc.profile})
 			if tc.wantErr {
 				require.Error(t, err)
 				assert.Empty(t, built)

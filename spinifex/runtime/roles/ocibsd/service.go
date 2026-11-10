@@ -96,7 +96,7 @@ func productionDeps() deps {
 			return natsmsg.ConnectNATSWithRetry(netaddr.DialTarget(cfg.NatsHost), cfg.NatsToken, cfg.NatsCACert)
 		},
 		instance:  oci.NewMetadataClient().Instance,
-		newClient: blockClientFor,
+		newClient: BlockClientFor,
 		initiator: ebsocibsd.NewISCSIAdm(ebsocibsd.ExecRunner{}),
 	}
 }
@@ -106,9 +106,9 @@ var (
 	newConfigFileBlockClient        = oci.NewConfigFileBlockClient
 )
 
-// blockClientFor builds the OCI client the configured credential selects;
+// BlockClientFor builds the OCI client the configured credential selects;
 // an unset auth reads a config file, as an oci external pool does.
-func blockClientFor(cfg *Config) (oci.BlockClient, error) {
+func BlockClientFor(cfg *Config) (oci.BlockClient, error) {
 	switch cfg.Auth {
 	case AuthInstancePrincipal:
 		return newInstancePrincipalBlockClient()
@@ -123,7 +123,7 @@ func blockClientFor(cfg *Config) (oci.BlockClient, error) {
 // cluster's AD, and starts the provider, which logs out stale sessions.
 func newProvider(ctx context.Context, cfg *Config, d deps) (*ebsocibsd.Provider, error) {
 	if cfg.ClusterID == "" {
-		return nil, fmt.Errorf("ocibsd: [nodes.%s.ebs.oci] cluster_id is unset; spx admin init writes it with --ebs-provider ocibsd", cfg.NodeName)
+		return nil, fmt.Errorf("ocibsd: [nodes.%s.ebs.oci] cluster_id is unset; spx admin init writes it when the provider resolves to ocibsd", cfg.NodeName)
 	}
 	md, err := d.instance(ctx)
 	if err != nil {

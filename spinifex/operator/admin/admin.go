@@ -128,6 +128,11 @@ type ConfigSettings struct {
 	OCICompartmentID      string
 	OCIAvailabilityDomain string
 	OCIClusterID          string
+	// OCIAuth, OCIConfigFile and OCIConfigProfile are this node's credential,
+	// rendered only when set.
+	OCIAuth          string
+	OCIConfigFile    string
+	OCIConfigProfile string
 
 	// GPUPassthrough enables VFIO GPU passthrough in the daemon config.
 	// Sets gpu_passthrough = true under [nodes.<node>.daemon].

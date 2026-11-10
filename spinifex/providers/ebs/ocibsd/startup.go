@@ -10,15 +10,30 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 )
 
-// Start readies the provider on node start, before it serves anything. It
-// reads the compartment's volumes, so a credential missing its grants fails
-// here, then logs out stale sessions; PublishVolume is refused until it ends.
-func (p *Provider) Start(ctx context.Context) error {
-	if _, err := p.cfg.Client.ListVolumes(ctx, oci.VolumeFilter{
-		CompartmentID: p.cfg.CompartmentID, AvailabilityDomain: p.cfg.AvailabilityDomain,
-		Tags: map[string]string{TagCluster: p.cfg.ClusterID},
+// RequiredPolicy is what the tenancy must grant the node's credential in the
+// compartment ocibsd keeps its volumes in.
+const RequiredPolicy = "manage volume-family and use instances"
+
+// CheckCredential makes the read ocibsd makes at start: it proves client
+// authenticates and can read volumes in the compartment, not that every grant
+// in RequiredPolicy is present, so an inspect-only credential passes.
+func CheckCredential(ctx context.Context, client oci.BlockClient, compartmentID, availabilityDomain, clusterID string) error {
+	if _, err := client.ListVolumes(ctx, oci.VolumeFilter{
+		CompartmentID: compartmentID, AvailabilityDomain: availabilityDomain,
+		Tags: map[string]string{TagCluster: clusterID},
 	}); err != nil {
-		return fmt.Errorf("ocibsd: read volumes in compartment %s (the credential needs manage volume-family and use instances there): %w", p.cfg.CompartmentID, err)
+		return fmt.Errorf("ocibsd: read volumes in compartment %s: %w; the tenancy needs a policy granting this node's credential %s in that compartment, as \"Allow dynamic-group <group> to manage volume-family in compartment id %[1]s\" and \"Allow dynamic-group <group> to use instances in compartment id %[1]s\" (or group <group> for an API key)",
+			compartmentID, err, RequiredPolicy)
+	}
+	return nil
+}
+
+// Start readies the provider on node start, before it serves anything. It
+// checks the credential as CheckCredential does, then logs out stale
+// sessions; PublishVolume is refused until it ends.
+func (p *Provider) Start(ctx context.Context) error {
+	if err := CheckCredential(ctx, p.cfg.Client, p.cfg.CompartmentID, p.cfg.AvailabilityDomain, p.cfg.ClusterID); err != nil {
+		return err
 	}
 	if err := p.logoutStaleSessions(ctx); err != nil {
 		return err

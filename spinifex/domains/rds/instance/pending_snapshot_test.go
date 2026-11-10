@@ -30,6 +30,7 @@ const pendingFinalSnapshotID = "orders-db-final"
 // describe a teardown's release reads.
 type ec2Snapshots struct {
 	*snapshot.SnapshotServiceImpl
+
 	mem *ebsprovider.MemoryProvider
 
 	mu          sync.Mutex

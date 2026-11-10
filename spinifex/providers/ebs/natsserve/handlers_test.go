@@ -779,6 +779,7 @@ func TestServeStopIsIdempotent(t *testing.T) {
 // listCountingProvider counts the ListSnapshots calls that reach it.
 type listCountingProvider struct {
 	*ebsprovider.MemoryProvider
+
 	lists atomic.Int32
 }
 

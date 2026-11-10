@@ -147,7 +147,7 @@ func (l *fakeLiveness) beat(node string, at time.Time) {
 type faultStore struct {
 	objectstore.ObjectStore
 
-	mu         sync.Mutex
+	mu            sync.Mutex
 	putsBefore    int // snapshot document puts allowed before failPuts applies; -1 never fails
 	failDelete    bool
 	failVolumeGet bool

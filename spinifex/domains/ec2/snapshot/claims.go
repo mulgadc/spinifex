@@ -9,8 +9,8 @@ import (
 	"time"
 
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
-	otelsetup "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
+	otelsetup "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 )
 
 // ClaimPrefix is the kvsync prefix of every snapshot's claim. A snapshot's

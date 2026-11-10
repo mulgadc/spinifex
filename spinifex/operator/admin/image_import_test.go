@@ -242,7 +242,7 @@ func TestImportImage_WaitsForAPendingSnapshot(t *testing.T) {
 		{name: "disappears", pending: true, wantErr: "no longer held", wantLists: 1,
 			onList: func(p *recordingProvider) func(int) error {
 				return func(int) error {
-					return p.MemoryProvider.DeleteSnapshot(context.Background(), ebsprovider.DeleteSnapshotRequest{
+					return p.DeleteSnapshot(context.Background(), ebsprovider.DeleteSnapshotRequest{
 						Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID,
 					})
 				}

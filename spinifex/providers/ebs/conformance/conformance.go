@@ -972,7 +972,6 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 		})
 
 		t.Run("a created snapshot is enumerated and a deleted one is not", func(t *testing.T) {
-
 			provider := newProvider(t)
 			ctx := context.Background()
 			volumeID := cfg.id("vol-snaplist-src")

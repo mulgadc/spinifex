@@ -225,10 +225,16 @@ func capacityOf(tags map[string]string) (int64, error) {
 	return capacity, nil
 }
 
-// ociError translates an OCI failure no verb handles itself. A quota or
-// throttling refusal is retry-later; anything else is passed on as is.
-func ociError(op string, err error) error {
+// ociError translates an OCI failure no verb handles itself. A conflict takes
+// the onConflict sentinel when the verb gives one, a quota or throttling
+// refusal is retry-later, and anything else is passed on as is.
+func ociError(op string, err error, onConflict ...error) error {
+	if len(onConflict) > 0 && errors.Is(err, oci.ErrConflict) {
+		return fmt.Errorf("%w: %s: %w", onConflict[0], op, err)
+	}
 	if errors.Is(err, oci.ErrLimitExceeded) {
+		// The contract has no resource-exhausted code, and the same request
+		// succeeds once the limit frees, as when another volume detaches.
 		return fmt.Errorf("%w: %s: %w", ebsprovider.ErrUnavailable, op, err)
 	}
 	return fmt.Errorf("ocibsd: %s: %w", op, err)

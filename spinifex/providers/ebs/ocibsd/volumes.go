@@ -142,11 +142,8 @@ func (p *Provider) CreateVolume(ctx context.Context, req ebsprovider.CreateVolum
 		in.SizeGB = max(in.SizeGB, backup.SizeGB)
 	}
 	created, err := p.cfg.Client.CreateVolume(ctx, in)
-	if errors.Is(err, oci.ErrConflict) {
-		return nil, fmt.Errorf("%w: create volume %s: %w", ebsprovider.ErrUnavailable, req.VolumeID, err)
-	}
 	if err != nil {
-		return nil, ociError("create volume "+req.VolumeID, err)
+		return nil, ociError("create volume "+req.VolumeID, err, ebsprovider.ErrUnavailable)
 	}
 	// OCI replays a retry token for a day, so a volume deleted and created
 	// again under the same ID inside that window comes back terminated.
@@ -318,11 +315,8 @@ func (p *Provider) ExpandVolume(ctx context.Context, req ebsprovider.ExpandVolum
 	if errors.Is(err, oci.ErrNotFound) {
 		return nil, fmt.Errorf("%w: volume %s", ebsprovider.ErrNotFound, req.VolumeID)
 	}
-	if errors.Is(err, oci.ErrConflict) {
-		return nil, fmt.Errorf("%w: expand volume %s: %w", ebsprovider.ErrUnavailable, req.VolumeID, err)
-	}
 	if err != nil {
-		return nil, ociError("update volume "+req.VolumeID, err)
+		return nil, ociError("expand volume "+req.VolumeID, err, ebsprovider.ErrUnavailable)
 	}
 	return p.volumeOf(ctx, updated)
 }
@@ -347,13 +341,8 @@ func (p *Provider) DeleteVolume(ctx context.Context, req ebsprovider.DeleteVolum
 	if len(attached) > 0 {
 		return fmt.Errorf("%w: volume %s is attached to %s", ebsprovider.ErrVolumeInUse, req.VolumeID, attached[0].InstanceID)
 	}
-	err = p.cfg.Client.DeleteVolume(ctx, v.ID)
-	switch {
-	case err == nil, errors.Is(err, oci.ErrNotFound):
-		return nil
-	case errors.Is(err, oci.ErrConflict):
-		return fmt.Errorf("%w: delete volume %s: %w", ebsprovider.ErrVolumeInUse, req.VolumeID, err)
-	default:
-		return ociError("delete volume "+req.VolumeID, err)
+	if err := p.cfg.Client.DeleteVolume(ctx, v.ID); err != nil && !errors.Is(err, oci.ErrNotFound) {
+		return ociError("delete volume "+req.VolumeID, err, ebsprovider.ErrVolumeInUse)
 	}
+	return nil
 }

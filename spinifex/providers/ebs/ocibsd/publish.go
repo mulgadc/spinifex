@@ -135,10 +135,6 @@ func (p *Provider) attach(ctx context.Context, req ebsprovider.PublishVolumeRequ
 		return a, nil
 	case errors.Is(err, oci.ErrNotFound):
 		return oci.VolumeAttachment{}, fmt.Errorf("%w: volume %s", ebsprovider.ErrNotFound, req.VolumeID)
-	case errors.Is(err, oci.ErrLimitExceeded):
-		// The contract has no resource-exhausted code, and the same publish
-		// succeeds once another volume detaches from this node.
-		return oci.VolumeAttachment{}, fmt.Errorf("%w: attach volume %s: %w", ebsprovider.ErrUnavailable, req.VolumeID, err)
 	case !errors.Is(err, oci.ErrConflict):
 		return oci.VolumeAttachment{}, ociError("attach volume "+req.VolumeID, err)
 	}
@@ -151,7 +147,7 @@ func (p *Provider) attach(ctx context.Context, req ebsprovider.PublishVolumeRequ
 			return oci.VolumeAttachment{}, fmt.Errorf("%w: volume %s is attached to instance %s", ebsprovider.HeldElsewhereError(req.SchemaVersion), req.VolumeID, other.InstanceID)
 		}
 	}
-	return oci.VolumeAttachment{}, fmt.Errorf("%w: attach volume %s: %w", ebsprovider.ErrUnavailable, req.VolumeID, err)
+	return oci.VolumeAttachment{}, ociError("attach volume "+req.VolumeID, err, ebsprovider.ErrUnavailable)
 }
 
 func (p *Provider) awaitAttached(ctx context.Context, attachmentID string) (oci.VolumeAttachment, error) {

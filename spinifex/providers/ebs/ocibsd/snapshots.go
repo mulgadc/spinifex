@@ -115,10 +115,8 @@ func (p *Provider) CreateSnapshot(ctx context.Context, req ebsprovider.CreateSna
 	switch {
 	case errors.Is(err, oci.ErrNotFound):
 		return nil, fmt.Errorf("%w: volume %s", ebsprovider.ErrNotFound, req.VolumeID)
-	case errors.Is(err, oci.ErrConflict):
-		return nil, fmt.Errorf("%w: create snapshot %s: %w", ebsprovider.ErrUnavailable, req.SnapshotID, err)
 	case err != nil:
-		return nil, ociError("create volume backup "+req.SnapshotID, err)
+		return nil, ociError("create snapshot "+req.SnapshotID, err, ebsprovider.ErrUnavailable)
 	}
 	if created.State.Gone() {
 		return nil, fmt.Errorf("ocibsd: create snapshot %s answered with %s backup %s", req.SnapshotID, created.State, created.ID)
@@ -139,15 +137,10 @@ func (p *Provider) DeleteSnapshot(ctx context.Context, req ebsprovider.DeleteSna
 	if err != nil || !ok {
 		return err
 	}
-	err = p.cfg.Client.DeleteVolumeBackup(ctx, b.ID)
-	switch {
-	case err == nil, errors.Is(err, oci.ErrNotFound):
-		return nil
-	case errors.Is(err, oci.ErrConflict):
-		return fmt.Errorf("%w: delete snapshot %s: %w", ebsprovider.ErrUnavailable, req.SnapshotID, err)
-	default:
-		return ociError("delete volume backup "+req.SnapshotID, err)
+	if err := p.cfg.Client.DeleteVolumeBackup(ctx, b.ID); err != nil && !errors.Is(err, oci.ErrNotFound) {
+		return ociError("delete snapshot "+req.SnapshotID, err, ebsprovider.ErrUnavailable)
 	}
+	return nil
 }
 
 // CopySnapshot is refused: OCI copies a backup only to another region.

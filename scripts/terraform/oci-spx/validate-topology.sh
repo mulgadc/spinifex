@@ -123,7 +123,9 @@ forms the cluster, and verifies the OCI address allocator.
                           Create the dynamic group and policy before deployment.
                           Needs a tenancy-admin profile. Opt-in because these are
                           tenancy-level resources. Use --identity-oci-profile to
-                          use a different profile for this one-time setup.
+                          use a different profile for this one-time setup. The
+                          policy carries the volume grants only on an ocibsd
+                          topology, and it is shared, so run it from one of those.
   --identity-oci-profile NAME
                           Tenancy-admin profile for --setup-instance-principal.
                           Defaults to --oci-profile / OCI_PROFILE.
@@ -413,18 +415,18 @@ identity_resources() {
                 "$HERE/setup-identity.sh" --destroy
         elif [ "$DRY_RUN" = 1 ]; then
             OCI_CLI_PROFILE="$identity_profile" OCI_SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" \
-                "$HERE/setup-identity.sh" --dry-run
+                "$HERE/setup-identity.sh" --dry-run --ebs-provider "$TOPO_EBS_PROVIDER"
         else
             OCI_CLI_PROFILE="$identity_profile" OCI_SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" \
-                "$HERE/setup-identity.sh"
+                "$HERE/setup-identity.sh" --ebs-provider "$TOPO_EBS_PROVIDER"
         fi
     else
         if [ "$action" = destroy ]; then
             OCI_SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" "$HERE/setup-identity.sh" --destroy
         elif [ "$DRY_RUN" = 1 ]; then
-            OCI_SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" "$HERE/setup-identity.sh" --dry-run
+            OCI_SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" "$HERE/setup-identity.sh" --dry-run --ebs-provider "$TOPO_EBS_PROVIDER"
         else
-            OCI_SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" "$HERE/setup-identity.sh"
+            OCI_SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" "$HERE/setup-identity.sh" --ebs-provider "$TOPO_EBS_PROVIDER"
         fi
     fi
 }

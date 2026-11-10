@@ -827,7 +827,7 @@ Allow dynamic-group <dynamic-group-name> to manage volume-family in compartment 
 Allow dynamic-group <dynamic-group-name> to use instances in compartment id <compartment-ocid>
 ```
 
-`manage volume-family` covers volumes, backups and attachments, and `use instances` covers attaching them to the node. The instance-principal policy that `--setup-instance-principal` (or `setup-identity.sh`) creates already grants both, for a Dynamic Group matching `ALL {instance.compartment.id = '<compartment-ocid>'}`.
+`manage volume-family` covers volumes, backups and attachments, and `use instances` covers attaching them to the node. The instance-principal policy that `--setup-instance-principal` on an `ocibsd` topology (or `setup-identity.sh --ebs-provider ocibsd`) creates grants both, for a Dynamic Group matching `ALL {instance.compartment.id = '<compartment-ocid>'}`. Built for `viperblockd`, the default, it grants neither, and because the policy is shared by every deployment in the compartment, re-running `setup-identity.sh` without the flag removes them.
 
 For an API key, grant the same two verbs to the key user's group, alongside the four from [section 2.2](#grant-the-group-its-four-permissions):
 
@@ -836,7 +836,7 @@ Allow group <group-name> to manage volume-family in compartment id <compartment-
 Allow group <group-name> to use instances in compartment id <compartment-ocid>
 ```
 
-`terraform output -json api_key_policy_statements` prints all six for the group named by `api_key_group_name` (default `spinifex-nodes`). Because init defaults to the instance principal, an API-key node needs its credential named in `spinifex.toml` before init, which init then keeps:
+`terraform output -json api_key_policy_statements` prints all six for the group named by `api_key_group_name` (default `spinifex-nodes`) when `ebs_provider = "ocibsd"`, and only the four address grants otherwise. Because init defaults to the instance principal, an API-key node needs its credential named in `spinifex.toml` before init, which init then keeps:
 
 ```toml
 [nodes.<node>.ebs]

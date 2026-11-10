@@ -32,7 +32,7 @@ resource "oci_identity_dynamic_group" "nodes" {
 # private IPs on a node's own VNIC and attaches public IPs to them, and ocibsd
 # creates, attaches and backs up EBS volumes. Nothing here grants identity.
 locals {
-  node_grants = [
+  network_grants = [
     "use vnics",
     "manage private-ips",
     "manage public-ips",
@@ -41,12 +41,17 @@ locals {
     # both of which only the subnets `use` verb carries. Without it every allocation
     # is refused as a 404, which reads as a missing resource rather than a missing grant.
     "use subnets",
+  ]
 
-    # ocibsd: volumes, backups and attachments, and attaching them to an instance.
-    # Without these every ocibsd call is refused and its service fails at start.
+  # ocibsd: volumes, backups and attachments, and attaching them to an instance.
+  # Without these every ocibsd call is refused and its service fails at start.
+  # A viperblockd deployment touches no OCI volume, so it is not granted them.
+  ocibsd_grants = [
     "manage volume-family",
     "use instances",
   ]
+
+  node_grants = concat(local.network_grants, var.ebs_provider == "ocibsd" ? local.ocibsd_grants : [])
 }
 
 resource "oci_identity_policy" "nodes" {

@@ -3,6 +3,7 @@ package snapshot
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
@@ -76,20 +77,32 @@ func markSnapshotError(doc *ebsmetadata.Snapshot) {
 // is still pending, so a delete or settlement since the caller read it is not
 // undone. It returns the document as read or written, zero when it is gone.
 func (s *SnapshotServiceImpl) updatePending(ctx context.Context, accountID, snapshotID string, mutate func(*ebsmetadata.Snapshot)) (ebsmetadata.Snapshot, bool, error) {
+	return s.rewrite(ctx, accountID, snapshotID, func(doc *ebsmetadata.Snapshot) bool {
+		// A marked document is the reaper's to delete, never to settle.
+		if doc.State != snapshotStatePending || doc.Hidden() {
+			return false
+		}
+		mutate(doc)
+		return true
+	})
+}
+
+// rewrite rereads snapshotID's document and writes it back when mutate asks
+// to. It returns the document as read or written and whether it wrote; one
+// that is gone is zero, and mutate never sees it.
+func (s *SnapshotServiceImpl) rewrite(ctx context.Context, accountID, snapshotID string, mutate func(*ebsmetadata.Snapshot) bool) (ebsmetadata.Snapshot, bool, error) {
 	doc, err := s.metadata.GetSnapshot(ctx, accountID, snapshotID)
 	if err != nil {
 		if objectstore.IsNoSuchKeyError(err) {
 			return ebsmetadata.Snapshot{}, false, nil
 		}
-		return ebsmetadata.Snapshot{}, false, err
+		return ebsmetadata.Snapshot{}, false, fmt.Errorf("read snapshot %s: %w", snapshotID, err)
 	}
-	// A marked document is the reaper's to delete, never to settle.
-	if doc.State != snapshotStatePending || doc.Hidden() {
+	if !mutate(&doc) {
 		return doc, false, nil
 	}
-	mutate(&doc)
 	if err := s.metadata.PutSnapshot(ctx, doc); err != nil {
-		return ebsmetadata.Snapshot{}, false, err
+		return ebsmetadata.Snapshot{}, false, fmt.Errorf("write snapshot %s: %w", snapshotID, err)
 	}
 	return doc, true, nil
 }

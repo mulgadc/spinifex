@@ -1012,19 +1012,17 @@ func (s *SnapshotServiceImpl) writeUnderClaim(ctx context.Context, accountID, sn
 		return err
 	}
 	defer held.release(ctx)
-	doc, err := s.metadata.GetSnapshot(ctx, accountID, snapshotID)
+	var mutateErr error
+	_, _, err = s.rewrite(ctx, accountID, snapshotID, func(doc *ebsmetadata.Snapshot) bool {
+		var write bool
+		write, mutateErr = mutate(doc)
+		return write && mutateErr == nil
+	})
+	if mutateErr != nil {
+		return mutateErr
+	}
 	if err != nil {
-		if objectstore.IsNoSuchKeyError(err) {
-			return nil
-		}
-		return awserrors.Errorf(awserrors.ErrorServerInternal, "read snapshot %s: %v", snapshotID, err)
-	}
-	write, err := mutate(&doc)
-	if err != nil || !write {
-		return err
-	}
-	if err := s.metadata.PutSnapshot(ctx, doc); err != nil {
-		return awserrors.Errorf(awserrors.ErrorServerInternal, "write snapshot %s: %v", snapshotID, err)
+		return awserrors.Errorf(awserrors.ErrorServerInternal, "%v", err)
 	}
 	return nil
 }

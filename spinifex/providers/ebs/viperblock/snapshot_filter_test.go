@@ -7,6 +7,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	vbtypes "github.com/mulgadc/viperblock/types"
+	"github.com/mulgadc/viperblock/viperblock"
+	"github.com/mulgadc/viperblock/viperblock/backends/file"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,25 +17,63 @@ import (
 // retake would fix it over writes made after the first answer, which a caller
 // that released a quiesce on that answer relies on it not containing.
 func TestCreateSnapshotWithVB_RepeatReturnsTheFirstSnapshot(t *testing.T) {
-	const volumeName = "vol-snaprepeat0001"
-	const snapshotID = "snap-repeat0000001"
-	vb := createTestVBWithState(t, volumeName)
+	for _, tc := range []struct {
+		name      string
+		encrypted bool
+	}{
+		{name: "plain"},
+		{name: "encrypted", encrypted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const volumeName = "vol-snaprepeat0001"
+			const snapshotID = "snap-repeat0000001"
+			var vb *viperblock.VB
+			if tc.encrypted {
+				vb = createEncryptedTestVB(t, volumeName)
+			} else {
+				vb = createTestVBWithState(t, volumeName)
+			}
 
-	first, err := createSnapshotWithVB(vb, volumeName, snapshotID)
-	require.NoError(t, err)
-	firstConfig, err := vb.Backend.ReadFrom(snapshotID, vbtypes.FileTypeConfig, 0, 0, 0)
-	require.NoError(t, err)
+			first, err := createSnapshotWithVB(vb, volumeName, snapshotID)
+			require.NoError(t, err)
+			firstConfig, err := vb.Backend.ReadFrom(snapshotID, vbtypes.FileTypeConfig, 0, 0, 0)
+			require.NoError(t, err)
 
-	again, err := createSnapshotWithVB(vb, volumeName, snapshotID)
-	require.NoError(t, err)
-	againConfig, err := vb.Backend.ReadFrom(snapshotID, vbtypes.FileTypeConfig, 0, 0, 0)
-	require.NoError(t, err)
+			again, err := createSnapshotWithVB(vb, volumeName, snapshotID)
+			require.NoError(t, err)
+			againConfig, err := vb.Backend.ReadFrom(snapshotID, vbtypes.FileTypeConfig, 0, 0, 0)
+			require.NoError(t, err)
 
-	assert.Equal(t, firstConfig, againConfig, "the repeat rewrote the snapshot instead of returning it")
-	assert.Equal(t, first.ID, again.ID)
-	assert.Equal(t, first.SourceVolumeID, again.SourceVolumeID)
-	assert.Equal(t, first.Handle, again.Handle)
-	assert.Equal(t, ebsprovider.SnapshotStateCompleted, again.State)
+			assert.Equal(t, firstConfig, againConfig, "the repeat rewrote the snapshot instead of returning it")
+			assert.Equal(t, first.ID, again.ID)
+			assert.Equal(t, first.SourceVolumeID, again.SourceVolumeID)
+			assert.Equal(t, first.Handle, again.Handle)
+			assert.Equal(t, ebsprovider.SnapshotStateCompleted, again.State)
+			assert.False(t, again.CreatedAt.IsZero(), "the repeat must report the stored creation time")
+			assert.True(t, first.CreatedAt.Equal(again.CreatedAt), "the repeat reported %s, the first call %s", again.CreatedAt, first.CreatedAt)
+		})
+	}
+}
+
+// createEncryptedTestVB is createTestVBWithState with a master key, so its
+// snapshot configs are sealed envelopes.
+func createEncryptedTestVB(t *testing.T, volumeName string) *viperblock.VB {
+	t.Helper()
+	baseDir := t.TempDir()
+	vb, err := viperblock.New(&viperblock.VB{
+		VolumeName:        volumeName,
+		VolumeSize:        1,
+		BaseDir:           baseDir,
+		WALSyncInterval:   -1,
+		Cache:             viperblock.Cache{Config: viperblock.CacheConfig{Size: 0}},
+		MasterKey:         testMasterKey(t),
+		EncryptionEnabled: true,
+	}, "file", file.FileConfig{VolumeName: volumeName, BaseDir: baseDir})
+	require.NoError(t, err)
+	t.Cleanup(vb.Detach)
+	require.NoError(t, vb.Backend.Init())
+	require.NoError(t, vb.SaveState())
+	return vb
 }
 
 func TestProviderHandlers_ListSnapshots_FilteredOnOneSnapshot(t *testing.T) {

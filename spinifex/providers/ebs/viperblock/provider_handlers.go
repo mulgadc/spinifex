@@ -1236,8 +1236,8 @@ func snapshotErrorCode(err error) ebsprovider.ErrorCode {
 }
 
 // checkSnapshotIDFree reports whether snapshotID is already this volume's
-// snapshot, and refuses it if it is another's. An existing snapshot whose
-// identity cannot be read is refused too: unprovable ownership must not pass.
+// snapshot, and refuses it as already_exists if it is another's. An identity
+// that cannot be read is refused as internal, since it may yet read as ours.
 func checkSnapshotIDFree(vb *viperblock.VB, volumeID, snapshotID string) (taken bool, err error) {
 	exists, err := snapshotConfigExists(vb, snapshotID)
 	if err != nil {
@@ -1246,10 +1246,14 @@ func checkSnapshotIDFree(vb *viperblock.VB, volumeID, snapshotID string) (taken 
 	if !exists {
 		return false, nil
 	}
-	if _, ident, err := vb.LoadSnapshotBlockMap(snapshotID); err == nil && ident.SourceVolumeName == volumeID {
-		return true, nil
+	_, ident, err := vb.LoadSnapshotBlockMap(snapshotID)
+	if err != nil {
+		return false, fmt.Errorf("read snapshot %s identity: %w", snapshotID, err)
 	}
-	return false, fmt.Errorf("%w: %s", errSnapshotExistsElsewhere, snapshotID)
+	if ident.SourceVolumeName != volumeID {
+		return false, fmt.Errorf("%w: %s", errSnapshotExistsElsewhere, snapshotID)
+	}
+	return true, nil
 }
 
 // snapshotVolumeEngine creates snapshotID off volumeID's live checkpoint,
@@ -1278,12 +1282,91 @@ func snapshotVolumeEngine(ctx context.Context, cfg *Config, volumeID, snapshotID
 	}
 	defer releaseWriterLock(ctx, lock, volumeID)
 
+	// A repeat is answered from the stored snapshot before the volume is
+	// opened, so it still answers once the source volume is deleted.
+	stored, storedErr := storedSnapshot(ctx, cfg, volumeID, snapshotID)
+	switch {
+	case storedErr == nil && stored != nil:
+		return stored, nil
+	case errors.Is(storedErr, errSnapshotExistsElsewhere):
+		return nil, storedErr
+	case storedErr != nil:
+		// The engine below repeats the lookup; this failure stands in for
+		// its not_found, which an unread snapshot does not prove.
+		slog.WarnContext(ctx, "ebs.provider.snapshot.create: stored snapshot lookup failed", "volume", volumeID, "snapshot", snapshotID, "err", storedErr)
+	}
+
 	vb, err := openLeasedVolumeVB(ctx, cfg, volumeID, lease)
 	if err != nil {
+		if storedErr != nil && errors.Is(err, viperblock.ErrStateNotFound) {
+			return nil, storedErr
+		}
 		return nil, err
 	}
 	defer vb.Detach()
 	return createSnapshotWithVB(vb, volumeID, snapshotID)
+}
+
+// storedSnapshot answers a repeated CreateSnapshot from the snapshot already
+// stored under snapshotID, without opening or leasing volumeID. It returns nil
+// when no snapshot is stored, and refuses one taken from another volume.
+func storedSnapshot(ctx context.Context, cfg *Config, volumeID, snapshotID string) (*ebsprovider.Snapshot, error) {
+	vbconfig, s3cfg := volumeVBConfig(cfg, volumeID)
+	vb, err := viperblock.NewStateReader(&vbconfig, "s3", s3cfg)
+	if err != nil {
+		return nil, fmt.Errorf("new snapshot reader: %w", err)
+	}
+	if err := vb.InitBackendForRead(ctx); err != nil {
+		return nil, fmt.Errorf("backend init: %w", err)
+	}
+	taken, err := checkSnapshotIDFree(vb, volumeID, snapshotID)
+	if err != nil || !taken {
+		return nil, err
+	}
+	createdAt, err := snapshotCreatedAt(vb, snapshotID)
+	if err != nil {
+		return nil, err
+	}
+	// The snapshot records no size of its own, so it is the source volume's
+	// size while that volume exists, and zero once it is deleted.
+	var sizeBytes int64
+	switch volume, err := describeVolumeEngine(ctx, cfg, volumeID); {
+	case err == nil:
+		sizeBytes = volume.CapacityBytes
+	case !errors.Is(err, viperblock.ErrStateNotFound):
+		return nil, fmt.Errorf("read source volume %s: %w", volumeID, err)
+	}
+	return &ebsprovider.Snapshot{
+		ID:             snapshotID,
+		SourceVolumeID: volumeID,
+		SizeBytes:      sizeBytes,
+		CreatedAt:      createdAt,
+		State:          ebsprovider.SnapshotStateCompleted,
+		Handle:         snapshotHandle(snapshotID),
+	}, nil
+}
+
+// snapshotCreatedAt reads the creation time stored in snapshotID's config.
+// The caller has authenticated the config through checkSnapshotIDFree; an
+// encrypted config is an envelope whose payload is the plaintext state.
+func snapshotCreatedAt(vb *viperblock.VB, snapshotID string) (time.Time, error) {
+	data, err := vb.Backend.ReadFrom(snapshotID, vbtypes.FileTypeConfig, 0, 0, 0)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("read snapshot %s config: %w", snapshotID, err)
+	}
+	var config struct {
+		Payload   json.RawMessage `json:"payload"`
+		CreatedAt time.Time       `json:"CreatedAt"`
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		return time.Time{}, fmt.Errorf("parse snapshot %s config: %w", snapshotID, err)
+	}
+	if len(config.Payload) > 0 {
+		if err := json.Unmarshal(config.Payload, &config); err != nil {
+			return time.Time{}, fmt.Errorf("parse snapshot %s config payload: %w", snapshotID, err)
+		}
+	}
+	return config.CreatedAt.UTC(), nil
 }
 
 // createSnapshotWithVB takes the snapshot against an already-resolved VB,
@@ -1294,13 +1377,18 @@ func createSnapshotWithVB(vb *viperblock.VB, volumeID, snapshotID string) (*ebsp
 	if err != nil {
 		return nil, err
 	}
-	// A repeat returns the first snapshot rather than retaking it over writes
-	// made since. Its creation time is sealed inside its state, so it is unset.
+	// A repeat that raced the first call past storedSnapshot returns the first
+	// snapshot rather than retaking it over writes made since.
 	if taken {
+		createdAt, err := snapshotCreatedAt(vb, snapshotID)
+		if err != nil {
+			return nil, err
+		}
 		return &ebsprovider.Snapshot{
 			ID:             snapshotID,
 			SourceVolumeID: volumeID,
 			SizeBytes:      safecast.Uint64ToInt64(vb.GetVolumeSize()),
+			CreatedAt:      createdAt,
 			State:          ebsprovider.SnapshotStateCompleted,
 			Handle:         snapshotHandle(snapshotID),
 		}, nil
@@ -1308,14 +1396,15 @@ func createSnapshotWithVB(vb *viperblock.VB, volumeID, snapshotID string) (*ebsp
 	if err := vb.LoadLiveCheckpoint(); err != nil {
 		return nil, fmt.Errorf("load live checkpoint: %w", err)
 	}
-	if _, err := vb.CreateSnapshot(snapshotID); err != nil {
+	state, err := vb.CreateSnapshot(snapshotID)
+	if err != nil {
 		return nil, fmt.Errorf("create snapshot: %w", err)
 	}
 	return &ebsprovider.Snapshot{
 		ID:             snapshotID,
 		SourceVolumeID: volumeID,
 		SizeBytes:      safecast.Uint64ToInt64(vb.GetVolumeSize()),
-		CreatedAt:      time.Now().UTC(),
+		CreatedAt:      state.CreatedAt.UTC(),
 		State:          ebsprovider.SnapshotStateCompleted,
 		Handle:         snapshotHandle(snapshotID),
 	}, nil

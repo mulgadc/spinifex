@@ -692,6 +692,27 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			}
 		})
 
+		// A caller that lost the first answer may only ask again after the
+		// source volume is gone, so the repeat must not need the volume.
+		t.Run("a repeat after the source volume is deleted returns the first snapshot", func(t *testing.T) {
+			provider := newProvider(t)
+			ctx := context.Background()
+			volumeID, snapshotID := cfg.id("vol-snap-gone"), cfg.id("snap-gone")
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			first := createSnapshot(t, provider, snapshotID, volumeID)
+			require.NoError(t, provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID}))
+
+			again, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volumeID})
+			require.NoError(t, err, "a repeat must be answered from the snapshot, not the deleted volume")
+			require.NotNil(t, again)
+			assert.Equal(t, first.ID, again.ID)
+			assert.Equal(t, volumeID, again.SourceVolumeID)
+			assert.Equal(t, first.Handle, again.Handle)
+			assert.False(t, again.CreatedAt.IsZero(), "the repeat must report when the snapshot was taken")
+			assert.Equal(t, ebsprovider.SnapshotStateCompleted, readSnapshot(t, provider, snapshotID).State)
+		})
+
 		t.Run("not_found on absent source volume", func(t *testing.T) {
 			provider := newProvider(t)
 			_, err := provider.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-orphan"), VolumeID: cfg.id("vol-never-existed")})

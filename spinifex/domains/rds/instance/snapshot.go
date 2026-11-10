@@ -114,7 +114,7 @@ func (s *Service) snapshotDBInstance(ctx context.Context, kv *kvstore.Bucket, re
 		return nil, err
 	}
 
-	snapshotID, crashConsistent, err := s.snapshotDataVolume(ctx, accountID, rec, resume, req.DBSnapshotIdentifier)
+	snapshotID, state, crashConsistent, err := s.snapshotDataVolume(ctx, accountID, rec, resume, req.DBSnapshotIdentifier)
 	if err != nil {
 		// The record only ever described a snapshot that now does not exist, so it
 		// goes with it rather than being left for the reconciler to puzzle over.
@@ -123,8 +123,21 @@ func (s *Service) snapshotDBInstance(ctx context.Context, kv *kvstore.Bucket, re
 	}
 
 	record.SnapshotID = snapshotID
-	record.Status = SnapshotStatusAvailable
 	record.CrashConsistent = crashConsistent
+	// A pending EC2 snapshot's contents are already fixed, so the quiesce is
+	// over; the record stays creating until the reconciler sees it settle.
+	if state == ec2.SnapshotStatePending {
+		if err := putJSON(ctx, kv, key, &record); err != nil {
+			return nil, err
+		}
+		slog.InfoContext(ctx, "rds: DB snapshot cut; waiting for its EC2 snapshot to complete",
+			"dbSnapshot", req.DBSnapshotIdentifier, "dbInstance", rec.DBInstanceIdentifier,
+			"snapshotType", record.SnapshotType, "snapshotId", snapshotID, "crashConsistent", crashConsistent)
+		return &record, nil
+	}
+	now := time.Now().UTC()
+	record.Status = SnapshotStatusAvailable
+	record.SettledAt = &now
 	if err := putJSON(ctx, kv, key, &record); err != nil {
 		return nil, err
 	}
@@ -139,10 +152,10 @@ func (s *Service) snapshotDBInstance(ctx context.Context, kv *kvstore.Bucket, re
 }
 
 // Quiesces the engine, snapshots the data volume, and releases the engine again
-// however the snapshot went. Reports the EC2 snapshot and whether the engine was
-// still writing when it was taken.
+// however the snapshot went. Reports the EC2 snapshot, its state, and whether
+// the engine was still writing when it was taken.
 func (s *Service) snapshotDataVolume(ctx context.Context, accountID string, rec *DBInstanceRecord,
-	resume Status, dbSnapshotIdentifier string) (snapshotID string, crashConsistent bool, err error) {
+	resume Status, dbSnapshotIdentifier string) (snapshotID, state string, crashConsistent bool, err error) {
 	// A stopped instance has no engine to hold: its datadir was sealed by the
 	// graceful stop, which is the checkpoint a quiesce would be forcing.
 	if resume == StatusAvailable {
@@ -176,12 +189,12 @@ func (s *Service) snapshotDataVolume(ctx context.Context, accountID string, rec 
 		}},
 	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
-		return "", crashConsistent, fmt.Errorf("rds: snapshot the data volume of %s: %w", rec.DBInstanceIdentifier, err)
+		return "", "", crashConsistent, fmt.Errorf("rds: snapshot the data volume of %s: %w", rec.DBInstanceIdentifier, err)
 	}
 	if snapshot == nil || aws.StringValue(snapshot.SnapshotId) == "" {
-		return "", crashConsistent, fmt.Errorf("rds: snapshot the data volume of %s: empty snapshot id", rec.DBInstanceIdentifier)
+		return "", "", crashConsistent, fmt.Errorf("rds: snapshot the data volume of %s: empty snapshot id", rec.DBInstanceIdentifier)
 	}
-	return aws.StringValue(snapshot.SnapshotId), crashConsistent, nil
+	return aws.StringValue(snapshot.SnapshotId), aws.StringValue(snapshot.State), crashConsistent, nil
 }
 
 // The half of the warning that holds for every engine. What restoring such a

@@ -434,12 +434,12 @@ for topology in $TOPOLOGIES; do
         build_principal_env
         run_env=(env "${PRINCIPAL_ENV[@]}")
     fi
-    # ocibsd's units come from the checkout the distro was built from, and its
-    # volumes need the credential the pool uses, so neither can be stood in for.
+    # ocibsd's files ship in the distro this checkout builds, and its volumes
+    # need the credential the pool uses, so neither can be stood in for.
     case "$topology" in
         *-ocibsd)
             if [ "$SOURCE" != tree ]; then
-                log "$topology: SKIPPED -- the ocibsd units ship only with a tree build"
+                log "$topology: SKIPPED -- the ocibsd files ship only with a tree build"
                 echo "$topology: SKIPPED (OCI_SOURCE=$SOURCE)" >> "$VERDICT"
                 continue
             fi

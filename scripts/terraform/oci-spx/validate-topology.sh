@@ -64,6 +64,8 @@ TOPOLOGIES="bm vm-single vm-multi vm-single-principal vm-single-ocibsd vm-multi-
 #
 # TOPO_EBS_PROVIDER is what backs EBS. The -ocibsd topologies are their viperblock
 # twins on OCI Block Volumes, so a difference between a pair is the provider's.
+# They set no provider and rely on init's detection on an OCI VM; every other
+# topology names viperblockd in SPINIFEX_EBS_PROVIDER to keep its baseline.
 topo_defaults() {
     TOPO_FORCE_PRINCIPAL=0
     TOPO_EBS_PROVIDER=viperblockd
@@ -103,9 +105,11 @@ forms the cluster, and verifies the OCI address allocator.
                           topology is the easiest expensive mistake here.
                           vm-single-principal is vm-single authenticating as the
                           instance, and implies --instance-principal.
-                          vm-single-ocibsd and vm-multi-ocibsd install with
-                          --ebs-provider ocibsd and add the ebs provider gate;
-                          both need --distro. Their OCI volumes and backups are
+                          vm-single-ocibsd and vm-multi-ocibsd set no EBS
+                          provider, so init detects ocibsd on the OCI VM, and
+                          add the ebs provider gate; the others set
+                          SPINIFEX_EBS_PROVIDER=viperblockd. The ocibsd pair
+                          need --distro. Their OCI volumes and backups are
                           in no Terraform state: the destroy here leaves any a
                           failed run made, and e2e-oci.sh sweeps them by tag.
   --ssh-public-key PATH   Public half installed on each node. Default $SSH_PUBLIC_KEY
@@ -224,15 +228,16 @@ fi
     || die "--existing-hosts-file and --existing-state-file are mutually exclusive"
 
 # ocibsd needs a node credential, which a run with no pool never installs, and the
-# compartment and AD from the state, which a hosts file does not carry. The units
-# come from this checkout, so they must be the bytes --distro was built from.
+# compartment and region from the state, which a hosts file does not carry, to
+# sweep and check its volumes. setup.sh stages its files from the tarball, and a
+# published release predates them.
 if [ "$TOPO_EBS_PROVIDER" = ocibsd ] && [ "$DESTROY_ONLY" = 0 ]; then
     [ "$SKIP_POOL" != 1 ] \
         || die "--no-external-pool installs no OCI credential, so ocibsd on $TOPOLOGY could not reach the OCI API"
     [ -z "$EXISTING_HOSTS_FILE" ] \
         || die "$TOPOLOGY reads its compartment and availability domain from Terraform state; use --existing-state-file"
     [ -n "$DISTRO" ] || [ "$DRY_RUN" = 1 ] \
-        || die "$TOPOLOGY needs --distro: a published release predates the ocibsd units this checkout installs"
+        || die "$TOPOLOGY needs --distro: a published release predates the ocibsd files setup.sh stages and init installs"
 fi
 if [ -n "$EXISTING_HOSTS_FILE" ] || [ -n "$EXISTING_STATE_FILE" ]; then
     EXISTING_INFRA=1
@@ -481,9 +486,6 @@ pool_complete() {
         if [ "$SKIP_POOL" != 1 ]; then
             ssh_node "$host" "grep -q 'name               = \"oci-public\"' /etc/spinifex/spinifex.toml" || return 1
         fi
-        if [ "$TOPO_EBS_PROVIDER" = ocibsd ]; then
-            ssh_node "$host" "grep -q '^auth = ' /etc/spinifex/spinifex.toml" || return 1
-        fi
     done
 }
 
@@ -698,8 +700,9 @@ else
         || die "read instance_principal='$PRINCIPAL_MODE' from the tfvars and the apply built '$built_principal'; set it in one place"
 fi
 
-# Where ocibsd keeps the cluster's volumes, read back from what was built rather
-# than from this run's inputs. Never logged: the compartment is an account's OCID.
+# Where ocibsd should keep the cluster's volumes, read back from what was built
+# rather than from this run's inputs, to check what init detected and to sweep.
+# Never logged: the compartment is an account's OCID.
 topo_output() {
     if [ "$EXISTING_INFRA" = 1 ]; then
         state_output "$1"
@@ -819,47 +822,40 @@ REMOTE
 done
 record install PASS "$INSTALLED_VERSION"
 
-# setup.sh installs no ocibsd unit, so this does what mulga's install role does on
-# an ocibsd node. The files come from this checkout, which --distro was built from,
-# because the tarball the nightly installs does not carry them.
-if [ "$TOPO_EBS_PROVIDER" = ocibsd ]; then
-    log "installing the ocibsd units on each node"
-    for host in "${HOSTS[@]}"; do
-        scp -i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            -o LogLevel=ERROR -qr "$REPO_ROOT/build/ocibsd" "ubuntu@$host:/tmp/" \
-            || die "could not copy the ocibsd units to $host"
-        ssh_node "$host" 'bash -s' > "$STATE_DIR/ocibsd-install-$host.log" 2>&1 <<'REMOTE' \
-            || die "the ocibsd install failed on $host; see $STATE_DIR/ocibsd-install-$host.log"
-set -e
-for _ in $(seq 1 120); do
-    sudo fuser /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock >/dev/null 2>&1 || break
-    sleep 5
-done
-sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -q open-iscsi
-sudo systemctl enable --now iscsid.socket
-sudo install -m 0644 /tmp/ocibsd/spinifex-ocibsd.service /etc/systemd/system/spinifex-ocibsd.service
-sudo install -d -m 0755 /etc/systemd/system/spinifex-daemon.service.d
-sudo install -m 0644 /tmp/ocibsd/spinifex-daemon.service.d/ocibsd.conf \
-    /etc/systemd/system/spinifex-daemon.service.d/ocibsd.conf
-sudo install -m 0644 /tmp/ocibsd/99-spinifex-ocibsd.rules /etc/udev/rules.d/99-spinifex-ocibsd.rules
-sudo udevadm control --reload-rules
-sudo systemctl stop spinifex-viperblock.service 2>/dev/null || true
-# A link, not systemctl mask, which refuses to replace the real unit setup.sh wrote.
-sudo ln -sfn /dev/null /etc/systemd/system/spinifex-viperblock.service
-sudo systemctl daemon-reload
-sudo systemctl enable spinifex-ocibsd.service
-rm -rf /tmp/ocibsd
-REMOTE
-    done
-    record "ocibsd install" PASS "initiator, unit, device drop-in, udev rule; viperblock masked"
-fi
 
-# spx admin init's EBS choice, written to every node once (ADR-0018:S3). Empty for
-# viperblock, so its init command is unchanged.
-INSTALL_NODE_EBS=()
-if [ "$TOPO_EBS_PROVIDER" = ocibsd ]; then
-    INSTALL_NODE_EBS=(--ebs-provider ocibsd --oci-compartment-id "$OCIBSD_COMPARTMENT"
-        --oci-availability-domain "$OCIBSD_AD")
+# spx admin init's EBS choice, written to every node once (ADR-0018:S3). The ocibsd
+# topologies set nothing, so init detects ocibsd on the OCI VM; the rest name
+# viperblockd, which keeps the viperblock baseline on OCI.
+INIT_EBS_PROVIDER=""
+[ "$TOPO_EBS_PROVIDER" = ocibsd ] || INIT_EBS_PROVIDER=viperblockd
+
+# ocibsd defaults to the instance principal. An API-key run gives init the key
+# instead: the hook installs it first, and each node's config is seeded with
+# provider and credential, which init keeps as an existing config's values.
+API_KEY_EBS=0
+[ "$TOPO_EBS_PROVIDER" = ocibsd ] && [ "$PRINCIPAL_MODE" = off ] && API_KEY_EBS=1
+PRESEEDED_EBS=0
+if [ "$API_KEY_EBS" = 1 ] && ! formation_complete; then
+    log "running the credential hook before formation, so init can check the ocibsd credential"
+    "$CREDENTIAL_HOOK" "$SSH_PRIVATE_KEY" "${HOSTS[@]}" > "$STATE_DIR/credential-hook.log" 2>&1 \
+        || die "the credential hook failed; see $STATE_DIR/credential-hook.log"
+    for i in "${!HOSTS[@]}"; do
+        # Named as init and install-node.sh name them: the host on one node,
+        # node1..nodeN on several.
+        if [ "$NODES" = 1 ]; then name='$(hostname -s)'; else name="node$((i + 1))"; fi
+        ssh_node "${HOSTS[$i]}" "sed \"s/@NODE@/$name/\" | sudo tee /etc/spinifex/spinifex.toml >/dev/null" <<'TOML' \
+            || die "could not seed the ocibsd credential on ${HOSTS[$i]}"
+[nodes.@NODE@.ebs]
+provider = "ocibsd"
+
+[nodes.@NODE@.ebs.oci]
+auth = "config_file"
+config_file = "/etc/spinifex/oci/config"
+config_profile = "spinifex"
+TOML
+    done
+    PRESEEDED_EBS=1
+    record "ocibsd credential" PASS "API key installed and seeded before init"
 fi
 
 # A single node is its own documented path: install-node.sh refuses fewer than two
@@ -870,35 +866,62 @@ if formation_complete; then
     record formation SKIP "checkpoint verified"
 elif [ "$NODES" = 1 ]; then
     log "initializing the single node"
-    ssh_node "${HOSTS[0]}" "OCIBSD_COMPARTMENT=$(printf '%q' "$OCIBSD_COMPARTMENT") OCIBSD_AD=$(printf '%q' "$OCIBSD_AD") bash -s" \
+    ssh_node "${HOSTS[0]}" "INIT_EBS_PROVIDER=$INIT_EBS_PROVIDER PRESEEDED_EBS=$PRESEEDED_EBS bash -s" \
         > "$STATE_DIR/form.log" 2>&1 <<'REMOTE' \
         || die "single-node init failed; see $STATE_DIR/form.log"
 set -e
-ebs=()
-if [ -n "$OCIBSD_COMPARTMENT" ]; then
-    ebs=(--ebs-provider ocibsd --oci-compartment-id "$OCIBSD_COMPARTMENT" --oci-availability-domain "$OCIBSD_AD")
-fi
-sudo spx admin init --node "$(hostname -s)" --nodes 1 \
+ebs_env=()
+[ -z "$INIT_EBS_PROVIDER" ] || ebs_env=("SPINIFEX_EBS_PROVIDER=$INIT_EBS_PROVIDER")
+# The seeded config is the only one there, so replacing it needs --force.
+force=()
+[ "$PRESEEDED_EBS" = 0 ] || force=(--force)
+sudo env -u SPINIFEX_EBS_PROVIDER ${ebs_env[@]+"${ebs_env[@]}"} spx admin init ${force[@]+"${force[@]}"} \
+    --node "$(hostname -s)" --nodes 1 \
     --region ap-southeast-2 --az ap-southeast-2a \
-    --external-mode=nat --ipsec=false ${ebs[@]+"${ebs[@]}"}
+    --external-mode=nat --ipsec=false
 sudo systemctl start spinifex.target
 REMOTE
     mark_stage formation
     record formation PASS
 else
     log "forming the cluster"
-    "$REPO_ROOT/scripts/install-node.sh" \
+    # env -u first, so a SPINIFEX_EBS_PROVIDER in this shell cannot stand in for
+    # detection on the ocibsd topologies.
+    env -u SPINIFEX_EBS_PROVIDER ${INIT_EBS_PROVIDER:+SPINIFEX_EBS_PROVIDER=$INIT_EBS_PROVIDER} \
+        "$REPO_ROOT/scripts/install-node.sh" \
         --hosts-file "$STATE_DIR/hosts" \
         --user ubuntu \
         --identity "$SSH_PRIVATE_KEY" \
         --external-mode nat \
         --ipsec off \
-        ${INSTALL_NODE_EBS[@]+"${INSTALL_NODE_EBS[@]}"} \
         --yes > "$STATE_DIR/form.log" 2>&1 \
         || die "formation failed; see $STATE_DIR/form.log"
     mark_stage formation
     record formation PASS
 fi
+
+# What init printed about its EBS choice, from the log formation left: init's own
+# output on one node, the init log install-node.sh keeps on the first host on several.
+init_ebs_line() {
+    if [ "$NODES" = 1 ]; then
+        grep -m1 '^EBS provider: ' "$STATE_DIR/form.log"
+    else
+        ssh_node "${HOSTS[0]}" "sudo grep -m1 '^EBS provider: ' /var/log/spx-init.log"
+    fi
+}
+# The provider has to be the topology's for the reason the topology names: the
+# ocibsd pair detected on the VM, the rest told viperblockd by the environment,
+# so a baseline flipped by detection or an ocibsd run that was configured fails.
+case "$TOPO_EBS_PROVIDER:$API_KEY_EBS" in
+    ocibsd:0) want_ebs='EBS provider: ocibsd (detected: OCI virtual machine ' ;;
+    ocibsd:1) want_ebs='EBS provider: ocibsd (from the existing config)' ;;
+    *)        want_ebs='EBS provider: viperblockd (from SPINIFEX_EBS_PROVIDER)' ;;
+esac
+ebs_line="$(init_ebs_line)" || die "init printed no EBS provider line; see $STATE_DIR/form.log"
+case "$ebs_line" in
+    "$want_ebs"*) record "ebs provider choice" PASS "${ebs_line#EBS provider: }" ;;
+    *) die "init chose '$ebs_line', and $TOPOLOGY needs '$want_ebs'" ;;
+esac
 
 # ocibsd tags every volume and backup with the cluster_id spx admin init generated,
 # and no Terraform state holds them, so e2e-oci.sh sweeps by that tag after the
@@ -932,7 +955,7 @@ if pool_complete; then
     log "OCI pool configuration already completed (resuming; pool setup skipped)"
     record pool SKIP "checkpoint verified"
 else
-    if [ "$SKIP_POOL" != 1 ] && [ "$PRINCIPAL_MODE" = off ]; then
+    if [ "$SKIP_POOL" != 1 ] && [ "$PRINCIPAL_MODE" = off ] && [ "$PRESEEDED_EBS" = 0 ]; then
         log "running the credential hook"
         # Arguments, not a file: the hook is told where the nodes are and how to reach
         # them, and decides for itself what to put there.
@@ -946,7 +969,7 @@ else
     # shadowed by Spinifex's own endpoints and the allocator cannot resolve its VNIC.
     log "configuring the IMDS remap$([ "$SKIP_POOL" = 1 ] && echo " (no external pool)" || echo " and the external pool")"
     for host in "${HOSTS[@]}"; do
-    ssh_node "$host" "SKIP_POOL=$SKIP_POOL PRINCIPAL_MODE=$PRINCIPAL_MODE EBS_PROVIDER=$TOPO_EBS_PROVIDER bash -s" > "$STATE_DIR/pool-$host.log" 2>&1 <<'REMOTE' \
+    ssh_node "$host" "SKIP_POOL=$SKIP_POOL PRINCIPAL_MODE=$PRINCIPAL_MODE bash -s" > "$STATE_DIR/pool-$host.log" 2>&1 <<'REMOTE' \
         || die "pool configuration failed on $host; see $STATE_DIR/pool-$host.log"
 set -e
 sudo cp /etc/spinifex/spinifex.toml /etc/spinifex/spinifex.toml.bak-prepool
@@ -971,28 +994,6 @@ if [ "${SKIP_POOL:-0}" != 1 ]; then
     fi
     grep -q 'name               = "oci-public"' /etc/spinifex/spinifex.toml \
         || sudo tee -a /etc/spinifex/spinifex.toml < /etc/spinifex/oci/external-pool.toml >/dev/null
-fi
-# ocibsd authenticates the way the pool does, and init writes no auth key, so each
-# [nodes.*.ebs.oci] table gets the pool's credential. Counted, like the remap.
-if [ "${EBS_PROVIDER:-}" = ocibsd ]; then
-    sudo env PRINCIPAL_MODE="${PRINCIPAL_MODE:-off}" python3 - <<"PY"
-import os, re, sys
-path = "/etc/spinifex/spinifex.toml"
-text = open(path).read()
-if os.environ["PRINCIPAL_MODE"] == "adopt":
-    keys = 'auth = "instance_principal"\n'
-else:
-    keys = 'auth = "config_file"\nconfig_file = "/etc/spinifex/oci/config"\nconfig_profile = "spinifex"\n'
-headers = list(re.finditer(r"(?m)^\[nodes\.[^.\]]+\.ebs\.oci\]\n", text))
-if not headers:
-    sys.exit("no [nodes.*.ebs.oci] table in %s, so ocibsd has no credential" % path)
-for m in reversed(headers):
-    end = re.compile(r"(?m)^\[").search(text, m.end())
-    table = text[m.end():end.start() if end else len(text)]
-    if not re.search(r"(?m)^auth\s*=", table):
-        text = text[:m.end()] + keys + text[m.end():]
-open(path, "w").write(text)
-PY
 fi
 # spx has no config subcommand, so the `spx config validate` that used to be here
 # could only ever fail, and was swallowed. Parsing the file is the check that was
@@ -1290,9 +1291,11 @@ ebs_provider_gate() {
     local data_vol data_serial data_tok snap restored from to
     : > "$GATE_LOG"
 
-    log "ebs provider gate: units, masks and drop-ins on every node"
+    log "ebs provider gate: units, masks, drop-ins and the detected placement on every node"
     for host in "${HOSTS[@]}"; do
-        ssh_node "$host" 'bash -s' >> "$GATE_LOG" 2>&1 <<'REMOTE' \
+        # The placement init read from the instance metadata must be where this run
+        # built the nodes; compared on the node, so the compartment is never printed.
+        ssh_node "$host" "WANT_COMPARTMENT='$OCIBSD_COMPARTMENT' WANT_AD='$OCIBSD_AD' bash -s" >> "$GATE_LOG" 2>&1 <<'REMOTE' \
             || die "$host is not an ocibsd node as installed; see $GATE_LOG"
 fail() { echo "FAIL $(hostname -s): $*"; exit 1; }
 [ "$(systemctl is-enabled spinifex-viperblock.service 2>&1)" = masked ] \
@@ -1306,18 +1309,25 @@ systemctl show -p DropInPaths --value spinifex-daemon.service \
 systemctl show -p DeviceAllow --value spinifex-daemon.service | grep -q 'block-sd rw' \
     || fail "the daemon's device cgroup does not allow block-sd"
 test -f /etc/udev/rules.d/99-spinifex-ocibsd.rules || fail "no ocibsd udev rule"
-sudo python3 - <<"PY" || fail "a node in spinifex.toml is not on ocibsd"
-import sys, tomllib
+sudo WANT_COMPARTMENT="$WANT_COMPARTMENT" WANT_AD="$WANT_AD" python3 - <<"PY" \
+    || fail "a node in spinifex.toml is not on ocibsd where the nodes were built"
+import os, sys, tomllib
 nodes = tomllib.load(open("/etc/spinifex/spinifex.toml", "rb")).get("nodes", {})
 other = {n: v.get("ebs", {}).get("provider") for n, v in nodes.items() if v.get("ebs", {}).get("provider") != "ocibsd"}
 if not nodes or other:
     sys.exit("providers other than ocibsd: %r" % other)
+for n, v in sorted(nodes.items()):
+    oci = v["ebs"].get("oci", {})
+    if oci.get("compartment_id") != os.environ["WANT_COMPARTMENT"]:
+        sys.exit("%s: compartment_id is not the compartment the nodes were built in" % n)
+    if oci.get("availability_domain") != os.environ["WANT_AD"]:
+        sys.exit("%s: availability_domain %r, and the nodes were built in %r" % (n, oci.get("availability_domain"), os.environ["WANT_AD"]))
 print("ebs providers:", ", ".join("%s=ocibsd" % n for n in sorted(nodes)))
 PY
 echo "ok $(hostname -s)"
 REMOTE
     done
-    record "ebs provider units" PASS "ocibsd active, viperblock masked, device drop-in on $NODES node(s)"
+    record "ebs provider units" PASS "ocibsd active, viperblock masked, device drop-in, placement from metadata on $NODES node(s)"
 
     GATE_IMAGE=ubuntu-26.04-x86_64
     log "ebs provider gate: importing $GATE_IMAGE onto an OCI volume"

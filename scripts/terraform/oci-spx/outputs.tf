@@ -43,8 +43,8 @@ output "api_key_policy_statements" {
   ]
 }
 
-# What spx admin init --ebs-provider ocibsd is given, so every OCI volume lands in
-# the nodes' own availability domain and the run knows where to sweep afterwards.
+# Where spx admin init should detect the nodes on ocibsd, so the run can check
+# what init read from the instance metadata and knows where to sweep afterwards.
 output "availability_domain" { value = local.compute_availability_domain }
 output "region" { value = var.region }
 output "ebs_provider" { value = var.ebs_provider }

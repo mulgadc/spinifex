@@ -2,12 +2,13 @@ package image
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/s3"
 	ebsmetadata "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -184,18 +185,28 @@ func TestDeregisterImage_AllowsAPendingAMI(t *testing.T) {
 	assert.Error(t, err, "the pending AMI is deregistered")
 }
 
-// putHookStore runs onPut once, before the first write to key reaches the store.
+// putHookStore runs onPut once, before the write to a matching key that
+// follows skip earlier matching writes reaches the store.
 type putHookStore struct {
 	objectstore.ObjectStore
 
-	key   string
+	match func(key string) bool
+	skip  int
 	onPut func()
-	once  sync.Once
+
+	mu   sync.Mutex
+	seen int
 }
 
 func (s *putHookStore) PutObject(ctx context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
-	if aws.StringValue(input.Key) == s.key {
-		s.once.Do(s.onPut)
+	if s.match(aws.StringValue(input.Key)) {
+		s.mu.Lock()
+		fire := s.seen == s.skip
+		s.seen++
+		s.mu.Unlock()
+		if fire {
+			s.onPut()
+		}
 	}
 	return s.ObjectStore.PutObject(ctx, input)
 }
@@ -217,7 +228,7 @@ func TestDeregisterImage_DuringTheReapersAMIWriteStaysDeleted(t *testing.T) {
 	require.NoError(t, err)
 	var deregErr error
 	deregistered := false
-	hooked := &putHookStore{ObjectStore: f.svc.store, key: key}
+	hooked := &putHookStore{ObjectStore: f.svc.store, match: func(k string) bool { return k == key }}
 	hooked.onPut = func() {
 		deregistered = true
 		_, deregErr = f.svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: out.ImageId}, testAccountID)
@@ -244,6 +255,57 @@ func TestDeregisterImage_DuringTheReapersAMIWriteStaysDeleted(t *testing.T) {
 	require.NoError(t, err, "the retry succeeds once the reaper's write is done")
 	_, err = reaping.NewPendingSnapshotReaper().Sweep(context.Background())
 	require.NoError(t, err)
+	_, getErr = f.svc.MetadataStore().GetAMI(context.Background(), imageID)
+	assert.True(t, objectstore.IsNoSuchKeyError(getErr), "the retried deregistration stays deleted: %v", getErr)
+}
+
+// A DeregisterImage that lands between CreateImage's reread of its pending AMI
+// and the write making it available is refused retryably, never undone.
+func TestDeregisterImage_DuringCreateImagesAMIWriteStaysDeleted(t *testing.T) {
+	f := newPendingImageFixture(t)
+	f.svc.SetImageClaims(f.snapshots)
+	sample, err := ebsmetadata.AMIKey("ami-0")
+	require.NoError(t, err)
+	amiKeyPrefix := sample[:strings.LastIndex(sample, "ami-0")]
+	var imageID string
+	var deregErr error
+	deregistered := false
+	// The Recorded hook's pending write is skipped; the Completed hook's is the one.
+	hooked := &putHookStore{
+		ObjectStore: f.svc.store,
+		skip:        1,
+		match:       func(k string) bool { return strings.HasPrefix(k, amiKeyPrefix) },
+	}
+	hooked.onPut = func() {
+		amis, err := f.svc.MetadataStore().ListAMIs(context.Background())
+		if err != nil || len(amis) != 1 {
+			deregErr = err
+			return
+		}
+		imageID = amis[0].ImageID
+		deregistered = true
+		_, deregErr = f.svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: aws.String(imageID)}, testAccountID)
+	}
+	f.svc.metadata = ebsmetadata.NewStore(hooked, testBucket)
+
+	out, err := f.createImage(t)
+	require.NoError(t, err)
+	require.True(t, deregistered, "CreateImage wrote the available AMI")
+	require.Equal(t, imageID, aws.StringValue(out.ImageId))
+
+	_, getErr := f.svc.MetadataStore().GetAMI(context.Background(), imageID)
+	if deregErr == nil {
+		require.True(t, objectstore.IsNoSuchKeyError(getErr), "a deregistered AMI was written back: %v", getErr)
+		return
+	}
+	code, _, ok := awserrors.ResolveErrorDetail(deregErr)
+	require.True(t, ok, "unregistered error: %v", deregErr)
+	assert.Equal(t, awserrors.ErrorIncorrectState, code, "a refused deregistration is retryable")
+	require.NoError(t, getErr)
+
+	_, err = f.svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: out.ImageId}, testAccountID)
+	require.NoError(t, err, "the retry succeeds once CreateImage's write is done")
+	f.sweep(t)
 	_, getErr = f.svc.MetadataStore().GetAMI(context.Background(), imageID)
 	assert.True(t, objectstore.IsNoSuchKeyError(getErr), "the retried deregistration stays deleted: %v", getErr)
 }

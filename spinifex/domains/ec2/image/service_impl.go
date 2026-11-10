@@ -549,14 +549,9 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 	ctx := context.Background()
 	snap, err := s.snapshotCreator().CreateImageSnapshot(ctx, volMeta, snapshotID, accountID, "Created by CreateImage("+aws.StringValue(input.InstanceId)+") for "+amiID,
 		ec2snapshot.ImageSnapshotHooks{
-			Recorded: func(ctx context.Context) error { return s.putAMIConfig(ctx, amiID, meta) },
-			Refused:  func(ctx context.Context) { s.removePendingAMI(ctx, amiID) },
-			Completed: func(ctx context.Context) {
-				meta.State = ebsmetadata.AMIStateAvailable
-				if err := s.putAMIConfig(ctx, amiID, meta); err != nil {
-					slog.WarnContext(ctx, "CreateImageFromInstance: AMI left pending for the reaper", "amiId", amiID, "err", err)
-				}
-			},
+			Recorded:  func(ctx context.Context) error { return s.putAMIConfig(ctx, amiID, meta) },
+			Refused:   func(ctx context.Context) { s.removePendingAMI(ctx, amiID) },
+			Completed: func(ctx context.Context) { s.settleCreatedAMI(ctx, amiID) },
 		})
 	if err != nil {
 		// A UEFI object left under the image's prefix is in the orphan report.
@@ -569,6 +564,28 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 	return &ec2.CreateImageOutput{
 		ImageId: aws.String(amiID),
 	}, nil
+}
+
+// settleCreatedAMI makes amiID available under the image's claim, which
+// DeregisterImage also takes, and only while a reread finds it still pending;
+// any AMI it leaves pending is settled by the reaper.
+func (s *ImageServiceImpl) settleCreatedAMI(ctx context.Context, amiID string) {
+	if s.imageClaims != nil {
+		unlock, err := s.imageClaims.LockImage(ctx, amiID)
+		if err != nil {
+			slog.WarnContext(ctx, "CreateImageFromInstance: AMI's claim not taken, left pending for the reaper", "amiId", amiID, "err", err)
+			return
+		}
+		defer unlock()
+	}
+	current, err := s.metadata.GetAMI(ctx, amiID)
+	if err != nil || current.State != ec2.ImageStatePending {
+		return
+	}
+	current.State = ebsmetadata.AMIStateAvailable
+	if err := s.putAMIConfig(ctx, amiID, current); err != nil {
+		slog.WarnContext(ctx, "CreateImageFromInstance: AMI left pending for the reaper", "amiId", amiID, "err", err)
+	}
 }
 
 // removePendingAMI deletes the AMI document of a CreateImage whose snapshot

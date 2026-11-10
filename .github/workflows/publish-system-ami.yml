@@ -1,21 +1,20 @@
 name: Publish System AMIs
 
-# Builds the system AMIs (libguestfs, on the runner) and publishes each
-# compressed qcow2 + .sha256 sidecar to the Cloudflare R2 bucket that backs
-# iso.mulgadc.com/system-ami/. Six images ship:
-#   spinifex-eks-node       Alpine EKS K3s node (server|agent, role at boot)
-#   spinifex-ecs-node       Alpine ECS container instance
-#   spinifex-eks-node-gpu   Ubuntu EKS K3s GPU worker (NVIDIA driver + toolkit)
-#   spinifex-ecs-node-gpu   Ubuntu ECS GPU container instance
-#   spinifex-rds-postgres   Alpine RDS PostgreSQL instance
-#   spinifex-rds-mariadb    Alpine RDS MariaDB instance
+# Builds the system AMIs and publishes each compressed qcow2 + .sha256 sidecar
+# to the Cloudflare R2 bucket that backs iso.mulgadc.com/system-ami/. The Alpine
+# images build with libguestfs (build-system-image.sh); the Ubuntu GPU images
+# build with mkosi, which installs from resolute-updates and resolute-security,
+# so each release ships the newest kernel. Eight images ship:
+#   spinifex-eks-node               Alpine EKS K3s node (server|agent, role at boot)
+#   spinifex-ecs-node               Alpine ECS container instance
+#   spinifex-rds-postgres           Alpine RDS PostgreSQL instance
+#   spinifex-rds-mariadb            Alpine RDS MariaDB instance
+#   spinifex-eks-node-gpu           Ubuntu EKS K3s GPU worker (mkosi)
+#   spinifex-ecs-node-gpu           Ubuntu ECS GPU container instance (mkosi)
+#   ubuntu-26.04-nvidia-gpu-x86_64  Ubuntu NVIDIA GPU base image (mkosi)
+#   ubuntu-26.04-amd-gpu-x86_64     Ubuntu AMD ROCm GPU base image (mkosi)
 # Operators then install them on any cluster with:
-#   spx admin images import --name spinifex-eks-node
-#   spx admin images import --name spinifex-ecs-node
-#   spx admin images import --name spinifex-eks-node-gpu
-#   spx admin images import --name spinifex-ecs-node-gpu
-#   spx admin images import --name spinifex-rds-postgres
-#   spx admin images import --name spinifex-rds-mariadb
+#   spx admin images import --name <catalog key>
 #
 # Publishing overwrites the mirror artifact, so it runs only from release.yml
 # once a tag has passed its gates, with siblings at the tags go.mod requires.
@@ -54,9 +53,12 @@ jobs:
           VARIANT: ${{ inputs.variant }}
         run: |
           set -euo pipefail
-          cpu='{"name":"spinifex-eks-node","manifest":"scripts/images/eks-node/manifest.conf"},{"name":"spinifex-ecs-node","manifest":"scripts/images/ecs-agent/manifest.conf"}'
-          gpu='{"name":"spinifex-eks-node-gpu","manifest":"scripts/images/eks-node-gpu/manifest.conf"},{"name":"spinifex-ecs-node-gpu","manifest":"scripts/images/ecs-agent-gpu/manifest.conf"}'
-          rds='{"name":"spinifex-rds-postgres","manifest":"scripts/images/rds-postgres/manifest.conf"},{"name":"spinifex-rds-mariadb","manifest":"scripts/images/rds-mariadb/manifest.conf"}'
+          # builder=legacy entries carry a manifest for build-system-image.sh;
+          # builder=mkosi entries carry the mkosi-build.sh --image name and the
+          # R2 object base, which must equal the catalog URL basename.
+          cpu='{"name":"spinifex-eks-node","builder":"legacy","manifest":"scripts/images/eks-node/manifest.conf"},{"name":"spinifex-ecs-node","builder":"legacy","manifest":"scripts/images/ecs-agent/manifest.conf"}'
+          gpu='{"name":"spinifex-eks-node-gpu","builder":"mkosi","image":"spinifex-eks-node-gpu","object":"spinifex-eks-node-gpu-x86_64"},{"name":"spinifex-ecs-node-gpu","builder":"mkosi","image":"spinifex-ecs-node-gpu","object":"spinifex-ecs-node-gpu-x86_64"},{"name":"ubuntu-26.04-nvidia-gpu","builder":"mkosi","image":"ubuntu-gpu-nvidia","object":"ubuntu-26.04-nvidia-gpu-x86_64"},{"name":"ubuntu-26.04-amd-gpu","builder":"mkosi","image":"ubuntu-gpu-amd","object":"ubuntu-26.04-amd-gpu-x86_64"}'
+          rds='{"name":"spinifex-rds-postgres","builder":"legacy","manifest":"scripts/images/rds-postgres/manifest.conf"},{"name":"spinifex-rds-mariadb","builder":"legacy","manifest":"scripts/images/rds-mariadb/manifest.conf"}'
           case "${VARIANT}" in
             cpu) items="${cpu}" ;;
             gpu) items="${gpu}" ;;
@@ -132,6 +134,8 @@ jobs:
           go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle
 
       - name: Install build + upload tooling
+        # mkosi legs build and upload inside the pinned builder container.
+        if: matrix.builder == 'legacy'
         run: |
           set -euo pipefail
           sudo apt-get update -qq
@@ -144,6 +148,7 @@ jobs:
           fi
 
       - name: Build + publish ${{ matrix.name }} to R2
+        if: matrix.builder == 'legacy'
         working-directory: spinifex
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
@@ -168,3 +173,34 @@ jobs:
             FLAGS+=(--dry-run)
           fi
           ./scripts/publish-system-image.sh "${MANIFEST}" "${FLAGS[@]}"
+
+      - name: Build + publish ${{ matrix.name }} to R2 (mkosi)
+        if: matrix.builder == 'mkosi'
+        working-directory: spinifex
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.CF_R2_ENDPOINT_URL }}
+          R2_BUCKET: spinifex-iso
+          DRY_RUN: ${{ inputs.dry_run }}
+          IMAGE: ${{ matrix.image }}
+          OBJECT: ${{ matrix.object }}
+          # On-disk scratch for the same reason as the legacy legs: the GPU raw
+          # and its qcow2 do not fit a RAM-backed /tmp.
+          MKOSI_OUTPUT_DIR: ${{ runner.temp }}/mkosi-output
+        run: |
+          set -euo pipefail
+          mkdir -p "${MKOSI_OUTPUT_DIR}"
+          ./scripts/mkosi-build.sh --image "${IMAGE}" -- --manifest-format=json
+          # The kernel this image boots, from mkosi's package manifest.
+          KERNEL=$(jq -r '.packages[] | select(.name | test("^linux-image-[0-9]")) | "\(.name) \(.version)"' "${MKOSI_OUTPUT_DIR}/${IMAGE}.manifest")
+          if [[ -z "${KERNEL}" ]]; then
+            echo "::error::no linux-image-<version> package in ${IMAGE}.manifest" >&2
+            exit 1
+          fi
+          echo "kernel: ${KERNEL}"
+          FLAGS=(--image "${IMAGE}" --name "${OBJECT}")
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            FLAGS+=(--dry-run)
+          fi
+          ./scripts/mkosi-publish.sh "${FLAGS[@]}"

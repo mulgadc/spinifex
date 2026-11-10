@@ -30,6 +30,7 @@ const (
 	ActionInstall  Action = "install"  // unit missing on disk
 	ActionReplace  Action = "replace"  // installed marker version is older than embedded
 	ActionConflict Action = "conflict" // marker version matches but content differs — operator-modified
+	ActionMasked   Action = "masked"   // unit is linked to /dev/null; left masked
 )
 
 // UnitStatus reports the reconcile decision for a single unit.
@@ -116,6 +117,13 @@ func Reconcile(root string, opts Options) (Result, error) {
 		embedded := Units[name]
 		embeddedVersion := unitVersion(embedded)
 		path := filepath.Join(root, name)
+
+		if target, lerr := os.Readlink(path); lerr == nil && target == os.DevNull {
+			result.Statuses = append(result.Statuses, UnitStatus{
+				Name: name, Action: ActionMasked, EmbeddedVersion: embeddedVersion,
+			})
+			continue
+		}
 
 		installed, err := os.ReadFile(path)
 		if os.IsNotExist(err) {

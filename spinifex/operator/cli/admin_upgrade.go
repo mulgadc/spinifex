@@ -203,6 +203,8 @@ func reportUnitStatus(result systemd.Result) {
 			fmt.Printf("  %-38s %d → %d (stale, will replace)\n", s.Name+":", s.InstalledVersion, s.EmbeddedVersion)
 		case systemd.ActionConflict:
 			fmt.Printf("  %-38s %d (operator-modified, not touched — see `systemctl edit %s`)\n", s.Name+":", s.InstalledVersion, s.Name)
+		case systemd.ActionMasked:
+			fmt.Printf("  %-38s masked, not touched\n", s.Name+":")
 		}
 	}
 	if result.HasConflicts() {

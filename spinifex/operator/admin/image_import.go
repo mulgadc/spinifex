@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
@@ -31,7 +32,14 @@ type ImportOpts struct {
 	// Progress receives the importer's own output (a percentage counter).
 	// Nil discards it.
 	Progress io.Writer
+	// SnapshotTimeout bounds the wait for a snapshot the provider answers
+	// pending to complete. Zero leaves only ctx to bound it.
+	SnapshotTimeout time.Duration
 }
+
+// snapshotPollInterval is how often a pending snapshot is read again; a test
+// shortens it so the wait does not sleep.
+var snapshotPollInterval = 5 * time.Second
 
 // ImportImage writes a local raw disk image into a new provider volume over
 // NBD, then optionally snapshots it. Everything here goes through the provider
@@ -91,16 +99,63 @@ func ImportImage(ctx context.Context, provider ebsprovider.EBSProvider, opts Imp
 	}
 
 	if opts.Snapshot {
-		if _, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{
+		snapshotID := SnapPrefix(opts.VolumeID)
+		created, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{
 			Versioned:  ebsprovider.NewVersioned(),
-			SnapshotID: SnapPrefix(opts.VolumeID),
+			SnapshotID: snapshotID,
 			VolumeID:   opts.VolumeID,
-		}); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("import: snapshot volume %s: %w", opts.VolumeID, err)
+		}
+		if created != nil && created.State == ebsprovider.SnapshotStatePending {
+			if err := waitForSnapshot(ctx, provider, snapshotID, opts.SnapshotTimeout); err != nil {
+				return fmt.Errorf("import: snapshot volume %s: %w", opts.VolumeID, err)
+			}
 		}
 	}
 
 	return nil
+}
+
+// waitForSnapshot reads a pending snapshot every snapshotPollInterval until it
+// is completed, failing when it errors, is gone, or timeout passes. A read that
+// fails is retried, and reported if the timeout passes first.
+func waitForSnapshot(ctx context.Context, provider ebsprovider.EBSProvider, snapshotID string, timeout time.Duration) error {
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	ticker := time.NewTicker(snapshotPollInterval)
+	defer ticker.Stop()
+	var lastErr error
+	for {
+		select {
+		case <-ctx.Done():
+			if lastErr != nil {
+				return fmt.Errorf("snapshot %s did not complete: %w (last read failed: %w)", snapshotID, ctx.Err(), lastErr)
+			}
+			return fmt.Errorf("snapshot %s did not complete: %w", snapshotID, ctx.Err())
+		case <-ticker.C:
+		}
+		resp, err := provider.ListSnapshots(ctx, ebsprovider.ListSnapshotsRequest{
+			Versioned: ebsprovider.NewLatestVersioned(), SnapshotID: snapshotID,
+		})
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp == nil || len(resp.Snapshots) == 0 {
+			return fmt.Errorf("snapshot %s is no longer held by the provider", snapshotID)
+		}
+		switch resp.Snapshots[0].State {
+		case ebsprovider.SnapshotStateCompleted:
+			return nil
+		case ebsprovider.SnapshotStateError:
+			return fmt.Errorf("snapshot %s ended in error", snapshotID)
+		}
+	}
 }
 
 // writeImage is the bulk copy step, indirected so a test can drive the verb

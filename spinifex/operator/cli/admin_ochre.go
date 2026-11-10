@@ -786,6 +786,7 @@ func materializeWeightsVolume(ctx context.Context, provider ebsprovider.EBSProvi
 		SourcePath:       imagePath,
 		Snapshot:         true,
 		Progress:         os.Stdout,
+		SnapshotTimeout:  imageImportTimeout,
 	}); err != nil {
 		return "", fmt.Errorf("could not import weights volume %s: %w", volumeId, err)
 	}

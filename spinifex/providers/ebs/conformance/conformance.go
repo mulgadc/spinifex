@@ -166,7 +166,14 @@ func readSnapshot(t *testing.T, provider ebsprovider.EBSProvider, snapshotID str
 
 // settleTimeout bounds the wait for a pending snapshot to complete, so a
 // provider that never settles one fails the test instead of hanging it.
-const settleTimeout = 30 * time.Second
+const settleTimeout = 5 * time.Minute
+
+// The settle poll starts short, so a fast provider settles at once, and
+// doubles to a cap, so a slow backend is read every few seconds.
+const (
+	settlePollMin = 10 * time.Millisecond
+	settlePollMax = 2 * time.Second
+)
 
 // createSnapshot takes snapshotID of volumeID and waits, through the filtered
 // ListSnapshots, until it is completed: CreateSnapshot may answer pending, so
@@ -181,6 +188,7 @@ func createSnapshot(t *testing.T, provider ebsprovider.EBSProvider, snapshotID, 
 	require.Equal(t, snapshotID, snap.ID)
 
 	deadline := time.Now().Add(settleTimeout)
+	poll := settlePollMin
 	for {
 		ref := readSnapshot(t, provider, snapshotID)
 		switch ref.State {
@@ -192,7 +200,8 @@ func createSnapshot(t *testing.T, provider ebsprovider.EBSProvider, snapshotID, 
 			require.Failf(t, "snapshot did not complete", "snapshot %s settled to %q", snapshotID, ref.State)
 		}
 		require.Truef(t, time.Now().Before(deadline), "snapshot %s still pending after %s", snapshotID, settleTimeout)
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(poll)
+		poll = min(2*poll, settlePollMax)
 	}
 }
 

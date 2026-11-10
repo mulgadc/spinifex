@@ -48,6 +48,10 @@ const (
 	defaultAttachTimeout  = 3 * time.Minute
 	defaultDetachTimeout  = 3 * time.Minute
 	retryTokenHashLetters = 48
+
+	// defaultPublishTimeout bounds a whole publish short of the client's
+	// budget, so a slow attach is answered as retry-later rather than abandoned.
+	defaultPublishTimeout = ebsprovider.PublishTimeout - 30*time.Second
 )
 
 // Config is what a Provider needs to reach OCI and to act for its node.
@@ -76,6 +80,8 @@ type Config struct {
 	VolumeTimeout time.Duration
 	AttachTimeout time.Duration
 	DetachTimeout time.Duration
+	// PublishTimeout bounds a whole publish, attach and login included.
+	PublishTimeout time.Duration
 }
 
 // Provider is the ocibsd EBSProvider for one node.
@@ -126,6 +132,9 @@ func New(cfg Config) (*Provider, error) {
 	}
 	if cfg.DetachTimeout <= 0 {
 		cfg.DetachTimeout = defaultDetachTimeout
+	}
+	if cfg.PublishTimeout <= 0 {
+		cfg.PublishTimeout = defaultPublishTimeout
 	}
 	return &Provider{cfg: cfg, locks: map[string]*volumeLock{}}, nil
 }

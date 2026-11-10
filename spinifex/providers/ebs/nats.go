@@ -55,16 +55,21 @@ var dataMovementVerbs = map[string]bool{
 	verbVolumeUnpublish: true,
 }
 
+// PublishTimeout bounds a publish, which on a remote block backend waits for
+// the backend to attach the volume and for its device to appear. A provider
+// must answer within it, or the caller cannot tell whether the volume is exported.
+const PublishTimeout = 5 * time.Minute
+
 // timeoutFor sizes a request to the work its subject names.
 func (p *NATSProvider) timeoutFor(subject string) time.Duration {
-	if movesData(subject) {
+	verb := parseSubject(subject).verb
+	switch {
+	case dataMovementVerbs[verb]:
 		return max(p.requestTimeout, dataMovementTimeout)
+	case verb == verbVolumePublish:
+		return max(p.requestTimeout, PublishTimeout)
 	}
 	return p.requestTimeout
-}
-
-func movesData(subject string) bool {
-	return dataMovementVerbs[parseSubject(subject).verb]
 }
 
 // SnapshotSubject addresses a create by source volume so the owning node can
@@ -256,7 +261,8 @@ var (
 )
 
 // NewNATSProvider returns a provider client over conn. A non-positive
-// requestTimeout takes the 30s default; data-moving subjects get at least 180s.
+// requestTimeout takes the 30s default; data-moving subjects get at least 180s
+// and a publish at least PublishTimeout.
 func NewNATSProvider(conn *nats.Conn, requestTimeout time.Duration) *NATSProvider {
 	if requestTimeout <= 0 {
 		requestTimeout = defaultRequestTimeout

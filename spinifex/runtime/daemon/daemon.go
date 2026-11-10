@@ -2686,8 +2686,8 @@ func (d *Daemon) startCluster() error {
 }
 
 // ebsProviderRequestTimeout bounds the ebs.provider.v1.* subjects that answer
-// from state already held. The provider raises it for the subjects that move
-// data, so this is a floor rather than the budget every call gets.
+// from state already held. The provider raises it for publish and the subjects
+// that move data, so this is a floor rather than the budget every call gets.
 const ebsProviderRequestTimeout = 30 * time.Second
 
 // ebsProviderProbeTimeout bounds the startup reachability check. Short because

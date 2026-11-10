@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
+	otelsetup "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	"github.com/mulgadc/spinifex/spinifex/providers/cloud/oci"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 )
@@ -22,10 +24,25 @@ func (p *Provider) checkNode(nodeID string) error {
 	return nil
 }
 
+// errPublishTimeout is the cause of a publish that ran out of its own budget.
+var errPublishTimeout = errors.New("ocibsd: publish budget spent")
+
 // PublishVolume attaches the volume to this node's instance over iSCSI and
 // returns its block device. An attachment here in the same access mode is
 // reused; any other attachment refuses the publish.
 func (p *Provider) PublishVolume(ctx context.Context, req ebsprovider.PublishVolumeRequest) (*ebsprovider.PublishedVolume, error) {
+	publishCtx, cancel := context.WithTimeoutCause(ctx, p.cfg.PublishTimeout, errPublishTimeout)
+	defer cancel()
+	published, err := p.publishVolume(publishCtx, req)
+	if err != nil && ctx.Err() == nil && errors.Is(context.Cause(publishCtx), errPublishTimeout) {
+		slog.WarnContext(ctx, "ocibsd: publish ran out of its budget", "volume", req.VolumeID, "budget_ms", otelsetup.Millis(p.cfg.PublishTimeout))
+		// A retry reuses whatever attachment this one left, so it is retry-later.
+		return nil, fmt.Errorf("%w: publish of volume %s did not finish in time: %v", ebsprovider.ErrUnavailable, req.VolumeID, err)
+	}
+	return published, err
+}
+
+func (p *Provider) publishVolume(ctx context.Context, req ebsprovider.PublishVolumeRequest) (*ebsprovider.PublishedVolume, error) {
 	if err := checkVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}

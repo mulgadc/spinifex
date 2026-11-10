@@ -794,12 +794,15 @@ func TestTimeoutForSizesEachSubjectToItsWork(t *testing.T) {
 	fast := []string{
 		CapabilitiesSubject, GetVolumeSubject, ListVolumesSubject,
 		ListSnapshotsSubject, ownerDescribe,
-		publish, unsealed,
+		unsealed,
 	}
 	for _, subject := range fast {
 		assert.Equal(t, callerTimeout, p.timeoutFor(subject),
 			"%s answers from state already held, so it keeps the caller's timeout", subject)
 	}
+
+	assert.Equal(t, PublishTimeout, p.timeoutFor(publish),
+		"a publish waits for the backend to attach the volume, so it must not inherit a describe's budget")
 }
 
 // TestTimeoutForNeverShortensTheCallersBudget covers a caller that already asks

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -411,6 +412,39 @@ func TestPublishOfADetachingAttachmentIsRetryLater(t *testing.T) {
 
 	_, err := p.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{Versioned: latest, VolumeID: "vol-detaching", NodeID: "node-1"})
 	require.ErrorIs(t, err, ebsprovider.ErrUnavailable)
+}
+
+// A publish that outlasts its own bound is retry-later, and the retry reuses
+// the attachment it left rather than attaching the volume again.
+func TestPublishPastItsBoundIsRetryLaterAndTheRetryReusesTheAttachment(t *testing.T) {
+	fake := oci.NewBlockFake()
+	fake.AttachAfter = 50
+	cfg := testConfig("node-1", fake, ocibsd.NewFakeInitiator())
+	cfg.AttachTimeout = time.Minute
+	cfg.PublishTimeout = 20 * time.Millisecond
+	p, err := ocibsd.New(cfg)
+	require.NoError(t, err)
+	ctx := context.Background()
+	require.NoError(t, p.Start(ctx))
+	createVolume(t, p, "vol-slow", 1<<30)
+
+	req := ebsprovider.PublishVolumeRequest{Versioned: latest, VolumeID: "vol-slow", NodeID: "node-1"}
+	var published *ebsprovider.PublishedVolume
+	timedOut := 0
+	for published == nil {
+		published, err = p.PublishVolume(ctx, req)
+		if err != nil {
+			require.ErrorIs(t, err, ebsprovider.ErrUnavailable)
+			require.NotErrorIs(t, err, context.DeadlineExceeded, "a spent bound is the provider's answer, not a lost caller")
+			timedOut++
+			require.Less(t, timedOut, 1000, "the attachment never settled")
+		}
+	}
+	require.Positive(t, timedOut, "the first publish must have outlasted its bound")
+	require.NoError(t, published.Export.Validate())
+	attachments, err := fake.ListVolumeAttachments(ctx, oci.AttachmentFilter{InstanceID: instanceOf("node-1")})
+	require.NoError(t, err)
+	assert.Len(t, attachments, 1, "every retry reuses the attachment the first publish made")
 }
 
 func TestPerNodeVerbsRefuseAnotherNode(t *testing.T) {

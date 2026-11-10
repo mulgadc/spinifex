@@ -34,13 +34,6 @@
 #   --region R               Region (default: ap-southeast-2)
 #   --az AZ                  Availability zone (default: <region>a)
 #   --email ADDR             Operator email for update and security notices
-#   --ebs-provider P         What backs EBS: viperblockd (default), qemunbd or
-#                            ocibsd (OCI Block Volumes).
-#                            ocibsd needs the two flags below, and the hosts
-#                            need its units installed first.
-#   --oci-compartment-id ID  OCI compartment ocibsd creates volumes in
-#   --oci-availability-domain AD
-#                            OCI availability domain of every host
 #   --user U                 SSH user (default: spinifex)
 #   --identity FILE          SSH private key
 #   --hosts-file FILE        One host per line; blank lines and # comments ignored
@@ -56,6 +49,11 @@
 #   --no-firewall            Leave the host firewall alone, for debugging
 #   --yes                    Skip the confirmation prompt
 #   --dry-run                Print what would happen and touch nothing
+#
+# Environment:
+#   SPINIFEX_EBS_PROVIDER    Passed to spx admin init on the first host, naming
+#                            what backs EBS in place of its detection; joining
+#                            nodes take the provider from formation.
 #
 # THE HOST FIREWALL
 #
@@ -105,9 +103,6 @@ VPC_BRIDGE_SET=false
 REGION="ap-southeast-2"
 AZ=""
 EMAIL=""
-EBS_PROVIDER=""
-OCI_COMPARTMENT_ID=""
-OCI_AVAILABILITY_DOMAIN=""
 PORT=4432
 TOKEN_TTL="30m"
 IPSEC="on"
@@ -152,9 +147,6 @@ while [[ $# -gt 0 ]]; do
         --region)              REGION="$2"; shift 2 ;;
         --az)                  AZ="$2"; shift 2 ;;
         --email)               EMAIL="$2"; shift 2 ;;
-        --ebs-provider)        EBS_PROVIDER="$2"; shift 2 ;;
-        --oci-compartment-id)  OCI_COMPARTMENT_ID="$2"; shift 2 ;;
-        --oci-availability-domain) OCI_AVAILABILITY_DOMAIN="$2"; shift 2 ;;
         --user)                SSH_USER="$2"; shift 2 ;;
         --identity)            IDENTITY="$2"; shift 2 ;;
         --token-ttl)           TOKEN_TTL="$2"; shift 2 ;;
@@ -172,7 +164,7 @@ while [[ $# -gt 0 ]]; do
         --no-firewall)  MANAGE_FIREWALL=false; shift ;;
         --yes|-y)   ASSUME_YES=true; shift ;;
         --dry-run)  DRY_RUN=true; shift ;;
-        -h|--help)  sed -n '2,74p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)  sed -n '2,72p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*)         echo "ERROR: unknown option: $1" >&2; exit 2 ;;
         *)          HOSTS+=("$1"); shift ;;
     esac
@@ -223,32 +215,17 @@ else
     done
 fi
 
-# ebs_init_args prints init's EBS flags one per line, or fails naming the bad one.
-# init_args is joined into a remote sh -c, so a value is limited to the characters
-# an OCID or availability domain can hold rather than quoted.
-ebs_init_args() {
-    local provider="$1" compartment="$2" ad="$3"
-    case "$provider" in
-        "")
-            [ -z "$compartment$ad" ] || { echo "--oci-* flags need --ebs-provider ocibsd"; return 1; } ;;
-        viperblockd | qemunbd)
-            [ -z "$compartment$ad" ] || { echo "--oci-* flags need --ebs-provider ocibsd"; return 1; }
-            printf '%s\n' "--ebs-provider=$provider" ;;
-        ocibsd)
-            [[ "$compartment" =~ ^ocid1\.[A-Za-z0-9._:-]+$ ]] \
-                || { echo "--oci-compartment-id must be an OCID, got: $compartment"; return 1; }
-            [[ "$ad" =~ ^[A-Za-z0-9._:-]+$ ]] \
-                || { echo "--oci-availability-domain must be an availability domain name, got: $ad"; return 1; }
-            printf '%s\n' --ebs-provider=ocibsd "--oci-compartment-id=$compartment" "--oci-availability-domain=$ad" ;;
-        *)
-            echo "--ebs-provider must be viperblockd, qemunbd or ocibsd, got: $provider"; return 1 ;;
+# init_env prints the env prefix that carries SPINIFEX_EBS_PROVIDER to init, or
+# nothing when it is unset. It is joined into a remote shell, so the value is
+# limited to a provider name's characters rather than quoted.
+init_env() {
+    case "$1" in
+        "") ;;
+        *[!a-z]*) echo "SPINIFEX_EBS_PROVIDER must be a provider name such as viperblockd, got: $1"; return 1 ;;
+        *) printf 'env SPINIFEX_EBS_PROVIDER=%s ' "$1" ;;
     esac
 }
-EBS_ARGS=()
-ebs_out="$(ebs_init_args "$EBS_PROVIDER" "$OCI_COMPARTMENT_ID" "$OCI_AVAILABILITY_DOMAIN")" || fail "$ebs_out"
-while IFS= read -r line; do
-    [ -n "$line" ] && EBS_ARGS+=("$line")
-done <<<"$ebs_out"
+INIT_ENV="$(init_env "${SPINIFEX_EBS_PROVIDER:-}")" || fail "$INIT_ENV"
 
 case "$IPSEC" in
     on)  IPSEC_ENABLED=true ;;
@@ -699,7 +676,6 @@ if [ "$EXT_MODE" = "pool" ]; then
 fi
 [ -n "$EXT_IFACE" ] && init_args+=(--external-iface="$EXT_IFACE")
 [ -n "$EMAIL" ] && init_args+=(--email="$EMAIL")
-[ ${#EBS_ARGS[@]} -eq 0 ] || init_args+=("${EBS_ARGS[@]}")
 
 # init prints the join token, so its log is root-only and outside the world-writable /tmp.
 INIT_LOG=/var/log/spx-init.log
@@ -712,7 +688,7 @@ log "initializing ${HOSTS[0]} as ${NODE_NAMES[0]} (waiting for $((N - 1)) node(s
 # init blocks in a formation server until every node has joined, so it runs
 # detached and the token is read back out of its output.
 on "${HOSTS[0]}" "sudo rm -f $INIT_LOG; \
-    sudo setsid sh -c 'umask 077; spx admin init ${init_args[*]} >$INIT_LOG 2>&1' </dev/null >/dev/null 2>&1 & \
+    sudo setsid ${INIT_ENV}sh -c 'umask 077; spx admin init ${init_args[*]} >$INIT_LOG 2>&1' </dev/null >/dev/null 2>&1 & \
     exit 0" || fail "${HOSTS[0]}: could not start spx admin init"
 
 TOKEN=""

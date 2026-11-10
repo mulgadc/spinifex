@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -247,18 +246,10 @@ func (r *sshRunner) statDevice(path string) (os.FileInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, err := r.Run(ctx, "test", "-b", path)
-	if err != nil && exitStatus(err) == 1 {
+	if err != nil && ocibsd.ExitCode(err) == 1 {
 		return nil, &fs.PathError{Op: "stat", Path: path, Err: fs.ErrNotExist}
 	}
 	return nil, err
-}
-
-func exitStatus(err error) int {
-	var coded interface{ ExitCode() int }
-	if errors.As(err, &coded) {
-		return coded.ExitCode()
-	}
-	return -1
 }
 
 func shellQuote(s string) string {

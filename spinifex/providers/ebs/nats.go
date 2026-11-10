@@ -432,8 +432,10 @@ func (p *NATSProvider) CreateSnapshot(ctx context.Context, req CreateSnapshotReq
 	if completed.OperationID != accepted.OperationID {
 		return nil, fmt.Errorf("snapshot operation mismatch: got %q, want %q", completed.OperationID, accepted.OperationID)
 	}
-	if completed.Snapshot == nil || completed.Snapshot.State != SnapshotStateCompleted {
-		return nil, fmt.Errorf("snapshot %s completion returned no completed snapshot", req.SnapshotID)
+	// A pending completion is the provider's answer that it fixed the contents
+	// and will settle the snapshot later; a filtered ListSnapshots follows it.
+	if completed.Snapshot == nil || (completed.Snapshot.State != SnapshotStateCompleted && completed.Snapshot.State != SnapshotStatePending) {
+		return nil, fmt.Errorf("snapshot %s completion returned no completed or pending snapshot", req.SnapshotID)
 	}
 	return completed.Snapshot, nil
 }
@@ -477,7 +479,7 @@ func (p *NATSProvider) CopySnapshot(ctx context.Context, req CopySnapshotRequest
 // ListSnapshots asks the provider what it holds. Like ListVolumes it is not
 // owner-routed: the question is about the whole provider, not one snapshot.
 func (p *NATSProvider) ListSnapshots(ctx context.Context, req ListSnapshotsRequest) (*ListSnapshotsResponse, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckListSnapshotsVersion(req); err != nil {
 		return nil, err
 	}
 	var response ListSnapshotsResponse
@@ -487,7 +489,18 @@ func (p *NATSProvider) ListSnapshots(ctx context.Context, req ListSnapshotsReque
 	if err := responseError(response.SchemaVersion, response.Error); err != nil {
 		return nil, err
 	}
+	if req.SnapshotID != "" && (len(response.Snapshots) > 1 || (len(response.Snapshots) == 1 && response.Snapshots[0].ID != req.SnapshotID)) {
+		return nil, fmt.Errorf("%s filtered on %s answered with %v: %w", ListSnapshotsSubject, req.SnapshotID, snapshotRefIDs(response.Snapshots), ErrUnreadableReply)
+	}
 	return &response, nil
+}
+
+func snapshotRefIDs(refs []SnapshotRef) []string {
+	ids := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		ids = append(ids, ref.ID)
+	}
+	return ids
 }
 
 func (p *NATSProvider) PublishVolume(ctx context.Context, req PublishVolumeRequest) (*PublishedVolume, error) {

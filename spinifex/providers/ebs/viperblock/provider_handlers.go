@@ -435,6 +435,14 @@ func handleListSnapshots(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		respondProvider(ctx, msg, ebsprovider.ListSnapshotsResponse{Versioned: v, Error: unsupportedVersionError(req.SchemaVersion)})
 		return
 	}
+	if err := ebsprovider.CheckListSnapshotsVersion(req); err != nil {
+		respondProvider(ctx, msg, ebsprovider.ListSnapshotsResponse{Versioned: v, Error: &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnsupportedVersion, Message: err.Error()}})
+		return
+	}
+	if req.SnapshotID != "" {
+		respondFilteredSnapshot(ctx, cfg, msg, req)
+		return
+	}
 
 	ids, err := listSnapshotPrefixes(ctx, providerObjectStoreFactory(cfg), cfg.Bucket)
 	if err != nil {
@@ -446,9 +454,58 @@ func handleListSnapshots(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	response := ebsprovider.ListSnapshotsResponse{Versioned: v}
 	response.Snapshots, response.NextToken = ebsprovider.Page(ids, req.StartingToken, int(req.PageSize()),
 		func(id string) ebsprovider.SnapshotRef {
-			return ebsprovider.SnapshotRef{ID: id, Handle: snapshotHandle(id)}
+			return snapshotRef(req.SchemaVersion, id)
 		})
 	respondProvider(ctx, msg, response)
+}
+
+// respondFilteredSnapshot answers a ListSnapshots filtered on one ID. Only a
+// snapshot whose config is written is held: CreateSnapshot writes it last, so
+// a snapshot that failed part way is not reported.
+func respondFilteredSnapshot(ctx context.Context, cfg *Config, msg *nats.Msg, req ebsprovider.ListSnapshotsRequest) {
+	if !validVolumeName(req.SnapshotID) || !strings.HasPrefix(req.SnapshotID, snapshotIDPrefix) {
+		respondProvider(ctx, msg, ebsprovider.FilteredSnapshots(req, nil))
+		return
+	}
+	held, err := snapshotConfigStored(ctx, providerObjectStoreFactory(cfg), cfg.Bucket, req.SnapshotID)
+	if err != nil {
+		slog.Error("ebs.provider.snapshot.list: failed to look up snapshot", "snapshot", req.SnapshotID, "err", err)
+		respondProvider(ctx, msg, ebsprovider.ListSnapshotsResponse{Versioned: ebsprovider.ReplyVersioned(req.SchemaVersion), Error: internalError("look up snapshot: %v", err)})
+		return
+	}
+	if !held {
+		respondProvider(ctx, msg, ebsprovider.FilteredSnapshots(req, nil))
+		return
+	}
+	ref := snapshotRef(req.SchemaVersion, req.SnapshotID)
+	respondProvider(ctx, msg, ebsprovider.FilteredSnapshots(req, &ref))
+}
+
+// snapshotConfigStored reports whether bucket holds snapshotID's config. It
+// lists rather than heads the key, so absence is an empty page, not an error
+// whose code differs between object stores.
+func snapshotConfigStored(ctx context.Context, store objectstore.ObjectStore, bucket, snapshotID string) (bool, error) {
+	key := snapshotID + "/config.json"
+	out, err := store.ListObjectsV2(ctx, &awss3.ListObjectsV2Input{
+		Bucket:  awssdk.String(bucket),
+		Prefix:  awssdk.String(key),
+		MaxKeys: awssdk.Int64(1),
+	})
+	if err != nil {
+		return false, fmt.Errorf("list snapshot %s config: %w", snapshotID, err)
+	}
+	return len(out.Contents) > 0 && awssdk.StringValue(out.Contents[0].Key) == key, nil
+}
+
+// snapshotRef is snapshotID as a ref in a reply at version. SourceVolumeID is
+// left empty, and every snapshot is completed, because CreateSnapshot writes
+// it before the completion is published.
+func snapshotRef(version uint16, snapshotID string) ebsprovider.SnapshotRef {
+	return ebsprovider.SnapshotRef{
+		ID:     snapshotID,
+		Handle: snapshotHandle(snapshotID),
+		State:  ebsprovider.RefState(version, ebsprovider.SnapshotStateCompleted),
+	}
 }
 
 // buildProviderVBConfig assembles the viperblock.VB config CreateVolume hands
@@ -1178,21 +1235,21 @@ func snapshotErrorCode(err error) ebsprovider.ErrorCode {
 	}
 }
 
-// checkSnapshotIDFree refuses a snapshot ID that already exists unless this
-// volume is the one it was taken from. An existing snapshot whose identity
-// cannot be read is refused too: unprovable ownership must not overwrite it.
-func checkSnapshotIDFree(vb *viperblock.VB, volumeID, snapshotID string) error {
+// checkSnapshotIDFree reports whether snapshotID is already this volume's
+// snapshot, and refuses it if it is another's. An existing snapshot whose
+// identity cannot be read is refused too: unprovable ownership must not pass.
+func checkSnapshotIDFree(vb *viperblock.VB, volumeID, snapshotID string) (taken bool, err error) {
 	exists, err := snapshotConfigExists(vb, snapshotID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !exists {
-		return nil
+		return false, nil
 	}
 	if _, ident, err := vb.LoadSnapshotBlockMap(snapshotID); err == nil && ident.SourceVolumeName == volumeID {
-		return nil
+		return true, nil
 	}
-	return fmt.Errorf("%w: %s", errSnapshotExistsElsewhere, snapshotID)
+	return false, fmt.Errorf("%w: %s", errSnapshotExistsElsewhere, snapshotID)
 }
 
 // snapshotVolumeEngine creates snapshotID off volumeID's live checkpoint,
@@ -1233,8 +1290,20 @@ func snapshotVolumeEngine(ctx context.Context, cfg *Config, volumeID, snapshotID
 // shared by snapshotVolumeEngine's mounted and freshly-opened branches so the
 // two cannot drift on what a snapshot of a volume means.
 func createSnapshotWithVB(vb *viperblock.VB, volumeID, snapshotID string) (*ebsprovider.Snapshot, error) {
-	if err := checkSnapshotIDFree(vb, volumeID, snapshotID); err != nil {
+	taken, err := checkSnapshotIDFree(vb, volumeID, snapshotID)
+	if err != nil {
 		return nil, err
+	}
+	// A repeat returns the first snapshot rather than retaking it over writes
+	// made since. Its creation time is sealed inside its state, so it is unset.
+	if taken {
+		return &ebsprovider.Snapshot{
+			ID:             snapshotID,
+			SourceVolumeID: volumeID,
+			SizeBytes:      safecast.Uint64ToInt64(vb.GetVolumeSize()),
+			State:          ebsprovider.SnapshotStateCompleted,
+			Handle:         snapshotHandle(snapshotID),
+		}, nil
 	}
 	if err := vb.LoadLiveCheckpoint(); err != nil {
 		return nil, fmt.Errorf("load live checkpoint: %w", err)

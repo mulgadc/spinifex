@@ -549,8 +549,11 @@ func (p *Provider) CreateSnapshot(ctx context.Context, req ebsprovider.CreateSna
 // snapshot that outlived the process still appears. Its SourceVolumeID comes
 // back empty in that case: the link was only ever in memory.
 func (p *Provider) ListSnapshots(_ context.Context, req ebsprovider.ListSnapshotsRequest) (*ebsprovider.ListSnapshotsResponse, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckListSnapshotsVersion(req); err != nil {
 		return nil, err
+	}
+	if req.SnapshotID != "" {
+		return p.filteredSnapshot(req)
 	}
 	entries, err := os.ReadDir(filepath.Join(p.baseDir, "snapshots"))
 	if err != nil {
@@ -563,13 +566,39 @@ func (p *Provider) ListSnapshots(_ context.Context, req ebsprovider.ListSnapshot
 	response := &ebsprovider.ListSnapshotsResponse{Versioned: ebsprovider.ReplyVersioned(req.SchemaVersion)}
 	response.Snapshots, response.NextToken = ebsprovider.Page(qcow2IDs(entries), req.StartingToken, int(req.PageSize()),
 		func(id string) ebsprovider.SnapshotRef {
-			return ebsprovider.SnapshotRef{
-				ID:             id,
-				SourceVolumeID: p.snapshotMeta[id].sourceVolumeID,
-				Handle:         p.snapshotPath(id),
-			}
+			return p.snapshotRef(req.SchemaVersion, id)
 		})
 	return response, nil
+}
+
+// filteredSnapshot answers a ListSnapshots filtered on one ID from its file. An
+// ID that is not a single path element names no file this provider wrote.
+func (p *Provider) filteredSnapshot(req ebsprovider.ListSnapshotsRequest) (*ebsprovider.ListSnapshotsResponse, error) {
+	if filepath.Base(req.SnapshotID) != req.SnapshotID {
+		return ebsprovider.FilteredSnapshots(req, nil), nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, err := os.Stat(p.snapshotPath(req.SnapshotID)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ebsprovider.FilteredSnapshots(req, nil), nil
+		}
+		return nil, fmt.Errorf("qemunbdd: stat snapshot %s: %w", req.SnapshotID, err)
+	}
+	ref := p.snapshotRef(req.SchemaVersion, req.SnapshotID)
+	return ebsprovider.FilteredSnapshots(req, &ref), nil
+}
+
+// snapshotRef is snapshotID as a ref in a reply at version. Every snapshot is
+// completed, because CreateSnapshot copies it before answering. The caller
+// holds p.mu.
+func (p *Provider) snapshotRef(version uint16, snapshotID string) ebsprovider.SnapshotRef {
+	return ebsprovider.SnapshotRef{
+		ID:             snapshotID,
+		SourceVolumeID: p.snapshotMeta[snapshotID].sourceVolumeID,
+		Handle:         p.snapshotPath(snapshotID),
+		State:          ebsprovider.RefState(version, ebsprovider.SnapshotStateCompleted),
+	}
 }
 
 // snapshotInUse reports whether any volume file still points at snapPath as

@@ -361,7 +361,9 @@ func TestReconciler_PendingFinalSnapshotReadFailureDoesNotFailTheDeletion(t *tes
 	require.NoError(t, onePass(t, r))
 	assert.Equal(t, StatusDeleting, h.record(t).Status, "still pending, so still waiting")
 
+	// One pass records the snapshot available, and the next finishes the deletion.
 	e.settle(t, ec2ID, ebsprovider.SnapshotStateCompleted)
+	require.NoError(t, onePass(t, r))
 	require.NoError(t, onePass(t, r))
 	assert.False(t, h.recordExists(t, testDBID), "the deletion recovers once the backup completes")
 	final, _ := h.snapshotRecord(t, pendingFinalSnapshotID)

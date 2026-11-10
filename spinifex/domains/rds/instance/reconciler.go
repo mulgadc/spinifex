@@ -752,27 +752,40 @@ func (r *Reconciler) settleCreatingSnapshot(ctx context.Context, kv *kvstore.Buc
 // whose document is gone. Nothing recreates one, so it settles the record.
 const ec2SnapshotGone = "gone"
 
-// Moves a creating record, read at rev, to what its EC2 snapshot's state says:
-// completed is available, error or gone is failed, and pending leaves it
-// creating, written only when adopted says the record has changed. Any other is left.
+// rdsSnapshotStatus is the DB snapshot status an EC2 snapshot's state gives:
+// pending is creating, completed available, and error or gone failed. known is
+// false for any other state, which says neither restorable nor lost.
+func rdsSnapshotStatus(ec2State string) (status string, known bool) {
+	switch ec2State {
+	case ec2.SnapshotStatePending:
+		return SnapshotStatusCreating, true
+	case ec2.SnapshotStateCompleted:
+		return SnapshotStatusAvailable, true
+	case ec2.SnapshotStateError, ec2SnapshotGone:
+		return SnapshotStatusFailed, true
+	}
+	return "", false
+}
+
+// Moves a creating record, read at rev, to what its EC2 snapshot's state says,
+// writing a pending one only when adopted says the record has changed. A state
+// rdsSnapshotStatus does not know leaves it.
 func (s *Service) applyEC2SnapshotState(ctx context.Context, kv *kvstore.Bucket, rev uint64,
 	accountID string, rec *DBSnapshotRecord, state string, adopted bool) error {
-	now := time.Now().UTC()
-	switch state {
-	case ec2.SnapshotStateCompleted:
-		rec.Status = SnapshotStatusAvailable
-		rec.SettledAt = &now
-	case ec2.SnapshotStateError, ec2SnapshotGone:
-		rec.Status = SnapshotStatusFailed
-		rec.SettledAt = &now
-	case ec2.SnapshotStatePending:
+	status, known := rdsSnapshotStatus(state)
+	switch {
+	case !known:
+		slog.WarnContext(ctx, "rds reconciler: the EC2 snapshot of a creating DB snapshot reports an unknown state; leaving it creating",
+			"dbSnapshot", rec.DBSnapshotIdentifier, "snapshotId", rec.SnapshotID, "accountId", accountID, "state", state)
+		return nil
+	case status == SnapshotStatusCreating:
 		if !adopted {
 			return nil
 		}
 	default:
-		slog.WarnContext(ctx, "rds reconciler: the EC2 snapshot of a creating DB snapshot reports an unknown state; leaving it creating",
-			"dbSnapshot", rec.DBSnapshotIdentifier, "snapshotId", rec.SnapshotID, "accountId", accountID, "state", state)
-		return nil
+		now := time.Now().UTC()
+		rec.Status = status
+		rec.SettledAt = &now
 	}
 	if err := updateJSON(ctx, kv, DBSnapshotKey(rec.DBSnapshotIdentifier), rev, rec); err != nil {
 		if errors.Is(err, kvstore.ErrConflict) {
@@ -780,6 +793,13 @@ func (s *Service) applyEC2SnapshotState(ctx context.Context, kv *kvstore.Bucket,
 		}
 		return err
 	}
+	s.recordSnapshotSettled(ctx, accountID, rec, state)
+	return nil
+}
+
+// Reports a DB snapshot record just written available or failed; one still
+// creating reports nothing. Every settlement of a DB snapshot comes through here.
+func (s *Service) recordSnapshotSettled(ctx context.Context, accountID string, rec *DBSnapshotRecord, state string) {
 	switch rec.Status {
 	case SnapshotStatusAvailable:
 		message := "DB snapshot created."
@@ -788,10 +808,12 @@ func (s *Service) applyEC2SnapshotState(ctx context.Context, kv *kvstore.Bucket,
 		}
 		s.RecordEvent(ctx, accountID, EventSourceTypeDBSnapshot, rec.DBSnapshotIdentifier,
 			message, EventCategoryBackup, EventCategoryCreation)
+		slog.InfoContext(ctx, "rds: DB snapshot created",
+			"dbSnapshot", rec.DBSnapshotIdentifier, "dbInstance", rec.DBInstanceIdentifier, "snapshotId", rec.SnapshotID,
+			"snapshotType", rec.SnapshotType, "crashConsistent", rec.CrashConsistent, "finalSnapshot", rec.FinalSnapshot)
 	case SnapshotStatusFailed:
 		s.recordDBSnapshotFailed(ctx, accountID, rec, state)
 	}
-	return nil
 }
 
 // Reports a DB snapshot whose EC2 snapshot settled in error or is gone, and

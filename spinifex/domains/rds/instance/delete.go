@@ -441,24 +441,17 @@ func (s *Service) takeFinalSnapshot(ctx context.Context, kv *kvstore.Bucket, acc
 		return awserrors.Errorf(awserrors.ErrorDBSnapshotAlreadyExists,
 			"DB snapshot %s already exists", rec.FinalSnapshotIdentifier)
 	}
-	if record.Status == SnapshotStatusAvailable && record.SnapshotID != "" {
+	switch {
+	case record.Status == SnapshotStatusAvailable && record.SnapshotID != "":
 		return nil
-	}
-	if record.Status == SnapshotStatusFailed {
+	case record.Status == SnapshotStatusFailed:
 		return fmt.Errorf("%w: %s", errFinalSnapshotFailed, rec.FinalSnapshotIdentifier)
-	}
-	if record.Status != SnapshotStatusCreating {
+	case record.Status != SnapshotStatusCreating:
 		return awserrors.Errorf(awserrors.ErrorDBSnapshotInvalidState,
 			"DB snapshot %s is %s; expected %s", rec.FinalSnapshotIdentifier, record.Status, SnapshotStatusCreating)
-	}
-
-	// Already cut and still settling: its state is read, never cut again.
-	if record.SnapshotID != "" {
-		state, err := s.ec2SnapshotState(ctx, record.SnapshotID)
-		if err != nil {
-			return err
-		}
-		return s.settleFinalSnapshot(ctx, kv, accountID, rec, record.SnapshotID, state)
+	case record.SnapshotID != "":
+		// Already cut and still settling, which reconcileSnapshots records.
+		return errFinalSnapshotInProgress
 	}
 
 	if !creator {
@@ -510,16 +503,14 @@ func (s *Service) settleFinalSnapshot(ctx context.Context, kv *kvstore.Bucket, a
 	if err != nil {
 		return err
 	}
-	switch {
-	case state == ec2.SnapshotStatePending:
+	if written != nil {
+		s.recordSnapshotSettled(ctx, accountID, written, state)
+	}
+	switch status, _ := rdsSnapshotStatus(state); status {
+	case SnapshotStatusCreating:
 		return errFinalSnapshotInProgress
-	case state == ec2.SnapshotStateError || state == ec2SnapshotGone:
-		if written != nil {
-			s.recordDBSnapshotFailed(ctx, accountID, written, state)
-		}
+	case SnapshotStatusFailed:
 		return fmt.Errorf("%w: %s", errFinalSnapshotFailed, rec.FinalSnapshotIdentifier)
-	case written != nil:
-		s.recordFinalSnapshotCreated(ctx, accountID, rec, snapshotID)
 	}
 	return nil
 }
@@ -576,14 +567,8 @@ func (s *Service) completeFinalSnapshot(ctx context.Context, kv *kvstore.Bucket,
 			return nil, fmt.Errorf("final snapshot %s already points to %s, not %s",
 				source.FinalSnapshotIdentifier, record.SnapshotID, snapshotID)
 		}
-		want := SnapshotStatusCreating
-		switch state {
-		case ec2.SnapshotStateCompleted:
-			want = SnapshotStatusAvailable
-		case ec2.SnapshotStateError, ec2SnapshotGone:
-			want = SnapshotStatusFailed
-		case ec2.SnapshotStatePending:
-		default:
+		want, known := rdsSnapshotStatus(state)
+		if !known {
 			return nil, fmt.Errorf("final snapshot %s: EC2 snapshot %s reports state %q",
 				source.FinalSnapshotIdentifier, snapshotID, state)
 		}
@@ -610,15 +595,6 @@ func (s *Service) completeFinalSnapshot(ctx context.Context, kv *kvstore.Bucket,
 	}
 	return nil, fmt.Errorf("rds: completing final snapshot %s contended after %d attempts",
 		source.FinalSnapshotIdentifier, tagWriteAttempts)
-}
-
-func (s *Service) recordFinalSnapshotCreated(ctx context.Context, accountID string,
-	rec *DBInstanceRecord, snapshotID string) {
-	s.RecordEvent(ctx, accountID, EventSourceTypeDBSnapshot, rec.FinalSnapshotIdentifier,
-		"Final DB snapshot created.", EventCategoryBackup, EventCategoryCreation)
-	slog.InfoContext(ctx, "rds: final DB snapshot created",
-		"dbSnapshot", rec.FinalSnapshotIdentifier, "dbInstance", rec.DBInstanceIdentifier,
-		"snapshotId", snapshotID)
 }
 
 // A viperblock snapshot references its source volume's chunk files rather than

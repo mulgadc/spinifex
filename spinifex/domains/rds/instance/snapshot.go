@@ -126,7 +126,7 @@ func (s *Service) snapshotDBInstance(ctx context.Context, kv *kvstore.Bucket, re
 	record.CrashConsistent = crashConsistent
 	// A pending EC2 snapshot's contents are already fixed, so the quiesce is
 	// over; the record stays creating until the reconciler sees it settle.
-	if state == ec2.SnapshotStatePending {
+	if status, _ := rdsSnapshotStatus(state); status == SnapshotStatusCreating {
 		if err := putJSON(ctx, kv, key, &record); err != nil {
 			return nil, err
 		}
@@ -142,11 +142,7 @@ func (s *Service) snapshotDBInstance(ctx context.Context, kv *kvstore.Bucket, re
 		return nil, err
 	}
 
-	s.RecordEvent(ctx, accountID, EventSourceTypeDBSnapshot, req.DBSnapshotIdentifier,
-		"DB snapshot created.", EventCategoryBackup, EventCategoryCreation)
-	slog.InfoContext(ctx, "rds: DB snapshot created",
-		"dbSnapshot", req.DBSnapshotIdentifier, "dbInstance", rec.DBInstanceIdentifier,
-		"snapshotType", record.SnapshotType, "snapshotId", snapshotID, "crashConsistent", crashConsistent)
+	s.recordSnapshotSettled(ctx, accountID, &record, state)
 
 	return &record, nil
 }

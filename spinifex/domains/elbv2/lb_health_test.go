@@ -193,6 +193,7 @@ type terminateGateKV struct {
 
 	keys     []string
 	armed    atomic.Bool
+	expired  atomic.Bool
 	released chan struct{}
 }
 
@@ -203,6 +204,7 @@ func (k *terminateGateKV) hold(key string) {
 	select {
 	case <-k.released:
 	case <-time.After(5 * time.Second):
+		k.expired.Store(true)
 	}
 }
 
@@ -273,6 +275,7 @@ func TestLBHealth_DeleteLoadBalancerSuspendsBeforeTerminatingTheVM(t *testing.T)
 	case <-time.After(5 * time.Second):
 		t.Fatal("the LB VM was never terminated")
 	}
+	assert.False(t, gate.expired.Load(), "a write was released by the failsafe, not by the terminate callback")
 }
 
 func TestLBHealth_SetSubnetsSuspendsFirstAndResumesOnTheNewVM(t *testing.T) {

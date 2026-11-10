@@ -26,13 +26,6 @@ func (f *pendingFixture) deleteSnapshot(svc *SnapshotServiceImpl, id string) err
 	return err
 }
 
-// seedDoc writes a snapshot document of pendingVolumeID and its reference.
-func (f *pendingFixture) seedDoc(svc *SnapshotServiceImpl, doc ebsmetadata.Snapshot) {
-	f.t.Helper()
-	doc.VolumeID, doc.OwnerID, doc.VolumeSize = pendingVolumeID, testAccountID, 4
-	require.NoError(f.t, f.metadata.PutSnapshot(f.t.Context(), doc))
-	require.NoError(f.t, svc.addSnapshotRef(f.t.Context(), pendingVolumeID, doc.SnapshotID))
-}
 
 // assertHidden requires that every request answers id as a deleted snapshot.
 func (f *pendingFixture) assertHidden(svc *SnapshotServiceImpl, id string) {
@@ -72,7 +65,7 @@ func TestDeleteSnapshot_MarksWhatTheProviderMayStillHold(t *testing.T) {
 			f := newPendingFixture(t)
 			svc := f.node(nodeA)
 			tc.doc.SnapshotID = id
-			f.seedDoc(svc, tc.doc)
+			f.seedDoc(tc.doc, true)
 			providerSnapshot(f, id)
 
 			require.NoError(t, f.deleteSnapshot(svc, id))
@@ -117,7 +110,7 @@ func TestDeleteSnapshot_PendingInUseIsStillRefused(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newPendingFixture(t)
 			svc := f.node(nodeA)
-			f.seedDoc(svc, ebsmetadata.Snapshot{SnapshotID: id, State: snapshotStatePending})
+			f.seedDoc(ebsmetadata.Snapshot{SnapshotID: id, State: snapshotStatePending}, true)
 			tc.seed(f)
 
 			err := f.deleteSnapshot(svc, id)
@@ -150,7 +143,7 @@ func TestDeleteSnapshot_ClaimContention(t *testing.T) {
 			svc := fastClaims(f.node(nodeA))
 			refused := 0
 			svc.claimRefused = func(string) { refused++ }
-			f.seedDoc(svc, ebsmetadata.Snapshot{SnapshotID: id, State: snapshotStatePending})
+			f.seedDoc(ebsmetadata.Snapshot{SnapshotID: id, State: snapshotStatePending}, true)
 			f.holdClaim(tc.holder, id)
 			f.liveness.beat(tc.holder, tc.holderSeen)
 
@@ -216,7 +209,7 @@ func TestPendingSnapshotReaper_MarkedColumn(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newPendingFixture(t)
 			reaper := f.node(nodeB)
-			f.seedDoc(reaper, ebsmetadata.Snapshot{SnapshotID: id, State: snapshotStatePending, DeleteRequested: true, AmbiguousCreate: tc.ambiguous})
+			f.seedDoc(ebsmetadata.Snapshot{SnapshotID: id, State: snapshotStatePending, DeleteRequested: true, AmbiguousCreate: tc.ambiguous}, true)
 			if tc.setup != nil {
 				tc.setup(f)
 			}
@@ -285,7 +278,7 @@ func TestPendingSnapshotReaper_CleanupInterrupted(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newPendingFixture(t)
 			reaper := f.node(nodeB)
-			f.seedDoc(reaper, ebsmetadata.Snapshot{SnapshotID: id, State: snapshotStatePending, DeleteRequested: true, AmbiguousCreate: tc.ambiguous})
+			f.seedDoc(ebsmetadata.Snapshot{SnapshotID: id, State: snapshotStatePending, DeleteRequested: true, AmbiguousCreate: tc.ambiguous}, true)
 			providerSnapshot(f, id)
 
 			tc.break_(f, reaper)
@@ -335,7 +328,7 @@ func TestDeleteSnapshot_LandsBetweenTheReapersRereadAndWrite(t *testing.T) {
 			if sameNode {
 				deleter = reaper
 			}
-			f.seedDoc(reaper, ebsmetadata.Snapshot{SnapshotID: id, State: snapshotStatePending})
+			f.seedDoc(ebsmetadata.Snapshot{SnapshotID: id, State: snapshotStatePending}, true)
 			providerSnapshot(f, id)
 
 			refused := make(chan struct{}, claimRetries+1)
@@ -444,7 +437,7 @@ func TestAmbiguousCreate_SetBeforeEveryCall(t *testing.T) {
 			var id string
 			if tc.reaper {
 				id = reaped
-				f.seedDoc(svc, ebsmetadata.Snapshot{SnapshotID: id, State: snapshotStatePending})
+				f.seedDoc(ebsmetadata.Snapshot{SnapshotID: id, State: snapshotStatePending}, true)
 				f.sweep(f.node(nodeB))
 			} else {
 				_, err := f.create(svc)
@@ -549,7 +542,7 @@ func TestPendingSnapshotReaper_SettlesPendingAMIs(t *testing.T) {
 			f := newPendingFixture(t)
 			if tc.snap != nil {
 				tc.snap.SnapshotID = snapID
-				f.seedDoc(f.node(nodeA), *tc.snap)
+				f.seedDoc(*tc.snap, true)
 				if tc.snap.State == snapshotStatePending {
 					f.mem.AnswerSnapshotsPending(true)
 					providerSnapshot(f, snapID)

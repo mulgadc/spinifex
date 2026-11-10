@@ -288,12 +288,35 @@ func (f *pendingFixture) doc(snapshotID string) (ebsmetadata.Snapshot, bool) {
 	return doc, true
 }
 
-func (f *pendingFixture) seedPending(snapshotID string) {
+// seedDoc writes doc as a snapshot of pendingVolumeID's owner, filling what it
+// leaves empty as a fresh pending document, and with withRef its reference.
+func (f *pendingFixture) seedDoc(doc ebsmetadata.Snapshot, withRef bool) {
 	f.t.Helper()
-	require.NoError(f.t, f.metadata.PutSnapshot(f.t.Context(), ebsmetadata.Snapshot{
-		SnapshotID: snapshotID, VolumeID: pendingVolumeID, VolumeSize: 4, State: snapshotStatePending,
-		Progress: "0%", StartTime: time.Now(), OwnerID: testAccountID, AvailabilityZone: "us-east-1a",
-	}))
+	if doc.VolumeID == "" {
+		doc.VolumeID = pendingVolumeID
+	}
+	if doc.OwnerID == "" {
+		doc.OwnerID = testAccountID
+	}
+	if doc.VolumeSize == 0 {
+		doc.VolumeSize = 4
+	}
+	if doc.State == "" {
+		doc.State = snapshotStatePending
+	}
+	if doc.Progress == "" && doc.State == snapshotStatePending {
+		doc.Progress = "0%"
+	}
+	if doc.StartTime.IsZero() {
+		doc.StartTime = time.Now()
+	}
+	if doc.AvailabilityZone == "" {
+		doc.AvailabilityZone = "us-east-1a"
+	}
+	require.NoError(f.t, f.metadata.PutSnapshot(f.t.Context(), doc))
+	if withRef {
+		require.NoError(f.t, f.node(nodeA).addSnapshotRef(f.t.Context(), doc.VolumeID, doc.SnapshotID))
+	}
 }
 
 // claimHolder reports who holds snapshotID's claim, empty when nobody does.
@@ -911,7 +934,7 @@ func TestPendingSnapshotReaper_SettlesEachRow(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newPendingFixture(t)
-			f.seedPending(id)
+			f.seedDoc(ebsmetadata.Snapshot{SnapshotID: id}, false)
 			if tc.setup != nil {
 				tc.setup(f)
 			}
@@ -985,7 +1008,7 @@ func TestPendingSnapshotReaper_RepeatHandleAndReference(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newPendingFixture(t)
-			f.seedPending(id)
+			f.seedDoc(ebsmetadata.Snapshot{SnapshotID: id}, false)
 			if tc.setup != nil {
 				tc.setup(f)
 			}
@@ -1037,7 +1060,7 @@ func deleteDocFirst(f *pendingFixture, id string) func(ebsprovider.ListSnapshots
 func TestPendingSnapshotReaper_SweepBoundaries(t *testing.T) {
 	t.Run("no provider settles nothing", func(t *testing.T) {
 		f := newPendingFixture(t)
-		f.seedPending("snap-noprovider0001")
+		f.seedDoc(ebsmetadata.Snapshot{SnapshotID: "snap-noprovider0001"}, false)
 		svc := f.node(nodeB)
 		svc.provider = nil
 		written, err := svc.NewPendingSnapshotReaper().Sweep(t.Context())
@@ -1058,7 +1081,7 @@ func TestPendingSnapshotReaper_SweepBoundaries(t *testing.T) {
 	})
 	t.Run("a cancelled sweep stops", func(t *testing.T) {
 		f := newPendingFixture(t)
-		f.seedPending("snap-cancelled00001")
+		f.seedDoc(ebsmetadata.Snapshot{SnapshotID: "snap-cancelled00001"}, false)
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
 		_, err := f.node(nodeB).NewPendingSnapshotReaper().Sweep(ctx)
@@ -1066,10 +1089,8 @@ func TestPendingSnapshotReaper_SweepBoundaries(t *testing.T) {
 	})
 	t.Run("settled documents are counted and others skipped", func(t *testing.T) {
 		f := newPendingFixture(t)
-		f.seedPending("snap-counted000001")
-		require.NoError(t, f.metadata.PutSnapshot(t.Context(), ebsmetadata.Snapshot{
-			SnapshotID: "snap-done000000001", VolumeID: pendingVolumeID, State: ebsmetadata.SnapshotStateCompleted, OwnerID: testAccountID,
-		}))
+		f.seedDoc(ebsmetadata.Snapshot{SnapshotID: "snap-counted000001"}, false)
+		f.seedDoc(ebsmetadata.Snapshot{SnapshotID: "snap-done000000001", State: ebsmetadata.SnapshotStateCompleted}, false)
 		written, err := f.node(nodeB).NewPendingSnapshotReaper().Sweep(t.Context())
 		require.NoError(t, err)
 		assert.Equal(t, 1, written)
@@ -1082,12 +1103,10 @@ func TestPendingSnapshotReaper_SweepBoundaries(t *testing.T) {
 // claim holds the reaper off.
 func TestReleaseNodeClaims_FreesARestartedNodesClaims(t *testing.T) {
 	f := newPendingFixture(t)
-	f.seedPending("snap-restartown0001")
-	f.seedPending("snap-restartother01")
-	f.seedPending("snap-restartlive001")
-	require.NoError(t, f.metadata.PutSnapshot(t.Context(), ebsmetadata.Snapshot{
-		SnapshotID: "snap-restartdone001", VolumeID: pendingVolumeID, State: ebsmetadata.SnapshotStateCompleted, OwnerID: testAccountID,
-	}))
+	f.seedDoc(ebsmetadata.Snapshot{SnapshotID: "snap-restartown0001"}, false)
+	f.seedDoc(ebsmetadata.Snapshot{SnapshotID: "snap-restartother01"}, false)
+	f.seedDoc(ebsmetadata.Snapshot{SnapshotID: "snap-restartlive001"}, false)
+	f.seedDoc(ebsmetadata.Snapshot{SnapshotID: "snap-restartdone001", State: ebsmetadata.SnapshotStateCompleted}, false)
 	f.holdClaim(nodeA, "snap-restartown0001")
 	f.holdClaim(nodeC, "snap-restartother01")
 	f.holdClaim(nodeA, "snap-restartlive001")
@@ -1186,17 +1205,13 @@ func TestS7_PendingSnapshotReaperDeletesOnlyWhatACustomerDeleted(t *testing.T) {
 		"snap-s7readfails001": func() {},
 	}
 	for id, setup := range ids {
-		f.seedPending(id)
+		f.seedDoc(ebsmetadata.Snapshot{SnapshotID: id}, false)
 		setup()
 	}
-	require.NoError(t, f.metadata.PutSnapshot(t.Context(), ebsmetadata.Snapshot{
-		SnapshotID: "snap-s7volumegone01", VolumeID: "vol-neverexisted01", State: snapshotStatePending, OwnerID: testAccountID,
-	}))
+	f.seedDoc(ebsmetadata.Snapshot{SnapshotID: "snap-s7volumegone01", VolumeID: "vol-neverexisted01"}, false)
 	// Settled documents the reaper must leave alone, one with a create unanswered.
 	for id, ambiguous := range map[string]bool{"snap-s7settled00001": false, "snap-s7settledamb01": true} {
-		require.NoError(t, f.metadata.PutSnapshot(t.Context(), ebsmetadata.Snapshot{
-			SnapshotID: id, VolumeID: pendingVolumeID, State: ebsmetadata.SnapshotStateCompleted, OwnerID: testAccountID, AmbiguousCreate: ambiguous,
-		}))
+		f.seedDoc(ebsmetadata.Snapshot{SnapshotID: id, State: ebsmetadata.SnapshotStateCompleted, AmbiguousCreate: ambiguous}, false)
 		providerSnapshot(f, id)
 		ids[id] = func() {}
 	}
@@ -1274,9 +1289,7 @@ func TestS7_PendingSnapshotReaperDeletesOnlyWhatACustomerDeleted(t *testing.T) {
 func TestReleaseNodeClaims_FreesARestartedNodesAMIClaims(t *testing.T) {
 	f := newPendingFixture(t)
 	const imageID = "ami-restartown00001"
-	require.NoError(t, f.metadata.PutSnapshot(t.Context(), ebsmetadata.Snapshot{
-		SnapshotID: "snap-amidone000001", VolumeID: pendingVolumeID, State: ebsmetadata.SnapshotStateCompleted, OwnerID: testAccountID,
-	}))
+	f.seedDoc(ebsmetadata.Snapshot{SnapshotID: "snap-amidone000001", State: ebsmetadata.SnapshotStateCompleted}, false)
 	require.NoError(t, f.metadata.PutAMI(t.Context(), ebsmetadata.AMI{
 		ImageID: imageID, SnapshotID: "snap-amidone000001", ImageOwnerAlias: testAccountID, State: ebsmetadata.AMIStatePending,
 	}))

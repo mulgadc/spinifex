@@ -2644,7 +2644,9 @@ func (d *Daemon) startCluster() error {
 			reapers = append(reapers, uefiWriteBacks)
 		}
 		if d.snapshotService != nil {
-			reapers = append(reapers, d.snapshotService.NewPendingSnapshotReaper())
+			// One sweep per cluster reads the provider for each pending document;
+			// the snapshot's claim, not the scope, decides who may repeat a call.
+			reapers = append(reapers, clusterWideReaper{d.snapshotService.NewPendingSnapshotReaper()})
 		}
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))

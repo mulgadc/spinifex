@@ -9,7 +9,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
-	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
 // PendingSnapshotReaper settles every pending snapshot document from the
@@ -23,8 +22,6 @@ type PendingSnapshotReaper struct {
 	svc *SnapshotServiceImpl
 }
 
-var _ vm.Reaper = (*PendingSnapshotReaper)(nil)
-
 // NewPendingSnapshotReaper builds the reaper over this service's documents,
 // provider and claims.
 func (s *SnapshotServiceImpl) NewPendingSnapshotReaper() *PendingSnapshotReaper {
@@ -32,10 +29,6 @@ func (s *SnapshotServiceImpl) NewPendingSnapshotReaper() *PendingSnapshotReaper 
 }
 
 func (r *PendingSnapshotReaper) Class() string { return "pending-snapshot" }
-
-// Scope is cluster-wide: one sweep per cluster reads the provider for each
-// pending document, and the claim, not the scope, decides who may repeat a call.
-func (r *PendingSnapshotReaper) Scope() vm.ReaperScope { return vm.ScopeClusterWide }
 
 // Sweep reads every snapshot document and settles each pending one it can,
 // reporting how many it wrote. A document it cannot settle now is left for

@@ -52,6 +52,16 @@ type SnapshotServiceImpl struct {
 	mutex    sync.RWMutex
 	metadata *ebsmetadata.Store
 	provider ebsprovider.EBSProvider
+	claims   *Claims
+
+	// crashAt stops CreateSnapshot after a step, as a crash there would. Tests only.
+	crashAt func(createStep) bool
+}
+
+// SetClaims wires the snapshot claims shared by CreateSnapshot and the
+// pending-snapshot reaper. Without it they exclude only within this process.
+func (s *SnapshotServiceImpl) SetClaims(claims *Claims) {
+	s.claims = claims
 }
 
 // SetEBSProvider injects the provider boundary for snapshot operations.
@@ -102,6 +112,7 @@ func NewSnapshotServiceImplWithNATS(ctx context.Context, cfg *config.Config, nat
 		natsConn: natsConn,
 		snapRefs: refs,
 		metadata: ebsmetadata.NewStore(store, cfg.Predastore.Bucket),
+		claims:   localClaims(),
 	}, kv, nil
 }
 
@@ -113,6 +124,7 @@ func NewSnapshotServiceImplWithStore(cfg *config.Config, store objectstore.Objec
 		store:    store,
 		natsConn: natsConn,
 		metadata: ebsmetadata.NewStore(store, cfg.Predastore.Bucket),
+		claims:   localClaims(),
 	}
 	if len(snapshotKV) > 0 {
 		svc.snapRefs = kvstore.Over[[]string](nil, snapshotKV[0], snapshotRefsConfig())
@@ -203,47 +215,161 @@ func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.Cre
 		return nil, errors.New(awserrors.ErrorIncorrectState)
 	}
 
-	created, err := s.provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{
-		Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volumeID, VolumeHandle: volume.ProviderHandle,
-	})
-	if err != nil || created == nil {
-		slog.ErrorContext(ctx, "CreateSnapshot: provider CreateSnapshot failed", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
-		return nil, ProviderCreateError(volumeID, err)
-	}
 	now := time.Now()
-	snapshotCfg := ebsmetadata.Snapshot{
+	doc := ebsmetadata.Snapshot{
 		SnapshotID: snapshotID, VolumeID: volumeID,
 		VolumeSize: safecast.Uint64ToInt64(volume.CapacityGiB),
-		State:      string(created.State), Progress: "100%", StartTime: now,
+		State:      snapshotStatePending, Progress: "0%", StartTime: now,
 		Encrypted: volume.Encrypted,
 		OwnerID:   accountID, AvailabilityZone: volume.AvailabilityZone,
-		Tags:           awstags.Extract(input.TagSpecifications, "snapshot"),
-		ProviderHandle: created.Handle,
-	}
-	if snapshotCfg.State == "" {
-		snapshotCfg.State = "completed"
+		Tags: awstags.Extract(input.TagSpecifications, "snapshot"),
 	}
 	if input.Description != nil {
-		snapshotCfg.Description = *input.Description
+		doc.Description = *input.Description
+	}
+	req := ebsprovider.CreateSnapshotRequest{
+		Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volumeID, VolumeHandle: volume.ProviderHandle,
+	}
+	return s.createSnapshot(ctx, doc, req)
+}
+
+// createStep is a point in createSnapshot after which a crash leaves its
+// writes so far, for a test to stop the request at.
+type createStep int
+
+const (
+	stepClaimed createStep = iota + 1
+	stepReferenced
+	stepRecorded
+	stepAnswered
+	stepSettled
+)
+
+// errCreateCrashed is what createSnapshot returns when a test stops it at a step.
+var errCreateCrashed = errors.New("snapshot create stopped at a test crash point")
+
+// createSnapshot records doc pending and then asks the provider for it, so a
+// provider snapshot never exists without a document. Only a refusal of the
+// first call removes the document; anything else leaves it for the reaper.
+func (s *SnapshotServiceImpl) createSnapshot(ctx context.Context, doc ebsmetadata.Snapshot, req ebsprovider.CreateSnapshotRequest) (*ec2.Snapshot, error) {
+	snapshotID, volumeID, accountID := doc.SnapshotID, doc.VolumeID, doc.OwnerID
+
+	held, err := s.claims.lock(ctx, snapshotID)
+	if err != nil {
+		slog.ErrorContext(ctx, "CreateSnapshot could not take the snapshot claim", "snapshotId", snapshotID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	crashed := false
+	defer func() {
+		if !crashed {
+			held.release(ctx)
+		}
+	}()
+	crash := func(step createStep) bool {
+		crashed = s.crashAt != nil && s.crashAt(step)
+		return crashed
+	}
+	if crash(stepClaimed) {
+		return nil, errCreateCrashed
 	}
 
-	// Track the volume→snapshot dependency in KV before persisting to S3.
-	// This ensures we never have an untracked snapshot in S3.
+	// The reference comes first so no snapshot document is ever untracked.
 	if err := s.addSnapshotRef(ctx, volumeID, snapshotID); err != nil {
 		slog.ErrorContext(ctx, "CreateSnapshot failed to add snapshot ref to KV", "snapshotId", snapshotID, "volumeId", volumeID, "err", err)
-		_ = s.provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, Handle: created.Handle})
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if err := s.metadata.PutSnapshot(ctx, snapshotCfg); err != nil {
-		slog.ErrorContext(ctx, "CreateSnapshot failed to write config", "snapshotId", snapshotID, "err", err)
-		_ = s.removeSnapshotRefForCleanup(ctx, volumeID, snapshotID)
-		_ = s.provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, Handle: created.Handle})
+	if crash(stepReferenced) {
+		return nil, errCreateCrashed
+	}
+	if err := s.metadata.PutSnapshot(ctx, doc); err != nil {
+		slog.ErrorContext(ctx, "CreateSnapshot failed to write the pending snapshot document", "snapshotId", snapshotID, "err", err)
+		if rerr := s.removeSnapshotRefForCleanup(ctx, volumeID, snapshotID); rerr != nil {
+			slog.ErrorContext(ctx, "CreateSnapshot failed to remove the snapshot ref", "snapshotId", snapshotID, "volumeId", volumeID, "err", rerr)
+		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	if crash(stepRecorded) {
+		return nil, errCreateCrashed
+	}
 
-	slog.InfoContext(ctx, "CreateSnapshot completed", "snapshotId", snapshotID, "volumeId", volumeID)
+	created, err := s.provider.CreateSnapshot(ctx, req)
+	if crash(stepAnswered) {
+		return nil, errCreateCrashed
+	}
+	if err == nil && created != nil {
+		return s.answerCreate(ctx, doc, created, crash)
+	}
+	if definiteRefusal(err) {
+		// The request holds the claim, so no other call for this ID exists that
+		// a provider could still accept: the document can go.
+		slog.WarnContext(ctx, "CreateSnapshot refused by the provider", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
+		s.rollBackCreate(ctx, accountID, volumeID, snapshotID)
+		return nil, ProviderCreateError(volumeID, err)
+	}
 
-	return snapshotConfigToEC2(snapshotCfg), nil
+	// The first call may have been accepted, so it is repeated: the provider
+	// answers a repeat with the snapshot it already holds.
+	slog.WarnContext(ctx, "CreateSnapshot provider call failed ambiguously, repeating it", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
+	created, err = s.provider.CreateSnapshot(ctx, req)
+	if crash(stepAnswered) {
+		return nil, errCreateCrashed
+	}
+	if err == nil && created != nil {
+		return s.answerCreate(ctx, doc, created, crash)
+	}
+	if refusalSettlesError(err) {
+		slog.WarnContext(ctx, "CreateSnapshot repeat refused for good, marking the snapshot error", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
+		wctx, cancel := writeContext(ctx)
+		defer cancel()
+		if _, _, werr := s.updatePending(wctx, accountID, snapshotID, markSnapshotError); werr != nil {
+			slog.ErrorContext(ctx, "CreateSnapshot failed to mark the snapshot error", "snapshotId", snapshotID, "err", werr)
+		}
+		return nil, ProviderCreateError(volumeID, err)
+	}
+	if definiteRefusal(err) {
+		// The first call may still be accepted once this refusal clears.
+		slog.WarnContext(ctx, "CreateSnapshot repeat refused, leaving the snapshot pending", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
+		return nil, ProviderCreateError(volumeID, err)
+	}
+	slog.ErrorContext(ctx, "CreateSnapshot provider call failed ambiguously twice, leaving the snapshot pending", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
+	return nil, errors.New(awserrors.ErrorServerInternal)
+}
+
+// answerCreate writes the provider's answer onto the pending document and
+// returns the snapshot as written. The answer fixed the contents, so a failed
+// write still reports success; the reaper settles the document.
+func (s *SnapshotServiceImpl) answerCreate(ctx context.Context, doc ebsmetadata.Snapshot, created *ebsprovider.Snapshot, crash func(createStep) bool) (*ec2.Snapshot, error) {
+	wctx, cancel := writeContext(ctx)
+	defer cancel()
+	written, ok, err := s.updatePending(wctx, doc.OwnerID, doc.SnapshotID, applyProviderAnswer(created))
+	switch {
+	case err != nil:
+		slog.ErrorContext(ctx, "CreateSnapshot failed to record the provider's answer", "snapshotId", doc.SnapshotID, "err", err)
+		written = doc
+	case !ok && written.SnapshotID == "":
+		// Deleted while the provider answered; report what the answer was.
+		written = doc
+		applyProviderAnswer(created)(&written)
+	}
+	if crash(stepSettled) {
+		return nil, errCreateCrashed
+	}
+	slog.InfoContext(ctx, "CreateSnapshot completed", "snapshotId", doc.SnapshotID, "volumeId", doc.VolumeID, "state", written.State)
+	return snapshotConfigToEC2(written), nil
+}
+
+// rollBackCreate removes the document and then the reference of a snapshot
+// the provider refused. A document that cannot be deleted keeps its reference.
+func (s *SnapshotServiceImpl) rollBackCreate(ctx context.Context, accountID, volumeID, snapshotID string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), snapshotCleanupTimeout)
+	defer cancel()
+	if err := s.metadata.DeleteSnapshot(ctx, accountID, snapshotID); err != nil && !objectstore.IsNoSuchKeyError(err) {
+		slog.ErrorContext(ctx, "CreateSnapshot failed to remove a refused snapshot's document", "snapshotId", snapshotID, "err", err)
+		return
+	}
+	if err := s.removeSnapshotRef(ctx, volumeID, snapshotID); err != nil {
+		slog.ErrorContext(ctx, "CreateSnapshot failed to remove a refused snapshot's ref", "snapshotId", snapshotID, "volumeId", volumeID, "err", err)
+	}
 }
 
 // describeSnapshotsValidFilters defines the set of filter names accepted by DescribeSnapshots.

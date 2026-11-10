@@ -2083,6 +2083,7 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize snapshot service: %w", err)
 	}
 	d.snapshotService = snap.svc
+	d.snapshotService.SetClaims(ec2snapshot.NewClaims(d.snapshotClaims(), d.node, d.heartbeatLiveness()))
 
 	d.volumeService = ec2volume.NewVolumeServiceImpl(d.config, d.natsConn, snap.kv)
 	if err := d.configureEBSProvider(); err != nil {
@@ -2547,6 +2548,10 @@ func (d *Daemon) startCluster() error {
 		slog.Info("Rebuilt mgmt IP allocator from restored instances", "allocated", d.mgmtIPAllocator.AllocatedCount())
 	}
 
+	// Before any request is served, so no claim a request of this process
+	// takes can be released as one of its predecessor's.
+	d.releaseSnapshotClaims()
+
 	if err := d.subscribeAll(); err != nil {
 		return fmt.Errorf("failed to subscribe to NATS topics: %w", err)
 	}
@@ -2637,6 +2642,9 @@ func (d *Daemon) startCluster() error {
 		}
 		if uefiWriteBacks := d.vmMgr.NewUEFIWriteBackReaper(); uefiWriteBacks != nil {
 			reapers = append(reapers, uefiWriteBacks)
+		}
+		if d.snapshotService != nil {
+			reapers = append(reapers, d.snapshotService.NewPendingSnapshotReaper())
 		}
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))

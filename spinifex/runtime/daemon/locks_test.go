@@ -25,6 +25,7 @@ func TestDaemonLocks_EveryOwnerHasItsOwnKey(t *testing.T) {
 		locks.eks.Get("123456789012/alpha")
 		locks.eks.Get("123456789012/alpha/teardown")
 		locks.uefi.Get("i-0123456789abcdef0")
+		locks.snapshot.Get("snap-0123456789abcdef0")
 	})
 }
 

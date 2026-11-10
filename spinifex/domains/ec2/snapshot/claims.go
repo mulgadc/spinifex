@@ -91,31 +91,23 @@ func (c *Claims) unreserve(snapshotID string) {
 // lock takes snapshotID's claim for a creating request. It never takes over:
 // the ID is new, so any holder is a fault worth refusing the request for.
 func (c *Claims) lock(ctx context.Context, snapshotID string) (*heldClaim, error) {
-	if !c.reserve(snapshotID) {
-		return nil, fmt.Errorf("%w: %s by this process", errClaimHeld, snapshotID)
-	}
-	held := &heldClaim{claims: c, snapshotID: snapshotID}
-	if c.group == nil {
-		return held, nil
-	}
-	held.claim = c.group.Get(snapshotID)
-	tok, err := held.claim.TryLock(ctx)
-	if err != nil {
-		c.unreserve(snapshotID)
-		return nil, fmt.Errorf("take snapshot claim %s: %w", snapshotID, err)
-	}
-	held.token = tok
-	return held, nil
+	return c.acquire(ctx, snapshotID, false)
 }
 
 // take acquires snapshotID's claim for the reaper. A claim another node holds
 // is taken over only once that node's heartbeat is LivenessWindow old or
 // absent; while it is fresh, or cannot be read, the claim is refused.
 func (c *Claims) take(ctx context.Context, snapshotID string) (*heldClaim, error) {
+	return c.acquire(ctx, snapshotID, true)
+}
+
+// acquire reserves snapshotID in this process and locks its claim, taking it
+// over from a dead holder only when takeOver allows.
+func (c *Claims) acquire(ctx context.Context, snapshotID string, takeOver bool) (*heldClaim, error) {
 	if !c.reserve(snapshotID) {
 		return nil, fmt.Errorf("%w: %s by this process", errClaimHeld, snapshotID)
 	}
-	held, err := c.takeReserved(ctx, snapshotID)
+	held, err := c.acquireReserved(ctx, snapshotID, takeOver)
 	if err != nil {
 		c.unreserve(snapshotID)
 		return nil, err
@@ -123,7 +115,7 @@ func (c *Claims) take(ctx context.Context, snapshotID string) (*heldClaim, error
 	return held, nil
 }
 
-func (c *Claims) takeReserved(ctx context.Context, snapshotID string) (*heldClaim, error) {
+func (c *Claims) acquireReserved(ctx context.Context, snapshotID string, takeOver bool) (*heldClaim, error) {
 	held := &heldClaim{claims: c, snapshotID: snapshotID}
 	if c.group == nil {
 		return held, nil
@@ -135,7 +127,7 @@ func (c *Claims) takeReserved(ctx context.Context, snapshotID string) (*heldClai
 		return held, nil
 	}
 	he, ok := errors.AsType[*kvsync.HeldError](err)
-	if !ok || he.Current.Holder == "" {
+	if !takeOver || !ok || he.Current.Holder == "" {
 		return nil, fmt.Errorf("take snapshot claim %s: %w", snapshotID, err)
 	}
 	holder := he.Current

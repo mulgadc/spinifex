@@ -186,52 +186,54 @@ func (c *apiClient) GetPrivateIP(ctx context.Context, privateIPID string) (Priva
 }
 
 func (c *apiClient) ListPrivateIPs(ctx context.Context, vnicID string) ([]PrivateIP, error) {
-	var out []PrivateIP
-	var page *string
-	for {
+	return listAll(func(page *string) ([]core.PrivateIp, *string, error) {
 		resp, err := c.net.ListPrivateIps(ctx, core.ListPrivateIpsRequest{VnicId: &vnicID, Page: page})
-		if err != nil {
-			return nil, wrap("ListPrivateIPs", err)
-		}
-		for _, item := range resp.Items {
-			ip, err := toPrivateIP(item)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, ip)
-		}
-		if resp.OpcNextPage == nil {
-			return out, nil
-		}
-		page = resp.OpcNextPage
-	}
+		return resp.Items, resp.OpcNextPage, wrap("ListPrivateIPs", err)
+	}, nil, toPrivateIP)
 }
 
 func (c *apiClient) ListReservedPublicIPs(ctx context.Context, compartmentID string) ([]PublicIP, error) {
-	var out []PublicIP
-	var page *string
-	for {
+	return listAll(func(page *string) ([]core.PublicIp, *string, error) {
 		resp, err := c.net.ListPublicIps(ctx, core.ListPublicIpsRequest{
 			CompartmentId: &compartmentID,
 			Scope:         core.ListPublicIpsScopeRegion,
 			Lifetime:      core.ListPublicIpsLifetimeReserved,
 			Page:          page,
 		})
+		return resp.Items, resp.OpcNextPage, wrap("ListReservedPublicIPs", err)
+	}, nil, toPublicIP)
+}
+
+// listAll reads every page fetch returns, from the first, and converts each
+// item keep accepts; a nil keep accepts every item.
+func listAll[I, T any](fetch func(page *string) ([]I, *string, error), keep func(I) bool, convert func(I) (T, error)) ([]T, error) {
+	var out []T
+	var page *string
+	for {
+		items, next, err := fetch(page)
 		if err != nil {
-			return nil, wrap("ListReservedPublicIPs", err)
+			return nil, err
 		}
-		for _, item := range resp.Items {
-			ip, err := toPublicIP(item)
+		for _, item := range items {
+			if keep != nil && !keep(item) {
+				continue
+			}
+			v, err := convert(item)
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, ip)
+			out = append(out, v)
 		}
-		if resp.OpcNextPage == nil {
+		if next == nil {
 			return out, nil
 		}
-		page = resp.OpcNextPage
+		page = next
 	}
+}
+
+// infallible adapts a conversion that cannot fail to listAll.
+func infallible[I, T any](convert func(I) T) func(I) (T, error) {
+	return func(item I) (T, error) { return convert(item), nil }
 }
 
 func (c *apiClient) GetSubnet(ctx context.Context, subnetID string) (Subnet, error) {

@@ -275,29 +275,18 @@ func (c *blockAPIClient) GetVolume(ctx context.Context, volumeID string) (BlockV
 }
 
 func (c *blockAPIClient) ListVolumes(ctx context.Context, filter VolumeFilter) ([]BlockVolume, error) {
-	var out []BlockVolume
 	seen := map[string]bool{}
-	var page *string
-	for {
+	return listAll(func(page *string) ([]core.Volume, *string, error) {
 		resp, err := c.storage.ListVolumes(ctx, core.ListVolumesRequest{
 			CompartmentId:      &filter.CompartmentID,
 			AvailabilityDomain: optional(filter.AvailabilityDomain),
 			DisplayName:        optional(filter.DisplayName),
 			Page:               page,
 		})
-		if err != nil {
-			return nil, wrap("ListVolumes", err)
-		}
-		for _, item := range resp.Items {
-			if hasTags(item.FreeformTags, filter.Tags) && firstSight(seen, item.Id) {
-				out = append(out, toBlockVolume(item))
-			}
-		}
-		if resp.OpcNextPage == nil {
-			return out, nil
-		}
-		page = resp.OpcNextPage
-	}
+		return resp.Items, resp.OpcNextPage, wrap("ListVolumes", err)
+	}, func(item core.Volume) bool {
+		return hasTags(item.FreeformTags, filter.Tags) && firstSight(seen, item.Id)
+	}, infallible(toBlockVolume))
 }
 
 func (c *blockAPIClient) UpdateVolume(ctx context.Context, volumeID string, in UpdateVolumeInput) (BlockVolume, error) {
@@ -343,26 +332,15 @@ func (c *blockAPIClient) GetVolumeAttachment(ctx context.Context, attachmentID s
 }
 
 func (c *blockAPIClient) ListVolumeAttachments(ctx context.Context, filter AttachmentFilter) ([]VolumeAttachment, error) {
-	var out []VolumeAttachment
-	var page *string
-	for {
+	return listAll(func(page *string) ([]core.VolumeAttachment, *string, error) {
 		resp, err := c.compute.ListVolumeAttachments(ctx, core.ListVolumeAttachmentsRequest{
 			CompartmentId: &filter.CompartmentID,
 			VolumeId:      optional(filter.VolumeID),
 			InstanceId:    optional(filter.InstanceID),
 			Page:          page,
 		})
-		if err != nil {
-			return nil, wrap("ListVolumeAttachments", err)
-		}
-		for _, item := range resp.Items {
-			out = append(out, toVolumeAttachment(item))
-		}
-		if resp.OpcNextPage == nil {
-			return out, nil
-		}
-		page = resp.OpcNextPage
-	}
+		return resp.Items, resp.OpcNextPage, wrap("ListVolumeAttachments", err)
+	}, nil, infallible(toVolumeAttachment))
 }
 
 func (c *blockAPIClient) DetachVolume(ctx context.Context, attachmentID string) error {
@@ -395,28 +373,17 @@ func (c *blockAPIClient) GetVolumeBackup(ctx context.Context, backupID string) (
 }
 
 func (c *blockAPIClient) ListVolumeBackups(ctx context.Context, filter BackupFilter) ([]VolumeBackup, error) {
-	var out []VolumeBackup
 	seen := map[string]bool{}
-	var page *string
-	for {
+	return listAll(func(page *string) ([]core.VolumeBackup, *string, error) {
 		resp, err := c.storage.ListVolumeBackups(ctx, core.ListVolumeBackupsRequest{
 			CompartmentId: &filter.CompartmentID,
 			DisplayName:   optional(filter.DisplayName),
 			Page:          page,
 		})
-		if err != nil {
-			return nil, wrap("ListVolumeBackups", err)
-		}
-		for _, item := range resp.Items {
-			if hasTags(item.FreeformTags, filter.Tags) && firstSight(seen, item.Id) {
-				out = append(out, toVolumeBackup(item))
-			}
-		}
-		if resp.OpcNextPage == nil {
-			return out, nil
-		}
-		page = resp.OpcNextPage
-	}
+		return resp.Items, resp.OpcNextPage, wrap("ListVolumeBackups", err)
+	}, func(item core.VolumeBackup) bool {
+		return hasTags(item.FreeformTags, filter.Tags) && firstSight(seen, item.Id)
+	}, infallible(toVolumeBackup))
 }
 
 func (c *blockAPIClient) DeleteVolumeBackup(ctx context.Context, backupID string) error {
@@ -503,7 +470,6 @@ func hasTags(tags, want map[string]string) bool {
 	return true
 }
 
-// optional is nil for the empty string, which the SDK omits from a request.
 // firstSight reports whether id is new to seen, and records it. OCI's list
 // calls can return a resource twice while it changes state, as a new backup
 // leaving REQUEST_RECEIVED does.
@@ -516,6 +482,7 @@ func firstSight(seen map[string]bool, id *string) bool {
 	return true
 }
 
+// optional is nil for the empty string, which the SDK omits from a request.
 func optional(s string) *string {
 	if s == "" {
 		return nil

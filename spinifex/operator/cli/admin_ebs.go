@@ -43,6 +43,15 @@ func ebsInitConfig(provider, compartmentID, availabilityDomain, priorClusterID s
 	}, nil
 }
 
+// formationEBS is the EBS object sent to joining nodes: nil for the default
+// provider, so a viperblock cluster's formation payload has no ebs object.
+func formationEBS(c formation.EBSConfig) *formation.EBSConfig {
+	if (config.EBSConfig{Provider: c.Provider}).ResolvedProvider() == config.EBSProviderViperblockd {
+		return nil
+	}
+	return &c
+}
+
 // generateClusterID returns a random 128-bit value in hex.
 func generateClusterID() (string, error) {
 	var b [16]byte

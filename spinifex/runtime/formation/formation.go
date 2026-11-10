@@ -122,8 +122,9 @@ type NetworkConfig struct {
 	BootstrapSubnetCidr string `json:"bootstrap_subnet_cidr,omitempty"`
 
 	// EBS is the cluster's EBS provider, chosen once at init, so every
-	// joining node writes the same one.
-	EBS EBSConfig `json:"ebs"`
+	// joining node writes the same one. Nil for the default provider, so a
+	// viperblock cluster's payload carries no ebs object.
+	EBS *EBSConfig `json:"ebs,omitempty"`
 }
 
 // EBSConfig is the EBS provider propagated to joining nodes. The OCI fields

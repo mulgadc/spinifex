@@ -1861,7 +1861,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		// external networking is disabled.
 		networkConfig := &formation.NetworkConfig{
 			IPSecEnabled: ipsecEnabled,
-			EBS:          ebsConfig,
+			EBS:          formationEBS(ebsConfig),
 		}
 		if externalMode != "" {
 			bootstrapVpcId := awsidentifiers.GenerateResourceID("vpc")
@@ -3420,10 +3420,12 @@ func finalizeNodeSetup(dataDir, certPath, adminAccessKey, adminSecretKey, region
 // NetworkConfig into ConfigSettings and auto-detects the local WAN interface.
 func applyNetworkConfig(settings *admin.ConfigSettings, nc *formation.NetworkConfig) {
 	settings.IPSecEnabled = nc.IPSecEnabled
-	settings.EBSProvider = nc.EBS.Provider
-	settings.OCICompartmentID = nc.EBS.OCICompartmentID
-	settings.OCIAvailabilityDomain = nc.EBS.OCIAvailabilityDomain
-	settings.OCIClusterID = nc.EBS.ClusterID
+	if nc.EBS != nil {
+		settings.EBSProvider = nc.EBS.Provider
+		settings.OCICompartmentID = nc.EBS.OCICompartmentID
+		settings.OCIAvailabilityDomain = nc.EBS.OCIAvailabilityDomain
+		settings.OCIClusterID = nc.EBS.ClusterID
+	}
 	settings.ExternalMode = nc.ExternalMode
 	// A node's own address is northstar itself; forwarding to it would loop.
 	settings.PoolDNSServers = filterDNSServers(nc.PoolDNSServers, settings.AdvertiseIP, settings.BindIP)

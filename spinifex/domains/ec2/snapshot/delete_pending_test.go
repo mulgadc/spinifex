@@ -26,7 +26,6 @@ func (f *pendingFixture) deleteSnapshot(svc *SnapshotServiceImpl, id string) err
 	return err
 }
 
-
 // assertHidden requires that every request answers id as a deleted snapshot.
 func (f *pendingFixture) assertHidden(svc *SnapshotServiceImpl, id string) {
 	f.t.Helper()

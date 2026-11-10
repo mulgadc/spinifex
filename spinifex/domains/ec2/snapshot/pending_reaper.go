@@ -226,7 +226,7 @@ func (r *PendingSnapshotReaper) repeat(ctx context.Context, current ebsmetadata.
 		}
 	}
 	created, err := r.svc.provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{
-		Versioned: ebsprovider.NewVersioned(), SnapshotID: current.SnapshotID, VolumeID: current.VolumeID, VolumeHandle: handle,
+		Versioned: ebsprovider.NewLatestVersioned(), SnapshotID: current.SnapshotID, VolumeID: current.VolumeID, VolumeHandle: handle,
 	})
 	mutate, answered := repeatOutcome(created, err, earlierUnanswered)
 	switch {

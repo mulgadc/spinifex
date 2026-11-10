@@ -256,7 +256,7 @@ func pendingDocument(volume ebsmetadata.Volume, snapshotID, accountID, descripti
 
 func providerCreateRequest(volume ebsmetadata.Volume, snapshotID string) ebsprovider.CreateSnapshotRequest {
 	return ebsprovider.CreateSnapshotRequest{
-		Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volume.VolumeID, VolumeHandle: volume.ProviderHandle,
+		Versioned: ebsprovider.NewLatestVersioned(), SnapshotID: snapshotID, VolumeID: volume.VolumeID, VolumeHandle: volume.ProviderHandle,
 	}
 }
 

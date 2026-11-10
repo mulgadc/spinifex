@@ -160,7 +160,7 @@ const settleTimeout = 30 * time.Second
 // nothing about the snapshot is asserted before it settles.
 func createSnapshot(t *testing.T, provider ebsprovider.EBSProvider, snapshotID, volumeID string) *ebsprovider.Snapshot {
 	t.Helper()
-	snap, err := provider.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volumeID})
+	snap, err := provider.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewLatestVersioned(), SnapshotID: snapshotID, VolumeID: volumeID})
 	require.NoError(t, err)
 	require.NotNil(t, snap)
 	require.Containsf(t, []ebsprovider.SnapshotState{ebsprovider.SnapshotStatePending, ebsprovider.SnapshotStateCompleted}, snap.State,
@@ -677,7 +677,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			require.NoError(t, err)
 			first := createSnapshot(t, provider, snapshotID, volumeID)
 
-			again, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volumeID})
+			again, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewLatestVersioned(), SnapshotID: snapshotID, VolumeID: volumeID})
 			require.NoError(t, err, "a repeat naming the same source volume is not a conflict")
 			require.NotNil(t, again)
 			assert.Equal(t, first.ID, again.ID)
@@ -702,7 +702,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			first := createSnapshot(t, provider, snapshotID, volumeID)
 			require.NoError(t, provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID}))
 
-			again, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volumeID})
+			again, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewLatestVersioned(), SnapshotID: snapshotID, VolumeID: volumeID})
 			require.NoError(t, err, "a repeat must be answered from the snapshot, not the deleted volume")
 			require.NotNil(t, again)
 			assert.Equal(t, first.ID, again.ID)

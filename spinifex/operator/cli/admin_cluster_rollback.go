@@ -74,16 +74,10 @@ func runClusterRollback(cmd *cobra.Command, _ []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), rollbackTimeout+5*time.Minute)
 	defer cancel()
 	jsm, err := daemon.NewJetStreamManager(nc)
-	if err == nil {
-		err = jsm.InitClusterConfigBucket()
-	}
-	if err == nil {
-		err = jsm.InitClusterStateBucket()
-	}
 	if err != nil {
 		fail(err)
 	}
-	store, err := jsm.FeatureLevelStore(ctx)
+	store, err := jsm.AttachFeatureLevel(ctx)
 	if err != nil {
 		fail(err)
 	}
@@ -129,16 +123,10 @@ func runClusterReleaseHold(_ *cobra.Command, _ []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	jsm, err := daemon.NewJetStreamManager(nc)
-	if err == nil {
-		err = jsm.InitClusterConfigBucket()
-	}
-	if err == nil {
-		err = jsm.InitClusterStateBucket()
-	}
 	if err != nil {
 		fail(err)
 	}
-	store, err := jsm.FeatureLevelStore(ctx)
+	store, err := jsm.AttachFeatureLevel(ctx)
 	if err != nil {
 		fail(err)
 	}

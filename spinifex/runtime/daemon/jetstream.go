@@ -296,10 +296,15 @@ func (m *JetStreamManager) WriteHeartbeat(h *Heartbeat) error {
 
 // ReadHeartbeat reads the heartbeat entry for the given node from the cluster-state KV.
 func (m *JetStreamManager) ReadHeartbeat(nodeID string) (*Heartbeat, error) {
+	return m.ReadHeartbeatContext(context.Background(), nodeID)
+}
+
+// ReadHeartbeatContext is ReadHeartbeat bounded by ctx.
+func (m *JetStreamManager) ReadHeartbeatContext(ctx context.Context, nodeID string) (*Heartbeat, error) {
 	if m.clusterKV == nil {
 		return nil, errors.New("cluster state KV not initialized")
 	}
-	entry, err := m.clusterKV.Get(context.Background(), clusterv1.HeartbeatKey(nodeID))
+	entry, err := m.clusterKV.Get(ctx, clusterv1.HeartbeatKey(nodeID))
 	if err != nil {
 		return nil, err
 	}

@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/foundation/release/featurelevel"
 	instancecache "github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,7 +42,7 @@ func levelBeat(t *testing.T, m *JetStreamManager, node string, level int, now ti
 
 func tick(t *testing.T, m *JetStreamManager, store *featurelevel.Store, nodes []string, now time.Time) (featurelevel.Record, bool) {
 	t.Helper()
-	rec, advanced, err := advanceFeatureLevel(t.Context(), store, m.ReadHeartbeat, nodes, now)
+	rec, advanced, err := advanceFeatureLevel(t.Context(), store, m.ReadHeartbeatContext, nodes, now)
 	require.NoError(t, err)
 	return rec, advanced
 }
@@ -107,7 +110,7 @@ func TestFeatureLevelReadErrorAdvancesNothing(t *testing.T) {
 	t.Parallel()
 	_, store := levelManager(t)
 	boom := errors.New("kv unavailable")
-	read := func(string) (*Heartbeat, error) { return nil, boom }
+	read := func(context.Context, string) (*Heartbeat, error) { return nil, boom }
 	rec, advanced, err := advanceFeatureLevel(t.Context(), store, read, []string{"a"}, time.Now())
 	require.ErrorIs(t, err, boom)
 	assert.False(t, advanced)
@@ -260,4 +263,88 @@ func TestFeatureLevelStatusSubs_NilGateServesNothing(t *testing.T) {
 
 	d.node = "a.b"
 	assert.Empty(t, d.featureLevelStatusSubs(), "an invalid node id serves nothing")
+}
+
+// A read that never returns on its own is cut off by the tick's context, so the
+// reconciliation cannot hold the heartbeat loop past its budget.
+func TestFeatureLevelAdvance_SlowReadsStopAtTheTickDeadline(t *testing.T) {
+	t.Parallel()
+	_, store := levelManager(t)
+	reads := 0
+	slow := func(ctx context.Context, _ string) (*Heartbeat, error) {
+		reads++
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, advanced, err := advanceFeatureLevel(ctx, store, slow, []string{"a", "b", "c", "d"}, time.Now())
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.False(t, advanced)
+	assert.Equal(t, 1, reads, "scanning stops once the deadline has passed")
+	assert.Less(t, time.Since(start), 2*time.Second)
+}
+
+// The store a daemon and the operator commands use reads through the stream
+// leader, so a lagging replica cannot return the level from before a raise.
+func TestFeatureLevelStore_ReadsThroughTheLeader(t *testing.T) {
+	t.Parallel()
+	_, nc, _ := testutil.StartTestJetStream(t)
+	m, err := NewJetStreamManager(nc)
+	require.NoError(t, err)
+	require.NoError(t, m.InitClusterConfigBucket())
+	store, err := m.FeatureLevelStore(t.Context())
+	require.NoError(t, err)
+
+	var mu sync.Mutex
+	var subjects []string
+	sub, err := nc.Subscribe("$JS.API.>", func(msg *nats.Msg) {
+		mu.Lock()
+		subjects = append(subjects, msg.Subject)
+		mu.Unlock()
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	require.NoError(t, enforceFeatureLevel(store))
+	require.NoError(t, nc.Flush())
+	mu.Lock()
+	defer mu.Unlock()
+	leaderGets := 0
+	for _, s := range subjects {
+		assert.False(t, strings.HasPrefix(s, "$JS.API.DIRECT.GET."), "startup check used a direct get: %s", s)
+		if s == "$JS.API.STREAM.MSG.GET.KV_"+ClusterConfigBucket {
+			leaderGets++
+		}
+	}
+	assert.Equal(t, 1, leaderGets)
+}
+
+// Attaching never creates a bucket: a cluster whose daemons have not made them
+// reports them unavailable instead of changing the cluster.
+func TestAttachFeatureLevel_NeverCreatesABucket(t *testing.T) {
+	t.Parallel()
+	_, nc, js := testutil.StartTestJetStream(t)
+	m, err := NewJetStreamManager(nc)
+	require.NoError(t, err)
+	_, err = m.AttachFeatureLevel(t.Context())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), ClusterConfigBucket)
+	_, kerr := js.KeyValue(t.Context(), ClusterConfigBucket)
+	require.ErrorIs(t, kerr, jetstream.ErrBucketNotFound, "attach must not create the bucket")
+	_, kerr = js.KeyValue(t.Context(), ClusterStateBucket)
+	require.ErrorIs(t, kerr, jetstream.ErrBucketNotFound)
+
+	other, onc, _ := testutil.StartTestJetStream(t)
+	_ = other
+	om, err := NewJetStreamManager(onc)
+	require.NoError(t, err)
+	require.NoError(t, om.InitClusterConfigBucket())
+	store, err := om.AttachFeatureLevel(t.Context())
+	require.NoError(t, err)
+	rec, _, err := store.Read(t.Context())
+	require.NoError(t, err)
+	assert.Zero(t, rec.Level)
+	assert.Nil(t, om.clusterKV, "a missing cluster-state bucket stays unattached and uncreated")
 }

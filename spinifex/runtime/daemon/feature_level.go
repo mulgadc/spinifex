@@ -15,7 +15,7 @@ import (
 )
 
 // FeatureLevelStore returns the cluster feature-level record over the
-// cluster-config bucket, which has no TTL.
+// cluster-config bucket, which has no TTL. Reads go to the stream leader.
 func (m *JetStreamManager) FeatureLevelStore(ctx context.Context) (*featurelevel.Store, error) {
 	if m.clusterConfig == nil {
 		return nil, errors.New("cluster config KV not initialized")
@@ -24,17 +24,35 @@ func (m *JetStreamManager) FeatureLevelStore(ctx context.Context) (*featurelevel
 	if err != nil {
 		return nil, err
 	}
-	return featurelevel.NewStore(kv), nil
+	return featurelevel.NewStore(featurelevel.LeaderKV(m.js, kv)), nil
+}
+
+// AttachFeatureLevel opens the buckets an operator command reads that a daemon
+// already created, without creating, repairing or migrating either. The
+// cluster-state bucket is optional: a missing one is reported as unavailable
+// heartbeats rather than created.
+func (m *JetStreamManager) AttachFeatureLevel(ctx context.Context) (*featurelevel.Store, error) {
+	kv, err := m.js.KeyValue(ctx, ClusterConfigBucket)
+	if err != nil {
+		return nil, fmt.Errorf("cluster config bucket %s is unavailable: %w", ClusterConfigBucket, err)
+	}
+	if state, serr := m.js.KeyValue(ctx, ClusterStateBucket); serr == nil {
+		m.clusterKV = state
+	}
+	return featurelevel.NewStore(featurelevel.LeaderKV(m.js, kv)), nil
 }
 
 // featureLevelMembers reads every configured node's heartbeat. A member is
 // current when its heartbeat is within NodeStaleAfter. A node with no heartbeat
 // (never written, or expired from the bucket) or an unreadable timestamp is not
 // current; any other read failure is returned so the tick advances nothing.
-func featureLevelMembers(read func(node string) (*Heartbeat, error), nodes []string, now time.Time) ([]featurelevel.Member, error) {
+func featureLevelMembers(ctx context.Context, read func(ctx context.Context, node string) (*Heartbeat, error), nodes []string, now time.Time) ([]featurelevel.Member, error) {
 	members := make([]featurelevel.Member, 0, len(nodes))
 	for _, node := range nodes {
-		h, err := read(node)
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("read heartbeat of %s: %w", node, err)
+		}
+		h, err := read(ctx, node)
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			members = append(members, featurelevel.Member{Node: node})
 			continue
@@ -51,8 +69,8 @@ func featureLevelMembers(read func(node string) (*Heartbeat, error), nodes []str
 
 // advanceFeatureLevel raises the recorded level when every configured node has
 // a current heartbeat reporting it. Any number of daemons may call it.
-func advanceFeatureLevel(ctx context.Context, store *featurelevel.Store, read func(string) (*Heartbeat, error), nodes []string, now time.Time) (featurelevel.Record, bool, error) {
-	members, err := featureLevelMembers(read, nodes, now)
+func advanceFeatureLevel(ctx context.Context, store *featurelevel.Store, read func(context.Context, string) (*Heartbeat, error), nodes []string, now time.Time) (featurelevel.Record, bool, error) {
+	members, err := featureLevelMembers(ctx, read, nodes, now)
 	if err != nil {
 		return featurelevel.Record{}, false, err
 	}
@@ -65,7 +83,8 @@ func (d *Daemon) tickFeatureLevel() {
 	if d.jsManager == nil || d.clusterConfig == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(d.ctx, heartbeatInterval)
+	// Half the interval, so a slow tick never delays the next heartbeat.
+	ctx, cancel := context.WithTimeout(d.ctx, heartbeatInterval/2)
 	defer cancel()
 	store, err := d.jsManager.FeatureLevelStore(ctx)
 	if err != nil {
@@ -73,7 +92,7 @@ func (d *Daemon) tickFeatureLevel() {
 		return
 	}
 	nodes := slices.Sorted(maps.Keys(d.clusterConfig.Nodes))
-	rec, advanced, err := advanceFeatureLevel(ctx, store, d.jsManager.ReadHeartbeat, nodes, time.Now())
+	rec, advanced, err := advanceFeatureLevel(ctx, store, d.jsManager.ReadHeartbeatContext, nodes, time.Now())
 	if err != nil {
 		slog.Warn("Feature level: advance failed", "error", err)
 		return

@@ -98,6 +98,9 @@ var (
 	ErrNoRollback = errors.New("featurelevel: no rollback in progress")
 	// ErrRollbackInProgress is returned when a different rollback is already recorded.
 	ErrRollbackInProgress = errors.New("featurelevel: a different rollback is in progress")
+	// ErrRollbackChanged is returned when the rollback was cancelled or restarted
+	// after its checks ran, so they no longer describe the record.
+	ErrRollbackChanged = errors.New("featurelevel: the rollback changed since it was verified")
 	// ErrBadTarget is returned for a rollback target that is not below the level.
 	ErrBadTarget = errors.New("featurelevel: rollback target must be below the recorded level and not negative")
 )

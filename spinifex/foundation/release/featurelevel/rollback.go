@@ -147,7 +147,7 @@ func RunRollback(ctx context.Context, target int, d RollbackDeps) (Record, error
 			return rec, &DrainOutstandingError{Level: n, Outstanding: outstanding}
 		}
 	}
-	return d.Store.FinishRollback(ctx)
+	return d.Store.FinishRollback(ctx, rev, target)
 }
 
 func (e *DrainOutstandingError) Unwrap() error { return e.Err }

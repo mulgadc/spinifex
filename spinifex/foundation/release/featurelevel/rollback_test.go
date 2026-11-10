@@ -195,3 +195,38 @@ func TestServeStatus_NilGateAnswersWithAnErrorNeverZeroInFlight(t *testing.T) {
 	_, err := g.ServeStatus("n1", Build)(t.Context(), &StatusRequest{Node: "n1"}, "")
 	require.Error(t, err)
 }
+
+func TestRollback_ACancelAndRestartAfterTheChecksFailsTheFinish(t *testing.T) {
+	t.Parallel()
+	s := atLevelOne(t)
+	probe := func(context.Context) []NodeStatus { return []NodeStatus{ackFor(s, "a", nil)} }
+	// The interruption lands after the drain check and before the finish.
+	drains := func(int) map[int]DrainCheck {
+		return map[int]DrainCheck{1: func(ctx context.Context) (int, error) {
+			if _, err := s.CancelRollback(ctx); err != nil {
+				return 0, err
+			}
+			_, _, err := s.StartRollback(ctx, 0, Build)
+			return 0, err
+		}}
+	}
+	_, err := RunRollback(t.Context(), 0, deps(s, probe, drains))
+	require.ErrorIs(t, err, ErrRollbackChanged)
+	got, _, _ := s.Read(t.Context())
+	assert.Equal(t, 1, got.Level, "the stale checks did not lower the level")
+	assert.NotNil(t, got.Rollback)
+}
+
+func TestFinishRollback_RefusesAWrongRevisionOrTarget(t *testing.T) {
+	t.Parallel()
+	s := atLevelOne(t)
+	_, rev, err := s.StartRollback(t.Context(), 0, Build)
+	require.NoError(t, err)
+	_, err = s.FinishRollback(t.Context(), rev-1, 0)
+	require.ErrorIs(t, err, ErrRollbackChanged)
+	_, err = s.FinishRollback(t.Context(), rev, 1)
+	require.ErrorIs(t, err, ErrRollbackChanged)
+	rec, err := s.FinishRollback(t.Context(), rev, 0)
+	require.NoError(t, err)
+	assert.Zero(t, rec.Level)
+}

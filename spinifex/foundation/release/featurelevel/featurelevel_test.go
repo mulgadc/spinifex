@@ -137,7 +137,7 @@ func TestRollbackToZeroHoldsAgainstRepeatedTicks(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, advanced, "advance stops while the rollback is in progress")
 
-	rec, err = s.FinishRollback(t.Context())
+	rec, err = s.FinishRollback(t.Context(), rev, 0)
 	require.NoError(t, err)
 	assert.Zero(t, rec.Level)
 	assert.Nil(t, rec.Rollback)
@@ -163,7 +163,7 @@ func TestRollback_StateTransitions(t *testing.T) {
 	s, _ := newStore(t)
 	_, _, err := s.StartRollback(t.Context(), 0, Build)
 	require.ErrorIs(t, err, ErrBadTarget, "nothing above level 0 to roll back")
-	_, err = s.FinishRollback(t.Context())
+	_, err = s.FinishRollback(t.Context(), 1, 0)
 	require.ErrorIs(t, err, ErrNoRollback)
 	_, err = s.CancelRollback(t.Context())
 	require.ErrorIs(t, err, ErrNoRollback)

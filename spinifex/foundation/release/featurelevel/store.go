@@ -184,17 +184,33 @@ func (s *Store) StartRollback(ctx context.Context, target, cliBuild int) (Record
 }
 
 // FinishRollback lowers the level to the target and clears the rollback, keeping
-// the hold so running newer builds cannot advance it again.
-func (s *Store) FinishRollback(ctx context.Context) (Record, error) {
-	rec, _, err := s.mutate(ctx, func(r *Record) (bool, error) {
-		if r.Rollback == nil {
-			return false, ErrNoRollback
+// the hold so running newer builds cannot advance it again. It succeeds only when
+// the record still holds the rollback write at rev for target, so a rollback that
+// was cancelled or restarted since its checks ran is not completed on their evidence.
+func (s *Store) FinishRollback(ctx context.Context, rev uint64, target int) (Record, error) {
+	rec, cur, err := s.Read(ctx)
+	if err != nil {
+		return Record{}, err
+	}
+	if rec.Rollback == nil {
+		return Record{}, ErrNoRollback
+	}
+	if cur != rev || rec.Rollback.Target != target {
+		return Record{}, fmt.Errorf("%w: recorded revision %d target %d, verified revision %d target %d", ErrRollbackChanged, cur, rec.Rollback.Target, rev, target)
+	}
+	rec.Level = target
+	rec.Rollback = nil
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return Record{}, fmt.Errorf("encode feature level: %w", err)
+	}
+	if _, err := s.kv.Update(ctx, Key, data, rev); err != nil {
+		if kvstore.IsRevisionConflict(err) {
+			return Record{}, fmt.Errorf("%w: the record changed while finishing", ErrRollbackChanged)
 		}
-		r.Level = r.Rollback.Target
-		r.Rollback = nil
-		return true, nil
-	})
-	return rec, err
+		return Record{}, fmt.Errorf("write feature level: %w", err)
+	}
+	return rec, nil
 }
 
 // CancelRollback clears a rollback that has not lowered the level and restores

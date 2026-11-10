@@ -3,6 +3,7 @@ package elbv2
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -184,26 +185,91 @@ func TestLBHealth_DeleteLoadBalancerRemovesTheKey(t *testing.T) {
 	assert.Nil(t, rec)
 }
 
+// terminateGateKV holds writes to one LB's records, once the listener cascade
+// has listed keys, until released. DeleteLoadBalancer then cannot delete the
+// records before the terminate goroutine has looked at them.
+type terminateGateKV struct {
+	jetstream.KeyValue
+
+	keys     []string
+	armed    atomic.Bool
+	released chan struct{}
+}
+
+func (k *terminateGateKV) hold(key string) {
+	if !k.armed.Load() || !slices.Contains(k.keys, key) {
+		return
+	}
+	select {
+	case <-k.released:
+	case <-time.After(5 * time.Second):
+	}
+}
+
+func (k *terminateGateKV) Keys(ctx context.Context, opts ...jetstream.WatchOpt) ([]string, error) {
+	k.armed.Store(true)
+	return k.KeyValue.Keys(ctx, opts...)
+}
+
+func (k *terminateGateKV) Put(ctx context.Context, key string, value []byte) (uint64, error) {
+	k.hold(key)
+	return k.KeyValue.Put(ctx, key, value)
+}
+
+func (k *terminateGateKV) Create(ctx context.Context, key string, value []byte, opts ...jetstream.KVCreateOpt) (uint64, error) {
+	k.hold(key)
+	return k.KeyValue.Create(ctx, key, value, opts...)
+}
+
+func (k *terminateGateKV) Update(ctx context.Context, key string, value []byte, revision uint64) (uint64, error) {
+	k.hold(key)
+	return k.KeyValue.Update(ctx, key, value, revision)
+}
+
+func (k *terminateGateKV) Delete(ctx context.Context, key string, opts ...jetstream.KVDeleteOpt) error {
+	k.hold(key)
+	return k.KeyValue.Delete(ctx, key, opts...)
+}
+
+func (k *terminateGateKV) Purge(ctx context.Context, key string, opts ...jetstream.KVDeleteOpt) error {
+	k.hold(key)
+	return k.KeyValue.Purge(ctx, key, opts...)
+}
+
 func TestLBHealth_DeleteLoadBalancerSuspendsBeforeTerminatingTheVM(t *testing.T) {
 	t.Parallel()
-	svc := setupTestService(t)
-	lb := seedHealthLB(t, svc)
-	seen := make(chan bool, 1)
-	svc.InstanceLauncher = &mockSystemInstanceLauncher{
-		onTerminate: func(string) {
-			rec, err := svc.store.GetLBHealth(context.Background(), healthLBID)
-			seen <- err == nil && rec != nil && rec.Suspended
-		},
-	}
+	e := newRepairEnv(t)
+	lb := e.seed("lbdel", true)
+	cands := e.candidates()
+	require.Len(t, cands, 1)
+	require.True(t, e.rec.eligible(context.Background(), cands[0], e.clock), "the LB must be repairable before the delete")
 
-	_, err := svc.DeleteLoadBalancer(context.Background(), &elbv2.DeleteLoadBalancerInput{
+	// The reconciler reads and writes past the gate, as another node would.
+	raw := e.svc.store.kv
+	e.rec.svc = &ELBv2ServiceImpl{store: &Store{kv: raw}}
+	gate := &terminateGateKV{
+		KeyValue: raw,
+		keys:     []string{KeyPrefixLB + lb.LoadBalancerID, KeyPrefixLBHealth + lb.LoadBalancerID},
+		released: make(chan struct{}),
+	}
+	e.svc.store.kv = gate
+
+	started := make(chan bool, 1)
+	e.launcher.onTerminate = func(string) {
+		defer close(gate.released)
+		started <- e.rec.repair(context.Background(), cands[0])
+	}
+	e.svc.InstanceLauncher = e.launcher
+
+	_, err := e.svc.DeleteLoadBalancer(context.Background(), &elbv2.DeleteLoadBalancerInput{
 		LoadBalancerArn: aws.String(lb.LoadBalancerArn),
 	}, testAccountID)
 	require.NoError(t, err)
 
 	select {
-	case suspended := <-seen:
-		assert.True(t, suspended, "repair must be excluded before the VM is terminated")
+	case repaired := <-started:
+		assert.False(t, repaired, "repair must be excluded before the VM is terminated")
+		assert.Empty(t, e.reboots())
 	case <-time.After(5 * time.Second):
 		t.Fatal("the LB VM was never terminated")
 	}

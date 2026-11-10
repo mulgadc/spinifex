@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/release/featurelevel"
+	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 	instancecache "github.com/mulgadc/spinifex/spinifex/runtime/compute/cache"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -122,23 +123,78 @@ func (e *FeatureLevelRefusedError) Unwrap() error { return errStartupPermanent }
 // featureLevelReadTimeout bounds one attempt at reading the record.
 const featureLevelReadTimeout = 10 * time.Second
 
+// featureLevelSleep is the backoff seam; tests replace it.
+var featureLevelSleep = func(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// retryFeatureLevel runs fn with the startup backoff (500ms to 10s) until it
+// succeeds, fails permanently, or ctx is cancelled. A cluster outage of any
+// length leaves the daemon retrying rather than abandoning bootstrap.
+func retryFeatureLevel(ctx context.Context, fn func() error) error {
+	delay := 500 * time.Millisecond
+	start := time.Now()
+	for attempt := 1; ; attempt++ {
+		err := fn()
+		if err == nil {
+			if attempt > 1 {
+				slog.Info("feature level initialized successfully", "attempts", attempt, "elapsed_ms", otelsetup.Millis(time.Since(start)))
+			}
+			return nil
+		}
+		if errors.Is(err, errStartupPermanent) {
+			return err
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("feature level check cancelled after %d attempts: %w", attempt, err)
+		}
+		slog.Warn("Failed to init feature level", "error", err, "attempt", attempt, "elapsed_ms", otelsetup.Millis(time.Since(start)))
+		if serr := featureLevelSleep(ctx, delay); serr != nil {
+			return fmt.Errorf("feature level check cancelled after %d attempts: %w", attempt, err)
+		}
+		delay = min(delay*2, 10*time.Second)
+	}
+}
+
+// refuseAboveBuild reads the record from the leader and refuses when it is above
+// this build.
+func refuseAboveBuild(ctx context.Context, store *featurelevel.Store) error {
+	rctx, cancel := context.WithTimeout(ctx, featureLevelReadTimeout)
+	defer cancel()
+	rec, _, err := store.Read(rctx)
+	if err != nil {
+		return err
+	}
+	if rec.Level > featurelevel.Build {
+		return &FeatureLevelRefusedError{Build: featurelevel.Build, Recorded: rec.Level}
+	}
+	return nil
+}
+
 // enforceFeatureLevel refuses when the recorded level is above this build. An
-// absent record is level 0. A read failure retries with backoff and neither
-// starts nor refuses.
-func enforceFeatureLevel(store *featurelevel.Store) error {
-	_, err := initServiceWithRetry("feature level", func() (struct{}, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), featureLevelReadTimeout)
-		defer cancel()
-		rec, _, err := store.Read(ctx)
-		if err != nil {
-			return struct{}{}, err
+// absent record is level 0. A read failure retries until ctx is cancelled and
+// neither starts nor refuses.
+//
+// Once the level passes, publish overwrites any predecessor's heartbeat with
+// this build's own, so its capability cannot count for the build now running.
+// The level is read again afterwards: one that rose in between refuses.
+func enforceFeatureLevel(ctx context.Context, store *featurelevel.Store, publish func() error) error {
+	return retryFeatureLevel(ctx, func() error {
+		if err := refuseAboveBuild(ctx, store); err != nil {
+			return err
 		}
-		if rec.Level > featurelevel.Build {
-			return struct{}{}, &FeatureLevelRefusedError{Build: featurelevel.Build, Recorded: rec.Level}
+		if err := publish(); err != nil {
+			return fmt.Errorf("publish heartbeat: %w", err)
 		}
-		return struct{}{}, nil
+		return refuseAboveBuild(ctx, store)
 	})
-	return err
 }
 
 // checkFeatureLevel runs the startup refusal against the cluster record.
@@ -147,7 +203,7 @@ func (d *Daemon) checkFeatureLevel() error {
 	if err != nil {
 		return err
 	}
-	if err := enforceFeatureLevel(store); err != nil {
+	if err := enforceFeatureLevel(d.ctx, store, func() error { return d.jsManager.WriteHeartbeat(d.buildHeartbeat()) }); err != nil {
 		return err
 	}
 	d.featureGate = featurelevel.NewGate(store)

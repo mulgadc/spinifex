@@ -164,13 +164,13 @@ func TestEnforceFeatureLevel_RefusesOnlyWhenTheBuildIsBelowTheRecord(t *testing.
 	t.Parallel()
 	m, store := levelManager(t)
 
-	require.NoError(t, enforceFeatureLevel(store), "an absent record is level 0")
+	require.NoError(t, enforceFeatureLevel(t.Context(), store, noPublish), "an absent record is level 0")
 
 	recordLevel(t, m, `{"level":1}`)
-	require.NoError(t, enforceFeatureLevel(store), "equal starts")
+	require.NoError(t, enforceFeatureLevel(t.Context(), store, noPublish), "equal starts")
 
 	recordLevel(t, m, `{"level":2}`)
-	err := enforceFeatureLevel(store)
+	err := enforceFeatureLevel(t.Context(), store, noPublish)
 	var refused *FeatureLevelRefusedError
 	require.ErrorAs(t, err, &refused)
 	require.ErrorIs(t, err, errStartupPermanent)
@@ -181,9 +181,7 @@ func TestEnforceFeatureLevel_RefusesOnlyWhenTheBuildIsBelowTheRecord(t *testing.
 }
 
 func TestEnforceFeatureLevel_ReadFailureRetriesThenStartsWithoutRefusing(t *testing.T) {
-	old := initRetrySleep
-	initRetrySleep = func(time.Duration) {}
-	t.Cleanup(func() { initRetrySleep = old })
+	noSleep(t)
 
 	m, store := levelManager(t)
 	_ = store
@@ -191,20 +189,18 @@ func TestEnforceFeatureLevel_ReadFailureRetriesThenStartsWithoutRefusing(t *test
 	kv, err := m.clusterConfig.KV(t.Context())
 	require.NoError(t, err)
 	flaky := &flakyKV{KV: kv, failures: 3}
-	require.NoError(t, enforceFeatureLevel(featurelevel.NewStore(flaky)))
+	require.NoError(t, enforceFeatureLevel(t.Context(), featurelevel.NewStore(flaky), noPublish))
 	assert.Zero(t, flaky.failures, "it retried through every failure and then read the record")
 }
 
 func TestEnforceFeatureLevel_ReadFailureThenARefusingRecordStillRefuses(t *testing.T) {
-	old := initRetrySleep
-	initRetrySleep = func(time.Duration) {}
-	t.Cleanup(func() { initRetrySleep = old })
+	noSleep(t)
 
 	m, _ := levelManager(t)
 	recordLevel(t, m, `{"level":3}`)
 	kv, err := m.clusterConfig.KV(t.Context())
 	require.NoError(t, err)
-	err = enforceFeatureLevel(featurelevel.NewStore(&flakyKV{KV: kv, failures: 2}))
+	err = enforceFeatureLevel(t.Context(), featurelevel.NewStore(&flakyKV{KV: kv, failures: 2}), noPublish)
 	require.ErrorIs(t, err, errStartupPermanent)
 }
 
@@ -307,7 +303,7 @@ func TestFeatureLevelStore_ReadsThroughTheLeader(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	require.NoError(t, enforceFeatureLevel(store))
+	require.NoError(t, enforceFeatureLevel(t.Context(), store, noPublish))
 	require.NoError(t, nc.Flush())
 	mu.Lock()
 	defer mu.Unlock()
@@ -318,7 +314,7 @@ func TestFeatureLevelStore_ReadsThroughTheLeader(t *testing.T) {
 			leaderGets++
 		}
 	}
-	assert.Equal(t, 1, leaderGets)
+	assert.Equal(t, 2, leaderGets, "the check and the re-read after the heartbeat write")
 }
 
 // Attaching never creates a bucket: a cluster whose daemons have not made them
@@ -347,4 +343,69 @@ func TestAttachFeatureLevel_NeverCreatesABucket(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, rec.Level)
 	assert.Nil(t, om.clusterKV, "a missing cluster-state bucket stays unattached and uncreated")
+}
+
+func noPublish() error { return nil }
+
+func noSleep(t *testing.T) *time.Duration {
+	t.Helper()
+	var slept time.Duration
+	old := featureLevelSleep
+	featureLevelSleep = func(_ context.Context, d time.Duration) error { slept += d; return nil }
+	t.Cleanup(func() { featureLevelSleep = old })
+	return &slept
+}
+
+// The startup read keeps retrying past the old five-minute budget; only the
+// daemon context ends it.
+func TestEnforceFeatureLevel_RetriesPastTheOldBudgetUntilCancelled(t *testing.T) {
+	slept := noSleep(t)
+	m, _ := levelManager(t)
+	recordLevel(t, m, `{"level":1}`)
+	kv, err := m.clusterConfig.KV(t.Context())
+	require.NoError(t, err)
+	flaky := &flakyKV{KV: kv, failures: 100}
+	require.NoError(t, enforceFeatureLevel(t.Context(), featurelevel.NewStore(flaky), noPublish))
+	assert.Greater(t, *slept, 5*time.Minute, "backoff time spent exceeds the old budget")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	err = enforceFeatureLevel(ctx, featurelevel.NewStore(&flakyKV{KV: kv, failures: 1000}), noPublish)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, errStartupPermanent)
+}
+
+// A predecessor's heartbeat is replaced by this build's own before the daemon
+// starts, so its capability cannot count towards an advance.
+func TestEnforceFeatureLevel_OverwritesThePredecessorHeartbeat(t *testing.T) {
+	t.Parallel()
+	m, store := levelManager(t)
+	now := time.Now()
+	levelBeat(t, m, "n1", featurelevel.Build+1, now, 0)
+
+	publish := func() error {
+		return m.WriteHeartbeat(&Heartbeat{Node: "n1", Timestamp: now.UTC().Format(time.RFC3339), FeatureLevel: featurelevel.Build})
+	}
+	require.NoError(t, enforceFeatureLevel(t.Context(), store, publish))
+	h, err := m.ReadHeartbeat("n1")
+	require.NoError(t, err)
+	assert.Equal(t, featurelevel.Build, h.FeatureLevel)
+	rec, _ := tick(t, m, store, []string{"n1"}, now)
+	assert.LessOrEqual(t, rec.Level, featurelevel.Build)
+}
+
+// A raise that lands between the check and the heartbeat write is caught by the
+// re-read.
+func TestEnforceFeatureLevel_RaiseBetweenCheckAndWriteRefuses(t *testing.T) {
+	t.Parallel()
+	m, store := levelManager(t)
+	publish := func() error {
+		recordLevel(t, m, `{"level":2}`)
+		return nil
+	}
+	err := enforceFeatureLevel(t.Context(), store, publish)
+	var refused *FeatureLevelRefusedError
+	require.ErrorAs(t, err, &refused)
+	require.ErrorIs(t, err, errStartupPermanent)
+	assert.Equal(t, 2, refused.Recorded)
 }

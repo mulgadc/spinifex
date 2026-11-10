@@ -99,6 +99,12 @@ type BlockVolume struct {
 	TimeCreated        time.Time
 }
 
+// Tags is the volume's freeform tags.
+func (v BlockVolume) Tags() map[string]string { return v.FreeformTags }
+
+// IsGone reports whether the volume is deleted or being deleted.
+func (v BlockVolume) IsGone() bool { return v.State.Gone() }
+
 // CreateVolumeInput creates a volume, empty or restored from SourceBackupID.
 // A zero VPUsPerGB takes OCI's default tier. RetryToken is sent as
 // opc-retry-token, so OCI answers a repeat with the first call's volume.
@@ -171,6 +177,12 @@ type VolumeBackup struct {
 	FreeformTags  map[string]string
 	TimeCreated   time.Time
 }
+
+// Tags is the backup's freeform tags.
+func (b VolumeBackup) Tags() map[string]string { return b.FreeformTags }
+
+// IsGone reports whether the backup is deleted or being deleted.
+func (b VolumeBackup) IsGone() bool { return b.State.Gone() }
 
 // CreateVolumeBackupInput takes an incremental backup of VolumeID, in the
 // volume's compartment. RetryToken is sent as opc-retry-token.

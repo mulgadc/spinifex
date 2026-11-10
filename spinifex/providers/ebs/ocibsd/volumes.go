@@ -12,39 +12,53 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 )
 
-// findVolume resolves an EBS volume to its live OCI volume, by handle when the
-// caller has one and by tag otherwise. A volume another cluster tagged, or one
-// OCI is terminating, is not found.
-func (p *Provider) findVolume(ctx context.Context, volumeID, handle string) (oci.BlockVolume, bool, error) {
+// tagged is an OCI resource ocibsd finds by its tags.
+type tagged interface {
+	Tags() map[string]string
+	IsGone() bool
+}
+
+// findTagged resolves an EBS ID to the live OCI resource whose idTag carries
+// it, by handle when the caller has one and by tag otherwise. A resource
+// another cluster tagged, or one OCI is deleting, is not found.
+func findTagged[T tagged](ctx context.Context, p *Provider, kind, idTag, idName, id, handle string,
+	get func(context.Context, string) (T, error), list func(context.Context, map[string]string) ([]T, error),
+) (T, bool, error) {
+	var none T
 	if handle != "" {
-		v, err := p.cfg.Client.GetVolume(ctx, handle)
+		r, err := get(ctx, handle)
 		if errors.Is(err, oci.ErrNotFound) {
-			return oci.BlockVolume{}, false, nil
+			return none, false, nil
 		}
 		if err != nil {
-			return oci.BlockVolume{}, false, ociError("get volume", err)
+			return none, false, ociError("get "+kind, err)
 		}
-		if v.State.Gone() || v.FreeformTags[TagCluster] != p.cfg.ClusterID || v.FreeformTags[TagVolumeID] != volumeID {
-			return oci.BlockVolume{}, false, nil
+		if r.IsGone() || r.Tags()[TagCluster] != p.cfg.ClusterID || r.Tags()[idTag] != id {
+			return none, false, nil
 		}
-		return v, true, nil
+		return r, true, nil
 	}
-	found, err := p.cfg.Client.ListVolumes(ctx, oci.VolumeFilter{
-		CompartmentID: p.cfg.CompartmentID,
-		Tags:          map[string]string{TagCluster: p.cfg.ClusterID, TagVolumeID: volumeID},
-	})
+	found, err := list(ctx, map[string]string{TagCluster: p.cfg.ClusterID, idTag: id})
 	if err != nil {
-		return oci.BlockVolume{}, false, ociError("list volumes", err)
+		return none, false, ociError("list "+kind+"s", err)
 	}
-	live := slices.DeleteFunc(found, func(v oci.BlockVolume) bool { return v.State.Gone() })
+	live := slices.DeleteFunc(found, T.IsGone)
 	switch len(live) {
 	case 0:
-		return oci.BlockVolume{}, false, nil
+		return none, false, nil
 	case 1:
 		return live[0], true, nil
 	default:
-		return oci.BlockVolume{}, false, fmt.Errorf("ocibsd: %d OCI volumes carry volume ID %s", len(live), volumeID)
+		return none, false, fmt.Errorf("ocibsd: %d OCI %ss carry %s %s", len(live), kind, idName, id)
 	}
+}
+
+// findVolume resolves an EBS volume to its live OCI volume.
+func (p *Provider) findVolume(ctx context.Context, volumeID, handle string) (oci.BlockVolume, bool, error) {
+	return findTagged(ctx, p, "volume", TagVolumeID, "volume ID", volumeID, handle, p.cfg.Client.GetVolume,
+		func(ctx context.Context, tags map[string]string) ([]oci.BlockVolume, error) {
+			return p.cfg.Client.ListVolumes(ctx, oci.VolumeFilter{CompartmentID: p.cfg.CompartmentID, Tags: tags})
+		})
 }
 
 // attachments lists the volume's attachments in any state but DETACHED.

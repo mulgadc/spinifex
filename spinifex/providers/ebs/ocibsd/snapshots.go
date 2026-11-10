@@ -23,38 +23,12 @@ func snapshotState(state oci.BackupState) ebsprovider.SnapshotState {
 	}
 }
 
-// findBackup resolves an EBS snapshot to its live OCI backup, as findVolume
-// does a volume.
+// findBackup resolves an EBS snapshot to its live OCI backup.
 func (p *Provider) findBackup(ctx context.Context, snapshotID, handle string) (oci.VolumeBackup, bool, error) {
-	if handle != "" {
-		b, err := p.cfg.Client.GetVolumeBackup(ctx, handle)
-		if errors.Is(err, oci.ErrNotFound) {
-			return oci.VolumeBackup{}, false, nil
-		}
-		if err != nil {
-			return oci.VolumeBackup{}, false, ociError("get volume backup", err)
-		}
-		if b.State.Gone() || b.FreeformTags[TagCluster] != p.cfg.ClusterID || b.FreeformTags[TagSnapshotID] != snapshotID {
-			return oci.VolumeBackup{}, false, nil
-		}
-		return b, true, nil
-	}
-	found, err := p.cfg.Client.ListVolumeBackups(ctx, oci.BackupFilter{
-		CompartmentID: p.cfg.CompartmentID,
-		Tags:          map[string]string{TagCluster: p.cfg.ClusterID, TagSnapshotID: snapshotID},
-	})
-	if err != nil {
-		return oci.VolumeBackup{}, false, ociError("list volume backups", err)
-	}
-	live := slices.DeleteFunc(found, func(b oci.VolumeBackup) bool { return b.State.Gone() })
-	switch len(live) {
-	case 0:
-		return oci.VolumeBackup{}, false, nil
-	case 1:
-		return live[0], true, nil
-	default:
-		return oci.VolumeBackup{}, false, fmt.Errorf("ocibsd: %d OCI backups carry snapshot ID %s", len(live), snapshotID)
-	}
+	return findTagged(ctx, p, "volume backup", TagSnapshotID, "snapshot ID", snapshotID, handle, p.cfg.Client.GetVolumeBackup,
+		func(ctx context.Context, tags map[string]string) ([]oci.VolumeBackup, error) {
+			return p.cfg.Client.ListVolumeBackups(ctx, oci.BackupFilter{CompartmentID: p.cfg.CompartmentID, Tags: tags})
+		})
 }
 
 func snapshotOf(b oci.VolumeBackup) (*ebsprovider.Snapshot, error) {

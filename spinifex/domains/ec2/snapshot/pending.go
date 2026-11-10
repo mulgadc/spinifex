@@ -32,9 +32,11 @@ func refusalSettlesError(err error) bool {
 }
 
 // applyProviderAnswer moves a document to what the provider answered: completed
-// at 100%, or pending with the provider's handle for the reaper to follow.
-func applyProviderAnswer(created *ebsprovider.Snapshot) func(*ebsmetadata.Snapshot) {
+// at 100%, or pending with the provider's handle for the reaper to follow. The
+// call was answered, so AmbiguousCreate stays only if an earlier one was not.
+func applyProviderAnswer(created *ebsprovider.Snapshot, earlierUnanswered bool) func(*ebsmetadata.Snapshot) {
 	return func(doc *ebsmetadata.Snapshot) {
+		doc.AmbiguousCreate = earlierUnanswered
 		if created.Handle != "" {
 			doc.ProviderHandle = created.Handle
 		}
@@ -67,7 +69,8 @@ func (s *SnapshotServiceImpl) updatePending(ctx context.Context, accountID, snap
 		}
 		return ebsmetadata.Snapshot{}, false, err
 	}
-	if doc.State != snapshotStatePending {
+	// A marked document is the reaper's to delete, never to settle.
+	if doc.State != snapshotStatePending || doc.Hidden() {
 		return doc, false, nil
 	}
 	mutate(&doc)

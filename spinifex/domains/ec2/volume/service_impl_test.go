@@ -743,6 +743,7 @@ func putTestSnapshotMetadata(t *testing.T, store *objectstore.MemoryObjectStore,
 		VolumeID:   "vol-source",
 		VolumeSize: sizeGiB,
 		OwnerID:    ownerID,
+		State:      ebsmetadata.SnapshotStateCompleted,
 	}))
 }
 

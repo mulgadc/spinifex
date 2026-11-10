@@ -1,0 +1,182 @@
+package image
+
+import (
+	"context"
+	"testing"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	ebsmetadata "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	ebsprovider "github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// pendingImageFixture is an image service wired to a snapshot service over the
+// same store and memory provider, whose reaper settles what CreateImage leaves.
+type pendingImageFixture struct {
+	svc       *ImageServiceImpl
+	snapshots *ec2snapshot.SnapshotServiceImpl
+	mem       *ebsprovider.MemoryProvider
+	volume    ebsmetadata.Volume
+}
+
+func newPendingImageFixture(t *testing.T) *pendingImageFixture {
+	t.Helper()
+	svc, store, provider := setupProviderSnapshotImageService(t)
+	mem, ok := provider.(*ebsprovider.MemoryProvider)
+	require.True(t, ok)
+	snapshots := ec2snapshot.NewSnapshotServiceImplWithStore(svc.config, store, nil)
+	snapshots.SetEBSProvider(mem)
+	svc.SetSnapshotCreator(snapshots)
+	return &pendingImageFixture{
+		svc:       svc,
+		snapshots: snapshots,
+		mem:       mem,
+		volume:    seedProviderVolume(t, svc, provider, "vol-createimage01", 8),
+	}
+}
+
+func (f *pendingImageFixture) createImage(t *testing.T) (*ec2.CreateImageOutput, error) {
+	t.Helper()
+	return f.svc.CreateImageFromInstance(CreateImageParams{
+		Input:        &ec2.CreateImageInput{InstanceId: aws.String("i-createimage01"), Name: aws.String("pending-image")},
+		RootVolumeID: f.volume.VolumeID,
+	}, testAccountID)
+}
+
+// onlyAMI is the one AMI document in the store, and its snapshot's document.
+func (f *pendingImageFixture) onlyAMI(t *testing.T) (ebsmetadata.AMI, ebsmetadata.Snapshot) {
+	t.Helper()
+	amis, err := f.svc.MetadataStore().ListAMIs(context.Background())
+	require.NoError(t, err)
+	require.Len(t, amis, 1)
+	snap, err := f.svc.MetadataStore().GetSnapshot(context.Background(), testAccountID, amis[0].SnapshotID)
+	require.NoError(t, err)
+	return amis[0], snap
+}
+
+func (f *pendingImageFixture) sweep(t *testing.T) {
+	t.Helper()
+	_, err := f.snapshots.NewPendingSnapshotReaper().Sweep(context.Background())
+	require.NoError(t, err)
+}
+
+// recordingCreateProvider reads the image's documents when the provider is called.
+type recordingCreateProvider struct {
+	ebsprovider.EBSProvider
+
+	store     *ebsmetadata.Store
+	amis      []ebsmetadata.AMI
+	snapshot  ebsmetadata.Snapshot
+	readError error
+}
+
+func (p *recordingCreateProvider) CreateSnapshot(ctx context.Context, req ebsprovider.CreateSnapshotRequest) (*ebsprovider.Snapshot, error) {
+	p.amis, p.readError = p.store.ListAMIs(ctx)
+	if p.readError == nil {
+		p.snapshot, p.readError = p.store.GetSnapshot(ctx, testAccountID, req.SnapshotID)
+	}
+	return p.EBSProvider.CreateSnapshot(ctx, req)
+}
+
+func TestCreateImage_WritesBothDocumentsPendingBeforeTheProviderCall(t *testing.T) {
+	f := newPendingImageFixture(t)
+	recording := &recordingCreateProvider{EBSProvider: f.mem, store: f.svc.MetadataStore()}
+	f.snapshots.SetEBSProvider(recording)
+
+	_, err := f.createImage(t)
+	require.NoError(t, err)
+
+	require.NoError(t, recording.readError)
+	require.Len(t, recording.amis, 1, "the AMI document exists when the provider is called")
+	assert.Equal(t, ec2.ImageStatePending, recording.amis[0].State)
+	assert.Equal(t, recording.snapshot.SnapshotID, recording.amis[0].SnapshotID)
+	assert.Equal(t, "pending", recording.snapshot.State, "the snapshot document is pending when the provider is called")
+}
+
+func TestCreateImage_DefiniteRefusalRemovesBothDocuments(t *testing.T) {
+	f := newPendingImageFixture(t)
+	f.snapshots.SetEBSProvider(&createInUseProvider{EBSProvider: f.mem})
+
+	_, err := f.createImage(t)
+	code, _, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "unregistered error: %v", err)
+	assert.Equal(t, awserrors.ErrorIncorrectState, code)
+
+	amis, err := f.svc.MetadataStore().ListAMIs(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, amis, "a refused image leaves no AMI document")
+	snaps, err := f.svc.MetadataStore().ListAllSnapshots(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, snaps, "a refused image leaves no snapshot document")
+}
+
+func TestCreateImage_SettlesTheSnapshotAndTheAMI(t *testing.T) {
+	tests := []struct {
+		name    string
+		arrange func(f *pendingImageFixture)
+		wantErr string
+		// settle is how the provider finishes a snapshot it answered pending; empty: it did not.
+		settle      ebsprovider.SnapshotState
+		wantPending bool
+		wantSnap    string
+		wantAMI     string
+	}{
+		{name: "completed in the request", arrange: func(*pendingImageFixture) {}, wantSnap: "completed", wantAMI: "available"},
+		{
+			name: "answered pending, then completed", arrange: func(f *pendingImageFixture) { f.mem.AnswerSnapshotsPending(true) },
+			wantPending: true, settle: ebsprovider.SnapshotStateCompleted, wantSnap: "completed", wantAMI: "available",
+		},
+		{
+			name: "answered pending, then error", arrange: func(f *pendingImageFixture) { f.mem.AnswerSnapshotsPending(true) },
+			wantPending: true, settle: ebsprovider.SnapshotStateError, wantSnap: "error", wantAMI: "failed",
+		},
+		{
+			name: "both answers lost", arrange: func(f *pendingImageFixture) { f.mem.FailCreateSnapshotsAfterAccept(2, nil) },
+			wantErr: awserrors.ErrorServerInternal, wantPending: true, wantSnap: "completed", wantAMI: "available",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPendingImageFixture(t)
+			tc.arrange(f)
+
+			_, err := f.createImage(t)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Equal(t, tc.wantErr, err.Error())
+			} else {
+				require.NoError(t, err)
+			}
+
+			ami, snap := f.onlyAMI(t)
+			if tc.wantPending {
+				assert.Equal(t, ec2.ImageStatePending, ami.State)
+				assert.Equal(t, "pending", snap.State)
+				if tc.settle != "" {
+					require.NoError(t, f.mem.SettleSnapshot(snap.SnapshotID, tc.settle))
+				}
+				f.sweep(t)
+				ami, snap = f.onlyAMI(t)
+			}
+			assert.Equal(t, tc.wantSnap, snap.State)
+			assert.Equal(t, tc.wantAMI, ami.State)
+		})
+	}
+}
+
+// DeregisterImage is allowed on an image whose snapshot has not completed.
+func TestDeregisterImage_AllowsAPendingAMI(t *testing.T) {
+	f := newPendingImageFixture(t)
+	f.mem.AnswerSnapshotsPending(true)
+	out, err := f.createImage(t)
+	require.NoError(t, err)
+
+	_, err = f.svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: out.ImageId}, testAccountID)
+	require.NoError(t, err)
+	_, err = f.svc.MetadataStore().GetAMI(context.Background(), aws.StringValue(out.ImageId))
+	assert.Error(t, err, "the pending AMI is deregistered")
+}

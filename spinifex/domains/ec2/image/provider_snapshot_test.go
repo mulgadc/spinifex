@@ -236,16 +236,21 @@ func (p *createUnavailableProvider) CreateSnapshot(context.Context, ebsprovider.
 	return nil, &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnavailable, Message: "held by node-2"}
 }
 
-// TestSnapshotVolume_Provider_UnavailableIsRetryLater locks that the
-// CreateImage snapshot surfaces a provider's retry-later as ServiceUnavailable.
-func TestSnapshotVolume_Provider_UnavailableIsRetryLater(t *testing.T) {
+// TestSnapshotVolume_Provider_UnavailableLeavesThePendingSnapshot locks that
+// a CreateImage snapshot whose call and repeat both go unanswered returns
+// InternalError and leaves its document pending for the reaper.
+func TestSnapshotVolume_Provider_UnavailableLeavesThePendingSnapshot(t *testing.T) {
 	svc, _, provider := setupProviderSnapshotImageService(t)
 	doc := seedProviderVolume(t, svc, provider, "vol-stopped-busy", 8)
 	svc.SetEBSProvider(&createUnavailableProvider{EBSProvider: provider})
 
 	err := svc.snapshotVolume(doc.VolumeID, "snap-stopped-busy", testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServiceUnavailable, err.Error())
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	snap, err := svc.metadata.GetSnapshot(context.Background(), testAccountID, "snap-stopped-busy")
+	require.NoError(t, err)
+	assert.Equal(t, "pending", snap.State)
+	assert.True(t, snap.AmbiguousCreate)
 }
 
 // createInUseProvider refuses every CreateSnapshot as volume in use.

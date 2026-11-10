@@ -55,6 +55,31 @@ type ImageServiceImpl struct {
 
 	uefiRecords UEFIStoreRecords
 	nodeID      string
+
+	// snapshots takes an image's snapshot through the snapshot service, so the
+	// claim and reference are the ones CreateSnapshot uses.
+	snapshots ec2snapshot.ImageSnapshotCreator
+}
+
+// SetSnapshotCreator wires the snapshot service CreateImage snapshots through.
+func (s *ImageServiceImpl) SetSnapshotCreator(snapshots ec2snapshot.ImageSnapshotCreator) {
+	s.snapshots = snapshots
+}
+
+// snapshotCreator is the wired snapshot service, or a standalone one over this
+// service's store and provider, which excludes only within the call and
+// records no volume reference.
+func (s *ImageServiceImpl) snapshotCreator() ec2snapshot.ImageSnapshotCreator {
+	if s.snapshots != nil {
+		return s.snapshots
+	}
+	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: s.bucketName}}
+	if s.config != nil {
+		cfg = s.config
+	}
+	svc := ec2snapshot.NewSnapshotServiceImplWithStore(cfg, s.store, nil)
+	svc.SetEBSProvider(s.provider)
+	return svc
 }
 
 // SetEBSProvider injects the provider boundary used by the control plane.
@@ -461,12 +486,10 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		}
 	}
 
-	// Step 2: Snapshot root volume
-	if err := s.snapshotVolume(params.RootVolumeID, snapshotID, accountID); err != nil {
-		return nil, err
+	// Step 2: Read source volume config for size
+	if s.config == nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-
-	// Step 3: Read source volume config for size
 	volMeta, err := s.getVolumeMetadata(context.Background(), accountID, params.RootVolumeID)
 	if err != nil {
 		slog.Error("CreateImageFromInstance: failed to read volume metadata", "volumeId", params.RootVolumeID, "err", err)
@@ -474,7 +497,7 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 	}
 	volumeSizeGiB := volMeta.CapacityGiB
 
-	// Step 4: Read source AMI config for architecture, platform, etc.
+	// Step 3: Read source AMI config for architecture, platform, etc.
 	sourceAMI := ebsmetadata.AMI{
 		Architecture:    "x86_64",
 		PlatformDetails: "Linux/UNIX",
@@ -489,13 +512,6 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		sourceAMI = srcCfg
 	}
 
-	// Step 5: Store snapshot metadata
-	if err := s.putSnapshotMetadata(context.Background(), snapshotID, params.RootVolumeID, volumeSizeGiB, accountID); err != nil {
-		slog.Error("CreateImageFromInstance: failed to write snapshot metadata", "snapshotId", snapshotID, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-
-	// Step 6: Build and store AMI config
 	meta := ebsmetadata.AMI{
 		ImageID:         amiID,
 		Name:            name,
@@ -513,27 +529,51 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		EnaSupport:   aws.Bool(true),
 		Distro:       sourceAMI.Distro,
 		DistroFamily: sourceAMI.DistroFamily,
-		// Snapshot succeeded before this point, so the image is complete.
-		State:    "available",
+		// Pending until its snapshot completes, here or in the snapshot reaper.
+		State:    ec2.ImageStatePending,
 		UEFIData: uefiData,
 	}
 
-	if err := s.putAMIConfig(context.Background(), amiID, meta); err != nil {
+	// Step 4: Snapshot the root volume. Its document and reference, then the
+	// AMI's document, are written pending before the provider is called, so an
+	// accepted snapshot whose answer is lost is still settled by the reaper.
+	ctx := context.Background()
+	snap, err := s.snapshotCreator().CreateImageSnapshot(ctx, volMeta, snapshotID, accountID, "Created by CreateImage("+aws.StringValue(input.InstanceId)+") for "+amiID,
+		ec2snapshot.ImageSnapshotHooks{
+			Recorded: func(ctx context.Context) error { return s.putAMIConfig(ctx, amiID, meta) },
+			Refused:  func(ctx context.Context) { s.removePendingAMI(ctx, amiID) },
+			Completed: func(ctx context.Context) {
+				meta.State = ebsmetadata.AMIStateAvailable
+				if err := s.putAMIConfig(ctx, amiID, meta); err != nil {
+					slog.WarnContext(ctx, "CreateImageFromInstance: AMI left pending for the reaper", "amiId", amiID, "err", err)
+				}
+			},
+		})
+	if err != nil {
 		// A UEFI object left under the image's prefix is in the orphan report.
-		slog.Error("CreateImageFromInstance: failed to store AMI config", "amiId", amiID, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
+		slog.Error("CreateImageFromInstance: snapshot failed", "amiId", amiID, "snapshotId", snapshotID, "err", err)
+		return nil, err
 	}
 
-	slog.Info("CreateImageFromInstance completed", "amiId", amiID, "snapshotId", snapshotID)
+	slog.Info("CreateImageFromInstance completed", "amiId", amiID, "snapshotId", snapshotID, "snapshotState", aws.StringValue(snap.State))
 
 	return &ec2.CreateImageOutput{
 		ImageId: aws.String(amiID),
 	}, nil
 }
 
-// snapshotVolume snapshots the root volume through the EBS provider, whether
-// or not the instance is running. A provider that buffers writes drains the
-// volume inside its own CreateSnapshot, so no drain is issued here.
+// removePendingAMI deletes the AMI document of a CreateImage whose snapshot
+// the provider refused, before the snapshot's own document goes.
+func (s *ImageServiceImpl) removePendingAMI(ctx context.Context, amiID string) {
+	if err := s.metadata.DeleteAMI(ctx, amiID); err != nil && !objectstore.IsNoSuchKeyError(err) {
+		slog.ErrorContext(ctx, "CreateImageFromInstance: failed to remove a refused image's AMI document; the reaper marks it failed",
+			"amiId", amiID, "err", err)
+	}
+}
+
+// snapshotVolume snapshots the root volume through the snapshot service,
+// whether or not the instance is running. A provider that buffers writes
+// drains the volume inside its own CreateSnapshot, so no drain is issued here.
 func (s *ImageServiceImpl) snapshotVolume(volumeID, snapshotID, accountID string) error {
 	if s.config == nil {
 		return errors.New(awserrors.ErrorServerInternal)
@@ -545,25 +585,8 @@ func (s *ImageServiceImpl) snapshotVolume(volumeID, snapshotID, accountID string
 		return errors.New(awserrors.ErrorServerInternal)
 	}
 
-	return s.createSnapshot(context.Background(), volMeta, snapshotID, "snapshotVolume")
-}
-
-// createSnapshot delegates snapshot creation for volMeta to the EBS provider.
-// op names the calling path so a failure is attributable in the log.
-func (s *ImageServiceImpl) createSnapshot(ctx context.Context, volMeta ebsmetadata.Volume, snapshotID, op string) error {
-	if s.provider == nil {
-		slog.ErrorContext(ctx, "no EBS provider configured", "op", op)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	created, err := s.provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{
-		Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volMeta.VolumeID, VolumeHandle: volMeta.ProviderHandle,
-	})
-	if err != nil || created == nil {
-		slog.ErrorContext(ctx, "provider CreateSnapshot failed", "op", op, "volumeId", volMeta.VolumeID, "snapshotId", snapshotID, "err", err)
-		return ec2snapshot.ProviderCreateError(volMeta.VolumeID, err)
-	}
-	slog.InfoContext(ctx, "snapshot created", "op", op, "volumeId", volMeta.VolumeID, "snapshotId", snapshotID)
-	return nil
+	_, err = s.snapshotCreator().CreateImageSnapshot(context.Background(), volMeta, snapshotID, accountID, "", ec2snapshot.ImageSnapshotHooks{})
+	return err
 }
 
 // getVolumeMetadata reads a volume's control-plane document, remapping a
@@ -647,6 +670,9 @@ func (s *ImageServiceImpl) GetAMISourceVolumeID(ctx context.Context, imageID str
 		slog.ErrorContext(ctx, "GetAMISourceVolumeID: failed to read snapshot metadata",
 			"imageId", imageID, "snapshotId", meta.SnapshotID, "err", err)
 		return "", errors.New(awserrors.ErrorServerInternal)
+	}
+	if snapCfg.Hidden() {
+		return "", errors.New(awserrors.ErrorInvalidSnapshotNotFound)
 	}
 	if snapCfg.VolumeID == "" {
 		slog.ErrorContext(ctx, "GetAMISourceVolumeID: snapshot metadata has no source volume",
@@ -815,6 +841,11 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 	if !callerCanReadAMI(srcMeta, accountID) {
 		return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 	}
+	// The copy shares the source's snapshot, so it is no readier than it.
+	if !srcMeta.Available() {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidAMIIDUnavailable,
+			"The image '%s' is %s, not available.", sourceImageID, srcMeta.State)
+	}
 
 	// Orphaned source (missing SnapshotID, or snapshot gone/corrupt) is
 	// reported as NotFound — don't leak the half-broken state.
@@ -841,6 +872,9 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 				"sourceImageId", sourceImageID, "snapshotId", srcMeta.SnapshotID, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
+	}
+	if srcSnap.Hidden() {
+		return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 	}
 
 	if exists, err := s.amiNameExists(ctx, name); err != nil {
@@ -1062,6 +1096,15 @@ func (s *ImageServiceImpl) RegisterImage(ctx context.Context, input *ec2.Registe
 		}
 		slog.ErrorContext(ctx, "RegisterImage: failed to read snapshot metadata", "snapshotId", snapshotID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if snapCfg.Hidden() {
+		return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
+	}
+	// An image registered on a snapshot that is not completed could never be
+	// launched from, and none is written pending outside CreateImage.
+	if !snapCfg.Ready() {
+		return nil, awserrors.Errorf(awserrors.ErrorIncorrectState,
+			"Snapshot is in invalid state - %s", snapCfg.State)
 	}
 
 	snapSizeGiB := uint64(0)

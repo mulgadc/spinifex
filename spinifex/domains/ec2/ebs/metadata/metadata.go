@@ -82,6 +82,37 @@ type Snapshot struct {
 	AvailabilityZone string            `json:"availability_zone"`
 	Tags             map[string]string `json:"tags,omitempty"`
 	ProviderHandle   string            `json:"provider_handle,omitempty"`
+	// DeleteRequested is a DeleteSnapshot accepted before the snapshot could be
+	// deleted; the snapshot is hidden from then on and the reaper deletes it.
+	DeleteRequested bool `json:"delete_requested,omitempty"`
+	// AmbiguousCreate is set before every provider CreateSnapshot call and kept
+	// while any call on the document went unanswered, as one may still be accepted.
+	AmbiguousCreate bool `json:"ambiguous_create,omitempty"`
+	// TombstonedAt is when a deleted AmbiguousCreate snapshot's document became
+	// a tombstone, under which a late-accepted snapshot of its ID is deleted.
+	TombstonedAt time.Time `json:"tombstoned_at,omitzero"`
+}
+
+// Hidden reports a snapshot a customer has deleted: it is absent to every
+// request, and only the reaper still acts on its document.
+func (s Snapshot) Hidden() bool {
+	return s.DeleteRequested || !s.TombstonedAt.IsZero()
+}
+
+// Tombstoned reports a document kept only to catch a late-accepted create.
+func (s Snapshot) Tombstoned() bool {
+	return !s.TombstonedAt.IsZero()
+}
+
+// SnapshotStateCompleted is the one snapshot state a consumer may use.
+const SnapshotStateCompleted = "completed"
+
+// AMIStateAvailable is the one AMI state an instance may launch from.
+const AMIStateAvailable = "available"
+
+// Ready reports a snapshot whose contents a consumer may read.
+func (s Snapshot) Ready() bool {
+	return s.State == SnapshotStateCompleted
 }
 
 // RootDeviceName is the device every image this platform serves reports as its
@@ -113,6 +144,12 @@ type AMI struct {
 	// UEFIData names the image's own UEFI variable store object; nil launches
 	// from the node's VARS template.
 	UEFIData *UEFIDataRef `json:"uefi_data,omitempty"`
+}
+
+// Available reports an AMI an instance may launch from or a copy may read. An
+// empty State predates the field, and every such image is complete.
+func (a AMI) Available() bool {
+	return a.State == "" || a.State == AMIStateAvailable
 }
 
 // UEFIDataRef names an image's UEFI variable store object and the firmware it

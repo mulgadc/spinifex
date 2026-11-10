@@ -47,6 +47,8 @@ type scriptedProvider struct {
 	// returns handled; held calls are the ones a test accepts late.
 	onCreate func(n int, req ebsprovider.CreateSnapshotRequest) (handled bool, snap *ebsprovider.Snapshot, err error)
 	onList   func(req ebsprovider.ListSnapshotsRequest) (handled bool, resp *ebsprovider.ListSnapshotsResponse, err error)
+	// onDelete answers a DeleteSnapshot instead of the memory provider when set.
+	onDelete func(req ebsprovider.DeleteSnapshotRequest) error
 	deletes  []string
 }
 
@@ -80,8 +82,18 @@ func (p *scriptedProvider) ListSnapshots(ctx context.Context, req ebsprovider.Li
 func (p *scriptedProvider) DeleteSnapshot(ctx context.Context, req ebsprovider.DeleteSnapshotRequest) error {
 	p.mu.Lock()
 	p.deletes = append(p.deletes, "snapshot "+req.SnapshotID)
+	hook := p.onDelete
 	p.mu.Unlock()
+	if hook != nil {
+		return hook(req)
+	}
 	return p.MemoryProvider.DeleteSnapshot(ctx, req)
+}
+
+func (p *scriptedProvider) deleteCalls() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.deletes...)
 }
 
 func (p *scriptedProvider) DeleteVolume(ctx context.Context, req ebsprovider.DeleteVolumeRequest) error {
@@ -695,25 +707,31 @@ func TestCreateSnapshot_ReaperBetweenTheRequestsTwoCalls(t *testing.T) {
 }
 
 // A provider that settles the snapshot before the request records its pending
-// answer leaves the reaper's completed document in place.
+// answer still ends completed. The reaper may not write while the request
+// holds the claim, so it settles the document on the sweep after.
 func TestCreateSnapshot_CompletedBeforeTheRequestWritesItsHandle(t *testing.T) {
 	f := newPendingFixture(t)
 	svc := f.node(nodeA)
+	reaper := f.node(nodeB)
 	f.mem.AnswerSnapshotsPending(true)
 	svc.crashAt = func(step createStep) bool {
 		if step == stepAnswered {
 			doc := f.onlyDoc()
 			require.NoError(t, f.mem.SettleSnapshot(doc.SnapshotID, ebsprovider.SnapshotStateCompleted))
-			f.sweep(f.node(nodeB))
+			f.sweep(reaper)
+			assert.Equal(t, snapshotStatePending, f.onlyDoc().State, "the reaper wrote under a claim the request holds")
 		}
 		return false
 	}
 
 	out, err := f.create(svc)
 	require.NoError(t, err)
+	assert.Equal(t, snapshotStatePending, aws.StringValue(out.State))
 
-	assert.Equal(t, snapshotStateCompleted, f.onlyDoc().State)
-	assert.Equal(t, snapshotStateCompleted, aws.StringValue(out.State))
+	f.sweep(reaper)
+	doc := f.onlyDoc()
+	assert.Equal(t, snapshotStateCompleted, doc.State)
+	assert.Equal(t, "memory://snapshot/"+doc.SnapshotID, doc.ProviderHandle)
 }
 
 // A DeleteSnapshot landing while the provider answers is not undone by the
@@ -1051,17 +1069,18 @@ func TestClaims_LocalExclusion(t *testing.T) {
 
 // Verifies: ADR-0003:S7.
 //
-// TestS7_PendingSnapshotReaperDeletesNothing runs the reaper over a document
-// in every row of its table, twice, and requires that no snapshot, volume or
-// AMI, in the provider or as a document, was deleted.
-func TestS7_PendingSnapshotReaperDeletesNothing(t *testing.T) {
+// Two sweeps over every unmarked row, beside marked documents and a tombstone,
+// delete only the marked snapshots and their documents, and no volume or AMI.
+func TestS7_PendingSnapshotReaperDeletesOnlyWhatACustomerDeleted(t *testing.T) {
 	f := newPendingFixture(t)
 	const otherVolume = "vol-pendingother001"
 	_, err := f.mem.CreateVolume(t.Context(), ebsprovider.CreateVolumeRequest{
 		Versioned: ebsprovider.NewVersioned(), VolumeID: otherVolume, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
 	})
 	require.NoError(t, err)
-	require.NoError(t, f.metadata.PutAMI(t.Context(), ebsmetadata.AMI{ImageID: "ami-0123456789abcdef0", SnapshotID: "snap-s7completed001", State: "pending"}))
+	amis := []string{"ami-0123456789abcdef0", "ami-0123456789abcdef1"}
+	require.NoError(t, f.metadata.PutAMI(t.Context(), ebsmetadata.AMI{ImageID: amis[0], SnapshotID: "snap-s7completed001", State: "pending"}))
+	require.NoError(t, f.metadata.PutAMI(t.Context(), ebsmetadata.AMI{ImageID: amis[1], SnapshotID: "snap-s7neverexists1", State: "pending"}))
 
 	ids := map[string]func(){
 		"snap-s7pending00001": func() {
@@ -1091,6 +1110,28 @@ func TestS7_PendingSnapshotReaperDeletesNothing(t *testing.T) {
 	require.NoError(t, f.metadata.PutSnapshot(t.Context(), ebsmetadata.Snapshot{
 		SnapshotID: "snap-s7volumegone01", VolumeID: "vol-neverexisted01", State: snapshotStatePending, OwnerID: testAccountID,
 	}))
+	// Settled documents the reaper must leave alone, one with a create unanswered.
+	for id, ambiguous := range map[string]bool{"snap-s7settled00001": false, "snap-s7settledamb01": true} {
+		require.NoError(t, f.metadata.PutSnapshot(t.Context(), ebsmetadata.Snapshot{
+			SnapshotID: id, VolumeID: pendingVolumeID, State: snapshotStateCompleted, OwnerID: testAccountID, AmbiguousCreate: ambiguous,
+		}))
+		providerSnapshot(f, id)
+		ids[id] = func() {}
+	}
+	marked := map[string]ebsmetadata.Snapshot{
+		"snap-s7markeddone01": {State: snapshotStatePending},
+		"snap-s7markedgone01": {State: snapshotStatePending},
+		"snap-s7markedtomb01": {State: snapshotStateCompleted, AmbiguousCreate: true},
+		"snap-s7tombstone001": {State: snapshotStateCompleted, AmbiguousCreate: true, TombstonedAt: time.Now()},
+	}
+	for id, doc := range marked {
+		doc.SnapshotID, doc.VolumeID, doc.OwnerID, doc.DeleteRequested = id, pendingVolumeID, testAccountID, true
+		require.NoError(t, f.metadata.PutSnapshot(t.Context(), doc))
+	}
+	providerSnapshot(f, "snap-s7markeddone01")
+	providerSnapshot(f, "snap-s7markedtomb01")
+	providerSnapshot(f, "snap-s7tombstone001")
+
 	f.provider.onCreate = func(_ int, req ebsprovider.CreateSnapshotRequest) (bool, *ebsprovider.Snapshot, error) {
 		switch req.SnapshotID {
 		case "snap-s7elsewhere001":
@@ -1111,17 +1152,37 @@ func TestS7_PendingSnapshotReaperDeletesNothing(t *testing.T) {
 	f.sweep(reaper)
 	f.sweep(reaper)
 
-	assert.Empty(t, f.provider.deletes, "ADR-0003:S7: the pending-snapshot reaper asked the provider to delete; it may only settle documents")
-	assert.Empty(t, f.store.deletes, "ADR-0003:S7: the pending-snapshot reaper deleted a document; it may only settle documents")
+	asked := map[string]bool{}
+	for id := range marked {
+		asked["snapshot "+id] = true
+		asked[snapshotDocumentPrefix+testAccountID+"/"+id+".json"] = true
+	}
+	for _, del := range f.provider.deleteCalls() {
+		assert.True(t, asked[del], "ADR-0003:S7: the pending-snapshot reaper asked the provider to delete %s, which no customer deleted", del)
+	}
+	f.store.mu.Lock()
+	storeDeletes := append([]string(nil), f.store.deletes...)
+	f.store.mu.Unlock()
+	for _, key := range storeDeletes {
+		assert.True(t, asked[key], "ADR-0003:S7: the pending-snapshot reaper deleted %s, which no customer deleted", key)
+	}
 	for id := range ids {
 		_, ok := f.doc(id)
 		assert.True(t, ok, "ADR-0003:S7: snapshot document %s is gone after the sweep", id)
 	}
-	_, err = f.metadata.GetAMI(t.Context(), "ami-0123456789abcdef0")
-	assert.NoError(t, err, "ADR-0003:S7: the AMI document is gone after the sweep")
+	for _, id := range []string{"snap-s7completed001", "snap-s7settled00001", "snap-s7settledamb01"} {
+		_, held := f.providerHolds(id)
+		assert.True(t, held, "ADR-0003:S7: snapshot %s, which no customer deleted, is gone at the provider", id)
+	}
+	for _, id := range amis {
+		_, err = f.metadata.GetAMI(t.Context(), id)
+		assert.NoError(t, err, "ADR-0003:S7: the AMI document %s is gone after the sweep", id)
+	}
 	_, err = f.mem.GetVolume(t.Context(), ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: pendingVolumeID})
 	assert.NoError(t, err, "ADR-0003:S7: the source volume is gone after the sweep")
 	volumes, err := f.metadata.ListAllVolumes(t.Context())
 	require.NoError(t, err)
 	assert.Len(t, volumes, 1, "ADR-0003:S7: a volume document is gone after the sweep")
+	_, ok := f.doc("snap-s7markeddone01")
+	assert.False(t, ok, "a snapshot the customer deleted is deleted once it settles")
 }

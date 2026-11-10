@@ -3169,6 +3169,30 @@ func TestPrepareRunInstances_AMINotOwnedByCaller(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 }
 
+func TestPrepareRunInstances_AMINotAvailable(t *testing.T) {
+	for _, state := range []string{"pending", "failed"} {
+		t.Run(state, func(t *testing.T) {
+			types, _ := defaultPrepareInstanceTypes()
+			svc := &InstanceServiceImpl{
+				instanceTypes: types,
+				amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+					"ami-1": {ImageOwnerAlias: "acc", State: state},
+				}},
+			}
+			_, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+				InstanceType: aws.String("t3.micro"),
+				ImageId:      aws.String("ami-1"),
+				MinCount:     aws.Int64(1),
+				MaxCount:     aws.Int64(1),
+			}, "acc", "")
+			code, message, ok := awserrors.ResolveErrorDetail(err)
+			require.True(t, ok, "unregistered error: %v", err)
+			assert.Equal(t, awserrors.ErrorInvalidAMIIDUnavailable, code)
+			assert.Contains(t, message, state)
+		})
+	}
+}
+
 func TestPrepareRunInstances_KeyPairNotFound(t *testing.T) {
 	types, _ := defaultPrepareInstanceTypes()
 	svc := &InstanceServiceImpl{

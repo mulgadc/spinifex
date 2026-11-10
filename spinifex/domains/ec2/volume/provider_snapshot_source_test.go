@@ -51,6 +51,7 @@ func writeSnapshotMetadata(t *testing.T, store objectstore.ObjectStore, snapshot
 	t.Helper()
 	require.NoError(t, ebsmetadata.NewStore(store, "test-bucket").PutSnapshot(context.Background(), ebsmetadata.Snapshot{
 		SnapshotID: snapshotID, VolumeID: sourceVolumeID, VolumeSize: sizeGiB, OwnerID: ownerID,
+		State: ebsmetadata.SnapshotStateCompleted,
 	}))
 }
 

@@ -10,8 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	otelsetup "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 )
 
 // ReplacementTimeoutSeconds is the node.session.timeo.replacement_timeout set
@@ -163,35 +161,33 @@ func parseSession(line string) (Target, bool) {
 }
 
 func (a *ISCSIAdm) awaitDevice(ctx context.Context, path string) (string, error) {
-	stat, timeout, poll := a.Stat, a.DeviceTimeout, a.DevicePoll
+	stat, timeout, interval := a.Stat, a.DeviceTimeout, a.DevicePoll
 	if stat == nil {
 		stat = os.Stat
 	}
 	if timeout <= 0 {
 		timeout = defaultDeviceTimeout
 	}
-	if poll <= 0 {
-		poll = defaultDevicePoll
+	if interval <= 0 {
+		interval = defaultDevicePoll
 	}
-	start := time.Now()
-	for {
+	err := poll(ctx, timeout, interval, "device "+path+" appearing", func(context.Context) (bool, error) {
 		_, err := stat(path)
 		if err == nil {
-			return path, nil
+			return true, nil
 		}
 		if !errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("stat %s: %w", path, err)
+			return false, fmt.Errorf("stat %s: %w", path, err)
 		}
-		if time.Since(start) >= timeout {
-			slog.WarnContext(ctx, "ocibsd: device did not appear", "device", path, "waited_ms", otelsetup.Millis(time.Since(start)))
-			return "", fmt.Errorf("device %s did not appear", path)
-		}
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(poll):
-		}
+		return false, nil
+	})
+	if errors.Is(err, errGaveUp) {
+		return "", fmt.Errorf("device %s did not appear", path)
 	}
+	if err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 // exitCode is the exit status err carries, or -1 when it carries none.

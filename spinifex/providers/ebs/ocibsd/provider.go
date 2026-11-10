@@ -233,26 +233,38 @@ func ociError(op string, err error, onConflict ...error) error {
 	return fmt.Errorf("ocibsd: %s: %w", op, err)
 }
 
-// waitFor polls done until it reports true, failing as retry-later once
-// timeout passes, since the same request may then find the work finished.
-func (p *Provider) waitFor(ctx context.Context, timeout time.Duration, what string, done func(context.Context) (bool, error)) error {
+// errGaveUp is what poll returns once its timeout passes.
+var errGaveUp = errors.New("ocibsd: gave up waiting")
+
+// poll calls done every interval until it reports true or fails, returning
+// errGaveUp once timeout passes and ctx's error if ctx ends first.
+func poll(ctx context.Context, timeout, interval time.Duration, what string, done func(context.Context) (bool, error)) error {
 	start := time.Now()
-	deadline := start.Add(timeout)
 	for {
 		ok, err := done(ctx)
 		if err != nil || ok {
 			return err
 		}
-		if time.Now().After(deadline) {
+		if time.Since(start) >= timeout {
 			slog.WarnContext(ctx, "ocibsd: gave up waiting", "what", what, "waited_ms", otelsetup.Millis(time.Since(start)))
-			return fmt.Errorf("%w: %s did not finish in time", ebsprovider.ErrUnavailable, what)
+			return errGaveUp
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(p.cfg.PollInterval):
+		case <-time.After(interval):
 		}
 	}
+}
+
+// waitFor polls an OCI operation, failing as retry-later once timeout passes,
+// since the same request may then find the work finished.
+func (p *Provider) waitFor(ctx context.Context, timeout time.Duration, what string, done func(context.Context) (bool, error)) error {
+	err := poll(ctx, timeout, p.cfg.PollInterval, what, done)
+	if errors.Is(err, errGaveUp) {
+		return fmt.Errorf("%w: %s did not finish in time", ebsprovider.ErrUnavailable, what)
+	}
+	return err
 }
 
 // lockVolume serialises this node's publish and unpublish of one volume, so

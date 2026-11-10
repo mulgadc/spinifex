@@ -47,6 +47,22 @@ func applyProviderAnswer(created *ebsprovider.Snapshot, earlierUnanswered bool) 
 	}
 }
 
+// repeatOutcome is the write a CreateSnapshot answer after an unanswered call
+// makes: answered, the provider's answer; a refusal no later call can change,
+// error; anything else, nil, leaving the document pending.
+func repeatOutcome(created *ebsprovider.Snapshot, err error, earlierUnanswered bool) (mutate func(*ebsmetadata.Snapshot), answered bool) {
+	switch {
+	case err == nil && created != nil:
+		return applyProviderAnswer(created, earlierUnanswered), true
+	case refusalSettlesError(err):
+		return func(d *ebsmetadata.Snapshot) {
+			markSnapshotError(d)
+			d.AmbiguousCreate = earlierUnanswered
+		}, false
+	}
+	return nil, false
+}
+
 func markSnapshotCompleted(doc *ebsmetadata.Snapshot) {
 	doc.State = snapshotStateCompleted
 	doc.Progress = "100%"

@@ -241,16 +241,14 @@ func (r *PendingSnapshotReaper) repeat(ctx context.Context, current ebsmetadata.
 	created, err := r.svc.provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{
 		Versioned: ebsprovider.NewVersioned(), SnapshotID: current.SnapshotID, VolumeID: current.VolumeID, VolumeHandle: handle,
 	})
+	mutate, answered := repeatOutcome(created, err, earlierUnanswered)
 	switch {
-	case err == nil && created != nil:
-		return r.write(ctx, current, applyProviderAnswer(created, earlierUnanswered))
-	case refusalSettlesError(err):
+	case answered:
+		return r.write(ctx, current, mutate)
+	case mutate != nil:
 		slog.WarnContext(ctx, "pending-snapshot: provider refused the repeat for good, marking the snapshot error",
 			"snapshotId", current.SnapshotID, "volumeId", current.VolumeID, "err", err)
-		return r.write(ctx, current, func(d *ebsmetadata.Snapshot) {
-			markSnapshotError(d)
-			d.AmbiguousCreate = earlierUnanswered
-		})
+		return r.write(ctx, current, mutate)
 	default:
 		slog.WarnContext(ctx, "pending-snapshot: repeat not answered, retrying next sweep",
 			"snapshotId", current.SnapshotID, "volumeId", current.VolumeID, "err", err)

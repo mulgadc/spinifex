@@ -352,6 +352,10 @@ const (
 	stepRollbackUnreferenced
 )
 
+// createAttempts bounds createSnapshot's provider calls: the first, and one
+// repeat of a call that may have been accepted.
+const createAttempts = 2
+
 // errCreateCrashed is what createSnapshot returns when a test stops it at a step.
 var errCreateCrashed = errors.New("snapshot create stopped at a test crash point")
 
@@ -410,47 +414,47 @@ func (s *SnapshotServiceImpl) createSnapshot(ctx context.Context, doc ebsmetadat
 	}
 
 	// The document carries AmbiguousCreate from its first write, so a crash
-	// once this call is sent leaves the flag set.
-	created, err := s.provider.CreateSnapshot(ctx, req)
-	if crash(stepAnswered) {
-		return nil, errCreateCrashed
-	}
-	if err == nil && created != nil {
-		return s.answerCreate(ctx, doc, created, false, hooks, crash)
-	}
-	if definiteRefusal(err) {
-		// The request holds the claim, so no other call for this ID exists that
-		// a provider could still accept: the document can go.
-		slog.WarnContext(ctx, "CreateSnapshot refused by the provider", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
-		if hooks.Refused != nil {
-			hooks.Refused(ctx)
-		}
-		if s.rollBackCreate(ctx, doc, crash) {
+	// once a call is sent leaves the flag set. A call that may have been
+	// accepted is repeated once: the provider answers it with what it holds.
+	var created *ebsprovider.Snapshot
+	earlierUnanswered := false
+	for range createAttempts {
+		created, err = s.provider.CreateSnapshot(ctx, req)
+		if crash(stepAnswered) {
 			return nil, errCreateCrashed
 		}
-		return nil, ProviderCreateError(volumeID, err)
+		if (err == nil && created != nil) || earlierUnanswered {
+			break
+		}
+		if definiteRefusal(err) {
+			// The request holds the claim, so no other call for this ID exists that
+			// a provider could still accept: the document can go.
+			slog.WarnContext(ctx, "CreateSnapshot refused by the provider", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
+			if hooks.Refused != nil {
+				hooks.Refused(ctx)
+			}
+			if s.rollBackCreate(ctx, doc, crash) {
+				return nil, errCreateCrashed
+			}
+			return nil, ProviderCreateError(volumeID, err)
+		}
+		slog.WarnContext(ctx, "CreateSnapshot provider call failed ambiguously, repeating it", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
+		earlierUnanswered = true
 	}
 
-	// The first call may have been accepted, so it is repeated: the provider
-	// answers a repeat with the snapshot it already holds.
-	slog.WarnContext(ctx, "CreateSnapshot provider call failed ambiguously, repeating it", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
-	created, err = s.provider.CreateSnapshot(ctx, req)
-	if crash(stepAnswered) {
-		return nil, errCreateCrashed
-	}
-	if err == nil && created != nil {
-		return s.answerCreate(ctx, doc, created, true, hooks, crash)
-	}
-	if refusalSettlesError(err) {
+	mutate, answered := repeatOutcome(created, err, earlierUnanswered)
+	switch {
+	case answered:
+		return s.answerCreate(ctx, doc, mutate, hooks, crash)
+	case mutate != nil:
 		slog.WarnContext(ctx, "CreateSnapshot repeat refused for good, marking the snapshot error", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
 		wctx, cancel := writeContext(ctx)
 		defer cancel()
-		if _, _, werr := s.updatePending(wctx, accountID, snapshotID, markSnapshotError); werr != nil {
+		if _, _, werr := s.updatePending(wctx, accountID, snapshotID, mutate); werr != nil {
 			slog.ErrorContext(ctx, "CreateSnapshot failed to mark the snapshot error", "snapshotId", snapshotID, "err", werr)
 		}
 		return nil, ProviderCreateError(volumeID, err)
-	}
-	if definiteRefusal(err) {
+	case definiteRefusal(err):
 		// The first call may still be accepted once this refusal clears.
 		slog.WarnContext(ctx, "CreateSnapshot repeat refused, leaving the snapshot pending", "volumeId", volumeID, "snapshotId", snapshotID, "err", err)
 		return nil, ProviderCreateError(volumeID, err)
@@ -462,11 +466,11 @@ func (s *SnapshotServiceImpl) createSnapshot(ctx context.Context, doc ebsmetadat
 // answerCreate writes the provider's answer onto the pending document and
 // returns the snapshot as written. The answer fixed the contents, so a failed
 // write still reports success; the reaper settles the document.
-func (s *SnapshotServiceImpl) answerCreate(ctx context.Context, doc ebsmetadata.Snapshot, created *ebsprovider.Snapshot,
-	earlierUnanswered bool, hooks createHooks, crash func(createStep) bool) (*ec2.Snapshot, error) {
+func (s *SnapshotServiceImpl) answerCreate(ctx context.Context, doc ebsmetadata.Snapshot, answer func(*ebsmetadata.Snapshot),
+	hooks createHooks, crash func(createStep) bool) (*ec2.Snapshot, error) {
 	wctx, cancel := writeContext(ctx)
 	defer cancel()
-	written, ok, err := s.updatePending(wctx, doc.OwnerID, doc.SnapshotID, applyProviderAnswer(created, earlierUnanswered))
+	written, ok, err := s.updatePending(wctx, doc.OwnerID, doc.SnapshotID, answer)
 	completed := ok && written.State == snapshotStateCompleted
 	switch {
 	case err != nil:
@@ -475,7 +479,7 @@ func (s *SnapshotServiceImpl) answerCreate(ctx context.Context, doc ebsmetadata.
 	case !ok && written.SnapshotID == "":
 		// Deleted while the provider answered; report what the answer was.
 		written = doc
-		applyProviderAnswer(created, earlierUnanswered)(&written)
+		answer(&written)
 	}
 	if crash(stepSettled) {
 		return nil, errCreateCrashed

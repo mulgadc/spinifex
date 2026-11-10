@@ -441,12 +441,6 @@ func TestCreateSnapshot_ProviderAnswers(t *testing.T) {
 				f.provider.onCreate = scriptCalls(errAmbiguous, ebsprovider.ErrNotFound)
 			},
 			wantErr: awserrors.ErrorServerInternal, wantState: snapshotStatePending, wantCalls: 2},
-		{name: "a refused document that cannot be removed keeps its reference",
-			setup: func(f *pendingFixture) {
-				f.store.failDelete = true
-				f.provider.onCreate = refuseFrom(1, ebsprovider.ErrVolumeInUse)
-			},
-			wantErr: awserrors.ErrorIncorrectState, wantState: snapshotStatePending, wantCalls: 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -511,17 +505,18 @@ func scriptCalls(errs ...error) func(int, ebsprovider.CreateSnapshotRequest) (bo
 // so each failure there refuses the request and leaves no document.
 func TestCreateSnapshot_FailsBeforeTheProviderIsCalled(t *testing.T) {
 	cases := []struct {
-		name  string
-		build func(f *pendingFixture) *SnapshotServiceImpl
+		name       string
+		build      func(f *pendingFixture) *SnapshotServiceImpl
+		wantMarked bool // the rollback left its document marked for the reaper
 	}{
 		{name: "the claim cannot be taken", build: func(f *pendingFixture) *SnapshotServiceImpl {
 			return f.nodeOver(nodeA, f.unreachableSync())
 		}},
-		{name: "the reference cannot be written, so the document is removed", build: func(f *pendingFixture) *SnapshotServiceImpl {
+		{name: "the reference cannot be written, so the document is left marked", build: func(f *pendingFixture) *SnapshotServiceImpl {
 			svc := f.node(nodeA)
 			svc.snapRefs = f.unreachableRefs()
 			return svc
-		}},
+		}, wantMarked: true},
 		{name: "the document cannot be written", build: func(f *pendingFixture) *SnapshotServiceImpl {
 			f.store.putsBefore = 0
 			return f.node(nodeA)
@@ -537,8 +532,84 @@ func TestCreateSnapshot_FailsBeforeTheProviderIsCalled(t *testing.T) {
 			require.Error(t, err)
 			assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 			assert.Zero(t, f.provider.createCalls(), "the provider must not be called without a recorded document")
+			if tc.wantMarked {
+				doc := f.onlyDoc()
+				assert.True(t, doc.DeleteRequested)
+				assert.False(t, doc.AmbiguousCreate)
+				f.sweep(f.node(nodeB))
+				assert.Zero(t, f.provider.createCalls(), "the reaper finishes the rollback and never repeats the create")
+			}
 			assert.Empty(t, f.docs())
 			assert.Empty(t, f.refsOf(pendingVolumeID))
+		})
+	}
+}
+
+// A rollback of a refused first call that fails or is interrupted part way
+// leaves its document marked for the reaper, which removes the reference and
+// then the document without repeating the create; no reference outlives it.
+func TestCreateSnapshot_RollbackInterrupted(t *testing.T) {
+	cases := []struct {
+		name    string
+		break_  func(f *pendingFixture, svc *SnapshotServiceImpl)
+		crashed bool
+		wantRef bool // the reference is still there after the request
+	}{
+		{name: "the reference removal fails", break_: func(f *pendingFixture, svc *SnapshotServiceImpl) {
+			refuse := refuseFrom(1, ebsprovider.ErrVolumeInUse)
+			f.provider.onCreate = func(n int, req ebsprovider.CreateSnapshotRequest) (bool, *ebsprovider.Snapshot, error) {
+				svc.snapRefs = f.unreachableRefs()
+				return refuse(n, req)
+			}
+		}, wantRef: true},
+		{name: "the document removal fails", break_: func(f *pendingFixture, _ *SnapshotServiceImpl) {
+			f.store.failDelete = true
+		}},
+		{name: "interrupted after the mark", break_: func(_ *pendingFixture, svc *SnapshotServiceImpl) {
+			svc.crashAt = func(step createStep) bool { return step == stepRollbackMarked }
+		}, crashed: true, wantRef: true},
+		{name: "interrupted after the reference removal", break_: func(_ *pendingFixture, svc *SnapshotServiceImpl) {
+			svc.crashAt = func(step createStep) bool { return step == stepRollbackUnreferenced }
+		}, crashed: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPendingFixture(t)
+			svc := f.node(nodeA)
+			f.provider.onCreate = refuseFrom(1, ebsprovider.ErrVolumeInUse)
+			tc.break_(f, svc)
+
+			_, err := f.create(svc)
+			if tc.crashed {
+				require.ErrorIs(t, err, errCreateCrashed)
+			} else {
+				code, _, ok := awserrors.ResolveErrorDetail(err)
+				require.True(t, ok, "unregistered error: %v", err)
+				assert.Equal(t, awserrors.ErrorIncorrectState, code, "the caller sees the provider's refusal")
+			}
+
+			doc := f.onlyDoc()
+			assert.True(t, doc.DeleteRequested, "the document left behind is marked, so the reaper deletes it")
+			assert.False(t, doc.AmbiguousCreate, "the refused call is the only one, so no tombstone is kept")
+			if tc.wantRef {
+				assert.Equal(t, []string{doc.SnapshotID}, f.refsOf(pendingVolumeID))
+			} else {
+				assert.Empty(t, f.refsOf(pendingVolumeID))
+			}
+			f.assertHidden(svc, doc.SnapshotID)
+
+			f.store.failDelete = false
+			if tc.crashed {
+				_, err := f.node(nodeA).ReleaseNodeClaims(t.Context())
+				require.NoError(t, err)
+			}
+			f.sweep(f.node(nodeB))
+
+			assert.Equal(t, 1, f.provider.createCalls(), "the reaper never repeats a refused create")
+			assert.Empty(t, f.docs())
+			assert.Empty(t, f.refsOf(pendingVolumeID))
+			_, held := f.providerHolds(doc.SnapshotID)
+			assert.False(t, held)
 		})
 	}
 }

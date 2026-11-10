@@ -303,6 +303,8 @@ const (
 	stepReferenced
 	stepAnswered
 	stepSettled
+	stepRollbackMarked
+	stepRollbackUnreferenced
 )
 
 // errCreateCrashed is what createSnapshot returns when a test stops it at a step.
@@ -344,7 +346,9 @@ func (s *SnapshotServiceImpl) createSnapshot(ctx context.Context, doc ebsmetadat
 	}
 	if err := s.addSnapshotRef(ctx, volumeID, snapshotID); err != nil {
 		slog.ErrorContext(ctx, "CreateSnapshot failed to add snapshot ref to KV", "snapshotId", snapshotID, "volumeId", volumeID, "err", err)
-		s.rollBackCreate(ctx, accountID, volumeID, snapshotID)
+		if s.rollBackCreate(ctx, doc, crash) {
+			return nil, errCreateCrashed
+		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if crash(stepReferenced) {
@@ -353,7 +357,9 @@ func (s *SnapshotServiceImpl) createSnapshot(ctx context.Context, doc ebsmetadat
 	if hooks.Recorded != nil {
 		if err := hooks.Recorded(ctx); err != nil {
 			slog.ErrorContext(ctx, "CreateSnapshot failed to record the image beside its snapshot", "snapshotId", snapshotID, "err", err)
-			s.rollBackCreate(ctx, accountID, volumeID, snapshotID)
+			if s.rollBackCreate(ctx, doc, crash) {
+				return nil, errCreateCrashed
+			}
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		}
 	}
@@ -374,7 +380,9 @@ func (s *SnapshotServiceImpl) createSnapshot(ctx context.Context, doc ebsmetadat
 		if hooks.Refused != nil {
 			hooks.Refused(ctx)
 		}
-		s.rollBackCreate(ctx, accountID, volumeID, snapshotID)
+		if s.rollBackCreate(ctx, doc, crash) {
+			return nil, errCreateCrashed
+		}
 		return nil, ProviderCreateError(volumeID, err)
 	}
 
@@ -434,19 +442,33 @@ func (s *SnapshotServiceImpl) answerCreate(ctx context.Context, doc ebsmetadata.
 	return snapshotConfigToEC2(written), nil
 }
 
-// rollBackCreate removes the document and then the reference of a snapshot
-// the provider refused or never saw. A document that cannot be deleted keeps
-// its reference.
-func (s *SnapshotServiceImpl) rollBackCreate(ctx context.Context, accountID, volumeID, snapshotID string) {
+// rollBackCreate removes a snapshot the provider refused or never saw, in the
+// reaper's order: the document is marked deleted with no call outstanding, then
+// the reference and the document go. It reports a test crash.
+func (s *SnapshotServiceImpl) rollBackCreate(ctx context.Context, doc ebsmetadata.Snapshot, crash func(createStep) bool) bool {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), snapshotCleanupTimeout)
 	defer cancel()
-	if err := s.metadata.DeleteSnapshot(ctx, accountID, snapshotID); err != nil && !objectstore.IsNoSuchKeyError(err) {
-		slog.ErrorContext(ctx, "CreateSnapshot failed to remove a refused snapshot's document", "snapshotId", snapshotID, "err", err)
-		return
+	// A marked document a failure below leaves is the reaper's to delete, and it
+	// never repeats the create of one, so the refusal the caller saw stands.
+	doc.DeleteRequested, doc.AmbiguousCreate = true, false
+	if err := s.metadata.PutSnapshot(ctx, doc); err != nil {
+		slog.ErrorContext(ctx, "CreateSnapshot failed to mark a refused snapshot's document deleted", "snapshotId", doc.SnapshotID, "err", err)
 	}
-	if err := s.removeSnapshotRef(ctx, volumeID, snapshotID); err != nil {
-		slog.ErrorContext(ctx, "CreateSnapshot failed to remove a refused snapshot's ref", "snapshotId", snapshotID, "volumeId", volumeID, "err", err)
+	if crash(stepRollbackMarked) {
+		return true
 	}
+	if err := s.removeSnapshotRef(ctx, doc.VolumeID, doc.SnapshotID); err != nil {
+		slog.ErrorContext(ctx, "CreateSnapshot failed to remove a refused snapshot's ref, leaving its document for the reaper",
+			"snapshotId", doc.SnapshotID, "volumeId", doc.VolumeID, "err", err)
+		return false
+	}
+	if crash(stepRollbackUnreferenced) {
+		return true
+	}
+	if err := s.metadata.DeleteSnapshot(ctx, doc.OwnerID, doc.SnapshotID); err != nil && !objectstore.IsNoSuchKeyError(err) {
+		slog.ErrorContext(ctx, "CreateSnapshot failed to remove a refused snapshot's document, leaving it for the reaper", "snapshotId", doc.SnapshotID, "err", err)
+	}
+	return false
 }
 
 // describeSnapshotsValidFilters defines the set of filter names accepted by DescribeSnapshots.

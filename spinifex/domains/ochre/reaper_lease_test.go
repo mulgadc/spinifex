@@ -172,6 +172,33 @@ func TestService_ADR0003S7_ReclaimRefusesOnceTheLeaseIsLost(t *testing.T) {
 	assert.Empty(t, f.harness.launcher.terminations())
 }
 
+// ADR-0003:S7 invariant: a reclaim admitted while leading that commits after a
+// lease loss yields to anything the new leader wrote, since that moves the
+// revision the draining CAS is fenced on.
+func TestService_ADR0003S7_ReclaimAdmittedBeforeALeaseLossYieldsToTheNewLeader(t *testing.T) {
+	f := newReaperFixture(t, ReaperDeps{})
+	rec := f.ready(t)
+	key := resolveKey(awsidentifiers.GlobalAccountID, testModelID)
+
+	observedAt := time.Now().UTC().Truncate(time.Second)
+	stillLeads := func() bool {
+		cur, rev, found, err := f.store.getRevision(t.Context(), key)
+		require.NoError(t, err)
+		require.True(t, found)
+		cur.LastActiveAt = observedAt
+		_, err = f.store.CompareAndSet(t.Context(), key, &cur, rev)
+		require.NoError(t, err)
+		return true
+	}
+	require.ErrorIs(t, f.svc.reclaim(t.Context(), rec, stillLeads), errReclaimSuperseded)
+
+	cur, found := f.current(t)
+	require.True(t, found)
+	assert.Equal(t, StateReady, cur.State)
+	assert.True(t, cur.LastActiveAt.Equal(observedAt), "the new leader's observation must survive")
+	assert.Empty(t, f.harness.launcher.terminations())
+}
+
 // An observation read before the endpoint was relaunched must not land on the
 // replacement, which would restore the old VM's identity over the new one.
 func TestReaper_StaleObservationDoesNotOverwriteAReplacement(t *testing.T) {

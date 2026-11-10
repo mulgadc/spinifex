@@ -453,8 +453,8 @@ func (s *Service) reclaim(ctx context.Context, observed EndpointRecord, stillLea
 }
 
 // deleteEndpoint is Delete for key. A non-nil admit is asked about the record
-// read under the key's mutex, and a false answer, or no record, returns
-// errReclaimSuperseded without changing anything.
+// read under the key's mutex; a false answer, no record, or a record moved
+// before the draining CAS returns errReclaimSuperseded and changes nothing.
 func (s *Service) deleteEndpoint(ctx context.Context, key, modelID string, admit func(EndpointRecord) bool) (*DeleteEndpointOutput, error) {
 	unlock := s.ensureMu.lock(key)
 	defer unlock()
@@ -480,6 +480,10 @@ func (s *Service) deleteEndpoint(ctx context.Context, key, modelID string, admit
 		rec.State = StateDraining
 		rec.Generation++
 		if _, err := s.store.CompareAndSet(ctx, key, &rec, rev); err != nil {
+			// A record moved since admission belongs to whoever moved it.
+			if admit != nil && errors.Is(err, kvstore.ErrConflict) {
+				return nil, errReclaimSuperseded
+			}
 			return nil, fmt.Errorf("bedrock: mark endpoint %s draining: %w", modelID, err)
 		}
 	}

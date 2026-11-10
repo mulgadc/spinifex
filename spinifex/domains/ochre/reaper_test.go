@@ -167,7 +167,7 @@ func TestReaper_ReapsIdleEndpointPastTTL(t *testing.T) {
 	rec := f.ready(t)
 	f.age(t, 10*time.Minute, 10*time.Minute)
 
-	require.NoError(t, f.reaper.sweepOnce(t.Context()))
+	require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
 
 	_, found := f.current(t)
 	assert.False(t, found, "a reaped endpoint's record must be purged, not left DRAINING")
@@ -183,7 +183,7 @@ func TestReaper_NeverReapsWithinIdleTTLOfReadyAt(t *testing.T) {
 	// Idle for far longer than the TTL, but only just became READY.
 	f.age(t, time.Second, 24*time.Hour)
 
-	require.NoError(t, f.reaper.sweepOnce(t.Context()))
+	require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
 
 	_, found := f.current(t)
 	assert.True(t, found, "a freshly READY endpoint must survive its first sweep")
@@ -202,7 +202,7 @@ func TestReaper_NeverReapsPinnedEndpoint(t *testing.T) {
 	_, casErr := f.store.CompareAndSet(t.Context(), key, &rec, rev)
 	require.NoError(t, casErr)
 
-	require.NoError(t, f.reaper.sweepOnce(t.Context()))
+	require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
 
 	got, found := f.current(t)
 	require.True(t, found)
@@ -248,7 +248,7 @@ func TestReaper_BusyEndpointStampsLastActive(t *testing.T) {
 	f.age(t, time.Hour, time.Hour)
 	f.transport.serve(2, 1, 5)
 
-	require.NoError(t, f.reaper.sweepOnce(t.Context()))
+	require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
 
 	got, found := f.current(t)
 	require.True(t, found, "an endpoint serving traffic must never be reaped")
@@ -265,7 +265,7 @@ func TestReaper_AdvancedCounterCountsAsActivity(t *testing.T) {
 	f.age(t, time.Hour, time.Hour)
 	f.transport.serve(0, 0, 12)
 
-	require.NoError(t, f.reaper.sweepOnce(t.Context()))
+	require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
 
 	got, found := f.current(t)
 	require.True(t, found)
@@ -274,7 +274,7 @@ func TestReaper_AdvancedCounterCountsAsActivity(t *testing.T) {
 	// Once that activity has aged out, the same unchanged counter is what makes
 	// the next sweep read the endpoint as idle.
 	f.age(t, time.Hour, time.Hour)
-	require.NoError(t, f.reaper.sweepOnce(t.Context()))
+	require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
 	_, found = f.current(t)
 	assert.False(t, found)
 }
@@ -285,7 +285,7 @@ func TestReaper_ScrapeFailuresEscalateToRelaunch(t *testing.T) {
 	f.transport.breakScrapes()
 
 	for range maxScrapeFailures - 1 {
-		require.NoError(t, f.reaper.sweepOnce(t.Context()))
+		require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
 		got, found := f.current(t)
 		require.True(t, found, "an unreachable endpoint is unknown, never idle")
 		assert.Empty(t, f.harness.launcher.terminated)
@@ -295,7 +295,7 @@ func TestReaper_ScrapeFailuresEscalateToRelaunch(t *testing.T) {
 	// The escalating sweep tears the wedged VM down and asks for it back.
 	f.transport.serve(0, 0, 0)
 	f.transport.breakScrapes()
-	require.NoError(t, f.reaper.sweepOnce(t.Context()))
+	require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
 	f.svc.WaitLaunches()
 
 	assert.Contains(t, f.harness.launcher.terminated, rec.InstanceID)
@@ -319,7 +319,7 @@ func TestReaper_PinnedEndpointNotReapedOnScrapeFailure(t *testing.T) {
 
 	f.transport.breakScrapes()
 	for range maxScrapeFailures + 2 {
-		require.NoError(t, f.reaper.sweepOnce(t.Context()))
+		require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
 	}
 
 	got, found := f.current(t)
@@ -351,7 +351,7 @@ func TestReaper_ServiceOnlyBundleLivenessProbedNotReaped(t *testing.T) {
 	_, err := f.store.Create(t.Context(), key, &rec)
 	require.NoError(t, err)
 
-	require.NoError(t, f.reaper.sweepOnce(t.Context()))
+	require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
 
 	rec, rev, found, err := f.store.getRevision(t.Context(), key)
 	require.NoError(t, err)
@@ -367,12 +367,12 @@ func TestReaper_SuccessfulScrapeResetsFailureCount(t *testing.T) {
 	f.ready(t)
 
 	f.transport.breakScrapes()
-	require.NoError(t, f.reaper.sweepOnce(t.Context()))
+	require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
 	got, _ := f.current(t)
 	require.Equal(t, 1, got.ScrapeFailures)
 
 	f.transport.serve(1, 0, 0)
-	require.NoError(t, f.reaper.sweepOnce(t.Context()))
+	require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
 	got, _ = f.current(t)
 	assert.Zero(t, got.ScrapeFailures)
 }
@@ -385,8 +385,8 @@ func TestReaper_UnchangedObservationWritesNothing(t *testing.T) {
 	f.ready(t)
 
 	before, _ := f.current(t)
-	require.NoError(t, f.reaper.sweepOnce(t.Context()))
-	require.NoError(t, f.reaper.sweepOnce(t.Context()))
+	require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
+	require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
 	after, found := f.current(t)
 
 	require.True(t, found)
@@ -405,7 +405,7 @@ func TestReaper_SkipsNonReadyRecords(t *testing.T) {
 	_, err := f.store.Create(t.Context(), key, &rec)
 	require.NoError(t, err)
 
-	require.NoError(t, f.reaper.sweepOnce(t.Context()))
+	require.NoError(t, f.reaper.sweepOnce(t.Context(), nil))
 
 	_, found := f.current(t)
 	assert.True(t, found)
@@ -493,35 +493,23 @@ func TestReaper_RunReleasesLeaseOnShutdown(t *testing.T) {
 // A reaper whose lease is taken over must stop reclaiming at once, or two
 // nodes would tear the same endpoint down; re-elected, it reclaims again.
 func TestReaper_LosingTheLeaseStopsReclaimUntilReElection(t *testing.T) {
-	deps := ReaperDeps{Interval: 5 * time.Millisecond, IdleTTL: time.Minute}
-	f := newReaperFixture(t, deps)
-	js, err := jetstream.New(f.svc.nc)
-	require.NoError(t, err)
-	store := kvstore.OpenSyncBucket(js)
-	f.reaper = NewReaper(f.svc, kvsync.NewLease(store, KeyReaper, "node-a", 300*time.Millisecond), deps)
+	f := newReaperFixture(t, ReaperDeps{Interval: 5 * time.Millisecond, IdleTTL: time.Minute})
+	syncKV := f.shortLease(t)
 	f.ready(t)
+	lead(t, f.reaper)
+	f.stealLease(t, syncKV)
+
+	// Idle from here on, so only the lost lease keeps it from being reaped.
+	f.age(t, 10*time.Minute, 10*time.Minute)
+	f.reaper.tick(t.Context())
+	_, found := f.current(t)
+	assert.True(t, found, "a reaper that lost the lease must not reclaim")
+	assert.Zero(t, f.transport.scrapeCount(), "a reaper that lost the lease must not even scrape")
 
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() { defer close(done); f.reaper.Run(ctx) }()
 	t.Cleanup(func() { cancel(); <-done })
-	require.Eventually(t, f.reaper.IsLeader, 5*time.Second, 5*time.Millisecond)
-
-	syncKV, err := store.KV(t.Context())
-	require.NoError(t, err)
-	_, err = syncKV.Put(t.Context(), KeyReaper, []byte(`{"holder":"node-b","generation":0}`))
-	require.NoError(t, err)
-	require.Eventually(t, func() bool { return !f.reaper.IsLeader() }, 5*time.Second, 5*time.Millisecond)
-
-	// Idle from here on, so only the lost lease keeps it from being reaped.
-	f.age(t, 10*time.Minute, 10*time.Minute)
-	time.Sleep(20 * time.Millisecond) // a sweep already running when the lease went
-	scrapes := f.transport.scrapeCount()
-	time.Sleep(100 * time.Millisecond)
-	_, found := f.current(t)
-	assert.True(t, found, "a reaper that lost the lease must not reclaim")
-	assert.Equal(t, scrapes, f.transport.scrapeCount(), "a reaper that lost the lease must not even scrape")
-
 	require.NoError(t, syncKV.Delete(t.Context(), KeyReaper))
 	require.Eventually(t, func() bool { _, found := f.current(t); return !found }, 5*time.Second, 5*time.Millisecond,
 		"re-elected, the reaper reclaims the idle endpoint")

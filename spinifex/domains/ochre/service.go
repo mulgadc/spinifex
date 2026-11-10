@@ -433,22 +433,45 @@ func (s *Service) Delete(ctx context.Context, in *DeleteEndpointInput, _ string)
 	if in == nil || in.ModelID == "" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	storeAccountID := resolveAccountID(in.AccountID)
-	key := resolveKey(storeAccountID, in.ModelID)
+	return s.deleteEndpoint(ctx, resolveKey(resolveAccountID(in.AccountID), in.ModelID), in.ModelID, nil)
+}
 
+// errReclaimSuperseded reports a reclaim refused because the endpoint is no
+// longer the one its caller observed, or the caller no longer leads.
+var errReclaimSuperseded = errors.New("bedrock: reclaim superseded")
+
+// reclaim is the reaper's Delete. It tears the endpoint down only if, once the
+// key is locked, the record is still the READY one observed and stillLeads
+// holds; the READY-to-DRAINING CAS then makes the teardown this caller's alone.
+func (s *Service) reclaim(ctx context.Context, observed EndpointRecord, stillLeads func() bool) error {
+	admit := func(current EndpointRecord) bool {
+		return current.State == StateReady && sameIncarnation(current, observed) &&
+			current.Generation == observed.Generation && stillLeads()
+	}
+	_, err := s.deleteEndpoint(ctx, resolveKey(resolveAccountID(observed.AccountID), observed.ModelID), observed.ModelID, admit)
+	return err
+}
+
+// deleteEndpoint is Delete for key. A non-nil admit is asked about the record
+// read under the key's mutex; a false answer, no record, or a record moved
+// before the draining CAS returns errReclaimSuperseded and changes nothing.
+func (s *Service) deleteEndpoint(ctx context.Context, key, modelID string, admit func(EndpointRecord) bool) (*DeleteEndpointOutput, error) {
 	unlock := s.ensureMu.lock(key)
 	defer unlock()
 
 	rec, rev, found, err := s.store.getRevision(ctx, key)
 	if err != nil {
-		return nil, fmt.Errorf("bedrock: read endpoint %s: %w", in.ModelID, err)
+		return nil, fmt.Errorf("bedrock: read endpoint %s: %w", modelID, err)
+	}
+	if admit != nil && (!found || !admit(rec)) {
+		return nil, errReclaimSuperseded
 	}
 	if !found {
 		return &DeleteEndpointOutput{Removed: false}, nil
 	}
 	if rec.State != StateReady && rec.State != StateDraining {
 		return nil, awserrors.Errorf(awserrors.ErrorModelNotReadyException,
-			"bedrock: endpoint for %s cannot be deleted (state=%s)", in.ModelID, rec.State)
+			"bedrock: endpoint for %s cannot be deleted (state=%s)", modelID, rec.State)
 	}
 	if rec.State == StateReady {
 		if err := validateTransition(rec.State, StateDraining); err != nil {
@@ -457,20 +480,30 @@ func (s *Service) Delete(ctx context.Context, in *DeleteEndpointInput, _ string)
 		rec.State = StateDraining
 		rec.Generation++
 		if _, err := s.store.CompareAndSet(ctx, key, &rec, rev); err != nil {
-			return nil, fmt.Errorf("bedrock: mark endpoint %s draining: %w", in.ModelID, err)
+			// A record moved since admission belongs to whoever moved it.
+			if admit != nil && errors.Is(err, kvstore.ErrConflict) {
+				return nil, errReclaimSuperseded
+			}
+			return nil, fmt.Errorf("bedrock: mark endpoint %s draining: %w", modelID, err)
 		}
 	}
 
 	if err := TerminateServingVM(ctx, s.deps.Launch, rec); err != nil {
-		return nil, fmt.Errorf("bedrock: delete endpoint %s: %w", in.ModelID, err)
+		return nil, fmt.Errorf("bedrock: delete endpoint %s: %w", modelID, err)
 	}
 	if err := validateTransition(StateDraining, StateAbsent); err != nil {
 		return nil, err
 	}
 	if err := s.store.Purge(ctx, key); err != nil {
-		return nil, fmt.Errorf("bedrock: remove endpoint %s record: %w", in.ModelID, err)
+		return nil, fmt.Errorf("bedrock: remove endpoint %s record: %w", modelID, err)
 	}
 	return &DeleteEndpointOutput{Removed: true}, nil
+}
+
+// sameIncarnation reports whether a and b are one launch of an endpoint. The
+// generation restarts with every launch, so it cannot tell two apart alone.
+func sameIncarnation(a, b EndpointRecord) bool {
+	return a.InstanceID == b.InstanceID && a.CreatedAt.Equal(b.CreatedAt)
 }
 
 // keyMutex hands out a per-key *sync.Mutex, creating it on first use. Entries

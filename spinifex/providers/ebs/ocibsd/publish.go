@@ -29,6 +29,11 @@ func (p *Provider) PublishVolume(ctx context.Context, req ebsprovider.PublishVol
 	if err := checkVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
+	// A block export has no form below the descriptor version, so refuse
+	// before attaching rather than attach a volume the caller cannot read.
+	if req.SchemaVersion < ebsprovider.DescriptorSchemaVersion {
+		return nil, fmt.Errorf("%w: a block export requires schema version %d, got %d", ebsprovider.ErrUnsupportedVersion, ebsprovider.DescriptorSchemaVersion, req.SchemaVersion)
+	}
 	if req.VolumeID == "" || req.NodeID == "" {
 		return nil, fmt.Errorf("%w: volume and node IDs are required", ebsprovider.ErrInvalidArgument)
 	}

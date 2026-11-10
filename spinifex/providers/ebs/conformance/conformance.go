@@ -51,6 +51,18 @@ func capabilitiesOf(t *testing.T, provider ebsprovider.EBSProvider) *ebsprovider
 // fails the test instead of hanging it.
 const maxListPages = 100
 
+// unreadableAt reports whether a caller at version cannot read the export a
+// provider publishes at the latest version: a block export has no v1 form.
+func unreadableAt(latest *ebsprovider.PublishedVolume, version uint16) bool {
+	return version < ebsprovider.DescriptorSchemaVersion && latest.Export.Kind == ebsprovider.ExportKindBlock
+}
+
+func requireUnreadableRefused(t *testing.T, err error, version uint16) {
+	t.Helper()
+	require.ErrorIsf(t, err, ebsprovider.ErrUnsupportedVersion,
+		"a version %d caller cannot read a block export, so its publish must be refused", version)
+}
+
 // unpublish is UnpublishVolume for a case that asserts only on the error.
 func unpublish(ctx context.Context, provider ebsprovider.EBSProvider, req ebsprovider.UnpublishVolumeRequest) error {
 	_, err := provider.UnpublishVolume(ctx, req)
@@ -612,7 +624,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-expand-inuse"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-expand-inuse"), NodeID: cfg.node()})
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: cfg.id("vol-expand-inuse"), NodeID: cfg.node()})
 			require.NoError(t, err)
 
 			expanded, err := provider.ExpandVolume(ctx, ebsprovider.ExpandVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-expand-inuse"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 2 << 30}})
@@ -649,7 +661,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-delete-inuse"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-delete-inuse"), NodeID: cfg.node()})
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: cfg.id("vol-delete-inuse"), NodeID: cfg.node()})
 			require.NoError(t, err)
 			err = provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-delete-inuse")})
 			require.ErrorIs(t, err, ebsprovider.ErrVolumeInUse)
@@ -753,7 +765,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			volumeID := cfg.id("vol-snap-held")
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
 			require.NoError(t, err)
 
 			for _, version := range contractVersions {
@@ -1071,7 +1083,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-pub-ok"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			pub, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-pub-ok"), NodeID: cfg.node()})
+			pub, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: cfg.id("vol-pub-ok"), NodeID: cfg.node()})
 			require.NoError(t, err)
 			require.NotNil(t, pub)
 			assert.Equal(t, cfg.id("vol-pub-ok"), pub.VolumeID)
@@ -1092,9 +1104,13 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 					volumeID := cfg.id(fmt.Sprintf("vol-pub-idem-v%d", version))
 					_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 					require.NoError(t, err)
-					first, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
+					first, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
 					require.NoError(t, err)
 					second, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.Versioned{SchemaVersion: version}, VolumeID: volumeID, NodeID: cfg.node()})
+					if unreadableAt(first, version) {
+						requireUnreadableRefused(t, err, version)
+						return
+					}
 					require.NoError(t, err)
 					assert.Equal(t, first, second)
 				})
@@ -1109,9 +1125,9 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-pub-conflict"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-pub-conflict"), NodeID: cfg.node()})
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: cfg.id("vol-pub-conflict"), NodeID: cfg.node()})
 			require.NoError(t, err)
-			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-pub-conflict"), NodeID: cfg.otherNode()})
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: cfg.id("vol-pub-conflict"), NodeID: cfg.otherNode()})
 			require.ErrorIs(t, err, ebsprovider.ErrVolumeInUse)
 		})
 
@@ -1126,10 +1142,14 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 					volumeID := cfg.id(fmt.Sprintf("vol-pub-held-v%d", version))
 					_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 					require.NoError(t, err)
-					_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
+					first, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
 					require.NoError(t, err)
 
 					_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.Versioned{SchemaVersion: version}, VolumeID: volumeID, NodeID: cfg.otherNode()})
+					if unreadableAt(first, version) {
+						requireUnreadableRefused(t, err, version)
+						return
+					}
 					require.ErrorIs(t, err, ebsprovider.ErrVolumeInUse, "every version must still read the refusal as in use")
 					if version >= ebsprovider.HeldElsewhereSchemaVersion {
 						assert.ErrorIs(t, err, ebsprovider.ErrVolumeHeldElsewhere)
@@ -1152,10 +1172,14 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 					volumeID := cfg.id(fmt.Sprintf("vol-pub-mode-v%d", version))
 					_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 					require.NoError(t, err)
-					_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
+					first, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
 					require.NoError(t, err)
 
 					_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.Versioned{SchemaVersion: version}, VolumeID: volumeID, NodeID: cfg.node(), ReadOnly: true})
+					if unreadableAt(first, version) {
+						requireUnreadableRefused(t, err, version)
+						return
+					}
 					require.ErrorIs(t, err, ebsprovider.ErrVolumeInUse)
 					assert.NotErrorIs(t, err, ebsprovider.ErrVolumeHeldElsewhere,
 						"this node holds the volume, so a caller told it is held elsewhere would wait for a node that does not exist")
@@ -1173,14 +1197,14 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			volumeID := cfg.id("vol-pub-dead")
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			first, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
+			first, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
 			require.NoError(t, err)
 			firstURI := dialURI(t, publishedNBDURI(t, first))
 
 			cfg.KillExport(t, first)
 			require.False(t, nbdReachable(firstURI), "the export still answers, so the kill did not take and this case proves nothing")
 
-			second, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
+			second, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
 			require.NoError(t, err, "a dead export must not make its volume unpublishable")
 			nbdInfoRetry(t, dialURI(t, publishedNBDURI(t, second)))
 		})
@@ -1194,7 +1218,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			volumeID := cfg.id("vol-pub-revoked")
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			published, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
+			published, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
 			require.NoError(t, err)
 
 			notice := cfg.RevokeExport(t, published)
@@ -1205,13 +1229,13 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 
 		t.Run("not_found on absent volume", func(t *testing.T) {
 			provider := newProvider(t)
-			_, err := provider.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-never-existed"), NodeID: cfg.node()})
+			_, err := provider.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: cfg.id("vol-never-existed"), NodeID: cfg.node()})
 			require.ErrorIs(t, err, ebsprovider.ErrNotFound)
 		})
 
 		t.Run("invalid_argument on missing ids", func(t *testing.T) {
 			provider := newProvider(t)
-			_, err := provider.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned()})
+			_, err := provider.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned()})
 			require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument)
 		})
 	})
@@ -1222,7 +1246,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-unpub-ok"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-unpub-ok"), NodeID: cfg.node()})
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: cfg.id("vol-unpub-ok"), NodeID: cfg.node()})
 			require.NoError(t, err)
 			require.NoError(t, unpublish(ctx, provider, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-unpub-ok"), NodeID: cfg.node()}))
 		})
@@ -1242,7 +1266,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			v3 := ebsprovider.Versioned{SchemaVersion: ebsprovider.NoSealSchemaVersion}
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
 			require.NoError(t, err)
 
 			first, err := provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{Versioned: v3, VolumeID: volumeID, NodeID: cfg.node()})
@@ -1264,7 +1288,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 					volumeID := cfg.id(fmt.Sprintf("vol-unpub-noseal-v%d", version))
 					_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 					require.NoError(t, err)
-					_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
+					_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
 					require.NoError(t, err)
 
 					err = unpublish(ctx, provider, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.Versioned{SchemaVersion: version}, VolumeID: volumeID, NodeID: cfg.node(), NoSeal: true})
@@ -1283,7 +1307,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			v3 := ebsprovider.Versioned{SchemaVersion: ebsprovider.NoSealSchemaVersion}
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
 			require.NoError(t, err)
 
 			result, err := provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{Versioned: v3, VolumeID: volumeID, NodeID: cfg.node(), NoSeal: true})
@@ -1295,7 +1319,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			again, err := provider.UnpublishVolume(ctx, ebsprovider.UnpublishVolumeRequest{Versioned: v3, VolumeID: volumeID, NodeID: cfg.node(), NoSeal: true})
 			require.NoError(t, err)
 			assert.False(t, again.TornDown)
-			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
 			require.NoError(t, err, "a volume dropped without sealing must still be publishable")
 		})
 
@@ -1313,7 +1337,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			volumeID := cfg.id("vol-unsealed")
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
 			require.NoError(t, err)
 
 			asked := []string{volumeID, cfg.id("vol-unsealed-never")}
@@ -1368,17 +1392,17 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			volumeID := cfg.id("vol-excl-second")
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
 			require.NoError(t, err)
 
-			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.otherNode()})
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: volumeID, NodeID: cfg.otherNode()})
 			require.ErrorIsf(t, err, ebsprovider.ErrVolumeInUse,
 				"scope %q promises a second writer is refused; letting this through is the two-writer case the guarantee exists to prevent", exclusion.Scope)
 
 			// Releasing the claim must make the volume publishable again, or
 			// the guarantee is indistinguishable from a permanent lock.
 			require.NoError(t, unpublish(ctx, provider, ebsprovider.UnpublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()}))
-			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.otherNode()})
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: volumeID, NodeID: cfg.otherNode()})
 			require.NoError(t, err, "a released claim must be reclaimable, or an unpublish strands the volume")
 		})
 
@@ -1403,7 +1427,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 				wg.Go(func() {
 					<-start
 					_, errs[i] = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{
-						Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: node,
+						Versioned: ebsprovider.NewLatestVersioned(), VolumeID: volumeID, NodeID: node,
 					})
 				})
 			}
@@ -1431,7 +1455,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			volumeID := cfg.id("vol-excl-delrace")
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
+			_, err = provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: volumeID, NodeID: cfg.node()})
 			require.NoError(t, err)
 
 			err = provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID})

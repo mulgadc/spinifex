@@ -345,9 +345,18 @@ func TestPublishIsRefusedWhileAnotherInstanceHoldsTheVolume(t *testing.T) {
 
 	_, err := p.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: latest, VolumeID: "vol-held", NodeID: "node-1"})
 	require.ErrorIs(t, err, ebsprovider.ErrVolumeHeldElsewhere)
-	_, err = p.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-held", NodeID: "node-1"})
-	require.ErrorIs(t, err, ebsprovider.ErrVolumeInUse)
-	assert.NotErrorIs(t, err, ebsprovider.ErrVolumeHeldElsewhere, "a v1 caller predates held elsewhere")
+}
+
+func TestPublishBelowTheDescriptorVersionIsRefusedWithoutAttaching(t *testing.T) {
+	c := newCluster(t)
+	p := c.router()
+	ctx := context.Background()
+	createVolume(t, p, "vol-v1", 1<<30)
+
+	_, err := p.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-v1", NodeID: "node-1"})
+	require.ErrorIs(t, err, ebsprovider.ErrUnsupportedVersion)
+	require.NoError(t, p.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{Versioned: latest, VolumeID: "vol-v1"}),
+		"a refused publish must leave the volume unattached, and so deletable")
 }
 
 // racingClient attaches the volume to another instance just before this

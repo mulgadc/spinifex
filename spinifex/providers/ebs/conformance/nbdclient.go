@@ -191,7 +191,7 @@ func publishForNBD(t *testing.T, provider ebsprovider.EBSProvider, cfg NBDClient
 	t.Cleanup(func() { cleanupVolume(t, provider, cfg, volumeID) })
 
 	pub, err := provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{
-		Versioned: ebsprovider.NewVersioned(),
+		Versioned: ebsprovider.NewLatestVersioned(),
 		VolumeID:  volumeID,
 		NodeID:    cfg.NodeID,
 		ReadOnly:  readOnly,
@@ -337,7 +337,7 @@ func RunNBDClientSuiteWithConfig(t *testing.T, newProvider func(t *testing.T) eb
 			t.Cleanup(func() { cleanupVolume(t, provider, cfg, cfg.VolumePrefix+"-readonly") })
 
 			_, err = provider.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{
-				Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.VolumePrefix + "-readonly",
+				Versioned: ebsprovider.NewLatestVersioned(), VolumeID: cfg.VolumePrefix + "-readonly",
 				NodeID: cfg.NodeID, ReadOnly: true,
 			})
 			require.ErrorIs(t, err, ebsprovider.ErrUnsupportedCapability)

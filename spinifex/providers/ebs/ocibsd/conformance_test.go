@@ -23,7 +23,6 @@ func TestConformanceInProcess(t *testing.T) {
 // Each node serves its own per-node subjects and joins the shared queue, as
 // the per-node service role does.
 func TestConformanceOverNATS(t *testing.T) {
-	t.Skip("the suite publishes at schema version 1, which natsserve refuses for a block export")
 	conformance.RunSuite(t, func(t *testing.T) ebsprovider.EBSProvider {
 		t.Helper()
 		c := newCluster(t)

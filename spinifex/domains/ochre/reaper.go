@@ -91,13 +91,32 @@ func (r *Reaper) Run(ctx context.Context) {
 			<-leaseDone
 			return
 		case <-sweepTicker.C:
-			if !r.IsLeader() {
-				continue
-			}
-			if err := r.sweepOnce(ctx); err != nil {
-				slog.ErrorContext(ctx, "bedrock reaper: sweep failed", "key", r.lease.Key(), "err", err)
-			}
+			r.tick(ctx)
 		}
+	}
+}
+
+// tick sweeps once if this node leads. Lost is read before Held, so a lease
+// gained in between yields the previous, closed channel and the sweep acts on
+// nothing; a lease lost after the check closes the channel the sweep holds.
+func (r *Reaper) tick(ctx context.Context) {
+	lost := r.lease.Lost()
+	if !r.IsLeader() {
+		return
+	}
+	if err := r.sweepOnce(ctx, lost); err != nil {
+		slog.ErrorContext(ctx, "bedrock reaper: sweep failed", "key", r.lease.Key(), "err", err)
+	}
+}
+
+// leading reports whether the acquisition whose Lost channel is lost still
+// holds. A nil lost never closes.
+func leading(lost <-chan struct{}) bool {
+	select {
+	case <-lost:
+		return false
+	default:
+		return true
 	}
 }
 
@@ -106,9 +125,10 @@ func (r *Reaper) IsLeader() bool {
 	return r.lease.Held()
 }
 
-// sweepOnce scrapes every READY endpoint once and acts on what it saw. One
-// endpoint's failure does not stop the pass: the others still need deciding.
-func (r *Reaper) sweepOnce(ctx context.Context) error {
+// sweepOnce scrapes every READY endpoint once and acts on what it saw, while
+// the acquisition lost belongs to holds. One endpoint's failure does not stop
+// the pass: the others still need deciding.
+func (r *Reaper) sweepOnce(ctx context.Context, lost <-chan struct{}) error {
 	recs, err := r.svc.store.list(ctx, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return err
@@ -120,7 +140,11 @@ func (r *Reaper) sweepOnce(ctx context.Context) error {
 		if rec.State != StateReady {
 			continue
 		}
-		if err := r.sweepEndpoint(ctx, rec); err != nil {
+		if !leading(lost) {
+			slog.InfoContext(ctx, "bedrock reaper: lease lost; ending the sweep", "key", r.lease.Key())
+			break
+		}
+		if err := r.sweepEndpoint(ctx, rec, lost); err != nil {
 			failures = append(failures, fmt.Errorf("%s: %w", rec.ModelID, err))
 		}
 	}
@@ -145,19 +169,19 @@ func reaperScrapesMetrics(rec EndpointRecord) bool {
 }
 
 // sweepEndpoint decides one endpoint's fate from a single probe.
-func (r *Reaper) sweepEndpoint(ctx context.Context, rec EndpointRecord) error {
+func (r *Reaper) sweepEndpoint(ctx context.Context, rec EndpointRecord, lost <-chan struct{}) error {
 	scrapeCtx, cancel := context.WithTimeout(ctx, r.scrapeTimeout())
 	defer cancel()
 
 	// A bundle with no vLLM member exposes no load metrics to reclaim on, so
 	// it is kept warm and only liveness-probed rather than idle-scraped.
 	if !reaperScrapesMetrics(rec) {
-		return r.sweepLiveness(scrapeCtx, rec)
+		return r.sweepLiveness(scrapeCtx, rec, lost)
 	}
 
 	sample, err := scrapeMetrics(scrapeCtx, r.svc.httpClient(), rec.BaseURL)
 	if err != nil {
-		return r.recordScrapeFailure(ctx, rec, err)
+		return r.recordScrapeFailure(ctx, rec, err, lost)
 	}
 
 	now := time.Now().UTC()
@@ -173,7 +197,7 @@ func (r *Reaper) sweepEndpoint(ctx context.Context, rec EndpointRecord) error {
 		slog.InfoContext(ctx, "bedrock reaper: reclaiming an idle endpoint",
 			"model", rec.ModelID, "instanceId", rec.InstanceID,
 			"idle_ms", otelsetup.Millis(now.Sub(updated.LastActive())))
-		if _, err := r.svc.Delete(ctx, &DeleteEndpointInput{ModelID: rec.ModelID}, awsidentifiers.GlobalAccountID); err != nil {
+		if _, err := r.reclaim(ctx, rec, lost); err != nil {
 			return fmt.Errorf("reap idle endpoint: %w", err)
 		}
 		return nil
@@ -186,9 +210,9 @@ func (r *Reaper) sweepEndpoint(ctx context.Context, rec EndpointRecord) error {
 // persistently unreachable, unpinned endpoint. A healthy probe refreshes the
 // warm clock; there is deliberately no scale-to-zero for a bundle whose whole
 // purpose is to stay warm on the retrieval hot path.
-func (r *Reaper) sweepLiveness(ctx context.Context, rec EndpointRecord) error {
+func (r *Reaper) sweepLiveness(ctx context.Context, rec EndpointRecord, lost <-chan struct{}) error {
 	if !probeOnce(ctx, r.svc.httpClient(), rec.BaseURL+"/health") {
-		return r.recordScrapeFailure(ctx, rec, fmt.Errorf("liveness probe of %s/health failed", rec.BaseURL))
+		return r.recordScrapeFailure(ctx, rec, fmt.Errorf("liveness probe of %s/health failed", rec.BaseURL), lost)
 	}
 	updated := rec
 	updated.ScrapeFailures = 0
@@ -212,7 +236,7 @@ func (r *Reaper) shouldReap(rec EndpointRecord, now time.Time) bool {
 // recordScrapeFailure counts an unknown sample and escalates a persistently
 // unreachable endpoint to terminate-and-relaunch. Never treats the failure as
 // idleness: a wedged VM must not be mistaken for a quiet one.
-func (r *Reaper) recordScrapeFailure(ctx context.Context, rec EndpointRecord, cause error) error {
+func (r *Reaper) recordScrapeFailure(ctx context.Context, rec EndpointRecord, cause error, lost <-chan struct{}) error {
 	updated := rec
 	updated.ScrapeFailures = rec.ScrapeFailures + 1
 
@@ -236,8 +260,12 @@ func (r *Reaper) recordScrapeFailure(ctx context.Context, rec EndpointRecord, ca
 	slog.ErrorContext(ctx, "bedrock reaper: endpoint unreachable; terminating and relaunching",
 		"model", rec.ModelID, "instanceId", rec.InstanceID,
 		"consecutiveFailures", updated.ScrapeFailures, "err", cause)
-	if _, err := r.svc.Delete(ctx, &DeleteEndpointInput{ModelID: rec.ModelID}, awsidentifiers.GlobalAccountID); err != nil {
+	reclaimed, err := r.reclaim(ctx, rec, lost)
+	if err != nil {
 		return fmt.Errorf("terminate unreachable endpoint: %w", err)
+	}
+	if !reclaimed || !leading(lost) {
+		return nil
 	}
 	// A relaunch that cannot be admitted (the device did not come back, or
 	// another model took it) is not a sweep failure: the endpoint is gone, which
@@ -247,6 +275,19 @@ func (r *Reaper) recordScrapeFailure(ctx context.Context, rec EndpointRecord, ca
 			"model", rec.ModelID, "err", err)
 	}
 	return nil
+}
+
+// reclaim tears rec down if it is still the record this sweep read and lost
+// has not closed, reporting whether it did. A refusal leaves the endpoint to
+// whoever changed it or now leads, so it is not a failed sweep.
+func (r *Reaper) reclaim(ctx context.Context, rec EndpointRecord, lost <-chan struct{}) (bool, error) {
+	err := r.svc.reclaim(ctx, rec, func() bool { return leading(lost) })
+	if errors.Is(err, errReclaimSuperseded) {
+		slog.InfoContext(ctx, "bedrock reaper: endpoint changed or lease lost; not reclaiming",
+			"model", rec.ModelID, "instanceId", rec.InstanceID)
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // persistObservation CAS-writes the sweep's findings, and only when they
@@ -262,7 +303,7 @@ func (r *Reaper) persistObservation(ctx context.Context, prev, next EndpointReco
 	if err != nil {
 		return err
 	}
-	if !found || current.Generation != prev.Generation || current.State != StateReady {
+	if !found || current.Generation != prev.Generation || current.State != StateReady || !sameIncarnation(current, prev) {
 		// The record moved since this pass read it — a delete, or a relaunch that
 		// reused the key. The next sweep re-reads rather than clobbering it.
 		return nil

@@ -51,7 +51,7 @@ RUN cp spinifex/scripts/setup.sh /out/setup.sh 2>/dev/null || true
 RUN cp spinifex/scripts/setup-ovn.sh /out/setup-ovn.sh
 RUN cd spinifex/scripts && cp install-node.sh smoke-test.sh node-reset.sh uninstall-spx.sh /out/
 RUN mkdir -p /out/udev && cp spinifex/build/udev/* /out/udev/
-# Installed only on ocibsd nodes, by the install role; setup.sh never reads it.
+# Staged by setup.sh on an OCI VM; spx admin init or join installs it on ocibsd nodes.
 RUN cp -r spinifex/build/ocibsd /out/ocibsd
 RUN mkdir -p /out/lib && cp spinifex/scripts/lib/distro.sh /out/lib/distro.sh
 RUN mkdir -p /out/systemd && cp spinifex/build/systemd/* /out/systemd/

@@ -311,7 +311,7 @@ func (s *SnapshotServiceImpl) SettlePendingAMI(ctx context.Context, imageID, sta
 func (s *SnapshotServiceImpl) settlePendingAMI(ctx context.Context, imageID, state string, take func(context.Context, string) (*heldClaim, error)) bool {
 	return withClaim(ctx, imageID, take, func() bool {
 		current, err := s.metadata.GetAMI(ctx, imageID)
-		if err != nil || current.State != amiStatePending {
+		if err != nil || current.State != ebsmetadata.AMIStatePending {
 			return false
 		}
 		current.State = state
@@ -471,7 +471,7 @@ func (s *SnapshotServiceImpl) answerCreate(ctx context.Context, doc ebsmetadata.
 	wctx, cancel := writeContext(ctx)
 	defer cancel()
 	written, ok, err := s.updatePending(wctx, doc.OwnerID, doc.SnapshotID, answer)
-	completed := ok && written.State == snapshotStateCompleted
+	completed := ok && written.State == ebsmetadata.SnapshotStateCompleted
 	switch {
 	case err != nil:
 		slog.ErrorContext(ctx, "CreateSnapshot failed to record the provider's answer", "snapshotId", doc.SnapshotID, "err", err)
@@ -1093,8 +1093,7 @@ func (s *SnapshotServiceImpl) CopySnapshot(ctx context.Context, input *ec2.CopyS
 		return nil, errors.New(awserrors.ErrorUnauthorizedOperation)
 	}
 	if !sourceCfg.Ready() {
-		return nil, awserrors.Errorf(awserrors.ErrorIncorrectState,
-			"Snapshot is in invalid state - %s", sourceCfg.State)
+		return nil, sourceCfg.NotReadyError()
 	}
 
 	// Without a provider the only reachable path writes the control-plane

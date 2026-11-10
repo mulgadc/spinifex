@@ -94,7 +94,7 @@ func TestCreateImage_WritesBothDocumentsPendingBeforeTheProviderCall(t *testing.
 
 	require.NoError(t, recording.readError)
 	require.Len(t, recording.amis, 1, "the AMI document exists when the provider is called")
-	assert.Equal(t, ec2.ImageStatePending, recording.amis[0].State)
+	assert.Equal(t, ebsmetadata.AMIStatePending, recording.amis[0].State)
 	assert.Equal(t, recording.snapshot.SnapshotID, recording.amis[0].SnapshotID)
 	assert.Equal(t, "pending", recording.snapshot.State, "the snapshot document is pending when the provider is called")
 }
@@ -127,18 +127,18 @@ func TestCreateImage_SettlesTheSnapshotAndTheAMI(t *testing.T) {
 		wantSnap    string
 		wantAMI     string
 	}{
-		{name: "completed in the request", arrange: func(*pendingImageFixture) {}, wantSnap: "completed", wantAMI: "available"},
+		{name: "completed in the request", arrange: func(*pendingImageFixture) {}, wantSnap: "completed", wantAMI: ebsmetadata.AMIStateAvailable},
 		{
 			name: "answered pending, then completed", arrange: func(f *pendingImageFixture) { f.mem.AnswerSnapshotsPending(true) },
-			wantPending: true, settle: ebsprovider.SnapshotStateCompleted, wantSnap: "completed", wantAMI: "available",
+			wantPending: true, settle: ebsprovider.SnapshotStateCompleted, wantSnap: "completed", wantAMI: ebsmetadata.AMIStateAvailable,
 		},
 		{
 			name: "answered pending, then error", arrange: func(f *pendingImageFixture) { f.mem.AnswerSnapshotsPending(true) },
-			wantPending: true, settle: ebsprovider.SnapshotStateError, wantSnap: "error", wantAMI: "failed",
+			wantPending: true, settle: ebsprovider.SnapshotStateError, wantSnap: "error", wantAMI: ebsmetadata.AMIStateFailed,
 		},
 		{
 			name: "both answers lost", arrange: func(f *pendingImageFixture) { f.mem.FailCreateSnapshotsAfterAccept(2, nil) },
-			wantErr: awserrors.ErrorServerInternal, wantPending: true, wantSnap: "completed", wantAMI: "available",
+			wantErr: awserrors.ErrorServerInternal, wantPending: true, wantSnap: "completed", wantAMI: ebsmetadata.AMIStateAvailable,
 		},
 	}
 	for _, tc := range tests {
@@ -156,7 +156,7 @@ func TestCreateImage_SettlesTheSnapshotAndTheAMI(t *testing.T) {
 
 			ami, snap := f.onlyAMI(t)
 			if tc.wantPending {
-				assert.Equal(t, ec2.ImageStatePending, ami.State)
+				assert.Equal(t, ebsmetadata.AMIStatePending, ami.State)
 				assert.Equal(t, "pending", snap.State)
 				if tc.settle != "" {
 					require.NoError(t, f.mem.SettleSnapshot(snap.SnapshotID, tc.settle))
@@ -219,7 +219,7 @@ func TestDeregisterImage_DuringTheReapersAMIWriteStaysDeleted(t *testing.T) {
 	require.NoError(t, err)
 	imageID := aws.StringValue(out.ImageId)
 	ami, snap := f.onlyAMI(t)
-	require.Equal(t, ec2.ImageStatePending, ami.State)
+	require.Equal(t, ebsmetadata.AMIStatePending, ami.State)
 	require.NoError(t, f.mem.SettleSnapshot(snap.SnapshotID, ebsprovider.SnapshotStateCompleted))
 
 	key, err := ebsmetadata.AMIKey(imageID)

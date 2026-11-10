@@ -527,7 +527,7 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		Distro:       sourceAMI.Distro,
 		DistroFamily: sourceAMI.DistroFamily,
 		// Pending until its snapshot completes, here or in the snapshot reaper.
-		State:    ec2.ImageStatePending,
+		State:    ebsmetadata.AMIStatePending,
 		UEFIData: uefiData,
 	}
 
@@ -817,8 +817,7 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 	}
 	// The copy shares the source's snapshot, so it is no readier than it.
 	if !srcMeta.Available() {
-		return nil, awserrors.Errorf(awserrors.ErrorInvalidAMIIDUnavailable,
-			"The image '%s' is %s, not available.", sourceImageID, srcMeta.State)
+		return nil, srcMeta.UnavailableError(sourceImageID)
 	}
 
 	// Orphaned source (missing SnapshotID, or snapshot gone/corrupt) is
@@ -1077,8 +1076,7 @@ func (s *ImageServiceImpl) RegisterImage(ctx context.Context, input *ec2.Registe
 	// An image registered on a snapshot that is not completed could never be
 	// launched from, and none is written pending outside CreateImage.
 	if !snapCfg.Ready() {
-		return nil, awserrors.Errorf(awserrors.ErrorIncorrectState,
-			"Snapshot is in invalid state - %s", snapCfg.State)
+		return nil, snapCfg.NotReadyError()
 	}
 
 	snapSizeGiB := uint64(0)

@@ -12,9 +12,8 @@ import (
 
 // The snapshot document states CreateSnapshot and the reaper move between.
 const (
-	snapshotStatePending   = string(ebsprovider.SnapshotStatePending)
-	snapshotStateCompleted = string(ebsprovider.SnapshotStateCompleted)
-	snapshotStateError     = string(ebsprovider.SnapshotStateError)
+	snapshotStatePending = string(ebsprovider.SnapshotStatePending)
+	snapshotStateError   = string(ebsprovider.SnapshotStateError)
 )
 
 // definiteRefusal reports a CreateSnapshot error that is the provider's answer
@@ -42,7 +41,7 @@ func applyProviderAnswer(created *ebsprovider.Snapshot, earlierUnanswered bool) 
 			doc.ProviderHandle = created.Handle
 		}
 		if created.State == ebsprovider.SnapshotStateCompleted {
-			doc.State = snapshotStateCompleted
+			doc.State = ebsmetadata.SnapshotStateCompleted
 			doc.Progress = "100%"
 		}
 	}
@@ -65,7 +64,7 @@ func repeatOutcome(created *ebsprovider.Snapshot, err error, earlierUnanswered b
 }
 
 func markSnapshotCompleted(doc *ebsmetadata.Snapshot) {
-	doc.State = snapshotStateCompleted
+	doc.State = ebsmetadata.SnapshotStateCompleted
 	doc.Progress = "100%"
 }
 

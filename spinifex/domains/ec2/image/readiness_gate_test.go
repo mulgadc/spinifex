@@ -47,8 +47,8 @@ func TestCopyImage_RefusesASourceThatIsNotAvailable(t *testing.T) {
 		hideSnap bool
 		wantCode string
 	}{
-		{name: "pending", amiState: "pending", wantCode: awserrors.ErrorInvalidAMIIDUnavailable},
-		{name: "failed", amiState: "failed", wantCode: awserrors.ErrorInvalidAMIIDUnavailable},
+		{name: "pending", amiState: ebsmetadata.AMIStatePending, wantCode: awserrors.ErrorInvalidAMIIDUnavailable},
+		{name: "failed", amiState: ebsmetadata.AMIStateFailed, wantCode: awserrors.ErrorInvalidAMIIDUnavailable},
 		{name: "snapshot deleted", amiState: "available", hideSnap: true, wantCode: awserrors.ErrorInvalidAMIIDNotFound},
 	}
 	for _, tc := range tests {

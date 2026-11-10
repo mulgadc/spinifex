@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"strings"
 	"time"
@@ -107,12 +108,23 @@ func (s Snapshot) Tombstoned() bool {
 // SnapshotStateCompleted is the one snapshot state a consumer may use.
 const SnapshotStateCompleted = "completed"
 
-// AMIStateAvailable is the one AMI state an instance may launch from.
-const AMIStateAvailable = "available"
+// The states of an AMI document. A CreateImage's AMI is pending until its
+// snapshot settles; available is the one state an instance may launch from.
+const (
+	AMIStatePending   = "pending"
+	AMIStateAvailable = "available"
+	AMIStateFailed    = "failed"
+)
 
 // Ready reports a snapshot whose contents a consumer may read.
 func (s Snapshot) Ready() bool {
 	return s.State == SnapshotStateCompleted
+}
+
+// NotReadyError is the IncorrectState a consumer answers for a snapshot that
+// is not Ready.
+func (s Snapshot) NotReadyError() error {
+	return awserrors.Errorf(awserrors.ErrorIncorrectState, "Snapshot is in invalid state - %s", s.State)
 }
 
 // RootDeviceName is the device every image this platform serves reports as its
@@ -150,6 +162,12 @@ type AMI struct {
 // empty State predates the field, and every such image is complete.
 func (a AMI) Available() bool {
 	return a.State == "" || a.State == AMIStateAvailable
+}
+
+// UnavailableError is the InvalidAMIID.Unavailable answer for imageID, whose
+// document is a, when a is not Available.
+func (a AMI) UnavailableError(imageID string) error {
+	return awserrors.Errorf(awserrors.ErrorInvalidAMIIDUnavailable, "The image '%s' is %s, not available.", imageID, a.State)
 }
 
 // UEFIDataRef names an image's UEFI variable store object and the firmware it

@@ -236,8 +236,7 @@ func (s *VolumeServiceImpl) createVolume(ctx context.Context, input *ec2.CreateV
 		// A pending snapshot's contents are not readable yet, and an errored
 		// one's never are.
 		if !snapMeta.Ready() {
-			return nil, awserrors.Errorf(awserrors.ErrorIncorrectState,
-				"Snapshot is in invalid state - %s", snapMeta.State)
+			return nil, snapMeta.NotReadyError()
 		}
 		sourceVolumeName = snapMeta.VolumeID
 		snapshotSizeGiB = snapMeta.VolumeSize

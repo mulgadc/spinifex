@@ -701,8 +701,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 	// it errors; neither has a root volume to clone.
 	if !amiMeta.Available() {
 		slog.WarnContext(ctx, "PrepareRunInstances: AMI is not available", "imageId", *input.ImageId, "state", amiMeta.State)
-		return nil, nil, nil, awserrors.Errorf(awserrors.ErrorInvalidAMIIDUnavailable,
-			"The image '%s' is %s, not available.", *input.ImageId, amiMeta.State)
+		return nil, nil, nil, amiMeta.UnavailableError(*input.ImageId)
 	}
 	if err := checkImageArchitecture(instanceType, amiMeta.Architecture); err != nil {
 		slog.WarnContext(ctx, "PrepareRunInstances: AMI architecture does not match instance type", "imageId", *input.ImageId, "InstanceType", *input.InstanceType, "amiArchitecture", amiMeta.Architecture)

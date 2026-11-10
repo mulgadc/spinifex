@@ -3170,7 +3170,7 @@ func TestPrepareRunInstances_AMINotOwnedByCaller(t *testing.T) {
 }
 
 func TestPrepareRunInstances_AMINotAvailable(t *testing.T) {
-	for _, state := range []string{"pending", "failed"} {
+	for _, state := range []string{ebsmetadata.AMIStatePending, ebsmetadata.AMIStateFailed} {
 		t.Run(state, func(t *testing.T) {
 			types, _ := defaultPrepareInstanceTypes()
 			svc := &InstanceServiceImpl{

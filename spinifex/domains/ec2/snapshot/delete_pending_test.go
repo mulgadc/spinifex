@@ -62,9 +62,9 @@ func TestDeleteSnapshot_MarksWhatTheProviderMayStillHold(t *testing.T) {
 	}{
 		{name: "pending", doc: ebsmetadata.Snapshot{State: snapshotStatePending}, wantMarked: true},
 		{name: "pending with an unanswered create", doc: ebsmetadata.Snapshot{State: snapshotStatePending, AmbiguousCreate: true}, wantMarked: true},
-		{name: "completed with an unanswered create", doc: ebsmetadata.Snapshot{State: snapshotStateCompleted, AmbiguousCreate: true}, wantMarked: true},
+		{name: "completed with an unanswered create", doc: ebsmetadata.Snapshot{State: ebsmetadata.SnapshotStateCompleted, AmbiguousCreate: true}, wantMarked: true},
 		{name: "errored with an unanswered create", doc: ebsmetadata.Snapshot{State: snapshotStateError, AmbiguousCreate: true}, wantMarked: true},
-		{name: "completed", doc: ebsmetadata.Snapshot{State: snapshotStateCompleted}},
+		{name: "completed", doc: ebsmetadata.Snapshot{State: ebsmetadata.SnapshotStateCompleted}},
 		{name: "errored", doc: ebsmetadata.Snapshot{State: snapshotStateError}},
 	}
 	for _, tc := range cases {
@@ -110,7 +110,7 @@ func TestDeleteSnapshot_PendingInUseIsStillRefused(t *testing.T) {
 			}))
 		}},
 		{name: "a registered AMI names it", seed: func(f *pendingFixture) {
-			require.NoError(f.t, f.metadata.PutAMI(f.t.Context(), ebsmetadata.AMI{ImageID: "ami-0aaaaaaaaaaaaaaa1", SnapshotID: id, State: "pending"}))
+			require.NoError(f.t, f.metadata.PutAMI(f.t.Context(), ebsmetadata.AMI{ImageID: "ami-0aaaaaaaaaaaaaaa1", SnapshotID: id, State: ebsmetadata.AMIStatePending}))
 		}},
 	}
 	for _, tc := range cases {
@@ -497,7 +497,7 @@ func TestTombstone_DeletesALateAcceptedSnapshotAndExpires(t *testing.T) {
 	// The reaper's repeat completes it, and the customer deletes it.
 	f.sweep(reaper)
 	doc := f.onlyDoc()
-	require.Equal(t, snapshotStateCompleted, doc.State)
+	require.Equal(t, ebsmetadata.SnapshotStateCompleted, doc.State)
 	require.True(t, doc.AmbiguousCreate, "the request's calls were never answered")
 	require.NoError(t, f.deleteSnapshot(svc, id))
 	f.sweep(reaper)
@@ -538,11 +538,11 @@ func TestPendingSnapshotReaper_SettlesPendingAMIs(t *testing.T) {
 		snap     *ebsmetadata.Snapshot // nil: no snapshot document
 		want     string
 	}{
-		{name: "snapshot completed", amiState: amiStatePending, snap: &ebsmetadata.Snapshot{State: snapshotStateCompleted}, want: amiStateAvailable},
-		{name: "snapshot errored", amiState: amiStatePending, snap: &ebsmetadata.Snapshot{State: snapshotStateError}, want: amiStateFailed},
-		{name: "snapshot document missing", amiState: amiStatePending, want: amiStateFailed},
-		{name: "snapshot pending", amiState: amiStatePending, snap: &ebsmetadata.Snapshot{State: snapshotStatePending}, want: amiStatePending},
-		{name: "AMI already available", amiState: amiStateAvailable, want: amiStateAvailable},
+		{name: "snapshot completed", amiState: ebsmetadata.AMIStatePending, snap: &ebsmetadata.Snapshot{State: ebsmetadata.SnapshotStateCompleted}, want: ebsmetadata.AMIStateAvailable},
+		{name: "snapshot errored", amiState: ebsmetadata.AMIStatePending, snap: &ebsmetadata.Snapshot{State: snapshotStateError}, want: ebsmetadata.AMIStateFailed},
+		{name: "snapshot document missing", amiState: ebsmetadata.AMIStatePending, want: ebsmetadata.AMIStateFailed},
+		{name: "snapshot pending", amiState: ebsmetadata.AMIStatePending, snap: &ebsmetadata.Snapshot{State: snapshotStatePending}, want: ebsmetadata.AMIStatePending},
+		{name: "AMI already available", amiState: ebsmetadata.AMIStateAvailable, want: ebsmetadata.AMIStateAvailable},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

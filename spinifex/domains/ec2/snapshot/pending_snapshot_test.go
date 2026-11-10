@@ -388,7 +388,7 @@ func TestCreateSnapshot_ProviderAnswers(t *testing.T) {
 		wantCalls int
 		wantHeld  bool // the provider holds the snapshot afterwards
 	}{
-		{name: "completed", wantState: snapshotStateCompleted, wantCalls: 1, wantHeld: true},
+		{name: "completed", wantState: ebsmetadata.SnapshotStateCompleted, wantCalls: 1, wantHeld: true},
 		{name: "pending", setup: func(f *pendingFixture) { f.mem.AnswerSnapshotsPending(true) },
 			wantState: snapshotStatePending, wantCalls: 1, wantHeld: true},
 		{name: "first call volume_in_use", setup: func(f *pendingFixture) { f.provider.onCreate = refuseFrom(1, ebsprovider.ErrVolumeInUse) },
@@ -401,7 +401,7 @@ func TestCreateSnapshot_ProviderAnswers(t *testing.T) {
 			wantErr: awserrors.ErrorServerInternal, wantCalls: 1},
 		{name: "ambiguous, then the repeat returns the accepted snapshot",
 			setup:     func(f *pendingFixture) { f.mem.FailCreateSnapshotsAfterAccept(1, nil) },
-			wantState: snapshotStateCompleted, wantCalls: 2, wantHeld: true},
+			wantState: ebsmetadata.SnapshotStateCompleted, wantCalls: 2, wantHeld: true},
 		{name: "unavailable after accepting, then the repeat answers pending",
 			setup: func(f *pendingFixture) {
 				f.mem.AnswerSnapshotsPending(true)
@@ -431,7 +431,7 @@ func TestCreateSnapshot_ProviderAnswers(t *testing.T) {
 					return n == 1, nil, nil
 				}
 			},
-			wantState: snapshotStateCompleted, wantCalls: 2, wantHeld: true},
+			wantState: ebsmetadata.SnapshotStateCompleted, wantCalls: 2, wantHeld: true},
 		{name: "an answer with no state is not completed, so the reaper follows it",
 			setup: func(f *pendingFixture) {
 				f.provider.onCreate = func(_ int, req ebsprovider.CreateSnapshotRequest) (bool, *ebsprovider.Snapshot, error) {
@@ -491,7 +491,7 @@ func TestCreateSnapshot_ProviderAnswers(t *testing.T) {
 				assert.Equal(t, doc.SnapshotID, aws.StringValue(out.SnapshotId))
 				assert.Equal(t, doc.State, aws.StringValue(out.State), "the response reports what the document holds")
 			}
-			if doc.State == snapshotStateCompleted {
+			if doc.State == ebsmetadata.SnapshotStateCompleted {
 				assert.Equal(t, "100%", doc.Progress)
 			}
 			if doc.State == snapshotStatePending && held && tc.wantErr == "" && f.store.putsBefore != 0 {
@@ -680,7 +680,7 @@ func TestCreateSnapshot_CrashAfterEachStepLeavesADocumentTheReaperSettles(t *tes
 
 			settled, ok := f.doc(doc.SnapshotID)
 			require.True(t, ok)
-			assert.Equal(t, snapshotStateCompleted, settled.State)
+			assert.Equal(t, ebsmetadata.SnapshotStateCompleted, settled.State)
 			assert.Equal(t, []string{doc.SnapshotID}, f.refsOf(pendingVolumeID), "the settled snapshot has exactly one reference")
 			if id != "" {
 				assert.Equal(t, id, doc.SnapshotID)
@@ -740,7 +740,7 @@ func TestCreateSnapshot_LateAcceptanceEndsWithOneCompletedSnapshot(t *testing.T)
 
 			settled, ok := f.doc(doc.SnapshotID)
 			require.True(t, ok)
-			assert.Equal(t, snapshotStateCompleted, settled.State)
+			assert.Equal(t, ebsmetadata.SnapshotStateCompleted, settled.State)
 			assert.Len(t, f.docs(), 1)
 		})
 	}
@@ -782,8 +782,8 @@ func TestCreateSnapshot_ReaperBetweenTheRequestsTwoCalls(t *testing.T) {
 
 			assert.Equal(t, tc.wantReaperCalls, reaperCalls)
 			doc := f.onlyDoc()
-			assert.Equal(t, snapshotStateCompleted, doc.State)
-			assert.Equal(t, snapshotStateCompleted, aws.StringValue(out.State))
+			assert.Equal(t, ebsmetadata.SnapshotStateCompleted, doc.State)
+			assert.Equal(t, ebsmetadata.SnapshotStateCompleted, aws.StringValue(out.State))
 		})
 	}
 }
@@ -812,7 +812,7 @@ func TestCreateSnapshot_CompletedBeforeTheRequestWritesItsHandle(t *testing.T) {
 
 	f.sweep(reaper)
 	doc := f.onlyDoc()
-	assert.Equal(t, snapshotStateCompleted, doc.State)
+	assert.Equal(t, ebsmetadata.SnapshotStateCompleted, doc.State)
 	assert.Equal(t, "memory://snapshot/"+doc.SnapshotID, doc.ProviderHandle)
 }
 
@@ -832,7 +832,7 @@ func TestCreateSnapshot_DeletedWhileTheProviderAnswersIsNotRecreated(t *testing.
 	out, err := f.create(svc)
 	require.NoError(t, err, "the provider answered, so the request succeeds")
 
-	assert.Equal(t, snapshotStateCompleted, aws.StringValue(out.State))
+	assert.Equal(t, ebsmetadata.SnapshotStateCompleted, aws.StringValue(out.State))
 	assert.Empty(t, f.docs(), "a deleted document must not be written back")
 }
 
@@ -854,7 +854,7 @@ func TestPendingSnapshotReaper_SettlesEachRow(t *testing.T) {
 			providerSnapshot(f, id)
 		}, wantState: snapshotStatePending},
 		{name: "provider completed", setup: func(f *pendingFixture) { providerSnapshot(f, id) },
-			wantState: snapshotStateCompleted},
+			wantState: ebsmetadata.SnapshotStateCompleted},
 		{name: "provider error", setup: func(f *pendingFixture) {
 			f.mem.AnswerSnapshotsPending(true)
 			providerSnapshot(f, id)
@@ -874,11 +874,11 @@ func TestPendingSnapshotReaper_SettlesEachRow(t *testing.T) {
 		{name: "absent, claim held by a stale node is taken over", setup: func(f *pendingFixture) {
 			f.holdClaim(nodeC, id)
 			f.liveness.beat(nodeC, stale)
-		}, wantState: snapshotStateCompleted, wantCalls: 1},
+		}, wantState: ebsmetadata.SnapshotStateCompleted, wantCalls: 1},
 		{name: "absent, claim held by a node with no heartbeat is taken over", setup: func(f *pendingFixture) {
 			f.holdClaim("node-gone", id)
-		}, wantState: snapshotStateCompleted, wantCalls: 1},
-		{name: "absent, claim free, repeat completes", wantState: snapshotStateCompleted, wantCalls: 1},
+		}, wantState: ebsmetadata.SnapshotStateCompleted, wantCalls: 1},
+		{name: "absent, claim free, repeat completes", wantState: ebsmetadata.SnapshotStateCompleted, wantCalls: 1},
 		{name: "absent, claim free, repeat answers pending", setup: func(f *pendingFixture) { f.mem.AnswerSnapshotsPending(true) },
 			wantState: snapshotStatePending, wantCalls: 1},
 		{name: "absent, repeat not_found because the source volume is gone", setup: func(f *pendingFixture) {
@@ -932,7 +932,7 @@ func TestPendingSnapshotReaper_SettlesEachRow(t *testing.T) {
 				require.True(t, ok)
 				assert.Equal(t, tc.wantState, doc.State)
 			}
-			if tc.wantState == snapshotStateCompleted {
+			if tc.wantState == ebsmetadata.SnapshotStateCompleted {
 				assert.Equal(t, "100%", doc.Progress)
 				assert.Equal(t, "memory://snapshot/"+id, doc.ProviderHandle)
 			}
@@ -962,9 +962,9 @@ func TestPendingSnapshotReaper_RepeatHandleAndReference(t *testing.T) {
 		wantRefs   []string
 	}{
 		{name: "the volume document's handle is sent", wantCalls: 1, wantHandle: volumeHandle,
-			wantState: snapshotStateCompleted, wantRefs: []string{id}},
+			wantState: ebsmetadata.SnapshotStateCompleted, wantRefs: []string{id}},
 		{name: "a gone volume document sends no handle, and the provider holds the volume", setup: deleteVolumeDoc,
-			wantCalls: 1, wantState: snapshotStateCompleted, wantRefs: []string{id}},
+			wantCalls: 1, wantState: ebsmetadata.SnapshotStateCompleted, wantRefs: []string{id}},
 		{name: "a gone volume document sends no handle, and the provider answers not_found", setup: func(f *pendingFixture) {
 			deleteVolumeDoc(f)
 			require.NoError(f.t, f.mem.DeleteVolume(f.t.Context(), ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: pendingVolumeID}))
@@ -1068,7 +1068,7 @@ func TestPendingSnapshotReaper_SweepBoundaries(t *testing.T) {
 		f := newPendingFixture(t)
 		f.seedPending("snap-counted000001")
 		require.NoError(t, f.metadata.PutSnapshot(t.Context(), ebsmetadata.Snapshot{
-			SnapshotID: "snap-done000000001", VolumeID: pendingVolumeID, State: snapshotStateCompleted, OwnerID: testAccountID,
+			SnapshotID: "snap-done000000001", VolumeID: pendingVolumeID, State: ebsmetadata.SnapshotStateCompleted, OwnerID: testAccountID,
 		}))
 		written, err := f.node(nodeB).NewPendingSnapshotReaper().Sweep(t.Context())
 		require.NoError(t, err)
@@ -1086,7 +1086,7 @@ func TestReleaseNodeClaims_FreesARestartedNodesClaims(t *testing.T) {
 	f.seedPending("snap-restartother01")
 	f.seedPending("snap-restartlive001")
 	require.NoError(t, f.metadata.PutSnapshot(t.Context(), ebsmetadata.Snapshot{
-		SnapshotID: "snap-restartdone001", VolumeID: pendingVolumeID, State: snapshotStateCompleted, OwnerID: testAccountID,
+		SnapshotID: "snap-restartdone001", VolumeID: pendingVolumeID, State: ebsmetadata.SnapshotStateCompleted, OwnerID: testAccountID,
 	}))
 	f.holdClaim(nodeA, "snap-restartown0001")
 	f.holdClaim(nodeC, "snap-restartother01")
@@ -1112,7 +1112,7 @@ func TestReleaseNodeClaims_FreesARestartedNodesClaims(t *testing.T) {
 
 	f.sweep(f.node(nodeB))
 	own, _ = f.doc("snap-restartown0001")
-	assert.Equal(t, snapshotStateCompleted, own.State)
+	assert.Equal(t, ebsmetadata.SnapshotStateCompleted, own.State)
 }
 
 func TestClaims_LocalExclusion(t *testing.T) {
@@ -1161,8 +1161,8 @@ func TestS7_PendingSnapshotReaperDeletesOnlyWhatACustomerDeleted(t *testing.T) {
 	})
 	require.NoError(t, err)
 	amis := []string{"ami-0123456789abcdef0", "ami-0123456789abcdef1"}
-	require.NoError(t, f.metadata.PutAMI(t.Context(), ebsmetadata.AMI{ImageID: amis[0], SnapshotID: "snap-s7completed001", State: "pending"}))
-	require.NoError(t, f.metadata.PutAMI(t.Context(), ebsmetadata.AMI{ImageID: amis[1], SnapshotID: "snap-s7neverexists1", State: "pending"}))
+	require.NoError(t, f.metadata.PutAMI(t.Context(), ebsmetadata.AMI{ImageID: amis[0], SnapshotID: "snap-s7completed001", State: ebsmetadata.AMIStatePending}))
+	require.NoError(t, f.metadata.PutAMI(t.Context(), ebsmetadata.AMI{ImageID: amis[1], SnapshotID: "snap-s7neverexists1", State: ebsmetadata.AMIStatePending}))
 
 	ids := map[string]func(){
 		"snap-s7pending00001": func() {
@@ -1195,7 +1195,7 @@ func TestS7_PendingSnapshotReaperDeletesOnlyWhatACustomerDeleted(t *testing.T) {
 	// Settled documents the reaper must leave alone, one with a create unanswered.
 	for id, ambiguous := range map[string]bool{"snap-s7settled00001": false, "snap-s7settledamb01": true} {
 		require.NoError(t, f.metadata.PutSnapshot(t.Context(), ebsmetadata.Snapshot{
-			SnapshotID: id, VolumeID: pendingVolumeID, State: snapshotStateCompleted, OwnerID: testAccountID, AmbiguousCreate: ambiguous,
+			SnapshotID: id, VolumeID: pendingVolumeID, State: ebsmetadata.SnapshotStateCompleted, OwnerID: testAccountID, AmbiguousCreate: ambiguous,
 		}))
 		providerSnapshot(f, id)
 		ids[id] = func() {}
@@ -1203,8 +1203,8 @@ func TestS7_PendingSnapshotReaperDeletesOnlyWhatACustomerDeleted(t *testing.T) {
 	marked := map[string]ebsmetadata.Snapshot{
 		"snap-s7markeddone01": {State: snapshotStatePending},
 		"snap-s7markedgone01": {State: snapshotStatePending},
-		"snap-s7markedtomb01": {State: snapshotStateCompleted, AmbiguousCreate: true},
-		"snap-s7tombstone001": {State: snapshotStateCompleted, AmbiguousCreate: true, TombstonedAt: time.Now()},
+		"snap-s7markedtomb01": {State: ebsmetadata.SnapshotStateCompleted, AmbiguousCreate: true},
+		"snap-s7tombstone001": {State: ebsmetadata.SnapshotStateCompleted, AmbiguousCreate: true, TombstonedAt: time.Now()},
 	}
 	for id, doc := range marked {
 		doc.SnapshotID, doc.VolumeID, doc.OwnerID, doc.DeleteRequested = id, pendingVolumeID, testAccountID, true
@@ -1275,17 +1275,17 @@ func TestReleaseNodeClaims_FreesARestartedNodesAMIClaims(t *testing.T) {
 	f := newPendingFixture(t)
 	const imageID = "ami-restartown00001"
 	require.NoError(t, f.metadata.PutSnapshot(t.Context(), ebsmetadata.Snapshot{
-		SnapshotID: "snap-amidone000001", VolumeID: pendingVolumeID, State: snapshotStateCompleted, OwnerID: testAccountID,
+		SnapshotID: "snap-amidone000001", VolumeID: pendingVolumeID, State: ebsmetadata.SnapshotStateCompleted, OwnerID: testAccountID,
 	}))
 	require.NoError(t, f.metadata.PutAMI(t.Context(), ebsmetadata.AMI{
-		ImageID: imageID, SnapshotID: "snap-amidone000001", ImageOwnerAlias: testAccountID, State: amiStatePending,
+		ImageID: imageID, SnapshotID: "snap-amidone000001", ImageOwnerAlias: testAccountID, State: ebsmetadata.AMIStatePending,
 	}))
 	f.holdClaim(nodeA, imageID)
 
 	f.sweep(f.node(nodeB))
 	ami, err := f.metadata.GetAMI(t.Context(), imageID)
 	require.NoError(t, err)
-	assert.Equal(t, amiStatePending, ami.State, "a live node's claim holds the reaper off the AMI")
+	assert.Equal(t, ebsmetadata.AMIStatePending, ami.State, "a live node's claim holds the reaper off the AMI")
 
 	released, err := f.node(nodeA).ReleaseNodeClaims(t.Context())
 	require.NoError(t, err)
@@ -1295,5 +1295,5 @@ func TestReleaseNodeClaims_FreesARestartedNodesAMIClaims(t *testing.T) {
 	f.sweep(f.node(nodeB))
 	ami, err = f.metadata.GetAMI(t.Context(), imageID)
 	require.NoError(t, err)
-	assert.Equal(t, amiStateAvailable, ami.State)
+	assert.Equal(t, ebsmetadata.AMIStateAvailable, ami.State)
 }

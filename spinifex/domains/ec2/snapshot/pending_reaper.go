@@ -30,13 +30,6 @@ type PendingSnapshotReaper struct {
 // stays, so a create accepted that late is still found and deleted.
 const tombstoneRetention = 7 * 24 * time.Hour
 
-// AMI states the reaper moves a CreateImage's AMI between.
-const (
-	amiStatePending   = "pending"
-	amiStateAvailable = ebsmetadata.AMIStateAvailable
-	amiStateFailed    = "failed"
-)
-
 // reapStep is a point in the reaper's work on one document, for a test to
 // interrupt it at.
 type reapStep int
@@ -353,7 +346,7 @@ func (r *PendingSnapshotReaper) settleAMIs(ctx context.Context) (int, error) {
 		if err := ctx.Err(); err != nil {
 			return written, err
 		}
-		if ami.State != amiStatePending || ami.SnapshotID == "" {
+		if ami.State != ebsmetadata.AMIStatePending || ami.SnapshotID == "" {
 			continue
 		}
 		state, ok := r.amiStateFromSnapshot(ctx, ami)
@@ -377,15 +370,15 @@ func (r *PendingSnapshotReaper) amiStateFromSnapshot(ctx context.Context, ami eb
 	snap, err := r.svc.metadata.GetSnapshot(ctx, owner, ami.SnapshotID)
 	switch {
 	case objectstore.IsNoSuchKeyError(err):
-		return amiStateFailed, true
+		return ebsmetadata.AMIStateFailed, true
 	case err != nil:
 		slog.WarnContext(ctx, "pending-snapshot: snapshot of a pending AMI unreadable, retrying next sweep",
 			"imageId", ami.ImageID, "snapshotId", ami.SnapshotID, "err", err)
 		return "", false
 	case snap.Hidden() || snap.State == snapshotStateError:
-		return amiStateFailed, true
-	case snap.State == snapshotStateCompleted:
-		return amiStateAvailable, true
+		return ebsmetadata.AMIStateFailed, true
+	case snap.State == ebsmetadata.SnapshotStateCompleted:
+		return ebsmetadata.AMIStateAvailable, true
 	default:
 		return "", false
 	}

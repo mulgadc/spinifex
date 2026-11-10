@@ -370,37 +370,53 @@ func TestReconciler_PendingFinalSnapshotReadFailureDoesNotFailTheDeletion(t *tes
 	assert.Equal(t, SnapshotStatusAvailable, final.Status)
 }
 
-// A final snapshot that errors keeps the instance in deleting, with one event
-// naming the failed snapshot, however many passes follow.
+// A final snapshot whose EC2 snapshot errors or is gone keeps the instance in
+// deleting, with one event naming the failed snapshot, however many passes follow.
 func TestReconciler_KeepsADeletionWhoseFinalSnapshotFailed(t *testing.T) {
 	t.Parallel()
-	h := newLifecycleHarness(t, false)
-	e := withEC2Snapshots(t, h)
-	ec2ID := startPendingFinalSnapshot(t, h, e, 3*time.Hour)
-
-	e.settle(t, ec2ID, ebsprovider.SnapshotStateError)
-	r := testReconciler(t, h.svc, "node-a")
-	for range 3 {
-		require.NoError(t, onePass(t, r))
+	cases := []struct {
+		name    string
+		breakIt func(t *testing.T, e *ec2Snapshots, ec2ID string)
+	}{
+		{name: "ended in error", breakIt: func(t *testing.T, e *ec2Snapshots, ec2ID string) {
+			e.settle(t, ec2ID, ebsprovider.SnapshotStateError)
+		}},
+		{name: "gone", breakIt: func(t *testing.T, e *ec2Snapshots, ec2ID string) {
+			require.NoError(t, e.MetadataStore().DeleteSnapshot(t.Context(), awsidentifiers.GlobalAccountID, ec2ID))
+		}},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newLifecycleHarness(t, false)
+			e := withEC2Snapshots(t, h)
+			ec2ID := startPendingFinalSnapshot(t, h, e, 3*time.Hour)
 
-	assert.Equal(t, StatusDeleting, h.record(t).Status)
-	final, found := h.snapshotRecord(t, pendingFinalSnapshotID)
-	require.True(t, found)
-	assert.Equal(t, SnapshotStatusFailed, final.Status)
-	instanceEvents := eventsOf(t, h, EventSourceTypeDBInstance, testDBID)
-	assert.Equal(t, 1, countContaining(instanceEvents, "The final DB snapshot "+pendingFinalSnapshotID+" failed"), "%v", instanceEvents)
-	assert.Equal(t, 1, countContaining(eventsOf(t, h, EventSourceTypeDBSnapshot, pendingFinalSnapshotID), ec2ID))
-	assert.Empty(t, h.volumes.deleted)
-	_, retained := h.retainedVolume(t, "vol-rdsdata01")
-	assert.False(t, retained, "the teardown stops before it decides the volume's fate")
+			tc.breakIt(t, e, ec2ID)
+			r := testReconciler(t, h.svc, "node-a")
+			for range 3 {
+				require.NoError(t, onePass(t, r))
+			}
 
-	// A retried DeleteDBInstance reports the deletion and changes nothing.
-	_, err := h.svc.DeleteDBInstance(t.Context(), &rds.DeleteDBInstanceInput{
-		DBInstanceIdentifier: aws.String(testDBID), FinalDBSnapshotIdentifier: aws.String(pendingFinalSnapshotID),
-	}, testAccountID)
-	require.NoError(t, err)
-	assert.Empty(t, h.volumes.deleted)
+			assert.Equal(t, StatusDeleting, h.record(t).Status)
+			final, found := h.snapshotRecord(t, pendingFinalSnapshotID)
+			require.True(t, found)
+			assert.Equal(t, SnapshotStatusFailed, final.Status)
+			instanceEvents := eventsOf(t, h, EventSourceTypeDBInstance, testDBID)
+			assert.Equal(t, 1, countContaining(instanceEvents, "The final DB snapshot "+pendingFinalSnapshotID+" failed"), "%v", instanceEvents)
+			assert.Equal(t, 1, countContaining(eventsOf(t, h, EventSourceTypeDBSnapshot, pendingFinalSnapshotID), ec2ID))
+			assert.Empty(t, h.volumes.deleted, "the data volume is the only copy left")
+			_, retained := h.retainedVolume(t, "vol-rdsdata01")
+			assert.False(t, retained, "the teardown stops before it decides the volume's fate")
+
+			// A retried DeleteDBInstance reports the deletion and changes nothing.
+			_, err := h.svc.DeleteDBInstance(t.Context(), &rds.DeleteDBInstanceInput{
+				DBInstanceIdentifier: aws.String(testDBID), FinalDBSnapshotIdentifier: aws.String(pendingFinalSnapshotID),
+			}, testAccountID)
+			require.NoError(t, err)
+			assert.Empty(t, h.volumes.deleted)
+		})
+	}
 }
 
 // Verifies: ADR-0003:S7.
@@ -439,52 +455,28 @@ func TestS7_RDSDeletionNeverDeletesTheDataVolumeWithoutACompletedFinalSnapshot(t
 }
 
 // A creating record whose EC2 snapshot is gone fails with an event, once: no
-// pass can make that snapshot again, so creating would wait on it forever. A
-// final snapshot that fails so keeps its deletion in deleting and the volume.
+// pass can make that snapshot again, so creating would wait on it forever.
 func TestReconciler_FailsACreatingDBSnapshotWhoseEC2SnapshotIsGone(t *testing.T) {
 	t.Parallel()
-	t.Run("DB snapshot", func(t *testing.T) {
-		t.Parallel()
-		h := newLifecycleHarness(t, false)
-		kv, err := h.svc.bucket(t.Context(), testAccountID)
-		require.NoError(t, err)
-		rec := availableRecord()
-		named := newDBSnapshotRecord(testAccountID, &rec, &validatedSnapshot{DBSnapshotIdentifier: testSnapshotID})
-		named.SnapshotID = "snap-named01"
-		require.NoError(t, putJSON(t.Context(), kv, DBSnapshotKey(testSnapshotID), &named))
+	h := newLifecycleHarness(t, false)
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	rec := availableRecord()
+	named := newDBSnapshotRecord(testAccountID, &rec, &validatedSnapshot{DBSnapshotIdentifier: testSnapshotID})
+	named.SnapshotID = "snap-named01"
+	require.NoError(t, putJSON(t.Context(), kv, DBSnapshotKey(testSnapshotID), &named))
 
-		r := testReconciler(t, h.svc, "node-a")
-		for range 3 {
-			require.NoError(t, onePass(t, r))
-		}
+	r := testReconciler(t, h.svc, "node-a")
+	for range 3 {
+		require.NoError(t, onePass(t, r))
+	}
 
-		stored, found := h.snapshotRecord(t, testSnapshotID)
-		require.True(t, found, "a failed DB snapshot is kept for the customer to see and delete")
-		assert.Equal(t, SnapshotStatusFailed, stored.Status)
-		assert.NotNil(t, stored.SettledAt)
-		events := eventsOf(t, h, EventSourceTypeDBSnapshot, testSnapshotID)
-		assert.Equal(t, 1, countContaining(events, "snap-named01 no longer exists"), "one failure event: %v", events)
-	})
-	t.Run("final snapshot", func(t *testing.T) {
-		t.Parallel()
-		h := newLifecycleHarness(t, false)
-		e := withEC2Snapshots(t, h)
-		ec2ID := startPendingFinalSnapshot(t, h, e, 3*time.Hour)
-		require.NoError(t, e.MetadataStore().DeleteSnapshot(t.Context(), awsidentifiers.GlobalAccountID, ec2ID))
-
-		r := testReconciler(t, h.svc, "node-a")
-		for range 3 {
-			require.NoError(t, onePass(t, r))
-		}
-
-		assert.Equal(t, StatusDeleting, h.record(t).Status)
-		final, found := h.snapshotRecord(t, pendingFinalSnapshotID)
-		require.True(t, found)
-		assert.Equal(t, SnapshotStatusFailed, final.Status)
-		instanceEvents := eventsOf(t, h, EventSourceTypeDBInstance, testDBID)
-		assert.Equal(t, 1, countContaining(instanceEvents, "The final DB snapshot "+pendingFinalSnapshotID+" failed"), "%v", instanceEvents)
-		assert.Empty(t, h.volumes.deleted, "the data volume is the only copy left")
-	})
+	stored, found := h.snapshotRecord(t, testSnapshotID)
+	require.True(t, found, "a failed DB snapshot is kept for the customer to see and delete")
+	assert.Equal(t, SnapshotStatusFailed, stored.Status)
+	assert.NotNil(t, stored.SettledAt)
+	events := eventsOf(t, h, EventSourceTypeDBSnapshot, testSnapshotID)
+	assert.Equal(t, 1, countContaining(events, "snap-named01 no longer exists"), "one failure event: %v", events)
 }
 
 // A creating record naming an EC2 snapshot that reports no state, or cannot

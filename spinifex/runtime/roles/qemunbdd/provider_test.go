@@ -2,6 +2,7 @@ package qemunbdd
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -410,8 +411,78 @@ func TestCreateSnapshot_Argv(t *testing.T) {
 	calls := fr.callsSnapshot()
 	snapPath := p.snapshotPath("snap-1")
 	require.Len(t, calls, 2)
-	assert.Equal(t, []string{"convert", "-O", "qcow2", volPath, snapPath}, calls[0].args)
+	assert.Equal(t, []string{"convert", "-O", "qcow2", volPath, p.partialSnapshotPath("snap-1")}, calls[0].args)
 	assert.Equal(t, []string{"info", "--output=json", "--force-share", snapPath}, calls[1].args)
+	assert.FileExists(t, snapPath)
+	assert.NoFileExists(t, p.partialSnapshotPath("snap-1"))
+}
+
+// partialConvert is a qemu-img convert that dies part way: it leaves some of
+// the copy at its target and fails.
+type partialConvert struct {
+	*fakeRunner
+}
+
+func (r partialConvert) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if name == "qemu-img" && len(args) > 0 && args[0] == "convert" {
+		_ = os.WriteFile(args[len(args)-1], []byte("half a qcow2"), 0o640)
+		return nil, errors.New("qemu-img convert: signal: killed")
+	}
+	return r.fakeRunner.Run(ctx, name, args...)
+}
+
+// assertNoSnapshot requires that no read of p reports snapshotID.
+func assertNoSnapshot(t *testing.T, p *Provider, snapshotID string) {
+	t.Helper()
+	filtered, err := p.ListSnapshots(t.Context(), ebsprovider.ListSnapshotsRequest{Versioned: ebsprovider.NewLatestVersioned(), SnapshotID: snapshotID})
+	require.NoError(t, err)
+	assert.Empty(t, filtered.Snapshots, "a partial copy must never read as a snapshot")
+	all, err := p.ListSnapshots(t.Context(), ebsprovider.ListSnapshotsRequest{Versioned: ebsprovider.NewLatestVersioned()})
+	require.NoError(t, err)
+	assert.Empty(t, all.Snapshots, "a partial copy must never be listed")
+	assert.NoFileExists(t, p.snapshotPath(snapshotID))
+}
+
+// A copy that fails part way leaves no snapshot and no partial file, and the
+// same create then succeeds.
+func TestCreateSnapshot_FailedCopyIsNeverASnapshot(t *testing.T) {
+	p, fr := newTestProvider(t)
+	require.NoError(t, os.WriteFile(p.volumePath("vol-snap-src"), nil, 0o640))
+	p.run = partialConvert{fakeRunner: fr}
+	req := ebsprovider.CreateSnapshotRequest{Versioned: versioned(), SnapshotID: "snap-cut", VolumeID: "vol-snap-src"}
+
+	_, err := p.CreateSnapshot(t.Context(), req)
+	require.Error(t, err)
+	assertNoSnapshot(t, p, "snap-cut")
+	assert.NoFileExists(t, p.partialSnapshotPath("snap-cut"))
+
+	p.run = fr
+	snap, err := p.CreateSnapshot(t.Context(), req)
+	require.NoError(t, err, "a failed copy must not leave the ID taken")
+	assert.Equal(t, ebsprovider.SnapshotStateCompleted, snap.State)
+	assert.FileExists(t, p.snapshotPath("snap-cut"))
+}
+
+// A provider killed mid-copy leaves its partial file. After the restart it is
+// no snapshot, and the reaper's repeat of the create replaces it.
+func TestCreateSnapshot_CopyKilledMidwayIsNeverASnapshot(t *testing.T) {
+	dir := t.TempDir()
+	killed, err := newProvider(dir, newFakeRunner())
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(killed.volumePath("vol-snap-src"), nil, 0o640))
+	require.NoError(t, os.WriteFile(killed.partialSnapshotPath("snap-cut"), []byte("half a qcow2"), 0o640))
+
+	restarted, err := newProvider(dir, newFakeRunner())
+	require.NoError(t, err)
+	assertNoSnapshot(t, restarted, "snap-cut")
+
+	snap, err := restarted.CreateSnapshot(t.Context(), ebsprovider.CreateSnapshotRequest{Versioned: versioned(), SnapshotID: "snap-cut", VolumeID: "vol-snap-src"})
+	require.NoError(t, err)
+	assert.Equal(t, ebsprovider.SnapshotStateCompleted, snap.State)
+	written, err := os.ReadFile(restarted.snapshotPath("snap-cut"))
+	require.NoError(t, err)
+	assert.Empty(t, written, "the snapshot is the new copy, not the partial one")
+	assert.NoFileExists(t, restarted.partialSnapshotPath("snap-cut"))
 }
 
 // A published volume is refused before qemu-img runs, and an unpublished one

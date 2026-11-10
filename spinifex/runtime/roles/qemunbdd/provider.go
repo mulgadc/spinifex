@@ -146,6 +146,13 @@ func (p *Provider) snapshotPath(snapshotID string) string {
 	return filepath.Join(p.baseDir, "snapshots", snapshotID+".qcow2")
 }
 
+// partialSnapshotPath is where a snapshot's file is written before it is
+// renamed to snapshotPath. It does not end in .qcow2, so no listing, lookup or
+// create ever counts it as a snapshot.
+func (p *Provider) partialSnapshotPath(snapshotID string) string {
+	return filepath.Join(p.baseDir, "snapshots", "."+snapshotID+".qcow2.partial")
+}
+
 func (p *Provider) socketPath(volumeID string) string {
 	return filepath.Join(p.baseDir, "sockets", volumeID+".sock")
 }
@@ -538,7 +545,10 @@ func (p *Provider) CreateSnapshot(ctx context.Context, req ebsprovider.CreateSna
 	if pub, ok := p.published[req.VolumeID]; ok && !pub.dead() {
 		return nil, fmt.Errorf("%w: volume %s is published, so it cannot be snapshotted until it is unpublished", ebsprovider.ErrVolumeInUse, req.VolumeID)
 	}
-	if _, err := p.run.Run(ctx, "qemu-img", "convert", "-O", "qcow2", volPath, snapPath); err != nil {
+	if err := p.writeSnapshotFile(req.SnapshotID, func(partial string) error {
+		_, err := p.run.Run(ctx, "qemu-img", "convert", "-O", "qcow2", volPath, partial)
+		return err
+	}); err != nil {
 		return nil, fmt.Errorf("create snapshot %s: %w", req.SnapshotID, err)
 	}
 	p.snapshotMeta[req.SnapshotID] = snapshotMeta{sourceVolumeID: req.VolumeID}
@@ -698,11 +708,59 @@ func (p *Provider) CopySnapshot(ctx context.Context, req ebsprovider.CopySnapsho
 	}
 
 	srcPath := p.snapshotPath(req.SourceSnapshotID)
-	if err := copyFile(srcPath, dstPath); err != nil {
+	if err := p.writeSnapshotFile(req.DestinationSnapshotID, func(partial string) error {
+		return copyFile(srcPath, partial)
+	}); err != nil {
 		return nil, fmt.Errorf("copy snapshot %s to %s: %w", req.SourceSnapshotID, req.DestinationSnapshotID, err)
 	}
 	p.snapshotMeta[req.DestinationSnapshotID] = snapshotMeta{sourceVolumeID: req.VolumeID}
 	return p.buildSnapshot(ctx, req.DestinationSnapshotID, req.VolumeID, dstPath)
+}
+
+// writeSnapshotFile has write fill the snapshot's partial file, then syncs it
+// and renames it to the snapshot's name, so an interrupted write never leaves a
+// file there. A partial file an earlier interrupted write left is replaced.
+func (p *Provider) writeSnapshotFile(snapshotID string, write func(partial string) error) error {
+	partial := p.partialSnapshotPath(snapshotID)
+	if err := os.Remove(partial); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove partial snapshot file: %w", err)
+	}
+	if err := write(partial); err != nil {
+		return errors.Join(err, removeIfExists(partial))
+	}
+	if err := syncPath(partial); err != nil {
+		return errors.Join(fmt.Errorf("sync partial snapshot file: %w", err), removeIfExists(partial))
+	}
+	final := p.snapshotPath(snapshotID)
+	if err := os.Rename(partial, final); err != nil {
+		return errors.Join(fmt.Errorf("publish snapshot file: %w", err), removeIfExists(partial))
+	}
+	// Without the directory's sync the rename may not survive a crash, so the
+	// snapshot is not reported until it has; a failure unpublishes it.
+	if err := syncPath(filepath.Dir(final)); err != nil {
+		return errors.Join(fmt.Errorf("sync snapshots directory: %w", err), removeIfExists(final))
+	}
+	return nil
+}
+
+// syncPath flushes a file's or a directory's contents to stable storage.
+func syncPath(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func removeIfExists(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // copyFile duplicates a snapshot file directly: CopySnapshot's job is to

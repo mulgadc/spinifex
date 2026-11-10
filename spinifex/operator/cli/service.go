@@ -250,6 +250,11 @@ var viperblockStartCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("load config file: %w", err)
 		}
+		// A reinstalled unit can outlive its mask on a node with another
+		// provider, which would answer the same subjects.
+		if err := requireEBSProvider(clusterConfig, config.EBSProviderViperblockd); err != nil {
+			return err
+		}
 		nodeConfig := clusterConfig.Nodes[clusterConfig.Node]
 
 		natsHost := viper.GetString("nats-host")
@@ -380,6 +385,15 @@ var viperblockStartCmd = &cobra.Command{
 	},
 }
 
+// requireEBSProvider refuses to start a provider service on a node whose
+// configured provider is another one; an unset provider is viperblockd.
+func requireEBSProvider(clusterConfig *config.ClusterConfig, want string) error {
+	if got := clusterConfig.Nodes[clusterConfig.Node].EBS.ResolvedProvider(); got != want {
+		return fmt.Errorf("[nodes.%s.ebs] provider is %q, not %q", clusterConfig.Node, got, want)
+	}
+	return nil
+}
+
 var qemunbdCmd = &cobra.Command{
 	Use:   "qemunbd",
 	Short: "Manage the qemunbd service",
@@ -475,10 +489,10 @@ var ocibsdStartCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("load config file: %w", err)
 		}
-		nodeConfig := clusterConfig.Nodes[clusterConfig.Node]
-		if got := nodeConfig.EBS.ResolvedProvider(); got != config.EBSProviderOCIBSD {
-			return fmt.Errorf("[nodes.%s.ebs] provider is %q, not %q", clusterConfig.Node, got, config.EBSProviderOCIBSD)
+		if err := requireEBSProvider(clusterConfig, config.EBSProviderOCIBSD); err != nil {
+			return err
 		}
+		nodeConfig := clusterConfig.Nodes[clusterConfig.Node]
 		if natsHost := viper.GetString("nats-host"); natsHost != "" {
 			nodeConfig.NATS.Host = natsHost
 		}

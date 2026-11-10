@@ -36,8 +36,9 @@ func (p *Provider) PublishVolume(ctx context.Context, req ebsprovider.PublishVol
 	published, err := p.publishVolume(publishCtx, req)
 	if err != nil && ctx.Err() == nil && errors.Is(context.Cause(publishCtx), errPublishTimeout) {
 		slog.WarnContext(ctx, "ocibsd: publish ran out of its budget", "volume", req.VolumeID, "budget_ms", otelsetup.Millis(p.cfg.PublishTimeout))
-		// A retry reuses whatever attachment this one left, so it is retry-later.
-		return nil, fmt.Errorf("%w: publish of volume %s did not finish in time: %v", ebsprovider.ErrUnavailable, req.VolumeID, err)
+		// Retry-later, since a retry reuses any attachment left behind. The cause is
+		// text so a sentinel inside it cannot override that classification.
+		return nil, fmt.Errorf("%w: publish of volume %s did not finish in time: %s", ebsprovider.ErrUnavailable, req.VolumeID, err.Error())
 	}
 	return published, err
 }

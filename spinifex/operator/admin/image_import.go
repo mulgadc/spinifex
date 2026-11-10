@@ -139,17 +139,15 @@ func waitForSnapshot(ctx context.Context, provider ebsprovider.EBSProvider, snap
 			return fmt.Errorf("snapshot %s did not complete: %w", snapshotID, ctx.Err())
 		case <-ticker.C:
 		}
-		resp, err := provider.ListSnapshots(ctx, ebsprovider.ListSnapshotsRequest{
-			Versioned: ebsprovider.NewLatestVersioned(), SnapshotID: snapshotID,
-		})
+		ref, found, err := ebsprovider.ReadSnapshot(ctx, provider, snapshotID)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		if resp == nil || len(resp.Snapshots) == 0 {
+		if !found {
 			return fmt.Errorf("snapshot %s is no longer held by the provider", snapshotID)
 		}
-		switch resp.Snapshots[0].State {
+		switch ref.State {
 		case ebsprovider.SnapshotStateCompleted:
 			return nil
 		case ebsprovider.SnapshotStateError:

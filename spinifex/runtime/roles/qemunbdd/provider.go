@@ -722,7 +722,7 @@ func (p *Provider) CopySnapshot(ctx context.Context, req ebsprovider.CopySnapsho
 // file there. A partial file an earlier interrupted write left is replaced.
 func (p *Provider) writeSnapshotFile(snapshotID string, write func(partial string) error) error {
 	partial := p.partialSnapshotPath(snapshotID)
-	if err := os.Remove(partial); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := removeIfExists(partial); err != nil {
 		return fmt.Errorf("remove partial snapshot file: %w", err)
 	}
 	if err := write(partial); err != nil {

@@ -513,6 +513,19 @@ func CheckListSnapshotsVersion(req ListSnapshotsRequest) error {
 	return nil
 }
 
+// ReadSnapshot reads snapshotID from p through the filtered ListSnapshots at
+// the latest contract version. found is false when p holds no such snapshot.
+func ReadSnapshot(ctx context.Context, p EBSProvider, snapshotID string) (ref SnapshotRef, found bool, err error) {
+	resp, err := p.ListSnapshots(ctx, ListSnapshotsRequest{Versioned: NewLatestVersioned(), SnapshotID: snapshotID})
+	if err != nil {
+		return SnapshotRef{}, false, err
+	}
+	if resp == nil || len(resp.Snapshots) == 0 {
+		return SnapshotRef{}, false, nil
+	}
+	return resp.Snapshots[0], true, nil
+}
+
 // FilteredSnapshots is the reply to a filtered ListSnapshots: ref, or none
 // when ref is nil because the provider does not hold the snapshot.
 func FilteredSnapshots(req ListSnapshotsRequest, ref *SnapshotRef) *ListSnapshotsResponse {

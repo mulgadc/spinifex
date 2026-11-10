@@ -136,20 +136,19 @@ func countOf(ids []string, id string) int {
 	return n
 }
 
-// filterVersion is the version every filtered ListSnapshots in the suite is
+// filterVersion is the version the suite's filter-contract cases are
 // sent at: the first that carries the filter.
 var filterVersion = ebsprovider.Versioned{SchemaVersion: ebsprovider.SnapshotFilterSchemaVersion}
 
-// readSnapshot reads snapshotID through the filtered ListSnapshots and fails
-// unless the reply holds that one snapshot.
+// readSnapshot reads snapshotID through ebsprovider.ReadSnapshot and fails
+// unless the reply holds that snapshot.
 func readSnapshot(t *testing.T, provider ebsprovider.EBSProvider, snapshotID string) ebsprovider.SnapshotRef {
 	t.Helper()
-	resp, err := provider.ListSnapshots(context.Background(), ebsprovider.ListSnapshotsRequest{Versioned: filterVersion, SnapshotID: snapshotID})
+	ref, found, err := ebsprovider.ReadSnapshot(context.Background(), provider, snapshotID)
 	require.NoError(t, err)
-	require.NotNil(t, resp)
-	require.Lenf(t, resp.Snapshots, 1, "a snapshot the provider accepted must be read back by its ID, never reported absent")
-	require.Equal(t, snapshotID, resp.Snapshots[0].ID)
-	return resp.Snapshots[0]
+	require.Truef(t, found, "a snapshot the provider accepted must be read back by its ID, never reported absent")
+	require.Equal(t, snapshotID, ref.ID)
+	return ref
 }
 
 // settleTimeout bounds the wait for a pending snapshot to complete, so a

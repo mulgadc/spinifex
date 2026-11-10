@@ -1336,6 +1336,12 @@ func storedSnapshot(ctx context.Context, cfg *Config, volumeID, snapshotID strin
 	case !errors.Is(err, viperblock.ErrStateNotFound):
 		return nil, fmt.Errorf("read source volume %s: %w", volumeID, err)
 	}
+	return completedSnapshot(snapshotID, volumeID, sizeBytes, createdAt), nil
+}
+
+// completedSnapshot is the answer for snapshotID of volumeID, which this
+// provider takes whole before it answers.
+func completedSnapshot(snapshotID, volumeID string, sizeBytes int64, createdAt time.Time) *ebsprovider.Snapshot {
 	return &ebsprovider.Snapshot{
 		ID:             snapshotID,
 		SourceVolumeID: volumeID,
@@ -1343,7 +1349,7 @@ func storedSnapshot(ctx context.Context, cfg *Config, volumeID, snapshotID strin
 		CreatedAt:      createdAt,
 		State:          ebsprovider.SnapshotStateCompleted,
 		Handle:         snapshotHandle(snapshotID),
-	}, nil
+	}
 }
 
 // snapshotCreatedAt reads the creation time stored in snapshotID's config.
@@ -1384,14 +1390,7 @@ func createSnapshotWithVB(vb *viperblock.VB, volumeID, snapshotID string) (*ebsp
 		if err != nil {
 			return nil, err
 		}
-		return &ebsprovider.Snapshot{
-			ID:             snapshotID,
-			SourceVolumeID: volumeID,
-			SizeBytes:      safecast.Uint64ToInt64(vb.GetVolumeSize()),
-			CreatedAt:      createdAt,
-			State:          ebsprovider.SnapshotStateCompleted,
-			Handle:         snapshotHandle(snapshotID),
-		}, nil
+		return completedSnapshot(snapshotID, volumeID, safecast.Uint64ToInt64(vb.GetVolumeSize()), createdAt), nil
 	}
 	if err := vb.LoadLiveCheckpoint(); err != nil {
 		return nil, fmt.Errorf("load live checkpoint: %w", err)
@@ -1400,14 +1399,7 @@ func createSnapshotWithVB(vb *viperblock.VB, volumeID, snapshotID string) (*ebsp
 	if err != nil {
 		return nil, fmt.Errorf("create snapshot: %w", err)
 	}
-	return &ebsprovider.Snapshot{
-		ID:             snapshotID,
-		SourceVolumeID: volumeID,
-		SizeBytes:      safecast.Uint64ToInt64(vb.GetVolumeSize()),
-		CreatedAt:      state.CreatedAt.UTC(),
-		State:          ebsprovider.SnapshotStateCompleted,
-		Handle:         snapshotHandle(snapshotID),
-	}, nil
+	return completedSnapshot(snapshotID, volumeID, safecast.Uint64ToInt64(vb.GetVolumeSize()), state.CreatedAt.UTC()), nil
 }
 
 // ownerVerbHandlers pairs each owner-routable verb's subject builder with

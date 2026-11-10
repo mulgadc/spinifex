@@ -89,18 +89,12 @@ func (r *PendingSnapshotReaper) interrupted(step reapStep, snapshotID string) bo
 // providerSnapshot reads snapshotID from the provider. found is false when the
 // provider holds no snapshot by that ID.
 func (r *PendingSnapshotReaper) providerSnapshot(ctx context.Context, doc ebsmetadata.Snapshot) (ebsprovider.SnapshotRef, bool, error) {
-	resp, err := r.svc.provider.ListSnapshots(ctx, ebsprovider.ListSnapshotsRequest{
-		Versioned: ebsprovider.NewLatestVersioned(), SnapshotID: doc.SnapshotID,
-	})
+	ref, found, err := ebsprovider.ReadSnapshot(ctx, r.svc.provider, doc.SnapshotID)
 	if err != nil {
 		slog.WarnContext(ctx, "pending-snapshot: provider read failed, retrying next sweep",
 			"snapshotId", doc.SnapshotID, "accountId", doc.OwnerID, "err", err)
-		return ebsprovider.SnapshotRef{}, false, err
 	}
-	if resp == nil || len(resp.Snapshots) == 0 {
-		return ebsprovider.SnapshotRef{}, false, nil
-	}
-	return resp.Snapshots[0], true, nil
+	return ref, found, err
 }
 
 // settle follows the provider's state for doc, carries out its accepted

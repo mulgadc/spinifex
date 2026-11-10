@@ -142,6 +142,11 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 		if name, _, err := resolveFunctionName(inv.Region, inv.AccountID, params[0]); err == nil {
 			resource = functionARN(inv.Region, inv.AccountID, name)
 		}
+	case "UpdateFunctionConfiguration":
+		c.UpdateConfig, decodeErr = decodeUpdateConfiguration(body)
+		if name, _, err := resolveFunctionName(inv.Region, inv.AccountID, params[0]); err == nil {
+			resource = functionARN(inv.Region, inv.AccountID, name)
+		}
 	case "GetEventSourceMapping", "DeleteEventSourceMapping":
 		resource = mappingARN(inv.Region, inv.AccountID, params[0])
 	case "Invoke":
@@ -164,6 +169,11 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 	}
 	if action == "CreateFunction" {
 		if err := d.checkPassRole(inv, aws.StringValue(c.Create.Role)); err != nil {
+			return err
+		}
+	}
+	if action == "UpdateFunctionConfiguration" && c.UpdateConfig.Role != nil {
+		if err := d.checkPassRole(inv, aws.StringValue(c.UpdateConfig.Role)); err != nil {
 			return err
 		}
 	}

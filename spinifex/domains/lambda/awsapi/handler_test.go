@@ -53,8 +53,13 @@ type localClient struct {
 	beginErr error
 	// loseUpdatedReply commits CodeUpdated, then reports a transport error.
 	loseUpdatedReply bool
-	// beforeCommit runs once, unlocked, before the next CodeUpdated reaches the owner.
+	// beforeCommit runs once, unlocked, before the next CodeUpdated or
+	// UpdateConfiguration reaches the owner.
 	beforeCommit func()
+	// configErr fails UpdateConfiguration before the owner sees it.
+	configErr error
+	// configCalls counts UpdateConfiguration requests sent to the owner.
+	configCalls int
 }
 
 var _ function.Client = (*localClient)(nil)
@@ -132,6 +137,29 @@ func (c *localClient) CodeUpdated(ctx context.Context, account, region string, r
 	}
 	r, err := c.svc.CodeUpdated(ctx, &function.CodeUpdatedRequest{Region: region, FunctionName: rec.FunctionName, FunctionID: rec.FunctionID,
 		Revision: rev, RevisionID: codeRevisionID, SHA256: sha, Size: size}, account)
+	if err != nil {
+		return function.Record{}, 0, err
+	}
+	if lose {
+		return function.Record{}, 0, errors.New("nats: timeout")
+	}
+	return r.Record, r.Revision, nil
+}
+
+func (c *localClient) UpdateConfiguration(ctx context.Context, account, region string, rec function.Record, rev uint64, cfg function.Configuration) (function.Record, uint64, error) {
+	c.mu.Lock()
+	hook, lose, fail := c.beforeCommit, c.loseUpdatedReply, c.configErr
+	c.beforeCommit = nil
+	c.configCalls++
+	c.mu.Unlock()
+	if fail != nil {
+		return function.Record{}, 0, fail
+	}
+	if hook != nil {
+		hook()
+	}
+	r, err := c.svc.UpdateConfiguration(ctx, &function.ConfigurationUpdatedRequest{Region: region, FunctionName: rec.FunctionName,
+		FunctionID: rec.FunctionID, Revision: rev, Configuration: cfg}, account)
 	if err != nil {
 		return function.Record{}, 0, err
 	}
@@ -836,7 +864,8 @@ func TestAuthorization(t *testing.T) {
 
 func TestRegistration_ResolvesActionsAndInventory(t *testing.T) {
 	reg := awsapi.NewRegistration(awsapi.Deps{})
-	assert.Equal(t, []string{"CreateEventSourceMapping", "CreateFunction", "DeleteEventSourceMapping", "GetEventSourceMapping", "GetFunction", "GetFunctionCodeSigningConfig", "GetFunctionConfiguration", "Invoke", "ListEventSourceMappings", "ListVersionsByFunction", "UpdateFunctionCode"}, reg.Inventory.Registered)
+	assert.Equal(t, []string{"CreateEventSourceMapping", "CreateFunction", "DeleteEventSourceMapping", "GetEventSourceMapping", "GetFunction", "GetFunctionCodeSigningConfig", "GetFunctionConfiguration", "Invoke", "ListEventSourceMappings", "ListVersionsByFunction", "UpdateFunctionCode", "UpdateFunctionConfiguration"}, reg.Inventory.Registered)
+	assert.Equal(t, "UpdateFunctionConfiguration", reg.ResolveAction(httptest.NewRequest(http.MethodPut, "/2015-03-31/functions/x/configuration", nil)))
 	assert.Equal(t, "ListVersionsByFunction", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2015-03-31/functions/x/versions", nil)))
 	assert.Equal(t, "DeleteEventSourceMapping", reg.ResolveAction(httptest.NewRequest(http.MethodDelete, "/2015-03-31/event-source-mappings/x", nil)))
 	assert.Equal(t, "GetFunctionCodeSigningConfig", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2020-06-30/functions/x/code-signing-config", nil)))

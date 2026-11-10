@@ -81,6 +81,10 @@ func (seamFunction) CodeUpdated(context.Context, string, string, function.Record
 	return function.Record{}, 0, errors.New("unused")
 }
 
+func (seamFunction) UpdateConfiguration(context.Context, string, string, function.Record, uint64, function.Configuration) (function.Record, uint64, error) {
+	return function.Record{}, 0, errors.New("unused")
+}
+
 type urlPresigner struct {
 	url   string
 	calls *atomic.Int32

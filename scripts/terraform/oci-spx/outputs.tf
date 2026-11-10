@@ -31,3 +31,20 @@ output "nodes" {
 output "hosts_file" {
   value = join("\n", [for instance in oci_core_instance.mulgadc : instance.public_ip])
 }
+
+# The api_key route's equivalent of the instance-principal policy, for a tenancy
+# admin to apply to the API user's group. Sensitive only to keep the compartment
+# OCID out of apply.log; read it with terraform output api_key_policy_statements.
+output "api_key_policy_statements" {
+  sensitive = true
+  value = [
+    for grant in local.node_grants :
+    "Allow group ${var.api_key_group_name} to ${grant} in compartment id ${var.compartment_ocid}"
+  ]
+}
+
+# What spx admin init --ebs-provider ocibsd is given, so every OCI volume lands in
+# the nodes' own availability domain and the run knows where to sweep afterwards.
+output "availability_domain" { value = local.compute_availability_domain }
+output "region" { value = var.region }
+output "ebs_provider" { value = var.ebs_provider }

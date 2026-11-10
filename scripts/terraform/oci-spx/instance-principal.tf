@@ -29,26 +29,39 @@ resource "oci_identity_dynamic_group" "nodes" {
 }
 
 # Narrower than it looks. The allocator creates, moves and deletes secondary
-# private IPs on a node's own VNIC and attaches public IPs to them, which is what
-# these four verbs cover; nothing here grants compute, storage or identity.
+# private IPs on a node's own VNIC and attaches public IPs to them, and ocibsd
+# creates, attaches and backs up EBS volumes. Nothing here grants identity.
+locals {
+  node_grants = [
+    "use vnics",
+    "manage private-ips",
+    "manage public-ips",
+
+    # CreatePrivateIp needs SUBNET_ATTACH and DeletePrivateIp needs SUBNET_DETACH,
+    # both of which only the subnets `use` verb carries. Without it every allocation
+    # is refused as a 404, which reads as a missing resource rather than a missing grant.
+    "use subnets",
+
+    # ocibsd: volumes, backups and attachments, and attaching them to an instance.
+    # Without these every ocibsd call is refused and its service fails at start.
+    "manage volume-family",
+    "use instances",
+  ]
+}
+
 resource "oci_identity_policy" "nodes" {
   provider       = oci.home
   count          = var.instance_principal == "create" ? 1 : 0
   compartment_id = var.compartment_ocid
   name           = "${var.deployment_name}-nodes-network"
-  description    = "Allows Spinifex nodes to manage the private and public IPs backing external addresses."
+  description    = "Allows Spinifex nodes to manage the IPs backing external addresses and the OCI volumes backing EBS."
 
   statements = [
-    "Allow dynamic-group ${oci_identity_dynamic_group.nodes[0].name} to use vnics in compartment id ${var.compartment_ocid}",
-    "Allow dynamic-group ${oci_identity_dynamic_group.nodes[0].name} to manage private-ips in compartment id ${var.compartment_ocid}",
-    "Allow dynamic-group ${oci_identity_dynamic_group.nodes[0].name} to manage public-ips in compartment id ${var.compartment_ocid}",
-
-    # CreatePrivateIp needs SUBNET_ATTACH and DeletePrivateIp needs SUBNET_DETACH,
-    # both of which only the subnets `use` verb carries. Without it every allocation
-    # is refused as a 404, which reads as a missing resource rather than a missing grant.
-    "Allow dynamic-group ${oci_identity_dynamic_group.nodes[0].name} to use subnets in compartment id ${var.compartment_ocid}",
+    for grant in local.node_grants :
+    "Allow dynamic-group ${oci_identity_dynamic_group.nodes[0].name} to ${grant} in compartment id ${var.compartment_ocid}"
   ]
-    lifecycle {
+
+  lifecycle {
     precondition {
       condition     = local.tenancy_home_region != ""
       error_message = "OCI did not report a tenancy home region; cannot create instance-principal IAM resources."

@@ -2,14 +2,17 @@ package image
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	ebsmetadata "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	ebsprovider "github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -179,4 +182,68 @@ func TestDeregisterImage_AllowsAPendingAMI(t *testing.T) {
 	require.NoError(t, err)
 	_, err = f.svc.MetadataStore().GetAMI(context.Background(), aws.StringValue(out.ImageId))
 	assert.Error(t, err, "the pending AMI is deregistered")
+}
+
+// putHookStore runs onPut once, before the first write to key reaches the store.
+type putHookStore struct {
+	objectstore.ObjectStore
+
+	key   string
+	onPut func()
+	once  sync.Once
+}
+
+func (s *putHookStore) PutObject(ctx context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+	if aws.StringValue(input.Key) == s.key {
+		s.once.Do(s.onPut)
+	}
+	return s.ObjectStore.PutObject(ctx, input)
+}
+
+// A DeregisterImage that lands between the reaper's reread of a pending AMI
+// and its write either waits the write out or is refused retryably; one that
+// succeeds is never undone by the reaper writing the settled AMI back.
+func TestDeregisterImage_DuringTheReapersAMIWriteStaysDeleted(t *testing.T) {
+	f := newPendingImageFixture(t)
+	f.mem.AnswerSnapshotsPending(true)
+	out, err := f.createImage(t)
+	require.NoError(t, err)
+	imageID := aws.StringValue(out.ImageId)
+	ami, snap := f.onlyAMI(t)
+	require.Equal(t, ec2.ImageStatePending, ami.State)
+	require.NoError(t, f.mem.SettleSnapshot(snap.SnapshotID, ebsprovider.SnapshotStateCompleted))
+
+	key, err := ebsmetadata.AMIKey(imageID)
+	require.NoError(t, err)
+	var deregErr error
+	deregistered := false
+	hooked := &putHookStore{ObjectStore: f.svc.store, key: key}
+	hooked.onPut = func() {
+		deregistered = true
+		_, deregErr = f.svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: out.ImageId}, testAccountID)
+	}
+	reaping := ec2snapshot.NewSnapshotServiceImplWithStore(f.svc.config, hooked, nil)
+	reaping.SetEBSProvider(f.mem)
+	f.svc.SetImageClaims(reaping)
+
+	_, err = reaping.NewPendingSnapshotReaper().Sweep(context.Background())
+	require.NoError(t, err)
+	require.True(t, deregistered, "the reaper wrote the settled AMI")
+
+	_, getErr := f.svc.MetadataStore().GetAMI(context.Background(), imageID)
+	if deregErr == nil {
+		require.True(t, objectstore.IsNoSuchKeyError(getErr), "a deregistered AMI was written back: %v", getErr)
+		return
+	}
+	code, _, ok := awserrors.ResolveErrorDetail(deregErr)
+	require.True(t, ok, "unregistered error: %v", deregErr)
+	assert.Equal(t, awserrors.ErrorIncorrectState, code, "a refused deregistration is retryable")
+	require.NoError(t, getErr)
+
+	_, err = f.svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: out.ImageId}, testAccountID)
+	require.NoError(t, err, "the retry succeeds once the reaper's write is done")
+	_, err = reaping.NewPendingSnapshotReaper().Sweep(context.Background())
+	require.NoError(t, err)
+	_, getErr = f.svc.MetadataStore().GetAMI(context.Background(), imageID)
+	assert.True(t, objectstore.IsNoSuchKeyError(getErr), "the retried deregistration stays deleted: %v", getErr)
 }

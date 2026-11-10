@@ -13,9 +13,9 @@ import (
 	otelsetup "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 )
 
-// ClaimPrefix is the kvsync prefix of every snapshot's claim. A snapshot's
-// claim is ClaimPrefix+snapshotID, and names the node that alone may call the
-// provider for that snapshot or delete its document.
+// ClaimPrefix is the kvsync prefix of every snapshot's claim, ClaimPrefix+ID,
+// naming the node that alone may call the provider for it or delete its
+// document. An AMI's claim, keyed by image ID, shares the prefix.
 const ClaimPrefix = "snapshot."
 
 // claimReleaseTimeout bounds the unlock after the last write, which runs even

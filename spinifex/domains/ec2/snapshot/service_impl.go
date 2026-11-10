@@ -279,6 +279,24 @@ type ImageSnapshotCreator interface {
 
 var _ ImageSnapshotCreator = (*SnapshotServiceImpl)(nil)
 
+// ImageClaims serialises the reaper's settling of an AMI with DeregisterImage:
+// each holds the image's claim, in the snapshot claim group keyed by image ID.
+type ImageClaims interface {
+	LockImage(ctx context.Context, imageID string) (unlock func(), err error)
+}
+
+var _ ImageClaims = (*SnapshotServiceImpl)(nil)
+
+// LockImage takes imageID's claim for a request, as writeUnderClaim takes a
+// snapshot's; one still held after the retries is a retryable IncorrectState.
+func (s *SnapshotServiceImpl) LockImage(ctx context.Context, imageID string) (func(), error) {
+	held, err := s.takeClaimWithRetry(ctx, "image", imageID)
+	if err != nil {
+		return nil, err
+	}
+	return func() { held.release(ctx) }, nil
+}
+
 // CreateImageSnapshot snapshots an image's root volume as CreateSnapshot does,
 // running hooks to write the AMI document beside the snapshot's.
 func (s *SnapshotServiceImpl) CreateImageSnapshot(ctx context.Context, volume ebsmetadata.Volume, snapshotID, accountID, description string, hooks ImageSnapshotHooks) (*ec2.Snapshot, error) {
@@ -958,7 +976,7 @@ const (
 // its write. A document that is gone is not mutated, and mutate never sees it.
 func (s *SnapshotServiceImpl) writeUnderClaim(ctx context.Context, accountID, snapshotID string,
 	mutate func(*ebsmetadata.Snapshot) (bool, error)) error {
-	held, err := s.takeClaimWithRetry(ctx, snapshotID)
+	held, err := s.takeClaimWithRetry(ctx, "snapshot", snapshotID)
 	if err != nil {
 		return err
 	}
@@ -980,36 +998,36 @@ func (s *SnapshotServiceImpl) writeUnderClaim(ctx context.Context, accountID, sn
 	return nil
 }
 
-// takeClaimWithRetry takes snapshotID's claim as the reaper does, retrying a
-// holder that is live; one still held after the retries is IncorrectState,
-// which the caller retries.
-func (s *SnapshotServiceImpl) takeClaimWithRetry(ctx context.Context, snapshotID string) (*heldClaim, error) {
+// takeClaimWithRetry takes the claim on resource id, of kind, as the
+// reaper does, retrying a holder that is live; one still held after the
+// retries is IncorrectState, which the caller retries.
+func (s *SnapshotServiceImpl) takeClaimWithRetry(ctx context.Context, kind, id string) (*heldClaim, error) {
 	delay := claimRetryDelay
 	if s.claimRetryDelay > 0 {
 		delay = s.claimRetryDelay
 	}
 	for attempt := 0; ; attempt++ {
-		held, err := s.claims.take(ctx, snapshotID)
+		held, err := s.claims.take(ctx, id)
 		if err == nil {
 			return held, nil
 		}
 		if !errors.Is(err, errClaimHeld) {
-			slog.ErrorContext(ctx, "Snapshot claim could not be taken", "snapshotId", snapshotID, "err", err)
-			return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "take the claim of snapshot %s: %v", snapshotID, err)
+			slog.ErrorContext(ctx, "Snapshot claim could not be taken", "kind", kind, "id", id, "err", err)
+			return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "take the claim of %s %s: %v", kind, id, err)
 		}
 		if s.claimRefused != nil {
-			s.claimRefused(snapshotID)
+			s.claimRefused(id)
 		}
 		if attempt == claimRetries {
-			slog.InfoContext(ctx, "Snapshot claim still held after retries", "snapshotId", snapshotID, "err", err)
+			slog.InfoContext(ctx, "Snapshot claim still held after retries", "kind", kind, "id", id, "err", err)
 			return nil, awserrors.Errorf(awserrors.ErrorIncorrectState,
-				"The snapshot '%s' is being updated. Retry the request.", snapshotID)
+				"The %s '%s' is being updated. Retry the request.", kind, id)
 		}
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "take the claim of snapshot %s: %v", snapshotID, ctx.Err())
+			return nil, awserrors.Errorf(awserrors.ErrorServerInternal, "take the claim of %s %s: %v", kind, id, ctx.Err())
 		case <-timer.C:
 		}
 	}

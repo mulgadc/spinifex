@@ -2085,6 +2085,7 @@ func (d *Daemon) startCluster() error {
 	d.snapshotService = snap.svc
 	d.snapshotService.SetClaims(ec2snapshot.NewClaims(d.snapshotClaims(), d.node, d.heartbeatLiveness()))
 	d.imageService.SetSnapshotCreator(d.snapshotService)
+	d.imageService.SetImageClaims(d.snapshotService)
 
 	d.volumeService = ec2volume.NewVolumeServiceImpl(d.config, d.natsConn, snap.kv)
 	if err := d.configureEBSProvider(); err != nil {

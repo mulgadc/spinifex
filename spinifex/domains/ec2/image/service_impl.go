@@ -59,11 +59,20 @@ type ImageServiceImpl struct {
 	// snapshots takes an image's snapshot through the snapshot service, so the
 	// claim and reference are the ones CreateSnapshot uses.
 	snapshots ec2snapshot.ImageSnapshotCreator
+	// imageClaims is the claim DeregisterImage shares with the reaper that
+	// settles a pending AMI; nil excludes nothing.
+	imageClaims ec2snapshot.ImageClaims
 }
 
 // SetSnapshotCreator wires the snapshot service CreateImage snapshots through.
 func (s *ImageServiceImpl) SetSnapshotCreator(snapshots ec2snapshot.ImageSnapshotCreator) {
 	s.snapshots = snapshots
+}
+
+// SetImageClaims wires the image claims of the snapshot service whose reaper
+// settles this service's pending AMIs.
+func (s *ImageServiceImpl) SetImageClaims(claims ec2snapshot.ImageClaims) {
+	s.imageClaims = claims
 }
 
 // snapshotCreator is the wired snapshot service, or a standalone one over this
@@ -1216,6 +1225,16 @@ func (s *ImageServiceImpl) DeregisterImage(ctx context.Context, input *ec2.Dereg
 
 	if _, err := s.loadAMIForMutation(ctx, imageID, accountID); err != nil {
 		return nil, err
+	}
+
+	// Held across both deletes, so the reaper cannot write back a settled AMI
+	// it read before them.
+	if s.imageClaims != nil {
+		unlock, err := s.imageClaims.LockImage(ctx, imageID)
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
 	}
 
 	// Only the image's own prefix: a copy or a source instance has its own.

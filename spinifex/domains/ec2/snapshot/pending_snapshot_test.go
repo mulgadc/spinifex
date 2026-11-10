@@ -1257,3 +1257,32 @@ func TestS7_PendingSnapshotReaperDeletesOnlyWhatACustomerDeleted(t *testing.T) {
 	_, ok := f.doc("snap-s7markeddone01")
 	assert.False(t, ok, "a snapshot the customer deleted is deleted once it settles")
 }
+
+// An AMI's claim left by this node's previous process holds the reaper off the
+// AMI while the node heartbeats, until the restarted daemon releases it.
+func TestReleaseNodeClaims_FreesARestartedNodesAMIClaims(t *testing.T) {
+	f := newPendingFixture(t)
+	const imageID = "ami-restartown00001"
+	require.NoError(t, f.metadata.PutSnapshot(t.Context(), ebsmetadata.Snapshot{
+		SnapshotID: "snap-amidone000001", VolumeID: pendingVolumeID, State: snapshotStateCompleted, OwnerID: testAccountID,
+	}))
+	require.NoError(t, f.metadata.PutAMI(t.Context(), ebsmetadata.AMI{
+		ImageID: imageID, SnapshotID: "snap-amidone000001", ImageOwnerAlias: testAccountID, State: amiStatePending,
+	}))
+	f.holdClaim(nodeA, imageID)
+
+	f.sweep(f.node(nodeB))
+	ami, err := f.metadata.GetAMI(t.Context(), imageID)
+	require.NoError(t, err)
+	assert.Equal(t, amiStatePending, ami.State, "a live node's claim holds the reaper off the AMI")
+
+	released, err := f.node(nodeA).ReleaseNodeClaims(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 1, released)
+	assert.Empty(t, f.claimHolder(imageID))
+
+	f.sweep(f.node(nodeB))
+	ami, err = f.metadata.GetAMI(t.Context(), imageID)
+	require.NoError(t, err)
+	assert.Equal(t, amiStateAvailable, ami.State)
+}

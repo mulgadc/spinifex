@@ -423,6 +423,9 @@ func init() {
 	adminInitCmd.Flags().String("gateway-ip", "", "OVN gateway router's external IP for SNAT (default: pool range_start for pool mode, required for nat mode without DHCP)")
 	adminInitCmd.Flags().StringSlice("external-dns", nil, "Comma-separated IPv4 DNS servers handed to guests on the external pool, at most 3 (auto-detected from the host resolver when omitted)")
 	adminInitCmd.Flags().Int("external-prefix-len", 24, "External pool subnet prefix length (auto-detected)")
+	adminInitCmd.Flags().String("ebs-provider", config.EBSProviderViperblockd, "EBS provider for every node: viperblockd, qemunbd or ocibsd (OCI Block Volumes); chosen once and never changed")
+	adminInitCmd.Flags().String("oci-compartment-id", "", "With --ebs-provider ocibsd: OCID of the compartment every volume is created in")
+	adminInitCmd.Flags().String("oci-availability-domain", "", "With --ebs-provider ocibsd: the OCI availability domain every volume is created in, which every node must be in")
 	adminInitCmd.Flags().Bool("gpu-passthrough", false, "Enable VFIO GPU passthrough (sets gpu_passthrough = true in daemon config)")
 	adminInitCmd.Flags().Bool("ipsec", true, "Encrypt intra-AZ Geneve via OVN native IPsec (cluster-wide); disable only for trusted single-rack lab")
 	adminInitCmd.Flags().Bool("skip-host-dns", false, "Do not point this node's host resolver at its local northstar (LB/EKS names then won't resolve from the node)")
@@ -1343,6 +1346,24 @@ func validateNodeCount(nodes int) error {
 	return nil
 }
 
+// ebsInitConfig checks the init flags that choose the cluster's EBS provider,
+// which every node is written with: the OCI flags go with ocibsd and only it.
+func ebsInitConfig(provider, compartmentID, availabilityDomain string) (formation.EBSConfig, error) {
+	if !config.SupportedEBSProvider(provider) {
+		return formation.EBSConfig{}, fmt.Errorf("--ebs-provider %q unsupported; use %q, %q or %q", provider, config.EBSProviderViperblockd, config.EBSProviderQEMUNBD, config.EBSProviderOCIBSD)
+	}
+	if provider != config.EBSProviderOCIBSD {
+		if compartmentID != "" || availabilityDomain != "" {
+			return formation.EBSConfig{}, fmt.Errorf("--oci-compartment-id and --oci-availability-domain are only valid with --ebs-provider %s", config.EBSProviderOCIBSD)
+		}
+		return formation.EBSConfig{Provider: provider}, nil
+	}
+	if compartmentID == "" || availabilityDomain == "" {
+		return formation.EBSConfig{}, fmt.Errorf("--ebs-provider %s requires --oci-compartment-id and --oci-availability-domain", config.EBSProviderOCIBSD)
+	}
+	return formation.EBSConfig{Provider: provider, OCICompartmentID: compartmentID, OCIAvailabilityDomain: availabilityDomain}, nil
+}
+
 // TODO: Move all logic to a module, use minimal application logic in viper commands.
 func runAdminInit(cmd *cobra.Command, args []string) {
 	if os.Getuid() != 0 {
@@ -1382,6 +1403,15 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	// going away and still accepts writes.
 	if err := validateNodeCount(nodes); err != nil {
 		fmt.Fprintf(os.Stderr, "--nodes: %v\n", err)
+		os.Exit(1)
+	}
+
+	ebsProvider, _ := cmd.Flags().GetString("ebs-provider")
+	ociCompartmentID, _ := cmd.Flags().GetString("oci-compartment-id")
+	ociAvailabilityDomain, _ := cmd.Flags().GetString("oci-availability-domain")
+	ebsConfig, err := ebsInitConfig(ebsProvider, ociCompartmentID, ociAvailabilityDomain)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
 
@@ -1848,6 +1878,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		// external networking is disabled.
 		networkConfig := &formation.NetworkConfig{
 			IPSecEnabled: ipsecEnabled,
+			EBS:          ebsConfig,
 		}
 		if externalMode != "" {
 			bootstrapVpcId := awsidentifiers.GenerateResourceID("vpc")
@@ -1986,6 +2017,10 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 
 		GPUPassthrough: gpuPassthrough,
 		IPSecEnabled:   ipsecEnabled,
+
+		EBSProvider:           ebsConfig.Provider,
+		OCICompartmentID:      ebsConfig.OCICompartmentID,
+		OCIAvailabilityDomain: ebsConfig.OCIAvailabilityDomain,
 
 		EncryptionKeyFile: viperblockKeyPath,
 
@@ -3401,6 +3436,9 @@ func finalizeNodeSetup(dataDir, certPath, adminAccessKey, adminSecretKey, region
 // NetworkConfig into ConfigSettings and auto-detects the local WAN interface.
 func applyNetworkConfig(settings *admin.ConfigSettings, nc *formation.NetworkConfig) {
 	settings.IPSecEnabled = nc.IPSecEnabled
+	settings.EBSProvider = nc.EBS.Provider
+	settings.OCICompartmentID = nc.EBS.OCICompartmentID
+	settings.OCIAvailabilityDomain = nc.EBS.OCIAvailabilityDomain
 	settings.ExternalMode = nc.ExternalMode
 	// A node's own address is northstar itself; forwarding to it would loop.
 	settings.PoolDNSServers = filterDNSServers(nc.PoolDNSServers, settings.AdvertiseIP, settings.BindIP)

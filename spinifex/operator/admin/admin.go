@@ -122,6 +122,12 @@ type ConfigSettings struct {
 	BootstrapCidr       string
 	BootstrapSubnetCidr string
 
+	// EBSProvider is rendered as [nodes.X.ebs] provider; empty renders the
+	// default. The OCI fields fill [nodes.X.ebs.oci] for ocibsd.
+	EBSProvider           string
+	OCICompartmentID      string
+	OCIAvailabilityDomain string
+
 	// GPUPassthrough enables VFIO GPU passthrough in the daemon config.
 	// Sets gpu_passthrough = true under [nodes.<node>.daemon].
 	GPUPassthrough bool

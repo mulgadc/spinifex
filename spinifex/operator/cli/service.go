@@ -20,6 +20,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/nats"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/northstar"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/predastore"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/ocibsd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/qemunbdd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/qmpcollector"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/spinifexui"
@@ -449,6 +450,67 @@ var qemunbdStartCmd = &cobra.Command{
 		}
 
 		fmt.Println("qemunbd service started")
+		return nil
+	},
+}
+
+var ocibsdCmd = &cobra.Command{
+	Use:   "ocibsd",
+	Short: "Manage the ocibsd service",
+}
+
+// ocibsd answers the same ebs.provider.v1.* subjects as viperblock and
+// qemunbd, so only the cluster's one provider may run against its NATS.
+var ocibsdStartCmd = &cobra.Command{
+	Use:           "start",
+	Short:         "Start the ocibsd service",
+	SilenceErrors: true,
+	SilenceUsage:  true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfgFile := viper.GetString("config")
+		if cfgFile == "" {
+			return fmt.Errorf("config file is not set")
+		}
+		clusterConfig, err := config.LoadConfig(cfgFile)
+		if err != nil {
+			return fmt.Errorf("load config file: %w", err)
+		}
+		nodeConfig := clusterConfig.Nodes[clusterConfig.Node]
+		if got := nodeConfig.EBS.ResolvedProvider(); got != config.EBSProviderOCIBSD {
+			return fmt.Errorf("[nodes.%s.ebs] provider is %q, not %q", clusterConfig.Node, got, config.EBSProviderOCIBSD)
+		}
+		if natsHost := viper.GetString("nats-host"); natsHost != "" {
+			nodeConfig.NATS.Host = natsHost
+		}
+		baseDir := nodeConfig.Predastore.BaseDir
+		if override := viper.GetString("base-dir"); override != "" {
+			baseDir = override
+		}
+
+		debug := viper.GetBool("ocibsd-debug")
+		defer initTelemetry("ocibsd", debug)()
+
+		oci := nodeConfig.EBS.OCI
+		service, err := service.New("ocibsd", &ocibsd.Config{
+			BaseDir:            baseDir,
+			NatsHost:           nodeConfig.NATS.Host,
+			NatsToken:          nodeConfig.NATS.ACL.Token,
+			NatsCACert:         nodeConfig.NATS.CACert,
+			NodeName:           clusterConfig.Node,
+			AvailabilityZone:   nodeConfig.AZ,
+			CompartmentID:      oci.CompartmentID,
+			AvailabilityDomain: oci.AvailabilityDomain,
+			Auth:               oci.Auth,
+			ConfigFile:         oci.ConfigFile,
+			ConfigProfile:      oci.ConfigProfile,
+			Debug:              debug,
+		})
+		if err != nil {
+			return fmt.Errorf("create ocibsd service: %w", err)
+		}
+		if _, err := service.Start(); err != nil {
+			return fmt.Errorf("start ocibsd service: %w", err)
+		}
 		return nil
 	},
 }
@@ -1146,6 +1208,14 @@ func init() {
 	mustBindPFlag("qemunbd-debug", qemunbdCmd.PersistentFlags(), "debug")
 
 	qemunbdCmd.AddCommand(qemunbdStartCmd)
+
+	serviceCmd.AddCommand(ocibsdCmd)
+
+	ocibsdCmd.PersistentFlags().Bool("debug", false, "ocibsd (EBS) debug logging")
+	mustBindEnv("ocibsd-debug", "SPINIFEX_OCIBSD_DEBUG")
+	mustBindPFlag("ocibsd-debug", ocibsdCmd.PersistentFlags(), "debug")
+
+	ocibsdCmd.AddCommand(ocibsdStartCmd)
 
 	// Nats
 	serviceCmd.AddCommand(natsCmd)

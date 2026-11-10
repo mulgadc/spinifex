@@ -24,6 +24,8 @@ type Client interface {
 	BeginCodeUpdate(ctx context.Context, accountID, region string, rec Record, revision uint64, codeRevisionID string) error
 	// CodeUpdated commits the stored copy and returns the updated record and revision.
 	CodeUpdated(ctx context.Context, accountID, region string, rec Record, revision uint64, codeRevisionID, sha256Hex string, size int64) (Record, uint64, error)
+	// UpdateConfiguration commits cfg for the function at revision and returns the updated record and revision.
+	UpdateConfiguration(ctx context.Context, accountID, region string, rec Record, revision uint64, cfg Configuration) (Record, uint64, error)
 }
 
 // NATSClient is the Client over NATS request/reply to the daemon.
@@ -81,6 +83,16 @@ func (c *NATSClient) CodeUpdated(ctx context.Context, accountID, region string, 
 	resp, err := natsmsg.NATSRequest[CodeUpdatedResponse](ctx, c.conn, SubjectCodeUpdated,
 		&CodeUpdatedRequest{Region: region, FunctionName: rec.FunctionName, FunctionID: rec.FunctionID, Revision: revision,
 			RevisionID: codeRevisionID, SHA256: sha256Hex, Size: size}, metaRequestTimeout, accountID)
+	if err != nil {
+		return Record{}, 0, err
+	}
+	return resp.Record, resp.Revision, nil
+}
+
+func (c *NATSClient) UpdateConfiguration(ctx context.Context, accountID, region string, rec Record, revision uint64, cfg Configuration) (Record, uint64, error) {
+	resp, err := natsmsg.NATSRequest[ConfigurationUpdatedResponse](ctx, c.conn, SubjectConfigurationUpdated,
+		&ConfigurationUpdatedRequest{Region: region, FunctionName: rec.FunctionName, FunctionID: rec.FunctionID, Revision: revision,
+			Configuration: cfg}, metaRequestTimeout, accountID)
 	if err != nil {
 		return Record{}, 0, err
 	}

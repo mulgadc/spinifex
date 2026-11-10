@@ -23,6 +23,9 @@ type call struct {
 	// Invoke is Invoke's validated target, resolved ahead of the
 	// authorization gate whose resource it names.
 	Invoke *invokeTarget
+	// UpdateConfig is the decoded UpdateFunctionConfiguration body, read
+	// ahead of the PassRole check on a new role.
+	UpdateConfig *lambda.UpdateFunctionConfigurationInput
 }
 
 // rawJSON is a response body written as is, for a shape the SDK encoder
@@ -53,6 +56,10 @@ var routes = []route{
 	{Method: "PUT", Pattern: "/2015-03-31/functions/{FunctionName}/code", Action: "UpdateFunctionCode",
 		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
 			return d.updateFunctionCode(ctx, c)
+		}},
+	{Method: "PUT", Pattern: "/2015-03-31/functions/{FunctionName}/configuration", Action: "UpdateFunctionConfiguration",
+		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
+			return d.updateFunctionConfiguration(ctx, c)
 		}},
 	{Method: "GET", Pattern: "/2015-03-31/functions/{FunctionName}/configuration", Action: "GetFunctionConfiguration",
 		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {

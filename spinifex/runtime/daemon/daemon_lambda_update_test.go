@@ -88,3 +88,51 @@ func TestLambdaCodeUpdate_PreviousDaemonRefusesWithoutMutation(t *testing.T) {
 	assert.Equal(t, lambdafunction.Code{RevisionID: "rev-2", SHA256: newDigest, Size: 12, State: lambdafunction.CodeStored}, got.Code)
 	assert.Equal(t, lambdafunction.StateActive, got.State)
 }
+
+// A daemon without the configuration subject refuses the update as a
+// retryable transport error and changes nothing; once served, it commits.
+func TestLambdaConfigurationUpdate_PreviousDaemonRefusesWithoutMutation(t *testing.T) {
+	_, nc, js := testutil.StartTestJetStream(t)
+	svc := lambdafunction.NewMetaService(js)
+	svc.SetReadiness(func(context.Context, lambdafunction.Record) error { return nil })
+	client := lambdafunction.NewNATSClient(nc)
+	ctx := t.Context()
+	const region = "ap-southeast-2"
+
+	serveLambdaSubjects(t, nc, svc, true)
+	rev, err := client.Create(ctx, lambdaTestAccount, region, lambdafunction.Record{
+		FunctionID: "f1", FunctionName: "hello", Role: "arn:aws:iam::000000000001:role/r", Runtime: "provided.al2023",
+		Handler: "bootstrap", Timeout: 3, MemorySize: 128, Code: lambdafunction.Code{RevisionID: "rev-1"},
+	})
+	require.NoError(t, err)
+	_, _, err = client.CodeStored(ctx, lambdaTestAccount, region, "hello", rev,
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 9)
+	require.NoError(t, err)
+	require.NoError(t, svc.ActivatePending(ctx))
+	rec, rev, err := client.Get(ctx, lambdaTestAccount, region, "hello")
+	require.NoError(t, err)
+
+	cfg := lambdafunction.Configuration{Role: rec.Role, Handler: "handler.two", Timeout: 8, MemorySize: 256}
+	_, _, err = client.UpdateConfiguration(ctx, lambdaTestAccount, region, rec, rev, cfg)
+	require.ErrorIs(t, err, nats.ErrNoResponders)
+	_, coded := awserrors.ResolveErrorCode(err)
+	assert.False(t, coded, "the gateway maps an uncoded failure to a retryable ServiceException")
+	same, sameRev, err := client.Get(ctx, lambdaTestAccount, region, "hello")
+	require.NoError(t, err)
+	assert.Equal(t, rev, sameRev)
+	assert.Equal(t, rec, same)
+
+	sub, err := nc.QueueSubscribe(lambdafunction.SubjectConfigurationUpdated, "spinifex-workers",
+		asMsgHandler(handleNATSRequest("node-1", svc.UpdateConfiguration)))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	require.NoError(t, nc.Flush())
+	updated, updatedRev, err := client.UpdateConfiguration(ctx, lambdaTestAccount, region, rec, rev, cfg)
+	require.NoError(t, err)
+	got, gotRev, err := client.Get(ctx, lambdaTestAccount, region, "hello")
+	require.NoError(t, err)
+	assert.Equal(t, updatedRev, gotRev)
+	assert.Equal(t, updated, got)
+	assert.Equal(t, "handler.two", got.Handler)
+	assert.Equal(t, int64(256), got.MemorySize)
+}

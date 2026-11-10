@@ -109,6 +109,8 @@ const (
 	SubjectRollbackCreate  = "lambda.function.rollback-create"
 	SubjectCodeUpdateBegin = "lambda.function.code-update-begin"
 	SubjectCodeUpdated     = "lambda.function.code-updated"
+	// SubjectConfigurationUpdated commits new settings for an Active function.
+	SubjectConfigurationUpdated = "lambda.function.configuration-updated"
 )
 
 // CreateRequest carries the record the gateway built; the daemon owns the
@@ -187,6 +189,32 @@ type CodeUpdatedRequest struct {
 
 // CodeUpdatedResponse returns the committed record and its revision.
 type CodeUpdatedResponse struct {
+	Record   Record `json:"record"`
+	Revision uint64 `json:"revision"`
+}
+
+// Configuration is the complete set of settings an update leaves on the
+// function; the gateway merges omitted members from the record it read.
+type Configuration struct {
+	Role        string `json:"role"`
+	Handler     string `json:"handler"`
+	Description string `json:"description,omitempty"`
+	Timeout     int64  `json:"timeout"`
+	MemorySize  int64  `json:"memorySize"`
+	EnvCipher   string `json:"envCipher,omitempty"`
+}
+
+// ConfigurationUpdatedRequest replaces the settings of the function at Revision.
+type ConfigurationUpdatedRequest struct {
+	Region        string        `json:"region"`
+	FunctionName  string        `json:"functionName"`
+	FunctionID    string        `json:"functionId"`
+	Revision      uint64        `json:"revision"`
+	Configuration Configuration `json:"configuration"`
+}
+
+// ConfigurationUpdatedResponse returns the committed record and its revision.
+type ConfigurationUpdatedResponse struct {
 	Record   Record `json:"record"`
 	Revision uint64 `json:"revision"`
 }

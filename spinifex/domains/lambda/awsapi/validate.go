@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/lambda"
@@ -339,4 +340,129 @@ func envVars(e *lambda.Environment) (map[string]string, error) {
 		return nil, invalid("%s", err)
 	}
 	return vars, nil
+}
+
+// maxEnvBytes bounds an environment's variables as the JSON object AWS sizes.
+const maxEnvBytes = 4096
+
+// maxHandler bounds Handler in bytes, as the test-link guest checks it.
+const maxHandler = 128
+
+// decodeUpdateConfiguration reads an UpdateFunctionConfiguration body as
+// strictly as decodeCreate reads CreateFunction.
+func decodeUpdateConfiguration(body []byte) (*lambda.UpdateFunctionConfigurationInput, error) {
+	in := new(lambda.UpdateFunctionConfigurationInput)
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(in); err != nil {
+		return nil, invalid("the request body is not a valid UpdateFunctionConfiguration document: %v", err)
+	}
+	return in, nil
+}
+
+// configUpdate is a validated UpdateFunctionConfiguration: a nil member is
+// omitted and keeps the function's current value. SetEnv with a nil Env clears.
+type configUpdate struct {
+	Role        *string
+	Handler     *string
+	Description *string
+	TimeoutSec  *int64
+	MemorySize  *int64
+	SetEnv      bool
+	Env         map[string]string
+}
+
+// validHandler applies the test-link guest's constraint: non-empty, at most
+// 128 bytes, with no Unicode whitespace or NUL.
+func validHandler(h string) error {
+	if h == "" || len(h) > maxHandler {
+		return awserrors.Errorf(awserrors.ErrorValidationException,
+			"1 validation error detected: Value at 'handler' failed to satisfy constraint: Member must have length between 1 and %d", maxHandler)
+	}
+	if strings.ContainsFunc(h, func(r rune) bool { return unicode.IsSpace(r) || r == 0 }) {
+		return awserrors.Errorf(awserrors.ErrorValidationException,
+			"1 validation error detected: Value at 'handler' failed to satisfy constraint: Member must satisfy regular expression pattern: [^\\s]+")
+	}
+	return nil
+}
+
+// envObjectSize is the size of the variables as a JSON object, punctuation and
+// escaping included.
+func envObjectSize(vars map[string]string) (int, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(vars); err != nil {
+		return 0, err
+	}
+	return len(bytes.TrimSuffix(buf.Bytes(), []byte("\n"))), nil
+}
+
+// validateUpdateConfiguration refuses settings this build cannot honour and
+// checks each supplied member against the CreateFunction limits.
+func validateUpdateConfiguration(in *lambda.UpdateFunctionConfigurationInput, name string) (*configUpdate, error) {
+	checks := []struct {
+		field string
+		set   bool
+	}{
+		{"Layers", isSet(in.Layers)},
+		{"VpcConfig", isSet(in.VpcConfig)},
+		{"KMSKeyArn", isSet(in.KMSKeyArn)},
+		{"DeadLetterConfig", isSet(in.DeadLetterConfig)},
+		{"TracingConfig", in.TracingConfig != nil && aws.StringValue(in.TracingConfig.Mode) == lambda.TracingModeActive},
+		{"FileSystemConfigs", isSet(in.FileSystemConfigs)},
+		{"ImageConfig", isSet(in.ImageConfig)},
+		{"SnapStart", in.SnapStart != nil && aws.StringValue(in.SnapStart.ApplyOn) != "" && aws.StringValue(in.SnapStart.ApplyOn) != lambda.SnapStartApplyOnNone},
+		{"EphemeralStorage", in.EphemeralStorage != nil && in.EphemeralStorage.Size != nil && aws.Int64Value(in.EphemeralStorage.Size) != 512},
+	}
+	for _, c := range checks {
+		if c.set {
+			return nil, unsupported(c.field)
+		}
+	}
+	if in.TracingConfig != nil {
+		if m := aws.StringValue(in.TracingConfig.Mode); m != "" && m != lambda.TracingModePassThrough {
+			return nil, awserrors.Errorf(awserrors.ErrorValidationException,
+				"1 validation error detected: Value at 'tracingConfig.mode' failed to satisfy constraint: Member must satisfy enum value set: [Active, PassThrough]")
+		}
+	}
+	if !defaultLogging(in.LoggingConfig, name) {
+		return nil, unsupported("A LoggingConfig other than LogFormat Text with log group " + logGroup(name))
+	}
+	if in.Runtime != nil && aws.StringValue(in.Runtime) != supportedRuntime {
+		return nil, invalid("Runtime must be %s", supportedRuntime)
+	}
+	u := &configUpdate{Role: in.Role, Handler: in.Handler, Description: in.Description, TimeoutSec: in.Timeout, MemorySize: in.MemorySize}
+	if u.Role != nil && *u.Role == "" {
+		return nil, invalid("Role must not be empty")
+	}
+	if u.Handler != nil {
+		if err := validHandler(*u.Handler); err != nil {
+			return nil, err
+		}
+	}
+	if u.TimeoutSec != nil && (*u.TimeoutSec < 1 || *u.TimeoutSec > maxTimeout) {
+		return nil, invalid("Timeout must be between 1 and %d", maxTimeout)
+	}
+	if u.MemorySize != nil && (*u.MemorySize < 128 || *u.MemorySize > maxMemory) {
+		return nil, invalid("MemorySize must be between 128 and %d", maxMemory)
+	}
+	if u.Description != nil && len(*u.Description) > maxDescription {
+		return nil, invalid("Description must be at most %d characters", maxDescription)
+	}
+	if in.Environment != nil {
+		env, err := envVars(in.Environment)
+		if err != nil {
+			return nil, err
+		}
+		size, err := envObjectSize(env)
+		if err != nil {
+			return nil, invalid("Environment variables could not be encoded")
+		}
+		if len(env) > 0 && size > maxEnvBytes {
+			return nil, invalid("Lambda was unable to configure your environment variables because the environment variables you have provided exceeded the 4KB limit. Size measured: %d bytes", size)
+		}
+		u.SetEnv, u.Env = true, env
+	}
+	return u, nil
 }

@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	otelsetup "github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
@@ -79,6 +80,9 @@ type Config struct {
 // Provider is the ocibsd EBSProvider for one node.
 type Provider struct {
 	cfg Config
+
+	// started is set once Start has logged out stale sessions.
+	started atomic.Bool
 
 	mu    sync.Mutex
 	locks map[string]*volumeLock

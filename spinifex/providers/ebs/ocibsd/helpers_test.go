@@ -56,6 +56,7 @@ func newClusterOver(t *testing.T, fake *oci.BlockFake, client oci.BlockClient) *
 		initiator := ocibsd.NewFakeInitiator()
 		p, err := ocibsd.New(testConfig(node, client, initiator))
 		require.NoError(t, err)
+		require.NoError(t, p.Start(context.Background()))
 		c.nodes[node], c.initiators[node] = p, initiator
 	}
 	return c

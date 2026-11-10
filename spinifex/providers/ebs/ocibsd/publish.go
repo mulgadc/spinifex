@@ -40,6 +40,9 @@ func (p *Provider) PublishVolume(ctx context.Context, req ebsprovider.PublishVol
 	if err := p.checkNode(req.NodeID); err != nil {
 		return nil, err
 	}
+	if err := p.checkStarted(); err != nil {
+		return nil, err
+	}
 	unlock := p.lockVolume(req.VolumeID)
 	defer unlock()
 

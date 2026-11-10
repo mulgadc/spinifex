@@ -104,6 +104,12 @@ func sortedUnitNames() []string {
 	return slices.Sorted(maps.Keys(Units))
 }
 
+// IsMasked reports whether the unit file at path is masked, a link to /dev/null.
+func IsMasked(path string) bool {
+	target, err := os.Readlink(path)
+	return err == nil && target == os.DevNull
+}
+
 // Reconcile compares each embedded unit (Units, generated from
 // build/systemd) against the copy installed under root. Missing or
 // version-stale units are replaced after a timestamped backup; units whose
@@ -118,7 +124,7 @@ func Reconcile(root string, opts Options) (Result, error) {
 		embeddedVersion := unitVersion(embedded)
 		path := filepath.Join(root, name)
 
-		if target, lerr := os.Readlink(path); lerr == nil && target == os.DevNull {
+		if IsMasked(path) {
 			result.Statuses = append(result.Statuses, UnitStatus{
 				Name: name, Action: ActionMasked, EmbeddedVersion: embeddedVersion,
 			})

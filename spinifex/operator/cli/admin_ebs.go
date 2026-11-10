@@ -16,6 +16,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/operator/admin"
+	"github.com/mulgadc/spinifex/spinifex/operator/host/systemd"
 	"github.com/mulgadc/spinifex/spinifex/providers/cloud/oci"
 	ebsocibsd "github.com/mulgadc/spinifex/spinifex/providers/ebs/ocibsd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/formation"
@@ -381,7 +382,7 @@ func installStaged(src, dst string) error {
 // maskUnit links path to /dev/null. systemctl mask refuses a real unit file
 // in /etc, which is where setup.sh installs the viperblock unit.
 func maskUnit(path string) error {
-	if target, err := os.Readlink(path); err == nil && target == os.DevNull {
+	if systemd.IsMasked(path) {
 		return nil
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {

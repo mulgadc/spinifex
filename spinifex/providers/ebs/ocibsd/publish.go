@@ -83,14 +83,12 @@ func (p *Provider) publishVolume(ctx context.Context, req ebsprovider.PublishVol
 	if err != nil {
 		return nil, err
 	}
-	var mine *oci.VolumeAttachment
-	for i, a := range attached {
-		if a.InstanceID != p.cfg.InstanceID {
-			return nil, fmt.Errorf("%w: volume %s is attached to instance %s", ebsprovider.HeldElsewhereError(req.SchemaVersion), req.VolumeID, a.InstanceID)
-		}
-		mine = &attached[i]
+	if err := p.heldElsewhere(req, attached); err != nil {
+		return nil, err
 	}
-	if mine != nil {
+	var mine *oci.VolumeAttachment
+	if len(attached) > 0 {
+		mine = &attached[len(attached)-1]
 		// OCI changes an attachment's access mode only by detaching it.
 		if mine.ReadOnly != req.ReadOnly {
 			return nil, fmt.Errorf("%w: volume %s is already attached here read_only=%t", ebsprovider.ErrVolumeInUse, req.VolumeID, mine.ReadOnly)
@@ -142,12 +140,20 @@ func (p *Provider) attach(ctx context.Context, req ebsprovider.PublishVolumeRequ
 	if listErr != nil {
 		return oci.VolumeAttachment{}, listErr
 	}
-	for _, other := range attached {
-		if other.InstanceID != p.cfg.InstanceID {
-			return oci.VolumeAttachment{}, fmt.Errorf("%w: volume %s is attached to instance %s", ebsprovider.HeldElsewhereError(req.SchemaVersion), req.VolumeID, other.InstanceID)
-		}
+	if err := p.heldElsewhere(req, attached); err != nil {
+		return oci.VolumeAttachment{}, err
 	}
 	return oci.VolumeAttachment{}, ociError("attach volume "+req.VolumeID, err, ebsprovider.ErrUnavailable)
+}
+
+// heldElsewhere refuses a publish of a volume attached to another instance.
+func (p *Provider) heldElsewhere(req ebsprovider.PublishVolumeRequest, attached []oci.VolumeAttachment) error {
+	for _, a := range attached {
+		if a.InstanceID != p.cfg.InstanceID {
+			return fmt.Errorf("%w: volume %s is attached to instance %s", ebsprovider.HeldElsewhereError(req.SchemaVersion), req.VolumeID, a.InstanceID)
+		}
+	}
+	return nil
 }
 
 func (p *Provider) awaitAttached(ctx context.Context, attachmentID string) (oci.VolumeAttachment, error) {

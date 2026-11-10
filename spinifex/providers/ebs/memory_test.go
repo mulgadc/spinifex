@@ -430,3 +430,113 @@ func TestValidateSeedData(t *testing.T) {
 	require.NoError(t, ValidateSeedData(make([]byte, MaxSeedBytes)))
 	require.ErrorIs(t, ValidateSeedData(make([]byte, MaxSeedBytes+1)), ErrInvalidArgument)
 }
+
+// memoryWithVolume is a provider holding vol-src, for the snapshot tests below.
+func memoryWithVolume(t *testing.T) *MemoryProvider {
+	t.Helper()
+	provider := NewMemoryProvider(Capabilities{})
+	_, err := provider.CreateVolume(t.Context(), CreateVolumeRequest{
+		Versioned: NewVersioned(), VolumeID: "vol-src", CapacityRange: CapacityRange{RequiredBytes: 1 << 30},
+	})
+	require.NoError(t, err)
+	return provider
+}
+
+func readMemorySnapshot(t *testing.T, provider *MemoryProvider, snapshotID string) []SnapshotRef {
+	t.Helper()
+	resp, err := provider.ListSnapshots(t.Context(), ListSnapshotsRequest{Versioned: NewLatestVersioned(), SnapshotID: snapshotID})
+	require.NoError(t, err)
+	return resp.Snapshots
+}
+
+// TestMemoryProviderPendingSnapshots covers the option later control-plane
+// tests stand a slow backup on: the answer is pending, the filtered read
+// follows it, and only SettleSnapshot moves it on.
+func TestMemoryProviderPendingSnapshots(t *testing.T) {
+	for _, settled := range []SnapshotState{SnapshotStateCompleted, SnapshotStateError} {
+		t.Run(string(settled), func(t *testing.T) {
+			provider := memoryWithVolume(t)
+			provider.AnswerSnapshotsPending(true)
+			create := CreateSnapshotRequest{Versioned: NewVersioned(), SnapshotID: "snap-1", VolumeID: "vol-src"}
+
+			snapshot, err := provider.CreateSnapshot(t.Context(), create)
+			require.NoError(t, err)
+			assert.Equal(t, SnapshotStatePending, snapshot.State)
+			assert.Equal(t, SnapshotStatePending, readMemorySnapshot(t, provider, "snap-1")[0].State)
+			repeated, err := provider.CreateSnapshot(t.Context(), create)
+			require.NoError(t, err)
+			assert.Equal(t, SnapshotStatePending, repeated.State, "a repeat answers with the snapshot as it stands")
+
+			require.NoError(t, provider.SettleSnapshot("snap-1", settled))
+			assert.Equal(t, settled, readMemorySnapshot(t, provider, "snap-1")[0].State)
+			require.ErrorIs(t, provider.SettleSnapshot("snap-1", SnapshotStateCompleted), ErrInvalidArgument, "a snapshot settles once")
+		})
+	}
+
+	t.Run("answering completed again", func(t *testing.T) {
+		provider := memoryWithVolume(t)
+		provider.AnswerSnapshotsPending(true)
+		provider.AnswerSnapshotsPending(false)
+		snapshot, err := provider.CreateSnapshot(t.Context(), CreateSnapshotRequest{Versioned: NewVersioned(), SnapshotID: "snap-1", VolumeID: "vol-src"})
+		require.NoError(t, err)
+		assert.Equal(t, SnapshotStateCompleted, snapshot.State)
+	})
+
+	t.Run("settle refusals", func(t *testing.T) {
+		provider := memoryWithVolume(t)
+		require.ErrorIs(t, provider.SettleSnapshot("snap-absent", SnapshotStateCompleted), ErrNotFound)
+		require.ErrorIs(t, provider.SettleSnapshot("snap-absent", SnapshotStatePending), ErrInvalidArgument)
+	})
+}
+
+// TestMemoryProviderFailsAfterAccept covers the ambiguous failure: the caller
+// sees an error, yet the snapshot is held, and the failures owed run out.
+func TestMemoryProviderFailsAfterAccept(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     error
+		wantErr error
+	}{
+		{name: "unavailable", err: ErrUnavailable, wantErr: ErrUnavailable},
+		{name: "default is a timeout", err: nil, wantErr: context.DeadlineExceeded},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider := memoryWithVolume(t)
+			provider.FailCreateSnapshotsAfterAccept(2, tt.err)
+			create := CreateSnapshotRequest{Versioned: NewVersioned(), SnapshotID: "snap-1", VolumeID: "vol-src"}
+
+			for range 2 {
+				_, err := provider.CreateSnapshot(t.Context(), create)
+				require.ErrorIs(t, err, tt.wantErr)
+				assert.Len(t, readMemorySnapshot(t, provider, "snap-1"), 1, "the snapshot was accepted before the failure")
+			}
+			snapshot, err := provider.CreateSnapshot(t.Context(), create)
+			require.NoError(t, err, "only the failures asked for are owed")
+			assert.Equal(t, "snap-1", snapshot.ID)
+		})
+	}
+
+	t.Run("a definite refusal owes no failure", func(t *testing.T) {
+		provider := memoryWithVolume(t)
+		provider.FailCreateSnapshotsAfterAccept(1, ErrUnavailable)
+		_, err := provider.CreateSnapshot(t.Context(), CreateSnapshotRequest{Versioned: NewVersioned(), SnapshotID: "snap-1", VolumeID: "vol-absent"})
+		require.ErrorIs(t, err, ErrNotFound)
+		_, err = provider.CreateSnapshot(t.Context(), CreateSnapshotRequest{Versioned: NewVersioned(), SnapshotID: "snap-1", VolumeID: "vol-src"})
+		require.ErrorIs(t, err, ErrUnavailable)
+	})
+}
+
+// TestMemoryProviderFilteredReadNeedsNoEnumeration covers the filter's reach:
+// a provider that cannot enumerate still answers for one snapshot by its ID.
+func TestMemoryProviderFilteredReadNeedsNoEnumeration(t *testing.T) {
+	provider := memoryWithVolume(t)
+	_, err := provider.CreateSnapshot(t.Context(), CreateSnapshotRequest{Versioned: NewVersioned(), SnapshotID: "snap-1", VolumeID: "vol-src"})
+	require.NoError(t, err)
+
+	assert.Equal(t, []SnapshotRef{{ID: "snap-1", SourceVolumeID: "vol-src", Handle: "memory://snapshot/snap-1", State: SnapshotStateCompleted}},
+		readMemorySnapshot(t, provider, "snap-1"))
+	assert.Empty(t, readMemorySnapshot(t, provider, "snap-absent"))
+	_, err = provider.ListSnapshots(t.Context(), ListSnapshotsRequest{Versioned: NewLatestVersioned()})
+	require.ErrorIs(t, err, ErrUnsupportedCapability, "unfiltered enumeration still needs the capability")
+}

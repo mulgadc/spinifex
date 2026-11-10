@@ -1,6 +1,7 @@
 package conformance_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -108,5 +109,52 @@ func TestNATSProviderConformance(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(stop)
 		return ebsprovider.NewNATSProvider(conn, 5*time.Second)
+	})
+}
+
+// settlingProvider is a MemoryProvider answering every CreateSnapshot pending.
+// It settles a pending snapshot once a filtered read has seen it pending, so
+// the suite's wait for completion is exercised and still ends.
+type settlingProvider struct {
+	*ebsprovider.MemoryProvider
+}
+
+var _ ebsprovider.EBSProvider = settlingProvider{}
+
+func newSettlingProvider() settlingProvider {
+	provider := ebsprovider.NewMemoryProvider(conformance.ReferenceCapabilities)
+	provider.AnswerSnapshotsPending(true)
+	return settlingProvider{MemoryProvider: provider}
+}
+
+func (p settlingProvider) ListSnapshots(ctx context.Context, req ebsprovider.ListSnapshotsRequest) (*ebsprovider.ListSnapshotsResponse, error) {
+	resp, err := p.MemoryProvider.ListSnapshots(ctx, req)
+	if err == nil && req.SnapshotID != "" && len(resp.Snapshots) == 1 && resp.Snapshots[0].State == ebsprovider.SnapshotStatePending {
+		if err := p.SettleSnapshot(req.SnapshotID, ebsprovider.SnapshotStateCompleted); err != nil {
+			return nil, err
+		}
+	}
+	return resp, err
+}
+
+// TestMemoryProviderPendingSnapshotConformance runs the suite against a
+// provider whose CreateSnapshot answers pending, as one whose backup outlives
+// the request does, in process and over NATS.
+func TestMemoryProviderPendingSnapshotConformance(t *testing.T) {
+	t.Run("in process", func(t *testing.T) {
+		conformance.RunSuite(t, func(t *testing.T) ebsprovider.EBSProvider {
+			t.Helper()
+			return newSettlingProvider()
+		})
+	})
+	t.Run("over NATS", func(t *testing.T) {
+		conformance.RunSuite(t, func(t *testing.T) ebsprovider.EBSProvider {
+			t.Helper()
+			_, conn := testutil.StartTestNATS(t)
+			stop, err := natsserve.Serve(t.Context(), conn, newSettlingProvider(), natsserve.Options{})
+			require.NoError(t, err)
+			t.Cleanup(stop)
+			return ebsprovider.NewNATSProvider(conn, 5*time.Second)
+		})
 	})
 }

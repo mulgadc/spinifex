@@ -40,6 +40,7 @@ mkdir -p "$STAGING/scripts"
 cp "$PROJECT_ROOT/build/scripts/"* "$STAGING/scripts/"
 mkdir -p "$STAGING/udev"
 cp "$PROJECT_ROOT/build/udev/"* "$STAGING/udev/"
+cp -r "$PROJECT_ROOT/build/ocibsd" "$STAGING/ocibsd"
 cp "$PROJECT_ROOT/build/logrotate/spinifex" "$STAGING/logrotate-spinifex"
 tar czf /tmp/spinifex-local.tar.gz -C "$STAGING" .
 

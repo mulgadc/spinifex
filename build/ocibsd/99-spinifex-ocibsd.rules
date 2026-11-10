@@ -1,0 +1,4 @@
+# Give QEMU (group spinifex) read-write on the disks of OCI Block Volume
+# attachments, named by ID_PATH, which is also the /dev/disk/by-path link.
+# Partitions and every other block device keep their default ownership.
+SUBSYSTEM=="block", ACTION!="remove", ENV{DEVTYPE}=="disk", ENV{ID_PATH}=="ip-*-iscsi-iqn.2015-12.com.oracleiaas:*", GROUP="spinifex", MODE="0660"

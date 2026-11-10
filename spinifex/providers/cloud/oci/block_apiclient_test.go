@@ -50,7 +50,7 @@ func TestBlockCreateVolumeSendsRetryTokenTagsAndSource(t *testing.T) {
 	req := (*seen)[0]
 	assert.Equal(t, http.MethodPost, req.method)
 	assert.Equal(t, "/20160918/volumes", req.path)
-	assert.Equal(t, "token-1", req.header.Get("opc-retry-token"))
+	assert.Equal(t, "token-1", req.header.Get("Opc-Retry-Token"))
 	assert.Equal(t, "c1", req.body["compartmentId"])
 	assert.Equal(t, "AD-1", req.body["availabilityDomain"])
 	assert.Equal(t, "vol-1", req.body["displayName"])
@@ -181,7 +181,7 @@ func TestBlockCreateVolumeBackupIsIncrementalWithRetryToken(t *testing.T) {
 
 	req := (*seen)[0]
 	assert.Equal(t, "/20160918/volumeBackups", req.path)
-	assert.Equal(t, "token-2", req.header.Get("opc-retry-token"))
+	assert.Equal(t, "token-2", req.header.Get("Opc-Retry-Token"))
 	assert.Equal(t, "INCREMENTAL", req.body["type"])
 	assert.Equal(t, map[string]any{"spinifex-snapshot-id": "snap-1"}, req.body["freeformTags"])
 }

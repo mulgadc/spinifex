@@ -239,6 +239,17 @@ func TestDeregisterImage_DuringTheReapersAMIWriteStaysDeleted(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, deregistered, "the reaper wrote the settled AMI")
 
+	assertDeregistrationStaysDeleted(t, f, imageID, deregErr, func() {
+		_, err := reaping.NewPendingSnapshotReaper().Sweep(context.Background())
+		require.NoError(t, err)
+	})
+}
+
+// assertDeregistrationStaysDeleted checks a DeregisterImage of imageID that
+// raced a settling write, and answered deregErr: one that succeeded left the
+// AMI gone, and one refused retryably succeeds on retry and stays gone after sweep.
+func assertDeregistrationStaysDeleted(t *testing.T, f *pendingImageFixture, imageID string, deregErr error, sweep func()) {
+	t.Helper()
 	_, getErr := f.svc.MetadataStore().GetAMI(context.Background(), imageID)
 	if deregErr == nil {
 		require.True(t, objectstore.IsNoSuchKeyError(getErr), "a deregistered AMI was written back: %v", getErr)
@@ -249,10 +260,9 @@ func TestDeregisterImage_DuringTheReapersAMIWriteStaysDeleted(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorIncorrectState, code, "a refused deregistration is retryable")
 	require.NoError(t, getErr)
 
-	_, err = f.svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: out.ImageId}, testAccountID)
-	require.NoError(t, err, "the retry succeeds once the reaper's write is done")
-	_, err = reaping.NewPendingSnapshotReaper().Sweep(context.Background())
-	require.NoError(t, err)
+	_, err := f.svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: aws.String(imageID)}, testAccountID)
+	require.NoError(t, err, "the retry succeeds once the settling write is done")
+	sweep()
 	_, getErr = f.svc.MetadataStore().GetAMI(context.Background(), imageID)
 	assert.True(t, objectstore.IsNoSuchKeyError(getErr), "the retried deregistration stays deleted: %v", getErr)
 }
@@ -294,19 +304,5 @@ func TestDeregisterImage_DuringCreateImagesAMIWriteStaysDeleted(t *testing.T) {
 	require.True(t, deregistered, "CreateImage wrote the available AMI")
 	require.Equal(t, imageID, aws.StringValue(out.ImageId))
 
-	_, getErr := f.svc.MetadataStore().GetAMI(context.Background(), imageID)
-	if deregErr == nil {
-		require.True(t, objectstore.IsNoSuchKeyError(getErr), "a deregistered AMI was written back: %v", getErr)
-		return
-	}
-	code, _, ok := awserrors.ResolveErrorDetail(deregErr)
-	require.True(t, ok, "unregistered error: %v", deregErr)
-	assert.Equal(t, awserrors.ErrorIncorrectState, code, "a refused deregistration is retryable")
-	require.NoError(t, getErr)
-
-	_, err = f.svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: out.ImageId}, testAccountID)
-	require.NoError(t, err, "the retry succeeds once CreateImage's write is done")
-	f.sweep(t)
-	_, getErr = f.svc.MetadataStore().GetAMI(context.Background(), imageID)
-	assert.True(t, objectstore.IsNoSuchKeyError(getErr), "the retried deregistration stays deleted: %v", getErr)
+	assertDeregistrationStaysDeleted(t, f, imageID, deregErr, func() { f.sweep(t) })
 }

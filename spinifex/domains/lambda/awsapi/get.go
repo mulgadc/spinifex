@@ -56,6 +56,27 @@ func (d Deps) lookupTarget(ctx context.Context, c *call, name, q string) (functi
 	return rec, revision, err
 }
 
+// render opens the record's environment and renders its configuration; an
+// environment that cannot be opened fails rather than being left out.
+func (d Deps) render(ctx context.Context, rec function.Record, revision uint64) (*lambda.FunctionConfiguration, error) {
+	var env map[string]string
+	if rec.EnvCipher != "" {
+		if d.AEAD == nil {
+			return nil, serviceError("environment decryption is unavailable")
+		}
+		var err error
+		if env, err = function.OpenEnv(d.AEAD, rec.AccountID, rec.FunctionID, rec.EnvCipher); err != nil {
+			slog.ErrorContext(ctx, "Lambda: open environment failed", "function_id", rec.FunctionID, "err", err)
+			return nil, serviceError("could not read the function environment")
+		}
+	}
+	cfg, err := configuration(rec, revision, env)
+	if err != nil {
+		return nil, serviceError("could not build the function configuration")
+	}
+	return cfg, nil
+}
+
 // loadConfiguration resolves the requested $LATEST function and renders its
 // configuration; it is a metadata read and never touches the code store.
 func (d Deps) loadConfiguration(ctx context.Context, c *call, query string) (function.Record, *lambda.FunctionConfiguration, error) {
@@ -64,19 +85,9 @@ func (d Deps) loadConfiguration(ctx context.Context, c *call, query string) (fun
 		return function.Record{}, nil, err
 	}
 
-	var env map[string]string
-	if rec.EnvCipher != "" {
-		if d.AEAD == nil {
-			return function.Record{}, nil, serviceError("environment decryption is unavailable")
-		}
-		if env, err = function.OpenEnv(d.AEAD, rec.AccountID, rec.FunctionID, rec.EnvCipher); err != nil {
-			slog.ErrorContext(ctx, "Lambda: open environment failed", "function_id", rec.FunctionID, "err", err)
-			return function.Record{}, nil, serviceError("could not read the function environment")
-		}
-	}
-	cfg, err := configuration(rec, revision, env)
+	cfg, err := d.render(ctx, rec, revision)
 	if err != nil {
-		return function.Record{}, nil, serviceError("could not build the function configuration")
+		return function.Record{}, nil, err
 	}
 	return rec, cfg, nil
 }

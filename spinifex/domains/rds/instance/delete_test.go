@@ -45,6 +45,19 @@ func (h *lifecycleHarness) retainedVolume(t *testing.T, volumeID string) (Retain
 	return rec, found
 }
 
+func TestValidateDeleteRequest_FinalSnapshotChoiceMessages(t *testing.T) {
+	t.Parallel()
+	_, err := validateDeleteRequest(&rds.DeleteDBInstanceInput{DBInstanceIdentifier: aws.String(testDBID)})
+	assert.EqualError(t, err, "FinalDBSnapshotIdentifier is required unless SkipFinalSnapshot is specified.: InvalidParameterCombination")
+
+	_, err = validateDeleteRequest(&rds.DeleteDBInstanceInput{
+		DBInstanceIdentifier:      aws.String(testDBID),
+		SkipFinalSnapshot:         aws.Bool(true),
+		FinalDBSnapshotIdentifier: aws.String("orders-db-final"),
+	})
+	assert.EqualError(t, err, "Only one of SkipFinalSnapshot and FinalDBSnapshotIdentifier can be specified: InvalidParameterCombination")
+}
+
 func skipFinalSnapshot() *rds.DeleteDBInstanceInput {
 	return &rds.DeleteDBInstanceInput{
 		DBInstanceIdentifier: aws.String(testDBID),
@@ -119,7 +132,7 @@ func TestDeleteDBInstance_HonoursDeletionProtection(t *testing.T) {
 
 	_, err := h.svc.DeleteDBInstance(t.Context(), skipFinalSnapshot(), testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "deletion protection")
+	assert.Equal(t, "Cannot delete protected DB Instance, please disable deletion protection and try again.: InvalidParameterCombination", err.Error())
 
 	assert.Equal(t, StatusAvailable, h.record(t).Status)
 	assert.Empty(t, h.launcher.terminated)
@@ -189,7 +202,7 @@ func TestReconciler_AdoptsAnInterruptedFinalSnapshot(t *testing.T) {
 
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	creating := newDBSnapshotRecord(testAccountID, &rec, &validatedSnapshot{
+	creating := h.svc.newDBSnapshotRecord(testAccountID, &rec, &validatedSnapshot{
 		DBSnapshotIdentifier: rec.FinalSnapshotIdentifier,
 		Tags:                 rec.Tags,
 	})

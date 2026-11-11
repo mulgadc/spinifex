@@ -168,7 +168,7 @@ func (s *Service) ModifyDBInstance(ctx context.Context, input *rds.ModifyDBInsta
 		return &rds.ModifyDBInstanceOutput{DBInstance: s.projectDBInstance(stored)}, nil
 	}
 
-	moved, kv, err := s.beginTransition(ctx, accountID, id, StatusModifying, StatusAvailable, StatusFailed)
+	moved, kv, err := s.beginTransition(ctx, accountID, id, nil, StatusModifying, StatusAvailable, StatusFailed)
 	if err != nil {
 		return nil, err
 	}

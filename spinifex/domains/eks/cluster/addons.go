@@ -141,7 +141,7 @@ func (s *EKSServiceImpl) CreateAddon(ctx context.Context, input *eks.CreateAddon
 	}
 	spec, ok := addon.Lookup(addonName)
 	if !ok {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, s.addonNotSupported(ctx, accountID, cluster, addonName)
 	}
 	version := spec.DefaultVersion
 	if requested := aws.StringValue(input.AddonVersion); requested != "" {
@@ -169,6 +169,24 @@ func (s *EKSServiceImpl) CreateAddon(ctx context.Context, input *eks.CreateAddon
 		return nil, err
 	}
 	return &eks.CreateAddonOutput{Addon: addonRecordToAWS(cluster, rec)}, nil
+}
+
+// addonNotSupported is AWS's refusal of an add-on the catalogue lacks, naming
+// the cluster's Kubernetes version; a missing cluster is reported first.
+func (s *EKSServiceImpl) addonNotSupported(ctx context.Context, accountID, cluster, addonName string) error {
+	acctKV, err := s.acctKVForCluster(ctx, accountID, cluster)
+	if err != nil {
+		return err
+	}
+	meta, err := GetClusterMeta(ctx, acctKV, cluster)
+	if err != nil {
+		if errors.Is(err, ErrClusterNotFound) {
+			return clusterNotFound(cluster)
+		}
+		return err
+	}
+	return awserrors.Errorf(awserrors.ErrorEKSInvalidParameter,
+		"Addon %s specified is not supported in %s kubernetes version", addonName, meta.Version)
 }
 
 // ListStagedAddonManifestsInput names the cluster whose staged add-on manifests
@@ -225,7 +243,7 @@ func (s *EKSServiceImpl) DescribeAddon(ctx context.Context, input *eks.DescribeA
 	rec, err := addon.Get(ctx, acctKV, cluster, addonName)
 	if err != nil {
 		if errors.Is(err, addon.ErrNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			return nil, resourceNotFound()
 		}
 		return nil, err
 	}
@@ -267,7 +285,7 @@ func (s *EKSServiceImpl) UpdateAddon(ctx context.Context, input *eks.UpdateAddon
 	})
 	if err != nil {
 		if errors.Is(err, addon.ErrNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			return nil, resourceNotFound()
 		}
 		return nil, err
 	}
@@ -293,7 +311,7 @@ func (s *EKSServiceImpl) DeleteAddon(ctx context.Context, input *eks.DeleteAddon
 	rec, err := s.addons().Delete(ctx, acctKV, accountID, cluster, addonName)
 	if err != nil {
 		if errors.Is(err, addon.ErrNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			return nil, resourceNotFound()
 		}
 		return nil, err
 	}

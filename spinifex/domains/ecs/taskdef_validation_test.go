@@ -26,8 +26,7 @@ func TestRegisterTaskDefinition_RejectsSecrets(t *testing.T) {
 			}},
 		}},
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidParameterException")
+	assert.EqualError(t, err, "container app: secrets cannot be applied: InvalidParameterException")
 }
 
 // TestRegisterTaskDefinition_AcceptsUnsupportedLogDriver verifies that a

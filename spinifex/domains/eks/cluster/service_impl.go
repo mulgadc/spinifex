@@ -1269,7 +1269,7 @@ func (s *EKSServiceImpl) DescribeCluster(ctx context.Context, input *eks.Describ
 	meta, err := GetClusterMeta(ctx, acctKV, name)
 	if err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			return nil, clusterNotFound(name)
 		}
 		return nil, err
 	}
@@ -1318,7 +1318,7 @@ func (s *EKSServiceImpl) DeleteCluster(ctx context.Context, input *eks.DeleteClu
 	meta, err := GetClusterMeta(ctx, acctKV, name)
 	if err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			return nil, clusterNotFound(name)
 		}
 		return nil, err
 	}
@@ -1342,7 +1342,7 @@ func (s *EKSServiceImpl) DeleteCluster(ctx context.Context, input *eks.DeleteClu
 	recorded, transitioned, err := MarkClusterDeleting(ctx, acctKV, name)
 	if err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			return nil, clusterNotFound(name)
 		}
 		return nil, fmt.Errorf("record DELETING: %w", err)
 	}
@@ -1746,7 +1746,7 @@ func (s *EKSServiceImpl) acctKVForCluster(ctx context.Context, accountID, cluste
 	}
 	if _, err := GetClusterMeta(ctx, acctKV, cluster); err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			return nil, clusterNotFound(cluster)
 		}
 		return nil, err
 	}
@@ -1764,7 +1764,7 @@ func (s *EKSServiceImpl) acctKVForNewDependant(ctx context.Context, accountID, c
 	meta, err := GetClusterMeta(ctx, acctKV, cluster)
 	if err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			return nil, clusterNotFound(cluster)
 		}
 		return nil, err
 	}

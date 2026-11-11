@@ -178,7 +178,7 @@ func TestDeleteNodegroup_ReaperEndsWorkersThenRemovesGroup(t *testing.T) {
 	_, err = describeNodegroupCall(f, "c1", "ng1")
 	code, msg, _ := awserrors.ResolveErrorDetail(err)
 	assert.Equal(t, awserrors.ErrorEKSResourceNotFound, code)
-	assert.Equal(t, "No node group found for name: ng1.", msg, "the live cluster is not reported missing")
+	assert.Equal(t, "The requested resource does not exist.", msg, "the live cluster is not reported missing")
 	_, ok := fixtureIAM(t, f).Profiles[rec.InstanceProfileName]
 	assert.False(t, ok, "the group is not gone until its profile is")
 }

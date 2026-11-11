@@ -81,13 +81,18 @@ func TestService_CreateService_RejectsDaemonAndRegistries(t *testing.T) {
 		Cluster: aws.String("web"), ServiceName: aws.String("d"), TaskDefinition: aws.String("app"),
 		SchedulingStrategy: aws.String(SchedulingStrategyDaemon),
 	}, testAccountID)
-	require.Error(t, err)
+	assert.EqualError(t, err, "schedulingStrategy DAEMON is not supported.: InvalidParameterException")
 
 	_, err = svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("r"), TaskDefinition: aws.String("app"),
 		ServiceRegistries: []*ecs.ServiceRegistry{{RegistryArn: aws.String("arn:aws:servicediscovery:::service/x")}},
 	}, testAccountID)
-	require.Error(t, err)
+	assert.EqualError(t, err, "serviceRegistries are not supported.: InvalidParameterException")
+
+	_, err = svc.CreateService(context.Background(), &ecs.CreateServiceInput{
+		Cluster: aws.String("web"), TaskDefinition: aws.String("app"),
+	}, testAccountID)
+	assert.EqualError(t, err, "serviceName is required.: InvalidParameterException")
 }
 
 func TestService_CreateService_UnknownCluster(t *testing.T) {
@@ -508,7 +513,7 @@ func TestService_StopTask_StopsAndDeregisters(t *testing.T) {
 func TestService_StopTask_NotFound(t *testing.T) {
 	svc, _, _ := serviceTestRig(t)
 	_, err := svc.StopTask(context.Background(), &ecs.StopTaskInput{Cluster: aws.String("web"), Task: aws.String("ghost")}, testAccountID)
-	require.Error(t, err)
+	assert.EqualError(t, err, "The referenced task was not found.: InvalidParameterException")
 }
 
 // StopTask on a never-placed task (no container instance) force-stops it directly:

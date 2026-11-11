@@ -93,7 +93,7 @@ func (o *Owner) Deregister(ctx context.Context, kv jetstream.KeyValue, family st
 		return nil, err
 	}
 	if !found {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+		return nil, ErrNotFound()
 	}
 	if rec.Status != StatusInactive {
 		now := time.Now().UTC()
@@ -106,12 +106,18 @@ func (o *Owner) Deregister(ctx context.Context, kv jetstream.KeyValue, family st
 	return &rec, nil
 }
 
+// ErrNotFound refuses a reference to a task-definition revision that does
+// not exist.
+func ErrNotFound() error {
+	return awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "The specified task definition does not exist.")
+}
+
 // Resolve loads the revision named by ref ("family", "family:rev", or a
 // task-definition ARN). A bare family resolves to its latest revision.
 func (o *Owner) Resolve(ctx context.Context, kv jetstream.KeyValue, ref string) (*Record, error) {
 	family, rev := ParseRef(ref)
 	if family == "" {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+		return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "Task definition %q names no family.", ref)
 	}
 	if rev == 0 {
 		var latest int
@@ -120,7 +126,7 @@ func (o *Owner) Resolve(ctx context.Context, kv jetstream.KeyValue, ref string) 
 			return nil, err
 		}
 		if !found {
-			return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+			return nil, ErrNotFound()
 		}
 		rev = latest
 	}
@@ -130,7 +136,7 @@ func (o *Owner) Resolve(ctx context.Context, kv jetstream.KeyValue, ref string) 
 		return nil, err
 	}
 	if !found {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+		return nil, ErrNotFound()
 	}
 	return &rec, nil
 }

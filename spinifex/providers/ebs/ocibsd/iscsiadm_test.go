@@ -49,6 +49,11 @@ var target = ocibsd.Target{IQN: "iqn.2015-12.com.oracleiaas:vol-1", IPv4: "169.2
 
 const nodeArgs = "iscsiadm -m node -T iqn.2015-12.com.oracleiaas:vol-1 -p 169.254.2.2:3260"
 
+const (
+	targetSession = "tcp: [1] 169.254.2.2:3260,1 iqn.2015-12.com.oracleiaas:vol-1 (non-flash)\n"
+	otherSession  = "tcp: [2] 169.254.2.2:3260,1 iqn.2015-12.com.oracleiaas:vol-2 (non-flash)\n"
+)
+
 func present(string) (os.FileInfo, error) { return nil, nil }
 
 func newISCSIAdm(r *scriptedRunner, stat func(string) (os.FileInfo, error)) *ocibsd.ISCSIAdm {
@@ -141,11 +146,24 @@ func TestLogout(t *testing.T) {
 		name    string
 		replies map[string]reply
 		want    string
+		deleted bool // the record delete ran before the error
 	}{
 		{name: "an open session"},
 		{name: "no session and no record", replies: map[string]reply{" -u": {err: exitError(21)}, "-o delete": {err: exitError(21)}}},
 		{name: "a failed logout", replies: map[string]reply{" -u": {err: exitError(10)}}, want: "log out"},
-		{name: "a record that cannot be deleted", replies: map[string]reply{"-o delete": {err: exitError(6)}}, want: "delete node record"},
+		{name: "a record that cannot be deleted", replies: map[string]reply{"-o delete": {err: exitError(6)}}, want: "delete node record", deleted: true},
+		{name: "another target's session is left alone", replies: map[string]reply{"-m session": {out: otherSession}}},
+		{
+			name:    "a session still listed after a successful logout",
+			replies: map[string]reply{"-m session": {out: targetSession}},
+			want:    "still logged in after iscsiadm -u exited 0",
+		},
+		{
+			name:    "a session still listed after a logout that matched nothing",
+			replies: map[string]reply{" -u": {err: exitError(21)}, "-m session": {out: targetSession}},
+			want:    "still logged in after iscsiadm -u exited 21",
+		},
+		{name: "sessions that cannot be listed", replies: map[string]reply{"-m session": {err: exitError(6)}}, want: "confirm log out"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -153,10 +171,13 @@ func TestLogout(t *testing.T) {
 			err := newISCSIAdm(r, present).Logout(context.Background(), target)
 			if tc.want != "" {
 				require.ErrorContains(t, err, tc.want)
+				if !tc.deleted {
+					assert.NotContains(t, r.calls, nodeArgs+" -o delete", "a failed logout must keep the record")
+				}
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, []string{nodeArgs + " -u", nodeArgs + " -o delete"}, r.calls)
+			assert.Equal(t, []string{nodeArgs + " -u", "iscsiadm -m session", nodeArgs + " -o delete"}, r.calls)
 		})
 	}
 }

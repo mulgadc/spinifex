@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -102,10 +103,24 @@ func (a *ISCSIAdm) Login(ctx context.Context, t Target) (string, error) {
 	return a.awaitDevice(ctx, ByPathDevice(t))
 }
 
-// Logout closes any session to t and deletes its node record.
+// Logout closes any session to t and deletes its node record. A session still
+// listed after the logout is an error naming the logout's exit code, since
+// iscsiadm can report success or no match and leave it logged in.
 func (a *ISCSIAdm) Logout(ctx context.Context, t Target) error {
-	if err := a.node(ctx, t, "-u"); err != nil && exitCode(err) != iscsiErrNoObjsFound {
-		return fmt.Errorf("log out: %w", err)
+	logoutErr := a.node(ctx, t, "-u")
+	if logoutErr != nil && exitCode(logoutErr) != iscsiErrNoObjsFound {
+		return fmt.Errorf("log out: %w", logoutErr)
+	}
+	sessions, err := a.Sessions(ctx)
+	if err != nil {
+		return fmt.Errorf("confirm log out: %w", err)
+	}
+	if slices.Contains(sessions, t) {
+		code := 0
+		if logoutErr != nil {
+			code = exitCode(logoutErr)
+		}
+		return fmt.Errorf("log out: session to %s at %s is still logged in after iscsiadm -u exited %d", t.IQN, portal(t), code)
 	}
 	if err := a.node(ctx, t, "-o", "delete"); err != nil && exitCode(err) != iscsiErrNoObjsFound {
 		return fmt.Errorf("delete node record: %w", err)

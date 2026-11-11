@@ -1312,6 +1312,38 @@ for d in /dev/disk/by-path/*iqn.2015-12.com.oracleiaas:*; do
 done
 printf -- '--- journalctl -u spinifex-ocibsd\n'; journalctl -u spinifex-ocibsd -n 300 --no-pager 2>&1
 printf -- '--- journalctl -k\n'; journalctl -k -n 150 --no-pager 2>&1
+# Logs out each left-over session first under the provider unit's own sandbox,
+# then without its capability limits, then with no sandbox, recording which one
+# succeeds. It also leaves the volume detachable for the teardown.
+printf -- '--- logout experiment\n'
+unit=$(systemctl show -p FragmentPath --value spinifex-ocibsd.service)
+mapfile -t props < <(sed -n '/^\[Service\]/,/^\[/p' "$unit" | grep -E '^(User|Group|NoNewPrivileges|Protect[A-Za-z]*|Private[A-Za-z]*|Restrict[A-Za-z]*|DevicePolicy|ReadWritePaths|ReadOnlyPaths|SystemCallArchitectures|MemoryDenyWriteExecute|LockPersonality|AmbientCapabilities|CapabilityBoundingSet|KeyringMode|RemoveIPC)=')
+full=(); nocap=()
+for p in "${props[@]}"; do
+    full+=(-p "$p")
+    case $p in CapabilityBoundingSet=*|AmbientCapabilities=*) ;; *) nocap+=(-p "$p") ;; esac
+done
+printf 'sandbox from %s: %s\n' "$unit" "${props[*]}"
+run() { local label=$1; shift; printf -- '-- %s: %s\n' "$label" "$*"; "$@" 2>&1; printf 'exit=%s\n' "$?"; }
+sb() { systemd-run --quiet --wait --pipe --collect "$@"; }
+for t in $(iscsiadm -m session 2>/dev/null | awk '$4 ~ /oracleiaas/ {split($3, a, ","); print $4 "@" a[1]}'); do
+    iqn=${t%@*} portal=${t#*@}
+    run "full sandbox, list" sb "${full[@]}" iscsiadm -m session
+    run "sandbox without capability limits, list" sb "${nocap[@]}" iscsiadm -m session
+    for mode in full nocap plain; do
+        iscsiadm -m session 2>/dev/null | grep -qF "$iqn" || { echo "session to $iqn gone before $mode"; break; }
+        case $mode in
+            full) run "full sandbox, logout" sb "${full[@]}" iscsiadm -m node -T "$iqn" -p "$portal" -u ;;
+            nocap) run "sandbox without capability limits, logout" sb "${nocap[@]}" iscsiadm -m node -T "$iqn" -p "$portal" -u ;;
+            plain) run "no sandbox, logout" iscsiadm -m node -T "$iqn" -p "$portal" -u ;;
+        esac
+        if iscsiadm -m session 2>/dev/null | grep -qF "$iqn"; then
+            echo "session to $iqn still logged in after $mode"
+        else
+            echo "session to $iqn logged out by $mode"
+        fi
+    done
+done
 DIAG
         } >> "$GATE_LOG" || true
     done

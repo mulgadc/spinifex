@@ -326,8 +326,16 @@ families=""
 for i in $(seq 0 $((N - 1))); do
     host="${HOSTS[$i]}"
 
-    ssh "${SSH_OPTS[@]}" "$SSH_USER@$host" true 2>/dev/null ||
-        fail "cannot reach $SSH_USER@$host over SSH"
+    # A fresh cloud host can drop one connection while sshd restarts, so a miss is retried.
+    reached=false
+    for _ in 1 2 3; do
+        if ssh "${SSH_OPTS[@]}" "$SSH_USER@$host" true 2>/dev/null; then
+            reached=true
+            break
+        fi
+        sleep 5
+    done
+    [ "$reached" = true ] || fail "cannot reach $SSH_USER@$host over SSH"
     ssh "${SSH_OPTS[@]}" "$SSH_USER@$host" "sudo -n true" 2>/dev/null ||
         fail "$host: $SSH_USER does not have passwordless sudo"
 

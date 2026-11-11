@@ -276,7 +276,7 @@ func TestUpdateService_NoTaskDefinitionSkipsPassRole(t *testing.T) {
 // DescribeTaskDefinition's not-found answer reaches a launch as the launch's
 // own not-found message, as on AWS.
 func TestCheckTaskLaunchRoles_UnknownTaskDefinitionIsNotFound(t *testing.T) {
-	svc := &fakeECSService{describeErr: errors.New(awserrors.ErrorECSClientException)}
+	svc := &fakeECSService{describeErr: awserrors.Errorf(awserrors.ErrorECSClientException, "Unable to describe task definition.")}
 	err := checkTaskLaunchRoles(context.Background(), svc, "123456789012", aws.String("ghost:1"), allowCheck(t, testTaskRoleARN))
 	code, msg, ok := awserrors.ResolveErrorDetail(err)
 	require.True(t, ok)

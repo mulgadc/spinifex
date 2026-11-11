@@ -72,8 +72,8 @@ func TestDescribeTaskDefinition_ResolvesEveryReferenceForm(t *testing.T) {
 	}
 
 	for ref, want := range map[string]string{
-		"app:3": awserrors.ErrorECSClientException,
-		"ghost": awserrors.ErrorECSClientException,
+		"app:3": "Unable to describe task definition.: ClientException",
+		"ghost": "Unable to describe task definition.: ClientException",
 		"":      awserrors.ErrorECSInvalidParameter,
 	} {
 		_, err := svc.DescribeTaskDefinition(context.Background(),
@@ -98,8 +98,7 @@ func TestDeregisterTaskDefinition_RepeatSucceedsAndUnknownIsRefused(t *testing.T
 
 	_, err := svc.DeregisterTaskDefinition(context.Background(),
 		&ecs.DeregisterTaskDefinitionInput{TaskDefinition: aws.String("app:9")}, testAccountID)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorECSInvalidParameter, err.Error())
+	assert.EqualError(t, err, "The specified task definition does not exist.: InvalidParameterException")
 }
 
 // registeredAt is on every read; deregisteredAt appears on reads after the
@@ -236,8 +235,7 @@ func TestLaunches_UnknownTaskDefinitionIsNotFound(t *testing.T) {
 			assert.Equal(t, awserrors.ErrorECSClientException, code, "%s %s", name, ref)
 			assert.Equal(t, "TaskDefinition not found.", msg, "%s %s", name, ref)
 		}
-		err := launch(":1")
-		require.Error(t, err, name)
-		assert.Equal(t, awserrors.ErrorECSInvalidParameter, err.Error(), name)
+		code, _ := awserrors.ResolveErrorCode(launch(":1"))
+		assert.Equal(t, awserrors.ErrorECSInvalidParameter, code, name)
 	}
 }

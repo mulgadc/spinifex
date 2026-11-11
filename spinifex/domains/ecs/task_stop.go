@@ -20,6 +20,11 @@ import (
 // defaultStopReason is recorded when StopTask is called without a reason.
 const defaultStopReason = "Task stopped by user"
 
+// errTaskNotFound refuses a task reference that names no task in the cluster.
+func errTaskNotFound() error {
+	return awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "The referenced task was not found.")
+}
+
 // StopTask requests a cooperative stop: it marks the task DesiredStatus=STOPPED
 // and posts a directive to the instance's stop inbox. The agent reaps the
 // container and reports STOPPED, which drives the capacity + ENI + TG release in
@@ -39,7 +44,7 @@ func (s *Service) StopTask(ctx context.Context, input *ecs.StopTaskInput, accoun
 		return nil, err
 	}
 	if !found {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+		return nil, errTaskNotFound()
 	}
 	reason := aws.StringValue(input.Reason)
 	if reason == "" {

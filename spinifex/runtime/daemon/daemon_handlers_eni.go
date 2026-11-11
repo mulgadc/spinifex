@@ -35,6 +35,20 @@ func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg
 		return respondErrorOutcome(d.node, msg, awserrors.ErrorIncorrectInstanceState)
 	}
 
+	// AWS refuses an occupied index before checking the interface's own state.
+	if !command.AttachENIData.AssignFreeIndex {
+		attached, err := d.vpcService.ListInstanceENIs(accountID, instance.ID)
+		if err != nil {
+			return respondServiceErrorOutcome(d.node, msg, err)
+		}
+		for _, a := range attached {
+			if a.DeviceIndex == deviceIndex {
+				return respondServiceErrorOutcome(d.node, msg, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+					"Instance '%s' already has an interface attached at device index '%d'.", instance.ID, deviceIndex))
+			}
+		}
+	}
+
 	record, err := d.vpcService.GetENIRecord(accountID, eniID)
 	if err != nil {
 		return respondServiceErrorOutcome(d.node, msg, err)

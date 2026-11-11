@@ -291,6 +291,52 @@ func TestHandleAttachNetworkInterface_HotPlugFails_RollsBackKV(t *testing.T) {
 	assert.NotEmpty(t, rec.LastAttachError, "LastAttachError should record the rollback reason")
 }
 
+// An index already taken on the instance is refused before the interface's own
+// state, so re-attaching the attached interface answers AWS's device-index error.
+func TestHandleAttachNetworkInterface_SameIndex(t *testing.T) {
+	f, _ := attachedFixture(t)
+	cmd := ec2v1.EC2InstanceCommand{
+		ID:            f.vmInst.ID,
+		AttachENIData: &ec2v1.AttachENIData{NetworkInterfaceID: f.eniID, DeviceIndex: 1},
+	}
+	payload := driveHandler(t, f.daemon.natsConn, "test.attach.sameindex", func(msg *nats.Msg) {
+		f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
+	})
+	assertDeviceIndexOccupied(t, payload, f.vmInst.ID)
+}
+
+// A different interface asking for an index already taken is refused and left
+// available, so the customer API cannot double-book a device index.
+func TestHandleAttachNetworkInterface_OtherENIOccupiedIndex(t *testing.T) {
+	f, _ := attachedFixture(t)
+	other, err := f.daemon.vpcService.CreateNetworkInterface(t.Context(), &ec2.CreateNetworkInterfaceInput{
+		SubnetId: aws.String(f.subnetID),
+	}, testAccountID)
+	require.NoError(t, err)
+	otherID := *other.NetworkInterface.NetworkInterfaceId
+
+	cmd := ec2v1.EC2InstanceCommand{
+		ID:            f.vmInst.ID,
+		AttachENIData: &ec2v1.AttachENIData{NetworkInterfaceID: otherID, DeviceIndex: 1},
+	}
+	payload := driveHandler(t, f.daemon.natsConn, "test.attach.otheroccupied", func(msg *nats.Msg) {
+		f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
+	})
+	assertDeviceIndexOccupied(t, payload, f.vmInst.ID)
+
+	rec, err := f.daemon.vpcService.GetENIRecord(testAccountID, otherID)
+	require.NoError(t, err)
+	assert.Equal(t, "available", rec.Status)
+}
+
+func assertDeviceIndexOccupied(t *testing.T, payload []byte, instanceID string) {
+	t.Helper()
+	var env ec2.ResponseError
+	require.NoError(t, json.Unmarshal(payload, &env))
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, aws.StringValue(env.Code))
+	assert.Equal(t, "Instance '"+instanceID+"' already has an interface attached at device index '1'.", aws.StringValue(env.Message))
+}
+
 // --- handleDetachNetworkInterface ---
 
 // attachedFixture extends the base fixture by pre-attaching the ENI to
@@ -452,12 +498,12 @@ func TestHandleAttachNetworkInterface_DeviceIndexIsTheAllocatedSlot(t *testing.T
 	require.NoError(t, err)
 	secondID := *second.NetworkInterface.NetworkInterfaceId
 
-	// Both attaches ask for device index 1, which is what the ECS task ENI path
-	// sends for every task.
+	// Both attaches ask for device index 1 with AssignFreeIndex, which is what the
+	// ECS task ENI path sends for every task.
 	for _, eniID := range []string{f.eniID, secondID} {
 		cmd := ec2v1.EC2InstanceCommand{
 			ID:            f.vmInst.ID,
-			AttachENIData: &ec2v1.AttachENIData{NetworkInterfaceID: eniID, DeviceIndex: 1},
+			AttachENIData: &ec2v1.AttachENIData{NetworkInterfaceID: eniID, DeviceIndex: 1, AssignFreeIndex: true},
 		}
 		driveHandler(t, f.daemon.natsConn, "test.attach.slot."+eniID, func(msg *nats.Msg) {
 			f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)

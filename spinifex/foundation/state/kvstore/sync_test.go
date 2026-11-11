@@ -16,6 +16,7 @@ import (
 )
 
 func TestSyncBucket_OpensWithOneRevisionNoTTLAndASchemaVersion(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	b := kvstore.OpenSyncBucket(js)
 	kv, err := b.KV(t.Context())
@@ -73,6 +74,7 @@ func TestSyncBucket_ErrorsCarryBothPackagesSentinels(t *testing.T) {
 }
 
 func TestSyncBucket_RevisionGrowsAcrossADelete(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	b := kvstore.OpenSyncBucket(js)
 
@@ -91,12 +93,14 @@ func TestSyncBucket_RevisionGrowsAcrossADelete(t *testing.T) {
 }
 
 func TestSyncBucket_StoppedJetStreamIsUnavailable(t *testing.T) {
+	t.Parallel()
 	stops := map[string]func(t *testing.T, ns *server.Server){
 		"jetstream disabled": func(t *testing.T, ns *server.Server) { require.NoError(t, ns.DisableJetStream()) },
 		"server shut down":   func(_ *testing.T, ns *server.Server) { ns.Shutdown(); ns.WaitForShutdown() },
 	}
 	for name, stop := range stops {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			ns, _, js := testutil.StartTestJetStream(t)
 			b := kvstore.OpenSyncBucket(js)
 			rev, err := b.CompareAndSwap(t.Context(), "k", []byte("a"), 0)
@@ -111,14 +115,19 @@ func TestSyncBucket_StoppedJetStreamIsUnavailable(t *testing.T) {
 				},
 				"delete": func(ctx context.Context) error { return b.CompareAndDelete(ctx, "k", rev) },
 			}
+			// Concurrent, since each op waits out its own bound.
+			var wg sync.WaitGroup
 			for op, call := range ops {
-				// Bounded because a gone server answers nothing at all.
-				ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
-				err := call(ctx)
-				cancel()
-				assert.ErrorIs(t, err, kvsync.ErrUnavailable, op)
-				assert.NotErrorIs(t, err, kvsync.ErrRevisionMismatch, op)
+				wg.Go(func() {
+					// Bounded because a gone server answers nothing at all.
+					ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+					defer cancel()
+					err := call(ctx)
+					assert.ErrorIs(t, err, kvsync.ErrUnavailable, op)
+					assert.NotErrorIs(t, err, kvsync.ErrRevisionMismatch, op)
+				})
 			}
+			wg.Wait()
 		})
 	}
 }
@@ -126,6 +135,7 @@ func TestSyncBucket_StoppedJetStreamIsUnavailable(t *testing.T) {
 // A recreated sync stream restarts its revisions, so a stale holder's revision
 // could match a new key. Losing the stream must leave every write failing.
 func TestSyncBucket_LostStreamIsNeverRecreated(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	b := kvstore.OpenSyncBucket(js)
 	rev, err := b.CompareAndSwap(t.Context(), "k", []byte("a"), 0)
@@ -163,6 +173,7 @@ func (s *stallingJS) KeyValue(ctx context.Context, name string) (jetstream.KeyVa
 // One caller's stuck open must not hold another past its own context, or a
 // lease renewal waiting behind it could outlive its deadline.
 func TestSyncBucket_AWaiterOnAStuckOpenStopsAtItsContext(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	stall := &stallingJS{JetStream: js, entered: make(chan struct{}), gate: make(chan struct{})}
 	t.Cleanup(func() { close(stall.gate) })
@@ -207,6 +218,7 @@ func (leaderlessJS) CreateKeyValue(context.Context, jetstream.KeyValueConfig) (j
 // A cold cluster still electing its meta leader is an outage a lock caller
 // waits out, not a fault that ends its election.
 func TestSyncBucket_ALeaderlessJetStreamIsUnavailable(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	b := kvstore.OpenSyncBucket(leaderlessJS{JetStream: js})
 

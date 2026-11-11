@@ -1422,7 +1422,7 @@ func TestGetPolicy_ShippedAWSManaged(t *testing.T) {
 		assert.Equal(t, "/", *p.Path)
 		assert.True(t, *p.IsAttachable)
 		assert.Equal(t, int64(0), *p.PermissionsBoundaryUsageCount)
-		assert.Regexp(t, `^v[0-9]+$`, *p.DefaultVersionId, policyARN)
+		assert.NotNil(t, p.Tags, policyARN)
 		assert.Equal(t, pin.VersionID, *p.DefaultVersionId)
 		assert.NotEmpty(t, *p.Description, policyARN)
 		assert.Regexp(t, `^ANPA[0-9A-F]{17}$`, *p.PolicyId)

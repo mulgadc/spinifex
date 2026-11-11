@@ -1598,6 +1598,9 @@ func (s *IAMServiceImpl) GetPolicy(accountID string, input *iam.GetPolicyInput) 
 	out := policyToSDK(policy, counts[policy.ARN])
 	out.Description = aws.String(policy.Description)
 	out.Tags = tagsToSDK(policy.Tags)
+	if ok {
+		out.Tags = []*iam.Tag{} // AWS renders an empty Tags list for its own policies.
+	}
 	return &iam.GetPolicyOutput{Policy: out}, nil
 }
 

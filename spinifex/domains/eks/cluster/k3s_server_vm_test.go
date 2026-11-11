@@ -29,7 +29,7 @@ type fakeK3sVPC struct {
 	deleteErr error
 	detachErr error
 	// inUseUntilDetached models real VPC semantics: DeleteNetworkInterface returns
-	// InvalidNetworkInterface.InUse for these ENIs until DetachENI clears the
+	// the in-use InvalidParameterValue for these ENIs until DetachENI clears the
 	// attachment. detached tracks which ENIs DetachENI has cleared.
 	inUseUntilDetached map[string]bool
 	detached           map[string]bool
@@ -63,7 +63,7 @@ func (f *fakeK3sVPC) CreateNetworkInterface(_ context.Context, input *ec2.Create
 func (f *fakeK3sVPC) DeleteNetworkInterface(_ context.Context, input *ec2.DeleteNetworkInterfaceInput, _ string) (*ec2.DeleteNetworkInterfaceOutput, error) {
 	f.deleteCalls = append(f.deleteCalls, input)
 	if id := aws.StringValue(input.NetworkInterfaceId); f.inUseUntilDetached[id] && !f.detached[id] {
-		return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "Network interface '%s' is currently in use.", id)
 	}
 	if f.deleteErr != nil {
 		return nil, f.deleteErr
@@ -868,7 +868,7 @@ func TestTerminateK3sServerVM_ENIDeleteErrorSurfaces(t *testing.T) {
 	t.Parallel()
 	// A real delete failure (not NotFound) must surface so the teardown backstop
 	// retries rather than silently stranding the ENI.
-	vpc := &fakeK3sVPC{deleteErr: errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)}
+	vpc := &fakeK3sVPC{deleteErr: awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "Network interface 'eni-aaa111' is currently in use.")}
 	inst := &fakeK3sInst{}
 
 	err := TerminateK3sServerVM(context.Background(), vpc, inst, "111122223333", "i-aaa111", "eni-aaa111")

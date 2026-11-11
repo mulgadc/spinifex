@@ -3334,7 +3334,7 @@ func (s *InstanceServiceImpl) deleteInstanceENI(ctx context.Context, instance *v
 	if instance.ENIId != "" && s.eniDeleter != nil {
 		// Detach first to clear the attachment record. A stopped instance's ENI may
 		// still show Status=in-use/AttachmentId set; without the detach the
-		// force=false DeleteNetworkInterface below fails InvalidNetworkInterface.InUse,
+		// force=false DeleteNetworkInterface below fails the in-use InvalidParameterValue,
 		// stranding the ENI record after the instance is already gone from the store
 		// and blocking VPC/subnet delete. Best-effort: the delete is
 		// the authoritative gate.

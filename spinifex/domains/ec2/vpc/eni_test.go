@@ -411,7 +411,38 @@ func TestDeleteNetworkInterface_InUse(t *testing.T) {
 	_, err = svc.DeleteNetworkInterface(context.Background(), &ec2.DeleteNetworkInterfaceInput{
 		NetworkInterfaceId: aws.String(eniId),
 	}, testAccountID)
-	assert.ErrorContains(t, err, "InvalidNetworkInterface.InUse")
+	code, msg, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "Network interface '"+eniId+"' is currently in use.", msg)
+}
+
+func TestAttachENI_RecordsAttachTimeAndNetworkCardIndex(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	eniId := createTestENI(t, svc, subnetId)
+
+	before := time.Now().UTC().Truncate(time.Second)
+	_, err := svc.AttachENI(testAccountID, eniId, "i-test123", 1)
+	require.NoError(t, err)
+
+	out, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: []*string{aws.String(eniId)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.NetworkInterfaces, 1)
+	att := out.NetworkInterfaces[0].Attachment
+	require.NotNil(t, att)
+	require.NotNil(t, att.AttachTime)
+	assert.False(t, att.AttachTime.Before(before))
+	require.NotNil(t, att.NetworkCardIndex)
+	assert.Equal(t, int64(0), *att.NetworkCardIndex)
+
+	require.NoError(t, svc.DetachENI(context.Background(), testAccountID, eniId))
+	rec, err := svc.GetENIRecord(testAccountID, eniId)
+	require.NoError(t, err)
+	assert.True(t, rec.AttachTime.IsZero())
 }
 
 func TestDeleteNetworkInterface_ReleasesIP(t *testing.T) {

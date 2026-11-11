@@ -357,7 +357,7 @@ func TestLaunchSystemInstanceOnNode_RemoteWithoutConn(t *testing.T) {
 // a CP VM this node does not own routes over system.TerminateInstance.{id} to the
 // owning daemon, which stops qemu and cascade-deletes the ENI before replying —
 // so the cluster-wide teardown actually frees the remote ENI instead of deleting
-// it while still attached (InvalidNetworkInterface.InUse).
+// it while still attached (the in-use InvalidParameterValue).
 func TestTerminateSystemInstanceRemote_RoundTrip(t *testing.T) {
 	t.Parallel()
 	nc, err := nats.Connect(sharedNATSURL)

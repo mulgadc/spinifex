@@ -247,6 +247,8 @@ func TestHandleAttachNetworkInterface_Success(t *testing.T) {
 	require.NoError(t, json.Unmarshal(payload, &out))
 	require.NotNil(t, out.AttachmentId)
 	assert.Contains(t, *out.AttachmentId, "eni-attach-")
+	require.NotNil(t, out.NetworkCardIndex)
+	assert.Equal(t, int64(0), *out.NetworkCardIndex)
 
 	rec, err := f.daemon.vpcService.GetENIRecord(testAccountID, f.eniID)
 	require.NoError(t, err)
@@ -287,6 +289,23 @@ func TestHandleAttachNetworkInterface_HotPlugFails_RollsBackKV(t *testing.T) {
 	assert.Empty(t, rec.AttachmentStatus, "AttachmentStatus should be cleared on rollback")
 	assert.Empty(t, rec.InstanceId)
 	assert.NotEmpty(t, rec.LastAttachError, "LastAttachError should record the rollback reason")
+}
+
+// An index already taken on the instance is refused before the interface's own
+// state, so re-attaching the attached interface answers AWS's device-index error.
+func TestHandleAttachNetworkInterface_SameIndex(t *testing.T) {
+	f, _ := attachedFixture(t)
+	cmd := ec2v1.EC2InstanceCommand{
+		ID:            f.vmInst.ID,
+		AttachENIData: &ec2v1.AttachENIData{NetworkInterfaceID: f.eniID, DeviceIndex: 1},
+	}
+	payload := driveHandler(t, f.daemon.natsConn, "test.attach.sameindex", func(msg *nats.Msg) {
+		f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
+	})
+	var env ec2.ResponseError
+	require.NoError(t, json.Unmarshal(payload, &env))
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, aws.StringValue(env.Code))
+	assert.Equal(t, "Instance '"+f.vmInst.ID+"' already has an interface attached at device index '1'.", aws.StringValue(env.Message))
 }
 
 // --- handleDetachNetworkInterface ---

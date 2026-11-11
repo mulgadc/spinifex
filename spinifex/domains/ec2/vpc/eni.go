@@ -56,6 +56,7 @@ type ENIRecord struct {
 	// the instance and its IAM role under this account. Empty means same-account.
 	InstanceOwnerId  string            `json:"instance_owner_id,omitempty"`
 	DeviceIndex      int64             `json:"device_index"`
+	AttachTime       time.Time         `json:"attach_time,omitzero"`
 	PublicIpAddress  string            `json:"public_ip_address,omitempty"` // Auto-assigned or EIP
 	PublicIpPool     string            `json:"public_ip_pool,omitempty"`    // Pool name the public IP came from
 	SecurityGroupIds []string          `json:"security_group_ids,omitempty"`
@@ -277,7 +278,7 @@ func (s *VPCServiceImpl) deleteNetworkInterface(ctx context.Context, eniId, acco
 	// instance forces teardown. An ENI whose instance is gone is detached by
 	// terminate (historic PROP-LIFECYCLE-003 §2) and falls through as deletable.
 	if !force && eniIsLiveAttachment(&record) {
-		return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "Network interface '%s' is currently in use.", eniId)
 	}
 
 	s.releaseENISideEffects(ctx, eniId, accountID, &record)
@@ -376,6 +377,7 @@ func (s *VPCServiceImpl) DetachAndDeleteENI(ctx context.Context, accountID, eniI
 		record.AttachmentId = ""
 		record.InstanceId = ""
 		record.DeviceIndex = 0
+		record.AttachTime = time.Time{}
 
 		data, marshalErr := json.Marshal(record)
 		if marshalErr != nil {
@@ -715,6 +717,7 @@ func (s *VPCServiceImpl) attachENI(ctx context.Context, accountID, eniId, instan
 		record.AttachmentId = attachmentId
 		record.InstanceId = instanceId
 		record.DeviceIndex = deviceIndex
+		record.AttachTime = time.Now().UTC()
 		if instanceOwnerID != "" {
 			record.InstanceOwnerId = instanceOwnerID
 		}
@@ -752,6 +755,7 @@ func (s *VPCServiceImpl) DetachENI(ctx context.Context, accountID, eniId string)
 	record.AttachmentId = ""
 	record.InstanceId = ""
 	record.DeviceIndex = 0
+	record.AttachTime = time.Time{}
 
 	data, err := json.Marshal(record)
 	if err != nil {
@@ -1159,8 +1163,12 @@ func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string, gro
 			InstanceId:          aws.String(record.InstanceId),
 			InstanceOwnerId:     aws.String(instanceOwner),
 			DeviceIndex:         aws.Int64(record.DeviceIndex),
+			NetworkCardIndex:    aws.Int64(0),
 			Status:              aws.String("attached"),
 			DeleteOnTermination: aws.Bool(record.DeleteOnTermination == nil || *record.DeleteOnTermination),
+		}
+		if !record.AttachTime.IsZero() {
+			eni.Attachment.AttachTime = aws.Time(record.AttachTime)
 		}
 	}
 

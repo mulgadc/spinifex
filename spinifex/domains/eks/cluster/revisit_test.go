@@ -171,6 +171,7 @@ func TestStoreReport_ARepeatedReportStillRefreshesWhatIsStored(t *testing.T) {
 }
 
 func TestStoreReport_AChangedReportWakesTheLoop(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		next *ServerStateReport
@@ -181,6 +182,7 @@ func TestStoreReport_AChangedReportWakesTheLoop(t *testing.T) {
 		{"nodegroup counts", &ServerStateReport{Healthz: "ok", NodeCount: 3, NodegroupReady: map[string]int{"ng": 2}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			r, _, _ := newStateReconcilerHarness(t)
 			r.storeReport(&ServerStateReport{Healthz: "ok", NodeCount: 3})
 			require.True(t, woke(r))

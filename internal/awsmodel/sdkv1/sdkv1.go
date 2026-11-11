@@ -54,7 +54,6 @@ func Operations(service awsmodel.Service) ([]string, bool) {
 	}
 	var operations []string
 	for method := range client.Methods() {
-		method := method
 		name, isRequest := strings.CutSuffix(method.Name, "Request")
 		if !isRequest || name == "" {
 			continue

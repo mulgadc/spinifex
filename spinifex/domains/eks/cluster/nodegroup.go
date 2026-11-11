@@ -237,7 +237,7 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV jetstream.K
 	}
 	if meta.Status != ClusterStatusActive {
 		slog.WarnContext(ctx, "createNodegroup: cluster not ACTIVE", "cluster", cluster, "status", meta.Status)
-		return nil, errors.New(awserrors.ErrorInvalidRequest)
+		return nil, awserrors.Errorf(awserrors.ErrorEKSResourceInUse, "Cluster: %s is not in a valid state", cluster)
 	}
 	if meta.ControlPlaneENIIP == "" {
 		slog.ErrorContext(ctx, "createNodegroup: cluster has no control-plane ENI IP", "cluster", cluster)

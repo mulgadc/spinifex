@@ -785,7 +785,10 @@ func TestCreateNodegroup_ClusterNotActive(t *testing.T) {
 	}))
 
 	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
-	require.EqualError(t, err, awserrors.ErrorInvalidRequest)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorEKSResourceInUse, code)
+	assert.Equal(t, "Cluster: c1 is not in a valid state", msg)
 }
 
 func TestCreateNodegroup_UnknownCluster(t *testing.T) {

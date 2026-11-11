@@ -203,6 +203,9 @@ e2e_suite_timeout() {
     # sweep after its last write-back, on top of three stop/starts and a boot.
     # A pass is estimated at 40 minutes, unmeasured; the rest is the watch's cap.
     uefistore) echo "60m" ;;
+    # eks finishes rather than hangs: passing runs took 26-29m, and one ran
+    # out at 30m inside DeleteCluster. The default left it minutes of headroom.
+    eks) echo "45m" ;;
     *) echo "30m" ;;
   esac
 }

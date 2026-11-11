@@ -109,7 +109,7 @@ func (s *Service) snapshotDBInstance(ctx context.Context, kv *kvstore.Bucket, re
 	if err := createJSON(ctx, kv, key, &record); err != nil {
 		if errors.Is(err, kvstore.ErrExists) {
 			return nil, awserrors.Errorf(awserrors.ErrorDBSnapshotAlreadyExists,
-				"DB snapshot %s already exists", req.DBSnapshotIdentifier)
+				"Cannot create the snapshot because a snapshot with the identifier %s already exists.", req.DBSnapshotIdentifier)
 		}
 		return nil, err
 	}
@@ -685,7 +685,8 @@ func (s *Service) checkDBSnapshotAvailable(ctx context.Context, kv *kvstore.Buck
 		return err
 	}
 	if found {
-		return awserrors.Errorf(awserrors.ErrorDBSnapshotAlreadyExists, "DB snapshot %s already exists", id)
+		return awserrors.Errorf(awserrors.ErrorDBSnapshotAlreadyExists,
+			"Cannot create the snapshot because a snapshot with the identifier %s already exists.", id)
 	}
 	return nil
 }

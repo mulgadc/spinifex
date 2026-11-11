@@ -56,7 +56,7 @@ func (s *Service) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInsta
 	}
 	if rec.DeletionProtection {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterCombination,
-			"DB instance %s cannot be deleted because deletion protection is enabled", id)
+			"Cannot delete protected DB Instance, please disable deletion protection and try again.")
 	}
 	if err := s.checkFinalSnapshotAvailable(ctx, kv, rec, finalSnapshot); err != nil {
 		return nil, err
@@ -136,10 +136,10 @@ func validateDeleteRequest(input *rds.DeleteDBInstanceInput) (string, error) {
 	switch {
 	case skip && identifier != "":
 		return "", awserrors.Errorf(awserrors.ErrorInvalidParameterCombination,
-			"FinalDBSnapshotIdentifier cannot be supplied with SkipFinalSnapshot")
+			"Only one of SkipFinalSnapshot and FinalDBSnapshotIdentifier can be specified")
 	case !skip && identifier == "":
 		return "", awserrors.Errorf(awserrors.ErrorInvalidParameterCombination,
-			"FinalDBSnapshotIdentifier is required unless SkipFinalSnapshot is set")
+			"FinalDBSnapshotIdentifier is required unless SkipFinalSnapshot is specified.")
 	}
 	if identifier != "" {
 		if err := validateDBSnapshotIdentifier(identifier); err != nil {

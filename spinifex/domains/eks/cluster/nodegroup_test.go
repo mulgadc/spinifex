@@ -465,6 +465,31 @@ func TestCreateNodegroup_OmittedDiskSizeUsesAWSDefault(t *testing.T) {
 	assert.Equal(t, int64(defaultNodegroupDiskSizeGiB), aws.Int64Value(bdms[0].Ebs.VolumeSize))
 }
 
+// A group created without updateConfig reads back AWS's default of
+// maxUnavailable 1, and carries no resources while it is still CREATING.
+func TestCreateNodegroup_DefaultUpdateConfigAndNoResourcesWhileCreating(t *testing.T) {
+	t.Parallel()
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+
+	markWorkersReady(t, f, "c1", "ng1", 1)
+	out, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, eks.NodegroupStatusCreating, aws.StringValue(out.Nodegroup.Status))
+	assert.Equal(t, &eks.NodegroupUpdateConfig{MaxUnavailable: aws.Int64(1)}, out.Nodegroup.UpdateConfig)
+	assert.Nil(t, out.Nodegroup.Resources)
+
+	f.svc.WaitLaunches()
+
+	desc, err := f.svc.DescribeNodegroup(context.Background(), &eks.DescribeNodegroupInput{
+		ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, eks.NodegroupStatusActive, aws.StringValue(desc.Nodegroup.Status))
+	assert.Equal(t, &eks.NodegroupUpdateConfig{MaxUnavailable: aws.Int64(1)}, desc.Nodegroup.UpdateConfig)
+	assert.NotNil(t, desc.Nodegroup.Resources)
+}
+
 // A GPU instance type must mark the record GPUEnabled with the matching
 // vendor, so the worker-launch path resolves the GPU node AMI instead of the
 // default eks-node AMI.

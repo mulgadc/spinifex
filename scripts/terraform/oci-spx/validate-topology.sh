@@ -1234,6 +1234,27 @@ write_gate_user_data() {
     cat > "$1" <<'USERDATA'
 #cloud-config
 write_files:
+  # Ubuntu 26.04's dd (uutils) fails O_DIRECT reads with EINVAL, so the gate's
+  # direct I/O uses a page-aligned buffer of its own.
+  - path: /usr/local/sbin/spx-gate-io
+    permissions: "0755"
+    content: |
+      #!/usr/bin/python3
+      import mmap, os, sys
+      mode, dev = sys.argv[1], sys.argv[2]
+      buf = mmap.mmap(-1, 4096)
+      if mode == "read":
+          fd = os.open(dev, os.O_RDONLY | os.O_DIRECT)
+          n = os.readv(fd, [buf])
+          if n != 4096:
+              sys.exit(f"short read: {n} bytes")
+          sys.stdout.buffer.write(buf[:])
+      else:
+          buf.write((sys.argv[3] + "\n").encode())
+          fd = os.open(dev, os.O_WRONLY | os.O_DIRECT | os.O_SYNC)
+          if os.writev(fd, [buf]) != 4096:
+              sys.exit("short write")
+          os.fsync(fd)
   - path: /usr/local/sbin/spx-ebs-gate
     permissions: "0755"
     content: |
@@ -1262,9 +1283,8 @@ write_files:
               case "$s" in vol*) ;; *) continue ;; esac
               case "$seen" in *" $d "*) next="$next$d "; continue ;; esac
               # A failed or short read is not a blank disk: overwriting it would destroy the marker.
-              if ! err=$(dd if="/dev/$d" of=/run/spx-gate-head bs=4096 count=1 iflag=direct 2>&1) \
-                  || [ "$(stat -c %s /run/spx-gate-head)" != 4096 ]; then
-                  say "data-unreadable serial=$s size=$(blockdev --getsize64 "/dev/$d" 2>&1) ssz=$(blockdev --getss "/dev/$d" 2>&1) $(printf '%s' "$err" | tr '\n' ' ' | tail -c 200)"
+              if ! err=$(spx-gate-io read "/dev/$d" 2>&1 >/run/spx-gate-head); then
+                  say "data-unreadable serial=$s $(printf '%s' "$err" | tr '\n' ' ' | tail -c 200)"
                   continue
               fi
               head=$(head -c 64 /run/spx-gate-head | tr -d '\000')
@@ -1276,8 +1296,7 @@ write_files:
                           say "data-foreign serial=$s"; next="$next$d "
                       else
                           tok=$(cat /proc/sys/kernel/random/uuid)
-                          if printf 'SPXGATE-DATA %s\n' "$tok" \
-                              | dd of="/dev/$d" bs=4096 count=1 conv=sync oflag=direct,sync 2>/dev/null; then
+                          if spx-gate-io write "/dev/$d" "SPXGATE-DATA $tok" 2>/dev/null; then
                               say "data-written serial=$s $tok"; next="$next$d "
                           fi
                       fi ;;

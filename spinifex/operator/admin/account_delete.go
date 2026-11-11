@@ -129,7 +129,7 @@ func (d Deps) deleteAccount(ctx context.Context, body []byte) (any, error) {
 		return nil, errors.New(awserrors.ErrorServiceUnavailable)
 	}
 
-	engine, err := accountteardown.NewClusterEngine(ctx, d.NATS, accountteardown.ClusterNodes{Expected: d.ExpectedNodes, DaemonIDs: d.NodeIDs, GatewayIDs: d.GatewayNodeIDs}, d.Termination, d.BucketStore, d.PlatformCleaner, accountteardown.WithComputeCleanup(d.ComputeCleaner, d.StorageCleaner))
+	engine, err := accountteardown.NewClusterEngine(ctx, d.NATS, accountteardown.ClusterNodes{Expected: d.ExpectedNodes, DaemonIDs: d.NodeIDs, GatewayIDs: d.GatewayNodeIDs}, d.Termination, d.BucketStore, d.PlatformCleaner, append([]accountteardown.ClusterOption{accountteardown.WithComputeCleanup(d.ComputeCleaner, d.StorageCleaner)}, d.teardownOptions...)...)
 	if err != nil {
 		slog.Error("DeleteAccount: failed to build teardown engine", "err", err)
 		return nil, errors.New(awserrors.ErrorServiceUnavailable)

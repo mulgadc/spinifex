@@ -152,7 +152,15 @@ func newDeleteAccountGateway(t *testing.T) Deps {
 		PlatformCleaner: &panicCleaner{},
 		ComputeCleaner:  emptyCompute{},
 		StorageCleaner:  emptyStorage{},
+		teardownOptions: []accountteardown.ClusterOption{shortTeardownWaits},
 	}
+}
+
+// shortTeardownWaits keeps the stage drain poll and convergence backoff from
+// stretching every teardown here by seconds of sleep.
+func shortTeardownWaits(e *accountteardown.Engine) {
+	e.Timeouts.DrainPoll = 10 * time.Millisecond
+	e.Converge.MinBackoff = 10 * time.Millisecond
 }
 
 // emptyBucketStore stands in for predastore: the tenant owns no buckets, so
@@ -288,7 +296,7 @@ func TestAdminDeleteAccountReturnsBeforeTheTeardownFinishes(t *testing.T) {
 	assert.NotEmpty(t, response.DeletionID)
 	assert.Equal(t, account.AccountID, response.AccountID)
 	assert.Equal(t, operatorv1.DeletionStateRunning, response.State)
-	// Parallel only once the teardown is running, so its drain poll overlaps the serial tests.
+	// Parallel only once the teardown is running, so it overlaps the serial tests.
 	t.Parallel()
 
 	// Progress is polled, so the record has to reach a terminal state on its own.
@@ -316,7 +324,7 @@ func TestAdminDeleteAccountReplaysAfterTheAccountIsGone(t *testing.T) {
 	first, err := gw.deleteAccount(t.Context(), body)
 	require.NoError(t, err)
 	started := first.(*DeleteAccountResponse)
-	// Parallel only once the teardown is running, so its drain poll overlaps the serial tests.
+	// Parallel only once the teardown is running, so it overlaps the serial tests.
 	t.Parallel()
 
 	require.Eventually(t, func() bool {
@@ -676,7 +684,7 @@ func TestAdminDeleteAccountFailedJobConvergesOnOperatorRerun(t *testing.T) {
 	_, err := gw.deleteAccount(t.Context(),
 		deleteAccountBody(t, account.AccountID, "tenant@example.com", strings.Repeat("a", 32)))
 	require.NoError(t, err)
-	// Parallel only once the teardown is running, so its convergence backoff overlaps the serial tests.
+	// Parallel only once the teardown is running, so it overlaps the serial tests.
 	t.Parallel()
 
 	require.Eventually(t, func() bool {

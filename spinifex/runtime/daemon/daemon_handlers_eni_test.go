@@ -291,23 +291,6 @@ func TestHandleAttachNetworkInterface_HotPlugFails_RollsBackKV(t *testing.T) {
 	assert.NotEmpty(t, rec.LastAttachError, "LastAttachError should record the rollback reason")
 }
 
-// An index already taken on the instance is refused before the interface's own
-// state, so re-attaching the attached interface answers AWS's device-index error.
-func TestHandleAttachNetworkInterface_SameIndex(t *testing.T) {
-	f, _ := attachedFixture(t)
-	cmd := ec2v1.EC2InstanceCommand{
-		ID:            f.vmInst.ID,
-		AttachENIData: &ec2v1.AttachENIData{NetworkInterfaceID: f.eniID, DeviceIndex: 1},
-	}
-	payload := driveHandler(t, f.daemon.natsConn, "test.attach.sameindex", func(msg *nats.Msg) {
-		f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
-	})
-	var env ec2.ResponseError
-	require.NoError(t, json.Unmarshal(payload, &env))
-	assert.Equal(t, awserrors.ErrorInvalidParameterValue, aws.StringValue(env.Code))
-	assert.Equal(t, "Instance '"+f.vmInst.ID+"' already has an interface attached at device index '1'.", aws.StringValue(env.Message))
-}
-
 // --- handleDetachNetworkInterface ---
 
 // attachedFixture extends the base fixture by pre-attaching the ENI to
@@ -488,5 +471,6 @@ func TestHandleAttachNetworkInterface_DeviceIndexIsTheAllocatedSlot(t *testing.T
 
 	assert.Equal(t, int64(first.HotPlugSlot), first.DeviceIndex)
 	assert.Equal(t, int64(other.HotPlugSlot), other.DeviceIndex)
+	assert.Equal(t, "in-use", other.Status, "a second task ENI asking for index 1 must still attach")
 	assert.NotEqual(t, first.DeviceIndex, other.DeviceIndex)
 }

@@ -669,7 +669,7 @@ func (s *Service) DescribeTaskDefinition(ctx context.Context, input *ecs.Describ
 	// same code with TaskDefinitionNotFound's message instead.
 	rec, err := s.taskDefs.Resolve(ctx, kv, ref)
 	if code, _ := awserrors.ResolveErrorCode(err); code == awserrors.ErrorECSInvalidParameter {
-		return nil, awserrors.Errorf(awserrors.ErrorECSClientException, "Unable to describe task definition.")
+		return nil, errors.New(awserrors.ErrorECSClientException)
 	}
 	if err != nil {
 		return nil, err

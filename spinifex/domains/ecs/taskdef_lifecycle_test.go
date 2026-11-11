@@ -72,8 +72,8 @@ func TestDescribeTaskDefinition_ResolvesEveryReferenceForm(t *testing.T) {
 	}
 
 	for ref, want := range map[string]string{
-		"app:3": "Unable to describe task definition.: ClientException",
-		"ghost": "Unable to describe task definition.: ClientException",
+		"app:3": awserrors.ErrorECSClientException,
+		"ghost": awserrors.ErrorECSClientException,
 		"":      awserrors.ErrorECSInvalidParameter,
 	} {
 		_, err := svc.DescribeTaskDefinition(context.Background(),

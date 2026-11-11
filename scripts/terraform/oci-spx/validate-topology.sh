@@ -889,6 +889,11 @@ REMOTE
     record formation PASS
 else
     log "forming the cluster"
+    # OCI reuses public addresses, and install-node.sh checks host keys against this
+    # runner's known_hosts, so a key an earlier run saw at an address would refuse it.
+    for host in "${HOSTS[@]}"; do
+        ssh-keygen -R "$host" >/dev/null 2>&1 || true
+    done
     # env -u first, so a SPINIFEX_EBS_PROVIDER in this shell cannot stand in for
     # detection on the ocibsd topologies.
     env -u SPINIFEX_EBS_PROVIDER ${INIT_EBS_PROVIDER:+SPINIFEX_EBS_PROVIDER=$INIT_EBS_PROVIDER} \

@@ -100,6 +100,9 @@ type BlockVolume struct {
 	SourceBackupID     string
 	FreeformTags       map[string]string
 	TimeCreated        time.Time
+	// ETag is the revision GetVolume or UpdateVolume answered with; a listed
+	// volume has none.
+	ETag string
 }
 
 // Tags is the volume's freeform tags.
@@ -136,6 +139,9 @@ type VolumeFilter struct {
 type UpdateVolumeInput struct {
 	SizeGB       int64
 	FreeformTags map[string]string
+	// IfMatch, when set, refuses the update with HTTP 412 unless the volume
+	// is still at this ETag.
+	IfMatch string
 }
 
 // VolumeAttachment is a volume attached to an instance. IQN, IPv4 and Port
@@ -274,7 +280,9 @@ func (c *blockAPIClient) GetVolume(ctx context.Context, volumeID string) (BlockV
 	if err != nil {
 		return BlockVolume{}, wrap("GetVolume", err)
 	}
-	return toBlockVolume(resp.Volume), nil
+	v := toBlockVolume(resp.Volume)
+	v.ETag = deref(resp.Etag)
+	return v, nil
 }
 
 func (c *blockAPIClient) ListVolumes(ctx context.Context, filter VolumeFilter) ([]BlockVolume, error) {
@@ -297,11 +305,15 @@ func (c *blockAPIClient) UpdateVolume(ctx context.Context, volumeID string, in U
 	if in.SizeGB > 0 {
 		details.SizeInGBs = &in.SizeGB
 	}
-	resp, err := c.storage.UpdateVolume(ctx, core.UpdateVolumeRequest{VolumeId: &volumeID, UpdateVolumeDetails: details})
+	resp, err := c.storage.UpdateVolume(ctx, core.UpdateVolumeRequest{
+		VolumeId: &volumeID, UpdateVolumeDetails: details, IfMatch: optional(in.IfMatch),
+	})
 	if err != nil {
 		return BlockVolume{}, wrap("UpdateVolume", err)
 	}
-	return toBlockVolume(resp.Volume), nil
+	v := toBlockVolume(resp.Volume)
+	v.ETag = deref(resp.Etag)
+	return v, nil
 }
 
 func (c *blockAPIClient) DeleteVolume(ctx context.Context, volumeID string) error {

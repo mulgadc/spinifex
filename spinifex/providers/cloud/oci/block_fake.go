@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -168,6 +169,7 @@ func (f *BlockFake) CreateVolume(_ context.Context, in CreateVolumeInput) (Block
 		ID: id, CompartmentID: in.CompartmentID, AvailabilityDomain: in.AvailabilityDomain,
 		DisplayName: in.DisplayName, SizeGB: in.SizeGB, VPUsPerGB: vpus, State: VolumeAvailable,
 		SourceBackupID: in.SourceBackupID, FreeformTags: maps.Clone(in.FreeformTags), TimeCreated: time.Now().UTC(),
+		ETag: "1",
 	}
 	f.remember(op, in.RetryToken, id)
 	return answerOf(f, op, cloneVolume(*f.volumes[id]))
@@ -202,7 +204,9 @@ func (f *BlockFake) ListVolumes(_ context.Context, filter VolumeFilter) ([]Block
 			!hasTags(v.FreeformTags, filter.Tags) {
 			continue
 		}
-		out = append(out, cloneVolume(*v))
+		listed := cloneVolume(*v)
+		listed.ETag = ""
+		out = append(out, listed)
 	}
 	return out, nil
 }
@@ -218,6 +222,9 @@ func (f *BlockFake) UpdateVolume(_ context.Context, volumeID string, in UpdateVo
 	if !ok || v.State.Gone() {
 		return BlockVolume{}, fakeError(op, 404, "NotAuthorizedOrNotFound", "volume not found")
 	}
+	if in.IfMatch != "" && in.IfMatch != v.ETag {
+		return BlockVolume{}, fakeError(op, 412, "NoEtagMatch", "the volume changed since the given etag")
+	}
 	if in.SizeGB > 0 && in.SizeGB < v.SizeGB {
 		return BlockVolume{}, fakeError(op, 400, "InvalidParameter", "a volume cannot shrink")
 	}
@@ -227,6 +234,8 @@ func (f *BlockFake) UpdateVolume(_ context.Context, volumeID string, in UpdateVo
 	if in.FreeformTags != nil {
 		v.FreeformTags = maps.Clone(in.FreeformTags)
 	}
+	rev, _ := strconv.Atoi(v.ETag)
+	v.ETag = strconv.Itoa(rev + 1)
 	return answerOf(f, op, cloneVolume(*v))
 }
 

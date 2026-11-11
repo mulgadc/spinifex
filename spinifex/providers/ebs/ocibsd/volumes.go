@@ -281,23 +281,46 @@ func (p *Provider) ListVolumes(ctx context.Context, req ebsprovider.ListVolumesR
 	return response, nil
 }
 
+// expandAttempts bounds ExpandVolume's re-reads when a concurrent update moves
+// the volume's ETag between its read and its write.
+const expandAttempts = 5
+
 // ExpandVolume within the OCI floor changes only the recorded capacity; past
-// it, OCI resizes the volume too. A volume attached anywhere is refused.
+// it, OCI resizes the volume too. A volume attached anywhere is refused. The
+// update names the ETag it read, so a concurrent expansion is never undone.
 func (p *Provider) ExpandVolume(ctx context.Context, req ebsprovider.ExpandVolumeRequest) (*ebsprovider.Volume, error) {
 	if err := ebsprovider.CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
-	required := req.CapacityRange.RequiredBytes
 	if req.VolumeID == "" || !req.CapacityRange.Valid() {
 		return nil, fmt.Errorf("%w: volume ID and a positive capacity range are required", ebsprovider.ErrInvalidArgument)
 	}
-	v, ok, err := p.findVolume(ctx, req.VolumeID, req.Handle)
+	found, ok, err := p.findVolume(ctx, req.VolumeID, req.Handle)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
 		return nil, fmt.Errorf("%w: volume %s", ebsprovider.ErrNotFound, req.VolumeID)
 	}
+	for attempt := 1; ; attempt++ {
+		v, err := p.cfg.Client.GetVolume(ctx, found.ID)
+		if errors.Is(err, oci.ErrNotFound) || (err == nil && v.IsGone()) {
+			return nil, fmt.Errorf("%w: volume %s", ebsprovider.ErrNotFound, req.VolumeID)
+		}
+		if err != nil {
+			return nil, ociError("read volume "+req.VolumeID, err)
+		}
+		out, err := p.expandFrom(ctx, req, v)
+		if oci.PreconditionFailed(err) && attempt < expandAttempts {
+			continue
+		}
+		return out, err
+	}
+}
+
+// expandFrom applies one expansion to v as read, conditional on v's ETag.
+func (p *Provider) expandFrom(ctx context.Context, req ebsprovider.ExpandVolumeRequest, v oci.BlockVolume) (*ebsprovider.Volume, error) {
+	required := req.CapacityRange.RequiredBytes
 	capacity, err := capacityOf(v.FreeformTags)
 	if err != nil {
 		return nil, err
@@ -317,7 +340,7 @@ func (p *Provider) ExpandVolume(ctx context.Context, req ebsprovider.ExpandVolum
 	}
 	tags := maps.Clone(v.FreeformTags)
 	tags[TagCapacityBytes] = strconv.FormatInt(required, 10)
-	in := oci.UpdateVolumeInput{FreeformTags: tags}
+	in := oci.UpdateVolumeInput{FreeformTags: tags, IfMatch: v.ETag}
 	if size := SizeGB(required); size > v.SizeGB {
 		in.SizeGB = size
 	}

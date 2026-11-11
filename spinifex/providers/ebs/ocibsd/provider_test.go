@@ -244,6 +244,59 @@ func TestExpandVolume(t *testing.T) {
 	require.ErrorIs(t, err, ebsprovider.ErrVolumeInUse)
 }
 
+// raceClient runs race before each UpdateVolume it forwards, as another
+// worker's write landing between this worker's read and its write.
+type raceClient struct {
+	oci.BlockClient
+
+	race func()
+}
+
+func (r *raceClient) UpdateVolume(ctx context.Context, volumeID string, in oci.UpdateVolumeInput) (oci.BlockVolume, error) {
+	if r.race != nil {
+		r.race()
+	}
+	return r.BlockClient.UpdateVolume(ctx, volumeID, in)
+}
+
+func TestConcurrentExpansionsNeverShrinkTheVolume(t *testing.T) {
+	fake := oci.NewBlockFake()
+	other := newClusterOver(t, fake, nil).router()
+	rc := &raceClient{BlockClient: fake}
+	p := newClusterOver(t, fake, rc).router()
+	ctx := context.Background()
+	v := createVolume(t, p, "vol-race", 1<<30)
+
+	rc.race = func() {
+		rc.race = nil
+		_, err := other.ExpandVolume(ctx, ebsprovider.ExpandVolumeRequest{Versioned: latest, VolumeID: "vol-race", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 3 << 30}})
+		require.NoError(t, err)
+	}
+	_, err := p.ExpandVolume(ctx, ebsprovider.ExpandVolumeRequest{Versioned: latest, VolumeID: "vol-race", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 2 << 30}})
+	require.ErrorIs(t, err, ebsprovider.ErrInvalidArgument, "re-read after the 412, 2 GiB would shrink the 3 GiB volume")
+
+	got, err := p.GetVolume(ctx, ebsprovider.GetVolumeRequest{Versioned: latest, VolumeID: "vol-race"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(3<<30), got.CapacityBytes)
+	assert.Equal(t, strconv.Itoa(3<<30), ociVolume(t, fake, v.Handle).FreeformTags[ocibsd.TagCapacityBytes])
+}
+
+func TestExpansionGivesUpWhileTheVolumeKeepsChanging(t *testing.T) {
+	fake := oci.NewBlockFake()
+	rc := &raceClient{BlockClient: fake}
+	p := newClusterOver(t, fake, rc).router()
+	ctx := context.Background()
+	v := createVolume(t, p, "vol-busy", 1<<30)
+
+	rc.race = func() {
+		_, err := fake.UpdateVolume(ctx, v.Handle, oci.UpdateVolumeInput{FreeformTags: ociVolume(t, fake, v.Handle).FreeformTags})
+		require.NoError(t, err)
+	}
+	_, err := p.ExpandVolume(ctx, ebsprovider.ExpandVolumeRequest{Versioned: latest, VolumeID: "vol-busy", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 2 << 30}})
+	require.ErrorIs(t, err, ebsprovider.ErrUnavailable)
+	assert.Equal(t, strconv.Itoa(1<<30), ociVolume(t, fake, v.Handle).FreeformTags[ocibsd.TagCapacityBytes])
+}
+
 func TestDeleteVolumeWhileABackupIsTakenIsInUse(t *testing.T) {
 	c := newCluster(t)
 	p := c.router()

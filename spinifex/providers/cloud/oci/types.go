@@ -22,6 +22,7 @@ package oci
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"net/netip"
 	"time"
 )
@@ -120,3 +121,10 @@ func (e *APIError) Error() string {
 
 // Unwrap returns the sentinel so errors.Is(err, ErrLimitExceeded) matches.
 func (e *APIError) Unwrap() error { return e.kind }
+
+// PreconditionFailed reports an HTTP 412: the resource changed since the ETag
+// an If-Match named.
+func PreconditionFailed(err error) bool {
+	var api *APIError
+	return errors.As(err, &api) && api.StatusCode == http.StatusPreconditionFailed
+}

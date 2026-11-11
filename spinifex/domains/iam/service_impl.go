@@ -1582,9 +1582,12 @@ func (s *IAMServiceImpl) CreatePolicy(accountID string, input *iam.CreatePolicyI
 
 func (s *IAMServiceImpl) GetPolicy(accountID string, input *iam.GetPolicyInput) (*iam.GetPolicyOutput, error) {
 	ctx := context.Background()
-	policy, err := s.getPolicyByARN(ctx, accountID, *input.PolicyArn)
-	if err != nil {
-		return nil, err
+	policy, ok := builtinManagedPolicy(*input.PolicyArn)
+	if !ok {
+		var err error
+		if policy, err = s.getPolicyByARN(ctx, accountID, *input.PolicyArn); err != nil {
+			return nil, err
+		}
 	}
 
 	counts, err := s.buildAttachmentCounts(ctx, accountID)

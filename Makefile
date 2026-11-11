@@ -515,9 +515,9 @@ install-system:
 	fi
 
 install-go:
-	@echo -e "\n....Installing Go 1.27.3 for $(ARCH) ($(GO_ARCH))...."
+	@echo -e "\n....Installing Go 1.27.4 for $(ARCH) ($(GO_ARCH))...."
 	@if [ ! -d "/usr/local/go" ]; then \
-		curl -L https://go.dev/dl/go1.27.3.linux-$(GO_ARCH).tar.gz | tar -C /usr/local -xz; \
+		curl -L https://go.dev/dl/go1.27.4.linux-$(GO_ARCH).tar.gz | tar -C /usr/local -xz; \
 	else \
 		echo "Go already installed in /usr/local/go"; \
 	fi

@@ -94,17 +94,22 @@ const ngCASMaxRetries = 16
 // service boundary.
 var ErrNodegroupNotFound = errors.New("eks: nodegroup not found")
 
-// nodegroupNotFound is the AWS answer for a missing node group on an existing
-// cluster; a missing cluster keeps the code's default resource message.
-func nodegroupNotFound(ng string) error {
-	return awserrors.Errorf(awserrors.ErrorEKSResourceNotFound, "No node group found for name: %s.", ng)
+// clusterNotFound is AWS's answer for a missing cluster, from any EKS call.
+func clusterNotFound(cluster string) error {
+	return awserrors.Errorf(awserrors.ErrorEKSResourceNotFound, "No cluster found for name: %s.", cluster)
+}
+
+// resourceNotFound is AWS's answer for a missing node group or add-on on an
+// existing cluster, which names neither.
+func resourceNotFound() error {
+	return awserrors.Errorf(awserrors.ErrorEKSResourceNotFound, "The requested resource does not exist.")
 }
 
 // requireCluster returns ResourceNotFoundException when the cluster is absent.
 func requireCluster(ctx context.Context, kv jetstream.KeyValue, cluster string) error {
 	if _, err := GetClusterMeta(ctx, kv, cluster); err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
-			return errors.New(awserrors.ErrorEKSResourceNotFound)
+			return clusterNotFound(cluster)
 		}
 		return err
 	}
@@ -231,7 +236,7 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV jetstream.K
 	meta, err := GetClusterMeta(ctx, acctKV, cluster)
 	if err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			return nil, clusterNotFound(cluster)
 		}
 		return nil, err
 	}
@@ -946,7 +951,7 @@ func (s *EKSServiceImpl) describeNodegroup(ctx context.Context, acctKV jetstream
 	rec, err := GetNodegroupRecord(ctx, acctKV, cluster, ng)
 	if err != nil {
 		if errors.Is(err, ErrNodegroupNotFound) {
-			return nil, nodegroupNotFound(ng)
+			return nil, resourceNotFound()
 		}
 		return nil, err
 	}
@@ -960,7 +965,7 @@ func (s *EKSServiceImpl) listNodegroups(ctx context.Context, acctKV jetstream.Ke
 	}
 	if _, err := GetClusterMeta(ctx, acctKV, cluster); err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			return nil, clusterNotFound(cluster)
 		}
 		return nil, err
 	}
@@ -987,7 +992,7 @@ func (s *EKSServiceImpl) updateNodegroupConfig(ctx context.Context, acctKV jetst
 	meta, err := GetClusterMeta(ctx, acctKV, cluster)
 	if err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			return nil, clusterNotFound(cluster)
 		}
 		return nil, err
 	}
@@ -1016,7 +1021,7 @@ func (s *EKSServiceImpl) reconcileNodegroup(ctx context.Context, acctKV jetstrea
 		rec, rev, err := getNodegroupEntry(ctx, acctKV, cluster, ng)
 		if err != nil {
 			if errors.Is(err, ErrNodegroupNotFound) {
-				return nil, nodegroupNotFound(ng)
+				return nil, resourceNotFound()
 			}
 			return nil, err
 		}
@@ -1250,7 +1255,7 @@ func (s *EKSServiceImpl) markNodegroupDeleting(ctx context.Context, kv jetstream
 		rec, rev, err := getNodegroupEntry(ctx, kv, cluster, ng)
 		if err != nil {
 			if errors.Is(err, ErrNodegroupNotFound) {
-				return nil, nodegroupNotFound(ng)
+				return nil, resourceNotFound()
 			}
 			return nil, err
 		}

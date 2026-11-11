@@ -934,7 +934,8 @@ if [ "$TOPO_EBS_PROVIDER" = ocibsd ]; then
     OCIBSD_CLUSTER_ID="$(ssh_node "${HOSTS[0]}" 'sudo python3 -' <<'PY'
 import sys, tomllib
 nodes = tomllib.load(open("/etc/spinifex/spinifex.toml", "rb")).get("nodes", {})
-ids = {n.get("ebs", {}).get("oci", {}).get("cluster_id", "") for n in nodes.values()}
+# A leader's config also lists the other nodes, without their EBS tables.
+ids = {n["ebs"]["oci"].get("cluster_id", "") for n in nodes.values() if "oci" in n.get("ebs", {})}
 if len(ids) != 1 or "" in ids:
     sys.exit("expected one cluster_id across [nodes.*.ebs.oci], found %r" % sorted(ids))
 print(ids.pop())
@@ -1084,9 +1085,9 @@ fi
 
 # Parse the STATUS column, never grep for Ready: NotReady contains it, and that
 # read passed a single-node run whose only node was NotReady on 0.0.0.0. The table
-# is colourised, so the escapes come off first.
+# is colourised and drawn with box characters, so both come off first.
 count_ready() {
-    sed 's/\x1b\[[0-9;]*m//g' "$STATE_DIR/nodes.txt" \
+    sed -e 's/\x1b\[[0-9;]*m//g' -e 's/│/|/g' "$STATE_DIR/nodes.txt" \
         | awk -F'|' 'NR > 1 { gsub(/^[ \t]+|[ \t]+$/, "", $2); if ($2 == "Ready") n++ } END { print n + 0 }'
 }
 

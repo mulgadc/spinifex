@@ -82,6 +82,7 @@ func (f *reaperFixture) sweepAcrossALeaseLoss(t *testing.T) {
 // endpoint as leader and lost the lease before acting leaves it to the new
 // leader, so two nodes never tear down the same serving VM.
 func TestReaper_ADR0003S7_IdleReclaimStopsWhenTheLeaseIsLostMidSweep(t *testing.T) {
+	t.Parallel()
 	f := newReaperFixture(t, ReaperDeps{IdleTTL: time.Minute})
 	rec := f.ready(t)
 	f.age(t, 10*time.Minute, 10*time.Minute)
@@ -96,6 +97,7 @@ func TestReaper_ADR0003S7_IdleReclaimStopsWhenTheLeaseIsLostMidSweep(t *testing.
 // ADR-0003:S7 invariant for the unreachable path: the escalating scrape
 // failure of a sweep that lost the lease neither terminates nor relaunches.
 func TestReaper_ADR0003S7_UnreachableEscalationStopsWhenTheLeaseIsLostMidSweep(t *testing.T) {
+	t.Parallel()
 	f := newReaperFixture(t, ReaperDeps{IdleTTL: time.Hour})
 	rec := f.ready(t)
 	f.transport.breakScrapes()
@@ -129,6 +131,7 @@ func (f *reaperFixture) replace(t *testing.T) (old, replacement EndpointRecord) 
 // ADR-0003:S7 invariant: a reclaim that reaches the record after the endpoint
 // was relaunched must not tear the replacement down.
 func TestService_ADR0003S7_ReclaimRefusesAReplacedEndpoint(t *testing.T) {
+	t.Parallel()
 	f := newReaperFixture(t, ReaperDeps{})
 	f.ready(t)
 	old, replacement := f.replace(t)
@@ -147,6 +150,7 @@ func TestService_ADR0003S7_ReclaimRefusesAReplacedEndpoint(t *testing.T) {
 // reclaim that waited out another operation and lost the lease meanwhile
 // terminates nothing.
 func TestService_ADR0003S7_ReclaimRefusesOnceTheLeaseIsLost(t *testing.T) {
+	t.Parallel()
 	f := newReaperFixture(t, ReaperDeps{})
 	rec := f.ready(t)
 	key := resolveKey(awsidentifiers.GlobalAccountID, testModelID)
@@ -176,6 +180,7 @@ func TestService_ADR0003S7_ReclaimRefusesOnceTheLeaseIsLost(t *testing.T) {
 // lease loss yields to anything the new leader wrote, since that moves the
 // revision the draining CAS is fenced on.
 func TestService_ADR0003S7_ReclaimAdmittedBeforeALeaseLossYieldsToTheNewLeader(t *testing.T) {
+	t.Parallel()
 	f := newReaperFixture(t, ReaperDeps{})
 	rec := f.ready(t)
 	key := resolveKey(awsidentifiers.GlobalAccountID, testModelID)
@@ -202,6 +207,7 @@ func TestService_ADR0003S7_ReclaimAdmittedBeforeALeaseLossYieldsToTheNewLeader(t
 // An observation read before the endpoint was relaunched must not land on the
 // replacement, which would restore the old VM's identity over the new one.
 func TestReaper_StaleObservationDoesNotOverwriteAReplacement(t *testing.T) {
+	t.Parallel()
 	f := newReaperFixture(t, ReaperDeps{IdleTTL: time.Hour})
 	f.ready(t)
 	f.transport.serve(1, 0, 0)

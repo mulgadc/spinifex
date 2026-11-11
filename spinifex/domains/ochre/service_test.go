@@ -44,6 +44,7 @@ func newTestService(t *testing.T, h *launchHarness, statusCode int32, gpuSnap gp
 }
 
 func TestEnsure_ConcurrentSameProcessLaunchesExactlyOneVM(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
 
@@ -78,6 +79,7 @@ func TestEnsure_ConcurrentSameProcessLaunchesExactlyOneVM(t *testing.T) {
 // for two daemon replicas) sharing one JetStream backend. Only the KV
 // Create/CAS in store.go decides the winner here.
 func TestEnsure_CrossReplicaCASCollapsesToOneLaunch(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	newDeps := func() ServiceDeps {
@@ -114,6 +116,7 @@ func TestEnsure_CrossReplicaCASCollapsesToOneLaunch(t *testing.T) {
 }
 
 func TestEnsure_CapacityRefusal(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, &stubSnapshotter{})
 
@@ -128,6 +131,7 @@ func TestEnsure_CapacityRefusal(t *testing.T) {
 }
 
 func TestEnsure_UnknownModelRejected(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
 
@@ -137,6 +141,7 @@ func TestEnsure_UnknownModelRejected(t *testing.T) {
 }
 
 func TestEnsure_ReachesReady(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
 
@@ -155,6 +160,7 @@ func TestEnsure_ReachesReady(t *testing.T) {
 }
 
 func TestEnsure_ReadinessTimeoutAbortsToAbsent(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusServiceUnavailable, sufficientGPU())
 
@@ -172,6 +178,7 @@ func TestEnsure_ReadinessTimeoutAbortsToAbsent(t *testing.T) {
 }
 
 func TestDelete_ReadyToAbsent(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
 
@@ -195,6 +202,7 @@ func TestDelete_ReadyToAbsent(t *testing.T) {
 }
 
 func TestDelete_IdempotentOnAbsent(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
 
@@ -206,6 +214,7 @@ func TestDelete_IdempotentOnAbsent(t *testing.T) {
 }
 
 func TestDelete_RefusesNonReadyState(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
 
@@ -226,6 +235,7 @@ func TestDelete_RefusesNonReadyState(t *testing.T) {
 // record is stranded, since nothing else moves it and the resolver treats
 // DRAINING as neither servable nor relaunchable.
 func TestDelete_ResumesFromDraining(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
 
@@ -255,6 +265,7 @@ const testAccountID = "111111111111"
 // Pinned at their zero values must still land under GlobalAccountID,
 // unpinned, exactly as every pre-existing caller relies on.
 func TestEnsure_EmptyAccountIDKeysGlobalAndUnpinned(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
 
@@ -274,6 +285,7 @@ func TestEnsure_EmptyAccountIDKeysGlobalAndUnpinned(t *testing.T) {
 // a real AccountID plus Pinned:true must key the record away from the shared
 // GlobalAccountID endpoint and persist Pinned on it.
 func TestEnsure_RealAccountIDKeysUnderAccountAndPersistsPinned(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
 
@@ -299,6 +311,7 @@ func TestEnsure_RealAccountIDKeysUnderAccountAndPersistsPinned(t *testing.T) {
 // TestDescribeDelete_AccountScopedRoundTrip covers Describe/Delete resolving
 // the same account-scoped key an account-scoped Ensure wrote.
 func TestDescribeDelete_AccountScopedRoundTrip(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
 
@@ -333,6 +346,7 @@ func TestDescribeDelete_AccountScopedRoundTrip(t *testing.T) {
 // and leave the record; scoped to the owning account it clears the record even
 // when the VM was terminated out of band.
 func TestDelete_BareDeleteMissesAccountScopedPinnedButScopedClearsGoneVM(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
 
@@ -364,6 +378,7 @@ func TestDelete_BareDeleteMissesAccountScopedPinnedButScopedClearsGoneVM(t *test
 }
 
 func TestList_ReturnsAllEnsuredEndpoints(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
 
@@ -382,6 +397,7 @@ func TestList_ReturnsAllEnsuredEndpoints(t *testing.T) {
 // alongside the shared GlobalAccountID one, carrying its own AccountID and
 // Pinned — an operator listing must not key on GlobalAccountID only.
 func TestList_ReturnsEndpointsAcrossAllAccountsIncludingPinned(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
 
@@ -420,6 +436,7 @@ func TestList_ReturnsEndpointsAcrossAllAccountsIncludingPinned(t *testing.T) {
 // resolve to coServeGroupOchreDemo, so Ensure keys them the same. Each member
 // still resolves to its own port on that VM.
 func TestEnsure_GroupMemberConvergesOnOneBundle(t *testing.T) {
+	t.Parallel()
 	const embedModelID = "nomic-embed-text-v1.5"
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())

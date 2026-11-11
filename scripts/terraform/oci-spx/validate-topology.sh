@@ -1291,6 +1291,36 @@ runcmd:
 USERDATA
 }
 
+# What the gate leaves for a failure it cannot explain from its own output: each
+# node's iSCSI sessions and records, block devices and their holders, and the
+# provider's and kernel's recent log. Best effort, so a failed read never masks
+# the gate's own error.
+gate_diagnose() {
+    local host
+    for host in "${HOSTS[@]}"; do
+        {
+            printf '\n=== diagnostics from %s ===\n' "$host"
+            ssh_node "$host" 'sudo bash -s' <<'DIAG' 2>&1
+for c in "iscsiadm -m session -P 3" "iscsiadm -m node" "lsblk -o NAME,SIZE,TYPE,MOUNTPOINTS,HCTL" "ls -l /dev/disk/by-path"; do
+    printf -- '--- %s\n' "$c"; $c 2>&1
+done
+printf -- '--- holders of iSCSI devices\n'
+for d in /dev/disk/by-path/*iqn.2015-12.com.oracleiaas:*; do
+    [ -e "$d" ] || continue
+    dev=$(readlink -f "$d"); printf '%s -> %s\n' "$d" "$dev"
+    ls /sys/class/block/"${dev##*/}"/holders 2>&1; fuser -v "$dev" 2>&1
+done
+printf -- '--- journalctl -u spinifex-ocibsd\n'; journalctl -u spinifex-ocibsd -n 300 --no-pager 2>&1
+printf -- '--- journalctl -k\n'; journalctl -k -n 150 --no-pager 2>&1
+DIAG
+        } >> "$GATE_LOG" || true
+    done
+}
+gate_die() {
+    gate_diagnose
+    die "$@"
+}
+
 ebs_provider_gate() {
     local host out ami snap_ami itype subnet iid az root_vol dot tok boot boots line
     local data_vol data_serial data_tok snap restored from to
@@ -1301,7 +1331,7 @@ ebs_provider_gate() {
         # The placement init read from the instance metadata must be where this run
         # built the nodes; compared on the node, so the compartment is never printed.
         ssh_node "$host" "WANT_COMPARTMENT='$OCIBSD_COMPARTMENT' WANT_AD='$OCIBSD_AD' bash -s" >> "$GATE_LOG" 2>&1 <<'REMOTE' \
-            || die "$host is not an ocibsd node as installed; see $GATE_LOG"
+            || gate_die "$host is not an ocibsd node as installed; see $GATE_LOG"
 fail() { echo "FAIL $(hostname -s): $*"; exit 1; }
 [ "$(systemctl is-enabled spinifex-viperblock.service 2>&1)" = masked ] \
     || fail "spinifex-viperblock.service is not masked"
@@ -1318,7 +1348,10 @@ sudo WANT_COMPARTMENT="$WANT_COMPARTMENT" WANT_AD="$WANT_AD" python3 - <<"PY" \
     || fail "a node in spinifex.toml is not on ocibsd where the nodes were built"
 import os, sys, tomllib
 nodes = tomllib.load(open("/etc/spinifex/spinifex.toml", "rb")).get("nodes", {})
-other = {n: v.get("ebs", {}).get("provider") for n, v in nodes.items() if v.get("ebs", {}).get("provider") != "ocibsd"}
+# Only tables with an ebs section: a leader also lists the other nodes, bare.
+# Each node's own table always has one, and this runs on every node.
+nodes = {n: v for n, v in nodes.items() if "ebs" in v}
+other = {n: v["ebs"].get("provider") for n, v in nodes.items() if v["ebs"].get("provider") != "ocibsd"}
 if not nodes or other:
     sys.exit("providers other than ocibsd: %r" % other)
 for n, v in sorted(nodes.items()):
@@ -1337,89 +1370,89 @@ REMOTE
     GATE_IMAGE=ubuntu-26.04-x86_64
     log "ebs provider gate: importing $GATE_IMAGE onto an OCI volume"
     out="$(ssh_node "${HOSTS[0]}" "sudo spx admin images import --name $GATE_IMAGE --config /etc/spinifex/spinifex.toml" 2>&1)" \
-        || { printf '%s\n' "$out" >> "$GATE_LOG"; die "importing $GATE_IMAGE failed; see $GATE_LOG"; }
+        || { printf '%s\n' "$out" >> "$GATE_LOG"; gate_die "importing $GATE_IMAGE failed; see $GATE_LOG"; }
     printf '%s\n' "$out" >> "$GATE_LOG"
     ami="$(printf '%s\n' "$out" | sed -n 's/.*Image-ID (AMI): \(ami-[0-9a-f]*\).*/\1/p' | tail -1)"
-    [ -n "$ami" ] || die "the import printed no AMI ID; see $GATE_LOG"
+    [ -n "$ami" ] || gate_die "the import printed no AMI ID; see $GATE_LOG"
     snap_ami="$(node_aws ec2 describe-images --image-ids "$ami" --query 'Images[0].BlockDeviceMappings[0].Ebs.SnapshotId')"
     [ "$(oci_count backups "spinifex-snapshot-id=$snap_ami" "spinifex-cluster=$OCIBSD_CLUSTER_ID")" = 1 ] \
-        || die "$ami's snapshot $snap_ami is not one OCI backup tagged with this cluster"
+        || gate_die "$ami's snapshot $snap_ami is not one OCI backup tagged with this cluster"
     record "ami import" PASS "$ami, snapshot $snap_ami is an OCI backup"
 
     itype="$(node_aws ec2 describe-instance-types \
         --query 'sort_by(InstanceTypes[?VCpuInfo.DefaultVCpus>=`2` && MemoryInfo.SizeInMiB>=`2048`], &MemoryInfo.SizeInMiB)[0].InstanceType')"
-    { [ -n "$itype" ] && [ "$itype" != None ]; } || die "no instance type with 2 vCPU and 2 GiB on this cluster"
+    { [ -n "$itype" ] && [ "$itype" != None ]; } || gate_die "no instance type with 2 vCPU and 2 GiB on this cluster"
     subnet="$(node_aws ec2 describe-subnets --filters Name=default-for-az,Values=true \
         --query 'Subnets[0].SubnetId' 2>>"$GATE_LOG")" || subnet=""
     [ "$subnet" != None ] || subnet=""
     write_gate_user_data "$STATE_DIR/ebs-gate-user-data.yaml"
     scp -i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -o LogLevel=ERROR -q "$STATE_DIR/ebs-gate-user-data.yaml" "ubuntu@${HOSTS[0]}:/tmp/ebs-gate-user-data.yaml" \
-        || die "could not copy the gate's user-data"
+        || gate_die "could not copy the gate's user-data"
 
     log "ebs provider gate: booting $itype from $ami"
     iid="$(node_aws ec2 run-instances --image-id "$ami" --instance-type "$itype" --count 1 \
         ${subnet:+--subnet-id "$subnet"} --user-data file:///tmp/ebs-gate-user-data.yaml \
         --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=ebs-provider-gate}]' \
-        --query 'Instances[0].InstanceId')" || die "run-instances from $ami failed"
-    node_aws ec2 wait instance-running --instance-ids "$iid" || die "$iid never reached running"
+        --query 'Instances[0].InstanceId')" || gate_die "run-instances from $ami failed"
+    node_aws ec2 wait instance-running --instance-ids "$iid" || gate_die "$iid never reached running"
     read -r az root_vol dot <<EOF
 $(node_aws ec2 describe-instances --instance-ids "$iid" \
     --query 'Reservations[0].Instances[0].[Placement.AvailabilityZone,BlockDeviceMappings[0].Ebs.VolumeId,BlockDeviceMappings[0].Ebs.DeleteOnTermination]')
 EOF
-    [ "$dot" = True ] || die "$iid's root volume $root_vol is not delete-on-termination"
+    [ "$dot" = True ] || gate_die "$iid's root volume $root_vol is not delete-on-termination"
     line="$(wait_console "$iid" 'SPXGATE boot=[0-9a-f-]+ root-written ' 900)" \
-        || die "$iid never reported its root marker on the console"
+        || gate_die "$iid never reported its root marker on the console"
     boot="$(printf '%s\n' "$line" | sed -n 's/.*boot=\([0-9a-f-]*\) .*/\1/p')"
     tok="${line##* }"
     boots="$boot"
     [ "$(oci_count volumes "spinifex-volume-id=$root_vol" "spinifex-cluster=$OCIBSD_CLUSTER_ID")" = 1 ] \
-        || die "$iid's root volume $root_vol is not one OCI volume tagged with this cluster"
+        || gate_die "$iid's root volume $root_vol is not one OCI volume tagged with this cluster"
     record "boot from ocibsd" PASS "$iid on $root_vol, an OCI volume tagged with this cluster"
 
     log "ebs provider gate: stop and start $iid"
-    node_aws ec2 stop-instances --instance-ids "$iid" >/dev/null || die "stop-instances $iid failed"
-    node_aws ec2 wait instance-stopped --instance-ids "$iid" || die "$iid never stopped"
-    node_aws ec2 start-instances --instance-ids "$iid" >/dev/null || die "start-instances $iid failed"
-    node_aws ec2 wait instance-running --instance-ids "$iid" || die "$iid never ran again"
+    node_aws ec2 stop-instances --instance-ids "$iid" >/dev/null || gate_die "stop-instances $iid failed"
+    node_aws ec2 wait instance-stopped --instance-ids "$iid" || gate_die "$iid never stopped"
+    node_aws ec2 start-instances --instance-ids "$iid" >/dev/null || gate_die "start-instances $iid failed"
+    node_aws ec2 wait instance-running --instance-ids "$iid" || gate_die "$iid never ran again"
     boot="$(wait_new_boot "$iid" "$tok" "$boots" 900)" \
-        || die "$iid did not find its root marker after a stop and start"
+        || gate_die "$iid did not find its root marker after a stop and start"
     boots="$boots $boot"
     record "stop and start" PASS "the root marker survived"
 
     log "ebs provider gate: attach and detach a data volume"
     data_vol="$(node_aws ec2 create-volume --availability-zone "$az" --size 1 --volume-type gp3 \
-        --query VolumeId)" || die "create-volume failed"
-    node_aws ec2 wait volume-available --volume-ids "$data_vol" || die "$data_vol never became available"
+        --query VolumeId)" || gate_die "create-volume failed"
+    node_aws ec2 wait volume-available --volume-ids "$data_vol" || gate_die "$data_vol never became available"
     node_aws ec2 attach-volume --volume-id "$data_vol" --instance-id "$iid" --device /dev/sdf >/dev/null \
-        || die "attach-volume $data_vol failed"
-    node_aws ec2 wait volume-in-use --volume-ids "$data_vol" || die "$data_vol never attached"
+        || gate_die "attach-volume $data_vol failed"
+    node_aws ec2 wait volume-in-use --volume-ids "$data_vol" || gate_die "$data_vol never attached"
     data_serial="${data_vol//-/}"
     line="$(wait_console "$iid" "SPXGATE boot=[0-9a-f-]+ data-written serial=$data_serial " 600)" \
-        || die "the guest never wrote to $data_vol"
+        || gate_die "the guest never wrote to $data_vol"
     data_tok="${line##* }"
     [ "$(oci_count volumes "spinifex-volume-id=$data_vol" "spinifex-cluster=$OCIBSD_CLUSTER_ID")" = 1 ] \
-        || die "$data_vol is not one OCI volume tagged with this cluster"
-    node_aws ec2 detach-volume --volume-id "$data_vol" >/dev/null || die "detach-volume $data_vol failed"
-    node_aws ec2 wait volume-available --volume-ids "$data_vol" || die "$data_vol never detached"
+        || gate_die "$data_vol is not one OCI volume tagged with this cluster"
+    node_aws ec2 detach-volume --volume-id "$data_vol" >/dev/null || gate_die "detach-volume $data_vol failed"
+    node_aws ec2 wait volume-available --volume-ids "$data_vol" || gate_die "$data_vol never detached"
     record "attach and detach" PASS "$data_vol written in the guest"
 
     log "ebs provider gate: snapshot, restore and read back"
     snap="$(node_aws ec2 create-snapshot --volume-id "$data_vol" --query SnapshotId)" \
-        || die "create-snapshot $data_vol failed"
-    node_aws ec2 wait snapshot-completed --snapshot-ids "$snap" || die "$snap never completed"
+        || gate_die "create-snapshot $data_vol failed"
+    node_aws ec2 wait snapshot-completed --snapshot-ids "$snap" || gate_die "$snap never completed"
     [ "$(oci_count backups "spinifex-snapshot-id=$snap" "spinifex-cluster=$OCIBSD_CLUSTER_ID")" = 1 ] \
-        || die "$snap is not one OCI backup tagged with this cluster"
+        || gate_die "$snap is not one OCI backup tagged with this cluster"
     restored="$(node_aws ec2 create-volume --availability-zone "$az" --snapshot-id "$snap" \
-        --volume-type gp3 --query VolumeId)" || die "create-volume from $snap failed"
-    node_aws ec2 wait volume-available --volume-ids "$restored" || die "$restored never became available"
+        --volume-type gp3 --query VolumeId)" || gate_die "create-volume from $snap failed"
+    node_aws ec2 wait volume-available --volume-ids "$restored" || gate_die "$restored never became available"
     node_aws ec2 attach-volume --volume-id "$restored" --instance-id "$iid" --device /dev/sdg >/dev/null \
-        || die "attach-volume $restored failed"
-    node_aws ec2 wait volume-in-use --volume-ids "$restored" || die "$restored never attached"
+        || gate_die "attach-volume $restored failed"
+    node_aws ec2 wait volume-in-use --volume-ids "$restored" || gate_die "$restored never attached"
     wait_console "$iid" "SPXGATE boot=[0-9a-f-]+ data-present serial=${restored//-/} $data_tok\$" 600 >/dev/null \
-        || die "the guest did not read $data_vol's marker back from $restored"
-    node_aws ec2 detach-volume --volume-id "$restored" >/dev/null || die "detach-volume $restored failed"
-    node_aws ec2 wait volume-available --volume-ids "$restored" || die "$restored never detached"
+        || gate_die "the guest did not read $data_vol's marker back from $restored"
+    node_aws ec2 detach-volume --volume-id "$restored" >/dev/null || gate_die "detach-volume $restored failed"
+    node_aws ec2 wait volume-available --volume-ids "$restored" || gate_die "$restored never detached"
     record "snapshot and restore" PASS "$snap restored to $restored with the marker intact"
 
     # A stopped instance restarts on its last node unless that node's daemon does
@@ -1428,27 +1461,27 @@ EOF
     if [ "$NODES" -gt 1 ]; then
         from="$(hosting_node "$iid")"
         log "ebs provider gate: moving $iid off $from"
-        node_aws ec2 stop-instances --instance-ids "$iid" >/dev/null || die "stop-instances $iid failed"
-        node_aws ec2 wait instance-stopped --instance-ids "$iid" || die "$iid never stopped"
-        ssh_node "$from" 'sudo systemctl stop spinifex-daemon.service' || die "could not stop the daemon on $from"
-        node_aws ec2 start-instances --instance-ids "$iid" >/dev/null || die "start-instances $iid failed"
-        node_aws ec2 wait instance-running --instance-ids "$iid" || die "$iid never ran on another node"
-        ssh_node "$from" 'sudo systemctl start spinifex-daemon.service' || die "could not restart the daemon on $from"
+        node_aws ec2 stop-instances --instance-ids "$iid" >/dev/null || gate_die "stop-instances $iid failed"
+        node_aws ec2 wait instance-stopped --instance-ids "$iid" || gate_die "$iid never stopped"
+        ssh_node "$from" 'sudo systemctl stop spinifex-daemon.service' || gate_die "could not stop the daemon on $from"
+        node_aws ec2 start-instances --instance-ids "$iid" >/dev/null || gate_die "start-instances $iid failed"
+        node_aws ec2 wait instance-running --instance-ids "$iid" || gate_die "$iid never ran on another node"
+        ssh_node "$from" 'sudo systemctl start spinifex-daemon.service' || gate_die "could not restart the daemon on $from"
         to="$(hosting_node "$iid")"
-        [ "$to" != "$from" ] || die "$iid started on $from again, so nothing moved"
+        [ "$to" != "$from" ] || gate_die "$iid started on $from again, so nothing moved"
         boot="$(wait_new_boot "$iid" "$tok" "$boots" 900)" \
-            || die "$iid did not find its root marker on $to"
+            || gate_die "$iid did not find its root marker on $to"
         record "cross-node start" PASS "$iid moved from $from to $to with its root marker"
     fi
 
     log "ebs provider gate: terminate and delete"
-    node_aws ec2 terminate-instances --instance-ids "$iid" >/dev/null || die "terminate-instances $iid failed"
-    node_aws ec2 wait instance-terminated --instance-ids "$iid" || die "$iid never terminated"
-    node_aws ec2 delete-volume --volume-id "$data_vol" || die "delete-volume $data_vol failed"
-    node_aws ec2 delete-volume --volume-id "$restored" || die "delete-volume $restored failed"
-    node_aws ec2 delete-snapshot --snapshot-id "$snap" || die "delete-snapshot $snap failed"
+    node_aws ec2 terminate-instances --instance-ids "$iid" >/dev/null || gate_die "terminate-instances $iid failed"
+    node_aws ec2 wait instance-terminated --instance-ids "$iid" || gate_die "$iid never terminated"
+    node_aws ec2 delete-volume --volume-id "$data_vol" || gate_die "delete-volume $data_vol failed"
+    node_aws ec2 delete-volume --volume-id "$restored" || gate_die "delete-volume $restored failed"
+    node_aws ec2 delete-snapshot --snapshot-id "$snap" || gate_die "delete-snapshot $snap failed"
     wait_gone_from_oci "$root_vol" "$data_vol" "$restored" "$snap" \
-        || die "OCI still holds a live volume or backup for $root_vol, $data_vol, $restored or $snap after 600s"
+        || gate_die "OCI still holds a live volume or backup for $root_vol, $data_vol, $restored or $snap after 600s"
     record "terminate" PASS "no OCI volume or backup left for the instance, its volumes or the snapshot"
 }
 

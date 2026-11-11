@@ -35,6 +35,7 @@ func TestOIDCPublisher_UnwiredAnswers500(t *testing.T) {
 }
 
 func TestOIDCPublisher_NoAccountBucketAnswers404(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	p := NewOIDCPublisher(testutil.NewJetStream(t, nc))
 
@@ -44,6 +45,7 @@ func TestOIDCPublisher_NoAccountBucketAnswers404(t *testing.T) {
 
 // A stored JWKS is written back as it is, even when it is not valid JSON.
 func TestOIDCPublisher_ServesStoredJWKSVerbatim(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	kv, err := GetOrCreateAccountBucket(t.Context(), js, oidcPubAccount)

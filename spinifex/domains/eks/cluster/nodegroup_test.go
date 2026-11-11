@@ -914,6 +914,7 @@ func TestUpdateNodegroupConfig_ConcurrentScaleUpConverges(t *testing.T) {
 // not a wrapped string the gateway sanitizes to 500. A generic launcher failure
 // still wraps, staying an opaque 500.
 func TestUpdateNodegroupConfig_CapacityErrorSurfacesCode(t *testing.T) {
+	t.Parallel()
 	scaleUpWithRunErr := func(t *testing.T, runErr error) error {
 		f := newEKSServiceFixture(t)
 		seedActiveClusterWithToken(t, f, "c1")
@@ -932,11 +933,13 @@ func TestUpdateNodegroupConfig_CapacityErrorSurfacesCode(t *testing.T) {
 	}
 
 	t.Run("capacity code preserved", func(t *testing.T) {
+		t.Parallel()
 		err := scaleUpWithRunErr(t, errors.New(awserrors.ErrorInsufficientInstanceCapacity))
 		require.EqualError(t, err, awserrors.ErrorInsufficientInstanceCapacity)
 	})
 
 	t.Run("wrapped capacity code preserved", func(t *testing.T) {
+		t.Parallel()
 		wrapped := fmt.Errorf("launch on node-1: %w", errors.New(awserrors.ErrorInsufficientInstanceCapacity))
 		err := scaleUpWithRunErr(t, wrapped)
 		require.EqualError(t, err, wrapped.Error())
@@ -946,6 +949,7 @@ func TestUpdateNodegroupConfig_CapacityErrorSurfacesCode(t *testing.T) {
 	})
 
 	t.Run("opaque error wrapped", func(t *testing.T) {
+		t.Parallel()
 		err := scaleUpWithRunErr(t, errors.New("kvm: out of host memory"))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "launch workers:")

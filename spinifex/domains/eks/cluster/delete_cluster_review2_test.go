@@ -155,7 +155,7 @@ func (b *blockingDeleteKV) Delete(ctx context.Context, key string, opts ...jetst
 func TestS8_EKSDeadlineDuringRecordRemovalIsRecorded(t *testing.T) {
 	f := newDeleteClusterFixture(t, "alpha")
 	orig := teardownPassTimeout
-	teardownPassTimeout = 300 * time.Millisecond
+	teardownPassTimeout = 150 * time.Millisecond
 	t.Cleanup(func() { teardownPassTimeout = orig })
 	_, err := f.kv.Put(t.Context(), "clusters/alpha/addons/vpc-cni", []byte(`{}`))
 	require.NoError(t, err)

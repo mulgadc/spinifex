@@ -95,7 +95,7 @@ func (r *rdsInstanceReaper) deleteInstance(ctx context.Context, accountID, id st
 // about. Every other invalid-state answer means the instance is busy, and
 // retrying the delete is what the drain loop already does.
 func isDeletionProtected(err error) bool {
-	return err != nil && strings.Contains(err.Error(), rdsinstance.DeletionProtectedMessage)
+	return err != nil && strings.Contains(err.Error(), "deletion protection")
 }
 
 type rdsSubnetGroupReaper struct {

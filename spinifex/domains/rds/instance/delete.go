@@ -19,9 +19,6 @@ import (
 
 var errFinalSnapshotInProgress = errors.New("rds: final DB snapshot creation is still in progress")
 
-// DeletionProtectedMessage is AWS's refusal text, which the account reaper matches to find the one refusal --force can clear.
-const DeletionProtectedMessage = "Cannot delete protected DB Instance, please disable deletion protection and try again."
-
 // errFinalSnapshotFailed holds a deletion in deleting with its data volume kept:
 // the final snapshot's EC2 snapshot ended in error, so the volume is the only copy.
 var errFinalSnapshotFailed = errors.New("rds: the final DB snapshot failed")
@@ -59,7 +56,7 @@ func (s *Service) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInsta
 	}
 	if rec.DeletionProtection {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterCombination,
-			DeletionProtectedMessage)
+			"Cannot delete protected DB Instance, please disable deletion protection and try again.")
 	}
 	if err := s.checkFinalSnapshotAvailable(ctx, kv, rec, finalSnapshot); err != nil {
 		return nil, err

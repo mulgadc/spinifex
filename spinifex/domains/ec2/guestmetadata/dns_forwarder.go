@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -16,9 +17,13 @@ import (
 // advertise up to 4096, so the relay buffer must not truncate below that.
 const maxDNSUDPSize = 4096
 
-// dnsExchangeTimeout bounds one backend attempt (UDP round-trip or TCP dial),
-// so failover across every backend stays inside a guest resolver's ~5s retry.
+// dnsExchangeTimeout is how long a UDP attempt runs before the next backend is
+// also tried, and bounds a TCP dial, so failover stays inside a guest's ~5s retry.
 const dnsExchangeTimeout = 2 * time.Second
+
+// dnsExchangeTotalTimeout bounds a UDP query across all attempts: above northstar's
+// 5s upstream read, so a slow answer is relayed, and below glibc's 10s total.
+const dnsExchangeTotalTimeout = 8 * time.Second
 
 // dnsTCPSessionTimeout bounds a proxied TCP DNS session end-to-end.
 const dnsTCPSessionTimeout = 30 * time.Second
@@ -84,10 +89,15 @@ func (b *dnsBackend) markUp() {
 type dnsForwarder struct {
 	backends    []*dnsBackend // northstar targets, health-tried healthy-first
 	timeout     time.Duration
+	total       time.Duration // whole-query bound; every attempt still gets timeout
 	cooldown    time.Duration // backend down-marking window (H3)
 	maxInFlight int           // per-tap concurrency cap (H2)
 	rate, burst int           // per-tap token-bucket query rate (H2)
 	now         func() time.Time
+
+	warnMu     sync.Mutex
+	nextWarnAt time.Time    // all-backends-failed is logged at Warn once per cooldown
+	inFlight   atomic.Int32 // open UDP attempts, for tests
 }
 
 func newDNSForwarder(targets []string) *dnsForwarder {
@@ -98,6 +108,7 @@ func newDNSForwarder(targets []string) *dnsForwarder {
 	return &dnsForwarder{
 		backends:    backends,
 		timeout:     dnsExchangeTimeout,
+		total:       dnsExchangeTotalTimeout,
 		cooldown:    dnsBackendCooldown,
 		maxInFlight: dnsMaxInFlightPerTap,
 		rate:        dnsQueryRatePerTap,
@@ -154,7 +165,7 @@ func (f *dnsForwarder) serveUDP(pc net.PacketConn) {
 			defer func() { <-sem }()
 			resp, err := f.exchangeUDP(query)
 			if err != nil {
-				slog.Debug("IMDS: DNS shim exchange failed on all backends", "err", err)
+				f.logAllBackendsFailed(err)
 				resp = servfail(query)
 				if resp == nil {
 					return
@@ -167,34 +178,91 @@ func (f *dnsForwarder) serveUDP(pc net.PacketConn) {
 	}
 }
 
-// exchangeUDP relays one query to the backends healthy-first, returning the first
-// answer received within the per-backend timeout. A failing backend is marked
-// down for the cooldown window; a responding one is marked healthy again.
+// exchangeUDP relays one query to the backends healthy-first. A backend that has
+// not answered within the per-backend timeout stays open while the next is tried,
+// and the first answer wins, so a slow but valid answer is relayed, not SERVFAILed.
 func (f *dnsForwarder) exchangeUDP(query []byte) ([]byte, error) {
-	var lastErr error
-	for _, b := range f.ordered(f.now()) {
-		resp, err := f.exchangeUDPOnce(b.addr, query)
-		if err != nil {
-			b.markDown(f.now(), f.cooldown)
-			lastErr = err
-			continue
-		}
-		b.markUp()
-		return resp, nil
+	backends := f.ordered(f.now())
+	if len(backends) == 0 {
+		return nil, errors.New("no DNS backends configured")
 	}
-	if lastErr == nil {
-		lastErr = errors.New("no DNS backends configured")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type result struct {
+		i    int
+		resp []byte
+		err  error
+	}
+	results := make(chan result, len(backends))
+	overall := time.Now().Add(f.total)
+	started := make([]time.Time, len(backends))
+	done := make([]bool, len(backends))
+	next, open := 0, 0
+	launch := func() {
+		i := next
+		started[i] = time.Now()
+		deadline := started[i].Add(f.timeout)
+		if overall.After(deadline) {
+			deadline = overall
+		}
+		next++
+		open++
+		f.inFlight.Add(1)
+		go func() {
+			defer f.inFlight.Add(-1)
+			resp, err := f.exchangeUDPOnce(ctx, backends[i].addr, query, deadline)
+			results <- result{i: i, resp: resp, err: err}
+		}()
+	}
+
+	launch()
+	hop := time.NewTimer(f.timeout)
+	defer hop.Stop()
+	var lastErr error
+	for open > 0 {
+		select {
+		case r := <-results:
+			open--
+			done[r.i] = true
+			if r.err == nil {
+				backends[r.i].markUp()
+				for j := range next {
+					if !done[j] && time.Since(started[j]) >= f.timeout {
+						backends[j].markDown(f.now(), f.cooldown)
+					}
+				}
+				return r.resp, nil
+			}
+			backends[r.i].markDown(f.now(), f.cooldown)
+			lastErr = r.err
+			if next < len(backends) {
+				launch()
+				hop.Reset(f.timeout)
+			}
+		case <-hop.C:
+			if next < len(backends) {
+				launch()
+				hop.Reset(f.timeout)
+			}
+		}
 	}
 	return nil, lastErr
 }
 
-func (f *dnsForwarder) exchangeUDPOnce(target string, query []byte) ([]byte, error) {
+// exchangeUDPOnce runs one attempt until deadline; cancelling ctx closes its
+// socket, so an attempt that lost the race does not outlive the query.
+func (f *dnsForwarder) exchangeUDPOnce(ctx context.Context, target string, query []byte, deadline time.Time) ([]byte, error) {
 	conn, err := net.DialTimeout("udp", target, f.timeout)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = conn.Close() }()
-	if err := conn.SetDeadline(time.Now().Add(f.timeout)); err != nil {
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer func() {
+		stop()
+		_ = conn.Close()
+	}()
+	if err := conn.SetDeadline(deadline); err != nil {
 		return nil, err
 	}
 	if _, err := conn.Write(query); err != nil {
@@ -206,6 +274,23 @@ func (f *dnsForwarder) exchangeUDPOnce(target string, query []byte) ([]byte, err
 		return nil, err
 	}
 	return buf[:n], nil
+}
+
+// logAllBackendsFailed reports a SERVFAIL at Warn at most once per cooldown, so a
+// guest flooding a dead backend cannot flood the log; the rest stay at Debug.
+func (f *dnsForwarder) logAllBackendsFailed(err error) {
+	now := f.now()
+	f.warnMu.Lock()
+	warn := !now.Before(f.nextWarnAt)
+	if warn {
+		f.nextWarnAt = now.Add(f.cooldown)
+	}
+	f.warnMu.Unlock()
+	if warn {
+		slog.Warn("IMDS: DNS shim exchange failed on all backends", "backends", len(f.backends), "err", err)
+		return
+	}
+	slog.Debug("IMDS: DNS shim exchange failed on all backends", "backends", len(f.backends), "err", err)
 }
 
 // serveTCP accepts guest TCP DNS sessions (truncated-response retries) and

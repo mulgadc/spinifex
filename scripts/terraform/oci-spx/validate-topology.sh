@@ -1261,7 +1261,12 @@ write_files:
               s=$(serial "$d")
               case "$s" in vol*) ;; *) continue ;; esac
               case "$seen" in *" $d "*) next="$next$d "; continue ;; esac
-              head=$(dd if="/dev/$d" bs=4096 count=1 iflag=direct 2>/dev/null | head -c 64 | tr -d '\000')
+              # A failed or short read is not a blank disk: overwriting it would destroy the marker.
+              if ! dd if="/dev/$d" of=/run/spx-gate-head bs=4096 count=1 iflag=direct 2>/dev/null \
+                  || [ "$(stat -c %s /run/spx-gate-head)" != 4096 ]; then
+                  say "data-unreadable serial=$s"; continue
+              fi
+              head=$(head -c 64 /run/spx-gate-head | tr -d '\000')
               case "$head" in
                   "SPXGATE-DATA "*)
                       say "data-present serial=$s ${head#SPXGATE-DATA }"; next="$next$d " ;;

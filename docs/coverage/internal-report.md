@@ -8,7 +8,7 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 
 ## acm
 
-`2015-12-08` — 9 of 40 modelled operations implemented (22.5%), 0 stubbed, 0 not applicable, 0 registered outside the pinned model.
+`2015-12-08` — 9 of 40 modelled operations implemented (22.5%), 0 stubbed, 25 require SDK v2, 0 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -49,7 +49,7 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 
 ## ec2
 
-`2016-11-15` — 127 of 811 modelled operations implemented (15.7%), 0 stubbed, 39 not applicable, 0 registered outside the pinned model.
+`2016-11-15` — 127 of 811 modelled operations implemented (15.7%), 0 stubbed, 186 require SDK v2, 39 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -775,7 +775,7 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 ## ecr
 
-`2015-09-21` — 23 of 62 modelled operations implemented (37.1%), 10 stubbed, 0 not applicable, 3 registered outside the pinned model.
+`2015-09-21` — 23 of 62 modelled operations implemented (37.1%), 10 stubbed, 15 require SDK v2, 0 not applicable, 3 registered outside the pinned model.
 
 ### Not implemented
 
@@ -839,7 +839,7 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 ## ecs
 
-`2014-11-13` — 31 of 88 modelled operations implemented (35.2%), 5 stubbed, 0 not applicable, 3 registered outside the pinned model.
+`2014-11-13` — 31 of 88 modelled operations implemented (35.2%), 5 stubbed, 32 require SDK v2, 0 not applicable, 3 registered outside the pinned model.
 
 ### Not implemented
 
@@ -915,7 +915,7 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 ## eks
 
-`2017-11-01` — 27 of 70 modelled operations implemented (38.6%), 0 stubbed, 0 not applicable, 5 registered outside the pinned model.
+`2017-11-01` — 27 of 70 modelled operations implemented (38.6%), 0 stubbed, 14 require SDK v2, 0 not applicable, 5 registered outside the pinned model.
 
 ### Not implemented
 
@@ -976,7 +976,7 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 ## elasticloadbalancingv2
 
-`2015-12-01` — 36 of 51 modelled operations implemented (70.6%), 0 stubbed, 0 not applicable, 2 registered outside the pinned model.
+`2015-12-01` — 36 of 51 modelled operations implemented (70.6%), 0 stubbed, 3 require SDK v2, 0 not applicable, 2 registered outside the pinned model.
 
 ### Not implemented
 
@@ -1006,7 +1006,7 @@ spot-price: On owned hardware there is no spot-to-on-demand price differential, 
 
 ## iam
 
-`2010-05-08` — 82 of 180 modelled operations implemented (45.6%), 0 stubbed, 19 not applicable, 0 registered outside the pinned model.
+`2010-05-08` — 82 of 180 modelled operations implemented (45.6%), 0 stubbed, 21 require SDK v2, 19 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -1128,7 +1128,7 @@ signing-certificates: X.509 signing certificates are an EC2-Classic SOAP credent
 
 ## rds
 
-`2014-10-31` — 27 of 168 modelled operations implemented (16.1%), 0 stubbed, 4 not applicable, 5 registered outside the pinned model.
+`2014-10-31` — 27 of 168 modelled operations implemented (16.1%), 0 stubbed, 6 require SDK v2, 4 not applicable, 5 registered outside the pinned model.
 
 ### Not implemented
 
@@ -1295,7 +1295,7 @@ option-groups: Option groups configure engine add-ons for engines this platform 
 
 ## route53
 
-`2013-04-01` — 13 of 71 modelled operations implemented (18.3%), 0 stubbed, 0 not applicable, 0 registered outside the pinned model.
+`2013-04-01` — 13 of 71 modelled operations implemented (18.3%), 0 stubbed, 1 require SDK v2, 0 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -1363,7 +1363,7 @@ option-groups: Option groups configure engine add-ons for engines this platform 
 
 ## s3
 
-`2006-03-01` — 26 of 112 modelled operations implemented (23.2%), 0 stubbed, 6 not applicable, 0 registered outside the pinned model.
+`2006-03-01` — 26 of 112 modelled operations implemented (23.2%), 0 stubbed, 17 require SDK v2, 6 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -1473,7 +1473,7 @@ request-payment: Requester Pays shifts transfer charges to the caller, which nee
 
 ## sqs
 
-`2012-11-05` — 15 of 23 modelled operations implemented (65.2%), 0 stubbed, 0 not applicable, 0 registered outside the pinned model.
+`2012-11-05` — 15 of 23 modelled operations implemented (65.2%), 0 stubbed, 0 require SDK v2, 0 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -1488,7 +1488,7 @@ request-payment: Requester Pays shifts transfer charges to the caller, which nee
 
 ## sts
 
-`2011-06-15` — 5 of 11 modelled operations implemented (45.5%), 0 stubbed, 0 not applicable, 0 registered outside the pinned model.
+`2011-06-15` — 5 of 11 modelled operations implemented (45.5%), 0 stubbed, 3 require SDK v2, 0 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 

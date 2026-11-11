@@ -74,6 +74,10 @@ func TestRequiresSDKV2IsRenderedInJSONAndPages(t *testing.T) {
 		t.Errorf("JSON does not carry the split:\n%s", contents)
 	}
 
+	if !strings.Contains(contents, `"schema_version": 1,`) {
+		t.Errorf("schema_version must stay 1: capability_profiles.py rejects any other version:\n%s", contents)
+	}
+
 	pages := testPageSet(t)
 	page, err := awsmodel.RenderServicePage(coverage, pages, "")
 	if err != nil {
@@ -96,5 +100,33 @@ func TestRequiresSDKV2IsRenderedInJSONAndPages(t *testing.T) {
 	report := awsmodel.RenderInternalReport([]awsmodel.OperationCoverage{coverage}, pages)
 	if !strings.Contains(report, "### Requires SDK v2") || strings.Contains(report, "### Not implemented") {
 		t.Errorf("internal report does not separate the SDK v2 list:\n%s", report)
+	}
+}
+
+func TestIndexAndReportCountSDKV2PerService(t *testing.T) {
+	sts := awsmodel.OperationCoverage{
+		Service: awsmodel.STS, APIVersion: "2011-06-15",
+		Modelled: []string{"A", "B", "C"}, Registered: []string{"A"}, Implemented: []string{"A"},
+		RequiresSDKV2: []string{"B", "C"},
+	}
+	iam := awsmodel.OperationCoverage{
+		Service: awsmodel.IAM, APIVersion: "2010-05-08",
+		Modelled: []string{"A", "B"}, Registered: []string{"A"}, Implemented: []string{"A"},
+		RequiresSDKV2: []string{"B"},
+	}
+	coverages := []awsmodel.OperationCoverage{sts, iam}
+	pages := testPageSet(t)
+	index, err := awsmodel.RenderIndexPage(coverages, pages, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []string{"| [IAM](/coverage/iam) | 1 | 1 |", "| [STS](/coverage/sts) | 1 | 2 |", "| **Total** | **2** | **3** |"} {
+		if !strings.Contains(index, row) {
+			t.Errorf("index lacks row %q:\n%s", row, index)
+		}
+	}
+	report := awsmodel.RenderInternalReport(coverages, pages)
+	if !strings.Contains(report, "0 stubbed, 2 require SDK v2,") || !strings.Contains(report, "0 stubbed, 1 require SDK v2,") {
+		t.Errorf("internal report summary lacks per-service SDK v2 counts:\n%s", report)
 	}
 }

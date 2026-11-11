@@ -283,9 +283,9 @@ func RenderInternalReport(coverages []OperationCoverage, pages PageSet) string {
 		notApplicable = append(notApplicable, declaredRefusals...)
 		sort.Strings(notApplicable)
 
-		fmt.Fprintf(&report, "`%s` — %d of %d modelled operations implemented (%.1f%%), %d stubbed, %d not applicable, %d registered outside the pinned model.\n\n",
+		fmt.Fprintf(&report, "`%s` — %d of %d modelled operations implemented (%.1f%%), %d stubbed, %d require SDK v2, %d not applicable, %d registered outside the pinned model.\n\n",
 			coverage.APIVersion, len(coverage.Implemented), len(coverage.Modelled), coverage.ImplementedPercent(),
-			len(coverage.Stubbed), len(notApplicable), len(coverage.Extra))
+			len(coverage.Stubbed), len(requiresSDKV2), len(notApplicable), len(coverage.Extra))
 		writeOperationList(&report, "Not implemented", missing)
 		writeOperationList(&report, "Requires SDK v2 (not work until the SDK v2 migration)", requiresSDKV2)
 		writeOperationList(&report, "Stubbed", coverage.Stubbed)

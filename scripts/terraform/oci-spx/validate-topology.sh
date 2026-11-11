@@ -1518,9 +1518,15 @@ EOF
     log "ebs provider gate: terminate and delete"
     node_aws ec2 terminate-instances --instance-ids "$iid" >/dev/null || gate_die "terminate-instances $iid failed"
     node_aws ec2 wait instance-terminated --instance-ids "$iid" || gate_die "$iid never terminated"
-    node_aws ec2 delete-volume --volume-id "$data_vol" || gate_die "delete-volume $data_vol failed"
+    # Spinifex refuses DeleteVolume on a volume with a snapshot and DeleteSnapshot on
+    # one a live volume came from, so the restore goes first and the source last.
     node_aws ec2 delete-volume --volume-id "$restored" || gate_die "delete-volume $restored failed"
     node_aws ec2 delete-snapshot --snapshot-id "$snap" || gate_die "delete-snapshot $snap failed"
+    local deadline=$((SECONDS + 300))
+    until node_aws ec2 delete-volume --volume-id "$data_vol" 2>>"$GATE_LOG"; do
+        [ "$SECONDS" -lt "$deadline" ] || gate_die "delete-volume $data_vol still refused 300s after $snap was deleted"
+        sleep 10
+    done
     wait_gone_from_oci "$root_vol" "$data_vol" "$restored" "$snap" \
         || gate_die "OCI still holds a live volume or backup for $root_vol, $data_vol, $restored or $snap after 600s"
     record "terminate" PASS "no OCI volume or backup left for the instance, its volumes or the snapshot"

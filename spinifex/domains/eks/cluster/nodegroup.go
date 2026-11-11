@@ -1232,11 +1232,11 @@ func (s *EKSServiceImpl) deleteNodegroup(ctx context.Context, acctKV jetstream.K
 	if err := requireCluster(ctx, acctKV, cluster); err != nil {
 		return nil, err
 	}
-	rec, err := s.markNodegroupDeleting(ctx, acctKV, cluster, ng)
+	rec, marked, err := s.markNodegroupDeleting(ctx, acctKV, cluster, ng)
 	if err != nil {
 		return nil, err
 	}
-	if !s.noDeleteKick {
+	if marked && !s.noDeleteKick {
 		s.startNodegroupDelete(accountID, acctKV, cluster, ng)
 	}
 	return &eks.DeleteNodegroupOutput{Nodegroup: nodegroupRecordToAWS(rec)}, nil
@@ -1245,17 +1245,21 @@ func (s *EKSServiceImpl) deleteNodegroup(ctx context.Context, acctKV jetstream.K
 // markNodegroupDeleting records DELETING and returns. The workers, the profile
 // and the record itself are the nodegroup reaper's to remove, so the request
 // never waits on work that scales with the group (a launching group is refused).
-func (s *EKSServiceImpl) markNodegroupDeleting(ctx context.Context, kv jetstream.KeyValue, cluster, ng string) (*NodegroupRecord, error) {
+// A group already DELETING is answered from its record with marked=false.
+func (s *EKSServiceImpl) markNodegroupDeleting(ctx context.Context, kv jetstream.KeyValue, cluster, ng string) (rec *NodegroupRecord, marked bool, err error) {
 	for range ngCASMaxRetries {
 		rec, rev, err := getNodegroupEntry(ctx, kv, cluster, ng)
 		if err != nil {
 			if errors.Is(err, ErrNodegroupNotFound) {
-				return nil, nodegroupNotFound(ng)
+				return nil, false, nodegroupNotFound(ng)
 			}
-			return nil, err
+			return nil, false, err
 		}
-		if rec.Status == eks.NodegroupStatusDeleting || rec.Status == eks.NodegroupStatusCreating {
-			return nil, errors.New(awserrors.ErrorEKSResourceInUse)
+		if rec.Status == eks.NodegroupStatusDeleting {
+			return rec, false, nil
+		}
+		if rec.Status == eks.NodegroupStatusCreating {
+			return nil, false, errors.New(awserrors.ErrorEKSResourceInUse)
 		}
 		now := time.Now().UTC()
 		rec.Status = eks.NodegroupStatusDeleting
@@ -1266,13 +1270,13 @@ func (s *EKSServiceImpl) markNodegroupDeleting(ctx context.Context, kv jetstream
 		rec.ModifiedAt = now
 		ok, err := s.casPutNodegroup(ctx, kv, rec, rev)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if ok {
-			return rec, nil
+			return rec, true, nil
 		}
 	}
-	return nil, errors.New(awserrors.ErrorServerInternal)
+	return nil, false, errors.New(awserrors.ErrorServerInternal)
 }
 
 // decryptNodeToken reads + decrypts the cluster's K3s join token from KV.

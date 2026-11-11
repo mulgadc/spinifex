@@ -563,6 +563,44 @@ func TestProjectDBSnapshot_ReportsProgressOnlyWhenTheDataExists(t *testing.T) {
 	assert.Equal(t, int64(100), aws.Int64Value(h.svc.projectDBSnapshot(&rec).PercentProgress))
 }
 
+// AWS reports the source instance's zone, handle and creation time on every
+// snapshot, plus static members for features the instance lacks; describe adds
+// MultiTenant and drops the empty ProcessorFeatures.
+func TestDBSnapshot_ReportsTheSourceInstanceAsItWasTaken(t *testing.T) {
+	t.Parallel()
+	h := newSnapshotHarness(t, false)
+	rec := availableRecord()
+	rec.DbiResourceID = "db-ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	rec.CreatedAt = time.Date(2026, 11, 11, 1, 5, 2, 0, time.UTC)
+	seedInstance(t, h.svc, rec)
+
+	created, err := h.svc.CreateDBSnapshot(t.Context(), snapshotInput(), testAccountID)
+	require.NoError(t, err)
+	described, err := h.svc.DescribeDBSnapshots(t.Context(), &rds.DescribeDBSnapshotsInput{
+		DBSnapshotIdentifier: aws.String(testSnapshotID),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, described.DBSnapshots, 1)
+
+	for name, snap := range map[string]*rds.DBSnapshot{"create": created.DBSnapshot, "describe": described.DBSnapshots[0]} {
+		assert.Equal(t, "ap-southeast-2a", aws.StringValue(snap.AvailabilityZone), name)
+		assert.Equal(t, rec.DbiResourceID, aws.StringValue(snap.DbiResourceId), name)
+		assert.Equal(t, rec.CreatedAt, aws.TimeValue(snap.InstanceCreateTime), name)
+		assert.Equal(t, aws.TimeValue(snap.SnapshotCreateTime), aws.TimeValue(snap.OriginalSnapshotCreateTime), name)
+		assert.Equal(t, "region", aws.StringValue(snap.SnapshotTarget), name)
+		require.NotNil(t, snap.IAMDatabaseAuthenticationEnabled, name)
+		assert.False(t, *snap.IAMDatabaseAuthenticationEnabled, name)
+		require.NotNil(t, snap.DedicatedLogVolume, name)
+		assert.False(t, *snap.DedicatedLogVolume, name)
+	}
+	assert.NotNil(t, created.DBSnapshot.ProcessorFeatures)
+	assert.Empty(t, created.DBSnapshot.ProcessorFeatures)
+	assert.Nil(t, created.DBSnapshot.MultiTenant)
+	assert.Nil(t, described.DBSnapshots[0].ProcessorFeatures)
+	require.NotNil(t, described.DBSnapshots[0].MultiTenant)
+	assert.False(t, *described.DBSnapshots[0].MultiTenant)
+}
+
 // The EC2 snapshot is tagged with the DB snapshot identifier before the record
 // is flipped, so its presence is what says the data exists.
 func TestReconciler_AdoptsTheEC2SnapshotOfAnUnfinishedDBSnapshot(t *testing.T) {

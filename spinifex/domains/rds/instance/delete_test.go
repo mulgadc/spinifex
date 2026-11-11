@@ -189,7 +189,7 @@ func TestReconciler_AdoptsAnInterruptedFinalSnapshot(t *testing.T) {
 
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	creating := newDBSnapshotRecord(testAccountID, &rec, &validatedSnapshot{
+	creating := h.svc.newDBSnapshotRecord(testAccountID, &rec, &validatedSnapshot{
 		DBSnapshotIdentifier: rec.FinalSnapshotIdentifier,
 		Tags:                 rec.Tags,
 	})

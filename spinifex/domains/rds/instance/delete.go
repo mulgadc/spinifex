@@ -363,7 +363,7 @@ func (s *Service) reserveFinalSnapshot(ctx context.Context, kv *kvstore.Bucket, 
 
 	// Manual, deliberately: the customer named it, so only the customer removes it
 	// — which is also what keeps the retention sweep away from it.
-	record := newDBSnapshotRecord(accountID, rec, &validatedSnapshot{
+	record := s.newDBSnapshotRecord(accountID, rec, &validatedSnapshot{
 		DBSnapshotIdentifier: identifier,
 		SnapshotType:         SnapshotTypeManual,
 		Tags:                 rec.Tags,

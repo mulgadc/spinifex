@@ -60,3 +60,27 @@ That behaviour is measured separately, against the `ceph/s3-tests` suite Ceph RG
 | `PutObject` |
 | `UploadPart` |
 | `UploadPartCopy` |
+
+### Requires AWS SDK v2
+
+These 17 operations are in the pinned AWS model but not in AWS SDK for Go v1, the SDK Spinifex is built and tested on. They are out of scope until Spinifex moves to AWS SDK v2.
+
+| Operation |
+|---|
+| `CreateBucketMetadataConfiguration` |
+| `CreateBucketMetadataTableConfiguration` |
+| `DeleteBucketMetadataConfiguration` |
+| `DeleteBucketMetadataTableConfiguration` |
+| `DeleteObjectAnnotation` |
+| `GetBucketAbac` |
+| `GetBucketMetadataConfiguration` |
+| `GetBucketMetadataTableConfiguration` |
+| `GetObjectAnnotation` |
+| `ListObjectAnnotations` |
+| `PutBucketAbac` |
+| `PutObjectAnnotation` |
+| `RenameObject` |
+| `UpdateBucketMetadataAnnotationTableConfiguration` |
+| `UpdateBucketMetadataInventoryTableConfiguration` |
+| `UpdateBucketMetadataJournalTableConfiguration` |
+| `UpdateObjectEncryption` |

@@ -33,3 +33,5 @@ The platform serves **406 operations** across the AWS APIs below. Every page nam
 | [S3](/coverage/s3) | 26 |
 | [STS](/coverage/sts) | 5 |
 | **Total** | **406** |
+
+A further **323 operations** in the pinned models are not in AWS SDK for Go v1, the SDK Spinifex is built and tested on. They are out of scope until Spinifex moves to AWS SDK v2; each service page lists its own under Requires AWS SDK v2.

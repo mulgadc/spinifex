@@ -146,6 +146,13 @@ func (p *Provider) snapshotPath(snapshotID string) string {
 	return filepath.Join(p.baseDir, "snapshots", snapshotID+".qcow2")
 }
 
+// partialSnapshotPath is where a snapshot's file is written before it is
+// renamed to snapshotPath. It does not end in .qcow2, so no listing, lookup or
+// create ever counts it as a snapshot.
+func (p *Provider) partialSnapshotPath(snapshotID string) string {
+	return filepath.Join(p.baseDir, "snapshots", "."+snapshotID+".qcow2.partial")
+}
+
 func (p *Provider) socketPath(volumeID string) string {
 	return filepath.Join(p.baseDir, "sockets", volumeID+".sock")
 }
@@ -513,11 +520,10 @@ func (p *Provider) CreateSnapshot(ctx context.Context, req ebsprovider.CreateSna
 		}
 		return p.buildSnapshot(ctx, req.SnapshotID, meta.sourceVolumeID, snapPath)
 	}
-	// A file on disk with no matching snapshotMeta entry means the provider
-	// restarted since it was created: the source-volume link lived only in
-	// memory and cannot be recovered, so the ID is refused rather than silently overwritten or accepted without provenance.
+	// The provider restarted since it took this snapshot, so its source is
+	// unknown; the control plane mints each ID once, so this is a repeat.
 	if _, err := os.Stat(snapPath); err == nil {
-		return nil, fmt.Errorf("%w: snapshot %s", ebsprovider.ErrAlreadyExists, req.SnapshotID)
+		return p.buildSnapshot(ctx, req.SnapshotID, "", snapPath)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
@@ -538,7 +544,10 @@ func (p *Provider) CreateSnapshot(ctx context.Context, req ebsprovider.CreateSna
 	if pub, ok := p.published[req.VolumeID]; ok && !pub.dead() {
 		return nil, fmt.Errorf("%w: volume %s is published, so it cannot be snapshotted until it is unpublished", ebsprovider.ErrVolumeInUse, req.VolumeID)
 	}
-	if _, err := p.run.Run(ctx, "qemu-img", "convert", "-O", "qcow2", volPath, snapPath); err != nil {
+	if err := p.writeSnapshotFile(req.SnapshotID, func(partial string) error {
+		_, err := p.run.Run(ctx, "qemu-img", "convert", "-O", "qcow2", volPath, partial)
+		return err
+	}); err != nil {
 		return nil, fmt.Errorf("create snapshot %s: %w", req.SnapshotID, err)
 	}
 	p.snapshotMeta[req.SnapshotID] = snapshotMeta{sourceVolumeID: req.VolumeID}
@@ -549,8 +558,11 @@ func (p *Provider) CreateSnapshot(ctx context.Context, req ebsprovider.CreateSna
 // snapshot that outlived the process still appears. Its SourceVolumeID comes
 // back empty in that case: the link was only ever in memory.
 func (p *Provider) ListSnapshots(_ context.Context, req ebsprovider.ListSnapshotsRequest) (*ebsprovider.ListSnapshotsResponse, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := ebsprovider.CheckListSnapshotsVersion(req); err != nil {
 		return nil, err
+	}
+	if req.SnapshotID != "" {
+		return p.filteredSnapshot(req)
 	}
 	entries, err := os.ReadDir(filepath.Join(p.baseDir, "snapshots"))
 	if err != nil {
@@ -563,13 +575,39 @@ func (p *Provider) ListSnapshots(_ context.Context, req ebsprovider.ListSnapshot
 	response := &ebsprovider.ListSnapshotsResponse{Versioned: ebsprovider.ReplyVersioned(req.SchemaVersion)}
 	response.Snapshots, response.NextToken = ebsprovider.Page(qcow2IDs(entries), req.StartingToken, int(req.PageSize()),
 		func(id string) ebsprovider.SnapshotRef {
-			return ebsprovider.SnapshotRef{
-				ID:             id,
-				SourceVolumeID: p.snapshotMeta[id].sourceVolumeID,
-				Handle:         p.snapshotPath(id),
-			}
+			return p.snapshotRef(req.SchemaVersion, id)
 		})
 	return response, nil
+}
+
+// filteredSnapshot answers a ListSnapshots filtered on one ID from its file. An
+// ID that is not a single path element names no file this provider wrote.
+func (p *Provider) filteredSnapshot(req ebsprovider.ListSnapshotsRequest) (*ebsprovider.ListSnapshotsResponse, error) {
+	if filepath.Base(req.SnapshotID) != req.SnapshotID {
+		return ebsprovider.FilteredSnapshots(req, nil), nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, err := os.Stat(p.snapshotPath(req.SnapshotID)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ebsprovider.FilteredSnapshots(req, nil), nil
+		}
+		return nil, fmt.Errorf("qemunbdd: stat snapshot %s: %w", req.SnapshotID, err)
+	}
+	ref := p.snapshotRef(req.SchemaVersion, req.SnapshotID)
+	return ebsprovider.FilteredSnapshots(req, &ref), nil
+}
+
+// snapshotRef is snapshotID as a ref in a reply at version. Every snapshot is
+// completed, because CreateSnapshot copies it before answering. The caller
+// holds p.mu.
+func (p *Provider) snapshotRef(version uint16, snapshotID string) ebsprovider.SnapshotRef {
+	return ebsprovider.SnapshotRef{
+		ID:             snapshotID,
+		SourceVolumeID: p.snapshotMeta[snapshotID].sourceVolumeID,
+		Handle:         p.snapshotPath(snapshotID),
+		State:          ebsprovider.RefState(version, ebsprovider.SnapshotStateCompleted),
+	}
 }
 
 // snapshotInUse reports whether any volume file still points at snapPath as
@@ -669,11 +707,59 @@ func (p *Provider) CopySnapshot(ctx context.Context, req ebsprovider.CopySnapsho
 	}
 
 	srcPath := p.snapshotPath(req.SourceSnapshotID)
-	if err := copyFile(srcPath, dstPath); err != nil {
+	if err := p.writeSnapshotFile(req.DestinationSnapshotID, func(partial string) error {
+		return copyFile(srcPath, partial)
+	}); err != nil {
 		return nil, fmt.Errorf("copy snapshot %s to %s: %w", req.SourceSnapshotID, req.DestinationSnapshotID, err)
 	}
 	p.snapshotMeta[req.DestinationSnapshotID] = snapshotMeta{sourceVolumeID: req.VolumeID}
 	return p.buildSnapshot(ctx, req.DestinationSnapshotID, req.VolumeID, dstPath)
+}
+
+// writeSnapshotFile has write fill the snapshot's partial file, then syncs it
+// and renames it to the snapshot's name, so an interrupted write never leaves a
+// file there. A partial file an earlier interrupted write left is replaced.
+func (p *Provider) writeSnapshotFile(snapshotID string, write func(partial string) error) error {
+	partial := p.partialSnapshotPath(snapshotID)
+	if err := removeIfExists(partial); err != nil {
+		return fmt.Errorf("remove partial snapshot file: %w", err)
+	}
+	if err := write(partial); err != nil {
+		return errors.Join(err, removeIfExists(partial))
+	}
+	if err := syncPath(partial); err != nil {
+		return errors.Join(fmt.Errorf("sync partial snapshot file: %w", err), removeIfExists(partial))
+	}
+	final := p.snapshotPath(snapshotID)
+	if err := os.Rename(partial, final); err != nil {
+		return errors.Join(fmt.Errorf("publish snapshot file: %w", err), removeIfExists(partial))
+	}
+	// Without the directory's sync the rename may not survive a crash, so the
+	// snapshot is not reported until it has; a failure unpublishes it.
+	if err := syncPath(filepath.Dir(final)); err != nil {
+		return errors.Join(fmt.Errorf("sync snapshots directory: %w", err), removeIfExists(final))
+	}
+	return nil
+}
+
+// syncPath flushes a file's or a directory's contents to stable storage.
+func syncPath(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func removeIfExists(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // copyFile duplicates a snapshot file directly: CopySnapshot's job is to

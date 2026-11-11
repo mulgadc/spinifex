@@ -229,9 +229,14 @@ func (s *VolumeServiceImpl) createVolume(ctx context.Context, input *ec2.CreateV
 		// The ownership check is the key: a snapshot outside the caller's prefix
 		// is not found, so the endpoint never confirms another account's IDs.
 		snapMeta, err := s.metadata.GetSnapshot(ctx, accountID, snapshotID)
-		if err != nil {
+		if err != nil || snapMeta.Hidden() {
 			slog.ErrorContext(ctx, "CreateVolume: snapshot not found", "snapshotId", snapshotID, "err", err)
 			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
+		}
+		// A pending snapshot's contents are not readable yet, and an errored
+		// one's never are.
+		if !snapMeta.Ready() {
+			return nil, snapMeta.NotReadyError()
 		}
 		sourceVolumeName = snapMeta.VolumeID
 		snapshotSizeGiB = snapMeta.VolumeSize

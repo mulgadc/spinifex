@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/stretchr/testify/assert"
@@ -25,6 +26,21 @@ type recordingProvider struct {
 	// publishExport, when its Kind is set, replaces the nbd export built
 	// from publishURI.
 	publishExport ebsprovider.VolumeExport
+
+	// onList runs before read n (from 1) of the snapshot; a non-nil error
+	// fails that read.
+	onList func(n int) error
+	lists  int
+}
+
+func (p *recordingProvider) ListSnapshots(ctx context.Context, req ebsprovider.ListSnapshotsRequest) (*ebsprovider.ListSnapshotsResponse, error) {
+	p.lists++
+	if p.onList != nil {
+		if err := p.onList(p.lists); err != nil {
+			return nil, err
+		}
+	}
+	return p.MemoryProvider.ListSnapshots(ctx, req)
 }
 
 func newRecordingProvider() *recordingProvider {
@@ -181,6 +197,90 @@ func TestImportImage_RejectsIncompleteOpts(t *testing.T) {
 			provider := newRecordingProvider()
 			require.Error(t, ImportImage(context.Background(), provider, opts))
 			assert.Empty(t, provider.calls, "nothing may be created before the options are checked")
+		})
+	}
+}
+
+// A snapshot the provider answers pending is read until it completes, and the
+// import fails if it errors, disappears, or outlasts SnapshotTimeout.
+func TestImportImage_WaitsForAPendingSnapshot(t *testing.T) {
+	original := snapshotPollInterval
+	snapshotPollInterval = time.Millisecond
+	t.Cleanup(func() { snapshotPollInterval = original })
+	snapshotID := SnapPrefix("ami-import001")
+
+	cases := []struct {
+		name      string
+		pending   bool
+		onList    func(p *recordingProvider) func(n int) error
+		wantErr   string // empty: the import succeeds
+		wantLists int    // -1: at least one
+	}{
+		{name: "answered completed is not read", wantLists: 0},
+		{name: "completes on the second read", pending: true, wantLists: 2,
+			onList: func(p *recordingProvider) func(int) error {
+				return func(n int) error {
+					if n == 2 {
+						return p.SettleSnapshot(snapshotID, ebsprovider.SnapshotStateCompleted)
+					}
+					return nil
+				}
+			}},
+		{name: "a failed read is retried", pending: true, wantLists: 2,
+			onList: func(p *recordingProvider) func(int) error {
+				return func(n int) error {
+					if n == 1 {
+						return ebsprovider.ErrUnavailable
+					}
+					return p.SettleSnapshot(snapshotID, ebsprovider.SnapshotStateCompleted)
+				}
+			}},
+		{name: "ends in error", pending: true, wantErr: "ended in error", wantLists: 1,
+			onList: func(p *recordingProvider) func(int) error {
+				return func(int) error { return p.SettleSnapshot(snapshotID, ebsprovider.SnapshotStateError) }
+			}},
+		{name: "disappears", pending: true, wantErr: "no longer held", wantLists: 1,
+			onList: func(p *recordingProvider) func(int) error {
+				return func(int) error {
+					return p.DeleteSnapshot(context.Background(), ebsprovider.DeleteSnapshotRequest{
+						Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID,
+					})
+				}
+			}},
+		{name: "outlasts the timeout", pending: true, wantErr: context.DeadlineExceeded.Error(), wantLists: -1},
+		{name: "outlasts the timeout while reads fail", pending: true, wantErr: "last read failed", wantLists: -1,
+			onList: func(*recordingProvider) func(int) error {
+				return func(int) error { return ebsprovider.ErrUnavailable }
+			}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stubWriteImage(t, nil, nil)
+			provider := newRecordingProvider()
+			provider.AnswerSnapshotsPending(tc.pending)
+			if tc.onList != nil {
+				provider.onList = tc.onList(provider)
+			}
+
+			err := ImportImage(context.Background(), provider, ImportOpts{
+				VolumeID: "ami-import001", NodeID: "node-a", SizeBytes: 1 << 30,
+				SourcePath: "/tmp/image.raw", Snapshot: true, SnapshotTimeout: 50 * time.Millisecond,
+			})
+
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				snap, ok := provider.Snapshot(snapshotID)
+				require.True(t, ok)
+				assert.Equal(t, ebsprovider.SnapshotStateCompleted, snap.State)
+			} else {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+			}
+			if tc.wantLists < 0 {
+				assert.Positive(t, provider.lists)
+			} else {
+				assert.Equal(t, tc.wantLists, provider.lists)
+			}
 		})
 	}
 }

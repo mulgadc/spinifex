@@ -271,6 +271,8 @@ const (
 	// in between leaves a reconcilable trace rather than an orphaned EC2 snapshot.
 	SnapshotStatusCreating  = "creating"
 	SnapshotStatusAvailable = "available"
+	// The EC2 snapshot settled in error, so the record holds no restorable data.
+	SnapshotStatusFailed = "failed"
 )
 
 // SnapshotOperation is the snapshot operation holding a DB instance, written under the same CAS that
@@ -334,6 +336,9 @@ type DBSnapshotRecord struct {
 	Tags map[string]string `json:"tags,omitempty"`
 
 	CreatedAt time.Time `json:"createdAt"`
+	// When the EC2 snapshot settled to available or failed. A deletion waiting
+	// on its final snapshot excludes the wait between this and CreatedAt.
+	SettledAt *time.Time `json:"settledAt,omitempty"`
 }
 
 var _ TaggedRecord = (*DBSnapshotRecord)(nil)

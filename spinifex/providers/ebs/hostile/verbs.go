@@ -63,7 +63,8 @@ func corruptSnapshot(snapshot *ebsprovider.Snapshot, flavour string) *ebsprovide
 	case "handle":
 		corrupted.SourceVolumeID = "vol-hostilewrongsrc"
 	case "state":
-		corrupted.State = ebsprovider.SnapshotStatePending
+		// Pending is a legitimate answer, so the lie is a failure that never was.
+		corrupted.State = ebsprovider.SnapshotStateError
 	}
 	return &corrupted
 }

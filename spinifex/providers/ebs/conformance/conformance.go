@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/stretchr/testify/assert"
@@ -121,6 +122,64 @@ func drainSnapshotIDs(t *testing.T, provider ebsprovider.EBSProvider, maxResults
 			return ids
 		}
 		token = resp.NextToken
+	}
+}
+
+// countOf is how many times id appears in ids.
+func countOf(ids []string, id string) int {
+	n := 0
+	for _, each := range ids {
+		if each == id {
+			n++
+		}
+	}
+	return n
+}
+
+// filterVersion is the version the suite's filter-contract cases are
+// sent at: the first that carries the filter.
+var filterVersion = ebsprovider.Versioned{SchemaVersion: ebsprovider.SnapshotFilterSchemaVersion}
+
+// readSnapshot reads snapshotID through ebsprovider.ReadSnapshot and fails
+// unless the reply holds that snapshot.
+func readSnapshot(t *testing.T, provider ebsprovider.EBSProvider, snapshotID string) ebsprovider.SnapshotRef {
+	t.Helper()
+	ref, found, err := ebsprovider.ReadSnapshot(context.Background(), provider, snapshotID)
+	require.NoError(t, err)
+	require.Truef(t, found, "a snapshot the provider accepted must be read back by its ID, never reported absent")
+	require.Equal(t, snapshotID, ref.ID)
+	return ref
+}
+
+// settleTimeout bounds the wait for a pending snapshot to complete, so a
+// provider that never settles one fails the test instead of hanging it.
+const settleTimeout = 30 * time.Second
+
+// createSnapshot takes snapshotID of volumeID and waits, through the filtered
+// ListSnapshots, until it is completed: CreateSnapshot may answer pending, so
+// nothing about the snapshot is asserted before it settles.
+func createSnapshot(t *testing.T, provider ebsprovider.EBSProvider, snapshotID, volumeID string) *ebsprovider.Snapshot {
+	t.Helper()
+	snap, err := provider.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewLatestVersioned(), SnapshotID: snapshotID, VolumeID: volumeID})
+	require.NoError(t, err)
+	require.NotNil(t, snap)
+	require.Containsf(t, []ebsprovider.SnapshotState{ebsprovider.SnapshotStatePending, ebsprovider.SnapshotStateCompleted}, snap.State,
+		"CreateSnapshot answers pending or completed, never %q", snap.State)
+	require.Equal(t, snapshotID, snap.ID)
+
+	deadline := time.Now().Add(settleTimeout)
+	for {
+		ref := readSnapshot(t, provider, snapshotID)
+		switch ref.State {
+		case ebsprovider.SnapshotStateCompleted:
+			return snap
+		case ebsprovider.SnapshotStatePending:
+			require.Equalf(t, ebsprovider.SnapshotStatePending, snap.State, "snapshot %s answered completed and then read pending", snapshotID)
+		default:
+			require.Failf(t, "snapshot did not complete", "snapshot %s settled to %q", snapshotID, ref.State)
+		}
+		require.Truef(t, time.Now().Before(deadline), "snapshot %s still pending after %s", snapshotID, settleTimeout)
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -315,10 +374,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 				CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
 			})
 			require.NoError(t, err)
-			snap, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{
-				Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-snapsrc"), VolumeID: cfg.id("vol-snapsrc-origin"),
-			})
-			require.NoError(t, err)
+			snap := createSnapshot(t, provider, cfg.id("snap-snapsrc"), cfg.id("vol-snapsrc-origin"))
 			require.Equal(t, cfg.id("vol-snapsrc-origin"), snap.SourceVolumeID, "a snapshot must report the volume it was taken from")
 
 			restored, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
@@ -341,10 +397,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 				CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
 			})
 			require.NoError(t, err)
-			snap, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{
-				Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-wrongorigin"), VolumeID: cfg.id("vol-wrongorigin-src"),
-			})
-			require.NoError(t, err)
+			snap := createSnapshot(t, provider, cfg.id("snap-wrongorigin"), cfg.id("vol-wrongorigin-src"))
 
 			_, err = provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
 				Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-wrongorigin-restored"),
@@ -608,12 +661,55 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-snap-src"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			snap, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-ok"), VolumeID: cfg.id("vol-snap-src")})
-			require.NoError(t, err)
-			require.NotNil(t, snap)
+			snap := createSnapshot(t, provider, cfg.id("snap-ok"), cfg.id("vol-snap-src"))
 			assert.Equal(t, cfg.id("snap-ok"), snap.ID)
 			assert.Equal(t, cfg.id("vol-snap-src"), snap.SourceVolumeID)
-			assert.Equal(t, ebsprovider.SnapshotStateCompleted, snap.State)
+		})
+
+		// CSI's idempotency rule for its name field: a repeat is answered with
+		// the snapshot the first call took, so a caller whose answer was lost
+		// can ask again without taking a second snapshot.
+		t.Run("a repeat with the same source returns the first snapshot", func(t *testing.T) {
+			provider := newProvider(t)
+			ctx := context.Background()
+			volumeID, snapshotID := cfg.id("vol-snap-repeat"), cfg.id("snap-repeat")
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			first := createSnapshot(t, provider, snapshotID, volumeID)
+
+			again, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewLatestVersioned(), SnapshotID: snapshotID, VolumeID: volumeID})
+			require.NoError(t, err, "a repeat naming the same source volume is not a conflict")
+			require.NotNil(t, again)
+			assert.Equal(t, first.ID, again.ID)
+			assert.Equal(t, first.SourceVolumeID, again.SourceVolumeID)
+			assert.Equal(t, first.Handle, again.Handle, "the repeat must answer with the snapshot the first call created")
+			assert.Equal(t, ebsprovider.SnapshotStateCompleted, readSnapshot(t, provider, snapshotID).State,
+				"a repeat of a completed snapshot must not reopen it")
+			if capabilities.SnapshotEnumeration {
+				listed := drainSnapshotIDs(t, provider, 0)
+				assert.Equal(t, 1, countOf(listed, snapshotID), "a repeat must not hold a second snapshot under the same ID")
+			}
+		})
+
+		// A caller that lost the first answer may only ask again after the
+		// source volume is gone, so the repeat must not need the volume.
+		t.Run("a repeat after the source volume is deleted returns the first snapshot", func(t *testing.T) {
+			provider := newProvider(t)
+			ctx := context.Background()
+			volumeID, snapshotID := cfg.id("vol-snap-gone"), cfg.id("snap-gone")
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			first := createSnapshot(t, provider, snapshotID, volumeID)
+			require.NoError(t, provider.DeleteVolume(ctx, ebsprovider.DeleteVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID}))
+
+			again, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewLatestVersioned(), SnapshotID: snapshotID, VolumeID: volumeID})
+			require.NoError(t, err, "a repeat must be answered from the snapshot, not the deleted volume")
+			require.NotNil(t, again)
+			assert.Equal(t, first.ID, again.ID)
+			assert.Equal(t, volumeID, again.SourceVolumeID)
+			assert.Equal(t, first.Handle, again.Handle)
+			assert.False(t, again.CreatedAt.IsZero(), "the repeat must report when the snapshot was taken")
+			assert.Equal(t, ebsprovider.SnapshotStateCompleted, readSnapshot(t, provider, snapshotID).State)
 		})
 
 		t.Run("not_found on absent source volume", func(t *testing.T) {
@@ -629,8 +725,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			require.NoError(t, err)
 			_, err = provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-snap-b"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-conflict"), VolumeID: cfg.id("vol-snap-a")})
-			require.NoError(t, err)
+			createSnapshot(t, provider, cfg.id("snap-conflict"), cfg.id("vol-snap-a"))
 			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-conflict"), VolumeID: cfg.id("vol-snap-b")})
 			require.ErrorIs(t, err, ebsprovider.ErrAlreadyExists)
 		})
@@ -669,9 +764,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 				}
 			}
 
-			snap, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-held-owner"), VolumeID: volumeID})
-			require.NoError(t, err, "the holder answers for its own volume")
-			assert.Equal(t, ebsprovider.SnapshotStateCompleted, snap.State)
+			createSnapshot(t, provider, cfg.id("snap-held-owner"), volumeID)
 		})
 	})
 
@@ -681,8 +774,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-delsnap-src"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-delete-ok"), VolumeID: cfg.id("vol-delsnap-src")})
-			require.NoError(t, err)
+			createSnapshot(t, provider, cfg.id("snap-delete-ok"), cfg.id("vol-delsnap-src"))
 			require.NoError(t, provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-delete-ok")}))
 		})
 
@@ -700,8 +792,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-copysnap-src"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-copysnap-src"), VolumeID: cfg.id("vol-copysnap-src")})
-			require.NoError(t, err)
+			createSnapshot(t, provider, cfg.id("snap-copysnap-src"), cfg.id("vol-copysnap-src"))
 
 			copied, err := provider.CopySnapshot(ctx, ebsprovider.CopySnapshotRequest{
 				Versioned: ebsprovider.NewVersioned(), SourceSnapshotID: cfg.id("snap-copysnap-src"), DestinationSnapshotID: cfg.id("snap-copysnap-dst"), VolumeID: cfg.id("vol-copysnap-src"),
@@ -734,10 +825,8 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-copysnap-conflict"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-copysnap-a"), VolumeID: cfg.id("vol-copysnap-conflict")})
-			require.NoError(t, err)
-			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-copysnap-b"), VolumeID: cfg.id("vol-copysnap-conflict")})
-			require.NoError(t, err)
+			createSnapshot(t, provider, cfg.id("snap-copysnap-a"), cfg.id("vol-copysnap-conflict"))
+			createSnapshot(t, provider, cfg.id("snap-copysnap-b"), cfg.id("vol-copysnap-conflict"))
 			_, err = provider.CopySnapshot(ctx, ebsprovider.CopySnapshotRequest{
 				Versioned: ebsprovider.NewVersioned(), SourceSnapshotID: cfg.id("snap-copysnap-a"), DestinationSnapshotID: cfg.id("snap-copysnap-b"), VolumeID: cfg.id("vol-copysnap-conflict"),
 			})
@@ -755,8 +844,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			ctx := context.Background()
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-copysnap-same"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-copysnap-same"), VolumeID: cfg.id("vol-copysnap-same")})
-			require.NoError(t, err)
+			createSnapshot(t, provider, cfg.id("snap-copysnap-same"), cfg.id("vol-copysnap-same"))
 			_, err = provider.CopySnapshot(ctx, ebsprovider.CopySnapshotRequest{
 				Versioned: ebsprovider.NewVersioned(), SourceSnapshotID: cfg.id("snap-copysnap-same"), DestinationSnapshotID: cfg.id("snap-copysnap-same"), VolumeID: cfg.id("vol-copysnap-same"),
 			})
@@ -770,8 +858,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			require.NoError(t, err)
 			_, err = provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: cfg.id("vol-copysnap-foreign"), CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: cfg.id("snap-copysnap-owned"), VolumeID: cfg.id("vol-copysnap-owner")})
-			require.NoError(t, err)
+			createSnapshot(t, provider, cfg.id("snap-copysnap-owned"), cfg.id("vol-copysnap-owner"))
 			_, err = provider.CopySnapshot(ctx, ebsprovider.CopySnapshotRequest{
 				Versioned: ebsprovider.NewVersioned(), SourceSnapshotID: cfg.id("snap-copysnap-owned"), DestinationSnapshotID: cfg.id("snap-copysnap-owned-dst"), VolumeID: cfg.id("vol-copysnap-foreign"),
 			})
@@ -796,9 +883,92 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			require.ErrorIs(t, err, ebsprovider.ErrUnsupportedCapability)
 		})
 
+		t.Run("a filtered read returns the one snapshot", func(t *testing.T) {
+			provider := newProvider(t)
+			ctx := context.Background()
+			volumeID := cfg.id("vol-snapfilter-src")
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			snap := createSnapshot(t, provider, cfg.id("snap-filter-one"), volumeID)
+			createSnapshot(t, provider, cfg.id("snap-filter-other"), volumeID)
+
+			resp, err := provider.ListSnapshots(ctx, ebsprovider.ListSnapshotsRequest{Versioned: filterVersion, SnapshotID: snap.ID, MaxResults: 1})
+			require.NoError(t, err)
+			require.Len(t, resp.Snapshots, 1, "a filtered read answers with the one snapshot, not a page of them")
+			assert.Equal(t, snap.ID, resp.Snapshots[0].ID)
+			assert.Equal(t, ebsprovider.SnapshotStateCompleted, resp.Snapshots[0].State)
+			assert.Empty(t, resp.NextToken, "a filtered read has no further page")
+			if resp.Snapshots[0].SourceVolumeID != "" {
+				assert.Equal(t, volumeID, resp.Snapshots[0].SourceVolumeID)
+			}
+
+			require.NoError(t, provider.DeleteSnapshot(ctx, ebsprovider.DeleteSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snap.ID}))
+			gone, err := provider.ListSnapshots(ctx, ebsprovider.ListSnapshotsRequest{Versioned: filterVersion, SnapshotID: snap.ID})
+			require.NoError(t, err)
+			assert.Empty(t, gone.Snapshots, "a deleted snapshot must read as absent")
+		})
+
+		t.Run("a filtered read of an absent snapshot returns none", func(t *testing.T) {
+			resp, err := newProvider(t).ListSnapshots(context.Background(), ebsprovider.ListSnapshotsRequest{Versioned: filterVersion, SnapshotID: cfg.id("snap-filter-absent")})
+			require.NoError(t, err, "absence is an answer, not an error")
+			require.NotNil(t, resp)
+			assert.Empty(t, resp.Snapshots)
+			assert.Empty(t, resp.NextToken)
+		})
+
+		// A provider at an earlier version would drop the filter and answer with
+		// every snapshot it holds, which a caller would read as the one it asked for.
+		t.Run("the filter below the version that defines it is refused as unsupported", func(t *testing.T) {
+			provider := newProvider(t)
+			for _, version := range contractVersions {
+				if version >= ebsprovider.SnapshotFilterSchemaVersion {
+					continue
+				}
+				_, err := provider.ListSnapshots(context.Background(), ebsprovider.ListSnapshotsRequest{
+					Versioned: ebsprovider.Versioned{SchemaVersion: version}, SnapshotID: cfg.id("snap-filter-old"),
+				})
+				require.ErrorIsf(t, err, ebsprovider.ErrUnsupportedVersion, "v%d", version)
+			}
+		})
+
 		if !capabilities.SnapshotEnumeration {
 			return
 		}
+
+		t.Run("state is enumerated only from the version that defines it", func(t *testing.T) {
+			provider := newProvider(t)
+			ctx := context.Background()
+			volumeID := cfg.id("vol-snaplist-state-src")
+			snapshotID := cfg.id("snap-list-state")
+			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+			require.NoError(t, err)
+			createSnapshot(t, provider, snapshotID, volumeID)
+
+			for _, version := range contractVersions {
+				listed := false
+				var token string
+				for pages := 0; ; pages++ {
+					require.Less(t, pages, maxListPages)
+					resp, err := provider.ListSnapshots(ctx, ebsprovider.ListSnapshotsRequest{Versioned: ebsprovider.Versioned{SchemaVersion: version}, StartingToken: token})
+					require.NoError(t, err)
+					for _, ref := range resp.Snapshots {
+						if ref.ID != snapshotID {
+							continue
+						}
+						listed = true
+						if version < ebsprovider.SnapshotFilterSchemaVersion {
+							assert.Emptyf(t, ref.State, "v%d does not define state, so its reply must not carry it", version)
+						} else {
+							assert.Equalf(t, ebsprovider.SnapshotStateCompleted, ref.State, "v%d", version)
+						}
+					}
+					if token = resp.NextToken; token == "" {
+						break
+					}
+				}
+				assert.Truef(t, listed, "v%d: snapshot %s was not enumerated", version, snapshotID)
+			}
+		})
 
 		t.Run("a created snapshot is enumerated and a deleted one is not", func(t *testing.T) {
 			provider := newProvider(t)
@@ -807,8 +977,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			snapshotID := cfg.id("snap-list-visible")
 			_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 			require.NoError(t, err)
-			_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volumeID})
-			require.NoError(t, err)
+			createSnapshot(t, provider, snapshotID, volumeID)
 			assert.Contains(t, drainSnapshotIDs(t, provider, 0), snapshotID,
 				"enumeration must report a snapshot the provider holds; it is the only way to find one whose control-plane document is lost")
 
@@ -825,8 +994,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			require.NoError(t, err)
 			want := []string{cfg.id("snap-list-page-a"), cfg.id("snap-list-page-b"), cfg.id("snap-list-page-c")}
 			for _, snapshotID := range want {
-				_, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volumeID})
-				require.NoError(t, err)
+				createSnapshot(t, provider, snapshotID, volumeID)
 			}
 
 			// One snapshot per page forces every token boundary to be exercised.
@@ -851,8 +1019,7 @@ func RunSuiteWithConfig(t *testing.T, newRawProvider func(t *testing.T) ebsprovi
 			require.NoError(t, err)
 			want := []string{cfg.id("snap-list-cap-a"), cfg.id("snap-list-cap-b")}
 			for _, snapshotID := range want {
-				_, err := provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: volumeID})
-				require.NoError(t, err)
+				createSnapshot(t, provider, snapshotID, volumeID)
 			}
 
 			resp, err := provider.ListSnapshots(ctx, ebsprovider.ListSnapshotsRequest{

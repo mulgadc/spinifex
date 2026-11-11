@@ -5,7 +5,9 @@ package integration
 import (
 	"testing"
 
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
+	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 )
 
@@ -29,6 +31,11 @@ func StartImageDaemonLite(t *testing.T, gw *Gateway) (*ec2image.ImageServiceImpl
 
 	store := objectstore.NewMemoryObjectStore()
 	svc := ec2image.NewImageServiceImplWithStore(store, testImageBucket)
+	// As the daemon does, CreateImage snapshots through a snapshot service.
+	snapshots := ec2snapshot.NewSnapshotServiceImplWithStore(
+		&config.Config{Predastore: config.PredastoreConfig{Bucket: testImageBucket}}, store, nil)
+	svc.SetSnapshotCreator(snapshots)
+	svc.SetImageClaims(snapshots)
 
 	subscribeServiceMethods(t, gw.NATSConn, "ec2", svc)
 

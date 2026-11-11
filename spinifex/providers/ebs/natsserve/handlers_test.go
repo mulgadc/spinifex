@@ -775,3 +775,45 @@ func TestServeStopIsIdempotent(t *testing.T) {
 	_, err = conn.Request(ebsprovider.CapabilitiesSubject, []byte(fmt.Sprintf(`{"schema_version":%d}`, ebsprovider.SchemaVersion)), 200*time.Millisecond)
 	require.ErrorIs(t, err, nats.ErrNoResponders, "stop must unsubscribe every subject Serve registered")
 }
+
+// listCountingProvider counts the ListSnapshots calls that reach it.
+type listCountingProvider struct {
+	*ebsprovider.MemoryProvider
+
+	lists atomic.Int32
+}
+
+func (p *listCountingProvider) ListSnapshots(ctx context.Context, req ebsprovider.ListSnapshotsRequest) (*ebsprovider.ListSnapshotsResponse, error) {
+	p.lists.Add(1)
+	return p.MemoryProvider.ListSnapshots(ctx, req)
+}
+
+// TestListSnapshotsFilterOnTheWire pins the server half of the snapshot filter:
+// refused below version 4 without reaching the provider, and answered with the
+// one snapshot and its state at 4.
+func TestListSnapshotsFilterOnTheWire(t *testing.T) {
+	provider := &listCountingProvider{MemoryProvider: ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{})}
+	conn := serveProvider(t, provider, natsserve.Options{NoQueueGroup: true})
+	ctx := context.Background()
+	_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-1", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
+	require.NoError(t, err)
+	provider.AnswerSnapshotsPending(true)
+	_, err = provider.CreateSnapshot(ctx, ebsprovider.CreateSnapshotRequest{Versioned: ebsprovider.NewVersioned(), SnapshotID: "snap-1", VolumeID: "vol-1"})
+	require.NoError(t, err)
+	request := ebsprovider.ListSnapshotsRequest{SnapshotID: "snap-1"}
+
+	msg, err := conn.Request(ebsprovider.ListSnapshotsSubject, withVersion(t, request, ebsprovider.NoSealSchemaVersion), requestTimeout)
+	require.NoError(t, err)
+	envelope := decodeEnvelope(t, msg.Data)
+	require.NotNil(t, envelope.Error)
+	assert.Equal(t, ebsprovider.ErrorCodeUnsupportedVersion, envelope.Error.Code)
+	assert.Equal(t, ebsprovider.NoSealSchemaVersion, envelope.SchemaVersion)
+	assert.Zero(t, provider.lists.Load(), "the refused filter must not have reached the provider")
+
+	msg, err = conn.Request(ebsprovider.ListSnapshotsSubject, withVersion(t, request, ebsprovider.SnapshotFilterSchemaVersion), requestTimeout)
+	require.NoError(t, err)
+	var resp ebsprovider.ListSnapshotsResponse
+	require.NoError(t, json.Unmarshal(msg.Data, &resp))
+	require.Nil(t, resp.Error)
+	assert.Equal(t, []ebsprovider.SnapshotRef{{ID: "snap-1", SourceVolumeID: "vol-1", Handle: "memory://snapshot/snap-1", State: ebsprovider.SnapshotStatePending}}, resp.Snapshots)
+}

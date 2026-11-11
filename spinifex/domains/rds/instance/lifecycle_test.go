@@ -130,6 +130,15 @@ type fakeSnapshots struct {
 	// The tags each created snapshot carries, which is what a tag-filtered
 	// describe resolves a DB snapshot identifier through.
 	tagged map[string]map[string]string
+	// The state a snapshot reports; one absent from it is completed.
+	states map[string]string
+}
+
+func (f *fakeSnapshots) stateOf(id string) string {
+	if state, ok := f.states[id]; ok {
+		return state
+	}
+	return ec2.SnapshotStateCompleted
 }
 
 var _ snapshotProvider = (*fakeSnapshots)(nil)
@@ -156,7 +165,7 @@ func (f *fakeSnapshots) CreateSnapshot(ctx context.Context, input *ec2.CreateSna
 	// A snapshot pins the chunks of the volume it was taken from, so taking one
 	// is also what makes that volume undeletable.
 	f.holding = append(f.holding, id)
-	return &ec2.Snapshot{SnapshotId: aws.String(id), VolumeId: input.VolumeId}, nil
+	return &ec2.Snapshot{SnapshotId: aws.String(id), VolumeId: input.VolumeId, State: aws.String(f.stateOf(id))}, nil
 }
 
 // A tag filter is answered from the recorded tags; anything else reports every
@@ -170,7 +179,7 @@ func (f *fakeSnapshots) DescribeSnapshots(_ context.Context, input *ec2.Describe
 		if !f.matchesFilters(id, input) {
 			continue
 		}
-		out.Snapshots = append(out.Snapshots, &ec2.Snapshot{SnapshotId: aws.String(id)})
+		out.Snapshots = append(out.Snapshots, &ec2.Snapshot{SnapshotId: aws.String(id), State: aws.String(f.stateOf(id))})
 	}
 	if f.afterDescribe != nil {
 		f.afterDescribe()

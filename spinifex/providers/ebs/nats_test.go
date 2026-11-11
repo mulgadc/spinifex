@@ -132,37 +132,57 @@ func TestNATSProviderReturnsTypedProviderError(t *testing.T) {
 	assert.Equal(t, "volume is mounted", err.Error())
 }
 
+// TestNATSProviderSnapshotWaitsForAsyncCompletion covers what the client makes
+// of the completion it waits for: a completed or pending snapshot is the
+// provider's answer, and anything else is refused.
 func TestNATSProviderSnapshotWaitsForAsyncCompletion(t *testing.T) {
-	_, conn := testutil.StartTestNATS(t)
-	subject, err := SnapshotSubject("vol-1")
-	require.NoError(t, err)
-	completionSubject, err := SnapshotCompletionSubject("snap-1")
-	require.NoError(t, err)
+	tests := []struct {
+		name     string
+		snapshot *Snapshot
+		wantErr  string
+	}{
+		{name: "completed", snapshot: &Snapshot{ID: "snap-1", SourceVolumeID: "vol-1", State: SnapshotStateCompleted}},
+		{name: "pending", snapshot: &Snapshot{ID: "snap-1", SourceVolumeID: "vol-1", State: SnapshotStatePending}},
+		{name: "error state", snapshot: &Snapshot{ID: "snap-1", SourceVolumeID: "vol-1", State: SnapshotStateError},
+			wantErr: "snapshot snap-1 completion returned no completed or pending snapshot"},
+		{name: "no snapshot", wantErr: "snapshot snap-1 completion returned no completed or pending snapshot"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, conn := testutil.StartTestNATS(t)
+			subject, err := SnapshotSubject("vol-1")
+			require.NoError(t, err)
+			completionSubject, err := SnapshotCompletionSubject("snap-1")
+			require.NoError(t, err)
 
-	sub, err := conn.Subscribe(subject, func(msg *nats.Msg) {
-		accepted, marshalErr := json.Marshal(CreateSnapshotResponse{
-			Versioned: NewVersioned(), OperationID: "op-snap-1", CompletionSubject: completionSubject,
+			sub, err := conn.Subscribe(subject, func(msg *nats.Msg) {
+				accepted, marshalErr := json.Marshal(CreateSnapshotResponse{
+					Versioned: NewVersioned(), OperationID: "op-snap-1", CompletionSubject: completionSubject,
+				})
+				require.NoError(t, marshalErr)
+				require.NoError(t, msg.Respond(accepted))
+
+				completed, marshalErr := json.Marshal(CreateSnapshotResponse{
+					Versioned: NewVersioned(), OperationID: "op-snap-1", Snapshot: tt.snapshot,
+				})
+				require.NoError(t, marshalErr)
+				require.NoError(t, conn.Publish(completionSubject, completed))
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = sub.Unsubscribe() })
+			require.NoError(t, conn.Flush())
+
+			snapshot, err := NewNATSProvider(conn, time.Second).CreateSnapshot(t.Context(), CreateSnapshotRequest{
+				Versioned: NewVersioned(), SnapshotID: "snap-1", VolumeID: "vol-1",
+			})
+			if tt.wantErr != "" {
+				require.EqualError(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.snapshot, snapshot)
 		})
-		require.NoError(t, marshalErr)
-		require.NoError(t, msg.Respond(accepted))
-
-		completed, marshalErr := json.Marshal(CreateSnapshotResponse{
-			Versioned: NewVersioned(), OperationID: "op-snap-1",
-			Snapshot: &Snapshot{ID: "snap-1", SourceVolumeID: "vol-1", State: SnapshotStateCompleted},
-		})
-		require.NoError(t, marshalErr)
-		require.NoError(t, conn.Publish(completionSubject, completed))
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	require.NoError(t, conn.Flush())
-
-	provider := NewNATSProvider(conn, time.Second)
-	snapshot, err := provider.CreateSnapshot(t.Context(), CreateSnapshotRequest{
-		Versioned: NewVersioned(), SnapshotID: "snap-1", VolumeID: "vol-1",
-	})
-	require.NoError(t, err)
-	assert.Equal(t, "snap-1", snapshot.ID)
+	}
 }
 
 func TestNATSProviderRejectsUnsafeSubjectTokens(t *testing.T) {
@@ -543,6 +563,40 @@ func TestNATSProviderPropagatesProviderErrors(t *testing.T) {
 		})
 		_, err := NewNATSProvider(conn, time.Second).ListSnapshots(t.Context(), ListSnapshotsRequest{Versioned: NewVersioned()})
 		require.ErrorIs(t, err, ErrUnsupportedCapability)
+	})
+
+	t.Run("ListSnapshots filtered on one snapshot", func(t *testing.T) {
+		ref := SnapshotRef{ID: "snap-1", SourceVolumeID: "vol-1", Handle: "vb://snap-1", State: SnapshotStatePending}
+		tests := []struct {
+			name    string
+			refs    []SnapshotRef
+			wantErr bool
+		}{
+			{name: "the one snapshot", refs: []SnapshotRef{ref}},
+			{name: "none", refs: nil},
+			{name: "another snapshot", refs: []SnapshotRef{{ID: "snap-2"}}, wantErr: true},
+			{name: "more than one", refs: []SnapshotRef{ref, {ID: "snap-2"}}, wantErr: true},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				_, conn := testutil.StartTestNATS(t)
+				respondWith(t, conn, ListSnapshotsSubject, ListSnapshotsResponse{Versioned: NewLatestVersioned(), Snapshots: tt.refs})
+				page, err := NewNATSProvider(conn, time.Second).ListSnapshots(t.Context(), ListSnapshotsRequest{Versioned: NewLatestVersioned(), SnapshotID: "snap-1"})
+				if tt.wantErr {
+					require.ErrorIs(t, err, ErrUnreadableReply, "a filtered reply naming another snapshot must not pass for the one asked about")
+					return
+				}
+				require.NoError(t, err)
+				assert.Equal(t, tt.refs, page.Snapshots)
+			})
+		}
+	})
+
+	t.Run("ListSnapshots filter below its version is refused before it is sent", func(t *testing.T) {
+		_, err := NewNATSProvider(nil, time.Second).ListSnapshots(t.Context(), ListSnapshotsRequest{
+			Versioned: Versioned{SchemaVersion: NoSealSchemaVersion}, SnapshotID: "snap-1",
+		})
+		require.ErrorIs(t, err, ErrUnsupportedVersion)
 	})
 
 	t.Run("ListSnapshots page", func(t *testing.T) {

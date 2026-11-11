@@ -697,7 +697,7 @@ func TestVolumeMounterAdapter_AbandonUnpublishesWithoutSealing(t *testing.T) {
 	require.Len(t, calls, 4, "every volume is attempted")
 	for _, call := range calls {
 		assert.True(t, call.noSeal, "%s must be dropped unsealed", call.volume)
-		assert.Equal(t, ebsprovider.NoSealSchemaVersion, call.version, "%s must be sent at the version carrying NoSeal", call.volume)
+		assert.GreaterOrEqual(t, call.version, ebsprovider.NoSealSchemaVersion, "%s must be sent at a version carrying NoSeal", call.volume)
 	}
 	assert.Contains(t, err.Error(), "abandon vol-refused (superseded)", "the failure must say why the volume was abandoned")
 	const gaveUp = "Gave up a volume export"

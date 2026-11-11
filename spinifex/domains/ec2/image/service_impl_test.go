@@ -6,8 +6,6 @@ import (
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"io"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -152,6 +150,24 @@ func TestCreateImageFromInstance_RunningInstance_NoNATS(t *testing.T) {
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
+// An image service the daemon gave no snapshot service fails CreateImage with
+// InternalError before it records anything.
+func TestCreateImageFromInstance_NoSnapshotServiceIsInternalError(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	svc := NewImageServiceImplWithConfig(&config.Config{Predastore: config.PredastoreConfig{Bucket: testBucket}}, store, nil)
+	createTestVolumeConfig(t, store, "vol-root123", 10)
+
+	_, err := svc.CreateImageFromInstance(CreateImageParams{
+		Input:        &ec2.CreateImageInput{InstanceId: aws.String("i-test123"), Name: aws.String("my-image")},
+		RootVolumeID: "vol-root123",
+	}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	amis, err := svc.MetadataStore().ListAMIs(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, amis)
 }
 
 func TestCreateImageFromInstance_StoppedInstance_NoConfig(t *testing.T) {
@@ -2549,115 +2565,4 @@ func TestResetImageAttribute_MissingParameters(t *testing.T) {
 	}, testAccountID)
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
-}
-
-func TestSnapshotVolume_VolumeConfigMissing(t *testing.T) {
-	store := objectstore.NewMemoryObjectStore()
-	svc := &ImageServiceImpl{
-		config:     &config.Config{},
-		store:      store,
-		bucketName: testBucket,
-	}
-	err := svc.snapshotVolume("vol-missing", "snap-s1", testAccountID)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
-}
-
-func TestSnapshotVolume_BackendInitFails(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-	}))
-	defer srv.Close()
-
-	store := objectstore.NewMemoryObjectStore()
-	svc := &ImageServiceImpl{
-		config: &config.Config{
-			Predastore: config.PredastoreConfig{
-				Host:   srv.URL,
-				Region: "us-east-1",
-				Bucket: testBucket,
-			},
-		},
-		store:      store,
-		bucketName: testBucket,
-	}
-	createTestVolumeConfig(t, store, "vol-stopped1", 10)
-
-	err := svc.snapshotVolume("vol-stopped1", "snap-s2", testAccountID)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
-}
-
-// imageS3MockServer passes ListObjectsV2 (Backend.Init) but returns 404 for everything else.
-func imageS3MockServer(t *testing.T) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.RawQuery, "list-type=2") {
-			w.Header().Set("Content-Type", "application/xml")
-			w.WriteHeader(http.StatusOK)
-			io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>`+
-				`<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">`+
-				`<Name>test-bucket</Name><KeyCount>0</KeyCount>`+
-				`<MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated></ListBucketResult>`)
-			return
-		}
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusNotFound)
-		io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>`+
-			`<Error><Code>NoSuchKey</Code>`+
-			`<Message>The specified key does not exist.</Message></Error>`)
-	}))
-}
-
-func TestSnapshotVolume_EncryptionKeyLoadError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	store := objectstore.NewMemoryObjectStore()
-	svc := &ImageServiceImpl{
-		config: &config.Config{
-			Predastore: config.PredastoreConfig{
-				Host:   srv.URL,
-				Region: "us-east-1",
-				Bucket: testBucket,
-			},
-			Viperblock: config.ViperblockConfig{
-				EncryptionKeyFile: "/nonexistent-image-stop-key.bin",
-			},
-		},
-		store:      store,
-		bucketName: testBucket,
-	}
-	createTestVolumeConfig(t, store, "vol-stopped-enckey", 10)
-
-	err := svc.snapshotVolume("vol-stopped-enckey", "snap-stop-enckey", testAccountID)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
-}
-
-func TestSnapshotVolume_LoadStateFails(t *testing.T) {
-	srv := imageS3MockServer(t)
-	defer srv.Close()
-
-	store := objectstore.NewMemoryObjectStore()
-	svc := &ImageServiceImpl{
-		config: &config.Config{
-			Predastore: config.PredastoreConfig{
-				Host:      srv.URL,
-				Region:    "us-east-1",
-				Bucket:    testBucket,
-				AccessKey: "test-key",
-				SecretKey: "test-secret",
-			},
-		},
-		store:      store,
-		bucketName: testBucket,
-	}
-	createTestVolumeConfig(t, store, "vol-stopped-lsf", 10)
-
-	err := svc.snapshotVolume("vol-stopped-lsf", "snap-stop-lsf", testAccountID)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }

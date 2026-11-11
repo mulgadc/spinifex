@@ -29,10 +29,15 @@ const (
 	// the request as unsupported rather than dropping the flag and sealing.
 	NoSealSchemaVersion uint16 = 3
 
+	// SnapshotFilterSchemaVersion is the first version that carries
+	// ListSnapshotsRequest.SnapshotID and SnapshotRef.State. A provider that
+	// does not serve it refuses the filter rather than listing everything.
+	SnapshotFilterSchemaVersion uint16 = 4
+
 	// SchemaVersion is the newest wire-contract version understood by this
 	// build. Every request and response carries a version so an unsupported
 	// representation fails at the boundary rather than silently decoding it.
-	SchemaVersion uint16 = NoSealSchemaVersion
+	SchemaVersion uint16 = SnapshotFilterSchemaVersion
 )
 
 // Versioned is embedded in every request and response sent over NATS.
@@ -89,6 +94,9 @@ type EBSProvider interface {
 	ListVolumes(context.Context, ListVolumesRequest) (*ListVolumesResponse, error)
 	ExpandVolume(context.Context, ExpandVolumeRequest) (*Volume, error)
 	DeleteVolume(context.Context, DeleteVolumeRequest) error
+	// CreateSnapshot answers pending or completed, and either way the contents
+	// are fixed at the answer: later writes are not in it. A pending snapshot
+	// settles to completed or error, which a filtered ListSnapshots reports.
 	CreateSnapshot(context.Context, CreateSnapshotRequest) (*Snapshot, error)
 	DeleteSnapshot(context.Context, DeleteSnapshotRequest) error
 	CopySnapshot(context.Context, CopySnapshotRequest) (*Snapshot, error)
@@ -400,8 +408,9 @@ type Snapshot struct {
 	Handle         string        `json:"handle"`
 }
 
-// CreateSnapshotRequest snapshots VolumeID as SnapshotID. It is sent to the
-// volume's owner node first, then to SnapshotSubject.
+// CreateSnapshotRequest snapshots VolumeID as SnapshotID, owner node first,
+// then SnapshotSubject. A repeat returns the snapshot held under SnapshotID;
+// ErrAlreadyExists only when the provider knows it came from another volume.
 type CreateSnapshotRequest struct {
 	Versioned
 
@@ -470,6 +479,11 @@ type SnapshotRef struct {
 	ID             string `json:"id"`
 	SourceVolumeID string `json:"source_volume_id,omitempty"`
 	Handle         string `json:"handle,omitempty"`
+
+	// State is the provider's current answer: pending until it settles, then
+	// completed or error. It is reported from SnapshotFilterSchemaVersion on
+	// (RefState), and is empty at earlier versions.
+	State SnapshotState `json:"state,omitempty"`
 }
 
 // ListSnapshotsRequest pages through the snapshots a provider holds. It is
@@ -479,6 +493,56 @@ type ListSnapshotsRequest struct {
 
 	MaxResults    int32  `json:"max_results,omitempty"`
 	StartingToken string `json:"starting_token,omitempty"`
+
+	// SnapshotID reads that one snapshot, needing no SnapshotEnumeration: the
+	// reply holds it or none, and paging is ignored. Carried only from
+	// SnapshotFilterSchemaVersion on (CheckListSnapshotsVersion).
+	SnapshotID string `json:"snapshot_id,omitempty"`
+}
+
+// CheckListSnapshotsVersion refuses a request this build cannot serve, and a
+// SnapshotID filter sent below SnapshotFilterSchemaVersion as unsupported: a
+// provider at that version would drop the filter and list every snapshot.
+func CheckListSnapshotsVersion(req ListSnapshotsRequest) error {
+	if err := checkVersion(req.SchemaVersion); err != nil {
+		return err
+	}
+	if req.SnapshotID != "" && req.SchemaVersion < SnapshotFilterSchemaVersion {
+		return fmt.Errorf("%w: snapshot_id filter requires schema version %d, got %d", ErrUnsupportedVersion, SnapshotFilterSchemaVersion, req.SchemaVersion)
+	}
+	return nil
+}
+
+// ReadSnapshot reads snapshotID from p through the filtered ListSnapshots at
+// the latest contract version. found is false when p holds no such snapshot.
+func ReadSnapshot(ctx context.Context, p EBSProvider, snapshotID string) (ref SnapshotRef, found bool, err error) {
+	resp, err := p.ListSnapshots(ctx, ListSnapshotsRequest{Versioned: NewLatestVersioned(), SnapshotID: snapshotID})
+	if err != nil {
+		return SnapshotRef{}, false, err
+	}
+	if resp == nil || len(resp.Snapshots) == 0 {
+		return SnapshotRef{}, false, nil
+	}
+	return resp.Snapshots[0], true, nil
+}
+
+// FilteredSnapshots is the reply to a filtered ListSnapshots: ref, or none
+// when ref is nil because the provider does not hold the snapshot.
+func FilteredSnapshots(req ListSnapshotsRequest, ref *SnapshotRef) *ListSnapshotsResponse {
+	response := &ListSnapshotsResponse{Versioned: ReplyVersioned(req.SchemaVersion)}
+	if ref != nil {
+		response.Snapshots = []SnapshotRef{*ref}
+	}
+	return response
+}
+
+// RefState is the State a SnapshotRef carries in a reply at version: state
+// from SnapshotFilterSchemaVersion on, and empty before it.
+func RefState(version uint16, state SnapshotState) SnapshotState {
+	if version < SnapshotFilterSchemaVersion {
+		return ""
+	}
+	return state
 }
 
 // ListSnapshotsResponse carries one page. An empty NextToken means the last

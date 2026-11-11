@@ -12,6 +12,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
+	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -40,8 +41,40 @@ func setupProviderSnapshotImageService(t *testing.T) (*ImageServiceImpl, *object
 		},
 	}
 	svc := NewImageServiceImplWithConfig(cfg, store, nil)
-	svc.SetEBSProvider(provider)
+	useProvider(svc, provider)
 	return svc, store, provider
+}
+
+// useProvider makes p svc's provider and wires a snapshot service over svc's
+// store and p, as the daemon wires its own, for CreateImage to snapshot through.
+func useProvider(svc *ImageServiceImpl, p ebsprovider.EBSProvider) *ec2snapshot.SnapshotServiceImpl {
+	svc.SetEBSProvider(p)
+	snapshots := ec2snapshot.NewSnapshotServiceImplWithStore(svc.config, svc.store, nil)
+	snapshots.SetEBSProvider(p)
+	svc.SetSnapshotCreator(snapshots)
+	svc.SetImageClaims(snapshots)
+	return snapshots
+}
+
+// createImageOf runs CreateImage of a stopped instance whose root volume is
+// volumeID, and returns its AMI's snapshot ID when one was recorded.
+func createImageOf(t *testing.T, svc *ImageServiceImpl, volumeID, name string) (string, error) {
+	t.Helper()
+	out, err := svc.CreateImageFromInstance(CreateImageParams{
+		Input:        &ec2.CreateImageInput{InstanceId: aws.String("i-" + name), Name: aws.String(name)},
+		RootVolumeID: volumeID,
+	}, testAccountID)
+	amis, listErr := svc.MetadataStore().ListAMIs(context.Background())
+	require.NoError(t, listErr)
+	for _, ami := range amis {
+		if ami.Name == name {
+			return ami.SnapshotID, err
+		}
+	}
+	if err == nil {
+		t.Fatalf("CreateImage %s returned %s but recorded no AMI", name, aws.StringValue(out.ImageId))
+	}
+	return "", err
 }
 
 // seedProviderVolume creates a provider-backed volume plus its ebsmetadata
@@ -100,15 +133,15 @@ func TestGetVolumeMetadata_Provider_UnknownVolumeIsNotFound(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidVolumeNotFound, err.Error())
 }
 
-// TestSnapshotVolume_Provider_CreatesThroughProvider locks that a
+// TestCreateImageFromInstance_Provider_CreatesThroughProvider locks that a
 // root-volume snapshot under a provider is created via provider.CreateSnapshot
 // and never falls through to building an embedded engine — the Predastore host
 // is a closed port, so any fallback would fail with connection refused.
-func TestSnapshotVolume_Provider_CreatesThroughProvider(t *testing.T) {
+func TestCreateImageFromInstance_Provider_CreatesThroughProvider(t *testing.T) {
 	svc, _, provider := setupProviderSnapshotImageService(t)
 	doc := seedProviderVolume(t, svc, provider, "vol-stopped001", 8)
 
-	err := svc.snapshotVolume(doc.VolumeID, "snap-stopped001", testAccountID)
+	snapshotID, err := createImageOf(t, svc, doc.VolumeID, "stopped001")
 	require.NoError(t, err, "the provider path must not fall through to the embedded engine against the closed Predastore port")
 
 	// CreateSnapshot is idempotent on (SnapshotID, VolumeID): re-issuing it
@@ -116,28 +149,28 @@ func TestSnapshotVolume_Provider_CreatesThroughProvider(t *testing.T) {
 	// confirms the snapshot genuinely exists in the provider (sourced from
 	// the right volume) instead of the call having silently no-opped.
 	snap, err := provider.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{
-		Versioned: ebsprovider.NewVersioned(), SnapshotID: "snap-stopped001", VolumeID: doc.VolumeID,
+		Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: doc.VolumeID,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, doc.VolumeID, snap.SourceVolumeID)
 }
 
-// TestSnapshotVolume_Provider_PassesProviderHandleAsVolumeHandle locks
+// TestCreateImageFromInstance_Provider_PassesProviderHandleAsVolumeHandle locks
 // that the ebsmetadata document's ProviderHandle is threaded through as
 // CreateSnapshotRequest.VolumeHandle. A wrong handle must be rejected by the
 // provider (MemoryProvider treats an empty VolumeHandle as "skip the check",
 // so only a mismatched non-empty value proves the real value is forwarded).
-func TestSnapshotVolume_Provider_PassesProviderHandleAsVolumeHandle(t *testing.T) {
+func TestCreateImageFromInstance_Provider_PassesProviderHandleAsVolumeHandle(t *testing.T) {
 	svc, _, provider := setupProviderSnapshotImageService(t)
 	doc := seedProviderVolume(t, svc, provider, "vol-running001", 8)
 
-	err := svc.snapshotVolume(doc.VolumeID, "snap-running001", testAccountID)
+	_, err := createImageOf(t, svc, doc.VolumeID, "running001")
 	require.NoError(t, err, "the correct provider handle must let CreateSnapshot succeed")
 
 	doc.ProviderHandle = "wrong-handle"
 	require.NoError(t, svc.MetadataStore().PutVolume(context.Background(), doc))
 
-	err = svc.snapshotVolume(doc.VolumeID, "snap-running002", testAccountID)
+	_, err = createImageOf(t, svc, doc.VolumeID, "running002")
 	require.Error(t, err, "a mismatched provider handle must be rejected, proving the value came from the document")
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
@@ -236,16 +269,21 @@ func (p *createUnavailableProvider) CreateSnapshot(context.Context, ebsprovider.
 	return nil, &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnavailable, Message: "held by node-2"}
 }
 
-// TestSnapshotVolume_Provider_UnavailableIsRetryLater locks that the
-// CreateImage snapshot surfaces a provider's retry-later as ServiceUnavailable.
-func TestSnapshotVolume_Provider_UnavailableIsRetryLater(t *testing.T) {
+// TestCreateImageFromInstance_Provider_UnavailableLeavesThePendingSnapshot
+// locks that a CreateImage snapshot whose call and repeat both go unanswered
+// returns InternalError and leaves its document pending for the reaper.
+func TestCreateImageFromInstance_Provider_UnavailableLeavesThePendingSnapshot(t *testing.T) {
 	svc, _, provider := setupProviderSnapshotImageService(t)
 	doc := seedProviderVolume(t, svc, provider, "vol-stopped-busy", 8)
-	svc.SetEBSProvider(&createUnavailableProvider{EBSProvider: provider})
+	useProvider(svc, &createUnavailableProvider{EBSProvider: provider})
 
-	err := svc.snapshotVolume(doc.VolumeID, "snap-stopped-busy", testAccountID)
+	snapshotID, err := createImageOf(t, svc, doc.VolumeID, "stopped-busy")
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorServiceUnavailable, err.Error())
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+	snap, err := svc.metadata.GetSnapshot(context.Background(), testAccountID, snapshotID)
+	require.NoError(t, err)
+	assert.Equal(t, "pending", snap.State)
+	assert.True(t, snap.AmbiguousCreate)
 }
 
 // createInUseProvider refuses every CreateSnapshot as volume in use.
@@ -257,14 +295,14 @@ func (p *createInUseProvider) CreateSnapshot(context.Context, ebsprovider.Create
 	return nil, &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeVolumeInUse, Message: "published"}
 }
 
-// TestSnapshotVolume_Provider_VolumeInUseIsIncorrectState locks that the
-// CreateImage snapshot tells the caller to detach a volume the provider refuses as in use.
-func TestSnapshotVolume_Provider_VolumeInUseIsIncorrectState(t *testing.T) {
+// TestCreateImageFromInstance_Provider_VolumeInUseIsIncorrectState locks that
+// the CreateImage snapshot tells the caller to detach a volume the provider refuses as in use.
+func TestCreateImageFromInstance_Provider_VolumeInUseIsIncorrectState(t *testing.T) {
 	svc, _, provider := setupProviderSnapshotImageService(t)
 	doc := seedProviderVolume(t, svc, provider, "vol-attached-inuse", 8)
-	svc.SetEBSProvider(&createInUseProvider{EBSProvider: provider})
+	useProvider(svc, &createInUseProvider{EBSProvider: provider})
 
-	err := svc.snapshotVolume(doc.VolumeID, "snap-attached-inuse", testAccountID)
+	_, err := createImageOf(t, svc, doc.VolumeID, "attached-inuse")
 
 	code, message, ok := awserrors.ResolveErrorDetail(err)
 	require.True(t, ok, "unregistered error: %v", err)
@@ -295,7 +333,7 @@ func TestCreateImageFromInstance_RunningInstanceLeavesTheDrainToTheProvider(t *t
 	svc.natsConn = nc
 	svc.config.DataDir = testutil.SocketTempDir(t)
 	counting := &countingSnapshotProvider{EBSProvider: provider}
-	svc.SetEBSProvider(counting)
+	useProvider(svc, counting)
 
 	doc := seedProviderVolume(t, svc, provider, "vol-running-drain", 8)
 	doc.State, doc.AttachedInstance = "in-use", instanceID

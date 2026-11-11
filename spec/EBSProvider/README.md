@@ -17,6 +17,7 @@ The contract that every implementation of the `EBSProvider` interface must meet.
   A failed call leaves the state unchanged, but a timeout can arrive after the provider acted, and a crash can leave work half done.
 - Is the schema version part of the contract?
   Every method refuses an unsupported version with `unsupported_version`, and the conformance suite tests it, but the specification does not model versions.
+  A snapshot's `state` in a ListSnapshots ref, and the `snapshot_id` filter, arrive at contract version 4: a ref carries no state below it, and a filtered call below it is refused with `unsupported_version` rather than answered with every snapshot.
 - Are `internal` and `unavailable` the only errors that a failed provider may cause?
 - Must a present but malformed ID be refused with `invalid_argument`?
   IDs are opaque here, so only an omitted one is refused.
@@ -100,13 +101,10 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 
 ### Snapshots
 
-- Should a pending snapshot's move to `completed` or `error` be modelled, as a step that happens without a call?
-  Without it a pending snapshot never completes, and no snapshot is ever in `error`.
-
 #### CreateSnapshot
 
-- May success return a `pending` snapshot?
-  AWS starts a snapshot as `pending`, while the memory implementation returns `completed` and the NATS implementation waits for completion and refuses anything else.
+- May a provider forget a snapshot's source?
+  The control plane mints every snapshot ID and records it before the first call, so the ID alone names the request. A provider that no longer knows a snapshot's source, such as qemu-nbd after a restart, answers a retry with the snapshot, and refuses with `already_exists` only when it knows the source differs. The specification models a provider that always knows the source.
 - Must a retry compare the volume handle?
   It is ignored, as in the memory implementation, so a volume deleted and recreated under the same ID returns the old snapshot.
 - Should a copy's ID count as a retry?
@@ -133,7 +131,7 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 - Is the handle check part of the contract?
   The Viperblock implementation ignores the handle and deletes anyway.
 - May a pending snapshot be deleted?
-  AWS allows it.
+  AWS allows it, while OCI refuses to delete a backup that is still being created, so the control plane never asks: it defers a customer's delete of a pending snapshot until the snapshot settles.
 - What does success promise?
   The Go docs say the snapshot is gone, but a snapshot whose handle did not match is left in place.
 - Should a snapshot that does not exist be refused with `not_found`?

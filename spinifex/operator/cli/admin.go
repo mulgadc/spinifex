@@ -480,8 +480,9 @@ func init() {
 
 const bytesPerGiB = 1024 * 1024 * 1024
 
-// imageImportTimeout bounds each provider call the import makes. Generous
-// because the snapshot at the end runs over the whole imported volume.
+// imageImportTimeout bounds each provider call the import makes, and the wait
+// for a snapshot the provider answers pending. Generous because the snapshot
+// at the end runs over the whole imported volume.
 const imageImportTimeout = 30 * time.Minute
 
 // amiVolumeSizeGiB returns the smallest whole GiB that still holds sizeBytes.
@@ -895,6 +896,7 @@ func registerExtractedImage(image imagecatalog.Images, amiNameOverride, imagePat
 		SourcePath:       extractedImagePath,
 		Snapshot:         true,
 		Progress:         os.Stdout,
+		SnapshotTimeout:  imageImportTimeout,
 	})
 	if err != nil {
 		return "", fmt.Errorf("import image: %w", err)

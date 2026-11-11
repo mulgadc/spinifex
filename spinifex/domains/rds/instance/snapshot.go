@@ -114,7 +114,7 @@ func (s *Service) snapshotDBInstance(ctx context.Context, kv *kvstore.Bucket, re
 		return nil, err
 	}
 
-	snapshotID, crashConsistent, err := s.snapshotDataVolume(ctx, accountID, rec, resume, req.DBSnapshotIdentifier)
+	snapshotID, state, crashConsistent, err := s.snapshotDataVolume(ctx, accountID, rec, resume, req.DBSnapshotIdentifier)
 	if err != nil {
 		// The record only ever described a snapshot that now does not exist, so it
 		// goes with it rather than being left for the reconciler to puzzle over.
@@ -123,26 +123,35 @@ func (s *Service) snapshotDBInstance(ctx context.Context, kv *kvstore.Bucket, re
 	}
 
 	record.SnapshotID = snapshotID
-	record.Status = SnapshotStatusAvailable
 	record.CrashConsistent = crashConsistent
+	// A pending EC2 snapshot's contents are already fixed, so the quiesce is
+	// over; the record stays creating until the reconciler sees it settle.
+	if status, _ := rdsSnapshotStatus(state); status == SnapshotStatusCreating {
+		if err := putJSON(ctx, kv, key, &record); err != nil {
+			return nil, err
+		}
+		slog.InfoContext(ctx, "rds: DB snapshot cut; waiting for its EC2 snapshot to complete",
+			"dbSnapshot", req.DBSnapshotIdentifier, "dbInstance", rec.DBInstanceIdentifier,
+			"snapshotType", record.SnapshotType, "snapshotId", snapshotID, "crashConsistent", crashConsistent)
+		return &record, nil
+	}
+	now := time.Now().UTC()
+	record.Status = SnapshotStatusAvailable
+	record.SettledAt = &now
 	if err := putJSON(ctx, kv, key, &record); err != nil {
 		return nil, err
 	}
 
-	s.RecordEvent(ctx, accountID, EventSourceTypeDBSnapshot, req.DBSnapshotIdentifier,
-		"DB snapshot created.", EventCategoryBackup, EventCategoryCreation)
-	slog.InfoContext(ctx, "rds: DB snapshot created",
-		"dbSnapshot", req.DBSnapshotIdentifier, "dbInstance", rec.DBInstanceIdentifier,
-		"snapshotType", record.SnapshotType, "snapshotId", snapshotID, "crashConsistent", crashConsistent)
+	s.recordSnapshotSettled(ctx, accountID, &record, state)
 
 	return &record, nil
 }
 
 // Quiesces the engine, snapshots the data volume, and releases the engine again
-// however the snapshot went. Reports the EC2 snapshot and whether the engine was
-// still writing when it was taken.
+// however the snapshot went. Reports the EC2 snapshot, its state, and whether
+// the engine was still writing when it was taken.
 func (s *Service) snapshotDataVolume(ctx context.Context, accountID string, rec *DBInstanceRecord,
-	resume Status, dbSnapshotIdentifier string) (snapshotID string, crashConsistent bool, err error) {
+	resume Status, dbSnapshotIdentifier string) (snapshotID, state string, crashConsistent bool, err error) {
 	// A stopped instance has no engine to hold: its datadir was sealed by the
 	// graceful stop, which is the checkpoint a quiesce would be forcing.
 	if resume == StatusAvailable {
@@ -176,12 +185,12 @@ func (s *Service) snapshotDataVolume(ctx context.Context, accountID string, rec 
 		}},
 	}, awsidentifiers.GlobalAccountID)
 	if err != nil {
-		return "", crashConsistent, fmt.Errorf("rds: snapshot the data volume of %s: %w", rec.DBInstanceIdentifier, err)
+		return "", "", crashConsistent, fmt.Errorf("rds: snapshot the data volume of %s: %w", rec.DBInstanceIdentifier, err)
 	}
 	if snapshot == nil || aws.StringValue(snapshot.SnapshotId) == "" {
-		return "", crashConsistent, fmt.Errorf("rds: snapshot the data volume of %s: empty snapshot id", rec.DBInstanceIdentifier)
+		return "", "", crashConsistent, fmt.Errorf("rds: snapshot the data volume of %s: empty snapshot id", rec.DBInstanceIdentifier)
 	}
-	return aws.StringValue(snapshot.SnapshotId), crashConsistent, nil
+	return aws.StringValue(snapshot.SnapshotId), aws.StringValue(snapshot.State), crashConsistent, nil
 }
 
 // The half of the warning that holds for every engine. What restoring such a
@@ -309,11 +318,11 @@ func (s *Service) DeleteDBSnapshot(ctx context.Context, input *rds.DeleteDBSnaps
 	if err != nil {
 		return nil, err
 	}
-	rec, _, err := s.getDBSnapshot(ctx, kv, id)
+	rec, rev, err := s.getDBSnapshot(ctx, kv, id)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.removeDBSnapshot(ctx, kv, accountID, rec); err != nil {
+	if err := s.removeDBSnapshot(ctx, kv, accountID, rec, rev); err != nil {
 		return nil, err
 	}
 	// AWS answers with the snapshot as it last stood, the way a delete of a DB
@@ -325,16 +334,16 @@ func (s *Service) DeleteDBSnapshot(ctx context.Context, input *rds.DeleteDBSnaps
 // data volume behind it. Shared with the retention sweep, which cannot go
 // through DeleteDBSnapshot: that rejects the rds: namespace automated snapshots
 // live in, so a customer can never delete one by hand.
-func (s *Service) removeDBSnapshot(ctx context.Context, kv *kvstore.Bucket, accountID string, rec *DBSnapshotRecord) error {
+func (s *Service) removeDBSnapshot(ctx context.Context, kv *kvstore.Bucket, accountID string, rec *DBSnapshotRecord, rev uint64) error {
 	if s.deps.Snapshots == nil {
 		return errors.New("rds: no snapshot service configured")
 	}
 	id := rec.DBSnapshotIdentifier
-	// A snapshot still being taken has no data to remove and an in-flight writer
-	// that would recreate the record; the reconciler resolves it either way.
-	if rec.Status != SnapshotStatusAvailable {
+	// A snapshot still being taken has an in-flight writer that would recreate
+	// the record; the reconciler settles it available or failed, as AWS's are.
+	if rec.Status != SnapshotStatusAvailable && rec.Status != SnapshotStatusFailed {
 		return awserrors.Errorf(awserrors.ErrorDBSnapshotInvalidState,
-			"DB snapshot %s is %s; it must be %s to be deleted", id, rec.Status, SnapshotStatusAvailable)
+			"DB snapshot %s is %s; it must be %s or %s to be deleted", id, rec.Status, SnapshotStatusAvailable, SnapshotStatusFailed)
 	}
 
 	if err := s.deleteEC2Snapshot(ctx, kv, accountID, rec); err != nil {
@@ -347,13 +356,42 @@ func (s *Service) removeDBSnapshot(ctx context.Context, kv *kvstore.Bucket, acco
 	}
 	// Last: while it exists the snapshot is still nameable, and a retry re-runs
 	// the steps above, each of which tolerates work it has already done.
-	if err := kv.Delete(ctx, DBSnapshotKey(id)); err != nil {
-		return fmt.Errorf("rds: delete the DB snapshot record for %s: %w", id, err)
+	if err := deleteDBSnapshotRecord(ctx, kv, rec, rev); err != nil {
+		return err
 	}
 
 	s.RecordEvent(ctx, accountID, EventSourceTypeDBSnapshot, id, "DB snapshot deleted.", EventCategoryDeletion)
 	slog.InfoContext(ctx, "rds: DB snapshot deleted", "dbSnapshot", id, "snapshotId", rec.SnapshotID)
 	return nil
+}
+
+// Deletes the record read at rev, or the same snapshot rewritten since, such as
+// by a tag change. A record of the same name for another snapshot, such as a
+// retaken final snapshot's reservation, is left alone.
+func deleteDBSnapshotRecord(ctx context.Context, kv *kvstore.Bucket, rec *DBSnapshotRecord, rev uint64) error {
+	id := rec.DBSnapshotIdentifier
+	for range tagWriteAttempts {
+		err := kv.CompareAndDelete(ctx, DBSnapshotKey(id), rev)
+		if !errors.Is(err, kvstore.ErrConflict) {
+			if err != nil {
+				return fmt.Errorf("rds: delete the DB snapshot record for %s: %w", id, err)
+			}
+			return nil
+		}
+		var current DBSnapshotRecord
+		var found bool
+		if rev, found, err = getJSONRevision(ctx, kv, DBSnapshotKey(id), &current); err != nil {
+			return err
+		}
+		if !found {
+			return nil
+		}
+		if current.SnapshotID != rec.SnapshotID || !current.CreatedAt.Equal(rec.CreatedAt) {
+			return awserrors.Errorf(awserrors.ErrorDBSnapshotInvalidState,
+				"DB snapshot %s was replaced while it was being deleted", id)
+		}
+	}
+	return fmt.Errorf("rds: deleting the DB snapshot record for %s contended after %d attempts", id, tagWriteAttempts)
 }
 
 // A snapshot with a volume still reading through it cannot go, which is exactly

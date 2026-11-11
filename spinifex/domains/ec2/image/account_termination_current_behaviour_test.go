@@ -57,6 +57,11 @@ func newStorageServices(t *testing.T) storageServices {
 	snapshots.SetEBSProvider(provider)
 	images := ec2image.NewImageServiceImplWithConfig(cfg, store, nil)
 	images.SetEBSProvider(provider)
+	// CreateImage snapshots through a snapshot service with no index handle.
+	imageSnapshots := ec2snapshot.NewSnapshotServiceImplWithStore(cfg, store, nc)
+	imageSnapshots.SetEBSProvider(provider)
+	images.SetSnapshotCreator(imageSnapshots)
+	images.SetImageClaims(imageSnapshots)
 
 	return storageServices{
 		volumes: volumes, snapshots: snapshots, images: images,
@@ -230,9 +235,9 @@ func TestCurrentBehaviour_AccountTermination_DeleteSnapshotDuringCloneCreationSt
 	assert.EqualError(t, err, awserrors.ErrorInvalidSnapshotNotFound, "a clone started after the delete is refused")
 }
 
-// CreateImage on an instance re-reads the image the instance launched from,
-// after the provider has taken the snapshot, so once that image is
-// deregistered the call fails and leaves a provider snapshot with no document.
+// CreateImage on an instance reads the image the instance launched from before
+// it snapshots the root volume, so once that image is deregistered the call
+// fails and the provider holds no snapshot for it.
 func TestCurrentBehaviour_AccountTermination_CreateImageOfRetainedInstanceNeedsItsLaunchImage(t *testing.T) {
 	s := newStorageServices(t)
 	ctx := context.Background()
@@ -252,17 +257,7 @@ func TestCurrentBehaviour_AccountTermination_CreateImageOfRetainedInstanceNeedsI
 
 	listed, err := s.provider.ListSnapshots(ctx, ebsprovider.ListSnapshotsRequest{Versioned: ebsprovider.NewVersioned()})
 	require.NoError(t, err)
-	var orphans []string
 	for _, ref := range listed.Snapshots {
-		if ref.SourceVolumeID == "vol-retained-root" {
-			orphans = append(orphans, ref.ID)
-		}
-	}
-	require.Len(t, orphans, 1, "the provider kept the snapshot it took before the image read failed")
-
-	docs, err := s.metadata.ListSnapshotsStrict(ctx, ctAccountID)
-	require.NoError(t, err)
-	for _, doc := range docs {
-		assert.NotEqual(t, orphans[0], doc.SnapshotID, "no document names that snapshot")
+		assert.NotEqual(t, "vol-retained-root", ref.SourceVolumeID, "the provider took a snapshot for an image that failed")
 	}
 }

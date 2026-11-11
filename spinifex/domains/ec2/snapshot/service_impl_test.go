@@ -1246,10 +1246,9 @@ func (s *snapshotMetadataFailingObjectStore) PutObject(ctx context.Context, inpu
 	return s.ObjectStore.PutObject(ctx, input)
 }
 
-// TestCreateSnapshot_Provider_RollbackOnMetadataWriteFailure covers
-// CreateSnapshot's rollback path: when persisting the snapshot config fails
-// after the provider has already created the snapshot, CreateSnapshot must
-// delete the just-created provider snapshot rather than orphan it.
+// TestCreateSnapshot_Provider_RollbackOnMetadataWriteFailure: the pending
+// document is written before the provider is called, so a failed write leaves
+// no provider snapshot behind to orphan.
 func TestCreateSnapshot_Provider_RollbackOnMetadataWriteFailure(t *testing.T) {
 	store := &snapshotMetadataFailingObjectStore{ObjectStore: objectstore.NewMemoryObjectStore()}
 	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
@@ -1273,13 +1272,10 @@ func TestCreateSnapshot_Provider_RollbackOnMetadataWriteFailure(t *testing.T) {
 
 	snapshotID := strings.TrimSuffix(path.Base(store.attemptedKey), ".json")
 	_, err = provider.GetVolume(context.Background(), ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-rollback"})
-	require.NoError(t, err, "the source volume must be unaffected by the snapshot rollback")
+	require.NoError(t, err, "the source volume must be unaffected by the failed create")
 
-	// Recreating the same snapshot ID against a different source volume only
-	// succeeds if the original snapshot no longer exists (MemoryProvider
-	// returns already_exists for a conflicting source volume on a live
-	// snapshot ID), proving the rollback actually deleted it rather than
-	// merely leaving it orphaned but reachable.
+	// The ID is free on another source volume only if the provider never took
+	// it: MemoryProvider refuses a held ID on a different volume.
 	_, err = provider.CreateVolume(context.Background(), ebsprovider.CreateVolumeRequest{
 		Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-rollback-check", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 * 1024 * 1024 * 1024},
 	})
@@ -1287,7 +1283,7 @@ func TestCreateSnapshot_Provider_RollbackOnMetadataWriteFailure(t *testing.T) {
 	_, err = provider.CreateSnapshot(context.Background(), ebsprovider.CreateSnapshotRequest{
 		Versioned: ebsprovider.NewVersioned(), SnapshotID: snapshotID, VolumeID: "vol-rollback-check",
 	})
-	require.NoError(t, err, "rollback must have deleted the just-created provider snapshot")
+	require.NoError(t, err, "a failed document write must leave no provider snapshot")
 }
 
 // providerSnapshotService builds a snapshot service backed by the memory
@@ -1547,17 +1543,17 @@ func TestCreateSnapshot_ProviderVolumeInUseIsIncorrectState(t *testing.T) {
 	assert.Contains(t, message, "Detach")
 }
 
-// A provider that cannot answer now, such as one refusing a volume another
-// node holds, is retry-later for the client; any other failure is internal.
+// A failure that is not a refusal may follow an accepted call, so after its
+// repeat fails the same way the request is internal and the snapshot is left
+// pending for the reaper rather than removed.
 func TestCreateSnapshot_ProviderFailureMapsToSpecificError(t *testing.T) {
 	cases := []struct {
-		name     string
-		err      error
-		wantCode string
+		name string
+		err  error
 	}{
-		{"provider unavailable", &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnavailable, Message: "held by node-2"}, awserrors.ErrorServiceUnavailable},
-		{"internal failure", &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeInternal, Message: "boom"}, awserrors.ErrorServerInternal},
-		{"transport failure", errors.New("connection reset"), awserrors.ErrorServerInternal},
+		{"provider unavailable", &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnavailable, Message: "held by node-2"}},
+		{"internal failure", &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeInternal, Message: "boom"}},
+		{"transport failure", errors.New("connection reset")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1567,7 +1563,11 @@ func TestCreateSnapshot_ProviderFailureMapsToSpecificError(t *testing.T) {
 
 			_, err := svc.CreateSnapshot(context.Background(), &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-create-fail")}, testAccountID)
 			require.Error(t, err)
-			assert.Equal(t, tc.wantCode, err.Error())
+			assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+			docs, err := svc.metadata.ListAllSnapshotsStrict(context.Background())
+			require.NoError(t, err)
+			require.Len(t, docs, 1)
+			assert.Equal(t, "pending", docs[0].State)
 		})
 	}
 }

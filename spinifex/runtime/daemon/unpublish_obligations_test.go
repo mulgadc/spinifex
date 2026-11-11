@@ -357,7 +357,7 @@ func TestVolumeMounterHold_UnpublishSealsOrDropsAsAsked(t *testing.T) {
 		assert.Equal(t, "vol-settle", call.VolumeID)
 		assert.Equal(t, "handle-1", call.Handle, "the obligation's handle names the publish it undoes")
 		assert.Equal(t, "node-hold", call.NodeID)
-		assert.Equal(t, ebsprovider.NoSealSchemaVersion, call.SchemaVersion)
+		assert.GreaterOrEqual(t, call.SchemaVersion, ebsprovider.NoSealSchemaVersion, "no_seal is carried only from the version that defines it")
 	}
 	assert.False(t, calls[0].NoSeal, "a surviving volume is sealed so its writes are kept")
 	assert.True(t, calls[1].NoSeal)

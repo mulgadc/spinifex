@@ -13,8 +13,9 @@ CreateSnapshotRequests == [snapshot_id   : Optional(SnapshotIDs),
 
 CreateSnapshot(req, val, err) ==
   (*******************************************************************************************************************)
-  (* A volume's data is frozen as a snapshot, from which new volumes can be restored. A retry of a call that         *)
-  (* already succeeded returns the same snapshot.                                                                    *)
+  (* A volume's data is frozen as a snapshot, from which new volumes can be restored. The snapshot holds the         *)
+  (* volume's data as it was when the call returned, even while it is pending, and a pending snapshot settles later  *)
+  (* without a call (SettleSnapshot). A retry of a call that already succeeded returns the same snapshot.            *)
   (*******************************************************************************************************************)
   LET snapID == req.snapshot_id
       volID  == req.volume_id
@@ -97,27 +98,45 @@ CopySnapshot(req, val, err) ==
 
 
 ListSnapshotsRequests == [max_results    : -1..(MaxListResults + 1),
-                          starting_token : Optional(ListTokens)]
+                          starting_token : Optional(ListTokens),
+                          snapshot_id    : Optional(SnapshotIDs)]
+
+\* The ref that ListSnapshots returns for a snapshot, carrying its current state.
+SnapshotRef(id) == [id               |-> id,
+                    source_volume_id |-> snapshots[id].source_volume_id,
+                    handle           |-> snapshots[id].handle,
+                    state            |-> snapshots[id].state]
 
 ListSnapshots(req, val, err) ==
   (*******************************************************************************************************************)
   (* Some of the snapshots are listed, a page at a time, and nothing changes. A call with no starting token that     *)
-  (* returns no next token lists every snapshot.                                                                     *)
+  (* returns no next token lists every snapshot. A call that names a snapshot returns that snapshot in its current   *)
+  (* state, or nothing when it does not exist, so an accepted snapshot is never reported absent while it is pending. *)
   (*******************************************************************************************************************)
-  LET Errors ==
-    LET checks == [unsupported_capability |-> ~Capabilities.snapshot_enumeration]
-    IN {e \in DOMAIN checks : checks[e]}
+  LET snapID == req.snapshot_id
+
+      Errors ==
+        \* A call that names a snapshot reads only that one, so it needs no enumeration.
+        LET checks == [unsupported_capability |-> snapID = None /\ ~Capabilities.snapshot_enumeration]
+        IN {e \in DOMAIN checks : checks[e]}
 
      \* The request was rejected, or the provider failed to answer.
   IN \/ /\ val = None
         /\ err \in Errors \union ProviderErrors
         /\ UNCHANGED vars
 
+     \* The request named one snapshot, so paging is ignored.
+     \/ /\ Errors = {}
+        /\ snapID /= None
+        /\ val = [snapshots  |-> IF KeyExists(snapshots, snapID) THEN {SnapshotRef(snapID)} ELSE {},
+                  next_token |-> None]
+        /\ err = None
+        /\ UNCHANGED vars
+
      \* The request was accepted.
      \/ /\ Errors = {}
-        /\ LET refs == {[id               |-> id,
-                         source_volume_id |-> snapshots[id].source_volume_id,
-                         handle           |-> snapshots[id].handle] : id \in DOMAIN snapshots}
+        /\ snapID = None
+        /\ LET refs == {SnapshotRef(id) : id \in DOMAIN snapshots}
            \* The page and the next token are the implementation's choice.
            IN \E page \in SUBSET refs, next \in Optional(ListTokens) :
                 /\ Cardinality(page) <= PageSize(req.max_results)
@@ -155,5 +174,19 @@ DeleteSnapshot(req, err) ==
                         ELSE RemoveKey(snapshots, snapID)
         /\ err = None
         /\ UNCHANGED <<volumes, publications>>
+
+-----------------------------------------------------------------------------------------------------------------------
+\* Steps without a call
+
+SettleSnapshot(snapID) ==
+  (*******************************************************************************************************************)
+  (* A pending snapshot settles as completed or error, as the provider finishes it. Its data is unchanged, since it  *)
+  (* was fixed when CreateSnapshot returned, and a snapshot that has settled never changes state again.              *)
+  (*******************************************************************************************************************)
+  /\ KeyExists(snapshots, snapID)
+  /\ snapshots[snapID].state = "pending"
+  /\ \E s \in {"completed", "error"} :
+       snapshots' = [snapshots EXCEPT ![snapID].state = s]
+  /\ UNCHANGED <<volumes, publications>>
 
 =======================================================================================================================

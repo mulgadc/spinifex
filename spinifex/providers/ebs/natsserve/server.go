@@ -326,6 +326,10 @@ func handleListSnapshots(provider ebsprovider.EBSProvider) msgHandler {
 			respond(ctx, msg, ebsprovider.ListSnapshotsResponse{Versioned: v, Error: versionError(req.SchemaVersion)})
 			return
 		}
+		if err := ebsprovider.CheckListSnapshotsVersion(req); err != nil {
+			respond(ctx, msg, ebsprovider.ListSnapshotsResponse{Versioned: v, Error: classifyError(err)})
+			return
+		}
 		resp, err := provider.ListSnapshots(ctx, req)
 		if err != nil {
 			respond(ctx, msg, ebsprovider.ListSnapshotsResponse{Versioned: v, Error: classifyError(err)})

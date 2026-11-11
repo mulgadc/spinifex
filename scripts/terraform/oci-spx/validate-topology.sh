@@ -1162,6 +1162,8 @@ except (binascii.Error, ValueError):
 }
 
 # wait_console <instance> <ERE> <seconds> prints the last console line matching.
+# On a timeout the guest's last gate reports go to the gate log, so a failure
+# shows what the guest saw instead.
 wait_console() {
     local id="$1" pattern="$2" deadline=$((SECONDS + $3)) line
     while [ "$SECONDS" -lt "$deadline" ]; do
@@ -1172,6 +1174,10 @@ wait_console() {
         fi
         sleep 10
     done
+    {
+        printf '\n=== %s console, last gate reports, waiting for: %s ===\n' "$id" "$pattern"
+        console_text "$id" | grep 'SPXGATE' | tail -20 || true
+    } >> "$GATE_LOG" 2>&1
     return 1
 }
 

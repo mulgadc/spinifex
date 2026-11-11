@@ -558,9 +558,11 @@ func TestProjectDBSnapshot_ReportsProgressOnlyWhenTheDataExists(t *testing.T) {
 		Status:               SnapshotStatusCreating,
 	}
 	assert.Nil(t, h.svc.projectDBSnapshot(&rec).PercentProgress)
+	assert.Nil(t, h.svc.projectDBSnapshot(&rec).OriginalSnapshotCreateTime)
 
 	rec.Status = SnapshotStatusAvailable
 	assert.Equal(t, int64(100), aws.Int64Value(h.svc.projectDBSnapshot(&rec).PercentProgress))
+	assert.NotNil(t, h.svc.projectDBSnapshot(&rec).OriginalSnapshotCreateTime)
 }
 
 // AWS reports the source instance's zone, handle and creation time on every
@@ -581,8 +583,13 @@ func TestDBSnapshot_ReportsTheSourceInstanceAsItWasTaken(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, described.DBSnapshots, 1)
+	listed, err := h.svc.DescribeDBSnapshots(t.Context(), &rds.DescribeDBSnapshotsInput{}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, listed.DBSnapshots, 1)
+	deleted, err := h.svc.DeleteDBSnapshot(t.Context(), &rds.DeleteDBSnapshotInput{DBSnapshotIdentifier: aws.String(testSnapshotID)}, testAccountID)
+	require.NoError(t, err)
 
-	for name, snap := range map[string]*rds.DBSnapshot{"create": created.DBSnapshot, "describe": described.DBSnapshots[0]} {
+	for name, snap := range map[string]*rds.DBSnapshot{"create": created.DBSnapshot, "describe": described.DBSnapshots[0], "list": listed.DBSnapshots[0], "delete": deleted.DBSnapshot} {
 		assert.Equal(t, "ap-southeast-2a", aws.StringValue(snap.AvailabilityZone), name)
 		assert.Equal(t, rec.DbiResourceID, aws.StringValue(snap.DbiResourceId), name)
 		assert.Equal(t, rec.CreatedAt, aws.TimeValue(snap.InstanceCreateTime), name)
@@ -593,12 +600,16 @@ func TestDBSnapshot_ReportsTheSourceInstanceAsItWasTaken(t *testing.T) {
 		require.NotNil(t, snap.DedicatedLogVolume, name)
 		assert.False(t, *snap.DedicatedLogVolume, name)
 	}
-	assert.NotNil(t, created.DBSnapshot.ProcessorFeatures)
-	assert.Empty(t, created.DBSnapshot.ProcessorFeatures)
-	assert.Nil(t, created.DBSnapshot.MultiTenant)
-	assert.Nil(t, described.DBSnapshots[0].ProcessorFeatures)
-	require.NotNil(t, described.DBSnapshots[0].MultiTenant)
-	assert.False(t, *described.DBSnapshots[0].MultiTenant)
+	for _, snap := range []*rds.DBSnapshot{created.DBSnapshot, deleted.DBSnapshot} {
+		assert.NotNil(t, snap.ProcessorFeatures)
+		assert.Empty(t, snap.ProcessorFeatures)
+		assert.Nil(t, snap.MultiTenant)
+	}
+	for _, snap := range []*rds.DBSnapshot{described.DBSnapshots[0], listed.DBSnapshots[0]} {
+		assert.Nil(t, snap.ProcessorFeatures)
+		require.NotNil(t, snap.MultiTenant)
+		assert.False(t, *snap.MultiTenant)
+	}
 }
 
 // The EC2 snapshot is tagged with the DB snapshot identifier before the record

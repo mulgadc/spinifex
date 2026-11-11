@@ -783,9 +783,7 @@ func (s *Service) projectDBSnapshot(rec *DBSnapshotRecord) *rds.DBSnapshot {
 		MasterUsername:       aws.String(rec.MasterUsername),
 		Port:                 aws.Int64(rec.Port),
 		SnapshotCreateTime:   aws.Time(rec.CreatedAt),
-		// Never copied, so the original is this snapshot itself.
-		OriginalSnapshotCreateTime: aws.Time(rec.CreatedAt),
-		SnapshotTarget:             aws.String("region"),
+		SnapshotTarget:       aws.String("region"),
 		// Features this platform does not offer, so the instance had them off.
 		IAMDatabaseAuthenticationEnabled: aws.Bool(false),
 		DedicatedLogVolume:               aws.Bool(false),
@@ -811,6 +809,8 @@ func (s *Service) projectDBSnapshot(rec *DBSnapshotRecord) *rds.DBSnapshot {
 	// would have a client restore from something that does not exist.
 	if rec.Status == SnapshotStatusAvailable {
 		out.PercentProgress = aws.Int64(100)
+		// Never copied, so the original is this snapshot itself.
+		out.OriginalSnapshotCreateTime = aws.Time(rec.CreatedAt)
 	}
 	return out
 }

@@ -104,7 +104,7 @@ func (s *Service) snapshotDBInstance(ctx context.Context, kv *kvstore.Bucket, re
 
 	// Written before the EC2 call, so a crash in between leaves a reconcilable
 	// record rather than an untracked EC2 snapshot.
-	record := newDBSnapshotRecord(accountID, rec, req)
+	record := s.newDBSnapshotRecord(accountID, rec, req)
 	key := DBSnapshotKey(req.DBSnapshotIdentifier)
 	if err := createJSON(ctx, kv, key, &record); err != nil {
 		if errors.Is(err, kvstore.ErrExists) {
@@ -247,7 +247,7 @@ func (s *Service) DescribeDBSnapshots(ctx context.Context, input *rds.DescribeDB
 		if !snapshotMatches(rec, aws.StringValue(input.DBInstanceIdentifier), snapshotType, filters) {
 			return &rds.DescribeDBSnapshotsOutput{DBSnapshots: []*rds.DBSnapshot{}}, nil
 		}
-		return &rds.DescribeDBSnapshotsOutput{DBSnapshots: []*rds.DBSnapshot{s.projectDBSnapshot(rec)}}, nil
+		return &rds.DescribeDBSnapshotsOutput{DBSnapshots: []*rds.DBSnapshot{s.projectDescribedDBSnapshot(rec)}}, nil
 	}
 
 	ids, err := ListDBSnapshotIDs(ctx, kv)
@@ -268,7 +268,7 @@ func (s *Service) DescribeDBSnapshots(ctx context.Context, input *rds.DescribeDB
 		if !found || !snapshotMatches(&rec, aws.StringValue(input.DBInstanceIdentifier), snapshotType, filters) {
 			continue
 		}
-		snapshots = append(snapshots, s.projectDBSnapshot(&rec))
+		snapshots = append(snapshots, s.projectDescribedDBSnapshot(&rec))
 	}
 	snapshots, next, err := Page(snapshots, dbSnapshotPageKey, input.MaxRecords, input.Marker)
 	if err != nil {
@@ -635,8 +635,9 @@ func validateDBSnapshotName(id string) error {
 
 // Everything a restore needs, copied rather than referenced: the DB instance
 // this describes may be gone by the time the snapshot is used.
-func newDBSnapshotRecord(accountID string, rec *DBInstanceRecord, req *validatedSnapshot) DBSnapshotRecord {
-	return DBSnapshotRecord{
+func (s *Service) newDBSnapshotRecord(accountID string, rec *DBInstanceRecord, req *validatedSnapshot) DBSnapshotRecord {
+	instanceCreateTime := rec.CreatedAt
+	record := DBSnapshotRecord{
 		DBSnapshotIdentifier:    req.DBSnapshotIdentifier,
 		DBInstanceIdentifier:    rec.DBInstanceIdentifier,
 		AccountID:               accountID,
@@ -652,6 +653,8 @@ func newDBSnapshotRecord(accountID string, rec *DBInstanceRecord, req *validated
 		DBName:                  rec.DBName,
 		MasterUsername:          rec.MasterUsername,
 		Port:                    rec.Port,
+		DbiResourceID:           rec.DbiResourceID,
+		InstanceCreateTime:      &instanceCreateTime,
 		VpcID:                   rec.VpcID,
 		VpcSecurityGroupIDs:     rec.VpcSecurityGroupIDs,
 		DBSubnetGroupName:       rec.DBSubnetGroupName,
@@ -660,6 +663,11 @@ func newDBSnapshotRecord(accountID string, rec *DBInstanceRecord, req *validated
 		Tags:                    req.Tags,
 		CreatedAt:               time.Now().UTC(),
 	}
+	// The zone the data volume was created in, which is where the instance runs.
+	if s.deps.Launch.Config != nil {
+		record.AvailabilityZone = s.deps.Launch.Config.AZ
+	}
+	return record
 }
 
 // Returns the record plus its revision, for callers that follow with a CAS.
@@ -776,6 +784,11 @@ func (s *Service) projectDBSnapshot(rec *DBSnapshotRecord) *rds.DBSnapshot {
 		MasterUsername:       aws.String(rec.MasterUsername),
 		Port:                 aws.Int64(rec.Port),
 		SnapshotCreateTime:   aws.Time(rec.CreatedAt),
+		SnapshotTarget:       aws.String("region"),
+		// Features this platform does not offer, so the instance had them off.
+		IAMDatabaseAuthenticationEnabled: aws.Bool(false),
+		DedicatedLogVolume:               aws.Bool(false),
+		ProcessorFeatures:                []*rds.ProcessorFeature{},
 		// The Terraform provider reads tags from the describe as well as from
 		// ListTagsForResource, so the two have to agree.
 		TagList: tagsToAWS(rec.Tags),
@@ -783,11 +796,32 @@ func (s *Service) projectDBSnapshot(rec *DBSnapshotRecord) *rds.DBSnapshot {
 	if rec.VpcID != "" {
 		out.VpcId = aws.String(rec.VpcID)
 	}
+	// Absent on a record predating the fields rather than reported empty.
+	if rec.AvailabilityZone != "" {
+		out.AvailabilityZone = aws.String(rec.AvailabilityZone)
+	}
+	if rec.DbiResourceID != "" {
+		out.DbiResourceId = aws.String(rec.DbiResourceID)
+	}
+	if rec.InstanceCreateTime != nil {
+		out.InstanceCreateTime = aws.Time(*rec.InstanceCreateTime)
+	}
 	// A snapshot still being taken has no data yet, so reporting full progress
 	// would have a client restore from something that does not exist.
 	if rec.Status == SnapshotStatusAvailable {
 		out.PercentProgress = aws.Int64(100)
+		// Never copied, so the original is this snapshot itself.
+		out.OriginalSnapshotCreateTime = aws.Time(rec.CreatedAt)
 	}
+	return out
+}
+
+// AWS's describe differs from the create and delete answers in exactly these
+// two members: it adds MultiTenant and leaves out the empty ProcessorFeatures.
+func (s *Service) projectDescribedDBSnapshot(rec *DBSnapshotRecord) *rds.DBSnapshot {
+	out := s.projectDBSnapshot(rec)
+	out.ProcessorFeatures = nil
+	out.MultiTenant = aws.Bool(false)
 	return out
 }
 

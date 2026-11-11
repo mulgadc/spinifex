@@ -667,7 +667,6 @@ func (b *blockedCompute) ComputeRemaining(_ context.Context, accountID string) (
 // A job that ends FAILED naming a blocker the loop cannot clear keeps the
 // account, and an operator rerun after the blocker clears converges it.
 func TestAdminDeleteAccountFailedJobConvergesOnOperatorRerun(t *testing.T) {
-	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	compute := &blockedCompute{}
 	compute.blocked.Store(true)
@@ -677,9 +676,12 @@ func TestAdminDeleteAccountFailedJobConvergesOnOperatorRerun(t *testing.T) {
 	_, err := gw.deleteAccount(t.Context(),
 		deleteAccountBody(t, account.AccountID, "tenant@example.com", strings.Repeat("a", 32)))
 	require.NoError(t, err)
+	// Parallel only once the teardown is running, so its convergence backoff overlaps the serial tests.
+	t.Parallel()
+
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateFailed
-	}, 60*time.Second, 50*time.Millisecond)
+	}, 60*time.Second, 10*time.Millisecond)
 	failed := describeDeletion(t, gw, account.AccountID)
 	assert.NotEmpty(t, failed.Error)
 	_, stillThere := gw.IAM.GetAccount(account.AccountID)
@@ -691,5 +693,5 @@ func TestAdminDeleteAccountFailedJobConvergesOnOperatorRerun(t *testing.T) {
 	require.NoError(t, err)
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted
-	}, 60*time.Second, 50*time.Millisecond)
+	}, 60*time.Second, 10*time.Millisecond)
 }

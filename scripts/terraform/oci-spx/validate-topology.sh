@@ -1262,9 +1262,10 @@ write_files:
               case "$s" in vol*) ;; *) continue ;; esac
               case "$seen" in *" $d "*) next="$next$d "; continue ;; esac
               # A failed or short read is not a blank disk: overwriting it would destroy the marker.
-              if ! dd if="/dev/$d" of=/run/spx-gate-head bs=4096 count=1 iflag=direct 2>/dev/null \
+              if ! err=$(dd if="/dev/$d" of=/run/spx-gate-head bs=4096 count=1 iflag=direct 2>&1) \
                   || [ "$(stat -c %s /run/spx-gate-head)" != 4096 ]; then
-                  say "data-unreadable serial=$s"; continue
+                  say "data-unreadable serial=$s size=$(blockdev --getsize64 "/dev/$d" 2>&1) ssz=$(blockdev --getss "/dev/$d" 2>&1) $(printf '%s' "$err" | tr '\n' ' ' | tail -c 200)"
+                  continue
               fi
               head=$(head -c 64 /run/spx-gate-head | tr -d '\000')
               case "$head" in

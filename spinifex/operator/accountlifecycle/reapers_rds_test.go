@@ -163,7 +163,7 @@ func TestRDSInstanceReaperAlwaysSkipsTheFinalSnapshot(t *testing.T) {
 func TestRDSInstanceReaperForceClearsDeletionProtection(t *testing.T) {
 	fake := newFakeRDS(t)
 	fake.failNext("rds.DeleteDBInstance",
-		"InvalidParameterCombination: DB instance orders cannot be deleted because deletion protection is enabled")
+		"InvalidParameterCombination: "+rdsinstance.DeletionProtectedMessage)
 	fake.reply("rds.ModifyDBInstance", rds.ModifyDBInstanceOutput{})
 	fake.reply("rds.DeleteDBInstance", rds.DeleteDBInstanceOutput{})
 
@@ -186,7 +186,7 @@ func TestRDSInstanceReaperForceClearsDeletionProtection(t *testing.T) {
 func TestRDSInstanceReaperLeavesDeletionProtectionAloneWithoutForce(t *testing.T) {
 	fake := newFakeRDS(t)
 	fake.failNext("rds.DeleteDBInstance",
-		"InvalidParameterCombination: DB instance orders cannot be deleted because deletion protection is enabled")
+		"InvalidParameterCombination: "+rdsinstance.DeletionProtectedMessage)
 
 	instances, _, _ := newRDSReapers(fake.nc)
 	err := instances.Delete(testCtx(t), "000000000042",

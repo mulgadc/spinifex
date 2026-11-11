@@ -267,7 +267,8 @@ func TestCreateDBSnapshot_RejectsATakenIdentifier(t *testing.T) {
 
 	_, err = h.svc.CreateDBSnapshot(t.Context(), snapshotInput(), testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorDBSnapshotAlreadyExists)
+	assert.Equal(t, "Cannot create the snapshot because a snapshot with the identifier "+testSnapshotID+
+		" already exists.: DBSnapshotAlreadyExists", err.Error())
 	// Checked before the instance is moved, so a duplicate leaves it where it was.
 	assert.Equal(t, StatusAvailable, h.instance(t, testDBID).Status)
 }

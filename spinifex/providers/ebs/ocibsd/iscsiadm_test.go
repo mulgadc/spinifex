@@ -52,6 +52,9 @@ const nodeArgs = "iscsiadm -m node -T iqn.2015-12.com.oracleiaas:vol-1 -p 169.25
 const (
 	targetSession = "tcp: [1] 169.254.2.2:3260,1 iqn.2015-12.com.oracleiaas:vol-1 (non-flash)\n"
 	otherSession  = "tcp: [2] 169.254.2.2:3260,1 iqn.2015-12.com.oracleiaas:vol-2 (non-flash)\n"
+
+	unreadableSession = "iSCSI ERROR: Failed to read 'username': permission deny when reading " +
+		"'/sys/class/iscsi_session/session1/username' # ../../libopeniscsiusr/sysfs.c:_sysfs_prop_get_str():184\n"
 )
 
 func present(string) (os.FileInfo, error) { return nil, nil }
@@ -164,6 +167,14 @@ func TestLogout(t *testing.T) {
 			want:    "still logged in after iscsiadm -u exited 21",
 		},
 		{name: "sessions that cannot be listed", replies: map[string]reply{"-m session": {err: exitError(6)}}, want: "confirm log out"},
+		{
+			name: "a logout and listing blind to the session without CAP_SYS_ADMIN",
+			replies: map[string]reply{
+				" -u":        {out: "iscsiadm: No matching sessions found", err: exitError(21)},
+				"-m session": {out: unreadableSession + "iscsiadm: No active sessions.\n", err: exitError(21)},
+			},
+			want: "could not read every session",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -199,6 +210,17 @@ func TestSessions(t *testing.T) {
 		},
 		{name: "no sessions", rep: reply{out: "iscsiadm: No active sessions.", err: exitError(21)}},
 		{name: "iscsid unreachable", rep: reply{err: exitError(20)}, err: "list sessions"},
+		{
+			// What iscsiadm prints without CAP_SYS_ADMIN while a session is open.
+			name: "an unreadable session reported as none",
+			rep:  reply{out: unreadableSession + "iscsiadm: No active sessions.\n", err: exitError(21)},
+			err:  "could not read every session",
+		},
+		{
+			name: "an unreadable session beside a readable one",
+			rep:  reply{out: unreadableSession + targetSession},
+			err:  "could not read every session",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

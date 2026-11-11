@@ -53,7 +53,9 @@ SystemCallArchitectures=native
 MemoryDenyWriteExecute=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 AmbientCapabilities=
-CapabilityBoundingSet=
+# The kernel hides an iSCSI session's credential attributes without CAP_SYS_ADMIN,
+# and iscsiadm then lists no session and logs out nothing.
+CapabilityBoundingSet=CAP_SYS_ADMIN
 ProtectHostname=yes
 KeyringMode=private
 RemoveIPC=yes

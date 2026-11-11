@@ -1,6 +1,7 @@
 package ocibsd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -132,6 +133,11 @@ func (a *ISCSIAdm) Logout(ctx context.Context, t Target) error {
 // a session it cannot identify is never acted on.
 func (a *ISCSIAdm) Sessions(ctx context.Context) ([]Target, error) {
 	out, err := a.Runner.Run(ctx, a.binary(), "-m", "session")
+	// iscsiadm drops a session whose attributes it cannot read and may then
+	// report none, so an unread attribute fails the listing.
+	if bytes.Contains(out, []byte("iSCSI ERROR")) {
+		return nil, fmt.Errorf("list sessions: iscsiadm could not read every session: %s", strings.TrimSpace(string(out)))
+	}
 	if err != nil {
 		if exitCode(err) == iscsiErrNoObjsFound {
 			return nil, nil

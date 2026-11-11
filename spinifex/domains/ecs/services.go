@@ -129,18 +129,18 @@ func (m *natsEIPManager) Release(ctx context.Context, accountID, allocationID st
 func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInput, accountID string) (*ecs.CreateServiceOutput, error) {
 	name := aws.StringValue(input.ServiceName)
 	if name == "" {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+		return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "serviceName is required.")
 	}
 	if err := validateTags(input.Tags); err != nil {
 		return nil, err
 	}
 	if strategy := aws.StringValue(input.SchedulingStrategy); strategy != "" && strategy != SchedulingStrategyReplica {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter) // DAEMON unsupported (Q15)
+		return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "schedulingStrategy %s is not supported.", strategy)
 	}
 	// Service discovery needs SRV records, which the DNS writer does not yet emit,
 	// and a servicediscovery surface to resolve the registry ARN against (Q15).
 	if len(input.ServiceRegistries) > 0 {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+		return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "serviceRegistries are not supported.")
 	}
 
 	cluster := ClusterShortName(aws.StringValue(input.Cluster))

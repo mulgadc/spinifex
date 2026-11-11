@@ -176,9 +176,9 @@ func TestService_Tags_TaskDefinitionRoundTrip(t *testing.T) {
 	assert.Equal(t, "env", aws.StringValue(described.Tags[0].Key))
 }
 
-// TestService_Tags_MissingResource asserts the not-found mapping the plan
-// specifies: cluster/service resolve to their named NotFound errors; task and
-// container-instance resolve to the generic InvalidParameter.
+// TestService_Tags_MissingResource asserts the not-found mapping: cluster and
+// service resolve to their named NotFound errors; task, container instance and
+// task definition to InvalidParameter with a message naming what is missing.
 func TestService_Tags_MissingResource(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
@@ -196,12 +196,23 @@ func TestService_Tags_MissingResource(t *testing.T) {
 	_, err = svc.ListTagsForResource(ctx, &ecs.ListTagsForResourceInput{
 		ResourceArn: aws.String("arn:aws:ecs:ap-southeast-2:123456789012:task/web/nope"),
 	}, testAccountID)
-	assert.EqualError(t, err, "InvalidParameterException")
+	assert.EqualError(t, err, "The referenced task was not found.: InvalidParameterException")
 
 	_, err = svc.ListTagsForResource(ctx, &ecs.ListTagsForResourceInput{
 		ResourceArn: aws.String("arn:aws:ecs:ap-southeast-2:123456789012:container-instance/web/nope"),
 	}, testAccountID)
-	assert.EqualError(t, err, "InvalidParameterException")
+	assert.EqualError(t, err, "The referenced container instance was not found.: InvalidParameterException")
+
+	_, err = svc.TagResource(ctx, &ecs.TagResourceInput{
+		ResourceArn: aws.String("arn:aws:ecs:ap-southeast-2:123456789012:task-definition/nope:1"),
+		Tags:        []*ecs.Tag{{Key: aws.String("k"), Value: aws.String("v")}},
+	}, testAccountID)
+	assert.EqualError(t, err, "The specified task definition does not exist.: InvalidParameterException")
+	_, err = svc.UntagResource(ctx, &ecs.UntagResourceInput{
+		ResourceArn: aws.String("arn:aws:ecs:ap-southeast-2:123456789012:container-instance/web/nope"),
+		TagKeys:     aws.StringSlice([]string{"k"}),
+	}, testAccountID)
+	assert.EqualError(t, err, "The referenced container instance was not found.: InvalidParameterException")
 }
 
 // TestService_RunTask_TagsPersisted confirms RunTask plumbs input.Tags onto

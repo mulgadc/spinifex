@@ -329,12 +329,35 @@ func TestHandleAttachNetworkInterface_OtherENIOccupiedIndex(t *testing.T) {
 	assert.Equal(t, "available", rec.Status)
 }
 
+// Device index 0 is always the primary interface, so a hot-plug request for it
+// is refused even though no hot-plug slot holds it.
+func TestHandleAttachNetworkInterface_PrimaryIndex(t *testing.T) {
+	f := newENIHotPlugFixture(t)
+	cmd := ec2v1.EC2InstanceCommand{
+		ID:            f.vmInst.ID,
+		AttachENIData: &ec2v1.AttachENIData{NetworkInterfaceID: f.eniID, DeviceIndex: 0},
+	}
+	payload := driveHandler(t, f.daemon.natsConn, "test.attach.primaryindex", func(msg *nats.Msg) {
+		f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
+	})
+	assertDeviceIndexOccupiedAt(t, payload, f.vmInst.ID, 0)
+
+	rec, err := f.daemon.vpcService.GetENIRecord(testAccountID, f.eniID)
+	require.NoError(t, err)
+	assert.Equal(t, "available", rec.Status)
+}
+
 func assertDeviceIndexOccupied(t *testing.T, payload []byte, instanceID string) {
+	t.Helper()
+	assertDeviceIndexOccupiedAt(t, payload, instanceID, 1)
+}
+
+func assertDeviceIndexOccupiedAt(t *testing.T, payload []byte, instanceID string, index int) {
 	t.Helper()
 	var env ec2.ResponseError
 	require.NoError(t, json.Unmarshal(payload, &env))
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, aws.StringValue(env.Code))
-	assert.Equal(t, "Instance '"+instanceID+"' already has an interface attached at device index '1'.", aws.StringValue(env.Message))
+	assert.Equal(t, fmt.Sprintf("Instance '%s' already has an interface attached at device index '%d'.", instanceID, index), aws.StringValue(env.Message))
 }
 
 // --- handleDetachNetworkInterface ---

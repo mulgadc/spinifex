@@ -36,17 +36,10 @@ func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg
 	}
 
 	// AWS refuses an occupied index before checking the interface's own state.
-	if !command.AttachENIData.AssignFreeIndex {
-		attached, err := d.vpcService.ListInstanceENIs(accountID, instance.ID)
-		if err != nil {
-			return respondServiceErrorOutcome(d.node, msg, err)
-		}
-		for _, a := range attached {
-			if a.DeviceIndex == deviceIndex {
-				return respondServiceErrorOutcome(d.node, msg, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-					"Instance '%s' already has an interface attached at device index '%d'.", instance.ID, deviceIndex))
-			}
-		}
+	// Index 0 is the primary interface; hot-plugged ENIs report their slot.
+	if !command.AttachENIData.AssignFreeIndex && (deviceIndex == 0 || instance.ENIRequests.SlotHeld(deviceIndex)) {
+		return respondServiceErrorOutcome(d.node, msg, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"Instance '%s' already has an interface attached at device index '%d'.", instance.ID, deviceIndex))
 	}
 
 	record, err := d.vpcService.GetENIRecord(accountID, eniID)

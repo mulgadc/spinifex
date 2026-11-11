@@ -102,20 +102,38 @@ func TestList_SkipsDeletedFunctionsUploadsObligationsAndOtherRegions(t *testing.
 	assert.Equal(t, []string{"elsewhere"}, names)
 }
 
-// More delete markers than one request may examine give an empty page that
-// still continues, and the walk reaches the live functions after them.
-func TestList_ScanBoundGivesAShortPageThatContinues(t *testing.T) {
-	svc, _ := newTestService(t)
-	tombstones(t, svc, maxListScan+5)
-	mustCreate(t, svc, "live", "f1")
+// cursorAfter is the last sequence a marker says its page examined.
+func cursorAfter(t *testing.T, marker string) uint64 {
+	t.Helper()
+	after, err := decodeCursor(marker, testAccount, testRegion)
+	require.NoError(t, err)
+	return after
+}
 
-	first := listPage(t, svc, testRegion, "", MaxListPage)
-	assert.Empty(t, first.Functions)
-	require.NotEmpty(t, first.NextMarker)
-	second := listPage(t, svc, testRegion, first.NextMarker, MaxListPage)
-	require.Len(t, second.Functions, 1)
-	assert.Equal(t, "live", second.Functions[0].Record.FunctionName)
-	assert.Empty(t, second.NextMarker)
+// walkFrom follows NextMarker from marker to the end, checking that no page
+// examines more than maxListScan sequences, and returns the names it listed.
+func walkFrom(t *testing.T, svc *MetaService, marker string, maxItems int) ([]string, int) {
+	t.Helper()
+	var names []string
+	var after uint64
+	if marker != "" {
+		after = cursorAfter(t, marker)
+	}
+	for pages := 1; ; pages++ {
+		resp := listPage(t, svc, testRegion, marker, maxItems)
+		require.LessOrEqual(t, len(resp.Functions), maxItems)
+		for _, f := range resp.Functions {
+			names = append(names, f.Record.FunctionName)
+		}
+		if resp.NextMarker == "" {
+			return names, pages
+		}
+		next := cursorAfter(t, resp.NextMarker)
+		require.LessOrEqual(t, next-after, uint64(maxListScan), "a page examined more than its scan bound")
+		require.True(t, next > after || len(resp.Functions) > 0, "a page made no progress")
+		marker, after = resp.NextMarker, next
+		require.Less(t, pages, 1000, "the walk does not end")
+	}
 }
 
 // tombstones appends n deleted functions to the stream.
@@ -130,9 +148,97 @@ func tombstones(t *testing.T, svc *MetaService, n int) {
 	}
 }
 
+// More delete markers than one request may examine give empty pages that
+// still continue, and the walk reaches the live function after them.
+func TestList_ScanBoundGivesShortPagesThatContinue(t *testing.T) {
+	svc, _ := newTestService(t)
+	tombstones(t, svc, maxListScan+5)
+	mustCreate(t, svc, "live", "f1")
+
+	first := listPage(t, svc, testRegion, "", MaxListPage)
+	assert.Empty(t, first.Functions)
+	require.NotEmpty(t, first.NextMarker)
+	assert.Equal(t, uint64(maxListScan), cursorAfter(t, first.NextMarker))
+	names, _ := walkFrom(t, svc, first.NextMarker, MaxListPage)
+	assert.Equal(t, []string{"live"}, names)
+}
+
+// Messages that are not this Region's function records count toward the scan
+// bound like any other sequence: uploads, obligations, other keys and other
+// Regions' functions.
+func TestList_ExcludedRecordsCountTowardTheScanBound(t *testing.T) {
+	svc, _ := newTestService(t)
+	mustCreate(t, svc, "first", "f1")
+	kv, err := svc.bucket(t.Context(), testAccount)
+	require.NoError(t, err)
+	for i := range maxListScan + 30 {
+		var key string
+		switch i % 4 {
+		case 0:
+			key = KVFunctionKey("us-east-1", fmt.Sprintf("x-%d", i))
+		case 1:
+			key = fmt.Sprintf("upload.%s.f9.%d", testRegion, i)
+		case 2:
+			key = KVDeletedKey(testRegion, fmt.Sprintf("d%d", i))
+		default:
+			key = fmt.Sprintf("other.%d", i)
+		}
+		_, err := kv.Put(t.Context(), key, []byte("{}"))
+		require.NoError(t, err)
+	}
+	mustCreate(t, svc, "last", "f2")
+
+	names, pages := walkFrom(t, svc, "", MaxListPage)
+	assert.Equal(t, []string{"first", "last"}, names)
+	assert.GreaterOrEqual(t, pages, 2)
+}
+
+// A key rewritten many times leaves gaps behind its latest revision; missing
+// sequences count toward the bound and the walk crosses them.
+func TestList_SparseSequencesCountTowardTheScanBound(t *testing.T) {
+	svc, _ := newTestService(t)
+	mustCreate(t, svc, "first", "f1")
+	kv, err := svc.bucket(t.Context(), testAccount)
+	require.NoError(t, err)
+	for range 2*maxListScan + 7 {
+		_, err := kv.Put(t.Context(), "scratch", []byte("{}"))
+		require.NoError(t, err)
+	}
+	mustCreate(t, svc, "middle", "f2")
+	for range maxListScan {
+		_, err := kv.Put(t.Context(), "scratch", []byte("{}"))
+		require.NoError(t, err)
+	}
+	mustCreate(t, svc, "last", "f3")
+
+	page := listPage(t, svc, testRegion, "", MaxListPage)
+	require.Len(t, page.Functions, 1)
+	assert.Equal(t, uint64(maxListScan), cursorAfter(t, page.NextMarker))
+	for _, size := range []int{1, MaxListPage} {
+		names, _ := walkFrom(t, svc, "", size)
+		assert.Equal(t, []string{"first", "middle", "last"}, names, "page size %d", size)
+	}
+}
+
+// A large live set is returned once each, in stream order, in pages that
+// never exceed the requested size.
+func TestList_LargeLiveSetPagesEveryFunctionOnce(t *testing.T) {
+	svc, _ := newTestService(t)
+	want := make([]string, 0, 3*MaxListPage+7)
+	for i := range cap(want) {
+		name := fmt.Sprintf("fn-%03d", i)
+		mustCreate(t, svc, name, fmt.Sprintf("f%d", i))
+		want = append(want, name)
+	}
+	for _, size := range []int{1, 7, MaxListPage} {
+		names, _ := walkFrom(t, svc, "", size)
+		assert.Equal(t, want, names, "page size %d", size)
+	}
+}
+
 // A full page looking ahead through delete markers to the end of the stream
-// returns no marker; when the scan bound runs out first, it continues and the
-// next page finds the function beyond them.
+// returns no marker; when the scan bound runs out first, it continues and a
+// later page finds the function beyond them.
 func TestList_LookAheadThroughDeleteMarkers(t *testing.T) {
 	t.Run("reaches the end", func(t *testing.T) {
 		svc, _ := newTestService(t)
@@ -151,10 +257,8 @@ func TestList_LookAheadThroughDeleteMarkers(t *testing.T) {
 		require.Len(t, page.Functions, 1)
 		assert.Equal(t, "live", page.Functions[0].Record.FunctionName)
 		require.NotEmpty(t, page.NextMarker, "the bound ran out before the walk was known to end")
-		next := listPage(t, svc, testRegion, page.NextMarker, 1)
-		require.Len(t, next.Functions, 1)
-		assert.Equal(t, "beyond", next.Functions[0].Record.FunctionName)
-		assert.Empty(t, next.NextMarker)
+		names, _ := walkFrom(t, svc, page.NextMarker, 1)
+		assert.Equal(t, []string{"beyond"}, names)
 	})
 }
 

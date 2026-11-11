@@ -16,7 +16,7 @@ import (
 )
 
 // List bounds: a page returns at most MaxListPage functions and examines at
-// most maxListScan stream messages, delete markers included.
+// most maxListScan stream sequences, whatever each one holds.
 const (
 	MaxListPage = 50
 	maxListScan = 200
@@ -56,8 +56,9 @@ func decodeCursor(marker, accountID, region string) (uint64, error) {
 }
 
 // List returns the Region's functions in stream order after the marker. Each
-// step is one leader message get filtered to this Region's function keys, so a
-// page costs at most its scan bound; NextMarker is set unless the walk ended.
+// step is one leader get of an exact sequence, bounded by a fast stream-state
+// read, so a page costs at most its scan bound whatever the bucket holds.
+// NextMarker is set unless the page reached the stream end it read.
 func (s *MetaService) List(ctx context.Context, req *ListRequest, accountID string) (*ListResponse, error) {
 	if !regionRE.MatchString(req.Region) {
 		return nil, badRegion()
@@ -76,37 +77,49 @@ func (s *MetaService) List(ctx context.Context, req *ListRequest, accountID stri
 	if err != nil {
 		return nil, err
 	}
-	bucket := kv.Bucket()
-	keyPrefix := "$KV." + bucket + "." + kvFunctionKeyPrefix + req.Region + "."
-	sel := kvstore.MsgGetRequest{NextFor: keyPrefix + ">"}
+	stream := "KV_" + kv.Bucket()
+	// An unfiltered stream info without deleted details reads counters only.
+	info, err := s.js.Stream(ctx, stream)
+	if err != nil {
+		return nil, fmt.Errorf("lambda: list function records: %w", err)
+	}
+	state := info.CachedInfo().State
+	if state.FirstSeq > 0 {
+		after = max(after, state.FirstSeq-1)
+	}
+	keyPrefix := "$KV." + kv.Bucket() + "." + kvFunctionKeyPrefix + req.Region + "."
 	out := &ListResponse{Functions: []ListedFunction{}}
-	for range maxListScan {
-		sel.Seq = after + 1
-		m, err := kvstore.LeaderMsgGet(ctx, s.js, "KV_"+bucket, sel)
+	for gets := 0; gets < maxListScan && after < state.LastSeq; gets++ {
+		seq := after + 1
+		m, err := kvstore.LeaderMsgGet(ctx, s.js, stream, kvstore.MsgGetRequest{Seq: seq})
 		if errors.Is(err, jetstream.ErrMsgNotFound) {
-			return out, nil
+			after = seq
+			continue
 		}
 		if err != nil {
 			return nil, fmt.Errorf("lambda: list function records: %w", err)
 		}
-		if m.Sequence <= after || !strings.HasPrefix(m.Subject, keyPrefix) {
+		if m.Sequence != seq {
 			return nil, fmt.Errorf("lambda: list function records: %w", jetstream.ErrInvalidJetStreamResponse)
 		}
-		gone := removed(m.Header)
-		if !gone && len(out.Functions) == req.MaxItems {
-			// A full page looked ahead to a live record it cannot return; the
-			// marker stays before it.
-			break
-		}
-		after = m.Sequence
-		if gone {
+		if !strings.HasPrefix(m.Subject, keyPrefix) || removed(m.Header) {
+			after = seq
 			continue
+		}
+		if len(out.Functions) == req.MaxItems {
+			// A full page reached a function it cannot return; the marker
+			// stays before it.
+			break
 		}
 		rec, err := decode(m.Data)
 		if err != nil {
 			return nil, err
 		}
-		out.Functions = append(out.Functions, ListedFunction{Record: rec, Revision: m.Sequence})
+		out.Functions = append(out.Functions, ListedFunction{Record: rec, Revision: seq})
+		after = seq
+	}
+	if after >= state.LastSeq {
+		return out, nil
 	}
 	if out.NextMarker, err = encodeCursor(listCursor{Version: 1, AccountID: accountID, Region: req.Region, After: after}); err != nil {
 		return nil, err

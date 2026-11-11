@@ -127,6 +127,52 @@ func TestListFunctions_PageHoldsAtMostFifty(t *testing.T) {
 	assert.Len(t, listedNames(pages), function.MaxListPage+1)
 }
 
+// Two accounts holding the same function names see only their own functions,
+// with their own environments, on first and continuation pages, and neither
+// can continue the other's walk.
+func TestListFunctions_AccountsAreIsolated(t *testing.T) {
+	e := newEnv(t)
+	const other = "210987654321"
+	e.deps.Roles = roleSet{roleARN: true, "arn:aws:iam::" + other + ":role/lambda-exec": true}
+	names := map[string][]string{
+		gwtest.AccountID: {"shared-1", "only-a", "shared-2", "shared-3"},
+		other:            {"shared-2", "shared-1", "only-b", "shared-3"},
+	}
+	for _, acct := range []string{gwtest.AccountID, other} {
+		e.h.AccountID = acct
+		for _, name := range names[acct] {
+			rec, err := e.do(http.MethodPost, listPath, createBody(name, func(b map[string]any) {
+				b["Role"] = "arn:aws:iam::" + acct + ":role/lambda-exec"
+				b["Environment"] = map[string]any{"Variables": map[string]string{"OWNER": acct}}
+			}))
+			require.NoError(t, err)
+			require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+		}
+	}
+	e.activate(t)
+
+	markers := map[string]string{}
+	for _, acct := range []string{gwtest.AccountID, other} {
+		e.h.AccountID = acct
+		pages := listAll(t, e, listPath+"?MaxItems=2")
+		require.Len(t, pages, 2, "the walk has a continuation page")
+		markers[acct] = *pages[0].NextMarker
+		assert.Equal(t, names[acct], listedNames(pages))
+		for _, p := range pages {
+			for _, f := range p.Functions {
+				assert.Equal(t, "arn:aws:lambda:"+gwtest.Region+":"+acct+":function:"+*f.FunctionName, *f.FunctionArn)
+				assert.Equal(t, "arn:aws:iam::"+acct+":role/lambda-exec", *f.Role)
+				assert.Equal(t, acct, *f.Environment.Variables["OWNER"])
+			}
+		}
+	}
+	for acct, foreign := range map[string]string{gwtest.AccountID: markers[other], other: markers[gwtest.AccountID]} {
+		e.h.AccountID = acct
+		_, err := e.do(http.MethodGet, listPath+"?Marker="+url.QueryEscape(foreign), nil)
+		testutil.RequireAWSCode(t, err, awserrors.ErrorInvalidParameterValueException)
+	}
+}
+
 func TestListFunctions_ParameterValidation(t *testing.T) {
 	e := newUpdateEnv(t)
 	for name, query := range map[string]string{

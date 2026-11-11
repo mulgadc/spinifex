@@ -860,6 +860,48 @@ func TestUpdateNodegroupConfig_ScaleUpAndDown(t *testing.T) {
 	assert.Len(t, rec.InstanceIDs, 1)
 }
 
+// A minimum above the desired size is refused before the reconcile acts, so the
+// only worker survives and the record keeps its sizes.
+func TestUpdateNodegroupConfig_MinAboveDesiredRefusedWithoutTerminate(t *testing.T) {
+	t.Parallel()
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+	markWorkersReady(t, f, "c1", "ng1", 1)
+	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
+	require.NoError(t, err)
+	f.svc.WaitLaunches()
+
+	_, err = f.svc.UpdateNodegroupConfig(context.Background(), &eks.UpdateNodegroupConfigInput{
+		ClusterName:   aws.String("c1"),
+		NodegroupName: aws.String("ng1"),
+		ScalingConfig: &eks.NodegroupScalingConfig{MinSize: aws.Int64(1), MaxSize: aws.Int64(1), DesiredSize: aws.Int64(0)},
+	}, testAccountID)
+	assert.Equal(t, awserrors.ErrorEKSInvalidParameter, awserrors.ValidErrorCodeFromError(err))
+	assert.ErrorContains(t, err, "Minimum capacity 1 can't be greater than desired size 0")
+	assert.Empty(t, f.worker.terminateCalls)
+	rec, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), rec.ScalingDesired)
+	assert.Equal(t, int64(3), rec.ScalingMax)
+	assert.Len(t, rec.InstanceIDs, 1)
+}
+
+func TestCreateNodegroup_MinAboveDesiredRefusedWithoutLaunch(t *testing.T) {
+	t.Parallel()
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+	in := createNGInput("c1", "ng1", 1)
+	in.ScalingConfig.MinSize = aws.Int64(2)
+
+	_, err := f.svc.CreateNodegroup(context.Background(), in, testAccountID)
+	assert.Equal(t, awserrors.ErrorEKSInvalidParameter, awserrors.ValidErrorCodeFromError(err))
+	assert.ErrorContains(t, err, "Minimum capacity 2 can't be greater than desired size 1")
+	f.svc.WaitLaunches()
+	assert.Empty(t, f.worker.runCalls)
+	_, err = GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
+	require.ErrorIs(t, err, ErrNodegroupNotFound)
+}
+
 // TestUpdateNodegroupConfig_ConcurrentScaleUpConverges proves the CAS reconcile
 // fixes the lost-update overshoot: two overlapping scale-up requests (UI +
 // terraform retry) must converge to exactly desired, not double-launch. Pre-fix

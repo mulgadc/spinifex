@@ -263,6 +263,9 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV jetstream.K
 		instanceTypes = []string{defaultNodegroupInstanceType}
 	}
 	minSize, maxSize, desired := scalingFromInput(input.ScalingConfig)
+	if err := checkScalingBounds(minSize, desired); err != nil {
+		return nil, err
+	}
 
 	gpuEnabled, gpuVendor := gpuFieldsForInstanceTypes(instanceTypes)
 	if gpuEnabled && gpuVendor == "" {
@@ -1024,6 +1027,9 @@ func (s *EKSServiceImpl) reconcileNodegroup(ctx context.Context, acctKV jetstrea
 			return nil, errors.New(awserrors.ErrorEKSResourceInUse)
 		}
 		applyScalingUpdate(rec, scaling)
+		if err := checkScalingBounds(rec.ScalingMin, rec.ScalingDesired); err != nil {
+			return nil, err
+		}
 		if labels != nil {
 			rec.Labels = applyLabelUpdate(rec.Labels, labels)
 		}
@@ -1183,6 +1189,16 @@ func applyScalingUpdate(rec *NodegroupRecord, scaling *eks.NodegroupScalingConfi
 	if v := scaling.DesiredSize; v != nil {
 		rec.ScalingDesired = *v
 	}
+}
+
+// checkScalingBounds refuses a minimum above the desired size with AWS's text,
+// before any worker is launched or terminated.
+func checkScalingBounds(minSize, desired int64) error {
+	if minSize > desired {
+		return awserrors.Errorf(awserrors.ErrorEKSInvalidParameter,
+			"Minimum capacity %d can't be greater than desired size %d", minSize, desired)
+	}
+	return nil
 }
 
 // getNodegroupEntry reads one record with its KV revision for CAS updates.

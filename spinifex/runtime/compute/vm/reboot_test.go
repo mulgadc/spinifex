@@ -193,9 +193,9 @@ func newRebootRig(t *testing.T, deps Deps, consoleSoFar string, writes ...bool) 
 		*p = d
 		t.Cleanup(func() { *p = prev })
 	}
-	setFast(&rebootPowerdownTimeout, 200*time.Millisecond)
+	setFast(&rebootPowerdownTimeout, 50*time.Millisecond)
 	setFast(&powerdownPollInterval, 5*time.Millisecond)
-	setFast(&rebootBootProgressTimeout, 150*time.Millisecond)
+	setFast(&rebootBootProgressTimeout, 30*time.Millisecond)
 	setFast(&rebootBootProgressPoll, 5*time.Millisecond)
 	setFast(&bootDiagSampleGap, time.Millisecond)
 
@@ -370,7 +370,7 @@ func TestReboot_StopWaitsForTheRelaunchBeforeUnmounting(t *testing.T) {
 		select {
 		case <-stopDone:
 			t.Error("the stop finished while the relaunch still owned the process")
-		case <-time.After(100 * time.Millisecond):
+		case <-time.After(50 * time.Millisecond):
 		}
 		mounter.mu.Lock()
 		assert.Empty(t, mounter.unmounted, "volumes unmounted under a QEMU being started")

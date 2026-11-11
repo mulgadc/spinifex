@@ -328,6 +328,7 @@ func TestManager_Replace(t *testing.T) {
 // TestManager_ConcurrentSoak runs many goroutines doing Insert/Delete/ForEach/
 // UpdateState concurrently. Run with `go test -race ./vm/...` to validate.
 func TestManager_ConcurrentSoak(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping soak in short mode")
 	}

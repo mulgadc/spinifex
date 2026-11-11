@@ -1222,12 +1222,11 @@ func TestMarkRecoveryFailed_DoesNotFireOnInstanceDown(t *testing.T) {
 		t.Fatalf("MarkRecoveryFailed did not transition to StateError within %s", markFailedDeadline)
 	}
 
-	// Give the async goroutine a moment to finish; even after completion
-	// OnInstanceDown must remain zero.
+	// Even once the async cleanup has finished, OnInstanceDown must remain zero.
 	assert.Eventually(t, func() bool {
 		return m.Status(instance) == StateError
 	}, markFailedDeadline, 10*time.Millisecond)
-	time.Sleep(50 * time.Millisecond)
+	m.WaitForBackgroundWork()
 
 	assert.Zero(t, down.Load(),
 		"recovery failure must not fire OnInstanceDown — per-id NATS subscription must stay live for operator action")
@@ -1357,6 +1356,8 @@ func TestMarkRecoveryFailed_CountsAgainstTheRestartWindow(t *testing.T) {
 	m.Insert(instance)
 
 	m.MarkRecoveryFailed(instance, "recovery_launch_failed")
+	// The async cleanup reads package timeouts, so it must end before the next test.
+	m.WaitForBackgroundWork()
 
 	assert.Equal(t, 1, instance.Health.CrashCount, "a failed recovery must count like a crash")
 	assert.False(t, instance.Health.FirstCrashTime.IsZero(), "the window must have a start")

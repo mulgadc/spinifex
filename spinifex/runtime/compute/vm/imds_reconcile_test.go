@@ -169,6 +169,7 @@ func TestRepairIMDSDatapath_RechecksGuestUnderLock(t *testing.T) {
 // Teardown holds the ENI lock across detach and tap cleanup; a repair must
 // wait for it rather than re-create what the teardown is removing.
 func TestRepairIMDSDatapath_WaitsForTeardownLock(t *testing.T) {
+	t.Parallel()
 	plumber := &fakeNetworkPlumber{}
 	m := NewManagerWithDeps(Deps{NetworkPlumber: plumber})
 	v := imdsTestVM("i-a", "eni-a", StateRunning)
@@ -197,6 +198,7 @@ func TestRepairIMDSDatapath_WaitsForTeardownLock(t *testing.T) {
 // A repair landing between detach and tap cleanup would find the tap still on
 // br-imds and re-create the endpoint and patch of a guest being torn down.
 func TestCleanupTapDevices_HoldsENILockAcrossDetachAndCleanup(t *testing.T) {
+	t.Parallel()
 	inDetach, releaseDetach := make(chan struct{}), make(chan struct{})
 	inCleanup, releaseCleanup := make(chan struct{}), make(chan struct{})
 	plumber := &fakeNetworkPlumber{
@@ -237,6 +239,7 @@ func TestCleanupTapDevices_HoldsENILockAcrossDetachAndCleanup(t *testing.T) {
 // An ovs-vswitchd restart drifts every guest at once; repairs must overlap so
 // the last guest is not dark for the sum of everyone else's install.
 func TestReconcileIMDSDatapaths_RepairsConcurrentlyUpToLimit(t *testing.T) {
+	t.Parallel()
 	const guests = imdsRepairConcurrency + 4
 	var inFlight atomic.Int32
 	var overLimit atomic.Bool

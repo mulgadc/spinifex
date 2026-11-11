@@ -180,7 +180,7 @@ func TestReconciler_SettlesACreatingDBSnapshotFromItsEC2Snapshot(t *testing.T) {
 			if tc.adopt {
 				kv, err := h.svc.bucket(t.Context(), testAccountID)
 				require.NoError(t, err)
-				stale := newDBSnapshotRecord(testAccountID, &rec, &validatedSnapshot{DBSnapshotIdentifier: testSnapshotID})
+				stale := h.svc.newDBSnapshotRecord(testAccountID, &rec, &validatedSnapshot{DBSnapshotIdentifier: testSnapshotID})
 				stale.CreatedAt = time.Now().UTC().Add(-2 * snapshotResolveTimeout)
 				require.NoError(t, putJSON(t.Context(), kv, DBSnapshotKey(testSnapshotID), &stale))
 				_, _, _, err = h.svc.snapshotDataVolume(t.Context(), testAccountID, &rec, StatusStopped, testSnapshotID)
@@ -463,7 +463,7 @@ func TestReconciler_FailsACreatingDBSnapshotWhoseEC2SnapshotIsGone(t *testing.T)
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
 	rec := availableRecord()
-	named := newDBSnapshotRecord(testAccountID, &rec, &validatedSnapshot{DBSnapshotIdentifier: testSnapshotID})
+	named := h.svc.newDBSnapshotRecord(testAccountID, &rec, &validatedSnapshot{DBSnapshotIdentifier: testSnapshotID})
 	named.SnapshotID = "snap-named01"
 	require.NoError(t, putJSON(t.Context(), kv, DBSnapshotKey(testSnapshotID), &named))
 
@@ -507,7 +507,7 @@ func TestReconciler_LeavesACreatingDBSnapshotItCannotSettle(t *testing.T) {
 			kv, err := h.svc.bucket(t.Context(), testAccountID)
 			require.NoError(t, err)
 			rec := availableRecord()
-			named := newDBSnapshotRecord(testAccountID, &rec, &validatedSnapshot{DBSnapshotIdentifier: testSnapshotID})
+			named := h.svc.newDBSnapshotRecord(testAccountID, &rec, &validatedSnapshot{DBSnapshotIdentifier: testSnapshotID})
 			named.SnapshotID = "snap-named01"
 			named.CreatedAt = time.Now().UTC().Add(-2 * snapshotResolveTimeout)
 			require.NoError(t, putJSON(t.Context(), kv, DBSnapshotKey(testSnapshotID), &named))

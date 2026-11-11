@@ -355,7 +355,7 @@ func TestCreateDBInstance_DuplicateIdentifierIsRejected(t *testing.T) {
 
 	_, err = h.svc.CreateDBInstance(t.Context(), validCreateInput(), testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorDBInstanceAlreadyExists)
+	assert.Equal(t, "DB instance already exists: DBInstanceAlreadyExists", err.Error())
 
 	// The loser must not have launched anything: the record reservation is what
 	// makes the uniqueness check atomic, so it precedes every resource.

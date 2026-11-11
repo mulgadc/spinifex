@@ -61,6 +61,12 @@ func (s *Service) DeleteCluster(ctx context.Context, input *ecs.DeleteClusterInp
 	return &ecs.DeleteClusterOutput{Cluster: c}, nil
 }
 
+// errContainerInstanceNotFound refuses a reference that names no container
+// instance in the cluster.
+func errContainerInstanceNotFound() error {
+	return awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "The referenced container instance was not found.")
+}
+
 // DeregisterContainerInstance removes a container instance from a cluster. With
 // Force set it first force-stops the instance's non-STOPPED tasks; without Force
 // it rejects an instance that still has running tasks (AWS parity). The instance
@@ -79,7 +85,7 @@ func (s *Service) DeregisterContainerInstance(ctx context.Context, input *ecs.De
 		return nil, err
 	}
 	if !found {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+		return nil, errContainerInstanceNotFound()
 	}
 
 	active, err := s.instanceActiveTasks(ctx, kv, cluster, id)
@@ -87,7 +93,7 @@ func (s *Service) DeregisterContainerInstance(ctx context.Context, input *ecs.De
 		return nil, err
 	}
 	if len(active) > 0 && !aws.BoolValue(input.Force) {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+		return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "Found running tasks on the instance.")
 	}
 	for i := range active {
 		s.forceStopTask(ctx, kv, accountID, &active[i], "Container instance deregistered")

@@ -581,7 +581,8 @@ func validateContainerDefs(defs []*ecs.ContainerDefinition, taskMemory string) e
 				"Invalid setting for container '%s'. At least one of 'memory' or 'memoryReservation' must be specified.", name)
 		}
 		if len(c.Secrets) > 0 {
-			return errors.New(awserrors.ErrorECSInvalidParameter)
+			return awserrors.Errorf(awserrors.ErrorECSInvalidParameter,
+				"container %s: secrets cannot be applied", name)
 		}
 		if len(c.MountPoints) > 0 {
 			return awserrors.Errorf(awserrors.ErrorECSInvalidParameter,
@@ -667,7 +668,7 @@ func (s *Service) DescribeTaskDefinition(ctx context.Context, input *ecs.Describ
 	// AWS answers an unknown revision with ClientException; launches get the
 	// same code with TaskDefinitionNotFound's message instead.
 	rec, err := s.taskDefs.Resolve(ctx, kv, ref)
-	if err != nil && err.Error() == awserrors.ErrorECSInvalidParameter {
+	if code, _ := awserrors.ResolveErrorCode(err); code == awserrors.ErrorECSInvalidParameter {
 		return nil, errors.New(awserrors.ErrorECSClientException)
 	}
 	if err != nil {
@@ -717,7 +718,7 @@ func TaskDefinitionNotFound() error {
 // A malformed reference (no family) keeps InvalidParameterException.
 func (s *Service) resolveTaskDef(ctx context.Context, kv jetstream.KeyValue, ref string) (*taskdefinition.Record, error) {
 	rec, err := s.launchDefs.Resolve(ctx, kv, ref)
-	if err != nil && err.Error() == awserrors.ErrorECSInvalidParameter {
+	if code, _ := awserrors.ResolveErrorCode(err); code == awserrors.ErrorECSInvalidParameter {
 		if family, _ := taskdefinition.ParseRef(ref); family != "" {
 			return nil, TaskDefinitionNotFound()
 		}

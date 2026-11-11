@@ -328,7 +328,8 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV jetstream.K
 		})
 	}
 
-	var updateConfig *NodegroupUpdateConfig
+	// AWS records maxUnavailable 1 when the request names no update config.
+	updateConfig := &NodegroupUpdateConfig{MaxUnavailable: 1}
 	if input.UpdateConfig != nil {
 		updateConfig = &NodegroupUpdateConfig{
 			MaxUnavailable:           aws.Int64Value(input.UpdateConfig.MaxUnavailable),
@@ -1452,7 +1453,10 @@ func nodegroupRecordToAWS(rec *NodegroupRecord) *eks.Nodegroup {
 			MaxSize:     aws.Int64(rec.ScalingMax),
 			DesiredSize: aws.Int64(rec.ScalingDesired),
 		},
-		Resources: &eks.NodegroupResources{},
+	}
+	// AWS omits resources until the group's capacity exists.
+	if rec.Status != eks.NodegroupStatusCreating {
+		out.Resources = &eks.NodegroupResources{}
 	}
 	if rec.DiskSize > 0 {
 		out.DiskSize = aws.Int64(rec.DiskSize)

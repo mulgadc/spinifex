@@ -475,8 +475,10 @@ mark_stage() { : > "$STATE_DIR/stage-$1.done"; }
 formation_complete() {
     local host
     stage_done formation || return 1
+    # A line only init writes, not a non-empty file: an ocibsd API-key run seeds the
+    # file with the credential before init, so a fresh node already has one.
     for host in "${HOSTS[@]}"; do
-        ssh_node "$host" 'test -s /etc/spinifex/spinifex.toml' || return 1
+        ssh_node "$host" "grep -q '^data_dir = ' /etc/spinifex/spinifex.toml" || return 1
     done
 }
 

@@ -66,6 +66,7 @@ func subscribeService(t *testing.T, nc *nats.Conn, svc EndpointService) {
 }
 
 func TestNATSEndpointService_EnsureDescribeListDelete_RoundTrip(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	svc, nc := newTestService(t, h, http.StatusOK, sufficientGPU())
 	subscribeService(t, nc, svc)
@@ -101,6 +102,7 @@ func TestNATSEndpointService_EnsureDescribeListDelete_RoundTrip(t *testing.T) {
 // service-side awserrors.Errorf refusal survives the NATS round trip with
 // both its wire code and its human message intact, not just a bare code.
 func TestNATSEndpointService_EnsureError_CarriesCodeAndMessage(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	svc, nc := newTestService(t, h, http.StatusOK, &stubSnapshotter{}) // no free capacity
 	subscribeService(t, nc, svc)
@@ -113,6 +115,7 @@ func TestNATSEndpointService_EnsureError_CarriesCodeAndMessage(t *testing.T) {
 }
 
 func TestNATSEndpointService_NoResponder(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	client := NewNATSEndpointService(nc)
 

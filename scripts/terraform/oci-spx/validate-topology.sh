@@ -1443,6 +1443,16 @@ EOF
     node_aws ec2 wait volume-available --volume-ids "$data_vol" || gate_die "$data_vol never detached"
     record "attach and detach" PASS "$data_vol written in the guest"
 
+    # Read back before the snapshot, so a lost marker is told apart from a lost restore.
+    node_aws ec2 attach-volume --volume-id "$data_vol" --instance-id "$iid" --device /dev/sdf >/dev/null \
+        || gate_die "reattach-volume $data_vol failed"
+    node_aws ec2 wait volume-in-use --volume-ids "$data_vol" || gate_die "$data_vol never reattached"
+    wait_console "$iid" "SPXGATE boot=[0-9a-f-]+ data-present serial=$data_serial $data_tok\$" 600 >/dev/null \
+        || gate_die "the guest did not read its marker back from $data_vol after a detach"
+    node_aws ec2 detach-volume --volume-id "$data_vol" >/dev/null || gate_die "detach-volume $data_vol failed"
+    node_aws ec2 wait volume-available --volume-ids "$data_vol" || gate_die "$data_vol never detached again"
+    record "reattach" PASS "$data_vol kept its marker across a detach"
+
     log "ebs provider gate: snapshot, restore and read back"
     snap="$(node_aws ec2 create-snapshot --volume-id "$data_vol" --query SnapshotId)" \
         || gate_die "create-snapshot $data_vol failed"

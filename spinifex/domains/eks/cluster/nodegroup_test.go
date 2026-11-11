@@ -792,7 +792,7 @@ func TestCreateNodegroup_UnknownCluster(t *testing.T) {
 	t.Parallel()
 	f := newEKSServiceFixture(t)
 	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("ghost", "ng1", 1), testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	require.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestDescribeAndListNodegroups(t *testing.T) {
@@ -1425,14 +1425,14 @@ func TestNodegroupCalls_MissingNodegroupVsMissingCluster(t *testing.T) {
 			code, msg, ok := awserrors.ResolveErrorDetail(call("c1"))
 			require.True(t, ok)
 			assert.Equal(t, awserrors.ErrorEKSResourceNotFound, code)
-			assert.Equal(t, "No node group found for name: ghost.", msg)
+			assert.Equal(t, "The requested resource does not exist.", msg)
 		})
 		t.Run(name+"/missing cluster", func(t *testing.T) {
 			t.Parallel()
 			code, msg, ok := awserrors.ResolveErrorDetail(call("nope"))
 			require.True(t, ok)
 			assert.Equal(t, awserrors.ErrorEKSResourceNotFound, code)
-			assert.Empty(t, msg, "a missing cluster keeps the default resource message")
+			assert.Equal(t, "No cluster found for name: nope.", msg)
 		})
 	}
 }

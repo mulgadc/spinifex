@@ -545,6 +545,7 @@ func (s *Service) RegisterTaskDefinition(ctx context.Context, input *ecs.Registe
 
 		RequiresCompatibilities: aws.StringValueSlice(input.RequiresCompatibilities),
 		RuntimePlatform:         runtimePlatformFromAWS(input.RuntimePlatform),
+		RegisteredBy:            CallerARN(ctx),
 	})
 	if err != nil {
 		return nil, err
@@ -751,6 +752,9 @@ func taskDefToAWS(r *taskdefinition.Record) *ecs.TaskDefinition {
 	}
 	if r.ExecutionRoleArn != "" {
 		td.ExecutionRoleArn = aws.String(r.ExecutionRoleArn)
+	}
+	if r.RegisteredBy != "" {
+		td.RegisteredBy = aws.String(r.RegisteredBy)
 	}
 	if len(r.RequiresCompatibilities) > 0 {
 		td.RequiresCompatibilities = aws.StringSlice(r.RequiresCompatibilities)

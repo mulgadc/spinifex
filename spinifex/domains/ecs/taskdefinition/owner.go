@@ -37,6 +37,7 @@ type Spec struct {
 	RuntimePlatform         *RuntimePlatform
 	Containers              []Container
 	Tags                    map[string]string
+	RegisteredBy            string
 }
 
 // Register stores spec as the family's next revision and advances latest-rev.
@@ -62,6 +63,7 @@ func (o *Owner) Register(ctx context.Context, kv jetstream.KeyValue, accountID s
 
 		RequiresCompatibilities: spec.RequiresCompatibilities,
 		RuntimePlatform:         spec.RuntimePlatform,
+		RegisteredBy:            spec.RegisteredBy,
 	}
 	if err := PutJSON(ctx, kv, RevKey(spec.Family, rev), rec); err != nil {
 		return nil, err

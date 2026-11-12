@@ -94,6 +94,8 @@ type Record struct {
 	RegisteredAt            time.Time         `json:"registeredAt"`
 	// DeregisteredAt is set when the revision first goes INACTIVE.
 	DeregisteredAt *time.Time `json:"deregisteredAt,omitempty"`
+	// RegisteredBy is the session or user ARN that registered the revision.
+	RegisteredBy string `json:"registeredBy,omitempty"`
 }
 
 // ReservedCPU sums the per-container CPU reservations used for bin-pack

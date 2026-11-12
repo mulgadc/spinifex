@@ -189,6 +189,7 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 		Tags:                 tagsToMap(input.Tags),
 		CreatedAt:            now,
 		UpdatedAt:            now,
+		CreatedBy:            CallerARN(ctx),
 	}
 	if input.NetworkConfiguration != nil && input.NetworkConfiguration.AwsvpcConfiguration != nil {
 		v := input.NetworkConfiguration.AwsvpcConfiguration
@@ -723,6 +724,9 @@ func (s *Service) serviceToAWS(accountID string, r *ServiceRecord) *ecs.Service 
 	}
 	if r.LaunchType != "" {
 		svc.LaunchType = aws.String(r.LaunchType)
+	}
+	if r.CreatedBy != "" {
+		svc.CreatedBy = aws.String(r.CreatedBy)
 	}
 	// Only awsvpc tasks carry a subnet/security-group selection; other modes
 	// never populate one (RunTask's parseAwsvpcConfig gates it the same way).

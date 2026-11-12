@@ -77,8 +77,8 @@ Mirror the cloud image you intend to run as guest VMs, together with the sums fi
 ```bash
 mkdir -p images
 cd images
-curl -fsSLO "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
-curl -fsSLO "https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS"
+curl -fsSLO "https://cloud.debian.org/images/cloud/trixie/20261103-2651/debian-13-genericcloud-amd64-20261103-2651.qcow2"
+curl -fsSLO "https://cloud.debian.org/images/cloud/trixie/20261103-2651/SHA512SUMS"
 sha512sum -c --ignore-missing SHA512SUMS
 cd ..
 ```
@@ -147,7 +147,7 @@ sudo systemctl start spinifex.target
 Register the pre-staged image with Spinifex, verifying it against the sums file carried across with it:
 
 ```bash
-sudo spx admin images import --file /mnt/usb/images/debian-13-genericcloud-amd64.qcow2 \
+sudo spx admin images import --file /mnt/usb/images/debian-13-genericcloud-amd64-20261103-2651.qcow2 \
   --checksum /mnt/usb/images/SHA512SUMS \
   --distro debian --version 13 --arch x86_64 --boot-mode uefi
 ```

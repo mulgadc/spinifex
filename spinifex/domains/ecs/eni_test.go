@@ -27,6 +27,7 @@ type stubENI struct {
 	releaseCalls int
 	allocErr     error
 	attachErr    error
+	attachedID   string // returned with attachErr when the attach itself landed
 	releaseErr   error
 	lastSubnet   string
 	lastSGs      []string
@@ -53,7 +54,7 @@ func (s *stubENI) Allocate(_ context.Context, _, subnetID string, sgs []*string)
 func (s *stubENI) Attach(_ context.Context, _, _, _ string) (string, error) {
 	s.attachCalls++
 	if s.attachErr != nil {
-		return "", s.attachErr
+		return s.attachedID, s.attachErr
 	}
 	return "eni-attach-stub", nil
 }
@@ -252,7 +253,7 @@ func TestRunTask_Awsvpc_AttachFailure_ReleaseSucceeds_NoRecordPersisted(t *testi
 
 func TestRunTask_Awsvpc_AttachFailure_ReleaseFails_PersistsStoppedRecord(t *testing.T) {
 	svc, _ := newTestService(t)
-	eni := &stubENI{attachErr: errors.New("hot-plug timeout"), releaseErr: errors.New("release timeout")}
+	eni := &stubENI{attachErr: errors.New("hot-plug timeout"), attachedID: "eni-attach-stub", releaseErr: errors.New("release timeout")}
 	svc.eni = eni
 	_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
@@ -265,6 +266,7 @@ func TestRunTask_Awsvpc_AttachFailure_ReleaseFails_PersistsStoppedRecord(t *test
 
 	rec, found := singleTaskRecord(t, svc, "web")
 	require.True(t, found, "a release that failed must leave a record so the sweep can retry it")
+	assert.Equal(t, "eni-attach-stub", rec.ENIAttachmentID, "an attach that landed must be detached by the sweep")
 	assert.Equal(t, TaskStatusStopped, rec.LastStatus)
 	assert.Equal(t, TaskStatusStopped, rec.DesiredStatus)
 	assert.Equal(t, "eni-stub", rec.ENIID, "the ENI identity must survive so the sweep owns the retry")
@@ -432,6 +434,13 @@ func TestNATSENIController_AllocateAttachRelease(t *testing.T) {
 	respond(t, nc, "ec2.DeleteNetworkInterface", func([]byte) any {
 		return ec2.DeleteNetworkInterfaceOutput{}
 	})
+	modified := make(chan ec2.ModifyNetworkInterfaceAttributeInput, 1)
+	respond(t, nc, "ec2.ModifyNetworkInterfaceAttribute", func(req []byte) any {
+		var in ec2.ModifyNetworkInterfaceAttributeInput
+		_ = json.Unmarshal(req, &in)
+		modified <- in
+		return ec2.ModifyNetworkInterfaceAttributeOutput{}
+	})
 
 	alloc, err := c.Allocate(context.Background(), testAccountID, "subnet-1", []*string{aws.String("sg-1")})
 	require.NoError(t, err)
@@ -442,6 +451,11 @@ func TestNATSENIController_AllocateAttachRelease(t *testing.T) {
 	attID, err := c.Attach(context.Background(), testAccountID, "i-1", "eni-real")
 	require.NoError(t, err)
 	assert.Equal(t, "att-real", attID)
+	mod := <-modified
+	assert.Equal(t, "eni-real", aws.StringValue(mod.NetworkInterfaceId))
+	require.NotNil(t, mod.Attachment)
+	assert.Equal(t, "att-real", aws.StringValue(mod.Attachment.AttachmentId))
+	assert.True(t, aws.BoolValue(mod.Attachment.DeleteOnTermination), "a task ENI must go with its container instance")
 
 	require.NoError(t, c.Release(context.Background(), testAccountID, &TaskRecord{
 		ENIID: "eni-real", ENIAttachmentID: "att-real", ContainerInstanceID: "i-1",

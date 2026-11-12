@@ -77,7 +77,8 @@ func (c *natsENIController) Allocate(ctx context.Context, accountID, subnetID st
 	}, nil
 }
 
-// Attach hot-plugs eniID onto instanceID and returns the attachment ID.
+// Attach hot-plugs eniID onto instanceID, marks the attachment
+// delete-on-termination and returns the attachment ID.
 func (c *natsENIController) Attach(ctx context.Context, accountID, instanceID, eniID string) (string, error) {
 	cmd := ec2v1.EC2InstanceCommand{
 		ID:         instanceID,
@@ -92,7 +93,20 @@ func (c *natsENIController) Attach(ctx context.Context, accountID, instanceID, e
 	if err != nil {
 		return "", fmt.Errorf("attach task ENI %s -> %s: %w", eniID, instanceID, err)
 	}
-	return aws.StringValue(out.AttachmentId), nil
+	attachmentID := aws.StringValue(out.AttachmentId)
+	// AttachNetworkInterface keeps an interface past termination; a task ENI
+	// must go with its container instance.
+	mod := &ec2.ModifyNetworkInterfaceAttributeInput{
+		NetworkInterfaceId: aws.String(eniID),
+		Attachment: &ec2.NetworkInterfaceAttachmentChanges{
+			AttachmentId:        aws.String(attachmentID),
+			DeleteOnTermination: aws.Bool(true),
+		},
+	}
+	if _, err := natsmsg.NATSRequest[ec2.ModifyNetworkInterfaceAttributeOutput](ctx, c.nc, "ec2.ModifyNetworkInterfaceAttribute", mod, c.timeout, accountID); err != nil {
+		return attachmentID, fmt.Errorf("mark task ENI %s delete-on-termination: %w", eniID, err)
+	}
+	return attachmentID, nil
 }
 
 // Release detaches (force) then deletes the task ENI. Both steps treat a NotFound

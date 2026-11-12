@@ -1691,3 +1691,69 @@ func TestModifyNetworkInterfaceAttribute_MultipleAttributes(t *testing.T) {
 	assert.Contains(t, msg, "description")
 	assert.Contains(t, msg, "securityGroups")
 }
+
+// RunInstances' interface goes with the instance; one the customer attaches
+// stays, even when an earlier attachment had marked it delete-on-termination.
+func TestAttachENI_DeleteOnTerminationDefaults(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	launchENI := createTestENI(t, svc, subnetId)
+	customerENI := createTestENI(t, svc, subnetId)
+
+	_, err := svc.AttachENI(testAccountID, launchENI, "i-launch", 0)
+	require.NoError(t, err)
+	_, err = svc.AttachENI(testAccountID, customerENI, "i-launch", 1)
+	require.NoError(t, err)
+	require.NoError(t, svc.DetachENI(context.Background(), testAccountID, customerENI))
+	_, err = svc.AttachNetworkInterface(testAccountID, customerENI, "i-other", 1)
+	require.NoError(t, err)
+
+	desc, err := svc.DescribeNetworkInterfaces(context.Background(), &ec2.DescribeNetworkInterfacesInput{
+		NetworkInterfaceIds: []*string{aws.String(launchENI), aws.String(customerENI)},
+	}, testAccountID)
+	require.NoError(t, err)
+	got := map[string]bool{}
+	for _, ni := range desc.NetworkInterfaces {
+		require.NotNil(t, ni.Attachment)
+		got[*ni.NetworkInterfaceId] = aws.BoolValue(ni.Attachment.DeleteOnTermination)
+	}
+	assert.Equal(t, map[string]bool{launchENI: true, customerENI: false}, got)
+}
+
+func TestModifyNetworkInterfaceAttribute_AttachmentDeleteOnTermination(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	eniId := createTestENI(t, svc, subnetId)
+	attachId, err := svc.AttachNetworkInterface(testAccountID, eniId, "i-test123", 1)
+	require.NoError(t, err)
+
+	modify := func(attachmentID *string, dot bool) error {
+		_, err := svc.ModifyNetworkInterfaceAttribute(context.Background(), &ec2.ModifyNetworkInterfaceAttributeInput{
+			NetworkInterfaceId: aws.String(eniId),
+			Attachment: &ec2.NetworkInterfaceAttachmentChanges{
+				AttachmentId:        attachmentID,
+				DeleteOnTermination: aws.Bool(dot),
+			},
+		}, testAccountID)
+		return err
+	}
+
+	assert.True(t, awserrors.IsErrorCode(modify(nil, true), awserrors.ErrorMissingParameter))
+	assert.True(t, awserrors.IsErrorCode(modify(aws.String("eni-attach-0000000000000000"), true), awserrors.ErrorInvalidAttachmentIDNotFound))
+
+	require.NoError(t, modify(aws.String(attachId), true))
+	rec, err := svc.GetENIRecord(testAccountID, eniId)
+	require.NoError(t, err)
+	require.NotNil(t, rec.DeleteOnTermination)
+	assert.True(t, *rec.DeleteOnTermination)
+
+	require.NoError(t, modify(aws.String(attachId), false))
+	rec, err = svc.GetENIRecord(testAccountID, eniId)
+	require.NoError(t, err)
+	require.NotNil(t, rec.DeleteOnTermination)
+	assert.False(t, *rec.DeleteOnTermination)
+}

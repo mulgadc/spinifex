@@ -543,3 +543,55 @@ func TestHandleAttachNetworkInterface_DeviceIndexIsTheAllocatedSlot(t *testing.T
 	assert.Equal(t, "in-use", other.Status, "a second task ENI asking for index 1 must still attach")
 	assert.NotEqual(t, first.DeviceIndex, other.DeviceIndex)
 }
+
+// TestS7_CustomerAttachedENISurvivesTerminateAndOrphanReaper pins that an
+// interface the customer attached outlives its instance. Neither the terminate
+// sweep nor the orphan reaper may delete it, however old the attachment.
+func TestS7_CustomerAttachedENISurvivesTerminateAndOrphanReaper(t *testing.T) {
+	attach := func(t *testing.T) *eniHotPlugFixture {
+		t.Helper()
+		f := newENIHotPlugFixture(t)
+		f.vmInst.AccountID = testAccountID
+		cmd := ec2v1.EC2InstanceCommand{
+			ID:            f.vmInst.ID,
+			AttachENIData: &ec2v1.AttachENIData{NetworkInterfaceID: f.eniID, DeviceIndex: 1},
+		}
+		payload := driveHandler(t, f.daemon.natsConn, "test.attach.s7", func(msg *nats.Msg) {
+			f.daemon.handleAttachNetworkInterface(context.Background(), msg, cmd, f.vmInst)
+		})
+		var out ec2.AttachNetworkInterfaceOutput
+		require.NoError(t, json.Unmarshal(payload, &out))
+		require.NotNil(t, out.AttachmentId)
+		// Older than every timeout on the terminate and reaper paths.
+		require.NoError(t, f.daemon.vpcService.UpdateENI(testAccountID, f.eniID, func(r *ec2vpc.ENIRecord) {
+			r.CreatedAt = time.Now().Add(-30 * 24 * time.Hour)
+			r.AttachmentStateAt = r.CreatedAt
+		}))
+		return f
+	}
+	assertKept := func(t *testing.T, f *eniHotPlugFixture) {
+		t.Helper()
+		rec, err := f.daemon.vpcService.GetENIRecord(testAccountID, f.eniID)
+		require.NoError(t, err, "a customer-attached interface must outlive its instance")
+		assert.Equal(t, "available", rec.Status)
+		assert.Empty(t, rec.InstanceId)
+	}
+
+	t.Run("terminate", func(t *testing.T) {
+		f := attach(t)
+		(&instanceCleanerAdapter{d: f.daemon}).releaseAttachedENIs(f.vmInst)
+		assertKept(t, f)
+	})
+
+	t.Run("orphan reaper", func(t *testing.T) {
+		f := attach(t)
+		r := &eniOrphanReaper{
+			vpc:       f.daemon.vpcService,
+			instances: &fakeInstanceIndex{live: []string{"i-somebody-else"}},
+			eip:       &fakeEIPDisassociator{associated: map[string]bool{}},
+			minAge:    15 * time.Minute,
+		}
+		require.NoError(t, sweepTwice(t, r))
+		assertKept(t, f)
+	})
+}

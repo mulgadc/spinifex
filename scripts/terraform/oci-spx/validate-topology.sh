@@ -451,11 +451,18 @@ capture_journals() {
     # the empty array is an unbound-variable error rather than zero passes.
     [ "${#HOSTS[@]}" -gt 0 ] || return 0
     for host in "${HOSTS[@]}"; do
+        # Per-request access lines are most of the volume, so they are dropped and
+        # the rest kept for the whole run rather than its last few minutes.
         ssh_node "$host" '
             echo "=== spinifex, warning and above ==="
-            sudo journalctl -u "spinifex-*" --since -4h --priority=warning --no-pager | tail -2000
-            echo "=== spinifex, all priorities, last 2000 lines ==="
-            sudo journalctl -u "spinifex-*" --since -4h --no-pager | tail -2000
+            sudo journalctl -u "spinifex-*" --since -6h --priority=warning --no-pager | tail -2000
+            echo "=== resolver drop-in and status ==="
+            cat /etc/systemd/resolved.conf.d/spinifex-dns.conf 2>&1
+            resolvectl status 2>&1 | head -40
+            echo "=== spinifex and resolved, all priorities, access lines dropped, last 40000 lines ==="
+            sudo journalctl -u "spinifex-*" -u systemd-resolved --since -6h --no-pager \
+                | grep -avE "\"msg\":\"(request|Request|Service request completed|IMDS: serving metadata request|IMDS: issued IMDSv2 token|Processing DescribeInstances request from this node|DescribeInstances completed|DescribeInstances: Aggregated response)\"" \
+                | tail -40000
         ' > "$STATE_DIR/journal-$host.log" 2>&1 || log "could not collect the journal from $host"
     done
 }

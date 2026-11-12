@@ -373,6 +373,8 @@ type ServiceRecord struct {
 	Events    []ServiceEvent `json:"events,omitempty"`
 	CreatedAt time.Time      `json:"createdAt"`
 	UpdatedAt time.Time      `json:"updatedAt"`
+	// CreatedBy is the IAM role or user ARN that created the service.
+	CreatedBy string `json:"createdBy,omitempty"`
 }
 
 // primaryDeployment returns a pointer to the service's PRIMARY deployment, or nil

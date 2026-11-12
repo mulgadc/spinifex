@@ -1855,6 +1855,11 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(ctx context.Context, input *elbv2.
 		// Idempotent: return success for absent/unowned LBs.
 		return &elbv2.DeleteLoadBalancerOutput{}, nil
 	}
+	// Refuse before any cascade so a protected balancer loses nothing.
+	if deletionProtected(lb) {
+		return nil, awserrors.Errorf(awserrors.ErrorOperationNotPermitted,
+			"Load balancer '%s' cannot be deleted because deletion protection is enabled", lb.LoadBalancerArn)
+	}
 
 	// Exclude data-path repair before anything touches the VM or its ENIs.
 	if err := s.store.SuspendLBHealth(ctx, lb.LoadBalancerID); err != nil {
@@ -1932,6 +1937,16 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(ctx context.Context, input *elbv2.
 	slog.InfoContext(ctx, "DeleteLoadBalancer completed", "lbArn", *input.LoadBalancerArn, "enis", len(lb.ENIs), "accountID", accountID)
 
 	return &elbv2.DeleteLoadBalancerOutput{}, nil
+}
+
+// deletionProtected reads deletion_protection.enabled from the stored
+// attributes, falling back to the type's default.
+func deletionProtected(lb *LoadBalancerRecord) bool {
+	v, ok := lb.Attributes[AttrDeletionProtection]
+	if !ok {
+		v = DefaultLoadBalancerAttributes(lb.Type)[AttrDeletionProtection]
+	}
+	return v == "true"
 }
 
 // releaseLBNameClaim drops the per-account LB name claim. Failures are logged but

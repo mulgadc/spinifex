@@ -125,6 +125,9 @@ Internal and internet-facing ALB and NLB, HTTPS listeners, listener rules, `Modi
 Unhealthy-target routing: an NLB with an HTTP health check on a TCP target group stops sending traffic to a target that fails it while still accepting TCP, sends traffic again once it recovers, and fails open when every target is unhealthy.
 An ALB whose targets all fail their health check keeps serving from them instead of answering 503.
 
+`Internal_NLB_DeletionProtection` enables `deletion_protection.enabled` on an internal NLB and holds it past the 30-minute data-path suspend backstop, the longest timeout on the delete path (ADR-0003:S7).
+`DeleteLoadBalancer` must then fail with `OperationNotPermitted` and AWS's message, leave the listener and ENI in place and keep serving traffic, and succeed once protection is turned off.
+
 `TestInternalALBPrivateSubnet` launches an internal ALB in a private subnet of a non-default VPC with no internet gateway and no public route.
 The load balancer must reach active with a healthy target, which needs the owner stamp on its ENI to resolve, and a client inside the VPC must be served by it on every request.
 The client reports on its serial console because the runner has no route into the VPC.

@@ -163,6 +163,10 @@ func TestLoadBalancer(t *testing.T) {
 				t.Parallel()
 				runListenerRulesSuite(t, client, fixture)
 			})
+			t.Run("Internal_NLB_DeletionProtection", func(t *testing.T) {
+				t.Parallel()
+				runDeletionProtectionSuite(t, client, fixture)
+			})
 		})
 		t.Run("Internal_NLB_UnhealthyTargets", func(t *testing.T) {
 			runNLBUnhealthyTargetsSuite(t, client, fixture)
@@ -200,6 +204,10 @@ func TestLoadBalancer(t *testing.T) {
 	t.Run("Internal_ALB_ListenerRules", func(t *testing.T) {
 		skipIfInternalBroken(t)
 		runListenerRulesSuite(t, client, fixture)
+	})
+	t.Run("Internal_NLB_DeletionProtection", func(t *testing.T) {
+		skipIfInternalBroken(t)
+		runDeletionProtectionSuite(t, client, fixture)
 	})
 	t.Run("Internal_NLB_UnhealthyTargets", func(t *testing.T) {
 		skipIfInternalBroken(t)

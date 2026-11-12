@@ -329,6 +329,10 @@ type RuleQueryStringKV struct {
 	Value string `json:"value"`
 }
 
+// AttrDeletionProtection is the load balancer attribute that makes
+// DeleteLoadBalancer refuse.
+const AttrDeletionProtection = "deletion_protection.enabled"
+
 // DefaultLoadBalancerAttributes returns the default attribute map for a load balancer.
 // ALBs cross-zone default is "true"; NLBs/unknown default to "false". Key set covers
 // every attribute Terraform's AWS provider sends on post-create Modify calls.

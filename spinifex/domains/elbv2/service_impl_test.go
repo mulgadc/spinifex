@@ -3093,7 +3093,6 @@ func TestDefaultLoadBalancerAttributes_ALBCoversTerraformKeys(t *testing.T) {
 		"health_check_logs.s3.enabled":                             "false",
 		"health_check_logs.s3.bucket":                              "",
 		"health_check_logs.s3.prefix":                              "",
-		"ipv6.deny_all_igw_traffic":                                "false",
 		"idle_timeout.timeout_seconds":                             "60",
 		"client_keep_alive.seconds":                                "3600",
 		"routing.http.desync_mitigation_mode":                      "defensive",
@@ -3107,11 +3106,8 @@ func TestDefaultLoadBalancerAttributes_ALBCoversTerraformKeys(t *testing.T) {
 		"zonal_shift.config.enabled":                               "false",
 	}
 
-	for k, v := range expected {
-		got, ok := attrs[k]
-		assert.True(t, ok, "ALB default attributes missing key %q — terraform will hit ValidationError", k)
-		assert.Equal(t, v, got, "ALB default value mismatch for key %s", k)
-	}
+	// Exactly the 22 keys AWS reports for an IPv4 ALB.
+	assert.Equal(t, expected, attrs)
 }
 
 // TestDefaultLoadBalancerAttributes_NLBCoversExpectedKeys is the NLB
@@ -3127,22 +3123,12 @@ func TestDefaultLoadBalancerAttributes_NLBCoversExpectedKeys(t *testing.T) {
 		"access_logs.s3.bucket":                  "",
 		"access_logs.s3.prefix":                  "",
 		"dns_record.client_routing_policy":       "any_availability_zone",
-		"ipv6.deny_all_igw_traffic":              "false",
 		"zonal_shift.config.enabled":             "false",
 		"secondary_ips.auto_assigned.per_subnet": "0",
 	}
 
-	for k, v := range expected {
-		got, ok := attrs[k]
-		assert.True(t, ok, "NLB default attributes missing key %q", k)
-		assert.Equal(t, v, got, "NLB default value mismatch for key %s", k)
-	}
-
-	// ALB-only keys must not leak into NLB defaults.
-	_, hasIdle := attrs["idle_timeout.timeout_seconds"]
-	assert.False(t, hasIdle, "idle_timeout.timeout_seconds is ALB-only, must not appear on NLB")
-	_, hasHTTP2 := attrs["routing.http2.enabled"]
-	assert.False(t, hasHTTP2, "routing.http2.enabled is ALB-only, must not appear on NLB")
+	// Exactly the 8 keys AWS reports for an IPv4 NLB.
+	assert.Equal(t, expected, attrs)
 }
 
 // TestModifyLoadBalancerAttributes_AcceptsConnectionLogsKey is a regression
@@ -3198,8 +3184,9 @@ func TestModifyLoadBalancerAttributes_EmptyStringClears(t *testing.T) {
 		},
 	}, testAccountID)
 	require.NoError(t, err)
-	require.Len(t, modOut.Attributes, 1, "empty-string Value must be echoed, not skipped")
-	assert.Empty(t, *modOut.Attributes[0].Value)
+	bucket, ok := lbAttrMap(modOut.Attributes)["access_logs.s3.bucket"]
+	require.True(t, ok, "empty-string Value must be returned, not skipped")
+	assert.Empty(t, bucket)
 
 	descOut, err := svc.DescribeLoadBalancerAttributes(context.Background(), &elbv2.DescribeLoadBalancerAttributesInput{
 		LoadBalancerArn: arn,
@@ -3244,14 +3231,6 @@ func echoMap(pairs []echoPair) map[string]string {
 	return m
 }
 
-// modifyLen is the number of pairs k's Modify returns after n were submitted.
-func (k attrKind) modifyLen(n int) int {
-	if k.modifySetLen > 0 {
-		return k.modifySetLen
-	}
-	return n
-}
-
 // attrArnPtr returns nil for an empty ARN so the MissingArn cases exercise the
 // real "no ARN supplied" path rather than an empty-string ARN.
 func attrArnPtr(arn string) *string {
@@ -3273,7 +3252,7 @@ type attrKind struct {
 	defaultKey        string // a default present after create
 	defaultVal        string
 	unknownKey        string // a key the handler must reject
-	modifySetLen      int    // size of the full set Modify returns; 0 when it echoes the submitted pairs
+	modifySetLen      int    // size of the full set Modify returns
 
 	create   func(t *testing.T, svc *ELBv2ServiceImpl, name string) string
 	modify   func(svc *ELBv2ServiceImpl, arn, accountID string, attrs []rawAttr) ([]echoPair, error)
@@ -3345,7 +3324,8 @@ func attrKinds() []attrKind {
 			keyA:       "idle_timeout.timeout_seconds", valA: "120", valA2: "90",
 			keyB: "deletion_protection.enabled", valB: "true",
 			defaultKey: "routing.http2.enabled", defaultVal: "true",
-			unknownKey: "stickiness.enabled", // valid TG key — cross-product mistake
+			unknownKey:   "stickiness.enabled", // valid TG key — cross-product mistake
+			modifySetLen: len(DefaultLoadBalancerAttributes(LoadBalancerTypeApplication)),
 			create: func(t *testing.T, svc *ELBv2ServiceImpl, name string) string {
 				out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{Name: aws.String(name)}, testAccountID)
 				require.NoError(t, err)
@@ -3408,7 +3388,7 @@ func TestAttributeRoundTrip(t *testing.T) {
 			// pass a length check.
 			echoed, err := k.modify(svc, arn, testAccountID, kvAttrs([2]string{k.keyA, k.valA}, [2]string{k.keyB, k.valB}))
 			require.NoError(t, err)
-			require.Len(t, echoed, k.modifyLen(2))
+			require.Len(t, echoed, k.modifySetLen)
 			em := echoMap(echoed)
 			assert.Equal(t, k.valA, em[k.keyA])
 			assert.Equal(t, k.valB, em[k.keyB])
@@ -3528,7 +3508,7 @@ func TestAttributeSkipsInvalidEntries(t *testing.T) {
 			})
 			require.NoError(t, err)
 			// The invalid elements are dropped and the valid one applied.
-			require.Len(t, echoed, k.modifyLen(1))
+			require.Len(t, echoed, k.modifySetLen)
 			assert.Equal(t, k.valB, echoMap(echoed)[k.keyB])
 
 			// The valid attribute should have been persisted.
@@ -3615,7 +3595,7 @@ func TestAttributeNoopSkipsPersist(t *testing.T) {
 			// Second modify with identical values — must skip the Put.
 			echoed, err := k.modify(svc, arn, testAccountID, kvAttrs([2]string{k.keyA, k.valA}))
 			require.NoError(t, err)
-			require.Len(t, echoed, k.modifyLen(1))
+			require.Len(t, echoed, k.modifySetLen)
 			assert.Equal(t, revBefore, k.revision(t, svc, arn), "identical modify must not increment KV revision")
 
 			// Empty attribute list is also a no-op.

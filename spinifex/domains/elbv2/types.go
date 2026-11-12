@@ -379,7 +379,6 @@ var (
 		"health_check_logs.s3.enabled":                             "false",
 		"health_check_logs.s3.bucket":                              "",
 		"health_check_logs.s3.prefix":                              "",
-		"ipv6.deny_all_igw_traffic":                                "false",
 		"idle_timeout.timeout_seconds":                             "60",
 		"client_keep_alive.seconds":                                "3600",
 		"routing.http.desync_mitigation_mode":                      "defensive",
@@ -400,7 +399,6 @@ var (
 		"access_logs.s3.bucket":                  "",
 		"access_logs.s3.prefix":                  "",
 		"dns_record.client_routing_policy":       "any_availability_zone",
-		"ipv6.deny_all_igw_traffic":              "false",
 		"zonal_shift.config.enabled":             "false",
 		"secondary_ips.auto_assigned.per_subnet": "0",
 	}

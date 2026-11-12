@@ -806,9 +806,9 @@ func runServiceWithELB(t *testing.T, c *harness.AWSClient, env *harness.Env, fx 
 	probeALBHTTP(t, c, lbArn)
 }
 
-// serviceMinAge outlives the ECS heartbeat timeout and several reconcile and
-// reaper passes, so the refused delete is checked against a settled service.
-const serviceMinAge = 3 * time.Minute
+// serviceMinAge outlives the ECS heartbeat timeout and the 5m reconcile resync,
+// so the refused delete is checked against a settled service.
+const serviceMinAge = 6 * time.Minute
 
 // assertUnforcedDeleteKeepsServiceRunning pins ADR-0003:S7 for DeleteService: an
 // unforced delete of a service scaled above 0 is refused and stops no task.

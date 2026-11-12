@@ -164,6 +164,11 @@ func TestService_DeleteService_DrainsAndInactivates(t *testing.T) {
 		DesiredCount: aws.Int64(2),
 	}, testAccountID)
 	require.NoError(t, err)
+	var rec ServiceRecord
+	_, err = taskdefinition.GetJSON(t.Context(), kv, ServiceKey("web", "web"), &rec)
+	require.NoError(t, err)
+	rec.Deployments[0].RunningCount = 2
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, ServiceKey("web", "web"), &rec))
 
 	out, err := svc.DeleteService(context.Background(), &ecs.DeleteServiceInput{
 		Cluster: aws.String("web"), Service: aws.String("web"), Force: aws.Bool(true),
@@ -217,8 +222,9 @@ func TestService_UpdateService_DeletedAndUnknown(t *testing.T) {
 	assert.EqualError(t, err, awserrors.ErrorECSServiceNotFound)
 }
 
-// ADR-0003:S7: a DeleteService without force on a service scaled above 0 is
-// refused and stops none of the customer's tasks, as AWS refuses it.
+// A DeleteService without force on a service scaled above 0 is refused and
+// stops none of the customer's tasks, as AWS refuses it.
+// Verifies: ADR-0003:S7.
 func TestS7_DeleteServiceWithoutForceLeavesAScaledServiceRunning(t *testing.T) {
 	svc, _, kv := serviceTestRig(t)
 	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{

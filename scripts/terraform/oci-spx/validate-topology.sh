@@ -787,17 +787,25 @@ for host in "${HOSTS[@]}"; do
     fi
     # cloud-init being finished does not mean apt is: the apt-daily timers and
     # unattended-upgrades run on their own schedule and hold the dpkg lock, which
-    # the installer then fails on. Wait for the lock rather than fight it.
+    # the installer then fails on. The timers are stopped so no new run starts, and
+    # the locks must stay free for three polls, since a run frees them between phases.
     ssh_node "$host" "DISTRO_NAME='$(basename "${DISTRO:-}")' SETUP_NAME='$(basename "${SETUP_SH:-}")' CHANNEL='$CHANNEL' INSTALL_VERSION='$INSTALL_VERSION' bash -s" \
         > "$STATE_DIR/install-$host.log" 2>&1 <<'REMOTE' \
         || die "install failed on $host; see $STATE_DIR/install-$host.log"
 set -e
+sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+free=0
 for _ in $(seq 1 120); do
-    sudo fuser /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock >/dev/null 2>&1 || break
+    if systemctl is-active --quiet apt-daily.service apt-daily-upgrade.service \
+        || sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; then
+        free=0
+    else
+        free=$((free + 1))
+        [ "$free" -lt 3 ] || break
+    fi
     sleep 5
 done
-sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
-    && { echo "the dpkg lock was still held after 10 minutes"; exit 1; }
+[ "$free" -ge 3 ] || { echo "apt was still busy after 10 minutes:"; ps -eo pid,etime,args | grep -E '[a]pt|[d]pkg|[u]nattended'; exit 1; }
 if [ -n "${DISTRO_NAME:-}" ]; then
     # The production setup.sh against the ref's own tarball, which is what the
     # release and the ISO both run, so there is no separate dev install layout.

@@ -142,8 +142,17 @@ func TestELBv2Pipeline_DescribeListenerAttributes_GoldenXML(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "text/xml", resp.Header.Get("Content-Type"))
-	assert.Equal(t, `<DescribeListenerAttributesResponse><DescribeListenerAttributesResult><Attributes><member><Key>tcp.idle_timeout.seconds</Key><Value>350</Value></member></Attributes></DescribeListenerAttributesResult></DescribeListenerAttributesResponse>`,
-		readBody(t, resp))
+	var out struct {
+		Attrs []struct {
+			Key   string `xml:"Key"`
+			Value string `xml:"Value"`
+		} `xml:"DescribeListenerAttributesResult>Attributes>member"`
+	}
+	// Member field order varies between runs, so the attributes are pinned decoded.
+	require.NoError(t, xml.Unmarshal([]byte(readBody(t, resp)), &out))
+	require.Len(t, out.Attrs, 1)
+	assert.Equal(t, "tcp.idle_timeout.seconds", out.Attrs[0].Key)
+	assert.Equal(t, "350", out.Attrs[0].Value)
 }
 
 func TestELBv2Pipeline_DescribeLoadBalancers_GoldenXML(t *testing.T) {

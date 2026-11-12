@@ -441,6 +441,7 @@ var (
 	ErrorECSClusterNotFound                             = "ClusterNotFoundException"
 	ErrorECSInvalidParameter                            = "InvalidParameterException"
 	ErrorECSServiceNotFound                             = "ServiceNotFoundException"
+	ErrorECSServiceNotActive                            = "ServiceNotActiveException"
 	ErrorRetryableError                                 = "RetryableError"
 	ErrorRouteAlreadyExists                             = "RouteAlreadyExists"
 	ErrorRouteLimitExceeded                             = "RouteLimitExceeded"
@@ -1257,6 +1258,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorECSClusterNotFound:                                    {HTTPCode: 400, Message: "Cluster not found."},
 	ErrorECSInvalidParameter:                                   {HTTPCode: 400, Message: "The specified parameter is not valid. Review the available parameters for the API request."},
 	ErrorECSServiceNotFound:                                    {HTTPCode: 400, Message: "The specified service was not found. You can view your available services with ListServices. Amazon ECS services are cluster specific and Region specific."},
+	ErrorECSServiceNotActive:                                   {HTTPCode: 400, Message: "Service was not ACTIVE."},
 	ErrorRetryableError:                                        {HTTPCode: 400, Message: "A request submitted by an AWS service on your behalf could not be completed. The requesting service might automatically retry the request."},
 	ErrorRouteAlreadyExists:                                    {HTTPCode: 409, Message: "A route for the specified CIDR block already exists in this route table."},
 	ErrorRouteLimitExceeded:                                    {HTTPCode: 400, Message: "You've reached the limit on the number of routes that you can add to a route table."},

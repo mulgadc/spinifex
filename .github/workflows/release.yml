@@ -218,6 +218,8 @@ jobs:
         working-directory: mulga/scripts/tofu-cluster
         run: |
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/hv-lock.sh"
+          hv_lock_acquire "envs/${SPINIFEX_CI_ENV}.tfvars"
           tofu init -input=false >> "$TOFU_LOG" 2>&1
           tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
           tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false >> "$TOFU_LOG" 2>&1 || true
@@ -236,6 +238,9 @@ jobs:
         working-directory: mulga/scripts/tofu-cluster
         run: |
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/hv-lock.sh"
+          hv_lock_acquire "envs/${SPINIFEX_CI_ENV}.tfvars" || {
+            echo "::error::teardown skipped: ${SPINIFEX_CI_ENV} is left up for the next job's pre-clean destroy"; exit 1; }
           tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
           retry_run "tofu destroy" "$TOFU_LOG" tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
           ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true

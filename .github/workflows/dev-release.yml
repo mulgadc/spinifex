@@ -29,7 +29,7 @@ concurrency:
 
 jobs:
   prerelease:
-    runs-on: ubuntu-latest-m
+    runs-on: ubuntu-26.04
     env:
       # Dev prereleases, newest published first: GitHub lists releases by tag name
       # as text, so list order is not build order. The install Worker uses this rule.

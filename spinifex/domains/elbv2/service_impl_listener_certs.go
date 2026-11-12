@@ -170,8 +170,14 @@ func (s *ELBv2ServiceImpl) DescribeListenerCertificates(ctx context.Context, inp
 		return nil, errors.New(awserrors.ErrorELBv2ListenerNotFound)
 	}
 
+	page, nextMarker, err := pageResults(listenerCertsToSDK(listener.Certificates), input.Marker, input.PageSize)
+	if err != nil {
+		return nil, err
+	}
+
 	return &elbv2.DescribeListenerCertificatesOutput{
-		Certificates: listenerCertsToSDK(listener.Certificates),
+		Certificates: page,
+		NextMarker:   nextMarker,
 	}, nil
 }
 

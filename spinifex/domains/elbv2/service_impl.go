@@ -1965,6 +1965,10 @@ func (s *ELBv2ServiceImpl) reapFloatingIPNAT(lb *LoadBalancerRecord) {
 }
 
 func (s *ELBv2ServiceImpl) DescribeLoadBalancers(ctx context.Context, input *elbv2.DescribeLoadBalancersInput, accountID string) (*elbv2.DescribeLoadBalancersOutput, error) {
+	if (input.PageSize != nil || aws.StringValue(input.Marker) != "") && (len(input.Names) > 0 || len(input.LoadBalancerArns) > 0) {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError, "Pagination is not supported when specifying load balancers")
+	}
+
 	allLBs, err := s.store.ListLoadBalancers(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "DescribeLoadBalancers: failed to list LBs", "err", err)
@@ -2026,8 +2030,17 @@ func (s *ELBv2ServiceImpl) DescribeLoadBalancers(ctx context.Context, input *elb
 		}
 	}
 
+	slices.SortFunc(result, func(a, b *elbv2.LoadBalancer) int {
+		return strings.Compare(aws.StringValue(a.LoadBalancerName), aws.StringValue(b.LoadBalancerName))
+	})
+	page, nextMarker, err := pageResults(result, input.Marker, input.PageSize)
+	if err != nil {
+		return nil, err
+	}
+
 	return &elbv2.DescribeLoadBalancersOutput{
-		LoadBalancers: result,
+		LoadBalancers: page,
+		NextMarker:    nextMarker,
 	}, nil
 }
 
@@ -2406,7 +2419,7 @@ func (s *ELBv2ServiceImpl) DescribeTargetGroups(ctx context.Context, input *elbv
 	slices.SortFunc(result, func(a, b *elbv2.TargetGroup) int {
 		return strings.Compare(aws.StringValue(a.TargetGroupName), aws.StringValue(b.TargetGroupName))
 	})
-	page, nextMarker, err := pageTargetGroups(result, input.Marker, input.PageSize)
+	page, nextMarker, err := pageResults(result, input.Marker, input.PageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -2417,22 +2430,25 @@ func (s *ELBv2ServiceImpl) DescribeTargetGroups(ctx context.Context, input *elbv
 	}, nil
 }
 
-// pageTargetGroups slices one page out of the sorted result. The marker is an
-// opaque offset and AWS allows a PageSize of 1 to 400; without one the whole
-// result is returned so internal callers that never page see every group.
-func pageTargetGroups(items []*elbv2.TargetGroup, marker *string, pageSize *int64) ([]*elbv2.TargetGroup, *string, error) {
+// pageResults slices one page out of a stably ordered result. The marker is
+// an opaque offset and AWS allows a PageSize of 1 to 400; without one the
+// whole result is returned so internal callers that never page see everything.
+func pageResults[T any](items []T, marker *string, pageSize *int64) ([]T, *string, error) {
 	start := 0
 	if aws.StringValue(marker) != "" {
 		n, err := strconv.Atoi(*marker)
 		if err != nil || n < 0 {
-			return nil, nil, errors.New(awserrors.ErrorValidationError)
+			return nil, nil, awserrors.Errorf(awserrors.ErrorValidationError, "Invalid Marker Id: %s", *marker)
 		}
 		start = min(n, len(items))
 	}
 	size := len(items)
 	if pageSize != nil {
-		if *pageSize < 1 || *pageSize > 400 {
-			return nil, nil, errors.New(awserrors.ErrorValidationError)
+		switch {
+		case *pageSize < 1:
+			return nil, nil, awserrors.Errorf(awserrors.ErrorValidationError, "1 validation error detected: Value '%d' at 'pageSize' failed to satisfy constraint: Member must have value greater than or equal to 1", *pageSize)
+		case *pageSize > 400:
+			return nil, nil, awserrors.Errorf(awserrors.ErrorValidationError, "1 validation error detected: Value '%d' at 'pageSize' failed to satisfy constraint: Member must have value less than or equal to 400", *pageSize)
 		}
 		size = int(*pageSize)
 	}
@@ -3330,8 +3346,17 @@ func (s *ELBv2ServiceImpl) DescribeListeners(ctx context.Context, input *elbv2.D
 		result = append(result, s.listenerRecordToSDK(l))
 	}
 
+	slices.SortFunc(result, func(a, b *elbv2.Listener) int {
+		return strings.Compare(aws.StringValue(a.ListenerArn), aws.StringValue(b.ListenerArn))
+	})
+	page, nextMarker, err := pageResults(result, input.Marker, input.PageSize)
+	if err != nil {
+		return nil, err
+	}
+
 	return &elbv2.DescribeListenersOutput{
-		Listeners: result,
+		Listeners:  page,
+		NextMarker: nextMarker,
 	}, nil
 }
 

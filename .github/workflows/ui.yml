@@ -39,7 +39,7 @@ concurrency:
 jobs:
   ui_build_and_test:
     name: UI Build and Test
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest-m
     defaults:
       run:
         working-directory: spinifex/runtime/roles/spinifexui/frontend
@@ -111,7 +111,7 @@ jobs:
   ui_e2e:
     name: UI End-to-End
     needs: ui_e2e_image
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest-m
     timeout-minutes: 20
     container:
       image: ${{ needs.ui_e2e_image.outputs.image }}

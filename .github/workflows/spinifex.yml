@@ -29,7 +29,7 @@ concurrency:
 jobs:
   build_and_test:
     name: Build and Test
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest-m
 
     steps:
       - name: Checkout Spinifex
@@ -161,7 +161,7 @@ jobs:
   race_detection:
     name: Race Detection
     if: ${{ github.event_name != 'pull_request' }}
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest-m
 
     steps:
       - name: Checkout Spinifex
@@ -265,7 +265,7 @@ jobs:
 
   lint_and_security:
     name: Lint + Security + Integration
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest-m
 
     steps:
       - name: Checkout Spinifex

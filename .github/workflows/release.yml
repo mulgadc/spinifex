@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   distro-amd64:
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest-m
     steps:
       - name: Checkout Spinifex
         uses: actions/checkout@v7.0.1

@@ -8,48 +8,52 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// Two concurrent CreateLoadBalancer calls for the same name resolve to exactly
-// one success and one DuplicateLoadBalancerName. The atomic name claim is the
-// barrier; under -race a double-claim would surface as a launcher/store race.
+// Two concurrent identical CreateLoadBalancer calls create one load balancer.
+// A loser that finds the winner's record gets it back; one that finds only the
+// pending claim gets DuplicateLoadBalancerName. Under -race a double-claim would surface.
 func TestCreateLoadBalancer_ConcurrentSameNameSingleOwner(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)
 
 	const n = 2
+	outs := make([]*elbv2.CreateLoadBalancerOutput, n)
 	errs := make([]error, n)
 	var wg sync.WaitGroup
 	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, errs[i] = svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+			outs[i], errs[i] = svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 				Name: aws.String("race-lb"),
 			}, testAccountID)
 		}(i)
 	}
 	wg.Wait()
 
-	var ok, dup int
-	for _, e := range errs {
-		switch {
-		case e == nil:
-			ok++
-		case e.Error() == "DuplicateLoadBalancerName":
-			dup++
-		default:
-			t.Fatalf("unexpected create error: %v", e)
-		}
-	}
-	assert.Equal(t, 1, ok, "exactly one create owns the name")
-	assert.Equal(t, 1, dup, "the duplicate is rejected DuplicateLoadBalancerName")
-
 	rec, err := svc.store.GetLoadBalancerByName(t.Context(), "race-lb", testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, rec)
+
+	var ok int
+	for i, e := range errs {
+		if e == nil {
+			ok++
+			assert.Equal(t, rec.LoadBalancerArn, *outs[i].LoadBalancers[0].LoadBalancerArn, "every success names the one load balancer")
+			continue
+		}
+		code, _, _ := awserrors.ResolveErrorDetail(e)
+		require.Equal(t, awserrors.ErrorELBv2DuplicateLoadBalancer, code, "unexpected create error: %v", e)
+	}
+	assert.GreaterOrEqual(t, ok, 1, "one create owns the name")
+
+	desc, err := svc.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, desc.LoadBalancers, 1)
 }
 
 // TestClaimLBName_PendingClaimBlocksSecondClaimer isolates the orphan-reclaim

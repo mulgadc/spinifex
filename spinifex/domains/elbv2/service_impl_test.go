@@ -87,20 +87,54 @@ func TestCreateLoadBalancer_InvalidScheme(t *testing.T) {
 	assert.Contains(t, err.Error(), "InvalidScheme")
 }
 
-func TestCreateLoadBalancer_DuplicateName(t *testing.T) {
+// An identical repeat, settings and tags alike, returns the stored load balancer.
+func TestCreateLoadBalancer_DuplicateNameSameSettingsReturnsExisting(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	first, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+		Name:           aws.String("dup-alb"),
+		Subnets:        aws.StringSlice([]string{"subnet-a", "subnet-b"}),
+		SecurityGroups: aws.StringSlice([]string{"sg-1"}),
+		Tags:           []*elbv2.Tag{{Key: aws.String("env"), Value: aws.String("dev")}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	second, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+		Name:           aws.String("dup-alb"),
+		Type:           aws.String(LoadBalancerTypeApplication),
+		Scheme:         aws.String(SchemeInternetFacing),
+		Subnets:        aws.StringSlice([]string{"subnet-b", "subnet-a"}),
+		SecurityGroups: aws.StringSlice([]string{"sg-1"}),
+		Tags:           []*elbv2.Tag{{Key: aws.String("env"), Value: aws.String("dev")}},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, second.LoadBalancers, 1)
+	assert.Equal(t, *first.LoadBalancers[0].LoadBalancerArn, *second.LoadBalancers[0].LoadBalancerArn)
+
+	desc, err := svc.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, desc.LoadBalancers, 1)
+}
+
+// A repeat that drops the original's tags is refused, as AWS refuses it.
+func TestCreateLoadBalancer_DuplicateNameDifferentSettings(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)
 
 	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("dup-alb"),
+		Tags: []*elbv2.Tag{{Key: aws.String("env"), Value: aws.String("dev")}},
 	}, testAccountID)
 	require.NoError(t, err)
 
 	_, err = svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
 		Name: aws.String("dup-alb"),
 	}, testAccountID)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "DuplicateLoadBalancerName")
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorELBv2DuplicateLoadBalancer, code)
+	assert.Equal(t, "A load balancer with the same name 'dup-alb' exists, but with different settings", msg)
 }
 
 func TestCreateLoadBalancer_MissingName(t *testing.T) {

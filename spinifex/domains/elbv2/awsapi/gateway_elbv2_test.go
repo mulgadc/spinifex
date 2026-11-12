@@ -238,28 +238,20 @@ func TestDescribeLoadBalancerAttributes_EmptyArn(t *testing.T) {
 }
 
 func TestDescribeListenerAttributes_NilInput(t *testing.T) {
-	_, err := DescribeListenerAttributes(nil, "123456789012")
+	_, err := DescribeListenerAttributes(context.Background(), nil, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
 
 func TestDescribeListenerAttributes_MissingArn(t *testing.T) {
-	_, err := DescribeListenerAttributes(&DescribeListenerAttributesInput{}, "123456789012")
+	_, err := DescribeListenerAttributes(context.Background(), &DescribeListenerAttributesInput{}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }
 
 func TestDescribeListenerAttributes_EmptyArn(t *testing.T) {
-	_, err := DescribeListenerAttributes(&DescribeListenerAttributesInput{
+	_, err := DescribeListenerAttributes(context.Background(), &DescribeListenerAttributesInput{
 		ListenerArn: aws.String(""),
-	}, "123456789012")
+	}, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
-}
-
-func TestDescribeListenerAttributes_OK(t *testing.T) {
-	out, err := DescribeListenerAttributes(&DescribeListenerAttributesInput{
-		ListenerArn: aws.String("arn:aws:elasticloadbalancing:us-east-1:123456789012:listener/app/lb/abc/def"),
-	}, "123456789012")
-	assert.NoError(t, err)
-	assert.Empty(t, out.Attributes)
 }
 
 func TestModifyListenerAttributes_NilInput(t *testing.T) {

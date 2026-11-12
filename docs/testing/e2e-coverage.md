@@ -13,6 +13,11 @@ Suites live in `tests/e2e/<name>/` and build to `tests/e2e/_bin/<name>.test`. Ev
 
 The nightly permutation sets are deliberately narrower than the full ones: those cells have a ~35 minute budget and exist to prove every install / network / host-OS combination boots and serves. `eks`, `ecs`, `rds`, `storagefault`, `instancerecovery`, `lbrecovery` and `kvquorum` each get a dedicated cell instead.
 
+**The push E2E runs `single` as three shards** on separate `ci-single` envs (`E2E_SINGLE_SHARDS`, default 3; a `test_run` dispatch runs it whole).
+Each leg lists `single.test -test.list` itself and `.github/scripts/e2e-shard.sh` assigns the names longest-first by the seconds in `.github/e2e-weights/single.txt`, so every leg computes the same partition and a test missing from the weights still lands in exactly one shard.
+A failed or empty listing fails the leg, and any failed leg fails the `e2e` status.
+The rest of the push base set (`iam`, `cert`, `partialblock`) runs whole on a `ci-pseudo` env.
+
 **`multinode` carries the KV replication sweep as well**, which is why the thing `kvquorum` proves is still checked in every multi-node permutation cell even though the suite itself is not. The read-only half costs a NATS connection and a stream listing; only the node-loss half needs a cell of its own.
 
 ## The suites

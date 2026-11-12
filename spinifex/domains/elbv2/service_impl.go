@@ -1421,6 +1421,10 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if claimDup {
+		// A create that won the claim may have persisted its record since the lookup above.
+		if out, err := s.repeatCreateLoadBalancer(ctx, want, name, accountID); out != nil || err != nil {
+			return out, err
+		}
 		return nil, errors.New(awserrors.ErrorELBv2DuplicateLoadBalancer)
 	}
 	if !claimOK {

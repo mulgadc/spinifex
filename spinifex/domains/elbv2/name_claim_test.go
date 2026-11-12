@@ -146,3 +146,55 @@ func TestCreateLoadBalancer_FailureAfterClaimReleasesNameForRetry(t *testing.T) 
 	require.NoError(t, err)
 	require.Len(t, out.LoadBalancers, 1)
 }
+
+// A create whose pre-claim lookup missed a concurrent winner, which then
+// persists its record before the claim, resolves against that record. The clock
+// hook runs inside ClaimLBName, after the lookup and before the claim.
+func TestCreateLoadBalancer_LostClaimResolvesAgainstWinnersRecord(t *testing.T) {
+	t.Parallel()
+	tags := []*elbv2.Tag{{Key: aws.String("env"), Value: aws.String("dev")}}
+	for name, tc := range map[string]struct {
+		winnerTags []*elbv2.Tag
+		wantErr    bool
+	}{
+		"same settings":      {winnerTags: tags},
+		"different settings": {winnerTags: nil, wantErr: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			svc := setupTestService(t)
+
+			var winner *elbv2.CreateLoadBalancerOutput
+			realNow := svc.store.now
+			svc.store.now = func() time.Time {
+				svc.store.now = realNow
+				var err error
+				winner, err = svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+					Name: aws.String("late-lb"),
+					Tags: tc.winnerTags,
+				}, testAccountID)
+				require.NoError(t, err)
+				return realNow()
+			}
+
+			out, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+				Name: aws.String("late-lb"),
+				Tags: tags,
+			}, testAccountID)
+			require.NotNil(t, winner, "the winner must create inside the claim")
+			if tc.wantErr {
+				code, msg, ok := awserrors.ResolveErrorDetail(err)
+				require.True(t, ok)
+				assert.Equal(t, awserrors.ErrorELBv2DuplicateLoadBalancer, code)
+				assert.Equal(t, "A load balancer with the same name 'late-lb' exists, but with different settings", msg)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, *winner.LoadBalancers[0].LoadBalancerArn, *out.LoadBalancers[0].LoadBalancerArn)
+			}
+
+			desc, err := svc.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{}, testAccountID)
+			require.NoError(t, err)
+			assert.Len(t, desc.LoadBalancers, 1)
+		})
+	}
+}

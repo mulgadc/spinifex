@@ -813,6 +813,12 @@ for i in $(seq 1 120); do
     sleep 5
 done
 [ "$free" -ge 3 ] || { echo "apt was still busy after 10 minutes:"; ps -eo pid,etime,args | grep -E '[a]pt|[d]pkg|[u]nattended'; exit 1; }
+# The image points apt at the region's clouds.archive.ubuntu.com alias, whose
+# servers intermittently return 502/504; the Australian country mirror does not.
+for f in $(sudo grep -rlE '[a-z0-9-]+\.clouds\.archive\.ubuntu\.com' /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null); do
+    sudo sed -i -E 's#[a-z0-9-]+\.clouds\.archive\.ubuntu\.com#au.archive.ubuntu.com#g' "$f"
+done
+echo 'Acquire::Retries "3";' | sudo tee /etc/apt/apt.conf.d/80-spx-retries >/dev/null
 if [ -n "${DISTRO_NAME:-}" ]; then
     # The production setup.sh against the ref's own tarball, which is what the
     # release and the ISO both run, so there is no separate dev install layout.

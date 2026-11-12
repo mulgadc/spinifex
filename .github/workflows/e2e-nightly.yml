@@ -105,10 +105,10 @@ jobs:
             fi
           done < <(jq -r '.[]|select((.suite//"")!="")|[.cell,.suite,(.timeout_minutes//50)]|@tsv' <<<"$sel")
 
-          # A permutation cell names no suite and runs the nightly subset for its
-          # topology, so its bound is the longest of those. max() and not sum():
-          # whichever suite hangs must panic on its own timeout first, and a sum
-          # would demand a budget the set has never come close to using.
+          # A permutation cell names no suite or extra and runs the nightly subset
+          # for its topology, so its bound is the longest of those. max() and not
+          # sum(): whichever suite hangs must panic on its own timeout first, and a
+          # sum would demand a budget the set has never come close to using.
           while IFS=$'\t' read -r cell topo budget; do
             case "$topo" in
               *multi) set -- ${E2E_SUITES_NIGHTLY_MULTI} ;;
@@ -123,7 +123,7 @@ jobs:
               echo "::error::cell-$cell runs the $topo nightly subset, whose longest suite asks ${want}m, inside a ${budget}m job. Raise timeout_minutes in .github/e2e-cells.json to at least $((want + SETUP_ALLOWANCE_MIN))." >&2
               bad=1
             fi
-          done < <(jq -r '.[]|select((.suite//"")=="")|[.cell,.topo,(.timeout_minutes//50)]|@tsv' <<<"$sel")
+          done < <(jq -r '.[]|select((.suite//"")=="" and (.extra//"")=="")|[.cell,.topo,(.timeout_minutes//50)]|@tsv' <<<"$sel")
           [ "$bad" -eq 0 ]
 
   matrix:

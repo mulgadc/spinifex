@@ -196,9 +196,9 @@ e2e_suite_timeout() {
     # and the whole service stack back up with every stream caught up.
     kvquorum) echo "40m" ;;
     # single is the broadest suite and finishes, it does not hang: passing runs
-    # took 24-29m, and an Oracle host ran out at 30m inside the last test's
-    # cleanup. The default left it no headroom at all.
-    single) echo "40m" ;;
+    # took 29-30m, and the attached-ENI terminate test then added a 17-minute
+    # hold that outlasts the orphan reaper, so a pass is now about 48m.
+    single) echo "60m" ;;
     # uefistore's prune test has to outwait the 10-minute prune age and a GC
     # sweep after its last write-back, on top of three stop/starts and a boot.
     # A pass is estimated at 40 minutes, unmeasured; the rest is the watch's cap.

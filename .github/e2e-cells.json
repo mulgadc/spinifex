@@ -9,7 +9,7 @@
     "runner": "ci-single",
     "extra": "",
     "suite": "",
-    "timeout_minutes": 60
+    "timeout_minutes": 80
   },
   {
     "cell": 2,
@@ -21,7 +21,7 @@
     "runner": "ci-single",
     "extra": "",
     "suite": "",
-    "timeout_minutes": 60
+    "timeout_minutes": 80
   },
   {
     "cell": 3,
@@ -33,7 +33,7 @@
     "runner": "ci-single",
     "extra": "",
     "suite": "",
-    "timeout_minutes": 60
+    "timeout_minutes": 80
   },
   {
     "cell": 8,
@@ -205,7 +205,7 @@
     "runner": "ci-single",
     "extra": "",
     "suite": "",
-    "timeout_minutes": 60
+    "timeout_minutes": 80
   },
   {
     "cell": 35,

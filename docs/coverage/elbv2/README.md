@@ -132,3 +132,13 @@ Behaviour against AWS was not compared, and the cases above were not run with an
 | `SetRulePriorities` |
 | `SetSecurityGroups` |
 | `SetSubnets` |
+
+### Requires AWS SDK v2
+
+These 3 operations are in the pinned AWS model but not in AWS SDK for Go v1, the SDK Spinifex is built and tested on. They are out of scope until Spinifex moves to AWS SDK v2.
+
+| Operation |
+|---|
+| `DescribeCapacityReservation` |
+| `ModifyCapacityReservation` |
+| `ModifyIpPools` |

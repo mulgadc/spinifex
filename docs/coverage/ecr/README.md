@@ -55,3 +55,25 @@ Registry replication is a stub for the same kind of reason: a deployment is a si
 | `StartLifecyclePolicyPreview` |
 | `TagResource` |
 | `UntagResource` |
+
+### Requires AWS SDK v2
+
+These 15 operations are in the pinned AWS model but not in AWS SDK for Go v1, the SDK Spinifex is built and tested on. They are out of scope until Spinifex moves to AWS SDK v2.
+
+| Operation |
+|---|
+| `DeleteSigningConfiguration` |
+| `DeregisterPullTimeUpdateExclusion` |
+| `DescribeImageSigningStatus` |
+| `DescribeReplicationBackfillResults` |
+| `GetAccountSetting` |
+| `GetSigningConfiguration` |
+| `ListImageReferrers` |
+| `ListPullTimeUpdateExclusions` |
+| `ListReplicationBackfills` |
+| `PutAccountSetting` |
+| `PutSigningConfiguration` |
+| `RegisterPullTimeUpdateExclusion` |
+| `StartReplicationBackfill` |
+| `StopReplicationBackfill` |
+| `UpdateImageStorageClass` |

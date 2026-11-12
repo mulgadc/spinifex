@@ -170,7 +170,7 @@ func (m *Manager) checkUEFIVarStore(ctx context.Context, v *VM) (*uefistore.UEFI
 	if records == nil {
 		return nil, fmt.Errorf("%w: %s, and no store records are wired on this node", ErrUEFIVarStoreMissing, v.ID)
 	}
-	rec, _, err := records.Get(ctx, v.ID)
+	rec, _, err := records.LeaderGet(ctx, v.ID)
 	switch {
 	case errors.Is(err, kvstore.ErrNotFound):
 		return nil, fmt.Errorf("%w: %s has no store record", ErrUEFIVarStoreMissing, v.ID)

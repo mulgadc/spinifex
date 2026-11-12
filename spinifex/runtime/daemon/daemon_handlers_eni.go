@@ -43,7 +43,7 @@ func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg
 		return respondErrorOutcome(d.node, msg, awserrors.ErrorInvalidNetworkInterfaceInUse)
 	}
 
-	attachmentID, err := d.vpcService.AttachENI(accountID, eniID, instance.ID, deviceIndex)
+	attachmentID, err := d.vpcService.AttachNetworkInterface(accountID, eniID, instance.ID, deviceIndex)
 	if err != nil {
 		return respondServiceErrorOutcome(d.node, msg, err)
 	}

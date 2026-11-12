@@ -139,6 +139,13 @@ func TestAttachToStopped(t *testing.T) {
 	runAttachToStopped(t, requireSingleNodeFixture(t))
 }
 
+// TestAttachedENISurvivesTerminate holds a test-owned guest with an attached
+// interface past every automatic timeout, then terminates it. Sequential: it
+// consumes node capacity for its own guest.
+func TestAttachedENISurvivesTerminate(t *testing.T) {
+	runAttachedENISurvivesTerminate(t, requireSingleNodeFixture(t))
+}
+
 // TestSpotInstanceLifecycle drives the two spot terminal transitions that need
 // a real backing VM: cancel-keeps-running and terminate-drives-the-real-close
 // chain. Sequential: it consumes node capacity for its own short-lived VMs

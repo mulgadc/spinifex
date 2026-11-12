@@ -432,6 +432,13 @@ func TestNATSENIController_AllocateAttachRelease(t *testing.T) {
 	respond(t, nc, "ec2.DeleteNetworkInterface", func([]byte) any {
 		return ec2.DeleteNetworkInterfaceOutput{}
 	})
+	modified := make(chan ec2.ModifyNetworkInterfaceAttributeInput, 1)
+	respond(t, nc, "ec2.ModifyNetworkInterfaceAttribute", func(req []byte) any {
+		var in ec2.ModifyNetworkInterfaceAttributeInput
+		_ = json.Unmarshal(req, &in)
+		modified <- in
+		return ec2.ModifyNetworkInterfaceAttributeOutput{}
+	})
 
 	alloc, err := c.Allocate(context.Background(), testAccountID, "subnet-1", []*string{aws.String("sg-1")})
 	require.NoError(t, err)
@@ -442,6 +449,11 @@ func TestNATSENIController_AllocateAttachRelease(t *testing.T) {
 	attID, err := c.Attach(context.Background(), testAccountID, "i-1", "eni-real")
 	require.NoError(t, err)
 	assert.Equal(t, "att-real", attID)
+	mod := <-modified
+	assert.Equal(t, "eni-real", aws.StringValue(mod.NetworkInterfaceId))
+	require.NotNil(t, mod.Attachment)
+	assert.Equal(t, "att-real", aws.StringValue(mod.Attachment.AttachmentId))
+	assert.True(t, aws.BoolValue(mod.Attachment.DeleteOnTermination), "a task ENI must go with its container instance")
 
 	require.NoError(t, c.Release(context.Background(), testAccountID, &TaskRecord{
 		ENIID: "eni-real", ENIAttachmentID: "att-real", ContainerInstanceID: "i-1",

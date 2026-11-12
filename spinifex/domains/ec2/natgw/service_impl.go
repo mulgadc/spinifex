@@ -137,15 +137,16 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 
 	natgwID := awsidentifiers.GenerateResourceID("nat")
 	record := NatGatewayRecord{
-		NatGatewayId: natgwID,
-		VpcId:        subnetRecord.VpcId,
-		SubnetId:     subnetID,
-		AllocationId: allocID,
-		PublicIp:     eipRecord.PublicIp,
-		State:        "available",
-		AccountID:    accountID,
-		Tags:         awstags.Extract(input.TagSpecifications, ec2.ResourceTypeNatgateway),
-		CreatedAt:    time.Now(),
+		NatGatewayId:  natgwID,
+		VpcId:         subnetRecord.VpcId,
+		SubnetId:      subnetID,
+		AllocationId:  allocID,
+		PublicIp:      eipRecord.PublicIp,
+		AssociationId: awsidentifiers.GenerateResourceID("eipassoc"),
+		State:         "available",
+		AccountID:     accountID,
+		Tags:          awstags.Extract(input.TagSpecifications, ec2.ResourceTypeNatgateway),
+		CreatedAt:     time.Now(),
 	}
 
 	data, err := json.Marshal(record)
@@ -161,7 +162,7 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 	// NAT GW reusing the same allocation). Linkage is the shared AllocationId;
 	// DeleteNatGateway clears it back to allocated. Non-fatal: the NAT GW is
 	// already stored, so a failed mark only weakens the reuse guard until then.
-	eipRecord.AssociationId = awsidentifiers.GenerateResourceID("eipassoc")
+	eipRecord.AssociationId = record.AssociationId
 	eipRecord.VpcId = subnetRecord.VpcId
 	eipRecord.State = "associated"
 	if eipData, err := json.Marshal(eipRecord); err == nil {
@@ -490,7 +491,12 @@ func recordToEC2(record *NatGatewayRecord) *ec2.NatGateway {
 			{
 				AllocationId: aws.String(record.AllocationId),
 				PublicIp:     aws.String(record.PublicIp),
+				IsPrimary:    aws.Bool(true),
+				Status:       aws.String(ec2.NatGatewayAddressStatusSucceeded),
 			},
+		}
+		if record.AssociationId != "" {
+			ngw.NatGatewayAddresses[0].AssociationId = aws.String(record.AssociationId)
 		}
 	}
 

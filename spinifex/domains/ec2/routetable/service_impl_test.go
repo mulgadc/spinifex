@@ -404,6 +404,24 @@ func TestCreateRoute_UnknownNatGatewayKeepsInvalidIDCode(t *testing.T) {
 	assert.EqualError(t, err, awserrors.ErrorInvalidNatGatewayIDNotFound)
 }
 
+// AWS refuses a repeat of a NAT gateway route, unlike a gateway route.
+func TestCreateRoute_RepeatedNatGatewayRouteConflicts(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	rtbID := createTestRtb(t, svc)
+	input := &ec2.CreateRouteInput{
+		RouteTableId:         aws.String(rtbID),
+		DestinationCidrBlock: aws.String("0.0.0.0/0"),
+		NatGatewayId:         aws.String("nat-test1"),
+	}
+
+	_, err := svc.CreateRoute(t.Context(), input, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.CreateRoute(t.Context(), input, testAccountID)
+	testutil.RequireAWSError(t, err, awserrors.ErrorRouteAlreadyExists, "The route identified by 0.0.0.0/0 already exists.")
+}
+
 func TestCreateRoute_DuplicateDestination(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)

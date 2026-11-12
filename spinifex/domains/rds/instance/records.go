@@ -273,6 +273,8 @@ const (
 	SnapshotStatusAvailable = "available"
 	// The EC2 snapshot settled in error, so the record holds no restorable data.
 	SnapshotStatusFailed = "failed"
+	// Only DeleteDBSnapshot's answer carries this; no record is stored with it.
+	SnapshotStatusDeleted = "deleted"
 )
 
 // SnapshotOperation is the snapshot operation holding a DB instance, written under the same CAS that

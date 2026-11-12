@@ -82,8 +82,7 @@ func TestSnapshotRestore(t *testing.T) {
 	// The snapshot has to carry enough of the instance's configuration to rebuild
 	// it, because the instance may be gone by the time it is used — as it is by the
 	// end of this test.
-	assert.Equal(t, harness.DBSnapshotAvailable, aws.StringValue(snapshot.Status),
-		"CreateDBSnapshot returns once the data is captured, so it is available on the response")
+	assert.Equal(t, harness.DBSnapshotAvailable, aws.StringValue(snapshot.Status))
 	assert.Equal(t, sourceID, aws.StringValue(snapshot.DBInstanceIdentifier))
 	assert.Equal(t, "manual", aws.StringValue(snapshot.SnapshotType))
 	assert.Equal(t, dbEngine, aws.StringValue(snapshot.Engine))
@@ -276,9 +275,9 @@ func TestSnapshotRestore(t *testing.T) {
 	})
 }
 
-// createDBSnapshot takes a snapshot and registers its teardown. CreateDBSnapshot
-// is synchronous — it returns once the volume has been captured — so there is
-// nothing to wait for, and a wait here would hide a status that never settled.
+// createDBSnapshot takes a snapshot, registers its teardown and returns it once
+// available. CreateDBSnapshot answers creating, as AWS's does, and the
+// reconciler settles it from its EC2 snapshot.
 func createDBSnapshot(t *testing.T, f *Fixture, dbInstanceID, snapshotID string) *rds.DBSnapshot {
 	t.Helper()
 	out, err := f.AWS.RDS.CreateDBSnapshot(&rds.CreateDBSnapshotInput{
@@ -288,17 +287,27 @@ func createDBSnapshot(t *testing.T, f *Fixture, dbInstanceID, snapshotID string)
 	require.NoError(t, err, "create-db-snapshot %s", snapshotID)
 	require.NotNil(t, out.DBSnapshot)
 	t.Cleanup(func() { deleteDBSnapshot(t, f, snapshotID) })
-	return out.DBSnapshot
+	assert.Equal(t, "creating", aws.StringValue(out.DBSnapshot.Status))
+	assert.Equal(t, int64(0), aws.Int64Value(out.DBSnapshot.PercentProgress))
+	assert.Nil(t, out.DBSnapshot.SnapshotCreateTime)
+	return harness.WaitForDBSnapshotAvailable(t, f.AWS, snapshotID)
 }
 
 // Idempotent teardown for one snapshot, so the assertions above can delete
 // snapshots in the order the retention behavior is proven without the cleanups then failing.
 func deleteDBSnapshot(t *testing.T, f *Fixture, snapshotID string) {
 	t.Helper()
-	if _, err := f.AWS.RDS.DeleteDBSnapshot(&rds.DeleteDBSnapshotInput{
+	out, err := f.AWS.RDS.DeleteDBSnapshot(&rds.DeleteDBSnapshotInput{
 		DBSnapshotIdentifier: aws.String(snapshotID),
-	}); err != nil && !harness.ErrorCodeIs(err, "DBSnapshotNotFound") {
+	})
+	switch {
+	case harness.ErrorCodeIs(err, "DBSnapshotNotFound"):
+	case err != nil:
 		t.Errorf("delete-db-snapshot %s: %v (left behind for manual teardown)", snapshotID, err)
+	default:
+		// AWS answers with the snapshot it removed, deleted and untagged.
+		assert.Equal(t, "deleted", aws.StringValue(out.DBSnapshot.Status))
+		assert.Empty(t, out.DBSnapshot.TagList)
 	}
 }
 

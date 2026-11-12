@@ -446,7 +446,7 @@ func TestRunBackupWindow_TakesIndexesAndStampsTheBackup(t *testing.T) {
 	snapshot, found := h.snapshot(t, entry.DBSnapshotIdentifier)
 	require.True(t, found)
 	assert.Equal(t, SnapshotTypeAutomated, snapshot.SnapshotType)
-	assert.Equal(t, SnapshotStatusAvailable, snapshot.Status)
+	assert.Equal(t, SnapshotStatusCreating, snapshot.Status)
 
 	// The instance is where it was found, with the window stamped as fired.
 	rec := h.instance(t, testDBID)
@@ -986,6 +986,7 @@ func TestRestoreDBInstanceFromDBSnapshot_RestoresFromAnAutomatedBackup(t *testin
 	found, err := getJSON(t.Context(), kv, AutomatedBackupKey(testDBID, stamps[0]), &entry)
 	require.NoError(t, err)
 	require.True(t, found)
+	h.settleSnapshot(t, entry.DBSnapshotIdentifier)
 
 	out, err := h.svc.RestoreDBInstanceFromDBSnapshot(t.Context(), &rds.RestoreDBInstanceFromDBSnapshotInput{
 		DBInstanceIdentifier: aws.String(testRestoredID),

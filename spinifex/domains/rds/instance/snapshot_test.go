@@ -110,6 +110,28 @@ func (h *snapshotHarness) seedSnapshotSource(t *testing.T) DBInstanceRecord {
 
 const testSnapshotID = "orders-db-pre-upgrade"
 
+// settleSnapshot runs the reconciler's settle of one creating DB snapshot, which
+// is what moves it to available once its EC2 snapshot has completed.
+func (h *snapshotHarness) settleSnapshot(t *testing.T, id string) {
+	t.Helper()
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	var rec DBSnapshotRecord
+	rev, found, err := getJSONRevision(t.Context(), kv, DBSnapshotKey(id), &rec)
+	require.NoError(t, err)
+	require.True(t, found, "DB snapshot %s should be stored", id)
+	r := &Reconciler{svc: h.svc}
+	require.NoError(t, r.settleCreatingSnapshot(t.Context(), kv, rev, testAccountID, &rec))
+}
+
+// createSettledSnapshot takes the test snapshot and settles it available.
+func (h *snapshotHarness) createSettledSnapshot(t *testing.T) {
+	t.Helper()
+	_, err := h.svc.CreateDBSnapshot(t.Context(), snapshotInput(), testAccountID)
+	require.NoError(t, err)
+	h.settleSnapshot(t, testSnapshotID)
+}
+
 func snapshotInput() *rds.CreateDBSnapshotInput {
 	return &rds.CreateDBSnapshotInput{
 		DBSnapshotIdentifier: aws.String(testSnapshotID),
@@ -127,7 +149,12 @@ func TestCreateDBSnapshot_QuiescesTheEngineAndRecordsTheSnapshot(t *testing.T) {
 
 	require.NotNil(t, out.DBSnapshot)
 	assert.Equal(t, testSnapshotID, aws.StringValue(out.DBSnapshot.DBSnapshotIdentifier))
-	assert.Equal(t, SnapshotStatusAvailable, aws.StringValue(out.DBSnapshot.Status))
+	// AWS answers before the snapshot has started: creating, no progress and no
+	// create time.
+	assert.Equal(t, SnapshotStatusCreating, aws.StringValue(out.DBSnapshot.Status))
+	assert.Equal(t, int64(0), aws.Int64Value(out.DBSnapshot.PercentProgress))
+	assert.NotNil(t, out.DBSnapshot.PercentProgress)
+	assert.Nil(t, out.DBSnapshot.SnapshotCreateTime)
 	assert.Equal(t, SnapshotTypeManual, aws.StringValue(out.DBSnapshot.SnapshotType))
 	assert.Equal(t, FormatARN(ResourceKindDBSnapshot, testRegion, testAccountID, testSnapshotID),
 		aws.StringValue(out.DBSnapshot.DBSnapshotArn))
@@ -149,6 +176,8 @@ func TestCreateDBSnapshot_QuiescesTheEngineAndRecordsTheSnapshot(t *testing.T) {
 
 	stored, found := h.snapshot(t, testSnapshotID)
 	require.True(t, found)
+	assert.Equal(t, SnapshotStatusCreating, stored.Status,
+		"the reconciler, not the request, settles the snapshot available")
 	assert.Equal(t, "snap-0001", stored.SnapshotID)
 	assert.False(t, stored.CrashConsistent)
 	// Everything a restore needs is copied, because the instance it describes may
@@ -206,11 +235,12 @@ func TestCreateDBSnapshot_FallsBackToCrashConsistentWhenTheQuiesceFails(t *testi
 	h := newSnapshotHarness(t, true)
 	h.seedSnapshotSource(t)
 
-	out, err := h.svc.CreateDBSnapshot(t.Context(), snapshotInput(), testAccountID)
+	_, err := h.svc.CreateDBSnapshot(t.Context(), snapshotInput(), testAccountID)
 	require.NoError(t, err)
-	assert.Equal(t, SnapshotStatusAvailable, aws.StringValue(out.DBSnapshot.Status))
+	h.settleSnapshot(t, testSnapshotID)
 
 	stored, _ := h.snapshot(t, testSnapshotID)
+	assert.Equal(t, SnapshotStatusAvailable, stored.Status)
 	assert.True(t, stored.CrashConsistent)
 	require.Len(t, h.snaps.created, 1)
 
@@ -412,18 +442,19 @@ func TestDeleteDBSnapshot_RemovesTheSnapshotAndItsRecord(t *testing.T) {
 	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshotSource(t)
-	_, err := h.svc.CreateDBSnapshot(t.Context(), snapshotInput(), testAccountID)
-	require.NoError(t, err)
+	h.createSettledSnapshot(t)
 
 	out, err := h.svc.DeleteDBSnapshot(t.Context(), &rds.DeleteDBSnapshotInput{
 		DBSnapshotIdentifier: aws.String(testSnapshotID),
 	}, testAccountID)
 	require.NoError(t, err)
 
-	// AWS answers with the snapshot as it last stood, the way a DB instance
-	// delete answers with the record it just removed.
+	// AWS answers with the snapshot it removed, deleted and with its tags gone.
 	require.NotNil(t, out.DBSnapshot)
 	assert.Equal(t, testSnapshotID, aws.StringValue(out.DBSnapshot.DBSnapshotIdentifier))
+	assert.Equal(t, SnapshotStatusDeleted, aws.StringValue(out.DBSnapshot.Status))
+	assert.NotNil(t, out.DBSnapshot.TagList)
+	assert.Empty(t, out.DBSnapshot.TagList)
 
 	assert.Equal(t, []string{"snap-0001"}, h.snaps.deleted)
 	_, found := h.snapshot(t, testSnapshotID)
@@ -438,8 +469,7 @@ func TestDeleteDBSnapshot_ReleasesARetainedVolumeWhenItWasTheLastHolder(t *testi
 	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshotSource(t)
-	_, err := h.svc.CreateDBSnapshot(t.Context(), snapshotInput(), testAccountID)
-	require.NoError(t, err)
+	h.createSettledSnapshot(t)
 
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
@@ -470,8 +500,7 @@ func TestDeleteDBSnapshot_KeepsARetainedVolumeAnotherSnapshotStillHolds(t *testi
 	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshotSource(t)
-	_, err := h.svc.CreateDBSnapshot(t.Context(), snapshotInput(), testAccountID)
-	require.NoError(t, err)
+	h.createSettledSnapshot(t)
 
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
@@ -505,8 +534,7 @@ func TestDeleteDBSnapshot_NamesTheRestoredInstanceStillReadingFromIt(t *testing.
 	t.Parallel()
 	h := newSnapshotHarness(t, false)
 	h.seedSnapshotSource(t)
-	_, err := h.svc.CreateDBSnapshot(t.Context(), snapshotInput(), testAccountID)
-	require.NoError(t, err)
+	h.createSettledSnapshot(t)
 
 	restored := availableRecord()
 	restored.DBInstanceIdentifier = "orders-db-restored"
@@ -514,7 +542,7 @@ func TestDeleteDBSnapshot_NamesTheRestoredInstanceStillReadingFromIt(t *testing.
 	seedInstance(t, h.svc, restored)
 	h.snaps.deleteErr = awserrors.Errorf(awserrors.ErrorInvalidSnapshotInUse, "snap-0001 is in use")
 
-	_, err = h.svc.DeleteDBSnapshot(t.Context(), &rds.DeleteDBSnapshotInput{
+	_, err := h.svc.DeleteDBSnapshot(t.Context(), &rds.DeleteDBSnapshotInput{
 		DBSnapshotIdentifier: aws.String(testSnapshotID),
 	}, testAccountID)
 	require.Error(t, err)
@@ -547,7 +575,7 @@ func TestDeleteDBSnapshot_RefusesASnapshotStillBeingTaken(t *testing.T) {
 	assert.Contains(t, err.Error(), awserrors.ErrorDBSnapshotInvalidState)
 }
 
-// A snapshot still being taken has no PercentProgress, because reporting full
+// A snapshot still being taken reports no progress, because reporting full
 // progress would have a client restore from something that does not exist.
 func TestProjectDBSnapshot_ReportsProgressOnlyWhenTheDataExists(t *testing.T) {
 	t.Parallel()
@@ -557,7 +585,7 @@ func TestProjectDBSnapshot_ReportsProgressOnlyWhenTheDataExists(t *testing.T) {
 		AccountID:            testAccountID,
 		Status:               SnapshotStatusCreating,
 	}
-	assert.Nil(t, h.svc.projectDBSnapshot(&rec).PercentProgress)
+	assert.Equal(t, int64(0), aws.Int64Value(h.svc.projectDBSnapshot(&rec).PercentProgress))
 
 	rec.Status = SnapshotStatusAvailable
 	assert.Equal(t, int64(100), aws.Int64Value(h.svc.projectDBSnapshot(&rec).PercentProgress))

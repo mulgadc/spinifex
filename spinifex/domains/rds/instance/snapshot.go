@@ -67,7 +67,11 @@ func (s *Service) CreateDBSnapshot(ctx context.Context, input *rds.CreateDBSnaps
 	if err != nil {
 		return nil, err
 	}
-	return &rds.CreateDBSnapshotOutput{DBSnapshot: s.projectDBSnapshot(record)}, nil
+	// AWS stamps SnapshotCreateTime once the snapshot starts, which it has not
+	// when CreateDBSnapshot answers.
+	out := s.projectDBSnapshot(record)
+	out.SnapshotCreateTime = nil
+	return &rds.CreateDBSnapshotOutput{DBSnapshot: out}, nil
 }
 
 // The one snapshot path. A customer's CreateDBSnapshot and an automated
@@ -124,26 +128,14 @@ func (s *Service) snapshotDBInstance(ctx context.Context, kv *kvstore.Bucket, re
 
 	record.SnapshotID = snapshotID
 	record.CrashConsistent = crashConsistent
-	// A pending EC2 snapshot's contents are already fixed, so the quiesce is
-	// over; the record stays creating until the reconciler sees it settle.
-	if status, _ := rdsSnapshotStatus(state); status == SnapshotStatusCreating {
-		if err := putJSON(ctx, kv, key, &record); err != nil {
-			return nil, err
-		}
-		slog.InfoContext(ctx, "rds: DB snapshot cut; waiting for its EC2 snapshot to complete",
-			"dbSnapshot", req.DBSnapshotIdentifier, "dbInstance", rec.DBInstanceIdentifier,
-			"snapshotType", record.SnapshotType, "snapshotId", snapshotID, "crashConsistent", crashConsistent)
-		return &record, nil
-	}
-	now := time.Now().UTC()
-	record.Status = SnapshotStatusAvailable
-	record.SettledAt = &now
+	// The quiesce is over once the EC2 snapshot is cut, but the DB snapshot stays
+	// creating, as AWS's does, until the reconciler reads its EC2 snapshot settled.
 	if err := putJSON(ctx, kv, key, &record); err != nil {
 		return nil, err
 	}
-
-	s.recordSnapshotSettled(ctx, accountID, &record, state)
-
+	slog.InfoContext(ctx, "rds: DB snapshot cut; the reconciler settles it from its EC2 snapshot",
+		"dbSnapshot", req.DBSnapshotIdentifier, "dbInstance", rec.DBInstanceIdentifier,
+		"snapshotType", record.SnapshotType, "snapshotId", snapshotID, "state", state, "crashConsistent", crashConsistent)
 	return &record, nil
 }
 
@@ -325,9 +317,11 @@ func (s *Service) DeleteDBSnapshot(ctx context.Context, input *rds.DeleteDBSnaps
 	if err := s.removeDBSnapshot(ctx, kv, accountID, rec, rev); err != nil {
 		return nil, err
 	}
-	// AWS answers with the snapshot as it last stood, the way a delete of a DB
-	// instance answers with the record it just removed.
-	return &rds.DeleteDBSnapshotOutput{DBSnapshot: s.projectDBSnapshot(rec)}, nil
+	// AWS answers with the snapshot it removed, deleted and with its tags gone.
+	out := s.projectDBSnapshot(rec)
+	out.Status = aws.String(SnapshotStatusDeleted)
+	out.TagList = []*rds.Tag{}
+	return &rds.DeleteDBSnapshotOutput{DBSnapshot: out}, nil
 }
 
 // Removes a DB snapshot, its EC2 data and — when this was the last reference — the
@@ -784,8 +778,11 @@ func (s *Service) projectDBSnapshot(rec *DBSnapshotRecord) *rds.DBSnapshot {
 	}
 	// A snapshot still being taken has no data yet, so reporting full progress
 	// would have a client restore from something that does not exist.
-	if rec.Status == SnapshotStatusAvailable {
+	switch rec.Status {
+	case SnapshotStatusAvailable:
 		out.PercentProgress = aws.Int64(100)
+	case SnapshotStatusCreating:
+		out.PercentProgress = aws.Int64(0)
 	}
 	return out
 }

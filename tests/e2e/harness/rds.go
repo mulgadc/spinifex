@@ -150,6 +150,30 @@ func DescribeDBSnapshot(c *AWSClient, id string) (*rds.DBSnapshot, error) {
 	return out.DBSnapshots[0], nil
 }
 
+// WaitForDBSnapshotAvailable polls until the snapshot settles available, and
+// fails fast when it settles failed instead.
+func WaitForDBSnapshotAvailable(t *testing.T, c *AWSClient, id string) *rds.DBSnapshot {
+	t.Helper()
+	var last *rds.DBSnapshot
+	EventuallyErr(t, func() error {
+		snapshot, err := DescribeDBSnapshot(c, id)
+		if err != nil {
+			return err
+		}
+		last = snapshot
+		switch status := aws.StringValue(snapshot.Status); status {
+		case DBSnapshotAvailable:
+			return nil
+		case "failed":
+			t.Fatalf("DB snapshot %s settled failed", id)
+		default:
+			return fmt.Errorf("%s status=%s want=%s", id, status, DBSnapshotAvailable)
+		}
+		return nil
+	}, 5*time.Minute, 5*time.Second)
+	return last
+}
+
 // AgeAutomatedBackup rewinds the authoritative snapshot record so a live test
 // can place a new backup beyond whole-day retention without waiting a day.
 func AgeAutomatedBackup(t *testing.T, env *Env, accountID, snapshotID string, by time.Duration) {

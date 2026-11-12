@@ -22,8 +22,7 @@ const testRestoredID = "orders-db-restored"
 func (h *snapshotHarness) seedSnapshot(t *testing.T) DBSnapshotRecord {
 	t.Helper()
 	h.seedSnapshotSource(t)
-	_, err := h.svc.CreateDBSnapshot(t.Context(), snapshotInput(), testAccountID)
-	require.NoError(t, err)
+	h.createSettledSnapshot(t)
 	rec, found := h.snapshot(t, testSnapshotID)
 	require.True(t, found)
 	return rec
@@ -153,7 +152,7 @@ func TestRestoreDBInstanceFromDBSnapshot_DefaultsRetentionAndTakesAnAutomatedBac
 	require.True(t, found)
 	assert.Equal(t, testRestoredID, backup.DBInstanceIdentifier)
 	assert.Equal(t, SnapshotTypeAutomated, backup.SnapshotType)
-	assert.Equal(t, SnapshotStatusAvailable, backup.Status)
+	assert.Equal(t, SnapshotStatusCreating, backup.Status)
 	assert.NotNil(t, h.instance(t, testRestoredID).LastAutomatedBackupAt)
 }
 

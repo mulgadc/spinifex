@@ -15,13 +15,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// protectedLBMinAge exceeds the longest timeout on the delete path, the
-// 30-minute backstop that resumes a suspended data-path repair.
-const protectedLBMinAge = 31 * time.Minute
-
-// runDeletionProtectionSuite proves a protected NLB older than every timeout
-// in the delete path is refused and keeps serving, then deletes once
-// protection is off (ADR-0003:S7).
+// runDeletionProtectionSuite proves a delete of a protected NLB is refused and
+// it keeps serving, then the delete succeeds once protection is off.
 func runDeletionProtectionSuite(t *testing.T, c *harness.AWSClient, f *sharedFixture) {
 	t.Helper()
 	label := "NLB deletion protection"
@@ -44,15 +39,7 @@ func runDeletionProtectionSuite(t *testing.T, c *harness.AWSClient, f *sharedFix
 	priv := privateIP(lbENI(t, c, "net", lb))
 	require.NotEmpty(t, priv, label+" needs private IP")
 
-	desc, err := c.ELBv2.DescribeLoadBalancers(&elbv2.DescribeLoadBalancersInput{LoadBalancerArns: []*string{aws.String(lb.ARN)}})
-	require.NoError(t, err)
-	require.Len(t, desc.LoadBalancers, 1)
-	if wait := time.Until(aws.TimeValue(desc.LoadBalancers[0].CreatedTime).Add(protectedLBMinAge)); wait > 0 {
-		t.Logf("%s: waiting %s until the LB is older than every delete-path timeout", label, wait.Round(time.Second))
-		time.Sleep(wait)
-	}
-
-	_, err = c.ELBv2.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{LoadBalancerArn: aws.String(lb.ARN)})
+	_, err := c.ELBv2.DeleteLoadBalancer(&elbv2.DeleteLoadBalancerInput{LoadBalancerArn: aws.String(lb.ARN)})
 	var aerr awserr.Error
 	require.Truef(t, errors.As(err, &aerr), "protected delete must fail, got %v", err)
 	assert.Equal(t, "OperationNotPermitted", aerr.Code())

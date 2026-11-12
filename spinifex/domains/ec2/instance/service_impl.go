@@ -924,8 +924,6 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 			ec2Instance.SetSubnetId(*input.SubnetId)
 			ec2Instance.SetVpcId(*eni.VpcId)
 			ec2Instance.SecurityGroups = eni.Groups
-			// AWS reports an empty description on the primary interface it creates;
-			// the record's marker description is internal.
 			primaryNIC := &ec2.InstanceNetworkInterface{
 				NetworkInterfaceId: eni.NetworkInterfaceId,
 				PrivateIpAddress:   eni.PrivateIpAddress,
@@ -934,7 +932,6 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 				VpcId:              eni.VpcId,
 				Status:             aws.String("in-use"),
 				Groups:             eni.Groups,
-				Description:        aws.String(""),
 				Attachment: &ec2.InstanceNetworkInterfaceAttachment{
 					AttachmentId:        aws.String(attachmentID),
 					AttachTime:          ec2Instance.LaunchTime,

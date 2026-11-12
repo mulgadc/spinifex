@@ -295,11 +295,8 @@ func TestProjectInstance_PrimaryNICAssociation(t *testing.T) {
 	})
 }
 
-// TestProjectInstance_EnclaveOptionsAlwaysDisabled covers the permanent
-// enclave_options {} Terraform diff: AWS always reports the block, and
-// Spinifex never enables it, on both the running and the stopped/KV paths.
-// An interface stored before these fields were stamped at launch still reports
-// them, and its PrivateIpAddresses entry carries the association only while the
+// An interface stored without the launch-time fields still reports the ones
+// projected at describe time, and its PrivateIpAddresses entry carries the association only while the
 // public address is held.
 func TestProjectInstance_InterfaceFields(t *testing.T) {
 	v := fullVM(vm.StateRunning)
@@ -332,6 +329,9 @@ func TestProjectInstance_InterfaceFields(t *testing.T) {
 		"the attachment is shared with the stored instance and must be copied before it is stamped")
 }
 
+// TestProjectInstance_EnclaveOptionsAlwaysDisabled covers the permanent
+// enclave_options {} Terraform diff: AWS always reports the block, and
+// Spinifex never enables it, on both the running and the stopped/KV paths.
 func TestProjectInstance_EnclaveOptionsAlwaysDisabled(t *testing.T) {
 	running, _ := ProjectInstance(fullVM(vm.StateRunning), runningCfg())
 	stopped, _ := ProjectInstance(fullVM(vm.StateStopped), stoppedCfg(80, "stopped"))

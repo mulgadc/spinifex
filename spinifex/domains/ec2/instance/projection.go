@@ -215,9 +215,7 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 // association so the list cannot disagree with them. Mutates nic, not Attachment.
 func projectInterfaceFields(nic *ec2.InstanceNetworkInterface, ownerID string) {
 	nic.InterfaceType = aws.String(ec2.NetworkInterfaceTypeInterface)
-	if nic.OwnerId == nil {
-		nic.OwnerId = aws.String(ownerID)
-	}
+	nic.OwnerId = aws.String(ownerID)
 	if nic.Description == nil {
 		nic.Description = aws.String("")
 	}

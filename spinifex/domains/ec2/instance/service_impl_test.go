@@ -5209,6 +5209,8 @@ func TestPrepareRunInstances_PreCreatedENIAttachedSkipsAutoCreate(t *testing.T) 
 	require.NotNil(t, nic.Attachment.DeleteOnTermination)
 	assert.False(t, *nic.Attachment.DeleteOnTermination)
 	assert.Equal(t, "attached", aws.StringValue(nic.Attachment.AttachmentId))
+	assert.Equal(t, "interface", aws.StringValue(nic.InterfaceType))
+	assert.Equal(t, aws.TimeValue(reservation.Instances[0].LaunchTime), aws.TimeValue(nic.Attachment.AttachTime))
 }
 
 func TestPrepareRunInstances_PreCreatedENIInUseRejected(t *testing.T) {

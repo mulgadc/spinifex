@@ -139,7 +139,7 @@ Spinifex nodes initiate a small, fixed set of outbound connections.
 
 | Destination | Purpose | Protocol | Verification |
 |-------------|---------|----------|--------------|
-| `https://cloud.debian.org/images/cloud/trixie/latest/` | Debian 13 cloud image download | HTTPS | TLS + checksum verification |
+| `https://cloud.debian.org/images/cloud/trixie/20261103-2651/` | Debian 13 cloud image download | HTTPS | TLS + checksum verification |
 | `https://cloud-images.ubuntu.com/releases/resolute/release/` | Ubuntu 26.04 LTS cloud image download | HTTPS | TLS + checksum verification |
 | `https://dl.rockylinux.org/pub/rocky/10/images/` | Rocky Linux 10 cloud image download | HTTPS | TLS + checksum verification |
 | `https://dl-cdn.alpinelinux.org/alpine/` | Alpine Linux cloud image download | HTTPS | TLS + checksum verification |

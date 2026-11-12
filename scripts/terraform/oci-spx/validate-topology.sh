@@ -457,7 +457,8 @@ capture_journals() {
             echo "=== spinifex, warning and above ==="
             sudo journalctl -u "spinifex-*" --since -6h --priority=warning --no-pager | tail -2000
             echo "=== resolver drop-in and status ==="
-            cat /etc/systemd/resolved.conf.d/spinifex-dns.conf 2>&1
+            sudo stat -c "%A %U:%G %n" /etc/systemd/resolved.conf.d /etc/systemd/resolved.conf.d/spinifex-dns.conf 2>&1
+            sudo cat /etc/systemd/resolved.conf.d/spinifex-dns.conf 2>&1
             resolvectl status 2>&1 | head -40
             echo "=== spinifex and resolved, all priorities, access lines dropped, last 40000 lines ==="
             sudo journalctl -u "spinifex-*" -u systemd-resolved --since -6h --no-pager \

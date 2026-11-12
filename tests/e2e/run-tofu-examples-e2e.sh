@@ -130,11 +130,15 @@ dump_ovn_state() {
 # resolver, and asked directly of the server the Spinifex drop-in routes it to.
 dump_eks_dns_state() {
     local label="${1:-eks-dns}" name host server ip
+    # The mode is printed because systemd-resolved reads the drop-in unprivileged,
+    # so a root-only file is silently ignored; sudo so it shows here regardless.
     log "--- ${label}: resolved drop-in ---"
-    cat /etc/systemd/resolved.conf.d/spinifex-dns.conf 2>&1 || true
+    sudo stat -c '%A %U:%G %n' /etc/systemd/resolved.conf.d /etc/systemd/resolved.conf.d/spinifex-dns.conf 2>&1 || true
+    sudo cat /etc/systemd/resolved.conf.d/spinifex-dns.conf 2>&1 || true
     log "--- ${label}: resolvectl status ---"
     resolvectl status 2>&1 | head -60 || true
-    server=$(sed -n 's/^DNS=//p' /etc/systemd/resolved.conf.d/spinifex-dns.conf 2>/dev/null | head -1)
+    server=$(sudo sed -n 's/^DNS=//p' /etc/systemd/resolved.conf.d/spinifex-dns.conf 2>/dev/null | head -1)
+    server=${server:-$WAN_IP}
     for name in $(aws eks list-clusters --query 'clusters[]' --output text 2>/dev/null); do
         host=$(aws eks describe-cluster --name "$name" --query 'cluster.endpoint' --output text 2>/dev/null)
         host=${host#https://}; host=${host%%:*}; host=${host%%/*}
@@ -148,6 +152,11 @@ dump_eks_dns_state() {
             if [ -n "$ip" ]; then
                 log "--- ${label}: https://${ip}:443/livez from this host ---"
                 curl -sk --max-time 5 -o /dev/null -w '%{http_code}\n' "https://${ip}:443/livez" 2>&1 || true
+                # The worker's own state, past this host's resolver: dialled by IP
+                # with the published name still verified against the cert.
+                log "--- ${label}: kubectl get nodes via ${ip} ---"
+                kubectl --server "https://${ip}:443" --tls-server-name "$host" --request-timeout=15s \
+                    get nodes -o wide 2>&1 | head -20 || true
             fi
         fi
     done

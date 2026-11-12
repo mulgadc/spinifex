@@ -2350,6 +2350,12 @@ func (s *ELBv2ServiceImpl) DescribeTargetGroups(ctx context.Context, input *elbv
 		}
 	}
 
+	if lbArn := aws.StringValue(input.LoadBalancerArn); lbArn != "" {
+		if err := s.requireLoadBalancer(ctx, lbArn, accountID); err != nil {
+			return nil, err
+		}
+	}
+
 	allTGs, err := s.store.ListTargetGroups(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "DescribeTargetGroups: failed to list TGs", "err", err)
@@ -3289,18 +3295,8 @@ func (s *ELBv2ServiceImpl) DescribeListeners(ctx context.Context, input *elbv2.D
 	var err error
 
 	if lbArn := aws.StringValue(input.LoadBalancerArn); lbArn != "" {
-		// An unparseable ARN is reported as not found rather than reaching the
-		// KV store, which rejects some characters as an invalid key.
-		var lb *LoadBalancerRecord
-		if parsed, ok := resourcearn.ParseELBv2(lbArn); ok && parsed.Kind == resourcearn.ELBv2LoadBalancer {
-			var lbErr error
-			if lb, lbErr = s.store.GetLoadBalancerByArn(ctx, lbArn); lbErr != nil {
-				slog.ErrorContext(ctx, "DescribeListeners: failed to get LB", "lbArn", lbArn, "err", lbErr)
-				return nil, errors.New(awserrors.ErrorServerInternal)
-			}
-		}
-		if lb == nil || lb.AccountID != accountID {
-			return nil, awserrors.Errorf(awserrors.ErrorELBv2LoadBalancerNotFound, "Load balancer '%s' not found", lbArn)
+		if err := s.requireLoadBalancer(ctx, lbArn, accountID); err != nil {
+			return nil, err
 		}
 		listeners, err = s.store.ListListenersByLB(ctx, lbArn)
 	} else {
@@ -3313,9 +3309,11 @@ func (s *ELBv2ServiceImpl) DescribeListeners(ctx context.Context, input *elbv2.D
 
 	// Filter by ARN if specified
 	arnFilter := make(map[string]bool)
+	missing := make(map[string]bool)
 	for _, arn := range input.ListenerArns {
 		if arn != nil {
 			arnFilter[*arn] = true
+			missing[*arn] = true
 		}
 	}
 
@@ -3328,11 +3326,33 @@ func (s *ELBv2ServiceImpl) DescribeListeners(ctx context.Context, input *elbv2.D
 			continue
 		}
 		result = append(result, s.listenerRecordToSDK(l))
+		delete(missing, l.ListenerArn)
+	}
+	if len(missing) > 0 {
+		return nil, awserrors.Errorf(awserrors.ErrorELBv2ListenerNotFound, "One or more listeners not found")
 	}
 
 	return &elbv2.DescribeListenersOutput{
 		Listeners: result,
 	}, nil
+}
+
+// requireLoadBalancer fails with AWS's LoadBalancerNotFound unless lbArn names a
+// load balancer of accountID. An unparseable ARN is reported as not found rather
+// than reaching the KV store, which rejects some characters as an invalid key.
+func (s *ELBv2ServiceImpl) requireLoadBalancer(ctx context.Context, lbArn, accountID string) error {
+	var lb *LoadBalancerRecord
+	if parsed, ok := resourcearn.ParseELBv2(lbArn); ok && parsed.Kind == resourcearn.ELBv2LoadBalancer {
+		var err error
+		if lb, err = s.store.GetLoadBalancerByArn(ctx, lbArn); err != nil {
+			slog.ErrorContext(ctx, "elbv2: failed to get LB", "lbArn", lbArn, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+	}
+	if lb == nil || lb.AccountID != accountID {
+		return awserrors.Errorf(awserrors.ErrorELBv2LoadBalancerNotFound, "Load balancer '%s' not found", lbArn)
+	}
+	return nil
 }
 
 // --- Tag operations ---

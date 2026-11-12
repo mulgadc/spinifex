@@ -420,6 +420,64 @@ func TestDescribeListeners_UnknownLoadBalancerReturnsNotFound(t *testing.T) {
 	assert.Empty(t, out.Listeners)
 }
 
+func TestDescribeListeners_DeletedListenerArnReturnsNotFound(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := setupTestService(t)
+
+	lbOut, err := svc.CreateLoadBalancer(ctx, &elbv2.CreateLoadBalancerInput{Name: aws.String("nf-larn-alb")}, testAccountID)
+	require.NoError(t, err)
+	lbArn := lbOut.LoadBalancers[0].LoadBalancerArn
+	tgOut, err := svc.CreateTargetGroup(ctx, &elbv2.CreateTargetGroupInput{Name: aws.String("nf-larn-tg")}, testAccountID)
+	require.NoError(t, err)
+	forward := []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}}
+	l80, err := svc.CreateListener(ctx, &elbv2.CreateListenerInput{LoadBalancerArn: lbArn, Port: aws.Int64(80), DefaultActions: forward}, testAccountID)
+	require.NoError(t, err)
+	l81, err := svc.CreateListener(ctx, &elbv2.CreateListenerInput{LoadBalancerArn: lbArn, Port: aws.Int64(81), DefaultActions: forward}, testAccountID)
+	require.NoError(t, err)
+	deleted, live := l80.Listeners[0].ListenerArn, l81.Listeners[0].ListenerArn
+
+	_, err = svc.DeleteListener(ctx, &elbv2.DeleteListenerInput{ListenerArn: deleted}, testAccountID)
+	require.NoError(t, err)
+
+	assertListenerNotFound := func(arns ...*string) {
+		t.Helper()
+		_, err := svc.DescribeListeners(ctx, &elbv2.DescribeListenersInput{ListenerArns: arns}, testAccountID)
+		code, msg, _ := awserrors.ResolveErrorDetail(err)
+		assert.Equal(t, awserrors.ErrorELBv2ListenerNotFound, code)
+		assert.Equal(t, "One or more listeners not found", msg)
+	}
+	assertListenerNotFound(deleted)
+	assertListenerNotFound(live, deleted)
+
+	// Another account cannot see the live listener either.
+	_, err = svc.DescribeListeners(ctx, &elbv2.DescribeListenersInput{ListenerArns: []*string{live}}, "999999999999")
+	code, _, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorELBv2ListenerNotFound, code)
+
+	// Deleting the load balancer takes the remaining listener with it.
+	_, err = svc.DeleteLoadBalancer(ctx, &elbv2.DeleteLoadBalancerInput{LoadBalancerArn: lbArn}, testAccountID)
+	require.NoError(t, err)
+	assertListenerNotFound(live)
+}
+
+func TestDescribeTargetGroups_DeletedLoadBalancerReturnsNotFound(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := setupTestService(t)
+
+	lbOut, err := svc.CreateLoadBalancer(ctx, &elbv2.CreateLoadBalancerInput{Name: aws.String("nf-tglb-alb")}, testAccountID)
+	require.NoError(t, err)
+	lbArn := lbOut.LoadBalancers[0].LoadBalancerArn
+	_, err = svc.DeleteLoadBalancer(ctx, &elbv2.DeleteLoadBalancerInput{LoadBalancerArn: lbArn}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.DescribeTargetGroups(ctx, &elbv2.DescribeTargetGroupsInput{LoadBalancerArn: lbArn}, testAccountID)
+	code, msg, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorELBv2LoadBalancerNotFound, code)
+	assert.Equal(t, "Load balancer '"+*lbArn+"' not found", msg)
+}
+
 func TestDescribeLoadBalancers_AccountIsolation(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)

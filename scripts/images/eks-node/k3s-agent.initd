@@ -11,12 +11,15 @@
 description="K3s Kubernetes agent (Mulga EKS worker)"
 command="/usr/local/bin/k3s"
 command_args="agent"
-command_background="yes"
 pidfile="/run/k3s-agent.pid"
+
+# Supervise the agent as k3s.initd supervises the server: k3s exits when flannel
+# cannot reach the API, and without a supervisor the node then stays NotReady.
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=0
 output_log="/var/log/k3s-agent.log"
 error_log="/var/log/k3s-agent.log"
-
-start_stop_daemon_args="--wait 5000"
 
 depend() {
     need net cgroups

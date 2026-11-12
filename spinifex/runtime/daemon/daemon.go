@@ -3484,12 +3484,11 @@ func (d *Daemon) setupShutdown() {
 // responds on the NATS message. Used by both AttachVolume and DetachVolume handlers.
 func (d *Daemon) respondWithVolumeAttachment(msg *nats.Msg, volumeID, instanceID, device, state string) {
 	attachment := ec2.VolumeAttachment{
-		VolumeId:            aws.String(volumeID),
-		InstanceId:          aws.String(instanceID),
-		Device:              aws.String(device),
-		State:               aws.String(state),
-		AttachTime:          aws.Time(time.Now()),
-		DeleteOnTermination: aws.Bool(false),
+		VolumeId:   aws.String(volumeID),
+		InstanceId: aws.String(instanceID),
+		Device:     aws.String(device),
+		State:      aws.String(state),
+		AttachTime: aws.Time(time.Now()),
 	}
 
 	jsonResp, err := json.Marshal(attachment)

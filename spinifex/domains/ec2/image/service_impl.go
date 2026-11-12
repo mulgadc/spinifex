@@ -956,8 +956,9 @@ func mergeCopyImageTags(srcTags map[string]string, specs []*ec2.TagSpecification
 	return merged
 }
 
-// DescribeImageAttribute supports description and blockDeviceMapping only.
-// Cross-account reads return NotFound so the caller can't learn the ID exists
+// DescribeImageAttribute answers the attributes the AMI record can back; an
+// attribute it never records (imdsSupport, lastLaunchedTime) has a nil Value,
+// as AWS answers for an unset one. Cross-account reads return NotFound so the caller can't learn the ID exists
 // in another account.
 func (s *ImageServiceImpl) DescribeImageAttribute(ctx context.Context, input *ec2.DescribeImageAttributeInput, accountID string) (*ec2.DescribeImageAttributeOutput, error) {
 	if input == nil || input.ImageId == nil || *input.ImageId == "" ||
@@ -987,7 +988,19 @@ func (s *ImageServiceImpl) DescribeImageAttribute(ctx context.Context, input *ec
 
 	switch attribute {
 	case ec2.ImageAttributeNameDescription:
-		output.Description = &ec2.AttributeValue{Value: aws.String(meta.Description)}
+		output.Description = &ec2.AttributeValue{Value: nonEmptyString(meta.Description)}
+	case ec2.ImageAttributeNameLaunchPermission:
+		// Images are never shared, so only a system image (public) has one.
+		output.LaunchPermissions = []*ec2.LaunchPermission{}
+		if !awsidentifiers.IsAccountID(meta.ImageOwnerAlias) {
+			output.LaunchPermissions = append(output.LaunchPermissions, &ec2.LaunchPermission{Group: aws.String(ec2.PermissionGroupAll)})
+		}
+	case ec2.ImageAttributeNameBootMode:
+		output.BootMode = &ec2.AttributeValue{Value: nonEmptyString(meta.BootMode)}
+	case ec2.ImageAttributeNameImdsSupport:
+		output.ImdsSupport = &ec2.AttributeValue{}
+	case ec2.ImageAttributeNameLastLaunchedTime:
+		output.LastLaunchedTime = &ec2.AttributeValue{}
 	case ec2.ImageAttributeNameBlockDeviceMapping:
 		output.BlockDeviceMappings = synthesizeRootBlockDeviceMapping(meta, s.clusterEncryptionEnabled())
 	default:
@@ -996,6 +1009,14 @@ func (s *ImageServiceImpl) DescribeImageAttribute(ctx context.Context, input *ec
 
 	slog.InfoContext(ctx, "DescribeImageAttribute completed", "imageId", imageID, "attribute", attribute, "accountId", accountID)
 	return output, nil
+}
+
+// nonEmptyString returns nil for "", so an unset attribute renders as {}.
+func nonEmptyString(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
 }
 
 // clusterEncryptionEnabled reports whether the daemon has a viperblock master

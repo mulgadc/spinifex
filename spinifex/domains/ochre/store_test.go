@@ -10,6 +10,7 @@ import (
 )
 
 func TestEndpointKey_Base64EncodesColonBearingModelID(t *testing.T) {
+	t.Parallel()
 	key := EndpointKey("000000000000", "meta.llama3-2-1b-instruct-v1:0")
 	assert.Equal(t, "000000000000/"+"bWV0YS5sbGFtYTMtMi0xYi1pbnN0cnVjdC12MTow", key)
 }
@@ -21,6 +22,7 @@ func newTestBucket(t *testing.T) *endpointStore {
 }
 
 func TestStore_CreateGetUpdateDelete(t *testing.T) {
+	t.Parallel()
 	store := newTestBucket(t)
 	key := EndpointKey("000000000000", "test-model")
 
@@ -65,6 +67,7 @@ func TestStore_CreateGetUpdateDelete(t *testing.T) {
 }
 
 func TestListEndpoints_FiltersByAccountPrefix(t *testing.T) {
+	t.Parallel()
 	store := newTestBucket(t)
 
 	seed := func(accountID, modelID string, state EndpointState) {
@@ -95,6 +98,7 @@ func TestListEndpoints_FiltersByAccountPrefix(t *testing.T) {
 // A bucket that has never held an endpoint is the normal pre-launch state.
 // JetStream reports it as ErrNoKeysFound, which must read as empty, not fail.
 func TestListEndpoints_EmptyBucketIsNotAnError(t *testing.T) {
+	t.Parallel()
 	store := newTestBucket(t)
 
 	recs, err := store.list(t.Context(), "000000000000")
@@ -107,6 +111,7 @@ func TestListEndpoints_EmptyBucketIsNotAnError(t *testing.T) {
 // records in one pass, which is what an operator listing needs to see a
 // pinned endpoint alongside the shared platform ones.
 func TestListAllEndpoints_ReturnsAcrossAccounts(t *testing.T) {
+	t.Parallel()
 	store := newTestBucket(t)
 
 	seed := func(accountID, modelID string, state EndpointState, pinned bool) {
@@ -134,6 +139,7 @@ func TestListAllEndpoints_ReturnsAcrossAccounts(t *testing.T) {
 // TestListAllEndpoints_EmptyBucketIsNotAnError mirrors ListEndpoints' own
 // empty-bucket guard.
 func TestListAllEndpoints_EmptyBucketIsNotAnError(t *testing.T) {
+	t.Parallel()
 	store := newTestBucket(t)
 
 	recs, err := store.listAll(t.Context())

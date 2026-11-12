@@ -465,6 +465,31 @@ func TestCreateNodegroup_OmittedDiskSizeUsesAWSDefault(t *testing.T) {
 	assert.Equal(t, int64(defaultNodegroupDiskSizeGiB), aws.Int64Value(bdms[0].Ebs.VolumeSize))
 }
 
+// A group created without updateConfig reads back AWS's default of
+// maxUnavailable 1, and carries no resources while it is still CREATING.
+func TestCreateNodegroup_DefaultUpdateConfigAndNoResourcesWhileCreating(t *testing.T) {
+	t.Parallel()
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+
+	markWorkersReady(t, f, "c1", "ng1", 1)
+	out, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, eks.NodegroupStatusCreating, aws.StringValue(out.Nodegroup.Status))
+	assert.Equal(t, &eks.NodegroupUpdateConfig{MaxUnavailable: aws.Int64(1)}, out.Nodegroup.UpdateConfig)
+	assert.Nil(t, out.Nodegroup.Resources)
+
+	f.svc.WaitLaunches()
+
+	desc, err := f.svc.DescribeNodegroup(context.Background(), &eks.DescribeNodegroupInput{
+		ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, eks.NodegroupStatusActive, aws.StringValue(desc.Nodegroup.Status))
+	assert.Equal(t, &eks.NodegroupUpdateConfig{MaxUnavailable: aws.Int64(1)}, desc.Nodegroup.UpdateConfig)
+	assert.NotNil(t, desc.Nodegroup.Resources)
+}
+
 // A GPU instance type must mark the record GPUEnabled with the matching
 // vendor, so the worker-launch path resolves the GPU node AMI instead of the
 // default eks-node AMI.
@@ -785,14 +810,17 @@ func TestCreateNodegroup_ClusterNotActive(t *testing.T) {
 	}))
 
 	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
-	require.EqualError(t, err, awserrors.ErrorInvalidRequest)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorEKSResourceInUse, code)
+	assert.Equal(t, "Cluster: c1 is not in a valid state", msg)
 }
 
 func TestCreateNodegroup_UnknownCluster(t *testing.T) {
 	t.Parallel()
 	f := newEKSServiceFixture(t)
 	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("ghost", "ng1", 1), testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	require.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestDescribeAndListNodegroups(t *testing.T) {
@@ -860,6 +888,48 @@ func TestUpdateNodegroupConfig_ScaleUpAndDown(t *testing.T) {
 	assert.Len(t, rec.InstanceIDs, 1)
 }
 
+// A minimum above the desired size is refused before the reconcile acts, so the
+// only worker survives and the record keeps its sizes.
+func TestUpdateNodegroupConfig_MinAboveDesiredRefusedWithoutTerminate(t *testing.T) {
+	t.Parallel()
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+	markWorkersReady(t, f, "c1", "ng1", 1)
+	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
+	require.NoError(t, err)
+	f.svc.WaitLaunches()
+
+	_, err = f.svc.UpdateNodegroupConfig(context.Background(), &eks.UpdateNodegroupConfigInput{
+		ClusterName:   aws.String("c1"),
+		NodegroupName: aws.String("ng1"),
+		ScalingConfig: &eks.NodegroupScalingConfig{MinSize: aws.Int64(1), MaxSize: aws.Int64(1), DesiredSize: aws.Int64(0)},
+	}, testAccountID)
+	assert.Equal(t, awserrors.ErrorEKSInvalidParameter, awserrors.ValidErrorCodeFromError(err))
+	assert.ErrorContains(t, err, "Minimum capacity 1 can't be greater than desired size 0")
+	assert.Empty(t, f.worker.terminateCalls)
+	rec, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), rec.ScalingDesired)
+	assert.Equal(t, int64(3), rec.ScalingMax)
+	assert.Len(t, rec.InstanceIDs, 1)
+}
+
+func TestCreateNodegroup_MinAboveDesiredRefusedWithoutLaunch(t *testing.T) {
+	t.Parallel()
+	f := newEKSServiceFixture(t)
+	seedActiveClusterWithToken(t, f, "c1")
+	in := createNGInput("c1", "ng1", 1)
+	in.ScalingConfig.MinSize = aws.Int64(2)
+
+	_, err := f.svc.CreateNodegroup(context.Background(), in, testAccountID)
+	assert.Equal(t, awserrors.ErrorEKSInvalidParameter, awserrors.ValidErrorCodeFromError(err))
+	assert.ErrorContains(t, err, "Minimum capacity 2 can't be greater than desired size 1")
+	f.svc.WaitLaunches()
+	assert.Empty(t, f.worker.runCalls)
+	_, err = GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
+	require.ErrorIs(t, err, ErrNodegroupNotFound)
+}
+
 // TestUpdateNodegroupConfig_ConcurrentScaleUpConverges proves the CAS reconcile
 // fixes the lost-update overshoot: two overlapping scale-up requests (UI +
 // terraform retry) must converge to exactly desired, not double-launch. Pre-fix
@@ -911,6 +981,7 @@ func TestUpdateNodegroupConfig_ConcurrentScaleUpConverges(t *testing.T) {
 // not a wrapped string the gateway sanitizes to 500. A generic launcher failure
 // still wraps, staying an opaque 500.
 func TestUpdateNodegroupConfig_CapacityErrorSurfacesCode(t *testing.T) {
+	t.Parallel()
 	scaleUpWithRunErr := func(t *testing.T, runErr error) error {
 		f := newEKSServiceFixture(t)
 		seedActiveClusterWithToken(t, f, "c1")
@@ -929,11 +1000,13 @@ func TestUpdateNodegroupConfig_CapacityErrorSurfacesCode(t *testing.T) {
 	}
 
 	t.Run("capacity code preserved", func(t *testing.T) {
+		t.Parallel()
 		err := scaleUpWithRunErr(t, errors.New(awserrors.ErrorInsufficientInstanceCapacity))
 		require.EqualError(t, err, awserrors.ErrorInsufficientInstanceCapacity)
 	})
 
 	t.Run("wrapped capacity code preserved", func(t *testing.T) {
+		t.Parallel()
 		wrapped := fmt.Errorf("launch on node-1: %w", errors.New(awserrors.ErrorInsufficientInstanceCapacity))
 		err := scaleUpWithRunErr(t, wrapped)
 		require.EqualError(t, err, wrapped.Error())
@@ -943,6 +1016,7 @@ func TestUpdateNodegroupConfig_CapacityErrorSurfacesCode(t *testing.T) {
 	})
 
 	t.Run("opaque error wrapped", func(t *testing.T) {
+		t.Parallel()
 		err := scaleUpWithRunErr(t, errors.New("kvm: out of host memory"))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "launch workers:")
@@ -1425,14 +1499,14 @@ func TestNodegroupCalls_MissingNodegroupVsMissingCluster(t *testing.T) {
 			code, msg, ok := awserrors.ResolveErrorDetail(call("c1"))
 			require.True(t, ok)
 			assert.Equal(t, awserrors.ErrorEKSResourceNotFound, code)
-			assert.Equal(t, "No node group found for name: ghost.", msg)
+			assert.Equal(t, "The requested resource does not exist.", msg)
 		})
 		t.Run(name+"/missing cluster", func(t *testing.T) {
 			t.Parallel()
 			code, msg, ok := awserrors.ResolveErrorDetail(call("nope"))
 			require.True(t, ok)
 			assert.Equal(t, awserrors.ErrorEKSResourceNotFound, code)
-			assert.Empty(t, msg, "a missing cluster keeps the default resource message")
+			assert.Equal(t, "No cluster found for name: nope.", msg)
 		})
 	}
 }

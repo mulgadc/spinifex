@@ -27,6 +27,7 @@ func newTestUsageStore(t *testing.T) *UsageStore {
 // TestMicroUSDCost_Arithmetic covers D12's integer accrual, including
 // truncation for token counts too small to register a whole micro-USD.
 func TestMicroUSDCost_Arithmetic(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		tokens          int64
@@ -41,6 +42,7 @@ func TestMicroUSDCost_Arithmetic(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tt.want, microUSDCost(tt.tokens, tt.pricePerMillion))
 		})
 	}
@@ -50,6 +52,7 @@ func TestMicroUSDCost_Arithmetic(t *testing.T) {
 // two records for the same account/model/period sum tokens, request count,
 // and cost rather than overwriting.
 func TestUsageStore_Apply_AccumulatesAcrossCalls(t *testing.T) {
+	t.Parallel()
 	store := newTestUsageStore(t)
 	ctx := context.Background()
 	now := time.Now()
@@ -76,6 +79,7 @@ func TestUsageStore_Apply_AccumulatesAcrossCalls(t *testing.T) {
 // rule under test: tokens are recorded exactly like a paid model, but cost
 // accrues a *known* zero, never a flag-less absence.
 func TestUsageStore_Apply_SelfHostZeroCostTokensRecorded(t *testing.T) {
+	t.Parallel()
 	store := newTestUsageStore(t)
 	ctx := context.Background()
 	now := time.Now()
@@ -102,6 +106,7 @@ func TestUsageStore_Apply_SelfHostZeroCostTokensRecorded(t *testing.T) {
 // period. CostMicroUSD stays whatever it already was; CostUnknown is the only
 // signal a reader may trust.
 func TestUsageStore_Apply_UnknownPriceFlagsCostUnknown_NotZero(t *testing.T) {
+	t.Parallel()
 	store := newTestUsageStore(t)
 	ctx := context.Background()
 	now := time.Now()
@@ -130,6 +135,7 @@ func TestUsageStore_Apply_UnknownPriceFlagsCostUnknown_NotZero(t *testing.T) {
 // TestUsageStore_MarkProcessed_DedupesRedelivery is the unit-level half of
 // the mandatory dedupe: the same RequestID may only be claimed once.
 func TestUsageStore_MarkProcessed_DedupesRedelivery(t *testing.T) {
+	t.Parallel()
 	store := newTestUsageStore(t)
 	ctx := context.Background()
 
@@ -151,6 +157,7 @@ func TestUsageStore_MarkProcessed_DedupesRedelivery(t *testing.T) {
 // tokens-per-month quota dimension consults: total is input+output summed
 // across every model for the account, in the current period only.
 func TestUsageStore_TokensThisPeriod_SumsAcrossModels(t *testing.T) {
+	t.Parallel()
 	store := newTestUsageStore(t)
 	ctx := context.Background()
 	now := time.Now()
@@ -168,6 +175,7 @@ func TestUsageStore_TokensThisPeriod_SumsAcrossModels(t *testing.T) {
 // TestUsageStore_TokensThisPeriod_NoUsageIsZero covers the empty-bucket path
 // (jetstream.ErrNoKeysFound) rather than erroring.
 func TestUsageStore_TokensThisPeriod_NoUsageIsZero(t *testing.T) {
+	t.Parallel()
 	store := newTestUsageStore(t)
 	total, err := store.TokensThisPeriod(context.Background(), usageTestAccountA)
 	require.NoError(t, err)
@@ -180,6 +188,7 @@ func TestUsageStore_TokensThisPeriod_NoUsageIsZero(t *testing.T) {
 // stream twice, the shape a StreamRecorder retry after an ambiguous publish
 // outcome takes on the wire — must be applied exactly once.
 func TestUsageConsumer_Run_RedeliveredRecordDoesNotDoubleCount(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -220,9 +229,12 @@ func TestUsageConsumer_Run_RedeliveredRecordDoesNotDoubleCount(t *testing.T) {
 		return err == nil && ok && counters.RequestCount >= 1
 	}, 2*time.Second, 10*time.Millisecond)
 
-	// Give the (already-processed) second message a moment to be consumed
-	// and confirmed as a duplicate before asserting the final count.
-	time.Sleep(200 * time.Millisecond)
+	// The consumer acks only after a message is fully handled, so an ack floor
+	// of two means the duplicate has been seen and skipped.
+	require.Eventually(t, func() bool {
+		info, err := consumer.Info(context.Background())
+		return err == nil && info.AckFloor.Consumer >= 2
+	}, 2*time.Second, 5*time.Millisecond)
 	cancel()
 	<-done
 
@@ -239,6 +251,7 @@ func TestUsageConsumer_Run_RedeliveredRecordDoesNotDoubleCount(t *testing.T) {
 // call was made): tokens were genuinely consumed and must still be counted,
 // but cost can never be resolved for it.
 func TestUsageConsumer_Run_UnknownModelStillRecordsTokensCostUnknown(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -285,6 +298,7 @@ func TestUsageConsumer_Run_UnknownModelStillRecordsTokensCostUnknown(t *testing.
 // TestBillingPeriod_MonthlyFormat pins the period key shape, since
 // TokensThisPeriod's prefix/suffix matching depends on it exactly.
 func TestBillingPeriod_MonthlyFormat(t *testing.T) {
+	t.Parallel()
 	ts := time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC)
 	assert.Equal(t, "2026-08", billingPeriod(ts))
 }
@@ -293,6 +307,7 @@ func TestBillingPeriod_MonthlyFormat(t *testing.T) {
 // JetStream client: both the counter bucket and the dedupe bucket must report
 // the misconfiguration rather than panic on a nil handle.
 func TestUsageStore_RequiresJetStream(t *testing.T) {
+	t.Parallel()
 	store := NewUsageStore(nil)
 	ctx := context.Background()
 

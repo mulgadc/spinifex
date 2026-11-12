@@ -132,6 +132,7 @@ func TestCreateProvisionedModelThroughput_RejectsProviderHostedModel(t *testing.
 // TestCreateProvisionedModelThroughput_RejectsUnknownModel covers the other
 // LookupServingSpec refusal: a model absent from the catalog entirely.
 func TestCreateProvisionedModelThroughput_RejectsUnknownModel(t *testing.T) {
+	t.Parallel()
 	stub := newStubEndpointProvisioner()
 	store := newProvisionedTestStore(t, stub)
 
@@ -145,6 +146,7 @@ func TestCreateProvisionedModelThroughput_RejectsUnknownModel(t *testing.T) {
 // Ensure is called for the caller's own account, the record is written
 // Creating, and a well-formed, parseable ARN comes back.
 func TestCreateProvisionedModelThroughput_SelfHostSucceeds(t *testing.T) {
+	t.Parallel()
 	stub := newStubEndpointProvisioner()
 	store := newProvisionedTestStore(t, stub)
 	ctx := context.Background()
@@ -176,6 +178,7 @@ func TestCreateProvisionedModelThroughput_SelfHostSucceeds(t *testing.T) {
 // TestGetProvisionedModelThroughput_StatusDerivation pins the exact mapping
 // the plan specifies: STARTING->Creating, READY->InService, absent->Failed.
 func TestGetProvisionedModelThroughput_StatusDerivation(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		state      string
@@ -187,6 +190,7 @@ func TestGetProvisionedModelThroughput_StatusDerivation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			stub := newStubEndpointProvisioner()
 			store := newProvisionedTestStore(t, stub)
 			ctx := context.Background()
@@ -211,6 +215,7 @@ func TestGetProvisionedModelThroughput_StatusDerivation(t *testing.T) {
 // never created and a foreign account presenting its own accountID: both
 // must read as not-found, never leaking whether the id exists elsewhere.
 func TestGetProvisionedModelThroughput_NotFound(t *testing.T) {
+	t.Parallel()
 	stub := newStubEndpointProvisioner()
 	store := newProvisionedTestStore(t, stub)
 	ctx := context.Background()
@@ -235,6 +240,7 @@ func TestGetProvisionedModelThroughput_NotFound(t *testing.T) {
 // TestListProvisionedModelThroughputs_AccountScoped is the plan's explicit
 // isolation requirement: account B never sees account A's commitment.
 func TestListProvisionedModelThroughputs_AccountScoped(t *testing.T) {
+	t.Parallel()
 	stub := newStubEndpointProvisioner()
 	store := newProvisionedTestStore(t, stub)
 	ctx := context.Background()
@@ -256,6 +262,7 @@ func TestListProvisionedModelThroughputs_AccountScoped(t *testing.T) {
 // TestUpdateProvisionedModelThroughput_RejectsModelSwap pins the resolved
 // decision: Update honours name/tags only, never a served-model change.
 func TestUpdateProvisionedModelThroughput_RejectsModelSwap(t *testing.T) {
+	t.Parallel()
 	stub := newStubEndpointProvisioner()
 	store := newProvisionedTestStore(t, stub)
 	ctx := context.Background()
@@ -278,6 +285,7 @@ func TestUpdateProvisionedModelThroughput_RejectsModelSwap(t *testing.T) {
 // TestUpdateProvisionedModelThroughput_AcceptsNameChange covers the mutable
 // side of the same op: a rename must succeed and persist.
 func TestUpdateProvisionedModelThroughput_AcceptsNameChange(t *testing.T) {
+	t.Parallel()
 	stub := newStubEndpointProvisioner()
 	store := newProvisionedTestStore(t, stub)
 	ctx := context.Background()
@@ -305,6 +313,7 @@ func TestUpdateProvisionedModelThroughput_AcceptsNameChange(t *testing.T) {
 // halves of Delete: the daemon call for the right account+model, and the KV
 // record actually going away (a subsequent Get reads not-found).
 func TestDeleteProvisionedModelThroughput_RemovesEndpointAndRecord(t *testing.T) {
+	t.Parallel()
 	stub := newStubEndpointProvisioner()
 	store := newProvisionedTestStore(t, stub)
 	ctx := context.Background()
@@ -334,6 +343,7 @@ func TestDeleteProvisionedModelThroughput_RemovesEndpointAndRecord(t *testing.T)
 // ochre.Service.Delete's own idempotence: deleting an
 // already-absent commitment must succeed, not error.
 func TestDeleteProvisionedModelThroughput_AbsentIsNoop(t *testing.T) {
+	t.Parallel()
 	stub := newStubEndpointProvisioner()
 	store := newProvisionedTestStore(t, stub)
 
@@ -347,6 +357,7 @@ func TestDeleteProvisionedModelThroughput_AbsentIsNoop(t *testing.T) {
 // fails the sum rather than being skipped. Skipping undercounts committed
 // capacity, which admits traffic the commitments do not cover.
 func TestCommittedModelUnits_RejectsAnUndecodableRecord(t *testing.T) {
+	t.Parallel()
 	store := newProvisionedTestStore(t, newStubEndpointProvisioner())
 	ctx := context.Background()
 
@@ -366,6 +377,7 @@ func TestCommittedModelUnits_RejectsAnUndecodableRecord(t *testing.T) {
 // second writer at the same revision loses, and reports a retryable
 // ConflictException rather than clobbering the winner.
 func TestProvisionedStore_UpdateRejectsAStaleRevision(t *testing.T) {
+	t.Parallel()
 	store := newProvisionedTestStore(t, newStubEndpointProvisioner())
 	ctx := context.Background()
 

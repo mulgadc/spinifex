@@ -46,6 +46,7 @@ func workerTags(cluster, account string) map[string]string {
 }
 
 func TestFindControlPlaneOrphansUnreadableRecordIsNotAnOrphan(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	js := testutil.NewJetStream(t, f.svc.deps.NATSConn)
 	ctx, cancel := context.WithCancel(t.Context())
@@ -63,6 +64,7 @@ func TestFindControlPlaneOrphansUnreadableRecordIsNotAnOrphan(t *testing.T) {
 }
 
 func TestFindControlPlaneOrphans(t *testing.T) {
+	t.Parallel()
 	const lost = "999999999999"
 	f := newEKSServiceFixture(t)
 	js := testutil.NewJetStream(t, f.svc.deps.NATSConn)
@@ -110,6 +112,7 @@ func TestFindControlPlaneOrphans(t *testing.T) {
 }
 
 func TestReportControlPlaneOrphansIncompleteListingPrintsNothing(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	js := testutil.NewJetStream(t, f.svc.deps.NATSConn)
 	var buf bytes.Buffer
@@ -124,6 +127,7 @@ func TestReportControlPlaneOrphansIncompleteListingPrintsNothing(t *testing.T) {
 }
 
 func TestReportControlPlaneOrphansPrintsRows(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	js := testutil.NewJetStream(t, f.svc.deps.NATSConn)
 	var buf bytes.Buffer
@@ -148,6 +152,7 @@ func TestReportControlPlaneOrphansPrintsRows(t *testing.T) {
 }
 
 func TestFindControlPlaneOrphansCorruptENIRecordIsUnreadable(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	js := testutil.NewJetStream(t, f.svc.deps.NATSConn)
 	enis, err := kvstore.GetOrCreateBucket(t.Context(), js, ec2vpc.KVBucketENIs, 10)
@@ -172,6 +177,7 @@ func TestFindControlPlaneOrphansCorruptENIRecordIsUnreadable(t *testing.T) {
 }
 
 func TestFindControlPlaneOrphansOnlyReportsRunningInstances(t *testing.T) {
+	t.Parallel()
 	f := newEKSServiceFixture(t)
 	js := testutil.NewJetStream(t, f.svc.deps.NATSConn)
 	eni := func(context.Context, string) (map[string]string, bool, error) {

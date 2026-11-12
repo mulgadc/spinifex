@@ -17,6 +17,7 @@ import (
 // JetStream context's default timeout when nothing answers, as nats.go's
 // own API calls do, instead of waiting on the caller's context forever.
 func TestLeaderMsgGetBoundsAContextWithoutDeadline(t *testing.T) {
+	t.Parallel()
 	srv, err := server.NewServer(&server.Options{Host: "127.0.0.1", Port: -1, NoLog: true, NoSigs: true})
 	require.NoError(t, err)
 	srv.Start()

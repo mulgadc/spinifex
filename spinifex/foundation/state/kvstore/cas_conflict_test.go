@@ -77,8 +77,10 @@ func bumpCounter(r *casRecord) (bool, error) {
 // jetstream.ErrKeyExists passes the single-replica case and surfaces a raw
 // "wrong last sequence" error on the replicated one.
 func TestCASUpdate_RetriesRevisionConflict(t *testing.T) {
+	t.Parallel()
 	for name, code := range conflictCodes {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			kv := casTestBucket(t, "cas-update-"+jetstreamCodeSuffix(code))
 			_, err := kv.Put(t.Context(), "key", []byte(`{"counter":1}`))
 			require.NoError(t, err)
@@ -93,8 +95,10 @@ func TestCASUpdate_RetriesRevisionConflict(t *testing.T) {
 }
 
 func TestCASUpdate_ExhaustsRetriesOnSustainedConflict(t *testing.T) {
+	t.Parallel()
 	for name, code := range conflictCodes {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			kv := casTestBucket(t, "cas-exhaust-"+jetstreamCodeSuffix(code))
 			_, err := kv.Put(t.Context(), "key", []byte(`{"counter":1}`))
 			require.NoError(t, err)
@@ -109,8 +113,10 @@ func TestCASUpdate_ExhaustsRetriesOnSustainedConflict(t *testing.T) {
 }
 
 func TestCASPut_RetriesRevisionConflict(t *testing.T) {
+	t.Parallel()
 	for name, code := range conflictCodes {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			kv := casTestBucket(t, "cas-put-"+jetstreamCodeSuffix(code))
 			_, err := kv.Put(t.Context(), "key", []byte(`{"counter":1}`))
 			require.NoError(t, err)
@@ -130,8 +136,10 @@ func TestCASPut_RetriesRevisionConflict(t *testing.T) {
 // as ErrKeyRevisionMismatch — ErrKeyExists never matches it on a
 // once the conflict carries the replicated code.
 func TestCASTake_RetriesRevisionConflict(t *testing.T) {
+	t.Parallel()
 	for name, code := range conflictCodes {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			kv := casTestBucket(t, "cas-take-"+jetstreamCodeSuffix(code))
 			_, err := kv.Put(t.Context(), "key", []byte(`{"counter":7}`))
 			require.NoError(t, err)
@@ -155,6 +163,7 @@ func jetstreamCodeSuffix(code jetstream.ErrorCode) string {
 }
 
 func TestUpdate_AbsentKeyReturnsCallerError(t *testing.T) {
+	t.Parallel()
 	kv := casTestBucket(t, "cas-notfound")
 
 	sentinel := errors.New("no such entity")
@@ -165,6 +174,7 @@ func TestUpdate_AbsentKeyReturnsCallerError(t *testing.T) {
 }
 
 func TestUpdate_ExhaustionUsesCallerError(t *testing.T) {
+	t.Parallel()
 	kv := casTestBucket(t, "cas-exhausted-hook")
 	_, err := kv.Put(t.Context(), "key", []byte(`{"counter":1}`))
 	require.NoError(t, err)
@@ -183,6 +193,7 @@ func TestUpdate_ExhaustionUsesCallerError(t *testing.T) {
 // A write landing between DeleteIf's check and its delete must send the new
 // value back through the check instead of deleting it unseen.
 func TestDeleteIf_RechecksAValueWrittenAfterTheCheck(t *testing.T) {
+	t.Parallel()
 	kv := casTestBucket(t, "cas-delete-if")
 	_, err := kv.Put(t.Context(), "key", []byte(`{"counter":1}`))
 	require.NoError(t, err)
@@ -206,6 +217,7 @@ func TestDeleteIf_RechecksAValueWrittenAfterTheCheck(t *testing.T) {
 }
 
 func TestDeleteIf_AbsentKeyReturnsCallerError(t *testing.T) {
+	t.Parallel()
 	kv := casTestBucket(t, "cas-delete-if-notfound")
 
 	sentinel := errors.New("no such entity")
@@ -216,6 +228,7 @@ func TestDeleteIf_AbsentKeyReturnsCallerError(t *testing.T) {
 }
 
 func TestIsRevisionConflictRecognisesTombstoneRetry(t *testing.T) {
+	t.Parallel()
 	assert.True(t, kvstore.IsRevisionConflict(jetstream.ErrKeyExists))
 	assert.True(t, kvstore.IsRevisionConflict(jetstream.ErrKeyRevisionMismatch))
 	assert.True(t, kvstore.IsRevisionConflict(&jetstream.APIError{ErrorCode: jetstream.JSErrCodeStreamWrongLastSequence}))

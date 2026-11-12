@@ -121,6 +121,7 @@ func readyRecord(baseURL string) EndpointRecord {
 // endpoint bypasses the lifecycle entirely, which is what dev boxes and the
 // gated E2E tier rely on.
 func TestDynamicEndpointResolver_StaticWins(t *testing.T) {
+	t.Parallel()
 	svc := &fakeEndpointService{record: readyRecord("http://10.0.0.9:8000")}
 	r := NewDynamicEndpointResolver(svc, map[string]string{resolverTestModel: "http://pinned:8000"}, 0)
 
@@ -132,6 +133,7 @@ func TestDynamicEndpointResolver_StaticWins(t *testing.T) {
 }
 
 func TestDynamicEndpointResolver_ReadyResolves(t *testing.T) {
+	t.Parallel()
 	svc := &fakeEndpointService{record: readyRecord("http://10.0.0.9:8000")}
 	r := NewDynamicEndpointResolver(svc, nil, 0)
 
@@ -146,6 +148,7 @@ func TestDynamicEndpointResolver_ReadyResolves(t *testing.T) {
 // routing inference at an empty address: READY without a base URL is a record
 // we cannot use, not one we can.
 func TestDynamicEndpointResolver_ReadyWithoutBaseURLDoesNotResolve(t *testing.T) {
+	t.Parallel()
 	svc := &fakeEndpointService{record: EndpointRecord{ModelID: resolverTestModel, State: StateReady}}
 	r := NewDynamicEndpointResolver(svc, nil, 0)
 
@@ -159,6 +162,7 @@ func TestDynamicEndpointResolver_ReadyWithoutBaseURLDoesNotResolve(t *testing.T)
 // change: a cold model asks the daemon for a VM and reports "not yet", which
 // the invoke paths turn into a retryable ModelNotReadyException.
 func TestDynamicEndpointResolver_AbsentRequestsLaunch(t *testing.T) {
+	t.Parallel()
 	svc := &fakeEndpointService{record: EndpointRecord{ModelID: resolverTestModel, State: StateAbsent}}
 	r := NewDynamicEndpointResolver(svc, nil, 0)
 
@@ -172,6 +176,7 @@ func TestDynamicEndpointResolver_AbsentRequestsLaunch(t *testing.T) {
 // where something is already happening: asking again changes nothing, and a
 // draining endpoint must not be resurrected mid-teardown.
 func TestDynamicEndpointResolver_InFlightStatesDoNotReEnsure(t *testing.T) {
+	t.Parallel()
 	for _, state := range []EndpointState{StateStarting, StateDraining} {
 		svc := &fakeEndpointService{record: EndpointRecord{ModelID: resolverTestModel, State: state}}
 		r := NewDynamicEndpointResolver(svc, nil, 0)
@@ -187,6 +192,7 @@ func TestDynamicEndpointResolver_InFlightStatesDoNotReEnsure(t *testing.T) {
 // plane distinguishable from a cold model: an unreachable daemon is an error,
 // not an indefinite "not ready".
 func TestDynamicEndpointResolver_DescribeErrorPropagates(t *testing.T) {
+	t.Parallel()
 	svc := &fakeEndpointService{describeErr: errors.New("no responders")}
 	r := NewDynamicEndpointResolver(svc, nil, 0)
 
@@ -200,6 +206,7 @@ func TestDynamicEndpointResolver_DescribeErrorPropagates(t *testing.T) {
 // refusal, which carries the real AWS code: no GPU it can admit comes back as
 // ModelNotReadyException with the daemon's message rather than a bare one.
 func TestDynamicEndpointResolver_EnsureErrorPropagates(t *testing.T) {
+	t.Parallel()
 	svc := &fakeEndpointService{
 		record:    EndpointRecord{ModelID: resolverTestModel, State: StateAbsent},
 		ensureErr: errors.New(awserrors.ErrorModelNotReadyException),
@@ -215,6 +222,7 @@ func TestDynamicEndpointResolver_EnsureErrorPropagates(t *testing.T) {
 // TestDynamicEndpointResolver_CachesReadyBaseURL keeps a warm model off the
 // bus: the steady state is every invoke hitting this path.
 func TestDynamicEndpointResolver_CachesReadyBaseURL(t *testing.T) {
+	t.Parallel()
 	svc := &fakeEndpointService{record: readyRecord("http://10.0.0.9:8000")}
 	r := NewDynamicEndpointResolver(svc, nil, time.Minute)
 
@@ -231,6 +239,7 @@ func TestDynamicEndpointResolver_CachesReadyBaseURL(t *testing.T) {
 // get, which is what makes a deleted endpoint recoverable without an
 // invalidation hook the resolver interface has no room for.
 func TestDynamicEndpointResolver_CacheExpires(t *testing.T) {
+	t.Parallel()
 	svc := &fakeEndpointService{record: readyRecord("http://10.0.0.9:8000")}
 	r := NewDynamicEndpointResolver(svc, nil, time.Millisecond)
 
@@ -376,6 +385,7 @@ func TestDynamicEndpointResolver_ColdStartWaitIsSharedAcrossCallers(t *testing.T
 // DRAINING has no launch to wait for: nothing relaunches on its own, so the
 // answer is immediate even with a wait configured.
 func TestDynamicEndpointResolver_ColdStartWaitSkipsDraining(t *testing.T) {
+	t.Parallel()
 	svc := &fakeEndpointService{record: EndpointRecord{ModelID: resolverTestModel, State: StateDraining}}
 	r := NewDynamicEndpointResolver(svc, nil, 0, WithColdStartWait(time.Minute))
 
@@ -394,6 +404,7 @@ const ptResolverAccount = "000000000001"
 // under the caller-supplied account, not the GlobalAccountID shorthand
 // Endpoint uses.
 func TestDynamicEndpointResolver_EndpointForAccount_KeysOnPassedAccount(t *testing.T) {
+	t.Parallel()
 	svc := &fakeEndpointService{record: readyRecord("http://10.0.0.9:9000")}
 	r := NewDynamicEndpointResolver(svc, nil, time.Minute)
 
@@ -409,6 +420,7 @@ func TestDynamicEndpointResolver_EndpointForAccount_KeysOnPassedAccount(t *testi
 // account with Pinned:true, mirroring how the commitment was created —
 // not the GlobalAccountID/Pinned:false shape Endpoint's own Ensure uses.
 func TestDynamicEndpointResolver_EndpointForAccount_AbsentEnsuresPinned(t *testing.T) {
+	t.Parallel()
 	svc := &fakeEndpointService{record: EndpointRecord{ModelID: resolverTestModel, State: StateAbsent}}
 	r := NewDynamicEndpointResolver(svc, nil, 0)
 
@@ -425,6 +437,7 @@ func TestDynamicEndpointResolver_EndpointForAccount_AbsentEnsuresPinned(t *testi
 // avoid: caching its answer under Endpoint's shared, modelID-only cache would
 // serve a pinned endpoint's address to an unrelated bare-modelId caller.
 func TestDynamicEndpointResolver_EndpointForAccount_DoesNotShareTheGlobalCache(t *testing.T) {
+	t.Parallel()
 	svc := &fakeEndpointService{record: readyRecord("http://10.0.0.9:9000")}
 	r := NewDynamicEndpointResolver(svc, nil, time.Minute)
 
@@ -464,6 +477,7 @@ func memberReadyRecord(t *testing.T, srv *httptest.Server) EndpointRecord {
 // answer its readiness route must not be handed out as a live address --
 // the caller gets the same retryable not-ready answer as a cold model.
 func TestDynamicEndpointResolver_ReadyRecordNotLiveResolvesAsNotReady(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
@@ -482,6 +496,7 @@ func TestDynamicEndpointResolver_ReadyRecordNotLiveResolvesAsNotReady(t *testing
 // recovery half: once the member starts answering, a fresh resolve (past the
 // liveness cache TTL) succeeds without the daemon ever touching the record.
 func TestDynamicEndpointResolver_ReadyRecordRecoversOnceLive(t *testing.T) {
+	t.Parallel()
 	var live atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if live.Load() {
@@ -510,6 +525,7 @@ func TestDynamicEndpointResolver_ReadyRecordRecoversOnceLive(t *testing.T) {
 // happy path the liveness gate must not regress: a member that is actually
 // answering resolves on the first call, no waiting.
 func TestDynamicEndpointResolver_ReadyRecordLiveResolvesImmediately(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -554,6 +570,7 @@ func TestDynamicEndpointResolver_IsLiveCachesWithinTTLThenRechecks(t *testing.T)
 // Members field) working exactly as before: with nothing to probe on, isLive
 // trusts the state rather than manufacturing a route to check.
 func TestDynamicEndpointResolver_IsLiveTrustsRecordsWithoutMembers(t *testing.T) {
+	t.Parallel()
 	r := NewDynamicEndpointResolver(&fakeEndpointService{}, nil, 0)
 	rec := readyRecord("http://10.0.0.9:8000")
 

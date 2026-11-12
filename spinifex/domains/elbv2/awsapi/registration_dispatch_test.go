@@ -248,21 +248,54 @@ func TestRegistrationDispatch_RequestShapeErrors(t *testing.T) {
 	}
 }
 
-// The listener attribute actions are served in process, with no daemon.
-func TestRegistrationDispatch_ListenerAttributesNeedNoDaemon(t *testing.T) {
+// ModifyListenerAttributes is served in process, with no daemon.
+func TestRegistrationDispatch_ModifyListenerAttributesNeedsNoDaemon(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
-	for _, action := range []string{"DescribeListenerAttributes", "ModifyListenerAttributes"} {
-		t.Run(action, func(t *testing.T) {
-			form := url.Values{"Action": {action}, "ListenerArn": {testLsnrArn}}
-			if action == "ModifyListenerAttributes" {
-				form.Set("Attributes.member.1.Key", "tcp.idle_timeout.seconds")
-				form.Set("Attributes.member.1.Value", "350")
-			}
-			w, _, err := invoke(t, elbv2awsapi.Deps{NATS: nc}, form.Encode(), nil)
-			require.NoError(t, err)
-			assert.Equal(t, action+"Response", rootElement(t, w.Body.Bytes()))
-		})
-	}
+	form := url.Values{"Action": {"ModifyListenerAttributes"}, "ListenerArn": {testLsnrArn}}
+	form.Set("Attributes.member.1.Key", "tcp.idle_timeout.seconds")
+	form.Set("Attributes.member.1.Value", "350")
+	w, _, err := invoke(t, elbv2awsapi.Deps{NATS: nc}, form.Encode(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, "ModifyListenerAttributesResponse", rootElement(t, w.Body.Bytes()))
+}
+
+// DescribeListenerAttributes returns the TCP idle timeout default AWS reports
+// for a TCP listener, and ListenerNotFound when the lookup finds no listener.
+func TestRegistrationDispatch_DescribeListenerAttributes(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	body := url.Values{"Action": {"DescribeListenerAttributes"}, "ListenerArn": {testLsnrArn}}.Encode()
+
+	t.Run("tcp defaults", func(t *testing.T) {
+		reply, err := json.Marshal(elbv2.DescribeListenersOutput{Listeners: []*elbv2.Listener{{
+			ListenerArn: aws.String(testLsnrArn), Protocol: aws.String(elbv2.ProtocolEnumTcp),
+		}}})
+		require.NoError(t, err)
+		got := serveOnce(t, nc, "elbv2.DescribeListeners", reply)
+
+		w, _, err := invoke(t, elbv2awsapi.Deps{NATS: nc}, body, nil)
+		require.NoError(t, err)
+		assert.Contains(t, w.Body.String(),
+			"<Attributes><member><Key>tcp.idle_timeout.seconds</Key><Value>350</Value></member></Attributes>")
+
+		var in elbv2.DescribeListenersInput
+		select {
+		case msg := <-got:
+			require.NoError(t, json.Unmarshal(msg.Data, &in))
+		case <-time.After(2 * time.Second):
+			t.Fatal("no DescribeListeners lookup observed")
+		}
+		assert.Equal(t, []*string{aws.String(testLsnrArn)}, in.ListenerArns)
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		reply, err := json.Marshal(elbv2.DescribeListenersOutput{Listeners: []*elbv2.Listener{}})
+		require.NoError(t, err)
+		serveOnce(t, nc, "elbv2.DescribeListeners", reply)
+
+		_, _, err = invoke(t, elbv2awsapi.Deps{NATS: nc}, body, nil)
+		require.Error(t, err)
+		assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorELBv2ListenerNotFound), "got %v", err)
+	})
 }
 
 // xmlText is s as the XML encoder writes it, so a value with a newline or an

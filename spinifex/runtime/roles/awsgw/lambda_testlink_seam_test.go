@@ -85,6 +85,14 @@ func (seamFunction) UpdateConfiguration(context.Context, string, string, functio
 	return function.Record{}, 0, errors.New("unused")
 }
 
+func (seamFunction) List(context.Context, string, string, string, int) ([]function.ListedFunction, string, error) {
+	return nil, "", errors.New("unused")
+}
+
+func (seamFunction) Delete(context.Context, string, string, function.Record, uint64) error {
+	return errors.New("unused")
+}
+
 type urlPresigner struct {
 	url   string
 	calls *atomic.Int32

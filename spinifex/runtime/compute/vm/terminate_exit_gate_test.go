@@ -19,7 +19,7 @@ import (
 func shortenPidFileRemovalWait(t *testing.T) {
 	t.Helper()
 	orig := pidFileRemovalTimeout
-	pidFileRemovalTimeout = 50 * time.Millisecond
+	pidFileRemovalTimeout = 10 * time.Millisecond
 	t.Cleanup(func() { pidFileRemovalTimeout = orig })
 }
 

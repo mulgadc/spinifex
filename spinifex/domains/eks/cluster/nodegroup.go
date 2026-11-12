@@ -94,17 +94,22 @@ const ngCASMaxRetries = 16
 // service boundary.
 var ErrNodegroupNotFound = errors.New("eks: nodegroup not found")
 
-// nodegroupNotFound is the AWS answer for a missing node group on an existing
-// cluster; a missing cluster keeps the code's default resource message.
-func nodegroupNotFound(ng string) error {
-	return awserrors.Errorf(awserrors.ErrorEKSResourceNotFound, "No node group found for name: %s.", ng)
+// clusterNotFound is AWS's answer for a missing cluster, from any EKS call.
+func clusterNotFound(cluster string) error {
+	return awserrors.Errorf(awserrors.ErrorEKSResourceNotFound, "No cluster found for name: %s.", cluster)
+}
+
+// resourceNotFound is AWS's answer for a missing node group or add-on on an
+// existing cluster, which names neither.
+func resourceNotFound() error {
+	return awserrors.Errorf(awserrors.ErrorEKSResourceNotFound, "The requested resource does not exist.")
 }
 
 // requireCluster returns ResourceNotFoundException when the cluster is absent.
 func requireCluster(ctx context.Context, kv jetstream.KeyValue, cluster string) error {
 	if _, err := GetClusterMeta(ctx, kv, cluster); err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
-			return errors.New(awserrors.ErrorEKSResourceNotFound)
+			return clusterNotFound(cluster)
 		}
 		return err
 	}
@@ -231,13 +236,13 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV jetstream.K
 	meta, err := GetClusterMeta(ctx, acctKV, cluster)
 	if err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			return nil, clusterNotFound(cluster)
 		}
 		return nil, err
 	}
 	if meta.Status != ClusterStatusActive {
 		slog.WarnContext(ctx, "createNodegroup: cluster not ACTIVE", "cluster", cluster, "status", meta.Status)
-		return nil, errors.New(awserrors.ErrorInvalidRequest)
+		return nil, awserrors.Errorf(awserrors.ErrorEKSResourceInUse, "Cluster: %s is not in a valid state", cluster)
 	}
 	if meta.ControlPlaneENIIP == "" {
 		slog.ErrorContext(ctx, "createNodegroup: cluster has no control-plane ENI IP", "cluster", cluster)
@@ -263,6 +268,9 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV jetstream.K
 		instanceTypes = []string{defaultNodegroupInstanceType}
 	}
 	minSize, maxSize, desired := scalingFromInput(input.ScalingConfig)
+	if err := checkScalingBounds(minSize, desired); err != nil {
+		return nil, err
+	}
 
 	gpuEnabled, gpuVendor := gpuFieldsForInstanceTypes(instanceTypes)
 	if gpuEnabled && gpuVendor == "" {
@@ -328,7 +336,8 @@ func (s *EKSServiceImpl) createNodegroup(ctx context.Context, acctKV jetstream.K
 		})
 	}
 
-	var updateConfig *NodegroupUpdateConfig
+	// AWS records maxUnavailable 1 when the request names no update config.
+	updateConfig := &NodegroupUpdateConfig{MaxUnavailable: 1}
 	if input.UpdateConfig != nil {
 		updateConfig = &NodegroupUpdateConfig{
 			MaxUnavailable:           aws.Int64Value(input.UpdateConfig.MaxUnavailable),
@@ -946,7 +955,7 @@ func (s *EKSServiceImpl) describeNodegroup(ctx context.Context, acctKV jetstream
 	rec, err := GetNodegroupRecord(ctx, acctKV, cluster, ng)
 	if err != nil {
 		if errors.Is(err, ErrNodegroupNotFound) {
-			return nil, nodegroupNotFound(ng)
+			return nil, resourceNotFound()
 		}
 		return nil, err
 	}
@@ -960,7 +969,7 @@ func (s *EKSServiceImpl) listNodegroups(ctx context.Context, acctKV jetstream.Ke
 	}
 	if _, err := GetClusterMeta(ctx, acctKV, cluster); err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			return nil, clusterNotFound(cluster)
 		}
 		return nil, err
 	}
@@ -987,7 +996,7 @@ func (s *EKSServiceImpl) updateNodegroupConfig(ctx context.Context, acctKV jetst
 	meta, err := GetClusterMeta(ctx, acctKV, cluster)
 	if err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			return nil, clusterNotFound(cluster)
 		}
 		return nil, err
 	}
@@ -1016,7 +1025,7 @@ func (s *EKSServiceImpl) reconcileNodegroup(ctx context.Context, acctKV jetstrea
 		rec, rev, err := getNodegroupEntry(ctx, acctKV, cluster, ng)
 		if err != nil {
 			if errors.Is(err, ErrNodegroupNotFound) {
-				return nil, nodegroupNotFound(ng)
+				return nil, resourceNotFound()
 			}
 			return nil, err
 		}
@@ -1024,6 +1033,9 @@ func (s *EKSServiceImpl) reconcileNodegroup(ctx context.Context, acctKV jetstrea
 			return nil, errors.New(awserrors.ErrorEKSResourceInUse)
 		}
 		applyScalingUpdate(rec, scaling)
+		if err := checkScalingBounds(rec.ScalingMin, rec.ScalingDesired); err != nil {
+			return nil, err
+		}
 		if labels != nil {
 			rec.Labels = applyLabelUpdate(rec.Labels, labels)
 		}
@@ -1185,6 +1197,16 @@ func applyScalingUpdate(rec *NodegroupRecord, scaling *eks.NodegroupScalingConfi
 	}
 }
 
+// checkScalingBounds refuses a minimum above the desired size with AWS's text,
+// before any worker is launched or terminated.
+func checkScalingBounds(minSize, desired int64) error {
+	if minSize > desired {
+		return awserrors.Errorf(awserrors.ErrorEKSInvalidParameter,
+			"Minimum capacity %d can't be greater than desired size %d", minSize, desired)
+	}
+	return nil
+}
+
 // getNodegroupEntry reads one record with its KV revision for CAS updates.
 func getNodegroupEntry(ctx context.Context, kv jetstream.KeyValue, cluster, ng string) (*NodegroupRecord, uint64, error) {
 	if cluster == "" || ng == "" {
@@ -1232,11 +1254,11 @@ func (s *EKSServiceImpl) deleteNodegroup(ctx context.Context, acctKV jetstream.K
 	if err := requireCluster(ctx, acctKV, cluster); err != nil {
 		return nil, err
 	}
-	rec, err := s.markNodegroupDeleting(ctx, acctKV, cluster, ng)
+	rec, marked, err := s.markNodegroupDeleting(ctx, acctKV, cluster, ng)
 	if err != nil {
 		return nil, err
 	}
-	if !s.noDeleteKick {
+	if marked && !s.noDeleteKick {
 		s.startNodegroupDelete(accountID, acctKV, cluster, ng)
 	}
 	return &eks.DeleteNodegroupOutput{Nodegroup: nodegroupRecordToAWS(rec)}, nil
@@ -1245,17 +1267,21 @@ func (s *EKSServiceImpl) deleteNodegroup(ctx context.Context, acctKV jetstream.K
 // markNodegroupDeleting records DELETING and returns. The workers, the profile
 // and the record itself are the nodegroup reaper's to remove, so the request
 // never waits on work that scales with the group (a launching group is refused).
-func (s *EKSServiceImpl) markNodegroupDeleting(ctx context.Context, kv jetstream.KeyValue, cluster, ng string) (*NodegroupRecord, error) {
+// A group already DELETING is answered from its record with marked=false.
+func (s *EKSServiceImpl) markNodegroupDeleting(ctx context.Context, kv jetstream.KeyValue, cluster, ng string) (rec *NodegroupRecord, marked bool, err error) {
 	for range ngCASMaxRetries {
 		rec, rev, err := getNodegroupEntry(ctx, kv, cluster, ng)
 		if err != nil {
 			if errors.Is(err, ErrNodegroupNotFound) {
-				return nil, nodegroupNotFound(ng)
+				return nil, false, resourceNotFound()
 			}
-			return nil, err
+			return nil, false, err
 		}
-		if rec.Status == eks.NodegroupStatusDeleting || rec.Status == eks.NodegroupStatusCreating {
-			return nil, errors.New(awserrors.ErrorEKSResourceInUse)
+		if rec.Status == eks.NodegroupStatusDeleting {
+			return rec, false, nil
+		}
+		if rec.Status == eks.NodegroupStatusCreating {
+			return nil, false, errors.New(awserrors.ErrorEKSResourceInUse)
 		}
 		now := time.Now().UTC()
 		rec.Status = eks.NodegroupStatusDeleting
@@ -1266,13 +1292,13 @@ func (s *EKSServiceImpl) markNodegroupDeleting(ctx context.Context, kv jetstream
 		rec.ModifiedAt = now
 		ok, err := s.casPutNodegroup(ctx, kv, rec, rev)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if ok {
-			return rec, nil
+			return rec, true, nil
 		}
 	}
-	return nil, errors.New(awserrors.ErrorServerInternal)
+	return nil, false, errors.New(awserrors.ErrorServerInternal)
 }
 
 // decryptNodeToken reads + decrypts the cluster's K3s join token from KV.
@@ -1452,7 +1478,10 @@ func nodegroupRecordToAWS(rec *NodegroupRecord) *eks.Nodegroup {
 			MaxSize:     aws.Int64(rec.ScalingMax),
 			DesiredSize: aws.Int64(rec.ScalingDesired),
 		},
-		Resources: &eks.NodegroupResources{},
+	}
+	// AWS omits resources until the group's capacity exists.
+	if rec.Status != eks.NodegroupStatusCreating {
+		out.Resources = &eks.NodegroupResources{}
 	}
 	if rec.DiskSize > 0 {
 		out.DiskSize = aws.Int64(rec.DiskSize)

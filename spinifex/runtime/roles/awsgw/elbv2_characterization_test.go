@@ -133,15 +133,16 @@ func TestELBv2Pipeline_NoResponder_500InternalError(t *testing.T) {
 
 // --- Golden success responses ----------------------------------------------
 
-// An action served without NATS answers 200 text/xml in the Query envelope.
 func TestELBv2Pipeline_DescribeListenerAttributes_GoldenXML(t *testing.T) {
-	_, app := elbv2PipelineApp(t, allowAllTaggingDocs(), nil)
+	gw, app := elbv2PipelineApp(t, allowAllTaggingDocs(), nil)
 	listener := pipelineListener("web", "1", "2")
+	respondELBv2(t, gwfix.DepsOf(gw).NATS, "elbv2.DescribeListeners",
+		`{"Listeners":[{"ListenerArn":"`+listener+`","Protocol":"TCP"}]}`)
 	resp := doRequest(app, signELBv2Request(t, "Action=DescribeListenerAttributes&ListenerArn="+listener))
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "text/xml", resp.Header.Get("Content-Type"))
-	assert.Equal(t, `<DescribeListenerAttributesResponse><DescribeListenerAttributesResult><Attributes></Attributes></DescribeListenerAttributesResult></DescribeListenerAttributesResponse>`,
+	assert.Equal(t, `<DescribeListenerAttributesResponse><DescribeListenerAttributesResult><Attributes><member><Key>tcp.idle_timeout.seconds</Key><Value>350</Value></member></Attributes></DescribeListenerAttributesResult></DescribeListenerAttributesResponse>`,
 		readBody(t, resp))
 }
 

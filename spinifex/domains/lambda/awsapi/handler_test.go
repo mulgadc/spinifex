@@ -60,6 +60,14 @@ type localClient struct {
 	configErr error
 	// configCalls counts UpdateConfiguration requests sent to the owner.
 	configCalls int
+	// deleteCalls counts Delete requests sent to the owner.
+	deleteCalls int
+	// deleteErr fails Delete before the owner sees it; loseDeleteReply
+	// reports a transport error after the owner committed it.
+	deleteErr       error
+	loseDeleteReply bool
+	// listErr fails List before the owner sees it.
+	listErr error
 }
 
 var _ function.Client = (*localClient)(nil)
@@ -167,6 +175,42 @@ func (c *localClient) UpdateConfiguration(ctx context.Context, account, region s
 		return function.Record{}, 0, errors.New("nats: timeout")
 	}
 	return r.Record, r.Revision, nil
+}
+
+func (c *localClient) List(ctx context.Context, account, region, marker string, maxItems int) ([]function.ListedFunction, string, error) {
+	c.mu.Lock()
+	fail := c.listErr
+	c.mu.Unlock()
+	if fail != nil {
+		return nil, "", fail
+	}
+	r, err := c.svc.List(ctx, &function.ListRequest{Region: region, Marker: marker, MaxItems: maxItems}, account)
+	if err != nil {
+		return nil, "", err
+	}
+	return r.Functions, r.NextMarker, nil
+}
+
+func (c *localClient) Delete(ctx context.Context, account, region string, rec function.Record, rev uint64) error {
+	c.mu.Lock()
+	hook, fail, lose := c.beforeCommit, c.deleteErr, c.loseDeleteReply
+	c.beforeCommit = nil
+	c.deleteCalls++
+	c.mu.Unlock()
+	if fail != nil {
+		return fail
+	}
+	if hook != nil {
+		hook()
+	}
+	if _, err := c.svc.Delete(ctx, &function.DeleteRequest{Region: region, FunctionName: rec.FunctionName,
+		FunctionID: rec.FunctionID, Revision: rev}, account); err != nil {
+		return err
+	}
+	if lose {
+		return errors.New("nats: timeout")
+	}
+	return nil
 }
 
 // memStore is an in-memory code store; objects is keyed by Ref.
@@ -864,7 +908,7 @@ func TestAuthorization(t *testing.T) {
 
 func TestRegistration_ResolvesActionsAndInventory(t *testing.T) {
 	reg := awsapi.NewRegistration(awsapi.Deps{})
-	assert.Equal(t, []string{"CreateEventSourceMapping", "CreateFunction", "DeleteEventSourceMapping", "GetEventSourceMapping", "GetFunction", "GetFunctionCodeSigningConfig", "GetFunctionConfiguration", "Invoke", "ListEventSourceMappings", "ListVersionsByFunction", "UpdateFunctionCode", "UpdateFunctionConfiguration"}, reg.Inventory.Registered)
+	assert.Equal(t, []string{"CreateEventSourceMapping", "CreateFunction", "DeleteEventSourceMapping", "DeleteFunction", "GetEventSourceMapping", "GetFunction", "GetFunctionCodeSigningConfig", "GetFunctionConfiguration", "Invoke", "ListEventSourceMappings", "ListFunctions", "ListVersionsByFunction", "UpdateFunctionCode", "UpdateFunctionConfiguration"}, reg.Inventory.Registered)
 	assert.Equal(t, "UpdateFunctionConfiguration", reg.ResolveAction(httptest.NewRequest(http.MethodPut, "/2015-03-31/functions/x/configuration", nil)))
 	assert.Equal(t, "ListVersionsByFunction", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2015-03-31/functions/x/versions", nil)))
 	assert.Equal(t, "DeleteEventSourceMapping", reg.ResolveAction(httptest.NewRequest(http.MethodDelete, "/2015-03-31/event-source-mappings/x", nil)))
@@ -873,7 +917,10 @@ func TestRegistration_ResolvesActionsAndInventory(t *testing.T) {
 	assert.Equal(t, "GetFunction", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2015-03-31/functions/x", nil)))
 	assert.Equal(t, "GetFunctionConfiguration", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2015-03-31/functions/x/configuration", nil)))
 	assert.Equal(t, "UpdateFunctionCode", reg.ResolveAction(httptest.NewRequest(http.MethodPut, "/2015-03-31/functions/x/code", nil)))
-	assert.Empty(t, reg.ResolveAction(httptest.NewRequest(http.MethodDelete, "/2015-03-31/functions/x", nil)))
+	assert.Equal(t, "DeleteFunction", reg.ResolveAction(httptest.NewRequest(http.MethodDelete, "/2015-03-31/functions/x", nil)))
+	assert.Equal(t, "ListFunctions", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2015-03-31/functions", nil)))
+	assert.Equal(t, "ListFunctions", reg.ResolveAction(httptest.NewRequest(http.MethodGet, "/2015-03-31/functions/", nil)))
+	assert.Empty(t, reg.ResolveAction(httptest.NewRequest(http.MethodDelete, "/2015-03-31/functions/x/configuration", nil)))
 }
 
 func TestGetFunctionConfiguration_ReturnsTheSameConfigurationAsGetFunction(t *testing.T) {

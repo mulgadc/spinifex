@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,6 +25,19 @@ type fakeELBv2 struct {
 	targetGroups  []*elbv2.TargetGroup
 	deleted       []string
 	err           error
+	protected     map[string]bool
+	modified      []string
+}
+
+func (f *fakeELBv2) ModifyLoadBalancerAttributes(_ context.Context, in *elbv2.ModifyLoadBalancerAttributesInput, _ string) (*elbv2.ModifyLoadBalancerAttributesOutput, error) {
+	arn := aws.StringValue(in.LoadBalancerArn)
+	f.modified = append(f.modified, arn)
+	for _, a := range in.Attributes {
+		if aws.StringValue(a.Key) == elbv2domain.AttrDeletionProtection {
+			f.protected[arn] = aws.StringValue(a.Value) == "true"
+		}
+	}
+	return &elbv2.ModifyLoadBalancerAttributesOutput{}, nil
 }
 
 func (f *fakeELBv2) DescribeLoadBalancers(_ context.Context, _ *elbv2.DescribeLoadBalancersInput, _ string) (*elbv2.DescribeLoadBalancersOutput, error) {
@@ -33,6 +47,10 @@ func (f *fakeELBv2) DescribeLoadBalancers(_ context.Context, _ *elbv2.DescribeLo
 func (f *fakeELBv2) DeleteLoadBalancer(_ context.Context, in *elbv2.DeleteLoadBalancerInput, _ string) (*elbv2.DeleteLoadBalancerOutput, error) {
 	if f.err != nil {
 		return nil, f.err
+	}
+	if arn := aws.StringValue(in.LoadBalancerArn); f.protected[arn] {
+		return nil, awserrors.Errorf(awserrors.ErrorOperationNotPermitted,
+			"Load balancer '%s' cannot be deleted because deletion protection is enabled", arn)
 	}
 	f.deleted = append(f.deleted, aws.StringValue(in.LoadBalancerArn))
 	return &elbv2.DeleteLoadBalancerOutput{}, nil
@@ -102,4 +120,30 @@ func TestELBv2ReapersDeleteBalancersBeforeTargetGroups(t *testing.T) {
 	require.Len(t, reapers, 2)
 	assert.Equal(t, "load-balancer", reapers[0].Kind())
 	assert.Equal(t, "target-group", reapers[1].Kind())
+}
+
+// An unforced teardown is an automated actor, so a protected balancer survives
+// it with protection left armed and no delete reaching the service.
+// Verifies: ADR-0003:S7.
+func TestS7_LoadBalancerReaperLeavesAProtectedBalancerWithoutForce(t *testing.T) {
+	svc := &fakeELBv2{protected: map[string]bool{"arn:lb/web": true}}
+	reaper := &loadBalancerReaper{svc: svc}
+
+	err := reaper.Delete(t.Context(), "000000000002", Resource{ID: "arn:lb/web"}, false)
+
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorOperationNotPermitted), "err: %v", err)
+	assert.Empty(t, svc.modified, "teardown must not disarm protection nobody asked it to override")
+	assert.Empty(t, svc.deleted)
+}
+
+// Under force the account-level decision overrides the protection, which is
+// otherwise a deadlock nobody is left to clear.
+func TestLoadBalancerReaperForceClearsDeletionProtection(t *testing.T) {
+	svc := &fakeELBv2{protected: map[string]bool{"arn:lb/web": true}}
+	reaper := &loadBalancerReaper{svc: svc}
+
+	require.NoError(t, reaper.Delete(t.Context(), "000000000002", Resource{ID: "arn:lb/web"}, true))
+
+	assert.Equal(t, []string{"arn:lb/web"}, svc.modified)
+	assert.Equal(t, []string{"arn:lb/web"}, svc.deleted)
 }

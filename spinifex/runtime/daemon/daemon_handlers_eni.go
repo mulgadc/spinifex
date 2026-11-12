@@ -35,6 +35,13 @@ func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg
 		return respondErrorOutcome(d.node, msg, awserrors.ErrorIncorrectInstanceState)
 	}
 
+	// AWS refuses an occupied index before checking the interface's own state.
+	// Index 0 is the primary interface; hot-plugged ENIs report their slot.
+	if !command.AttachENIData.AssignFreeIndex && (deviceIndex == 0 || instance.ENIRequests.SlotHeld(deviceIndex)) {
+		return respondServiceErrorOutcome(d.node, msg, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"Instance '%s' already has an interface attached at device index '%d'.", instance.ID, deviceIndex))
+	}
+
 	record, err := d.vpcService.GetENIRecord(accountID, eniID)
 	if err != nil {
 		return respondServiceErrorOutcome(d.node, msg, err)
@@ -94,7 +101,8 @@ func (d *Daemon) handleAttachNetworkInterface(ctx context.Context, msg *nats.Msg
 	})
 
 	respondWithJSON(d.node, msg, ec2.AttachNetworkInterfaceOutput{
-		AttachmentId: aws.String(attachmentID),
+		AttachmentId:     aws.String(attachmentID),
+		NetworkCardIndex: aws.Int64(0),
 	})
 	return outcomeSuccess
 }

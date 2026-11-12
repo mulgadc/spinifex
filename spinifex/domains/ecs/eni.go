@@ -85,6 +85,7 @@ func (c *natsENIController) Attach(ctx context.Context, accountID, instanceID, e
 		AttachENIData: &ec2v1.AttachENIData{
 			NetworkInterfaceID: eniID,
 			DeviceIndex:        taskENIDeviceIndex,
+			AssignFreeIndex:    true,
 		},
 	}
 	out, err := natsmsg.NATSRequest[ec2.AttachNetworkInterfaceOutput](ctx, c.nc, eniCmdSubject(instanceID), cmd, c.timeout, accountID)

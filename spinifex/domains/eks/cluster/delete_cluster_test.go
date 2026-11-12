@@ -301,7 +301,7 @@ func TestDeleteCluster_AllTeardownSucceedsSweepsKV(t *testing.T) {
 // teardown fix: the Set A private-endpoint ENI is an extra NIC on the cluster NLB's
 // LB VM, not that VM's primary ENI, so the instance-terminate cascade never reclaims
 // it. purgeClusterInfra must detach (store-clear) the stale attachment before
-// deleting, or DeleteNetworkInterface loops on InvalidNetworkInterface.InUse and the
+// deleting, or DeleteNetworkInterface loops on the in-use InvalidParameterValue and the
 // cluster wedges in DELETING. The fake models that in-use-until-detached semantics,
 // so the teardown only completes if detach precedes delete.
 func TestDeleteCluster_DetachesPrivateEndpointENIBeforeDelete(t *testing.T) {

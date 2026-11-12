@@ -166,10 +166,6 @@ func safeELBv2Name(prefix, clusterName, suffix string) string {
 // NLB managed-SG ingress; ignored for an internal NLB (its ingress already
 // tracks the VPC CIDR) and for the wide-open default, which the LB carries out
 // of the box.
-//
-// A failed call deletes, by ARN, the LB and target groups it created itself, so
-// the launch's purge finds no LB VM pinning the control-plane VPC. Anything it
-// found by name is left alone.
 func EnsureClusterNLB(ctx context.Context, nlbp nlbProvisioner, accountID, clusterName string, subnetIDs []string, internetFacing bool, publicAccessCidrs []string, crossAccountENIs []systeminstance.ExtraENIInput) (*ClusterNLB, error) {
 	if clusterName == "" {
 		return nil, errors.New("eks: EnsureClusterNLB empty cluster name")
@@ -187,41 +183,34 @@ func EnsureClusterNLB(ctx context.Context, nlbp nlbProvisioner, accountID, clust
 	}
 
 	out := &ClusterNLB{}
-	var created clusterNLBCreated
-	fail := func(err error) (*ClusterNLB, error) {
-		return nil, created.unwind(ctx, nlbp, accountID, err)
-	}
 
-	lbCreated, err := ensureClusterLB(ctx, nlbp, accountID, clusterName, lbName, subnetIDs, internetFacing, crossAccountENIs, out)
-	if lbCreated {
-		created.lbArn = out.LoadBalancerArn
+	if err := ensureClusterLB(ctx, nlbp, accountID, clusterName, lbName, subnetIDs, internetFacing, crossAccountENIs, out); err != nil {
+		return nil, err
 	}
-	if err != nil {
-		return fail(err)
-	}
-	if out.TargetGroupArn, err = created.targetGroup(ensureClusterTG(ctx, nlbp, accountID, clusterName, tgName, k3sAPIServerPort, cpReadinessHealthCheck)); err != nil {
-		return fail(err)
+	var err error
+	if out.TargetGroupArn, err = ensureClusterTG(ctx, nlbp, accountID, clusterName, tgName, k3sAPIServerPort, cpReadinessHealthCheck); err != nil {
+		return nil, err
 	}
 	if out.ListenerArn, err = ensureClusterListener(ctx, nlbp, accountID, lbName, out.LoadBalancerArn, out.TargetGroupArn, clusterNLBListenPort); err != nil {
-		return fail(err)
+		return nil, err
 	}
 	// Second listener :6443 → same CP target group. The apiserver advertises itself
 	// on :6443 in the in-cluster `kubernetes` Endpoints; worker pods reach it only if
 	// the NLB serves :6443. Arn not persisted — teardown cascades via DeleteLoadBalancer.
 	if _, err = ensureClusterListener(ctx, nlbp, accountID, lbName, out.LoadBalancerArn, out.TargetGroupArn, k3sAPIServerPort); err != nil {
-		return fail(err)
+		return nil, err
 	}
 	// Konnectivity TG + listener :8132 → the 3 CP konnectivity-servers. Worker
 	// konnectivity-agents dial this VIP; server-count fan-out reaches all 3 servers.
-	if out.KonnTargetGroupArn, err = created.targetGroup(ensureClusterTG(ctx, nlbp, accountID, clusterName, konnTGName, konnectivityAgentPort, nil)); err != nil {
-		return fail(err)
+	if out.KonnTargetGroupArn, err = ensureClusterTG(ctx, nlbp, accountID, clusterName, konnTGName, konnectivityAgentPort, nil); err != nil {
+		return nil, err
 	}
 	if _, err = ensureClusterListener(ctx, nlbp, accountID, lbName, out.LoadBalancerArn, out.KonnTargetGroupArn, konnectivityAgentPort); err != nil {
-		return fail(err)
+		return nil, err
 	}
 	if internetFacing && narrowsPublicAccess(publicAccessCidrs) {
 		if err := nlbp.SetLoadBalancerIngressCIDRs(out.LoadBalancerArn, publicAccessCidrs, accountID); err != nil {
-			return fail(fmt.Errorf("eks: set NLB ingress CIDRs for %s: %w", lbName, err))
+			return nil, fmt.Errorf("eks: set NLB ingress CIDRs for %s: %w", lbName, err)
 		}
 	}
 	// FrontendIP is set synchronously by ensureClusterLB. An empty value means the
@@ -229,45 +218,9 @@ func EnsureClusterNLB(ctx context.Context, nlbp nlbProvisioner, accountID, clust
 	// would leave the apiserver cert SANed only to the unresolvable DNS name —
 	// fail the launch loud instead.
 	if out.FrontendIP == "" {
-		return fail(fmt.Errorf("eks: NLB %s: %w", lbName, ErrClusterNLBFrontendIPUnavailable))
+		return nil, fmt.Errorf("eks: NLB %s: %w", lbName, ErrClusterNLBFrontendIPUnavailable)
 	}
 	return out, nil
-}
-
-// clusterNLBCreated holds the ARNs one EnsureClusterNLB call created itself, as
-// opposed to resources it found by name and reused.
-type clusterNLBCreated struct {
-	lbArn  string
-	tgArns []string
-}
-
-// targetGroup passes ensureClusterTG's result through, noting the ARN when the
-// call created the group.
-func (c *clusterNLBCreated) targetGroup(arn string, created bool, err error) (string, error) {
-	if created && arn != "" {
-		c.tgArns = append(c.tgArns, arn)
-	}
-	return arn, err
-}
-
-// unwind deletes what the failed call created, LB first so its listeners stop
-// referencing the target groups, and returns cause joined with any delete error.
-// A failed delete leaves that resource behind, logged by ARN.
-func (c *clusterNLBCreated) unwind(ctx context.Context, nlbp nlbProvisioner, accountID string, cause error) error {
-	errs := []error{cause}
-	if c.lbArn != "" {
-		if _, err := nlbp.DeleteLoadBalancer(ctx, &elbv2.DeleteLoadBalancerInput{LoadBalancerArn: aws.String(c.lbArn)}, accountID); err != nil && !awserrors.IsNotFound(err) {
-			slog.ErrorContext(ctx, "EnsureClusterNLB: unwind failed to delete NLB", "arn", c.lbArn, "err", err)
-			errs = append(errs, fmt.Errorf("unwind NLB %s: %w", c.lbArn, err))
-		}
-	}
-	for _, arn := range c.tgArns {
-		if _, err := nlbp.DeleteTargetGroup(ctx, &elbv2.DeleteTargetGroupInput{TargetGroupArn: aws.String(arn)}, accountID); err != nil && !awserrors.IsNotFound(err) {
-			slog.ErrorContext(ctx, "EnsureClusterNLB: unwind failed to delete TG", "arn", arn, "err", err)
-			errs = append(errs, fmt.Errorf("unwind TG %s: %w", arn, err))
-		}
-	}
-	return errors.Join(errs...)
 }
 
 // ErrClusterNLBFrontendIPUnavailable is returned by EnsureClusterNLB when the
@@ -420,23 +373,19 @@ func deleteClusterTG(ctx context.Context, nlbp nlbProvisioner, accountID, tgName
 	return nil
 }
 
-// ensureClusterLB fills out from the cluster's LB, creating it when none has the
-// name; created reports whether this call created it.
-func ensureClusterLB(ctx context.Context, nlbp nlbProvisioner, accountID, clusterName, lbName string, subnetIDs []string, internetFacing bool, crossAccountENIs []systeminstance.ExtraENIInput, out *ClusterNLB) (created bool, err error) {
-	existing, err := lookupLBByName(ctx, nlbp, accountID, lbName)
-	if err != nil {
-		return false, err
-	}
-	if existing != nil {
+func ensureClusterLB(ctx context.Context, nlbp nlbProvisioner, accountID, clusterName, lbName string, subnetIDs []string, internetFacing bool, crossAccountENIs []systeminstance.ExtraENIInput, out *ClusterNLB) error {
+	if lb, err := lookupLBByName(ctx, nlbp, accountID, lbName); err != nil {
+		return err
+	} else if lb != nil {
 		// Idempotent re-entry: the LB already exists (and, since creation is
 		// synchronous, has already been launched), so its address is on the record.
-		out.LoadBalancerArn = aws.StringValue(existing.LoadBalancerArn)
-		out.DNSName = aws.StringValue(existing.DNSName)
-		out.FrontendIP = frontendIPFromLB(existing, internetFacing)
+		out.LoadBalancerArn = aws.StringValue(lb.LoadBalancerArn)
+		out.DNSName = aws.StringValue(lb.DNSName)
+		out.FrontendIP = frontendIPFromLB(lb, internetFacing)
 		if out.LoadBalancerArn == "" || out.DNSName == "" {
-			return false, fmt.Errorf("eks: existing NLB %s missing arn or DNS name", lbName)
+			return fmt.Errorf("eks: existing NLB %s missing arn or DNS name", lbName)
 		}
-		return false, nil
+		return nil
 	}
 
 	scheme := elbv2.LoadBalancerSchemeEnumInternal
@@ -459,43 +408,41 @@ func ensureClusterLB(ctx context.Context, nlbp nlbProvisioner, accountID, cluste
 			{Key: aws.String(clusterEKSClusterTagKey), Value: aws.String(clusterName)},
 		},
 	}
-	var res *elbv2.CreateLoadBalancerOutput
+	var created *elbv2.CreateLoadBalancerOutput
+	var err error
 	if len(crossAccountENIs) > 0 {
-		res, err = nlbp.CreateClusterNLBSync(in, accountID, crossAccountENIs)
+		created, err = nlbp.CreateClusterNLBSync(in, accountID, crossAccountENIs)
 	} else {
-		res, err = nlbp.CreateLoadBalancerSync(in, accountID)
+		created, err = nlbp.CreateLoadBalancerSync(in, accountID)
 	}
 	if err != nil {
-		return false, fmt.Errorf("create NLB %s: %w", lbName, err)
+		return fmt.Errorf("create NLB %s: %w", lbName, err)
 	}
-	if res == nil || len(res.LoadBalancers) == 0 || res.LoadBalancers[0] == nil {
-		return false, fmt.Errorf("eks: CreateLoadBalancer returned no LB for %s", lbName)
+	if created == nil || len(created.LoadBalancers) == 0 || created.LoadBalancers[0] == nil {
+		return fmt.Errorf("eks: CreateLoadBalancer returned no LB for %s", lbName)
 	}
-	lb := res.LoadBalancers[0]
+	lb := created.LoadBalancers[0]
 	out.LoadBalancerArn = aws.StringValue(lb.LoadBalancerArn)
 	out.DNSName = aws.StringValue(lb.DNSName)
 	out.FrontendIP = frontendIPFromLB(lb, internetFacing)
 	if out.LoadBalancerArn == "" || out.DNSName == "" {
-		return true, fmt.Errorf("eks: CreateLoadBalancer returned empty arn or DNS name for %s", lbName)
+		return fmt.Errorf("eks: CreateLoadBalancer returned empty arn or DNS name for %s", lbName)
 	}
-	return true, nil
+	return nil
 }
 
 // ensureClusterTG creates (or reuses) a TCP target group of the given name
-// forwarding to port, returning its ARN and whether this call created it.
-// Idempotent on name. configure, if set, adjusts the create input; an existing
-// group is returned as is, unmodified.
-func ensureClusterTG(ctx context.Context, nlbp nlbProvisioner, accountID, clusterName, tgName string, port int64, configure func(*elbv2.CreateTargetGroupInput)) (arn string, created bool, err error) {
-	tg, err := lookupTGByName(ctx, nlbp, accountID, tgName)
-	if err != nil {
-		return "", false, err
-	}
-	if tg != nil {
-		arn = aws.StringValue(tg.TargetGroupArn)
+// forwarding to port, returning its ARN. Idempotent on name. configure, if set,
+// adjusts the create input; an existing group is returned as is, unmodified.
+func ensureClusterTG(ctx context.Context, nlbp nlbProvisioner, accountID, clusterName, tgName string, port int64, configure func(*elbv2.CreateTargetGroupInput)) (string, error) {
+	if tg, err := lookupTGByName(ctx, nlbp, accountID, tgName); err != nil {
+		return "", err
+	} else if tg != nil {
+		arn := aws.StringValue(tg.TargetGroupArn)
 		if arn == "" {
-			return "", false, fmt.Errorf("eks: existing TG %s missing arn", tgName)
+			return "", fmt.Errorf("eks: existing TG %s missing arn", tgName)
 		}
-		return arn, false, nil
+		return arn, nil
 	}
 
 	in := &elbv2.CreateTargetGroupInput{
@@ -511,18 +458,18 @@ func ensureClusterTG(ctx context.Context, nlbp nlbProvisioner, accountID, cluste
 	if configure != nil {
 		configure(in)
 	}
-	res, err := nlbp.CreateTargetGroup(ctx, in, accountID)
+	created, err := nlbp.CreateTargetGroup(ctx, in, accountID)
 	if err != nil {
-		return "", false, fmt.Errorf("create TG %s: %w", tgName, err)
+		return "", fmt.Errorf("create TG %s: %w", tgName, err)
 	}
-	if res == nil || len(res.TargetGroups) == 0 || res.TargetGroups[0] == nil {
-		return "", false, fmt.Errorf("eks: CreateTargetGroup returned no TG for %s", tgName)
+	if created == nil || len(created.TargetGroups) == 0 || created.TargetGroups[0] == nil {
+		return "", fmt.Errorf("eks: CreateTargetGroup returned no TG for %s", tgName)
 	}
-	arn = aws.StringValue(res.TargetGroups[0].TargetGroupArn)
+	arn := aws.StringValue(created.TargetGroups[0].TargetGroupArn)
 	if arn == "" {
-		return "", false, fmt.Errorf("eks: CreateTargetGroup returned empty arn for %s", tgName)
+		return "", fmt.Errorf("eks: CreateTargetGroup returned empty arn for %s", tgName)
 	}
-	return arn, true, nil
+	return arn, nil
 }
 
 // ensureClusterListener creates (or reuses) one TCP listener on the LB at the

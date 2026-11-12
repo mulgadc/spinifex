@@ -12,11 +12,14 @@ import (
 )
 
 // supportedImageAttributes lists the AMI attributes spinifex exposes.
-// description is modifiable; blockDeviceMapping is synthesised read-only from
-// AMIMetadata. Any other attribute is rejected rather than returning empty.
+// Any other attribute is rejected rather than returning empty.
 var supportedImageAttributes = map[string]bool{
 	ec2.ImageAttributeNameDescription:        true,
 	ec2.ImageAttributeNameBlockDeviceMapping: true,
+	ec2.ImageAttributeNameLaunchPermission:   true,
+	ec2.ImageAttributeNameBootMode:           true,
+	ec2.ImageAttributeNameImdsSupport:        true,
+	ec2.ImageAttributeNameLastLaunchedTime:   true,
 }
 
 // ValidateDescribeImageAttributeInput requires an ami- prefixed ImageId and an Attribute.

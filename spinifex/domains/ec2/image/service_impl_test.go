@@ -2314,7 +2314,7 @@ func TestDescribeImageAttribute_UnsupportedAttribute(t *testing.T) {
 
 	createTestAMIConfigWithOwner(t, store, "ami-unsup01", "u", testAccountID)
 
-	for _, attr := range []string{"launchPermission", "bootMode", "kernel", "ramdisk"} {
+	for _, attr := range []string{"kernel", "ramdisk"} {
 		t.Run(attr, func(t *testing.T) {
 			_, err := svc.DescribeImageAttribute(context.Background(), &ec2.DescribeImageAttributeInput{
 				ImageId:   aws.String("ami-unsup01"),
@@ -2324,6 +2324,66 @@ func TestDescribeImageAttribute_UnsupportedAttribute(t *testing.T) {
 			assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 		})
 	}
+}
+
+func describeImageAttr(t *testing.T, svc *ImageServiceImpl, imageID, attr string) *ec2.DescribeImageAttributeOutput {
+	t.Helper()
+	out, err := svc.DescribeImageAttribute(context.Background(), &ec2.DescribeImageAttributeInput{
+		ImageId:   aws.String(imageID),
+		Attribute: aws.String(attr),
+	}, testAccountID)
+	require.NoError(t, err)
+	return out
+}
+
+func TestDescribeImageAttribute_EmptyDescriptionHasNilValue(t *testing.T) {
+	svc, store := setupTestImageService(t)
+	createTestAMIConfigWithOwner(t, store, "ami-nodesc01", "u", testAccountID)
+
+	out := describeImageAttr(t, svc, "ami-nodesc01", "description")
+	require.NotNil(t, out.Description)
+	assert.Nil(t, out.Description.Value)
+}
+
+func TestDescribeImageAttribute_LaunchPermission(t *testing.T) {
+	svc, store := setupTestImageService(t)
+	createTestAMIConfigWithOwner(t, store, "ami-lp01", "u", testAccountID)
+
+	own := describeImageAttr(t, svc, "ami-lp01", "launchPermission")
+	require.NotNil(t, own.LaunchPermissions)
+	assert.Empty(t, own.LaunchPermissions)
+}
+
+func TestDescribeImageAttribute_BootMode(t *testing.T) {
+	svc, store := setupTestImageService(t)
+	createTestAMIConfigRich(t, store, ebsmetadata.AMI{ImageID: "ami-bm01", Name: "bm", RootDeviceType: "ebs", ImageOwnerAlias: testAccountID, BootMode: "uefi-preferred"})
+	createTestAMIConfigWithOwner(t, store, "ami-bm02", "u", testAccountID)
+
+	set := describeImageAttr(t, svc, "ami-bm01", "bootMode")
+	require.NotNil(t, set.BootMode)
+	assert.Equal(t, "uefi-preferred", aws.StringValue(set.BootMode.Value))
+
+	unset := describeImageAttr(t, svc, "ami-bm02", "bootMode")
+	require.NotNil(t, unset.BootMode)
+	assert.Nil(t, unset.BootMode.Value)
+}
+
+func TestDescribeImageAttribute_ImdsSupport(t *testing.T) {
+	svc, store := setupTestImageService(t)
+	createTestAMIConfigWithOwner(t, store, "ami-imds01", "u", testAccountID)
+
+	out := describeImageAttr(t, svc, "ami-imds01", "imdsSupport")
+	require.NotNil(t, out.ImdsSupport)
+	assert.Nil(t, out.ImdsSupport.Value)
+}
+
+func TestDescribeImageAttribute_LastLaunchedTime(t *testing.T) {
+	svc, store := setupTestImageService(t)
+	createTestAMIConfigWithOwner(t, store, "ami-llt01", "u", testAccountID)
+
+	out := describeImageAttr(t, svc, "ami-llt01", "lastLaunchedTime")
+	require.NotNil(t, out.LastLaunchedTime)
+	assert.Nil(t, out.LastLaunchedTime.Value)
 }
 
 func TestModifyImageAttribute_Description(t *testing.T) {
@@ -2498,8 +2558,7 @@ func TestResetImageAttribute_Description(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, out.Description)
-	require.NotNil(t, out.Description.Value)
-	assert.Empty(t, *out.Description.Value)
+	assert.Nil(t, out.Description.Value)
 }
 
 func TestResetImageAttribute_CrossAccount(t *testing.T) {

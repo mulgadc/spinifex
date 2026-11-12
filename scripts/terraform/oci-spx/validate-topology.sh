@@ -795,7 +795,14 @@ for host in "${HOSTS[@]}"; do
 set -e
 sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
 free=0
-for _ in $(seq 1 120); do
+for i in $(seq 1 120); do
+    # The Oracle Cloud Agent runs its own apt update at boot, which can hang for
+    # longer than this wait. A list refresh is safe to stop; a dpkg run is not.
+    if [ "$i" -ge 36 ] && ! pgrep -x dpkg >/dev/null && pgrep -f '^/usr/bin/apt update$' >/dev/null; then
+        echo "stopping an apt update still running after 3 minutes:"
+        ps -o pid,etime,args -p "$(pgrep -d, -f '^/usr/bin/apt update$')" || true
+        sudo pkill -f '^/usr/bin/apt update$' || true
+    fi
     if systemctl is-active --quiet apt-daily.service apt-daily-upgrade.service \
         || sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; then
         free=0

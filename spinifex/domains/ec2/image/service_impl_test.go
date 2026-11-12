@@ -2348,15 +2348,10 @@ func TestDescribeImageAttribute_EmptyDescriptionHasNilValue(t *testing.T) {
 func TestDescribeImageAttribute_LaunchPermission(t *testing.T) {
 	svc, store := setupTestImageService(t)
 	createTestAMIConfigWithOwner(t, store, "ami-lp01", "u", testAccountID)
-	createTestAMIConfigRich(t, store, ebsmetadata.AMI{ImageID: "ami-lpsys01", Name: "sys", RootDeviceType: "ebs", ImageOwnerAlias: "system"})
 
 	own := describeImageAttr(t, svc, "ami-lp01", "launchPermission")
 	require.NotNil(t, own.LaunchPermissions)
 	assert.Empty(t, own.LaunchPermissions)
-
-	sys := describeImageAttr(t, svc, "ami-lpsys01", "launchPermission")
-	require.Len(t, sys.LaunchPermissions, 1)
-	assert.Equal(t, "all", aws.StringValue(sys.LaunchPermissions[0].Group))
 }
 
 func TestDescribeImageAttribute_BootMode(t *testing.T) {

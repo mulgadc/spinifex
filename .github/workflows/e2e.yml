@@ -478,9 +478,13 @@ jobs:
             BIN="${GITHUB_WORKSPACE}/spinifex/tests/e2e/_bin/single.test"
             # Listed separately so a failed listing fails the leg; the sharder
             # also refuses a listing with no tests in it.
+            # The leg skips the other shards' tests rather than naming its own:
+            # a test named in -test.run counts as opted in (TestRebootLoop).
+            SHARDER="${GITHUB_WORKSPACE}/spinifex/.github/scripts/e2e-shard.sh"
+            WEIGHTS="${GITHUB_WORKSPACE}/spinifex/.github/e2e-weights/single.txt"
             TEST_LIST=$("${BIN}" -test.list '.*') &&
-              SHARD_RE=$("${GITHUB_WORKSPACE}/spinifex/.github/scripts/e2e-shard.sh" "${SHARD}" "${SHARDS}" \
-                "${GITHUB_WORKSPACE}/spinifex/.github/e2e-weights/single.txt" <<<"${TEST_LIST}") || {
+              SHARD_RE=$("${SHARDER}" "${SHARD}" "${SHARDS}" "${WEIGHTS}" <<<"${TEST_LIST}") &&
+              SKIP_RE=$("${SHARDER}" --skip "${SHARD}" "${SHARDS}" "${WEIGHTS}" <<<"${TEST_LIST}") || {
               echo "::error::cannot list or shard the single suite"; echo "rc=1" >> "$GITHUB_OUTPUT"; exit 0; }
             if [ -z "${SHARD_RE}" ]; then
               echo "shard ${SHARD}/${SHARDS} has no tests; skipping"
@@ -488,7 +492,7 @@ jobs:
               exit 0
             fi
             echo "shard ${SHARD}/${SHARDS}: $(tr '|' '\n' <<<"${SHARD_RE}" | wc -l) tests: ${SHARD_RE}"
-            TEST_RUN_FLAG="-test.run='${SHARD_RE}'"
+            if [ -n "${SKIP_RE}" ]; then TEST_RUN_FLAG="-test.skip='${SKIP_RE}'"; fi
           fi
           VM_HOST="tf-user@${{ steps.vm.outputs.wan_ip }}"
           SSH_KEY="${{ steps.vm.outputs.ssh_key }}"

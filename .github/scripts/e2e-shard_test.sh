@@ -29,6 +29,10 @@ check "benchmarks, examples and duplicates are dropped" "$(grep -c -E 'Benchmark
 check "shard 1 takes the heaviest" "$("$shard" 1 3 "$tmp/w" <"$tmp/names")" '^(TestA)$'
 check "lighter shards absorb the defaults" "$("$shard" 3 3 "$tmp/w" <"$tmp/names")" '^(TestC|TestD|TestF)$'
 
+check "--skip matches every other shard" \
+  "$("$shard" --skip 3 3 "$tmp/w" <"$tmp/names" | selected | tr '\n' ' ')" "TestA TestB TestE TestG "
+check "--skip of a lone shard matches nothing" "$("$shard" --skip 1 1 <"$tmp/names")" ""
+
 check "one shard selects everything" "$("$shard" 1 1 <"$tmp/names" | selected | wc -l)" "7"
 check "an empty shard prints nothing" "$(printf 'TestA\n' | "$shard" 2 2)" ""
 check "the same input gives the same answer" "$("$shard" 2 3 "$tmp/w" <"$tmp/names")" "$("$shard" 2 3 "$tmp/w" <"$tmp/names")"

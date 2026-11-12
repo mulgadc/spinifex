@@ -15,6 +15,7 @@ The nightly permutation sets are deliberately narrower than the full ones: those
 
 **The push E2E runs `single` as three shards** on separate `ci-single` envs (`E2E_SINGLE_SHARDS`, default 3; a `test_run` dispatch runs it whole).
 Each leg lists `single.test -test.list` itself and `.github/scripts/e2e-shard.sh` assigns the names longest-first by the seconds in `.github/e2e-weights/single.txt`, so every leg computes the same partition and a test missing from the weights still lands in exactly one shard.
+A leg passes the other shards' names to `-test.skip` and never names a test in `-test.run`, so opt-in tests such as `TestRebootLoop` stay skipped as in a whole-suite run.
 A failed or empty listing fails the leg, and any failed leg fails the `e2e` status.
 The rest of the push base set (`iam`, `cert`, `partialblock`) runs whole on a `ci-pseudo` env.
 

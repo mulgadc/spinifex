@@ -233,6 +233,7 @@ type ENIInfo struct {
 	VpcID              string
 	PrivateIpAddress   string
 	MacAddress         string
+	Description        string
 	Status             string
 	SecurityGroupIDs   []string
 	// PublicIpAddress / PublicIpPool are the address the interface is currently

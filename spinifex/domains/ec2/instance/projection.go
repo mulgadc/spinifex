@@ -201,12 +201,37 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 				}
 			}
 
+			projectInterfaceFields(&nicCopy, v.AccountID)
 			nics = append(nics, &nicCopy)
 		}
 		instanceCopy.NetworkInterfaces = nics
 	}
 
 	return &instanceCopy, stateMapped
+}
+
+// projectInterfaceFields stamps the fields AWS reports on every interface of an
+// instance, deriving PrivateIpAddresses from the primary address and its
+// association so the list cannot disagree with them. Mutates nic, not Attachment.
+func projectInterfaceFields(nic *ec2.InstanceNetworkInterface, ownerID string) {
+	nic.InterfaceType = aws.String(ec2.NetworkInterfaceTypeInterface)
+	nic.OwnerId = aws.String(ownerID)
+	if nic.Description == nil {
+		nic.Description = aws.String("")
+	}
+	if nic.Attachment != nil {
+		attachment := *nic.Attachment
+		attachment.NetworkCardIndex = aws.Int64(0)
+		nic.Attachment = &attachment
+	}
+	nic.PrivateIpAddresses = nil
+	if nic.PrivateIpAddress != nil {
+		nic.PrivateIpAddresses = []*ec2.InstancePrivateIpAddress{{
+			Primary:          aws.Bool(true),
+			PrivateIpAddress: nic.PrivateIpAddress,
+			Association:      nic.Association,
+		}}
+	}
 }
 
 // ParseInstanceIDFilter builds the set of instance IDs to filter on, rejecting

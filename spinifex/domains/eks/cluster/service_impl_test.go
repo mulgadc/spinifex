@@ -50,7 +50,7 @@ func TestEKSServiceImpl_ClusterLifecycleShimMode(t *testing.T) {
 	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
 
 	_, err = svc.DescribeCluster(context.Background(), &eks.DescribeClusterInput{Name: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	require.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err))
 
 	out, err := svc.ListClusters(context.Background(), &eks.ListClustersInput{}, testAccountID)
 	require.NoError(t, err)
@@ -172,7 +172,10 @@ func TestDescribeCluster_NotFoundWithFullDeps(t *testing.T) {
 	f := newEKSServiceFixture(t)
 
 	_, err := f.svc.DescribeCluster(context.Background(), &eks.DescribeClusterInput{Name: aws.String("ghost")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorEKSResourceNotFound, code)
+	assert.Equal(t, "No cluster found for name: ghost.", msg)
 }
 
 // DeleteCluster on an absent cluster must reach the KV lookup with full deps
@@ -197,7 +200,7 @@ func TestDeleteCluster_NotFoundWithFullDeps(t *testing.T) {
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
 	out, err := NewNATSEKSService(nc).DeleteCluster(context.Background(), deleteInput("ghost"), testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	require.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err))
 	assert.Nil(t, out)
 	assert.Empty(t, f.inst.terminateCalls, "absent cluster must trigger no teardown")
 }
@@ -230,10 +233,10 @@ func TestEKSServiceImpl_NodegroupMethodsShimMode(t *testing.T) {
 	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
 
 	_, err = svc.DescribeNodegroup(context.Background(), &eks.DescribeNodegroupInput{ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	require.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err))
 
 	_, err = svc.ListNodegroups(context.Background(), &eks.ListNodegroupsInput{ClusterName: aws.String("c1")}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	require.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err))
 
 	_, err = svc.UpdateNodegroupConfig(context.Background(), &eks.UpdateNodegroupConfigInput{ClusterName: aws.String("c1"), NodegroupName: aws.String("ng1")}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorServiceUnavailable)
@@ -260,7 +263,7 @@ func TestAccessEntry_UnknownClusterIsNotFound(t *testing.T) {
 	_, err := svc.CreateAccessEntry(context.Background(), &eks.CreateAccessEntryInput{
 		ClusterName: aws.String("missing"), PrincipalArn: aws.String(testPrincipalARN),
 	}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	require.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestAccessEntry_CreateDescribeListDelete(t *testing.T) {
@@ -304,7 +307,7 @@ func TestAccessEntry_CreateDescribeListDelete(t *testing.T) {
 	_, err = svc.DescribeAccessEntry(context.Background(), &eks.DescribeAccessEntryInput{
 		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN),
 	}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	require.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestAccessEntry_RejectsNodeType(t *testing.T) {
@@ -324,11 +327,11 @@ func TestAccessEntry_DescribeDeleteMissingIsNotFound(t *testing.T) {
 	_, err := svc.DescribeAccessEntry(context.Background(), &eks.DescribeAccessEntryInput{
 		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN),
 	}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	require.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err))
 	_, err = svc.DeleteAccessEntry(context.Background(), &eks.DeleteAccessEntryInput{
 		ClusterName: aws.String("c1"), PrincipalArn: aws.String(testPrincipalARN),
 	}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	require.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestAccessPolicy_AssociateListDisassociate(t *testing.T) {
@@ -573,19 +576,19 @@ func TestEKSServiceImpl_NodegroupTagMissingNotFound(t *testing.T) {
 	const arn = "arn:aws:eks:us-east-1:111122223333:nodegroup/c1/absent/abc123"
 
 	_, err := svc.ListTagsForResource(context.Background(), &eks.ListTagsForResourceInput{ResourceArn: aws.String(arn)}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	require.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err))
 
 	_, err = svc.TagResource(context.Background(), &eks.TagResourceInput{
 		ResourceArn: aws.String(arn),
 		Tags:        aws.StringMap(map[string]string{"k": "v"}),
 	}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	require.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err))
 
 	_, err = svc.UntagResource(context.Background(), &eks.UntagResourceInput{
 		ResourceArn: aws.String(arn),
 		TagKeys:     aws.StringSlice([]string{"k"}),
 	}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	require.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestEKSServiceImpl_TagsUnsupportedARNNotImplemented(t *testing.T) {

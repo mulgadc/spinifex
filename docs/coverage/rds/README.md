@@ -101,3 +101,16 @@ A parameter whose omission would create a false safety, security or availability
 | `RestoreDBInstanceFromDBSnapshot` |
 | `StartDBInstance` |
 | `StopDBInstance` |
+
+### Requires AWS SDK v2
+
+These 6 operations are in the pinned AWS model but not in AWS SDK for Go v1, the SDK Spinifex is built and tested on. They are out of scope until Spinifex moves to AWS SDK v2.
+
+| Operation |
+|---|
+| `CancelDBCapacityReservation` |
+| `CreateDBCapacityReservation` |
+| `DescribeDBCapacityReservations` |
+| `DescribeDBMajorEngineVersions` |
+| `DescribeServerlessV2PlatformVersions` |
+| `ModifyDBCapacityReservation` |

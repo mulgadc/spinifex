@@ -162,7 +162,7 @@ func TestDescribeInstanceStatus_IncludeAllAddsStoppedAsNotApplicable(t *testing.
 	assert.Equal(t, "stopped", *stopped.InstanceState.Name)
 	assert.Equal(t, "not-applicable", *stopped.InstanceStatus.Status)
 	assert.Equal(t, "not-applicable", *stopped.SystemStatus.Status)
-	assert.Equal(t, "not-applicable", *stopped.InstanceStatus.Details[0].Status)
+	assert.Nil(t, stopped.InstanceStatus.Details)
 	assert.Equal(t, "az-a", *stopped.AvailabilityZone)
 }
 
@@ -233,6 +233,8 @@ func TestBuildInstanceStatusFromInstance_PopulatesState(t *testing.T) {
 	assert.Equal(t, "az-a", *got.AvailabilityZone)
 	assert.Equal(t, "not-applicable", *got.InstanceStatus.Status)
 	assert.Equal(t, "not-applicable", *got.SystemStatus.Status)
+	assert.Nil(t, got.InstanceStatus.Details, "AWS reports a stopped instance's checks without details")
+	assert.Nil(t, got.SystemStatus.Details, "AWS reports a stopped instance's checks without details")
 }
 
 func TestBuildInstanceStatusFromInstance_FallbackStateName(t *testing.T) {

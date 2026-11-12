@@ -188,7 +188,7 @@ func (o *Owner) Delete(ctx context.Context, accountID, name string) error {
 	}
 	if len(users) > 0 {
 		return awserrors.Errorf(awserrors.ErrorDBSubnetGroupInvalidState,
-			"DB subnet group %s is still used by %s", name, strings.Join(users, ", "))
+			"Cannot delete the subnet group '%s' because at least one database instance: %s is still using it.", name, strings.Join(users, ", "))
 	}
 
 	if err := kv.Delete(ctx, Key(name)); err != nil {
@@ -203,7 +203,7 @@ func (o *Owner) Delete(ctx context.Context, accountID, name string) error {
 func get(ctx context.Context, kv *kvstore.Bucket, name string) (*Record, uint64, error) {
 	rec, rev, err := kvstore.On[Record](kv).Get(ctx, Key(name))
 	if errors.Is(err, kvstore.ErrNotFound) {
-		return nil, 0, awserrors.Errorf(awserrors.ErrorDBSubnetGroupNotFound, "DB subnet group %s not found", name)
+		return nil, 0, awserrors.Errorf(awserrors.ErrorDBSubnetGroupNotFound, "DB Subnet group '%s' not found.", name)
 	}
 	if err != nil {
 		return nil, 0, err

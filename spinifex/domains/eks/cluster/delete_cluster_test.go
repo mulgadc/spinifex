@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -255,6 +256,7 @@ func TestRLC5_DeleteClusterCPVPCReleasesNATGWEIPAfterRoutes(t *testing.T) {
 // GC or a retried delete-cluster already removed it) — while a real failure
 // still surfaces so the backstop retries.
 func TestRLC1_DeleteClusterCPVPCToleratesAbsentVPC(t *testing.T) {
+	t.Parallel()
 	cpVPC := []*fakeCPVPC{{
 		id:   "vpc-cp",
 		cidr: "10.0.0.0/16",
@@ -262,8 +264,9 @@ func TestRLC1_DeleteClusterCPVPCToleratesAbsentVPC(t *testing.T) {
 	}}
 
 	t.Run("absent VPC (NotFound) converges to success", func(t *testing.T) {
+		t.Parallel()
 		f := newEKSServiceFixture(t)
-		f.vpcMgr.vpcs = cpVPC
+		f.vpcMgr.vpcs = slices.Clone(cpVPC)
 		f.vpcMgr.deleteVpcErr = errors.New(awserrors.ErrorInvalidVpcIDNotFound)
 
 		require.NoErrorf(t, DeleteClusterCPVPC(context.Background(), f.svc.cpVPCDeps(), testAccountID, "alpha", nil),
@@ -271,8 +274,9 @@ func TestRLC1_DeleteClusterCPVPCToleratesAbsentVPC(t *testing.T) {
 	})
 
 	t.Run("a real DeleteVpc failure still surfaces", func(t *testing.T) {
+		t.Parallel()
 		f := newEKSServiceFixture(t)
-		f.vpcMgr.vpcs = cpVPC
+		f.vpcMgr.vpcs = slices.Clone(cpVPC)
 		f.vpcMgr.deleteVpcErr = errors.New(awserrors.ErrorDependencyViolation)
 
 		err := DeleteClusterCPVPC(context.Background(), f.svc.cpVPCDeps(), testAccountID, "alpha", nil)
@@ -297,7 +301,7 @@ func TestDeleteCluster_AllTeardownSucceedsSweepsKV(t *testing.T) {
 // teardown fix: the Set A private-endpoint ENI is an extra NIC on the cluster NLB's
 // LB VM, not that VM's primary ENI, so the instance-terminate cascade never reclaims
 // it. purgeClusterInfra must detach (store-clear) the stale attachment before
-// deleting, or DeleteNetworkInterface loops on InvalidNetworkInterface.InUse and the
+// deleting, or DeleteNetworkInterface loops on the in-use InvalidParameterValue and the
 // cluster wedges in DELETING. The fake models that in-use-until-detached semantics,
 // so the teardown only completes if detach precedes delete.
 func TestDeleteCluster_DetachesPrivateEndpointENIBeforeDelete(t *testing.T) {
@@ -611,7 +615,9 @@ func subscribeVPCDelete(t *testing.T, nc *nats.Conn) func() string {
 // surviving reference to its identity is the caller's persisted ManagedCPVPC
 // record (knownRefs). With no known record at all, there is nothing to GC.
 func TestDeleteClusterCPVPC_OVNGCSelection(t *testing.T) {
+	t.Parallel()
 	t.Run("VPC deleted this call: GC targets the live vpc id", func(t *testing.T) {
+		t.Parallel()
 		f := newEKSServiceFixture(t)
 		f.vpcMgr.vpcs = []*fakeCPVPC{{
 			id:   "vpc-cp-live",
@@ -625,6 +631,7 @@ func TestDeleteClusterCPVPC_OVNGCSelection(t *testing.T) {
 	})
 
 	t.Run("VPC already gone: GC falls back to the persisted state record", func(t *testing.T) {
+		t.Parallel()
 		f := newEKSServiceFixture(t) // vpcMgr has nothing tagged — already gone
 		nextVPCID := subscribeVPCDelete(t, f.svc.deps.NATSConn)
 
@@ -634,6 +641,7 @@ func TestDeleteClusterCPVPC_OVNGCSelection(t *testing.T) {
 	})
 
 	t.Run("VPC already gone, no known record: nothing to GC, no event published", func(t *testing.T) {
+		t.Parallel()
 		f := newEKSServiceFixture(t)
 		sub, err := f.svc.deps.NATSConn.SubscribeSync("vpc.delete")
 		require.NoError(t, err)

@@ -56,6 +56,7 @@ type ENIRecord struct {
 	// the instance and its IAM role under this account. Empty means same-account.
 	InstanceOwnerId  string            `json:"instance_owner_id,omitempty"`
 	DeviceIndex      int64             `json:"device_index"`
+	AttachTime       time.Time         `json:"attach_time,omitzero"`
 	PublicIpAddress  string            `json:"public_ip_address,omitempty"` // Auto-assigned or EIP
 	PublicIpPool     string            `json:"public_ip_pool,omitempty"`    // Pool name the public IP came from
 	SecurityGroupIds []string          `json:"security_group_ids,omitempty"`
@@ -277,7 +278,7 @@ func (s *VPCServiceImpl) deleteNetworkInterface(ctx context.Context, eniId, acco
 	// instance forces teardown. An ENI whose instance is gone is detached by
 	// terminate (historic PROP-LIFECYCLE-003 §2) and falls through as deletable.
 	if !force && eniIsLiveAttachment(&record) {
-		return nil, errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "Network interface '%s' is currently in use.", eniId)
 	}
 
 	s.releaseENISideEffects(ctx, eniId, accountID, &record)
@@ -376,6 +377,7 @@ func (s *VPCServiceImpl) DetachAndDeleteENI(ctx context.Context, accountID, eniI
 		record.AttachmentId = ""
 		record.InstanceId = ""
 		record.DeviceIndex = 0
+		record.AttachTime = time.Time{}
 
 		data, marshalErr := json.Marshal(record)
 		if marshalErr != nil {
@@ -427,6 +429,9 @@ func ValidateModifyNetworkInterfaceAttributeAttributes(input *ec2.ModifyNetworkI
 	if len(input.Groups) > 0 {
 		set = append(set, "securityGroups")
 	}
+	if input.Attachment != nil {
+		set = append(set, "attachment")
+	}
 	if len(set) == 0 {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -436,6 +441,9 @@ func ValidateModifyNetworkInterfaceAttributeAttributes(input *ec2.ModifyNetworkI
 	// Disabling source/dest check is unsupported: OVN port security enforces it.
 	if input.SourceDestCheck != nil && input.SourceDestCheck.Value != nil && !*input.SourceDestCheck.Value {
 		return errors.New(awserrors.ErrorUnsupported)
+	}
+	if input.Attachment != nil && (input.Attachment.AttachmentId == nil || *input.Attachment.AttachmentId == "") {
+		return errors.New(awserrors.ErrorMissingParameter)
 	}
 	return nil
 }
@@ -447,8 +455,9 @@ func multipleAttributesError(names []string) error {
 		"Fields for multiple attribute types specified: %s", strings.Join(names, ", "))
 }
 
-// ModifyNetworkInterfaceAttribute modifies one ENI attribute (security groups
-// or description). SourceDestCheck=true is accepted as a no-op.
+// ModifyNetworkInterfaceAttribute modifies one ENI attribute (security groups,
+// description or the attachment's DeleteOnTermination). SourceDestCheck=true
+// is accepted as a no-op.
 func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(ctx context.Context, input *ec2.ModifyNetworkInterfaceAttributeInput, accountID string) (*ec2.ModifyNetworkInterfaceAttributeOutput, error) {
 	if input.NetworkInterfaceId == nil || *input.NetworkInterfaceId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -488,6 +497,15 @@ func (s *VPCServiceImpl) ModifyNetworkInterfaceAttribute(ctx context.Context, in
 
 	if input.Description != nil && input.Description.Value != nil {
 		record.Description = *input.Description.Value
+	}
+
+	if input.Attachment != nil {
+		if record.AttachmentId == "" || record.AttachmentId != *input.Attachment.AttachmentId {
+			return nil, errors.New(awserrors.ErrorInvalidAttachmentIDNotFound)
+		}
+		if input.Attachment.DeleteOnTermination != nil {
+			record.DeleteOnTermination = aws.Bool(*input.Attachment.DeleteOnTermination)
+		}
 	}
 
 	data, err := json.Marshal(record)
@@ -695,17 +713,24 @@ func eniMatchesFilters(record *ENIRecord, filters map[string][]string) bool {
 // AttachENI marks an ENI as attached to an instance (internal use by RunInstances).
 // accountID scopes the lookup to the correct KV key.
 func (s *VPCServiceImpl) AttachENI(accountID, eniId, instanceId string, deviceIndex int64) (string, error) {
-	return s.attachENI(context.Background(), accountID, eniId, instanceId, deviceIndex, "")
+	return s.attachENI(context.Background(), accountID, eniId, instanceId, deviceIndex, "", nil)
+}
+
+// AttachNetworkInterface attaches an ENI on a customer's AttachNetworkInterface
+// call. As on AWS, the new attachment keeps the interface when the instance
+// terminates, written in the same CAS as the attach.
+func (s *VPCServiceImpl) AttachNetworkInterface(accountID, eniId, instanceId string, deviceIndex int64) (string, error) {
+	return s.attachENI(context.Background(), accountID, eniId, instanceId, deviceIndex, "", aws.Bool(false))
 }
 
 // AttachENIWithOwner attaches the ENI and records instanceOwnerID as the owner
 // of the attached instance in the same write, so no later write can lose the
 // stamp. An empty owner leaves the record's owner untouched.
 func (s *VPCServiceImpl) AttachENIWithOwner(accountID, eniId, instanceId string, deviceIndex int64, instanceOwnerID string) (string, error) {
-	return s.attachENI(context.Background(), accountID, eniId, instanceId, deviceIndex, instanceOwnerID)
+	return s.attachENI(context.Background(), accountID, eniId, instanceId, deviceIndex, instanceOwnerID, nil)
 }
 
-func (s *VPCServiceImpl) attachENI(ctx context.Context, accountID, eniId, instanceId string, deviceIndex int64, instanceOwnerID string) (string, error) {
+func (s *VPCServiceImpl) attachENI(ctx context.Context, accountID, eniId, instanceId string, deviceIndex int64, instanceOwnerID string, deleteOnTermination *bool) (string, error) {
 	attachmentId := awsidentifiers.GenerateResourceID("eni-attach")
 	err := s.casENI(ctx, kvstore.AccountKey(accountID, eniId), eniId, func(record *ENIRecord) error {
 		if record.Status == "in-use" {
@@ -715,13 +740,15 @@ func (s *VPCServiceImpl) attachENI(ctx context.Context, accountID, eniId, instan
 		record.AttachmentId = attachmentId
 		record.InstanceId = instanceId
 		record.DeviceIndex = deviceIndex
+		record.AttachTime = time.Now().UTC()
 		if instanceOwnerID != "" {
 			record.InstanceOwnerId = instanceOwnerID
 		}
-		// Default DeleteOnTermination to true on first attach, matching what
-		// DescribeNetworkInterfaces already advertises; a record carrying an
-		// explicit value from an earlier attach keeps it across re-attach.
-		if record.DeleteOnTermination == nil {
+		// An explicit value is stamped; otherwise default to true on first attach
+		// and keep an explicit value from an earlier attach across re-attach.
+		if deleteOnTermination != nil {
+			record.DeleteOnTermination = aws.Bool(*deleteOnTermination)
+		} else if record.DeleteOnTermination == nil {
 			record.DeleteOnTermination = aws.Bool(true)
 		}
 		return nil
@@ -752,6 +779,7 @@ func (s *VPCServiceImpl) DetachENI(ctx context.Context, accountID, eniId string)
 	record.AttachmentId = ""
 	record.InstanceId = ""
 	record.DeviceIndex = 0
+	record.AttachTime = time.Time{}
 
 	data, err := json.Marshal(record)
 	if err != nil {
@@ -1159,8 +1187,12 @@ func (s *VPCServiceImpl) eniRecordToEC2(record *ENIRecord, accountID string, gro
 			InstanceId:          aws.String(record.InstanceId),
 			InstanceOwnerId:     aws.String(instanceOwner),
 			DeviceIndex:         aws.Int64(record.DeviceIndex),
+			NetworkCardIndex:    aws.Int64(0),
 			Status:              aws.String("attached"),
 			DeleteOnTermination: aws.Bool(record.DeleteOnTermination == nil || *record.DeleteOnTermination),
+		}
+		if !record.AttachTime.IsZero() {
+			eni.Attachment.AttachTime = aws.Time(record.AttachTime)
 		}
 	}
 

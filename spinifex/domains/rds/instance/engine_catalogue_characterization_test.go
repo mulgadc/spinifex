@@ -25,7 +25,7 @@ func TestValidateMasterUserPassword_ExactCodesAndMessages(t *testing.T) {
 
 	tooShort := ValidateMasterUserPassword("short1")
 	require.Error(t, tooShort)
-	assert.Equal(t, "MasterUserPassword must be between 8 and 128 characters: InvalidParameterValue", tooShort.Error())
+	assert.Equal(t, "The parameter MasterUserPassword is not a valid password because it is shorter than 8 characters.: InvalidParameterValue", tooShort.Error())
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, awserrors.ValidErrorCodeFromError(tooShort),
 		"this one is built with awserrors.Errorf, so it resolves correctly")
 

@@ -59,3 +59,42 @@ Clusters, services and tasks run on EC2 container instances. There is no Fargate
 | `UntagResource` |
 | `UpdateContainerInstancesState` |
 | `UpdateService` |
+
+### Requires AWS SDK v2
+
+These 32 operations are in the pinned AWS model but not in AWS SDK for Go v1, the SDK Spinifex is built and tested on. They are out of scope until Spinifex moves to AWS SDK v2.
+
+| Operation |
+|---|
+| `AssociateGatewayWithCluster` |
+| `ContinueServiceDeployment` |
+| `CreateDaemon` |
+| `CreateExpressGatewayService` |
+| `CreateGateway` |
+| `DeleteDaemon` |
+| `DeleteDaemonTaskDefinition` |
+| `DeleteExpressGatewayService` |
+| `DeleteGateway` |
+| `DescribeDaemon` |
+| `DescribeDaemonDeployments` |
+| `DescribeDaemonRevisions` |
+| `DescribeDaemonTaskDefinition` |
+| `DescribeExpressGatewayService` |
+| `DescribeGateway` |
+| `DescribeGatewayResources` |
+| `DescribeGatewayRoute` |
+| `DescribeServiceDeployments` |
+| `DescribeServiceRevisions` |
+| `DisassociateGatewayFromCluster` |
+| `ListDaemonDeployments` |
+| `ListDaemonTaskDefinitions` |
+| `ListDaemons` |
+| `ListGatewayClusterAssociations` |
+| `ListGatewayRoutes` |
+| `ListGateways` |
+| `ListServiceDeployments` |
+| `RegisterDaemonTaskDefinition` |
+| `StopServiceDeployment` |
+| `UpdateDaemon` |
+| `UpdateExpressGatewayService` |
+| `UpdateGateway` |

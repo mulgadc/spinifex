@@ -271,6 +271,11 @@ func (s *ELBv2ServiceImpl) DescribeRules(ctx context.Context, input *elbv2.Descr
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
+	page, nextMarker, err := pageResults(out.Rules, input.Marker, input.PageSize)
+	if err != nil {
+		return nil, err
+	}
+	out.Rules, out.NextMarker = page, nextMarker
 	return out, nil
 }
 

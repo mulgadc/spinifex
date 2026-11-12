@@ -545,6 +545,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 				harness.Detail(t, "nat_gw", natGWID)
 
 				waitForNATGatewayState(t, c, natGWID, "available")
+				assertNATGatewayAddressShape(t, c, natGWID, natAllocID)
 
 				// Route table -> associate -> CreateRoute. The association
 				// must exist before the route so the SNAT publication fires
@@ -904,6 +905,31 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 		require.NoError(t, err, "release-address")
 		eipReleased = true
 	})
+}
+
+// assertNATGatewayAddressShape checks the gateway's address against AWS: primary,
+// succeeded, and under the association DescribeAddresses reports for the EIP.
+func assertNATGatewayAddressShape(t *testing.T, c *harness.AWSClient, natGWID, allocID string) {
+	t.Helper()
+	harness.Step(t, "describe-nat-gateways %s address shape", natGWID)
+	ngwOut, err := c.EC2.DescribeNatGateways(&ec2.DescribeNatGatewaysInput{
+		NatGatewayIds: []*string{aws.String(natGWID)},
+	})
+	require.NoError(t, err, "describe-nat-gateways")
+	require.Len(t, ngwOut.NatGateways, 1)
+	require.Len(t, ngwOut.NatGateways[0].NatGatewayAddresses, 1)
+	addr := ngwOut.NatGateways[0].NatGatewayAddresses[0]
+	assert.Equal(t, allocID, aws.StringValue(addr.AllocationId))
+	assert.True(t, aws.BoolValue(addr.IsPrimary), "IsPrimary")
+	assert.Equal(t, ec2.NatGatewayAddressStatusSucceeded, aws.StringValue(addr.Status))
+
+	eipOut, err := c.EC2.DescribeAddresses(&ec2.DescribeAddressesInput{
+		AllocationIds: []*string{aws.String(allocID)},
+	})
+	require.NoError(t, err, "describe-addresses")
+	require.Len(t, eipOut.Addresses, 1)
+	require.NotEmpty(t, aws.StringValue(eipOut.Addresses[0].AssociationId), "NAT EIP AssociationId")
+	assert.Equal(t, aws.StringValue(eipOut.Addresses[0].AssociationId), aws.StringValue(addr.AssociationId))
 }
 
 // waitForNATGatewayState polls DescribeNatGateways until State == target.

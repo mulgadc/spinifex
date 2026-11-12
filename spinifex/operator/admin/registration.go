@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
@@ -75,6 +76,11 @@ type Deps struct {
 
 	// NetworkTests holds node-to-node throughput tests; nil refuses them.
 	NetworkTests NetworkTestStore
+
+	// teardownOptions tune the teardown engine in tests; nil in production.
+	teardownOptions []accountteardown.ClusterOption
+	// networkTestServeTimeout overrides the serve deadline in tests; zero in production.
+	networkTestServeTimeout time.Duration
 }
 
 // adminActions are the actions only the super-admin account may call.

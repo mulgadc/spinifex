@@ -60,6 +60,16 @@ I1103 03:00:03.123456    1234 kubelet.go:1000] SyncLoop (UPDATE, "api")
 EOF
 check "filter: info and debug lines are dropped" "0" "$(forwarded)"
 
+# --- filter: the lines an agent exit leaves behind must pass, redacted ---
+forward filter_exit <<'EOF'
+time="2026-11-03T03:00:08Z" level=fatal msg="flannel exited: failed to register flannel network: token K1009f3c2d4e5::server:s3cr3tExit"
+panic: runtime error: invalid memory address or nil pointer dereference
+fatal error: concurrent map writes
+goroutine 1 [running]:
+EOF
+check "filter: fatal, panic and fatal error lines pass" "3" "$(forwarded)"
+check "filter: a fatal line is still redacted" "0" "$(grep -c 's3cr3tExit' "${OUT}" || true)"
+
 # --- redaction: one case per secret shape ---
 redact() { # redact <name> <line> <secret-that-must-not-appear>
     forward "redact_$1" <<EOF

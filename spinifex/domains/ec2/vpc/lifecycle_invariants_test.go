@@ -106,7 +106,7 @@ func TestRLC_ENINonDeadlock(t *testing.T) {
 	_, err = svc.DeleteNetworkInterface(context.Background(), &ec2.DeleteNetworkInterfaceInput{
 		NetworkInterfaceId: aws.String(eniId),
 	}, testAccountID)
-	assert.ErrorContainsf(t, err, "InvalidNetworkInterface.InUse",
+	assert.ErrorContainsf(t, err, "is currently in use.: InvalidParameterValue",
 		"historic PROP-LIFECYCLE-003 §2: the in-use guard must still protect an ENI held by a different live instance")
 
 	// The owning instance's force teardown must break the deadlock.
@@ -166,7 +166,7 @@ func TestRLC3_VPCFamilyDeleteGuardsLiveDependents(t *testing.T) {
 		require.NoError(t, err)
 
 		_, err = svc.DeleteNetworkInterface(context.Background(), &ec2.DeleteNetworkInterfaceInput{NetworkInterfaceId: aws.String(eniId)}, testAccountID)
-		assert.ErrorContainsf(t, err, awserrors.ErrorInvalidNetworkInterfaceInUse,
+		assert.ErrorContainsf(t, err, "is currently in use.: "+awserrors.ErrorInvalidParameterValue,
 			"Q-61 / Q-78: a plain DeleteNetworkInterface must reject an ENI attached to a live instance")
 	})
 

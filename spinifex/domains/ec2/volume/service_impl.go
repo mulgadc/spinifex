@@ -344,16 +344,7 @@ func (s *VolumeServiceImpl) createVolume(ctx context.Context, input *ec2.CreateV
 	return &ec2.Volume{VolumeId: aws.String(volumeID), Size: aws.Int64(size), VolumeType: aws.String(volumeType),
 		State: aws.String(string(initialState)), AvailabilityZone: input.AvailabilityZone, CreateTime: aws.Time(now),
 		Iops: aws.Int64(int64(iops)), Throughput: aws.Int64(int64(throughput)), Encrypted: aws.Bool(encrypted),
-		SnapshotId: snapshotIDOrNil(snapshotID), Tags: awstags.MapToEC2(tags)}, nil
-}
-
-// snapshotIDOrNil keeps SnapshotId absent for a volume that was not cloned,
-// rather than serialising an empty string.
-func snapshotIDOrNil(snapshotID string) *string {
-	if snapshotID == "" {
-		return nil
-	}
-	return aws.String(snapshotID)
+		SnapshotId: aws.String(snapshotID), MultiAttachEnabled: aws.Bool(false), Tags: awstags.MapToEC2(tags)}, nil
 }
 
 // requireProvider fails the call when no EBS provider is wired. Every write
@@ -941,15 +932,14 @@ func metadataVolumeToEC2(meta ebsmetadata.Volume) *ec2.Volume {
 		VolumeId: aws.String(meta.VolumeID), Size: aws.Int64(safecast.Uint64ToInt64(meta.CapacityGiB)),
 		State: aws.String(state), AvailabilityZone: aws.String(meta.AvailabilityZone), CreateTime: aws.Time(meta.CreatedAt),
 		VolumeType: aws.String(volumeType), Encrypted: aws.Bool(meta.Encrypted), Tags: awstags.MapToEC2(meta.Tags),
+		// AWS reports SnapshotId as "" for a volume not made from a snapshot.
+		SnapshotId: aws.String(meta.SnapshotID), MultiAttachEnabled: aws.Bool(false),
 	}
 	if meta.IOPS > 0 {
 		volume.Iops = aws.Int64(int64(meta.IOPS))
 	}
 	if meta.Throughput > 0 {
 		volume.Throughput = aws.Int64(int64(meta.Throughput))
-	}
-	if meta.SnapshotID != "" {
-		volume.SnapshotId = aws.String(meta.SnapshotID)
 	}
 	if meta.AttachedInstance != "" {
 		// A recorded attachment on a volume that is not in-use is drift, so the

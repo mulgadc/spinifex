@@ -145,6 +145,28 @@ func TestAttachNetworkInterface_DaemonErrorResponse(t *testing.T) {
 	assert.EqualError(t, err, awserrors.ErrorIncorrectInstanceState)
 }
 
+// The daemon's AWS error text must reach the client alongside the code.
+func TestAttachNetworkInterface_DaemonErrorKeepsMessage(t *testing.T) {
+	nc := newTestNATS(t)
+	const text = "Instance 'i-msg' already has an interface attached at device index '1'."
+
+	sub, err := nc.Subscribe("ec2.cmd.i-msg", func(msg *nats.Msg) {
+		_ = msg.Respond(awserrors.GenerateErrorPayloadWithMessage(awserrors.ErrorInvalidParameterValue, text))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	_, err = AttachNetworkInterface(context.Background(), &ec2.AttachNetworkInterfaceInput{
+		NetworkInterfaceId: aws.String("eni-msg"),
+		InstanceId:         aws.String("i-msg"),
+		DeviceIndex:        aws.Int64(1),
+	}, nc, testAccountID)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, text, msg)
+}
+
 func TestAttachNetworkInterface_MalformedDaemonResponse(t *testing.T) {
 	nc := newTestNATS(t)
 

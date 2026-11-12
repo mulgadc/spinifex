@@ -1351,16 +1351,6 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 		return nil, err
 	}
 
-	// Check for duplicate name
-	existing, err := s.store.GetLoadBalancerByName(ctx, name, accountID)
-	if err != nil {
-		slog.ErrorContext(ctx, "CreateLoadBalancer: failed to check duplicate name", "name", name, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	if existing != nil {
-		return nil, errors.New(awserrors.ErrorELBv2DuplicateLoadBalancer)
-	}
-
 	// Resolve load balancer type — default to application (ALB).
 	lbType := LoadBalancerTypeApplication
 	if input.Type != nil && *input.Type != "" {
@@ -1394,6 +1384,20 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
 	}
 
+	subnets := flattenSubnetIDs(input.Subnets, input.SubnetMappings)
+
+	var securityGroups []string
+	for _, sg := range input.SecurityGroups {
+		if sg != nil {
+			securityGroups = append(securityGroups, *sg)
+		}
+	}
+
+	want := &LoadBalancerRecord{Type: lbType, Scheme: scheme, Subnets: subnets, SecurityGroups: securityGroups, Tags: tags}
+	if out, err := s.repeatCreateLoadBalancer(ctx, want, name, accountID); out != nil || err != nil {
+		return out, err
+	}
+
 	lbID := awsidentifiers.GenerateResourceID("lb")
 	lbArn := resourcearn.FormatELBv2LoadBalancer(s.region, accountID, name, lbID, lbType)
 	arnPathSegment := resourcearn.ELBv2LBPathSegment(lbType)
@@ -1417,19 +1421,14 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if claimDup {
+		// A create that won the claim may have persisted its record since the lookup above.
+		if out, err := s.repeatCreateLoadBalancer(ctx, want, name, accountID); out != nil || err != nil {
+			return out, err
+		}
 		return nil, errors.New(awserrors.ErrorELBv2DuplicateLoadBalancer)
 	}
 	if !claimOK {
 		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-
-	subnets := flattenSubnetIDs(input.Subnets, input.SubnetMappings)
-
-	var securityGroups []string
-	for _, sg := range input.SecurityGroups {
-		if sg != nil {
-			securityGroups = append(securityGroups, *sg)
-		}
 	}
 
 	// Create ENIs in each subnet (when VPC service is available)
@@ -1560,7 +1559,8 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 			// Drive the data-plane launch inline so the returned record carries the
 			// allocated front-end IP. The caller is off the gateway responder, so
 			// 267.4 does not apply.
-			if err := s.provisionLBDataPlane(ctx, lc); err != nil {
+			launched, err := s.provisionLBDataPlane(ctx, lc)
+			if err != nil {
 				slog.ErrorContext(ctx, "CreateLoadBalancerSync: data-plane launch failed", "lbArn", lbArn, "err", err)
 				// Unwind completely rather than leaving the failed record behind.
 				// A synchronous caller gets an error and no ARN, and this path's
@@ -1576,11 +1576,8 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 				}
 				return nil, lbLaunchError(err)
 			}
-			launched, lerr := s.store.GetLoadBalancerByArn(ctx, lbArn)
-			if lerr != nil || launched == nil {
-				slog.ErrorContext(ctx, "CreateLoadBalancerSync: reload after launch failed", "lbArn", lbArn, "err", lerr)
-				return nil, errors.New(awserrors.ErrorServerInternal)
-			}
+			// Return the record the launch wrote: a re-read can be answered by a
+			// replica that has not applied that write yet, losing the front-end IP.
 			record = launched
 		} else {
 			s.launchWG.Go(func() {
@@ -1604,6 +1601,41 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 	}, nil
 }
 
+// repeatCreateLoadBalancer resolves a create for a name the account already holds:
+// the stored load balancer when its settings and tags equal want's, otherwise
+// DuplicateLoadBalancerName. Both results are nil when no record holds the name.
+func (s *ELBv2ServiceImpl) repeatCreateLoadBalancer(ctx context.Context, want *LoadBalancerRecord, name, accountID string) (*elbv2.CreateLoadBalancerOutput, error) {
+	existing, err := s.store.GetLoadBalancerByName(ctx, name, accountID)
+	if err != nil {
+		slog.ErrorContext(ctx, "CreateLoadBalancer: failed to check duplicate name", "name", name, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if existing == nil {
+		return nil, nil
+	}
+	if existing.Type == want.Type && existing.Scheme == want.Scheme &&
+		sameStringSet(existing.Subnets, want.Subnets) && sameStringSet(existing.SecurityGroups, want.SecurityGroups) &&
+		maps.Equal(existing.Tags, want.Tags) {
+		return &elbv2.CreateLoadBalancerOutput{
+			LoadBalancers: []*elbv2.LoadBalancer{s.lbRecordToSDK(ctx, existing)},
+		}, nil
+	}
+	return nil, awserrors.Errorf(awserrors.ErrorELBv2DuplicateLoadBalancer,
+		"A load balancer with the same name '%s' exists, but with different settings", name)
+}
+
+// sameStringSet reports whether a and b hold the same distinct values in any order.
+func sameStringSet(a, b []string) bool {
+	as, bs := make(map[string]bool, len(a)), make(map[string]bool, len(b))
+	for _, v := range a {
+		as[v] = true
+	}
+	for _, v := range b {
+		bs[v] = true
+	}
+	return maps.Equal(as, bs)
+}
+
 // lbLaunchCtx carries the immutable inputs for an asynchronous LB-VM launch.
 type lbLaunchCtx struct {
 	lbID      string
@@ -1621,25 +1653,26 @@ type lbLaunchCtx struct {
 // record: on success the instance/VPC-IP/host-ports and the per-AZ front-end IP
 // are recorded and the LB stays provisioning until the lb-agent heartbeats; on
 // failure the record is marked failed so the API reflects the broken data plane.
+// On success it returns the record it persisted.
 // Synchronous — launchLBVM (a bounded LaunchSystemInstance request/reply) returns
 // the allocated front-end IP before the guest boot completes. Callers choose
 // whether to run it inline (CreateLoadBalancerSync) or on a background goroutine
 // (launchLBVMAsync).
-func (s *ELBv2ServiceImpl) provisionLBDataPlane(ctx context.Context, lc lbLaunchCtx) error {
+func (s *ELBv2ServiceImpl) provisionLBDataPlane(ctx context.Context, lc lbLaunchCtx) (*LoadBalancerRecord, error) {
 	launch := s.launchLBVM(ctx, lc.lbID, lc.scheme, lc.eniIDs, lc.subnets, lc.accountID, lc.crossAccountENIs)
 
 	record, err := s.store.GetLoadBalancerByArn(ctx, lc.lbArn)
 	if err != nil || record == nil {
-		return fmt.Errorf("reload record for %s: %w", lc.lbArn, err)
+		return nil, fmt.Errorf("reload record for %s: %w", lc.lbArn, err)
 	}
 
 	if launch.failed {
 		record.State = StateFailed
 		record.StateReason = launch.failReason
 		if putErr := s.store.PutLoadBalancer(ctx, record); putErr != nil {
-			return fmt.Errorf("persist failed state for %s: %w", lc.lbArn, putErr)
+			return nil, fmt.Errorf("persist failed state for %s: %w", lc.lbArn, putErr)
 		}
-		return fmt.Errorf("lb-vm launch failed for %s: %s", lc.lbArn, launch.failReason)
+		return nil, fmt.Errorf("lb-vm launch failed for %s: %s", lc.lbArn, launch.failReason)
 	}
 
 	record.InstanceID = launch.instanceID
@@ -1649,9 +1682,9 @@ func (s *ELBv2ServiceImpl) provisionLBDataPlane(ctx context.Context, lc lbLaunch
 		record.AvailZones[0].PublicIP = launch.publicIP
 	}
 	if putErr := s.store.PutLoadBalancer(ctx, record); putErr != nil {
-		return fmt.Errorf("persist launch result for %s: %w", lc.lbArn, putErr)
+		return nil, fmt.Errorf("persist launch result for %s: %w", lc.lbArn, putErr)
 	}
-	return nil
+	return record, nil
 }
 
 // lbFrontendIP is the address the load balancer's DNS name should resolve to:
@@ -1705,7 +1738,7 @@ func (s *ELBv2ServiceImpl) DesiredDNSChanges() (changes []dns.Change, ok bool) {
 // by CreateLoadBalancer; failures are logged (the record is already marked
 // failed inside provisionLBDataPlane). Runs after CreateLoadBalancer has returned.
 func (s *ELBv2ServiceImpl) launchLBVMAsync(ctx context.Context, lc lbLaunchCtx) {
-	if err := s.provisionLBDataPlane(ctx, lc); err != nil {
+	if _, err := s.provisionLBDataPlane(ctx, lc); err != nil {
 		slog.ErrorContext(ctx, "CreateLoadBalancer: async launch failed", "lbArn", lc.lbArn, "err", err)
 	}
 }
@@ -1855,6 +1888,11 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(ctx context.Context, input *elbv2.
 		// Idempotent: return success for absent/unowned LBs.
 		return &elbv2.DeleteLoadBalancerOutput{}, nil
 	}
+	// Refuse before any cascade so a protected balancer loses nothing.
+	if deletionProtected(lb) {
+		return nil, awserrors.Errorf(awserrors.ErrorOperationNotPermitted,
+			"Load balancer '%s' cannot be deleted because deletion protection is enabled", lb.LoadBalancerArn)
+	}
 
 	// Exclude data-path repair before anything touches the VM or its ENIs.
 	if err := s.store.SuspendLBHealth(ctx, lb.LoadBalancerID); err != nil {
@@ -1934,6 +1972,16 @@ func (s *ELBv2ServiceImpl) DeleteLoadBalancer(ctx context.Context, input *elbv2.
 	return &elbv2.DeleteLoadBalancerOutput{}, nil
 }
 
+// deletionProtected reads deletion_protection.enabled from the stored
+// attributes, falling back to the type's default.
+func deletionProtected(lb *LoadBalancerRecord) bool {
+	v, ok := lb.Attributes[AttrDeletionProtection]
+	if !ok {
+		v = DefaultLoadBalancerAttributes(lb.Type)[AttrDeletionProtection]
+	}
+	return v == "true"
+}
+
 // releaseLBNameClaim drops the per-account LB name claim. Failures are logged but
 // not fatal; leaked claims are reclaimed by the crash-orphan path on next create.
 func (s *ELBv2ServiceImpl) releaseLBNameClaim(ctx context.Context, name, accountID string) {
@@ -1965,6 +2013,10 @@ func (s *ELBv2ServiceImpl) reapFloatingIPNAT(lb *LoadBalancerRecord) {
 }
 
 func (s *ELBv2ServiceImpl) DescribeLoadBalancers(ctx context.Context, input *elbv2.DescribeLoadBalancersInput, accountID string) (*elbv2.DescribeLoadBalancersOutput, error) {
+	if (input.PageSize != nil || aws.StringValue(input.Marker) != "") && (len(input.Names) > 0 || len(input.LoadBalancerArns) > 0) {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError, "Pagination is not supported when specifying load balancers")
+	}
+
 	allLBs, err := s.store.ListLoadBalancers(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "DescribeLoadBalancers: failed to list LBs", "err", err)
@@ -2026,8 +2078,17 @@ func (s *ELBv2ServiceImpl) DescribeLoadBalancers(ctx context.Context, input *elb
 		}
 	}
 
+	slices.SortFunc(result, func(a, b *elbv2.LoadBalancer) int {
+		return strings.Compare(aws.StringValue(a.LoadBalancerName), aws.StringValue(b.LoadBalancerName))
+	})
+	page, nextMarker, err := pageResults(result, input.Marker, input.PageSize)
+	if err != nil {
+		return nil, err
+	}
+
 	return &elbv2.DescribeLoadBalancersOutput{
-		LoadBalancers: result,
+		LoadBalancers: page,
+		NextMarker:    nextMarker,
 	}, nil
 }
 
@@ -2350,6 +2411,12 @@ func (s *ELBv2ServiceImpl) DescribeTargetGroups(ctx context.Context, input *elbv
 		}
 	}
 
+	if lbArn := aws.StringValue(input.LoadBalancerArn); lbArn != "" {
+		if err := s.requireLoadBalancer(ctx, lbArn, accountID); err != nil {
+			return nil, err
+		}
+	}
+
 	allTGs, err := s.store.ListTargetGroups(ctx)
 	if err != nil {
 		slog.ErrorContext(ctx, "DescribeTargetGroups: failed to list TGs", "err", err)
@@ -2406,7 +2473,7 @@ func (s *ELBv2ServiceImpl) DescribeTargetGroups(ctx context.Context, input *elbv
 	slices.SortFunc(result, func(a, b *elbv2.TargetGroup) int {
 		return strings.Compare(aws.StringValue(a.TargetGroupName), aws.StringValue(b.TargetGroupName))
 	})
-	page, nextMarker, err := pageTargetGroups(result, input.Marker, input.PageSize)
+	page, nextMarker, err := pageResults(result, input.Marker, input.PageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -2417,22 +2484,25 @@ func (s *ELBv2ServiceImpl) DescribeTargetGroups(ctx context.Context, input *elbv
 	}, nil
 }
 
-// pageTargetGroups slices one page out of the sorted result. The marker is an
-// opaque offset and AWS allows a PageSize of 1 to 400; without one the whole
-// result is returned so internal callers that never page see every group.
-func pageTargetGroups(items []*elbv2.TargetGroup, marker *string, pageSize *int64) ([]*elbv2.TargetGroup, *string, error) {
+// pageResults slices one page out of a stably ordered result. The marker is
+// an opaque offset and AWS allows a PageSize of 1 to 400; without one the
+// whole result is returned so internal callers that never page see everything.
+func pageResults[T any](items []T, marker *string, pageSize *int64) ([]T, *string, error) {
 	start := 0
 	if aws.StringValue(marker) != "" {
 		n, err := strconv.Atoi(*marker)
 		if err != nil || n < 0 {
-			return nil, nil, errors.New(awserrors.ErrorValidationError)
+			return nil, nil, awserrors.Errorf(awserrors.ErrorValidationError, "Invalid Marker Id: %s", *marker)
 		}
 		start = min(n, len(items))
 	}
 	size := len(items)
 	if pageSize != nil {
-		if *pageSize < 1 || *pageSize > 400 {
-			return nil, nil, errors.New(awserrors.ErrorValidationError)
+		switch {
+		case *pageSize < 1:
+			return nil, nil, awserrors.Errorf(awserrors.ErrorValidationError, "1 validation error detected: Value '%d' at 'pageSize' failed to satisfy constraint: Member must have value greater than or equal to 1", *pageSize)
+		case *pageSize > 400:
+			return nil, nil, awserrors.Errorf(awserrors.ErrorValidationError, "1 validation error detected: Value '%d' at 'pageSize' failed to satisfy constraint: Member must have value less than or equal to 400", *pageSize)
 		}
 		size = int(*pageSize)
 	}
@@ -3289,18 +3359,8 @@ func (s *ELBv2ServiceImpl) DescribeListeners(ctx context.Context, input *elbv2.D
 	var err error
 
 	if lbArn := aws.StringValue(input.LoadBalancerArn); lbArn != "" {
-		// An unparseable ARN is reported as not found rather than reaching the
-		// KV store, which rejects some characters as an invalid key.
-		var lb *LoadBalancerRecord
-		if parsed, ok := resourcearn.ParseELBv2(lbArn); ok && parsed.Kind == resourcearn.ELBv2LoadBalancer {
-			var lbErr error
-			if lb, lbErr = s.store.GetLoadBalancerByArn(ctx, lbArn); lbErr != nil {
-				slog.ErrorContext(ctx, "DescribeListeners: failed to get LB", "lbArn", lbArn, "err", lbErr)
-				return nil, errors.New(awserrors.ErrorServerInternal)
-			}
-		}
-		if lb == nil || lb.AccountID != accountID {
-			return nil, awserrors.Errorf(awserrors.ErrorELBv2LoadBalancerNotFound, "Load balancer '%s' not found", lbArn)
+		if err := s.requireLoadBalancer(ctx, lbArn, accountID); err != nil {
+			return nil, err
 		}
 		listeners, err = s.store.ListListenersByLB(ctx, lbArn)
 	} else {
@@ -3313,9 +3373,11 @@ func (s *ELBv2ServiceImpl) DescribeListeners(ctx context.Context, input *elbv2.D
 
 	// Filter by ARN if specified
 	arnFilter := make(map[string]bool)
+	missing := make(map[string]bool)
 	for _, arn := range input.ListenerArns {
 		if arn != nil {
 			arnFilter[*arn] = true
+			missing[*arn] = true
 		}
 	}
 
@@ -3328,11 +3390,42 @@ func (s *ELBv2ServiceImpl) DescribeListeners(ctx context.Context, input *elbv2.D
 			continue
 		}
 		result = append(result, s.listenerRecordToSDK(l))
+		delete(missing, l.ListenerArn)
+	}
+	if len(missing) > 0 {
+		return nil, awserrors.Errorf(awserrors.ErrorELBv2ListenerNotFound, "One or more listeners not found")
+	}
+
+	slices.SortFunc(result, func(a, b *elbv2.Listener) int {
+		return strings.Compare(aws.StringValue(a.ListenerArn), aws.StringValue(b.ListenerArn))
+	})
+	page, nextMarker, err := pageResults(result, input.Marker, input.PageSize)
+	if err != nil {
+		return nil, err
 	}
 
 	return &elbv2.DescribeListenersOutput{
-		Listeners: result,
+		Listeners:  page,
+		NextMarker: nextMarker,
 	}, nil
+}
+
+// requireLoadBalancer fails with AWS's LoadBalancerNotFound unless lbArn names a
+// load balancer of accountID. An unparseable ARN is reported as not found rather
+// than reaching the KV store, which rejects some characters as an invalid key.
+func (s *ELBv2ServiceImpl) requireLoadBalancer(ctx context.Context, lbArn, accountID string) error {
+	var lb *LoadBalancerRecord
+	if parsed, ok := resourcearn.ParseELBv2(lbArn); ok && parsed.Kind == resourcearn.ELBv2LoadBalancer {
+		var err error
+		if lb, err = s.store.GetLoadBalancerByArn(ctx, lbArn); err != nil {
+			slog.ErrorContext(ctx, "elbv2: failed to get LB", "lbArn", lbArn, "err", err)
+			return errors.New(awserrors.ErrorServerInternal)
+		}
+	}
+	if lb == nil || lb.AccountID != accountID {
+		return awserrors.Errorf(awserrors.ErrorELBv2LoadBalancerNotFound, "Load balancer '%s' not found", lbArn)
+	}
+	return nil
 }
 
 // --- Tag operations ---

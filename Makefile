@@ -276,8 +276,15 @@ install-microvm: $(MICROVM_ARTIFACTS) $(QBOOT_ARTIFACTS) ## Install microVM arti
 # -j2 overlaps the only two heavy gates, lint and test-cover: alone each leaves
 # most of the machine idle, so pairing them cuts a cold run by about a quarter.
 # -Otarget keeps each gate's output in one block instead of interleaving them.
+# The shell suites mostly wait rather than compute, so they run beside the -j2
+# Go gates instead of taking one of their two slots.
 preflight:
-	@$(MAKE) --no-print-directory -j2 -Otarget QUIET=1 lint govulncheck test-cover diff-coverage test-harness test-build-scripts
+	@sh_log=$$(mktemp); trap 'rm -f "$$sh_log"' EXIT; \
+	$(MAKE) --no-print-directory QUIET=1 test-build-scripts > "$$sh_log" 2>&1 & sh_pid=$$!; \
+	$(MAKE) --no-print-directory -j2 -Otarget QUIET=1 lint govulncheck test-cover diff-coverage test-harness; go_rc=$$?; \
+	wait $$sh_pid; sh_rc=$$?; \
+	cat "$$sh_log"; \
+	[ "$$go_rc" -eq 0 ] && [ "$$sh_rc" -eq 0 ]
 	@echo -e "\n ✅ Preflight passed — safe to commit."
 
 # Shell suites + shellcheck for build/scripts/, the systemd-unit helpers that
@@ -291,23 +298,18 @@ preflight:
 # deletion, not a style note.
 NODE_SCRIPTS := scripts/setup.sh scripts/setup-ovn.sh scripts/install-node.sh scripts/smoke-test.sh scripts/node-reset.sh scripts/uninstall-spx.sh scripts/lib/distro.sh scripts/lib/stage-sqs-store-microvm.sh
 
+# One target per suite so make runs them in parallel; -k reports every failing
+# suite rather than the first, and -Otarget keeps each suite's output together.
+SHELL_SUITES := $(addprefix shell-suite/,$(sort $(shell find build/scripts -name '*_test.sh'; \
+	find scripts -maxdepth 1 -name '*_test.sh'; find scripts/lib scripts/appliance -name '*_test.sh'; \
+	find scripts/terraform/latitude-spx .github/scripts -maxdepth 1 -name '*_test.sh')))
+.PHONY: $(SHELL_SUITES)
+$(SHELL_SUITES): shell-suite/%:
+	@t=$*; log=$$(mktemp); trap 'rm -f "$$log"' EXIT; $(_RUNSH)
+
 test-build-scripts:
-	@$(_HDR) "\n....Running build/scripts/**/*_test.sh...."
-	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; for t in $$(find build/scripts -name '*_test.sh' | sort); do \
-		$(_RUNSH); \
-	done
-	@$(_HDR) "\n....Running scripts/*_test.sh, scripts/lib/*_test.sh and scripts/appliance/*_test.sh...."
-	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; for t in $$( (find scripts -maxdepth 1 -name '*_test.sh'; find scripts/lib scripts/appliance -name '*_test.sh') | sort); do \
-		$(_RUNSH); \
-	done
-	@$(_HDR) "\n....Running scripts/terraform/latitude-spx/*_test.sh...."
-	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; for t in $$(find scripts/terraform/latitude-spx -maxdepth 1 -name '*_test.sh' | sort); do \
-		$(_RUNSH); \
-	done
-	@$(_HDR) "\n....Running .github/scripts/*_test.sh...."
-	@log=$$(mktemp); trap 'rm -f "$$log"' EXIT; for t in $$(find .github/scripts -maxdepth 1 -name '*_test.sh' | sort); do \
-		$(_RUNSH); \
-	done
+	@$(_HDR) "\n....Running the *_test.sh suites in parallel...."
+	@$(MAKE) --no-print-directory -k -j$$(nproc) -Otarget $(SHELL_SUITES)
 	$(_Q)shellcheck -S warning .github/scripts/hypervisor-disk-preflight.sh \
 		.github/scripts/wait-for-memory.sh \
 		.github/scripts/go-build-cache.sh \

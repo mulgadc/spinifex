@@ -3825,6 +3825,50 @@ func TestPrepareRunInstances_DefaultSubnetResolved(t *testing.T) {
 	assert.Equal(t, 1, eni.attachCalls)
 }
 
+// The RunInstances response carries the primary interface's attachment and
+// address fields, as AWS's does, rather than the bare launch-time entry.
+func TestPrepareRunInstances_PrimaryInterfaceFields(t *testing.T) {
+	eni := &fakeENICreator{
+		createOut: &ec2.CreateNetworkInterfaceOutput{
+			NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-1"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:ff"),
+				PrivateIpAddress:   aws.String("10.0.0.10"),
+				VpcId:              aws.String("vpc-1"),
+				Description:        aws.String("Primary network interface for i-x"),
+			},
+		},
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+
+	reservation, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc", "")
+	require.NoError(t, err)
+	require.Len(t, reservation.Instances, 1)
+	inst := reservation.Instances[0]
+	require.Len(t, inst.NetworkInterfaces, 1)
+	nic := inst.NetworkInterfaces[0]
+
+	require.NotNil(t, nic.Description)
+	assert.Empty(t, *nic.Description)
+	assert.Equal(t, "interface", aws.StringValue(nic.InterfaceType))
+	assert.Equal(t, "acc", aws.StringValue(nic.OwnerId))
+	require.NotNil(t, nic.Attachment)
+	assert.Equal(t, "attached", aws.StringValue(nic.Attachment.AttachmentId), "the id AttachENI returned")
+	assert.Equal(t, aws.TimeValue(inst.LaunchTime), aws.TimeValue(nic.Attachment.AttachTime))
+	assert.True(t, aws.BoolValue(nic.Attachment.DeleteOnTermination))
+	require.NotNil(t, nic.Attachment.NetworkCardIndex)
+	assert.Equal(t, int64(0), *nic.Attachment.NetworkCardIndex)
+	assert.Equal(t, []*ec2.InstancePrivateIpAddress{{
+		Primary: aws.Bool(true), PrivateIpAddress: aws.String("10.0.0.10"),
+	}}, nic.PrivateIpAddresses)
+}
+
 // TestPrepareRunInstances_ForwardsPrivateIpAddress verifies a pinned
 // RunInstancesInput.PrivateIpAddress reaches CreateNetworkInterfaceInput,
 // where the IPAM claim path (eni.go) actually enforces it.
@@ -4749,6 +4793,18 @@ func TestBuildInstanceStatus_ErrorStateProjectsToStopped(t *testing.T) {
 	assert.Equal(t, int64(80), *is.InstanceState.Code)
 }
 
+// AWS reports a stopped instance's checks as not-applicable with no details.
+func TestBuildInstanceStatus_StoppedHasNoDetails(t *testing.T) {
+	stopped := runningVM("i-stopped", "111122223333")
+	stopped.Status = vm.StateStopped
+
+	is := buildInstanceStatus(stopped, false, "az-a")
+	assert.Equal(t, "not-applicable", *is.InstanceStatus.Status)
+	assert.Nil(t, is.InstanceStatus.Details)
+	assert.Equal(t, "not-applicable", *is.SystemStatus.Status)
+	assert.Nil(t, is.SystemStatus.Details)
+}
+
 // Every internal state must map onto a valid AWS InstanceStateName here, the
 // same guarantee vm.EC2APIState gives the DescribeInstances projection.
 func TestBuildInstanceStatus_NeverSurfacesNonAWSName(t *testing.T) {
@@ -5134,6 +5190,7 @@ func TestPrepareRunInstances_PreCreatedENIAttachedSkipsAutoCreate(t *testing.T) 
 				VpcID:              "vpc-pre",
 				PrivateIpAddress:   "10.0.5.42",
 				MacAddress:         "aa:bb:cc:dd:ee:01",
+				Description:        "customer interface",
 				Status:             "available",
 				SecurityGroupIDs:   []string{"sg-pre"},
 			},
@@ -5141,7 +5198,7 @@ func TestPrepareRunInstances_PreCreatedENIAttachedSkipsAutoCreate(t *testing.T) 
 	}
 	svc, _ := prepareSvcWithENI(t, eni, nil)
 
-	_, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+	reservation, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
 		InstanceType: aws.String("t3.micro"),
 		ImageId:      aws.String("ami-1"),
 		MinCount:     aws.Int64(1),
@@ -5157,6 +5214,15 @@ func TestPrepareRunInstances_PreCreatedENIAttachedSkipsAutoCreate(t *testing.T) 
 	assert.Equal(t, "aa:bb:cc:dd:ee:01", instances[0].ENIMac)
 	assert.Equal(t, 1, eni.attachCalls)
 	assert.Equal(t, 0, eni.createCalls, "auto-create must not run when NetworkInterfaceId is specified")
+
+	// A caller's interface keeps its own description and delete-on-termination.
+	nic := reservation.Instances[0].NetworkInterfaces[0]
+	assert.Equal(t, "customer interface", aws.StringValue(nic.Description))
+	require.NotNil(t, nic.Attachment.DeleteOnTermination)
+	assert.False(t, *nic.Attachment.DeleteOnTermination)
+	assert.Equal(t, "attached", aws.StringValue(nic.Attachment.AttachmentId))
+	assert.Equal(t, "interface", aws.StringValue(nic.InterfaceType))
+	assert.Equal(t, aws.TimeValue(reservation.Instances[0].LaunchTime), aws.TimeValue(nic.Attachment.AttachTime))
 }
 
 func TestPrepareRunInstances_PreCreatedENIInUseRejected(t *testing.T) {

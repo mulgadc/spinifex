@@ -633,7 +633,7 @@ func (d *Daemon) attachSystemMgmtNIC(inst *vm.VM) error {
 // daemon: an HA-spread EKS control plane places CP VMs on remote hosts, so a
 // cluster-wide teardown invoked on any node must reach the owner to actually
 // stop qemu and free the ENI — otherwise the local-only path returns NotFound
-// and the teardown deletes a still-attached ENI (InvalidNetworkInterface.InUse).
+// and the teardown deletes a still-attached ENI (the in-use InvalidParameterValue).
 func (d *Daemon) TerminateSystemInstance(instanceID string) error {
 	cls, err := d.requireSystemInstance(instanceID)
 	if err != nil {

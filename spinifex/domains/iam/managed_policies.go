@@ -2,8 +2,11 @@ package iam
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	iamarn "github.com/mulgadc/bluebottle/pkg/auth"
 )
@@ -328,6 +331,102 @@ var awsManagedPolicyDocs = map[string]string{
 			}
 		]
 	}`,
+}
+
+// managedPolicyVersion is the AWS policy version a shipped document is pinned
+// to, with the metadata GetPolicy reports for it. Times are RFC 3339 UTC.
+type managedPolicyVersion struct {
+	VersionID   string
+	Description string
+	CreatedAt   string
+	UpdatedAt   string
+}
+
+// awsManagedPolicyVersions pins every entry of awsManagedPolicyDocs to the
+// default version AWS publishes in its managed policy reference guide.
+var awsManagedPolicyVersions = map[string]managedPolicyVersion{
+	"arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy": {
+		VersionID:   "v3",
+		Description: "This policy allows Amazon EKS worker nodes to connect to Amazon EKS Clusters.",
+		CreatedAt:   "2018-05-27T21:09:01Z",
+		UpdatedAt:   "2023-11-27T00:06:13Z",
+	},
+	"arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy": {
+		VersionID:   "v6",
+		Description: "This policy provides the Amazon VPC CNI Plugin (amazon-vpc-cni-k8s) the permissions it requires to modify the IP address configuration on your EKS worker nodes. This permission set allows the CNI to list, describe, and modify Elastic Network Interfaces on your behalf. More information on the AWS VPC CNI Plugin is available here: https://github.com/aws/amazon-vpc-cni-k8s",
+		CreatedAt:   "2018-05-27T21:07:00Z",
+		UpdatedAt:   "2026-03-04T19:12:00Z",
+	},
+	"arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly": {
+		VersionID:   "v3",
+		Description: "Provides read-only access to Amazon EC2 Container Registry repositories.",
+		CreatedAt:   "2015-12-21T17:04:00Z",
+		UpdatedAt:   "2019-12-10T20:56:00Z",
+	},
+	"arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly": {
+		VersionID:   "v1",
+		Description: "Provides access to pull images from Amazon EC2 Container Registry repositories.",
+		CreatedAt:   "2024-10-04T16:58:00Z",
+		UpdatedAt:   "2024-10-04T16:58:00Z",
+	},
+	"arn:aws:iam::aws:policy/AmazonEKSClusterPolicy": {
+		VersionID:   "v10",
+		Description: "This policy provides Kubernetes the permissions it requires to manage resources on your behalf. Kubernetes requires Ec2:CreateTags permissions to place identifying information on EC2 resources including but not limited to Instances, Security Groups, and Elastic Network Interfaces. ",
+		CreatedAt:   "2018-05-27T21:06:14Z",
+		UpdatedAt:   "2026-02-12T17:58:15Z",
+	},
+	"arn:aws:iam::aws:policy/AmazonRDSFullAccess": {
+		VersionID:   "v14",
+		Description: "Provides full access to Amazon RDS via the AWS Management Console.",
+		CreatedAt:   "2015-02-06T18:40:00Z",
+		UpdatedAt:   "2023-08-17T23:00:00Z",
+	},
+	"arn:aws:iam::aws:policy/AmazonRDSReadOnlyAccess": {
+		VersionID:   "v7",
+		Description: "Provides read only access to Amazon RDS via the AWS Management Console.",
+		CreatedAt:   "2015-02-06T18:40:00Z",
+		UpdatedAt:   "2023-04-14T12:32:00Z",
+	},
+	"arn:aws:iam::aws:policy/AmazonRoute53FullAccess": {
+		VersionID:   "v8",
+		Description: "Provides full access to all Amazon Route 53 via the AWS Management Console.",
+		CreatedAt:   "2015-02-06T18:40:00Z",
+		UpdatedAt:   "2026-10-08T20:17:00Z",
+	},
+	"arn:aws:iam::aws:policy/AmazonRoute53ReadOnlyAccess": {
+		VersionID:   "v2",
+		Description: "Provides read only access to all Amazon Route 53 via the AWS Management Console.",
+		CreatedAt:   "2015-02-06T18:40:00Z",
+		UpdatedAt:   "2016-11-15T21:15:00Z",
+	},
+	"arn:aws:iam::aws:policy/AmazonEKSServicePolicy": {
+		VersionID:   "v7",
+		Description: "This policy allows Amazon Elastic Container Service for Kubernetes to create and manage the necessary resources to operate EKS Clusters.",
+		CreatedAt:   "2018-05-27T21:08:00Z",
+		UpdatedAt:   "2024-10-14T21:12:00Z",
+	},
+}
+
+// builtinManagedPolicy returns a shipped AWS-managed policy as a Policy
+// record. ok is false for managed ARNs Spinifex does not ship.
+func builtinManagedPolicy(policyARN string) (*Policy, bool) {
+	raw, ok := awsManagedPolicyDocs[policyARN]
+	if !ok {
+		return nil, false
+	}
+	pin := awsManagedPolicyVersions[policyARN]
+	sum := sha256.Sum256([]byte(policyARN))
+	return &Policy{
+		PolicyName:     policyARN[strings.LastIndex(policyARN, "/")+1:],
+		PolicyID:       "ANPA" + strings.ToUpper(hex.EncodeToString(sum[:]))[:17],
+		ARN:            policyARN,
+		Path:           "/",
+		Description:    pin.Description,
+		PolicyDocument: raw,
+		CreatedAt:      pin.CreatedAt,
+		UpdatedAt:      pin.UpdatedAt,
+		DefaultVersion: pin.VersionID,
+	}, true
 }
 
 // builtinManagedPolicyParsed is the parsed form of awsManagedPolicyDocs, built

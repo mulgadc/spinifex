@@ -73,7 +73,8 @@ func TestDelete_RefusesWhileDependantsNameTheGroup(t *testing.T) {
 
 	err = owner.Delete(t.Context(), testAccount, testGroup)
 	assert.Equal(t, awserrors.ErrorDBSubnetGroupInvalidState, awserrors.ValidErrorCodeFromError(err))
-	assert.ErrorContains(t, err, "orders-db, users-db")
+	assert.EqualError(t, err, "Cannot delete the subnet group '"+testGroup+
+		"' because at least one database instance: orders-db, users-db is still using it.: InvalidDBSubnetGroupStateFault")
 }
 
 // A node without RDS networking cannot validate members, so it stores nothing.
@@ -84,7 +85,7 @@ func TestCreate_RefusesWithoutSubnetResolution(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorServerInternal, awserrors.ValidErrorCodeFromError(err))
 
 	_, err = owner.Get(t.Context(), testAccount, testGroup)
-	assert.Equal(t, awserrors.ErrorDBSubnetGroupNotFound, awserrors.ValidErrorCodeFromError(err))
+	assert.EqualError(t, err, "DB Subnet group '"+testGroup+"' not found.: DBSubnetGroupNotFoundFault")
 }
 
 // Placement reports member subnets in request order; choosing among them is the instance's job.

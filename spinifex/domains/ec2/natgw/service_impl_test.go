@@ -1,6 +1,7 @@
 package natgw
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -93,6 +94,36 @@ func TestCreateNatGateway(t *testing.T) {
 	assert.Equal(t, "available", *ngw.State)
 	require.Len(t, ngw.NatGatewayAddresses, 1)
 	assert.Equal(t, "203.0.113.50", *ngw.NatGatewayAddresses[0].PublicIp)
+}
+
+// AWS reports the gateway's address as primary and succeeded, under the
+// association ID that DescribeAddresses shows for the same EIP.
+func TestDescribeNatGateways_AddressCarriesAssociation(t *testing.T) {
+	svc, js := setupTestServiceJS(t)
+	createOut, err := svc.CreateNatGateway(t.Context(), &ec2.CreateNatGatewayInput{
+		SubnetId:     aws.String("subnet-pub1"),
+		AllocationId: aws.String("eipalloc-test1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	eipKV, err := js.KeyValue(t.Context(), ec2eip.KVBucketEIPs)
+	require.NoError(t, err)
+	entry, err := eipKV.Get(t.Context(), kvstore.AccountKey(testAccountID, "eipalloc-test1"))
+	require.NoError(t, err)
+	var eip ec2eip.EIPRecord
+	require.NoError(t, json.Unmarshal(entry.Value(), &eip))
+	require.NotEmpty(t, eip.AssociationId)
+
+	out, err := svc.DescribeNatGateways(t.Context(), &ec2.DescribeNatGatewaysInput{
+		NatGatewayIds: []*string{createOut.NatGateway.NatGatewayId},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.NatGateways, 1)
+	require.Len(t, out.NatGateways[0].NatGatewayAddresses, 1)
+	addr := out.NatGateways[0].NatGatewayAddresses[0]
+	assert.Equal(t, eip.AssociationId, aws.StringValue(addr.AssociationId))
+	assert.True(t, aws.BoolValue(addr.IsPrimary))
+	assert.Equal(t, ec2.NatGatewayAddressStatusSucceeded, aws.StringValue(addr.Status))
 }
 
 // TestCreateNatGateway_PersistsTagsForTagFilterDiscovery locks the

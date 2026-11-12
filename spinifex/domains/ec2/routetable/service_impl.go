@@ -805,13 +805,13 @@ func (s *RouteTableServiceImpl) CreateRoute(ctx context.Context, input *ec2.Crea
 		return nil, err
 	}
 
-	// A repeat of an existing route (same destination, same target) is a
-	// successful no-op; a different target is a conflict.
+	// AWS answers a repeated gateway route with success; a repeated NAT
+	// gateway route, or any other target, is a conflict.
 	for _, r := range record.Routes {
 		if r.DestinationCidrBlock != destCidr {
 			continue
 		}
-		if r.GatewayId == route.GatewayId && r.NatGatewayId == route.NatGatewayId {
+		if route.GatewayId != "" && r.GatewayId == route.GatewayId && r.NatGatewayId == "" {
 			return &ec2.CreateRouteOutput{Return: aws.Bool(true)}, nil
 		}
 		return nil, awserrors.Errorf(awserrors.ErrorRouteAlreadyExists, "The route identified by %s already exists.", destCidr)

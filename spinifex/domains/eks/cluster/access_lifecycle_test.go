@@ -163,7 +163,7 @@ func TestAccessPolicy_AssociateWithNoEntryIsNotFound(t *testing.T) {
 		PolicyArn:    aws.String("arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"),
 		AccessScope:  &eks.AccessScope{Type: aws.String("cluster")},
 	}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	require.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err))
 }
 
 // Disassociating a policy that was never associated succeeds today (the

@@ -110,7 +110,8 @@
     "arch": "x86_64",
     "runner": "ci-single-nvme",
     "extra": "eks",
-    "suite": "eks"
+    "suite": "eks",
+    "timeout_minutes": 60
   },
   {
     "cell": 26,

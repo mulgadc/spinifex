@@ -84,6 +84,9 @@ type DetachVolumeData struct {
 type AttachENIData struct {
 	NetworkInterfaceID string `json:"network_interface_id"`
 	DeviceIndex        int64  `json:"device_index"`
+	// AssignFreeIndex skips the occupied-index refusal for platform callers that
+	// accept whichever hot-plug slot is free. The customer API never sets it.
+	AssignFreeIndex bool `json:"assign_free_index,omitempty"`
 }
 
 // DetachENIData carries parameters for a detach-network-interface command.

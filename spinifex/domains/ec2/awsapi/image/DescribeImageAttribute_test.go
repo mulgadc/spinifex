@@ -47,24 +47,6 @@ func TestValidateDescribeImageAttributeInput(t *testing.T) {
 			errMsg:  awserrors.ErrorInvalidAMIIDMalformed,
 		},
 		{
-			name: "UnsupportedAttribute_LaunchPermission",
-			input: &ec2.DescribeImageAttributeInput{
-				ImageId:   aws.String("ami-1234567890abcdef0"),
-				Attribute: aws.String("launchPermission"),
-			},
-			wantErr: true,
-			errMsg:  awserrors.ErrorInvalidParameterValue,
-		},
-		{
-			name: "UnsupportedAttribute_BootMode",
-			input: &ec2.DescribeImageAttributeInput{
-				ImageId:   aws.String("ami-1234567890abcdef0"),
-				Attribute: aws.String("bootMode"),
-			},
-			wantErr: true,
-			errMsg:  awserrors.ErrorInvalidParameterValue,
-		},
-		{
 			name: "UnsupportedAttribute_Kernel",
 			input: &ec2.DescribeImageAttributeInput{
 				ImageId:   aws.String("ami-1234567890abcdef0"),
@@ -86,6 +68,38 @@ func TestValidateDescribeImageAttributeInput(t *testing.T) {
 			input: &ec2.DescribeImageAttributeInput{
 				ImageId:   aws.String("ami-1234567890abcdef0"),
 				Attribute: aws.String("blockDeviceMapping"),
+			},
+			wantErr: false,
+		},
+		{
+			name: "ValidLaunchPermission",
+			input: &ec2.DescribeImageAttributeInput{
+				ImageId:   aws.String("ami-1234567890abcdef0"),
+				Attribute: aws.String("launchPermission"),
+			},
+			wantErr: false,
+		},
+		{
+			name: "ValidBootMode",
+			input: &ec2.DescribeImageAttributeInput{
+				ImageId:   aws.String("ami-1234567890abcdef0"),
+				Attribute: aws.String("bootMode"),
+			},
+			wantErr: false,
+		},
+		{
+			name: "ValidImdsSupport",
+			input: &ec2.DescribeImageAttributeInput{
+				ImageId:   aws.String("ami-1234567890abcdef0"),
+				Attribute: aws.String("imdsSupport"),
+			},
+			wantErr: false,
+		},
+		{
+			name: "ValidLastLaunchedTime",
+			input: &ec2.DescribeImageAttributeInput{
+				ImageId:   aws.String("ami-1234567890abcdef0"),
+				Attribute: aws.String("lastLaunchedTime"),
 			},
 			wantErr: false,
 		},

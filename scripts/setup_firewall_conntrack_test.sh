@@ -62,7 +62,10 @@ cat > "$TMP/flow.py" << 'PY'
 import os, socket, subprocess, sys
 
 srv_ns, cli_ns, script = sys.argv[1], sys.argv[2], sys.argv[3]
-wait = float(sys.argv[4]) if len(sys.argv) > 4 else 2
+# An optional wait applies only to the last step, the one expected to be lost;
+# a loss there exits 3, and a loss anywhere else exits 1.
+last_wait = float(sys.argv[4]) if len(sys.argv) > 4 else 2
+steps = script.split("@@")
 
 def enter(ns):
     fd = os.open("/run/netns/" + ns, os.O_RDONLY)
@@ -77,14 +80,16 @@ listener.listen(1)
 enter(cli_ns)
 
 cli = srv = None
-for step in script.split("@@"):
+for i, step in enumerate(steps):
     if step == "connect":
         cli = socket.create_connection(("10.99.0.1", 6644), timeout=3)
         srv, _ = listener.accept()
-        cli.settimeout(wait)
-        srv.settimeout(wait)
+        cli.settimeout(2)
+        srv.settimeout(2)
     elif step in ("s2c", "c2s"):
         tx, rx = (srv, cli) if step == "s2c" else (cli, srv)
+        last = i == len(steps) - 1
+        rx.settimeout(last_wait if last else 2)
         tx.sendall(b"x" * 300)
         got = b""
         try:
@@ -92,7 +97,7 @@ for step in script.split("@@"):
                 got += rx.recv(300 - len(got))
         except socket.timeout:
             print("lost " + step)
-            sys.exit(1)
+            sys.exit(3 if last else 1)
     else:
         subprocess.run(step, shell=True, check=True)
 PY
@@ -158,10 +163,13 @@ DROP_WAIT=0.5
 # server's next segment, or this kernel cannot show the failure and the cases
 # below prove nothing.
 fresh
-if $SUDO python3 "$TMP/flow.py" "$S" "$C" "connect@@s2c@@c2s@@$arm@@s2c" "$DROP_WAIT" > /dev/null 2>&1; then
+rc=0; $SUDO python3 "$TMP/flow.py" "$S" "$C" "connect@@s2c@@c2s@@$arm@@s2c" "$DROP_WAIT" > /dev/null 2>&1 || rc=$?
+if [ "$rc" = 3 ]; then
+    pass "control: a flow opened with no conntrack user loses the server's next segment once armed"
+elif [ "$rc" = 0 ]; then
     fail "control: a flow opened with no conntrack user survived the arm, so this kernel cannot reproduce the drop"
 else
-    pass "control: a flow opened with no conntrack user loses the server's next segment once armed"
+    fail "control: the flow failed before the arm (exit $rc), so the control proves nothing"
 fi
 
 fresh

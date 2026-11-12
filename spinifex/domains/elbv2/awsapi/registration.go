@@ -202,7 +202,7 @@ var actions = map[string]action{
 		return DescribeAccountLimits(input, loadBalancers), nil
 	}),
 	"DescribeListenerAttributes": handler(func(ctx context.Context, input *DescribeListenerAttributesInput, d Deps, accountID string) (any, error) {
-		return DescribeListenerAttributes(input, accountID)
+		return DescribeListenerAttributes(ctx, input, d.NATS, accountID)
 	}),
 	"ModifyListenerAttributes": handler(func(ctx context.Context, input *ModifyListenerAttributesInput, d Deps, accountID string) (any, error) {
 		return ModifyListenerAttributes(input, accountID)

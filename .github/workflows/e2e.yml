@@ -31,12 +31,6 @@ permissions:
   statuses: write
   actions: read
 
-# A newer push to dev supersedes the run in flight, which frees its env slots;
-# main and dispatches keep every run. The superseded commit reports failure.
-concurrency:
-  group: e2e-${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' && 'dev-push' || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
-
 env:
   GIT_BRANCH: ${{ github.ref_name }}
   TEST_RUN: ${{ inputs.test_run || '' }}

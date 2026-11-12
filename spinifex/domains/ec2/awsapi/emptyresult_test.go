@@ -186,3 +186,16 @@ func TestEC2_NetworkListsAWSOmitsWhenEmpty(t *testing.T) {
 	assert.NotContains(t, subnet, "tagSet")
 	assert.Contains(t, subnet, "<ipv6CidrBlockAssociationSet></ipv6CidrBlockAssociationSet>")
 }
+
+// A stopped instance's not-applicable checks carry no details on the wire.
+func TestEC2_InstanceStatusDetailsOmittedWhenNotApplicable(t *testing.T) {
+	out := render[ec2.DescribeInstanceStatusInput](t, "DescribeInstanceStatus", ec2.DescribeInstanceStatusOutput{
+		InstanceStatuses: []*ec2.InstanceStatus{{
+			InstanceId:     aws.String("i-1"),
+			InstanceStatus: &ec2.InstanceStatusSummary{Status: aws.String("not-applicable")},
+			SystemStatus:   &ec2.InstanceStatusSummary{Status: aws.String("not-applicable")},
+		}},
+	})
+	assert.Contains(t, out, "<instanceStatus><status>not-applicable</status></instanceStatus>")
+	assert.NotContains(t, out, "details")
+}

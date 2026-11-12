@@ -160,9 +160,9 @@ func runInstanceStatus(t *testing.T, fix *Fixture) {
 	require.NotNil(t, stopped.InstanceState, "InstanceState missing")
 	assert.Equal(t, "stopped", aws.StringValue(stopped.InstanceState.Name), "InstanceState.Name")
 	assert.Equal(t, instStatusNotApplicable, aws.StringValue(stopped.InstanceStatus.Status), "InstanceStatus.Status")
-	requireReachability(t, stopped.InstanceStatus, instStatusNotApplicable)
+	assert.Empty(t, stopped.InstanceStatus.Details, "AWS omits details from a not-applicable check")
 	assert.Equal(t, instStatusNotApplicable, aws.StringValue(stopped.SystemStatus.Status), "SystemStatus.Status")
-	requireReachability(t, stopped.SystemStatus, instStatusNotApplicable)
+	assert.Empty(t, stopped.SystemStatus.Details, "AWS omits details from a not-applicable check")
 
 	// --- Stage 6: no duplicates across the unscoped fan-out + KV union ---
 

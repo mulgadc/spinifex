@@ -438,6 +438,106 @@ func TestEnsureClusterNLB_NoFrontendIPFailsLoud(t *testing.T) {
 	assert.Len(t, nlbp.createLBSyncCalls, 1)
 }
 
+// deletedLBArns and deletedTGArns list the ARNs the provisioner was asked to delete.
+func (f *fakeNLBProvisioner) deletedLBArns() []string {
+	arns := make([]string, 0, len(f.deleteLBCalls))
+	for _, c := range f.deleteLBCalls {
+		arns = append(arns, aws.StringValue(c.LoadBalancerArn))
+	}
+	return arns
+}
+
+func (f *fakeNLBProvisioner) deletedTGArns() []string {
+	arns := make([]string, 0, len(f.deleteTGCalls))
+	for _, c := range f.deleteTGCalls {
+		arns = append(arns, aws.StringValue(c.TargetGroupArn))
+	}
+	return arns
+}
+
+func TestEnsureClusterNLB_NoFrontendIPDeletesWhatItCreated(t *testing.T) {
+	t.Parallel()
+	nlbp := newFakeNLBProvisioner()
+	nlbp.frontendIP = ""
+
+	_, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, nil, nil)
+	require.ErrorIs(t, err, ErrClusterNLBFrontendIPUnavailable)
+
+	require.Len(t, nlbp.createTGCalls, 2)
+	assert.Equal(t, []string{aws.StringValue(nlbp.createLBOut.LoadBalancers[0].LoadBalancerArn)}, nlbp.deletedLBArns())
+	assert.ElementsMatch(t, []string{
+		"arn:aws:elasticloadbalancing:us-east-1:111122223333:targetgroup/" + ClusterTargetGroupName("alpha") + "/tg-001",
+		"arn:aws:elasticloadbalancing:us-east-1:111122223333:targetgroup/" + ClusterKonnTargetGroupName("alpha") + "/tg-001",
+	}, nlbp.deletedTGArns())
+	assert.Empty(t, nlbp.lbByName)
+	assert.Empty(t, nlbp.tgByName)
+}
+
+func TestEnsureClusterNLB_ListenerFailureDeletesOnlyCreatedSoFar(t *testing.T) {
+	t.Parallel()
+	nlbp := newFakeNLBProvisioner()
+	nlbp.createListenerErr = errors.New("listener boom")
+
+	_, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, false, nil, nil)
+	require.Error(t, err)
+
+	assert.Len(t, nlbp.deletedLBArns(), 1)
+	// The konnectivity group was never reached, so only the apiserver group is deleted.
+	assert.Equal(t, []string{
+		"arn:aws:elasticloadbalancing:us-east-1:111122223333:targetgroup/" + ClusterTargetGroupName("alpha") + "/tg-001",
+	}, nlbp.deletedTGArns())
+}
+
+func TestEnsureClusterNLB_FailureLeavesAnLBFoundByName(t *testing.T) {
+	t.Parallel()
+	nlbp := newFakeNLBProvisioner()
+	existingArn := "arn:aws:elasticloadbalancing:us-east-1:111122223333:loadbalancer/net/" + ClusterNLBName("alpha") + "/lb-other"
+	nlbp.lbByName[ClusterNLBName("alpha")] = &elbv2.LoadBalancer{
+		LoadBalancerArn:  aws.String(existingArn),
+		LoadBalancerName: aws.String(ClusterNLBName("alpha")),
+		DNSName:          aws.String("other.elb.spinifex.local"),
+	}
+
+	_, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, nil, nil)
+	require.ErrorIs(t, err, ErrClusterNLBFrontendIPUnavailable)
+
+	assert.Empty(t, nlbp.createLBSyncCalls)
+	assert.Empty(t, nlbp.deleteLBCalls, "an NLB this call did not create is never deleted")
+	assert.Contains(t, nlbp.lbByName, ClusterNLBName("alpha"))
+}
+
+func TestEnsureClusterNLB_FailureLeavesATargetGroupFoundByName(t *testing.T) {
+	t.Parallel()
+	nlbp := newFakeNLBProvisioner()
+	nlbp.frontendIP = ""
+	existingTG := "arn:aws:elasticloadbalancing:us-east-1:111122223333:targetgroup/" + ClusterTargetGroupName("alpha") + "/tg-other"
+	nlbp.tgByName[ClusterTargetGroupName("alpha")] = &elbv2.TargetGroup{
+		TargetGroupArn:  aws.String(existingTG),
+		TargetGroupName: aws.String(ClusterTargetGroupName("alpha")),
+	}
+
+	_, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, nil, nil)
+	require.ErrorIs(t, err, ErrClusterNLBFrontendIPUnavailable)
+
+	assert.Len(t, nlbp.deletedLBArns(), 1, "the NLB this call created is deleted")
+	assert.NotContains(t, nlbp.deletedTGArns(), existingTG)
+	assert.Equal(t, []string{
+		"arn:aws:elasticloadbalancing:us-east-1:111122223333:targetgroup/" + ClusterKonnTargetGroupName("alpha") + "/tg-001",
+	}, nlbp.deletedTGArns())
+	assert.Contains(t, nlbp.tgByName, ClusterTargetGroupName("alpha"))
+}
+
+func TestEnsureClusterNLB_FailedUnwindIsReported(t *testing.T) {
+	t.Parallel()
+	nlbp := newFakeNLBProvisioner()
+	nlbp.frontendIP = ""
+	nlbp.deleteLBErr = errors.New("delete boom")
+
+	_, err := EnsureClusterNLB(context.Background(), nlbp, "111122223333", "alpha", []string{"subnet-aaa"}, true, nil, nil)
+	require.ErrorIs(t, err, ErrClusterNLBFrontendIPUnavailable)
+	assert.ErrorContains(t, err, "delete boom")
+}
+
 func TestEnsureClusterNLB_InternetFacingUsesPublicAddress(t *testing.T) {
 	t.Parallel()
 	nlbp := newFakeNLBProvisioner()

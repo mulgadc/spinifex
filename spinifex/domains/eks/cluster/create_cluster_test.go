@@ -139,6 +139,25 @@ func TestCreateCluster_FailedLaunchEagerlyPurgesInfra(t *testing.T) {
 	assert.Equal(t, ClusterStatusFailed, meta.Status)
 }
 
+// A launch whose NLB comes back without a front-end IP fails, and deletes that
+// NLB so it does not pin the control-plane VPC.
+func TestCreateCluster_NLBWithoutFrontendIPIsDeleted(t *testing.T) {
+	t.Parallel()
+	f := newEKSServiceFixture(t)
+	f.nlb.frontendIP = ""
+
+	_, err := f.svc.CreateCluster(context.Background(), createInput("alpha"), testAccountID, "")
+	require.NoError(t, err)
+	f.svc.WaitLaunches()
+
+	meta, getErr := GetClusterMeta(t.Context(), f.kv, "alpha")
+	require.NoError(t, getErr)
+	assert.Equal(t, ClusterStatusFailed, meta.Status)
+	require.Len(t, f.nlb.createLBSyncCalls, 1)
+	assert.Equal(t, []string{aws.StringValue(f.nlb.createLBOut.LoadBalancers[0].LoadBalancerArn)}, f.nlb.deletedLBArns())
+	assert.Empty(t, f.nlb.lbByName)
+}
+
 // A duplicate CreateCluster call with the same ClientRequestToken and identical
 // parameters must replay the in-progress/created cluster rather than launching
 // a second control plane (AWS ClientRequestToken semantics).

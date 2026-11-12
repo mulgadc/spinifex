@@ -52,6 +52,7 @@ func (a *daemonENICreator) GetENI(_ context.Context, accountID, eniID string) (*
 		VpcID:              rec.VpcId,
 		PrivateIpAddress:   rec.PrivateIpAddress,
 		MacAddress:         rec.MacAddress,
+		Description:        rec.Description,
 		Status:             rec.Status,
 		SecurityGroupIDs:   rec.SecurityGroupIds,
 		PublicIpAddress:    rec.PublicIpAddress,

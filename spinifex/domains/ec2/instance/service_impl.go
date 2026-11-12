@@ -905,7 +905,8 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 			instance.ENIMac = *eni.MacAddress
 			autoCreatedENI[instance.ID] = true
 
-			if _, attachErr := s.eniCreator.AttachENI(ctx, accountID, instance.ENIId, instance.ID, 0); attachErr != nil {
+			attachmentID, attachErr := s.eniCreator.AttachENI(ctx, accountID, instance.ENIId, instance.ID, 0)
+			if attachErr != nil {
 				// Without the attachment RegisterTargets silently drops the target;
 				// aborting prevents a leak of the auto-assigned EIP.
 				slog.ErrorContext(ctx, "PrepareRunInstances: AttachENI failed — aborting launch",
@@ -923,21 +924,27 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 			ec2Instance.SetSubnetId(*input.SubnetId)
 			ec2Instance.SetVpcId(*eni.VpcId)
 			ec2Instance.SecurityGroups = eni.Groups
-			ec2Instance.NetworkInterfaces = []*ec2.InstanceNetworkInterface{
-				{
-					NetworkInterfaceId: eni.NetworkInterfaceId,
-					PrivateIpAddress:   eni.PrivateIpAddress,
-					MacAddress:         eni.MacAddress,
-					SubnetId:           input.SubnetId,
-					VpcId:              eni.VpcId,
-					Status:             aws.String("in-use"),
-					Groups:             eni.Groups,
-					Attachment: &ec2.InstanceNetworkInterfaceAttachment{
-						DeviceIndex: aws.Int64(0),
-						Status:      aws.String("attached"),
-					},
+			// AWS reports an empty description on the primary interface it creates;
+			// the record's marker description is internal.
+			primaryNIC := &ec2.InstanceNetworkInterface{
+				NetworkInterfaceId: eni.NetworkInterfaceId,
+				PrivateIpAddress:   eni.PrivateIpAddress,
+				MacAddress:         eni.MacAddress,
+				SubnetId:           input.SubnetId,
+				VpcId:              eni.VpcId,
+				Status:             aws.String("in-use"),
+				Groups:             eni.Groups,
+				Description:        aws.String(""),
+				Attachment: &ec2.InstanceNetworkInterfaceAttachment{
+					AttachmentId:        aws.String(attachmentID),
+					AttachTime:          ec2Instance.LaunchTime,
+					DeleteOnTermination: aws.Bool(true),
+					DeviceIndex:         aws.Int64(0),
+					Status:              aws.String("attached"),
 				},
 			}
+			projectInterfaceFields(primaryNIC, accountID)
+			ec2Instance.NetworkInterfaces = []*ec2.InstanceNetworkInterface{primaryNIC}
 
 			slog.InfoContext(ctx, "PrepareRunInstances: auto-created ENI for VPC instance",
 				"instanceId", instance.ID,
@@ -1061,7 +1068,8 @@ func (s *InstanceServiceImpl) attachPreCreatedENI(ctx context.Context, accountID
 	if eniInfo.Status == "in-use" {
 		return errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
 	}
-	if _, err := s.eniCreator.AttachENI(ctx, accountID, eniID, instance.ID, 0); err != nil {
+	attachmentID, err := s.eniCreator.AttachENI(ctx, accountID, eniID, instance.ID, 0)
+	if err != nil {
 		return err
 	}
 
@@ -1078,18 +1086,24 @@ func (s *InstanceServiceImpl) attachPreCreatedENI(ctx context.Context, accountID
 		}
 		ec2Instance.SecurityGroups = groups
 	}
-	ec2Instance.NetworkInterfaces = []*ec2.InstanceNetworkInterface{{
+	primaryNIC := &ec2.InstanceNetworkInterface{
 		NetworkInterfaceId: aws.String(eniID),
 		PrivateIpAddress:   aws.String(eniInfo.PrivateIpAddress),
 		MacAddress:         aws.String(eniInfo.MacAddress),
 		SubnetId:           aws.String(eniInfo.SubnetID),
 		VpcId:              aws.String(eniInfo.VpcID),
 		Status:             aws.String("in-use"),
+		Description:        aws.String(eniInfo.Description),
 		Attachment: &ec2.InstanceNetworkInterfaceAttachment{
-			DeviceIndex: aws.Int64(0),
-			Status:      aws.String("attached"),
+			AttachmentId:        aws.String(attachmentID),
+			AttachTime:          ec2Instance.LaunchTime,
+			DeleteOnTermination: aws.Bool(eniInfo.DeleteOnTermination),
+			DeviceIndex:         aws.Int64(0),
+			Status:              aws.String("attached"),
 		},
-	}}
+	}
+	projectInterfaceFields(primaryNIC, accountID)
+	ec2Instance.NetworkInterfaces = []*ec2.InstanceNetworkInterface{primaryNIC}
 
 	slog.InfoContext(ctx, "PrepareRunInstances: attached pre-created ENI",
 		"instanceId", instance.ID,

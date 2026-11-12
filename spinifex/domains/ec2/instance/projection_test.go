@@ -298,6 +298,40 @@ func TestProjectInstance_PrimaryNICAssociation(t *testing.T) {
 // TestProjectInstance_EnclaveOptionsAlwaysDisabled covers the permanent
 // enclave_options {} Terraform diff: AWS always reports the block, and
 // Spinifex never enables it, on both the running and the stopped/KV paths.
+// An interface stored before these fields were stamped at launch still reports
+// them, and its PrivateIpAddresses entry carries the association only while the
+// public address is held.
+func TestProjectInstance_InterfaceFields(t *testing.T) {
+	v := fullVM(vm.StateRunning)
+	v.Instance.NetworkInterfaces = []*ec2.InstanceNetworkInterface{{
+		NetworkInterfaceId: aws.String("eni-primary"),
+		PrivateIpAddress:   aws.String("10.0.0.5"),
+		Attachment:         &ec2.InstanceNetworkInterfaceAttachment{DeviceIndex: aws.Int64(0)},
+	}}
+
+	running, _ := ProjectInstance(v, runningCfg())
+	stopped, _ := ProjectInstance(v, stoppedCfg(80, "stopped"))
+
+	nic := running.NetworkInterfaces[0]
+	assert.Equal(t, "interface", aws.StringValue(nic.InterfaceType))
+	assert.Equal(t, "123456789012", aws.StringValue(nic.OwnerId))
+	require.NotNil(t, nic.Description)
+	assert.Empty(t, *nic.Description)
+	require.NotNil(t, nic.Attachment.NetworkCardIndex)
+	assert.Equal(t, int64(0), *nic.Attachment.NetworkCardIndex)
+	require.Len(t, nic.PrivateIpAddresses, 1)
+	assert.True(t, aws.BoolValue(nic.PrivateIpAddresses[0].Primary))
+	assert.Equal(t, "10.0.0.5", aws.StringValue(nic.PrivateIpAddresses[0].PrivateIpAddress))
+	require.NotNil(t, nic.PrivateIpAddresses[0].Association)
+	assert.Equal(t, "203.0.113.7", aws.StringValue(nic.PrivateIpAddresses[0].Association.PublicIp))
+
+	require.Len(t, stopped.NetworkInterfaces[0].PrivateIpAddresses, 1)
+	assert.Nil(t, stopped.NetworkInterfaces[0].PrivateIpAddresses[0].Association)
+
+	assert.Nil(t, v.Instance.NetworkInterfaces[0].Attachment.NetworkCardIndex,
+		"the attachment is shared with the stored instance and must be copied before it is stamped")
+}
+
 func TestProjectInstance_EnclaveOptionsAlwaysDisabled(t *testing.T) {
 	running, _ := ProjectInstance(fullVM(vm.StateRunning), runningCfg())
 	stopped, _ := ProjectInstance(fullVM(vm.StateStopped), stoppedCfg(80, "stopped"))

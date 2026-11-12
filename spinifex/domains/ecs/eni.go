@@ -103,7 +103,7 @@ func (c *natsENIController) Attach(ctx context.Context, accountID, instanceID, e
 		},
 	}
 	if _, err := natsmsg.NATSRequest[ec2.ModifyNetworkInterfaceAttributeOutput](ctx, c.nc, "ec2.ModifyNetworkInterfaceAttribute", mod, c.timeout, accountID); err != nil {
-		return "", fmt.Errorf("mark task ENI %s delete-on-termination: %w", eniID, err)
+		return attachmentID, fmt.Errorf("mark task ENI %s delete-on-termination: %w", eniID, err)
 	}
 	return attachmentID, nil
 }

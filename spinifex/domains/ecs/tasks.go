@@ -155,6 +155,7 @@ func (s *Service) provisionTaskENI(ctx context.Context, kv jetstream.KeyValue, a
 	rec.ENISubnetID = alloc.SubnetID
 
 	attachmentID, err := s.eni.Attach(ctx, accountID, rec.ContainerInstanceID, alloc.ENIID)
+	rec.ENIAttachmentID = attachmentID
 	if err != nil {
 		s.reclaimTaskENI(ctx, accountID, rec)
 		if rec.ENIReleased {
@@ -175,7 +176,6 @@ func (s *Service) provisionTaskENI(ctx context.Context, kv jetstream.KeyValue, a
 		}
 		return rollback("attach", err)
 	}
-	rec.ENIAttachmentID = attachmentID
 	return nil
 }
 

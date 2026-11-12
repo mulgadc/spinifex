@@ -78,7 +78,7 @@ type Deps struct {
 	NetworkTests NetworkTestStore
 
 	// teardownOptions tune the teardown engine in tests; nil in production.
-	teardownOptions         []accountteardown.ClusterOption
+	teardownOptions []accountteardown.ClusterOption
 	// networkTestServeTimeout overrides the serve deadline in tests; zero in production.
 	networkTestServeTimeout time.Duration
 }

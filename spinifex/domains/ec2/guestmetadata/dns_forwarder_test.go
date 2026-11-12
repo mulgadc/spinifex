@@ -95,7 +95,11 @@ func TestDNSForwarder_UDPServfailWhenAllBackendsDead(t *testing.T) {
 	go f.serveUDP(pc)
 	defer func() { _ = pc.Close() }()
 
+	start := time.Now()
 	resp := udpQuery(t, pc.LocalAddr().String(), testDNSQuery)
+	elapsed := time.Since(start)
+	assert.GreaterOrEqual(t, elapsed, f.total, "SERVFAIL must wait for the overall deadline, not one backend's timeout")
+	assert.Less(t, elapsed, f.total+500*time.Millisecond)
 	require.GreaterOrEqual(t, len(resp), 12)
 	assert.Equal(t, testDNSQuery[0:2], resp[0:2], "SERVFAIL must echo the query ID")
 	assert.NotZero(t, resp[2]&0x80, "QR bit must be set")
@@ -153,7 +157,9 @@ func TestDNSForwarder_UDPOverallDeadlineBoundary(t *testing.T) {
 	start := time.Now()
 	_, err = f.exchangeUDP(testDNSQuery)
 	require.Error(t, err, "an answer after the overall deadline must not be waited for")
-	assert.Less(t, time.Since(start), 550*time.Millisecond, "the exchange must end at the overall deadline")
+	elapsed := time.Since(start)
+	assert.GreaterOrEqual(t, elapsed, f.total, "the exchange must wait for the overall deadline")
+	assert.Less(t, elapsed, 550*time.Millisecond, "the exchange must end at the overall deadline")
 }
 
 // With more silent backends than the overall bound has hops for, the last one
@@ -186,6 +192,23 @@ func TestDNSForwarder_UDPClosesLosingAttempts(t *testing.T) {
 	require.NoError(t, err)
 	assert.Eventually(t, func() bool { return f.inFlight.Load() == 0 },
 		time.Second, 10*time.Millisecond, "the silent backend's attempt must not run to the 5s deadline")
+}
+
+// Each tap's throttle is its own: one tap's suppressed failures leave another
+// tap's first Warn through, and each suppresses its own repeats in the window.
+func TestWarnThrottle_PerTapWindows(t *testing.T) {
+	base := time.Now()
+	now := func() time.Time { return base }
+	a := &warnThrottle{every: 10 * time.Second, now: now}
+	b := &warnThrottle{every: 10 * time.Second, now: now}
+
+	assert.True(t, a.allow(), "tap A's first failure warns")
+	assert.False(t, a.allow(), "tap A's repeat inside the window is suppressed")
+	assert.True(t, b.allow(), "tap B's first failure warns despite tap A's window")
+	assert.False(t, b.allow())
+
+	base = base.Add(11 * time.Second)
+	assert.True(t, a.allow(), "tap A warns again once its window has passed")
 }
 
 func TestDNSForwarder_TCPProxiesFramedSession(t *testing.T) {

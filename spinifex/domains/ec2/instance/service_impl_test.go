@@ -4749,6 +4749,24 @@ func TestBuildInstanceStatus_ErrorStateProjectsToStopped(t *testing.T) {
 	assert.Equal(t, int64(80), *is.InstanceState.Code)
 }
 
+// AWS reports a stopped instance's checks as not-applicable with no details,
+// while a running instance keeps its reachability detail.
+func TestBuildInstanceStatus_StoppedHasNoDetails(t *testing.T) {
+	owner := "111122223333"
+	stopped := runningVM("i-stopped", owner)
+	stopped.Status = vm.StateStopped
+
+	is := buildInstanceStatus(stopped, false, "az-a")
+	assert.Equal(t, "not-applicable", *is.InstanceStatus.Status)
+	assert.Nil(t, is.InstanceStatus.Details)
+	assert.Equal(t, "not-applicable", *is.SystemStatus.Status)
+	assert.Nil(t, is.SystemStatus.Details)
+
+	running := buildInstanceStatus(runningVM("i-running", owner), false, "az-a")
+	require.Len(t, running.InstanceStatus.Details, 1)
+	require.Len(t, running.SystemStatus.Details, 1)
+}
+
 // Every internal state must map onto a valid AWS InstanceStateName here, the
 // same guarantee vm.EC2APIState gives the DescribeInstances projection.
 func TestBuildInstanceStatus_NeverSurfacesNonAWSName(t *testing.T) {

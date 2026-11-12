@@ -113,6 +113,7 @@ var ec2ListsAsSet = map[reflect.Type][]string{
 	reflect.TypeFor[ec2.NetworkInterface]():                 {"Ipv4Prefixes", "Ipv6Prefixes"},
 	reflect.TypeFor[ec2.Vpc]():                              {"Ipv6CidrBlockAssociationSet"},
 	reflect.TypeFor[ec2.Subnet]():                           {"Tags"},
+	reflect.TypeFor[ec2.InstanceStatusSummary]():            {"Details"},
 }
 
 // marshalEC2Response renders an EC2 handler's output into the action's XML

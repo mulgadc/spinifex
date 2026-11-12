@@ -3598,15 +3598,18 @@ func buildInstanceStatus(v *vm.VM, systemImpaired bool, az string) *ec2.Instance
 		AvailabilityZone: aws.String(az),
 		InstanceId:       aws.String(v.ID),
 		InstanceState:    state,
-		InstanceStatus: &ec2.InstanceStatusSummary{
-			Status:  aws.String(status),
-			Details: []*ec2.InstanceStatusDetails{instDetail},
-		},
-		SystemStatus: &ec2.InstanceStatusSummary{
-			Status:  aws.String(systemStatus),
-			Details: []*ec2.InstanceStatusDetails{sysDetail},
-		},
+		InstanceStatus:   statusSummary(status, instDetail),
+		SystemStatus:     statusSummary(systemStatus, sysDetail),
 	}
+}
+
+// statusSummary omits the detail of a not-applicable check, as AWS does.
+func statusSummary(status string, detail *ec2.InstanceStatusDetails) *ec2.InstanceStatusSummary {
+	summary := &ec2.InstanceStatusSummary{Status: aws.String(status)}
+	if status != instanceStatusNotApplicable {
+		summary.Details = []*ec2.InstanceStatusDetails{detail}
+	}
+	return summary
 }
 
 // instanceInitializingGrace is the post-launch window during which a running VM

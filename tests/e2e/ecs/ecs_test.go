@@ -799,9 +799,58 @@ func runServiceWithELB(t *testing.T, c *harness.AWSClient, env *harness.Env, fx 
 
 	harness.WaitForTargetsHealthy(t, c, tgArn, 1, "ecs-service-tg", 4*time.Minute)
 
+	assertUnforcedDeleteKeepsServiceRunning(t, c, fx, svcName)
+
 	// Best-effort: GET / through the ALB public IP. The .elb.spinifex.local DNS
 	// name does not resolve from the host, so reach the assigned public IP.
 	probeALBHTTP(t, c, lbArn)
+}
+
+// serviceMinAge outlives the ECS heartbeat timeout and the 5m reconcile resync,
+// so the refused delete is checked against a settled service.
+const serviceMinAge = 6 * time.Minute
+
+// assertUnforcedDeleteKeepsServiceRunning pins ADR-0003:S7 for DeleteService: an
+// unforced delete of a service scaled above 0 is refused and stops no task.
+func assertUnforcedDeleteKeepsServiceRunning(t *testing.T, c *harness.AWSClient, fx *ecsFixture, svcName string) {
+	t.Helper()
+	describe := func() *ecs.Service {
+		out, err := c.ECS.DescribeServices(&ecs.DescribeServicesInput{
+			Cluster: aws.String(fx.ClusterName), Services: aws.StringSlice([]string{svcName}),
+		})
+		require.NoError(t, err, "describe-services")
+		require.Len(t, out.Services, 1)
+		return out.Services[0]
+	}
+	listTasks := func() []string {
+		out, err := c.ECS.ListTasks(&ecs.ListTasksInput{
+			Cluster: aws.String(fx.ClusterName), ServiceName: aws.String(svcName),
+		})
+		require.NoError(t, err, "list-tasks")
+		return aws.StringValueSlice(out.TaskArns)
+	}
+
+	if age := time.Since(aws.TimeValue(describe().CreatedAt)); age < serviceMinAge {
+		harness.Step(t, "ageing service %s past %s", svcName, serviceMinAge)
+		time.Sleep(serviceMinAge - age)
+	}
+	before := listTasks()
+	require.NotEmpty(t, before, "service must have a task before the delete")
+
+	harness.Step(t, "DeleteService without force on a service scaled above 0")
+	_, err := c.ECS.DeleteService(&ecs.DeleteServiceInput{
+		Cluster: aws.String(fx.ClusterName), Service: aws.String(svcName),
+	})
+	var aerr awserr.Error
+	require.True(t, errors.As(err, &aerr), "unforced delete must be refused, got %v", err)
+	assert.Equal(t, "InvalidParameterException", aerr.Code())
+	assert.Equal(t, "The service cannot be stopped while it is scaled above 0.", aerr.Message())
+
+	svc := describe()
+	assert.Equal(t, "ACTIVE", aws.StringValue(svc.Status))
+	assert.Equal(t, int64(1), aws.Int64Value(svc.DesiredCount))
+	assert.Equal(t, int64(1), aws.Int64Value(svc.RunningCount))
+	assert.ElementsMatch(t, before, listTasks(), "the refused delete must stop no task")
 }
 
 func probeALBHTTP(t *testing.T, c *harness.AWSClient, lbArn string) {

@@ -164,12 +164,23 @@ func TestService_DeleteService_DrainsAndInactivates(t *testing.T) {
 		DesiredCount: aws.Int64(2),
 	}, testAccountID)
 	require.NoError(t, err)
+	var rec ServiceRecord
+	_, err = taskdefinition.GetJSON(t.Context(), kv, ServiceKey("web", "web"), &rec)
+	require.NoError(t, err)
+	rec.Deployments[0].RunningCount = 2
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, ServiceKey("web", "web"), &rec))
 
 	out, err := svc.DeleteService(context.Background(), &ecs.DeleteServiceInput{
-		Cluster: aws.String("web"), Service: aws.String("web"),
+		Cluster: aws.String("web"), Service: aws.String("web"), Force: aws.Bool(true),
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, ServiceStatusInactive, aws.StringValue(out.Service.Status))
+	require.NotEmpty(t, out.Service.Deployments)
+	for _, d := range out.Service.Deployments {
+		assert.Zero(t, aws.Int64Value(d.DesiredCount), "deployment desiredCount")
+		assert.Zero(t, aws.Int64Value(d.RunningCount), "deployment runningCount")
+		assert.Zero(t, aws.Int64Value(d.PendingCount), "deployment pendingCount")
+	}
 
 	live, err := svc.listServiceTasks(t.Context(), kv, "web", "web")
 	require.NoError(t, err)
@@ -209,6 +220,56 @@ func TestService_UpdateService_DeletedAndUnknown(t *testing.T) {
 		Cluster: aws.String("web"), Service: aws.String("ghost"), DesiredCount: aws.Int64(1),
 	}, testAccountID)
 	assert.EqualError(t, err, awserrors.ErrorECSServiceNotFound)
+}
+
+// A DeleteService without force on a service scaled above 0 is refused and
+// stops none of the customer's tasks, as AWS refuses it.
+// Verifies: ADR-0003:S7.
+func TestS7_DeleteServiceWithoutForceLeavesAScaledServiceRunning(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
+		Cluster: aws.String("web"), ServiceName: aws.String("web"), TaskDefinition: aws.String("app"),
+		DesiredCount: aws.Int64(2),
+	}, testAccountID)
+	require.NoError(t, err)
+	before, err := svc.listServiceTasks(t.Context(), kv, "web", "web")
+	require.NoError(t, err)
+	require.Len(t, before, 2)
+
+	_, err = svc.DeleteService(context.Background(), &ecs.DeleteServiceInput{
+		Cluster: aws.String("web"), Service: aws.String("web"), Force: aws.Bool(false),
+	}, testAccountID)
+	require.EqualError(t, err, "The service cannot be stopped while it is scaled above 0.: InvalidParameterException")
+
+	after, err := svc.listServiceTasks(t.Context(), kv, "web", "web")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, taskIDs(before), taskIDs(after), "no task may be stopped")
+	desc, err := svc.DescribeServices(context.Background(), &ecs.DescribeServicesInput{
+		Cluster: aws.String("web"), Services: []*string{aws.String("web")},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Services, 1)
+	assert.Equal(t, ServiceStatusActive, aws.StringValue(desc.Services[0].Status))
+	assert.Equal(t, int64(2), aws.Int64Value(desc.Services[0].DesiredCount))
+
+	// Scaled to 0, the same call without force succeeds.
+	_, err = svc.UpdateService(context.Background(), &ecs.UpdateServiceInput{
+		Cluster: aws.String("web"), Service: aws.String("web"), DesiredCount: aws.Int64(0),
+	}, testAccountID)
+	require.NoError(t, err)
+	out, err := svc.DeleteService(context.Background(), &ecs.DeleteServiceInput{
+		Cluster: aws.String("web"), Service: aws.String("web"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, ServiceStatusInactive, aws.StringValue(out.Service.Status))
+}
+
+func taskIDs(tasks []TaskRecord) []string {
+	ids := make([]string, 0, len(tasks))
+	for i := range tasks {
+		ids = append(ids, tasks[i].TaskID)
+	}
+	return ids
 }
 
 func TestService_DescribeAndList(t *testing.T) {

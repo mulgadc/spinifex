@@ -62,6 +62,7 @@ cat > "$TMP/flow.py" << 'PY'
 import os, socket, subprocess, sys
 
 srv_ns, cli_ns, script = sys.argv[1], sys.argv[2], sys.argv[3]
+wait = float(sys.argv[4]) if len(sys.argv) > 4 else 2
 
 def enter(ns):
     fd = os.open("/run/netns/" + ns, os.O_RDONLY)
@@ -80,8 +81,8 @@ for step in script.split("@@"):
     if step == "connect":
         cli = socket.create_connection(("10.99.0.1", 6644), timeout=3)
         srv, _ = listener.accept()
-        cli.settimeout(2)
-        srv.settimeout(2)
+        cli.settimeout(wait)
+        srv.settimeout(wait)
     elif step in ("s2c", "c2s"):
         tx, rx = (srv, cli) if step == "s2c" else (cli, srv)
         tx.sendall(b"x" * 300)
@@ -96,12 +97,13 @@ for step in script.split("@@"):
         subprocess.run(step, shell=True, check=True)
 PY
 
-# dial <client source> <server addr> <port> — a new connection from the server
-# namespace to the client, which listens on the port. 0 when it connects.
+# dial <client source> <server addr> <port> [wait] — a new connection from the
+# server namespace to the client, which listens on the port. 0 when it connects.
 cat > "$TMP/dial.py" << 'PY'
 import os, socket, sys
 
 srv_ns, cli_ns, src, port = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+wait = float(sys.argv[5]) if len(sys.argv) > 5 else 2
 fd = os.open("/run/netns/" + cli_ns, os.O_RDONLY)
 os.setns(fd, os.CLONE_NEWNET)
 listener = socket.socket()
@@ -111,7 +113,7 @@ fd = os.open("/run/netns/" + srv_ns, os.O_RDONLY)
 os.setns(fd, os.CLONE_NEWNET)
 dialer = socket.socket()
 dialer.bind((src, 0))
-dialer.settimeout(2)
+dialer.settimeout(wait)
 try:
     dialer.connect(("10.99.0.3", port))
 except OSError:
@@ -148,11 +150,15 @@ flow() {
     if out=$($SUDO python3 "$TMP/flow.py" "$S" "$C" "$2" 2>&1); then pass "$1"; else fail "$1: $out"; fi
 }
 
+# Steps expected to be dropped wait only this long, since a segment on a local
+# veth arrives in microseconds; steps expected to arrive keep the 2s default.
+DROP_WAIT=0.5
+
 # Control first: with nothing tracking, arming under an open flow must drop the
 # server's next segment, or this kernel cannot show the failure and the cases
 # below prove nothing.
 fresh
-if $SUDO python3 "$TMP/flow.py" "$S" "$C" "connect@@s2c@@c2s@@$arm@@s2c" > /dev/null 2>&1; then
+if $SUDO python3 "$TMP/flow.py" "$S" "$C" "connect@@s2c@@c2s@@$arm@@s2c" "$DROP_WAIT" > /dev/null 2>&1; then
     fail "control: a flow opened with no conntrack user survived the arm, so this kernel cannot reproduce the drop"
 else
     pass "control: a flow opened with no conntrack user loses the server's next segment once armed"
@@ -182,12 +188,12 @@ if $SUDO python3 "$TMP/dial.py" "$S" "$C" 10.99.0.1 6644; then
 else
     fail "armed: a peer cannot reach a cluster port"
 fi
-if $SUDO python3 "$TMP/dial.py" "$S" "$C" 10.99.0.9 6644; then
+if $SUDO python3 "$TMP/dial.py" "$S" "$C" 10.99.0.9 6644 "$DROP_WAIT"; then
     fail "armed: a non-peer reaches a cluster port"
 else
     pass "armed: a non-peer is dropped on a cluster port"
 fi
-if $SUDO python3 "$TMP/dial.py" "$S" "$C" 10.99.0.1 7777; then
+if $SUDO python3 "$TMP/dial.py" "$S" "$C" 10.99.0.1 7777 "$DROP_WAIT"; then
     fail "armed: a peer reaches a port the policy does not open"
 else
     pass "armed: a peer is dropped on a port the policy does not open"

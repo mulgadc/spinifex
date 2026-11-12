@@ -1584,9 +1584,14 @@ for img in ubuntu-26.04-x86_64 spinifex-rds-postgres spinifex-ecs-node spinifex-
 done
 ssh_node "${HOSTS[0]}" "WORKBOOK_IMAGES='$WORKBOOK_IMAGES' bash -s" > "$STATE_DIR/images.log" 2>&1 <<'REMOTE' \
     || die "image import failed; see $STATE_DIR/images.log"
-set -e
+out=$(mktemp)
 for img in $WORKBOOK_IMAGES; do
-    sudo spx admin images import --name "$img" --config /etc/spinifex/spinifex.toml >/dev/null
+    # The import reports some failures on stdout, so a failure prints all of it.
+    if ! sudo spx admin images import --name "$img" --config /etc/spinifex/spinifex.toml < /dev/null > "$out" 2>&1; then
+        echo "importing $img failed:"
+        tr '\r' '\n' < "$out" | grep -v '/100%)' | tail -40
+        exit 1
+    fi
 done
 REMOTE
 

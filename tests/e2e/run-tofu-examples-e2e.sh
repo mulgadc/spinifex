@@ -126,6 +126,28 @@ dump_ovn_state() {
         --columns=logical_port,mac,chassis,up list port_binding 2>&1 | head -80 || true
 }
 
+# dump_eks_dns_state shows how this host resolves each EKS endpoint: through the
+# resolver, and asked directly of the server the Spinifex drop-in routes it to.
+dump_eks_dns_state() {
+    local label="${1:-eks-dns}" name host server
+    log "--- ${label}: resolved drop-in ---"
+    cat /etc/systemd/resolved.conf.d/spinifex-dns.conf 2>&1 || true
+    log "--- ${label}: resolvectl status ---"
+    resolvectl status 2>&1 | head -60 || true
+    server=$(sed -n 's/^DNS=//p' /etc/systemd/resolved.conf.d/spinifex-dns.conf 2>/dev/null | head -1)
+    for name in $(aws eks list-clusters --query 'clusters[]' --output text 2>/dev/null); do
+        host=$(aws eks describe-cluster --name "$name" --query 'cluster.endpoint' --output text 2>/dev/null)
+        host=${host#https://}; host=${host%%:*}; host=${host%%/*}
+        [ -n "$host" ] || continue
+        log "--- ${label}: resolvectl query ${host} ---"
+        resolvectl query "$host" 2>&1 || true
+        if [ -n "$server" ] && command -v dig >/dev/null; then
+            log "--- ${label}: ${host} asked of ${server} ---"
+            dig +time=3 +tries=1 @"${server%%#*}" "$host" A 2>&1 | grep -E 'status:|^[^;].*\sIN\s' || true
+        fi
+    done
+}
+
 cleanup() {
     EXIT_CODE=$?
     if [ "$EXIT_CODE" -ne 0 ]; then
@@ -684,6 +706,7 @@ run_workbook() {
         # Capture OVN state while VMs still exist — the EXIT trap fires after
         # destroy, by which point port groups, address sets, and ACLs are gone.
         dump_ovn_state "post-fail ${example} (pre-destroy)"
+        case "$example" in eks-*) dump_eks_dns_state "post-fail ${example} (pre-destroy)" ;; esac
         rc=1
     fi
 

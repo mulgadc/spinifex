@@ -300,6 +300,27 @@ func TestCreateVolume_PassesValidation(t *testing.T) {
 	}
 }
 
+// AWS returns MultiAttachEnabled false and SnapshotId "" for a volume not
+// made from a snapshot, from both CreateVolume and DescribeVolumes.
+func TestCreateVolume_NoSnapshotShape(t *testing.T) {
+	svc := newTestVolumeService("ap-southeast-2a")
+	svc.snapshotKV = setupTestVolumeKV(t)
+	ctx := context.Background()
+
+	created, err := svc.CreateVolume(ctx, &ec2.CreateVolumeInput{Size: aws.Int64(1), AvailabilityZone: aws.String("ap-southeast-2a")}, testVolAccountID)
+	require.NoError(t, err)
+	out, err := svc.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: []*string{created.VolumeId}}, testVolAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.Volumes, 1)
+
+	for name, vol := range map[string]*ec2.Volume{"CreateVolume": created, "DescribeVolumes": out.Volumes[0]} {
+		require.NotNil(t, vol.SnapshotId, name)
+		assert.Empty(t, *vol.SnapshotId, name)
+		require.NotNil(t, vol.MultiAttachEnabled, name)
+		assert.False(t, *vol.MultiAttachEnabled, name)
+	}
+}
+
 func TestCreateVolume_UsesInjectedProvider(t *testing.T) {
 	svc := newTestVolumeService("ap-southeast-2a")
 	svc.snapshotKV = setupTestVolumeKV(t)

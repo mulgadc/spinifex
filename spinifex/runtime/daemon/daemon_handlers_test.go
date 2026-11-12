@@ -1036,7 +1036,7 @@ func TestRespondWithVolumeAttachment(t *testing.T) {
 	assert.Equal(t, "/dev/sdf", *attachment.Device)
 	assert.Equal(t, "attached", *attachment.State)
 	assert.NotNil(t, attachment.AttachTime)
-	assert.False(t, *attachment.DeleteOnTermination)
+	assert.Nil(t, attachment.DeleteOnTermination, "AWS omits DeleteOnTermination from AttachVolume and DetachVolume")
 }
 
 // --- handleEC2ModifyVolume tests ---

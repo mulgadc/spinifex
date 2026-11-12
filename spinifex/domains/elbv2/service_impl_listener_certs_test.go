@@ -448,3 +448,26 @@ func TestListenerCerts_DefaultCertRendersFirstAndKeepsItsPath(t *testing.T) {
 	assert.Contains(t, lb.ConfigText, "ssl crt "+defaultPath,
 		"the default cert must be the first crt on the bind line")
 }
+
+func TestDescribeListenerCertificates_PageSize(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	arn := createHTTPSListener(t, svc)
+	_, err := svc.AddListenerCertificates(context.Background(), &elbv2.AddListenerCertificatesInput{
+		ListenerArn:  aws.String(arn),
+		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn2)}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	first, err := svc.DescribeListenerCertificates(context.Background(), &elbv2.DescribeListenerCertificatesInput{ListenerArn: aws.String(arn), PageSize: aws.Int64(1)}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, first.Certificates, 1)
+	assert.Equal(t, testCertArn, *first.Certificates[0].CertificateArn)
+	require.NotNil(t, first.NextMarker)
+
+	second, err := svc.DescribeListenerCertificates(context.Background(), &elbv2.DescribeListenerCertificatesInput{ListenerArn: aws.String(arn), PageSize: aws.Int64(1), Marker: first.NextMarker}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, second.Certificates, 1)
+	assert.Equal(t, testCertArn2, *second.Certificates[0].CertificateArn)
+	assert.Nil(t, second.NextMarker)
+}

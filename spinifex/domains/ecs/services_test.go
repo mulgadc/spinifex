@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
 	"github.com/aws/aws-sdk-go/service/ecs"
 	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -178,6 +179,31 @@ func TestService_DeleteService_DrainsAndInactivates(t *testing.T) {
 	require.NoError(t, dropRevisit(svc.reconcileAllServices)(t.Context()))
 	live, _ = svc.listServiceTasks(t.Context(), kv, "web", "web")
 	assert.Empty(t, live)
+}
+
+// A deleted service is still known, so UpdateService answers not-active;
+// only a name that never existed answers not-found.
+func TestService_UpdateService_DeletedAndUnknown(t *testing.T) {
+	svc, _, _ := serviceTestRig(t)
+	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
+		Cluster: aws.String("web"), ServiceName: aws.String("web"), TaskDefinition: aws.String("app"),
+		DesiredCount: aws.Int64(0),
+	}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.DeleteService(context.Background(), &ecs.DeleteServiceInput{
+		Cluster: aws.String("web"), Service: aws.String("web"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.UpdateService(context.Background(), &ecs.UpdateServiceInput{
+		Cluster: aws.String("web"), Service: aws.String("web"), DesiredCount: aws.Int64(1),
+	}, testAccountID)
+	assert.EqualError(t, err, awserrors.ErrorECSServiceNotActive)
+
+	_, err = svc.UpdateService(context.Background(), &ecs.UpdateServiceInput{
+		Cluster: aws.String("web"), Service: aws.String("ghost"), DesiredCount: aws.Int64(1),
+	}, testAccountID)
+	assert.EqualError(t, err, awserrors.ErrorECSServiceNotFound)
 }
 
 func TestService_DescribeAndList(t *testing.T) {

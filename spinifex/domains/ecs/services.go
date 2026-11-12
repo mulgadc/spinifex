@@ -222,8 +222,11 @@ func (s *Service) UpdateService(ctx context.Context, input *ecs.UpdateServiceInp
 	if err != nil {
 		return nil, err
 	}
-	if !found || rec.Status == ServiceStatusInactive {
+	if !found {
 		return nil, errors.New(awserrors.ErrorECSServiceNotFound)
+	}
+	if rec.Status != ServiceStatusActive {
+		return nil, errors.New(awserrors.ErrorECSServiceNotActive)
 	}
 
 	rec.ensurePrimaryDeployment()

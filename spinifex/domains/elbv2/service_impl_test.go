@@ -87,20 +87,66 @@ func TestCreateLoadBalancer_InvalidScheme(t *testing.T) {
 	assert.Contains(t, err.Error(), "InvalidScheme")
 }
 
-func TestCreateLoadBalancer_DuplicateName(t *testing.T) {
+// An identical repeat, settings and tags alike, returns the stored load balancer.
+func TestCreateLoadBalancer_DuplicateNameSameSettingsReturnsExisting(t *testing.T) {
 	t.Parallel()
 	svc := setupTestService(t)
 
-	_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
-		Name: aws.String("dup-alb"),
+	first, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+		Name:           aws.String("dup-alb"),
+		Subnets:        aws.StringSlice([]string{"subnet-a", "subnet-b"}),
+		SecurityGroups: aws.StringSlice([]string{"sg-1"}),
+		Tags:           []*elbv2.Tag{{Key: aws.String("env"), Value: aws.String("dev")}},
 	}, testAccountID)
 	require.NoError(t, err)
 
-	_, err = svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
-		Name: aws.String("dup-alb"),
+	second, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+		Name:           aws.String("dup-alb"),
+		Type:           aws.String(LoadBalancerTypeApplication),
+		Scheme:         aws.String(SchemeInternetFacing),
+		Subnets:        aws.StringSlice([]string{"subnet-b", "subnet-a"}),
+		SecurityGroups: aws.StringSlice([]string{"sg-1"}),
+		Tags:           []*elbv2.Tag{{Key: aws.String("env"), Value: aws.String("dev")}},
 	}, testAccountID)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "DuplicateLoadBalancerName")
+	require.NoError(t, err)
+	require.Len(t, second.LoadBalancers, 1)
+	assert.Equal(t, *first.LoadBalancers[0].LoadBalancerArn, *second.LoadBalancers[0].LoadBalancerArn)
+
+	desc, err := svc.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, desc.LoadBalancers, 1)
+}
+
+// A repeat that differs from the original in any compared setting is refused;
+// AWS refuses one that drops the tags.
+func TestCreateLoadBalancer_DuplicateNameDifferentSettings(t *testing.T) {
+	t.Parallel()
+	tags := []*elbv2.Tag{{Key: aws.String("env"), Value: aws.String("dev")}}
+	for name, repeat := range map[string]*elbv2.CreateLoadBalancerInput{
+		"tags":           {},
+		"type":           {Tags: tags, Type: aws.String(LoadBalancerTypeNetwork)},
+		"scheme":         {Tags: tags, Scheme: aws.String(SchemeInternal)},
+		"subnets":        {Tags: tags, Subnets: aws.StringSlice([]string{"subnet-a"})},
+		"securityGroups": {Tags: tags, SecurityGroups: aws.StringSlice([]string{"sg-1"})},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			svc := setupTestService(t)
+
+			_, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+				Name: aws.String("dup-alb"),
+				Tags: tags,
+			}, testAccountID)
+			require.NoError(t, err)
+
+			repeat.Name = aws.String("dup-alb")
+			_, err = svc.CreateLoadBalancer(context.Background(), repeat, testAccountID)
+			code, msg, ok := awserrors.ResolveErrorDetail(err)
+			require.True(t, ok)
+			assert.Equal(t, awserrors.ErrorELBv2DuplicateLoadBalancer, code)
+			assert.Equal(t, "A load balancer with the same name 'dup-alb' exists, but with different settings", msg)
+		})
+	}
 }
 
 func TestCreateLoadBalancer_MissingName(t *testing.T) {

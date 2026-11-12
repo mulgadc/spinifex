@@ -1351,16 +1351,6 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 		return nil, err
 	}
 
-	// Check for duplicate name
-	existing, err := s.store.GetLoadBalancerByName(ctx, name, accountID)
-	if err != nil {
-		slog.ErrorContext(ctx, "CreateLoadBalancer: failed to check duplicate name", "name", name, "err", err)
-		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-	if existing != nil {
-		return nil, errors.New(awserrors.ErrorELBv2DuplicateLoadBalancer)
-	}
-
 	// Resolve load balancer type — default to application (ALB).
 	lbType := LoadBalancerTypeApplication
 	if input.Type != nil && *input.Type != "" {
@@ -1394,6 +1384,20 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
 	}
 
+	subnets := flattenSubnetIDs(input.Subnets, input.SubnetMappings)
+
+	var securityGroups []string
+	for _, sg := range input.SecurityGroups {
+		if sg != nil {
+			securityGroups = append(securityGroups, *sg)
+		}
+	}
+
+	want := &LoadBalancerRecord{Type: lbType, Scheme: scheme, Subnets: subnets, SecurityGroups: securityGroups, Tags: tags}
+	if out, err := s.repeatCreateLoadBalancer(ctx, want, name, accountID); out != nil || err != nil {
+		return out, err
+	}
+
 	lbID := awsidentifiers.GenerateResourceID("lb")
 	lbArn := resourcearn.FormatELBv2LoadBalancer(s.region, accountID, name, lbID, lbType)
 	arnPathSegment := resourcearn.ELBv2LBPathSegment(lbType)
@@ -1417,19 +1421,14 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if claimDup {
+		// A create that won the claim may have persisted its record since the lookup above.
+		if out, err := s.repeatCreateLoadBalancer(ctx, want, name, accountID); out != nil || err != nil {
+			return out, err
+		}
 		return nil, errors.New(awserrors.ErrorELBv2DuplicateLoadBalancer)
 	}
 	if !claimOK {
 		return nil, errors.New(awserrors.ErrorServerInternal)
-	}
-
-	subnets := flattenSubnetIDs(input.Subnets, input.SubnetMappings)
-
-	var securityGroups []string
-	for _, sg := range input.SecurityGroups {
-		if sg != nil {
-			securityGroups = append(securityGroups, *sg)
-		}
 	}
 
 	// Create ENIs in each subnet (when VPC service is available)
@@ -1602,6 +1601,41 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 	return &elbv2.CreateLoadBalancerOutput{
 		LoadBalancers: []*elbv2.LoadBalancer{s.lbRecordToSDK(ctx, record)},
 	}, nil
+}
+
+// repeatCreateLoadBalancer resolves a create for a name the account already holds:
+// the stored load balancer when its settings and tags equal want's, otherwise
+// DuplicateLoadBalancerName. Both results are nil when no record holds the name.
+func (s *ELBv2ServiceImpl) repeatCreateLoadBalancer(ctx context.Context, want *LoadBalancerRecord, name, accountID string) (*elbv2.CreateLoadBalancerOutput, error) {
+	existing, err := s.store.GetLoadBalancerByName(ctx, name, accountID)
+	if err != nil {
+		slog.ErrorContext(ctx, "CreateLoadBalancer: failed to check duplicate name", "name", name, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if existing == nil {
+		return nil, nil
+	}
+	if existing.Type == want.Type && existing.Scheme == want.Scheme &&
+		sameStringSet(existing.Subnets, want.Subnets) && sameStringSet(existing.SecurityGroups, want.SecurityGroups) &&
+		maps.Equal(existing.Tags, want.Tags) {
+		return &elbv2.CreateLoadBalancerOutput{
+			LoadBalancers: []*elbv2.LoadBalancer{s.lbRecordToSDK(ctx, existing)},
+		}, nil
+	}
+	return nil, awserrors.Errorf(awserrors.ErrorELBv2DuplicateLoadBalancer,
+		"A load balancer with the same name '%s' exists, but with different settings", name)
+}
+
+// sameStringSet reports whether a and b hold the same distinct values in any order.
+func sameStringSet(a, b []string) bool {
+	as, bs := make(map[string]bool, len(a)), make(map[string]bool, len(b))
+	for _, v := range a {
+		as[v] = true
+	}
+	for _, v := range b {
+		bs[v] = true
+	}
+	return maps.Equal(as, bs)
 }
 
 // lbLaunchCtx carries the immutable inputs for an asynchronous LB-VM launch.

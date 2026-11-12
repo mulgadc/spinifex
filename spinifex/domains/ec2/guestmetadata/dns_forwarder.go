@@ -95,9 +95,7 @@ type dnsForwarder struct {
 	rate, burst int           // per-tap token-bucket query rate (H2)
 	now         func() time.Time
 
-	warnMu     sync.Mutex
-	nextWarnAt time.Time    // all-backends-failed is logged at Warn once per cooldown
-	inFlight   atomic.Int32 // open UDP attempts, for tests
+	inFlight atomic.Int32 // open UDP attempts, for tests
 }
 
 func newDNSForwarder(targets []string) *dnsForwarder {
@@ -140,6 +138,7 @@ func (f *dnsForwarder) ordered(now time.Time) []*dnsBackend {
 func (f *dnsForwarder) serveUDP(pc net.PacketConn) {
 	sem := make(chan struct{}, f.maxInFlight)
 	limiter := newTokenBucket(f.rate, f.burst, f.now)
+	warns := &warnThrottle{every: f.cooldown, now: f.now}
 	buf := make([]byte, maxDNSUDPSize)
 	for {
 		n, addr, err := pc.ReadFrom(buf)
@@ -165,7 +164,7 @@ func (f *dnsForwarder) serveUDP(pc net.PacketConn) {
 			defer func() { <-sem }()
 			resp, err := f.exchangeUDP(query)
 			if err != nil {
-				f.logAllBackendsFailed(err)
+				f.logAllBackendsFailed(warns, err)
 				resp = servfail(query)
 				if resp == nil {
 					return
@@ -276,17 +275,30 @@ func (f *dnsForwarder) exchangeUDPOnce(ctx context.Context, target string, query
 	return buf[:n], nil
 }
 
-// logAllBackendsFailed reports a SERVFAIL at Warn at most once per cooldown, so a
-// guest flooding a dead backend cannot flood the log; the rest stay at Debug.
-func (f *dnsForwarder) logAllBackendsFailed(err error) {
-	now := f.now()
-	f.warnMu.Lock()
-	warn := !now.Before(f.nextWarnAt)
-	if warn {
-		f.nextWarnAt = now.Add(f.cooldown)
+// warnThrottle admits one Warn per window. Each serveUDP owns one, so one tap's
+// failing guest cannot hide another tap's failures.
+type warnThrottle struct {
+	mu    sync.Mutex
+	next  time.Time
+	every time.Duration
+	now   func() time.Time
+}
+
+func (w *warnThrottle) allow() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	now := w.now()
+	if now.Before(w.next) {
+		return false
 	}
-	f.warnMu.Unlock()
-	if warn {
+	w.next = now.Add(w.every)
+	return true
+}
+
+// logAllBackendsFailed reports a SERVFAIL at Warn at most once per window per tap,
+// so a guest flooding a dead backend cannot flood the log; the rest stay at Debug.
+func (f *dnsForwarder) logAllBackendsFailed(warns *warnThrottle, err error) {
+	if warns.allow() {
 		slog.Warn("IMDS: DNS shim exchange failed on all backends", "backends", len(f.backends), "err", err)
 		return
 	}

@@ -272,6 +272,12 @@ func TestOperations_RefuseAfterConfigDrift(t *testing.T) {
 			require.ErrorContains(t, err, "not durable")
 			_, err = s.Lookup(t.Context(), testPrefix, "i-1", "node1", "10.11.12.10")
 			require.ErrorContains(t, err, "not durable")
+			_, err = s.ClaimAt(t.Context(), snap, "i-1", "node1", "10.11.12.10")
+			require.ErrorContains(t, err, "not durable")
+			_, err = s.Remove(t.Context(), snap, "i-1", "node1", "10.11.12.10")
+			require.ErrorContains(t, err, "not durable")
+			_, err = s.Seed(t.Context(), testPrefix, AuthorityMigrated, nil)
+			require.ErrorContains(t, err, "not durable")
 
 			requireUnchanged(t, s, string(raw), rev)
 		})
@@ -600,4 +606,261 @@ func TestInsert_InPlaceMutationOfReturnedEntriesDoesNotReachTheStore(t *testing.
 	require.NoError(t, err)
 	assert.Equal(t, []Entry{entry("10.11.12.10", "i-1", "node1"), entry("10.11.12.11", "i-2", "node2")}, reloaded.Record().Entries)
 	assert.Equal(t, "i-1", snap.Record().Entries[0].InstanceID)
+}
+
+func TestSeed_CreatesAuthoritativeRecordFromUnion(t *testing.T) {
+	s, _ := newStore(t)
+	_, err := s.Load(t.Context(), testPrefix)
+	require.ErrorIs(t, err, ErrNotAuthoritative)
+
+	got, err := s.Seed(t.Context(), testPrefix, AuthorityMigrated, []Entry{
+		entry("10.11.12.30", "i-b", "node2"),
+		entry("10.11.12.12", "i-a", "node1"),
+		entry("10.11.12.30", "i-b", "node2"),
+	})
+	require.NoError(t, err)
+
+	snap, err := s.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+	assert.Equal(t, got, snap.Record())
+	assert.Equal(t, AuthorityMigrated, got.Authority)
+	assert.Equal(t, []Entry{entry("10.11.12.12", "i-a", "node1"), entry("10.11.12.30", "i-b", "node2")}, got.Entries)
+
+	next, err := s.Insert(t.Context(), snap, "i-c", "node1")
+	require.NoError(t, err)
+	assert.Equal(t, "10.11.12.10", next.IP)
+}
+
+func TestSeed_EmptyFormationIsAuthoritative(t *testing.T) {
+	s, _ := newStore(t)
+	_, err := s.Seed(t.Context(), testPrefix, AuthorityFormed, nil)
+	require.NoError(t, err)
+	snap, err := s.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+	assert.Equal(t, AuthorityFormed, snap.Record().Authority)
+	assert.Empty(t, snap.Record().Entries)
+}
+
+func TestSeed_RefusesDisagreeingSourcesAndWritesNothing(t *testing.T) {
+	cases := map[string][]Entry{
+		"address held by two instances":  {entry("10.11.12.10", "i-a", "node1"), entry("10.11.12.10", "i-b", "node2")},
+		"instance holding two addresses": {entry("10.11.12.10", "i-a", "node1"), entry("10.11.12.11", "i-a", "node1")},
+		"instance on two nodes":          {entry("10.11.12.10", "i-a", "node1"), entry("10.11.12.10", "i-a", "node2")},
+		"address outside the subnet":     {entry("10.11.13.10", "i-a", "node1")},
+		"entry without a node":           {entry("10.11.12.10", "i-a", "")},
+	}
+	for name, entries := range cases {
+		t.Run(name, func(t *testing.T) {
+			s, _ := newStore(t)
+			_, err := s.Seed(t.Context(), testPrefix, AuthorityMigrated, entries)
+			require.ErrorIs(t, err, ErrInvalidArgument)
+			_, err = s.kv.Get(t.Context(), testKey)
+			require.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+		})
+	}
+}
+
+func TestSeed_RefusesUnknownAuthority(t *testing.T) {
+	s, _ := newStore(t)
+	_, err := s.Seed(t.Context(), testPrefix, "", nil)
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	_, err = s.kv.Get(t.Context(), testKey)
+	require.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+}
+
+func TestSeed_ExistingRecordKeepsItsEntriesAndAuthority(t *testing.T) {
+	s, _ := newStore(t)
+	putRecord(t, s, formed(entry("10.11.12.40", "i-old", "node1")))
+
+	got, err := s.Seed(t.Context(), testPrefix, AuthorityMigrated, []Entry{
+		entry("10.11.12.40", "i-old", "node1"),
+		entry("10.11.12.11", "i-new", "node2"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, AuthorityFormed, got.Authority)
+	assert.Equal(t, []Entry{entry("10.11.12.11", "i-new", "node2"), entry("10.11.12.40", "i-old", "node1")}, got.Entries)
+
+	snap, err := s.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+	assert.Equal(t, got, snap.Record())
+}
+
+func TestSeed_ConflictWithExistingRecordWritesNothing(t *testing.T) {
+	s, _ := newStore(t)
+	rev := putRecord(t, s, formed(entry("10.11.12.40", "i-old", "node1")))
+	raw, _ := storedValue(t, s)
+
+	_, err := s.Seed(t.Context(), testPrefix, AuthorityMigrated, []Entry{entry("10.11.12.40", "i-other", "node2")})
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	requireUnchanged(t, s, string(raw), rev)
+}
+
+func TestSeed_RefusesDamagedExistingRecord(t *testing.T) {
+	s, _ := newStore(t)
+	rev := putRaw(t, s, `{"schema":1}`)
+	_, err := s.Seed(t.Context(), testPrefix, AuthorityMigrated, nil)
+	require.ErrorIs(t, err, ErrNotAuthoritative)
+	requireUnchanged(t, s, `{"schema":1}`, rev)
+}
+
+func TestClaimAt_ReservesTheGivenAddress(t *testing.T) {
+	s, _ := newStore(t)
+	putRecord(t, s, formed(entry("10.11.12.10", "i-1", "node1")))
+	snap, err := s.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+
+	got, err := s.ClaimAt(t.Context(), snap, "i-2", "node2", "10.11.12.77")
+	require.NoError(t, err)
+	assert.Equal(t, entry("10.11.12.77", "i-2", "node2"), got)
+
+	reloaded, err := s.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+	assert.Contains(t, reloaded.Record().Entries, got)
+}
+
+func TestClaimAt_ExistingMatchIsReacknowledged(t *testing.T) {
+	s, _ := newStore(t)
+	rev := putRecord(t, s, formed(entry("10.11.12.10", "i-1", "node1")))
+	raw, _ := storedValue(t, s)
+	snap, err := s.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+
+	_, err = s.ClaimAt(t.Context(), snap, "i-1", "node1", "10.11.12.10")
+	require.NoError(t, err)
+	val, gotRev := storedValue(t, s)
+	assert.Equal(t, string(raw), string(val))
+	assert.Greater(t, gotRev, rev)
+}
+
+func TestClaimAt_RefusesConflictsAndWritesNothing(t *testing.T) {
+	cases := []struct {
+		name               string
+		instance, node, ip string
+		want               error
+	}{
+		{"address held by another instance", "i-2", "node1", "10.11.12.10", ErrAddressHeld},
+		{"instance held on another node", "i-1", "node2", "10.11.12.10", ErrForeignHolder},
+		{"instance holds another address", "i-1", "node1", "10.11.12.20", ErrAlreadyHeld},
+		{"address outside the subnet", "i-2", "node1", "10.11.13.20", ErrInvalidArgument},
+		{"no node", "i-2", "", "10.11.12.20", ErrInvalidArgument},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := newStore(t)
+			rev := putRecord(t, s, formed(entry("10.11.12.10", "i-1", "node1")))
+			raw, _ := storedValue(t, s)
+			snap, err := s.Load(t.Context(), testPrefix)
+			require.NoError(t, err)
+
+			_, err = s.ClaimAt(t.Context(), snap, tc.instance, tc.node, tc.ip)
+			require.ErrorIs(t, err, tc.want)
+			requireUnchanged(t, s, string(raw), rev)
+		})
+	}
+}
+
+func TestClaimAt_StaleSnapshotConflicts(t *testing.T) {
+	s, _ := newStore(t)
+	putRecord(t, s, formed())
+	snap, err := s.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+	rev := putRecord(t, s, formed(entry("10.11.12.10", "i-1", "node1")))
+	raw, _ := storedValue(t, s)
+
+	_, err = s.ClaimAt(t.Context(), snap, "i-2", "node2", "10.11.12.10")
+	require.ErrorIs(t, err, ErrConflict)
+	requireUnchanged(t, s, string(raw), rev)
+}
+
+func TestRemove_ReleasesOwnEntry(t *testing.T) {
+	s, _ := newStore(t)
+	putRecord(t, s, formed(entry("10.11.12.10", "i-1", "node1"), entry("10.11.12.11", "i-2", "node2")))
+	snap, err := s.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+
+	removed, err := s.Remove(t.Context(), snap, "i-1", "node1", "10.11.12.10")
+	require.NoError(t, err)
+	assert.True(t, removed)
+
+	reloaded, err := s.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+	assert.Equal(t, []Entry{entry("10.11.12.11", "i-2", "node2")}, reloaded.Record().Entries)
+}
+
+func TestRemove_RefusesAnotherHoldersEntryAndWritesNothing(t *testing.T) {
+	cases := []struct {
+		name     string
+		node, ip string
+		want     error
+	}{
+		{"held on another node", "node2", "10.11.12.10", ErrForeignHolder},
+		{"held at another address", "node1", "10.11.12.99", ErrNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := newStore(t)
+			rev := putRecord(t, s, formed(entry("10.11.12.10", "i-1", "node1")))
+			raw, _ := storedValue(t, s)
+			snap, err := s.Load(t.Context(), testPrefix)
+			require.NoError(t, err)
+
+			_, err = s.Remove(t.Context(), snap, "i-1", tc.node, tc.ip)
+			require.ErrorIs(t, err, tc.want)
+			requireUnchanged(t, s, string(raw), rev)
+		})
+	}
+}
+
+// A release of an absent entry still advances the revision, so an allocation
+// prepared before the release cannot land after it.
+func TestRemove_AbsentEntryFencesEarlierWrites(t *testing.T) {
+	s, _ := newStore(t)
+	rev := putRecord(t, s, formed())
+	raw, _ := storedValue(t, s)
+	delayed, err := s.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+	release, err := s.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+
+	removed, err := s.Remove(t.Context(), release, "i-1", "node1", "10.11.12.10")
+	require.NoError(t, err)
+	assert.False(t, removed)
+	val, gotRev := storedValue(t, s)
+	assert.Equal(t, string(raw), string(val))
+	assert.Greater(t, gotRev, rev)
+
+	_, err = s.Insert(t.Context(), delayed, "i-1", "node1")
+	require.ErrorIs(t, err, ErrConflict)
+	_, err = s.ClaimAt(t.Context(), delayed, "i-1", "node1", "10.11.12.10")
+	require.ErrorIs(t, err, ErrConflict)
+	requireUnchanged(t, s, string(raw), gotRev)
+}
+
+func TestRemove_StaleSnapshotConflicts(t *testing.T) {
+	s, _ := newStore(t)
+	putRecord(t, s, formed(entry("10.11.12.10", "i-1", "node1")))
+	snap, err := s.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+	rev := putRecord(t, s, formed(entry("10.11.12.10", "i-1", "node1"), entry("10.11.12.11", "i-2", "node1")))
+	raw, _ := storedValue(t, s)
+
+	_, err = s.Remove(t.Context(), snap, "i-1", "node1", "10.11.12.10")
+	require.ErrorIs(t, err, ErrConflict)
+	requireUnchanged(t, s, string(raw), rev)
+}
+
+func TestNewOperations_RefuseForeignSnapshot(t *testing.T) {
+	s, _ := newStore(t)
+	other, _ := newStore(t)
+	rev := putRecord(t, s, formed(entry("10.11.12.10", "i-1", "node1")))
+	raw, _ := storedValue(t, s)
+	putRecord(t, other, formed(entry("10.11.12.10", "i-1", "node1")))
+	foreign, err := other.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+
+	_, err = s.ClaimAt(t.Context(), foreign, "i-2", "node1", "10.11.12.20")
+	require.ErrorIs(t, err, ErrForeignSnapshot)
+	_, err = s.Remove(t.Context(), foreign, "i-1", "node1", "10.11.12.10")
+	require.ErrorIs(t, err, ErrForeignSnapshot)
+	requireUnchanged(t, s, string(raw), rev)
 }

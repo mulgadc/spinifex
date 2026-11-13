@@ -55,6 +55,8 @@ var (
 	ErrConflict          = errors.New("mgmtipstore: record changed since it was read")
 	ErrNotFound          = errors.New("mgmtipstore: no such entry")
 	ErrAlreadyHeld       = errors.New("mgmtipstore: instance already holds an address")
+	ErrAddressHeld       = errors.New("mgmtipstore: address is held by another instance")
+	ErrForeignHolder     = errors.New("mgmtipstore: entry is held on another node")
 	ErrRangeExhausted    = errors.New("mgmtipstore: address range exhausted")
 	ErrForeignSnapshot   = errors.New("mgmtipstore: snapshot does not belong to this store")
 	ErrNoCreationTime    = errors.New("mgmtipstore: stream reports no creation time")
@@ -380,17 +382,167 @@ func (s *Store) Insert(ctx context.Context, snap *Snapshot, instanceID, node str
 	}
 	entry := Entry{IP: ip, InstanceID: instanceID, Node: node}
 	rec.Entries = append(slices.Clone(rec.Entries), entry)
-	raw, err := encode(rec)
-	if err != nil {
-		return Entry{}, fmt.Errorf("encode subnet %s: %w", rec.Subnet, err)
-	}
-	if _, err := s.kv.Update(ctx, rec.Subnet, raw, snap.revision); err != nil {
-		if kvstore.IsRevisionConflict(err) {
-			return Entry{}, fmt.Errorf("%w: subnet %s revision %d", ErrConflict, rec.Subnet, snap.revision)
-		}
-		return Entry{}, fmt.Errorf("insert into subnet %s: %w", rec.Subnet, err)
+	if err := s.write(ctx, rec, snap.revision, "insert into"); err != nil {
+		return Entry{}, err
 	}
 	return entry, nil
+}
+
+// ClaimAt reserves a given address for an instance on node, conditional on the
+// snapshot's revision. An entry already matching all three is re-written
+// unchanged, so the claim is acknowledged current rather than read from a cache.
+func (s *Store) ClaimAt(ctx context.Context, snap *Snapshot, instanceID, node, ip string) (Entry, error) {
+	if instanceID == "" || node == "" {
+		return Entry{}, fmt.Errorf("%w: instance and node are required", ErrInvalidArgument)
+	}
+	rec, err := s.owns(snap)
+	if err != nil {
+		return Entry{}, err
+	}
+	if err := canonicalIPIn(ip, snap.prefix); err != nil {
+		return Entry{}, fmt.Errorf("%w: %w", ErrInvalidArgument, err)
+	}
+	if err := s.check(ctx); err != nil {
+		return Entry{}, err
+	}
+	want := Entry{IP: ip, InstanceID: instanceID, Node: node}
+	present := false
+	for _, e := range rec.Entries {
+		switch {
+		case e == want:
+			present = true
+		case e.IP == ip && e.InstanceID != instanceID:
+			return Entry{}, fmt.Errorf("%w: %s holds %s", ErrAddressHeld, e.InstanceID, ip)
+		case e.InstanceID == instanceID && e.Node != node:
+			return Entry{}, fmt.Errorf("%w: %s is held on %s", ErrForeignHolder, instanceID, e.Node)
+		case e.InstanceID == instanceID:
+			return Entry{}, fmt.Errorf("%w: %s holds %s", ErrAlreadyHeld, instanceID, e.IP)
+		}
+	}
+	if !present {
+		rec.Entries = append(slices.Clone(rec.Entries), want)
+	}
+	if err := s.write(ctx, rec, snap.revision, "claim in"); err != nil {
+		return Entry{}, err
+	}
+	return want, nil
+}
+
+// Remove releases the instance's entry on node at ip, conditional on the
+// snapshot's revision. With no entry it still writes the record unchanged, so
+// no write prepared at an earlier revision can land after the release.
+func (s *Store) Remove(ctx context.Context, snap *Snapshot, instanceID, node, ip string) (removed bool, err error) {
+	if instanceID == "" || node == "" {
+		return false, fmt.Errorf("%w: instance and node are required", ErrInvalidArgument)
+	}
+	rec, err := s.owns(snap)
+	if err != nil {
+		return false, err
+	}
+	if err := canonicalIPIn(ip, snap.prefix); err != nil {
+		return false, fmt.Errorf("%w: %w", ErrInvalidArgument, err)
+	}
+	if err := s.check(ctx); err != nil {
+		return false, err
+	}
+	kept := make([]Entry, 0, len(rec.Entries))
+	for _, e := range rec.Entries {
+		if e.InstanceID != instanceID {
+			kept = append(kept, e)
+			continue
+		}
+		if e.Node != node {
+			return false, fmt.Errorf("%w: %s is held on %s", ErrForeignHolder, instanceID, e.Node)
+		}
+		if e.IP != ip {
+			return false, fmt.Errorf("%w: %s holds %s, not %s", ErrNotFound, instanceID, e.IP, ip)
+		}
+		removed = true
+	}
+	rec.Entries = kept
+	if err := s.write(ctx, rec, snap.revision, "remove from"); err != nil {
+		return false, err
+	}
+	return removed, nil
+}
+
+// Seed makes a subnet's record authoritative from entries gathered by the
+// cutover. An existing authoritative record keeps its entries and authority and
+// gains the new ones; any address or instance held two ways is refused.
+func (s *Store) Seed(ctx context.Context, prefix netip.Prefix, authority Authority, entries []Entry) (Record, error) {
+	if err := validPrefix(prefix); err != nil {
+		return Record{}, err
+	}
+	if authority != AuthorityFormed && authority != AuthorityMigrated {
+		return Record{}, fmt.Errorf("%w: authority state %q", ErrInvalidArgument, authority)
+	}
+	rec := Record{Schema: SchemaMajor, Authority: authority, Subnet: keyOf(prefix)}
+	if err := s.check(ctx); err != nil {
+		return Record{}, err
+	}
+	if err := union(&rec, entries, prefix); err != nil {
+		return Record{}, err
+	}
+	raw, err := encode(rec)
+	if err != nil {
+		return Record{}, fmt.Errorf("encode subnet %s: %w", rec.Subnet, err)
+	}
+	_, err = s.kv.Create(ctx, rec.Subnet, raw)
+	if err == nil {
+		return rec, nil
+	}
+	if !errors.Is(err, jetstream.ErrKeyExists) {
+		return Record{}, fmt.Errorf("seed subnet %s: %w", rec.Subnet, err)
+	}
+	snap, err := s.Load(ctx, prefix)
+	if err != nil {
+		return Record{}, err
+	}
+	merged := snap.Record()
+	if err := union(&merged, entries, prefix); err != nil {
+		return Record{}, err
+	}
+	if err := s.write(ctx, merged, snap.revision, "seed"); err != nil {
+		return Record{}, err
+	}
+	return merged, nil
+}
+
+// union adds entries to rec, dropping exact repeats, and orders the result by
+// address. Sources that disagree over an address or an instance are refused.
+func union(rec *Record, entries []Entry, prefix netip.Prefix) error {
+	all := slices.Clone(rec.Entries)
+	for _, e := range entries {
+		if !slices.Contains(all, e) {
+			all = append(all, e)
+		}
+	}
+	candidate := *rec
+	candidate.Entries = all
+	if err := validateContent(candidate, prefix); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidArgument, err)
+	}
+	slices.SortFunc(all, func(a, b Entry) int {
+		return netip.MustParseAddr(a.IP).Compare(netip.MustParseAddr(b.IP))
+	})
+	rec.Entries = all
+	return nil
+}
+
+// write stores rec conditional on revision, reporting a changed record as
+// ErrConflict.
+func (s *Store) write(ctx context.Context, rec Record, revision uint64, op string) error {
+	raw, err := encode(rec)
+	if err != nil {
+		return fmt.Errorf("encode subnet %s: %w", rec.Subnet, err)
+	}
+	if _, err := s.kv.Update(ctx, rec.Subnet, raw, revision); err != nil {
+		if kvstore.IsRevisionConflict(err) {
+			return fmt.Errorf("%w: subnet %s revision %d", ErrConflict, rec.Subnet, revision)
+		}
+		return fmt.Errorf("%s subnet %s: %w", op, rec.Subnet, err)
+	}
+	return nil
 }
 
 func firstFree(prefix netip.Prefix, entries []Entry) (string, error) {

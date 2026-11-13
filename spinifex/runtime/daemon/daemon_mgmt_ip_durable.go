@@ -24,6 +24,10 @@ const mgmtStoreTimeout = 10 * time.Second
 var (
 	errMgmtIPAMUnbound   = errors.New("durable mgmt IPAM is not bound")
 	errMgmtIPNotReserved = errors.New("mgmt IP is not reserved in the durable record")
+
+	// errMgmtIPUnresolvedHolder refuses new addresses while a local guest's
+	// address is unacknowledged by the durable record.
+	errMgmtIPUnresolvedHolder = errors.New("a local mgmt IP holder is not reserved in the durable record")
 )
 
 func entryFor(snap *mgmtipstore.Snapshot, instanceID string) (mgmtipstore.Entry, bool) {
@@ -125,6 +129,11 @@ func (a *MgmtIPAllocator) allocateDurable(instanceID string) (string, error) {
 	a.mu.Lock()
 	cached := a.allocated[instanceID]
 	a.mu.Unlock()
+	if cached == "" {
+		if err := a.resolveLocalHolders(); err != nil {
+			return "", fmt.Errorf("allocate mgmt IP for %s: %w", instanceID, err)
+		}
+	}
 
 	var ip string
 	err := a.withRecord(func(ctx context.Context, store *mgmtipstore.Store, snap *mgmtipstore.Snapshot, node string) error {
@@ -148,6 +157,7 @@ func (a *MgmtIPAllocator) allocateDurable(instanceID string) (string, error) {
 	}
 	a.mu.Lock()
 	a.allocated[instanceID] = ip
+	a.confirmed[instanceID] = true
 	a.mu.Unlock()
 	slog.Debug("Management IP allocated", "instance", instanceID, "ip", ip)
 	return ip, nil
@@ -172,6 +182,7 @@ func (a *MgmtIPAllocator) releaseDurable(instanceID, ip string) (removed bool, e
 	a.mu.Lock()
 	if cur, ok := a.allocated[instanceID]; ok && (ip == "" || cur == ip) {
 		delete(a.allocated, instanceID)
+		delete(a.confirmed, instanceID)
 	}
 	a.mu.Unlock()
 	return removed, nil
@@ -193,12 +204,14 @@ func (a *MgmtIPAllocator) confirmDurable(instanceID, mgmtIP string) error {
 	}
 	a.mu.Lock()
 	a.allocated[instanceID] = mgmtIP
+	a.confirmed[instanceID] = true
 	a.mu.Unlock()
 	return nil
 }
 
 // rebuildDurable confirms every local VM's reservation. A missing or
-// conflicting one is reported and left for the operator, never reconstructed.
+// conflicting one is reported, never reconstructed, and stays unconfirmed so
+// it blocks new allocations (see resolveLocalHolders).
 func (a *MgmtIPAllocator) rebuildDurable(vms map[string]*vm.VM) {
 	for id, v := range vms {
 		if v.MgmtIP == "" {
@@ -209,4 +222,29 @@ func (a *MgmtIPAllocator) rebuildDurable(vms map[string]*vm.VM) {
 				"instance", id, "ip", v.MgmtIP, "err", err)
 		}
 	}
+}
+
+// resolveLocalHolders confirms every address this node holds that the record
+// has not yet acknowledged. A new address is handed out only when none is left
+// unconfirmed: the record may lack a live guest's address and offer it again.
+func (a *MgmtIPAllocator) resolveLocalHolders() error {
+	a.mu.Lock()
+	pending := make(map[string]string)
+	for id, ip := range a.allocated {
+		if !a.confirmed[id] {
+			pending[id] = ip
+		}
+	}
+	a.mu.Unlock()
+
+	var errs []error
+	for id, ip := range pending {
+		if err := a.confirmDurable(id, ip); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%w: %w", errMgmtIPUnresolvedHolder, errors.Join(errs...))
+	}
+	return nil
 }

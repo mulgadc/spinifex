@@ -300,3 +300,45 @@ func TestMgmtIPAllocator_Durable_RebuildNeverReconstructsOrOverwrites(t *testing
 	assert.Equal(t, want, durableEntries(t, store))
 	requireNoLegacyRecord(t, jsm)
 }
+
+// A running guest whose address the record lacks must not have it handed to
+// another instance: new allocations wait until the record acknowledges it.
+func TestMgmtIPAllocator_Durable_UnreservedLiveGuestBlocksNewAllocations(t *testing.T) {
+	jsm := newTestMgmtJSM(t)
+	store := createDurableMgmtBucket(t, jsm)
+	a := newDurableAllocator(t, jsm, "node1")
+	a.Rebuild(map[string]*vm.VM{"i-1": {MgmtIP: "10.15.8.10"}})
+
+	_, err := a.Allocate("i-2")
+	require.ErrorIs(t, err, errMgmtIPUnresolvedHolder)
+	assert.Empty(t, durableEntries(t, store))
+
+	// Once the cutover records the guest, allocation resumes around it.
+	_, err = store.Seed(t.Context(), durableTestPrefix, mgmtipstore.AuthorityMigrated,
+		[]mgmtipstore.Entry{durableEntry("10.15.8.10", "i-1", "node1")})
+	require.NoError(t, err)
+	ip, err := a.Allocate("i-2")
+	require.NoError(t, err)
+	assert.Equal(t, "10.15.8.11", ip)
+}
+
+func TestMgmtIPAllocator_Durable_ConflictingLiveGuestBlocksNewAllocations(t *testing.T) {
+	jsm := newTestMgmtJSM(t)
+	store := createDurableMgmtBucket(t, jsm, durableEntry("10.15.8.10", "i-other", "node2"))
+	a := newDurableAllocator(t, jsm, "node1")
+	a.Rebuild(map[string]*vm.VM{"i-1": {MgmtIP: "10.15.8.10"}})
+
+	_, err := a.Allocate("i-2")
+	require.ErrorIs(t, err, errMgmtIPUnresolvedHolder)
+	assert.Equal(t, []mgmtipstore.Entry{durableEntry("10.15.8.10", "i-other", "node2")}, durableEntries(t, store))
+}
+
+func TestMgmtIPAllocator_Durable_UnboundAtRebuildBlocksUntilConfirmed(t *testing.T) {
+	jsm := newTestMgmtJSM(t)
+	a := newDurableAllocator(t, jsm, "node1")
+	a.Rebuild(map[string]*vm.VM{"i-1": {MgmtIP: "10.15.8.10"}})
+
+	createDurableMgmtBucket(t, jsm)
+	_, err := a.Allocate("i-2")
+	require.ErrorIs(t, err, errMgmtIPUnresolvedHolder)
+}

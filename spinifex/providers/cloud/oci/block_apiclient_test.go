@@ -141,6 +141,7 @@ func TestBlockAttachVolumeIsISCSIAndNotShareable(t *testing.T) {
 	assert.Equal(t, "iscsi", body["type"])
 	assert.Equal(t, true, body["isReadOnly"])
 	assert.Equal(t, false, body["isShareable"])
+	assert.Equal(t, false, body["isAgentAutoIscsiLoginEnabled"], "the Oracle Cloud Agent must not log these sessions in or out")
 	assert.Equal(t, "i1", body["instanceId"])
 	assert.Equal(t, "v1", body["volumeId"])
 }

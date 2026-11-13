@@ -322,7 +322,7 @@ func (c *blockAPIClient) DeleteVolume(ctx context.Context, volumeID string) erro
 }
 
 func (c *blockAPIClient) AttachVolume(ctx context.Context, in AttachVolumeInput) (VolumeAttachment, error) {
-	notShareable := false
+	notShareable, noAgentLogin := false, false
 	resp, err := c.compute.AttachVolume(ctx, core.AttachVolumeRequest{
 		AttachVolumeDetails: core.AttachIScsiVolumeDetails{
 			InstanceId:  &in.InstanceID,
@@ -330,6 +330,9 @@ func (c *blockAPIClient) AttachVolume(ctx context.Context, in AttachVolumeInput)
 			DisplayName: optional(in.DisplayName),
 			IsReadOnly:  &in.ReadOnly,
 			IsShareable: &notShareable,
+			// The Oracle Cloud Agent logs in and out only attachments that set
+			// this, and these sessions are the provider's alone to manage.
+			IsAgentAutoIscsiLoginEnabled: &noAgentLogin,
 		},
 	})
 	if err != nil {

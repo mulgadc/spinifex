@@ -1,6 +1,6 @@
 #!/bin/sh
 # setup_ocibsd_test.sh — setup.sh's systemd and udev stages never install the
-# tarball's ocibsd/ files; install_ocibsd stages them on an OCI VM, and
+# tarball's ocibsd/ files; install_ocibsd stages them on an OCI instance, and
 # reinstalls them on upgrade only where the node's config already runs ocibsd.
 # A stub SUDO records every privileged command and runs the file ones under a
 # scratch root, so what each case leaves on disk is checked as well.
@@ -44,7 +44,7 @@ exec "${args[@]}"
 EOF
 chmod +x "$TMP/sudo"
 
-# run_setup <case> <oci_vm yes|no> <config body or -> <functions...>
+# run_setup <case> <oci_instance yes|no> <config body or -> <functions...>
 # runs the named setup.sh functions in a fresh root for one case.
 run_setup() {
     name="$1" vm="$2" body="$3"
@@ -56,7 +56,7 @@ run_setup() {
     [ "$body" = - ] || printf '%s\n' "$body" > "$ROOT/etc/spinifex/spinifex.toml"
     export ROOT CALLS
     OUT=$(INSTALL_SPINIFEX_LIB_ONLY=1 bash -c '
-        . "$1"; SUDO="$2"; EXTRACT_DIR="$3"; OCI_VM="$4"; SPINIFEX_TOML="$ROOT/etc/spinifex/spinifex.toml"
+        . "$1"; SUDO="$2"; EXTRACT_DIR="$3"; OCI_INSTANCE="$4"; SPINIFEX_TOML="$ROOT/etc/spinifex/spinifex.toml"
         shift 4
         for f in "$@"; do $f; done' _ "$SETUP" "$TMP/sudo" "$EXTRACT" "$vm" "$@" 2>&1) \
         || fail "$name: $* failed: $OUT"
@@ -91,7 +91,7 @@ staged_ok() {
     done
 }
 
-echo "-- a fresh install on an OCI VM stages ocibsd/ and installs none of it"
+echo "-- a fresh install on an OCI instance stages ocibsd/ and installs none of it"
 run_setup fresh yes - install_systemd install_udev install_ocibsd
 if staged_ok; then pass "the three files are staged"; else fail "the stage does not match the tarball: $(ls -R "$ROOT/$STAGED" 2>&1)"; fi
 [ "$(installed_count)" = 0 ] && pass "nothing is installed" || fail "installed $(installed_count) ocibsd file(s) on a node init has not resolved"
@@ -131,7 +131,7 @@ echo "-- an ocibsd node is refreshed even when the metadata service does not ans
 run_setup upgrade-no-imds no "$OCIBSD_TOML" install_ocibsd
 [ "$(installed_count)" = 3 ] && pass "the three files are installed" || fail "installed $(installed_count) of 3"
 
-echo "-- an upgrade of a viperblock node on an OCI VM installs none of them"
+echo "-- an upgrade of a viperblock node on an OCI instance installs none of them"
 run_setup viperblock yes '[nodes.node1.ebs]
 provider = "viperblockd"' install_systemd install_udev install_ocibsd
 [ "$(installed_count)" = 0 ] && pass "nothing is installed" || fail "installed $(installed_count) ocibsd file(s) on a viperblock node"
@@ -142,7 +142,7 @@ echo "-- off OCI nothing is staged"
 run_setup off-oci no '[nodes.node1.daemon]' install_ocibsd
 [ ! -e "$ROOT/$STAGED" ] && pass "no stage" || fail "staged ocibsd/ off OCI"
 
-echo "-- the initiator is installed on an OCI VM only"
+echo "-- the initiator is installed on an OCI instance only"
 run_setup initiator-apt yes - "install_iscsi_initiator apt"
 grep -q 'apt-get install -y -qq open-iscsi' "$CALLS" && grep -q '^systemctl enable --now iscsid.socket$' "$CALLS" \
     && pass "apt installs open-iscsi and enables iscsid.socket" || fail "apt: $(cat "$CALLS")"
@@ -150,6 +150,20 @@ run_setup initiator-dnf yes - "install_iscsi_initiator dnf"
 grep -q 'dnf install -y -q iscsi-initiator-utils' "$CALLS" && pass "dnf installs iscsi-initiator-utils" || fail "dnf: $(cat "$CALLS")"
 run_setup initiator-off no - "install_iscsi_initiator apt"
 [ -s "$CALLS" ] && fail "installed an initiator off OCI: $(cat "$CALLS")" || pass "no initiator off OCI"
+
+echo "-- detection takes any shape the metadata service answers, bare metal included"
+mkdir -p "$TMP/bin"
+printf '#!/bin/sh\n[ -n "$SHAPE" ] || exit 22\nprintf %%s "$SHAPE"\n' > "$TMP/bin/curl"
+chmod +x "$TMP/bin/curl"
+detect() {
+    SHAPE="$1" PATH="$TMP/bin:$PATH" INSTALL_SPINIFEX_LIB_ONLY=1 bash -c '
+        . "$1"; unset OCI_INSTANCE
+        if is_oci_instance; then echo yes; else echo no; fi' _ "$SETUP" 2>/dev/null
+}
+for shape in VM.Standard.E6.Flex BM.Standard.E2.64; do
+    [ "$(detect "$shape")" = yes ] && pass "$shape is an OCI instance" || fail "$shape was not detected"
+done
+[ "$(detect "")" = no ] && pass "no answer is not an OCI instance" || fail "detected an OCI instance with no metadata answer"
 
 if [ "$fails" -gt 0 ]; then
     echo "$fails failure(s)"

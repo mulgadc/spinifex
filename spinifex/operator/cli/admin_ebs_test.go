@@ -91,7 +91,9 @@ func TestResolveInitEBS_Precedence(t *testing.T) {
 		{name: "an existing config's provider wins over the environment", existing: "[nodes.node1.ebs]\nprovider = \"qemunbd\"\n", env: config.EBSProviderViperblockd, shape: "VM.Standard.E6.Flex", want: config.EBSProviderQEMUNBD, source: ebsFromConfig},
 		{name: "the environment wins over detection", env: config.EBSProviderViperblockd, shape: "VM.Standard.E6.Flex", want: config.EBSProviderViperblockd, source: ebsFromEnv},
 		{name: "detection on an OCI virtual machine", shape: "VM.Standard.E6.Flex", want: config.EBSProviderOCIBSD, source: ebsFromDetection},
-		{name: "detection on an OCI bare-metal shape", shape: "BM.Standard.E2.64", want: config.EBSProviderViperblockd, source: ebsFromDetection},
+		{name: "detection on an OCI bare-metal shape", shape: "BM.Standard.E2.64", want: config.EBSProviderOCIBSD, source: ebsFromDetection},
+		{name: "an existing config's provider wins over detection on bare metal", existing: "[nodes.node1.ebs]\nprovider = \"viperblockd\"\n", shape: "BM.Standard.E2.64", want: config.EBSProviderViperblockd, source: ebsFromConfig},
+		{name: "the environment wins over detection on bare metal", env: config.EBSProviderViperblockd, shape: "BM.Standard.E2.64", want: config.EBSProviderViperblockd, source: ebsFromEnv},
 		{name: "detection off OCI", want: config.EBSProviderViperblockd, source: ebsFromDetection},
 		{name: "another node's table is not this node's config", existing: "[nodes.node2.ebs]\nprovider = \"qemunbd\"\n", want: config.EBSProviderViperblockd, source: ebsFromDetection},
 	}
@@ -136,7 +138,7 @@ func TestResolveInitEBS_DetectionFillsTheOCITable(t *testing.T) {
 	assert.Regexp(t, `^[0-9a-f]{32}$`, got.ClusterID, "128 random bits in hex")
 	assert.Equal(t, 1, f.imdsReads, "detection's read also fills the table")
 	assert.Equal(t, []string{"instance_principal||"}, f.clientFor, "the credential is checked as instance principal")
-	assert.Equal(t, "EBS provider: ocibsd (detected: OCI virtual machine VM.Standard.E6.Flex)", got.describe())
+	assert.Equal(t, "EBS provider: ocibsd (detected: OCI instance VM.Standard.E6.Flex)", got.describe())
 
 	again, err := resolveInitEBS(context.Background(), absentConfig(t), "node1", f.resolver())
 	require.NoError(t, err)
@@ -340,7 +342,7 @@ func TestActivateEBSProvider_MissingStage(t *testing.T) {
 	runner := &fakeRunner{}
 	e := nodeEBS{EBSConfig: formation.EBSConfig{Provider: config.EBSProviderOCIBSD}}
 	err := activateEBSProvider(context.Background(), e, ocibsdActivation{Root: t.TempDir(), Stage: filepath.Join(t.TempDir(), "absent"), Runner: runner})
-	require.ErrorContains(t, err, "setup.sh stages it on an OCI virtual machine")
+	require.ErrorContains(t, err, "setup.sh stages it on an OCI instance")
 	assert.Empty(t, runner.calls, "nothing is enabled without its files")
 }
 

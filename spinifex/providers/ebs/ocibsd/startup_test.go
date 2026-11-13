@@ -114,6 +114,23 @@ func TestStartLogsOutOnlyThisClustersDetachedSessions(t *testing.T) {
 	}
 }
 
+// An OCI bare-metal host boots from a boot volume over iSCSI, so its session
+// is open before the provider starts and must survive every stale-session pass.
+func TestStartKeepsTheBareMetalBootSessionBesideAStaleOne(t *testing.T) {
+	fake := oci.NewBlockFake()
+	stale := ociTarget("detached")
+	seedAttachment(fake, "att-old", instanceOf("node-1"), seedVolume(t, fake, testCluster), oci.AttachmentDetached, stale)
+	boot := ocibsd.Target{IQN: "iqn.2015-02.oracle.boot:uefi", IPv4: "169.254.0.2", Port: 3260}
+	initiator := ocibsd.NewFakeInitiator()
+	initiator.SeedSession(boot)
+	initiator.SeedSession(stale)
+	p := newNode(t, fake, initiator)
+
+	require.NoError(t, p.Start(context.Background()))
+	assert.Equal(t, []string{"logout " + stale.IQN}, initiator.Events())
+	assert.Equal(t, []ocibsd.Target{boot}, initiator.Open())
+}
+
 func TestPublishWaitsForTheStaleSessionLogout(t *testing.T) {
 	fake := oci.NewBlockFake()
 	stale := ociTarget("stale")

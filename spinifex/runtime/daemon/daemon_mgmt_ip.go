@@ -106,11 +106,10 @@ type MgmtIPAllocator struct {
 	node      string
 
 	// durable selects the durable record (see SetMode). store stays nil until
-	// BindKV binds it, and bindErr keeps why it could not.
+	// a bind succeeds, and is then kept.
 	durable bool
 	prefix  netip.Prefix
 	store   *mgmtipstore.Store
-	bindErr error
 }
 
 // NewMgmtIPAllocator creates an allocator for the /24 subnet of bridgeIP.
@@ -154,7 +153,10 @@ func (a *MgmtIPAllocator) BindKV(jsManager *JetStreamManager, node string) {
 	durable := a.durable
 	a.mu.Unlock()
 	if durable {
-		a.bindDurable(jsManager)
+		if _, err := a.bindDurable(); err != nil {
+			slog.Error("Durable mgmt IPAM unavailable; each request retries the bind",
+				"bucket", MgmtIPAMBucket, "err", err)
+		}
 	}
 }
 
@@ -372,7 +374,7 @@ func (a *MgmtIPAllocator) Claim(instanceID, mgmtIP string) {
 		return
 	}
 	if a.isDurable() {
-		if err := a.claimDurable(instanceID, mgmtIP); err != nil {
+		if err := a.confirmDurable(instanceID, mgmtIP); err != nil {
 			slog.Error("Management IP claim refused", "instance", instanceID, "ip", mgmtIP, "err", err)
 		}
 		return

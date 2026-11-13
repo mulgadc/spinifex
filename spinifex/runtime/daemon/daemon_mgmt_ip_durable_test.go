@@ -155,7 +155,38 @@ func TestMgmtIPAllocator_Durable_CachedAddressIsReclaimedNotTrusted(t *testing.T
 	require.NoError(t, err)
 
 	_, err = a.Allocate("i-1")
-	require.ErrorIs(t, err, mgmtipstore.ErrAddressHeld)
+	require.ErrorIs(t, err, errMgmtIPNotReserved)
+	assert.Equal(t, []mgmtipstore.Entry{durableEntry(ip, "i-2", "node2")}, durableEntries(t, store))
+}
+
+// A cached holder the record has lost may have had its address handed out while
+// it was missing, so it is refused rather than written back.
+func TestMgmtIPAllocator_Durable_CachedHolderMissingFromTheRecordIsRefused(t *testing.T) {
+	jsm := newTestMgmtJSM(t)
+	store := createDurableMgmtBucket(t, jsm)
+	a := newDurableAllocator(t, jsm, "node1")
+	a.Rebuild(map[string]*vm.VM{"i-1": {MgmtIP: "10.15.8.10"}})
+	before, err := store.Load(t.Context(), durableTestPrefix)
+	require.NoError(t, err)
+
+	_, err = a.Allocate("i-1")
+	require.ErrorIs(t, err, errMgmtIPNotReserved)
+	after, err := store.Load(t.Context(), durableTestPrefix)
+	require.NoError(t, err)
+	assert.Equal(t, before.Revision(), after.Revision())
+	assert.Empty(t, after.Entries())
+}
+
+func TestMgmtIPAllocator_Durable_BindsOnceTheBucketAppears(t *testing.T) {
+	jsm := newTestMgmtJSM(t)
+	a := newDurableAllocator(t, jsm, "node1")
+	_, err := a.Allocate("i-1")
+	require.ErrorIs(t, err, jetstream.ErrBucketNotFound)
+
+	createDurableMgmtBucket(t, jsm)
+	ip, err := a.Allocate("i-1")
+	require.NoError(t, err)
+	assert.Equal(t, "10.15.8.10", ip)
 }
 
 func TestMgmtIPAllocator_Durable_RefusesAnInstanceHeldOnAnotherNode(t *testing.T) {
@@ -231,29 +262,41 @@ func TestMgmtIPAllocator_Durable_ClaimRefusesAnotherInstancesAddress(t *testing.
 	a := newDurableAllocator(t, jsm, "node1")
 
 	a.Claim("i-1", "10.15.8.10")
-	assert.Equal(t, []mgmtipstore.Entry{durableEntry("10.15.8.10", "i-other", "node2")}, durableEntries(t, store))
-
 	a.Claim("i-1", "10.15.8.40")
-	assert.Contains(t, durableEntries(t, store), durableEntry("10.15.8.40", "i-1", "node1"))
+	assert.Equal(t, []mgmtipstore.Entry{durableEntry("10.15.8.10", "i-other", "node2")}, durableEntries(t, store))
 }
 
-func TestMgmtIPAllocator_Durable_RebuildClaimsLocalVMsWithoutOverwriting(t *testing.T) {
+func TestMgmtIPAllocator_Durable_ClaimReacknowledgesOwnReservation(t *testing.T) {
 	jsm := newTestMgmtJSM(t)
-	store := createDurableMgmtBucket(t, jsm,
+	store := createDurableMgmtBucket(t, jsm, durableEntry("10.15.8.10", "i-1", "node1"))
+	a := newDurableAllocator(t, jsm, "node1")
+	before, err := store.Load(t.Context(), durableTestPrefix)
+	require.NoError(t, err)
+
+	a.Claim("i-1", "10.15.8.10")
+	after, err := store.Load(t.Context(), durableTestPrefix)
+	require.NoError(t, err)
+	assert.Greater(t, after.Revision(), before.Revision())
+	assert.Equal(t, before.Entries(), after.Entries())
+}
+
+func TestMgmtIPAllocator_Durable_RebuildNeverReconstructsOrOverwrites(t *testing.T) {
+	jsm := newTestMgmtJSM(t)
+	want := []mgmtipstore.Entry{
 		durableEntry("10.15.8.10", "i-elsewhere", "node2"),
-		durableEntry("10.15.8.11", "i-moved", "node2"))
+		durableEntry("10.15.8.11", "i-moved", "node2"),
+		durableEntry("10.15.8.12", "i-local", "node1"),
+	}
+	store := createDurableMgmtBucket(t, jsm, want...)
 	a := newDurableAllocator(t, jsm, "node1")
 
 	a.Rebuild(map[string]*vm.VM{
-		"i-local":    {MgmtIP: "10.15.8.20"},
+		"i-local":    {MgmtIP: "10.15.8.12"},
+		"i-missing":  {MgmtIP: "10.15.8.20"},
 		"i-conflict": {MgmtIP: "10.15.8.10"},
 		"i-moved":    {MgmtIP: "10.15.8.11"},
 		"i-none":     {},
 	})
-	assert.ElementsMatch(t, []mgmtipstore.Entry{
-		durableEntry("10.15.8.10", "i-elsewhere", "node2"),
-		durableEntry("10.15.8.11", "i-moved", "node2"),
-		durableEntry("10.15.8.20", "i-local", "node1"),
-	}, durableEntries(t, store))
+	assert.Equal(t, want, durableEntries(t, store))
 	requireNoLegacyRecord(t, jsm)
 }

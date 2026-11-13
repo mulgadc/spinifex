@@ -21,7 +21,19 @@ const (
 // mgmtStoreTimeout bounds one durable record operation, including its retries.
 const mgmtStoreTimeout = 10 * time.Second
 
-var errMgmtIPAMUnbound = errors.New("durable mgmt IPAM is not bound")
+var (
+	errMgmtIPAMUnbound   = errors.New("durable mgmt IPAM is not bound")
+	errMgmtIPNotReserved = errors.New("mgmt IP is not reserved in the durable record")
+)
+
+func entryFor(snap *mgmtipstore.Snapshot, instanceID string) (mgmtipstore.Entry, bool) {
+	for _, e := range snap.Entries() {
+		if e.InstanceID == instanceID {
+			return e, true
+		}
+	}
+	return mgmtipstore.Entry{}, false
+}
 
 // SetMode selects the allocator. Durable mode never falls back to the legacy
 // record: until BindKV binds the durable bucket, every operation that needs the
@@ -46,36 +58,41 @@ func (a *MgmtIPAllocator) SetMode(mode string) error {
 	return nil
 }
 
-// bindDurable binds the durable bucket. A failure is kept and returned by
-// every later operation rather than leaving the allocator to guess.
-func (a *MgmtIPAllocator) bindDurable(jsManager *JetStreamManager) {
+// bindDurable binds the durable bucket, never creating it. Until a bind has
+// succeeded each operation tries again; once bound, the store is kept and its
+// own checks refuse a bucket that was recreated or changed.
+func (a *MgmtIPAllocator) bindDurable() (*mgmtipstore.Store, error) {
+	a.mu.Lock()
+	store, jsManager := a.store, a.jsManager
+	a.mu.Unlock()
+	if store != nil {
+		return store, nil
+	}
+	if jsManager == nil || jsManager.js == nil {
+		return nil, errMgmtIPAMUnbound
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), mgmtStoreTimeout)
 	defer cancel()
-	var store *mgmtipstore.Store
-	err := errMgmtIPAMUnbound
-	if jsManager != nil && jsManager.js != nil {
-		store, err = mgmtipstore.Bind(ctx, jsManager.js, MgmtIPAMBucket)
-	}
+	bound, err := mgmtipstore.Bind(ctx, jsManager.js, MgmtIPAMBucket)
 	if err != nil {
-		slog.Error("Durable mgmt IPAM unavailable; system instances get no management address until it binds",
-			"bucket", MgmtIPAMBucket, "err", err)
+		return nil, err
 	}
-	a.mu.Lock()
-	a.store, a.bindErr = store, err
-	a.mu.Unlock()
-}
-
-func (a *MgmtIPAllocator) durableStore() (*mgmtipstore.Store, netip.Prefix, string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.store == nil {
-		err := a.bindErr
-		if err == nil {
-			err = errMgmtIPAMUnbound
-		}
+		a.store = bound
+	}
+	return a.store, nil
+}
+
+func (a *MgmtIPAllocator) durableStore() (*mgmtipstore.Store, netip.Prefix, string, error) {
+	store, err := a.bindDurable()
+	if err != nil {
 		return nil, netip.Prefix{}, "", fmt.Errorf("mgmt IP for subnet %s: %w", a.subnet, err)
 	}
-	return a.store, a.prefix, a.node, nil
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return store, a.prefix, a.node, nil
 }
 
 // withRecord runs op against a freshly loaded snapshot, reloading only when
@@ -101,9 +118,9 @@ func (a *MgmtIPAllocator) withRecord(op func(context.Context, *mgmtipstore.Store
 	return fmt.Errorf("mgmt IP record for %s changed on each of %d attempts: %w", prefix, mgmtCASOuterRetries, mgmtipstore.ErrConflict)
 }
 
-// allocateDurable returns the instance's acknowledged address, claiming the
-// cached one or inserting a new one. A cached address is re-claimed in the
-// record rather than trusted, and another holder of it is refused.
+// allocateDurable returns the instance's acknowledged address. A recorded
+// entry is re-acknowledged and a new instance gets a new address; a cached
+// address the record no longer holds is refused, never written back.
 func (a *MgmtIPAllocator) allocateDurable(instanceID string) (string, error) {
 	a.mu.Lock()
 	cached := a.allocated[instanceID]
@@ -111,21 +128,18 @@ func (a *MgmtIPAllocator) allocateDurable(instanceID string) (string, error) {
 
 	var ip string
 	err := a.withRecord(func(ctx context.Context, store *mgmtipstore.Store, snap *mgmtipstore.Snapshot, node string) error {
-		want := cached
-		for _, e := range snap.Entries() {
-			if e.InstanceID == instanceID {
-				if cached != "" && e.IP != cached {
-					return fmt.Errorf("mgmt IP for %s is recorded as %s but cached as %s", instanceID, e.IP, cached)
-				}
-				want = e.IP
-			}
-		}
-		if want == "" {
-			got, err := store.Insert(ctx, snap, instanceID, node)
+		recorded, ok := entryFor(snap, instanceID)
+		switch {
+		case ok && cached != "" && recorded.IP != cached:
+			return fmt.Errorf("mgmt IP for %s is recorded as %s but cached as %s", instanceID, recorded.IP, cached)
+		case ok:
+			got, err := store.ClaimAt(ctx, snap, instanceID, node, recorded.IP)
 			ip = got.IP
 			return err
+		case cached != "":
+			return fmt.Errorf("%w: %s at %s", errMgmtIPNotReserved, instanceID, cached)
 		}
-		got, err := store.ClaimAt(ctx, snap, instanceID, node, want)
+		got, err := store.Insert(ctx, snap, instanceID, node)
 		ip = got.IP
 		return err
 	})
@@ -163,10 +177,14 @@ func (a *MgmtIPAllocator) releaseDurable(instanceID, ip string) (removed bool, e
 	return removed, nil
 }
 
-// claimDurable records this node as the holder of the instance's address. It
-// refuses an address another instance holds and an entry on another node.
-func (a *MgmtIPAllocator) claimDurable(instanceID, mgmtIP string) error {
+// confirmDurable re-acknowledges this node's existing reservation of mgmtIP
+// for the instance. A missing reservation is refused, not recreated: another
+// node may have handed the address out while it was missing.
+func (a *MgmtIPAllocator) confirmDurable(instanceID, mgmtIP string) error {
 	err := a.withRecord(func(ctx context.Context, store *mgmtipstore.Store, snap *mgmtipstore.Snapshot, node string) error {
+		if _, ok := entryFor(snap, instanceID); !ok {
+			return fmt.Errorf("%w: %s at %s", errMgmtIPNotReserved, instanceID, mgmtIP)
+		}
 		_, err := store.ClaimAt(ctx, snap, instanceID, node, mgmtIP)
 		return err
 	})
@@ -179,14 +197,14 @@ func (a *MgmtIPAllocator) claimDurable(instanceID, mgmtIP string) error {
 	return nil
 }
 
-// rebuildDurable claims every local VM's address. A conflict is reported and
-// left for the operator: the record is never overwritten to match this node.
+// rebuildDurable confirms every local VM's reservation. A missing or
+// conflicting one is reported and left for the operator, never reconstructed.
 func (a *MgmtIPAllocator) rebuildDurable(vms map[string]*vm.VM) {
 	for id, v := range vms {
 		if v.MgmtIP == "" {
 			continue
 		}
-		if err := a.claimDurable(id, v.MgmtIP); err != nil {
+		if err := a.confirmDurable(id, v.MgmtIP); err != nil {
 			slog.Error("Local VM's management IP is not reserved for it in the durable record",
 				"instance", id, "ip", v.MgmtIP, "err", err)
 		}

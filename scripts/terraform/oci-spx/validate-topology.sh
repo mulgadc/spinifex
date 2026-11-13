@@ -821,10 +821,14 @@ for i in $(seq 1 120); do
     sleep 5
 done
 [ "$free" -ge 3 ] || { echo "apt was still busy after 10 minutes:"; ps -eo pid,etime,args | grep -E '[a]pt|[d]pkg|[u]nattended'; exit 1; }
-# The image points apt at the region's clouds.archive.ubuntu.com alias, whose
-# servers intermittently return 502/504; the Australian country mirror does not.
+# The image's regional clouds.archive.ubuntu.com alias and the country mirror
+# have each gone unreachable for hours, so apt falls through a list instead.
 for f in $(sudo grep -rlE '[a-z0-9-]+\.clouds\.archive\.ubuntu\.com' /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null); do
-    sudo sed -i -E 's#[a-z0-9-]+\.clouds\.archive\.ubuntu\.com#au.archive.ubuntu.com#g' "$f"
+    regional=$(grep -oE 'https?://[a-z0-9-]+\.clouds\.archive\.ubuntu\.com/ubuntu/?' "$f" | head -1)
+    printf '%s\tpriority:1\n%s\tpriority:2\n%s\tpriority:3\n' \
+        http://archive.ubuntu.com/ubuntu/ http://au.archive.ubuntu.com/ubuntu/ "${regional%/}/" \
+        | sudo tee /etc/apt/spx-mirrors.txt >/dev/null
+    sudo sed -i -E 's#https?://[a-z0-9-]+\.clouds\.archive\.ubuntu\.com/ubuntu/?#mirror+file:/etc/apt/spx-mirrors.txt#g' "$f"
 done
 echo 'Acquire::Retries "3";' | sudo tee /etc/apt/apt.conf.d/80-spx-retries >/dev/null
 if [ -n "${DISTRO_NAME:-}" ]; then

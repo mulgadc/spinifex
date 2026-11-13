@@ -49,7 +49,8 @@ WORKBOOKS=""
 # set -u an unset array is an error rather than an empty one.
 HOSTS=()
 
-TOPOLOGIES="bm vm-single vm-multi vm-single-principal vm-single-ocibsd vm-multi-ocibsd"
+TOPOLOGIES="bm vm-single vm-multi vm-single-principal"
+EBS_PROVIDER=""
 
 # What a topology is worth when nothing says otherwise, so a CI run of a named
 # topology is the same every time. Supplied as TF_VAR_, which terraform.auto.tfvars
@@ -62,13 +63,13 @@ TOPOLOGIES="bm vm-single vm-multi vm-single-principal vm-single-ocibsd vm-multi-
 # A case rather than an associative array: macOS ships bash 3.2, where declare -A
 # is an indexed assignment and the key is read as an arithmetic variable.
 #
-# TOPO_EBS_PROVIDER is what backs EBS. The -ocibsd topologies are their viperblock
-# twins on OCI Block Volumes, so a difference between a pair is the provider's.
-# They set no provider and rely on init's detection on an OCI VM; every other
-# topology names viperblockd in SPINIFEX_EBS_PROVIDER to keep its baseline.
+# TOPO_EBS_PROVIDER is what backs EBS: ocibsd, which init detects on any OCI
+# instance, unless --ebs-provider viperblockd names it for a one-off check.
+# TOPO_LEGACY marks a retired name kept so the sweep can destroy its state.
 topo_defaults() {
     TOPO_FORCE_PRINCIPAL=0
-    TOPO_EBS_PROVIDER=viperblockd
+    TOPO_EBS_PROVIDER=ocibsd
+    TOPO_LEGACY=0
     case "$1" in
         bm)        TOPO_DEFAULT_SHAPE="BM.Standard.E2.64";  TOPO_DEFAULT_NODES=1 ;;
         vm-single) TOPO_DEFAULT_SHAPE="VM.Standard.E6.Flex"; TOPO_DEFAULT_NODES=1 ;;
@@ -81,9 +82,9 @@ topo_defaults() {
             TOPO_DEFAULT_NODES=1
             TOPO_FORCE_PRINCIPAL=1 ;;
         vm-single-ocibsd)
-            TOPO_DEFAULT_SHAPE="VM.Standard.E6.Flex"; TOPO_DEFAULT_NODES=1; TOPO_EBS_PROVIDER=ocibsd ;;
+            TOPO_DEFAULT_SHAPE="VM.Standard.E6.Flex"; TOPO_DEFAULT_NODES=1; TOPO_LEGACY=1 ;;
         vm-multi-ocibsd)
-            TOPO_DEFAULT_SHAPE="VM.Standard.E6.Flex"; TOPO_DEFAULT_NODES=3; TOPO_EBS_PROVIDER=ocibsd ;;
+            TOPO_DEFAULT_SHAPE="VM.Standard.E6.Flex"; TOPO_DEFAULT_NODES=3; TOPO_LEGACY=1 ;;
         *) return 1 ;;
     esac
 }
@@ -96,7 +97,7 @@ die() {
 
 usage() {
     cat >&2 <<EOF
-usage: ${0##*/} --topology <bm|vm-single|vm-multi|vm-single-principal|vm-single-ocibsd|vm-multi-ocibsd> [options]
+usage: ${0##*/} --topology <bm|vm-single|vm-multi|vm-single-principal> [options]
 
 Builds a topology, or installs on existing OCI hosts, then installs Spinifex,
 forms the cluster, and verifies the OCI address allocator.
@@ -105,13 +106,16 @@ forms the cluster, and verifies the OCI address allocator.
                           topology is the easiest expensive mistake here.
                           vm-single-principal is vm-single authenticating as the
                           instance, and implies --instance-principal.
-                          vm-single-ocibsd and vm-multi-ocibsd set no EBS
-                          provider, so init detects ocibsd on the OCI VM, and
-                          add the ebs provider gate; the others set
-                          SPINIFEX_EBS_PROVIDER=viperblockd. The ocibsd pair
-                          need --distro. Their OCI volumes and backups are
-                          in no Terraform state: the destroy here leaves any a
-                          failed run made, and e2e-oci.sh sweeps them by tag.
+                          Every topology backs EBS with ocibsd, which init
+                          detects on the OCI instance, runs the ebs provider
+                          gate, and needs --distro. Its OCI volumes and
+                          backups are in no Terraform state: the destroy here
+                          leaves any a failed run made, and e2e-oci.sh sweeps
+                          them by tag. vm-single-ocibsd and vm-multi-ocibsd are
+                          accepted with --destroy-only, for earlier state.
+  --ebs-provider NAME     ocibsd (default) or viperblockd, which init is then
+                          told through SPINIFEX_EBS_PROVIDER. For a one-off
+                          viperblock check; no default run uses it.
   --ssh-public-key PATH   Public half installed on each node. Default $SSH_PUBLIC_KEY
   --ssh-private-key PATH  Private half used to reach them. Default $SSH_PRIVATE_KEY
   --instance-principal    Configure the pool with oci_auth="instance_principal"
@@ -178,6 +182,7 @@ EOF
 while [ $# -gt 0 ]; do
     case "$1" in
         --topology) TOPOLOGY="${2:?}"; shift 2 ;;
+        --ebs-provider) EBS_PROVIDER="${2:?}"; shift 2 ;;
         --ssh-public-key) SSH_PUBLIC_KEY="${2:?}"; shift 2 ;;
         --ssh-private-key) SSH_PRIVATE_KEY="${2:?}"; shift 2 ;;
         --workbooks) WORKBOOKS_SET=1; WORKBOOKS="${2-}"; shift 2 ;;
@@ -208,6 +213,13 @@ done
 
 [ -n "$TOPOLOGY" ] || usage
 topo_defaults "$TOPOLOGY" || die "unknown topology $TOPOLOGY; one of: $TOPOLOGIES"
+[ "$TOPO_LEGACY" = 0 ] || [ "$DESTROY_ONLY" = 1 ] \
+    || die "$TOPOLOGY is accepted only with --destroy-only; run ${TOPOLOGY%-ocibsd}, which backs EBS with ocibsd"
+case "$EBS_PROVIDER" in
+    "") ;;
+    ocibsd | viperblockd) TOPO_EBS_PROVIDER="$EBS_PROVIDER" ;;
+    *) die "--ebs-provider must be ocibsd or viperblockd, not '$EBS_PROVIDER'" ;;
+esac
 [ -r "$SSH_PUBLIC_KEY" ] || die "no readable SSH public key at $SSH_PUBLIC_KEY"
 [ -r "$SSH_PRIVATE_KEY" ] || die "no readable SSH private key at $SSH_PRIVATE_KEY"
 # Both or neither: a distro with the published setup.sh installs one ref's bytes
@@ -860,9 +872,9 @@ done
 record install PASS "$INSTALLED_VERSION"
 
 
-# spx admin init's EBS choice, written to every node once (ADR-0018:S3). The ocibsd
-# topologies set nothing, so init detects ocibsd on the OCI VM; the rest name
-# viperblockd, which keeps the viperblock baseline on OCI.
+# spx admin init's EBS choice, written to every node once (ADR-0018:S3). An
+# ocibsd run sets nothing, so init detects ocibsd on the OCI instance; a
+# viperblockd run names it, since detection would choose ocibsd.
 INIT_EBS_PROVIDER=""
 [ "$TOPO_EBS_PROVIDER" = ocibsd ] || INIT_EBS_PROVIDER=viperblockd
 
@@ -928,7 +940,7 @@ else
         ssh-keygen -R "$host" >/dev/null 2>&1 || true
     done
     # env -u first, so a SPINIFEX_EBS_PROVIDER in this shell cannot stand in for
-    # detection on the ocibsd topologies.
+    # detection on an ocibsd run.
     env -u SPINIFEX_EBS_PROVIDER ${INIT_EBS_PROVIDER:+SPINIFEX_EBS_PROVIDER=$INIT_EBS_PROVIDER} \
         "$REPO_ROOT/scripts/install-node.sh" \
         --hosts-file "$STATE_DIR/hosts" \
@@ -951,11 +963,11 @@ init_ebs_line() {
         ssh_node "${HOSTS[0]}" "sudo grep -m1 '^EBS provider: ' /var/log/spx-init.log"
     fi
 }
-# The provider has to be the topology's for the reason the topology names: the
-# ocibsd pair detected on the VM, the rest told viperblockd by the environment,
-# so a baseline flipped by detection or an ocibsd run that was configured fails.
+# The provider has to be the run's for the reason the run gives: ocibsd detected
+# on the instance or kept from the seeded config, viperblockd from the
+# environment, so a choice that came from anywhere else fails.
 case "$TOPO_EBS_PROVIDER:$API_KEY_EBS" in
-    ocibsd:0) want_ebs='EBS provider: ocibsd (detected: OCI virtual machine ' ;;
+    ocibsd:0) want_ebs='EBS provider: ocibsd (detected: OCI instance ' ;;
     ocibsd:1) want_ebs='EBS provider: ocibsd (from the existing config)' ;;
     *)        want_ebs='EBS provider: viperblockd (from SPINIFEX_EBS_PROVIDER)' ;;
 esac

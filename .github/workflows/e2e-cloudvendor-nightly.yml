@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       topologies:
-        description: "Space-separated topologies (blank = vm-single vm-multi bm vm-single-principal vm-single-ocibsd vm-multi-ocibsd). One name runs one topology."
+        description: "Space-separated topologies (blank = vm-single vm-multi bm vm-single-principal), each on ocibsd. One name runs one topology."
         required: false
       workbooks:
         description: "Space-separated workbooks (blank = the driver's default list)"
@@ -238,7 +238,7 @@ jobs:
       # always(), and before the artifact upload: an OCI bare-metal host left
       # running by a cancelled or timed-out job is the most expensive way this
       # workflow can fail. It destroys by state file, then deletes OCI volumes and
-      # backups by the cluster tag each ocibsd topology recorded.
+      # backups by the cluster tag each topology recorded.
       - name: Sweep anything left behind
         if: always() && !inputs.keep_on_fail
         working-directory: spinifex/scripts/terraform/oci-spx

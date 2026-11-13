@@ -68,13 +68,13 @@ variable "instance_principal" {
   }
 }
 
-# What backs EBS on these nodes. ocibsd attaches an OCI block volume per EBS
-# volume at runtime, so the Oracle Cloud Agent's Block Volume Management plugin
-# is disabled and the node's own data volume attaches paravirtualized instead.
+# What backs EBS on these nodes, which decides only the policy grants. ocibsd,
+# the default, is what spx admin init detects on any OCI instance; viperblockd
+# also needs SPINIFEX_EBS_PROVIDER=viperblockd at init.
 variable "ebs_provider" {
-  description = "EBS provider the nodes are installed with: viperblockd, or ocibsd for OCI Block Volumes."
+  description = "EBS provider the nodes are installed with: ocibsd for OCI Block Volumes, or viperblockd."
   type        = string
-  default     = "viperblockd"
+  default     = "ocibsd"
 
   validation {
     condition     = contains(["viperblockd", "ocibsd"], var.ebs_provider)

@@ -263,9 +263,21 @@ jobs:
           path: ~/.cache/go-build
           key: gobuild-${{ github.job }}-${{ github.run_id }}
 
+  # Three parallel jobs: run serially, integration and the gated suites made
+  # this the longest PR check. lint_and_security_result reports all three.
   lint_and_security:
-    name: Lint + Security + Integration
+    name: ${{ matrix.name }}
     runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - check: lint
+            name: Lint and Govulncheck
+          - check: integration
+            name: Integration
+          - check: gated
+            name: Gated Suites
 
     steps:
       - name: Checkout Spinifex
@@ -338,8 +350,10 @@ jobs:
         uses: actions/cache/restore@v6.1.0
         with:
           path: ~/.cache/go-build
-          key: gobuild-${{ github.job }}-${{ github.run_id }}
-          restore-keys: gobuild-${{ github.job }}-
+          key: gobuild-${{ github.job }}-${{ matrix.check }}-${{ github.run_id }}
+          restore-keys: |
+            gobuild-${{ github.job }}-${{ matrix.check }}-
+            gobuild-${{ github.job }}-
 
       # Go refreshes an entry's mtime on use only when it is over an hour old, so
       # restored entries are backdated past that before any Go command runs and
@@ -352,20 +366,22 @@ jobs:
         run: go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle
 
       - name: Lint
+        if: ${{ matrix.check == 'lint' }}
         uses: golangci/golangci-lint-action@v9.3.0
         with:
           version: v2.14.0
           working-directory: spinifex
 
       - name: Govulncheck
+        if: ${{ matrix.check == 'lint' && !cancelled() }}
         run: make -C spinifex govulncheck
 
       - name: Run Integration Tests
-        if: ${{ !cancelled() }}
+        if: ${{ matrix.check == 'integration' }}
         run: make -C spinifex test-integration
 
       - name: Run Gated Suites
-        if: ${{ !cancelled() }}
+        if: ${{ matrix.check == 'gated' }}
         run: make -C spinifex test-gated GOTESTFLAGS=-count=1
 
       # Keeps what this run read or wrote and drops the rest, so the saved entry
@@ -380,4 +396,19 @@ jobs:
         uses: actions/cache/save@v6.1.0
         with:
           path: ~/.cache/go-build
-          key: gobuild-${{ github.job }}-${{ github.run_id }}
+          key: gobuild-${{ github.job }}-${{ matrix.check }}-${{ github.run_id }}
+
+  # The context main's ruleset requires, passing only when all three jobs pass.
+  lint_and_security_result:
+    name: Lint and Security
+    if: ${{ always() }}
+    needs: [lint_and_security]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - name: Require lint, integration and gated suites
+        env:
+          RESULT: ${{ needs.lint_and_security.result }}
+        run: |
+          echo "lint, integration and gated suites: ${RESULT}"
+          [ "${RESULT}" = success ]

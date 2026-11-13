@@ -2,7 +2,7 @@
 # start-net-capture.sh — kick off background tcpdump on br-wan.
 # Pair: capture-net-diag.sh stops it and copies the pcap into net-diag/.
 #
-# Filter: anything on br-wan involving the EIP pool (192.168.0.0/23) plus
+# Filter: anything on br-wan involving the WAN segment (192.168.0.0/21) plus
 # ARP for the same range. Single ring buffer (-W 1 -G 0) → grows until stop;
 # capped at 64 MiB via -C 64. Snaplen 200 bytes (headers + a bit) to keep
 # size sane while preserving L2/L3/L4 + first payload bytes.
@@ -29,7 +29,7 @@ fi
 
 sudo nohup tcpdump -i br-wan -s 200 -C 64 -W 1 -U \
     -w "$PCAP" \
-    '(net 192.168.0.0/23) or (arp and (arp[24:4]&0xfffffe00=0xc0a80000))' \
+    '(net 192.168.0.0/21) or (arp and (arp[24:4]&0xfffff800=0xc0a80000))' \
     >/tmp/spinifex-e2e-tcpdump.log 2>&1 &
 PID=$!
 echo "$PID" | sudo tee "$PIDFILE" >/dev/null

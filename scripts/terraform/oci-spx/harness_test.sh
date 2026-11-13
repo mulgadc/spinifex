@@ -1,10 +1,10 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # harness_test.sh — the OCI harness's defaults without a tenancy:
 # setup-identity.sh grants ocibsd unless told otherwise, and validate-topology.sh
 # accepts the retired -ocibsd topology names only to destroy their state.
-set -uo pipefail
+set -u
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 

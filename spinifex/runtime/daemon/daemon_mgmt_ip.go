@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/daemon/mgmtipstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -102,6 +104,13 @@ type MgmtIPAllocator struct {
 	// there is local-cache-only until BindKV is called.
 	jsManager *JetStreamManager
 	node      string
+
+	// durable selects the durable record (see SetMode). store stays nil until
+	// BindKV binds it, and bindErr keeps why it could not.
+	durable bool
+	prefix  netip.Prefix
+	store   *mgmtipstore.Store
+	bindErr error
 }
 
 // NewMgmtIPAllocator creates an allocator for the /24 subnet of bridgeIP.
@@ -140,9 +149,13 @@ func NewMgmtIPAllocator(bridgeIP string) (*MgmtIPAllocator, error) {
 // entry names may give that address back.
 func (a *MgmtIPAllocator) BindKV(jsManager *JetStreamManager, node string) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.jsManager = jsManager
 	a.node = node
+	durable := a.durable
+	a.mu.Unlock()
+	if durable {
+		a.bindDurable(jsManager)
+	}
 }
 
 // Allocate assigns a management IP to the given instance.
@@ -153,6 +166,9 @@ func (a *MgmtIPAllocator) BindKV(jsManager *JetStreamManager, node string) {
 // allocation requires a healthy cluster KV — this node's cache cannot prove
 // an address is free cluster-wide on its own — and is refused otherwise.
 func (a *MgmtIPAllocator) Allocate(instanceID string) (string, error) {
+	if a.isDurable() {
+		return a.allocateDurable(instanceID)
+	}
 	a.mu.Lock()
 	// Addresses this node's own instances hold stay off the table even when the
 	// cluster record has lost their entries.
@@ -235,6 +251,10 @@ func nextFreeIP(baseIP net.IP, rangeMin, rangeMax byte, allocated []MgmtIPEntry)
 // returned — callers (LaunchSystemInstance rollback, CleanupMgmtNetwork)
 // cannot act on a Release error, matching the pre-existing signature.
 func (a *MgmtIPAllocator) Release(instanceID string) {
+	if a.isDurable() {
+		a.releaseCached(instanceID)
+		return
+	}
 	ip, foreign, node, err := a.release(instanceID, false)
 	if err != nil && !errors.Is(err, errMgmtIPNoKV) {
 		slog.Warn("Failed to release mgmt IP in cluster KV; address remains reserved until reconciled",
@@ -250,6 +270,13 @@ func (a *MgmtIPAllocator) Release(instanceID string) {
 // this node; any failure, another node's entry or one naming no node leaves both entries
 // in place. Callers must serialize Allocate and ReleaseChecked for the same instance ID.
 func (a *MgmtIPAllocator) ReleaseChecked(instanceID string) error {
+	if a.isDurable() {
+		a.mu.Lock()
+		cached := a.allocated[instanceID]
+		a.mu.Unlock()
+		_, err := a.releaseDurable(instanceID, cached)
+		return err
+	}
 	ip, foreign, _, err := a.release(instanceID, true)
 	if err != nil {
 		return err
@@ -344,6 +371,12 @@ func (a *MgmtIPAllocator) Claim(instanceID, mgmtIP string) {
 	if instanceID == "" || mgmtIP == "" {
 		return
 	}
+	if a.isDurable() {
+		if err := a.claimDurable(instanceID, mgmtIP); err != nil {
+			slog.Error("Management IP claim refused", "instance", instanceID, "ip", mgmtIP, "err", err)
+		}
+		return
+	}
 
 	a.mu.Lock()
 	a.allocated[instanceID] = mgmtIP
@@ -412,6 +445,10 @@ func (a *MgmtIPAllocator) Rebuild(vms map[string]*vm.VM) {
 		// startLocal: no cluster KV yet, cache-only rebuild.
 		return
 	}
+	if a.isDurable() {
+		a.rebuildDurable(vms)
+		return
+	}
 	if !jsManager.KVHealthy() {
 		slog.Warn("Skipping mgmt IP KV reconcile: cluster state KV unreachable", "subnet", subnet)
 		return
@@ -445,6 +482,27 @@ func (a *MgmtIPAllocator) Rebuild(vms map[string]*vm.VM) {
 	}
 }
 
+func (a *MgmtIPAllocator) isDurable() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.durable
+}
+
+// releaseCached is Release in durable mode: ordinary cleanup releases only the
+// address it knows, and with none known leaves any entry reserved.
+func (a *MgmtIPAllocator) releaseCached(instanceID string) {
+	a.mu.Lock()
+	ip := a.allocated[instanceID]
+	a.mu.Unlock()
+	if ip == "" {
+		slog.Warn("No known management IP to release; any recorded entry stays reserved", "instance", instanceID)
+		return
+	}
+	if _, err := a.releaseDurable(instanceID, ip); err != nil {
+		slog.Warn("Failed to release mgmt IP; address remains reserved", "instance", instanceID, "ip", ip, "err", err)
+	}
+}
+
 // AllocatedCount returns the number of currently allocated IPs known to this
 // node's local cache.
 func (a *MgmtIPAllocator) AllocatedCount() int {
@@ -473,6 +531,14 @@ func (d *Daemon) mgmtBridgeName() string {
 		return d.config.Daemon.MgmtBridge
 	}
 	return defaultMgmtBridge
+}
+
+// mgmtIPAMMode returns the configured management IP allocator mode.
+func (d *Daemon) mgmtIPAMMode() string {
+	if d.config != nil {
+		return d.config.Daemon.MgmtIPAM
+	}
+	return ""
 }
 
 // invalidateMgmtNeigh drops the host ARP entry for a released management IP.

@@ -28,6 +28,9 @@ const (
 	// ClusterConfigBucket holds settings fixed when a cluster forms. Unlike
 	// ClusterStateBucket it has no TTL, so a key written once stays written.
 	ClusterConfigBucket = "spinifex-cluster-config"
+	// MgmtIPAMBucket holds the durable management IP records. Only the cutover
+	// creates it; a daemon in durable mode binds it and never creates it.
+	MgmtIPAMBucket = "spinifex-mgmt-ipam"
 	// InstanceStatePrefix is the key prefix for the per-node running-set blobs
 	// the record space replaces. Nothing writes it after the cutover; the
 	// migration reads it and a rolled-back node still finds what it left.

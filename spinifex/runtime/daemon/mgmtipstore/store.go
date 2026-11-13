@@ -99,6 +99,9 @@ func (s *Snapshot) Record() Record {
 	return rec
 }
 
+// Entries returns a copy of the snapshot's allocations, as current as the read.
+func (s *Snapshot) Entries() []Entry { return s.Record().Entries }
+
 // Revision is the key revision the snapshot was read at.
 func (s *Snapshot) Revision() uint64 { return s.revision }
 

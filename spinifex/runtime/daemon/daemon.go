@@ -1484,6 +1484,9 @@ func (d *Daemon) startLocal() error {
 	} else {
 		d.mgmtBridgeIP = bridgeIP
 		alloc, allocErr := NewMgmtIPAllocator(bridgeIP)
+		if allocErr == nil {
+			allocErr = alloc.SetMode(d.mgmtIPAMMode())
+		}
 		if allocErr != nil {
 			slog.Error("Failed to create mgmt IP allocator", "bridgeIP", bridgeIP, "err", allocErr)
 		} else {

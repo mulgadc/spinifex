@@ -629,6 +629,9 @@ type DaemonConfig struct {
 	GPUModelOverrides []GPUModelOverride `json:"GPUModelOverrides" mapstructure:"gpu_model_overrides"` // Dev/test GPU mappings not in the production model list
 	// MIGProfile enables NVIDIA MIG on all eligible GPUs (e.g. "1g.10gb"); empty disables. Per-GPU override via GPUModelOverrides[].MIGProfile.
 	MIGProfile string `json:"MIGProfile" mapstructure:"mig_profile"`
+	// MgmtIPAM selects the management IP allocator: "" or "legacy" for the shared
+	// expiring record, "durable" only after the cluster's cutover has seeded it.
+	MgmtIPAM string `json:"MgmtIPAM" mapstructure:"mgmt_ipam"`
 }
 
 // NATSConfig holds the NATS configuration.

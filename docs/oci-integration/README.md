@@ -830,7 +830,7 @@ Allow dynamic-group <dynamic-group-name> to manage volume-family in compartment 
 Allow dynamic-group <dynamic-group-name> to use instances in compartment id <compartment-ocid>
 ```
 
-`manage volume-family` covers volumes, backups and attachments, and `use instances` covers attaching them to the node. The instance-principal policy that `--setup-instance-principal` on an `ocibsd` topology (or `setup-identity.sh --ebs-provider ocibsd`) creates grants both, for a Dynamic Group matching `ALL {instance.compartment.id = '<compartment-ocid>'}`. Built for `viperblockd`, the default, it grants neither, and because the policy is shared by every deployment in the compartment, re-running `setup-identity.sh` without the flag removes them.
+`manage volume-family` covers volumes, backups and attachments, and `use instances` covers attaching them to the node. The instance-principal policy that `--setup-instance-principal` or `setup-identity.sh` creates grants both by default, for a Dynamic Group matching `ALL {instance.compartment.id = '<compartment-ocid>'}`. Built with `--ebs-provider viperblockd` it grants neither, and because the policy is shared by every deployment in the compartment, that run removes them. A policy created while `viperblockd` was the default lacks them too, so `spx admin init` refuses the instance principal until `setup-identity.sh` is run again.
 
 For an API key, grant the same two verbs to the key user's group, alongside the four from [section 2.2](#grant-the-group-its-four-permissions):
 

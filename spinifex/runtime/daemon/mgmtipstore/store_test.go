@@ -278,6 +278,8 @@ func TestOperations_RefuseAfterConfigDrift(t *testing.T) {
 			require.ErrorContains(t, err, "not durable")
 			_, err = s.Seed(t.Context(), testPrefix, AuthorityMigrated, nil)
 			require.ErrorContains(t, err, "not durable")
+			_, err = s.RemoveUnknown(t.Context(), snap, "i-1", "node1")
+			require.ErrorContains(t, err, "not durable")
 
 			requireUnchanged(t, s, string(raw), rev)
 		})
@@ -862,5 +864,73 @@ func TestNewOperations_RefuseForeignSnapshot(t *testing.T) {
 	require.ErrorIs(t, err, ErrForeignSnapshot)
 	_, err = s.Remove(t.Context(), foreign, "i-1", "node1", "10.11.12.10")
 	require.ErrorIs(t, err, ErrForeignSnapshot)
+	_, err = s.RemoveUnknown(t.Context(), foreign, "i-1", "node1")
+	require.ErrorIs(t, err, ErrForeignSnapshot)
+	requireUnchanged(t, s, string(raw), rev)
+}
+
+func TestRemove_RequiresAnAddress(t *testing.T) {
+	s, _ := newStore(t)
+	rev := putRecord(t, s, formed(entry("10.11.12.10", "i-1", "node1")))
+	raw, _ := storedValue(t, s)
+	snap, err := s.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+
+	_, err = s.Remove(t.Context(), snap, "i-1", "node1", "")
+	require.ErrorIs(t, err, ErrInvalidArgument)
+	requireUnchanged(t, s, string(raw), rev)
+}
+
+// An allocation whose outcome was unknown may have landed at an address the
+// caller never learned; releasing by instance and node still removes it.
+func TestRemoveUnknown_ReleasesLandedAllocation(t *testing.T) {
+	s, _ := newStore(t)
+	putRecord(t, s, formed(entry("10.11.12.10", "i-1", "node1")))
+	alloc, err := s.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+	_, err = s.Insert(t.Context(), alloc, "lambda-a", "node1")
+	require.NoError(t, err)
+
+	snap, err := s.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+	removed, err := s.RemoveUnknown(t.Context(), snap, "lambda-a", "node1")
+	require.NoError(t, err)
+	assert.True(t, removed)
+
+	reloaded, err := s.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+	assert.Equal(t, []Entry{entry("10.11.12.10", "i-1", "node1")}, reloaded.Record().Entries)
+}
+
+func TestRemoveUnknown_AbsentAllocationFencesTheDelayedWrite(t *testing.T) {
+	s, _ := newStore(t)
+	rev := putRecord(t, s, formed())
+	raw, _ := storedValue(t, s)
+	delayed, err := s.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+	release, err := s.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+
+	removed, err := s.RemoveUnknown(t.Context(), release, "lambda-a", "node1")
+	require.NoError(t, err)
+	assert.False(t, removed)
+	val, gotRev := storedValue(t, s)
+	assert.Equal(t, string(raw), string(val))
+	assert.Greater(t, gotRev, rev)
+
+	_, err = s.Insert(t.Context(), delayed, "lambda-a", "node1")
+	require.ErrorIs(t, err, ErrConflict)
+	requireUnchanged(t, s, string(raw), gotRev)
+}
+
+func TestRemoveUnknown_RefusesForeignHolderAndWritesNothing(t *testing.T) {
+	s, _ := newStore(t)
+	rev := putRecord(t, s, formed(entry("10.11.12.10", "lambda-a", "node2")))
+	raw, _ := storedValue(t, s)
+	snap, err := s.Load(t.Context(), testPrefix)
+	require.NoError(t, err)
+
+	_, err = s.RemoveUnknown(t.Context(), snap, "lambda-a", "node1")
+	require.ErrorIs(t, err, ErrForeignHolder)
 	requireUnchanged(t, s, string(raw), rev)
 }

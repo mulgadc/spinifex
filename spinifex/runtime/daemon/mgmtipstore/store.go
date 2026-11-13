@@ -432,6 +432,21 @@ func (s *Store) ClaimAt(ctx context.Context, snap *Snapshot, instanceID, node, i
 // snapshot's revision. With no entry it still writes the record unchanged, so
 // no write prepared at an earlier revision can land after the release.
 func (s *Store) Remove(ctx context.Context, snap *Snapshot, instanceID, node, ip string) (removed bool, err error) {
+	if ip == "" {
+		return false, fmt.Errorf("%w: address is required", ErrInvalidArgument)
+	}
+	return s.remove(ctx, snap, instanceID, node, ip)
+}
+
+// RemoveUnknown is Remove for an allocation whose outcome is unknown, so whose
+// address, if any, was never learned: it releases the instance's entry on node
+// at whatever address it holds, and fences earlier writes the same way.
+func (s *Store) RemoveUnknown(ctx context.Context, snap *Snapshot, instanceID, node string) (removed bool, err error) {
+	return s.remove(ctx, snap, instanceID, node, "")
+}
+
+// remove matches any address when ip is empty.
+func (s *Store) remove(ctx context.Context, snap *Snapshot, instanceID, node, ip string) (removed bool, err error) {
 	if instanceID == "" || node == "" {
 		return false, fmt.Errorf("%w: instance and node are required", ErrInvalidArgument)
 	}
@@ -439,8 +454,10 @@ func (s *Store) Remove(ctx context.Context, snap *Snapshot, instanceID, node, ip
 	if err != nil {
 		return false, err
 	}
-	if err := canonicalIPIn(ip, snap.prefix); err != nil {
-		return false, fmt.Errorf("%w: %w", ErrInvalidArgument, err)
+	if ip != "" {
+		if err := canonicalIPIn(ip, snap.prefix); err != nil {
+			return false, fmt.Errorf("%w: %w", ErrInvalidArgument, err)
+		}
 	}
 	if err := s.check(ctx); err != nil {
 		return false, err
@@ -454,7 +471,7 @@ func (s *Store) Remove(ctx context.Context, snap *Snapshot, instanceID, node, ip
 		if e.Node != node {
 			return false, fmt.Errorf("%w: %s is held on %s", ErrForeignHolder, instanceID, e.Node)
 		}
-		if e.IP != ip {
+		if ip != "" && e.IP != ip {
 			return false, fmt.Errorf("%w: %s holds %s, not %s", ErrNotFound, instanceID, e.IP, ip)
 		}
 		removed = true

@@ -777,7 +777,7 @@ oci limits resource-availability get --service-name vcn \
 
 ## EBS on OCI Block Volumes
 
-On an OCI virtual machine, EBS volumes can be backed by OCI Block Volumes through the `ocibsd` provider instead of Viperblock. Each EBS volume is one OCI block volume, attached over iSCSI to the node that runs the instance using it.
+On an OCI instance, virtual machine or bare metal, EBS volumes are backed by OCI Block Volumes through the `ocibsd` provider instead of Viperblock. Each EBS volume is one OCI block volume, attached over iSCSI to the node that runs the instance using it.
 
 ### How the provider is chosen
 
@@ -785,9 +785,9 @@ There is no flag. `spx admin init` takes the provider from the first of these th
 
 1. The existing `/etc/spinifex/spinifex.toml`, whose provider the node keeps; a node table that omits it is `viperblockd`.
 2. The `SPINIFEX_EBS_PROVIDER` environment variable: `viperblockd`, `qemunbd` or `ocibsd`.
-3. The OCI instance metadata service (IMDS v2), read with a one-second timeout. An OCI VM shape selects `ocibsd`; a `BM.*` shape, or no answer, selects `viperblockd`.
+3. The OCI instance metadata service (IMDS v2), read with a one-second timeout. Any OCI shape, `VM.*` or `BM.*`, selects `ocibsd`; no answer selects `viperblockd`.
 
-Init prints its choice and where it came from, for example `EBS provider: ocibsd (detected: OCI virtual machine <shape>)`. Joining nodes take the provider from formation rather than choosing their own. The choice is written once for every node and cannot be changed without wiping and re-forming the cluster.
+Init prints its choice and where it came from, for example `EBS provider: ocibsd (detected: OCI instance <shape>)`. Joining nodes take the provider from formation rather than choosing their own. The choice is written once for every node and cannot be changed without wiping and re-forming the cluster.
 
 For `ocibsd`, init fills the compartment and availability domain from instance metadata unless the existing config names them, generates a cluster ID that tags every OCI volume and backup the cluster makes, and defaults `auth` to `instance_principal` when the existing config names no credential. It then reads the compartment's volumes with that credential, and stops with an error naming the needed policy, `manage volume-family` and `use instances`, if the read is refused. It never falls back to Viperblock.
 
@@ -804,15 +804,18 @@ cluster_id = "<generated-cluster-id>"
 auth = "instance_principal"
 ```
 
-On an OCI VM, `setup.sh` installs the iSCSI initiator (`open-iscsi` with apt, `iscsi-initiator-utils` with dnf) and stages the `ocibsd` files under `/usr/local/share/spinifex/ocibsd`. When the provider resolves to `ocibsd`, init and join install the `spinifex-ocibsd.service` unit, its udev rule and a `spinifex-daemon` drop-in, mask `spinifex-viperblock.service`, and enable `spinifex-ocibsd.service`, so exactly one service answers for EBS on the node.
+On an OCI instance, `setup.sh` installs the iSCSI initiator (`open-iscsi` with apt, `iscsi-initiator-utils` with dnf) and stages the `ocibsd` files under `/usr/local/share/spinifex/ocibsd`. When the provider resolves to `ocibsd`, init and join install the `spinifex-ocibsd.service` unit, its udev rule and a `spinifex-daemon` drop-in, mask `spinifex-viperblock.service`, and enable `spinifex-ocibsd.service`, so exactly one service answers for EBS on the node.
 
-To keep Viperblock on an OCI VM, name it before init:
+On bare metal the instance boots from an iSCSI boot volume, so the node already holds a session to an `iqn.2015-02.oracle.boot` target; `ocibsd` only ever logs out sessions to its own cluster's volumes and leaves that one alone.
+`ocibsd` attaches its volumes with the Oracle Cloud Agent's iSCSI login turned off, so the agent's Block Volume Management plugin can stay enabled for the instance's other attachments.
+
+To keep Viperblock on an OCI instance, name it before init:
 
 ```bash
 sudo env SPINIFEX_EBS_PROVIDER=viperblockd spx admin init <your usual flags>
 ```
 
-`validate-topology.sh` does this for every topology except `vm-single-ocibsd` and `vm-multi-ocibsd`, which rely on detection and need `--distro`.
+`validate-topology.sh` does this only with `--ebs-provider viperblockd`; by default every topology relies on detection and needs `--distro`. Build such nodes with `ebs_provider = "viperblockd"` in your tfvars, since the Terraform default is `ocibsd`.
 
 ### One availability domain per cluster
 
@@ -836,7 +839,7 @@ Allow group <group-name> to manage volume-family in compartment id <compartment-
 Allow group <group-name> to use instances in compartment id <compartment-ocid>
 ```
 
-`terraform output -json api_key_policy_statements` prints all six for the group named by `api_key_group_name` (default `spinifex-nodes`) when `ebs_provider = "ocibsd"`, and only the four address grants otherwise. Because init defaults to the instance principal, an API-key node needs its credential named in `spinifex.toml` before init, which init then keeps:
+`terraform output -json api_key_policy_statements` prints all six for the group named by `api_key_group_name` (default `spinifex-nodes`) when `ebs_provider = "ocibsd"`, the default, and only the four address grants with `ebs_provider = "viperblockd"`. Because init defaults to the instance principal, an API-key node needs its credential named in `spinifex.toml` before init, which init then keeps:
 
 ```toml
 [nodes.<node>.ebs]

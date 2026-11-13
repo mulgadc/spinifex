@@ -18,30 +18,56 @@ import (
 )
 
 const (
-	// The status an instance holds for the length of a snapshot, from the quiesce
-	// to the release.
+	// The status an instance holds for the length of a snapshot, from before the
+	// quiesce to after the release.
 	dbInstanceBackingUp = "backing-up"
 
-	// How often the watcher samples the status. The hold lasts about a second, so
-	// the harness's 10s status interval would step straight over it.
-	backingUpSampleEvery = 100 * time.Millisecond
+	// How often the watcher samples the status. The hold has lasted 0.3 to 1.3s,
+	// so this sees it with time left to send a rotation into it.
+	backingUpSampleEvery = 50 * time.Millisecond
 
 	// One window: the reconciler's pass that fires it, the backup itself, and the
 	// minute boundary a later attempt has to wait for.
 	backupOverlapAttemptTimeout = 5 * time.Minute
 
-	// The hold is short and the rotations are discrete, so one backup can finish
-	// between two of them. Each further attempt opens a fresh window.
+	// The status is sampled, so a short hold can still slip between two samples.
+	// Each further attempt opens a fresh window.
 	maxBackupOverlapAttempts = 3
+
+	// How often an attempt still waiting for backing-up looks for a snapshot that
+	// landed without the watcher seeing the status.
+	backupLandedCheckEvery = time.Second
 
 	// A probe table only this check writes to, so its DDL and commit say nothing
 	// about any row the rest of the test reads.
 	backupProbeTable = "e2e_backup_probe"
 )
 
-// Rotates the master password back and forth through an automated backup until
-// one rotation is seen in flight while the instance reports backing-up. conn is
-// kept on whichever password is live, so later subtests connect with it.
+// How one window went for the rotation sent into it.
+type overlapAttempt int
+
+const (
+	overlapped overlapAttempt = iota
+	// The backup landed and no sample read backing-up, so nothing was sent.
+	missedStatus
+	// A rotation was sent, but no describe sent after it read backing-up.
+	lateSend
+)
+
+func (a overlapAttempt) String() string {
+	switch a {
+	case overlapped:
+		return "a rotation overlapped the backup"
+	case missedStatus:
+		return "the backup landed without the watcher seeing backing-up"
+	default:
+		return "the rotation was not seen inside backing-up"
+	}
+}
+
+// Sends a rotation as soon as the instance reports backing-up for an automated
+// backup, until one is seen inside it. conn is kept on whichever password is
+// live, so later subtests connect with it.
 func rotateDuringAutomatedBackup(t *testing.T, f *Fixture, client harness.SSHTarget, id string, conn *harness.MariaDBConn) {
 	t.Helper()
 	// Put back once done, so no later subtest can be interrupted by a retry of
@@ -49,40 +75,116 @@ func rotateDuringAutomatedBackup(t *testing.T, f *Fixture, client harness.SSHTar
 	t.Cleanup(func() { pinBackupWindowClearOfTheRun(t, f, id) })
 
 	var lastOpened time.Time
-	for attempt := 1; attempt <= maxBackupOverlapAttempts; attempt++ {
-		before, err := automatedSnapshots(f, id)
-		require.NoError(t, err)
-		beforeIDs := automatedSnapshotIDs(before)
-
-		lastOpened = openBackupWindowNow(t, f, id, lastOpened)
-		watch := watchStatus(f, id)
-		overlapped := rotateUntilTheBackupLands(t, f, client, id, conn, beforeIDs, watch)
-		watch.stop()
-		if err := watch.err(); err != nil {
-			t.Logf("the status watcher missed samples; the last describe failed with: %v", err)
+	_, ok := retryUntilOverlap(maxBackupOverlapAttempts, func(attempt int) overlapAttempt {
+		result := rotateIntoOneBackup(t, f, client, id, conn, &lastOpened)
+		if result != overlapped {
+			t.Logf("attempt %d: %s of %s; opening another window", attempt, result, id)
 		}
-
-		harness.WaitForDBInstanceAvailable(t, f.AWS, id, harness.WithPoll(2*time.Second),
-			harness.WithTimeout(2*time.Minute))
-		assertTheEngineIsReleased(t, client, *conn)
-
-		if overlapped {
-			return
-		}
-		t.Logf("attempt %d: the backup of %s finished between two rotations; opening another window", attempt, id)
+		return result
+	})
+	if !ok {
+		t.Fatalf("no rotation overlapped an automated backup of %s in %d windows", id, maxBackupOverlapAttempts)
 	}
-	t.Fatalf("no rotation overlapped an automated backup of %s in %d windows", id, maxBackupOverlapAttempts)
 }
 
-// Opens the backup window on the current minute, or on the next one when the
-// previous attempt's window already opened on this one: a window fires once,
-// and only for a backup older than its opening.
+// Runs attempts until one overlaps, and reports which one did.
+func retryUntilOverlap(attempts int, attempt func(int) overlapAttempt) (int, bool) {
+	for n := 1; n <= attempts; n++ {
+		if attempt(n) == overlapped {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+// Opens a window, sends one rotation once the instance reports backing-up, and
+// waits for the backup to land before saying how the rotation fell.
+func rotateIntoOneBackup(t *testing.T, f *Fixture, client harness.SSHTarget, id string,
+	conn *harness.MariaDBConn, lastOpened *time.Time) overlapAttempt {
+	t.Helper()
+	before, err := automatedSnapshots(f, id)
+	require.NoError(t, err)
+	beforeIDs := automatedSnapshotIDs(before)
+
+	watch := watchStatus(f, id)
+	*lastOpened = openBackupWindowNow(t, f, id, *lastOpened)
+	deadline := time.Now().Add(backupOverlapAttemptTimeout)
+
+	var sent *time.Time
+	nextLandedCheck := time.Now().Add(backupLandedCheckEvery)
+	for {
+		require.True(t, time.Now().Before(deadline),
+			"no automated backup of %s finished within %s of its window opening", id, backupOverlapAttemptTimeout)
+		if watch.latest() == dbInstanceBackingUp {
+			issued, err := rotateOnce(t, f, client, id, conn)
+			sent = &issued
+			t.Logf("rotation sent at %s while %s reported backing-up (err=%v)", issued.Format(time.RFC3339Nano), id, err)
+			break
+		}
+		if time.Now().After(nextLandedCheck) {
+			if newAutomatedSnapshot(t, f, id, beforeIDs) {
+				break
+			}
+			nextLandedCheck = time.Now().Add(backupLandedCheckEvery)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	for watch.latest() == dbInstanceBackingUp || !newAutomatedSnapshot(t, f, id, beforeIDs) {
+		require.True(t, time.Now().Before(deadline),
+			"no automated backup of %s finished within %s of its window opening", id, backupOverlapAttemptTimeout)
+		time.Sleep(backupLandedCheckEvery)
+	}
+	watch.stop()
+	if err := watch.err(); err != nil {
+		t.Logf("the status watcher missed samples; the last describe failed with: %v", err)
+	}
+
+	harness.WaitForDBInstanceAvailable(t, f.AWS, id, harness.WithPoll(2*time.Second),
+		harness.WithTimeout(2*time.Minute))
+	assertTheEngineIsReleased(t, client, *conn)
+
+	result := classifyOverlapAttempt(watch.all(), sent)
+	if result == overlapped {
+		t.Logf("rotation in flight from %s overlapped the backup", sent.Format(time.RFC3339Nano))
+	}
+	return result
+}
+
+// Classifies a window from its samples and the rotation's send time, nil when
+// no rotation was sent.
+func classifyOverlapAttempt(samples []statusSample, sent *time.Time) overlapAttempt {
+	switch {
+	case sent == nil:
+		return missedStatus
+	case rotationOverlapped(samples, *sent):
+		return overlapped
+	default:
+		return lateSend
+	}
+}
+
+// The rotation is only sent once a sample reads backing-up, and the status
+// holds it once per backup, so the first describe sent at or after the rotation
+// reading it shows the status was held when the rotation went out.
+func rotationOverlapped(samples []statusSample, sent time.Time) bool {
+	for _, s := range samples {
+		if !s.sent.Before(sent) {
+			return s.status == dbInstanceBackingUp
+		}
+	}
+	return false
+}
+
+// Opens the backup window on the current minute. When the previous attempt's
+// window opened on this one, it first waits for the next minute: a window fires
+// once, and the write that opens it is what wakes the reconciler to fire it.
 func openBackupWindowNow(t *testing.T, f *Fixture, id string, previous time.Time) time.Time {
 	t.Helper()
-	opens := time.Now().UTC().Truncate(time.Minute)
-	if !opens.After(previous) {
-		opens = previous.Add(time.Minute)
+	if next := previous.Add(time.Minute); time.Now().Before(next) {
+		time.Sleep(time.Until(next))
 	}
+	opens := time.Now().UTC().Truncate(time.Minute)
 	window := dailyWindowAt(opens, 30*time.Minute)
 	harness.Step(t, "Opening the backup window of %q at %s", id, window)
 	_, err := f.AWS.RDS.ModifyDBInstance(&rds.ModifyDBInstanceInput{
@@ -94,39 +196,22 @@ func openBackupWindowNow(t *testing.T, f *Fixture, id string, previous time.Time
 	return opens
 }
 
-// Rotates until the backup has produced its snapshot and the instance has left
-// backing-up, and reports whether any rotation was in flight while it was in it.
-func rotateUntilTheBackupLands(t *testing.T, f *Fixture, client harness.SSHTarget, id string,
-	conn *harness.MariaDBConn, beforeIDs []string, watch *statusWatch) bool {
+// Rotates the master password to whichever of the two it is not on, checks the
+// rotation is whole, and returns when it was sent.
+func rotateOnce(t *testing.T, f *Fixture, client harness.SSHTarget, id string, conn *harness.MariaDBConn) (time.Time, error) {
 	t.Helper()
-	deadline := time.Now().Add(backupOverlapAttemptTimeout)
-	overlapped := false
-	for {
-		require.True(t, time.Now().Before(deadline),
-			"no automated backup of %s finished within %s of its window opening", id, backupOverlapAttemptTimeout)
-
-		next := mariaRotatedPassword
-		if conn.Password == mariaRotatedPassword {
-			next = mariaBackupRotationPassword
-		}
-		issued := time.Now()
-		_, err := f.AWS.RDS.ModifyDBInstance(&rds.ModifyDBInstanceInput{
-			DBInstanceIdentifier: aws.String(id),
-			MasterUserPassword:   aws.String(next),
-			ApplyImmediately:     aws.Bool(true),
-		})
-		answered := time.Now()
-		if watch.sawBetween(dbInstanceBackingUp, issued, answered) {
-			overlapped = true
-			t.Logf("rotation in flight %s-%s overlapped the backup (err=%v)",
-				issued.Format(time.RFC3339Nano), answered.Format(time.RFC3339Nano), err)
-		}
-		assertRotationIsWhole(t, client, conn, next, err)
-
-		if watch.latest() != dbInstanceBackingUp && newAutomatedSnapshot(t, f, id, beforeIDs) {
-			return overlapped
-		}
+	next := mariaRotatedPassword
+	if conn.Password == mariaRotatedPassword {
+		next = mariaBackupRotationPassword
 	}
+	issued := time.Now()
+	_, err := f.AWS.RDS.ModifyDBInstance(&rds.ModifyDBInstanceInput{
+		DBInstanceIdentifier: aws.String(id),
+		MasterUserPassword:   aws.String(next),
+		ApplyImmediately:     aws.Bool(true),
+	})
+	assertRotationIsWhole(t, client, conn, next, err)
+	return issued, err
 }
 
 // An accepted rotation leaves only the new password working; a refused one
@@ -185,7 +270,7 @@ func pinBackupWindowClearOfTheRun(t *testing.T, f *Fixture, id string) {
 }
 
 // Samples an instance's status on its own goroutine, fast enough to see a hold
-// that lasts about a second.
+// that lasts well under a second.
 type statusWatch struct {
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -195,8 +280,10 @@ type statusWatch struct {
 	lastErr error
 }
 
+// sent is when the describe went out, so a reply that was already in flight
+// when something else happened is never read as coming after it.
 type statusSample struct {
-	at     time.Time
+	sent   time.Time
 	status string
 }
 
@@ -208,12 +295,13 @@ func watchStatus(f *Fixture, id string) *statusWatch {
 		ticker := time.NewTicker(backingUpSampleEvery)
 		defer ticker.Stop()
 		for {
+			sent := time.Now()
 			instance, err := harness.DescribeDBInstance(f.AWS, id)
 			w.mu.Lock()
 			if err != nil {
 				w.lastErr = err
 			} else {
-				w.samples = append(w.samples, statusSample{at: time.Now(), status: aws.StringValue(instance.DBInstanceStatus)})
+				w.samples = append(w.samples, statusSample{sent: sent, status: aws.StringValue(instance.DBInstanceStatus)})
 			}
 			w.mu.Unlock()
 			select {
@@ -246,13 +334,8 @@ func (w *statusWatch) latest() string {
 	return w.samples[len(w.samples)-1].status
 }
 
-func (w *statusWatch) sawBetween(status string, from, to time.Time) bool {
+func (w *statusWatch) all() []statusSample {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	for _, s := range w.samples {
-		if s.status == status && !s.at.Before(from) && !s.at.After(to) {
-			return true
-		}
-	}
-	return false
+	return slices.Clone(w.samples)
 }

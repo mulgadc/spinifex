@@ -13,7 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerident"
 	"github.com/mulgadc/spinifex/spinifex/domains/sqs/workerlaunch"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/runtime/compute/nbd"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/imagewrite"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -82,7 +82,7 @@ func (d *Daemon) buildSQSWorkerLauncher(ctx context.Context) (*workerlaunch.Laun
 		return nil, err
 	}
 	prep := &storevolume.Preparer{Volumes: d.volumeService, Provider: d.ebsProvider, NodeID: d.node,
-		ScratchDir: d.config.DataDir, WriteImage: nbd.WriteRawImage}
+		ScratchDir: d.config.DataDir, WriteImage: imagewrite.Writer{}.Write}
 	vols := sqsWorkerVolumes{prep: prep, volumes: d.volumeService, availabilityZone: d.config.AZ,
 		encryptionKeyFile: d.config.Viperblock.EncryptionKeyFile}
 	return &workerlaunch.Launcher{

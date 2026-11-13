@@ -1,6 +1,7 @@
 package oci
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/oracle/oci-go-sdk/v65/common"
@@ -37,4 +38,20 @@ func NewTestClient(provider common.ConfigurationProvider, endpoint string, hc *h
 	c.Host = endpoint
 	c.HTTPClient = hc
 	return &apiClient{net: c}, nil
+}
+
+// NewTestBlockClient points the real SDK-backed BlockClient at a local
+// endpoint, for both the block storage and the compute half.
+func NewTestBlockClient(provider common.ConfigurationProvider, endpoint string, hc *http.Client) (BlockClient, error) {
+	client, err := NewBlockClientWithProvider(provider)
+	if err != nil {
+		return nil, err
+	}
+	c, ok := client.(*blockAPIClient)
+	if !ok {
+		return nil, fmt.Errorf("NewBlockClientWithProvider built a %T", client)
+	}
+	c.storage.Host, c.storage.HTTPClient = endpoint, hc
+	c.compute.Host, c.compute.HTTPClient = endpoint, hc
+	return c, nil
 }

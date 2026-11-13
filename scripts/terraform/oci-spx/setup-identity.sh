@@ -21,6 +21,7 @@ STATE_DIR="${OCI_STATE_ROOT:-$HERE}/.identity"
 SSH_PUBLIC_KEY="${OCI_SSH_PUBLIC_KEY:-$HOME/.ssh/oci-spx.pub}"
 DESTROY=0
 DRY_RUN=0
+EBS_PROVIDER=viperblockd
 
 log() { printf '[setup-identity] %s\n' "$*"; }
 die() {
@@ -30,14 +31,17 @@ die() {
 
 usage() {
     cat >&2 <<EOF
-usage: ${0##*/} [--dry-run] [--destroy]
+usage: ${0##*/} [--dry-run] [--destroy] [--ebs-provider viperblockd|ocibsd]
 
 Creates the OCI dynamic group and policy for instance-principal authentication.
 Needs a tenancy-admin OCI credential; the compartment-scoped user the rest of this
 configuration runs as cannot create either resource.
 
-  --dry-run   Show the plan, change nothing.
-  --destroy   Remove them again. Every node using "adopt" loses its credential.
+  --dry-run       Show the plan, change nothing.
+  --destroy       Remove them again. Every node using "adopt" loses its credential.
+  --ebs-provider  ocibsd also grants manage volume-family and use instances. The
+                  policy is shared by every deployment in the compartment, so a
+                  later run without it removes those grants. Default viperblockd.
 EOF
     exit 2
 }
@@ -46,11 +50,16 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) DRY_RUN=1; shift ;;
         --destroy) DESTROY=1; shift ;;
+        --ebs-provider) EBS_PROVIDER="${2:?}"; shift 2 ;;
         -h | --help) usage ;;
         *) die "unknown option $1" ;;
     esac
 done
 
+case "$EBS_PROVIDER" in
+    viperblockd | ocibsd) ;;
+    *) die "--ebs-provider must be viperblockd or ocibsd, got '$EBS_PROVIDER'" ;;
+esac
 [ -r "$SSH_PUBLIC_KEY" ] || die "no readable SSH public key at $SSH_PUBLIC_KEY (set OCI_SSH_PUBLIC_KEY)"
 mkdir -p "$STATE_DIR"
 
@@ -75,7 +84,7 @@ if [ "$DESTROY" = 1 ]; then
     exit 0
 fi
 
-args=(-var 'instance_principal=create' -state "$STATE_DIR/terraform.tfstate" "${targets[@]}")
+args=(-var 'instance_principal=create' -var "ebs_provider=$EBS_PROVIDER" -state "$STATE_DIR/terraform.tfstate" "${targets[@]}")
 
 if [ "$DRY_RUN" = 1 ]; then
     log "dry run: planning the dynamic group and policy only"

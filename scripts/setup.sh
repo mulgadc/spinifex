@@ -17,7 +17,7 @@
 #   SETUP_STAGES               Comma-separated subset of stages to run:
 #                                deps, aws, dns, users, sudoers, firewall, timesync, files,
 #                                directories, env, systemd, sysctl, needrestart, modules,
-#                                logrotate, udev, fixown, migrations
+#                                logrotate, udev, ocibsd, fixown, migrations
 #                              Unset = run every stage appropriate for the current mode.
 
 set -e
@@ -42,6 +42,13 @@ FIREWALL_CUSTOM="${FIREWALL_DIR}/custom.nft"
 FIREWALL_TRACK="${FIREWALL_DIR}/conntrack.nft"
 FIREWALL_MODE_FILE="${SPINIFEX_FIREWALL_MODE_FILE:-${FIREWALL_DIR}/mode}"
 FIREWALL_APPLY="/usr/local/lib/spinifex/spinifex-firewall-apply"
+
+# The OCI instance metadata service spx admin init detects ocibsd by. v2 needs
+# the bearer header; it is a confused-deputy guard, not a credential.
+OCI_IMDS_SHAPE_URL="http://169.254.169.254/opc/v2/instance/shape"
+# Where the tarball's ocibsd/ is staged; init and join install it from here.
+OCIBSD_STAGE_DIR="/usr/local/share/spinifex/ocibsd"
+SPINIFEX_TOML="/etc/spinifex/spinifex.toml"
 
 # The daemon runs with ProtectKernelModules=yes, so every module it needs must
 # already be loaded when it starts.
@@ -1351,6 +1358,7 @@ install_deps() {
             apt) install_apt_deps ;;
             dnf) install_dnf_deps ;;
         esac
+        install_iscsi_initiator "$pm"
     fi
 
     # Mask the standalone dhcpcd.service auto-enabled on Debian Trixie when
@@ -1382,6 +1390,53 @@ install_apt_deps() {
     if [ "$(findmnt -no FSTYPE /)" = "zfs" ] && ! command -v zpool >/dev/null 2>&1; then
         info "ZFS root detected, installing zfsutils-linux..."
         DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq zfsutils-linux > /dev/null
+    fi
+}
+
+# is_oci_vm is spx admin init's detection: the OCI metadata service answers
+# within a second with a shape that is not bare metal. Asked once per run,
+# because off OCI each ask costs the full second.
+is_oci_vm() {
+    if [ -z "${OCI_VM:-}" ]; then
+        local shape=""
+        OCI_VM=no
+        if command -v curl >/dev/null 2>&1 \
+            && shape=$(curl -sf -m 1 -H 'Authorization: Bearer Oracle' "$OCI_IMDS_SHAPE_URL" 2>/dev/null); then
+            case "$shape" in
+                "" | BM.*) ;;
+                *) OCI_VM=yes ;;
+            esac
+        fi
+    fi
+    [ "$OCI_VM" = yes ]
+}
+
+# node_runs_ocibsd reports whether this node's existing config names ocibsd in
+# a [nodes.<name>.ebs] table, the provider being the same on every node.
+node_runs_ocibsd() {
+    local text
+    [ -e "$SPINIFEX_TOML" ] || return 1
+    if [ -r "$SPINIFEX_TOML" ]; then
+        text=$(cat "$SPINIFEX_TOML") || return 1
+    else
+        text=$($SUDO cat "$SPINIFEX_TOML") || return 1
+    fi
+    printf '%s\n' "$text" | awk '
+        /^[[:space:]]*\[/ { ebs = ($0 ~ /^[[:space:]]*\[nodes\.[^].]+\.ebs\][[:space:]]*(#.*)?$/); next }
+        ebs && /^[[:space:]]*provider[[:space:]]*=[[:space:]]*"ocibsd"/ { found = 1 }
+        END { exit !found }'
+}
+
+# The initiator ocibsd drives, on the only host it can back EBS on.
+install_iscsi_initiator() {
+    is_oci_vm || return 0
+    info "OCI virtual machine detected, installing the iSCSI initiator..."
+    case "$1" in
+        apt) DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq open-iscsi > /dev/null ;;
+        dnf) $SUDO dnf install -y -q iscsi-initiator-utils > /dev/null ;;
+    esac
+    if [ "${ISO_BUILD:-0}" != "1" ]; then
+        $SUDO systemctl enable --now iscsid.socket
     fi
 }
 
@@ -2135,6 +2190,45 @@ install_udev() {
     info "udev rules installed"
 }
 
+# install_ocibsd stages the tarball's ocibsd/ on an OCI virtual machine, where
+# spx admin init or join installs it once the provider resolves to ocibsd. On
+# a node whose config already runs ocibsd it also reinstalls the staged files.
+install_ocibsd() {
+    stage "staging the ocibsd files"
+    local ocibsd_node=false f
+    node_runs_ocibsd && ocibsd_node=true
+    if ! $ocibsd_node && ! is_oci_vm; then
+        return 0
+    fi
+    if [ ! -d "$EXTRACT_DIR/ocibsd" ]; then
+        $ocibsd_node && fatal "This node runs ocibsd and the tarball has no ocibsd/ directory to reinstall it from"
+        warn "The tarball has no ocibsd/ directory, so OCI Block Volumes cannot back EBS on this node"
+        return 0
+    fi
+    $SUDO rm -rf "$OCIBSD_STAGE_DIR"
+    $SUDO install -d -m 0755 "$OCIBSD_STAGE_DIR/spinifex-daemon.service.d"
+    for f in spinifex-ocibsd.service 99-spinifex-ocibsd.rules spinifex-daemon.service.d/ocibsd.conf; do
+        $SUDO install -m 0644 "$EXTRACT_DIR/ocibsd/$f" "$OCIBSD_STAGE_DIR/$f"
+    done
+    info "  $OCIBSD_STAGE_DIR (staged)"
+    $ocibsd_node || return 0
+
+    $SUDO install -m 0644 "$OCIBSD_STAGE_DIR/spinifex-ocibsd.service" /etc/systemd/system/spinifex-ocibsd.service
+    $SUDO install -d -m 0755 /etc/systemd/system/spinifex-daemon.service.d
+    $SUDO install -m 0644 "$OCIBSD_STAGE_DIR/spinifex-daemon.service.d/ocibsd.conf" \
+        /etc/systemd/system/spinifex-daemon.service.d/ocibsd.conf
+    $SUDO install -d /etc/udev/rules.d
+    $SUDO install -m 0644 "$OCIBSD_STAGE_DIR/99-spinifex-ocibsd.rules" /etc/udev/rules.d/99-spinifex-ocibsd.rules
+    # install_systemd has just written the viperblock unit over its mask.
+    $SUDO ln -sf /dev/null /etc/systemd/system/spinifex-viperblock.service
+    info "  ocibsd unit, device drop-in and udev rule reinstalled; spinifex-viperblock.service masked"
+    if [ "${ISO_BUILD:-0}" != "1" ]; then
+        $SUDO systemctl daemon-reload
+        $SUDO systemctl enable spinifex-ocibsd.service
+        $SUDO udevadm control --reload-rules
+    fi
+}
+
 # --- Upgrade handling ---
 handle_upgrade() {
     if $SUDO systemctl is-active --quiet spinifex.target 2>/dev/null; then
@@ -2273,12 +2367,12 @@ main() {
     detect_os
     detect_arch
 
-    # Stages that need EXTRACT_DIR: files, directories, systemd, logrotate, udev.
+    # Stages that need EXTRACT_DIR: files, directories, systemd, logrotate, udev, ocibsd.
     # Only download/extract when at least one such stage is enabled, and before
     # anything on the host changes, so the hand-off finds it untouched.
     if stage_enabled files || stage_enabled directories \
         || stage_enabled systemd || stage_enabled logrotate \
-        || stage_enabled udev; then
+        || stage_enabled udev || stage_enabled ocibsd; then
         download_spinifex
         hand_off_to_packaged_setup "${args[@]}"
     fi
@@ -2306,6 +2400,7 @@ main() {
     stage_enabled modules    && install_kernel_modules
     stage_enabled logrotate  && install_logrotate
     stage_enabled udev       && install_udev
+    stage_enabled ocibsd     && install_ocibsd
     stage_enabled swap       && setup_swap
 
     # Migrations are only safe on a live system (need a running NATS and a

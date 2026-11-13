@@ -230,7 +230,7 @@ func TestSubjectBuildersRejectUnsafeTokens(t *testing.T) {
 
 // TestNATSProviderChecksVersionBeforeTransport confirms every EBSProvider
 // method on NATSProvider rejects an unsupported SchemaVersion via
-// checkVersion before it ever touches the connection. A nil *nats.Conn would
+// CheckVersion before it ever touches the connection. A nil *nats.Conn would
 // panic or return nats.ErrConnectionClosed if any method reached transport,
 // so seeing ErrUnsupportedVersion here proves the ordering.
 func TestNATSProviderChecksVersionBeforeTransport(t *testing.T) {
@@ -794,12 +794,15 @@ func TestTimeoutForSizesEachSubjectToItsWork(t *testing.T) {
 	fast := []string{
 		CapabilitiesSubject, GetVolumeSubject, ListVolumesSubject,
 		ListSnapshotsSubject, ownerDescribe,
-		publish, unsealed,
+		unsealed,
 	}
 	for _, subject := range fast {
 		assert.Equal(t, callerTimeout, p.timeoutFor(subject),
 			"%s answers from state already held, so it keeps the caller's timeout", subject)
 	}
+
+	assert.Equal(t, PublishTimeout, p.timeoutFor(publish),
+		"a publish waits for the backend to attach the volume, so it must not inherit a describe's budget")
 }
 
 // TestTimeoutForNeverShortensTheCallersBudget covers a caller that already asks

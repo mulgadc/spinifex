@@ -1,0 +1,67 @@
+# spinifex-unit-version: 1
+[Unit]
+Description=Spinifex ocibsd (OCI Block Volumes)
+PartOf=spinifex.target
+After=spinifex-nats.service iscsid.socket iscsid.service
+Wants=spinifex-nats.service iscsid.socket
+
+[Service]
+EnvironmentFile=-/etc/spinifex/telemetry.env
+Type=simple
+Slice=spinifex-system.slice
+# Root without capabilities: iscsid answers iscsiadm only for uid 0, and the
+# node records, lock and devices it touches are root-owned. iscsid does the
+# privileged session and module work.
+User=root
+Group=spinifex
+ExecStartPre=/var/lib/spinifex/wait-for-nats.sh
+ExecStart=/usr/local/bin/spx service ocibsd start
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+OOMScoreAdjust=-500
+MemoryHigh=10%
+MemoryMax=20%
+EnvironmentFile=/etc/spinifex/systemd.env
+Environment=SPINIFEX_CONFIG_PATH=/etc/spinifex/spinifex.toml
+Environment=SPINIFEX_BASE_DIR=/var/lib/spinifex/ocibsd/
+StateDirectory=spinifex/ocibsd
+
+# Filesystem access: iscsiadm writes node records and its lock
+NoNewPrivileges=yes
+ProtectSystem=strict
+PrivateDevices=no
+DevicePolicy=closed
+ReadOnlyPaths=/etc/spinifex/spinifex.toml /etc/spinifex/systemd.env /etc/spinifex/ca.pem
+ReadWritePaths=/var/log/spinifex -/etc/iscsi -/var/lib/iscsi -/run/lock
+# read-only, not yes: a config_file credential may default to ~/.oci/config
+ProtectHome=read-only
+
+# Hardening
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+AmbientCapabilities=
+# The kernel hides an iSCSI session's credential attributes without CAP_SYS_ADMIN,
+# and iscsiadm then lists no session and logs out nothing.
+CapabilityBoundingSet=CAP_SYS_ADMIN
+ProtectHostname=yes
+KeyringMode=private
+RemoveIPC=yes
+LimitCORE=0
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=spinifex.target

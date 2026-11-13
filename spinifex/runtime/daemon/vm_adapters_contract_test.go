@@ -11,9 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"github.com/mulgadc/spinifex/spinifex/providers/cloud/oci"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/natsserve"
+	ebsocibsd "github.com/mulgadc/spinifex/spinifex/providers/ebs/ocibsd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -359,7 +362,7 @@ func TestVolumeMounterAdapter_HeldElsewhereReachesTheMountCaller(t *testing.T) {
 
 // The unpublish budget is the provider's data-movement budget, not the
 // request timeout every other call gets: a seal that outlasts the request
-// timeout still completes, where a publish that slow fails.
+// timeout still completes.
 func TestVolumeMounterAdapter_UnpublishOutlastingRequestTimeoutCompletes(t *testing.T) {
 	t.Parallel()
 	const requestTimeout = 100 * time.Millisecond
@@ -372,19 +375,49 @@ func TestVolumeMounterAdapter_UnpublishOutlastingRequestTimeoutCompletes(t *test
 		time.Sleep(sealTime)
 		return ebsprovider.UnpublishVolumeResponse{}
 	})
-	fake.setPublish(func(volumeID string) ebsprovider.PublishVolumeResponse {
-		time.Sleep(sealTime)
-		return publishedNBD("nbd://" + volumeID)
-	})
 
 	adapter := newNATSMounter(nc, node)
 	adapter.provider = ebsprovider.NewNATSProvider(nc, requestTimeout)
 
 	require.NoError(t, adapter.Unmount(t.Context(), mounterTestVM("vol-slow-seal")))
 	require.NoError(t, adapter.UnmountOne(t.Context(), testAccountID, vm.EBSRequest{Name: "vol-slow-seal"}))
+}
 
-	err := adapter.MountOne(t.Context(), testAccountID, &vm.EBSRequest{Name: "vol-slow-seal"})
-	require.ErrorIs(t, err, context.DeadlineExceeded, "the publish must be held to the request timeout")
+// An attach that outlasts the request floor still mounts: the publish has its
+// own budget. The floor is the daemon's scaled down, as the wait is real time.
+func TestVolumeMounterAdapter_DelayedAttachOutlastingRequestFloorMounts(t *testing.T) {
+	t.Parallel()
+	const requestFloor = ebsProviderRequestTimeout / 300
+	const pollInterval = 20 * time.Millisecond
+	_, nc := testutil.StartTestNATS(t)
+	node := newMounterTestNode()
+
+	fake := oci.NewBlockFake()
+	// Each poll of an ATTACHING attachment counts down one.
+	fake.AttachAfter = int(4 * requestFloor / pollInterval)
+	provider, err := ebsocibsd.New(ebsocibsd.Config{
+		ClusterID: "cluster-1", CompartmentID: "ocid1.compartment.oc1..test",
+		AvailabilityDomain: "AD-1", AvailabilityZone: "ap-southeast-2a", InstanceAvailabilityDomain: "AD-1",
+		NodeID: node, InstanceID: "ocid1.instance.oc1..test",
+		Client: fake, Initiator: ebsocibsd.NewFakeInitiator(), PollInterval: pollInterval,
+	})
+	require.NoError(t, err)
+	require.NoError(t, provider.Start(t.Context()))
+	_, err = provider.CreateVolume(t.Context(), ebsprovider.CreateVolumeRequest{
+		Versioned: ebsprovider.NewLatestVersioned(), VolumeID: "vol-slow-attach",
+		CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
+	})
+	require.NoError(t, err)
+	stop, err := natsserve.Serve(t.Context(), nc, provider, natsserve.Options{NoQueueGroup: true, NodeID: node})
+	require.NoError(t, err)
+	t.Cleanup(stop)
+
+	adapter := newVolumeMounterAdapter(ebsprovider.NewNATSProvider(nc, requestFloor), node)
+	req := &vm.EBSRequest{Name: "vol-slow-attach"}
+	started := time.Now()
+	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, req))
+	require.Greater(t, time.Since(started), requestFloor, "the attach must have outlasted the request floor")
+	assert.NotEmpty(t, req.BlockDevice)
 }
 
 // A failed volume rolls back the volumes this Mount already published, and a
@@ -484,18 +517,24 @@ func TestVolumeMounterAdapter_AmbiguousPublishIsTornDown(t *testing.T) {
 			fake := serveFakeNodeProvider(t, nc, node)
 			fake.setPublish(func(string) ebsprovider.PublishVolumeResponse { return tt.reply() })
 			adapter := newNATSMounter(nc, node)
-			if tt.timeout > 0 {
-				adapter.provider = ebsprovider.NewNATSProvider(nc, tt.timeout)
+			// A publish has its own budget, so the caller's deadline is what lapses.
+			callCtx := func() context.Context {
+				if tt.timeout == 0 {
+					return t.Context()
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), tt.timeout)
+				t.Cleanup(cancel)
+				return ctx
 			}
 
 			hot := &vm.EBSRequest{Name: "vol-hot", NBDURI: "nbd://stale"}
-			err := adapter.MountOne(t.Context(), testAccountID, hot)
+			err := adapter.MountOne(callCtx(), testAccountID, hot)
 			require.ErrorIs(t, err, vm.ErrMountAmbiguous)
 			require.ErrorIs(t, err, tt.cause)
 			assert.NotErrorIs(t, err, vm.ErrMountRetryable)
 			assert.Equal(t, "nbd://stale", hot.NBDURI, "a failed publish must not overwrite the request's export")
 
-			err = adapter.Mount(t.Context(), mounterTestVM("vol-ambiguous"))
+			err = adapter.Mount(callCtx(), mounterTestVM("vol-ambiguous"))
 			require.ErrorIs(t, err, vm.ErrMountAmbiguous)
 			assert.Equal(t, []string{"vol-ambiguous"}, fake.unpublished(), "the ambiguous volume must be unpublished")
 		})

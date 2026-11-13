@@ -48,9 +48,10 @@ type Preparer struct {
 	Provider   Publisher
 	NodeID     string
 	ScratchDir string
-	// WriteImage copies a raw image onto an NBD export. The composition root
-	// supplies it, since a domain does not import the runtime copy helper.
-	WriteImage func(ctx context.Context, sourcePath, nbdURI string, progress io.Writer) error
+	// WriteImage copies a raw image onto the published export, refusing a kind
+	// it cannot write. The composition root supplies it, since a domain does
+	// not import the runtime copy helper.
+	WriteImage func(ctx context.Context, sourcePath string, export ebsprovider.VolumeExport, progress io.Writer) error
 
 	lookPath  func(string) (string, error)
 	runMkfs   func(ctx context.Context, mkfs, path string) error
@@ -163,8 +164,9 @@ func (e *prepError) Error() string { return e.err.Error() }
 // fill publishes the volume, copies the image and unpublishes it. Its error
 // says whether the export is known to be closed.
 func (p *Preparer) fill(ctx context.Context, volumeID, image string) error {
+	// A block export has no version 1 form, so publish as the VM path does.
 	published, err := p.Provider.PublishVolume(ctx, ebsprovider.PublishVolumeRequest{
-		Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, NodeID: p.NodeID,
+		Versioned: ebsprovider.NewLatestVersioned(), VolumeID: volumeID, NodeID: p.NodeID,
 	})
 	if err != nil {
 		// These refusals may mean another export exists, which an unpublish
@@ -181,10 +183,10 @@ func (p *Preparer) fill(ctx context.Context, volumeID, image string) error {
 	}
 
 	var writeErr error
-	if published == nil || published.Export.Kind != ebsprovider.ExportKindNBD || published.Export.NBD == nil {
-		writeErr = errors.New("volume was not published as an nbd export")
+	if published == nil {
+		writeErr = errors.New("publish returned no export")
 	} else {
-		writeErr = p.WriteImage(ctx, image, published.Export.NBD.NBDURI, nil)
+		writeErr = p.WriteImage(ctx, image, published.Export, nil)
 	}
 
 	if err := p.unpublish(ctx, volumeID); err != nil {

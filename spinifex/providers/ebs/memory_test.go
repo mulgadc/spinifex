@@ -111,7 +111,7 @@ func TestProviderErrorUnwrap(t *testing.T) {
 	assert.Equal(t, "volume disappeared", err.Error())
 }
 
-// TestMemoryProviderChecksVersionOnEveryMethod covers the checkVersion guard
+// TestMemoryProviderChecksVersionOnEveryMethod covers the CheckVersion guard
 // on every one of the nine EBSProvider methods directly on MemoryProvider,
 // independent of NATSProvider's own client-side pre-check.
 func TestMemoryProviderChecksVersionOnEveryMethod(t *testing.T) {
@@ -364,7 +364,7 @@ func TestMemoryProviderListSnapshotsCarriesSourceVolume(t *testing.T) {
 // case where copying would either lose data or attribute it to the wrong
 // volume.
 func TestMemoryProviderCopySnapshot(t *testing.T) {
-	provider := NewMemoryProvider(Capabilities{})
+	provider := NewMemoryProvider(Capabilities{SnapshotCopy: true})
 	copiedAt := time.Date(2026, 8, 5, 6, 0, 0, 0, time.UTC)
 	provider.now = func() time.Time { return copiedAt }
 	ctx := context.Background()

@@ -1293,7 +1293,7 @@ func providerSnapshotService(t *testing.T, volumeID string) (*SnapshotServiceImp
 	store := objectstore.NewMemoryObjectStore()
 	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
 	svc := NewSnapshotServiceImplWithStore(cfg, store, nil)
-	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{})
+	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{SnapshotCopy: true})
 	svc.SetEBSProvider(provider)
 	require.NoError(t, svc.metadata.PutVolume(context.Background(), ebsmetadata.Volume{
 		VolumeID: volumeID, TenantID: testAccountID, CapacityGiB: 4, State: "available",
@@ -1411,6 +1411,34 @@ func TestCopySnapshot_Provider_ForeignSnapshotRefused(t *testing.T) {
 
 	_, ok := provider.Snapshot(aws.StringValue(src.SnapshotId))
 	require.True(t, ok, "the source must survive a refused copy")
+}
+
+// A provider that cannot copy in place answers UnsupportedOperation, and the
+// refusal leaves no copy behind in the control plane.
+func TestCopySnapshot_Provider_WithoutSnapshotCopyIsUnsupported(t *testing.T) {
+	ctx := context.Background()
+	svc, provider := providerSnapshotService(t, "vol-copyunsup")
+
+	src, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-copyunsup")}, testAccountID)
+	require.NoError(t, err)
+
+	svc.SetEBSProvider(&noCopyProvider{EBSProvider: provider})
+	_, err = svc.CopySnapshot(ctx, &ec2.CopySnapshotInput{SourceSnapshotId: src.SnapshotId}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorUnsupportedOperation, err.Error())
+
+	listed, err := svc.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, listed.Snapshots, 1, "only the source snapshot should exist")
+}
+
+// noCopyProvider refuses CopySnapshot as a provider without SnapshotCopy does.
+type noCopyProvider struct {
+	ebsprovider.EBSProvider
+}
+
+func (p *noCopyProvider) CopySnapshot(context.Context, ebsprovider.CopySnapshotRequest) (*ebsprovider.Snapshot, error) {
+	return nil, ebsprovider.ErrUnsupportedCapability
 }
 
 // copyFailingProvider fails only CopySnapshot, leaving every other operation

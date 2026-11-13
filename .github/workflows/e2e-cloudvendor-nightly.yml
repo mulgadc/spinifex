@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       topologies:
-        description: "Space-separated topologies (blank = vm-single vm-multi bm vm-single-principal). One name runs one topology."
+        description: "Space-separated topologies (blank = vm-single vm-multi bm vm-single-principal vm-single-ocibsd vm-multi-ocibsd). One name runs one topology."
         required: false
       workbooks:
         description: "Space-separated workbooks (blank = the driver's default list)"
@@ -62,9 +62,10 @@ jobs:
     # a dedicated label keeps a two-hour cloud wait off the hypervisor labels and
     # lifts the six-hour cap a hosted job carries.
     runs-on: ${{ inputs.runner || vars.OCI_E2E_RUNNER || 'ubuntu-26.04' }}
-    # Three topologies including a bare-metal build, each with its own install,
-    # formation and workbook pass. The sweep still runs if this fires.
-    timeout-minutes: 300
+    # Six topologies including a bare-metal build, each with its own install,
+    # formation and workbook pass, so this is the hosted runner's cap. The sweep
+    # still runs if this fires, ocibsd volumes and backups included.
+    timeout-minutes: 360
     steps:
       # Set here rather than in a job-level env block: the runner context is not
       # available at job level, only from a step onwards, and a workflow that
@@ -236,8 +237,8 @@ jobs:
 
       # always(), and before the artifact upload: an OCI bare-metal host left
       # running by a cancelled or timed-out job is the most expensive way this
-      # workflow can fail. The sweep works from the Terraform state files, so it
-      # can only destroy what this run created.
+      # workflow can fail. It destroys by state file, then deletes OCI volumes and
+      # backups by the cluster tag each ocibsd topology recorded.
       - name: Sweep anything left behind
         if: always() && !inputs.keep_on_fail
         working-directory: spinifex/scripts/terraform/oci-spx

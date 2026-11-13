@@ -200,10 +200,11 @@ func TestHandlersReplyInRequestVersion(t *testing.T) {
 }
 
 // seededProvider holds what every wireVerbs request needs to succeed: vol-1
-// and snap-1 taken from it, with enumeration advertised so listing succeeds.
+// and snap-1 taken from it, with enumeration and copy advertised so listing
+// and copying succeed.
 func seededProvider(t *testing.T) ebsprovider.EBSProvider {
 	t.Helper()
-	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{VolumeEnumeration: true, SnapshotEnumeration: true})
+	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{VolumeEnumeration: true, SnapshotEnumeration: true, SnapshotCopy: true})
 	ctx := context.Background()
 	_, err := provider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{Versioned: ebsprovider.NewVersioned(), VolumeID: "vol-1", CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30}})
 	require.NoError(t, err)
@@ -353,6 +354,7 @@ func TestServedProviderRoundTrip(t *testing.T) {
 	capabilities := ebsprovider.Capabilities{
 		VolumeEnumeration:   true,
 		SnapshotEnumeration: true,
+		SnapshotCopy:        true,
 		OnlineExpansion:     true,
 	}
 	conn := serveProvider(t, ebsprovider.NewMemoryProvider(capabilities), natsserve.Options{NoQueueGroup: true})

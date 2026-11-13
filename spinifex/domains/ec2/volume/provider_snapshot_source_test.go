@@ -96,6 +96,25 @@ func TestCreateVolume_Provider_WithoutSnapshotSendsNoSource(t *testing.T) {
 	assert.Empty(t, provider.lastRequest.SourceSnapshotVolumeID)
 }
 
+// TestCreateVolume_Provider_SendsVolumeType locks that the provider is told the
+// volume type, which is how a provider with performance tiers picks one.
+func TestCreateVolume_Provider_SendsVolumeType(t *testing.T) {
+	store := objectstore.NewMemoryObjectStore()
+	cfg := &config.Config{AZ: providerTestAZ, Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
+	svc := NewVolumeServiceImplWithStore(cfg, store, nil)
+	provider := newSnapshotSourceProvider()
+	svc.SetEBSProvider(provider)
+
+	_, err := svc.CreateVolume(context.Background(), &ec2.CreateVolumeInput{
+		Size: aws.Int64(8), AvailabilityZone: aws.String(providerTestAZ), VolumeType: aws.String("GP3"),
+	}, "000000000001")
+	require.NoError(t, err)
+
+	params, err := ebsprovider.ParseVolumeParameters(provider.lastRequest.Parameters)
+	require.NoError(t, err)
+	assert.Equal(t, ebspolicy.VolumeTypeGP3, params.VolumeType)
+}
+
 // fixedAMILoader resolves one AMI to a snapshot on a known source volume.
 type fixedAMILoader struct {
 	meta           ebsmetadata.AMI

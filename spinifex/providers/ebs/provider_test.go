@@ -78,3 +78,19 @@ func TestPublishedVolumeWireShape(t *testing.T) {
 		})
 	}
 }
+
+func TestCapacityRangeValid(t *testing.T) {
+	for _, tc := range []struct {
+		r    CapacityRange
+		want bool
+	}{
+		{CapacityRange{RequiredBytes: 1}, true},
+		{CapacityRange{RequiredBytes: 0}, false},
+		{CapacityRange{RequiredBytes: -1}, false},
+		{CapacityRange{RequiredBytes: 10, LimitBytes: 10}, true},
+		{CapacityRange{RequiredBytes: 11, LimitBytes: 10}, false},
+		{CapacityRange{RequiredBytes: 11, LimitBytes: -1}, true},
+	} {
+		assert.Equal(t, tc.want, tc.r.Valid(), "%+v", tc.r)
+	}
+}

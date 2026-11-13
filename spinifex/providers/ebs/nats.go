@@ -55,16 +55,21 @@ var dataMovementVerbs = map[string]bool{
 	verbVolumeUnpublish: true,
 }
 
+// PublishTimeout bounds a publish, which on a remote block backend waits for
+// the backend to attach the volume and for its device to appear. A provider
+// must answer within it, or the caller cannot tell whether the volume is exported.
+const PublishTimeout = 5 * time.Minute
+
 // timeoutFor sizes a request to the work its subject names.
 func (p *NATSProvider) timeoutFor(subject string) time.Duration {
-	if movesData(subject) {
+	verb := parseSubject(subject).verb
+	switch {
+	case dataMovementVerbs[verb]:
 		return max(p.requestTimeout, dataMovementTimeout)
+	case verb == verbVolumePublish:
+		return max(p.requestTimeout, PublishTimeout)
 	}
 	return p.requestTimeout
-}
-
-func movesData(subject string) bool {
-	return dataMovementVerbs[parseSubject(subject).verb]
 }
 
 // SnapshotSubject addresses a create by source volume so the owning node can
@@ -256,7 +261,8 @@ var (
 )
 
 // NewNATSProvider returns a provider client over conn. A non-positive
-// requestTimeout takes the 30s default; data-moving subjects get at least 180s.
+// requestTimeout takes the 30s default; data-moving subjects get at least 180s
+// and a publish at least PublishTimeout.
 func NewNATSProvider(conn *nats.Conn, requestTimeout time.Duration) *NATSProvider {
 	if requestTimeout <= 0 {
 		requestTimeout = defaultRequestTimeout
@@ -265,7 +271,7 @@ func NewNATSProvider(conn *nats.Conn, requestTimeout time.Duration) *NATSProvide
 }
 
 func (p *NATSProvider) GetCapabilities(ctx context.Context, req GetCapabilitiesRequest) (*GetCapabilitiesResponse, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	var response GetCapabilitiesResponse
@@ -279,7 +285,7 @@ func (p *NATSProvider) GetCapabilities(ctx context.Context, req GetCapabilitiesR
 }
 
 func (p *NATSProvider) CreateVolume(ctx context.Context, req CreateVolumeRequest) (*Volume, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if err := ValidateSeedData(req.SeedData); err != nil {
@@ -299,7 +305,7 @@ func (p *NATSProvider) CreateVolume(ctx context.Context, req CreateVolumeRequest
 }
 
 func (p *NATSProvider) GetVolume(ctx context.Context, req GetVolumeRequest) (*Volume, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	ownerSubject, err := GetVolumeOwnerSubject(req.VolumeID)
@@ -323,7 +329,7 @@ func (p *NATSProvider) GetVolume(ctx context.Context, req GetVolumeRequest) (*Vo
 // question is about the whole provider, not one volume, so it goes to the
 // queue group rather than to any single volume's mounting node.
 func (p *NATSProvider) ListVolumes(ctx context.Context, req ListVolumesRequest) (*ListVolumesResponse, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	var response ListVolumesResponse
@@ -337,7 +343,7 @@ func (p *NATSProvider) ListVolumes(ctx context.Context, req ListVolumesRequest) 
 }
 
 func (p *NATSProvider) ExpandVolume(ctx context.Context, req ExpandVolumeRequest) (*Volume, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	ownerSubject, err := ExpandVolumeOwnerSubject(req.VolumeID)
@@ -358,7 +364,7 @@ func (p *NATSProvider) ExpandVolume(ctx context.Context, req ExpandVolumeRequest
 }
 
 func (p *NATSProvider) DeleteVolume(ctx context.Context, req DeleteVolumeRequest) error {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return err
 	}
 	var response DeleteVolumeResponse
@@ -369,7 +375,7 @@ func (p *NATSProvider) DeleteVolume(ctx context.Context, req DeleteVolumeRequest
 }
 
 func (p *NATSProvider) CreateSnapshot(ctx context.Context, req CreateSnapshotRequest) (*Snapshot, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	requestSubject, err := SnapshotSubject(req.VolumeID)
@@ -441,7 +447,7 @@ func (p *NATSProvider) CreateSnapshot(ctx context.Context, req CreateSnapshotReq
 }
 
 func (p *NATSProvider) DeleteSnapshot(ctx context.Context, req DeleteSnapshotRequest) error {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return err
 	}
 	var response DeleteSnapshotResponse
@@ -456,7 +462,7 @@ func (p *NATSProvider) DeleteSnapshot(ctx context.Context, req DeleteSnapshotReq
 // of small object writes with no flush/upload step slow enough to warrant a
 // completion subject.
 func (p *NATSProvider) CopySnapshot(ctx context.Context, req CopySnapshotRequest) (*Snapshot, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	ownerSubject, err := SnapshotCopyOwnerSubject(req.VolumeID)
@@ -504,7 +510,7 @@ func snapshotRefIDs(refs []SnapshotRef) []string {
 }
 
 func (p *NATSProvider) PublishVolume(ctx context.Context, req PublishVolumeRequest) (*PublishedVolume, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	subject, err := PublishSubject(req.NodeID)
@@ -654,7 +660,7 @@ func (p *NATSProvider) requestOwnerFirst(ctx context.Context, ownerSubject, queu
 }
 
 func responseError(version uint16, providerErr *ProviderError) error {
-	if err := checkVersion(version); err != nil {
+	if err := CheckVersion(version); err != nil {
 		return fmt.Errorf("%w: %w", ErrUnreadableReply, err)
 	}
 	if providerErr != nil {

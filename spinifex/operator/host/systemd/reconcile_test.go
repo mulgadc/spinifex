@@ -521,3 +521,33 @@ func TestBackupUnit_UnreadableSourceReturnsError(t *testing.T) {
 		t.Fatal("backupUnit: want an error for a nonexistent source path, got nil")
 	}
 }
+
+func TestReconcile_MaskedUnitStaysMasked(t *testing.T) {
+	root := t.TempDir()
+	reloadCalls := stubDaemonReload(t)
+	const name = "spinifex-viperblock.service"
+	path := filepath.Join(root, name)
+	if err := os.Symlink(os.DevNull, path); err != nil {
+		t.Fatalf("mask: %v", err)
+	}
+
+	result, err := Reconcile(root, Options{})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	st := findStatus(t, result, name)
+	if st.Action != ActionMasked || st.Applied || st.Backup != "" {
+		t.Errorf("status = %+v, want masked, not applied, no backup", st)
+	}
+	if target, err := os.Readlink(path); err != nil || target != os.DevNull {
+		t.Errorf("unit no longer masked: target %q, err %v", target, err)
+	}
+	backups, _ := filepath.Glob(path + ".pre-reconcile-*")
+	if len(backups) != 0 {
+		t.Errorf("backups written for a masked unit: %v", backups)
+	}
+	if reloadCalls() != 1 {
+		t.Errorf("daemon-reload calls = %d, want 1 for the other units", reloadCalls())
+	}
+}

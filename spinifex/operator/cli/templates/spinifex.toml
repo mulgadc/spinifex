@@ -139,7 +139,7 @@ encryption_key_file = "{{.EncryptionKeyFile}}"
 # provider: every node in a cluster must name the same one, and the daemon
 # refuses to start on a provider other than the one the cluster recorded.
 # Changing it needs the cluster wiped and reformed.
-provider = "viperblockd"
+provider = "{{or .EBSProvider "viperblockd"}}"
 # Per-volume export tunables. Both are applied per nbdkit process and there is
 # one of those per volume, so the host cost of each is the value times the
 # volume count. Uncomment to override; a service restart plus a volume
@@ -152,6 +152,27 @@ provider = "viperblockd"
 # cache_size_mb: per-volume plaintext read cache. 0 disables it. Auxiliary -efi
 # volumes are uncached regardless.
 #cache_size_mb = 128
+{{- if eq .EBSProvider "ocibsd"}}
+
+[nodes.{{.Node}}.ebs.oci]
+# Every node names the same compartment and availability domain.
+compartment_id = "{{.OCICompartmentID}}"
+availability_domain = "{{.OCIAvailabilityDomain}}"
+# Generated once at init; tags every OCI volume and backup of this cluster.
+cluster_id = "{{.OCIClusterID}}"
+# auth: "config_file" (the default when unset) reads config_file and
+# config_profile, which default to ~/.oci/config and DEFAULT;
+# "instance_principal" uses the instance's own certificate and takes neither.
+{{- if .OCIAuth}}
+auth = "{{.OCIAuth}}"
+{{- end}}
+{{- if .OCIConfigFile}}
+config_file = "{{.OCIConfigFile}}"
+{{- end}}
+{{- if .OCIConfigProfile}}
+config_profile = "{{.OCIConfigProfile}}"
+{{- end}}
+{{- end}}
 
 [nodes.{{.Node}}.vpcd]
 ovn_nb_addr = "{{.OVNNBAddr}}"

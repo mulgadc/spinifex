@@ -29,6 +29,7 @@ var Capabilities = ebsprovider.Capabilities{
 	ReadOnlyPublish:         true,
 	VolumeEnumeration:       true,
 	SnapshotEnumeration:     true,
+	SnapshotCopy:            true,
 	Exclusion:               ebsprovider.ExclusionSemantics{Scope: ebsprovider.ExclusionScopeNode},
 }
 

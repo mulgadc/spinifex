@@ -50,6 +50,11 @@
 #   --yes                    Skip the confirmation prompt
 #   --dry-run                Print what would happen and touch nothing
 #
+# Environment:
+#   SPINIFEX_EBS_PROVIDER    Passed to spx admin init on the first host, naming
+#                            what backs EBS in place of its detection; joining
+#                            nodes take the provider from formation.
+#
 # THE HOST FIREWALL
 #
 # Nodes installed from the ISO boot armed, scoped to the only cluster member
@@ -159,7 +164,7 @@ while [[ $# -gt 0 ]]; do
         --no-firewall)  MANAGE_FIREWALL=false; shift ;;
         --yes|-y)   ASSUME_YES=true; shift ;;
         --dry-run)  DRY_RUN=true; shift ;;
-        -h|--help)  sed -n '2,67p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)  sed -n '2,72p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*)         echo "ERROR: unknown option: $1" >&2; exit 2 ;;
         *)          HOSTS+=("$1"); shift ;;
     esac
@@ -209,6 +214,18 @@ else
          --external-gateway 216.218.163.97 --external-prefix-len 27"
     done
 fi
+
+# init_env prints the env prefix that carries SPINIFEX_EBS_PROVIDER to init, or
+# nothing when it is unset. It is joined into a remote shell, so the value is
+# limited to a provider name's characters rather than quoted.
+init_env() {
+    case "$1" in
+        "") ;;
+        *[!a-z]*) echo "SPINIFEX_EBS_PROVIDER must be a provider name such as viperblockd, got: $1"; return 1 ;;
+        *) printf 'env SPINIFEX_EBS_PROVIDER=%s ' "$1" ;;
+    esac
+}
+INIT_ENV="$(init_env "${SPINIFEX_EBS_PROVIDER:-}")" || fail "$INIT_ENV"
 
 case "$IPSEC" in
     on)  IPSEC_ENABLED=true ;;
@@ -671,7 +688,7 @@ log "initializing ${HOSTS[0]} as ${NODE_NAMES[0]} (waiting for $((N - 1)) node(s
 # init blocks in a formation server until every node has joined, so it runs
 # detached and the token is read back out of its output.
 on "${HOSTS[0]}" "sudo rm -f $INIT_LOG; \
-    sudo setsid sh -c 'umask 077; spx admin init ${init_args[*]} >$INIT_LOG 2>&1' </dev/null >/dev/null 2>&1 & \
+    sudo setsid ${INIT_ENV}sh -c 'umask 077; spx admin init ${init_args[*]} >$INIT_LOG 2>&1' </dev/null >/dev/null 2>&1 & \
     exit 0" || fail "${HOSTS[0]}: could not start spx admin init"
 
 TOKEN=""

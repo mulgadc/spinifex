@@ -17,6 +17,7 @@ The contract that every implementation of the `EBSProvider` interface must meet.
   A failed call leaves the state unchanged, but a timeout can arrive after the provider acted, and a crash can leave work half done.
 - Is the schema version part of the contract?
   Every method refuses an unsupported version with `unsupported_version`, and the conformance suite tests it, but the specification does not model versions.
+  A block export arrives at contract version 2: a PublishVolume call below it, for a volume that only a host block device can export, is refused with `unsupported_version`.
   A snapshot's `state` in a ListSnapshots ref, and the `snapshot_id` filter, arrive at contract version 4: a ref carries no state below it, and a filtered call below it is refused with `unsupported_version` rather than answered with every snapshot.
 - Are `internal` and `unavailable` the only errors that a failed provider may cause?
 - Must a present but malformed ID be refused with `invalid_argument`?

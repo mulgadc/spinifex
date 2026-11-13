@@ -8,8 +8,10 @@
 #
 #   SPX_REF           Ref to prove. Default: the spinifex checkout's current branch.
 #   OCI_TOPOLOGIES    Space-separated. Default: "vm-single vm-multi bm
-#                     vm-single-principal". Set one name to test one thing: a
-#                     single VM topology is roughly a quarter of the full run.
+#                     vm-single-principal vm-single-ocibsd vm-multi-ocibsd". Set
+#                     one name to test one thing. The two ocibsd topologies back
+#                     EBS with OCI Block Volumes, need OCI_SOURCE=tree and an
+#                     external pool, and are recorded SKIPPED without them.
 #   OCI_SOURCE        tree (build SPX_REF) or release (the published installer).
 #   OCI_VERSION       With OCI_SOURCE=release, install this exact release tag and
 #                     ignore OCI_CHANNEL. Preferred for anything repeatable: a tag
@@ -82,7 +84,7 @@ SPINIFEX_ROOT="$(cd "$HERE/../../.." && pwd)"
 # under the workspace. Deriving one from the other is only right in the first case.
 MULGA_ROOT="${MULGA_ROOT:-$SPINIFEX_ROOT/..}"
 
-TOPOLOGIES="${OCI_TOPOLOGIES:-vm-single vm-multi bm vm-single-principal}"
+TOPOLOGIES="${OCI_TOPOLOGIES:-vm-single vm-multi bm vm-single-principal vm-single-ocibsd vm-multi-ocibsd}"
 SOURCE="${OCI_SOURCE:-tree}"
 CHANNEL="${OCI_CHANNEL:-latest}"
 INSTALL_VERSION="${OCI_VERSION:-}"
@@ -289,6 +291,35 @@ publish_summary() {
     fi
 }
 
+# ocibsd's volumes and backups live in no Terraform state, so a destroy leaves any
+# a failed run made. Each cluster_id a topology recorded is swept by its tag once
+# the nodes are gone, and anything still tagged afterwards fails the run.
+sweep_ocibsd() {
+    local dir="$1" record="$1/ocibsd-clusters" cluster compartment region left
+    [ -s "$record" ] || return 0
+    left="$(mktemp)"
+    while IFS=$'\t' read -r cluster compartment region; do
+        [ -n "$cluster" ] || continue
+        log "sweep: OCI volumes and backups of ocibsd cluster $cluster"
+        if OCIBSD_COMPARTMENT="$compartment" python3 "$HERE/scripts/oci_env.py" \
+            ${OCI_PROFILE:+--profile "$OCI_PROFILE"} --region "$region" -- \
+            python3 "$HERE/scripts/oci_volumes.py" sweep --cluster "$cluster" \
+            < /dev/null >> "$ARTIFACT_DIR/sweep.log" 2>&1; then
+            log "sweep: nothing tagged with ocibsd cluster $cluster remains"
+        else
+            log "sweep: OCI still holds volumes or backups of ocibsd cluster $cluster. See $ARTIFACT_DIR/sweep.log"
+            echo "sweep ${dir##*/.validate-} ocibsd cluster $cluster: FAIL" >> "$VERDICT"
+            printf '%s\t%s\t%s\n' "$cluster" "$compartment" "$region" >> "$left"
+        fi
+    done < "$record"
+    # Kept only for what is left, so the next sweep retries exactly that.
+    if [ -s "$left" ]; then
+        mv "$left" "$record"
+    else
+        rm -f "$left" "$record"
+    fi
+}
+
 # A topology destroys itself from its own EXIT trap, so this only catches a run
 # the trap never reached: a killed process, a runner reclaimed mid-job, a reboot.
 # It works from the state files rather than by name filter, so it can only ever
@@ -297,12 +328,16 @@ sweep() {
     local found=0 dir topology
     local sweep_env=(env)
     for dir in "$STATE_ROOT"/.validate-*; do
-        [ -s "$dir/terraform.tfstate" ] || continue
+        [ -d "$dir" ] || continue
+        if [ ! -s "$dir/terraform.tfstate" ]; then
+            sweep_ocibsd "$dir"
+            continue
+        fi
         python3 -c '
 import json, sys
 state = json.load(open(sys.argv[1]))
 sys.exit(0 if any(r["instances"] for r in state.get("resources", [])) else 1)
-' "$dir/terraform.tfstate" 2>/dev/null || continue
+' "$dir/terraform.tfstate" 2>/dev/null || { sweep_ocibsd "$dir"; continue; }
         topology="${dir##*/.validate-}"
         # The child reads OCI_STATE_ROOT from the environment, so it looks in the
         # same place this loop found the state rather than beside its own script.
@@ -319,6 +354,7 @@ sys.exit(0 if any(r["instances"] for r in state.get("resources", [])) else 1)
         if "${sweep_env[@]}" "$HERE/validate-topology.sh" --topology "$topology" --destroy-only \
             >> "$ARTIFACT_DIR/sweep.log" 2>&1; then
             log "sweep: $topology destroyed"
+            sweep_ocibsd "$dir"
         else
             log "sweep: $topology WOULD NOT DESTROY -- it is still billing. See $ARTIFACT_DIR/sweep.log"
             echo "sweep $topology: FAIL" >> "$VERDICT"
@@ -342,6 +378,10 @@ sweep
 
 if [ "$SWEEP_ONLY" = 1 ]; then
     log "--sweep-only: done"
+    if grep -q FAIL "$VERDICT"; then
+        cat "$VERDICT"
+        exit 1
+    fi
     exit 0
 fi
 
@@ -394,6 +434,22 @@ for topology in $TOPOLOGIES; do
         build_principal_env
         run_env=(env "${PRINCIPAL_ENV[@]}")
     fi
+    # ocibsd's files ship in the distro this checkout builds, and its volumes
+    # need the credential the pool uses, so neither can be stood in for.
+    case "$topology" in
+        *-ocibsd)
+            if [ "$SOURCE" != tree ]; then
+                log "$topology: SKIPPED -- the ocibsd files ship only with a tree build"
+                echo "$topology: SKIPPED (OCI_SOURCE=$SOURCE)" >> "$VERDICT"
+                continue
+            fi
+            if [ "${OCI_NO_EXTERNAL_POOL:-0}" = 1 ]; then
+                log "$topology: SKIPPED -- ocibsd needs the OCI credential the external pool installs"
+                echo "$topology: SKIPPED (OCI_NO_EXTERNAL_POOL=1)" >> "$VERDICT"
+                continue
+            fi
+            ;;
+    esac
     args=(--topology "$topology" --ssh-public-key "$SSH_PUBLIC_KEY" --ssh-private-key "$SSH_PRIVATE_KEY")
     [ "$DRY_RUN" = 1 ] && args+=(--dry-run)
     # Two separate choices. --no-external-pool is the one that forms without any
@@ -460,5 +516,8 @@ if [ "$RUN_RC" = 0 ] && ! grep -q FAIL "$VERDICT"; then
 else
     log "FAIL"
     printf 'FAIL\te2e-oci\t%d.000s\n' "$SECONDS"
+    # A failed sweep is a FAIL in the verdict with every topology passing, and is
+    # still resources left billing, so it fails the run as well.
+    RUN_RC=1
 fi
 exit "$RUN_RC"

@@ -137,6 +137,11 @@ type Capabilities struct {
 	// can enumerate one without the other.
 	SnapshotEnumeration bool `json:"snapshot_enumeration"`
 
+	// SnapshotCopy advertises that CopySnapshot duplicates a snapshot in place.
+	// A provider leaving this false refuses CopySnapshot as unsupported, so a
+	// caller can tell a copy it cannot have from one that failed.
+	SnapshotCopy bool `json:"snapshot_copy"`
+
 	// OwnerRouting advertises that CreateSnapshot, CopySnapshot, ExpandVolume
 	// and GetVolume are answered directly by a volume's mounting node over
 	// its OwnerSubject when one exists, instead of always fanning out to the
@@ -221,6 +226,12 @@ type GetCapabilitiesResponse struct {
 type CapacityRange struct {
 	RequiredBytes int64 `json:"required_bytes"`
 	LimitBytes    int64 `json:"limit_bytes,omitempty"`
+}
+
+// Valid reports whether the range asks for a positive capacity within its
+// limit. A LimitBytes of zero or less sets no limit.
+func (r CapacityRange) Valid() bool {
+	return r.RequiredBytes > 0 && (r.LimitBytes <= 0 || r.RequiredBytes <= r.LimitBytes)
 }
 
 // VolumeState is a volume's attachment state, using the EC2 volume state names.
@@ -504,7 +515,7 @@ type ListSnapshotsRequest struct {
 // SnapshotID filter sent below SnapshotFilterSchemaVersion as unsupported: a
 // provider at that version would drop the filter and list every snapshot.
 func CheckListSnapshotsVersion(req ListSnapshotsRequest) error {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return err
 	}
 	if req.SnapshotID != "" && req.SchemaVersion < SnapshotFilterSchemaVersion {
@@ -732,7 +743,7 @@ type UnpublishVolumeRequest struct {
 // NoSeal sent below NoSealSchemaVersion: a provider at that version would
 // drop the flag and seal, so no provider may honour it there either.
 func CheckUnpublishVersion(req UnpublishVolumeRequest) error {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return err
 	}
 	if req.NoSeal && req.SchemaVersion < NoSealSchemaVersion {

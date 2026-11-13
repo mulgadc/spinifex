@@ -1053,6 +1053,7 @@ region = "us-east-1"
 		{"unset defaults to viperblockd", "", EBSProviderViperblockd},
 		{"viperblockd explicit", "[nodes.n1.ebs]\nprovider = \"viperblockd\"\n", EBSProviderViperblockd},
 		{"qemunbd explicit", "[nodes.n1.ebs]\nprovider = \"qemunbd\"\n", EBSProviderQEMUNBD},
+		{"ocibsd explicit", "[nodes.n1.ebs]\nprovider = \"ocibsd\"\n\n[nodes.n1.ebs.oci]\ncompartment_id = \"c\"\navailability_domain = \"ad\"\n", EBSProviderOCIBSD},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1144,6 +1145,59 @@ func TestLoadConfig_EBSProvider_SingleProviderPerCluster(t *testing.T) {
 			}
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+func TestLoadConfig_EBSOCI(t *testing.T) {
+	oci := func(node, compartment, ad, extra string) string {
+		return fmt.Sprintf("[nodes.%s.ebs]\nprovider = \"ocibsd\"\n\n[nodes.%s.ebs.oci]\ncompartment_id = %q\navailability_domain = %q\n%s", node, node, compartment, ad, extra)
+	}
+	const comp, ad = "ocid1.compartment.oc1..a", "Uocm:US-ASHBURN-AD-1"
+	cases := []struct {
+		name    string
+		ebs     []string
+		wantErr string
+	}{
+		{"one node", []string{oci("n1", comp, ad, "")}, ""},
+		{"every node agrees, with unset peers", []string{oci("n1", comp, ad, ""), "", oci("n3", comp, ad, "auth = \"instance_principal\"\n")}, ""},
+		{"config file credentials", []string{oci("n1", comp, ad, "auth = \"config_file\"\nconfig_file = \"/etc/spinifex/oci/config\"\nconfig_profile = \"SPX\"\n")}, ""},
+		{"no compartment", []string{oci("n1", "", ad, "")}, "[nodes.n1.ebs.oci] compartment_id and availability_domain are required"},
+		{"no availability domain", []string{oci("n1", comp, "", "")}, "[nodes.n1.ebs.oci] compartment_id and availability_domain are required"},
+		{"no table at all", []string{"[nodes.n1.ebs]\nprovider = \"ocibsd\"\n"}, "compartment_id and availability_domain are required"},
+		{"unknown auth", []string{oci("n1", comp, ad, "auth = \"api_key\"\n")}, `[nodes.n1.ebs.oci] auth must be "config_file" or "instance_principal", got "api_key"`},
+		{"instance principal beside a config file", []string{oci("n1", comp, ad, "auth = \"instance_principal\"\nconfig_file = \"/x\"\n")},
+			`config_file/config_profile are not valid with auth="instance_principal"`},
+		{"nodes disagree on the AD", []string{oci("n1", comp, ad, ""), oci("n2", comp, "Uocm:US-ASHBURN-AD-2", "")},
+			"every node must name the same compartment and availability domain"},
+		{"nodes agree on the cluster ID", []string{oci("n1", comp, ad, "cluster_id = \"c1\"\n"), oci("n2", comp, ad, "cluster_id = \"c1\"\n")}, ""},
+		{"nodes disagree on the cluster ID", []string{oci("n1", comp, ad, "cluster_id = \"c1\"\n"), oci("n2", comp, ad, "cluster_id = \"c2\"\n")},
+			`[nodes.n2.ebs.oci] cluster_id "c2" differs from [nodes.n1.ebs.oci] cluster_id "c1"`},
+		{"nodes disagree on the compartment", []string{oci("n1", comp, ad, ""), oci("n2", "ocid1.compartment.oc1..b", ad, "")},
+			"every node must name the same compartment and availability domain"},
+		{"the table on another provider", []string{"[nodes.n1.ebs]\nprovider = \"viperblockd\"\n\n[nodes.n1.ebs.oci]\ncompartment_id = \"x\"\n"},
+			`[nodes.n1.ebs.oci] is only valid with provider = "ocibsd"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := "node = \"n1\"\n"
+			for i, ebs := range tc.ebs {
+				body += fmt.Sprintf("\n[nodes.n%d]\nregion = \"us-east-1\"\n%s", i+1, ebs)
+			}
+			resetViper(t)
+			path := filepath.Join(t.TempDir(), "spinifex.toml")
+			require.NoError(t, os.WriteFile(path, []byte(body), 0600))
+
+			cfg, err := LoadConfig(path)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, EBSProviderOCIBSD, cfg.Nodes["n1"].EBS.ResolvedProvider())
+			got := cfg.Nodes["n1"].EBS.OCI
+			assert.Equal(t, comp, got.CompartmentID)
+			assert.Equal(t, ad, got.AvailabilityDomain)
 		})
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
+	"github.com/mulgadc/spinifex/spinifex/foundation/release/featurelevel"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/migrate"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
@@ -275,6 +276,10 @@ type Heartbeat struct {
 	AvailableMem  float64  `json:"available_mem_gb"`
 	ReservedVCPU  int      `json:"reserved_vcpu"`
 	ReservedMem   float64  `json:"reserved_mem_gb"`
+
+	// FeatureLevel is the highest cluster feature level this build supports.
+	// Heartbeats written before the field existed read as 0.
+	FeatureLevel int `json:"feature_level,omitempty"`
 }
 
 // WriteHeartbeat writes a heartbeat entry for the given node to the cluster-state KV.
@@ -292,10 +297,30 @@ func (m *JetStreamManager) WriteHeartbeat(h *Heartbeat) error {
 
 // ReadHeartbeat reads the heartbeat entry for the given node from the cluster-state KV.
 func (m *JetStreamManager) ReadHeartbeat(nodeID string) (*Heartbeat, error) {
+	return m.ReadHeartbeatContext(context.Background(), nodeID)
+}
+
+// ReadHeartbeatContext is ReadHeartbeat bounded by ctx.
+func (m *JetStreamManager) ReadHeartbeatContext(ctx context.Context, nodeID string) (*Heartbeat, error) {
 	if m.clusterKV == nil {
 		return nil, errors.New("cluster state KV not initialized")
 	}
-	entry, err := m.clusterKV.Get(context.Background(), clusterv1.HeartbeatKey(nodeID))
+	return readHeartbeat(ctx, m.clusterKV, nodeID)
+}
+
+// ReadHeartbeatLeader reads the heartbeat from the stream leader, so a lagging
+// replica cannot return one a restart has since replaced.
+func (m *JetStreamManager) ReadHeartbeatLeader(ctx context.Context, nodeID string) (*Heartbeat, error) {
+	if m.clusterKV == nil {
+		return nil, errors.New("cluster state KV not initialized")
+	}
+	return readHeartbeat(ctx, featurelevel.LeaderKV(m.js, m.clusterKV), nodeID)
+}
+
+func readHeartbeat(ctx context.Context, kv interface {
+	Get(context.Context, string) (jetstream.KeyValueEntry, error)
+}, nodeID string) (*Heartbeat, error) {
+	entry, err := kv.Get(ctx, clusterv1.HeartbeatKey(nodeID))
 	if err != nil {
 		return nil, err
 	}

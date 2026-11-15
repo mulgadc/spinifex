@@ -84,54 +84,10 @@ jobs:
         with:
           path: spinifex
 
-      - name: Resolve sibling release tags from go.mod
-        id: siblings
-        run: bash spinifex/.github/scripts/resolve-release-sibling-refs.sh spinifex/go.mod
-
-      - name: Checkout Viperblock
-        uses: actions/checkout@v7.0.1
+      - name: Go workspace
+        uses: $/.github/actions/go-workspace
         with:
-          repository: mulgadc/viperblock
-          ref: ${{ steps.siblings.outputs.viperblock }}
-          path: viperblock
-
-      - name: Checkout Predastore
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/predastore
-          ref: ${{ steps.siblings.outputs.predastore }}
-          path: predastore
-
-      - name: Checkout Northstar
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/northstar
-          ref: ${{ steps.siblings.outputs.northstar }}
-          path: northstar
-
-      - name: Checkout Bluebottle
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/bluebottle
-          ref: ${{ steps.siblings.outputs.bluebottle }}
-          path: bluebottle
-
-      - name: Setup Go
-        uses: actions/setup-go@v7.0.0
-        with:
-          go-version-file: "spinifex/go.mod"
-          # Self-hosted runner: the Go module + build cache already persists on
-          # local disk between runs.
-          cache: false
-
-      - name: Setup Go Workspace
-        # Idempotent: the ci-single runner reuses one workspace across matrix
-        # legs and runs, and checkout never scrubs the root go.work. Remove any
-        # stale file so each leg re-inits cleanly instead of failing on
-        # "go.work already exists".
-        run: |
-          rm -f go.work go.work.sum
-          go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle
+          siblings: release
 
       - name: Install build + upload tooling
         # mkosi legs build and upload inside the pinned builder container.

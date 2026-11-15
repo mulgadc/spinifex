@@ -1,0 +1,25 @@
+name: Save Go build cache
+description: >-
+  On dev and main, trim the build cache to this run's working set and save it
+  under the prefix go-workspace restored from. A red run may have stopped
+  early and used only part of the set, so call it only when the job passed.
+
+inputs:
+  cache:
+    description: The same key prefix passed to go-workspace.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Trim Go build cache
+      if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+      shell: bash
+      run: bash "${{ github.action_path }}/../../scripts/go-build-cache.sh" trim
+
+    - name: Save Go build cache
+      if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+      uses: actions/cache/save@v6.1.0
+      with:
+        path: ~/.cache/go-build
+        key: ${{ inputs.cache }}-${{ github.run_id }}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 	"uuid"
@@ -64,7 +65,7 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 	}
 	eni := eniReservationFor(mode)
 
-	out := &ecs.RunTaskOutput{}
+	out := &ecs.RunTaskOutput{Failures: []*ecs.Failure{}}
 	for i := 0; i < count; i++ {
 		taskID := uuid.NewV4().String()
 		inst, err := s.reservePlacement(ctx, kv, cluster, taskID, cpu, mem, gpu, eni, strategy)
@@ -91,7 +92,7 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 		if err := s.publishAssign(ctx, kv, accountID, cluster, inst.InstanceID, rec, taskDef); err != nil {
 			slog.ErrorContext(ctx, "ECS RunTask: failed to publish assign", "task", taskID, "instance", inst.InstanceID, "err", err)
 		}
-		out.Tasks = append(out.Tasks, s.taskToAWS(accountID, rec))
+		out.Tasks = append(out.Tasks, s.taskToAWS(accountID, rec, taskDef))
 	}
 	return out, nil
 }
@@ -233,6 +234,7 @@ func (s *Service) newTaskRecord(accountID, cluster, taskID string, td *taskdefin
 		TaskDefARN:           td.ARN,
 		ContainerInstanceID:  inst.InstanceID,
 		ContainerInstanceARN: inst.ARN,
+		AvailabilityZone:     inst.AZ,
 		DesiredStatus:        TaskStatusRunning,
 		LastStatus:           TaskStatusPending,
 		ReservedCPU:          cpu,
@@ -284,7 +286,7 @@ func (s *Service) DescribeTasks(ctx context.Context, input *ecs.DescribeTasksInp
 	if err != nil {
 		return nil, err
 	}
-	out := &ecs.DescribeTasksOutput{}
+	out := &ecs.DescribeTasksOutput{Failures: []*ecs.Failure{}}
 	for _, ref := range awsStringSlice(input.Tasks) {
 		taskID := ContainerInstanceShortID(ref)
 		var rec TaskRecord
@@ -293,7 +295,11 @@ func (s *Service) DescribeTasks(ctx context.Context, input *ecs.DescribeTasksInp
 			return nil, err
 		}
 		if found {
-			out.Tasks = append(out.Tasks, s.taskToAWS(accountID, &rec))
+			td, err := taskDefOf(ctx, kv, &rec)
+			if err != nil {
+				return nil, err
+			}
+			out.Tasks = append(out.Tasks, s.taskToAWS(accountID, &rec, td))
 		} else {
 			out.Failures = append(out.Failures, &ecs.Failure{Arn: aws.String(ref), Reason: aws.String("MISSING")})
 		}
@@ -389,7 +395,25 @@ func (f taskFilter) matches(rec *TaskRecord) bool {
 	return true
 }
 
-func (s *Service) taskToAWS(accountID string, r *TaskRecord) *ecs.Task {
+// taskDefOf loads the revision a task was launched from, or nil when the
+// revision has since been deleted.
+func taskDefOf(ctx context.Context, kv jetstream.KeyValue, r *TaskRecord) (*taskdefinition.Record, error) {
+	var td taskdefinition.Record
+	found, err := taskdefinition.GetJSON(ctx, kv, taskdefinition.RevKey(r.TaskDefFamily, r.TaskDefRevision), &td)
+	if err != nil || !found {
+		return nil, err
+	}
+	return &td, nil
+}
+
+// taskToAWS projects a task record. td is the revision it was launched from;
+// when nil, the members it alone holds (container image, cpu, memory) are left
+// out. Members only the agent could report are not modelled.
+func (s *Service) taskToAWS(accountID string, r *TaskRecord, td *taskdefinition.Record) *ecs.Task {
+	group := r.Group
+	if group == "" {
+		group = "family:" + r.TaskDefFamily
+	}
 	t := &ecs.Task{
 		TaskArn:              aws.String(r.ARN),
 		ClusterArn:           aws.String(ClusterARN(s.region, accountID, r.Cluster)),
@@ -401,9 +425,29 @@ func (s *Service) taskToAWS(accountID string, r *TaskRecord) *ecs.Task {
 		CreatedAt:            awsTimeOrNil(r.CreatedAt),
 		StartedAt:            awsTimeOrNil(r.StartedAt),
 		StoppedAt:            awsTimeOrNil(r.StoppedAt),
+		Group:                aws.String(group),
+		LaunchType:           aws.String(ecs.LaunchTypeEc2),
+		EnableExecuteCommand: aws.Bool(false),
+		Overrides: &ecs.TaskOverride{
+			ContainerOverrides:            []*ecs.ContainerOverride{},
+			InferenceAcceleratorOverrides: []*ecs.InferenceAcceleratorOverride{},
+		},
 	}
-	if r.Group != "" {
-		t.Group = aws.String(r.Group)
+	if r.AvailabilityZone != "" {
+		t.AvailabilityZone = aws.String(r.AvailabilityZone)
+	}
+	cpu, mem := strconv.Itoa(r.ReservedCPU), strconv.Itoa(r.ReservedMemoryMiB)
+	if td != nil && td.CPU != "" {
+		cpu = td.CPU
+	}
+	if td != nil && td.Memory != "" {
+		mem = td.Memory
+	}
+	if cpu != "0" {
+		t.Cpu = aws.String(cpu)
+	}
+	if mem != "0" {
+		t.Memory = aws.String(mem)
 	}
 	if r.StartedBy != "" {
 		t.StartedBy = aws.String(r.StartedBy)
@@ -434,7 +478,20 @@ func (s *Service) taskToAWS(accountID string, r *TaskRecord) *ecs.Task {
 		t.Attachments = append(t.Attachments, att)
 	}
 	for _, c := range r.Containers {
-		ctr := &ecs.Container{Name: aws.String(c.Name), LastStatus: aws.String(c.Status)}
+		t.Overrides.ContainerOverrides = append(t.Overrides.ContainerOverrides, &ecs.ContainerOverride{Name: aws.String(c.Name)})
+		ctr := &ecs.Container{
+			Name:         aws.String(c.Name),
+			LastStatus:   aws.String(c.Status),
+			TaskArn:      aws.String(r.ARN),
+			ContainerArn: aws.String(ContainerARN(s.region, accountID, r.Cluster, r.TaskID, c.Name)),
+		}
+		if def := td.Container(c.Name); def != nil {
+			ctr.Image = aws.String(def.Image)
+			ctr.Cpu = aws.String(strconv.Itoa(def.CPU))
+			if def.MemoryMiB > 0 {
+				ctr.Memory = aws.String(strconv.Itoa(def.MemoryMiB))
+			}
+		}
 		if c.ExitCode != nil {
 			ctr.ExitCode = aws.Int64(int64(*c.ExitCode))
 		}

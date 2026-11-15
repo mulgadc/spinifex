@@ -98,6 +98,20 @@ type Record struct {
 	RegisteredBy string `json:"registeredBy,omitempty"`
 }
 
+// Container returns the named container definition, or nil when t is nil or
+// holds no container of that name.
+func (t *Record) Container(name string) *Container {
+	if t == nil {
+		return nil
+	}
+	for i := range t.Containers {
+		if t.Containers[i].Name == name {
+			return &t.Containers[i]
+		}
+	}
+	return nil
+}
+
 // ReservedCPU sums the per-container CPU reservations used for bin-pack
 // placement. A taskdef-level cpu/memory is not modelled in v1; placement uses
 // the container sums.

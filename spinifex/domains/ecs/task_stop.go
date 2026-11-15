@@ -50,8 +50,12 @@ func (s *Service) StopTask(ctx context.Context, input *ecs.StopTaskInput, accoun
 	if reason == "" {
 		reason = defaultStopReason
 	}
+	td, err := taskDefOf(ctx, kv, &task)
+	if err != nil {
+		return nil, err
+	}
 	s.requestStopTask(ctx, kv, accountID, &task, reason)
-	return &ecs.StopTaskOutput{Task: s.taskToAWS(accountID, &task)}, nil
+	return &ecs.StopTaskOutput{Task: s.taskToAWS(accountID, &task, td)}, nil
 }
 
 // StartTask places one task per named container instance (explicit placement, no
@@ -88,7 +92,7 @@ func (s *Service) StartTask(ctx context.Context, input *ecs.StartTaskInput, acco
 	group := aws.StringValue(input.Group)
 	startedBy := aws.StringValue(input.StartedBy)
 
-	out := &ecs.StartTaskOutput{}
+	out := &ecs.StartTaskOutput{Failures: []*ecs.Failure{}}
 	for _, ref := range awsStringSlice(input.ContainerInstances) {
 		instanceID := ContainerInstanceShortID(ref)
 		taskID := uuid.NewV4().String()
@@ -116,7 +120,7 @@ func (s *Service) StartTask(ctx context.Context, input *ecs.StartTaskInput, acco
 		if err := s.publishAssign(ctx, kv, accountID, cluster, inst.InstanceID, rec, taskDef); err != nil {
 			slog.ErrorContext(ctx, "ECS StartTask: failed to publish assign", "task", taskID, "instance", inst.InstanceID, "err", err)
 		}
-		out.Tasks = append(out.Tasks, s.taskToAWS(accountID, rec))
+		out.Tasks = append(out.Tasks, s.taskToAWS(accountID, rec, taskDef))
 	}
 	return out, nil
 }

@@ -1278,6 +1278,9 @@ func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteV
 	// exactly would strand it undeletable and block stack teardown.
 	if meta.AttachedInstance != "" || (meta.State != "available" && meta.State != "") {
 		slog.ErrorContext(ctx, "DeleteVolume: volume is in use", "volumeId", volumeID, "state", meta.State, "attachedInstance", meta.AttachedInstance)
+		if meta.AttachedInstance != "" {
+			return nil, awserrors.Errorf(awserrors.ErrorVolumeInUse, "Volume %s is currently attached to {%s}", volumeID, meta.AttachedInstance)
+		}
 		return nil, errors.New(awserrors.ErrorVolumeInUse)
 	}
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 )
@@ -76,7 +77,7 @@ func DetachNetworkInterface(ctx context.Context, input *ec2.DetachNetworkInterfa
 
 	responseError, err := awserrors.ValidateErrorPayload(msg.Data)
 	if err != nil {
-		return output, errors.New(*responseError.Code)
+		return output, awserrors.ResponseErrorToError(responseError)
 	}
 
 	if err := json.Unmarshal(msg.Data, &output); err != nil {
@@ -120,9 +121,9 @@ func resolveAttachmentInstance(ctx context.Context, natsConn *nats.Conn, account
 			continue
 		}
 		if ni.Attachment.InstanceId == nil || *ni.Attachment.InstanceId == "" {
-			return "", errors.New(awserrors.ErrorInvalidAttachmentIDNotFound)
+			return "", ec2vpc.AttachmentNotFoundError(attachmentID)
 		}
 		return *ni.Attachment.InstanceId, nil
 	}
-	return "", errors.New(awserrors.ErrorInvalidAttachmentIDNotFound)
+	return "", ec2vpc.AttachmentNotFoundError(attachmentID)
 }

@@ -269,7 +269,9 @@ func TestTerminateInstances_RefusalIsNotReportedAsTerminated(t *testing.T) {
 	}, nc, "123456789012")
 
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+	code, message, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, code)
+	assert.Equal(t, "wrong state", message, "the daemon's message must reach the client")
 	assert.Nil(t, output)
 }
 

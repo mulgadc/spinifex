@@ -156,7 +156,8 @@ func TestAccountTermination_DeleteSnapshotRefusesARegisteredImage(t *testing.T) 
 	require.NoError(t, err)
 
 	_, err = s.snapshots.DeleteSnapshot(ctx, &ec2.DeleteSnapshotInput{SnapshotId: aws.String(snapshotID)}, ctAccountID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidSnapshotInUse, "the snapshot refuses to delete while an image is registered on it")
+	assert.EqualError(t, err, "The snapshot "+snapshotID+" is currently in use by "+aws.StringValue(registered.ImageId)+": "+awserrors.ErrorInvalidSnapshotInUse,
+		"the snapshot refuses to delete while an image is registered on it")
 
 	_, err = s.metadata.GetSnapshot(ctx, ctAccountID, snapshotID)
 	assert.NoError(t, err, "the snapshot document is still present")

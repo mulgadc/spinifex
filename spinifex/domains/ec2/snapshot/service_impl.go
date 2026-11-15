@@ -799,23 +799,23 @@ func (s *SnapshotServiceImpl) snapshotInUseByVolumes(ctx context.Context, snapsh
 // amiInUseBySnapshot checks if any registered AMI names the given snapshot as
 // its root device. AWS refuses DeleteSnapshot while a registered AMI
 // references the snapshot, the same way it refuses one backing a volume.
-func (s *SnapshotServiceImpl) amiInUseBySnapshot(ctx context.Context, snapshotID, accountID string) (bool, error) {
+func (s *SnapshotServiceImpl) amiInUseBySnapshot(ctx context.Context, snapshotID, accountID string) (ebsmetadata.AMI, bool, error) {
 	// Whole-cluster and fail-closed for the same reason as the volume check
 	// above: a system AMI can be registered by an account other than the
 	// snapshot's owner, and an AMI this cannot read is not evidence none exists.
 	amis, unreadable, err := s.metadata.ListAMIsPartial(ctx)
 	if err != nil {
-		return false, awserrors.Errorf(awserrors.ErrorServerInternal, "check whether snapshot %s is in use: list AMIs: %v", snapshotID, err)
+		return ebsmetadata.AMI{}, false, awserrors.Errorf(awserrors.ErrorServerInternal, "check whether snapshot %s is in use: list AMIs: %v", snapshotID, err)
 	}
 	for _, ami := range amis {
 		if ami.SnapshotID == snapshotID {
-			return true, nil
+			return ami, true, nil
 		}
 	}
 	if len(unreadable) > 0 {
-		return false, unreadableRecordError(ctx, snapshotID, accountID, "AMI", unreadable)
+		return ebsmetadata.AMI{}, false, unreadableRecordError(ctx, snapshotID, accountID, "AMI", unreadable)
 	}
-	return false, nil
+	return ebsmetadata.AMI{}, false, nil
 }
 
 // unreadableRecordError refuses a delete the in-use scan could not clear. It
@@ -909,10 +909,14 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 	}
 
 	// Check if any registered AMI names this snapshot as its root device
-	amiInUse, amiErr := s.amiInUseBySnapshot(ctx, snapshotID, accountID)
+	ami, amiInUse, amiErr := s.amiInUseBySnapshot(ctx, snapshotID, accountID)
 	if amiInUse {
-		slog.InfoContext(ctx, "DeleteSnapshot blocked: snapshot in use by registered AMI", "snapshotId", snapshotID)
-		return nil, errors.New(awserrors.ErrorInvalidSnapshotInUse)
+		slog.InfoContext(ctx, "DeleteSnapshot blocked: snapshot in use by registered AMI", "snapshotId", snapshotID, "imageId", ami.ImageID)
+		// Name the AMI only when the caller owns it: the scan is whole-cluster.
+		if ami.ImageOwnerAlias != accountID {
+			return nil, errors.New(awserrors.ErrorInvalidSnapshotInUse)
+		}
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidSnapshotInUse, "The snapshot %s is currently in use by %s", snapshotID, ami.ImageID)
 	}
 	if volumeErr != nil {
 		slog.ErrorContext(ctx, "DeleteSnapshot failed to check snapshot usage", "snapshotId", snapshotID, "err", volumeErr)

@@ -171,7 +171,7 @@ func (s *EIPServiceImpl) ReleaseAddress(ctx context.Context, input *ec2.ReleaseA
 
 	entry, err := s.eipKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidAllocationIDNotFound)
+		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidAllocationIDNotFound, "allocation", allocID)
 	}
 
 	var record EIPRecord
@@ -841,7 +841,7 @@ func (s *EIPServiceImpl) findByAssociationID(ctx context.Context, accountID, ass
 		}
 	}
 
-	return nil, "", 0, errors.New(awserrors.ErrorInvalidAssociationIDNotFound)
+	return nil, "", 0, awserrors.IDNotFound(awserrors.ErrorInvalidAssociationIDNotFound, "association", associationID)
 }
 
 // AssociatedPublicIPForInstance returns the public IP of the EIP associated with

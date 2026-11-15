@@ -453,11 +453,11 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 	// Check for duplicate AMI name before doing any expensive work
 	name := aws.StringValue(input.Name)
 	if name != "" {
-		if exists, err := s.amiNameExists(context.Background(), name); err != nil {
+		if existing, exists, err := s.amiNameExists(context.Background(), name); err != nil {
 			slog.Error("CreateImageFromInstance: failed to check AMI name uniqueness", "name", name, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		} else if exists {
-			return nil, errors.New(awserrors.ErrorInvalidAMINameDuplicate)
+			return nil, duplicateAMINameError(name, existing, accountID)
 		}
 	}
 
@@ -579,17 +579,26 @@ func (s *ImageServiceImpl) getVolumeMetadata(ctx context.Context, accountID, vol
 // amiNameExists checks if any existing AMI already uses the given name. It
 // lists strictly: an AMI this cannot read is a name it cannot rule out, and
 // answering false would let a duplicate through and mask the corruption.
-func (s *ImageServiceImpl) amiNameExists(ctx context.Context, name string) (bool, error) {
+func (s *ImageServiceImpl) amiNameExists(ctx context.Context, name string) (ebsmetadata.AMI, bool, error) {
 	amis, err := s.metadata.ListAMIsStrict(ctx)
 	if err != nil {
-		return false, fmt.Errorf("amiNameExists: failed to list AMIs: %w", err)
+		return ebsmetadata.AMI{}, false, fmt.Errorf("amiNameExists: failed to list AMIs: %w", err)
 	}
 	for _, ami := range amis {
 		if ami.Name == name {
-			return true, nil
+			return ami, true, nil
 		}
 	}
-	return false, nil
+	return ebsmetadata.AMI{}, false, nil
+}
+
+// duplicateAMINameError refuses name, which existing already uses. It names the
+// AMI only when the caller owns it, because the name check spans every account.
+func duplicateAMINameError(name string, existing ebsmetadata.AMI, accountID string) error {
+	if existing.ImageOwnerAlias != accountID {
+		return errors.New(awserrors.ErrorInvalidAMINameDuplicate)
+	}
+	return awserrors.Errorf(awserrors.ErrorInvalidAMINameDuplicate, "AMI name %s is already in use by AMI %s", name, existing.ImageID)
 }
 
 // GetAMIConfig reads an AMI's control-plane document. Errors come from the
@@ -850,11 +859,11 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 		return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 	}
 
-	if exists, err := s.amiNameExists(ctx, name); err != nil {
+	if existing, exists, err := s.amiNameExists(ctx, name); err != nil {
 		slog.ErrorContext(ctx, "CopyImage: failed to check AMI name uniqueness", "name", name, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	} else if exists {
-		return nil, errors.New(awserrors.ErrorInvalidAMINameDuplicate)
+		return nil, duplicateAMINameError(name, existing, accountID)
 	}
 
 	newSnapshotID := awsidentifiers.GenerateResourceID("snap")
@@ -1109,11 +1118,11 @@ func (s *ImageServiceImpl) RegisterImage(ctx context.Context, input *ec2.Registe
 		volumeSizeGiB = requested
 	}
 
-	if exists, err := s.amiNameExists(ctx, name); err != nil {
+	if existing, exists, err := s.amiNameExists(ctx, name); err != nil {
 		slog.ErrorContext(ctx, "RegisterImage: failed to check AMI name uniqueness", "name", name, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	} else if exists {
-		return nil, errors.New(awserrors.ErrorInvalidAMINameDuplicate)
+		return nil, duplicateAMINameError(name, existing, accountID)
 	}
 
 	architecture := "x86_64"

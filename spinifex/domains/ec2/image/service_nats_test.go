@@ -45,6 +45,37 @@ func TestNATSCreateImage_OwnerServerErrorNotMaskedByNotFound(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
 
+// The owner's refusal keeps the message it sent, even when a non-owner's
+// NotFound, which carries a message of its own, reaches the gather first.
+func TestNATSCreateImage_OwnerRefusalKeepsItsMessage(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+
+	_, err := nc.Subscribe("ec2.CreateImage", func(msg *nats.Msg) {
+		_ = msg.Respond(awserrors.GenerateErrorPayloadWithMessage(awserrors.ErrorInvalidInstanceIDNotFound, "not this node"))
+	})
+	require.NoError(t, err)
+	require.NoError(t, nc.Flush())
+
+	nc2, err := nats.Connect(nc.ConnectedUrl())
+	require.NoError(t, err)
+	defer nc2.Close()
+	_, err = nc2.Subscribe("ec2.CreateImage", func(msg *nats.Msg) {
+		_ = msg.Respond(awserrors.GenerateErrorPayloadWithMessage(awserrors.ErrorInvalidAMINameDuplicate,
+			"AMI name awsdiffp101638-ami is already in use by AMI ami-05fd427d3924f4f0f"))
+	})
+	require.NoError(t, err)
+	require.NoError(t, nc2.Flush())
+
+	svc := NewNATSImageService(nc, 2)
+	_, err = svc.CreateImage(context.Background(), &ec2.CreateImageInput{
+		InstanceId: aws.String("i-abc123"),
+		Name:       aws.String("awsdiffp101638-ami"),
+	}, "123456789012")
+	code, message, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorInvalidAMINameDuplicate, code)
+	assert.Equal(t, "AMI name awsdiffp101638-ami is already in use by AMI ami-05fd427d3924f4f0f", message)
+}
+
 // TestNATSCreateImage_AllNotFound returns NotFound when no node owns the instance.
 func TestNATSCreateImage_AllNotFound(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)

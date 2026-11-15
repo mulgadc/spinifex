@@ -1935,7 +1935,7 @@ func TestTerminateStoppedInstance_TerminationProtected(t *testing.T) {
 
 	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorOperationNotPermitted, err.Error())
+	assert.EqualError(t, err, "The instance 'i-prot' may not be terminated. Modify its 'disableApiTermination' instance attribute and try again.: "+awserrors.ErrorOperationNotPermitted)
 
 	assert.Empty(t, vd.calls, "volumes must not be deleted when termination protected")
 	assert.Empty(t, store.WroteTerminated, "must not write to terminated bucket when protected")
@@ -3632,7 +3632,8 @@ func TestStopOrTerminateInstance_TerminationProtection(t *testing.T) {
 		attrs   ec2v1.EC2CommandAttributes
 		wantErr string
 	}{
-		{name: "terminate blocked", attrs: ec2v1.EC2CommandAttributes{TerminateInstance: true}, wantErr: awserrors.ErrorOperationNotPermitted},
+		{name: "terminate blocked", attrs: ec2v1.EC2CommandAttributes{TerminateInstance: true},
+			wantErr: "The instance 'i-prot' may not be terminated. Modify its 'disableApiTermination' instance attribute and try again.: " + awserrors.ErrorOperationNotPermitted},
 		{name: "stop allowed", attrs: ec2v1.EC2CommandAttributes{StopInstance: true}, wantErr: ""},
 	}
 	for _, tc := range tests {

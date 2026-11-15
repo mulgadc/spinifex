@@ -216,7 +216,7 @@ func TestDetachNetworkInterface_UnknownAttachment(t *testing.T) {
 	_, err = DetachNetworkInterface(context.Background(), &ec2.DetachNetworkInterfaceInput{
 		AttachmentId: aws.String("eni-attach-missing"),
 	}, nc, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidAttachmentIDNotFound)
+	assert.EqualError(t, err, "The interface attachment 'eni-attach-missing' does not exist.: "+awserrors.ErrorInvalidAttachmentIDNotFound)
 }
 
 func TestDetachNetworkInterface_DescribeErrorResponse(t *testing.T) {
@@ -257,7 +257,7 @@ func TestDetachNetworkInterface_AttachmentWithoutInstance(t *testing.T) {
 	_, err = DetachNetworkInterface(context.Background(), &ec2.DetachNetworkInterfaceInput{
 		AttachmentId: aws.String("eni-attach-orphan"),
 	}, nc, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidAttachmentIDNotFound)
+	assert.EqualError(t, err, "The interface attachment 'eni-attach-orphan' does not exist.: "+awserrors.ErrorInvalidAttachmentIDNotFound)
 }
 
 func TestDetachNetworkInterface_NoResponders(t *testing.T) {

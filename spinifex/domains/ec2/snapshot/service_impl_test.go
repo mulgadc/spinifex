@@ -582,7 +582,7 @@ func TestDeleteSnapshot_InUseByRegisteredAMI(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, svc.metadata.PutAMI(context.Background(), ebsmetadata.AMI{
-		ImageID: "ami-registered", Name: "ct-ami", SnapshotID: *snap.SnapshotId,
+		ImageID: "ami-registered", Name: "ct-ami", ImageOwnerAlias: testAccountID, SnapshotID: *snap.SnapshotId,
 	}))
 
 	_, err = svc.DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{
@@ -591,7 +591,7 @@ func TestDeleteSnapshot_InUseByRegisteredAMI(t *testing.T) {
 	require.Error(t, err)
 	code, message := clientErrorDetail(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, code)
-	assert.Equal(t, "The snapshot that you are trying to delete is in use by one or more AMIs.", message)
+	assert.Equal(t, "The snapshot "+*snap.SnapshotId+" is currently in use by ami-registered", message)
 
 	// The provider and control-plane document both survive the refusal.
 	result, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{
@@ -628,7 +628,9 @@ func TestDeleteSnapshot_InUseByRegisteredAMI_AnotherAccount(t *testing.T) {
 		SnapshotId: snap.SnapshotId,
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorInvalidSnapshotInUse)
+	code, message := clientErrorDetail(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, code)
+	assert.NotContains(t, message, "ami-other-account", "another account's AMI must not be named")
 }
 
 // TestDeleteSnapshot_NotFound tests deleting a non-existent snapshot.

@@ -78,7 +78,8 @@ func validateMetadataOptions(httpTokens, httpEndpoint, ipv6, tags string, hopLim
 		return errors.New(awserrors.ErrorUnsupportedOperation)
 	}
 	if hopLimit != nil && (*hopLimit < 1 || *hopLimit > 64) {
-		return errors.New(awserrors.ErrorInvalidParameterValue)
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"A value of '%d' is not valid for HttpPutResponseHopLimit. Specify a value between 1 and 64 and try again.", *hopLimit)
 	}
 	return nil
 }

@@ -1138,6 +1138,9 @@ func TestGetVolumeByID_DefaultStateAndType(t *testing.T) {
 
 	assert.Equal(t, "available", *vol.State)
 	assert.Equal(t, "gp3", *vol.VolumeType)
+	// An unattached volume reports a non-nil empty list, which renders as [].
+	require.NotNil(t, vol.Attachments)
+	assert.Empty(t, vol.Attachments)
 }
 
 // TestGetVolumeByID_ThroughputOmitted_PreFieldVolume covers a volume written

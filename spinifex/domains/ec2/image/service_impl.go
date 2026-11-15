@@ -998,6 +998,9 @@ func (s *ImageServiceImpl) DescribeImageAttribute(ctx context.Context, input *ec
 		output.LastLaunchedTime = &ec2.AttributeValue{}
 	case ec2.ImageAttributeNameBlockDeviceMapping:
 		output.BlockDeviceMappings = synthesizeRootBlockDeviceMapping(meta, s.clusterEncryptionEnabled())
+		if output.BlockDeviceMappings == nil {
+			output.BlockDeviceMappings = []*ec2.BlockDeviceMapping{}
+		}
 	default:
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}

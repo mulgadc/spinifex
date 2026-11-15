@@ -2238,6 +2238,27 @@ func TestDescribeImageAttribute_BlockDeviceMapping(t *testing.T) {
 	assert.Nil(t, out.Description)
 }
 
+// A requested blockDeviceMapping on an image with no EBS root still renders
+// the list, since only unrequested attribute lists are omitted on the wire.
+func TestDescribeImageAttribute_BlockDeviceMappingInstanceStore(t *testing.T) {
+	svc, store := setupTestImageService(t)
+
+	createTestAMIConfigRich(t, store, ebsmetadata.AMI{
+		ImageID:         "ami-bdm02",
+		Name:            "bdm-is-ami",
+		RootDeviceType:  "instance-store",
+		ImageOwnerAlias: testAccountID,
+	})
+
+	out, err := svc.DescribeImageAttribute(context.Background(), &ec2.DescribeImageAttributeInput{
+		ImageId:   aws.String("ami-bdm02"),
+		Attribute: aws.String("blockDeviceMapping"),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.BlockDeviceMappings)
+	assert.Empty(t, out.BlockDeviceMappings)
+}
+
 func TestDescribeImageAttribute_MissingParameters(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 

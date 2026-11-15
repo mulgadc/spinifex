@@ -365,7 +365,7 @@ func TestTaskToAWS_StoppedAwsvpc_ReleasedENI_ReportsDeletedAttachment(t *testing
 		ENIReleased:     true,
 	}
 
-	task := svc.taskToAWS(testAccountID, rec)
+	task := svc.taskToAWS(testAccountID, rec, nil)
 
 	require.Len(t, task.Attachments, 1, "a released ENI must still be reported, not dropped")
 	att := task.Attachments[0]

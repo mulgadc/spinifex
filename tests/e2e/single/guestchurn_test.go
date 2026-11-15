@@ -120,7 +120,7 @@ func runGuestChurnDurability(t *testing.T, fix *Fixture) {
 
 		addr := net.JoinHostPort(host, strconv.Itoa(port))
 		harness.Step(t, "waiting for SSH handshake %s", addr)
-		sshHealth.WaitReady(t, host, port, keyPath)
+		sshHealth.WaitReadyOr(t, host, port, keyPath, guestIMDSDump(t, fix, inst))
 		_ = addr
 
 		tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
@@ -475,7 +475,7 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 		host, port := harness.InstancePublicSSHHost(t, runInst)
 		harness.Detail(t, "ssh_host", host, "ssh_port", port)
 
-		sshHealth.WaitReady(t, host, port, keyPath)
+		sshHealth.WaitReadyOr(t, host, port, keyPath, guestIMDSDump(t, fix, runInst))
 		tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 
 		harness.Step(t, "ssh nproc")
@@ -522,7 +522,7 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 		runInst := harness.WaitForInstanceState(t, fix.AWS, instanceID, "running")
 
 		host, port := harness.InstancePublicSSHHost(t, runInst)
-		sshHealth.WaitReady(t, host, port, keyPath)
+		sshHealth.WaitReadyOr(t, host, port, keyPath, guestIMDSDump(t, fix, runInst))
 		tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 		gotSha := harness.GuestReadSentinelSha(t, tgt, "/dev/disk/by-label/"+guestChurnSentinelLabel, guestChurnSentinelLabel)
 		require.Equalf(t, wantSha, gotSha, "sha256 mismatch after stop/start")
@@ -532,7 +532,7 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 	t.Run("Reboot", func(t *testing.T) {
 		inst := describeSingletonInstance(t, fix, instanceID)
 		host, port := harness.InstancePublicSSHHost(t, inst)
-		sshHealth.WaitReady(t, host, port, keyPath)
+		sshHealth.WaitReadyOr(t, host, port, keyPath, guestIMDSDump(t, fix, inst))
 
 		// The boot ID is what proves a reboot happened. Uptime cannot on its
 		// own: a reboot is asynchronous, so the guest answering shortly after
@@ -581,7 +581,7 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 		require.NotEmpty(t, descPost.Reservations[0].Instances, "no instances post-reboot")
 		postInst := descPost.Reservations[0].Instances[0]
 		host, port = harness.InstancePublicSSHHost(t, postInst)
-		sshHealth.WaitReady(t, host, port, keyPath)
+		sshHealth.WaitReadyOr(t, host, port, keyPath, guestIMDSDump(t, fix, postInst))
 
 		tgt := harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 		waitForNewBootID(t, tgt, preBootID)
@@ -667,7 +667,7 @@ func resolveGuestSSHTarget(t *testing.T, fix *Fixture, instanceID, keyPath strin
 	t.Helper()
 	inst := describeSingletonInstance(t, fix, instanceID)
 	host, port := harness.InstancePublicSSHHost(t, inst)
-	sshHealth.WaitReady(t, host, port, keyPath)
+	sshHealth.WaitReadyOr(t, host, port, keyPath, guestIMDSDump(t, fix, inst))
 	return harness.SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
 }
 
@@ -825,4 +825,26 @@ func guestNICDropped(t *testing.T, tgt harness.SSHTarget, mac string, timeout ti
 		time.Sleep(3 * time.Second)
 	}
 	return false
+}
+
+// guestIMDSDump returns the SSH-miss callback for inst: a restarted guest that
+// never reaches IMDS stalls in cloud-init before sshd starts, so the dump
+// records the IMDS datapath while the guest is still retrying.
+func guestIMDSDump(t *testing.T, fix *Fixture, inst *ec2.Instance) func() {
+	t.Helper()
+	return guestIMDSDumpWith(t, inst, fix.ArtifactDir(t), harness.DumpIMDSDatapathDiagnostics)
+}
+
+func guestIMDSDumpWith(t *testing.T, inst *ec2.Instance, artifactDir string,
+	dump func(t *testing.T, subnetID, guestIP, artifactDir string)) func() {
+	subnetID := aws.StringValue(inst.SubnetId)
+	guestIP := aws.StringValue(inst.PrivateIpAddress)
+	return func() {
+		if subnetID == "" || guestIP == "" {
+			t.Logf("no IMDS datapath dump for %s: subnet %q, private IP %q",
+				aws.StringValue(inst.InstanceId), subnetID, guestIP)
+			return
+		}
+		dump(t, subnetID, guestIP, artifactDir)
+	}
 }

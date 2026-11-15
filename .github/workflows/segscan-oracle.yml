@@ -30,40 +30,10 @@ jobs:
           path: spinifex
           fetch-depth: 2
 
-      - name: Resolve sibling refs
-        id: siblings
-        env:
-          BRANCH: ${{ github.head_ref || github.ref_name }}
-        run: bash .github/scripts/resolve-sibling-refs.sh
-        working-directory: spinifex
-
-      - name: Checkout Viperblock
-        uses: actions/checkout@v7.0.1
+      - name: Go workspace
+        uses: $/.github/actions/go-workspace
         with:
-          repository: mulgadc/viperblock
-          ref: ${{ steps.siblings.outputs.viperblock }}
-          path: viperblock
-
-      - name: Checkout Predastore
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/predastore
-          ref: ${{ steps.siblings.outputs.predastore }}
-          path: predastore
-
-      - name: Checkout Northstar
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/northstar
-          ref: ${{ steps.siblings.outputs.northstar }}
-          path: northstar
-
-      - name: Checkout Bluebottle
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/bluebottle
-          ref: ${{ steps.siblings.outputs.bluebottle }}
-          path: bluebottle
+          siblings: branch
 
       - uses: actions/create-github-app-token@v3.3.0
         id: app-token
@@ -79,15 +49,6 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           sparse-checkout: scripts/segscan
           path: mulga
-
-      - name: Setup Go
-        uses: actions/setup-go@v7.0.0
-        with:
-          cache-dependency-path: "spinifex/go.sum"
-          go-version-file: "spinifex/go.mod"
-
-      - name: Setup Go Workspace
-        run: go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle
 
       - name: Run Segscan Oracle Test
         env:

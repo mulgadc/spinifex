@@ -248,6 +248,7 @@ func TestTaskDefinition_ContainerMatchesAWSResponse(t *testing.T) {
 		Family:                  aws.String("web"),
 		NetworkMode:             aws.String(ecs.NetworkModeAwsvpc),
 		RequiresCompatibilities: aws.StringSlice([]string{ecs.CompatibilityEc2}),
+		Tags:                    []*ecs.Tag{{Key: aws.String("awsdiff"), Value: aws.String("t")}},
 		ContainerDefinitions: []*ecs.ContainerDefinition{{
 			Name: aws.String("web"), Image: aws.String("docker.io/library/nginx:1.27-alpine"),
 			Cpu: aws.Int64(128), Memory: aws.Int64(256), Essential: aws.Bool(true),
@@ -272,11 +273,14 @@ func TestTaskDefinition_ContainerMatchesAWSResponse(t *testing.T) {
 	}
 	for name, td := range map[string]*ecs.TaskDefinition{"register": reg.TaskDefinition, "deregister": dereg.TaskDefinition} {
 		require.Len(t, td.ContainerDefinitions, 1, name)
+		assert.Equal(t, "web", aws.StringValue(td.Family), name)
+		assert.Equal(t, ecs.NetworkModeAwsvpc, aws.StringValue(td.NetworkMode), name)
 		assert.Equal(t, want, td.ContainerDefinitions[0], name)
 		assert.Equal(t, []*ecs.Volume{}, td.Volumes, name)
 		assert.Equal(t, []*ecs.TaskDefinitionPlacementConstraint{}, td.PlacementConstraints, name)
 		assert.Equal(t, []*string{aws.String(ecs.CompatibilityEc2)}, td.RequiresCompatibilities, name)
 	}
+	assert.Equal(t, []*ecs.Tag{{Key: aws.String("awsdiff"), Value: aws.String("t")}}, reg.Tags)
 	assert.Equal(t, taskdefinition.StatusActive, aws.StringValue(reg.TaskDefinition.Status))
 	assert.Equal(t, taskdefinition.StatusInactive, aws.StringValue(dereg.TaskDefinition.Status))
 }

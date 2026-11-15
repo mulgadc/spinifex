@@ -136,6 +136,7 @@ var ec2Scopes = map[string][]*resourceScope{
 	"ModifyInstanceMetadataOptions": {instanceScope},
 	"GetConsoleOutput":              {instanceScope},
 	"GetPasswordData":               {instanceScope},
+	"GetInstanceUefiData":           {instanceScope},
 	"AssociateIamInstanceProfile":   {instanceScope},
 
 	// The association id needs a NATS lookup to reach the instance behind it, so

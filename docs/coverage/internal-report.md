@@ -49,7 +49,7 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 
 ## ec2
 
-`2016-11-15` — 127 of 811 modelled operations implemented (15.7%), 0 stubbed, 186 require SDK v2, 39 not applicable, 0 registered outside the pinned model.
+`2016-11-15` — 128 of 811 modelled operations implemented (15.8%), 0 stubbed, 186 require SDK v2, 39 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -374,7 +374,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `GetInstanceMetadataDefaults`
 - `GetInstanceTpmEkPub`
 - `GetInstanceTypesFromInstanceRequirements`
-- `GetInstanceUefiData`
 - `GetIpamAddressHistory`
 - `GetIpamDiscoveredAccounts`
 - `GetIpamDiscoveredPublicAddresses`

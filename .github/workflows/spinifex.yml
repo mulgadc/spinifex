@@ -264,7 +264,7 @@ jobs:
           key: gobuild-${{ github.job }}-${{ github.run_id }}
 
   # Three parallel jobs: run serially, integration and the gated suites made
-  # this the longest PR check. lint_and_security_result reports all three.
+  # this the longest PR check. Main's ruleset requires each matrix name.
   lint_and_security:
     name: ${{ matrix.name }}
     runs-on: ubuntu-26.04
@@ -398,17 +398,3 @@ jobs:
           path: ~/.cache/go-build
           key: gobuild-${{ github.job }}-${{ matrix.check }}-${{ github.run_id }}
 
-  # The context main's ruleset requires, passing only when all three jobs pass.
-  lint_and_security_result:
-    name: Lint and Security
-    if: ${{ always() }}
-    needs: [lint_and_security]
-    runs-on: ubuntu-26.04
-    timeout-minutes: 5
-    steps:
-      - name: Require lint, integration and gated suites
-        env:
-          RESULT: ${{ needs.lint_and_security.result }}
-        run: |
-          echo "lint, integration and gated suites: ${RESULT}"
-          [ "${RESULT}" = success ]

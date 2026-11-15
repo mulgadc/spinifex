@@ -3,10 +3,12 @@ package awsapi
 import (
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
@@ -43,7 +45,7 @@ type Deps struct {
 // action parses once so authorization and dispatch share one typed input.
 type action struct {
 	parse    func(map[string]string) (any, error)
-	dispatch func(name string, parsed any, d Deps, accountID string) ([]byte, error)
+	dispatch func(name string, parsed any, d Deps, accountID, requestID string) ([]byte, error)
 }
 
 // handler creates a type-safe IAM action with separate parse and dispatch
@@ -60,7 +62,7 @@ func handler[In any](h func(string, *In, Deps) (any, error)) action {
 			}
 			return input, nil
 		},
-		dispatch: func(name string, parsed any, d Deps, accountID string) ([]byte, error) {
+		dispatch: func(name string, parsed any, d Deps, accountID, requestID string) ([]byte, error) {
 			input, ok := parsed.(*In)
 			if !ok {
 				return nil, errors.New(awserrors.ErrorInternalError)
@@ -69,7 +71,7 @@ func handler[In any](h func(string, *In, Deps) (any, error)) action {
 			if err != nil {
 				return nil, err
 			}
-			payload := awsxml.QueryResponsePayload(name, output)
+			payload := awsxml.QueryResponsePayload(name, requestID, output)
 			xmlOutput, err := awsxml.Marshal(payload)
 			if err != nil {
 				return nil, errors.New(awserrors.ErrorInternalError)
@@ -444,12 +446,14 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 		}
 	}
 
-	xmlOutput, err := h.dispatch(name, input, d, accountID)
+	requestID := uuid.NewV4().String()
+	xmlOutput, err := h.dispatch(name, input, d, accountID, requestID)
 	if err != nil {
 		return err
 	}
 
 	w.Header().Set("Content-Type", "text/xml")
+	w.Header().Set(envelope.RequestIDHeader, requestID)
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(xmlOutput); err != nil {
 		slog.ErrorContext(r.Context(), "Failed to write IAM response", "err", err)

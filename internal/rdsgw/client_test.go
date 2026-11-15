@@ -65,7 +65,7 @@ func newTestClient(t *testing.T, stub *gatewayStub) *Client {
 // test exercises the real envelope rather than a hand-written approximation.
 func xmlResult(t *testing.T, action string, payload any) []byte {
 	t.Helper()
-	body, err := awsxml.Marshal(awsxml.QueryResponsePayload(action, payload))
+	body, err := awsxml.Marshal(awsxml.QueryResponsePayload(action, "", payload))
 	if err != nil {
 		t.Fatalf("marshal %s result: %v", action, err)
 	}

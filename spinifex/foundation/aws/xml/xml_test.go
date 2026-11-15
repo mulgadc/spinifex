@@ -2,6 +2,7 @@ package awsxml
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -60,13 +61,18 @@ func TestQueryResponsePayload(t *testing.T) {
 		{name: "list", action: "ListUsers", user: user{UserName: "admin", UserID: "AIDA99999"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			xmlBytes, err := Marshal(QueryResponsePayload(tt.action, tt.user))
+			xmlBytes, err := Marshal(QueryResponsePayload(tt.action, "req-1", tt.user))
 			require.NoError(t, err)
 			xmlText := string(xmlBytes)
-			assert.Contains(t, xmlText, tt.action+"Response")
-			assert.Contains(t, xmlText, tt.action+"Result")
-			assert.Contains(t, xmlText, tt.user.UserName)
-			assert.Contains(t, xmlText, tt.user.UserID)
+			assert.True(t, strings.HasPrefix(xmlText, "<"+tt.action+"Response>"), xmlText)
+			assert.True(t, strings.HasSuffix(xmlText, "</"+tt.action+"Response>"), xmlText)
+			assert.Contains(t, xmlText, "<"+tt.action+"Result>")
+			assert.Contains(t, xmlText, "<UserName>"+tt.user.UserName+"</UserName>")
+			assert.Contains(t, xmlText, "<UserId>"+tt.user.UserID+"</UserId>")
+			assert.Contains(t, xmlText, "<ResponseMetadata><RequestId>req-1</RequestId></ResponseMetadata>")
+			_, inResult, _ := strings.Cut(xmlText, "<"+tt.action+"Result>")
+			inResult, _, _ = strings.Cut(inResult, "</"+tt.action+"Result>")
+			assert.NotContains(t, inResult, "ResponseMetadata", "metadata is a sibling of the result")
 		})
 	}
 }

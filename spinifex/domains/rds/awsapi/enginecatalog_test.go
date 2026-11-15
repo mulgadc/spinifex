@@ -24,7 +24,7 @@ import (
 func describeEngineVersions(t *testing.T, query map[string]string) []*rds.DBEngineVersion {
 	t.Helper()
 	query["Action"] = "DescribeDBEngineVersions"
-	body, err := Dispatch(t.Context(), "DescribeDBEngineVersions", query, nil, testCaller, testEnv)
+	body, err := Dispatch(t.Context(), "DescribeDBEngineVersions", "", query, nil, testCaller, testEnv)
 	require.NoError(t, err)
 
 	var out rds.DescribeDBEngineVersionsOutput
@@ -36,7 +36,7 @@ func describeEngineVersions(t *testing.T, query map[string]string) []*rds.DBEngi
 func describeOrderable(t *testing.T, nc *nats.Conn, query map[string]string) []*rds.OrderableDBInstanceOption {
 	t.Helper()
 	query["Action"] = "DescribeOrderableDBInstanceOptions"
-	body, err := Dispatch(t.Context(), "DescribeOrderableDBInstanceOptions", query, nc, testCaller, testEnv)
+	body, err := Dispatch(t.Context(), "DescribeOrderableDBInstanceOptions", "", query, nc, testCaller, testEnv)
 	require.NoError(t, err)
 
 	var out rds.DescribeOrderableDBInstanceOptionsOutput
@@ -196,7 +196,7 @@ func TestDescribeCatalogs_RejectAnUnrecognisedFilterName(t *testing.T) {
 	nc := newStubbedNATS(t)
 	for _, tc := range cases {
 		t.Run(tc.action+"/"+tc.filter, func(t *testing.T) {
-			_, err := Dispatch(t.Context(), tc.action, map[string]string{
+			_, err := Dispatch(t.Context(), tc.action, "", map[string]string{
 				"Action": tc.action, "Engine": "postgres",
 				"Filters.Filter.1.Name": tc.filter, "Filters.Filter.1.Values.Value.1": "anything",
 			}, nc, testCaller, testEnv)
@@ -212,7 +212,7 @@ func TestDescribeCatalogs_RejectAnUnrecognisedFilterName(t *testing.T) {
 func TestDescribeOrderableDBInstanceOptions_RejectANonBooleanVpcFilter(t *testing.T) {
 	for _, value := range []string{"yes", "", "2"} {
 		t.Run(value, func(t *testing.T) {
-			_, err := Dispatch(t.Context(), "DescribeOrderableDBInstanceOptions", map[string]string{
+			_, err := Dispatch(t.Context(), "DescribeOrderableDBInstanceOptions", "", map[string]string{
 				"Action": "DescribeOrderableDBInstanceOptions", "Engine": "postgres",
 				"Filters.Filter.1.Name": "vpc", "Filters.Filter.1.Values.Value.1": value,
 			}, newStubbedNATS(t), testCaller, testEnv)
@@ -244,7 +244,7 @@ func TestDescribeCatalogs_RejectMalformedFilters(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.query["Action"] = "DescribeDBEngineVersions"
-			_, err := Dispatch(t.Context(), "DescribeDBEngineVersions", tc.query, nil, testCaller, testEnv)
+			_, err := Dispatch(t.Context(), "DescribeDBEngineVersions", "", tc.query, nil, testCaller, testEnv)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.code)
 			assert.Contains(t, err.Error(), tc.msg)
@@ -263,7 +263,7 @@ func TestDescribeOrderableDBInstanceOptions_PagesTheCatalog(t *testing.T) {
 		if marker != "" {
 			query["Marker"] = marker
 		}
-		body, err := Dispatch(t.Context(), "DescribeOrderableDBInstanceOptions", query, nc, testCaller, testEnv)
+		body, err := Dispatch(t.Context(), "DescribeOrderableDBInstanceOptions", "", query, nc, testCaller, testEnv)
 		require.NoError(t, err)
 		var out rds.DescribeOrderableDBInstanceOptionsOutput
 		require.NoError(t, xmlutil.UnmarshalXML(&out, xml.NewDecoder(bytes.NewReader(body)),
@@ -281,7 +281,7 @@ func TestDescribeCatalogs_RejectAMarkerTheyDidNotIssue(t *testing.T) {
 	nc := newStubbedNATS(t)
 	for _, action := range []string{"DescribeDBEngineVersions", "DescribeOrderableDBInstanceOptions"} {
 		t.Run(action, func(t *testing.T) {
-			_, err := Dispatch(t.Context(), action, map[string]string{
+			_, err := Dispatch(t.Context(), action, "", map[string]string{
 				"Action": action, "Engine": "postgres", "Marker": "page-two",
 			}, nc, testCaller, testEnv)
 			require.Error(t, err)
@@ -309,7 +309,7 @@ func TestDescribeOrderableDBInstanceOptions_RequiresAKnownEngine(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.query["Action"] = "DescribeOrderableDBInstanceOptions"
-			_, err := Dispatch(t.Context(), "DescribeOrderableDBInstanceOptions", tc.query, nc, testCaller, testEnv)
+			_, err := Dispatch(t.Context(), "DescribeOrderableDBInstanceOptions", "", tc.query, nc, testCaller, testEnv)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.want)
 		})
@@ -359,7 +359,7 @@ func TestDescribeDBEngineVersions_TheFourBooleansAreProvableNoOps(t *testing.T) 
 func TestDescribeOrderableDBInstanceOptions_ASilentClusterIsServerInternal(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 
-	_, err := Dispatch(t.Context(), "DescribeOrderableDBInstanceOptions", map[string]string{
+	_, err := Dispatch(t.Context(), "DescribeOrderableDBInstanceOptions", "", map[string]string{
 		"Action": "DescribeOrderableDBInstanceOptions", "Engine": "postgres",
 	}, nc, testCaller, testEnv)
 	require.Error(t, err)

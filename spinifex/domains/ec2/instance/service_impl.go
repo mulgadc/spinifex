@@ -1295,8 +1295,6 @@ func (s *InstanceServiceImpl) StartInstance(ctx context.Context, instance *vm.VM
 	return nil
 }
 
-// StopOrTerminateInstance handles an ec2.cmd stop or terminate. Validates the
-// transition synchronously, then dispatches Stop/Terminate in a goroutine.
 // terminationProtectedError is AWS's refusal to terminate an instance whose
 // disableApiTermination attribute is set.
 func terminationProtectedError(instanceID string) error {
@@ -1304,6 +1302,8 @@ func terminationProtectedError(instanceID string) error {
 		"The instance '%s' may not be terminated. Modify its 'disableApiTermination' instance attribute and try again.", instanceID)
 }
 
+// StopOrTerminateInstance handles an ec2.cmd stop or terminate. Validates the
+// transition synchronously, then dispatches Stop/Terminate in a goroutine.
 func (s *InstanceServiceImpl) StopOrTerminateInstance(ctx context.Context, instance *vm.VM, command ec2v1.EC2InstanceCommand) error {
 	isTerminate := command.Attributes.TerminateInstance
 	action := "Stopping"

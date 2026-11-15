@@ -212,7 +212,7 @@ var ec2Actions = map[string]ec2Action{
 		return ec2instanceapi.GetConsoleOutput(ctx, input, c.NATS, accountID)
 	}),
 	"GetInstanceUefiData": ec2Handler(func(ctx context.Context, input *ec2.GetInstanceUefiDataInput, c *call, accountID string) (any, error) {
-		return ec2instanceapi.GetInstanceUefiData(ctx, input, c.NATS, c.ExpectedNodes, c.NodeIDs, accountID)
+		return ec2instanceapi.GetInstanceUefiData(ctx, input, c.NATS, c.NodeIDs, accountID)
 	}),
 	"GetPasswordData": ec2Handler(func(ctx context.Context, input *ec2.GetPasswordDataInput, c *call, accountID string) (any, error) {
 		return ec2instanceapi.GetPasswordData(ctx, input, c.NATS, accountID)

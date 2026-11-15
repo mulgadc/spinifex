@@ -8,7 +8,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,24 +17,15 @@ func TestGetInstanceUefiData(t *testing.T) {
 	_, nc := startTestNATSServer(t)
 	subscribeEmptyInstanceBuckets(t, nc)
 	const known = "i-0123456789abcdef0"
-	_, err := nc.Subscribe("ec2.DescribeInstances", func(msg *nats.Msg) {
-		var in ec2.DescribeInstancesInput
-		_ = json.Unmarshal(msg.Data, &in)
-		out := &ec2.DescribeInstancesOutput{Reservations: []*ec2.Reservation{}}
-		if len(in.InstanceIds) == 1 && *in.InstanceIds[0] == known {
-			out.Reservations = append(out.Reservations, &ec2.Reservation{
-				ReservationId: aws.String("r-1"),
-				Instances:     []*ec2.Instance{{InstanceId: aws.String(known)}},
-			})
-		}
-		data, _ := json.Marshal(out)
-		msg.Respond(data)
-	})
+	data, err := json.Marshal(&ec2.DescribeInstancesOutput{Reservations: []*ec2.Reservation{{
+		ReservationId: aws.String("r-1"),
+		Instances:     []*ec2.Instance{{InstanceId: aws.String(known)}},
+	}}})
 	require.NoError(t, err)
-	require.NoError(t, nc.Flush())
+	subscribeAsNode(t, nc, "ec2.DescribeInstances", "node-1", data)
 
 	call := func(id string) (*ec2.GetInstanceUefiDataOutput, error) {
-		return GetInstanceUefiData(context.Background(), &ec2.GetInstanceUefiDataInput{InstanceId: aws.String(id)}, nc, 1, nil, "123456789012")
+		return GetInstanceUefiData(context.Background(), &ec2.GetInstanceUefiDataInput{InstanceId: aws.String(id)}, nc, []string{"node-1"}, "123456789012")
 	}
 
 	_, err = call("ami-0123456789abcdef0")
@@ -54,6 +44,6 @@ func TestGetInstanceUefiData(t *testing.T) {
 	assert.Equal(t, known, aws.StringValue(out.InstanceId))
 	assert.Nil(t, out.UefiData)
 
-	_, err = GetInstanceUefiData(context.Background(), &ec2.GetInstanceUefiDataInput{}, nc, 1, nil, "123456789012")
+	_, err = GetInstanceUefiData(context.Background(), &ec2.GetInstanceUefiDataInput{}, nc, nil, "123456789012")
 	assert.EqualError(t, err, awserrors.ErrorMissingParameter)
 }

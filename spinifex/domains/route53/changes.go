@@ -145,8 +145,11 @@ func conflicts(zone string, sets []RRSet, set RRSet) string {
 		if s.Name != set.Name || s.Type == set.Type {
 			continue
 		}
-		if s.Type == "CNAME" || set.Type == "CNAME" {
-			return fmt.Sprintf("RRSet of type %s with DNS name %s is not permitted as it conflicts with other records with the same DNS name in zone %s", set.Type, set.Name, zone)
+		if set.Type == "CNAME" {
+			return fmt.Sprintf("RRSet of type CNAME with DNS name %s is not permitted as it conflicts with other records with the same DNS name in zone %s", set.Name, zone)
+		}
+		if s.Type == "CNAME" {
+			return fmt.Sprintf("RRSet of type %s with DNS name %s is not permitted because a conflicting RRSet of type CNAME with the same DNS name already exists in zone %s", set.Type, set.Name, zone)
 		}
 	}
 	return ""

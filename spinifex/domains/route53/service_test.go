@@ -228,7 +228,7 @@ func TestChangeBatchIsAllOrNothing(t *testing.T) {
 func TestChangeBatchValidation(t *testing.T) {
 	svc := newService(t)
 	id := createZone(t, svc, acctA, "example.com")
-	_, err := apply(svc, acctA, id, change("CREATE", "www.example.com", "A", 60, "192.0.2.1"))
+	_, err := apply(svc, acctA, id, change("CREATE", "www.example.com", "A", 60, "192.0.2.1"), change("CREATE", "cn.example.com", "CNAME", 60, "x.example.net"))
 	require.NoError(t, err)
 
 	alias := change("CREATE", "lb.example.com", "A", 60)
@@ -245,6 +245,7 @@ func TestChangeBatchValidation(t *testing.T) {
 		msg    string
 	}{
 		{"CNAME beside A", change("CREATE", "www.example.com", "CNAME", 60, "x.example.net"), awserrors.ErrorInvalidChangeBatch, "conflicts with other records"},
+		{"TXT beside CNAME", change("CREATE", "cn.example.com", "TXT", 60, `"v"`), awserrors.ErrorInvalidChangeBatch, "because a conflicting RRSet of type CNAME with the same DNS name already exists"},
 		{"CNAME at apex", change("CREATE", "example.com", "CNAME", 60, "x.example.net"), awserrors.ErrorInvalidChangeBatch, "not permitted at apex"},
 		{"name outside zone", change("CREATE", "www.example.org", "A", 60, "192.0.2.1"), awserrors.ErrorInvalidChangeBatch, "is not permitted in zone example.com."},
 		{"apex NS delete", change("DELETE", "example.com", "NS", 172800, "ns1.spx3.net.", "ns2.spx3.net."), awserrors.ErrorInvalidChangeBatch, "must contain at least one NS record"},

@@ -906,7 +906,7 @@ func TestReleaseSystemInstanceEIP_ReleasesEipServiceAllocation(t *testing.T) {
 	require.NoError(t, err)
 	d.externalIPAM = ipam
 
-	eipSvc, err := ec2eip.NewEIPServiceImpl(t.Context(), jsNC, ipam, d.vpcService)
+	eipSvc, err := ec2eip.NewEIPServiceImpl(t.Context(), jsNC, ipam, d.vpcService, "ap-southeast-2")
 	require.NoError(t, err)
 	d.eipService = eipSvc
 

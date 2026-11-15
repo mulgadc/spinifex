@@ -287,7 +287,6 @@ func (s *Service) DescribeTasks(ctx context.Context, input *ecs.DescribeTasksInp
 		return nil, err
 	}
 	out := &ecs.DescribeTasksOutput{Failures: []*ecs.Failure{}}
-	taskDefs := map[string]*taskdefinition.Record{}
 	for _, ref := range awsStringSlice(input.Tasks) {
 		taskID := ContainerInstanceShortID(ref)
 		var rec TaskRecord
@@ -296,12 +295,9 @@ func (s *Service) DescribeTasks(ctx context.Context, input *ecs.DescribeTasksInp
 			return nil, err
 		}
 		if found {
-			td, ok := taskDefs[rec.TaskDefARN]
-			if !ok {
-				if td, err = taskDefOf(ctx, kv, &rec); err != nil {
-					return nil, err
-				}
-				taskDefs[rec.TaskDefARN] = td
+			td, err := taskDefOf(ctx, kv, &rec)
+			if err != nil {
+				return nil, err
 			}
 			out.Tasks = append(out.Tasks, s.taskToAWS(accountID, &rec, td))
 		} else {

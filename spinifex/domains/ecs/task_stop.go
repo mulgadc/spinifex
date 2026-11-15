@@ -50,11 +50,11 @@ func (s *Service) StopTask(ctx context.Context, input *ecs.StopTaskInput, accoun
 	if reason == "" {
 		reason = defaultStopReason
 	}
-	s.requestStopTask(ctx, kv, accountID, &task, reason)
 	td, err := taskDefOf(ctx, kv, &task)
 	if err != nil {
 		return nil, err
 	}
+	s.requestStopTask(ctx, kv, accountID, &task, reason)
 	return &ecs.StopTaskOutput{Task: s.taskToAWS(accountID, &task, td)}, nil
 }
 

@@ -1864,7 +1864,7 @@ func (s *IAMServiceImpl) DetachUserPolicy(accountID string, input *iam.DetachUse
 // leaves Delete{Role,User,Group} refusing on a field the caller has been told
 // is empty.
 func (s *IAMServiceImpl) attachedPolicies(ctx context.Context, accountID string, arns []string, pathPrefix string) ([]*iam.AttachedPolicy, error) {
-	var attached []*iam.AttachedPolicy
+	attached := []*iam.AttachedPolicy{}
 	for _, arn := range arns {
 		// AWS-managed ARNs have no KV entry; report them from the ARN itself so
 		// attach/list round-trips instead of silently dropping them.

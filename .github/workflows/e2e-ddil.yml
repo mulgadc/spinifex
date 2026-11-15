@@ -8,7 +8,7 @@ on:
         required: false
         default: ""
 
-# Shared with e2e-nightly.yml and e2e-suites.yml: every one of them provisions
+# Shared with e2e-nightly.yml: both provision
 # many cells on the same runner pools and the same hypervisors, so two in
 # flight compete for their disks and their libvirt guests. Queued rather than
 # cancelled — a run in progress is someone's result, not a stale one. e2e.yml

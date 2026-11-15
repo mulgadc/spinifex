@@ -43,8 +43,8 @@ permissions:
 # second rather than cancelling it: a dispatch is usually a verification run
 # and discarding it loses the result someone is waiting on.
 #
-# The group is shared with e2e-suites.yml and e2e-ddil.yml, which draw on the
-# same runner pools. e2e.yml is deliberately outside it: a single-cluster push
+# The group is shared with e2e-ddil.yml, which draws on the same
+# runner pools. e2e.yml is deliberately outside it: a single-cluster push
 # run is cheap enough to overlap, and grouping it stalled every push behind a
 # multi-hour nightly.
 concurrency:

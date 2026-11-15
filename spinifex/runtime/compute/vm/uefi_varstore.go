@@ -132,12 +132,6 @@ func isUEFIBootMode(bootMode string) bool {
 	return bootMode == "uefi" || bootMode == "uefi-preferred"
 }
 
-// BootsUEFI reports whether v boots through UEFI firmware rather than a
-// legacy BIOS.
-func (v *VM) BootsUEFI() bool {
-	return usesUEFIVarStore(v)
-}
-
 // usesUEFIVarStore reports whether v boots through UEFI and so needs a
 // variable store. A direct-boot microvm boots qboot and has none.
 func usesUEFIVarStore(v *VM) bool {

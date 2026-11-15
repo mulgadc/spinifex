@@ -348,6 +348,7 @@ func TestProjectInstance_AWSDescribeFields(t *testing.T) {
 			v.PlacementGroupName = ""
 			v.CapacityReservationId = ""
 			v.BootMode = ec2.BootModeValuesUefiPreferred
+			v.InstanceType = "t3.micro"
 			v.RunInstancesInput = &ec2.RunInstancesInput{ClientToken: aws.String("09bead7a-de9d-439c-9682-b4f79eaa56ca")}
 
 			got, _ := ProjectInstance(v, cfg)
@@ -358,6 +359,7 @@ func TestProjectInstance_AWSDescribeFields(t *testing.T) {
 				CapacityReservationPreference: aws.String("open"),
 			}, got.CapacityReservationSpecification)
 			assert.Equal(t, "09bead7a-de9d-439c-9682-b4f79eaa56ca", aws.StringValue(got.ClientToken))
+			assert.Equal(t, &ec2.CpuOptions{CoreCount: aws.Int64(2), ThreadsPerCore: aws.Int64(1)}, got.CpuOptions)
 			require.NotNil(t, got.EbsOptimized)
 			assert.False(t, *got.EbsOptimized)
 			assert.Equal(t, &ec2.HibernationOptions{Configured: aws.Bool(false)}, got.HibernationOptions)

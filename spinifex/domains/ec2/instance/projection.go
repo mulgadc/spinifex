@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instancetypes"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
@@ -131,9 +132,7 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 		placement.AvailabilityZone = aws.String(cfg.AZ)
 	}
 	placement.GroupName = aws.String(v.PlacementGroupName)
-	if placement.Tenancy == nil {
-		placement.Tenancy = aws.String(ec2.TenancyDefault)
-	}
+	placement.Tenancy = aws.String(ec2.TenancyDefault)
 	instanceCopy.Placement = placement
 
 	// Echo the consumed capacity reservation so targeted-launch Terraform
@@ -244,10 +243,16 @@ func projectLaunchConstants(inst *ec2.Instance, v *vm.VM) {
 		inst.BootMode = aws.String(v.BootMode)
 	}
 	currentBootMode := ec2.InstanceBootModeValuesLegacyBios
-	if v.BootsUEFI() {
+	if vm.UsesUEFIVarStore(v) {
 		currentBootMode = ec2.InstanceBootModeValuesUefi
 	}
 	inst.CurrentInstanceBootMode = aws.String(currentBootMode)
+
+	// QEMU's -smp presents each vCPU as its own core with one thread. Read from
+	// the current type so a resize is reflected.
+	if vcpus, ok := instancetypes.DefaultVCPUs(v.InstanceType); ok {
+		inst.CpuOptions = &ec2.CpuOptions{CoreCount: aws.Int64(int64(vcpus)), ThreadsPerCore: aws.Int64(1)}
+	}
 
 	// AWS's instance Hypervisor enum is ovm or xen, and xen covers Nitro, the
 	// KVM-based hypervisor, so it is the only accurate value for a KVM guest.

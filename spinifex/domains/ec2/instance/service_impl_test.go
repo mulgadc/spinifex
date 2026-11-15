@@ -107,19 +107,6 @@ func TestRunInstance_ArchitecturePopulated(t *testing.T) {
 	}
 }
 
-// CpuOptions reports the guest's QEMU topology, one thread per vCPU core, from
-// the instance type's vCPU count.
-func TestRunInstance_CpuOptionsFromInstanceType(t *testing.T) {
-	svc := &InstanceServiceImpl{instanceTypes: map[string]*ec2.InstanceTypeInfo{
-		"t3.large": {InstanceType: aws.String("t3.large"), VCpuInfo: &ec2.VCpuInfo{DefaultVCpus: aws.Int64(2)}},
-	}}
-
-	_, ec2Instance, err := svc.RunInstance(&ec2.RunInstancesInput{InstanceType: aws.String("t3.large")})
-	require.NoError(t, err)
-
-	assert.Equal(t, &ec2.CpuOptions{CoreCount: aws.Int64(2), ThreadsPerCore: aws.Int64(1)}, ec2Instance.CpuOptions)
-}
-
 // PlatformDetails and the billing code are stamped from the AMI at launch, as
 // AWS reports them on the instance, with the code's update time at launch.
 func TestPrepareRunInstances_StampsPlatformDetailsAndUsageOperation(t *testing.T) {

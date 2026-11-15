@@ -360,10 +360,10 @@ func renderVisibleImage(amiMeta ebsmetadata.AMI, input *ec2.DescribeImagesInput,
 	if bdms := synthesizeRootBlockDeviceMapping(amiMeta, encryptedAtRest); bdms != nil {
 		image.RootDeviceName = aws.String("/dev/sda1")
 		image.BlockDeviceMappings = bdms
-		// A customer image records its gp3 root volume's baseline performance.
-		if !isSystemAMI {
-			bdms[0].Ebs.Iops = aws.Int64(3000)
-			bdms[0].Ebs.Throughput = aws.Int64(125)
+		// A CreateImage image records its root volume's performance.
+		if amiMeta.RootIOPS > 0 {
+			bdms[0].Ebs.Iops = aws.Int64(int64(amiMeta.RootIOPS))
+			bdms[0].Ebs.Throughput = aws.Int64(int64(amiMeta.RootThroughput))
 		}
 	}
 
@@ -537,6 +537,8 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		ImdsSupport:     sourceAMI.ImdsSupport,
 		// The instance ID is validated non-nil above.
 		SourceInstanceID: *input.InstanceId,
+		RootIOPS:         volMeta.IOPS,
+		RootThroughput:   volMeta.Throughput,
 		// Every instance reports ENA support, and AWS takes the image's from the instance.
 		EnaSupport:   aws.Bool(true),
 		Distro:       sourceAMI.Distro,

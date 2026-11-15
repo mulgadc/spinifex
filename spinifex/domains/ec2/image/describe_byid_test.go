@@ -205,6 +205,7 @@ func TestDescribeImagesByID_CustomerImageProjection(t *testing.T) {
 	doc.Description = ""
 	doc.SourceInstanceID = "i-0669dd059c6c9d8cd"
 	doc.ImdsSupport = "v2.0"
+	doc.RootIOPS, doc.RootThroughput = 3000, 125
 	putByIDAMI(t, store, doc)
 
 	out, err := svc.DescribeImages(t.Context(), &ec2.DescribeImagesInput{

@@ -157,6 +157,9 @@ type AMI struct {
 	SourceInstanceID string `json:"source_instance_id,omitempty"`
 	// ImdsSupport is "v2.0" for an image whose instances require IMDSv2.
 	ImdsSupport string `json:"imds_support,omitempty"`
+	// RootIOPS and RootThroughput are the root volume's performance at CreateImage.
+	RootIOPS       int `json:"root_iops,omitempty"`
+	RootThroughput int `json:"root_throughput,omitempty"`
 	// UEFIData names the image's own UEFI variable store object; nil launches
 	// from the node's VARS template.
 	UEFIData *UEFIDataRef `json:"uefi_data,omitempty"`

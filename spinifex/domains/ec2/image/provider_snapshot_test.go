@@ -265,6 +265,8 @@ func TestCreateImageFromInstance_SetsEnaSupportFromInstance(t *testing.T) {
 func TestCreateImageFromInstance_RecordsSourceInstanceAndImdsSupport(t *testing.T) {
 	svc, _, provider := setupProviderSnapshotImageService(t)
 	doc := seedProviderVolume(t, svc, provider, "vol-imds001", 8)
+	doc.IOPS, doc.Throughput = 6000, 500
+	require.NoError(t, svc.MetadataStore().PutVolume(context.Background(), doc))
 	require.NoError(t, svc.MetadataStore().PutAMI(context.Background(), ebsmetadata.AMI{
 		ImageID:         "ami-src-imds",
 		Name:            "imdsv2",
@@ -283,6 +285,8 @@ func TestCreateImageFromInstance_RecordsSourceInstanceAndImdsSupport(t *testing.
 	require.NoError(t, err)
 	assert.Equal(t, "i-imds001", ami.SourceInstanceID)
 	assert.Equal(t, "v2.0", ami.ImdsSupport)
+	assert.Equal(t, 6000, ami.RootIOPS)
+	assert.Equal(t, 500, ami.RootThroughput)
 }
 
 // createUnavailableProvider refuses every CreateSnapshot as retry-later.

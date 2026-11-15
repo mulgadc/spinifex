@@ -35,7 +35,7 @@ func validateZoneName(name string) error {
 		return err
 	}
 	if len(labels) < 2 {
-		return awserrors.Errorf(awserrors.ErrorInvalidDomainName, "%s is a top-level domain and cannot be a hosted zone", name)
+		return awserrors.Errorf(awserrors.ErrorInvalidDomainName, "%s is reserved by AWS!", strings.TrimSuffix(name, "."))
 	}
 	return nil
 }
@@ -62,11 +62,19 @@ func splitLabels(name string, allowWildcard bool) ([]string, error) {
 		if l == "*" && allowWildcard && i == 0 {
 			continue
 		}
+		if l == "" {
+			return nil, emptyLabel(trimmed)
+		}
 		if !validLabel(l) {
 			return nil, awserrors.Errorf(awserrors.ErrorInvalidDomainName, "%q is not a valid domain name", name)
 		}
 	}
 	return labels, nil
+}
+
+// emptyLabel is Route 53's parser fault for a name with an empty label.
+func emptyLabel(name string) error {
+	return awserrors.Errorf(awserrors.ErrorInvalidDomainName, "FATAL problem: DomainLabelEmpty (Domain label is empty) encountered with '%s'", name)
 }
 
 // validLabel accepts letters, digits, hyphens and underscores, the last for

@@ -163,7 +163,7 @@ describe("hosted zone details", () => {
     sdk.setHandler("DeleteHostedZoneCommand", () => {
       throw Object.assign(
         new Error(
-          "The specified hosted zone contains non-required resource record sets",
+          "The specified hosted zone contains resource record sets other than the default SOA and NS records and so cannot be deleted. Delete all non-default records and try again.",
         ),
         {
           name: "HostedZoneNotEmpty",

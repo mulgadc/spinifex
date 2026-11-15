@@ -395,8 +395,8 @@ func colonHex(digest []byte) string {
 }
 
 // keyPairType maps an SSH public key algorithm to the EC2 key type string. EC2
-// key pairs are RSA or ED25519 only, so every other algorithm -- ECDSA and
-// ssh-dss included -- is rejected rather than stored under a type the API has no
+// key pairs are RSA or ED25519 only, so every other algorithm -- ECDSA
+// included -- is rejected rather than stored under a type the API has no
 // way to report back.
 func keyPairType(publicKey ssh.PublicKey) (string, error) {
 	switch publicKey.Type() {

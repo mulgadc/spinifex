@@ -41,3 +41,35 @@ Terraform's canonical certificate, DNS record and validation flow works unmodifi
 | `ListTagsForCertificate` |
 | `RemoveTagsFromCertificate` |
 | `RequestCertificate` |
+
+### Requires AWS SDK v2
+
+These 25 operations are in the pinned AWS model but not in AWS SDK for Go v1, the SDK Spinifex is built and tested on. They are out of scope until Spinifex moves to AWS SDK v2.
+
+| Operation |
+|---|
+| `CreateAcmeDomainValidation` |
+| `CreateAcmeEndpoint` |
+| `CreateAcmeExternalAccountBinding` |
+| `DeleteAcmeDomainValidation` |
+| `DeleteAcmeEndpoint` |
+| `DeleteAcmeExternalAccountBinding` |
+| `DescribeAcmeAccount` |
+| `DescribeAcmeDomainValidation` |
+| `DescribeAcmeEndpoint` |
+| `DescribeAcmeExternalAccountBinding` |
+| `GetAcmeExternalAccountBindingCredentials` |
+| `ListAcmeAccounts` |
+| `ListAcmeDomainValidations` |
+| `ListAcmeEndpoints` |
+| `ListAcmeExternalAccountBindings` |
+| `ListCertificateDomainValidations` |
+| `ListTagsForResource` |
+| `RevokeAcmeAccount` |
+| `RevokeAcmeExternalAccountBinding` |
+| `RevokeCertificate` |
+| `SearchCertificates` |
+| `TagResource` |
+| `UntagResource` |
+| `UpdateAcmeDomainValidation` |
+| `UpdateAcmeEndpoint` |

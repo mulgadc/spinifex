@@ -65,6 +65,8 @@ jobs:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
           IN_SUITES: ${{ inputs.suites }}
+          # A test_run regex already narrows the suite, so it runs in one leg.
+          E2E_SINGLE_SHARDS: ${{ inputs.test_run && '1' || '' }}
         run: |
           set -euo pipefail
           SELECT=.github/scripts/e2e-select.sh
@@ -93,15 +95,18 @@ jobs:
       # Both legs can run on banksia at once, so every host path carries the leg.
       TOFU_LOG: /tmp/e2e-tofu-single-${{ github.run_id }}-${{ matrix.leg }}.log
       ARTIFACT_DIR: /tmp/spinifex-e2e-artifacts-${{ github.run_id }}-${{ matrix.leg }}
+      # Non-zero on a single-suite shard leg: which share of the suite it runs.
+      SHARD: ${{ matrix.shard }}
+      SHARDS: ${{ matrix.shards }}
       # The base leg keeps the cell name it always had, so its history in
       # Elastic and telemetry continues; any other leg appends its name.
-      E2E_CELL: ${{ matrix.leg == 'base' && 'single' || format('single-{0}', matrix.leg) }}
+      E2E_CELL: ${{ matrix.leg == 'base' && 'single' || startsWith(matrix.leg, 'single-') && matrix.leg || format('single-{0}', matrix.leg) }}
       # Job-level env wins over the workflow-level default. This job and
       # e2e_multi share one run id and both name their hosts node1/node2/node3,
       # so without ci.cell their telemetry collapses into one bucket. This job
       # is where "Bootstrap via Binary Install" bakes SPINIFEX_OTEL_ATTRS into
       # the VM's telemetry.env, so the label has to be set here.
-      SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=${{ matrix.leg == 'base' && 'single' || format('single-{0}', matrix.leg) }}
+      SPINIFEX_OTEL_ATTRS: ci.run_id=${{ github.run_id }},ci.workflow=${{ github.workflow }},ci.cell=${{ matrix.leg == 'base' && 'single' || startsWith(matrix.leg, 'single-') && matrix.leg || format('single-{0}', matrix.leg) }}
     steps:
       - name: Reap Orphan Procs
         run: |
@@ -187,6 +192,8 @@ jobs:
         run: |
           set -euo pipefail
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/hv-lock.sh"
+          hv_lock_acquire "envs/${SPINIFEX_CI_ENV}.tfvars"
           export TF_VAR_git_branch="${GIT_BRANCH}"
           quiet_run "tofu init"                "$TOFU_LOG" tofu init -input=false
           quiet_run "tofu workspace select"    "$TOFU_LOG" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
@@ -459,6 +466,28 @@ jobs:
           else
             TEST_RUN_FLAG=""
           fi
+          # A shard leg runs only the single suite, so the regex applies to it alone.
+          # Every leg lists the same binary, so the shards partition the suite.
+          if [ "${SHARDS:-0}" -gt 0 ]; then
+            BIN="${GITHUB_WORKSPACE}/spinifex/tests/e2e/_bin/single.test"
+            # Listed separately so a failed listing fails the leg; the sharder
+            # also refuses a listing with no tests in it.
+            # The leg skips the other shards' tests rather than naming its own:
+            # a test named in -test.run counts as opted in (TestRebootLoop).
+            SHARDER="${GITHUB_WORKSPACE}/spinifex/.github/scripts/e2e-shard.sh"
+            WEIGHTS="${GITHUB_WORKSPACE}/spinifex/.github/e2e-weights/single.txt"
+            TEST_LIST=$("${BIN}" -test.list '.*') &&
+              SHARD_RE=$("${SHARDER}" "${SHARD}" "${SHARDS}" "${WEIGHTS}" <<<"${TEST_LIST}") &&
+              SKIP_RE=$("${SHARDER}" --skip "${SHARD}" "${SHARDS}" "${WEIGHTS}" <<<"${TEST_LIST}") || {
+              echo "::error::cannot list or shard the single suite"; echo "rc=1" >> "$GITHUB_OUTPUT"; exit 0; }
+            if [ -z "${SHARD_RE}" ]; then
+              echo "shard ${SHARD}/${SHARDS} has no tests; skipping"
+              echo "rc=0" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "shard ${SHARD}/${SHARDS}: $(tr '|' '\n' <<<"${SHARD_RE}" | wc -l) tests: ${SHARD_RE}"
+            if [ -n "${SKIP_RE}" ]; then TEST_RUN_FLAG="-test.skip='${SKIP_RE}'"; fi
+          fi
           VM_HOST="tf-user@${{ steps.vm.outputs.wan_ip }}"
           SSH_KEY="${{ steps.vm.outputs.ssh_key }}"
           cleanup_remote() {
@@ -594,6 +623,9 @@ jobs:
         run: |
           set +e
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/hv-lock.sh"
+          hv_lock_acquire "envs/${SPINIFEX_CI_ENV}.tfvars" || {
+            echo "::error::teardown skipped: ${SPINIFEX_CI_ENV} is left up for the next job's pre-clean destroy"; exit 1; }
           if [ -n "${{ steps.vm.outputs.wan_ip }}" ] && [ -n "${{ steps.vm.outputs.ssh_key }}" ]; then
             ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
               -i "${{ steps.vm.outputs.ssh_key }}" \
@@ -738,6 +770,8 @@ jobs:
         run: |
           set -euo pipefail
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/hv-lock.sh"
+          hv_lock_acquire "envs/${SPINIFEX_CI_ENV}.tfvars"
           export TF_VAR_git_branch="${GIT_BRANCH}"
           quiet_run "tofu init"                "$TOFU_LOG" tofu init -input=false
           quiet_run "tofu workspace select"    "$TOFU_LOG" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
@@ -1053,6 +1087,9 @@ jobs:
         run: |
           set +e
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/hv-lock.sh"
+          hv_lock_acquire "envs/${SPINIFEX_CI_ENV}.tfvars" || {
+            echo "::error::teardown skipped: ${SPINIFEX_CI_ENV} is left up for the next job's pre-clean destroy"; exit 1; }
           if [ -n "${{ steps.cluster.outputs.node1_ip }}" ] && [ -n "${{ steps.cluster.outputs.ssh_key }}" ]; then
             IFS=',' read -ra NODE_LIST <<< "${{ steps.cluster.outputs.nodes_csv }}"
             for ip in "${NODE_LIST[@]}"; do
@@ -1145,7 +1182,9 @@ jobs:
     name: ES CI Run Summary
     needs: [plan, e2e_single, e2e_multi]
     if: always()
-    runs-on: [self-hosted, ci-single]
+    # Any self-hosted runner reaches the sink, and this holds no env. Pinned
+    # to ci-single it waited up to 40 minutes behind a nightly's cells.
+    runs-on: [self-hosted]
     timeout-minutes: 5
     permissions:
       actions: read

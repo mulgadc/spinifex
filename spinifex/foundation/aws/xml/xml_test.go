@@ -151,3 +151,9 @@ func TestWithRequestID(t *testing.T) {
 		require.Equal(t, tt.want, v.FieldByName("Names").Interface())
 	}
 }
+
+func TestQueryMetadataResponsePayload(t *testing.T) {
+	xmlBytes, err := Marshal(QueryMetadataResponsePayload("DeleteUser", "req-1"))
+	require.NoError(t, err)
+	assert.Equal(t, "<DeleteUserResponse><ResponseMetadata><RequestId>req-1</RequestId></ResponseMetadata></DeleteUserResponse>", string(xmlBytes))
+}

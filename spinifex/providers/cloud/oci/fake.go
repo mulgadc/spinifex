@@ -15,6 +15,8 @@ import (
 // models the two behaviours that actually bite: OCI picks the address, and
 // assignment is asynchronous so a create is not immediately ASSIGNED.
 type Fake struct {
+	stagedFailures
+
 	mu sync.Mutex
 
 	// NextAddr supplies successive private addresses when the caller does not
@@ -26,10 +28,6 @@ type Fake struct {
 	// AssignAfter is how many Get calls a public IP spends in ASSIGNING before
 	// reporting ASSIGNED. Zero means assigned immediately.
 	AssignAfter int
-
-	// FailWith, when non-nil, is returned by the next call to the named
-	// operation and then cleared. Keyed by the Op strings used in APIError.
-	FailWith map[string]error
 
 	// PrivateLimit caps private IPs per VNIC; 0 means unlimited. OCI's real
 	// cap is 64.
@@ -48,10 +46,11 @@ func NewFake() *Fake {
 	return &Fake{
 		NextAddr:   netip.MustParseAddr("10.200.0.100"),
 		NextPublic: netip.MustParseAddr("203.0.113.10"),
-		FailWith:   map[string]error{},
 		privateIPs: map[string]PrivateIP{},
 		publicIPs:  map[string]PublicIP{},
 		pending:    map[string]int{},
+
+		stagedFailures: stagedFailures{FailWith: map[string]error{}},
 	}
 }
 
@@ -102,18 +101,29 @@ func (f *Fake) ListReservedPublicIPs(_ context.Context, _ string) ([]PublicIP, e
 	return out, nil
 }
 
-// FailOp stages err for the next call to op. Locked, so a test may stage one
-// against a Fake that a loop under test is already calling.
-func (f *Fake) FailOp(op string, err error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.FailWith[op] = err
+// stagedFailures is the failure a fake returns from an operation's next call.
+type stagedFailures struct {
+	lock sync.Mutex
+
+	// FailWith, when non-nil, is returned by the next call to the named
+	// operation and then cleared. Keyed by the Op strings used in APIError.
+	FailWith map[string]error
+}
+
+// FailOp stages err for the next call to op, which then changes nothing.
+// Locked, so a test may stage one against a fake a loop is already calling.
+func (s *stagedFailures) FailOp(op string, err error) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	s.FailWith[op] = err
 }
 
 // take returns and clears a staged failure for op.
-func (f *Fake) take(op string) error {
-	if err, ok := f.FailWith[op]; ok {
-		delete(f.FailWith, op)
+func (s *stagedFailures) take(op string) error {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if err, ok := s.FailWith[op]; ok {
+		delete(s.FailWith, op)
 		return err
 	}
 	return nil

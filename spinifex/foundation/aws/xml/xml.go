@@ -136,6 +136,14 @@ type responseMetadata struct {
 	RequestID string `locationName:"RequestId" type:"string"`
 }
 
+// QueryMetadataResponsePayload is the <ActionResponse><ResponseMetadata>
+// envelope AWS answers for an action with no modelled output.
+func QueryMetadataResponsePayload(action, requestID string) any {
+	return ResponsePayload(action+"Response", struct {
+		ResponseMetadata responseMetadata `locationName:"ResponseMetadata" type:"structure"`
+	}{responseMetadata{RequestID: requestID}})
+}
+
 // QueryResponsePayload wraps payload in the IAM-style
 // <ActionResponse><ActionResult>...</ActionResult><ResponseMetadata>
 // envelope, with requestID as the response's RequestId.

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"reflect"
 	"slices"
 	"uuid"
 
@@ -71,14 +72,42 @@ func handler[In any](h func(string, *In, Deps) (any, error)) action {
 			if err != nil {
 				return nil, err
 			}
-			payload := awsxml.QueryResponsePayload(name, requestID, output)
-			xmlOutput, err := awsxml.Marshal(payload)
+			xmlOutput, err := awsxml.Marshal(queryPayload(name, requestID, output))
 			if err != nil {
 				return nil, errors.New(awserrors.ErrorInternalError)
 			}
 			return xmlOutput, nil
 		},
 	}
+}
+
+// structResultActions are the actions whose modelled output is an empty
+// structure rather than none; AWS still answers those with an empty Result.
+var structResultActions = map[string]bool{"UpdateRole": true}
+
+// queryPayload wraps output in <ActionResponse><ActionResult>, leaving out the
+// Result element for an action with no modelled output, as AWS does.
+func queryPayload(name, requestID string, output any) any {
+	if structResultActions[name] || hasExportedField(output) {
+		return awsxml.QueryResponsePayload(name, requestID, output)
+	}
+	return awsxml.QueryMetadataResponsePayload(name, requestID)
+}
+
+func hasExportedField(output any) bool {
+	t := reflect.TypeOf(output)
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil || t.Kind() != reflect.Struct {
+		return true
+	}
+	for f := range t.Fields() {
+		if f.IsExported() {
+			return true
+		}
+	}
+	return false
 }
 
 var actions = map[string]action{

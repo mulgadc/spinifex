@@ -3,6 +3,7 @@
 package harness
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -97,5 +98,37 @@ func TestWaitReadyOrSkipsWithoutDumpingOnceTheSuiteIsBroken(t *testing.T) {
 	}
 	if dumped {
 		t.Fatal("WaitReadyOr on a broken suite called onMiss")
+	}
+}
+
+// A handshake that stalls after connecting is cancelled at the budget, so the
+// first miss, and the diagnostic dump behind it, is not held back by it.
+func TestPollHandshakeCancelsAStalledAttemptAtTheBudget(t *testing.T) {
+	start := time.Now()
+	attempts := 0
+	got := pollHandshake(100*time.Millisecond, 50*time.Millisecond, time.Millisecond, func(ctx context.Context) bool {
+		attempts++
+		<-ctx.Done()
+		return false
+	})
+	if got {
+		t.Fatal("a stalled handshake reported success")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("a stalled handshake held the wait for %s against a 100ms budget", elapsed)
+	}
+	if attempts == 0 {
+		t.Fatal("no attempt was made")
+	}
+}
+
+func TestPollHandshakeReturnsOnTheFirstSuccess(t *testing.T) {
+	attempts := 0
+	got := pollHandshake(time.Second, 50*time.Millisecond, time.Millisecond, func(context.Context) bool {
+		attempts++
+		return attempts == 2
+	})
+	if !got || attempts != 2 {
+		t.Fatalf("ready = %v after %d attempts, want true after 2", got, attempts)
 	}
 }

@@ -185,15 +185,35 @@ func waitReadyDecision(attempt func(time.Duration) bool, reprime, onMiss func())
 // handshakeWithin polls for a full SSH handshake until budget runs out.
 func (h *SSHHealth) handshakeWithin(host string, port int, keyPath string, budget time.Duration) bool {
 	tgt := SSHTarget{User: "ubuntu", Host: host, Port: port, KeyPath: keyPath}
+	return pollHandshake(budget, sshAttemptFloor, 2*time.Second, func(ctx context.Context) bool {
+		return exec.CommandContext(ctx, "ssh", guestSSHArgs(tgt, 3, "true")...).Run() == nil
+	})
+}
+
+// sshAttemptFloor is the least time one handshake attempt gets, so the last
+// attempt before the deadline is not killed before it can connect.
+const sshAttemptFloor = 5 * time.Second
+
+// pollHandshake retries attempt until it succeeds or budget runs out. Each
+// attempt is cancelled at the deadline (or floor after it starts, if later),
+// so a stalled ssh cannot hold the wait past its budget.
+func pollHandshake(budget, floor, pause time.Duration, attempt func(context.Context) bool) bool {
 	deadline := time.Now().Add(budget)
 	for {
-		if exec.Command("ssh", guestSSHArgs(tgt, 3, "true")...).Run() == nil {
+		stop := deadline
+		if f := time.Now().Add(floor); f.After(stop) {
+			stop = f
+		}
+		ctx, cancel := context.WithDeadline(context.Background(), stop)
+		ok := attempt(ctx)
+		cancel()
+		if ok {
 			return true
 		}
 		if time.Now().After(deadline) {
 			return false
 		}
-		time.Sleep(2 * time.Second)
+		time.Sleep(pause)
 	}
 }
 

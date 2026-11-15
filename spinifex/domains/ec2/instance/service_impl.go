@@ -387,6 +387,7 @@ func (s *InstanceServiceImpl) RunInstance(input *ec2.RunInstancesInput) (*vm.VM,
 	if arch := instanceArchitecture(s.instanceTypes[*input.InstanceType]); arch != "" {
 		ec2Instance.SetArchitecture(arch)
 	}
+	ec2Instance.CpuOptions = instanceCPUOptions(s.instanceTypes[*input.InstanceType])
 
 	// Every image this platform serves boots from an EBS root at the same
 	// device, and DescribeImages already reports both. DescribeInstances left
@@ -805,6 +806,13 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 		// Stamped at launch so DescribeInstances keeps reporting the AMI's platform
 		// even if the image is later deregistered.
 		ec2Instance.Platform = ec2platform.PlatformFromDetails(amiMeta.PlatformDetails)
+		if amiMeta.PlatformDetails != "" {
+			ec2Instance.PlatformDetails = aws.String(amiMeta.PlatformDetails)
+		}
+		if op := ec2platform.UsageOperationFromDetails(amiMeta.PlatformDetails); op != nil {
+			ec2Instance.UsageOperation = op
+			ec2Instance.UsageOperationUpdateTime = ec2Instance.LaunchTime
+		}
 
 		// RunInstance has no image in hand, so the platform-derived IMDS default
 		// lands here, where the AMI is resolved.
@@ -1948,6 +1956,18 @@ func instanceArchitecture(it *ec2.InstanceTypeInfo) string {
 		return ""
 	}
 	return *it.ProcessorInfo.SupportedArchitectures[0]
+}
+
+// instanceCPUOptions reports the guest's CPU topology: QEMU presents each vCPU
+// as its own core with one thread, so the core count is the vCPU count.
+func instanceCPUOptions(it *ec2.InstanceTypeInfo) *ec2.CpuOptions {
+	if it == nil || it.VCpuInfo == nil || aws.Int64Value(it.VCpuInfo.DefaultVCpus) <= 0 {
+		return nil
+	}
+	return &ec2.CpuOptions{
+		CoreCount:      aws.Int64(aws.Int64Value(it.VCpuInfo.DefaultVCpus)),
+		ThreadsPerCore: aws.Int64(1),
+	}
 }
 
 // DescribeInstancesValidFilters lists the filter names accepted by DescribeInstances

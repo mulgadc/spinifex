@@ -85,6 +85,15 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 		}
 	}
 
+	// AWS reports an empty name, not none, for an instance without a public
+	// address, running or stopped.
+	if instanceCopy.PublicDnsName == nil {
+		instanceCopy.PublicDnsName = aws.String("")
+	}
+	if cfg.IncludeRuntimeNetwork && instanceCopy.StateTransitionReason == nil {
+		instanceCopy.StateTransitionReason = aws.String("")
+	}
+
 	// Map internal status to AWS state, projecting Spinifex-only states
 	// (e.g. error -> stopped) so SDK/UI clients see a valid label. An unmapped
 	// status falls back to the caller's code/name and reports stateMapped false.
@@ -121,8 +130,9 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 	if cfg.AZ != "" {
 		placement.AvailabilityZone = aws.String(cfg.AZ)
 	}
-	if v.PlacementGroupName != "" {
-		placement.GroupName = aws.String(v.PlacementGroupName)
+	placement.GroupName = aws.String(v.PlacementGroupName)
+	if placement.Tenancy == nil {
+		placement.Tenancy = aws.String(ec2.TenancyDefault)
 	}
 	instanceCopy.Placement = placement
 
@@ -138,7 +148,18 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 				CapacityReservationId: aws.String(v.CapacityReservationId),
 			},
 		}
+	} else {
+		preference := ec2.CapacityReservationPreferenceOpen
+		if v.RunInstancesInput != nil && v.RunInstancesInput.CapacityReservationSpecification != nil &&
+			aws.StringValue(v.RunInstancesInput.CapacityReservationSpecification.CapacityReservationPreference) != "" {
+			preference = aws.StringValue(v.RunInstancesInput.CapacityReservationSpecification.CapacityReservationPreference)
+		}
+		instanceCopy.CapacityReservationSpecification = &ec2.CapacityReservationSpecificationResponse{
+			CapacityReservationPreference: aws.String(preference),
+		}
 	}
+
+	projectLaunchConstants(&instanceCopy, v)
 
 	// Monitoring reads the same field the telemetry collector's period does, so
 	// a describe cannot disagree with the tier actually being collected. Only
@@ -208,6 +229,40 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 	}
 
 	return &instanceCopy, stateMapped
+}
+
+// projectLaunchConstants stamps the fields AWS reports on every instance whose
+// value is fixed by the launch request, the AMI's boot mode, or the platform.
+func projectLaunchConstants(inst *ec2.Instance, v *vm.VM) {
+	clientToken := ""
+	if v.RunInstancesInput != nil {
+		clientToken = aws.StringValue(v.RunInstancesInput.ClientToken)
+	}
+	inst.ClientToken = aws.String(clientToken)
+
+	if v.BootMode != "" {
+		inst.BootMode = aws.String(v.BootMode)
+	}
+	currentBootMode := ec2.InstanceBootModeValuesLegacyBios
+	if v.BootsUEFI() {
+		currentBootMode = ec2.InstanceBootModeValuesUefi
+	}
+	inst.CurrentInstanceBootMode = aws.String(currentBootMode)
+
+	// AWS's instance Hypervisor enum is ovm or xen, and xen covers Nitro, the
+	// KVM-based hypervisor, so it is the only accurate value for a KVM guest.
+	inst.Hypervisor = aws.String(ec2.HypervisorTypeXen)
+	inst.VirtualizationType = aws.String(ec2.VirtualizationTypeHvm)
+	inst.EbsOptimized = aws.Bool(false)
+	inst.HibernationOptions = &ec2.HibernationOptions{Configured: aws.Bool(false)}
+	inst.MaintenanceOptions = &ec2.InstanceMaintenanceOptions{
+		AutoRecovery: aws.String(ec2.InstanceAutoRecoveryStateDefault),
+	}
+	inst.PrivateDnsNameOptions = &ec2.PrivateDnsNameOptionsResponse{
+		HostnameType:                    aws.String(ec2.HostnameTypeIpName),
+		EnableResourceNameDnsARecord:    aws.Bool(false),
+		EnableResourceNameDnsAAAARecord: aws.Bool(false),
+	}
 }
 
 // projectInterfaceFields stamps the fields AWS reports on every interface of an

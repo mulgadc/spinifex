@@ -203,6 +203,16 @@ func TestDeleteNatGateway(t *testing.T) {
 	// Should be gone
 	_, err = svc.natgwKV.Get(t.Context(), kvstore.AccountKey(testAccountID, natgwID))
 	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+
+	// The freed address keeps its border group and drops every association member.
+	eipSvc, err := ec2eip.NewEIPServiceImpl(t.Context(), svc.natsConn, nil, nil, "ap-southeast-2")
+	require.NoError(t, err)
+	desc, err := eipSvc.DescribeAddresses(t.Context(), &ec2.DescribeAddressesInput{AllocationIds: []*string{aws.String("eipalloc-test1")}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Addresses, 1)
+	assert.Equal(t, "ap-southeast-2", aws.StringValue(desc.Addresses[0].NetworkBorderGroup))
+	assert.Nil(t, desc.Addresses[0].AssociationId)
+	assert.Nil(t, desc.Addresses[0].NetworkInterfaceOwnerId)
 }
 
 func TestDescribeNatGateways(t *testing.T) {

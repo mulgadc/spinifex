@@ -311,6 +311,8 @@ func presentMembers(v any) []string {
 func TestEIP_AddressMembersMatchAWS(t *testing.T) {
 	svc, _, vpcSvc := setupTestEIP(t)
 	eni := createAssocENI(t, vpcSvc)
+	_, err := vpcSvc.AttachENI(testAccountID, *eni.NetworkInterfaceId, "i-0123456789abcdef0", 0)
+	require.NoError(t, err)
 
 	alloc, err := svc.AllocateAddress(t.Context(), &ec2.AllocateAddressInput{
 		TagSpecifications: []*ec2.TagSpecification{{
@@ -333,7 +335,7 @@ func TestEIP_AddressMembersMatchAWS(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	addr = describeEIP(t, svc, *alloc.AllocationId)
-	assert.Equal(t, []string{"AllocationId", "AssociationId", "Domain", "NetworkBorderGroup", "NetworkInterfaceId",
+	assert.Equal(t, []string{"AllocationId", "AssociationId", "Domain", "InstanceId", "NetworkBorderGroup", "NetworkInterfaceId",
 		"NetworkInterfaceOwnerId", "PrivateIpAddress", "PublicIp", "PublicIpv4Pool", "Tags"}, presentMembers(addr))
 	assert.Equal(t, testAccountID, aws.StringValue(addr.NetworkInterfaceOwnerId))
 	assert.Equal(t, testRegion, aws.StringValue(addr.NetworkBorderGroup))

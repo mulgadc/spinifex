@@ -3,11 +3,13 @@ package awsapi
 import (
 	"bytes"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"io"
 	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/sts"
@@ -50,7 +52,7 @@ type action struct {
 	anonymous bool
 	// gated actions need a pass on the caller's identity policy.
 	gated bool
-	run   func(name string, q map[string]string, c caller, d Deps) ([]byte, error)
+	run   func(name, requestID string, q map[string]string, c caller, d Deps) ([]byte, error)
 }
 
 // handler creates a type-safe action: it allocates the input struct, parses the
@@ -59,7 +61,7 @@ func handler[In any](anonymous, gated bool, h func(c caller, input *In, d Deps) 
 	return action{
 		anonymous: anonymous,
 		gated:     gated,
-		run: func(name string, q map[string]string, c caller, d Deps) ([]byte, error) {
+		run: func(name, requestID string, q map[string]string, c caller, d Deps) ([]byte, error) {
 			input := new(In)
 			if err := query.QueryParamsToStruct(q, input); err != nil {
 				if errors.Is(err, query.ErrSliceTooLarge) {
@@ -71,7 +73,7 @@ func handler[In any](anonymous, gated bool, h func(c caller, input *In, d Deps) 
 			if err != nil {
 				return nil, err
 			}
-			xmlOutput, err := awsxml.Marshal(awsxml.QueryResponsePayload(name, output))
+			xmlOutput, err := awsxml.Marshal(awsxml.QueryResponsePayload(name, requestID, output))
 			if err != nil {
 				return nil, errors.New(awserrors.ErrorInternalError)
 			}
@@ -122,18 +124,18 @@ func OperationInventory() dispatch.Inventory {
 
 // AnonymousFunc runs one unsigned STS action from its parsed query arguments
 // and answers the XML response body.
-type AnonymousFunc func(queryArgs map[string]string) ([]byte, error)
+type AnonymousFunc func(requestID string, queryArgs map[string]string) ([]byte, error)
 
 // NewAnonymousAssumeRoleWithWebIdentity serves AssumeRoleWithWebIdentity for a
 // request that carries no SigV4 envelope. The web-identity token in the body is
 // the only authentication, so it runs no caller or identity-policy step.
 func NewAnonymousAssumeRoleWithWebIdentity(deps Deps) AnonymousFunc {
-	return func(q map[string]string) ([]byte, error) {
+	return func(requestID string, q map[string]string) ([]byte, error) {
 		if deps.STS == nil {
 			slog.Error("STS: service not initialized")
 			return nil, errors.New(awserrors.ErrorInternalError)
 		}
-		return actions["AssumeRoleWithWebIdentity"].run("AssumeRoleWithWebIdentity", q, caller{}, deps)
+		return actions["AssumeRoleWithWebIdentity"].run("AssumeRoleWithWebIdentity", requestID, q, caller{}, deps)
 	}
 }
 
@@ -158,11 +160,13 @@ func NewPreAuth(deps Deps) dispatch.PreAuth {
 			if !ok {
 				return false, nil
 			}
-			xmlOutput, err := run(args)
+			requestID := uuid.NewV4().String()
+			xmlOutput, err := run(requestID, args)
 			if err != nil {
 				return true, err
 			}
 			w.Header().Set("Content-Type", "text/xml")
+			w.Header().Set(envelope.RequestIDHeader, requestID)
 			w.WriteHeader(http.StatusOK)
 			if _, err := w.Write(xmlOutput); err != nil {
 				slog.Error("Failed to write STS response", "err", err)
@@ -245,12 +249,14 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 		}
 	}
 
-	xmlOutput, err := h.run(name, queryArgs, c, d)
+	requestID := uuid.NewV4().String()
+	xmlOutput, err := h.run(name, requestID, queryArgs, c, d)
 	if err != nil {
 		return err
 	}
 
 	w.Header().Set("Content-Type", "text/xml")
+	w.Header().Set(envelope.RequestIDHeader, requestID)
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(xmlOutput); err != nil {
 		slog.Error("Failed to write STS response", "err", err)

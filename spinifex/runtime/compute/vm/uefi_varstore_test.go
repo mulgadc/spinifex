@@ -639,6 +639,24 @@ func TestCheckUEFIVarStore_Accepts(t *testing.T) {
 	}
 }
 
+// The launch right after seeding reads the record's current revision, so a
+// replica that lags the pointer move cannot refuse it or hand it an older pointer.
+func TestCheckUEFIVarStore_ReadsThePointerALaggingReplicaHasNotApplied(t *testing.T) {
+	f := newUEFIFixture(t)
+	instance := f.newInstance()
+	require.NoError(t, f.m.SeedUEFIVarStore(t.Context(), instance, nil))
+	seeded, _ := f.record(t)
+	require.NotNil(t, seeded.Pointer)
+
+	created := *seeded
+	created.Pointer = nil
+	f.m.deps.UEFIVarStore.Records = staleRecordGet{UEFIStoreRecords: f.records, stale: &created}
+	rec, err := f.m.checkUEFIVarStore(t.Context(), instance)
+	require.NoError(t, err)
+	require.NotNil(t, rec.Pointer)
+	assert.Equal(t, seeded.Pointer.Key, rec.Pointer.Key)
+}
+
 // A store-record launch opens this node's copy as pflash unit 1 with
 // format=raw, after the read-only CODE blob.
 func TestStartQEMU_StoreObjectPassesTheLocalCopyAsPflashUnit1(t *testing.T) {

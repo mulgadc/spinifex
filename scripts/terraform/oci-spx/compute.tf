@@ -45,6 +45,11 @@ locals {
   # after the boot disk (mulga-poc has oraclevda1 pointing at sdb1).
   data_device = "/dev/oracleoci/oraclevdb"
 
+  # The Block Volume Management plugin logs iSCSI sessions in and out by itself,
+  # and on an ocibsd node those sessions are ocibsd's to manage. With the plugin
+  # off, the node's data volume attaches paravirtualized, which needs no login.
+  ocibsd_nodes = var.ebs_provider == "ocibsd"
+
   # adopt and create differ only in who creates the dynamic group and policy; a node
   # authenticates identically either way, because the matching rule covers the whole
   # compartment and so names no instance.
@@ -106,11 +111,12 @@ resource "oci_core_instance" "mulgadc" {
     user_data           = base64encode(local.user_data)
   }
 
-  # Required for automatic UHP iSCSI multipath setup and login.
+  # Required for automatic UHP iSCSI multipath setup and login, and disabled on
+  # an ocibsd node, where ocibsd owns every iSCSI session (see ocibsd_nodes).
   agent_config {
     plugins_config {
       name          = "Block Volume Management"
-      desired_state = "ENABLED"
+      desired_state = local.ocibsd_nodes ? "DISABLED" : "ENABLED"
     }
   }
 
@@ -165,10 +171,10 @@ resource "oci_core_volume" "mulgadc_data" {
 
 resource "oci_core_volume_attachment" "mulgadc_data" {
   count           = var.node_count
-  attachment_type = "iscsi"
+  attachment_type = local.ocibsd_nodes ? "paravirtualized" : "iscsi"
   # Required by OCI for Ultra High Performance iSCSI volume attachments.
   device                            = local.data_device
-  is_agent_auto_iscsi_login_enabled = true
+  is_agent_auto_iscsi_login_enabled = local.ocibsd_nodes ? null : true
   instance_id                       = oci_core_instance.mulgadc[count.index].id
   volume_id                         = oci_core_volume.mulgadc_data[count.index].id
 }

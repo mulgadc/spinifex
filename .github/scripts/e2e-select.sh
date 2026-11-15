@@ -16,6 +16,12 @@ FLOOR_MIN=60
 BASE_RUNNER=ci-single
 SERVICE_RUNNER=ci-pseudo
 
+# The single suite is most of the push gate's wall clock, so it is split across
+# this many ci-single legs. The rest of the base set moves to a ci-pseudo leg,
+# keeping the ci-single legs to the runners there are.
+SINGLE_SHARDS="${E2E_SINGLE_SHARDS:-3}"
+[[ "$SINGLE_SHARDS" =~ ^[1-9][0-9]*$ ]] || { printf '[e2e-select] error: E2E_SINGLE_SHARDS=%s\n' "$SINGLE_SHARDS" >&2; exit 1; }
+
 log() { printf '[e2e-select] %s\n' "$*" >&2; }
 die() { log "error: $*"; exit 1; }
 
@@ -54,19 +60,31 @@ prefixed() {
   printf '%s' "$out"
 }
 
-# leg <name> <runner> <suites>: one matrix entry, or nothing for no suites.
+# leg <name> <runner> <suites> [<shard> <shards>]: one matrix entry, or nothing
+# for no suites. shard is 0 for a leg that runs its suites whole.
 leg() {
   [ -n "$3" ] || return 0
   jq -nc --arg leg "$1" --arg runner "$2" --arg suites "$(prefixed "$3")" \
-    --argjson timeout "$(budget "$3")" \
-    '{leg: $leg, runner: $runner, suites: $suites, timeout: $timeout}'
+    --argjson timeout "$(budget "$3")" --argjson shard "${4:-0}" --argjson shards "${5:-0}" \
+    '{leg: $leg, runner: $runner, suites: $suites, timeout: $timeout, shard: $shard, shards: $shards}'
 }
 
 # emit <base-single> <service-single> <multi>
 emit() {
-  local legs
-  legs=$( { leg base "${BASE_RUNNER}" "$1"; leg service "${SERVICE_RUNNER}" "$2"; } | jq -sc .)
-  log "base leg: ${1:-none}"
+  local legs rest k
+  if [ "$SINGLE_SHARDS" -gt 1 ] && in_list single "$1"; then
+    rest=$(for s in $1; do [ "$s" = single ] || printf '%s ' "$s"; done)
+    legs=$( {
+      for ((k = 1; k <= SINGLE_SHARDS; k++)); do leg "single-$k" "${BASE_RUNNER}" single "$k" "$SINGLE_SHARDS"; done
+      leg base "${SERVICE_RUNNER}" "${rest% }"
+      leg service "${SERVICE_RUNNER}" "$2"
+    } | jq -sc .)
+    log "single legs: ${SINGLE_SHARDS} shards on ${BASE_RUNNER}"
+    log "base leg: ${rest:-none}"
+  else
+    legs=$( { leg base "${BASE_RUNNER}" "$1"; leg service "${SERVICE_RUNNER}" "$2"; } | jq -sc .)
+    log "base leg: ${1:-none}"
+  fi
   log "service leg: ${2:-none}"
   log "multi: ${3:-none}"
   printf 'single_legs=%s\n' "$legs"

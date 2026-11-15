@@ -1,1 +1,0 @@
-import{c as e,l as t,s as n}from"./tags-DwfPPTv5.js";import{gn as r}from"./aws-client-DvXrErvJ.js";var i=class extends t(n,e,`DescribeLoadBalancers`,r){};export{i as t};

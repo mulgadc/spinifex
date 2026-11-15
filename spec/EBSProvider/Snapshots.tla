@@ -70,13 +70,14 @@ CopySnapshot(req, val, err) ==
       volID     == req.volume_id
 
       Errors ==
-        LET checks == [invalid_argument |-> \/ None \in {srcSnapID, dstSnapID, volID}
-                                            \/ srcSnapID = dstSnapID
-                                            \* Only compared, not looked up, since a snapshot outlives its volume.
-                                            \/ /\ KeyExists(snapshots, srcSnapID)
-                                               /\ snapshots[srcSnapID].source_volume_id /= volID,
-                       already_exists   |-> KeyExists(snapshots, dstSnapID),
-                       not_found        |-> srcSnapID \notin Optional(DOMAIN snapshots)]
+        LET checks == [invalid_argument       |-> \/ None \in {srcSnapID, dstSnapID, volID}
+                                                  \/ srcSnapID = dstSnapID
+                                                  \* Only compared, not looked up, since a snapshot outlives its volume.
+                                                  \/ /\ KeyExists(snapshots, srcSnapID)
+                                                     /\ snapshots[srcSnapID].source_volume_id /= volID,
+                       already_exists         |-> KeyExists(snapshots, dstSnapID),
+                       not_found              |-> srcSnapID \notin Optional(DOMAIN snapshots),
+                       unsupported_capability |-> ~Capabilities.snapshot_copy]
         IN {e \in DOMAIN checks : checks[e]}
 
      \* The request was rejected, or the provider failed to answer.

@@ -30,7 +30,7 @@ func TestNewRegistration_RegistersUnderCredentialScopeAndInventoryName(t *testin
 // A registration with no quota reports the AWS default cap and enforces none.
 func TestDescribeAccountLimits_NoQuotaReportsDefault(t *testing.T) {
 	out, err := actions["DescribeAccountLimits"].dispatch(t.Context(), "DescribeAccountLimits",
-		&elbv2.DescribeAccountLimitsInput{}, Deps{}, "123456789012")
+		&elbv2.DescribeAccountLimitsInput{}, Deps{}, "123456789012", "")
 	require.NoError(t, err)
 	assert.Equal(t, "50", limitMax(t, out, "application-load-balancers"))
 }
@@ -67,7 +67,7 @@ func (q fixedQuota) LoadBalancerLimit(context.Context, string) (int, error) {
 
 func TestDescribeAccountLimits_ReportsTheQuotaLimit(t *testing.T) {
 	out, err := actions["DescribeAccountLimits"].dispatch(t.Context(), "DescribeAccountLimits",
-		&elbv2.DescribeAccountLimitsInput{}, Deps{Quota: fixedQuota{limit: 7}}, "123456789012")
+		&elbv2.DescribeAccountLimitsInput{}, Deps{Quota: fixedQuota{limit: 7}}, "123456789012", "")
 	require.NoError(t, err)
 	assert.Equal(t, "7", limitMax(t, out, "application-load-balancers"))
 }

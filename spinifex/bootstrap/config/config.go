@@ -322,14 +322,27 @@ type ViperblockConfig struct {
 }
 
 // EBS provider selectors. Viperblockd routes EBS calls to the viperblockd
-// daemon and qemunbd to the qemunbdd daemon, both over the versioned
-// ebs.provider.v1.* NATS contract. Embedded named the removed in-process
+// daemon, qemunbd to the qemunbdd daemon and ocibsd to the ocibsd daemon, all
+// over the versioned ebs.provider.v1.* NATS contract. Embedded named the removed in-process
 // engine and survives solely so a config that still selects it can be
 // rejected by name.
 const (
 	EBSProviderEmbedded    = "embedded"
 	EBSProviderViperblockd = "viperblockd"
 	EBSProviderQEMUNBD     = "qemunbd"
+	EBSProviderOCIBSD      = "ocibsd"
+)
+
+// OCI credential selections, as in oci_auth on an external pool and auth in
+// [nodes.<name>.ebs.oci]. An unset auth reads a config file.
+const (
+	// OCIAuthConfigFile authenticates from an API-key config file. The default,
+	// because it is what an operator already has from `oci setup config`.
+	OCIAuthConfigFile = "config_file"
+	// OCIAuthInstancePrincipal authenticates as the instance, from the
+	// certificate its metadata service serves. No key material on any node and
+	// nothing to rotate, at the cost of a dynamic group and an IAM policy.
+	OCIAuthInstancePrincipal = "instance_principal"
 )
 
 // Per-volume export tunables. Both are applied per nbdkit process, and
@@ -353,9 +366,12 @@ const (
 // boundary, not one provider's settings, so a second provider never needs a
 // rename.
 type EBSConfig struct {
-	// Provider is "viperblockd" or "qemunbd" and may be left unset. Volumes
-	// are persisted in ebsmetadata.
+	// Provider is "viperblockd", "qemunbd" or "ocibsd" and may be left unset.
+	// Volumes are persisted in ebsmetadata.
 	Provider string `json:"Provider" mapstructure:"provider"`
+
+	// OCI is the [nodes.<name>.ebs.oci] table, read only by ocibsd.
+	OCI EBSOCIConfig `json:"OCI" mapstructure:"oci"`
 
 	// DefaultThreads is nbdkit's -t: worker threads per NBD connection, which
 	// bounds how many requests are in flight inside viperblock for one volume.
@@ -370,9 +386,27 @@ type EBSConfig struct {
 	CacheSizeMB *int `json:"CacheSizeMB" mapstructure:"cache_size_mb"`
 }
 
+// EBSOCIConfig is where ocibsd keeps the cluster's volumes and how it
+// authenticates. Auth, ConfigFile and ConfigProfile mean what oci_auth,
+// oci_config_file and oci_config_profile mean on an oci external pool.
+type EBSOCIConfig struct {
+	// CompartmentID and AvailabilityDomain are the same on every node: a
+	// volume is created there whichever node answers, and attached anywhere.
+	CompartmentID      string `json:"CompartmentID" mapstructure:"compartment_id"`
+	AvailabilityDomain string `json:"AvailabilityDomain" mapstructure:"availability_domain"`
+	// ClusterID is generated once by spx admin init and tags every OCI
+	// resource ocibsd creates, so one compartment can hold several clusters.
+	ClusterID     string `json:"ClusterID" mapstructure:"cluster_id"`
+	Auth          string `json:"Auth" mapstructure:"auth"`
+	ConfigFile    string `json:"ConfigFile" mapstructure:"config_file"`
+	ConfigProfile string `json:"ConfigProfile" mapstructure:"config_profile"`
+}
+
+func (c EBSOCIConfig) isZero() bool { return c == EBSOCIConfig{} }
+
 // SupportedEBSProvider reports whether name is a provider a node may run.
 func SupportedEBSProvider(name string) bool {
-	return name == EBSProviderViperblockd || name == EBSProviderQEMUNBD
+	return name == EBSProviderViperblockd || name == EBSProviderQEMUNBD || name == EBSProviderOCIBSD
 }
 
 // ResolvedProvider normalizes an empty Provider to EBSProviderViperblockd,
@@ -889,6 +923,63 @@ func validateSingleEBSProvider(cc *ClusterConfig) error {
 	return nil
 }
 
+// validateOCIAuth checks an OCI credential selection, where prefix is what
+// the keys are named with ("oci_" on an external pool, "" in [ebs.oci]).
+func validateOCIAuth(prefix, auth, configFile, configProfile string) error {
+	// Named explicitly rather than inferred, so a node that was meant to
+	// use its own identity and has no dynamic group fails at config load
+	// instead of falling back to a key file nobody installed.
+	switch auth {
+	case "", OCIAuthConfigFile, OCIAuthInstancePrincipal:
+	default:
+		return fmt.Errorf("%sauth must be %q or %q, got %q", prefix, OCIAuthConfigFile, OCIAuthInstancePrincipal, auth)
+	}
+	// Credentials come from the metadata service under instance principal,
+	// so a config file named beside it is one of two sources of truth and
+	// the one that would be silently ignored.
+	if auth == OCIAuthInstancePrincipal && (configFile != "" || configProfile != "") {
+		return fmt.Errorf("%[1]sconfig_file/%[1]sconfig_profile are not valid with %[1]sauth=\"instance_principal\" (the instance's own certificate is the credential)", prefix)
+	}
+	return nil
+}
+
+// validateEBSOCI checks every node's [ebs.oci] table: present and complete
+// exactly when the node runs ocibsd, and naming one compartment and one AD
+// across the cluster, since any node may create a volume another attaches.
+func validateEBSOCI(cc *ClusterConfig) error {
+	var first string
+	var want EBSOCIConfig
+	for _, name := range slices.Sorted(maps.Keys(cc.Nodes)) {
+		ebs := cc.Nodes[name].EBS
+		if ebs.ResolvedProvider() != EBSProviderOCIBSD {
+			if !ebs.OCI.isZero() {
+				return fmt.Errorf("config: [nodes.%s.ebs.oci] is only valid with provider = %q", name, EBSProviderOCIBSD)
+			}
+			continue
+		}
+		oci := ebs.OCI
+		if oci.CompartmentID == "" || oci.AvailabilityDomain == "" {
+			return fmt.Errorf("config: [nodes.%s.ebs.oci] compartment_id and availability_domain are required with provider = %q", name, EBSProviderOCIBSD)
+		}
+		if err := validateOCIAuth("", oci.Auth, oci.ConfigFile, oci.ConfigProfile); err != nil {
+			return fmt.Errorf("config: [nodes.%s.ebs.oci] %w", name, err)
+		}
+		if first == "" {
+			first, want = name, oci
+			continue
+		}
+		if oci.ClusterID != want.ClusterID {
+			return fmt.Errorf("config: [nodes.%s.ebs.oci] cluster_id %q differs from [nodes.%s.ebs.oci] cluster_id %q; every node must carry the cluster's one ID",
+				name, oci.ClusterID, first, want.ClusterID)
+		}
+		if oci.CompartmentID != want.CompartmentID || oci.AvailabilityDomain != want.AvailabilityDomain {
+			return fmt.Errorf("config: [nodes.%s.ebs.oci] names compartment %q in %q but [nodes.%s.ebs.oci] names %q in %q; every node must name the same compartment and availability domain",
+				first, want.CompartmentID, want.AvailabilityDomain, name, oci.CompartmentID, oci.AvailabilityDomain)
+		}
+	}
+	return nil
+}
+
 func validateClusterConfig(cc *ClusterConfig) error {
 	if viper.IsSet("network.external_dhcp") {
 		return fmt.Errorf("config: [network] external_dhcp is no longer supported; remove the key (static WAN-pool allocation only)")
@@ -905,7 +996,7 @@ func validateClusterConfig(cc *ClusterConfig) error {
 			// ebsmetadata one-way without the operator ever asking for it.
 			return fmt.Errorf("config: [nodes.%s.ebs] provider=%q has been removed; set provider = %q or remove the key (this is a one-way switch: volumes move to ebsmetadata)", nodeName, EBSProviderEmbedded, EBSProviderViperblockd)
 		default:
-			return fmt.Errorf("config: [nodes.%s.ebs] provider=%q unsupported; use %q or %q, or remove the key", nodeName, nodeCfg.EBS.Provider, EBSProviderViperblockd, EBSProviderQEMUNBD)
+			return fmt.Errorf("config: [nodes.%s.ebs] provider=%q unsupported; use %q, %q or %q, or remove the key", nodeName, nodeCfg.EBS.Provider, EBSProviderViperblockd, EBSProviderQEMUNBD, EBSProviderOCIBSD)
 		}
 		// Range checks only. Both settings are deliberately unbounded above by
 		// anything host-aware: they are operator tunables, and the host cost is
@@ -921,6 +1012,9 @@ func validateClusterConfig(cc *ClusterConfig) error {
 		}
 	}
 	if err := validateSingleEBSProvider(cc); err != nil {
+		return err
+	}
+	if err := validateEBSOCI(cc); err != nil {
 		return err
 	}
 
@@ -993,19 +1087,8 @@ func validateClusterConfig(cc *ClusterConfig) error {
 			if (p.OCIVNICID == "") == (p.OCIVNICIface == "") {
 				return fmt.Errorf("config: [[network.external_pools]] %q: source=\"oci\" requires exactly one of oci_vnic_id or oci_vnic_iface", p.Name)
 			}
-			// Named explicitly rather than inferred, so a node that was meant to
-			// use its own identity and has no dynamic group fails at config load
-			// instead of falling back to a key file nobody installed.
-			switch p.OCIAuth {
-			case "", "config_file", "instance_principal":
-			default:
-				return fmt.Errorf("config: [[network.external_pools]] %q: oci_auth must be \"config_file\" or \"instance_principal\", got %q", p.Name, p.OCIAuth)
-			}
-			// Credentials come from the metadata service under instance principal,
-			// so a config file named beside it is one of two sources of truth and
-			// the one that would be silently ignored.
-			if p.OCIAuth == "instance_principal" && (p.OCIConfigFile != "" || p.OCIConfigProfile != "") {
-				return fmt.Errorf("config: [[network.external_pools]] %q: oci_config_file/oci_config_profile are not valid with oci_auth=\"instance_principal\" (the instance's own certificate is the credential)", p.Name)
+			if err := validateOCIAuth("oci_", p.OCIAuth, p.OCIConfigFile, p.OCIConfigProfile); err != nil {
+				return fmt.Errorf("config: [[network.external_pools]] %q: %w", p.Name, err)
 			}
 			if p.BindBridge != "" || p.DHCPMAC != "" {
 				return fmt.Errorf("config: [[network.external_pools]] %q: bind_bridge/dhcp_mac are only valid with source=\"dhcp\"", p.Name)

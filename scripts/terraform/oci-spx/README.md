@@ -230,11 +230,11 @@ Create them once per tenancy, then every deployment and rebuild afterwards uses 
 
 **`adopt` references the dynamic group by nothing at all.** Its matching rule is `instance.compartment.id`, so it covers every instance in the compartment and names no OCID — which is why adopting needs no read on an identity resource and no tenancy rights. The cost is that a missing policy is invisible at apply time: the node forms, passes every health check, and then refuses every launch wanting a public address. The allocator gate in `validate-topology.sh` is what catches that, by requiring `ocinet credential authorised to allocate` in each node's `spinifex-daemon` journal.
 
-The policy grants four verbs in one compartment: `use vnics`, `manage private-ips`, `manage public-ips` and `use subnets`.
-That is exactly what allocating an external address does and nothing more.
+The policy grants `use vnics`, `manage private-ips`, `manage public-ips` and `use subnets` in one compartment for the allocator, and with `ebs_provider = "ocibsd"` also `manage volume-family` and `use instances` for the `ocibsd` EBS provider. `setup-identity.sh --ebs-provider ocibsd` creates it with them; the policy is shared by every deployment in the compartment, so running it without the flag removes them.
+The first four are exactly what allocating an external address does and nothing more; the last two are what creating, attaching, backing up and deleting a block volume does.
 `use subnets` looks unrelated and is not: `CreatePrivateIp` is checked against `SUBNET_ATTACH` and `CreatePrivateIp` is how an address is registered, so a policy without it authorises nothing and every allocation returns a 404.
 
-**An API key is the fallback**, and the default because it needs nothing from a tenancy admin. Grant that user only the operations Spinifex performs on addresses and nothing else; it is not a tenancy admin, and broader rights widen the blast radius of a node compromise for no benefit.
+**An API key is the fallback**, and the default because it needs nothing from a tenancy admin. Grant that user only the operations Spinifex performs on addresses and volumes and nothing else: `terraform output -json api_key_policy_statements` prints the same statements for the group named by `api_key_group_name` (default `spinifex-nodes`), for a tenancy admin to apply; it is not a tenancy admin, and broader rights widen the blast radius of a node compromise for no benefit.
 
 `spx-oci-config.sh` installs it on **every** node, as `/etc/spinifex/oci/{oci_api_key.pem,config}` — not a home directory, because the daemon's unit sets `ProtectHome=yes`. Both files are needed: `oci_config_file` names an ordinary OCI SDK config, so a node holding only the PEM forms and then fails every allocation. The profile it writes is `spinifex`, matching `oci_config_profile`:
 
@@ -274,6 +274,20 @@ The count that later gates read is the number of addresses the `hosts_file` outp
 **The teardown decides the verdict.** A topology or workbook that cannot be destroyed is half proved, and has been a real defect before, so `destroy` runs from an `EXIT` trap even on failure and a teardown failure fails the run. `--keep` leaves everything up and records no verdict. Other flags: `--skip-workload` (form and verify, launch no guests), `--workbook NAME`, `--ssh-public-key` / `--ssh-private-key`.
 
 **A clean teardown can still leave public IPs behind, and they count against the tenancy.** The addresses Spinifex allocates for guests are created by the running node, so they are in no Terraform state and `destroy` neither sees nor removes them. The node's own reconcile collects detached ones every ten minutes, which is exactly the sweep a destroy takes away. Twenty accumulated in `spxbm` over four runs and exhausted the tenancy's 50 reserved-public-IP limit, at which point every later launch in every compartment failed. [Check for leftover public IPs afterwards](../../../docs/oci-integration/README.md#check-for-leftover-public-ips-afterwards) has the query and the rule for reading it.
+
+### The ocibsd topologies
+
+`vm-single-ocibsd` and `vm-multi-ocibsd` are `vm-single` and `vm-multi` with EBS backed by OCI Block Volumes. They build with `ebs_provider = "ocibsd"`, which disables the Block Volume Management plugin and attaches each node's data volume paravirtualized, because every iSCSI session on the node is `ocibsd`'s to manage. They need `--distro`, because a published release predates the `ocibsd` files that `setup.sh` stages, and an external pool, because an API-key run gives `ocibsd` the pool's credential.
+
+The ocibsd topologies name no EBS provider. `spx admin init` detects that it is on an OCI virtual machine, reads the compartment, availability domain and region from the instance metadata, and generates the cluster's `cluster_id`. Every other topology sets `SPINIFEX_EBS_PROVIDER=viperblockd`, so its viperblock baseline is not replaced by detection on OCI. The run checks the `EBS provider:` line init prints: `detected` on the ocibsd topologies under the instance principal, and `from SPINIFEX_EBS_PROVIDER` on the rest.
+
+Under the instance principal, `ocibsd` uses the instance's own certificate. An API-key run runs the credential hook before formation instead, and seeds each node's `spinifex.toml` with `provider = "ocibsd"` and the hook's `/etc/spinifex/oci/config`, which init keeps as an existing config, so its `EBS provider:` line reads `from the existing config`.
+
+Every volume and backup `ocibsd` creates is tagged `spinifex-cluster=<cluster_id>`, and none of them is in any Terraform state, so the run records the ID in `.validate-<topology>/ocibsd-clusters` before any volume exists.
+
+The `ebs provider` gate then checks the units, the viperblock mask, the daemon's device drop-in, and that the compartment and availability domain init detected are the ones the state reports on every node, imports an AMI onto OCI and boots from it, and drives stop and start, attach and detach, snapshot and restore with a guest-written marker read back over the serial console. On `vm-multi-ocibsd` it also starts the stopped instance on another node. It ends by terminating everything and polling OCI until nothing tagged with the instance's volumes or snapshot is left.
+
+`e2e-oci.sh` deletes everything tagged with each recorded `cluster_id` once that topology's nodes are destroyed, including from `--sweep-only`, and fails the run if anything tagged remains. A standalone `validate-topology.sh` run does not sweep, so follow it with `./e2e-oci.sh --sweep-only`.
 
 The workbook runs **on the node** against `127.0.0.1`, because the node certificate carries no SAN for its public address — a workbook driven from outside the VCN is still blocked.
 

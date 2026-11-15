@@ -110,7 +110,8 @@ func (e *ProviderError) Unwrap() error {
 	}
 }
 
-func checkVersion(version uint16) error {
+// CheckVersion refuses a schema version outside the served window.
+func CheckVersion(version uint16) error {
 	if !SupportsSchemaVersion(version) {
 		return fmt.Errorf("%w: got %d, %s", ErrUnsupportedVersion, version, SupportedVersionsText())
 	}

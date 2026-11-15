@@ -188,6 +188,48 @@ func TestServiceStartCmdsReturnErrorOnMissingConfig(t *testing.T) {
 			},
 			wantErr: "start viperblock service",
 		},
+		{
+			name: "viperblock start (explicit viperblockd provider passes the guard)",
+			cmd:  viperblockStartCmd,
+			setup: func(t *testing.T) {
+				resetGlobalViper(t)
+				toml := minimalClusterToml + "\n[nodes.node1.ebs]\nprovider = \"viperblockd\"\n"
+				viper.Set("config", writeSpinifexToml(t, toml))
+				viper.Set("plugin-path", t.TempDir())
+				viper.Set("base-dir", blockedDir(t))
+			},
+			wantErr: "start viperblock service",
+		},
+		{
+			name: "viperblock start (refused on a qemunbd node)",
+			cmd:  viperblockStartCmd,
+			setup: func(t *testing.T) {
+				resetGlobalViper(t)
+				toml := minimalClusterToml + "\n[nodes.node1.ebs]\nprovider = \"qemunbd\"\n"
+				viper.Set("config", writeSpinifexToml(t, toml))
+				viper.Set("plugin-path", t.TempDir())
+			},
+			wantErr: `[nodes.node1.ebs] provider is "qemunbd", not "viperblockd"`,
+		},
+		{
+			name: "viperblock start (refused on an ocibsd node)",
+			cmd:  viperblockStartCmd,
+			setup: func(t *testing.T) {
+				resetGlobalViper(t)
+				toml := minimalClusterToml + `
+[nodes.node1.ebs]
+provider = "ocibsd"
+
+[nodes.node1.ebs.oci]
+compartment_id = "ocid1.compartment.oc1..test"
+availability_domain = "Uocm:US-ASHBURN-AD-1"
+cluster_id = "5f0c3a9e1b7d42c68e2a4f1d9b3c7e05"
+`
+				viper.Set("config", writeSpinifexToml(t, toml))
+				viper.Set("plugin-path", t.TempDir())
+			},
+			wantErr: `[nodes.node1.ebs] provider is "ocibsd", not "viperblockd"`,
+		},
 		{name: "qemunbd start (missing config)", cmd: qemunbdStartCmd},
 		{
 			name: "qemunbd start (config file load failure)",

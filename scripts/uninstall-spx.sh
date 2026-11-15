@@ -349,7 +349,8 @@ rm_path /etc/systemd/system/spinifex-*.service \
         /etc/systemd/system/spinifex.slice \
         /etc/systemd/system/spinifex-system.slice \
         /etc/systemd/system/spinifex-guests.slice \
-        /etc/systemd/system/system.slice.d/spinifex-reserve.conf
+        /etc/systemd/system/system.slice.d/spinifex-reserve.conf \
+        /etc/systemd/system/spinifex-daemon.service.d/ocibsd.conf
 
 # Drop-ins we wrote into *other people's* units. These are the dangerous ones:
 # they are not in a spinifex-named path, so a namespace glob misses them, and

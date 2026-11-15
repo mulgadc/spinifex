@@ -2506,7 +2506,7 @@ func TestGetLBConfig_HealthTargetsWireShape(t *testing.T) {
 
 	// Confirm the marshalled member shape matches what the lb-agent parses
 	// (GetLBConfigResult>HealthTargets>member>{ServerName,Address,Protocol,Path}).
-	payload := awsxml.QueryResponsePayload("GetLBConfig", *out)
+	payload := awsxml.QueryResponsePayload("GetLBConfig", "", *out)
 	xmlBytes, err := awsxml.Marshal(payload)
 	require.NoError(t, err)
 	var parsed struct {

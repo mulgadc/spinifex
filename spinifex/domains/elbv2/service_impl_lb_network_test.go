@@ -3,6 +3,8 @@ package elbv2
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -10,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/elbv2"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -215,6 +218,74 @@ func TestCreateLoadBalancerSync_ReturnsFrontendIP(t *testing.T) {
 	// returned LB already carries its front-end IP.
 	require.Len(t, mock.launchCalls, 1)
 	assert.Equal(t, "203.0.113.9", frontendPublicIP(out.LoadBalancers[0]))
+}
+
+// laggingLBReplicaKV answers every Get of a load-balancer key with the entry as
+// first written, as a replica that has applied no later write would.
+type laggingLBReplicaKV struct {
+	jetstream.KeyValue
+
+	mu    sync.Mutex
+	first map[string]jetstream.KeyValueEntry
+}
+
+func (k *laggingLBReplicaKV) Put(ctx context.Context, key string, value []byte) (uint64, error) {
+	rev, err := k.KeyValue.Put(ctx, key, value)
+	if err != nil || !strings.HasPrefix(key, KeyPrefixLB) {
+		return rev, err
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if _, seen := k.first[key]; !seen {
+		entry, gerr := k.KeyValue.Get(ctx, key)
+		if gerr != nil {
+			return rev, gerr
+		}
+		k.first[key] = entry
+	}
+	return rev, nil
+}
+
+func (k *laggingLBReplicaKV) Get(ctx context.Context, key string) (jetstream.KeyValueEntry, error) {
+	k.mu.Lock()
+	entry, ok := k.first[key]
+	k.mu.Unlock()
+	if ok {
+		return entry, nil
+	}
+	return k.KeyValue.Get(ctx, key)
+}
+
+func TestCreateLoadBalancerSync_LaggingReplicaKeepsFrontendIP(t *testing.T) {
+	t.Parallel()
+	svc, vpcSvc, mock := setupSubnetTestService(t)
+	mock.launchResult.PublicIP = "203.0.113.10"
+	vid := vpcID(t, vpcSvc)
+	sub := getTestSubnetID(t, vpcSvc, vid, "10.0.32.0/24", "us-east-1a")
+	leader := svc.store.kv
+	svc.store.kv = &laggingLBReplicaKV{KeyValue: leader, first: map[string]jetstream.KeyValueEntry{}}
+
+	out, err := svc.CreateLoadBalancerSync(&elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("lagging-lb"),
+		Type:    aws.String("network"),
+		Scheme:  aws.String(elbv2.LoadBalancerSchemeEnumInternetFacing),
+		Subnets: []*string{aws.String(sub)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.LoadBalancers, 1)
+	assert.Equal(t, "203.0.113.10", frontendPublicIP(out.LoadBalancers[0]))
+
+	// The bucket holds the launch write, while a read still sees the pre-launch record.
+	arn := aws.StringValue(out.LoadBalancers[0].LoadBalancerArn)
+	stale, err := svc.store.GetLoadBalancerByArn(t.Context(), arn)
+	require.NoError(t, err)
+	require.NotNil(t, stale)
+	assert.Empty(t, stale.AvailZones[0].PublicIP)
+	svc.store.kv = leader
+	current, err := svc.store.GetLoadBalancerByArn(t.Context(), arn)
+	require.NoError(t, err)
+	require.NotNil(t, current)
+	assert.Equal(t, "203.0.113.10", current.AvailZones[0].PublicIP)
 }
 
 func TestCreateLoadBalancer_AsyncDefersFrontendIP(t *testing.T) {

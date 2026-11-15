@@ -1660,6 +1660,14 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		os.Exit(0)
 	}
 
+	// Resolved once and written to every node (ADR-0018:S3), before anything
+	// is written, so a refused OCI credential leaves the node untouched.
+	ebsChoice, err := resolveInitEBS(context.Background(), spinifexTomlPath, node, productionEBSResolver())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
+		os.Exit(1)
+	}
+
 	if spxRoot == "" {
 		spxRoot = DefaultDataDir()
 	}
@@ -1848,6 +1856,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		// external networking is disabled.
 		networkConfig := &formation.NetworkConfig{
 			IPSecEnabled: ipsecEnabled,
+			EBS:          formationEBS(ebsChoice.EBSConfig),
 		}
 		if externalMode != "" {
 			bootstrapVpcId := awsidentifiers.GenerateResourceID("vpc")
@@ -1867,7 +1876,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		runAdminInitMultiNode(cmd, accessKey, secretKey, accountID, adminAccessKey, adminSecretKey,
 			masterKey, viperblockKey, natsToken, clusterName,
 			configDir, spxRoot, certPath, region, az, node, bindIP, advertiseIP, clusterBind, email,
-			port, nodes, formationTimeoutStr, tokenTTLStr, services, nameserver, networkConfig, northstarCreds)
+			port, nodes, formationTimeoutStr, tokenTTLStr, services, nameserver, networkConfig, northstarCreds, ebsChoice)
 		return
 	}
 
@@ -2029,6 +2038,8 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 		}
 	}
 
+	ebsChoice.apply(&configSettings)
+
 	// Generate config files
 	if err := generateAndWriteConfigs(dirs, spinifexTomlPath, configSettings, predastoreNodesStr != ""); err != nil {
 		fmt.Fprintf(os.Stderr, "Error generating configuration files: %v\n", err)
@@ -2036,6 +2047,7 @@ func runAdminInit(cmd *cobra.Command, args []string) {
 	}
 
 	finalizeNodeSetup(spxRoot, certPath, adminAccessKey, adminSecretKey, region, bindIP)
+	exitOnActivationError(activateEBSProvider(context.Background(), ebsChoice, productionOCIBSDActivation()))
 
 	skipHostDNS, _ := cmd.Flags().GetBool("skip-host-dns")
 	configureHostDNS(configSettings, skipHostDNS)
@@ -2077,7 +2089,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 	masterKey, viperblockKey []byte, natsToken, clusterName,
 	configDir, spxRoot, certPath, region, az, node, bindIP, advertiseIP, clusterBind, email string,
 	port, expectedNodes int, formationTimeoutStr, tokenTTLStr string, services []string, nameserver bool, networkConfig *formation.NetworkConfig,
-	northstarCreds admin.NorthstarCredentials) {
+	northstarCreds admin.NorthstarCredentials, ebsChoice nodeEBS) {
 	formationTimeout, err := time.ParseDuration(formationTimeoutStr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ Error: Invalid --formation-timeout: %v\n", err)
@@ -2304,6 +2316,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 	if networkConfig != nil {
 		applyNetworkConfig(&configSettings, networkConfig)
 	}
+	ebsChoice.apply(&configSettings)
 
 	if err := generateAndWriteConfigs(dirs, spinifexTomlPath, configSettings, hasPredastoreConfig); err != nil {
 		fmt.Fprintf(os.Stderr, "Error generating configuration files: %v\n", err)
@@ -2311,6 +2324,7 @@ func runAdminInitMultiNode(cmd *cobra.Command, accessKey, secretKey, accountID, 
 	}
 
 	finalizeNodeSetup(spxRoot, certPath, adminAccessKey, adminSecretKey, region, bindIP)
+	exitOnActivationError(activateEBSProvider(context.Background(), ebsChoice, productionOCIBSDActivation()))
 
 	skipHostDNS, _ := cmd.Flags().GetBool("skip-host-dns")
 	configureHostDNS(configSettings, skipHostDNS)
@@ -2885,6 +2899,14 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	if statusResp.NetworkConfig != nil {
 		applyNetworkConfig(&configSettings, statusResp.NetworkConfig)
 	}
+	// The provider is the cluster's, from formation; the credential is this
+	// node's, and is checked before its config is written.
+	ebsChoice, err := resolveJoinEBS(context.Background(), spinifexTomlPath, node, statusResp.NetworkConfig, productionEBSResolver())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error: %v\n", err)
+		os.Exit(1)
+	}
+	ebsChoice.apply(&configSettings)
 
 	if err := generateAndWriteConfigs(dirs, spinifexTomlPath, configSettings, hasPredastoreConfig); err != nil {
 		fmt.Fprintf(os.Stderr, "Error generating configuration files: %v\n", err)
@@ -2892,6 +2914,7 @@ func runAdminJoin(cmd *cobra.Command, args []string) {
 	}
 
 	finalizeNodeSetup(dataDir, caCertPath, creds.AdminAccessKey, creds.AdminSecretKey, creds.Region, bindIP)
+	exitOnActivationError(activateEBSProvider(context.Background(), ebsChoice, productionOCIBSDActivation()))
 
 	skipHostDNS, _ := cmd.Flags().GetBool("skip-host-dns")
 	configureHostDNS(configSettings, skipHostDNS)

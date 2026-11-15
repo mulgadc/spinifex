@@ -41,6 +41,8 @@ resources:
 - [Harden it before production](#harden-it-before-production)
 - [Next steps](#next-steps)
 - [Removing the deployment](#removing-the-deployment)
+- [EBS on OCI Block Volumes](#ebs-on-oci-block-volumes)
+- [Testing the OCI Block Volumes provider live](#testing-the-oci-block-volumes-provider-live)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -772,6 +774,116 @@ Use the limits API rather than a count to judge the headroom, because the two di
 oci limits resource-availability get --service-name vcn \
     --limit-name reserved-public-ip-count --compartment-id "$TENANCY_OCID"
 ```
+
+## EBS on OCI Block Volumes
+
+On an OCI virtual machine, EBS volumes can be backed by OCI Block Volumes through the `ocibsd` provider instead of Viperblock. Each EBS volume is one OCI block volume, attached over iSCSI to the node that runs the instance using it.
+
+### How the provider is chosen
+
+There is no flag. `spx admin init` takes the provider from the first of these that gives one:
+
+1. The existing `/etc/spinifex/spinifex.toml`, whose provider the node keeps; a node table that omits it is `viperblockd`.
+2. The `SPINIFEX_EBS_PROVIDER` environment variable: `viperblockd`, `qemunbd` or `ocibsd`.
+3. The OCI instance metadata service (IMDS v2), read with a one-second timeout. An OCI VM shape selects `ocibsd`; a `BM.*` shape, or no answer, selects `viperblockd`.
+
+Init prints its choice and where it came from, for example `EBS provider: ocibsd (detected: OCI virtual machine <shape>)`. Joining nodes take the provider from formation rather than choosing their own. The choice is written once for every node and cannot be changed without wiping and re-forming the cluster.
+
+For `ocibsd`, init fills the compartment and availability domain from instance metadata unless the existing config names them, generates a cluster ID that tags every OCI volume and backup the cluster makes, and defaults `auth` to `instance_principal` when the existing config names no credential. It then reads the compartment's volumes with that credential, and stops with an error naming the needed policy, `manage volume-family` and `use instances`, if the read is refused. It never falls back to Viperblock.
+
+The settings land in the node's table in `spinifex.toml`:
+
+```toml
+[nodes.<node>.ebs]
+provider = "ocibsd"
+
+[nodes.<node>.ebs.oci]
+compartment_id = "<compartment-ocid>"
+availability_domain = "<availability-domain>"
+cluster_id = "<generated-cluster-id>"
+auth = "instance_principal"
+```
+
+On an OCI VM, `setup.sh` installs the iSCSI initiator (`open-iscsi` with apt, `iscsi-initiator-utils` with dnf) and stages the `ocibsd` files under `/usr/local/share/spinifex/ocibsd`. When the provider resolves to `ocibsd`, init and join install the `spinifex-ocibsd.service` unit, its udev rule and a `spinifex-daemon` drop-in, mask `spinifex-viperblock.service`, and enable `spinifex-ocibsd.service`, so exactly one service answers for EBS on the node.
+
+To keep Viperblock on an OCI VM, name it before init:
+
+```bash
+sudo env SPINIFEX_EBS_PROVIDER=viperblockd spx admin init <your usual flags>
+```
+
+`validate-topology.sh` does this for every topology except `vm-single-ocibsd` and `vm-multi-ocibsd`, which rely on detection and need `--distro`.
+
+### One availability domain per cluster
+
+Every volume is created in the availability domain the cluster recorded at init, whichever node handles the request. Config validation refuses nodes that name different compartments or availability domains, and `spinifex-ocibsd` refuses to start on a node whose instance metadata places it in another availability domain. Deploy every node of an `ocibsd` cluster into one availability domain.
+
+### IAM policy
+
+The node's credential needs two grants in the compartment, on top of the four the address allocator needs:
+
+```text
+Allow dynamic-group <dynamic-group-name> to manage volume-family in compartment id <compartment-ocid>
+Allow dynamic-group <dynamic-group-name> to use instances in compartment id <compartment-ocid>
+```
+
+`manage volume-family` covers volumes, backups and attachments, and `use instances` covers attaching them to the node. The instance-principal policy that `--setup-instance-principal` on an `ocibsd` topology (or `setup-identity.sh --ebs-provider ocibsd`) creates grants both, for a Dynamic Group matching `ALL {instance.compartment.id = '<compartment-ocid>'}`. Built for `viperblockd`, the default, it grants neither, and because the policy is shared by every deployment in the compartment, re-running `setup-identity.sh` without the flag removes them.
+
+For an API key, grant the same two verbs to the key user's group, alongside the four from [section 2.2](#grant-the-group-its-four-permissions):
+
+```text
+Allow group <group-name> to manage volume-family in compartment id <compartment-ocid>
+Allow group <group-name> to use instances in compartment id <compartment-ocid>
+```
+
+`terraform output -json api_key_policy_statements` prints all six for the group named by `api_key_group_name` (default `spinifex-nodes`) when `ebs_provider = "ocibsd"`, and only the four address grants otherwise. Because init defaults to the instance principal, an API-key node needs its credential named in `spinifex.toml` before init, which init then keeps:
+
+```toml
+[nodes.<node>.ebs]
+provider = "ocibsd"
+
+[nodes.<node>.ebs.oci]
+auth = "config_file"
+config_file = "/etc/spinifex/oci/config"
+config_profile = "spinifex"
+```
+
+`validate-topology.sh` writes this for you on an API-key run of an `ocibsd` topology, after the credential hook has installed the key.
+
+### The 50 GB floor
+
+OCI creates no block volume smaller than 50 GB, where OCI's GB is 2^30 bytes. The OCI volume is the requested size rounded up to a whole GB, and never less than 50 GB. Spinifex records the requested size in a `spinifex-capacity-bytes` tag, reports it as the EBS volume's size, and presents exactly that size to the guest, so a 1 GiB EBS volume is 1 GiB to the API and the guest. OCI bills for the 50 GB volume underneath it.
+
+## Testing the OCI Block Volumes provider live
+
+`providers/ebs/ocibsd/live_test.go` runs the EBS provider conformance suite, in process and over NATS, against a real compartment and one OCI instance.
+It also checks that OCI's GB is 2^30 bytes on the attached device, and that recreating a deleted volume under the same ID never answers with the deleted volume.
+The test runs on your workstation with the API-key profile from `~/.oci/config`, and drives `sudo iscsiadm` and the device check on the instance over SSH, so no credential is placed on the instance.
+Every subtest skips unless `SPINIFEX_OCIBSD_LIVE` is set.
+
+| Variable | Meaning |
+| --- | --- |
+| `SPINIFEX_OCIBSD_LIVE` | Any value runs the live tests |
+| `SPINIFEX_OCIBSD_COMPARTMENT_ID` | Compartment the volumes and backups are created in |
+| `SPINIFEX_OCIBSD_AVAILABILITY_DOMAIN` | The instance's availability domain, where every volume is created |
+| `SPINIFEX_OCIBSD_INSTANCE_ID` | OCID of the instance volumes are attached to |
+| `SPINIFEX_OCIBSD_SSH_HOST` | Address of that instance |
+| `SPINIFEX_OCIBSD_SSH_USER` | SSH user with passwordless `sudo`, `opc` when unset |
+| `SPINIFEX_OCIBSD_SSH_KEY` | Private key for that user |
+| `SPINIFEX_OCIBSD_SSH_KNOWN_HOSTS` | Known-hosts file, a fresh temporary one when unset |
+| `SPINIFEX_OCIBSD_CLUSTER_ID` | `spinifex-cluster` tag value for the run, random when unset and logged either way |
+| `SPINIFEX_OCIBSD_OCI_PROFILE` | OCI config profile, `DEFAULT` when unset |
+
+The instance needs `iscsi-initiator-utils` and the Oracle Cloud Agent "Block Volume Management" plugin disabled, so no agent logs sessions in or out behind the test.
+The profile needs `manage volume-family` and `use instances` in the compartment.
+
+```bash
+cd spinifex
+SPINIFEX_OCIBSD_LIVE=1 go test ./providers/ebs/ocibsd/ -run TestLive -count=1 -v -timeout 60m
+```
+
+The suite deletes what it creates, but a failed run can leave volumes and backups behind, and OCI bills for them.
+Sweep everything tagged `spinifex-cluster=<cluster ID>` in the compartment after every run.
 
 ## Troubleshooting
 

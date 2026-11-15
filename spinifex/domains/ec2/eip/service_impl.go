@@ -688,67 +688,12 @@ func addressMatchesFilters(record *EIPRecord, filters map[string][]string) bool 
 	return awsfilters.MatchesTags(filters, record.Tags)
 }
 
-// DescribeAddressesAttribute returns per-EIP attributes. PtrRecord is always nil
-// (no reverse-DNS support). Returns an empty list, not an error, for missing IDs.
+// DescribeAddressesAttribute lists only addresses with a PTR record. Spinifex
+// stores no reverse DNS, so the answer is always an empty list, as AWS gives
+// for addresses without one.
 func (s *EIPServiceImpl) DescribeAddressesAttribute(ctx context.Context, input *ec2.DescribeAddressesAttributeInput, accountID string) (*ec2.DescribeAddressesAttributeOutput, error) {
-	var addresses []*ec2.AddressAttribute
-
-	if len(input.AllocationIds) > 0 {
-		// Direct lookups by requested IDs.
-		for _, id := range input.AllocationIds {
-			if id == nil {
-				continue
-			}
-			key := kvstore.AccountKey(accountID, *id)
-			entry, err := s.eipKV.Get(ctx, key)
-			if err != nil {
-				continue // not found, skip
-			}
-			var record EIPRecord
-			if err := json.Unmarshal(entry.Value(), &record); err != nil {
-				slog.WarnContext(ctx, "Failed to unmarshal EIP record", "key", key, "error", err)
-				continue
-			}
-			addresses = append(addresses, &ec2.AddressAttribute{
-				AllocationId: aws.String(record.AllocationId),
-				PublicIp:     aws.String(record.PublicIp),
-			})
-		}
-	} else {
-		// No filter — scan all EIPs for this account.
-		prefix := accountID + "."
-		keys, err := s.eipKV.Keys(ctx)
-		if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil, errors.New(awserrors.ErrorServerInternal)
-		}
-		for _, k := range keys {
-			if k == kvstore.VersionKey {
-				continue
-			}
-			if !strings.HasPrefix(k, prefix) {
-				continue
-			}
-			entry, err := s.eipKV.Get(ctx, k)
-			if err != nil {
-				slog.WarnContext(ctx, "Failed to get EIP record", "key", k, "error", err)
-				continue
-			}
-			var record EIPRecord
-			if err := json.Unmarshal(entry.Value(), &record); err != nil {
-				slog.WarnContext(ctx, "Failed to unmarshal EIP record", "key", k, "error", err)
-				continue
-			}
-			addresses = append(addresses, &ec2.AddressAttribute{
-				AllocationId: aws.String(record.AllocationId),
-				PublicIp:     aws.String(record.PublicIp),
-			})
-		}
-	}
-
-	slog.InfoContext(ctx, "DescribeAddressesAttribute completed", "count", len(addresses), "accountID", accountID)
-
 	return &ec2.DescribeAddressesAttributeOutput{
-		Addresses: addresses,
+		Addresses: []*ec2.AddressAttribute{},
 	}, nil
 }
 

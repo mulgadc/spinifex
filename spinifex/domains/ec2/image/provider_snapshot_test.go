@@ -260,6 +260,31 @@ func TestCreateImageFromInstance_SetsEnaSupportFromInstance(t *testing.T) {
 	assert.True(t, *ami.EnaSupport)
 }
 
+// AWS records the instance an image was made from and carries the source
+// image's IMDS support onto it.
+func TestCreateImageFromInstance_RecordsSourceInstanceAndImdsSupport(t *testing.T) {
+	svc, _, provider := setupProviderSnapshotImageService(t)
+	doc := seedProviderVolume(t, svc, provider, "vol-imds001", 8)
+	require.NoError(t, svc.MetadataStore().PutAMI(context.Background(), ebsmetadata.AMI{
+		ImageID:         "ami-src-imds",
+		Name:            "imdsv2",
+		ImageOwnerAlias: "system",
+		ImdsSupport:     "v2.0",
+	}))
+
+	out, err := svc.CreateImageFromInstance(CreateImageParams{
+		Input:         &ec2.CreateImageInput{InstanceId: aws.String("i-imds001"), Name: aws.String("from-imdsv2")},
+		RootVolumeID:  doc.VolumeID,
+		SourceImageID: "ami-src-imds",
+	}, testAccountID)
+	require.NoError(t, err)
+
+	ami, err := svc.MetadataStore().GetAMI(context.Background(), aws.StringValue(out.ImageId))
+	require.NoError(t, err)
+	assert.Equal(t, "i-imds001", ami.SourceInstanceID)
+	assert.Equal(t, "v2.0", ami.ImdsSupport)
+}
+
 // createUnavailableProvider refuses every CreateSnapshot as retry-later.
 type createUnavailableProvider struct {
 	ebsprovider.EBSProvider

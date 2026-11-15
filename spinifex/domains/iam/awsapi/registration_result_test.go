@@ -14,7 +14,7 @@ import (
 
 // TestQueryPayload_ResultElementMatchesModel checks every registered action
 // carries an <ActionResult> element exactly when the IAM model gives the
-// operation an output, using the SDK's zero-value output for that action.
+// operation an output, and ResponseMetadata either way.
 func TestQueryPayload_ResultElementMatchesModel(t *testing.T) {
 	model, err := awsmodel.Load(awsmodel.IAM)
 	require.NoError(t, err)
@@ -28,11 +28,12 @@ func TestQueryPayload_ResultElementMatchesModel(t *testing.T) {
 			require.True(t, ok, "SDK has no method %s", name)
 			output := reflect.New(method.Type.Out(0).Elem()).Interface()
 
-			body, err := awsxml.Marshal(queryPayload(name, output))
+			body, err := awsxml.Marshal(queryPayload(name, "req-1", output))
 			require.NoError(t, err)
 			xmlText := string(body)
 			assert.True(t, strings.HasPrefix(xmlText, "<"+name+"Response>"), xmlText)
 			assert.Equal(t, op.Output != nil, strings.Contains(xmlText, "<"+name+"Result"), xmlText)
+			assert.Contains(t, xmlText, "<ResponseMetadata><RequestId>req-1</RequestId></ResponseMetadata>")
 		})
 	}
 }

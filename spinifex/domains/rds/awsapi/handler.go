@@ -36,12 +36,12 @@ type Env struct {
 
 // Handler is one entry in the RDS action table: it decodes the query params q, runs the action
 // for caller and returns the marshalled XML response.
-type Handler func(ctx context.Context, action string, q map[string]string, nc *nats.Conn, caller Caller, env Env) ([]byte, error)
+type Handler func(ctx context.Context, action, requestID string, q map[string]string, nc *nats.Conn, caller Caller, env Env) ([]byte, error)
 
 // Allocates the input struct, parses the query params into it, calls handler and
 // marshals the output into the IAM-style <ActionResponse><ActionResult> envelope.
 func typedEnv[In any](handler func(context.Context, *In, *nats.Conn, Caller, Env) (any, error)) Handler {
-	return func(ctx context.Context, action string, q map[string]string, nc *nats.Conn, caller Caller, env Env) ([]byte, error) {
+	return func(ctx context.Context, action, requestID string, q map[string]string, nc *nats.Conn, caller Caller, env Env) ([]byte, error) {
 		input := new(In)
 		if err := query.QueryParamsToStruct(q, input); err != nil {
 			// An over-long indexed list is a client-side malformation, not an
@@ -55,7 +55,7 @@ func typedEnv[In any](handler func(context.Context, *In, *nats.Conn, Caller, Env
 		if err != nil {
 			return nil, err
 		}
-		payload := awsxml.QueryResponsePayload(action, output)
+		payload := awsxml.QueryResponsePayload(action, requestID, output)
 		xmlOutput, err := awsxml.Marshal(payload)
 		if err != nil {
 			return nil, errors.New("failed to marshal response to XML")
@@ -180,7 +180,7 @@ func HasAction(action string) bool {
 // Dispatch runs action and returns its XML. Callers are expected to have authorized it already;
 // the unknown-action check here is a backstop. The internal actions re-run their own gate, so
 // skipping AuthorizeCaller still cannot reach one.
-func Dispatch(ctx context.Context, action string, q map[string]string, nc *nats.Conn, caller Caller, env Env) ([]byte, error) {
+func Dispatch(ctx context.Context, action, requestID string, q map[string]string, nc *nats.Conn, caller Caller, env Env) ([]byte, error) {
 	def, ok := actions[action]
 	if !ok {
 		return nil, errors.New(awserrors.ErrorInvalidAction)
@@ -189,7 +189,7 @@ func Dispatch(ctx context.Context, action string, q map[string]string, nc *nats.
 		slog.DebugContext(ctx, "RDS: action not available", "action", action)
 		return nil, errors.New(awserrors.ErrorOperationNotSupported)
 	}
-	return def.handler(ctx, action, q, nc, caller, env)
+	return def.handler(ctx, action, requestID, q, nc, caller, env)
 }
 
 // ActionNames returns every action the gateway recognises, in stable order.

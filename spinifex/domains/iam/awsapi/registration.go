@@ -3,11 +3,13 @@ package awsapi
 import (
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"log/slog"
 	"maps"
 	"net/http"
 	"reflect"
 	"slices"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/iam"
@@ -44,7 +46,7 @@ type Deps struct {
 // action parses once so authorization and dispatch share one typed input.
 type action struct {
 	parse    func(map[string]string) (any, error)
-	dispatch func(name string, parsed any, d Deps, accountID string) ([]byte, error)
+	dispatch func(name string, parsed any, d Deps, accountID, requestID string) ([]byte, error)
 }
 
 // handler creates a type-safe IAM action with separate parse and dispatch
@@ -61,7 +63,7 @@ func handler[In any](h func(string, *In, Deps) (any, error)) action {
 			}
 			return input, nil
 		},
-		dispatch: func(name string, parsed any, d Deps, accountID string) ([]byte, error) {
+		dispatch: func(name string, parsed any, d Deps, accountID, requestID string) ([]byte, error) {
 			input, ok := parsed.(*In)
 			if !ok {
 				return nil, errors.New(awserrors.ErrorInternalError)
@@ -70,7 +72,7 @@ func handler[In any](h func(string, *In, Deps) (any, error)) action {
 			if err != nil {
 				return nil, err
 			}
-			xmlOutput, err := awsxml.Marshal(queryPayload(name, output))
+			xmlOutput, err := awsxml.Marshal(queryPayload(name, requestID, output))
 			if err != nil {
 				return nil, errors.New(awserrors.ErrorInternalError)
 			}
@@ -85,11 +87,11 @@ var structResultActions = map[string]bool{"UpdateRole": true}
 
 // queryPayload wraps output in <ActionResponse><ActionResult>, leaving out the
 // Result element for an action with no modelled output, as AWS does.
-func queryPayload(name string, output any) any {
+func queryPayload(name, requestID string, output any) any {
 	if structResultActions[name] || hasExportedField(output) {
-		return awsxml.QueryResponsePayload(name, output)
+		return awsxml.QueryResponsePayload(name, requestID, output)
 	}
-	return awsxml.ResponsePayload(name+"Response", output)
+	return awsxml.QueryMetadataResponsePayload(name, requestID)
 }
 
 func hasExportedField(output any) bool {
@@ -473,12 +475,14 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 		}
 	}
 
-	xmlOutput, err := h.dispatch(name, input, d, accountID)
+	requestID := uuid.NewV4().String()
+	xmlOutput, err := h.dispatch(name, input, d, accountID, requestID)
 	if err != nil {
 		return err
 	}
 
 	w.Header().Set("Content-Type", "text/xml")
+	w.Header().Set(envelope.RequestIDHeader, requestID)
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(xmlOutput); err != nil {
 		slog.ErrorContext(r.Context(), "Failed to write IAM response", "err", err)

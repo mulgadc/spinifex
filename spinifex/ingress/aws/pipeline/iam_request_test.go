@@ -58,6 +58,9 @@ func TestIAMRequest_UnitOutputOmitsResult(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	assert.Contains(t, string(body), "<DeleteUserResponse")
 	assert.NotContains(t, string(body), "DeleteUserResult")
+	requestID := resp.Header.Get("X-Amzn-Requestid")
+	require.NotEmpty(t, requestID)
+	assert.Contains(t, string(body), "<ResponseMetadata><RequestId>"+requestID+"</RequestId></ResponseMetadata>")
 }
 
 func TestIAMRequest_EmptyAction(t *testing.T) {

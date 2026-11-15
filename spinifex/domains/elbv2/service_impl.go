@@ -1425,8 +1425,7 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 		if out, err := s.repeatCreateLoadBalancer(ctx, want, name, accountID); out != nil || err != nil {
 			return out, err
 		}
-		return nil, awserrors.Errorf(awserrors.ErrorELBv2DuplicateLoadBalancer,
-			"A load balancer with the same name '%s' exists, but with different settings", name)
+		return nil, errors.New(awserrors.ErrorELBv2DuplicateLoadBalancer)
 	}
 	if !claimOK {
 		return nil, errors.New(awserrors.ErrorServerInternal)

@@ -1425,7 +1425,8 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 		if out, err := s.repeatCreateLoadBalancer(ctx, want, name, accountID); out != nil || err != nil {
 			return out, err
 		}
-		return nil, errors.New(awserrors.ErrorELBv2DuplicateLoadBalancer)
+		return nil, awserrors.Errorf(awserrors.ErrorELBv2DuplicateLoadBalancer,
+			"A load balancer with the same name '%s' exists, but with different settings", name)
 	}
 	if !claimOK {
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -2373,7 +2374,8 @@ func (s *ELBv2ServiceImpl) DeleteTargetGroup(ctx context.Context, input *elbv2.D
 		liveListener[l.ListenerArn] = true
 		for _, action := range l.DefaultActions {
 			if action.TargetGroupArn == tg.TargetGroupArn {
-				return nil, errors.New(awserrors.ErrorELBv2TargetGroupInUse)
+				return nil, awserrors.Errorf(awserrors.ErrorELBv2TargetGroupInUse,
+					"Target group '%s' is currently in use by a listener or a rule", tg.TargetGroupArn)
 			}
 		}
 	}
@@ -2390,7 +2392,8 @@ func (s *ELBv2ServiceImpl) DeleteTargetGroup(ctx context.Context, input *elbv2.D
 		}
 		for _, action := range r.Actions {
 			if action.TargetGroupArn == tg.TargetGroupArn {
-				return nil, errors.New(awserrors.ErrorELBv2TargetGroupInUse)
+				return nil, awserrors.Errorf(awserrors.ErrorELBv2TargetGroupInUse,
+					"Target group '%s' is currently in use by a listener or a rule", tg.TargetGroupArn)
 			}
 		}
 	}
@@ -2938,7 +2941,7 @@ func buildListenerCertificates(protocol string, in []*elbv2.Certificate, sslPoli
 	if policy == "" {
 		policy = DefaultSslPolicy
 	} else if !isKnownSslPolicy(policy) {
-		return nil, "", errors.New(awserrors.ErrorELBv2SSLPolicyNotFound)
+		return nil, "", awserrors.Errorf(awserrors.ErrorELBv2SSLPolicyNotFound, "SSL policy '%s' not found", policy)
 	}
 
 	return certs, policy, nil
@@ -2997,7 +3000,8 @@ func (s *ELBv2ServiceImpl) CreateListener(ctx context.Context, input *elbv2.Crea
 	}
 	for _, l := range existingListeners {
 		if l.Port == port {
-			return nil, errors.New(awserrors.ErrorELBv2DuplicateListener)
+			return nil, awserrors.Errorf(awserrors.ErrorELBv2DuplicateListener,
+				"A listener already exists on this port for this load balancer '%s'", lb.LoadBalancerArn)
 		}
 	}
 
@@ -3256,7 +3260,8 @@ func (s *ELBv2ServiceImpl) ModifyListener(ctx context.Context, input *elbv2.Modi
 					continue
 				}
 				if l.Port == newPort {
-					return nil, errors.New(awserrors.ErrorELBv2DuplicateListener)
+					return nil, awserrors.Errorf(awserrors.ErrorELBv2DuplicateListener,
+						"A listener already exists on this port for this load balancer '%s'", lb.LoadBalancerArn)
 				}
 			}
 			updated.Port = newPort

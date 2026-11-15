@@ -46,8 +46,9 @@ func TestCreateLoadBalancer_ConcurrentSameNameSingleOwner(t *testing.T) {
 			assert.Equal(t, rec.LoadBalancerArn, *outs[i].LoadBalancers[0].LoadBalancerArn, "every success names the one load balancer")
 			continue
 		}
-		code, _, _ := awserrors.ResolveErrorDetail(e)
+		code, msg, _ := awserrors.ResolveErrorDetail(e)
 		require.Equal(t, awserrors.ErrorELBv2DuplicateLoadBalancer, code, "unexpected create error: %v", e)
+		assert.Equal(t, "A load balancer with the same name 'race-lb' exists, but with different settings", msg)
 	}
 	assert.GreaterOrEqual(t, ok, 1, "one create owns the name")
 

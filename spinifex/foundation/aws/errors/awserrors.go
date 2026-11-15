@@ -1372,9 +1372,9 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorOperationNotSupported:    {HTTPCode: 400, Message: "The specified operation is not supported in this registry."},
 
 	// ELBv2 error codes
-	ErrorELBv2LoadBalancerNotFound:         {HTTPCode: 400, Message: "One or more load balancers not found."},
+	ErrorELBv2LoadBalancerNotFound:         {HTTPCode: 400, Message: "One or more load balancers not found"},
 	ErrorELBv2TargetGroupNotFound:          {HTTPCode: 400, Message: "One or more target groups not found."},
-	ErrorELBv2ListenerNotFound:             {HTTPCode: 400, Message: "One or more listeners not found."},
+	ErrorELBv2ListenerNotFound:             {HTTPCode: 400, Message: "One or more listeners not found"},
 	ErrorELBv2DuplicateLoadBalancer:        {HTTPCode: 400, Message: "A load balancer with the same name already exists."},
 	ErrorELBv2DuplicateTargetGroup:         {HTTPCode: 400, Message: "A target group with the same name already exists."},
 	ErrorELBv2DuplicateListener:            {HTTPCode: 400, Message: "A listener with the specified port already exists on this load balancer."},
@@ -1389,7 +1389,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorELBv2SubnetNotFound:               {HTTPCode: 400, Message: "The specified subnet does not exist."},
 	ErrorELBv2AvailabilityZoneNotSupported: {HTTPCode: 400, Message: "The specified Availability Zone is not supported."},
 	ErrorELBv2InvalidConfigurationRequest:  {HTTPCode: 400, Message: "The requested configuration change is not valid."},
-	ErrorELBv2RuleNotFound:                 {HTTPCode: 400, Message: "One or more rules not found."},
+	ErrorELBv2RuleNotFound:                 {HTTPCode: 400, Message: "One or more rules not found"},
 	ErrorELBv2PriorityInUse:                {HTTPCode: 400, Message: "The specified priority is in use."},
 	ErrorELBv2TooManyRules:                 {HTTPCode: 400, Message: "You've reached the limit on the number of rules per load balancer."},
 	ErrorELBv2TooManyActions:               {HTTPCode: 400, Message: "You've reached the limit on the number of actions per rule."},

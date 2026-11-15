@@ -126,6 +126,84 @@ dump_ovn_state() {
         --columns=logical_port,mac,chassis,up list port_binding 2>&1 | head -80 || true
 }
 
+# dump_eks_dns_state shows how this host resolves each EKS endpoint: through the
+# resolver, and asked directly of the server the Spinifex drop-in routes it to.
+dump_eks_dns_state() {
+    local label="${1:-eks-dns}" name host server ip
+    # The mode is printed because systemd-resolved reads the drop-in unprivileged,
+    # so a root-only file is silently ignored; sudo so it shows here regardless.
+    log "--- ${label}: resolved drop-in ---"
+    sudo stat -c '%A %U:%G %n' /etc/systemd/resolved.conf.d /etc/systemd/resolved.conf.d/spinifex-dns.conf 2>&1 || true
+    sudo cat /etc/systemd/resolved.conf.d/spinifex-dns.conf 2>&1 || true
+    log "--- ${label}: resolvectl status ---"
+    resolvectl status 2>&1 | head -60 || true
+    server=$(sudo sed -n 's/^DNS=//p' /etc/systemd/resolved.conf.d/spinifex-dns.conf 2>/dev/null | head -1)
+    server=${server:-$WAN_IP}
+    for name in $(aws eks list-clusters --query 'clusters[]' --output text 2>/dev/null); do
+        host=$(aws eks describe-cluster --name "$name" --query 'cluster.endpoint' --output text 2>/dev/null)
+        host=${host#https://}; host=${host%%:*}; host=${host%%/*}
+        [ -n "$host" ] || continue
+        log "--- ${label}: resolvectl query ${host} ---"
+        resolvectl query "$host" 2>&1 || true
+        if [ -n "$server" ] && command -v dig >/dev/null; then
+            log "--- ${label}: ${host} asked of ${server} ---"
+            dig +time=3 +tries=1 @"${server%%#*}" "$host" A 2>&1 | grep -E 'status:|^[^;].*\sIN\s' || true
+            ip=$(dig +short +time=3 +tries=1 @"${server%%#*}" "$host" A 2>/dev/null | grep -m1 -E '^[0-9.]+$')
+            if [ -n "$ip" ]; then
+                log "--- ${label}: https://${ip}:443/livez from this host ---"
+                curl -sk --max-time 5 -o /dev/null -w '%{http_code}\n' "https://${ip}:443/livez" 2>&1 || true
+                # The worker's own state, past this host's resolver: dialled by IP
+                # with the published name still verified against the cert.
+                log "--- ${label}: kubectl get nodes via ${ip} ---"
+                kubectl --server "https://${ip}:443" --tls-server-name "$host" --request-timeout=15s \
+                    get nodes -o wide 2>&1 | head -20 || true
+            fi
+        fi
+    done
+}
+
+# console_text prints an instance's console output; the CLI may or may not have
+# decoded the base64 the API returns.
+console_text() {
+    aws ec2 get-console-output --instance-id "$1" --query Output --output text 2>/dev/null |
+        python3 -c '
+import base64, binascii, sys
+raw = sys.stdin.read().strip()
+try:
+    sys.stdout.write(base64.b64decode(raw, validate=True).decode("utf-8", "replace"))
+except (binascii.Error, ValueError):
+    sys.stdout.write(raw)
+' | tr -d '\r'
+}
+
+# dump_eks_worker_state shows each cluster's nodegroups and what every worker VM
+# printed on its console: the agent join happens there, out of the API's sight.
+dump_eks_worker_state() {
+    local label="${1:-eks-workers}" name ng iid
+    for name in $(aws eks list-clusters --query 'clusters[]' --output text 2>/dev/null); do
+        log "--- ${label}: describe-cluster ${name} ---"
+        aws eks describe-cluster --name "$name" --output json \
+            --query 'cluster.{status:status,endpoint:endpoint,vpc:resourcesVpcConfig,health:health}' 2>&1 | head -60 || true
+        for ng in $(aws eks list-nodegroups --cluster-name "$name" --query 'nodegroups[]' --output text 2>/dev/null); do
+            log "--- ${label}: describe-nodegroup ${name}/${ng} ---"
+            aws eks describe-nodegroup --cluster-name "$name" --nodegroup-name "$ng" --output json \
+                --query 'nodegroup.{status:status,health:health,subnets:subnets,resources:resources}' 2>&1 | head -60 || true
+        done
+        log "--- ${label}: ${name} worker instances ---"
+        aws ec2 describe-instances --filters "Name=tag:spinifex:eks-cluster,Values=${name}" --output table \
+            --query 'Reservations[].Instances[].[InstanceId,State.Name,PrivateIpAddress,PublicIpAddress,SubnetId,Placement.AvailabilityZone]' \
+            2>&1 | head -40 || true
+        for iid in $(aws ec2 describe-instances --filters "Name=tag:spinifex:eks-cluster,Values=${name}" \
+            --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null); do
+            log "--- ${label}: ${iid} console, k3s/cloud-init/network lines ---"
+            console_text "$iid" | grep -aiE 'k3s|cloud-init|spinifex|eks|error|fail|refused|timeout|resolv|dial|x509|certificate' |
+                tail -150 || true
+            log "--- ${label}: ${iid} console, last 60 lines ---"
+            console_text "$iid" | tail -60 || true
+        done
+    done
+}
+
 cleanup() {
     EXIT_CODE=$?
     if [ "$EXIT_CODE" -ne 0 ]; then
@@ -684,6 +762,12 @@ run_workbook() {
         # Capture OVN state while VMs still exist — the EXIT trap fires after
         # destroy, by which point port groups, address sets, and ACLs are gone.
         dump_ovn_state "post-fail ${example} (pre-destroy)"
+        case "$example" in
+            eks-*)
+                dump_eks_dns_state "post-fail ${example} (pre-destroy)"
+                dump_eks_worker_state "post-fail ${example} (pre-destroy)"
+                ;;
+        esac
         rc=1
     fi
 

@@ -1824,3 +1824,25 @@ func TestCreateRole_TrustPolicy_AssumeRoleStringLikeRejected(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorIAMMalformedPolicyDocument, code)
 	assert.Contains(t, message, "StringLike")
 }
+
+// AWS answers an identity with nothing attached with an empty AttachedPolicies
+// element; a nil slice marshals to no element at all.
+func TestListAttachedPolicies_NoneAttachedIsEmptyNotNil(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "bare-role")
+	createTestUser(t, svc, "bare-user")
+	createTestGroup(t, svc, "bare-group")
+
+	roleOut, err := svc.ListAttachedRolePolicies(testAccountID, &iam.ListAttachedRolePoliciesInput{RoleName: aws.String("bare-role")})
+	require.NoError(t, err)
+	assert.Equal(t, []*iam.AttachedPolicy{}, roleOut.AttachedPolicies)
+
+	userOut, err := svc.ListAttachedUserPolicies(testAccountID, &iam.ListAttachedUserPoliciesInput{UserName: aws.String("bare-user")})
+	require.NoError(t, err)
+	assert.Equal(t, []*iam.AttachedPolicy{}, userOut.AttachedPolicies)
+
+	groupOut, err := svc.ListAttachedGroupPolicies(testAccountID, &iam.ListAttachedGroupPoliciesInput{GroupName: aws.String("bare-group")})
+	require.NoError(t, err)
+	assert.Equal(t, []*iam.AttachedPolicy{}, groupOut.AttachedPolicies)
+}

@@ -76,6 +76,7 @@ func TestReportUnitStatus_PrintsEachActionAndConflictFooter(t *testing.T) {
 		{Name: "install.service", Action: systemd.ActionInstall, EmbeddedVersion: 2},
 		{Name: "replace.service", Action: systemd.ActionReplace, InstalledVersion: 1, EmbeddedVersion: 2},
 		{Name: "conflict.service", Action: systemd.ActionConflict, InstalledVersion: 2},
+		{Name: "masked.service", Action: systemd.ActionMasked},
 	}}
 
 	out := captureStdout(t, func() { reportUnitStatus(result) })
@@ -85,6 +86,7 @@ func TestReportUnitStatus_PrintsEachActionAndConflictFooter(t *testing.T) {
 		"install.service:", "missing → will install (v2)",
 		"replace.service:", "1 → 2 (stale, will replace)",
 		"conflict.service:", "2 (operator-modified, not touched",
+		"masked.service:", "masked, not touched",
 		"Operator-modified units above are left as-is",
 	} {
 		assert.Contains(t, out, want)

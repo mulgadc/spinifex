@@ -8,6 +8,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/awsgw"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/nats"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/northstar"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/ocibsd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/predastore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/qemunbdd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/qmpcollector"
@@ -29,6 +30,7 @@ var (
 	_ Service = (*predastore.Service)(nil)
 	_ Service = (*viperblockd.Service)(nil)
 	_ Service = (*qemunbdd.Service)(nil)
+	_ Service = (*ocibsd.Service)(nil)
 	_ Service = (*spinifex.Service)(nil)
 	_ Service = (*awsgw.Service)(nil)
 	_ Service = (*spinifexui.Service)(nil)
@@ -54,6 +56,9 @@ func New(btype string, config any) (Service, error) {
 
 	case "qemunbd":
 		return qemunbdd.New(config)
+
+	case "ocibsd":
+		return ocibsd.New(config)
 
 	case "spinifex":
 		return spinifex.New(config)

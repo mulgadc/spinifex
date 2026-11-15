@@ -68,6 +68,28 @@ variable "instance_principal" {
   }
 }
 
+# What backs EBS on these nodes. ocibsd attaches an OCI block volume per EBS
+# volume at runtime, so the Oracle Cloud Agent's Block Volume Management plugin
+# is disabled and the node's own data volume attaches paravirtualized instead.
+variable "ebs_provider" {
+  description = "EBS provider the nodes are installed with: viperblockd, or ocibsd for OCI Block Volumes."
+  type        = string
+  default     = "viperblockd"
+
+  validation {
+    condition     = contains(["viperblockd", "ocibsd"], var.ebs_provider)
+    error_message = "ebs_provider must be viperblockd or ocibsd."
+  }
+}
+
+# Named only in the api_key_policy_statements output, which a tenancy admin
+# applies to the group holding the API user that spx-oci-config.sh installs.
+variable "api_key_group_name" {
+  description = "IAM group of the API-key user the nodes authenticate as when instance_principal is off."
+  type        = string
+  default     = "spinifex-nodes"
+}
+
 variable "vcn_cidr" {
   description = "VCN address space. A /22 leaves room for the per-node secondary private IPs Spinifex allocates for external addresses."
   type        = string

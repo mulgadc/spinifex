@@ -1,5 +1,7 @@
 package external
 
+import "github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+
 // ExternalPoolConfig describes one external IP pool wired to a VPC.
 // Mirrors [external_pools] in spinifex.toml.
 type ExternalPoolConfig struct {
@@ -32,8 +34,8 @@ type ExternalPoolConfig struct {
 	OCIVNICIface     string
 	OCISubnetID      string
 	OCIPublicIPPool  string
-	// OCIAuth selects how the provider authenticates: OCIAuthInstancePrincipal
-	// for the instance's own certificate, or OCIAuthConfigFile (the default) for
+	// OCIAuth selects how the provider authenticates: config.OCIAuthInstancePrincipal
+	// for the instance's own certificate, or config.OCIAuthConfigFile (the default) for
 	// an API key, which OCIConfigFile and OCIConfigProfile then locate.
 	OCIAuth          string
 	OCIConfigFile    string
@@ -77,7 +79,7 @@ func (p *ExternalPoolConfig) IsOCI() bool {
 // UsesInstancePrincipal reports whether the OCI provider authenticates as the
 // instance rather than from an API-key config file.
 func (p *ExternalPoolConfig) UsesInstancePrincipal() bool {
-	return p != nil && p.OCIAuth == OCIAuthInstancePrincipal
+	return p != nil && p.OCIAuth == config.OCIAuthInstancePrincipal
 }
 
 // IsExoscale reports whether the pool sources IPs from Exoscale Elastic IPs.
@@ -122,14 +124,6 @@ const (
 	// SourceLatitude hands out a fixed set of latitude.sh Elastic IPs, moved
 	// between servers. A routed Elastic IP arrives addressed to the host's MAC.
 	SourceLatitude = "latitude"
-
-	// OCIAuthConfigFile authenticates from an API-key config file. The default,
-	// because it is what an operator already has from `oci setup config`.
-	OCIAuthConfigFile = "config_file"
-	// OCIAuthInstancePrincipal authenticates as the instance, from the
-	// certificate its metadata service serves. No key material on any node and
-	// nothing to rotate, at the cost of a dynamic group and an IAM policy.
-	OCIAuthInstancePrincipal = "instance_principal"
 
 	// DHCPMACDerived leases with deterministic per-client-id 02:xx MACs.
 	DHCPMACDerived = "derived"

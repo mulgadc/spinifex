@@ -30,6 +30,7 @@ const (
 	ActionInstall  Action = "install"  // unit missing on disk
 	ActionReplace  Action = "replace"  // installed marker version is older than embedded
 	ActionConflict Action = "conflict" // marker version matches but content differs — operator-modified
+	ActionMasked   Action = "masked"   // unit is linked to /dev/null; left masked
 )
 
 // UnitStatus reports the reconcile decision for a single unit.
@@ -103,6 +104,12 @@ func sortedUnitNames() []string {
 	return slices.Sorted(maps.Keys(Units))
 }
 
+// IsMasked reports whether the unit file at path is masked, a link to /dev/null.
+func IsMasked(path string) bool {
+	target, err := os.Readlink(path)
+	return err == nil && target == os.DevNull
+}
+
 // Reconcile compares each embedded unit (Units, generated from
 // build/systemd) against the copy installed under root. Missing or
 // version-stale units are replaced after a timestamped backup; units whose
@@ -116,6 +123,13 @@ func Reconcile(root string, opts Options) (Result, error) {
 		embedded := Units[name]
 		embeddedVersion := unitVersion(embedded)
 		path := filepath.Join(root, name)
+
+		if IsMasked(path) {
+			result.Statuses = append(result.Statuses, UnitStatus{
+				Name: name, Action: ActionMasked, EmbeddedVersion: embeddedVersion,
+			})
+			continue
+		}
 
 		installed, err := os.ReadFile(path)
 		if os.IsNotExist(err) {

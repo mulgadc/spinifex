@@ -49,7 +49,7 @@ WORKBOOKS=""
 # set -u an unset array is an error rather than an empty one.
 HOSTS=()
 
-TOPOLOGIES="bm vm-single vm-multi vm-single-principal"
+TOPOLOGIES="bm vm-single vm-multi vm-single-principal vm-single-ocibsd vm-multi-ocibsd"
 
 # What a topology is worth when nothing says otherwise, so a CI run of a named
 # topology is the same every time. Supplied as TF_VAR_, which terraform.auto.tfvars
@@ -61,8 +61,14 @@ TOPOLOGIES="bm vm-single vm-multi vm-single-principal"
 #
 # A case rather than an associative array: macOS ships bash 3.2, where declare -A
 # is an indexed assignment and the key is read as an arithmetic variable.
+#
+# TOPO_EBS_PROVIDER is what backs EBS. The -ocibsd topologies are their viperblock
+# twins on OCI Block Volumes, so a difference between a pair is the provider's.
+# They set no provider and rely on init's detection on an OCI VM; every other
+# topology names viperblockd in SPINIFEX_EBS_PROVIDER to keep its baseline.
 topo_defaults() {
     TOPO_FORCE_PRINCIPAL=0
+    TOPO_EBS_PROVIDER=viperblockd
     case "$1" in
         bm)        TOPO_DEFAULT_SHAPE="BM.Standard.E2.64";  TOPO_DEFAULT_NODES=1 ;;
         vm-single) TOPO_DEFAULT_SHAPE="VM.Standard.E6.Flex"; TOPO_DEFAULT_NODES=1 ;;
@@ -74,6 +80,10 @@ topo_defaults() {
             TOPO_DEFAULT_SHAPE="${OCI_PRINCIPAL_SHAPE:-VM.Standard.E6.Flex}"
             TOPO_DEFAULT_NODES=1
             TOPO_FORCE_PRINCIPAL=1 ;;
+        vm-single-ocibsd)
+            TOPO_DEFAULT_SHAPE="VM.Standard.E6.Flex"; TOPO_DEFAULT_NODES=1; TOPO_EBS_PROVIDER=ocibsd ;;
+        vm-multi-ocibsd)
+            TOPO_DEFAULT_SHAPE="VM.Standard.E6.Flex"; TOPO_DEFAULT_NODES=3; TOPO_EBS_PROVIDER=ocibsd ;;
         *) return 1 ;;
     esac
 }
@@ -86,7 +96,7 @@ die() {
 
 usage() {
     cat >&2 <<EOF
-usage: ${0##*/} --topology <bm|vm-single|vm-multi|vm-single-principal> [options]
+usage: ${0##*/} --topology <bm|vm-single|vm-multi|vm-single-principal|vm-single-ocibsd|vm-multi-ocibsd> [options]
 
 Builds a topology, or installs on existing OCI hosts, then installs Spinifex,
 forms the cluster, and verifies the OCI address allocator.
@@ -95,6 +105,13 @@ forms the cluster, and verifies the OCI address allocator.
                           topology is the easiest expensive mistake here.
                           vm-single-principal is vm-single authenticating as the
                           instance, and implies --instance-principal.
+                          vm-single-ocibsd and vm-multi-ocibsd set no EBS
+                          provider, so init detects ocibsd on the OCI VM, and
+                          add the ebs provider gate; the others set
+                          SPINIFEX_EBS_PROVIDER=viperblockd. The ocibsd pair
+                          need --distro. Their OCI volumes and backups are
+                          in no Terraform state: the destroy here leaves any a
+                          failed run made, and e2e-oci.sh sweeps them by tag.
   --ssh-public-key PATH   Public half installed on each node. Default $SSH_PUBLIC_KEY
   --ssh-private-key PATH  Private half used to reach them. Default $SSH_PRIVATE_KEY
   --instance-principal    Configure the pool with oci_auth="instance_principal"
@@ -106,7 +123,9 @@ forms the cluster, and verifies the OCI address allocator.
                           Create the dynamic group and policy before deployment.
                           Needs a tenancy-admin profile. Opt-in because these are
                           tenancy-level resources. Use --identity-oci-profile to
-                          use a different profile for this one-time setup.
+                          use a different profile for this one-time setup. The
+                          policy carries the volume grants only on an ocibsd
+                          topology, and it is shared, so run it from one of those.
   --identity-oci-profile NAME
                           Tenancy-admin profile for --setup-instance-principal.
                           Defaults to --oci-profile / OCI_PROFILE.
@@ -209,6 +228,19 @@ fi
 
 [ -z "$EXISTING_HOSTS_FILE" ] || [ -z "$EXISTING_STATE_FILE" ] \
     || die "--existing-hosts-file and --existing-state-file are mutually exclusive"
+
+# ocibsd needs a node credential, which a run with no pool never installs, and the
+# compartment and region from the state, which a hosts file does not carry, to
+# sweep and check its volumes. setup.sh stages its files from the tarball, and a
+# published release predates them.
+if [ "$TOPO_EBS_PROVIDER" = ocibsd ] && [ "$DESTROY_ONLY" = 0 ]; then
+    [ "$SKIP_POOL" != 1 ] \
+        || die "--no-external-pool installs no OCI credential, so ocibsd on $TOPOLOGY could not reach the OCI API"
+    [ -z "$EXISTING_HOSTS_FILE" ] \
+        || die "$TOPOLOGY reads its compartment and availability domain from Terraform state; use --existing-state-file"
+    [ -n "$DISTRO" ] || [ "$DRY_RUN" = 1 ] \
+        || die "$TOPOLOGY needs --distro: a published release predates the ocibsd files setup.sh stages and init installs"
+fi
 if [ -n "$EXISTING_HOSTS_FILE" ] || [ -n "$EXISTING_STATE_FILE" ]; then
     EXISTING_INFRA=1
     [ "$DESTROY_ONLY" = 0 ] \
@@ -281,7 +313,7 @@ tf() {
     # deployment sizes itself in that file and the topology only supplies the
     # default a CI run wants.
     TF_VAR_compute_shape="$TOPO_DEFAULT_SHAPE" TF_VAR_node_count="$TOPO_DEFAULT_NODES" \
-        python3 "$HERE/scripts/oci_env.py" --ssh-public-key-path "$SSH_PUBLIC_KEY" \
+        TF_VAR_ebs_provider="$TOPO_EBS_PROVIDER" python3 "$HERE/scripts/oci_env.py" --ssh-public-key-path "$SSH_PUBLIC_KEY" \
         ${OCI_PROFILE:+--profile "$OCI_PROFILE"} -- \
         terraform -chdir="$HERE" "$@"
 }
@@ -383,18 +415,18 @@ identity_resources() {
                 "$HERE/setup-identity.sh" --destroy
         elif [ "$DRY_RUN" = 1 ]; then
             OCI_CLI_PROFILE="$identity_profile" OCI_SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" \
-                "$HERE/setup-identity.sh" --dry-run
+                "$HERE/setup-identity.sh" --dry-run --ebs-provider "$TOPO_EBS_PROVIDER"
         else
             OCI_CLI_PROFILE="$identity_profile" OCI_SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" \
-                "$HERE/setup-identity.sh"
+                "$HERE/setup-identity.sh" --ebs-provider "$TOPO_EBS_PROVIDER"
         fi
     else
         if [ "$action" = destroy ]; then
             OCI_SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" "$HERE/setup-identity.sh" --destroy
         elif [ "$DRY_RUN" = 1 ]; then
-            OCI_SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" "$HERE/setup-identity.sh" --dry-run
+            OCI_SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" "$HERE/setup-identity.sh" --dry-run --ebs-provider "$TOPO_EBS_PROVIDER"
         else
-            OCI_SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" "$HERE/setup-identity.sh"
+            OCI_SSH_PUBLIC_KEY="$SSH_PUBLIC_KEY" "$HERE/setup-identity.sh" --ebs-provider "$TOPO_EBS_PROVIDER"
         fi
     fi
 }
@@ -419,11 +451,19 @@ capture_journals() {
     # the empty array is an unbound-variable error rather than zero passes.
     [ "${#HOSTS[@]}" -gt 0 ] || return 0
     for host in "${HOSTS[@]}"; do
+        # Per-request access lines are most of the volume, so they are dropped and
+        # the rest kept for the whole run rather than its last few minutes.
         ssh_node "$host" '
             echo "=== spinifex, warning and above ==="
-            sudo journalctl -u "spinifex-*" --since -4h --priority=warning --no-pager | tail -2000
-            echo "=== spinifex, all priorities, last 2000 lines ==="
-            sudo journalctl -u "spinifex-*" --since -4h --no-pager | tail -2000
+            sudo journalctl -u "spinifex-*" --since -6h --priority=warning --no-pager | tail -2000
+            echo "=== resolver drop-in and status ==="
+            sudo stat -c "%A %U:%G %n" /etc/systemd/resolved.conf.d /etc/systemd/resolved.conf.d/spinifex-dns.conf 2>&1
+            sudo cat /etc/systemd/resolved.conf.d/spinifex-dns.conf 2>&1
+            resolvectl status 2>&1 | head -40
+            echo "=== spinifex and resolved, all priorities, access lines dropped, last 40000 lines ==="
+            sudo journalctl -u "spinifex-*" -u systemd-resolved --since -6h --no-pager \
+                | grep -avE "\"msg\":\"(request|Request|Service request completed|IMDS: serving metadata request|IMDS: issued IMDSv2 token|Processing DescribeInstances request from this node|DescribeInstances completed|DescribeInstances: Aggregated response)\"" \
+                | tail -40000
         ' > "$STATE_DIR/journal-$host.log" 2>&1 || log "could not collect the journal from $host"
     done
 }
@@ -443,8 +483,10 @@ mark_stage() { : > "$STATE_DIR/stage-$1.done"; }
 formation_complete() {
     local host
     stage_done formation || return 1
+    # A line only init writes, not a non-empty file: an ocibsd API-key run seeds the
+    # file with the credential before init, so a fresh node already has one.
     for host in "${HOSTS[@]}"; do
-        ssh_node "$host" 'test -s /etc/spinifex/spinifex.toml' || return 1
+        ssh_node "$host" "grep -q '^data_dir = ' /etc/spinifex/spinifex.toml" || return 1
     done
 }
 
@@ -634,6 +676,7 @@ if [ "$DRY_RUN" = 1 ]; then
         | sed -E 's/ +=/ =/' | sort -u | sed 's/^/  /'
     log "full plan in $STATE_DIR/plan.txt"
     plan="install Spinifex on $NODES node(s), form the cluster"
+    [ "$TOPO_EBS_PROVIDER" = ocibsd ] && plan="$plan on ocibsd, run the ebs provider gate"
     [ "$SKIP_POOL" = 1 ] && plan="$plan, configure no external pool"
     if [ "$SKIP_WORKLOAD" = 1 ]; then
         plan="$plan, launch no guests"
@@ -667,6 +710,29 @@ else
         || die "could not read instance_principal from $STATE_DIR/terraform.tfstate"
     [ "$built_principal" = "$PRINCIPAL_MODE" ] \
         || die "read instance_principal='$PRINCIPAL_MODE' from the tfvars and the apply built '$built_principal'; set it in one place"
+fi
+
+# Where ocibsd should keep the cluster's volumes, read back from what was built
+# rather than from this run's inputs, to check what init detected and to sweep.
+# Never logged: the compartment is an account's OCID.
+topo_output() {
+    if [ "$EXISTING_INFRA" = 1 ]; then
+        state_output "$1"
+    else
+        tf output -raw "${tf_state[@]}" "$1"
+    fi
+}
+OCIBSD_COMPARTMENT=""
+OCIBSD_AD=""
+OCIBSD_REGION=""
+if [ "$TOPO_EBS_PROVIDER" = ocibsd ]; then
+    built_provider="$(topo_output ebs_provider 2>/dev/null)" \
+        || die "the state has no ebs_provider output; it predates ocibsd, so rebuild it"
+    [ "$built_provider" = ocibsd ] \
+        || die "$TOPOLOGY needs nodes built for ocibsd and the state says ebs_provider='$built_provider'; a tfvars override wins over the topology"
+    OCIBSD_COMPARTMENT="$(topo_output compartment_ocid)" || die "could not read compartment_ocid from the state"
+    OCIBSD_AD="$(topo_output availability_domain)" || die "could not read availability_domain from the state"
+    OCIBSD_REGION="$(topo_output region)" || die "could not read region from the state"
 fi
 
 # Written for every topology, not just the multi-node one that passes it to
@@ -729,17 +795,42 @@ for host in "${HOSTS[@]}"; do
     fi
     # cloud-init being finished does not mean apt is: the apt-daily timers and
     # unattended-upgrades run on their own schedule and hold the dpkg lock, which
-    # the installer then fails on. Wait for the lock rather than fight it.
+    # the installer then fails on. The timers are stopped so no new run starts, and
+    # the locks must stay free for three polls, since a run frees them between phases.
     ssh_node "$host" "DISTRO_NAME='$(basename "${DISTRO:-}")' SETUP_NAME='$(basename "${SETUP_SH:-}")' CHANNEL='$CHANNEL' INSTALL_VERSION='$INSTALL_VERSION' bash -s" \
         > "$STATE_DIR/install-$host.log" 2>&1 <<'REMOTE' \
         || die "install failed on $host; see $STATE_DIR/install-$host.log"
 set -e
-for _ in $(seq 1 120); do
-    sudo fuser /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock >/dev/null 2>&1 || break
+sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+free=0
+for i in $(seq 1 120); do
+    # The Oracle Cloud Agent runs its own apt update at boot, which can hang for
+    # longer than this wait. A list refresh is safe to stop; a dpkg run is not.
+    if [ "$i" -ge 36 ] && ! pgrep -x dpkg >/dev/null && pgrep -f '^/usr/bin/apt update$' >/dev/null; then
+        echo "stopping an apt update still running after 3 minutes:"
+        ps -o pid,etime,args -p "$(pgrep -d, -f '^/usr/bin/apt update$')" || true
+        sudo pkill -f '^/usr/bin/apt update$' || true
+    fi
+    if systemctl is-active --quiet apt-daily.service apt-daily-upgrade.service \
+        || sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; then
+        free=0
+    else
+        free=$((free + 1))
+        [ "$free" -lt 3 ] || break
+    fi
     sleep 5
 done
-sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
-    && { echo "the dpkg lock was still held after 10 minutes"; exit 1; }
+[ "$free" -ge 3 ] || { echo "apt was still busy after 10 minutes:"; ps -eo pid,etime,args | grep -E '[a]pt|[d]pkg|[u]nattended'; exit 1; }
+# The image's regional clouds.archive.ubuntu.com alias and the country mirror
+# have each gone unreachable for hours, so apt falls through a list instead.
+for f in $(sudo grep -rlE '[a-z0-9-]+\.clouds\.archive\.ubuntu\.com' /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null); do
+    regional=$(grep -oE 'https?://[a-z0-9-]+\.clouds\.archive\.ubuntu\.com/ubuntu/?' "$f" | head -1)
+    printf '%s\tpriority:1\n%s\tpriority:2\n%s\tpriority:3\n' \
+        http://archive.ubuntu.com/ubuntu/ http://au.archive.ubuntu.com/ubuntu/ "${regional%/}/" \
+        | sudo tee /etc/apt/spx-mirrors.txt >/dev/null
+    sudo sed -i -E 's#https?://[a-z0-9-]+\.clouds\.archive\.ubuntu\.com/ubuntu/?#mirror+file:/etc/apt/spx-mirrors.txt#g' "$f"
+done
+echo 'Acquire::Retries "3";' | sudo tee /etc/apt/apt.conf.d/80-spx-retries >/dev/null
 if [ -n "${DISTRO_NAME:-}" ]; then
     # The production setup.sh against the ref's own tarball, which is what the
     # release and the ISO both run, so there is no separate dev install layout.
@@ -768,6 +859,42 @@ REMOTE
 done
 record install PASS "$INSTALLED_VERSION"
 
+
+# spx admin init's EBS choice, written to every node once (ADR-0018:S3). The ocibsd
+# topologies set nothing, so init detects ocibsd on the OCI VM; the rest name
+# viperblockd, which keeps the viperblock baseline on OCI.
+INIT_EBS_PROVIDER=""
+[ "$TOPO_EBS_PROVIDER" = ocibsd ] || INIT_EBS_PROVIDER=viperblockd
+
+# ocibsd defaults to the instance principal. An API-key run gives init the key
+# instead: the hook installs it first, and each node's config is seeded with
+# provider and credential, which init keeps as an existing config's values.
+API_KEY_EBS=0
+[ "$TOPO_EBS_PROVIDER" = ocibsd ] && [ "$PRINCIPAL_MODE" = off ] && API_KEY_EBS=1
+PRESEEDED_EBS=0
+if [ "$API_KEY_EBS" = 1 ] && ! formation_complete; then
+    log "running the credential hook before formation, so init can check the ocibsd credential"
+    "$CREDENTIAL_HOOK" "$SSH_PRIVATE_KEY" "${HOSTS[@]}" > "$STATE_DIR/credential-hook.log" 2>&1 \
+        || die "the credential hook failed; see $STATE_DIR/credential-hook.log"
+    for i in "${!HOSTS[@]}"; do
+        # Named as init and install-node.sh name them: the host on one node,
+        # node1..nodeN on several.
+        if [ "$NODES" = 1 ]; then name='$(hostname -s)'; else name="node$((i + 1))"; fi
+        ssh_node "${HOSTS[$i]}" "sed \"s/@NODE@/$name/\" | sudo tee /etc/spinifex/spinifex.toml >/dev/null" <<'TOML' \
+            || die "could not seed the ocibsd credential on ${HOSTS[$i]}"
+[nodes.@NODE@.ebs]
+provider = "ocibsd"
+
+[nodes.@NODE@.ebs.oci]
+auth = "config_file"
+config_file = "/etc/spinifex/oci/config"
+config_profile = "spinifex"
+TOML
+    done
+    PRESEEDED_EBS=1
+    record "ocibsd credential" PASS "API key installed and seeded before init"
+fi
+
 # A single node is its own documented path: install-node.sh refuses fewer than two
 # hosts, because there is nothing to join. Both branches use the flags the guide
 # names, so what is validated is what the guide tells a customer to type.
@@ -776,19 +903,34 @@ if formation_complete; then
     record formation SKIP "checkpoint verified"
 elif [ "$NODES" = 1 ]; then
     log "initializing the single node"
-    ssh_node "${HOSTS[0]}" '
-        set -e
-        sudo spx admin init --node "$(hostname -s)" --nodes 1 \
-            --region ap-southeast-2 --az ap-southeast-2a \
-            --external-mode=nat --ipsec=false
-        sudo systemctl start spinifex.target
-    ' > "$STATE_DIR/form.log" 2>&1 \
+    ssh_node "${HOSTS[0]}" "INIT_EBS_PROVIDER=$INIT_EBS_PROVIDER PRESEEDED_EBS=$PRESEEDED_EBS bash -s" \
+        > "$STATE_DIR/form.log" 2>&1 <<'REMOTE' \
         || die "single-node init failed; see $STATE_DIR/form.log"
+set -e
+ebs_env=()
+[ -z "$INIT_EBS_PROVIDER" ] || ebs_env=("SPINIFEX_EBS_PROVIDER=$INIT_EBS_PROVIDER")
+# The seeded config is the only one there, so replacing it needs --force.
+force=()
+[ "$PRESEEDED_EBS" = 0 ] || force=(--force)
+sudo env -u SPINIFEX_EBS_PROVIDER ${ebs_env[@]+"${ebs_env[@]}"} spx admin init ${force[@]+"${force[@]}"} \
+    --node "$(hostname -s)" --nodes 1 \
+    --region ap-southeast-2 --az ap-southeast-2a \
+    --external-mode=nat --ipsec=false
+sudo systemctl start spinifex.target
+REMOTE
     mark_stage formation
     record formation PASS
 else
     log "forming the cluster"
-    "$REPO_ROOT/scripts/install-node.sh" \
+    # OCI reuses public addresses, and install-node.sh checks host keys against this
+    # runner's known_hosts, so a key an earlier run saw at an address would refuse it.
+    for host in "${HOSTS[@]}"; do
+        ssh-keygen -R "$host" >/dev/null 2>&1 || true
+    done
+    # env -u first, so a SPINIFEX_EBS_PROVIDER in this shell cannot stand in for
+    # detection on the ocibsd topologies.
+    env -u SPINIFEX_EBS_PROVIDER ${INIT_EBS_PROVIDER:+SPINIFEX_EBS_PROVIDER=$INIT_EBS_PROVIDER} \
+        "$REPO_ROOT/scripts/install-node.sh" \
         --hosts-file "$STATE_DIR/hosts" \
         --user ubuntu \
         --identity "$SSH_PRIVATE_KEY" \
@@ -800,6 +942,53 @@ else
     record formation PASS
 fi
 
+# What init printed about its EBS choice, from the log formation left: init's own
+# output on one node, the init log install-node.sh keeps on the first host on several.
+init_ebs_line() {
+    if [ "$NODES" = 1 ]; then
+        grep -m1 '^EBS provider: ' "$STATE_DIR/form.log"
+    else
+        ssh_node "${HOSTS[0]}" "sudo grep -m1 '^EBS provider: ' /var/log/spx-init.log"
+    fi
+}
+# The provider has to be the topology's for the reason the topology names: the
+# ocibsd pair detected on the VM, the rest told viperblockd by the environment,
+# so a baseline flipped by detection or an ocibsd run that was configured fails.
+case "$TOPO_EBS_PROVIDER:$API_KEY_EBS" in
+    ocibsd:0) want_ebs='EBS provider: ocibsd (detected: OCI virtual machine ' ;;
+    ocibsd:1) want_ebs='EBS provider: ocibsd (from the existing config)' ;;
+    *)        want_ebs='EBS provider: viperblockd (from SPINIFEX_EBS_PROVIDER)' ;;
+esac
+ebs_line="$(init_ebs_line)" || die "init printed no EBS provider line; see $STATE_DIR/form.log"
+case "$ebs_line" in
+    "$want_ebs"*) record "ebs provider choice" PASS "${ebs_line#EBS provider: }" ;;
+    *) die "init chose '$ebs_line', and $TOPOLOGY needs '$want_ebs'" ;;
+esac
+
+# ocibsd tags every volume and backup with the cluster_id spx admin init generated,
+# and no Terraform state holds them, so e2e-oci.sh sweeps by that tag after the
+# destroy. Recorded before any volume exists, so a killed run is still sweepable.
+OCIBSD_CLUSTERS="$STATE_DIR/ocibsd-clusters"
+OCIBSD_CLUSTER_ID=""
+if [ "$TOPO_EBS_PROVIDER" = ocibsd ]; then
+    OCIBSD_CLUSTER_ID="$(ssh_node "${HOSTS[0]}" 'sudo python3 -' <<'PY'
+import sys, tomllib
+nodes = tomllib.load(open("/etc/spinifex/spinifex.toml", "rb")).get("nodes", {})
+# A leader's config also lists the other nodes, without their EBS tables.
+ids = {n["ebs"]["oci"].get("cluster_id", "") for n in nodes.values() if "oci" in n.get("ebs", {})}
+if len(ids) != 1 or "" in ids:
+    sys.exit("expected one cluster_id across [nodes.*.ebs.oci], found %r" % sorted(ids))
+print(ids.pop())
+PY
+)" || die "could not read the ocibsd cluster_id from ${HOSTS[0]}"
+    [[ "$OCIBSD_CLUSTER_ID" =~ ^[0-9a-f]{32}$ ]] \
+        || die "${HOSTS[0]} reports cluster_id '$OCIBSD_CLUSTER_ID', which is not the 128-bit hex value init writes"
+    # Appended: a record a failed sweep left behind must survive this run's.
+    line="$(printf '%s\t%s\t%s' "$OCIBSD_CLUSTER_ID" "$OCIBSD_COMPARTMENT" "$OCIBSD_REGION")"
+    grep -qxF "$line" "$OCIBSD_CLUSTERS" 2>/dev/null || printf '%s\n' "$line" >> "$OCIBSD_CLUSTERS"
+    log "ocibsd cluster_id $OCIBSD_CLUSTER_ID, recorded for the sweep"
+fi
+
 # Runs after formation and before the pool is configured, which is the only window
 # where a node has /etc/spinifex but has not yet started the allocator. Nothing in
 # this repository knows what it does: an API-key deployment needs a credential on
@@ -809,7 +998,7 @@ if pool_complete; then
     log "OCI pool configuration already completed (resuming; pool setup skipped)"
     record pool SKIP "checkpoint verified"
 else
-    if [ "$SKIP_POOL" != 1 ] && [ "$PRINCIPAL_MODE" = off ]; then
+    if [ "$SKIP_POOL" != 1 ] && [ "$PRINCIPAL_MODE" = off ] && [ "$PRESEEDED_EBS" = 0 ]; then
         log "running the credential hook"
         # Arguments, not a file: the hook is told where the nodes are and how to reach
         # them, and decides for itself what to put there.
@@ -936,9 +1125,9 @@ fi
 
 # Parse the STATUS column, never grep for Ready: NotReady contains it, and that
 # read passed a single-node run whose only node was NotReady on 0.0.0.0. The table
-# is colourised, so the escapes come off first.
+# is colourised and drawn with box characters, so both come off first.
 count_ready() {
-    sed 's/\x1b\[[0-9;]*m//g' "$STATE_DIR/nodes.txt" \
+    sed -e 's/\x1b\[[0-9;]*m//g' -e 's/│/|/g' "$STATE_DIR/nodes.txt" \
         | awk -F'|' 'NR > 1 { gsub(/^[ \t]+|[ \t]+$/, "", $2); if ($2 == "Ready") n++ } END { print n + 0 }'
 }
 
@@ -962,8 +1151,427 @@ fi
 
 if [ "$SKIP_WORKLOAD" = 1 ]; then
     log "--skip-workload: stopping before the workbook"
+    if [ "$TOPO_EBS_PROVIDER" = ocibsd ]; then
+        record "ebs provider" SKIPPED "--skip-workload"
+    fi
     record workbooks SKIPPED "--skip-workload"
     exit 0
+fi
+
+# The ebs provider gate, ocibsd only. The workbooks reach EBS only through RDS,
+# ECS and EKS, so this boots from an imported AMI, stops, attaches, snapshots,
+# restores and terminates, checking each against OCI's own view of the volumes.
+
+GATE_IMAGE=""
+GATE_LOG="$STATE_DIR/ebs-gate.log"
+
+# The AWS CLI on node 1, as the workbook driver runs it. Each argument is quoted
+# for the remote shell, so a JMESPath expression arrives as one word.
+node_aws() {
+    ssh_node "${HOSTS[0]}" "AWS_PROFILE=spinifex aws --output text $(printf '%q ' "$@")"
+}
+
+# OCI's live volumes or backups carrying every key=value given, as JSON, read from
+# this runner with the credential the apply used; nothing on a node is trusted.
+oci_tagged() {
+    local kind="$1" tag tags=()
+    shift
+    for tag in "$@"; do tags+=(--tag "$tag"); done
+    OCIBSD_COMPARTMENT="$OCIBSD_COMPARTMENT" python3 "$HERE/scripts/oci_env.py" \
+        ${OCI_PROFILE:+--profile "$OCI_PROFILE"} --region "$OCIBSD_REGION" -- \
+        python3 "$HERE/scripts/oci_volumes.py" "$kind" "${tags[@]}" 2>>"$GATE_LOG"
+}
+
+oci_count() {
+    oci_tagged "$@" | python3 -c 'import json, sys; print(len(json.load(sys.stdin)))'
+}
+
+# get-console-output is base64 on the wire and the CLI may or may not decode it.
+console_text() {
+    node_aws ec2 get-console-output --instance-id "$1" --query Output 2>/dev/null \
+        | python3 -c '
+import base64, binascii, sys
+raw = sys.stdin.read().strip()
+try:
+    sys.stdout.write(base64.b64decode(raw, validate=True).decode("utf-8", "replace"))
+except (binascii.Error, ValueError):
+    sys.stdout.write(raw)
+' | tr -d '\r'
+}
+
+# wait_console <instance> <ERE> <seconds> prints the last console line matching.
+# On a timeout the guest's last gate reports go to the gate log, so a failure
+# shows what the guest saw instead.
+wait_console() {
+    local id="$1" pattern="$2" deadline=$((SECONDS + $3)) line
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        line="$(console_text "$id" | grep -E "$pattern" | tail -1 || true)"
+        if [ -n "$line" ]; then
+            printf '%s\n' "$line"
+            return 0
+        fi
+        sleep 10
+    done
+    {
+        printf '\n=== %s console, last gate reports, waiting for: %s ===\n' "$id" "$pattern"
+        console_text "$id" | grep 'SPXGATE' | tail -20 || true
+    } >> "$GATE_LOG" 2>&1
+    return 1
+}
+
+# wait_new_boot <instance> <token> <boots seen> <seconds> prints the boot ID of
+# the first boot not yet seen that found the root marker, proving a restart kept it.
+wait_new_boot() {
+    local id="$1" tok="$2" seen="$3" deadline=$((SECONDS + $4)) boot
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        for boot in $(console_text "$id" \
+            | sed -n "s/.*SPXGATE boot=\([0-9a-f-]*\) root-present serial=[^ ]* $tok\$/\1/p"); do
+            case " $seen " in
+                *" $boot "*) ;;
+                *) printf '%s\n' "$boot"; return 0 ;;
+            esac
+        done
+        sleep 10
+    done
+    return 1
+}
+
+# The node whose QEMU runs the instance, by process, as the multinode suite finds it.
+hosting_node() {
+    local host found=""
+    for host in "${HOSTS[@]}"; do
+        if ssh_node "$host" "ps -eo args | grep -F -- '$1' | grep -q '[q]emu-system'"; then
+            [ -z "$found" ] || die "$1 runs on both $found and $host"
+            found="$host"
+        fi
+    done
+    [ -n "$found" ] || die "no node runs a QEMU for $1"
+    printf '%s\n' "$found"
+}
+
+wait_gone_from_oci() {
+    local deadline=$((SECONDS + 600)) left vol
+    while :; do
+        left=0
+        for vol in "$@"; do
+            case "$vol" in
+                snap-*) left=$((left + $(oci_count backups "spinifex-snapshot-id=$vol"))) ;;
+                *) left=$((left + $(oci_count volumes "spinifex-volume-id=$vol"))) ;;
+            esac
+        done
+        [ "$left" = 0 ] && return 0
+        [ "$SECONDS" -lt "$deadline" ] || return 1
+        sleep 15
+    done
+}
+
+# Reports on the serial console, which get-console-output reads: the root marker
+# at each boot, then each Spinifex disk (serial vol...) as it appears, writing a
+# marker to a blank one and reading one back from a restored one.
+write_gate_user_data() {
+    cat > "$1" <<'USERDATA'
+#cloud-config
+write_files:
+  # Ubuntu 26.04's dd (uutils) fails O_DIRECT reads with EINVAL, so the gate's
+  # direct I/O uses a page-aligned buffer of its own.
+  - path: /usr/local/sbin/spx-gate-io
+    permissions: "0755"
+    content: |
+      #!/usr/bin/python3
+      import mmap, os, sys
+      mode, dev = sys.argv[1], sys.argv[2]
+      buf = mmap.mmap(-1, 4096)
+      if mode == "read":
+          fd = os.open(dev, os.O_RDONLY | os.O_DIRECT)
+          n = os.readv(fd, [buf])
+          if n != 4096:
+              sys.exit(f"short read: {n} bytes")
+          sys.stdout.buffer.write(buf[:])
+      else:
+          buf.write((sys.argv[3] + "\n").encode())
+          fd = os.open(dev, os.O_WRONLY | os.O_DIRECT | os.O_SYNC)
+          if os.writev(fd, [buf]) != 4096:
+              sys.exit("short write")
+          os.fsync(fd)
+  - path: /usr/local/sbin/spx-ebs-gate
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      BOOT=$(cat /proc/sys/kernel/random/boot_id)
+      say() { echo "SPXGATE boot=$BOOT $*" > /dev/ttyS0; }
+      serial() { cat "/sys/block/$1/serial" 2>/dev/null || cat "/sys/block/$1/device/serial" 2>/dev/null || true; }
+      src=$(findmnt -no SOURCE /)
+      rootdisk=$(lsblk -no PKNAME "$src" | head -1)
+      [ -n "$rootdisk" ] || rootdisk=${src##*/}
+      mark=/var/lib/spx-ebs-gate/root
+      if [ -s "$mark" ]; then
+          say "root-present serial=$(serial "$rootdisk") $(cat "$mark")"
+      else
+          mkdir -p /var/lib/spx-ebs-gate
+          cat /proc/sys/kernel/random/uuid > "$mark.tmp" && sync && mv "$mark.tmp" "$mark" && sync
+          say "root-written serial=$(serial "$rootdisk") $(cat "$mark")"
+      fi
+      seen=" "
+      while :; do
+          next=" "
+          for sys in /sys/block/*; do
+              d=${sys##*/}
+              [ "$d" != "$rootdisk" ] || continue
+              s=$(serial "$d")
+              case "$s" in vol*) ;; *) continue ;; esac
+              case "$seen" in *" $d "*) next="$next$d "; continue ;; esac
+              # A failed or short read is not a blank disk: overwriting it would destroy the marker.
+              if ! err=$(spx-gate-io read "/dev/$d" 2>&1 >/run/spx-gate-head); then
+                  say "data-unreadable serial=$s $(printf '%s' "$err" | tr '\n' ' ' | tail -c 200)"
+                  continue
+              fi
+              head=$(head -c 64 /run/spx-gate-head | tr -d '\000')
+              case "$head" in
+                  "SPXGATE-DATA "*)
+                      say "data-present serial=$s ${head#SPXGATE-DATA }"; next="$next$d " ;;
+                  "")
+                      if blkid -p "/dev/$d" >/dev/null 2>&1; then
+                          say "data-foreign serial=$s"; next="$next$d "
+                      else
+                          tok=$(cat /proc/sys/kernel/random/uuid)
+                          if spx-gate-io write "/dev/$d" "SPXGATE-DATA $tok" 2>/dev/null; then
+                              say "data-written serial=$s $tok"; next="$next$d "
+                          fi
+                      fi ;;
+                  *) say "data-foreign serial=$s"; next="$next$d " ;;
+              esac
+          done
+          seen=$next
+          sleep 3
+      done
+  - path: /etc/systemd/system/spx-ebs-gate.service
+    content: |
+      [Unit]
+      Description=Spinifex EBS provider gate reporter
+      After=local-fs.target
+      [Service]
+      ExecStart=/usr/local/sbin/spx-ebs-gate
+      Restart=always
+      [Install]
+      WantedBy=multi-user.target
+runcmd:
+  - [systemctl, daemon-reload]
+  - [systemctl, enable, --now, spx-ebs-gate.service]
+USERDATA
+}
+
+# What the gate leaves for a failure it cannot explain from its own output: each
+# node's iSCSI sessions and records, block devices and their holders, and the
+# provider's and kernel's recent log. Best effort, so a failed read never masks
+# the gate's own error.
+gate_diagnose() {
+    local host
+    for host in "${HOSTS[@]}"; do
+        {
+            printf '\n=== diagnostics from %s ===\n' "$host"
+            ssh_node "$host" 'sudo bash -s' <<'DIAG' 2>&1
+for c in "iscsiadm -m session -P 3" "iscsiadm -m node" "lsblk -o NAME,SIZE,TYPE,MOUNTPOINTS,HCTL" "ls -l /dev/disk/by-path"; do
+    printf -- '--- %s\n' "$c"; $c 2>&1
+done
+printf -- '--- holders of iSCSI devices\n'
+for d in /dev/disk/by-path/*iqn.2015-12.com.oracleiaas:*; do
+    [ -e "$d" ] || continue
+    dev=$(readlink -f "$d"); printf '%s -> %s\n' "$d" "$dev"
+    ls /sys/class/block/"${dev##*/}"/holders 2>&1; fuser -v "$dev" 2>&1
+done
+printf -- '--- journalctl -u spinifex-ocibsd\n'; journalctl -u spinifex-ocibsd -n 300 --no-pager 2>&1
+printf -- '--- journalctl -k\n'; journalctl -k -n 150 --no-pager 2>&1
+DIAG
+        } >> "$GATE_LOG" || true
+    done
+}
+gate_die() {
+    gate_diagnose
+    die "$@"
+}
+
+ebs_provider_gate() {
+    local host out ami snap_ami itype subnet iid az root_vol dot tok boot boots line
+    local data_vol data_serial data_tok snap restored from to
+    : > "$GATE_LOG"
+
+    log "ebs provider gate: units, masks, drop-ins and the detected placement on every node"
+    for host in "${HOSTS[@]}"; do
+        # The placement init read from the instance metadata must be where this run
+        # built the nodes; compared on the node, so the compartment is never printed.
+        ssh_node "$host" "WANT_COMPARTMENT='$OCIBSD_COMPARTMENT' WANT_AD='$OCIBSD_AD' bash -s" >> "$GATE_LOG" 2>&1 <<'REMOTE' \
+            || gate_die "$host is not an ocibsd node as installed; see $GATE_LOG"
+fail() { echo "FAIL $(hostname -s): $*"; exit 1; }
+[ "$(systemctl is-enabled spinifex-viperblock.service 2>&1)" = masked ] \
+    || fail "spinifex-viperblock.service is not masked"
+if systemctl is-active --quiet spinifex-viperblock.service; then fail "spinifex-viperblock.service is running"; fi
+systemctl is-active --quiet spinifex-ocibsd.service || fail "spinifex-ocibsd.service is not active"
+[ "$(systemctl is-enabled spinifex-ocibsd.service)" = enabled ] || fail "spinifex-ocibsd.service is not enabled"
+systemctl show -p DropInPaths --value spinifex-daemon.service \
+    | grep -q /etc/systemd/system/spinifex-daemon.service.d/ocibsd.conf \
+    || fail "the daemon's ocibsd device drop-in is not loaded"
+systemctl show -p DeviceAllow --value spinifex-daemon.service | grep -q 'block-sd rw' \
+    || fail "the daemon's device cgroup does not allow block-sd"
+test -f /etc/udev/rules.d/99-spinifex-ocibsd.rules || fail "no ocibsd udev rule"
+sudo WANT_COMPARTMENT="$WANT_COMPARTMENT" WANT_AD="$WANT_AD" python3 - <<"PY" \
+    || fail "a node in spinifex.toml is not on ocibsd where the nodes were built"
+import os, sys, tomllib
+nodes = tomllib.load(open("/etc/spinifex/spinifex.toml", "rb")).get("nodes", {})
+# Only tables with an ebs section: a leader also lists the other nodes, bare.
+# Each node's own table always has one, and this runs on every node.
+nodes = {n: v for n, v in nodes.items() if "ebs" in v}
+other = {n: v["ebs"].get("provider") for n, v in nodes.items() if v["ebs"].get("provider") != "ocibsd"}
+if not nodes or other:
+    sys.exit("providers other than ocibsd: %r" % other)
+for n, v in sorted(nodes.items()):
+    oci = v["ebs"].get("oci", {})
+    if oci.get("compartment_id") != os.environ["WANT_COMPARTMENT"]:
+        sys.exit("%s: compartment_id is not the compartment the nodes were built in" % n)
+    if oci.get("availability_domain") != os.environ["WANT_AD"]:
+        sys.exit("%s: availability_domain %r, and the nodes were built in %r" % (n, oci.get("availability_domain"), os.environ["WANT_AD"]))
+print("ebs providers:", ", ".join("%s=ocibsd" % n for n in sorted(nodes)))
+PY
+echo "ok $(hostname -s)"
+REMOTE
+    done
+    record "ebs provider units" PASS "ocibsd active, viperblock masked, device drop-in, placement from metadata on $NODES node(s)"
+
+    GATE_IMAGE=ubuntu-26.04-x86_64
+    log "ebs provider gate: importing $GATE_IMAGE onto an OCI volume"
+    out="$(ssh_node "${HOSTS[0]}" "sudo spx admin images import --name $GATE_IMAGE --config /etc/spinifex/spinifex.toml" 2>&1)" \
+        || { printf '%s\n' "$out" >> "$GATE_LOG"; gate_die "importing $GATE_IMAGE failed; see $GATE_LOG"; }
+    printf '%s\n' "$out" >> "$GATE_LOG"
+    ami="$(printf '%s\n' "$out" | sed -n 's/.*Image-ID (AMI): \(ami-[0-9a-f]*\).*/\1/p' | tail -1)"
+    [ -n "$ami" ] || gate_die "the import printed no AMI ID; see $GATE_LOG"
+    snap_ami="$(node_aws ec2 describe-images --image-ids "$ami" --query 'Images[0].BlockDeviceMappings[0].Ebs.SnapshotId')"
+    [ "$(oci_count backups "spinifex-snapshot-id=$snap_ami" "spinifex-cluster=$OCIBSD_CLUSTER_ID")" = 1 ] \
+        || gate_die "$ami's snapshot $snap_ami is not one OCI backup tagged with this cluster"
+    record "ami import" PASS "$ami, snapshot $snap_ami is an OCI backup"
+
+    itype="$(node_aws ec2 describe-instance-types \
+        --query 'sort_by(InstanceTypes[?VCpuInfo.DefaultVCpus>=`2` && MemoryInfo.SizeInMiB>=`2048`], &MemoryInfo.SizeInMiB)[0].InstanceType')"
+    { [ -n "$itype" ] && [ "$itype" != None ]; } || gate_die "no instance type with 2 vCPU and 2 GiB on this cluster"
+    subnet="$(node_aws ec2 describe-subnets --filters Name=default-for-az,Values=true \
+        --query 'Subnets[0].SubnetId' 2>>"$GATE_LOG")" || subnet=""
+    [ "$subnet" != None ] || subnet=""
+    write_gate_user_data "$STATE_DIR/ebs-gate-user-data.yaml"
+    scp -i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR -q "$STATE_DIR/ebs-gate-user-data.yaml" "ubuntu@${HOSTS[0]}:/tmp/ebs-gate-user-data.yaml" \
+        || gate_die "could not copy the gate's user-data"
+
+    log "ebs provider gate: booting $itype from $ami"
+    iid="$(node_aws ec2 run-instances --image-id "$ami" --instance-type "$itype" --count 1 \
+        ${subnet:+--subnet-id "$subnet"} --user-data file:///tmp/ebs-gate-user-data.yaml \
+        --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=ebs-provider-gate}]' \
+        --query 'Instances[0].InstanceId')" || gate_die "run-instances from $ami failed"
+    node_aws ec2 wait instance-running --instance-ids "$iid" || gate_die "$iid never reached running"
+    read -r az root_vol dot <<EOF
+$(node_aws ec2 describe-instances --instance-ids "$iid" \
+    --query 'Reservations[0].Instances[0].[Placement.AvailabilityZone,BlockDeviceMappings[0].Ebs.VolumeId,BlockDeviceMappings[0].Ebs.DeleteOnTermination]')
+EOF
+    [ "$dot" = True ] || gate_die "$iid's root volume $root_vol is not delete-on-termination"
+    line="$(wait_console "$iid" 'SPXGATE boot=[0-9a-f-]+ root-written ' 900)" \
+        || gate_die "$iid never reported its root marker on the console"
+    boot="$(printf '%s\n' "$line" | sed -n 's/.*boot=\([0-9a-f-]*\) .*/\1/p')"
+    tok="${line##* }"
+    boots="$boot"
+    [ "$(oci_count volumes "spinifex-volume-id=$root_vol" "spinifex-cluster=$OCIBSD_CLUSTER_ID")" = 1 ] \
+        || gate_die "$iid's root volume $root_vol is not one OCI volume tagged with this cluster"
+    record "boot from ocibsd" PASS "$iid on $root_vol, an OCI volume tagged with this cluster"
+
+    log "ebs provider gate: stop and start $iid"
+    node_aws ec2 stop-instances --instance-ids "$iid" >/dev/null || gate_die "stop-instances $iid failed"
+    node_aws ec2 wait instance-stopped --instance-ids "$iid" || gate_die "$iid never stopped"
+    node_aws ec2 start-instances --instance-ids "$iid" >/dev/null || gate_die "start-instances $iid failed"
+    node_aws ec2 wait instance-running --instance-ids "$iid" || gate_die "$iid never ran again"
+    boot="$(wait_new_boot "$iid" "$tok" "$boots" 900)" \
+        || gate_die "$iid did not find its root marker after a stop and start"
+    boots="$boots $boot"
+    record "stop and start" PASS "the root marker survived"
+
+    log "ebs provider gate: attach and detach a data volume"
+    data_vol="$(node_aws ec2 create-volume --availability-zone "$az" --size 1 --volume-type gp3 \
+        --query VolumeId)" || gate_die "create-volume failed"
+    node_aws ec2 wait volume-available --volume-ids "$data_vol" || gate_die "$data_vol never became available"
+    node_aws ec2 attach-volume --volume-id "$data_vol" --instance-id "$iid" --device /dev/sdf >/dev/null \
+        || gate_die "attach-volume $data_vol failed"
+    node_aws ec2 wait volume-in-use --volume-ids "$data_vol" || gate_die "$data_vol never attached"
+    data_serial="${data_vol//-/}"
+    line="$(wait_console "$iid" "SPXGATE boot=[0-9a-f-]+ data-written serial=$data_serial " 600)" \
+        || gate_die "the guest never wrote to $data_vol"
+    data_tok="${line##* }"
+    [ "$(oci_count volumes "spinifex-volume-id=$data_vol" "spinifex-cluster=$OCIBSD_CLUSTER_ID")" = 1 ] \
+        || gate_die "$data_vol is not one OCI volume tagged with this cluster"
+    node_aws ec2 detach-volume --volume-id "$data_vol" >/dev/null || gate_die "detach-volume $data_vol failed"
+    node_aws ec2 wait volume-available --volume-ids "$data_vol" || gate_die "$data_vol never detached"
+    record "attach and detach" PASS "$data_vol written in the guest"
+
+    # Read back before the snapshot, so a lost marker is told apart from a lost restore.
+    node_aws ec2 attach-volume --volume-id "$data_vol" --instance-id "$iid" --device /dev/sdf >/dev/null \
+        || gate_die "reattach-volume $data_vol failed"
+    node_aws ec2 wait volume-in-use --volume-ids "$data_vol" || gate_die "$data_vol never reattached"
+    wait_console "$iid" "SPXGATE boot=[0-9a-f-]+ data-present serial=$data_serial $data_tok\$" 600 >/dev/null \
+        || gate_die "the guest did not read its marker back from $data_vol after a detach"
+    node_aws ec2 detach-volume --volume-id "$data_vol" >/dev/null || gate_die "detach-volume $data_vol failed"
+    node_aws ec2 wait volume-available --volume-ids "$data_vol" || gate_die "$data_vol never detached again"
+    record "reattach" PASS "$data_vol kept its marker across a detach"
+
+    log "ebs provider gate: snapshot, restore and read back"
+    snap="$(node_aws ec2 create-snapshot --volume-id "$data_vol" --query SnapshotId)" \
+        || gate_die "create-snapshot $data_vol failed"
+    node_aws ec2 wait snapshot-completed --snapshot-ids "$snap" || gate_die "$snap never completed"
+    [ "$(oci_count backups "spinifex-snapshot-id=$snap" "spinifex-cluster=$OCIBSD_CLUSTER_ID")" = 1 ] \
+        || gate_die "$snap is not one OCI backup tagged with this cluster"
+    restored="$(node_aws ec2 create-volume --availability-zone "$az" --snapshot-id "$snap" \
+        --volume-type gp3 --query VolumeId)" || gate_die "create-volume from $snap failed"
+    node_aws ec2 wait volume-available --volume-ids "$restored" || gate_die "$restored never became available"
+    node_aws ec2 attach-volume --volume-id "$restored" --instance-id "$iid" --device /dev/sdg >/dev/null \
+        || gate_die "attach-volume $restored failed"
+    node_aws ec2 wait volume-in-use --volume-ids "$restored" || gate_die "$restored never attached"
+    wait_console "$iid" "SPXGATE boot=[0-9a-f-]+ data-present serial=${restored//-/} $data_tok\$" 600 >/dev/null \
+        || gate_die "the guest did not read $data_vol's marker back from $restored"
+    node_aws ec2 detach-volume --volume-id "$restored" >/dev/null || gate_die "detach-volume $restored failed"
+    node_aws ec2 wait volume-available --volume-ids "$restored" || gate_die "$restored never detached"
+    record "snapshot and restore" PASS "$snap restored to $restored with the marker intact"
+
+    # A stopped instance restarts on its last node unless that node's daemon does
+    # not answer, so the daemon is stopped there for the start. The guest is down
+    # first, so no write is in flight; this is not a fence test.
+    if [ "$NODES" -gt 1 ]; then
+        from="$(hosting_node "$iid")"
+        log "ebs provider gate: moving $iid off $from"
+        node_aws ec2 stop-instances --instance-ids "$iid" >/dev/null || gate_die "stop-instances $iid failed"
+        node_aws ec2 wait instance-stopped --instance-ids "$iid" || gate_die "$iid never stopped"
+        ssh_node "$from" 'sudo systemctl stop spinifex-daemon.service' || gate_die "could not stop the daemon on $from"
+        node_aws ec2 start-instances --instance-ids "$iid" >/dev/null || gate_die "start-instances $iid failed"
+        node_aws ec2 wait instance-running --instance-ids "$iid" || gate_die "$iid never ran on another node"
+        ssh_node "$from" 'sudo systemctl start spinifex-daemon.service' || gate_die "could not restart the daemon on $from"
+        to="$(hosting_node "$iid")"
+        [ "$to" != "$from" ] || gate_die "$iid started on $from again, so nothing moved"
+        boot="$(wait_new_boot "$iid" "$tok" "$boots" 900)" \
+            || gate_die "$iid did not find its root marker on $to"
+        record "cross-node start" PASS "$iid moved from $from to $to with its root marker"
+    fi
+
+    log "ebs provider gate: terminate and delete"
+    node_aws ec2 terminate-instances --instance-ids "$iid" >/dev/null || gate_die "terminate-instances $iid failed"
+    node_aws ec2 wait instance-terminated --instance-ids "$iid" || gate_die "$iid never terminated"
+    # Spinifex refuses DeleteVolume on a volume with a snapshot and DeleteSnapshot on
+    # one a live volume came from, so the restore goes first and the source last.
+    node_aws ec2 delete-volume --volume-id "$restored" || gate_die "delete-volume $restored failed"
+    node_aws ec2 delete-snapshot --snapshot-id "$snap" || gate_die "delete-snapshot $snap failed"
+    local deadline=$((SECONDS + 300))
+    until node_aws ec2 delete-volume --volume-id "$data_vol" 2>>"$GATE_LOG"; do
+        [ "$SECONDS" -lt "$deadline" ] || gate_die "delete-volume $data_vol still refused 300s after $snap was deleted"
+        sleep 10
+    done
+    wait_gone_from_oci "$root_vol" "$data_vol" "$restored" "$snap" \
+        || gate_die "OCI still holds a live volume or backup for $root_vol, $data_vol, $restored or $snap after 600s"
+    record "terminate" PASS "no OCI volume or backup left for the instance, its volumes or the snapshot"
+}
+
+if [ "$TOPO_EBS_PROVIDER" = ocibsd ]; then
+    ebs_provider_gate
 fi
 
 # The same driver the GitHub nightly runs (cell 17), on the same published
@@ -1002,12 +1610,23 @@ scp -i "$SSH_PRIVATE_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev
 # to absorb parallel uploads. Three are appliances rather than distros: RDS, ECS
 # and EKS each boot their own, found by a spinifex:managed-by tag and never by name.
 log "importing the images the workbooks need"
-ssh_node "${HOSTS[0]}" '
-    set -e
-    for img in ubuntu-26.04-x86_64 spinifex-rds-postgres spinifex-ecs-node spinifex-eks-node; do
-        sudo spx admin images import --name "$img" --config /etc/spinifex/spinifex.toml >/dev/null
-    done
-' > "$STATE_DIR/images.log" 2>&1 || die "image import failed; see $STATE_DIR/images.log"
+# The ebs provider gate has already imported its own, and is not asked twice.
+WORKBOOK_IMAGES=""
+for img in ubuntu-26.04-x86_64 spinifex-rds-postgres spinifex-ecs-node spinifex-eks-node; do
+    [ "$img" = "$GATE_IMAGE" ] || WORKBOOK_IMAGES="$WORKBOOK_IMAGES $img"
+done
+ssh_node "${HOSTS[0]}" "WORKBOOK_IMAGES='$WORKBOOK_IMAGES' bash -s" > "$STATE_DIR/images.log" 2>&1 <<'REMOTE' \
+    || die "image import failed; see $STATE_DIR/images.log"
+out=$(mktemp)
+for img in $WORKBOOK_IMAGES; do
+    # The import reports some failures on stdout, so a failure prints all of it.
+    if ! sudo spx admin images import --name "$img" --config /etc/spinifex/spinifex.toml < /dev/null > "$out" 2>&1; then
+        echo "importing $img failed:"
+        tr '\r' '\n' < "$out" | grep -v '/100%)' | tail -40
+        exit 1
+    fi
+done
+REMOTE
 
 # Every workbook that is a workbook. The shared driver's own default is five, which
 # leaves ECS and all three EKS variants untested on every platform -- their

@@ -281,7 +281,7 @@ type ImageSnapshotHooks struct {
 // ImageSnapshotCreator takes the snapshot behind a CreateImage through the
 // same document, reference, claim and provider path as CreateSnapshot.
 type ImageSnapshotCreator interface {
-	CreateImageSnapshot(ctx context.Context, volume ebsmetadata.Volume, snapshotID, accountID, description string, hooks ImageSnapshotHooks) (*ec2.Snapshot, error)
+	CreateImageSnapshot(ctx context.Context, volume ebsmetadata.Volume, snapshotID, accountID, description string, tags map[string]string, hooks ImageSnapshotHooks) (*ec2.Snapshot, error)
 }
 
 var _ ImageSnapshotCreator = (*SnapshotServiceImpl)(nil)
@@ -333,12 +333,13 @@ func (s *SnapshotServiceImpl) settlePendingAMI(ctx context.Context, imageID, sta
 
 // CreateImageSnapshot snapshots an image's root volume as CreateSnapshot does,
 // running hooks to write the AMI document beside the snapshot's.
-func (s *SnapshotServiceImpl) CreateImageSnapshot(ctx context.Context, volume ebsmetadata.Volume, snapshotID, accountID, description string, hooks ImageSnapshotHooks) (*ec2.Snapshot, error) {
+func (s *SnapshotServiceImpl) CreateImageSnapshot(ctx context.Context, volume ebsmetadata.Volume, snapshotID, accountID, description string, tags map[string]string, hooks ImageSnapshotHooks) (*ec2.Snapshot, error) {
 	if s.provider == nil {
 		slog.ErrorContext(ctx, "no EBS provider configured", "op", "CreateImageSnapshot")
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	doc := pendingDocument(volume, snapshotID, accountID, description)
+	doc.Tags = tags
 	return s.createSnapshot(ctx, doc, providerCreateRequest(volume, snapshotID), createHooks(hooks))
 }
 

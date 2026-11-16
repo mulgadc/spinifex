@@ -180,14 +180,17 @@ func (s *ImageServiceImpl) describeImages(ctx context.Context, input *ec2.Descri
 	}
 
 	var images []*ec2.Image
+	var metas []ebsmetadata.AMI
 	for _, amiMeta := range amis {
 		if amiMeta.ImageID == "" {
 			continue
 		}
 		if image := renderVisibleImage(amiMeta, input, accountID, parsedFilters, encryptedAtRest); image != nil {
 			images = append(images, image)
+			metas = append(metas, amiMeta)
 		}
 	}
+	s.applySnapshotEncryption(ctx, metas, images, encryptedAtRest)
 
 	slog.InfoContext(ctx, "DescribeImages completed", "count", len(images))
 	return &ec2.DescribeImagesOutput{Images: images}, nil
@@ -240,6 +243,7 @@ func (s *ImageServiceImpl) describeImagesByIDs(ctx context.Context, input *ec2.D
 	}
 
 	images := make([]*ec2.Image, 0, len(imageIDs))
+	metas := make([]ebsmetadata.AMI, 0, len(imageIDs))
 	for i, result := range results {
 		// Every other store error was classified above, so this is a missing key.
 		if result.Err != nil {
@@ -258,7 +262,9 @@ func (s *ImageServiceImpl) describeImagesByIDs(ctx context.Context, input *ec2.D
 			return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 		}
 		images = append(images, image)
+		metas = append(metas, result.Document)
 	}
+	s.applySnapshotEncryption(ctx, metas, images, encryptedAtRest)
 
 	slog.InfoContext(ctx, "DescribeImages completed", "count", len(images))
 	return &ec2.DescribeImagesOutput{Images: images}, nil
@@ -546,6 +552,7 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		// Pending until its snapshot completes, here or in the snapshot reaper.
 		State:    ebsmetadata.AMIStatePending,
 		UEFIData: uefiData,
+		Tags:     awstags.Extract(input.TagSpecifications, "image"),
 	}
 
 	// Step 4: Snapshot the root volume. Its document and reference, then the
@@ -553,6 +560,7 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 	// accepted snapshot whose answer is lost is still settled by the reaper.
 	ctx := context.Background()
 	snap, err := s.snapshots.CreateImageSnapshot(ctx, volMeta, snapshotID, accountID, "Created by CreateImage("+aws.StringValue(input.InstanceId)+") for "+amiID,
+		awstags.Extract(input.TagSpecifications, "snapshot"),
 		ec2snapshot.ImageSnapshotHooks{
 			Recorded:  func(ctx context.Context) error { return s.putAMIConfig(ctx, amiID, meta) },
 			Refused:   func(ctx context.Context) { s.removePendingAMI(ctx, amiID) },
@@ -803,11 +811,12 @@ func (s *ImageServiceImpl) loadAMIForMutation(ctx context.Context, imageID, acco
 
 // putSnapshotMetadata stores the snapshot's control-plane document under the
 // account that owns it.
-func (s *ImageServiceImpl) putSnapshotMetadata(ctx context.Context, snapshotID, volumeID string, volumeSizeGiB uint64, accountID string) error {
+func (s *ImageServiceImpl) putSnapshotMetadata(ctx context.Context, snapshotID, volumeID string, volumeSizeGiB uint64, encrypted bool, accountID string) error {
 	return s.metadata.PutSnapshot(ctx, ebsmetadata.Snapshot{
 		SnapshotID: snapshotID,
 		VolumeID:   volumeID,
 		VolumeSize: safecast.Uint64ToInt64(volumeSizeGiB),
+		Encrypted:  encrypted,
 		State:      "completed",
 		Progress:   "100%",
 		StartTime:  time.Now(),
@@ -863,6 +872,7 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 				SnapshotID: srcMeta.SnapshotID,
 				VolumeID:   sourceImageID,
 				VolumeSize: safecast.Uint64ToInt64(srcMeta.VolumeSizeGiB),
+				Encrypted:  s.clusterEncryptionEnabled(),
 			}
 		} else if objectstore.IsNoSuchKeyError(err) || errors.Is(err, ebsmetadata.ErrCorruptDocument) {
 			return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
@@ -891,7 +901,7 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 	if srcSnap.VolumeSize > 0 {
 		snapSizeGiB = uint64(srcSnap.VolumeSize)
 	}
-	if err := s.putSnapshotMetadata(ctx, newSnapshotID, srcSnap.VolumeID, snapSizeGiB, accountID); err != nil {
+	if err := s.putSnapshotMetadata(ctx, newSnapshotID, srcSnap.VolumeID, snapSizeGiB, srcSnap.Encrypted, accountID); err != nil {
 		slog.ErrorContext(ctx, "CopyImage: failed to write snapshot metadata", "snapshotId", newSnapshotID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -1023,7 +1033,7 @@ func (s *ImageServiceImpl) DescribeImageAttribute(ctx context.Context, input *ec
 	case ec2.ImageAttributeNameLastLaunchedTime:
 		output.LastLaunchedTime = &ec2.AttributeValue{}
 	case ec2.ImageAttributeNameBlockDeviceMapping:
-		output.BlockDeviceMappings = synthesizeRootBlockDeviceMapping(meta, s.clusterEncryptionEnabled())
+		output.BlockDeviceMappings = synthesizeRootBlockDeviceMapping(meta, s.snapshotEncrypted(ctx, meta, s.clusterEncryptionEnabled()))
 		if output.BlockDeviceMappings == nil {
 			output.BlockDeviceMappings = []*ec2.BlockDeviceMapping{}
 		}
@@ -1058,9 +1068,48 @@ func (s *ImageServiceImpl) clusterEncryptionEnabled() bool {
 	return encrypted
 }
 
+// snapshotEncrypted reports the Encrypted flag of meta's snapshot document, or
+// fallback for an image with no snapshot document to read.
+func (s *ImageServiceImpl) snapshotEncrypted(ctx context.Context, meta ebsmetadata.AMI, fallback bool) bool {
+	if meta.SnapshotID == "" || meta.RootDeviceType != ec2.DeviceTypeEbs {
+		return fallback
+	}
+	owner, _ := snapshotAccountForAMI(meta)
+	snap, err := s.metadata.GetSnapshot(ctx, owner, meta.SnapshotID)
+	if err != nil {
+		if !objectstore.IsNoSuchKeyError(err) {
+			slog.WarnContext(ctx, "failed to read an image's snapshot, reporting the cluster encryption posture",
+				"imageId", meta.ImageID, "snapshotId", meta.SnapshotID, "err", err)
+		}
+		return fallback
+	}
+	return snap.Encrypted
+}
+
+// applySnapshotEncryption sets each rendered image's root mapping Encrypted
+// from its snapshot document, reading the documents concurrently.
+func (s *ImageServiceImpl) applySnapshotEncryption(ctx context.Context, metas []ebsmetadata.AMI, images []*ec2.Image, fallback bool) {
+	ids := make([]string, len(metas))
+	byID := make(map[string]ebsmetadata.AMI, len(metas))
+	for i, meta := range metas {
+		ids[i] = meta.ImageID
+		byID[meta.ImageID] = meta
+	}
+	results := ebsmetadata.FetchByIDs(ctx, ids, func(ctx context.Context, id string) (bool, error) {
+		return s.snapshotEncrypted(ctx, byID[id], fallback), nil
+	})
+	for i, image := range images {
+		for _, bdm := range image.BlockDeviceMappings {
+			if bdm.Ebs != nil {
+				bdm.Ebs.Encrypted = aws.Bool(results[i].Document)
+			}
+		}
+	}
+}
+
 // synthesizeRootBlockDeviceMapping returns /dev/sda1 with size+snapshot from AMIMetadata,
-// or nil for non-EBS AMIs. encrypted reflects the cluster-level encryption posture
-// (master key configured); AMI metadata carries no per-image encryption flag.
+// or nil for non-EBS AMIs. encrypted is the caller's answer for the mapping,
+// normally the image snapshot's flag.
 func synthesizeRootBlockDeviceMapping(meta ebsmetadata.AMI, encrypted bool) []*ec2.BlockDeviceMapping {
 	if meta.RootDeviceType != "ebs" {
 		return nil

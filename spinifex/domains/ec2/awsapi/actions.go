@@ -103,24 +103,27 @@ func ec2Handler[In any](handler func(ctx context.Context, input *In, c *call, ac
 // ec2ListsAsSet names the list fields AWS omits when empty instead of
 // rendering them. Each is rendered as its handler set it, so nil omits it.
 var ec2ListsAsSet = map[reflect.Type][]string{
-	reflect.TypeFor[ec2.CreateKeyPairOutput]():              {"Tags"},
-	reflect.TypeFor[ec2.Image]():                            {"Tags", "ProductCodes"},
-	reflect.TypeFor[ec2.CreateSecurityGroupOutput]():        {"Tags"},
-	reflect.TypeFor[ec2.SecurityGroup]():                    {"Tags"},
-	reflect.TypeFor[ec2.SecurityGroupRule]():                {"Tags"},
-	reflect.TypeFor[ec2.RevokeSecurityGroupIngressOutput](): {"UnknownIpPermissions"},
-	reflect.TypeFor[ec2.RevokeSecurityGroupEgressOutput]():  {"UnknownIpPermissions"},
-	reflect.TypeFor[ec2.NetworkInterface]():                 {"Ipv4Prefixes", "Ipv6Prefixes"},
-	reflect.TypeFor[ec2.Vpc]():                              {"Ipv6CidrBlockAssociationSet"},
-	reflect.TypeFor[ec2.Subnet]():                           {"Tags"},
-	reflect.TypeFor[ec2.InstanceStatusSummary]():            {"Details"},
-	reflect.TypeFor[ec2.Instance]():                         {"ElasticGpuAssociations", "ElasticInferenceAcceleratorAssociations", "Licenses"},
-	reflect.TypeFor[ec2.InstanceNetworkInterface]():         {"Ipv4Prefixes", "Ipv6Prefixes"},
-	reflect.TypeFor[ec2.DescribeInstanceAttributeOutput]():  {"BlockDeviceMappings", "Groups", "ProductCodes"},
-	reflect.TypeFor[ec2.DescribeImageAttributeOutput]():     {"BlockDeviceMappings", "LaunchPermissions", "ProductCodes"},
-	reflect.TypeFor[ec2.InstanceStatus]():                   {"Events"},
-	reflect.TypeFor[ec2.VolumeStatusItem]():                 {"AttachmentStatuses"},
-	reflect.TypeFor[ec2.Volume]():                           {"Attachments"},
+	reflect.TypeFor[ec2.CreateKeyPairOutput]():                     {"Tags"},
+	reflect.TypeFor[ec2.Image]():                                   {"Tags", "ProductCodes"},
+	reflect.TypeFor[ec2.CreateSecurityGroupOutput]():               {"Tags"},
+	reflect.TypeFor[ec2.SecurityGroup]():                           {"Tags"},
+	reflect.TypeFor[ec2.SecurityGroupRule]():                       {"Tags"},
+	reflect.TypeFor[ec2.RevokeSecurityGroupIngressOutput]():        {"UnknownIpPermissions"},
+	reflect.TypeFor[ec2.RevokeSecurityGroupEgressOutput]():         {"UnknownIpPermissions"},
+	reflect.TypeFor[ec2.NetworkInterface]():                        {"Ipv4Prefixes", "Ipv6Prefixes"},
+	reflect.TypeFor[ec2.Vpc]():                                     {"Ipv6CidrBlockAssociationSet"},
+	reflect.TypeFor[ec2.Subnet]():                                  {"Tags"},
+	reflect.TypeFor[ec2.InstanceStatusSummary]():                   {"Details"},
+	reflect.TypeFor[ec2.Instance]():                                {"ElasticGpuAssociations", "ElasticInferenceAcceleratorAssociations", "Licenses"},
+	reflect.TypeFor[ec2.InstanceNetworkInterface]():                {"Ipv4Prefixes", "Ipv6Prefixes"},
+	reflect.TypeFor[ec2.DescribeInstanceAttributeOutput]():         {"BlockDeviceMappings", "Groups", "ProductCodes"},
+	reflect.TypeFor[ec2.DescribeImageAttributeOutput]():            {"BlockDeviceMappings", "LaunchPermissions", "ProductCodes"},
+	reflect.TypeFor[ec2.InstanceStatus]():                          {"Events"},
+	reflect.TypeFor[ec2.VolumeStatusItem]():                        {"AttachmentStatuses"},
+	reflect.TypeFor[ec2.Volume]():                                  {"Attachments"},
+	reflect.TypeFor[ec2.DescribeVolumeAttributeOutput]():           {"ProductCodes"},
+	reflect.TypeFor[ec2.DescribeSnapshotAttributeOutput]():         {"ProductCodes", "CreateVolumePermissions"},
+	reflect.TypeFor[ec2.DescribeNetworkInterfaceAttributeOutput](): {"Groups"},
 }
 
 // marshalEC2Response renders an EC2 handler's output into the action's XML
@@ -327,6 +330,9 @@ var ec2Actions = map[string]ec2Action{
 	"AttachVolume": ec2Handler(func(ctx context.Context, input *ec2.AttachVolumeInput, c *call, accountID string) (any, error) {
 		return ec2volumeapi.AttachVolume(ctx, input, c.NATS, accountID)
 	}),
+	"DescribeVolumeAttribute": ec2Handler(func(ctx context.Context, input *ec2.DescribeVolumeAttributeInput, c *call, accountID string) (any, error) {
+		return ec2volumeapi.DescribeVolumeAttribute(ctx, input, c.NATS, accountID)
+	}),
 	"DescribeVolumeStatus": ec2Handler(func(ctx context.Context, input *ec2.DescribeVolumeStatusInput, c *call, accountID string) (any, error) {
 		return ec2volumeapi.DescribeVolumeStatus(ctx, input, c.NATS, accountID)
 	}),
@@ -376,6 +382,9 @@ var ec2Actions = map[string]ec2Action{
 	}),
 	"DescribeSnapshots": ec2Handler(func(ctx context.Context, input *ec2.DescribeSnapshotsInput, c *call, accountID string) (any, error) {
 		return ec2snapshotapi.DescribeSnapshots(ctx, input, c.NATS, accountID)
+	}),
+	"DescribeSnapshotAttribute": ec2Handler(func(ctx context.Context, input *ec2.DescribeSnapshotAttributeInput, c *call, accountID string) (any, error) {
+		return ec2snapshotapi.DescribeSnapshotAttribute(ctx, input, c.NATS, accountID)
 	}),
 	"CopySnapshot": ec2Handler(func(ctx context.Context, input *ec2.CopySnapshotInput, c *call, accountID string) (any, error) {
 		return ec2snapshotapi.CopySnapshot(ctx, input, c.NATS, accountID)
@@ -531,6 +540,9 @@ var ec2Actions = map[string]ec2Action{
 	}),
 	"DescribeNetworkInterfaces": ec2Handler(func(ctx context.Context, input *ec2.DescribeNetworkInterfacesInput, c *call, accountID string) (any, error) {
 		return ec2vpcapi.DescribeNetworkInterfaces(ctx, input, c.NATS, accountID)
+	}),
+	"DescribeNetworkInterfaceAttribute": ec2Handler(func(ctx context.Context, input *ec2.DescribeNetworkInterfaceAttributeInput, c *call, accountID string) (any, error) {
+		return ec2vpcapi.DescribeNetworkInterfaceAttribute(ctx, input, c.NATS, accountID)
 	}),
 	"ModifyNetworkInterfaceAttribute": ec2Handler(func(ctx context.Context, input *ec2.ModifyNetworkInterfaceAttributeInput, c *call, accountID string) (any, error) {
 		return ec2vpcapi.ModifyNetworkInterfaceAttribute(ctx, input, c.NATS, accountID)

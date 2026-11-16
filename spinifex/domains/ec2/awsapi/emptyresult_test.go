@@ -258,3 +258,25 @@ func TestEC2_InstanceAndVolumeListsAWSOmitsWhenEmpty(t *testing.T) {
 	})
 	assert.Contains(t, described, "<attachmentSet></attachmentSet>")
 }
+
+// AWS renders only the requested attribute: an empty createVolumePermission
+// list, with no productCodes or groupSet beside it.
+func TestEC2AttributeDescribes_RenderOnlyTheRequestedAttribute(t *testing.T) {
+	volume := render[ec2.DescribeVolumeAttributeInput](t, "DescribeVolumeAttribute", ec2.DescribeVolumeAttributeOutput{
+		VolumeId: aws.String("vol-1"), AutoEnableIO: &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
+	})
+	assert.Contains(t, volume, "<autoEnableIO><value>false</value></autoEnableIO>")
+	assert.NotContains(t, volume, "productCodes")
+
+	snapshot := render[ec2.DescribeSnapshotAttributeInput](t, "DescribeSnapshotAttribute", ec2.DescribeSnapshotAttributeOutput{
+		SnapshotId: aws.String("snap-1"), CreateVolumePermissions: []*ec2.CreateVolumePermission{},
+	})
+	assert.Contains(t, snapshot, "<createVolumePermission></createVolumePermission>")
+	assert.NotContains(t, snapshot, "productCodes")
+
+	eni := render[ec2.DescribeNetworkInterfaceAttributeInput](t, "DescribeNetworkInterfaceAttribute", ec2.DescribeNetworkInterfaceAttributeOutput{
+		NetworkInterfaceId: aws.String("eni-1"), Attachment: &ec2.NetworkInterfaceAttachment{AttachmentId: aws.String("eni-attach-1")},
+	})
+	assert.Contains(t, eni, "<attachmentId>eni-attach-1</attachmentId>")
+	assert.NotContains(t, eni, "groupSet")
+}

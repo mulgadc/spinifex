@@ -935,7 +935,7 @@ func TestCreateDBSnapshot_CopiesInstanceTagsOnlyWithoutRequestTags(t *testing.T)
 			input.Tags = tc.request
 			out, err := h.svc.CreateDBSnapshot(t.Context(), input, testAccountID)
 			require.NoError(t, err)
-			assert.Equal(t, tagsToAWS(tc.want), out.DBSnapshot.TagList)
+			assert.Equal(t, append([]*rds.Tag{}, tagsToAWS(tc.want)...), out.DBSnapshot.TagList)
 			stored, _ := h.snapshot(t, testSnapshotID)
 			assert.Equal(t, tc.want, stored.Tags)
 		})

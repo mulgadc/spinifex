@@ -202,7 +202,7 @@ func TestDeleteDBInstance_FinalSnapshotCopiesTagsOnlyUnderCopyTagsToSnapshot(t *
 			if copyTags {
 				assert.Equal(t, tagsToAWS(instanceTags), got.TagList)
 			} else {
-				assert.Empty(t, got.TagList)
+				assert.Equal(t, []*rds.Tag{}, got.TagList, "AWS sends an empty TagList, not none")
 			}
 		})
 	}

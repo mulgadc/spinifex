@@ -797,7 +797,7 @@ func (s *Service) projectDBSnapshot(rec *DBSnapshotRecord) *rds.DBSnapshot {
 		ProcessorFeatures:                []*rds.ProcessorFeature{},
 		// The Terraform provider reads tags from the describe as well as from
 		// ListTagsForResource, so the two have to agree.
-		TagList: tagsToAWS(rec.Tags),
+		TagList: append([]*rds.Tag{}, tagsToAWS(rec.Tags)...),
 	}
 	if rec.VpcID != "" {
 		out.VpcId = aws.String(rec.VpcID)

@@ -152,6 +152,9 @@ var ec2Scopes = map[string][]*resourceScope{
 	"DetachVolume":   {volumeScope, instanceOptScope},
 	"CreateSnapshot": {snapshotNewScope, volumeScope},
 	"DeleteSnapshot": {snapshotScope},
+	// Unlike the other describes, AWS scopes these two to the resource.
+	"DescribeVolumeAttribute":   {volumeScope},
+	"DescribeSnapshotAttribute": {snapshotScope},
 	// The source snapshot lives in SourceRegion, so an ARN built from gw.Region
 	// would name a resource in the wrong region.
 	"CopySnapshot": {snapshotNewScope},
@@ -282,6 +285,7 @@ var ec2Scopes = map[string][]*resourceScope{
 	"DescribeLaunchTemplateVersions":         unscoped,
 	"DescribeLaunchTemplates":                unscoped,
 	"DescribeNatGateways":                    unscoped,
+	"DescribeNetworkInterfaceAttribute":      unscoped,
 	"DescribeNetworkInterfaces":              unscoped,
 	"DescribePlacementGroups":                unscoped,
 	"DescribeRegions":                        unscoped,

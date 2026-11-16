@@ -580,12 +580,20 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *e
 		}
 	}
 
-	prefix := accountID + "."
-	keys, err := s.eniKV.Keys(ctx)
-	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
-		return nil, errors.New(awserrors.ErrorServerInternal)
+	// Named interfaces are read by key, so an ID-scoped describe never lists the bucket.
+	var keys []string
+	if len(eniIDs) > 0 {
+		for id := range eniIDs {
+			keys = append(keys, kvstore.AccountKey(accountID, id))
+		}
+	} else {
+		keys, err = s.eniKV.Keys(ctx)
+		if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
 	}
 
+	prefix := accountID + "."
 	for _, key := range keys {
 		if key == kvstore.VersionKey {
 			continue
@@ -596,7 +604,13 @@ func (s *VPCServiceImpl) DescribeNetworkInterfaces(ctx context.Context, input *e
 
 		entry, err := s.eniKV.Get(ctx, key)
 		if err != nil {
-			slog.WarnContext(ctx, "Failed to get ENI record", "key", key, "error", err)
+			if len(eniIDs) > 0 && !errors.Is(err, jetstream.ErrKeyNotFound) {
+				slog.ErrorContext(ctx, "DescribeNetworkInterfaces: failed to read ENI record", "key", key, "error", err)
+				return nil, errors.New(awserrors.ErrorServerInternal)
+			}
+			if !errors.Is(err, jetstream.ErrKeyNotFound) {
+				slog.WarnContext(ctx, "Failed to get ENI record", "key", key, "error", err)
+			}
 			continue
 		}
 

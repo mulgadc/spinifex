@@ -134,6 +134,7 @@ var ec2Scopes = map[string][]*resourceScope{
 	"UnmonitorInstances":            {instanceListScope},
 	"ModifyInstanceAttribute":       {instanceScope},
 	"ModifyInstanceMetadataOptions": {instanceScope},
+	"ResetInstanceAttribute":        {instanceScope},
 	"GetConsoleOutput":              {instanceScope},
 	"GetPasswordData":               {instanceScope},
 	"GetInstanceUefiData":           {instanceScope},

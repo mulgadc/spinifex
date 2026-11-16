@@ -58,6 +58,13 @@ func TestValidateDeleteRequest_FinalSnapshotChoiceMessages(t *testing.T) {
 	assert.EqualError(t, err, "Only one of SkipFinalSnapshot and FinalDBSnapshotIdentifier can be specified: InvalidParameterCombination")
 }
 
+// The handler leaves the tail of the teardown to the reconciler, so the end
+// state of a delete is the one after its next pass.
+func (h *lifecycleHarness) convergeDelete(t *testing.T) {
+	t.Helper()
+	require.NoError(t, onePass(t, testReconciler(t, h.svc, "node-a")))
+}
+
 func skipFinalSnapshot() *rds.DeleteDBInstanceInput {
 	return &rds.DeleteDBInstanceInput{
 		DBInstanceIdentifier: aws.String(testDBID),
@@ -78,6 +85,7 @@ func TestDeleteDBInstance_TearsDownEverythingItOwns(t *testing.T) {
 
 	out, err := h.svc.DeleteDBInstance(t.Context(), skipFinalSnapshot(), testAccountID)
 	require.NoError(t, err)
+	h.convergeDelete(t)
 
 	// Answered with the last state it held, as AWS does.
 	assert.Equal(t, string(StatusDeleting), aws.StringValue(out.DBInstance.DBInstanceStatus))
@@ -274,6 +282,7 @@ func TestDeleteDBInstance_RetainsTheVolumeAFinalSnapshotStillHolds(t *testing.T)
 		FinalDBSnapshotIdentifier: aws.String("orders-db-final"),
 	}, testAccountID)
 	require.NoError(t, err)
+	h.convergeDelete(t)
 
 	assert.Empty(t, h.volumes.deleted, "a volume a snapshot references must not be deleted")
 	retained, found := h.retainedVolume(t, "vol-rdsdata01")
@@ -359,6 +368,7 @@ func TestDeleteDBInstance_RetainsTheVolumeWhenTheVolumeStoreReportsItInUse(t *te
 
 	_, err := h.svc.DeleteDBInstance(t.Context(), skipFinalSnapshot(), testAccountID)
 	require.NoError(t, err)
+	h.convergeDelete(t)
 
 	retained, found := h.retainedVolume(t, "vol-rdsdata01")
 	require.True(t, found, "a volume the store refused to delete must be recorded, not forgotten")
@@ -515,6 +525,7 @@ func TestDeleteDBInstance_TerminatesAStoppedVMFromItsRecord(t *testing.T) {
 
 	_, err := h.svc.DeleteDBInstance(t.Context(), skipFinalSnapshot(), testAccountID)
 	require.NoError(t, err)
+	h.convergeDelete(t)
 
 	assert.Equal(t, []string{
 		"detach-stopped:" + testInstance + ":vol-rdsdata01",

@@ -131,6 +131,10 @@ type DBInstanceRecord struct {
 	// Named on the delete request and persisted before teardown starts, so a
 	// resumed delete takes the same final snapshot rather than none.
 	FinalSnapshotIdentifier string `json:"finalSnapshotIdentifier,omitempty"`
+	// Set once the delete handler has retired the VM and left the rest of the
+	// teardown to the reconciler, which then resumes it without waiting out the
+	// handler's claim.
+	TeardownHandedOff bool `json:"teardownHandedOff,omitempty"`
 
 	// The snapshot currently being taken of this instance. Nil when none is.
 	SnapshotOperation *SnapshotOperation `json:"snapshotOperation,omitempty"`

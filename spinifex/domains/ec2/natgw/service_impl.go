@@ -163,6 +163,7 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 	// DeleteNatGateway clears it back to allocated. Non-fatal: the NAT GW is
 	// already stored, so a failed mark only weakens the reuse guard until then.
 	eipRecord.AssociationId = record.AssociationId
+	eipRecord.NatGatewayId = natgwID
 	eipRecord.VpcId = subnetRecord.VpcId
 	eipRecord.State = "associated"
 	if eipData, err := json.Marshal(eipRecord); err == nil {
@@ -356,6 +357,7 @@ func (s *NatGatewayServiceImpl) disassociateEIP(ctx context.Context, record *Nat
 	eip.PrivateIp = ""
 	eip.MacAddress = ""
 	eip.VpcId = ""
+	eip.NatGatewayId = ""
 	eip.State = "allocated"
 	data, err := json.Marshal(eip)
 	if err != nil {

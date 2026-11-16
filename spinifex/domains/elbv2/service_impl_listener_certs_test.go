@@ -197,7 +197,9 @@ func TestListenerCertificates_AddRemoveDescribe(t *testing.T) {
 		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn2)}},
 	}, testAccountID)
 	require.NoError(t, err)
-	require.Len(t, addOut.Certificates, 2)
+	require.Len(t, addOut.Certificates, 1, "AWS returns only the requested certificate")
+	assert.Equal(t, testCertArn2, aws.StringValue(addOut.Certificates[0].CertificateArn))
+	assert.False(t, aws.BoolValue(addOut.Certificates[0].IsDefault))
 
 	// Re-adding is idempotent.
 	addOut, err = svc.AddListenerCertificates(context.Background(), &elbv2.AddListenerCertificatesInput{
@@ -205,7 +207,7 @@ func TestListenerCertificates_AddRemoveDescribe(t *testing.T) {
 		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn2)}},
 	}, testAccountID)
 	require.NoError(t, err)
-	require.Len(t, addOut.Certificates, 2)
+	require.Len(t, addOut.Certificates, 1)
 
 	// Describe shows both.
 	desc, err := svc.DescribeListenerCertificates(context.Background(), &elbv2.DescribeListenerCertificatesInput{
@@ -235,6 +237,27 @@ func TestListenerCertificates_AddRemoveDescribe(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, desc.Certificates, 1)
 	assert.Equal(t, testCertArn, aws.StringValue(desc.Certificates[0].CertificateArn))
+}
+
+func TestAddListenerCertificates_MoreThanOneRejected(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	arn := createHTTPSListener(t, svc)
+
+	_, err := svc.AddListenerCertificates(context.Background(), &elbv2.AddListenerCertificatesInput{
+		ListenerArn: aws.String(arn),
+		Certificates: []*elbv2.Certificate{
+			{CertificateArn: aws.String(testCertArn2)},
+			{CertificateArn: aws.String(testCertArn)},
+		},
+	}, testAccountID)
+	assert.EqualError(t, err, "Up to '1' certificate ARNs can be specified, but '2' were specified: "+awserrors.ErrorValidationError)
+
+	desc, err := svc.DescribeListenerCertificates(context.Background(), &elbv2.DescribeListenerCertificatesInput{
+		ListenerArn: aws.String(arn),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, desc.Certificates, 1, "a refused call attaches nothing")
 }
 
 func TestAddListenerCertificates_HTTPRejected(t *testing.T) {

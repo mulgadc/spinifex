@@ -25,12 +25,16 @@ func listenerCertsToSDK(certs []ListenerCertificate) []*elbv2.Certificate {
 
 // AddListenerCertificates attaches additional (SNI) certificates to a secure listener.
 // Added certificates are non-default; re-adding an existing certificate is a no-op.
+// The response lists only the requested certificate, as AWS does.
 func (s *ELBv2ServiceImpl) AddListenerCertificates(ctx context.Context, input *elbv2.AddListenerCertificatesInput, accountID string) (*elbv2.AddListenerCertificatesOutput, error) {
 	if input == nil || input.ListenerArn == nil || *input.ListenerArn == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 	if len(input.Certificates) == 0 {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if len(input.Certificates) > 1 {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError, "Up to '1' certificate ARNs can be specified, but '%d' were specified", len(input.Certificates))
 	}
 
 	listener, err := s.store.GetListenerByArn(ctx, *input.ListenerArn)
@@ -62,6 +66,7 @@ func (s *ELBv2ServiceImpl) AddListenerCertificates(ctx context.Context, input *e
 		seen[*c.CertificateArn] = true
 	}
 	updated.Certificates = certs
+	added := []ListenerCertificate{{CertificateArn: *input.Certificates[0].CertificateArn}}
 
 	if err := s.validateListenerCerts(ctx, certs, accountID); err != nil {
 		return nil, err
@@ -87,7 +92,7 @@ func (s *ELBv2ServiceImpl) AddListenerCertificates(ctx context.Context, input *e
 	}
 
 	return &elbv2.AddListenerCertificatesOutput{
-		Certificates: listenerCertsToSDK(certs),
+		Certificates: listenerCertsToSDK(added),
 	}, nil
 }
 

@@ -2915,7 +2915,7 @@ func buildListenerCertificates(protocol string, in []*elbv2.Certificate, sslPoli
 	}
 
 	if len(in) == 0 {
-		return nil, "", errors.New(awserrors.ErrorELBv2CertificateNotFound)
+		return nil, "", awserrors.Errorf(awserrors.ErrorValidationError, "A certificate must be specified for %s listeners", protocol)
 	}
 
 	certs := make([]ListenerCertificate, 0, len(in))
@@ -2986,7 +2986,7 @@ func (s *ELBv2ServiceImpl) CreateListener(ctx context.Context, input *elbv2.Crea
 		case ProtocolHTTP, ProtocolHTTPS:
 			// valid ALB protocols
 		default:
-			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+			return nil, awserrors.Errorf(awserrors.ErrorValidationError, "Listener protocol '%s' must be one of 'HTTPS, HTTP'", protocol)
 		}
 	}
 

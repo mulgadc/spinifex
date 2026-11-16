@@ -56,12 +56,14 @@ func TestSetIpAddressType_DualstackRejected(t *testing.T) {
 	svc := setupTestService(t)
 	arn := createLBArn(t, svc, "ipt-ds")
 
-	_, err := svc.SetIpAddressType(context.Background(), &elbv2.SetIpAddressTypeInput{
-		LoadBalancerArn: aws.String(arn),
-		IpAddressType:   aws.String("dualstack"),
-	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorELBv2InvalidConfigurationRequest)
+	for _, ipType := range []string{"dualstack", "dualstack-without-public-ipv4"} {
+		_, err := svc.SetIpAddressType(context.Background(), &elbv2.SetIpAddressTypeInput{
+			LoadBalancerArn: aws.String(arn),
+			IpAddressType:   aws.String(ipType),
+		}, testAccountID)
+		assert.EqualError(t, err, "You must specify subnets with an associated IPv6 CIDR block.: ValidationError", ipType)
+	}
+	assert.Equal(t, "ipv4", *describeLB(t, svc, arn).IpAddressType)
 }
 
 func TestSetIpAddressType_MissingParams(t *testing.T) {

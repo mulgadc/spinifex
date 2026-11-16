@@ -41,6 +41,7 @@ var v1Actions = []string{
 	"CreateDBSnapshot",
 	"DescribeDBSnapshots",
 	"DeleteDBSnapshot",
+	"DescribeDBSnapshotAttributes",
 	"RestoreDBInstanceFromDBSnapshot",
 
 	"DescribeDBInstanceAutomatedBackups",

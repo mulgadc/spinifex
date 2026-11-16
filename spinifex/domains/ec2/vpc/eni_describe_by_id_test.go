@@ -25,15 +25,6 @@ func (k noListKV) Keys(context.Context, ...jetstream.WatchOpt) ([]string, error)
 	return nil, errors.New("bucket listing refused")
 }
 
-// failGetKV fails every direct read with an error other than a missing key.
-type failGetKV struct {
-	jetstream.KeyValue
-}
-
-func (failGetKV) Get(context.Context, string) (jetstream.KeyValueEntry, error) {
-	return nil, errors.New("replica unavailable")
-}
-
 func TestDescribeNetworkInterfaces_ByIDReadsOnlyTheNamedRecords(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)

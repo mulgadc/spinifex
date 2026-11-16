@@ -732,6 +732,11 @@ func (s *VPCServiceImpl) AttachENIWithOwner(accountID, eniId, instanceId string,
 
 func (s *VPCServiceImpl) attachENI(ctx context.Context, accountID, eniId, instanceId string, deviceIndex int64, instanceOwnerID string, deleteOnTermination *bool) (string, error) {
 	attachmentId := awsidentifiers.GenerateResourceID("eni-attach")
+	// Indexed before the record names the instance, so a describe that sees the
+	// attachment always finds it; an attach that then fails leaves a stale entry.
+	if err := s.indexAttachment(ctx, accountID, instanceId, eniId); err != nil {
+		return "", err
+	}
 	err := s.casENI(ctx, kvstore.AccountKey(accountID, eniId), eniId, func(record *ENIRecord) error {
 		if record.Status == "in-use" {
 			return errors.New(awserrors.ErrorInvalidNetworkInterfaceInUse)
@@ -894,16 +899,6 @@ func (s *VPCServiceImpl) ListInstanceENIs(accountID, instanceID string) ([]ENIRe
 }
 
 func (s *VPCServiceImpl) listInstanceENIs(ctx context.Context, accountID, instanceID string) ([]ENIRecord, error) {
-	return s.listAccountENIs(ctx, accountID, func(r *ENIRecord) bool { return r.InstanceId == instanceID })
-}
-
-// ListAttachedENIs returns every ENIRecord in accountID attached to any
-// instance, so a describe can group them by instance in one scan.
-func (s *VPCServiceImpl) ListAttachedENIs(accountID string) ([]ENIRecord, error) {
-	return s.listAccountENIs(context.Background(), accountID, func(r *ENIRecord) bool { return r.InstanceId != "" })
-}
-
-func (s *VPCServiceImpl) listAccountENIs(ctx context.Context, accountID string, match func(*ENIRecord) bool) ([]ENIRecord, error) {
 	keys, err := s.eniKV.Keys(ctx)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
@@ -925,7 +920,7 @@ func (s *VPCServiceImpl) listAccountENIs(ctx context.Context, accountID string, 
 		if err := json.Unmarshal(entry.Value(), &record); err != nil {
 			continue
 		}
-		if match(&record) {
+		if record.InstanceId == instanceID {
 			out = append(out, record)
 		}
 	}

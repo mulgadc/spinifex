@@ -85,16 +85,16 @@ func TestDaemonENICreator_ListInstanceENIs_HappyPath(t *testing.T) {
 	assert.True(t, infos[0].DeleteOnTermination, "attach defaults DeleteOnTermination to true")
 }
 
-// TestDaemonENICreator_ListAttachedENIs_CarriesAttachment confirms the account
-// listing maps the attachment fields DescribeInstances projects interfaces from.
-func TestDaemonENICreator_ListAttachedENIs_CarriesAttachment(t *testing.T) {
+// TestDaemonENICreator_InstanceAttachedENIs_CarriesAttachment confirms the
+// per-instance read maps the attachment fields DescribeInstances projects.
+func TestDaemonENICreator_InstanceAttachedENIs_CarriesAttachment(t *testing.T) {
 	f := newENIHotPlugFixture(t)
 
 	attachmentID, err := f.daemon.vpcService.AttachENI(testAccountID, f.eniID, f.vmInst.ID, 2)
 	require.NoError(t, err)
 
 	creator := &daemonENICreator{d: f.daemon}
-	infos, err := creator.ListAttachedENIs(context.Background(), testAccountID)
+	infos, err := creator.InstanceAttachedENIs(context.Background(), testAccountID, f.vmInst.ID, nil)
 	require.NoError(t, err)
 	require.Len(t, infos, 1)
 	assert.Equal(t, f.eniID, infos[0].NetworkInterfaceID)

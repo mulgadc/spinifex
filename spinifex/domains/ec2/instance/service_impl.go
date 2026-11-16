@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -38,6 +39,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
+	"golang.org/x/sync/errgroup"
 )
 
 // bytesPerGiB converts the byte sizes the launch path works in to the GiB
@@ -2139,17 +2141,17 @@ func (s *InstanceServiceImpl) DescribeInstances(ctx context.Context, input *ec2.
 		return nil, err
 	}
 
-	// The interface records are read before the manager lock is taken, since
-	// the read is a KV scan.
-	accountIDs := map[string]bool{}
+	// The interface records are read outside the manager lock, since each
+	// instance's read is KV round trips.
+	var lookups []eniLookup
 	s.vmMgr.View(func(vms map[string]*vm.VM) {
 		for _, instance := range vms {
 			if IsInstanceVisibleToCaller(accountID, instance) && (len(instanceIDFilter) == 0 || instanceIDFilter[instance.ID]) {
-				accountIDs[instance.AccountID] = true
+				lookups = append(lookups, newENILookup(instance))
 			}
 		}
 	})
-	attachedENIs, err := s.attachedENIsByInstance(ctx, accountIDs)
+	attachedENIs, err := s.attachedENIsByInstance(ctx, lookups)
 	if err != nil {
 		return nil, err
 	}
@@ -2220,23 +2222,62 @@ func (s *InstanceServiceImpl) DescribeInstances(ctx context.Context, input *ec2.
 	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
 }
 
-// attachedENIsByInstance groups the interfaces attached in each of accountIDs
-// by instance ID. It returns nil when no ENI source is wired, which leaves the
-// projection on the launch-time interfaces.
-func (s *InstanceServiceImpl) attachedENIsByInstance(ctx context.Context, accountIDs map[string]bool) (map[string][]ENIInfo, error) {
+// eniLookupConcurrency bounds the instances whose interfaces one describe
+// reads at once.
+const eniLookupConcurrency = 8
+
+// eniLookup names an instance whose attached interfaces a describe reads, with
+// the interfaces its record names as candidates beside the attachment index.
+type eniLookup struct {
+	accountID  string
+	instanceID string
+	candidates []string
+}
+
+func newENILookup(v *vm.VM) eniLookup {
+	l := eniLookup{accountID: v.AccountID, instanceID: v.ID}
+	if v.ENIId != "" {
+		l.candidates = append(l.candidates, v.ENIId)
+	}
+	for _, extra := range v.ExtraENIs {
+		l.candidates = append(l.candidates, extra.ENIID)
+	}
+	if v.Instance != nil {
+		for _, nic := range v.Instance.NetworkInterfaces {
+			if nic != nil && nic.NetworkInterfaceId != nil {
+				l.candidates = append(l.candidates, *nic.NetworkInterfaceId)
+			}
+		}
+	}
+	return l
+}
+
+// attachedENIsByInstance reads the interfaces attached to each looked-up
+// instance, keyed by instance ID. It returns nil when no ENI source is wired,
+// which leaves the projection on the launch-time interfaces.
+func (s *InstanceServiceImpl) attachedENIsByInstance(ctx context.Context, lookups []eniLookup) (map[string][]ENIInfo, error) {
 	if s.eniCreator == nil {
 		return nil, nil
 	}
-	byInstance := map[string][]ENIInfo{}
-	for accountID := range accountIDs {
-		records, err := s.eniCreator.ListAttachedENIs(ctx, accountID)
-		if err != nil {
-			slog.ErrorContext(ctx, "DescribeInstances: failed to list attached interfaces", "accountID", accountID, "err", err)
-			return nil, errors.New(awserrors.ErrorServerInternal)
-		}
-		for _, r := range records {
-			byInstance[r.InstanceID] = append(byInstance[r.InstanceID], r)
-		}
+	byInstance := make(map[string][]ENIInfo, len(lookups))
+	var mu sync.Mutex
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(eniLookupConcurrency)
+	for _, l := range lookups {
+		g.Go(func() error {
+			records, err := s.eniCreator.InstanceAttachedENIs(gctx, l.accountID, l.instanceID, l.candidates)
+			if err != nil {
+				slog.ErrorContext(ctx, "DescribeInstances: failed to read attached interfaces", "instanceId", l.instanceID, "err", err)
+				return errors.New(awserrors.ErrorServerInternal)
+			}
+			mu.Lock()
+			byInstance[l.instanceID] = records
+			mu.Unlock()
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 	return byInstance, nil
 }
@@ -2338,13 +2379,13 @@ func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input
 
 	var attachedENIs map[string][]ENIInfo
 	if liveENIs {
-		accountIDs := map[string]bool{}
+		var lookups []eniLookup
 		for _, instance := range instances {
 			if IsInstanceVisible(accountID, instance.AccountID) && (len(instanceIDFilter) == 0 || instanceIDFilter[instance.ID]) {
-				accountIDs[instance.AccountID] = true
+				lookups = append(lookups, newENILookup(instance))
 			}
 		}
-		if attachedENIs, err = s.attachedENIsByInstance(ctx, accountIDs); err != nil {
+		if attachedENIs, err = s.attachedENIsByInstance(ctx, lookups); err != nil {
 			return nil, err
 		}
 	}

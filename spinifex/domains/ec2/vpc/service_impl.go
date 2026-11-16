@@ -93,6 +93,9 @@ type VPCServiceImpl struct {
 	eigwKV     jetstream.KeyValue // egress-only internet gateway bucket for the DeleteVpc dependency check
 	ipam       *IPAM
 
+	// eniAttachKV indexes attached interfaces by instance; see KVBucketENIAttachments.
+	eniAttachKV jetstream.KeyValue
+
 	// Optional: injected after construction for public IP cleanup in DeleteNetworkInterface.
 	externalIPAM *ExternalIPAM
 	eipKV        jetstream.KeyValue
@@ -205,6 +208,15 @@ func NewVPCServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketENIs, err)
 	}
 
+	// Opened after the ENI bucket: its first migration backfills from it.
+	eniAttachKV, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketENIAttachments, 1)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketENIAttachments, err)
+	}
+	if err := migrate.DefaultRegistry.RunKVWithJetStream(ctx, KVBucketENIAttachments, eniAttachKV, js, KVBucketENIAttachmentsVersion); err != nil {
+		return nil, fmt.Errorf("migrate %s: %w", KVBucketENIAttachments, err)
+	}
+
 	sgKV, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketSecurityGroups, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketSecurityGroups, err)
@@ -262,6 +274,8 @@ func NewVPCServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn
 		igwKV:      igwKV,
 		eigwKV:     eigwKV,
 		ipam:       ipam,
+
+		eniAttachKV: eniAttachKV,
 	}, nil
 }
 

@@ -3737,8 +3737,15 @@ type fakeENICreator struct {
 	detachErr       error                // returned by every DetachENI call when set
 	instanceENIs    map[string][]ENIInfo // keyed by instanceID, for ListInstanceENIs
 	listENIsErr     error
+	attachedLookups []attachedLookup
+	attached        map[string][]ENIInfo
 	eniHasEIP       bool  // what ENIHasEIP reports for every ENI
 	eniHasEIPErr    error // when set, ENIHasEIP fails instead
+}
+
+type attachedLookup struct {
+	instanceID string
+	candidates []string
 }
 
 func (f *fakeENICreator) ENIHasEIP(_ context.Context, _, _ string) (bool, error) {
@@ -3785,11 +3792,17 @@ func (f *fakeENICreator) CreateNetworkInterface(_ context.Context, input *ec2.Cr
 	return f.createOut, nil
 }
 
-func (f *fakeENICreator) AttachENI(_ context.Context, _, _, _ string, _ int64) (string, error) {
+func (f *fakeENICreator) AttachENI(_ context.Context, _, eniID, instanceID string, deviceIndex int64) (string, error) {
 	f.attachCalls++
 	if f.attachErr != nil && (f.attachErrOnCall == 0 || f.attachErrOnCall == f.attachCalls) {
 		return "", f.attachErr
 	}
+	if f.attached == nil {
+		f.attached = map[string][]ENIInfo{}
+	}
+	f.attached[instanceID] = append(f.attached[instanceID], ENIInfo{
+		NetworkInterfaceID: eniID, Status: "in-use", AttachmentID: "attached", DeviceIndex: deviceIndex, DeleteOnTermination: true,
+	})
 	return "attached", nil
 }
 
@@ -3814,16 +3827,19 @@ func (f *fakeENICreator) ListInstanceENIs(_ context.Context, _, instanceID strin
 	return f.instanceENIs[instanceID], nil
 }
 
-func (f *fakeENICreator) ListAttachedENIs(_ context.Context, _ string) ([]ENIInfo, error) {
+func (f *fakeENICreator) InstanceAttachedENIs(_ context.Context, _, instanceID string, candidates []string) ([]ENIInfo, error) {
+	f.attachedLookups = append(f.attachedLookups, attachedLookup{instanceID: instanceID, candidates: candidates})
 	if f.listENIsErr != nil {
 		return nil, f.listENIsErr
 	}
+	enis, ok := f.instanceENIs[instanceID]
+	if !ok {
+		enis = f.attached[instanceID]
+	}
 	var out []ENIInfo
-	for instanceID, enis := range f.instanceENIs {
-		for _, eni := range enis {
-			eni.InstanceID = instanceID
-			out = append(out, eni)
-		}
+	for _, eni := range enis {
+		eni.InstanceID = instanceID
+		out = append(out, eni)
 	}
 	return out, nil
 }

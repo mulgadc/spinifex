@@ -63,6 +63,9 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 		return nil, err
 	}
 	eni := eniReservationFor(mode)
+	if err := s.requireContainerInstance(ctx, kv, cluster); err != nil {
+		return nil, err
+	}
 
 	out := &ecs.RunTaskOutput{}
 	for i := 0; i < count; i++ {
@@ -94,6 +97,19 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 		out.Tasks = append(out.Tasks, s.taskToAWS(accountID, rec))
 	}
 	return out, nil
+}
+
+// requireContainerInstance refuses a launch into a cluster with no registered
+// container instance, as AWS does, rather than reporting a per-task failure.
+func (s *Service) requireContainerInstance(ctx context.Context, kv jetstream.KeyValue, cluster string) error {
+	keys, err := taskdefinition.KeysWithPrefix(ctx, kv, InstancesPrefix(cluster))
+	if err != nil {
+		return err
+	}
+	if len(keys) == 0 {
+		return awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "No Container Instances were found in your cluster.")
+	}
+	return nil
 }
 
 // eniReservationFor reports how many task ENI slots a network mode costs an

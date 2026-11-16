@@ -208,12 +208,21 @@ func TestSnapshotRestore(t *testing.T) {
 	// A stopped instance was sealed by its own graceful stop, so there is no engine
 	// to hold at a checkpoint and no reason to refuse the snapshot. It is also the
 	// cheapest correct way to back up a database that is not in use.
+	// The snapshot's delete belongs to the whole test, because the last subtest
+	// needs it still holding the source volume.
+	t.Cleanup(func() { deleteDBSnapshot(t, f, stoppedSnapshotID) })
 	t.Run("ASnapshotOfAStoppedInstanceIsAllowed", func(t *testing.T) {
 		_, err := f.AWS.RDS.StopDBInstance(&rds.StopDBInstanceInput{DBInstanceIdentifier: aws.String(sourceID)})
 		require.NoError(t, err, "stop-db-instance")
 		harness.WaitForDBInstanceStatus(t, f.AWS, sourceID, harness.DBInstanceStopped)
 
-		stopped := createDBSnapshot(t, f, sourceID, stoppedSnapshotID)
+		out, err := f.AWS.RDS.CreateDBSnapshot(&rds.CreateDBSnapshotInput{
+			DBInstanceIdentifier: aws.String(sourceID),
+			DBSnapshotIdentifier: aws.String(stoppedSnapshotID),
+		})
+		require.NoError(t, err, "create-db-snapshot %s", stoppedSnapshotID)
+		require.NotNil(t, out.DBSnapshot)
+		stopped := out.DBSnapshot
 		assert.Equal(t, harness.DBSnapshotAvailable, aws.StringValue(stopped.Status))
 		assert.Equal(t, int64(dbStorageGiB), aws.Int64Value(stopped.AllocatedStorage))
 
@@ -260,6 +269,10 @@ func TestSnapshotRestore(t *testing.T) {
 	// failure this catches is the expensive one — a volume nothing points at, paid
 	// for indefinitely, invisible to the customer who deleted the database.
 	t.Run("DeletingTheLastSnapshotReleasesTheRetainedVolume", func(t *testing.T) {
+		holder, err := harness.DescribeDBSnapshot(f.AWS, stoppedSnapshotID)
+		require.NoError(t, err, "the stopped snapshot must still hold the source volume")
+		require.Equal(t, harness.DBSnapshotAvailable, aws.StringValue(holder.Status))
+
 		// The snapshot it was restored from goes straight after, while the restored
 		// volume's teardown is still owed: a customer is never made to wait for it.
 		harness.Step(t, "Deleting the restored instance %q, then the snapshot it came from", restoredID)
@@ -394,6 +407,8 @@ func requireVolumeExists(t *testing.T, system *harness.AWSClient, volumeID, why 
 	})
 	require.NoError(t, err, "describe-volumes %s: %s", volumeID, why)
 	require.Len(t, out.Volumes, 1, why)
+	// A volume the reaper is already deleting is still listed, but not retained.
+	require.NotEqual(t, "deleting", aws.StringValue(out.Volumes[0].State), why)
 }
 
 // Polled: the snapshot delete leaves the volume deleting, and it is gone only

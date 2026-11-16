@@ -40,8 +40,8 @@ type InstanceProjection struct {
 	FallbackStateName string
 
 	// AttachedENIs maps an instance ID to the interface records attached to it.
-	// An instance it holds takes NetworkInterfaces from it rather than the
-	// launch-time copy, so an interface attached or detached after launch shows.
+	// When non-nil, NetworkInterfaces come from it rather than the launch-time
+	// copy, so an interface attached or detached after launch shows up.
 	AttachedENIs map[string][]ENIInfo
 }
 
@@ -191,8 +191,8 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 	// because instanceCopy shares their pointers with the stored instance.
 	instanceCopy.SourceDestCheck = aws.Bool(true)
 	instanceCopy.EnaSupport = aws.Bool(instanceEnaSupport)
-	if records, ok := cfg.AttachedENIs[v.ID]; ok {
-		instanceCopy.NetworkInterfaces = interfacesFromRecords(records, instanceCopy.NetworkInterfaces, instanceCopy.SecurityGroups)
+	if cfg.AttachedENIs != nil {
+		instanceCopy.NetworkInterfaces = interfacesFromRecords(cfg.AttachedENIs[v.ID], instanceCopy.SecurityGroups)
 	}
 	if len(instanceCopy.NetworkInterfaces) > 0 {
 		nics := make([]*ec2.InstanceNetworkInterface, 0, len(instanceCopy.NetworkInterfaces))
@@ -307,20 +307,13 @@ func projectInterfaceFields(nic *ec2.InstanceNetworkInterface, ownerID string) {
 }
 
 // interfacesFromRecords builds an instance's interfaces from the records
-// attached to it, primary first as AWS orders them. An interface the launch
-// stored keeps that copy with the record's attachment; group names come from
-// the instance's groups, since the records carry only IDs.
-func interfacesFromRecords(records []ENIInfo, launched []*ec2.InstanceNetworkInterface, instanceGroups []*ec2.GroupIdentifier) []*ec2.InstanceNetworkInterface {
+// attached to it, primary first as AWS orders them. Group names come from the
+// instance's groups, since the records carry only IDs.
+func interfacesFromRecords(records []ENIInfo, instanceGroups []*ec2.GroupIdentifier) []*ec2.InstanceNetworkInterface {
 	groupNames := make(map[string]*string, len(instanceGroups))
 	for _, g := range instanceGroups {
 		if g != nil && g.GroupId != nil {
 			groupNames[*g.GroupId] = g.GroupName
-		}
-	}
-	launchedByID := make(map[string]*ec2.InstanceNetworkInterface, len(launched))
-	for _, nic := range launched {
-		if nic != nil && nic.NetworkInterfaceId != nil {
-			launchedByID[*nic.NetworkInterfaceId] = nic
 		}
 	}
 	sorted := slices.SortedFunc(slices.Values(records), func(a, b ENIInfo) int {
@@ -328,38 +321,25 @@ func interfacesFromRecords(records []ENIInfo, launched []*ec2.InstanceNetworkInt
 	})
 	nics := make([]*ec2.InstanceNetworkInterface, 0, len(sorted))
 	for _, r := range sorted {
-		attachment := &ec2.InstanceNetworkInterfaceAttachment{}
-		if !r.AttachTime.IsZero() {
-			attachment.AttachTime = aws.Time(r.AttachTime)
+		groups := make([]*ec2.GroupIdentifier, 0, len(r.SecurityGroupIDs))
+		for _, id := range r.SecurityGroupIDs {
+			groups = append(groups, &ec2.GroupIdentifier{GroupId: aws.String(id), GroupName: groupNames[id]})
 		}
-		var nic ec2.InstanceNetworkInterface
-		if stored, ok := launchedByID[r.NetworkInterfaceID]; ok {
-			nic = *stored
-			if stored.Attachment != nil {
-				*attachment = *stored.Attachment
-			}
-		} else {
-			groups := make([]*ec2.GroupIdentifier, 0, len(r.SecurityGroupIDs))
-			for _, id := range r.SecurityGroupIDs {
-				groups = append(groups, &ec2.GroupIdentifier{GroupId: aws.String(id), GroupName: groupNames[id]})
-			}
-			nic = ec2.InstanceNetworkInterface{
-				NetworkInterfaceId: aws.String(r.NetworkInterfaceID),
-				PrivateIpAddress:   aws.String(r.PrivateIpAddress),
-				MacAddress:         aws.String(r.MacAddress),
-				SubnetId:           aws.String(r.SubnetID),
-				VpcId:              aws.String(r.VpcID),
-				Description:        aws.String(r.Description),
-				Groups:             groups,
-			}
-		}
-		nic.Status = aws.String(r.Status)
-		attachment.AttachmentId = aws.String(r.AttachmentID)
-		attachment.DeviceIndex = aws.Int64(r.DeviceIndex)
-		attachment.Status = aws.String(cmp.Or(r.AttachmentStatus, ec2.AttachmentStatusAttached))
-		attachment.DeleteOnTermination = aws.Bool(r.DeleteOnTermination)
-		nic.Attachment = attachment
-		nics = append(nics, &nic)
+		nics = append(nics, &ec2.InstanceNetworkInterface{
+			NetworkInterfaceId: aws.String(r.NetworkInterfaceID),
+			PrivateIpAddress:   aws.String(r.PrivateIpAddress),
+			MacAddress:         aws.String(r.MacAddress),
+			SubnetId:           aws.String(r.SubnetID),
+			VpcId:              aws.String(r.VpcID),
+			Status:             aws.String(r.Status),
+			Groups:             groups,
+			Attachment: &ec2.InstanceNetworkInterfaceAttachment{
+				AttachmentId:        aws.String(r.AttachmentID),
+				DeviceIndex:         aws.Int64(r.DeviceIndex),
+				Status:              aws.String(cmp.Or(r.AttachmentStatus, ec2.AttachmentStatusAttached)),
+				DeleteOnTermination: aws.Bool(r.DeleteOnTermination),
+			},
+		})
 	}
 	return nics
 }

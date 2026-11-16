@@ -125,25 +125,3 @@ func TestDescribeInstances_InterfaceListFailureIsInternal(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 }
-
-// A describe reads the interfaces of the instances it returns and no others,
-// offering each instance's own interfaces beside the attachment index.
-func TestDescribeInstances_ReadsOnlyTheRequestedInstancesInterfaces(t *testing.T) {
-	v := describeENIVM()
-	neighbor := describeENIVM()
-	neighbor.ID = "i-neighbor"
-	neighbor.Instance = &ec2.Instance{InstanceId: aws.String(neighbor.ID)}
-	enis := &fakeENICreator{instanceENIs: map[string][]ENIInfo{v.ID: {primaryENI()}}}
-	svc := &InstanceServiceImpl{
-		vmMgr:      mgrWith(map[string]*vm.VM{v.ID: v, neighbor.ID: neighbor}),
-		config:     &config.Config{},
-		eniCreator: enis,
-	}
-
-	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{InstanceIds: []*string{aws.String(v.ID)}}, describeENIOwner)
-	require.NoError(t, err)
-	assert.Equal(t, []string{"eni-primary"}, interfaceIDs(describedInterfaces(t, out)))
-	require.Len(t, enis.attachedLookups, 1, "the neighbouring instance's interfaces are not read")
-	assert.Equal(t, v.ID, enis.attachedLookups[0].instanceID)
-	assert.Equal(t, []string{"eni-primary"}, enis.attachedLookups[0].candidates)
-}

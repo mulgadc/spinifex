@@ -69,7 +69,6 @@ func eniInfoFromRecord(rec ec2vpc.ENIRecord) ec2instance.ENIInfo {
 		AttachmentID:     rec.AttachmentId,
 		DeviceIndex:      rec.DeviceIndex,
 		AttachmentStatus: rec.AttachmentStatus,
-		AttachTime:       rec.AttachTime,
 	}
 }
 
@@ -97,8 +96,8 @@ func (a *daemonENICreator) ListInstanceENIs(_ context.Context, accountID, instan
 	return eniInfosFromRecords(a.d.vpcService.ListInstanceENIs(accountID, instanceID))
 }
 
-func (a *daemonENICreator) InstanceAttachedENIs(ctx context.Context, accountID, instanceID string, candidates []string) ([]ec2instance.ENIInfo, error) {
-	return eniInfosFromRecords(a.d.vpcService.InstanceAttachedENIs(ctx, accountID, instanceID, candidates))
+func (a *daemonENICreator) ListAttachedENIs(_ context.Context, accountID string) ([]ec2instance.ENIInfo, error) {
+	return eniInfosFromRecords(a.d.vpcService.ListAttachedENIs(accountID))
 }
 
 func eniInfosFromRecords(records []ec2vpc.ENIRecord, err error) ([]ec2instance.ENIInfo, error) {

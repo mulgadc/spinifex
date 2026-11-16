@@ -5,7 +5,6 @@ package instance
 
 import (
 	"context"
-	"time"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
@@ -245,13 +244,12 @@ type ENIInfo struct {
 	// DeleteOnTermination mirrors the stored ENIRecord field, defaulted true
 	// when unset. Read by the terminate sweep to decide detach-only vs delete.
 	DeleteOnTermination bool
-	// InstanceID, AttachmentID, DeviceIndex, AttachmentStatus and AttachTime
-	// describe the current attachment; InstanceID is empty for a detached one.
+	// InstanceID, AttachmentID, DeviceIndex and AttachmentStatus describe the
+	// current attachment; InstanceID is empty for a detached interface.
 	InstanceID       string
 	AttachmentID     string
 	DeviceIndex      int64
 	AttachmentStatus string
-	AttachTime       time.Time
 }
 
 // ENICreator covers the VPC/ENI operations RunInstances uses to auto-attach a
@@ -275,10 +273,9 @@ type ENICreator interface {
 	// Used by the terminate sweep for post-launch attachments the launch-time
 	// ENIId scalar on vm.VM never carries.
 	ListInstanceENIs(ctx context.Context, accountID, instanceID string) ([]ENIInfo, error)
-	// InstanceAttachedENIs returns the ENIs attached to instanceID, reading only
-	// the interfaces indexed under it plus candidates, so DescribeInstances costs
-	// what the instance has rather than what the account has.
-	InstanceAttachedENIs(ctx context.Context, accountID, instanceID string, candidates []string) ([]ENIInfo, error)
+	// ListAttachedENIs returns every ENI in accountID attached to any instance.
+	// DescribeInstances projects an instance's interfaces from it.
+	ListAttachedENIs(ctx context.Context, accountID string) ([]ENIInfo, error)
 }
 
 // PublicIPAllocator allocates a public IP to an instance/ENI from a pool.

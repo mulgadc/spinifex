@@ -2558,6 +2558,35 @@ func (s *InstanceServiceImpl) modifiableInstanceState(instanceID, accountID stri
 	return state, IsInstanceVisible(accountID, owner), nil
 }
 
+// ResetInstanceAttribute checks that the instance can take the reset and
+// returns. sourceDestCheck is always at its default and kernel and ramdisk are
+// never set, so there is nothing to change.
+func (s *InstanceServiceImpl) ResetInstanceAttribute(ctx context.Context, input *ec2.ResetInstanceAttributeInput, accountID string) (*ec2.ResetInstanceAttributeOutput, error) {
+	if input.InstanceId == nil || *input.InstanceId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	instanceID := *input.InstanceId
+	attribute := aws.StringValue(input.Attribute)
+
+	state, found, err := s.modifiableInstanceState(instanceID, accountID)
+	if err != nil {
+		slog.ErrorContext(ctx, "ResetInstanceAttribute: failed to resolve instance", "instanceId", instanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if !found {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidInstanceIDNotFound, "The instance ID '%s' does not exist", instanceID)
+	}
+	switch {
+	case state == vm.StateShuttingDown || state == vm.StateTerminated:
+		return nil, awserrors.Errorf(awserrors.ErrorIncorrectInstanceState,
+			"The instance '%s' must be in a 'running', 'pending', 'stopping' or 'stopped' state for this operation.", instanceID)
+	case attribute != ec2.InstanceAttributeNameSourceDestCheck && state != vm.StateStopped:
+		return nil, notStoppedError(instanceID)
+	}
+	slog.InfoContext(ctx, "ResetInstanceAttribute: attribute already at its default", "instanceId", instanceID, "attribute", attribute)
+	return &ec2.ResetInstanceAttributeOutput{}, nil
+}
+
 // notStoppedError is AWS's answer to a stopped-only attribute change on an
 // instance in any other live state.
 func notStoppedError(instanceID string) error {

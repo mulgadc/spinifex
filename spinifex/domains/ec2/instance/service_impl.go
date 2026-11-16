@@ -805,6 +805,13 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 		// Stamped at launch so DescribeInstances keeps reporting the AMI's platform
 		// even if the image is later deregistered.
 		ec2Instance.Platform = ec2platform.PlatformFromDetails(amiMeta.PlatformDetails)
+		if amiMeta.PlatformDetails != "" {
+			ec2Instance.PlatformDetails = aws.String(amiMeta.PlatformDetails)
+		}
+		if op := ec2platform.UsageOperationFromDetails(amiMeta.PlatformDetails); op != nil {
+			ec2Instance.UsageOperation = op
+			ec2Instance.UsageOperationUpdateTime = ec2Instance.LaunchTime
+		}
 
 		// RunInstance has no image in hand, so the platform-derived IMDS default
 		// lands here, where the AMI is resolved.

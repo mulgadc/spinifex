@@ -15,7 +15,6 @@ import (
 // only the records it names.
 type noScanKV struct {
 	jetstream.KeyValue
-
 	t *testing.T
 }
 
@@ -47,7 +46,6 @@ func (k noScanKV) WatchFiltered(context.Context, []string, ...jetstream.WatchOpt
 // failGetKV fails the direct read of one key.
 type failGetKV struct {
 	jetstream.KeyValue
-
 	key string
 }
 

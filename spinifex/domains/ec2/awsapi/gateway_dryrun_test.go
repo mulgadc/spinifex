@@ -32,6 +32,18 @@ func TestEC2Request_DryRunFalseDispatches(t *testing.T) {
 	gwtest.AssertPermitted(t, dispatchEC2(t, h, "Action=CreateVpc&CidrBlock=10.0.0.0/16&DryRun=false"))
 }
 
+// The ID-format calls answer without NATS, and the two whose input models
+// DryRun answer DryRunOperation.
+func TestEC2Request_IdFormatCalls(t *testing.T) {
+	h := gwtest.AllowAll()
+	require.NoError(t, dispatchEC2(t, h, "Action=DescribeIdFormat"))
+	require.NoError(t, dispatchEC2(t, h, "Action=DescribeIdentityIdFormat&PrincipalArn=arn:aws:iam::"+gwtest.AccountID+":root"))
+	require.NoError(t, dispatchEC2(t, h, "Action=DescribeAggregateIdFormat"))
+	require.NoError(t, dispatchEC2(t, h, "Action=DescribePrincipalIdFormat"))
+	assertDryRun(t, dispatchEC2(t, h, "Action=DescribeAggregateIdFormat&DryRun=true"))
+	assertDryRun(t, dispatchEC2(t, h, "Action=DescribePrincipalIdFormat&DryRun=true"))
+}
+
 // ResetInstanceAttribute is authorised on the instance ARN, and a permitted
 // DryRun answers DryRunOperation even for an instance that does not exist.
 func TestEC2Request_ResetInstanceAttributeAuthzAndDryRun(t *testing.T) {

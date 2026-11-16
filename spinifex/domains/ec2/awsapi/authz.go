@@ -207,6 +207,7 @@ var ec2Scopes = map[string][]*resourceScope{
 	"CreateNetworkInterface":          {eniNewScope, subnetScope, securityGroupsOptList},
 	"DeleteNetworkInterface":          {eniScope},
 	"ModifyNetworkInterfaceAttribute": {eniScope},
+	"ResetNetworkInterfaceAttribute":  {eniScope},
 	"AttachNetworkInterface":          {eniScope, instanceScope},
 	// Carries only an attachment id, which needs a lookup to reach the interface.
 	"DetachNetworkInterface": unscoped,

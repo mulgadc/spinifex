@@ -550,6 +550,9 @@ var ec2Actions = map[string]ec2Action{
 	"ModifyNetworkInterfaceAttribute": ec2Handler(func(ctx context.Context, input *ec2.ModifyNetworkInterfaceAttributeInput, c *call, accountID string) (any, error) {
 		return ec2vpcapi.ModifyNetworkInterfaceAttribute(ctx, input, c.NATS, accountID)
 	}),
+	"ResetNetworkInterfaceAttribute": ec2Handler(func(ctx context.Context, input *ec2.ResetNetworkInterfaceAttributeInput, c *call, accountID string) (any, error) {
+		return ec2vpcapi.ResetNetworkInterfaceAttribute(ctx, input, c.NATS, accountID)
+	}),
 	"AttachNetworkInterface": ec2Handler(func(ctx context.Context, input *ec2.AttachNetworkInterfaceInput, c *call, accountID string) (any, error) {
 		return ec2vpcapi.AttachNetworkInterface(ctx, input, c.NATS, accountID)
 	}),

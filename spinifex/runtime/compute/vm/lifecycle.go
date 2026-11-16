@@ -156,6 +156,7 @@ func (m *Manager) launch(ctx context.Context, instance *VM, pre *uefiPrecheck) (
 	m.Inspect(instance, func(v *VM) {
 		if v.Instance != nil {
 			v.Instance.StateReason = nil
+			v.Instance.StateTransitionReason = nil
 		}
 	})
 

@@ -1960,6 +1960,28 @@ func TestTerminateStoppedInstance_HappyPath(t *testing.T) {
 	assert.Contains(t, store.DeletedStopped, id)
 }
 
+// A customer terminate records the reason AWS reports for it, replacing the
+// one the earlier stop left.
+func TestTerminateStoppedInstance_RecordsUserInitiatedReason(t *testing.T) {
+	id := "i-term-reason"
+	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{
+		id: {ID: id, Status: vm.StateStopped, AccountID: "acc", Instance: &ec2.Instance{
+			StateTransitionReason: aws.String("User initiated (2000-01-01 00:00:00 GMT)"),
+		}},
+	}}
+	svc := &InstanceServiceImpl{stoppedStore: store}
+
+	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
+	require.NoError(t, err)
+
+	got := store.WroteTerminated[id].Instance
+	require.NotNil(t, got.StateReason)
+	assert.Equal(t, "Client.UserInitiatedShutdown", aws.StringValue(got.StateReason.Code))
+	assert.Equal(t, "Client.UserInitiatedShutdown: User initiated shutdown", aws.StringValue(got.StateReason.Message))
+	assert.Regexp(t, `^User initiated \(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} GMT\)$`, aws.StringValue(got.StateTransitionReason))
+	assert.NotEqual(t, "User initiated (2000-01-01 00:00:00 GMT)", aws.StringValue(got.StateTransitionReason))
+}
+
 func TestTerminateStoppedInstance_CentralTagsDeleted(t *testing.T) {
 	id := "i-term-tags"
 	store := &vmmock.StateStore{Stopped: map[string]*vm.VM{

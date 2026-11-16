@@ -1317,12 +1317,13 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(ctx context.Context, insta
 			stateMismatch = true
 			return
 		}
+		now := time.Now().UTC()
 		if isTerminate {
-			now := time.Now().UTC()
 			v.DeletionTimestamp = &now
 		} else {
 			v.DesiredState = vm.DesiredStopped
 		}
+		stampUserInitiatedShutdown(v.Instance, now)
 		// Auto-disassociate IAM profile on terminate (AWS parity; stop/start preserves it).
 		// Done under the same lock so DescribeInstances never sees a terminated
 		// instance advertising a profile.
@@ -1387,6 +1388,19 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(ctx context.Context, insta
 	}(instance.ID, instance.AccountID)
 
 	return nil
+}
+
+// stampUserInitiatedShutdown records the reason AWS reports on an instance a
+// customer stopped or terminated. inst may be nil on a damaged record.
+func stampUserInitiatedShutdown(inst *ec2.Instance, now time.Time) {
+	if inst == nil {
+		return
+	}
+	inst.StateReason = &ec2.StateReason{
+		Code:    aws.String("Client.UserInitiatedShutdown"),
+		Message: aws.String("Client.UserInitiatedShutdown: User initiated shutdown"),
+	}
+	inst.StateTransitionReason = aws.String("User initiated (" + now.UTC().Format("2006-01-02 15:04:05") + " GMT)")
 }
 
 // AssociateIamInstanceProfile attaches an instance profile to a running instance.
@@ -2266,9 +2280,12 @@ func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input
 		// Reuse the shared projection so stopped/terminated instances carry the
 		// same fields as the running path. Runtime network and the capacity
 		// reservation are released on stop, so IncludeRuntimeNetwork stays false;
-		// Placement and Spot lineage survive and are projected. The caller's
-		// fallback labels the state when a stored status has no EC2 mapping.
+		// Placement, Spot lineage and the private DNS name survive and are
+		// projected. The caller's fallback labels an unmapped stored status.
 		projected, _ := ProjectInstance(instance, InstanceProjection{
+			Region:            s.config.Region,
+			DNSBaseDomain:     s.dnsBaseDomain,
+			DNSInternalDomain: s.dnsInternalDomain,
 			AZ:                s.config.AZ,
 			FallbackStateCode: fallbackCode,
 			FallbackStateName: fallbackName,
@@ -2947,6 +2964,7 @@ func (s *InstanceServiceImpl) TerminateStoppedInstance(ctx context.Context, inpu
 	// Write to terminated KV FIRST so the instance is visible in DescribeInstances.
 	// If this fails the instance stays in the stopped bucket — safe to retry.
 	instance.Status = vm.StateTerminated
+	stampUserInitiatedShutdown(instance.Instance, time.Now().UTC())
 	if err := s.stoppedStore.WriteTerminatedInstance(input.InstanceID, instance); err != nil {
 		slog.ErrorContext(ctx, "TerminateStoppedInstance: failed to write to terminated KV, aborting", "instanceId", input.InstanceID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)

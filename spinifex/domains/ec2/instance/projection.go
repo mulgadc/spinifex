@@ -25,11 +25,10 @@ type InstanceProjection struct {
 	AZ                string
 
 	// IncludeRuntimeNetwork projects the fields that only hold while an instance
-	// runs: the public IP, its derived DNS names, and the consumed capacity
-	// reservation. AWS releases all three when an instance stops, so the
-	// stopped/terminated path leaves IncludeRuntimeNetwork false and they stay
-	// unset. Placement and Spot lineage survive a stop and are projected either
-	// way.
+	// runs: the public IP, its association and the consumed capacity reservation.
+	// AWS releases them when an instance stops, so the stopped/terminated path
+	// leaves IncludeRuntimeNetwork false and they stay unset. Placement and Spot
+	// lineage survive a stop and are projected either way.
 	IncludeRuntimeNetwork bool
 
 	// FallbackStateCode/Name label the state when vm.EC2APIState has no mapping
@@ -54,36 +53,31 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 	// Association.PublicDnsName (stamped below) cannot drift apart.
 	var publicDNS string
 
-	// Public IP and its derived DNS names exist only while the instance runs; a
-	// stopped instance has released the public IP, so the KV path leaves them
-	// unset. Mirrors the records the control-plane writer publishes to northstar.
+	// The public IP exists only while the instance runs; a stopped instance has
+	// released it, so the KV path clears it. Mirrors the records the
+	// control-plane writer publishes to northstar.
 	if !cfg.IncludeRuntimeNetwork {
 		// Cleared, not merely left alone: launch stamps the auto-assigned address
 		// onto the stored instance, so a stopped instance kept reporting an
 		// address that had been released and may already belong to someone else.
 		instanceCopy.PublicIpAddress = nil
-		instanceCopy.PublicDnsName = nil
 	}
-	if cfg.IncludeRuntimeNetwork {
-		// The runtime address wins over the launch stamp. Associating an EIP
-		// replaces what an instance is reachable on, and filling only a nil field
-		// could never express that — the stamp is always present.
-		if v.PublicIP != "" {
-			instanceCopy.PublicIpAddress = aws.String(v.PublicIP)
-		}
+	// The runtime address wins over the launch stamp. Associating an EIP
+	// replaces what an instance is reachable on, and filling only a nil field
+	// could never express that — the stamp is always present.
+	if cfg.IncludeRuntimeNetwork && v.PublicIP != "" {
+		instanceCopy.PublicIpAddress = aws.String(v.PublicIP)
+	}
 
-		var privateDNS string
-		publicDNS, privateDNS = dns.EC2DNSNames(
-			cfg.Region, cfg.DNSBaseDomain, cfg.DNSInternalDomain,
-			aws.StringValue(instanceCopy.PublicIpAddress), aws.StringValue(instanceCopy.PrivateIpAddress),
-		)
-		if publicDNS != "" {
-			instanceCopy.PublicDnsName = aws.String(publicDNS)
-		}
-		if privateDNS != "" {
-			instanceCopy.PrivateDnsName = aws.String(privateDNS)
-		}
-	}
+	// AWS reports both names on every instance: the private one survives a stop,
+	// and the public one is "" while the instance has no public address.
+	var privateDNS string
+	publicDNS, privateDNS = dns.EC2DNSNames(
+		cfg.Region, cfg.DNSBaseDomain, cfg.DNSInternalDomain,
+		aws.StringValue(instanceCopy.PublicIpAddress), aws.StringValue(instanceCopy.PrivateIpAddress),
+	)
+	instanceCopy.PublicDnsName = aws.String(publicDNS)
+	instanceCopy.PrivateDnsName = aws.String(privateDNS)
 
 	// Map internal status to AWS state, projecting Spinifex-only states
 	// (e.g. error -> stopped) so SDK/UI clients see a valid label. An unmapped
@@ -204,6 +198,19 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 			nics = append(nics, &nicCopy)
 		}
 		instanceCopy.NetworkInterfaces = nics
+	}
+
+	// A terminated instance has given up its interfaces, volumes and addresses,
+	// so AWS reports them empty and drops the fields derived from them.
+	if v.Status == vm.StateTerminated {
+		instanceCopy.PrivateDnsName = aws.String("")
+		instanceCopy.PrivateIpAddress = nil
+		instanceCopy.SubnetId = nil
+		instanceCopy.VpcId = nil
+		instanceCopy.SourceDestCheck = nil
+		instanceCopy.BlockDeviceMappings = []*ec2.InstanceBlockDeviceMapping{}
+		instanceCopy.NetworkInterfaces = []*ec2.InstanceNetworkInterface{}
+		instanceCopy.SecurityGroups = []*ec2.GroupIdentifier{}
 	}
 
 	return &instanceCopy, stateMapped

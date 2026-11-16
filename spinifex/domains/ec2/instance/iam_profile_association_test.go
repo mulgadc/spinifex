@@ -271,3 +271,28 @@ func TestStopOrTerminateInstance_AutoDisassociatesProfileOnTerminate(t *testing.
 	assert.Empty(t, v.IamInstanceProfileArn, "terminate must clear profile ARN")
 	assert.Empty(t, v.IamInstanceProfileAssociationId, "terminate must clear association ID")
 }
+
+// A customer stop records the reason AWS reports for it before the stop runs,
+// so the stopping and stopped instance both carry it.
+func TestStopOrTerminateInstance_StopRecordsUserInitiatedReason(t *testing.T) {
+	v := vmWithAccount("i-stop-reason", testIAMAccount)
+	v.Instance = &ec2.Instance{InstanceId: aws.String(v.ID)}
+	mgr := mgrWith(map[string]*vm.VM{v.ID: v})
+	svc := &InstanceServiceImpl{vmMgr: mgr}
+
+	err := svc.StopOrTerminateInstance(context.Background(), v, ec2v1.EC2InstanceCommand{
+		ID:         v.ID,
+		Attributes: ec2v1.EC2CommandAttributes{StopInstance: true},
+	})
+	require.NoError(t, err)
+
+	var reason *ec2.StateReason
+	var transition string
+	mgr.Inspect(v, func(v *vm.VM) {
+		reason = v.Instance.StateReason
+		transition = aws.StringValue(v.Instance.StateTransitionReason)
+	})
+	require.NotNil(t, reason)
+	assert.Equal(t, "Client.UserInitiatedShutdown", aws.StringValue(reason.Code))
+	assert.Regexp(t, `^User initiated \(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} GMT\)$`, transition)
+}

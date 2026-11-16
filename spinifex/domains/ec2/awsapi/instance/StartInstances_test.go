@@ -194,3 +194,50 @@ func TestStartInstances_VolumeHeldElsewhereHeader(t *testing.T) {
 		})
 	}
 }
+
+// A running instance's owner answers that it was already running, which AWS
+// reports as a successful start from running to running.
+func TestStartInstances_RunningInstanceStaysRunning(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	instanceID := "i-0669dd059c6c9d8cd"
+	_, err := nc.Subscribe("ec2.cmd."+instanceID, func(msg *nats.Msg) {
+		_ = msg.Respond([]byte(`{"status":"running","previousStatus":"running","instanceId":"` + instanceID + `"}`))
+	})
+	require.NoError(t, err)
+
+	output, err := StartInstances(context.Background(), &ec2.StartInstancesInput{
+		InstanceIds: []*string{aws.String(instanceID)},
+	}, nc, "123456789012")
+	require.NoError(t, err)
+	require.Len(t, output.StartingInstances, 1)
+	sc := output.StartingInstances[0]
+	assert.Equal(t, int64(16), *sc.CurrentState.Code)
+	assert.Equal(t, "running", *sc.CurrentState.Name)
+	assert.Equal(t, int64(16), *sc.PreviousState.Code)
+	assert.Equal(t, "running", *sc.PreviousState.Name)
+}
+
+// The stopped-instance path reports a terminated instance as missing; AWS
+// refuses it as being in a state it cannot be started from.
+func TestStartInstances_TerminatedInstanceIsIncorrectState(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	instanceID := "i-0669dd059c6c9d8cd"
+	_, err := nc.QueueSubscribe("ec2.start", "spinifex-workers", func(msg *nats.Msg) {
+		_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
+	})
+	require.NoError(t, err)
+	serveInstanceBucket(t, nc, "ec2.DescribeTerminatedInstances", instanceID)
+	serveInstanceBucket(t, nc, "ec2.DescribeStoppedInstances")
+
+	_, err = StartInstances(context.Background(), &ec2.StartInstancesInput{
+		InstanceIds: []*string{aws.String(instanceID)},
+	}, nc, "123456789012")
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, code)
+	assert.Equal(t, "The instance '"+instanceID+"' is not in a state from which it can be started.", message)
+}

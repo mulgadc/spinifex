@@ -3646,9 +3646,18 @@ func TestPrepareRunInstances_BootModePropagated(t *testing.T) {
 	}
 }
 
-func TestStartInstance_NotStopped(t *testing.T) {
+func TestStartInstance_RunningIsAlreadyRunning(t *testing.T) {
 	id := "i-running"
 	mgr := mgrWith(map[string]*vm.VM{id: {ID: id, Status: vm.StateRunning}})
+	v, _ := mgr.Get(id)
+	svc := &InstanceServiceImpl{vmMgr: mgr}
+	err := svc.StartInstance(context.Background(), v, ec2v1.EC2InstanceCommand{ID: id})
+	assert.ErrorIs(t, err, ErrInstanceAlreadyRunning)
+}
+
+func TestStartInstance_NotStopped(t *testing.T) {
+	id := "i-stopping"
+	mgr := mgrWith(map[string]*vm.VM{id: {ID: id, Status: vm.StateStopping}})
 	v, _ := mgr.Get(id)
 	svc := &InstanceServiceImpl{vmMgr: mgr}
 	err := svc.StartInstance(context.Background(), v, ec2v1.EC2InstanceCommand{ID: id})

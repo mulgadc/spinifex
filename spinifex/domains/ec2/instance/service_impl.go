@@ -1261,11 +1261,18 @@ func (s *InstanceServiceImpl) RebootInstance(ctx context.Context, instance *vm.V
 	return nil
 }
 
+// ErrInstanceAlreadyRunning is StartInstance's answer for a running instance,
+// which AWS reports as a successful start from running to running.
+var ErrInstanceAlreadyRunning = errors.New("instance is already running")
+
 // StartInstance handles an ec2.cmd start for a locally stopped instance.
 func (s *InstanceServiceImpl) StartInstance(ctx context.Context, instance *vm.VM, command ec2v1.EC2InstanceCommand) error {
 	slog.InfoContext(ctx, "StartInstance: starting instance", "id", command.ID)
 
 	status := s.vmMgr.Status(instance)
+	if status == vm.StateRunning {
+		return ErrInstanceAlreadyRunning
+	}
 	// StateError is startable so a crashed instance can be manually recovered.
 	if status != vm.StateStopped && status != vm.StateError {
 		slog.ErrorContext(ctx, "StartInstance: instance not in a startable state", "instanceId", command.ID, "status", status)

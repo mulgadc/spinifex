@@ -169,8 +169,10 @@ func TestRebootInstances_StoppedInstance(t *testing.T) {
 	}
 
 	_, err := RebootInstances(context.Background(), input, nc, "123456789012")
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorIncorrectState, code)
+	assert.Equal(t, "Cannot reboot instance "+instanceID+" that is currently in stopped state.", message)
 }
 
 func TestRebootInstances_DaemonError(t *testing.T) {

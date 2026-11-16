@@ -60,6 +60,13 @@ func StartInstances(ctx context.Context, input *ec2.StartInstancesInput, natsCon
 		}
 
 		sc, err = startStoppedInstance(ctx, natsConn, instanceID, accountID)
+		if awserrors.IsErrorCode(err, awserrors.ErrorInvalidInstanceIDNotFound) {
+			// The stopped path never sees a terminated instance; AWS refuses it.
+			if state, _ := classifyUnownedInstance(ctx, natsConn, instanceID, accountID); state == bucketStateTerminated {
+				err = awserrors.Errorf(awserrors.ErrorIncorrectInstanceState,
+					"The instance '%s' is not in a state from which it can be started.", instanceID)
+			}
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -107,6 +114,12 @@ func startLiveInstance(ctx context.Context, natsConn *nats.Conn, instanceID, acc
 	}
 
 	slog.InfoContext(ctx, "StartInstances: restarted via owner node", "instance_id", instanceID, "response", string(msg.Data))
+	var reply struct {
+		PreviousStatus string `json:"previousStatus"`
+	}
+	if json.Unmarshal(msg.Data, &reply) == nil && reply.PreviousStatus == "running" {
+		return newStateChange(instanceID, 16, "running", 16, "running"), true, nil
+	}
 	return newStateChange(instanceID, 0, "pending", 80, "stopped"), true, nil
 }
 

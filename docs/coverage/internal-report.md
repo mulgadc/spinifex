@@ -49,7 +49,7 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 
 ## ec2
 
-`2016-11-15` — 133 of 811 modelled operations implemented (16.4%), 0 stubbed, 186 require SDK v2, 39 not applicable, 0 registered outside the pinned model.
+`2016-11-15` — 134 of 811 modelled operations implemented (16.5%), 0 stubbed, 186 require SDK v2, 39 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -362,7 +362,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `GetCapacityReservationUsage`
 - `GetCoipPoolUsage`
 - `GetConsoleScreenshot`
-- `GetDefaultCreditSpecification`
 - `GetEbsDefaultKmsKeyId`
 - `GetFlowLogsIntegrationTemplate`
 - `GetGroupsForCapacityReservation`

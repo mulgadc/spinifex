@@ -234,10 +234,11 @@ func TestAggregateResults_AllSucceed(t *testing.T) {
 	}
 
 	// No NATS needed — all succeed, no rollback
-	reservation, err := aggregateResults(context.Background(), results, 2, nil, "")
+	reservation, err := aggregateResults(context.Background(), results, 2, nil, "123456789012")
 	require.NoError(t, err)
 	assert.Len(t, reservation.Instances, 3)
 	assert.Equal(t, "r-abc", aws.StringValue(reservation.ReservationId))
+	assert.Equal(t, "123456789012", aws.StringValue(reservation.OwnerId), "AWS returns the caller as the reservation owner")
 }
 
 func TestAggregateResults_PartialSuccessMeetsMinCount(t *testing.T) {

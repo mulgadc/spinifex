@@ -782,7 +782,6 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 	launchCount = allocatedCount
 
 	var instances []*vm.VM
-	var allEC2Instances []*ec2.Instance
 	var lastRunErr error
 	// Whether this call created the instance's ENI, keyed by instance ID. An
 	// abandoned batch deletes the ones it made and only detaches the rest.
@@ -868,9 +867,8 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 				}
 				continue
 			}
-			ec2Instance.SetAmiLaunchIndex(int64(len(allEC2Instances)))
+			ec2Instance.SetAmiLaunchIndex(int64(len(instances)))
 			instances = append(instances, instance)
-			allEC2Instances = append(allEC2Instances, ec2Instance)
 			continue
 		}
 
@@ -1006,9 +1004,8 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 			}
 		}
 
-		ec2Instance.SetAmiLaunchIndex(int64(len(allEC2Instances)))
+		ec2Instance.SetAmiLaunchIndex(int64(len(instances)))
 		instances = append(instances, instance)
-		allEC2Instances = append(allEC2Instances, ec2Instance)
 	}
 
 	if len(instances) < minCount {
@@ -1035,7 +1032,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 	reservation := &ec2.Reservation{}
 	reservation.SetReservationId(awsidentifiers.GenerateResourceID("r"))
 	reservation.SetOwnerId(accountID)
-	reservation.Instances = allEC2Instances
+	reservation.Instances = make([]*ec2.Instance, 0, len(instances))
 
 	for _, instance := range instances {
 		instance.Reservation = reservation
@@ -1046,6 +1043,21 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 		if input.Placement != nil && input.Placement.GroupName != nil && *input.Placement.GroupName != "" {
 			instance.PlacementGroupName = *input.Placement.GroupName
 		}
+
+		// The response goes through the projection DescribeInstances uses, so the
+		// two cannot report a different instance. StateReason is response-only:
+		// AWS drops it once the instance leaves pending.
+		projected, _ := ProjectInstance(instance, InstanceProjection{
+			Region:                s.config.Region,
+			DNSBaseDomain:         s.dnsBaseDomain,
+			DNSInternalDomain:     s.dnsInternalDomain,
+			AZ:                    s.config.AZ,
+			IncludeRuntimeNetwork: true,
+			FallbackStateCode:     0,
+			FallbackStateName:     "pending",
+		})
+		projected.StateReason = &ec2.StateReason{Code: aws.String("pending"), Message: aws.String("pending")}
+		reservation.Instances = append(reservation.Instances, projected)
 	}
 
 	return reservation, instances, instanceType, nil

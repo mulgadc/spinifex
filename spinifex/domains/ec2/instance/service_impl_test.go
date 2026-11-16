@@ -1522,6 +1522,8 @@ func TestModifyInstanceAttribute_InstanceStates(t *testing.T) {
 			"i-x": {ID: "i-x", AccountID: acc, Status: vm.StateTerminated},
 		}}, input: sourceDestCheck("i-x"), wantCode: awserrors.ErrorIncorrectInstanceState, wantMsg: notLive},
 		{name: "unknown", store: vmmock.New(), input: sourceDestCheck("i-x"), wantCode: awserrors.ErrorInvalidInstanceIDNotFound},
+		{name: "running on this node in another account", local: &vm.VM{ID: "i-x", AccountID: "other", Status: vm.StateRunning},
+			store: vmmock.New(), input: instanceType("i-x"), wantCode: awserrors.ErrorInvalidInstanceIDNotFound},
 		{name: "terminated in another account", store: &vmmock.StateStore{Terminated: map[string]*vm.VM{
 			"i-x": {ID: "i-x", AccountID: "other", Status: vm.StateTerminated},
 		}}, input: sourceDestCheck("i-x"), wantCode: awserrors.ErrorInvalidInstanceIDNotFound},

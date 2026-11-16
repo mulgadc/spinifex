@@ -1463,26 +1463,90 @@ func TestModifyInstanceAttribute_MissingInstanceID(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorMissingParameter, err.Error())
 }
 
-func TestModifyInstanceAttribute_SourceDestCheckTrueNoOp(t *testing.T) {
-	// SourceDestCheck=true succeeds without touching KV or requiring stopped state.
-	svc := &InstanceServiceImpl{}
+func TestModifyInstanceAttribute_SourceDestCheck(t *testing.T) {
+	// true is a no-op on a live instance; disabling is unsupported because OVN
+	// port security always enforces the check.
+	id := "i-sdc-001"
+	mgr := mgrWith(map[string]*vm.VM{id: {ID: id, AccountID: "acc", Status: vm.StateRunning}})
+	svc := &InstanceServiceImpl{vmMgr: mgr}
+
 	out, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
-		InstanceId:      aws.String("i-sdc-001"),
+		InstanceId:      aws.String(id),
 		SourceDestCheck: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
 	}, "acc")
 	require.NoError(t, err)
 	require.NotNil(t, out)
-}
 
-func TestModifyInstanceAttribute_SourceDestCheckFalseUnsupported(t *testing.T) {
-	// Disabling is unsupported: OVN port security always enforces the check.
-	svc := &InstanceServiceImpl{}
-	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
-		InstanceId:      aws.String("i-sdc-001"),
+	_, err = svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{
+		InstanceId:      aws.String(id),
 		SourceDestCheck: &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
 	}, "acc")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorUnsupported, err.Error())
+}
+
+// TestModifyInstanceAttribute_InstanceStates pins AWS's answer for each state:
+// a stopped-only attribute on a live instance is refused with the stopped text,
+// any attribute on a terminated one with the live-states text, and an ID no
+// store holds is not found.
+func TestModifyInstanceAttribute_InstanceStates(t *testing.T) {
+	const acc = "acc"
+	instanceType := func(id string) *ec2.ModifyInstanceAttributeInput {
+		return &ec2.ModifyInstanceAttributeInput{InstanceId: aws.String(id), InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")}}
+	}
+	sourceDestCheck := func(id string) *ec2.ModifyInstanceAttributeInput {
+		return &ec2.ModifyInstanceAttributeInput{InstanceId: aws.String(id), SourceDestCheck: &ec2.AttributeBooleanValue{Value: aws.Bool(true)}}
+	}
+	stopped := func(id string) *vm.VM {
+		return &vm.VM{ID: id, AccountID: acc, Status: vm.StateStopped, Instance: &ec2.Instance{InstanceId: aws.String(id)}}
+	}
+	notStopped := "The instance 'i-x' is not in the 'stopped' state."
+	notLive := "The instance 'i-x' must be in a 'running', 'pending', 'stopping' or 'stopped' state for this operation."
+
+	tests := []struct {
+		name     string
+		local    *vm.VM
+		store    *vmmock.StateStore
+		input    *ec2.ModifyInstanceAttributeInput
+		wantCode string
+		wantMsg  string
+	}{
+		{name: "running on this node", local: &vm.VM{ID: "i-x", AccountID: acc, Status: vm.StateRunning},
+			store: vmmock.New(), input: instanceType("i-x"), wantCode: awserrors.ErrorIncorrectInstanceState, wantMsg: notStopped},
+		{name: "running on another node", store: &vmmock.StateStore{Saved: map[string]map[string]*vm.VM{
+			"node-b": {"i-x": {ID: "i-x", AccountID: acc, Status: vm.StateRunning}},
+		}}, input: instanceType("i-x"), wantCode: awserrors.ErrorIncorrectInstanceState, wantMsg: notStopped},
+		{name: "stopped", store: &vmmock.StateStore{Stopped: map[string]*vm.VM{"i-x": stopped("i-x")}},
+			input: instanceType("i-x")},
+		{name: "terminated", store: &vmmock.StateStore{Terminated: map[string]*vm.VM{
+			"i-x": {ID: "i-x", AccountID: acc, Status: vm.StateTerminated},
+		}}, input: sourceDestCheck("i-x"), wantCode: awserrors.ErrorIncorrectInstanceState, wantMsg: notLive},
+		{name: "unknown", store: vmmock.New(), input: sourceDestCheck("i-x"), wantCode: awserrors.ErrorInvalidInstanceIDNotFound},
+		{name: "terminated in another account", store: &vmmock.StateStore{Terminated: map[string]*vm.VM{
+			"i-x": {ID: "i-x", AccountID: "other", Status: vm.StateTerminated},
+		}}, input: sourceDestCheck("i-x"), wantCode: awserrors.ErrorInvalidInstanceIDNotFound},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			vms := map[string]*vm.VM{}
+			if tc.local != nil {
+				vms[tc.local.ID] = tc.local
+			}
+			svc := &InstanceServiceImpl{vmMgr: mgrWith(vms), stoppedStore: tc.store}
+
+			_, err := svc.ModifyInstanceAttribute(context.Background(), tc.input, acc)
+			if tc.wantCode == "" {
+				require.NoError(t, err)
+				assert.Equal(t, "t3.medium", tc.store.Stopped["i-x"].InstanceType)
+				return
+			}
+			code, msg, _ := awserrors.ResolveErrorDetail(err)
+			assert.Equal(t, tc.wantCode, code)
+			if tc.wantMsg != "" {
+				assert.Equal(t, tc.wantMsg, msg)
+			}
+		})
+	}
 }
 
 func TestModifyInstanceAttribute_NilStore(t *testing.T) {
@@ -1518,8 +1582,7 @@ func TestModifyInstanceAttribute_NotStopped(t *testing.T) {
 		InstanceId:   aws.String(id),
 		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
 	}, "acc")
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorIncorrectInstanceState), "got %v", err)
 }
 
 func TestModifyInstanceAttribute_NotVisible(t *testing.T) {
@@ -1792,8 +1855,7 @@ func TestModifyInstanceAttribute_ConcurrentClaimDoesNotResurrect(t *testing.T) {
 		InstanceId:   aws.String(id),
 		InstanceType: &ec2.AttributeValue{Value: aws.String("t3.medium")},
 	}, "acc")
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorIncorrectInstanceState), "got %v", err)
 	assert.Empty(t, store.Stopped, "the claimed record must not be resurrected")
 	assert.Equal(t, []string{id}, store.ClaimedStopped)
 }

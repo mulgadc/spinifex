@@ -930,9 +930,9 @@ func (s *VPCServiceImpl) checkSubnetResidents(ctx context.Context, accountID, su
 	return s.checkSubnetNatGateways(ctx, accountID, subnetID)
 }
 
-// checkSubnetNatGateways returns DependencyViolation while a NAT gateway that
-// is not deleted names the subnet, since it holds no interface record the ENI
-// scan could find. Fail-closed on a KV read error, matching the ENI scan.
+// checkSubnetNatGateways returns DependencyViolation while a NAT gateway names
+// the subnet, since it holds no interface record the ENI scan could find. A
+// deleted gateway leaves this bucket. Fail-closed on a KV read error.
 func (s *VPCServiceImpl) checkSubnetNatGateways(ctx context.Context, accountID, subnetID string) error {
 	keys, err := s.natgwKV.Keys(ctx)
 	if err != nil {
@@ -957,13 +957,12 @@ func (s *VPCServiceImpl) checkSubnetNatGateways(ctx context.Context, accountID, 
 		// natgw imports this package, so its record type cannot be named here.
 		var gw struct {
 			SubnetId string `json:"subnet_id"`
-			State    string `json:"state"`
 		}
 		if err := json.Unmarshal(entry.Value(), &gw); err != nil {
 			slog.ErrorContext(ctx, "DeleteSubnet: NAT gateway unmarshal failed, blocking delete", "subnetId", subnetID, "key", key, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)
 		}
-		if gw.SubnetId == subnetID && gw.State != "deleted" {
+		if gw.SubnetId == subnetID {
 			return awserrors.HasDependencies("subnet", subnetID)
 		}
 	}

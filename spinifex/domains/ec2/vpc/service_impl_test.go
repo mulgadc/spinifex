@@ -2703,21 +2703,30 @@ func TestCreateSubnet_ZoneStoreFailureWritesNothingAndPublishesNothing(t *testin
 func TestDeleteSubnet_NatGateway(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		state   string
-		wantErr bool
+		name, gwSubnet string
+		gwDeleted      bool
+		wantErr        bool
 	}{
-		{state: "available", wantErr: true},
-		{state: "pending", wantErr: true},
-		{state: "deleted", wantErr: false},
+		{name: "available", wantErr: true},
+		{name: "deleted", gwDeleted: true, wantErr: false},
+		{name: "other subnet", gwSubnet: "subnet-0other", wantErr: false},
 	} {
-		t.Run(tc.state, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			svc := setupTestVPCService(t)
 			vpcID := createTestVPC(t, svc, "10.67.0.0/16")
 			subnetID := createTestSubnet(t, svc, vpcID, "10.67.1.0/24")
-			rec := fmt.Sprintf(`{"nat_gateway_id":"nat-0abc","vpc_id":%q,"subnet_id":%q,"state":%q}`, vpcID, subnetID, tc.state)
+			gwSubnet := subnetID
+			if tc.gwSubnet != "" {
+				gwSubnet = tc.gwSubnet
+			}
+			rec := fmt.Sprintf(`{"nat_gateway_id":"nat-0abc","vpc_id":%q,"subnet_id":%q,"state":"available"}`, vpcID, gwSubnet)
 			_, err := svc.natgwKV.Put(t.Context(), testAccountID+".nat-0abc", []byte(rec))
 			require.NoError(t, err)
+			if tc.gwDeleted {
+				// DeleteNatGateway removes the record from the active bucket.
+				require.NoError(t, svc.natgwKV.Delete(t.Context(), testAccountID+".nat-0abc"))
+			}
 
 			_, err = svc.DeleteSubnet(t.Context(), &ec2.DeleteSubnetInput{SubnetId: aws.String(subnetID)}, testAccountID)
 			if !tc.wantErr {

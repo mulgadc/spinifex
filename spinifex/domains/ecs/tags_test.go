@@ -246,10 +246,21 @@ func TestService_RunTask_TagsPersisted(t *testing.T) {
 	described, err := svc.DescribeTasks(ctx, &ecs.DescribeTasksInput{
 		Cluster: aws.String("web"),
 		Tasks:   []*string{out.Tasks[0].TaskArn},
+		Include: aws.StringSlice([]string{ecs.TaskFieldTags}),
 	}, testAccountID)
 	require.NoError(t, err)
 	require.Len(t, described.Tasks, 1)
 	require.Len(t, described.Tasks[0].Tags, 1)
+
+	// Without include TAGS, AWS answers an empty list rather than the tags.
+	described, err = svc.DescribeTasks(ctx, &ecs.DescribeTasksInput{
+		Cluster: aws.String("web"),
+		Tasks:   []*string{out.Tasks[0].TaskArn},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, described.Tasks, 1)
+	assert.NotNil(t, described.Tasks[0].Tags)
+	assert.Empty(t, described.Tasks[0].Tags)
 }
 
 func tagN(n int) []*ecs.Tag {

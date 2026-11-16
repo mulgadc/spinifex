@@ -303,7 +303,7 @@ func (s *Service) DeleteService(ctx context.Context, input *ecs.DeleteServiceInp
 		return nil, err
 	}
 	for i := range tasks {
-		s.requestStopTask(ctx, kv, accountID, &tasks[i], "Service deleted")
+		s.requestStopTask(ctx, kv, accountID, &tasks[i], "Service deleted", "")
 	}
 	rec.Status = ServiceStatusInactive
 	rec.RunningCount = 0
@@ -568,7 +568,7 @@ func (s *Service) stopSurplusTasks(ctx context.Context, kv jetstream.KeyValue, a
 	runBudget := max(runningTotal-minCount, 0)
 	// Cooperative stop: the agent reaps the container, then recordTaskState performs
 	// the single capacity release. A never-placed task force-stops internally.
-	stop := func(i int, reason string) { s.requestStopTask(ctx, kv, accountID, &tasks[i], reason) }
+	stop := func(i int, reason string) { s.requestStopTask(ctx, kv, accountID, &tasks[i], reason, "") }
 
 	for _, i := range oldPending {
 		stop(i, deploymentSupersededReason)

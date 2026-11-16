@@ -322,7 +322,7 @@ func TestDispatch_ListTagsForResourceRendersTheNestedTagList(t *testing.T) {
 // An unshared snapshot's restore attribute carries an empty value list, which
 // AWS renders as an empty element rather than omitting it.
 func TestDispatch_DescribeDBSnapshotAttributesRendersTheEmptyRestoreList(t *testing.T) {
-	body, err := Dispatch(t.Context(), "DescribeDBSnapshotAttributes", map[string]string{
+	body, err := Dispatch(t.Context(), "DescribeDBSnapshotAttributes", "", map[string]string{
 		"Action":               "DescribeDBSnapshotAttributes",
 		"DBSnapshotIdentifier": "orders-db-pre-upgrade",
 	}, newStubbedNATS(t), testCaller, testEnv)

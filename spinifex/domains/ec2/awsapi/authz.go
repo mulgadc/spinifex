@@ -264,6 +264,7 @@ var ec2Scopes = map[string][]*resourceScope{
 	"EnableSerialConsoleAccess":     unscoped,
 	"DisableSerialConsoleAccess":    unscoped,
 	"GetSerialConsoleAccessStatus":  unscoped,
+	"GetDefaultCreditSpecification": unscoped,
 	"DescribeIdFormat":              unscoped,
 	"DescribeIdentityIdFormat":      unscoped,
 	"DescribeAggregateIdFormat":     unscoped,

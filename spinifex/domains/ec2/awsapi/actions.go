@@ -259,6 +259,9 @@ var ec2Actions = map[string]ec2Action{
 	"DescribeInstanceCreditSpecifications": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceCreditSpecificationsInput, c *call, accountID string) (any, error) {
 		return ec2instanceapi.DescribeInstanceCreditSpecifications(input)
 	}),
+	"GetDefaultCreditSpecification": ec2Handler(func(ctx context.Context, input *ec2.GetDefaultCreditSpecificationInput, c *call, accountID string) (any, error) {
+		return ec2instanceapi.GetDefaultCreditSpecification(input)
+	}),
 	"CreateKeyPair": ec2Handler(func(ctx context.Context, input *ec2.CreateKeyPairInput, c *call, accountID string) (any, error) {
 		return ec2keyapi.CreateKeyPair(ctx, input, c.NATS, accountID)
 	}),

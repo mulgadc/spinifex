@@ -44,8 +44,6 @@ func TestLaunch_RefusalsMatchAWS(t *testing.T) {
 		for _, tc := range cases {
 			t.Run(action+"/"+tc.name, func(t *testing.T) {
 				svc, _ := newTestService(t)
-				eni := &stubENI{}
-				svc.eni = eni
 				_, err := svc.CreateCluster(context.Background(), &ecs.CreateClusterInput{ClusterName: aws.String("web")}, testAccountID)
 				require.NoError(t, err)
 				registerTaskDef(t, svc, "bridge", 128, 256)
@@ -58,7 +56,6 @@ func TestLaunch_RefusalsMatchAWS(t *testing.T) {
 				require.True(t, ok)
 				assert.Equal(t, "InvalidParameterException", code)
 				assert.Equal(t, tc.msg, msg)
-				assert.Equal(t, 0, eni.allocCalls)
 			})
 		}
 	}

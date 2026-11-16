@@ -6,6 +6,7 @@ import (
 	"fmt"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -663,6 +664,11 @@ func (s *Service) newDBSnapshotRecord(accountID string, rec *DBInstanceRecord, r
 		Tags:                    req.Tags,
 		CreatedAt:               time.Now().UTC(),
 	}
+	// Tags named on the request win; without them AWS copies the instance's
+	// tags only when CopyTagsToSnapshot is set.
+	if len(record.Tags) == 0 && rec.CopyTagsToSnapshot {
+		record.Tags = maps.Clone(rec.Tags)
+	}
 	// The zone the data volume was created in, which is where the instance runs.
 	if s.deps.Launch.Config != nil {
 		record.AvailabilityZone = s.deps.Launch.Config.AZ
@@ -791,7 +797,7 @@ func (s *Service) projectDBSnapshot(rec *DBSnapshotRecord) *rds.DBSnapshot {
 		ProcessorFeatures:                []*rds.ProcessorFeature{},
 		// The Terraform provider reads tags from the describe as well as from
 		// ListTagsForResource, so the two have to agree.
-		TagList: tagsToAWS(rec.Tags),
+		TagList: append([]*rds.Tag{}, tagsToAWS(rec.Tags)...),
 	}
 	if rec.VpcID != "" {
 		out.VpcId = aws.String(rec.VpcID)

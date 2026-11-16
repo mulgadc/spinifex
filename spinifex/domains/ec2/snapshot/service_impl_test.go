@@ -1630,3 +1630,24 @@ func TestDescribeSnapshots_FilterByTagKeyAndTagValue(t *testing.T) {
 		})
 	}
 }
+
+// AWS reports StorageTier standard on every described snapshot, by listing or
+// by ID, and none on CreateSnapshot's answer.
+func TestDescribeSnapshots_ReportsStandardStorageTier(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+	createTestVolume(t, svc, store, "vol-1", 50)
+
+	created, err := svc.CreateSnapshot(t.Context(), &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-1")}, testAccountID)
+	require.NoError(t, err)
+	assert.Nil(t, created.StorageTier)
+
+	listed, err := svc.DescribeSnapshots(t.Context(), &ec2.DescribeSnapshotsInput{}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, listed.Snapshots, 1)
+	assert.Equal(t, "standard", aws.StringValue(listed.Snapshots[0].StorageTier))
+
+	byID, err := svc.DescribeSnapshots(t.Context(), &ec2.DescribeSnapshotsInput{SnapshotIds: []*string{created.SnapshotId}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, byID.Snapshots, 1)
+	assert.Equal(t, "standard", aws.StringValue(byID.Snapshots[0].StorageTier))
+}

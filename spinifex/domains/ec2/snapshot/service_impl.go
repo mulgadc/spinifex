@@ -199,6 +199,13 @@ func snapshotConfigToEC2(cfg ebsmetadata.Snapshot) *ec2.Snapshot {
 	return snapshot
 }
 
+// describedSnapshot is a snapshot as DescribeSnapshots reports it. Archive
+// tiering is not implemented, so every snapshot is in the standard tier;
+// CreateSnapshot's answer carries no tier, as on AWS.
+func describedSnapshot(cfg ebsmetadata.Snapshot) *ec2.Snapshot {
+	return snapshotConfigToEC2(cfg).SetStorageTier(ec2.StorageTierStandard)
+}
+
 // CreateSnapshot creates a new snapshot from a volume.
 func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.CreateSnapshotInput, accountID string) (*ec2.Snapshot, error) {
 	if input == nil || input.VolumeId == nil {
@@ -597,7 +604,7 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 			continue
 		}
 
-		snapshots = append(snapshots, snapshotConfigToEC2(cfg))
+		snapshots = append(snapshots, describedSnapshot(cfg))
 	}
 
 	slog.InfoContext(ctx, "DescribeSnapshots completed", "count", len(snapshots))
@@ -699,7 +706,7 @@ func (s *SnapshotServiceImpl) describeSnapshotsByIDs(ctx context.Context, input 
 			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
 		}
 
-		snapshots = append(snapshots, snapshotConfigToEC2(result.Document))
+		snapshots = append(snapshots, describedSnapshot(result.Document))
 	}
 
 	slog.InfoContext(ctx, "DescribeSnapshots completed", "count", len(snapshots))

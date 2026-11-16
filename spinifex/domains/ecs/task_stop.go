@@ -83,9 +83,6 @@ func (s *Service) StartTask(ctx context.Context, input *ecs.StartTaskInput, acco
 	if mode == NetworkModeAwsvpc && netCfg.firstSubnet() == "" {
 		return nil, errMissingAwsvpcConfig()
 	}
-	if err := s.requireContainerInstance(ctx, kv, cluster); err != nil {
-		return nil, err
-	}
 	cpu, mem, gpu := taskDef.ReservedCPU(), taskDef.ReservedMemory(), taskDef.ReservedGPU()
 	eni := eniReservationFor(mode)
 	group := aws.StringValue(input.Group)

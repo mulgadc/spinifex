@@ -184,6 +184,9 @@ func (s *EIPServiceImpl) ReleaseAddress(ctx context.Context, input *ec2.ReleaseA
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	if record.NatGatewayId != "" {
+		return nil, errNatGatewayHeld()
+	}
 	// Cannot release an EIP that is still associated.
 	if record.State == "associated" {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidIPAddressInUse, "Address %s is in use.", record.PublicIp)
@@ -307,6 +310,9 @@ func (s *EIPServiceImpl) DisassociateAddress(ctx context.Context, input *ec2.Dis
 	record, key, revision, err := s.findByAssociationID(ctx, accountID, associationID)
 	if err != nil {
 		return nil, err
+	}
+	if record.NatGatewayId != "" {
+		return nil, errNatGatewayHeld()
 	}
 
 	// Publish vpc.delete-nat event before clearing association (fire-and-forget).
@@ -459,6 +465,12 @@ func (s *EIPServiceImpl) stampENIPublicIP(ctx context.Context, accountID, eniID,
 
 // clearAssociation reverts a record to the unassociated "allocated" state. The
 // allocation itself survives: disassociating never hands the address back.
+// errNatGatewayHeld is AWS's answer to disassociating or releasing the address
+// a NAT gateway holds.
+func errNatGatewayHeld() error {
+	return awserrors.Errorf(awserrors.ErrorAuthFailure, "You do not have permission to access the specified resource.")
+}
+
 func clearAssociation(record *EIPRecord) {
 	record.AssociationId = ""
 	record.ENIId = ""

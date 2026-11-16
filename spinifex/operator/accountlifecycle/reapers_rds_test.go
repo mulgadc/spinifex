@@ -186,6 +186,23 @@ func TestRDSInstanceReaperForceClearsDeletionProtection(t *testing.T) {
 	}
 }
 
+// A stopped instance refuses the modify, so it is started for a later pass to
+// clear the flag on.
+func TestRDSInstanceReaperForceStartsAStoppedProtectedInstance(t *testing.T) {
+	fake := newFakeRDS(t)
+	fake.failNext("rds.DeleteDBInstance",
+		"InvalidParameterCombination: Cannot delete protected DB Instance, please disable deletion protection and try again.")
+	fake.failNext("rds.ModifyDBInstance", "InvalidDBInstanceState")
+	fake.reply("rds.StartDBInstance", rds.StartDBInstanceOutput{})
+
+	instances, _, _ := newRDSReapers(fake.nc)
+	err := instances.Delete(testCtx(t), "000000000042",
+		Resource{Kind: "rds-instance", ID: "orders", Detail: "stopped"}, true)
+
+	require.Error(t, err)
+	assert.Equal(t, []string{"rds.DeleteDBInstance", "rds.ModifyDBInstance", "rds.StartDBInstance"}, fake.called())
+}
+
 // Without --force the refusal stands. Silently disarming a protection the
 // operator did not ask to override is not teardown's call to make.
 func TestRDSInstanceReaperLeavesDeletionProtectionAloneWithoutForce(t *testing.T) {

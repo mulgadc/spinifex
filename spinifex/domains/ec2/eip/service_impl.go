@@ -225,6 +225,9 @@ func (s *EIPServiceImpl) AssociateAddress(ctx context.Context, input *ec2.Associ
 	if err := json.Unmarshal(entry.Value(), &record); err != nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	if record.NatGatewayId != "" {
+		return nil, errNatGatewayHeld()
+	}
 
 	// Resolve the target ENI. Either by direct NetworkInterfaceId or by InstanceId lookup.
 	var eniID, instanceID, privateIP, vpcID, macAddr string
@@ -266,7 +269,6 @@ func (s *EIPServiceImpl) AssociateAddress(ctx context.Context, input *ec2.Associ
 	record.PrivateIp = privateIP
 	record.VpcId = vpcID
 	record.MacAddress = macAddr
-	record.NatGatewayId = ""
 	record.State = "associated"
 
 	data, err := json.Marshal(record)
@@ -465,7 +467,7 @@ func (s *EIPServiceImpl) stampENIPublicIP(ctx context.Context, accountID, eniID,
 }
 
 // errNatGatewayHeld is AWS's answer to disassociating or releasing the address
-// a NAT gateway holds.
+// a NAT gateway holds; associating it elsewhere is refused the same way.
 func errNatGatewayHeld() error {
 	return awserrors.Errorf(awserrors.ErrorAuthFailure, "You do not have permission to access the specified resource.")
 }

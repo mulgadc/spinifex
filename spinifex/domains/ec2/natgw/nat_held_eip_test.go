@@ -31,7 +31,7 @@ func setupNatHeldEIP(t *testing.T) (*NatGatewayServiceImpl, *ec2eip.EIPServiceIm
 		Name: natHeldPool, RangeStart: "198.51.100.10", RangeEnd: "198.51.100.20", Gateway: "198.51.100.1", PrefixLen: 24,
 	}})
 	require.NoError(t, err)
-	eipSvc, err := ec2eip.NewEIPServiceImpl(t.Context(), nc, ipam, nil)
+	eipSvc, err := ec2eip.NewEIPServiceImpl(t.Context(), nc, ipam, nil, "ap-southeast-2")
 	require.NoError(t, err)
 	natSvc, err := NewNatGatewayServiceImplWithNATS(t.Context(), nc)
 	require.NoError(t, err)
@@ -47,9 +47,9 @@ func requireAuthFailure(t *testing.T, err error) {
 	assert.Equal(t, "You do not have permission to access the specified resource.", message)
 }
 
-// AWS refuses DisassociateAddress and ReleaseAddress on a NAT gateway's address
-// with AuthFailure and leaves the gateway, its association and the pool lease as
-// they were, so the address it translates to is never handed back to the pool.
+// AWS refuses DisassociateAddress and ReleaseAddress on a NAT gateway's address with
+// AuthFailure, and AssociateAddress cannot move it; the gateway, its association and
+// the pool lease stay as they were, so its address never goes back to the pool.
 func TestNatHeldEIP_DisassociateAndReleaseRefused(t *testing.T) {
 	natSvc, eipSvc, ipam, nc, js := setupNatHeldEIP(t)
 	ctx := t.Context()
@@ -63,6 +63,13 @@ func TestNatHeldEIP_DisassociateAndReleaseRefused(t *testing.T) {
 	assocID := created.NatGateway.NatGatewayAddresses[0].AssociationId
 
 	_, err = eipSvc.DisassociateAddress(ctx, &ec2.DisassociateAddressInput{AssociationId: assocID}, testAccountID)
+	requireAuthFailure(t, err)
+	_, err = eipSvc.ReleaseAddress(ctx, &ec2.ReleaseAddressInput{AllocationId: alloc.AllocationId}, testAccountID)
+	requireAuthFailure(t, err)
+	// Moving the address elsewhere would clear the hold, so it is refused before any change.
+	_, err = eipSvc.AssociateAddress(ctx, &ec2.AssociateAddressInput{
+		AllocationId: alloc.AllocationId, NetworkInterfaceId: aws.String("eni-elsewhere"), AllowReassociation: aws.Bool(true),
+	}, testAccountID)
 	requireAuthFailure(t, err)
 	_, err = eipSvc.ReleaseAddress(ctx, &ec2.ReleaseAddressInput{AllocationId: alloc.AllocationId}, testAccountID)
 	requireAuthFailure(t, err)

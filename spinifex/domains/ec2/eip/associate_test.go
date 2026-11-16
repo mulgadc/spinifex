@@ -16,7 +16,6 @@ import (
 	networkv1 "github.com/mulgadc/spinifex/contracts/network/v1"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -195,17 +194,6 @@ func TestEIP_DisassociateAfterAssociate(t *testing.T) {
 	svc, _, vpcSvc := setupTestEIP(t)
 	eni := createAssocENI(t, vpcSvc)
 	allocID, publicIP := allocateEIP(t, svc)
-
-	// Associating an address a NAT gateway holds takes it from the gateway.
-	entry, err := svc.eipKV.Get(t.Context(), kvstore.AccountKey(testAccountID, allocID))
-	require.NoError(t, err)
-	var rec EIPRecord
-	require.NoError(t, json.Unmarshal(entry.Value(), &rec))
-	rec.NatGatewayId = "nat-held"
-	data, err := json.Marshal(rec)
-	require.NoError(t, err)
-	_, err = svc.eipKV.Put(t.Context(), entry.Key(), data)
-	require.NoError(t, err)
 
 	assoc, err := svc.AssociateAddress(context.Background(), &ec2.AssociateAddressInput{
 		AllocationId:       aws.String(allocID),

@@ -215,6 +215,34 @@ func TestDeleteNatGateway(t *testing.T) {
 	assert.Nil(t, desc.Addresses[0].NetworkInterfaceOwnerId)
 }
 
+// A repeat delete of a deleted gateway succeeds with its ID, as AWS answers,
+// and leaves the deleted record and the released EIP untouched.
+func TestDeleteNatGateway_AlreadyDeleted(t *testing.T) {
+	svc := setupTestService(t)
+	createOut, err := svc.CreateNatGateway(t.Context(), &ec2.CreateNatGatewayInput{
+		SubnetId:     aws.String("subnet-pub1"),
+		AllocationId: aws.String("eipalloc-test1"),
+	}, testAccountID)
+	require.NoError(t, err)
+	natgwID := *createOut.NatGateway.NatGatewayId
+
+	_, err = svc.DeleteNatGateway(t.Context(), &ec2.DeleteNatGatewayInput{NatGatewayId: aws.String(natgwID)}, testAccountID)
+	require.NoError(t, err)
+	key := kvstore.AccountKey(testAccountID, natgwID)
+	before, err := svc.deletedNatgwKV.Get(t.Context(), key)
+	require.NoError(t, err)
+
+	again, err := svc.DeleteNatGateway(t.Context(), &ec2.DeleteNatGatewayInput{NatGatewayId: aws.String(natgwID)}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, &ec2.DeleteNatGatewayOutput{NatGatewayId: aws.String(natgwID)}, again)
+
+	after, err := svc.deletedNatgwKV.Get(t.Context(), key)
+	require.NoError(t, err)
+	assert.Equal(t, before.Revision(), after.Revision(), "a repeat delete must not rewrite the deleted record")
+	_, err = svc.natgwKV.Get(t.Context(), key)
+	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+}
+
 func TestDescribeNatGateways(t *testing.T) {
 	svc := setupTestService(t)
 	createOut, err := svc.CreateNatGateway(t.Context(), &ec2.CreateNatGatewayInput{

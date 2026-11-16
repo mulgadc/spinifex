@@ -191,9 +191,7 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(ctx context.Context, input *ec2
 	entry, err := s.natgwKV.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			// AWS-faithful: an absent NAT gateway is NatGatewayNotFound (provider
-			// tolerates it on destroy); destroy orchestration tolerates it too.
-			return nil, errors.New(awserrors.ErrorNatGatewayNotFound)
+			return s.deleteAlreadyDeletedNatGateway(ctx, key, natgwID)
 		}
 		slog.ErrorContext(ctx, "Failed to read NAT Gateway", "natGatewayId", natgwID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -235,6 +233,20 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(ctx context.Context, input *ec2
 	return &ec2.DeleteNatGatewayOutput{
 		NatGatewayId: aws.String(natgwID),
 	}, nil
+}
+
+// deleteAlreadyDeletedNatGateway answers a repeat delete the way AWS does: a
+// gateway still listed as deleted returns its ID with no side effects, and an
+// ID that was never seen (or has expired) is NatGatewayNotFound.
+func (s *NatGatewayServiceImpl) deleteAlreadyDeletedNatGateway(ctx context.Context, key, natgwID string) (*ec2.DeleteNatGatewayOutput, error) {
+	if _, err := s.deletedNatgwKV.Get(ctx, key); err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return nil, errors.New(awserrors.ErrorNatGatewayNotFound)
+		}
+		slog.ErrorContext(ctx, "Failed to read deleted NAT Gateway", "natGatewayId", natgwID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	return &ec2.DeleteNatGatewayOutput{NatGatewayId: aws.String(natgwID)}, nil
 }
 
 // kvBucketRouteTables is the route-table KV bucket. Duplicated as a literal

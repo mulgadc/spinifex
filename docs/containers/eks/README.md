@@ -67,7 +67,8 @@ Authentication uses **EKS access entries** (the API authentication mode) — IAM
   This matches AWS managed node groups and lets a pod without IRSA reach the node role through the SDK default credential chain.
   A node group launch template that sets `metadata_options` overrides each field it sets, and any field it leaves unset keeps the default.
   Existing workers keep their hop limit until they are replaced or changed with `ModifyInstanceMetadataOptions`.
-- **Default Kubernetes version is `1.32`.**
+- **Kubernetes version `1.32` is the only supported version and the default.**
+  `CreateCluster` refuses any other `version` with `InvalidParameterException` naming the supported versions.
 
 ### Control plane readiness and kubectl authentication
 

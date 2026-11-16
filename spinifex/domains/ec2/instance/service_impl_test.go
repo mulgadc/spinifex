@@ -1311,16 +1311,17 @@ func TestDescribeStoppedInstances_HappyPath(t *testing.T) {
 					ReservationId: aws.String("r-stop1"),
 					OwnerId:       aws.String(owner),
 				},
-				Instance: &ec2.Instance{InstanceId: aws.String("i-stop1")},
+				Instance: &ec2.Instance{InstanceId: aws.String("i-stop1"), PrivateIpAddress: aws.String("10.0.0.5")},
 			},
 		},
 	}
-	svc := &InstanceServiceImpl{stoppedStore: store, config: &config.Config{}}
+	svc := &InstanceServiceImpl{stoppedStore: store, config: &config.Config{Region: "us-east-1"}, dnsInternalDomain: "compute.internal"}
 
 	out, err := svc.DescribeStoppedInstances(context.Background(), &ec2.DescribeInstancesInput{}, owner)
 	require.NoError(t, err)
 	require.Len(t, out.Reservations, 1)
 	assert.Equal(t, "i-stop1", *out.Reservations[0].Instances[0].InstanceId)
+	assert.Equal(t, "ip-10-0-0-5.us-east-1.compute.internal", aws.StringValue(out.Reservations[0].Instances[0].PrivateDnsName))
 }
 
 func TestDescribeTerminatedInstances_NilStore(t *testing.T) {

@@ -1391,9 +1391,10 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(ctx context.Context, insta
 }
 
 // stampUserInitiatedShutdown records the reason AWS reports on an instance a
-// customer stopped or terminated. inst may be nil on a damaged record.
+// customer stopped or terminated. inst may be nil on a damaged record. A fence
+// reason is kept, since it is what keeps the guest out of automatic relaunch.
 func stampUserInitiatedShutdown(inst *ec2.Instance, now time.Time) {
-	if inst == nil {
+	if inst == nil || vm.VolumeFenced(inst) {
 		return
 	}
 	inst.StateReason = &ec2.StateReason{

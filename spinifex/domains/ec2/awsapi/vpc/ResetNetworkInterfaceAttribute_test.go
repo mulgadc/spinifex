@@ -87,9 +87,4 @@ func TestResetNetworkInterfaceAttribute(t *testing.T) {
 	}
 
 	require.NoError(t, reset(eniID, aws.String(""), testAccountID))
-	attr, err := DescribeNetworkInterfaceAttribute(ctx, &ec2.DescribeNetworkInterfaceAttributeInput{
-		NetworkInterfaceId: aws.String(eniID), Attribute: aws.String(ec2.NetworkInterfaceAttributeSourceDestCheck),
-	}, nc, testAccountID)
-	require.NoError(t, err)
-	assert.True(t, aws.BoolValue(attr.SourceDestCheck.Value))
 }

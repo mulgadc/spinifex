@@ -1718,6 +1718,84 @@ func TestModifyInstanceAttribute_InstanceStates(t *testing.T) {
 	}
 }
 
+// TestResetInstanceAttribute_InstanceStates pins the state each attribute
+// needs: kernel and ramdisk only reset on a stopped instance, sourceDestCheck
+// on any live one, and nothing on a shutting-down or terminated instance.
+func TestResetInstanceAttribute_InstanceStates(t *testing.T) {
+	const acc = "acc"
+	notStopped := "The instance 'i-x' is not in the 'stopped' state."
+	notLive := "The instance 'i-x' must be in a 'running', 'pending', 'stopping' or 'stopped' state for this operation."
+	stored := func(state vm.InstanceState, owner string) *vmmock.StateStore {
+		v := &vm.VM{ID: "i-x", AccountID: owner, Status: state}
+		switch state {
+		case vm.StateStopped:
+			return &vmmock.StateStore{Stopped: map[string]*vm.VM{"i-x": v}}
+		case vm.StateTerminated:
+			return &vmmock.StateStore{Terminated: map[string]*vm.VM{"i-x": v}}
+		default:
+			return &vmmock.StateStore{Saved: map[string]map[string]*vm.VM{"node-b": {"i-x": v}}}
+		}
+	}
+
+	tests := []struct {
+		name      string
+		local     *vm.VM
+		store     *vmmock.StateStore
+		attribute string
+		wantCode  string
+		wantMsg   string
+	}{
+		{name: "kernel on stopped", store: stored(vm.StateStopped, acc), attribute: "kernel"},
+		{name: "ramdisk on stopped", store: stored(vm.StateStopped, acc), attribute: "ramdisk"},
+		{name: "sourceDestCheck on stopped", store: stored(vm.StateStopped, acc), attribute: "sourceDestCheck"},
+		{name: "sourceDestCheck on running", local: &vm.VM{ID: "i-x", AccountID: acc, Status: vm.StateRunning},
+			store: vmmock.New(), attribute: "sourceDestCheck"},
+		{name: "kernel on running here", local: &vm.VM{ID: "i-x", AccountID: acc, Status: vm.StateRunning},
+			store: vmmock.New(), attribute: "kernel", wantCode: awserrors.ErrorIncorrectInstanceState, wantMsg: notStopped},
+		{name: "ramdisk on running elsewhere", store: stored(vm.StateRunning, acc), attribute: "ramdisk",
+			wantCode: awserrors.ErrorIncorrectInstanceState, wantMsg: notStopped},
+		{name: "sourceDestCheck on shutting-down", store: stored(vm.StateShuttingDown, acc), attribute: "sourceDestCheck",
+			wantCode: awserrors.ErrorIncorrectInstanceState, wantMsg: notLive},
+		{name: "sourceDestCheck on terminated", store: stored(vm.StateTerminated, acc), attribute: "sourceDestCheck",
+			wantCode: awserrors.ErrorIncorrectInstanceState, wantMsg: notLive},
+		{name: "kernel on terminated", store: stored(vm.StateTerminated, acc), attribute: "kernel",
+			wantCode: awserrors.ErrorIncorrectInstanceState, wantMsg: notLive},
+		{name: "unknown", store: vmmock.New(), attribute: "kernel",
+			wantCode: awserrors.ErrorInvalidInstanceIDNotFound, wantMsg: "The instance ID 'i-x' does not exist"},
+		{name: "stopped in another account", store: stored(vm.StateStopped, "other"), attribute: "kernel",
+			wantCode: awserrors.ErrorInvalidInstanceIDNotFound, wantMsg: "The instance ID 'i-x' does not exist"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			vms := map[string]*vm.VM{}
+			if tc.local != nil {
+				vms[tc.local.ID] = tc.local
+			}
+			svc := &InstanceServiceImpl{vmMgr: mgrWith(vms), stoppedStore: tc.store}
+
+			out, err := svc.ResetInstanceAttribute(context.Background(), &ec2.ResetInstanceAttributeInput{
+				InstanceId: aws.String("i-x"), Attribute: aws.String(tc.attribute),
+			}, acc)
+			if tc.wantCode == "" {
+				require.NoError(t, err)
+				assert.NotNil(t, out)
+				return
+			}
+			code, msg, _ := awserrors.ResolveErrorDetail(err)
+			assert.Equal(t, tc.wantCode, code)
+			assert.Equal(t, tc.wantMsg, msg)
+		})
+	}
+}
+
+func TestResetInstanceAttribute_StoreError(t *testing.T) {
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{}), stoppedStore: &vmmock.StateStore{LoadStoppedErr: errors.New("kv down")}}
+	_, err := svc.ResetInstanceAttribute(context.Background(), &ec2.ResetInstanceAttributeInput{
+		InstanceId: aws.String("i-x"), Attribute: aws.String("kernel"),
+	}, "acc")
+	assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+}
+
 func TestModifyInstanceAttribute_NilStore(t *testing.T) {
 	svc := &InstanceServiceImpl{}
 	_, err := svc.ModifyInstanceAttribute(context.Background(), &ec2.ModifyInstanceAttributeInput{

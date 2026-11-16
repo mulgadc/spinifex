@@ -31,7 +31,6 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/projection"
 	resourcearn "github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
-	"github.com/mulgadc/spinifex/spinifex/foundation/aws/paging"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvsync"
@@ -1285,21 +1284,11 @@ func (s *EKSServiceImpl) ListClusters(ctx context.Context, input *eks.ListCluste
 	if err != nil {
 		return nil, eksReadUnavailableOr(err, "list cluster names")
 	}
-	from, err := decodeEKSToken(input.NextToken)
+	page, next, err := pageEKSList(names, func(n string) string { return n }, input.MaxResults, input.NextToken)
 	if err != nil {
 		return nil, err
 	}
-	maxResults := int(aws.Int64Value(input.MaxResults))
-	if maxResults <= 0 || maxResults > 100 {
-		maxResults = 100
-	}
-	page, next := paging.Page(names, func(n string) string { return n }, paging.Request{Limit: maxResults, From: from})
-
-	out := &eks.ListClustersOutput{Clusters: aws.StringSlice(page)}
-	if next != "" {
-		out.NextToken = aws.String(next)
-	}
-	return out, nil
+	return &eks.ListClustersOutput{Clusters: aws.StringSlice(page), NextToken: next}, nil
 }
 
 func (s *EKSServiceImpl) DeleteCluster(ctx context.Context, input *eks.DeleteClusterInput, accountID string) (*eks.DeleteClusterOutput, error) {
@@ -1849,7 +1838,11 @@ func (s *EKSServiceImpl) ListAccessEntries(ctx context.Context, input *eks.ListA
 	for _, rec := range recs {
 		arns = append(arns, rec.PrincipalARN)
 	}
-	return &eks.ListAccessEntriesOutput{AccessEntries: aws.StringSlice(arns)}, nil
+	page, next, err := pageEKSList(arns, func(a string) string { return a }, input.MaxResults, input.NextToken)
+	if err != nil {
+		return nil, err
+	}
+	return &eks.ListAccessEntriesOutput{AccessEntries: aws.StringSlice(page), NextToken: next}, nil
 }
 
 func (s *EKSServiceImpl) UpdateAccessEntry(ctx context.Context, input *eks.UpdateAccessEntryInput, accountID string) (*eks.UpdateAccessEntryOutput, error) {
@@ -1969,15 +1962,28 @@ func (s *EKSServiceImpl) ListAssociatedAccessPolicies(ctx context.Context, input
 	for _, p := range rec.AssociatedPolicies {
 		policies = append(policies, associatedPolicyToAWS(p))
 	}
+	page, next, err := pageEKSList(policies, func(p *eks.AssociatedAccessPolicy) string { return aws.StringValue(p.PolicyArn) },
+		input.MaxResults, input.NextToken)
+	if err != nil {
+		return nil, err
+	}
 	return &eks.ListAssociatedAccessPoliciesOutput{
 		ClusterName:              aws.String(cluster),
 		PrincipalArn:             aws.String(principalARN),
-		AssociatedAccessPolicies: policies,
+		AssociatedAccessPolicies: page,
+		NextToken:                next,
 	}, nil
 }
 
-func (s *EKSServiceImpl) ListAccessPolicies(ctx context.Context, _ *eks.ListAccessPoliciesInput, _ string) (*eks.ListAccessPoliciesOutput, error) {
-	arns := slices.Sorted(maps.Keys(access.SupportedPolicies))
+func (s *EKSServiceImpl) ListAccessPolicies(ctx context.Context, input *eks.ListAccessPoliciesInput, _ string) (*eks.ListAccessPoliciesOutput, error) {
+	if input == nil {
+		input = &eks.ListAccessPoliciesInput{}
+	}
+	arns, next, err := pageEKSList(slices.Collect(maps.Keys(access.SupportedPolicies)), func(a string) string { return a },
+		input.MaxResults, input.NextToken)
+	if err != nil {
+		return nil, err
+	}
 	policies := make([]*eks.AccessPolicy, 0, len(arns))
 	for _, arn := range arns {
 		policies = append(policies, &eks.AccessPolicy{
@@ -1985,7 +1991,7 @@ func (s *EKSServiceImpl) ListAccessPolicies(ctx context.Context, _ *eks.ListAcce
 			Name: aws.String(accessPolicyName(arn)),
 		})
 	}
-	return &eks.ListAccessPoliciesOutput{AccessPolicies: policies}, nil
+	return &eks.ListAccessPoliciesOutput{AccessPolicies: policies, NextToken: next}, nil
 }
 
 // accessPolicyName extracts the policy short name from its ARN

@@ -972,7 +972,11 @@ func (s *EKSServiceImpl) listNodegroups(ctx context.Context, acctKV jetstream.Ke
 	for _, rec := range recs {
 		names = append(names, rec.Name)
 	}
-	return &eks.ListNodegroupsOutput{Nodegroups: aws.StringSlice(names)}, nil
+	page, next, err := pageEKSList(names, func(n string) string { return n }, input.MaxResults, input.NextToken)
+	if err != nil {
+		return nil, err
+	}
+	return &eks.ListNodegroupsOutput{Nodegroups: aws.StringSlice(page), NextToken: next}, nil
 }
 
 func (s *EKSServiceImpl) updateNodegroupConfig(ctx context.Context, acctKV jetstream.KeyValue, input *eks.UpdateNodegroupConfigInput, accountID string) (*eks.UpdateNodegroupConfigOutput, error) {

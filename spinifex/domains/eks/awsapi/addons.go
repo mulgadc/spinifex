@@ -10,10 +10,16 @@ import (
 )
 
 // ListAddons — GET /clusters/{name}/addons.
-func ListAddons(ctx context.Context, natsConn *nats.Conn, accountID, cluster string) (*eks.ListAddonsOutput, error) {
-	return ekscluster.NewNATSEKSService(natsConn).ListAddons(ctx, &eks.ListAddonsInput{
-		ClusterName: aws.String(cluster),
-	}, accountID)
+func ListAddons(ctx context.Context, natsConn *nats.Conn, accountID, cluster string, query []byte) (*eks.ListAddonsOutput, error) {
+	q, err := parseListQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	input := &eks.ListAddonsInput{ClusterName: aws.String(cluster), NextToken: q.str("nextToken")}
+	if input.MaxResults, err = q.int64("maxResults"); err != nil {
+		return nil, err
+	}
+	return ekscluster.NewNATSEKSService(natsConn).ListAddons(ctx, input, accountID)
 }
 
 // DescribeAddonVersions — GET /addons/supported-versions.

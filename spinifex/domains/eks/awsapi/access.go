@@ -29,8 +29,19 @@ func DescribeAccessEntry(ctx context.Context, natsConn *nats.Conn, accountID, cl
 }
 
 // ListAccessEntries — GET /clusters/{name}/access-entries.
-func ListAccessEntries(ctx context.Context, natsConn *nats.Conn, accountID, cluster string) (*eks.ListAccessEntriesOutput, error) {
-	input := &eks.ListAccessEntriesInput{ClusterName: aws.String(cluster)}
+func ListAccessEntries(ctx context.Context, natsConn *nats.Conn, accountID, cluster string, query []byte) (*eks.ListAccessEntriesOutput, error) {
+	q, err := parseListQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	input := &eks.ListAccessEntriesInput{
+		ClusterName:         aws.String(cluster),
+		AssociatedPolicyArn: q.str("associatedPolicyArn"),
+		NextToken:           q.str("nextToken"),
+	}
+	if input.MaxResults, err = q.int64("maxResults"); err != nil {
+		return nil, err
+	}
 	return ekscluster.NewNATSEKSService(natsConn).ListAccessEntries(ctx, input, accountID)
 }
 
@@ -76,15 +87,31 @@ func DisassociateAccessPolicy(ctx context.Context, natsConn *nats.Conn, accountI
 }
 
 // ListAssociatedAccessPolicies — GET /clusters/{name}/access-entries/{arn}/access-policies.
-func ListAssociatedAccessPolicies(ctx context.Context, natsConn *nats.Conn, accountID, cluster, principalARN string) (*eks.ListAssociatedAccessPoliciesOutput, error) {
+func ListAssociatedAccessPolicies(ctx context.Context, natsConn *nats.Conn, accountID, cluster, principalARN string, query []byte) (*eks.ListAssociatedAccessPoliciesOutput, error) {
+	q, err := parseListQuery(query)
+	if err != nil {
+		return nil, err
+	}
 	input := &eks.ListAssociatedAccessPoliciesInput{
 		ClusterName:  aws.String(cluster),
 		PrincipalArn: aws.String(principalARN),
+		NextToken:    q.str("nextToken"),
+	}
+	if input.MaxResults, err = q.int64("maxResults"); err != nil {
+		return nil, err
 	}
 	return ekscluster.NewNATSEKSService(natsConn).ListAssociatedAccessPolicies(ctx, input, accountID)
 }
 
 // ListAccessPolicies — GET /access-policies.
-func ListAccessPolicies(ctx context.Context, natsConn *nats.Conn, accountID string) (*eks.ListAccessPoliciesOutput, error) {
-	return ekscluster.NewNATSEKSService(natsConn).ListAccessPolicies(ctx, &eks.ListAccessPoliciesInput{}, accountID)
+func ListAccessPolicies(ctx context.Context, natsConn *nats.Conn, accountID string, query []byte) (*eks.ListAccessPoliciesOutput, error) {
+	q, err := parseListQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	input := &eks.ListAccessPoliciesInput{NextToken: q.str("nextToken")}
+	if input.MaxResults, err = q.int64("maxResults"); err != nil {
+		return nil, err
+	}
+	return ekscluster.NewNATSEKSService(natsConn).ListAccessPolicies(ctx, input, accountID)
 }

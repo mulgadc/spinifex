@@ -34,7 +34,11 @@ func (s *EKSServiceImpl) ListAddons(ctx context.Context, input *eks.ListAddonsIn
 	for _, rec := range recs {
 		names = append(names, rec.AddonName)
 	}
-	return &eks.ListAddonsOutput{Addons: aws.StringSlice(names)}, nil
+	page, next, err := pageEKSList(names, func(n string) string { return n }, input.MaxResults, input.NextToken)
+	if err != nil {
+		return nil, err
+	}
+	return &eks.ListAddonsOutput{Addons: aws.StringSlice(page), NextToken: next}, nil
 }
 
 // DescribeAddonVersions returns the add-on catalogue filtered by name, owner,
@@ -95,6 +99,28 @@ func pageAddons(specs []addon.Spec, maxResults *int64, token *string) ([]addon.S
 		req.Limit = min(max(int(*maxResults), 1), maxAddonPage)
 	}
 	page, next := paging.Page(specs, func(sp addon.Spec) string { return sp.Name }, req)
+	if next == "" {
+		return page, nil, nil
+	}
+	return page, &next, nil
+}
+
+// maxListPage is the default and ceiling of a list call's maxResults; an
+// out-of-range value is clamped to it rather than refused.
+const maxListPage = 100
+
+// pageEKSList returns the page of items a list call's maxResults and nextToken
+// select, sorted by key, and the token for the next page or nil on the last.
+func pageEKSList[T any](items []T, key func(T) string, maxResults *int64, token *string) ([]T, *string, error) {
+	from, err := decodeEKSToken(token)
+	if err != nil {
+		return nil, nil, err
+	}
+	limit := int(aws.Int64Value(maxResults))
+	if limit <= 0 || limit > maxListPage {
+		limit = maxListPage
+	}
+	page, next := paging.Page(items, key, paging.Request{Limit: limit, From: from})
 	if next == "" {
 		return page, nil, nil
 	}

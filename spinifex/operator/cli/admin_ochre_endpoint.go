@@ -131,6 +131,8 @@ func waitForEndpointReady(ctx context.Context, svc ochre.EndpointService, modelI
 			return out.Endpoint, clock.now().Sub(start), nil
 		case ochre.StateAbsent:
 			return out.Endpoint, clock.now().Sub(start), errEndpointLaunchAborted
+		case ochre.StateStarting, ochre.StateDraining:
+			// Not settled: poll again.
 		}
 
 		// Check the deadline only after a Describe, so a timeout already at

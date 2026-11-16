@@ -72,6 +72,8 @@ func (r *EKSBillableReaper) Sweep(ctx context.Context) (int, error) {
 		case ClusterRecordUnreadable:
 			slog.WarnContext(ctx, "eks-billable: "+verdict.Reason, "cluster", clusterName, "account", clusterAccount, "err", verdict.Err)
 			continue
+		case ClusterRecordMissing:
+			// No record: raise the data-safety alarm below and retain the VM.
 		}
 		reason := verdict.Reason
 

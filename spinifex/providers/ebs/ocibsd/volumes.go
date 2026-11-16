@@ -215,6 +215,8 @@ func (p *Provider) restorableBackup(ctx context.Context, req ebsprovider.CreateV
 		return oci.VolumeBackup{}, fmt.Errorf("%w: snapshot %s is still pending", ebsprovider.ErrUnavailable, req.SourceSnapshotID)
 	case ebsprovider.SnapshotStateError:
 		return oci.VolumeBackup{}, fmt.Errorf("%w: snapshot %s failed", ebsprovider.ErrInvalidArgument, req.SourceSnapshotID)
+	case ebsprovider.SnapshotStateCompleted:
+		// A completed backup is restorable.
 	}
 	return backup, nil
 }

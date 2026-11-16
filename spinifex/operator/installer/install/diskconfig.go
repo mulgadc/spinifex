@@ -288,6 +288,8 @@ func (d DiskConfig) Tolerated() int {
 		return 2
 	case FSZFSRAIDZ3:
 		return 3
+	case FSExt4, FSZFSRAID0:
+		// No redundancy: no disk can be lost.
 	}
 	return 0
 }

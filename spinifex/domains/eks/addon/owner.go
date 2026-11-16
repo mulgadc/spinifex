@@ -151,6 +151,8 @@ func (o *Owner) ApplyReport(ctx context.Context, kv jetstream.KeyValue, cluster 
 			health = report.Message
 		case PhaseReady:
 			health = ""
+		case PhaseApplied:
+			// Applied keeps the health until the add-on reports ready or failed.
 		}
 		if !changed && health == rec.Health {
 			return false

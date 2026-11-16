@@ -169,6 +169,8 @@ func (g *requestGenerator) enumHint(path []pathStep) (string, bool) {
 		if member == "Type" {
 			return "A", true
 		}
+	default:
+		// Other services take no service-specific enum hint.
 	}
 	return "", false
 }
@@ -286,6 +288,8 @@ func (g *requestGenerator) hint(path []pathStep) (string, bool) {
 		if member == "AccessKeyId" && options.AccessKeyID != "" {
 			return options.AccessKeyID, true
 		}
+	case IAM, S3, SQS:
+		// These services use only the shared member hints below.
 	}
 
 	switch member {

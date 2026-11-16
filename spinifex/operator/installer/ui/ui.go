@@ -411,6 +411,9 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.screen = screenPassword
 			m = m.setCredsFocus(0)
 		}
+
+	case screenDone:
+		// The done screen takes no keys.
 	}
 
 	return m, nil
@@ -651,6 +654,8 @@ func (m model) updateActiveInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.hostnameInput, cmd = m.hostnameInput.Update(msg)
 		return m, cmd
+	default:
+		// Only the erase and hostname screens have a text input.
 	}
 	return m, nil
 }

@@ -296,6 +296,8 @@ func (m *JetStreamManager) TerminateDecided(instanceID string) (bool, error) {
 	switch record.Status.Status {
 	case vm.StateShuttingDown, vm.StateTerminated:
 		return true, nil
+	case vm.StateProvisioning, vm.StatePending, vm.StateRunning, vm.StateStopping, vm.StateStopped, vm.StateError:
+		// Terminate is not decided for these.
 	}
 	return false, nil
 }

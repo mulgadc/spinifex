@@ -250,6 +250,8 @@ func (r *Reconciler) reconcileInstance(ctx context.Context, kv *kvstore.Bucket, 
 		handled = r.reconcileBackingUp(ctx, kv, rev, accountID, &rec)
 	case StatusAvailable, StatusFailed:
 		handled = r.reconcileHealth(ctx, kv, rev, accountID, &rec)
+	case StatusStopped, StatusRecovering, StatusDeleted:
+		// Nothing to converge: stopped and deleted are at rest, and nothing sets recovering.
 	}
 	return revisit, handled
 }

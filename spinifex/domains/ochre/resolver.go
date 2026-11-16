@@ -214,6 +214,8 @@ func (r *DynamicEndpointResolver) describeAndEnsure(ctx context.Context, account
 		// A teardown is in flight and nothing will relaunch on its own, so
 		// there is no readiness to wait for.
 		return "", nil
+	case StateAbsent:
+		// Nothing runs: ask for a launch below.
 	}
 
 	if _, err := r.svc.Ensure(ctx, &EnsureEndpointInput{ModelID: modelID, AccountID: accountID, Pinned: pinned}, accountID); err != nil {

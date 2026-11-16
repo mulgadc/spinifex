@@ -465,6 +465,8 @@ func (m model) handleRoleKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			f.dhcp = key == "left"
 			f.focusCurrent()
 			return m, nil
+		default:
+			// Text fields keep the arrows for cursor movement.
 		}
 	}
 

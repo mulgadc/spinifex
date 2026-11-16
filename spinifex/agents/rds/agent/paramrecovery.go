@@ -98,6 +98,8 @@ func (g *paramGuard) waitForEngineDown(ctx context.Context) bool {
 			return false
 		case engineRecovering:
 			deadline = time.Now().Add(g.after)
+		case engineAbsent:
+			// Still down: the deadline below decides.
 		}
 		if time.Now().After(deadline) {
 			return true

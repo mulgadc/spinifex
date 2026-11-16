@@ -326,6 +326,8 @@ func OutcomeName(o relay.Outcome) string {
 		return OutcomeDelivered
 	case relay.CallerGone:
 		return OutcomeCallerGone
+	case relay.Unknown:
+		// Unknown, like any value outside the set, is named below.
 	}
 	return OutcomeUnknown
 }

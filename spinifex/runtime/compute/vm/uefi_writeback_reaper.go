@@ -56,6 +56,8 @@ func uefiGuestMayRun(status InstanceState) bool {
 	switch status {
 	case StateProvisioning, StatePending, StateRunning, StateStopping, StateShuttingDown:
 		return true
+	case StateStopped, StateTerminated, StateError:
+		// No guest runs; a crash drops the writer before it records StateError.
 	}
 	return false
 }
@@ -121,6 +123,8 @@ func (m *Manager) settleOwedUEFIStore(ctx context.Context, id string) bool {
 	case uefiWriteBackGone:
 		removeUEFIDir(id, dir)
 		return true
+	case uefiWriteBackFailed:
+		// Still owed: a later sweep retries.
 	}
 	return false
 }

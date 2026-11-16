@@ -119,9 +119,11 @@ fi
 if aws s3 ls --endpoint-url "${R2_ENDPOINT}" "${s3}/${qcow2}" >/dev/null 2>&1; then
     stamp="$(date -u +%Y%m%dT%H%M%SZ)"
     echo "+ backing up current object to ${s3}/archive/${OBJECT_BASE}-${stamp}.qcow2"
-    aws s3 cp --endpoint-url "${R2_ENDPOINT}" \
+    # The default --copy-props reads the source tags, and R2 does not
+    # implement GetObjectTagging; metadata-directive copies metadata only.
+    aws s3 cp --endpoint-url "${R2_ENDPOINT}" --copy-props metadata-directive \
         "${s3}/${qcow2}" "${s3}/archive/${OBJECT_BASE}-${stamp}.qcow2"
-    aws s3 cp --endpoint-url "${R2_ENDPOINT}" \
+    aws s3 cp --endpoint-url "${R2_ENDPOINT}" --copy-props metadata-directive \
         "${s3}/${sha}" "${s3}/archive/${OBJECT_BASE}-${stamp}.qcow2.sha256" || true
 fi
 

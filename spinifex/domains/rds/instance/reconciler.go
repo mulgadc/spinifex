@@ -595,7 +595,7 @@ func (r *Reconciler) reconcileStopping(ctx context.Context, kv *kvstore.Bucket, 
 func (r *Reconciler) reconcileDeleting(ctx context.Context, kv *kvstore.Bucket, rev uint64, accountID string, rec *DBInstanceRecord) error {
 	// The handler that accepted the delete tears it down until its claim ends; a
 	// second teardown alongside it sees the VM mid-shutdown as gone.
-	if time.Now().Before(deleteClaimEnds(rec)) {
+	if !rec.TeardownHandedOff && time.Now().Before(deleteClaimEnds(rec)) {
 		return nil
 	}
 	err := r.svc.teardownDBInstance(ctx, kv, accountID, rec, false)

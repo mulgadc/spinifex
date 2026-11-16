@@ -415,8 +415,10 @@ func TestModifyDBInstance_SweepsTheAutomatedBackupsWhenRetentionGoesToZero(t *te
 }
 
 // An automated backup outliving its instance would pin the instance's data
-// volume for good, so teardown sweeps the set before releasing the volume.
-func TestDeleteDBInstance_SweepsTheAutomatedBackups(t *testing.T) {
+// volume for good, so teardown sweeps the set before releasing the volume. The
+// sweep scales with the backups stored, so the request leaves it to the
+// reconciler (ADR-0003:S8).
+func TestS8_DeleteDBInstanceLeavesTheAutomatedBackupSweepToTheReconciler(t *testing.T) {
 	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	seedInstance(t, h.svc, availableRecord())
@@ -426,10 +428,18 @@ func TestDeleteDBInstance_SweepsTheAutomatedBackups(t *testing.T) {
 	require.NoError(t, err)
 
 	_, found := h.snapshotRecord(t, swept)
+	assert.True(t, found, "the request must not sweep the automated backups")
+	assert.Empty(t, h.volumes.deleted, "the volume waits for the sweep")
+	assert.True(t, h.record(t).TeardownHandedOff, "the reconciler must not wait out the handler's claim")
+
+	h.convergeDelete(t)
+
+	_, found = h.snapshotRecord(t, swept)
 	assert.False(t, found)
 	// Nothing holds the data volume once the automated set is gone, so it is
 	// deleted rather than retained.
 	assert.Equal(t, []string{"vol-rdsdata01"}, h.volumes.deleted)
 	_, found = h.retainedVolume(t, "vol-rdsdata01")
 	assert.False(t, found)
+	assert.False(t, h.recordExists(t, testDBID))
 }

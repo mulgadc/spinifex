@@ -131,7 +131,7 @@ func RunBenchSuite(b *testing.B, provider ebsprovider.EBSProvider, cfg BenchConf
 		b.ResetTimer()
 		for b.Loop() {
 			if _, err := provider.PublishVolume(context.Background(), ebsprovider.PublishVolumeRequest{
-				Versioned: ebsprovider.NewVersioned(),
+				Versioned: ebsprovider.NewLatestVersioned(),
 				VolumeID:  volumeID,
 				NodeID:    cfg.node(),
 			}); err != nil {

@@ -1,5 +1,6 @@
 // Package oci wraps the subset of the Oracle Cloud API that Spinifex needs to
-// hand out publicly reachable addresses on an OCI instance.
+// hand out publicly reachable addresses on an OCI instance, and, in block.go,
+// to keep EBS volumes on OCI block volumes.
 //
 // OCI enforces the source IP per VNIC: a packet leaving the instance with a
 // source address that is not a registered private IP object on that VNIC is
@@ -21,6 +22,7 @@ package oci
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"net/netip"
 	"time"
 )
@@ -119,3 +121,10 @@ func (e *APIError) Error() string {
 
 // Unwrap returns the sentinel so errors.Is(err, ErrLimitExceeded) matches.
 func (e *APIError) Unwrap() error { return e.kind }
+
+// PreconditionFailed reports an HTTP 412: the resource changed since the ETag
+// an If-Match named.
+func PreconditionFailed(err error) bool {
+	var api *APIError
+	return errors.As(err, &api) && api.StatusCode == http.StatusPreconditionFailed
+}

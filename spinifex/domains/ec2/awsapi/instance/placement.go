@@ -236,6 +236,7 @@ func aggregateResults(ctx context.Context, results []nodeLaunchResult, minCount 
 
 	return &ec2.Reservation{
 		ReservationId: reservationID,
+		OwnerId:       aws.String(accountID),
 		Instances:     allInstances,
 	}, nil
 }
@@ -356,6 +357,7 @@ func distributeInstancesSpread(ctx context.Context, input *ec2.RunInstancesInput
 
 	return &ec2.Reservation{
 		ReservationId: reservationID,
+		OwnerId:       aws.String(accountID),
 		Instances:     allInstances,
 	}, nil
 }

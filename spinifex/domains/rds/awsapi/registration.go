@@ -3,8 +3,10 @@ package awsapi
 import (
 	"context"
 	"errors"
+	"github.com/mulgadc/spinifex/spinifex/ingress/aws/envelope"
 	"log/slog"
 	"net/http"
+	"uuid"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
@@ -106,12 +108,14 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 			return d.Quota.EnforceRDSInstances(ctx, d.NATS, accountID, want)
 		}
 	}
-	xmlOutput, err := Dispatch(r.Context(), action, queryArgs, d.NATS, caller, env)
+	requestID := uuid.NewV4().String()
+	xmlOutput, err := Dispatch(r.Context(), action, requestID, queryArgs, d.NATS, caller, env)
 	if err != nil {
 		return err
 	}
 
 	w.Header().Set("Content-Type", "text/xml")
+	w.Header().Set(envelope.RequestIDHeader, requestID)
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(xmlOutput); err != nil {
 		slog.ErrorContext(r.Context(), "Failed to write RDS response", "err", err)

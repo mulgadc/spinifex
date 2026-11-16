@@ -4,7 +4,7 @@
 #   . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
 #
 # Which e2e suites each topology can run. Sourced by every workflow that drives
-# suites (e2e.yml, e2e-suites.yml, e2e-nightly.yml) so the lists cannot drift
+# suites (e2e.yml, e2e-nightly.yml) so the lists cannot drift
 # apart — they previously disagreed three ways.
 #
 # Eligibility is a property of the suite, not of the workflow: a suite belongs

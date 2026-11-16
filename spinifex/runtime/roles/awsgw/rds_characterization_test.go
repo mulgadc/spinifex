@@ -171,7 +171,12 @@ func TestRDSPipeline_DescribeDBInstances_Golden(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "text/xml", resp.Header.Get("Content-Type"))
 	assert.Equal(t, 1, *calls)
-	assert.Equal(t, `<DescribeDBInstancesResponse><DescribeDBInstancesResult><DBInstances></DBInstances></DescribeDBInstancesResult></DescribeDBInstancesResponse>`, readBody(t, resp))
+	// The request ID rides both the header and ResponseMetadata, as on AWS.
+	requestID := resp.Header.Get("X-Amzn-Requestid")
+	require.NotEmpty(t, requestID)
+	body := readBody(t, resp)
+	assert.Contains(t, body, `<DescribeDBInstancesResult><DBInstances></DBInstances></DescribeDBInstancesResult>`)
+	assert.Contains(t, body, `<ResponseMetadata><RequestId>`+requestID+`</RequestId></ResponseMetadata>`)
 }
 
 func TestRDSPipeline_Authz_DeniedStopsBeforeHandler(t *testing.T) {

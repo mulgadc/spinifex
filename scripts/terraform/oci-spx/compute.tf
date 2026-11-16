@@ -45,6 +45,7 @@ locals {
   # after the boot disk (mulga-poc has oraclevda1 pointing at sdb1).
   data_device = "/dev/oracleoci/oraclevdb"
 
+
   # adopt and create differ only in who creates the dynamic group and policy; a node
   # authenticates identically either way, because the matching rule covers the whole
   # compartment and so names no instance.
@@ -106,7 +107,8 @@ resource "oci_core_instance" "mulgadc" {
     user_data           = base64encode(local.user_data)
   }
 
-  # Required for automatic UHP iSCSI multipath setup and login.
+  # Logs in the data volume below, the one attachment that asks it to; ocibsd's
+  # attachments do not, so the plugin leaves their sessions to ocibsd.
   agent_config {
     plugins_config {
       name          = "Block Volume Management"
@@ -165,6 +167,8 @@ resource "oci_core_volume" "mulgadc_data" {
 
 resource "oci_core_volume_attachment" "mulgadc_data" {
   count           = var.node_count
+  # iSCSI on every node and provider: bare metal attaches no other way, and
+  # ebs_provider must not change how a deployment's own data volume attaches.
   attachment_type = "iscsi"
   # Required by OCI for Ultra High Performance iSCSI volume attachments.
   device                            = local.data_device

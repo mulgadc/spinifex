@@ -6,6 +6,8 @@ package eip
 import (
 	"context"
 	"encoding/json"
+	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -286,4 +288,60 @@ func TestEIP_AssociateKeepsAnotherElasticIP(t *testing.T) {
 
 	assert.True(t, poolHolds(t, ipam, firstIP), "an Elastic IP is freed only by ReleaseAddress")
 	assert.Equal(t, firstIP, *describeEIP(t, svc, firstID).PublicIp)
+}
+
+// presentMembers names the members a response carries, the way the wire does:
+// a nil pointer or slice is omitted from the XML.
+func presentMembers(v any) []string {
+	rv := reflect.ValueOf(v).Elem()
+	var names []string
+	for i := range rv.NumField() {
+		f := rv.Field(i)
+		if (f.Kind() == reflect.Pointer || f.Kind() == reflect.Slice) && !f.IsNil() {
+			names = append(names, rv.Type().Field(i).Name)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
+// An address carries its region as NetworkBorderGroup through allocate,
+// associate and disassociate, and NetworkInterfaceOwnerId only while it is on
+// an interface. The member sets are those real AWS returns at each step.
+func TestEIP_AddressMembersMatchAWS(t *testing.T) {
+	svc, _, vpcSvc := setupTestEIP(t)
+	eni := createAssocENI(t, vpcSvc)
+	_, err := vpcSvc.AttachENI(testAccountID, *eni.NetworkInterfaceId, "i-0123456789abcdef0", 0)
+	require.NoError(t, err)
+
+	alloc, err := svc.AllocateAddress(t.Context(), &ec2.AllocateAddressInput{
+		TagSpecifications: []*ec2.TagSpecification{{
+			ResourceType: aws.String("elastic-ip"),
+			Tags:         []*ec2.Tag{{Key: aws.String("Name"), Value: aws.String("eip")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"AllocationId", "Domain", "NetworkBorderGroup", "PublicIp", "PublicIpv4Pool"}, presentMembers(alloc))
+	assert.Equal(t, testRegion, aws.StringValue(alloc.NetworkBorderGroup))
+
+	unassociated := []string{"AllocationId", "Domain", "NetworkBorderGroup", "PublicIp", "PublicIpv4Pool", "Tags"}
+	addr := describeEIP(t, svc, *alloc.AllocationId)
+	assert.Equal(t, unassociated, presentMembers(addr))
+	assert.Equal(t, testRegion, aws.StringValue(addr.NetworkBorderGroup))
+
+	assoc, err := svc.AssociateAddress(t.Context(), &ec2.AssociateAddressInput{
+		AllocationId:       alloc.AllocationId,
+		NetworkInterfaceId: eni.NetworkInterfaceId,
+	}, testAccountID)
+	require.NoError(t, err)
+	addr = describeEIP(t, svc, *alloc.AllocationId)
+	assert.Equal(t, []string{"AllocationId", "AssociationId", "Domain", "InstanceId", "NetworkBorderGroup", "NetworkInterfaceId",
+		"NetworkInterfaceOwnerId", "PrivateIpAddress", "PublicIp", "PublicIpv4Pool", "Tags"}, presentMembers(addr))
+	assert.Equal(t, testAccountID, aws.StringValue(addr.NetworkInterfaceOwnerId))
+	assert.Equal(t, testRegion, aws.StringValue(addr.NetworkBorderGroup))
+
+	_, err = svc.DisassociateAddress(t.Context(), &ec2.DisassociateAddressInput{AssociationId: assoc.AssociationId}, testAccountID)
+	require.NoError(t, err)
+	addr = describeEIP(t, svc, *alloc.AllocationId)
+	assert.Equal(t, unassociated, presentMembers(addr))
 }

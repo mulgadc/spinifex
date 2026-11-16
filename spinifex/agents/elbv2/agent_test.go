@@ -659,7 +659,7 @@ func notFoundGateway(t *testing.T) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/xml")
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `<ErrorResponse><Error><Type>Sender</Type><Code>LoadBalancerNotFound</Code><Message>One or more load balancers not found.</Message></Error></ErrorResponse>`)
+		fmt.Fprint(w, `<ErrorResponse><Error><Type>Sender</Type><Code>LoadBalancerNotFound</Code><Message>One or more load balancers not found</Message></Error></ErrorResponse>`)
 	}))
 }
 

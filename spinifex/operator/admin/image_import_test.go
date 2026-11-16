@@ -3,11 +3,15 @@ package admin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
+	"github.com/mulgadc/spinifex/spinifex/runtime/compute/imagewrite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -55,6 +59,9 @@ func (p *recordingProvider) CreateVolume(ctx context.Context, req ebsprovider.Cr
 func (p *recordingProvider) PublishVolume(ctx context.Context, req ebsprovider.PublishVolumeRequest) (*ebsprovider.PublishedVolume, error) {
 	p.calls = append(p.calls, "publish")
 	p.publishes = append(p.publishes, req)
+	if p.publishExport.Kind == ebsprovider.ExportKindBlock && req.SchemaVersion < ebsprovider.DescriptorSchemaVersion {
+		return nil, fmt.Errorf("%w: a block export has no version %d form", ebsprovider.ErrUnsupportedVersion, req.SchemaVersion)
+	}
 	if _, err := p.MemoryProvider.PublishVolume(ctx, req); err != nil {
 		return nil, err
 	}
@@ -81,9 +88,9 @@ func (p *recordingProvider) CreateSnapshot(ctx context.Context, req ebsprovider.
 func stubWriteImage(t *testing.T, err error, seen *string) {
 	t.Helper()
 	original := writeImage
-	writeImage = func(_ context.Context, _, nbdURI string, _ io.Writer) error {
-		if seen != nil {
-			*seen = nbdURI
+	writeImage = func(_ context.Context, _ string, export ebsprovider.VolumeExport, _ io.Writer) error {
+		if seen != nil && export.NBD != nil {
+			*seen = export.NBD.NBDURI
 		}
 		return err
 	}
@@ -140,30 +147,54 @@ func TestImportImage_WriteFailureStillUnpublishes(t *testing.T) {
 		"a failed copy must not be snapshotted, and must still be unpublished")
 }
 
-// TestImportImage_BlockExportIsRefused covers a provider that publishes a host
-// block device: the import writes only through NBD, so it must fail without
-// copying and still release the export.
-func TestImportImage_BlockExportIsRefused(t *testing.T) {
-	var wroteTo string
-	stubWriteImage(t, nil, &wroteTo)
+// blockImport sets up an import against a provider publishing a host block
+// device, with the shared writer running a fake qemu-img.
+func blockImport(t *testing.T, imageBytes int64, deviceBytes uint64) (*recordingProvider, ImportOpts, *[][]string) {
+	t.Helper()
 	provider := newRecordingProvider()
 	provider.publishExport = ebsprovider.VolumeExport{
 		Kind:  ebsprovider.ExportKindBlock,
-		Block: &ebsprovider.BlockExport{DevicePath: "/dev/sdx", SizeBytes: 1 << 30},
+		Block: &ebsprovider.BlockExport{DevicePath: "/dev/sdx", SizeBytes: deviceBytes},
 	}
+	image := filepath.Join(t.TempDir(), "image.raw")
+	require.NoError(t, os.WriteFile(image, nil, 0o600))
+	require.NoError(t, os.Truncate(image, imageBytes))
 
-	err := ImportImage(context.Background(), provider, ImportOpts{
-		VolumeID:   "ami-import005",
-		NodeID:     "node-a",
-		SizeBytes:  1 << 30,
-		SourcePath: "/dev/null",
-		Snapshot:   true,
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), `"block" export`)
-	assert.Empty(t, wroteTo, "a block export must not reach the NBD writer")
+	var ran [][]string
+	original := writeImage
+	writeImage = imagewrite.Writer{QemuImg: func(_ context.Context, _ io.Writer, args ...string) error {
+		ran = append(ran, args)
+		return nil
+	}}.Write
+	t.Cleanup(func() { writeImage = original })
+	return provider, ImportOpts{VolumeID: "ami-import005", NodeID: "node-a", SizeBytes: 1 << 30, SourcePath: image, Snapshot: true}, &ran
+}
+
+// A block export has no version 1 form, so only a publish at the latest
+// version reaches the device at all.
+func TestImportImage_BlockExportIsWrittenAtItsDevicePath(t *testing.T) {
+	provider, opts, ran := blockImport(t, 1<<20, 1<<30)
+
+	require.NoError(t, ImportImage(context.Background(), provider, opts))
+
+	require.Len(t, provider.publishes, 1)
+	assert.Equal(t, ebsprovider.SchemaVersion, provider.publishes[0].SchemaVersion)
+	require.Len(t, *ran, 1)
+	assert.Equal(t, "/dev/sdx", (*ran)[0][len((*ran)[0])-1], "the copy must target the device the provider published")
+	assert.Equal(t, []string{"create", "publish", "unpublish", "snapshot"}, provider.calls)
+	vol, err := provider.GetVolume(context.Background(), ebsprovider.GetVolumeRequest{Versioned: ebsprovider.NewLatestVersioned(), VolumeID: opts.VolumeID})
+	require.NoError(t, err)
+	assert.Equal(t, ebsprovider.VolumeStateAvailable, vol.State)
+}
+
+func TestImportImage_ImageLargerThanTheBlockExportIsRefusedAndUnpublished(t *testing.T) {
+	provider, opts, ran := blockImport(t, 1<<20+1, 1<<20)
+
+	err := ImportImage(context.Background(), provider, opts)
+	require.ErrorContains(t, err, "larger than")
+	assert.Empty(t, *ran, "nothing may be written to a device too small for the image")
 	assert.Equal(t, []string{"create", "publish", "unpublish"}, provider.calls,
-		"a refused export must not be snapshotted, and must still be unpublished")
+		"a refused write must not be snapshotted, and must still be unpublished")
 }
 
 // TestImportImage_NoSnapshotWhenNotAsked covers the weights-style import that

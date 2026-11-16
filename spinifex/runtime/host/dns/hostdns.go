@@ -156,7 +156,7 @@ func (c *configurator) configureResolved(p Params) error {
 
 	if existing, err := os.ReadFile(dropinPath); err == nil && bytes.Equal(existing, dropin) {
 		if c.verifyResolved(p) == nil {
-			return nil
+			return fixFragmentModes(dropinPath)
 		}
 	}
 
@@ -196,7 +196,7 @@ func (c *configurator) configureResolvconf(p Params) error {
 
 	if existing, err := os.ReadFile(headPath); err == nil && bytes.Equal(existing, head) {
 		if c.verifyResolvconf(p) == nil {
-			return nil
+			return fixFragmentModes(headPath)
 		}
 	}
 
@@ -262,6 +262,19 @@ func writeFragment(path string, content []byte) error {
 	}
 	if err := os.WriteFile(path, content, 0o644); err != nil { //nolint:gosec // resolver fragment is intentionally world-readable
 		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return fixFragmentModes(path)
+}
+
+// fixFragmentModes sets the fragment and its directory to their public modes.
+// MkdirAll and WriteFile honour the caller's umask and leave an existing file's
+// mode alone, and systemd-resolved reads its drop-ins unprivileged.
+func fixFragmentModes(path string) error {
+	if err := os.Chmod(filepath.Dir(path), 0o755); err != nil { //nolint:gosec // resolver config dir is intentionally world-traversable
+		return fmt.Errorf("chmod %s: %w", filepath.Dir(path), err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil { //nolint:gosec // resolver fragment is intentionally world-readable
+		return fmt.Errorf("chmod %s: %w", path, err)
 	}
 	return nil
 }

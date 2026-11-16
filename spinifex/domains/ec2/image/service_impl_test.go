@@ -451,7 +451,7 @@ func TestCreateImageFromInstance_DuplicateName(t *testing.T) {
 		IsRunning:    true,
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidAMINameDuplicate, err.Error())
+	assert.EqualError(t, err, "AMI name my-image is already in use by AMI ami-existing123: "+awserrors.ErrorInvalidAMINameDuplicate)
 }
 
 func TestCreateImageFromInstance_UniqueNameAllowed(t *testing.T) {
@@ -896,7 +896,7 @@ func TestGetVolumeMetadata_InvalidJSON(t *testing.T) {
 func TestAmiNameExists_NoAMIs(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	exists, err := svc.amiNameExists(context.Background(), "nonexistent")
+	_, exists, err := svc.amiNameExists(context.Background(), "nonexistent")
 	require.NoError(t, err)
 	assert.False(t, exists)
 }
@@ -906,7 +906,7 @@ func TestAmiNameExists_Found(t *testing.T) {
 
 	createTestAMIConfigWithName(t, store, "ami-found123", "target-name")
 
-	exists, err := svc.amiNameExists(context.Background(), "target-name")
+	_, exists, err := svc.amiNameExists(context.Background(), "target-name")
 	require.NoError(t, err)
 	assert.True(t, exists)
 }
@@ -916,7 +916,7 @@ func TestAmiNameExists_NotFound(t *testing.T) {
 
 	createTestAMIConfigWithName(t, store, "ami-other123", "other-name")
 
-	exists, err := svc.amiNameExists(context.Background(), "different-name")
+	_, exists, err := svc.amiNameExists(context.Background(), "different-name")
 	require.NoError(t, err)
 	assert.False(t, exists)
 }
@@ -929,7 +929,7 @@ func TestAmiNameExists_InvalidJSON(t *testing.T) {
 	// A corrupt AMI document is a real store-side problem. Surface it rather
 	// than silently under-counting names (which would let a caller write a
 	// duplicate and mask the corruption).
-	_, err := svc.amiNameExists(context.Background(), "any-name")
+	_, _, err := svc.amiNameExists(context.Background(), "any-name")
 	require.Error(t, err)
 }
 
@@ -1391,7 +1391,7 @@ func TestRegisterImage_DuplicateName(t *testing.T) {
 
 	_, err := svc.RegisterImage(context.Background(), validRegisterImageServiceInput("snap-dup01"), testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidAMINameDuplicate, err.Error())
+	assert.EqualError(t, err, "AMI name registered-ami is already in use by AMI ami-existing01: "+awserrors.ErrorInvalidAMINameDuplicate)
 }
 
 func TestRegisterImage_SnapshotNotFound(t *testing.T) {
@@ -2002,6 +2002,20 @@ func TestCopyImage_OrphanedSource_MissingSnapshot(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 }
 
+// The name check spans every account, so a collision with another account's
+// AMI must not reveal that AMI's ID.
+func TestRegisterImage_DuplicateNameOfAnotherAccountsAMI(t *testing.T) {
+	svc, store := setupTestImageService(t)
+
+	createTestAMIConfigWithOwner(t, store, "ami-foreign01", "registered-ami", "999999999999")
+	putTestSnapshotConfig(t, store, "snap-dup01", 8, testAccountID)
+
+	_, err := svc.RegisterImage(context.Background(), validRegisterImageServiceInput("snap-dup01"), testAccountID)
+	code, message, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorInvalidAMINameDuplicate, code)
+	assert.NotContains(t, message, "ami-foreign01")
+}
+
 func TestCopyImage_OrphanedSource_NoSnapshotID(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
@@ -2021,7 +2035,7 @@ func TestCopyImage_DuplicateName(t *testing.T) {
 
 	_, err := svc.CopyImage(context.Background(), validCopyImageServiceInput("ami-dup-src", "already-taken"), testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidAMINameDuplicate, err.Error())
+	assert.EqualError(t, err, "AMI name already-taken is already in use by AMI ami-collide: "+awserrors.ErrorInvalidAMINameDuplicate)
 }
 
 func TestCopyImage_CopyImageTagsInheritsSourceTags(t *testing.T) {
@@ -2236,6 +2250,27 @@ func TestDescribeImageAttribute_BlockDeviceMapping(t *testing.T) {
 	require.NotNil(t, bdm.Ebs.VolumeSize)
 	assert.Equal(t, int64(20), *bdm.Ebs.VolumeSize)
 	assert.Nil(t, out.Description)
+}
+
+// A requested blockDeviceMapping on an image with no EBS root still renders
+// the list, since only unrequested attribute lists are omitted on the wire.
+func TestDescribeImageAttribute_BlockDeviceMappingInstanceStore(t *testing.T) {
+	svc, store := setupTestImageService(t)
+
+	createTestAMIConfigRich(t, store, ebsmetadata.AMI{
+		ImageID:         "ami-bdm02",
+		Name:            "bdm-is-ami",
+		RootDeviceType:  "instance-store",
+		ImageOwnerAlias: testAccountID,
+	})
+
+	out, err := svc.DescribeImageAttribute(context.Background(), &ec2.DescribeImageAttributeInput{
+		ImageId:   aws.String("ami-bdm02"),
+		Attribute: aws.String("blockDeviceMapping"),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.BlockDeviceMappings)
+	assert.Empty(t, out.BlockDeviceMappings)
 }
 
 func TestDescribeImageAttribute_MissingParameters(t *testing.T) {

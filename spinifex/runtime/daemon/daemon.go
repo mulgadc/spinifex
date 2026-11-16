@@ -2224,7 +2224,7 @@ func (d *Daemon) startCluster() error {
 	// Initialize EIP service if external IPAM is available
 	if d.externalIPAM != nil && d.vpcService != nil {
 		eipSvc, eipErr := initServiceWithRetry("EIP service", func() (*ec2eip.EIPServiceImpl, error) {
-			return ec2eip.NewEIPServiceImpl(d.ctx, d.natsConn, d.externalIPAM, d.vpcService)
+			return ec2eip.NewEIPServiceImpl(d.ctx, d.natsConn, d.externalIPAM, d.vpcService, d.config.Region)
 		})
 		if eipErr != nil {
 			return fmt.Errorf("failed to initialize EIP service: %w", eipErr)
@@ -2688,8 +2688,8 @@ func (d *Daemon) startCluster() error {
 }
 
 // ebsProviderRequestTimeout bounds the ebs.provider.v1.* subjects that answer
-// from state already held. The provider raises it for the subjects that move
-// data, so this is a floor rather than the budget every call gets.
+// from state already held. The provider raises it for publish and the subjects
+// that move data, so this is a floor rather than the budget every call gets.
 const ebsProviderRequestTimeout = 30 * time.Second
 
 // ebsProviderProbeTimeout bounds the startup reachability check. Short because

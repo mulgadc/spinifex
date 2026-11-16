@@ -302,7 +302,7 @@ NODE_SCRIPTS := scripts/setup.sh scripts/setup-ovn.sh scripts/install-node.sh sc
 # suite rather than the first, and -Otarget keeps each suite's output together.
 SHELL_SUITES := $(addprefix shell-suite/,$(sort $(shell find build/scripts -name '*_test.sh'; \
 	find scripts -maxdepth 1 -name '*_test.sh'; find scripts/lib scripts/appliance -name '*_test.sh'; \
-	find scripts/terraform/latitude-spx .github/scripts -maxdepth 1 -name '*_test.sh')))
+	find scripts/terraform/latitude-spx scripts/terraform/oci-spx .github/scripts -maxdepth 1 -name '*_test.sh')))
 .PHONY: $(SHELL_SUITES)
 $(SHELL_SUITES): shell-suite/%:
 	@t=$*; log=$$(mktemp); trap 'rm -f "$$log"' EXIT; $(_RUNSH)
@@ -313,7 +313,9 @@ test-build-scripts:
 	$(_Q)shellcheck -S warning .github/scripts/hypervisor-disk-preflight.sh \
 		.github/scripts/wait-for-memory.sh \
 		.github/scripts/go-build-cache.sh \
-		.github/scripts/e2e-select.sh
+		.github/scripts/e2e-select.sh \
+		.github/scripts/e2e-shard.sh \
+		.github/scripts/hv-lock.sh
 	@$(_HDR) "\n....Running shellcheck over build/scripts/**/*.sh + the node scripts...."
 	$(_Q)shellcheck -S warning $$(find build/scripts -name '*.sh' | sort) $(NODE_SCRIPTS)
 	$(_Q)shellcheck -S warning -x scripts/build-oracle-appliance.sh $$(find scripts/appliance -name '*.sh' | sort)

@@ -322,7 +322,7 @@ func renderVisibleImage(amiMeta ebsmetadata.AMI, input *ec2.DescribeImagesInput,
 	image := &ec2.Image{
 		ImageId:            aws.String(amiMeta.ImageID),
 		Name:               aws.String(amiMeta.Name),
-		Description:        aws.String(amiMeta.Description),
+		Description:        nonEmptyString(amiMeta.Description),
 		Architecture:       aws.String(amiMeta.Architecture),
 		PlatformDetails:    aws.String(amiMeta.PlatformDetails),
 		Platform:           ec2platform.PlatformFromDetails(amiMeta.PlatformDetails),
@@ -330,19 +330,26 @@ func renderVisibleImage(amiMeta ebsmetadata.AMI, input *ec2.DescribeImagesInput,
 		CreationDate:       aws.String(amiMeta.CreationDate.UTC().Format("2006-01-02T15:04:05.000Z")),
 		RootDeviceType:     aws.String(amiMeta.RootDeviceType),
 		VirtualizationType: aws.String(amiMeta.Virtualization),
-		ImageOwnerAlias:    aws.String(amiMeta.ImageOwnerAlias),
 		OwnerId:            aws.String(ownerID),
 		Public:             aws.Bool(false),
 		State:              aws.String(amiImageState(amiMeta.State)),
 		ImageType:          aws.String("machine"),
 		Hypervisor:         aws.String("xen"),
+		SriovNetSupport:    aws.String("simple"),
+		SourceInstanceId:   nonEmptyString(amiMeta.SourceInstanceID),
+		ImdsSupport:        nonEmptyString(amiMeta.ImdsSupport),
 	}
 
 	// A system image stands where AWS's public, Amazon-owned images do. Only the
 	// rendered values change: the stored alias still identifies it as system.
+	// AWS gives a customer's own image no alias, so the stored account ID stays unrendered.
 	if isSystemAMI {
 		image.Public = aws.Bool(true)
 		image.ImageOwnerAlias = aws.String("amazon")
+		image.ImageLocation = aws.String("amazon/" + amiMeta.Name)
+	} else {
+		image.ImageLocation = aws.String(ownerID + "/" + amiMeta.Name)
+		image.DeregistrationProtection = aws.String("disabled")
 	}
 
 	// RegisterImage takes BootMode as an optional input, so an AMI can
@@ -359,6 +366,11 @@ func renderVisibleImage(amiMeta ebsmetadata.AMI, input *ec2.DescribeImagesInput,
 	if bdms := synthesizeRootBlockDeviceMapping(amiMeta, encryptedAtRest); bdms != nil {
 		image.RootDeviceName = aws.String("/dev/sda1")
 		image.BlockDeviceMappings = bdms
+		// A CreateImage image records its root volume's performance.
+		if amiMeta.RootIOPS > 0 {
+			bdms[0].Ebs.Iops = aws.Int64(int64(amiMeta.RootIOPS))
+			bdms[0].Ebs.Throughput = aws.Int64(int64(amiMeta.RootThroughput))
+		}
 	}
 
 	image.Tags = awstags.MapToEC2(amiMeta.Tags)
@@ -459,11 +471,11 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 	// Check for duplicate AMI name before doing any expensive work
 	name := aws.StringValue(input.Name)
 	if name != "" {
-		if exists, err := s.amiNameExists(context.Background(), name); err != nil {
+		if existing, exists, err := s.amiNameExists(context.Background(), name); err != nil {
 			slog.Error("CreateImageFromInstance: failed to check AMI name uniqueness", "name", name, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		} else if exists {
-			return nil, errors.New(awserrors.ErrorInvalidAMINameDuplicate)
+			return nil, duplicateAMINameError(name, existing, accountID)
 		}
 	}
 
@@ -528,6 +540,11 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		RootDeviceType:  ec2.DeviceTypeEbs,
 		ImageOwnerAlias: accountID,
 		BootMode:        sourceAMI.BootMode,
+		ImdsSupport:     sourceAMI.ImdsSupport,
+		// The instance ID is validated non-nil above.
+		SourceInstanceID: *input.InstanceId,
+		RootIOPS:         volMeta.IOPS,
+		RootThroughput:   volMeta.Throughput,
 		// Every instance reports ENA support, and AWS takes the image's from the instance.
 		EnaSupport:   aws.Bool(true),
 		Distro:       sourceAMI.Distro,
@@ -587,17 +604,26 @@ func (s *ImageServiceImpl) getVolumeMetadata(ctx context.Context, accountID, vol
 // amiNameExists checks if any existing AMI already uses the given name. It
 // lists strictly: an AMI this cannot read is a name it cannot rule out, and
 // answering false would let a duplicate through and mask the corruption.
-func (s *ImageServiceImpl) amiNameExists(ctx context.Context, name string) (bool, error) {
+func (s *ImageServiceImpl) amiNameExists(ctx context.Context, name string) (ebsmetadata.AMI, bool, error) {
 	amis, err := s.metadata.ListAMIsStrict(ctx)
 	if err != nil {
-		return false, fmt.Errorf("amiNameExists: failed to list AMIs: %w", err)
+		return ebsmetadata.AMI{}, false, fmt.Errorf("amiNameExists: failed to list AMIs: %w", err)
 	}
 	for _, ami := range amis {
 		if ami.Name == name {
-			return true, nil
+			return ami, true, nil
 		}
 	}
-	return false, nil
+	return ebsmetadata.AMI{}, false, nil
+}
+
+// duplicateAMINameError refuses name, which existing already uses. It names the
+// AMI only when the caller owns it, because the name check spans every account.
+func duplicateAMINameError(name string, existing ebsmetadata.AMI, accountID string) error {
+	if existing.ImageOwnerAlias != accountID {
+		return errors.New(awserrors.ErrorInvalidAMINameDuplicate)
+	}
+	return awserrors.Errorf(awserrors.ErrorInvalidAMINameDuplicate, "AMI name %s is already in use by AMI %s", name, existing.ImageID)
 }
 
 // GetAMIConfig reads an AMI's control-plane document. Errors come from the
@@ -860,11 +886,11 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 		return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 	}
 
-	if exists, err := s.amiNameExists(ctx, name); err != nil {
+	if existing, exists, err := s.amiNameExists(ctx, name); err != nil {
 		slog.ErrorContext(ctx, "CopyImage: failed to check AMI name uniqueness", "name", name, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	} else if exists {
-		return nil, errors.New(awserrors.ErrorInvalidAMINameDuplicate)
+		return nil, duplicateAMINameError(name, existing, accountID)
 	}
 
 	newSnapshotID := awsidentifiers.GenerateResourceID("snap")
@@ -1008,6 +1034,9 @@ func (s *ImageServiceImpl) DescribeImageAttribute(ctx context.Context, input *ec
 		output.LastLaunchedTime = &ec2.AttributeValue{}
 	case ec2.ImageAttributeNameBlockDeviceMapping:
 		output.BlockDeviceMappings = synthesizeRootBlockDeviceMapping(meta, s.snapshotEncrypted(ctx, meta, s.clusterEncryptionEnabled()))
+		if output.BlockDeviceMappings == nil {
+			output.BlockDeviceMappings = []*ec2.BlockDeviceMapping{}
+		}
 	default:
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -1158,11 +1187,11 @@ func (s *ImageServiceImpl) RegisterImage(ctx context.Context, input *ec2.Registe
 		volumeSizeGiB = requested
 	}
 
-	if exists, err := s.amiNameExists(ctx, name); err != nil {
+	if existing, exists, err := s.amiNameExists(ctx, name); err != nil {
 		slog.ErrorContext(ctx, "RegisterImage: failed to check AMI name uniqueness", "name", name, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	} else if exists {
-		return nil, errors.New(awserrors.ErrorInvalidAMINameDuplicate)
+		return nil, duplicateAMINameError(name, existing, accountID)
 	}
 
 	architecture := "x86_64"

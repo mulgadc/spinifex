@@ -782,7 +782,6 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 	launchCount = allocatedCount
 
 	var instances []*vm.VM
-	var allEC2Instances []*ec2.Instance
 	var lastRunErr error
 	// Whether this call created the instance's ENI, keyed by instance ID. An
 	// abandoned batch deletes the ones it made and only detaches the rest.
@@ -805,6 +804,13 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 		// Stamped at launch so DescribeInstances keeps reporting the AMI's platform
 		// even if the image is later deregistered.
 		ec2Instance.Platform = ec2platform.PlatformFromDetails(amiMeta.PlatformDetails)
+		if amiMeta.PlatformDetails != "" {
+			ec2Instance.PlatformDetails = aws.String(amiMeta.PlatformDetails)
+		}
+		if op := ec2platform.UsageOperationFromDetails(amiMeta.PlatformDetails); op != nil {
+			ec2Instance.UsageOperation = op
+			ec2Instance.UsageOperationUpdateTime = ec2Instance.LaunchTime
+		}
 
 		// RunInstance has no image in hand, so the platform-derived IMDS default
 		// lands here, where the AMI is resolved.
@@ -868,9 +874,8 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 				}
 				continue
 			}
-			ec2Instance.SetAmiLaunchIndex(int64(len(allEC2Instances)))
+			ec2Instance.SetAmiLaunchIndex(int64(len(instances)))
 			instances = append(instances, instance)
-			allEC2Instances = append(allEC2Instances, ec2Instance)
 			continue
 		}
 
@@ -1006,9 +1011,8 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 			}
 		}
 
-		ec2Instance.SetAmiLaunchIndex(int64(len(allEC2Instances)))
+		ec2Instance.SetAmiLaunchIndex(int64(len(instances)))
 		instances = append(instances, instance)
-		allEC2Instances = append(allEC2Instances, ec2Instance)
 	}
 
 	if len(instances) < minCount {
@@ -1035,7 +1039,7 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 	reservation := &ec2.Reservation{}
 	reservation.SetReservationId(awsidentifiers.GenerateResourceID("r"))
 	reservation.SetOwnerId(accountID)
-	reservation.Instances = allEC2Instances
+	reservation.Instances = make([]*ec2.Instance, 0, len(instances))
 
 	for _, instance := range instances {
 		instance.Reservation = reservation
@@ -1046,6 +1050,21 @@ func (s *InstanceServiceImpl) PrepareRunInstances(ctx context.Context, input *ec
 		if input.Placement != nil && input.Placement.GroupName != nil && *input.Placement.GroupName != "" {
 			instance.PlacementGroupName = *input.Placement.GroupName
 		}
+
+		// The response goes through the projection DescribeInstances uses, so the
+		// two cannot report a different instance. StateReason is response-only:
+		// AWS drops it once the instance leaves pending.
+		projected, _ := ProjectInstance(instance, InstanceProjection{
+			Region:                s.config.Region,
+			DNSBaseDomain:         s.dnsBaseDomain,
+			DNSInternalDomain:     s.dnsInternalDomain,
+			AZ:                    s.config.AZ,
+			IncludeRuntimeNetwork: true,
+			FallbackStateCode:     0,
+			FallbackStateName:     "pending",
+		})
+		projected.StateReason = &ec2.StateReason{Code: aws.String("pending"), Message: aws.String("pending")}
+		reservation.Instances = append(reservation.Instances, projected)
 	}
 
 	return reservation, instances, instanceType, nil
@@ -1295,6 +1314,13 @@ func (s *InstanceServiceImpl) StartInstance(ctx context.Context, instance *vm.VM
 	return nil
 }
 
+// terminationProtectedError is AWS's refusal to terminate an instance whose
+// disableApiTermination attribute is set.
+func terminationProtectedError(instanceID string) error {
+	return awserrors.Errorf(awserrors.ErrorOperationNotPermitted,
+		"The instance '%s' may not be terminated. Modify its 'disableApiTermination' instance attribute and try again.", instanceID)
+}
+
 // StopOrTerminateInstance handles an ec2.cmd stop or terminate. Validates the
 // transition synchronously, then dispatches Stop/Terminate in a goroutine.
 func (s *InstanceServiceImpl) StopOrTerminateInstance(ctx context.Context, instance *vm.VM, command ec2v1.EC2InstanceCommand) error {
@@ -1362,7 +1388,7 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(ctx context.Context, insta
 	if protected {
 		slog.WarnContext(ctx, "StopOrTerminateInstance: instance has termination protection",
 			"instanceId", instance.ID)
-		return errors.New(awserrors.ErrorOperationNotPermitted)
+		return terminationProtectedError(instance.ID)
 	}
 	if raced {
 		// Idempotent: a concurrent terminate is already in progress.
@@ -1872,6 +1898,12 @@ func (s *InstanceServiceImpl) createRootVolumeViaProvider(ctx context.Context, s
 	slog.InfoContext(ctx, "Creating root volume from AMI snapshot via EBS provider",
 		"imageId", spec.amiID, "volumeId", spec.volumeID, "snapshotId", amiConfig.SnapshotID, "sourceVolumeId", sourceVolumeID)
 
+	params, err := ebsprovider.NewVolumeParameters(ebspolicy.VolumeTypeGP3)
+	if err != nil {
+		slog.ErrorContext(ctx, "Encode root volume provider parameters failed", "volumeId", spec.volumeID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+
 	created, err := s.ebsProvider.CreateVolume(ctx, ebsprovider.CreateVolumeRequest{
 		Versioned:              ebsprovider.NewVersioned(),
 		VolumeID:               spec.volumeID,
@@ -1879,6 +1911,7 @@ func (s *InstanceServiceImpl) createRootVolumeViaProvider(ctx context.Context, s
 		AvailabilityZone:       s.config.AZ,
 		SourceSnapshotID:       amiConfig.SnapshotID,
 		SourceSnapshotVolumeID: sourceVolumeID,
+		Parameters:             params,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "Provider root volume creation failed",
@@ -2947,7 +2980,7 @@ func (s *InstanceServiceImpl) TerminateStoppedInstance(ctx context.Context, inpu
 	if instance.IsTerminationProtected() {
 		slog.WarnContext(ctx, "TerminateStoppedInstance: instance has termination protection",
 			"instanceId", input.InstanceID)
-		return nil, errors.New(awserrors.ErrorOperationNotPermitted)
+		return nil, terminationProtectedError(input.InstanceID)
 	}
 
 	s.deleteInstanceVolumes(ctx, instance, input.InstanceID)
@@ -3827,6 +3860,9 @@ func (s *InstanceServiceImpl) AttachVolumeToStopped(ctx context.Context, input *
 	}
 	if meta.TenantID != accountID {
 		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+	}
+	if meta.State == "in-use" {
+		return nil, awserrors.Errorf(awserrors.ErrorVolumeInUse, "%s is already attached to an instance", volumeID)
 	}
 	if meta.State != "available" {
 		return nil, errors.New(awserrors.ErrorVolumeInUse)

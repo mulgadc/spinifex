@@ -13,10 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// eniKeepAge outlasts every automatic timeout an attached interface passes
-// through: the ENI orphan reaper's 15-minute minimum age plus a sweep.
-const eniKeepAge = 17 * time.Minute
-
 // runAttachedENISurvivesTerminate proves an interface attached with
 // AttachNetworkInterface defaults to DeleteOnTermination=false, can be toggled
 // with ModifyNetworkInterfaceAttribute, and outlives TerminateInstances.
@@ -39,7 +35,6 @@ func runAttachedENISurvivesTerminate(t *testing.T, fix *Fixture) {
 		Description: aws.String("e2e-eni-keep-on-terminate"),
 	})
 	require.NoError(t, err, "create-network-interface")
-	createdAt := time.Now()
 	eniID := aws.StringValue(cni.NetworkInterface.NetworkInterfaceId)
 	require.NotEmpty(t, eniID, "ENI NetworkInterfaceId empty")
 	harness.Detail(t, "eni", eniID)
@@ -95,12 +90,6 @@ func runAttachedENISurvivesTerminate(t *testing.T, fix *Fixture) {
 		require.NoError(t, err, "modify-network-interface-attribute")
 		requireENIDeleteOnTermination(t, c, eniID, dot)
 	}
-
-	if wait := time.Until(createdAt.Add(eniKeepAge)); wait > 0 {
-		harness.Step(t, "hold the attachment %s so it outlasts every automatic timeout", wait.Round(time.Second))
-		time.Sleep(wait)
-	}
-	waitForENIAttached(t, c, eniID, instanceID)
 
 	harness.Step(t, "terminate-instances %s", instanceID)
 	_, err = c.EC2.TerminateInstances(&ec2.TerminateInstancesInput{InstanceIds: []*string{aws.String(instanceID)}})

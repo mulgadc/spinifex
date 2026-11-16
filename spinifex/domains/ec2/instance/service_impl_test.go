@@ -107,6 +107,38 @@ func TestRunInstance_ArchitecturePopulated(t *testing.T) {
 	}
 }
 
+// PlatformDetails and the billing code are stamped from the AMI at launch, as
+// AWS reports them on the instance, with the code's update time at launch.
+func TestPrepareRunInstances_StampsPlatformDetailsAndUsageOperation(t *testing.T) {
+	types, _ := defaultPrepareInstanceTypes()
+	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
+		instanceTypes: types,
+		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
+			"ami-1": {ImageOwnerAlias: "acc", PlatformDetails: "Linux/UNIX"},
+		}},
+		resourceMgr: &fakeResourceCapacityProvider{
+			instanceTypes: types,
+			canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
+		},
+	}
+
+	reservation, _, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, "acc", "")
+	require.NoError(t, err)
+	require.Len(t, reservation.Instances, 1)
+
+	got := reservation.Instances[0]
+	assert.Equal(t, "Linux/UNIX", aws.StringValue(got.PlatformDetails))
+	assert.Equal(t, "RunInstances", aws.StringValue(got.UsageOperation))
+	require.NotNil(t, got.UsageOperationUpdateTime)
+	assert.Equal(t, aws.TimeValue(got.LaunchTime), aws.TimeValue(got.UsageOperationUpdateTime))
+}
+
 func TestRunInstance_RootDeviceFieldsPopulated(t *testing.T) {
 	svc := &InstanceServiceImpl{
 		instanceTypes: map[string]*ec2.InstanceTypeInfo{"t3.micro": {InstanceType: aws.String("t3.micro")}},
@@ -1935,7 +1967,7 @@ func TestTerminateStoppedInstance_TerminationProtected(t *testing.T) {
 
 	_, err := svc.TerminateStoppedInstance(context.Background(), &TerminateStoppedInstanceInput{InstanceID: id}, "acc")
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorOperationNotPermitted, err.Error())
+	assert.EqualError(t, err, "The instance 'i-prot' may not be terminated. Modify its 'disableApiTermination' instance attribute and try again.: "+awserrors.ErrorOperationNotPermitted)
 
 	assert.Empty(t, vd.calls, "volumes must not be deleted when termination protected")
 	assert.Empty(t, store.WroteTerminated, "must not write to terminated bucket when protected")
@@ -3276,6 +3308,7 @@ func TestPrepareRunInstances_ElasticInferenceAcceleratorIsNotAGPUOverride(t *tes
 		canAllocFn:    func(_ *ec2.InstanceTypeInfo, count int) int { return count },
 	}
 	svc := &InstanceServiceImpl{
+		config:        &config.Config{},
 		instanceTypes: types,
 		amiLoader: &fakeAMILoader{byID: map[string]ebsmetadata.AMI{
 			"ami-1": {ImageOwnerAlias: "acc"},
@@ -3632,7 +3665,8 @@ func TestStopOrTerminateInstance_TerminationProtection(t *testing.T) {
 		attrs   ec2v1.EC2CommandAttributes
 		wantErr string
 	}{
-		{name: "terminate blocked", attrs: ec2v1.EC2CommandAttributes{TerminateInstance: true}, wantErr: awserrors.ErrorOperationNotPermitted},
+		{name: "terminate blocked", attrs: ec2v1.EC2CommandAttributes{TerminateInstance: true},
+			wantErr: "The instance 'i-prot' may not be terminated. Modify its 'disableApiTermination' instance attribute and try again.: " + awserrors.ErrorOperationNotPermitted},
 		{name: "stop allowed", attrs: ec2v1.EC2CommandAttributes{StopInstance: true}, wantErr: ""},
 	}
 	for _, tc := range tests {
@@ -5398,4 +5432,52 @@ func TestUnnamedBlockDeviceMapping(t *testing.T) {
 	assert.False(t, UnnamedBlockDeviceMapping([]*ec2.BlockDeviceMapping{root, ephemeral}))
 	assert.True(t, UnnamedBlockDeviceMapping([]*ec2.BlockDeviceMapping{unnamed}))
 	assert.True(t, UnnamedBlockDeviceMapping([]*ec2.BlockDeviceMapping{root, emptyName}))
+}
+
+// The RunInstances response carries the members AWS's does for a fresh launch,
+// and each instance is the shape DescribeInstances reports for it.
+func TestPrepareRunInstances_ResponseIsProjectedInstance(t *testing.T) {
+	eni := &fakeENICreator{
+		createOut: &ec2.CreateNetworkInterfaceOutput{
+			NetworkInterface: &ec2.NetworkInterface{
+				NetworkInterfaceId: aws.String("eni-1"),
+				MacAddress:         aws.String("aa:bb:cc:dd:ee:ff"),
+				PrivateIpAddress:   aws.String("10.0.0.10"),
+				VpcId:              aws.String("vpc-1"),
+			},
+		},
+	}
+	svc, _ := prepareSvcWithENI(t, eni, nil)
+	const owner = "123456789012"
+
+	reservation, instances, _, err := svc.PrepareRunInstances(context.Background(), &ec2.RunInstancesInput{
+		InstanceType: aws.String("t3.micro"),
+		ImageId:      aws.String("ami-1"),
+		SubnetId:     aws.String("subnet-1"),
+		MinCount:     aws.Int64(1),
+		MaxCount:     aws.Int64(1),
+	}, owner, "")
+	require.NoError(t, err)
+	assert.Equal(t, owner, aws.StringValue(reservation.OwnerId))
+	require.Len(t, reservation.Instances, 1)
+	inst := reservation.Instances[0]
+
+	assert.Equal(t, &ec2.InstanceState{Code: aws.Int64(0), Name: aws.String("pending")}, inst.State)
+	assert.Equal(t, &ec2.StateReason{Code: aws.String("pending"), Message: aws.String("pending")}, inst.StateReason)
+	require.NotNil(t, inst.Placement)
+	assert.Equal(t, "us-east-1a", aws.StringValue(inst.Placement.AvailabilityZone))
+	assert.Equal(t, "ip-10-0-0-10.us-east-1.compute.internal", aws.StringValue(inst.PrivateDnsName))
+	assert.True(t, aws.BoolValue(inst.SourceDestCheck))
+	assert.Equal(t, &ec2.Monitoring{State: aws.String("disabled")}, inst.Monitoring)
+	assert.Equal(t, &ec2.EnclaveOptions{Enabled: aws.Bool(false)}, inst.EnclaveOptions)
+	assert.Nil(t, instances[0].Instance.StateReason, "the stored record must not keep the launch-only reason")
+
+	svc.vmMgr = mgrWith(map[string]*vm.VM{instances[0].ID: instances[0]})
+	out, err := svc.DescribeInstances(context.Background(), &ec2.DescribeInstancesInput{}, owner)
+	require.NoError(t, err)
+	require.Len(t, out.Reservations, 1)
+	require.Len(t, out.Reservations[0].Instances, 1)
+	described := *out.Reservations[0].Instances[0]
+	described.StateReason = inst.StateReason
+	assert.Equal(t, inst, &described)
 }

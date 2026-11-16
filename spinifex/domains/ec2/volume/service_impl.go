@@ -294,6 +294,12 @@ func (s *VolumeServiceImpl) createVolume(ctx context.Context, input *ec2.CreateV
 		return nil, err
 	}
 
+	params, err := ebsprovider.NewVolumeParameters(volumeType)
+	if err != nil {
+		slog.ErrorContext(ctx, "CreateVolume: encode provider parameters failed", "volumeId", volumeID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
 	// SourceVolumeName must travel with the snapshot ID: a clone resolves its
 	// base blocks against the source volume's prefix, and the provider rejects
 	// a snapshot source without it.
@@ -304,6 +310,7 @@ func (s *VolumeServiceImpl) createVolume(ctx context.Context, input *ec2.CreateV
 		AvailabilityZone:       *input.AvailabilityZone,
 		SourceSnapshotID:       snapshotID,
 		SourceSnapshotVolumeID: sourceVolumeName,
+		Parameters:             params,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "CreateVolume: provider allocation failed", "volumeId", volumeID, "err", err)
@@ -927,6 +934,8 @@ func metadataVolumeToEC2(meta ebsmetadata.Volume) *ec2.Volume {
 		VolumeType: aws.String(volumeType), Encrypted: aws.Bool(meta.Encrypted), Tags: awstags.MapToEC2(meta.Tags),
 		// AWS reports SnapshotId as "" for a volume not made from a snapshot.
 		SnapshotId: aws.String(meta.SnapshotID), MultiAttachEnabled: aws.Bool(false),
+		// DescribeVolumes renders an unattached volume's attachmentSet empty.
+		Attachments: []*ec2.VolumeAttachment{},
 	}
 	if meta.IOPS > 0 {
 		volume.Iops = aws.Int64(int64(meta.IOPS))
@@ -1278,6 +1287,9 @@ func (s *VolumeServiceImpl) DeleteVolume(ctx context.Context, input *ec2.DeleteV
 	// exactly would strand it undeletable and block stack teardown.
 	if meta.AttachedInstance != "" || (meta.State != "available" && meta.State != "") {
 		slog.ErrorContext(ctx, "DeleteVolume: volume is in use", "volumeId", volumeID, "state", meta.State, "attachedInstance", meta.AttachedInstance)
+		if meta.AttachedInstance != "" {
+			return nil, awserrors.Errorf(awserrors.ErrorVolumeInUse, "Volume %s is currently attached to {%s}", volumeID, meta.AttachedInstance)
+		}
 		return nil, errors.New(awserrors.ErrorVolumeInUse)
 	}
 

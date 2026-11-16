@@ -806,10 +806,6 @@ func runServiceWithELB(t *testing.T, c *harness.AWSClient, env *harness.Env, fx 
 	probeALBHTTP(t, c, lbArn)
 }
 
-// serviceMinAge outlives the ECS heartbeat timeout and the 5m reconcile resync,
-// so the refused delete is checked against a settled service.
-const serviceMinAge = 6 * time.Minute
-
 // assertUnforcedDeleteKeepsServiceRunning pins ADR-0003:S7 for DeleteService: an
 // unforced delete of a service scaled above 0 is refused and stops no task.
 func assertUnforcedDeleteKeepsServiceRunning(t *testing.T, c *harness.AWSClient, fx *ecsFixture, svcName string) {
@@ -830,10 +826,6 @@ func assertUnforcedDeleteKeepsServiceRunning(t *testing.T, c *harness.AWSClient,
 		return aws.StringValueSlice(out.TaskArns)
 	}
 
-	if age := time.Since(aws.TimeValue(describe().CreatedAt)); age < serviceMinAge {
-		harness.Step(t, "ageing service %s past %s", svcName, serviceMinAge)
-		time.Sleep(serviceMinAge - age)
-	}
 	before := listTasks()
 	require.NotEmpty(t, before, "service must have a task before the delete")
 

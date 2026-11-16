@@ -1824,3 +1824,53 @@ func TestCreateRole_TrustPolicy_AssumeRoleStringLikeRejected(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorIAMMalformedPolicyDocument, code)
 	assert.Contains(t, message, "StringLike")
 }
+
+func TestTrustPolicy_DropsEmptyPrincipalLists(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	sent := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":[],"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"aws:SourceAccount":123456789012}}}]}`
+	want := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole","Condition":{"StringEquals":{"aws:SourceAccount":123456789012}}}]}`
+
+	created, err := svc.CreateRole(testAccountID, &iam.CreateRoleInput{
+		RoleName:                 aws.String("empty-principal"),
+		AssumeRolePolicyDocument: aws.String(sent),
+	})
+	require.NoError(t, err)
+	assert.JSONEq(t, want, *created.Role.AssumeRolePolicyDocument)
+	assert.Contains(t, *created.Role.AssumeRolePolicyDocument, `:123456789012}`, "numbers keep their literal form")
+	got, err := svc.GetRole(testAccountID, &iam.GetRoleInput{RoleName: aws.String("empty-principal")})
+	require.NoError(t, err)
+	assert.JSONEq(t, want, *got.Role.AssumeRolePolicyDocument)
+
+	roleARN := "arn:aws:iam::" + testAccountID + ":role/other"
+	_, err = svc.UpdateAssumeRolePolicy(testAccountID, &iam.UpdateAssumeRolePolicyInput{
+		RoleName:       aws.String("empty-principal"),
+		PolicyDocument: aws.String(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"` + roleARN + `","Service":[]},"Action":"sts:AssumeRole"}]}`),
+	})
+	require.NoError(t, err)
+	got, err = svc.GetRole(testAccountID, &iam.GetRoleInput{RoleName: aws.String("empty-principal")})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"`+roleARN+`"},"Action":"sts:AssumeRole"}]}`, *got.Role.AssumeRolePolicyDocument)
+}
+
+// AWS answers an identity with nothing attached with an empty AttachedPolicies
+// element; a nil slice marshals to no element at all.
+func TestListAttachedPolicies_NoneAttachedIsEmptyNotNil(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	createTestRole(t, svc, "bare-role")
+	createTestUser(t, svc, "bare-user")
+	createTestGroup(t, svc, "bare-group")
+
+	roleOut, err := svc.ListAttachedRolePolicies(testAccountID, &iam.ListAttachedRolePoliciesInput{RoleName: aws.String("bare-role")})
+	require.NoError(t, err)
+	assert.Equal(t, []*iam.AttachedPolicy{}, roleOut.AttachedPolicies)
+
+	userOut, err := svc.ListAttachedUserPolicies(testAccountID, &iam.ListAttachedUserPoliciesInput{UserName: aws.String("bare-user")})
+	require.NoError(t, err)
+	assert.Equal(t, []*iam.AttachedPolicy{}, userOut.AttachedPolicies)
+
+	groupOut, err := svc.ListAttachedGroupPolicies(testAccountID, &iam.ListAttachedGroupPoliciesInput{GroupName: aws.String("bare-group")})
+	require.NoError(t, err)
+	assert.Equal(t, []*iam.AttachedPolicy{}, groupOut.AttachedPolicies)
+}

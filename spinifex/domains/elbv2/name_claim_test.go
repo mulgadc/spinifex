@@ -46,8 +46,9 @@ func TestCreateLoadBalancer_ConcurrentSameNameSingleOwner(t *testing.T) {
 			assert.Equal(t, rec.LoadBalancerArn, *outs[i].LoadBalancers[0].LoadBalancerArn, "every success names the one load balancer")
 			continue
 		}
-		code, _, _ := awserrors.ResolveErrorDetail(e)
+		code, msg, _ := awserrors.ResolveErrorDetail(e)
 		require.Equal(t, awserrors.ErrorELBv2DuplicateLoadBalancer, code, "unexpected create error: %v", e)
+		assert.Equal(t, "A load balancer with the same name 'race-lb' exists, but with different settings", msg)
 	}
 	assert.GreaterOrEqual(t, ok, 1, "one create owns the name")
 
@@ -74,6 +75,26 @@ func TestClaimLBName_PendingClaimBlocksSecondClaimer(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok2, "a pending claim within its TTL must not be stealable")
 	assert.True(t, dup2, "the second claimer must see the name as unavailable")
+}
+
+// A create whose name is claimed by a create still in flight, with no record
+// yet, is refused with the same message as a name held by a load balancer.
+func TestCreateLoadBalancer_PendingClaimRefusedWithAWSMessage(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+
+	ok, dup, err := svc.store.ClaimLBName(t.Context(), "inflight-lb", testAccountID, "lb-inflight")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.False(t, dup)
+
+	_, err = svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+		Name: aws.String("inflight-lb"),
+	}, testAccountID)
+	code, msg, found := awserrors.ResolveErrorDetail(err)
+	require.True(t, found)
+	assert.Equal(t, awserrors.ErrorELBv2DuplicateLoadBalancer, code)
+	assert.Equal(t, "A load balancer with the same name 'inflight-lb' exists, but with different settings", msg)
 }
 
 // A name claim whose owner resolves to no live record, past its TTL, is a

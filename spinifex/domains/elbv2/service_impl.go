@@ -1425,7 +1425,7 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 		if out, err := s.repeatCreateLoadBalancer(ctx, want, name, accountID); out != nil || err != nil {
 			return out, err
 		}
-		return nil, errors.New(awserrors.ErrorELBv2DuplicateLoadBalancer)
+		return nil, errDuplicateLoadBalancerName(name)
 	}
 	if !claimOK {
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -1622,7 +1622,12 @@ func (s *ELBv2ServiceImpl) repeatCreateLoadBalancer(ctx context.Context, want *L
 			LoadBalancers: []*elbv2.LoadBalancer{s.lbRecordToSDK(ctx, existing)},
 		}, nil
 	}
-	return nil, awserrors.Errorf(awserrors.ErrorELBv2DuplicateLoadBalancer,
+	return nil, errDuplicateLoadBalancerName(name)
+}
+
+// errDuplicateLoadBalancerName is AWS's refusal of a name the account already holds.
+func errDuplicateLoadBalancerName(name string) error {
+	return awserrors.Errorf(awserrors.ErrorELBv2DuplicateLoadBalancer,
 		"A load balancer with the same name '%s' exists, but with different settings", name)
 }
 

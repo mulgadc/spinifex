@@ -316,7 +316,7 @@ func renderVisibleImage(amiMeta ebsmetadata.AMI, input *ec2.DescribeImagesInput,
 	image := &ec2.Image{
 		ImageId:            aws.String(amiMeta.ImageID),
 		Name:               aws.String(amiMeta.Name),
-		Description:        aws.String(amiMeta.Description),
+		Description:        nonEmptyString(amiMeta.Description),
 		Architecture:       aws.String(amiMeta.Architecture),
 		PlatformDetails:    aws.String(amiMeta.PlatformDetails),
 		Platform:           ec2platform.PlatformFromDetails(amiMeta.PlatformDetails),
@@ -324,19 +324,26 @@ func renderVisibleImage(amiMeta ebsmetadata.AMI, input *ec2.DescribeImagesInput,
 		CreationDate:       aws.String(amiMeta.CreationDate.UTC().Format("2006-01-02T15:04:05.000Z")),
 		RootDeviceType:     aws.String(amiMeta.RootDeviceType),
 		VirtualizationType: aws.String(amiMeta.Virtualization),
-		ImageOwnerAlias:    aws.String(amiMeta.ImageOwnerAlias),
 		OwnerId:            aws.String(ownerID),
 		Public:             aws.Bool(false),
 		State:              aws.String(amiImageState(amiMeta.State)),
 		ImageType:          aws.String("machine"),
 		Hypervisor:         aws.String("xen"),
+		SriovNetSupport:    aws.String("simple"),
+		SourceInstanceId:   nonEmptyString(amiMeta.SourceInstanceID),
+		ImdsSupport:        nonEmptyString(amiMeta.ImdsSupport),
 	}
 
 	// A system image stands where AWS's public, Amazon-owned images do. Only the
 	// rendered values change: the stored alias still identifies it as system.
+	// AWS gives a customer's own image no alias, so the stored account ID stays unrendered.
 	if isSystemAMI {
 		image.Public = aws.Bool(true)
 		image.ImageOwnerAlias = aws.String("amazon")
+		image.ImageLocation = aws.String("amazon/" + amiMeta.Name)
+	} else {
+		image.ImageLocation = aws.String(ownerID + "/" + amiMeta.Name)
+		image.DeregistrationProtection = aws.String("disabled")
 	}
 
 	// RegisterImage takes BootMode as an optional input, so an AMI can
@@ -353,6 +360,11 @@ func renderVisibleImage(amiMeta ebsmetadata.AMI, input *ec2.DescribeImagesInput,
 	if bdms := synthesizeRootBlockDeviceMapping(amiMeta, encryptedAtRest); bdms != nil {
 		image.RootDeviceName = aws.String("/dev/sda1")
 		image.BlockDeviceMappings = bdms
+		// A CreateImage image records its root volume's performance.
+		if amiMeta.RootIOPS > 0 {
+			bdms[0].Ebs.Iops = aws.Int64(int64(amiMeta.RootIOPS))
+			bdms[0].Ebs.Throughput = aws.Int64(int64(amiMeta.RootThroughput))
+		}
 	}
 
 	image.Tags = awstags.MapToEC2(amiMeta.Tags)
@@ -522,6 +534,11 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		RootDeviceType:  ec2.DeviceTypeEbs,
 		ImageOwnerAlias: accountID,
 		BootMode:        sourceAMI.BootMode,
+		ImdsSupport:     sourceAMI.ImdsSupport,
+		// The instance ID is validated non-nil above.
+		SourceInstanceID: *input.InstanceId,
+		RootIOPS:         volMeta.IOPS,
+		RootThroughput:   volMeta.Throughput,
 		// Every instance reports ENA support, and AWS takes the image's from the instance.
 		EnaSupport:   aws.Bool(true),
 		Distro:       sourceAMI.Distro,

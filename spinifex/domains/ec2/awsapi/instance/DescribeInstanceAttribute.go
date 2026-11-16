@@ -73,6 +73,9 @@ func DescribeInstanceAttribute(ctx context.Context, input *ec2.DescribeInstanceA
 	// instead of treating a transient failure as a deleted instance.
 	for code, n := range sum.ErrorCodes {
 		if n > 0 && code != "" && code != awserrors.ErrorInvalidInstanceIDNotFound {
+			if code == sum.FirstClient4xx && sum.FirstClient4xxMessage != "" {
+				return nil, awserrors.Errorf(code, "%s", sum.FirstClient4xxMessage)
+			}
 			return nil, errors.New(code)
 		}
 	}

@@ -28,10 +28,10 @@ require (
 	github.com/klauspost/cpuid/v2 v2.4.2
 	github.com/miekg/dns v1.1.73
 	github.com/minio/highwayhash v1.0.4
-	github.com/mulgadc/bluebottle v1.24.0
-	github.com/mulgadc/northstar v1.24.0
-	github.com/mulgadc/predastore v1.24.0
-	github.com/mulgadc/viperblock v1.24.0
+	github.com/mulgadc/bluebottle v1.25.0
+	github.com/mulgadc/northstar v1.25.0
+	github.com/mulgadc/predastore v1.25.0
+	github.com/mulgadc/viperblock v1.25.0
 	github.com/nats-io/nats-server/v2 v2.15.3
 	github.com/nats-io/nats.go v1.55.0
 	github.com/nats-io/nkeys v0.4.17
@@ -178,7 +178,7 @@ require (
 	github.com/prometheus/client_model v0.6.3 // indirect
 	github.com/prometheus/common v0.71.0 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect
-	github.com/quic-go/quic-go v0.64.1 // indirect
+	github.com/quic-go/quic-go v0.65.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/sirupsen/logrus v1.10.2 // indirect

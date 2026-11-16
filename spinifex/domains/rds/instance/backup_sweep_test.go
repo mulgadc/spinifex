@@ -418,7 +418,7 @@ func TestModifyDBInstance_SweepsTheAutomatedBackupsWhenRetentionGoesToZero(t *te
 // volume for good, so teardown sweeps the set before releasing the volume. The
 // sweep scales with the backups stored, so the request leaves it to the
 // reconciler (ADR-0003:S8).
-func TestDeleteDBInstance_SweepsTheAutomatedBackupsInTheReconciler(t *testing.T) {
+func TestS8_DeleteDBInstanceLeavesTheAutomatedBackupSweepToTheReconciler(t *testing.T) {
 	t.Parallel()
 	h := newLifecycleHarness(t, false)
 	seedInstance(t, h.svc, availableRecord())

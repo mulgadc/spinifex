@@ -671,3 +671,27 @@ func TestFailTransition_KeepsAnAcceptedDelete(t *testing.T) {
 
 	assert.Equal(t, StatusDeleting, h.record(t).Status)
 }
+
+// A delete that handed off and then failed is retried with a final snapshot; a
+// reconciler pass inside the new handler's claim must not release the volume.
+func TestS7_RetriedDeleteKeepsTheVolumeUntilItsFinalSnapshot(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	rec := availableRecord()
+	rec.Status = StatusFailed
+	rec.TeardownHandedOff = true
+	seedInstance(t, h.svc, rec)
+	kv, err := h.svc.bucket(t.Context(), testAccountID)
+	require.NoError(t, err)
+	h.snaps.beforeCreate = func() {
+		_, err := testReconciler(t, h.svc, "node-a").reconcileInstance(t.Context(), kv, testAccountID, testDBID)
+		assert.NoError(t, err)
+	}
+
+	_, err = h.svc.DeleteDBInstance(t.Context(), &rds.DeleteDBInstanceInput{
+		DBInstanceIdentifier:      aws.String(testDBID),
+		FinalDBSnapshotIdentifier: aws.String("orders-db-final"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, h.volumes.deleted, "the volume must outlive the cut of its final snapshot")
+}

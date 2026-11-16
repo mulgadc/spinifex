@@ -145,6 +145,8 @@ func (k packageKind) rank() int {
 		return 4
 	case kindL5External:
 		return 5
+	case kindUnknown, kindCrossCutter, kindInvariants:
+		// Not layered: ranks -1 below.
 	}
 	return -1
 }

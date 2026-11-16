@@ -215,6 +215,8 @@ func (e *postgresEngine) ApplyParameters(ctx context.Context, params []rdsinstan
 		return e.restartOnRepairSetLocked(ctx)
 	case engineRecovering:
 		return nil, errors.Join(errors.New("the engine entered startup or recovery during the parameter apply"), restoreParameters())
+	case engineServing:
+		// A serving engine goes on to take the set.
 	}
 
 	// After the engine's own parser has passed the set and before the reload that

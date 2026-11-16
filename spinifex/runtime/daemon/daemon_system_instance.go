@@ -903,6 +903,8 @@ func (d *Daemon) WaitForSystemInstance(instanceID string, timeout time.Duration)
 			return nil
 		case vm.StateError, vm.StateShuttingDown, vm.StateTerminated:
 			return fmt.Errorf("instance %s in terminal state: %s", instanceID, status)
+		case vm.StateProvisioning, vm.StatePending, vm.StateStopping, vm.StateStopped:
+			// Not settled: keep polling until the timeout.
 		}
 
 		waitPollSleep(500 * time.Millisecond)

@@ -50,6 +50,8 @@ func (e ErrorEnvelope) Protocol() (p envelope.Protocol, ok bool) {
 		return envelope.ProtocolRESTJSON, true
 	case ErrorEnvelopeJSON10Query:
 		return envelope.ProtocolJSON10Query, true
+	case ErrorEnvelopeUnset, ErrorEnvelopeXML:
+		// Not a JSON envelope: ok is false below.
 	}
 	return envelope.ProtocolJSON11, false
 }
@@ -493,6 +495,8 @@ func (e *Entry) ThrottleError() (spec ErrorSpec, ok bool) {
 		}, true
 	case ErrorEnvelopeJSON10Query:
 		return ErrorSpec{Code: "RequestThrottled", Message: "Rate exceeded.", Status: http.StatusBadRequest}, true
+	case ErrorEnvelopeUnset, ErrorEnvelopeXML, ErrorEnvelopeJSON:
+		// These envelopes define no default throttle error.
 	}
 	return ErrorSpec{}, false
 }
@@ -513,6 +517,8 @@ func (e *Entry) InternalErrorCode() (code string, ok bool) {
 		return "ServiceException", true
 	case ErrorEnvelopeJSON10Query:
 		return "InternalFailure", true
+	case ErrorEnvelopeUnset, ErrorEnvelopeXML, ErrorEnvelopeJSON:
+		// These envelopes define no default internal error code.
 	}
 	return "", false
 }

@@ -579,6 +579,8 @@ func (m *Manager) startQEMU(instance *VM) (err error) {
 			nbdEndpoints = append(nbdEndpoints, struct{ name, uri string }{req.Name, req.NBDURI})
 		case volumeExportBlock:
 			blockDevices = append(blockDevices, struct{ name, path string }{req.Name, req.BlockDevice})
+		case volumeExportInvalid:
+			// Nothing to probe; buildDrives rejects it.
 		}
 	}
 	for _, ep := range nbdEndpoints {

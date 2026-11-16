@@ -148,6 +148,8 @@ func waitForSnapshot(ctx context.Context, provider ebsprovider.EBSProvider, snap
 			return nil
 		case ebsprovider.SnapshotStateError:
 			return fmt.Errorf("snapshot %s ended in error", snapshotID)
+		case ebsprovider.SnapshotStatePending:
+			// Not finished: poll again.
 		}
 	}
 }

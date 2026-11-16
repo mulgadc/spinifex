@@ -187,6 +187,8 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 		case StateDraining:
 			return nil, awserrors.Errorf(awserrors.ErrorModelNotReadyException,
 				"bedrock: endpoint for %s is draining", in.ModelID)
+		case StateAbsent:
+			// An absent record is launched afresh below.
 		}
 	}
 

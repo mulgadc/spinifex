@@ -177,6 +177,8 @@ func (f *Filter) compileText(startParam int) (string, []any, int, error) {
 		sql = fmt.Sprintf(`starts_with(metadata->>'%s', $%d)`, key, startParam)
 	case FilterStringContains:
 		sql = fmt.Sprintf(`position($%d IN metadata->>'%s') > 0`, startParam, key)
+	default:
+		// Compile routes only the text operators here.
 	}
 	return sql, []any{value}, startParam + 1, nil
 }
@@ -203,6 +205,8 @@ func (f *Filter) compileNumeric(startParam int) (string, []any, int, error) {
 		op = "<"
 	case FilterLessThanOrEqual:
 		op = "<="
+	default:
+		// Compile routes only the numeric operators here.
 	}
 	sql := fmt.Sprintf(`(metadata->>'%s')::numeric %s $%d`, key, op, startParam)
 	return sql, []any{value}, startParam + 1, nil
@@ -226,6 +230,8 @@ func (f *Filter) compileSet(startParam int) (string, []any, int, error) {
 		sql = fmt.Sprintf(`metadata->>'%s' = ANY($%d)`, key, startParam)
 	case FilterNotIn:
 		sql = fmt.Sprintf(`metadata->>'%s' != ALL($%d)`, key, startParam)
+	default:
+		// Compile routes only the set operators here.
 	}
 	return sql, []any{values}, startParam + 1, nil
 }

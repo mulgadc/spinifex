@@ -483,6 +483,8 @@ func instanceHasNoTap(rec *vm.InstanceRecord) bool {
 		return true
 	case vm.StateStopped:
 		return rec.Spec.DesiredState == vm.DesiredStopped
+	case vm.StateProvisioning, vm.StatePending, vm.StateRunning, vm.StateStopping, vm.StateShuttingDown, vm.StateError:
+		// Treated as having a tap, so the reconciler keeps their network state.
 	}
 	return false
 }

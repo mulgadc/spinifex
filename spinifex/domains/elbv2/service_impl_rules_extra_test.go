@@ -6,6 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -45,6 +46,41 @@ func TestCreateRule_WrongAccount(t *testing.T) {
 	}, "other-account")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ListenerNotFound")
+}
+
+func TestCreateRule_NLBListenerRejected(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	lb, err := svc.CreateLoadBalancer(context.Background(), &elbv2.CreateLoadBalancerInput{
+		Name: aws.String("cr-nlb"),
+		Type: aws.String("network"),
+	}, testAccountID)
+	require.NoError(t, err)
+	tg, err := svc.CreateTargetGroup(context.Background(), &elbv2.CreateTargetGroupInput{
+		Name:     aws.String("cr-nlb-tg"),
+		Protocol: aws.String(elbv2.ProtocolEnumTcp),
+		Port:     aws.Int64(5432),
+	}, testAccountID)
+	require.NoError(t, err)
+	lst, err := svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
+		LoadBalancerArn: lb.LoadBalancers[0].LoadBalancerArn,
+		Protocol:        aws.String(elbv2.ProtocolEnumTcp),
+		Port:            aws.Int64(5432),
+		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tg.TargetGroups[0].TargetGroupArn}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
+		ListenerArn: lst.Listeners[0].ListenerArn,
+		Priority:    aws.Int64(1),
+		Conditions:  []*elbv2.RuleCondition{{Field: aws.String("path-pattern"), Values: aws.StringSlice([]string{"/a"})}},
+		Actions:     []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tg.TargetGroups[0].TargetGroupArn}},
+	}, testAccountID)
+	assert.EqualError(t, err, "Rules are unsupported for non-dualstack network load balancer listeners: "+awserrors.ErrorValidationError)
+
+	rules, err := svc.store.ListRulesByListener(t.Context(), *lst.Listeners[0].ListenerArn)
+	require.NoError(t, err)
+	assert.Empty(t, rules)
 }
 
 func TestModifyRule_InputValidation(t *testing.T) {
@@ -97,6 +133,20 @@ func TestDeleteRule_InputValidation(t *testing.T) {
 	out, err := env.svc.DeleteRule(context.Background(), &elbv2.DeleteRuleInput{RuleArn: aws.String("arn:none")}, testAccountID)
 	require.NoError(t, err)
 	assert.NotNil(t, out)
+}
+
+func TestDeleteRule_DefaultRuleRefused(t *testing.T) {
+	t.Parallel()
+	env := newRuleTestEnv(t, "del-default")
+	ruleArn, err := defaultRuleArn(env.listenerArn)
+	require.NoError(t, err)
+
+	_, err = env.svc.DeleteRule(context.Background(), &elbv2.DeleteRuleInput{RuleArn: aws.String(ruleArn)}, testAccountID)
+	assert.EqualError(t, err, "Default rule '"+ruleArn+"' cannot be deleted: "+awserrors.ErrorOperationNotPermitted)
+
+	// Another account's default rule stays on the idempotent absent-rule path.
+	_, err = env.svc.DeleteRule(context.Background(), &elbv2.DeleteRuleInput{RuleArn: aws.String(ruleArn)}, "other-account")
+	require.NoError(t, err)
 }
 
 func TestDescribeRules_InputValidation(t *testing.T) {

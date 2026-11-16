@@ -114,7 +114,7 @@ func TestValidateCreateClusterInput_RejectsUnsupportedVersion(t *testing.T) {
 	in.Version = aws.String("1.29")
 	code, message, ok := awserrors.ResolveErrorDetail(validateCreateClusterInput(in, testAccountID))
 	require.True(t, ok)
-	assert.Equal(t, awserrors.ErrorInvalidParameter, code)
+	assert.Equal(t, awserrors.ErrorEKSInvalidParameter, code)
 	assert.Contains(t, message, "1.29")
 	assert.Contains(t, message, defaultK8sVersion)
 

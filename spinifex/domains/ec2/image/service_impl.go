@@ -1079,8 +1079,8 @@ func (s *ImageServiceImpl) applySnapshotEncryption(ctx context.Context, metas []
 }
 
 // synthesizeRootBlockDeviceMapping returns /dev/sda1 with size+snapshot from AMIMetadata,
-// or nil for non-EBS AMIs. encrypted reflects the cluster-level encryption posture
-// (master key configured); AMI metadata carries no per-image encryption flag.
+// or nil for non-EBS AMIs. encrypted is the caller's answer for the mapping,
+// normally the image snapshot's flag.
 func synthesizeRootBlockDeviceMapping(meta ebsmetadata.AMI, encrypted bool) []*ec2.BlockDeviceMapping {
 	if meta.RootDeviceType != "ebs" {
 		return nil

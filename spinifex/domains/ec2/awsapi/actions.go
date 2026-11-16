@@ -250,6 +250,9 @@ var ec2Actions = map[string]ec2Action{
 	"DescribeInstanceAttribute": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceAttributeInput, c *call, accountID string) (any, error) {
 		return ec2instanceapi.DescribeInstanceAttribute(ctx, input, c.NATS, c.ActiveNodes(ctx), accountID)
 	}),
+	"ResetInstanceAttribute": ec2Handler(func(ctx context.Context, input *ec2.ResetInstanceAttributeInput, c *call, accountID string) (any, error) {
+		return ec2instanceapi.ResetInstanceAttribute(ctx, input, c.NATS, accountID)
+	}),
 	"ModifyInstanceMetadataOptions": ec2Handler(func(ctx context.Context, input *ec2.ModifyInstanceMetadataOptionsInput, c *call, accountID string) (any, error) {
 		return ec2instanceapi.ModifyInstanceMetadataOptions(ctx, input, c.NATS, accountID)
 	}),

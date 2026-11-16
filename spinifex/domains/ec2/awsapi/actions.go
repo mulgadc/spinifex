@@ -347,6 +347,18 @@ var ec2Actions = map[string]ec2Action{
 			return defaultVPCID(ctx, c.NATS, accountID)
 		})
 	}),
+	"DescribeIdFormat": ec2Handler(func(ctx context.Context, input *ec2.DescribeIdFormatInput, c *call, accountID string) (any, error) {
+		return ec2accountapi.DescribeIdFormat(input)
+	}),
+	"DescribeIdentityIdFormat": ec2Handler(func(ctx context.Context, input *ec2.DescribeIdentityIdFormatInput, c *call, accountID string) (any, error) {
+		return ec2accountapi.DescribeIdentityIdFormat(input, accountID)
+	}),
+	"DescribeAggregateIdFormat": ec2Handler(func(ctx context.Context, input *ec2.DescribeAggregateIdFormatInput, c *call, accountID string) (any, error) {
+		return ec2accountapi.DescribeAggregateIdFormat(input)
+	}),
+	"DescribePrincipalIdFormat": ec2Handler(func(ctx context.Context, input *ec2.DescribePrincipalIdFormatInput, c *call, accountID string) (any, error) {
+		return ec2accountapi.DescribePrincipalIdFormat(input, accountID)
+	}),
 	"EnableEbsEncryptionByDefault": ec2Handler(func(ctx context.Context, input *ec2.EnableEbsEncryptionByDefaultInput, c *call, accountID string) (any, error) {
 		return ec2accountapi.EnableEbsEncryptionByDefault(ctx, input, c.NATS, accountID)
 	}),
@@ -645,6 +657,10 @@ var ec2LocalActions = map[string]bool{
 	"DescribeRegions":           true,
 	"DescribeAvailabilityZones": true,
 	"DescribeAccountAttributes": true,
+	"DescribeIdFormat":          true,
+	"DescribeIdentityIdFormat":  true,
+	"DescribeAggregateIdFormat": true,
+	"DescribePrincipalIdFormat": true,
 }
 
 // dryRunRequested reports whether a parsed EC2 input carries DryRun=true. Only

@@ -262,6 +262,10 @@ var ec2Scopes = map[string][]*resourceScope{
 	"EnableSerialConsoleAccess":     unscoped,
 	"DisableSerialConsoleAccess":    unscoped,
 	"GetSerialConsoleAccessStatus":  unscoped,
+	"DescribeIdFormat":              unscoped,
+	"DescribeIdentityIdFormat":      unscoped,
+	"DescribeAggregateIdFormat":     unscoped,
+	"DescribePrincipalIdFormat":     unscoped,
 
 	// Describes. "*" is fidelity, not a stub: EC2 describe actions do not
 	// support resource-level permissions in AWS either.

@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	toml "github.com/pelletier/go-toml/v2"
@@ -136,10 +135,10 @@ func readExistingEBS(tomlPath, node string) (*existingEBS, error) {
 	return &n.EBS, nil
 }
 
-// isOCIVM reports whether md is an OCI virtual machine; bare-metal shapes
-// stay on viperblockd until a bare-metal iSCSI run is proven.
-func isOCIVM(md oci.InstanceMetadata) bool {
-	return md.Shape != "" && !strings.HasPrefix(md.Shape, "BM.")
+// isOCIInstance reports whether md describes an OCI instance, virtual
+// machine or bare metal.
+func isOCIInstance(md oci.InstanceMetadata) bool {
+	return md.Shape != ""
 }
 
 // detect reads the OCI instance metadata within imdsDetectTimeout; ok is
@@ -170,10 +169,10 @@ func (r ebsResolver) resolveProvider(ctx context.Context, existing *existingEBS)
 	switch {
 	case !ok:
 		return nodeEBS{EBSConfig: formation.EBSConfig{Provider: config.EBSProviderViperblockd}, Source: ebsFromDetection, Detail: "no OCI instance metadata"}, nil
-	case !isOCIVM(md):
-		return nodeEBS{EBSConfig: formation.EBSConfig{Provider: config.EBSProviderViperblockd}, Source: ebsFromDetection, Detail: "OCI bare metal " + md.Shape}, nil
+	case !isOCIInstance(md):
+		return nodeEBS{EBSConfig: formation.EBSConfig{Provider: config.EBSProviderViperblockd}, Source: ebsFromDetection, Detail: "OCI instance metadata names no shape"}, nil
 	}
-	return nodeEBS{EBSConfig: formation.EBSConfig{Provider: config.EBSProviderOCIBSD}, Source: ebsFromDetection, Detail: "OCI virtual machine " + md.Shape}, &md
+	return nodeEBS{EBSConfig: formation.EBSConfig{Provider: config.EBSProviderOCIBSD}, Source: ebsFromDetection, Detail: "OCI instance " + md.Shape}, &md
 }
 
 // fillOCIBSD completes an ocibsd choice: the existing config's values win,
@@ -305,7 +304,7 @@ func generateClusterID() (string, error) {
 }
 
 // ocibsdStageDir is where setup.sh stages the tarball's ocibsd/ files on an
-// OCI virtual machine.
+// OCI instance.
 const ocibsdStageDir = "/usr/local/share/spinifex/ocibsd"
 
 // ocibsdFiles maps each staged file to where activation installs it.
@@ -363,7 +362,7 @@ func activateEBSProvider(ctx context.Context, e nodeEBS, a ocibsdActivation) err
 func installStaged(src, dst string) error {
 	data, err := os.ReadFile(src)
 	if err != nil {
-		return fmt.Errorf("activate ocibsd: read the staged %s (setup.sh stages it on an OCI virtual machine): %w", src, err)
+		return fmt.Errorf("activate ocibsd: read the staged %s (setup.sh stages it on an OCI instance): %w", src, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil { //nolint:gosec // systemd and udev directories are world-readable
 		return fmt.Errorf("activate ocibsd: %w", err)

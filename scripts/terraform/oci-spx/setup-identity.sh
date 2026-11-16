@@ -21,7 +21,7 @@ STATE_DIR="${OCI_STATE_ROOT:-$HERE}/.identity"
 SSH_PUBLIC_KEY="${OCI_SSH_PUBLIC_KEY:-$HOME/.ssh/oci-spx.pub}"
 DESTROY=0
 DRY_RUN=0
-EBS_PROVIDER=viperblockd
+EBS_PROVIDER=ocibsd
 
 log() { printf '[setup-identity] %s\n' "$*"; }
 die() {
@@ -31,7 +31,7 @@ die() {
 
 usage() {
     cat >&2 <<EOF
-usage: ${0##*/} [--dry-run] [--destroy] [--ebs-provider viperblockd|ocibsd]
+usage: ${0##*/} [--dry-run] [--destroy] [--ebs-provider ocibsd|viperblockd]
 
 Creates the OCI dynamic group and policy for instance-principal authentication.
 Needs a tenancy-admin OCI credential; the compartment-scoped user the rest of this
@@ -39,9 +39,9 @@ configuration runs as cannot create either resource.
 
   --dry-run       Show the plan, change nothing.
   --destroy       Remove them again. Every node using "adopt" loses its credential.
-  --ebs-provider  ocibsd also grants manage volume-family and use instances. The
-                  policy is shared by every deployment in the compartment, so a
-                  later run without it removes those grants. Default viperblockd.
+  --ebs-provider  ocibsd (default) also grants manage volume-family and use
+                  instances. The policy is shared by every deployment in the
+                  compartment, so a later viperblockd run removes those grants.
 EOF
     exit 2
 }

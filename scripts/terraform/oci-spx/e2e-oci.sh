@@ -8,10 +8,11 @@
 #
 #   SPX_REF           Ref to prove. Default: the spinifex checkout's current branch.
 #   OCI_TOPOLOGIES    Space-separated. Default: "vm-single vm-multi bm
-#                     vm-single-principal vm-single-ocibsd vm-multi-ocibsd". Set
-#                     one name to test one thing. The two ocibsd topologies back
-#                     EBS with OCI Block Volumes, need OCI_SOURCE=tree and an
-#                     external pool, and are recorded SKIPPED without them.
+#                     vm-single-principal". Set one name to test one thing.
+#                     Every topology backs EBS with OCI Block Volumes (ocibsd),
+#                     needs OCI_SOURCE=tree and an external pool, and is
+#                     recorded SKIPPED without them.
+#   OCI_EBS_PROVIDER  viperblockd for a one-off viperblock run; blank is ocibsd.
 #   OCI_SOURCE        tree (build SPX_REF) or release (the published installer).
 #   OCI_VERSION       With OCI_SOURCE=release, install this exact release tag and
 #                     ignore OCI_CHANNEL. Preferred for anything repeatable: a tag
@@ -84,7 +85,8 @@ SPINIFEX_ROOT="$(cd "$HERE/../../.." && pwd)"
 # under the workspace. Deriving one from the other is only right in the first case.
 MULGA_ROOT="${MULGA_ROOT:-$SPINIFEX_ROOT/..}"
 
-TOPOLOGIES="${OCI_TOPOLOGIES:-vm-single vm-multi bm vm-single-principal vm-single-ocibsd vm-multi-ocibsd}"
+TOPOLOGIES="${OCI_TOPOLOGIES:-vm-single vm-multi bm vm-single-principal}"
+EBS_PROVIDER="${OCI_EBS_PROVIDER:-ocibsd}"
 SOURCE="${OCI_SOURCE:-tree}"
 CHANNEL="${OCI_CHANNEL:-latest}"
 INSTALL_VERSION="${OCI_VERSION:-}"
@@ -436,8 +438,8 @@ for topology in $TOPOLOGIES; do
     fi
     # ocibsd's files ship in the distro this checkout builds, and its volumes
     # need the credential the pool uses, so neither can be stood in for.
-    case "$topology" in
-        *-ocibsd)
+    case "$EBS_PROVIDER" in
+        ocibsd)
             if [ "$SOURCE" != tree ]; then
                 log "$topology: SKIPPED -- the ocibsd files ship only with a tree build"
                 echo "$topology: SKIPPED (OCI_SOURCE=$SOURCE)" >> "$VERDICT"
@@ -450,7 +452,7 @@ for topology in $TOPOLOGIES; do
             fi
             ;;
     esac
-    args=(--topology "$topology" --ssh-public-key "$SSH_PUBLIC_KEY" --ssh-private-key "$SSH_PRIVATE_KEY")
+    args=(--topology "$topology" --ebs-provider "$EBS_PROVIDER" --ssh-public-key "$SSH_PUBLIC_KEY" --ssh-private-key "$SSH_PRIVATE_KEY")
     [ "$DRY_RUN" = 1 ] && args+=(--dry-run)
     # Two separate choices. --no-external-pool is the one that forms without any
     # allocator, for a tenancy whose dynamic group does not exist yet; it records

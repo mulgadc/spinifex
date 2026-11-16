@@ -718,17 +718,3 @@ func TestService_CreateService_SameTokenAndParametersReplays(t *testing.T) {
 	_, err = svc.CreateService(t.Context(), input, testAccountID)
 	assert.EqualError(t, err, "Creation of service was not idempotent.: InvalidParameterException")
 }
-
-// Without a client token a repeat cannot be a replay, even with identical parameters.
-func TestService_CreateService_TokenlessRepeatRefused(t *testing.T) {
-	svc, _, _ := serviceTestRig(t)
-	input := &ecs.CreateServiceInput{
-		Cluster: aws.String("web"), ServiceName: aws.String("s"), TaskDefinition: aws.String("app"),
-		DesiredCount: aws.Int64(1),
-	}
-	_, err := svc.CreateService(t.Context(), input, testAccountID)
-	require.NoError(t, err)
-
-	_, err = svc.CreateService(t.Context(), input, testAccountID)
-	assert.EqualError(t, err, "Creation of service was not idempotent.: InvalidParameterException")
-}

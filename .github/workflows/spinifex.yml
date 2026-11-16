@@ -103,56 +103,81 @@ jobs:
         with:
           cache: gobuild-${{ github.job }}
 
-  # Three parallel jobs: run serially, integration and the gated suites made
-  # this the longest PR check. Main's ruleset requires each matrix name.
-  lint_and_security:
-    name: ${{ matrix.name }}
+  lint:
+    name: Lint and Govulncheck
     runs-on: ubuntu-26.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - check: lint
-            name: Lint and Govulncheck
-          - check: integration
-            name: Integration
-          - check: gated
-            name: Gated Suites
 
     steps:
       - name: Checkout Spinifex
         uses: actions/checkout@v7.0.1
         with:
           path: spinifex
-          fetch-depth: 2
 
       - name: Go workspace
         uses: $/.github/actions/go-workspace
         with:
           siblings: branch
-          cache: gobuild-${{ github.job }}-${{ matrix.check }}
+          cache: gobuild-${{ github.job }}
 
       - name: Lint
-        if: ${{ matrix.check == 'lint' }}
         uses: golangci/golangci-lint-action@v9.3.0
         with:
           version: v2.14.0
           working-directory: spinifex
 
       - name: Govulncheck
-        if: ${{ matrix.check == 'lint' && !cancelled() }}
+        if: ${{ !cancelled() }}
         run: make -C spinifex govulncheck
 
+      - name: Save Go build cache
+        uses: $/.github/actions/go-build-cache-save
+        with:
+          cache: gobuild-${{ github.job }}
+
+  integration:
+    name: Integration
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: Checkout Spinifex
+        uses: actions/checkout@v7.0.1
+        with:
+          path: spinifex
+
+      - name: Go workspace
+        uses: $/.github/actions/go-workspace
+        with:
+          siblings: branch
+          cache: gobuild-${{ github.job }}
+
       - name: Run Integration Tests
-        if: ${{ matrix.check == 'integration' }}
         run: make -C spinifex test-integration
 
+      - name: Save Go build cache
+        uses: $/.github/actions/go-build-cache-save
+        with:
+          cache: gobuild-${{ github.job }}
+
+  gated:
+    name: Gated Suites
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: Checkout Spinifex
+        uses: actions/checkout@v7.0.1
+        with:
+          path: spinifex
+
+      - name: Go workspace
+        uses: $/.github/actions/go-workspace
+        with:
+          siblings: branch
+          cache: gobuild-${{ github.job }}
+
       - name: Run Gated Suites
-        if: ${{ matrix.check == 'gated' }}
         run: make -C spinifex test-gated GOTESTFLAGS=-count=1
 
       - name: Save Go build cache
         uses: $/.github/actions/go-build-cache-save
         with:
-          cache: gobuild-${{ github.job }}-${{ matrix.check }}
-
+          cache: gobuild-${{ github.job }}

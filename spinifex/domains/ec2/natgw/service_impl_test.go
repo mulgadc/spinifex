@@ -171,9 +171,23 @@ func TestCreateNatGateway_EIPNotFound(t *testing.T) {
 	svc := setupTestService(t)
 	_, err := svc.CreateNatGateway(t.Context(), &ec2.CreateNatGatewayInput{
 		SubnetId:     aws.String("subnet-pub1"),
-		AllocationId: aws.String("eipalloc-nope"),
+		AllocationId: aws.String("eipalloc-00000000000000000"),
 	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidAllocationIDNotFound)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "unresolvable error: %v", err)
+	assert.Equal(t, "InvalidElasticIpID.NotFound", code)
+	assert.Equal(t, "The elasticIp ID 'eipalloc-00000000000000000' does not exist", msg)
+}
+
+func TestDescribeNatGateways_UnknownFilter(t *testing.T) {
+	svc := setupTestService(t)
+	_, err := svc.DescribeNatGateways(t.Context(), &ec2.DescribeNatGatewaysInput{
+		Filter: []*ec2.Filter{{Name: aws.String("no-such-filter"), Values: []*string{aws.String("x")}}},
+	}, testAccountID)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "unresolvable error: %v", err)
+	assert.Equal(t, "InvalidParameter", code)
+	assert.Equal(t, "The filter 'no-such-filter' is invalid", msg)
 }
 
 func TestCreateNatGateway_EIPAlreadyAssociated(t *testing.T) {

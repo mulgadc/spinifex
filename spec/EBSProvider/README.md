@@ -4,7 +4,7 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 
 ## Terminology
 
-- **Provider:** the service that backs an implementation's operations, such as Viperblock.
+- **Provider:** the service that backs an implementation's methods, such as Viperblock.
   The memory implementation has none.
 - **Implementation:** a Go implementation of the `EBSProvider` interface, which adapts between the shapes of the contract and the shapes that its provider expects.
 - **Contract:** the behaviour that this specification requires of every implementation, as observed through the interface.
@@ -16,11 +16,11 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 - What may a failed call change?
   A failed call leaves the state unchanged, but a timeout can arrive after the provider acted, and a crash can leave work half done.
 - Is the schema version part of the contract?
-  Every method refuses an unsupported version with `unsupported_version`, and the conformance suite tests it, but the specification does not model versions.
-  A block export arrives at contract version 2: a PublishVolume call below it, for a volume that only a host block device can export, is refused with `unsupported_version`.
-  A snapshot's `state` in a ListSnapshots ref, and the `snapshot_id` filter, arrive at contract version 4: a ref carries no state below it, and a filtered call below it is refused with `unsupported_version` rather than answered with every snapshot.
+  Every method refuses an unsupported version with `unsupportedVersion`, and the conformance suite tests it, but the specification does not model versions.
+  A block export arrives at contract version 2: a PublishVolume call below it, for a volume that only a host block device can export, is refused with `unsupportedVersion`.
+  A snapshot's `state` in a ListSnapshots ref, and the `snapshotId` filter, arrive at contract version 4: a ref carries no state below it, and a filtered call below it is refused with `unsupportedVersion` rather than answered with every snapshot.
 - Are `internal` and `unavailable` the only errors that a failed provider may cause?
-- Must a present but malformed ID be refused with `invalid_argument`?
+- Must a present but malformed ID be refused with `invalidArgument`?
   IDs are opaque here, so only an omitted one is refused.
 
 ### Capabilities
@@ -50,13 +50,13 @@ The contract that every implementation of the `EBSProvider` interface must meet.
   It is not compared.
 - Is byte equality the meaning of equal parameters, or may an implementation compare them semantically?
 - Should `MaxSeedBytes` be modelled?
-  Seed data larger than it is refused with `invalid_argument`.
+  Seed data larger than it is refused with `invalidArgument`.
 
 #### GetVolume
 
 - Must an implementation compare the handle?
   The Viperblock implementation ignores it.
-- Is `not_found` the right error for a volume that was deleted and recreated under the same ID?
+- Is `notFound` the right error for a volume that was deleted and recreated under the same ID?
 
 #### ListVolumes
 
@@ -69,17 +69,17 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 
 #### ExpandVolume
 
-- Should a request below the current capacity succeed without change, as CSI recommends, rather than be refused with `invalid_argument`?
+- Should a request below the current capacity succeed without change, as CSI recommends, rather than be refused with `invalidArgument`?
   It is refused here, as AWS refuses `ModifyVolume` to a smaller size and the conformance suite tests, while CSI says the plugin should reply OK when the volume is already at least the requested size.
 - Must a block export's size follow an online expansion?
-  A published volume keeps its export's `size_bytes`, so after it grows the export reports the old size.
+  A published volume keeps its export's `sizeBytes`, so after it grows the export reports the old size.
 
 #### PublishVolume
 
-- Should `volume_in_use` depend on the exclusion scope?
+- Should `volumeInUse` depend on the exclusion scope?
   An implementation whose scope is `none` lets two writers in, and one whose scope is `node` cannot see another node, yet both are refused here.
-- Must a republish to the same node with a different `read_only` be refused?
-  The Viperblock implementation refuses it with `volume_in_use`, while the memory implementation ignores the flag.
+- Must a republish to the same node with a different `readOnly` be refused?
+  The Viperblock implementation refuses it with `volumeInUse`, while the memory implementation ignores the flag.
 - May two volumes on one node share an NBD URI or a device path?
 - Must a block export's size equal the volume's capacity?
 
@@ -90,14 +90,14 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 - Is a provider that fails to seal the volume a failed provider?
   The Viperblock implementation answers `internal` and leaves the volume published, which the specification allows only when the provider may fail.
 - Should a claim that lapses through its TTL be modelled, as a step that happens without a call?
-- Should a volume that does not exist be refused with `not_found`?
+- Should a volume that does not exist be refused with `notFound`?
   It succeeds here, as CSI requires and the conformance suite tests, while AWS refuses `DetachVolume` on a missing volume with `InvalidVolume.NotFound`.
 
 #### DeleteVolume
 
 - Must an implementation compare the handle before refusing a published volume?
-  The memory implementation does, and succeeds without deleting it, while the Viperblock implementation ignores the handle and refuses with `volume_in_use`.
-- Should a volume that does not exist be refused with `not_found`?
+  The memory implementation does, and succeeds without deleting it, while the Viperblock implementation ignores the handle and refuses with `volumeInUse`.
+- Should a volume that does not exist be refused with `notFound`?
   It succeeds here, as CSI requires and the conformance suite tests, while AWS refuses `DeleteVolume` on a missing volume with `InvalidVolume.NotFound`.
 
 ### Snapshots
@@ -105,17 +105,17 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 #### CreateSnapshot
 
 - May a provider forget a snapshot's source?
-  The control plane mints every snapshot ID and records it before the first call, so the ID alone names the request. A provider that no longer knows a snapshot's source, such as qemu-nbd after a restart, answers a retry with the snapshot, and refuses with `already_exists` only when it knows the source differs. The specification models a provider that always knows the source.
+  The control plane mints every snapshot ID and records it before the first call, so the ID alone names the request. A provider that no longer knows a snapshot's source, such as qemu-nbd after a restart, answers a retry with the snapshot, and refuses with `alreadyExists` only when it knows the source differs. The specification models a provider that always knows the source.
 - Must a retry compare the volume handle?
   It is ignored, as in the memory implementation, so a volume deleted and recreated under the same ID returns the old snapshot.
 - Should a copy's ID count as a retry?
   A copy keeps its source's volume ID, so creating a snapshot of that volume under the copy's ID returns the copy.
-- Should `crash_consistent_snapshot` be modelled?
+- Should `crashConsistentSnapshot` be modelled?
   The specification does not model volume data, so it cannot say what a snapshot of a published volume holds.
 
 #### CopySnapshot
 
-- Should a retried copy return the existing copy, as a retried CreateVolume does, rather than `already_exists`?
+- Should a retried copy return the existing copy, as a retried CreateVolume does, rather than `alreadyExists`?
 - May a source that is not completed be copied?
   AWS refuses until it is.
 - What state does a copy start in?
@@ -135,5 +135,5 @@ The contract that every implementation of the `EBSProvider` interface must meet.
   AWS allows it, while OCI refuses to delete a backup that is still being created, so the control plane never asks: it defers a customer's delete of a pending snapshot until the snapshot settles.
 - What does success promise?
   The Go docs say the snapshot is gone, but a snapshot whose handle did not match is left in place.
-- Should a snapshot that does not exist be refused with `not_found`?
+- Should a snapshot that does not exist be refused with `notFound`?
   It succeeds here, as CSI requires and the conformance suite tests, while AWS refuses `DeleteSnapshot` on a missing snapshot with `InvalidSnapshot.NotFound`.

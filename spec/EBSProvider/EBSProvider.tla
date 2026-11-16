@@ -14,9 +14,9 @@ EXTENDS
 
 CONSTANTS
   MaxBytes,
-  VolumeIDs, VolumeHandles,
-  NodeIDs, NBDURIs, DevicePaths,
-  SnapshotIDs, SnapshotHandles,
+  VolumeIds, VolumeHandles,
+  NodeIds, NBDURIs, DevicePaths,
+  SnapshotIds, SnapshotHandles,
   AvailabilityZones, Timestamps,
   Parameters, ProviderData,
   ListTokens, MaxListResults,
@@ -28,25 +28,25 @@ CONSTANTS
   None
 
 ASSUME MaxBytes \in Nat \ {0}
-ASSUME VolumeIDs /= {} /\ VolumeHandles /= {}
-ASSUME NodeIDs /= {} => NBDURIs /= {} \/ DevicePaths /= {}
-ASSUME SnapshotIDs /= {} => SnapshotHandles /= {} /\ Timestamps /= {}
+ASSUME VolumeIds /= {} /\ VolumeHandles /= {}
+ASSUME NodeIds /= {} => NBDURIs /= {} \/ DevicePaths /= {}
+ASSUME SnapshotIds /= {} => SnapshotHandles /= {} /\ Timestamps /= {}
 ASSUME ListTokens /= {}
 ASSUME MaxListResults \in Nat \ {0}
-ASSUME None \notin UNION {VolumeIDs, VolumeHandles, NodeIDs, SnapshotIDs, SnapshotHandles,
+ASSUME None \notin UNION {VolumeIds, VolumeHandles, NodeIds, SnapshotIds, SnapshotHandles,
                           AvailabilityZones, Timestamps, Parameters, ProviderData, ListTokens}
-ASSUME Capabilities \in [online_expansion          : BOOLEAN,
-                         sparse_extent_reporting   : BOOLEAN,
-                         crash_consistent_snapshot : BOOLEAN,
-                         volume_seeding            : BOOLEAN,
-                         read_only_publish         : BOOLEAN,
-                         volume_enumeration        : BOOLEAN,
-                         snapshot_enumeration      : BOOLEAN,
-                         snapshot_copy             : BOOLEAN,
-                         owner_routing             : BOOLEAN,
-                         exclusion                 : [scope             : {"none", "node", "cluster"},
-                                                      claim_ttl_seconds : Nat,
-                                                      fences_lost_claim : BOOLEAN]]
+ASSUME Capabilities \in [onlineExpansion         : BOOLEAN,
+                         sparseExtentReporting   : BOOLEAN,
+                         crashConsistentSnapshot : BOOLEAN,
+                         volumeSeeding           : BOOLEAN,
+                         readOnlyPublish         : BOOLEAN,
+                         volumeEnumeration       : BOOLEAN,
+                         snapshotEnumeration     : BOOLEAN,
+                         snapshotCopy            : BOOLEAN,
+                         ownerRouting            : BOOLEAN,
+                         exclusion               : [scope           : {"none", "node", "cluster"},
+                                                    claimTtlSeconds : Nat,
+                                                    fencesLostClaim : BOOLEAN]]
 ASSUME ProviderMayFail \in BOOLEAN
 
 -----------------------------------------------------------------------------------------------------------------------
@@ -58,9 +58,19 @@ VARIABLES
   \* Every publication that the implementation exposes, keyed by the volume and the node it is published to.
   publications,
   \* Every snapshot that the implementation exposes, keyed by snapshot ID.
-  snapshots
+  snapshots,
+  \* The method that the last step called and the request it was called with, or None for a step without a call.
+  method, params,
+  \* The value or error that the last step's call returned.
+  val, err
 
-vars == <<volumes, publications, snapshots>>
+\* The state that the implementation exposes, which a refused call leaves unchanged.
+state == <<volumes, publications, snapshots>>
+
+\* The call that the last step answered.
+call == <<method, params, val, err>>
+
+vars == <<state, call>>
 
 -----------------------------------------------------------------------------------------------------------------------
 \* Miscellaneous
@@ -71,7 +81,7 @@ Optional(S) == S \union {None}
 
 InsertKey(f, x, y) == f @@ (x :> y)
 
-RemoveKey(f, x) == RestrictDomain(f, LAMBDA x_2 : x_2 /= x)
+RemoveKey(f, x) == RestrictDomain(f, LAMBDA y : y /= x)
 
 KeyExists(f, x) == x \in DOMAIN f
 
@@ -80,78 +90,95 @@ KeyExists(f, x) == x \in DOMAIN f
 
 Bytes == 0..MaxBytes
 
+\* A requested capacity, where a limit of zero sets none.
+CapacityRanges == [requiredBytes : Bytes, limitBytes : Bytes]
+
+\* The interface methods that a call may name.
+Methods == {"GetCapabilities",
+            "CreateVolume", "GetVolume", "ListVolumes", "ExpandVolume",
+            "PublishVolume", "UnpublishVolume", "DeleteVolume",
+            "CreateSnapshot", "CopySnapshot", "ListSnapshots", "DeleteSnapshot"}
+
+\* The errors that a call may return.
+ErrorCodes == {"invalidArgument", "alreadyExists", "notFound", "unsupportedCapability", "volumeInUse",
+               "internal", "unavailable"}
+
 \* The errors that an implementation may return when its provider fails to answer.
 ProviderErrors == IF ProviderMayFail
                   THEN {"internal", "unavailable"}
                   \* Otherwise an implementation could conform by refusing to answer.
                   ELSE {}
 
-CapacityRanges == [required_bytes : Bytes, limit_bytes : Bytes]
-
 VolumeStates == {"available", "in-use"}
 
-Volumes == [capacity_bytes     : 1..MaxBytes,
-            state              : VolumeStates,
-            handle             : VolumeHandles,
-            availability_zone  : Optional(AvailabilityZones),
+Volumes == [capacityBytes    : 1..MaxBytes,
+            state            : VolumeStates,
+            handle           : VolumeHandles,
+            availabilityZone : Optional(AvailabilityZones),
 
             \* Never returned, but kept to tell a retry from a conflicting request.
-            source_snapshot_id : Optional(SnapshotIDs),
-            parameters         : Optional(Parameters),
-            provider_data      : Optional(ProviderData)]
+            sourceSnapshotId : Optional(SnapshotIds),
+            parameters       : Optional(Parameters),
+            providerData     : Optional(ProviderData)]
 
 \* How a published volume is reached on its node, either over NBD or as a host block device.
-Exports == [kind    : {"nbd"},
-            nbd_uri : NBDURIs]
+Exports == [kind   : {"nbd"},
+            nbdUri : NBDURIs]
            \union
-           [kind        : {"block"},
-            device_path : DevicePaths,
-            size_bytes  : 1..MaxBytes]
+           [kind       : {"block"},
+            devicePath : DevicePaths,
+            sizeBytes  : 1..MaxBytes]
 
 \* A volume published to a node, and whether it was published read-only.
-Publications == [export    : Exports,
-                 read_only : BOOLEAN]
+Publications == [export   : Exports,
+                 readOnly : BOOLEAN]
 
 SnapshotStates == {"pending", "completed", "error"}
 
-Snapshots == [size_bytes       : 1..MaxBytes,
-              created_at       : Timestamps,
-              state            : SnapshotStates,
-              handle           : SnapshotHandles,
-              source_volume_id : VolumeIDs]
+Snapshots == [sizeBytes      : 1..MaxBytes,
+              createdAt      : Timestamps,
+              state          : SnapshotStates,
+              handle         : SnapshotHandles,
+              sourceVolumeId : VolumeIds]
 
 -----------------------------------------------------------------------------------------------------------------------
 \* State helpers
 
 \* The part of a volume that the implementation returns.
-VolumeView(volID) ==
-  ("id" :> volID) @@ Restrict(volumes[volID], {"capacity_bytes",
+VolumeView(volId) ==
+  ("id" :> volId) @@ Restrict(volumes[volId], {"capacityBytes",
                                                "state",
                                                "handle",
-                                               "availability_zone",
-                                               "provider_data"})
+                                               "availabilityZone",
+                                               "providerData"})
 
 \* The nodes that a volume is published to.
-PublishedNodes(volID) == {n \in NodeIDs : KeyExists(publications, <<volID, n>>)}
+PublishedNodes(volId) == {n \in NodeIds : KeyExists(publications, <<volId, n>>)}
 
 \* The part of a publication that the implementation returns.
-PublicationView(volID, nodeID) == [volume_id |-> volID,
-                                   node_id   |-> nodeID,
-                                   export    |-> publications[volID, nodeID].export]
+PublicationView(volId, nodeId) == [volumeId |-> volId,
+                                   nodeId   |-> nodeId,
+                                   export   |-> publications[volId, nodeId].export]
 
 \* The part of a snapshot that the implementation returns.
-SnapshotView(snapID) == ("id" :> snapID) @@ snapshots[snapID]
+SnapshotView(snapId) == ("id" :> snapId) @@ snapshots[snapId]
 
 \* The number of refs that a page may hold, with an omitted or oversized request clamped to the maximum.
 PageSize(m) == IF m <= 0 \/ m > MaxListResults THEN MaxListResults ELSE m
 
 -----------------------------------------------------------------------------------------------------------------------
-\* Invariants
+\* Calls
 
-TypeOK ==
-  /\ IsPartialFn(volumes, VolumeIDs, Volumes)
-  /\ IsPartialFn(publications, VolumeIDs \X NodeIDs, Publications)
-  /\ IsPartialFn(snapshots, SnapshotIDs, Snapshots)
+\* A call to method m with req, which Action answers by setting val and err.
+Call(m, req, Action(_)) == /\ method' = m
+                           /\ params' = req
+                           /\ Action(req)
+
+\* A step that answers no call, such as one that the provider itself takes.
+NoCall == /\ method' = None
+          /\ params' = None
+          /\ val'    = None
+          /\ err'    = None
 
 -----------------------------------------------------------------------------------------------------------------------
 \* Initial state
@@ -160,5 +187,37 @@ Init ==
   /\ volumes      = <<>>
   /\ publications = <<>>
   /\ snapshots    = <<>>
+  \* No call has been answered.
+  /\ method       = None
+  /\ params       = None
+  /\ val          = None
+  /\ err          = None
+
+-----------------------------------------------------------------------------------------------------------------------
+\* Invariants
+
+TypeOK ==
+  /\ IsPartialFn(volumes, VolumeIds, Volumes)
+  /\ IsPartialFn(publications, VolumeIds \X NodeIds, Publications)
+  /\ IsPartialFn(snapshots, SnapshotIds, Snapshots)
+  /\ method \in Optional(Methods)
+  /\ err \in Optional(ErrorCodes)
+  /\ err \in ErrorCodes => val = None
+
+ExistsAndInUseIffPublished ==
+  \A volId \in VolumeIds :
+    KeyExists(volumes, volId) /\ volumes[volId].state = "in-use"
+    <=>
+    PublishedNodes(volId) /= {}
+
+OnlyPublishedOnce ==
+  \A volId \in VolumeIds :
+    Cardinality(PublishedNodes(volId)) <= 1
+
+HandlesAreUnique ==
+  /\ \A i, j \in DOMAIN volumes :
+       volumes[i].handle = volumes[j].handle => i = j
+  /\ \A i, j \in DOMAIN snapshots :
+       snapshots[i].handle = snapshots[j].handle => i = j
 
 =======================================================================================================================

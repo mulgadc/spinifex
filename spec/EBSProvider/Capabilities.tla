@@ -9,19 +9,19 @@ EXTENDS EBSProvider
 
 GetCapabilitiesRequests == {<<>>}
 
-GetCapabilities(req, val, err) ==
+GetCapabilities(req) ==
   (*******************************************************************************************************************)
   (* The implementation reports which optional behaviour it supports.                                                *)
   (*******************************************************************************************************************)
      \* The provider failed to answer.
-  \/ /\ val = None
-     /\ err \in ProviderErrors
-     /\ UNCHANGED vars
+  \/ /\ val' = None
+     /\ err' \in ProviderErrors
+     /\ UNCHANGED state
 
      \* The request was accepted.
      \* Every answer is the same, so an earlier one may be cached.
-  \/ /\ val = Capabilities
-     /\ err = None
-     /\ UNCHANGED vars
+  \/ /\ val' = Capabilities
+     /\ err' = None
+     /\ UNCHANGED state
 
 =======================================================================================================================

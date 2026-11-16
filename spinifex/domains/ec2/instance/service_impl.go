@@ -2380,8 +2380,7 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(ctx context.Context, input
 		slog.WarnContext(ctx, "ModifyInstanceAttribute: instance not found or not visible", "instanceId", instanceID, "callerAccount", accountID)
 		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
 	}
-	switch state {
-	case vm.StateShuttingDown, vm.StateTerminated:
+	if state == vm.StateShuttingDown || state == vm.StateTerminated {
 		return nil, awserrors.Errorf(awserrors.ErrorIncorrectInstanceState,
 			"The instance '%s' must be in a 'running', 'pending', 'stopping' or 'stopped' state for this operation.", instanceID)
 	}

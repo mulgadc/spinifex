@@ -1,7 +1,9 @@
 package instance
 
 import (
+	"cmp"
 	"errors"
+	"slices"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -36,6 +38,11 @@ type InstanceProjection struct {
 	// for the instance's internal status.
 	FallbackStateCode int64
 	FallbackStateName string
+
+	// AttachedENIs maps an instance ID to the interface records attached to it.
+	// When non-nil, NetworkInterfaces come from it rather than the launch-time
+	// copy, so an interface attached or detached after launch shows up.
+	AttachedENIs map[string][]ENIInfo
 }
 
 // ProjectInstance returns the API-shaped copy of v.Instance with every
@@ -184,6 +191,9 @@ func ProjectInstance(v *vm.VM, cfg InstanceProjection) (inst *ec2.Instance, stat
 	// because instanceCopy shares their pointers with the stored instance.
 	instanceCopy.SourceDestCheck = aws.Bool(true)
 	instanceCopy.EnaSupport = aws.Bool(instanceEnaSupport)
+	if cfg.AttachedENIs != nil {
+		instanceCopy.NetworkInterfaces = interfacesFromRecords(cfg.AttachedENIs[v.ID], instanceCopy.SecurityGroups)
+	}
 	if len(instanceCopy.NetworkInterfaces) > 0 {
 		nics := make([]*ec2.InstanceNetworkInterface, 0, len(instanceCopy.NetworkInterfaces))
 		for _, nic := range instanceCopy.NetworkInterfaces {
@@ -294,6 +304,44 @@ func projectInterfaceFields(nic *ec2.InstanceNetworkInterface, ownerID string) {
 			Association:      nic.Association,
 		}}
 	}
+}
+
+// interfacesFromRecords builds an instance's interfaces from the records
+// attached to it, primary first as AWS orders them. Group names come from the
+// instance's groups, since the records carry only IDs.
+func interfacesFromRecords(records []ENIInfo, instanceGroups []*ec2.GroupIdentifier) []*ec2.InstanceNetworkInterface {
+	groupNames := make(map[string]*string, len(instanceGroups))
+	for _, g := range instanceGroups {
+		if g != nil && g.GroupId != nil {
+			groupNames[*g.GroupId] = g.GroupName
+		}
+	}
+	sorted := slices.SortedFunc(slices.Values(records), func(a, b ENIInfo) int {
+		return cmp.Compare(a.DeviceIndex, b.DeviceIndex)
+	})
+	nics := make([]*ec2.InstanceNetworkInterface, 0, len(sorted))
+	for _, r := range sorted {
+		groups := make([]*ec2.GroupIdentifier, 0, len(r.SecurityGroupIDs))
+		for _, id := range r.SecurityGroupIDs {
+			groups = append(groups, &ec2.GroupIdentifier{GroupId: aws.String(id), GroupName: groupNames[id]})
+		}
+		nics = append(nics, &ec2.InstanceNetworkInterface{
+			NetworkInterfaceId: aws.String(r.NetworkInterfaceID),
+			PrivateIpAddress:   aws.String(r.PrivateIpAddress),
+			MacAddress:         aws.String(r.MacAddress),
+			SubnetId:           aws.String(r.SubnetID),
+			VpcId:              aws.String(r.VpcID),
+			Status:             aws.String(r.Status),
+			Groups:             groups,
+			Attachment: &ec2.InstanceNetworkInterfaceAttachment{
+				AttachmentId:        aws.String(r.AttachmentID),
+				DeviceIndex:         aws.Int64(r.DeviceIndex),
+				Status:              aws.String(cmp.Or(r.AttachmentStatus, ec2.AttachmentStatusAttached)),
+				DeleteOnTermination: aws.Bool(r.DeleteOnTermination),
+			},
+		})
+	}
+	return nics
 }
 
 // ParseInstanceIDFilter builds the set of instance IDs to filter on, rejecting

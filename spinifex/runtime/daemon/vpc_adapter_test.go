@@ -85,6 +85,24 @@ func TestDaemonENICreator_ListInstanceENIs_HappyPath(t *testing.T) {
 	assert.True(t, infos[0].DeleteOnTermination, "attach defaults DeleteOnTermination to true")
 }
 
+// TestDaemonENICreator_ListAttachedENIs_CarriesAttachment confirms the account
+// listing maps the attachment fields DescribeInstances projects interfaces from.
+func TestDaemonENICreator_ListAttachedENIs_CarriesAttachment(t *testing.T) {
+	f := newENIHotPlugFixture(t)
+
+	attachmentID, err := f.daemon.vpcService.AttachENI(testAccountID, f.eniID, f.vmInst.ID, 2)
+	require.NoError(t, err)
+
+	creator := &daemonENICreator{d: f.daemon}
+	infos, err := creator.ListAttachedENIs(context.Background(), testAccountID)
+	require.NoError(t, err)
+	require.Len(t, infos, 1)
+	assert.Equal(t, f.eniID, infos[0].NetworkInterfaceID)
+	assert.Equal(t, f.vmInst.ID, infos[0].InstanceID)
+	assert.Equal(t, attachmentID, infos[0].AttachmentID)
+	assert.Equal(t, int64(2), infos[0].DeviceIndex)
+}
+
 // TestDaemonENICreator_ListInstanceENIs_NoAttachments confirms an instance with no
 // KV-recorded ENIs returns an empty, non-error result.
 func TestDaemonENICreator_ListInstanceENIs_NoAttachments(t *testing.T) {

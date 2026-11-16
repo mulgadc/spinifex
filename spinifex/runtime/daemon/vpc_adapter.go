@@ -5,6 +5,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 )
 
 // daemonENICreator adapts the daemon's VPCServiceImpl to the
@@ -46,7 +47,12 @@ func (a *daemonENICreator) GetENI(_ context.Context, accountID, eniID string) (*
 	if err != nil {
 		return nil, err
 	}
-	return &ec2instance.ENIInfo{
+	info := eniInfoFromRecord(rec)
+	return &info, nil
+}
+
+func eniInfoFromRecord(rec ec2vpc.ENIRecord) ec2instance.ENIInfo {
+	return ec2instance.ENIInfo{
 		NetworkInterfaceID: rec.NetworkInterfaceId,
 		SubnetID:           rec.SubnetId,
 		VpcID:              rec.VpcId,
@@ -59,7 +65,11 @@ func (a *daemonENICreator) GetENI(_ context.Context, accountID, eniID string) (*
 		PublicIpPool:       rec.PublicIpPool,
 		DeleteOnTermination: rec.DeleteOnTermination == nil ||
 			*rec.DeleteOnTermination,
-	}, nil
+		InstanceID:       rec.InstanceId,
+		AttachmentID:     rec.AttachmentId,
+		DeviceIndex:      rec.DeviceIndex,
+		AttachmentStatus: rec.AttachmentStatus,
+	}
 }
 
 func (a *daemonENICreator) CreateNetworkInterface(ctx context.Context, input *ec2.CreateNetworkInterfaceInput, accountID string) (*ec2.CreateNetworkInterfaceOutput, error) {
@@ -83,23 +93,20 @@ func (a *daemonENICreator) ENIHasEIP(ctx context.Context, accountID, eniID strin
 }
 
 func (a *daemonENICreator) ListInstanceENIs(_ context.Context, accountID, instanceID string) ([]ec2instance.ENIInfo, error) {
-	records, err := a.d.vpcService.ListInstanceENIs(accountID, instanceID)
+	return eniInfosFromRecords(a.d.vpcService.ListInstanceENIs(accountID, instanceID))
+}
+
+func (a *daemonENICreator) ListAttachedENIs(_ context.Context, accountID string) ([]ec2instance.ENIInfo, error) {
+	return eniInfosFromRecords(a.d.vpcService.ListAttachedENIs(accountID))
+}
+
+func eniInfosFromRecords(records []ec2vpc.ENIRecord, err error) ([]ec2instance.ENIInfo, error) {
 	if err != nil {
 		return nil, err
 	}
 	out := make([]ec2instance.ENIInfo, 0, len(records))
 	for _, rec := range records {
-		out = append(out, ec2instance.ENIInfo{
-			NetworkInterfaceID: rec.NetworkInterfaceId,
-			SubnetID:           rec.SubnetId,
-			VpcID:              rec.VpcId,
-			PrivateIpAddress:   rec.PrivateIpAddress,
-			MacAddress:         rec.MacAddress,
-			Status:             rec.Status,
-			SecurityGroupIDs:   rec.SecurityGroupIds,
-			DeleteOnTermination: rec.DeleteOnTermination == nil ||
-				*rec.DeleteOnTermination,
-		})
+		out = append(out, eniInfoFromRecord(rec))
 	}
 	return out, nil
 }

@@ -339,6 +339,17 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 		require.Equal(t, eniIP, aws.StringValue(eni.PrivateIpAddress),
 			"attached ENI %s private IP drifted from create-time value", eniID)
 
+		harness.Step(t, "describe-instances %s lists the hot-plugged ENI %s", instanceID, eniID)
+		nics := describeSingletonInstance(t, fix, instanceID).NetworkInterfaces
+		require.Len(t, nics, 2, "instance must list its primary and the hot-plugged interface")
+		require.NotNil(t, nics[0].Attachment, "primary interface has no attachment")
+		require.Equal(t, int64(0), aws.Int64Value(nics[0].Attachment.DeviceIndex), "primary interface must be listed first")
+		hotplugged := instanceNIC(nics, eniID)
+		require.NotNil(t, hotplugged, "describe-instances does not list hot-plugged ENI %s", eniID)
+		require.NotNil(t, hotplugged.Attachment, "hot-plugged interface has no attachment")
+		require.Equal(t, attachmentID, aws.StringValue(hotplugged.Attachment.AttachmentId))
+		require.Equal(t, eniIP, aws.StringValue(hotplugged.PrivateIpAddress))
+
 		eniAttached = true
 	})
 	verifySentinel(t, "HotplugENI")
@@ -368,6 +379,11 @@ func runGuestChurnRound(t *testing.T, fix *Fixture, instanceID, origType, keyPat
 			detachAfterReconcile(t, c, attachmentID)
 			waitForENIStatus(t, c, eniID, "available")
 			detachedByStage = true
+
+			harness.Step(t, "describe-instances %s no longer lists ENI %s", instanceID, eniID)
+			nics := describeSingletonInstance(t, fix, instanceID).NetworkInterfaces
+			require.Nil(t, instanceNIC(nics, eniID), "describe-instances still lists detached ENI %s", eniID)
+			require.Len(t, nics, 1, "only the primary interface remains after detach")
 
 			// Guest NIC removal is a soft check: virtio-net unplug + udev
 			// cleanup can lag the control-plane detach.
@@ -695,6 +711,16 @@ func guestMACSet(t *testing.T, tgt harness.SSHTarget) map[string]struct{} {
 // setKeys returns the keys of a string set as a slice for log/Detail output.
 func setKeys(m map[string]struct{}) []string {
 	return slices.Collect(maps.Keys(m))
+}
+
+// instanceNIC returns the interface in nics with ID eniID, or nil.
+func instanceNIC(nics []*ec2.InstanceNetworkInterface, eniID string) *ec2.InstanceNetworkInterface {
+	for _, nic := range nics {
+		if nic != nil && aws.StringValue(nic.NetworkInterfaceId) == eniID {
+			return nic
+		}
+	}
+	return nil
 }
 
 // describeENI returns the single ENI record for eniID, erroring if absent.

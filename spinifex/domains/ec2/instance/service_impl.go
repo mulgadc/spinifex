@@ -2139,6 +2139,21 @@ func (s *InstanceServiceImpl) DescribeInstances(ctx context.Context, input *ec2.
 		return nil, err
 	}
 
+	// The interface records are read before the manager lock is taken, since
+	// the read is a KV scan.
+	accountIDs := map[string]bool{}
+	s.vmMgr.View(func(vms map[string]*vm.VM) {
+		for _, instance := range vms {
+			if IsInstanceVisibleToCaller(accountID, instance) && (len(instanceIDFilter) == 0 || instanceIDFilter[instance.ID]) {
+				accountIDs[instance.AccountID] = true
+			}
+		}
+	})
+	attachedENIs, err := s.attachedENIsByInstance(ctx, accountIDs)
+	if err != nil {
+		return nil, err
+	}
+
 	reservationMap := make(map[string]*ec2.Reservation)
 
 	// Iterate under the manager lock to avoid races on Status, Instance, PublicIP, etc.
@@ -2171,6 +2186,7 @@ func (s *InstanceServiceImpl) DescribeInstances(ctx context.Context, input *ec2.
 				IncludeRuntimeNetwork: true,
 				FallbackStateCode:     0,
 				FallbackStateName:     "pending",
+				AttachedENIs:          attachedENIs,
 			})
 			if !stateMapped {
 				slog.WarnContext(ctx, "Instance has unmapped status, reporting as pending",
@@ -2202,6 +2218,27 @@ func (s *InstanceServiceImpl) DescribeInstances(ctx context.Context, input *ec2.
 
 	slog.InfoContext(ctx, "DescribeInstances completed", "count", len(reservations))
 	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
+}
+
+// attachedENIsByInstance groups the interfaces attached in each of accountIDs
+// by instance ID. It returns nil when no ENI source is wired, which leaves the
+// projection on the launch-time interfaces.
+func (s *InstanceServiceImpl) attachedENIsByInstance(ctx context.Context, accountIDs map[string]bool) (map[string][]ENIInfo, error) {
+	if s.eniCreator == nil {
+		return nil, nil
+	}
+	byInstance := map[string][]ENIInfo{}
+	for accountID := range accountIDs {
+		records, err := s.eniCreator.ListAttachedENIs(ctx, accountID)
+		if err != nil {
+			slog.ErrorContext(ctx, "DescribeInstances: failed to list attached interfaces", "accountID", accountID, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		for _, r := range records {
+			byInstance[r.InstanceID] = append(byInstance[r.InstanceID], r)
+		}
+	}
+	return byInstance, nil
 }
 
 // DescribeInstanceTypes returns supported instance types. With filter
@@ -2257,7 +2294,7 @@ func (s *InstanceServiceImpl) DescribeStoppedInstances(ctx context.Context, inpu
 	if s.stoppedStore == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListStoppedInstances, 80, "stopped", "DescribeStoppedInstances", false)
+	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListStoppedInstances, 80, "stopped", "DescribeStoppedInstances", false, true)
 }
 
 // DescribeAccountInstanceRecords returns every non-terminated instance record
@@ -2268,7 +2305,7 @@ func (s *InstanceServiceImpl) DescribeAccountInstanceRecords(ctx context.Context
 	if s.stoppedStore == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListNonTerminatedInstances, 0, "pending", "DescribeAccountInstanceRecords", true)
+	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListNonTerminatedInstances, 0, "pending", "DescribeAccountInstanceRecords", true, false)
 }
 
 // DescribeTerminatedInstances returns terminated instances from the terminated KV bucket.
@@ -2276,10 +2313,12 @@ func (s *InstanceServiceImpl) DescribeTerminatedInstances(ctx context.Context, i
 	if s.stoppedStore == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListTerminatedInstances, 48, "terminated", "DescribeTerminatedInstances", false)
+	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListTerminatedInstances, 48, "terminated", "DescribeTerminatedInstances", false, false)
 }
 
-func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string, listFn func() ([]*vm.VM, error), fallbackCode int64, fallbackName, opName string, strict bool) (*ec2.DescribeInstancesOutput, error) {
+// liveENIs projects interfaces from the attached interface records rather than
+// the launch-time copy.
+func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string, listFn func() ([]*vm.VM, error), fallbackCode int64, fallbackName, opName string, strict, liveENIs bool) (*ec2.DescribeInstancesOutput, error) {
 	instanceIDFilter, err := ParseInstanceIDFilter(input.InstanceIds)
 	if err != nil {
 		return nil, err
@@ -2295,6 +2334,19 @@ func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input
 	if err != nil {
 		slog.ErrorContext(ctx, opName+": failed to list instances", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	var attachedENIs map[string][]ENIInfo
+	if liveENIs {
+		accountIDs := map[string]bool{}
+		for _, instance := range instances {
+			if IsInstanceVisible(accountID, instance.AccountID) && (len(instanceIDFilter) == 0 || instanceIDFilter[instance.ID]) {
+				accountIDs[instance.AccountID] = true
+			}
+		}
+		if attachedENIs, err = s.attachedENIsByInstance(ctx, accountIDs); err != nil {
+			return nil, err
+		}
 	}
 
 	reservationMap := make(map[string]*ec2.Reservation)
@@ -2334,6 +2386,7 @@ func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input
 			AZ:                s.config.AZ,
 			FallbackStateCode: fallbackCode,
 			FallbackStateName: fallbackName,
+			AttachedENIs:      attachedENIs,
 		})
 
 		if len(parsedFilters) > 0 && !instanceMatchesFilters(instance, projected, parsedFilters) {

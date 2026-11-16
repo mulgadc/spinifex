@@ -166,3 +166,28 @@ func TestUpdateENI_PreservesUnrelatedFields(t *testing.T) {
 	assert.Equal(t, subnetId, rec.SubnetId)
 	assert.NotEmpty(t, rec.MacAddress)
 }
+
+func TestListAttachedENIs_OnlyAttachedInAccount(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcId := createTestVPC(t, svc, "10.0.0.0/16")
+	subnetId := createTestSubnet(t, svc, vpcId, "10.0.1.0/24")
+	first := createTestENI(t, svc, subnetId)
+	second := createTestENI(t, svc, subnetId)
+	createTestENI(t, svc, subnetId)
+
+	_, err := svc.AttachENI(testAccountID, first, "i-one", 0)
+	require.NoError(t, err)
+	_, err = svc.AttachENI(testAccountID, second, "i-two", 0)
+	require.NoError(t, err)
+	require.NoError(t, svc.DetachENI(context.Background(), testAccountID, second))
+
+	recs, err := svc.ListAttachedENIs(testAccountID)
+	require.NoError(t, err)
+	require.Len(t, recs, 1, "a detached or never-attached ENI is not listed")
+	assert.Equal(t, first, recs[0].NetworkInterfaceId)
+
+	recs, err = svc.ListAttachedENIs("999988887777")
+	require.NoError(t, err)
+	assert.Empty(t, recs)
+}

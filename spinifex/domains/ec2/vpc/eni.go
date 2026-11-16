@@ -894,6 +894,16 @@ func (s *VPCServiceImpl) ListInstanceENIs(accountID, instanceID string) ([]ENIRe
 }
 
 func (s *VPCServiceImpl) listInstanceENIs(ctx context.Context, accountID, instanceID string) ([]ENIRecord, error) {
+	return s.listAccountENIs(ctx, accountID, func(r *ENIRecord) bool { return r.InstanceId == instanceID })
+}
+
+// ListAttachedENIs returns every ENIRecord in accountID attached to any
+// instance, so a describe can group them by instance in one scan.
+func (s *VPCServiceImpl) ListAttachedENIs(accountID string) ([]ENIRecord, error) {
+	return s.listAccountENIs(context.Background(), accountID, func(r *ENIRecord) bool { return r.InstanceId != "" })
+}
+
+func (s *VPCServiceImpl) listAccountENIs(ctx context.Context, accountID string, match func(*ENIRecord) bool) ([]ENIRecord, error) {
 	keys, err := s.eniKV.Keys(ctx)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
@@ -915,7 +925,7 @@ func (s *VPCServiceImpl) listInstanceENIs(ctx context.Context, accountID, instan
 		if err := json.Unmarshal(entry.Value(), &record); err != nil {
 			continue
 		}
-		if record.InstanceId == instanceID {
+		if match(&record) {
 			out = append(out, record)
 		}
 	}

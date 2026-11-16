@@ -1107,7 +1107,7 @@ func TestDescribeInstancesFromKV_FilterExcludesOnlyInstance_ReturnsZeroReservati
 	input := &ec2.DescribeInstancesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("instance-type"), Values: []*string{aws.String("t3.nano")}}},
 	}
-	out, err := svc.describeInstancesFromKV(context.Background(), input, awsidentifiers.GlobalAccountID, listFn, 80, "stopped", "DescribeStoppedInstances", false)
+	out, err := svc.describeInstancesFromKV(context.Background(), input, awsidentifiers.GlobalAccountID, listFn, 80, "stopped", "DescribeStoppedInstances", false, false)
 	require.NoError(t, err)
 	assert.Empty(t, out.Reservations, "a reservation with every instance filtered out must not appear in the response")
 }
@@ -3812,6 +3812,20 @@ func (f *fakeENICreator) ListInstanceENIs(_ context.Context, _, instanceID strin
 		return nil, f.listENIsErr
 	}
 	return f.instanceENIs[instanceID], nil
+}
+
+func (f *fakeENICreator) ListAttachedENIs(_ context.Context, _ string) ([]ENIInfo, error) {
+	if f.listENIsErr != nil {
+		return nil, f.listENIsErr
+	}
+	var out []ENIInfo
+	for instanceID, enis := range f.instanceENIs {
+		for _, eni := range enis {
+			eni.InstanceID = instanceID
+			out = append(out, eni)
+		}
+	}
+	return out, nil
 }
 
 type fakeIPAllocator struct {

@@ -2980,7 +2980,7 @@ func (s *ELBv2ServiceImpl) CreateListener(ctx context.Context, input *elbv2.Crea
 		case ProtocolHTTP, ProtocolHTTPS:
 			// valid ALB protocols
 		default:
-			return nil, awserrors.Errorf(awserrors.ErrorValidationError, "Listener protocol '%s' must be one of 'HTTP, HTTPS'", protocol)
+			return nil, awserrors.Errorf(awserrors.ErrorValidationError, "Listener protocol '%s' must be one of 'HTTPS, HTTP'", protocol)
 		}
 	}
 

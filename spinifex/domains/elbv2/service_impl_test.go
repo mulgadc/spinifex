@@ -2033,7 +2033,7 @@ func TestCreateListener_ALB_RejectsTCPProtocol(t *testing.T) {
 		},
 	}, testAccountID)
 
-	assert.EqualError(t, err, "Listener protocol 'TCP' must be one of 'HTTP, HTTPS': ValidationError")
+	assert.EqualError(t, err, "Listener protocol 'TCP' must be one of 'HTTPS, HTTP': ValidationError")
 }
 
 func TestCreateListener_NLB_ProtocolCompatibility_TLSToTCP(t *testing.T) {

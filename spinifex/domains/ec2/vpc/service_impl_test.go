@@ -2699,33 +2699,34 @@ func TestCreateSubnet_ZoneStoreFailureWritesNothingAndPublishesNothing(t *testin
 }
 
 // TestDeleteSubnet_NatGateway asserts a NAT gateway pins its subnet with
-// AWS's DependencyViolation text until the gateway is deleted.
+// AWS's DependencyViolation text while its record and subnet index key exist.
 func TestDeleteSubnet_NatGateway(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name, gwSubnet string
-		gwDeleted      bool
-		wantErr        bool
+		name     string
+		idxOther bool // index the gateway under another subnet
+		noRecord bool // DeleteNatGateway removed the record, or a create failed after indexing
+		wantErr  bool
 	}{
 		{name: "available", wantErr: true},
-		{name: "deleted", gwDeleted: true, wantErr: false},
-		{name: "other subnet", gwSubnet: "subnet-0other", wantErr: false},
+		{name: "record gone", noRecord: true},
+		{name: "other subnet", idxOther: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			svc := setupTestVPCService(t)
 			vpcID := createTestVPC(t, svc, "10.67.0.0/16")
 			subnetID := createTestSubnet(t, svc, vpcID, "10.67.1.0/24")
-			gwSubnet := subnetID
-			if tc.gwSubnet != "" {
-				gwSubnet = tc.gwSubnet
+			idxSubnet := subnetID
+			if tc.idxOther {
+				idxSubnet = "subnet-0other"
 			}
-			rec := fmt.Sprintf(`{"nat_gateway_id":"nat-0abc","vpc_id":%q,"subnet_id":%q,"state":"available"}`, vpcID, gwSubnet)
-			_, err := svc.natgwKV.Put(t.Context(), testAccountID+".nat-0abc", []byte(rec))
+			_, err := svc.natgwIdxKV.Put(t.Context(), SubnetNatGatewayKey(testAccountID, idxSubnet, "nat-0abc"), []byte("nat-0abc"))
 			require.NoError(t, err)
-			if tc.gwDeleted {
-				// DeleteNatGateway removes the record from the active bucket.
-				require.NoError(t, svc.natgwKV.Delete(t.Context(), testAccountID+".nat-0abc"))
+			if !tc.noRecord {
+				rec := fmt.Sprintf(`{"nat_gateway_id":"nat-0abc","vpc_id":%q,"subnet_id":%q,"state":"available"}`, vpcID, idxSubnet)
+				_, err = svc.natgwKV.Put(t.Context(), testAccountID+".nat-0abc", []byte(rec))
+				require.NoError(t, err)
 			}
 
 			_, err = svc.DeleteSubnet(t.Context(), &ec2.DeleteSubnetInput{SubnetId: aws.String(subnetID)}, testAccountID)
@@ -2742,16 +2743,47 @@ func TestDeleteSubnet_NatGateway(t *testing.T) {
 	}
 }
 
-// TestDeleteSubnet_NatGatewayCheckFailsClosedOnCorruptRecord asserts an
-// undecodable NAT gateway record blocks DeleteSubnet.
-func TestDeleteSubnet_NatGatewayCheckFailsClosedOnCorruptRecord(t *testing.T) {
+// TestDeleteSubnet_NatGatewayCheckReadsOnlyItsSubnet asserts the check reads
+// no gateway outside the subnet's index, so an undecodable gateway elsewhere
+// in the bucket cannot fail it.
+func TestDeleteSubnet_NatGatewayCheckReadsOnlyItsSubnet(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.68.0.0/16")
 	subnetID := createTestSubnet(t, svc, vpcID, "10.68.1.0/24")
 	_, err := svc.natgwKV.Put(t.Context(), testAccountID+".nat-0abc", []byte("{not json"))
 	require.NoError(t, err)
+	_, err = svc.natgwIdxKV.Put(t.Context(), SubnetNatGatewayKey(testAccountID, "subnet-0other", "nat-0abc"), []byte("nat-0abc"))
+	require.NoError(t, err)
 
 	_, err = svc.DeleteSubnet(t.Context(), &ec2.DeleteSubnetInput{SubnetId: aws.String(subnetID)}, testAccountID)
-	assert.ErrorContains(t, err, "ServerInternal")
+	require.NoError(t, err)
+}
+
+// failGetKV wraps a real KeyValue and fails every Get.
+type failGetKV struct {
+	jetstream.KeyValue
+}
+
+func (failGetKV) Get(context.Context, string) (jetstream.KeyValueEntry, error) {
+	return nil, errors.New("simulated KV read failure")
+}
+
+// TestDeleteSubnet_NatGatewayCheckFailsClosedOnReadError asserts a failed read
+// of an indexed gateway blocks DeleteSubnet and keeps the subnet.
+func TestDeleteSubnet_NatGatewayCheckFailsClosedOnReadError(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.69.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.69.1.0/24")
+	_, err := svc.natgwIdxKV.Put(t.Context(), SubnetNatGatewayKey(testAccountID, subnetID, "nat-0abc"), []byte("nat-0abc"))
+	require.NoError(t, err)
+	svc.natgwKV = failGetKV{KeyValue: svc.natgwKV}
+
+	_, err = svc.DeleteSubnet(t.Context(), &ec2.DeleteSubnetInput{SubnetId: aws.String(subnetID)}, testAccountID)
+	require.ErrorContains(t, err, awserrors.ErrorServerInternal)
+
+	desc, err := svc.DescribeSubnets(t.Context(), &ec2.DescribeSubnetsInput{SubnetIds: []*string{aws.String(subnetID)}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Subnets, 1)
 }

@@ -92,6 +92,7 @@ type VPCServiceImpl struct {
 	igwKV      jetstream.KeyValue // internet gateway bucket for the DeleteVpc dependency check
 	eigwKV     jetstream.KeyValue // egress-only internet gateway bucket for the DeleteVpc dependency check
 	natgwKV    jetstream.KeyValue // NAT gateway bucket for the DeleteSubnet dependency check
+	natgwIdxKV jetstream.KeyValue // per-subnet NAT gateway index for the same check
 	ipam       *IPAM
 
 	// Optional: injected after construction for public IP cleanup in DeleteNetworkInterface.
@@ -237,9 +238,13 @@ func NewVPCServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV bucket spinifex-eigw: %w", err)
 	}
-	natgwKV, err := kvstore.GetOrCreateBucket(ctx, js, "spinifex-vpc-nat-gateways", 10)
+	natgwKV, err := kvstore.GetOrCreateBucket(ctx, js, kvBucketNatGateways, 10)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create KV bucket spinifex-vpc-nat-gateways: %w", err)
+		return nil, fmt.Errorf("failed to create KV bucket %s: %w", kvBucketNatGateways, err)
+	}
+	natgwIdxKV, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketSubnetNatGateways, KVBucketSubnetNatGatewaysHistory)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketSubnetNatGateways, err)
 	}
 
 	ipam, err := NewIPAM(ctx, js)
@@ -267,6 +272,7 @@ func NewVPCServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn
 		igwKV:      igwKV,
 		eigwKV:     eigwKV,
 		natgwKV:    natgwKV,
+		natgwIdxKV: natgwIdxKV,
 		ipam:       ipam,
 	}, nil
 }
@@ -928,45 +934,6 @@ func (s *VPCServiceImpl) checkSubnetResidents(ctx context.Context, accountID, su
 		}
 	}
 	return s.checkSubnetNatGateways(ctx, accountID, subnetID)
-}
-
-// checkSubnetNatGateways returns DependencyViolation while a NAT gateway names
-// the subnet, since it holds no interface record the ENI scan could find. A
-// deleted gateway leaves this bucket. Fail-closed on a KV read error.
-func (s *VPCServiceImpl) checkSubnetNatGateways(ctx context.Context, accountID, subnetID string) error {
-	keys, err := s.natgwKV.Keys(ctx)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil
-		}
-		slog.ErrorContext(ctx, "DeleteSubnet: NAT gateway scan failed, blocking delete", "subnetId", subnetID, "err", err)
-		return errors.New(awserrors.ErrorServerInternal)
-	}
-	prefix := accountID + "."
-	for _, key := range keys {
-		if key == kvstore.VersionKey || !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		entry, err := s.natgwKV.Get(ctx, key)
-		if err != nil {
-			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				continue
-			}
-			return errors.New(awserrors.ErrorServerInternal)
-		}
-		// natgw imports this package, so its record type cannot be named here.
-		var gw struct {
-			SubnetId string `json:"subnet_id"`
-		}
-		if err := json.Unmarshal(entry.Value(), &gw); err != nil {
-			slog.ErrorContext(ctx, "DeleteSubnet: NAT gateway unmarshal failed, blocking delete", "subnetId", subnetID, "key", key, "err", err)
-			return errors.New(awserrors.ErrorServerInternal)
-		}
-		if gw.SubnetId == subnetID {
-			return awserrors.HasDependencies("subnet", subnetID)
-		}
-	}
-	return nil
 }
 
 // clearRouteTableAssociationsForSubnet removes every route table association

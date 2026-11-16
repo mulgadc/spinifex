@@ -273,6 +273,20 @@ func TestChangeBatchValidation(t *testing.T) {
 	requireCode(t, err, awserrors.ErrorInvalidInput)
 }
 
+func TestChangeWithoutTTLAnswersInvalidInput(t *testing.T) {
+	svc := newService(t)
+	id := createZone(t, svc, acctA, "example.com")
+	for _, action := range []string{"CREATE", "UPSERT", "DELETE"} {
+		t.Run(action, func(t *testing.T) {
+			ch := change(action, "nottl.example.com", "A", 0, "192.0.2.1")
+			ch.ResourceRecordSet.TTL = nil
+			_, err := apply(svc, acctA, id, ch)
+			assert.Equal(t, "Invalid request: Expected exactly one of [AliasTarget, all of [TTL, and ResourceRecords], or TrafficPolicyInstanceId], but found none in Change with [Action="+action+", Name=nottl.example.com, Type=A, SetIdentifier=null]",
+				requireCode(t, err, awserrors.ErrorInvalidInput))
+		})
+	}
+}
+
 // TestErrorMessagesMatchAWS pins the code and text real Route 53 returned for
 // each case, with the zone and names the recording used.
 func TestErrorMessagesMatchAWS(t *testing.T) {

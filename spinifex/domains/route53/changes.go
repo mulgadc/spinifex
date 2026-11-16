@@ -43,7 +43,7 @@ func applyChangeBatch(zone string, sets []RRSet, batch *route53.ChangeBatch) ([]
 		if ch == nil || ch.ResourceRecordSet == nil {
 			return nil, awserrors.Errorf(awserrors.ErrorInvalidInput, "every change needs an Action and a ResourceRecordSet")
 		}
-		set, err := toRRSet(zone, ch.ResourceRecordSet)
+		set, err := toRRSet(zone, aws.StringValue(ch.Action), ch.ResourceRecordSet)
 		if err != nil {
 			if code, _, ok := awserrors.ResolveErrorDetail(err); ok && code != awserrors.ErrorInvalidChangeBatch {
 				return nil, err
@@ -167,7 +167,7 @@ func sortedCopy(v []string) []string {
 
 // toRRSet validates one wire record set and converts it. Routing policies,
 // alias targets and health checks are refused with InvalidInput.
-func toRRSet(zone string, in *route53.ResourceRecordSet) (RRSet, error) {
+func toRRSet(zone, action string, in *route53.ResourceRecordSet) (RRSet, error) {
 	if in.AliasTarget != nil {
 		return RRSet{}, awserrors.Errorf(awserrors.ErrorInvalidInput, "alias records are not supported")
 	}
@@ -190,7 +190,7 @@ func toRRSet(zone string, in *route53.ResourceRecordSet) (RRSet, error) {
 		return RRSet{}, awserrors.Errorf(awserrors.ErrorInvalidInput, "wildcard records are supported only directly below the zone apex, as *.%s", zone)
 	}
 	if in.TTL == nil {
-		return RRSet{}, awserrors.Errorf(awserrors.ErrorInvalidChangeBatch, "Invalid request: Expected exactly one of [AliasTarget, all of [TTL, and ResourceRecords]], but found none in Change with [Name=%s, Type=%s, SetIdentifier=null]", name, rrType)
+		return RRSet{}, awserrors.Errorf(awserrors.ErrorInvalidInput, "Invalid request: Expected exactly one of [AliasTarget, all of [TTL, and ResourceRecords], or TrafficPolicyInstanceId], but found none in Change with [Action=%s, Name=%s, Type=%s, SetIdentifier=null]", action, aws.StringValue(in.Name), rrType)
 	}
 	ttl := aws.Int64Value(in.TTL)
 	if ttl < 0 || ttl > maxTTL {

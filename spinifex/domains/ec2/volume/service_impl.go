@@ -934,6 +934,8 @@ func metadataVolumeToEC2(meta ebsmetadata.Volume) *ec2.Volume {
 		VolumeType: aws.String(volumeType), Encrypted: aws.Bool(meta.Encrypted), Tags: awstags.MapToEC2(meta.Tags),
 		// AWS reports SnapshotId as "" for a volume not made from a snapshot.
 		SnapshotId: aws.String(meta.SnapshotID), MultiAttachEnabled: aws.Bool(false),
+		// DescribeVolumes renders an unattached volume's attachmentSet empty.
+		Attachments: []*ec2.VolumeAttachment{},
 	}
 	if meta.IOPS > 0 {
 		volume.Iops = aws.Int64(int64(meta.IOPS))

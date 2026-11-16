@@ -153,7 +153,7 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 	if err != nil {
 		return nil, err
 	}
-	if !found {
+	if !found || clusterRec.Status == ClusterStatusInactive {
 		return nil, errors.New(awserrors.ErrorECSClusterNotFound)
 	}
 

@@ -65,7 +65,7 @@ func (s *Service) StartTask(ctx context.Context, input *ecs.StartTaskInput, acco
 	if err != nil {
 		return nil, err
 	}
-	if !found {
+	if !found || clusterRec.Status == ClusterStatusInactive {
 		return nil, errors.New(awserrors.ErrorECSClusterNotFound)
 	}
 	taskDef, err := s.resolveTaskDef(ctx, kv, aws.StringValue(input.TaskDefinition))

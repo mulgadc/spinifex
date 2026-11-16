@@ -28,7 +28,7 @@ func (s *Service) PutClusterCapacityProviders(ctx context.Context, input *ecs.Pu
 	if err != nil {
 		return nil, err
 	}
-	if !found {
+	if !found || rec.Status == ClusterStatusInactive {
 		return nil, errors.New(awserrors.ErrorECSClusterNotFound)
 	}
 

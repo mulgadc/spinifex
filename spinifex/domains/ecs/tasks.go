@@ -41,7 +41,7 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 	if err != nil {
 		return nil, err
 	}
-	if !found {
+	if !found || clusterRec.Status == ClusterStatusInactive {
 		return nil, errors.New(awserrors.ErrorECSClusterNotFound)
 	}
 
@@ -315,7 +315,7 @@ func (s *Service) ListTasks(ctx context.Context, input *ecs.ListTasksInput, acco
 	if err != nil {
 		return nil, err
 	}
-	if !found {
+	if !found || clusterRec.Status == ClusterStatusInactive {
 		return nil, errors.New(awserrors.ErrorECSClusterNotFound)
 	}
 	keys, err := taskdefinition.KeysWithPrefix(ctx, kv, TasksPrefix(cluster))

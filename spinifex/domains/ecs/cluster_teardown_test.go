@@ -24,13 +24,104 @@ func TestService_DeleteCluster_CascadesAndSweeps(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, ClusterStatusInactive, aws.StringValue(out.Cluster.Status))
 
-	// Whole cluster subtree swept: no clusters, no leftover task/service keys.
+	// Cluster subtree swept down to the INACTIVE meta record, which ListClusters
+	// leaves out.
 	list, err := svc.ListClusters(context.Background(), &ecs.ListClustersInput{}, testAccountID)
 	require.NoError(t, err)
 	assert.Empty(t, list.ClusterArns)
 	keys, err := taskdefinition.KeysWithPrefix(t.Context(), kv, clusterKeyPrefix("web"))
 	require.NoError(t, err)
-	assert.Empty(t, keys)
+	assert.Equal(t, []string{ClusterMetaKey("web")}, keys)
+}
+
+// A deleted cluster still describes as INACTIVE with zeroed counts, as on AWS,
+// and every other action treats it as not found.
+func TestService_DeleteCluster_LeavesInactiveRecord(t *testing.T) {
+	svc, _, _ := serviceTestRig(t)
+	ctx := context.Background()
+	_, err := svc.CreateCluster(ctx, &ecs.CreateClusterInput{
+		ClusterName: aws.String("web"),
+		Tags:        []*ecs.Tag{{Key: aws.String("k"), Value: aws.String("v")}},
+	}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.RunTask(ctx, &ecs.RunTaskInput{Cluster: aws.String("web"), TaskDefinition: aws.String("app")}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.DeleteCluster(ctx, &ecs.DeleteClusterInput{Cluster: aws.String("web")}, testAccountID)
+	require.NoError(t, err)
+
+	out, err := svc.DescribeClusters(ctx, &ecs.DescribeClustersInput{
+		Clusters: []*string{aws.String("web")}, Include: aws.StringSlice([]string{ecs.ClusterFieldTags}),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, out.Failures)
+	require.Len(t, out.Clusters, 1)
+	c := out.Clusters[0]
+	assert.Equal(t, ClusterStatusInactive, aws.StringValue(c.Status))
+	assert.Equal(t, ClusterARN(testRegion, testAccountID, "web"), aws.StringValue(c.ClusterArn))
+	assert.Zero(t, aws.Int64Value(c.RegisteredContainerInstancesCount))
+	assert.Zero(t, aws.Int64Value(c.RunningTasksCount))
+	assert.Zero(t, aws.Int64Value(c.PendingTasksCount))
+	assert.Zero(t, aws.Int64Value(c.ActiveServicesCount))
+	assert.Empty(t, c.Tags)
+
+	arn := aws.String(ClusterARN(testRegion, testAccountID, "web"))
+	cluster := aws.String("web")
+	calls := map[string]func() error{
+		"DeleteCluster": func() error {
+			_, err := svc.DeleteCluster(ctx, &ecs.DeleteClusterInput{Cluster: cluster}, testAccountID)
+			return err
+		},
+		"PutClusterCapacityProviders": func() error {
+			_, err := svc.PutClusterCapacityProviders(ctx, &ecs.PutClusterCapacityProvidersInput{
+				Cluster: cluster, CapacityProviders: []*string{}, DefaultCapacityProviderStrategy: []*ecs.CapacityProviderStrategyItem{},
+			}, testAccountID)
+			return err
+		},
+		"ListTagsForResource": func() error {
+			_, err := svc.ListTagsForResource(ctx, &ecs.ListTagsForResourceInput{ResourceArn: arn}, testAccountID)
+			return err
+		},
+		"TagResource": func() error {
+			_, err := svc.TagResource(ctx, &ecs.TagResourceInput{
+				ResourceArn: arn, Tags: []*ecs.Tag{{Key: aws.String("k"), Value: aws.String("v")}},
+			}, testAccountID)
+			return err
+		},
+		"CreateService": func() error {
+			_, err := svc.CreateService(ctx, &ecs.CreateServiceInput{
+				Cluster: cluster, ServiceName: aws.String("svc"), TaskDefinition: aws.String("app"), DesiredCount: aws.Int64(1),
+			}, testAccountID)
+			return err
+		},
+		"RunTask": func() error {
+			_, err := svc.RunTask(ctx, &ecs.RunTaskInput{Cluster: cluster, TaskDefinition: aws.String("app")}, testAccountID)
+			return err
+		},
+		"StartTask": func() error {
+			_, err := svc.StartTask(ctx, &ecs.StartTaskInput{
+				Cluster: cluster, TaskDefinition: aws.String("app"), ContainerInstances: aws.StringSlice([]string{"i-1"}),
+			}, testAccountID)
+			return err
+		},
+		"ListTasks": func() error {
+			_, err := svc.ListTasks(ctx, &ecs.ListTasksInput{Cluster: cluster}, testAccountID)
+			return err
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			code, _, ok := awserrors.ResolveErrorDetail(call())
+			require.True(t, ok)
+			assert.Equal(t, awserrors.ErrorECSClusterNotFound, code)
+		})
+	}
+
+	created, err := svc.CreateCluster(ctx, &ecs.CreateClusterInput{ClusterName: cluster}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, ClusterStatusActive, aws.StringValue(created.Cluster.Status))
+	list, err := svc.ListClusters(ctx, &ecs.ListClustersInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, []*string{arn}, list.ClusterArns)
 }
 
 func TestService_DeleteCluster_Unknown(t *testing.T) {

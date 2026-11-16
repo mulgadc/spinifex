@@ -82,7 +82,7 @@ func (s *Service) resourceTags(ctx context.Context, kv jetstream.KeyValue, kind 
 		if err != nil {
 			return nil, err
 		}
-		if !found {
+		if !found || rec.Status == ClusterStatusInactive {
 			return nil, errors.New(awserrors.ErrorECSClusterNotFound)
 		}
 		return rec.Tags, nil
@@ -146,7 +146,7 @@ func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue,
 		if err != nil {
 			return err
 		}
-		if !found {
+		if !found || rec.Status == ClusterStatusInactive {
 			return errors.New(awserrors.ErrorECSClusterNotFound)
 		}
 		tags, err := mutate(rec.Tags)

@@ -190,7 +190,8 @@ func deleteKeysWithPrefix(ctx context.Context, kv jetstream.KeyValue, prefix str
 // --- Cluster ---
 
 // CreateCluster persists a cluster meta record. Idempotent: re-creating an
-// existing cluster returns the existing ACTIVE record.
+// existing cluster returns the existing ACTIVE record. A deleted (INACTIVE)
+// cluster of the same name is replaced by a new one.
 func (s *Service) CreateCluster(ctx context.Context, input *ecs.CreateClusterInput, accountID string) (*ecs.CreateClusterOutput, error) {
 	if err := validateTags(input.Tags); err != nil {
 		return nil, err
@@ -208,6 +209,9 @@ func (s *Service) CreateCluster(ctx context.Context, input *ecs.CreateClusterInp
 	found, err := taskdefinition.GetJSON(ctx, kv, ClusterMetaKey(name), &rec)
 	if err != nil {
 		return nil, err
+	}
+	if found && rec.Status == ClusterStatusInactive {
+		found = false
 	}
 	if !found {
 		rec = ClusterRecord{
@@ -356,7 +360,8 @@ func (s *Service) applyClusterCounts(ctx context.Context, kv jetstream.KeyValue,
 	return counts, nil
 }
 
-// ListClusters returns the ARNs of all clusters in the account.
+// ListClusters returns the ARNs of the account's clusters, leaving out deleted
+// (INACTIVE) ones.
 func (s *Service) ListClusters(ctx context.Context, _ *ecs.ListClustersInput, accountID string) (*ecs.ListClustersOutput, error) {
 	kv, err := s.bucket(ctx, accountID)
 	if err != nil {
@@ -376,7 +381,7 @@ func (s *Service) ListClusters(ctx context.Context, _ *ecs.ListClustersInput, ac
 		if err != nil {
 			return nil, err
 		}
-		if found {
+		if found && rec.Status != ClusterStatusInactive {
 			arns = append(arns, rec.ARN)
 		}
 	}

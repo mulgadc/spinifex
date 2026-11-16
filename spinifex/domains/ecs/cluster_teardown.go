@@ -21,8 +21,9 @@ func clusterKeyPrefix(cluster string) string {
 // rejects a non-empty cluster), Mulga cascades so terraform destroy round-trips
 // regardless of teardown ordering: every non-STOPPED task is force-stopped
 // (releasing ENIs, deregistering TG targets, returning capacity), every service
-// is marked INACTIVE, then the whole clusters/{name}/ prefix is deleted. Returns
-// the cluster with Status INACTIVE.
+// is marked INACTIVE, then the clusters/{name}/ prefix is deleted. The meta
+// record is kept as INACTIVE, without tags, so DescribeClusters still lists the
+// deleted cluster as AWS does.
 func (s *Service) DeleteCluster(ctx context.Context, input *ecs.DeleteClusterInput, accountID string) (*ecs.DeleteClusterOutput, error) {
 	// cluster is required here; ClusterShortName would resolve an omitted one
 	// to the default cluster and delete it.
@@ -39,7 +40,7 @@ func (s *Service) DeleteCluster(ctx context.Context, input *ecs.DeleteClusterInp
 	if err != nil {
 		return nil, err
 	}
-	if !found {
+	if !found || rec.Status == ClusterStatusInactive {
 		return nil, errors.New(awserrors.ErrorECSClusterNotFound)
 	}
 
@@ -56,9 +57,11 @@ func (s *Service) DeleteCluster(ctx context.Context, input *ecs.DeleteClusterInp
 	}
 
 	rec.Status = ClusterStatusInactive
-	c := rec.toAWS()
-	c.Tags = []*ecs.Tag{}
-	return &ecs.DeleteClusterOutput{Cluster: c}, nil
+	rec.Tags = nil
+	if err := taskdefinition.PutJSON(ctx, kv, ClusterMetaKey(cluster), &rec); err != nil {
+		return nil, err
+	}
+	return &ecs.DeleteClusterOutput{Cluster: rec.toAWS()}, nil
 }
 
 // DeregisterContainerInstance removes a container instance from a cluster. With

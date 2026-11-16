@@ -162,8 +162,7 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 	if ok, gerr := taskdefinition.GetJSON(ctx, kv, ServiceKey(cluster, name), &existing); gerr != nil {
 		return nil, gerr
 	} else if ok && existing.Status == ServiceStatusActive {
-		token := aws.StringValue(input.ClientToken)
-		if token == "" || token != existing.ClientToken || createServiceFingerprint(input) != existing.CreateFingerprint {
+		if aws.StringValue(input.ClientToken) != existing.ClientToken || createServiceFingerprint(input) != existing.CreateFingerprint {
 			return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "Creation of service was not idempotent.")
 		}
 		return &ecs.CreateServiceOutput{Service: s.serviceToAWS(accountID, &existing)}, nil

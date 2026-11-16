@@ -2697,3 +2697,52 @@ func TestCreateSubnet_ZoneStoreFailureWritesNothingAndPublishesNothing(t *testin
 	}
 	assert.Zero(t, events.Load(), "no topology event may be published")
 }
+
+// TestDeleteSubnet_NatGateway asserts a NAT gateway pins its subnet with
+// AWS's DependencyViolation text until the gateway is deleted.
+func TestDeleteSubnet_NatGateway(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		state   string
+		wantErr bool
+	}{
+		{state: "available", wantErr: true},
+		{state: "pending", wantErr: true},
+		{state: "deleted", wantErr: false},
+	} {
+		t.Run(tc.state, func(t *testing.T) {
+			t.Parallel()
+			svc := setupTestVPCService(t)
+			vpcID := createTestVPC(t, svc, "10.67.0.0/16")
+			subnetID := createTestSubnet(t, svc, vpcID, "10.67.1.0/24")
+			rec := fmt.Sprintf(`{"nat_gateway_id":"nat-0abc","vpc_id":%q,"subnet_id":%q,"state":%q}`, vpcID, subnetID, tc.state)
+			_, err := svc.natgwKV.Put(t.Context(), testAccountID+".nat-0abc", []byte(rec))
+			require.NoError(t, err)
+
+			_, err = svc.DeleteSubnet(t.Context(), &ec2.DeleteSubnetInput{SubnetId: aws.String(subnetID)}, testAccountID)
+			if !tc.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			testutil.RequireAWSError(t, err, awserrors.ErrorDependencyViolation, "The subnet '"+subnetID+"' has dependencies and cannot be deleted.")
+
+			desc, err := svc.DescribeSubnets(t.Context(), &ec2.DescribeSubnetsInput{SubnetIds: []*string{aws.String(subnetID)}}, testAccountID)
+			require.NoError(t, err)
+			require.Len(t, desc.Subnets, 1)
+		})
+	}
+}
+
+// TestDeleteSubnet_NatGatewayCheckFailsClosedOnCorruptRecord asserts an
+// undecodable NAT gateway record blocks DeleteSubnet.
+func TestDeleteSubnet_NatGatewayCheckFailsClosedOnCorruptRecord(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	vpcID := createTestVPC(t, svc, "10.68.0.0/16")
+	subnetID := createTestSubnet(t, svc, vpcID, "10.68.1.0/24")
+	_, err := svc.natgwKV.Put(t.Context(), testAccountID+".nat-0abc", []byte("{not json"))
+	require.NoError(t, err)
+
+	_, err = svc.DeleteSubnet(t.Context(), &ec2.DeleteSubnetInput{SubnetId: aws.String(subnetID)}, testAccountID)
+	assert.ErrorContains(t, err, "ServerInternal")
+}

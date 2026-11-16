@@ -46,6 +46,9 @@ func runningCfg() InstanceProjection {
 // stoppedCfg is the projection the stopped/terminated KV path passes.
 func stoppedCfg(code int64, name string) InstanceProjection {
 	return InstanceProjection{
+		Region:            "us-east-1",
+		DNSBaseDomain:     "example.com",
+		DNSInternalDomain: "compute.internal",
 		AZ:                "us-east-1a",
 		FallbackStateCode: code,
 		FallbackStateName: name,
@@ -95,15 +98,54 @@ func TestProjectInstance_StoppedRetainsPlacementAndSpot(t *testing.T) {
 	assert.Equal(t, "spot", aws.StringValue(got.InstanceLifecycle))
 	assert.Equal(t, "sir-1", aws.StringValue(got.SpotInstanceRequestId))
 
-	// Released on stop, so never projected onto a stopped instance.
-	assert.Nil(t, got.PublicIpAddress)
+	// The private name survives a stop; the public one reads "" once the
+	// address is released, as AWS reports it.
+	assert.Equal(t, "ip-10-0-0-5.us-east-1.compute.internal", aws.StringValue(got.PrivateDnsName))
 	require.NotNil(t, got.PublicDnsName)
 	assert.Empty(t, *got.PublicDnsName)
-	assert.Nil(t, got.PrivateDnsName)
+
+	// Released on stop, so never projected onto a stopped instance.
+	assert.Nil(t, got.PublicIpAddress)
 	assert.Nil(t, got.CapacityReservationId)
 	assert.Equal(t, &ec2.CapacityReservationSpecificationResponse{
 		CapacityReservationPreference: aws.String(ec2.CapacityReservationPreferenceOpen),
 	}, got.CapacityReservationSpecification)
+}
+
+// A terminated instance has given up its interfaces, volumes and addresses, so
+// AWS reports them empty and omits the fields derived from them, while the
+// reason the customer terminated it stays.
+func TestProjectInstance_TerminatedDropsNetworkAndDevices(t *testing.T) {
+	v := fullVM(vm.StateTerminated)
+	v.Instance.SubnetId = aws.String("subnet-1")
+	v.Instance.VpcId = aws.String("vpc-1")
+	v.Instance.BlockDeviceMappings = []*ec2.InstanceBlockDeviceMapping{{DeviceName: aws.String("/dev/xvda")}}
+	v.Instance.NetworkInterfaces = []*ec2.InstanceNetworkInterface{{NetworkInterfaceId: aws.String("eni-1")}}
+	v.Instance.SecurityGroups = []*ec2.GroupIdentifier{{GroupId: aws.String("sg-1")}}
+	v.Instance.StateReason = &ec2.StateReason{Code: aws.String("Client.UserInitiatedShutdown")}
+
+	got, _ := ProjectInstance(v, stoppedCfg(48, "terminated"))
+
+	assert.Equal(t, "terminated", aws.StringValue(got.State.Name))
+	require.NotNil(t, got.PrivateDnsName)
+	assert.Empty(t, *got.PrivateDnsName)
+	require.NotNil(t, got.PublicDnsName)
+	assert.Empty(t, *got.PublicDnsName)
+	assert.Nil(t, got.PrivateIpAddress)
+	assert.Nil(t, got.SubnetId)
+	assert.Nil(t, got.VpcId)
+	assert.Nil(t, got.SourceDestCheck)
+	assert.NotNil(t, got.BlockDeviceMappings)
+	assert.Empty(t, got.BlockDeviceMappings)
+	assert.NotNil(t, got.NetworkInterfaces)
+	assert.Empty(t, got.NetworkInterfaces)
+	assert.NotNil(t, got.SecurityGroups)
+	assert.Empty(t, got.SecurityGroups)
+	assert.Equal(t, "Client.UserInitiatedShutdown", aws.StringValue(got.StateReason.Code))
+
+	// The stored record keeps them: only the projection drops them.
+	assert.Equal(t, "10.0.0.5", aws.StringValue(v.Instance.PrivateIpAddress))
+	assert.Len(t, v.Instance.NetworkInterfaces, 1)
 }
 
 // TestProjectInstance_ProjectsAZWithoutPlacementGroup is the direct bug fix: an

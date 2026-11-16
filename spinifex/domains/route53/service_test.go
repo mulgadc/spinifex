@@ -228,7 +228,7 @@ func TestChangeBatchIsAllOrNothing(t *testing.T) {
 func TestChangeBatchValidation(t *testing.T) {
 	svc := newService(t)
 	id := createZone(t, svc, acctA, "example.com")
-	_, err := apply(svc, acctA, id, change("CREATE", "www.example.com", "A", 60, "192.0.2.1"))
+	_, err := apply(svc, acctA, id, change("CREATE", "www.example.com", "A", 60, "192.0.2.1"), change("CREATE", "cn.example.com", "CNAME", 60, "x.example.net"))
 	require.NoError(t, err)
 
 	alias := change("CREATE", "lb.example.com", "A", 60)
@@ -244,7 +244,8 @@ func TestChangeBatchValidation(t *testing.T) {
 		code   string
 		msg    string
 	}{
-		{"CNAME beside A", change("CREATE", "www.example.com", "CNAME", 60, "x.example.net"), awserrors.ErrorInvalidChangeBatch, "conflicting RRSet of type A"},
+		{"CNAME beside A", change("CREATE", "www.example.com", "CNAME", 60, "x.example.net"), awserrors.ErrorInvalidChangeBatch, "conflicts with other records"},
+		{"TXT beside CNAME", change("CREATE", "cn.example.com", "TXT", 60, `"v"`), awserrors.ErrorInvalidChangeBatch, "because a conflicting RRSet of type CNAME with the same DNS name already exists"},
 		{"CNAME at apex", change("CREATE", "example.com", "CNAME", 60, "x.example.net"), awserrors.ErrorInvalidChangeBatch, "not permitted at apex"},
 		{"name outside zone", change("CREATE", "www.example.org", "A", 60, "192.0.2.1"), awserrors.ErrorInvalidChangeBatch, "is not permitted in zone example.com."},
 		{"apex NS delete", change("DELETE", "example.com", "NS", 172800, "ns1.spx3.net.", "ns2.spx3.net."), awserrors.ErrorInvalidChangeBatch, "must contain at least one NS record"},
@@ -270,6 +271,72 @@ func TestChangeBatchValidation(t *testing.T) {
 
 	_, err = apply(svc, acctA, id)
 	requireCode(t, err, awserrors.ErrorInvalidInput)
+}
+
+func TestChangeWithoutTTLAnswersInvalidInput(t *testing.T) {
+	svc := newService(t)
+	id := createZone(t, svc, acctA, "example.com")
+	for _, action := range []string{"CREATE", "UPSERT", "DELETE"} {
+		t.Run(action, func(t *testing.T) {
+			ch := change(action, "nottl.example.com", "A", 0, "192.0.2.1")
+			ch.ResourceRecordSet.TTL = nil
+			_, err := apply(svc, acctA, id, ch)
+			assert.Equal(t, "Invalid request: Expected exactly one of [AliasTarget, all of [TTL, and ResourceRecords], or TrafficPolicyInstanceId], but found none in Change with [Action="+action+", Name=nottl.example.com, Type=A, SetIdentifier=null]",
+				requireCode(t, err, awserrors.ErrorInvalidInput))
+		})
+	}
+}
+
+// TestErrorMessagesMatchAWS pins the code and text real Route 53 returned for
+// each case, with the zone and names the recording used.
+func TestErrorMessagesMatchAWS(t *testing.T) {
+	const zone = "awsdiffn103710.awsdiff-mulga.net"
+	svc := newService(t)
+	id := createZone(t, svc, acctA, zone)
+	_, err := apply(svc, acctA, id, change("CREATE", "www."+zone, "A", 60, "192.0.2.1"))
+	require.NoError(t, err)
+	var soa []string
+	for _, s := range listSets(t, svc, acctA, id) {
+		if f := strings.SplitN(s, " ", 4); f[1] == "SOA" {
+			soa = []string{f[3]}
+		}
+	}
+	require.NotEmpty(t, soa)
+
+	createErr := func(name string) error {
+		_, err := svc.CreateHostedZone(ctx, &r53.CreateHostedZoneInput{Name: aws.String(name), CallerReference: aws.String("r-" + name)}, acctA)
+		return err
+	}
+	applyErr := func(c *r53.Change) error {
+		_, err := apply(svc, acctA, id, c)
+		return err
+	}
+	cases := []struct {
+		name string
+		err  error
+		code string
+		msg  string
+	}{
+		{"CreateHostedZone.badName", createErr("bad..awsdiffn103710.awsdiff-mulga.net"), awserrors.ErrorInvalidDomainName,
+			"FATAL problem: DomainLabelEmpty (Domain label is empty) encountered with 'bad..awsdiffn103710.awsdiff-mulga.net'"},
+		{"CreateHostedZone.tld", createErr("com"), awserrors.ErrorInvalidDomainName, "com is reserved by AWS!"},
+		{"ChangeResourceRecordSets.cnameBesideA", applyErr(change("CREATE", "www."+zone, "CNAME", 60, "x.example.net")), awserrors.ErrorInvalidChangeBatch,
+			"[RRSet of type CNAME with DNS name www.awsdiffn103710.awsdiff-mulga.net. is not permitted as it conflicts with other records with the same DNS name in zone awsdiffn103710.awsdiff-mulga.net.]"},
+		{"ChangeResourceRecordSets.badIPv4", applyErr(change("CREATE", "bad."+zone, "A", 60, "999.1.1.1")), awserrors.ErrorInvalidChangeBatch,
+			"[Invalid Resource Record: 'FATAL problem: ARRDATAIllegalIPv4Address (Value is not a valid IPv4 address) encountered with '999.1.1.1'']"},
+		{"ChangeResourceRecordSets.deleteSOA", applyErr(change("DELETE", zone, "SOA", 900, soa...)), awserrors.ErrorInvalidChangeBatch,
+			"[A HostedZone must contain exactly one SOA record.]"},
+		{"DeleteHostedZone.notEmpty", func() error {
+			_, err := svc.DeleteHostedZone(ctx, &r53.DeleteHostedZoneInput{Id: aws.String(id)}, acctA)
+			return err
+		}(), awserrors.ErrorHostedZoneNotEmpty,
+			"The specified hosted zone contains resource record sets other than the default SOA and NS records and so cannot be deleted. Delete all non-default records and try again."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.msg, requireCode(t, tc.err, tc.code))
+		})
+	}
 }
 
 func TestChangeBatchSizeLimits(t *testing.T) {

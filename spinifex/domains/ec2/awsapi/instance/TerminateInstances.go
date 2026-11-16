@@ -97,7 +97,7 @@ func TerminateInstances(ctx context.Context, input *ec2.TerminateInstancesInput,
 					if code != awserrors.ErrorInvalidInstanceIDNotFound {
 						slog.ErrorContext(ctx, "TerminateInstances: ec2.terminate refused the instance",
 							"instance_id", instanceID, "code", code)
-						return nil, errors.New(code)
+						return nil, awserrors.ResponseErrorToError(responseError)
 					}
 					daemonReportedAbsent = true
 					slog.InfoContext(ctx, "TerminateInstances: instance is not a stopped instance, checking the instance buckets",
@@ -127,7 +127,7 @@ func TerminateInstances(ctx context.Context, input *ec2.TerminateInstancesInput,
 
 		if responseError, parseErr := awserrors.ValidateErrorPayload(msg.Data); parseErr != nil {
 			slog.ErrorContext(ctx, "TerminateInstances: Daemon returned error", "instance_id", instanceID, "code", *responseError.Code)
-			return nil, errors.New(*responseError.Code)
+			return nil, awserrors.ResponseErrorToError(responseError)
 		}
 
 		slog.InfoContext(ctx, "TerminateInstances: Command sent successfully", "instance_id", instanceID, "response", string(msg.Data))

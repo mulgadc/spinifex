@@ -68,6 +68,28 @@ variable "instance_principal" {
   }
 }
 
+# What backs EBS on these nodes, which decides only the policy grants. ocibsd,
+# the default, is what spx admin init detects on any OCI instance; viperblockd
+# also needs SPINIFEX_EBS_PROVIDER=viperblockd at init.
+variable "ebs_provider" {
+  description = "EBS provider the nodes are installed with: ocibsd for OCI Block Volumes, or viperblockd."
+  type        = string
+  default     = "ocibsd"
+
+  validation {
+    condition     = contains(["viperblockd", "ocibsd"], var.ebs_provider)
+    error_message = "ebs_provider must be viperblockd or ocibsd."
+  }
+}
+
+# Named only in the api_key_policy_statements output, which a tenancy admin
+# applies to the group holding the API user that spx-oci-config.sh installs.
+variable "api_key_group_name" {
+  description = "IAM group of the API-key user the nodes authenticate as when instance_principal is off."
+  type        = string
+  default     = "spinifex-nodes"
+}
+
 variable "vcn_cidr" {
   description = "VCN address space. A /22 leaves room for the per-node secondary private IPs Spinifex allocates for external addresses."
   type        = string

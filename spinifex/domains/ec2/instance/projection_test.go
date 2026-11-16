@@ -107,7 +107,9 @@ func TestProjectInstance_StoppedRetainsPlacementAndSpot(t *testing.T) {
 	// Released on stop, so never projected onto a stopped instance.
 	assert.Nil(t, got.PublicIpAddress)
 	assert.Nil(t, got.CapacityReservationId)
-	assert.Nil(t, got.CapacityReservationSpecification)
+	assert.Equal(t, &ec2.CapacityReservationSpecificationResponse{
+		CapacityReservationPreference: aws.String(ec2.CapacityReservationPreferenceOpen),
+	}, got.CapacityReservationSpecification)
 }
 
 // A terminated instance has given up its interfaces, volumes and addresses, so
@@ -164,7 +166,9 @@ func TestProjectInstance_ProjectsAZWithoutPlacementGroup(t *testing.T) {
 
 			require.NotNil(t, got.Placement)
 			assert.Equal(t, "us-east-1a", aws.StringValue(got.Placement.AvailabilityZone))
-			assert.Nil(t, got.Placement.GroupName)
+			require.NotNil(t, got.Placement.GroupName)
+			assert.Empty(t, *got.Placement.GroupName)
+			assert.Equal(t, ec2.TenancyDefault, aws.StringValue(got.Placement.Tenancy))
 		})
 	}
 }
@@ -336,6 +340,124 @@ func TestProjectInstance_PrimaryNICAssociation(t *testing.T) {
 		require.Len(t, got.NetworkInterfaces, 2)
 		assert.Nil(t, got.NetworkInterfaces[0].Association)
 	})
+}
+
+// An interface stored without the launch-time fields still reports the ones
+// projected at describe time, and its PrivateIpAddresses entry carries the association only while the
+// public address is held.
+func TestProjectInstance_InterfaceFields(t *testing.T) {
+	v := fullVM(vm.StateRunning)
+	v.Instance.NetworkInterfaces = []*ec2.InstanceNetworkInterface{{
+		NetworkInterfaceId: aws.String("eni-primary"),
+		PrivateIpAddress:   aws.String("10.0.0.5"),
+		Attachment:         &ec2.InstanceNetworkInterfaceAttachment{DeviceIndex: aws.Int64(0)},
+	}}
+
+	running, _ := ProjectInstance(v, runningCfg())
+	stopped, _ := ProjectInstance(v, stoppedCfg(80, "stopped"))
+
+	nic := running.NetworkInterfaces[0]
+	assert.Equal(t, "interface", aws.StringValue(nic.InterfaceType))
+	assert.Equal(t, "123456789012", aws.StringValue(nic.OwnerId))
+	require.NotNil(t, nic.Description)
+	assert.Empty(t, *nic.Description)
+	require.NotNil(t, nic.Attachment.NetworkCardIndex)
+	assert.Equal(t, int64(0), *nic.Attachment.NetworkCardIndex)
+	require.Len(t, nic.PrivateIpAddresses, 1)
+	assert.True(t, aws.BoolValue(nic.PrivateIpAddresses[0].Primary))
+	assert.Equal(t, "10.0.0.5", aws.StringValue(nic.PrivateIpAddresses[0].PrivateIpAddress))
+	require.NotNil(t, nic.PrivateIpAddresses[0].Association)
+	assert.Equal(t, "203.0.113.7", aws.StringValue(nic.PrivateIpAddresses[0].Association.PublicIp))
+
+	require.Len(t, stopped.NetworkInterfaces[0].PrivateIpAddresses, 1)
+	assert.Nil(t, stopped.NetworkInterfaces[0].PrivateIpAddresses[0].Association)
+
+	assert.Nil(t, v.Instance.NetworkInterfaces[0].Attachment.NetworkCardIndex,
+		"the attachment is shared with the stored instance and must be copied before it is stamped")
+}
+
+// TestProjectInstance_AWSDescribeFields pins the members a recorded AWS
+// DescribeInstances returns on every instance, running or stopped, for a
+// Linux/UNIX instance launched from a uefi-preferred AMI without a public IP.
+func TestProjectInstance_AWSDescribeFields(t *testing.T) {
+	for name, cfg := range map[string]InstanceProjection{
+		"running": runningCfg(),
+		"stopped": stoppedCfg(80, "stopped"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			v := fullVM(vm.StateRunning)
+			v.PublicIP = ""
+			v.PlacementGroupName = ""
+			v.CapacityReservationId = ""
+			v.BootMode = ec2.BootModeValuesUefiPreferred
+			v.InstanceType = "t3.micro"
+			v.RunInstancesInput = &ec2.RunInstancesInput{ClientToken: aws.String("09bead7a-de9d-439c-9682-b4f79eaa56ca")}
+
+			got, _ := ProjectInstance(v, cfg)
+
+			assert.Equal(t, "uefi-preferred", aws.StringValue(got.BootMode))
+			assert.Equal(t, "uefi", aws.StringValue(got.CurrentInstanceBootMode))
+			assert.Equal(t, &ec2.CapacityReservationSpecificationResponse{
+				CapacityReservationPreference: aws.String("open"),
+			}, got.CapacityReservationSpecification)
+			assert.Equal(t, "09bead7a-de9d-439c-9682-b4f79eaa56ca", aws.StringValue(got.ClientToken))
+			assert.Equal(t, &ec2.CpuOptions{CoreCount: aws.Int64(2), ThreadsPerCore: aws.Int64(1)}, got.CpuOptions)
+			require.NotNil(t, got.EbsOptimized)
+			assert.False(t, *got.EbsOptimized)
+			assert.Equal(t, &ec2.HibernationOptions{Configured: aws.Bool(false)}, got.HibernationOptions)
+			assert.Equal(t, "xen", aws.StringValue(got.Hypervisor))
+			assert.Equal(t, &ec2.InstanceMaintenanceOptions{AutoRecovery: aws.String("default")}, got.MaintenanceOptions)
+			require.NotNil(t, got.Placement.GroupName)
+			assert.Empty(t, *got.Placement.GroupName)
+			assert.Equal(t, "default", aws.StringValue(got.Placement.Tenancy))
+			assert.Equal(t, &ec2.PrivateDnsNameOptionsResponse{
+				HostnameType:                    aws.String("ip-name"),
+				EnableResourceNameDnsARecord:    aws.Bool(false),
+				EnableResourceNameDnsAAAARecord: aws.Bool(false),
+			}, got.PrivateDnsNameOptions)
+			require.NotNil(t, got.PublicDnsName)
+			assert.Empty(t, *got.PublicDnsName)
+			assert.Equal(t, "hvm", aws.StringValue(got.VirtualizationType))
+		})
+	}
+}
+
+// AWS reports StateTransitionReason as "" while an instance runs.
+func TestProjectInstance_RunningStateTransitionReasonEmpty(t *testing.T) {
+	got, _ := ProjectInstance(fullVM(vm.StateRunning), runningCfg())
+
+	require.NotNil(t, got.StateTransitionReason)
+	assert.Empty(t, *got.StateTransitionReason)
+}
+
+// The current boot mode follows the firmware the guest boots: legacy BIOS for an
+// AMI without a UEFI boot mode, and none reported as the AMI's own boot mode.
+func TestProjectInstance_LegacyBootMode(t *testing.T) {
+	v := fullVM(vm.StateRunning)
+	v.BootMode = ""
+
+	got, _ := ProjectInstance(v, runningCfg())
+
+	assert.Nil(t, got.BootMode)
+	assert.Equal(t, ec2.InstanceBootModeValuesLegacyBios, aws.StringValue(got.CurrentInstanceBootMode))
+	require.NotNil(t, got.ClientToken)
+	assert.Empty(t, *got.ClientToken)
+}
+
+// A launch that opted out of capacity reservations reports that preference.
+func TestProjectInstance_RequestedCapacityReservationPreference(t *testing.T) {
+	v := fullVM(vm.StateRunning)
+	v.CapacityReservationId = ""
+	v.RunInstancesInput = &ec2.RunInstancesInput{
+		CapacityReservationSpecification: &ec2.CapacityReservationSpecification{
+			CapacityReservationPreference: aws.String(ec2.CapacityReservationPreferenceNone),
+		},
+	}
+
+	got, _ := ProjectInstance(v, runningCfg())
+
+	assert.Equal(t, ec2.CapacityReservationPreferenceNone,
+		aws.StringValue(got.CapacityReservationSpecification.CapacityReservationPreference))
 }
 
 // TestProjectInstance_EnclaveOptionsAlwaysDisabled covers the permanent

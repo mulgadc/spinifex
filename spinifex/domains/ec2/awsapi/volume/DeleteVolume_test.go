@@ -2,6 +2,7 @@ package volume
 
 import (
 	"context"
+	"encoding/json"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -225,4 +226,29 @@ func TestDeleteVolume_GuardRefusesWhenOneNodeAnswersTwiceAndAnotherIsSilent(t *t
 	require.True(t, ok)
 	assert.Equal(t, awserrors.ErrorServiceUnavailable, code, "an unanswered node is retryable, not an internal fault")
 	assert.Zero(t, deletes.Load(), "the volume service must not be asked to destroy the backing")
+}
+
+// A volume a live instance still maps is refused naming that instance, before
+// the volume service is asked.
+func TestDeleteVolume_AttachedVolumeNamesItsInstance(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	running, err := json.Marshal(ec2.DescribeInstancesOutput{Reservations: []*ec2.Reservation{{Instances: []*ec2.Instance{{
+		InstanceId: aws.String("i-0669dd059c6c9d8cd"),
+		State:      &ec2.InstanceState{Name: aws.String(ec2.InstanceStateNameRunning)},
+		BlockDeviceMappings: []*ec2.InstanceBlockDeviceMapping{{
+			Ebs: &ec2.EbsInstanceBlockDevice{VolumeId: aws.String("vol-064feb2e41c378860")},
+		}},
+	}}}}})
+	require.NoError(t, err)
+	replyAsNode(t, nc, "ec2.DescribeInstances", "node-1", running)
+	replyAsNode(t, nc, "ec2.DescribeStoppedInstances", "", []byte(`{}`))
+	replyAsNode(t, nc, "ec2.DescribeTerminatedInstances", "", []byte(`{}`))
+	require.NoError(t, nc.Flush())
+
+	_, err = DeleteVolume(context.Background(), &ec2.DeleteVolumeInput{VolumeId: aws.String("vol-064feb2e41c378860")},
+		nc, []string{"node-1"}, "000000000042")
+
+	code, message, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorVolumeInUse, code)
+	assert.Equal(t, "Volume vol-064feb2e41c378860 is currently attached to {i-0669dd059c6c9d8cd}", message)
 }

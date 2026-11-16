@@ -62,7 +62,7 @@ func (s *Service) CreateDBInstance(ctx context.Context, input *rds.CreateDBInsta
 	if createErr != nil {
 		if errors.Is(createErr, kvstore.ErrExists) {
 			return nil, awserrors.Errorf(awserrors.ErrorDBInstanceAlreadyExists,
-				"DB instance %s already exists", req.Identifier)
+				"DB instance already exists")
 		}
 		return nil, createErr
 	}

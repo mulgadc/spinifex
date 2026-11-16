@@ -267,7 +267,8 @@ func TestCreateDBSnapshot_RejectsATakenIdentifier(t *testing.T) {
 
 	_, err = h.svc.CreateDBSnapshot(t.Context(), snapshotInput(), testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorDBSnapshotAlreadyExists)
+	assert.Equal(t, "Cannot create the snapshot because a snapshot with the identifier "+testSnapshotID+
+		" already exists.: DBSnapshotAlreadyExists", err.Error())
 	// Checked before the instance is moved, so a duplicate leaves it where it was.
 	assert.Equal(t, StatusAvailable, h.instance(t, testDBID).Status)
 }
@@ -558,9 +559,58 @@ func TestProjectDBSnapshot_ReportsProgressOnlyWhenTheDataExists(t *testing.T) {
 		Status:               SnapshotStatusCreating,
 	}
 	assert.Nil(t, h.svc.projectDBSnapshot(&rec).PercentProgress)
+	assert.Nil(t, h.svc.projectDBSnapshot(&rec).OriginalSnapshotCreateTime)
 
 	rec.Status = SnapshotStatusAvailable
 	assert.Equal(t, int64(100), aws.Int64Value(h.svc.projectDBSnapshot(&rec).PercentProgress))
+	assert.NotNil(t, h.svc.projectDBSnapshot(&rec).OriginalSnapshotCreateTime)
+}
+
+// AWS reports the source instance's zone, handle and creation time on every
+// snapshot, plus static members for features the instance lacks; describe adds
+// MultiTenant and drops the empty ProcessorFeatures.
+func TestDBSnapshot_ReportsTheSourceInstanceAsItWasTaken(t *testing.T) {
+	t.Parallel()
+	h := newSnapshotHarness(t, false)
+	rec := availableRecord()
+	rec.DbiResourceID = "db-ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	rec.CreatedAt = time.Date(2026, 11, 11, 1, 5, 2, 0, time.UTC)
+	seedInstance(t, h.svc, rec)
+
+	created, err := h.svc.CreateDBSnapshot(t.Context(), snapshotInput(), testAccountID)
+	require.NoError(t, err)
+	described, err := h.svc.DescribeDBSnapshots(t.Context(), &rds.DescribeDBSnapshotsInput{
+		DBSnapshotIdentifier: aws.String(testSnapshotID),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, described.DBSnapshots, 1)
+	listed, err := h.svc.DescribeDBSnapshots(t.Context(), &rds.DescribeDBSnapshotsInput{}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, listed.DBSnapshots, 1)
+	deleted, err := h.svc.DeleteDBSnapshot(t.Context(), &rds.DeleteDBSnapshotInput{DBSnapshotIdentifier: aws.String(testSnapshotID)}, testAccountID)
+	require.NoError(t, err)
+
+	for name, snap := range map[string]*rds.DBSnapshot{"create": created.DBSnapshot, "describe": described.DBSnapshots[0], "list": listed.DBSnapshots[0], "delete": deleted.DBSnapshot} {
+		assert.Equal(t, "ap-southeast-2a", aws.StringValue(snap.AvailabilityZone), name)
+		assert.Equal(t, rec.DbiResourceID, aws.StringValue(snap.DbiResourceId), name)
+		assert.Equal(t, rec.CreatedAt, aws.TimeValue(snap.InstanceCreateTime), name)
+		assert.Equal(t, aws.TimeValue(snap.SnapshotCreateTime), aws.TimeValue(snap.OriginalSnapshotCreateTime), name)
+		assert.Equal(t, "region", aws.StringValue(snap.SnapshotTarget), name)
+		require.NotNil(t, snap.IAMDatabaseAuthenticationEnabled, name)
+		assert.False(t, *snap.IAMDatabaseAuthenticationEnabled, name)
+		require.NotNil(t, snap.DedicatedLogVolume, name)
+		assert.False(t, *snap.DedicatedLogVolume, name)
+	}
+	for _, snap := range []*rds.DBSnapshot{created.DBSnapshot, deleted.DBSnapshot} {
+		assert.NotNil(t, snap.ProcessorFeatures)
+		assert.Empty(t, snap.ProcessorFeatures)
+		assert.Nil(t, snap.MultiTenant)
+	}
+	for _, snap := range []*rds.DBSnapshot{described.DBSnapshots[0], listed.DBSnapshots[0]} {
+		assert.Nil(t, snap.ProcessorFeatures)
+		require.NotNil(t, snap.MultiTenant)
+		assert.False(t, *snap.MultiTenant)
+	}
 }
 
 // The EC2 snapshot is tagged with the DB snapshot identifier before the record
@@ -855,6 +905,41 @@ func TestDBSnapshotTags_ReadBackThroughBothPaths(t *testing.T) {
 
 	stored, _ := h.snapshot(t, testSnapshotID)
 	assert.Equal(t, map[string]string{"env": "prod", "team": "payments"}, stored.Tags)
+}
+
+// Request tags replace the instance's; with none, the instance's are copied
+// only under CopyTagsToSnapshot.
+func TestCreateDBSnapshot_CopiesInstanceTagsOnlyWithoutRequestTags(t *testing.T) {
+	t.Parallel()
+	requestTags := []*rds.Tag{{Key: aws.String("env"), Value: aws.String("prod")}}
+	cases := []struct {
+		name     string
+		copyTags bool
+		request  []*rds.Tag
+		want     map[string]string
+	}{
+		{"flag off", false, nil, nil},
+		{"flag on", true, nil, map[string]string{"team": "payments"}},
+		{"flag on with request tags", true, requestTags, map[string]string{"env": "prod"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newSnapshotHarness(t, false)
+			rec := availableRecord()
+			rec.Tags = map[string]string{"team": "payments"}
+			rec.CopyTagsToSnapshot = tc.copyTags
+			seedInstance(t, h.svc, rec)
+
+			input := snapshotInput()
+			input.Tags = tc.request
+			out, err := h.svc.CreateDBSnapshot(t.Context(), input, testAccountID)
+			require.NoError(t, err)
+			assert.Equal(t, append([]*rds.Tag{}, tagsToAWS(tc.want)...), out.DBSnapshot.TagList)
+			stored, _ := h.snapshot(t, testSnapshotID)
+			assert.Equal(t, tc.want, stored.Tags)
+		})
+	}
 }
 
 // The record has to survive a round trip through KV, because that is the only

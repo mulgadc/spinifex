@@ -199,6 +199,13 @@ func snapshotConfigToEC2(cfg ebsmetadata.Snapshot) *ec2.Snapshot {
 	return snapshot
 }
 
+// describedSnapshot is a snapshot as DescribeSnapshots reports it. Archive
+// tiering is not implemented, so every snapshot is in the standard tier;
+// CreateSnapshot's answer carries no tier, as on AWS.
+func describedSnapshot(cfg ebsmetadata.Snapshot) *ec2.Snapshot {
+	return snapshotConfigToEC2(cfg).SetStorageTier(ec2.StorageTierStandard)
+}
+
 // CreateSnapshot creates a new snapshot from a volume.
 func (s *SnapshotServiceImpl) CreateSnapshot(ctx context.Context, input *ec2.CreateSnapshotInput, accountID string) (*ec2.Snapshot, error) {
 	if input == nil || input.VolumeId == nil {
@@ -274,7 +281,7 @@ type ImageSnapshotHooks struct {
 // ImageSnapshotCreator takes the snapshot behind a CreateImage through the
 // same document, reference, claim and provider path as CreateSnapshot.
 type ImageSnapshotCreator interface {
-	CreateImageSnapshot(ctx context.Context, volume ebsmetadata.Volume, snapshotID, accountID, description string, hooks ImageSnapshotHooks) (*ec2.Snapshot, error)
+	CreateImageSnapshot(ctx context.Context, volume ebsmetadata.Volume, snapshotID, accountID, description string, tags map[string]string, hooks ImageSnapshotHooks) (*ec2.Snapshot, error)
 }
 
 var _ ImageSnapshotCreator = (*SnapshotServiceImpl)(nil)
@@ -326,12 +333,13 @@ func (s *SnapshotServiceImpl) settlePendingAMI(ctx context.Context, imageID, sta
 
 // CreateImageSnapshot snapshots an image's root volume as CreateSnapshot does,
 // running hooks to write the AMI document beside the snapshot's.
-func (s *SnapshotServiceImpl) CreateImageSnapshot(ctx context.Context, volume ebsmetadata.Volume, snapshotID, accountID, description string, hooks ImageSnapshotHooks) (*ec2.Snapshot, error) {
+func (s *SnapshotServiceImpl) CreateImageSnapshot(ctx context.Context, volume ebsmetadata.Volume, snapshotID, accountID, description string, tags map[string]string, hooks ImageSnapshotHooks) (*ec2.Snapshot, error) {
 	if s.provider == nil {
 		slog.ErrorContext(ctx, "no EBS provider configured", "op", "CreateImageSnapshot")
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	doc := pendingDocument(volume, snapshotID, accountID, description)
+	doc.Tags = tags
 	return s.createSnapshot(ctx, doc, providerCreateRequest(volume, snapshotID), createHooks(hooks))
 }
 
@@ -597,7 +605,7 @@ func (s *SnapshotServiceImpl) describeSnapshots(ctx context.Context, input *ec2.
 			continue
 		}
 
-		snapshots = append(snapshots, snapshotConfigToEC2(cfg))
+		snapshots = append(snapshots, describedSnapshot(cfg))
 	}
 
 	slog.InfoContext(ctx, "DescribeSnapshots completed", "count", len(snapshots))
@@ -699,7 +707,7 @@ func (s *SnapshotServiceImpl) describeSnapshotsByIDs(ctx context.Context, input 
 			return nil, errors.New(awserrors.ErrorInvalidSnapshotNotFound)
 		}
 
-		snapshots = append(snapshots, snapshotConfigToEC2(result.Document))
+		snapshots = append(snapshots, describedSnapshot(result.Document))
 	}
 
 	slog.InfoContext(ctx, "DescribeSnapshots completed", "count", len(snapshots))
@@ -799,23 +807,23 @@ func (s *SnapshotServiceImpl) snapshotInUseByVolumes(ctx context.Context, snapsh
 // amiInUseBySnapshot checks if any registered AMI names the given snapshot as
 // its root device. AWS refuses DeleteSnapshot while a registered AMI
 // references the snapshot, the same way it refuses one backing a volume.
-func (s *SnapshotServiceImpl) amiInUseBySnapshot(ctx context.Context, snapshotID, accountID string) (bool, error) {
+func (s *SnapshotServiceImpl) amiInUseBySnapshot(ctx context.Context, snapshotID, accountID string) (ebsmetadata.AMI, bool, error) {
 	// Whole-cluster and fail-closed for the same reason as the volume check
 	// above: a system AMI can be registered by an account other than the
 	// snapshot's owner, and an AMI this cannot read is not evidence none exists.
 	amis, unreadable, err := s.metadata.ListAMIsPartial(ctx)
 	if err != nil {
-		return false, awserrors.Errorf(awserrors.ErrorServerInternal, "check whether snapshot %s is in use: list AMIs: %v", snapshotID, err)
+		return ebsmetadata.AMI{}, false, awserrors.Errorf(awserrors.ErrorServerInternal, "check whether snapshot %s is in use: list AMIs: %v", snapshotID, err)
 	}
 	for _, ami := range amis {
 		if ami.SnapshotID == snapshotID {
-			return true, nil
+			return ami, true, nil
 		}
 	}
 	if len(unreadable) > 0 {
-		return false, unreadableRecordError(ctx, snapshotID, accountID, "AMI", unreadable)
+		return ebsmetadata.AMI{}, false, unreadableRecordError(ctx, snapshotID, accountID, "AMI", unreadable)
 	}
-	return false, nil
+	return ebsmetadata.AMI{}, false, nil
 }
 
 // unreadableRecordError refuses a delete the in-use scan could not clear. It
@@ -909,10 +917,14 @@ func (s *SnapshotServiceImpl) DeleteSnapshot(ctx context.Context, input *ec2.Del
 	}
 
 	// Check if any registered AMI names this snapshot as its root device
-	amiInUse, amiErr := s.amiInUseBySnapshot(ctx, snapshotID, accountID)
+	ami, amiInUse, amiErr := s.amiInUseBySnapshot(ctx, snapshotID, accountID)
 	if amiInUse {
-		slog.InfoContext(ctx, "DeleteSnapshot blocked: snapshot in use by registered AMI", "snapshotId", snapshotID)
-		return nil, errors.New(awserrors.ErrorInvalidSnapshotInUse)
+		slog.InfoContext(ctx, "DeleteSnapshot blocked: snapshot in use by registered AMI", "snapshotId", snapshotID, "imageId", ami.ImageID)
+		// Name the AMI only when the caller owns it: the scan is whole-cluster.
+		if ami.ImageOwnerAlias != accountID {
+			return nil, errors.New(awserrors.ErrorInvalidSnapshotInUse)
+		}
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidSnapshotInUse, "The snapshot %s is currently in use by %s", snapshotID, ami.ImageID)
 	}
 	if volumeErr != nil {
 		slog.ErrorContext(ctx, "DeleteSnapshot failed to check snapshot usage", "snapshotId", snapshotID, "err", volumeErr)
@@ -1111,6 +1123,12 @@ func (s *SnapshotServiceImpl) CopySnapshot(ctx context.Context, input *ec2.CopyS
 		DestinationSnapshotID: newSnapshotID,
 		VolumeID:              sourceCfg.VolumeID,
 	})
+	// A provider without SnapshotCopy refuses as unsupported, which no retry
+	// changes, so the caller is told the operation is unsupported here.
+	if errors.Is(err, ebsprovider.ErrUnsupportedCapability) {
+		slog.WarnContext(ctx, "CopySnapshot is not supported by the EBS provider", "sourceSnapshotId", sourceSnapshotID)
+		return nil, errors.New(awserrors.ErrorUnsupportedOperation)
+	}
 	if err != nil || copied == nil {
 		slog.ErrorContext(ctx, "CopySnapshot: provider copy failed", "sourceSnapshotId", sourceSnapshotID, "newSnapshotId", newSnapshotID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)

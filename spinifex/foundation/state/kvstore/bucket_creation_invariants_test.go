@@ -32,6 +32,7 @@ var exempt = []string{
 // were five independent ways to create a bucket and the replica count was
 // opt-in in all of them.
 func TestKVBuckets_AreOnlyCreatedThroughTheChokepoint(t *testing.T) {
+	t.Parallel()
 	root := repoRoot(t)
 
 	type hit struct {

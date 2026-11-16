@@ -52,6 +52,7 @@ func (failingAccess) Granted(_ context.Context, _, _ string) (bool, error) {
 }
 
 func TestDenyAllAccessResolver_GrantsNothing(t *testing.T) {
+	t.Parallel()
 	for _, modelID := range []string{selfHostTestModel, anthropicTestModel, "nonexistent.model-v1:0"} {
 		granted, err := DenyAllAccessResolver.Granted(context.Background(), "000000000001", modelID)
 		require.NoError(t, err)
@@ -60,6 +61,7 @@ func TestDenyAllAccessResolver_GrantsNothing(t *testing.T) {
 }
 
 func TestAccessKey_EncodesModelID(t *testing.T) {
+	t.Parallel()
 	// Model IDs contain ':', which NATS rejects in a KV key, so the model
 	// segment must be encoded rather than interpolated raw.
 	key := accessKey("000000000001", "anthropic.claude-3-5-sonnet-20240620-v1:0")
@@ -71,6 +73,7 @@ func TestAccessKey_EncodesModelID(t *testing.T) {
 // path: lazy bucket create, Grant, the hit and miss branches of Granted, and
 // Revoke.
 func TestModelAccessStore_GrantResolveRevoke(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	store := NewModelAccessStore(js)
 	ctx := context.Background()
@@ -99,6 +102,7 @@ func TestModelAccessStore_GrantResolveRevoke(t *testing.T) {
 }
 
 func TestModelAccessStore_GrantIsIdempotent(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	store := NewModelAccessStore(js)
 	ctx := context.Background()
@@ -115,6 +119,7 @@ func TestModelAccessStore_GrantIsIdempotent(t *testing.T) {
 // branch: callers revoke without checking first, so a missing grant is not an
 // error.
 func TestModelAccessStore_RevokeMissingGrantSucceeds(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	store := NewModelAccessStore(js)
 
@@ -124,6 +129,7 @@ func TestModelAccessStore_RevokeMissingGrantSucceeds(t *testing.T) {
 // TestModelAccessStore_List_RoundTripsModelIDs proves the key encoding is
 // reversible, including the ':' that forced it.
 func TestModelAccessStore_List_RoundTripsModelIDs(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	store := NewModelAccessStore(js)
 	ctx := context.Background()
@@ -142,6 +148,7 @@ func TestModelAccessStore_List_RoundTripsModelIDs(t *testing.T) {
 }
 
 func TestModelAccessStore_ListEmptyAccount(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	store := NewModelAccessStore(js)
 
@@ -153,6 +160,7 @@ func TestModelAccessStore_ListEmptyAccount(t *testing.T) {
 // TestModelAccessStore_SystemAccountBypassesGrants mirrors how
 // the quota package exempts the system account from every quota dimension.
 func TestModelAccessStore_SystemAccountBypassesGrants(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	store := NewModelAccessStore(js)
 
@@ -165,6 +173,7 @@ func TestModelAccessStore_SystemAccountBypassesGrants(t *testing.T) {
 // depend on: an unknown model is not found, a known-but-ungranted model is
 // access denied, and a broken grant store propagates rather than failing open.
 func TestGrantedCatalogEntry_ErrorClasses(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	_, err := grantedCatalogEntry(ctx, "000000000001", "nonexistent.model-v1:0", grantAll{})
@@ -188,6 +197,7 @@ func TestGrantedCatalogEntry_ErrorClasses(t *testing.T) {
 // seed marker: a fresh install gets a usable operator account, but an operator
 // who then revokes a grant does not have it restored by the next restart.
 func TestSeedAccountGrants_SeedsOnceThenRespectsRevoke(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	store := NewModelAccessStore(js)
 	ctx := context.Background()
@@ -217,6 +227,7 @@ func TestSeedAccountGrants_SeedsOnceThenRespectsRevoke(t *testing.T) {
 // a bootstrap convenience for the operator's account, not a way for every
 // account to end up with the catalog.
 func TestSeedAccountGrants_LeavesOtherAccountsDenied(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	store := NewModelAccessStore(js)
 	ctx := context.Background()
@@ -232,6 +243,7 @@ func TestSeedAccountGrants_LeavesOtherAccountsDenied(t *testing.T) {
 // TestSeedAccountGrants_MarkerIsNotAGrant guards the key namespaces: a marker
 // read back as a grant would show up as a bogus model ID in List.
 func TestSeedAccountGrants_MarkerIsNotAGrant(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	store := NewModelAccessStore(js)
 	ctx := context.Background()
@@ -248,6 +260,7 @@ func TestSeedAccountGrants_MarkerIsNotAGrant(t *testing.T) {
 // JetStream client: every accessor must report the misconfiguration rather
 // than panic on a nil handle.
 func TestModelAccessStore_RequiresJetStream(t *testing.T) {
+	t.Parallel()
 	store := NewModelAccessStore(nil)
 	ctx := context.Background()
 

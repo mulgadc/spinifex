@@ -57,13 +57,13 @@ func (r *RefusalError) Error() string { return "invocation refused before dispat
 
 func (r *RefusalError) Unwrap() error { return r.Err }
 
-// invokeTarget is the function and qualifier an Invoke request names, once
+// functionTarget is the function and qualifier a request names, once
 // every deterministic check on the request has passed.
-type invokeTarget struct{ Name, Qualifier string }
+type functionTarget struct{ Name, Qualifier string }
 
 // validateInvoke runs every check that needs no stored state: options, size,
 // payload JSON, function name and qualifier. Nothing here reads metadata.
-func validateInvoke(c *call) (*invokeTarget, error) {
+func validateInvoke(c *call) (*functionTarget, error) {
 	if err := checkInvokeOptions(c.Header); err != nil {
 		return nil, err
 	}
@@ -76,6 +76,12 @@ func validateInvoke(c *call) (*invokeTarget, error) {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidRequestContentException,
 			"Could not parse request body into json")
 	}
+	return qualifiedTarget(c)
+}
+
+// qualifiedTarget resolves the function name and the qualifier from either
+// its suffix or the Qualifier query, which c.Query must hold strictly parsed.
+func qualifiedTarget(c *call) (*functionTarget, error) {
 	if len(c.Params[0]) > maxFunctionNameLen {
 		return nil, invalid("1 validation error detected: Value at 'functionName' failed to satisfy constraint: Member must have length less than or equal to 256")
 	}
@@ -101,7 +107,7 @@ func validateInvoke(c *call) (*invokeTarget, error) {
 		}
 		q = query[0]
 	}
-	return &invokeTarget{Name: name, Qualifier: q}, nil
+	return &functionTarget{Name: name, Qualifier: q}, nil
 }
 
 // invoke implements Invoke for RequestResponse on $LATEST. serve has already

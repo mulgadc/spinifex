@@ -277,7 +277,10 @@ func ValidateMasterUserPassword(password string) error {
 	switch {
 	case password == "":
 		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "MasterUserPassword is required")
-	case len(password) < minMasterPasswordLen || len(password) > maxMasterPasswordLen:
+	case len(password) < minMasterPasswordLen:
+		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"The parameter MasterUserPassword is not a valid password because it is shorter than %d characters.", minMasterPasswordLen)
+	case len(password) > maxMasterPasswordLen:
 		return awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"MasterUserPassword must be between %d and %d characters", minMasterPasswordLen, maxMasterPasswordLen)
 	}

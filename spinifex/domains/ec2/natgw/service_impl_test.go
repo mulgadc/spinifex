@@ -1,6 +1,7 @@
 package natgw
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -95,6 +96,36 @@ func TestCreateNatGateway(t *testing.T) {
 	assert.Equal(t, "203.0.113.50", *ngw.NatGatewayAddresses[0].PublicIp)
 }
 
+// AWS reports the gateway's address as primary and succeeded, under the
+// association ID that DescribeAddresses shows for the same EIP.
+func TestDescribeNatGateways_AddressCarriesAssociation(t *testing.T) {
+	svc, js := setupTestServiceJS(t)
+	createOut, err := svc.CreateNatGateway(t.Context(), &ec2.CreateNatGatewayInput{
+		SubnetId:     aws.String("subnet-pub1"),
+		AllocationId: aws.String("eipalloc-test1"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	eipKV, err := js.KeyValue(t.Context(), ec2eip.KVBucketEIPs)
+	require.NoError(t, err)
+	entry, err := eipKV.Get(t.Context(), kvstore.AccountKey(testAccountID, "eipalloc-test1"))
+	require.NoError(t, err)
+	var eip ec2eip.EIPRecord
+	require.NoError(t, json.Unmarshal(entry.Value(), &eip))
+	require.NotEmpty(t, eip.AssociationId)
+
+	out, err := svc.DescribeNatGateways(t.Context(), &ec2.DescribeNatGatewaysInput{
+		NatGatewayIds: []*string{createOut.NatGateway.NatGatewayId},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, out.NatGateways, 1)
+	require.Len(t, out.NatGateways[0].NatGatewayAddresses, 1)
+	addr := out.NatGateways[0].NatGatewayAddresses[0]
+	assert.Equal(t, eip.AssociationId, aws.StringValue(addr.AssociationId))
+	assert.True(t, aws.BoolValue(addr.IsPrimary))
+	assert.Equal(t, ec2.NatGatewayAddressStatusSucceeded, aws.StringValue(addr.Status))
+}
+
 // TestCreateNatGateway_PersistsTagsForTagFilterDiscovery locks the
 // contract: CreateNatGateway must persist TagSpecifications so DeleteClusterCPVPC can
 // find the cluster NAT gateway by tag filter and release its EIP. A dropped tag
@@ -140,9 +171,23 @@ func TestCreateNatGateway_EIPNotFound(t *testing.T) {
 	svc := setupTestService(t)
 	_, err := svc.CreateNatGateway(t.Context(), &ec2.CreateNatGatewayInput{
 		SubnetId:     aws.String("subnet-pub1"),
-		AllocationId: aws.String("eipalloc-nope"),
+		AllocationId: aws.String("eipalloc-00000000000000000"),
 	}, testAccountID)
-	assert.EqualError(t, err, awserrors.ErrorInvalidAllocationIDNotFound)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "unresolvable error: %v", err)
+	assert.Equal(t, "InvalidElasticIpID.NotFound", code)
+	assert.Equal(t, "The elasticIp ID 'eipalloc-00000000000000000' does not exist", msg)
+}
+
+func TestDescribeNatGateways_UnknownFilter(t *testing.T) {
+	svc := setupTestService(t)
+	_, err := svc.DescribeNatGateways(t.Context(), &ec2.DescribeNatGatewaysInput{
+		Filter: []*ec2.Filter{{Name: aws.String("no-such-filter"), Values: []*string{aws.String("x")}}},
+	}, testAccountID)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "unresolvable error: %v", err)
+	assert.Equal(t, "InvalidParameter", code)
+	assert.Equal(t, "The filter 'no-such-filter' is invalid", msg)
 }
 
 func TestCreateNatGateway_EIPAlreadyAssociated(t *testing.T) {
@@ -171,6 +216,44 @@ func TestDeleteNatGateway(t *testing.T) {
 
 	// Should be gone
 	_, err = svc.natgwKV.Get(t.Context(), kvstore.AccountKey(testAccountID, natgwID))
+	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+
+	// The freed address keeps its border group and drops every association member.
+	eipSvc, err := ec2eip.NewEIPServiceImpl(t.Context(), svc.natsConn, nil, nil, "ap-southeast-2")
+	require.NoError(t, err)
+	desc, err := eipSvc.DescribeAddresses(t.Context(), &ec2.DescribeAddressesInput{AllocationIds: []*string{aws.String("eipalloc-test1")}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Addresses, 1)
+	assert.Equal(t, "ap-southeast-2", aws.StringValue(desc.Addresses[0].NetworkBorderGroup))
+	assert.Nil(t, desc.Addresses[0].AssociationId)
+	assert.Nil(t, desc.Addresses[0].NetworkInterfaceOwnerId)
+}
+
+// A repeat delete of a deleted gateway succeeds with its ID, as AWS answers,
+// and leaves the deleted record and the released EIP untouched.
+func TestDeleteNatGateway_AlreadyDeleted(t *testing.T) {
+	svc := setupTestService(t)
+	createOut, err := svc.CreateNatGateway(t.Context(), &ec2.CreateNatGatewayInput{
+		SubnetId:     aws.String("subnet-pub1"),
+		AllocationId: aws.String("eipalloc-test1"),
+	}, testAccountID)
+	require.NoError(t, err)
+	natgwID := *createOut.NatGateway.NatGatewayId
+
+	_, err = svc.DeleteNatGateway(t.Context(), &ec2.DeleteNatGatewayInput{NatGatewayId: aws.String(natgwID)}, testAccountID)
+	require.NoError(t, err)
+	key := kvstore.AccountKey(testAccountID, natgwID)
+	before, err := svc.deletedNatgwKV.Get(t.Context(), key)
+	require.NoError(t, err)
+
+	again, err := svc.DeleteNatGateway(t.Context(), &ec2.DeleteNatGatewayInput{NatGatewayId: aws.String(natgwID)}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, &ec2.DeleteNatGatewayOutput{NatGatewayId: aws.String(natgwID)}, again)
+
+	after, err := svc.deletedNatgwKV.Get(t.Context(), key)
+	require.NoError(t, err)
+	assert.Equal(t, before.Revision(), after.Revision(), "a repeat delete must not rewrite the deleted record")
+	_, err = svc.natgwKV.Get(t.Context(), key)
 	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound)
 }
 

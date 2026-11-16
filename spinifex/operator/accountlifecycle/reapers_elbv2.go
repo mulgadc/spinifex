@@ -50,9 +50,28 @@ func (r *loadBalancerReaper) List(ctx context.Context, accountID string) ([]Reso
 	return found, nil
 }
 
-func (r *loadBalancerReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
-	_, err := r.svc.DeleteLoadBalancer(ctx, &elbv2.DeleteLoadBalancerInput{
+// Delete clears deletion protection only under force, as the RDS reaper does:
+// without it the refusal stands, since nobody asked to override it.
+func (r *loadBalancerReaper) Delete(ctx context.Context, accountID string, resource Resource, force bool) error {
+	err := r.deleteBalancer(ctx, accountID, resource.ID)
+	if err == nil || !force || !isDeletionProtected(err) {
+		return err
+	}
+	if _, mErr := r.svc.ModifyLoadBalancerAttributes(ctx, &elbv2.ModifyLoadBalancerAttributesInput{
 		LoadBalancerArn: aws.String(resource.ID),
+		Attributes: []*elbv2.LoadBalancerAttribute{{
+			Key:   aws.String(elbv2domain.AttrDeletionProtection),
+			Value: aws.String("false"),
+		}},
+	}, accountID); mErr != nil {
+		return ignoreAlreadyGone(mErr)
+	}
+	return r.deleteBalancer(ctx, accountID, resource.ID)
+}
+
+func (r *loadBalancerReaper) deleteBalancer(ctx context.Context, accountID, arn string) error {
+	_, err := r.svc.DeleteLoadBalancer(ctx, &elbv2.DeleteLoadBalancerInput{
+		LoadBalancerArn: aws.String(arn),
 	}, accountID)
 	return ignoreAlreadyGone(err)
 }

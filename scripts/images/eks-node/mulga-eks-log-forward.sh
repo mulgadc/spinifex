@@ -42,7 +42,8 @@ select_lines() {
         line = $0
         gsub(/\r/, "", line)
         keep = 0
-        if (line ~ /level=(warning|error)/) keep = 1
+        if (line ~ /level=(warning|error|fatal)/) keep = 1
+        else if (line ~ /^(panic|fatal error):/) keep = 1
         else if (line ~ /^[WE][0-9][0-9][0-9][0-9] /) keep = 1
         else if (line ~ /NodeNotReady|PLEG|[Ll]ease|[Nn]ode status/) keep = 1
         if (!keep) next

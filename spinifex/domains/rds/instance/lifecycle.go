@@ -59,6 +59,15 @@ const instanceCommandTimeout = 90 * time.Second
 // How often the fleet is re-read while a stop is settling.
 const vmStopPollInterval = 500 * time.Millisecond
 
+// stateErrorFunc words the refusal of an action from the instance's current status.
+type stateErrorFunc func(id string, status Status) error
+
+// AWS lists its own rebootable states whatever ours are, with two spaces before "Instance".
+func rebootStateError(id string, status Status) error {
+	return awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState,
+		"Can only reboot db instances with state in: available, storage-optimization, storage-initialization, incompatible-credentials, incompatible-parameters.  Instance %s has state: %s.", id, status)
+}
+
 // RebootDBInstance reboots the engine, applying any static parameters stored pending-reboot.
 // ForceFailover is rejected outright: there is no standby to fail over to, and silently ignoring it
 // would report a failover that never happened.
@@ -67,10 +76,11 @@ func (s *Service) RebootDBInstance(ctx context.Context, input *rds.RebootDBInsta
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
 	}
 	if aws.BoolValue(input.ForceFailover) {
-		return nil, unimplemented("ForceFailover", "this platform is single-AZ; there is no standby to fail over to")
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"ForceFailover cannot be specified since the instance is not configured for either MultiAZ or High Availability")
 	}
 
-	rec, kv, err := s.beginTransition(ctx, accountID, aws.StringValue(input.DBInstanceIdentifier),
+	rec, kv, err := s.beginTransition(ctx, accountID, aws.StringValue(input.DBInstanceIdentifier), rebootStateError,
 		StatusRebooting, StatusAvailable, StatusFailed)
 	if err != nil {
 		return nil, err
@@ -117,7 +127,7 @@ func (s *Service) StopDBInstance(ctx context.Context, input *rds.StopDBInstanceI
 		return nil, unimplemented("DBSnapshotIdentifier", "taking a snapshot as part of a stop is not implemented yet")
 	}
 
-	rec, kv, err := s.beginTransition(ctx, accountID, aws.StringValue(input.DBInstanceIdentifier),
+	rec, kv, err := s.beginTransition(ctx, accountID, aws.StringValue(input.DBInstanceIdentifier), nil,
 		StatusStopping, StatusAvailable, StatusFailed)
 	if err != nil {
 		return nil, err
@@ -147,7 +157,7 @@ func (s *Service) StartDBInstance(ctx context.Context, input *rds.StartDBInstanc
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
 	}
 
-	rec, kv, err := s.beginTransition(ctx, accountID, aws.StringValue(input.DBInstanceIdentifier),
+	rec, kv, err := s.beginTransition(ctx, accountID, aws.StringValue(input.DBInstanceIdentifier), nil,
 		StatusStarting, StatusStopped, StatusFailed)
 	if err != nil {
 		return nil, err
@@ -280,7 +290,7 @@ func uncleanStopMessage(ctx context.Context, engineName, operation string) strin
 // as written. from lists the statuses the operation is legal from, so a stop of
 // an already-stopping instance is rejected as a state error rather than racing
 // the stop already running.
-func (s *Service) beginTransition(ctx context.Context, accountID, id string, to Status, from ...Status) (*DBInstanceRecord, *kvstore.Bucket, error) {
+func (s *Service) beginTransition(ctx context.Context, accountID, id string, stateErr stateErrorFunc, to Status, from ...Status) (*DBInstanceRecord, *kvstore.Bucket, error) {
 	if id == "" {
 		return nil, nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "DBInstanceIdentifier is required")
 	}
@@ -296,6 +306,9 @@ func (s *Service) beginTransition(ctx context.Context, accountID, id string, to 
 		return nil, nil, err
 	}
 	if !slices.Contains(from, rec.Status) {
+		if stateErr != nil {
+			return nil, nil, stateErr(id, rec.Status)
+		}
 		return nil, nil, awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState,
 			"DB instance %s is %s; the operation requires it to be %s", id, rec.Status, joinStatuses(from))
 	}

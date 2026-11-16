@@ -52,6 +52,14 @@ func (*spyFunctions) UpdateConfiguration(context.Context, string, string, functi
 	return function.Record{}, 0, errors.New("unused")
 }
 
+func (*spyFunctions) List(context.Context, string, string, string, int) ([]function.ListedFunction, string, error) {
+	return nil, "", errors.New("unused")
+}
+
+func (*spyFunctions) Delete(context.Context, string, string, function.Record, uint64) error {
+	return errors.New("unused")
+}
+
 // spyExec counts invocations that would start an attempt.
 type spyExec struct{ calls atomic.Int32 }
 

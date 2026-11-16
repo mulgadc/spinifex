@@ -13,6 +13,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1099,4 +1100,79 @@ func TestCreateClusterNLBSync_CarriesCrossAccountENI(t *testing.T) {
 	require.NotNil(t, record)
 	require.Len(t, record.CrossAccountENIs, 1)
 	assert.Equal(t, "eni-seta-001", record.CrossAccountENIs[0].ENIID)
+}
+
+// A protected balancer refuses before any cascade: its VM, listener and ENIs
+// all survive, and the delete succeeds once protection is turned off.
+func TestDeleteLoadBalancer_DeletionProtectionRefusesUntilDisabled(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, vpcSvc := setupTestServiceWithVPC(t)
+
+	subnets, err := vpcSvc.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{}, testAccountID)
+	require.NoError(t, err)
+	mock := &mockSystemInstanceLauncher{
+		launchResult:  &SystemInstanceOutput{InstanceID: "i-alb-protected", PrivateIP: "10.0.1.8"},
+		terminateDone: make(chan struct{}),
+	}
+	svc.InstanceLauncher = mock
+	svc.GatewayURL = "https://10.0.0.1:9999"
+	svc.SystemAccessKey = "AKID"
+	svc.SystemSecretKey = "SECRET"
+
+	lbOut, err := svc.CreateLoadBalancer(ctx, &elbv2.CreateLoadBalancerInput{
+		Name:    aws.String("protected-alb"),
+		Subnets: []*string{subnets.Subnets[0].SubnetId},
+	}, testAccountID)
+	require.NoError(t, err)
+	svc.WaitLaunches()
+	lbArn := lbOut.LoadBalancers[0].LoadBalancerArn
+
+	tgOut, err := svc.CreateTargetGroup(ctx, &elbv2.CreateTargetGroupInput{Name: aws.String("protected-tg")}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.CreateListener(ctx, &elbv2.CreateListenerInput{
+		LoadBalancerArn: lbArn,
+		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: tgOut.TargetGroups[0].TargetGroupArn}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	setProtection := func(v string) {
+		t.Helper()
+		_, err := svc.ModifyLoadBalancerAttributes(ctx, &elbv2.ModifyLoadBalancerAttributesInput{
+			LoadBalancerArn: lbArn,
+			Attributes:      []*elbv2.LoadBalancerAttribute{{Key: aws.String(AttrDeletionProtection), Value: aws.String(v)}},
+		}, testAccountID)
+		require.NoError(t, err)
+	}
+	setProtection("true")
+
+	_, err = svc.DeleteLoadBalancer(ctx, &elbv2.DeleteLoadBalancerInput{LoadBalancerArn: lbArn}, testAccountID)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "err: %v", err)
+	assert.Equal(t, awserrors.ErrorOperationNotPermitted, code)
+	assert.Equal(t, "Load balancer '"+*lbArn+"' cannot be deleted because deletion protection is enabled", msg)
+
+	lb, err := svc.store.GetLoadBalancerByArn(ctx, *lbArn)
+	require.NoError(t, err)
+	require.NotNil(t, lb, "the protected balancer must survive")
+	listeners, err := svc.store.ListListenersByLB(ctx, *lbArn)
+	require.NoError(t, err)
+	assert.Len(t, listeners, 1, "the listener must survive")
+	enis, err := vpcSvc.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, enis.NetworkInterfaces, 1, "the ENI must survive")
+	mock.mu.Lock()
+	assert.Empty(t, mock.terminateCalls, "the VM must not be terminated")
+	mock.mu.Unlock()
+
+	setProtection("false")
+	_, err = svc.DeleteLoadBalancer(ctx, &elbv2.DeleteLoadBalancerInput{LoadBalancerArn: lbArn}, testAccountID)
+	require.NoError(t, err)
+	mock.waitTerminate()
+	gone, err := svc.store.GetLoadBalancerByArn(ctx, *lbArn)
+	require.NoError(t, err)
+	assert.Nil(t, gone)
+	enis, err = vpcSvc.DescribeNetworkInterfaces(ctx, &ec2.DescribeNetworkInterfacesInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, enis.NetworkInterfaces)
 }

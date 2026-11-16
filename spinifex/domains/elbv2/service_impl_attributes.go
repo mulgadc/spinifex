@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strconv"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/elbv2"
@@ -242,9 +243,12 @@ func (s *ELBv2ServiceImpl) lbAttrResource(ctx context.Context, arn, accountID, o
 		},
 		accountIDOf: func(r *LoadBalancerRecord) string { return r.AccountID },
 		defaults:    func(r *LoadBalancerRecord) map[string]string { return DefaultLoadBalancerAttributes(r.Type) },
-		attrsOf:     func(r *LoadBalancerRecord) map[string]string { return r.Attributes },
-		setAttrs:    func(r *LoadBalancerRecord, m map[string]string) { r.Attributes = m },
-		validate:    validateLBAttribute,
+		unknownKey: func(key string) error {
+			return awserrors.Errorf(awserrors.ErrorValidationError, "Load balancer attribute key '%s' is not recognized", key)
+		},
+		attrsOf:  func(r *LoadBalancerRecord) map[string]string { return r.Attributes },
+		setAttrs: func(r *LoadBalancerRecord, m map[string]string) { r.Attributes = m },
+		validate: validateLBAttribute,
 		afterChange: func(rec *LoadBalancerRecord, changed []string) error {
 			return s.reRenderForAttributes(ctx, rec.LoadBalancerID, changed)
 		},
@@ -253,6 +257,8 @@ func (s *ELBv2ServiceImpl) lbAttrResource(ctx context.Context, arn, accountID, o
 
 // validateLBAttribute checks the values of the load balancer attributes that
 // shape the rendered configuration; other keys are stored as submitted.
+const attrIdleTimeout = "idle_timeout.timeout_seconds"
+
 func validateLBAttribute(key, value string) error {
 	switch key {
 	case AttrXFFHeaderProcessing:
@@ -268,6 +274,12 @@ func validateLBAttribute(key, value string) error {
 		}
 		return awserrors.Errorf(awserrors.ErrorValidationError,
 			"Invalid value '%s' for attribute '%s': must be true or false", value, key)
+	case attrIdleTimeout:
+		// AWS words the numeric lower bound as a length, so this mirrors its text.
+		if n, err := strconv.Atoi(value); value == "" || (err == nil && n < 1) {
+			return awserrors.Errorf(awserrors.ErrorValidationError,
+				"The value of '%s' cannot be less than 1 characters", key)
+		}
 	}
 	return nil
 }
@@ -348,11 +360,11 @@ func (s *ELBv2ServiceImpl) ModifyLoadBalancerAttributes(ctx context.Context, inp
 	const op = "ModifyLoadBalancerAttributes"
 	arn := aws.StringValue(input.LoadBalancerArn)
 	pairs, raw := sdkAttrsIn(input.Attributes, lbAttrKeyVal, arn, op)
-	submitted, _, err := modifyResourceAttributes(s.lbAttrResource(ctx, arn, accountID, op), pairs, raw)
+	_, full, err := modifyResourceAttributes(s.lbAttrResource(ctx, arn, accountID, op), pairs, raw)
 	if err != nil {
 		return nil, err
 	}
-	return &elbv2.ModifyLoadBalancerAttributesOutput{Attributes: sdkAttrsOut(submitted, mkLBAttr)}, nil
+	return &elbv2.ModifyLoadBalancerAttributesOutput{Attributes: sdkAttrsOut(full, mkLBAttr)}, nil
 }
 
 func (s *ELBv2ServiceImpl) DescribeLoadBalancerAttributes(ctx context.Context, input *elbv2.DescribeLoadBalancerAttributesInput, accountID string) (*elbv2.DescribeLoadBalancerAttributesOutput, error) {

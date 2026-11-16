@@ -175,7 +175,7 @@ func TestCreateCluster_SameTokenDifferentParamsIsIdempotentMismatch(t *testing.T
 
 	in2 := createInput("alpha")
 	in2.ClientRequestToken = aws.String("tok-mismatch")
-	in2.Version = aws.String("1.31") // same token, different param
+	in2.Tags = aws.StringMap(map[string]string{"team": "b"}) // same token, different param
 	_, err = f.svc.CreateCluster(context.Background(), in2, testAccountID, "")
 	require.EqualError(t, err, awserrors.ErrorIdempotentParameterMismatch)
 

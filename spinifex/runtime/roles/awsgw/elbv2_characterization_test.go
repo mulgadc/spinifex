@@ -133,16 +133,26 @@ func TestELBv2Pipeline_NoResponder_500InternalError(t *testing.T) {
 
 // --- Golden success responses ----------------------------------------------
 
-// An action served without NATS answers 200 text/xml in the Query envelope.
 func TestELBv2Pipeline_DescribeListenerAttributes_GoldenXML(t *testing.T) {
-	_, app := elbv2PipelineApp(t, allowAllTaggingDocs(), nil)
+	gw, app := elbv2PipelineApp(t, allowAllTaggingDocs(), nil)
 	listener := pipelineListener("web", "1", "2")
+	respondELBv2(t, gwfix.DepsOf(gw).NATS, "elbv2.DescribeListeners",
+		`{"Listeners":[{"ListenerArn":"`+listener+`","Protocol":"TCP"}]}`)
 	resp := doRequest(app, signELBv2Request(t, "Action=DescribeListenerAttributes&ListenerArn="+listener))
 
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "text/xml", resp.Header.Get("Content-Type"))
-	assert.Equal(t, `<DescribeListenerAttributesResponse><DescribeListenerAttributesResult><Attributes></Attributes></DescribeListenerAttributesResult></DescribeListenerAttributesResponse>`,
-		readBody(t, resp))
+	var out struct {
+		Attrs []struct {
+			Key   string `xml:"Key"`
+			Value string `xml:"Value"`
+		} `xml:"DescribeListenerAttributesResult>Attributes>member"`
+	}
+	// Member field order varies between runs, so the attributes are pinned decoded.
+	require.NoError(t, xml.Unmarshal([]byte(readBody(t, resp)), &out))
+	require.Len(t, out.Attrs, 1)
+	assert.Equal(t, "tcp.idle_timeout.seconds", out.Attrs[0].Key)
+	assert.Equal(t, "350", out.Attrs[0].Value)
 }
 
 func TestELBv2Pipeline_DescribeLoadBalancers_GoldenXML(t *testing.T) {

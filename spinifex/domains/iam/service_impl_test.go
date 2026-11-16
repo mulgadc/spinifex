@@ -1399,6 +1399,60 @@ func TestGetPolicy(t *testing.T) {
 	assert.Equal(t, int64(0), *out.Policy.AttachmentCount)
 }
 
+// Every shipped AWS-managed policy answers GetPolicy with its pinned AWS
+// version metadata and this account's attachment count.
+func TestGetPolicy_ShippedAWSManaged(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	const clusterARN = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+	createTestRole(t, svc, "eks-cluster")
+	_, err := svc.AttachRolePolicy(testAccountID, &iam.AttachRolePolicyInput{
+		RoleName: aws.String("eks-cluster"), PolicyArn: aws.String(clusterARN),
+	})
+	require.NoError(t, err)
+
+	for policyARN := range awsManagedPolicyDocs {
+		out, err := svc.GetPolicy(testAccountID, &iam.GetPolicyInput{PolicyArn: aws.String(policyARN)})
+		require.NoError(t, err, policyARN)
+		p := out.Policy
+		pin, ok := awsManagedPolicyVersions[policyARN]
+		require.True(t, ok, "%s has no pinned version", policyARN)
+		assert.Equal(t, policyARN, *p.Arn)
+		assert.Equal(t, policyARN, "arn:aws:iam::aws:policy/"+*p.PolicyName)
+		assert.Equal(t, "/", *p.Path)
+		assert.True(t, *p.IsAttachable)
+		assert.Equal(t, int64(0), *p.PermissionsBoundaryUsageCount)
+		assert.NotNil(t, p.Tags, policyARN)
+		assert.Equal(t, pin.VersionID, *p.DefaultVersionId)
+		assert.NotEmpty(t, *p.Description, policyARN)
+		assert.Regexp(t, `^ANPA[0-9A-F]{17}$`, *p.PolicyId)
+		assert.False(t, p.CreateDate.IsZero(), policyARN)
+		assert.False(t, p.UpdateDate.Before(*p.CreateDate), policyARN)
+		wantCount := int64(0)
+		if policyARN == clusterARN {
+			wantCount = 1
+		}
+		assert.Equal(t, wantCount, *p.AttachmentCount, policyARN)
+	}
+
+	out, err := svc.GetPolicy(testAccountID, &iam.GetPolicyInput{PolicyArn: aws.String(clusterARN)})
+	require.NoError(t, err)
+	assert.Equal(t, "v10", *out.Policy.DefaultVersionId)
+	assert.Equal(t, time.Date(2018, 5, 27, 21, 6, 14, 0, time.UTC), out.Policy.CreateDate.UTC())
+	assert.Equal(t, time.Date(2026, 2, 12, 17, 58, 15, 0, time.UTC), out.Policy.UpdateDate.UTC())
+}
+
+// An AWS-managed policy Spinifex does not ship is NoSuchEntity naming it.
+func TestGetPolicy_UnshippedAWSManaged(t *testing.T) {
+	t.Parallel()
+	svc := setupTestIAMService(t)
+	const arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+	_, err := svc.GetPolicy(testAccountID, &iam.GetPolicyInput{PolicyArn: aws.String(arn)})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), awserrors.ErrorIAMNoSuchEntity)
+	assert.Contains(t, err.Error(), "Policy "+arn+" was not found.")
+}
+
 func TestGetPolicy_NotFound(t *testing.T) {
 	t.Parallel()
 	svc := setupTestIAMService(t)

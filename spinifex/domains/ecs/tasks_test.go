@@ -24,7 +24,7 @@ func TestTaskToAWS_LifecycleTimestamps(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			task := svc.taskToAWS(testAccountID, &tc.rec)
+			task := svc.taskToAWS(testAccountID, &tc.rec, nil)
 			assert.Equal(t, &created, task.CreatedAt)
 			assert.Equal(t, tc.started, task.StartedAt)
 			assert.Equal(t, tc.stopped, task.StoppedAt)

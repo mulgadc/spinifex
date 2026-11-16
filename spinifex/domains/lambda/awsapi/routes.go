@@ -22,7 +22,10 @@ type call struct {
 	Create *lambda.CreateFunctionInput
 	// Invoke is Invoke's validated target, resolved ahead of the
 	// authorization gate whose resource it names.
-	Invoke *invokeTarget
+	Invoke *functionTarget
+	// Delete is DeleteFunction's validated target, resolved from the strictly
+	// parsed query ahead of the authorization gate.
+	Delete *functionTarget
 	// UpdateConfig is the decoded UpdateFunctionConfiguration body, read
 	// ahead of the PassRole check on a new role.
 	UpdateConfig *lambda.UpdateFunctionConfigurationInput
@@ -48,6 +51,18 @@ var routes = []route{
 	{Method: "POST", Pattern: "/2015-03-31/functions", Action: "CreateFunction",
 		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
 			return d.createFunction(ctx, c)
+		}},
+	{Method: "GET", Pattern: "/2015-03-31/functions", Action: "ListFunctions",
+		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
+			return d.listFunctions(ctx, c)
+		}},
+	{Method: "GET", Pattern: "/2015-03-31/functions/", Action: "ListFunctions",
+		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
+			return d.listFunctions(ctx, c)
+		}},
+	{Method: "DELETE", Pattern: "/2015-03-31/functions/{FunctionName}", Action: "DeleteFunction",
+		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {
+			return d.deleteFunction(ctx, c)
 		}},
 	{Method: "GET", Pattern: "/2015-03-31/functions/{FunctionName}", Action: "GetFunction",
 		Handler: func(ctx context.Context, d Deps, c *call) (reply, error) {

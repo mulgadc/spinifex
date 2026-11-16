@@ -1036,7 +1036,7 @@ func TestRespondWithVolumeAttachment(t *testing.T) {
 	assert.Equal(t, "/dev/sdf", *attachment.Device)
 	assert.Equal(t, "attached", *attachment.State)
 	assert.NotNil(t, attachment.AttachTime)
-	assert.False(t, *attachment.DeleteOnTermination)
+	assert.Nil(t, attachment.DeleteOnTermination, "AWS omits DeleteOnTermination from AttachVolume and DetachVolume")
 }
 
 // --- handleEC2ModifyVolume tests ---
@@ -3718,7 +3718,7 @@ func TestDelegateHandlers_EIP(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	eipSvc, err := ec2eip.NewEIPServiceImpl(t.Context(), nc, ipam, daemon.vpcService)
+	eipSvc, err := ec2eip.NewEIPServiceImpl(t.Context(), nc, ipam, daemon.vpcService, "ap-southeast-2")
 	require.NoError(t, err)
 	daemon.eipService = eipSvc
 

@@ -26,6 +26,10 @@ type Client interface {
 	CodeUpdated(ctx context.Context, accountID, region string, rec Record, revision uint64, codeRevisionID, sha256Hex string, size int64) (Record, uint64, error)
 	// UpdateConfiguration commits cfg for the function at revision and returns the updated record and revision.
 	UpdateConfiguration(ctx context.Context, accountID, region string, rec Record, revision uint64, cfg Configuration) (Record, uint64, error)
+	// List returns up to maxItems of the Region's functions after marker and the next marker, empty at the end.
+	List(ctx context.Context, accountID, region, marker string, maxItems int) ([]ListedFunction, string, error)
+	// Delete unbinds the function read at revision, retaining its cleanup obligation.
+	Delete(ctx context.Context, accountID, region string, rec Record, revision uint64) error
 }
 
 // NATSClient is the Client over NATS request/reply to the daemon.
@@ -97,4 +101,20 @@ func (c *NATSClient) UpdateConfiguration(ctx context.Context, accountID, region 
 		return Record{}, 0, err
 	}
 	return resp.Record, resp.Revision, nil
+}
+
+func (c *NATSClient) List(ctx context.Context, accountID, region, marker string, maxItems int) ([]ListedFunction, string, error) {
+	resp, err := natsmsg.NATSRequest[ListResponse](ctx, c.conn, SubjectList,
+		&ListRequest{Region: region, Marker: marker, MaxItems: maxItems}, metaRequestTimeout, accountID)
+	if err != nil {
+		return nil, "", err
+	}
+	return resp.Functions, resp.NextMarker, nil
+}
+
+func (c *NATSClient) Delete(ctx context.Context, accountID, region string, rec Record, revision uint64) error {
+	_, err := natsmsg.NATSRequest[DeleteResponse](ctx, c.conn, SubjectDelete,
+		&DeleteRequest{Region: region, FunctionName: rec.FunctionName, FunctionID: rec.FunctionID, Revision: revision},
+		metaRequestTimeout, accountID)
+	return err
 }

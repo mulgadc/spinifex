@@ -98,19 +98,17 @@ func (s *Service) ModifyDBInstance(ctx context.Context, input *rds.ModifyDBInsta
 	// Resolved against the stored record and fully validated before anything
 	// moves, so a rejected request never leaves a database stopped.
 	plan, err := s.planModify(ctx, input, accountID, rec)
+	// AWS refuses any change outside available ahead of validating it, yet still
+	// answers a request repeating the current values. Failed stays open so a
+	// customer can retry the change that failed it.
+	if rec.Status != StatusAvailable && rec.Status != StatusFailed && (err != nil || !plan.empty()) {
+		return nil, awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState, "Database instance is not in available state.")
+	}
 	if err != nil {
 		return nil, err
 	}
 	if plan.empty() {
 		return &rds.ModifyDBInstanceOutput{DBInstance: s.projectDBInstance(rec)}, nil
-	}
-	// A disruptive change needs a live engine to be stopped cleanly and a live
-	// agent to apply parameters, so it is legal only from available. The
-	// non-disruptive settings are record and ENI writes, legal from any settled
-	// state.
-	if plan.disruptive() && rec.Status != StatusAvailable && rec.Status != StatusFailed {
-		return nil, awserrors.Errorf(awserrors.ErrorDBInstanceInvalidState,
-			"DB instance %s is %s; the requested modification requires it to be %s", id, rec.Status, StatusAvailable)
 	}
 	// Only from failed. A create that timed out with its bootstrap still staged
 	// never formatted its data volume, and the replacement VM would lose the
@@ -168,7 +166,7 @@ func (s *Service) ModifyDBInstance(ctx context.Context, input *rds.ModifyDBInsta
 		return &rds.ModifyDBInstanceOutput{DBInstance: s.projectDBInstance(stored)}, nil
 	}
 
-	moved, kv, err := s.beginTransition(ctx, accountID, id, StatusModifying, StatusAvailable, StatusFailed)
+	moved, kv, err := s.beginTransition(ctx, accountID, id, nil, StatusModifying, StatusAvailable, StatusFailed)
 	if err != nil {
 		return nil, err
 	}

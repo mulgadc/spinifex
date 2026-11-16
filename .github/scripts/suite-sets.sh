@@ -4,7 +4,7 @@
 #   . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
 #
 # Which e2e suites each topology can run. Sourced by every workflow that drives
-# suites (e2e.yml, e2e-suites.yml, e2e-nightly.yml) so the lists cannot drift
+# suites (e2e.yml, e2e-nightly.yml) so the lists cannot drift
 # apart — they previously disagreed three ways.
 #
 # Eligibility is a property of the suite, not of the workflow: a suite belongs
@@ -203,6 +203,9 @@ e2e_suite_timeout() {
     # sweep after its last write-back, on top of three stop/starts and a boot.
     # A pass is estimated at 40 minutes, unmeasured; the rest is the watch's cap.
     uefistore) echo "60m" ;;
+    # eks finishes rather than hangs: passing runs took 26-29m, and one ran
+    # out at 30m inside DeleteCluster. The default left it minutes of headroom.
+    eks) echo "45m" ;;
     *) echo "30m" ;;
   esac
 }

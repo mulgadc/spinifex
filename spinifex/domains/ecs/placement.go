@@ -19,6 +19,10 @@ const (
 // ErrNoCapacity is returned when no ACTIVE instance can fit the task.
 var ErrNoCapacity = errors.New("no container instance has capacity for the task")
 
+// errNoContainerInstances is returned when the cluster has no container-instance
+// record at all, draining or not.
+var errNoContainerInstances = errors.New("no container instance is registered in the cluster")
+
 // ErrNoENICapacity is returned when the only thing standing between the task and
 // an instance is an awsvpc network interface slot. It is separated from
 // ErrNoCapacity so the caller can say which resource bound, the way AWS does

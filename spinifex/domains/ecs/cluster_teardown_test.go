@@ -93,7 +93,7 @@ func TestService_DeregisterContainerInstance_ForceStopsAndRemoves(t *testing.T) 
 	_, err = svc.DeregisterContainerInstance(context.Background(), &ecs.DeregisterContainerInstanceInput{
 		Cluster: aws.String("web"), ContainerInstance: aws.String("i-1"),
 	}, testAccountID)
-	require.Error(t, err)
+	assert.EqualError(t, err, "Found running tasks on the instance.: InvalidParameterException")
 
 	// With force, the task is stopped and the instance record removed.
 	out, err := svc.DeregisterContainerInstance(context.Background(), &ecs.DeregisterContainerInstanceInput{
@@ -112,6 +112,11 @@ func TestService_DeregisterContainerInstance_ForceStopsAndRemoves(t *testing.T) 
 	require.NoError(t, err)
 	assert.Empty(t, desc.ContainerInstances)
 	require.Len(t, desc.Failures, 1)
+
+	_, err = svc.DeregisterContainerInstance(context.Background(), &ecs.DeregisterContainerInstanceInput{
+		Cluster: aws.String("web"), ContainerInstance: aws.String("i-1"),
+	}, testAccountID)
+	assert.EqualError(t, err, "The referenced container instance was not found.: InvalidParameterException")
 }
 
 func TestService_UpdateContainerInstancesState_DrainsServiceTasks(t *testing.T) {

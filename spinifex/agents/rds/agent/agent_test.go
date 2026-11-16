@@ -764,7 +764,7 @@ func TestPollDBCommandsOutput_MatchesGatewayShape(t *testing.T) {
 	issued := time.Date(2026, 7, 28, 1, 2, 3, 0, time.UTC)
 	// Rendered exactly as the gateway's typed adapter renders it, so a change to
 	// either side's tags fails here.
-	payload := awsxml.QueryResponsePayload("PollDBCommands", &rdsawsapi.PollDBCommandsOutput{
+	payload := awsxml.QueryResponsePayload("PollDBCommands", "", &rdsawsapi.PollDBCommandsOutput{
 		Commands: []rdsinstance.Command{{
 			CommandID:         "cmd-1",
 			Type:              "reload-parameters",

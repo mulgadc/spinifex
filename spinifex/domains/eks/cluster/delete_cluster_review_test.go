@@ -219,7 +219,7 @@ func TestS2_EKSLastNodegroupDeletedResumesTheClusterDelete(t *testing.T) {
 func TestS8_EKSHungTeardownStepReleasesTheGate(t *testing.T) {
 	f := newDeleteClusterFixture(t, "alpha")
 	orig := teardownPassTimeout
-	teardownPassTimeout = 300 * time.Millisecond
+	teardownPassTimeout = 150 * time.Millisecond
 	t.Cleanup(func() { teardownPassTimeout = orig })
 	var once sync.Once
 	f.nlb.describeLBHook = func(ctx context.Context) { once.Do(func() { <-ctx.Done() }) }

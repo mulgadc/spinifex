@@ -10,7 +10,7 @@ import { isValidCidr } from "@/lib/subnet-calculator"
 
 // K3s control plane is pinned per Mulga release; expose the supported
 // Kubernetes minor versions the backend accepts.
-export const EKS_SUPPORTED_VERSIONS = ["1.32", "1.31", "1.30"] as const
+export const EKS_SUPPORTED_VERSIONS = ["1.32"] as const
 
 // Only these AWS-managed access policies are mapped to K8s ClusterRoles in v1.
 export const EKS_ACCESS_POLICIES = [

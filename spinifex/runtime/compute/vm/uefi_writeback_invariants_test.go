@@ -349,7 +349,7 @@ func TestS7_AStopSettlesItsStoreOnlyOnceQEMUIsGone(t *testing.T) {
 	require.Eventually(t, func() bool {
 		clock.Advance(uefiWriteBackQuiet)
 		return bytes.Equal(want, f.pointedRegion(t))
-	}, 10*time.Second, 10*time.Millisecond, "ADR-0003:S7: a change a live guest makes after the stop must land")
+	}, 10*time.Second, 2*time.Millisecond, "ADR-0003:S7: a change a live guest makes after the stop must land")
 
 	_, err := f.m.NewUEFIWriteBackReaper().Sweep(t.Context())
 	require.NoError(t, err)

@@ -16,14 +16,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// consoleBody returns n bytes of 16-byte numbered lines, so any slice of it
-// identifies which part of the original it came from.
+// consoleBody returns n bytes of 16-byte numbered lines ("l%014d\n"), so any
+// slice of it identifies which part of the original it came from.
 func consoleBody(n int) []byte {
-	var b bytes.Buffer
-	for i := 0; b.Len() < n; i++ {
-		fmt.Fprintf(&b, "l%014d\n", i)
+	b := make([]byte, (n+15)/16*16)
+	for i, off := 0, 0; off < len(b); i, off = i+1, off+16 {
+		line := b[off : off+16]
+		line[0], line[15] = 'l', '\n'
+		for d, v := 14, i; d >= 1; d, v = d-1, v/10 {
+			line[d] = byte('0' + v%10)
+		}
 	}
-	return b.Bytes()[:n]
+	return b[:n]
 }
 
 func newConsoleReaper(t *testing.T, now time.Time) (*ConsoleLogReaper, string) {
@@ -44,6 +48,7 @@ func writeConsole(t *testing.T, dir, id string, body []byte, mtime time.Time) st
 }
 
 func TestConsoleLogReaper_TrimsToNewestMiB(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	r, dir := newConsoleReaper(t, now)
 	body := consoleBody(5 << 20)
@@ -61,6 +66,7 @@ func TestConsoleLogReaper_TrimsToNewestMiB(t *testing.T) {
 }
 
 func TestConsoleLogReaper_LeavesFilesAtOrBelowTheLimit(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	r, dir := newConsoleReaper(t, now)
 	small := consoleBody(3 << 20)
@@ -82,6 +88,7 @@ func TestConsoleLogReaper_LeavesFilesAtOrBelowTheLimit(t *testing.T) {
 // QEMU writes through a descriptor it keeps open, so the trim must leave the
 // file usable for that writer: no hole of NULs, and later output at the end.
 func TestConsoleLogReaper_AppendWriterKeepsWritingAfterTrim(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	r, dir := newConsoleReaper(t, now)
 	p := filepath.Join(dir, "console-i-live.log")
@@ -106,6 +113,7 @@ func TestConsoleLogReaper_AppendWriterKeepsWritingAfterTrim(t *testing.T) {
 }
 
 func TestConsoleLogReaper_RemovesOnlyAgedRetiredFiles(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	r, dir := newConsoleReaper(t, now)
 	old := now.Add(-consoleRemoveAfter - time.Minute)
@@ -137,6 +145,7 @@ func TestConsoleLogReaper_RemovesOnlyAgedRetiredFiles(t *testing.T) {
 }
 
 func TestRetireConsoleLog(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	p := writeConsole(t, dir, "i-end", []byte("last words\n"), time.Now())
 
@@ -152,6 +161,7 @@ func TestRetireConsoleLog(t *testing.T) {
 }
 
 func TestConsoleLogReaper_TrimsOnlyLiveFiles(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	r, dir := newConsoleReaper(t, now)
 	big := writeConsole(t, dir, "i-big", consoleBody(5<<20), now)
@@ -207,6 +217,7 @@ func fakeQEMUProc(t *testing.T, procRoot string, pid int, open ...string) {
 }
 
 func TestConsoleLogReaper_RemovesIdleLiveFileNothingHolds(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	r, dir := newConsoleReaper(t, now)
 	idle := writeConsole(t, dir, "i-stopped-then-terminated", []byte("boot\n"), now.Add(-consoleIdleAfter-time.Minute))
@@ -223,6 +234,7 @@ func TestConsoleLogReaper_RemovesIdleLiveFileNothingHolds(t *testing.T) {
 }
 
 func TestConsoleLogReaper_KeepsIdleFileHeldByRealProcess(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	r, dir := newConsoleReaper(t, now)
 	held := writeConsole(t, dir, "i-quiet-guest", []byte("boot\n"), now.Add(-48*time.Hour))
@@ -252,6 +264,7 @@ func TestConsoleLogReaper_KeepsIdleFileHeldByRealProcess(t *testing.T) {
 }
 
 func TestConsoleLogReaper_KeepsIdleFileWhenProcessTableUnreadable(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	r, dir := newConsoleReaper(t, now)
 	idle := writeConsole(t, dir, "i-unprovable", []byte("boot\n"), now.Add(-48*time.Hour))
@@ -269,6 +282,7 @@ func TestConsoleLogReaper_KeepsIdleFileWhenProcessTableUnreadable(t *testing.T) 
 }
 
 func TestConsoleLogReaper_KeepsIdleFileWhenPidFileNamesLivePidTheScanMissed(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	r, dir := newConsoleReaper(t, now)
 	idle := writeConsole(t, dir, "i-quiet", []byte("boot\n"), now.Add(-48*time.Hour))
@@ -283,6 +297,7 @@ func TestConsoleLogReaper_KeepsIdleFileWhenPidFileNamesLivePidTheScanMissed(t *t
 }
 
 func TestConsoleLogReaper_IgnoresPidFileOfDeadProcess(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	r, dir := newConsoleReaper(t, now)
 	idle := writeConsole(t, dir, "i-gone", []byte("boot\n"), now.Add(-48*time.Hour))

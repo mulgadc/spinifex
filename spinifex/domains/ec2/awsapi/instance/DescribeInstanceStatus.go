@@ -183,20 +183,8 @@ func buildInstanceStatusFromInstance(inst *ec2.Instance, az string) *ec2.Instanc
 		AvailabilityZone: aws.String(az),
 		InstanceId:       inst.InstanceId,
 		InstanceState:    state,
-		InstanceStatus: &ec2.InstanceStatusSummary{
-			Status: aws.String(notApplicable),
-			Details: []*ec2.InstanceStatusDetails{{
-				Name:   aws.String(reachabilityDetailName),
-				Status: aws.String(notApplicable),
-			}},
-		},
-		SystemStatus: &ec2.InstanceStatusSummary{
-			Status: aws.String(notApplicable),
-			Details: []*ec2.InstanceStatusDetails{{
-				Name:   aws.String(reachabilityDetailName),
-				Status: aws.String(notApplicable),
-			}},
-		},
+		InstanceStatus:   &ec2.InstanceStatusSummary{Status: aws.String(notApplicable)},
+		SystemStatus:     &ec2.InstanceStatusSummary{Status: aws.String(notApplicable)},
 	}
 }
 

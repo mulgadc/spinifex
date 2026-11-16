@@ -138,6 +138,7 @@ func TestS8_EKSSecondDeleteAnswersFromTheRecordWithoutASecondTeardown(t *testing
 // own, so cancelling the request context mid-teardown does not let the lease
 // lapse and a second node start a duplicate teardown.
 func TestS8_EKSTeardownLeaseOutlivesTheRequest(t *testing.T) {
+	t.Parallel()
 	f := newDeleteClusterFixture(t, "alpha")
 	// A short TTL keeps the wait brief while leaving several renewal chances
 	// inside each TTL window.

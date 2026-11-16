@@ -94,6 +94,22 @@ type Record struct {
 	RegisteredAt            time.Time         `json:"registeredAt"`
 	// DeregisteredAt is set when the revision first goes INACTIVE.
 	DeregisteredAt *time.Time `json:"deregisteredAt,omitempty"`
+	// RegisteredBy is the session or user ARN that registered the revision.
+	RegisteredBy string `json:"registeredBy,omitempty"`
+}
+
+// Container returns the named container definition, or nil when t is nil or
+// holds no container of that name.
+func (t *Record) Container(name string) *Container {
+	if t == nil {
+		return nil
+	}
+	for i := range t.Containers {
+		if t.Containers[i].Name == name {
+			return &t.Containers[i]
+		}
+	}
+	return nil
 }
 
 // ReservedCPU sums the per-container CPU reservations used for bin-pack

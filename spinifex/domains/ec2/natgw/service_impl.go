@@ -125,7 +125,7 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 	// Validate EIP exists and is not already associated
 	eipEntry, err := s.eipKV.Get(ctx, kvstore.AccountKey(accountID, allocID))
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidAllocationIDNotFound)
+		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidElasticIpIDNotFound, "elasticIp", allocID)
 	}
 	var eipRecord ec2eip.EIPRecord
 	if err := json.Unmarshal(eipEntry.Value(), &eipRecord); err != nil {
@@ -137,15 +137,16 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 
 	natgwID := awsidentifiers.GenerateResourceID("nat")
 	record := NatGatewayRecord{
-		NatGatewayId: natgwID,
-		VpcId:        subnetRecord.VpcId,
-		SubnetId:     subnetID,
-		AllocationId: allocID,
-		PublicIp:     eipRecord.PublicIp,
-		State:        "available",
-		AccountID:    accountID,
-		Tags:         awstags.Extract(input.TagSpecifications, ec2.ResourceTypeNatgateway),
-		CreatedAt:    time.Now(),
+		NatGatewayId:  natgwID,
+		VpcId:         subnetRecord.VpcId,
+		SubnetId:      subnetID,
+		AllocationId:  allocID,
+		PublicIp:      eipRecord.PublicIp,
+		AssociationId: awsidentifiers.GenerateResourceID("eipassoc"),
+		State:         "available",
+		AccountID:     accountID,
+		Tags:          awstags.Extract(input.TagSpecifications, ec2.ResourceTypeNatgateway),
+		CreatedAt:     time.Now(),
 	}
 
 	data, err := json.Marshal(record)
@@ -161,7 +162,7 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 	// NAT GW reusing the same allocation). Linkage is the shared AllocationId;
 	// DeleteNatGateway clears it back to allocated. Non-fatal: the NAT GW is
 	// already stored, so a failed mark only weakens the reuse guard until then.
-	eipRecord.AssociationId = awsidentifiers.GenerateResourceID("eipassoc")
+	eipRecord.AssociationId = record.AssociationId
 	eipRecord.VpcId = subnetRecord.VpcId
 	eipRecord.State = "associated"
 	if eipData, err := json.Marshal(eipRecord); err == nil {
@@ -190,9 +191,7 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(ctx context.Context, input *ec2
 	entry, err := s.natgwKV.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			// AWS-faithful: an absent NAT gateway is NatGatewayNotFound (provider
-			// tolerates it on destroy); destroy orchestration tolerates it too.
-			return nil, errors.New(awserrors.ErrorNatGatewayNotFound)
+			return s.deleteAlreadyDeletedNatGateway(ctx, key, natgwID)
 		}
 		slog.ErrorContext(ctx, "Failed to read NAT Gateway", "natGatewayId", natgwID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -234,6 +233,20 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(ctx context.Context, input *ec2
 	return &ec2.DeleteNatGatewayOutput{
 		NatGatewayId: aws.String(natgwID),
 	}, nil
+}
+
+// deleteAlreadyDeletedNatGateway answers a repeat delete the way AWS does: a
+// gateway still listed as deleted returns its ID with no side effects, and an
+// ID that was never seen (or has expired) is NatGatewayNotFound.
+func (s *NatGatewayServiceImpl) deleteAlreadyDeletedNatGateway(ctx context.Context, key, natgwID string) (*ec2.DeleteNatGatewayOutput, error) {
+	if _, err := s.deletedNatgwKV.Get(ctx, key); err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return nil, errors.New(awserrors.ErrorNatGatewayNotFound)
+		}
+		slog.ErrorContext(ctx, "Failed to read deleted NAT Gateway", "natGatewayId", natgwID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	return &ec2.DeleteNatGatewayOutput{NatGatewayId: aws.String(natgwID)}, nil
 }
 
 // kvBucketRouteTables is the route-table KV bucket. Duplicated as a literal
@@ -365,7 +378,10 @@ func (s *NatGatewayServiceImpl) DescribeNatGateways(ctx context.Context, input *
 	parsedFilters, err := awsfilters.ParseFilters(input.Filter, describeNatGatewaysValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeNatGateways: invalid filter", "err", err)
-		return nil, err
+		// AWS answers InvalidParameter here, where other EC2 describes answer
+		// InvalidParameterValue with the same text.
+		_, msg, _ := awserrors.ResolveErrorDetail(err)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameter, "%s", msg)
 	}
 
 	natgwIDs := awsidentifiers.Set(input.NatGatewayIds)
@@ -490,7 +506,12 @@ func recordToEC2(record *NatGatewayRecord) *ec2.NatGateway {
 			{
 				AllocationId: aws.String(record.AllocationId),
 				PublicIp:     aws.String(record.PublicIp),
+				IsPrimary:    aws.Bool(true),
+				Status:       aws.String(ec2.NatGatewayAddressStatusSucceeded),
 			},
+		}
+		if record.AssociationId != "" {
+			ngw.NatGatewayAddresses[0].AssociationId = aws.String(record.AssociationId)
 		}
 	}
 

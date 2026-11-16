@@ -47,6 +47,17 @@ func ValidateErrorPayload(payload []byte) (responseError ec2.ResponseError, err 
 	return responseError, nil
 }
 
+// ResponseErrorToError rebuilds the error a NATS error payload carried,
+// keeping its sender's message so the client is not answered with the code's
+// default text instead.
+func ResponseErrorToError(responseError ec2.ResponseError) error {
+	code := aws.StringValue(responseError.Code)
+	if message := aws.StringValue(responseError.Message); message != "" {
+		return Errorf(code, "%s", message)
+	}
+	return errors.New(code)
+}
+
 // UnmarshalJsonPayload decodes jsonData into input (already a pointer) using strict field checking.
 func UnmarshalJsonPayload(input any, jsonData []byte) []byte {
 	decoder := json.NewDecoder(bytes.NewReader(jsonData))

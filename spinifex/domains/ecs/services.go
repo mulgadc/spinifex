@@ -129,18 +129,18 @@ func (m *natsEIPManager) Release(ctx context.Context, accountID, allocationID st
 func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInput, accountID string) (*ecs.CreateServiceOutput, error) {
 	name := aws.StringValue(input.ServiceName)
 	if name == "" {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+		return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "serviceName is required.")
 	}
 	if err := validateTags(input.Tags); err != nil {
 		return nil, err
 	}
 	if strategy := aws.StringValue(input.SchedulingStrategy); strategy != "" && strategy != SchedulingStrategyReplica {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter) // DAEMON unsupported (Q15)
+		return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "schedulingStrategy %s is not supported.", strategy)
 	}
 	// Service discovery needs SRV records, which the DNS writer does not yet emit,
 	// and a servicediscovery surface to resolve the registry ARN against (Q15).
 	if len(input.ServiceRegistries) > 0 {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+		return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "serviceRegistries are not supported.")
 	}
 
 	cluster := ClusterShortName(aws.StringValue(input.Cluster))
@@ -189,6 +189,7 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 		Tags:                 tagsToMap(input.Tags),
 		CreatedAt:            now,
 		UpdatedAt:            now,
+		CreatedBy:            CallerARN(ctx),
 	}
 	if input.NetworkConfiguration != nil && input.NetworkConfiguration.AwsvpcConfiguration != nil {
 		v := input.NetworkConfiguration.AwsvpcConfiguration
@@ -222,8 +223,11 @@ func (s *Service) UpdateService(ctx context.Context, input *ecs.UpdateServiceInp
 	if err != nil {
 		return nil, err
 	}
-	if !found || rec.Status == ServiceStatusInactive {
+	if !found {
 		return nil, errors.New(awserrors.ErrorECSServiceNotFound)
+	}
+	if rec.Status != ServiceStatusActive {
+		return nil, errors.New(awserrors.ErrorECSServiceNotActive)
 	}
 
 	rec.ensurePrimaryDeployment()
@@ -266,8 +270,8 @@ func (s *Service) UpdateService(ctx context.Context, input *ecs.UpdateServiceInp
 	return &ecs.UpdateServiceOutput{Service: s.serviceToAWS(accountID, &rec)}, nil
 }
 
-// DeleteService drains the service to zero, force-stops its tasks, and marks it
-// INACTIVE (kept describable, AWS parity).
+// DeleteService refuses a service scaled above 0 unless force is set, as AWS
+// does; otherwise it force-stops the tasks and marks it INACTIVE (still describable).
 func (s *Service) DeleteService(ctx context.Context, input *ecs.DeleteServiceInput, accountID string) (*ecs.DeleteServiceOutput, error) {
 	cluster := ClusterShortName(aws.StringValue(input.Cluster))
 	name := ServiceShortName(aws.StringValue(input.Service))
@@ -284,7 +288,16 @@ func (s *Service) DeleteService(ctx context.Context, input *ecs.DeleteServiceInp
 		return nil, errors.New(awserrors.ErrorECSServiceNotFound)
 	}
 
+	if rec.DesiredCount > 0 && !aws.BoolValue(input.Force) {
+		return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "The service cannot be stopped while it is scaled above 0.")
+	}
+
 	rec.DesiredCount = 0
+	for i := range rec.Deployments {
+		rec.Deployments[i].DesiredCount = 0
+		rec.Deployments[i].RunningCount = 0
+		rec.Deployments[i].PendingCount = 0
+	}
 	tasks, err := s.listServiceTasks(ctx, kv, cluster, name)
 	if err != nil {
 		return nil, err
@@ -723,6 +736,9 @@ func (s *Service) serviceToAWS(accountID string, r *ServiceRecord) *ecs.Service 
 	}
 	if r.LaunchType != "" {
 		svc.LaunchType = aws.String(r.LaunchType)
+	}
+	if r.CreatedBy != "" {
+		svc.CreatedBy = aws.String(r.CreatedBy)
 	}
 	// Only awsvpc tasks carry a subnet/security-group selection; other modes
 	// never populate one (RunTask's parseAwsvpcConfig gates it the same way).

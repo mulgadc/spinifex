@@ -123,7 +123,7 @@ func TestAuthorizeAgent_RejectsWhenNoInstancesExist(t *testing.T) {
 func TestInternalActions_GateBeforeDispatch(t *testing.T) {
 	for _, action := range []string{"RegisterDBInstance", "SubmitDBStateChange", "PollDBCommands", "GetDBBootstrapConfig"} {
 		t.Run(action, func(t *testing.T) {
-			_, err := Dispatch(t.Context(), action, map[string]string{"Action": action}, nil, testCaller, testEnv)
+			_, err := Dispatch(t.Context(), action, "", map[string]string{"Action": action}, nil, testCaller, testEnv)
 			require.Error(t, err)
 			assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
 		})
@@ -306,7 +306,7 @@ func TestBootstrapConfigXML_OmitsPasswordOnAttach(t *testing.T) {
 
 func marshalResult(t *testing.T, action string, out any) string {
 	t.Helper()
-	body, err := awsxml.Marshal(awsxml.QueryResponsePayload(action, out))
+	body, err := awsxml.Marshal(awsxml.QueryResponsePayload(action, "", out))
 	require.NoError(t, err)
 	return string(body)
 }

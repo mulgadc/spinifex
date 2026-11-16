@@ -52,11 +52,12 @@ func TestService_CreateCapacityProvider_InvalidParameter(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
+	const want = "name and autoScalingGroupProvider.autoScalingGroupArn are required.: InvalidParameterException"
 	_, err := svc.CreateCapacityProvider(ctx, &ecs.CreateCapacityProviderInput{}, testAccountID)
-	require.Error(t, err)
+	assert.EqualError(t, err, want)
 
 	_, err = svc.CreateCapacityProvider(ctx, &ecs.CreateCapacityProviderInput{Name: aws.String("cp")}, testAccountID)
-	require.Error(t, err)
+	assert.EqualError(t, err, want)
 }
 
 func TestService_DescribeCapacityProviders_NamedAndMissing(t *testing.T) {
@@ -101,7 +102,7 @@ func TestService_DeleteCapacityProvider(t *testing.T) {
 	assert.Empty(t, list.CapacityProviders)
 
 	_, err = svc.DeleteCapacityProvider(ctx, &ecs.DeleteCapacityProviderInput{CapacityProvider: aws.String("cp-1")}, testAccountID)
-	require.Error(t, err)
+	assert.EqualError(t, err, "The specified capacity provider cp-1 does not exist.: InvalidParameterException")
 }
 
 // TestService_PutClusterCapacityProviders_PersistsStrategy asserts the

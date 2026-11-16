@@ -51,7 +51,8 @@ func (s *Service) PutClusterCapacityProviders(ctx context.Context, input *ecs.Pu
 func (s *Service) CreateCapacityProvider(ctx context.Context, input *ecs.CreateCapacityProviderInput, accountID string) (*ecs.CreateCapacityProviderOutput, error) {
 	if input == nil || aws.StringValue(input.Name) == "" || input.AutoScalingGroupProvider == nil ||
 		aws.StringValue(input.AutoScalingGroupProvider.AutoScalingGroupArn) == "" {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+		return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter,
+			"name and autoScalingGroupProvider.autoScalingGroupArn are required.")
 	}
 	if err := validateTags(input.Tags); err != nil {
 		return nil, err
@@ -147,7 +148,8 @@ func (s *Service) DeleteCapacityProvider(ctx context.Context, input *ecs.DeleteC
 		return nil, err
 	}
 	if !found {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+		return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter,
+			"The specified capacity provider %s does not exist.", name)
 	}
 	if err := kv.Delete(ctx, CapacityProviderKey(name)); err != nil {
 		return nil, err

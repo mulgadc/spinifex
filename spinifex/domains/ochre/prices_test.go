@@ -32,6 +32,7 @@ func (s stubPriceResolver) Resolve(context.Context, string) (Price, bool, error)
 // consulted from the catalog's (irrelevant, zero-value) price fields — so it
 // can never be confused with an unpriced model.
 func TestResolvePrice_SelfHost_AlwaysKnownZero(t *testing.T) {
+	t.Parallel()
 	entry, ok := lookupCatalogEntry(priceTestSelfHostModelID)
 	require.True(t, ok)
 
@@ -73,6 +74,7 @@ func TestResolvePrice_KVOverrideWinsOverInTreeDefault(t *testing.T) {
 // test: a model with neither a KV override nor an in-tree default resolves
 // Known=false, never a silent zero.
 func TestResolvePrice_NoDefaultNoOverride_Unknown(t *testing.T) {
+	t.Parallel()
 	entry := catalogEntry{ModelID: priceTestUnknownModelID, Provider: providerPrefix + "unpriced-vendor"}
 
 	price, err := resolvePrice(context.Background(), nil, entry)
@@ -93,6 +95,7 @@ func TestResolvePrice_ResolverErrorPropagates(t *testing.T) {
 // TestPriceStore_PutGetDelete exercises the real JetStream KV path, mirroring
 // TestWeightsStore_PutAndResolve_KV.
 func TestPriceStore_PutGetDelete(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	store := NewPriceStore(testutil.NewJetStream(t, nc))
 	ctx := context.Background()
@@ -123,6 +126,7 @@ func TestPriceStore_PutGetDelete(t *testing.T) {
 // JetStream client: every accessor must report the misconfiguration rather
 // than panic on a nil handle.
 func TestPriceStore_RequiresJetStream(t *testing.T) {
+	t.Parallel()
 	store := NewPriceStore(nil)
 	ctx := context.Background()
 

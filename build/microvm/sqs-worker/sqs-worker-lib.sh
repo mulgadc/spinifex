@@ -15,6 +15,7 @@ SQSW_LIB=${SQSW_LIB:-/usr/local/lib/sqs-worker/sqs-worker-lib.sh}
 SQSW_NATS_BIN=${SQSW_NATS_BIN:-/usr/local/bin/nats-server}
 SQSW_STORE_PORT=${SQSW_STORE_PORT:-4222}
 SQSW_STOP_BUDGET_TENTHS=${SQSW_STOP_BUDGET_TENTHS:-100}
+SQSW_KILL_WAIT_TENTHS=${SQSW_KILL_WAIT_TENTHS:-30}
 SQSW_RESPAWN_GAP=${SQSW_RESPAWN_GAP:-5}
 SQSW_PARK=${SQSW_PARK:-sleep 2147483647}
 SQSW_BOOT_RETRY=${SQSW_BOOT_RETRY:-30}
@@ -158,7 +159,7 @@ sqsw_end() {
         sqsw_log "stop: $1 pid=$pid still running after $((SQSW_STOP_BUDGET_TENTHS / 10))s, SIGKILL"
         kill -KILL "$pid" 2>/dev/null || true
         j=0
-        while sqsw_same "$pid" "$st" && [ "$j" -lt 30 ]; do sleep 0.1; j=$((j + 1)); done
+        while sqsw_same "$pid" "$st" && [ "$j" -lt "$SQSW_KILL_WAIT_TENTHS" ]; do sleep 0.1; j=$((j + 1)); done
     fi
     if sqsw_same "$pid" "$st"; then
         sqsw_log "stop: $1 pid=$pid STILL ALIVE"

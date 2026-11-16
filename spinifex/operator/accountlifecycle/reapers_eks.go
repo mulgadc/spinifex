@@ -43,9 +43,7 @@ func (r *eksNodegroupReaper) List(ctx context.Context, accountID string) ([]Reso
 
 	var found []Resource
 	for _, cluster := range clusters {
-		out, err := r.svc.ListNodegroups(ctx, &eks.ListNodegroupsInput{
-			ClusterName: aws.String(cluster),
-		}, accountID)
+		names, err := listEKSNodegroupNames(ctx, r.svc, accountID, cluster)
 		if err != nil {
 			// The cluster went between the two calls, which is the ordinary
 			// result of a concurrent delete rather than a reason to fail the
@@ -55,14 +53,8 @@ func (r *eksNodegroupReaper) List(ctx context.Context, accountID string) ([]Reso
 			}
 			return nil, err
 		}
-		for _, name := range out.Nodegroups {
-			if aws.StringValue(name) == "" {
-				continue
-			}
-			found = append(found, Resource{
-				Kind: r.Kind(),
-				ID:   cluster + eksNodegroupSeparator + aws.StringValue(name),
-			})
+		for _, name := range names {
+			found = append(found, Resource{Kind: r.Kind(), ID: cluster + eksNodegroupSeparator + name})
 		}
 	}
 	return found, nil
@@ -130,6 +122,29 @@ func listEKSClusterNames(ctx context.Context, svc ekscluster.EKSService, account
 			}
 		}
 		if out.NextToken == nil || aws.StringValue(out.NextToken) == "" {
+			break
+		}
+		token = out.NextToken
+	}
+	return names, nil
+}
+
+// listEKSNodegroupNames pages through ListNodegroups for one cluster, which
+// returns at most 100 names per page.
+func listEKSNodegroupNames(ctx context.Context, svc ekscluster.EKSService, accountID, cluster string) ([]string, error) {
+	var names []string
+	var token *string
+	for range eksListPageLimit {
+		out, err := svc.ListNodegroups(ctx, &eks.ListNodegroupsInput{ClusterName: aws.String(cluster), NextToken: token}, accountID)
+		if err != nil {
+			return nil, err
+		}
+		for _, name := range out.Nodegroups {
+			if aws.StringValue(name) != "" {
+				names = append(names, aws.StringValue(name))
+			}
+		}
+		if aws.StringValue(out.NextToken) == "" {
 			break
 		}
 		token = out.NextToken

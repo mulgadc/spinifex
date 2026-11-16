@@ -249,7 +249,7 @@ func TestMarkNodegroupDeleting_UnknownGroupIsResourceNotFound(t *testing.T) {
 	f := newEKSServiceFixture(t)
 	seedActiveClusterWithToken(t, f, "c1")
 
-	_, err := f.svc.markNodegroupDeleting(t.Context(), f.kv, "c1", "ghost")
+	_, _, err := f.svc.markNodegroupDeleting(t.Context(), f.kv, "c1", "ghost")
 
 	requireErrorCode(t, err, awserrors.ErrorEKSResourceNotFound)
 }

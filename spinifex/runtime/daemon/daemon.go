@@ -1189,7 +1189,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"ecs.DeleteCluster", handleNATSRequest(d.node, d.ecsService.DeleteCluster), "spinifex-workers"},
 			natsSub{"ecs.DescribeClusters", handleNATSRequest(d.node, d.ecsService.DescribeClusters), "spinifex-workers"},
 			natsSub{"ecs.ListClusters", handleNATSRequest(d.node, d.ecsService.ListClusters), "spinifex-workers"},
-			natsSub{"ecs.RegisterTaskDefinition", handleNATSRequest(d.node, d.ecsService.RegisterTaskDefinition), "spinifex-workers"},
+			natsSub{"ecs.RegisterTaskDefinition", handleNATSRequestWithPrincipal(d.node, ecsdomain.WithCaller(d.ecsService.RegisterTaskDefinition)), "spinifex-workers"},
 			natsSub{"ecs.DeregisterTaskDefinition", handleNATSRequest(d.node, d.ecsService.DeregisterTaskDefinition), "spinifex-workers"},
 			natsSub{"ecs.DescribeTaskDefinition", handleNATSRequest(d.node, d.ecsService.DescribeTaskDefinition), "spinifex-workers"},
 			natsSub{"ecs.ListTaskDefinitions", handleNATSRequest(d.node, d.ecsService.ListTaskDefinitions), "spinifex-workers"},
@@ -1203,7 +1203,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"ecs.StopTask", handleNATSRequest(d.node, d.ecsService.StopTask), "spinifex-workers"},
 			natsSub{"ecs.DescribeTasks", handleNATSRequest(d.node, d.ecsService.DescribeTasks), "spinifex-workers"},
 			natsSub{"ecs.ListTasks", handleNATSRequest(d.node, d.ecsService.ListTasks), "spinifex-workers"},
-			natsSub{"ecs.CreateService", handleNATSRequest(d.node, d.ecsService.CreateService), "spinifex-workers"},
+			natsSub{"ecs.CreateService", handleNATSRequestWithPrincipal(d.node, ecsdomain.WithCaller(d.ecsService.CreateService)), "spinifex-workers"},
 			natsSub{"ecs.UpdateService", handleNATSRequest(d.node, d.ecsService.UpdateService), "spinifex-workers"},
 			natsSub{"ecs.DeleteService", handleNATSRequest(d.node, d.ecsService.DeleteService), "spinifex-workers"},
 			natsSub{"ecs.DescribeServices", handleNATSRequest(d.node, d.ecsService.DescribeServices), "spinifex-workers"},
@@ -1363,6 +1363,8 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{lambdafunction.SubjectCodeUpdateBegin, handleNATSRequest(d.node, d.lambdaMetaService.BeginCodeUpdate), "spinifex-workers"},
 			natsSub{lambdafunction.SubjectCodeUpdated, handleNATSRequest(d.node, d.lambdaMetaService.CodeUpdated), "spinifex-workers"},
 			natsSub{lambdafunction.SubjectConfigurationUpdated, handleNATSRequest(d.node, d.lambdaMetaService.UpdateConfiguration), "spinifex-workers"},
+			natsSub{lambdafunction.SubjectList, handleNATSRequest(d.node, d.lambdaMetaService.List), "spinifex-workers"},
+			natsSub{lambdafunction.SubjectDelete, handleNATSRequest(d.node, d.lambdaMetaService.Delete), "spinifex-workers"},
 		)
 	}
 
@@ -2222,7 +2224,7 @@ func (d *Daemon) startCluster() error {
 	// Initialize EIP service if external IPAM is available
 	if d.externalIPAM != nil && d.vpcService != nil {
 		eipSvc, eipErr := initServiceWithRetry("EIP service", func() (*ec2eip.EIPServiceImpl, error) {
-			return ec2eip.NewEIPServiceImpl(d.ctx, d.natsConn, d.externalIPAM, d.vpcService)
+			return ec2eip.NewEIPServiceImpl(d.ctx, d.natsConn, d.externalIPAM, d.vpcService, d.config.Region)
 		})
 		if eipErr != nil {
 			return fmt.Errorf("failed to initialize EIP service: %w", eipErr)
@@ -2686,8 +2688,8 @@ func (d *Daemon) startCluster() error {
 }
 
 // ebsProviderRequestTimeout bounds the ebs.provider.v1.* subjects that answer
-// from state already held. The provider raises it for the subjects that move
-// data, so this is a floor rather than the budget every call gets.
+// from state already held. The provider raises it for publish and the subjects
+// that move data, so this is a floor rather than the budget every call gets.
 const ebsProviderRequestTimeout = 30 * time.Second
 
 // ebsProviderProbeTimeout bounds the startup reachability check. Short because
@@ -3482,12 +3484,11 @@ func (d *Daemon) setupShutdown() {
 // responds on the NATS message. Used by both AttachVolume and DetachVolume handlers.
 func (d *Daemon) respondWithVolumeAttachment(msg *nats.Msg, volumeID, instanceID, device, state string) {
 	attachment := ec2.VolumeAttachment{
-		VolumeId:            aws.String(volumeID),
-		InstanceId:          aws.String(instanceID),
-		Device:              aws.String(device),
-		State:               aws.String(state),
-		AttachTime:          aws.Time(time.Now()),
-		DeleteOnTermination: aws.Bool(false),
+		VolumeId:   aws.String(volumeID),
+		InstanceId: aws.String(instanceID),
+		Device:     aws.String(device),
+		State:      aws.String(state),
+		AttachTime: aws.Time(time.Now()),
 	}
 
 	jsonResp, err := json.Marshal(attachment)

@@ -438,8 +438,22 @@ func TestRebootDBInstance_RejectsForceFailover(t *testing.T) {
 		ForceFailover:        aws.Bool(true),
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "ForceFailover")
+	assert.Equal(t, "ForceFailover cannot be specified since the instance is not configured for either MultiAZ or High Availability: InvalidParameterValue", err.Error())
 	assert.Equal(t, StatusAvailable, h.record(t).Status)
+}
+
+// AWS names its own rebootable states and the instance's current one.
+func TestRebootDBInstance_RefusesOutsideAvailableWithAWSMessage(t *testing.T) {
+	t.Parallel()
+	h := newLifecycleHarness(t, false)
+	rec := availableRecord()
+	rec.Status = StatusCreating
+	seedInstance(t, h.svc, rec)
+
+	_, err := h.svc.RebootDBInstance(t.Context(),
+		&rds.RebootDBInstanceInput{DBInstanceIdentifier: aws.String(testDBID)}, testAccountID)
+	assert.EqualError(t, err, "Can only reboot db instances with state in: available, storage-optimization, storage-initialization, incompatible-credentials, incompatible-parameters.  Instance "+
+		testDBID+" has state: creating.: InvalidDBInstanceState")
 }
 
 // An engine that did not stop cleanly replays its WAL on the next start.

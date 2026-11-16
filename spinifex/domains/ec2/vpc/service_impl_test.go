@@ -2563,6 +2563,7 @@ func TestVpc_ModifyVpcAttribute_MultipleAttributes(t *testing.T) {
 }
 
 func TestSubnetAvailabilityZones_DistinctSortedAcrossAccounts(t *testing.T) {
+	t.Parallel()
 	svc := setupTestVPCService(t)
 	put := func(key, az string) {
 		data, err := json.Marshal(SubnetRecord{SubnetId: key, AvailabilityZone: az})
@@ -2586,6 +2587,7 @@ func TestSubnetAvailabilityZones_DistinctSortedAcrossAccounts(t *testing.T) {
 }
 
 func TestDescribeSubnets_AvailabilityZoneIDFilter(t *testing.T) {
+	t.Parallel()
 	_, nc, js := testutil.StartTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)
 	svc, err := NewVPCServiceImplWithNATS(t.Context(), nil, nc)
@@ -2627,6 +2629,7 @@ func TestDescribeSubnets_AvailabilityZoneIDFilter(t *testing.T) {
 }
 
 func TestCreateSubnet_RefusesA65thDistinctZone(t *testing.T) {
+	t.Parallel()
 	_, nc, js := testutil.StartTestJetStream(t)
 	testutil.StubVpcdSGResponder(t, nc)
 	svc, err := NewVPCServiceImplWithNATS(t.Context(), nil, nc)
@@ -2668,6 +2671,7 @@ func (failingZoneIDs) ZoneID(context.Context, string) (string, error) {
 }
 
 func TestCreateSubnet_ZoneStoreFailureWritesNothingAndPublishesNothing(t *testing.T) {
+	t.Parallel()
 	svc, nc := setupTestVPCServiceWithNC(t)
 	svc.SetZoneIDSource(failingZoneIDs{})
 	vpcID := createTestVPC(t, svc, "10.0.0.0/16")

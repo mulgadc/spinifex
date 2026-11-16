@@ -1,6 +1,6 @@
 package storevolume
 
-//test:in-package — the host tools, mkfs and NBD copy are swapped for fakes
+//test:in-package — the host tools, mkfs and image copy are swapped for fakes
 // through unexported fields so no test formats or writes a real device.
 
 import (
@@ -32,6 +32,7 @@ const (
 	testVolume  = "vol-0123456789abcdef0"
 	testNode    = "node-a"
 	testURI     = "nbd://127.0.0.1:10809"
+	testDevice  = "/dev/sdx"
 )
 
 // harness records every call, in order, across the fakes.
@@ -99,8 +100,14 @@ func (h *harness) PublishVolume(_ context.Context, req ebsprovider.PublishVolume
 		kind = ebsprovider.ExportKindNBD
 	}
 	export := ebsprovider.VolumeExport{Kind: kind}
-	if kind == ebsprovider.ExportKindNBD {
+	switch kind {
+	case ebsprovider.ExportKindNBD:
 		export.NBD = &ebsprovider.NBDExport{NBDURI: testURI}
+	case ebsprovider.ExportKindBlock:
+		if req.SchemaVersion < ebsprovider.DescriptorSchemaVersion {
+			return nil, fmt.Errorf("%w: a block export has no version %d form", ebsprovider.ErrUnsupportedVersion, req.SchemaVersion)
+		}
+		export.Block = &ebsprovider.BlockExport{DevicePath: testDevice, SizeBytes: 1 << 30}
 	}
 	return &ebsprovider.PublishedVolume{VolumeID: req.VolumeID, NodeID: req.NodeID, Export: export}, nil
 }
@@ -133,8 +140,15 @@ func (h *harness) preparer(t *testing.T) *Preparer {
 			h.record("mkfs " + filepath.Base(path))
 			return h.mkfsErr
 		},
-		WriteImage: func(_ context.Context, src, uri string, _ io.Writer) error {
-			h.record("write " + uri)
+		WriteImage: func(_ context.Context, src string, export ebsprovider.VolumeExport, _ io.Writer) error {
+			switch {
+			case export.Kind == ebsprovider.ExportKindNBD && export.NBD != nil:
+				h.record("write " + export.NBD.NBDURI)
+			case export.Kind == ebsprovider.ExportKindBlock && export.Block != nil:
+				h.record("write " + export.Block.DevicePath)
+			default:
+				return fmt.Errorf("no writer for a %q export", export.Kind)
+			}
 			h.writtenImage = src
 			return h.writeErr
 		},
@@ -265,12 +279,22 @@ func TestPrepare_FailedCopyUnpublishesThenDiscards(t *testing.T) {
 	}, h.calls)
 }
 
-func TestPrepare_NonNBDExportIsNotWrittenAndIsDiscarded(t *testing.T) {
-	h := &harness{exportKind: "iscsi"}
-	_, err := prepare(t, h)
-	require.ErrorContains(t, err, "not published as an nbd export")
-	assert.NotContains(t, h.calls, "write "+testURI)
-	assert.Equal(t, "discard "+testVolume, h.calls[len(h.calls)-1])
+// A block export has no version 1 form, so the block path works only because
+// preparation publishes at the latest version.
+func TestPrepare_BlockExportIsWrittenAtItsDevicePathAndReleased(t *testing.T) {
+	h := &harness{exportKind: ebsprovider.ExportKindBlock}
+	id, err := prepare(t, h)
+	require.NoError(t, err)
+	assert.Equal(t, testVolume, id)
+	assert.Equal(t, []string{
+		"mkfs ext4.raw",
+		"create 000000000000 1GiB",
+		"publish " + testVolume + " on " + testNode,
+		"write " + testDevice,
+		"unpublish " + testVolume + " on " + testNode,
+		"complete " + testVolume,
+	}, h.calls)
+	assert.Equal(t, "available", h.state)
 }
 
 // An in-use or already-exists refusal may mean another export of the volume
@@ -359,7 +383,7 @@ func TestPrepare_StuckUnpublishIsBounded(t *testing.T) {
 	p := h.preparer(t)
 	p.cleanupTimeout = 50 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
-	p.WriteImage = func(context.Context, string, string, io.Writer) error {
+	p.WriteImage = func(context.Context, string, ebsprovider.VolumeExport, io.Writer) error {
 		cancel()
 		return context.Canceled
 	}
@@ -391,7 +415,7 @@ func TestPrepare_CancelledCopyStillUnpublishes(t *testing.T) {
 	h := &harness{}
 	ctx, cancel := context.WithCancel(context.Background())
 	p := h.preparer(t)
-	p.WriteImage = func(context.Context, string, string, io.Writer) error {
+	p.WriteImage = func(context.Context, string, ebsprovider.VolumeExport, io.Writer) error {
 		cancel()
 		return context.Canceled
 	}

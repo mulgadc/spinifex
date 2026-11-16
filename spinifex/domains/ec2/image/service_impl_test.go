@@ -367,7 +367,7 @@ func TestGetAMIConfig_NotFound(t *testing.T) {
 func TestPutSnapshotMetadata(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	err := svc.putSnapshotMetadata(context.Background(), "snap-abc123", "vol-xyz789", 10, testAccountID)
+	err := svc.putSnapshotMetadata(context.Background(), "snap-abc123", "vol-xyz789", 10, false, testAccountID)
 	require.NoError(t, err)
 
 	// The document must land under the owning account's prefix.
@@ -451,7 +451,7 @@ func TestCreateImageFromInstance_DuplicateName(t *testing.T) {
 		IsRunning:    true,
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidAMINameDuplicate, err.Error())
+	assert.EqualError(t, err, "AMI name my-image is already in use by AMI ami-existing123: "+awserrors.ErrorInvalidAMINameDuplicate)
 }
 
 func TestCreateImageFromInstance_UniqueNameAllowed(t *testing.T) {
@@ -632,7 +632,7 @@ func TestDeregisterImage_DoesNotTouchSnapshot(t *testing.T) {
 	})
 
 	// Backing snapshot metadata
-	require.NoError(t, svc.putSnapshotMetadata(context.Background(), snapID, "vol-keep", 8, testAccountID))
+	require.NoError(t, svc.putSnapshotMetadata(context.Background(), snapID, "vol-keep", 8, false, testAccountID))
 
 	_, err := svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: aws.String(amiID)}, testAccountID)
 	require.NoError(t, err)
@@ -896,7 +896,7 @@ func TestGetVolumeMetadata_InvalidJSON(t *testing.T) {
 func TestAmiNameExists_NoAMIs(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
-	exists, err := svc.amiNameExists(context.Background(), "nonexistent")
+	_, exists, err := svc.amiNameExists(context.Background(), "nonexistent")
 	require.NoError(t, err)
 	assert.False(t, exists)
 }
@@ -906,7 +906,7 @@ func TestAmiNameExists_Found(t *testing.T) {
 
 	createTestAMIConfigWithName(t, store, "ami-found123", "target-name")
 
-	exists, err := svc.amiNameExists(context.Background(), "target-name")
+	_, exists, err := svc.amiNameExists(context.Background(), "target-name")
 	require.NoError(t, err)
 	assert.True(t, exists)
 }
@@ -916,7 +916,7 @@ func TestAmiNameExists_NotFound(t *testing.T) {
 
 	createTestAMIConfigWithName(t, store, "ami-other123", "other-name")
 
-	exists, err := svc.amiNameExists(context.Background(), "different-name")
+	_, exists, err := svc.amiNameExists(context.Background(), "different-name")
 	require.NoError(t, err)
 	assert.False(t, exists)
 }
@@ -929,7 +929,7 @@ func TestAmiNameExists_InvalidJSON(t *testing.T) {
 	// A corrupt AMI document is a real store-side problem. Surface it rather
 	// than silently under-counting names (which would let a caller write a
 	// duplicate and mask the corruption).
-	_, err := svc.amiNameExists(context.Background(), "any-name")
+	_, _, err := svc.amiNameExists(context.Background(), "any-name")
 	require.Error(t, err)
 }
 
@@ -1391,7 +1391,7 @@ func TestRegisterImage_DuplicateName(t *testing.T) {
 
 	_, err := svc.RegisterImage(context.Background(), validRegisterImageServiceInput("snap-dup01"), testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidAMINameDuplicate, err.Error())
+	assert.EqualError(t, err, "AMI name registered-ami is already in use by AMI ami-existing01: "+awserrors.ErrorInvalidAMINameDuplicate)
 }
 
 func TestRegisterImage_SnapshotNotFound(t *testing.T) {
@@ -2002,6 +2002,20 @@ func TestCopyImage_OrphanedSource_MissingSnapshot(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 }
 
+// The name check spans every account, so a collision with another account's
+// AMI must not reveal that AMI's ID.
+func TestRegisterImage_DuplicateNameOfAnotherAccountsAMI(t *testing.T) {
+	svc, store := setupTestImageService(t)
+
+	createTestAMIConfigWithOwner(t, store, "ami-foreign01", "registered-ami", "999999999999")
+	putTestSnapshotConfig(t, store, "snap-dup01", 8, testAccountID)
+
+	_, err := svc.RegisterImage(context.Background(), validRegisterImageServiceInput("snap-dup01"), testAccountID)
+	code, message, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorInvalidAMINameDuplicate, code)
+	assert.NotContains(t, message, "ami-foreign01")
+}
+
 func TestCopyImage_OrphanedSource_NoSnapshotID(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
@@ -2021,7 +2035,7 @@ func TestCopyImage_DuplicateName(t *testing.T) {
 
 	_, err := svc.CopyImage(context.Background(), validCopyImageServiceInput("ami-dup-src", "already-taken"), testAccountID)
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorInvalidAMINameDuplicate, err.Error())
+	assert.EqualError(t, err, "AMI name already-taken is already in use by AMI ami-collide: "+awserrors.ErrorInvalidAMINameDuplicate)
 }
 
 func TestCopyImage_CopyImageTagsInheritsSourceTags(t *testing.T) {
@@ -2238,6 +2252,27 @@ func TestDescribeImageAttribute_BlockDeviceMapping(t *testing.T) {
 	assert.Nil(t, out.Description)
 }
 
+// A requested blockDeviceMapping on an image with no EBS root still renders
+// the list, since only unrequested attribute lists are omitted on the wire.
+func TestDescribeImageAttribute_BlockDeviceMappingInstanceStore(t *testing.T) {
+	svc, store := setupTestImageService(t)
+
+	createTestAMIConfigRich(t, store, ebsmetadata.AMI{
+		ImageID:         "ami-bdm02",
+		Name:            "bdm-is-ami",
+		RootDeviceType:  "instance-store",
+		ImageOwnerAlias: testAccountID,
+	})
+
+	out, err := svc.DescribeImageAttribute(context.Background(), &ec2.DescribeImageAttributeInput{
+		ImageId:   aws.String("ami-bdm02"),
+		Attribute: aws.String("blockDeviceMapping"),
+	}, testAccountID)
+	require.NoError(t, err)
+	require.NotNil(t, out.BlockDeviceMappings)
+	assert.Empty(t, out.BlockDeviceMappings)
+}
+
 func TestDescribeImageAttribute_MissingParameters(t *testing.T) {
 	svc, _ := setupTestImageService(t)
 
@@ -2314,7 +2349,7 @@ func TestDescribeImageAttribute_UnsupportedAttribute(t *testing.T) {
 
 	createTestAMIConfigWithOwner(t, store, "ami-unsup01", "u", testAccountID)
 
-	for _, attr := range []string{"launchPermission", "bootMode", "kernel", "ramdisk"} {
+	for _, attr := range []string{"kernel", "ramdisk"} {
 		t.Run(attr, func(t *testing.T) {
 			_, err := svc.DescribeImageAttribute(context.Background(), &ec2.DescribeImageAttributeInput{
 				ImageId:   aws.String("ami-unsup01"),
@@ -2324,6 +2359,66 @@ func TestDescribeImageAttribute_UnsupportedAttribute(t *testing.T) {
 			assert.Equal(t, awserrors.ErrorInvalidParameterValue, err.Error())
 		})
 	}
+}
+
+func describeImageAttr(t *testing.T, svc *ImageServiceImpl, imageID, attr string) *ec2.DescribeImageAttributeOutput {
+	t.Helper()
+	out, err := svc.DescribeImageAttribute(context.Background(), &ec2.DescribeImageAttributeInput{
+		ImageId:   aws.String(imageID),
+		Attribute: aws.String(attr),
+	}, testAccountID)
+	require.NoError(t, err)
+	return out
+}
+
+func TestDescribeImageAttribute_EmptyDescriptionHasNilValue(t *testing.T) {
+	svc, store := setupTestImageService(t)
+	createTestAMIConfigWithOwner(t, store, "ami-nodesc01", "u", testAccountID)
+
+	out := describeImageAttr(t, svc, "ami-nodesc01", "description")
+	require.NotNil(t, out.Description)
+	assert.Nil(t, out.Description.Value)
+}
+
+func TestDescribeImageAttribute_LaunchPermission(t *testing.T) {
+	svc, store := setupTestImageService(t)
+	createTestAMIConfigWithOwner(t, store, "ami-lp01", "u", testAccountID)
+
+	own := describeImageAttr(t, svc, "ami-lp01", "launchPermission")
+	require.NotNil(t, own.LaunchPermissions)
+	assert.Empty(t, own.LaunchPermissions)
+}
+
+func TestDescribeImageAttribute_BootMode(t *testing.T) {
+	svc, store := setupTestImageService(t)
+	createTestAMIConfigRich(t, store, ebsmetadata.AMI{ImageID: "ami-bm01", Name: "bm", RootDeviceType: "ebs", ImageOwnerAlias: testAccountID, BootMode: "uefi-preferred"})
+	createTestAMIConfigWithOwner(t, store, "ami-bm02", "u", testAccountID)
+
+	set := describeImageAttr(t, svc, "ami-bm01", "bootMode")
+	require.NotNil(t, set.BootMode)
+	assert.Equal(t, "uefi-preferred", aws.StringValue(set.BootMode.Value))
+
+	unset := describeImageAttr(t, svc, "ami-bm02", "bootMode")
+	require.NotNil(t, unset.BootMode)
+	assert.Nil(t, unset.BootMode.Value)
+}
+
+func TestDescribeImageAttribute_ImdsSupport(t *testing.T) {
+	svc, store := setupTestImageService(t)
+	createTestAMIConfigWithOwner(t, store, "ami-imds01", "u", testAccountID)
+
+	out := describeImageAttr(t, svc, "ami-imds01", "imdsSupport")
+	require.NotNil(t, out.ImdsSupport)
+	assert.Nil(t, out.ImdsSupport.Value)
+}
+
+func TestDescribeImageAttribute_LastLaunchedTime(t *testing.T) {
+	svc, store := setupTestImageService(t)
+	createTestAMIConfigWithOwner(t, store, "ami-llt01", "u", testAccountID)
+
+	out := describeImageAttr(t, svc, "ami-llt01", "lastLaunchedTime")
+	require.NotNil(t, out.LastLaunchedTime)
+	assert.Nil(t, out.LastLaunchedTime.Value)
 }
 
 func TestModifyImageAttribute_Description(t *testing.T) {
@@ -2498,8 +2593,7 @@ func TestResetImageAttribute_Description(t *testing.T) {
 	}, testAccountID)
 	require.NoError(t, err)
 	require.NotNil(t, out.Description)
-	require.NotNil(t, out.Description.Value)
-	assert.Empty(t, *out.Description.Value)
+	assert.Nil(t, out.Description.Value)
 }
 
 func TestResetImageAttribute_CrossAccount(t *testing.T) {

@@ -173,14 +173,105 @@ func TestDescribeTargetGroups_PageSize(t *testing.T) {
 	assert.Equal(t, []string{"page-a", "page-b", "page-c"}, names(all.TargetGroups))
 	assert.Nil(t, all.NextMarker)
 
-	for _, input := range []*elbv2.DescribeTargetGroupsInput{
-		{PageSize: aws.Int64(0)},
-		{PageSize: aws.Int64(401)},
-		{Marker: aws.String("not-a-marker")},
+	for input, msg := range map[*elbv2.DescribeTargetGroupsInput]string{
+		{PageSize: aws.Int64(0)}:             "1 validation error detected: Value '0' at 'pageSize' failed to satisfy constraint: Member must have value greater than or equal to 1",
+		{PageSize: aws.Int64(401)}:           "1 validation error detected: Value '401' at 'pageSize' failed to satisfy constraint: Member must have value less than or equal to 400",
+		{Marker: aws.String("not-a-marker")}: "Invalid Marker Id: not-a-marker",
 	} {
 		_, err := svc.DescribeTargetGroups(context.Background(), input, testAccountID)
-		assert.EqualError(t, err, awserrors.ErrorValidationError)
+		assertELBv2Error(t, err, awserrors.ErrorValidationError, msg)
 	}
+}
+
+func assertELBv2Error(t *testing.T, err error, code, msg string) {
+	t.Helper()
+	gotCode, gotMsg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok, "unresolvable error %v", err)
+	assert.Equal(t, code, gotCode)
+	assert.Equal(t, msg, gotMsg)
+}
+
+func TestDescribeLoadBalancers_PageSize(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	for _, name := range []string{"page-lb-b", "page-lb-a"} {
+		createLBArn(t, svc, name)
+	}
+
+	first, err := svc.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{PageSize: aws.Int64(1)}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, first.LoadBalancers, 1)
+	assert.Equal(t, "page-lb-a", *first.LoadBalancers[0].LoadBalancerName)
+	require.NotNil(t, first.NextMarker)
+
+	second, err := svc.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{PageSize: aws.Int64(1), Marker: first.NextMarker}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, second.LoadBalancers, 1)
+	assert.Equal(t, "page-lb-b", *second.LoadBalancers[0].LoadBalancerName)
+	assert.Nil(t, second.NextMarker)
+
+	_, err = svc.DescribeLoadBalancers(context.Background(), &elbv2.DescribeLoadBalancersInput{PageSize: aws.Int64(401)}, testAccountID)
+	assertELBv2Error(t, err, awserrors.ErrorValidationError, "1 validation error detected: Value '401' at 'pageSize' failed to satisfy constraint: Member must have value less than or equal to 400")
+
+	for _, input := range []*elbv2.DescribeLoadBalancersInput{
+		{Names: aws.StringSlice([]string{"page-lb-a"}), PageSize: aws.Int64(1)},
+		{Names: aws.StringSlice([]string{"page-lb-a"}), Marker: aws.String("not-a-marker")},
+		{LoadBalancerArns: []*string{first.LoadBalancers[0].LoadBalancerArn}, PageSize: aws.Int64(1)},
+	} {
+		_, err := svc.DescribeLoadBalancers(context.Background(), input, testAccountID)
+		assertELBv2Error(t, err, awserrors.ErrorValidationError, "Pagination is not supported when specifying load balancers")
+	}
+}
+
+func TestDescribeListeners_PageSize(t *testing.T) {
+	t.Parallel()
+	env := newRuleTestEnv(t, "page-lst")
+	_, err := env.svc.CreateListener(context.Background(), &elbv2.CreateListenerInput{
+		LoadBalancerArn: aws.String(env.lbArn),
+		Protocol:        aws.String("HTTP"),
+		Port:            aws.Int64(81),
+		DefaultActions:  []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: aws.String(env.tgArn)}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	seen := map[string]bool{}
+	input := &elbv2.DescribeListenersInput{LoadBalancerArn: aws.String(env.lbArn), PageSize: aws.Int64(1)}
+	for range 2 {
+		out, err := env.svc.DescribeListeners(context.Background(), input, testAccountID)
+		require.NoError(t, err)
+		require.Len(t, out.Listeners, 1)
+		seen[*out.Listeners[0].ListenerArn] = true
+		input.Marker = out.NextMarker
+	}
+	assert.Len(t, seen, 2)
+	assert.Nil(t, input.Marker)
+
+	_, err = env.svc.DescribeListeners(context.Background(), &elbv2.DescribeListenersInput{Marker: aws.String("not-a-marker")}, testAccountID)
+	assertELBv2Error(t, err, awserrors.ErrorValidationError, "Invalid Marker Id: not-a-marker")
+}
+
+func TestDescribeRules_PageSize(t *testing.T) {
+	t.Parallel()
+	env := newRuleTestEnv(t, "page-rules")
+	_, err := env.svc.CreateRule(context.Background(), &elbv2.CreateRuleInput{
+		ListenerArn: aws.String(env.listenerArn),
+		Priority:    aws.Int64(10),
+		Conditions:  []*elbv2.RuleCondition{{Field: aws.String("path-pattern"), Values: aws.StringSlice([]string{"/api/*"})}},
+		Actions:     []*elbv2.Action{{Type: aws.String("forward"), TargetGroupArn: aws.String(env.tgAltArn)}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	first, err := env.svc.DescribeRules(context.Background(), &elbv2.DescribeRulesInput{ListenerArn: aws.String(env.listenerArn), PageSize: aws.Int64(1)}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, first.Rules, 1)
+	assert.Equal(t, "10", *first.Rules[0].Priority)
+	require.NotNil(t, first.NextMarker)
+
+	second, err := env.svc.DescribeRules(context.Background(), &elbv2.DescribeRulesInput{ListenerArn: aws.String(env.listenerArn), PageSize: aws.Int64(1), Marker: first.NextMarker}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, second.Rules, 1)
+	assert.True(t, *second.Rules[0].IsDefault)
+	assert.Nil(t, second.NextMarker)
 }
 
 func TestTargetGroup_LoadBalancerArns(t *testing.T) {

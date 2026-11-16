@@ -180,14 +180,17 @@ func (s *ImageServiceImpl) describeImages(ctx context.Context, input *ec2.Descri
 	}
 
 	var images []*ec2.Image
+	var metas []ebsmetadata.AMI
 	for _, amiMeta := range amis {
 		if amiMeta.ImageID == "" {
 			continue
 		}
 		if image := renderVisibleImage(amiMeta, input, accountID, parsedFilters, encryptedAtRest); image != nil {
 			images = append(images, image)
+			metas = append(metas, amiMeta)
 		}
 	}
+	s.applySnapshotEncryption(ctx, metas, images, encryptedAtRest)
 
 	slog.InfoContext(ctx, "DescribeImages completed", "count", len(images))
 	return &ec2.DescribeImagesOutput{Images: images}, nil
@@ -240,6 +243,7 @@ func (s *ImageServiceImpl) describeImagesByIDs(ctx context.Context, input *ec2.D
 	}
 
 	images := make([]*ec2.Image, 0, len(imageIDs))
+	metas := make([]ebsmetadata.AMI, 0, len(imageIDs))
 	for i, result := range results {
 		// Every other store error was classified above, so this is a missing key.
 		if result.Err != nil {
@@ -258,7 +262,9 @@ func (s *ImageServiceImpl) describeImagesByIDs(ctx context.Context, input *ec2.D
 			return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 		}
 		images = append(images, image)
+		metas = append(metas, result.Document)
 	}
+	s.applySnapshotEncryption(ctx, metas, images, encryptedAtRest)
 
 	slog.InfoContext(ctx, "DescribeImages completed", "count", len(images))
 	return &ec2.DescribeImagesOutput{Images: images}, nil
@@ -316,7 +322,7 @@ func renderVisibleImage(amiMeta ebsmetadata.AMI, input *ec2.DescribeImagesInput,
 	image := &ec2.Image{
 		ImageId:            aws.String(amiMeta.ImageID),
 		Name:               aws.String(amiMeta.Name),
-		Description:        aws.String(amiMeta.Description),
+		Description:        nonEmptyString(amiMeta.Description),
 		Architecture:       aws.String(amiMeta.Architecture),
 		PlatformDetails:    aws.String(amiMeta.PlatformDetails),
 		Platform:           ec2platform.PlatformFromDetails(amiMeta.PlatformDetails),
@@ -324,19 +330,26 @@ func renderVisibleImage(amiMeta ebsmetadata.AMI, input *ec2.DescribeImagesInput,
 		CreationDate:       aws.String(amiMeta.CreationDate.UTC().Format("2006-01-02T15:04:05.000Z")),
 		RootDeviceType:     aws.String(amiMeta.RootDeviceType),
 		VirtualizationType: aws.String(amiMeta.Virtualization),
-		ImageOwnerAlias:    aws.String(amiMeta.ImageOwnerAlias),
 		OwnerId:            aws.String(ownerID),
 		Public:             aws.Bool(false),
 		State:              aws.String(amiImageState(amiMeta.State)),
 		ImageType:          aws.String("machine"),
 		Hypervisor:         aws.String("xen"),
+		SriovNetSupport:    aws.String("simple"),
+		SourceInstanceId:   nonEmptyString(amiMeta.SourceInstanceID),
+		ImdsSupport:        nonEmptyString(amiMeta.ImdsSupport),
 	}
 
 	// A system image stands where AWS's public, Amazon-owned images do. Only the
 	// rendered values change: the stored alias still identifies it as system.
+	// AWS gives a customer's own image no alias, so the stored account ID stays unrendered.
 	if isSystemAMI {
 		image.Public = aws.Bool(true)
 		image.ImageOwnerAlias = aws.String("amazon")
+		image.ImageLocation = aws.String("amazon/" + amiMeta.Name)
+	} else {
+		image.ImageLocation = aws.String(ownerID + "/" + amiMeta.Name)
+		image.DeregistrationProtection = aws.String("disabled")
 	}
 
 	// RegisterImage takes BootMode as an optional input, so an AMI can
@@ -353,6 +366,11 @@ func renderVisibleImage(amiMeta ebsmetadata.AMI, input *ec2.DescribeImagesInput,
 	if bdms := synthesizeRootBlockDeviceMapping(amiMeta, encryptedAtRest); bdms != nil {
 		image.RootDeviceName = aws.String("/dev/sda1")
 		image.BlockDeviceMappings = bdms
+		// A CreateImage image records its root volume's performance.
+		if amiMeta.RootIOPS > 0 {
+			bdms[0].Ebs.Iops = aws.Int64(int64(amiMeta.RootIOPS))
+			bdms[0].Ebs.Throughput = aws.Int64(int64(amiMeta.RootThroughput))
+		}
 	}
 
 	image.Tags = awstags.MapToEC2(amiMeta.Tags)
@@ -453,11 +471,11 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 	// Check for duplicate AMI name before doing any expensive work
 	name := aws.StringValue(input.Name)
 	if name != "" {
-		if exists, err := s.amiNameExists(context.Background(), name); err != nil {
+		if existing, exists, err := s.amiNameExists(context.Background(), name); err != nil {
 			slog.Error("CreateImageFromInstance: failed to check AMI name uniqueness", "name", name, "err", err)
 			return nil, errors.New(awserrors.ErrorServerInternal)
 		} else if exists {
-			return nil, errors.New(awserrors.ErrorInvalidAMINameDuplicate)
+			return nil, duplicateAMINameError(name, existing, accountID)
 		}
 	}
 
@@ -522,6 +540,11 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		RootDeviceType:  ec2.DeviceTypeEbs,
 		ImageOwnerAlias: accountID,
 		BootMode:        sourceAMI.BootMode,
+		ImdsSupport:     sourceAMI.ImdsSupport,
+		// The instance ID is validated non-nil above.
+		SourceInstanceID: *input.InstanceId,
+		RootIOPS:         volMeta.IOPS,
+		RootThroughput:   volMeta.Throughput,
 		// Every instance reports ENA support, and AWS takes the image's from the instance.
 		EnaSupport:   aws.Bool(true),
 		Distro:       sourceAMI.Distro,
@@ -529,6 +552,7 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 		// Pending until its snapshot completes, here or in the snapshot reaper.
 		State:    ebsmetadata.AMIStatePending,
 		UEFIData: uefiData,
+		Tags:     awstags.Extract(input.TagSpecifications, "image"),
 	}
 
 	// Step 4: Snapshot the root volume. Its document and reference, then the
@@ -536,6 +560,7 @@ func (s *ImageServiceImpl) CreateImageFromInstance(params CreateImageParams, acc
 	// accepted snapshot whose answer is lost is still settled by the reaper.
 	ctx := context.Background()
 	snap, err := s.snapshots.CreateImageSnapshot(ctx, volMeta, snapshotID, accountID, "Created by CreateImage("+aws.StringValue(input.InstanceId)+") for "+amiID,
+		awstags.Extract(input.TagSpecifications, "snapshot"),
 		ec2snapshot.ImageSnapshotHooks{
 			Recorded:  func(ctx context.Context) error { return s.putAMIConfig(ctx, amiID, meta) },
 			Refused:   func(ctx context.Context) { s.removePendingAMI(ctx, amiID) },
@@ -579,17 +604,26 @@ func (s *ImageServiceImpl) getVolumeMetadata(ctx context.Context, accountID, vol
 // amiNameExists checks if any existing AMI already uses the given name. It
 // lists strictly: an AMI this cannot read is a name it cannot rule out, and
 // answering false would let a duplicate through and mask the corruption.
-func (s *ImageServiceImpl) amiNameExists(ctx context.Context, name string) (bool, error) {
+func (s *ImageServiceImpl) amiNameExists(ctx context.Context, name string) (ebsmetadata.AMI, bool, error) {
 	amis, err := s.metadata.ListAMIsStrict(ctx)
 	if err != nil {
-		return false, fmt.Errorf("amiNameExists: failed to list AMIs: %w", err)
+		return ebsmetadata.AMI{}, false, fmt.Errorf("amiNameExists: failed to list AMIs: %w", err)
 	}
 	for _, ami := range amis {
 		if ami.Name == name {
-			return true, nil
+			return ami, true, nil
 		}
 	}
-	return false, nil
+	return ebsmetadata.AMI{}, false, nil
+}
+
+// duplicateAMINameError refuses name, which existing already uses. It names the
+// AMI only when the caller owns it, because the name check spans every account.
+func duplicateAMINameError(name string, existing ebsmetadata.AMI, accountID string) error {
+	if existing.ImageOwnerAlias != accountID {
+		return errors.New(awserrors.ErrorInvalidAMINameDuplicate)
+	}
+	return awserrors.Errorf(awserrors.ErrorInvalidAMINameDuplicate, "AMI name %s is already in use by AMI %s", name, existing.ImageID)
 }
 
 // GetAMIConfig reads an AMI's control-plane document. Errors come from the
@@ -777,11 +811,12 @@ func (s *ImageServiceImpl) loadAMIForMutation(ctx context.Context, imageID, acco
 
 // putSnapshotMetadata stores the snapshot's control-plane document under the
 // account that owns it.
-func (s *ImageServiceImpl) putSnapshotMetadata(ctx context.Context, snapshotID, volumeID string, volumeSizeGiB uint64, accountID string) error {
+func (s *ImageServiceImpl) putSnapshotMetadata(ctx context.Context, snapshotID, volumeID string, volumeSizeGiB uint64, encrypted bool, accountID string) error {
 	return s.metadata.PutSnapshot(ctx, ebsmetadata.Snapshot{
 		SnapshotID: snapshotID,
 		VolumeID:   volumeID,
 		VolumeSize: safecast.Uint64ToInt64(volumeSizeGiB),
+		Encrypted:  encrypted,
 		State:      "completed",
 		Progress:   "100%",
 		StartTime:  time.Now(),
@@ -837,6 +872,7 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 				SnapshotID: srcMeta.SnapshotID,
 				VolumeID:   sourceImageID,
 				VolumeSize: safecast.Uint64ToInt64(srcMeta.VolumeSizeGiB),
+				Encrypted:  s.clusterEncryptionEnabled(),
 			}
 		} else if objectstore.IsNoSuchKeyError(err) || errors.Is(err, ebsmetadata.ErrCorruptDocument) {
 			return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
@@ -850,11 +886,11 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 		return nil, errors.New(awserrors.ErrorInvalidAMIIDNotFound)
 	}
 
-	if exists, err := s.amiNameExists(ctx, name); err != nil {
+	if existing, exists, err := s.amiNameExists(ctx, name); err != nil {
 		slog.ErrorContext(ctx, "CopyImage: failed to check AMI name uniqueness", "name", name, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	} else if exists {
-		return nil, errors.New(awserrors.ErrorInvalidAMINameDuplicate)
+		return nil, duplicateAMINameError(name, existing, accountID)
 	}
 
 	newSnapshotID := awsidentifiers.GenerateResourceID("snap")
@@ -865,7 +901,7 @@ func (s *ImageServiceImpl) CopyImage(ctx context.Context, input *ec2.CopyImageIn
 	if srcSnap.VolumeSize > 0 {
 		snapSizeGiB = uint64(srcSnap.VolumeSize)
 	}
-	if err := s.putSnapshotMetadata(ctx, newSnapshotID, srcSnap.VolumeID, snapSizeGiB, accountID); err != nil {
+	if err := s.putSnapshotMetadata(ctx, newSnapshotID, srcSnap.VolumeID, snapSizeGiB, srcSnap.Encrypted, accountID); err != nil {
 		slog.ErrorContext(ctx, "CopyImage: failed to write snapshot metadata", "snapshotId", newSnapshotID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
@@ -956,9 +992,9 @@ func mergeCopyImageTags(srcTags map[string]string, specs []*ec2.TagSpecification
 	return merged
 }
 
-// DescribeImageAttribute supports description and blockDeviceMapping only.
-// Cross-account reads return NotFound so the caller can't learn the ID exists
-// in another account.
+// DescribeImageAttribute leaves Value nil for an attribute the AMI never records,
+// as AWS does for an unset one. Cross-account reads return NotFound so the
+// caller can't learn the ID exists in another account.
 func (s *ImageServiceImpl) DescribeImageAttribute(ctx context.Context, input *ec2.DescribeImageAttributeInput, accountID string) (*ec2.DescribeImageAttributeOutput, error) {
 	if input == nil || input.ImageId == nil || *input.ImageId == "" ||
 		input.Attribute == nil || *input.Attribute == "" {
@@ -987,15 +1023,34 @@ func (s *ImageServiceImpl) DescribeImageAttribute(ctx context.Context, input *ec
 
 	switch attribute {
 	case ec2.ImageAttributeNameDescription:
-		output.Description = &ec2.AttributeValue{Value: aws.String(meta.Description)}
+		output.Description = &ec2.AttributeValue{Value: nonEmptyString(meta.Description)}
+	case ec2.ImageAttributeNameLaunchPermission:
+		output.LaunchPermissions = []*ec2.LaunchPermission{}
+	case ec2.ImageAttributeNameBootMode:
+		output.BootMode = &ec2.AttributeValue{Value: nonEmptyString(meta.BootMode)}
+	case ec2.ImageAttributeNameImdsSupport:
+		output.ImdsSupport = &ec2.AttributeValue{}
+	case ec2.ImageAttributeNameLastLaunchedTime:
+		output.LastLaunchedTime = &ec2.AttributeValue{}
 	case ec2.ImageAttributeNameBlockDeviceMapping:
-		output.BlockDeviceMappings = synthesizeRootBlockDeviceMapping(meta, s.clusterEncryptionEnabled())
+		output.BlockDeviceMappings = synthesizeRootBlockDeviceMapping(meta, s.snapshotEncrypted(ctx, meta, s.clusterEncryptionEnabled()))
+		if output.BlockDeviceMappings == nil {
+			output.BlockDeviceMappings = []*ec2.BlockDeviceMapping{}
+		}
 	default:
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
 	slog.InfoContext(ctx, "DescribeImageAttribute completed", "imageId", imageID, "attribute", attribute, "accountId", accountID)
 	return output, nil
+}
+
+// nonEmptyString returns nil for "", so an unset attribute renders as {}.
+func nonEmptyString(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
 }
 
 // clusterEncryptionEnabled reports whether the daemon has a viperblock master
@@ -1013,9 +1068,48 @@ func (s *ImageServiceImpl) clusterEncryptionEnabled() bool {
 	return encrypted
 }
 
+// snapshotEncrypted reports the Encrypted flag of meta's snapshot document, or
+// fallback for an image with no snapshot document to read.
+func (s *ImageServiceImpl) snapshotEncrypted(ctx context.Context, meta ebsmetadata.AMI, fallback bool) bool {
+	if meta.SnapshotID == "" || meta.RootDeviceType != ec2.DeviceTypeEbs {
+		return fallback
+	}
+	owner, _ := snapshotAccountForAMI(meta)
+	snap, err := s.metadata.GetSnapshot(ctx, owner, meta.SnapshotID)
+	if err != nil {
+		if !objectstore.IsNoSuchKeyError(err) {
+			slog.WarnContext(ctx, "failed to read an image's snapshot, reporting the cluster encryption posture",
+				"imageId", meta.ImageID, "snapshotId", meta.SnapshotID, "err", err)
+		}
+		return fallback
+	}
+	return snap.Encrypted
+}
+
+// applySnapshotEncryption sets each rendered image's root mapping Encrypted
+// from its snapshot document, reading the documents concurrently.
+func (s *ImageServiceImpl) applySnapshotEncryption(ctx context.Context, metas []ebsmetadata.AMI, images []*ec2.Image, fallback bool) {
+	ids := make([]string, len(metas))
+	byID := make(map[string]ebsmetadata.AMI, len(metas))
+	for i, meta := range metas {
+		ids[i] = meta.ImageID
+		byID[meta.ImageID] = meta
+	}
+	results := ebsmetadata.FetchByIDs(ctx, ids, func(ctx context.Context, id string) (bool, error) {
+		return s.snapshotEncrypted(ctx, byID[id], fallback), nil
+	})
+	for i, image := range images {
+		for _, bdm := range image.BlockDeviceMappings {
+			if bdm.Ebs != nil {
+				bdm.Ebs.Encrypted = aws.Bool(results[i].Document)
+			}
+		}
+	}
+}
+
 // synthesizeRootBlockDeviceMapping returns /dev/sda1 with size+snapshot from AMIMetadata,
-// or nil for non-EBS AMIs. encrypted reflects the cluster-level encryption posture
-// (master key configured); AMI metadata carries no per-image encryption flag.
+// or nil for non-EBS AMIs. encrypted is the caller's answer for the mapping,
+// normally the image snapshot's flag.
 func synthesizeRootBlockDeviceMapping(meta ebsmetadata.AMI, encrypted bool) []*ec2.BlockDeviceMapping {
 	if meta.RootDeviceType != "ebs" {
 		return nil
@@ -1093,11 +1187,11 @@ func (s *ImageServiceImpl) RegisterImage(ctx context.Context, input *ec2.Registe
 		volumeSizeGiB = requested
 	}
 
-	if exists, err := s.amiNameExists(ctx, name); err != nil {
+	if existing, exists, err := s.amiNameExists(ctx, name); err != nil {
 		slog.ErrorContext(ctx, "RegisterImage: failed to check AMI name uniqueness", "name", name, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	} else if exists {
-		return nil, errors.New(awserrors.ErrorInvalidAMINameDuplicate)
+		return nil, duplicateAMINameError(name, existing, accountID)
 	}
 
 	architecture := "x86_64"

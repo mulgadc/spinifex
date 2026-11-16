@@ -316,6 +316,12 @@ type DBSnapshotRecord struct {
 	MasterUsername   string `json:"masterUsername"`
 	Port             int64  `json:"port"`
 
+	// The source instance as it stood when the snapshot was taken, which AWS
+	// reports on every snapshot even after the instance is gone.
+	AvailabilityZone   string     `json:"availabilityZone,omitempty"`
+	DbiResourceID      string     `json:"dbiResourceId,omitempty"`
+	InstanceCreateTime *time.Time `json:"instanceCreateTime,omitempty"`
+
 	// The placement the source instance had, which a restore falls back to for
 	// every field the request leaves unspecified.
 	VpcID                string   `json:"vpcId,omitempty"`

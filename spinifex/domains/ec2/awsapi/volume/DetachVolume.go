@@ -62,7 +62,7 @@ func DetachVolume(ctx context.Context, input *ec2.DetachVolumeInput, natsConn *n
 		}
 		vol := descOutput.Volumes[0]
 		if len(vol.Attachments) == 0 || vol.Attachments[0].InstanceId == nil {
-			return output, errors.New(awserrors.ErrorIncorrectState)
+			return output, awserrors.Errorf(awserrors.ErrorIncorrectState, "Volume '%s' is in the '%s' state.", volumeID, aws.StringValue(vol.State))
 		}
 		instanceID = *vol.Attachments[0].InstanceId
 	}
@@ -118,7 +118,7 @@ func DetachVolume(ctx context.Context, input *ec2.DetachVolumeInput, natsConn *n
 	responseError, err := awserrors.ValidateErrorPayload(msg.Data)
 	if err != nil {
 		if responseError.Code != nil {
-			return output, errors.New(*responseError.Code)
+			return output, awserrors.ResponseErrorToError(responseError)
 		}
 		return output, errors.New(awserrors.ErrorServerInternal)
 	}

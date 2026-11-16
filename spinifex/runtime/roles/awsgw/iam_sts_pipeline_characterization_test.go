@@ -230,3 +230,27 @@ func TestIAMSTSPipeline_AnonymousWebIdentityStaysAheadOfSigV4(t *testing.T) {
 		assert.Equal(t, cbRegistry(awserrors.ErrorMissingAuthenticationToken), got)
 	})
 }
+
+// A success names its request in both the x-amzn-RequestId header and the
+// body's ResponseMetadata, as AWS Query services do, so an SDK can report it.
+func TestIAMSTSPipeline_SuccessCarriesRequestID(t *testing.T) {
+	e := newCBEnv(t, cbEnvOpts{})
+	e.putUserPolicy(t, "alice", cbAllowAll)
+	trust := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"*"},"Action":"sts:AssumeRole"}]}`
+
+	for name, req := range map[string]struct {
+		service string
+		form    url.Values
+	}{
+		"iam_create_role":         {"iam", cbForm("CreateRole", "RoleName", "rid", "AssumeRolePolicyDocument", trust)},
+		"sts_get_caller_identity": {"sts", cbForm("GetCallerIdentity")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := e.request(t, e.h, e.alice, req.service, req.form)
+			require.Equalf(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+			requestID := rec.Header().Get("X-Amzn-Requestid")
+			require.NotEmpty(t, requestID)
+			assert.Contains(t, rec.Body.String(), "<ResponseMetadata><RequestId>"+requestID+"</RequestId></ResponseMetadata>")
+		})
+	}
+}

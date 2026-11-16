@@ -88,17 +88,127 @@ func TestDNSForwarder_UDPServfailWhenAllBackendsDead(t *testing.T) {
 	dead := fakeUDPUpstream(t, silent)
 	f := newDNSForwarder([]string{dead})
 	f.timeout = 100 * time.Millisecond
+	f.total = 300 * time.Millisecond
 
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	require.NoError(t, err)
 	go f.serveUDP(pc)
 	defer func() { _ = pc.Close() }()
 
+	start := time.Now()
 	resp := udpQuery(t, pc.LocalAddr().String(), testDNSQuery)
+	elapsed := time.Since(start)
+	assert.GreaterOrEqual(t, elapsed, f.total, "SERVFAIL must wait for the overall deadline, not one backend's timeout")
+	assert.Less(t, elapsed, f.total+500*time.Millisecond)
 	require.GreaterOrEqual(t, len(resp), 12)
 	assert.Equal(t, testDNSQuery[0:2], resp[0:2], "SERVFAIL must echo the query ID")
 	assert.NotZero(t, resp[2]&0x80, "QR bit must be set")
 	assert.Equal(t, byte(2), resp[3]&0x0F, "RCODE must be SERVFAIL")
+}
+
+// delayed answers like respond, but only after d, as a slow upstream would.
+func delayed(d time.Duration, respond func(q []byte) []byte) func(q []byte) []byte {
+	return func(q []byte) []byte {
+		time.Sleep(d)
+		return respond(q)
+	}
+}
+
+// A lone backend that answers after its per-backend timeout is relayed, not
+// replaced with SERVFAIL, as long as it answers inside the overall bound.
+func TestDNSForwarder_UDPRelaysSlowAnswerFromOnlyBackend(t *testing.T) {
+	slow := fakeUDPUpstream(t, delayed(300*time.Millisecond, markedResponse('S')))
+	f := newDNSForwarder([]string{slow})
+	f.timeout = 100 * time.Millisecond
+	f.total = 600 * time.Millisecond
+
+	resp, err := f.exchangeUDP(testDNSQuery)
+	require.NoError(t, err, "a slow answer inside the overall bound must be relayed")
+	assert.Equal(t, byte('S'), resp[len(resp)-1])
+}
+
+// A slow first backend stays open while the next is tried, and its answer wins
+// when the next one never answers.
+func TestDNSForwarder_UDPKeepsSlowBackendOpenDuringFailover(t *testing.T) {
+	slow := fakeUDPUpstream(t, delayed(300*time.Millisecond, markedResponse('S')))
+	dead := fakeUDPUpstream(t, silent)
+	f := newDNSForwarder([]string{slow, dead})
+	f.timeout = 100 * time.Millisecond
+	f.total = 600 * time.Millisecond
+
+	resp, err := f.exchangeUDP(testDNSQuery)
+	require.NoError(t, err)
+	assert.Equal(t, byte('S'), resp[len(resp)-1], "the first backend's late answer must be returned")
+}
+
+// The overall bound is a boundary: just inside it is relayed, just past it fails.
+func TestDNSForwarder_UDPOverallDeadlineBoundary(t *testing.T) {
+	inside := fakeUDPUpstream(t, delayed(250*time.Millisecond, markedResponse('I')))
+	f := newDNSForwarder([]string{inside})
+	f.timeout = 100 * time.Millisecond
+	f.total = 400 * time.Millisecond
+	_, err := f.exchangeUDP(testDNSQuery)
+	require.NoError(t, err, "an answer before the overall deadline must be relayed")
+
+	outside := fakeUDPUpstream(t, delayed(600*time.Millisecond, markedResponse('O')))
+	f = newDNSForwarder([]string{outside})
+	f.timeout = 100 * time.Millisecond
+	f.total = 400 * time.Millisecond
+	start := time.Now()
+	_, err = f.exchangeUDP(testDNSQuery)
+	require.Error(t, err, "an answer after the overall deadline must not be waited for")
+	elapsed := time.Since(start)
+	assert.GreaterOrEqual(t, elapsed, f.total, "the exchange must wait for the overall deadline")
+	assert.Less(t, elapsed, 550*time.Millisecond, "the exchange must end at the overall deadline")
+}
+
+// With more silent backends than the overall bound has hops for, the last one
+// still gets its own per-backend timeout, as sequential failover gave it.
+func TestDNSForwarder_UDPLastBackendReachableBehindSilentOnes(t *testing.T) {
+	targets := make([]string, 0, 5)
+	for range 4 {
+		targets = append(targets, fakeUDPUpstream(t, silent))
+	}
+	targets = append(targets, fakeUDPUpstream(t, markedResponse('L')))
+	f := newDNSForwarder(targets)
+	f.timeout = 100 * time.Millisecond
+	f.total = 250 * time.Millisecond
+
+	resp, err := f.exchangeUDP(testDNSQuery)
+	require.NoError(t, err, "the fifth backend must still be tried and answer")
+	assert.Equal(t, byte('L'), resp[len(resp)-1])
+}
+
+// Attempts that lost the race are closed when the exchange returns, so they do
+// not hold sockets past the query and escape the per-tap in-flight cap.
+func TestDNSForwarder_UDPClosesLosingAttempts(t *testing.T) {
+	dead := fakeUDPUpstream(t, silent)
+	live := fakeUDPUpstream(t, markedResponse('Y'))
+	f := newDNSForwarder([]string{dead, live})
+	f.timeout = 100 * time.Millisecond
+	f.total = 5 * time.Second
+
+	_, err := f.exchangeUDP(testDNSQuery)
+	require.NoError(t, err)
+	assert.Eventually(t, func() bool { return f.inFlight.Load() == 0 },
+		time.Second, 10*time.Millisecond, "the silent backend's attempt must not run to the 5s deadline")
+}
+
+// Each tap's throttle is its own: one tap's suppressed failures leave another
+// tap's first Warn through, and each suppresses its own repeats in the window.
+func TestWarnThrottle_PerTapWindows(t *testing.T) {
+	base := time.Now()
+	now := func() time.Time { return base }
+	a := &warnThrottle{every: 10 * time.Second, now: now}
+	b := &warnThrottle{every: 10 * time.Second, now: now}
+
+	assert.True(t, a.allow(), "tap A's first failure warns")
+	assert.False(t, a.allow(), "tap A's repeat inside the window is suppressed")
+	assert.True(t, b.allow(), "tap B's first failure warns despite tap A's window")
+	assert.False(t, b.allow())
+
+	base = base.Add(11 * time.Second)
+	assert.True(t, a.allow(), "tap A warns again once its window has passed")
 }
 
 func TestDNSForwarder_TCPProxiesFramedSession(t *testing.T) {

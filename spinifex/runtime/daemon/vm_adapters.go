@@ -731,7 +731,7 @@ func (d *Daemon) onInstanceUpHook() func(*vm.VM) error {
 		// reconnect-to-surviving-QEMU recovery after a daemon restart. Without it
 		// system.TerminateInstance.{id} has no responder, so a cluster-wide
 		// teardown invoked on another node cannot stop this VM and deletes its
-		// still-attached ENI (InvalidNetworkInterface.InUse).
+		// still-attached ENI (the in-use InvalidParameterValue).
 		if tags.IsSystemManaged(instance.ManagedBy) {
 			if subErr := d.subscribeSystemTerminateLocked(instance.ID); subErr != nil {
 				slog.Error("OnInstanceUp: failed to re-arm system terminate subscription",

@@ -45,6 +45,19 @@ func (h *lifecycleHarness) retainedVolume(t *testing.T, volumeID string) (Retain
 	return rec, found
 }
 
+func TestValidateDeleteRequest_FinalSnapshotChoiceMessages(t *testing.T) {
+	t.Parallel()
+	_, err := validateDeleteRequest(&rds.DeleteDBInstanceInput{DBInstanceIdentifier: aws.String(testDBID)})
+	assert.EqualError(t, err, "FinalDBSnapshotIdentifier is required unless SkipFinalSnapshot is specified.: InvalidParameterCombination")
+
+	_, err = validateDeleteRequest(&rds.DeleteDBInstanceInput{
+		DBInstanceIdentifier:      aws.String(testDBID),
+		SkipFinalSnapshot:         aws.Bool(true),
+		FinalDBSnapshotIdentifier: aws.String("orders-db-final"),
+	})
+	assert.EqualError(t, err, "Only one of SkipFinalSnapshot and FinalDBSnapshotIdentifier can be specified: InvalidParameterCombination")
+}
+
 func skipFinalSnapshot() *rds.DeleteDBInstanceInput {
 	return &rds.DeleteDBInstanceInput{
 		DBInstanceIdentifier: aws.String(testDBID),
@@ -119,7 +132,7 @@ func TestDeleteDBInstance_HonoursDeletionProtection(t *testing.T) {
 
 	_, err := h.svc.DeleteDBInstance(t.Context(), skipFinalSnapshot(), testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "deletion protection")
+	assert.Equal(t, "Cannot delete protected DB Instance, please disable deletion protection and try again.: InvalidParameterCombination", err.Error())
 
 	assert.Equal(t, StatusAvailable, h.record(t).Status)
 	assert.Empty(t, h.launcher.terminated)
@@ -158,6 +171,43 @@ func TestDeleteDBInstance_TakesTheFinalSnapshotAfterTheEngineAndVMAreDown(t *tes
 	assert.Equal(t, "vol-rdsdata01", snapshot.SourceVolumeID)
 }
 
+// AWS gives the final snapshot the instance's tags only under
+// CopyTagsToSnapshot; without it the snapshot's TagList is empty.
+func TestDeleteDBInstance_FinalSnapshotCopiesTagsOnlyUnderCopyTagsToSnapshot(t *testing.T) {
+	t.Parallel()
+	instanceTags := map[string]string{"awsdiff": "run", "Name": "orders-db"}
+	for _, copyTags := range []bool{false, true} {
+		t.Run(fmt.Sprintf("CopyTagsToSnapshot=%t", copyTags), func(t *testing.T) {
+			t.Parallel()
+			h := newLifecycleHarness(t, false)
+			rec := availableRecord()
+			rec.Tags = instanceTags
+			rec.CopyTagsToSnapshot = copyTags
+			seedInstance(t, h.svc, rec)
+
+			_, err := h.svc.DeleteDBInstance(t.Context(), &rds.DeleteDBInstanceInput{
+				DBInstanceIdentifier:      aws.String(testDBID),
+				FinalDBSnapshotIdentifier: aws.String("orders-db-final"),
+			}, testAccountID)
+			require.NoError(t, err)
+
+			out, err := h.svc.DescribeDBSnapshots(t.Context(), &rds.DescribeDBSnapshotsInput{
+				DBSnapshotIdentifier: aws.String("orders-db-final"),
+			}, testAccountID)
+			require.NoError(t, err)
+			require.Len(t, out.DBSnapshots, 1)
+			got := out.DBSnapshots[0]
+			assert.Equal(t, SnapshotTypeManual, aws.StringValue(got.SnapshotType))
+			assert.Equal(t, SnapshotStatusAvailable, aws.StringValue(got.Status))
+			if copyTags {
+				assert.Equal(t, tagsToAWS(instanceTags), got.TagList)
+			} else {
+				assert.Equal(t, []*rds.Tag{}, got.TagList, "AWS sends an empty TagList, not none")
+			}
+		})
+	}
+}
+
 func TestDeleteDBInstance_ReservesTheFinalSnapshotBeforeCuttingIt(t *testing.T) {
 	t.Parallel()
 	h := newLifecycleHarness(t, false)
@@ -189,7 +239,7 @@ func TestReconciler_AdoptsAnInterruptedFinalSnapshot(t *testing.T) {
 
 	kv, err := h.svc.bucket(t.Context(), testAccountID)
 	require.NoError(t, err)
-	creating := newDBSnapshotRecord(testAccountID, &rec, &validatedSnapshot{
+	creating := h.svc.newDBSnapshotRecord(testAccountID, &rec, &validatedSnapshot{
 		DBSnapshotIdentifier: rec.FinalSnapshotIdentifier,
 		Tags:                 rec.Tags,
 	})

@@ -274,12 +274,15 @@ func (s *Service) DescribeClusters(ctx context.Context, input *ecs.DescribeClust
 		if slices.Contains(include, ecs.ClusterFieldAttachments) {
 			c.Attachments = []*ecs.Attachment{}
 		}
-		counts, err := s.applyClusterCounts(ctx, kv, name, c)
-		if err != nil {
-			return nil, err
-		}
-		if slices.Contains(include, ecs.ClusterFieldStatistics) {
-			c.Statistics = counts.statistics()
+		// A deleted cluster reports zero counts even if an agent re-registers into it.
+		if rec.Status != ClusterStatusInactive {
+			counts, err := s.applyClusterCounts(ctx, kv, name, c)
+			if err != nil {
+				return nil, err
+			}
+			if slices.Contains(include, ecs.ClusterFieldStatistics) {
+				c.Statistics = counts.statistics()
+			}
 		}
 		out.Clusters = append(out.Clusters, c)
 	}

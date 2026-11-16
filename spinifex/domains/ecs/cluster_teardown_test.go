@@ -48,6 +48,7 @@ func TestService_DeleteCluster_LeavesInactiveRecord(t *testing.T) {
 	require.NoError(t, err)
 	_, err = svc.DeleteCluster(ctx, &ecs.DeleteClusterInput{Cluster: aws.String("web")}, testAccountID)
 	require.NoError(t, err)
+	registerInstance(t, svc, "web", "i-1", 4096, 8192)
 
 	out, err := svc.DescribeClusters(ctx, &ecs.DescribeClustersInput{
 		Clusters: []*string{aws.String("web")}, Include: aws.StringSlice([]string{ecs.ClusterFieldTags}),

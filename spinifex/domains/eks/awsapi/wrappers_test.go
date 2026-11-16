@@ -102,7 +102,7 @@ func TestGatewayWrappers_Nodegroup(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, out3)
 
-	out4, err := ListNodegroups(context.Background(), nc, acct, "alpha")
+	out4, err := ListNodegroups(context.Background(), nc, acct, "alpha", nil)
 	require.NoError(t, err)
 	assert.NotNil(t, out4)
 
@@ -145,7 +145,7 @@ func TestGatewayWrappers_Access(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, out3)
 
-	out4, err := ListAccessEntries(context.Background(), nc, acct, "alpha")
+	out4, err := ListAccessEntries(context.Background(), nc, acct, "alpha", nil)
 	require.NoError(t, err)
 	assert.NotNil(t, out4)
 
@@ -173,11 +173,11 @@ func TestGatewayWrappers_Access(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, out10)
 
-	out12, err := ListAssociatedAccessPolicies(context.Background(), nc, acct, "alpha", "arn-user")
+	out12, err := ListAssociatedAccessPolicies(context.Background(), nc, acct, "alpha", "arn-user", nil)
 	require.NoError(t, err)
 	assert.NotNil(t, out12)
 
-	out13, err := ListAccessPolicies(context.Background(), nc, acct)
+	out13, err := ListAccessPolicies(context.Background(), nc, acct, nil)
 	require.NoError(t, err)
 	assert.NotNil(t, out13)
 }
@@ -198,7 +198,7 @@ func TestGatewayWrappers_Addons(t *testing.T) {
 	_, nc := testutil.StartTestNATS(t)
 	stubEKSResponder(t, nc)
 
-	out1, err := ListAddons(context.Background(), nc, acct, "alpha")
+	out1, err := ListAddons(context.Background(), nc, acct, "alpha", nil)
 	require.NoError(t, err)
 	assert.NotNil(t, out1)
 

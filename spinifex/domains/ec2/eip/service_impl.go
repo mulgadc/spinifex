@@ -266,6 +266,7 @@ func (s *EIPServiceImpl) AssociateAddress(ctx context.Context, input *ec2.Associ
 	record.PrivateIp = privateIP
 	record.VpcId = vpcID
 	record.MacAddress = macAddr
+	record.NatGatewayId = ""
 	record.State = "associated"
 
 	data, err := json.Marshal(record)
@@ -463,14 +464,14 @@ func (s *EIPServiceImpl) stampENIPublicIP(ctx context.Context, accountID, eniID,
 	}
 }
 
-// clearAssociation reverts a record to the unassociated "allocated" state. The
-// allocation itself survives: disassociating never hands the address back.
 // errNatGatewayHeld is AWS's answer to disassociating or releasing the address
 // a NAT gateway holds.
 func errNatGatewayHeld() error {
 	return awserrors.Errorf(awserrors.ErrorAuthFailure, "You do not have permission to access the specified resource.")
 }
 
+// clearAssociation reverts a record to the unassociated "allocated" state. The
+// allocation itself survives: disassociating never hands the address back.
 func clearAssociation(record *EIPRecord) {
 	record.AssociationId = ""
 	record.ENIId = ""

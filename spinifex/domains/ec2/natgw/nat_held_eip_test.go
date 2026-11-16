@@ -7,17 +7,20 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 const natHeldPool = "nat-held-pool"
 
-func setupNatHeldEIP(t *testing.T) (*NatGatewayServiceImpl, *ec2eip.EIPServiceImpl, *ec2vpc.ExternalIPAM) {
+func setupNatHeldEIP(t *testing.T) (*NatGatewayServiceImpl, *ec2eip.EIPServiceImpl, *ec2vpc.ExternalIPAM, *nats.Conn, jetstream.JetStream) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
@@ -32,7 +35,7 @@ func setupNatHeldEIP(t *testing.T) (*NatGatewayServiceImpl, *ec2eip.EIPServiceIm
 	require.NoError(t, err)
 	natSvc, err := NewNatGatewayServiceImplWithNATS(t.Context(), nc)
 	require.NoError(t, err)
-	return natSvc, eipSvc, ipam
+	return natSvc, eipSvc, ipam, nc, js
 }
 
 func requireAuthFailure(t *testing.T, err error) {
@@ -48,7 +51,7 @@ func requireAuthFailure(t *testing.T, err error) {
 // with AuthFailure and leaves the gateway, its association and the pool lease as
 // they were, so the address it translates to is never handed back to the pool.
 func TestNatHeldEIP_DisassociateAndReleaseRefused(t *testing.T) {
-	natSvc, eipSvc, ipam := setupNatHeldEIP(t)
+	natSvc, eipSvc, ipam, nc, js := setupNatHeldEIP(t)
 	ctx := t.Context()
 
 	alloc, err := eipSvc.AllocateAddress(ctx, &ec2.AllocateAddressInput{}, testAccountID)
@@ -72,6 +75,20 @@ func TestNatHeldEIP_DisassociateAndReleaseRefused(t *testing.T) {
 	pool, err := ipam.GetPoolRecord(natHeldPool)
 	require.NoError(t, err)
 	assert.Contains(t, pool.Allocated, aws.StringValue(alloc.PublicIp), "the gateway's address must stay leased")
+
+	// The address stays mapped, so the VPC's internet gateway cannot be detached.
+	igwSvc, err := igw.NewIGWServiceImplWithNATS(ctx, nil, nc)
+	require.NoError(t, err)
+	igwKV, err := js.KeyValue(ctx, igw.KVBucketIGW)
+	require.NoError(t, err)
+	_, err = igwKV.Put(ctx, kvstore.AccountKey(testAccountID, "igw-test1"), []byte(`{"internet_gateway_id":"igw-test1","vpc_id":"vpc-test1","state":"available"}`))
+	require.NoError(t, err)
+	_, err = igwSvc.DetachInternetGateway(ctx, &ec2.DetachInternetGatewayInput{
+		InternetGatewayId: aws.String("igw-test1"), VpcId: aws.String("vpc-test1"),
+	}, testAccountID)
+	code, msg, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorDependencyViolation, code)
+	assert.Equal(t, "Network vpc-test1 has some mapped public address(es). Please unmap those public address(es) before detaching the gateway.", msg)
 
 	// Deleting the gateway frees the address for the customer to release.
 	_, err = natSvc.DeleteNatGateway(ctx, &ec2.DeleteNatGatewayInput{NatGatewayId: created.NatGateway.NatGatewayId}, testAccountID)

@@ -2283,7 +2283,7 @@ func (s *InstanceServiceImpl) DescribeTerminatedInstances(ctx context.Context, i
 	if s.stoppedStore == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListTerminatedInstances, s.stoppedStore.LoadTerminatedInstance, 48, "terminated", "DescribeTerminatedInstances", false)
+	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListTerminatedInstances, nil, 48, "terminated", "DescribeTerminatedInstances", false)
 }
 
 // describeInstancesFromKV projects the records listFn returns, or, when the

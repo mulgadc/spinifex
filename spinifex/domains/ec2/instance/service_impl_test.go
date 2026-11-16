@@ -1454,10 +1454,8 @@ func TestDescribeKVInstances_ByIDReadsRecordsDirectly(t *testing.T) {
 	listErr := errors.New("list must not be called")
 	newStore := func() *vmmock.StateStore {
 		return &vmmock.StateStore{
-			Stopped:           map[string]*vm.VM{mine.ID: mine, theirs.ID: theirs},
-			Terminated:        map[string]*vm.VM{mine.ID: mine, theirs.ID: theirs},
-			ListStoppedErr:    listErr,
-			ListTerminatedErr: listErr,
+			Stopped:        map[string]*vm.VM{mine.ID: mine, theirs.ID: theirs},
+			ListStoppedErr: listErr,
 		}
 	}
 	type describeFn func(*InstanceServiceImpl, *ec2.DescribeInstancesInput) (*ec2.DescribeInstancesOutput, error)
@@ -1469,9 +1467,6 @@ func TestDescribeKVInstances_ByIDReadsRecordsDirectly(t *testing.T) {
 		{"stopped", func(svc *InstanceServiceImpl, input *ec2.DescribeInstancesInput) (*ec2.DescribeInstancesOutput, error) {
 			return svc.DescribeStoppedInstances(context.Background(), input, owner)
 		}, func(s *vmmock.StateStore) { s.LoadStoppedErr = errors.New("kv down") }},
-		{"terminated", func(svc *InstanceServiceImpl, input *ec2.DescribeInstancesInput) (*ec2.DescribeInstancesOutput, error) {
-			return svc.DescribeTerminatedInstances(context.Background(), input, owner)
-		}, func(s *vmmock.StateStore) { s.LoadTerminatedErr = errors.New("kv down") }},
 	}
 	ids := func(v ...string) *ec2.DescribeInstancesInput {
 		return &ec2.DescribeInstancesInput{InstanceIds: aws.StringSlice(v)}

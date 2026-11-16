@@ -109,7 +109,6 @@ type StoppedInstanceStore interface {
 	ListNonTerminatedInstances() ([]*vm.VM, error)
 	ListTerminatedInPrimary() ([]*vm.VM, error)
 	ListTerminatedInstances() ([]*vm.VM, error)
-	LoadTerminatedInstance(instanceID string) (*vm.VM, error)
 	WriteStoppedInstance(instanceID string, instance *vm.VM) error
 	DeleteStoppedInstance(instanceID string) error
 	// UpdateStoppedInstance atomically applies mutate to the current stopped

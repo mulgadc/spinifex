@@ -84,6 +84,9 @@ func RebootInstances(ctx context.Context, input *ec2.RebootInstancesInput, natsC
 			// rebooted; only readable, empty buckets prove it does not exist.
 			state, queryOK := classifyUnownedInstance(ctx, natsConn, instanceID, accountID)
 			switch {
+			case state == bucketStateStopped:
+				return nil, awserrors.Errorf(awserrors.ErrorIncorrectState,
+					"Cannot reboot instance %s that is currently in stopped state.", instanceID)
 			case state != bucketStateAbsent:
 				return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
 			case queryOK:

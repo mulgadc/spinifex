@@ -1107,7 +1107,7 @@ func TestDescribeInstancesFromKV_FilterExcludesOnlyInstance_ReturnsZeroReservati
 	input := &ec2.DescribeInstancesInput{
 		Filters: []*ec2.Filter{{Name: aws.String("instance-type"), Values: []*string{aws.String("t3.nano")}}},
 	}
-	out, err := svc.describeInstancesFromKV(context.Background(), input, awsidentifiers.GlobalAccountID, listFn, 80, "stopped", "DescribeStoppedInstances", false)
+	out, err := svc.describeInstancesFromKV(context.Background(), input, awsidentifiers.GlobalAccountID, listFn, nil, 80, "stopped", "DescribeStoppedInstances", false)
 	require.NoError(t, err)
 	assert.Empty(t, out.Reservations, "a reservation with every instance filtered out must not appear in the response")
 }
@@ -1541,6 +1541,65 @@ func TestDescribeKVInstances_FilteringGroupingAndIsolation(t *testing.T) {
 			require.Len(t, out.Reservations, 1)
 			require.Len(t, out.Reservations[0].Instances, 1)
 			assert.Equal(t, "i-second", aws.StringValue(out.Reservations[0].Instances[0].InstanceId))
+		})
+	}
+}
+
+// An ID-scoped describe reads each named record directly: it answers while the
+// bucket cannot be listed, keeps account isolation, and fails on a read error.
+func TestDescribeKVInstances_ByIDReadsRecordsDirectly(t *testing.T) {
+	owner := "111122223333"
+	mine := &vm.VM{
+		ID: "i-mine", AccountID: owner,
+		Reservation: &ec2.Reservation{ReservationId: aws.String("r-mine")},
+		Instance:    &ec2.Instance{InstanceId: aws.String("i-mine")},
+	}
+	theirs := &vm.VM{
+		ID: "i-theirs", AccountID: "999988887777",
+		Reservation: &ec2.Reservation{ReservationId: aws.String("r-theirs")},
+		Instance:    &ec2.Instance{InstanceId: aws.String("i-theirs")},
+	}
+	listErr := errors.New("list must not be called")
+	newStore := func() *vmmock.StateStore {
+		return &vmmock.StateStore{
+			Stopped:        map[string]*vm.VM{mine.ID: mine, theirs.ID: theirs},
+			ListStoppedErr: listErr,
+		}
+	}
+	type describeFn func(*InstanceServiceImpl, *ec2.DescribeInstancesInput) (*ec2.DescribeInstancesOutput, error)
+	tests := []struct {
+		name    string
+		call    describeFn
+		loadErr func(*vmmock.StateStore)
+	}{
+		{"stopped", func(svc *InstanceServiceImpl, input *ec2.DescribeInstancesInput) (*ec2.DescribeInstancesOutput, error) {
+			return svc.DescribeStoppedInstances(context.Background(), input, owner)
+		}, func(s *vmmock.StateStore) { s.LoadStoppedErr = errors.New("kv down") }},
+	}
+	ids := func(v ...string) *ec2.DescribeInstancesInput {
+		return &ec2.DescribeInstancesInput{InstanceIds: aws.StringSlice(v)}
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &InstanceServiceImpl{stoppedStore: newStore(), config: &config.Config{}}
+
+			out, err := tt.call(svc, ids("i-mine", "i-theirs", "i-absent"))
+			require.NoError(t, err)
+			require.Len(t, out.Reservations, 1)
+			require.Len(t, out.Reservations[0].Instances, 1)
+			assert.Equal(t, "i-mine", aws.StringValue(out.Reservations[0].Instances[0].InstanceId))
+
+			_, err = tt.call(svc, &ec2.DescribeInstancesInput{})
+			require.Error(t, err, "an unscoped describe still lists the bucket")
+			assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
+
+			store := newStore()
+			tt.loadErr(store)
+			svc = &InstanceServiceImpl{stoppedStore: store, config: &config.Config{}}
+			_, err = tt.call(svc, ids("i-absent"))
+			require.Error(t, err, "a failed read must not read as an absent instance")
+			assert.Equal(t, awserrors.ErrorServerInternal, err.Error())
 		})
 	}
 }
@@ -3818,9 +3877,18 @@ func TestPrepareRunInstances_BootModePropagated(t *testing.T) {
 	}
 }
 
-func TestStartInstance_NotStopped(t *testing.T) {
+func TestStartInstance_RunningIsAlreadyRunning(t *testing.T) {
 	id := "i-running"
 	mgr := mgrWith(map[string]*vm.VM{id: {ID: id, Status: vm.StateRunning}})
+	v, _ := mgr.Get(id)
+	svc := &InstanceServiceImpl{vmMgr: mgr}
+	err := svc.StartInstance(context.Background(), v, ec2v1.EC2InstanceCommand{ID: id})
+	assert.ErrorIs(t, err, ErrInstanceAlreadyRunning)
+}
+
+func TestStartInstance_NotStopped(t *testing.T) {
+	id := "i-stopping"
+	mgr := mgrWith(map[string]*vm.VM{id: {ID: id, Status: vm.StateStopping}})
 	v, _ := mgr.Get(id)
 	svc := &InstanceServiceImpl{vmMgr: mgr}
 	err := svc.StartInstance(context.Background(), v, ec2v1.EC2InstanceCommand{ID: id})

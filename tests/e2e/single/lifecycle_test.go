@@ -16,7 +16,7 @@ var sshHealth harness.SSHHealth
 
 // runStopStart stops fix.Instance and waits for it to reach the
 // "stopped" state, then asserts that rebooting a stopped instance is
-// rejected with IncorrectInstanceState, then starts it again. Maps to
+// rejected with IncorrectState, then starts it again. Maps to
 // run-e2e.sh ~1027–1053.
 func runStopStart(t *testing.T, fix *Fixture) {
 	harness.Phase(t, "Single — Instance State Transitions (Stop)")
@@ -32,16 +32,16 @@ func runStopStart(t *testing.T, fix *Fixture) {
 
 	harness.WaitForInstanceState(t, fix.AWS, instanceID, "stopped")
 
-	// Reboot of a stopped instance must be rejected — IncorrectInstanceState
-	// is the AWS code bash's expect_error pins on.
+	// Reboot of a stopped instance must be rejected with IncorrectState, the
+	// code AWS answers for it.
 	harness.Step(t, "reboot-instances on stopped instance (should fail)")
-	harness.ExpectError(t, "IncorrectInstanceState", func() error {
+	harness.ExpectError(t, "IncorrectState", func() error {
 		_, err := fix.AWS.EC2.RebootInstances(&ec2.RebootInstancesInput{
 			InstanceIds: []*string{aws.String(instanceID)},
 		})
 		return err
 	})
-	harness.Detail(t, "stopped_reject", "IncorrectInstanceState")
+	harness.Detail(t, "stopped_reject", "IncorrectState")
 
 	// Restore primary instance to running so sibling Test* don't trip on a
 	// stopped singleton row.

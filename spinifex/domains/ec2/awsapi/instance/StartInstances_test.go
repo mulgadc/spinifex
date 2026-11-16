@@ -153,6 +153,7 @@ func TestStartInstances_MixedSuccessAndFailure(t *testing.T) {
 			msg.Respond([]byte(`{"Code":"InvalidInstanceID.NotFound"}`))
 		}
 	})
+	serveInstanceBucket(t, nc, "ec2.DescribeTerminatedInstances")
 
 	input := &ec2.StartInstancesInput{
 		InstanceIds: []*string{aws.String(goodID), aws.String(badID)},
@@ -193,4 +194,111 @@ func TestStartInstances_VolumeHeldElsewhereHeader(t *testing.T) {
 			assert.Equal(t, "volume vol-1 is published to node-a", message)
 		})
 	}
+}
+
+// A running instance's owner answers that it was already running, which AWS
+// reports as a successful start from running to running.
+func TestStartInstances_RunningInstanceStaysRunning(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	instanceID := "i-0669dd059c6c9d8cd"
+	_, err := nc.Subscribe("ec2.cmd."+instanceID, func(msg *nats.Msg) {
+		_ = msg.Respond([]byte(`{"status":"running","previousStatus":"running","instanceId":"` + instanceID + `"}`))
+	})
+	require.NoError(t, err)
+
+	output, err := StartInstances(context.Background(), &ec2.StartInstancesInput{
+		InstanceIds: []*string{aws.String(instanceID)},
+	}, nc, "123456789012")
+	require.NoError(t, err)
+	require.Len(t, output.StartingInstances, 1)
+	sc := output.StartingInstances[0]
+	assert.Equal(t, int64(16), *sc.CurrentState.Code)
+	assert.Equal(t, "running", *sc.CurrentState.Name)
+	assert.Equal(t, int64(16), *sc.PreviousState.Code)
+	assert.Equal(t, "running", *sc.PreviousState.Name)
+}
+
+// The stopped-instance path reports a terminated instance as missing; AWS
+// refuses it as being in a state it cannot be started from.
+func TestStartInstances_TerminatedInstanceIsIncorrectState(t *testing.T) {
+	t.Parallel()
+	_, nc := startTestNATSServer(t)
+
+	instanceID := "i-0669dd059c6c9d8cd"
+	_, err := nc.QueueSubscribe("ec2.start", "spinifex-workers", func(msg *nats.Msg) {
+		_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
+	})
+	require.NoError(t, err)
+	serveInstanceBucket(t, nc, "ec2.DescribeTerminatedInstances", instanceID)
+
+	_, err = StartInstances(context.Background(), &ec2.StartInstancesInput{
+		InstanceIds: []*string{aws.String(instanceID)},
+	}, nc, "123456789012")
+	code, message, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, code)
+	assert.Equal(t, "The instance '"+instanceID+"' is not in a state from which it can be started.", message)
+}
+
+// The terminated lookup names the one instance, so the daemon reads its record
+// directly; a bucket it cannot read is ServerInternal rather than NotFound.
+func TestStartInstances_NotFoundConsultsTerminatedRecord(t *testing.T) {
+	t.Parallel()
+	const instanceID = "i-0669dd059c6c9d8cd"
+	serveNotFoundStart := func(t *testing.T, nc *nats.Conn) {
+		t.Helper()
+		_, err := nc.QueueSubscribe("ec2.start", "spinifex-workers", func(msg *nats.Msg) {
+			_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorInvalidInstanceIDNotFound))
+		})
+		require.NoError(t, err)
+	}
+	start := func(nc *nats.Conn) error {
+		_, err := StartInstances(context.Background(), &ec2.StartInstancesInput{
+			InstanceIds: []*string{aws.String(instanceID)},
+		}, nc, "123456789012")
+		return err
+	}
+
+	t.Run("lookup is scoped to the instance and account", func(t *testing.T) {
+		t.Parallel()
+		_, nc := startTestNATSServer(t)
+		serveNotFoundStart(t, nc)
+		requests := make(chan *nats.Msg, 1)
+		_, err := nc.Subscribe("ec2.DescribeTerminatedInstances", func(msg *nats.Msg) {
+			requests <- msg
+			_ = msg.Respond([]byte(`{"Reservations":[]}`))
+		})
+		require.NoError(t, err)
+
+		code, ok := awserrors.ResolveErrorCode(start(nc))
+		require.True(t, ok)
+		assert.Equal(t, awserrors.ErrorInvalidInstanceIDNotFound, code, "an instance in no bucket stays NotFound")
+
+		var msg *nats.Msg
+		select {
+		case msg = <-requests:
+		default:
+			require.FailNow(t, "StartInstances never asked the terminated bucket")
+		}
+		var input ec2.DescribeInstancesInput
+		require.NoError(t, json.Unmarshal(msg.Data, &input))
+		assert.Equal(t, []string{instanceID}, aws.StringValueSlice(input.InstanceIds))
+		assert.Empty(t, input.Filters)
+		assert.Equal(t, "123456789012", msg.Header.Get(natsmsg.AccountIDHeader))
+	})
+	t.Run("unreadable terminated bucket is ServerInternal", func(t *testing.T) {
+		t.Parallel()
+		_, nc := startTestNATSServer(t)
+		serveNotFoundStart(t, nc)
+		_, err := nc.Subscribe("ec2.DescribeTerminatedInstances", func(msg *nats.Msg) {
+			_ = msg.Respond(awserrors.GenerateErrorPayload(awserrors.ErrorServerInternal))
+		})
+		require.NoError(t, err)
+
+		code, ok := awserrors.ResolveErrorCode(start(nc))
+		require.True(t, ok)
+		assert.Equal(t, awserrors.ErrorServerInternal, code)
+	})
 }

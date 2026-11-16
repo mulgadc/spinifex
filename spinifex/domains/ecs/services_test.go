@@ -597,6 +597,59 @@ func TestService_StopTask_StopsAndDeregisters(t *testing.T) {
 	assert.Len(t, reg.deregistered, 1)
 }
 
+// StopTask records AWS's stop fields when it accepts the stop, and they survive
+// both agent reports: the exit-wait report carrying the exit code and the stop
+// reap's report that carries none.
+func TestService_StopTask_RecordsStopFieldsAndExitCode(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+	task := &TaskRecord{
+		TaskID: "t-5", Cluster: "web", ContainerInstanceID: "i-1",
+		LastStatus: TaskStatusRunning, DesiredStatus: TaskStatusRunning,
+		Tags:       map[string]string{"env": "prod"},
+		Containers: []ContainerState{{Name: "app", Status: TaskStatusRunning}},
+	}
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, TaskKey("web", "t-5"), task))
+
+	out, err := svc.StopTask(t.Context(), &ecs.StopTaskInput{
+		Cluster: aws.String("web"), Task: aws.String("t-5"), Reason: aws.String("bye"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "bye", aws.StringValue(out.Task.StoppedReason))
+	assert.Equal(t, ecs.TaskStopCodeUserInitiated, aws.StringValue(out.Task.StopCode))
+	require.NotNil(t, out.Task.StoppingAt)
+	stoppingAt := *out.Task.StoppingAt
+	assert.Nil(t, out.Task.ExecutionStoppedAt)
+	assert.NotNil(t, out.Task.Tags)
+	assert.Empty(t, out.Task.Tags)
+
+	exit := 0
+	require.NoError(t, svc.recordTaskState(t.Context(), &ecsv1.TaskState{
+		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: "t-5",
+		LastStatus: ecsv1.TaskStatusStopped, Reason: "container app exited (0)",
+		Containers: []ecsv1.ContainerStatus{{Name: "app", Status: ecsv1.TaskStatusStopped, ExitCode: &exit}},
+	}))
+	require.NoError(t, svc.recordTaskState(t.Context(), &ecsv1.TaskState{
+		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: "t-5",
+		LastStatus: ecsv1.TaskStatusStopped, Reason: "bye",
+		Containers: []ecsv1.ContainerStatus{{Name: "app", Status: ecsv1.TaskStatusStopped}},
+	}))
+
+	dt, err := svc.DescribeTasks(t.Context(), &ecs.DescribeTasksInput{
+		Cluster: aws.String("web"), Tasks: []*string{aws.String("t-5")},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, dt.Tasks, 1)
+	got := dt.Tasks[0]
+	assert.Equal(t, "bye", aws.StringValue(got.StoppedReason))
+	assert.Equal(t, ecs.TaskStopCodeUserInitiated, aws.StringValue(got.StopCode))
+	assert.Equal(t, stoppingAt, aws.TimeValue(got.StoppingAt))
+	require.NotNil(t, got.ExecutionStoppedAt)
+	assert.False(t, got.ExecutionStoppedAt.Before(stoppingAt))
+	require.Len(t, got.Containers, 1)
+	assert.Equal(t, int64(0), aws.Int64Value(got.Containers[0].ExitCode))
+	assert.NotNil(t, got.Containers[0].ExitCode)
+}
+
 func TestService_StopTask_NotFound(t *testing.T) {
 	svc, _, _ := serviceTestRig(t)
 	_, err := svc.StopTask(context.Background(), &ecs.StopTaskInput{Cluster: aws.String("web"), Task: aws.String("ghost")}, testAccountID)

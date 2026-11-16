@@ -54,8 +54,10 @@ func (s *Service) StopTask(ctx context.Context, input *ecs.StopTaskInput, accoun
 	if err != nil {
 		return nil, err
 	}
-	s.requestStopTask(ctx, kv, accountID, &task, reason)
-	return &ecs.StopTaskOutput{Task: s.taskToAWS(accountID, &task, td)}, nil
+	s.requestStopTask(ctx, kv, accountID, &task, reason, ecs.TaskStopCodeUserInitiated)
+	out := s.taskToAWS(accountID, &task, td)
+	out.Tags = []*ecs.Tag{}
+	return &ecs.StopTaskOutput{Task: out}, nil
 }
 
 // StartTask places one task per named container instance (explicit placement, no
@@ -171,10 +173,15 @@ func (s *Service) reserveOnInstance(ctx context.Context, kv jetstream.KeyValue, 
 // untouched. The agent reaps the container and reports STOPPED; recordTaskState
 // then performs the single release. No-op once the task is already STOPPED. A task
 // with no container instance (never placed) is forced-stopped directly since no
-// agent can report it.
-func (s *Service) requestStopTask(ctx context.Context, kv jetstream.KeyValue, accountID string, task *TaskRecord, reason string) {
+// agent can report it. The first request records its reason, stopCode and time.
+func (s *Service) requestStopTask(ctx context.Context, kv jetstream.KeyValue, accountID string, task *TaskRecord, reason, stopCode string) {
 	if task.LastStatus == TaskStatusStopped {
 		return
+	}
+	if task.StoppingAt.IsZero() {
+		task.StoppingAt = time.Now().UTC()
+		task.StoppedReason = reason
+		task.StopCode = stopCode
 	}
 	if task.ContainerInstanceID == "" {
 		s.forceStopTask(ctx, kv, accountID, task, reason)

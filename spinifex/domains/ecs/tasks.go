@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -293,6 +294,7 @@ func (s *Service) DescribeTasks(ctx context.Context, input *ecs.DescribeTasksInp
 	if err != nil {
 		return nil, err
 	}
+	includeTags := slices.Contains(awsStringSlice(input.Include), ecs.TaskFieldTags)
 	out := &ecs.DescribeTasksOutput{Failures: []*ecs.Failure{}}
 	for _, ref := range awsStringSlice(input.Tasks) {
 		taskID := ContainerInstanceShortID(ref)
@@ -306,7 +308,11 @@ func (s *Service) DescribeTasks(ctx context.Context, input *ecs.DescribeTasksInp
 			if err != nil {
 				return nil, err
 			}
-			out.Tasks = append(out.Tasks, s.taskToAWS(accountID, &rec, td))
+			t := s.taskToAWS(accountID, &rec, td)
+			if !includeTags {
+				t.Tags = []*ecs.Tag{}
+			}
+			out.Tasks = append(out.Tasks, t)
 		} else {
 			out.Failures = append(out.Failures, &ecs.Failure{Arn: aws.String(ref), Reason: aws.String("MISSING")})
 		}
@@ -462,15 +468,16 @@ func (s *Service) taskToAWS(accountID string, r *TaskRecord, td *taskdefinition.
 	if r.StoppedReason != "" {
 		t.StoppedReason = aws.String(r.StoppedReason)
 	}
+	if r.StopCode != "" {
+		t.StopCode = aws.String(r.StopCode)
+	}
+	t.StoppingAt = awsTimeOrNil(r.StoppingAt)
+	t.ExecutionStoppedAt = awsTimeOrNil(r.ExecutionStoppedAt)
 	if r.ENIID != "" {
-		attStatus := r.LastStatus
-		if r.ENIReleased {
-			attStatus = "DELETED"
-		}
 		att := &ecs.Attachment{
 			Id:     aws.String(r.ENIAttachmentID),
 			Type:   aws.String("ElasticNetworkInterface"),
-			Status: aws.String(attStatus),
+			Status: aws.String(taskENIAttachmentStatus(r)),
 			Details: []*ecs.KeyValuePair{
 				{Name: aws.String("networkInterfaceId"), Value: aws.String(r.ENIID)},
 				{Name: aws.String("privateIPv4Address"), Value: aws.String(r.ENIPrivateIP)},
@@ -508,6 +515,30 @@ func (s *Service) taskToAWS(accountID string, r *TaskRecord, td *taskdefinition.
 		t.Containers = append(t.Containers, ctr)
 	}
 	return t
+}
+
+// ENI attachment states a task reports, from AWS's attachment lifecycle.
+const (
+	attachmentStatusPrecreated = "PRECREATED"
+	attachmentStatusAttached   = "ATTACHED"
+	attachmentStatusDetaching  = "DETACHING"
+	attachmentStatusDeleted    = "DELETED"
+)
+
+// taskENIAttachmentStatus derives the attachment state from the ENI's own
+// progress: plumbed into the task once the agent reports it started, detaching
+// while a stopped task's release is still owed, deleted once released.
+func taskENIAttachmentStatus(r *TaskRecord) string {
+	switch {
+	case r.ENIReleased:
+		return attachmentStatusDeleted
+	case r.LastStatus == TaskStatusStopped:
+		return attachmentStatusDetaching
+	case r.ENIAttachmentID != "" && !r.StartedAt.IsZero():
+		return attachmentStatusAttached
+	default:
+		return attachmentStatusPrecreated
+	}
 }
 
 // placementStrategyFromAWS extracts the first strategy type, defaulting binpack.

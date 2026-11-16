@@ -301,6 +301,7 @@ type TaskRecord struct {
 	DesiredStatus     string `json:"desiredStatus"`
 	LastStatus        string `json:"lastStatus"`
 	StoppedReason     string `json:"stoppedReason,omitempty"`
+	StopCode          string `json:"stopCode,omitempty"`
 	ReservedCPU       int    `json:"reservedCpu"`
 	ReservedMemoryMiB int    `json:"reservedMemoryMiB"`
 	// GPU is the task-level whole-GPU total (sum of its container defs' GPU
@@ -335,6 +336,10 @@ type TaskRecord struct {
 	CreatedAt          time.Time `json:"createdAt"`
 	StartedAt          time.Time `json:"startedAt,omitzero"`
 	StoppedAt          time.Time `json:"stoppedAt,omitzero"`
+	// StoppingAt is when a stop was first requested; ExecutionStoppedAt is when
+	// the agent first reported the task's containers stopped.
+	StoppingAt         time.Time `json:"stoppingAt,omitzero"`
+	ExecutionStoppedAt time.Time `json:"executionStoppedAt,omitzero"`
 }
 
 // LoadBalancerTarget is one ELBv2 target-group attachment on a service. On task

@@ -19,6 +19,7 @@ import (
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -125,7 +126,7 @@ func (m *natsEIPManager) Release(ctx context.Context, accountID, allocationID st
 
 // CreateService persists a REPLICA service and reconciles up to desiredCount.
 // DAEMON scheduling and serviceRegistries are rejected in v1 (Q15). Re-creating
-// an existing ACTIVE service returns it, so ClientToken needs no store.
+// an existing ACTIVE service returns it only for the same clientToken and parameters.
 func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInput, accountID string) (*ecs.CreateServiceOutput, error) {
 	name := aws.StringValue(input.ServiceName)
 	if name == "" {
@@ -161,6 +162,10 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 	if ok, gerr := taskdefinition.GetJSON(ctx, kv, ServiceKey(cluster, name), &existing); gerr != nil {
 		return nil, gerr
 	} else if ok && existing.Status == ServiceStatusActive {
+		token := aws.StringValue(input.ClientToken)
+		if token == "" || token != existing.ClientToken || createServiceFingerprint(input) != existing.CreateFingerprint {
+			return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "Creation of service was not idempotent.")
+		}
 		return &ecs.CreateServiceOutput{Service: s.serviceToAWS(accountID, &existing)}, nil
 	}
 
@@ -190,6 +195,8 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 		CreatedAt:            now,
 		UpdatedAt:            now,
 		CreatedBy:            CallerARN(ctx),
+		ClientToken:          aws.StringValue(input.ClientToken),
+		CreateFingerprint:    createServiceFingerprint(input),
 	}
 	if input.NetworkConfiguration != nil && input.NetworkConfiguration.AwsvpcConfiguration != nil {
 		v := input.NetworkConfiguration.AwsvpcConfiguration
@@ -208,6 +215,14 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 		slog.ErrorContext(ctx, "ECS CreateService: initial reconcile failed", "service", name, "err", err)
 	}
 	return &ecs.CreateServiceOutput{Service: s.serviceToAWS(accountID, &rec)}, nil
+}
+
+// createServiceFingerprint hashes every CreateService parameter except the
+// client token, so a replay can be told apart from a changed request.
+func createServiceFingerprint(input *ecs.CreateServiceInput) string {
+	params := *input
+	params.ClientToken = nil
+	return idempotency.ParamHash(&params)
 }
 
 // UpdateService mutates desiredCount and/or the task definition, then reconciles.

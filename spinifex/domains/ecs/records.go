@@ -395,6 +395,10 @@ type ServiceRecord struct {
 	UpdatedAt time.Time      `json:"updatedAt"`
 	// CreatedBy is the IAM role or user ARN that created the service.
 	CreatedBy string `json:"createdBy,omitempty"`
+	// ClientToken and CreateFingerprint identify the creating request, so only
+	// its exact replay returns the existing service.
+	ClientToken       string `json:"clientToken,omitempty"`
+	CreateFingerprint string `json:"createFingerprint,omitempty"`
 }
 
 // primaryDeployment returns a pointer to the service's PRIMARY deployment, or nil

@@ -713,3 +713,61 @@ func TestService_TargetGroup_RegisterOnRunningDeregisterOnStopped(t *testing.T) 
 	}))
 	assert.Equal(t, []string{key(tgARN, "10.0.1.5", 80)}, reg.deregistered)
 }
+
+func TestService_CreateService_RepeatWithDifferentParametersRefused(t *testing.T) {
+	cases := map[string]func(*ecs.CreateServiceInput){
+		"desiredCount":   func(in *ecs.CreateServiceInput) { in.DesiredCount = aws.Int64(3) },
+		"taskDefinition": func(in *ecs.CreateServiceInput) { in.TaskDefinition = aws.String("other") },
+		"tags":           func(in *ecs.CreateServiceInput) { in.Tags = nil },
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			svc, _, kv := serviceTestRig(t)
+			registerTaskDef(t, svc, "other", 128, 256)
+			input := func() *ecs.CreateServiceInput {
+				return &ecs.CreateServiceInput{
+					Cluster: aws.String("web"), ServiceName: aws.String("s"), TaskDefinition: aws.String("app"),
+					DesiredCount: aws.Int64(1), ClientToken: aws.String("tok-1"),
+					Tags: []*ecs.Tag{{Key: aws.String("env"), Value: aws.String("prod")}},
+				}
+			}
+			_, err := svc.CreateService(t.Context(), input(), testAccountID)
+			require.NoError(t, err)
+			var before ServiceRecord
+			_, err = taskdefinition.GetJSON(t.Context(), kv, ServiceKey("web", "s"), &before)
+			require.NoError(t, err)
+
+			repeat := input()
+			change(repeat)
+			_, err = svc.CreateService(t.Context(), repeat, testAccountID)
+			assert.EqualError(t, err, "Creation of service was not idempotent.: InvalidParameterException")
+
+			var after ServiceRecord
+			_, err = taskdefinition.GetJSON(t.Context(), kv, ServiceKey("web", "s"), &after)
+			require.NoError(t, err)
+			assert.Equal(t, before, after)
+		})
+	}
+}
+
+func TestService_CreateService_SameTokenAndParametersReplays(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+	input := &ecs.CreateServiceInput{
+		Cluster: aws.String("web"), ServiceName: aws.String("s"), TaskDefinition: aws.String("app"),
+		DesiredCount: aws.Int64(1), ClientToken: aws.String("tok-1"),
+	}
+	first, err := svc.CreateService(t.Context(), input, testAccountID)
+	require.NoError(t, err)
+
+	again, err := svc.CreateService(t.Context(), input, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, aws.StringValue(first.Service.ServiceArn), aws.StringValue(again.Service.ServiceArn))
+	tasks, err := svc.listServiceTasks(t.Context(), kv, "web", "s")
+	require.NoError(t, err)
+	assert.Len(t, tasks, 1, "a replay launches no further tasks")
+
+	// The same parameters under another token are a different request.
+	input.ClientToken = aws.String("tok-2")
+	_, err = svc.CreateService(t.Context(), input, testAccountID)
+	assert.EqualError(t, err, "Creation of service was not idempotent.: InvalidParameterException")
+}

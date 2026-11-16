@@ -2229,6 +2229,12 @@ func validateCreateClusterInput(input *eks.CreateClusterInput, accountID string)
 			return errors.New(awserrors.ErrorInvalidParameterValue)
 		}
 	}
+	// The control plane image runs one Kubernetes version; an omitted version
+	// takes it, as AWS takes its default.
+	if v := input.Version; v != nil && *v != defaultK8sVersion {
+		return awserrors.Errorf(awserrors.ErrorInvalidParameter,
+			"unsupported Kubernetes version %q, supported versions: %s", *v, defaultK8sVersion)
+	}
 	if input.AccessConfig != nil && input.AccessConfig.AuthenticationMode != nil {
 		mode := *input.AccessConfig.AuthenticationMode
 		switch mode {

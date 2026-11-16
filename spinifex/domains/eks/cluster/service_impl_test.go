@@ -106,6 +106,22 @@ func TestValidateCreateClusterInput_RejectsConfigMapAuthMode(t *testing.T) {
 	assert.Contains(t, message, "accessConfig.authenticationMode")
 }
 
+// The control plane only runs defaultK8sVersion, so any other requested version
+// is refused, naming the version that is supported.
+func TestValidateCreateClusterInput_RejectsUnsupportedVersion(t *testing.T) {
+	t.Parallel()
+	in := createInput("alpha")
+	in.Version = aws.String("1.29")
+	code, message, ok := awserrors.ResolveErrorDetail(validateCreateClusterInput(in, testAccountID))
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameter, code)
+	assert.Contains(t, message, "1.29")
+	assert.Contains(t, message, defaultK8sVersion)
+
+	in.Version = nil
+	require.NoError(t, validateCreateClusterInput(in, testAccountID))
+}
+
 // A junk authentication mode must be rejected the same way as CONFIG_MAP, and
 // must also name the parameter rather than surfacing a bare code.
 func TestValidateCreateClusterInput_RejectsJunkAuthMode(t *testing.T) {

@@ -357,9 +357,10 @@ func TestEIP_ReleaseMissingParams(t *testing.T) {
 func TestEIP_ReleaseNotFound(t *testing.T) {
 	svc, _, _ := setupTestEIP(t)
 
-	_, err := svc.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{AllocationId: aws.String("eipalloc-nonexistent")}, testAccountID)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidAllocationID.NotFound")
+	_, err := svc.ReleaseAddress(context.Background(), &ec2.ReleaseAddressInput{AllocationId: aws.String("eipalloc-03dd524cb8f0510e0")}, testAccountID)
+	code, message, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorInvalidAllocationIDNotFound, code)
+	assert.Equal(t, "The allocation ID 'eipalloc-03dd524cb8f0510e0' does not exist", message)
 }
 
 func TestEIP_AssociateMissingAllocationId(t *testing.T) {
@@ -415,10 +416,11 @@ func TestEIP_DisassociateNotFound(t *testing.T) {
 	svc, _, _ := setupTestEIP(t)
 
 	_, err := svc.DisassociateAddress(context.Background(), &ec2.DisassociateAddressInput{
-		AssociationId: aws.String("eipassoc-nonexistent"),
+		AssociationId: aws.String("eipassoc-04e037d9ee292cf2c"),
 	}, testAccountID)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidAssociationID.NotFound")
+	code, message, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorInvalidAssociationIDNotFound, code)
+	assert.Equal(t, "The association ID 'eipassoc-04e037d9ee292cf2c' does not exist", message)
 }
 
 func TestEIP_RecordToEC2_WithTags(t *testing.T) {

@@ -57,7 +57,7 @@ func (s *NATSImageService) CreateImage(ctx context.Context, input *ec2.CreateIma
 	// responses at all is a cluster fault, not a missing instance.
 	for code, n := range sum.ErrorCodes {
 		if n > 0 && code != "" && code != awserrors.ErrorInvalidInstanceIDNotFound {
-			return nil, errors.New(code)
+			return nil, sum.CodeError(code)
 		}
 	}
 	if sum.ErrorCodes[awserrors.ErrorInvalidInstanceIDNotFound] > 0 {

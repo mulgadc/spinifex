@@ -109,6 +109,14 @@ func TestAttachVolumeToStopped_Refusals(t *testing.T) {
 	}
 }
 
+func TestAttachVolumeToStopped_AttachedVolumeMessage(t *testing.T) {
+	f := newStoppedAttachFixture(t, ebsmetadata.Volume{VolumeID: "vol-busy", State: "in-use", AttachedInstance: "i-other", AvailabilityZone: stoppedAttachAZ})
+
+	_, err := f.attach("vol-busy", "")
+
+	assert.EqualError(t, err, "vol-busy is already attached to an instance: "+awserrors.ErrorVolumeInUse)
+}
+
 func TestAttachVolumeToStopped_OtherAccountsInstanceIsNotFound(t *testing.T) {
 	f := newStoppedAttachFixture(t, availableVolume("vol-new"))
 

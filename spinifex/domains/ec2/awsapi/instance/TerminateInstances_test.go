@@ -269,7 +269,9 @@ func TestTerminateInstances_RefusalIsNotReportedAsTerminated(t *testing.T) {
 	}, nc, "123456789012")
 
 	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, err.Error())
+	code, message, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorIncorrectInstanceState, code)
+	assert.Equal(t, "wrong state", message, "the daemon's message must reach the client")
 	assert.Nil(t, output)
 }
 
@@ -382,4 +384,20 @@ func TestTerminateInstances_MixedBatchWithUnknownIDFails(t *testing.T) {
 	require.Error(t, err)
 	assert.EqualError(t, err, "The instance ID 'i-0ee1ff203142536a7' does not exist: "+awserrors.ErrorInvalidInstanceIDNotFound)
 	assert.Nil(t, output)
+}
+
+// A running instance's daemon refusal reaches the caller with its message.
+func TestTerminateInstances_RunningRefusalKeepsDaemonMessage(t *testing.T) {
+	_, nc := startTestNATSServer(t)
+	nc.Subscribe("ec2.cmd.i-0669dd059c6c9d8cd", func(msg *nats.Msg) {
+		msg.Respond(awserrors.GenerateErrorPayloadWithMessage(awserrors.ErrorOperationNotPermitted, "protected"))
+	})
+
+	_, err := TerminateInstances(context.Background(), &ec2.TerminateInstancesInput{
+		InstanceIds: []*string{aws.String("i-0669dd059c6c9d8cd")},
+	}, nc, "123456789012")
+
+	code, message, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorOperationNotPermitted, code)
+	assert.Equal(t, "protected", message)
 }

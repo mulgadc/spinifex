@@ -1295,6 +1295,13 @@ func (s *InstanceServiceImpl) StartInstance(ctx context.Context, instance *vm.VM
 	return nil
 }
 
+// terminationProtectedError is AWS's refusal to terminate an instance whose
+// disableApiTermination attribute is set.
+func terminationProtectedError(instanceID string) error {
+	return awserrors.Errorf(awserrors.ErrorOperationNotPermitted,
+		"The instance '%s' may not be terminated. Modify its 'disableApiTermination' instance attribute and try again.", instanceID)
+}
+
 // StopOrTerminateInstance handles an ec2.cmd stop or terminate. Validates the
 // transition synchronously, then dispatches Stop/Terminate in a goroutine.
 func (s *InstanceServiceImpl) StopOrTerminateInstance(ctx context.Context, instance *vm.VM, command ec2v1.EC2InstanceCommand) error {
@@ -1362,7 +1369,7 @@ func (s *InstanceServiceImpl) StopOrTerminateInstance(ctx context.Context, insta
 	if protected {
 		slog.WarnContext(ctx, "StopOrTerminateInstance: instance has termination protection",
 			"instanceId", instance.ID)
-		return errors.New(awserrors.ErrorOperationNotPermitted)
+		return terminationProtectedError(instance.ID)
 	}
 	if raced {
 		// Idempotent: a concurrent terminate is already in progress.
@@ -2954,7 +2961,7 @@ func (s *InstanceServiceImpl) TerminateStoppedInstance(ctx context.Context, inpu
 	if instance.IsTerminationProtected() {
 		slog.WarnContext(ctx, "TerminateStoppedInstance: instance has termination protection",
 			"instanceId", input.InstanceID)
-		return nil, errors.New(awserrors.ErrorOperationNotPermitted)
+		return nil, terminationProtectedError(input.InstanceID)
 	}
 
 	s.deleteInstanceVolumes(ctx, instance, input.InstanceID)
@@ -3834,6 +3841,9 @@ func (s *InstanceServiceImpl) AttachVolumeToStopped(ctx context.Context, input *
 	}
 	if meta.TenantID != accountID {
 		return nil, errors.New(awserrors.ErrorInvalidVolumeNotFound)
+	}
+	if meta.State == "in-use" {
+		return nil, awserrors.Errorf(awserrors.ErrorVolumeInUse, "%s is already attached to an instance", volumeID)
 	}
 	if meta.State != "available" {
 		return nil, errors.New(awserrors.ErrorVolumeInUse)

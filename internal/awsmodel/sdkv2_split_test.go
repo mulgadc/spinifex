@@ -57,7 +57,7 @@ func TestCompareOperationsSplitsGapsBySDKV1(t *testing.T) {
 	}
 }
 
-func TestRequiresSDKV2IsRenderedInJSONAndPages(t *testing.T) {
+func TestRequiresSDKV2IsInJSONAndReportButNotPublishedPages(t *testing.T) {
 	coverage := awsmodel.OperationCoverage{
 		Service:       awsmodel.STS,
 		APIVersion:    "2011-06-15",
@@ -83,19 +83,14 @@ func TestRequiresSDKV2IsRenderedInJSONAndPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(page, "### Requires AWS SDK v2") || !strings.Contains(page, "| `OnlyInV2` |") {
-		t.Errorf("service page lacks the SDK v2 section:\n%s", page)
-	}
-	operations, _, _ := strings.Cut(page, "### Requires AWS SDK v2")
-	if strings.Contains(operations, "OnlyInV2") {
-		t.Error("an SDK-v2-only operation must not be listed under Operations")
-	}
 	index, err := awsmodel.RenderIndexPage([]awsmodel.OperationCoverage{coverage}, pages, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(index, "A further **1 operations**") {
-		t.Errorf("index lacks the SDK v2 count:\n%s", index)
+	for name, published := range map[string]string{"service page": page, "index": index} {
+		if strings.Contains(published, "OnlyInV2") || strings.Contains(published, "SDK v2") {
+			t.Errorf("the SDK v2 split is internal and must not reach the published %s:\n%s", name, published)
+		}
 	}
 	report := awsmodel.RenderInternalReport([]awsmodel.OperationCoverage{coverage}, pages)
 	if !strings.Contains(report, "### Requires SDK v2") || strings.Contains(report, "### Not implemented") {
@@ -103,7 +98,7 @@ func TestRequiresSDKV2IsRenderedInJSONAndPages(t *testing.T) {
 	}
 }
 
-func TestIndexAndReportCountSDKV2PerService(t *testing.T) {
+func TestReportCountsSDKV2PerService(t *testing.T) {
 	sts := awsmodel.OperationCoverage{
 		Service: awsmodel.STS, APIVersion: "2011-06-15",
 		Modelled: []string{"A", "B", "C"}, Registered: []string{"A"}, Implemented: []string{"A"},
@@ -116,15 +111,6 @@ func TestIndexAndReportCountSDKV2PerService(t *testing.T) {
 	}
 	coverages := []awsmodel.OperationCoverage{sts, iam}
 	pages := testPageSet(t)
-	index, err := awsmodel.RenderIndexPage(coverages, pages, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, row := range []string{"| [IAM](/coverage/iam) | 1 | 1 |", "| [STS](/coverage/sts) | 1 | 2 |", "| **Total** | **2** | **3** |"} {
-		if !strings.Contains(index, row) {
-			t.Errorf("index lacks row %q:\n%s", row, index)
-		}
-	}
 	report := awsmodel.RenderInternalReport(coverages, pages)
 	if !strings.Contains(report, "0 stubbed, 2 require SDK v2,") || !strings.Contains(report, "0 stubbed, 1 require SDK v2,") {
 		t.Errorf("internal report summary lacks per-service SDK v2 counts:\n%s", report)

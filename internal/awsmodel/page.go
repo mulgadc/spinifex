@@ -335,7 +335,6 @@ func RenderServicePage(coverage OperationCoverage, pages PageSet, intro string) 
 	}
 
 	writeOperations(&body, statuses)
-	writeRequiresSDKV2(&body, statuses)
 	return body.String(), nil
 }
 
@@ -351,25 +350,6 @@ func writeOperations(body *strings.Builder, statuses []OperationStatus) {
 			continue
 		}
 		fmt.Fprintf(body, "| `%s` |\n", status.Operation)
-	}
-}
-
-// writeRequiresSDKV2 lists the modelled operations that need AWS SDK v2. They
-// are not gaps to build: the SDK Spinifex is built and tested on cannot call
-// them, so the section records what an SDK upgrade would unlock.
-func writeRequiresSDKV2(body *strings.Builder, statuses []OperationStatus) {
-	var operations []string
-	for _, status := range statuses {
-		if status.Status == StatusRequiresSDKV2 {
-			operations = append(operations, status.Operation)
-		}
-	}
-	if len(operations) == 0 {
-		return
-	}
-	fmt.Fprintf(body, "\n### Requires AWS SDK v2\n\nThese %d operations are in the pinned AWS model but not in AWS SDK for Go v1, the SDK Spinifex is built and tested on. They are out of scope until Spinifex moves to AWS SDK v2.\n\n| Operation |\n|---|\n", len(operations))
-	for _, operation := range operations {
-		fmt.Fprintf(body, "| `%s` |\n", operation)
 	}
 }
 
@@ -390,26 +370,16 @@ func RenderIndexPage(coverages []OperationCoverage, pages PageSet, intro string)
 	}
 
 	fmt.Fprintf(&body, "The platform serves **%d operations** across the AWS APIs below. Every page names the operations its service implements from the pinned model, generated from the dispatch tables on each build rather than written by hand.\n\n", total)
-	body.WriteString("| Service | Operations | Requires AWS SDK v2 |\n|---|---:|---:|\n")
+	body.WriteString("| Service | Operations |\n|---|---:|\n")
 	for _, coverage := range sortedCoverages(coverages) {
 		page, ok := pages.Services[coverage.Service]
 		if !ok {
 			continue
 		}
-		fmt.Fprintf(&body, "| [%s](%s/%s) | %d | %d |\n",
-			page.Name, pages.BasePath, page.Slug, len(coverage.Implemented), len(coverage.RequiresSDKV2))
+		fmt.Fprintf(&body, "| [%s](%s/%s) | %d |\n",
+			page.Name, pages.BasePath, page.Slug, len(coverage.Implemented))
 	}
-	totalV2 := 0
-	for _, coverage := range coverages {
-		if _, ok := pages.Services[coverage.Service]; ok {
-			totalV2 += len(coverage.RequiresSDKV2)
-		}
-	}
-	fmt.Fprintf(&body, "| **Total** | **%d** | **%d** |\n", total, totalV2)
-
-	if totalV2 > 0 {
-		fmt.Fprintf(&body, "\nA further **%d operations** in the pinned models are not in AWS SDK for Go v1, the SDK Spinifex is built and tested on. They are out of scope until Spinifex moves to AWS SDK v2; each service page lists its own under Requires AWS SDK v2.\n", totalV2)
-	}
+	fmt.Fprintf(&body, "| **Total** | **%d** |\n", total)
 
 	if intro != "" {
 		body.WriteString("\n" + strings.TrimSpace(intro) + "\n")

@@ -32,6 +32,7 @@ var _ NatGatewayService = (*NatGatewayServiceImpl)(nil)
 type NatGatewayServiceImpl struct {
 	natgwKV        jetstream.KeyValue
 	deletedNatgwKV jetstream.KeyValue
+	natgwIdxKV     jetstream.KeyValue
 	eipKV          jetstream.KeyValue
 	subnetKV       jetstream.KeyValue
 	vpcKV          jetstream.KeyValue
@@ -61,6 +62,16 @@ func NewNatGatewayServiceImplWithNATS(ctx context.Context, natsConn *nats.Conn) 
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketDeletedNatGateways, err)
 	}
 
+	natgwIdxKV, err := kvstore.GetOrCreateBucket(ctx, js, ec2vpc.KVBucketSubnetNatGateways, ec2vpc.KVBucketSubnetNatGatewaysHistory)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create KV bucket %s: %w", ec2vpc.KVBucketSubnetNatGateways, err)
+	}
+	// Before any request is served, so DeleteSubnet sees gateways stored before
+	// the index existed, or by a node that did not yet write it.
+	if err := backfillSubnetIndex(ctx, natgwKV, natgwIdxKV); err != nil {
+		return nil, fmt.Errorf("backfill %s: %w", ec2vpc.KVBucketSubnetNatGateways, err)
+	}
+
 	eipKV, err := kvstore.GetOrCreateBucket(ctx, js, ec2eip.KVBucketEIPs, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get EIP KV bucket: %w", err)
@@ -81,6 +92,7 @@ func NewNatGatewayServiceImplWithNATS(ctx context.Context, natsConn *nats.Conn) 
 	return &NatGatewayServiceImpl{
 		natgwKV:        natgwKV,
 		deletedNatgwKV: deletedKV,
+		natgwIdxKV:     natgwIdxKV,
 		eipKV:          eipKV,
 		subnetKV:       subnetKV,
 		vpcKV:          vpcKV,
@@ -151,6 +163,14 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 
 	data, err := json.Marshal(record)
 	if err != nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	// Indexed before the record is stored, so no stored gateway is missing from
+	// DeleteSubnet's lookup. The key stays if the store fails: a failed write may
+	// still have landed, and a key without a record pins nothing.
+	idxKey := ec2vpc.SubnetNatGatewayKey(accountID, subnetID, natgwID)
+	if _, err := s.natgwIdxKV.Put(ctx, idxKey, []byte(natgwID)); err != nil {
+		slog.ErrorContext(ctx, "Failed to index NAT Gateway by subnet", "natGatewayId", natgwID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if _, err := s.natgwKV.Put(ctx, kvstore.AccountKey(accountID, natgwID), data); err != nil {
@@ -225,6 +245,8 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(ctx context.Context, input *ec2
 		slog.ErrorContext(ctx, "Failed to delete NAT Gateway from active bucket", "natGatewayId", natgwID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	// Only after the record is gone, so the subnet stays pinned until then.
+	s.removeSubnetIndex(ctx, ec2vpc.SubnetNatGatewayKey(accountID, record.SubnetId, natgwID), natgwID)
 
 	// Disassociate the EIP, keeping the allocation (AWS parity).
 	s.disassociateEIP(ctx, &record, accountID)
@@ -234,6 +256,57 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(ctx context.Context, input *ec2
 	return &ec2.DeleteNatGatewayOutput{
 		NatGatewayId: aws.String(natgwID),
 	}, nil
+}
+
+// removeSubnetIndex drops a deleted gateway's subnet index key. Best-effort: a
+// key whose gateway record is gone no longer pins the subnet.
+func (s *NatGatewayServiceImpl) removeSubnetIndex(ctx context.Context, idxKey, natgwID string) {
+	if err := s.natgwIdxKV.Delete(ctx, idxKey); err != nil {
+		slog.WarnContext(ctx, "Failed to remove NAT Gateway subnet index", "natGatewayId", natgwID, "err", err)
+	}
+}
+
+// backfillSubnetIndex indexes every stored gateway by subnet. Its cost grows
+// with the bucket, so it runs at service start and never inside a request.
+func backfillSubnetIndex(ctx context.Context, natgwKV, idxKV jetstream.KeyValue) error {
+	keys, err := natgwKV.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil
+		}
+		return fmt.Errorf("list NAT gateways: %w", err)
+	}
+	indexed := 0
+	for _, key := range keys {
+		accountID, natgwID, ok := strings.Cut(key, ".")
+		if !ok {
+			continue
+		}
+		entry, err := natgwKV.Get(ctx, key)
+		if err != nil {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				continue
+			}
+			return fmt.Errorf("read NAT gateway %s: %w", key, err)
+		}
+		var record NatGatewayRecord
+		if err := json.Unmarshal(entry.Value(), &record); err != nil || record.SubnetId == "" {
+			slog.ErrorContext(ctx, "NAT gateway subnet index backfill: record has no subnet, not indexed", "key", key, "err", err)
+			continue
+		}
+		idxKey := ec2vpc.SubnetNatGatewayKey(accountID, record.SubnetId, natgwID)
+		if _, err := idxKV.Create(ctx, idxKey, []byte(natgwID)); err != nil {
+			if errors.Is(err, jetstream.ErrKeyExists) {
+				continue
+			}
+			return fmt.Errorf("index NAT gateway %s: %w", key, err)
+		}
+		indexed++
+	}
+	if indexed > 0 {
+		slog.InfoContext(ctx, "NAT gateway subnet index backfilled", "indexed", indexed)
+	}
+	return nil
 }
 
 // deleteAlreadyDeletedNatGateway answers a repeat delete the way AWS does: a

@@ -91,6 +91,8 @@ type VPCServiceImpl struct {
 	rtbKV      jetstream.KeyValue // route table bucket for auto-creating main route table
 	igwKV      jetstream.KeyValue // internet gateway bucket for the DeleteVpc dependency check
 	eigwKV     jetstream.KeyValue // egress-only internet gateway bucket for the DeleteVpc dependency check
+	natgwKV    jetstream.KeyValue // NAT gateway bucket for the DeleteSubnet dependency check
+	natgwIdxKV jetstream.KeyValue // per-subnet NAT gateway index for the same check
 	ipam       *IPAM
 
 	// Optional: injected after construction for public IP cleanup in DeleteNetworkInterface.
@@ -236,6 +238,14 @@ func NewVPCServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV bucket spinifex-eigw: %w", err)
 	}
+	natgwKV, err := kvstore.GetOrCreateBucket(ctx, js, kvBucketNatGateways, 10)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create KV bucket %s: %w", kvBucketNatGateways, err)
+	}
+	natgwIdxKV, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketSubnetNatGateways, KVBucketSubnetNatGatewaysHistory)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketSubnetNatGateways, err)
+	}
 
 	ipam, err := NewIPAM(ctx, js)
 	if err != nil {
@@ -261,6 +271,8 @@ func NewVPCServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn
 		rtbKV:      rtbKV,
 		igwKV:      igwKV,
 		eigwKV:     eigwKV,
+		natgwKV:    natgwKV,
+		natgwIdxKV: natgwIdxKV,
 		ipam:       ipam,
 	}, nil
 }
@@ -921,7 +933,7 @@ func (s *VPCServiceImpl) checkSubnetResidents(ctx context.Context, accountID, su
 			return awserrors.HasDependencies("subnet", subnetID)
 		}
 	}
-	return nil
+	return s.checkSubnetNatGateways(ctx, accountID, subnetID)
 }
 
 // clearRouteTableAssociationsForSubnet removes every route table association

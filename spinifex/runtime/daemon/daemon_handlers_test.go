@@ -2079,7 +2079,7 @@ func TestHandleEC2DescribeInstanceAttribute_UnsupportedAttribute(t *testing.T) {
 
 	input := &ec2.DescribeInstanceAttributeInput{
 		InstanceId: aws.String(instanceID),
-		Attribute:  aws.String(ec2.InstanceAttributeNameBlockDeviceMapping),
+		Attribute:  aws.String(ec2.InstanceAttributeNameEnaSupport),
 	}
 	reqData, _ := json.Marshal(input)
 	reply, err := natsRequest(daemon.natsConn, "ec2.DescribeInstanceAttribute", reqData, 5*time.Second)
@@ -2089,6 +2089,7 @@ func TestHandleEC2DescribeInstanceAttribute_UnsupportedAttribute(t *testing.T) {
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, errResp["Code"])
+	assert.Equal(t, "Value (enaSupport) for parameter attribute is invalid. Unknown attribute.", errResp["Message"])
 }
 
 func TestHandleEC2DescribeInstanceAttribute_InvalidJSON(t *testing.T) {

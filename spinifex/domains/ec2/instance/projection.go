@@ -13,8 +13,7 @@ import (
 )
 
 // instanceEnaSupport is what every instance reports for ENA. Guests use virtio
-// NICs, and DescribeInstances, RunInstances and DescribeInstanceAttribute all
-// answer from this one value.
+// NICs, and DescribeInstances and RunInstances both answer from this one value.
 const instanceEnaSupport = true
 
 // InstanceProjection carries the caller-scoped values ProjectInstance needs.

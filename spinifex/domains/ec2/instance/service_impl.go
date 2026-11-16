@@ -3553,9 +3553,57 @@ func (s *InstanceServiceImpl) DescribeInstanceAttribute(ctx context.Context, inp
 		val := false
 		output.EbsOptimized = &ec2.AttributeBooleanValue{Value: &val}
 
-	case ec2.InstanceAttributeNameEnaSupport:
-		val := instanceEnaSupport
-		output.EnaSupport = &ec2.AttributeBooleanValue{Value: &val}
+	case ec2.InstanceAttributeNameKernel:
+		output.KernelId = &ec2.AttributeValue{}
+
+	case ec2.InstanceAttributeNameRamdisk:
+		output.RamdiskId = &ec2.AttributeValue{}
+
+	case ec2.InstanceAttributeNameProductCodes:
+		output.ProductCodes = []*ec2.ProductCode{}
+
+	case ec2.InstanceAttributeNameSriovNetSupport:
+		output.SriovNetSupport = &ec2.AttributeValue{Value: aws.String("simple")}
+
+	case ec2.InstanceAttributeNameRootDeviceName:
+		// Records written before launch stamped the field fall back to the
+		// device every image boots from, as start and detach already do.
+		root := ebsmetadata.RootDeviceName
+		s.vmMgr.Inspect(instance, func(v *vm.VM) {
+			if v.Instance != nil && aws.StringValue(v.Instance.RootDeviceName) != "" {
+				root = aws.StringValue(v.Instance.RootDeviceName)
+			}
+		})
+		output.RootDeviceName = &ec2.AttributeValue{Value: aws.String(root)}
+
+	case ec2.InstanceAttributeNameBlockDeviceMapping:
+		// Copied under the manager lock: attach and detach rewrite the slice.
+		output.BlockDeviceMappings = []*ec2.InstanceBlockDeviceMapping{}
+		s.vmMgr.Inspect(instance, func(v *vm.VM) {
+			if v.Instance == nil {
+				return
+			}
+			for _, m := range v.Instance.BlockDeviceMappings {
+				if m == nil {
+					continue
+				}
+				mCopy := *m
+				if m.Ebs != nil {
+					ebsCopy := *m.Ebs
+					mCopy.Ebs = &ebsCopy
+				}
+				output.BlockDeviceMappings = append(output.BlockDeviceMappings, &mCopy)
+			}
+		})
+
+	case ec2.InstanceAttributeNameEnclaveOptions:
+		enabled := false
+		s.vmMgr.Inspect(instance, func(v *vm.VM) {
+			if v.Instance != nil && v.Instance.EnclaveOptions != nil {
+				enabled = aws.BoolValue(v.Instance.EnclaveOptions.Enabled)
+			}
+		})
+		output.EnclaveOptions = &ec2.EnclaveOptions{Enabled: aws.Bool(enabled)}
 
 	case ec2.InstanceAttributeNameSourceDestCheck:
 		val := true
@@ -3569,9 +3617,12 @@ func (s *InstanceServiceImpl) DescribeInstanceAttribute(ctx context.Context, inp
 		}
 
 	default:
+		// AWS lists enaSupport in the attribute enum yet refuses it here, with
+		// this text, as it does any name it does not know.
 		slog.WarnContext(ctx, "DescribeInstanceAttribute: unsupported attribute",
 			"instanceId", instanceID, "attribute", attribute)
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
+			"Value (%s) for parameter attribute is invalid. Unknown attribute.", attribute)
 	}
 
 	slog.InfoContext(ctx, "DescribeInstanceAttribute: completed",

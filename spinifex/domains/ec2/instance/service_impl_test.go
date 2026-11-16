@@ -1182,14 +1182,6 @@ func TestDescribeInstanceAttribute_RunningInstance(t *testing.T) {
 			},
 		},
 		{
-			name:      "enaSupport",
-			attribute: ec2.InstanceAttributeNameEnaSupport,
-			assertions: func(t *testing.T, out *ec2.DescribeInstanceAttributeOutput) {
-				require.NotNil(t, out.EnaSupport)
-				assert.True(t, *out.EnaSupport.Value)
-			},
-		},
-		{
 			name:      "sourceDestCheck",
 			attribute: ec2.InstanceAttributeNameSourceDestCheck,
 			assertions: func(t *testing.T, out *ec2.DescribeInstanceAttributeOutput) {
@@ -1211,6 +1203,122 @@ func TestDescribeInstanceAttribute_RunningInstance(t *testing.T) {
 			tc.assertions(t, out)
 		})
 	}
+}
+
+// TestDescribeInstanceAttribute_AWSAnsweredAttributes covers the attributes
+// AWS answers for every EBS-backed instance, the record-backed ones read from
+// the stored instance rather than a constant.
+func TestDescribeInstanceAttribute_AWSAnsweredAttributes(t *testing.T) {
+	id := "i-attr2"
+	owner := awsidentifiers.GlobalAccountID
+	attachTime := time.Date(2026, 11, 11, 0, 17, 2, 0, time.UTC)
+	v := &vm.VM{
+		ID:        id,
+		AccountID: owner,
+		Instance: &ec2.Instance{
+			RootDeviceName: aws.String("/dev/sda1"),
+			EnclaveOptions: &ec2.EnclaveOptions{Enabled: aws.Bool(true)},
+			BlockDeviceMappings: []*ec2.InstanceBlockDeviceMapping{
+				{
+					DeviceName: aws.String("/dev/sda1"),
+					Ebs: &ec2.EbsInstanceBlockDevice{
+						AttachTime:          aws.Time(attachTime),
+						DeleteOnTermination: aws.Bool(true),
+						Status:              aws.String("attached"),
+						VolumeId:            aws.String("vol-root"),
+					},
+				},
+				{
+					DeviceName: aws.String("/dev/sdf"),
+					Ebs: &ec2.EbsInstanceBlockDevice{
+						AttachTime:          aws.Time(attachTime),
+						DeleteOnTermination: aws.Bool(false),
+						Status:              aws.String("attached"),
+						VolumeId:            aws.String("vol-data"),
+					},
+				},
+			},
+		},
+	}
+	legacy := &vm.VM{ID: "i-attr3", AccountID: owner, Instance: &ec2.Instance{}}
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: v, legacy.ID: legacy})}
+
+	describe := func(t *testing.T, instanceID, attribute string) *ec2.DescribeInstanceAttributeOutput {
+		t.Helper()
+		out, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
+			InstanceId: aws.String(instanceID),
+			Attribute:  aws.String(attribute),
+		}, owner)
+		require.NoError(t, err)
+		assert.Equal(t, instanceID, aws.StringValue(out.InstanceId))
+		return out
+	}
+
+	t.Run("kernel", func(t *testing.T) {
+		out := describe(t, id, ec2.InstanceAttributeNameKernel)
+		require.NotNil(t, out.KernelId)
+		assert.Nil(t, out.KernelId.Value)
+	})
+	t.Run("ramdisk", func(t *testing.T) {
+		out := describe(t, id, ec2.InstanceAttributeNameRamdisk)
+		require.NotNil(t, out.RamdiskId)
+		assert.Nil(t, out.RamdiskId.Value)
+	})
+	t.Run("productCodes", func(t *testing.T) {
+		out := describe(t, id, ec2.InstanceAttributeNameProductCodes)
+		require.NotNil(t, out.ProductCodes)
+		assert.Empty(t, out.ProductCodes)
+	})
+	t.Run("sriovNetSupport", func(t *testing.T) {
+		out := describe(t, id, ec2.InstanceAttributeNameSriovNetSupport)
+		require.NotNil(t, out.SriovNetSupport)
+		assert.Equal(t, "simple", aws.StringValue(out.SriovNetSupport.Value))
+	})
+	t.Run("rootDeviceName", func(t *testing.T) {
+		out := describe(t, id, ec2.InstanceAttributeNameRootDeviceName)
+		require.NotNil(t, out.RootDeviceName)
+		assert.Equal(t, "/dev/sda1", aws.StringValue(out.RootDeviceName.Value))
+
+		out = describe(t, legacy.ID, ec2.InstanceAttributeNameRootDeviceName)
+		assert.Equal(t, ebsmetadata.RootDeviceName, aws.StringValue(out.RootDeviceName.Value))
+	})
+	t.Run("blockDeviceMapping", func(t *testing.T) {
+		out := describe(t, id, ec2.InstanceAttributeNameBlockDeviceMapping)
+		assert.Equal(t, v.Instance.BlockDeviceMappings, out.BlockDeviceMappings)
+		assert.NotSame(t, v.Instance.BlockDeviceMappings[0].Ebs, out.BlockDeviceMappings[0].Ebs)
+
+		out = describe(t, legacy.ID, ec2.InstanceAttributeNameBlockDeviceMapping)
+		require.NotNil(t, out.BlockDeviceMappings)
+		assert.Empty(t, out.BlockDeviceMappings)
+	})
+	t.Run("enclaveOptions", func(t *testing.T) {
+		out := describe(t, id, ec2.InstanceAttributeNameEnclaveOptions)
+		require.NotNil(t, out.EnclaveOptions)
+		assert.True(t, aws.BoolValue(out.EnclaveOptions.Enabled))
+
+		out = describe(t, legacy.ID, ec2.InstanceAttributeNameEnclaveOptions)
+		require.NotNil(t, out.EnclaveOptions)
+		require.NotNil(t, out.EnclaveOptions.Enabled)
+		assert.False(t, *out.EnclaveOptions.Enabled)
+	})
+}
+
+// TestDescribeInstanceAttribute_EnaSupportRefused pins AWS's refusal of
+// enaSupport, which it lists among the attribute names but does not answer.
+func TestDescribeInstanceAttribute_EnaSupportRefused(t *testing.T) {
+	id := "i-attr4"
+	owner := awsidentifiers.GlobalAccountID
+	svc := &InstanceServiceImpl{vmMgr: mgrWith(map[string]*vm.VM{id: {ID: id, AccountID: owner}})}
+
+	_, err := svc.DescribeInstanceAttribute(context.Background(), &ec2.DescribeInstanceAttributeInput{
+		InstanceId: aws.String(id),
+		Attribute:  aws.String(ec2.InstanceAttributeNameEnaSupport),
+	}, owner)
+	require.Error(t, err)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorInvalidParameterValue, code)
+	assert.Equal(t, "Value (enaSupport) for parameter attribute is invalid. Unknown attribute.", msg)
 }
 
 func TestDescribeInstanceAttribute_NotRunning_NoStore(t *testing.T) {

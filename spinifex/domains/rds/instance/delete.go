@@ -366,7 +366,6 @@ func (s *Service) reserveFinalSnapshot(ctx context.Context, kv *kvstore.Bucket, 
 	record := s.newDBSnapshotRecord(accountID, rec, &validatedSnapshot{
 		DBSnapshotIdentifier: identifier,
 		SnapshotType:         SnapshotTypeManual,
-		Tags:                 rec.Tags,
 	})
 	record.FinalSnapshot = true
 	rev, err := createJSONRevision(ctx, kv, DBSnapshotKey(identifier), &record)

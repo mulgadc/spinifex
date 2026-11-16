@@ -171,6 +171,43 @@ func TestDeleteDBInstance_TakesTheFinalSnapshotAfterTheEngineAndVMAreDown(t *tes
 	assert.Equal(t, "vol-rdsdata01", snapshot.SourceVolumeID)
 }
 
+// AWS gives the final snapshot the instance's tags only under
+// CopyTagsToSnapshot; without it the snapshot's TagList is empty.
+func TestDeleteDBInstance_FinalSnapshotCopiesTagsOnlyUnderCopyTagsToSnapshot(t *testing.T) {
+	t.Parallel()
+	instanceTags := map[string]string{"awsdiff": "run", "Name": "orders-db"}
+	for _, copyTags := range []bool{false, true} {
+		t.Run(fmt.Sprintf("CopyTagsToSnapshot=%t", copyTags), func(t *testing.T) {
+			t.Parallel()
+			h := newLifecycleHarness(t, false)
+			rec := availableRecord()
+			rec.Tags = instanceTags
+			rec.CopyTagsToSnapshot = copyTags
+			seedInstance(t, h.svc, rec)
+
+			_, err := h.svc.DeleteDBInstance(t.Context(), &rds.DeleteDBInstanceInput{
+				DBInstanceIdentifier:      aws.String(testDBID),
+				FinalDBSnapshotIdentifier: aws.String("orders-db-final"),
+			}, testAccountID)
+			require.NoError(t, err)
+
+			out, err := h.svc.DescribeDBSnapshots(t.Context(), &rds.DescribeDBSnapshotsInput{
+				DBSnapshotIdentifier: aws.String("orders-db-final"),
+			}, testAccountID)
+			require.NoError(t, err)
+			require.Len(t, out.DBSnapshots, 1)
+			got := out.DBSnapshots[0]
+			assert.Equal(t, SnapshotTypeManual, aws.StringValue(got.SnapshotType))
+			assert.Equal(t, SnapshotStatusAvailable, aws.StringValue(got.Status))
+			if copyTags {
+				assert.Equal(t, tagsToAWS(instanceTags), got.TagList)
+			} else {
+				assert.Empty(t, got.TagList)
+			}
+		})
+	}
+}
+
 func TestDeleteDBInstance_ReservesTheFinalSnapshotBeforeCuttingIt(t *testing.T) {
 	t.Parallel()
 	h := newLifecycleHarness(t, false)

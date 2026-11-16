@@ -6,6 +6,7 @@ import (
 	"fmt"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -662,6 +663,11 @@ func (s *Service) newDBSnapshotRecord(accountID string, rec *DBInstanceRecord, r
 		MasterPasswordUpdatedAt: rec.MasterPasswordUpdatedAt,
 		Tags:                    req.Tags,
 		CreatedAt:               time.Now().UTC(),
+	}
+	// Tags named on the request win; without them AWS copies the instance's
+	// tags only when CopyTagsToSnapshot is set.
+	if len(record.Tags) == 0 && rec.CopyTagsToSnapshot {
+		record.Tags = maps.Clone(rec.Tags)
 	}
 	// The zone the data volume was created in, which is where the instance runs.
 	if s.deps.Launch.Config != nil {

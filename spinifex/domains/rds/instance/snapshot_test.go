@@ -907,6 +907,41 @@ func TestDBSnapshotTags_ReadBackThroughBothPaths(t *testing.T) {
 	assert.Equal(t, map[string]string{"env": "prod", "team": "payments"}, stored.Tags)
 }
 
+// Request tags replace the instance's; with none, the instance's are copied
+// only under CopyTagsToSnapshot.
+func TestCreateDBSnapshot_CopiesInstanceTagsOnlyWithoutRequestTags(t *testing.T) {
+	t.Parallel()
+	requestTags := []*rds.Tag{{Key: aws.String("env"), Value: aws.String("prod")}}
+	cases := []struct {
+		name     string
+		copyTags bool
+		request  []*rds.Tag
+		want     map[string]string
+	}{
+		{"flag off", false, nil, nil},
+		{"flag on", true, nil, map[string]string{"team": "payments"}},
+		{"flag on with request tags", true, requestTags, map[string]string{"env": "prod"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newSnapshotHarness(t, false)
+			rec := availableRecord()
+			rec.Tags = map[string]string{"team": "payments"}
+			rec.CopyTagsToSnapshot = tc.copyTags
+			seedInstance(t, h.svc, rec)
+
+			input := snapshotInput()
+			input.Tags = tc.request
+			out, err := h.svc.CreateDBSnapshot(t.Context(), input, testAccountID)
+			require.NoError(t, err)
+			assert.Equal(t, tagsToAWS(tc.want), out.DBSnapshot.TagList)
+			stored, _ := h.snapshot(t, testSnapshotID)
+			assert.Equal(t, tc.want, stored.Tags)
+		})
+	}
+}
+
 // The record has to survive a round trip through KV, because that is the only
 // copy a restore reads once the instance it came from is gone.
 func TestDBSnapshotRecord_SurvivesARoundTrip(t *testing.T) {

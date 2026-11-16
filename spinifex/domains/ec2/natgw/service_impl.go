@@ -125,7 +125,7 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 	// Validate EIP exists and is not already associated
 	eipEntry, err := s.eipKV.Get(ctx, kvstore.AccountKey(accountID, allocID))
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidAllocationIDNotFound)
+		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidElasticIpIDNotFound, "elasticIp", allocID)
 	}
 	var eipRecord ec2eip.EIPRecord
 	if err := json.Unmarshal(eipEntry.Value(), &eipRecord); err != nil {
@@ -378,7 +378,10 @@ func (s *NatGatewayServiceImpl) DescribeNatGateways(ctx context.Context, input *
 	parsedFilters, err := awsfilters.ParseFilters(input.Filter, describeNatGatewaysValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeNatGateways: invalid filter", "err", err)
-		return nil, err
+		// AWS answers InvalidParameter here, where other EC2 describes answer
+		// InvalidParameterValue with the same text.
+		_, msg, _ := awserrors.ResolveErrorDetail(err)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameter, "%s", msg)
 	}
 
 	natgwIDs := awsidentifiers.Set(input.NatGatewayIds)

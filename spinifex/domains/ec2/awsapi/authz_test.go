@@ -245,6 +245,10 @@ func TestResourceARNs(t *testing.T) {
 		{"EnableSerialConsoleAccess", map[string]string{}, []string{"*"}},
 		{"DisableSerialConsoleAccess", map[string]string{}, []string{"*"}},
 		{"GetSerialConsoleAccessStatus", map[string]string{}, []string{"*"}},
+		{"DescribeIdFormat", map[string]string{}, []string{"*"}},
+		{"DescribeIdentityIdFormat", map[string]string{"PrincipalArn": "arn:aws:iam::123456789012:root"}, []string{"*"}},
+		{"DescribeAggregateIdFormat", map[string]string{}, []string{"*"}},
+		{"DescribePrincipalIdFormat", map[string]string{}, []string{"*"}},
 
 		// Describes evaluate account-wide, as they do in AWS.
 		{"DescribeInstances", map[string]string{"InstanceId.1": "i-1"}, []string{"*"}},

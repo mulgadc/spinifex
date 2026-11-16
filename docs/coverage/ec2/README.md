@@ -18,7 +18,7 @@ tags:
 
 ## Overview
 
-Spinifex implements **134 operations** in the EC2 `2016-11-15` API model.
+Spinifex implements **138 operations** in the EC2 `2016-11-15` API model.
 
 ### Spot Instances Are a Mock
 
@@ -113,10 +113,13 @@ Whether new volumes are encrypted is decided by the platform's encryption key, n
 | `DescribeAccountAttributes` |
 | `DescribeAddresses` |
 | `DescribeAddressesAttribute` |
+| `DescribeAggregateIdFormat` |
 | `DescribeAvailabilityZones` |
 | `DescribeCapacityReservations` |
 | `DescribeEgressOnlyInternetGateways` |
 | `DescribeIamInstanceProfileAssociations` |
+| `DescribeIdFormat` |
+| `DescribeIdentityIdFormat` |
 | `DescribeImageAttribute` |
 | `DescribeImages` |
 | `DescribeInstanceAttribute` |
@@ -133,6 +136,7 @@ Whether new volumes are encrypted is decided by the platform's encryption key, n
 | `DescribeNetworkInterfaceAttribute` |
 | `DescribeNetworkInterfaces` |
 | `DescribePlacementGroups` |
+| `DescribePrincipalIdFormat` |
 | `DescribeRegions` |
 | `DescribeRouteTables` |
 | `DescribeSecurityGroupRules` |

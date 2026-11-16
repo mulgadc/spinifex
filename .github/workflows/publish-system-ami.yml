@@ -16,12 +16,24 @@ name: Publish System AMIs
 # Operators then install them on any cluster with:
 #   spx admin images import --name <catalog key>
 #
-# Publishing overwrites the mirror artifact, so it runs only from release.yml
-# once a tag has passed its gates, with siblings at the tags go.mod requires.
-# The `variant` input scopes which images build — the Ubuntu GPU legs are 16G
-# and much slower (NVIDIA driver download + DKMS build).
+# Publishing overwrites the mirror artifact, so it runs from release.yml once a
+# tag has passed its gates, or by hand from main to republish the released
+# images, with siblings at the tags go.mod requires. The `variant` input scopes
+# which images build — the Ubuntu GPU legs are 16G and much slower (NVIDIA
+# driver download + DKMS build).
 
 on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "Which images to build (all|cpu|gpu|rds)"
+        type: choice
+        options: [all, cpu, gpu, rds]
+        default: all
+      dry_run:
+        description: "Build + convert only; skip the R2 upload"
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       variant:

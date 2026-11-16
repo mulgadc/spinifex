@@ -120,6 +120,9 @@ func applyOne(zone string, sets []RRSet, action string, set RRSet) ([]RRSet, str
 		if !sameRRSet(sets[at], set) {
 			return sets, "Tried to delete resource record set " + label + " but the values provided do not match the current values"
 		}
+		if apexDefault && set.Type == "SOA" {
+			return sets, "A HostedZone must contain exactly one SOA record."
+		}
 		if apexDefault {
 			return sets, fmt.Sprintf("A HostedZone must contain at least one %s record for the zone itself.", set.Type)
 		}
@@ -142,8 +145,11 @@ func conflicts(zone string, sets []RRSet, set RRSet) string {
 		if s.Name != set.Name || s.Type == set.Type {
 			continue
 		}
-		if s.Type == "CNAME" || set.Type == "CNAME" {
-			return fmt.Sprintf("RRSet of type %s with DNS name %s is not permitted because a conflicting RRSet of type %s with the same DNS name already exists in zone %s", set.Type, set.Name, s.Type, zone)
+		if set.Type == "CNAME" {
+			return fmt.Sprintf("RRSet of type CNAME with DNS name %s is not permitted as it conflicts with other records with the same DNS name in zone %s", set.Name, zone)
+		}
+		if s.Type == "CNAME" {
+			return fmt.Sprintf("RRSet of type %s with DNS name %s is not permitted because a conflicting RRSet of type CNAME with the same DNS name already exists in zone %s", set.Type, set.Name, zone)
 		}
 	}
 	return ""
@@ -200,7 +206,7 @@ func toRRSet(zone, action string, in *route53.ResourceRecordSet) (RRSet, error) 
 	for _, rr := range in.ResourceRecords {
 		v := strings.TrimSpace(aws.StringValue(rr.Value))
 		if err := validateValue(rrType, v); err != nil {
-			return RRSet{}, awserrors.Errorf(awserrors.ErrorInvalidChangeBatch, "Invalid Resource Record: %s for %s %s", err, name, rrType)
+			return RRSet{}, awserrors.Errorf(awserrors.ErrorInvalidChangeBatch, "Invalid Resource Record: '%s'", err)
 		}
 		set.Values = append(set.Values, v)
 	}
@@ -219,7 +225,7 @@ func validateValue(rrType, v string) error {
 	switch rrType {
 	case "A":
 		if ip := net.ParseIP(v); ip == nil || ip.To4() == nil || strings.Contains(v, ":") {
-			return fmt.Errorf("value %q is not a valid IPv4 address", v)
+			return fmt.Errorf("FATAL problem: ARRDATAIllegalIPv4Address (Value is not a valid IPv4 address) encountered with '%s'", v)
 		}
 	case "AAAA":
 		if ip := net.ParseIP(v); ip == nil || !strings.Contains(v, ":") {

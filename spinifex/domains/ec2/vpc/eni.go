@@ -1047,7 +1047,13 @@ func (s *VPCServiceImpl) findENIByAttachment(ctx context.Context, accountID, att
 			return record, nil
 		}
 	}
-	return ENIRecord{}, errors.New(awserrors.ErrorInvalidAttachmentIDNotFound)
+	return ENIRecord{}, AttachmentNotFoundError(attachmentId)
+}
+
+// AttachmentNotFoundError is EC2's InvalidAttachmentID.NotFound answer for an
+// interface attachment ID that names no attachment.
+func AttachmentNotFoundError(attachmentID string) error {
+	return awserrors.Errorf(awserrors.ErrorInvalidAttachmentIDNotFound, "The interface attachment '%s' does not exist.", attachmentID)
 }
 
 // UpdateENIPublicIP updates the PublicIpAddress and PublicIpPool on an ENI record.

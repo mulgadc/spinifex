@@ -120,6 +120,20 @@ type NetworkConfig struct {
 	BootstrapIgwId      string `json:"bootstrap_igw_id,omitempty"`
 	BootstrapCidr       string `json:"bootstrap_cidr,omitempty"`
 	BootstrapSubnetCidr string `json:"bootstrap_subnet_cidr,omitempty"`
+
+	// EBS is the cluster's EBS provider, chosen once at init, so every
+	// joining node writes the same one. Nil for the default provider, so a
+	// viperblock cluster's payload carries no ebs object.
+	EBS *EBSConfig `json:"ebs,omitempty"`
+}
+
+// EBSConfig is the EBS provider propagated to joining nodes. The OCI fields
+// and ClusterID are set only for ocibsd. An empty Provider leaves the default.
+type EBSConfig struct {
+	Provider              string `json:"provider,omitempty"`
+	OCICompartmentID      string `json:"oci_compartment_id,omitempty"`
+	OCIAvailabilityDomain string `json:"oci_availability_domain,omitempty"`
+	ClusterID             string `json:"cluster_id,omitempty"`
 }
 
 // SharedCredentials contains the cluster-wide credentials distributed during formation.

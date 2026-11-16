@@ -74,7 +74,7 @@ func (s *ELBv2ServiceImpl) CreateRule(ctx context.Context, input *elbv2.CreateRu
 	}
 	for _, r := range existing {
 		if r.Priority == priority {
-			return nil, errors.New(awserrors.ErrorELBv2PriorityInUse)
+			return nil, awserrors.Errorf(awserrors.ErrorELBv2PriorityInUse, "Priority '%d' is currently in use", priority)
 		}
 	}
 
@@ -340,7 +340,7 @@ func (s *ELBv2ServiceImpl) SetRulePriorities(ctx context.Context, input *elbv2.S
 			continue
 		}
 		if _, claimed := seen[r.Priority]; claimed {
-			return nil, errors.New(awserrors.ErrorELBv2PriorityInUse)
+			return nil, awserrors.Errorf(awserrors.ErrorELBv2PriorityInUse, "One or more priorities not found")
 		}
 	}
 

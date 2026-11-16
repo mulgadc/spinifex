@@ -91,7 +91,7 @@ func (s *IAMServiceImpl) CreateRole(accountID string, input *iam.CreateRoleInput
 		ARN:                      arn.FormatIAMPath(arn.IAMRole, accountID, path, roleName),
 		Path:                     path,
 		Description:              aws.StringValue(input.Description),
-		AssumeRolePolicyDocument: *input.AssumeRolePolicyDocument,
+		AssumeRolePolicyDocument: dropEmptyPrincipalLists(*input.AssumeRolePolicyDocument),
 		MaxSessionDuration:       maxSession,
 		CreatedAt:                time.Now().UTC().Format(time.RFC3339),
 		AttachedPolicies:         []string{},
@@ -304,7 +304,7 @@ func (s *IAMServiceImpl) UpdateAssumeRolePolicy(accountID string, input *iam.Upd
 	}
 
 	err := s.updateRoleCAS(ctx, accountID, roleName, func(role *Role) (bool, error) {
-		role.AssumeRolePolicyDocument = *input.PolicyDocument
+		role.AssumeRolePolicyDocument = dropEmptyPrincipalLists(*input.PolicyDocument)
 		return true, nil
 	})
 	if err != nil {
@@ -795,6 +795,47 @@ func validateWebIdentityCondition(i int, stmt TrustStatement) error {
 func conditionKeysJoined(keys map[string]json.RawMessage) string {
 	names := slices.Sorted(maps.Keys(keys))
 	return strings.Join(names, ", ")
+}
+
+// dropEmptyPrincipalLists removes principal types whose value is an empty list
+// ("AWS": []), as AWS does when it stores a trust policy. A document with nothing
+// to drop, or whose Principal would be left empty, is returned unchanged.
+func dropEmptyPrincipalLists(docJSON string) string {
+	var doc map[string]any
+	dec := json.NewDecoder(strings.NewReader(docJSON))
+	dec.UseNumber()
+	if dec.Decode(&doc) != nil {
+		return docJSON
+	}
+	stmts, _ := doc["Statement"].([]any)
+	changed := false
+	for _, s := range stmts {
+		stmt, _ := s.(map[string]any)
+		principal, ok := stmt["Principal"].(map[string]any)
+		if !ok {
+			continue
+		}
+		kept := maps.Clone(principal)
+		maps.DeleteFunc(kept, func(_ string, v any) bool {
+			list, isList := v.([]any)
+			return isList && len(list) == 0
+		})
+		if len(kept) == len(principal) || len(kept) == 0 {
+			continue
+		}
+		stmt["Principal"] = kept
+		changed = true
+	}
+	if !changed {
+		return docJSON
+	}
+	var buf strings.Builder
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(doc); err != nil {
+		return docJSON
+	}
+	return strings.TrimSuffix(buf.String(), "\n")
 }
 
 // isRawJSONNonEmpty reports whether a json.RawMessage carries a meaningful value.

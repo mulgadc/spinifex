@@ -8,6 +8,7 @@ import (
 
 	"github.com/mulgadc/predastore/s3api"
 	"github.com/mulgadc/spinifex/internal/awsmodel"
+	"github.com/mulgadc/spinifex/internal/awsmodel/sdkv1"
 	acmawsapi "github.com/mulgadc/spinifex/spinifex/domains/acm/awsapi"
 	ec2awsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi"
 	awsapi "github.com/mulgadc/spinifex/spinifex/domains/ecr/awsapi"
@@ -95,6 +96,12 @@ func compareAll() ([]awsmodel.OperationCoverage, error) {
 		default:
 			return nil, fmt.Errorf("no gateway inventory for %s", service)
 		}
+
+		sdkV1, ok := sdkv1.Operations(service)
+		if !ok {
+			return nil, fmt.Errorf("no aws-sdk-go v1 client registered for %s in internal/awsmodel/sdkv1", service)
+		}
+		modelInventory.SDKV1Operations = sdkV1
 
 		coverage, err := awsmodel.CompareOperations(service, modelInventory)
 		if err != nil {

@@ -378,7 +378,7 @@ func TestRegisterTaskDefinition_EchoesEmptyCollections(t *testing.T) {
 }
 
 // A container that supplied none of these fields reads back with AWS's
-// defaults: cpu 0, empty mountPoints/volumesFrom/systemControls, and on each
+// defaults: cpu 0, empty environment/mountPoints/volumesFrom/systemControls, and on each
 // port mapping protocol tcp and, under awsvpc, hostPort equal to containerPort.
 func TestRegisterTaskDefinition_FillsAWSDefaults(t *testing.T) {
 	svc, _ := newTestService(t)
@@ -400,7 +400,7 @@ func TestRegisterTaskDefinition_FillsAWSDefaults(t *testing.T) {
 	assert.Equal(t, []*ecs.TaskDefinitionPlacementConstraint{}, d.TaskDefinition.PlacementConstraints)
 	c := d.TaskDefinition.ContainerDefinitions[0]
 
-	assert.Nil(t, c.Environment)
+	assert.Equal(t, []*ecs.KeyValuePair{}, c.Environment)
 	require.NotNil(t, c.Cpu)
 	assert.Equal(t, int64(0), aws.Int64Value(c.Cpu))
 	assert.Equal(t, []*ecs.MountPoint{}, c.MountPoints)

@@ -3718,7 +3718,7 @@ func TestDelegateHandlers_EIP(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	eipSvc, err := ec2eip.NewEIPServiceImpl(t.Context(), nc, ipam, daemon.vpcService)
+	eipSvc, err := ec2eip.NewEIPServiceImpl(t.Context(), nc, ipam, daemon.vpcService, "ap-southeast-2")
 	require.NoError(t, err)
 	daemon.eipService = eipSvc
 

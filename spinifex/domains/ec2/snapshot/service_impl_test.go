@@ -582,7 +582,7 @@ func TestDeleteSnapshot_InUseByRegisteredAMI(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, svc.metadata.PutAMI(context.Background(), ebsmetadata.AMI{
-		ImageID: "ami-registered", Name: "ct-ami", SnapshotID: *snap.SnapshotId,
+		ImageID: "ami-registered", Name: "ct-ami", ImageOwnerAlias: testAccountID, SnapshotID: *snap.SnapshotId,
 	}))
 
 	_, err = svc.DeleteSnapshot(context.Background(), &ec2.DeleteSnapshotInput{
@@ -591,7 +591,7 @@ func TestDeleteSnapshot_InUseByRegisteredAMI(t *testing.T) {
 	require.Error(t, err)
 	code, message := clientErrorDetail(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, code)
-	assert.Equal(t, "The snapshot that you are trying to delete is in use by one or more AMIs.", message)
+	assert.Equal(t, "The snapshot "+*snap.SnapshotId+" is currently in use by ami-registered", message)
 
 	// The provider and control-plane document both survive the refusal.
 	result, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{
@@ -628,7 +628,9 @@ func TestDeleteSnapshot_InUseByRegisteredAMI_AnotherAccount(t *testing.T) {
 		SnapshotId: snap.SnapshotId,
 	}, testAccountID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorInvalidSnapshotInUse)
+	code, message := clientErrorDetail(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, code)
+	assert.NotContains(t, message, "ami-other-account", "another account's AMI must not be named")
 }
 
 // TestDeleteSnapshot_NotFound tests deleting a non-existent snapshot.
@@ -1293,7 +1295,7 @@ func providerSnapshotService(t *testing.T, volumeID string) (*SnapshotServiceImp
 	store := objectstore.NewMemoryObjectStore()
 	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
 	svc := NewSnapshotServiceImplWithStore(cfg, store, nil)
-	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{})
+	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{SnapshotCopy: true})
 	svc.SetEBSProvider(provider)
 	require.NoError(t, svc.metadata.PutVolume(context.Background(), ebsmetadata.Volume{
 		VolumeID: volumeID, TenantID: testAccountID, CapacityGiB: 4, State: "available",
@@ -1411,6 +1413,34 @@ func TestCopySnapshot_Provider_ForeignSnapshotRefused(t *testing.T) {
 
 	_, ok := provider.Snapshot(aws.StringValue(src.SnapshotId))
 	require.True(t, ok, "the source must survive a refused copy")
+}
+
+// A provider that cannot copy in place answers UnsupportedOperation, and the
+// refusal leaves no copy behind in the control plane.
+func TestCopySnapshot_Provider_WithoutSnapshotCopyIsUnsupported(t *testing.T) {
+	ctx := context.Background()
+	svc, provider := providerSnapshotService(t, "vol-copyunsup")
+
+	src, err := svc.CreateSnapshot(ctx, &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-copyunsup")}, testAccountID)
+	require.NoError(t, err)
+
+	svc.SetEBSProvider(&noCopyProvider{EBSProvider: provider})
+	_, err = svc.CopySnapshot(ctx, &ec2.CopySnapshotInput{SourceSnapshotId: src.SnapshotId}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorUnsupportedOperation, err.Error())
+
+	listed, err := svc.DescribeSnapshots(ctx, &ec2.DescribeSnapshotsInput{}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, listed.Snapshots, 1, "only the source snapshot should exist")
+}
+
+// noCopyProvider refuses CopySnapshot as a provider without SnapshotCopy does.
+type noCopyProvider struct {
+	ebsprovider.EBSProvider
+}
+
+func (p *noCopyProvider) CopySnapshot(context.Context, ebsprovider.CopySnapshotRequest) (*ebsprovider.Snapshot, error) {
+	return nil, ebsprovider.ErrUnsupportedCapability
 }
 
 // copyFailingProvider fails only CopySnapshot, leaving every other operation
@@ -1599,4 +1629,25 @@ func TestDescribeSnapshots_FilterByTagKeyAndTagValue(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+// AWS reports StorageTier standard on every described snapshot, by listing or
+// by ID, and none on CreateSnapshot's answer.
+func TestDescribeSnapshots_ReportsStandardStorageTier(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+	createTestVolume(t, svc, store, "vol-1", 50)
+
+	created, err := svc.CreateSnapshot(t.Context(), &ec2.CreateSnapshotInput{VolumeId: aws.String("vol-1")}, testAccountID)
+	require.NoError(t, err)
+	assert.Nil(t, created.StorageTier)
+
+	listed, err := svc.DescribeSnapshots(t.Context(), &ec2.DescribeSnapshotsInput{}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, listed.Snapshots, 1)
+	assert.Equal(t, "standard", aws.StringValue(listed.Snapshots[0].StorageTier))
+
+	byID, err := svc.DescribeSnapshots(t.Context(), &ec2.DescribeSnapshotsInput{SnapshotIds: []*string{created.SnapshotId}}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, byID.Snapshots, 1)
+	assert.Equal(t, "standard", aws.StringValue(byID.Snapshots[0].StorageTier))
 }

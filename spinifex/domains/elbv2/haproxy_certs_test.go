@@ -252,7 +252,7 @@ func TestGetLBConfig_DeliversCertFiles(t *testing.T) {
 
 	// The gateway marshals this output to XML; confirm the member shape the
 	// lb-agent parses (GetLBConfigResult>CertFiles>member>{Path,PEM}).
-	payload := awsxml.QueryResponsePayload("GetLBConfig", *out)
+	payload := awsxml.QueryResponsePayload("GetLBConfig", "", *out)
 	xmlBytes, err := awsxml.Marshal(payload)
 	require.NoError(t, err)
 	var parsed struct {

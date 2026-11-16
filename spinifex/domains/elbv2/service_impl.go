@@ -1425,7 +1425,7 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 		if out, err := s.repeatCreateLoadBalancer(ctx, want, name, accountID); out != nil || err != nil {
 			return out, err
 		}
-		return nil, errors.New(awserrors.ErrorELBv2DuplicateLoadBalancer)
+		return nil, errDuplicateLoadBalancerName(name)
 	}
 	if !claimOK {
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -1559,7 +1559,8 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 			// Drive the data-plane launch inline so the returned record carries the
 			// allocated front-end IP. The caller is off the gateway responder, so
 			// 267.4 does not apply.
-			if err := s.provisionLBDataPlane(ctx, lc); err != nil {
+			launched, err := s.provisionLBDataPlane(ctx, lc)
+			if err != nil {
 				slog.ErrorContext(ctx, "CreateLoadBalancerSync: data-plane launch failed", "lbArn", lbArn, "err", err)
 				// Unwind completely rather than leaving the failed record behind.
 				// A synchronous caller gets an error and no ARN, and this path's
@@ -1575,11 +1576,8 @@ func (s *ELBv2ServiceImpl) createLoadBalancer(ctx context.Context, input *elbv2.
 				}
 				return nil, lbLaunchError(err)
 			}
-			launched, lerr := s.store.GetLoadBalancerByArn(ctx, lbArn)
-			if lerr != nil || launched == nil {
-				slog.ErrorContext(ctx, "CreateLoadBalancerSync: reload after launch failed", "lbArn", lbArn, "err", lerr)
-				return nil, errors.New(awserrors.ErrorServerInternal)
-			}
+			// Return the record the launch wrote: a re-read can be answered by a
+			// replica that has not applied that write yet, losing the front-end IP.
 			record = launched
 		} else {
 			s.launchWG.Go(func() {
@@ -1622,7 +1620,12 @@ func (s *ELBv2ServiceImpl) repeatCreateLoadBalancer(ctx context.Context, want *L
 			LoadBalancers: []*elbv2.LoadBalancer{s.lbRecordToSDK(ctx, existing)},
 		}, nil
 	}
-	return nil, awserrors.Errorf(awserrors.ErrorELBv2DuplicateLoadBalancer,
+	return nil, errDuplicateLoadBalancerName(name)
+}
+
+// errDuplicateLoadBalancerName is AWS's refusal of a name the account already holds.
+func errDuplicateLoadBalancerName(name string) error {
+	return awserrors.Errorf(awserrors.ErrorELBv2DuplicateLoadBalancer,
 		"A load balancer with the same name '%s' exists, but with different settings", name)
 }
 
@@ -1655,25 +1658,26 @@ type lbLaunchCtx struct {
 // record: on success the instance/VPC-IP/host-ports and the per-AZ front-end IP
 // are recorded and the LB stays provisioning until the lb-agent heartbeats; on
 // failure the record is marked failed so the API reflects the broken data plane.
+// On success it returns the record it persisted.
 // Synchronous — launchLBVM (a bounded LaunchSystemInstance request/reply) returns
 // the allocated front-end IP before the guest boot completes. Callers choose
 // whether to run it inline (CreateLoadBalancerSync) or on a background goroutine
 // (launchLBVMAsync).
-func (s *ELBv2ServiceImpl) provisionLBDataPlane(ctx context.Context, lc lbLaunchCtx) error {
+func (s *ELBv2ServiceImpl) provisionLBDataPlane(ctx context.Context, lc lbLaunchCtx) (*LoadBalancerRecord, error) {
 	launch := s.launchLBVM(ctx, lc.lbID, lc.scheme, lc.eniIDs, lc.subnets, lc.accountID, lc.crossAccountENIs)
 
 	record, err := s.store.GetLoadBalancerByArn(ctx, lc.lbArn)
 	if err != nil || record == nil {
-		return fmt.Errorf("reload record for %s: %w", lc.lbArn, err)
+		return nil, fmt.Errorf("reload record for %s: %w", lc.lbArn, err)
 	}
 
 	if launch.failed {
 		record.State = StateFailed
 		record.StateReason = launch.failReason
 		if putErr := s.store.PutLoadBalancer(ctx, record); putErr != nil {
-			return fmt.Errorf("persist failed state for %s: %w", lc.lbArn, putErr)
+			return nil, fmt.Errorf("persist failed state for %s: %w", lc.lbArn, putErr)
 		}
-		return fmt.Errorf("lb-vm launch failed for %s: %s", lc.lbArn, launch.failReason)
+		return nil, fmt.Errorf("lb-vm launch failed for %s: %s", lc.lbArn, launch.failReason)
 	}
 
 	record.InstanceID = launch.instanceID
@@ -1683,9 +1687,9 @@ func (s *ELBv2ServiceImpl) provisionLBDataPlane(ctx context.Context, lc lbLaunch
 		record.AvailZones[0].PublicIP = launch.publicIP
 	}
 	if putErr := s.store.PutLoadBalancer(ctx, record); putErr != nil {
-		return fmt.Errorf("persist launch result for %s: %w", lc.lbArn, putErr)
+		return nil, fmt.Errorf("persist launch result for %s: %w", lc.lbArn, putErr)
 	}
-	return nil
+	return record, nil
 }
 
 // lbFrontendIP is the address the load balancer's DNS name should resolve to:
@@ -1739,7 +1743,7 @@ func (s *ELBv2ServiceImpl) DesiredDNSChanges() (changes []dns.Change, ok bool) {
 // by CreateLoadBalancer; failures are logged (the record is already marked
 // failed inside provisionLBDataPlane). Runs after CreateLoadBalancer has returned.
 func (s *ELBv2ServiceImpl) launchLBVMAsync(ctx context.Context, lc lbLaunchCtx) {
-	if err := s.provisionLBDataPlane(ctx, lc); err != nil {
+	if _, err := s.provisionLBDataPlane(ctx, lc); err != nil {
 		slog.ErrorContext(ctx, "CreateLoadBalancer: async launch failed", "lbArn", lc.lbArn, "err", err)
 	}
 }
@@ -2373,7 +2377,8 @@ func (s *ELBv2ServiceImpl) DeleteTargetGroup(ctx context.Context, input *elbv2.D
 		liveListener[l.ListenerArn] = true
 		for _, action := range l.DefaultActions {
 			if action.TargetGroupArn == tg.TargetGroupArn {
-				return nil, errors.New(awserrors.ErrorELBv2TargetGroupInUse)
+				return nil, awserrors.Errorf(awserrors.ErrorELBv2TargetGroupInUse,
+					"Target group '%s' is currently in use by a listener or a rule", tg.TargetGroupArn)
 			}
 		}
 	}
@@ -2390,7 +2395,8 @@ func (s *ELBv2ServiceImpl) DeleteTargetGroup(ctx context.Context, input *elbv2.D
 		}
 		for _, action := range r.Actions {
 			if action.TargetGroupArn == tg.TargetGroupArn {
-				return nil, errors.New(awserrors.ErrorELBv2TargetGroupInUse)
+				return nil, awserrors.Errorf(awserrors.ErrorELBv2TargetGroupInUse,
+					"Target group '%s' is currently in use by a listener or a rule", tg.TargetGroupArn)
 			}
 		}
 	}
@@ -2909,7 +2915,7 @@ func buildListenerCertificates(protocol string, in []*elbv2.Certificate, sslPoli
 	}
 
 	if len(in) == 0 {
-		return nil, "", errors.New(awserrors.ErrorELBv2CertificateNotFound)
+		return nil, "", awserrors.Errorf(awserrors.ErrorValidationError, "A certificate must be specified for %s listeners", protocol)
 	}
 
 	certs := make([]ListenerCertificate, 0, len(in))
@@ -2938,7 +2944,7 @@ func buildListenerCertificates(protocol string, in []*elbv2.Certificate, sslPoli
 	if policy == "" {
 		policy = DefaultSslPolicy
 	} else if !isKnownSslPolicy(policy) {
-		return nil, "", errors.New(awserrors.ErrorELBv2SSLPolicyNotFound)
+		return nil, "", awserrors.Errorf(awserrors.ErrorELBv2SSLPolicyNotFound, "SSL policy '%s' not found", policy)
 	}
 
 	return certs, policy, nil
@@ -2980,7 +2986,7 @@ func (s *ELBv2ServiceImpl) CreateListener(ctx context.Context, input *elbv2.Crea
 		case ProtocolHTTP, ProtocolHTTPS:
 			// valid ALB protocols
 		default:
-			return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+			return nil, awserrors.Errorf(awserrors.ErrorValidationError, "Listener protocol '%s' must be one of 'HTTPS, HTTP'", protocol)
 		}
 	}
 
@@ -2997,7 +3003,8 @@ func (s *ELBv2ServiceImpl) CreateListener(ctx context.Context, input *elbv2.Crea
 	}
 	for _, l := range existingListeners {
 		if l.Port == port {
-			return nil, errors.New(awserrors.ErrorELBv2DuplicateListener)
+			return nil, awserrors.Errorf(awserrors.ErrorELBv2DuplicateListener,
+				"A listener already exists on this port for this load balancer '%s'", lb.LoadBalancerArn)
 		}
 	}
 
@@ -3256,7 +3263,8 @@ func (s *ELBv2ServiceImpl) ModifyListener(ctx context.Context, input *elbv2.Modi
 					continue
 				}
 				if l.Port == newPort {
-					return nil, errors.New(awserrors.ErrorELBv2DuplicateListener)
+					return nil, awserrors.Errorf(awserrors.ErrorELBv2DuplicateListener,
+						"A listener already exists on this port for this load balancer '%s'", lb.LoadBalancerArn)
 				}
 			}
 			updated.Port = newPort

@@ -90,7 +90,7 @@ func DeleteVolume(ctx context.Context, input *ec2.DeleteVolumeInput, natsConn *n
 	if holder := volumeHeldByInstance(listing.Reservations, volumeID); holder != "" {
 		slog.ErrorContext(ctx, "DeleteVolume: volume still attached to a live instance",
 			"volumeId", volumeID, "instanceId", holder)
-		return output, errors.New(awserrors.ErrorVolumeInUse)
+		return output, awserrors.Errorf(awserrors.ErrorVolumeInUse, "Volume %s is currently attached to {%s}", volumeID, holder)
 	}
 
 	volumeService := ec2volume.NewNATSVolumeService(natsConn)

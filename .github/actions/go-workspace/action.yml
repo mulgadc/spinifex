@@ -1,0 +1,117 @@
+name: Go workspace
+description: >-
+  Check out viperblock, predastore, northstar and bluebottle beside ./spinifex,
+  set up Go and link the five modules with go.work. The caller checks out
+  spinifex at ./spinifex first, since its fetch depth and ref vary by job.
+
+inputs:
+  siblings:
+    description: >-
+      Which sibling refs to build against: branch (the branch named like this
+      one, else dev), release (the tags spinifex/go.mod requires) or dev.
+    required: true
+  cache:
+    description: >-
+      Build cache key prefix, one per job, since -race, -covermode=atomic and
+      plain builds produce disjoint entries that would evict each other. When
+      set, restores the module cache and the newest build cache under it. Pair
+      with the go-build-cache-save action at the end of the job.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve sibling refs
+      id: siblings
+      shell: bash
+      env:
+        MODE: ${{ inputs.siblings }}
+        BRANCH: ${{ github.head_ref || github.ref_name }}
+        SCRIPTS: ${{ github.action_path }}/../../scripts
+      run: |
+        set -euo pipefail
+        case "${MODE}" in
+          branch) bash "${SCRIPTS}/resolve-sibling-refs.sh" ;;
+          release) bash "${SCRIPTS}/resolve-release-sibling-refs.sh" spinifex/go.mod ;;
+          dev)
+            for repo in viperblock predastore northstar bluebottle; do
+              echo "${repo}: building against dev"
+              echo "${repo}=dev" >>"$GITHUB_OUTPUT"
+            done
+            ;;
+          *) echo "::error::siblings must be branch, release or dev, not '${MODE}'"; exit 1 ;;
+        esac
+
+    - name: Checkout Viperblock
+      uses: actions/checkout@v7.0.1
+      with:
+        repository: mulgadc/viperblock
+        ref: ${{ steps.siblings.outputs.viperblock }}
+        path: viperblock
+
+    - name: Checkout Predastore
+      uses: actions/checkout@v7.0.1
+      with:
+        repository: mulgadc/predastore
+        ref: ${{ steps.siblings.outputs.predastore }}
+        path: predastore
+
+    - name: Checkout Northstar
+      uses: actions/checkout@v7.0.1
+      with:
+        repository: mulgadc/northstar
+        ref: ${{ steps.siblings.outputs.northstar }}
+        path: northstar
+
+    - name: Checkout Bluebottle
+      uses: actions/checkout@v7.0.1
+      with:
+        repository: mulgadc/bluebottle
+        ref: ${{ steps.siblings.outputs.bluebottle }}
+        path: bluebottle
+
+    # setup-go's own cache only writes on a key miss, so it froze a snapshot at
+    # the last go.sum change and never refreshed it. The cache inputs below
+    # manage both caches instead.
+    - name: Setup Go
+      uses: actions/setup-go@v7.0.0
+      with:
+        go-version-file: spinifex/go.mod
+        cache: false
+
+    # Module contents follow the five go.sum files, so a content key is exact.
+    - name: Cache Go modules
+      if: ${{ inputs.cache != '' }}
+      uses: actions/cache@v6.1.0
+      with:
+        path: ~/go/pkg/mod
+        key: gomod-${{ hashFiles('spinifex/go.sum', 'viperblock/go.sum', 'predastore/go.sum', 'northstar/go.sum', 'bluebottle/go.sum') }}
+        restore-keys: gomod-
+
+    # Build artifacts follow source, so the key rolls per run and falls back to
+    # the prefix's newest entry. Saving is gated to dev and main, so a PR reads
+    # the base branch's entry without uploading one only that PR would read.
+    - name: Restore Go build cache
+      if: ${{ inputs.cache != '' }}
+      uses: actions/cache/restore@v6.1.0
+      with:
+        path: ~/.cache/go-build
+        key: ${{ inputs.cache }}-${{ github.run_id }}
+        restore-keys: ${{ inputs.cache }}-
+
+    # Go refreshes an entry's mtime on use only when it is over an hour old, so
+    # restored entries are backdated before any Go command runs and the trim
+    # can tell this run's working set from the last run's.
+    - name: Mark Go build cache
+      if: ${{ inputs.cache != '' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+      shell: bash
+      run: bash "${{ github.action_path }}/../../scripts/go-build-cache.sh" mark
+
+    # Self-hosted runners reuse the workspace and checkout never scrubs the
+    # root go.work, so a stale one is removed before init.
+    - name: Setup Go Workspace
+      shell: bash
+      run: |
+        rm -f go.work go.work.sum
+        go work init ./spinifex ./viperblock ./predastore ./northstar ./bluebottle

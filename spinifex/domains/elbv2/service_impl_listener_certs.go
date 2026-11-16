@@ -42,7 +42,7 @@ func (s *ELBv2ServiceImpl) AddListenerCertificates(ctx context.Context, input *e
 		return nil, errors.New(awserrors.ErrorELBv2ListenerNotFound)
 	}
 	if !protocolRequiresCert(listener.Protocol) {
-		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError, "A certificate cannot be specified for %s listeners", listener.Protocol)
 	}
 
 	updated := *listener
@@ -125,7 +125,7 @@ func (s *ELBv2ServiceImpl) RemoveListenerCertificates(ctx context.Context, input
 		if remove[c.CertificateArn] {
 			if c.IsDefault {
 				// The default certificate is managed via the listener itself.
-				return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
+				return nil, awserrors.Errorf(awserrors.ErrorOperationNotPermitted, "Default certificate cannot be removed")
 			}
 			continue
 		}

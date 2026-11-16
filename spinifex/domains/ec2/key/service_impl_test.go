@@ -38,7 +38,8 @@ const testRSAPubKey = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDP9LrByKWpgbX+prxBw
 // key pairs are RSA or ED25519 only, so import must reject it.
 const testECDSAPubKey = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBMZBEqs7mTlkOKGPSYp+tc5lZadVp9C2vCzIWZFTdnO1e3a8X59SdBWXiccQXjK1jxj+KLuQAEJY38kKqIUe/no="
 
-// Well-formed DSA public key: parseable by x/crypto/ssh but not a key type EC2 accepts.
+// Well-formed DSA public key. x/crypto/ssh no longer parses ssh-dss, so import
+// rejects it at the parser rather than at the key-type check.
 const testDSAPubKey = "ssh-dss AAAAB3NzaC1kc3MAAACBAMfooAGeGkAp6syFsxNueaASpwMr5t+BiLTxAmf9grlH/7MPhXHxxtrrzEdq4bK0mheLl4irAtardgR5ghOVxKXqz4dLlcEyv3H3tOY8Hq+JT/6w9j4FLjen4obXcilh7vfRPdL/A7Dk3Th9NSkrp43FmXUL4EyuMbqi7LcQYpMpAAAAFQDpwLJZvztWN3pEeT/MMLsVSmJedwAAAIBZjhEyHHk1iomvueP6GkmdrXt4V9+6BHjG/rHzQRlO79muU5ImX/BFALCc0RjaPNAoo0lF6ptaPf2HPeu3dtEAWM9iXH8SLqcAVX7B5FUYKFb7zsyQmlT3pKo21V3mCakKHDma8kbHSC2sysl1NOD4IkGTQalP4MuzIvCXNKbCdAAAAIEAl7OdP7hBngX0CuM0+cJXonZvnvIo1NOWGVu+dCn93mvoGjKFyZmLSEMIfFbmckQF2J4F9cM9aU6ht76k73DFnnA/F7WiJ+hIKLhL7Y8F0eDtWkawswvwxvHB+C7drrqezD6t5INX4CYlNQD4zqhgWKBSKVn3sQzQI95gFE51rKE="
 
 const (
@@ -420,7 +421,6 @@ func TestImportKeyPairInvalidKeyFormat(t *testing.T) {
 			expectedErrMsg: awserrors.ErrorInvalidKeyFormat,
 		},
 		{
-			// Parses cleanly, but DSA is not a key type EC2 accepts.
 			name:           "UnsupportedAlgorithmDSA",
 			publicKey:      testDSAPubKey,
 			expectedErrMsg: awserrors.ErrorInvalidKeyFormat,
@@ -1054,12 +1054,8 @@ func TestImportedKeyFingerprint(t *testing.T) {
 // yield a digest AWS would never produce. ECDSA is the case that matters --
 // x509.MarshalPKIXPublicKey marshals it happily, so nothing else would stop it.
 func TestImportedKeyFingerprint_UnsupportedAlgorithm(t *testing.T) {
-	for name, pubKey := range map[string]string{"ECDSA": testECDSAPubKey, "DSA": testDSAPubKey} {
-		t.Run(name, func(t *testing.T) {
-			_, err := importedKeyFingerprint(parseTestPubKey(t, pubKey))
-			require.Error(t, err)
-		})
-	}
+	_, err := importedKeyFingerprint(parseTestPubKey(t, testECDSAPubKey))
+	require.Error(t, err)
 }
 
 // A comment or surrounding whitespace is not part of the key, so it must not
@@ -1112,7 +1108,6 @@ func TestKeyPairType(t *testing.T) {
 		{name: "ED25519", pubKey: testED25519PubKey, expected: "ed25519"},
 		{name: "RSA", pubKey: testRSAPubKey, expected: "rsa"},
 		{name: "ECDSAUnsupported", pubKey: testECDSAPubKey, expectErr: true},
-		{name: "DSAUnsupported", pubKey: testDSAPubKey, expectErr: true},
 	}
 
 	for _, tt := range tests {

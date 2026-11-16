@@ -199,3 +199,62 @@ func TestEC2_InstanceStatusDetailsOmittedWhenNotApplicable(t *testing.T) {
 	assert.Contains(t, out, "<instanceStatus><status>not-applicable</status></instanceStatus>")
 	assert.NotContains(t, out, "details")
 }
+
+// The instance, attribute and status lists AWS omits when empty, and the
+// volume attachmentSet that DescribeVolumes renders empty but CreateVolume omits.
+func TestEC2_InstanceAndVolumeListsAWSOmitsWhenEmpty(t *testing.T) {
+	run := render[ec2.RunInstancesInput](t, "RunInstances", ec2.Reservation{
+		Instances: []*ec2.Instance{{
+			InstanceId:        aws.String("i-1"),
+			NetworkInterfaces: []*ec2.InstanceNetworkInterface{{NetworkInterfaceId: aws.String("eni-1")}},
+		}},
+	})
+	for _, list := range []string{"elasticGpuAssociationSet", "elasticInferenceAcceleratorAssociationSet", "licenseSet", "ipv4PrefixSet", "ipv6PrefixSet"} {
+		assert.NotContains(t, run, list)
+	}
+	assert.Contains(t, run, "<productCodes></productCodes>")
+	assert.Contains(t, run, "<ipv6AddressesSet></ipv6AddressesSet>")
+
+	instAttr := render[ec2.DescribeInstanceAttributeInput](t, "DescribeInstanceAttribute", ec2.DescribeInstanceAttributeOutput{
+		InstanceId:     aws.String("i-1"),
+		DisableApiStop: &ec2.AttributeBooleanValue{Value: aws.Bool(false)},
+	})
+	for _, list := range []string{"blockDeviceMapping", "groupSet", "productCodes"} {
+		assert.NotContains(t, instAttr, list)
+	}
+	productCodes := render[ec2.DescribeInstanceAttributeInput](t, "DescribeInstanceAttribute", ec2.DescribeInstanceAttributeOutput{
+		InstanceId: aws.String("i-1"), ProductCodes: []*ec2.ProductCode{},
+	})
+	assert.Contains(t, productCodes, "<productCodes></productCodes>")
+
+	imgAttr := render[ec2.DescribeImageAttributeInput](t, "DescribeImageAttribute", ec2.DescribeImageAttributeOutput{
+		ImageId: aws.String("ami-1"), Description: &ec2.AttributeValue{},
+	})
+	for _, list := range []string{"blockDeviceMapping", "launchPermission", "productCodes"} {
+		assert.NotContains(t, imgAttr, list)
+	}
+	launchPerm := render[ec2.DescribeImageAttributeInput](t, "DescribeImageAttribute", ec2.DescribeImageAttributeOutput{
+		ImageId: aws.String("ami-1"), LaunchPermissions: []*ec2.LaunchPermission{},
+	})
+	assert.Contains(t, launchPerm, "<launchPermission></launchPermission>")
+
+	status := render[ec2.DescribeInstanceStatusInput](t, "DescribeInstanceStatus", ec2.DescribeInstanceStatusOutput{
+		InstanceStatuses: []*ec2.InstanceStatus{{InstanceId: aws.String("i-1")}},
+	})
+	assert.NotContains(t, status, "eventsSet")
+
+	volStatus := render[ec2.DescribeVolumeStatusInput](t, "DescribeVolumeStatus", ec2.DescribeVolumeStatusOutput{
+		VolumeStatuses: []*ec2.VolumeStatusItem{{VolumeId: aws.String("vol-1")}},
+	})
+	assert.NotContains(t, volStatus, "attachmentStatuses")
+	assert.Contains(t, volStatus, "<actionsSet></actionsSet>")
+	assert.Contains(t, volStatus, "<eventsSet></eventsSet>")
+
+	created := render[ec2.CreateVolumeInput](t, "CreateVolume", ec2.Volume{VolumeId: aws.String("vol-1")})
+	assert.NotContains(t, created, "attachmentSet")
+
+	described := render[ec2.DescribeVolumesInput](t, "DescribeVolumes", ec2.DescribeVolumesOutput{
+		Volumes: []*ec2.Volume{{VolumeId: aws.String("vol-1"), Attachments: []*ec2.VolumeAttachment{}}},
+	})
+	assert.Contains(t, described, "<attachmentSet></attachmentSet>")
+}

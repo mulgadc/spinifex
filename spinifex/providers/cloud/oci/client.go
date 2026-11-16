@@ -94,6 +94,16 @@ const DefaultConfigProfile = "DEFAULT"
 // The default, because it needs nothing from a tenancy admin. It costs a private
 // key on every node, which NewInstancePrincipalClient avoids.
 func NewConfigFileClient(path, profile string) (Client, error) {
+	provider, err := configFileProvider(path, profile)
+	if err != nil {
+		return nil, err
+	}
+	return NewClientWithProvider(provider)
+}
+
+// configFileProvider reads API-key credentials from path and profile, each
+// defaulting as the OCI CLI does.
+func configFileProvider(path, profile string) (common.ConfigurationProvider, error) {
 	if path == "" {
 		path = DefaultConfigFile
 	}
@@ -108,7 +118,7 @@ func NewConfigFileClient(path, profile string) (Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("oci config file %s (profile %s): %w", expanded, profile, err)
 	}
-	return NewClientWithProvider(provider)
+	return provider, nil
 }
 
 // expandHome resolves a leading ~ so operators can configure the conventional
@@ -176,52 +186,54 @@ func (c *apiClient) GetPrivateIP(ctx context.Context, privateIPID string) (Priva
 }
 
 func (c *apiClient) ListPrivateIPs(ctx context.Context, vnicID string) ([]PrivateIP, error) {
-	var out []PrivateIP
-	var page *string
-	for {
+	return listAll(func(page *string) ([]core.PrivateIp, *string, error) {
 		resp, err := c.net.ListPrivateIps(ctx, core.ListPrivateIpsRequest{VnicId: &vnicID, Page: page})
-		if err != nil {
-			return nil, wrap("ListPrivateIPs", err)
-		}
-		for _, item := range resp.Items {
-			ip, err := toPrivateIP(item)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, ip)
-		}
-		if resp.OpcNextPage == nil {
-			return out, nil
-		}
-		page = resp.OpcNextPage
-	}
+		return resp.Items, resp.OpcNextPage, wrap("ListPrivateIPs", err)
+	}, nil, toPrivateIP)
 }
 
 func (c *apiClient) ListReservedPublicIPs(ctx context.Context, compartmentID string) ([]PublicIP, error) {
-	var out []PublicIP
-	var page *string
-	for {
+	return listAll(func(page *string) ([]core.PublicIp, *string, error) {
 		resp, err := c.net.ListPublicIps(ctx, core.ListPublicIpsRequest{
 			CompartmentId: &compartmentID,
 			Scope:         core.ListPublicIpsScopeRegion,
 			Lifetime:      core.ListPublicIpsLifetimeReserved,
 			Page:          page,
 		})
+		return resp.Items, resp.OpcNextPage, wrap("ListReservedPublicIPs", err)
+	}, nil, toPublicIP)
+}
+
+// listAll reads every page fetch returns, from the first, and converts each
+// item keep accepts; a nil keep accepts every item.
+func listAll[I, T any](fetch func(page *string) ([]I, *string, error), keep func(I) bool, convert func(I) (T, error)) ([]T, error) {
+	var out []T
+	var page *string
+	for {
+		items, next, err := fetch(page)
 		if err != nil {
-			return nil, wrap("ListReservedPublicIPs", err)
+			return nil, err
 		}
-		for _, item := range resp.Items {
-			ip, err := toPublicIP(item)
+		for _, item := range items {
+			if keep != nil && !keep(item) {
+				continue
+			}
+			v, err := convert(item)
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, ip)
+			out = append(out, v)
 		}
-		if resp.OpcNextPage == nil {
+		if next == nil {
 			return out, nil
 		}
-		page = resp.OpcNextPage
+		page = next
 	}
+}
+
+// infallible adapts a conversion that cannot fail to listAll.
+func infallible[I, T any](convert func(I) T) func(I) (T, error) {
+	return func(item I) (T, error) { return convert(item), nil }
 }
 
 func (c *apiClient) GetSubnet(ctx context.Context, subnetID string) (Subnet, error) {
@@ -361,21 +373,21 @@ func wrap(op string, err error) error {
 	if !ok {
 		return fmt.Errorf("oci %s: %w", op, err)
 	}
-	api := &APIError{
-		Op:         op,
-		Code:       svc.GetCode(),
-		Message:    svc.GetMessage(),
-		StatusCode: svc.GetHTTPStatusCode(),
-		RequestID:  svc.GetOpcRequestID(),
-	}
+	return newAPIError(op, svc.GetHTTPStatusCode(), svc.GetCode(), svc.GetMessage(), svc.GetOpcRequestID())
+}
+
+// newAPIError builds an APIError classified by its HTTP status, as wrap does
+// for the SDK's errors and the fakes do for the failures they model.
+func newAPIError(op string, status int, code, message, requestID string) *APIError {
+	api := &APIError{Op: op, Code: code, Message: message, StatusCode: status, RequestID: requestID}
 	switch {
-	case svc.GetHTTPStatusCode() == 404:
+	case status == 404:
 		api.kind = ErrNotFound
-	case svc.GetHTTPStatusCode() == 409, svc.GetHTTPStatusCode() == 412:
+	case status == 409, status == 412:
 		api.kind = ErrConflict
-	case svc.GetHTTPStatusCode() == 400 && svc.GetCode() == "LimitExceeded":
+	case status == 400 && code == "LimitExceeded":
 		api.kind = ErrLimitExceeded
-	case svc.GetHTTPStatusCode() == 429:
+	case status == 429:
 		api.kind = ErrLimitExceeded
 	}
 	return api

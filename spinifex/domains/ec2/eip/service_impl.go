@@ -36,6 +36,9 @@ type EIPServiceImpl struct {
 	externalIPAM *ec2vpc.ExternalIPAM
 	vpcService   ec2vpc.VPCService
 	natsConn     *nats.Conn
+	// region is every address's NetworkBorderGroup: Spinifex has no Local or
+	// Wavelength Zones, so the region is the only border group.
+	region string
 
 	// idemKV records AllocateAddress outcomes by retry token and allocSF joins
 	// a retry to the call still in flight. Together they stop one SDK-level
@@ -60,7 +63,7 @@ type ENIPublicIPChanged struct {
 }
 
 // NewEIPServiceImpl creates a new EIP service backed by NATS JetStream KV.
-func NewEIPServiceImpl(ctx context.Context, natsConn *nats.Conn, externalIPAM *ec2vpc.ExternalIPAM, vpcService ec2vpc.VPCService) (*EIPServiceImpl, error) {
+func NewEIPServiceImpl(ctx context.Context, natsConn *nats.Conn, externalIPAM *ec2vpc.ExternalIPAM, vpcService ec2vpc.VPCService, region string) (*EIPServiceImpl, error) {
 	js, err := jetstream.New(natsConn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get JetStream context: %w", err)
@@ -89,6 +92,7 @@ func NewEIPServiceImpl(ctx context.Context, natsConn *nats.Conn, externalIPAM *e
 		externalIPAM: externalIPAM,
 		vpcService:   vpcService,
 		natsConn:     natsConn,
+		region:       region,
 		idemKV:       idemKV,
 	}, nil
 }
@@ -153,10 +157,11 @@ func (s *EIPServiceImpl) allocateAddress(ctx context.Context, input *ec2.Allocat
 	slog.InfoContext(ctx, "AllocateAddress completed", "allocationId", allocID, "publicIp", publicIP, "pool", poolName, "accountID", accountID)
 
 	return &ec2.AllocateAddressOutput{
-		AllocationId:   aws.String(allocID),
-		PublicIp:       aws.String(publicIP),
-		Domain:         aws.String("vpc"),
-		PublicIpv4Pool: aws.String(poolName),
+		AllocationId:       aws.String(allocID),
+		PublicIp:           aws.String(publicIP),
+		Domain:             aws.String("vpc"),
+		PublicIpv4Pool:     aws.String(poolName),
+		NetworkBorderGroup: aws.String(s.region),
 	}, nil
 }
 
@@ -171,7 +176,7 @@ func (s *EIPServiceImpl) ReleaseAddress(ctx context.Context, input *ec2.ReleaseA
 
 	entry, err := s.eipKV.Get(ctx, key)
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidAllocationIDNotFound)
+		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidAllocationIDNotFound, "allocation", allocID)
 	}
 
 	var record EIPRecord
@@ -620,7 +625,7 @@ func (s *EIPServiceImpl) DescribeAddresses(ctx context.Context, input *ec2.Descr
 			continue
 		}
 
-		addresses = append(addresses, s.eipRecordToEC2(&record))
+		addresses = append(addresses, s.eipRecordToEC2(&record, accountID))
 	}
 
 	// If specific allocation IDs were requested but not found, return error.
@@ -841,7 +846,7 @@ func (s *EIPServiceImpl) findByAssociationID(ctx context.Context, accountID, ass
 		}
 	}
 
-	return nil, "", 0, errors.New(awserrors.ErrorInvalidAssociationIDNotFound)
+	return nil, "", 0, awserrors.IDNotFound(awserrors.ErrorInvalidAssociationIDNotFound, "association", associationID)
 }
 
 // AssociatedPublicIPForInstance returns the public IP of the EIP associated with
@@ -940,13 +945,15 @@ func (s *EIPServiceImpl) publishNATEvent(topic, vpcID, externalIP, logicalIP, en
 	projection.New(s.natsConn).AnnounceNATAdd(vpcID, externalIP, logicalIP, portName, mac)
 }
 
-// eipRecordToEC2 converts an EIPRecord to an EC2 Address.
-func (s *EIPServiceImpl) eipRecordToEC2(record *EIPRecord) *ec2.Address {
+// eipRecordToEC2 converts an EIPRecord to an EC2 Address. An address only
+// associates with an interface in its own account, so that account owns it.
+func (s *EIPServiceImpl) eipRecordToEC2(record *EIPRecord, accountID string) *ec2.Address {
 	addr := &ec2.Address{
-		AllocationId:   aws.String(record.AllocationId),
-		PublicIp:       aws.String(record.PublicIp),
-		Domain:         aws.String("vpc"),
-		PublicIpv4Pool: aws.String(record.PoolName),
+		AllocationId:       aws.String(record.AllocationId),
+		PublicIp:           aws.String(record.PublicIp),
+		Domain:             aws.String("vpc"),
+		PublicIpv4Pool:     aws.String(record.PoolName),
+		NetworkBorderGroup: aws.String(s.region),
 	}
 
 	if record.AssociationId != "" {
@@ -954,6 +961,7 @@ func (s *EIPServiceImpl) eipRecordToEC2(record *EIPRecord) *ec2.Address {
 	}
 	if record.ENIId != "" {
 		addr.NetworkInterfaceId = aws.String(record.ENIId)
+		addr.NetworkInterfaceOwnerId = aws.String(accountID)
 	}
 	if record.InstanceId != "" {
 		addr.InstanceId = aws.String(record.InstanceId)

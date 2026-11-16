@@ -62,7 +62,11 @@ func StartInstances(ctx context.Context, input *ec2.StartInstancesInput, natsCon
 		sc, err = startStoppedInstance(ctx, natsConn, instanceID, accountID)
 		if awserrors.IsErrorCode(err, awserrors.ErrorInvalidInstanceIDNotFound) {
 			// The stopped path never sees a terminated instance; AWS refuses it.
-			if state, _ := classifyUnownedInstance(ctx, natsConn, instanceID, accountID); state == bucketStateTerminated {
+			terminated, lookupErr := isTerminatedInstance(ctx, natsConn, instanceID, accountID)
+			switch {
+			case lookupErr != nil:
+				err = lookupErr
+			case terminated:
 				err = awserrors.Errorf(awserrors.ErrorIncorrectInstanceState,
 					"The instance '%s' is not in a state from which it can be started.", instanceID)
 			}

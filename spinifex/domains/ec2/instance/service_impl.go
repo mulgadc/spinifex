@@ -2264,7 +2264,7 @@ func (s *InstanceServiceImpl) DescribeStoppedInstances(ctx context.Context, inpu
 	if s.stoppedStore == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListStoppedInstances, 80, "stopped", "DescribeStoppedInstances", false)
+	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListStoppedInstances, s.stoppedStore.LoadStoppedInstance, 80, "stopped", "DescribeStoppedInstances", false)
 }
 
 // DescribeAccountInstanceRecords returns every non-terminated instance record
@@ -2275,7 +2275,7 @@ func (s *InstanceServiceImpl) DescribeAccountInstanceRecords(ctx context.Context
 	if s.stoppedStore == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListNonTerminatedInstances, 0, "pending", "DescribeAccountInstanceRecords", true)
+	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListNonTerminatedInstances, nil, 0, "pending", "DescribeAccountInstanceRecords", true)
 }
 
 // DescribeTerminatedInstances returns terminated instances from the terminated KV bucket.
@@ -2283,10 +2283,13 @@ func (s *InstanceServiceImpl) DescribeTerminatedInstances(ctx context.Context, i
 	if s.stoppedStore == nil {
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListTerminatedInstances, 48, "terminated", "DescribeTerminatedInstances", false)
+	return s.describeInstancesFromKV(ctx, input, accountID, s.stoppedStore.ListTerminatedInstances, s.stoppedStore.LoadTerminatedInstance, 48, "terminated", "DescribeTerminatedInstances", false)
 }
 
-func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string, listFn func() ([]*vm.VM, error), fallbackCode int64, fallbackName, opName string, strict bool) (*ec2.DescribeInstancesOutput, error) {
+// describeInstancesFromKV projects the records listFn returns, or, when the
+// input names instance IDs and loadFn is set, reads only those records with one
+// Get each so a lookup by ID never scans the bucket.
+func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input *ec2.DescribeInstancesInput, accountID string, listFn func() ([]*vm.VM, error), loadFn func(string) (*vm.VM, error), fallbackCode int64, fallbackName, opName string, strict bool) (*ec2.DescribeInstancesOutput, error) {
 	instanceIDFilter, err := ParseInstanceIDFilter(input.InstanceIds)
 	if err != nil {
 		return nil, err
@@ -2298,9 +2301,14 @@ func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input
 		return nil, filterErr
 	}
 
-	instances, err := listFn()
+	var instances []*vm.VM
+	if len(instanceIDFilter) > 0 && loadFn != nil {
+		instances, err = loadInstancesByID(instanceIDFilter, loadFn)
+	} else {
+		instances, err = listFn()
+	}
 	if err != nil {
-		slog.ErrorContext(ctx, opName+": failed to list instances", "err", err)
+		slog.ErrorContext(ctx, opName+": failed to read instances", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -2367,6 +2375,22 @@ func (s *InstanceServiceImpl) describeInstancesFromKV(ctx context.Context, input
 
 	slog.InfoContext(ctx, opName+" completed", "count", len(reservations))
 	return &ec2.DescribeInstancesOutput{Reservations: reservations}, nil
+}
+
+// loadInstancesByID reads each named instance with loadFn, skipping the IDs
+// that hold no record. A read error fails the whole lookup.
+func loadInstancesByID(ids map[string]bool, loadFn func(string) (*vm.VM, error)) ([]*vm.VM, error) {
+	instances := make([]*vm.VM, 0, len(ids))
+	for id := range ids {
+		instance, err := loadFn(id)
+		if err != nil {
+			return nil, err
+		}
+		if instance != nil {
+			instances = append(instances, instance)
+		}
+	}
+	return instances, nil
 }
 
 // ModifyInstanceAttribute applies a single attribute change. SourceDestCheck=true

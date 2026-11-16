@@ -45,6 +45,7 @@ type StateStore struct {
 	ClaimStoppedErr    error
 	WriteTerminatedErr error
 	ListTerminatedErr  error
+	LoadTerminatedErr  error
 
 	// DeleteFailFirst makes the first DeleteStoppedInstance call fail and the
 	// second succeed, exercising a caller's single retry.
@@ -255,6 +256,15 @@ func (s *StateStore) ListTerminatedInstances() ([]*vm.VM, error) {
 		return nil, s.ListTerminatedErr
 	}
 	return slices.Collect(maps.Values(s.Terminated)), nil
+}
+
+func (s *StateStore) LoadTerminatedInstance(id string) (*vm.VM, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.LoadTerminatedErr != nil {
+		return nil, s.LoadTerminatedErr
+	}
+	return s.Terminated[id], nil
 }
 
 func (s *StateStore) DeleteTerminatedInstance(id string) error {

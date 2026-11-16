@@ -968,3 +968,33 @@ func TestDBSnapshotRecord_SurvivesARoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(payload, &back))
 	assert.Equal(t, rec, back)
 }
+
+// A manual snapshot that was never shared answers with the restore attribute and
+// an empty value list; anything else is not found.
+func TestDescribeDBSnapshotAttributes(t *testing.T) {
+	t.Parallel()
+	h := newSnapshotHarness(t, false)
+	seedInstance(t, h.svc, availableRecord())
+	_, err := h.svc.CreateDBSnapshot(t.Context(), snapshotInput(), testAccountID)
+	require.NoError(t, err)
+	automated := h.seedBackup(t, time.Hour)
+
+	out, err := h.svc.DescribeDBSnapshotAttributes(t.Context(), &rds.DescribeDBSnapshotAttributesInput{
+		DBSnapshotIdentifier: aws.String(testSnapshotID),
+	}, testAccountID)
+	require.NoError(t, err)
+	result := out.DBSnapshotAttributesResult
+	require.NotNil(t, result)
+	assert.Equal(t, testSnapshotID, aws.StringValue(result.DBSnapshotIdentifier))
+	require.Len(t, result.DBSnapshotAttributes, 1)
+	assert.Equal(t, "restore", aws.StringValue(result.DBSnapshotAttributes[0].AttributeName))
+	assert.NotNil(t, result.DBSnapshotAttributes[0].AttributeValues, "an empty list, not an absent one")
+	assert.Empty(t, result.DBSnapshotAttributes[0].AttributeValues)
+
+	for _, id := range []string{"no-such-snapshot", automated} {
+		_, err := h.svc.DescribeDBSnapshotAttributes(t.Context(), &rds.DescribeDBSnapshotAttributesInput{
+			DBSnapshotIdentifier: aws.String(id),
+		}, testAccountID)
+		assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorDBSnapshotNotFound), "%s: %v", id, err)
+	}
+}

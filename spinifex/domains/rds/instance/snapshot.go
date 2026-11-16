@@ -331,6 +331,37 @@ func (s *Service) DeleteDBSnapshot(ctx context.Context, input *rds.DeleteDBSnaps
 	return &rds.DeleteDBSnapshotOutput{DBSnapshot: s.projectDBSnapshot(rec)}, nil
 }
 
+// DescribeDBSnapshotAttributes reports the restore attribute of a manual snapshot. Snapshots are
+// never shared with another account, so its value list is always empty; an automated snapshot
+// is not addressable here and answers as not found.
+func (s *Service) DescribeDBSnapshotAttributes(ctx context.Context, input *rds.DescribeDBSnapshotAttributesInput, accountID string) (*rds.DescribeDBSnapshotAttributesOutput, error) {
+	if input == nil {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "empty request")
+	}
+	id := aws.StringValue(input.DBSnapshotIdentifier)
+	if err := validateDBSnapshotReference(id); err != nil {
+		return nil, err
+	}
+	kv, err := s.bucket(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	rec, _, err := s.getDBSnapshot(ctx, kv, id)
+	if err != nil {
+		return nil, err
+	}
+	if rec.SnapshotType != SnapshotTypeManual {
+		return nil, awserrors.Errorf(awserrors.ErrorDBSnapshotNotFound, "DBSnapshot not found: %s", id)
+	}
+	return &rds.DescribeDBSnapshotAttributesOutput{DBSnapshotAttributesResult: &rds.DBSnapshotAttributesResult{
+		DBSnapshotIdentifier: aws.String(id),
+		DBSnapshotAttributes: []*rds.DBSnapshotAttribute{{
+			AttributeName:   aws.String("restore"),
+			AttributeValues: []*string{},
+		}},
+	}}, nil
+}
+
 // Removes a DB snapshot, its EC2 data and — when this was the last reference — the
 // data volume behind it. Shared with the retention sweep, which cannot go
 // through DeleteDBSnapshot: that rejects the rds: namespace automated snapshots

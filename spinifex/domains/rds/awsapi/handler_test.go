@@ -41,6 +41,7 @@ var v1Actions = []string{
 	"CreateDBSnapshot",
 	"DescribeDBSnapshots",
 	"DeleteDBSnapshot",
+	"DescribeDBSnapshotAttributes",
 	"RestoreDBInstanceFromDBSnapshot",
 
 	"DescribeDBInstanceAutomatedBackups",
@@ -153,7 +154,7 @@ var liveActions = []string{
 	"CreateDBParameterGroup", "DescribeDBParameterGroups", "ModifyDBParameterGroup",
 	"DescribeDBParameters", "DeleteDBParameterGroup",
 	"CreateDBSnapshot", "DescribeDBSnapshots", "DeleteDBSnapshot",
-	"RestoreDBInstanceFromDBSnapshot",
+	"DescribeDBSnapshotAttributes", "RestoreDBInstanceFromDBSnapshot",
 	"DescribeDBInstanceAutomatedBackups",
 	"DescribeDBEngineVersions", "DescribeOrderableDBInstanceOptions",
 }
@@ -208,6 +209,13 @@ func newStubbedNATS(t *testing.T) *nats.Conn {
 		&rds.CreateDBSnapshotOutput{DBSnapshot: &rds.DBSnapshot{DBSnapshotIdentifier: aws.String("orders-db-pre-upgrade")}})
 	respondWith(t, nc, rdsinstance.SubjectDescribeDBSnapshots, &rds.DescribeDBSnapshotsOutput{})
 	respondWith(t, nc, rdsinstance.SubjectDeleteDBSnapshot, &rds.DeleteDBSnapshotOutput{})
+	respondWith(t, nc, rdsinstance.SubjectDescribeDBSnapshotAttributes, &rds.DescribeDBSnapshotAttributesOutput{
+		DBSnapshotAttributesResult: &rds.DBSnapshotAttributesResult{
+			DBSnapshotIdentifier: aws.String("orders-db-pre-upgrade"),
+			DBSnapshotAttributes: []*rds.DBSnapshotAttribute{
+				{AttributeName: aws.String("restore"), AttributeValues: []*string{}},
+			},
+		}})
 	respondWith(t, nc, rdsinstance.SubjectRestoreDBInstanceFromDBSnapshot,
 		&rds.RestoreDBInstanceFromDBSnapshotOutput{DBInstance: &rds.DBInstance{DBInstanceIdentifier: aws.String("orders-db-restored")}})
 	respondWith(t, nc, rdsinstance.SubjectDescribeDBInstanceAutomatedBackups,
@@ -309,6 +317,24 @@ func TestDispatch_ListTagsForResourceRendersTheNestedTagList(t *testing.T) {
 	require.NoError(t, xmlutil.UnmarshalXML(&out, xml.NewDecoder(bytes.NewReader(body)), "ListTagsForResourceResult"))
 
 	assert.Equal(t, []*rds.Tag{{Key: aws.String("env"), Value: aws.String("prod")}}, out.TagList)
+}
+
+// An unshared snapshot's restore attribute carries an empty value list, which
+// AWS renders as an empty element rather than omitting it.
+func TestDispatch_DescribeDBSnapshotAttributesRendersTheEmptyRestoreList(t *testing.T) {
+	body, err := Dispatch(t.Context(), "DescribeDBSnapshotAttributes", "", map[string]string{
+		"Action":               "DescribeDBSnapshotAttributes",
+		"DBSnapshotIdentifier": "orders-db-pre-upgrade",
+	}, newStubbedNATS(t), testCaller, testEnv)
+	require.NoError(t, err)
+
+	assert.Contains(t, string(body), "<AttributeValues></AttributeValues>")
+	var out rds.DescribeDBSnapshotAttributesOutput
+	require.NoError(t, xmlutil.UnmarshalXML(&out, xml.NewDecoder(bytes.NewReader(body)), "DescribeDBSnapshotAttributesResult"))
+	require.NotNil(t, out.DBSnapshotAttributesResult)
+	assert.Equal(t, "orders-db-pre-upgrade", aws.StringValue(out.DBSnapshotAttributesResult.DBSnapshotIdentifier))
+	require.Len(t, out.DBSnapshotAttributesResult.DBSnapshotAttributes, 1)
+	assert.Equal(t, "restore", aws.StringValue(out.DBSnapshotAttributesResult.DBSnapshotAttributes[0].AttributeName))
 }
 
 // RDS serializes a tag list under its own locationNameList, so the params

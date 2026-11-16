@@ -106,6 +106,8 @@ var actions = map[string]actionDef{
 		scopes: []*resourceScope{dbInstanceScope, dbSnapshotScope}},
 	"DescribeDBSnapshots": {handler: typed(DescribeDBSnapshots)},
 	"DeleteDBSnapshot":    {handler: typed(DeleteDBSnapshot), scopes: []*resourceScope{dbSnapshotScope}},
+	"DescribeDBSnapshotAttributes": {handler: typed(DescribeDBSnapshotAttributes),
+		scopes: []*resourceScope{dbSnapshotScope}},
 	"RestoreDBInstanceFromDBSnapshot": {handler: typed(RestoreDBInstanceFromDBSnapshot),
 		scopes: []*resourceScope{dbSnapshotScope, dbInstanceScope}},
 

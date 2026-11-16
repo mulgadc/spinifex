@@ -1240,6 +1240,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{rdsinstance.SubjectCreateDBSnapshot, handleNATSRequest(d.node, d.rdsService.CreateDBSnapshot), "spinifex-workers"},
 			natsSub{rdsinstance.SubjectDescribeDBSnapshots, handleNATSRequest(d.node, d.rdsService.DescribeDBSnapshots), "spinifex-workers"},
 			natsSub{rdsinstance.SubjectDeleteDBSnapshot, handleNATSRequest(d.node, d.rdsService.DeleteDBSnapshot), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDescribeDBSnapshotAttributes, handleNATSRequest(d.node, d.rdsService.DescribeDBSnapshotAttributes), "spinifex-workers"},
 			natsSub{rdsinstance.SubjectRestoreDBInstanceFromDBSnapshot, handleNATSRequest(d.node, d.rdsService.RestoreDBInstanceFromDBSnapshot), "spinifex-workers"},
 			natsSub{rdsinstance.SubjectDescribeDBInstanceAutomatedBackups, handleNATSRequest(d.node, d.rdsService.DescribeDBInstanceAutomatedBackups), "spinifex-workers"},
 			natsSub{rdsinstance.SubjectDescribeEvents, handleNATSRequest(d.node, d.rdsService.DescribeEvents), "spinifex-workers"},

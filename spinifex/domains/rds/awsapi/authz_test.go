@@ -109,6 +109,8 @@ func TestResourceARN_ScopesSingleResourceActions(t *testing.T) {
 			"arn:aws:rds:ap-southeast-2:123456789012:db:orders-db"},
 		{"DeleteDBSnapshot", map[string]string{"DBSnapshotIdentifier": "orders-db-pre-upgrade"},
 			"arn:aws:rds:ap-southeast-2:123456789012:snapshot:orders-db-pre-upgrade"},
+		{"DescribeDBSnapshotAttributes", map[string]string{"DBSnapshotIdentifier": "orders-db-pre-upgrade"},
+			"arn:aws:rds:ap-southeast-2:123456789012:snapshot:orders-db-pre-upgrade"},
 		{"ModifyDBSubnetGroup", map[string]string{"DBSubnetGroupName": "db-private"},
 			"arn:aws:rds:ap-southeast-2:123456789012:subgrp:db-private"},
 		{"DeleteDBSubnetGroup", map[string]string{"DBSubnetGroupName": "db-private"},

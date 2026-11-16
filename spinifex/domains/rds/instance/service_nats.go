@@ -107,6 +107,11 @@ func (s *NATSService) DeleteDBSnapshot(ctx context.Context, input *rds.DeleteDBS
 		SubjectDeleteDBSnapshot, input, snapshotDeleteTimeout, accountID)
 }
 
+func (s *NATSService) DescribeDBSnapshotAttributes(ctx context.Context, input *rds.DescribeDBSnapshotAttributesInput, accountID string) (*rds.DescribeDBSnapshotAttributesOutput, error) {
+	return natsmsg.NATSRequest[rds.DescribeDBSnapshotAttributesOutput](ctx, s.nc,
+		SubjectDescribeDBSnapshotAttributes, input, defaultTimeout, accountID)
+}
+
 func (s *NATSService) RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rds.RestoreDBInstanceFromDBSnapshotInput, accountID string) (*rds.RestoreDBInstanceFromDBSnapshotOutput, error) {
 	return natsmsg.NATSRequest[rds.RestoreDBInstanceFromDBSnapshotOutput](ctx, s.nc,
 		SubjectRestoreDBInstanceFromDBSnapshot, input, restoreTimeout, accountID)

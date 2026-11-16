@@ -57,8 +57,7 @@ func TestSetIpAddressType_DualstackRejected(t *testing.T) {
 		LoadBalancerArn: aws.String(arn),
 		IpAddressType:   aws.String("dualstack"),
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorELBv2InvalidConfigurationRequest)
+	assert.EqualError(t, err, "You must specify subnets with an associated IPv6 CIDR block.: ValidationError")
 }
 
 func TestSetIpAddressType_MissingParams(t *testing.T) {

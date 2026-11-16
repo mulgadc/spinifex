@@ -20,7 +20,12 @@ func (s *ELBv2ServiceImpl) SetIpAddressType(ctx context.Context, input *elbv2.Se
 	if input.IpAddressType == nil || *input.IpAddressType == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
-	if *input.IpAddressType != IPAddressTypeIPv4 {
+	switch *input.IpAddressType {
+	case IPAddressTypeIPv4:
+	case "dualstack", "dualstack-without-public-ipv4":
+		// Subnets here are IPv4-only, so a dual-stack type always lacks IPv6 subnets.
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError, "You must specify subnets with an associated IPv6 CIDR block.")
+	default:
 		return nil, errors.New(awserrors.ErrorELBv2InvalidConfigurationRequest)
 	}
 

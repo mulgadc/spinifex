@@ -50,8 +50,7 @@ func TestCreateListener_HTTPSRequiresCert(t *testing.T) {
 		Port:            aws.Int64(443),
 		DefaultActions:  fixedResponseAction(),
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorELBv2CertificateNotFound)
+	assert.EqualError(t, err, "A certificate must be specified for HTTPS listeners: ValidationError")
 }
 
 func TestCreateListener_HTTPSDefaultsSslPolicy(t *testing.T) {
@@ -158,8 +157,7 @@ func TestModifyListener_SwitchToHTTPSRequiresCert(t *testing.T) {
 		ListenerArn: arn,
 		Protocol:    aws.String(ProtocolHTTPS),
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorELBv2CertificateNotFound)
+	assert.EqualError(t, err, "A certificate must be specified for HTTPS listeners: ValidationError")
 
 	// HTTP -> HTTPS with a cert succeeds and defaults the policy.
 	out, err := svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
@@ -219,8 +217,7 @@ func TestListenerCertificates_AddRemoveDescribe(t *testing.T) {
 		ListenerArn:  aws.String(arn),
 		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}},
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorELBv2InvalidConfigurationRequest)
+	assert.EqualError(t, err, "Default certificate cannot be removed: OperationNotPermitted")
 
 	// Removing the SNI cert succeeds.
 	_, err = svc.RemoveListenerCertificates(context.Background(), &elbv2.RemoveListenerCertificatesInput{
@@ -253,8 +250,7 @@ func TestAddListenerCertificates_HTTPRejected(t *testing.T) {
 		ListenerArn:  lst.Listeners[0].ListenerArn,
 		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}},
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorELBv2InvalidConfigurationRequest)
+	assert.EqualError(t, err, "A certificate cannot be specified for HTTP listeners: ValidationError")
 }
 
 func TestListenerCertificates_ValidationAndNotFound(t *testing.T) {

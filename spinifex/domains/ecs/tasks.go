@@ -69,6 +69,10 @@ func (s *Service) RunTask(ctx context.Context, input *ecs.RunTaskInput, accountI
 	for i := 0; i < count; i++ {
 		taskID := uuid.NewV4().String()
 		inst, err := s.reservePlacement(ctx, kv, cluster, taskID, cpu, mem, gpu, eni, strategy)
+		if i == 0 && errors.Is(err, errNoContainerInstances) {
+			// AWS refuses the whole request, before any task is recorded.
+			return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "No Container Instances were found in your cluster.")
+		}
 		if err != nil {
 			out.Failures = append(out.Failures, placementFailure(err))
 			continue
@@ -187,6 +191,9 @@ func (s *Service) reservePlacement(ctx context.Context, kv jetstream.KeyValue, c
 		instances, err := s.listInstanceRecords(ctx, kv, cluster)
 		if err != nil {
 			return nil, err
+		}
+		if len(instances) == 0 {
+			return nil, errNoContainerInstances
 		}
 		chosen, err := placeTask(instances, cpu, mem, gpu, eni, strategy)
 		if err != nil {

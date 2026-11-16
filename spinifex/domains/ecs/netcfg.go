@@ -1,7 +1,6 @@
 package ecs
 
 import (
-	"errors"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecs/taskdefinition"
 	"strings"
 
@@ -51,9 +50,16 @@ func parseAwsvpcConfig(input *ecs.RunTaskInput, mode string) (awsvpcConfig, erro
 		cfg.SecurityGroups = awsStringSlice(v.SecurityGroups)
 	}
 	if mode == NetworkModeAwsvpc && len(cfg.Subnets) == 0 {
-		return cfg, errors.New(awserrors.ErrorInvalidParameterValue)
+		return cfg, errMissingAwsvpcConfig()
 	}
 	return cfg, nil
+}
+
+// errMissingAwsvpcConfig is AWS's refusal of an awsvpc task launched without a
+// networkConfiguration.
+func errMissingAwsvpcConfig() error {
+	return awserrors.Errorf(awserrors.ErrorECSInvalidParameter,
+		"Network Configuration must be provided when networkMode 'awsvpc' is specified.")
 }
 
 // firstSubnet returns the subnet the task ENI is allocated in. v1 takes the

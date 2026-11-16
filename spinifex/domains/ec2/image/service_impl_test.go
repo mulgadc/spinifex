@@ -367,7 +367,7 @@ func TestGetAMIConfig_NotFound(t *testing.T) {
 func TestPutSnapshotMetadata(t *testing.T) {
 	svc, store := setupTestImageService(t)
 
-	err := svc.putSnapshotMetadata(context.Background(), "snap-abc123", "vol-xyz789", 10, testAccountID)
+	err := svc.putSnapshotMetadata(context.Background(), "snap-abc123", "vol-xyz789", 10, false, testAccountID)
 	require.NoError(t, err)
 
 	// The document must land under the owning account's prefix.
@@ -632,7 +632,7 @@ func TestDeregisterImage_DoesNotTouchSnapshot(t *testing.T) {
 	})
 
 	// Backing snapshot metadata
-	require.NoError(t, svc.putSnapshotMetadata(context.Background(), snapID, "vol-keep", 8, testAccountID))
+	require.NoError(t, svc.putSnapshotMetadata(context.Background(), snapID, "vol-keep", 8, false, testAccountID))
 
 	_, err := svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: aws.String(amiID)}, testAccountID)
 	require.NoError(t, err)

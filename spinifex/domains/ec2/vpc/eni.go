@@ -904,19 +904,20 @@ func (s *VPCServiceImpl) ListAttachedENIs(accountID string) ([]ENIRecord, error)
 }
 
 func (s *VPCServiceImpl) listAccountENIs(ctx context.Context, accountID string, match func(*ENIRecord) bool) ([]ENIRecord, error) {
-	keys, err := s.eniKV.Keys(ctx)
+	lister, err := s.eniKV.ListKeysFiltered(ctx, kvstore.AccountKey(accountID, "*"))
 	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil, nil
-		}
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	prefix := accountID + "."
+	var keys []string
+	for k := range lister.Keys() {
+		keys = append(keys, k)
+	}
+	// Cancellation closes the lister early, and a short list must not read as complete.
+	if ctx.Err() != nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
 	var out []ENIRecord
 	for _, key := range keys {
-		if key == kvstore.VersionKey || !strings.HasPrefix(key, prefix) {
-			continue
-		}
 		entry, err := s.eniKV.Get(ctx, key)
 		if err != nil {
 			continue

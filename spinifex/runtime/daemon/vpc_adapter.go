@@ -69,6 +69,7 @@ func eniInfoFromRecord(rec ec2vpc.ENIRecord) ec2instance.ENIInfo {
 		AttachmentID:     rec.AttachmentId,
 		DeviceIndex:      rec.DeviceIndex,
 		AttachmentStatus: rec.AttachmentStatus,
+		AttachTime:       rec.AttachTime,
 	}
 }
 

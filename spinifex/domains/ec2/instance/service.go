@@ -105,6 +105,9 @@ type GPUClaimer interface {
 // daemon.JetStreamManager.
 type StoppedInstanceStore interface {
 	LoadStoppedInstance(instanceID string) (*vm.VM, error)
+	// InstanceStateOf reports an instance's state and account from its live
+	// record in any state, or else its terminated one; found is false for neither.
+	InstanceStateOf(instanceID string) (state vm.InstanceState, accountID string, found bool, err error)
 	ListStoppedInstances() ([]*vm.VM, error)
 	ListNonTerminatedInstances() ([]*vm.VM, error)
 	ListTerminatedInPrimary() ([]*vm.VM, error)

@@ -2371,6 +2371,20 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(ctx context.Context, input
 	}
 	instanceID := *input.InstanceId
 
+	state, found, err := s.modifiableInstanceState(instanceID, accountID)
+	if err != nil {
+		slog.ErrorContext(ctx, "ModifyInstanceAttribute: failed to resolve instance", "instanceId", instanceID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if !found {
+		slog.WarnContext(ctx, "ModifyInstanceAttribute: instance not found or not visible", "instanceId", instanceID, "callerAccount", accountID)
+		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
+	}
+	if state == vm.StateShuttingDown || state == vm.StateTerminated {
+		return nil, awserrors.Errorf(awserrors.ErrorIncorrectInstanceState,
+			"The instance '%s' must be in a 'running', 'pending', 'stopping' or 'stopped' state for this operation.", instanceID)
+	}
+
 	if input.SourceDestCheck != nil {
 		if input.SourceDestCheck.Value != nil && !*input.SourceDestCheck.Value {
 			return nil, errors.New(awserrors.ErrorUnsupported)
@@ -2424,14 +2438,9 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(ctx context.Context, input
 		slog.ErrorContext(ctx, "ModifyInstanceAttribute: failed to load stopped instance", "instanceId", instanceID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
-	if instance == nil {
-		slog.WarnContext(ctx, "ModifyInstanceAttribute: instance not found in shared KV", "instanceId", instanceID)
-		return nil, errors.New(awserrors.ErrorInvalidInstanceIDNotFound)
-	}
-
-	if instance.Status != vm.StateStopped {
-		slog.ErrorContext(ctx, "ModifyInstanceAttribute: instance not in stopped state", "instanceId", instanceID, "status", instance.Status)
-		return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
+	if instance == nil || instance.Status != vm.StateStopped {
+		slog.WarnContext(ctx, "ModifyInstanceAttribute: instance not in stopped state", "instanceId", instanceID, "status", state)
+		return nil, notStoppedError(instanceID)
 	}
 
 	if !IsInstanceVisible(accountID, instance.AccountID) {
@@ -2488,7 +2497,7 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(ctx context.Context, input
 			// The record existed moments ago (Load above) but a concurrent
 			// claim removed it: the instance is mid-transition, not gone.
 			slog.WarnContext(ctx, "ModifyInstanceAttribute: instance claimed concurrently, not resurrecting", "instanceId", instanceID)
-			return nil, errors.New(awserrors.ErrorIncorrectInstanceState)
+			return nil, notStoppedError(instanceID)
 		}
 		slog.ErrorContext(ctx, "ModifyInstanceAttribute: failed to write modified instance to KV",
 			"instanceId", instanceID, "err", err)
@@ -2497,6 +2506,31 @@ func (s *InstanceServiceImpl) ModifyInstanceAttribute(ctx context.Context, input
 
 	slog.InfoContext(ctx, "ModifyInstanceAttribute: completed successfully", "instanceId", instanceID)
 	return &ec2.ModifyInstanceAttributeOutput{}, nil
+}
+
+// modifiableInstanceState reads instanceID's state from this node's running set,
+// then the shared record any node's instance keeps, then the terminated record.
+// found is false when none holds it or the caller's account cannot see it.
+func (s *InstanceServiceImpl) modifiableInstanceState(instanceID, accountID string) (vm.InstanceState, bool, error) {
+	if s.vmMgr != nil {
+		if v, ok := s.vmMgr.Get(instanceID); ok {
+			return s.vmMgr.Status(v), IsInstanceVisible(accountID, v.AccountID), nil
+		}
+	}
+	if s.stoppedStore == nil {
+		return "", false, errors.New("stopped store not available")
+	}
+	state, owner, found, err := s.stoppedStore.InstanceStateOf(instanceID)
+	if err != nil || !found {
+		return "", false, err
+	}
+	return state, IsInstanceVisible(accountID, owner), nil
+}
+
+// notStoppedError is AWS's answer to a stopped-only attribute change on an
+// instance in any other live state.
+func notStoppedError(instanceID string) error {
+	return awserrors.Errorf(awserrors.ErrorIncorrectInstanceState, "The instance '%s' is not in the 'stopped' state.", instanceID)
 }
 
 // ModifyInstanceMetadataOptions applies a metadata-options change; only the hop

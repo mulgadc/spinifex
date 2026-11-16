@@ -3,6 +3,7 @@
 package single
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -34,7 +35,7 @@ import (
 //	8n InvalidAMIID.NotFound        — DescribeImages with unknown ami id
 //	8o InvalidAMIName.Duplicate     — CreateImage with e2e-custom-ami name
 //	8p (idempotent)                 — DeleteKeyPair for unknown key must succeed
-//	8q InvalidInstanceID.NotFound   — ModifyInstanceAttribute on running inst
+//	8q IncorrectInstanceState       — ModifyInstanceAttribute on running inst
 //	8r InvalidInstanceID.NotFound   — RebootInstances on unknown id
 //	8s InvalidInstanceID.NotFound   — Terminate/Stop/StartInstances on unknown id
 //	8t InvalidInstanceID.Malformed  — lifecycle verbs on a malformed id
@@ -281,10 +282,8 @@ func runNegativeErrorPaths(t *testing.T, fix *Fixture) {
 		require.NoError(t, err, "delete-key-pair on missing key must succeed (idempotent)")
 	})
 
-	// 8q: ModifyInstanceAttribute on a running instance — gateway requires
-	// the instance to be stopped, and the running instance isn't in the
-	// stopped KV view, so the error surfaces as NotFound rather than
-	// IncorrectInstanceState. Matches bash expectation.
+	// 8q: ModifyInstanceAttribute InstanceType on a running instance — AWS
+	// requires the instance to be stopped and answers IncorrectInstanceState.
 	t.Run("8q_ModifyAttributeOnRunning", func(t *testing.T) {
 		t.Parallel()
 		harness.Step(t, "modify-instance-attribute %s (running)", instanceID)
@@ -294,7 +293,10 @@ func runNegativeErrorPaths(t *testing.T, fix *Fixture) {
 				Value: aws.String(instType),
 			},
 		})
-		harness.AssertAWSError(t, err, "InvalidInstanceID.NotFound")
+		aerr := harness.AssertAWSError(t, err, "IncorrectInstanceState")
+		if want := fmt.Sprintf("The instance '%s' is not in the 'stopped' state.", instanceID); aerr.Message() != want {
+			t.Errorf("message = %q, want %q", aerr.Message(), want)
+		}
 	})
 
 	// 8r: RebootInstances on a non-existent instance id.

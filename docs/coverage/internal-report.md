@@ -49,7 +49,7 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 
 ## ec2
 
-`2016-11-15` — 131 of 811 modelled operations implemented (16.2%), 0 stubbed, 186 require SDK v2, 39 not applicable, 0 registered outside the pinned model.
+`2016-11-15` — 132 of 811 modelled operations implemented (16.3%), 0 stubbed, 186 require SDK v2, 39 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -487,7 +487,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `ResetAddressAttribute`
 - `ResetEbsDefaultKmsKeyId`
 - `ResetInstanceAttribute`
-- `ResetNetworkInterfaceAttribute`
 - `ResetSnapshotAttribute`
 - `RestoreImageFromRecycleBin`
 - `RestoreManagedPrefixListVersion`

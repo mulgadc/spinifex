@@ -49,7 +49,7 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 
 ## ec2
 
-`2016-11-15` — 138 of 811 modelled operations implemented (17.0%), 0 stubbed, 186 require SDK v2, 35 not applicable, 0 registered outside the pinned model.
+`2016-11-15` — 144 of 811 modelled operations implemented (17.8%), 0 stubbed, 186 require SDK v2, 35 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -59,7 +59,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `AcceptTransitGatewayPeeringAttachment`
 - `AcceptTransitGatewayVpcAttachment`
 - `AcceptVpcEndpointConnections`
-- `AcceptVpcPeeringConnection`
 - `AdvertiseByoipCidr`
 - `AllocateHosts`
 - `AllocateIpamPoolCidr`
@@ -149,7 +148,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `CreateVpcEndpoint`
 - `CreateVpcEndpointConnectionNotification`
 - `CreateVpcEndpointServiceConfiguration`
-- `CreateVpcPeeringConnection`
 - `CreateVpnConnection`
 - `CreateVpnConnectionRoute`
 - `CreateVpnGateway`
@@ -206,7 +204,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `DeleteVpcEndpointConnectionNotifications`
 - `DeleteVpcEndpointServiceConfigurations`
 - `DeleteVpcEndpoints`
-- `DeleteVpcPeeringConnection`
 - `DeleteVpnConnection`
 - `DeleteVpnConnectionRoute`
 - `DeleteVpnGateway`
@@ -312,7 +309,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `DescribeVpcEndpointServiceConfigurations`
 - `DescribeVpcEndpointServicePermissions`
 - `DescribeVpcEndpointServices`
-- `DescribeVpcPeeringConnections`
 - `DescribeVpnConnections`
 - `DescribeVpnGateways`
 - `DetachVerifiedAccessTrustProvider`
@@ -453,7 +449,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `ModifyVpcEndpointServiceConfiguration`
 - `ModifyVpcEndpointServicePayerResponsibility`
 - `ModifyVpcEndpointServicePermissions`
-- `ModifyVpcPeeringConnectionOptions`
 - `ModifyVpcTenancy`
 - `ModifyVpnConnection`
 - `ModifyVpnConnectionOptions`
@@ -475,7 +470,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `RejectTransitGatewayPeeringAttachment`
 - `RejectTransitGatewayVpcAttachment`
 - `RejectVpcEndpointConnections`
-- `RejectVpcPeeringConnection`
 - `ReleaseHosts`
 - `ReleaseIpamPoolAllocation`
 - `ReplaceNetworkAclAssociation`

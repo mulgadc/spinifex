@@ -20,6 +20,7 @@ import (
 	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	ec2vpcpeering "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcpeering"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -304,9 +305,10 @@ func TestRecordTagMirrors_IncludesEveryRecordStore(t *testing.T) {
 		eigwService:       &ec2eigw.EgressOnlyIGWServiceImpl{},
 		eipService:        &ec2eip.EIPServiceImpl{},
 		natGatewayService: &ec2natgw.NatGatewayServiceImpl{},
+		vpcPeeringService: &ec2vpcpeering.ServiceImpl{},
 		keyService:        &ec2key.KeyServiceImpl{},
 	}
-	assert.Len(t, d.recordTagMirrors(), 10)
+	assert.Len(t, d.recordTagMirrors(), 11)
 }
 
 func TestDeleteTags_NonInstanceResource(t *testing.T) {

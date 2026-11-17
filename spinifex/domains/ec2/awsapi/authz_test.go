@@ -155,6 +155,16 @@ func TestResourceARNs(t *testing.T) {
 			[]string{ec2arn("natgateway", "*"), ec2arn("subnet", "subnet-1"), ec2arn("elastic-ip", "eipalloc-1")}},
 		{"DeleteNatGateway", map[string]string{"NatGatewayId": "nat-1"}, []string{ec2arn("natgateway", "nat-1")}},
 
+		// VPC peering.
+		{"CreateVpcPeeringConnection", map[string]string{"VpcId": "vpc-1", "PeerVpcId": "vpc-2"},
+			[]string{ec2arn("vpc-peering-connection", "*"), ec2arn("vpc", "vpc-1")}},
+		{"AcceptVpcPeeringConnection", map[string]string{"VpcPeeringConnectionId": "pcx-1"}, []string{ec2arn("vpc-peering-connection", "pcx-1")}},
+		{"RejectVpcPeeringConnection", map[string]string{"VpcPeeringConnectionId": "pcx-1"}, []string{ec2arn("vpc-peering-connection", "pcx-1")}},
+		{"DeleteVpcPeeringConnection", map[string]string{"VpcPeeringConnectionId": "pcx-1"}, []string{ec2arn("vpc-peering-connection", "pcx-1")}},
+		{"ModifyVpcPeeringConnectionOptions", map[string]string{"VpcPeeringConnectionId": "pcx-1"},
+			[]string{ec2arn("vpc-peering-connection", "pcx-1")}},
+		{"DescribeVpcPeeringConnections", map[string]string{"VpcPeeringConnectionId.1": "pcx-1"}, []string{"*"}},
+
 		// Network interfaces.
 		{"CreateNetworkInterface", map[string]string{"SubnetId": "subnet-1", "SecurityGroupId.1": "sg-1"},
 			[]string{ec2arn("network-interface", "*"), ec2arn("subnet", "subnet-1"), ec2arn("security-group", "sg-1")}},
@@ -414,6 +424,11 @@ var ec2Inputs = map[string]any{
 	"StopInstances":                              &ec2.StopInstancesInput{},
 	"TerminateInstances":                         &ec2.TerminateInstancesInput{},
 	"UnmonitorInstances":                         &ec2.UnmonitorInstancesInput{},
+	"RejectVpcPeeringConnection":                 &ec2.RejectVpcPeeringConnectionInput{},
+	"ModifyVpcPeeringConnectionOptions":          &ec2.ModifyVpcPeeringConnectionOptionsInput{},
+	"DeleteVpcPeeringConnection":                 &ec2.DeleteVpcPeeringConnectionInput{},
+	"CreateVpcPeeringConnection":                 &ec2.CreateVpcPeeringConnectionInput{},
+	"AcceptVpcPeeringConnection":                 &ec2.AcceptVpcPeeringConnectionInput{},
 	"UpdateSecurityGroupRuleDescriptionsEgress":  &ec2.UpdateSecurityGroupRuleDescriptionsEgressInput{},
 	"UpdateSecurityGroupRuleDescriptionsIngress": &ec2.UpdateSecurityGroupRuleDescriptionsIngressInput{},
 }

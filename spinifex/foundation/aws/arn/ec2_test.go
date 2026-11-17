@@ -29,6 +29,7 @@ func TestEC2TypeForID(t *testing.T) {
 		{"nat-abc123", arn.EC2NATGateway, true},
 		{"key-abc123", arn.EC2KeyPair, true},
 		{"pg-abc123", arn.EC2PlacementGroup, true},
+		{"pcx-abc123", arn.EC2VPCPeeringConnection, true},
 		{"unknown-abc123", "", false},
 		{"", "", false},
 		{"i", "", false},

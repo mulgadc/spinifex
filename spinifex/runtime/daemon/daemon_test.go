@@ -47,6 +47,7 @@ import (
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	ec2vpcpeering "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcpeering"
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
@@ -4396,6 +4397,7 @@ func TestAssertNoClusterServicesInitialised_PerField(t *testing.T) {
 		{name: "vpcService", set: func(d *Daemon) { d.vpcService = &ec2vpc.VPCServiceImpl{} }, wantMsg: "vpcService"},
 		{name: "routeTableService", set: func(d *Daemon) { d.routeTableService = &ec2routetable.RouteTableServiceImpl{} }, wantMsg: "routeTableService"},
 		{name: "natGatewayService", set: func(d *Daemon) { d.natGatewayService = &ec2natgw.NatGatewayServiceImpl{} }, wantMsg: "natGatewayService"},
+		{name: "vpcPeeringService", set: func(d *Daemon) { d.vpcPeeringService = &ec2vpcpeering.ServiceImpl{} }, wantMsg: "vpcPeeringService"},
 		{name: "externalIPAM", set: func(d *Daemon) { d.externalIPAM = &ec2vpc.ExternalIPAM{} }, wantMsg: "externalIPAM"},
 		{name: "eipService", set: func(d *Daemon) { d.eipService = &ec2eip.EIPServiceImpl{} }, wantMsg: "eipService"},
 		{name: "accountService", set: func(d *Daemon) { d.accountService = &ec2account.AccountSettingsServiceImpl{} }, wantMsg: "accountService"},

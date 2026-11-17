@@ -97,3 +97,11 @@ func (s *NATSImageService) EnableImageDeregistrationProtection(ctx context.Conte
 func (s *NATSImageService) DisableImageDeregistrationProtection(ctx context.Context, input *ec2.DisableImageDeregistrationProtectionInput, accountID string) (*ec2.DisableImageDeregistrationProtectionOutput, error) {
 	return natsmsg.NATSRequest[ec2.DisableImageDeregistrationProtectionOutput](ctx, s.natsConn, "ec2.DisableImageDeregistrationProtection", input, 30*time.Second, accountID)
 }
+
+func (s *NATSImageService) EnableImageDeprecation(ctx context.Context, input *ec2.EnableImageDeprecationInput, accountID string) (*ec2.EnableImageDeprecationOutput, error) {
+	return natsmsg.NATSRequest[ec2.EnableImageDeprecationOutput](ctx, s.natsConn, "ec2.EnableImageDeprecation", input, 30*time.Second, accountID)
+}
+
+func (s *NATSImageService) DisableImageDeprecation(ctx context.Context, input *ec2.DisableImageDeprecationInput, accountID string) (*ec2.DisableImageDeprecationOutput, error) {
+	return natsmsg.NATSRequest[ec2.DisableImageDeprecationOutput](ctx, s.natsConn, "ec2.DisableImageDeprecation", input, 30*time.Second, accountID)
+}

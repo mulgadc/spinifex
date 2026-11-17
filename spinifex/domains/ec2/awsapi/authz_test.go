@@ -106,6 +106,8 @@ func TestResourceARNs(t *testing.T) {
 		{"ResetImageAttribute", map[string]string{"ImageId": "ami-1"}, []string{ec2arn("image", "ami-1")}},
 		{"EnableImageDeregistrationProtection", map[string]string{"ImageId": "ami-1"}, []string{ec2arn("image", "ami-1")}},
 		{"DisableImageDeregistrationProtection", map[string]string{"ImageId": "ami-1"}, []string{ec2arn("image", "ami-1")}},
+		{"EnableImageDeprecation", map[string]string{"ImageId": "ami-1"}, []string{ec2arn("image", "ami-1")}},
+		{"DisableImageDeprecation", map[string]string{"ImageId": "ami-1"}, []string{ec2arn("image", "ami-1")}},
 
 		// Key pairs. Either parameter names the same resource, so neither
 		// contributes a spurious "*" when the other is the one supplied.
@@ -247,6 +249,10 @@ func TestResourceARNs(t *testing.T) {
 		{"EnableSerialConsoleAccess", map[string]string{}, []string{"*"}},
 		{"DisableSerialConsoleAccess", map[string]string{}, []string{"*"}},
 		{"GetSerialConsoleAccessStatus", map[string]string{}, []string{"*"}},
+		{"DescribeIdFormat", map[string]string{}, []string{"*"}},
+		{"DescribeIdentityIdFormat", map[string]string{"PrincipalArn": "arn:aws:iam::123456789012:root"}, []string{"*"}},
+		{"DescribeAggregateIdFormat", map[string]string{}, []string{"*"}},
+		{"DescribePrincipalIdFormat", map[string]string{}, []string{"*"}},
 
 		// Describes evaluate account-wide, as they do in AWS.
 		{"DescribeInstances", map[string]string{"InstanceId.1": "i-1"}, []string{"*"}},
@@ -380,7 +386,9 @@ var ec2Inputs = map[string]any{
 	"DetachVolume":                               &ec2.DetachVolumeInput{},
 	"DisassociateAddress":                        &ec2.DisassociateAddressInput{},
 	"DisassociateIamInstanceProfile":             &ec2.DisassociateIamInstanceProfileInput{},
+	"DisableImageDeprecation":                    &ec2.DisableImageDeprecationInput{},
 	"DisassociateRouteTable":                     &ec2.DisassociateRouteTableInput{},
+	"EnableImageDeprecation":                     &ec2.EnableImageDeprecationInput{},
 	"GetConsoleOutput":                           &ec2.GetConsoleOutputInput{},
 	"GetPasswordData":                            &ec2.GetPasswordDataInput{},
 	"GetInstanceUefiData":                        &ec2.GetInstanceUefiDataInput{},

@@ -168,6 +168,8 @@ var ec2Scopes = map[string][]*resourceScope{
 	"ResetImageAttribute":                  {imageScope},
 	"EnableImageDeregistrationProtection":  {imageScope},
 	"DisableImageDeregistrationProtection": {imageScope},
+	"EnableImageDeprecation":               {imageScope},
+	"DisableImageDeprecation":              {imageScope},
 	// Source image is in SourceRegion, as with CopySnapshot.
 	"CopyImage": {imageNewScope},
 
@@ -266,6 +268,11 @@ var ec2Scopes = map[string][]*resourceScope{
 	"EnableSerialConsoleAccess":     unscoped,
 	"DisableSerialConsoleAccess":    unscoped,
 	"GetSerialConsoleAccessStatus":  unscoped,
+	"GetDefaultCreditSpecification": unscoped,
+	"DescribeIdFormat":              unscoped,
+	"DescribeIdentityIdFormat":      unscoped,
+	"DescribeAggregateIdFormat":     unscoped,
+	"DescribePrincipalIdFormat":     unscoped,
 
 	// Describes. "*" is fidelity, not a stub: EC2 describe actions do not
 	// support resource-level permissions in AWS either.

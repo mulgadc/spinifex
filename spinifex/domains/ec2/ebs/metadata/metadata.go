@@ -165,6 +165,9 @@ type AMI struct {
 	UEFIData *UEFIDataRef `json:"uefi_data,omitempty"`
 	// DeregistrationProtection is the protection state; empty is disabled.
 	DeregistrationProtection string `json:"deregistration_protection,omitempty"`
+	// DeprecationTime is when EnableImageDeprecation deprecates the image;
+	// nil means the image is never deprecated.
+	DeprecationTime *time.Time `json:"deprecation_time,omitempty"`
 }
 
 // The DeregistrationProtection states EC2 renders for an image.

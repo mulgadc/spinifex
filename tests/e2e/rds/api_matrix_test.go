@@ -57,8 +57,8 @@ var unregisteredRDSActions = []string{
 //
 // One instance is created and deleted without ever being waited for, because
 // three assertions need a record to exist and none of them needs an engine: the
-// no-op parameters as the API reports them back, a duplicate identifier, and a
-// storage shrink.
+// no-op parameters as the create reports them back, a duplicate identifier, and
+// a change refused while the instance is still creating.
 func TestAPIMatrix(t *testing.T) {
 	f := requireRDSFixture(t)
 	// Deliberately not parallel: it is the cheapest test in the suite and the one
@@ -304,9 +304,6 @@ func TestAPIMatrix(t *testing.T) {
 	probeID := fmt.Sprintf("%s-matrix-%d", dbInstancePfx, suffix)
 	harness.Phase(t, "Creating DB instance %q to probe the record-level rejections", probeID)
 	probe := validCreateInput(probeID)
-	// Above the floor so a shrink request is reachable: a shrink to anything below
-	// the floor is refused by the floor rule first.
-	probe.AllocatedStorage = aws.Int64(dbStorageGiB + 10)
 	// The inert parameters accepted rather than rejected. Each one names a
 	// feature this platform does not have, but omitting it promises nothing.
 	probe.AutoMinorVersionUpgrade = aws.Bool(true)
@@ -320,40 +317,28 @@ func TestAPIMatrix(t *testing.T) {
 	t.Cleanup(func() { deleteInstance(t, f, probeID) })
 
 	// Accepted inert parameters are echoed so Terraform does not plan changes no
-	// modify can deliver.
+	// modify can deliver; the modify half needs an available instance.
 	t.Run("InertParametersAreAcceptedAndEchoed", func(t *testing.T) {
 		instance := created.DBInstance
 		assert.True(t, aws.BoolValue(instance.AutoMinorVersionUpgrade))
 		assert.True(t, aws.BoolValue(instance.PerformanceInsightsEnabled))
 		assert.Equal(t, int64(60), aws.Int64Value(instance.MonitoringInterval))
 		assert.True(t, aws.BoolValue(instance.CopyTagsToSnapshot))
-
-		_, err := f.AWS.RDS.ModifyDBInstance(&rds.ModifyDBInstanceInput{
-			DBInstanceIdentifier:      aws.String(probeID),
-			EnablePerformanceInsights: aws.Bool(false),
-			MonitoringInterval:        aws.Int64(0),
-			CopyTagsToSnapshot:        aws.Bool(false),
-		})
-		require.NoError(t, err)
-		instance, err = harness.DescribeDBInstance(f.AWS, probeID)
-		require.NoError(t, err)
-		assert.False(t, aws.BoolValue(instance.PerformanceInsightsEnabled))
-		assert.Zero(t, aws.Int64Value(instance.MonitoringInterval))
-		assert.False(t, aws.BoolValue(instance.CopyTagsToSnapshot))
 	})
 
 	t.Run("DuplicateIdentifierIsRefused", func(t *testing.T) {
 		expectCreateRefused(t, f, f.AWS, "DBInstanceAlreadyExists", validCreateInput(probeID))
 	})
 
-	// Grow-only, and refused before the instance leaves its current state: a
-	// rejected resize must never stop a running database.
-	t.Run("StorageShrinkIsRefused", func(t *testing.T) {
-		harness.ExpectError(t, "InvalidParameterCombination", func() error {
+	// The probe is milliseconds old and reaches available only once its VM has
+	// booted, so it is still creating, and AWS refuses any change until it is not.
+	t.Run("AChangeIsRefusedWhileCreating", func(t *testing.T) {
+		harness.ExpectError(t, "InvalidDBInstanceState", func() error {
 			_, err := f.AWS.RDS.ModifyDBInstance(&rds.ModifyDBInstanceInput{
-				DBInstanceIdentifier: aws.String(probeID),
-				AllocatedStorage:     aws.Int64(dbStorageGiB + 5),
-				ApplyImmediately:     aws.Bool(true),
+				DBInstanceIdentifier:      aws.String(probeID),
+				EnablePerformanceInsights: aws.Bool(false),
+				MonitoringInterval:        aws.Int64(0),
+				CopyTagsToSnapshot:        aws.Bool(false),
 			})
 			return err
 		})

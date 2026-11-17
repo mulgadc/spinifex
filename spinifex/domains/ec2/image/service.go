@@ -21,4 +21,6 @@ type ImageService interface {
 	ResetImageAttribute(ctx context.Context, input *ec2.ResetImageAttributeInput, accountID string) (*ec2.ResetImageAttributeOutput, error)
 	EnableImageDeregistrationProtection(ctx context.Context, input *ec2.EnableImageDeregistrationProtectionInput, accountID string) (*ec2.EnableImageDeregistrationProtectionOutput, error)
 	DisableImageDeregistrationProtection(ctx context.Context, input *ec2.DisableImageDeregistrationProtectionInput, accountID string) (*ec2.DisableImageDeregistrationProtectionOutput, error)
+	EnableImageDeprecation(ctx context.Context, input *ec2.EnableImageDeprecationInput, accountID string) (*ec2.EnableImageDeprecationOutput, error)
+	DisableImageDeprecation(ctx context.Context, input *ec2.DisableImageDeprecationInput, accountID string) (*ec2.DisableImageDeprecationOutput, error)
 }

@@ -49,7 +49,7 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 
 ## ec2
 
-`2016-11-15` — 135 of 811 modelled operations implemented (16.6%), 0 stubbed, 186 require SDK v2, 39 not applicable, 0 registered outside the pinned model.
+`2016-11-15` — 142 of 811 modelled operations implemented (17.5%), 0 stubbed, 186 require SDK v2, 35 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -322,7 +322,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `DisableFastSnapshotRestores`
 - `DisableImage`
 - `DisableImageBlockPublicAccess`
-- `DisableImageDeprecation`
 - `DisableIpamOrganizationAdminAccount`
 - `DisableSnapshotBlockPublicAccess`
 - `DisableTransitGatewayRouteTablePropagation`
@@ -344,7 +343,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `EnableFastSnapshotRestores`
 - `EnableImage`
 - `EnableImageBlockPublicAccess`
-- `EnableImageDeprecation`
 - `EnableIpamOrganizationAdminAccount`
 - `EnableReachabilityAnalyzerOrganizationSharing`
 - `EnableSnapshotBlockPublicAccess`
@@ -360,7 +358,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `GetCapacityReservationUsage`
 - `GetCoipPoolUsage`
 - `GetConsoleScreenshot`
-- `GetDefaultCreditSpecification`
 - `GetEbsDefaultKmsKeyId`
 - `GetFlowLogsIntegrationTemplate`
 - `GetGroupsForCapacityReservation`
@@ -740,10 +737,6 @@ fpga: FPGA images are built and ingested through AWS's own AFI pipeline for its 
 
 id-format: These switched resource IDs between the short and long forms during AWS's 2016 migration, which has long since finished.
 
-- `DescribeAggregateIdFormat`
-- `DescribeIdFormat`
-- `DescribeIdentityIdFormat`
-- `DescribePrincipalIdFormat`
 - `ModifyIdFormat`
 - `ModifyIdentityIdFormat`
 

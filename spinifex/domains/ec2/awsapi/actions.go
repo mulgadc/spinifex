@@ -259,6 +259,9 @@ var ec2Actions = map[string]ec2Action{
 	"DescribeInstanceCreditSpecifications": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceCreditSpecificationsInput, c *call, accountID string) (any, error) {
 		return ec2instanceapi.DescribeInstanceCreditSpecifications(input)
 	}),
+	"GetDefaultCreditSpecification": ec2Handler(func(ctx context.Context, input *ec2.GetDefaultCreditSpecificationInput, c *call, accountID string) (any, error) {
+		return ec2instanceapi.GetDefaultCreditSpecification(input)
+	}),
 	"CreateKeyPair": ec2Handler(func(ctx context.Context, input *ec2.CreateKeyPairInput, c *call, accountID string) (any, error) {
 		return ec2keyapi.CreateKeyPair(ctx, input, c.NATS, accountID)
 	}),
@@ -309,6 +312,12 @@ var ec2Actions = map[string]ec2Action{
 	"DisableImageDeregistrationProtection": ec2Handler(func(ctx context.Context, input *ec2.DisableImageDeregistrationProtectionInput, c *call, accountID string) (any, error) {
 		return ec2imageapi.DisableImageDeregistrationProtection(ctx, input, c.NATS, accountID)
 	}),
+	"EnableImageDeprecation": ec2Handler(func(ctx context.Context, input *ec2.EnableImageDeprecationInput, c *call, accountID string) (any, error) {
+		return ec2imageapi.EnableImageDeprecation(ctx, input, c.NATS, accountID)
+	}),
+	"DisableImageDeprecation": ec2Handler(func(ctx context.Context, input *ec2.DisableImageDeprecationInput, c *call, accountID string) (any, error) {
+		return ec2imageapi.DisableImageDeprecation(ctx, input, c.NATS, accountID)
+	}),
 	"DescribeRegions": ec2Handler(func(ctx context.Context, input *ec2.DescribeRegionsInput, c *call, accountID string) (any, error) {
 		return ec2zoneapi.DescribeRegions(input, c.Region, c.Endpoint)
 	}),
@@ -355,6 +364,18 @@ var ec2Actions = map[string]ec2Action{
 		return ec2accountapi.DescribeAccountAttributes(input, func() (string, error) {
 			return defaultVPCID(ctx, c.NATS, accountID)
 		})
+	}),
+	"DescribeIdFormat": ec2Handler(func(ctx context.Context, input *ec2.DescribeIdFormatInput, c *call, accountID string) (any, error) {
+		return ec2accountapi.DescribeIdFormat(input)
+	}),
+	"DescribeIdentityIdFormat": ec2Handler(func(ctx context.Context, input *ec2.DescribeIdentityIdFormatInput, c *call, accountID string) (any, error) {
+		return ec2accountapi.DescribeIdentityIdFormat(input, accountID)
+	}),
+	"DescribeAggregateIdFormat": ec2Handler(func(ctx context.Context, input *ec2.DescribeAggregateIdFormatInput, c *call, accountID string) (any, error) {
+		return ec2accountapi.DescribeAggregateIdFormat(input)
+	}),
+	"DescribePrincipalIdFormat": ec2Handler(func(ctx context.Context, input *ec2.DescribePrincipalIdFormatInput, c *call, accountID string) (any, error) {
+		return ec2accountapi.DescribePrincipalIdFormat(input, accountID)
 	}),
 	"EnableEbsEncryptionByDefault": ec2Handler(func(ctx context.Context, input *ec2.EnableEbsEncryptionByDefaultInput, c *call, accountID string) (any, error) {
 		return ec2accountapi.EnableEbsEncryptionByDefault(ctx, input, c.NATS, accountID)
@@ -657,6 +678,10 @@ var ec2LocalActions = map[string]bool{
 	"DescribeRegions":           true,
 	"DescribeAvailabilityZones": true,
 	"DescribeAccountAttributes": true,
+	"DescribeIdFormat":          true,
+	"DescribeIdentityIdFormat":  true,
+	"DescribeAggregateIdFormat": true,
+	"DescribePrincipalIdFormat": true,
 }
 
 // dryRunRequested reports whether a parsed EC2 input carries DryRun=true. Only

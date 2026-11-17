@@ -55,3 +55,17 @@ func TestEC2Request_ResetInstanceAttributeAuthzAndDryRun(t *testing.T) {
 	gwtest.AssertUnauthorized(t, dispatchEC2(t, h, "Action=ResetInstanceAttribute&InstanceId=i-0f3a9c2b&Attribute=kernel&DryRun=true"))
 	assertDryRun(t, dispatchEC2(t, h, "Action=ResetInstanceAttribute&InstanceId=i-0f3a9c2b7d1e4a5b6&Attribute=kernel&DryRun=true"))
 }
+
+// Enable/DisableImageDeprecation are authorised on the image ARN, and a
+// permitted DryRun answers DryRunOperation even for an image that does not exist.
+func TestEC2Request_ImageDeprecationAuthzAndDryRun(t *testing.T) {
+	h := gwtest.Scoped(
+		gwtest.Statement("Allow", "ec2:*", "*"),
+		gwtest.Statement("Deny", "ec2:EnableImageDeprecation", "arn:aws:ec2:*:*:image/ami-0f3a9c2b"),
+		gwtest.Statement("Deny", "ec2:DisableImageDeprecation", "arn:aws:ec2:*:*:image/ami-0f3a9c2b"),
+	)
+	gwtest.AssertUnauthorized(t, dispatchEC2(t, h, "Action=EnableImageDeprecation&ImageId=ami-0f3a9c2b&DeprecateAt=2030-01-01T00:00:00Z&DryRun=true"))
+	gwtest.AssertUnauthorized(t, dispatchEC2(t, h, "Action=DisableImageDeprecation&ImageId=ami-0f3a9c2b&DryRun=true"))
+	assertDryRun(t, dispatchEC2(t, h, "Action=EnableImageDeprecation&ImageId=ami-0f3a9c2b7d1e4a5b6&DeprecateAt=2030-01-01T00:00:00Z&DryRun=true"))
+	assertDryRun(t, dispatchEC2(t, h, "Action=DisableImageDeprecation&ImageId=ami-0f3a9c2b7d1e4a5b6&DryRun=true"))
+}

@@ -339,6 +339,9 @@ func renderVisibleImage(amiMeta ebsmetadata.AMI, input *ec2.DescribeImagesInput,
 		SourceInstanceId:   nonEmptyString(amiMeta.SourceInstanceID),
 		ImdsSupport:        nonEmptyString(amiMeta.ImdsSupport),
 	}
+	if amiMeta.DeprecationTime != nil {
+		image.DeprecationTime = aws.String(amiMeta.DeprecationTime.UTC().Format("2006-01-02T15:04:05.000Z"))
+	}
 
 	// A system image stands where AWS's public, Amazon-owned images do. Only the
 	// rendered values change: the stored alias still identifies it as system.
@@ -1382,4 +1385,80 @@ func (s *ImageServiceImpl) ResetImageAttribute(ctx context.Context, input *ec2.R
 
 	slog.InfoContext(ctx, "ResetImageAttribute completed", "imageId", imageID, "attribute", attribute, "accountId", accountID)
 	return &ec2.ResetImageAttributeOutput{}, nil
+}
+
+// maxDeprecationYears is how far ahead AWS lets a deprecation time be set.
+const maxDeprecationYears = 10
+
+// EnableImageDeprecation stores DeprecateAt, rounded to the nearest minute as
+// AWS stores it, replacing any time already set.
+func (s *ImageServiceImpl) EnableImageDeprecation(ctx context.Context, input *ec2.EnableImageDeprecationInput, accountID string) (*ec2.EnableImageDeprecationOutput, error) {
+	if input == nil || input.ImageId == nil || *input.ImageId == "" || input.DeprecateAt == nil {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	now := time.Now()
+	at := *input.DeprecateAt
+	if !at.After(now) {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "EnableImageDeprecation failed. Caused by specified deprecation time in the past")
+	}
+	if at.After(now.AddDate(maxDeprecationYears, 0, 0)) {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "EnableImageDeprecation failed. Caused by specified deprecation time that is above ten-year limit")
+	}
+	rounded := at.UTC().Round(time.Minute)
+	if err := s.setImageDeprecation(ctx, *input.ImageId, accountID, &rounded); err != nil {
+		return nil, err
+	}
+	return &ec2.EnableImageDeprecationOutput{Return: aws.Bool(true)}, nil
+}
+
+// DisableImageDeprecation clears the deprecation time; an image with none
+// still answers true, as on AWS.
+func (s *ImageServiceImpl) DisableImageDeprecation(ctx context.Context, input *ec2.DisableImageDeprecationInput, accountID string) (*ec2.DisableImageDeprecationOutput, error) {
+	if input == nil || input.ImageId == nil || *input.ImageId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if err := s.setImageDeprecation(ctx, *input.ImageId, accountID, nil); err != nil {
+		return nil, err
+	}
+	return &ec2.DisableImageDeprecationOutput{Return: aws.Bool(true)}, nil
+}
+
+// setImageDeprecation writes at as imageID's deprecation time under the claim
+// DeregisterImage takes. An image the caller does not own is NotFound, as AWS
+// answers for an image it cannot see.
+func (s *ImageServiceImpl) setImageDeprecation(ctx context.Context, imageID, accountID string, at *time.Time) error {
+	load := func() (ebsmetadata.AMI, error) {
+		meta, err := s.loadAMIForMutation(ctx, imageID, accountID)
+		if err != nil && (err.Error() == awserrors.ErrorUnauthorizedOperation || err.Error() == awserrors.ErrorInvalidAMIIDNotFound) {
+			return meta, awserrors.Errorf(awserrors.ErrorInvalidAMIIDNotFound, "Invalid ImageId: %s", imageID)
+		}
+		return meta, err
+	}
+	if _, err := load(); err != nil {
+		return err
+	}
+
+	if s.imageClaims != nil {
+		unlock, err := s.imageClaims.LockImage(ctx, imageID)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+	}
+
+	// Reread under the claim so a write that landed since the check survives.
+	meta, err := load()
+	if err != nil {
+		return err
+	}
+	if meta.DeprecationTime == nil && at == nil {
+		return nil
+	}
+	meta.DeprecationTime = at
+	if err := s.putAMIConfig(ctx, imageID, meta); err != nil {
+		slog.ErrorContext(ctx, "setImageDeprecation: failed to write AMI config", "imageId", imageID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	slog.InfoContext(ctx, "image deprecation set", "imageId", imageID, "accountId", accountID, "deprecated", at != nil)
+	return nil
 }

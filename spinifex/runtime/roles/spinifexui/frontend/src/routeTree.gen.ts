@@ -33,6 +33,7 @@ import { Route as AuthEc2subnetCreateSubnetRouteImport } from './routes/_auth/ec
 import { Route as AuthEc2targetGroupsCreateTargetGroupRouteImport } from './routes/_auth/ec2/(target-groups)/create-target-group'
 import { Route as AuthEc2volumesCreateVolumeRouteImport } from './routes/_auth/ec2/(volumes)/create-volume'
 import { Route as AuthEc2vpcCreateVpcRouteImport } from './routes/_auth/ec2/(vpc)/create-vpc'
+import { Route as AuthEc2vpcPeeringConnectionsCreateVpcPeeringConnectionRouteImport } from './routes/_auth/ec2/(vpc-peering-connections)/create-vpc-peering-connection'
 import { Route as AuthEcsclustersCreateServiceRouteImport } from './routes/_auth/ecs/(clusters)/create-service'
 import { Route as AuthEcsclustersRegisterTaskDefinitionRouteImport } from './routes/_auth/ecs/(clusters)/register-task-definition'
 import { Route as AuthEcsclustersRunTaskRouteImport } from './routes/_auth/ecs/(clusters)/run-task'
@@ -91,6 +92,8 @@ import { Route as AuthEc2volumesDescribeVolumesIdRouteImport } from './routes/_a
 import { Route as AuthEc2volumesModifyVolumeIdRouteImport } from './routes/_auth/ec2/(volumes)/modify-volume/$id'
 import { Route as AuthEc2vpcDescribeVpcsIndexRouteImport } from './routes/_auth/ec2/(vpc)/describe-vpcs/index'
 import { Route as AuthEc2vpcDescribeVpcsIdRouteImport } from './routes/_auth/ec2/(vpc)/describe-vpcs/$id'
+import { Route as AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIndexRouteImport } from './routes/_auth/ec2/(vpc-peering-connections)/describe-vpc-peering-connections/index'
+import { Route as AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIdRouteImport } from './routes/_auth/ec2/(vpc-peering-connections)/describe-vpc-peering-connections/$id'
 import { Route as AuthEcrrepositoriesListRepositoriesIndexRouteImport } from './routes/_auth/ecr/(repositories)/list-repositories/index'
 import { Route as AuthEcrrepositoriesListRepositoriesIdRouteImport } from './routes/_auth/ecr/(repositories)/list-repositories/$id'
 import { Route as AuthEcsclustersListClustersIndexRouteImport } from './routes/_auth/ecs/(clusters)/list-clusters/index'
@@ -257,6 +260,12 @@ const AuthEc2vpcCreateVpcRoute = AuthEc2vpcCreateVpcRouteImport.update({
   path: '/ec2/create-vpc',
   getParentRoute: () => AuthRouteRoute,
 } as any)
+const AuthEc2vpcPeeringConnectionsCreateVpcPeeringConnectionRoute =
+  AuthEc2vpcPeeringConnectionsCreateVpcPeeringConnectionRouteImport.update({
+    id: '/ec2/(vpc-peering-connections)/create-vpc-peering-connection',
+    path: '/ec2/create-vpc-peering-connection',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
 const AuthEcsclustersCreateServiceRoute =
   AuthEcsclustersCreateServiceRouteImport.update({
     id: '/ecs/(clusters)/create-service',
@@ -600,6 +609,22 @@ const AuthEc2vpcDescribeVpcsIdRoute =
     path: '/ec2/describe-vpcs/$id',
     getParentRoute: () => AuthRouteRoute,
   } as any)
+const AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIndexRoute =
+  AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIndexRouteImport.update(
+    {
+      id: '/ec2/(vpc-peering-connections)/describe-vpc-peering-connections/',
+      path: '/ec2/describe-vpc-peering-connections/',
+      getParentRoute: () => AuthRouteRoute,
+    } as any,
+  )
+const AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIdRoute =
+  AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIdRouteImport.update(
+    {
+      id: '/ec2/(vpc-peering-connections)/describe-vpc-peering-connections/$id',
+      path: '/ec2/describe-vpc-peering-connections/$id',
+      getParentRoute: () => AuthRouteRoute,
+    } as any,
+  )
 const AuthEcrrepositoriesListRepositoriesIndexRoute =
   AuthEcrrepositoriesListRepositoriesIndexRouteImport.update({
     id: '/ecr/(repositories)/list-repositories/',
@@ -824,6 +849,7 @@ export interface FileRoutesByFullPath {
   '/ec2/create-target-group': typeof AuthEc2targetGroupsCreateTargetGroupRoute
   '/ec2/create-volume': typeof AuthEc2volumesCreateVolumeRoute
   '/ec2/create-vpc': typeof AuthEc2vpcCreateVpcRoute
+  '/ec2/create-vpc-peering-connection': typeof AuthEc2vpcPeeringConnectionsCreateVpcPeeringConnectionRoute
   '/ecs/create-service': typeof AuthEcsclustersCreateServiceRoute
   '/ecs/register-task-definition': typeof AuthEcsclustersRegisterTaskDefinitionRoute
   '/ecs/run-task': typeof AuthEcsclustersRunTaskRoute
@@ -860,6 +886,7 @@ export interface FileRoutesByFullPath {
   '/ec2/describe-volumes/$id': typeof AuthEc2volumesDescribeVolumesIdRoute
   '/ec2/modify-volume/$id': typeof AuthEc2volumesModifyVolumeIdRoute
   '/ec2/describe-vpcs/$id': typeof AuthEc2vpcDescribeVpcsIdRoute
+  '/ec2/describe-vpc-peering-connections/$id': typeof AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIdRoute
   '/ecr/list-repositories/$id': typeof AuthEcrrepositoriesListRepositoriesIdRoute
   '/ecs/list-clusters/$clusterName': typeof AuthEcsclustersListClustersClusterNameRoute
   '/eks/list-clusters/$clusterName': typeof AuthEksclustersListClustersClusterNameRoute
@@ -896,6 +923,7 @@ export interface FileRoutesByFullPath {
   '/ec2/describe-target-groups/': typeof AuthEc2targetGroupsDescribeTargetGroupsIndexRoute
   '/ec2/describe-volumes/': typeof AuthEc2volumesDescribeVolumesIndexRoute
   '/ec2/describe-vpcs/': typeof AuthEc2vpcDescribeVpcsIndexRoute
+  '/ec2/describe-vpc-peering-connections/': typeof AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIndexRoute
   '/ecr/list-repositories/': typeof AuthEcrrepositoriesListRepositoriesIndexRoute
   '/ecs/list-clusters/': typeof AuthEcsclustersListClustersIndexRoute
   '/eks/list-clusters/': typeof AuthEksclustersListClustersIndexRoute
@@ -939,6 +967,7 @@ export interface FileRoutesByTo {
   '/ec2/create-target-group': typeof AuthEc2targetGroupsCreateTargetGroupRoute
   '/ec2/create-volume': typeof AuthEc2volumesCreateVolumeRoute
   '/ec2/create-vpc': typeof AuthEc2vpcCreateVpcRoute
+  '/ec2/create-vpc-peering-connection': typeof AuthEc2vpcPeeringConnectionsCreateVpcPeeringConnectionRoute
   '/ecs/create-service': typeof AuthEcsclustersCreateServiceRoute
   '/ecs/register-task-definition': typeof AuthEcsclustersRegisterTaskDefinitionRoute
   '/ecs/run-task': typeof AuthEcsclustersRunTaskRoute
@@ -975,6 +1004,7 @@ export interface FileRoutesByTo {
   '/ec2/describe-volumes/$id': typeof AuthEc2volumesDescribeVolumesIdRoute
   '/ec2/modify-volume/$id': typeof AuthEc2volumesModifyVolumeIdRoute
   '/ec2/describe-vpcs/$id': typeof AuthEc2vpcDescribeVpcsIdRoute
+  '/ec2/describe-vpc-peering-connections/$id': typeof AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIdRoute
   '/ecr/list-repositories/$id': typeof AuthEcrrepositoriesListRepositoriesIdRoute
   '/ecs/list-clusters/$clusterName': typeof AuthEcsclustersListClustersClusterNameRoute
   '/eks/list-clusters/$clusterName': typeof AuthEksclustersListClustersClusterNameRoute
@@ -1011,6 +1041,7 @@ export interface FileRoutesByTo {
   '/ec2/describe-target-groups': typeof AuthEc2targetGroupsDescribeTargetGroupsIndexRoute
   '/ec2/describe-volumes': typeof AuthEc2volumesDescribeVolumesIndexRoute
   '/ec2/describe-vpcs': typeof AuthEc2vpcDescribeVpcsIndexRoute
+  '/ec2/describe-vpc-peering-connections': typeof AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIndexRoute
   '/ecr/list-repositories': typeof AuthEcrrepositoriesListRepositoriesIndexRoute
   '/ecs/list-clusters': typeof AuthEcsclustersListClustersIndexRoute
   '/eks/list-clusters': typeof AuthEksclustersListClustersIndexRoute
@@ -1057,6 +1088,7 @@ export interface FileRoutesById {
   '/_auth/ec2/(target-groups)/create-target-group': typeof AuthEc2targetGroupsCreateTargetGroupRoute
   '/_auth/ec2/(volumes)/create-volume': typeof AuthEc2volumesCreateVolumeRoute
   '/_auth/ec2/(vpc)/create-vpc': typeof AuthEc2vpcCreateVpcRoute
+  '/_auth/ec2/(vpc-peering-connections)/create-vpc-peering-connection': typeof AuthEc2vpcPeeringConnectionsCreateVpcPeeringConnectionRoute
   '/_auth/ecs/(clusters)/create-service': typeof AuthEcsclustersCreateServiceRoute
   '/_auth/ecs/(clusters)/register-task-definition': typeof AuthEcsclustersRegisterTaskDefinitionRoute
   '/_auth/ecs/(clusters)/run-task': typeof AuthEcsclustersRunTaskRoute
@@ -1093,6 +1125,7 @@ export interface FileRoutesById {
   '/_auth/ec2/(volumes)/describe-volumes/$id': typeof AuthEc2volumesDescribeVolumesIdRoute
   '/_auth/ec2/(volumes)/modify-volume/$id': typeof AuthEc2volumesModifyVolumeIdRoute
   '/_auth/ec2/(vpc)/describe-vpcs/$id': typeof AuthEc2vpcDescribeVpcsIdRoute
+  '/_auth/ec2/(vpc-peering-connections)/describe-vpc-peering-connections/$id': typeof AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIdRoute
   '/_auth/ecr/(repositories)/list-repositories/$id': typeof AuthEcrrepositoriesListRepositoriesIdRoute
   '/_auth/ecs/(clusters)/list-clusters/$clusterName': typeof AuthEcsclustersListClustersClusterNameRoute
   '/_auth/eks/(clusters)/list-clusters/$clusterName': typeof AuthEksclustersListClustersClusterNameRoute
@@ -1129,6 +1162,7 @@ export interface FileRoutesById {
   '/_auth/ec2/(target-groups)/describe-target-groups/': typeof AuthEc2targetGroupsDescribeTargetGroupsIndexRoute
   '/_auth/ec2/(volumes)/describe-volumes/': typeof AuthEc2volumesDescribeVolumesIndexRoute
   '/_auth/ec2/(vpc)/describe-vpcs/': typeof AuthEc2vpcDescribeVpcsIndexRoute
+  '/_auth/ec2/(vpc-peering-connections)/describe-vpc-peering-connections/': typeof AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIndexRoute
   '/_auth/ecr/(repositories)/list-repositories/': typeof AuthEcrrepositoriesListRepositoriesIndexRoute
   '/_auth/ecs/(clusters)/list-clusters/': typeof AuthEcsclustersListClustersIndexRoute
   '/_auth/eks/(clusters)/list-clusters/': typeof AuthEksclustersListClustersIndexRoute
@@ -1175,6 +1209,7 @@ export interface FileRouteTypes {
     | '/ec2/create-target-group'
     | '/ec2/create-volume'
     | '/ec2/create-vpc'
+    | '/ec2/create-vpc-peering-connection'
     | '/ecs/create-service'
     | '/ecs/register-task-definition'
     | '/ecs/run-task'
@@ -1211,6 +1246,7 @@ export interface FileRouteTypes {
     | '/ec2/describe-volumes/$id'
     | '/ec2/modify-volume/$id'
     | '/ec2/describe-vpcs/$id'
+    | '/ec2/describe-vpc-peering-connections/$id'
     | '/ecr/list-repositories/$id'
     | '/ecs/list-clusters/$clusterName'
     | '/eks/list-clusters/$clusterName'
@@ -1247,6 +1283,7 @@ export interface FileRouteTypes {
     | '/ec2/describe-target-groups/'
     | '/ec2/describe-volumes/'
     | '/ec2/describe-vpcs/'
+    | '/ec2/describe-vpc-peering-connections/'
     | '/ecr/list-repositories/'
     | '/ecs/list-clusters/'
     | '/eks/list-clusters/'
@@ -1290,6 +1327,7 @@ export interface FileRouteTypes {
     | '/ec2/create-target-group'
     | '/ec2/create-volume'
     | '/ec2/create-vpc'
+    | '/ec2/create-vpc-peering-connection'
     | '/ecs/create-service'
     | '/ecs/register-task-definition'
     | '/ecs/run-task'
@@ -1326,6 +1364,7 @@ export interface FileRouteTypes {
     | '/ec2/describe-volumes/$id'
     | '/ec2/modify-volume/$id'
     | '/ec2/describe-vpcs/$id'
+    | '/ec2/describe-vpc-peering-connections/$id'
     | '/ecr/list-repositories/$id'
     | '/ecs/list-clusters/$clusterName'
     | '/eks/list-clusters/$clusterName'
@@ -1362,6 +1401,7 @@ export interface FileRouteTypes {
     | '/ec2/describe-target-groups'
     | '/ec2/describe-volumes'
     | '/ec2/describe-vpcs'
+    | '/ec2/describe-vpc-peering-connections'
     | '/ecr/list-repositories'
     | '/ecs/list-clusters'
     | '/eks/list-clusters'
@@ -1407,6 +1447,7 @@ export interface FileRouteTypes {
     | '/_auth/ec2/(target-groups)/create-target-group'
     | '/_auth/ec2/(volumes)/create-volume'
     | '/_auth/ec2/(vpc)/create-vpc'
+    | '/_auth/ec2/(vpc-peering-connections)/create-vpc-peering-connection'
     | '/_auth/ecs/(clusters)/create-service'
     | '/_auth/ecs/(clusters)/register-task-definition'
     | '/_auth/ecs/(clusters)/run-task'
@@ -1443,6 +1484,7 @@ export interface FileRouteTypes {
     | '/_auth/ec2/(volumes)/describe-volumes/$id'
     | '/_auth/ec2/(volumes)/modify-volume/$id'
     | '/_auth/ec2/(vpc)/describe-vpcs/$id'
+    | '/_auth/ec2/(vpc-peering-connections)/describe-vpc-peering-connections/$id'
     | '/_auth/ecr/(repositories)/list-repositories/$id'
     | '/_auth/ecs/(clusters)/list-clusters/$clusterName'
     | '/_auth/eks/(clusters)/list-clusters/$clusterName'
@@ -1479,6 +1521,7 @@ export interface FileRouteTypes {
     | '/_auth/ec2/(target-groups)/describe-target-groups/'
     | '/_auth/ec2/(volumes)/describe-volumes/'
     | '/_auth/ec2/(vpc)/describe-vpcs/'
+    | '/_auth/ec2/(vpc-peering-connections)/describe-vpc-peering-connections/'
     | '/_auth/ecr/(repositories)/list-repositories/'
     | '/_auth/ecs/(clusters)/list-clusters/'
     | '/_auth/eks/(clusters)/list-clusters/'
@@ -1672,6 +1715,13 @@ declare module '@tanstack/react-router' {
       path: '/ec2/create-vpc'
       fullPath: '/ec2/create-vpc'
       preLoaderRoute: typeof AuthEc2vpcCreateVpcRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(vpc-peering-connections)/create-vpc-peering-connection': {
+      id: '/_auth/ec2/(vpc-peering-connections)/create-vpc-peering-connection'
+      path: '/ec2/create-vpc-peering-connection'
+      fullPath: '/ec2/create-vpc-peering-connection'
+      preLoaderRoute: typeof AuthEc2vpcPeeringConnectionsCreateVpcPeeringConnectionRouteImport
       parentRoute: typeof AuthRouteRoute
     }
     '/_auth/ecs/(clusters)/create-service': {
@@ -2080,6 +2130,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthEc2vpcDescribeVpcsIdRouteImport
       parentRoute: typeof AuthRouteRoute
     }
+    '/_auth/ec2/(vpc-peering-connections)/describe-vpc-peering-connections/': {
+      id: '/_auth/ec2/(vpc-peering-connections)/describe-vpc-peering-connections/'
+      path: '/ec2/describe-vpc-peering-connections'
+      fullPath: '/ec2/describe-vpc-peering-connections/'
+      preLoaderRoute: typeof AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIndexRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/ec2/(vpc-peering-connections)/describe-vpc-peering-connections/$id': {
+      id: '/_auth/ec2/(vpc-peering-connections)/describe-vpc-peering-connections/$id'
+      path: '/ec2/describe-vpc-peering-connections/$id'
+      fullPath: '/ec2/describe-vpc-peering-connections/$id'
+      preLoaderRoute: typeof AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
     '/_auth/ecr/(repositories)/list-repositories/': {
       id: '/_auth/ecr/(repositories)/list-repositories/'
       path: '/ecr/list-repositories'
@@ -2390,6 +2454,7 @@ interface AuthRouteRouteChildren {
   AuthEc2targetGroupsCreateTargetGroupRoute: typeof AuthEc2targetGroupsCreateTargetGroupRoute
   AuthEc2volumesCreateVolumeRoute: typeof AuthEc2volumesCreateVolumeRoute
   AuthEc2vpcCreateVpcRoute: typeof AuthEc2vpcCreateVpcRoute
+  AuthEc2vpcPeeringConnectionsCreateVpcPeeringConnectionRoute: typeof AuthEc2vpcPeeringConnectionsCreateVpcPeeringConnectionRoute
   AuthEcsclustersCreateServiceRoute: typeof AuthEcsclustersCreateServiceRoute
   AuthEcsclustersRegisterTaskDefinitionRoute: typeof AuthEcsclustersRegisterTaskDefinitionRoute
   AuthEcsclustersRunTaskRoute: typeof AuthEcsclustersRunTaskRoute
@@ -2423,6 +2488,7 @@ interface AuthRouteRouteChildren {
   AuthEc2volumesDescribeVolumesIdRoute: typeof AuthEc2volumesDescribeVolumesIdRoute
   AuthEc2volumesModifyVolumeIdRoute: typeof AuthEc2volumesModifyVolumeIdRoute
   AuthEc2vpcDescribeVpcsIdRoute: typeof AuthEc2vpcDescribeVpcsIdRoute
+  AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIdRoute: typeof AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIdRoute
   AuthEcrrepositoriesListRepositoriesIdRoute: typeof AuthEcrrepositoriesListRepositoriesIdRoute
   AuthEcsclustersListClustersClusterNameRoute: typeof AuthEcsclustersListClustersClusterNameRoute
   AuthEksclustersListClustersClusterNameRoute: typeof AuthEksclustersListClustersClusterNameRoute
@@ -2453,6 +2519,7 @@ interface AuthRouteRouteChildren {
   AuthEc2targetGroupsDescribeTargetGroupsIndexRoute: typeof AuthEc2targetGroupsDescribeTargetGroupsIndexRoute
   AuthEc2volumesDescribeVolumesIndexRoute: typeof AuthEc2volumesDescribeVolumesIndexRoute
   AuthEc2vpcDescribeVpcsIndexRoute: typeof AuthEc2vpcDescribeVpcsIndexRoute
+  AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIndexRoute: typeof AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIndexRoute
   AuthEcrrepositoriesListRepositoriesIndexRoute: typeof AuthEcrrepositoriesListRepositoriesIndexRoute
   AuthEcsclustersListClustersIndexRoute: typeof AuthEcsclustersListClustersIndexRoute
   AuthEksclustersListClustersIndexRoute: typeof AuthEksclustersListClustersIndexRoute
@@ -2502,6 +2569,8 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
     AuthEc2targetGroupsCreateTargetGroupRoute,
   AuthEc2volumesCreateVolumeRoute: AuthEc2volumesCreateVolumeRoute,
   AuthEc2vpcCreateVpcRoute: AuthEc2vpcCreateVpcRoute,
+  AuthEc2vpcPeeringConnectionsCreateVpcPeeringConnectionRoute:
+    AuthEc2vpcPeeringConnectionsCreateVpcPeeringConnectionRoute,
   AuthEcsclustersCreateServiceRoute: AuthEcsclustersCreateServiceRoute,
   AuthEcsclustersRegisterTaskDefinitionRoute:
     AuthEcsclustersRegisterTaskDefinitionRoute,
@@ -2552,6 +2621,8 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
   AuthEc2volumesDescribeVolumesIdRoute: AuthEc2volumesDescribeVolumesIdRoute,
   AuthEc2volumesModifyVolumeIdRoute: AuthEc2volumesModifyVolumeIdRoute,
   AuthEc2vpcDescribeVpcsIdRoute: AuthEc2vpcDescribeVpcsIdRoute,
+  AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIdRoute:
+    AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIdRoute,
   AuthEcrrepositoriesListRepositoriesIdRoute:
     AuthEcrrepositoriesListRepositoriesIdRoute,
   AuthEcsclustersListClustersClusterNameRoute:
@@ -2606,6 +2677,8 @@ const AuthRouteRouteChildren: AuthRouteRouteChildren = {
   AuthEc2volumesDescribeVolumesIndexRoute:
     AuthEc2volumesDescribeVolumesIndexRoute,
   AuthEc2vpcDescribeVpcsIndexRoute: AuthEc2vpcDescribeVpcsIndexRoute,
+  AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIndexRoute:
+    AuthEc2vpcPeeringConnectionsDescribeVpcPeeringConnectionsIndexRoute,
   AuthEcrrepositoriesListRepositoriesIndexRoute:
     AuthEcrrepositoriesListRepositoriesIndexRoute,
   AuthEcsclustersListClustersIndexRoute: AuthEcsclustersListClustersIndexRoute,

@@ -47,6 +47,10 @@ func SecurityGroupPortGroup(sgID string) string {
 	return strings.ReplaceAll(sgID, "-", "_")
 }
 
+// PeeringRouterPort is the OVN LRP on vpcID's router for its end of a VPC
+// peering link; the two ends name each other as peer.
+func PeeringRouterPort(pcxID, vpcID string) string { return "pcx-" + pcxID + "-" + vpcID }
+
 // TransitSwitch is the OVN-IC transit switch name used for federation.
 func TransitSwitch(azID, vpcID string) string { return "ts-" + azID + "-" + vpcID }
 

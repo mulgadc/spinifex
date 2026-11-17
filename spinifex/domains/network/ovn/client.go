@@ -30,6 +30,22 @@ type ACLSpec struct {
 	Severity  string // "alert", "warning", "notice", "info", "debug"
 }
 
+// ExternalIDPcxID stamps every row a VPC peering connection owns: its link
+// ports, their guards and its reroutes. A route's drop does not carry it.
+const ExternalIDPcxID = "spinifex:pcx_id"
+
+// PeeringGuardRole is the spinifex:role a peering guard policy carries, so a
+// re-ensure can find the connection's other guards on a router.
+const PeeringGuardRole = "peering-guard"
+
+// PeeringLinkEnd is one router's end of a VPC peering link: the port that
+// joins it to the peer router, and the guard on traffic arriving through it.
+type PeeringLinkEnd struct {
+	Router string
+	Port   nbdb.LogicalRouterPort
+	Guard  nbdb.LogicalRouterPolicy
+}
+
 // Client is the OVN Northbound DB abstraction. The vpcd in-tree
 // implementation is LiveClient (live.go); tests use network/ovn/mock.
 type Client interface {
@@ -125,6 +141,14 @@ type Client interface {
 	DeleteLogicalRouterPolicy(ctx context.Context, routerName string, priority int, match string) error
 	FindLogicalRouterPolicy(ctx context.Context, routerName string, priority int, match string) (*nbdb.LogicalRouterPolicy, error)
 	ListLogicalRouterPolicies(ctx context.Context, routerName string) ([]nbdb.LogicalRouterPolicy, error)
+
+	// EnsurePeeringLink writes both ends' ports and guards in one transaction,
+	// creating each row or rewriting it in place and removing any other guard
+	// the connection holds on either router. A failed transaction changes nothing.
+	EnsurePeeringLink(ctx context.Context, ends [2]PeeringLinkEnd) error
+	// DeletePeeringLink removes every port and policy stamped with pcxID on the
+	// named routers in one transaction. A router absent from NB is skipped.
+	DeletePeeringLink(ctx context.Context, pcxID string, routers []string) error
 
 	// Port Groups (security group enforcement)
 	CreatePortGroup(ctx context.Context, name string, ports []string) error

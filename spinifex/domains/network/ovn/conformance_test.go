@@ -53,6 +53,7 @@ func TestClientConformance(t *testing.T) {
 		{"ACLs", conformACLs},
 		{"GatewayChassis", conformGatewayChassis},
 		{"DHCPOptions", conformDHCPOptions},
+		{"PeeringLink", conformPeeringLink},
 	}
 
 	for _, impl := range impls {

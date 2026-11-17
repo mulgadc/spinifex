@@ -27,6 +27,8 @@ import (
 // IntentState is the desired OVN state derived from the JetStream KV
 // snapshot, scoped to the local AZ. Empty maps are valid.
 type IntentState struct {
+	PeeringIntent
+
 	VPCs        map[string]topology.VPCSpec
 	Subnets     map[string]topology.SubnetSpec
 	Ports       map[string]topology.PortSpec
@@ -114,6 +116,8 @@ func LoadIntentFromKV(ctx context.Context, js jetstream.JetStream, localAZ strin
 		return IntentState{}, err
 	}
 	loadSubnetEgressRoutes(localVPCs, intent.Subnets, routeTables, intent.IGWRoutes, intent.NATGWRoutes)
+	intent.PeeringIntent = loadPeering(ctx, js, localVPCs)
+	intent.PeeringRoutes = loadPeeringRoutes(intent.VPCs, intent.Subnets, routeTables)
 	loadSubnetDropGates(localVPCs, intent.Subnets, intent.IGWs, intent.IGWRoutes, intent.NATGWRoutes, intent.DropGates)
 
 	return intent, nil

@@ -49,6 +49,7 @@ type LogicalRouterPort struct {
 	MAC            string            `ovsdb:"mac"`
 	Networks       []string          `ovsdb:"networks"`
 	GatewayChassis []string          `ovsdb:"gateway_chassis"`
+	Peer           *string           `ovsdb:"peer"`
 	ExternalIDs    map[string]string `ovsdb:"external_ids"`
 	Options        map[string]string `ovsdb:"options"`
 }

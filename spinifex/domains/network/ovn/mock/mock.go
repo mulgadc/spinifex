@@ -45,6 +45,10 @@ type Client struct {
 	AddACLCalls     int
 	ClearACLCalls   int
 	ReplaceACLCalls int
+
+	// EnsurePeeringLinkErr, when set, fails EnsurePeeringLink with no change.
+	EnsurePeeringLinkErr   error
+	EnsurePeeringLinkCalls int
 }
 
 var _ ovn.Client = (*Client)(nil)

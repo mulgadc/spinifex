@@ -29,7 +29,7 @@ const sameSGPingTimeout = 45 * time.Second
 
 // baselineLaunch launches one instance with the given SGs into subnetID,
 // registers a terminate-and-wait cleanup, and returns the instance ID once "running".
-func baselineLaunch(t *testing.T, fix *Fixture, amiID, instType, keyName, subnetID string, sgIDs []string) string {
+func baselineLaunch(t *testing.T, fix *Fixture, amiID, instType, keyName, subnetID string, sgIDs []string, opts ...func(*ec2.RunInstancesInput)) string {
 	t.Helper()
 	sgs := make([]*string, 0, len(sgIDs))
 	for _, id := range sgIDs {
@@ -43,6 +43,9 @@ func baselineLaunch(t *testing.T, fix *Fixture, amiID, instType, keyName, subnet
 		SecurityGroupIds: sgs,
 		MinCount:         aws.Int64(1),
 		MaxCount:         aws.Int64(1),
+	}
+	for _, opt := range opts {
+		opt(input)
 	}
 	var id string
 	for attempt := 1; attempt <= 6; attempt++ {

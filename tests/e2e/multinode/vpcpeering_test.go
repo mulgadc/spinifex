@@ -26,9 +26,16 @@ func runMultinodeVPCPeering(t *testing.T, fix *Fixture) {
 	keyName, keyPath := harness.EnsureKeyPair(t, fix.Harness)
 	defCIDR := vpcCIDR(t, c, defVPC)
 
+	// A spread group puts the two ends on different hosts.
+	const pgName = "peering-spread"
+	_, err := c.EC2.CreatePlacementGroup(&ec2.CreatePlacementGroupInput{GroupName: aws.String(pgName), Strategy: aws.String("spread")})
+	require.NoError(t, err, "create-placement-group %s", pgName)
+	t.Cleanup(func() { _, _ = c.EC2.DeletePlacementGroup(&ec2.DeletePlacementGroupInput{GroupName: aws.String(pgName)}) })
+	spread := func(in *ec2.RunInstancesInput) { in.Placement = &ec2.Placement{GroupName: aws.String(pgName)} }
+
 	runnerSG := harness.EnsureSG(t, fix.Harness, defVPC, "peering-runnersg")
 	harness.AuthorizeSSHIngress(t, c, runnerSG)
-	srcID := baselineLaunch(t, fix, amiID, instType, keyName, defSubnet, []string{defSG, runnerSG})
+	srcID := baselineLaunch(t, fix, amiID, instType, keyName, defSubnet, []string{defSG, runnerSG}, spread)
 	srcNode := harness.InstanceHostingNode(t, fix.Cluster, srcID)
 	require.NotNil(t, srcNode, "source %s has no hosting node", srcID)
 
@@ -39,17 +46,10 @@ func runMultinodeVPCPeering(t *testing.T, fix *Fixture) {
 	peerSG := harness.EnsureSG(t, fix.Harness, peerVPC, "peering-icmp")
 	harness.AuthorizeICMPIngress(t, c, peerSG)
 
-	var dstID string
-	for range 4 {
-		id := baselineLaunch(t, fix, amiID, instType, keyName, peerSubnet, []string{peerSG})
-		if n := harness.InstanceHostingNode(t, fix.Cluster, id); n != nil && n.Name != srcNode.Name {
-			dstID = id
-			break
-		}
-	}
-	if dstID == "" {
-		t.Skipf("no peer instance landed off %s; the scheduler colocated every launch", srcNode.Name)
-	}
+	dstID := baselineLaunch(t, fix, amiID, instType, keyName, peerSubnet, []string{peerSG}, spread)
+	dstNode := harness.InstanceHostingNode(t, fix.Cluster, dstID)
+	require.NotNil(t, dstNode, "peer %s has no hosting node", dstID)
+	require.NotEqual(t, srcNode.Name, dstNode.Name, "spread placement colocated %s and %s", srcID, dstID)
 	dstPriv := instancePrivateIP(t, fix, dstID)
 
 	out, err := c.EC2.CreateVpcPeeringConnection(&ec2.CreateVpcPeeringConnectionInput{VpcId: aws.String(defVPC), PeerVpcId: aws.String(peerVPC)})

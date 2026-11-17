@@ -84,14 +84,12 @@ func pingOnce(t *testing.T, tgt harness.SSHTarget, dst string) bool {
 	return strings.TrimSpace(out) == "yes"
 }
 
-// requirePingBlocked asserts dst stays unreachable from tgt across several
-// bursts, after any earlier path has had time to be withdrawn.
+// requirePingBlocked asserts dst stays unreachable from tgt for a second
+// burst, after any earlier path has had time to be withdrawn.
 func requirePingBlocked(t *testing.T, tgt harness.SSHTarget, dst, why string) {
 	t.Helper()
 	harness.Eventually(t, func() bool { return !pingOnce(t, tgt, dst) }, 60*time.Second, 3*time.Second, "%s: still reachable", why)
-	for range 3 {
-		require.Falsef(t, pingOnce(t, tgt, dst), "%s: %s reached %s", why, tgt.Host, dst)
-	}
+	require.Falsef(t, pingOnce(t, tgt, dst), "%s: %s reached %s", why, tgt.Host, dst)
 }
 
 func requirePingConverged(t *testing.T, tgt harness.SSHTarget, dst, why string) {

@@ -14,18 +14,33 @@ func peeringEnds(pcxID, guardMatchA, guardMatchB string) [2]ovn.PeeringLinkEnd {
 	peerA, peerB := "pcx-a", "pcx-b"
 	ids := map[string]string{ovn.ExternalIDPcxID: pcxID}
 	guardIDs := map[string]string{ovn.ExternalIDPcxID: pcxID, "spinifex:role": ovn.PeeringGuardRole}
+	noRouteIDs := map[string]string{ovn.ExternalIDPcxID: pcxID, "spinifex:role": ovn.PeeringNoRouteRole}
 	return [2]ovn.PeeringLinkEnd{
 		{
-			Router: "lr-a",
-			Port:   nbdb.LogicalRouterPort{Name: peerA, MAC: "0a:00:00:00:02:01", Networks: []string{"169.254.192.1/30"}, Peer: &peerB, ExternalIDs: ids},
-			Guard:  nbdb.LogicalRouterPolicy{Priority: 1400, Match: guardMatchA, Action: "drop", ExternalIDs: guardIDs},
+			Router:  "lr-a",
+			Port:    nbdb.LogicalRouterPort{Name: peerA, MAC: "0a:00:00:00:02:01", Networks: []string{"169.254.192.1/30"}, Peer: &peerB, ExternalIDs: ids},
+			Guard:   nbdb.LogicalRouterPolicy{Priority: 1400, Match: guardMatchA, Action: "drop", ExternalIDs: guardIDs},
+			Entry:   nbdb.LogicalRouterStaticRoute{IPPrefix: "10.2.0.0/16", Nexthop: "169.254.192.2", OutputPort: &peerA, ExternalIDs: ids},
+			NoRoute: nbdb.LogicalRouterPolicy{Priority: 1250, Match: "ip4.dst == 10.2.0.0/16", Action: "drop", ExternalIDs: noRouteIDs},
 		},
 		{
-			Router: "lr-b",
-			Port:   nbdb.LogicalRouterPort{Name: peerB, MAC: "0a:00:00:00:02:02", Networks: []string{"169.254.192.2/30"}, Peer: &peerA, ExternalIDs: ids},
-			Guard:  nbdb.LogicalRouterPolicy{Priority: 1400, Match: guardMatchB, Action: "drop", ExternalIDs: guardIDs},
+			Router:  "lr-b",
+			Port:    nbdb.LogicalRouterPort{Name: peerB, MAC: "0a:00:00:00:02:02", Networks: []string{"169.254.192.2/30"}, Peer: &peerA, ExternalIDs: ids},
+			Guard:   nbdb.LogicalRouterPolicy{Priority: 1400, Match: guardMatchB, Action: "drop", ExternalIDs: guardIDs},
+			Entry:   nbdb.LogicalRouterStaticRoute{IPPrefix: "10.1.0.0/16", Nexthop: "169.254.192.1", OutputPort: &peerB, ExternalIDs: ids},
+			NoRoute: nbdb.LogicalRouterPolicy{Priority: 1250, Match: "ip4.dst == 10.1.0.0/16", Action: "drop", ExternalIDs: noRouteIDs},
 		},
 	}
+}
+
+func policiesOfRole(policies []nbdb.LogicalRouterPolicy, role string) []nbdb.LogicalRouterPolicy {
+	var out []nbdb.LogicalRouterPolicy
+	for _, p := range policies {
+		if p.ExternalIDs["spinifex:role"] == role {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func routerRows(t *testing.T, cli ovn.Client, ctx context.Context, router string) (ports int, policies []nbdb.LogicalRouterPolicy) {
@@ -49,23 +64,52 @@ func conformPeeringLink(t *testing.T, cli ovn.Client, ctx context.Context) {
 	assert.Equal(t, []string{"169.254.192.1/30"}, a.Networks)
 	ports, policies := routerRows(t, cli, ctx, "lr-b")
 	assert.Equal(t, 1, ports)
-	require.Len(t, policies, 1)
-	assert.Equal(t, "drop", policies[0].Action)
+	require.Len(t, policies, 2)
+	require.Len(t, policiesOfRole(policies, ovn.PeeringNoRouteRole), 1)
+	assert.Equal(t, 1250, policiesOfRole(policies, ovn.PeeringNoRouteRole)[0].Priority)
+	routes, err := cli.ListStaticRoutes(ctx, "lr-b")
+	require.NoError(t, err)
+	require.Len(t, routes, 1)
+	assert.Equal(t, "10.1.0.0/16", routes[0].IPPrefix)
+	assert.Equal(t, "169.254.192.1", routes[0].Nexthop)
 
 	// A re-ensure rewrites in place and replaces a guard whose match changed.
 	ends := peeringEnds("pcx-1", `inport == "pcx-a" && ip4.src != 10.2.0.0/16`, `inport == "pcx-b" && ip4.src != 10.9.0.0/16`)
 	ends[1].Port.Networks = []string{"169.254.192.6/30"}
+	ends[0].Entry.Nexthop = "169.254.192.6"
 	require.NoError(t, cli.EnsurePeeringLink(ctx, ends))
 	b, err := cli.GetLogicalRouterPort(ctx, "pcx-b")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"169.254.192.6/30"}, b.Networks)
 	ports, policies = routerRows(t, cli, ctx, "lr-b")
 	assert.Equal(t, 1, ports)
-	require.Len(t, policies, 1, "the superseded guard is removed")
-	assert.Contains(t, policies[0].Match, "10.9.0.0/16")
+	guards := policiesOfRole(policies, ovn.PeeringGuardRole)
+	require.Len(t, guards, 1, "the superseded guard is removed")
+	assert.Contains(t, guards[0].Match, "10.9.0.0/16")
+	require.Len(t, policiesOfRole(policies, ovn.PeeringNoRouteRole), 1)
+	routes, err = cli.ListStaticRoutes(ctx, "lr-a")
+	require.NoError(t, err)
+	require.Len(t, routes, 1, "the entry route is rewritten in place")
+	assert.Equal(t, "169.254.192.6", routes[0].Nexthop)
 
-	// A policy another owner placed on the router survives the delete.
+	// Two connections whose peers share a range keep one drop and one entry route each.
+	other := peeringEnds("pcx-3", `inport == "pcx-c" && ip4.src != 10.2.0.0/16`, `inport == "pcx-d" && ip4.src != 10.1.0.0/16`)
+	for i, name := range []string{"pcx-c", "pcx-d"} {
+		peer := []string{"pcx-d", "pcx-c"}[i]
+		other[i].Port.Name, other[i].Port.Peer, other[i].Entry.OutputPort = name, &peer, &name
+	}
+	require.NoError(t, cli.EnsurePeeringLink(ctx, other))
+	require.NoError(t, cli.EnsurePeeringLink(ctx, ends))
+	_, policies = routerRows(t, cli, ctx, "lr-a")
+	assert.Len(t, policiesOfRole(policies, ovn.PeeringNoRouteRole), 2)
+	routes, err = cli.ListStaticRoutes(ctx, "lr-a")
+	require.NoError(t, err)
+	assert.Len(t, routes, 2)
+	require.NoError(t, cli.DeletePeeringLink(ctx, "pcx-3", []string{"lr-a", "lr-b"}))
+
+	// A policy and a static route another owner placed on the router survive the delete.
 	require.NoError(t, cli.AddLogicalRouterPolicy(ctx, "lr-a", &nbdb.LogicalRouterPolicy{Priority: 1100, Match: "ip4.dst == 0.0.0.0/0", Action: "drop"}))
+	require.NoError(t, cli.AddStaticRoute(ctx, "lr-a", &nbdb.LogicalRouterStaticRoute{IPPrefix: "0.0.0.0/0", Nexthop: "169.254.0.1"}))
 	require.NoError(t, cli.AddLogicalRouterPolicy(ctx, "lr-a", &nbdb.LogicalRouterPolicy{
 		Priority: 1333, Match: "ip4.dst == 10.2.0.0/16", Action: "reroute", Nexthop: strPtr("169.254.192.2"),
 		ExternalIDs: map[string]string{ovn.ExternalIDPcxID: "pcx-1"},
@@ -80,6 +124,10 @@ func conformPeeringLink(t *testing.T, cli ovn.Client, ctx context.Context) {
 	}
 	_, policies = routerRows(t, cli, ctx, "lr-a")
 	assert.Len(t, policies, 1)
+	routes, err = cli.ListStaticRoutes(ctx, "lr-a")
+	require.NoError(t, err)
+	require.Len(t, routes, 1)
+	assert.Equal(t, "0.0.0.0/0", routes[0].IPPrefix)
 	require.NoError(t, cli.DeletePeeringLink(ctx, "pcx-1", []string{"lr-a", "lr-b"}), "a repeated delete is a no-op")
 
 	// A link to a router that does not exist writes nothing on the other.

@@ -42,6 +42,31 @@ func TestPeeringGuards_Match(t *testing.T) {
 	}
 }
 
+// Each end's entry route leads to the peer over its own port, and its drop
+// ranks above the system-instance allow and below every peering route.
+func TestPeeringEntries(t *testing.T) {
+	routes, drops, err := PeeringEntries(testLinkSpec())
+	if err != nil {
+		t.Fatalf("PeeringEntries: %v", err)
+	}
+	want := [2]struct{ prefix, nexthop, port string }{
+		{"10.1.0.0/16", "169.254.192.2", "pcx-pcx-1-vpc-a"},
+		{"10.0.0.0/16", "169.254.192.1", "pcx-pcx-1-vpc-b"},
+	}
+	for i, r := range routes {
+		if r.IPPrefix != want[i].prefix || r.Nexthop != want[i].nexthop || r.OutputPort == nil || *r.OutputPort != want[i].port {
+			t.Errorf("entry route %d = %+v, want %+v", i, r, want[i])
+		}
+		if drops[i].Match != "ip4.dst == "+want[i].prefix || drops[i].Action != "drop" {
+			t.Errorf("no-route drop %d = %+v", i, drops[i])
+		}
+	}
+	if SystemInstanceEgressPriority >= PeeringNoRoutePriority || PeeringNoRoutePriority >= peeringRouteBase {
+		t.Errorf("no-route drop at %d is not between the system-instance allow (%d) and the peering routes (%d)",
+			PeeringNoRoutePriority, SystemInstanceEgressPriority, peeringRouteBase)
+	}
+}
+
 func reroute() *PeeringReroute {
 	return &PeeringReroute{
 		PcxID: "pcx-1", Nexthop: netip.MustParseAddr("169.254.192.2"),

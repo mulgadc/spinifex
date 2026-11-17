@@ -31,19 +31,26 @@ type ACLSpec struct {
 }
 
 // ExternalIDPcxID stamps every row a VPC peering connection owns: its link
-// ports, their guards and its reroutes. A route's drop does not carry it.
+// ports, guards, entry routes, no-route drops and reroutes. A route's drop does not.
 const ExternalIDPcxID = "spinifex:pcx_id"
 
 // PeeringGuardRole is the spinifex:role a peering guard policy carries, so a
 // re-ensure can find the connection's other guards on a router.
 const PeeringGuardRole = "peering-guard"
 
+// PeeringNoRouteRole is the spinifex:role of the drop that decides traffic to
+// the peer range wherever no peering route does.
+const PeeringNoRouteRole = "peering-no-route"
+
 // PeeringLinkEnd is one router's end of a VPC peering link: the port that
-// joins it to the peer router, and the guard on traffic arriving through it.
+// joins it to the peer router, the guard on traffic arriving through it, and
+// the entry route and no-route drop that let the policy stage decide the peer range.
 type PeeringLinkEnd struct {
-	Router string
-	Port   nbdb.LogicalRouterPort
-	Guard  nbdb.LogicalRouterPolicy
+	Router  string
+	Port    nbdb.LogicalRouterPort
+	Guard   nbdb.LogicalRouterPolicy
+	Entry   nbdb.LogicalRouterStaticRoute
+	NoRoute nbdb.LogicalRouterPolicy
 }
 
 // Client is the OVN Northbound DB abstraction. The vpcd in-tree
@@ -133,6 +140,7 @@ type Client interface {
 	AddStaticRoute(ctx context.Context, routerName string, route *nbdb.LogicalRouterStaticRoute) error
 	DeleteStaticRoute(ctx context.Context, routerName string, ipPrefix string) error
 	FindStaticRoute(ctx context.Context, routerName, ipPrefix string) (*nbdb.LogicalRouterStaticRoute, error)
+	ListStaticRoutes(ctx context.Context, routerName string) ([]nbdb.LogicalRouterStaticRoute, error)
 
 	// Logical Router Policies (per-subnet egress steering). Identity is the
 	// (router, priority, match) triple — same triple replaces, missing rows
@@ -146,11 +154,11 @@ type Client interface {
 	// so the row is never absent. A missing row is an error.
 	UpdateLogicalRouterPolicy(ctx context.Context, routerName string, policy *nbdb.LogicalRouterPolicy) error
 
-	// EnsurePeeringLink writes both ends' ports and guards in one transaction,
-	// creating each row or rewriting it in place and removing any other guard
-	// the connection holds on either router. A failed transaction changes nothing.
+	// EnsurePeeringLink writes both ends' rows in one transaction, creating each
+	// or rewriting it in place, and removes the connection's other rows of the
+	// same kind on either router. A failed transaction changes nothing.
 	EnsurePeeringLink(ctx context.Context, ends [2]PeeringLinkEnd) error
-	// DeletePeeringLink removes every port and policy stamped with pcxID on the
+	// DeletePeeringLink removes every port, policy and static route stamped pcxID on the
 	// named routers in one transaction. A router absent from NB is skipped.
 	DeletePeeringLink(ctx context.Context, pcxID string, routers []string) error
 

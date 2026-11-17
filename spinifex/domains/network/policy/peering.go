@@ -15,6 +15,11 @@ const (
 	// not peer-to-local, ahead of every route policy.
 	PeeringGuardPriority = 1400
 
+	// PeeringNoRoutePriority drops the peer range wherever no peering route
+	// decides it, above the system-instance allow (1200) so an EIP instance's
+	// allow never accepts the entry route.
+	PeeringNoRoutePriority = 1250
+
 	// peeringRouteBase puts every peering route above the drop gate (1100) and
 	// the system-instance allow (1200). A route to D sits at base + 2·bits(D)
 	// and its reroute one above, so ranks follow longest-prefix match.
@@ -45,6 +50,38 @@ func PeeringGuards(spec topology.PeeringLinkSpec) ([2]nbdb.LogicalRouterPolicy, 
 		}
 	}
 	return out, nil
+}
+
+// PeeringEntries returns each end's entry route, which lets a router with no
+// route covering the peer range reach the policy stage, and the drop that
+// keeps that route from forwarding; requester first.
+func PeeringEntries(spec topology.PeeringLinkSpec) ([2]nbdb.LogicalRouterStaticRoute, [2]nbdb.LogicalRouterPolicy, error) {
+	var routes [2]nbdb.LogicalRouterStaticRoute
+	var drops [2]nbdb.LogicalRouterPolicy
+	for i, vpcID := range []string{spec.RequesterVPC, spec.AccepterVPC} {
+		side, ok := spec.Side(vpcID)
+		if !ok || !side.PeerCIDR.IsValid() || !side.PeerAddr.Is4() {
+			return routes, drops, fmt.Errorf("peering entry %s: peer range and link address required", spec.PcxID)
+		}
+		port := side.LocalPort
+		routes[i] = nbdb.LogicalRouterStaticRoute{
+			IPPrefix:    side.PeerCIDR.String(),
+			Nexthop:     side.PeerAddr.String(),
+			OutputPort:  &port,
+			ExternalIDs: map[string]string{ovn.ExternalIDPcxID: spec.PcxID},
+		}
+		drops[i] = nbdb.LogicalRouterPolicy{
+			Priority: PeeringNoRoutePriority,
+			Match:    fmt.Sprintf("ip4.dst == %s", side.PeerCIDR),
+			Action:   "drop",
+			Options:  map[string]string{},
+			ExternalIDs: map[string]string{
+				ovn.ExternalIDPcxID: spec.PcxID,
+				"spinifex:role":     ovn.PeeringNoRouteRole,
+			},
+		}
+	}
+	return routes, drops, nil
 }
 
 // PeeringReroute delivers the part of a peering route's destination inside

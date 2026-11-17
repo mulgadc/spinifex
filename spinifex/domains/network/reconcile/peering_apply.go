@@ -121,27 +121,67 @@ func peeringLinkEnds(spec topology.PeeringLinkSpec) ([2]ovn.PeeringLinkEnd, erro
 	if err != nil {
 		return [2]ovn.PeeringLinkEnd{}, err
 	}
+	entries, noRoutes, err := policy.PeeringEntries(spec)
+	if err != nil {
+		return [2]ovn.PeeringLinkEnd{}, err
+	}
 	return [2]ovn.PeeringLinkEnd{
-		{Router: topology.VPCRouter(spec.RequesterVPC), Port: ports[0], Guard: guards[0]},
-		{Router: topology.VPCRouter(spec.AccepterVPC), Port: ports[1], Guard: guards[1]},
+		{Router: topology.VPCRouter(spec.RequesterVPC), Port: ports[0], Guard: guards[0], Entry: entries[0], NoRoute: noRoutes[0]},
+		{Router: topology.VPCRouter(spec.AccepterVPC), Port: ports[1], Guard: guards[1], Entry: entries[1], NoRoute: noRoutes[1]},
 	}, nil
 }
 
-// peeringLinkConverged reports whether both ports and both guards already
-// match, so a steady-state pass writes nothing.
+// peeringLinkConverged reports whether every row of both ends already
+// matches, exactly once, so a steady-state pass writes nothing.
 func (r *reconciler) peeringLinkConverged(ctx context.Context, ends [2]ovn.PeeringLinkEnd) bool {
 	for _, end := range ends {
 		port, err := r.ovn.GetLogicalRouterPort(ctx, end.Port.Name)
 		if err != nil || !peeringPortMatches(port, &end.Port) {
 			return false
 		}
-		guard, err := r.ovn.FindLogicalRouterPolicy(ctx, end.Router, end.Guard.Priority, end.Guard.Match)
-		if err != nil || guard == nil || guard.Action != end.Guard.Action ||
-			guard.ExternalIDs[ovn.ExternalIDPcxID] != end.Guard.ExternalIDs[ovn.ExternalIDPcxID] {
+		policies, err := r.ovn.ListLogicalRouterPolicies(ctx, end.Router)
+		if err != nil || !peeringPolicyConverged(policies, &end.Guard) || !peeringPolicyConverged(policies, &end.NoRoute) {
+			return false
+		}
+		routes, err := r.ovn.ListStaticRoutes(ctx, end.Router)
+		if err != nil || !peeringEntryConverged(routes, &end.Entry) {
 			return false
 		}
 	}
 	return true
+}
+
+// peeringPolicyConverged reports one policy of want's connection and role, equal to want.
+func peeringPolicyConverged(policies []nbdb.LogicalRouterPolicy, want *nbdb.LogicalRouterPolicy) bool {
+	pcxID, role := want.ExternalIDs[ovn.ExternalIDPcxID], want.ExternalIDs["spinifex:role"]
+	found := 0
+	for i := range policies {
+		p := &policies[i]
+		if p.ExternalIDs[ovn.ExternalIDPcxID] != pcxID || p.ExternalIDs["spinifex:role"] != role {
+			continue
+		}
+		if found++; p.Priority != want.Priority || p.Match != want.Match || p.Action != want.Action {
+			return false
+		}
+	}
+	return found == 1
+}
+
+// peeringEntryConverged reports one static route of want's connection, equal to want.
+func peeringEntryConverged(routes []nbdb.LogicalRouterStaticRoute, want *nbdb.LogicalRouterStaticRoute) bool {
+	pcxID := want.ExternalIDs[ovn.ExternalIDPcxID]
+	found := 0
+	for i := range routes {
+		rt := &routes[i]
+		if rt.ExternalIDs[ovn.ExternalIDPcxID] != pcxID {
+			continue
+		}
+		if found++; rt.IPPrefix != want.IPPrefix || rt.Nexthop != want.Nexthop ||
+			rt.OutputPort == nil || *rt.OutputPort != *want.OutputPort {
+			return false
+		}
+	}
+	return found == 1
 }
 
 func peeringPortMatches(cur, want *nbdb.LogicalRouterPort) bool {
@@ -180,7 +220,7 @@ func (r *reconciler) applyPeeringRoutes(ctx context.Context, intent IntentState,
 	}
 }
 
-// prunePeeringOrphans deletes link ports, guards and reroutes whose connection
+// prunePeeringOrphans deletes link ports, policies and entry routes whose connection
 // has no live record. It is a backstop behind teardown and runs only on a
 // complete read of the peering bucket.
 func (r *reconciler) prunePeeringOrphans(ctx context.Context, intent IntentState, res *passResult) {
@@ -213,6 +253,16 @@ func (r *reconciler) prunePeeringOrphans(ctx context.Context, intent IntentState
 		}
 		for _, p := range policies {
 			if id := p.ExternalIDs[ovn.ExternalIDPcxID]; id != "" {
+				orphans[id] = struct{}{}
+			}
+		}
+		routes, err := r.ovn.ListStaticRoutes(ctx, lr.Name)
+		if err != nil {
+			res.fail(classPeeringLink, "prune", err)
+			return
+		}
+		for _, rt := range routes {
+			if id := rt.ExternalIDs[ovn.ExternalIDPcxID]; id != "" {
 				orphans[id] = struct{}{}
 			}
 		}

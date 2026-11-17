@@ -699,6 +699,22 @@ func (m *Client) FindStaticRoute(_ context.Context, routerName, ipPrefix string)
 	return nil, nil
 }
 
+func (m *Client) ListStaticRoutes(_ context.Context, routerName string) ([]nbdb.LogicalRouterStaticRoute, error) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	lr, exists := m.Routers[routerName]
+	if !exists {
+		return nil, fmt.Errorf("logical router %q not found", routerName)
+	}
+	var out []nbdb.LogicalRouterStaticRoute
+	for _, uuid := range lr.StaticRoutes {
+		if r, ok := m.StaticRoutes[uuid]; ok {
+			out = append(out, *r)
+		}
+	}
+	return out, nil
+}
+
 func (m *Client) DeleteStaticRoute(_ context.Context, routerName string, ipPrefix string) error {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()

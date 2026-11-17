@@ -161,11 +161,13 @@ var ec2Scopes = map[string][]*resourceScope{
 	"CopySnapshot": {snapshotNewScope},
 
 	// Images.
-	"CreateImage":          {imageNewScope, instanceScope},
-	"RegisterImage":        {imageNewScope},
-	"DeregisterImage":      {imageScope},
-	"ModifyImageAttribute": {imageScope},
-	"ResetImageAttribute":  {imageScope},
+	"CreateImage":             {imageNewScope, instanceScope},
+	"RegisterImage":           {imageNewScope},
+	"DeregisterImage":         {imageScope},
+	"ModifyImageAttribute":    {imageScope},
+	"ResetImageAttribute":     {imageScope},
+	"EnableImageDeprecation":  {imageScope},
+	"DisableImageDeprecation": {imageScope},
 	// Source image is in SourceRegion, as with CopySnapshot.
 	"CopyImage": {imageNewScope},
 

@@ -18,7 +18,7 @@ tags:
 
 ## Overview
 
-Spinifex implements **138 operations** in the EC2 `2016-11-15` API model.
+Spinifex implements **140 operations** in the EC2 `2016-11-15` API model.
 
 ### Spot Instances Are a Mock
 
@@ -157,11 +157,13 @@ Whether new volumes are encrypted is decided by the platform's encryption key, n
 | `DetachNetworkInterface` |
 | `DetachVolume` |
 | `DisableEbsEncryptionByDefault` |
+| `DisableImageDeprecation` |
 | `DisableSerialConsoleAccess` |
 | `DisassociateAddress` |
 | `DisassociateIamInstanceProfile` |
 | `DisassociateRouteTable` |
 | `EnableEbsEncryptionByDefault` |
+| `EnableImageDeprecation` |
 | `EnableSerialConsoleAccess` |
 | `GetConsoleOutput` |
 | `GetDefaultCreditSpecification` |

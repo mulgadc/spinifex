@@ -49,7 +49,7 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 
 ## ec2
 
-`2016-11-15` — 138 of 811 modelled operations implemented (17.0%), 0 stubbed, 186 require SDK v2, 35 not applicable, 0 registered outside the pinned model.
+`2016-11-15` — 140 of 811 modelled operations implemented (17.3%), 0 stubbed, 186 require SDK v2, 35 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -322,7 +322,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `DisableFastSnapshotRestores`
 - `DisableImage`
 - `DisableImageBlockPublicAccess`
-- `DisableImageDeprecation`
 - `DisableImageDeregistrationProtection`
 - `DisableIpamOrganizationAdminAccount`
 - `DisableSnapshotBlockPublicAccess`
@@ -345,7 +344,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `EnableFastSnapshotRestores`
 - `EnableImage`
 - `EnableImageBlockPublicAccess`
-- `EnableImageDeprecation`
 - `EnableImageDeregistrationProtection`
 - `EnableIpamOrganizationAdminAccount`
 - `EnableReachabilityAnalyzerOrganizationSharing`

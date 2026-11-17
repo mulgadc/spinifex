@@ -163,6 +163,9 @@ type AMI struct {
 	// UEFIData names the image's own UEFI variable store object; nil launches
 	// from the node's VARS template.
 	UEFIData *UEFIDataRef `json:"uefi_data,omitempty"`
+	// DeprecationTime is when EnableImageDeprecation deprecates the image;
+	// nil means the image is never deprecated.
+	DeprecationTime *time.Time `json:"deprecation_time,omitempty"`
 }
 
 // Available reports an AMI an instance may launch from or a copy may read. An

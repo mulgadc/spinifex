@@ -14,7 +14,8 @@ import (
 
 // applyPeeringLinks tears down every connection in PeeringTeardowns, then
 // writes each link and its guards as one transaction and confirms a
-// provisioning connection active. It returns the links realised this pass.
+// provisioning connection active. It returns the links that may deliver this
+// pass: realised, and active before the pass or confirmed active during it.
 func (r *reconciler) applyPeeringLinks(ctx context.Context, intent IntentState, actual ActualState, res *passResult) map[string]bool {
 	if intent.PeeringIncomplete != nil {
 		slog.Warn("reconcile/apply: peering intent incomplete; peering left unchanged", "err", intent.PeeringIncomplete)
@@ -38,7 +39,7 @@ func (r *reconciler) applyPeeringLinks(ctx context.Context, intent IntentState, 
 		}
 	}
 
-	realised := map[string]bool{}
+	deliver := map[string]bool{}
 	var pending []string
 	for _, id := range slices.Sorted(maps.Keys(intent.PeeringLinks)) {
 		link := intent.PeeringLinks[id]
@@ -64,20 +65,25 @@ func (r *reconciler) applyPeeringLinks(ctx context.Context, intent IntentState, 
 			}
 			slog.Info("reconcile/apply: peering link written", "vpc_peering_connection_id", id)
 		}
-		realised[id] = true
-		if !link.Active {
+		switch {
+		case link.Active || r.markPeeringActive == nil:
+			deliver[id] = true
+		default:
 			pending = append(pending, id)
 		}
 	}
-	r.confirmPeeringActive(ctx, intent.PeeringLinks, pending, res)
-	return realised
+	for _, id := range r.confirmPeeringActive(ctx, intent.PeeringLinks, pending, res) {
+		deliver[id] = true
+	}
+	return deliver
 }
 
 // confirmPeeringActive waits once for chassis to install the links' flows,
-// then reports each generation realised. A failed report is retried next pass.
-func (r *reconciler) confirmPeeringActive(ctx context.Context, links map[string]PeeringLinkIntent, ids []string, res *passResult) {
-	if r.markPeeringActive == nil || len(ids) == 0 {
-		return
+// then reports each generation realised and returns those it confirmed. A
+// failed report is retried next pass.
+func (r *reconciler) confirmPeeringActive(ctx context.Context, links map[string]PeeringLinkIntent, ids []string, res *passResult) []string {
+	if len(ids) == 0 {
+		return nil
 	}
 	if r.flowsBarrier != nil {
 		if err := r.flowsBarrier(); err != nil {
@@ -85,15 +91,19 @@ func (r *reconciler) confirmPeeringActive(ctx context.Context, links map[string]
 			for _, id := range ids {
 				res.fail(classPeeringLink, id, err)
 			}
-			return
+			return nil
 		}
 	}
+	var confirmed []string
 	for _, id := range ids {
 		if err := r.markPeeringActive(ctx, id, links[id].Generation); err != nil {
 			slog.Warn("reconcile/apply: marking peering connection active failed", "vpc_peering_connection_id", id, "err", err)
 			res.fail(classPeeringLink, id, err)
+			continue
 		}
+		confirmed = append(confirmed, id)
 	}
+	return confirmed
 }
 
 type routerMissingError string
@@ -141,9 +151,9 @@ func peeringPortMatches(cur, want *nbdb.LogicalRouterPort) bool {
 }
 
 // applyPeeringRoutes makes each local VPC router's peering route policies
-// exactly what its tables say. A route delivers only over a link realised this
-// pass whose connection is active; every other route keeps only its drop.
-func (r *reconciler) applyPeeringRoutes(ctx context.Context, intent IntentState, actual ActualState, realised map[string]bool, res *passResult) {
+// exactly what its tables say. A route delivers only over a link in deliver;
+// every other route keeps only its drop.
+func (r *reconciler) applyPeeringRoutes(ctx context.Context, intent IntentState, actual ActualState, deliver map[string]bool, res *passResult) {
 	if intent.PeeringIncomplete != nil {
 		return
 	}
@@ -152,7 +162,7 @@ func (r *reconciler) applyPeeringRoutes(ctx context.Context, intent IntentState,
 		spec := policy.PeeringRouteSpec{
 			RouteTableID: route.RouteTableID, SubnetID: route.SubnetID, Dest: route.Dest, Exclude: route.Exclude,
 		}
-		if link, ok := intent.PeeringLinks[route.PcxID]; ok && realised[route.PcxID] && (link.Active || r.markPeeringActive == nil) {
+		if link, ok := intent.PeeringLinks[route.PcxID]; ok && deliver[route.PcxID] {
 			if side, ok := link.Spec.Side(route.VPCID); ok {
 				spec.Reroute = &policy.PeeringReroute{PcxID: route.PcxID, Nexthop: side.PeerAddr, OutputPort: side.LocalPort, PeerCIDR: side.PeerCIDR}
 			}

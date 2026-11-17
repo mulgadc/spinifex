@@ -396,8 +396,8 @@ func (r *reconciler) reconcile(ctx context.Context, intent IntentState, pruneTop
 	r.applyNATGWs(ctx, intent, actual, res)
 	r.applyIGWRoutes(ctx, intent, actual, res)
 	r.applyNATGWRoutes(ctx, intent, actual, res)
-	realised := r.applyPeeringLinks(ctx, intent, actual, res)
-	r.applyPeeringRoutes(ctx, intent, actual, realised, res)
+	deliver := r.applyPeeringLinks(ctx, intent, actual, res)
+	r.applyPeeringRoutes(ctx, intent, actual, deliver, res)
 	if pruneTopology {
 		r.prunePeeringOrphans(ctx, intent, res)
 	}

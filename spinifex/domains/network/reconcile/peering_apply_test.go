@@ -111,7 +111,7 @@ func linkPortCount(m *mock.Client) int {
 }
 
 // A provisioning connection gets its link and guards, is confirmed active only
-// after the flows barrier, and its routes deliver only once the record says active.
+// after the flows barrier, and its routes deliver in the pass that confirms it.
 func TestReconcile_PeeringProvisioningThenActive(t *testing.T) {
 	rec, m := newTestReconciler(t)
 	p := &peeringRecorder{}
@@ -131,8 +131,8 @@ func TestReconcile_PeeringProvisioningThenActive(t *testing.T) {
 		if got := peeringRows(m, router, "peering-route-drop"); got != 1 {
 			t.Errorf("%s route drops = %d, want 1", router, got)
 		}
-		if got := peeringRows(m, router, "peering-reroute"); got != 0 {
-			t.Errorf("%s reroutes before active = %d, want 0", router, got)
+		if got := peeringRows(m, router, "peering-reroute"); got != 1 {
+			t.Errorf("%s reroutes in the confirming pass = %d, want 1", router, got)
 		}
 	}
 	if !slices.Equal(p.order, []string{"barrier", "active:" + testPcx}) {
@@ -278,5 +278,27 @@ func TestReconcile_PeeringOrphanPrunedOnlyWhenPruning(t *testing.T) {
 	}
 	if got := peeringRows(m, "vpc-vpc-a", ovn.PeeringGuardRole); got != 0 {
 		t.Errorf("guards after prune = %d, want 0", got)
+	}
+}
+
+// A connection whose activation report fails keeps only its route drops, so
+// traffic never flows while the record still says provisioning.
+func TestReconcile_PeeringUnconfirmedLinkDoesNotDeliver(t *testing.T) {
+	rec, m := newTestReconciler(t)
+	p := &peeringRecorder{}
+	p.wire(rec)
+	rec.markPeeringActive = func(context.Context, string, int64) error { return errors.New("kv unavailable") }
+	ctx := context.Background()
+
+	if err := rec.Reconcile(ctx, peeringIntent(false)); !errors.Is(err, ErrPassIncomplete) {
+		t.Fatalf("Reconcile = %v, want ErrPassIncomplete", err)
+	}
+	if got := linkPortCount(m); got != 2 {
+		t.Errorf("link ports = %d, want 2", got)
+	}
+	for _, router := range []string{"vpc-vpc-a", "vpc-vpc-b"} {
+		if got := peeringRows(m, router, "peering-reroute"); got != 0 {
+			t.Errorf("%s reroutes while unconfirmed = %d, want 0", router, got)
+		}
 	}
 }

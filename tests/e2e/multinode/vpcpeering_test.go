@@ -43,7 +43,14 @@ func runMultinodeVPCPeering(t *testing.T, fix *Fixture) {
 	t.Cleanup(func() { harness.DeleteVPC(t, c, peerVPC) })
 	peerSubnet := harness.CreateSubnet(t, c, peerVPC, "10.210.1.0/24")
 	t.Cleanup(func() { harness.DeleteSubnet(t, c, peerSubnet) })
-	peerSG := harness.EnsureSG(t, fix.Harness, peerVPC, "peering-icmp")
+	// The peer VPC's default group goes with the VPC, so cleanup leaves no dependency.
+	sgs, err := c.EC2.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{Filters: []*ec2.Filter{
+		{Name: aws.String("vpc-id"), Values: []*string{aws.String(peerVPC)}},
+		{Name: aws.String("group-name"), Values: []*string{aws.String("default")}},
+	}})
+	require.NoError(t, err, "describe-security-groups default %s", peerVPC)
+	require.NotEmpty(t, sgs.SecurityGroups, "no default SG for %s", peerVPC)
+	peerSG := aws.StringValue(sgs.SecurityGroups[0].GroupId)
 	harness.AuthorizeICMPIngress(t, c, peerSG)
 
 	dstID := baselineLaunch(t, fix, amiID, instType, keyName, peerSubnet, []string{peerSG}, spread)

@@ -325,6 +325,51 @@ func runVPCPeering(t *testing.T, fix *Fixture) {
 		requirePolicyDrop(t, tracePolicy(t, a.vpcID, abLinkA, b.privateIP, "8.8.8.8"), 1400, "B -> A's internet gateway")
 	})
 
+	t.Run("NoDefaultRoute", func(t *testing.T) {
+		harness.SkipIfNoOVN(t)
+		harness.Step(t, "traces: a peer with no default route, and a public instance with no peering route")
+		const noRoutePriority, eHost = 1250, "10.157.1.10"
+		e := harness.CreateVPC(t, c, "10.157.0.0/16")
+		t.Cleanup(func() { harness.DeleteVPC(t, c, e) })
+		eSubnet := harness.CreateSubnet(t, c, e, "10.157.1.0/24")
+		t.Cleanup(func() { harness.DeleteSubnet(t, c, eSubnet) })
+		ae := createPeering(t, c, a.vpcID, e)
+		acceptPeering(t, c, ae)
+		ePort, eRtb := "rtr-"+eSubnet, mainRouteTableID(t, c, e)
+
+		// E has no IGW and so no static route: the link's entry route takes its
+		// traffic to A into the policy stage, where only a peering route delivers it.
+		requirePolicyDrop(t, tracePolicy(t, e, ePort, eHost, a.privateIP), noRoutePriority, "E with no route to A")
+		peeringRoute(t, c, eRtb, a.cidr, ae)
+		t.Cleanup(func() {
+			_, _ = c.EC2.DeleteRoute(&ec2.DeleteRouteInput{RouteTableId: aws.String(eRtb), DestinationCidrBlock: aws.String(a.cidr)})
+		})
+		harness.Eventually(t, func() bool {
+			return strings.Contains(tracePolicy(t, e, ePort, eHost, a.privateIP), "outport = ")
+		}, 60*time.Second, 2*time.Second, "E's route to A never realised")
+		requirePolicyReroute(t, tracePolicy(t, e, ePort, eHost, a.privateIP), peeringDropPriority(16)+1, "pcx-"+ae+"-"+e, "E to A with no default route")
+
+		// Without its default route A's subnet is gated and A's public instance
+		// holds the system-instance allow, which must not accept the entry route.
+		_, err := c.EC2.DeleteRoute(&ec2.DeleteRouteInput{RouteTableId: aws.String(a.rtbID), DestinationCidrBlock: aws.String("0.0.0.0/0")})
+		require.NoError(t, err, "delete-route 0.0.0.0/0")
+		t.Cleanup(func() {
+			_, err := c.EC2.CreateRoute(&ec2.CreateRouteInput{
+				RouteTableId: aws.String(a.rtbID), DestinationCidrBlock: aws.String("0.0.0.0/0"), GatewayId: aws.String(a.igwID),
+			})
+			require.NoError(t, err, "restore 0.0.0.0/0 -> igw")
+		})
+		harness.Eventually(t, func() bool {
+			for line := range strings.SplitSeq(harness.OvnNbctl(t, "lr-policy-list", "vpc-"+a.vpcID), "\n") {
+				if strings.Contains(line, " 1200 ") && strings.Contains(line, a.privateIP) {
+					return true
+				}
+			}
+			return false
+		}, 60*time.Second, 2*time.Second, "A's public instance never got its system-instance allow")
+		requirePolicyDrop(t, tracePolicy(t, a.vpcID, "rtr-"+a.subnetID, a.privateIP, eHost), noRoutePriority, "public instance with no peering route")
+	})
+
 	t.Run("DeleteVpcWhileActive", func(t *testing.T) {
 		harness.Step(t, "8. DeleteVpc refuses an active connection")
 		x := harness.CreateVPC(t, c, "10.153.0.0/16")

@@ -1365,12 +1365,10 @@ func (s *ImageServiceImpl) setDeregistrationProtection(ctx context.Context, imag
 		}
 		return "", err
 	}
-	if meta.DeregistrationProtection != protection {
-		meta.DeregistrationProtection = protection
-		if err := s.putAMIConfig(ctx, imageID, meta); err != nil {
-			slog.ErrorContext(ctx, "setDeregistrationProtection: failed to write AMI config", "imageId", imageID, "err", err)
-			return "", errors.New(awserrors.ErrorServerInternal)
-		}
+	meta.DeregistrationProtection = protection
+	if err := s.putAMIConfig(ctx, imageID, meta); err != nil {
+		slog.ErrorContext(ctx, "setDeregistrationProtection: failed to write AMI config", "imageId", imageID, "err", err)
+		return "", errors.New(awserrors.ErrorServerInternal)
 	}
 	slog.InfoContext(ctx, "Image deregistration protection set", "imageId", imageID, "state", meta.DeregistrationProtectionState(), "accountId", accountID)
 	return meta.DeregistrationProtectionState(), nil

@@ -24,6 +24,10 @@ const (
 	// The requirement: traffic is back within five minutes of the fault.
 	shRecoveryBudget = 5 * time.Minute
 
+	// The platform leaves a load balancer guest alone until it has been active
+	// this long (lbRepairMinVMAge in domains/elbv2/lb_repair.go).
+	shLBMinAge = 5 * time.Minute
+
 	// The data NIC of a load balancer guest; the management NIC is the last.
 	shDataNIC = "net0"
 
@@ -68,6 +72,7 @@ type shInstanceSnap struct {
 func runLBSelfHeal(t *testing.T, fix *Fixture, kind shKind) {
 	harness.Phase(t, "A %s repairs a dead data NIC", kind.name)
 	f := shSetup(t, fix, kind)
+	activeAt := time.Now()
 	internetFacing := kind.scheme == "internet-facing"
 	cli := fix.AWS
 
@@ -85,6 +90,10 @@ func runLBSelfHeal(t *testing.T, fix *Fixture, kind shKind) {
 
 	if client != "" {
 		shLogClockSkew(t, cli, client)
+	}
+	if wait := time.Until(activeAt.Add(shLBMinAge)); wait > 0 {
+		harness.Step(t, "wait until the load balancer has been active for %s", shLBMinAge)
+		time.Sleep(wait)
 	}
 	before := shSnapshot(t, fix, customers)
 	lbBefore := shLBIdentity(t, fix, f)

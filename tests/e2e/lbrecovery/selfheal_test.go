@@ -71,8 +71,7 @@ type shInstanceSnap struct {
 
 func runLBSelfHeal(t *testing.T, fix *Fixture, kind shKind) {
 	harness.Phase(t, "A %s repairs a dead data NIC", kind.name)
-	f := shSetup(t, fix, kind)
-	activeAt := time.Now()
+	f, activeAt := shSetup(t, fix, kind)
 	internetFacing := kind.scheme == "internet-facing"
 	cli := fix.AWS
 
@@ -449,8 +448,8 @@ func shLaunchBystander(t *testing.T, fix *Fixture, f *albFixture) string {
 }
 
 // shSetup builds the VPC, a load balancer of the given kind with a listener,
-// and two registered backends.
-func shSetup(t *testing.T, fix *Fixture, kind shKind) *albFixture {
+// and two registered backends, and also returns when it saw the LB active.
+func shSetup(t *testing.T, fix *Fixture, kind shKind) (*albFixture, time.Time) {
 	t.Helper()
 	f := &albFixture{}
 	instanceType, arch := harness.DiscoverNanoInstanceType(t, fix.Harness)
@@ -519,6 +518,7 @@ func shSetup(t *testing.T, fix *Fixture, kind shKind) *albFixture {
 	t.Cleanup(func() { lbrDeleteListener(t, c, f) })
 
 	harness.WaitForLBActive(t, c, f.LBArn, kind.name, albActiveBudget)
+	activeAt := time.Now()
 	shDiscoverPlacement(t, fix, f, kind)
 
 	for len(f.TargetIDs) < lbrTargets {
@@ -528,7 +528,7 @@ func shSetup(t *testing.T, fix *Fixture, kind shKind) *albFixture {
 	}
 	lbrRegisterTargets(t, c, f)
 	harness.WaitForTargetsHealthy(t, c, f.TGArn, lbrTargets, kind.name+" targets", targetsHealthyBudget)
-	return f
+	return f, activeAt
 }
 
 // shDiscoverPlacement finds the load balancer's guest through the ENI it is

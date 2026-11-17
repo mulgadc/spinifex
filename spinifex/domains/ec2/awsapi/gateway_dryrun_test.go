@@ -25,6 +25,8 @@ func TestEC2Request_DryRunDeniedCaller(t *testing.T) {
 	gwtest.AssertUnauthorized(t, dispatchEC2(t, h, "Action=CreateVpc&CidrBlock=10.0.0.0/16&DryRun=true"))
 	assertDryRun(t, dispatchEC2(t, h, "Action=CreateSecurityGroup&GroupName=g&GroupDescription=d&DryRun=true"))
 	assertDryRun(t, dispatchEC2(t, h, "Action=ResetNetworkInterfaceAttribute&NetworkInterfaceId=eni-0f3a9c2b7d1e4a5b6&SourceDestCheck=&DryRun=true"))
+	assertDryRun(t, dispatchEC2(t, h, "Action=EnableImageDeregistrationProtection&ImageId=ami-0123456789abcdef0&DryRun=true"))
+	assertDryRun(t, dispatchEC2(t, h, "Action=DisableImageDeregistrationProtection&ImageId=ami-0123456789abcdef0&DryRun=true"))
 	assertDryRun(t, dispatchEC2(t, h, "Action=GetDefaultCreditSpecification&InstanceFamily=t3&DryRun=true"))
 }
 

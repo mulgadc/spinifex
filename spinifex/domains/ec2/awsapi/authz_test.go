@@ -104,6 +104,8 @@ func TestResourceARNs(t *testing.T) {
 		{"DeregisterImage", map[string]string{"ImageId": "ami-1"}, []string{ec2arn("image", "ami-1")}},
 		{"ModifyImageAttribute", map[string]string{"ImageId": "ami-1"}, []string{ec2arn("image", "ami-1")}},
 		{"ResetImageAttribute", map[string]string{"ImageId": "ami-1"}, []string{ec2arn("image", "ami-1")}},
+		{"EnableImageDeregistrationProtection", map[string]string{"ImageId": "ami-1"}, []string{ec2arn("image", "ami-1")}},
+		{"DisableImageDeregistrationProtection", map[string]string{"ImageId": "ami-1"}, []string{ec2arn("image", "ami-1")}},
 		{"EnableImageDeprecation", map[string]string{"ImageId": "ami-1"}, []string{ec2arn("image", "ami-1")}},
 		{"DisableImageDeprecation", map[string]string{"ImageId": "ami-1"}, []string{ec2arn("image", "ami-1")}},
 
@@ -409,6 +411,8 @@ var ec2Inputs = map[string]any{
 	"ModifySecurityGroupRules":                   &ec2.ModifySecurityGroupRulesInput{},
 	"RequestSpotInstances":                       &ec2.RequestSpotInstancesInput{},
 	"ResetImageAttribute":                        &ec2.ResetImageAttributeInput{},
+	"EnableImageDeregistrationProtection":        &ec2.EnableImageDeregistrationProtectionInput{},
+	"DisableImageDeregistrationProtection":       &ec2.DisableImageDeregistrationProtectionInput{},
 	"ResetInstanceAttribute":                     &ec2.ResetInstanceAttributeInput{},
 	"ResetNetworkInterfaceAttribute":             &ec2.ResetNetworkInterfaceAttributeInput{},
 	"RevokeSecurityGroupEgress":                  &ec2.RevokeSecurityGroupEgressInput{},

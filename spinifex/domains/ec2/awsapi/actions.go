@@ -306,6 +306,12 @@ var ec2Actions = map[string]ec2Action{
 	"ResetImageAttribute": ec2Handler(func(ctx context.Context, input *ec2.ResetImageAttributeInput, c *call, accountID string) (any, error) {
 		return ec2imageapi.ResetImageAttribute(ctx, input, c.NATS, accountID)
 	}),
+	"EnableImageDeregistrationProtection": ec2Handler(func(ctx context.Context, input *ec2.EnableImageDeregistrationProtectionInput, c *call, accountID string) (any, error) {
+		return ec2imageapi.EnableImageDeregistrationProtection(ctx, input, c.NATS, accountID)
+	}),
+	"DisableImageDeregistrationProtection": ec2Handler(func(ctx context.Context, input *ec2.DisableImageDeregistrationProtectionInput, c *call, accountID string) (any, error) {
+		return ec2imageapi.DisableImageDeregistrationProtection(ctx, input, c.NATS, accountID)
+	}),
 	"EnableImageDeprecation": ec2Handler(func(ctx context.Context, input *ec2.EnableImageDeprecationInput, c *call, accountID string) (any, error) {
 		return ec2imageapi.EnableImageDeprecation(ctx, input, c.NATS, accountID)
 	}),

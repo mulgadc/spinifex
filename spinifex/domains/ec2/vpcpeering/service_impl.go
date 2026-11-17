@@ -118,7 +118,7 @@ func (s *ServiceImpl) CreateVpcPeeringConnection(ctx context.Context, input *ec2
 	if existing, err := s.openRequest(ctx, vpcID, peerVpcID); err != nil {
 		return nil, internalError(ctx, "CreateVpcPeeringConnection", err)
 	} else if existing != nil {
-		return &ec2.CreateVpcPeeringConnectionOutput{VpcPeeringConnection: viewToEC2(existing, accountID)}, nil
+		return &ec2.CreateVpcPeeringConnectionOutput{VpcPeeringConnection: existingToEC2(existing, accountID)}, nil
 	}
 
 	now := s.now()
@@ -184,7 +184,7 @@ func (s *ServiceImpl) CreateVpcPeeringConnection(ctx context.Context, input *ec2
 		if winner == nil {
 			return nil, internalError(ctx, "CreateVpcPeeringConnection", fmt.Errorf("winning request %s vanished", holder))
 		}
-		return &ec2.CreateVpcPeeringConnectionOutput{VpcPeeringConnection: viewToEC2(winner, accountID)}, nil
+		return &ec2.CreateVpcPeeringConnectionOutput{VpcPeeringConnection: existingToEC2(winner, accountID)}, nil
 	}
 
 	slog.InfoContext(ctx, "CreateVpcPeeringConnection completed", "vpcPeeringConnectionId", rec.ID,

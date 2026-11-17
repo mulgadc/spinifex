@@ -131,6 +131,17 @@ func viewToEC2(v *view, viewer string) *ec2.VpcPeeringConnection {
 	return toEC2(&v.rec, viewer, v.status, v.message, shapeFor(v.status))
 }
 
+// existingToEC2 renders the connection a repeated Create returns. AWS shows a
+// linked one's accepter with its CidrBlock alone.
+func existingToEC2(v *view, viewer string) *ec2.VpcPeeringConnection {
+	out := viewToEC2(v, viewer)
+	if shapeFor(v.status) == shapeLinked {
+		out.AccepterVpcInfo.CidrBlockSet = nil
+		out.AccepterVpcInfo.PeeringOptions = nil
+	}
+	return out
+}
+
 // optionsDescription renders one side's options for the Modify output.
 func optionsDescription(o PeeringOptions) *ec2.PeeringConnectionOptions {
 	return &ec2.PeeringConnectionOptions{

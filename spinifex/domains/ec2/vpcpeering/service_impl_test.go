@@ -94,6 +94,10 @@ func TestCreate_RepeatedRequestReturnsExistingWithNoWrite(t *testing.T) {
 	again = f.create(t, vpcA, vpcB)
 	assert.Equal(t, id, *again.VpcPeeringConnectionId)
 	assert.Equal(t, StateActive, *again.Status.Code)
+	assert.NotNil(t, again.AccepterVpcInfo.CidrBlock)
+	assert.Nil(t, again.AccepterVpcInfo.CidrBlockSet, "AWS shows a repeated request's accepter by CidrBlock alone")
+	assert.Nil(t, again.AccepterVpcInfo.PeeringOptions)
+	assert.NotNil(t, again.RequesterVpcInfo.PeeringOptions)
 
 	reversed := f.create(t, vpcB, vpcA)
 	assert.NotEqual(t, id, *reversed.VpcPeeringConnectionId, "a reversed request is another direction")

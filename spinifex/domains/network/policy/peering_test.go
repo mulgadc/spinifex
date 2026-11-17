@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"testing"
 
@@ -135,3 +136,44 @@ func TestSyncPeeringRoutes(t *testing.T) {
 		t.Error("stale peering route row survived")
 	}
 }
+
+// A subnet moving to another table with the same blackhole destination keeps
+// its drop throughout: the row is rewritten in place, and a failed rewrite
+// leaves the old drop rather than none.
+func TestSyncPeeringRoutes_ReassociationKeepsDrop(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	if err := m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-vpc-a"}); err != nil {
+		t.Fatalf("CreateLogicalRouter: %v", err)
+	}
+	mgr := NewPeeringRouteManager(m)
+	spec := PeeringRouteSpec{RouteTableID: "rtb-1", SubnetID: "subnet-1", Dest: netip.MustParsePrefix("10.1.0.0/16")}
+	if err := mgr.SyncPeeringRoutes(ctx, "vpc-a", PeeringRouteRows(spec)); err != nil {
+		t.Fatalf("SyncPeeringRoutes: %v", err)
+	}
+	drop := PeeringRouteRows(spec)[0]
+	before, _ := m.FindLogicalRouterPolicy(ctx, "vpc-vpc-a", drop.Priority, drop.Match)
+	if before == nil {
+		t.Fatal("drop not written")
+	}
+
+	spec.RouteTableID = "rtb-2"
+	m.UpdateLogicalRouterPolicyErr = errInjected
+	if err := mgr.SyncPeeringRoutes(ctx, "vpc-a", PeeringRouteRows(spec)); err == nil {
+		t.Fatal("SyncPeeringRoutes succeeded with the rewrite failing")
+	}
+	if got, _ := m.FindLogicalRouterPolicy(ctx, "vpc-vpc-a", drop.Priority, drop.Match); got == nil || got.Action != "drop" {
+		t.Fatalf("drop after a failed rewrite = %+v, want the old drop", got)
+	}
+
+	m.UpdateLogicalRouterPolicyErr = nil
+	if err := mgr.SyncPeeringRoutes(ctx, "vpc-a", PeeringRouteRows(spec)); err != nil {
+		t.Fatalf("SyncPeeringRoutes: %v", err)
+	}
+	got, _ := m.FindLogicalRouterPolicy(ctx, "vpc-vpc-a", drop.Priority, drop.Match)
+	if got == nil || got.UUID != before.UUID || got.ExternalIDs["spinifex:rtb_id"] != "rtb-2" {
+		t.Errorf("drop = %+v, want row %s rewritten to rtb-2", got, before.UUID)
+	}
+}
+
+var errInjected = errors.New("injected")

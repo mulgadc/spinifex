@@ -141,6 +141,10 @@ type Client interface {
 	DeleteLogicalRouterPolicy(ctx context.Context, routerName string, priority int, match string) error
 	FindLogicalRouterPolicy(ctx context.Context, routerName string, priority int, match string) (*nbdb.LogicalRouterPolicy, error)
 	ListLogicalRouterPolicies(ctx context.Context, routerName string) ([]nbdb.LogicalRouterPolicy, error)
+	// UpdateLogicalRouterPolicy rewrites the action, next hops, options and
+	// external IDs of the row with policy's priority and match in one write,
+	// so the row is never absent. A missing row is an error.
+	UpdateLogicalRouterPolicy(ctx context.Context, routerName string, policy *nbdb.LogicalRouterPolicy) error
 
 	// EnsurePeeringLink writes both ends' ports and guards in one transaction,
 	// creating each row or rewriting it in place and removing any other guard

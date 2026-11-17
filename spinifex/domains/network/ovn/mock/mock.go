@@ -49,6 +49,9 @@ type Client struct {
 	// EnsurePeeringLinkErr, when set, fails EnsurePeeringLink with no change.
 	EnsurePeeringLinkErr   error
 	EnsurePeeringLinkCalls int
+
+	// UpdateLogicalRouterPolicyErr, when set, fails UpdateLogicalRouterPolicy with no change.
+	UpdateLogicalRouterPolicyErr error
 }
 
 var _ ovn.Client = (*Client)(nil)
@@ -777,6 +780,27 @@ func (m *Client) ListLogicalRouterPolicies(_ context.Context, routerName string)
 		}
 	}
 	return out, nil
+}
+
+func (m *Client) UpdateLogicalRouterPolicy(_ context.Context, routerName string, policy *nbdb.LogicalRouterPolicy) error {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if m.UpdateLogicalRouterPolicyErr != nil {
+		return m.UpdateLogicalRouterPolicyErr
+	}
+	lr, exists := m.Routers[routerName]
+	if !exists {
+		return fmt.Errorf("logical router %q not found", routerName)
+	}
+	for _, uuid := range lr.Policies {
+		p, ok := m.LRPolicies[uuid]
+		if ok && p.Priority == policy.Priority && p.Match == policy.Match {
+			p.Action, p.Nexthop, p.Nexthops = policy.Action, policy.Nexthop, policy.Nexthops
+			p.Options, p.ExternalIDs = maps.Clone(policy.Options), maps.Clone(policy.ExternalIDs)
+			return nil
+		}
+	}
+	return fmt.Errorf("LR policy %d %q not found on %s", policy.Priority, policy.Match, routerName)
 }
 
 func (m *Client) DeleteLogicalRouterPolicy(_ context.Context, routerName string, priority int, match string) error {

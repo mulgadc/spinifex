@@ -161,9 +161,12 @@ func (m *peeringRouteManager) SyncPeeringRoutes(ctx context.Context, vpcID strin
 			if peeringRowMatches(cur, &row) {
 				continue
 			}
-			if err := m.ovn.DeleteLogicalRouterPolicy(ctx, router, row.Priority, row.Match); err != nil {
-				return fmt.Errorf("delete drifted peering policy %q on %s: %w", row.Match, router, err)
+			// Rewritten in place: a delete then add would leave the destination
+			// to the default route if the add failed.
+			if err := m.ovn.UpdateLogicalRouterPolicy(ctx, router, &row); err != nil {
+				return fmt.Errorf("update drifted peering policy %q on %s: %w", row.Match, router, err)
 			}
+			continue
 		}
 		if err := m.ovn.AddLogicalRouterPolicy(ctx, router, &row); err != nil {
 			return fmt.Errorf("add peering policy %q on %s: %w", row.Match, router, err)

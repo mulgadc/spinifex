@@ -1237,6 +1237,33 @@ func (c *LiveClient) ListLogicalRouterPolicies(ctx context.Context, routerName s
 	return policies, nil
 }
 
+func (c *LiveClient) UpdateLogicalRouterPolicy(ctx context.Context, routerName string, policy *nbdb.LogicalRouterPolicy) error {
+	existing, err := c.FindLogicalRouterPolicy(ctx, routerName, policy.Priority, policy.Match)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return fmt.Errorf("LR policy %d %q not found on %s", policy.Priority, policy.Match, routerName)
+	}
+	row := *existing
+	row.Action, row.Nexthop, row.Nexthops = policy.Action, policy.Nexthop, policy.Nexthops
+	row.Options, row.ExternalIDs = policy.Options, policy.ExternalIDs
+	if row.Options == nil {
+		row.Options = map[string]string{}
+	}
+	if row.ExternalIDs == nil {
+		row.ExternalIDs = map[string]string{}
+	}
+	ops, err := c.client.Where(&row).Update(&row, &row.Action, &row.Nexthop, &row.Nexthops, &row.Options, &row.ExternalIDs)
+	if err != nil {
+		return fmt.Errorf("update LR policy ops: %w", err)
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("update LR policy transact: %w", err)
+	}
+	return nil
+}
+
 func (c *LiveClient) DeleteLogicalRouterPolicy(ctx context.Context, routerName string, priority int, match string) error {
 	existing, err := c.FindLogicalRouterPolicy(ctx, routerName, priority, match)
 	if err != nil {

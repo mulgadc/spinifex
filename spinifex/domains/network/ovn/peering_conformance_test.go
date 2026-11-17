@@ -89,3 +89,33 @@ func conformPeeringLink(t *testing.T, cli ovn.Client, ctx context.Context) {
 	ports, _ = routerRows(t, cli, ctx, "lr-a")
 	assert.Zero(t, ports)
 }
+
+// An update rewrites a policy row's action, next hop and external IDs in
+// place, keeping its identity; a missing row is an error.
+func conformRouterPolicyUpdate(t *testing.T, cli ovn.Client, ctx context.Context) {
+	seedRouter(t, cli, ctx, "lr-a")
+	match := `inport == "rtr-subnet-1" && ip4.dst == 10.1.0.0/16`
+	require.NoError(t, cli.AddLogicalRouterPolicy(ctx, "lr-a", &nbdb.LogicalRouterPolicy{
+		Priority: 1332, Match: match, Action: "drop", ExternalIDs: map[string]string{"spinifex:rtb_id": "rtb-1"},
+	}))
+	before, err := cli.FindLogicalRouterPolicy(ctx, "lr-a", 1332, match)
+	require.NoError(t, err)
+	require.NotNil(t, before)
+
+	nexthop := "169.254.192.2"
+	require.NoError(t, cli.UpdateLogicalRouterPolicy(ctx, "lr-a", &nbdb.LogicalRouterPolicy{
+		Priority: 1332, Match: match, Action: "reroute", Nexthop: &nexthop,
+		ExternalIDs: map[string]string{"spinifex:rtb_id": "rtb-2"},
+	}))
+	got, err := cli.FindLogicalRouterPolicy(ctx, "lr-a", 1332, match)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, before.UUID, got.UUID)
+	assert.Equal(t, "reroute", got.Action)
+	require.NotNil(t, got.Nexthop)
+	assert.Equal(t, nexthop, *got.Nexthop)
+	assert.Equal(t, "rtb-2", got.ExternalIDs["spinifex:rtb_id"])
+
+	err = cli.UpdateLogicalRouterPolicy(ctx, "lr-a", &nbdb.LogicalRouterPolicy{Priority: 1332, Match: "ip4", Action: "drop"})
+	assert.Error(t, err)
+}

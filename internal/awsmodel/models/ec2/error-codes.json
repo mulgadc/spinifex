@@ -1,6 +1,6 @@
 {
   "source": "https://docs.aws.amazon.com/ec2/latest/devguide/errors-overview.html",
-  "verifiedOn": "2026-11-04",
+  "verifiedOn": "2026-11-17",
   "commonClient": [
     "AuthFailure",
     "Blocked",
@@ -32,6 +32,7 @@
     "ValidationError"
   ],
   "specificClient": [
+    "ActiveVpcPeeringConnectionPerVpcLimitExceeded",
     "CannotDelete",
     "DependencyViolation",
     "Gateway.NotAttached",
@@ -88,15 +89,21 @@
     "InvalidSnapshot.NotFound",
     "InvalidSnapshotID.Malformed",
     "InvalidSpotInstanceRequestID.NotFound",
+    "InvalidStateTransition",
     "InvalidSubnet.Conflict",
     "InvalidSubnet.Range",
     "InvalidSubnetID.NotFound",
     "InvalidVolume.NotFound",
     "InvalidVolumeID.Malformed",
     "InvalidVpcID.NotFound",
+    "InvalidVpcPeeringConnectionID.NotFound",
+    "InvalidVpcPeeringConnectionId.Malformed",
+    "InvalidVpcPeeringConnectionState.DnsHostnamesDisabled",
     "InvalidVpcRange",
     "NatGatewayNotFound",
     "OperationNotPermitted",
+    "OutstandingVpcPeeringConnectionLimitExceeded",
+    "PendingVpcPeeringConnectionLimitExceeded",
     "ReservationCapacityExceeded",
     "Resource.AlreadyAssociated",
     "ResourceLimitExceeded",
@@ -106,7 +113,9 @@
     "SignatureDoesNotMatch",
     "UnknownVolumeType",
     "Unsupported",
-    "VolumeInUse"
+    "VolumeInUse",
+    "VpcPeeringConnectionAlreadyExists",
+    "VpcPeeringConnectionsPerVpcLimitExceeded"
   ],
   "server": [
     "BandwidthLimitExceeded",
@@ -122,5 +131,11 @@
     "ServerInternal",
     "ServiceUnavailable",
     "Unavailable"
+  ],
+  "observedSource": "live AWS responses in ap-southeast-2, recorded in mulga scripts/aws-compliance/aws-response-diff/baselines/vpc-peering-aws.json",
+  "observedOn": "2026-11-17",
+  "observedClient": [
+    "CidrConflict",
+    "InvalidVpcId.Malformed"
   ]
 }

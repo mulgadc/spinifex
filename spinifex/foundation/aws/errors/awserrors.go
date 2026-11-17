@@ -31,6 +31,7 @@ var (
 	ErrorBootForVolumeTypeUnsupported                      = "BootForVolumeTypeUnsupported"
 	ErrorBundlingInProgress                                = "BundlingInProgress"
 	ErrorCannotDelete                                      = "CannotDelete"
+	ErrorCidrConflict                                      = "CidrConflict"
 	ErrorCapacityBlockDescribeLimitExceeded                = "CapacityBlockDescribeLimitExceeded"
 	ErrorClientInvalidParameterValue                       = "ClientInvalidParameterValue"
 	ErrorClientVpnAuthorizationRuleLimitExceeded           = "ClientVpnAuthorizationRuleLimitExceeded"
@@ -317,6 +318,7 @@ var (
 	ErrorInvalidVpcEndpointServiceIdIdMalformed               = "InvalidVpcEndpointServiceIdId.Malformed"
 	ErrorInvalidVpcEndpointType                               = "InvalidVpcEndpointType"
 	ErrorInvalidVpcIDMalformed                                = "InvalidVpcID.Malformed"
+	ErrorInvalidVpcIdMalformed                                = "InvalidVpcId.Malformed"
 	ErrorInvalidVpcIDNotFound                                 = "InvalidVpcID.NotFound"
 	ErrorInvalidVpcPeeringConnectionIDNotFound                = "InvalidVpcPeeringConnectionID.NotFound"
 	ErrorInvalidVpcPeeringConnectionIdMalformed               = "InvalidVpcPeeringConnectionId.Malformed"
@@ -897,6 +899,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorBootForVolumeTypeUnsupported:                          {HTTPCode: 400, Message: "The specified volume type cannot be used as a boot volume. For more information, see Amazon EBS volume types."},
 	ErrorBundlingInProgress:                                    {HTTPCode: 400, Message: "The specified instance already has a bundling task in progress."},
 	ErrorCannotDelete:                                          {HTTPCode: 400, Message: "You cannot delete the 'default' security group in your VPC, but you can change its rules. For more information, see Amazon EC2 security groups."},
+	ErrorCidrConflict:                                          {HTTPCode: 400, Message: "The CIDR range of the VPC overlaps with the Classic IP space."},
 	ErrorCapacityBlockDescribeLimitExceeded:                    {HTTPCode: 400, Message: "You've reached the limit for this account. The returned message provides details."},
 	ErrorClientInvalidParameterValue:                           {HTTPCode: 400, Message: "A parameter specified in a request is not valid, is unsupported, or cannot be used. The returned message provides an explanation of the error value. For example, if you are launching an instance, you can't specify a security group and subnet that are in different VPCs."},
 	ErrorClientVpnAuthorizationRuleLimitExceeded:               {HTTPCode: 400, Message: "You've reached the limit on the number of authorization rules that can be added to a single Client VPN endpoint."},
@@ -1182,6 +1185,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInvalidVpcEndpointServiceIdIdMalformed:                {HTTPCode: 400, Message: "The specified VPC endpoint service ID is malformed. Ensure that you specify the ID in the form vpc-svc-xxxxxxxxxxxxxxxxx."},
 	ErrorInvalidVpcEndpointType:                                {HTTPCode: 400, Message: "The specified VPC endpoint type is not valid."},
 	ErrorInvalidVpcIDMalformed:                                 {HTTPCode: 400, Message: "The specified VPC ID is malformed. Ensure that you've specified the ID in the form vpc-xxxxxxxxxxxxxxxxx."},
+	ErrorInvalidVpcIdMalformed:                                 {HTTPCode: 400, Message: "The specified VPC ID is malformed. Ensure that you've specified the ID in the form vpc-xxxxxxxxxxxxxxxxx."},
 	ErrorInvalidVpcIDNotFound:                                  {HTTPCode: 400, Message: "The specified VPC does not exist."},
 	ErrorInvalidVpcPeeringConnectionIDNotFound:                 {HTTPCode: 400, Message: "The specified VPC peering connection ID does not exist."},
 	ErrorInvalidVpcPeeringConnectionIdMalformed:                {HTTPCode: 400, Message: "The specified VPC peering connection ID is malformed. Ensure that you provide the ID in the form pcx-xxxxxxxxxxxxxxxxx."},

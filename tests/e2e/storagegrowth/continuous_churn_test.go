@@ -3,6 +3,7 @@
 package storagegrowth
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -23,6 +24,13 @@ const (
 	// be large enough to hold every parallel writer's region; the workload
 	// deliberately rewrites a small footprint many times rather than growing it.
 	churnVolumeSizeGiB = 4
+	// churnWALBudgetRatio is how many times the volume's logical size its local
+	// WAL may hold on the host after the churn. Reclaim keeps a healthy volume
+	// near zero, so this is slack for a generation in flight, not a budget. It
+	// is deliberately loose: the failure it catches is unbounded growth, where
+	// the WAL tracks bytes written rather than bytes stored, and a run writing
+	// tens of GiB into 4 GiB overshoots any ratio by two orders of magnitude.
+	churnWALBudgetRatio = 8
 
 	// churnDurationEnv sets how long the raw-overwrite loop runs, in seconds.
 	// The default spans more than two 5-minute GC ticks so a sweep provably
@@ -58,10 +66,11 @@ const (
 //     sweep provably runs while the volume is open and superseded chunks are
 //     eligible to reclaim.
 //
-// It asserts only that the churn ran and the volume detached cleanly; the
-// backend-side signals (no "backend out of space" latch, GC "sweep complete"
-// swept counts) are read out of band from the viperblockd log stream, because
-// the plugin's own accounting is not visible to the guest.
+// It also bounds the volume's WAL on the host, which is the signal the guest
+// cannot produce: the host stores the guest's writes, not its data, so a fixed
+// volume size caps nothing there. The remaining backend-side signals (no
+// "backend out of space" latch, GC "sweep complete" swept counts) are still
+// read out of band from the viperblockd log stream.
 func TestContinuousChurn(t *testing.T) {
 	fix := requireStorageGrowthFixture(t)
 	harness.Phase(t, "Continuous Churn — single long-open concurrent raw overwrite (503 limiter + live GC)")
@@ -100,9 +109,107 @@ func TestContinuousChurn(t *testing.T) {
 
 	// Every mark is one 4 MiB chunk write, so total bytes written is passes×4 MiB
 	// regardless of region size or writer count.
+	writtenBytes := passes * 4 * 1024 * 1024
 	harness.Detail(t, "chunk_writes", passes,
 		"approx_bytes_written_gib",
 		fmt.Sprintf("%.1f", float64(passes)*4.0/1024.0))
+
+	assertHostWALBounded(t, fix, volID, writtenBytes)
+}
+
+// assertHostWALBounded is the assertion this workload was missing. It drove
+// exactly the write pattern that filled a production node, a small volume
+// rewritten continuously, and then checked only that the churn ran and the
+// volume detached, because the plugin's accounting is not visible to the guest.
+//
+// The WAL records writes, not data, so a volume's size bounds neither. A guest
+// rewriting the same blocks produces unbounded write volume against constant
+// data, and a WAL that is never reclaimed keeps all of it. Measuring the host
+// directory after a run that wrote many times the volume's size is what tells
+// those two apart: reclaimed stays near zero, unreclaimed tracks writtenBytes.
+func assertHostWALBounded(t *testing.T, fix *Fixture, volID string, writtenBytes int64) {
+	t.Helper()
+
+	ssh := harness.NewPeerSSH()
+	walBytes, dir, err := hostVolumeWALBytes(ssh, fix.Env.WANHost, volID)
+	if err != nil {
+		// Not a skip dressed as a pass: the measurement is the point, so a
+		// node we cannot read is a failure of the test's own preconditions.
+		t.Fatalf("could not measure the host WAL for %s on %s: %v", volID, fix.Env.WANHost, err)
+	}
+
+	volumeBytes := int64(churnVolumeSizeGiB) * 1024 * 1024 * 1024
+	budget := volumeBytes * churnWALBudgetRatio
+	harness.Detail(t, "wal_dir", dir, "wal_bytes", walBytes,
+		"written_bytes", writtenBytes, "budget_bytes", budget,
+		"wal_over_volume_ratio", fmt.Sprintf("%.2f", float64(walBytes)/float64(volumeBytes)))
+
+	require.LessOrEqualf(t, walBytes, budget,
+		"local WAL for %s holds %d bytes after the guest wrote %d bytes into a %d GiB volume. "+
+			"A WAL that tracks bytes written rather than bytes stored is not being reclaimed, "+
+			"which is what took a production node to zero bytes free. Measured at %s on %s.",
+		volID, walBytes, writtenBytes, churnVolumeSizeGiB, dir, fix.Env.WANHost)
+}
+
+// hostVolumeWALBytes returns the bytes a volume's local WAL occupies on the
+// node at wanHost, and the directory it measured.
+//
+// The root is read from the serving nbdkit process rather than assumed. base_dir
+// and wal_base_dir are independent config keys (runtime/compute/nbd.go passes
+// both to the plugin), so a deployment that moves the WAL to its own device
+// would otherwise be measured on the wrong filesystem and report a clean zero.
+// Taking it from the live command line means this measures whatever the node is
+// actually serving the volume from.
+func hostVolumeWALBytes(ssh *harness.PeerSSH, wanHost, volID string) (int64, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// One nbdkit per volume, so matching volume= is unambiguous. tr turns the
+	// NUL-separated cmdline into lines; the last match wins if a stale process
+	// is still exiting, because the newest is the one serving the attachment.
+	readArgs := fmt.Sprintf(
+		`for p in /proc/[0-9]*/cmdline; do `+
+			`tr '\0' '\n' < "$p" 2>/dev/null | grep -qx 'volume=%s' || continue; `+
+			`tr '\0' '\n' < "$p" 2>/dev/null | grep -E '^(base_dir|wal_base_dir)='; `+
+			`done`, volID)
+	out, err := ssh.Run(ctx, wanHost, readArgs)
+	if err != nil {
+		return 0, "", fmt.Errorf("read nbdkit args for %s via PeerSSH: %w", volID, err)
+	}
+
+	var baseDir, walBaseDir string
+	for _, line := range strings.Split(string(out), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || v == "" {
+			continue
+		}
+		switch k {
+		case "base_dir":
+			baseDir = v
+		case "wal_base_dir":
+			walBaseDir = v
+		}
+	}
+
+	root := walBaseDir
+	if root == "" {
+		root = baseDir
+	}
+	if root == "" {
+		return 0, "", fmt.Errorf("no nbdkit process on %s serves volume=%s, so the WAL root is unknown", wanHost, volID)
+	}
+	dir := fmt.Sprintf("%s/%s/wal", strings.TrimRight(root, "/"), volID)
+
+	duOut, duErr := ssh.Run(ctx, wanHost,
+		fmt.Sprintf("sudo du -s --block-size=1 %s | cut -f1", dir))
+	if duErr != nil {
+		return 0, dir, fmt.Errorf("du %s via PeerSSH: %w", dir, duErr)
+	}
+	v, perr := parseLastIntField(string(duOut))
+	if perr != nil {
+		return 0, dir, fmt.Errorf("parse du output %q: %w", duOut, perr)
+	}
+	return v, dir, nil
 }
 
 // runContinuousChurn runs parallelism concurrent raw-overwrite loops against

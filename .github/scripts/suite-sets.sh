@@ -190,7 +190,7 @@ e2e_suite_timeout() {
     # owner, a lease, a boot, HAProxy's own start, and its health checks against
     # the backends before it forwards anything. Then the node comes back and has
     # to be shown not to answer for an address it no longer holds.
-    lbrecovery) echo "75m" ;;
+    lbrecovery) echo "30m" ;;
     # kvquorum audits every bucket in seconds and then spends the rest of its
     # budget on a node stopping and starting: seven units down, a raft election,
     # and the whole service stack back up with every stream caught up.

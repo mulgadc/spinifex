@@ -69,7 +69,7 @@ func runMultinodeVPCPeering(t *testing.T, fix *Fixture) {
 	require.NoError(t, err, "accept-vpc-peering-connection")
 
 	for _, r := range []struct{ vpc, dst string }{{defVPC, peeringCIDR}, {peerVPC, defCIDR}} {
-		rtb := mainRouteTableID(t, c, r.vpc)
+		rtb := harness.MainRouteTableID(t, c, r.vpc)
 		_, err := c.EC2.CreateRoute(&ec2.CreateRouteInput{
 			RouteTableId: aws.String(rtb), DestinationCidrBlock: aws.String(r.dst), VpcPeeringConnectionId: aws.String(pcx),
 		})
@@ -95,13 +95,3 @@ func vpcCIDR(t *testing.T, c *harness.AWSClient, vpcID string) string {
 	return aws.StringValue(out.Vpcs[0].CidrBlock)
 }
 
-func mainRouteTableID(t *testing.T, c *harness.AWSClient, vpcID string) string {
-	t.Helper()
-	out, err := c.EC2.DescribeRouteTables(&ec2.DescribeRouteTablesInput{Filters: []*ec2.Filter{
-		{Name: aws.String("vpc-id"), Values: []*string{aws.String(vpcID)}},
-		{Name: aws.String("association.main"), Values: []*string{aws.String("true")}},
-	}})
-	require.NoError(t, err, "describe-route-tables main %s", vpcID)
-	require.NotEmpty(t, out.RouteTables, "no main route table for %s", vpcID)
-	return aws.StringValue(out.RouteTables[0].RouteTableId)
-}

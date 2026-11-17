@@ -330,7 +330,7 @@ func TestAccept_CrashedPairClaimTakenOverOnlyAfterGrace(t *testing.T) {
 	fwd := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 	rev := *f.create(t, vpcB, vpcA).VpcPeeringConnectionId
 	// An Accept of fwd that crashed after its pair claim and before its record write.
-	_, err := createJSON(t.Context(), f.svc.live, pairKey(vpcA, vpcB), claim{PcxID: fwd, ClaimedAt: f.clock.now()})
+	_, err := writeJSON(t.Context(), f.svc.live, pairKey(vpcA, vpcB), claim{PcxID: fwd, ClaimedAt: f.clock.now()}, 0)
 	require.NoError(t, err)
 
 	_, err = f.accept(t, rev)
@@ -351,12 +351,14 @@ func TestAccept_TakeoverFencesTheOwnersRetry(t *testing.T) {
 	fwd := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 	rev := *f.create(t, vpcB, vpcA).VpcPeeringConnectionId
 	var takeoverErr error
-	f.svc.live = &stallingKV{KeyValue: f.svc.live, prefix: recordKey(fwd), update: true, stall: func() {
+	kv := &stallingKV{KeyValue: f.svc.live, prefix: recordKey(fwd), update: true, stall: func() {
 		f.clock.advance(claimGrace)
 		_, takeoverErr = f.accept(t, rev)
 	}}
+	f.svc.live = kv
 
 	_, err := f.accept(t, fwd)
+	require.True(t, kv.fired, "the owner's accept stalled before its record write")
 	requireCode(t, err, awserrors.ErrorVpcPeeringConnectionAlreadyExists)
 	require.NoError(t, takeoverErr, "the takeover of the stalled owner's pair claim succeeds")
 	assert.Equal(t, StateProvisioning, f.status(t, rev))
@@ -374,7 +376,7 @@ func TestCreate_InterruptedBeforeClaimIsAbsentThenSwept(t *testing.T) {
 		Status: StatePendingAcceptance, ExpirationTime: f.clock.now().Add(requestLifetime), Generation: 1, CreatedAt: f.clock.now(),
 	}
 	require.NoError(t, f.svc.writeIndexes(t.Context(), rec))
-	_, err := createJSON(t.Context(), f.svc.live, recordKey(rec.ID), rec)
+	_, err := writeJSON(t.Context(), f.svc.live, recordKey(rec.ID), rec, 0)
 	require.NoError(t, err)
 
 	assert.Empty(t, f.status(t, rec.ID), "Describe treats an unclaimed pending record as absent")
@@ -437,7 +439,7 @@ func TestSweep_FinishesAMoveInterruptedAfterTheFence(t *testing.T) {
 	rec, rev, err := getJSON[PeeringRecord](t.Context(), f.svc.live, recordKey(id))
 	require.NoError(t, err)
 	rec.Status, rec.StatusMessage, rec.TerminalAt, rec.TerminatedBy = StateRejected, rejectedMessage(testAccount), f.clock.now(), testAccount
-	_, err = updateJSON(t.Context(), f.svc.live, recordKey(id), rec, rev)
+	_, err = writeJSON(t.Context(), f.svc.live, recordKey(id), rec, rev)
 	require.NoError(t, err)
 
 	assert.Equal(t, StateRejected, f.status(t, id))
@@ -489,6 +491,24 @@ func TestPendingWithDeletedVpc_EndsRejectedWhicheverRunsFirst(t *testing.T) {
 		require.NoError(t, f.svc.MarkCleaned(t.Context(), id))
 		assert.Equal(t, StateRejected, f.status(t, id))
 	}
+}
+
+// MarkCleaned of a linked connection whose VPCs both exist is a stray
+// confirmation, never a delete: the connection stays active with its claims.
+func TestMarkCleaned_LinkedWithBothVpcsChangesNothing(t *testing.T) {
+	f := newFixture(t)
+	id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
+	f.activate(t, id)
+	before := f.liveKeys(t)
+
+	require.NoError(t, f.svc.MarkCleaned(t.Context(), id))
+	rec := f.liveRecord(t, id)
+	require.NotNil(t, rec, "the connection stays in the live bucket")
+	assert.Equal(t, StateActive, rec.Status)
+	assert.Nil(t, f.termRecord(t, id))
+	assert.Equal(t, before, f.liveKeys(t), "its link, pair and index keys are all still held")
+	assert.Equal(t, 1, countPrefix(before, "link."))
+	assert.Equal(t, 1, countPrefix(before, "pair."))
 }
 
 func TestLinkedWithDeletedVpc_CleanedAsDeleted(t *testing.T) {
@@ -719,4 +739,72 @@ func TestDelete_VisibilityWindowIgnoresPendingCleanup(t *testing.T) {
 	require.True(t, f.liveRecord(t, id).CleanupPending, "cleanup is still pending")
 	_, err := f.describe(t, id)
 	requireCode(t, err, awserrors.ErrorInvalidVpcPeeringConnectionIDNotFound)
+}
+
+// An ID KV cannot hold a key for answers NotFound from every entry point, as
+// an unknown well-formed ID does.
+func TestMalformedIDIsNotFound(t *testing.T) {
+	f := newFixture(t)
+	for _, id := range []string{"pcx-abc*", "pcx-abc.", "pcx-a:b", "pcx-a b", "pcx-a..b"} {
+		_, err := f.describe(t, id)
+		requireCode(t, err, awserrors.ErrorInvalidVpcPeeringConnectionIDNotFound)
+		_, err = f.accept(t, id)
+		requireCode(t, err, awserrors.ErrorInvalidVpcPeeringConnectionIDNotFound)
+		requireCode(t, f.reject(t, id), awserrors.ErrorInvalidVpcPeeringConnectionIDNotFound)
+		requireCode(t, f.del(t, id), awserrors.ErrorInvalidVpcPeeringConnectionIDNotFound)
+		_, err = f.svc.ModifyVpcPeeringConnectionOptions(t.Context(), &ec2.ModifyVpcPeeringConnectionOptionsInput{VpcPeeringConnectionId: aws.String(id)}, testAccount)
+		requireCode(t, err, awserrors.ErrorInvalidVpcPeeringConnectionIDNotFound)
+		target, err := f.svc.RouteTarget(t.Context(), testAccount, id)
+		require.NoError(t, err, "%q", id)
+		assert.Nil(t, target, "%q", id)
+	}
+}
+
+// Accept's link search skips a slot held by a connection that still has, or
+// is still removing, a link there, and takes over one past the grace whose
+// holder never recorded it.
+func TestAccept_LinkSlotHeldOrTakenOver(t *testing.T) {
+	const holderID = "pcx-0000000000000beef"
+	for _, tc := range []struct {
+		name      string
+		holder    func(slot string) *PeeringRecord
+		wantStart bool
+	}{
+		{"active holder keeps it", func(slot string) *PeeringRecord {
+			return &PeeringRecord{Status: StateActive, LinkPrefix: slot}
+		}, false},
+		{"deleted holder awaiting cleanup keeps it", func(slot string) *PeeringRecord {
+			return &PeeringRecord{Status: StateDeleted, CleanupPending: true, LinkPrefix: slot}
+		}, false},
+		{"crashed pending accept is taken over", func(string) *PeeringRecord {
+			return &PeeringRecord{Status: StatePendingAcceptance}
+		}, true},
+		{"absent holder is taken over", func(string) *PeeringRecord { return nil }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
+			start := linkStart(id)
+			if h := tc.holder(linkPrefix(start).String()); h != nil {
+				h.ID, h.RequesterVpcID, h.AccepterVpcID = holderID, vpcC, vpcB
+				h.RequesterAccountID, h.AccepterAccountID, h.Generation = testAccount, testAccount, 1
+				_, err := writeJSON(t.Context(), f.svc.live, recordKey(holderID), h, 0)
+				require.NoError(t, err)
+			}
+			_, err := writeJSON(t.Context(), f.svc.live, linkKey(start), claim{PcxID: holderID, ClaimedAt: f.clock.now()}, 0)
+			require.NoError(t, err)
+			f.clock.advance(claimGrace)
+
+			_, err = f.accept(t, id)
+			require.NoError(t, err)
+			want := (start + 1) % linkSlots
+			if tc.wantStart {
+				want = start
+			}
+			assert.Equal(t, linkPrefix(want).String(), f.liveRecord(t, id).LinkPrefix)
+			held, _, err := getJSON[claim](t.Context(), f.svc.live, linkKey(want))
+			require.NoError(t, err)
+			assert.Equal(t, id, held.PcxID)
+		})
+	}
 }

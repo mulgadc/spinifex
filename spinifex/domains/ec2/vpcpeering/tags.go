@@ -9,6 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/tagmirror"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
 
 // ApplyRecordTags mirrors CreateTags into the caller's tag map on each named
@@ -45,27 +46,27 @@ func (s *ServiceImpl) mirrorTags(ctx context.Context, resources []*string, accou
 // updateTags rewrites one account's tags on a live record at the revision read.
 // An absent record, or one the account does not own, is skipped.
 func (s *Store) updateTags(ctx context.Context, id, accountID string, mut func(map[string]string)) error {
-	for range moveAttempts {
-		rec, rev, err := getJSON[PeeringRecord](ctx, s.live, recordKey(id))
-		if err != nil || rec == nil || !rec.involves(accountID) {
-			return err
-		}
-		if rec.Tags == nil {
-			rec.Tags = map[string]map[string]string{}
+	_, err := kvstore.Update(ctx, s.live, recordKey(id), kvstore.CASConfig{NotFound: errAbsent}, func(rec *PeeringRecord) (bool, error) {
+		if !rec.involves(accountID) {
+			return false, nil
 		}
 		tags := rec.Tags[accountID]
 		if tags == nil {
 			tags = map[string]string{}
 		}
 		mut(tags)
+		if rec.Tags == nil {
+			rec.Tags = map[string]map[string]string{}
+		}
 		if len(tags) == 0 {
 			delete(rec.Tags, accountID)
 		} else {
 			rec.Tags[accountID] = tags
 		}
-		if _, err := updateJSON(ctx, s.live, recordKey(id), rec, rev); !errors.Is(err, errConflict) {
-			return err
-		}
+		return true, nil
+	})
+	if errors.Is(err, errAbsent) {
+		return nil
 	}
-	return errConflict
+	return err
 }

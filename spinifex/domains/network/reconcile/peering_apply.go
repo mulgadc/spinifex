@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"maps"
 	"slices"
@@ -43,18 +44,9 @@ func (r *reconciler) applyPeeringLinks(ctx context.Context, intent IntentState, 
 	var pending []string
 	for _, id := range slices.Sorted(maps.Keys(intent.PeeringLinks)) {
 		link := intent.PeeringLinks[id]
-		ends, err := peeringLinkEnds(link.Spec)
-		if err != nil {
-			slog.Error("reconcile/apply: peering link rows invalid", "vpc_peering_connection_id", id, "err", err)
-			res.fail(classPeeringLink, id, err)
-			continue
-		}
-		if _, ok := actual.Routers[ends[0].Router]; !ok {
-			res.fail(classPeeringLink, id, errRouterMissing(ends[0].Router))
-			continue
-		}
-		if _, ok := actual.Routers[ends[1].Router]; !ok {
-			res.fail(classPeeringLink, id, errRouterMissing(ends[1].Router))
+		ends := peeringLinkEnds(link.Spec)
+		if missing := missingRouter(ends, actual); missing != "" {
+			res.fail(classPeeringLink, id, fmt.Errorf("logical router %s not present", missing))
 			continue
 		}
 		if !r.peeringLinkConverged(ctx, ends) {
@@ -106,29 +98,28 @@ func (r *reconciler) confirmPeeringActive(ctx context.Context, links map[string]
 	return confirmed
 }
 
-type routerMissingError string
-
-func (e routerMissingError) Error() string { return "logical router " + string(e) + " not present" }
-
-func errRouterMissing(router string) error { return routerMissingError(router) }
-
-func peeringLinkEnds(spec topology.PeeringLinkSpec) ([2]ovn.PeeringLinkEnd, error) {
-	ports, err := topology.PeeringLinkPorts(spec)
-	if err != nil {
-		return [2]ovn.PeeringLinkEnd{}, err
+// missingRouter returns the first end whose router is not in actual, or "".
+func missingRouter(ends [2]ovn.PeeringLinkEnd, actual ActualState) string {
+	for _, end := range ends {
+		if _, ok := actual.Routers[end.Router]; !ok {
+			return end.Router
+		}
 	}
-	guards, err := policy.PeeringGuards(spec)
-	if err != nil {
-		return [2]ovn.PeeringLinkEnd{}, err
+	return ""
+}
+
+func peeringLinkEnds(spec topology.PeeringLinkSpec) [2]ovn.PeeringLinkEnd {
+	var ends [2]ovn.PeeringLinkEnd
+	for i, side := range spec.Sides() {
+		ends[i] = ovn.PeeringLinkEnd{
+			Router:  topology.VPCRouter(side.LocalVPC),
+			Port:    topology.PeeringLinkPort(side),
+			Guard:   policy.PeeringGuard(side),
+			Entry:   policy.PeeringEntryRoute(side),
+			NoRoute: policy.PeeringNoRouteDrop(side),
+		}
 	}
-	entries, noRoutes, err := policy.PeeringEntries(spec)
-	if err != nil {
-		return [2]ovn.PeeringLinkEnd{}, err
-	}
-	return [2]ovn.PeeringLinkEnd{
-		{Router: topology.VPCRouter(spec.RequesterVPC), Port: ports[0], Guard: guards[0], Entry: entries[0], NoRoute: noRoutes[0]},
-		{Router: topology.VPCRouter(spec.AccepterVPC), Port: ports[1], Guard: guards[1], Entry: entries[1], NoRoute: noRoutes[1]},
-	}, nil
+	return ends
 }
 
 // peeringLinkConverged reports whether every row of both ends already
@@ -153,11 +144,10 @@ func (r *reconciler) peeringLinkConverged(ctx context.Context, ends [2]ovn.Peeri
 
 // peeringPolicyConverged reports one policy of want's connection and role, equal to want.
 func peeringPolicyConverged(policies []nbdb.LogicalRouterPolicy, want *nbdb.LogicalRouterPolicy) bool {
-	pcxID, role := want.ExternalIDs[ovn.ExternalIDPcxID], want.ExternalIDs["spinifex:role"]
 	found := 0
 	for i := range policies {
 		p := &policies[i]
-		if p.ExternalIDs[ovn.ExternalIDPcxID] != pcxID || p.ExternalIDs["spinifex:role"] != role {
+		if !ovn.SamePeeringOwner(p.ExternalIDs, want.ExternalIDs) {
 			continue
 		}
 		if found++; p.Priority != want.Priority || p.Match != want.Match || p.Action != want.Action {
@@ -169,11 +159,10 @@ func peeringPolicyConverged(policies []nbdb.LogicalRouterPolicy, want *nbdb.Logi
 
 // peeringEntryConverged reports one static route of want's connection, equal to want.
 func peeringEntryConverged(routes []nbdb.LogicalRouterStaticRoute, want *nbdb.LogicalRouterStaticRoute) bool {
-	pcxID := want.ExternalIDs[ovn.ExternalIDPcxID]
 	found := 0
 	for i := range routes {
 		rt := &routes[i]
-		if rt.ExternalIDs[ovn.ExternalIDPcxID] != pcxID {
+		if !ovn.SamePeeringOwner(rt.ExternalIDs, want.ExternalIDs) {
 			continue
 		}
 		if found++; rt.IPPrefix != want.IPPrefix || rt.Nexthop != want.Nexthop ||

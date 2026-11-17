@@ -1127,15 +1127,8 @@ func (c *LiveClient) ListStaticRoutes(ctx context.Context, routerName string) ([
 	if err != nil {
 		return nil, fmt.Errorf("get logical router for static route list: %w", err)
 	}
-	if len(lr.StaticRoutes) == 0 {
-		return nil, nil
-	}
-	owned := uuidSet(lr.StaticRoutes)
-	var routes []nbdb.LogicalRouterStaticRoute
-	if err := c.client.WhereCache(func(r *nbdb.LogicalRouterStaticRoute) bool {
-		_, ok := owned[r.UUID]
-		return ok
-	}).List(ctx, &routes); err != nil {
+	routes, err := rowsIn(ctx, c, lr.StaticRoutes, routeStamp)
+	if err != nil {
 		return nil, fmt.Errorf("list static routes: %w", err)
 	}
 	return routes, nil

@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
@@ -54,19 +55,10 @@ func internalError(ctx context.Context, op string, err error) error {
 // vpcIDMalformed is AWS's answer to a VpcId or PeerVpcId not of the vpc- form.
 func vpcIDMalformed(id string) error {
 	suffix, ok := strings.CutPrefix(id, "vpc-")
-	if ok && (len(suffix) == 8 || len(suffix) == 17) && isLowerHex(suffix) {
+	if ok && (len(suffix) == 8 || len(suffix) == 17) && ec2vpc.IsLowerHex(suffix) {
 		return nil
 	}
 	return awserrors.Errorf(awserrors.ErrorInvalidVpcIdMalformed, "Invalid id: \"%s\" (expecting \"vpc-...\")", id)
-}
-
-func isLowerHex(s string) bool {
-	for _, c := range s {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return s != ""
 }
 
 // CreateVpcPeeringConnection requests a connection from the caller's VpcId to
@@ -164,7 +156,7 @@ func (s *ServiceImpl) CreateVpcPeeringConnection(ctx context.Context, input *ec2
 	if err := s.writeIndexes(ctx, rec); err != nil {
 		return nil, internalError(ctx, "CreateVpcPeeringConnection", err)
 	}
-	recRev, err := createJSON(ctx, s.live, recordKey(rec.ID), rec)
+	recRev, err := writeJSON(ctx, s.live, recordKey(rec.ID), rec, 0)
 	if err != nil {
 		return nil, internalError(ctx, "CreateVpcPeeringConnection", err)
 	}
@@ -319,7 +311,7 @@ func (s *ServiceImpl) AcceptVpcPeeringConnection(ctx context.Context, input *ec2
 		rec.ExpirationTime = time.Time{}
 		rec.Generation++
 		rec.LinkPrefix = prefix
-		if _, err := updateJSON(ctx, s.live, recordKey(id), &rec, v.rev); err != nil {
+		if _, err := writeJSON(ctx, s.live, recordKey(id), &rec, v.rev); err != nil {
 			if errors.Is(err, errConflict) {
 				continue
 			}
@@ -394,7 +386,7 @@ func (s *ServiceImpl) DeleteVpcPeeringConnection(ctx context.Context, input *ec2
 			err = s.moveTerminal(ctx, &rec, v.rev)
 		} else {
 			rec.CleanupPending = true
-			if _, err = updateJSON(ctx, s.live, recordKey(id), &rec, v.rev); err == nil {
+			if _, err = writeJSON(ctx, s.live, recordKey(id), &rec, v.rev); err == nil {
 				err = s.releaseClaim(ctx, pairKey(rec.RequesterVpcID, rec.AccepterVpcID), id)
 			}
 		}
@@ -462,7 +454,7 @@ func (s *ServiceImpl) ModifyVpcPeeringConnectionOptions(ctx context.Context, inp
 			applyOptions(side.opts, side.req)
 		}
 		rec.Generation++
-		if _, err := updateJSON(ctx, s.live, recordKey(id), &rec, v.rev); err != nil {
+		if _, err := writeJSON(ctx, s.live, recordKey(id), &rec, v.rev); err != nil {
 			if errors.Is(err, errConflict) {
 				continue
 			}

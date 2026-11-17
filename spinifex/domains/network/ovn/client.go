@@ -34,6 +34,15 @@ type ACLSpec struct {
 // ports, guards, entry routes, no-route drops and reroutes. A route's drop does not.
 const ExternalIDPcxID = "spinifex:pcx_id"
 
+// ExternalIDRole names what a spinifex-owned row is for.
+const ExternalIDRole = "spinifex:role"
+
+// SamePeeringOwner reports whether two rows' external IDs name the same
+// connection and role; a row with no role matches only another with none.
+func SamePeeringOwner(a, b map[string]string) bool {
+	return a[ExternalIDPcxID] == b[ExternalIDPcxID] && a[ExternalIDRole] == b[ExternalIDRole]
+}
+
 // PeeringGuardRole is the spinifex:role a peering guard policy carries, so a
 // re-ensure can find the connection's other guards on a router.
 const PeeringGuardRole = "peering-guard"

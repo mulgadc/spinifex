@@ -21,8 +21,7 @@ import (
 // Shared reachability-probe helpers used by the merged single-node
 // scenarios: tcpReachable/pingConverged/sshCapture for raw datapath probes,
 // launchBaselineInstance/instancePublicIP/instancePrivateIP for launching and
-// describing a scenario-owned guest, and mainRouteTableID for resolving a
-// VPC's implicitly-associated route table.
+// describing a scenario-owned guest.
 
 // tcpReachable reports whether a TCP connect to host:port succeeds within
 // timeout. An OVN ACL drop yields a dial timeout (no RST); a reject yields
@@ -131,24 +130,3 @@ func instancePublicIP(t *testing.T, fix *Fixture, instanceID string) string {
 	return ip
 }
 
-// mainRouteTableID returns the main (implicitly-associated) route table for
-// vpcID — the one a subnet joins when it has no explicit RT association.
-func mainRouteTableID(t *testing.T, c *harness.AWSClient, vpcID string) string {
-	t.Helper()
-	out, err := c.EC2.DescribeRouteTables(&ec2.DescribeRouteTablesInput{
-		Filters: []*ec2.Filter{
-			{Name: aws.String("vpc-id"), Values: []*string{aws.String(vpcID)}},
-			{Name: aws.String("association.main"), Values: []*string{aws.String("true")}},
-		},
-	})
-	require.NoError(t, err, "describe-route-tables main vpc=%s", vpcID)
-	require.NotEmptyf(t, out.RouteTables, "no main route table for vpc %s", vpcID)
-	id := aws.StringValue(out.RouteTables[0].RouteTableId)
-	require.NotEmpty(t, id, "main RouteTableId empty")
-	return id
-}
-
-// The route-before-subnet ordering regression guard that used to live here
-// (runNewVPCEgressBaseline) now runs as the RouteBeforeSubnet stage of
-// runVPCEgressPaths (vpcegress_test.go), which is the sole remaining caller
-// of mainRouteTableID above.

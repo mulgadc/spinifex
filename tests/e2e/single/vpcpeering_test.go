@@ -45,7 +45,7 @@ func newPeeringGuest(t *testing.T, fix *Fixture, cidr, subnetCIDR, ami, instType
 	})
 	_, err = c.EC2.AttachInternetGateway(&ec2.AttachInternetGatewayInput{InternetGatewayId: aws.String(g.igwID), VpcId: aws.String(g.vpcID)})
 	require.NoError(t, err, "attach-internet-gateway")
-	g.rtbID = mainRouteTableID(t, c, g.vpcID)
+	g.rtbID = harness.MainRouteTableID(t, c, g.vpcID)
 	_, err = c.EC2.CreateRoute(&ec2.CreateRouteInput{
 		RouteTableId: aws.String(g.rtbID), DestinationCidrBlock: aws.String("0.0.0.0/0"), GatewayId: aws.String(g.igwID),
 	})
@@ -335,7 +335,7 @@ func runVPCPeering(t *testing.T, fix *Fixture) {
 		t.Cleanup(func() { harness.DeleteSubnet(t, c, eSubnet) })
 		ae := createPeering(t, c, a.vpcID, e)
 		acceptPeering(t, c, ae)
-		ePort, eRtb := "rtr-"+eSubnet, mainRouteTableID(t, c, e)
+		ePort, eRtb := "rtr-"+eSubnet, harness.MainRouteTableID(t, c, e)
 
 		// E has no IGW and so no static route: the link's entry route takes its
 		// traffic to A into the policy stage, where only a peering route delivers it.

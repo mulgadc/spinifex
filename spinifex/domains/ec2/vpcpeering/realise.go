@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -34,26 +35,22 @@ func ListRecords(ctx context.Context, live jetstream.KeyValue) ([]PeeringRecord,
 // moves provisioning to active at that generation, so a confirmation landing
 // after a delete or a newer accept changes nothing.
 func (s *Store) MarkActive(ctx context.Context, id string, generation int64) error {
-	for range moveAttempts {
-		rec, rev, err := getJSON[PeeringRecord](ctx, s.live, recordKey(id))
-		if err != nil {
-			return err
+	moved := false
+	_, err := kvstore.Update(ctx, s.live, recordKey(id), kvstore.CASConfig{NotFound: errAbsent}, func(rec *PeeringRecord) (bool, error) {
+		moved = rec.Status == StateProvisioning && rec.Generation == generation
+		if moved {
+			rec.Status, rec.StatusMessage = StateActive, activeMessage
+			rec.RealizedGeneration = generation
 		}
-		if rec == nil || rec.Status != StateProvisioning || rec.Generation != generation {
-			return nil
-		}
-		rec.Status, rec.StatusMessage = StateActive, activeMessage
-		rec.RealizedGeneration = generation
-		if _, err := updateJSON(ctx, s.live, recordKey(id), rec, rev); err != nil {
-			if errors.Is(err, errConflict) {
-				continue
-			}
-			return err
-		}
-		slog.InfoContext(ctx, "VPC peering connection active", "vpcPeeringConnectionId", id, "generation", generation)
+		return moved, nil
+	})
+	if errors.Is(err, errAbsent) {
 		return nil
 	}
-	return fmt.Errorf("mark %s active: %w", id, errConflict)
+	if err == nil && moved {
+		slog.InfoContext(ctx, "VPC peering connection active", "vpcPeeringConnectionId", id, "generation", generation)
+	}
+	return err
 }
 
 // MarkCleaned records that the reconciler removed a connection's link and

@@ -1,7 +1,6 @@
 package topology
 
 import (
-	"fmt"
 	"net/netip"
 
 	networkids "github.com/mulgadc/spinifex/spinifex/domains/network/identifiers"
@@ -21,53 +20,51 @@ type PeeringLinkSpec struct {
 	AccepterAddr  netip.Addr
 }
 
-// PeeringSide is one VPC's view of a link: its own port, and the peer's
-// range and address.
+// PeeringSide is one VPC's view of a link: its own range, address and port,
+// and the peer's port, range and address.
 type PeeringSide struct {
+	PcxID     string
 	LocalVPC  string
 	LocalCIDR netip.Prefix
+	LocalAddr netip.Addr
 	LocalPort string
+	PeerPort  string
 	PeerCIDR  netip.Prefix
 	PeerAddr  netip.Addr
 }
 
 // Side returns vpcID's view of the link; ok is false when vpcID is neither end.
 func (s PeeringLinkSpec) Side(vpcID string) (PeeringSide, bool) {
+	reqPort, accPort := PeeringRouterPort(s.PcxID, s.RequesterVPC), PeeringRouterPort(s.PcxID, s.AccepterVPC)
 	switch vpcID {
 	case s.RequesterVPC:
-		return PeeringSide{vpcID, s.RequesterCIDR, PeeringRouterPort(s.PcxID, vpcID), s.AccepterCIDR, s.AccepterAddr}, true
+		return PeeringSide{s.PcxID, vpcID, s.RequesterCIDR, s.RequesterAddr, reqPort, accPort, s.AccepterCIDR, s.AccepterAddr}, true
 	case s.AccepterVPC:
-		return PeeringSide{vpcID, s.AccepterCIDR, PeeringRouterPort(s.PcxID, vpcID), s.RequesterCIDR, s.RequesterAddr}, true
+		return PeeringSide{s.PcxID, vpcID, s.AccepterCIDR, s.AccepterAddr, accPort, reqPort, s.RequesterCIDR, s.RequesterAddr}, true
 	}
 	return PeeringSide{}, false
 }
 
-// PeeringLinkPorts returns the link's two router ports, requester first. Each
-// takes a hashed MAC of its name and names the other as peer.
-func PeeringLinkPorts(spec PeeringLinkSpec) ([2]nbdb.LogicalRouterPort, error) {
-	if spec.PcxID == "" || spec.RequesterVPC == "" || spec.AccepterVPC == "" {
-		return [2]nbdb.LogicalRouterPort{}, fmt.Errorf("peering link: connection and both VPCs required")
+// Sides returns both ends' views of the link, requester first.
+func (s PeeringLinkSpec) Sides() [2]PeeringSide {
+	req, _ := s.Side(s.RequesterVPC)
+	acc, _ := s.Side(s.AccepterVPC)
+	return [2]PeeringSide{req, acc}
+}
+
+// PeeringLinkPort is side's router port on the link. It takes a hashed MAC of
+// its name and names the peer's port as peer.
+func PeeringLinkPort(side PeeringSide) nbdb.LogicalRouterPort {
+	peer := side.PeerPort
+	return nbdb.LogicalRouterPort{
+		Name:     side.LocalPort,
+		MAC:      networkids.HashMAC(side.LocalPort),
+		Networks: []string{netip.PrefixFrom(side.LocalAddr, 30).String()},
+		Peer:     &peer,
+		ExternalIDs: map[string]string{
+			ovn.ExternalIDPcxID: side.PcxID,
+			"spinifex:vpc_id":   side.LocalVPC,
+			ovn.ExternalIDRole:  "peering",
+		},
 	}
-	if !spec.RequesterAddr.Is4() || !spec.AccepterAddr.Is4() {
-		return [2]nbdb.LogicalRouterPort{}, fmt.Errorf("peering link %s: both link addresses required", spec.PcxID)
-	}
-	reqName := PeeringRouterPort(spec.PcxID, spec.RequesterVPC)
-	accName := PeeringRouterPort(spec.PcxID, spec.AccepterVPC)
-	port := func(name, peer, vpcID string, addr netip.Addr) nbdb.LogicalRouterPort {
-		return nbdb.LogicalRouterPort{
-			Name:     name,
-			MAC:      networkids.HashMAC(name),
-			Networks: []string{netip.PrefixFrom(addr, 30).String()},
-			Peer:     &peer,
-			ExternalIDs: map[string]string{
-				ovn.ExternalIDPcxID: spec.PcxID,
-				"spinifex:vpc_id":   vpcID,
-				"spinifex:role":     "peering",
-			},
-		}
-	}
-	return [2]nbdb.LogicalRouterPort{
-		port(reqName, accName, spec.RequesterVPC, spec.RequesterAddr),
-		port(accName, reqName, spec.AccepterVPC, spec.AccepterAddr),
-	}, nil
 }

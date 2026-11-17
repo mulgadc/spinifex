@@ -3,6 +3,8 @@ package topology
 import (
 	"net/netip"
 	"testing"
+
+	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn/nbdb"
 )
 
 func testPeeringSpec() PeeringLinkSpec {
@@ -14,11 +16,9 @@ func testPeeringSpec() PeeringLinkSpec {
 }
 
 // The two ports name each other as peer, so OVN joins the routers directly.
-func TestPeeringLinkPorts_PeersEachOther(t *testing.T) {
-	ports, err := PeeringLinkPorts(testPeeringSpec())
-	if err != nil {
-		t.Fatalf("PeeringLinkPorts: %v", err)
-	}
+func TestPeeringLinkPort_PeersEachOther(t *testing.T) {
+	sides := testPeeringSpec().Sides()
+	ports := [2]nbdb.LogicalRouterPort{PeeringLinkPort(sides[0]), PeeringLinkPort(sides[1])}
 	if ports[0].Name != "pcx-pcx-1-vpc-a" || ports[1].Name != "pcx-pcx-1-vpc-b" {
 		t.Fatalf("names = %q, %q", ports[0].Name, ports[1].Name)
 	}
@@ -33,24 +33,12 @@ func TestPeeringLinkPorts_PeersEachOther(t *testing.T) {
 	}
 }
 
-func TestPeeringLinkPorts_RejectsIncompleteSpec(t *testing.T) {
-	spec := testPeeringSpec()
-	spec.AccepterAddr = netip.Addr{}
-	if _, err := PeeringLinkPorts(spec); err == nil {
-		t.Error("missing link address accepted")
-	}
-	spec = testPeeringSpec()
-	spec.AccepterVPC = ""
-	if _, err := PeeringLinkPorts(spec); err == nil {
-		t.Error("missing VPC accepted")
-	}
-}
-
 // Each side sees its own port and the other side's range and address.
 func TestPeeringLinkSpec_Side(t *testing.T) {
 	spec := testPeeringSpec()
 	acc, ok := spec.Side("vpc-b")
-	if !ok || acc.LocalPort != "pcx-pcx-1-vpc-b" || acc.PeerCIDR != spec.RequesterCIDR || acc.PeerAddr != spec.RequesterAddr {
+	if !ok || acc.LocalPort != "pcx-pcx-1-vpc-b" || acc.PeerPort != "pcx-pcx-1-vpc-a" || acc.LocalAddr != spec.AccepterAddr ||
+		acc.PeerCIDR != spec.RequesterCIDR || acc.PeerAddr != spec.RequesterAddr {
 		t.Errorf("accepter side = %+v, %v", acc, ok)
 	}
 	if _, ok := spec.Side("vpc-c"); ok {

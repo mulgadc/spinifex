@@ -93,7 +93,7 @@ func peeringRows(m *mock.Client, router, role string) int {
 	}
 	n := 0
 	for _, p := range rows {
-		if p.ExternalIDs["spinifex:role"] == role {
+		if p.ExternalIDs[ovn.ExternalIDRole] == role {
 			n++
 		}
 	}
@@ -142,10 +142,10 @@ func TestReconcile_PeeringProvisioningThenActive(t *testing.T) {
 		if got := peeringRows(m, router, ovn.PeeringGuardRole); got != 1 {
 			t.Errorf("%s guards = %d, want 1", router, got)
 		}
-		if got := peeringRows(m, router, "peering-route-drop"); got != 1 {
+		if got := peeringRows(m, router, policy.PeeringRouteDropRole); got != 1 {
 			t.Errorf("%s route drops = %d, want 1", router, got)
 		}
-		if got := peeringRows(m, router, "peering-reroute"); got != 1 {
+		if got := peeringRows(m, router, policy.PeeringRerouteRole); got != 1 {
 			t.Errorf("%s reroutes in the confirming pass = %d, want 1", router, got)
 		}
 	}
@@ -161,7 +161,7 @@ func TestReconcile_PeeringProvisioningThenActive(t *testing.T) {
 		t.Fatalf("Reconcile active: %v", err)
 	}
 	for _, router := range []string{"vpc-vpc-a", "vpc-vpc-b"} {
-		if got := peeringRows(m, router, "peering-reroute"); got != 1 {
+		if got := peeringRows(m, router, policy.PeeringRerouteRole); got != 1 {
 			t.Errorf("%s reroutes when active = %d, want 1", router, got)
 		}
 	}
@@ -183,7 +183,7 @@ func TestReconcile_PeeringFailedLinkWithdrawsReroute(t *testing.T) {
 	if err := rec.Reconcile(ctx, peeringIntent(true)); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if got := peeringRows(m, "vpc-vpc-a", "peering-reroute"); got != 1 {
+	if got := peeringRows(m, "vpc-vpc-a", policy.PeeringRerouteRole); got != 1 {
 		t.Fatalf("reroutes = %d, want 1", got)
 	}
 
@@ -194,19 +194,19 @@ func TestReconcile_PeeringFailedLinkWithdrawsReroute(t *testing.T) {
 		t.Fatalf("Reconcile = %v, want ErrPassIncomplete", err)
 	}
 	for _, router := range []string{"vpc-vpc-a", "vpc-vpc-b"} {
-		if got := peeringRows(m, router, "peering-reroute"); got != 0 {
+		if got := peeringRows(m, router, policy.PeeringRerouteRole); got != 0 {
 			t.Errorf("%s reroutes after failed link = %d, want 0", router, got)
 		}
-		if got := peeringRows(m, router, "peering-route-drop"); got != 1 {
+		if got := peeringRows(m, router, policy.PeeringRouteDropRole); got != 1 {
 			t.Errorf("%s route drops after failed link = %d, want 1", router, got)
 		}
 	}
 }
 
-// One missing guard on an active link makes the next pass rewrite the whole
-// link in one transaction; if that rewrite fails, the same pass withdraws the
-// link's reroutes on both routers.
-func TestReconcile_PeeringMissingGuardRewritesLink(t *testing.T) {
+// A missing guard, entry route or no-route drop on an active link makes the
+// next pass rewrite the whole link in one transaction, restoring both ends; a
+// converged pass then writes nothing.
+func TestReconcile_PeeringMissingRowRewritesLink(t *testing.T) {
 	rec, m := newTestReconciler(t)
 	p := &peeringRecorder{}
 	p.wire(rec)
@@ -214,88 +214,37 @@ func TestReconcile_PeeringMissingGuardRewritesLink(t *testing.T) {
 	if err := rec.Reconcile(ctx, peeringIntent(true)); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	guards, err := policy.PeeringGuards(peeringSpec())
-	if err != nil {
-		t.Fatalf("PeeringGuards: %v", err)
-	}
-	dropGuard := func() {
-		t.Helper()
-		if err := m.DeleteLogicalRouterPolicy(ctx, "vpc-vpc-a", guards[0].Priority, guards[0].Match); err != nil {
-			t.Fatalf("DeleteLogicalRouterPolicy: %v", err)
-		}
-	}
-
-	dropGuard()
-	writes := m.EnsurePeeringLinkCalls
-	if err := rec.Reconcile(ctx, peeringIntent(true)); err != nil {
-		t.Fatalf("Reconcile repair: %v", err)
-	}
-	if m.EnsurePeeringLinkCalls != writes+1 {
-		t.Errorf("link transactions = %d, want one", m.EnsurePeeringLinkCalls-writes)
-	}
-	if got := linkPortCount(m); got != 2 {
-		t.Errorf("link ports = %d, want 2", got)
-	}
-	for _, router := range []string{"vpc-vpc-a", "vpc-vpc-b"} {
-		if got := peeringRows(m, router, ovn.PeeringGuardRole); got != 1 {
-			t.Errorf("%s guards after repair = %d, want 1", router, got)
-		}
-		if got := peeringRows(m, router, "peering-reroute"); got != 1 {
-			t.Errorf("%s reroutes after repair = %d, want 1", router, got)
-		}
-	}
-
-	dropGuard()
-	m.EnsurePeeringLinkErr = errors.New("nb unavailable")
-	if err := rec.Reconcile(ctx, peeringIntent(true)); !errors.Is(err, ErrPassIncomplete) {
-		t.Fatalf("Reconcile = %v, want ErrPassIncomplete", err)
-	}
-	for _, router := range []string{"vpc-vpc-a", "vpc-vpc-b"} {
-		if got := peeringRows(m, router, "peering-reroute"); got != 0 {
-			t.Errorf("%s reroutes with a guard missing = %d, want 0", router, got)
-		}
-		if got := peeringRows(m, router, "peering-route-drop"); got != 1 {
-			t.Errorf("%s route drops with a guard missing = %d, want 1", router, got)
-		}
-	}
-}
-
-// A missing entry route or no-route drop on an active link makes the next pass
-// rewrite the whole link in one transaction, restoring both ends.
-func TestReconcile_PeeringMissingEntryRewritesLink(t *testing.T) {
-	rec, m := newTestReconciler(t)
-	p := &peeringRecorder{}
-	p.wire(rec)
-	ctx := context.Background()
-	if err := rec.Reconcile(ctx, peeringIntent(true)); err != nil {
-		t.Fatalf("Reconcile: %v", err)
-	}
-	_, noRoutes, err := policy.PeeringEntries(peeringSpec())
-	if err != nil {
-		t.Fatalf("PeeringEntries: %v", err)
-	}
-	for name, drop := range map[string]func() error{
-		"entry route": func() error { return m.DeleteStaticRoute(ctx, "vpc-vpc-a", peeringSpec().AccepterCIDR.String()) },
-		"no-route drop": func() error {
-			return m.DeleteLogicalRouterPolicy(ctx, "vpc-vpc-b", noRoutes[1].Priority, noRoutes[1].Match)
-		},
+	sides := peeringSpec().Sides()
+	guard, noRoute := policy.PeeringGuard(sides[0]), policy.PeeringNoRouteDrop(sides[1])
+	for _, tc := range []struct {
+		name string
+		drop func() error
+	}{
+		{"guard", func() error { return m.DeleteLogicalRouterPolicy(ctx, "vpc-vpc-a", guard.Priority, guard.Match) }},
+		{"entry route", func() error { return m.DeleteStaticRoute(ctx, "vpc-vpc-a", sides[0].PeerCIDR.String()) }},
+		{"no-route drop", func() error { return m.DeleteLogicalRouterPolicy(ctx, "vpc-vpc-b", noRoute.Priority, noRoute.Match) }},
 	} {
-		if err := drop(); err != nil {
-			t.Fatalf("delete %s: %v", name, err)
+		if err := tc.drop(); err != nil {
+			t.Fatalf("delete %s: %v", tc.name, err)
 		}
 		writes := m.EnsurePeeringLinkCalls
 		if err := rec.Reconcile(ctx, peeringIntent(true)); err != nil {
-			t.Fatalf("Reconcile after %s deleted: %v", name, err)
+			t.Fatalf("Reconcile after %s deleted: %v", tc.name, err)
 		}
 		if m.EnsurePeeringLinkCalls != writes+1 {
-			t.Errorf("%s: link transactions = %d, want one", name, m.EnsurePeeringLinkCalls-writes)
+			t.Errorf("%s: link transactions = %d, want one", tc.name, m.EnsurePeeringLinkCalls-writes)
+		}
+		if got := linkPortCount(m); got != 2 {
+			t.Errorf("%s: link ports = %d, want 2", tc.name, got)
 		}
 		for _, router := range []string{"vpc-vpc-a", "vpc-vpc-b"} {
-			if got := entryRouteCount(m, router); got != 1 {
-				t.Errorf("%s: %s entry routes = %d, want 1", name, router, got)
+			for _, role := range []string{ovn.PeeringGuardRole, ovn.PeeringNoRouteRole, policy.PeeringRerouteRole} {
+				if got := peeringRows(m, router, role); got != 1 {
+					t.Errorf("%s: %s %s rows = %d, want 1", tc.name, router, role, got)
+				}
 			}
-			if got := peeringRows(m, router, ovn.PeeringNoRouteRole); got != 1 {
-				t.Errorf("%s: %s no-route drops = %d, want 1", name, router, got)
+			if got := entryRouteCount(m, router); got != 1 {
+				t.Errorf("%s: %s entry routes = %d, want 1", tc.name, router, got)
 			}
 		}
 	}
@@ -305,6 +254,34 @@ func TestReconcile_PeeringMissingEntryRewritesLink(t *testing.T) {
 	}
 	if m.EnsurePeeringLinkCalls != writes {
 		t.Errorf("a converged pass wrote the link %d times", m.EnsurePeeringLinkCalls-writes)
+	}
+}
+
+// When rewriting a link with a missing guard fails, the same pass withdraws
+// the link's reroutes on both routers and keeps the route drops.
+func TestReconcile_PeeringFailedRewriteWithdrawsReroutes(t *testing.T) {
+	rec, m := newTestReconciler(t)
+	p := &peeringRecorder{}
+	p.wire(rec)
+	ctx := context.Background()
+	if err := rec.Reconcile(ctx, peeringIntent(true)); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	guard := policy.PeeringGuard(peeringSpec().Sides()[0])
+	if err := m.DeleteLogicalRouterPolicy(ctx, "vpc-vpc-a", guard.Priority, guard.Match); err != nil {
+		t.Fatalf("DeleteLogicalRouterPolicy: %v", err)
+	}
+	m.EnsurePeeringLinkErr = errors.New("nb unavailable")
+	if err := rec.Reconcile(ctx, peeringIntent(true)); !errors.Is(err, ErrPassIncomplete) {
+		t.Fatalf("Reconcile = %v, want ErrPassIncomplete", err)
+	}
+	for _, router := range []string{"vpc-vpc-a", "vpc-vpc-b"} {
+		if got := peeringRows(m, router, policy.PeeringRerouteRole); got != 0 {
+			t.Errorf("%s reroutes with a guard missing = %d, want 0", router, got)
+		}
+		if got := peeringRows(m, router, policy.PeeringRouteDropRole); got != 1 {
+			t.Errorf("%s route drops with a guard missing = %d, want 1", router, got)
+		}
 	}
 }
 
@@ -338,10 +315,10 @@ func TestReconcile_PeeringTeardown(t *testing.T) {
 		if got := entryRouteCount(m, router); got != 0 {
 			t.Errorf("%s entry routes after teardown = %d, want 0", router, got)
 		}
-		if got := peeringRows(m, router, "peering-reroute"); got != 0 {
+		if got := peeringRows(m, router, policy.PeeringRerouteRole); got != 0 {
 			t.Errorf("%s reroutes after teardown = %d, want 0", router, got)
 		}
-		if got := peeringRows(m, router, "peering-route-drop"); got != 1 {
+		if got := peeringRows(m, router, policy.PeeringRouteDropRole); got != 1 {
 			t.Errorf("%s route drops after teardown = %d, want 1", router, got)
 		}
 	}
@@ -351,6 +328,40 @@ func TestReconcile_PeeringTeardown(t *testing.T) {
 }
 
 // A failed read of the peering bucket changes nothing: no link is torn down,
+// A teardown whose link delete fails is not reported cleaned, so the record
+// and its link address are kept until a later pass removes the link.
+func TestReconcile_PeeringFailedTeardownIsNotCleaned(t *testing.T) {
+	rec, m := newTestReconciler(t)
+	p := &peeringRecorder{}
+	p.wire(rec)
+	ctx := context.Background()
+	if err := rec.Reconcile(ctx, peeringIntent(true)); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	intent := peeringIntent(true)
+	intent.PeeringLinks = map[string]PeeringLinkIntent{}
+	intent.PeeringTeardowns = map[string]PeeringTeardownIntent{testPcx: {testPcx, "vpc-a", "vpc-b"}}
+
+	m.DeletePeeringLinkErr = errors.New("nb unavailable")
+	if err := rec.Reconcile(ctx, intent); !errors.Is(err, ErrPassIncomplete) {
+		t.Fatalf("Reconcile failed teardown = %v, want ErrPassIncomplete", err)
+	}
+	if len(p.cleaned) != 0 {
+		t.Fatalf("cleaned = %v after a failed teardown, want none", p.cleaned)
+	}
+	if got := linkPortCount(m); got != 2 {
+		t.Errorf("link ports after a failed teardown = %d, want 2", got)
+	}
+
+	m.DeletePeeringLinkErr = nil
+	if err := rec.Reconcile(ctx, intent); err != nil {
+		t.Fatalf("Reconcile retried teardown: %v", err)
+	}
+	if !slices.Equal(p.cleaned, []string{testPcx}) || linkPortCount(m) != 0 {
+		t.Errorf("after retry cleaned = %v, link ports = %d; want [%s] and 0", p.cleaned, linkPortCount(m), testPcx)
+	}
+}
+
 // no route is withdrawn, and the pass reports itself incomplete.
 func TestReconcile_PeeringIncompleteIntentChangesNothing(t *testing.T) {
 	rec, m := newTestReconciler(t)
@@ -369,7 +380,7 @@ func TestReconcile_PeeringIncompleteIntentChangesNothing(t *testing.T) {
 	if got := linkPortCount(m); got != 2 {
 		t.Errorf("link ports = %d, want 2", got)
 	}
-	if got := peeringRows(m, "vpc-vpc-a", "peering-reroute"); got != 1 {
+	if got := peeringRows(m, "vpc-vpc-a", policy.PeeringRerouteRole); got != 1 {
 		t.Errorf("reroutes = %d, want 1", got)
 	}
 }
@@ -422,7 +433,7 @@ func TestReconcile_PeeringUnconfirmedLinkDoesNotDeliver(t *testing.T) {
 		t.Errorf("link ports = %d, want 2", got)
 	}
 	for _, router := range []string{"vpc-vpc-a", "vpc-vpc-b"} {
-		if got := peeringRows(m, router, "peering-reroute"); got != 0 {
+		if got := peeringRows(m, router, policy.PeeringRerouteRole); got != 0 {
 			t.Errorf("%s reroutes while unconfirmed = %d, want 0", router, got)
 		}
 	}

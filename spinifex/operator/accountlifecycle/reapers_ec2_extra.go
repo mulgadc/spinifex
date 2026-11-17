@@ -119,7 +119,7 @@ func (r *egressOnlyIGWReaper) Delete(ctx context.Context, accountID string, reso
 // endedPeeringStates are the states a connection has already left the live
 // lifecycle in. A deleted one may still await the reconciler; that is not ours.
 var endedPeeringStates = map[string]bool{
-	"deleted": true, "rejected": true, "failed": true, "expired": true,
+	ec2vpcpeering.StateDeleted: true, ec2vpcpeering.StateRejected: true, ec2vpcpeering.StateFailed: true, ec2vpcpeering.StateExpired: true,
 }
 
 type vpcPeeringReaper struct {
@@ -166,7 +166,7 @@ func (r *vpcPeeringReaper) Delete(ctx context.Context, accountID string, resourc
 	if state := aws.StringValue(conn.Status.Code); endedPeeringStates[state] {
 		return nil
 	}
-	if aws.StringValue(conn.Status.Code) == "pending-acceptance" && conn.RequesterVpcInfo != nil &&
+	if aws.StringValue(conn.Status.Code) == ec2vpcpeering.StatePendingAcceptance && conn.RequesterVpcInfo != nil &&
 		aws.StringValue(conn.RequesterVpcInfo.OwnerId) != accountID {
 		_, err = r.svc.RejectVpcPeeringConnection(ctx, &ec2.RejectVpcPeeringConnectionInput{
 			VpcPeeringConnectionId: aws.String(resource.ID),

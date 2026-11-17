@@ -115,7 +115,9 @@ func (v *view) visibleTo(viewer string, now time.Time) bool {
 func getJSON[T any](ctx context.Context, kv jetstream.KeyValue, key string) (*T, uint64, error) {
 	entry, err := kv.Get(ctx, key)
 	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
+		// A key KV cannot hold names nothing: a malformed caller-supplied ID
+		// is absent, as an unknown one is.
+		if errors.Is(err, jetstream.ErrKeyNotFound) || errors.Is(err, jetstream.ErrInvalidKey) {
 			return nil, 0, nil
 		}
 		return nil, 0, fmt.Errorf("read %s: %w", key, err)
@@ -138,34 +140,25 @@ func putJSON(ctx context.Context, kv jetstream.KeyValue, key string, v any) erro
 	return nil
 }
 
-func createJSON(ctx context.Context, kv jetstream.KeyValue, key string, v any) (uint64, error) {
+// writeJSON creates key when rev is 0, else updates it at rev; a lost race
+// is errConflict.
+func writeJSON(ctx context.Context, kv jetstream.KeyValue, key string, v any, rev uint64) (uint64, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return 0, fmt.Errorf("encode %s: %w", key, err)
 	}
-	rev, err := kv.Create(ctx, key, data)
+	if rev == 0 {
+		rev, err = kv.Create(ctx, key, data)
+	} else {
+		rev, err = kv.Update(ctx, key, data, rev)
+	}
+	if kvstore.IsRevisionConflict(err) {
+		return 0, errConflict
+	}
 	if err != nil {
-		if kvstore.IsRevisionConflict(err) {
-			return 0, errConflict
-		}
-		return 0, fmt.Errorf("create %s: %w", key, err)
+		return 0, fmt.Errorf("write %s: %w", key, err)
 	}
 	return rev, nil
-}
-
-func updateJSON(ctx context.Context, kv jetstream.KeyValue, key string, v any, rev uint64) (uint64, error) {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return 0, fmt.Errorf("encode %s: %w", key, err)
-	}
-	newRev, err := kv.Update(ctx, key, data, rev)
-	if err != nil {
-		if kvstore.IsRevisionConflict(err) {
-			return 0, errConflict
-		}
-		return 0, fmt.Errorf("update %s: %w", key, err)
-	}
-	return newRev, nil
 }
 
 // deleteAt removes key at rev; an absent key is already deleted.
@@ -277,7 +270,7 @@ func (v *view) ended() PeeringRecord {
 // the record or an index unclaimed deletes at that revision, so rewriting them
 // makes it lose. It reports false when the sweep already removed the record.
 func (s *Store) confirmCreated(ctx context.Context, rec *PeeringRecord, rev uint64) (bool, error) {
-	if _, err := updateJSON(ctx, s.live, recordKey(rec.ID), rec, rev); errors.Is(err, errConflict) {
+	if _, err := writeJSON(ctx, s.live, recordKey(rec.ID), rec, rev); errors.Is(err, errConflict) {
 		v, err := s.load(ctx, rec.ID)
 		if err != nil || v == nil || v.rev == 0 {
 			return v != nil, err
@@ -298,18 +291,18 @@ func (v *view) isOpen() bool {
 	return v.status == StatePendingAcceptance || v.isLinkedAlive()
 }
 
-// takeReqClaim takes the directed request claim for rec. It returns the ID
-// that holds it afterwards: rec.ID, or the valid connection that already did.
-func (s *Store) takeReqClaim(ctx context.Context, rec *PeeringRecord) (string, error) {
-	key := reqKey(rec.RequesterVpcID, rec.AccepterVpcID)
-	mine := claim{PcxID: rec.ID, ClaimedAt: s.now()}
+// claimJudge decides a claim another connection holds: keep leaves it to its
+// holder, retry re-reads it after the judge cleared the way, and neither takes
+// it over at the revision read.
+type claimJudge func(ctx context.Context, held claim) (keep, retry bool, err error)
+
+// takeClaim takes key for id, refreshing its own claim or taking over one the
+// judge releases. It returns the ID holding the claim afterwards.
+func (s *Store) takeClaim(ctx context.Context, key, id string, judge claimJudge) (string, error) {
+	mine := claim{PcxID: id, ClaimedAt: s.now()}
 	for range moveAttempts {
-		_, err := createJSON(ctx, s.live, key, mine)
-		if err == nil {
-			return rec.ID, nil
-		}
-		if !errors.Is(err, errConflict) {
-			return "", err
+		if _, err := writeJSON(ctx, s.live, key, mine, 0); !errors.Is(err, errConflict) {
+			return id, err
 		}
 		held, rev, err := getJSON[claim](ctx, s.live, key)
 		if err != nil {
@@ -318,33 +311,45 @@ func (s *Store) takeReqClaim(ctx context.Context, rec *PeeringRecord) (string, e
 		if held == nil {
 			continue
 		}
-		if held.PcxID == rec.ID {
-			return rec.ID, nil
-		}
-		owner, err := s.load(ctx, held.PcxID)
-		if err != nil {
-			return "", err
-		}
-		if owner != nil && owner.isOpen() {
-			return held.PcxID, nil
-		}
-		// An expired request, or one whose VPC is gone, keeps its visibility
-		// window: move it to the terminal bucket before its claim is taken.
-		if owner != nil && owner.rec.Status == StatePendingAcceptance {
-			ended := owner.ended()
-			if err := s.moveTerminal(ctx, &ended, owner.rev); err != nil && !errors.Is(err, errConflict) {
-				return "", err
+		if held.PcxID != id {
+			keep, retry, err := judge(ctx, *held)
+			if err != nil || keep {
+				return held.PcxID, err
 			}
-			continue
+			if retry {
+				continue
+			}
 		}
-		if _, err := updateJSON(ctx, s.live, key, mine, rev); err == nil {
-			return rec.ID, nil
-		} else if !errors.Is(err, errConflict) {
-			return "", err
+		if _, err := writeJSON(ctx, s.live, key, mine, rev); !errors.Is(err, errConflict) {
+			return id, err
 		}
 	}
 	return "", fmt.Errorf("take %s: %w", key, errConflict)
 }
+
+// takeReqClaim takes the directed request claim for rec. It returns the ID
+// that holds it afterwards: rec.ID, or the valid connection that already did.
+func (s *Store) takeReqClaim(ctx context.Context, rec *PeeringRecord) (string, error) {
+	return s.takeClaim(ctx, reqKey(rec.RequesterVpcID, rec.AccepterVpcID), rec.ID, func(ctx context.Context, held claim) (bool, bool, error) {
+		owner, err := s.load(ctx, held.PcxID)
+		if err != nil || owner == nil || owner.isOpen() {
+			return owner != nil, false, err
+		}
+		// An expired request, or one whose VPC is gone, keeps its visibility
+		// window: move it to the terminal bucket before its claim is taken.
+		if owner.rec.Status != StatePendingAcceptance {
+			return false, false, nil
+		}
+		ended := owner.ended()
+		if err := s.moveTerminal(ctx, &ended, owner.rev); err != nil && !errors.Is(err, errConflict) {
+			return false, false, err
+		}
+		return false, true, nil
+	})
+}
+
+// errAbsent marks a record read-modify-write whose record is gone.
+var errAbsent = errors.New("vpcpeering: record absent")
 
 // errClaimHeld reports a pair claim held by another connection that may keep it.
 var errClaimHeld = errors.New("vpcpeering: claim held")
@@ -353,47 +358,25 @@ var errClaimHeld = errors.New("vpcpeering: claim held")
 // holder's live record (nil when absent) and claim age. A pending holder is
 // fenced at the revision read before the takeover.
 func (s *Store) takeOwnedClaim(ctx context.Context, key, id string, stale func(holder *PeeringRecord, age time.Duration) bool) error {
-	mine := claim{PcxID: id, ClaimedAt: s.now()}
-	for range moveAttempts {
-		_, err := createJSON(ctx, s.live, key, mine)
-		if err == nil {
-			return nil
+	holderID, err := s.takeClaim(ctx, key, id, func(ctx context.Context, held claim) (bool, bool, error) {
+		holder, rev, err := getJSON[PeeringRecord](ctx, s.live, recordKey(held.PcxID))
+		if err != nil || !stale(holder, s.now().Sub(held.ClaimedAt)) {
+			return err == nil, false, err
 		}
-		if !errors.Is(err, errConflict) {
-			return err
+		if holder == nil || holder.Status != StatePendingAcceptance {
+			return false, false, nil
 		}
-		held, rev, err := getJSON[claim](ctx, s.live, key)
-		if err != nil {
-			return err
+		holder.Generation++
+		_, err = writeJSON(ctx, s.live, recordKey(holder.ID), holder, rev)
+		if errors.Is(err, errConflict) {
+			return false, true, nil
 		}
-		if held == nil {
-			continue
-		}
-		if held.PcxID != id {
-			holder, holderRev, err := getJSON[PeeringRecord](ctx, s.live, recordKey(held.PcxID))
-			if err != nil {
-				return err
-			}
-			if !stale(holder, s.now().Sub(held.ClaimedAt)) {
-				return errClaimHeld
-			}
-			if holder != nil && holder.Status == StatePendingAcceptance {
-				holder.Generation++
-				if _, err := updateJSON(ctx, s.live, recordKey(holder.ID), holder, holderRev); err != nil {
-					if errors.Is(err, errConflict) {
-						continue
-					}
-					return err
-				}
-			}
-		}
-		if _, err := updateJSON(ctx, s.live, key, mine, rev); err == nil {
-			return nil
-		} else if !errors.Is(err, errConflict) {
-			return err
-		}
+		return false, false, err
+	})
+	if err == nil && holderID != id {
+		return errClaimHeld
 	}
-	return fmt.Errorf("take %s: %w", key, errConflict)
+	return err
 }
 
 // pairClaimStale: the holder is gone, terminal or deleted, or is a pending
@@ -419,9 +402,7 @@ func linkClaimStale(slot string) func(*PeeringRecord, time.Duration) bool {
 // takeLinkSlot claims a /30 for id, probing from a slot derived from the ID so
 // a retried Accept finds its own claim first.
 func (s *Store) takeLinkSlot(ctx context.Context, id string) (string, error) {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(id))
-	start := int(h.Sum32() % linkSlots)
+	start := linkStart(id)
 	for i := range linkSlots {
 		n := (start + i) % linkSlots
 		prefix := linkPrefix(n).String()
@@ -434,6 +415,13 @@ func (s *Store) takeLinkSlot(ctx context.Context, id string) (string, error) {
 		}
 	}
 	return "", errLinkSpaceExhausted
+}
+
+// linkStart is the slot id's link search starts from.
+func linkStart(id string) int {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(id))
+	return int(h.Sum32() % linkSlots)
 }
 
 // releaseClaim deletes key at its revision while it still names id.
@@ -536,7 +524,7 @@ func (s *Store) releaseAll(ctx context.Context, rec *PeeringRecord) error {
 // finishes the move. The first write is the fence: a racing writer at the
 // same revision loses.
 func (s *Store) moveTerminal(ctx context.Context, rec *PeeringRecord, rev uint64) error {
-	newRev, err := updateJSON(ctx, s.live, recordKey(rec.ID), rec, rev)
+	newRev, err := writeJSON(ctx, s.live, recordKey(rec.ID), rec, rev)
 	if err != nil {
 		return err
 	}

@@ -21,11 +21,12 @@ type stallingKV struct {
 	prefix string
 	update bool
 	stall  func()
+	fired  bool
 }
 
 func (k *stallingKV) before(key string, update bool) {
 	if stall := k.stall; stall != nil && update == k.update && strings.HasPrefix(key, k.prefix) {
-		k.stall = nil
+		k.stall, k.fired = nil, true
 		stall()
 	}
 }
@@ -42,21 +43,24 @@ func (k *stallingKV) Update(ctx context.Context, key string, value []byte, revis
 
 // stallCreate makes the next Create pause before writing a key with prefix
 // while the clock passes the grace and a sweep runs.
-func (f *fixture) stallCreate(t *testing.T, prefix string, check func(SweepResult)) {
-	f.svc.live = &stallingKV{KeyValue: f.svc.live, prefix: prefix, stall: func() {
+func (f *fixture) stallCreate(t *testing.T, prefix string, check func(SweepResult)) *stallingKV {
+	kv := &stallingKV{KeyValue: f.svc.live, prefix: prefix, stall: func() {
 		f.clock.advance(claimGrace)
 		res, err := f.svc.Sweep(t.Context())
 		require.NoError(t, err)
 		check(res)
 	}}
+	f.svc.live = kv
+	return kv
 }
 
 func TestCreate_StalledPastSweepBeforeRecordIsFullyIndexed(t *testing.T) {
 	f := newFixture(t)
-	f.stallCreate(t, "pcx.", func(res SweepResult) {
+	kv := f.stallCreate(t, "pcx.", func(res SweepResult) {
 		assert.Positive(t, res.KeysRemoved, "the sweep removes the stalled create's indexes")
 	})
 	id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
+	require.True(t, kv.fired, "the create stalled before its record write")
 
 	conns, err := f.describe(t)
 	require.NoError(t, err)
@@ -74,10 +78,11 @@ func TestCreate_StalledPastSweepBeforeRecordIsFullyIndexed(t *testing.T) {
 
 func TestCreate_RecordSweptBeforeClaimFailsTheCreate(t *testing.T) {
 	f := newFixture(t)
-	f.stallCreate(t, "req.", func(res SweepResult) {
+	kv := f.stallCreate(t, "req.", func(res SweepResult) {
 		assert.Equal(t, 1, res.DiscardedStale, "the sweep discards the unclaimed record")
 	})
 	_, err := f.svc.CreateVpcPeeringConnection(t.Context(), &ec2.CreateVpcPeeringConnectionInput{VpcId: aws.String(vpcA), PeerVpcId: aws.String(vpcB)}, testAccount)
+	require.True(t, kv.fired, "the create stalled before its claim write")
 	requireCode(t, err, awserrors.ErrorServerInternal)
 
 	conns, err := f.describe(t)

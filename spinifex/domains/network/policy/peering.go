@@ -25,63 +25,47 @@ const (
 	// and its reroute one above, so ranks follow longest-prefix match.
 	peeringRouteBase = 1300
 
-	peeringRouteDropRole = "peering-route-drop"
-	peeringRerouteRole   = "peering-reroute"
+	// PeeringRouteDropRole and PeeringRerouteRole are the roles of a peering
+	// route's drop and of its delivery over the link.
+	PeeringRouteDropRole = "peering-route-drop"
+	PeeringRerouteRole   = "peering-reroute"
 )
 
-// PeeringGuards returns the guard on each end of spec's link, requester first.
-func PeeringGuards(spec topology.PeeringLinkSpec) ([2]nbdb.LogicalRouterPolicy, error) {
-	var out [2]nbdb.LogicalRouterPolicy
-	for i, vpcID := range []string{spec.RequesterVPC, spec.AccepterVPC} {
-		side, ok := spec.Side(vpcID)
-		if !ok || !side.LocalCIDR.IsValid() || !side.PeerCIDR.IsValid() {
-			return out, fmt.Errorf("peering guard %s: both VPC ranges required", spec.PcxID)
-		}
-		out[i] = nbdb.LogicalRouterPolicy{
-			Priority: PeeringGuardPriority,
-			Match: fmt.Sprintf(`inport == %q && (ip4.src != %s || ip4.dst != %s || ip6)`,
-				side.LocalPort, side.PeerCIDR, side.LocalCIDR),
-			Action:  "drop",
-			Options: map[string]string{},
-			ExternalIDs: map[string]string{
-				ovn.ExternalIDPcxID: spec.PcxID,
-				"spinifex:role":     ovn.PeeringGuardRole,
-			},
-		}
+// PeeringGuard drops anything arriving on side's link port that is not
+// peer-to-local IPv4.
+func PeeringGuard(side topology.PeeringSide) nbdb.LogicalRouterPolicy {
+	return nbdb.LogicalRouterPolicy{
+		Priority: PeeringGuardPriority,
+		Match: fmt.Sprintf(`inport == %q && (ip4.src != %s || ip4.dst != %s || ip6)`,
+			side.LocalPort, side.PeerCIDR, side.LocalCIDR),
+		Action:      "drop",
+		Options:     map[string]string{},
+		ExternalIDs: map[string]string{ovn.ExternalIDPcxID: side.PcxID, ovn.ExternalIDRole: ovn.PeeringGuardRole},
 	}
-	return out, nil
 }
 
-// PeeringEntries returns each end's entry route, which lets a router with no
-// route covering the peer range reach the policy stage, and the drop that
-// keeps that route from forwarding; requester first.
-func PeeringEntries(spec topology.PeeringLinkSpec) ([2]nbdb.LogicalRouterStaticRoute, [2]nbdb.LogicalRouterPolicy, error) {
-	var routes [2]nbdb.LogicalRouterStaticRoute
-	var drops [2]nbdb.LogicalRouterPolicy
-	for i, vpcID := range []string{spec.RequesterVPC, spec.AccepterVPC} {
-		side, ok := spec.Side(vpcID)
-		if !ok || !side.PeerCIDR.IsValid() || !side.PeerAddr.Is4() {
-			return routes, drops, fmt.Errorf("peering entry %s: peer range and link address required", spec.PcxID)
-		}
-		port := side.LocalPort
-		routes[i] = nbdb.LogicalRouterStaticRoute{
-			IPPrefix:    side.PeerCIDR.String(),
-			Nexthop:     side.PeerAddr.String(),
-			OutputPort:  &port,
-			ExternalIDs: map[string]string{ovn.ExternalIDPcxID: spec.PcxID},
-		}
-		drops[i] = nbdb.LogicalRouterPolicy{
-			Priority: PeeringNoRoutePriority,
-			Match:    fmt.Sprintf("ip4.dst == %s", side.PeerCIDR),
-			Action:   "drop",
-			Options:  map[string]string{},
-			ExternalIDs: map[string]string{
-				ovn.ExternalIDPcxID: spec.PcxID,
-				"spinifex:role":     ovn.PeeringNoRouteRole,
-			},
-		}
+// PeeringEntryRoute lets side's router, with no route covering the peer
+// range, carry it to the policy stage; PeeringNoRouteDrop keeps it from
+// forwarding wherever no peering route decides it.
+func PeeringEntryRoute(side topology.PeeringSide) nbdb.LogicalRouterStaticRoute {
+	port := side.LocalPort
+	return nbdb.LogicalRouterStaticRoute{
+		IPPrefix:    side.PeerCIDR.String(),
+		Nexthop:     side.PeerAddr.String(),
+		OutputPort:  &port,
+		ExternalIDs: map[string]string{ovn.ExternalIDPcxID: side.PcxID},
 	}
-	return routes, drops, nil
+}
+
+// PeeringNoRouteDrop drops side's peer range below every peering route.
+func PeeringNoRouteDrop(side topology.PeeringSide) nbdb.LogicalRouterPolicy {
+	return nbdb.LogicalRouterPolicy{
+		Priority:    PeeringNoRoutePriority,
+		Match:       fmt.Sprintf("ip4.dst == %s", side.PeerCIDR),
+		Action:      "drop",
+		Options:     map[string]string{},
+		ExternalIDs: map[string]string{ovn.ExternalIDPcxID: side.PcxID, ovn.ExternalIDRole: ovn.PeeringNoRouteRole},
+	}
 }
 
 // PeeringReroute delivers the part of a peering route's destination inside
@@ -112,7 +96,7 @@ func PeeringRouteRows(spec PeeringRouteSpec) []nbdb.LogicalRouterPolicy {
 		"spinifex:rtb_id":    spec.RouteTableID,
 		"spinifex:subnet":    spec.SubnetID,
 		"spinifex:route_dst": spec.Dest.String(),
-		"spinifex:role":      peeringRouteDropRole,
+		ovn.ExternalIDRole:   PeeringRouteDropRole,
 	}
 	rows := []nbdb.LogicalRouterPolicy{{
 		Priority: prio, Match: peeringRouteMatch(spec.SubnetID, spec.Dest, spec.Exclude),
@@ -135,7 +119,7 @@ func PeeringRouteRows(spec PeeringRouteSpec) []nbdb.LogicalRouterPolicy {
 			"spinifex:subnet":      spec.SubnetID,
 			"spinifex:route_dst":   spec.Dest.String(),
 			"spinifex:output_port": r.OutputPort,
-			"spinifex:role":        peeringRerouteRole,
+			ovn.ExternalIDRole:     PeeringRerouteRole,
 		},
 	})
 	return rows
@@ -171,8 +155,8 @@ func NewPeeringRouteManager(client ovn.Client) PeeringRouteManager {
 }
 
 func isPeeringRouteRow(p *nbdb.LogicalRouterPolicy) bool {
-	role := p.ExternalIDs["spinifex:role"]
-	return role == peeringRouteDropRole || role == peeringRerouteRole
+	role := p.ExternalIDs[ovn.ExternalIDRole]
+	return role == PeeringRouteDropRole || role == PeeringRerouteRole
 }
 
 func (m *peeringRouteManager) SyncPeeringRoutes(ctx context.Context, vpcID string, want []nbdb.LogicalRouterPolicy) error {
@@ -227,7 +211,7 @@ func peeringRowMatches(cur, want *nbdb.LogicalRouterPolicy) bool {
 	if (cur.Nexthop == nil) != (want.Nexthop == nil) || (cur.Nexthop != nil && *cur.Nexthop != *want.Nexthop) {
 		return false
 	}
-	for _, k := range []string{ovn.ExternalIDPcxID, "spinifex:output_port", "spinifex:rtb_id", "spinifex:role"} {
+	for _, k := range []string{ovn.ExternalIDPcxID, "spinifex:output_port", "spinifex:rtb_id", ovn.ExternalIDRole} {
 		if cur.ExternalIDs[k] != want.ExternalIDs[k] {
 			return false
 		}

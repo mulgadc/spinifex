@@ -97,6 +97,25 @@ func TestLoadIntentFromKV_PeeringUnreadableVPCIsPresent(t *testing.T) {
 	}
 }
 
+// With the VPC bucket unreadable every VPC would look absent, so peering
+// intent is incomplete and no linked connection is marked for teardown.
+func TestLoadIntentFromKV_PeeringWithoutVPCBucketTearsNothingDown(t *testing.T) {
+	js := startKV(t)
+	testutil.SeedKV(t, js, ec2vpcpeering.KVBucketPeeringConnections, map[string][]byte{
+		"pcx.pcx-1": mustJSON(t, peeringRec("pcx-1", ec2vpcpeering.StateActive, "vpc-a", "10.0.0.0/16", "vpc-b", "10.1.0.0/16")),
+	})
+	intent, err := LoadIntentFromKV(context.Background(), js, "us-east-1a")
+	if err != nil {
+		t.Fatalf("LoadIntentFromKV: %v", err)
+	}
+	if intent.PeeringIncomplete == nil {
+		t.Error("PeeringIncomplete = nil with no VPC bucket, want the pass marked incomplete")
+	}
+	if len(intent.PeeringTeardowns) != 0 {
+		t.Errorf("teardowns = %v with no VPC bucket, want none", intent.PeeringTeardowns)
+	}
+}
+
 // A peering route fans out over every subnet its table governs and excludes
 // the VPC range and each more specific gateway route inside its destination.
 func TestLoadPeeringRoutes_FanOutAndExclusions(t *testing.T) {

@@ -201,6 +201,23 @@ func DiscoverDefaultVPC(t *testing.T, c *AWSClient) (vpcID, sgID, subnetID strin
 	return vpcID, sgID, subnetID
 }
 
+// MainRouteTableID returns the main route table of vpcID, the one a subnet
+// with no explicit association uses.
+func MainRouteTableID(t *testing.T, c *AWSClient, vpcID string) string {
+	t.Helper()
+	out, err := c.EC2.DescribeRouteTables(&ec2.DescribeRouteTablesInput{Filters: []*ec2.Filter{
+		{Name: aws.String("vpc-id"), Values: []*string{aws.String(vpcID)}},
+		{Name: aws.String("association.main"), Values: []*string{aws.String("true")}},
+	}})
+	if err != nil {
+		t.Fatalf("describe-route-tables main vpc=%s: %v", vpcID, err)
+	}
+	if len(out.RouteTables) == 0 || aws.StringValue(out.RouteTables[0].RouteTableId) == "" {
+		t.Fatalf("no main route table for vpc %s", vpcID)
+	}
+	return aws.StringValue(out.RouteTables[0].RouteTableId)
+}
+
 // AuthorizeSSHIngress idempotently authorizes tcp/22 ingress from 0.0.0.0/0
 // on sgID.
 func AuthorizeSSHIngress(t *testing.T, c *AWSClient, sgID string) {

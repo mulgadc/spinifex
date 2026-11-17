@@ -33,62 +33,68 @@ func (m *Client) EnsurePeeringLink(_ context.Context, ends [2]ovn.PeeringLinkEnd
 		}
 		m.RouterPorts[port.Name] = &port
 
-		m.upsertPeeringPolicy(lr, end.Guard)
-		m.upsertPeeringPolicy(lr, end.NoRoute)
-		m.upsertEntryRoute(lr, end.Entry)
+		upsertOwned(m.LRPolicies, &lr.Policies, end.Guard, policyStamp, "lrp")
+		upsertOwned(m.LRPolicies, &lr.Policies, end.NoRoute, policyStamp, "lrp")
+		upsertOwned(m.StaticRoutes, &lr.StaticRoutes, end.Entry, routeStamp, "route")
 	}
 	return nil
 }
 
-// upsertPeeringPolicy keeps one policy of want's connection and role on lr,
-// rewritten to want. The caller holds m.Mu.
-func (m *Client) upsertPeeringPolicy(lr *nbdb.LogicalRouter, want nbdb.LogicalRouterPolicy) {
-	pcxID, role := want.ExternalIDs[ovn.ExternalIDPcxID], want.ExternalIDs["spinifex:role"]
-	for _, uuid := range slices.Clone(lr.Policies) {
-		p, ok := m.LRPolicies[uuid]
-		if !ok || p.ExternalIDs[ovn.ExternalIDPcxID] != pcxID || p.ExternalIDs["spinifex:role"] != role {
-			continue
-		}
-		if want.UUID == "" {
-			want.UUID = uuid
-			continue
-		}
-		delete(m.LRPolicies, uuid)
-		lr.Policies = slices.DeleteFunc(lr.Policies, func(u string) bool { return u == uuid })
-	}
-	if want.UUID == "" {
-		want.UUID = awsidentifiers.GenerateResourceID("lrp")
-		lr.Policies = append(lr.Policies, want.UUID)
-	}
-	m.LRPolicies[want.UUID] = &want
+func policyStamp(r *nbdb.LogicalRouterPolicy) (*string, map[string]string) {
+	return &r.UUID, r.ExternalIDs
 }
 
-// upsertEntryRoute keeps one static route of want's connection on lr,
-// rewritten to want. The caller holds m.Mu.
-func (m *Client) upsertEntryRoute(lr *nbdb.LogicalRouter, want nbdb.LogicalRouterStaticRoute) {
-	pcxID := want.ExternalIDs[ovn.ExternalIDPcxID]
-	for _, uuid := range slices.Clone(lr.StaticRoutes) {
-		r, ok := m.StaticRoutes[uuid]
-		if !ok || r.ExternalIDs[ovn.ExternalIDPcxID] != pcxID {
+func routeStamp(r *nbdb.LogicalRouterStaticRoute) (*string, map[string]string) {
+	return &r.UUID, r.ExternalIDs
+}
+
+// upsertOwned keeps one row of want's connection and role among the rows
+// attached through *attached, rewritten to want. The caller holds m.Mu.
+func upsertOwned[T any](rows map[string]*T, attached *[]string, want T, at func(*T) (*string, map[string]string), prefix string) {
+	wantUUID, wantExt := at(&want)
+	for _, uuid := range slices.Clone(*attached) {
+		r, ok := rows[uuid]
+		if !ok {
 			continue
 		}
-		if want.UUID == "" {
-			want.UUID = uuid
+		if _, ext := at(r); !ovn.SamePeeringOwner(ext, wantExt) {
 			continue
 		}
-		delete(m.StaticRoutes, uuid)
-		lr.StaticRoutes = slices.DeleteFunc(lr.StaticRoutes, func(u string) bool { return u == uuid })
+		if *wantUUID == "" {
+			*wantUUID = uuid
+			continue
+		}
+		delete(rows, uuid)
+		*attached = slices.DeleteFunc(*attached, func(u string) bool { return u == uuid })
 	}
-	if want.UUID == "" {
-		want.UUID = awsidentifiers.GenerateResourceID("route")
-		lr.StaticRoutes = append(lr.StaticRoutes, want.UUID)
+	if *wantUUID == "" {
+		*wantUUID = awsidentifiers.GenerateResourceID(prefix)
+		*attached = append(*attached, *wantUUID)
 	}
-	m.StaticRoutes[want.UUID] = &want
+	rows[*wantUUID] = &want
+}
+
+// deleteOwned removes the rows stamped pcxID from rows and from *attached.
+func deleteOwned[T any](rows map[string]*T, attached *[]string, at func(*T) (*string, map[string]string), pcxID string) {
+	*attached = slices.DeleteFunc(*attached, func(uuid string) bool {
+		r, ok := rows[uuid]
+		if !ok {
+			return false
+		}
+		if _, ext := at(r); ext[ovn.ExternalIDPcxID] != pcxID {
+			return false
+		}
+		delete(rows, uuid)
+		return true
+	})
 }
 
 func (m *Client) DeletePeeringLink(_ context.Context, pcxID string, routers []string) error {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
+	if m.DeletePeeringLinkErr != nil {
+		return m.DeletePeeringLinkErr
+	}
 	for _, name := range routers {
 		lr, ok := m.Routers[name]
 		if !ok {
@@ -103,22 +109,8 @@ func (m *Client) DeletePeeringLink(_ context.Context, pcxID string, routers []st
 			}
 			return false
 		})
-		lr.StaticRoutes = slices.DeleteFunc(lr.StaticRoutes, func(uuid string) bool {
-			r, ok := m.StaticRoutes[uuid]
-			if ok && r.ExternalIDs[ovn.ExternalIDPcxID] == pcxID {
-				delete(m.StaticRoutes, uuid)
-				return true
-			}
-			return false
-		})
-		lr.Policies = slices.DeleteFunc(lr.Policies, func(uuid string) bool {
-			p, ok := m.LRPolicies[uuid]
-			if ok && p.ExternalIDs[ovn.ExternalIDPcxID] == pcxID {
-				delete(m.LRPolicies, uuid)
-				return true
-			}
-			return false
-		})
+		deleteOwned(m.StaticRoutes, &lr.StaticRoutes, routeStamp, pcxID)
+		deleteOwned(m.LRPolicies, &lr.Policies, policyStamp, pcxID)
 	}
 	return nil
 }

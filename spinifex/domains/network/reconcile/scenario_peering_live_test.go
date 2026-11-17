@@ -36,7 +36,7 @@ func peeringNB(t *testing.T, ctx context.Context, cli ovn.Client) string {
 			t.Fatalf("ListLogicalRouterPolicies %s: %v", router, err)
 		}
 		for _, p := range policies {
-			if !strings.HasPrefix(p.ExternalIDs["spinifex:role"], "peering") {
+			if !strings.HasPrefix(p.ExternalIDs[ovn.ExternalIDRole], "peering") {
 				continue
 			}
 			nh := ""

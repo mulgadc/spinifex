@@ -21,44 +21,32 @@ func testLinkSpec() topology.PeeringLinkSpec {
 }
 
 // Each guard admits only peer-to-local IPv4 arriving on its own link port.
-func TestPeeringGuards_Match(t *testing.T) {
-	guards, err := PeeringGuards(testLinkSpec())
-	if err != nil {
-		t.Fatalf("PeeringGuards: %v", err)
-	}
+func TestPeeringGuard_Match(t *testing.T) {
 	want := [2]string{
 		`inport == "pcx-pcx-1-vpc-a" && (ip4.src != 10.1.0.0/16 || ip4.dst != 10.0.0.0/16 || ip6)`,
 		`inport == "pcx-pcx-1-vpc-b" && (ip4.src != 10.0.0.0/16 || ip4.dst != 10.1.0.0/16 || ip6)`,
 	}
-	for i, g := range guards {
-		if g.Match != want[i] || g.Action != "drop" || g.Priority != PeeringGuardPriority {
+	for i, side := range testLinkSpec().Sides() {
+		if g := PeeringGuard(side); g.Match != want[i] || g.Action != "drop" || g.Priority != PeeringGuardPriority {
 			t.Errorf("guard %d = %+v, want drop at %d on %s", i, g, PeeringGuardPriority, want[i])
 		}
-	}
-	spec := testLinkSpec()
-	spec.AccepterCIDR = netip.Prefix{}
-	if _, err := PeeringGuards(spec); err == nil {
-		t.Error("guard built without the accepter range")
 	}
 }
 
 // Each end's entry route leads to the peer over its own port, and its drop
 // ranks above the system-instance allow and below every peering route.
-func TestPeeringEntries(t *testing.T) {
-	routes, drops, err := PeeringEntries(testLinkSpec())
-	if err != nil {
-		t.Fatalf("PeeringEntries: %v", err)
-	}
+func TestPeeringEntryRouteAndNoRouteDrop(t *testing.T) {
 	want := [2]struct{ prefix, nexthop, port string }{
 		{"10.1.0.0/16", "169.254.192.2", "pcx-pcx-1-vpc-a"},
 		{"10.0.0.0/16", "169.254.192.1", "pcx-pcx-1-vpc-b"},
 	}
-	for i, r := range routes {
+	for i, side := range testLinkSpec().Sides() {
+		r := PeeringEntryRoute(side)
 		if r.IPPrefix != want[i].prefix || r.Nexthop != want[i].nexthop || r.OutputPort == nil || *r.OutputPort != want[i].port {
 			t.Errorf("entry route %d = %+v, want %+v", i, r, want[i])
 		}
-		if drops[i].Match != "ip4.dst == "+want[i].prefix || drops[i].Action != "drop" {
-			t.Errorf("no-route drop %d = %+v", i, drops[i])
+		if d := PeeringNoRouteDrop(side); d.Match != "ip4.dst == "+want[i].prefix || d.Action != "drop" || d.Priority != PeeringNoRoutePriority {
+			t.Errorf("no-route drop %d = %+v", i, d)
 		}
 	}
 	if SystemInstanceEgressPriority >= PeeringNoRoutePriority || PeeringNoRoutePriority >= peeringRouteBase {
@@ -130,10 +118,10 @@ func TestSyncPeeringRoutes(t *testing.T) {
 	if err := m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-vpc-a"}); err != nil {
 		t.Fatalf("CreateLogicalRouter: %v", err)
 	}
-	guards, _ := PeeringGuards(testLinkSpec())
+	guard := PeeringGuard(testLinkSpec().Sides()[0])
 	other := nbdb.LogicalRouterPolicy{Priority: 1100, Match: "inport == \"rtr-subnet-1\"", Action: "drop"}
 	stale := PeeringRouteRows(PeeringRouteSpec{SubnetID: "subnet-9", Dest: netip.MustParsePrefix("10.9.0.0/16")})[0]
-	for _, p := range []nbdb.LogicalRouterPolicy{guards[0], other, stale} {
+	for _, p := range []nbdb.LogicalRouterPolicy{guard, other, stale} {
 		if err := m.AddLogicalRouterPolicy(ctx, "vpc-vpc-a", &p); err != nil {
 			t.Fatalf("AddLogicalRouterPolicy: %v", err)
 		}
@@ -148,7 +136,7 @@ func TestSyncPeeringRoutes(t *testing.T) {
 	if err := mgr.SyncPeeringRoutes(ctx, "vpc-a", want); err != nil {
 		t.Fatalf("SyncPeeringRoutes drift: %v", err)
 	}
-	for _, p := range []nbdb.LogicalRouterPolicy{guards[0], other, want[0], want[1]} {
+	for _, p := range []nbdb.LogicalRouterPolicy{guard, other, want[0], want[1]} {
 		got, err := m.FindLogicalRouterPolicy(ctx, "vpc-vpc-a", p.Priority, p.Match)
 		if err != nil || got == nil {
 			t.Errorf("policy %q missing: %v", p.Match, err)

@@ -13,8 +13,8 @@ import (
 func peeringEnds(pcxID, guardMatchA, guardMatchB string) [2]ovn.PeeringLinkEnd {
 	peerA, peerB := "pcx-a", "pcx-b"
 	ids := map[string]string{ovn.ExternalIDPcxID: pcxID}
-	guardIDs := map[string]string{ovn.ExternalIDPcxID: pcxID, "spinifex:role": ovn.PeeringGuardRole}
-	noRouteIDs := map[string]string{ovn.ExternalIDPcxID: pcxID, "spinifex:role": ovn.PeeringNoRouteRole}
+	guardIDs := map[string]string{ovn.ExternalIDPcxID: pcxID, ovn.ExternalIDRole: ovn.PeeringGuardRole}
+	noRouteIDs := map[string]string{ovn.ExternalIDPcxID: pcxID, ovn.ExternalIDRole: ovn.PeeringNoRouteRole}
 	return [2]ovn.PeeringLinkEnd{
 		{
 			Router:  "lr-a",
@@ -36,7 +36,7 @@ func peeringEnds(pcxID, guardMatchA, guardMatchB string) [2]ovn.PeeringLinkEnd {
 func policiesOfRole(policies []nbdb.LogicalRouterPolicy, role string) []nbdb.LogicalRouterPolicy {
 	var out []nbdb.LogicalRouterPolicy
 	for _, p := range policies {
-		if p.ExternalIDs["spinifex:role"] == role {
+		if p.ExternalIDs[ovn.ExternalIDRole] == role {
 			out = append(out, p)
 		}
 	}

@@ -50,6 +50,9 @@ type Client struct {
 	EnsurePeeringLinkErr   error
 	EnsurePeeringLinkCalls int
 
+	// DeletePeeringLinkErr, when set, fails DeletePeeringLink with no change.
+	DeletePeeringLinkErr error
+
 	// UpdateLogicalRouterPolicyErr, when set, fails UpdateLogicalRouterPolicy with no change.
 	UpdateLogicalRouterPolicyErr error
 }

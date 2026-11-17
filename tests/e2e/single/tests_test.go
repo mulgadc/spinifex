@@ -76,6 +76,12 @@ func TestVPCPeering(t *testing.T) {
 	runVPCPeering(t, requireSingleNodeFixture(t))
 }
 
+// TestVPCPeeringCrossAccount covers peering between two accounts, with a third
+// that must see nothing (see runVPCPeeringCrossAccount for the stages).
+func TestVPCPeeringCrossAccount(t *testing.T) {
+	runVPCPeeringCrossAccount(t, requireSingleNodeFixture(t))
+}
+
 // TestWANEgressSMTPBlock boots one public guest and asserts the platform
 // egress ACL drops outbound SMTP (25/465/587) to a public destination while
 // ordinary WAN egress still works — the AWS-parity default block.

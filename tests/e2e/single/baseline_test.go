@@ -40,6 +40,21 @@ func tcpReachable(host string, port int, timeout time.Duration) bool {
 // owns its VM for its own duration only.
 func launchBaselineInstance(t *testing.T, fix *Fixture, ami, instType, keyName, subnetID string, sgIDs []string) string {
 	t.Helper()
+	id := runBaselineInstance(t, fix, ami, instType, keyName, subnetID, sgIDs)
+	t.Cleanup(func() {
+		_, _ = fix.AWS.EC2.TerminateInstances(&ec2.TerminateInstancesInput{
+			InstanceIds: []*string{aws.String(id)},
+		})
+		harness.WaitForInstanceState(t, fix.AWS, id, "terminated")
+	})
+	harness.WaitForInstanceState(t, fix.AWS, id, "running")
+	return id
+}
+
+// runBaselineInstance launches one instance and returns at once, leaving its
+// cleanup and the wait for running to the caller.
+func runBaselineInstance(t *testing.T, fix *Fixture, ami, instType, keyName, subnetID string, sgIDs []string) string {
+	t.Helper()
 	sgs := make([]*string, 0, len(sgIDs))
 	for _, id := range sgIDs {
 		sgs = append(sgs, aws.String(id))
@@ -55,15 +70,7 @@ func launchBaselineInstance(t *testing.T, fix *Fixture, ami, instType, keyName, 
 	})
 	require.NoError(t, err, "RunInstances")
 	require.NotEmpty(t, out.Instances, "RunInstances returned no instances")
-	id := aws.StringValue(out.Instances[0].InstanceId)
-	t.Cleanup(func() {
-		_, _ = fix.AWS.EC2.TerminateInstances(&ec2.TerminateInstancesInput{
-			InstanceIds: []*string{aws.String(id)},
-		})
-		harness.WaitForInstanceState(t, fix.AWS, id, "terminated")
-	})
-	harness.WaitForInstanceState(t, fix.AWS, id, "running")
-	return id
+	return aws.StringValue(out.Instances[0].InstanceId)
 }
 
 // instancePrivateIP returns the instance's primary VPC private IP.

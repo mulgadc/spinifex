@@ -202,7 +202,7 @@ func (s *ServiceImpl) openRequest(ctx context.Context, vpcID, peerVpcID string) 
 		return nil, err
 	}
 	v, err := s.load(ctx, held.PcxID)
-	if err != nil || v == nil || !v.live || !v.isOpen() {
+	if err != nil || v == nil || !v.isOpen() {
 		return nil, err
 	}
 	return v, nil
@@ -228,7 +228,7 @@ func (s *Store) vpcConnections(ctx context.Context, vpcID string) ([]*view, erro
 		if err != nil {
 			return nil, err
 		}
-		if v != nil && v.live && v.isOpen() {
+		if v != nil && v.isOpen() {
 			out = append(out, v)
 		}
 	}

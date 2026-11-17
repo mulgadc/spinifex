@@ -13,23 +13,13 @@ import (
 // ListRecords reads every live connection record. It is for background
 // passes only: the reconciler and the sweep.
 func ListRecords(ctx context.Context, live jetstream.KeyValue) ([]PeeringRecord, error) {
-	lister, err := live.ListKeysFiltered(ctx, "pcx.*")
+	ids, err := listIndex(ctx, live, "pcx.")
 	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("list peering records: %w", err)
-	}
-	var keys []string
-	for k := range lister.Keys() {
-		keys = append(keys, k)
-	}
-	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	var out []PeeringRecord
-	for _, k := range keys {
-		rec, _, err := getJSON[PeeringRecord](ctx, live, k)
+	for _, id := range ids {
+		rec, _, err := getJSON[PeeringRecord](ctx, live, recordKey(id))
 		if err != nil {
 			return nil, err
 		}
@@ -120,7 +110,7 @@ func (s *Store) RouteTarget(ctx context.Context, accountID, id string) (*RouteTa
 		return nil, nil
 	}
 	v, err := s.visible(ctx, id, accountID)
-	if err != nil || v == nil || !v.live || !v.isOpen() {
+	if err != nil || v == nil || !v.isOpen() {
 		return nil, err
 	}
 	return &RouteTarget{RequesterVpcID: v.rec.RequesterVpcID, AccepterVpcID: v.rec.AccepterVpcID}, nil

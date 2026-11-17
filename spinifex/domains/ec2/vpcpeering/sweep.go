@@ -60,11 +60,11 @@ func (s *Store) sweepRecord(ctx context.Context, id string, res *SweepResult) er
 		case rec.Status != StatePendingAcceptance:
 			return nil
 		default:
-			valid, verr := s.reqClaimNames(ctx, rec)
+			v, verr := s.liveView(ctx, rec, rev)
 			if verr != nil {
 				return verr
 			}
-			if !valid {
+			if v == nil {
 				if now.Sub(rec.CreatedAt) < claimGrace {
 					return nil
 				}
@@ -74,18 +74,11 @@ func (s *Store) sweepRecord(ctx context.Context, id string, res *SweepResult) er
 				}
 				break
 			}
-			if !now.Before(rec.ExpirationTime) {
-				rec.Status, rec.StatusMessage = StateExpired, expiredMessage
-				rec.TerminalAt, rec.TerminatedBy = rec.ExpirationTime, ""
-			} else {
-				owner, oerr := s.missingVpcOwner(ctx, rec)
-				if oerr != nil || owner == "" {
-					return oerr
-				}
-				rec.Status, rec.StatusMessage = StateRejected, rejectedMessage(owner)
-				rec.TerminalAt, rec.TerminatedBy = now, owner
+			if !v.isTerminal() {
+				return nil
 			}
-			rec.Generation++
+			ended := v.ended()
+			rec = &ended
 			err = s.moveTerminal(ctx, rec, rev)
 		}
 		if errors.Is(err, errConflict) {

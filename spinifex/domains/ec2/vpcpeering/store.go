@@ -71,7 +71,6 @@ func OpenStore(ctx context.Context, js jetstream.JetStream) (*Store, error) {
 type view struct {
 	rec          PeeringRecord
 	rev          uint64 // live revision; 0 when read from the terminal bucket
-	live         bool
 	status       string
 	message      string
 	terminalAt   time.Time
@@ -237,7 +236,7 @@ func (s *Store) load(ctx context.Context, id string) (*view, error) {
 
 // liveView derives a live record's read-time state.
 func (s *Store) liveView(ctx context.Context, rec *PeeringRecord, rev uint64) (*view, error) {
-	v := &view{rec: *rec, rev: rev, live: true, status: rec.Status, message: rec.StatusMessage, terminalAt: rec.TerminalAt, terminatedBy: rec.TerminatedBy}
+	v := &view{rec: *rec, rev: rev, status: rec.Status, message: rec.StatusMessage, terminalAt: rec.TerminalAt, terminatedBy: rec.TerminatedBy}
 	if rec.Status != StatePendingAcceptance {
 		return v, nil
 	}
@@ -263,6 +262,15 @@ func (s *Store) liveView(ctx context.Context, rec *PeeringRecord, rev uint64) (*
 		v.terminalAt, v.terminatedBy = now, owner
 	}
 	return v, nil
+}
+
+// ended is the record a view's derived terminal state is stored as.
+func (v *view) ended() PeeringRecord {
+	rec := v.rec
+	rec.Status, rec.StatusMessage = v.status, v.message
+	rec.TerminalAt, rec.TerminatedBy = v.terminalAt, v.terminatedBy
+	rec.Generation++
+	return rec
 }
 
 // isLinkedAlive reports a view that holds a link: provisioning or active.
@@ -302,16 +310,13 @@ func (s *Store) takeReqClaim(ctx context.Context, rec *PeeringRecord) (string, e
 		if err != nil {
 			return "", err
 		}
-		if owner != nil && owner.live && owner.isOpen() {
+		if owner != nil && owner.isOpen() {
 			return held.PcxID, nil
 		}
 		// An expired request, or one whose VPC is gone, keeps its visibility
 		// window: move it to the terminal bucket before its claim is taken.
-		if owner != nil && owner.live && owner.rec.Status == StatePendingAcceptance {
-			ended := owner.rec
-			ended.Status, ended.StatusMessage = owner.status, owner.message
-			ended.TerminalAt, ended.TerminatedBy = owner.terminalAt, owner.terminatedBy
-			ended.Generation++
+		if owner != nil && owner.rec.Status == StatePendingAcceptance {
+			ended := owner.ended()
 			if err := s.moveTerminal(ctx, &ended, owner.rev); err != nil && !errors.Is(err, errConflict) {
 				return "", err
 			}

@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
@@ -57,8 +58,8 @@ func (s *ServiceImpl) DescribeVpcPeeringConnections(ctx context.Context, input *
 
 	var out []*ec2.VpcPeeringConnection
 	for _, v := range views {
-		if matchesFilters(v, accountID, filters) {
-			out = append(out, viewToEC2(v, accountID))
+		if c := viewToEC2(v, accountID); matchesFilters(c, v.rec.Tags[accountID], filters) {
+			out = append(out, c)
 		}
 	}
 	slices.SortFunc(out, func(a, b *ec2.VpcPeeringConnection) int {
@@ -101,16 +102,9 @@ func (s *Store) viewsFor(ctx context.Context, accountID string, ids []string) ([
 	return out, nil
 }
 
-// matchesFilters applies the model's filters to a view as viewer sees it.
-func matchesFilters(v *view, viewer string, filters map[string][]string) bool {
-	requesterCIDR, accepterCIDR := "", ""
-	switch shapeFor(v.status) {
-	case shapeLinked:
-		requesterCIDR, accepterCIDR = v.rec.RequesterCIDR, v.rec.AccepterCIDR
-	case shapeRequest:
-		requesterCIDR = v.rec.RequesterCIDR
-	case shapeFailedCreate, shapeTerminal:
-	}
+// matchesFilters applies the model's filters to a connection as rendered for
+// the viewer, so a filter never matches a member the response hides.
+func matchesFilters(c *ec2.VpcPeeringConnection, tags map[string]string, filters map[string][]string) bool {
 	for name, values := range filters {
 		if awsfilters.IsTagFilter(name) {
 			continue
@@ -118,32 +112,32 @@ func matchesFilters(v *view, viewer string, filters map[string][]string) bool {
 		var value string
 		switch name {
 		case "accepter-vpc-info.cidr-block":
-			value = accepterCIDR
+			value = aws.StringValue(c.AccepterVpcInfo.CidrBlock)
 		case "accepter-vpc-info.owner-id":
-			value = v.rec.AccepterAccountID
+			value = aws.StringValue(c.AccepterVpcInfo.OwnerId)
 		case "accepter-vpc-info.vpc-id":
-			value = v.rec.AccepterVpcID
+			value = aws.StringValue(c.AccepterVpcInfo.VpcId)
 		case "expiration-time":
-			if shapeFor(v.status) != shapeRequest || v.rec.ExpirationTime.IsZero() {
+			if c.ExpirationTime == nil {
 				return false
 			}
-			value = awsTime(v.rec.ExpirationTime)
+			value = awsTime(*c.ExpirationTime)
 		case "requester-vpc-info.cidr-block":
-			value = requesterCIDR
+			value = aws.StringValue(c.RequesterVpcInfo.CidrBlock)
 		case "requester-vpc-info.owner-id":
-			value = v.rec.RequesterAccountID
+			value = aws.StringValue(c.RequesterVpcInfo.OwnerId)
 		case "requester-vpc-info.vpc-id":
-			value = v.rec.RequesterVpcID
+			value = aws.StringValue(c.RequesterVpcInfo.VpcId)
 		case "status-code":
-			value = v.status
+			value = aws.StringValue(c.Status.Code)
 		case "status-message":
-			value = v.message
+			value = aws.StringValue(c.Status.Message)
 		case "vpc-peering-connection-id":
-			value = v.rec.ID
+			value = aws.StringValue(c.VpcPeeringConnectionId)
 		}
 		if !awsfilters.MatchesAny(values, value) {
 			return false
 		}
 	}
-	return awsfilters.MatchesTags(filters, v.rec.Tags[viewer])
+	return awsfilters.MatchesTags(filters, tags)
 }

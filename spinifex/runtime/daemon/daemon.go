@@ -2202,6 +2202,7 @@ func (d *Daemon) startCluster() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize VPC peering service: %w", err)
 	}
+	d.routeTableService.SetPeeringLookup(d.vpcPeeringService.Store)
 
 	// A node declaring public pools must serve EIPs or refuse to start: EIP
 	// subjects are a queue group, so one node silently on the disabled stub

@@ -386,7 +386,8 @@ Its version must equal the lockfile's `@playwright/test`, since the image carrie
 
 Both run `scripts/ui-playwright.sh`, which uses podman, or docker where podman is absent, and `CONTAINER_RUNTIME` overrides the choice.
 It mounts the frontend directory, installs with `pnpm install --frozen-lockfile` into a separate `node_modules` under `~/.cache/spinifex-ui-playwright`, so the host's `node_modules` is never touched, then builds `dist` and runs the suite.
-It refuses to run when the image's Node differs from `.nvmrc` or its Playwright differs from the lockfile's.
+It runs on the `.nvmrc` Node, as CI does: when the image's Node differs, it downloads that version from nodejs.org into the container for the run and checks it against the release's SHA-256 sums.
+It refuses to run when the image's Playwright differs from the lockfile's.
 `make test-ui-e2e` and `pnpm e2e` still run on the host, where screenshots compare reliably only against baselines drawn on that host, so do not commit baselines from `pnpm e2e:update`.
 
 The `UI End-to-End` job in `.github/workflows/ui.yml` runs the suite inside the pinned image on every pull request touching the frontend, and screenshots gate the merge with every behavioural and CSP test.

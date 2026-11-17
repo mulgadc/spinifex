@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"slices"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn"
@@ -83,8 +84,11 @@ func TestPeeringRouteRows_WideRoute(t *testing.T) {
 	if rr.Match != `inport == "rtr-subnet-1" && ip4.dst == 10.1.0.0/16` {
 		t.Errorf("reroute match = %s", rr.Match)
 	}
-	if rr.Action != "reroute" || *rr.Nexthop != "169.254.192.2" || rr.ExternalIDs[ovn.ExternalIDPcxID] != "pcx-1" {
+	if rr.Action != "reroute" || rr.ExternalIDs[ovn.ExternalIDPcxID] != "pcx-1" {
 		t.Errorf("reroute = %+v", rr)
+	}
+	if rr.Nexthop != nil || len(rr.Nexthops) != 1 || rr.Nexthops[0] != "169.254.192.2" {
+		t.Errorf("reroute next hop = %v / %v, want only nexthops [169.254.192.2]", rr.Nexthop, rr.Nexthops)
 	}
 	if _, ok := drop.ExternalIDs[ovn.ExternalIDPcxID]; ok {
 		t.Error("route drop carries the connection ID, so teardown would remove it")
@@ -142,8 +146,8 @@ func TestSyncPeeringRoutes(t *testing.T) {
 			t.Errorf("policy %q missing: %v", p.Match, err)
 		}
 	}
-	if got, _ := m.FindLogicalRouterPolicy(ctx, "vpc-vpc-a", want[1].Priority, want[1].Match); got != nil && *got.Nexthop != "169.254.192.6" {
-		t.Errorf("drifted nexthop = %s, want 169.254.192.6", *got.Nexthop)
+	if got, _ := m.FindLogicalRouterPolicy(ctx, "vpc-vpc-a", want[1].Priority, want[1].Match); got != nil && !slices.Equal(got.Nexthops, []string{"169.254.192.6"}) {
+		t.Errorf("drifted nexthops = %v, want [169.254.192.6]", got.Nexthops)
 	}
 	if got, _ := m.FindLogicalRouterPolicy(ctx, "vpc-vpc-a", stale.Priority, stale.Match); got != nil {
 		t.Error("stale peering route row survived")
@@ -190,3 +194,32 @@ func TestSyncPeeringRoutes_ReassociationKeepsDrop(t *testing.T) {
 }
 
 var errInjected = errors.New("injected")
+
+// A reroute written through the deprecated nexthop column, which OVN 26.03
+// ignores, is rewritten in place to use nexthops.
+func TestSyncPeeringRoutes_RewritesDeprecatedNexthop(t *testing.T) {
+	ctx := context.Background()
+	m := mock.New()
+	if err := m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: "vpc-vpc-a"}); err != nil {
+		t.Fatalf("CreateLogicalRouter: %v", err)
+	}
+	want := PeeringRouteRows(PeeringRouteSpec{RouteTableID: "rtb-1", SubnetID: "subnet-1", Dest: netip.MustParsePrefix("10.1.0.0/16"), Reroute: reroute()})
+	legacy := want[1]
+	nexthop := legacy.Nexthops[0]
+	legacy.Nexthop, legacy.Nexthops = &nexthop, nil
+	for _, p := range []nbdb.LogicalRouterPolicy{want[0], legacy} {
+		if err := m.AddLogicalRouterPolicy(ctx, "vpc-vpc-a", &p); err != nil {
+			t.Fatalf("AddLogicalRouterPolicy: %v", err)
+		}
+	}
+	if err := NewPeeringRouteManager(m).SyncPeeringRoutes(ctx, "vpc-a", want); err != nil {
+		t.Fatalf("SyncPeeringRoutes: %v", err)
+	}
+	got, err := m.FindLogicalRouterPolicy(ctx, "vpc-vpc-a", want[1].Priority, want[1].Match)
+	if err != nil || got == nil {
+		t.Fatalf("reroute missing: %v", err)
+	}
+	if got.Nexthop != nil || !slices.Equal(got.Nexthops, []string{"169.254.192.2"}) {
+		t.Errorf("reroute next hop = %v / %v, want only nexthops [169.254.192.2]", got.Nexthop, got.Nexthops)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"slices"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn/nbdb"
@@ -110,10 +111,11 @@ func PeeringRouteRows(spec PeeringRouteSpec) []nbdb.LogicalRouterPolicy {
 	if r.PeerCIDR.Bits() > deliver.Bits() {
 		deliver = r.PeerCIDR
 	}
-	nexthop := r.Nexthop.String()
+	// nexthops, not nexthop: OVN 26.03 ignores the deprecated column, which
+	// would leave only the drop below.
 	rows = append(rows, nbdb.LogicalRouterPolicy{
 		Priority: prio + 1, Match: peeringRouteMatch(spec.SubnetID, deliver, spec.Exclude),
-		Action: "reroute", Nexthop: &nexthop, Options: map[string]string{},
+		Action: "reroute", Nexthops: []string{r.Nexthop.String()}, Options: map[string]string{},
 		ExternalIDs: map[string]string{
 			ovn.ExternalIDPcxID:    r.PcxID,
 			"spinifex:subnet":      spec.SubnetID,
@@ -209,6 +211,9 @@ func peeringRowMatches(cur, want *nbdb.LogicalRouterPolicy) bool {
 		return false
 	}
 	if (cur.Nexthop == nil) != (want.Nexthop == nil) || (cur.Nexthop != nil && *cur.Nexthop != *want.Nexthop) {
+		return false
+	}
+	if !slices.Equal(cur.Nexthops, want.Nexthops) {
 		return false
 	}
 	for _, k := range []string{ovn.ExternalIDPcxID, "spinifex:output_port", "spinifex:rtb_id", ovn.ExternalIDRole} {

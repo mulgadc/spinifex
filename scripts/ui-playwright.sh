@@ -37,14 +37,35 @@ esac
 
 mkdir -p "${cache}/node_modules" "${cache}/pnpm-store" "${cache}/corepack"
 
-# Runs in the container: check the image against .nvmrc and the lockfile's
-# Playwright, then install, build dist for the CSP test, and run the suite.
+# Runs in the container: put the .nvmrc node first on PATH, as CI does, then
+# check Playwright against the image, install, build dist and run the suite.
+# A node the image lacks is fetched into the throwaway container per run.
 # shellcheck disable=SC2016
 inner='
 set -eu
 want_node="v$(cat .nvmrc)"
+if [ "$(node --version)" != "${want_node}" ]; then
+    case "$(uname -m)" in
+        x86_64) arch=x64 ;;
+        aarch64) arch=arm64 ;;
+        *) echo "ui-playwright: no node build for $(uname -m)" >&2; exit 1 ;;
+    esac
+    tarball="node-${want_node}-linux-${arch}.tar.gz"
+    url="https://nodejs.org/dist/${want_node}"
+    dir="$(mktemp -d)"
+    curl -fsSL --proto =https --proto-redir =https -o "${dir}/SHASUMS256.txt" "${url}/SHASUMS256.txt"
+    curl -fsSL --proto =https --proto-redir =https -o "${dir}/${tarball}" "${url}/${tarball}"
+    grep -q "  ${tarball}\$" "${dir}/SHASUMS256.txt" ||
+        { echo "ui-playwright: ${tarball} is not in the release checksums" >&2; exit 1; }
+    (cd "${dir}" && grep "  ${tarball}\$" SHASUMS256.txt | sha256sum -c --quiet -) ||
+        { echo "ui-playwright: ${tarball} failed its checksum" >&2; exit 1; }
+    mkdir "${dir}/node"
+    tar -xzf "${dir}/${tarball}" -C "${dir}/node" --strip-components=1
+    PATH="${dir}/node/bin:${PATH}"
+    export PATH
+fi
 [ "$(node --version)" = "${want_node}" ] ||
-    { echo "ui-playwright: image has node $(node --version), .nvmrc wants ${want_node}" >&2; exit 1; }
+    { echo "ui-playwright: node is $(node --version), .nvmrc wants ${want_node}" >&2; exit 1; }
 corepack pnpm install --frozen-lockfile --store-dir /cache/pnpm-store
 pw="$(corepack pnpm exec playwright --version | awk "{print \$2}")"
 case "${UI_PLAYWRIGHT_IMAGE}" in

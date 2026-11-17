@@ -205,7 +205,7 @@ var ec2Scopes = map[string][]*resourceScope{
 	"DeleteEgressOnlyInternetGateway": {eigwScope},
 	"CreateNatGateway":                {natGatewayNewScope, subnetScope, addressOptScope},
 	"DeleteNatGateway":                {natGatewayScope},
-	// The accepter VPC is not in Accept's input; resolving it needs a lookup.
+	// Accept's accepter VPC needs a lookup, which Dispatch adds.
 	"CreateVpcPeeringConnection":        {vpcPeeringNewScope, vpcScope},
 	"AcceptVpcPeeringConnection":        {vpcPeeringScope},
 	"RejectVpcPeeringConnection":        {vpcPeeringScope},

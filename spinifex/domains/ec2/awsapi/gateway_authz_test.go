@@ -16,6 +16,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -298,4 +299,39 @@ func TestEC2Request_ResolverAccessDeniedPassesThrough(t *testing.T) {
 	err := dispatchEC2With(t, h, reg, "Action=AssociateIamInstanceProfile&InstanceId=i-dev&IamInstanceProfile.Name=web")
 	require.Error(t, err)
 	assert.Equal(t, awserrors.ErrorAccessDenied, err.Error())
+}
+
+// Accept is authorised on the accepter VPC as well as the connection, so a
+// deny scoped to the VPC fences it although Accept's input never names it.
+func TestEC2Request_AcceptVpcPeeringChecksAccepterVpc(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+	describe, err := nc.Subscribe("ec2.DescribeVpcPeeringConnections", func(m *nats.Msg) {
+		_ = m.Respond([]byte(`{"VpcPeeringConnections":[{"VpcPeeringConnectionId":"pcx-1",` +
+			`"AccepterVpcInfo":{"OwnerId":"` + gwtest.AccountID + `","VpcId":"vpc-acc"}}]}`))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = describe.Unsubscribe() })
+	accept, err := nc.Subscribe("ec2.AcceptVpcPeeringConnection", func(m *nats.Msg) { _ = m.Respond([]byte("{}")) })
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = accept.Unsubscribe() })
+	reg := ec2awsapi.NewRegistration(ec2awsapi.Deps{NATS: nc})
+	body := "Action=AcceptVpcPeeringConnection&VpcPeeringConnectionId=pcx-1"
+
+	denied := gwtest.Scoped(
+		gwtest.Statement("Allow", "ec2:AcceptVpcPeeringConnection", "arn:aws:ec2:*:*:vpc-peering-connection/pcx-1"),
+		gwtest.Statement("Allow", "ec2:AcceptVpcPeeringConnection", "arn:aws:ec2:*:*:vpc/*"),
+		gwtest.Statement("Deny", "ec2:AcceptVpcPeeringConnection", "arn:aws:ec2:*:*:vpc/vpc-acc"),
+	)
+	gwtest.AssertUnauthorized(t, dispatchEC2With(t, denied, reg, body))
+
+	connectionOnly := gwtest.Scoped(
+		gwtest.Statement("Allow", "ec2:AcceptVpcPeeringConnection", "arn:aws:ec2:*:*:vpc-peering-connection/pcx-1"),
+	)
+	gwtest.AssertUnauthorized(t, dispatchEC2With(t, connectionOnly, reg, body))
+
+	both := gwtest.Scoped(
+		gwtest.Statement("Allow", "ec2:AcceptVpcPeeringConnection", "arn:aws:ec2:*:*:vpc-peering-connection/pcx-1"),
+		gwtest.Statement("Allow", "ec2:AcceptVpcPeeringConnection", "arn:aws:ec2:*:*:vpc/vpc-acc"),
+	)
+	require.NoError(t, dispatchEC2With(t, both, reg, body))
 }

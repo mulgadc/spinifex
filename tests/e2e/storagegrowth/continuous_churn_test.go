@@ -25,12 +25,12 @@ const (
 	// deliberately rewrites a small footprint many times rather than growing it.
 	churnVolumeSizeGiB = 4
 	// churnWALBudgetRatio is how many times the volume's logical size its local
-	// WAL may hold on the host after the churn. Reclaim keeps a healthy volume
-	// near zero, so this is slack for a generation in flight, not a budget. It
-	// is deliberately loose: the failure it catches is unbounded growth, where
-	// the WAL tracks bytes written rather than bytes stored, and a run writing
-	// tens of GiB into 4 GiB overshoots any ratio by two orders of magnitude.
-	churnWALBudgetRatio = 8
+	// WAL may hold on the host after the churn. A reclaimed volume retains only
+	// the open generation and whatever is in flight, so 2 is slack rather than
+	// a budget. It is also the discrimination threshold: the run has to write
+	// past it before an unreclaimed WAL would exceed it, so raising it makes
+	// the assertion need a proportionally longer run to mean anything.
+	churnWALBudgetRatio = 2
 
 	// churnDurationEnv sets how long the raw-overwrite loop runs, in seconds.
 	// The default spans more than two 5-minute GC ticks so a sweep provably
@@ -143,6 +143,16 @@ func assertHostWALBounded(t *testing.T, fix *Fixture, volID string, writtenBytes
 	harness.Detail(t, "wal_dir", dir, "wal_bytes", walBytes,
 		"written_bytes", writtenBytes, "budget_bytes", budget,
 		"wal_over_volume_ratio", fmt.Sprintf("%.2f", float64(walBytes)/float64(volumeBytes)))
+
+	// The bound only discriminates once the run has written past it. Below
+	// that, an unreclaimed WAL holding every byte still fits the budget and
+	// the assertion passes without having tested anything, so a short or slow
+	// run is inconclusive evidence and is reported as a failure rather than a
+	// green tick. Raise SPINIFEX_STORAGEGROWTH_CHURN_SECS to clear it.
+	require.Greaterf(t, writtenBytes, budget,
+		"the churn wrote %d bytes against a %d byte budget, so an unreclaimed WAL would have passed this assertion. "+
+			"The run is too short to tell reclaim from no reclaim; it is not evidence that the bound holds.",
+		writtenBytes, budget)
 
 	require.LessOrEqualf(t, walBytes, budget,
 		"local WAL for %s holds %d bytes after the guest wrote %d bytes into a %d GiB volume. "+

@@ -152,3 +152,60 @@ func TestADR0003S8_PeeringDescribeReadsOnlyCallerIndex(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, live.lists, "ADR-0003:S8 Describe by ID lists nothing")
 }
+
+// writingKV fails the test on any write, so a read-only path proves it.
+type writingKV struct {
+	*countingKV
+
+	t *testing.T
+}
+
+func (k *writingKV) Put(ctx context.Context, key string, v []byte) (uint64, error) {
+	k.t.Errorf("ADR-0003:S8 DeleteVpc's peering check wrote %q", key)
+	return k.countingKV.Put(ctx, key, v)
+}
+
+func (k *writingKV) Update(ctx context.Context, key string, v []byte, rev uint64) (uint64, error) {
+	k.t.Errorf("ADR-0003:S8 DeleteVpc's peering check updated %q", key)
+	return k.countingKV.Update(ctx, key, v, rev)
+}
+
+func (k *writingKV) Create(ctx context.Context, key string, v []byte, opts ...jetstream.KVCreateOpt) (uint64, error) {
+	k.t.Errorf("ADR-0003:S8 DeleteVpc's peering check created %q", key)
+	return k.countingKV.Create(ctx, key, v, opts...)
+}
+
+func (k *writingKV) Delete(ctx context.Context, key string, opts ...jetstream.KVDeleteOpt) error {
+	k.t.Errorf("ADR-0003:S8 DeleteVpc's peering check deleted %q", key)
+	return k.countingKV.Delete(ctx, key, opts...)
+}
+
+// With thousands of unrelated connections in the bucket, DeleteVpc's peering
+// check reads only the VPC's index and the records it names, writes nothing,
+// and a pending connection does not block; it reads rejected once the VPC goes.
+// Verifies: ADR-0003:S8.
+func TestADR0003S8_DeleteVpcRecordsNoPeeringFanOut(t *testing.T) {
+	f := newFixture(t)
+	seedUnrelated(t, f, 2000)
+	pending := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
+	linked := *f.create(t, vpcA, vpcC).VpcPeeringConnectionId
+	f.activate(t, linked)
+	live, term := instrument(f)
+	f.svc.live = &writingKV{countingKV: live, t: t}
+	f.svc.term = &writingKV{countingKV: term, t: t}
+
+	blocked, err := f.svc.VpcHasLinkedConnection(t.Context(), vpcA)
+	require.NoError(t, err)
+	assert.True(t, blocked, "an active connection blocks DeleteVpc")
+	blocked, err = f.svc.VpcHasLinkedConnection(t.Context(), vpcB)
+	require.NoError(t, err)
+	assert.False(t, blocked, "a pending connection does not block DeleteVpc")
+	for _, l := range append(live.lists, term.lists...) {
+		assert.Truef(t, strings.HasPrefix(l, "vpc."+vpcA+".") || strings.HasPrefix(l, "vpc."+vpcB+"."),
+			"ADR-0003:S8 the DeleteVpc check must list only the VPC's index keys, listed %q", l)
+	}
+	assert.Lessf(t, len(live.gets), 20, "ADR-0003:S8 the DeleteVpc check read %d keys with 2000 unrelated connections", len(live.gets))
+
+	f.deleteVPC(t, testAccount, vpcB)
+	assert.Equal(t, StateRejected, f.status(t, pending), "a pending connection reads rejected once its VPC record is gone")
+}

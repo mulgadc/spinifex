@@ -2203,6 +2203,7 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize VPC peering service: %w", err)
 	}
 	d.routeTableService.SetPeeringLookup(d.vpcPeeringService.Store)
+	d.vpcService.SetPeeringCheck(d.vpcPeeringService.VpcHasLinkedConnection)
 
 	// A node declaring public pools must serve EIPs or refuse to start: EIP
 	// subjects are a queue group, so one node silently on the disabled stub
@@ -2672,6 +2673,9 @@ func (d *Daemon) startCluster() error {
 			// One sweep per cluster reads the provider for each pending document;
 			// the snapshot's claim, not the scope, decides who may repeat a call.
 			reapers = append(reapers, clusterWideReaper{d.snapshotService.NewPendingSnapshotReaper()})
+		}
+		if d.vpcPeeringService != nil {
+			reapers = append(reapers, clusterWideReaper{d.vpcPeeringService.NewSweepReaper()})
 		}
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))

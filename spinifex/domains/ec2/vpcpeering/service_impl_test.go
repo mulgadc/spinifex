@@ -626,21 +626,6 @@ func TestLimits(t *testing.T) {
 	requireCode(t, err, awserrors.ErrorOutstandingVpcPeeringConnectionLimitExceeded)
 }
 
-func TestAccountReap(t *testing.T) {
-	f := newFixture(t)
-	pending := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
-	active := *f.create(t, vpcA, vpcC).VpcPeeringConnectionId
-	f.activate(t, active)
-
-	require.NoError(t, f.svc.ReapAccount(t.Context(), testAccount))
-	assert.Equal(t, StateDeleted, f.termRecord(t, pending).Status)
-	rec := f.liveRecord(t, active)
-	require.NotNil(t, rec)
-	assert.True(t, rec.CleanupPending, "a linked connection waits for the reconciler")
-
-	require.NoError(t, f.svc.ReapAccount(t.Context(), testAccount), "the reap is idempotent")
-}
-
 func TestVpcHasLinkedConnection(t *testing.T) {
 	f := newFixture(t)
 	id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
@@ -691,4 +676,31 @@ func countPrefix(keys map[string]bool, prefix string) int {
 		}
 	}
 	return n
+}
+
+// The GC ticks every few minutes; the sweep reaper scans at most hourly, and
+// the first tick after a leader change scans at once.
+func TestSweepReaper_RunsHourly(t *testing.T) {
+	f := newFixture(t)
+	r := f.svc.NewSweepReaper()
+	id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
+	f.clock.advance(requestLifetime)
+
+	n, err := r.Sweep(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "the first tick sweeps the expired request")
+	assert.Equal(t, StateExpired, f.termRecord(t, id).Status)
+
+	id = *f.create(t, vpcA, vpcC).VpcPeeringConnectionId
+	f.deleteVPC(t, testAccount, vpcC)
+	f.clock.advance(10 * time.Minute)
+	n, err = r.Sweep(t.Context())
+	require.NoError(t, err)
+	assert.Zero(t, n, "a tick within the hour does not scan")
+	assert.NotNil(t, f.liveRecord(t, id))
+
+	f.clock.advance(SweepInterval)
+	n, err = r.Sweep(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
 }

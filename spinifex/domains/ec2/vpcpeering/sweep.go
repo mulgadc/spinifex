@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 )
@@ -143,4 +145,40 @@ func (s *Store) removeOrphan(ctx context.Context, key, id string, rev uint64, re
 	res.KeysRemoved++
 	slog.DebugContext(ctx, "VPC peering sweep removed an orphaned key", "key", key)
 	return nil
+}
+
+// SweepInterval is how often the cluster leader scans the live bucket.
+const SweepInterval = time.Hour
+
+// SweepReaper runs Sweep for the GC backstop at most once per SweepInterval.
+// A failed pass is retried on the next tick.
+type SweepReaper struct {
+	store *Store
+
+	mu   sync.Mutex
+	last time.Time
+}
+
+// NewSweepReaper returns the expiry sweep for the cluster-wide GC.
+func (s *Store) NewSweepReaper() *SweepReaper { return &SweepReaper{store: s} }
+
+func (r *SweepReaper) Class() string { return "vpc-peering-sweep" }
+
+func (r *SweepReaper) Sweep(ctx context.Context) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := r.store.now()
+	if !r.last.IsZero() && now.Sub(r.last) < SweepInterval {
+		return 0, nil
+	}
+	res, err := r.store.Sweep(ctx)
+	n := res.Moved + res.DiscardedStale + res.KeysRemoved
+	if err != nil {
+		return n, err
+	}
+	r.last = now
+	if n > 0 {
+		slog.InfoContext(ctx, "VPC peering sweep", "moved", res.Moved, "discarded_stale", res.DiscardedStale, "keys_removed", res.KeysRemoved)
+	}
+	return n, nil
 }

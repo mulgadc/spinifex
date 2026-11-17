@@ -70,7 +70,7 @@ func TestEnableImageDeprecation_RefusesTimesOutsideTheWindow(t *testing.T) {
 	assert.Nil(t, describeDeprecationTime(t, svc, deprecationImageID))
 
 	require.NoError(t, enableDeprecation(t, svc, deprecationImageID, now.Add(90*time.Second)))
-	require.NoError(t, enableDeprecation(t, svc, deprecationImageID, now.AddDate(9, 0, 0)))
+	require.NoError(t, enableDeprecation(t, svc, deprecationImageID, now.AddDate(10, 0, -1)))
 }
 
 // Disabling clears the time, and disabling an image with none still succeeds.

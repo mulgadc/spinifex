@@ -71,8 +71,6 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 
 - Should a request below the current capacity succeed without change, as CSI recommends, rather than be refused with `invalidArgument`?
   It is refused here, as AWS refuses `ModifyVolume` to a smaller size and the conformance suite tests, while CSI says the plugin should reply OK when the volume is already at least the requested size.
-- Must a block export's size follow an online expansion?
-  A published volume keeps its export's `sizeBytes`, so after it grows the export reports the old size.
 
 #### PublishVolume
 
@@ -80,8 +78,6 @@ The contract that every implementation of the `EBSProvider` interface must meet.
   An implementation whose scope is `none` lets two writers in, and one whose scope is `node` cannot see another node, yet both are refused here.
 - Must a republish to the same node with a different `readOnly` be refused?
   The Viperblock implementation refuses it with `volumeInUse`, while the memory implementation ignores the flag.
-- May two volumes on one node share an NBD URI or a device path?
-- Must a block export's size equal the volume's capacity?
 
 #### UnpublishVolume
 
@@ -137,3 +133,8 @@ The contract that every implementation of the `EBSProvider` interface must meet.
   The Go docs say the snapshot is gone, but a snapshot whose handle did not match is left in place.
 - Should a snapshot that does not exist be refused with `notFound`?
   It succeeds here, as CSI requires and the conformance suite tests, while AWS refuses `DeleteSnapshot` on a missing snapshot with `InvalidSnapshot.NotFound`.
+
+## TODO
+
+- Model the data plane.
+- Clean up comments.

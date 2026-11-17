@@ -165,9 +165,16 @@ ExpandVolume(req) ==
      \* The request was accepted.
      \/ /\ Errors = {}
         /\ volumes' = [volumes EXCEPT ![volId].capacityBytes = capacity.requiredBytes]
+        \* The new volume size propagates through to any nodes it is published on via the size field
+        \* on the export record. If the target and current volume sizes are equal, which is always the case
+        \* if the volume is published and online expansion is not supported, this is a no-op.
+        /\ publications' = [p \in DOMAIN publications |->
+                              IF p[1] = volId
+                              THEN [publications[p] EXCEPT !.export.sizeBytes = capacity.requiredBytes]
+                              ELSE publications[p]]
         /\ val' = VolumeView(volId)'
         /\ err' = None
-        /\ UNCHANGED <<publications, snapshots>>
+        /\ UNCHANGED snapshots
 
 
 PublishVolumeRequests == [volumeId : VolumeIds,
@@ -204,10 +211,18 @@ PublishVolume(req) ==
               /\ UNCHANGED publications
 
            \/ /\ ~KeyExists(publications, <<volId, nodeId>>)
-              \* The type of export is the implementation's choice.
+              \* The exact kind of export (NBD, block etc) is left up to the implementation.
               /\ \E x \in Exports :
-                   publications' = InsertKey(publications, <<volId, nodeId>>, [export   |-> x,
-                                                                               readOnly |-> req.readOnly])
+                   \* Each export path must be unique within the target node. To prevent attempts to mount
+                   \* two different block devices to the same host file-system location, for example.
+                   /\ x.path \notin {publications[p].export.path :
+                                       p \in {<<v, n>> \in DOMAIN publications : n = nodeId}}
+                   \* The export's backing storage may be larger than the volume we are publishing. We
+                   \* attach the size of the volume to the export record so that QEMU may limit the size
+                   \* of the virtual disk exposed to the guest.
+                   /\ x.sizeBytes = volumes[volId].capacityBytes
+                   /\ publications' = InsertKey(publications, <<volId, nodeId>>, [export   |-> x,
+                                                                                  readOnly |-> req.readOnly])
         /\ volumes' = [volumes EXCEPT ![volId].state = "in-use"]
         /\ val' = PublicationView(volId, nodeId)'
         /\ err' = None

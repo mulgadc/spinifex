@@ -15,7 +15,7 @@ EXTENDS
 CONSTANTS
   MaxBytes,
   VolumeIds, VolumeHandles,
-  NodeIds, NBDURIs, DevicePaths,
+  NodeIds, ExportPaths,
   SnapshotIds, SnapshotHandles,
   AvailabilityZones, Timestamps,
   Parameters, ProviderData,
@@ -29,7 +29,7 @@ CONSTANTS
 
 ASSUME MaxBytes \in Nat \ {0}
 ASSUME VolumeIds /= {} /\ VolumeHandles /= {}
-ASSUME NodeIds /= {} => NBDURIs /= {} \/ DevicePaths /= {}
+ASSUME NodeIds /= {} => ExportPaths /= {}
 ASSUME SnapshotIds /= {} => SnapshotHandles /= {} /\ Timestamps /= {}
 ASSUME ListTokens /= {}
 ASSUME MaxListResults \in Nat \ {0}
@@ -122,12 +122,9 @@ Volumes == [capacityBytes    : 1..MaxBytes,
             providerData     : Optional(ProviderData)]
 
 \* How a published volume is reached on its node, either over NBD or as a host block device.
-Exports == [kind   : {"nbd"},
-            nbdUri : NBDURIs]
-           \union
-           [kind       : {"block"},
-            devicePath : DevicePaths,
-            sizeBytes  : 1..MaxBytes]
+Exports == [kind      : {"nbd", "block"},
+            path      : ExportPaths,
+            sizeBytes : 1..MaxBytes]
 
 \* A volume published to a node, and whether it was published read-only.
 Publications == [export   : Exports,
@@ -169,7 +166,7 @@ PageSize(m) == IF m <= 0 \/ m > MaxListResults THEN MaxListResults ELSE m
 -----------------------------------------------------------------------------------------------------------------------
 \* Calls
 
-\* A call to method m with req, which Action answers by setting val and err.
+\* A call to method m with req, which action answers by setting val and err.
 Call(m, req, Action(_)) == /\ method' = m
                            /\ params' = req
                            /\ Action(req)
@@ -219,5 +216,13 @@ HandlesAreUnique ==
        volumes[i].handle = volumes[j].handle => i = j
   /\ \A i, j \in DOMAIN snapshots :
        snapshots[i].handle = snapshots[j].handle => i = j
+
+ExportPathsAreUniquePerNode ==
+  \A i, j \in DOMAIN publications :
+    i[2] = j[2] /\ publications[i].export.path = publications[j].export.path => i = j
+
+ExportSizeMatchesCapacity ==
+  \A p \in DOMAIN publications :
+    publications[p].export.sizeBytes = volumes[p[1]].capacityBytes
 
 =======================================================================================================================

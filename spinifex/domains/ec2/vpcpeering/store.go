@@ -78,12 +78,12 @@ type view struct {
 	terminatedBy string
 }
 
+// isTerminal reports an ended connection. A deleted one is ended to its
+// readers while its cleanup is still pending.
 func (v *view) isTerminal() bool {
 	switch v.status {
-	case StateFailed, StateRejected, StateExpired:
+	case StateFailed, StateRejected, StateExpired, StateDeleted:
 		return true
-	case StateDeleted:
-		return !v.rec.CleanupPending || !v.live
 	}
 	return false
 }

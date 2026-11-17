@@ -708,3 +708,19 @@ func TestSweepReaper_RunsHourly(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
 }
+
+// A deleted connection leaves Describe on AWS's window even while its link
+// cleanup is still pending.
+func TestDelete_VisibilityWindowIgnoresPendingCleanup(t *testing.T) {
+	f := newFixture(t)
+	id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
+	f.activate(t, id)
+	require.NoError(t, f.del(t, id))
+
+	f.clock.advance(terminalShortWindow - time.Minute)
+	assert.Equal(t, StateDeleted, f.status(t, id))
+	f.clock.advance(2 * time.Minute)
+	require.True(t, f.liveRecord(t, id).CleanupPending, "cleanup is still pending")
+	_, err := f.describe(t, id)
+	requireCode(t, err, awserrors.ErrorInvalidVpcPeeringConnectionIDNotFound)
+}

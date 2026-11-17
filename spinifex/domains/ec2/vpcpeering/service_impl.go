@@ -297,9 +297,10 @@ func (s *ServiceImpl) AcceptVpcPeeringConnection(ctx context.Context, input *ec2
 			}
 			return nil, internalError(ctx, "AcceptVpcPeeringConnection", err)
 		}
+		// A failed Accept keeps its claims: a concurrent Accept of the same ID
+		// shares them, and they go stale once no linked record carries them.
 		prefix, err := s.takeLinkSlot(ctx, id)
 		if err != nil {
-			s.releaseAfterFailedAccept(ctx, &v.rec, "")
 			return nil, internalError(ctx, "AcceptVpcPeeringConnection", err)
 		}
 
@@ -309,7 +310,6 @@ func (s *ServiceImpl) AcceptVpcPeeringConnection(ctx context.Context, input *ec2
 		rec.Generation++
 		rec.LinkPrefix = prefix
 		if _, err := updateJSON(ctx, s.live, recordKey(id), &rec, v.rev); err != nil {
-			s.releaseAfterFailedAccept(ctx, &rec, prefix)
 			if errors.Is(err, errConflict) {
 				continue
 			}
@@ -322,22 +322,6 @@ func (s *ServiceImpl) AcceptVpcPeeringConnection(ctx context.Context, input *ec2
 		}, nil
 	}
 	return nil, internalError(ctx, "AcceptVpcPeeringConnection", fmt.Errorf("accept %s: %w", id, errConflict))
-}
-
-// releaseAfterFailedAccept releases the claims an Accept took before its
-// record write failed; each is released only while it still names the record.
-func (s *Store) releaseAfterFailedAccept(ctx context.Context, rec *PeeringRecord, prefix string) {
-	if err := s.releaseClaim(ctx, pairKey(rec.RequesterVpcID, rec.AccepterVpcID), rec.ID); err != nil {
-		slog.WarnContext(ctx, "AcceptVpcPeeringConnection: pair claim release failed", "vpcPeeringConnectionId", rec.ID, "err", err)
-	}
-	if prefix == "" {
-		return
-	}
-	withLink := *rec
-	withLink.LinkPrefix = prefix
-	if err := s.releaseLinkClaim(ctx, &withLink); err != nil {
-		slog.WarnContext(ctx, "AcceptVpcPeeringConnection: link claim release failed", "vpcPeeringConnectionId", rec.ID, "err", err)
-	}
 }
 
 // RejectVpcPeeringConnection rejects a pending request as its accepter.

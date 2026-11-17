@@ -5,6 +5,7 @@ import {
   type RequestLaunchTemplateData,
   type Tag,
   type TagSpecification,
+  AcceptVpcPeeringConnectionCommand,
   AllocateAddressCommand,
   AssociateAddressCommand,
   AssociateIamInstanceProfileCommand,
@@ -29,6 +30,7 @@ import {
   CreateSubnetCommand,
   CreateVolumeCommand,
   CreateVpcCommand,
+  CreateVpcPeeringConnectionCommand,
   DeleteInternetGatewayCommand,
   DeleteKeyPairCommand,
   DeleteLaunchTemplateCommand,
@@ -42,6 +44,7 @@ import {
   DeleteSubnetCommand,
   DeleteVolumeCommand,
   DeleteVpcCommand,
+  DeleteVpcPeeringConnectionCommand,
   DetachInternetGatewayCommand,
   DisassociateAddressCommand,
   DisassociateIamInstanceProfileCommand,
@@ -56,6 +59,7 @@ import {
   ModifyVolumeCommand,
   RebootInstancesCommand,
   RegisterImageCommand,
+  RejectVpcPeeringConnectionCommand,
   ResourceType,
   RevokeSecurityGroupEgressCommand,
   RevokeSecurityGroupIngressCommand,
@@ -64,7 +68,11 @@ import {
   StopInstancesCommand,
   TerminateInstancesCommand,
 } from "@aws-sdk/client-ec2"
-import { useMutation, useQueryClient } from "@tanstack/react-query"
+import {
+  type QueryClient,
+  useMutation,
+  useQueryClient,
+} from "@tanstack/react-query"
 
 import { getEc2Client } from "@/lib/aws-client"
 import { resolveSubnetCidrs } from "@/lib/subnet-calculator"
@@ -1428,6 +1436,95 @@ export function useDeleteNatGateway() {
   })
 }
 
+// Routes and the map derive their state from a connection, so both refresh.
+function invalidatePeering(queryClient: QueryClient) {
+  void queryClient.invalidateQueries({
+    queryKey: ["ec2", "vpcPeeringConnections"],
+  })
+  void queryClient.invalidateQueries({ queryKey: ["ec2", "routeTables"] })
+  void queryClient.invalidateQueries({ queryKey: ["topology"] })
+}
+
+export function useCreateVpcPeeringConnection() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (params: {
+      vpcId: string
+      peerVpcId: string
+      peerOwnerId?: string
+      name?: string
+    }) => {
+      const command = new CreateVpcPeeringConnectionCommand({
+        VpcId: params.vpcId,
+        PeerVpcId: params.peerVpcId,
+        PeerOwnerId: params.peerOwnerId,
+        TagSpecifications: buildTagSpec(
+          ResourceType.vpc_peering_connection,
+          params.name,
+          [],
+        ),
+      })
+
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      invalidatePeering(queryClient)
+    },
+  })
+}
+
+export function useAcceptVpcPeeringConnection() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (connectionId: string) => {
+      const command = new AcceptVpcPeeringConnectionCommand({
+        VpcPeeringConnectionId: connectionId,
+      })
+
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      invalidatePeering(queryClient)
+    },
+  })
+}
+
+export function useRejectVpcPeeringConnection() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (connectionId: string) => {
+      const command = new RejectVpcPeeringConnectionCommand({
+        VpcPeeringConnectionId: connectionId,
+      })
+
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      invalidatePeering(queryClient)
+    },
+  })
+}
+
+export function useDeleteVpcPeeringConnection() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (connectionId: string) => {
+      const command = new DeleteVpcPeeringConnectionCommand({
+        VpcPeeringConnectionId: connectionId,
+      })
+
+      return await getEc2Client().send(command)
+    },
+    onSuccess: () => {
+      invalidatePeering(queryClient)
+    },
+  })
+}
+
 export function useCreateRouteTable() {
   const queryClient = useQueryClient()
 
@@ -1476,12 +1573,14 @@ export function useCreateRoute() {
       destinationCidrBlock: string
       gatewayId?: string
       natGatewayId?: string
+      vpcPeeringConnectionId?: string
     }) => {
       const command = new CreateRouteCommand({
         RouteTableId: params.routeTableId,
         DestinationCidrBlock: params.destinationCidrBlock,
         GatewayId: params.gatewayId,
         NatGatewayId: params.natGatewayId,
+        VpcPeeringConnectionId: params.vpcPeeringConnectionId,
       })
 
       return await getEc2Client().send(command)

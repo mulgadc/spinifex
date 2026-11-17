@@ -123,6 +123,7 @@ const EMPTY_EC2 = {
   DescribeSecurityGroups: "<securityGroupInfo/>",
   DescribeSubnets: "<subnetSet/>",
   DescribeVolumes: "<volumeSet/>",
+  DescribeVpcPeeringConnections: "<vpcPeeringConnectionSet/>",
   DescribeVpcs: "<vpcSet/>",
 }
 

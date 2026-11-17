@@ -24,6 +24,10 @@ const (
 	// The requirement: traffic is back within five minutes of the fault.
 	shRecoveryBudget = 5 * time.Minute
 
+	// The platform leaves a load balancer guest alone until it has been active
+	// this long (lbRepairMinVMAge in domains/elbv2/lb_repair.go).
+	shLBMinAge = 5 * time.Minute
+
 	// The data NIC of a load balancer guest; the management NIC is the last.
 	shDataNIC = "net0"
 
@@ -67,7 +71,7 @@ type shInstanceSnap struct {
 
 func runLBSelfHeal(t *testing.T, fix *Fixture, kind shKind) {
 	harness.Phase(t, "A %s repairs a dead data NIC", kind.name)
-	f := shSetup(t, fix, kind)
+	f, activeAt := shSetup(t, fix, kind)
 	internetFacing := kind.scheme == "internet-facing"
 	cli := fix.AWS
 
@@ -85,6 +89,10 @@ func runLBSelfHeal(t *testing.T, fix *Fixture, kind shKind) {
 
 	if client != "" {
 		shLogClockSkew(t, cli, client)
+	}
+	if wait := time.Until(activeAt.Add(shLBMinAge)); wait > 0 {
+		harness.Step(t, "wait until the load balancer has been active for %s", shLBMinAge)
+		time.Sleep(wait)
 	}
 	before := shSnapshot(t, fix, customers)
 	lbBefore := shLBIdentity(t, fix, f)
@@ -440,8 +448,8 @@ func shLaunchBystander(t *testing.T, fix *Fixture, f *albFixture) string {
 }
 
 // shSetup builds the VPC, a load balancer of the given kind with a listener,
-// and two registered backends.
-func shSetup(t *testing.T, fix *Fixture, kind shKind) *albFixture {
+// and two registered backends, and also returns when it saw the LB active.
+func shSetup(t *testing.T, fix *Fixture, kind shKind) (*albFixture, time.Time) {
 	t.Helper()
 	f := &albFixture{}
 	instanceType, arch := harness.DiscoverNanoInstanceType(t, fix.Harness)
@@ -510,6 +518,7 @@ func shSetup(t *testing.T, fix *Fixture, kind shKind) *albFixture {
 	t.Cleanup(func() { lbrDeleteListener(t, c, f) })
 
 	harness.WaitForLBActive(t, c, f.LBArn, kind.name, albActiveBudget)
+	activeAt := time.Now()
 	shDiscoverPlacement(t, fix, f, kind)
 
 	for len(f.TargetIDs) < lbrTargets {
@@ -519,7 +528,7 @@ func shSetup(t *testing.T, fix *Fixture, kind shKind) *albFixture {
 	}
 	lbrRegisterTargets(t, c, f)
 	harness.WaitForTargetsHealthy(t, c, f.TGArn, lbrTargets, kind.name+" targets", targetsHealthyBudget)
-	return f
+	return f, activeAt
 }
 
 // shDiscoverPlacement finds the load balancer's guest through the ENI it is

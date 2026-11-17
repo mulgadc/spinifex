@@ -117,7 +117,7 @@ func (s *ServiceImpl) CreateVpcPeeringConnection(ctx context.Context, input *ec2
 
 	if existing, err := s.openRequest(ctx, vpcID, peerVpcID); err != nil {
 		return nil, internalError(ctx, "CreateVpcPeeringConnection", err)
-	} else if existing != nil {
+	} else if existing != nil && existing.rec.AccepterAccountID == peerOwner {
 		return &ec2.CreateVpcPeeringConnectionOutput{VpcPeeringConnection: existingToEC2(existing, accountID)}, nil
 	}
 

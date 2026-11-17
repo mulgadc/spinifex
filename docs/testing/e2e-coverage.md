@@ -36,7 +36,7 @@ The largest suite, 32 top-level tests. Notable entry points:
 - **`TestVPCPeeringCrossAccount`** — peering between two accounts, with a third that owns neither VPC. Only the accepter can accept or reject, the third account can neither see, change nor route to the connection, and routes on both sides converge ping between the two accounts' guests.
   - **IAM evaluates the connection ARN in the caller's own account:** a deny naming the caller's account blocks the action, and one naming the other owner's account does not. Each owner sees only its own tags.
   - **`FailedPeerVpc`** proves a peer VPC absent from the peer account and one owned by a third account both fail with the same message, unseen by the accepter. **`DeleteVpcWithPendingRequest`** proves the accepter's `DeleteVpc` is refused while a request is pending, and the requester's succeeds and leaves the connection `deleted`.
-  - Deleting the accepter account deletes its connections for the requester, whose route then describes `blackhole` and whose VPC deletes cleanly.
+  - Deleting the accepter account deletes its connections for the requester, whose route then describes `blackhole` and whose VPC deletes cleanly, and rejects the request still pending against it.
 - `TestSGPolicyDatapath`, `TestSGReachabilityPolicy` — security groups as an actual datapath, not just API state.
 - `TestWANEgressSMTPBlock` — egress port blocking.
 - `TestInstanceMetadata` — IMDS from inside a guest.

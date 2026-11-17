@@ -260,7 +260,7 @@ func runVPCPeeringCrossAccount(t *testing.T, fix *Fixture) {
 		require.NoError(t, err, "accepter DeleteVpc once the request is deleted")
 	})
 
-	harness.Step(t, "8. terminating the accepter account deletes the connection for the requester")
+	harness.Step(t, "8. terminating the accepter account deletes its connections and rejects its pending requests")
 	idle := harness.CreateVPC(t, a, "10.165.0.0/16")
 	t.Cleanup(func() { harness.DeleteVPC(t, a, idle) })
 	bIdle := harness.CreateVPC(t, b, "10.166.0.0/16")
@@ -268,11 +268,17 @@ func runVPCPeeringCrossAccount(t *testing.T, fix *Fixture) {
 	_, err = b.EC2.AcceptVpcPeeringConnection(&ec2.AcceptVpcPeeringConnectionInput{VpcPeeringConnectionId: aws.String(idlePcx)})
 	require.NoError(t, err, "accept the idle connection")
 	harness.Eventually(t, func() bool { return peeringStatus(t, a, idlePcx) == "active" }, 90*time.Second, 2*time.Second, "%s never became active", idlePcx)
+	waiting := harness.CreateVPC(t, a, "10.167.0.0/16")
+	t.Cleanup(func() { harness.DeleteVPC(t, a, waiting) })
+	bWaiting := harness.CreateVPC(t, b, "10.168.0.0/16")
+	pendingPcx, _ := createCrossAccountPeering(t, a, waiting, bTen.AccountID, bWaiting)
+	require.Equal(t, "pending-acceptance", peeringStatus(t, a, pendingPcx))
 
 	bTen.remove(t)
 	for _, id := range []string{pcx, idlePcx} {
 		require.Equal(t, "deleted", peeringStatus(t, a, id), "%s after the accepter account was deleted", id)
 	}
+	require.Equal(t, "rejected", peeringStatus(t, a, pendingPcx), "a request pending against the deleted account")
 	require.Equal(t, "blackhole", routeState(t, a, ag.rtbID, bg.cidr))
 	requirePingBlocked(t, ag.tgt, bg.privateIP, "after the accepter account was deleted")
 	_, err = a.EC2.DeleteVpc(&ec2.DeleteVpcInput{VpcId: aws.String(idle)})

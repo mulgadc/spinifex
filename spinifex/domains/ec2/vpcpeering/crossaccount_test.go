@@ -1,8 +1,10 @@
 package vpcpeering
 
 import (
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
@@ -17,6 +19,7 @@ const (
 	thirdAccount = "333333333333"
 	peerVpc      = "vpc-0d000000000000004"
 	thirdVpc     = "vpc-0e000000000000005"
+	overlapVpc   = "vpc-0f000000000000006"
 )
 
 func newCrossAccountFixture(t *testing.T) *fixture {
@@ -79,17 +82,19 @@ func TestCrossAccount_CreateToAnOwnedPeerVpcIsPendingForBoth(t *testing.T) {
 	assert.True(t, f.has(t, acctKey(peerAccount, id)), "the accepter lists the request")
 }
 
-// A missing VPC, one another account owns and a malformed owner all fail
-// alike, so Create cannot probe another account.
+// A missing VPC, one another account owns, a malformed owner and an
+// overlapping peer all fail alike, indexed for the requester only.
 func TestCrossAccount_CreateFailsAlikeWithoutRevealingThePeer(t *testing.T) {
 	cases := []struct{ name, owner, peer string }{
 		{"absent from the peer account", peerAccount, vpcID(77)},
 		{"owned by a third account", peerAccount, thirdVpc},
 		{"malformed owner", "not-an-account", peerVpc},
+		{"overlapping the requester", peerAccount, overlapVpc},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newCrossAccountFixture(t)
+			f.putVPC(t, peerAccount, overlapVpc, "10.1.0.0/24")
 			before := f.liveKeys(t)
 			pcx := f.createTo(t, testAccount, vpcA, tc.owner, tc.peer)
 			id := aws.StringValue(pcx.VpcPeeringConnectionId)
@@ -233,4 +238,70 @@ func TestCrossAccount_PendingWithinOneAccountNeverBlocksDeleteVpc(t *testing.T) 
 		require.NoError(t, err)
 		assert.False(t, blocked, vpc)
 	}
+}
+
+// A repeat names the same VPCs; it returns the open request only when it also
+// names the same peer owner, and otherwise fails like any unowned peer.
+func TestCrossAccount_RepeatCreateMatchesThePeerOwner(t *testing.T) {
+	f := newCrossAccountFixture(t)
+	id := aws.StringValue(f.createTo(t, testAccount, vpcA, peerAccount, peerVpc).VpcPeeringConnectionId)
+	assert.Equal(t, id, aws.StringValue(f.createTo(t, testAccount, vpcA, peerAccount, peerVpc).VpcPeeringConnectionId))
+	same := aws.StringValue(f.create(t, vpcA, vpcB).VpcPeeringConnectionId)
+
+	for _, tc := range []struct{ name, owner, peer, open string }{
+		{"third account", thirdAccount, peerVpc, id},
+		{"malformed owner", "not-an-account", peerVpc, id},
+		{"another account named for a same-account peer", peerAccount, vpcB, same},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := aws.StringValue(f.createTo(t, testAccount, vpcA, tc.owner, tc.peer).VpcPeeringConnectionId)
+			assert.NotEqual(t, tc.open, got)
+			assert.Equal(t, StateFailed, f.statusAs(t, testAccount, got))
+			assert.Equal(t, StatePendingAcceptance, f.statusAs(t, testAccount, tc.open), "the open request is untouched")
+		})
+	}
+}
+
+func TestCrossAccount_PeerSideLimitCapsOtherAccountsRequests(t *testing.T) {
+	f := newCrossAccountFixture(t)
+	for i := range perVpcLimit {
+		requester := vpcID(300 + i)
+		f.putVPC(t, thirdAccount, requester, "10.100."+strconv.Itoa(i)+".0/24")
+		f.createTo(t, thirdAccount, requester, peerAccount, peerVpc)
+	}
+	_, err := f.svc.CreateVpcPeeringConnection(t.Context(), &ec2.CreateVpcPeeringConnectionInput{
+		VpcId: aws.String(vpcA), PeerVpcId: aws.String(peerVpc), PeerOwnerId: aws.String(peerAccount),
+	}, testAccount)
+	requireCode(t, err, awserrors.ErrorVpcPeeringConnectionsPerVpcLimitExceeded)
+}
+
+func TestCrossAccount_ExpiredRequestStopsBlockingDeleteVpc(t *testing.T) {
+	f := newCrossAccountFixture(t)
+	f.createTo(t, testAccount, vpcA, peerAccount, peerVpc)
+	f.clock.advance(requestLifetime + time.Second)
+	blocked, err := f.svc.VpcBlocksDeletion(t.Context(), peerVpc)
+	require.NoError(t, err)
+	assert.False(t, blocked, "an expired request blocks nothing, before any sweep")
+}
+
+// The accepter's VPC can vanish under a pending request only by racing
+// DeleteVpc; the request then reads rejected by the accepter.
+func TestCrossAccount_MissingAccepterVpcReadsRejected(t *testing.T) {
+	f := newCrossAccountFixture(t)
+	id := aws.StringValue(f.createTo(t, testAccount, vpcA, peerAccount, peerVpc).VpcPeeringConnectionId)
+	f.deleteVPC(t, peerAccount, peerVpc)
+	for _, viewer := range []string{testAccount, peerAccount} {
+		out, err := f.svc.DescribeVpcPeeringConnections(t.Context(),
+			&ec2.DescribeVpcPeeringConnectionsInput{VpcPeeringConnectionIds: aws.StringSlice([]string{id})}, viewer)
+		require.NoError(t, err)
+		assert.Equal(t, StateRejected, aws.StringValue(out.VpcPeeringConnections[0].Status.Code), viewer)
+		assert.Equal(t, rejectedMessage(peerAccount), aws.StringValue(out.VpcPeeringConnections[0].Status.Message), viewer)
+	}
+
+	_, err := f.svc.Sweep(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, StateRejected, f.termRecord(t, id).Status)
+	f.clock.advance(terminalShortWindow)
+	assert.Empty(t, f.statusAs(t, peerAccount, id), "the rejecter sees it for 2 hours")
+	assert.Equal(t, StateRejected, f.statusAs(t, testAccount, id), "the requester sees it for 2 days")
 }

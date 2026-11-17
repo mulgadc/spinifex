@@ -102,9 +102,24 @@ func (r *imageReaper) List(ctx context.Context, accountID string) ([]Resource, e
 	return found, nil
 }
 
-func (r *imageReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
-	_, err := ec2imageapi.DeregisterImage(ctx, &ec2.DeregisterImageInput{
+// Delete clears deregistration protection only under force, as the load
+// balancer reaper does: without it the refusal stands.
+func (r *imageReaper) Delete(ctx context.Context, accountID string, resource Resource, force bool) error {
+	err := r.deregister(ctx, accountID, resource.ID)
+	if err == nil || !force || !awserrors.IsErrorCode(err, awserrors.ErrorOperationNotPermitted) {
+		return err
+	}
+	if _, dErr := ec2imageapi.DisableImageDeregistrationProtection(ctx, &ec2.DisableImageDeregistrationProtectionInput{
 		ImageId: aws.String(resource.ID),
+	}, r.nc, accountID); dErr != nil {
+		return ignoreAlreadyGone(dErr)
+	}
+	return r.deregister(ctx, accountID, resource.ID)
+}
+
+func (r *imageReaper) deregister(ctx context.Context, accountID, imageID string) error {
+	_, err := ec2imageapi.DeregisterImage(ctx, &ec2.DeregisterImageInput{
+		ImageId: aws.String(imageID),
 	}, r.nc, accountID)
 	return ignoreAlreadyGone(err)
 }

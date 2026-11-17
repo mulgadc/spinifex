@@ -952,6 +952,8 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.DescribeImageAttribute", handleNATSRequest(d.node, d.imageService.DescribeImageAttribute), "spinifex-workers"},
 		{"ec2.ModifyImageAttribute", handleNATSRequest(d.node, d.imageService.ModifyImageAttribute), "spinifex-workers"},
 		{"ec2.ResetImageAttribute", handleNATSRequest(d.node, d.imageService.ResetImageAttribute), "spinifex-workers"},
+		{"ec2.EnableImageDeregistrationProtection", handleNATSRequest(d.node, d.imageService.EnableImageDeregistrationProtection), "spinifex-workers"},
+		{"ec2.DisableImageDeregistrationProtection", handleNATSRequest(d.node, d.imageService.DisableImageDeregistrationProtection), "spinifex-workers"},
 		{"ec2.CreateVolume", handleNATSRequest(d.node, d.volumeService.CreateVolume), "spinifex-workers"},
 		{"ec2.DescribeVolumes", handleNATSRequest(d.node, d.volumeService.DescribeVolumes), "spinifex-workers"},
 		{"ec2.ModifyVolume", d.handleEC2ModifyVolume, "spinifex-workers"},

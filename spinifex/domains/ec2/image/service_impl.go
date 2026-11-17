@@ -349,7 +349,7 @@ func renderVisibleImage(amiMeta ebsmetadata.AMI, input *ec2.DescribeImagesInput,
 		image.ImageLocation = aws.String("amazon/" + amiMeta.Name)
 	} else {
 		image.ImageLocation = aws.String(ownerID + "/" + amiMeta.Name)
-		image.DeregistrationProtection = aws.String("disabled")
+		image.DeregistrationProtection = aws.String(amiMeta.DeregistrationProtectionState())
 	}
 
 	// RegisterImage takes BootMode as an optional input, so an AMI can
@@ -1032,6 +1032,8 @@ func (s *ImageServiceImpl) DescribeImageAttribute(ctx context.Context, input *ec
 		output.ImdsSupport = &ec2.AttributeValue{}
 	case ec2.ImageAttributeNameLastLaunchedTime:
 		output.LastLaunchedTime = &ec2.AttributeValue{}
+	case ec2.ImageAttributeNameDeregistrationProtection:
+		output.DeregistrationProtection = &ec2.AttributeValue{Value: aws.String(meta.DeregistrationProtectionState())}
 	case ec2.ImageAttributeNameBlockDeviceMapping:
 		output.BlockDeviceMappings = synthesizeRootBlockDeviceMapping(meta, s.snapshotEncrypted(ctx, meta, s.clusterEncryptionEnabled()))
 		if output.BlockDeviceMappings == nil {
@@ -1280,18 +1282,22 @@ func (s *ImageServiceImpl) DeregisterImage(ctx context.Context, input *ec2.Dereg
 
 	imageID := *input.ImageId
 
-	if _, err := s.loadAMIForMutation(ctx, imageID, accountID); err != nil {
+	// Held across the protection check and both deletes, so neither the reaper
+	// nor an Enable can write the AMI between them.
+	unlock, err := s.lockImage(ctx, imageID)
+	if err != nil {
 		return nil, err
 	}
+	defer unlock()
 
-	// Held across both deletes, so the reaper cannot write back a settled AMI
-	// it read before them.
-	if s.imageClaims != nil {
-		unlock, err := s.imageClaims.LockImage(ctx, imageID)
-		if err != nil {
-			return nil, err
-		}
-		defer unlock()
+	meta, err := s.loadAMIForMutation(ctx, imageID, accountID)
+	if err != nil {
+		return nil, err
+	}
+	if meta.DeregistrationProtection != "" {
+		return nil, awserrors.Errorf(awserrors.ErrorOperationNotPermitted,
+			"%s can't be deregistered because deregistration protection is %s. Please disable protection and try again.",
+			imageID, meta.DeregistrationProtectionState())
 	}
 
 	// Only the image's own prefix: a copy or a source instance has its own.
@@ -1307,6 +1313,67 @@ func (s *ImageServiceImpl) DeregisterImage(ctx context.Context, input *ec2.Dereg
 
 	slog.InfoContext(ctx, "DeregisterImage completed", "imageId", imageID, "accountId", accountID)
 	return &ec2.DeregisterImageOutput{}, nil
+}
+
+// lockImage takes imageID's claim, or nothing when no claims are wired.
+func (s *ImageServiceImpl) lockImage(ctx context.Context, imageID string) (func(), error) {
+	if s.imageClaims == nil {
+		return func() {}, nil
+	}
+	return s.imageClaims.LockImage(ctx, imageID)
+}
+
+// EnableImageDeregistrationProtection protects an image the caller owns from
+// DeregisterImage. The gateway refuses WithCooldown, which is not modelled.
+func (s *ImageServiceImpl) EnableImageDeregistrationProtection(ctx context.Context, input *ec2.EnableImageDeregistrationProtectionInput, accountID string) (*ec2.EnableImageDeregistrationProtectionOutput, error) {
+	if input == nil || input.ImageId == nil || *input.ImageId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	state, err := s.setDeregistrationProtection(ctx, *input.ImageId, accountID, ebsmetadata.DeregistrationProtectionEnabledWithoutCooldown)
+	if err != nil {
+		return nil, err
+	}
+	return &ec2.EnableImageDeregistrationProtectionOutput{Return: aws.String(state)}, nil
+}
+
+// DisableImageDeregistrationProtection clears an owned image's protection.
+func (s *ImageServiceImpl) DisableImageDeregistrationProtection(ctx context.Context, input *ec2.DisableImageDeregistrationProtectionInput, accountID string) (*ec2.DisableImageDeregistrationProtectionOutput, error) {
+	if input == nil || input.ImageId == nil || *input.ImageId == "" {
+		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	state, err := s.setDeregistrationProtection(ctx, *input.ImageId, accountID, "")
+	if err != nil {
+		return nil, err
+	}
+	return &ec2.DisableImageDeregistrationProtectionOutput{Return: aws.String(state)}, nil
+}
+
+// setDeregistrationProtection writes protection under the claim DeregisterImage
+// takes and returns the rendered state. An image the caller does not own, a
+// system image included, is NotFound to it, as on AWS.
+func (s *ImageServiceImpl) setDeregistrationProtection(ctx context.Context, imageID, accountID, protection string) (string, error) {
+	unlock, err := s.lockImage(ctx, imageID)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+
+	meta, err := s.loadAMIForMutation(ctx, imageID, accountID)
+	if err != nil {
+		if code := err.Error(); code == awserrors.ErrorInvalidAMIIDNotFound || code == awserrors.ErrorUnauthorizedOperation {
+			return "", awserrors.Errorf(awserrors.ErrorInvalidAMIIDNotFound, "Invalid ImageId: %s", imageID)
+		}
+		return "", err
+	}
+	if meta.DeregistrationProtection != protection {
+		meta.DeregistrationProtection = protection
+		if err := s.putAMIConfig(ctx, imageID, meta); err != nil {
+			slog.ErrorContext(ctx, "setDeregistrationProtection: failed to write AMI config", "imageId", imageID, "err", err)
+			return "", errors.New(awserrors.ErrorServerInternal)
+		}
+	}
+	slog.InfoContext(ctx, "Image deregistration protection set", "imageId", imageID, "state", meta.DeregistrationProtectionState(), "accountId", accountID)
+	return meta.DeregistrationProtectionState(), nil
 }
 
 // ModifyImageAttribute writes a modifiable AMI attribute; only description is writable.

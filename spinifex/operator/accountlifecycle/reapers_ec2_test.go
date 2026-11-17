@@ -175,6 +175,48 @@ func TestImageReaperListsOnlyOwnedImages(t *testing.T) {
 	assert.Equal(t, "000000000042", aws.StringValue(input.Owners[0]))
 }
 
+// protectedImageCluster answers DeregisterImage with the protection refusal
+// until DisableImageDeregistrationProtection has been called.
+func protectedImageCluster(t *testing.T) *fakeCluster {
+	cluster := newFakeCluster(t)
+	disabled := false
+	cluster.handlers["ec2.DisableImageDeregistrationProtection"] = func([]byte) (any, string) {
+		disabled = true
+		return ec2.DisableImageDeregistrationProtectionOutput{Return: aws.String("disabled")}, ""
+	}
+	cluster.handlers["ec2.DeregisterImage"] = func([]byte) (any, string) {
+		if !disabled {
+			return nil, awserrors.ErrorOperationNotPermitted
+		}
+		return ec2.DeregisterImageOutput{}, ""
+	}
+	return cluster
+}
+
+// An unforced teardown is an automated actor, so a protected image survives
+// it with protection left armed.
+// Verifies: ADR-0003:S7.
+func TestS7_ImageReaperLeavesAProtectedImageWithoutForce(t *testing.T) {
+	cluster := protectedImageCluster(t)
+	reaper := &imageReaper{nc: cluster.nc}
+
+	err := reaper.Delete(testCtx(t), "000000000042", Resource{ID: "ami-0123456789abcdef0"}, false)
+
+	assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorOperationNotPermitted), "err: %v", err)
+	assert.Equal(t, []string{"ec2.DeregisterImage"}, cluster.called(), "teardown must not disarm protection nobody asked it to override")
+}
+
+// Under force the account-level decision overrides the protection, which is
+// otherwise a deadlock nobody is left to clear.
+func TestImageReaperForceClearsDeregistrationProtection(t *testing.T) {
+	cluster := protectedImageCluster(t)
+	reaper := &imageReaper{nc: cluster.nc}
+
+	require.NoError(t, reaper.Delete(testCtx(t), "000000000042", Resource{ID: "ami-0123456789abcdef0"}, true))
+
+	assert.Equal(t, []string{"ec2.DeregisterImage", "ec2.DisableImageDeregistrationProtection", "ec2.DeregisterImage"}, cluster.called())
+}
+
 func TestSnapshotReaperListsOnlyOwnedSnapshots(t *testing.T) {
 	cluster := newFakeCluster(t)
 	cluster.reply("ec2.DescribeSnapshots", ec2.DescribeSnapshotsOutput{

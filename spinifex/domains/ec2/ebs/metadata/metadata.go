@@ -163,6 +163,23 @@ type AMI struct {
 	// UEFIData names the image's own UEFI variable store object; nil launches
 	// from the node's VARS template.
 	UEFIData *UEFIDataRef `json:"uefi_data,omitempty"`
+	// DeregistrationProtection is the protection state; empty is disabled.
+	DeregistrationProtection string `json:"deregistration_protection,omitempty"`
+}
+
+// The DeregistrationProtection states EC2 renders for an image.
+const (
+	DeregistrationProtectionDisabled               = "disabled"
+	DeregistrationProtectionEnabledWithoutCooldown = "enabled-without-cooldown"
+)
+
+// DeregistrationProtectionState renders the stored protection, an absent
+// field being AWS's default of disabled.
+func (a AMI) DeregistrationProtectionState() string {
+	if a.DeregistrationProtection == "" {
+		return DeregistrationProtectionDisabled
+	}
+	return a.DeregistrationProtection
 }
 
 // Available reports an AMI an instance may launch from or a copy may read. An

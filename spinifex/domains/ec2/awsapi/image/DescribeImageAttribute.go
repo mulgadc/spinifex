@@ -14,12 +14,13 @@ import (
 // supportedImageAttributes lists the AMI attributes spinifex exposes.
 // Any other attribute is rejected rather than returning empty.
 var supportedImageAttributes = map[string]bool{
-	ec2.ImageAttributeNameDescription:        true,
-	ec2.ImageAttributeNameBlockDeviceMapping: true,
-	ec2.ImageAttributeNameLaunchPermission:   true,
-	ec2.ImageAttributeNameBootMode:           true,
-	ec2.ImageAttributeNameImdsSupport:        true,
-	ec2.ImageAttributeNameLastLaunchedTime:   true,
+	ec2.ImageAttributeNameDescription:              true,
+	ec2.ImageAttributeNameBlockDeviceMapping:       true,
+	ec2.ImageAttributeNameLaunchPermission:         true,
+	ec2.ImageAttributeNameBootMode:                 true,
+	ec2.ImageAttributeNameImdsSupport:              true,
+	ec2.ImageAttributeNameLastLaunchedTime:         true,
+	ec2.ImageAttributeNameDeregistrationProtection: true,
 }
 
 // ValidateDescribeImageAttributeInput requires an ami- prefixed ImageId and an Attribute.

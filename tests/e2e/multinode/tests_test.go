@@ -101,6 +101,12 @@ func TestMultinodeSpread(t *testing.T) {
 	runSpread(t, requireMultiNodeFixture(t))
 }
 
+// TestMultinodeVPCPeering is sequential: it adds a peering route to the
+// default VPC's main route table, which the trio's guests also use.
+func TestMultinodeVPCPeering(t *testing.T) {
+	runMultinodeVPCPeering(t, requireMultiNodeFixture(t))
+}
+
 // TestMultinodeVPCNetworking owns 10.200.0.0/16 (no EIP use); safe to run in parallel.
 func TestMultinodeVPCNetworking(t *testing.T) {
 	t.Parallel()

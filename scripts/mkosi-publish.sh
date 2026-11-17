@@ -87,6 +87,9 @@ DOCKER_ARGS=(
     --env "OBJECT_BASE=${OBJECT_BASE}"
     --env "RAW_NAME=${RAW_NAME}"
     --env "DRY_RUN=${DRY_RUN}"
+    # Debian's aws-cli 2.23 signs Transfer-Encoding on a streamed checksum
+    # upload, Cloudflare's edge rewrites it, and R2 rejects the signature.
+    --env "AWS_REQUEST_CHECKSUM_CALCULATION=when_required"
 )
 
 echo "[mkosi-publish] raw:    ${OUTPUT_DIR}/${RAW_NAME}"
@@ -116,15 +119,23 @@ fi
 # The object path carries no version and the catalog resolves newest-wins, so
 # an upload overwrites the live image with no way back. Copy the current object
 # aside first: without this, a bad build is unrecoverable rather than a restore.
-if aws s3 ls --endpoint-url "${R2_ENDPOINT}" "${s3}/${qcow2}" >/dev/null 2>&1; then
+# Only a 404 means there is nothing to back up; any other error stops here.
+if head="$(aws s3api head-object --endpoint-url "${R2_ENDPOINT}" \
+        --bucket "${R2_BUCKET}" --key "system-ami/${qcow2}" 2>&1)"; then
     stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-    echo "+ backing up current object to ${s3}/archive/${OBJECT_BASE}-${stamp}.qcow2"
-    # The default --copy-props reads the source tags, and R2 does not
-    # implement GetObjectTagging; metadata-directive copies metadata only.
+    archive="system-ami/archive/${OBJECT_BASE}-${stamp}.qcow2"
+    echo "+ backing up current object to s3://${R2_BUCKET}/${archive}"
+    # R2 implements neither GetObjectTagging, which a multipart copy with the
+    # default --copy-props calls, nor x-amz-tagging-directive, which
+    # metadata-directive sends on a single-part copy. The qcow2 is multipart.
     aws s3 cp --endpoint-url "${R2_ENDPOINT}" --copy-props metadata-directive \
-        "${s3}/${qcow2}" "${s3}/archive/${OBJECT_BASE}-${stamp}.qcow2"
-    aws s3 cp --endpoint-url "${R2_ENDPOINT}" --copy-props metadata-directive \
-        "${s3}/${sha}" "${s3}/archive/${OBJECT_BASE}-${stamp}.qcow2.sha256" || true
+        "${s3}/${qcow2}" "s3://${R2_BUCKET}/${archive}"
+    aws s3api copy-object --endpoint-url "${R2_ENDPOINT}" >/dev/null \
+        --copy-source "${R2_BUCKET}/system-ami/${sha}" \
+        --bucket "${R2_BUCKET}" --key "${archive}.sha256"
+elif ! grep -q "(404)" <<<"${head}"; then
+    echo "${head}" >&2
+    exit 1
 fi
 
 # Upload the image before its sidecar: the reverse advertises a checksum for

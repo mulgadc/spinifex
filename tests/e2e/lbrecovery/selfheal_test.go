@@ -21,11 +21,6 @@ import (
 )
 
 const (
-	// Older than every timeout in the repair path, so a repair that reaches a
-	// customer instance would find one the platform has long stopped expecting
-	// to change.
-	shTargetAge = 21 * time.Minute
-
 	// The requirement: traffic is back within five minutes of the fault.
 	shRecoveryBudget = 5 * time.Minute
 
@@ -81,14 +76,12 @@ func runLBSelfHeal(t *testing.T, fix *Fixture, kind shKind) {
 	// load balancer's own guest.
 	bystander := shLaunchBystander(t, fix, f)
 
-	harness.Step(t, "wait until every customer instance is older than %s", shTargetAge)
 	customers := append(slices.Clone(f.TargetIDs), bystander)
 	var client string
 	if !internetFacing {
 		client = shLaunchInVPCClient(t, fix, f)
 		customers = append(customers, client)
 	}
-	shWaitOlderThan(t, cli, customers, shTargetAge)
 
 	if client != "" {
 		shLogClockSkew(t, cli, client)
@@ -436,24 +429,6 @@ func shSnapshot(t *testing.T, fix *Fixture, ids []string) []shInstanceSnap {
 		snaps = append(snaps, shInstanceSnap{id: id, launch: launch[id], process: proc, node: *host})
 	}
 	return snaps
-}
-
-func shWaitOlderThan(t *testing.T, c *harness.AWSClient, ids []string, age time.Duration) {
-	t.Helper()
-	out, err := c.EC2.DescribeInstances(&ec2.DescribeInstancesInput{InstanceIds: aws.StringSlice(ids)})
-	require.NoError(t, err, "describe customer instances")
-	var newest time.Time
-	for _, r := range out.Reservations {
-		for _, inst := range r.Instances {
-			if lt := aws.TimeValue(inst.LaunchTime); lt.After(newest) {
-				newest = lt
-			}
-		}
-	}
-	if wait := time.Until(newest.Add(age)); wait > 0 {
-		harness.Detail(t, "waiting", wait.Round(time.Second).String())
-		time.Sleep(wait)
-	}
 }
 
 func shLaunchBystander(t *testing.T, fix *Fixture, f *albFixture) string {

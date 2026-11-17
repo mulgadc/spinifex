@@ -74,6 +74,14 @@ func TestAMIWithoutSourceDigestStillDecodes(t *testing.T) {
 	assert.Equal(t, "ami-1", got.ImageID)
 	assert.Nil(t, got.SourceDigest)
 	assert.Nil(t, got.UEFIData, "a document with no uefi_data launches from the template")
+	assert.Equal(t, DeregistrationProtectionDisabled, got.DeregistrationProtectionState())
+}
+
+// Deregistration protection rides at schema version 2 under its JSON name.
+func TestAMIDeregistrationProtectionDecodesAtSchemaVersion2(t *testing.T) {
+	got, err := UnmarshalAMI([]byte(`{"schema_version":2,"image_id":"ami-1","deregistration_protection":"enabled-without-cooldown"}`))
+	require.NoError(t, err)
+	assert.Equal(t, DeregistrationProtectionEnabledWithoutCooldown, got.DeregistrationProtectionState())
 }
 
 // The UEFI store reference rides at schema version 2 under its JSON names.

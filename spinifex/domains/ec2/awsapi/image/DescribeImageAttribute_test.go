@@ -103,6 +103,14 @@ func TestValidateDescribeImageAttributeInput(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name: "ValidDeregistrationProtection",
+			input: &ec2.DescribeImageAttributeInput{
+				ImageId:   aws.String("ami-1234567890abcdef0"),
+				Attribute: aws.String("deregistrationProtection"),
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {

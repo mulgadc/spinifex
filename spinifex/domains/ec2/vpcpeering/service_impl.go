@@ -164,7 +164,8 @@ func (s *ServiceImpl) CreateVpcPeeringConnection(ctx context.Context, input *ec2
 	if err := s.writeIndexes(ctx, rec); err != nil {
 		return nil, internalError(ctx, "CreateVpcPeeringConnection", err)
 	}
-	if _, err := createJSON(ctx, s.live, recordKey(rec.ID), rec); err != nil {
+	recRev, err := createJSON(ctx, s.live, recordKey(rec.ID), rec)
+	if err != nil {
 		return nil, internalError(ctx, "CreateVpcPeeringConnection", err)
 	}
 	holder, err := s.takeReqClaim(ctx, rec)
@@ -185,6 +186,15 @@ func (s *ServiceImpl) CreateVpcPeeringConnection(ctx context.Context, input *ec2
 			return nil, internalError(ctx, "CreateVpcPeeringConnection", fmt.Errorf("winning request %s vanished", holder))
 		}
 		return &ec2.CreateVpcPeeringConnectionOutput{VpcPeeringConnection: existingToEC2(winner, accountID)}, nil
+	}
+	if live, err := s.confirmCreated(ctx, rec, recRev); err != nil || !live {
+		if err == nil {
+			err = fmt.Errorf("request %s was swept before its claim", rec.ID)
+			if derr := s.deleteIndexes(ctx, rec); derr != nil {
+				slog.WarnContext(ctx, "CreateVpcPeeringConnection: discard swept request failed; the sweep removes it", "vpcPeeringConnectionId", rec.ID, "err", derr)
+			}
+		}
+		return nil, internalError(ctx, "CreateVpcPeeringConnection", err)
 	}
 
 	slog.InfoContext(ctx, "CreateVpcPeeringConnection completed", "vpcPeeringConnectionId", rec.ID,

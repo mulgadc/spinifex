@@ -343,31 +343,27 @@ func TestAccept_CrashedPairClaimTakenOverOnlyAfterGrace(t *testing.T) {
 	requireCode(t, err, awserrors.ErrorVpcPeeringConnectionAlreadyExists)
 }
 
-// TestAccept_TakeoverFencesTheOwnersRetry interleaves the owner's retried
-// Accept between a takeover's read of the owner and its claim write: the
-// owner's record is the fence, so exactly one connection provisions.
+// TestAccept_TakeoverFencesTheOwnersRetry stalls an owner's Accept past the
+// grace just before its record write while a takeover runs: the takeover's
+// fence on the owner's record makes exactly one connection provision.
 func TestAccept_TakeoverFencesTheOwnersRetry(t *testing.T) {
 	f := newFixture(t)
 	fwd := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
 	rev := *f.create(t, vpcB, vpcA).VpcPeeringConnectionId
-	_, err := createJSON(t.Context(), f.svc.live, pairKey(vpcA, vpcB), claim{PcxID: fwd, ClaimedAt: f.clock.now()})
-	require.NoError(t, err)
-	f.clock.advance(claimGrace)
+	var takeoverErr error
+	f.svc.live = &stallingKV{KeyValue: f.svc.live, prefix: recordKey(fwd), update: true, stall: func() {
+		f.clock.advance(claimGrace)
+		_, takeoverErr = f.accept(t, rev)
+	}}
 
-	// The takeover reads fwd's record; the owner's retried Accept then moves it.
-	_, staleRev, err := getJSON[PeeringRecord](t.Context(), f.svc.live, recordKey(fwd))
-	require.NoError(t, err)
-	_, err = f.accept(t, fwd)
-	require.NoError(t, err)
-	stale := f.liveRecord(t, fwd)
-	stale.Status = StatePendingAcceptance
-	_, err = updateJSON(t.Context(), f.svc.live, recordKey(fwd), stale, staleRev)
-	require.ErrorIs(t, err, errConflict, "the takeover's fence write loses to the owner's move")
-
-	_, err = f.accept(t, rev)
+	_, err := f.accept(t, fwd)
 	requireCode(t, err, awserrors.ErrorVpcPeeringConnectionAlreadyExists)
-	assert.Equal(t, StateProvisioning, f.status(t, fwd))
-	assert.Equal(t, StatePendingAcceptance, f.status(t, rev))
+	require.NoError(t, takeoverErr, "the takeover of the stalled owner's pair claim succeeds")
+	assert.Equal(t, StateProvisioning, f.status(t, rev))
+	assert.Equal(t, StatePendingAcceptance, f.status(t, fwd), "the owner's stale record write loses to the fence")
+	held, _, err := getJSON[claim](t.Context(), f.svc.live, pairKey(vpcA, vpcB))
+	require.NoError(t, err)
+	assert.Equal(t, rev, held.PcxID)
 }
 
 func TestCreate_InterruptedBeforeClaimIsAbsentThenSwept(t *testing.T) {

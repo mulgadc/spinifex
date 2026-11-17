@@ -273,6 +273,21 @@ func (v *view) ended() PeeringRecord {
 	return rec
 }
 
+// confirmCreated fences the sweep once rec's claim is won: a sweep that read
+// the record or an index unclaimed deletes at that revision, so rewriting them
+// makes it lose. It reports false when the sweep already removed the record.
+func (s *Store) confirmCreated(ctx context.Context, rec *PeeringRecord, rev uint64) (bool, error) {
+	if _, err := updateJSON(ctx, s.live, recordKey(rec.ID), rec, rev); errors.Is(err, errConflict) {
+		v, err := s.load(ctx, rec.ID)
+		if err != nil || v == nil || v.rev == 0 {
+			return v != nil, err
+		}
+	} else if err != nil {
+		return false, err
+	}
+	return true, s.writeIndexes(ctx, rec)
+}
+
 // isLinkedAlive reports a view that holds a link: provisioning or active.
 func (v *view) isLinkedAlive() bool {
 	return v.status == StateProvisioning || v.status == StateActive

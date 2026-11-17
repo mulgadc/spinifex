@@ -7,9 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
-	"strings"
 
-	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	ec2vpcpeering "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcpeering"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -33,34 +31,23 @@ type PeeringConnection struct {
 	CleanupPending bool // deleted, and its link not yet confirmed gone
 }
 
-// PeeringSnapshot is every live connection and every VPC ID with a record,
-// in any AZ. VPC presence comes from keys alone.
-type PeeringSnapshot struct {
-	Connections []PeeringConnection
-	VPCIDs      map[string]struct{}
-}
-
-// LoadPeering reads the snapshot. A missing peering bucket is an empty
-// snapshot; any other read failure is an error, never a partial snapshot.
-func LoadPeering(ctx context.Context, js jetstream.JetStream) (PeeringSnapshot, error) {
+// LoadPeering reads every live connection. A missing peering bucket is none;
+// any other read failure is an error, never a partial list.
+func LoadPeering(ctx context.Context, js jetstream.JetStream) ([]PeeringConnection, error) {
 	kv, err := js.KeyValue(ctx, PeeringBucket)
 	if errors.Is(err, jetstream.ErrBucketNotFound) {
-		return PeeringSnapshot{VPCIDs: map[string]struct{}{}}, nil
+		return nil, nil
 	}
 	if err != nil {
-		return PeeringSnapshot{}, fmt.Errorf("open peering bucket: %w", err)
+		return nil, fmt.Errorf("open peering bucket: %w", err)
 	}
 	recs, err := ec2vpcpeering.ListRecords(ctx, kv)
 	if err != nil {
-		return PeeringSnapshot{}, err
+		return nil, err
 	}
-	vpcs, err := loadVPCIDs(ctx, js)
-	if err != nil {
-		return PeeringSnapshot{}, err
-	}
-	out := PeeringSnapshot{Connections: make([]PeeringConnection, 0, len(recs)), VPCIDs: vpcs}
+	out := make([]PeeringConnection, 0, len(recs))
 	for i := range recs {
-		out.Connections = append(out.Connections, connection(&recs[i]))
+		out = append(out, connection(&recs[i]))
 	}
 	return out, nil
 }
@@ -79,22 +66,4 @@ func connection(rec *ec2vpcpeering.PeeringRecord) PeeringConnection {
 		c.RequesterAddr, c.AccepterAddr, _ = ec2vpcpeering.LinkAddresses(rec.LinkPrefix)
 	}
 	return c
-}
-
-func loadVPCIDs(ctx context.Context, js jetstream.JetStream) (map[string]struct{}, error) {
-	kv, err := js.KeyValue(ctx, ec2vpc.KVBucketVPCs)
-	if err != nil {
-		return nil, fmt.Errorf("open VPC bucket: %w", err)
-	}
-	keys, err := kv.Keys(ctx)
-	if err != nil && !errors.Is(err, jetstream.ErrNoKeysFound) {
-		return nil, fmt.Errorf("list VPC keys: %w", err)
-	}
-	out := make(map[string]struct{}, len(keys))
-	for _, key := range keys {
-		if _, id, ok := strings.Cut(key, "."); ok && strings.HasPrefix(id, "vpc-") {
-			out[id] = struct{}{}
-		}
-	}
-	return out, nil
 }

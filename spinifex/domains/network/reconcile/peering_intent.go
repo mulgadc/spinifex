@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/netip"
 	"strings"
@@ -51,25 +52,29 @@ type PeeringIntent struct {
 }
 
 // loadPeering classifies every live connection through EC2's projection.
-// VPC presence comes from keys, so an unreadable VPC record never reads as absent.
-func loadPeering(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}) PeeringIntent {
+// vpcIDs comes from keys, so an unreadable VPC record never reads as absent.
+func loadPeering(ctx context.Context, js jetstream.JetStream, localVPCs, vpcIDs map[string]struct{}) PeeringIntent {
 	out := PeeringIntent{
 		PeeringLinks:     map[string]PeeringLinkIntent{},
 		PeeringTeardowns: map[string]PeeringTeardownIntent{},
 		PeeringLive:      map[string]struct{}{},
 	}
-	snap, err := ec2projection.LoadPeering(ctx, js)
+	if vpcIDs == nil {
+		out.PeeringIncomplete = errors.New("VPC bucket unavailable")
+		return out
+	}
+	conns, err := ec2projection.LoadPeering(ctx, js)
 	if err != nil {
 		out.PeeringIncomplete = err
 		return out
 	}
-	for _, c := range snap.Connections {
+	for _, c := range conns {
 		out.PeeringLive[c.ID] = struct{}{}
 		if !c.Linked && !c.CleanupPending {
 			continue
 		}
-		_, reqHere := snap.VPCIDs[c.RequesterVPC]
-		_, accHere := snap.VPCIDs[c.AccepterVPC]
+		_, reqHere := vpcIDs[c.RequesterVPC]
+		_, accHere := vpcIDs[c.AccepterVPC]
 		_, reqLocal := localVPCs[c.RequesterVPC]
 		_, accLocal := localVPCs[c.AccepterVPC]
 		if c.CleanupPending || !reqHere || !accHere {

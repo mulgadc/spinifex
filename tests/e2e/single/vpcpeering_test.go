@@ -159,6 +159,45 @@ func requireAWSCode(t *testing.T, err error, code string) {
 	require.Equal(t, code, aerr.Code(), aerr.Message())
 }
 
+// lrpMAC reads a logical router port's MAC from NB.
+func lrpMAC(t *testing.T, port string) string {
+	t.Helper()
+	return strings.Trim(harness.OvnNbctl(t, "get", "Logical_Router_Port", port, "mac"), `"`)
+}
+
+// tracePolicy traces an ICMP packet entering router vpcID on inport and
+// returns the first router-policy stage it hits, with the actions under it.
+func tracePolicy(t *testing.T, vpcID, inport, src, dst string) string {
+	t.Helper()
+	flow := fmt.Sprintf(`inport == %q && eth.src == 02:00:00:00:00:01 && eth.dst == %s && ip4.src == %s && ip4.dst == %s && ip.ttl == 64 && icmp4`,
+		inport, lrpMAC(t, inport), src, dst)
+	trace := harness.OvnTrace(t, "vpc-"+vpcID, flow)
+	lines := strings.Split(trace, "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "lr_in_policy (") {
+			return strings.Join(lines[i:min(i+6, len(lines))], "\n")
+		}
+	}
+	t.Fatalf("trace of %s -> %s on %s reached no router policy\n%s", src, dst, vpcID, trace)
+	return ""
+}
+
+// Peering route rows rank by destination length: a drop at 1300+2*bits and
+// its reroute one above; link guards sit at 1400.
+func peeringDropPriority(bits int) int { return 1300 + 2*bits }
+
+func requirePolicyDrop(t *testing.T, stage string, priority int, why string) {
+	t.Helper()
+	require.Containsf(t, stage, fmt.Sprintf("priority %d,", priority), "%s: wrong policy won\n%s", why, stage)
+	require.Containsf(t, stage, "drop;", "%s: not dropped\n%s", why, stage)
+}
+
+func requirePolicyReroute(t *testing.T, stage string, priority int, outport, why string) {
+	t.Helper()
+	require.Containsf(t, stage, fmt.Sprintf("priority %d,", priority), "%s: wrong policy won\n%s", why, stage)
+	require.Containsf(t, stage, fmt.Sprintf("outport = %q;", outport), "%s: not sent over the link\n%s", why, stage)
+}
+
 // runVPCPeering proves same-account peering end to end: no path until both
 // sides route, no transit, no edge-to-edge egress, a guard on the link, and
 // DeleteVpc's dependency rules.
@@ -238,6 +277,56 @@ func runVPCPeering(t *testing.T, fix *Fixture) {
 		require.Containsf(t, trace, "drop;", "spoofed packet was not dropped\n%s", trace)
 	})
 
+	t.Run("ForwardingTraces", func(t *testing.T) {
+		harness.SkipIfNoOVN(t)
+		harness.Step(t, "traces: route ranking, blackholes, transit and edge-to-edge at the routers")
+		subnetPort := "rtr-" + a.subnetID
+		abLinkA := "pcx-" + pcx + "-" + a.vpcID
+		bPeer := "10.151.2.9"
+
+		// A route wider than the peer delivers only the peer range; the rest of
+		// it, and a route disjoint from the peer, drop instead of using the IGW.
+		peeringRoute(t, c, a.rtbID, "10.0.0.0/8", pcx)
+		peeringRoute(t, c, a.rtbID, "10.99.0.0/16", pcx)
+		t.Cleanup(func() {
+			for _, d := range []string{"10.0.0.0/8", "10.99.0.0/16"} {
+				_, _ = c.EC2.DeleteRoute(&ec2.DeleteRouteInput{RouteTableId: aws.String(a.rtbID), DestinationCidrBlock: aws.String(d)})
+			}
+		})
+		harness.Eventually(t, func() bool {
+			return strings.Contains(tracePolicy(t, a.vpcID, subnetPort, a.privateIP, "10.200.0.1"), "drop;")
+		}, 60*time.Second, 2*time.Second, "wide peering route never realised")
+		requirePolicyReroute(t, tracePolicy(t, a.vpcID, subnetPort, a.privateIP, bPeer), peeringDropPriority(16)+1, abLinkA, "peer range under its own route")
+		requirePolicyDrop(t, tracePolicy(t, a.vpcID, subnetPort, a.privateIP, "10.200.0.1"), peeringDropPriority(8), "rest of a wide route")
+		requirePolicyDrop(t, tracePolicy(t, a.vpcID, subnetPort, a.privateIP, "10.99.0.1"), peeringDropPriority(16), "route disjoint from the peer")
+
+		// A blackhole route beats an active one by length in both nesting orders.
+		d := harness.CreateVPC(t, c, "10.156.0.0/16")
+		t.Cleanup(func() { harness.DeleteVPC(t, c, d) })
+		pending := createPeering(t, c, a.vpcID, d)
+		peeringRoute(t, c, a.rtbID, "10.151.2.0/24", pending)
+		peeringRoute(t, c, a.rtbID, "10.144.0.0/12", pending)
+		t.Cleanup(func() {
+			for _, dst := range []string{"10.151.2.0/24", "10.144.0.0/12"} {
+				_, _ = c.EC2.DeleteRoute(&ec2.DeleteRouteInput{RouteTableId: aws.String(a.rtbID), DestinationCidrBlock: aws.String(dst)})
+			}
+		})
+		require.Equal(t, "blackhole", routeState(t, c, a.rtbID, "10.151.2.0/24"))
+		harness.Eventually(t, func() bool {
+			return strings.Contains(tracePolicy(t, a.vpcID, subnetPort, a.privateIP, bPeer), fmt.Sprintf("priority %d,", peeringDropPriority(24)))
+		}, 60*time.Second, 2*time.Second, "blackhole route never realised")
+		requirePolicyDrop(t, tracePolicy(t, a.vpcID, subnetPort, a.privateIP, bPeer), peeringDropPriority(24), "narrower blackhole inside an active route")
+		requirePolicyReroute(t, tracePolicy(t, a.vpcID, subnetPort, a.privateIP, b.privateIP), peeringDropPriority(16)+1, abLinkA, "active route inside a wider blackhole")
+		requirePolicyDrop(t, tracePolicy(t, a.vpcID, subnetPort, a.privateIP, "10.152.0.1"), peeringDropPriority(12), "rest of a wider blackhole")
+
+		// B's guard drops transit from a third VPC towards A, and A's guard
+		// drops B's traffic towards A's internet gateway.
+		bd := createPeering(t, c, d, b.vpcID)
+		acceptPeering(t, c, bd)
+		requirePolicyDrop(t, tracePolicy(t, b.vpcID, "pcx-"+bd+"-"+b.vpcID, "10.156.1.10", a.privateIP), 1400, "transit D -> B -> A")
+		requirePolicyDrop(t, tracePolicy(t, a.vpcID, abLinkA, b.privateIP, "8.8.8.8"), 1400, "B -> A's internet gateway")
+	})
+
 	t.Run("DeleteVpcWhileActive", func(t *testing.T) {
 		harness.Step(t, "8. DeleteVpc refuses an active connection")
 		x := harness.CreateVPC(t, c, "10.153.0.0/16")
@@ -270,6 +359,11 @@ func runVPCPeering(t *testing.T, fix *Fixture) {
 	requirePingBlocked(t, a.tgt, b.privateIP, "after delete")
 	require.Equal(t, "blackhole", routeState(t, c, a.rtbID, b.cidr))
 	require.Equal(t, "blackhole", routeState(t, c, b.rtbID, a.cidr))
+	t.Run("BlackholeBeatsDefaultRoute", func(t *testing.T) {
+		harness.SkipIfNoOVN(t)
+		requirePolicyDrop(t, tracePolicy(t, a.vpcID, "rtr-"+a.subnetID, a.privateIP, b.privateIP),
+			peeringDropPriority(16), "blackhole route in a subnet whose table has 0.0.0.0/0 to an IGW")
+	})
 	for _, rtb := range []struct{ id, dst string }{{a.rtbID, b.cidr}, {b.rtbID, a.cidr}} {
 		_, err := c.EC2.DeleteRoute(&ec2.DeleteRouteInput{RouteTableId: aws.String(rtb.id), DestinationCidrBlock: aws.String(rtb.dst)})
 		require.NoError(t, err, "delete blackhole route")

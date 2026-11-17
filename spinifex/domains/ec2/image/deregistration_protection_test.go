@@ -6,7 +6,11 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	testutil "github.com/mulgadc/spinifex/internal/testkit"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -87,4 +91,18 @@ func TestImageDeregistrationProtection_ImageNotOwnedIsNotFound(t *testing.T) {
 	other, err := svc.GetAMIConfig(ctx, "ami-00000000000000002")
 	require.NoError(t, err)
 	assert.Empty(t, other.DeregistrationProtection, "another account's image is not written")
+}
+
+// An ID no AMI has answers NotFound before it can reach the claim, whose key
+// refuses characters such as '*'.
+func TestDeregisterImage_OddIDIsNotFoundWithClaimsWired(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	svc, store := setupTestImageService(t)
+	snaps := ec2snapshot.NewSnapshotServiceImplWithStore(&config.Config{Predastore: config.PredastoreConfig{Bucket: testBucket}}, store, nil)
+	snaps.SetClaims(ec2snapshot.NewClaims(ec2snapshot.NewClaimGroup(kvstore.OpenSyncBucket(js), "node-a"), "node-a", nil))
+	svc.SetImageClaims(snaps)
+
+	_, err := svc.DeregisterImage(context.Background(), &ec2.DeregisterImageInput{ImageId: aws.String("ami-a*b")}, testAccountID)
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorInvalidAMIIDNotFound, err.Error())
 }

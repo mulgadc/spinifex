@@ -1282,6 +1282,11 @@ func (s *ImageServiceImpl) DeregisterImage(ctx context.Context, input *ec2.Dereg
 
 	imageID := *input.ImageId
 
+	// Load before the claim, so an ID no AMI has never reaches the claim's key.
+	if _, err := s.loadAMIForMutation(ctx, imageID, accountID); err != nil {
+		return nil, err
+	}
+
 	// Held across the protection check and both deletes, so neither the reaper
 	// nor an Enable can write the AMI between them.
 	unlock, err := s.lockImage(ctx, imageID)

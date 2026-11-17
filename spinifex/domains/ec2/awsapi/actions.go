@@ -125,6 +125,7 @@ var ec2ListsAsSet = map[reflect.Type][]string{
 	reflect.TypeFor[ec2.DescribeVolumeAttributeOutput]():           {"ProductCodes"},
 	reflect.TypeFor[ec2.DescribeSnapshotAttributeOutput]():         {"ProductCodes", "CreateVolumePermissions"},
 	reflect.TypeFor[ec2.DescribeNetworkInterfaceAttributeOutput](): {"Groups"},
+	reflect.TypeFor[ec2.VpcPeeringConnectionVpcInfo]():             {"CidrBlockSet", "Ipv6CidrBlockSet"},
 }
 
 // marshalEC2Response renders an EC2 handler's output into the action's XML

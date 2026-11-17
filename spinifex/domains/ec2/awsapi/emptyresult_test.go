@@ -280,3 +280,22 @@ func TestEC2AttributeDescribes_RenderOnlyTheRequestedAttribute(t *testing.T) {
 	assert.Contains(t, eni, "<attachmentId>eni-attach-1</attachmentId>")
 	assert.NotContains(t, eni, "groupSet")
 }
+
+// A peering side shown by identity only carries no CIDR lists, and no side
+// carries an IPv6 list the VPC does not have.
+func TestEC2_PeeringVpcInfoListsAWSOmitsWhenEmpty(t *testing.T) {
+	out := render[ec2.DescribeVpcPeeringConnectionsInput](t, "DescribeVpcPeeringConnections", ec2.DescribeVpcPeeringConnectionsOutput{
+		VpcPeeringConnections: []*ec2.VpcPeeringConnection{{
+			VpcPeeringConnectionId: aws.String("pcx-1"),
+			RequesterVpcInfo: &ec2.VpcPeeringConnectionVpcInfo{
+				VpcId: aws.String("vpc-1"), CidrBlock: aws.String("10.0.0.0/16"),
+				CidrBlockSet: []*ec2.CidrBlock{{CidrBlock: aws.String("10.0.0.0/16")}},
+			},
+			AccepterVpcInfo: &ec2.VpcPeeringConnectionVpcInfo{VpcId: aws.String("vpc-2")},
+			Tags:            []*ec2.Tag{},
+		}},
+	})
+	assert.Equal(t, 1, strings.Count(out, "<cidrBlockSet>"))
+	assert.NotContains(t, out, "ipv6CidrBlockSet")
+	assert.Contains(t, out, "<tagSet></tagSet>")
+}

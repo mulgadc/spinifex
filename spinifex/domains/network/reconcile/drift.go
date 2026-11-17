@@ -10,6 +10,7 @@ import (
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
 	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
+	ec2projection "github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
 	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	loop "github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
@@ -38,10 +39,9 @@ var driftDebounce = loop.DefaultDebounce
 // of a VPC having no external gateway.
 const driftBackoffFactor = 3
 
-// intentBuckets names every KV bucket LoadIntentFromKV reads. None of their
-// writers is periodic, so watching them cannot self-trigger a loop. The one
-// write a pass makes is confirming an IGW attachment, which fires only on the
-// pending transition and so costs one extra pass per attach, not a cycle.
+// intentBuckets names every KV bucket LoadIntentFromKV reads. No writer is
+// periodic; a pass writes only on a one-way transition (an IGW attachment, a
+// peering activation or cleanup), so each costs one extra pass, not a cycle.
 var intentBuckets = []string{
 	ec2vpc.KVBucketVPCs,
 	ec2vpc.KVBucketSubnets,
@@ -51,6 +51,7 @@ var intentBuckets = []string{
 	ec2eip.KVBucketEIPs,
 	ec2routetable.KVBucketRouteTables,
 	ec2natgw.KVBucketNatGateways,
+	ec2projection.PeeringBucket,
 }
 
 // intentSource watches the intent buckets. Enumerated rather than fixed so a

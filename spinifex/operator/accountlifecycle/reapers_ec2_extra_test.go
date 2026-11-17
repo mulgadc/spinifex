@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
 	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
+	ec2vpcpeering "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcpeering"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -118,4 +119,74 @@ func TestEgressOnlyIGWReaperTreatsAMissingGatewayAsDeleted(t *testing.T) {
 	reaper := &egressOnlyIGWReaper{svc: svc}
 
 	assert.NoError(t, reaper.Delete(t.Context(), "000000000002", Resource{ID: "eigw-gone"}, false))
+}
+
+type fakePeering struct {
+	ec2vpcpeering.VpcPeeringService
+
+	conns    map[string]*ec2.VpcPeeringConnection
+	deleted  []string
+	rejected []string
+}
+
+func (f *fakePeering) DescribeVpcPeeringConnections(_ context.Context, in *ec2.DescribeVpcPeeringConnectionsInput, _ string) (*ec2.DescribeVpcPeeringConnectionsOutput, error) {
+	out := &ec2.DescribeVpcPeeringConnectionsOutput{}
+	if len(in.VpcPeeringConnectionIds) == 0 {
+		for _, c := range f.conns {
+			out.VpcPeeringConnections = append(out.VpcPeeringConnections, c)
+		}
+		return out, nil
+	}
+	c, ok := f.conns[aws.StringValue(in.VpcPeeringConnectionIds[0])]
+	if !ok {
+		return nil, errors.New("InvalidVpcPeeringConnectionID.NotFound")
+	}
+	out.VpcPeeringConnections = []*ec2.VpcPeeringConnection{c}
+	return out, nil
+}
+
+func (f *fakePeering) DeleteVpcPeeringConnection(_ context.Context, in *ec2.DeleteVpcPeeringConnectionInput, _ string) (*ec2.DeleteVpcPeeringConnectionOutput, error) {
+	f.deleted = append(f.deleted, aws.StringValue(in.VpcPeeringConnectionId))
+	return &ec2.DeleteVpcPeeringConnectionOutput{Return: aws.Bool(true)}, nil
+}
+
+func (f *fakePeering) RejectVpcPeeringConnection(_ context.Context, in *ec2.RejectVpcPeeringConnectionInput, _ string) (*ec2.RejectVpcPeeringConnectionOutput, error) {
+	f.rejected = append(f.rejected, aws.StringValue(in.VpcPeeringConnectionId))
+	return &ec2.RejectVpcPeeringConnectionOutput{Return: aws.Bool(true)}, nil
+}
+
+func peeringConn(id, state, requester string) *ec2.VpcPeeringConnection {
+	return &ec2.VpcPeeringConnection{
+		VpcPeeringConnectionId: aws.String(id),
+		Status:                 &ec2.VpcPeeringConnectionStateReason{Code: aws.String(state)},
+		RequesterVpcInfo:       &ec2.VpcPeeringConnectionVpcInfo{OwnerId: aws.String(requester)},
+	}
+}
+
+// Termination lists only live connections, deletes what the account requested
+// or has linked, and rejects a request pending against it.
+func TestVPCPeeringReaper(t *testing.T) {
+	const acct, other = "000000000001", "000000000002"
+	f := &fakePeering{conns: map[string]*ec2.VpcPeeringConnection{
+		"pcx-own-pending":  peeringConn("pcx-own-pending", "pending-acceptance", acct),
+		"pcx-incoming":     peeringConn("pcx-incoming", "pending-acceptance", other),
+		"pcx-active":       peeringConn("pcx-active", "active", other),
+		"pcx-provisioning": peeringConn("pcx-provisioning", "provisioning", acct),
+		"pcx-deleted":      peeringConn("pcx-deleted", "deleted", acct),
+		"pcx-rejected":     peeringConn("pcx-rejected", "rejected", acct),
+		"pcx-expired":      peeringConn("pcx-expired", "expired", acct),
+	}}
+	r := &vpcPeeringReaper{svc: f}
+	found, err := r.List(t.Context(), acct)
+	require.NoError(t, err)
+	var ids []string
+	for _, res := range found {
+		ids = append(ids, res.ID)
+		require.NoError(t, r.Delete(t.Context(), acct, res, false))
+	}
+	assert.ElementsMatch(t, []string{"pcx-own-pending", "pcx-incoming", "pcx-active", "pcx-provisioning"}, ids)
+	assert.ElementsMatch(t, []string{"pcx-own-pending", "pcx-active", "pcx-provisioning"}, f.deleted)
+	assert.Equal(t, []string{"pcx-incoming"}, f.rejected)
+
+	require.NoError(t, r.Delete(t.Context(), acct, Resource{Kind: r.Kind(), ID: "pcx-gone"}, false), "a connection already gone is done")
 }

@@ -25,11 +25,14 @@ The rest of the push base set (`iam`, `cert`, `partialblock`) runs whole on a `c
 
 ### `single` — the broad single-node EC2/EBS/VPC surface
 
-The largest suite, 27 top-level tests. Notable entry points:
+The largest suite, 28 top-level tests. Notable entry points:
 
 - **`TestVPCEgressPaths`** — **the authority on subnet egress semantics.** One VPC with a public and a private subnet, sharing two guests across four stages: `PublicSubnetEgress` (IGW egress works), `RouteBeforeSubnet` (a regression guard for an IGW route installed on the main route table before the subnet exists), the NAT Gateway rounds, and `EIPFlip` (associating an Elastic IP onto a running instance).
   - **`NATBaseline` hard-fails if a private-subnet guest reaches the internet with no NAT Gateway.** `NATGatewayUp` then proves egress appears and `NATGatewayDown` that it disappears. `SPINIFEX_VPCEGRESS_NAT_ROUNDS` repeats the up/down cycle for a soak run.
   - **This is AWS parity for private subnets.** It ran in pool mode only until 2026-09-26: the fixture gated it on `external_mode = "pool"`, on the stale premise that nat clusters have no EIPs. They do when a public pool is configured, so the gate is now "can this cluster allocate public addresses" and the nat-single cell runs this test beside `natuplink`, which never creates a private subnet.
+- **`TestVPCPeering`** — same-account VPC peering on the datapath. Two VPCs with a guest each have no path before peering, none once active with no routes, and none with a route on one side only; routes on both sides converge ping both ways.
+  - **`NoTransit`** peers a third VPC to B and proves it cannot reach A through B, and **`NoEdgeToEdge`** proves a route to an internet address over the connection drops rather than leaving through A's internet gateway.
+  - **`GuardDropsSpoofedSource`** traces a packet over the link from outside the peer's range and requires the priority-1400 guard to drop it. **`DeleteVpcWhileActive`** proves `DependencyViolation` while a connection is active, success once it is deleted, and that a pending connection does not block and then reads `rejected`. After delete, ping fails and both routes describe `blackhole`.
 - `TestSGPolicyDatapath`, `TestSGReachabilityPolicy` — security groups as an actual datapath, not just API state.
 - `TestWANEgressSMTPBlock` — egress port blocking.
 - `TestInstanceMetadata` — IMDS from inside a guest.
@@ -54,6 +57,8 @@ Four nightly cells run it: `nat-single` (cell 19) and `nat-multi` (cell 30), and
 ### `multinode` — behaviour that only exists on more than one node
 
 `VPCSetup`, `SpansMultipleNodes`, `SpreadPlacement`, `EveryRunningInstanceReported`, `BastionSSH`, and its own NAT Gateway lane: `PreNATIsolation`, `NATGatewayInternet`, `NATCleanupOrdering`.
+
+**`TestMultinodeVPCPeering` carries a peering link across chassis.** It peers the default VPC with a fresh `10.210.0.0/16` VPC, places the two guests on different nodes, routes each VPC to the other over the connection, and requires ping to converge. It skips if the scheduler colocates every launch.
 
 **`TestMultinodeJetStreamReplicas` is a whole-cluster sweep, not a named list, and it lives here on purpose.** It audits every KV bucket the cluster has and fails any that is replicated across fewer nodes than the cluster has, capped at JetStream's ceiling of five. Naming buckets would only ever cover the ones somebody remembered — a replica count is set where a bucket is created, and there is a bucket-creating call in most services — so the sweep is the assertion and the three daemon-owned buckets are named only so that a run enumerating nothing still fails. Because `multinode` is in `E2E_SUITES_NIGHTLY_MULTI`, this runs in every multi-node permutation cell, and no cell can be added that quietly opts out of it.
 

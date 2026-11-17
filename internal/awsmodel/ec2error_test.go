@@ -77,8 +77,11 @@ func TestEC2ErrorCatalogMetadataAndClasses(t *testing.T) {
 	if catalog.metadata.VerifiedOn == "" {
 		t.Fatal("verifiedOn is empty")
 	}
-	if len(catalog.codes) != 116 {
-		t.Fatalf("catalog code count = %d, want 116", len(catalog.codes))
+	if len(catalog.codes) != 127 {
+		t.Fatalf("catalog code count = %d, want 127", len(catalog.codes))
+	}
+	if catalog.codes["CidrConflict"] != ec2ErrorClassClient {
+		t.Fatal("observed CidrConflict is not classified as client")
 	}
 	if catalog.codes["InvalidParameterValue"] != ec2ErrorClassClient {
 		t.Fatal("InvalidParameterValue is not classified as client")

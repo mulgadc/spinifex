@@ -30,6 +30,7 @@ const (
 	EC2NATGateway                EC2ResourceType = "natgateway"
 	EC2KeyPair                   EC2ResourceType = "key-pair"
 	EC2PlacementGroup            EC2ResourceType = "placement-group"
+	EC2VPCPeeringConnection      EC2ResourceType = "vpc-peering-connection"
 )
 
 // Types that carry no id prefix of their own, so they are named by a parameter
@@ -62,6 +63,7 @@ var ec2IDPrefixes = []struct {
 	{"nat-", EC2NATGateway},
 	{"key-", EC2KeyPair},
 	{"pg-", EC2PlacementGroup},
+	{"pcx-", EC2VPCPeeringConnection},
 }
 
 // EC2TypeForID maps an EC2 resource id to its ARN type by prefix. ok is false

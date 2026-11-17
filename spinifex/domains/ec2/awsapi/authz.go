@@ -86,6 +86,9 @@ var (
 	natGatewayOptScope = &resourceScope{paths: []string{"NatGatewayId"}, kind: arn.EC2NATGateway, optional: true}
 	natGatewayNewScope = &resourceScope{kind: arn.EC2NATGateway}
 
+	vpcPeeringScope    = &resourceScope{paths: []string{"VpcPeeringConnectionId"}, kind: arn.EC2VPCPeeringConnection}
+	vpcPeeringNewScope = &resourceScope{kind: arn.EC2VPCPeeringConnection}
+
 	keyPairScope    = &resourceScope{paths: []string{"KeyPairId", "KeyName"}, kind: arn.EC2KeyPair}
 	keyPairOptScope = &resourceScope{paths: []string{"KeyName"}, kind: arn.EC2KeyPair, optional: true}
 
@@ -206,6 +209,12 @@ var ec2Scopes = map[string][]*resourceScope{
 	"DeleteEgressOnlyInternetGateway": {eigwScope},
 	"CreateNatGateway":                {natGatewayNewScope, subnetScope, addressOptScope},
 	"DeleteNatGateway":                {natGatewayScope},
+	// Accept's accepter VPC needs a lookup, which Dispatch adds.
+	"CreateVpcPeeringConnection":        {vpcPeeringNewScope, vpcScope},
+	"AcceptVpcPeeringConnection":        {vpcPeeringScope},
+	"RejectVpcPeeringConnection":        {vpcPeeringScope},
+	"DeleteVpcPeeringConnection":        {vpcPeeringScope},
+	"ModifyVpcPeeringConnectionOptions": {vpcPeeringScope},
 
 	// Network interfaces.
 	"CreateNetworkInterface":          {eniNewScope, subnetScope, securityGroupsOptList},
@@ -296,6 +305,7 @@ var ec2Scopes = map[string][]*resourceScope{
 	"DescribeLaunchTemplateVersions":         unscoped,
 	"DescribeLaunchTemplates":                unscoped,
 	"DescribeNatGateways":                    unscoped,
+	"DescribeVpcPeeringConnections":          unscoped,
 	"DescribeNetworkInterfaceAttribute":      unscoped,
 	"DescribeNetworkInterfaces":              unscoped,
 	"DescribePlacementGroups":                unscoped,

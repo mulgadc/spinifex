@@ -29,6 +29,7 @@ import (
 	ec2tagsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/tags"
 	ec2volumeapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/volume"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
+	ec2vpcpeeringapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpcpeering"
 	ec2zoneapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/zone"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
@@ -124,6 +125,7 @@ var ec2ListsAsSet = map[reflect.Type][]string{
 	reflect.TypeFor[ec2.DescribeVolumeAttributeOutput]():           {"ProductCodes"},
 	reflect.TypeFor[ec2.DescribeSnapshotAttributeOutput]():         {"ProductCodes", "CreateVolumePermissions"},
 	reflect.TypeFor[ec2.DescribeNetworkInterfaceAttributeOutput](): {"Groups"},
+	reflect.TypeFor[ec2.VpcPeeringConnectionVpcInfo]():             {"CidrBlockSet", "Ipv6CidrBlockSet"},
 }
 
 // marshalEC2Response renders an EC2 handler's output into the action's XML
@@ -651,6 +653,24 @@ var ec2Actions = map[string]ec2Action{
 	}),
 	"DescribeNatGateways": ec2Handler(func(ctx context.Context, input *ec2.DescribeNatGatewaysInput, c *call, accountID string) (any, error) {
 		return ec2natgwapi.DescribeNatGateways(ctx, input, c.NATS, accountID)
+	}),
+	"CreateVpcPeeringConnection": ec2Handler(func(ctx context.Context, input *ec2.CreateVpcPeeringConnectionInput, c *call, accountID string) (any, error) {
+		return ec2vpcpeeringapi.CreateVpcPeeringConnection(ctx, input, c.NATS, accountID)
+	}),
+	"AcceptVpcPeeringConnection": ec2Handler(func(ctx context.Context, input *ec2.AcceptVpcPeeringConnectionInput, c *call, accountID string) (any, error) {
+		return ec2vpcpeeringapi.AcceptVpcPeeringConnection(ctx, input, c.NATS, accountID)
+	}),
+	"RejectVpcPeeringConnection": ec2Handler(func(ctx context.Context, input *ec2.RejectVpcPeeringConnectionInput, c *call, accountID string) (any, error) {
+		return ec2vpcpeeringapi.RejectVpcPeeringConnection(ctx, input, c.NATS, accountID)
+	}),
+	"DeleteVpcPeeringConnection": ec2Handler(func(ctx context.Context, input *ec2.DeleteVpcPeeringConnectionInput, c *call, accountID string) (any, error) {
+		return ec2vpcpeeringapi.DeleteVpcPeeringConnection(ctx, input, c.NATS, accountID)
+	}),
+	"DescribeVpcPeeringConnections": ec2Handler(func(ctx context.Context, input *ec2.DescribeVpcPeeringConnectionsInput, c *call, accountID string) (any, error) {
+		return ec2vpcpeeringapi.DescribeVpcPeeringConnections(ctx, input, c.NATS, accountID)
+	}),
+	"ModifyVpcPeeringConnectionOptions": ec2Handler(func(ctx context.Context, input *ec2.ModifyVpcPeeringConnectionOptionsInput, c *call, accountID string) (any, error) {
+		return ec2vpcpeeringapi.ModifyVpcPeeringConnectionOptions(ctx, input, c.NATS, accountID)
 	}),
 }
 

@@ -70,6 +70,12 @@ func TestVPCEgressPaths(t *testing.T) {
 	runVPCEgressPaths(t, requireSingleNodeFixture(t))
 }
 
+// TestVPCPeering covers same-account VPC peering on the datapath (see
+// runVPCPeering for the stages).
+func TestVPCPeering(t *testing.T) {
+	runVPCPeering(t, requireSingleNodeFixture(t))
+}
+
 // TestWANEgressSMTPBlock boots one public guest and asserts the platform
 // egress ACL drops outbound SMTP (25/465/587) to a public destination while
 // ordinary WAN egress still works — the AWS-parity default block.

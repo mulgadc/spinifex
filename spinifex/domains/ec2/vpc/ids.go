@@ -6,8 +6,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 )
 
-// isLowerHex reports whether s is non-empty and holds only lowercase hex digits.
-func isLowerHex(s string) bool {
+// IsLowerHex reports whether s is non-empty and holds only lowercase hex digits.
+func IsLowerHex(s string) bool {
 	if s == "" {
 		return false
 	}
@@ -37,14 +37,14 @@ func malformedIDError(code, prefix, id string, suffixOK func(string) bool) error
 // of every Spinifex ID; other lengths are Malformed.
 func sgIDMalformedError(id string) error {
 	return malformedIDError(awserrors.ErrorInvalidGroupIdMalformed, "sg", id, func(s string) bool {
-		return isLowerHex(s) && (len(s) <= 8 || len(s) == 17)
+		return IsLowerHex(s) && (len(s) <= 8 || len(s) == 17)
 	})
 }
 
 // eniIDMalformedError returns AWS's error for an interface ID it calls
 // malformed, or nil. AWS answers NotFound for lowercase hex of any length.
 func eniIDMalformedError(id string) error {
-	return malformedIDError(awserrors.ErrorInvalidNetworkInterfaceIdMalformed, "eni", id, isLowerHex)
+	return malformedIDError(awserrors.ErrorInvalidNetworkInterfaceIdMalformed, "eni", id, IsLowerHex)
 }
 
 func vpcNotFoundError(id string) error {

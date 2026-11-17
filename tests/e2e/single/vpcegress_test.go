@@ -358,7 +358,7 @@ func runVPCEgressPaths(t *testing.T, fix *Fixture) {
 		})
 		require.NoError(t, err, "attach-internet-gateway")
 
-		mainRT := mainRouteTableID(t, c, vID)
+		mainRT := harness.MainRouteTableID(t, c, vID)
 		harness.Detail(t, "vpc", vID, "igw", iID, "main_rtb", mainRT)
 
 		// Route FIRST, on the main RT, before the subnet exists.

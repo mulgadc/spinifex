@@ -23,6 +23,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/guestmetadata"
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
+	ec2vpcpeering "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcpeering"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/floating"
@@ -731,6 +732,11 @@ func launchService(cfg *Config) error {
 		}
 	}()
 
+	peeringStore, err := ec2vpcpeering.OpenStore(ctx, js)
+	if err != nil {
+		return fmt.Errorf("open VPC peering store: %w", err)
+	}
+
 	rec, err := reconcile.New(reconcile.Config{
 		OVN:            liveClient,
 		SG:             sgMgr,
@@ -765,6 +771,9 @@ func launchService(cfg *Config) error {
 			}
 			return ec2igw.MarkAttached(ctx, kv, recordKey, vpcID)
 		},
+		FlowsBarrier:       flowsBarrier,
+		MarkPeeringActive:  peeringStore.MarkActive,
+		MarkPeeringCleaned: peeringStore.MarkCleaned,
 	})
 	if err != nil {
 		return fmt.Errorf("construct reconciler: %w", err)

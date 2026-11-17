@@ -112,6 +112,15 @@ type VPCServiceImpl struct {
 	// (non-pool external modes have no public IPs to assign). Zero value keeps
 	// the AWS-faithful default of true.
 	disableDefaultPublicIP bool
+
+	// Optional: reports whether a VPC has a provisioning or active peering
+	// connection, which blocks DeleteVpc. Nil checks nothing.
+	linkedPeering func(ctx context.Context, vpcID string) (bool, error)
+}
+
+// SetPeeringCheck injects the DeleteVpc peering dependency check.
+func (s *VPCServiceImpl) SetPeeringCheck(check func(ctx context.Context, vpcID string) (bool, error)) {
+	s.linkedPeering = check
 }
 
 // SetDefaultPublicIPMapping controls whether default subnets are seeded with
@@ -526,6 +535,9 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 	if err := rejectAttachedGateway(ctx, s.eigwKV, accountID, vpcID); err != nil {
 		return nil, err
 	}
+	if err := s.rejectLinkedPeering(ctx, vpcID); err != nil {
+		return nil, err
+	}
 
 	// Cascade-delete the default SG before removing the VPC record so a vpcd
 	// failure surfaces to the caller and leaves both records intact for retry.
@@ -564,6 +576,24 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 	s.publishVPCEvent(networkv1.VPCDeleteSubject, vpcID, "", 0)
 
 	return &ec2.DeleteVpcOutput{}, nil
+}
+
+// rejectLinkedPeering returns DependencyViolation while a peering connection
+// links vpcID. A pending connection does not block; it reads as rejected once
+// the VPC record is gone.
+func (s *VPCServiceImpl) rejectLinkedPeering(ctx context.Context, vpcID string) error {
+	if s.linkedPeering == nil {
+		return nil
+	}
+	linked, err := s.linkedPeering(ctx, vpcID)
+	if err != nil {
+		slog.WarnContext(ctx, "DeleteVpc: peering check failed", "vpcId", vpcID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if linked {
+		return awserrors.HasDependencies("vpc", vpcID)
+	}
+	return nil
 }
 
 // rejectAttachedGateway returns DependencyViolation when a gateway record in kv

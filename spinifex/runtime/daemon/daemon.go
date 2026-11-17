@@ -64,6 +64,7 @@ import (
 	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	ec2vpcpeering "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcpeering"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
@@ -199,6 +200,7 @@ type Daemon struct {
 	lambdaMetaService     *lambdafunction.MetaService
 	routeTableService     *ec2routetable.RouteTableServiceImpl
 	natGatewayService     *ec2natgw.NatGatewayServiceImpl
+	vpcPeeringService     *ec2vpcpeering.ServiceImpl
 	externalIPAM          *ec2vpc.ExternalIPAM
 	// floatingAllocators is every floating-address pool (source="vultr" or "latitude") on
 	// this node, written once during startup like ociAllocators.
@@ -1013,6 +1015,12 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.CreateNatGateway", handleNATSRequest(d.node, d.natGatewayService.CreateNatGateway), "spinifex-workers"},
 		{"ec2.DeleteNatGateway", handleNATSRequest(d.node, d.natGatewayService.DeleteNatGateway), "spinifex-workers"},
 		{"ec2.DescribeNatGateways", handleNATSRequest(d.node, d.natGatewayService.DescribeNatGateways), "spinifex-workers"},
+		{"ec2.CreateVpcPeeringConnection", handleNATSRequest(d.node, d.vpcPeeringService.CreateVpcPeeringConnection), "spinifex-workers"},
+		{"ec2.AcceptVpcPeeringConnection", handleNATSRequest(d.node, d.vpcPeeringService.AcceptVpcPeeringConnection), "spinifex-workers"},
+		{"ec2.RejectVpcPeeringConnection", handleNATSRequest(d.node, d.vpcPeeringService.RejectVpcPeeringConnection), "spinifex-workers"},
+		{"ec2.DeleteVpcPeeringConnection", handleNATSRequest(d.node, d.vpcPeeringService.DeleteVpcPeeringConnection), "spinifex-workers"},
+		{"ec2.DescribeVpcPeeringConnections", handleNATSRequest(d.node, d.vpcPeeringService.DescribeVpcPeeringConnections), "spinifex-workers"},
+		{"ec2.ModifyVpcPeeringConnectionOptions", handleNATSRequest(d.node, d.vpcPeeringService.ModifyVpcPeeringConnectionOptions), "spinifex-workers"},
 		{"ec2.CreateRouteTable", handleNATSRequest(d.node, d.routeTableService.CreateRouteTable), "spinifex-workers"},
 		{"ec2.DeleteRouteTable", handleNATSRequest(d.node, d.routeTableService.DeleteRouteTable), "spinifex-workers"},
 		{"ec2.DescribeRouteTables", handleNATSRequest(d.node, d.routeTableService.DescribeRouteTables), "spinifex-workers"},
@@ -1979,6 +1987,8 @@ func (d *Daemon) assertNoClusterServicesInitialised() error {
 		return errors.New("d.routeTableService must be nil before startCluster")
 	case d.natGatewayService != nil:
 		return errors.New("d.natGatewayService must be nil before startCluster")
+	case d.vpcPeeringService != nil:
+		return errors.New("d.vpcPeeringService must be nil before startCluster")
 	case d.externalIPAM != nil:
 		return errors.New("d.externalIPAM must be nil before startCluster")
 	case d.eipService != nil:
@@ -2189,6 +2199,15 @@ func (d *Daemon) startCluster() error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize NatGateway service: %w", err)
 	}
+
+	d.vpcPeeringService, err = initServiceWithRetry("VPC peering service", func() (*ec2vpcpeering.ServiceImpl, error) {
+		return ec2vpcpeering.NewServiceImplWithNATS(d.ctx, d.natsConn, d.config.Region)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize VPC peering service: %w", err)
+	}
+	d.routeTableService.SetPeeringLookup(d.vpcPeeringService.Store)
+	d.vpcService.SetPeeringCheck(d.vpcPeeringService.VpcHasLinkedConnection)
 
 	// A node declaring public pools must serve EIPs or refuse to start: EIP
 	// subjects are a queue group, so one node silently on the disabled stub
@@ -2658,6 +2677,9 @@ func (d *Daemon) startCluster() error {
 			// One sweep per cluster reads the provider for each pending document;
 			// the snapshot's claim, not the scope, decides who may repeat a call.
 			reapers = append(reapers, clusterWideReaper{d.snapshotService.NewPendingSnapshotReaper()})
+		}
+		if d.vpcPeeringService != nil {
+			reapers = append(reapers, clusterWideReaper{d.vpcPeeringService.NewSweepReaper()})
 		}
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))

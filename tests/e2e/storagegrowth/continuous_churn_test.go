@@ -23,6 +23,9 @@ const (
 	// churnVolumeSizeGiB sizes the volume the churn writes into. It only needs to
 	// be large enough to hold every parallel writer's region; the workload
 	// deliberately rewrites a small footprint many times rather than growing it.
+	// It is also the denominator of the host WAL bound, so it is passed to
+	// CreateVolume rather than assumed: a constant the creation does not use
+	// makes that assertion wrong by whatever the two differ by.
 	churnVolumeSizeGiB = 4
 	// churnWALBudgetRatio is how many times the volume's logical size its local
 	// WAL may hold on the host after the churn. A reclaimed volume retains only
@@ -81,7 +84,7 @@ func TestContinuousChurn(t *testing.T) {
 
 	instanceID, tgt := ensureWorkloadInstance(t, fix)
 	az := harness.DiscoverDefaultAZ(t, fix.Harness)
-	volID := createWorkloadVolume(t, fix, az, false)
+	volID := createWorkloadVolume(t, fix, az, churnVolumeSizeGiB, false)
 
 	harness.Detail(t, "duration_s", int(duration.Seconds()), "region_mib", regionMiB,
 		"parallelism", parallelism, "instance", instanceID, "volume", volID)
@@ -174,14 +177,15 @@ func hostVolumeWALBytes(ssh *harness.PeerSSH, wanHost, volID string) (int64, str
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// One nbdkit per volume, so matching volume= is unambiguous. tr turns the
-	// NUL-separated cmdline into lines; the last match wins if a stale process
-	// is still exiting, because the newest is the one serving the attachment.
+	// One nbdkit per volume, so matching volume= is unambiguous; the last match
+	// wins if a stale process is still exiting, because the newest is the one
+	// serving the attachment. Both greps run under sudo: the daemon runs as
+	// another user, and a host with hidepid would otherwise read as "no such
+	// volume" rather than as a permission problem.
 	readArgs := fmt.Sprintf(
-		`for p in /proc/[0-9]*/cmdline; do `+
-			`tr '\0' '\n' < "$p" 2>/dev/null | grep -qx 'volume=%s' || continue; `+
-			`tr '\0' '\n' < "$p" 2>/dev/null | grep -E '^(base_dir|wal_base_dir)='; `+
-			`done`, volID)
+		`p=$(sudo grep -lFzx 'volume=%s' /proc/[0-9]*/cmdline 2>/dev/null | tail -1); `+
+			`[ -n "$p" ] && sudo grep -azE '^(base_dir|wal_base_dir)=' "$p" | tr '\0' '\n'`,
+		volID)
 	out, err := ssh.Run(ctx, wanHost, readArgs)
 	if err != nil {
 		return 0, "", fmt.Errorf("read nbdkit args for %s via PeerSSH: %w", volID, err)
@@ -210,16 +214,28 @@ func hostVolumeWALBytes(ssh *harness.PeerSSH, wanHost, volID string) (int64, str
 	}
 	dir := fmt.Sprintf("%s/%s/wal", strings.TrimRight(root, "/"), volID)
 
-	duOut, duErr := ssh.Run(ctx, wanHost,
-		fmt.Sprintf("sudo du -s --block-size=1 %s | cut -f1", dir))
+	// Unpiped, so du's exit status survives. Piping it through cut discards
+	// that status, and du reports a partial total on an unreadable subtree, so
+	// an incomplete measurement would satisfy the bound and read as a pass.
+	duOut, duErr := ssh.Run(ctx, wanHost, fmt.Sprintf("sudo du -s --block-size=1 %s", dir))
 	if duErr != nil {
 		return 0, dir, fmt.Errorf("du %s via PeerSSH: %w", dir, duErr)
 	}
-	v, perr := parseLastIntField(string(duOut))
+	v, perr := parseFirstIntField(string(duOut))
 	if perr != nil {
 		return 0, dir, fmt.Errorf("parse du output %q: %w", duOut, perr)
 	}
 	return v, dir, nil
+}
+
+// parseFirstIntField reads du's total out of "<bytes>\t<path>". The last field
+// is the path, so parseLastIntField cannot be reused here.
+func parseFirstIntField(out string) (int64, error) {
+	fields := strings.Fields(strings.TrimSpace(out))
+	if len(fields) == 0 {
+		return 0, fmt.Errorf("no fields in %q", out)
+	}
+	return strconv.ParseInt(fields[0], 10, 64)
 }
 
 // runContinuousChurn runs parallelism concurrent raw-overwrite loops against
@@ -340,4 +356,31 @@ func churnRegionMiB() int {
 // past predastore's burst=500 limiter on a network-backed volume.
 func churnParallelism() int {
 	return envPositiveIntOr(churnParallelismEnv, 8)
+}
+
+// TestParseFirstIntField covers the field du's total actually occupies. Piping
+// du through cut discarded its exit status, so the measurement now parses the
+// unpiped output, where the last field is the path rather than a number.
+func TestParseFirstIntField(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		out  string
+		want int64
+		err  bool
+	}{
+		{name: "du output", out: "1234567\t/var/lib/spinifex/viperblock/vol-abc/wal\n", want: 1234567},
+		{name: "path ending in digits", out: "42\t/var/lib/spinifex/vol-00030214\n", want: 42},
+		{name: "empty", out: "   \n", err: true},
+		{name: "non-numeric first field", out: "du: cannot read directory\n", err: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseFirstIntField(tc.out)
+			if tc.err {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
+	}
 }

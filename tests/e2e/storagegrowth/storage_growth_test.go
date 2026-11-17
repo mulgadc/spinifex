@@ -172,7 +172,7 @@ func TestNPassOverwrite(t *testing.T) {
 
 	instanceID, tgt := ensureWorkloadInstance(t, fix)
 	az := harness.DiscoverDefaultAZ(t, fix.Harness)
-	volID := createWorkloadVolume(t, fix, az, retain)
+	volID := createWorkloadVolume(t, fix, az, npassVolumeSizeGiB, retain)
 
 	harness.Detail(t, "passes", passes, "extent_mib", extentMiB, "instance", instanceID,
 		"volume", volID, "retain_volume", retain)
@@ -321,14 +321,16 @@ func runNPassOverwrite(t *testing.T, fix *Fixture, tgt harness.SSHTarget, instan
 // A retained volume is tagged with the same run tag the harness stamps on its
 // own resources, so the standard run-scoped teardown sweep reclaims it at the
 // end of the run rather than leaving it stranded.
-func createWorkloadVolume(t *testing.T, fix *Fixture, az string, retain bool) string {
+func createWorkloadVolume(t *testing.T, fix *Fixture, az string, sizeGiB int64, retain bool) string {
 	t.Helper()
 
 	// The volume's own backing-store cost is the subject under test, so its
-	// identity and lifetime cannot be delegated to the memoized helper.
+	// identity and lifetime cannot be delegated to the memoized helper. The
+	// size is a parameter because a caller that asserts against it needs the
+	// denominator and the creation to be the same number.
 	out, err := fix.AWS.EC2.CreateVolume(&ec2.CreateVolumeInput{
 		AvailabilityZone: aws.String(az),
-		Size:             aws.Int64(npassVolumeSizeGiB),
+		Size:             aws.Int64(sizeGiB),
 	})
 	require.NoError(t, err, "CreateVolume in %s", az)
 	volID := aws.StringValue(out.VolumeId)

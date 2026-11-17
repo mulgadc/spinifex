@@ -25,12 +25,19 @@ type peeringGuest struct {
 
 func newPeeringGuest(t *testing.T, fix *Fixture, cidr, subnetCIDR, ami, instType, keyName, keyPath string) *peeringGuest {
 	t.Helper()
+	return buildPeeringGuest(t, fix, t.Cleanup, cidr, subnetCIDR, ami, instType, keyName, keyPath)
+}
+
+// buildPeeringGuest registers its teardown through cleanup, which a guest in
+// an account the test deletes replaces with a no-op.
+func buildPeeringGuest(t *testing.T, fix *Fixture, cleanup func(func()), cidr, subnetCIDR, ami, instType, keyName, keyPath string) *peeringGuest {
+	t.Helper()
 	c := fix.AWS
 	g := &peeringGuest{cidr: cidr}
 	g.vpcID = harness.CreateVPC(t, c, cidr)
-	t.Cleanup(func() { harness.DeleteVPC(t, c, g.vpcID) })
+	cleanup(func() { harness.DeleteVPC(t, c, g.vpcID) })
 	g.subnetID = harness.CreateSubnet(t, c, g.vpcID, subnetCIDR)
-	t.Cleanup(func() { harness.DeleteSubnet(t, c, g.subnetID) })
+	cleanup(func() { harness.DeleteSubnet(t, c, g.subnetID) })
 	_, err := c.EC2.ModifySubnetAttribute(&ec2.ModifySubnetAttributeInput{
 		SubnetId: aws.String(g.subnetID), MapPublicIpOnLaunch: &ec2.AttributeBooleanValue{Value: aws.Bool(true)},
 	})
@@ -39,7 +46,7 @@ func newPeeringGuest(t *testing.T, fix *Fixture, cidr, subnetCIDR, ami, instType
 	igw, err := c.EC2.CreateInternetGateway(&ec2.CreateInternetGatewayInput{})
 	require.NoError(t, err, "create-internet-gateway")
 	g.igwID = aws.StringValue(igw.InternetGateway.InternetGatewayId)
-	t.Cleanup(func() {
+	cleanup(func() {
 		_, _ = c.EC2.DetachInternetGateway(&ec2.DetachInternetGatewayInput{InternetGatewayId: aws.String(g.igwID), VpcId: aws.String(g.vpcID)})
 		_, _ = c.EC2.DeleteInternetGateway(&ec2.DeleteInternetGatewayInput{InternetGatewayId: aws.String(g.igwID)})
 	})
@@ -55,7 +62,12 @@ func newPeeringGuest(t *testing.T, fix *Fixture, cidr, subnetCIDR, ami, instType
 	harness.AuthorizeSSHIngress(t, c, sg)
 	harness.AuthorizeICMPIngress(t, c, sg)
 
-	g.instanceID = launchBaselineInstance(t, fix, ami, instType, keyName, g.subnetID, []string{sg})
+	g.instanceID = runBaselineInstance(t, fix, ami, instType, keyName, g.subnetID, []string{sg})
+	cleanup(func() {
+		_, _ = c.EC2.TerminateInstances(&ec2.TerminateInstancesInput{InstanceIds: []*string{aws.String(g.instanceID)}})
+		harness.WaitForInstanceState(t, c, g.instanceID, "terminated")
+	})
+	harness.WaitForInstanceState(t, c, g.instanceID, "running")
 	g.publicIP = instancePublicIP(t, fix, g.instanceID)
 	g.privateIP = instancePrivateIP(t, fix, g.instanceID)
 	g.tgt = harness.SSHTarget{User: "ubuntu", Host: g.publicIP, Port: 22, KeyPath: keyPath}

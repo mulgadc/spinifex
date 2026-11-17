@@ -71,12 +71,6 @@ func TestCreate_SynchronousRefusals(t *testing.T) {
 		}, testAccount)
 		require.NoError(t, err)
 	})
-	t.Run("another account", func(t *testing.T) {
-		_, err := f.svc.CreateVpcPeeringConnection(t.Context(), &ec2.CreateVpcPeeringConnectionInput{
-			VpcId: aws.String(vpcA), PeerVpcId: aws.String(vpcC), PeerOwnerId: aws.String("210987654321"),
-		}, testAccount)
-		requireCode(t, err, awserrors.ErrorInvalidParameterValue)
-	})
 }
 
 func TestCreate_RepeatedRequestReturnsExistingWithNoWrite(t *testing.T) {
@@ -646,20 +640,20 @@ func TestLimits(t *testing.T) {
 	requireCode(t, err, awserrors.ErrorOutstandingVpcPeeringConnectionLimitExceeded)
 }
 
-func TestVpcHasLinkedConnection(t *testing.T) {
+func TestVpcBlocksDeletion(t *testing.T) {
 	f := newFixture(t)
 	id := *f.create(t, vpcA, vpcB).VpcPeeringConnectionId
-	has, err := f.svc.VpcHasLinkedConnection(t.Context(), vpcA)
+	has, err := f.svc.VpcBlocksDeletion(t.Context(), vpcA)
 	require.NoError(t, err)
 	assert.False(t, has, "a pending connection does not block DeleteVpc")
 
 	f.activate(t, id)
-	has, err = f.svc.VpcHasLinkedConnection(t.Context(), vpcB)
+	has, err = f.svc.VpcBlocksDeletion(t.Context(), vpcB)
 	require.NoError(t, err)
 	assert.True(t, has)
 
 	require.NoError(t, f.del(t, id))
-	has, err = f.svc.VpcHasLinkedConnection(t.Context(), vpcA)
+	has, err = f.svc.VpcBlocksDeletion(t.Context(), vpcA)
 	require.NoError(t, err)
 	assert.False(t, has, "a deleted connection awaiting cleanup does not block DeleteVpc")
 }

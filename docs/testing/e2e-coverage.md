@@ -25,7 +25,7 @@ The rest of the push base set (`iam`, `cert`, `partialblock`) runs whole on a `c
 
 ### `single` — the broad single-node EC2/EBS/VPC surface
 
-The largest suite, 28 top-level tests. Notable entry points:
+The largest suite, 32 top-level tests. Notable entry points:
 
 - **`TestVPCEgressPaths`** — **the authority on subnet egress semantics.** One VPC with a public and a private subnet, sharing two guests across four stages: `PublicSubnetEgress` (IGW egress works), `RouteBeforeSubnet` (a regression guard for an IGW route installed on the main route table before the subnet exists), the NAT Gateway rounds, and `EIPFlip` (associating an Elastic IP onto a running instance).
   - **`NATBaseline` hard-fails if a private-subnet guest reaches the internet with no NAT Gateway.** `NATGatewayUp` then proves egress appears and `NATGatewayDown` that it disappears. `SPINIFEX_VPCEGRESS_NAT_ROUNDS` repeats the up/down cycle for a soak run.
@@ -33,6 +33,10 @@ The largest suite, 28 top-level tests. Notable entry points:
 - **`TestVPCPeering`** — same-account VPC peering on the datapath. Two VPCs with a guest each have no path before peering, none once active with no routes, and none with a route on one side only; routes on both sides converge ping both ways.
   - **`NoTransit`** peers a third VPC to B and proves it cannot reach A through B, and **`NoEdgeToEdge`** proves a route to an internet address over the connection drops rather than leaving through A's internet gateway.
   - **`GuardDropsSpoofedSource`** traces a packet over the link from outside the peer's range and requires the priority-1400 guard to drop it. **`DeleteVpcWhileActive`** proves `DependencyViolation` while a connection is active, success once it is deleted, and that a pending connection does not block and then reads `rejected`. After delete, ping fails and both routes describe `blackhole`.
+- **`TestVPCPeeringCrossAccount`** — peering between two accounts, with a third that owns neither VPC. Only the accepter can accept or reject, the third account can neither see, change nor route to the connection, and routes on both sides converge ping between the two accounts' guests.
+  - **IAM evaluates the connection ARN in the caller's own account:** a deny naming the caller's account blocks the action, and one naming the other owner's account does not. Each owner sees only its own tags.
+  - **`FailedPeerVpc`** proves a peer VPC absent from the peer account and one owned by a third account both fail with the same message, unseen by the accepter. **`DeleteVpcWithPendingRequest`** proves the accepter's `DeleteVpc` is refused while a request is pending, and the requester's succeeds and leaves the connection `deleted`.
+  - Deleting the accepter account deletes its connections for the requester, whose route then describes `blackhole` and whose VPC deletes cleanly, and rejects the request still pending against it.
 - `TestSGPolicyDatapath`, `TestSGReachabilityPolicy` — security groups as an actual datapath, not just API state.
 - `TestWANEgressSMTPBlock` — egress port blocking.
 - `TestInstanceMetadata` — IMDS from inside a guest.

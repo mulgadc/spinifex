@@ -250,7 +250,13 @@ func (s *Store) liveView(ctx context.Context, rec *PeeringRecord, rev uint64) (*
 	if err != nil {
 		return nil, err
 	}
-	if owner != "" {
+	switch {
+	case owner == "":
+	case owner == rec.RequesterAccountID && rec.AccepterAccountID != owner:
+		// AWS deletes a request to another account whose requester VPC is deleted.
+		v.status, v.message = StateDeleted, deletedMessage(owner)
+		v.terminalAt, v.terminatedBy = now, owner
+	default:
 		v.status, v.message = StateRejected, rejectedMessage(owner)
 		v.terminalAt, v.terminatedBy = now, owner
 	}
@@ -485,7 +491,13 @@ func (s *Store) writeTerminal(ctx context.Context, rec *PeeringRecord) error {
 		return err
 	}
 	entry := indexEntry{CreatedAt: rec.CreatedAt}
-	for _, acct := range rec.accounts() {
+	viewers := rec.accounts()
+	// Only the requester sees a failed request, so no other account's reads
+	// grow with failed requests made against it.
+	if rec.Status == StateFailed {
+		viewers = []string{rec.RequesterAccountID}
+	}
+	for _, acct := range viewers {
 		if err := putJSON(ctx, s.term, acctKey(acct, rec.ID), entry); err != nil {
 			return err
 		}

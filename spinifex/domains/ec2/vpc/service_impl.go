@@ -113,14 +113,14 @@ type VPCServiceImpl struct {
 	// the AWS-faithful default of true.
 	disableDefaultPublicIP bool
 
-	// Optional: reports whether a VPC has a provisioning or active peering
-	// connection, which blocks DeleteVpc. Nil checks nothing.
-	linkedPeering func(ctx context.Context, vpcID string) (bool, error)
+	// Optional: reports whether a VPC's peering connections block DeleteVpc.
+	// Nil checks nothing.
+	peeringBlocks func(ctx context.Context, vpcID string) (bool, error)
 }
 
 // SetPeeringCheck injects the DeleteVpc peering dependency check.
 func (s *VPCServiceImpl) SetPeeringCheck(check func(ctx context.Context, vpcID string) (bool, error)) {
-	s.linkedPeering = check
+	s.peeringBlocks = check
 }
 
 // SetDefaultPublicIPMapping controls whether default subnets are seeded with
@@ -535,7 +535,7 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 	if err := rejectAttachedGateway(ctx, s.eigwKV, accountID, vpcID); err != nil {
 		return nil, err
 	}
-	if err := s.rejectLinkedPeering(ctx, vpcID); err != nil {
+	if err := s.rejectPeeringDependency(ctx, vpcID); err != nil {
 		return nil, err
 	}
 
@@ -578,19 +578,19 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 	return &ec2.DeleteVpcOutput{}, nil
 }
 
-// rejectLinkedPeering returns DependencyViolation while a peering connection
-// links vpcID. A pending connection does not block; it reads as rejected once
-// the VPC record is gone.
-func (s *VPCServiceImpl) rejectLinkedPeering(ctx context.Context, vpcID string) error {
-	if s.linkedPeering == nil {
+// rejectPeeringDependency returns DependencyViolation while a peering
+// connection links vpcID or another account's request awaits its acceptance.
+// Any other pending request ends once the VPC record is gone.
+func (s *VPCServiceImpl) rejectPeeringDependency(ctx context.Context, vpcID string) error {
+	if s.peeringBlocks == nil {
 		return nil
 	}
-	linked, err := s.linkedPeering(ctx, vpcID)
+	blocked, err := s.peeringBlocks(ctx, vpcID)
 	if err != nil {
 		slog.WarnContext(ctx, "DeleteVpc: peering check failed", "vpcId", vpcID, "err", err)
 		return errors.New(awserrors.ErrorServerInternal)
 	}
-	if linked {
+	if blocked {
 		return awserrors.HasDependencies("vpc", vpcID)
 	}
 	return nil

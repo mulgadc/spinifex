@@ -82,10 +82,10 @@ func (s *ServiceImpl) CreateVpcPeeringConnection(ctx context.Context, input *ec2
 			"Invalid value '%s' for peerRegion. Inter-Region VPC peering is not supported; the peer VPC must be in %s.", r, s.region)
 	}
 	peerOwner := accountID
-	if o := aws.StringValue(input.PeerOwnerId); o != "" && o != accountID {
-		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
-			"Invalid value '%s' for peerOwnerId. Peering with a VPC in another account is not supported.", o)
+	if o := aws.StringValue(input.PeerOwnerId); o != "" {
+		peerOwner = o
 	}
+	crossAccount := peerOwner != accountID
 
 	vpc, err := s.vpcRecord(ctx, accountID, vpcID)
 	if err != nil {
@@ -99,17 +99,25 @@ func (s *ServiceImpl) CreateVpcPeeringConnection(ctx context.Context, input *ec2
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterValue,
 			"Invalid value '%s' for peerVpcId. The value of peerVpcId needs to be different to vpcId.", peerVpcID)
 	}
-	peer, err := s.vpcRecord(ctx, peerOwner, peerVpcID)
-	if err != nil {
-		return nil, internalError(ctx, "CreateVpcPeeringConnection", err)
+	// Another account's missing VPC fails the connection rather than the
+	// request, so Create cannot probe which VPCs another account owns.
+	var peer *ec2vpc.VPCRecord
+	if !crossAccount || awsidentifiers.IsAccountID(peerOwner) {
+		if peer, err = s.vpcRecord(ctx, peerOwner, peerVpcID); err != nil {
+			return nil, internalError(ctx, "CreateVpcPeeringConnection", err)
+		}
 	}
-	if peer == nil {
+	if peer == nil && !crossAccount {
 		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidVpcIDNotFound, "vpc", peerVpcID)
+	}
+	peerCIDR := ""
+	if peer != nil {
+		peerCIDR = peer.CidrBlock
 	}
 
 	if existing, err := s.openRequest(ctx, vpcID, peerVpcID); err != nil {
 		return nil, internalError(ctx, "CreateVpcPeeringConnection", err)
-	} else if existing != nil {
+	} else if existing != nil && existing.rec.AccepterAccountID == peerOwner {
 		return &ec2.CreateVpcPeeringConnectionOutput{VpcPeeringConnection: existingToEC2(existing, accountID)}, nil
 	}
 
@@ -121,7 +129,7 @@ func (s *ServiceImpl) CreateVpcPeeringConnection(ctx context.Context, input *ec2
 		RequesterCIDR:      vpc.CidrBlock,
 		AccepterAccountID:  peerOwner,
 		AccepterVpcID:      peerVpcID,
-		AccepterCIDR:       peer.CidrBlock,
+		AccepterCIDR:       peerCIDR,
 		Region:             s.region,
 		ExpirationTime:     now.Add(requestLifetime),
 		Generation:         1,
@@ -133,16 +141,17 @@ func (s *ServiceImpl) CreateVpcPeeringConnection(ctx context.Context, input *ec2
 	}
 
 	// A VPC with no AZ home predates homes and matches every AZ.
-	homesDiffer := vpc.AZ != "" && peer.AZ != "" && vpc.AZ != peer.AZ
-	overlap := cidrsOverlap(vpc.CidrBlock, peer.CidrBlock)
-	if overlap || homesDiffer {
+	peerMissing := peer == nil
+	homesDiffer := !peerMissing && vpc.AZ != "" && peer.AZ != "" && vpc.AZ != peer.AZ
+	overlap := !peerMissing && cidrsOverlap(vpc.CidrBlock, peerCIDR)
+	if peerMissing || overlap || homesDiffer {
 		rec.Status, rec.StatusMessage = StateFailed, failedMessage
 		rec.TerminalAt, rec.TerminatedBy = now, ""
 		if err := s.writeTerminal(ctx, rec); err != nil {
 			return nil, internalError(ctx, "CreateVpcPeeringConnection", err)
 		}
 		slog.InfoContext(ctx, "CreateVpcPeeringConnection failed the connection", "vpcPeeringConnectionId", rec.ID,
-			"vpcId", vpcID, "peerVpcId", peerVpcID, "cidrOverlap", overlap, "azHomesDiffer", homesDiffer, "accountID", accountID)
+			"vpcId", vpcID, "peerVpcId", peerVpcID, "peerMissing", peerMissing, "cidrOverlap", overlap, "azHomesDiffer", homesDiffer, "accountID", accountID)
 		return &ec2.CreateVpcPeeringConnectionOutput{
 			VpcPeeringConnection: toEC2(rec, accountID, StateInitiatingRequest, initiatingMessage(peerOwner), shapeFailedCreate),
 		}, nil

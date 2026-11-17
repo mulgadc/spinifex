@@ -194,10 +194,10 @@ func TestADR0003S8_DeleteVpcRecordsNoPeeringFanOut(t *testing.T) {
 	f.svc.live = &writingKV{countingKV: live, t: t}
 	f.svc.term = &writingKV{countingKV: term, t: t}
 
-	blocked, err := f.svc.VpcHasLinkedConnection(t.Context(), vpcA)
+	blocked, err := f.svc.VpcBlocksDeletion(t.Context(), vpcA)
 	require.NoError(t, err)
 	assert.True(t, blocked, "an active connection blocks DeleteVpc")
-	blocked, err = f.svc.VpcHasLinkedConnection(t.Context(), vpcB)
+	blocked, err = f.svc.VpcBlocksDeletion(t.Context(), vpcB)
 	require.NoError(t, err)
 	assert.False(t, blocked, "a pending connection does not block DeleteVpc")
 	for _, l := range append(live.lists, term.lists...) {

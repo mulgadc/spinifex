@@ -130,15 +130,19 @@ func (s *Store) ActiveConnections(ctx context.Context, ids []string) (map[string
 	return out, nil
 }
 
-// VpcHasLinkedConnection reports whether vpcID has a provisioning or active
-// connection, which blocks DeleteVpc. It reads only the VPC's index.
-func (s *Store) VpcHasLinkedConnection(ctx context.Context, vpcID string) (bool, error) {
+// VpcBlocksDeletion reports whether vpcID has a provisioning or active
+// connection, or is the accepter of a request pending from another account;
+// either blocks DeleteVpc. It reads only the VPC's index.
+func (s *Store) VpcBlocksDeletion(ctx context.Context, vpcID string) (bool, error) {
 	conns, err := s.vpcConnections(ctx, vpcID)
 	if err != nil {
 		return false, err
 	}
 	for _, v := range conns {
 		if v.isLinkedAlive() {
+			return true, nil
+		}
+		if v.status == StatePendingAcceptance && v.rec.AccepterVpcID == vpcID && v.rec.RequesterAccountID != v.rec.AccepterAccountID {
 			return true, nil
 		}
 	}

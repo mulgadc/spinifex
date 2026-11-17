@@ -189,6 +189,63 @@ func TestReconcile_PeeringFailedLinkWithdrawsReroute(t *testing.T) {
 	}
 }
 
+// One missing guard on an active link makes the next pass rewrite the whole
+// link in one transaction; if that rewrite fails, the same pass withdraws the
+// link's reroutes on both routers.
+func TestReconcile_PeeringMissingGuardRewritesLink(t *testing.T) {
+	rec, m := newTestReconciler(t)
+	p := &peeringRecorder{}
+	p.wire(rec)
+	ctx := context.Background()
+	if err := rec.Reconcile(ctx, peeringIntent(true)); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	guards, err := policy.PeeringGuards(peeringSpec())
+	if err != nil {
+		t.Fatalf("PeeringGuards: %v", err)
+	}
+	dropGuard := func() {
+		t.Helper()
+		if err := m.DeleteLogicalRouterPolicy(ctx, "vpc-vpc-a", guards[0].Priority, guards[0].Match); err != nil {
+			t.Fatalf("DeleteLogicalRouterPolicy: %v", err)
+		}
+	}
+
+	dropGuard()
+	writes := m.EnsurePeeringLinkCalls
+	if err := rec.Reconcile(ctx, peeringIntent(true)); err != nil {
+		t.Fatalf("Reconcile repair: %v", err)
+	}
+	if m.EnsurePeeringLinkCalls != writes+1 {
+		t.Errorf("link transactions = %d, want one", m.EnsurePeeringLinkCalls-writes)
+	}
+	if got := linkPortCount(m); got != 2 {
+		t.Errorf("link ports = %d, want 2", got)
+	}
+	for _, router := range []string{"vpc-vpc-a", "vpc-vpc-b"} {
+		if got := peeringRows(m, router, ovn.PeeringGuardRole); got != 1 {
+			t.Errorf("%s guards after repair = %d, want 1", router, got)
+		}
+		if got := peeringRows(m, router, "peering-reroute"); got != 1 {
+			t.Errorf("%s reroutes after repair = %d, want 1", router, got)
+		}
+	}
+
+	dropGuard()
+	m.EnsurePeeringLinkErr = errors.New("nb unavailable")
+	if err := rec.Reconcile(ctx, peeringIntent(true)); !errors.Is(err, ErrPassIncomplete) {
+		t.Fatalf("Reconcile = %v, want ErrPassIncomplete", err)
+	}
+	for _, router := range []string{"vpc-vpc-a", "vpc-vpc-b"} {
+		if got := peeringRows(m, router, "peering-reroute"); got != 0 {
+			t.Errorf("%s reroutes with a guard missing = %d, want 0", router, got)
+		}
+		if got := peeringRows(m, router, "peering-route-drop"); got != 1 {
+			t.Errorf("%s route drops with a guard missing = %d, want 1", router, got)
+		}
+	}
+}
+
 // A deleted connection loses its link, guards and reroutes and is reported
 // cleaned; a route still naming it keeps its drop, so it blackholes.
 func TestReconcile_PeeringTeardown(t *testing.T) {

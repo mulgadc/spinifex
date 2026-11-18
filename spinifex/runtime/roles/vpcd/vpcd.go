@@ -63,7 +63,8 @@ func newFlowsBarrier(nbAddr string) func() error {
 }
 
 // waitForFlowsHV runs `ovn-nbctl --wait=hv sync`, blocking until all chassis acknowledge the new NB sequence.
-// Bounded at 30 s; overruns log a Warn and return nil. Declared as a var so tests can stub it.
+// Bounded at 30 s; an overrun or failure is returned so callers that need
+// confirmation can retry. Declared as a var so tests can stub it.
 var waitForFlowsHV = func(nbAddr string) error {
 	start := time.Now()
 	cmd := sudoCommand("ovn-nbctl",
@@ -74,12 +75,13 @@ var waitForFlowsHV = func(nbAddr string) error {
 		"sync",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		slog.Warn("vpcd: OVN flows-ready barrier overran; continuing without confirmation",
+		output := strings.TrimSpace(string(out))
+		slog.Warn("vpcd: OVN flows-ready barrier failed; chassis have not confirmed",
 			"elapsed_ms", otelsetup.Millis(time.Since(start)),
 			"err", err,
-			"output", strings.TrimSpace(string(out)),
+			"output", output,
 		)
-		return nil
+		return fmt.Errorf("ovn-nbctl --wait=hv sync: %w: %s", err, output)
 	}
 	slog.Debug("vpcd: OVN flows-ready barrier complete", "elapsed_ms", otelsetup.Millis(time.Since(start)))
 	return nil

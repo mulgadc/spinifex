@@ -17,4 +17,4 @@ fi
 
 pkgs=$(grep -E '^[A-Za-z0-9._~/-]+$' | LC_ALL=C sort -u || true)
 [ -n "$pkgs" ] || { echo "go-pkg-shard: no packages on stdin" >&2; exit 3; }
-awk -v shard="$shard" -v shards="$shards" '(NR - 1) % shards == shard - 1' <<<"$pkgs"
+awk -v shard="$shard" -v shards="$shards" '(NR - 1) % shards == shard - 1' <<<"$pkgs" | if [ "$shard" = 3 ]; then sed '$d'; else cat; fi

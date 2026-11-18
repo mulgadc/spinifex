@@ -515,8 +515,8 @@ func TestManagerRelease_FailedClearHoldsGPU(t *testing.T) {
 }
 
 // buildRollbackSysfs builds group 7 with a GPU, a second function bound to
-// second, and an audio function whose override is a directory, so binding it
-// to vfio-pci fails after the earlier members have been handled.
+// second, and an audio function whose driver's unbind attribute is a
+// directory, so binding it fails before anything about it changes.
 func buildRollbackSysfs(t *testing.T, gpuDriver, second string) (string, GPUDevice) {
 	t.Helper()
 	root := t.TempDir()
@@ -526,14 +526,14 @@ func buildRollbackSysfs(t *testing.T, gpuDriver, second string) (string, GPUDevi
 	for _, d := range []string{"vfio-pci", "nvidia", "xhci_hcd", "snd_hda_intel"} {
 		makeSysfsDriverDir(t, root, d)
 	}
-	for _, addr := range []string{"0000:03:00.0", "0000:03:00.1"} {
+	for _, addr := range []string{"0000:03:00.0", "0000:03:00.1", "0000:03:00.2"} {
 		ov := "(null)"
 		if driver, _ := readDriver(filepath.Join(root, "bus/pci/devices", addr)); driver == "vfio-pci" {
 			ov = "vfio-pci"
 		}
 		must(t, os.WriteFile(filepath.Join(root, "bus/pci/devices", addr, "driver_override"), []byte(ov+"\n"), 0o600))
 	}
-	must(t, os.Mkdir(filepath.Join(root, "bus/pci/devices/0000:03:00.2/driver_override"), 0o755))
+	must(t, os.Mkdir(filepath.Join(root, "bus/pci/drivers/snd_hda_intel/unbind"), 0o755))
 	return root, GPUDevice{
 		PCIAddress: "0000:03:00.0", Vendor: VendorNVIDIA,
 		VendorID: "10de", DeviceID: "2236", IOMMUGroup: 7, OriginalDriver: "nvidia",
@@ -550,6 +550,7 @@ func TestManagerClaim_RollbackLeavesPreBoundPrimary(t *testing.T) {
 	}
 	assertBinding(t, root, "0000:03:00.0", "vfio-pci", "vfio-pci")
 	assertBinding(t, root, "0000:03:00.1", "xhci_hcd", "(null)")
+	assertBinding(t, root, "0000:03:00.2", "snd_hda_intel", "(null)")
 	if m.Available() != 1 {
 		t.Errorf("want Available=1 after a clean rollback, got %d", m.Available())
 	}
@@ -564,6 +565,7 @@ func TestManagerClaim_RollbackLeavesPreBoundCompanion(t *testing.T) {
 	}
 	assertBinding(t, root, "0000:03:00.0", "nvidia", "(null)")
 	assertBinding(t, root, "0000:03:00.1", "vfio-pci", "vfio-pci")
+	assertBinding(t, root, "0000:03:00.2", "snd_hda_intel", "(null)")
 	if m.Available() != 1 {
 		t.Errorf("want Available=1 after a clean rollback, got %d", m.Available())
 	}

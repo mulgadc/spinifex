@@ -138,9 +138,9 @@ jobs:
       matrix.host }}${{ matrix.extra && format('/{0}', matrix.extra) || '' }})"
     needs: select
     if: needs.select.outputs.any == 'true'
-    # Six by default; E2E_NIGHTLY_MAX_PARALLEL or the dispatch input raises it. Single
-    # cells ask for ci-single-nightly, which two ci-single runners lack so push E2E
-    # always has them. hv-lock.sh serialises provisioning per hypervisor.
+    # Six by default; E2E_NIGHTLY_MAX_PARALLEL or the dispatch input raises it. Cells use
+    # 4 ci-single-nightly and 5 ci-multi runners; ci-single-5 and -6 lack the label, so
+    # these selectors never put a nightly job there. hv-lock.sh serialises provisioning per hypervisor.
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJSON(inputs.max_parallel || vars.E2E_NIGHTLY_MAX_PARALLEL || '6') }}

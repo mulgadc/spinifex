@@ -51,6 +51,13 @@ func bindVFIO(sysfsRoot, addr string) (string, error) {
 }
 
 func unbindVFIO(sysfsRoot, addr, originalDriver string) error {
+	return restoreVFIO(sysfsRoot, addr, originalDriver, true)
+}
+
+// restoreVFIO returns addr to originalDriver. A member re-claimed after a restart
+// has no known original, so finding it off vfio-pci is an error, decided on the
+// same driver read that would otherwise unbind it.
+func restoreVFIO(sysfsRoot, addr, originalDriver string, originalKnown bool) error {
 	devPath := filepath.Join(sysfsRoot, "bus/pci/devices", addr)
 
 	if _, err := os.Stat(devPath); err != nil {
@@ -61,6 +68,9 @@ func unbindVFIO(sysfsRoot, addr, originalDriver string) error {
 		return fmt.Errorf("read driver for %s: %w", addr, err)
 	}
 	if current != "vfio-pci" {
+		if !originalKnown {
+			return fmt.Errorf("%s is bound to %q with its original driver unknown", addr, current)
+		}
 		return checkRestored(devPath, addr, current, originalDriver)
 	}
 

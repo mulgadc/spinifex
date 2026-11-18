@@ -251,6 +251,7 @@ func (m *Manager) release(instanceID string, rollback bool) error {
 	var firstErr error
 	released := false
 	var releasedMIGPCI string
+	groupErr := make(map[[2]int]error)
 
 	for i := range m.pool {
 		if m.pool[i].InstanceID != instanceID {
@@ -267,38 +268,15 @@ func (m *Manager) release(instanceID string, rollback bool) error {
 			continue
 		}
 
-		// Scoped to this entry, not the whole release: an instance can hold
-		// several GPUs, and one that unbound cleanly stays available however
-		// its siblings fared.
-		var entryErr error
-
-		for _, member := range entry.groupMembers {
-			orig, known := entry.memberDrivers[member.PCIAddress]
-			release := unbindVFIO
-			switch {
-			case orig == "vfio-pci" || (rollback && entry.claimPreBound[member.PCIAddress]):
-				// Pre-bound before this instance (e.g. by spx-test-gpu): it stays on
-				// vfio-pci for the next claim, so only confirm it is still there.
-				release = func(root, addr, _ string) error { return checkStillVFIO(root, addr) }
-			case !known:
-				// A member re-claimed after a restart has no recorded original; one
-				// already off vfio-pci cannot be shown restored, so it is fenced.
-				release = func(root, addr, _ string) error {
-					if err := checkStillVFIO(root, addr); err != nil {
-						return fmt.Errorf("original driver unknown: %w", err)
-					}
-					return unbindVFIO(root, addr, "")
-				}
-			}
-			if err := release(m.sysfsRoot, member.PCIAddress, orig); err != nil {
-				slog.Error("GPU release failed for IOMMU group member",
-					"instance", instanceID, "pci", member.PCIAddress, "err", err)
-				if entryErr == nil {
-					entryErr = err
-				}
-				if firstErr == nil {
-					firstErr = err
-				}
+		// Entries of one instance can share an IOMMU group: each group is restored
+		// once, from the records of all its entries, and its outcome applies to each.
+		key := releaseKey(i, entry.Device.IOMMUGroup)
+		entryErr, done := groupErr[key]
+		if !done {
+			entryErr = m.releaseGroupLocked(instanceID, key, rollback)
+			groupErr[key] = entryErr
+			if entryErr != nil && firstErr == nil {
+				firstErr = entryErr
 			}
 		}
 
@@ -329,6 +307,66 @@ func (m *Manager) release(instanceID string, rollback bool) error {
 	}
 
 	return firstErr
+}
+
+// releaseKey groups whole-GPU entries by IOMMU group; an entry with no valid
+// group is its own key.
+func releaseKey(idx, group int) [2]int {
+	if group >= 0 {
+		return [2]int{group, -1}
+	}
+	return [2]int{-1, idx}
+}
+
+// releaseGroupLocked restores one IOMMU group held by instanceID. A member's
+// record comes from the claim that moved it, and it counts as pre-bound for
+// rollback only if the first claim found it on vfio-pci. Must hold m.mu.
+func (m *Manager) releaseGroupLocked(instanceID string, key [2]int, rollback bool) error {
+	var members []IOMMUGroupMember
+	drivers := make(map[string]string)
+	preBound := make(map[string]bool)
+	for i := range m.pool {
+		e := &m.pool[i]
+		if e.InstanceID != instanceID || e.MIGInstance != nil || releaseKey(i, e.Device.IOMMUGroup) != key {
+			continue
+		}
+		for _, member := range e.groupMembers {
+			addr := member.PCIAddress
+			if _, seen := preBound[addr]; !seen {
+				members = append(members, member)
+				preBound[addr] = true
+			}
+			if orig, ok := e.memberDrivers[addr]; ok {
+				if cur, had := drivers[addr]; !had || cur == "vfio-pci" {
+					drivers[addr] = orig
+				}
+			}
+			// A later claim finds on vfio-pci whatever an earlier one moved there.
+			preBound[addr] = preBound[addr] && e.claimPreBound[addr]
+		}
+	}
+
+	var groupErr error
+	for _, member := range members {
+		addr := member.PCIAddress
+		orig, known := drivers[addr]
+		var err error
+		if orig == "vfio-pci" || (rollback && preBound[addr]) {
+			// Pre-bound before this instance (e.g. by spx-test-gpu): it stays on
+			// vfio-pci for the next claim, so only confirm it is still there.
+			err = checkStillVFIO(m.sysfsRoot, addr)
+		} else {
+			err = restoreVFIO(m.sysfsRoot, addr, orig, known)
+		}
+		if err != nil {
+			slog.Error("GPU release failed for IOMMU group member",
+				"instance", instanceID, "pci", addr, "err", err)
+			if groupErr == nil {
+				groupErr = err
+			}
+		}
+	}
+	return groupErr
 }
 
 // tryDestroyIdleMIGGPULocked destroys MIG instances on pciAddr when none are

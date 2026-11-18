@@ -861,3 +861,126 @@ func TestManagerRelease_ReclaimedCompanionWithUnknownOriginal(t *testing.T) {
 		})
 	}
 }
+
+// buildSharedGroupSysfs puts two GPUs and an audio function in IOMMU group 7.
+func buildSharedGroupSysfs(t *testing.T, audioDriver string) (string, []GPUDevice) {
+	t.Helper()
+	root := t.TempDir()
+	buildSysfsDevice(t, root, "0000:03:00.0", "0x030200", "0x10de", "0x2236", "nvidia", 7)
+	buildSysfsDevice(t, root, "0000:03:00.1", "0x030200", "0x10de", "0x2236", "nvidia", 7)
+	buildSysfsDevice(t, root, "0000:03:00.2", "0x040300", "0x10de", "0x1aef", audioDriver, 7)
+	for _, d := range []string{"vfio-pci", "nvidia", "snd_hda_intel"} {
+		makeSysfsDriverDir(t, root, d)
+	}
+	var gpus []GPUDevice
+	for _, addr := range []string{"0000:03:00.0", "0000:03:00.1"} {
+		gpus = append(gpus, GPUDevice{PCIAddress: addr, Vendor: VendorNVIDIA,
+			VendorID: "10de", DeviceID: "2236", IOMMUGroup: 7, OriginalDriver: "nvidia"})
+	}
+	return root, gpus
+}
+
+func claimBoth(t *testing.T, m *Manager) {
+	t.Helper()
+	for range 2 {
+		if _, _, err := m.Claim("i-001", ""); err != nil {
+			t.Fatalf("Claim: %v", err)
+		}
+	}
+}
+
+func TestManagerRelease_TwoGPUsInOneGroupRestoreOnce(t *testing.T) {
+	useKernfs(t)
+	for _, rollback := range []bool{false, true} {
+		t.Run(map[bool]string{false: "release", true: "rollback"}[rollback], func(t *testing.T) {
+			root, gpus := buildSharedGroupSysfs(t, "snd_hda_intel")
+			m := newManagerForTest(gpus, root)
+			claimBoth(t, m)
+			var err error
+			if rollback {
+				if _, _, cerr := m.Claim("i-001", ""); cerr == nil {
+					t.Fatal("want a third Claim to fail on a two-GPU pool")
+				}
+				err = m.RollbackClaim("i-001")
+			} else {
+				err = m.Release("i-001")
+			}
+			if err != nil {
+				t.Fatalf("release: %v", err)
+			}
+			assertBinding(t, root, "0000:03:00.0", "nvidia", "(null)")
+			assertBinding(t, root, "0000:03:00.1", "nvidia", "(null)")
+			assertBinding(t, root, "0000:03:00.2", "snd_hda_intel", "(null)")
+			if m.Available() != 2 {
+				t.Errorf("want Available=2, got %d", m.Available())
+			}
+		})
+	}
+}
+
+func TestManagerRelease_SharedGroupFailureHoldsEveryEntry(t *testing.T) {
+	useKernfs(t)
+	root, gpus := buildSharedGroupSysfs(t, "snd_hda_intel")
+	m := newManagerForTest(gpus, root)
+	claimBoth(t, m)
+	override := filepath.Join(root, "bus/pci/devices/0000:03:00.2/driver_override")
+	must(t, os.Remove(override))
+	must(t, os.Mkdir(override, 0o755))
+
+	if err := m.Release("i-001"); err == nil {
+		t.Fatal("want Release error when a shared group member cannot be restored")
+	}
+	if m.Available() != 0 {
+		t.Errorf("want both GPUs held, got Available=%d", m.Available())
+	}
+}
+
+// The audio function was unbound before the claims: a known empty original,
+// so finding it unbound and cleared at release counts as restored.
+func TestManagerRelease_SharedGroupKeepsKnownEmptyOriginal(t *testing.T) {
+	useKernfs(t)
+	const audio = "0000:03:00.2"
+	root, gpus := buildSharedGroupSysfs(t, "")
+	m := newManagerForTest(gpus, root)
+	claimBoth(t, m)
+	must(t, kernfsWrite(filepath.Join(root, "bus/pci/drivers/vfio-pci/unbind"), audio))
+	must(t, kernfsWrite(filepath.Join(root, "bus/pci/devices", audio, "driver_override"), "\n"))
+
+	if err := m.Release("i-001"); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	assertBinding(t, root, audio, "", "(null)")
+	if m.Available() != 2 {
+		t.Errorf("want Available=2, got %d", m.Available())
+	}
+}
+
+// GPUs with no IOMMU group are separate groups, so one failing does not hold the other.
+func TestManagerRelease_UngroupedEntriesAreNotCoalesced(t *testing.T) {
+	useKernfs(t)
+	root := t.TempDir()
+	makeSysfsDriverDir(t, root, "vfio-pci")
+	makeSysfsDriverDir(t, root, "nvidia")
+	var gpus []GPUDevice
+	for _, addr := range []string{"0000:03:00.0", "0000:04:00.0"} {
+		buildSysfsDevice(t, root, addr, "0x030200", "0x10de", "0x2236", "vfio-pci", -1)
+		must(t, kernfsWrite(filepath.Join(root, "bus/pci/devices", addr, "driver_override"), "vfio-pci"))
+		gpus = append(gpus, GPUDevice{PCIAddress: addr, Vendor: VendorNVIDIA,
+			VendorID: "10de", DeviceID: "2236", IOMMUGroup: -1, OriginalDriver: "nvidia"})
+	}
+	m := newManagerForTest(gpus, root)
+	for _, g := range gpus {
+		if err := m.ReclaimByAddress(g.PCIAddress, "i-001"); err != nil {
+			t.Fatalf("ReclaimByAddress %s: %v", g.PCIAddress, err)
+		}
+	}
+	must(t, os.RemoveAll(filepath.Join(root, "bus/pci/devices/0000:04:00.0")))
+
+	if err := m.Release("i-001"); err == nil {
+		t.Fatal("want Release error for the missing GPU")
+	}
+	assertBinding(t, root, "0000:03:00.0", "nvidia", "(null)")
+	if m.Available() != 1 {
+		t.Errorf("want only the missing GPU held, got Available=%d", m.Available())
+	}
+}

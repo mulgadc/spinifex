@@ -168,3 +168,19 @@ func TestUnbindVFIO_NoOriginalDriver(t *testing.T) {
 		t.Errorf("no driver rebind expected when originalDriver is empty, got: %v", matches)
 	}
 }
+
+// With the original unknown, the one driver read decides: off vfio-pci is an error.
+func TestRestoreVFIO_UnknownOriginalOffVFIO(t *testing.T) {
+	useKernfs(t)
+	root := t.TempDir()
+	buildSysfsDevice(t, root, "0000:03:00.1", "0x040300", "0x10de", "0x1aef", "", 7)
+	makeSysfsDriverDir(t, root, "vfio-pci")
+	must(t, kernfsWrite(filepath.Join(root, "bus/pci/devices/0000:03:00.1/driver_override"), "\n"))
+
+	if err := restoreVFIO(root, "0000:03:00.1", "", false); err == nil {
+		t.Fatal("want an error for an unbound function whose original driver is unknown")
+	}
+	if err := restoreVFIO(root, "0000:03:00.1", "", true); err != nil {
+		t.Fatalf("known unbound original: %v", err)
+	}
+}

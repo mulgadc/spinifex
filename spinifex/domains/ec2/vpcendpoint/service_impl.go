@@ -189,31 +189,15 @@ func (s *Store) heldByOther(ctx context.Context, tables []string, id string) (st
 	return "", nil
 }
 
-// overLimit reports whether one more endpoint would pass the per-account or
-// per-VPC quota. Concurrent creates may each pass the last free slot.
-func (s *Store) overLimit(ctx context.Context, accountID, vpcID string) (bool, error) {
-	recs, err := s.accountRecords(ctx, accountID)
+// overLimit reports whether one more endpoint would pass the account quota.
+// Residue counts until swept, which caps the records every account read
+// visits; concurrent creates may each pass the last free slot.
+func (s *Store) overLimit(ctx context.Context, accountID string) (bool, error) {
+	keys, err := listKeys(ctx, s.kv, accountID+".")
 	if err != nil {
 		return false, err
 	}
-	if countLive(s, recs) >= accountLimit {
-		return true, nil
-	}
-	recs, err = s.vpcRecords(ctx, vpcID)
-	if err != nil {
-		return false, err
-	}
-	return countLive(s, recs) >= vpcLimit, nil
-}
-
-func countLive(s *Store, recs []*EndpointRecord) int {
-	n := 0
-	for _, r := range recs {
-		if s.live(r) {
-			n++
-		}
-	}
-	return n
+	return len(keys) >= accountLimit, nil
 }
 
 // CreateVpcEndpoint creates a gateway endpoint for S3, available on return.
@@ -261,7 +245,7 @@ func (s *ServiceImpl) CreateVpcEndpoint(ctx context.Context, input *ec2.CreateVp
 			return nil, err
 		}
 	}
-	if over, err := s.overLimit(ctx, accountID, vpcID); err != nil {
+	if over, err := s.overLimit(ctx, accountID); err != nil {
 		return nil, internalError(ctx, "CreateVpcEndpoint", err)
 	} else if over {
 		return nil, awserrors.Errorf(awserrors.ErrorVpcEndpointLimitExceeded, "The maximum number of VPC endpoints has been reached.")
@@ -280,10 +264,16 @@ func (s *ServiceImpl) CreateVpcEndpoint(ctx context.Context, input *ec2.CreateVp
 		CreatedAt:       s.now().UTC(),
 	}
 	if err := s.create(ctx, rec); err != nil {
-		if lost, ok := errors.AsType[*claimLostError](err); ok {
-			return nil, s.routeExists(lost.table)
+		lost, isLost := errors.AsType[*claimLostError](err)
+		gone := errors.Is(err, errVpcGone)
+		if !isLost && !gone {
+			return nil, internalError(ctx, "CreateVpcEndpoint", err)
 		}
-		return nil, internalError(ctx, "CreateVpcEndpoint", err)
+		slog.InfoContext(ctx, "CreateVpcEndpoint abandoned", "vpcEndpointId", rec.ID, "err", err)
+		if gone {
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidVpcIdNotFound, "The Vpc Id %s does not exist", vpcID)
+		}
+		return nil, s.routeExists(lost.table)
 	}
 	s.projectTags(ctx, accountID, rec.ID, rec.Tags)
 	out := recordToEC2(rec, tables)
@@ -352,22 +342,26 @@ func (s *ServiceImpl) ModifyVpcEndpoint(ctx context.Context, input *ec2.ModifyVp
 	}
 
 	if _, err := s.modify(ctx, accountID, id, m); err != nil {
-		if lost, ok := errors.AsType[*claimLostError](err); ok {
-			return nil, s.routeExists(lost.table)
-		}
+		lost, isLost := errors.AsType[*claimLostError](err)
 		switch {
+		case isLost:
+			err = s.routeExists(lost.table)
 		case errors.Is(err, errAbsent):
-			return nil, endpointNotFound(id)
+			err = endpointNotFound(id)
 		case errors.Is(err, errNotAssociated):
-			return nil, errors.New(awserrors.ErrorInvalidParameter)
+			err = errors.New(awserrors.ErrorInvalidParameter)
+		default:
+			return nil, internalError(ctx, "ModifyVpcEndpoint", err)
 		}
-		return nil, internalError(ctx, "ModifyVpcEndpoint", err)
+		slog.InfoContext(ctx, "ModifyVpcEndpoint refused", "vpcEndpointId", id, "err", err)
+		return nil, err
 	}
 	return &ec2.ModifyVpcEndpointOutput{Return: aws.Bool(true)}, nil
 }
 
 // DeleteVpcEndpoints fences and removes each named endpoint with two writes,
-// whatever its associations; what they leave is the sweep's.
+// whatever its associations; what they leave is the sweep's. A store failure
+// on one ID is that ID's, and the rest still complete.
 func (s *ServiceImpl) DeleteVpcEndpoints(ctx context.Context, input *ec2.DeleteVpcEndpointsInput, accountID string) (*ec2.DeleteVpcEndpointsOutput, error) {
 	ids := awsidentifiers.Distinct(input.VpcEndpointIds)
 	if len(ids) == 0 {
@@ -376,20 +370,20 @@ func (s *ServiceImpl) DeleteVpcEndpoints(ctx context.Context, input *ec2.DeleteV
 	out := &ec2.DeleteVpcEndpointsOutput{Unsuccessful: []*ec2.UnsuccessfulItem{}}
 	for _, id := range ids {
 		found, err := s.remove(ctx, accountID, id)
-		if err != nil {
-			return nil, internalError(ctx, "DeleteVpcEndpoints", err)
+		switch {
+		case err != nil:
+			slog.ErrorContext(ctx, "DeleteVpcEndpoints failed for one endpoint", "vpcEndpointId", id, "err", err)
+			out.Unsuccessful = append(out.Unsuccessful, unsuccessful(id, awserrors.ErrorInternalError, "An internal error has occurred."))
+		case !found:
+			out.Unsuccessful = append(out.Unsuccessful, unsuccessful(id, awserrors.ErrorInvalidVpcEndpointNotFound, fmt.Sprintf("user %s does not own a resource %s", accountID, id)))
 		}
-		if found {
-			s.dropTags(ctx, accountID, id)
-			continue
-		}
-		out.Unsuccessful = append(out.Unsuccessful, &ec2.UnsuccessfulItem{
-			ResourceId: aws.String(id),
-			Error: &ec2.UnsuccessfulItemError{
-				Code:    aws.String(awserrors.ErrorInvalidVpcEndpointNotFound),
-				Message: aws.String(fmt.Sprintf("user %s does not own a resource %s", accountID, id)),
-			},
-		})
 	}
 	return out, nil
+}
+
+func unsuccessful(id, code, msg string) *ec2.UnsuccessfulItem {
+	return &ec2.UnsuccessfulItem{
+		ResourceId: aws.String(id),
+		Error:      &ec2.UnsuccessfulItemError{Code: aws.String(code), Message: aws.String(msg)},
+	}
 }

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
@@ -15,43 +14,38 @@ import (
 // SweepResult counts what one sweep pass removed.
 type SweepResult struct {
 	Records int // pending records past the grace, and deleting records
-	Keys    int // index keys, claims and central tags with no effective owner
+	Keys    int // claims with no effective owner
 }
 
 // Sweep is the one pass that scans the bucket. It removes what an interrupted
 // request left: records that never became available or were part way through
-// a delete, index keys with no record, stale claims, and central tags of
-// endpoints that are gone.
+// a delete, and stale claims. A key it cannot decide is logged and skipped.
 func (s *Store) Sweep(ctx context.Context) (SweepResult, error) {
 	var res SweepResult
 	keys, err := kvstore.Keys(ctx, s.kv)
 	if err != nil {
 		return res, fmt.Errorf("list %s: %w", KVBucketVpcEndpoints, err)
 	}
-	var rest []string
+	var errs []error
 	for _, key := range keys {
 		if key == kvstore.VersionKey {
 			continue
 		}
-		if strings.HasPrefix(key, "vpc.") || strings.HasPrefix(key, "rtb.") {
-			rest = append(rest, key)
-			continue
+		if table, ok := rtbFromClaimKey(key); ok {
+			err = s.sweepClaim(ctx, key, table, &res)
+		} else {
+			err = s.sweepRecord(ctx, key, &res)
 		}
-		if err := s.sweepRecord(ctx, key, &res); err != nil {
-			return res, fmt.Errorf("sweep %s: %w", key, err)
-		}
-	}
-	for _, key := range rest {
-		if err := s.sweepKey(ctx, key, &res); err != nil {
-			return res, fmt.Errorf("sweep %s: %w", key, err)
+		if err != nil {
+			slog.WarnContext(ctx, "VPC endpoint sweep skipped a key", "key", key, "err", err)
+			errs = append(errs, fmt.Errorf("sweep %s: %w", key, err))
 		}
 	}
-	if err := s.sweepTags(ctx, &res); err != nil {
-		return res, fmt.Errorf("sweep tags: %w", err)
-	}
-	return res, nil
+	return res, errors.Join(errs...)
 }
 
+// sweepRecord finishes a delete stopped after its fence, and removes a
+// pending record past the grace with the claims it took.
 func (s *Store) sweepRecord(ctx context.Context, key string, res *SweepResult) error {
 	rec, rev, err := getJSON[EndpointRecord](ctx, s.kv, key)
 	if err != nil || rec == nil || rec.ID == "" {
@@ -59,10 +53,10 @@ func (s *Store) sweepRecord(ctx context.Context, key string, res *SweepResult) e
 	}
 	switch {
 	case rec.State == StateDeleting:
-		err = deleteAt(ctx, s.kv, key, rev)
+		err = s.finishDelete(ctx, rec, rev)
 	case rec.State == StatePending && s.now().Sub(rec.CreatedAt) >= claimGrace:
 		if err = deleteAt(ctx, s.kv, key, rev); err == nil {
-			err = errors.Join(deleteKey(ctx, s.kv, vpcKey(rec.VpcID, rec.ID)), s.releaseClaims(ctx, rec.RouteTableIds, rec.ID))
+			err = s.releaseClaims(ctx, rec.RouteTableIds, rec.ID)
 		}
 	default:
 		return nil
@@ -74,21 +68,6 @@ func (s *Store) sweepRecord(ctx context.Context, key string, res *SweepResult) e
 		res.Records++
 	}
 	return err
-}
-
-func (s *Store) sweepKey(ctx context.Context, key string, res *SweepResult) error {
-	if table, ok := rtbFromClaimKey(key); ok {
-		return s.sweepClaim(ctx, key, table, res)
-	}
-	entry, rev, err := getJSON[indexEntry](ctx, s.kv, key)
-	if err != nil || entry == nil || s.now().Sub(entry.CreatedAt) < claimGrace {
-		return err
-	}
-	rec, _, err := s.load(ctx, entry.AccountID, idFromIndexKey(key))
-	if err != nil || rec != nil {
-		return err
-	}
-	return s.removeKey(ctx, key, rev, res)
 }
 
 // sweepClaim removes a claim past the grace that names no effective

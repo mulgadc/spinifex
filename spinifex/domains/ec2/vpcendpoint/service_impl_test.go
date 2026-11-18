@@ -375,17 +375,20 @@ func TestTags_MirrorAndRemove(t *testing.T) {
 
 func TestVpcBlocksDeletion(t *testing.T) {
 	f := newFixture(t)
-	blocked, err := f.svc.VpcBlocksDeletion(t.Context(), vpcA)
+	blocked, err := f.svc.VpcBlocksDeletion(t.Context(), testAccount, vpcA)
 	require.NoError(t, err)
 	assert.False(t, blocked)
 
 	id := f.create(t)
-	blocked, err = f.svc.VpcBlocksDeletion(t.Context(), vpcA)
+	blocked, err = f.svc.VpcBlocksDeletion(t.Context(), testAccount, vpcA)
 	require.NoError(t, err)
 	assert.True(t, blocked, "an endpoint with no tables still blocks DeleteVpc, as on AWS")
+	blocked, err = f.svc.VpcBlocksDeletion(t.Context(), testAccount, vpcB)
+	require.NoError(t, err)
+	assert.False(t, blocked, "an endpoint blocks only its own VPC")
 
 	f.del(t, id)
-	blocked, err = f.svc.VpcBlocksDeletion(context.Background(), vpcA)
+	blocked, err = f.svc.VpcBlocksDeletion(context.Background(), testAccount, vpcA)
 	require.NoError(t, err)
 	assert.False(t, blocked)
 }

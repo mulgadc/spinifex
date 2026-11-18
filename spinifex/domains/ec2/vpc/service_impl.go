@@ -115,14 +115,18 @@ type VPCServiceImpl struct {
 
 	// Reports, per dependent resource kind owned elsewhere, whether one blocks
 	// DeleteVpc. Set before serving.
-	dependencyChecks map[string]func(ctx context.Context, vpcID string) (bool, error)
+	dependencyChecks map[string]DependencyCheck
 }
+
+// DependencyCheck reports whether a resource of one kind blocks deleting
+// accountID's VPC vpcID.
+type DependencyCheck func(ctx context.Context, accountID, vpcID string) (bool, error)
 
 // SetDependencyCheck injects the DeleteVpc check for one dependent resource
 // kind another service owns, replacing any earlier check for that kind.
-func (s *VPCServiceImpl) SetDependencyCheck(kind string, check func(ctx context.Context, vpcID string) (bool, error)) {
+func (s *VPCServiceImpl) SetDependencyCheck(kind string, check DependencyCheck) {
 	if s.dependencyChecks == nil {
-		s.dependencyChecks = map[string]func(context.Context, string) (bool, error){}
+		s.dependencyChecks = map[string]DependencyCheck{}
 	}
 	s.dependencyChecks[kind] = check
 }
@@ -539,7 +543,7 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 	if err := rejectAttachedGateway(ctx, s.eigwKV, accountID, vpcID); err != nil {
 		return nil, err
 	}
-	if err := s.rejectOwnedDependency(ctx, vpcID); err != nil {
+	if err := s.rejectOwnedDependency(ctx, accountID, vpcID); err != nil {
 		return nil, err
 	}
 
@@ -585,9 +589,9 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 // rejectOwnedDependency returns DependencyViolation while a resource another
 // service owns, such as a peering connection or an endpoint, still needs
 // vpcID. A failed check fails closed.
-func (s *VPCServiceImpl) rejectOwnedDependency(ctx context.Context, vpcID string) error {
+func (s *VPCServiceImpl) rejectOwnedDependency(ctx context.Context, accountID, vpcID string) error {
 	for _, kind := range slices.Sorted(maps.Keys(s.dependencyChecks)) {
-		blocked, err := s.dependencyChecks[kind](ctx, vpcID)
+		blocked, err := s.dependencyChecks[kind](ctx, accountID, vpcID)
 		if err != nil {
 			slog.WarnContext(ctx, "DeleteVpc: dependency check failed", "kind", kind, "vpcId", vpcID, "err", err)
 			return errors.New(awserrors.ErrorServerInternal)

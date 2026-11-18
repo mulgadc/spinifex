@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -11,7 +12,7 @@ import (
 )
 
 // ValidateCreateRouteInput rejects a nil input with InvalidParameterValue and a missing
-// RouteTableId or DestinationCidrBlock with MissingParameter.
+// RouteTableId or destination with MissingParameter.
 func ValidateCreateRouteInput(input *ec2.CreateRouteInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -19,10 +20,15 @@ func ValidateCreateRouteInput(input *ec2.CreateRouteInput) error {
 	if input.RouteTableId == nil || *input.RouteTableId == "" {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
-	if input.DestinationCidrBlock == nil || *input.DestinationCidrBlock == "" {
+	if !hasDestination(input.DestinationCidrBlock, input.DestinationPrefixListId) {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
 	return nil
+}
+
+// hasDestination reports whether a route names a CIDR or prefix-list destination.
+func hasDestination(cidr, prefixListID *string) bool {
+	return aws.StringValue(cidr) != "" || aws.StringValue(prefixListID) != ""
 }
 
 // CreateRoute implements the EC2 CreateRoute action, adding an IPv4 route to a route table via

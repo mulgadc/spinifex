@@ -2,6 +2,7 @@ package routetable
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -15,12 +16,18 @@ import (
 
 const endpointRegion = "ap-southeast-2"
 
-// fakeEndpoints routes each table in routed to its endpoint.
-type fakeEndpoints struct{ routed map[string]string }
+// fakeEndpoints routes each table in routed to its endpoint, or fails with err.
+type fakeEndpoints struct {
+	routed map[string]string
+	err    error
+}
 
 var _ EndpointLookup = (*fakeEndpoints)(nil)
 
 func (f *fakeEndpoints) EffectiveEndpoints(_ context.Context, ids []string) (map[string]string, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
 	out := map[string]string{}
 	for _, id := range ids {
 		if vpce, ok := f.routed[id]; ok {
@@ -110,6 +117,17 @@ func TestRouteMutations_RefuseEndpointRoutes(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.RouteTables, 1)
 	assert.Len(t, out.RouteTables[0].Routes, 1, "only the local route remains")
+}
+
+// A failed endpoint lookup fails the request rather than hiding the route.
+func TestEndpointLookupFailureIsInternal(t *testing.T) {
+	svc, routed, _ := endpointService(t)
+	svc.SetEndpointLookup(&fakeEndpoints{err: errors.New("kv unavailable")})
+
+	_, err := svc.DescribeRouteTables(t.Context(), &ec2.DescribeRouteTablesInput{RouteTableIds: aws.StringSlice([]string{routed})}, testAccountID)
+	assert.EqualError(t, err, awserrors.ErrorServerInternal)
+	_, err = svc.DeleteRoute(t.Context(), &ec2.DeleteRouteInput{RouteTableId: aws.String(routed), DestinationPrefixListId: aws.String(prefixlist.ID(endpointRegion))}, testAccountID)
+	assert.EqualError(t, err, awserrors.ErrorServerInternal)
 }
 
 func TestRouteTableVpc(t *testing.T) {

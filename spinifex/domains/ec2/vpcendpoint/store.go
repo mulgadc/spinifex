@@ -187,42 +187,14 @@ func (s *Store) accountRecords(ctx context.Context, accountID string) ([]*Endpoi
 	return out, nil
 }
 
-// vpcRecords returns the records indexed under vpcID, in every state.
-func (s *Store) vpcRecords(ctx context.Context, vpcID string) ([]*EndpointRecord, error) {
-	keys, err := listKeys(ctx, s.kv, "vpc."+vpcID+".")
-	if err != nil {
-		return nil, err
-	}
-	var out []*EndpointRecord
-	for _, key := range keys {
-		entry, _, err := getJSON[indexEntry](ctx, s.kv, key)
-		if err != nil {
-			return nil, err
-		}
-		if entry == nil {
-			continue
-		}
-		rec, _, err := s.load(ctx, entry.AccountID, idFromIndexKey(key))
-		if err != nil {
-			return nil, err
-		}
-		if rec != nil {
-			out = append(out, rec)
-		}
-	}
-	return out, nil
-}
-
-// VpcBlocksDeletion reports whether an endpoint blocks deleting vpcID.
-func (s *Store) VpcBlocksDeletion(ctx context.Context, vpcID string) (bool, error) {
-	recs, err := s.vpcRecords(ctx, vpcID)
+// VpcBlocksDeletion reports whether an endpoint blocks deleting accountID's
+// vpcID. An endpoint's VPC is its owner's, so only the owner's records count.
+func (s *Store) VpcBlocksDeletion(ctx context.Context, accountID, vpcID string) (bool, error) {
+	recs, err := s.accountRecords(ctx, accountID)
 	if err != nil {
 		return false, err
 	}
-	if slices.ContainsFunc(recs, s.live) {
-		return true, nil
-	}
-	return false, nil
+	return slices.ContainsFunc(recs, func(r *EndpointRecord) bool { return r.VpcID == vpcID && s.live(r) }), nil
 }
 
 // claimHolder returns the endpoint rtbID's claim names, and that endpoint's

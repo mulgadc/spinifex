@@ -11,7 +11,7 @@ import (
 )
 
 // ValidateReplaceRouteInput rejects a nil input with InvalidParameterValue and a missing
-// RouteTableId or DestinationCidrBlock with MissingParameter.
+// RouteTableId or destination with MissingParameter.
 func ValidateReplaceRouteInput(input *ec2.ReplaceRouteInput) error {
 	if input == nil {
 		return errors.New(awserrors.ErrorInvalidParameterValue)
@@ -19,7 +19,7 @@ func ValidateReplaceRouteInput(input *ec2.ReplaceRouteInput) error {
 	if input.RouteTableId == nil || *input.RouteTableId == "" {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
-	if input.DestinationCidrBlock == nil || *input.DestinationCidrBlock == "" {
+	if !hasDestination(input.DestinationCidrBlock, input.DestinationPrefixListId) {
 		return errors.New(awserrors.ErrorMissingParameter)
 	}
 	return nil

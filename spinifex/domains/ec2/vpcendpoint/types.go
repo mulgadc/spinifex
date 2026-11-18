@@ -33,9 +33,8 @@ const (
 	claimGrace = 2 * time.Minute
 
 	// accountLimit is AWS's Regional gateway endpoint quota, counted per
-	// account; vpcLimit is its per-VPC gateway endpoint quota.
+	// account. AWS's 255 per VPC cannot be reached under it.
 	accountLimit = 20
-	vpcLimit     = 255
 
 	// maxPolicyLength is AWS's limit on an endpoint policy document.
 	maxPolicyLength = 20480
@@ -71,15 +70,7 @@ type claim struct {
 	ClaimedAt time.Time `json:"claimed_at"`
 }
 
-// indexEntry is the value of a vpc.<vpc>.<id> key.
-type indexEntry struct {
-	AccountID string    `json:"account_id"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
 func recordKey(accountID, id string) string { return kvstore.AccountKey(accountID, id) }
-
-func vpcKey(vpcID, id string) string { return "vpc." + vpcID + "." + id }
 
 func claimKey(rtbID string) string { return "rtb." + rtbID + "." + serviceKey }
 
@@ -91,15 +82,6 @@ func rtbFromClaimKey(key string) (string, bool) {
 	}
 	rtb, svc, ok := strings.Cut(rest, ".")
 	return rtb, ok && svc == serviceKey
-}
-
-// idFromIndexKey returns the trailing endpoint ID of a vpc. key.
-func idFromIndexKey(key string) string {
-	_, id, ok := strings.Cut(strings.TrimPrefix(key, "vpc."), ".")
-	if !ok {
-		return ""
-	}
-	return id
 }
 
 // lists reports whether the record names table.

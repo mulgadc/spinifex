@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 )
 
@@ -13,18 +14,22 @@ type claimLostError struct{ table string }
 
 func (e *claimLostError) Error() string { return "vpcendpoint: claim on " + e.table + " held" }
 
+// errVpcGone reports a create whose VPC was deleted while it published.
+var errVpcGone = errors.New("vpcendpoint: VPC deleted during create")
+
 // takeClaim takes the S3 claim on table for rec, refreshing its own or taking
-// over a stale one after fencing its holder.
-func (s *Store) takeClaim(ctx context.Context, rec *EndpointRecord, table string) error {
+// over a stale one after fencing its holder, and returns the revision written.
+func (s *Store) takeClaim(ctx context.Context, rec *EndpointRecord, table string) (uint64, error) {
 	key := claimKey(table)
 	mine := claim{VpceID: rec.ID, AccountID: rec.AccountID, ClaimedAt: s.now()}
 	for range moveAttempts {
-		if _, err := writeJSON(ctx, s.kv, key, mine, 0); !errors.Is(err, errConflict) {
-			return err
+		rev, err := writeJSON(ctx, s.kv, key, mine, 0)
+		if !errors.Is(err, errConflict) {
+			return rev, err
 		}
-		held, rev, err := getJSON[claim](ctx, s.kv, key)
+		held, heldRev, err := getJSON[claim](ctx, s.kv, key)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		if held == nil {
 			continue
@@ -32,20 +37,21 @@ func (s *Store) takeClaim(ctx context.Context, rec *EndpointRecord, table string
 		if held.VpceID != rec.ID {
 			stale, retry, err := s.fenceHolder(ctx, held, table)
 			if err != nil {
-				return err
+				return 0, err
 			}
 			if retry {
 				continue
 			}
 			if !stale {
-				return &claimLostError{table: table}
+				return 0, &claimLostError{table: table}
 			}
 		}
-		if _, err := writeJSON(ctx, s.kv, key, mine, rev); !errors.Is(err, errConflict) {
-			return err
+		rev, err = writeJSON(ctx, s.kv, key, mine, heldRev)
+		if !errors.Is(err, errConflict) {
+			return rev, err
 		}
 	}
-	return fmt.Errorf("take %s: %w", key, errConflict)
+	return 0, fmt.Errorf("take %s: %w", key, errConflict)
 }
 
 // fenceHolder decides another endpoint's claim on table. A stale claim's
@@ -72,79 +78,96 @@ func (s *Store) fenceHolder(ctx context.Context, held *claim, table string) (sta
 }
 
 // fence advances holder past the revision a stalled writer holds: a pending
-// record is removed with its index key, and an available one is rewritten.
+// record is removed, and an available one is rewritten.
 func (s *Store) fence(ctx context.Context, holder *EndpointRecord, rev uint64) error {
 	key := recordKey(holder.AccountID, holder.ID)
 	if holder.State == StatePending {
-		if err := deleteAt(ctx, s.kv, key, rev); err != nil {
-			return err
-		}
-		return deleteKey(ctx, s.kv, vpcKey(holder.VpcID, holder.ID))
+		return deleteAt(ctx, s.kv, key, rev)
 	}
 	_, err := writeJSON(ctx, s.kv, key, holder, rev)
 	return err
 }
 
-// releaseClaim deletes table's claim at its revision while it names id.
-func (s *Store) releaseClaim(ctx context.Context, table, id string) error {
-	key := claimKey(table)
-	held, rev, err := getJSON[claim](ctx, s.kv, key)
-	if err != nil || held == nil || held.VpceID != id {
-		return err
+// ownClaims returns the revision of each of tables' claims that names id.
+func (s *Store) ownClaims(ctx context.Context, tables []string, id string) (map[string]uint64, error) {
+	revs := map[string]uint64{}
+	for _, t := range tables {
+		c, rev, err := getJSON[claim](ctx, s.kv, claimKey(t))
+		if err != nil {
+			return nil, err
+		}
+		if c != nil && c.VpceID == id {
+			revs[t] = rev
+		}
 	}
-	if err := deleteAt(ctx, s.kv, key, rev); err != nil && !errors.Is(err, errConflict) {
-		return err
-	}
-	return nil
+	return revs, nil
 }
 
-func (s *Store) releaseClaims(ctx context.Context, tables []string, id string) error {
+// releaseAt deletes each table's claim at the revision given. A newer
+// revision is another request's refresh, and stays.
+func (s *Store) releaseAt(ctx context.Context, revs map[string]uint64) error {
 	var errs []error
-	for _, t := range tables {
-		if err := s.releaseClaim(ctx, t, id); err != nil {
+	for t, rev := range revs {
+		if err := deleteAt(ctx, s.kv, claimKey(t), rev); err != nil && !errors.Is(err, errConflict) {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// create writes rec in the publication order: index key, pending record,
-// each claim, then available at the record's revision. A lost claim, or a
-// fence by a taker, undoes the create and names the table it lost.
+// create writes rec in the publication order: pending record, a re-read of
+// the VPC, each claim, then available at the record's revision. A lost claim,
+// or a fence by a taker, undoes the create and names the table it lost.
 func (s *Store) create(ctx context.Context, rec *EndpointRecord) error {
-	if err := putJSON(ctx, s.kv, vpcKey(rec.VpcID, rec.ID), indexEntry{AccountID: rec.AccountID, CreatedAt: rec.CreatedAt}); err != nil {
+	key := recordKey(rec.AccountID, rec.ID)
+	rec.State = StatePending
+	rev, err := writeJSON(ctx, s.kv, key, rec, 0)
+	if err != nil {
 		return err
 	}
-	rec.State = StatePending
-	rev, err := writeJSON(ctx, s.kv, recordKey(rec.AccountID, rec.ID), rec, 0)
-	if err != nil {
-		return errors.Join(err, deleteKey(ctx, s.kv, vpcKey(rec.VpcID, rec.ID)))
+	taken := map[string]uint64{}
+	vpc, err := s.vpcRecord(ctx, rec.AccountID, rec.VpcID)
+	if err == nil && vpc == nil {
+		err = errVpcGone
 	}
-	for i, t := range rec.RouteTableIds {
-		if err := s.takeClaim(ctx, rec, t); err != nil {
-			return errors.Join(err, s.abandon(ctx, rec, rev, rec.RouteTableIds[:i]))
+	if err != nil {
+		return errors.Join(err, s.abandon(ctx, rec, rev, taken))
+	}
+	for _, t := range rec.RouteTableIds {
+		claimRev, err := s.takeClaim(ctx, rec, t)
+		if err != nil {
+			return errors.Join(err, s.abandon(ctx, rec, rev, taken))
 		}
+		taken[t] = claimRev
 	}
 	rec.State = StateAvailable
-	if _, err := writeJSON(ctx, s.kv, recordKey(rec.AccountID, rec.ID), rec, rev); err != nil {
-		if errors.Is(err, errConflict) {
-			err = &claimLostError{table: s.lostTable(ctx, rec)}
+	_, err = writeJSON(ctx, s.kv, key, rec, rev)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, errConflict):
+		err = &claimLostError{table: s.lostTable(ctx, rec)}
+	default:
+		// The write may have landed: only this create makes its record available.
+		cur, _, readErr := s.load(ctx, rec.AccountID, rec.ID)
+		if readErr != nil {
+			return errors.Join(err, readErr)
 		}
-		return errors.Join(err, s.abandon(ctx, rec, rev, rec.RouteTableIds))
+		if cur != nil && cur.State == StateAvailable {
+			return nil
+		}
 	}
-	return nil
+	return errors.Join(err, s.abandon(ctx, rec, rev, taken))
 }
 
 // abandon removes a create that did not complete: its pending record if no
-// taker removed it first, its index key, and the claims it took.
-func (s *Store) abandon(ctx context.Context, rec *EndpointRecord, rev uint64, taken []string) error {
+// taker removed it first, and the claims it took at the revisions written.
+func (s *Store) abandon(ctx context.Context, rec *EndpointRecord, rev uint64, taken map[string]uint64) error {
 	err := deleteAt(ctx, s.kv, recordKey(rec.AccountID, rec.ID), rev)
 	if errors.Is(err, errConflict) {
 		err = nil
 	}
-	return errors.Join(err,
-		deleteKey(ctx, s.kv, vpcKey(rec.VpcID, rec.ID)),
-		s.releaseClaims(ctx, taken, rec.ID))
+	return errors.Join(err, s.releaseAt(ctx, taken))
 }
 
 // lostTable names the first of rec's tables whose claim no longer names it.
@@ -175,29 +198,29 @@ type modification struct {
 }
 
 // modify applies m in the publication order: claims for added tables, the
-// record at its revision, then the release of removed tables' claims.
+// revisions of removed tables' claims, the record at its revision, then the
+// release of those claims at the revisions read. A failed modify releases
+// nothing: another modify of the endpoint may publish a claim it refreshed.
 func (s *Store) modify(ctx context.Context, accountID, id string, m modification) (*EndpointRecord, error) {
-	var taken []string
 	for range moveAttempts {
 		rec, rev, err := s.load(ctx, accountID, id)
 		if err != nil {
-			return nil, errors.Join(err, s.releaseClaims(ctx, taken, id))
+			return nil, err
 		}
 		if rec == nil || rec.State != StateAvailable {
-			return nil, errors.Join(errAbsent, s.releaseClaims(ctx, taken, id))
+			return nil, errAbsent
 		}
-		for _, t := range m.remove {
-			if !rec.lists(t) {
-				return nil, errors.Join(errNotAssociated, s.releaseClaims(ctx, unlisted(taken, rec), id))
-			}
+		if slices.ContainsFunc(m.remove, func(t string) bool { return !rec.lists(t) }) {
+			return nil, errNotAssociated
 		}
 		for _, t := range m.add {
-			if err := s.takeClaim(ctx, rec, t); err != nil {
-				return nil, errors.Join(err, s.releaseClaims(ctx, unlisted(taken, rec), id))
+			if _, err := s.takeClaim(ctx, rec, t); err != nil {
+				return nil, err
 			}
-			if !rec.lists(t) && !slices.Contains(taken, t) {
-				taken = append(taken, t)
-			}
+		}
+		released, err := s.ownClaims(ctx, m.remove, id)
+		if err != nil {
+			return nil, err
 		}
 		tables := slices.Concat(rec.RouteTableIds, m.add)
 		tables = slices.DeleteFunc(tables, func(t string) bool { return slices.Contains(m.remove, t) })
@@ -216,18 +239,16 @@ func (s *Store) modify(ctx context.Context, accountID, id string, m modification
 			}
 			return nil, err
 		}
-		return rec, s.releaseClaims(ctx, m.remove, id)
+		if err := s.releaseAt(ctx, released); err != nil {
+			slog.WarnContext(ctx, "VPC endpoint claim release failed; the sweep removes it", "vpcEndpointId", id, "err", err)
+		}
+		return rec, nil
 	}
-	return nil, errors.Join(fmt.Errorf("modify %s: %w", id, errConflict), s.releaseClaims(ctx, taken, id))
-}
-
-// unlisted returns the tables of taken that rec does not list.
-func unlisted(taken []string, rec *EndpointRecord) []string {
-	return slices.DeleteFunc(slices.Clone(taken), rec.lists)
+	return nil, fmt.Errorf("modify %s: %w", id, errConflict)
 }
 
 // remove fences an available record as deleting at the revision read, then
-// removes it. It reports false when the endpoint was not available.
+// finishes the delete. It reports false when the endpoint was not available.
 func (s *Store) remove(ctx context.Context, accountID, id string) (bool, error) {
 	key := recordKey(accountID, id)
 	for range moveAttempts {
@@ -243,10 +264,33 @@ func (s *Store) remove(ctx context.Context, accountID, id string) (bool, error) 
 		if err != nil {
 			return false, err
 		}
-		if err := deleteAt(ctx, s.kv, key, newRev); err != nil && !errors.Is(err, errConflict) {
-			return true, err
+		if err := s.finishDelete(ctx, rec, newRev); err != nil {
+			slog.WarnContext(ctx, "VPC endpoint delete left for the sweep", "vpcEndpointId", id, "err", err)
 		}
 		return true, nil
 	}
 	return false, fmt.Errorf("delete %s: %w", id, errConflict)
+}
+
+// finishDelete drops a fenced endpoint's central tags, then its record. A
+// failure leaves the deleting record, which the sweep finishes the same way.
+func (s *Store) finishDelete(ctx context.Context, rec *EndpointRecord, rev uint64) error {
+	if err := s.dropTags(ctx, rec.AccountID, rec.ID); err != nil {
+		return err
+	}
+	err := deleteAt(ctx, s.kv, recordKey(rec.AccountID, rec.ID), rev)
+	if errors.Is(err, errConflict) {
+		return nil
+	}
+	return err
+}
+
+// releaseClaims deletes each of tables' claims while it names id, for a
+// record already removed, whose claims no request can still depend on.
+func (s *Store) releaseClaims(ctx context.Context, tables []string, id string) error {
+	revs, err := s.ownClaims(ctx, tables, id)
+	if err != nil {
+		return err
+	}
+	return s.releaseAt(ctx, revs)
 }

@@ -66,7 +66,6 @@ func (s *Store) updateTags(ctx context.Context, accountID, id string, mut func(m
 type CentralTagStore interface {
 	PutResourceTags(ctx context.Context, accountID, resourceID string, tags map[string]string) error
 	DeleteAllTags(ctx context.Context, accountID, resourceID string) error
-	ScanTaggedResources(ctx context.Context, prefix string) (map[string][]string, error)
 }
 
 // SetCentralTagStore injects the index that create writes and delete clears.
@@ -83,40 +82,10 @@ func (s *Store) projectTags(ctx context.Context, accountID, id string, tags map[
 	}
 }
 
-// dropTags clears a deleted endpoint's central tags; the sweep retries a failure.
-func (s *Store) dropTags(ctx context.Context, accountID, id string) {
-	if s.centralTags == nil {
-		return
-	}
-	if err := s.centralTags.DeleteAllTags(ctx, accountID, id); err != nil {
-		slog.WarnContext(ctx, "VPC endpoint central tag delete failed", "vpcEndpointId", id, "err", err)
-	}
-}
-
-// sweepTags deletes central tags naming an endpoint with no record. Create
-// writes the record before the tags, so a create in flight keeps its own.
-func (s *Store) sweepTags(ctx context.Context, res *SweepResult) error {
+// dropTags clears a fenced endpoint's central tags.
+func (s *Store) dropTags(ctx context.Context, accountID, id string) error {
 	if s.centralTags == nil {
 		return nil
 	}
-	byAccount, err := s.centralTags.ScanTaggedResources(ctx, "vpce-")
-	if err != nil {
-		return err
-	}
-	for account, ids := range byAccount {
-		for _, id := range ids {
-			rec, _, err := s.load(ctx, account, id)
-			if err != nil {
-				return err
-			}
-			if rec != nil {
-				continue
-			}
-			if err := s.centralTags.DeleteAllTags(ctx, account, id); err != nil {
-				return err
-			}
-			res.Keys++
-		}
-	}
-	return nil
+	return s.centralTags.DeleteAllTags(ctx, accountID, id)
 }

@@ -2249,7 +2249,9 @@ func (d *Daemon) startCluster() error {
 	}
 	d.vpcPeeringService.SetCentralTagStore(d.tagsService)
 	d.routeTableService.SetPeeringLookup(d.vpcPeeringService.Store)
-	d.vpcService.SetDependencyCheck("vpc-peering-connection", d.vpcPeeringService.VpcBlocksDeletion)
+	d.vpcService.SetDependencyCheck("vpc-peering-connection", func(ctx context.Context, _, vpcID string) (bool, error) {
+		return d.vpcPeeringService.VpcBlocksDeletion(ctx, vpcID)
+	})
 
 	// No activation is installed, so the endpoint service is never offered.
 	endpointSettings := ec2vpcendpoint.Settings{Region: d.config.Region, AZ: d.config.AZ}

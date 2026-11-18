@@ -62,11 +62,16 @@ unaccounted holder, missing host or missing attestation writes nothing.
 var mgmtIPAMPrepareNodeCmd = &cobra.Command{
 	Use:   "prepare-node",
 	Short: "Write this node's launch records for guests the operator attests are stopped",
-	Long: `Run on each host with its daemon stopped. For every guest the inventory lists
-on this node as stopped with stopped_attested, write an exited launch record
-so a later start can prove the previous launch stopped. Running guests are left
-for the daemon to adopt when it identifies their process. A guest with neither
-stays held until it is repaired.`,
+	Long: `Run on each host with its daemon stopped, as the daemon's user so the daemon
+can read the records. For every guest the inventory lists on this node as
+stopped with stopped_attested, write an exited launch record so a later start
+can prove the previous launch stopped. Running guests are left for the daemon
+to adopt when it identifies their process. A guest with neither stays held
+until it is repaired.
+
+The command takes the launch records' lock, which detects a running durable
+daemon on this host. A legacy daemon does not take that lock and is not
+detected; stop it first.`,
 	Run: runMgmtIPAMPrepareNode,
 }
 
@@ -619,8 +624,8 @@ func runMgmtIPAMActivate(cmd *cobra.Command, _ []string) {
 }
 
 // prepareMgmtNode writes exited launch records for this node's attested
-// stopped guests under the launch records' lock, so it fails while a daemon
-// on this state directory is running.
+// stopped guests under the launch records' lock, so it fails while a durable
+// daemon on this state directory is running.
 func prepareMgmtNode(w io.Writer, inv *mgmtInventory, node, launchDir string) error {
 	var host *mgmtInventoryHost
 	for i := range inv.Hosts {

@@ -128,6 +128,20 @@ func TestWaitSAsExpiresNamingMissingLeg(t *testing.T) {
 	assert.Equal(t, 10*time.Second, res.elapsed, "the pause is capped at the time left")
 }
 
+func TestWaitSAsRequiresEveryLegInOnePoll(t *testing.T) {
+	clk := &fakeClock{now: time.Unix(0, 0)}
+	start := clk.now
+	res := waitSAs([]testLeg{"early", "late"}, 10*time.Second,
+		func(l testLeg, _ time.Duration) (bool, error) {
+			up := clk.now.Sub(start) >= 4*time.Second
+			return (l == "early") != up, nil // early goes down as late comes up
+		},
+		func(testLeg, time.Duration) {},
+		clk.Now, clk.Advance)
+	assert.False(t, res.ready, "an SA seen in an earlier poll must still be there")
+	assert.Equal(t, []string{"early"}, res.missing)
+}
+
 func TestWaitSAsStartsNothingAfterExpiry(t *testing.T) {
 	clk := &fakeClock{now: time.Unix(0, 0)}
 	var probes, triggers int

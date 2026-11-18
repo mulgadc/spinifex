@@ -33,28 +33,29 @@ func waitSAs[L fmt.Stringer](legs []L, budget time.Duration, ready func(L, time.
 	trigger func(L, time.Duration), now func() time.Time, pause func(time.Duration)) saWaitResult {
 	start := now()
 	deadline := start.Add(budget)
-	lastErr := make(map[int]error, len(legs))
-	missing := make([]int, 0, len(legs))
-	for i := range legs {
-		missing = append(missing, i)
-	}
+	up := make([]bool, len(legs))
+	lastErr := make([]error, len(legs))
+	var missing []int
 	for {
-		var still []int
-		for _, i := range missing {
+		// Every leg is probed on every poll: an SA seen earlier may have gone.
+		// Ready needs one complete poll; a leg cut off keeps its last result.
+		complete := true
+		for i := range legs {
 			left := deadline.Sub(now())
 			if left <= 0 {
-				still = append(still, i)
+				complete = false
 				continue
 			}
-			ok, err := ready(legs[i], min(10*time.Second, left))
-			lastErr[i] = err
-			if !ok {
-				still = append(still, i)
+			up[i], lastErr[i] = ready(legs[i], min(10*time.Second, left))
+		}
+		missing = missing[:0]
+		for i := range legs {
+			if !up[i] {
+				missing = append(missing, i)
 			}
 		}
-		missing = still
 		late := now().After(deadline)
-		if len(missing) == 0 && !late {
+		if len(missing) == 0 && complete && !late {
 			return saWaitResult{ready: true, elapsed: now().Sub(start)}
 		}
 		if late || !deadline.After(now()) {
@@ -177,6 +178,8 @@ func triggerAcquire(t *testing.T, ssh *harness.PeerSSH, l ipsecLeg, limit time.D
 // only. Returns the legs still missing an SA, or nil.
 func waitCrossHostSAs(t *testing.T, src, dst harness.Node) []string {
 	t.Helper()
+	// The budget covers setup too, so the phase never runs past it.
+	start := time.Now()
 	ssh := harness.NewPeerSSH()
 	if !ipsecRequested(t, ssh, src) || !ipsecRequested(t, ssh, dst) {
 		harness.Detail(t, "ipsec_sa_wait", "skipped")
@@ -187,7 +190,7 @@ func waitCrossHostSAs(t *testing.T, src, dst harness.Node) []string {
 		{self: src, peer: dst, selfEncap: srcEncap, peerEncap: dstEncap},
 		{self: dst, peer: src, selfEncap: dstEncap, peerEncap: srcEncap},
 	}
-	res := waitSAs(legs, ipsecSAReadyTimeout,
+	res := waitSAs(legs, ipsecSAReadyTimeout-time.Since(start),
 		func(l ipsecLeg, limit time.Duration) (bool, error) { return legHasGeneveSA(ssh, l, limit) },
 		func(l ipsecLeg, limit time.Duration) { triggerAcquire(t, ssh, l, limit) },
 		time.Now, time.Sleep)
@@ -195,6 +198,6 @@ func waitCrossHostSAs(t *testing.T, src, dst harness.Node) []string {
 		harness.Detail(t, "ipsec_sa_wait", "expired", "ipsec_sa_missing", strings.Join(res.missing, "; "))
 		return res.missing
 	}
-	harness.Detail(t, "ipsec_sa_wait", "ready", "ipsec_sa_ready_ms", res.elapsed.Milliseconds())
+	harness.Detail(t, "ipsec_sa_wait", "ready", "ipsec_sa_ready_ms", time.Since(start).Milliseconds())
 	return nil
 }

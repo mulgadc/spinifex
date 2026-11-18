@@ -155,3 +155,31 @@ func TestServiceUnitsAreServicesOnly(t *testing.T) {
 	assert.Contains(t, units, "spinifex-daemon.service")
 	assert.NotContains(t, units, "spinifex.target")
 }
+
+// The pre-swap gate must not see services on the old binary, while the full
+// check still reports them; otherwise make deploy can never pass.
+func TestCheckHostAt_RunningBinariesSelectable(t *testing.T) {
+	const (
+		unit = "spinifex-daemon.service"
+		pid  = 4242
+	)
+	root := fakeProc(t, pid, "usr/local/bin/spx", "/usr/local/bin/spx"+deletedSuffix)
+	stubMainPID(t, unit, pid)
+
+	serviceRows := func(results []Result) []Result {
+		var rows []Result
+		for _, r := range results {
+			if r.Kind == "service" {
+				rows = append(rows, r)
+			}
+		}
+		return rows
+	}
+
+	assert.Empty(t, serviceRows(checkHostAt(root, false)))
+
+	rows := serviceRows(CheckHostAt(root))
+	require.Len(t, rows, 1)
+	assert.Equal(t, unit, rows[0].Path)
+	assert.Equal(t, Stale, rows[0].Status)
+}

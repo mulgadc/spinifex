@@ -9,7 +9,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var adminPreflightQuiet bool
+var (
+	adminPreflightQuiet               bool
+	adminPreflightSkipRunningBinaries bool
+)
 
 var adminPreflightCmd = &cobra.Command{
 	Use:   "preflight",
@@ -23,6 +26,9 @@ It also reports any running service still executing a replaced binary.
 Overwriting /usr/local/bin/spx while spinifex.target is up does not move the
 services onto it: each keeps executing the replaced inode until it restarts,
 so a node can serve a mixture of two builds indefinitely.
+--skip-running-binaries leaves that check out, for a gate run before a binary
+swap: make deploy uses it before installing spx, then runs the full check
+after restarting spinifex.target.
 
 On x86_64 it checks that the QEMU binary the daemon will run has the microvm
 machine type, and that the microvm firmware is installed: load balancers boot
@@ -49,10 +55,16 @@ Failed.`,
 func init() {
 	adminCmd.AddCommand(adminPreflightCmd)
 	adminPreflightCmd.Flags().BoolVar(&adminPreflightQuiet, "quiet", false, "print only non-OK rows")
+	adminPreflightCmd.Flags().BoolVar(&adminPreflightSkipRunningBinaries, "skip-running-binaries", false,
+		"leave out the check for services running a replaced binary (for a gate run before a binary swap)")
 }
 
 func runAdminPreflight(_ *cobra.Command, _ []string) error {
-	results := preflight.CheckHost()
+	check := preflight.CheckHost
+	if adminPreflightSkipRunningBinaries {
+		check = preflight.CheckHostAssets
+	}
+	results := check()
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "PATH\tKIND\tSTATUS\tDETAIL")

@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -202,7 +203,13 @@ func (r *reconciler) applyPeeringRoutes(ctx context.Context, intent IntentState,
 		if _, ok := actual.Routers[topology.VPCRouter(vpcID)]; !ok {
 			continue
 		}
-		if err := r.peeringRoutes.SyncPeeringRoutes(ctx, vpcID, want[vpcID]); err != nil {
+		err := r.peeringRoutes.SyncPeeringRoutes(ctx, vpcID, want[vpcID])
+		if errors.Is(err, ovn.ErrLogicalRouterNotFound) {
+			// Deleted since the snapshot; the VPC's own teardown converges it.
+			slog.Debug("reconcile/apply: peering route sync skipped, router gone", "vpc_id", vpcID, "err", err)
+			continue
+		}
+		if err != nil {
 			slog.Error("reconcile/apply: peering route sync failed", "vpc_id", vpcID, "err", err)
 			res.fail(classPeeringRoute, vpcID, err)
 		}

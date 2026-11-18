@@ -326,7 +326,7 @@ func (m *Client) GetLogicalRouter(_ context.Context, name string) (*nbdb.Logical
 	defer m.Mu.Unlock()
 	lr, exists := m.Routers[name]
 	if !exists {
-		return nil, fmt.Errorf("logical router %q not found", name)
+		return nil, fmt.Errorf("%w: %q", ovn.ErrLogicalRouterNotFound, name)
 	}
 	result := *lr
 	return &result, nil
@@ -790,7 +790,7 @@ func (m *Client) ListLogicalRouterPolicies(_ context.Context, routerName string)
 	defer m.Mu.Unlock()
 	lr, exists := m.Routers[routerName]
 	if !exists {
-		return nil, fmt.Errorf("logical router %q not found", routerName)
+		return nil, fmt.Errorf("%w: %q", ovn.ErrLogicalRouterNotFound, routerName)
 	}
 	out := make([]nbdb.LogicalRouterPolicy, 0, len(lr.Policies))
 	for _, uuid := range lr.Policies {

@@ -545,7 +545,7 @@ func (c *LiveClient) GetLogicalRouter(ctx context.Context, name string) (*nbdb.L
 		return nil, fmt.Errorf("get logical router: %w", err)
 	}
 	if len(routers) == 0 {
-		return nil, fmt.Errorf("logical router %q not found", name)
+		return nil, fmt.Errorf("%w: %q", ErrLogicalRouterNotFound, name)
 	}
 	return &routers[0], nil
 }

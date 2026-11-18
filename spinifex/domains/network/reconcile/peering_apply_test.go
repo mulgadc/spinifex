@@ -10,6 +10,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn/mock"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 )
@@ -436,5 +437,43 @@ func TestReconcile_PeeringUnconfirmedLinkDoesNotDeliver(t *testing.T) {
 		if got := peeringRows(m, router, policy.PeeringRerouteRole); got != 0 {
 			t.Errorf("%s reroutes while unconfirmed = %d, want 0", router, got)
 		}
+	}
+}
+
+type failingPeeringRoutes struct{ err error }
+
+func (f failingPeeringRoutes) SyncPeeringRoutes(context.Context, string, []nbdb.LogicalRouterPolicy) error {
+	return f.err
+}
+
+// A router deleted after the pass snapshot is skipped without failing the
+// pass; the surviving VPC still syncs.
+func TestApplyPeeringRoutes_RouterGoneMidPassIsSkipped(t *testing.T) {
+	rec, m := newTestReconciler(t)
+	ctx := context.Background()
+	if err := m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: topology.VPCRouter("vpc-b")}); err != nil {
+		t.Fatalf("CreateLogicalRouter: %v", err)
+	}
+	actual := ActualState{Routers: map[string]struct{}{
+		topology.VPCRouter("vpc-a"): {}, topology.VPCRouter("vpc-b"): {},
+	}}
+	res := &passResult{}
+	rec.applyPeeringRoutes(ctx, peeringIntent(true), actual, nil, res)
+	if len(res.failures) != 0 {
+		t.Fatalf("failures = %v, want none", res.failures)
+	}
+	if got := peeringRows(m, topology.VPCRouter("vpc-b"), policy.PeeringRouteDropRole); got != 1 {
+		t.Fatalf("vpc-b drop rows = %d, want 1", got)
+	}
+}
+
+func TestApplyPeeringRoutes_OtherSyncErrorFailsPass(t *testing.T) {
+	rec, _ := newTestReconciler(t)
+	rec.peeringRoutes = failingPeeringRoutes{err: errors.New("ovsdb transact failed")}
+	actual := ActualState{Routers: map[string]struct{}{topology.VPCRouter("vpc-a"): {}}}
+	res := &passResult{}
+	rec.applyPeeringRoutes(context.Background(), peeringIntent(true), actual, nil, res)
+	if len(res.failures) != 1 || res.failures[0].class != classPeeringRoute || res.failures[0].id != "vpc-a" {
+		t.Fatalf("failures = %v, want one peering_route failure for vpc-a", res.failures)
 	}
 }

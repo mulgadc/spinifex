@@ -19,6 +19,9 @@ var ErrPortGroupNotFound = errors.New("port group not found")
 // ErrAddressSetNotFound is returned when an address set is absent (use errors.Is for idempotency).
 var ErrAddressSetNotFound = errors.New("address set not found")
 
+// ErrLogicalRouterNotFound is returned when a logical router is absent (use errors.Is).
+var ErrLogicalRouterNotFound = errors.New("logical router not found")
+
 // ACLSpec describes an OVN ACL rule for attachment to a port group.
 type ACLSpec struct {
 	Direction string // "to-lport" or "from-lport"

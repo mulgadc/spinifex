@@ -760,6 +760,10 @@ func TestManagerRollbackClaim_LeavesClaimTimePreBoundGPU(t *testing.T) {
 	if _, _, err := m.Claim("i-001", ""); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
+	// A two-GPU request on a one-GPU pool: the second claim fails, as the claimer sees it.
+	if _, _, err := m.Claim("i-001", ""); err == nil {
+		t.Fatal("want the second Claim to fail on a one-GPU pool")
+	}
 
 	if err := m.RollbackClaim("i-001"); err != nil {
 		t.Fatalf("RollbackClaim: %v", err)
@@ -777,6 +781,10 @@ func TestManagerRollbackClaim_RestoresClaimMovedGPU(t *testing.T) {
 	m := newManagerForTest([]GPUDevice{gpu}, root)
 	if _, _, err := m.Claim("i-001", ""); err != nil {
 		t.Fatalf("Claim: %v", err)
+	}
+	// A two-GPU request on a one-GPU pool: the second claim fails, as the claimer sees it.
+	if _, _, err := m.Claim("i-001", ""); err == nil {
+		t.Fatal("want the second Claim to fail on a one-GPU pool")
 	}
 
 	if err := m.RollbackClaim("i-001"); err != nil {

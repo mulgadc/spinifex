@@ -15,8 +15,10 @@ import (
 type fakeDemuxer struct {
 	mu      sync.Mutex
 	flows   map[string][]netip.AddrPort
-	unowned int
+	unowned []uint64
+	rmErr   error
 	readErr error
+	setErr  error
 	sets    []string
 }
 
@@ -28,7 +30,7 @@ func (f *fakeDemuxer) EndpointDemuxStates(_ context.Context, eniIDs []string) (E
 	if f.readErr != nil {
 		return EndpointDemuxStates{}, f.readErr
 	}
-	out := EndpointDemuxStates{ByENI: map[string][]netip.AddrPort{}, Unowned: f.unowned}
+	out := EndpointDemuxStates{ByENI: map[string][]netip.AddrPort{}, Unowned: slices.Clone(f.unowned)}
 	for _, e := range eniIDs {
 		out.ByENI[e] = slices.Clone(f.flows[e])
 	}
@@ -42,11 +44,24 @@ func (f *fakeDemuxer) EnsureEndpointDemux(_ context.Context, eniID string, entri
 		f.flows = map[string][]netip.AddrPort{}
 	}
 	f.sets = append(f.sets, eniID)
+	if f.setErr != nil {
+		return f.setErr
+	}
 	if len(entries) == 0 {
 		delete(f.flows, eniID)
 	} else {
 		f.flows[eniID] = slices.Clone(entries)
 	}
+	return nil
+}
+
+func (f *fakeDemuxer) RemoveEndpointDemuxCookie(_ context.Context, cookie uint64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.rmErr != nil {
+		return f.rmErr
+	}
+	f.unowned = slices.DeleteFunc(f.unowned, func(c uint64) bool { return c == cookie })
 	return nil
 }
 
@@ -210,10 +225,10 @@ func TestReconcileEndpointDemux_UnreadableStateCountsAsHeld(t *testing.T) {
 	}
 }
 
-// A fresh process may inherit flows, and a flow no running guest owns is still
-// on the bridge: both count until a pass shows none.
+// A fresh process may inherit flows, so it reports them held until a pass
+// shows none. A flow no running guest owns is removed; until it is, it holds.
 func TestEndpointDemuxHeld_UntilAPassShowsNone(t *testing.T) {
-	d := &fakeDemuxer{unowned: 1}
+	d := &fakeDemuxer{unowned: []uint64{0xa1e500000001}, rmErr: errors.New("ovs down")}
 	m := demuxManager(d, routed())
 	if !m.EndpointDemuxHeld() {
 		t.Fatal("a process that has not read the bridge reports no demux")
@@ -222,14 +237,17 @@ func TestEndpointDemuxHeld_UntilAPassShowsNone(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !m.EndpointDemuxHeld() {
-		t.Error("an unowned flow does not count as held")
+		t.Error("an unowned flow that could not be removed does not count as held")
 	}
-	d.unowned = 0
+	d.rmErr = nil
 	if err := m.ReconcileEndpointDemux(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if len(d.unowned) != 0 {
+		t.Errorf("unowned flows left: %#x", d.unowned)
+	}
 	if m.EndpointDemuxHeld() {
-		t.Error("node with no flow reports a demux")
+		t.Error("node with no flow left reports a demux")
 	}
 }
 
@@ -255,5 +273,33 @@ func TestReconcileEndpointDemux_MixedPassReportsHeld(t *testing.T) {
 	}
 	if !m.EndpointDemuxHeld() {
 		t.Error("node with installed flows reports none")
+	}
+}
+
+// A demux update that fails may have left the tap's flows partly written, so
+// the node keeps reporting them held whether it was installing or removing.
+func TestReconcileEndpointDemux_FailedUpdateCountsAsHeld(t *testing.T) {
+	cases := map[string]struct {
+		flows  map[string][]netip.AddrPort
+		routes []string
+	}{
+		"removal":      {flows: map[string][]netip.AddrPort{"eni-a": sortedEntries()}, routes: []string{"subnet-other"}},
+		"installation": {flows: map[string][]netip.AddrPort{}, routes: []string{"subnet-0abc"}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			d := &fakeDemuxer{flows: tc.flows, setErr: errors.New("ovs-ofctl failed")}
+			m := demuxManager(d, routed(tc.routes...))
+			m.Insert(imdsTestVM("i-a", "eni-a", StateRunning))
+			if err := m.ReconcileEndpointDemux(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(d.sets) != 1 {
+				t.Fatalf("attempted %d updates, want 1", len(d.sets))
+			}
+			if !m.EndpointDemuxHeld() {
+				t.Error("a node whose demux update failed reports no flows")
+			}
+		})
 	}
 }

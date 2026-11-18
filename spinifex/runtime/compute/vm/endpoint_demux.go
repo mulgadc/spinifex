@@ -19,13 +19,15 @@ type EndpointDemuxer interface {
 	EndpointDemuxStates(ctx context.Context, eniIDs []string) (EndpointDemuxStates, error)
 	// EnsureEndpointDemux makes eniID's demux exactly entries; empty removes it.
 	EnsureEndpointDemux(ctx context.Context, eniID string, entries []netip.AddrPort) error
+	// RemoveEndpointDemuxCookie removes the flows under a cookie no ENI owns.
+	RemoveEndpointDemuxCookie(ctx context.Context, cookie uint64) error
 }
 
 // EndpointDemuxStates is one read of the node's demux flows: the destinations
-// each listed ENI's tap sends to the proxy, and the flows no listed ENI owns.
+// each listed ENI's tap sends to the proxy, and the cookies no listed ENI owns.
 type EndpointDemuxStates struct {
 	ByENI   map[string][]netip.AddrPort
-	Unowned int
+	Unowned []uint64
 }
 
 // EndpointIntent is what the node's demux should be: the subnets whose route
@@ -89,7 +91,9 @@ func (m *Manager) ReconcileEndpointDemux(ctx context.Context) error {
 		return fmt.Errorf("read endpoint demux: %w", err)
 	}
 
-	held := states.Unowned > 0
+	// Only this loop installs demux flows, so a cookie no running guest owns
+	// was left by a teardown that failed to clear it, and would hold rollback.
+	held := m.removeUnownedEndpointDemux(ctx, states.Unowned)
 	var mu sync.Mutex
 	sem := make(chan struct{}, imdsRepairConcurrency)
 	var wg sync.WaitGroup
@@ -118,6 +122,25 @@ func (m *Manager) ReconcileEndpointDemux(ctx context.Context) error {
 	wg.Wait()
 	m.endpointDemux.clear.Store(!held)
 	return nil
+}
+
+// removeUnownedEndpointDemux removes each unowned cookie's flows and reports
+// whether any may remain.
+func (m *Manager) removeUnownedEndpointDemux(ctx context.Context, cookies []uint64) bool {
+	left := false
+	for _, c := range cookies {
+		rmCtx, cancel := context.WithTimeout(ctx, imdsRepairTimeout)
+		err := m.deps.EndpointDemuxer.RemoveEndpointDemuxCookie(rmCtx, c)
+		cancel()
+		if err != nil {
+			slog.Error("endpoint: removing a demux no running guest owns failed; retrying next pass",
+				"cookie", fmt.Sprintf("%#x", c), "err", err)
+			left = true
+			continue
+		}
+		slog.Info("endpoint: removed a demux no running guest owns", "cookie", fmt.Sprintf("%#x", c))
+	}
+	return left
 }
 
 // ensureEndpointDemux sets one guest's demux under its ENI lock, so it cannot

@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -115,7 +116,9 @@ func TestEndpointDemuxStates_GroupsByTap(t *testing.T) {
 
 	got, unowned, err := EndpointDemuxStates(context.Background(), s, []string{demuxENI, flushed})
 	require.NoError(t, err)
-	assert.Equal(t, 1, unowned, "the flow of an ENI not asked for")
+	theirsCookie, err := strconv.ParseUint(theirs, 0, 64)
+	require.NoError(t, err)
+	assert.Equal(t, []uint64{theirsCookie}, unowned, "the cookie of an ENI not asked for")
 	others, _, err := EndpointDemuxStates(context.Background(), s, []string{other})
 	require.NoError(t, err)
 	assert.Equal(t, []EndpointEntry{entry("192.0.2.10:8443"), entry("192.0.2.12:8443")}, got[demuxENI])
@@ -136,4 +139,19 @@ func TestEndpointDemuxStates_DumpFailureReadsNothing(t *testing.T) {
 	got, _, err := EndpointDemuxStates(context.Background(), failingRunner{}, []string{demuxENI})
 	require.Error(t, err)
 	assert.Nil(t, got)
+}
+
+// An unowned cookie's flows are deleted by exactly that cookie, and a cookie
+// outside the endpoint range, such as an IMDS flow's, is never touched.
+func TestRemoveEndpointDemuxCookie_OnlyEndpointCookies(t *testing.T) {
+	cookie := endpointFlowCookie(IMDSEndpointName(demuxENI))
+	c, err := strconv.ParseUint(cookie, 0, 64)
+	require.NoError(t, err)
+	s := &scriptRunner{}
+	require.NoError(t, RemoveEndpointDemuxCookie(context.Background(), s, c))
+	assert.Equal(t, []string{"ovs-ofctl del-flows " + IMDSBridge + " cookie=" + cookie + "/-1"}, s.calls)
+
+	s = &scriptRunner{}
+	require.Error(t, RemoveEndpointDemuxCookie(context.Background(), s, 0x1a5d00000001))
+	assert.Empty(t, s.calls)
 }

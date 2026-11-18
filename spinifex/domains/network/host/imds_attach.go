@@ -138,6 +138,12 @@ func (p *OVSPlumber) EndpointDemuxStates(ctx context.Context, eniIDs []string) (
 	return out, nil
 }
 
+// RemoveEndpointDemuxCookie removes the demux flows under a cookie no running
+// guest owns.
+func (p *OVSPlumber) RemoveEndpointDemuxCookie(ctx context.Context, cookie uint64) error {
+	return RemoveEndpointDemuxCookie(ctx, NewExecRunner(), cookie)
+}
+
 // EnsureEndpointDemux makes eniID's tap demux exactly entries to the proxy;
 // an empty set removes its demux.
 func (p *OVSPlumber) EnsureEndpointDemux(ctx context.Context, eniID string, entries []netip.AddrPort) error {

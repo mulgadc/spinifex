@@ -149,6 +149,10 @@ type VM struct {
 	// waiter reports a crash only while it is current; a reboot clears it.
 	qemuPID atomic.Int64 `json:"-"`
 
+	// mgmtGen is the management launch generation this object launched or
+	// adopted; 0 binds it to none. Teardown acts only for that launch.
+	mgmtGen atomic.Uint64 `json:"-"`
+
 	// DesiredState is the state this instance has been asked to be in, as
 	// opposed to Status, which is the state it is observed to be in.
 	DesiredState DesiredState `json:"desired_state,omitempty"`

@@ -887,6 +887,7 @@ func (d *Daemon) buildVMManagerDeps() vm.Deps {
 		ConsumeCleanShutdownMarker: d.consumeCleanShutdownMarker(),
 		BackingStoreReady:          func() bool { return d.checkPredastoreReady() && d.checkJetStreamReady() },
 		EBSProviderReady:           d.ebsProviderReady,
+		MgmtLaunch:                 d.mgmtLaunchDeps(),
 		UEFIVarStore: vm.UEFIVarStoreDeps{
 			Objects:  d.instanceObjects,
 			Bucket:   d.config.Predastore.Bucket,
@@ -1002,7 +1003,8 @@ func (a *instanceCleanerAdapter) CleanupMgmtNetwork(instance *vm.VM) {
 	// Before Release: once the address is back in the pool the next launch can
 	// take it, and it must not find the terminated instance's MAC still cached.
 	a.d.invalidateMgmtNeigh(instance.ID, instance.MgmtIP)
-	if a.d.mgmtIPAllocator != nil {
+	// In durable mode the VM manager releases it once the launch is proven stopped.
+	if a.d.mgmtIPAllocator != nil && !a.d.mgmtIPAllocator.isDurable() {
 		a.d.mgmtIPAllocator.Release(instance.ID)
 	}
 }

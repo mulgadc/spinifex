@@ -313,8 +313,8 @@ func TestBuildVMManagerDeps_WiresBeforeInstanceRelaunch(t *testing.T) {
 	assert.Equal(t, wantPC, gotPC, "hook must point at prepareInstanceRelaunch")
 
 	// Sanity: the wired hook is callable and returns nil for non-ELBv2 VMs.
-	require.NoError(t, deps.Hooks.BeforeInstanceRelaunch(&vm.VM{ID: "i-noop", ManagedBy: ""}))
-	require.Error(t, deps.Hooks.BeforeInstanceRelaunch(&vm.VM{ID: "i-svc", ManagedBy: tags.ManagedByELBv2}),
+	require.NoError(t, deps.Hooks.BeforeInstanceRelaunch(&vm.VM{ID: "i-noop", ManagedBy: ""}, false))
+	require.Error(t, deps.Hooks.BeforeInstanceRelaunch(&vm.VM{ID: "i-svc", ManagedBy: tags.ManagedByELBv2}, false),
 		"ELBv2 VM with nil elbv2Service must error rather than silently no-op")
 }
 
@@ -328,7 +328,7 @@ func TestPrepareInstanceRelaunch_ClaimsTheManagementAddress(t *testing.T) {
 	require.NoError(t, err)
 
 	d := &Daemon{config: &config.Config{}, vmMgr: vm.NewManager(), mgmtIPAllocator: alloc}
-	require.NoError(t, d.prepareInstanceRelaunch(&vm.VM{ID: "i-moved", MgmtIP: "10.36.8.42"}))
+	require.NoError(t, d.prepareInstanceRelaunch(&vm.VM{ID: "i-moved", MgmtIP: "10.36.8.42"}, false))
 
 	assert.Equal(t, 1, alloc.AllocatedCount(),
 		"an instance that arrived here holds its address here, and the allocator has to know before the next launch")
@@ -356,7 +356,7 @@ func TestPrepareInstanceRelaunch_Durable_RefusesAnUnreservedAddress(t *testing.T
 			store := createDurableMgmtBucket(t, jsm, tc.entries...)
 			d := &Daemon{config: &config.Config{}, vmMgr: vm.NewManager(), mgmtIPAllocator: newDurableAllocator(t, jsm, "node1")}
 
-			err := d.prepareInstanceRelaunch(&vm.VM{ID: "i-1", MgmtIP: "10.15.8.10"})
+			err := d.prepareInstanceRelaunch(&vm.VM{ID: "i-1", MgmtIP: "10.15.8.10"}, false)
 			if tc.wantErr == nil {
 				require.NoError(t, err)
 			} else {
@@ -365,6 +365,17 @@ func TestPrepareInstanceRelaunch_Durable_RefusesAnUnreservedAddress(t *testing.T
 			assert.ElementsMatch(t, tc.entries, durableEntries(t, store), "a refused relaunch changes no reservation")
 		})
 	}
+}
+
+// A customer start leaves a released address to the VM manager, which claims
+// it only once the previous launch is proven stopped; the hook changes nothing.
+func TestPrepareInstanceRelaunch_DurableExplicitStartLeavesTheClaimToTheLaunch(t *testing.T) {
+	jsm := newTestMgmtJSM(t)
+	store := createDurableMgmtBucket(t, jsm)
+	d := &Daemon{config: &config.Config{}, vmMgr: vm.NewManager(), mgmtIPAllocator: newDurableAllocator(t, jsm, "node1")}
+
+	require.NoError(t, d.prepareInstanceRelaunch(&vm.VM{ID: "i-1", MgmtIP: "10.15.8.10"}, true))
+	assert.Empty(t, durableEntries(t, store))
 }
 
 // With no allocator (no bridge, or a refused allocator mode) only legacy mode
@@ -386,7 +397,7 @@ func TestPrepareInstanceRelaunch_NoAllocatorFailsClosedOutsideLegacy(t *testing.
 			cfg := &config.Config{}
 			cfg.Daemon.MgmtIPAM = tc.mode
 			d := &Daemon{config: cfg, vmMgr: vm.NewManager()}
-			err := d.prepareInstanceRelaunch(&vm.VM{ID: "i-1", MgmtIP: tc.mgmtIP})
+			err := d.prepareInstanceRelaunch(&vm.VM{ID: "i-1", MgmtIP: tc.mgmtIP}, false)
 			if tc.wantErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "no \""+tc.mode+"\" mgmt IP allocator")

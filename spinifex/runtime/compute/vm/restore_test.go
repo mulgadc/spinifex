@@ -837,7 +837,7 @@ func TestRelaunchAll(t *testing.T) {
 		m, mounter, _, _ := relaunchTestManager(t)
 		var hookOrder []string
 		var mu sync.Mutex
-		m.deps.Hooks.BeforeInstanceRelaunch = func(v *VM) error {
+		m.deps.Hooks.BeforeInstanceRelaunch = func(v *VM, _ bool) error {
 			mu.Lock()
 			hookOrder = append(hookOrder, "hook:"+v.ID)
 			mu.Unlock()
@@ -881,7 +881,7 @@ func TestRelaunchAll(t *testing.T) {
 			TransitionState: rt.apply,
 			ShutdownSignal:  func() bool { return false },
 			Hooks: ManagerHooks{
-				BeforeInstanceRelaunch: func(*VM) error {
+				BeforeInstanceRelaunch: func(*VM, bool) error {
 					return errors.New("blob regeneration failed")
 				},
 			},

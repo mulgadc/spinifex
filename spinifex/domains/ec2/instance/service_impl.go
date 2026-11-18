@@ -2793,7 +2793,7 @@ func (s *InstanceServiceImpl) StartStoppedInstance(ctx context.Context, input *S
 	}
 
 	// Reset node-local fields that are stale after cross-node migration.
-	if err := s.launchClaimedInstance(ctx, instance, func() { s.restoreClaimedStoppedInstance(ctx, instance) }); err != nil {
+	if err := s.launchClaimedInstance(ctx, instance, true, func() { s.restoreClaimedStoppedInstance(ctx, instance) }); err != nil {
 		return nil, err
 	}
 
@@ -2865,7 +2865,9 @@ func (s *InstanceServiceImpl) capacityRefusal(ctx context.Context, instance *vm.
 // happen, which is the one thing the two callers disagree about: an explicit
 // start returns it to the stopped store, a recovery returns it to the node it
 // was taken from.
-func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instance *vm.VM, undo func()) error {
+// explicitStart is a customer start, which may take back a released management
+// address; recovery only re-confirms the one the instance holds.
+func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instance *vm.VM, explicitStart bool, undo func()) error {
 	// Before anything is stamped or claimed, so the record handed back is the
 	// one that was claimed.
 	if err := s.vmMgr.CheckUEFIVarStore(ctx, instance); err != nil {
@@ -2977,10 +2979,16 @@ func (s *InstanceServiceImpl) launchClaimedInstance(ctx context.Context, instanc
 	// wrote it. A system instance whose boot blobs are not rebuilt here is handed
 	// paths that exist only on the node it is being recovered from, so it either
 	// refuses to start or starts with no network configuration at all.
-	launchErr := s.vmMgr.PrepareRelaunch(instance)
+	prepare := s.vmMgr.PrepareRelaunch
+	if explicitStart {
+		prepare = s.vmMgr.PrepareStart
+	}
+	launchErr := prepare(instance)
 	if launchErr != nil {
 		slog.ErrorContext(ctx, "launchClaimedInstance: could not rebuild this node's copy of the instance's boot state",
 			"instanceId", instance.ID, "managedBy", instance.ManagedBy, "err", launchErr)
+	} else if explicitStart {
+		launchErr = s.vmMgr.StartClaimed(ctx, instance)
 	} else {
 		launchErr = s.vmMgr.Run(ctx, instance)
 	}
@@ -3031,7 +3039,7 @@ func (s *InstanceServiceImpl) RecoverInstance(ctx context.Context, instance *vm.
 	// it. Pending is the same shape a drain-stop leaves behind, which restore
 	// already relaunches from.
 	instance.Status = vm.StatePending
-	return s.launchClaimedInstance(ctx, instance, undo)
+	return s.launchClaimedInstance(ctx, instance, false, undo)
 }
 
 // volumeHeldElsewhereError converts a mount the EBS provider refused with its

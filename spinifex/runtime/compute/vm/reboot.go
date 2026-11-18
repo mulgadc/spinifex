@@ -152,7 +152,9 @@ func (m *Manager) rebootNow(ctx context.Context, instance *VM) error {
 // returns the console log size before the new process ran.
 func (m *Manager) relaunchGuest(ctx context.Context, instance *VM) (int64, error) {
 	// Hot-plug and stop both act on the process, so neither may land on one
-	// that is being replaced.
+	// that is being replaced; the launch guard also covers other VM objects.
+	unlockMgmt := m.lockMgmt(instance)
+	defer unlockMgmt()
 	instance.attachMu.Lock()
 	defer instance.attachMu.Unlock()
 	instance.relaunchMu.Lock()
@@ -160,6 +162,10 @@ func (m *Manager) relaunchGuest(ctx context.Context, instance *VM) (int64, error
 
 	if status := m.Status(instance); status != StateRunning {
 		return 0, fmt.Errorf("%w: reboot of %s interrupted in state %s", ErrInvalidTransition, instance.ID, status)
+	}
+	// A superseded object would end the replacement through the shared pidfile.
+	if err := m.mgmtCurrentLocked(instance, m.mgmtGeneration(instance)); err != nil {
+		return 0, fmt.Errorf("reboot of %s: %w", instance.ID, err)
 	}
 	if err := m.endQEMUForRelaunch(ctx, instance); err != nil {
 		return 0, fmt.Errorf("end QEMU for reboot: %w", err)
@@ -171,7 +177,7 @@ func (m *Manager) relaunchGuest(ctx context.Context, instance *VM) (int64, error
 	}
 
 	baseline := consoleLogSize(instance)
-	if err := startRelaunchedQEMU(m, instance); err != nil {
+	if err := m.startGuestQEMULocked(instance, func(v *VM) error { return startRelaunchedQEMU(m, v) }, false); err != nil {
 		return 0, fmt.Errorf("%w: start QEMU: %w", errRelaunchFailed, err)
 	}
 	fresh, err := newQMPClientWithHandshake(ctx, instance)

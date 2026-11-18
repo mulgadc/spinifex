@@ -80,10 +80,13 @@ func (m *Manager) FenceVolume(ctx context.Context, volumeID, reason string) stri
 	slog.ErrorContext(ctx, "Instance fenced: another node owns its volume, so the guest is being stopped here",
 		"instanceId", instance.ID, "volumeId", volumeID, "reason", reason)
 
+	mgmtGen := m.mgmtGeneration(instance)
 	m.goroutineWg.Go(func() {
-		m.killFencedQEMU(ctx, instance)
-		m.dropUEFIWriter(instance.ID, "fence", true)
-		m.cleanupTapDevices(instance)
+		m.mgmtTeardown(instance, mgmtGen, "fence", func() {
+			m.killFencedQEMU(ctx, instance)
+			m.dropUEFIWriter(instance.ID, "fence", true)
+			m.cleanupTapDevices(instance)
+		})
 		m.Inspect(instance, func(v *VM) { v.LastNode = m.deps.NodeID })
 		if err := m.writeRunningState(); err != nil {
 			slog.ErrorContext(ctx, "FenceVolume: failed to persist state after fencing",

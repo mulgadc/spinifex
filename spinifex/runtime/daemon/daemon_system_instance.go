@@ -361,7 +361,7 @@ func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInp
 	if d.mgmtIPAllocator != nil && d.mgmtBridgeIP != "" {
 		mgmtBridge := d.mgmtBridgeName()
 
-		mgmtIP, allocErr := d.mgmtIPAllocator.Allocate(instance.ID)
+		mgmtIP, inserted, allocErr := d.mgmtIPAllocator.AllocateNew(instance.ID)
 		if allocErr != nil {
 			if mgmtRequired {
 				d.cleanupFailedSystemInstance(instance, instanceType)
@@ -382,8 +382,13 @@ func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInp
 
 			tapName := vm.MgmtTapName(instance.ID)
 			tapErr := d.networkPlumber.SetupTap(vm.TapSpec{Name: tapName, Bridge: mgmtBridge})
+			if tapErr == nil {
+				if recErr := d.recordNewMgmtLaunch(instance, inserted); recErr != nil {
+					tapErr = fmt.Errorf("record mgmt launch: %w", recErr)
+				}
+			}
 			if tapErr != nil {
-				d.mgmtIPAllocator.Release(instance.ID)
+				d.releaseUnlaunchedMgmtIP(instance.ID, inserted)
 				instance.MgmtMAC = ""
 				instance.MgmtIP = ""
 				if mgmtRequired {
@@ -610,15 +615,21 @@ func (d *Daemon) attachSystemMgmtNIC(inst *vm.VM) error {
 		return errors.New("sysinstance: management bridge unavailable; system VM would have no route to the daemon")
 	}
 	mgmtBridge := d.mgmtBridgeName()
-	mgmtIP, err := d.mgmtIPAllocator.Allocate(inst.ID)
+	mgmtIP, inserted, err := d.mgmtIPAllocator.AllocateNew(inst.ID)
 	if err != nil {
 		return fmt.Errorf("allocate mgmt IP: %w", err)
 	}
 	inst.MgmtMAC = vm.GenerateMgmtMAC(inst.ID)
 	inst.MgmtIP = mgmtIP
 	tapName := vm.MgmtTapName(inst.ID)
-	if err := d.networkPlumber.SetupTap(vm.TapSpec{Name: tapName, Bridge: mgmtBridge}); err != nil {
-		d.mgmtIPAllocator.Release(inst.ID)
+	err = d.networkPlumber.SetupTap(vm.TapSpec{Name: tapName, Bridge: mgmtBridge})
+	if err == nil {
+		if recErr := d.recordNewMgmtLaunch(inst, inserted); recErr != nil {
+			err = fmt.Errorf("record mgmt launch: %w", recErr)
+		}
+	}
+	if err != nil {
+		d.releaseUnlaunchedMgmtIP(inst.ID, inserted)
 		inst.MgmtMAC = ""
 		inst.MgmtIP = ""
 		return fmt.Errorf("setup mgmt tap: %w", err)
@@ -790,12 +801,15 @@ func (d *Daemon) rebootSystemInstanceLocal(instanceID string) error {
 // reservation. On a same-node restart the references still resolve; on a recovery
 // onto a survivor they point at another node. So both concerns below are the same
 // question asked twice — what does this record assume that is not true here yet.
-func (d *Daemon) prepareInstanceRelaunch(inst *vm.VM) error {
+func (d *Daemon) prepareInstanceRelaunch(inst *vm.VM, explicitStart bool) error {
 	// Before the launch. Outside legacy mode the guest must not start on an
 	// address the record does not reserve for it here, nor with no allocator.
+	// A durable customer start re-claims it in the VM manager's launch guard.
 	if d.mgmtIPAllocator != nil {
-		if err := d.mgmtIPAllocator.ClaimChecked(inst.ID, inst.MgmtIP); err != nil {
-			return fmt.Errorf("relaunch %s: %w", inst.ID, err)
+		if !explicitStart || !d.mgmtIPAllocator.isDurable() {
+			if err := d.mgmtIPAllocator.ClaimChecked(inst.ID, inst.MgmtIP); err != nil {
+				return fmt.Errorf("relaunch %s: %w", inst.ID, err)
+			}
 		}
 	} else if mode := d.mgmtIPAMMode(); inst.MgmtIP != "" && mode != "" && mode != MgmtIPAMLegacy {
 		return fmt.Errorf("relaunch %s at mgmt IP %s: no %q mgmt IP allocator on this node", inst.ID, inst.MgmtIP, mode)

@@ -21,7 +21,8 @@ type ManagerHooks struct {
 	// ephemeral on-host state the record only names: a path to a file this host
 	// does not have is the same problem whether the file went with a reboot or
 	// with the node that wrote it. A non-nil error aborts the relaunch.
-	BeforeInstanceRelaunch func(*VM) error
+	// explicitStart marks a customer start rather than a recovery.
+	BeforeInstanceRelaunch func(inst *VM, explicitStart bool) error
 }
 
 // Deps bundles collaborators the manager uses to drive lifecycle.
@@ -95,6 +96,9 @@ type Deps struct {
 
 	// UEFIVarStore is where UEFI variable stores are read from and kept.
 	UEFIVarStore UEFIVarStoreDeps
+
+	// MgmtLaunch ties each management address to a proven launch identity.
+	MgmtLaunch MgmtLaunchDeps
 }
 
 // Manager owns the in-memory map of running VMs on this node and every
@@ -108,6 +112,11 @@ type Manager struct {
 	// imdsLocks serialises each primary ENI's IMDS datapath attach, repair and
 	// teardown, which run outside mu.
 	imdsLocks keyedMutex
+
+	// mgmtLocks serialises each instance's management launch record across
+	// every VM object that carries its ID.
+	mgmtLocks  keyedMutex
+	mgmtReaped mgmtReaped
 
 	// uefi is each running UEFI instance's variable store writer.
 	uefi uefiWriterState

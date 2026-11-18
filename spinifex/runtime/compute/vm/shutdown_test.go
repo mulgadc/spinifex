@@ -634,7 +634,7 @@ func TestStopCleanup_InvokesReleaseGPU(t *testing.T) {
 	m := NewManagerWithDeps(Deps{InstanceCleaner: cleaner})
 	instance := &VM{ID: "i-stop", GPUAttachments: []gpu.GPUAttachment{{PCIAddress: "0000:01:00.0"}}}
 
-	require.NoError(t, m.stopCleanup(instance))
+	require.NoError(t, m.stopCleanup(instance, 0, false))
 
 	if got := cleaner.releaseGPU; len(got) != 1 || got[0] != "i-stop" {
 		t.Fatalf("ReleaseGPU on stopCleanup: got %v, want [i-stop]", got)
@@ -656,7 +656,7 @@ func TestStopCleanup_ReservationBoundReleasesAndClears(t *testing.T) {
 	instance := &VM{ID: "i-cr", InstanceType: "t3.micro", CapacityReservationId: "cr-123"}
 	m.Insert(instance)
 
-	require.NoError(t, m.stopCleanup(instance))
+	require.NoError(t, m.stopCleanup(instance, 0, false))
 
 	if got := rc.releasedToCRID; len(got) != 1 || got[0] != "cr-123" {
 		t.Fatalf("stop must release the slot to the reservation: got %v, want [cr-123]", got)
@@ -675,7 +675,7 @@ func TestTerminateCleanup_InvokesReleaseGPU(t *testing.T) {
 	m := NewManagerWithDeps(Deps{InstanceCleaner: cleaner})
 	instance := &VM{ID: "i-term", GPUAttachments: []gpu.GPUAttachment{{PCIAddress: "0000:01:00.0"}}}
 
-	m.terminateCleanup(instance)
+	m.terminateCleanup(instance, 0)
 
 	if got := cleaner.releaseGPU; len(got) != 1 || got[0] != "i-term" {
 		t.Fatalf("ReleaseGPU on terminateCleanup: got %v, want [i-term]", got)
@@ -694,8 +694,8 @@ func TestCleanup_NoGPU_StillInvokesReleaseGPU(t *testing.T) {
 	m := NewManagerWithDeps(Deps{InstanceCleaner: cleaner})
 	instance := &VM{ID: "i-cpu"}
 
-	require.NoError(t, m.stopCleanup(instance))
-	m.terminateCleanup(instance)
+	require.NoError(t, m.stopCleanup(instance, 0, false))
+	m.terminateCleanup(instance, 0)
 
 	if got := len(cleaner.releaseGPU); got != 2 {
 		t.Fatalf("ReleaseGPU calls across stop+terminate: got %d, want 2", got)
@@ -1552,7 +1552,7 @@ func TestStopCleanup_SealFailure_StillRunsBestEffortSteps(t *testing.T) {
 	instance := &VM{ID: "i-seal-cleanup", InstanceType: "t3.micro"}
 	m.Insert(instance)
 
-	err := m.stopCleanup(instance)
+	err := m.stopCleanup(instance, 0, false)
 
 	require.ErrorIs(t, err, ErrVolumeSealFailed)
 	assert.Equal(t, []string{"i-seal-cleanup"}, cleaner.releaseGPU,

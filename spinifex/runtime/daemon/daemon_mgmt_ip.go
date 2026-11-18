@@ -173,9 +173,21 @@ func (a *MgmtIPAllocator) BindKV(jsManager *JetStreamManager, node string) {
 // allocation requires a healthy cluster KV — this node's cache cannot prove
 // an address is free cluster-wide on its own — and is refused otherwise.
 func (a *MgmtIPAllocator) Allocate(instanceID string) (string, error) {
+	ip, _, err := a.AllocateNew(instanceID)
+	return ip, err
+}
+
+// AllocateNew is Allocate that also reports whether this call created the
+// instance's durable reservation. Legacy mode never reports one.
+func (a *MgmtIPAllocator) AllocateNew(instanceID string) (string, bool, error) {
 	if a.isDurable() {
 		return a.allocateDurable(instanceID)
 	}
+	ip, err := a.allocateLegacy(instanceID)
+	return ip, false, err
+}
+
+func (a *MgmtIPAllocator) allocateLegacy(instanceID string) (string, error) {
 	a.mu.Lock()
 	// Addresses this node's own instances hold stay off the table even when the
 	// cluster record has lost their entries.

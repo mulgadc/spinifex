@@ -22,7 +22,7 @@ func TestSQSStoreIsNeverRecoveredOntoAnotherNode(t *testing.T) {
 	var relaunched []string
 	d.vmMgr.SetDeps(vm.Deps{
 		NodeID: d.node,
-		Hooks: vm.ManagerHooks{BeforeInstanceRelaunch: func(v *vm.VM) error {
+		Hooks: vm.ManagerHooks{BeforeInstanceRelaunch: func(v *vm.VM, _ bool) error {
 			relaunched = append(relaunched, v.ID)
 			return nil
 		}},

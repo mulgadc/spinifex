@@ -62,6 +62,11 @@ func (m *Manager) Restore() {
 
 	slog.Info("Loaded state", "instance count", m.Count())
 
+	// Before any relaunch can install a replacement object for the same ID.
+	for _, v := range m.Snapshot() {
+		m.bindMgmtLaunch(v)
+	}
+
 	toLaunch := m.classifyRestoredInstances()
 
 	if len(toLaunch) > 0 {
@@ -417,10 +422,20 @@ func (m *Manager) relaunchAll(toLaunch []*VM) {
 // specific to Restore, and the hook being reachable only from there is what made
 // a recovered load balancer boot with no network configuration.
 func (m *Manager) PrepareRelaunch(inst *VM) error {
+	return m.prepareRecordLaunch(inst, false)
+}
+
+// PrepareStart is PrepareRelaunch for a customer start of a stopped instance,
+// which StartClaimed then launches.
+func (m *Manager) PrepareStart(inst *VM) error {
+	return m.prepareRecordLaunch(inst, true)
+}
+
+func (m *Manager) prepareRecordLaunch(inst *VM, explicitStart bool) error {
 	if m.deps.Hooks.BeforeInstanceRelaunch == nil {
 		return nil
 	}
-	return m.deps.Hooks.BeforeInstanceRelaunch(inst)
+	return m.deps.Hooks.BeforeInstanceRelaunch(inst, explicitStart)
 }
 
 // relaunchWithRetry calls m.Run, retrying only when the failure is
@@ -481,6 +496,7 @@ func (m *Manager) reconnectInstance(instance *VM) error {
 	if err := attachQMPForReconnect(m, instance); err != nil {
 		return fmt.Errorf("failed to reconnect QMP: %w", err)
 	}
+	m.adoptMgmtLaunch(instance)
 
 	if m.deps.Hooks.OnInstanceUp != nil {
 		if err := m.deps.Hooks.OnInstanceUp(instance); err != nil {

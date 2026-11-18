@@ -122,21 +122,21 @@ func (a *MgmtIPAllocator) withRecord(op func(context.Context, *mgmtipstore.Store
 	return fmt.Errorf("mgmt IP record for %s changed on each of %d attempts: %w", prefix, mgmtCASOuterRetries, mgmtipstore.ErrConflict)
 }
 
-// allocateDurable returns the instance's acknowledged address. A recorded
-// entry is re-acknowledged and a new instance gets a new address; a cached
-// address the record no longer holds is refused, never written back.
-func (a *MgmtIPAllocator) allocateDurable(instanceID string) (string, error) {
+// allocateDurable returns the instance's acknowledged address and whether this
+// call created its reservation. A recorded entry is re-acknowledged and a new
+// instance gets a new address; a cached address the record lacks is refused.
+func (a *MgmtIPAllocator) allocateDurable(instanceID string) (ip string, inserted bool, err error) {
 	a.mu.Lock()
 	cached := a.allocated[instanceID]
 	a.mu.Unlock()
 	if cached == "" {
 		if err := a.resolveLocalHolders(); err != nil {
-			return "", fmt.Errorf("allocate mgmt IP for %s: %w", instanceID, err)
+			return "", false, fmt.Errorf("allocate mgmt IP for %s: %w", instanceID, err)
 		}
 	}
 
-	var ip string
-	err := a.withRecord(func(ctx context.Context, store *mgmtipstore.Store, snap *mgmtipstore.Snapshot, node string) error {
+	err = a.withRecord(func(ctx context.Context, store *mgmtipstore.Store, snap *mgmtipstore.Snapshot, node string) error {
+		inserted = false
 		recorded, ok := entryFor(snap, instanceID)
 		switch {
 		case ok && cached != "" && recorded.IP != cached:
@@ -149,18 +149,18 @@ func (a *MgmtIPAllocator) allocateDurable(instanceID string) (string, error) {
 			return fmt.Errorf("%w: %s at %s", errMgmtIPNotReserved, instanceID, cached)
 		}
 		got, err := store.Insert(ctx, snap, instanceID, node)
-		ip = got.IP
+		ip, inserted = got.IP, err == nil
 		return err
 	})
 	if err != nil {
-		return "", fmt.Errorf("allocate mgmt IP for %s: %w", instanceID, err)
+		return "", false, fmt.Errorf("allocate mgmt IP for %s: %w", instanceID, err)
 	}
 	a.mu.Lock()
 	a.allocated[instanceID] = ip
 	a.confirmed[instanceID] = ip
 	a.mu.Unlock()
 	slog.Debug("Management IP allocated", "instance", instanceID, "ip", ip)
-	return ip, nil
+	return ip, inserted, nil
 }
 
 // releaseDurable removes this node's entry for the instance. An empty ip means
@@ -207,6 +207,43 @@ func (a *MgmtIPAllocator) confirmDurable(instanceID, mgmtIP string) error {
 	a.confirmed[instanceID] = mgmtIP
 	a.mu.Unlock()
 	return nil
+}
+
+// claimDurable reserves mgmtIP for the instance on this node, creating the
+// entry when the address is free; an address or instance held elsewhere is
+// refused. Callers have proven the instance's previous launch stopped.
+func (a *MgmtIPAllocator) claimDurable(instanceID, mgmtIP string) error {
+	err := a.withRecord(func(ctx context.Context, store *mgmtipstore.Store, snap *mgmtipstore.Snapshot, node string) error {
+		_, err := store.ClaimAt(ctx, snap, instanceID, node, mgmtIP)
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("claim mgmt IP %s for %s: %w", mgmtIP, instanceID, err)
+	}
+	a.mu.Lock()
+	a.allocated[instanceID] = mgmtIP
+	a.confirmed[instanceID] = mgmtIP
+	a.mu.Unlock()
+	return nil
+}
+
+// mgmtLaunchAddresses is the durable record as the VM manager's address
+// authority for launches it has proven safe.
+type mgmtLaunchAddresses struct{ a *MgmtIPAllocator }
+
+var _ vm.MgmtAddresses = mgmtLaunchAddresses{}
+
+func (m mgmtLaunchAddresses) Claim(instanceID, ip string) error {
+	return m.a.claimDurable(instanceID, ip)
+}
+
+func (m mgmtLaunchAddresses) Confirm(instanceID, ip string) error {
+	return m.a.confirmDurable(instanceID, ip)
+}
+
+func (m mgmtLaunchAddresses) Release(instanceID, ip string) error {
+	_, err := m.a.releaseDurable(instanceID, ip)
+	return err
 }
 
 // rebuildDurable confirms every local VM's reservation. A missing or

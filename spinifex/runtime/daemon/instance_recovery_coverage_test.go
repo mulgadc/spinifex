@@ -259,7 +259,7 @@ func TestRecoveryAttemptSucceeds(t *testing.T) {
 		NodeID:             d.node,
 		VolumeMounter:      newNATSMounter(d.natsConn, d.node),
 		VolumeStateUpdater: d.volumeService,
-		Hooks: vm.ManagerHooks{BeforeInstanceRelaunch: func(v *vm.VM) error {
+		Hooks: vm.ManagerHooks{BeforeInstanceRelaunch: func(v *vm.VM, _ bool) error {
 			d.vmMgr.Inspect(v, func(v *vm.VM) { v.Status = vm.StateShuttingDown })
 			return nil
 		}},

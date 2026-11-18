@@ -281,6 +281,8 @@ type Daemon struct {
 	// instances. Populated at startup when br-mgmt is detected.
 	mgmtBridgeIP    string
 	mgmtIPAllocator *MgmtIPAllocator
+	// mgmtLaunchLock is held for the process lifetime in durable mgmt IPAM mode.
+	mgmtLaunchLock *os.File
 	// mgmtRouteVia: AWSGW bind IP system instances route via br-mgmt (multi-node).
 	mgmtRouteVia string
 
@@ -1492,6 +1494,11 @@ func (d *Daemon) startLocal() error {
 		} else {
 			d.mgmtIPAllocator = alloc
 			slog.Info("Management bridge detected", "bridge", mgmtBridge, "ip", bridgeIP)
+		}
+	}
+	if d.mgmtIPAMMode() == MgmtIPAMDurable {
+		if err := d.lockMgmtLaunchDir(); err != nil {
+			return err
 		}
 	}
 

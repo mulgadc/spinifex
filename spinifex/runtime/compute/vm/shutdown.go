@@ -136,7 +136,11 @@ func (m *Manager) stopOne(instance *VM) (bool, error) {
 		return false, err
 	}
 
-	sealErr := m.stopCleanup(instance)
+	// A drained guest keeps its management address for the relaunch.
+	sealErr := m.stopCleanup(instance, m.mgmtGeneration(instance), instance.DesiredState == DesiredStopped)
+	if errors.Is(sealErr, errTeardownSuperseded) {
+		return false, fmt.Errorf("stop %s: %w", instance.ID, sealErr)
+	}
 
 	m.UpdateState(instance.ID, func(v *VM) { v.LastNode = m.deps.NodeID })
 
@@ -242,7 +246,9 @@ func (m *Manager) Terminate(id string) error {
 		return err
 	}
 
-	m.terminateCleanup(instance)
+	if !m.terminateCleanup(instance, m.mgmtGeneration(instance)) {
+		return fmt.Errorf("terminate %s: %w", instance.ID, errTeardownSuperseded)
+	}
 
 	return m.finalizeTerminated(instance)
 }
@@ -291,11 +297,15 @@ func (m *Manager) MarkFailed(ctx context.Context, instance *VM, reason string) {
 			return
 		}
 	}
+	mgmtGen := m.mgmtGeneration(instance)
 	recordInstanceFailure(ctx, instance.ID, reason)
 	slog.ErrorContext(ctx, "Instance marked as failed", "instanceId", instance.ID, "reason", reason)
 
 	m.goroutineWg.Go(func() {
-		m.terminateCleanup(instance)
+		if !m.terminateCleanup(instance, mgmtGen) {
+			slog.Error("MarkFailed left a superseded VM object unfinalized", "instanceId", instance.ID)
+			return
+		}
 		if err := m.finalizeTerminated(instance); err != nil {
 			slog.Error("MarkFailed finalize failed", "instanceId", instance.ID, "err", err)
 		}
@@ -342,8 +352,14 @@ func (m *Manager) MarkRecoveryFailed(instance *VM, reason string) {
 	slog.Error("Instance marked recovery_failed; volumes and ENIs preserved for operator action",
 		"instanceId", instance.ID, "reason", reason)
 
+	mgmtGen := m.mgmtGeneration(instance)
 	m.goroutineWg.Go(func() {
-		if err := m.stopCleanup(instance); err != nil {
+		err := m.stopCleanup(instance, mgmtGen, false)
+		if errors.Is(err, errTeardownSuperseded) {
+			slog.Error("Recovery cleanup left a superseded VM object alone", "instanceId", instance.ID)
+			return
+		}
+		if err != nil {
 			slog.Error("Volume seal failed during recovery cleanup; volume left unsealed for operator action",
 				"instanceId", instance.ID, "err", err)
 		}
@@ -525,9 +541,22 @@ func (m *Manager) stampOutstandingTeardownFailed(instance *VM) {
 // initial section of Terminate: graceful QMP shutdown, PID-file wait,
 // volume unmount, tap teardown (main + extra ENI + mgmt), resource
 // deallocation. Every step runs; only a failed volume seal is returned.
-func (m *Manager) stopCleanup(instance *VM) error {
-	sealErr := m.shutdownAndUnmount(instance, m.finishStoppedUEFIWriteBack)
-	m.cleanupTapDevices(instance)
+//
+// mgmtGen is the launch the stop belongs to; releaseMgmt gives its management
+// address back once that launch is proven stopped. A superseded object touches
+// nothing and gets errTeardownSuperseded.
+func (m *Manager) stopCleanup(instance *VM, mgmtGen uint64, releaseMgmt bool) error {
+	var sealErr error
+	current := m.mgmtTeardown(instance, mgmtGen, "stop", func() {
+		sealErr = m.shutdownAndUnmount(instance, m.finishStoppedUEFIWriteBack)
+		m.cleanupTapDevices(instance)
+		if releaseMgmt {
+			m.releaseMgmtLocked(instance, mgmtGen)
+		}
+	})
+	if !current {
+		return errTeardownSuperseded
+	}
 	if m.deps.InstanceCleaner != nil {
 		if err := m.deps.InstanceCleaner.ReleaseGPU(instance); err != nil {
 			slog.Warn("ReleaseGPU failed on stop", "instanceId", instance.ID, "err", err)
@@ -579,14 +608,21 @@ func (m *Manager) releaseAutoAssignedPublicIP(instance *VM) {
 // terminateCleanup is stopCleanup plus the AWS-resource cleanup that
 // only applies on terminate: volume deletion, the UEFI store's deletion
 // record, public IP release, ENI deletion, placement-group removal.
-func (m *Manager) terminateCleanup(instance *VM) {
-	// Terminate deletes the volumes next, so an unsealed block map loses
-	// nothing a caller can still ask for. Tolerated to keep terminate
-	// idempotent; only stop and DRAIN treat a failed seal as fatal.
-	_ = m.shutdownAndUnmount(instance, func(v *VM) { m.dropUEFIWriter(v.ID, "terminate", false) })
-	m.cleanupAfterQEMU(instance)
-
-	m.cleanupTapDevices(instance)
+// mgmtGen is the launch the teardown belongs to, read before it began. It
+// reports false, having touched nothing, for a superseded object.
+func (m *Manager) terminateCleanup(instance *VM, mgmtGen uint64) bool {
+	current := m.mgmtTeardown(instance, mgmtGen, "terminate", func() {
+		// Terminate deletes the volumes next, so an unsealed block map loses
+		// nothing a caller can still ask for. Tolerated to keep terminate
+		// idempotent; only stop and DRAIN treat a failed seal as fatal.
+		_ = m.shutdownAndUnmount(instance, func(v *VM) { m.dropUEFIWriter(v.ID, "terminate", false) })
+		m.cleanupAfterQEMU(instance)
+		m.cleanupTapDevices(instance)
+		m.releaseMgmtLocked(instance, mgmtGen)
+	})
+	if !current {
+		return false
+	}
 	m.markTeardown(instance, TeardownTap, TeardownDone)
 
 	if m.deps.InstanceCleaner != nil {
@@ -629,6 +665,7 @@ func (m *Manager) terminateCleanup(instance *VM) {
 	}
 
 	m.deallocateResources(instance)
+	return true
 }
 
 // cleanupAfterQEMU deletes the volumes and the UEFI store only once QEMU is
@@ -751,9 +788,14 @@ func (m *Manager) ForgetSuperseded(instance *VM) {
 	if instance == nil {
 		return
 	}
-	m.shutdownQEMU(instance)
-	m.dropUEFIWriter(instance.ID, "superseded", true)
-	m.cleanupTapDevices(instance)
+	current := m.mgmtTeardown(instance, m.mgmtGeneration(instance), "superseded", func() {
+		m.shutdownQEMU(instance)
+		m.dropUEFIWriter(instance.ID, "superseded", true)
+		m.cleanupTapDevices(instance)
+	})
+	if !current {
+		return
+	}
 
 	if m.deps.VolumeMounter != nil {
 		if err := m.deps.VolumeMounter.Abandon(context.Background(), instance,

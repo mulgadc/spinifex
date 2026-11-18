@@ -37,7 +37,7 @@ func refusedLaunch(t *testing.T, checker *fakeUnsealedChecker) error {
 	// An instance type this node does not offer is the simplest capacity refusal.
 	instance := &vm.VM{ID: "i-held", AccountID: "acc", InstanceType: "no.such.type"}
 	instance.EBSRequests.Requests = []vm.EBSRequest{{Name: "vol-root", Boot: true}, {Name: "vol-data"}}
-	return svc.launchClaimedInstance(t.Context(), instance, func() {})
+	return svc.launchClaimedInstance(t.Context(), instance, false, func() {})
 }
 
 func TestLaunchClaimedInstance_CapacityRefusalWhileHoldingUnsealedWrites(t *testing.T) {
@@ -89,7 +89,7 @@ func TestLaunchClaimedInstance_UnansweredCheckIsBoundedAndFailsSafe(t *testing.T
 	instance.EBSRequests.Requests = []vm.EBSRequest{{Name: "vol-root", Boot: true}}
 
 	start := time.Now()
-	err := svc.launchClaimedInstance(t.Context(), instance, func() {})
+	err := svc.launchClaimedInstance(t.Context(), instance, false, func() {})
 
 	assert.Less(t, time.Since(start), 5*time.Second)
 	typed, ok := errors.AsType[*UnsealedWritesError](err)

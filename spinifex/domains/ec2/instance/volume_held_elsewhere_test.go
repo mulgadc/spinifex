@@ -85,7 +85,7 @@ func TestStartPaths_ReportAVolumeHeldElsewhereByCode(t *testing.T) {
 		mgr.SetDeps(vm.Deps{NodeID: "node-b", VolumeMounter: heldElsewhereMounter{}})
 		svc := &InstanceServiceImpl{resourceMgr: &fakeResourceCapacityProvider{instanceTypes: types}, vmMgr: mgr}
 
-		err := svc.launchClaimedInstance(t.Context(), &vm.VM{ID: "i-held-claim", AccountID: "acc", InstanceType: "t3.micro", Status: vm.StatePending}, func() {})
+		err := svc.launchClaimedInstance(t.Context(), &vm.VM{ID: "i-held-claim", AccountID: "acc", InstanceType: "t3.micro", Status: vm.StatePending}, false, func() {})
 		assert.ErrorIs(t, err, ec2v1.ErrVolumeHeldElsewhere)
 		assert.Equal(t, awserrors.ErrorIncorrectState, awserrors.ValidErrorCodeFromError(err))
 	})
@@ -122,7 +122,7 @@ func TestStartPaths_ReportAHeldUEFIStoreAsCapacity(t *testing.T) {
 		mgr.SetDeps(vm.Deps{NodeID: "node-b", VolumeMounter: uefiClaimHeldMounter{}})
 		svc := &InstanceServiceImpl{resourceMgr: &fakeResourceCapacityProvider{instanceTypes: types}, vmMgr: mgr}
 
-		err := svc.launchClaimedInstance(t.Context(), &vm.VM{ID: "i-uefi-claim", AccountID: "acc", InstanceType: "t3.micro", Status: vm.StatePending}, func() {})
+		err := svc.launchClaimedInstance(t.Context(), &vm.VM{ID: "i-uefi-claim", AccountID: "acc", InstanceType: "t3.micro", Status: vm.StatePending}, false, func() {})
 		assert.Equal(t, awserrors.ErrorInsufficientInstanceCapacity, awserrors.ValidErrorCodeFromError(err))
 	})
 

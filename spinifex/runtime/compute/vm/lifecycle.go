@@ -83,7 +83,14 @@ func guestOOMScore(managedBy string) int {
 // transition to Running, fire OnInstanceUp. Inserts the instance before
 // transitioning. Used by RunInstances, start-stopped handler, restore, and crash recovery.
 func (m *Manager) Run(ctx context.Context, instance *VM) error {
-	return m.launch(ctx, instance, nil)
+	return m.launch(ctx, instance, nil, false)
+}
+
+// StartClaimed launches a stopped instance the caller claimed for an explicit
+// start. Like Start, and unlike Run, it may re-create a free management
+// reservation once the previous launch is proven stopped.
+func (m *Manager) StartClaimed(ctx context.Context, instance *VM) error {
+	return m.launch(ctx, instance, nil, true)
 }
 
 // Start re-launches a stopped instance by id. Returns ErrInstanceNotFound when
@@ -104,7 +111,7 @@ func (m *Manager) Start(ctx context.Context, id string) error {
 			return err
 		}
 	}
-	return m.launch(ctx, instance, &uefiPrecheck{rec: rec})
+	return m.launch(ctx, instance, &uefiPrecheck{rec: rec}, true)
 }
 
 // uefiPrecheck is a variable store check a caller of launch already made,
@@ -126,8 +133,8 @@ func (m *Manager) launchStillValid(instance *VM) bool {
 
 // launch is the orchestrator: pid check, mount volumes, exec QEMU, attach
 // QMP, fire OnInstanceUp, transition to Running. A nil pre checks the
-// variable store here.
-func (m *Manager) launch(ctx context.Context, instance *VM, pre *uefiPrecheck) (err error) {
+// variable store here. Only freshMgmt may create a missing mgmt reservation.
+func (m *Manager) launch(ctx context.Context, instance *VM, pre *uefiPrecheck, freshMgmt bool) (err error) {
 	ctx, span := otel.Tracer(vmTracerName).Start(ctx, "vm.launch",
 		trace.WithAttributes(
 			attribute.String("instance.id", instance.ID),
@@ -224,7 +231,7 @@ func (m *Manager) launch(ctx context.Context, instance *VM, pre *uefiPrecheck) (
 
 	_, qemuSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.start_qemu")
 	m.startUEFIWriter(instance.ID, uefiHeld != nil && uefiHeld.reused)
-	qemuErr := m.startQEMU(instance)
+	qemuErr := m.startGuestQEMU(instance, m.startQEMU, freshMgmt)
 	guestMayHaveRun = !errors.Is(qemuErr, errQEMUNotStarted)
 	endSpanWithError(qemuSpan, qemuErr)
 	if qemuErr != nil {
@@ -651,6 +658,7 @@ func (m *Manager) startQEMU(instance *VM) (err error) {
 		processChan <- cmd.Process.Pid
 
 		waitErr := cmd.Wait()
+		m.mgmtReaped.note(instance.ID, cmd.Process.Pid)
 		if waitErr != nil {
 			slog.Error("VM process exited", "instance", instance.ID, "err", waitErr)
 		}

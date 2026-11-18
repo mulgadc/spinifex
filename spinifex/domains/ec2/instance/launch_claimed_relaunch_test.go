@@ -34,7 +34,7 @@ func claimedRelaunchService(t *testing.T, hook func(*vm.VM) error) (*InstanceSer
 	mgr.SetDeps(vm.Deps{
 		NodeID:        "node-b",
 		VolumeMounter: raceVolumeMounter{},
-		Hooks:         vm.ManagerHooks{BeforeInstanceRelaunch: hook},
+		Hooks:         vm.ManagerHooks{BeforeInstanceRelaunch: func(v *vm.VM, _ bool) error { return hook(v) }},
 	})
 
 	return &InstanceServiceImpl{resourceMgr: resources, vmMgr: mgr}, resources
@@ -56,7 +56,7 @@ func TestLaunchClaimedInstance_RebuildsThisNodesCopyOfTheBootState(t *testing.T)
 	})
 
 	instance := &vm.VM{ID: "i-moved", AccountID: "acc", InstanceType: "t3.micro"}
-	_ = svc.launchClaimedInstance(t.Context(), instance, func() {})
+	_ = svc.launchClaimedInstance(t.Context(), instance, false, func() {})
 
 	assert.Equal(t, []string{"i-moved"}, prepared,
 		"a recovery onto another node has to rebuild what the record only names, or the guest boots with none of it")
@@ -72,7 +72,7 @@ func TestLaunchClaimedInstance_RefusesWhenTheBootStateCannotBeRebuilt(t *testing
 
 	undone := false
 	instance := &vm.VM{ID: "i-moved", AccountID: "acc", InstanceType: "t3.micro"}
-	err := svc.launchClaimedInstance(t.Context(), instance, func() { undone = true })
+	err := svc.launchClaimedInstance(t.Context(), instance, false, func() { undone = true })
 
 	require.Error(t, err, "a guest that cannot be given its boot state must not be reported as recovered")
 	assert.True(t, undone, "the claim has to be given back, or no other node will try")
@@ -95,7 +95,7 @@ func TestLaunchClaimedInstance_RestampsLaunchTime(t *testing.T) {
 	before := time.Now()
 	instance := &vm.VM{ID: "i-moved", AccountID: "acc", InstanceType: "t3.micro",
 		Instance: &ec2.Instance{LaunchTime: aws.Time(before.Add(-24 * time.Hour))}}
-	_ = svc.launchClaimedInstance(t.Context(), instance, func() {})
+	_ = svc.launchClaimedInstance(t.Context(), instance, false, func() {})
 
 	assert.False(t, launchedAt.Before(before),
 		"the relaunch must start the pending watchdog's clock again, or a launch older than %s is terminated as stuck", vm.PendingWatchdogTimeout)
@@ -112,7 +112,7 @@ func TestLaunchClaimedInstance_NeverAFirstLaunch(t *testing.T) {
 	})
 
 	instance := &vm.VM{ID: "i-moved", AccountID: "acc", InstanceType: "t3.micro", FirstLaunch: true}
-	_ = svc.launchClaimedInstance(t.Context(), instance, func() {})
+	_ = svc.launchClaimedInstance(t.Context(), instance, false, func() {})
 
 	assert.Equal(t, []bool{false}, firstLaunch,
 		"ADR-0003:S7: a claimed relaunch reached launch still marked as a first launch, so its failure could terminate it")

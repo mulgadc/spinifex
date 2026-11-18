@@ -1,4 +1,4 @@
-//test:in-package — replaces the unexported sysfs writer for the whole package.
+//test:in-package — swaps the unexported sysfs writer for tests that need kernfs semantics.
 package gpu
 
 import (
@@ -10,9 +10,14 @@ import (
 	"testing"
 )
 
-// Every test in the package writes through a model of PCI sysfs, because a
+// useKernfs routes this test's sysfs writes through a model of PCI sysfs, as a
 // regular file truncates on an empty write and never moves a driver link.
-func init() { sysfsWrite = kernfsWrite }
+// The package's tests do not run in parallel, so swapping the writer is safe.
+func useKernfs(t *testing.T) {
+	t.Helper()
+	sysfsWrite = kernfsWrite
+	t.Cleanup(func() { sysfsWrite = writeSysfs })
+}
 
 // kernfsWrite models PCI sysfs: opening without O_TRUNC keeps path errors but
 // not truncation, a zero-length write never reaches the store, a newline clears
@@ -64,7 +69,7 @@ func kernfsOverride(devPath string) string {
 	if err != nil {
 		return ""
 	}
-	if v := strings.TrimSpace(string(b)); v != "(null)" {
+	if v := strings.TrimSuffix(string(b), "\n"); v != "(null)" {
 		return v
 	}
 	return ""
@@ -98,5 +103,47 @@ func TestKernfsWrite_ModelsOverrideAndBind(t *testing.T) {
 	must(t, kernfsWrite(filepath.Join(root, "bus/pci/drivers/nvidia/unbind"), "0000:03:00.0"))
 	if got, _ := readDriver(devPath); got != "" {
 		t.Fatalf("driver after unbind = %q, want unbound", got)
+	}
+}
+
+func TestKernfsWrite_WhitespaceOverrideBlocksBind(t *testing.T) {
+	root := t.TempDir()
+	buildSysfsDevice(t, root, "0000:03:00.0", "0x030200", "0x10de", "0x2236", "", 7)
+	makeSysfsDriverDir(t, root, "nvidia")
+	override := filepath.Join(root, "bus/pci/devices/0000:03:00.0/driver_override")
+
+	must(t, kernfsWrite(override, " "))
+	if got := readSysfsTestFile(t, override); got != " \n" {
+		t.Fatalf("override after a space = %q, want it kept", got)
+	}
+	if err := kernfsWrite(filepath.Join(root, "bus/pci/drivers/nvidia/bind"), "0000:03:00.0"); !errors.Is(err, syscall.ENODEV) {
+		t.Fatalf("bind with a whitespace override = %v, want ENODEV", err)
+	}
+}
+
+// The production writer must hand the kernel the exact bytes, newline included.
+func TestUnbindVFIO_ProductionWriterSendsNewlineClear(t *testing.T) {
+	root := t.TempDir()
+	buildSysfsDevice(t, root, "0000:03:00.0", "0x030200", "0x10de", "0x2236", "vfio-pci", 7)
+	makeSysfsDriverDir(t, root, "vfio-pci")
+	makeSysfsDriverDir(t, root, "nvidia")
+	devPath := filepath.Join(root, "bus/pci/devices/0000:03:00.0")
+	must(t, os.WriteFile(filepath.Join(devPath, "driver_override"), []byte("vfio-pci\n"), 0o600))
+
+	must(t, unbindVFIO(root, "0000:03:00.0", "nvidia"))
+	for path, want := range map[string]string{
+		filepath.Join(root, "bus/pci/drivers/vfio-pci/unbind"): "0000:03:00.0",
+		filepath.Join(devPath, "driver_override"):              "\n",
+		filepath.Join(root, "bus/pci/drivers/nvidia/bind"):     "0000:03:00.0",
+	} {
+		if got := readSysfsTestFile(t, path); got != want {
+			t.Errorf("%s = %q, want %q", path, got, want)
+		}
+	}
+}
+
+func TestWriteSysfs_ReportsMissingAttributeDir(t *testing.T) {
+	if err := writeSysfs(filepath.Join(t.TempDir(), "missing/bind"), "0000:03:00.0"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("writeSysfs into a missing dir = %v, want ErrNotExist", err)
 	}
 }

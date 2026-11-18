@@ -258,15 +258,13 @@ func (m *Manager) Release(instanceID string) error {
 
 		for _, member := range entry.groupMembers {
 			orig := entry.memberDrivers[member.PCIAddress]
+			release := unbindVFIO
 			if orig == "vfio-pci" {
-				// GPU was already bound to vfio-pci before this instance (e.g. by
-				// spx-test-gpu at node setup). QEMU released the group fd on exit;
-				// the device stays vfio-pci bound and is immediately available for
-				// the next claim. Skipping unbind avoids a needless round-trip and
-				// eliminates a brief window where the device is unbound.
-				continue
+				// Pre-bound before this instance (e.g. by spx-test-gpu): it stays on
+				// vfio-pci for the next claim, so only confirm it is still there.
+				release = func(root, addr, _ string) error { return checkStillVFIO(root, addr) }
 			}
-			if err := unbindVFIO(m.sysfsRoot, member.PCIAddress, orig); err != nil {
+			if err := release(m.sysfsRoot, member.PCIAddress, orig); err != nil {
 				slog.Error("GPU release failed for IOMMU group member",
 					"instance", instanceID, "pci", member.PCIAddress, "err", err)
 				if entryErr == nil {

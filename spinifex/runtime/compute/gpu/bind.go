@@ -102,14 +102,33 @@ func checkRestored(devPath, addr, current, originalDriver string) error {
 	if err != nil {
 		return fmt.Errorf("read driver_override for %s: %w", addr, err)
 	}
-	if v := strings.TrimSpace(string(b)); v != "" && v != "(null)" {
+	// The kernel shows an unset override as "(null)" and keeps any other bytes,
+	// whitespace included, up to the first newline.
+	if v := strings.TrimSuffix(string(b), "\n"); v != "(null)" {
 		return fmt.Errorf("%s still has driver_override %q", addr, v)
 	}
 	return nil
 }
 
-// sysfsWrite performs every bind and override write; tests swap in a model of
-// kernfs, whose semantics a regular file does not share.
+// checkStillVFIO confirms a function found on vfio-pci at claim time is still
+// present and bound there; release leaves such a function as it found it.
+func checkStillVFIO(sysfsRoot, addr string) error {
+	devPath := filepath.Join(sysfsRoot, "bus/pci/devices", addr)
+	if _, err := os.Stat(devPath); err != nil {
+		return fmt.Errorf("stat device %s: %w", addr, err)
+	}
+	current, err := readDriver(devPath)
+	if err != nil {
+		return fmt.Errorf("read driver for %s: %w", addr, err)
+	}
+	if current != "vfio-pci" {
+		return fmt.Errorf("%s was pre-bound to vfio-pci but is bound to %q", addr, current)
+	}
+	return nil
+}
+
+// sysfsWrite performs every bind and override write; tests that need driver
+// links to move swap in a model of kernfs, which a regular file does not share.
 var sysfsWrite = writeSysfs
 
 // writeSysfs writes value to a sysfs attribute path. Works against both real

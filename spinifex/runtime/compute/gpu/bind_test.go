@@ -25,6 +25,7 @@ func readSysfsTestFile(t *testing.T, path string) string {
 }
 
 func TestBindVFIO_BoundToDriver(t *testing.T) {
+	useKernfs(t)
 	root := t.TempDir()
 	buildSysfsDevice(t, root, "0000:03:00.0", "0x030200", "0x10de", "0x2236", "nvidia", 7)
 	makeSysfsDriverDir(t, root, "vfio-pci")
@@ -70,6 +71,7 @@ func TestBindVFIO_AlreadyBoundToVFIO(t *testing.T) {
 }
 
 func TestBindVFIO_Unbound(t *testing.T) {
+	useKernfs(t)
 	root := t.TempDir()
 	// No driver symlink — device is unbound.
 	buildSysfsDevice(t, root, "0000:03:00.0", "0x030200", "0x10de", "0x2236", "", 7)
@@ -96,6 +98,7 @@ func TestBindVFIO_Unbound(t *testing.T) {
 }
 
 func TestUnbindVFIO_WithOriginalDriver(t *testing.T) {
+	useKernfs(t)
 	root := t.TempDir()
 	buildSysfsDevice(t, root, "0000:03:00.0", "0x030200", "0x10de", "0x2236", "vfio-pci", 7)
 	makeSysfsDriverDir(t, root, "vfio-pci")

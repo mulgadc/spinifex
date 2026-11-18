@@ -2,11 +2,12 @@
 
 Builds a Spinifex deployment on latitude.sh bare metal from your laptop with `deploy-latitude.sh`.
 The commands, flags, step markers and state layout follow `vultr-spx`.
+The customer guide is [`docs/latitude-integration/README.md`](../../../docs/latitude-integration/README.md).
 
-**Status: not yet run end to end.**
-The script was written from the plan doc findings (`docs/development/feature/latitude-bm.md`, L1 to L26) and from the provider schema.
-No latitude.sh API call or host run was made while building it, so treat the first `up` as the test.
-One node has been the only shape run live, and only in part (see Unverified). The three-node flow, including the floating pool, has not been run: Ben takes that over.
+**Status: one node is proven end to end on v1.25.0; three nodes are only partly proven.**
+One node: `up`, `status`, `credentials`, a guest on the Elastic IP through the `nginx-webserver` workbook, and `destroy`.
+Three nodes formed (Terraform, VLAN, cluster, pool, guests on two nodes, and the Elastic IP `PATCH` move to another server).
+Unproven: guest traffic after an Elastic IP moves to another guest, and failover by `stop`.
 
 ## What it creates
 
@@ -21,7 +22,7 @@ One node has been the only shape run live, and only in part (see Unverified). Th
 
 ## Requirements
 
-OpenTofu (or Terraform) 1.5 or later, `aws` CLI, `python3`, `curl`, `ssh`, an SSH key pair.
+bash 3.2 or later, OpenTofu (or Terraform) 1.5 or later, `aws` CLI, `python3`, `curl`, `ssh`, an SSH key pair.
 
 | Variable | When | Meaning |
 |---|---|---|
@@ -36,11 +37,15 @@ Nodes are reached as `ubuntu` with the deployment's SSH key, and remote commands
 
 ## Usage
 
+`read -rs` takes the token without echoing it, so it stays out of your shell history.
+
 ```
-export LATITUDESH_AUTH_TOKEN=...        # from the latitude.sh dashboard
+read -rs LATITUDESH_AUTH_TOKEN          # paste the token from the latitude.sh dashboard, then Enter
+export LATITUDESH_AUTH_TOKEN
 ./deploy-latitude.sh up --name demo     # one node
 
-export LATITUDESH_NODE_TOKEN=...        # a second, writable key
+read -rs LATITUDESH_NODE_TOKEN          # a second, writable key
+export LATITUDESH_NODE_TOKEN
 ./deploy-latitude.sh up --name demo3 --nodes 3
 ./deploy-latitude.sh status --name demo
 ./deploy-latitude.sh ssh --name demo node1 'systemctl status spinifex.target'
@@ -51,7 +56,7 @@ export LATITUDESH_NODE_TOKEN=...        # a second, writable key
 ```
 
 Options: `--name`, `--site` (alias `--region`), `--plan`, `--os`, `--project ID|SLUG`, `--distro TARBALL`, `--channel`, `--spx-region`, `--spx-az`, `--ssh-key`, `--image`, `--data-disk-id`, `--vpc-subnet` (the VLAN's /24, three nodes), `--nodes 1|3`, `--yes`.
-`./deploy-latitude.sh --help` lists them with defaults.
+`./deploy-latitude.sh up --help` lists them with defaults.
 
 Three nodes need `--distro` with a tarball built from this branch (`make distro-amd64`) until a release carries the latitude provider.
 A released spx rejects `source="latitude"` and its daemon restarts in a loop, so `up --nodes 3` without `--distro` stops in preflight.
@@ -108,25 +113,19 @@ An `up` that failed while creating can leave an object nothing recorded, such as
 
 ## Unverified
 
-Nothing in the three-node flow has run against real servers. For one node, only the parts the person ran have been exercised, and the script has changed since.
+Not yet seen on real servers:
 
-- The OS slug `ubuntu_26_04_x64_lts` (the `latitudesh_operating_system` data source fails the plan if it is wrong).
-- That the deploy key is on `ubuntu` and `sudo -n` works for it, and that `sudo` resets nothing the script needs (the SSH peer address is read before `sudo` for that reason).
-- The power action request (`POST /servers/{id}/actions` with `power_off` and `power_on`).
 - Resolving `--project` as a slug through `GET /projects/{slug}`, and the `in_stock` shape of `GET /plans` used by the stock check, which only warns when it cannot read it.
-- The `GET` and `DELETE` paths for `/user_data/{id}` and `/virtual_networks/{id}`.
-- That the Spinifex API certificate names the node's public address, which the profile check needs.
-- That the private NIC is `eno2`, its tagging and MTU (the script uses 1500), and that the networkd files persist the VLAN across a reboot.
 - `GET /auth/api_keys` and its `token_last_slice` and `read_only` fields, which the node key check relies on; and that a key with `allowed_ips` set to the nodes' addresses still works from them.
-- The Elastic IP move itself: `PATCH /elastic_ips/{id}` with `server_id`, its 202 then `active`, the error codes, and how long a move takes; the client waits up to its move timeout and makes one write per call.
-- That the daemon reads the node token and logs "floating pool ready", then fails over when a node stops (`stop node1`) and the address lands on another node.
-- `install-node.sh` as `--user ubuntu` on latitude.sh servers.
+- The Elastic IP move's error codes and how long a move takes; the client waits up to its move timeout and makes one write per call.
+- That the daemon fails over when a node stops (`stop node1`) and the address lands on another node.
+- The `GET` and `DELETE` paths for `/user_data/{id}` and `/virtual_networks/{id}`, which only the fallback deletes use and never ran live.
+- The VLAN's MTU (the script uses 1500), and that the networkd files persist the VLAN across a reboot.
 
 ## Not exercised
 
-Any real API call from the three-node flow, `destroy`, `host-data-disk.sh` on a host and the VLAN step on a server.
-Guest launch, public reachability of the Elastic IP, the Terraform workbooks and failover are not part of `up`; prove them by hand.
-`e2e-latitude.sh` and removing the old `install-node.sh` in this directory are not done.
+Failover, `e2e-latitude.sh`, and removing the old `install-node.sh` in this directory are not done.
+Guest launch, public reachability of the Elastic IP and the Terraform workbooks are not part of `up`; prove them by hand.
 
 ## Tests
 

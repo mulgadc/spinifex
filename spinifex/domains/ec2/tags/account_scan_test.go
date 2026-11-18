@@ -6,6 +6,7 @@ package tags
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/service/s3"
@@ -53,4 +54,25 @@ func TestScanAccountResourceIDsReturnsAListingFailure(t *testing.T) {
 	svc := NewTagsServiceImplWithStore(cfg, &listFailingObjectStore{MemoryObjectStore: objectstore.NewMemoryObjectStore()}, testTagsBucket(t))
 	_, err := svc.ScanAccountResourceIDs(t.Context(), "1111", "pg-")
 	require.Error(t, err)
+}
+
+// The cross-account scan groups each account's prefixed KV IDs under it.
+func TestScanTaggedResourcesGroupsPrefixedIDsByAccount(t *testing.T) {
+	kv := testTagsBucket(t)
+	writer := NewTagsServiceImplWithStore(&config.Config{}, nil, kv)
+	for account, ids := range map[string][]string{
+		"111111111111": {"pcx-0a", "vpc-0ignored"},
+		"222222222222": {"pcx-0a", "pcx-0b"},
+	} {
+		for _, id := range ids {
+			require.NoError(t, writer.PutResourceTags(t.Context(), account, id, map[string]string{"k": "v"}))
+		}
+	}
+
+	got, err := NewTagsServiceImplWithStore(&config.Config{}, nil, readonlystore.NewKV(t, kv)).ScanTaggedResources(t.Context(), "pcx-")
+	require.NoError(t, err)
+	for _, ids := range got {
+		slices.Sort(ids)
+	}
+	assert.Equal(t, map[string][]string{"111111111111": {"pcx-0a"}, "222222222222": {"pcx-0a", "pcx-0b"}}, got)
 }

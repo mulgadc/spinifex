@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
@@ -450,6 +451,7 @@ func (f failingPeeringRoutes) SyncPeeringRoutes(context.Context, string, []nbdb.
 // pass; the surviving VPC still syncs.
 func TestApplyPeeringRoutes_RouterGoneMidPassIsSkipped(t *testing.T) {
 	rec, m := newTestReconciler(t)
+	logs := captureReconcileLogs(t)
 	ctx := context.Background()
 	if err := m.CreateLogicalRouter(ctx, &nbdb.LogicalRouter{Name: topology.VPCRouter("vpc-b")}); err != nil {
 		t.Fatalf("CreateLogicalRouter: %v", err)
@@ -459,8 +461,8 @@ func TestApplyPeeringRoutes_RouterGoneMidPassIsSkipped(t *testing.T) {
 	}}
 	res := &passResult{}
 	rec.applyPeeringRoutes(ctx, peeringIntent(true), actual, nil, res)
-	if len(res.failures) != 0 {
-		t.Fatalf("failures = %v, want none", res.failures)
+	if len(res.failures) != 0 || strings.Contains(logs.String(), "level=ERROR") {
+		t.Fatalf("failures = %v, logs = %q, want neither", res.failures, logs.String())
 	}
 	if got := peeringRows(m, topology.VPCRouter("vpc-b"), policy.PeeringRouteDropRole); got != 1 {
 		t.Fatalf("vpc-b drop rows = %d, want 1", got)

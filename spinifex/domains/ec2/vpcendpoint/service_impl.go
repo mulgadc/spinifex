@@ -10,7 +10,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/prefixlist"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
@@ -143,11 +142,14 @@ func (s *ServiceImpl) checkTypeAndService(typ, name string) error {
 	return nil
 }
 
-// interfaceOnly reports whether name is one of this Region's services that
-// AWS offers only as an interface endpoint: the ones Spinifex also serves.
+// interfaceOnlyServices are services Spinifex also serves that AWS offers in
+// a Region only as interface endpoints, per AWS's PrivateLink service list.
+var interfaceOnlyServices = []string{"ec2", "ecr.api", "ecr.dkr", "ecs", "eks", "elasticloadbalancing", "sts"}
+
+// interfaceOnly reports whether name is one of interfaceOnlyServices in this Region.
 func (s *ServiceImpl) interfaceOnly(name string) bool {
 	svc, ok := strings.CutPrefix(name, "com.amazonaws."+s.settings.Region+".")
-	return ok && (slices.Contains(config.AWSGWServiceNames, svc) || svc == "ecr.api" || svc == "ecr.dkr")
+	return ok && slices.Contains(interfaceOnlyServices, svc)
 }
 
 // interfaceOnlyFields refuses the fields AWS accepts only on interface

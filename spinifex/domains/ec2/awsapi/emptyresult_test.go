@@ -299,3 +299,13 @@ func TestEC2_PeeringVpcInfoListsAWSOmitsWhenEmpty(t *testing.T) {
 	assert.NotContains(t, out, "ipv6CidrBlockSet")
 	assert.Contains(t, out, "<tagSet></tagSet>")
 }
+
+// AWS omits a gateway service's private DNS names rather than rendering an
+// empty set, and still renders its empty tag set.
+func TestEC2_ServiceDetailPrivateDnsNamesOmittedWhenEmpty(t *testing.T) {
+	out := render[ec2.DescribeVpcEndpointServicesInput](t, "DescribeVpcEndpointServices", ec2.DescribeVpcEndpointServicesOutput{
+		ServiceDetails: []*ec2.ServiceDetail{{ServiceName: aws.String("com.amazonaws.ap-southeast-2.s3"), Tags: []*ec2.Tag{}}},
+	})
+	assert.NotContains(t, out, "privateDnsNameSet")
+	assert.Contains(t, out, "<tagSet></tagSet>")
+}

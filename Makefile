@@ -510,7 +510,10 @@ deploy: build
 	sudo systemctl daemon-reload
 	sudo systemctl restart spinifex.target
 	@if [ "$${SKIP_ASSET_PREFLIGHT:-}" != "1" ]; then \
-		$(MAKE) --no-print-directory deploy-verify; \
+		if ! $(MAKE) --no-print-directory deploy-verify; then \
+			echo "[deploy] the new spx is installed and spinifex.target was restarted."; \
+			exit 1; \
+		fi; \
 	fi
 
 # Full preflight against the installed spx: after a restart, a Stale service row
@@ -518,9 +521,9 @@ deploy: build
 deploy-verify:
 	@if ! sudo /usr/local/bin/spx admin preflight; then \
 		echo ""; \
-		echo "[deploy] post-restart preflight failed: the new spx is installed and"; \
-		echo "  spinifex.target was restarted, but the table above has problems. A Stale"; \
-		echo "  service row is still running a replaced binary; check it with:"; \
+		echo "[deploy-verify] preflight against the installed spx found problems (table above)."; \
+		echo "  A Stale service row is still executing a replaced binary: restart spinifex.target,"; \
+		echo "  then check it with:"; \
 		echo "    systemctl status 'spinifex-*'"; \
 		exit 1; \
 	fi

@@ -14,6 +14,12 @@ var (
 	adminPreflightSkipRunningBinaries bool
 )
 
+// Overridable so tests can see which check set the command selected.
+var (
+	checkHost       = preflight.CheckHost
+	checkHostAssets = preflight.CheckHostAssets
+)
+
 var adminPreflightCmd = &cobra.Command{
 	Use:   "preflight",
 	Short: "Verify this host's managed assets against what this build expects",
@@ -60,9 +66,9 @@ func init() {
 }
 
 func runAdminPreflight(_ *cobra.Command, _ []string) error {
-	check := preflight.CheckHost
+	check := checkHost
 	if adminPreflightSkipRunningBinaries {
-		check = preflight.CheckHostAssets
+		check = checkHostAssets
 	}
 	results := check()
 

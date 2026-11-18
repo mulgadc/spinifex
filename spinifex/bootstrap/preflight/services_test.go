@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"testing"
 
+	hostcommand "github.com/mulgadc/spinifex/spinifex/runtime/host/command"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -156,8 +157,8 @@ func TestServiceUnitsAreServicesOnly(t *testing.T) {
 	assert.NotContains(t, units, "spinifex.target")
 }
 
-// The pre-swap gate must not see services on the old binary, while the full
-// check still reports them; otherwise make deploy can never pass.
+// The pre-swap gate must not see services on the old binary, but must still
+// fail on a bad asset; the full check reports both.
 func TestCheckHostAt_RunningBinariesSelectable(t *testing.T) {
 	const (
 		unit = "spinifex-daemon.service"
@@ -165,6 +166,8 @@ func TestCheckHostAt_RunningBinariesSelectable(t *testing.T) {
 	)
 	root := fakeProc(t, pid, "usr/local/bin/spx", "/usr/local/bin/spx"+deletedSuffix)
 	stubMainPID(t, unit, pid)
+	helper := hostcommand.EndpointSysctlHelper
+	writeHelper(t, root, helper, []byte("not the canonical helper body\n"))
 
 	serviceRows := func(results []Result) []Result {
 		var rows []Result
@@ -176,10 +179,15 @@ func TestCheckHostAt_RunningBinariesSelectable(t *testing.T) {
 		return rows
 	}
 
-	assert.Empty(t, serviceRows(checkHostAt(root, false)))
+	assets := checkHostAt(root, false)
+	assert.Empty(t, serviceRows(assets))
+	assert.Equal(t, Stale, findResult(t, assets, helper).Status)
+	assert.True(t, HasProblem(assets))
 
-	rows := serviceRows(CheckHostAt(root))
+	full := CheckHostAt(root)
+	rows := serviceRows(full)
 	require.Len(t, rows, 1)
 	assert.Equal(t, unit, rows[0].Path)
 	assert.Equal(t, Stale, rows[0].Status)
+	assert.Equal(t, Stale, findResult(t, full, helper).Status)
 }

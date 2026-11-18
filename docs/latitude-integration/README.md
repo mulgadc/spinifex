@@ -53,8 +53,9 @@ It is the same product you would install on your own servers with [Single-Node I
 
 **Why run it on latitude.sh:**
 
-- **Bare metal by the hour.** Spinifex runs guests with KVM, which needs a server that exposes `/dev/kvm`, and a latitude.sh bare-metal server does.
-  A virtual machine plan cannot run guests.
+- **Hourly billing, no commitment.** You pay for a bare-metal server by the hour and remove it when you are done.
+- **Bare metal runs guests.** Spinifex runs guests with KVM, which needs `/dev/kvm`, and a bare-metal server exposes it.
+  A virtual machine plan does not, so it cannot run guests.
 - **Sites in several locations.** You choose the latitude.sh site, such as `DAL` or `LON2`, so the region sits close to your users or your data.
 - **Portable workloads.** Your applications and Terraform code against the AWS APIs, not against latitude.sh, so they move between latitude.sh, AWS, your own rack or an edge site as a deployment decision.
 - **Keep your AWS shape.** VPCs, subnets, security groups, instances and volumes stay exactly as you define them today.
@@ -70,12 +71,12 @@ Spinifex uses that Elastic IP as a static address pool: an instance in a public 
 You need:
 
 - **A latitude.sh account** with room for one server and one Elastic IP.
-- **A latitude.sh API key.** In the latitude.sh dashboard, open **API Keys** from your account menu and create a key.
+- **A latitude.sh API key.** In the latitude.sh dashboard, open **Settings**, then **API Keys**, and choose **Create API Key**.
   Export it as `LATITUDESH_AUTH_TOKEN` in [step 3](#3-deploy).
 - **OpenTofu or Terraform**, version 1.6 or newer. Install [OpenTofu](https://opentofu.org/docs/intro/install/) or [Terraform](https://developer.hashicorp.com/terraform/install); the deploy script uses whichever it finds, preferring OpenTofu.
   The website workbook in [step 7](#7-launch-a-website) needs 1.6.
 - **The [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)**, `python3` and `curl`.
-- **No `AWS_*` variables in your shell.** Unset `AWS_ENDPOINT_URL_EC2`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_DEFAULT_REGION` if they are set, because they override the profile the deploy writes.
+- **No AWS credential, region or endpoint variables in your shell.** Unset `AWS_ENDPOINT_URL_EC2`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_DEFAULT_REGION` if they are set, because they override the profile the deploy writes.
 - **An SSH key pair** at `~/.ssh/id_ed25519`.
   Create one with `ssh-keygen -t ed25519` if you do not have one.
   The deploy installs the public key on the node.
@@ -102,12 +103,12 @@ cd spinifex/scripts/terraform/latitude-spx
 
 | Use | Nodes | Plan | Cost while running |
 | --- | --- | --- | --- |
-| Development, testing and a first look | 1 | `m4-metal-medium` bare metal | The plan's hourly price, plus the Elastic IP's monthly price, both as latitude.sh lists them |
+| Development, testing and a first look | 1 | `m4-metal-medium` bare metal (AMD EPYC 9124, 16 cores, 128 GB, 2 × 1.9 TB NVMe data disks) | $0.62 an hour, plus $4 a month for the Elastic IP |
 
-Check the current prices in the latitude.sh dashboard before you deploy.
+Check the current prices on latitude.sh before you deploy.
 latitude.sh bills a bare-metal server from the moment it is created, and a powered-off server still bills, so remove the deployment when you are done.
 
-The installer puts Spinifex's data on the largest blank NVMe disk it finds, and in our run that was a 1.9 TB disk, the largest of three.
+The deploy puts Spinifex's data on the largest blank NVMe disk it finds, and in our run that was a 1.9 TB disk, the largest of three.
 
 ## 3. Deploy
 
@@ -128,11 +129,8 @@ export LATITUDESH_AUTH_TOKEN=<your token>
 ```
 
 Bare metal is slow to arrive: in our run latitude.sh delivered the server after about 10½ minutes, and the rest of `up` took about 3½ minutes.
-The default latitude.sh site is `DAL`; pass `--site` for another, with the site code in upper case, such as `--site LON2`.
+The default latitude.sh site is `DAL`; pass `--site` for another, such as `--site LON2`.
 Run `./deploy-latitude.sh --help` for every option.
-
-A lower-case site, such as `--site lon2`, creates the server and then fails with `Provider produced inconsistent result after apply`.
-See [Troubleshooting](#troubleshooting) to recover.
 
 If a site has no `m4-metal-medium` in stock, the deploy stops and you pick another site with `--site`.
 
@@ -162,7 +160,7 @@ Keep that command: it is how you log in if SSH is lost.
 
 This prints `node1` and its address, then the objects the deployment holds in your latitude.sh account by ID (the Elastic IP, project, server, SSH key and user data), then the completed deploy steps.
 
-In the latitude.sh dashboard, the server is under your project's **Servers**, named `spx-default-node1`.
+In the latitude.sh dashboard, the server is in the project `spinifex-default`, under **Compute**, then **Bare metal**, named `spx-default-node1`.
 It is the server that runs Spinifex, and the AWS workloads you create on it run inside it.
 
 <p align="center">
@@ -170,7 +168,7 @@ It is the server that runs Spinifex, and the AWS workloads you create on it run 
 </p>
 <p align="center"><em>The Spinifex node in the latitude.sh dashboard.</em></p>
 
-The Elastic IP is under **Elastic IPs** in the same dashboard:
+The Elastic IP is under **Network**, then **IP addresses**:
 
 <p align="center">
   <img src="../../.github/assets/images/latitude/latitude-elastic-ip.png" alt="latitude.sh Elastic IPs page, showing the address the deployment created" width="900">
@@ -275,9 +273,10 @@ tofu destroy -var region=us-east-1 \
 
 Without those options the destroy targets the workbook's default region and a local endpoint, and removes nothing.
 
-Then remove the deployment from the `latitude-spx` directory:
+Then go back to the `latitude-spx` directory and remove the deployment:
 
 ```bash
+cd ../../../scripts/terraform/latitude-spx
 ./deploy-latitude.sh destroy
 ```
 
@@ -286,12 +285,12 @@ It deletes the server, the Elastic IP, the SSH key, the user data and the projec
 Objects whose names match the deployment but that it did not record are listed, and are deleted only after you type `delete-untracked`.
 
 The Elastic IP list in the latitude.sh API ignores pagination, so the last step asks you to check the dashboard for leftovers and to type `checked`.
-Look under **Servers** and **Elastic IPs** before you do.
+Look under **Compute**, then **Bare metal**, and under **Network**, then **IP addresses**, before you do.
 In our run the destroy took about 1½ minutes, including both prompts, and left nothing behind.
 
 ## Limits
 
-- **One node.** Three nodes are not supported yet, because an Elastic IP does not yet move to another server when a node fails.
+- **One node.** Three-node deployments are not supported on latitude.sh yet.
 - **One public address, so one public instance.** The deployment holds a single Elastic IP, and each instance in a public subnet needs one.
   A second public instance, or a load balancer that needs public addresses, has no address to take.
 - **Five Elastic IPs per team.** latitude.sh raises the limit on request to support.
@@ -300,9 +299,9 @@ In our run the destroy took about 1½ minutes, including both prompts, and left 
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `Provider produced inconsistent result after apply ... .site` after the server was created | The site was passed in lower case. The server exists and Terraform recorded it as tainted. Run `tofu untaint 'latitudesh_server.node[0]'` against `~/.spinifex/latitude/default/terraform.tfstate`, then run `./deploy-latitude.sh up --site <UPPER-CASE SITE>` again, and it keeps the server. Or run `./deploy-latitude.sh destroy` and then `up`. |
-| The site has no `m4-metal-medium` in stock | Pick another site with `--site`, in upper case. |
+| The site has no `m4-metal-medium` in stock | Pick another site with `--site`. |
 | `Connection was closed before we received a valid response from endpoint URL: "http://127.0.0.1:8080/"` | `AWS_ENDPOINT_URL_EC2`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` or `AWS_DEFAULT_REGION` is set in your shell and overrides the profile. Run `unset` on each, then `export AWS_PROFILE=spinifex-latitude-default`. |
 | The workbook targets the wrong region or a local endpoint | Pass `-var region=us-east-1` and `-var spinifex_endpoint="$(aws configure get endpoint_url)"` to both `apply` and `destroy`. |
-| SSH to the node stops answering | Use the out-of-band console command the deploy printed, or the Out-of-Band tab on the server in the latitude.sh dashboard. Logging in there needs an OS user password, which you set yourself while SSH still works. |
+| SSH to the node stops answering | Use the out-of-band console command the deploy printed, or the Out-of-Band tab on the server in the latitude.sh dashboard. Logging in there needs a password for the `ubuntu` user, which you set while SSH still works: run `./deploy-latitude.sh ssh`, then `sudo passwd ubuntu` on the node. |
+| `SERVERS_OUT_OF_STOCK` from the apply, after the server order | Stock levels shown before the order are not a guarantee. Run `./deploy-latitude.sh destroy`, then `./deploy-latitude.sh up` with another `--site`. |
 | Any other failure | The logs are under `~/.spinifex/latitude/default/`. `up` resumes from the failed step. |

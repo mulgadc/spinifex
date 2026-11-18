@@ -330,7 +330,7 @@ func readOutboundSAs(t *testing.T, ssh *harness.PeerSSH, l ipsecLeg) map[string]
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	raw, err := ssh.Run(ctx, l.self.Addr,
-		fmt.Sprintf("sudo ip -s xfrm state list src %s dst %s proto esp", l.selfEncap, l.peerEncap))
+		fmt.Sprintf("sudo ip -s xfrm state list src %s dst %s proto esp nokeys", l.selfEncap, l.peerEncap))
 	if err != nil {
 		t.Fatalf("%s: ip -s xfrm state: %v", l, err)
 	}

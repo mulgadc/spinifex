@@ -55,6 +55,11 @@ func parseFilters(filters []*ec2.Filter, valid map[string]bool) (map[string][]st
 // DescribeVpcEndpoints lists the caller's available endpoints from its own
 // account keys, so its cost is the caller's result set.
 func (s *ServiceImpl) DescribeVpcEndpoints(ctx context.Context, input *ec2.DescribeVpcEndpointsInput, accountID string) (*ec2.DescribeVpcEndpointsOutput, error) {
+	// Until activation is installed no endpoint can exist, and the answer
+	// stays the empty inventory the route has always returned.
+	if s.active == nil {
+		return &ec2.DescribeVpcEndpointsOutput{VpcEndpoints: []*ec2.VpcEndpoint{}}, nil
+	}
 	ids := awsidentifiers.Distinct(input.VpcEndpointIds)
 	pageReq, err := describePaging.Parse(input.MaxResults, input.NextToken, len(ids))
 	if err != nil {

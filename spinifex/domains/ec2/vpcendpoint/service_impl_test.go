@@ -147,6 +147,14 @@ func TestCreate_InactiveServiceDoesNotExist(t *testing.T) {
 	assert.Empty(t, out.ServiceDetails, "the service is not listed until it is offered")
 	_, err = f.svc.DescribeVpcEndpointServices(t.Context(), &ec2.DescribeVpcEndpointServicesInput{ServiceNames: aws.StringSlice([]string{s3Service})}, testAccount)
 	requireCode(t, err, awserrors.ErrorInvalidServiceName, "")
+
+	got, err := f.svc.DescribeVpcEndpoints(t.Context(), &ec2.DescribeVpcEndpointsInput{
+		VpcEndpointIds: aws.StringSlice([]string{"vpce-0123456789abcdef0"}),
+		Filters:        []*ec2.Filter{{Name: aws.String("no-such-filter"), Values: aws.StringSlice([]string{"x"})}},
+	}, testAccount)
+	require.NoError(t, err, "without activation the inventory answers as it did before endpoints existed")
+	assert.Empty(t, got.VpcEndpoints)
+	assert.NotNil(t, got.VpcEndpoints)
 }
 
 func TestCreate_OneEndpointRoutePerTable(t *testing.T) {

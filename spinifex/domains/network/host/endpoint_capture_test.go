@@ -125,6 +125,12 @@ func (f *fakeNetfilter) ip(args []string) ([]byte, error) {
 		f.rules = slices.Delete(f.rules, i, i+1)
 	case args[0] == "route" && args[1] == "replace":
 		f.routes[args[len(args)-1]] = true
+	case args[0] == "route" && args[1] == "show":
+		// The kernel holds no table without routes, and listing one fails.
+		if !f.routes[args[len(args)-1]] {
+			return []byte("Error: ipv4: FIB table does not exist."), errors.New("exit status 2")
+		}
+		return []byte("local default dev lo scope host\n"), nil
 	case args[0] == "route" && args[1] == "flush":
 		delete(f.routes, args[len(args)-1])
 	default:
@@ -275,4 +281,12 @@ func TestProbeEndpointCapture(t *testing.T) {
 	require.ErrorContains(t, err, "TPROXY capture unavailable")
 	_, exists = f.chains["mangle/SPX-VPCE-PROBE"]
 	assert.False(t, exists)
+}
+
+// On a host where the capture table was never created, removing the capture
+// succeeds and flushes nothing.
+func TestEnsureEndpointCapture_EmptyOnPristineHost(t *testing.T) {
+	f := newFakeNetfilter()
+	require.NoError(t, EnsureEndpointCapture(t.Context(), f, nil))
+	assert.Empty(t, f.callsWith("ip route flush"))
 }

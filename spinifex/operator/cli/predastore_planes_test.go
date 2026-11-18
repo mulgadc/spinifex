@@ -134,3 +134,36 @@ func TestPredastoreTemplatesBindOnlyTheGate(t *testing.T) {
 		})
 	}
 }
+
+// Every gate serves the endpoint listener the node proxies dial, and its host
+// names the formation CA, without which predastore would verify no client.
+func TestPredastoreTemplatesServeTheEndpointListener(t *testing.T) {
+	t.Parallel()
+
+	multinode, err := admin.GenerateMultiNodePredastoreConfig(
+		predastoreMultiNodeTemplate, predastoreMultinodeNodes(), "AK", "SK", "ap-southeast-2", "tok",
+		"/cfg", "/var/lib/spinifex", "10.0.0.1", 0, admin.NorthstarCredentials{},
+	)
+	require.NoError(t, err)
+
+	for name, tc := range map[string]struct {
+		content, ca string
+	}{
+		"single-node": {renderTemplate(t, predastoreTomlTemplate, singleNodeSettings()), "/etc/spinifex/ca.pem"},
+		"multi-node":  {multinode, "/cfg/ca.pem"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			for _, host := range loadRenderedPredastore(t, tc.content).Hosts {
+				assert.Equal(t, tc.ca, host.TLSCA, "host %d must verify proxies against the formation CA", host.ID)
+				for _, n := range host.Nodes {
+					want := 0
+					if n.Role == pds.RoleGate {
+						want = 8474
+					}
+					assert.Equal(t, want, n.EndpointPort, "node %d (%s)", n.ID, n.Role)
+				}
+			}
+		})
+	}
+}

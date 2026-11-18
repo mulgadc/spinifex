@@ -31,6 +31,9 @@ addr = "127.0.0.1"
 data_dir = "{{.PredastoreDataDir}}"
 tls_cert = "{{.ConfigDir}}/server.pem"
 tls_key = "{{.ConfigDir}}/server.key"
+# The formation CA: the gate's endpoint listener admits only a client
+# certificate it issued, which every node's endpoint proxy presents.
+tls_ca = "{{.ConfigDir}}/ca.pem"
 encryption_key = "{{.ConfigDir}}/predastore/encryption.key"
 admin_port = {{.PredastoreAdminPort}}
 
@@ -42,6 +45,8 @@ id = 1
 role = "gate"
 port = 8443
 bind_addr = "0.0.0.0"
+# VPC gateway endpoint traffic from node proxies, over mutual TLS.
+endpoint_port = 8474
 
 # One blob node holds every object. Extra blob nodes would only hash-partition
 # the keys across more segment files and more badger indexes on the same drive,

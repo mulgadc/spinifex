@@ -864,6 +864,8 @@ func (d *Daemon) buildVMManagerDeps() vm.Deps {
 		StateStore:         d.stateStore,
 		VolumeMounter:      d.volumeMounter(),
 		NetworkPlumber:     d.networkPlumber,
+		EndpointDemuxer:    d.endpointDemuxer(),
+		EndpointIntent:     d.endpointIntent,
 		InstanceTypes:      newInstanceTypeResolverAdapter(d.resourceMgr),
 		Resources:          newResourceControllerAdapter(d.resourceMgr),
 		VolumeStateUpdater: d.volumeService,

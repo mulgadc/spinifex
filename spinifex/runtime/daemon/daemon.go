@@ -2707,6 +2707,7 @@ func (d *Daemon) startCluster() error {
 	// ovs-vswitchd keeps br-imds flows only in memory and nothing else restores
 	// them, so a restart would leave every guest on this node without a network.
 	d.vmMgr.StartIMDSDatapathReconcile(d.ctx)
+	d.startEndpointDemuxReconcile(d.ctx)
 
 	// Reality→desired GC backstop (historic PROP-LIFECYCLE-003 §3): finish teardown interrupted by
 	// a node-down mid-cascade and purge completed terminated records. The volume

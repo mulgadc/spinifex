@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"context"
 	"maps"
 	"slices"
 	"sync"
@@ -32,6 +33,10 @@ type Deps struct {
 	StateStore         StateStore
 	VolumeMounter      VolumeMounter
 	NetworkPlumber     NetworkPlumber
+	// EndpointDemuxer and EndpointIntent drive the gateway-endpoint demux;
+	// either nil leaves it off.
+	EndpointDemuxer EndpointDemuxer
+	EndpointIntent  func(context.Context) (EndpointIntent, error)
 	InstanceTypes      InstanceTypeResolver
 	Resources          ResourceController
 	VolumeStateUpdater VolumeStateUpdater
@@ -108,6 +113,8 @@ type Manager struct {
 	// imdsLocks serialises each primary ENI's IMDS datapath attach, repair and
 	// teardown, which run outside mu.
 	imdsLocks keyedMutex
+
+	endpointDemux endpointDemux
 
 	// uefi is each running UEFI instance's variable store writer.
 	uefi uefiWriterState

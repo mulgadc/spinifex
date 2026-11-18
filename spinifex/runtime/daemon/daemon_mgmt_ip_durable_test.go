@@ -342,3 +342,17 @@ func TestMgmtIPAllocator_Durable_UnboundAtRebuildBlocksUntilConfirmed(t *testing
 	_, err := a.Allocate("i-2")
 	require.ErrorIs(t, err, errMgmtIPUnresolvedHolder)
 }
+
+// Confirmation belongs to an address, so a local guest reported later at a
+// different address is unconfirmed again and blocks new allocations.
+func TestMgmtIPAllocator_Durable_ChangedLocalAddressIsUnconfirmedAgain(t *testing.T) {
+	jsm := newTestMgmtJSM(t)
+	store := createDurableMgmtBucket(t, jsm, durableEntry("10.15.8.10", "i-1", "node1"))
+	a := newDurableAllocator(t, jsm, "node1")
+	a.Rebuild(map[string]*vm.VM{"i-1": {MgmtIP: "10.15.8.10"}})
+	a.Rebuild(map[string]*vm.VM{"i-1": {MgmtIP: "10.15.8.11"}})
+
+	_, err := a.Allocate("i-2")
+	require.ErrorIs(t, err, errMgmtIPUnresolvedHolder)
+	assert.Equal(t, []mgmtipstore.Entry{durableEntry("10.15.8.10", "i-1", "node1")}, durableEntries(t, store))
+}

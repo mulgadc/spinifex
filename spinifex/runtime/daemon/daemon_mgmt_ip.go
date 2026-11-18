@@ -111,8 +111,9 @@ type MgmtIPAllocator struct {
 	prefix  netip.Prefix
 	store   *mgmtipstore.Store
 
-	// confirmed marks cached holders the durable record has acknowledged.
-	confirmed map[string]bool
+	// confirmed holds the address the durable record acknowledged for each
+	// cached holder; a cached address that differs from it is unconfirmed.
+	confirmed map[string]string
 }
 
 // NewMgmtIPAllocator creates an allocator for the /24 subnet of bridgeIP.
@@ -135,7 +136,7 @@ func NewMgmtIPAllocator(bridgeIP string) (*MgmtIPAllocator, error) {
 
 	return &MgmtIPAllocator{
 		allocated: make(map[string]string),
-		confirmed: make(map[string]bool),
+		confirmed: make(map[string]string),
 		baseIP:    base,
 		subnet:    fmt.Sprintf("%d.%d.%d.0/24", base[0], base[1], base[2]),
 		rangeMin:  10,

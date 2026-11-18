@@ -157,7 +157,7 @@ func (a *MgmtIPAllocator) allocateDurable(instanceID string) (string, error) {
 	}
 	a.mu.Lock()
 	a.allocated[instanceID] = ip
-	a.confirmed[instanceID] = true
+	a.confirmed[instanceID] = ip
 	a.mu.Unlock()
 	slog.Debug("Management IP allocated", "instance", instanceID, "ip", ip)
 	return ip, nil
@@ -204,7 +204,7 @@ func (a *MgmtIPAllocator) confirmDurable(instanceID, mgmtIP string) error {
 	}
 	a.mu.Lock()
 	a.allocated[instanceID] = mgmtIP
-	a.confirmed[instanceID] = true
+	a.confirmed[instanceID] = mgmtIP
 	a.mu.Unlock()
 	return nil
 }
@@ -231,7 +231,7 @@ func (a *MgmtIPAllocator) resolveLocalHolders() error {
 	a.mu.Lock()
 	pending := make(map[string]string)
 	for id, ip := range a.allocated {
-		if !a.confirmed[id] {
+		if a.confirmed[id] != ip {
 			pending[id] = ip
 		}
 	}

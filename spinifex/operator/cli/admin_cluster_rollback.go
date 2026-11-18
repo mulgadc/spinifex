@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcendpoint"
 	"github.com/mulgadc/spinifex/spinifex/foundation/release/featurelevel"
 	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 	"github.com/nats-io/nats.go/jetstream"
@@ -107,12 +106,7 @@ func runClusterRollback(cmd *cobra.Command, _ []string) {
 	if err != nil {
 		fail(err)
 	}
-	endpointDrain.mu.Lock()
-	endpointDrain.store, endpointDrain.nodes, endpointDrain.daemons = store, nodes, probe.Probe
-	endpointDrain.proxy = requestProxyStatus(nc)
-	endpointDrain.live = func(ctx context.Context) (int, error) { return vpcendpoint.CountLive(ctx, js, time.Now()) }
-	endpointDrain.out = os.Stdout
-	endpointDrain.mu.Unlock()
+	endpointDrain.connect(store, nodes, probe.Probe, nc, js, os.Stdout)
 	rec, err := featurelevel.RunRollback(ctx, rollbackTo, featurelevel.RollbackDeps{
 		Store:      store,
 		Probe:      probe.Probe,

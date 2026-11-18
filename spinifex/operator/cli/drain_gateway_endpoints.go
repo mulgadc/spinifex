@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,8 +10,10 @@ import (
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcendpoint"
 	"github.com/mulgadc/spinifex/spinifex/foundation/release/featurelevel"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // proxyStatusWait bounds each node's vpcd answer to the drain.
@@ -31,6 +32,18 @@ type gatewayEndpointDrain struct {
 }
 
 var endpointDrain = &gatewayEndpointDrain{}
+
+// connect points the drain at a connected formation: the level store, the
+// configured nodes, their daemons' status, each vpcd and the endpoint bucket.
+func (g *gatewayEndpointDrain) connect(store *featurelevel.Store, nodes []string,
+	daemons func(context.Context) []featurelevel.NodeStatus, nc *nats.Conn, js jetstream.JetStream, out io.Writer,
+) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.store, g.nodes, g.daemons, g.out = store, nodes, daemons, out
+	g.proxy = requestProxyStatus(nc)
+	g.live = func(ctx context.Context) (int, error) { return vpcendpoint.CountLive(ctx, js, time.Now()) }
+}
 
 // check counts what still depends on the endpoint listener: live endpoints,
 // endpoints a proxy still admits by, unfinished connections and demux flows.
@@ -95,30 +108,9 @@ func (g *gatewayEndpointDrain) check(ctx context.Context) (int, error) {
 	return live + admitting + sessions + demuxNodes, nil
 }
 
-// requestProxyStatus asks node's vpcd for its endpoint proxy status.
+// requestProxyStatus asks each node's vpcd for its endpoint proxy status.
 func requestProxyStatus(nc *nats.Conn) func(ctx context.Context, node string) (projection.EndpointProxyStatus, error) {
 	return func(ctx context.Context, node string) (projection.EndpointProxyStatus, error) {
-		var st projection.EndpointProxyStatus
-		if !featurelevel.ValidNode(node) {
-			return st, errors.New("invalid node ID")
-		}
-		body, err := json.Marshal(projection.EndpointProxyStatusRequest{Node: node})
-		if err != nil {
-			return st, err
-		}
-		msg, err := nc.RequestWithContext(ctx, projection.EndpointProxyStatusSubject(node), body)
-		if err != nil {
-			return st, fmt.Errorf("no reply: %w", err)
-		}
-		if err := json.Unmarshal(msg.Data, &st); err != nil {
-			return st, fmt.Errorf("malformed reply: %w", err)
-		}
-		switch {
-		case st.Error != "":
-			return st, fmt.Errorf("refused: %s", st.Error)
-		case st.Node != node:
-			return st, fmt.Errorf("answered by %q", st.Node)
-		}
-		return st, nil
+		return projection.RequestEndpointProxyStatus(ctx, nc, node)
 	}
 }

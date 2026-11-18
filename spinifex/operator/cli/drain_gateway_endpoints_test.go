@@ -100,7 +100,8 @@ func TestGatewayEndpointDrain_CountsEveryDependent(t *testing.T) {
 	}
 }
 
-// A node that cannot say it has read the rollback is not idle.
+// A node that cannot say it has read the rollback, or an endpoint count that
+// cannot be read, is not idle.
 func TestGatewayEndpointDrain_UnreadNodeFails(t *testing.T) {
 	cases := map[string]func(f *drainFixture){
 		"silent vpcd": func(f *drainFixture) { f.silent["n2"] = true },
@@ -108,6 +109,9 @@ func TestGatewayEndpointDrain_UnreadNodeFails(t *testing.T) {
 			f.proxies["n1"] = projection.EndpointProxyStatus{Node: "n1", Revision: f.rev - 1}
 		},
 		"silent daemon": func(f *drainFixture) { f.silent["daemon-n1"] = true },
+		"unreadable endpoint bucket": func(f *drainFixture) {
+			f.drain.live = func(context.Context) (int, error) { return 0, errors.New("bucket unavailable") }
+		},
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

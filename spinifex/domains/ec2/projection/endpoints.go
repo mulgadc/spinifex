@@ -2,7 +2,6 @@ package projection
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -110,37 +109,20 @@ func openBucket(ctx context.Context, js jetstream.JetStream, bucket string) (jet
 	return kv, nil
 }
 
-// loadRecords decodes every record in bucket; a key deleted between the list
-// and the read is skipped.
+// loadRecords decodes every account-scoped record in bucket in one consistent
+// read; the single-token version key is not matched.
 func loadRecords[T any](ctx context.Context, js jetstream.JetStream, bucket string) ([]T, error) {
 	kv, err := openBucket(ctx, js, bucket)
 	if kv == nil || err != nil {
 		return nil, err
 	}
-	keys, err := kvstore.Keys(ctx, kv)
-	if errors.Is(err, jetstream.ErrNoKeysFound) {
-		return nil, nil
-	}
+	items, _, err := kvstore.Over[T](nil, kv, kvstore.Config{Name: bucket}).Snapshot(ctx, "*.*")
 	if err != nil {
-		return nil, fmt.Errorf("list %s: %w", bucket, err)
+		return nil, fmt.Errorf("read %s: %w", bucket, err)
 	}
-	var out []T
-	for _, key := range keys {
-		if key == kvstore.VersionKey {
-			continue
-		}
-		entry, err := kv.Get(ctx, key)
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("read %s/%s: %w", bucket, key, err)
-		}
-		var v T
-		if err := json.Unmarshal(entry.Value(), &v); err != nil {
-			return nil, fmt.Errorf("decode %s/%s: %w", bucket, key, err)
-		}
-		out = append(out, v)
+	out := make([]T, len(items))
+	for i, it := range items {
+		out[i] = it.Value
 	}
 	return out, nil
 }

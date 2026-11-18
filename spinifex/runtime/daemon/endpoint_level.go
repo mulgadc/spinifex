@@ -2,9 +2,7 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -14,32 +12,6 @@ import (
 
 // endpointProxyStatusWait bounds the heartbeat's ask of its own vpcd.
 const endpointProxyStatusWait = 2 * time.Second
-
-// localEndpointProxyStatus asks this node's vpcd for its endpoint proxy status.
-func (d *Daemon) localEndpointProxyStatus(ctx context.Context) (projection.EndpointProxyStatus, error) {
-	var st projection.EndpointProxyStatus
-	if d.natsConn == nil {
-		return st, errors.New("no NATS connection")
-	}
-	body, err := json.Marshal(projection.EndpointProxyStatusRequest{Node: d.node})
-	if err != nil {
-		return st, err
-	}
-	msg, err := d.natsConn.RequestWithContext(ctx, projection.EndpointProxyStatusSubject(d.node), body)
-	if err != nil {
-		return st, err
-	}
-	if err := json.Unmarshal(msg.Data, &st); err != nil {
-		return st, fmt.Errorf("decode endpoint proxy status: %w", err)
-	}
-	switch {
-	case st.Error != "":
-		return st, fmt.Errorf("vpcd refused: %s", st.Error)
-	case st.Node != d.node:
-		return st, fmt.Errorf("endpoint proxy status for %q answered by %q", d.node, st.Node)
-	}
-	return st, nil
-}
 
 // advertisedFeatureLevel is the level this node's heartbeat reports. Gateway
 // endpoints need this node to capture their traffic and its gate to serve
@@ -51,7 +23,7 @@ func (d *Daemon) advertisedFeatureLevel() int {
 	}
 	ctx, cancel := context.WithTimeout(parent, endpointProxyStatusWait)
 	defer cancel()
-	st, err := d.localEndpointProxyStatus(ctx)
+	st, err := projection.RequestEndpointProxyStatus(ctx, d.natsConn, d.node)
 	level := featurelevel.Build
 	if err != nil || !st.ProbePassed || !st.GateReady {
 		level = featurelevel.GatewayEndpoints - 1

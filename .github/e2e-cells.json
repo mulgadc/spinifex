@@ -6,7 +6,7 @@
     "net": "dhcp",
     "host": "debian-13",
     "arch": "x86_64",
-    "runner": "ci-single",
+    "runner": "ci-single-nightly",
     "extra": "",
     "suite": "",
     "timeout_minutes": 75
@@ -18,7 +18,7 @@
     "net": "static",
     "host": "ubuntu-26.04",
     "arch": "x86_64",
-    "runner": "ci-single",
+    "runner": "ci-single-nightly",
     "extra": "",
     "suite": "",
     "timeout_minutes": 75
@@ -30,7 +30,7 @@
     "net": "dhcp",
     "host": "ubuntu-26.04",
     "arch": "x86_64",
-    "runner": "ci-single",
+    "runner": "ci-single-nightly",
     "extra": "",
     "suite": "",
     "timeout_minutes": 75
@@ -86,7 +86,7 @@
     "net": "static",
     "host": "debian-13",
     "arch": "x86_64",
-    "runner": "ci-single",
+    "runner": "ci-single-nightly",
     "extra": "reboot-single",
     "suite": ""
   },
@@ -97,7 +97,7 @@
     "net": "nat",
     "host": "debian-13",
     "arch": "x86_64",
-    "runner": "ci-single",
+    "runner": "ci-single-nightly",
     "extra": "nat-single",
     "suite": ""
   },
@@ -120,7 +120,7 @@
     "net": "static",
     "host": "debian-13",
     "arch": "x86_64",
-    "runner": "ci-single",
+    "runner": "ci-single-nightly",
     "extra": "ecs",
     "suite": "ecs"
   },
@@ -131,7 +131,7 @@
     "net": "static",
     "host": "debian-13",
     "arch": "x86_64",
-    "runner": "ci-single",
+    "runner": "ci-single-nightly",
     "extra": "rds",
     "suite": "rds",
     "timeout_minutes": 120,
@@ -206,7 +206,7 @@
     "net": "dhcp",
     "host": "oracle-10",
     "arch": "x86_64",
-    "runner": "ci-single",
+    "runner": "ci-single-nightly",
     "extra": "",
     "suite": "",
     "timeout_minutes": 75
@@ -218,7 +218,7 @@
     "net": "static",
     "host": "oracle-10",
     "arch": "x86_64",
-    "runner": "ci-single",
+    "runner": "ci-single-nightly",
     "extra": "reboot-single",
     "suite": ""
   },
@@ -229,7 +229,7 @@
     "net": "nat",
     "host": "oracle-10",
     "arch": "x86_64",
-    "runner": "ci-single",
+    "runner": "ci-single-nightly",
     "extra": "nat-single",
     "suite": ""
   },
@@ -262,7 +262,7 @@
     "net": "static",
     "host": "debian-13",
     "arch": "x86_64",
-    "runner": "ci-single",
+    "runner": "ci-single-nightly",
     "extra": "rds",
     "suite": "rds",
     "timeout_minutes": 120,

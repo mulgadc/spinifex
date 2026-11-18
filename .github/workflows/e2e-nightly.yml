@@ -138,9 +138,9 @@ jobs:
       matrix.host }}${{ matrix.extra && format('/{0}', matrix.extra) || '' }})"
     needs: select
     if: needs.select.outputs.any == 'true'
-    # Six by default; the E2E_NIGHTLY_MAX_PARALLEL variable or the dispatch input
-    # raises it to the 11 ci-single and ci-multi runners once two sampled
-    # nightlies show the rack holds it. hv-lock.sh serialises provisioning per hypervisor.
+    # Six by default; E2E_NIGHTLY_MAX_PARALLEL or the dispatch input raises it. Cells use
+    # 4 ci-single-nightly and 5 ci-multi runners; ci-single-5 and -6 lack the label, so
+    # these selectors never put a nightly job there. hv-lock.sh serialises provisioning per hypervisor.
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJSON(inputs.max_parallel || vars.E2E_NIGHTLY_MAX_PARALLEL || '6') }}
@@ -1078,7 +1078,7 @@ jobs:
     if: >-
       inputs.cells == '' ||
       contains(format(',{0},', inputs.cells), ',21,')
-    runs-on: [self-hosted, ci-single]
+    runs-on: [self-hosted, ci-single-nightly]
     # ISO build, install, boot and pool re-form is ~35 of these on its own,
     # before the workload step imports an AMI and launches an instance.
     timeout-minutes: 90
@@ -1514,7 +1514,7 @@ jobs:
       !cancelled() && (
       inputs.cells == '' ||
       contains(format(',{0},', inputs.cells), ',23,') )
-    runs-on: [self-hosted, ci-single]
+    runs-on: [self-hosted, ci-single-nightly]
     timeout-minutes: 60
     env:
       # Two-minute samples. The 30s smoke preset is too short to compare nights.
@@ -1624,7 +1624,7 @@ jobs:
       !cancelled() && (
       inputs.cells == '' ||
       contains(format(',{0},', inputs.cells), ',24,') )
-    runs-on: [self-hosted, ci-single]
+    runs-on: [self-hosted, ci-single-nightly]
     # The thirteen scenarios run serially and are ~35 minutes of work on their
     # own, measured from the per-scenario predastore matrix, before checkout
     # and build. 30 could not have passed whatever the disk did.

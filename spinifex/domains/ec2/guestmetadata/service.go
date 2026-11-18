@@ -75,6 +75,7 @@ type IMDSServiceImpl struct {
 	roleMiss       *roleMissLogger
 	pubKeys        publicKeyLookup
 	tapResp        *tapResponderManager
+	proxy          *EndpointProxy
 	listTaps       listTapsFunc
 	now            func() time.Time
 	region         string
@@ -219,6 +220,14 @@ func (s *IMDSServiceImpl) httpHandler() http.Handler {
 	return otelsetup.HTTPMiddleware("vpcd")(rejectForwarded(normalizeVersion(nameAction(mux))))
 }
 
+// EnableEndpointProxy serves p behind every tap from the next reconcile. Call it
+// before Run; the service shuts p down when Run returns.
+func (s *IMDSServiceImpl) EnableEndpointProxy(p *EndpointProxy) {
+	p.refresh = s.resolver.refreshENI
+	s.proxy = p
+	s.tapResp.enableEndpointProxy(p)
+}
+
 // Run starts the per-tap reconcile loop and the token-sweep ticker, then blocks
 // until ctx is done. Initial failures are non-fatal; vpcd readiness must not be
 // gated on IMDS.
@@ -228,6 +237,9 @@ func (s *IMDSServiceImpl) Run(ctx context.Context) error {
 
 	<-ctx.Done()
 	s.tapResp.shutdown()
+	if s.proxy != nil {
+		s.proxy.shutdown()
+	}
 	return ctx.Err()
 }
 

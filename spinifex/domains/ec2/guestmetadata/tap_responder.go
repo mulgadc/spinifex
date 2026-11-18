@@ -45,6 +45,10 @@ type activeTapResponder struct {
 	// optional and its bind failures retry without affecting IMDS serving).
 	dnsUDP net.PacketConn
 	dnsTCP net.Listener
+	// eni is the identity resolved at start; the endpoint proxy re-reads it per
+	// connection. proxyLn is nil until the proxy is bound.
+	eni     *eniFacts
+	proxyLn net.Listener
 }
 
 // closeDNS closes the responder's DNS shim sockets, if bound.
@@ -69,6 +73,9 @@ type tapResponderManager struct {
 	// DNS shim (VPC DNS co-tenant). Both nil unless enableDNS was called.
 	dnsListen dnsListenFunc
 	dnsFwd    *dnsForwarder
+
+	// Gateway endpoint proxy, nil unless enableEndpointProxy was called.
+	proxy *EndpointProxy
 
 	mu      sync.Mutex
 	active  map[string]*activeTapResponder // eniID → responder
@@ -100,6 +107,7 @@ func (m *tapResponderManager) start(ctx context.Context, eniID, endpoint string)
 	if ok {
 		if !m.endpointRecreated(cur, endpoint) {
 			m.ensureDNS(ctx, eniID, endpoint)
+			m.ensureProxy(ctx, eniID, endpoint)
 			return nil
 		}
 		// A stop/start faster than the reconcile interval recreates the endpoint
@@ -148,7 +156,7 @@ func (m *tapResponderManager) start(ctx context.Context, eniID, endpoint string)
 		_ = listener.Close()
 		return nil
 	}
-	m.active[eniID] = &activeTapResponder{listener: listener, server: server, endpoint: endpoint, ifindex: ifindex}
+	m.active[eniID] = &activeTapResponder{listener: listener, server: server, endpoint: endpoint, ifindex: ifindex, eni: eni}
 	m.mu.Unlock()
 
 	go func() {
@@ -164,7 +172,79 @@ func (m *tapResponderManager) start(ctx context.Context, eniID, endpoint string)
 
 	slog.InfoContext(ctx, "IMDS: tap responder serving", "eni_id", eniID, "endpoint", endpoint, "addr", listener.Addr().String())
 	m.ensureDNS(ctx, eniID, endpoint)
+	m.ensureProxy(ctx, eniID, endpoint)
 	return nil
+}
+
+// enableEndpointProxy turns on the per-tap gateway endpoint proxy. Must be
+// called before the manager starts reconciling.
+func (m *tapResponderManager) enableEndpointProxy(p *EndpointProxy) {
+	m.proxy = p
+}
+
+// ensureProxy binds the tap's endpoint proxy listener if the proxy is enabled
+// and not yet bound. A bind failure is retried next reconcile and never
+// affects IMDS on the same endpoint.
+func (m *tapResponderManager) ensureProxy(ctx context.Context, eniID, endpoint string) {
+	if m.proxy == nil {
+		return
+	}
+	m.mu.Lock()
+	cur, ok := m.active[eniID]
+	bound := ok && cur.proxyLn != nil
+	m.mu.Unlock()
+	if !ok || bound {
+		return
+	}
+
+	ln, err := m.proxy.listen(ctx, endpoint)
+	if err != nil {
+		slog.WarnContext(ctx, "IMDS: tap endpoint proxy bind failed, retrying next reconcile", "eni_id", eniID, "endpoint", endpoint, "err", err)
+		return
+	}
+	ln = newLimitListener(ln, endpointProxyConnsPerTap)
+
+	m.mu.Lock()
+	cur, ok = m.active[eniID]
+	if !ok || cur.proxyLn != nil || cur.endpoint != endpoint {
+		m.mu.Unlock()
+		_ = ln.Close()
+		return
+	}
+	cur.proxyLn = ln
+	pinned := cur.eni
+	m.mu.Unlock()
+
+	go func() {
+		if err := m.proxy.serve(ctx, ln, pinned); err != nil {
+			slog.ErrorContext(ctx, "IMDS: tap endpoint proxy accept exited, rebinding next reconcile", "eni_id", eniID, "err", err)
+			m.dropProxyIfCurrent(eniID, ln)
+		}
+	}()
+	slog.InfoContext(ctx, "IMDS: tap endpoint proxy serving", "eni_id", eniID, "endpoint", endpoint, "addr", ln.Addr().String())
+}
+
+// dropProxyIfCurrent unbinds eniID's proxy listener only if it is still ln, so
+// the next reconcile rebinds it.
+func (m *tapResponderManager) dropProxyIfCurrent(eniID string, ln net.Listener) {
+	m.mu.Lock()
+	cur, ok := m.active[eniID]
+	if ok && cur.proxyLn == ln {
+		cur.proxyLn = nil
+	}
+	m.mu.Unlock()
+	_ = ln.Close()
+}
+
+// closeProxy closes the responder's proxy listener and resets its sessions.
+func (m *tapResponderManager) closeProxy(eniID string, r *activeTapResponder) {
+	if m.proxy == nil {
+		return
+	}
+	if r.proxyLn != nil {
+		_ = r.proxyLn.Close()
+	}
+	m.proxy.closeTap(eniID)
 }
 
 // enableDNS turns on the per-tap VPC DNS shim: every responder additionally
@@ -292,6 +372,7 @@ func (m *tapResponderManager) stop(eniID string) {
 		return
 	}
 	responder.closeDNS()
+	m.closeProxy(eniID, responder)
 	if err := responder.server.Close(); err != nil {
 		slog.Warn("IMDS: tap responder close failed", "eni_id", eniID, "err", err)
 	}
@@ -305,8 +386,9 @@ func (m *tapResponderManager) removeIfCurrent(eniID string, server *http.Server)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if cur, ok := m.active[eniID]; ok && cur.server == server {
-		// Close the DNS shim too: a dangling bind would EADDRINUSE the re-start.
+		// Close the DNS shim and proxy too: a dangling bind would EADDRINUSE the re-start.
 		cur.closeDNS()
+		m.closeProxy(eniID, cur)
 		delete(m.active, eniID)
 	}
 }
@@ -317,6 +399,7 @@ func (m *tapResponderManager) shutdown() {
 	defer m.mu.Unlock()
 	for eniID, responder := range m.active {
 		responder.closeDNS()
+		m.closeProxy(eniID, responder)
 		if err := responder.server.Close(); err != nil {
 			slog.Warn("IMDS: tap responder close failed during shutdown", "eni_id", eniID, "err", err)
 		}

@@ -170,7 +170,7 @@ func TestDescribeImagesByID_SystemAMIRendersPublicAmazon(t *testing.T) {
 		wantAlias  string
 	}{
 		{name: "system image", ownerAlias: "system", wantPublic: true, wantAlias: "amazon"},
-		{name: "own image", ownerAlias: byIDAccount, wantPublic: false, wantAlias: byIDAccount},
+		{name: "own image", ownerAlias: byIDAccount, wantPublic: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -193,6 +193,66 @@ func TestDescribeImagesByID_SystemAMIRendersPublicAmazon(t *testing.T) {
 			assert.Equal(t, "RunInstances", aws.StringValue(img.UsageOperation))
 		})
 	}
+}
+
+// A customer image renders the members AWS gives an image CreateImage made: no
+// alias or empty description, its location, protection, SR-IOV and IMDS support,
+// source instance, and the gp3 baseline in its mapping.
+func TestDescribeImagesByID_CustomerImageProjection(t *testing.T) {
+	store := recordingstore.New()
+	svc := ec2image.NewImageServiceImplWithStore(store, byIDBucket)
+	doc := byIDAMIDoc(byIDImage, byIDAccount)
+	doc.Description = ""
+	doc.SourceInstanceID = "i-0669dd059c6c9d8cd"
+	doc.ImdsSupport = "v2.0"
+	doc.RootIOPS, doc.RootThroughput = 3000, 125
+	putByIDAMI(t, store, doc)
+
+	out, err := svc.DescribeImages(t.Context(), &ec2.DescribeImagesInput{
+		ImageIds: aws.StringSlice([]string{byIDImage}),
+		Owners:   aws.StringSlice([]string{"self"}),
+	}, byIDAccount)
+
+	require.NoError(t, err)
+	require.Len(t, out.Images, 1)
+	img := out.Images[0]
+	assert.Nil(t, img.Description)
+	assert.Nil(t, img.ImageOwnerAlias)
+	assert.Equal(t, byIDAccount, aws.StringValue(img.OwnerId))
+	assert.Equal(t, byIDAccount+"/debian-13", aws.StringValue(img.ImageLocation))
+	assert.Equal(t, "disabled", aws.StringValue(img.DeregistrationProtection))
+	assert.Equal(t, "simple", aws.StringValue(img.SriovNetSupport))
+	assert.Equal(t, "v2.0", aws.StringValue(img.ImdsSupport))
+	assert.Equal(t, "i-0669dd059c6c9d8cd", aws.StringValue(img.SourceInstanceId))
+	require.Len(t, img.BlockDeviceMappings, 1)
+	assert.Equal(t, int64(3000), aws.Int64Value(img.BlockDeviceMappings[0].Ebs.Iops))
+	assert.Equal(t, int64(125), aws.Int64Value(img.BlockDeviceMappings[0].Ebs.Throughput))
+}
+
+// A system image keeps its description and Amazon alias and locates under it,
+// and carries none of the members only a customer's own image has.
+func TestDescribeImagesByID_SystemImageProjection(t *testing.T) {
+	store := recordingstore.New()
+	svc := ec2image.NewImageServiceImplWithStore(store, byIDBucket)
+	putByIDAMI(t, store, byIDAMIDoc(byIDImage, "system"))
+
+	out, err := svc.DescribeImages(t.Context(), &ec2.DescribeImagesInput{
+		ImageIds: aws.StringSlice([]string{byIDImage}),
+	}, byIDAccount)
+
+	require.NoError(t, err)
+	require.Len(t, out.Images, 1)
+	img := out.Images[0]
+	assert.Equal(t, "Debian 13", aws.StringValue(img.Description))
+	assert.Equal(t, "amazon", aws.StringValue(img.ImageOwnerAlias))
+	assert.Equal(t, "amazon/debian-13", aws.StringValue(img.ImageLocation))
+	assert.Equal(t, "simple", aws.StringValue(img.SriovNetSupport))
+	assert.Nil(t, img.DeregistrationProtection)
+	assert.Nil(t, img.SourceInstanceId)
+	assert.Nil(t, img.ImdsSupport)
+	require.Len(t, img.BlockDeviceMappings, 1)
+	assert.Nil(t, img.BlockDeviceMappings[0].Ebs.Iops)
+	assert.Nil(t, img.BlockDeviceMappings[0].Ebs.Throughput)
 }
 
 // The Owners parameter is matched against the resolved owner, and a named image

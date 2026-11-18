@@ -98,7 +98,7 @@ record() { echo "$1 $( . "$LIB"; sqsw_starttime "$1" )" > "$T/run/${2:-ready}.pi
 shutdown_step() {
     (
         SQSW_RUN="$T/run" SQSW_DATA="$T/data" SQSW_CONSOLE="$T/console" SQSW_MOUNTS="$T/mounts"
-        UMOUNT="$TMP/bin/umount" SQSW_STOP_BUDGET_TENTHS=5
+        UMOUNT="$TMP/bin/umount" SQSW_STOP_BUDGET_TENTHS=5 SQSW_KILL_WAIT_TENTHS=5
         # shellcheck source=../../build/microvm/sqs-worker/sqs-worker-lib.sh
         . "$LIB"
         if [ -n "${1:-}" ]; then sqsw_same() { [ "$1" = "$survivor" ]; }; survivor=$1; fi

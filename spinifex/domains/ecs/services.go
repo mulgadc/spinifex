@@ -19,6 +19,7 @@ import (
 	ec2eip "github.com/mulgadc/spinifex/spinifex/domains/ec2/eip"
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -125,22 +126,22 @@ func (m *natsEIPManager) Release(ctx context.Context, accountID, allocationID st
 
 // CreateService persists a REPLICA service and reconciles up to desiredCount.
 // DAEMON scheduling and serviceRegistries are rejected in v1 (Q15). Re-creating
-// an existing ACTIVE service returns it, so ClientToken needs no store.
+// an existing ACTIVE service returns it only for the same clientToken and parameters.
 func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInput, accountID string) (*ecs.CreateServiceOutput, error) {
 	name := aws.StringValue(input.ServiceName)
 	if name == "" {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+		return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "serviceName is required.")
 	}
 	if err := validateTags(input.Tags); err != nil {
 		return nil, err
 	}
 	if strategy := aws.StringValue(input.SchedulingStrategy); strategy != "" && strategy != SchedulingStrategyReplica {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter) // DAEMON unsupported (Q15)
+		return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "schedulingStrategy %s is not supported.", strategy)
 	}
 	// Service discovery needs SRV records, which the DNS writer does not yet emit,
 	// and a servicediscovery surface to resolve the registry ARN against (Q15).
 	if len(input.ServiceRegistries) > 0 {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+		return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "serviceRegistries are not supported.")
 	}
 
 	cluster := ClusterShortName(aws.StringValue(input.Cluster))
@@ -161,6 +162,10 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 	if ok, gerr := taskdefinition.GetJSON(ctx, kv, ServiceKey(cluster, name), &existing); gerr != nil {
 		return nil, gerr
 	} else if ok && existing.Status == ServiceStatusActive {
+		token := aws.StringValue(input.ClientToken)
+		if token == "" || token != existing.ClientToken || createServiceFingerprint(input) != existing.CreateFingerprint {
+			return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "Creation of service was not idempotent.")
+		}
 		return &ecs.CreateServiceOutput{Service: s.serviceToAWS(accountID, &existing)}, nil
 	}
 
@@ -189,6 +194,9 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 		Tags:                 tagsToMap(input.Tags),
 		CreatedAt:            now,
 		UpdatedAt:            now,
+		CreatedBy:            CallerARN(ctx),
+		ClientToken:          aws.StringValue(input.ClientToken),
+		CreateFingerprint:    createServiceFingerprint(input),
 	}
 	if input.NetworkConfiguration != nil && input.NetworkConfiguration.AwsvpcConfiguration != nil {
 		v := input.NetworkConfiguration.AwsvpcConfiguration
@@ -209,6 +217,14 @@ func (s *Service) CreateService(ctx context.Context, input *ecs.CreateServiceInp
 	return &ecs.CreateServiceOutput{Service: s.serviceToAWS(accountID, &rec)}, nil
 }
 
+// createServiceFingerprint hashes every CreateService parameter except the
+// client token, so a replay can be told apart from a changed request.
+func createServiceFingerprint(input *ecs.CreateServiceInput) string {
+	params := *input
+	params.ClientToken = nil
+	return idempotency.ParamHash(&params)
+}
+
 // UpdateService mutates desiredCount and/or the task definition, then reconciles.
 func (s *Service) UpdateService(ctx context.Context, input *ecs.UpdateServiceInput, accountID string) (*ecs.UpdateServiceOutput, error) {
 	cluster := ClusterShortName(aws.StringValue(input.Cluster))
@@ -222,8 +238,11 @@ func (s *Service) UpdateService(ctx context.Context, input *ecs.UpdateServiceInp
 	if err != nil {
 		return nil, err
 	}
-	if !found || rec.Status == ServiceStatusInactive {
+	if !found {
 		return nil, errors.New(awserrors.ErrorECSServiceNotFound)
+	}
+	if rec.Status != ServiceStatusActive {
+		return nil, errors.New(awserrors.ErrorECSServiceNotActive)
 	}
 
 	rec.ensurePrimaryDeployment()
@@ -266,8 +285,8 @@ func (s *Service) UpdateService(ctx context.Context, input *ecs.UpdateServiceInp
 	return &ecs.UpdateServiceOutput{Service: s.serviceToAWS(accountID, &rec)}, nil
 }
 
-// DeleteService drains the service to zero, force-stops its tasks, and marks it
-// INACTIVE (kept describable, AWS parity).
+// DeleteService refuses a service scaled above 0 unless force is set, as AWS
+// does; otherwise it force-stops the tasks and marks it INACTIVE (still describable).
 func (s *Service) DeleteService(ctx context.Context, input *ecs.DeleteServiceInput, accountID string) (*ecs.DeleteServiceOutput, error) {
 	cluster := ClusterShortName(aws.StringValue(input.Cluster))
 	name := ServiceShortName(aws.StringValue(input.Service))
@@ -284,13 +303,22 @@ func (s *Service) DeleteService(ctx context.Context, input *ecs.DeleteServiceInp
 		return nil, errors.New(awserrors.ErrorECSServiceNotFound)
 	}
 
+	if rec.DesiredCount > 0 && !aws.BoolValue(input.Force) {
+		return nil, awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "The service cannot be stopped while it is scaled above 0.")
+	}
+
 	rec.DesiredCount = 0
+	for i := range rec.Deployments {
+		rec.Deployments[i].DesiredCount = 0
+		rec.Deployments[i].RunningCount = 0
+		rec.Deployments[i].PendingCount = 0
+	}
 	tasks, err := s.listServiceTasks(ctx, kv, cluster, name)
 	if err != nil {
 		return nil, err
 	}
 	for i := range tasks {
-		s.requestStopTask(ctx, kv, accountID, &tasks[i], "Service deleted")
+		s.requestStopTask(ctx, kv, accountID, &tasks[i], "Service deleted", "")
 	}
 	rec.Status = ServiceStatusInactive
 	rec.RunningCount = 0
@@ -555,7 +583,7 @@ func (s *Service) stopSurplusTasks(ctx context.Context, kv jetstream.KeyValue, a
 	runBudget := max(runningTotal-minCount, 0)
 	// Cooperative stop: the agent reaps the container, then recordTaskState performs
 	// the single capacity release. A never-placed task force-stops internally.
-	stop := func(i int, reason string) { s.requestStopTask(ctx, kv, accountID, &tasks[i], reason) }
+	stop := func(i int, reason string) { s.requestStopTask(ctx, kv, accountID, &tasks[i], reason, "") }
 
 	for _, i := range oldPending {
 		stop(i, deploymentSupersededReason)
@@ -723,6 +751,9 @@ func (s *Service) serviceToAWS(accountID string, r *ServiceRecord) *ecs.Service 
 	}
 	if r.LaunchType != "" {
 		svc.LaunchType = aws.String(r.LaunchType)
+	}
+	if r.CreatedBy != "" {
+		svc.CreatedBy = aws.String(r.CreatedBy)
 	}
 	// Only awsvpc tasks carry a subnet/security-group selection; other modes
 	// never populate one (RunTask's parseAwsvpcConfig gates it the same way).

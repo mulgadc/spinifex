@@ -245,7 +245,7 @@ func bindRealEIP(t *testing.T, d *Daemon, instanceID string) (allocID string, sv
 	})
 	require.NoError(t, err)
 	d.externalIPAM = ipam
-	svc, err = ec2eip.NewEIPServiceImpl(t.Context(), nc, ipam, d.vpcService)
+	svc, err = ec2eip.NewEIPServiceImpl(t.Context(), nc, ipam, d.vpcService, "ap-southeast-2")
 	require.NoError(t, err)
 	d.eipService = svc
 
@@ -307,7 +307,7 @@ func TestS7_BackstopNeverReleasesCustomerAssociatedAddress(t *testing.T) {
 		{Name: "wan-test", RangeStart: "203.0.113.10", RangeEnd: "203.0.113.20", Gateway: "203.0.113.1", PrefixLen: 24},
 	})
 	require.NoError(t, err)
-	svc, err := ec2eip.NewEIPServiceImpl(t.Context(), nc, ipam, d.vpcService)
+	svc, err := ec2eip.NewEIPServiceImpl(t.Context(), nc, ipam, d.vpcService, "ap-southeast-2")
 	require.NoError(t, err)
 	d.eipService = svc
 	kv, err := js.KeyValue(t.Context(), ec2eip.KVBucketEIPs)
@@ -394,7 +394,7 @@ func TestS7_WrapperSkipsBackstopWhenOwnerCannotReadRecord(t *testing.T) {
 		{Name: "wan-test", RangeStart: "203.0.113.10", RangeEnd: "203.0.113.20", Gateway: "203.0.113.1", PrefixLen: 24},
 	})
 	require.NoError(t, err)
-	svc, err := ec2eip.NewEIPServiceImpl(t.Context(), nc, ipam, d.vpcService)
+	svc, err := ec2eip.NewEIPServiceImpl(t.Context(), nc, ipam, d.vpcService, "ap-southeast-2")
 	require.NoError(t, err)
 	d.eipService = svc
 	kv, err := js.KeyValue(t.Context(), ec2eip.KVBucketEIPs)
@@ -480,7 +480,7 @@ func TestS7_SystemThenAbsentKeepsLaunchEIP(t *testing.T) {
 		{Name: "wan-test", RangeStart: "203.0.113.10", RangeEnd: "203.0.113.20", Gateway: "203.0.113.1", PrefixLen: 24},
 	})
 	require.NoError(t, err)
-	svc, err := ec2eip.NewEIPServiceImpl(t.Context(), nc, ipam, d.vpcService)
+	svc, err := ec2eip.NewEIPServiceImpl(t.Context(), nc, ipam, d.vpcService, "ap-southeast-2")
 	require.NoError(t, err)
 	d.eipService = svc
 	kv, err := js.KeyValue(t.Context(), ec2eip.KVBucketEIPs)

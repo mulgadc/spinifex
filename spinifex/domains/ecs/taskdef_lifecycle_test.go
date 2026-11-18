@@ -98,8 +98,7 @@ func TestDeregisterTaskDefinition_RepeatSucceedsAndUnknownIsRefused(t *testing.T
 
 	_, err := svc.DeregisterTaskDefinition(context.Background(),
 		&ecs.DeregisterTaskDefinitionInput{TaskDefinition: aws.String("app:9")}, testAccountID)
-	require.Error(t, err)
-	assert.Equal(t, awserrors.ErrorECSInvalidParameter, err.Error())
+	assert.EqualError(t, err, "The specified task definition does not exist.: InvalidParameterException")
 }
 
 // registeredAt is on every read; deregisteredAt appears on reads after the
@@ -236,8 +235,52 @@ func TestLaunches_UnknownTaskDefinitionIsNotFound(t *testing.T) {
 			assert.Equal(t, awserrors.ErrorECSClientException, code, "%s %s", name, ref)
 			assert.Equal(t, "TaskDefinition not found.", msg, "%s %s", name, ref)
 		}
-		err := launch(":1")
-		require.Error(t, err, name)
-		assert.Equal(t, awserrors.ErrorECSInvalidParameter, err.Error(), name)
+		code, _ := awserrors.ResolveErrorCode(launch(":1"))
+		assert.Equal(t, awserrors.ErrorECSInvalidParameter, code, name)
 	}
+}
+
+// The container AWS returns from RegisterTaskDefinition and
+// DeregisterTaskDefinition for an awsvpc definition that sets no environment.
+func TestTaskDefinition_ContainerMatchesAWSResponse(t *testing.T) {
+	svc, _ := newTestService(t)
+	reg, err := svc.RegisterTaskDefinition(context.Background(), &ecs.RegisterTaskDefinitionInput{
+		Family:                  aws.String("web"),
+		NetworkMode:             aws.String(ecs.NetworkModeAwsvpc),
+		RequiresCompatibilities: aws.StringSlice([]string{ecs.CompatibilityEc2}),
+		Tags:                    []*ecs.Tag{{Key: aws.String("awsdiff"), Value: aws.String("t")}},
+		ContainerDefinitions: []*ecs.ContainerDefinition{{
+			Name: aws.String("web"), Image: aws.String("docker.io/library/nginx:1.27-alpine"),
+			Cpu: aws.Int64(128), Memory: aws.Int64(256), Essential: aws.Bool(true),
+			PortMappings: []*ecs.PortMapping{{ContainerPort: aws.Int64(80)}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	dereg, err := svc.DeregisterTaskDefinition(context.Background(),
+		&ecs.DeregisterTaskDefinitionInput{TaskDefinition: aws.String("web:1")}, testAccountID)
+	require.NoError(t, err)
+
+	want := &ecs.ContainerDefinition{
+		Name: aws.String("web"), Image: aws.String("docker.io/library/nginx:1.27-alpine"),
+		Cpu: aws.Int64(128), Memory: aws.Int64(256), Essential: aws.Bool(true),
+		PortMappings: []*ecs.PortMapping{{
+			ContainerPort: aws.Int64(80), HostPort: aws.Int64(80), Protocol: aws.String("tcp"),
+		}},
+		Environment:    []*ecs.KeyValuePair{},
+		MountPoints:    []*ecs.MountPoint{},
+		VolumesFrom:    []*ecs.VolumeFrom{},
+		SystemControls: []*ecs.SystemControl{},
+	}
+	for name, td := range map[string]*ecs.TaskDefinition{"register": reg.TaskDefinition, "deregister": dereg.TaskDefinition} {
+		require.Len(t, td.ContainerDefinitions, 1, name)
+		assert.Equal(t, "web", aws.StringValue(td.Family), name)
+		assert.Equal(t, ecs.NetworkModeAwsvpc, aws.StringValue(td.NetworkMode), name)
+		assert.Equal(t, want, td.ContainerDefinitions[0], name)
+		assert.Equal(t, []*ecs.Volume{}, td.Volumes, name)
+		assert.Equal(t, []*ecs.TaskDefinitionPlacementConstraint{}, td.PlacementConstraints, name)
+		assert.Equal(t, []*string{aws.String(ecs.CompatibilityEc2)}, td.RequiresCompatibilities, name)
+	}
+	assert.Equal(t, []*ecs.Tag{{Key: aws.String("awsdiff"), Value: aws.String("t")}}, reg.Tags)
+	assert.Equal(t, taskdefinition.StatusActive, aws.StringValue(reg.TaskDefinition.Status))
+	assert.Equal(t, taskdefinition.StatusInactive, aws.StringValue(dereg.TaskDefinition.Status))
 }

@@ -26,6 +26,11 @@ func DeleteDBSnapshot(ctx context.Context, input *rds.DeleteDBSnapshotInput, nc 
 	return rdsinstance.NewNATSService(nc).DeleteDBSnapshot(ctx, input, caller.AccountID)
 }
 
+// DescribeDBSnapshotAttributes implements the RDS action of the same name for the caller's account.
+func DescribeDBSnapshotAttributes(ctx context.Context, input *rds.DescribeDBSnapshotAttributesInput, nc *nats.Conn, caller Caller) (any, error) {
+	return rdsinstance.NewNATSService(nc).DescribeDBSnapshotAttributes(ctx, input, caller.AccountID)
+}
+
 // RestoreDBInstanceFromDBSnapshot implements the RDS action of the same name, creating a new DB
 // instance from a snapshot in the caller's account.
 func RestoreDBInstanceFromDBSnapshot(ctx context.Context, input *rds.RestoreDBInstanceFromDBSnapshotInput, nc *nats.Conn, caller Caller) (any, error) {

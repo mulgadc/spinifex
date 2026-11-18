@@ -203,7 +203,8 @@ func TestNetworkTestRunsEveryDirectionAndRecordsEachResult(t *testing.T) {
 func TestNetworkTestFailsARunWhoseServerNeverAnswers(t *testing.T) {
 	_, nc, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
-	d := Deps{NATS: nc, NetworkTests: NewKVNetworkTests(js), NodeIDs: []string{"a", "b"}}
+	const serveTimeout = 100 * time.Millisecond
+	d := Deps{NATS: nc, NetworkTests: NewKVNetworkTests(js), NodeIDs: []string{"a", "b"}, networkTestServeTimeout: serveTimeout}
 	fakeNode(t, nc, "a", "10.10.8.4", 23e9, false, nil)
 	silent, err := nc.Subscribe(clusterv1.NetTestServeSubject("b"), func(*nats.Msg) {})
 	require.NoError(t, err)
@@ -211,7 +212,7 @@ func TestNetworkTestFailsARunWhoseServerNeverAnswers(t *testing.T) {
 
 	started, err := d.StartNetworkTest(ctx, map[string]string{"Plane": "lan", "Source": "a", "Target": "b", "DurationSeconds": "5"})
 	require.NoError(t, err)
-	// Parallel only once the test is running, so its serve timeout overlaps the serial tests.
+	// Parallel only once the test is running, so it overlaps the serial tests.
 	t.Parallel()
 
 	var done NetworkTest
@@ -222,7 +223,7 @@ func TestNetworkTestFailsARunWhoseServerNeverAnswers(t *testing.T) {
 		}
 		done = out.Tests[0]
 		return done.Status != NetworkTestRunning
-	}, networkTestServeTimeout+3*time.Second, 50*time.Millisecond, "the serve request has its own deadline")
+	}, serveTimeout+3*time.Second, 10*time.Millisecond, "the serve request has its own deadline")
 
 	assert.Equal(t, NetworkTestFailed, done.Status)
 	require.NotEmpty(t, done.Runs)

@@ -131,6 +131,10 @@ type DBInstanceRecord struct {
 	// Named on the delete request and persisted before teardown starts, so a
 	// resumed delete takes the same final snapshot rather than none.
 	FinalSnapshotIdentifier string `json:"finalSnapshotIdentifier,omitempty"`
+	// Set once the delete handler has retired the VM and left the rest of the
+	// teardown to the reconciler, which then resumes it without waiting out the
+	// handler's claim.
+	TeardownHandedOff bool `json:"teardownHandedOff,omitempty"`
 
 	// The snapshot currently being taken of this instance. Nil when none is.
 	SnapshotOperation *SnapshotOperation `json:"snapshotOperation,omitempty"`
@@ -271,6 +275,8 @@ const (
 	// in between leaves a reconcilable trace rather than an orphaned EC2 snapshot.
 	SnapshotStatusCreating  = "creating"
 	SnapshotStatusAvailable = "available"
+	// The EC2 snapshot settled in error, so the record holds no restorable data.
+	SnapshotStatusFailed = "failed"
 )
 
 // SnapshotOperation is the snapshot operation holding a DB instance, written under the same CAS that
@@ -314,6 +320,12 @@ type DBSnapshotRecord struct {
 	MasterUsername   string `json:"masterUsername"`
 	Port             int64  `json:"port"`
 
+	// The source instance as it stood when the snapshot was taken, which AWS
+	// reports on every snapshot even after the instance is gone.
+	AvailabilityZone   string     `json:"availabilityZone,omitempty"`
+	DbiResourceID      string     `json:"dbiResourceId,omitempty"`
+	InstanceCreateTime *time.Time `json:"instanceCreateTime,omitempty"`
+
 	// The placement the source instance had, which a restore falls back to for
 	// every field the request leaves unspecified.
 	VpcID                string   `json:"vpcId,omitempty"`
@@ -334,6 +346,9 @@ type DBSnapshotRecord struct {
 	Tags map[string]string `json:"tags,omitempty"`
 
 	CreatedAt time.Time `json:"createdAt"`
+	// When the EC2 snapshot settled to available or failed. A deletion waiting
+	// on its final snapshot excludes the wait between this and CreatedAt.
+	SettledAt *time.Time `json:"settledAt,omitempty"`
 }
 
 var _ TaggedRecord = (*DBSnapshotRecord)(nil)

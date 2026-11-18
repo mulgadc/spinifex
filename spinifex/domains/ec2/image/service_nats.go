@@ -57,7 +57,7 @@ func (s *NATSImageService) CreateImage(ctx context.Context, input *ec2.CreateIma
 	// responses at all is a cluster fault, not a missing instance.
 	for code, n := range sum.ErrorCodes {
 		if n > 0 && code != "" && code != awserrors.ErrorInvalidInstanceIDNotFound {
-			return nil, errors.New(code)
+			return nil, sum.CodeError(code)
 		}
 	}
 	if sum.ErrorCodes[awserrors.ErrorInvalidInstanceIDNotFound] > 0 {
@@ -88,4 +88,20 @@ func (s *NATSImageService) ModifyImageAttribute(ctx context.Context, input *ec2.
 
 func (s *NATSImageService) ResetImageAttribute(ctx context.Context, input *ec2.ResetImageAttributeInput, accountID string) (*ec2.ResetImageAttributeOutput, error) {
 	return natsmsg.NATSRequest[ec2.ResetImageAttributeOutput](ctx, s.natsConn, "ec2.ResetImageAttribute", input, 30*time.Second, accountID)
+}
+
+func (s *NATSImageService) EnableImageDeregistrationProtection(ctx context.Context, input *ec2.EnableImageDeregistrationProtectionInput, accountID string) (*ec2.EnableImageDeregistrationProtectionOutput, error) {
+	return natsmsg.NATSRequest[ec2.EnableImageDeregistrationProtectionOutput](ctx, s.natsConn, "ec2.EnableImageDeregistrationProtection", input, 30*time.Second, accountID)
+}
+
+func (s *NATSImageService) DisableImageDeregistrationProtection(ctx context.Context, input *ec2.DisableImageDeregistrationProtectionInput, accountID string) (*ec2.DisableImageDeregistrationProtectionOutput, error) {
+	return natsmsg.NATSRequest[ec2.DisableImageDeregistrationProtectionOutput](ctx, s.natsConn, "ec2.DisableImageDeregistrationProtection", input, 30*time.Second, accountID)
+}
+
+func (s *NATSImageService) EnableImageDeprecation(ctx context.Context, input *ec2.EnableImageDeprecationInput, accountID string) (*ec2.EnableImageDeprecationOutput, error) {
+	return natsmsg.NATSRequest[ec2.EnableImageDeprecationOutput](ctx, s.natsConn, "ec2.EnableImageDeprecation", input, 30*time.Second, accountID)
+}
+
+func (s *NATSImageService) DisableImageDeprecation(ctx context.Context, input *ec2.DisableImageDeprecationInput, accountID string) (*ec2.DisableImageDeprecationOutput, error) {
+	return natsmsg.NATSRequest[ec2.DisableImageDeprecationOutput](ctx, s.natsConn, "ec2.DisableImageDeprecation", input, 30*time.Second, accountID)
 }

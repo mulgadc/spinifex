@@ -97,7 +97,7 @@ func (s *Service) resourceTags(ctx context.Context, kv jetstream.KeyValue, kind 
 			return nil, err
 		}
 		if !found {
-			return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+			return nil, taskdefinition.ErrNotFound()
 		}
 		return rec.Tags, nil
 	case ecsResourceService:
@@ -117,7 +117,7 @@ func (s *Service) resourceTags(ctx context.Context, kv jetstream.KeyValue, kind 
 			return nil, err
 		}
 		if !found {
-			return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+			return nil, errTaskNotFound()
 		}
 		return rec.Tags, nil
 	case ecsResourceContainerInstance:
@@ -127,7 +127,7 @@ func (s *Service) resourceTags(ctx context.Context, kv jetstream.KeyValue, kind 
 			return nil, err
 		}
 		if !found {
-			return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+			return nil, errContainerInstanceNotFound()
 		}
 		return rec.Tags, nil
 	default:
@@ -166,7 +166,7 @@ func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue,
 			return err
 		}
 		if !found {
-			return errors.New(awserrors.ErrorECSInvalidParameter)
+			return taskdefinition.ErrNotFound()
 		}
 		tags, err := mutate(rec.Tags)
 		if err != nil {
@@ -196,7 +196,7 @@ func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue,
 			return err
 		}
 		if !found {
-			return errors.New(awserrors.ErrorECSInvalidParameter)
+			return errTaskNotFound()
 		}
 		tags, err := mutate(rec.Tags)
 		if err != nil {
@@ -211,7 +211,7 @@ func (s *Service) mutateResourceTags(ctx context.Context, kv jetstream.KeyValue,
 			return err
 		}
 		if !found {
-			return errors.New(awserrors.ErrorECSInvalidParameter)
+			return errContainerInstanceNotFound()
 		}
 		tags, err := mutate(rec.Tags)
 		if err != nil {

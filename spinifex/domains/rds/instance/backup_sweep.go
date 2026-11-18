@@ -193,7 +193,7 @@ func (s *Service) loadAutomatedBackups(ctx context.Context, kv *kvstore.Bucket,
 			continue
 		}
 		var snapshot DBSnapshotRecord
-		found, err = getJSON(ctx, kv, DBSnapshotKey(entry.DBSnapshotIdentifier), &snapshot)
+		rev, found, err := getJSONRevision(ctx, kv, DBSnapshotKey(entry.DBSnapshotIdentifier), &snapshot)
 		if err != nil {
 			return nil, err
 		}
@@ -206,7 +206,7 @@ func (s *Service) loadAutomatedBackups(ctx context.Context, kv *kvstore.Bucket,
 		// The snapshot record is the authority on age, not the index key: the key is
 		// a naming convention, and the record is what a restore reads.
 		entry.CreatedAt = snapshot.CreatedAt
-		entries = append(entries, automatedBackup{AutomatedBackupRecord: entry, stamp: stamp, snapshot: &snapshot})
+		entries = append(entries, automatedBackup{AutomatedBackupRecord: entry, stamp: stamp, snapshot: &snapshot, revision: rev})
 	}
 	return entries, nil
 }
@@ -217,6 +217,7 @@ type automatedBackup struct {
 
 	stamp    string
 	snapshot *DBSnapshotRecord
+	revision uint64
 }
 
 // The newest snapshot retention must not remove. Only an available one counts: a
@@ -242,7 +243,7 @@ func newestAvailableBackup(entries []automatedBackup) string {
 // entry stays so it is not lost from the index.
 func (s *Service) deleteAutomatedBackup(ctx context.Context, kv *kvstore.Bucket,
 	accountID string, entry automatedBackup) (bool, error) {
-	err := s.removeDBSnapshot(ctx, kv, accountID, entry.snapshot)
+	err := s.removeDBSnapshot(ctx, kv, accountID, entry.snapshot, entry.revision)
 	switch {
 	// Both readings of "not now": a snapshot an instance restored from it is still
 	// reading, and one still being cut. Neither is a failure — the next pass

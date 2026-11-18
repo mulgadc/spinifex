@@ -6,7 +6,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -36,7 +35,7 @@ func startingInstance(id string, names ...string) *vm.VM {
 		if boot {
 			device = "/dev/sda1"
 		}
-		v.EBSRequests.Requests = append(v.EBSRequests.Requests, viperblocklegacyv1.EBSRequest{Name: n, Boot: boot, DeviceName: device})
+		v.EBSRequests.Requests = append(v.EBSRequests.Requests, vm.EBSRequest{Name: n, Boot: boot, DeviceName: device})
 		v.Instance.BlockDeviceMappings = append(v.Instance.BlockDeviceMappings, &ec2.InstanceBlockDeviceMapping{
 			DeviceName: aws.String(device), Ebs: &ec2.EbsInstanceBlockDevice{VolumeId: aws.String(n)},
 		})
@@ -136,7 +135,7 @@ func TestReconcileStartVolumes_DirectBootNeedsNoRootVolume(t *testing.T) {
 
 	sqs := &vm.VM{ID: "i-sqs", AccountID: startVolumesAccount, Status: vm.StateStopped, DirectBoot: true,
 		Instance: &ec2.Instance{InstanceId: aws.String("i-sqs")}}
-	sqs.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{{Name: "vol-store-gone", DeviceName: "/dev/vdb"}}
+	sqs.EBSRequests.Requests = []vm.EBSRequest{{Name: "vol-store-gone", DeviceName: "/dev/vdb"}}
 	require.NoError(t, svc.reconcileStartVolumes(context.Background(), sqs))
 	assert.Equal(t, []string{"vol-store-gone"}, requestedNames(sqs), "a system store volume is never pruned")
 }

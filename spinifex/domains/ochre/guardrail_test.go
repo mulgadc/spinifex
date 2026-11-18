@@ -70,6 +70,7 @@ func createGuardrailInput(name string) *bedrock.CreateGuardrailInput {
 // well-formed, self-parseable ARN, Status READY, and every policy config
 // persisted verbatim (round-tripped back through Get).
 func TestCreateGuardrail_MintsARNAndDraft(t *testing.T) {
+	t.Parallel()
 	store := newGuardrailTestStore(t)
 	ctx := context.Background()
 
@@ -116,6 +117,7 @@ func TestCreateGuardrail_MintsARNAndDraft(t *testing.T) {
 // TestCreateGuardrail_RejectsMissingRequiredFields covers the required-field
 // validation AWS's own CreateGuardrailInput.Validate() enforces.
 func TestCreateGuardrail_RejectsMissingRequiredFields(t *testing.T) {
+	t.Parallel()
 	store := newGuardrailTestStore(t)
 	ctx := context.Background()
 
@@ -136,6 +138,7 @@ func TestCreateGuardrail_RejectsMissingRequiredFields(t *testing.T) {
 // a foreign account presenting its own accountID: both must read as
 // not-found, never leaking whether the id exists elsewhere.
 func TestGetGuardrail_NotFound(t *testing.T) {
+	t.Parallel()
 	store := newGuardrailTestStore(t)
 	ctx := context.Background()
 
@@ -155,6 +158,7 @@ func TestGetGuardrail_NotFound(t *testing.T) {
 // invariant: a numbered version freezes the DRAFT at creation time, and a
 // later DRAFT mutation never reaches an already-created snapshot.
 func TestCreateGuardrailVersion_SnapshotsImmutably(t *testing.T) {
+	t.Parallel()
 	store := newGuardrailTestStore(t)
 	ctx := context.Background()
 
@@ -200,6 +204,7 @@ func TestCreateGuardrailVersion_SnapshotsImmutably(t *testing.T) {
 // "DRAFT" both mean the mutable working copy; a numbered version that was
 // never created is not-found.
 func TestGetGuardrail_VersionField(t *testing.T) {
+	t.Parallel()
 	store := newGuardrailTestStore(t)
 	ctx := context.Background()
 
@@ -228,6 +233,7 @@ func TestGetGuardrail_VersionField(t *testing.T) {
 // TestListGuardrails_AccountScoped is the plan's explicit isolation
 // requirement: account B never sees account A's guardrail.
 func TestListGuardrails_AccountScoped(t *testing.T) {
+	t.Parallel()
 	store := newGuardrailTestStore(t)
 	ctx := context.Background()
 
@@ -248,6 +254,7 @@ func TestListGuardrails_AccountScoped(t *testing.T) {
 // guarantee: repeated calls return guardrails in the same (creation-time,
 // then id) order.
 func TestListGuardrails_SortedDeterministically(t *testing.T) {
+	t.Parallel()
 	store := newGuardrailTestStore(t)
 	ctx := context.Background()
 
@@ -270,6 +277,7 @@ func TestListGuardrails_SortedDeterministically(t *testing.T) {
 // DRAFT's fields (including swapping a policy config wholesale) and never
 // touches the Versions map.
 func TestUpdateGuardrail_MutatesDraftOnly(t *testing.T) {
+	t.Parallel()
 	store := newGuardrailTestStore(t)
 	ctx := context.Background()
 
@@ -308,6 +316,7 @@ func TestUpdateGuardrail_MutatesDraftOnly(t *testing.T) {
 // foreign-account) guardrail reports not-found rather than silently creating
 // one.
 func TestUpdateGuardrail_NotFound(t *testing.T) {
+	t.Parallel()
 	store := newGuardrailTestStore(t)
 	ctx := context.Background()
 
@@ -325,6 +334,7 @@ func TestUpdateGuardrail_NotFound(t *testing.T) {
 // version-aware half: deleting version "1" removes only that snapshot, and
 // the DRAFT plus any other version survive.
 func TestDeleteGuardrail_VersionDeletesOnlyThatSnapshot(t *testing.T) {
+	t.Parallel()
 	store := newGuardrailTestStore(t)
 	ctx := context.Background()
 
@@ -361,6 +371,7 @@ func TestDeleteGuardrail_VersionDeletesOnlyThatSnapshot(t *testing.T) {
 // TestDeleteGuardrail_AbsentVersionIsNoop covers deleting a numbered version
 // that was never created: idempotent-friendly, not an error.
 func TestDeleteGuardrail_AbsentVersionIsNoop(t *testing.T) {
+	t.Parallel()
 	store := newGuardrailTestStore(t)
 	ctx := context.Background()
 
@@ -381,6 +392,7 @@ func TestDeleteGuardrail_AbsentVersionIsNoop(t *testing.T) {
 // "DRAFT" is not a deletable snapshot: it must be deleted by omitting
 // GuardrailVersion entirely (which deletes the whole guardrail).
 func TestDeleteGuardrail_RejectsDeletingDraftByVersion(t *testing.T) {
+	t.Parallel()
 	store := newGuardrailTestStore(t)
 	ctx := context.Background()
 
@@ -399,6 +411,7 @@ func TestDeleteGuardrail_RejectsDeletingDraftByVersion(t *testing.T) {
 // whole-guardrail half (no GuardrailVersion) and its idempotence on an
 // already-absent guardrail.
 func TestDeleteGuardrail_WholeGuardrailAndAbsentIsNoop(t *testing.T) {
+	t.Parallel()
 	store := newGuardrailTestStore(t)
 	ctx := context.Background()
 
@@ -422,6 +435,7 @@ func TestDeleteGuardrail_WholeGuardrailAndAbsentIsNoop(t *testing.T) {
 // TestCreateGuardrailVersion_NotFound guards that versioning a never-created
 // (or foreign-account) guardrail reports not-found.
 func TestCreateGuardrailVersion_NotFound(t *testing.T) {
+	t.Parallel()
 	store := newGuardrailTestStore(t)
 	ctx := context.Background()
 
@@ -434,6 +448,7 @@ func TestCreateGuardrailVersion_NotFound(t *testing.T) {
 // GuardrailIdentifier field allows: a bare id or a full ARN, resolved through
 // Get to prove both reach the same record.
 func TestGuardrailID_ResolvesBareOrARN(t *testing.T) {
+	t.Parallel()
 	store := newGuardrailTestStore(t)
 	ctx := context.Background()
 
@@ -456,6 +471,7 @@ func TestGuardrailID_ResolvesBareOrARN(t *testing.T) {
 // the listing rather than silently omitting one of the account's guardrails. A
 // short list is a wrong answer to a question about active security controls.
 func TestListGuardrails_RejectsAnUndecodableRecord(t *testing.T) {
+	t.Parallel()
 	store := newGuardrailTestStore(t)
 	ctx := context.Background()
 
@@ -475,6 +491,7 @@ func TestListGuardrails_RejectsAnUndecodableRecord(t *testing.T) {
 // second writer at the same revision loses, and reports a retryable
 // ConflictException rather than clobbering the winner.
 func TestGuardrailStore_UpdateRejectsAStaleRevision(t *testing.T) {
+	t.Parallel()
 	store := newGuardrailTestStore(t)
 	ctx := context.Background()
 

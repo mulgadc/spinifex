@@ -21,6 +21,7 @@ const (
 	StatusNotApplicable  = "⛔ Not applicable"
 	StatusNotImplemented = "❌ Not implemented"
 	StatusOutsideModel   = "🔒 Outside the pinned model"
+	StatusRequiresSDKV2  = "⏳ Requires AWS SDK v2"
 )
 
 // Frontmatter length rules enforced by the docs site. See docs/README.md.
@@ -65,6 +66,7 @@ func (c OperationCoverage) OperationStatuses(page PageMetadata) ([]OperationStat
 	stubbed := toSet(c.Stubbed)
 	unsupported := toSet(c.Unsupported)
 	modelled := toSet(c.Modelled)
+	requiresSDKV2 := toSet(c.RequiresSDKV2)
 	extra := toSet(c.Extra)
 	notApplicable := page.NotApplicable
 
@@ -93,6 +95,8 @@ func (c OperationCoverage) OperationStatuses(page PageMetadata) ([]OperationStat
 		switch {
 		case stubbed[operation]:
 			status = StatusStub
+		case requiresSDKV2[operation]:
+			status = StatusRequiresSDKV2
 		// A registered handler that refuses serves nothing, so it reads as the
 		// gap it is unless the page declares why it is permanent.
 		case unsupported[operation]:

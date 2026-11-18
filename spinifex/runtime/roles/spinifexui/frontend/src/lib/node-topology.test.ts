@@ -8,6 +8,7 @@ import {
   formatLinkSpeed,
   layoutTopology,
   rateThroughput,
+  wanReach,
 } from "./node-topology"
 
 function node(name: string, nics: NICFacts[]): NodeFacts {
@@ -144,6 +145,46 @@ describe("buildTopology", () => {
     )
     expect(at("node:node1")?.x).toBeGreaterThan(at("switch:aa:aa")?.x ?? 0)
     expect(at("node:node1")?.y).toBeLessThan(at("node:node2")?.y ?? 0)
+  })
+})
+
+function down(facts: NodeFacts): NodeFacts {
+  return {
+    ...facts,
+    nics: (facts.nics ?? []).map((nic) =>
+      nic.planes?.includes("wan") ? { ...nic, state: "down" } : nic,
+    ),
+  }
+}
+
+describe("wanReach", () => {
+  it("is reachable while any node has a WAN port up", () => {
+    expect(wanReach(prod)).toBe("reachable")
+    expect(wanReach([down(prod[0] ?? node("x", [])), ...prod.slice(1)])).toBe(
+      "reachable",
+    )
+  })
+
+  it("is unreachable when every node in the cluster answered with its WAN ports down", () => {
+    const cluster = ["node1", "node2"]
+
+    expect(wanReach(prod.map(down), cluster)).toBe("unreachable")
+    expect(
+      buildTopology(prod.map(down), cluster).devices.find(
+        (d) => d.id === "internet",
+      )?.reach,
+    ).toBe("unreachable")
+  })
+
+  it("is unknown when a node did not answer, or the cluster's list is missing", () => {
+    const answered = prod.slice(0, 1).map(down)
+
+    expect(wanReach(answered, ["node1", "node2"])).toBe("unknown")
+    expect(wanReach(prod.map(down))).toBe("unknown")
+  })
+
+  it("is unknown when no node reported a WAN port", () => {
+    expect(wanReach([node("node1", [])])).toBe("unknown")
   })
 })
 

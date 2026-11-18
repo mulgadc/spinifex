@@ -138,12 +138,31 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 		if decodeErr == nil {
 			resource = functionARN(inv.Region, inv.AccountID, aws.StringValue(c.Create.FunctionName))
 		}
-	case "GetFunction", "GetFunctionConfiguration", "GetFunctionCodeSigningConfig", "ListVersionsByFunction":
+	case "GetFunction", "GetFunctionConfiguration", "GetFunctionCodeSigningConfig", "ListVersionsByFunction", "UpdateFunctionCode":
+		if name, _, err := resolveFunctionName(inv.Region, inv.AccountID, params[0]); err == nil {
+			resource = functionARN(inv.Region, inv.AccountID, name)
+		}
+	case "UpdateFunctionConfiguration":
+		c.UpdateConfig, decodeErr = decodeUpdateConfiguration(body)
 		if name, _, err := resolveFunctionName(inv.Region, inv.AccountID, params[0]); err == nil {
 			resource = functionARN(inv.Region, inv.AccountID, name)
 		}
 	case "GetEventSourceMapping", "DeleteEventSourceMapping":
 		resource = mappingARN(inv.Region, inv.AccountID, params[0])
+	case "ListFunctions":
+		if c.Query, err = url.ParseQuery(r.URL.RawQuery); err != nil {
+			return invalid("The request query string could not be parsed.")
+		}
+	case "DeleteFunction":
+		// A dropped Qualifier would widen the request to the whole function,
+		// so the query is parsed strictly and the target resolved before anything else.
+		if c.Query, err = url.ParseQuery(r.URL.RawQuery); err != nil {
+			return invalid("The request query string could not be parsed.")
+		}
+		if c.Delete, err = qualifiedTarget(c); err != nil {
+			return err
+		}
+		resource = qualifiedFunctionARN(inv.Region, inv.AccountID, c.Delete.Name, c.Delete.Qualifier)
 	case "Invoke":
 		// Invoke validates deterministically before authorizing, and its
 		// resource comes from that same validated target. URL.Query drops
@@ -167,8 +186,13 @@ func (d Deps) serve(w http.ResponseWriter, inv dispatch.Invocation) error {
 			return err
 		}
 	}
-	// Only CreateFunction and GetFunction touch the code store.
-	needsCodes := action == "CreateFunction" || action == "GetFunction"
+	if action == "UpdateFunctionConfiguration" && c.UpdateConfig.Role != nil {
+		if err := d.checkPassRole(inv, aws.StringValue(c.UpdateConfig.Role)); err != nil {
+			return err
+		}
+	}
+	// Only CreateFunction, GetFunction and UpdateFunctionCode touch the code store.
+	needsCodes := action == "CreateFunction" || action == "GetFunction" || action == "UpdateFunctionCode"
 	if d.Meta == nil || (d.Codes == nil && needsCodes) {
 		return errors.New(awserrors.ErrorServiceException)
 	}
@@ -224,6 +248,11 @@ func (d Deps) checkPassRole(inv dispatch.Invocation, roleARN string) error {
 }
 
 func writeJSON(w http.ResponseWriter, out reply) {
+	if out.Status == http.StatusNoContent {
+		maps.Copy(w.Header(), out.Header)
+		w.WriteHeader(out.Status)
+		return
+	}
 	var body []byte
 	var err error
 	if raw, ok := out.Body.(rawJSON); ok {

@@ -64,6 +64,7 @@ import (
 	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	ec2vpcpeering "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcpeering"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
@@ -201,6 +202,7 @@ type Daemon struct {
 	lambdaMetaService     *lambdafunction.MetaService
 	routeTableService     *ec2routetable.RouteTableServiceImpl
 	natGatewayService     *ec2natgw.NatGatewayServiceImpl
+	vpcPeeringService     *ec2vpcpeering.ServiceImpl
 	externalIPAM          *ec2vpc.ExternalIPAM
 	// floatingAllocators is every floating-address pool (source="vultr" or "latitude") on
 	// this node, written once during startup like ociAllocators.
@@ -954,6 +956,10 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.DescribeImageAttribute", handleNATSRequest(d.node, d.imageService.DescribeImageAttribute), "spinifex-workers"},
 		{"ec2.ModifyImageAttribute", handleNATSRequest(d.node, d.imageService.ModifyImageAttribute), "spinifex-workers"},
 		{"ec2.ResetImageAttribute", handleNATSRequest(d.node, d.imageService.ResetImageAttribute), "spinifex-workers"},
+		{"ec2.EnableImageDeregistrationProtection", handleNATSRequest(d.node, d.imageService.EnableImageDeregistrationProtection), "spinifex-workers"},
+		{"ec2.DisableImageDeregistrationProtection", handleNATSRequest(d.node, d.imageService.DisableImageDeregistrationProtection), "spinifex-workers"},
+		{"ec2.EnableImageDeprecation", handleNATSRequest(d.node, d.imageService.EnableImageDeprecation), "spinifex-workers"},
+		{"ec2.DisableImageDeprecation", handleNATSRequest(d.node, d.imageService.DisableImageDeprecation), "spinifex-workers"},
 		{"ec2.CreateVolume", handleNATSRequest(d.node, d.volumeService.CreateVolume), "spinifex-workers"},
 		{"ec2.DescribeVolumes", handleNATSRequest(d.node, d.volumeService.DescribeVolumes), "spinifex-workers"},
 		{"ec2.ModifyVolume", d.handleEC2ModifyVolume, "spinifex-workers"},
@@ -1011,6 +1017,12 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.CreateNatGateway", handleNATSRequest(d.node, d.natGatewayService.CreateNatGateway), "spinifex-workers"},
 		{"ec2.DeleteNatGateway", handleNATSRequest(d.node, d.natGatewayService.DeleteNatGateway), "spinifex-workers"},
 		{"ec2.DescribeNatGateways", handleNATSRequest(d.node, d.natGatewayService.DescribeNatGateways), "spinifex-workers"},
+		{"ec2.CreateVpcPeeringConnection", handleNATSRequest(d.node, d.vpcPeeringService.CreateVpcPeeringConnection), "spinifex-workers"},
+		{"ec2.AcceptVpcPeeringConnection", handleNATSRequest(d.node, d.vpcPeeringService.AcceptVpcPeeringConnection), "spinifex-workers"},
+		{"ec2.RejectVpcPeeringConnection", handleNATSRequest(d.node, d.vpcPeeringService.RejectVpcPeeringConnection), "spinifex-workers"},
+		{"ec2.DeleteVpcPeeringConnection", handleNATSRequest(d.node, d.vpcPeeringService.DeleteVpcPeeringConnection), "spinifex-workers"},
+		{"ec2.DescribeVpcPeeringConnections", handleNATSRequest(d.node, d.vpcPeeringService.DescribeVpcPeeringConnections), "spinifex-workers"},
+		{"ec2.ModifyVpcPeeringConnectionOptions", handleNATSRequest(d.node, d.vpcPeeringService.ModifyVpcPeeringConnectionOptions), "spinifex-workers"},
 		{"ec2.CreateRouteTable", handleNATSRequest(d.node, d.routeTableService.CreateRouteTable), "spinifex-workers"},
 		{"ec2.DeleteRouteTable", handleNATSRequest(d.node, d.routeTableService.DeleteRouteTable), "spinifex-workers"},
 		{"ec2.DescribeRouteTables", handleNATSRequest(d.node, d.routeTableService.DescribeRouteTables), "spinifex-workers"},
@@ -1047,6 +1059,7 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.ModifySecurityGroupRules", handleNATSRequest(d.node, d.vpcService.ModifySecurityGroupRules), "spinifex-workers"},
 		{"ec2.ModifyInstanceAttribute", handleNATSRequest(d.node, d.instanceService.ModifyInstanceAttribute), "spinifex-workers"},
 		{"ec2.ModifyInstanceMetadataOptions", handleNATSRequest(d.node, d.instanceService.ModifyInstanceMetadataOptions), "spinifex-workers"},
+		{"ec2.ResetInstanceAttribute", handleNATSRequest(d.node, d.instanceService.ResetInstanceAttribute), "spinifex-workers"},
 		{"ec2.MonitorInstances", handleNATSRequest(d.node, d.monitorInstances), "spinifex-workers"},
 		{"ec2.UnmonitorInstances", handleNATSRequest(d.node, d.unmonitorInstances), "spinifex-workers"},
 		{"ec2.start", d.handleEC2StartStoppedInstance, "spinifex-workers"},
@@ -1191,7 +1204,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"ecs.DeleteCluster", handleNATSRequest(d.node, d.ecsService.DeleteCluster), "spinifex-workers"},
 			natsSub{"ecs.DescribeClusters", handleNATSRequest(d.node, d.ecsService.DescribeClusters), "spinifex-workers"},
 			natsSub{"ecs.ListClusters", handleNATSRequest(d.node, d.ecsService.ListClusters), "spinifex-workers"},
-			natsSub{"ecs.RegisterTaskDefinition", handleNATSRequest(d.node, d.ecsService.RegisterTaskDefinition), "spinifex-workers"},
+			natsSub{"ecs.RegisterTaskDefinition", handleNATSRequestWithPrincipal(d.node, ecsdomain.WithCaller(d.ecsService.RegisterTaskDefinition)), "spinifex-workers"},
 			natsSub{"ecs.DeregisterTaskDefinition", handleNATSRequest(d.node, d.ecsService.DeregisterTaskDefinition), "spinifex-workers"},
 			natsSub{"ecs.DescribeTaskDefinition", handleNATSRequest(d.node, d.ecsService.DescribeTaskDefinition), "spinifex-workers"},
 			natsSub{"ecs.ListTaskDefinitions", handleNATSRequest(d.node, d.ecsService.ListTaskDefinitions), "spinifex-workers"},
@@ -1205,7 +1218,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{"ecs.StopTask", handleNATSRequest(d.node, d.ecsService.StopTask), "spinifex-workers"},
 			natsSub{"ecs.DescribeTasks", handleNATSRequest(d.node, d.ecsService.DescribeTasks), "spinifex-workers"},
 			natsSub{"ecs.ListTasks", handleNATSRequest(d.node, d.ecsService.ListTasks), "spinifex-workers"},
-			natsSub{"ecs.CreateService", handleNATSRequest(d.node, d.ecsService.CreateService), "spinifex-workers"},
+			natsSub{"ecs.CreateService", handleNATSRequestWithPrincipal(d.node, ecsdomain.WithCaller(d.ecsService.CreateService)), "spinifex-workers"},
 			natsSub{"ecs.UpdateService", handleNATSRequest(d.node, d.ecsService.UpdateService), "spinifex-workers"},
 			natsSub{"ecs.DeleteService", handleNATSRequest(d.node, d.ecsService.DeleteService), "spinifex-workers"},
 			natsSub{"ecs.DescribeServices", handleNATSRequest(d.node, d.ecsService.DescribeServices), "spinifex-workers"},
@@ -1242,6 +1255,7 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{rdsinstance.SubjectCreateDBSnapshot, handleNATSRequest(d.node, d.rdsService.CreateDBSnapshot), "spinifex-workers"},
 			natsSub{rdsinstance.SubjectDescribeDBSnapshots, handleNATSRequest(d.node, d.rdsService.DescribeDBSnapshots), "spinifex-workers"},
 			natsSub{rdsinstance.SubjectDeleteDBSnapshot, handleNATSRequest(d.node, d.rdsService.DeleteDBSnapshot), "spinifex-workers"},
+			natsSub{rdsinstance.SubjectDescribeDBSnapshotAttributes, handleNATSRequest(d.node, d.rdsService.DescribeDBSnapshotAttributes), "spinifex-workers"},
 			natsSub{rdsinstance.SubjectRestoreDBInstanceFromDBSnapshot, handleNATSRequest(d.node, d.rdsService.RestoreDBInstanceFromDBSnapshot), "spinifex-workers"},
 			natsSub{rdsinstance.SubjectDescribeDBInstanceAutomatedBackups, handleNATSRequest(d.node, d.rdsService.DescribeDBInstanceAutomatedBackups), "spinifex-workers"},
 			natsSub{rdsinstance.SubjectDescribeEvents, handleNATSRequest(d.node, d.rdsService.DescribeEvents), "spinifex-workers"},
@@ -1362,6 +1376,11 @@ func (d *Daemon) subscribeAll() error {
 			natsSub{lambdafunction.SubjectGet, handleNATSRequest(d.node, d.lambdaMetaService.Get), "spinifex-workers"},
 			natsSub{lambdafunction.SubjectCodeStored, handleNATSRequest(d.node, d.lambdaMetaService.CodeStored), "spinifex-workers"},
 			natsSub{lambdafunction.SubjectRollbackCreate, handleNATSRequest(d.node, d.lambdaMetaService.RollbackCreate), "spinifex-workers"},
+			natsSub{lambdafunction.SubjectCodeUpdateBegin, handleNATSRequest(d.node, d.lambdaMetaService.BeginCodeUpdate), "spinifex-workers"},
+			natsSub{lambdafunction.SubjectCodeUpdated, handleNATSRequest(d.node, d.lambdaMetaService.CodeUpdated), "spinifex-workers"},
+			natsSub{lambdafunction.SubjectConfigurationUpdated, handleNATSRequest(d.node, d.lambdaMetaService.UpdateConfiguration), "spinifex-workers"},
+			natsSub{lambdafunction.SubjectList, handleNATSRequest(d.node, d.lambdaMetaService.List), "spinifex-workers"},
+			natsSub{lambdafunction.SubjectDelete, handleNATSRequest(d.node, d.lambdaMetaService.Delete), "spinifex-workers"},
 		)
 	}
 
@@ -1982,6 +2001,8 @@ func (d *Daemon) assertNoClusterServicesInitialised() error {
 		return errors.New("d.routeTableService must be nil before startCluster")
 	case d.natGatewayService != nil:
 		return errors.New("d.natGatewayService must be nil before startCluster")
+	case d.vpcPeeringService != nil:
+		return errors.New("d.vpcPeeringService must be nil before startCluster")
 	case d.externalIPAM != nil:
 		return errors.New("d.externalIPAM must be nil before startCluster")
 	case d.eipService != nil:
@@ -2106,6 +2127,9 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize snapshot service: %w", err)
 	}
 	d.snapshotService = snap.svc
+	d.snapshotService.SetClaims(ec2snapshot.NewClaims(d.snapshotClaims(), d.node, d.heartbeatLiveness()))
+	d.imageService.SetSnapshotCreator(d.snapshotService)
+	d.imageService.SetImageClaims(d.snapshotService)
 
 	d.volumeService = ec2volume.NewVolumeServiceImpl(d.config, d.natsConn, snap.kv)
 	if err := d.configureEBSProvider(); err != nil {
@@ -2201,6 +2225,15 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize NatGateway service: %w", err)
 	}
 
+	d.vpcPeeringService, err = initServiceWithRetry("VPC peering service", func() (*ec2vpcpeering.ServiceImpl, error) {
+		return ec2vpcpeering.NewServiceImplWithNATS(d.ctx, d.natsConn, d.config.Region)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize VPC peering service: %w", err)
+	}
+	d.routeTableService.SetPeeringLookup(d.vpcPeeringService.Store)
+	d.vpcService.SetPeeringCheck(d.vpcPeeringService.VpcBlocksDeletion)
+
 	// A node declaring public pools must serve EIPs or refuse to start: EIP
 	// subjects are a queue group, so one node silently on the disabled stub
 	// answers cluster-wide with an empty address list on the requests it wins.
@@ -2241,7 +2274,7 @@ func (d *Daemon) startCluster() error {
 	// Initialize EIP service if external IPAM is available
 	if d.externalIPAM != nil && d.vpcService != nil {
 		eipSvc, eipErr := initServiceWithRetry("EIP service", func() (*ec2eip.EIPServiceImpl, error) {
-			return ec2eip.NewEIPServiceImpl(d.ctx, d.natsConn, d.externalIPAM, d.vpcService)
+			return ec2eip.NewEIPServiceImpl(d.ctx, d.natsConn, d.externalIPAM, d.vpcService, d.config.Region)
 		})
 		if eipErr != nil {
 			return fmt.Errorf("failed to initialize EIP service: %w", eipErr)
@@ -2570,6 +2603,10 @@ func (d *Daemon) startCluster() error {
 		slog.Info("Rebuilt mgmt IP allocator from restored instances", "allocated", d.mgmtIPAllocator.AllocatedCount())
 	}
 
+	// Before any request is served, so no claim a request of this process
+	// takes can be released as one of its predecessor's.
+	d.releaseSnapshotClaims()
+
 	if err := d.subscribeAll(); err != nil {
 		return fmt.Errorf("failed to subscribe to NATS topics: %w", err)
 	}
@@ -2661,6 +2698,14 @@ func (d *Daemon) startCluster() error {
 		if uefiWriteBacks := d.vmMgr.NewUEFIWriteBackReaper(); uefiWriteBacks != nil {
 			reapers = append(reapers, uefiWriteBacks)
 		}
+		if d.snapshotService != nil {
+			// One sweep per cluster reads the provider for each pending document;
+			// the snapshot's claim, not the scope, decides who may repeat a call.
+			reapers = append(reapers, clusterWideReaper{d.snapshotService.NewPendingSnapshotReaper()})
+		}
+		if d.vpcPeeringService != nil {
+			reapers = append(reapers, clusterWideReaper{d.vpcPeeringService.NewSweepReaper()})
+		}
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))
 			reapers = append(reapers, d.volumeService.NewVolumeReclaimReaper())
@@ -2696,8 +2741,8 @@ func (d *Daemon) startCluster() error {
 }
 
 // ebsProviderRequestTimeout bounds the ebs.provider.v1.* subjects that answer
-// from state already held. The provider raises it for the subjects that move
-// data, so this is a floor rather than the budget every call gets.
+// from state already held. The provider raises it for publish and the subjects
+// that move data, so this is a floor rather than the budget every call gets.
 const ebsProviderRequestTimeout = 30 * time.Second
 
 // ebsProviderProbeTimeout bounds the startup reachability check. Short because
@@ -3492,12 +3537,11 @@ func (d *Daemon) setupShutdown() {
 // responds on the NATS message. Used by both AttachVolume and DetachVolume handlers.
 func (d *Daemon) respondWithVolumeAttachment(msg *nats.Msg, volumeID, instanceID, device, state string) {
 	attachment := ec2.VolumeAttachment{
-		VolumeId:            aws.String(volumeID),
-		InstanceId:          aws.String(instanceID),
-		Device:              aws.String(device),
-		State:               aws.String(state),
-		AttachTime:          aws.Time(time.Now()),
-		DeleteOnTermination: aws.Bool(false),
+		VolumeId:   aws.String(volumeID),
+		InstanceId: aws.String(instanceID),
+		Device:     aws.String(device),
+		State:      aws.String(state),
+		AttachTime: aws.Time(time.Now()),
 	}
 
 	jsonResp, err := json.Marshal(attachment)

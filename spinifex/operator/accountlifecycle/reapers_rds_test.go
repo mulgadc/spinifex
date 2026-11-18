@@ -160,25 +160,47 @@ func TestRDSInstanceReaperAlwaysSkipsTheFinalSnapshot(t *testing.T) {
 
 // Deletion protection is RDS's version of the deadlock --force exists for: the
 // tenant is gone and nobody is left to clear the flag through the ordinary API.
+// Both texts are matched, so a reaper and daemon on different releases still agree.
 func TestRDSInstanceReaperForceClearsDeletionProtection(t *testing.T) {
+	for _, refusal := range []string{
+		"Cannot delete protected DB Instance, please disable deletion protection and try again.",
+		"DB instance orders cannot be deleted because deletion protection is enabled",
+	} {
+		fake := newFakeRDS(t)
+		fake.failNext("rds.DeleteDBInstance", "InvalidParameterCombination: "+refusal)
+		fake.reply("rds.ModifyDBInstance", rds.ModifyDBInstanceOutput{})
+		fake.reply("rds.DeleteDBInstance", rds.DeleteDBInstanceOutput{})
+
+		instances, _, _ := newRDSReapers(fake.nc)
+		require.NoError(t, instances.Delete(testCtx(t), "000000000042",
+			Resource{Kind: "rds-instance", ID: "orders"}, true))
+
+		var modify rds.ModifyDBInstanceInput
+		fake.requestAt(t, "rds.ModifyDBInstance", 0, &modify)
+		assert.False(t, aws.BoolValue(modify.DeletionProtection))
+		assert.True(t, aws.BoolValue(modify.ApplyImmediately))
+
+		assert.Equal(t, []string{
+			"rds.DeleteDBInstance", "rds.ModifyDBInstance", "rds.DeleteDBInstance",
+		}, fake.called(), "the flag is cleared only after the ordinary delete refuses")
+	}
+}
+
+// A stopped instance refuses the modify, so it is started for a later pass to
+// clear the flag on.
+func TestRDSInstanceReaperForceStartsAStoppedProtectedInstance(t *testing.T) {
 	fake := newFakeRDS(t)
 	fake.failNext("rds.DeleteDBInstance",
-		"InvalidParameterCombination: DB instance orders cannot be deleted because deletion protection is enabled")
-	fake.reply("rds.ModifyDBInstance", rds.ModifyDBInstanceOutput{})
-	fake.reply("rds.DeleteDBInstance", rds.DeleteDBInstanceOutput{})
+		"InvalidParameterCombination: Cannot delete protected DB Instance, please disable deletion protection and try again.")
+	fake.failNext("rds.ModifyDBInstance", "InvalidDBInstanceState")
+	fake.reply("rds.StartDBInstance", rds.StartDBInstanceOutput{})
 
 	instances, _, _ := newRDSReapers(fake.nc)
-	require.NoError(t, instances.Delete(testCtx(t), "000000000042",
-		Resource{Kind: "rds-instance", ID: "orders"}, true))
+	err := instances.Delete(testCtx(t), "000000000042",
+		Resource{Kind: "rds-instance", ID: "orders", Detail: "stopped"}, true)
 
-	var modify rds.ModifyDBInstanceInput
-	fake.requestAt(t, "rds.ModifyDBInstance", 0, &modify)
-	assert.False(t, aws.BoolValue(modify.DeletionProtection))
-	assert.True(t, aws.BoolValue(modify.ApplyImmediately))
-
-	assert.Equal(t, []string{
-		"rds.DeleteDBInstance", "rds.ModifyDBInstance", "rds.DeleteDBInstance",
-	}, fake.called(), "the flag is cleared only after the ordinary delete refuses")
+	require.Error(t, err)
+	assert.Equal(t, []string{"rds.DeleteDBInstance", "rds.ModifyDBInstance", "rds.StartDBInstance"}, fake.called())
 }
 
 // Without --force the refusal stands. Silently disarming a protection the
@@ -186,7 +208,7 @@ func TestRDSInstanceReaperForceClearsDeletionProtection(t *testing.T) {
 func TestRDSInstanceReaperLeavesDeletionProtectionAloneWithoutForce(t *testing.T) {
 	fake := newFakeRDS(t)
 	fake.failNext("rds.DeleteDBInstance",
-		"InvalidParameterCombination: DB instance orders cannot be deleted because deletion protection is enabled")
+		"InvalidParameterCombination: Cannot delete protected DB Instance, please disable deletion protection and try again.")
 
 	instances, _, _ := newRDSReapers(fake.nc)
 	err := instances.Delete(testCtx(t), "000000000042",

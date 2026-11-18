@@ -29,8 +29,15 @@ func DescribeNodegroup(ctx context.Context, natsConn *nats.Conn, accountID, clus
 }
 
 // ListNodegroups — GET /clusters/{name}/node-groups.
-func ListNodegroups(ctx context.Context, natsConn *nats.Conn, accountID, cluster string) (*eks.ListNodegroupsOutput, error) {
-	input := &eks.ListNodegroupsInput{ClusterName: aws.String(cluster)}
+func ListNodegroups(ctx context.Context, natsConn *nats.Conn, accountID, cluster string, query []byte) (*eks.ListNodegroupsOutput, error) {
+	q, err := parseListQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	input := &eks.ListNodegroupsInput{ClusterName: aws.String(cluster), NextToken: q.str("nextToken")}
+	if input.MaxResults, err = q.int64("maxResults"); err != nil {
+		return nil, err
+	}
 	return ekscluster.NewNATSEKSService(natsConn).ListNodegroups(ctx, input, accountID)
 }
 

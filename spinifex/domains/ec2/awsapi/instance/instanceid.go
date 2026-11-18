@@ -100,6 +100,22 @@ func classifyUnownedInstance(ctx context.Context, natsConn *nats.Conn, instanceI
 	return bucketStateAbsent, allOK
 }
 
+// isTerminatedInstance asks the terminated bucket for instanceID alone, which
+// the daemon answers with one Get. A failed query is ServerInternal, never a
+// miss, so an unreadable bucket cannot pass for an instance that is not there.
+func isTerminatedInstance(ctx context.Context, natsConn *nats.Conn, instanceID, accountID string) (bool, error) {
+	reqData, err := json.Marshal(&ec2.DescribeInstancesInput{InstanceIds: []*string{&instanceID}})
+	if err != nil {
+		slog.ErrorContext(ctx, "isTerminatedInstance: failed to marshal request", "instance_id", instanceID, "err", err)
+		return false, errors.New(awserrors.ErrorServerInternal)
+	}
+	reservations, ok := queryInstanceBucket(ctx, natsConn, "ec2.DescribeTerminatedInstances", reqData, accountID)
+	if !ok {
+		return false, errors.New(awserrors.ErrorServerInternal)
+	}
+	return len(missingInstanceIDs(reservations, []*string{&instanceID})) == 0, nil
+}
+
 // routeInstanceMutation sends cmd to the instance's owner first and falls back
 // to the queue-group subject only when that is safe: no daemon runs the
 // instance (ErrNoResponders after every retry), or the owner is N-1 and

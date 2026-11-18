@@ -45,6 +45,16 @@ type Client struct {
 	AddACLCalls     int
 	ClearACLCalls   int
 	ReplaceACLCalls int
+
+	// EnsurePeeringLinkErr, when set, fails EnsurePeeringLink with no change.
+	EnsurePeeringLinkErr   error
+	EnsurePeeringLinkCalls int
+
+	// DeletePeeringLinkErr, when set, fails DeletePeeringLink with no change.
+	DeletePeeringLinkErr error
+
+	// UpdateLogicalRouterPolicyErr, when set, fails UpdateLogicalRouterPolicy with no change.
+	UpdateLogicalRouterPolicyErr error
 }
 
 var _ ovn.Client = (*Client)(nil)
@@ -316,7 +326,7 @@ func (m *Client) GetLogicalRouter(_ context.Context, name string) (*nbdb.Logical
 	defer m.Mu.Unlock()
 	lr, exists := m.Routers[name]
 	if !exists {
-		return nil, fmt.Errorf("logical router %q not found", name)
+		return nil, fmt.Errorf("%w: %q", ovn.ErrLogicalRouterNotFound, name)
 	}
 	result := *lr
 	return &result, nil
@@ -692,6 +702,22 @@ func (m *Client) FindStaticRoute(_ context.Context, routerName, ipPrefix string)
 	return nil, nil
 }
 
+func (m *Client) ListStaticRoutes(_ context.Context, routerName string) ([]nbdb.LogicalRouterStaticRoute, error) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	lr, exists := m.Routers[routerName]
+	if !exists {
+		return nil, fmt.Errorf("logical router %q not found", routerName)
+	}
+	var out []nbdb.LogicalRouterStaticRoute
+	for _, uuid := range lr.StaticRoutes {
+		if r, ok := m.StaticRoutes[uuid]; ok {
+			out = append(out, *r)
+		}
+	}
+	return out, nil
+}
+
 func (m *Client) DeleteStaticRoute(_ context.Context, routerName string, ipPrefix string) error {
 	m.Mu.Lock()
 	defer m.Mu.Unlock()
@@ -764,7 +790,7 @@ func (m *Client) ListLogicalRouterPolicies(_ context.Context, routerName string)
 	defer m.Mu.Unlock()
 	lr, exists := m.Routers[routerName]
 	if !exists {
-		return nil, fmt.Errorf("logical router %q not found", routerName)
+		return nil, fmt.Errorf("%w: %q", ovn.ErrLogicalRouterNotFound, routerName)
 	}
 	out := make([]nbdb.LogicalRouterPolicy, 0, len(lr.Policies))
 	for _, uuid := range lr.Policies {
@@ -773,6 +799,27 @@ func (m *Client) ListLogicalRouterPolicies(_ context.Context, routerName string)
 		}
 	}
 	return out, nil
+}
+
+func (m *Client) UpdateLogicalRouterPolicy(_ context.Context, routerName string, policy *nbdb.LogicalRouterPolicy) error {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if m.UpdateLogicalRouterPolicyErr != nil {
+		return m.UpdateLogicalRouterPolicyErr
+	}
+	lr, exists := m.Routers[routerName]
+	if !exists {
+		return fmt.Errorf("logical router %q not found", routerName)
+	}
+	for _, uuid := range lr.Policies {
+		p, ok := m.LRPolicies[uuid]
+		if ok && p.Priority == policy.Priority && p.Match == policy.Match {
+			p.Action, p.Nexthop, p.Nexthops = policy.Action, policy.Nexthop, policy.Nexthops
+			p.Options, p.ExternalIDs = maps.Clone(policy.Options), maps.Clone(policy.ExternalIDs)
+			return nil
+		}
+	}
+	return fmt.Errorf("LR policy %d %q not found on %s", policy.Priority, policy.Match, routerName)
 }
 
 func (m *Client) DeleteLogicalRouterPolicy(_ context.Context, routerName string, priority int, match string) error {

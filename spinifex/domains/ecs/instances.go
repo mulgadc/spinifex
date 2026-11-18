@@ -379,10 +379,16 @@ func (s *Service) recordTaskState(ctx context.Context, msg *ecsv1.TaskState) err
 		// Preserve pinned GPU UUIDs across a state change that omits them — the
 		// STOPPED report carries no GPUIDs and would otherwise wipe the device
 		// IDs the RUNNING report set, leaving DescribeTasks gpuIds empty.
+		// The same holds for exit codes: a stop reap's report carries none and can
+		// land after the exit-wait report that did.
 		prevGPUIDs := make(map[string][]string, len(task.Containers))
+		prevExit := make(map[string]*int, len(task.Containers))
 		for _, c := range task.Containers {
 			if len(c.GPUIDs) > 0 {
 				prevGPUIDs[c.Name] = c.GPUIDs
+			}
+			if c.ExitCode != nil {
+				prevExit[c.Name] = c.ExitCode
 			}
 		}
 		task.Containers = task.Containers[:0]
@@ -391,8 +397,12 @@ func (s *Service) recordTaskState(ctx context.Context, msg *ecsv1.TaskState) err
 			if len(gpuIDs) == 0 {
 				gpuIDs = prevGPUIDs[c.Name]
 			}
+			exitCode := c.ExitCode
+			if exitCode == nil {
+				exitCode = prevExit[c.Name]
+			}
 			task.Containers = append(task.Containers, ContainerState{
-				Name: c.Name, Status: c.Status, ContainerID: c.ContainerID, ExitCode: c.ExitCode, GPUIDs: gpuIDs,
+				Name: c.Name, Status: c.Status, ContainerID: c.ContainerID, ExitCode: exitCode, GPUIDs: gpuIDs,
 			})
 		}
 	}
@@ -402,7 +412,11 @@ func (s *Service) recordTaskState(ctx context.Context, msg *ecsv1.TaskState) err
 	}
 	if msg.LastStatus == TaskStatusStopped {
 		task.StoppedAt = now
-		if msg.Reason != "" {
+		if task.ExecutionStoppedAt.IsZero() {
+			task.ExecutionStoppedAt = now
+		}
+		// A reason recorded by the stop request, or by an earlier report, stands.
+		if msg.Reason != "" && task.StoppedReason == "" {
 			task.StoppedReason = msg.Reason
 		}
 		// A task that exits on its own was never asked to stop, so its desired

@@ -55,7 +55,7 @@ func newUEFIImageFixture(t *testing.T) *uefiImageFixture {
 	svc.SetUEFIStores(records, "node-a")
 	volume := seedProviderVolume(t, svc, provider, "vol-uefi001", 8)
 	snapshots := &countingSnapshots{EBSProvider: provider}
-	svc.SetEBSProvider(snapshots)
+	useProvider(svc, snapshots)
 	return &uefiImageFixture{svc: svc, snapshots: snapshots, objects: objects, records: records, volume: volume}
 }
 

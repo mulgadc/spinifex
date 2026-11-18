@@ -33,7 +33,7 @@ func (r *TemplateConsumerReader) AccountTemplateConsumers(ctx context.Context, a
 	}
 	out := &accountcleanup.TemplateConsumers{TemplateIDs: map[string]bool{}, TemplateNames: map[string]bool{}}
 	for _, cluster := range clusters {
-		listed, err := r.svc.ListNodegroups(ctx, &eks.ListNodegroupsInput{ClusterName: aws.String(cluster)}, accountID)
+		listed, err := listEKSNodegroupNames(ctx, r.svc, accountID, cluster)
 		if err != nil {
 			// A cluster deleted between the two calls holds no nodegroup record,
 			// because DeleteCluster is refused while any exists.
@@ -42,9 +42,9 @@ func (r *TemplateConsumerReader) AccountTemplateConsumers(ctx context.Context, a
 			}
 			return nil, fmt.Errorf("list nodegroups: %w", err)
 		}
-		for _, name := range listed.Nodegroups {
+		for _, name := range listed {
 			described, err := r.svc.DescribeNodegroup(ctx, &eks.DescribeNodegroupInput{
-				ClusterName: aws.String(cluster), NodegroupName: name,
+				ClusterName: aws.String(cluster), NodegroupName: aws.String(name),
 			}, accountID)
 			if err != nil {
 				if isAlreadyGone(err) {

@@ -17,6 +17,7 @@ import (
 )
 
 func TestWarmupProbe_NotReadyUntilHealthPasses(t *testing.T) {
+	t.Parallel()
 	var healthy atomic.Bool
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, embedderHealthPath, r.URL.Path)
@@ -42,6 +43,7 @@ func TestWarmupProbe_NotReadyUntilHealthPasses(t *testing.T) {
 }
 
 func TestWarmupProbe_ReProbesAfterInterval(t *testing.T) {
+	t.Parallel()
 	var healthy atomic.Bool
 	healthy.Store(true)
 	var calls atomic.Int64
@@ -68,6 +70,7 @@ func TestWarmupProbe_ReProbesAfterInterval(t *testing.T) {
 }
 
 func TestEmbeddingsProvider_Embed_WarmupGateFailsFastUntilHealthy(t *testing.T) {
+	t.Parallel()
 	var healthy atomic.Bool
 	var embedCalls atomic.Int64
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -111,6 +114,7 @@ func TestEmbeddingsProvider_Embed_WarmupGateFailsFastUntilHealthy(t *testing.T) 
 // A probe left polling after its test outlives that test's server, and a later
 // test's server bound to the recycled port then counts the stray /health hits.
 func TestWarmupProbe_StopEndsThePollLoop(t *testing.T) {
+	t.Parallel()
 	p := &warmupProbe{client: http.DefaultClient, baseURL: "http://127.0.0.1:1", done: make(chan struct{})}
 	exited := make(chan struct{})
 	go func() {

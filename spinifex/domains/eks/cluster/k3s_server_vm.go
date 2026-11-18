@@ -329,7 +329,7 @@ func TerminateK3sServerVM(ctx context.Context,
 // detachAndDeleteServerENI removes the server VM's control-plane ENI. Teardown
 // owns this ENI and has already terminated its VM, so the attachment is
 // authoritatively dead even if the record still shows it in-use — a state a
-// plain force=false delete would reject as InvalidNetworkInterface.InUse
+// plain force=false delete would reject as the in-use InvalidParameterValue
 // forever, wedging EKSDeletingReaper in a no-progress loop.
 // Detach first to clear the stale attachment fields, then delete. Both calls
 // tolerate an already-gone ENI (NotFound), so a race with the async

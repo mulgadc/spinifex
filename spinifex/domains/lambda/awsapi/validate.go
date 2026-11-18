@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/lambda"
@@ -51,6 +52,15 @@ func invalid(format string, args ...any) error {
 
 func unsupported(field string) error {
 	return invalid("%s is not supported", field)
+}
+
+// refuseField names a refused member; Publish also says why, since it waits on
+// function versions rather than being out of scope.
+func refuseField(field string) error {
+	if field == "Publish" {
+		return invalid("Publish is not supported: function versions are not yet supported")
+	}
+	return unsupported(field)
 }
 
 // decodeCreate reads a CreateFunction body strictly: a member this build does
@@ -210,14 +220,12 @@ func validateCreate(in *lambda.CreateFunctionInput) (*createParams, error) {
 	if pt := aws.StringValue(in.PackageType); pt != "" && pt != lambda.PackageTypeZip {
 		return nil, invalid("PackageType must be %s", lambda.PackageTypeZip)
 	}
-	if in.Code == nil || len(in.Code.ZipFile) == 0 {
-		return nil, invalid("Code.ZipFile is required")
+	var zipFile []byte
+	if in.Code != nil {
+		zipFile = in.Code.ZipFile
 	}
-	if len(in.Code.ZipFile) > codestore.MaxCodeBytes {
-		return nil, awserrors.Errorf(awserrors.ErrorRequestEntityTooLarge, "Code.ZipFile exceeds %d bytes", codestore.MaxCodeBytes)
-	}
-	if _, err := zip.NewReader(bytes.NewReader(in.Code.ZipFile), int64(len(in.Code.ZipFile))); err != nil {
-		return nil, invalid("Could not unzip uploaded file. Please check your file, then try to upload again.")
+	if err := checkZip("Code.ZipFile", zipFile); err != nil {
+		return nil, err
 	}
 	handler := aws.StringValue(in.Handler)
 	if handler == "" {
@@ -254,6 +262,69 @@ func validateCreate(in *lambda.CreateFunctionInput) (*createParams, error) {
 	}, nil
 }
 
+// checkZip applies the inline ZIP rules CreateFunction and UpdateFunctionCode
+// share: present, within the code store bound, and readable as a ZIP.
+func checkZip(field string, code []byte) error {
+	if len(code) == 0 {
+		return invalid("%s is required", field)
+	}
+	if len(code) > codestore.MaxCodeBytes {
+		return awserrors.Errorf(awserrors.ErrorRequestEntityTooLarge, "%s exceeds %d bytes", field, codestore.MaxCodeBytes)
+	}
+	if _, err := zip.NewReader(bytes.NewReader(code), int64(len(code))); err != nil {
+		return invalid("Could not unzip uploaded file. Please check your file, then try to upload again.")
+	}
+	return nil
+}
+
+// decodeUpdateCode reads an UpdateFunctionCode body as strictly as
+// decodeCreate reads CreateFunction.
+func decodeUpdateCode(body []byte) (*lambda.UpdateFunctionCodeInput, error) {
+	in := new(lambda.UpdateFunctionCodeInput)
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(in); err != nil {
+		return nil, invalid("the request body is not a valid UpdateFunctionCode document: %v", err)
+	}
+	return in, nil
+}
+
+// validateUpdateCode refuses every code source but an inline ZIP, publishing
+// and an architecture change, then checks the ZIP.
+func validateUpdateCode(in *lambda.UpdateFunctionCodeInput) error {
+	checks := []struct {
+		field string
+		set   bool
+	}{
+		{"S3Bucket", isSet(in.S3Bucket)},
+		{"S3Key", isSet(in.S3Key)},
+		{"S3ObjectVersion", isSet(in.S3ObjectVersion)},
+		{"ImageUri", isSet(in.ImageUri)},
+		{"Publish", aws.BoolValue(in.Publish)},
+	}
+	for _, c := range checks {
+		if c.set {
+			return refuseField(c.field)
+		}
+	}
+	if in.Architectures != nil {
+		if len(in.Architectures) == 0 {
+			return invalid("1 validation error detected: Value at 'architectures' failed to satisfy constraint: Member must have length greater than or equal to 1")
+		}
+		if len(in.Architectures) > 1 {
+			return invalid("1 validation error detected: Value at 'architectures' failed to satisfy constraint: Member must have length less than or equal to 1")
+		}
+		switch a := aws.StringValue(in.Architectures[0]); a {
+		case lambda.ArchitectureX8664:
+		case lambda.ArchitectureArm64:
+			return unsupported("Architectures " + a)
+		default:
+			return invalid("1 validation error detected: Value at 'architectures' failed to satisfy constraint: Member must satisfy enum value set: [x86_64, arm64]")
+		}
+	}
+	return checkZip("ZipFile", in.ZipFile)
+}
+
 func envVars(e *lambda.Environment) (map[string]string, error) {
 	if e == nil || len(e.Variables) == 0 {
 		return nil, nil
@@ -269,4 +340,129 @@ func envVars(e *lambda.Environment) (map[string]string, error) {
 		return nil, invalid("%s", err)
 	}
 	return vars, nil
+}
+
+// maxEnvBytes bounds an environment's variables as the JSON object AWS sizes.
+const maxEnvBytes = 4096
+
+// maxHandler bounds Handler in bytes, as the test-link guest checks it.
+const maxHandler = 128
+
+// decodeUpdateConfiguration reads an UpdateFunctionConfiguration body as
+// strictly as decodeCreate reads CreateFunction.
+func decodeUpdateConfiguration(body []byte) (*lambda.UpdateFunctionConfigurationInput, error) {
+	in := new(lambda.UpdateFunctionConfigurationInput)
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(in); err != nil {
+		return nil, invalid("the request body is not a valid UpdateFunctionConfiguration document: %v", err)
+	}
+	return in, nil
+}
+
+// configUpdate is a validated UpdateFunctionConfiguration: a nil member is
+// omitted and keeps the function's current value. SetEnv with a nil Env clears.
+type configUpdate struct {
+	Role        *string
+	Handler     *string
+	Description *string
+	TimeoutSec  *int64
+	MemorySize  *int64
+	SetEnv      bool
+	Env         map[string]string
+}
+
+// validHandler applies the test-link guest's constraint: non-empty, at most
+// 128 bytes, with no Unicode whitespace or NUL.
+func validHandler(h string) error {
+	if h == "" || len(h) > maxHandler {
+		return awserrors.Errorf(awserrors.ErrorValidationException,
+			"1 validation error detected: Value at 'handler' failed to satisfy constraint: Member must have length between 1 and %d", maxHandler)
+	}
+	if strings.ContainsFunc(h, func(r rune) bool { return unicode.IsSpace(r) || r == 0 }) {
+		return awserrors.Errorf(awserrors.ErrorValidationException,
+			"1 validation error detected: Value at 'handler' failed to satisfy constraint: Member must satisfy regular expression pattern: [^\\s]+")
+	}
+	return nil
+}
+
+// envObjectSize is the size of the variables as a JSON object, punctuation and
+// escaping included.
+func envObjectSize(vars map[string]string) (int, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(vars); err != nil {
+		return 0, err
+	}
+	return len(bytes.TrimSuffix(buf.Bytes(), []byte("\n"))), nil
+}
+
+// validateUpdateConfiguration refuses settings this build cannot honour and
+// checks each supplied member against the CreateFunction limits.
+func validateUpdateConfiguration(in *lambda.UpdateFunctionConfigurationInput, name string) (*configUpdate, error) {
+	checks := []struct {
+		field string
+		set   bool
+	}{
+		{"Layers", isSet(in.Layers)},
+		{"VpcConfig", isSet(in.VpcConfig)},
+		{"KMSKeyArn", isSet(in.KMSKeyArn)},
+		{"DeadLetterConfig", isSet(in.DeadLetterConfig)},
+		{"TracingConfig", in.TracingConfig != nil && aws.StringValue(in.TracingConfig.Mode) == lambda.TracingModeActive},
+		{"FileSystemConfigs", isSet(in.FileSystemConfigs)},
+		{"ImageConfig", isSet(in.ImageConfig)},
+		{"SnapStart", in.SnapStart != nil && aws.StringValue(in.SnapStart.ApplyOn) != "" && aws.StringValue(in.SnapStart.ApplyOn) != lambda.SnapStartApplyOnNone},
+		{"EphemeralStorage", in.EphemeralStorage != nil && in.EphemeralStorage.Size != nil && aws.Int64Value(in.EphemeralStorage.Size) != 512},
+	}
+	for _, c := range checks {
+		if c.set {
+			return nil, unsupported(c.field)
+		}
+	}
+	if in.TracingConfig != nil {
+		if m := aws.StringValue(in.TracingConfig.Mode); m != "" && m != lambda.TracingModePassThrough {
+			return nil, awserrors.Errorf(awserrors.ErrorValidationException,
+				"1 validation error detected: Value at 'tracingConfig.mode' failed to satisfy constraint: Member must satisfy enum value set: [Active, PassThrough]")
+		}
+	}
+	if !defaultLogging(in.LoggingConfig, name) {
+		return nil, unsupported("A LoggingConfig other than LogFormat Text with log group " + logGroup(name))
+	}
+	if in.Runtime != nil && aws.StringValue(in.Runtime) != supportedRuntime {
+		return nil, invalid("Runtime must be %s", supportedRuntime)
+	}
+	u := &configUpdate{Role: in.Role, Handler: in.Handler, Description: in.Description, TimeoutSec: in.Timeout, MemorySize: in.MemorySize}
+	if u.Role != nil && *u.Role == "" {
+		return nil, invalid("Role must not be empty")
+	}
+	if u.Handler != nil {
+		if err := validHandler(*u.Handler); err != nil {
+			return nil, err
+		}
+	}
+	if u.TimeoutSec != nil && (*u.TimeoutSec < 1 || *u.TimeoutSec > maxTimeout) {
+		return nil, invalid("Timeout must be between 1 and %d", maxTimeout)
+	}
+	if u.MemorySize != nil && (*u.MemorySize < 128 || *u.MemorySize > maxMemory) {
+		return nil, invalid("MemorySize must be between 128 and %d", maxMemory)
+	}
+	if u.Description != nil && len(*u.Description) > maxDescription {
+		return nil, invalid("Description must be at most %d characters", maxDescription)
+	}
+	if in.Environment != nil {
+		env, err := envVars(in.Environment)
+		if err != nil {
+			return nil, err
+		}
+		size, err := envObjectSize(env)
+		if err != nil {
+			return nil, invalid("Environment variables could not be encoded")
+		}
+		if len(env) > 0 && size > maxEnvBytes {
+			return nil, invalid("Lambda was unable to configure your environment variables because the environment variables you have provided exceeded the 4KB limit. Size measured: %d bytes", size)
+		}
+		u.SetEnv, u.Env = true, env
+	}
+	return u, nil
 }

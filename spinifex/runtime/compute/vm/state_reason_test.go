@@ -32,7 +32,10 @@ func TestLaunch_ClearsStaleStateReason(t *testing.T) {
 		ID:           "i-stale-reason",
 		Status:       StateStopped,
 		InstanceType: "m7i.small",
-		Instance:     &ec2.Instance{StateReason: unschedulableReason()},
+		Instance: &ec2.Instance{
+			StateReason:           unschedulableReason(),
+			StateTransitionReason: aws.String("User initiated (2026-11-11 00:32:23 GMT)"),
+		},
 	}
 	m.Insert(instance)
 	mounter.behavior[instance.ID] = func(*VM) error { return errors.New("mount failed") }
@@ -40,6 +43,7 @@ func TestLaunch_ClearsStaleStateReason(t *testing.T) {
 	require.Error(t, m.Run(context.Background(), instance), "the launch is expected to fail at Mount")
 	assert.Nil(t, instance.Instance.StateReason,
 		"the reason describes the state the instance is leaving and must not outlive the launch attempt")
+	assert.Nil(t, instance.Instance.StateTransitionReason)
 }
 
 // A launch that never starts must leave the reason alone: it still describes

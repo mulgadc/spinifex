@@ -119,6 +119,8 @@ func FindControlPlaneOrphans(ctx context.Context, js jetstream.JetStream, reserv
 				continue
 			case ClusterRecordUnreadable:
 				row.Unreadable, row.Err = true, verdict.Err
+			case ClusterRecordMissing:
+				// No record: reported as an orphan below.
 			}
 			row.Reason = verdict.Reason
 			rows = append(rows, row)

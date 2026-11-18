@@ -130,9 +130,24 @@ func WithRequestID(payload any, requestID string) any {
 	return composite.Interface()
 }
 
+// responseMetadata is the <ResponseMetadata> block every Query-protocol
+// response carries after its result.
+type responseMetadata struct {
+	RequestID string `locationName:"RequestId" type:"string"`
+}
+
+// QueryMetadataResponsePayload is the <ActionResponse><ResponseMetadata>
+// envelope AWS answers for an action with no modelled output.
+func QueryMetadataResponsePayload(action, requestID string) any {
+	return ResponsePayload(action+"Response", struct {
+		ResponseMetadata responseMetadata `locationName:"ResponseMetadata" type:"structure"`
+	}{responseMetadata{RequestID: requestID}})
+}
+
 // QueryResponsePayload wraps payload in the IAM-style
-// <ActionResponse><ActionResult>...</ActionResult></ActionResponse> envelope.
-func QueryResponsePayload(action string, payload any) any {
+// <ActionResponse><ActionResult>...</ActionResult><ResponseMetadata>
+// envelope, with requestID as the response's RequestId.
+func QueryResponsePayload(action, requestID string, payload any) any {
 	resultName := action + "Result"
 	resultWrapper := reflect.StructOf([]reflect.StructField{
 		{
@@ -140,9 +155,15 @@ func QueryResponsePayload(action string, payload any) any {
 			Type: reflect.TypeOf(payload),
 			Tag:  reflect.StructTag(`locationName:"` + resultName + `"`),
 		},
+		{
+			Name: "ResponseMetadata",
+			Type: reflect.TypeFor[responseMetadata](),
+			Tag:  `locationName:"ResponseMetadata" type:"structure"`,
+		},
 	})
 	resultV := reflect.New(resultWrapper).Elem()
 	resultV.Field(0).Set(reflect.ValueOf(payload))
+	resultV.Field(1).Set(reflect.ValueOf(responseMetadata{RequestID: requestID}))
 
 	responseName := action + "Response"
 	responseWrapper := reflect.StructOf([]reflect.StructField{

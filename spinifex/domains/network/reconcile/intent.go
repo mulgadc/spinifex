@@ -27,6 +27,8 @@ import (
 // IntentState is the desired OVN state derived from the JetStream KV
 // snapshot, scoped to the local AZ. Empty maps are valid.
 type IntentState struct {
+	PeeringIntent
+
 	VPCs        map[string]topology.VPCSpec
 	Subnets     map[string]topology.SubnetSpec
 	Ports       map[string]topology.PortSpec
@@ -85,7 +87,7 @@ func LoadIntentFromKV(ctx context.Context, js jetstream.JetStream, localAZ strin
 		IdlePorts:   make(map[string]string),
 	}
 
-	localVPCs, err := loadVPCs(ctx, js, localAZ, intent.VPCs)
+	localVPCs, vpcIDs, err := loadVPCs(ctx, js, localAZ, intent.VPCs)
 	if err != nil {
 		return IntentState{}, err
 	}
@@ -114,6 +116,8 @@ func LoadIntentFromKV(ctx context.Context, js jetstream.JetStream, localAZ strin
 		return IntentState{}, err
 	}
 	loadSubnetEgressRoutes(localVPCs, intent.Subnets, routeTables, intent.IGWRoutes, intent.NATGWRoutes)
+	intent.PeeringIntent = loadPeering(ctx, js, localVPCs, vpcIDs)
+	intent.PeeringRoutes = loadPeeringRoutes(intent.VPCs, intent.Subnets, routeTables)
 	loadSubnetDropGates(localVPCs, intent.Subnets, intent.IGWs, intent.IGWRoutes, intent.NATGWRoutes, intent.DropGates)
 
 	return intent, nil
@@ -127,48 +131,12 @@ func loadSubnetEgressRoutes(
 	routeTables []ec2routetable.RouteTableRecord,
 	igwOut, natgwOut map[string]SubnetEgressIntent,
 ) {
-	subnetsByVPC := make(map[string][]string, len(localVPCs))
-	for id, spec := range subnets {
-		subnetsByVPC[spec.VPCID] = append(subnetsByVPC[spec.VPCID], id)
-	}
-
-	explicitByVPC := make(map[string]map[string]struct{}, len(routeTables))
+	byTable := routeTableSubnets(subnets, routeTables)
 	for _, rt := range routeTables {
 		if _, ok := localVPCs[rt.VpcId]; !ok {
 			continue
 		}
-		ex, ok := explicitByVPC[rt.VpcId]
-		if !ok {
-			ex = map[string]struct{}{}
-			explicitByVPC[rt.VpcId] = ex
-		}
-		for _, assoc := range rt.Associations {
-			if assoc.SubnetId == "" || assoc.Main {
-				continue
-			}
-			ex[assoc.SubnetId] = struct{}{}
-		}
-	}
-
-	for _, rt := range routeTables {
-		if _, ok := localVPCs[rt.VpcId]; !ok {
-			continue
-		}
-		targets := map[string]struct{}{}
-		for _, assoc := range rt.Associations {
-			if assoc.SubnetId == "" || assoc.Main {
-				continue
-			}
-			targets[assoc.SubnetId] = struct{}{}
-		}
-		if rt.IsMain {
-			for _, subnetID := range subnetsByVPC[rt.VpcId] {
-				if _, ok := explicitByVPC[rt.VpcId][subnetID]; ok {
-					continue
-				}
-				targets[subnetID] = struct{}{}
-			}
-		}
+		targets := byTable[rt.RouteTableId]
 		for _, r := range rt.Routes {
 			if r.State != "" && !strings.EqualFold(r.State, "active") {
 				continue
@@ -238,20 +206,28 @@ func matchesLocalAZ(vpcAZ, localAZ string) bool {
 
 func keyIsVersion(key string) bool { return key == kvstore.VersionKey }
 
-func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out map[string]topology.VPCSpec) (map[string]struct{}, error) {
+// loadVPCs fills out with this AZ's VPCs and returns their IDs, and the ID of
+// every VPC with a key in any AZ, readable or not; nil if the bucket is absent.
+func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out map[string]topology.VPCSpec) (map[string]struct{}, map[string]struct{}, error) {
 	localVPCs := make(map[string]struct{})
 
 	kv, err := js.KeyValue(ctx, ec2vpc.KVBucketVPCs)
 	if err != nil {
 		slog.Debug("reconcile/intent: VPC bucket not available, skipping", "err", err)
-		return localVPCs, nil
+		return localVPCs, nil, nil
 	}
 	keys, err := kv.Keys(ctx)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return localVPCs, nil
+			return localVPCs, map[string]struct{}{}, nil
 		}
-		return nil, fmt.Errorf("list VPC keys: %w", err)
+		return nil, nil, fmt.Errorf("list VPC keys: %w", err)
+	}
+	vpcIDs := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		if _, id, ok := strings.Cut(key, "."); ok && strings.HasPrefix(id, "vpc-") {
+			vpcIDs[id] = struct{}{}
+		}
 	}
 	for _, key := range keys {
 		if keyIsVersion(key) {
@@ -263,7 +239,7 @@ func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out m
 		// an unhealthy store.
 		entry, err := kv.Get(ctx, key)
 		if err != nil {
-			return nil, fmt.Errorf("read VPC %s: %w", key, err)
+			return nil, nil, fmt.Errorf("read VPC %s: %w", key, err)
 		}
 		var rec ec2vpc.VPCRecord
 		if err := json.Unmarshal(entry.Value(), &rec); err != nil {
@@ -285,7 +261,7 @@ func loadVPCs(ctx context.Context, js jetstream.JetStream, localAZ string, out m
 		}
 		localVPCs[rec.VpcId] = struct{}{}
 	}
-	return localVPCs, nil
+	return localVPCs, vpcIDs, nil
 }
 
 func loadSubnets(ctx context.Context, js jetstream.JetStream, localVPCs map[string]struct{}, out map[string]topology.SubnetSpec) error {
@@ -483,6 +459,8 @@ func instanceHasNoTap(rec *vm.InstanceRecord) bool {
 		return true
 	case vm.StateStopped:
 		return rec.Spec.DesiredState == vm.DesiredStopped
+	case vm.StateProvisioning, vm.StatePending, vm.StateRunning, vm.StateStopping, vm.StateShuttingDown, vm.StateError:
+		// Treated as having a tap, so the reconciler keeps their network state.
 	}
 	return false
 }

@@ -11,10 +11,12 @@ import (
 	"testing"
 	"time"
 
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
+	"github.com/mulgadc/spinifex/spinifex/providers/cloud/oci"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/natsserve"
+	ebsocibsd "github.com/mulgadc/spinifex/spinifex/providers/ebs/ocibsd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
@@ -92,7 +94,7 @@ func volumeState(t *testing.T, provider *ebsprovider.MemoryProvider, volumeID st
 func mounterTestVM(volumeIDs ...string) *vm.VM {
 	instance := &vm.VM{ID: "i-mounter", AccountID: testAccountID}
 	for _, id := range volumeIDs {
-		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, viperblocklegacyv1.EBSRequest{Name: id})
+		instance.EBSRequests.Requests = append(instance.EBSRequests.Requests, vm.EBSRequest{Name: id})
 	}
 	return instance
 }
@@ -265,7 +267,7 @@ func TestVolumeMounterAdapter_EveryRequestAtVersion3OverTheContract(t *testing.T
 		assert.Equal(t, ebsprovider.VolumeStateInUse, volumeState(t, provider, req.Name))
 	}
 
-	hot := &viperblocklegacyv1.EBSRequest{Name: "vol-hot"}
+	hot := &vm.EBSRequest{Name: "vol-hot"}
 	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, hot))
 	assert.Equal(t, "nbd+unix:///?socket=/memory/vol-hot.sock", hot.NBDURI)
 	require.NoError(t, adapter.UnmountOne(t.Context(), testAccountID, *hot))
@@ -305,7 +307,7 @@ func TestVolumeMounterAdapter_RetryLaterRefusalBacksOffAndRecovers(t *testing.T)
 			instance := mounterTestVM("vol-relaunch")
 			err := adapter.Mount(t.Context(), instance)
 			require.ErrorIs(t, err, vm.ErrMountRetryable, "restore must back off rather than give up")
-			hot := &viperblocklegacyv1.EBSRequest{Name: "vol-hot"}
+			hot := &vm.EBSRequest{Name: "vol-hot"}
 			require.ErrorIs(t, adapter.MountOne(t.Context(), testAccountID, hot), vm.ErrMountRetryable)
 
 			fake.setPublish(func(string) ebsprovider.PublishVolumeResponse { return publishedNBD("nbd://ready") })
@@ -360,7 +362,7 @@ func TestVolumeMounterAdapter_HeldElsewhereReachesTheMountCaller(t *testing.T) {
 
 // The unpublish budget is the provider's data-movement budget, not the
 // request timeout every other call gets: a seal that outlasts the request
-// timeout still completes, where a publish that slow fails.
+// timeout still completes.
 func TestVolumeMounterAdapter_UnpublishOutlastingRequestTimeoutCompletes(t *testing.T) {
 	t.Parallel()
 	const requestTimeout = 100 * time.Millisecond
@@ -373,19 +375,49 @@ func TestVolumeMounterAdapter_UnpublishOutlastingRequestTimeoutCompletes(t *test
 		time.Sleep(sealTime)
 		return ebsprovider.UnpublishVolumeResponse{}
 	})
-	fake.setPublish(func(volumeID string) ebsprovider.PublishVolumeResponse {
-		time.Sleep(sealTime)
-		return publishedNBD("nbd://" + volumeID)
-	})
 
 	adapter := newNATSMounter(nc, node)
 	adapter.provider = ebsprovider.NewNATSProvider(nc, requestTimeout)
 
 	require.NoError(t, adapter.Unmount(t.Context(), mounterTestVM("vol-slow-seal")))
-	require.NoError(t, adapter.UnmountOne(t.Context(), testAccountID, viperblocklegacyv1.EBSRequest{Name: "vol-slow-seal"}))
+	require.NoError(t, adapter.UnmountOne(t.Context(), testAccountID, vm.EBSRequest{Name: "vol-slow-seal"}))
+}
 
-	err := adapter.MountOne(t.Context(), testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-slow-seal"})
-	require.ErrorIs(t, err, context.DeadlineExceeded, "the publish must be held to the request timeout")
+// An attach that outlasts the request floor still mounts: the publish has its
+// own budget. The floor is the daemon's scaled down, as the wait is real time.
+func TestVolumeMounterAdapter_DelayedAttachOutlastingRequestFloorMounts(t *testing.T) {
+	t.Parallel()
+	const requestFloor = ebsProviderRequestTimeout / 300
+	const pollInterval = 20 * time.Millisecond
+	_, nc := testutil.StartTestNATS(t)
+	node := newMounterTestNode()
+
+	fake := oci.NewBlockFake()
+	// Each poll of an ATTACHING attachment counts down one.
+	fake.AttachAfter = int(4 * requestFloor / pollInterval)
+	provider, err := ebsocibsd.New(ebsocibsd.Config{
+		ClusterID: "cluster-1", CompartmentID: "ocid1.compartment.oc1..test",
+		AvailabilityDomain: "AD-1", AvailabilityZone: "ap-southeast-2a", InstanceAvailabilityDomain: "AD-1",
+		NodeID: node, InstanceID: "ocid1.instance.oc1..test",
+		Client: fake, Initiator: ebsocibsd.NewFakeInitiator(), PollInterval: pollInterval,
+	})
+	require.NoError(t, err)
+	require.NoError(t, provider.Start(t.Context()))
+	_, err = provider.CreateVolume(t.Context(), ebsprovider.CreateVolumeRequest{
+		Versioned: ebsprovider.NewLatestVersioned(), VolumeID: "vol-slow-attach",
+		CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},
+	})
+	require.NoError(t, err)
+	stop, err := natsserve.Serve(t.Context(), nc, provider, natsserve.Options{NoQueueGroup: true, NodeID: node})
+	require.NoError(t, err)
+	t.Cleanup(stop)
+
+	adapter := newVolumeMounterAdapter(ebsprovider.NewNATSProvider(nc, requestFloor), node)
+	req := &vm.EBSRequest{Name: "vol-slow-attach"}
+	started := time.Now()
+	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, req))
+	require.Greater(t, time.Since(started), requestFloor, "the attach must have outlasted the request floor")
+	assert.NotEmpty(t, req.BlockDevice)
 }
 
 // A failed volume rolls back the volumes this Mount already published, and a
@@ -428,7 +460,7 @@ func TestVolumeMounterAdapter_BlockExportReplacesNBDURI(t *testing.T) {
 		Block: &ebsprovider.BlockExport{DevicePath: "/dev/sdx", SizeBytes: 1 << 30},
 	}}, "node-stub")
 
-	req := &viperblocklegacyv1.EBSRequest{Name: "vol-block", NBDURI: "nbd://stale"}
+	req := &vm.EBSRequest{Name: "vol-block", NBDURI: "nbd://stale"}
 	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, req))
 	assert.Empty(t, req.NBDURI)
 	assert.Equal(t, "/dev/sdx", req.BlockDevice)
@@ -485,18 +517,24 @@ func TestVolumeMounterAdapter_AmbiguousPublishIsTornDown(t *testing.T) {
 			fake := serveFakeNodeProvider(t, nc, node)
 			fake.setPublish(func(string) ebsprovider.PublishVolumeResponse { return tt.reply() })
 			adapter := newNATSMounter(nc, node)
-			if tt.timeout > 0 {
-				adapter.provider = ebsprovider.NewNATSProvider(nc, tt.timeout)
+			// A publish has its own budget, so the caller's deadline is what lapses.
+			callCtx := func() context.Context {
+				if tt.timeout == 0 {
+					return t.Context()
+				}
+				ctx, cancel := context.WithTimeout(t.Context(), tt.timeout)
+				t.Cleanup(cancel)
+				return ctx
 			}
 
-			hot := &viperblocklegacyv1.EBSRequest{Name: "vol-hot", NBDURI: "nbd://stale"}
-			err := adapter.MountOne(t.Context(), testAccountID, hot)
+			hot := &vm.EBSRequest{Name: "vol-hot", NBDURI: "nbd://stale"}
+			err := adapter.MountOne(callCtx(), testAccountID, hot)
 			require.ErrorIs(t, err, vm.ErrMountAmbiguous)
 			require.ErrorIs(t, err, tt.cause)
 			assert.NotErrorIs(t, err, vm.ErrMountRetryable)
 			assert.Equal(t, "nbd://stale", hot.NBDURI, "a failed publish must not overwrite the request's export")
 
-			err = adapter.Mount(t.Context(), mounterTestVM("vol-ambiguous"))
+			err = adapter.Mount(callCtx(), mounterTestVM("vol-ambiguous"))
 			require.ErrorIs(t, err, vm.ErrMountAmbiguous)
 			assert.Equal(t, []string{"vol-ambiguous"}, fake.unpublished(), "the ambiguous volume must be unpublished")
 		})
@@ -558,7 +596,7 @@ func TestVolumeMounterAdapter_MountOneCancelledAfterSendIsAmbiguous(t *testing.T
 		<-arrived
 		cancel()
 	}()
-	req := &viperblocklegacyv1.EBSRequest{Name: "vol-hot", NBDURI: "nbd://stale"}
+	req := &vm.EBSRequest{Name: "vol-hot", NBDURI: "nbd://stale"}
 	err := adapter.MountOne(ctx, testAccountID, req)
 	require.ErrorIs(t, err, context.Canceled)
 	require.ErrorIs(t, err, vm.ErrMountAmbiguous)
@@ -580,7 +618,7 @@ func TestVolumeMounterAdapter_PublishAfterCallerGoneSendsNothing(t *testing.T) {
 
 	cancelled, cancel := context.WithCancel(t.Context())
 	cancel()
-	err := adapter.MountOne(cancelled, testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-hot"})
+	err := adapter.MountOne(cancelled, testAccountID, &vm.EBSRequest{Name: "vol-hot"})
 	require.ErrorIs(t, err, context.Canceled)
 	assert.NotErrorIs(t, err, vm.ErrMountAmbiguous)
 
@@ -604,10 +642,10 @@ func TestVolumeMounterAdapter_ContractRequestsCarryTheAccount(t *testing.T) {
 	require.NoError(t, adapter.Mount(t.Context(), instance))
 	require.NoError(t, adapter.Unmount(t.Context(), instance))
 	require.NoError(t, adapter.Abandon(t.Context(), instance, "superseded"))
-	hot := &viperblocklegacyv1.EBSRequest{Name: "vol-hot"}
+	hot := &vm.EBSRequest{Name: "vol-hot"}
 	require.NoError(t, adapter.MountOne(t.Context(), testAccountID, hot))
 	require.NoError(t, adapter.UnmountOne(t.Context(), testAccountID, *hot))
-	require.NoError(t, adapter.MountOne(t.Context(), "", &viperblocklegacyv1.EBSRequest{Name: "vol-none"}))
+	require.NoError(t, adapter.MountOne(t.Context(), "", &vm.EBSRequest{Name: "vol-none"}))
 
 	require.Eventually(t, func() bool { return len(calls()) == 6 }, 5*time.Second, 10*time.Millisecond)
 	for _, call := range calls() {
@@ -629,7 +667,7 @@ func TestVolumeMounterAdapter_RequestSpanCarriesTheAccountUnderTheCaller(t *test
 	adapter := newNATSMounter(nc, node)
 
 	ctx, caller := otel.Tracer("test").Start(t.Context(), "caller")
-	require.NoError(t, adapter.MountOne(ctx, testAccountID, &viperblocklegacyv1.EBSRequest{Name: "vol-acct"}))
+	require.NoError(t, adapter.MountOne(ctx, testAccountID, &vm.EBSRequest{Name: "vol-acct"}))
 	caller.End()
 
 	request := clientSpan(t, sr)
@@ -658,7 +696,7 @@ func TestVolumeMounterAdapter_UnpublishOutlivesCallerContext(t *testing.T) {
 
 	short, cancelShort := context.WithTimeout(t.Context(), sealTime/4)
 	defer cancelShort()
-	require.NoError(t, adapter.UnmountOne(short, testAccountID, viperblocklegacyv1.EBSRequest{Name: "vol-detach"}))
+	require.NoError(t, adapter.UnmountOne(short, testAccountID, vm.EBSRequest{Name: "vol-detach"}))
 
 	cancelled, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -698,7 +736,7 @@ func TestVolumeMounterAdapter_AbandonUnpublishesWithoutSealing(t *testing.T) {
 	require.Len(t, calls, 4, "every volume is attempted")
 	for _, call := range calls {
 		assert.True(t, call.noSeal, "%s must be dropped unsealed", call.volume)
-		assert.Equal(t, ebsprovider.NoSealSchemaVersion, call.version, "%s must be sent at the version carrying NoSeal", call.volume)
+		assert.GreaterOrEqual(t, call.version, ebsprovider.NoSealSchemaVersion, "%s must be sent at a version carrying NoSeal", call.volume)
 	}
 	assert.Contains(t, err.Error(), "abandon vol-refused (superseded)", "the failure must say why the volume was abandoned")
 	const gaveUp = "Gave up a volume export"

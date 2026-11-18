@@ -21,10 +21,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { getNameTag } from "@/lib/utils"
+import { isLivePeering, peerOf, touchesVpc } from "@/lib/vpc-peering"
 import { useCreateRoute, useDeleteRoute } from "@/mutations/ec2"
 import {
   ec2InternetGatewaysQueryOptions,
   ec2NatGatewaysQueryOptions,
+  ec2VpcPeeringConnectionsQueryOptions,
 } from "@/queries/ec2"
 import { type CreateRouteFormData, createRouteSchema } from "@/types/ec2"
 
@@ -45,8 +48,8 @@ export function routeTarget(route: RouteEntry): string {
   )
 }
 
-// The table's routes, with add and delete. Only gateways in the table's own VPC
-// are offered as targets; the local route cannot be deleted.
+// The table's routes, with add and delete. Only gateways and peering connections of
+// the table's own VPC are offered as targets; the local route cannot be deleted.
 function routeColumns(
   deleting: boolean,
   onDelete: (cidr: string) => void,
@@ -109,6 +112,7 @@ export function RouteTableRoutes({ rtb }: { rtb: RouteTable }) {
   const routes = rtb.Routes ?? []
   const { data: igwData } = useQuery(ec2InternetGatewaysQueryOptions)
   const { data: natData } = useQuery(ec2NatGatewaysQueryOptions)
+  const { data: pcxData } = useQuery(ec2VpcPeeringConnectionsQueryOptions)
   const createRoute = useCreateRoute()
   const deleteRoute = useDeleteRoute()
   const [routeToDelete, setRouteToDelete] = useState<string | null>(null)
@@ -131,6 +135,32 @@ export function RouteTableRoutes({ rtb }: { rtb: RouteTable }) {
   const vpcNatGateways = (natData?.NatGateways ?? []).filter(
     (nat) => nat.VpcId === rtb.VpcId && nat.State === "available",
   )
+
+  // A pending connection is a valid target; its route reads blackhole until accepted.
+  const vpcPeerings = (pcxData?.VpcPeeringConnections ?? []).filter(
+    (pcx) => touchesVpc(pcx, rtb.VpcId) && isLivePeering(pcx),
+  )
+
+  const targets = {
+    igw: attachedIgws.map((igw) => ({
+      id: igw.InternetGatewayId ?? "",
+      label: igw.InternetGatewayId ?? "",
+    })),
+    nat: vpcNatGateways.map((nat) => ({
+      id: nat.NatGatewayId ?? "",
+      label: nat.NatGatewayId ?? "",
+    })),
+    pcx: vpcPeerings.map((pcx) => {
+      const id = pcx.VpcPeeringConnectionId ?? ""
+      const name = getNameTag(pcx.Tags)
+      const peer = peerOf(pcx, rtb.VpcId)
+
+      return {
+        id,
+        label: `${id} (${name ?? `${peer?.VpcId ?? ""} ${peer?.CidrBlock ?? ""}`.trim()})`,
+      }
+    }),
+  }[targetType]
 
   const error = createRoute.error ?? deleteRoute.error
 
@@ -158,6 +188,8 @@ export function RouteTableRoutes({ rtb }: { rtb: RouteTable }) {
         destinationCidrBlock: values.destinationCidrBlock,
         gatewayId: values.targetType === "igw" ? values.targetId : undefined,
         natGatewayId: values.targetType === "nat" ? values.targetId : undefined,
+        vpcPeeringConnectionId:
+          values.targetType === "pcx" ? values.targetId : undefined,
       })
     } catch {
       // Shown by the banner above the form.
@@ -218,6 +250,7 @@ export function RouteTableRoutes({ rtb }: { rtb: RouteTable }) {
                     <SelectContent>
                       <SelectItem value="igw">Internet gateway</SelectItem>
                       <SelectItem value="nat">NAT gateway</SelectItem>
+                      <SelectItem value="pcx">Peering connection</SelectItem>
                     </SelectContent>
                   </Select>
                 )}
@@ -241,23 +274,11 @@ export function RouteTableRoutes({ rtb }: { rtb: RouteTable }) {
                       <SelectValue placeholder="Select target" />
                     </SelectTrigger>
                     <SelectContent>
-                      {targetType === "igw"
-                        ? attachedIgws.map((igw) => (
-                            <SelectItem
-                              key={igw.InternetGatewayId}
-                              value={igw.InternetGatewayId ?? ""}
-                            >
-                              {igw.InternetGatewayId}
-                            </SelectItem>
-                          ))
-                        : vpcNatGateways.map((nat) => (
-                            <SelectItem
-                              key={nat.NatGatewayId}
-                              value={nat.NatGatewayId ?? ""}
-                            >
-                              {nat.NatGatewayId}
-                            </SelectItem>
-                          ))}
+                      {targets.map((target) => (
+                        <SelectItem key={target.id} value={target.id}>
+                          {target.label}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 )}

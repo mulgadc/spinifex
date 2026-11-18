@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
 	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
+	ec2vpcpeering "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcpeering"
 	"github.com/nats-io/nats.go"
 )
 
@@ -19,6 +20,7 @@ func EC2ExtraReapers(nc *nats.Conn) []Reaper {
 	return []Reaper{
 		&natGatewayReaper{svc: ec2natgw.NewNATSNatGatewayService(nc)},
 		&egressOnlyIGWReaper{svc: ec2eigw.NewNATSEgressOnlyIGWService(nc)},
+		&vpcPeeringReaper{svc: ec2vpcpeering.NewNATSVpcPeeringService(nc)},
 	}
 }
 
@@ -110,6 +112,69 @@ func (r *egressOnlyIGWReaper) List(ctx context.Context, accountID string) ([]Res
 func (r *egressOnlyIGWReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
 	_, err := r.svc.DeleteEgressOnlyInternetGateway(ctx, &ec2.DeleteEgressOnlyInternetGatewayInput{
 		EgressOnlyInternetGatewayId: aws.String(resource.ID),
+	}, accountID)
+	return ignoreAlreadyGone(err)
+}
+
+// endedPeeringStates are the states a connection has already left the live
+// lifecycle in. A deleted one may still await the reconciler; that is not ours.
+var endedPeeringStates = map[string]bool{
+	ec2vpcpeering.StateDeleted: true, ec2vpcpeering.StateRejected: true, ec2vpcpeering.StateFailed: true, ec2vpcpeering.StateExpired: true,
+}
+
+type vpcPeeringReaper struct {
+	svc ec2vpcpeering.VpcPeeringService
+}
+
+func (r *vpcPeeringReaper) Kind() string { return "vpc-peering-connection" }
+func (r *vpcPeeringReaper) Stage() Stage { return StageNetwork }
+
+// List names every live connection the account requested or accepted. Detail
+// is the state, so a stuck one says which.
+func (r *vpcPeeringReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
+	out, err := r.svc.DescribeVpcPeeringConnections(ctx, &ec2.DescribeVpcPeeringConnectionsInput{}, accountID)
+	if err != nil {
+		return nil, err
+	}
+	var found []Resource
+	for _, conn := range out.VpcPeeringConnections {
+		if conn == nil || conn.VpcPeeringConnectionId == nil || conn.Status == nil {
+			continue
+		}
+		state := aws.StringValue(conn.Status.Code)
+		if endedPeeringStates[state] {
+			continue
+		}
+		found = append(found, Resource{Kind: r.Kind(), ID: aws.StringValue(conn.VpcPeeringConnectionId), Detail: state})
+	}
+	return found, nil
+}
+
+// Delete deletes a connection, except a request pending against the account,
+// which AWS lets only the accepter reject.
+func (r *vpcPeeringReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
+	out, err := r.svc.DescribeVpcPeeringConnections(ctx, &ec2.DescribeVpcPeeringConnectionsInput{
+		VpcPeeringConnectionIds: []*string{aws.String(resource.ID)},
+	}, accountID)
+	if err != nil {
+		return ignoreAlreadyGone(err)
+	}
+	if len(out.VpcPeeringConnections) == 0 || out.VpcPeeringConnections[0] == nil {
+		return nil
+	}
+	conn := out.VpcPeeringConnections[0]
+	if state := aws.StringValue(conn.Status.Code); endedPeeringStates[state] {
+		return nil
+	}
+	if aws.StringValue(conn.Status.Code) == ec2vpcpeering.StatePendingAcceptance && conn.RequesterVpcInfo != nil &&
+		aws.StringValue(conn.RequesterVpcInfo.OwnerId) != accountID {
+		_, err = r.svc.RejectVpcPeeringConnection(ctx, &ec2.RejectVpcPeeringConnectionInput{
+			VpcPeeringConnectionId: aws.String(resource.ID),
+		}, accountID)
+		return ignoreAlreadyGone(err)
+	}
+	_, err = r.svc.DeleteVpcPeeringConnection(ctx, &ec2.DeleteVpcPeeringConnectionInput{
+		VpcPeeringConnectionId: aws.String(resource.ID),
 	}, accountID)
 	return ignoreAlreadyGone(err)
 }

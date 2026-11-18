@@ -19,11 +19,13 @@ func nodegroupNaming(id, name string) eks.DescribeNodegroupOutput {
 }
 
 // Every nodegroup of every cluster is described, whatever its status, and the
-// template IDs and names they carry are collected.
+// template IDs and names they carry are collected, across listing pages.
 func TestTemplateConsumersCollectEveryNodegroupsTemplate(t *testing.T) {
 	fake := newFakeEKS(t)
 	fake.reply("eks.ListClusters", eks.ListClustersOutput{Clusters: aws.StringSlice([]string{"alpha"})})
-	fake.reply("eks.ListNodegroups", eks.ListNodegroupsOutput{Nodegroups: aws.StringSlice([]string{"ng1", "ng2", "ng3"})})
+	fake.reply("eks.ListNodegroups",
+		eks.ListNodegroupsOutput{Nodegroups: aws.StringSlice([]string{"ng1", "ng2"}), NextToken: aws.String("next")},
+		eks.ListNodegroupsOutput{Nodegroups: aws.StringSlice([]string{"ng3"})})
 	fake.reply("eks.DescribeNodegroup",
 		nodegroupNaming("lt-1", ""),
 		nodegroupNaming("", "by-name"),

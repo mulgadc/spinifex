@@ -4,8 +4,8 @@ package vm
 // public IP, ENI, placement group) that the manager does not own. Invoked from
 // Stop/Terminate after QEMU shuts down; methods are best-effort and self-logging.
 type InstanceCleaner interface {
-	// DeleteVolumes deletes the EFI internal volume via ebs.delete and user
-	// volumes flagged DeleteOnTermination via the volume service.
+	// DeleteVolumes deletes user volumes flagged DeleteOnTermination via the
+	// volume service and detaches the rest, skipping a leftover EFI request.
 	// Called only on Terminate, never on Stop. Returns the first delete error.
 	DeleteVolumes(v *VM) error
 

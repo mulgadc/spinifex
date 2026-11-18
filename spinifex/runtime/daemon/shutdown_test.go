@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	ebspolicy "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/policy"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -694,7 +693,7 @@ func stubEBSUnmount(t *testing.T, d *Daemon, refusal *ebsprovider.ProviderError)
 // a boot volume attached, and drain-stopped rather than operator-stopped.
 func drainRunningInstance(id, volume string) *vm.VM {
 	instance := &vm.VM{ID: id, Status: vm.StateRunning, AccountID: "111122223333"}
-	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+	instance.EBSRequests.Requests = []vm.EBSRequest{
 		{Name: volume, VolType: ebspolicy.VolumeTypeGP3, Boot: true},
 	}
 	return instance

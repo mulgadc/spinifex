@@ -20,6 +20,11 @@ import (
 // defaultStopReason is recorded when StopTask is called without a reason.
 const defaultStopReason = "Task stopped by user"
 
+// errTaskNotFound refuses a task reference that names no task in the cluster.
+func errTaskNotFound() error {
+	return awserrors.Errorf(awserrors.ErrorECSInvalidParameter, "The referenced task was not found.")
+}
+
 // StopTask requests a cooperative stop: it marks the task DesiredStatus=STOPPED
 // and posts a directive to the instance's stop inbox. The agent reaps the
 // container and reports STOPPED, which drives the capacity + ENI + TG release in
@@ -39,14 +44,20 @@ func (s *Service) StopTask(ctx context.Context, input *ecs.StopTaskInput, accoun
 		return nil, err
 	}
 	if !found {
-		return nil, errors.New(awserrors.ErrorECSInvalidParameter)
+		return nil, errTaskNotFound()
 	}
 	reason := aws.StringValue(input.Reason)
 	if reason == "" {
 		reason = defaultStopReason
 	}
-	s.requestStopTask(ctx, kv, accountID, &task, reason)
-	return &ecs.StopTaskOutput{Task: s.taskToAWS(accountID, &task)}, nil
+	td, err := taskDefOf(ctx, kv, &task)
+	if err != nil {
+		return nil, err
+	}
+	s.requestStopTask(ctx, kv, accountID, &task, reason, ecs.TaskStopCodeUserInitiated)
+	out := s.taskToAWS(accountID, &task, td)
+	out.Tags = []*ecs.Tag{}
+	return &ecs.StopTaskOutput{Task: out}, nil
 }
 
 // StartTask places one task per named container instance (explicit placement, no
@@ -76,14 +87,14 @@ func (s *Service) StartTask(ctx context.Context, input *ecs.StartTaskInput, acco
 	mode := resolveNetworkMode(taskDef)
 	netCfg := awsvpcConfigFromStartTask(input)
 	if mode == NetworkModeAwsvpc && netCfg.firstSubnet() == "" {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, errMissingAwsvpcConfig()
 	}
 	cpu, mem, gpu := taskDef.ReservedCPU(), taskDef.ReservedMemory(), taskDef.ReservedGPU()
 	eni := eniReservationFor(mode)
 	group := aws.StringValue(input.Group)
 	startedBy := aws.StringValue(input.StartedBy)
 
-	out := &ecs.StartTaskOutput{}
+	out := &ecs.StartTaskOutput{Failures: []*ecs.Failure{}}
 	for _, ref := range awsStringSlice(input.ContainerInstances) {
 		instanceID := ContainerInstanceShortID(ref)
 		taskID := uuid.NewV4().String()
@@ -111,7 +122,7 @@ func (s *Service) StartTask(ctx context.Context, input *ecs.StartTaskInput, acco
 		if err := s.publishAssign(ctx, kv, accountID, cluster, inst.InstanceID, rec, taskDef); err != nil {
 			slog.ErrorContext(ctx, "ECS StartTask: failed to publish assign", "task", taskID, "instance", inst.InstanceID, "err", err)
 		}
-		out.Tasks = append(out.Tasks, s.taskToAWS(accountID, rec))
+		out.Tasks = append(out.Tasks, s.taskToAWS(accountID, rec, taskDef))
 	}
 	return out, nil
 }
@@ -162,10 +173,15 @@ func (s *Service) reserveOnInstance(ctx context.Context, kv jetstream.KeyValue, 
 // untouched. The agent reaps the container and reports STOPPED; recordTaskState
 // then performs the single release. No-op once the task is already STOPPED. A task
 // with no container instance (never placed) is forced-stopped directly since no
-// agent can report it.
-func (s *Service) requestStopTask(ctx context.Context, kv jetstream.KeyValue, accountID string, task *TaskRecord, reason string) {
+// agent can report it. The first request records its reason, stopCode and time.
+func (s *Service) requestStopTask(ctx context.Context, kv jetstream.KeyValue, accountID string, task *TaskRecord, reason, stopCode string) {
 	if task.LastStatus == TaskStatusStopped {
 		return
+	}
+	if task.StoppingAt.IsZero() {
+		task.StoppingAt = time.Now().UTC()
+		task.StoppedReason = reason
+		task.StopCode = stopCode
 	}
 	if task.ContainerInstanceID == "" {
 		s.forceStopTask(ctx, kv, accountID, task, reason)

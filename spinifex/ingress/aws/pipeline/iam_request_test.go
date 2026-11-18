@@ -46,6 +46,23 @@ func TestIAMRequest_CreateUser_Success(t *testing.T) {
 	assert.Contains(t, xmlStr, "alice")
 }
 
+func TestIAMRequest_UnitOutputOmitsResult(t *testing.T) {
+	handler := setupIAMRequestHandler(&flexMockIAMService{})
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Action=DeleteUser&UserName=alice"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp := doRequest(handler, req)
+	assert.Equal(t, 200, resp.StatusCode)
+
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "<DeleteUserResponse")
+	assert.NotContains(t, string(body), "DeleteUserResult")
+	requestID := resp.Header.Get("X-Amzn-Requestid")
+	require.NotEmpty(t, requestID)
+	assert.Contains(t, string(body), "<ResponseMetadata><RequestId>"+requestID+"</RequestId></ResponseMetadata>")
+}
+
 func TestIAMRequest_EmptyAction(t *testing.T) {
 	handler := setupIAMRequestHandler(&flexMockIAMService{})
 

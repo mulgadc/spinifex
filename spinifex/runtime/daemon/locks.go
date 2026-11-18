@@ -6,6 +6,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/instance/uefistore"
+	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
 	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
@@ -30,6 +31,7 @@ type daemonLocks struct {
 	elbv2          *kvsync.Lease
 	eks            *kvsync.LeaseGroup
 	uefi           *kvsync.ClaimGroup
+	snapshot       *kvsync.ClaimGroup
 }
 
 func newDaemonLocks(store kvsync.KVStore, node string) *daemonLocks {
@@ -43,6 +45,7 @@ func newDaemonLocks(store kvsync.KVStore, node string) *daemonLocks {
 		elbv2:          elbv2domain.NewDataPathLease(store, node),
 		eks:            ekscluster.NewClusterLeases(store, node),
 		uefi:           uefistore.NewClaims(store, node),
+		snapshot:       ec2snapshot.NewClaimGroup(store, node),
 	}
 }
 
@@ -79,4 +82,13 @@ func (d *Daemon) uefiClaims() *kvsync.ClaimGroup {
 		return nil
 	}
 	return d.locks.uefi
+}
+
+// snapshotClaims is the pending-snapshot claim group, or nil before
+// startCluster has built the daemon's locks.
+func (d *Daemon) snapshotClaims() *kvsync.ClaimGroup {
+	if d.locks == nil {
+		return nil
+	}
+	return d.locks.snapshot
 }

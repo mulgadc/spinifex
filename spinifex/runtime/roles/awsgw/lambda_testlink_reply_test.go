@@ -48,6 +48,26 @@ func (storedFunction) RollbackCreate(context.Context, string, string, string, ui
 	return errors.New("unused")
 }
 
+func (storedFunction) BeginCodeUpdate(context.Context, string, string, function.Record, uint64, string) error {
+	return errors.New("unused")
+}
+
+func (storedFunction) CodeUpdated(context.Context, string, string, function.Record, uint64, string, string, int64) (function.Record, uint64, error) {
+	return function.Record{}, 0, errors.New("unused")
+}
+
+func (storedFunction) UpdateConfiguration(context.Context, string, string, function.Record, uint64, function.Configuration) (function.Record, uint64, error) {
+	return function.Record{}, 0, errors.New("unused")
+}
+
+func (storedFunction) List(context.Context, string, string, string, int) ([]function.ListedFunction, string, error) {
+	return nil, "", errors.New("unused")
+}
+
+func (storedFunction) Delete(context.Context, string, string, function.Record, uint64) error {
+	return errors.New("unused")
+}
+
 // invokeThrough sends one Invoke through the Lambda handler to the real
 // test-link executor; fakeControl stands in for the daemon and answers with rep.
 func invokeThrough(t *testing.T, rep testlink.Reply) (*httptest.ResponseRecorder, error) {

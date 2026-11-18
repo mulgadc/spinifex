@@ -17,94 +17,106 @@ import { StateBadge } from "@/components/state-badge"
 import { buttonVariants } from "@/components/ui/button"
 import { useRowSelection } from "@/hooks/use-row-selection"
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
+import type { SubnetType } from "@/lib/subnet-routing"
 import { getNameTag } from "@/lib/utils"
 import { useDeleteSubnet } from "@/mutations/ec2"
 
 import { CreateSubnetPage } from "./create-subnet-page"
 import { SubnetDetails } from "./subnet-details"
+import { SUBNET_TYPE_LABELS, useSubnetType } from "./subnet-type"
 
-const COLUMNS: DataColumn<Subnet>[] = [
-  {
-    id: "subnet",
-    header: "Subnet",
-    sortValue: (subnet) => getNameTag(subnet.Tags) ?? subnet.SubnetId,
-    cell: (subnet) => {
-      const name = getNameTag(subnet.Tags)
-      const id = subnet.SubnetId ?? ""
+function columns(typeOf: (subnet: Subnet) => SubnetType): DataColumn<Subnet>[] {
+  return [
+    {
+      id: "subnet",
+      header: "Subnet",
+      sortValue: (subnet) => getNameTag(subnet.Tags) ?? subnet.SubnetId,
+      cell: (subnet) => {
+        const name = getNameTag(subnet.Tags)
+        const id = subnet.SubnetId ?? ""
 
-      return (
-        <Link
-          className="group block max-w-72 min-w-0 rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-          from="/ec2/describe-subnets/"
-          search={(previous) => ({
-            ...previous,
-            ...CLOSED_PANEL,
-            selected: id,
-          })}
-          to="."
-        >
-          <span className="block truncate font-medium text-primary group-hover:underline">
-            {name ?? id}
-          </span>
-          {name && (
-            <span className="block truncate font-mono text-xs text-muted-foreground">
-              {id}
+        return (
+          <Link
+            className="group block max-w-72 min-w-0 rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            from="/ec2/describe-subnets/"
+            search={(previous) => ({
+              ...previous,
+              ...CLOSED_PANEL,
+              selected: id,
+            })}
+            to="."
+          >
+            <span className="block truncate font-medium text-primary group-hover:underline">
+              {name ?? id}
             </span>
-          )}
-        </Link>
-      )
+            {name && (
+              <span className="block truncate font-mono text-xs text-muted-foreground">
+                {id}
+              </span>
+            )}
+          </Link>
+        )
+      },
     },
-  },
-  {
-    id: "state",
-    header: "State",
-    sortValue: (subnet) => subnet.State,
-    cell: (subnet) => <StateBadge state={subnet.State} />,
-  },
-  {
-    id: "cidr",
-    header: "CIDR",
-    sortValue: (subnet) => subnet.CidrBlock,
-    cell: (subnet) => (
-      <span className="font-mono text-xs tabular-nums">{subnet.CidrBlock}</span>
-    ),
-  },
-  {
-    id: "vpc",
-    header: "VPC",
-    sortValue: (subnet) => subnet.VpcId,
-    hideBelow: "sm",
-    cell: (subnet) =>
-      subnet.VpcId ? (
-        <Link
-          className="font-mono text-xs text-primary hover:underline"
-          params={{ id: subnet.VpcId }}
-          to="/ec2/describe-vpcs/$id"
-        >
-          {subnet.VpcId}
-        </Link>
-      ) : (
-        <span className="text-muted-foreground">—</span>
+    {
+      id: "state",
+      header: "State",
+      sortValue: (subnet) => subnet.State,
+      cell: (subnet) => <StateBadge state={subnet.State} />,
+    },
+    {
+      id: "type",
+      header: "Type",
+      sortValue: (subnet) => typeOf(subnet),
+      cell: (subnet) => SUBNET_TYPE_LABELS[typeOf(subnet)],
+    },
+    {
+      id: "cidr",
+      header: "CIDR",
+      sortValue: (subnet) => subnet.CidrBlock,
+      cell: (subnet) => (
+        <span className="font-mono text-xs tabular-nums">
+          {subnet.CidrBlock}
+        </span>
       ),
-  },
-  {
-    id: "zone",
-    header: "Availability zone",
-    sortValue: (subnet) => subnet.AvailabilityZone,
-    hideBelow: "md",
-    cell: (subnet) => subnet.AvailabilityZone,
-  },
-  {
-    id: "available",
-    header: "Available IPs",
-    sortValue: (subnet) => subnet.AvailableIpAddressCount,
-    hideBelow: "lg",
-    align: "end",
-    cell: (subnet) => (
-      <span className="tabular-nums">{subnet.AvailableIpAddressCount}</span>
-    ),
-  },
-]
+    },
+    {
+      id: "vpc",
+      header: "VPC",
+      sortValue: (subnet) => subnet.VpcId,
+      hideBelow: "sm",
+      cell: (subnet) =>
+        subnet.VpcId ? (
+          <Link
+            className="font-mono text-xs text-primary hover:underline"
+            params={{ id: subnet.VpcId }}
+            to="/ec2/describe-vpcs/$id"
+          >
+            {subnet.VpcId}
+          </Link>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        ),
+    },
+    {
+      id: "zone",
+      header: "Availability zone",
+      sortValue: (subnet) => subnet.AvailabilityZone,
+      hideBelow: "md",
+      cell: (subnet) => subnet.AvailabilityZone,
+    },
+    {
+      id: "available",
+      header: "Available IPs",
+      sortValue: (subnet) => subnet.AvailableIpAddressCount,
+      hideBelow: "lg",
+      align: "end",
+      cell: (subnet) => (
+        <span className="tabular-nums">{subnet.AvailableIpAddressCount}</span>
+      ),
+    },
+  ]
+}
 
 interface SubnetsPageProps {
   subnets: readonly Subnet[]
@@ -118,6 +130,7 @@ export function SubnetsPage({
   onSearchChange,
 }: SubnetsPageProps) {
   const [sort, setSort] = useState<SortState>()
+  const typeOf = useSubnetType()
 
   const open = subnets.find(
     (subnet) => search.selected !== "" && subnet.SubnetId === search.selected,
@@ -210,7 +223,7 @@ export function SubnetsPage({
       <DataTable
         activeId={open?.SubnetId}
         caption="Subnets"
-        columns={COLUMNS}
+        columns={columns(typeOf)}
         empty="No subnets yet."
         getRowId={(subnet) => subnet.SubnetId ?? ""}
         onRowClick={(id) => {

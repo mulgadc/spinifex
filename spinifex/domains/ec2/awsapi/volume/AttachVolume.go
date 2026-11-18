@@ -91,7 +91,7 @@ func AttachVolume(ctx context.Context, input *ec2.AttachVolumeInput, natsConn *n
 
 	responseError, err := awserrors.ValidateErrorPayload(msg.Data)
 	if err != nil {
-		return output, errors.New(*responseError.Code)
+		return output, awserrors.ResponseErrorToError(responseError)
 	}
 
 	if err := json.Unmarshal(msg.Data, &output); err != nil {

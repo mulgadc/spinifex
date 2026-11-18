@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
 	"github.com/aws/aws-sdk-go/service/ecs"
 	ecsv1 "github.com/mulgadc/spinifex/contracts/ecs/v1"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -81,13 +82,18 @@ func TestService_CreateService_RejectsDaemonAndRegistries(t *testing.T) {
 		Cluster: aws.String("web"), ServiceName: aws.String("d"), TaskDefinition: aws.String("app"),
 		SchedulingStrategy: aws.String(SchedulingStrategyDaemon),
 	}, testAccountID)
-	require.Error(t, err)
+	assert.EqualError(t, err, "schedulingStrategy DAEMON is not supported.: InvalidParameterException")
 
 	_, err = svc.CreateService(context.Background(), &ecs.CreateServiceInput{
 		Cluster: aws.String("web"), ServiceName: aws.String("r"), TaskDefinition: aws.String("app"),
 		ServiceRegistries: []*ecs.ServiceRegistry{{RegistryArn: aws.String("arn:aws:servicediscovery:::service/x")}},
 	}, testAccountID)
-	require.Error(t, err)
+	assert.EqualError(t, err, "serviceRegistries are not supported.: InvalidParameterException")
+
+	_, err = svc.CreateService(context.Background(), &ecs.CreateServiceInput{
+		Cluster: aws.String("web"), TaskDefinition: aws.String("app"),
+	}, testAccountID)
+	assert.EqualError(t, err, "serviceName is required.: InvalidParameterException")
 }
 
 func TestService_CreateService_UnknownCluster(t *testing.T) {
@@ -158,12 +164,23 @@ func TestService_DeleteService_DrainsAndInactivates(t *testing.T) {
 		DesiredCount: aws.Int64(2),
 	}, testAccountID)
 	require.NoError(t, err)
+	var rec ServiceRecord
+	_, err = taskdefinition.GetJSON(t.Context(), kv, ServiceKey("web", "web"), &rec)
+	require.NoError(t, err)
+	rec.Deployments[0].RunningCount = 2
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, ServiceKey("web", "web"), &rec))
 
 	out, err := svc.DeleteService(context.Background(), &ecs.DeleteServiceInput{
-		Cluster: aws.String("web"), Service: aws.String("web"),
+		Cluster: aws.String("web"), Service: aws.String("web"), Force: aws.Bool(true),
 	}, testAccountID)
 	require.NoError(t, err)
 	assert.Equal(t, ServiceStatusInactive, aws.StringValue(out.Service.Status))
+	require.NotEmpty(t, out.Service.Deployments)
+	for _, d := range out.Service.Deployments {
+		assert.Zero(t, aws.Int64Value(d.DesiredCount), "deployment desiredCount")
+		assert.Zero(t, aws.Int64Value(d.RunningCount), "deployment runningCount")
+		assert.Zero(t, aws.Int64Value(d.PendingCount), "deployment pendingCount")
+	}
 
 	live, err := svc.listServiceTasks(t.Context(), kv, "web", "web")
 	require.NoError(t, err)
@@ -178,6 +195,81 @@ func TestService_DeleteService_DrainsAndInactivates(t *testing.T) {
 	require.NoError(t, dropRevisit(svc.reconcileAllServices)(t.Context()))
 	live, _ = svc.listServiceTasks(t.Context(), kv, "web", "web")
 	assert.Empty(t, live)
+}
+
+// A deleted service is still known, so UpdateService answers not-active;
+// only a name that never existed answers not-found.
+func TestService_UpdateService_DeletedAndUnknown(t *testing.T) {
+	svc, _, _ := serviceTestRig(t)
+	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
+		Cluster: aws.String("web"), ServiceName: aws.String("web"), TaskDefinition: aws.String("app"),
+		DesiredCount: aws.Int64(0),
+	}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.DeleteService(context.Background(), &ecs.DeleteServiceInput{
+		Cluster: aws.String("web"), Service: aws.String("web"),
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.UpdateService(context.Background(), &ecs.UpdateServiceInput{
+		Cluster: aws.String("web"), Service: aws.String("web"), DesiredCount: aws.Int64(1),
+	}, testAccountID)
+	assert.EqualError(t, err, awserrors.ErrorECSServiceNotActive)
+
+	_, err = svc.UpdateService(context.Background(), &ecs.UpdateServiceInput{
+		Cluster: aws.String("web"), Service: aws.String("ghost"), DesiredCount: aws.Int64(1),
+	}, testAccountID)
+	assert.EqualError(t, err, awserrors.ErrorECSServiceNotFound)
+}
+
+// A DeleteService without force on a service scaled above 0 is refused and
+// stops none of the customer's tasks, as AWS refuses it.
+// Verifies: ADR-0003:S7.
+func TestS7_DeleteServiceWithoutForceLeavesAScaledServiceRunning(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+	_, err := svc.CreateService(context.Background(), &ecs.CreateServiceInput{
+		Cluster: aws.String("web"), ServiceName: aws.String("web"), TaskDefinition: aws.String("app"),
+		DesiredCount: aws.Int64(2),
+	}, testAccountID)
+	require.NoError(t, err)
+	before, err := svc.listServiceTasks(t.Context(), kv, "web", "web")
+	require.NoError(t, err)
+	require.Len(t, before, 2)
+
+	_, err = svc.DeleteService(context.Background(), &ecs.DeleteServiceInput{
+		Cluster: aws.String("web"), Service: aws.String("web"), Force: aws.Bool(false),
+	}, testAccountID)
+	require.EqualError(t, err, "The service cannot be stopped while it is scaled above 0.: InvalidParameterException")
+
+	after, err := svc.listServiceTasks(t.Context(), kv, "web", "web")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, taskIDs(before), taskIDs(after), "no task may be stopped")
+	desc, err := svc.DescribeServices(context.Background(), &ecs.DescribeServicesInput{
+		Cluster: aws.String("web"), Services: []*string{aws.String("web")},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, desc.Services, 1)
+	assert.Equal(t, ServiceStatusActive, aws.StringValue(desc.Services[0].Status))
+	assert.Equal(t, int64(2), aws.Int64Value(desc.Services[0].DesiredCount))
+
+	// Scaled to 0, the same call without force succeeds.
+	_, err = svc.UpdateService(context.Background(), &ecs.UpdateServiceInput{
+		Cluster: aws.String("web"), Service: aws.String("web"), DesiredCount: aws.Int64(0),
+	}, testAccountID)
+	require.NoError(t, err)
+	out, err := svc.DeleteService(context.Background(), &ecs.DeleteServiceInput{
+		Cluster: aws.String("web"), Service: aws.String("web"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, ServiceStatusInactive, aws.StringValue(out.Service.Status))
+}
+
+func taskIDs(tasks []TaskRecord) []string {
+	ids := make([]string, 0, len(tasks))
+	for i := range tasks {
+		ids = append(ids, tasks[i].TaskID)
+	}
+	return ids
 }
 
 func TestService_DescribeAndList(t *testing.T) {
@@ -505,10 +597,63 @@ func TestService_StopTask_StopsAndDeregisters(t *testing.T) {
 	assert.Len(t, reg.deregistered, 1)
 }
 
+// StopTask records AWS's stop fields when it accepts the stop, and they survive
+// both agent reports: the exit-wait report carrying the exit code and the stop
+// reap's report that carries none.
+func TestService_StopTask_RecordsStopFieldsAndExitCode(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+	task := &TaskRecord{
+		TaskID: "t-5", Cluster: "web", ContainerInstanceID: "i-1",
+		LastStatus: TaskStatusRunning, DesiredStatus: TaskStatusRunning,
+		Tags:       map[string]string{"env": "prod"},
+		Containers: []ContainerState{{Name: "app", Status: TaskStatusRunning}},
+	}
+	require.NoError(t, taskdefinition.PutJSON(t.Context(), kv, TaskKey("web", "t-5"), task))
+
+	out, err := svc.StopTask(t.Context(), &ecs.StopTaskInput{
+		Cluster: aws.String("web"), Task: aws.String("t-5"), Reason: aws.String("bye"),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, "bye", aws.StringValue(out.Task.StoppedReason))
+	assert.Equal(t, ecs.TaskStopCodeUserInitiated, aws.StringValue(out.Task.StopCode))
+	require.NotNil(t, out.Task.StoppingAt)
+	stoppingAt := *out.Task.StoppingAt
+	assert.Nil(t, out.Task.ExecutionStoppedAt)
+	assert.NotNil(t, out.Task.Tags)
+	assert.Empty(t, out.Task.Tags)
+
+	exit := 0
+	require.NoError(t, svc.recordTaskState(t.Context(), &ecsv1.TaskState{
+		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: "t-5",
+		LastStatus: ecsv1.TaskStatusStopped, Reason: "container app exited (0)",
+		Containers: []ecsv1.ContainerStatus{{Name: "app", Status: ecsv1.TaskStatusStopped, ExitCode: &exit}},
+	}))
+	require.NoError(t, svc.recordTaskState(t.Context(), &ecsv1.TaskState{
+		AccountID: testAccountID, ClusterName: "web", InstanceID: "i-1", TaskID: "t-5",
+		LastStatus: ecsv1.TaskStatusStopped, Reason: "bye",
+		Containers: []ecsv1.ContainerStatus{{Name: "app", Status: ecsv1.TaskStatusStopped}},
+	}))
+
+	dt, err := svc.DescribeTasks(t.Context(), &ecs.DescribeTasksInput{
+		Cluster: aws.String("web"), Tasks: []*string{aws.String("t-5")},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, dt.Tasks, 1)
+	got := dt.Tasks[0]
+	assert.Equal(t, "bye", aws.StringValue(got.StoppedReason))
+	assert.Equal(t, ecs.TaskStopCodeUserInitiated, aws.StringValue(got.StopCode))
+	assert.Equal(t, stoppingAt, aws.TimeValue(got.StoppingAt))
+	require.NotNil(t, got.ExecutionStoppedAt)
+	assert.False(t, got.ExecutionStoppedAt.Before(stoppingAt))
+	require.Len(t, got.Containers, 1)
+	assert.Equal(t, int64(0), aws.Int64Value(got.Containers[0].ExitCode))
+	assert.NotNil(t, got.Containers[0].ExitCode)
+}
+
 func TestService_StopTask_NotFound(t *testing.T) {
 	svc, _, _ := serviceTestRig(t)
 	_, err := svc.StopTask(context.Background(), &ecs.StopTaskInput{Cluster: aws.String("web"), Task: aws.String("ghost")}, testAccountID)
-	require.Error(t, err)
+	assert.EqualError(t, err, "The referenced task was not found.: InvalidParameterException")
 }
 
 // StopTask on a never-placed task (no container instance) force-stops it directly:
@@ -567,4 +712,62 @@ func TestService_TargetGroup_RegisterOnRunningDeregisterOnStopped(t *testing.T) 
 		TaskID: "t-1", LastStatus: ecsv1.TaskStatusStopped,
 	}))
 	assert.Equal(t, []string{key(tgARN, "10.0.1.5", 80)}, reg.deregistered)
+}
+
+func TestService_CreateService_RepeatWithDifferentParametersRefused(t *testing.T) {
+	cases := map[string]func(*ecs.CreateServiceInput){
+		"desiredCount":   func(in *ecs.CreateServiceInput) { in.DesiredCount = aws.Int64(3) },
+		"taskDefinition": func(in *ecs.CreateServiceInput) { in.TaskDefinition = aws.String("other") },
+		"tags":           func(in *ecs.CreateServiceInput) { in.Tags = nil },
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			svc, _, kv := serviceTestRig(t)
+			registerTaskDef(t, svc, "other", 128, 256)
+			input := func() *ecs.CreateServiceInput {
+				return &ecs.CreateServiceInput{
+					Cluster: aws.String("web"), ServiceName: aws.String("s"), TaskDefinition: aws.String("app"),
+					DesiredCount: aws.Int64(1), ClientToken: aws.String("tok-1"),
+					Tags: []*ecs.Tag{{Key: aws.String("env"), Value: aws.String("prod")}},
+				}
+			}
+			_, err := svc.CreateService(t.Context(), input(), testAccountID)
+			require.NoError(t, err)
+			var before ServiceRecord
+			_, err = taskdefinition.GetJSON(t.Context(), kv, ServiceKey("web", "s"), &before)
+			require.NoError(t, err)
+
+			repeat := input()
+			change(repeat)
+			_, err = svc.CreateService(t.Context(), repeat, testAccountID)
+			assert.EqualError(t, err, "Creation of service was not idempotent.: InvalidParameterException")
+
+			var after ServiceRecord
+			_, err = taskdefinition.GetJSON(t.Context(), kv, ServiceKey("web", "s"), &after)
+			require.NoError(t, err)
+			assert.Equal(t, before, after)
+		})
+	}
+}
+
+func TestService_CreateService_SameTokenAndParametersReplays(t *testing.T) {
+	svc, _, kv := serviceTestRig(t)
+	input := &ecs.CreateServiceInput{
+		Cluster: aws.String("web"), ServiceName: aws.String("s"), TaskDefinition: aws.String("app"),
+		DesiredCount: aws.Int64(1), ClientToken: aws.String("tok-1"),
+	}
+	first, err := svc.CreateService(t.Context(), input, testAccountID)
+	require.NoError(t, err)
+
+	again, err := svc.CreateService(t.Context(), input, testAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, aws.StringValue(first.Service.ServiceArn), aws.StringValue(again.Service.ServiceArn))
+	tasks, err := svc.listServiceTasks(t.Context(), kv, "web", "s")
+	require.NoError(t, err)
+	assert.Len(t, tasks, 1, "a replay launches no further tasks")
+
+	// The same parameters under another token are a different request.
+	input.ClientToken = aws.String("tok-2")
+	_, err = svc.CreateService(t.Context(), input, testAccountID)
+	assert.EqualError(t, err, "Creation of service was not idempotent.: InvalidParameterException")
 }

@@ -26,6 +26,7 @@ func evictableRecord(modelID string, lastActive time.Time) EndpointRecord {
 }
 
 func TestSelectEvictable_PicksLeastRecentlyUsed(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	recs := []EndpointRecord{
 		evictableRecord("recent", now.Add(-time.Minute)),
@@ -43,6 +44,7 @@ func TestSelectEvictable_PicksLeastRecentlyUsed(t *testing.T) {
 // endpoint sorts last rather than first — the opposite would evict the one
 // thing that just launched.
 func TestSelectEvictable_UnsampledRecordFallsBackToReadyAt(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	fresh := EndpointRecord{ModelID: "fresh", State: StateReady, NodeID: testNodeID, ReadyAt: now.Add(-10 * time.Minute)}
 	old := EndpointRecord{ModelID: "old", State: StateReady, NodeID: testNodeID, ReadyAt: now.Add(-3 * time.Hour)}
@@ -54,6 +56,7 @@ func TestSelectEvictable_UnsampledRecordFallsBackToReadyAt(t *testing.T) {
 }
 
 func TestSelectEvictable_Exclusions(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	stale := now.Add(-time.Hour)
 
@@ -84,6 +87,7 @@ func TestSelectEvictable_Exclusions(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			_, found := selectEvictable([]EndpointRecord{tt.rec}, testNodeID, 5*time.Minute, now)
 			assert.False(t, found)
 		})
@@ -110,6 +114,7 @@ func (f *freeingGPU) Snapshot() []gpu.PoolEntry {
 // The case that is impossible without eviction: the only GPU is held by a
 // model nobody is calling, and every launch that needs it is refused forever.
 func TestEnsure_EvictsIdleEndpointToMakeRoom(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, 200, &freeingGPU{launcher: h.launcher})
 	seedReadyEndpoint(t, s, "other.model-v1:0", time.Now().UTC().Add(-time.Hour))
@@ -132,6 +137,7 @@ func TestEnsure_EvictsIdleEndpointToMakeRoom(t *testing.T) {
 // Capacity contention breaches no quota, so the refusal that comes back is
 // the retryable one, never ServiceQuotaExceededException.
 func TestEnsure_NothingEvictableKeepsModelNotReady(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, 200, exhaustedGPU())
 	// The only other endpoint is pinned, so nothing may be given up.
@@ -150,6 +156,7 @@ func TestEnsure_NothingEvictableKeepsModelNotReady(t *testing.T) {
 // An endpoint still inside minResidency is not a candidate, so a refusal
 // stands rather than two models trading the device on every call.
 func TestEnsure_MinResidencyProtectsAFreshEndpoint(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, 200, exhaustedGPU())
 	seedReadyEndpoint(t, s, "other.model-v1:0", time.Now().UTC())
@@ -164,6 +171,7 @@ func TestEnsure_MinResidencyProtectsAFreshEndpoint(t *testing.T) {
 // The requester's own endpoint is never the victim: stopping it to launch it
 // again is a no-op at best.
 func TestEvictForCapacity_NeverEvictsTheRequester(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, 200, exhaustedGPU())
 	seedReadyEndpoint(t, s, testModelID, time.Now().UTC().Add(-time.Hour))
@@ -178,6 +186,7 @@ func TestEvictForCapacity_NeverEvictsTheRequester(t *testing.T) {
 // still be invisible to selectEvictable, while an identical unpinned one is
 // picked.
 func TestSelectEvictable_SkipsRecordCreatedPinnedViaEnsure(t *testing.T) {
+	t.Parallel()
 	h := newLaunchHarness()
 	s, _ := newTestService(t, h, http.StatusOK, sufficientGPU())
 

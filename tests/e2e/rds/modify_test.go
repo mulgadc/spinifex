@@ -136,6 +136,51 @@ func TestModifyStorageAndClass(t *testing.T) {
 		assertGrowEventRecorded(t, f, id)
 	})
 
+	// Grow-only, and refused before the instance leaves available: a rejected
+	// resize must never stop a running database. Above the floor, so it is the
+	// grow-only rule that refuses it.
+	t.Run("AShrinkIsRefusedAndLeavesTheInstanceAvailable", func(t *testing.T) {
+		harness.ExpectError(t, "InvalidParameterCombination", func() error {
+			_, err := f.AWS.RDS.ModifyDBInstance(&rds.ModifyDBInstanceInput{
+				DBInstanceIdentifier: aws.String(id),
+				AllocatedStorage:     aws.Int64(grownStorageGiB - 5),
+				ApplyImmediately:     aws.Bool(true),
+			})
+			return err
+		})
+		instance, err := harness.DescribeDBInstance(f.AWS, id)
+		require.NoError(t, err)
+		assert.Equal(t, harness.DBInstanceAvailable, aws.StringValue(instance.DBInstanceStatus))
+		assert.Equal(t, int64(grownStorageGiB), aws.Int64Value(instance.AllocatedStorage))
+	})
+
+	// Accepted inert parameters are echoed so Terraform does not plan changes no
+	// modify can deliver. Set and then cleared, so an explicit false or zero that
+	// a modify ignored would show.
+	t.Run("InertParametersAreAcceptedAndEchoed", func(t *testing.T) {
+		for _, want := range []struct {
+			on       bool
+			interval int64
+		}{{true, 60}, {false, 0}} {
+			out, err := f.AWS.RDS.ModifyDBInstance(&rds.ModifyDBInstanceInput{
+				DBInstanceIdentifier:      aws.String(id),
+				EnablePerformanceInsights: aws.Bool(want.on),
+				MonitoringInterval:        aws.Int64(want.interval),
+				CopyTagsToSnapshot:        aws.Bool(want.on),
+			})
+			require.NoError(t, err, "modify-db-instance inert parameters to %v", want.on)
+			described, err := harness.DescribeDBInstance(f.AWS, id)
+			require.NoError(t, err)
+			for _, instance := range []*rds.DBInstance{out.DBInstance, described} {
+				require.NotNil(t, instance)
+				assert.Equal(t, harness.DBInstanceAvailable, aws.StringValue(instance.DBInstanceStatus))
+				assert.Equal(t, want.on, aws.BoolValue(instance.PerformanceInsightsEnabled))
+				assert.Equal(t, want.interval, aws.Int64Value(instance.MonitoringInterval))
+				assert.Equal(t, want.on, aws.BoolValue(instance.CopyTagsToSnapshot))
+			}
+		}
+	})
+
 	// The class moves, which replaces the VM, and the
 	// size-derived defaults have to be re-resolved against the class the instance is
 	// becoming. The endpoint is kept through it — the data volume and the customer

@@ -43,6 +43,7 @@ func TestDetectHostVirtStack(t *testing.T) {
 // TestPackageOwning_DistroFirmware resolves the package of a file the host's
 // package manager does own, when there is one to ask.
 func TestPackageOwning_DistroFirmware(t *testing.T) {
+	t.Parallel()
 	const path = "/bin/sh"
 	if runHostProbe("dpkg-query", "-S", path) == "" && runHostProbe("rpm", "-qf", path) == "" {
 		t.Skip("no package manager owns /bin/sh on this host")

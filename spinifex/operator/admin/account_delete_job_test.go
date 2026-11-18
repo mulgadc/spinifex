@@ -152,7 +152,15 @@ func newDeleteAccountGateway(t *testing.T) Deps {
 		PlatformCleaner: &panicCleaner{},
 		ComputeCleaner:  emptyCompute{},
 		StorageCleaner:  emptyStorage{},
+		teardownOptions: []accountteardown.ClusterOption{shortTeardownWaits},
 	}
+}
+
+// shortTeardownWaits keeps the stage drain poll and convergence backoff from
+// stretching every teardown here by seconds of sleep.
+func shortTeardownWaits(e *accountteardown.Engine) {
+	e.Timeouts.DrainPoll = 10 * time.Millisecond
+	e.Converge.MinBackoff = 10 * time.Millisecond
 }
 
 // emptyBucketStore stands in for predastore: the tenant owns no buckets, so
@@ -288,7 +296,7 @@ func TestAdminDeleteAccountReturnsBeforeTheTeardownFinishes(t *testing.T) {
 	assert.NotEmpty(t, response.DeletionID)
 	assert.Equal(t, account.AccountID, response.AccountID)
 	assert.Equal(t, operatorv1.DeletionStateRunning, response.State)
-	// Parallel only once the teardown is running, so its drain poll overlaps the serial tests.
+	// Parallel only once the teardown is running, so it overlaps the serial tests.
 	t.Parallel()
 
 	// Progress is polled, so the record has to reach a terminal state on its own.
@@ -316,7 +324,7 @@ func TestAdminDeleteAccountReplaysAfterTheAccountIsGone(t *testing.T) {
 	first, err := gw.deleteAccount(t.Context(), body)
 	require.NoError(t, err)
 	started := first.(*DeleteAccountResponse)
-	// Parallel only once the teardown is running, so its drain poll overlaps the serial tests.
+	// Parallel only once the teardown is running, so it overlaps the serial tests.
 	t.Parallel()
 
 	require.Eventually(t, func() bool {
@@ -667,7 +675,6 @@ func (b *blockedCompute) ComputeRemaining(_ context.Context, accountID string) (
 // A job that ends FAILED naming a blocker the loop cannot clear keeps the
 // account, and an operator rerun after the blocker clears converges it.
 func TestAdminDeleteAccountFailedJobConvergesOnOperatorRerun(t *testing.T) {
-	t.Parallel()
 	gw := newDeleteAccountGateway(t)
 	compute := &blockedCompute{}
 	compute.blocked.Store(true)
@@ -677,9 +684,12 @@ func TestAdminDeleteAccountFailedJobConvergesOnOperatorRerun(t *testing.T) {
 	_, err := gw.deleteAccount(t.Context(),
 		deleteAccountBody(t, account.AccountID, "tenant@example.com", strings.Repeat("a", 32)))
 	require.NoError(t, err)
+	// Parallel only once the teardown is running, so it overlaps the serial tests.
+	t.Parallel()
+
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateFailed
-	}, 60*time.Second, 50*time.Millisecond)
+	}, 60*time.Second, 10*time.Millisecond)
 	failed := describeDeletion(t, gw, account.AccountID)
 	assert.NotEmpty(t, failed.Error)
 	_, stillThere := gw.IAM.GetAccount(account.AccountID)
@@ -691,5 +701,5 @@ func TestAdminDeleteAccountFailedJobConvergesOnOperatorRerun(t *testing.T) {
 	require.NoError(t, err)
 	require.Eventually(t, func() bool {
 		return describeDeletion(t, gw, account.AccountID).State == operatorv1.DeletionStateCompleted
-	}, 60*time.Second, 50*time.Millisecond)
+	}, 60*time.Second, 10*time.Millisecond)
 }

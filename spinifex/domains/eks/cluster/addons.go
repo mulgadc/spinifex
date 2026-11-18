@@ -34,7 +34,11 @@ func (s *EKSServiceImpl) ListAddons(ctx context.Context, input *eks.ListAddonsIn
 	for _, rec := range recs {
 		names = append(names, rec.AddonName)
 	}
-	return &eks.ListAddonsOutput{Addons: aws.StringSlice(names)}, nil
+	page, next, err := pageEKSList(names, func(n string) string { return n }, input.MaxResults, input.NextToken)
+	if err != nil {
+		return nil, err
+	}
+	return &eks.ListAddonsOutput{Addons: aws.StringSlice(page), NextToken: next}, nil
 }
 
 // DescribeAddonVersions returns the add-on catalogue filtered by name, owner,
@@ -101,6 +105,28 @@ func pageAddons(specs []addon.Spec, maxResults *int64, token *string) ([]addon.S
 	return page, &next, nil
 }
 
+// maxListPage is the default and ceiling of a list call's maxResults; an
+// out-of-range value is clamped to it rather than refused.
+const maxListPage = 100
+
+// pageEKSList returns the page of items a list call's maxResults and nextToken
+// select, sorted by key, and the token for the next page or nil on the last.
+func pageEKSList[T any](items []T, key func(T) string, maxResults *int64, token *string) ([]T, *string, error) {
+	from, err := decodeEKSToken(token)
+	if err != nil {
+		return nil, nil, err
+	}
+	limit := int(aws.Int64Value(maxResults))
+	if limit <= 0 || limit > maxListPage {
+		limit = maxListPage
+	}
+	page, next := paging.Page(items, key, paging.Request{Limit: limit, From: from})
+	if next == "" {
+		return page, nil, nil
+	}
+	return page, &next, nil
+}
+
 // decodeEKSToken returns the key a nextToken resumes at, rejecting any token
 // this service did not issue.
 func decodeEKSToken(token *string) (string, error) {
@@ -141,7 +167,7 @@ func (s *EKSServiceImpl) CreateAddon(ctx context.Context, input *eks.CreateAddon
 	}
 	spec, ok := addon.Lookup(addonName)
 	if !ok {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
+		return nil, s.addonNotSupported(ctx, accountID, cluster, addonName)
 	}
 	version := spec.DefaultVersion
 	if requested := aws.StringValue(input.AddonVersion); requested != "" {
@@ -169,6 +195,24 @@ func (s *EKSServiceImpl) CreateAddon(ctx context.Context, input *eks.CreateAddon
 		return nil, err
 	}
 	return &eks.CreateAddonOutput{Addon: addonRecordToAWS(cluster, rec)}, nil
+}
+
+// addonNotSupported is AWS's refusal of an add-on the catalogue lacks, naming
+// the cluster's Kubernetes version; a missing cluster is reported first.
+func (s *EKSServiceImpl) addonNotSupported(ctx context.Context, accountID, cluster, addonName string) error {
+	acctKV, err := s.acctKVForCluster(ctx, accountID, cluster)
+	if err != nil {
+		return err
+	}
+	meta, err := GetClusterMeta(ctx, acctKV, cluster)
+	if err != nil {
+		if errors.Is(err, ErrClusterNotFound) {
+			return clusterNotFound(cluster)
+		}
+		return err
+	}
+	return awserrors.Errorf(awserrors.ErrorEKSInvalidParameter,
+		"Addon %s specified is not supported in %s kubernetes version", addonName, meta.Version)
 }
 
 // ListStagedAddonManifestsInput names the cluster whose staged add-on manifests
@@ -225,7 +269,7 @@ func (s *EKSServiceImpl) DescribeAddon(ctx context.Context, input *eks.DescribeA
 	rec, err := addon.Get(ctx, acctKV, cluster, addonName)
 	if err != nil {
 		if errors.Is(err, addon.ErrNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			return nil, resourceNotFound()
 		}
 		return nil, err
 	}
@@ -267,7 +311,7 @@ func (s *EKSServiceImpl) UpdateAddon(ctx context.Context, input *eks.UpdateAddon
 	})
 	if err != nil {
 		if errors.Is(err, addon.ErrNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			return nil, resourceNotFound()
 		}
 		return nil, err
 	}
@@ -293,7 +337,7 @@ func (s *EKSServiceImpl) DeleteAddon(ctx context.Context, input *eks.DeleteAddon
 	rec, err := s.addons().Delete(ctx, acctKV, accountID, cluster, addonName)
 	if err != nil {
 		if errors.Is(err, addon.ErrNotFound) {
-			return nil, errors.New(awserrors.ErrorEKSResourceNotFound)
+			return nil, resourceNotFound()
 		}
 		return nil, err
 	}

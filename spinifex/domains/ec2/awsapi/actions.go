@@ -29,6 +29,7 @@ import (
 	ec2tagsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/tags"
 	ec2volumeapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/volume"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
+	ec2vpcpeeringapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpcpeering"
 	ec2zoneapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/zone"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsxml "github.com/mulgadc/spinifex/spinifex/foundation/aws/xml"
@@ -103,16 +104,28 @@ func ec2Handler[In any](handler func(ctx context.Context, input *In, c *call, ac
 // ec2ListsAsSet names the list fields AWS omits when empty instead of
 // rendering them. Each is rendered as its handler set it, so nil omits it.
 var ec2ListsAsSet = map[reflect.Type][]string{
-	reflect.TypeFor[ec2.CreateKeyPairOutput]():              {"Tags"},
-	reflect.TypeFor[ec2.Image]():                            {"Tags", "ProductCodes"},
-	reflect.TypeFor[ec2.CreateSecurityGroupOutput]():        {"Tags"},
-	reflect.TypeFor[ec2.SecurityGroup]():                    {"Tags"},
-	reflect.TypeFor[ec2.SecurityGroupRule]():                {"Tags"},
-	reflect.TypeFor[ec2.RevokeSecurityGroupIngressOutput](): {"UnknownIpPermissions"},
-	reflect.TypeFor[ec2.RevokeSecurityGroupEgressOutput]():  {"UnknownIpPermissions"},
-	reflect.TypeFor[ec2.NetworkInterface]():                 {"Ipv4Prefixes", "Ipv6Prefixes"},
-	reflect.TypeFor[ec2.Vpc]():                              {"Ipv6CidrBlockAssociationSet"},
-	reflect.TypeFor[ec2.Subnet]():                           {"Tags"},
+	reflect.TypeFor[ec2.CreateKeyPairOutput]():                     {"Tags"},
+	reflect.TypeFor[ec2.Image]():                                   {"Tags", "ProductCodes"},
+	reflect.TypeFor[ec2.CreateSecurityGroupOutput]():               {"Tags"},
+	reflect.TypeFor[ec2.SecurityGroup]():                           {"Tags"},
+	reflect.TypeFor[ec2.SecurityGroupRule]():                       {"Tags"},
+	reflect.TypeFor[ec2.RevokeSecurityGroupIngressOutput]():        {"UnknownIpPermissions"},
+	reflect.TypeFor[ec2.RevokeSecurityGroupEgressOutput]():         {"UnknownIpPermissions"},
+	reflect.TypeFor[ec2.NetworkInterface]():                        {"Ipv4Prefixes", "Ipv6Prefixes"},
+	reflect.TypeFor[ec2.Vpc]():                                     {"Ipv6CidrBlockAssociationSet"},
+	reflect.TypeFor[ec2.Subnet]():                                  {"Tags"},
+	reflect.TypeFor[ec2.InstanceStatusSummary]():                   {"Details"},
+	reflect.TypeFor[ec2.Instance]():                                {"ElasticGpuAssociations", "ElasticInferenceAcceleratorAssociations", "Licenses"},
+	reflect.TypeFor[ec2.InstanceNetworkInterface]():                {"Ipv4Prefixes", "Ipv6Prefixes"},
+	reflect.TypeFor[ec2.DescribeInstanceAttributeOutput]():         {"BlockDeviceMappings", "Groups", "ProductCodes"},
+	reflect.TypeFor[ec2.DescribeImageAttributeOutput]():            {"BlockDeviceMappings", "LaunchPermissions", "ProductCodes"},
+	reflect.TypeFor[ec2.InstanceStatus]():                          {"Events"},
+	reflect.TypeFor[ec2.VolumeStatusItem]():                        {"AttachmentStatuses"},
+	reflect.TypeFor[ec2.Volume]():                                  {"Attachments"},
+	reflect.TypeFor[ec2.DescribeVolumeAttributeOutput]():           {"ProductCodes"},
+	reflect.TypeFor[ec2.DescribeSnapshotAttributeOutput]():         {"ProductCodes", "CreateVolumePermissions"},
+	reflect.TypeFor[ec2.DescribeNetworkInterfaceAttributeOutput](): {"Groups"},
+	reflect.TypeFor[ec2.VpcPeeringConnectionVpcInfo]():             {"CidrBlockSet", "Ipv6CidrBlockSet"},
 }
 
 // marshalEC2Response renders an EC2 handler's output into the action's XML
@@ -210,6 +223,9 @@ var ec2Actions = map[string]ec2Action{
 	"GetConsoleOutput": ec2Handler(func(ctx context.Context, input *ec2.GetConsoleOutputInput, c *call, accountID string) (any, error) {
 		return ec2instanceapi.GetConsoleOutput(ctx, input, c.NATS, accountID)
 	}),
+	"GetInstanceUefiData": ec2Handler(func(ctx context.Context, input *ec2.GetInstanceUefiDataInput, c *call, accountID string) (any, error) {
+		return ec2instanceapi.GetInstanceUefiData(ctx, input, c.NATS, c.NodeIDs, accountID)
+	}),
 	"GetPasswordData": ec2Handler(func(ctx context.Context, input *ec2.GetPasswordDataInput, c *call, accountID string) (any, error) {
 		return ec2instanceapi.GetPasswordData(ctx, input, c.NATS, accountID)
 	}),
@@ -236,11 +252,17 @@ var ec2Actions = map[string]ec2Action{
 	"DescribeInstanceAttribute": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceAttributeInput, c *call, accountID string) (any, error) {
 		return ec2instanceapi.DescribeInstanceAttribute(ctx, input, c.NATS, c.ActiveNodes(ctx), accountID)
 	}),
+	"ResetInstanceAttribute": ec2Handler(func(ctx context.Context, input *ec2.ResetInstanceAttributeInput, c *call, accountID string) (any, error) {
+		return ec2instanceapi.ResetInstanceAttribute(ctx, input, c.NATS, accountID)
+	}),
 	"ModifyInstanceMetadataOptions": ec2Handler(func(ctx context.Context, input *ec2.ModifyInstanceMetadataOptionsInput, c *call, accountID string) (any, error) {
 		return ec2instanceapi.ModifyInstanceMetadataOptions(ctx, input, c.NATS, accountID)
 	}),
 	"DescribeInstanceCreditSpecifications": ec2Handler(func(ctx context.Context, input *ec2.DescribeInstanceCreditSpecificationsInput, c *call, accountID string) (any, error) {
 		return ec2instanceapi.DescribeInstanceCreditSpecifications(input)
+	}),
+	"GetDefaultCreditSpecification": ec2Handler(func(ctx context.Context, input *ec2.GetDefaultCreditSpecificationInput, c *call, accountID string) (any, error) {
+		return ec2instanceapi.GetDefaultCreditSpecification(input)
 	}),
 	"CreateKeyPair": ec2Handler(func(ctx context.Context, input *ec2.CreateKeyPairInput, c *call, accountID string) (any, error) {
 		return ec2keyapi.CreateKeyPair(ctx, input, c.NATS, accountID)
@@ -286,6 +308,18 @@ var ec2Actions = map[string]ec2Action{
 	"ResetImageAttribute": ec2Handler(func(ctx context.Context, input *ec2.ResetImageAttributeInput, c *call, accountID string) (any, error) {
 		return ec2imageapi.ResetImageAttribute(ctx, input, c.NATS, accountID)
 	}),
+	"EnableImageDeregistrationProtection": ec2Handler(func(ctx context.Context, input *ec2.EnableImageDeregistrationProtectionInput, c *call, accountID string) (any, error) {
+		return ec2imageapi.EnableImageDeregistrationProtection(ctx, input, c.NATS, accountID)
+	}),
+	"DisableImageDeregistrationProtection": ec2Handler(func(ctx context.Context, input *ec2.DisableImageDeregistrationProtectionInput, c *call, accountID string) (any, error) {
+		return ec2imageapi.DisableImageDeregistrationProtection(ctx, input, c.NATS, accountID)
+	}),
+	"EnableImageDeprecation": ec2Handler(func(ctx context.Context, input *ec2.EnableImageDeprecationInput, c *call, accountID string) (any, error) {
+		return ec2imageapi.EnableImageDeprecation(ctx, input, c.NATS, accountID)
+	}),
+	"DisableImageDeprecation": ec2Handler(func(ctx context.Context, input *ec2.DisableImageDeprecationInput, c *call, accountID string) (any, error) {
+		return ec2imageapi.DisableImageDeprecation(ctx, input, c.NATS, accountID)
+	}),
 	"DescribeRegions": ec2Handler(func(ctx context.Context, input *ec2.DescribeRegionsInput, c *call, accountID string) (any, error) {
 		return ec2zoneapi.DescribeRegions(input, c.Region, c.Endpoint)
 	}),
@@ -316,6 +350,9 @@ var ec2Actions = map[string]ec2Action{
 	"AttachVolume": ec2Handler(func(ctx context.Context, input *ec2.AttachVolumeInput, c *call, accountID string) (any, error) {
 		return ec2volumeapi.AttachVolume(ctx, input, c.NATS, accountID)
 	}),
+	"DescribeVolumeAttribute": ec2Handler(func(ctx context.Context, input *ec2.DescribeVolumeAttributeInput, c *call, accountID string) (any, error) {
+		return ec2volumeapi.DescribeVolumeAttribute(ctx, input, c.NATS, accountID)
+	}),
 	"DescribeVolumeStatus": ec2Handler(func(ctx context.Context, input *ec2.DescribeVolumeStatusInput, c *call, accountID string) (any, error) {
 		return ec2volumeapi.DescribeVolumeStatus(ctx, input, c.NATS, accountID)
 	}),
@@ -329,6 +366,18 @@ var ec2Actions = map[string]ec2Action{
 		return ec2accountapi.DescribeAccountAttributes(input, func() (string, error) {
 			return defaultVPCID(ctx, c.NATS, accountID)
 		})
+	}),
+	"DescribeIdFormat": ec2Handler(func(ctx context.Context, input *ec2.DescribeIdFormatInput, c *call, accountID string) (any, error) {
+		return ec2accountapi.DescribeIdFormat(input)
+	}),
+	"DescribeIdentityIdFormat": ec2Handler(func(ctx context.Context, input *ec2.DescribeIdentityIdFormatInput, c *call, accountID string) (any, error) {
+		return ec2accountapi.DescribeIdentityIdFormat(input, accountID)
+	}),
+	"DescribeAggregateIdFormat": ec2Handler(func(ctx context.Context, input *ec2.DescribeAggregateIdFormatInput, c *call, accountID string) (any, error) {
+		return ec2accountapi.DescribeAggregateIdFormat(input)
+	}),
+	"DescribePrincipalIdFormat": ec2Handler(func(ctx context.Context, input *ec2.DescribePrincipalIdFormatInput, c *call, accountID string) (any, error) {
+		return ec2accountapi.DescribePrincipalIdFormat(input, accountID)
 	}),
 	"EnableEbsEncryptionByDefault": ec2Handler(func(ctx context.Context, input *ec2.EnableEbsEncryptionByDefaultInput, c *call, accountID string) (any, error) {
 		return ec2accountapi.EnableEbsEncryptionByDefault(ctx, input, c.NATS, accountID)
@@ -365,6 +414,9 @@ var ec2Actions = map[string]ec2Action{
 	}),
 	"DescribeSnapshots": ec2Handler(func(ctx context.Context, input *ec2.DescribeSnapshotsInput, c *call, accountID string) (any, error) {
 		return ec2snapshotapi.DescribeSnapshots(ctx, input, c.NATS, accountID)
+	}),
+	"DescribeSnapshotAttribute": ec2Handler(func(ctx context.Context, input *ec2.DescribeSnapshotAttributeInput, c *call, accountID string) (any, error) {
+		return ec2snapshotapi.DescribeSnapshotAttribute(ctx, input, c.NATS, accountID)
 	}),
 	"CopySnapshot": ec2Handler(func(ctx context.Context, input *ec2.CopySnapshotInput, c *call, accountID string) (any, error) {
 		return ec2snapshotapi.CopySnapshot(ctx, input, c.NATS, accountID)
@@ -521,8 +573,14 @@ var ec2Actions = map[string]ec2Action{
 	"DescribeNetworkInterfaces": ec2Handler(func(ctx context.Context, input *ec2.DescribeNetworkInterfacesInput, c *call, accountID string) (any, error) {
 		return ec2vpcapi.DescribeNetworkInterfaces(ctx, input, c.NATS, accountID)
 	}),
+	"DescribeNetworkInterfaceAttribute": ec2Handler(func(ctx context.Context, input *ec2.DescribeNetworkInterfaceAttributeInput, c *call, accountID string) (any, error) {
+		return ec2vpcapi.DescribeNetworkInterfaceAttribute(ctx, input, c.NATS, accountID)
+	}),
 	"ModifyNetworkInterfaceAttribute": ec2Handler(func(ctx context.Context, input *ec2.ModifyNetworkInterfaceAttributeInput, c *call, accountID string) (any, error) {
 		return ec2vpcapi.ModifyNetworkInterfaceAttribute(ctx, input, c.NATS, accountID)
+	}),
+	"ResetNetworkInterfaceAttribute": ec2Handler(func(ctx context.Context, input *ec2.ResetNetworkInterfaceAttributeInput, c *call, accountID string) (any, error) {
+		return ec2vpcapi.ResetNetworkInterfaceAttribute(ctx, input, c.NATS, accountID)
 	}),
 	"AttachNetworkInterface": ec2Handler(func(ctx context.Context, input *ec2.AttachNetworkInterfaceInput, c *call, accountID string) (any, error) {
 		return ec2vpcapi.AttachNetworkInterface(ctx, input, c.NATS, accountID)
@@ -596,6 +654,24 @@ var ec2Actions = map[string]ec2Action{
 	"DescribeNatGateways": ec2Handler(func(ctx context.Context, input *ec2.DescribeNatGatewaysInput, c *call, accountID string) (any, error) {
 		return ec2natgwapi.DescribeNatGateways(ctx, input, c.NATS, accountID)
 	}),
+	"CreateVpcPeeringConnection": ec2Handler(func(ctx context.Context, input *ec2.CreateVpcPeeringConnectionInput, c *call, accountID string) (any, error) {
+		return ec2vpcpeeringapi.CreateVpcPeeringConnection(ctx, input, c.NATS, accountID)
+	}),
+	"AcceptVpcPeeringConnection": ec2Handler(func(ctx context.Context, input *ec2.AcceptVpcPeeringConnectionInput, c *call, accountID string) (any, error) {
+		return ec2vpcpeeringapi.AcceptVpcPeeringConnection(ctx, input, c.NATS, accountID)
+	}),
+	"RejectVpcPeeringConnection": ec2Handler(func(ctx context.Context, input *ec2.RejectVpcPeeringConnectionInput, c *call, accountID string) (any, error) {
+		return ec2vpcpeeringapi.RejectVpcPeeringConnection(ctx, input, c.NATS, accountID)
+	}),
+	"DeleteVpcPeeringConnection": ec2Handler(func(ctx context.Context, input *ec2.DeleteVpcPeeringConnectionInput, c *call, accountID string) (any, error) {
+		return ec2vpcpeeringapi.DeleteVpcPeeringConnection(ctx, input, c.NATS, accountID)
+	}),
+	"DescribeVpcPeeringConnections": ec2Handler(func(ctx context.Context, input *ec2.DescribeVpcPeeringConnectionsInput, c *call, accountID string) (any, error) {
+		return ec2vpcpeeringapi.DescribeVpcPeeringConnections(ctx, input, c.NATS, accountID)
+	}),
+	"ModifyVpcPeeringConnectionOptions": ec2Handler(func(ctx context.Context, input *ec2.ModifyVpcPeeringConnectionOptionsInput, c *call, accountID string) (any, error) {
+		return ec2vpcpeeringapi.ModifyVpcPeeringConnectionOptions(ctx, input, c.NATS, accountID)
+	}),
 }
 
 // defaultVPCID returns the ID of accountID's default VPC, or "" when it has
@@ -622,6 +698,10 @@ var ec2LocalActions = map[string]bool{
 	"DescribeRegions":           true,
 	"DescribeAvailabilityZones": true,
 	"DescribeAccountAttributes": true,
+	"DescribeIdFormat":          true,
+	"DescribeIdentityIdFormat":  true,
+	"DescribeAggregateIdFormat": true,
+	"DescribePrincipalIdFormat": true,
 }
 
 // dryRunRequested reports whether a parsed EC2 input carries DryRun=true. Only

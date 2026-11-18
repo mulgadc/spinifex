@@ -26,6 +26,12 @@ type MemoryProvider struct {
 	// Zero takes the defaults; tests shorten them.
 	fenceNoticeTimeout time.Duration
 	fenceNoticeEvery   time.Duration
+
+	// Test-set CreateSnapshot behaviour; see AnswerSnapshotsPending and
+	// FailCreateSnapshotsAfterAccept.
+	snapshotsPending   bool
+	failAfterAccept    int
+	failAfterAcceptErr error
 }
 
 type memoryVolume struct {
@@ -58,7 +64,7 @@ func NewMemoryProvider(capabilities Capabilities) *MemoryProvider {
 }
 
 func (m *MemoryProvider) GetCapabilities(_ context.Context, req GetCapabilitiesRequest) (*GetCapabilitiesResponse, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	return &GetCapabilitiesResponse{
@@ -69,11 +75,10 @@ func (m *MemoryProvider) GetCapabilities(_ context.Context, req GetCapabilitiesR
 }
 
 func (m *MemoryProvider) CreateVolume(_ context.Context, req CreateVolumeRequest) (*Volume, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
-	if req.VolumeID == "" || req.CapacityRange.RequiredBytes <= 0 ||
-		(req.CapacityRange.LimitBytes > 0 && req.CapacityRange.RequiredBytes > req.CapacityRange.LimitBytes) {
+	if req.VolumeID == "" || !req.CapacityRange.Valid() {
 		return nil, fmt.Errorf("%w: invalid volume ID or capacity range", ErrInvalidArgument)
 	}
 	if req.SourceSnapshotID != "" && req.SourceSnapshotVolumeID == "" {
@@ -149,7 +154,7 @@ func (m *MemoryProvider) SeedData(volumeID string) ([]byte, bool) {
 }
 
 func (m *MemoryProvider) GetVolume(_ context.Context, req GetVolumeRequest) (*Volume, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if req.VolumeID == "" {
@@ -168,7 +173,7 @@ func (m *MemoryProvider) GetVolume(_ context.Context, req GetVolumeRequest) (*Vo
 // a token stays meaningful across calls. The token is the ID to resume after,
 // which keeps paging correct when volumes are created or deleted mid-walk.
 func (m *MemoryProvider) ListVolumes(_ context.Context, req ListVolumesRequest) (*ListVolumesResponse, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if !m.capabilities.VolumeEnumeration {
@@ -188,11 +193,10 @@ func (m *MemoryProvider) ListVolumes(_ context.Context, req ListVolumesRequest) 
 }
 
 func (m *MemoryProvider) ExpandVolume(_ context.Context, req ExpandVolumeRequest) (*Volume, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
-	if req.VolumeID == "" || req.CapacityRange.RequiredBytes <= 0 ||
-		(req.CapacityRange.LimitBytes > 0 && req.CapacityRange.RequiredBytes > req.CapacityRange.LimitBytes) {
+	if req.VolumeID == "" || !req.CapacityRange.Valid() {
 		return nil, fmt.Errorf("%w: invalid volume ID or capacity range", ErrInvalidArgument)
 	}
 	m.mu.Lock()
@@ -212,7 +216,7 @@ func (m *MemoryProvider) ExpandVolume(_ context.Context, req ExpandVolumeRequest
 }
 
 func (m *MemoryProvider) DeleteVolume(_ context.Context, req DeleteVolumeRequest) error {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return err
 	}
 	if req.VolumeID == "" {
@@ -235,7 +239,7 @@ func (m *MemoryProvider) DeleteVolume(_ context.Context, req DeleteVolumeRequest
 }
 
 func (m *MemoryProvider) CreateSnapshot(_ context.Context, req CreateSnapshotRequest) (*Snapshot, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if req.SnapshotID == "" || req.VolumeID == "" {
@@ -247,22 +251,78 @@ func (m *MemoryProvider) CreateSnapshot(_ context.Context, req CreateSnapshotReq
 		if existing.SourceVolumeID != req.VolumeID {
 			return nil, fmt.Errorf("%w: snapshot %s", ErrAlreadyExists, req.SnapshotID)
 		}
-		return cloneSnapshot(existing), nil
+		return m.answerAccepted(existing)
 	}
 	volume := m.volumes[req.VolumeID]
 	if volume == nil || (req.VolumeHandle != "" && req.VolumeHandle != volume.volume.Handle) {
 		return nil, fmt.Errorf("%w: volume %s", ErrNotFound, req.VolumeID)
+	}
+	state := SnapshotStateCompleted
+	if m.snapshotsPending {
+		state = SnapshotStatePending
 	}
 	snapshot := &Snapshot{
 		ID:             req.SnapshotID,
 		SourceVolumeID: req.VolumeID,
 		SizeBytes:      volume.volume.CapacityBytes,
 		CreatedAt:      m.now().UTC(),
-		State:          SnapshotStateCompleted,
+		State:          state,
 		Handle:         "memory://snapshot/" + req.SnapshotID,
 	}
 	m.snapshots[req.SnapshotID] = snapshot
+	return m.answerAccepted(snapshot)
+}
+
+// answerAccepted answers a CreateSnapshot that holds snapshot, or the failure
+// FailCreateSnapshotsAfterAccept owes. The caller holds the provider lock.
+func (m *MemoryProvider) answerAccepted(snapshot *Snapshot) (*Snapshot, error) {
+	if m.failAfterAccept > 0 {
+		m.failAfterAccept--
+		return nil, m.failAfterAcceptErr
+	}
 	return cloneSnapshot(snapshot), nil
+}
+
+// AnswerSnapshotsPending makes CreateSnapshot answer each new snapshot pending,
+// as a provider whose backup outlives the request does, until SettleSnapshot
+// settles it. False restores answering completed.
+func (m *MemoryProvider) AnswerSnapshotsPending(pending bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.snapshotsPending = pending
+}
+
+// FailCreateSnapshotsAfterAccept makes the next n CreateSnapshot calls that hold
+// their snapshot return err, a reply lost after acceptance. A nil err is
+// context.DeadlineExceeded; pass ErrUnavailable for the provider's own code.
+func (m *MemoryProvider) FailCreateSnapshotsAfterAccept(n int, err error) {
+	if err == nil {
+		err = context.DeadlineExceeded
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.failAfterAccept = n
+	m.failAfterAcceptErr = err
+}
+
+// SettleSnapshot moves a pending snapshot to state, completed or error, as the
+// provider finishing its backup does. It fails if the snapshot is absent or
+// already settled.
+func (m *MemoryProvider) SettleSnapshot(snapshotID string, state SnapshotState) error {
+	if state != SnapshotStateCompleted && state != SnapshotStateError {
+		return fmt.Errorf("%w: a snapshot settles to completed or error, not %q", ErrInvalidArgument, state)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	snapshot := m.snapshots[snapshotID]
+	if snapshot == nil {
+		return fmt.Errorf("%w: snapshot %s", ErrNotFound, snapshotID)
+	}
+	if snapshot.State != SnapshotStatePending {
+		return fmt.Errorf("%w: snapshot %s is already %s", ErrInvalidArgument, snapshotID, snapshot.State)
+	}
+	snapshot.State = state
+	return nil
 }
 
 // Snapshot reports what the provider holds under snapshotID, so a
@@ -279,7 +339,7 @@ func (m *MemoryProvider) Snapshot(snapshotID string) (*Snapshot, bool) {
 }
 
 func (m *MemoryProvider) DeleteSnapshot(_ context.Context, req DeleteSnapshotRequest) error {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return err
 	}
 	if req.SnapshotID == "" {
@@ -300,7 +360,7 @@ func (m *MemoryProvider) DeleteSnapshot(_ context.Context, req DeleteSnapshotReq
 // destination, an empty or equal ID pair, and a snapshot that does not
 // belong to VolumeID (the caller's claimed source volume).
 func (m *MemoryProvider) CopySnapshot(_ context.Context, req CopySnapshotRequest) (*Snapshot, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if req.SourceSnapshotID == "" || req.DestinationSnapshotID == "" || req.VolumeID == "" {
@@ -308,6 +368,9 @@ func (m *MemoryProvider) CopySnapshot(_ context.Context, req CopySnapshotRequest
 	}
 	if req.SourceSnapshotID == req.DestinationSnapshotID {
 		return nil, fmt.Errorf("%w: destination snapshot must differ from the source", ErrInvalidArgument)
+	}
+	if !m.capabilities.SnapshotCopy {
+		return nil, fmt.Errorf("%w: snapshot copy", ErrUnsupportedCapability)
 	}
 
 	m.mu.Lock()
@@ -339,8 +402,18 @@ func (m *MemoryProvider) CopySnapshot(_ context.Context, req CopySnapshotRequest
 // so a token stays meaningful across calls. The token is the ID to resume
 // after, which keeps paging correct when snapshots come and go mid-walk.
 func (m *MemoryProvider) ListSnapshots(_ context.Context, req ListSnapshotsRequest) (*ListSnapshotsResponse, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckListSnapshotsVersion(req); err != nil {
 		return nil, err
+	}
+	if req.SnapshotID != "" {
+		m.mu.RLock()
+		defer m.mu.RUnlock()
+		snapshot := m.snapshots[req.SnapshotID]
+		if snapshot == nil {
+			return FilteredSnapshots(req, nil), nil
+		}
+		ref := memorySnapshotRef(req.SchemaVersion, snapshot)
+		return FilteredSnapshots(req, &ref), nil
 	}
 	if !m.capabilities.SnapshotEnumeration {
 		return nil, fmt.Errorf("%w: snapshot enumeration", ErrUnsupportedCapability)
@@ -353,17 +426,24 @@ func (m *MemoryProvider) ListSnapshots(_ context.Context, req ListSnapshotsReque
 	response := &ListSnapshotsResponse{Versioned: ReplyVersioned(req.SchemaVersion)}
 	response.Snapshots, response.NextToken = Page(ids, req.StartingToken, int(req.PageSize()),
 		func(id string) SnapshotRef {
-			return SnapshotRef{
-				ID:             id,
-				SourceVolumeID: m.snapshots[id].SourceVolumeID,
-				Handle:         m.snapshots[id].Handle,
-			}
+			return memorySnapshotRef(req.SchemaVersion, m.snapshots[id])
 		})
 	return response, nil
 }
 
+// memorySnapshotRef is snapshot as a ref in a reply at version. The caller holds the
+// provider lock.
+func memorySnapshotRef(version uint16, snapshot *Snapshot) SnapshotRef {
+	return SnapshotRef{
+		ID:             snapshot.ID,
+		SourceVolumeID: snapshot.SourceVolumeID,
+		Handle:         snapshot.Handle,
+		State:          RefState(version, snapshot.State),
+	}
+}
+
 func (m *MemoryProvider) PublishVolume(_ context.Context, req PublishVolumeRequest) (*PublishedVolume, error) {
-	if err := checkVersion(req.SchemaVersion); err != nil {
+	if err := CheckVersion(req.SchemaVersion); err != nil {
 		return nil, err
 	}
 	if req.VolumeID == "" || req.NodeID == "" {

@@ -78,6 +78,13 @@ func (r *rdsInstanceReaper) Delete(ctx context.Context, accountID string, resour
 		DeletionProtection:   aws.Bool(false),
 		ApplyImmediately:     aws.Bool(true),
 	}, accountID); mErr != nil {
+		// A stopped instance refuses every modify, so start it and let a later
+		// pass clear the flag once it is available.
+		if resource.Detail == string(rdsinstance.StatusStopped) {
+			if _, sErr := r.svc.StartDBInstance(ctx, &rds.StartDBInstanceInput{DBInstanceIdentifier: aws.String(resource.ID)}, accountID); sErr != nil {
+				return ignoreAlreadyGone(sErr)
+			}
+		}
 		return ignoreAlreadyGone(mErr)
 	}
 	return r.deleteInstance(ctx, accountID, resource.ID)
@@ -95,7 +102,7 @@ func (r *rdsInstanceReaper) deleteInstance(ctx context.Context, accountID, id st
 // about. Every other invalid-state answer means the instance is busy, and
 // retrying the delete is what the drain loop already does.
 func isDeletionProtected(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "deletion protection is enabled")
+	return err != nil && strings.Contains(err.Error(), "deletion protection")
 }
 
 type rdsSubnetGroupReaper struct {

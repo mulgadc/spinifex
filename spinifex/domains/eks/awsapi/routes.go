@@ -74,7 +74,7 @@ var routes = []route{
 		}},
 	{Method: "GET", Pattern: "/clusters/{clusterName}/node-groups", Action: "ListNodegroups",
 		Handler: func(ctx context.Context, nc *nats.Conn, acct, callerARN string, p []string, b []byte) (any, error) {
-			return ListNodegroups(ctx, nc, acct, p[0])
+			return ListNodegroups(ctx, nc, acct, p[0], b)
 		}},
 	{Method: "POST", Pattern: "/clusters/{clusterName}/node-groups/{nodegroupName}/update-config", Action: "UpdateNodegroupConfig",
 		Handler: func(ctx context.Context, nc *nats.Conn, acct, callerARN string, p []string, b []byte) (any, error) {
@@ -96,7 +96,7 @@ var routes = []route{
 		}},
 	{Method: "GET", Pattern: "/clusters/{clusterName}/access-entries", Action: "ListAccessEntries",
 		Handler: func(ctx context.Context, nc *nats.Conn, acct, callerARN string, p []string, b []byte) (any, error) {
-			return ListAccessEntries(ctx, nc, acct, p[0])
+			return ListAccessEntries(ctx, nc, acct, p[0], b)
 		}},
 	{Method: "POST", Pattern: "/clusters/{clusterName}/access-entries/{principalArn}/access-policies", Action: "AssociateAccessPolicy",
 		Handler: func(ctx context.Context, nc *nats.Conn, acct, callerARN string, p []string, b []byte) (any, error) {
@@ -108,7 +108,7 @@ var routes = []route{
 		}},
 	{Method: "GET", Pattern: "/clusters/{clusterName}/access-entries/{principalArn}/access-policies", Action: "ListAssociatedAccessPolicies",
 		Handler: func(ctx context.Context, nc *nats.Conn, acct, callerARN string, p []string, b []byte) (any, error) {
-			return ListAssociatedAccessPolicies(ctx, nc, acct, p[0], p[1])
+			return ListAssociatedAccessPolicies(ctx, nc, acct, p[0], p[1], b)
 		}},
 	{Method: "GET", Pattern: "/clusters/{clusterName}/access-entries/{principalArn}", Action: "DescribeAccessEntry",
 		Handler: func(ctx context.Context, nc *nats.Conn, acct, callerARN string, p []string, b []byte) (any, error) {
@@ -124,7 +124,7 @@ var routes = []route{
 		}},
 	{Method: "GET", Pattern: "/access-policies", Action: "ListAccessPolicies",
 		Handler: func(ctx context.Context, nc *nats.Conn, acct, callerARN string, p []string, b []byte) (any, error) {
-			return ListAccessPolicies(ctx, nc, acct)
+			return ListAccessPolicies(ctx, nc, acct, b)
 		}},
 
 	// Addons
@@ -134,7 +134,7 @@ var routes = []route{
 		}},
 	{Method: "GET", Pattern: "/clusters/{clusterName}/addons", Action: "ListAddons",
 		Handler: func(ctx context.Context, nc *nats.Conn, acct, callerARN string, p []string, b []byte) (any, error) {
-			return ListAddons(ctx, nc, acct, p[0])
+			return ListAddons(ctx, nc, acct, p[0], b)
 		}},
 	{Method: "POST", Pattern: "/clusters/{clusterName}/addons", Action: "CreateAddon",
 		Handler: func(ctx context.Context, nc *nats.Conn, acct, callerARN string, p []string, b []byte) (any, error) {

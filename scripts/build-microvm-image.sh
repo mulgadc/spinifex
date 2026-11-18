@@ -321,12 +321,19 @@ echo "[build-microvm-image] building initramfs: $INITRAMFS_OUT"
 # Create the static device nodes and pack the archive inside a single fakeroot
 # session: mknod/cpio see faked device entries and write real char-device
 # records into the cpio, while the host filesystem never gets an actual node.
-fakeroot sh -c '
+# Pack to a .partial and list it before renaming, so a pack cut short (fakeroot
+# losing its daemon, a full disk) fails here and never leaves a stale archive.
+fakeroot bash -c '
+    set -euo pipefail
     cd "$1" || exit 1
     mknod -m 600 dev/console c 5 1
     mknod -m 666 dev/null    c 1 3
     find . | cpio --quiet -o -H newc | gzip -9 > "$2"
-' _ "$CHROOT_DIR" "$INITRAMFS_OUT"
+' _ "$CHROOT_DIR" "$INITRAMFS_OUT.partial" \
+    && gzip -t "$INITRAMFS_OUT.partial" \
+    && zcat "$INITRAMFS_OUT.partial" | cpio -t --quiet >/dev/null \
+    || { rm -f "$INITRAMFS_OUT.partial" "$INITRAMFS_OUT"; echo "ERROR: initramfs $INITRAMFS_OUT is incomplete or unreadable" >&2; exit 1; }
+mv -f "$INITRAMFS_OUT.partial" "$INITRAMFS_OUT"
 
 # --- Log artifact sizes ---
 echo ""

@@ -23,6 +23,7 @@ import (
 
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/guestmetadata"
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
+	ec2vpcpeering "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcpeering"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/dhcp"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external/floating"
@@ -62,7 +63,8 @@ func newFlowsBarrier(nbAddr string) func() error {
 }
 
 // waitForFlowsHV runs `ovn-nbctl --wait=hv sync`, blocking until all chassis acknowledge the new NB sequence.
-// Bounded at 30 s; overruns log a Warn and return nil. Declared as a var so tests can stub it.
+// Bounded at 30 s; an overrun or failure is returned so callers that need
+// confirmation can retry. Declared as a var so tests can stub it.
 var waitForFlowsHV = func(nbAddr string) error {
 	start := time.Now()
 	cmd := sudoCommand("ovn-nbctl",
@@ -73,12 +75,13 @@ var waitForFlowsHV = func(nbAddr string) error {
 		"sync",
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		slog.Warn("vpcd: OVN flows-ready barrier overran; continuing without confirmation",
+		output := strings.TrimSpace(string(out))
+		slog.Warn("vpcd: OVN flows-ready barrier failed; chassis have not confirmed",
 			"elapsed_ms", otelsetup.Millis(time.Since(start)),
 			"err", err,
-			"output", strings.TrimSpace(string(out)),
+			"output", output,
 		)
-		return nil
+		return fmt.Errorf("ovn-nbctl --wait=hv sync: %w: %s", err, output)
 	}
 	slog.Debug("vpcd: OVN flows-ready barrier complete", "elapsed_ms", otelsetup.Millis(time.Since(start)))
 	return nil
@@ -731,6 +734,11 @@ func launchService(cfg *Config) error {
 		}
 	}()
 
+	peeringStore, err := ec2vpcpeering.OpenStore(ctx, js)
+	if err != nil {
+		return fmt.Errorf("open VPC peering store: %w", err)
+	}
+
 	rec, err := reconcile.New(reconcile.Config{
 		OVN:            liveClient,
 		SG:             sgMgr,
@@ -765,6 +773,9 @@ func launchService(cfg *Config) error {
 			}
 			return ec2igw.MarkAttached(ctx, kv, recordKey, vpcID)
 		},
+		FlowsBarrier:       flowsBarrier,
+		MarkPeeringActive:  peeringStore.MarkActive,
+		MarkPeeringCleaned: peeringStore.MarkCleaned,
 	})
 	if err != nil {
 		return fmt.Errorf("construct reconciler: %w", err)

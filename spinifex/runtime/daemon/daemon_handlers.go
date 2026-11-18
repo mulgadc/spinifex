@@ -260,6 +260,13 @@ func (d *Daemon) dispatchEC2Command(msg *nats.Msg) (string, string) {
 	case command.Attributes.StartInstance:
 		opCtx, opSpan := startOpSpan(ctx, "ec2.StartInstance", instance.ID)
 		err := d.instanceService.StartInstance(opCtx, instance, command)
+		if errors.Is(err, ec2instance.ErrInstanceAlreadyRunning) {
+			endOpSpan(opSpan, nil)
+			if err := msg.Respond(fmt.Appendf(nil, `{"status":"running","previousStatus":"running","instanceId":"%s"}`, instance.ID)); err != nil {
+				slog.ErrorContext(ctx, "Failed to respond to NATS request", "err", err)
+			}
+			return name, outcomeSuccess
+		}
 		endOpSpan(opSpan, err)
 		if err != nil {
 			natsmsg.MarkSpanError(span, err)

@@ -22,7 +22,7 @@ import (
 const tracerName = "github.com/mulgadc/spinifex/spinifex/ebsprovider"
 
 // spanNamePrefix puts provider spans in the same namespace as the ebs.mount
-// and ebs.unmount spans the legacy path emits.
+// and ebs.unmount spans viperblockd's mount and unmount paths emit.
 const spanNamePrefix = "ebs."
 
 const (

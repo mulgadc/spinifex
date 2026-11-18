@@ -17,7 +17,6 @@ import (
 	awssdk "github.com/aws/aws-sdk-go/aws"
 	awss3 "github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mulgadc/bluebottle/pkg/safecast"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/mulgadc/spinifex/spinifex/providers/objectstore"
@@ -318,6 +317,9 @@ func handleProviderCapabilities(ctx context.Context, msg *nats.Msg) {
 			// without any control-plane metadata to consult.
 			VolumeEnumeration:   true,
 			SnapshotEnumeration: true,
+			// A copy writes its own snapshot config over the source's frozen
+			// blocks (see handleCopySnapshot).
+			SnapshotCopy: true,
 			// Every engine open takes a JetStream KV lease keyed by volume and
 			// the KV create is the compare-and-swap, so a second opener on any
 			// node is refused rather than racing. Losing the lease is logged
@@ -436,6 +438,14 @@ func handleListSnapshots(ctx context.Context, cfg *Config, msg *nats.Msg) {
 		respondProvider(ctx, msg, ebsprovider.ListSnapshotsResponse{Versioned: v, Error: unsupportedVersionError(req.SchemaVersion)})
 		return
 	}
+	if err := ebsprovider.CheckListSnapshotsVersion(req); err != nil {
+		respondProvider(ctx, msg, ebsprovider.ListSnapshotsResponse{Versioned: v, Error: &ebsprovider.ProviderError{Code: ebsprovider.ErrorCodeUnsupportedVersion, Message: err.Error()}})
+		return
+	}
+	if req.SnapshotID != "" {
+		respondFilteredSnapshot(ctx, cfg, msg, req)
+		return
+	}
 
 	ids, err := listSnapshotPrefixes(ctx, providerObjectStoreFactory(cfg), cfg.Bucket)
 	if err != nil {
@@ -447,9 +457,58 @@ func handleListSnapshots(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	response := ebsprovider.ListSnapshotsResponse{Versioned: v}
 	response.Snapshots, response.NextToken = ebsprovider.Page(ids, req.StartingToken, int(req.PageSize()),
 		func(id string) ebsprovider.SnapshotRef {
-			return ebsprovider.SnapshotRef{ID: id, Handle: snapshotHandle(id)}
+			return snapshotRef(req.SchemaVersion, id)
 		})
 	respondProvider(ctx, msg, response)
+}
+
+// respondFilteredSnapshot answers a ListSnapshots filtered on one ID. Only a
+// snapshot whose config is written is held: CreateSnapshot writes it last, so
+// a snapshot that failed part way is not reported.
+func respondFilteredSnapshot(ctx context.Context, cfg *Config, msg *nats.Msg, req ebsprovider.ListSnapshotsRequest) {
+	if !validVolumeName(req.SnapshotID) || !strings.HasPrefix(req.SnapshotID, snapshotIDPrefix) {
+		respondProvider(ctx, msg, ebsprovider.FilteredSnapshots(req, nil))
+		return
+	}
+	held, err := snapshotConfigStored(ctx, providerObjectStoreFactory(cfg), cfg.Bucket, req.SnapshotID)
+	if err != nil {
+		slog.Error("ebs.provider.snapshot.list: failed to look up snapshot", "snapshot", req.SnapshotID, "err", err)
+		respondProvider(ctx, msg, ebsprovider.ListSnapshotsResponse{Versioned: ebsprovider.ReplyVersioned(req.SchemaVersion), Error: internalError("look up snapshot: %v", err)})
+		return
+	}
+	if !held {
+		respondProvider(ctx, msg, ebsprovider.FilteredSnapshots(req, nil))
+		return
+	}
+	ref := snapshotRef(req.SchemaVersion, req.SnapshotID)
+	respondProvider(ctx, msg, ebsprovider.FilteredSnapshots(req, &ref))
+}
+
+// snapshotConfigStored reports whether bucket holds snapshotID's config. It
+// lists rather than heads the key, so absence is an empty page, not an error
+// whose code differs between object stores.
+func snapshotConfigStored(ctx context.Context, store objectstore.ObjectStore, bucket, snapshotID string) (bool, error) {
+	key := snapshotID + "/config.json"
+	out, err := store.ListObjectsV2(ctx, &awss3.ListObjectsV2Input{
+		Bucket:  awssdk.String(bucket),
+		Prefix:  awssdk.String(key),
+		MaxKeys: awssdk.Int64(1),
+	})
+	if err != nil {
+		return false, fmt.Errorf("list snapshot %s config: %w", snapshotID, err)
+	}
+	return len(out.Contents) > 0 && awssdk.StringValue(out.Contents[0].Key) == key, nil
+}
+
+// snapshotRef is snapshotID as a ref in a reply at version. SourceVolumeID is
+// left empty, and every snapshot is completed, because CreateSnapshot writes
+// it before the completion is published.
+func snapshotRef(version uint16, snapshotID string) ebsprovider.SnapshotRef {
+	return ebsprovider.SnapshotRef{
+		ID:     snapshotID,
+		Handle: snapshotHandle(snapshotID),
+		State:  ebsprovider.RefState(version, ebsprovider.SnapshotStateCompleted),
+	}
 }
 
 // buildProviderVBConfig assembles the viperblock.VB config CreateVolume hands
@@ -1179,21 +1238,25 @@ func snapshotErrorCode(err error) ebsprovider.ErrorCode {
 	}
 }
 
-// checkSnapshotIDFree refuses a snapshot ID that already exists unless this
-// volume is the one it was taken from. An existing snapshot whose identity
-// cannot be read is refused too: unprovable ownership must not overwrite it.
-func checkSnapshotIDFree(vb *viperblock.VB, volumeID, snapshotID string) error {
+// checkSnapshotIDFree reports whether snapshotID is already this volume's
+// snapshot, and refuses it as already_exists if it is another's. An identity
+// that cannot be read is refused as internal, since it may yet read as ours.
+func checkSnapshotIDFree(vb *viperblock.VB, volumeID, snapshotID string) (taken bool, err error) {
 	exists, err := snapshotConfigExists(vb, snapshotID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !exists {
-		return nil
+		return false, nil
 	}
-	if _, ident, err := vb.LoadSnapshotBlockMap(snapshotID); err == nil && ident.SourceVolumeName == volumeID {
-		return nil
+	_, ident, err := vb.LoadSnapshotBlockMap(snapshotID)
+	if err != nil {
+		return false, fmt.Errorf("read snapshot %s identity: %w", snapshotID, err)
 	}
-	return fmt.Errorf("%w: %s", errSnapshotExistsElsewhere, snapshotID)
+	if ident.SourceVolumeName != volumeID {
+		return false, fmt.Errorf("%w: %s", errSnapshotExistsElsewhere, snapshotID)
+	}
+	return true, nil
 }
 
 // snapshotVolumeEngine creates snapshotID off volumeID's live checkpoint,
@@ -1222,35 +1285,124 @@ func snapshotVolumeEngine(ctx context.Context, cfg *Config, volumeID, snapshotID
 	}
 	defer releaseWriterLock(ctx, lock, volumeID)
 
+	// A repeat is answered from the stored snapshot before the volume is
+	// opened, so it still answers once the source volume is deleted.
+	stored, storedErr := storedSnapshot(ctx, cfg, volumeID, snapshotID)
+	switch {
+	case storedErr == nil && stored != nil:
+		return stored, nil
+	case errors.Is(storedErr, errSnapshotExistsElsewhere):
+		return nil, storedErr
+	case storedErr != nil:
+		// The engine below repeats the lookup; this failure stands in for
+		// its not_found, which an unread snapshot does not prove.
+		slog.WarnContext(ctx, "ebs.provider.snapshot.create: stored snapshot lookup failed", "volume", volumeID, "snapshot", snapshotID, "err", storedErr)
+	}
+
 	vb, err := openLeasedVolumeVB(ctx, cfg, volumeID, lease)
 	if err != nil {
+		if storedErr != nil && errors.Is(err, viperblock.ErrStateNotFound) {
+			return nil, storedErr
+		}
 		return nil, err
 	}
 	defer vb.Detach()
 	return createSnapshotWithVB(vb, volumeID, snapshotID)
 }
 
+// storedSnapshot answers a repeated CreateSnapshot from the snapshot already
+// stored under snapshotID, without opening or leasing volumeID. It returns nil
+// when no snapshot is stored, and refuses one taken from another volume.
+func storedSnapshot(ctx context.Context, cfg *Config, volumeID, snapshotID string) (*ebsprovider.Snapshot, error) {
+	vbconfig, s3cfg := volumeVBConfig(cfg, volumeID)
+	vb, err := viperblock.NewStateReader(&vbconfig, "s3", s3cfg)
+	if err != nil {
+		return nil, fmt.Errorf("new snapshot reader: %w", err)
+	}
+	if err := vb.InitBackendForRead(ctx); err != nil {
+		return nil, fmt.Errorf("backend init: %w", err)
+	}
+	taken, err := checkSnapshotIDFree(vb, volumeID, snapshotID)
+	if err != nil || !taken {
+		return nil, err
+	}
+	createdAt, err := snapshotCreatedAt(vb, snapshotID)
+	if err != nil {
+		return nil, err
+	}
+	// The snapshot records no size of its own, so it is the source volume's
+	// size while that volume exists, and zero once it is deleted.
+	var sizeBytes int64
+	switch volume, err := describeVolumeEngine(ctx, cfg, volumeID); {
+	case err == nil:
+		sizeBytes = volume.CapacityBytes
+	case !errors.Is(err, viperblock.ErrStateNotFound):
+		return nil, fmt.Errorf("read source volume %s: %w", volumeID, err)
+	}
+	return completedSnapshot(snapshotID, volumeID, sizeBytes, createdAt), nil
+}
+
+// completedSnapshot is the answer for snapshotID of volumeID, which this
+// provider takes whole before it answers.
+func completedSnapshot(snapshotID, volumeID string, sizeBytes int64, createdAt time.Time) *ebsprovider.Snapshot {
+	return &ebsprovider.Snapshot{
+		ID:             snapshotID,
+		SourceVolumeID: volumeID,
+		SizeBytes:      sizeBytes,
+		CreatedAt:      createdAt,
+		State:          ebsprovider.SnapshotStateCompleted,
+		Handle:         snapshotHandle(snapshotID),
+	}
+}
+
+// snapshotCreatedAt reads the creation time stored in snapshotID's config.
+// The caller has authenticated the config through checkSnapshotIDFree; an
+// encrypted config is an envelope whose payload is the plaintext state.
+func snapshotCreatedAt(vb *viperblock.VB, snapshotID string) (time.Time, error) {
+	data, err := vb.Backend.ReadFrom(snapshotID, vbtypes.FileTypeConfig, 0, 0, 0)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("read snapshot %s config: %w", snapshotID, err)
+	}
+	var config struct {
+		Payload   json.RawMessage `json:"payload"`
+		CreatedAt time.Time       `json:"CreatedAt"`
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		return time.Time{}, fmt.Errorf("parse snapshot %s config: %w", snapshotID, err)
+	}
+	if len(config.Payload) > 0 {
+		if err := json.Unmarshal(config.Payload, &config); err != nil {
+			return time.Time{}, fmt.Errorf("parse snapshot %s config payload: %w", snapshotID, err)
+		}
+	}
+	return config.CreatedAt.UTC(), nil
+}
+
 // createSnapshotWithVB takes the snapshot against an already-resolved VB,
 // shared by snapshotVolumeEngine's mounted and freshly-opened branches so the
 // two cannot drift on what a snapshot of a volume means.
 func createSnapshotWithVB(vb *viperblock.VB, volumeID, snapshotID string) (*ebsprovider.Snapshot, error) {
-	if err := checkSnapshotIDFree(vb, volumeID, snapshotID); err != nil {
+	taken, err := checkSnapshotIDFree(vb, volumeID, snapshotID)
+	if err != nil {
 		return nil, err
+	}
+	// A repeat that raced the first call past storedSnapshot returns the first
+	// snapshot rather than retaking it over writes made since.
+	if taken {
+		createdAt, err := snapshotCreatedAt(vb, snapshotID)
+		if err != nil {
+			return nil, err
+		}
+		return completedSnapshot(snapshotID, volumeID, safecast.Uint64ToInt64(vb.GetVolumeSize()), createdAt), nil
 	}
 	if err := vb.LoadLiveCheckpoint(); err != nil {
 		return nil, fmt.Errorf("load live checkpoint: %w", err)
 	}
-	if _, err := vb.CreateSnapshot(snapshotID); err != nil {
+	state, err := vb.CreateSnapshot(snapshotID)
+	if err != nil {
 		return nil, fmt.Errorf("create snapshot: %w", err)
 	}
-	return &ebsprovider.Snapshot{
-		ID:             snapshotID,
-		SourceVolumeID: volumeID,
-		SizeBytes:      safecast.Uint64ToInt64(vb.GetVolumeSize()),
-		CreatedAt:      time.Now().UTC(),
-		State:          ebsprovider.SnapshotStateCompleted,
-		Handle:         snapshotHandle(snapshotID),
-	}, nil
+	return completedSnapshot(snapshotID, volumeID, safecast.Uint64ToInt64(vb.GetVolumeSize()), state.CreatedAt.UTC()), nil
 }
 
 // ownerVerbHandlers pairs each owner-routable verb's subject builder with
@@ -1281,7 +1433,7 @@ func ownerVerbHandlers(cfg *Config, nc *nats.Conn) []struct {
 
 // subscribeOwnerSubjects registers volumeName's owner subjects as plain,
 // non-queue subscriptions, so a request for a mounted volume reaches this node
-// rather than a random worker. A failure is logged and skipped, as ConfigSub is.
+// rather than a random worker. A failure is logged and skipped.
 func subscribeOwnerSubjects(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName string) []*nats.Subscription {
 	var subs []*nats.Subscription
 	for _, o := range ownerVerbHandlers(cfg, nc) {
@@ -1301,7 +1453,7 @@ func subscribeOwnerSubjects(ctx context.Context, cfg *Config, nc *nats.Conn, vol
 }
 
 // unsubscribeOwnerSubjects tears down subs, logging (not failing) any
-// individual Unsubscribe error, matching ConfigSub's teardown handling.
+// individual Unsubscribe error.
 func unsubscribeOwnerSubjects(volumeName string, subs []*nats.Subscription) {
 	for _, sub := range subs {
 		if sub == nil {
@@ -1413,18 +1565,30 @@ func mountErrRetryable(err error) bool {
 		errors.Is(err, ErrLeaseStoreUnavailable)
 }
 
-// mountVolume is launchService's ebs.mount body, extracted so the legacy
-// ebs.mount handler and the ebs.provider.v1.*.mount handler share one nbdkit
-// mount path instead of risking two divergent implementations of it. It
-// starts (or fails to start) nbdkit for volumeName and registers the result
-// in cfg.MountedVolumes; it does not publish a response, that stays with the
-// caller.
-func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName string, readOnly bool) (viperblocklegacyv1.EBSMountResponse, error) {
+// mountResult is what mountVolume reports to its contract caller.
+type mountResult struct {
+	URI       string
+	Mounted   bool
+	Error     string
+	Retryable bool
+}
+
+// unmountResult is what unmountVolume reports to its contract caller. Reaped
+// says a volume with no registry entry still had a live nbdkit, now killed.
+type unmountResult struct {
+	Mounted  bool
+	Error    string
+	NotFound bool
+	Reaped   bool
+}
+
+// mountVolume starts (or fails to start) nbdkit for volumeName and registers
+// the result in cfg.MountedVolumes; it does not publish a response, that stays
+// with the caller.
+func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName string, readOnly bool) (mountResult, error) {
 	// A volume this node already exports must not get a second nbdkit, which
-	// is the double-writer hazard the provider boundary exists to prevent.
-	// The guard lives here rather than in one handler because the legacy
-	// ebs.mount subject is the route production actually takes: a retried
-	// attach racing a fresh one would otherwise start two real exports.
+	// is the double-writer hazard the provider boundary exists to prevent: a
+	// retried publish racing a fresh one would otherwise start two exports.
 	if mv, ok := findMountedVolume(cfg, volumeName); ok {
 		// Returning a dead entry's URI makes the volume unstartable forever:
 		// every caller waits for a socket nothing will create. The entry is
@@ -1433,17 +1597,17 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 			slog.WarnContext(ctx, "ebs.mount: dropping stale mount entry and remounting",
 				"volume", volumeName, "uri", mv.NBDURI, "reason", why)
 			if err := releaseStaleMount(ctx, cfg, volumeName); err != nil {
-				return viperblocklegacyv1.EBSMountResponse{Error: err.Error()}, err
+				return mountResult{Error: err.Error()}, err
 			}
 		} else {
 			// Access mode is fixed when nbdkit starts, so a remount asking for
 			// the other mode cannot be answered with the running export.
 			if mv.ReadOnly != readOnly {
 				err := fmt.Errorf("volume %s is already mounted read_only=%t on this node: %w", volumeName, mv.ReadOnly, errReadOnlyMismatch)
-				return viperblocklegacyv1.EBSMountResponse{Error: err.Error()}, err
+				return mountResult{Error: err.Error()}, err
 			}
 			slog.InfoContext(ctx, "ebs.mount: already mounted, returning existing export", "volume", volumeName, "uri", mv.NBDURI)
-			return viperblocklegacyv1.EBSMountResponse{URI: mv.NBDURI, Mounted: true}, nil
+			return mountResult{URI: mv.NBDURI, Mounted: true}, nil
 		}
 	}
 
@@ -1454,7 +1618,7 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 	ctx, mountSpan := otel.Tracer(viperblockdTracerName).Start(ctx, "ebs.mount",
 		trace.WithAttributes(attribute.String("volume.id", volumeName)))
 
-	var ebsResponse viperblocklegacyv1.EBSMountResponse
+	var ebsResponse mountResult
 	ebsResponse.Mounted = false
 	defer func() { endSpanWithResponseError(mountSpan, ebsResponse.Error) }()
 
@@ -1620,13 +1784,6 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 	ebsResponse.Mounted = true
 	ebsResponse.URI = nbdURI
 
-	// Subscribe to volume-specific config-update topic so encrypted-volume
-	// metadata writes route to this node's live VB (the StateSeqNum owner).
-	configSub, err := nc.Subscribe(viperblocklegacyv1.VolumeConfigUpdateSubject(volumeName), makeConfigUpdateHandler(vb, volumeName))
-	if err != nil {
-		slog.ErrorContext(ctx, "Failed to subscribe to volume config topic", "volume", volumeName, "err", err)
-	}
-
 	// Owner-routed subscriptions let snapshot/expand/describe requests reach
 	// this node directly while it holds the live engine, instead of the
 	// spinifex-workers queue group delivering them to a random node.
@@ -1640,7 +1797,6 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 		NBDURI:    nbdURI,
 		PID:       pid,
 		VB:        vb,
-		ConfigSub: configSub,
 		OwnerSubs: ownerSubs,
 		ReadOnly:  readOnly,
 		Lease:     lease,
@@ -1651,23 +1807,20 @@ func mountVolume(ctx context.Context, cfg *Config, nc *nats.Conn, volumeName str
 	return ebsResponse, nil
 }
 
-// unmountVolume is launchService's ebs.unmount body, extracted for the same
-// reason as mountVolume: the legacy ebs.unmount handler and the
-// ebs.provider.v1.*.unmount handler must share the one seal-decision path
-// rather than risk it diverging between two copies.
+// unmountVolume is the seal-decision path behind UnpublishVolume.
 //
 // A failed seal leaves volumeName in cfg.MountedVolumes (response.Error set,
 // response.Mounted stays false but the entry is not removed) so a retry
 // re-attempts the seal; a volume with no matching entry gets
 // response.NotFound set instead of a bare error, so callers can tell "never
 // mounted here" apart from "seal failed".
-func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (viperblocklegacyv1.EBSUnMountResponse, error) {
+func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (unmountResult, error) {
 	ctx, unmountSpan := otel.Tracer(viperblockdTracerName).Start(ctx, "ebs.unmount",
 		trace.WithAttributes(attribute.String("volume.id", volumeName)))
 
 	// Find the volume and extract references while holding the lock,
 	// then release before calling VB.Close() (which does heavy S3 I/O).
-	var ebsResponse viperblocklegacyv1.EBSUnMountResponse
+	var ebsResponse unmountResult
 	defer func() { endSpanWithResponseError(unmountSpan, ebsResponse.Error) }()
 	var matched MountedVolume
 	var matchIdx = -1
@@ -1682,17 +1835,8 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (viperbl
 	cfg.mu.Unlock()
 
 	if matchIdx >= 0 {
-		ebsResponse = viperblocklegacyv1.EBSUnMountResponse{
-			Volume:  matched.Name,
-			Mounted: false,
-		}
+		ebsResponse = unmountResult{Mounted: false}
 
-		// Unsubscribe from volume-specific config-update topic
-		if matched.ConfigSub != nil {
-			if err := matched.ConfigSub.Unsubscribe(); err != nil {
-				slog.ErrorContext(ctx, "Failed to unsubscribe config topic", "volume", volumeName, "err", err)
-			}
-		}
 		unsubscribeOwnerSubjects(matched.Name, matched.OwnerSubs)
 
 		// Stop background goroutines on the state-tracking VB.
@@ -1788,8 +1932,7 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (viperbl
 		// daemon owns for this volume is a leak whatever left it behind.
 		reaped := reapUnregisteredNbdkit(ctx, cfg, volumeName)
 
-		ebsResponse = viperblocklegacyv1.EBSUnMountResponse{
-			Volume:   volumeName,
+		ebsResponse = unmountResult{
 			Error:    fmt.Sprintf("Volume %s not found", volumeName),
 			NotFound: true,
 			Reaped:   reaped,
@@ -1802,10 +1945,9 @@ func unmountVolume(ctx context.Context, cfg *Config, volumeName string) (viperbl
 	return ebsResponse, nil
 }
 
-// handlePublishVolume serves ebs.provider.v1.<node>.mount, the provider-neutral
-// front for the same nbdkit mount path ebs.mount uses. It is node-addressed
-// (subscribed on cfg.NodeName's subject), so unlike the legacy handler there
-// is no queue-group fallback to reason about.
+// handlePublishVolume serves ebs.provider.v1.<node>.mount over mountVolume's
+// nbdkit mount path. It is node-addressed (subscribed on cfg.NodeName's
+// subject), so there is no queue-group fallback to reason about.
 func handlePublishVolume(ctx context.Context, cfg *Config, nc *nats.Conn, msg *nats.Msg) {
 	var req ebsprovider.PublishVolumeRequest
 	err := json.Unmarshal(msg.Data, &req)
@@ -1862,10 +2004,9 @@ func publishError(version uint16, volumeID string, err error) *ebsprovider.Provi
 	}
 }
 
-// handleUnpublishVolume serves ebs.provider.v1.<node>.unmount, fronting the
-// same seal-decision path ebs.unmount uses. A failed seal is reported as an
-// error while leaving the volume in cfg.MountedVolumes (see unmountVolume),
-// never as success.
+// handleUnpublishVolume serves ebs.provider.v1.<node>.unmount over
+// unmountVolume's seal-decision path. A failed seal is reported as an error
+// while leaving the volume in cfg.MountedVolumes, never as success.
 func handleUnpublishVolume(ctx context.Context, cfg *Config, msg *nats.Msg) {
 	var req ebsprovider.UnpublishVolumeRequest
 	err := json.Unmarshal(msg.Data, &req)
@@ -1906,7 +2047,7 @@ func unpublishRequestError(version uint16, err error) *ebsprovider.ProviderError
 
 // unpublishVolume tears down this node's export and reports whether there was
 // one, which is only reported from NoSealSchemaVersion on. NoSeal drops it
-// unsealed, as an abandon does; otherwise it seals first, as ebs.unmount does.
+// unsealed, as an abandon does; otherwise unmountVolume seals it first.
 func unpublishVolume(ctx context.Context, cfg *Config, req ebsprovider.UnpublishVolumeRequest) (bool, error) {
 	tornDown, err := tearDownPublication(ctx, cfg, req)
 	return tornDown && req.SchemaVersion >= ebsprovider.NoSealSchemaVersion, err
@@ -2004,11 +2145,6 @@ func releaseStaleMount(ctx context.Context, cfg *Config, volumeName string) erro
 		return nil
 	}
 
-	if matched.ConfigSub != nil {
-		if err := matched.ConfigSub.Unsubscribe(); err != nil {
-			slog.ErrorContext(ctx, "stale mount: unsubscribe config topic", "volume", volumeName, "err", err)
-		}
-	}
 	for _, sub := range matched.OwnerSubs {
 		if sub == nil {
 			continue

@@ -43,6 +43,7 @@ type RouteTableServiceImpl struct {
 	subnetKV jetstream.KeyValue
 	natgwKV  jetstream.KeyValue
 	natsConn *nats.Conn
+	peering  PeeringLookup
 }
 
 // NewRouteTableServiceImplWithNATS creates a Route Table service with NATS JetStream for persistence.
@@ -601,6 +602,7 @@ var describeRouteTablesValidFilters = map[string]bool{
 	"route.destination-cidr-block":           true,
 	"route.gateway-id":                       true,
 	"route.nat-gateway-id":                   true,
+	"route.vpc-peering-connection-id":        true,
 	"route.state":                            true,
 	"route.origin":                           true,
 	"owner-id":                               true,
@@ -629,9 +631,7 @@ func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
-	var routeTables []*ec2.RouteTable
-	foundIDs := make(map[string]bool)
-
+	var records []*RouteTableRecord
 	for _, key := range keys {
 		if key == kvstore.VersionKey || !strings.HasPrefix(key, prefix) {
 			continue
@@ -655,12 +655,21 @@ func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *
 		if len(rtbIDs) > 0 && !rtbIDs[record.RouteTableId] {
 			continue
 		}
+		records = append(records, &record)
+	}
 
-		if !rtbMatchesFilters(&record, parsedFilters) {
+	if err := s.derivePeeringStates(ctx, records); err != nil {
+		slog.ErrorContext(ctx, "DescribeRouteTables: peering route state lookup failed", "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+
+	var routeTables []*ec2.RouteTable
+	foundIDs := make(map[string]bool)
+	for _, record := range records {
+		if !rtbMatchesFilters(record, parsedFilters) {
 			continue
 		}
-
-		routeTables = append(routeTables, recordToEC2(&record))
+		routeTables = append(routeTables, recordToEC2(record))
 		foundIDs[record.RouteTableId] = true
 	}
 
@@ -797,6 +806,13 @@ func (s *RouteTableServiceImpl) CreateRoute(ctx context.Context, input *ec2.Crea
 			s.publishNatGatewayEvents(ctx, accountID, record, natgwRecord.VpcId, natgwID, natgwRecord.PublicIp, destCidr)
 		}
 
+	case input.VpcPeeringConnectionId != nil && *input.VpcPeeringConnectionId != "":
+		route, err = s.peeringRoute(ctx, accountID, record, destCidr, *input.VpcPeeringConnectionId)
+		if err != nil {
+			return nil, err
+		}
+		publish = func() {}
+
 	default:
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
@@ -805,13 +821,13 @@ func (s *RouteTableServiceImpl) CreateRoute(ctx context.Context, input *ec2.Crea
 		return nil, err
 	}
 
-	// A repeat of an existing route (same destination, same target) is a
-	// successful no-op; a different target is a conflict.
+	// AWS answers a repeated gateway route with success; a repeated NAT
+	// gateway route, or any other target, is a conflict.
 	for _, r := range record.Routes {
 		if r.DestinationCidrBlock != destCidr {
 			continue
 		}
-		if r.GatewayId == route.GatewayId && r.NatGatewayId == route.NatGatewayId {
+		if route.GatewayId != "" && r.GatewayId == route.GatewayId && r.NatGatewayId == "" {
 			return &ec2.CreateRouteOutput{Return: aws.Bool(true)}, nil
 		}
 		return nil, awserrors.Errorf(awserrors.ErrorRouteAlreadyExists, "The route identified by %s already exists.", destCidr)
@@ -916,21 +932,28 @@ func (s *RouteTableServiceImpl) ReplaceRoute(ctx context.Context, input *ec2.Rep
 		return nil, err
 	}
 
-	// V1: only GatewayId target supported
-	if input.GatewayId == nil || *input.GatewayId == "" {
-		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
-	}
-
-	igwID := *input.GatewayId
-
-	// AWS reports a missing gateway ahead of a missing route.
-	igwEntry, err := s.igwKV.Get(ctx, kvstore.AccountKey(accountID, igwID))
-	if err != nil {
-		return nil, gatewayNotFoundError(igwID)
-	}
+	// Targets: GatewayId (internet gateway) or VpcPeeringConnectionId.
+	var replacement RouteRecord
 	var igwRecord ec2igw.IGWRecord
-	if err := json.Unmarshal(igwEntry.Value(), &igwRecord); err != nil {
-		return nil, errors.New(awserrors.ErrorServerInternal)
+	switch {
+	case input.GatewayId != nil && *input.GatewayId != "":
+		igwID := *input.GatewayId
+		// AWS reports a missing gateway ahead of a missing route.
+		igwEntry, err := s.igwKV.Get(ctx, kvstore.AccountKey(accountID, igwID))
+		if err != nil {
+			return nil, gatewayNotFoundError(igwID)
+		}
+		if err := json.Unmarshal(igwEntry.Value(), &igwRecord); err != nil {
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		replacement = RouteRecord{GatewayId: igwID, State: ec2.RouteStateActive}
+	case input.VpcPeeringConnectionId != nil && *input.VpcPeeringConnectionId != "":
+		replacement, err = s.peeringRoute(ctx, accountID, record, destCidr, *input.VpcPeeringConnectionId)
+		if err != nil {
+			return nil, err
+		}
+	default:
+		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
 	idx := -1
@@ -948,19 +971,21 @@ func (s *RouteTableServiceImpl) ReplaceRoute(ctx context.Context, input *ec2.Rep
 	if record.Routes[idx].GatewayId == "local" {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
-	if igwRecord.VpcId != record.VpcId {
+	if replacement.GatewayId != "" && igwRecord.VpcId != record.VpcId {
 		return nil, errors.New(awserrors.ErrorInvalidParameterValue)
 	}
 
-	record.Routes[idx].GatewayId = igwID
+	record.Routes[idx].GatewayId = replacement.GatewayId
 	record.Routes[idx].NatGatewayId = ""
-	record.Routes[idx].State = "active"
+	record.Routes[idx].VpcPeeringConnectionId = replacement.VpcPeeringConnectionId
+	record.Routes[idx].State = replacement.State
 
 	if err := s.putRouteTable(ctx, accountID, record); err != nil {
 		return nil, err
 	}
 
-	slog.InfoContext(ctx, "ReplaceRoute completed", "routeTableId", rtbID, "destination", destCidr, "gatewayId", igwID, "accountID", accountID)
+	slog.InfoContext(ctx, "ReplaceRoute completed", "routeTableId", rtbID, "destination", destCidr,
+		"gatewayId", replacement.GatewayId, "vpcPeeringConnectionId", replacement.VpcPeeringConnectionId, "accountID", accountID)
 
 	return &ec2.ReplaceRouteOutput{}, nil
 }
@@ -1309,6 +1334,12 @@ func rtbMatchesFilters(record *RouteTableRecord, filters map[string][]string) bo
 			}) {
 				return false
 			}
+		case "route.vpc-peering-connection-id":
+			if !slices.ContainsFunc(record.Routes, func(r RouteRecord) bool {
+				return awsfilters.MatchesAny(values, r.VpcPeeringConnectionId)
+			}) {
+				return false
+			}
 		case "route.state":
 			if !slices.ContainsFunc(record.Routes, func(r RouteRecord) bool {
 				return awsfilters.MatchesAny(values, r.State)
@@ -1553,6 +1584,9 @@ func recordToEC2(record *RouteTableRecord) *ec2.RouteTable {
 		}
 		if r.NatGatewayId != "" {
 			route.NatGatewayId = aws.String(r.NatGatewayId)
+		}
+		if r.VpcPeeringConnectionId != "" {
+			route.VpcPeeringConnectionId = aws.String(r.VpcPeeringConnectionId)
 		}
 		rtb.Routes = append(rtb.Routes, route)
 	}

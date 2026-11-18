@@ -17,6 +17,7 @@ import {
   DescribeSnapshotsCommand,
   DescribeSubnetsCommand,
   DescribeVolumesCommand,
+  DescribeVpcPeeringConnectionsCommand,
   DescribeVpcsCommand,
   GetConsoleOutputCommand,
 } from "@aws-sdk/client-ec2"
@@ -355,6 +356,29 @@ export const ec2NatGatewayQueryOptions = (natGatewayId: string) =>
     queryFn: async () => {
       const command = new DescribeNatGatewaysCommand({
         NatGatewayIds: [natGatewayId],
+      })
+
+      return await getEc2Client().send(command)
+    },
+    refetchInterval: 5000,
+  })
+
+export const ec2VpcPeeringConnectionsQueryOptions = queryOptions({
+  queryKey: ["ec2", "vpcPeeringConnections"],
+  queryFn: async () => {
+    const command = new DescribeVpcPeeringConnectionsCommand({})
+
+    return await getEc2Client().send(command)
+  },
+  refetchInterval: 5000,
+})
+
+export const ec2VpcPeeringConnectionQueryOptions = (connectionId: string) =>
+  queryOptions({
+    queryKey: ["ec2", "vpcPeeringConnections", connectionId],
+    queryFn: async () => {
+      const command = new DescribeVpcPeeringConnectionsCommand({
+        VpcPeeringConnectionIds: [connectionId],
       })
 
       return await getEc2Client().send(command)

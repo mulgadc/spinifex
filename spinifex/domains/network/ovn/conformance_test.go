@@ -53,6 +53,8 @@ func TestClientConformance(t *testing.T) {
 		{"ACLs", conformACLs},
 		{"GatewayChassis", conformGatewayChassis},
 		{"DHCPOptions", conformDHCPOptions},
+		{"PeeringLink", conformPeeringLink},
+		{"RouterPolicyUpdate", conformRouterPolicyUpdate},
 	}
 
 	for _, impl := range impls {
@@ -186,7 +188,7 @@ func conformLogicalRouter(t *testing.T, cli ovn.Client, ctx context.Context) {
 
 	require.NoError(t, cli.DeleteLogicalRouter(ctx, "lr-a"))
 	_, err = cli.GetLogicalRouter(ctx, "lr-a")
-	require.Error(t, err)
+	require.ErrorIs(t, err, ovn.ErrLogicalRouterNotFound)
 	assert.Contains(t, err.Error(), `"lr-a"`)
 	assert.Error(t, cli.DeleteLogicalRouter(ctx, "lr-a"))
 }

@@ -50,6 +50,7 @@ const CAUTION_STATES = new Set([
   "insufficient-data",
   "unused",
   "expired",
+  "pending-acceptance",
 ])
 
 // Yellow: the resource is changing state and will settle on its own.
@@ -78,9 +79,16 @@ const PROGRESS_STATES = new Set([
   "deregistering",
   "pending-validation",
   "optimizing",
+  "initiating-request",
 ])
 
-const MUTED_STATES = new Set(["terminated", "deleted", "inactive", "no"])
+const MUTED_STATES = new Set([
+  "terminated",
+  "deleted",
+  "inactive",
+  "no",
+  "rejected",
+])
 
 export type StateTone =
   | "success"

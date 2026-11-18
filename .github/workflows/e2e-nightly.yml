@@ -43,8 +43,8 @@ permissions:
 # second rather than cancelling it: a dispatch is usually a verification run
 # and discarding it loses the result someone is waiting on.
 #
-# The group is shared with e2e-suites.yml and e2e-ddil.yml, which draw on the
-# same runner pools. e2e.yml is deliberately outside it: a single-cluster push
+# The group is shared with e2e-ddil.yml, which draws on the same
+# runner pools. e2e.yml is deliberately outside it: a single-cluster push
 # run is cheap enough to overlap, and grouping it stalled every push behind a
 # multi-hour nightly.
 concurrency:
@@ -105,10 +105,10 @@ jobs:
             fi
           done < <(jq -r '.[]|select((.suite//"")!="")|[.cell,.suite,(.timeout_minutes//50)]|@tsv' <<<"$sel")
 
-          # A permutation cell names no suite and runs the nightly subset for its
-          # topology, so its bound is the longest of those. max() and not sum():
-          # whichever suite hangs must panic on its own timeout first, and a sum
-          # would demand a budget the set has never come close to using.
+          # A permutation cell names no suite or extra and runs the nightly subset
+          # for its topology, so its bound is the longest of those. max() and not
+          # sum(): whichever suite hangs must panic on its own timeout first, and
+          # a sum would demand a budget the set has never come close to using.
           while IFS=$'\t' read -r cell topo budget; do
             case "$topo" in
               *multi) set -- ${E2E_SUITES_NIGHTLY_MULTI} ;;
@@ -123,7 +123,7 @@ jobs:
               echo "::error::cell-$cell runs the $topo nightly subset, whose longest suite asks ${want}m, inside a ${budget}m job. Raise timeout_minutes in .github/e2e-cells.json to at least $((want + SETUP_ALLOWANCE_MIN))." >&2
               bad=1
             fi
-          done < <(jq -r '.[]|select((.suite//"")=="")|[.cell,.topo,(.timeout_minutes//50)]|@tsv' <<<"$sel")
+          done < <(jq -r '.[]|select((.suite//"")=="" and (.extra//"")=="")|[.cell,.topo,(.timeout_minutes//50)]|@tsv' <<<"$sel")
           [ "$bad" -eq 0 ]
 
   matrix:
@@ -131,9 +131,11 @@ jobs:
       matrix.host }}${{ matrix.extra && format('/{0}', matrix.extra) || '' }})"
     needs: select
     if: needs.select.outputs.any == 'true'
+    # Six is the ci-single and ci-multi runner count. Provisioning is serialised
+    # per hypervisor by hv-lock.sh, which is what made more than three unsafe.
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 6
       matrix:
         include: ${{ fromJSON(needs.select.outputs.cells) }}
     runs-on: [self-hosted, "${{ matrix.runner }}"]
@@ -230,6 +232,8 @@ jobs:
           esac
 
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/hv-lock.sh"
+          hv_lock_acquire "envs/${SPINIFEX_CI_ENV}.tfvars"
           tofu init -input=false >> "$TOFU_LOG" 2>&1
           tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
           tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars ${TOFU_VAR_ARGS} -auto-approve -input=false >> "$TOFU_LOG" 2>&1 || true
@@ -905,6 +909,9 @@ jobs:
             oracle-*) TOFU_VAR_ARGS="-var=host_image_override=${ORACLE_GOLD_IMAGE} -var=host_os=oracle" ;;
           esac
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/hv-lock.sh"
+          hv_lock_acquire "envs/${SPINIFEX_CI_ENV}.tfvars" || {
+            echo "::error::teardown skipped: ${SPINIFEX_CI_ENV} is left up for the next job's pre-clean destroy"; exit 1; }
           tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
           timeout 120 ./flush-telemetry.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
           # shellcheck disable=SC2086
@@ -1412,7 +1419,7 @@ jobs:
   # also overrides cancellation and keeps the run starting jobs after a cancel.
   performance:
     name: cell-23 (predastore/throughput)
-    needs: [matrix, baremetal, iso-single, iso-multi]
+    needs: [matrix, baremetal, iso-single, iso-multi, stress]
     if: >-
       !cancelled() && (
       inputs.cells == '' ||
@@ -1518,12 +1525,11 @@ jobs:
   # Fault injection, not throughput. Cell-23 asks how fast predastore is when
   # every node is healthy; this asks whether it survives one that is not.
   #
-  # After cell-23 rather than beside it: both want a quiet single runner, and a
-  # benchmark sharing a machine with a fault injection run measures the wrong
-  # thing. The port offset keeps them apart even so.
+  # Beside the cells rather than after them: it measures survival, not speed.
+  # Cell-23 waits for it, so the benchmark still never shares a machine with it.
   stress:
     name: cell-24 (predastore/fault-injection)
-    needs: [matrix, baremetal, iso-single, iso-multi, performance]
+    needs: [select]
     if: >-
       !cancelled() && (
       inputs.cells == '' ||

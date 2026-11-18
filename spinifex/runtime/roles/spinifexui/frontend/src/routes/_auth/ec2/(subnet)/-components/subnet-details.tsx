@@ -12,12 +12,17 @@ import {
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
 import { Ec2Tags } from "@/components/resource-tags"
 import { StateBadge } from "@/components/state-badge"
+import { useTopologyTab } from "@/components/topology/resource-topology"
 import { Button, buttonVariants } from "@/components/ui/button"
 import type { PanelTab } from "@/lib/panel-search"
 import { getNameTag } from "@/lib/utils"
 import { useDeleteSubnet } from "@/mutations/ec2"
 
+import { SUBNET_TYPE_LABELS, useSubnetType } from "./subnet-type"
+
 function Overview({ subnet }: { subnet: Subnet }) {
+  const typeOf = useSubnetType()
+
   return (
     <PanelSection title="Details">
       <PanelFields>
@@ -34,6 +39,9 @@ function Overview({ subnet }: { subnet: Subnet }) {
               {subnet.VpcId}
             </Link>
           )}
+        </PanelField>
+        <PanelField label="Type">
+          {SUBNET_TYPE_LABELS[typeOf(subnet)]}
         </PanelField>
         <PanelField copy={subnet.CidrBlock} label="CIDR" mono>
           {subnet.CidrBlock}
@@ -124,6 +132,15 @@ export function SubnetDetails({
   const id = subnet.SubnetId ?? ""
   const name = getNameTag(subnet.Tags)
 
+  const topology = useTopologyTab({
+    page: layout === "page",
+    tab,
+    vpcId: subnet.VpcId,
+    focus: { kind: "subnet", id },
+    noVpc: "This subnet belongs to no VPC.",
+    pin: { subnet },
+  })
+
   return (
     <DetailPanel
       closeLabel={
@@ -147,7 +164,12 @@ export function SubnetDetails({
       onClose={onClose}
       onTabChange={onTabChange}
       subtitle={name ? id : undefined}
-      summary={<StateBadge state={subnet.State} />}
+      summary={
+        <>
+          <StateBadge state={subnet.State} />
+          {topology.toggle}
+        </>
+      }
       tab={tab}
       tabs={[
         {
@@ -156,6 +178,7 @@ export function SubnetDetails({
           icon: Eye,
           content: <Overview subnet={subnet} />,
         },
+        topology.spec,
         {
           id: "settings",
           label: "Settings",

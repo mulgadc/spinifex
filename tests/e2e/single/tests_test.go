@@ -70,6 +70,18 @@ func TestVPCEgressPaths(t *testing.T) {
 	runVPCEgressPaths(t, requireSingleNodeFixture(t))
 }
 
+// TestVPCPeering covers same-account VPC peering on the datapath (see
+// runVPCPeering for the stages).
+func TestVPCPeering(t *testing.T) {
+	runVPCPeering(t, requireSingleNodeFixture(t))
+}
+
+// TestVPCPeeringCrossAccount covers peering between two accounts, with a third
+// that must see nothing (see runVPCPeeringCrossAccount for the stages).
+func TestVPCPeeringCrossAccount(t *testing.T) {
+	runVPCPeeringCrossAccount(t, requireSingleNodeFixture(t))
+}
+
 // TestWANEgressSMTPBlock boots one public guest and asserts the platform
 // egress ACL drops outbound SMTP (25/465/587) to a public destination while
 // ordinary WAN egress still works — the AWS-parity default block.
@@ -137,6 +149,13 @@ func TestStopStart(t *testing.T) {
 
 func TestAttachToStopped(t *testing.T) {
 	runAttachToStopped(t, requireSingleNodeFixture(t))
+}
+
+// TestAttachedENISurvivesTerminate terminates a test-owned guest with an
+// attached interface and requires the interface to survive. Sequential: it
+// consumes node capacity for its own guest.
+func TestAttachedENISurvivesTerminate(t *testing.T) {
+	runAttachedENISurvivesTerminate(t, requireSingleNodeFixture(t))
 }
 
 // TestSpotInstanceLifecycle drives the two spot terminal transitions that need

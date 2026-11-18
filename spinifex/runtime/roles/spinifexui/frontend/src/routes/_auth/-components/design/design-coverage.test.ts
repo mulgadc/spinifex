@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest"
 
 const COMPONENTS = import.meta.glob<string>(
-  ["/src/components/*.tsx", "!/src/components/*.test.tsx"],
+  [
+    "/src/components/*.tsx",
+    "/src/components/topology/*.tsx",
+    "!/src/components/**/*.test.tsx",
+  ],
   { query: "?raw", import: "default", eager: true },
 )
 
@@ -32,6 +36,10 @@ const NOT_SHOWN = {
   "resource-tags": "InlineTags wired to each service's tagging calls",
   "theme-provider": "part of the shell",
   "theme-switch": "part of the shell, in the header",
+  "topology/network-topology": "reads a VPC's live resources",
+  "topology/resource-topology": "reads a resource's VPC and its live resources",
+  "topology/security-group-topology":
+    "reads what a security group covers from live resources",
   "upload-progress-dialog": "tracks real S3 uploads",
   "vpc-select-field": "reads the account's VPCs",
 } satisfies Record<string, string>

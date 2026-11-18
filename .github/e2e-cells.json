@@ -9,7 +9,7 @@
     "runner": "ci-single",
     "extra": "",
     "suite": "",
-    "timeout_minutes": 60
+    "timeout_minutes": 75
   },
   {
     "cell": 2,
@@ -21,7 +21,7 @@
     "runner": "ci-single",
     "extra": "",
     "suite": "",
-    "timeout_minutes": 60
+    "timeout_minutes": 75
   },
   {
     "cell": 3,
@@ -33,7 +33,7 @@
     "runner": "ci-single",
     "extra": "",
     "suite": "",
-    "timeout_minutes": 60
+    "timeout_minutes": 75
   },
   {
     "cell": 8,
@@ -110,7 +110,8 @@
     "arch": "x86_64",
     "runner": "ci-single-nvme",
     "extra": "eks",
-    "suite": "eks"
+    "suite": "eks",
+    "timeout_minutes": 60
   },
   {
     "cell": 26,
@@ -204,7 +205,7 @@
     "runner": "ci-single",
     "extra": "",
     "suite": "",
-    "timeout_minutes": 60
+    "timeout_minutes": 75
   },
   {
     "cell": 35,

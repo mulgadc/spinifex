@@ -9,6 +9,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	ebsmetadata "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	ec2image "github.com/mulgadc/spinifex/spinifex/domains/ec2/image"
+	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
 	ebsprovider "github.com/mulgadc/spinifex/spinifex/providers/ebs"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,6 +26,10 @@ func (f *uefiFixture) createImage(t *testing.T) string {
 	svc := ec2image.NewImageServiceImplWithConfig(cfg, f.objects, nil)
 	provider := ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{})
 	svc.SetEBSProvider(provider)
+	snapshots := ec2snapshot.NewSnapshotServiceImplWithStore(cfg, f.objects, nil)
+	snapshots.SetEBSProvider(provider)
+	svc.SetSnapshotCreator(snapshots)
+	svc.SetImageClaims(snapshots)
 	svc.SetUEFIStores(f.records, "node-a")
 	created, err := provider.CreateVolume(t.Context(), ebsprovider.CreateVolumeRequest{
 		Versioned: ebsprovider.NewVersioned(), VolumeID: volumeID, CapacityRange: ebsprovider.CapacityRange{RequiredBytes: 1 << 30},

@@ -6,6 +6,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/providers/ebs/viperblock"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/nats"
+	"github.com/mulgadc/spinifex/spinifex/runtime/roles/ocibsd"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/predastore"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/spinifexui"
 	"github.com/mulgadc/spinifex/spinifex/runtime/roles/vpcd"
@@ -14,7 +15,7 @@ import (
 
 func TestNew(t *testing.T) {
 	// Test known service types
-	services := []string{"nats", "predastore", "viperblock", "spinifex", "awsgw", "spinifex-ui", "vpcd"}
+	services := []string{"nats", "predastore", "viperblock", "spinifex", "awsgw", "spinifex-ui", "vpcd", "ocibsd"}
 
 	for _, s := range services {
 		var svc Service
@@ -38,6 +39,8 @@ func TestNew(t *testing.T) {
 			svc, err = New(s, &spinifexui.Config{})
 		case "vpcd":
 			svc, err = New(s, &vpcd.Config{})
+		case "ocibsd":
+			svc, err = New(s, &ocibsd.Config{})
 		}
 
 		assert.NoError(t, err)

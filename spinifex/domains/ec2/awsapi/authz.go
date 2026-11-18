@@ -86,6 +86,9 @@ var (
 	natGatewayOptScope = &resourceScope{paths: []string{"NatGatewayId"}, kind: arn.EC2NATGateway, optional: true}
 	natGatewayNewScope = &resourceScope{kind: arn.EC2NATGateway}
 
+	vpcPeeringScope    = &resourceScope{paths: []string{"VpcPeeringConnectionId"}, kind: arn.EC2VPCPeeringConnection}
+	vpcPeeringNewScope = &resourceScope{kind: arn.EC2VPCPeeringConnection}
+
 	keyPairScope    = &resourceScope{paths: []string{"KeyPairId", "KeyName"}, kind: arn.EC2KeyPair}
 	keyPairOptScope = &resourceScope{paths: []string{"KeyName"}, kind: arn.EC2KeyPair, optional: true}
 
@@ -134,8 +137,10 @@ var ec2Scopes = map[string][]*resourceScope{
 	"UnmonitorInstances":            {instanceListScope},
 	"ModifyInstanceAttribute":       {instanceScope},
 	"ModifyInstanceMetadataOptions": {instanceScope},
+	"ResetInstanceAttribute":        {instanceScope},
 	"GetConsoleOutput":              {instanceScope},
 	"GetPasswordData":               {instanceScope},
+	"GetInstanceUefiData":           {instanceScope},
 	"AssociateIamInstanceProfile":   {instanceScope},
 
 	// The association id needs a NATS lookup to reach the instance behind it, so
@@ -151,16 +156,23 @@ var ec2Scopes = map[string][]*resourceScope{
 	"DetachVolume":   {volumeScope, instanceOptScope},
 	"CreateSnapshot": {snapshotNewScope, volumeScope},
 	"DeleteSnapshot": {snapshotScope},
+	// Unlike the other describes, AWS scopes these two to the resource.
+	"DescribeVolumeAttribute":   {volumeScope},
+	"DescribeSnapshotAttribute": {snapshotScope},
 	// The source snapshot lives in SourceRegion, so an ARN built from gw.Region
 	// would name a resource in the wrong region.
 	"CopySnapshot": {snapshotNewScope},
 
 	// Images.
-	"CreateImage":          {imageNewScope, instanceScope},
-	"RegisterImage":        {imageNewScope},
-	"DeregisterImage":      {imageScope},
-	"ModifyImageAttribute": {imageScope},
-	"ResetImageAttribute":  {imageScope},
+	"CreateImage":                          {imageNewScope, instanceScope},
+	"RegisterImage":                        {imageNewScope},
+	"DeregisterImage":                      {imageScope},
+	"ModifyImageAttribute":                 {imageScope},
+	"ResetImageAttribute":                  {imageScope},
+	"EnableImageDeregistrationProtection":  {imageScope},
+	"DisableImageDeregistrationProtection": {imageScope},
+	"EnableImageDeprecation":               {imageScope},
+	"DisableImageDeprecation":              {imageScope},
 	// Source image is in SourceRegion, as with CopySnapshot.
 	"CopyImage": {imageNewScope},
 
@@ -197,11 +209,18 @@ var ec2Scopes = map[string][]*resourceScope{
 	"DeleteEgressOnlyInternetGateway": {eigwScope},
 	"CreateNatGateway":                {natGatewayNewScope, subnetScope, addressOptScope},
 	"DeleteNatGateway":                {natGatewayScope},
+	// Accept's accepter VPC needs a lookup, which Dispatch adds.
+	"CreateVpcPeeringConnection":        {vpcPeeringNewScope, vpcScope},
+	"AcceptVpcPeeringConnection":        {vpcPeeringScope},
+	"RejectVpcPeeringConnection":        {vpcPeeringScope},
+	"DeleteVpcPeeringConnection":        {vpcPeeringScope},
+	"ModifyVpcPeeringConnectionOptions": {vpcPeeringScope},
 
 	// Network interfaces.
 	"CreateNetworkInterface":          {eniNewScope, subnetScope, securityGroupsOptList},
 	"DeleteNetworkInterface":          {eniScope},
 	"ModifyNetworkInterfaceAttribute": {eniScope},
+	"ResetNetworkInterfaceAttribute":  {eniScope},
 	"AttachNetworkInterface":          {eniScope, instanceScope},
 	// Carries only an attachment id, which needs a lookup to reach the interface.
 	"DetachNetworkInterface": unscoped,
@@ -258,6 +277,11 @@ var ec2Scopes = map[string][]*resourceScope{
 	"EnableSerialConsoleAccess":     unscoped,
 	"DisableSerialConsoleAccess":    unscoped,
 	"GetSerialConsoleAccessStatus":  unscoped,
+	"GetDefaultCreditSpecification": unscoped,
+	"DescribeIdFormat":              unscoped,
+	"DescribeIdentityIdFormat":      unscoped,
+	"DescribeAggregateIdFormat":     unscoped,
+	"DescribePrincipalIdFormat":     unscoped,
 
 	// Describes. "*" is fidelity, not a stub: EC2 describe actions do not
 	// support resource-level permissions in AWS either.
@@ -281,6 +305,8 @@ var ec2Scopes = map[string][]*resourceScope{
 	"DescribeLaunchTemplateVersions":         unscoped,
 	"DescribeLaunchTemplates":                unscoped,
 	"DescribeNatGateways":                    unscoped,
+	"DescribeVpcPeeringConnections":          unscoped,
+	"DescribeNetworkInterfaceAttribute":      unscoped,
 	"DescribeNetworkInterfaces":              unscoped,
 	"DescribePlacementGroups":                unscoped,
 	"DescribeRegions":                        unscoped,

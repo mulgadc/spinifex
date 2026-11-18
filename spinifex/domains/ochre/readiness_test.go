@@ -13,6 +13,7 @@ import (
 )
 
 func TestWaitReady_ImmediateSuccess(t *testing.T) {
+	t.Parallel()
 	var requests atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -29,6 +30,7 @@ func TestWaitReady_ImmediateSuccess(t *testing.T) {
 }
 
 func TestWaitReady_NonOKThenOK(t *testing.T) {
+	t.Parallel()
 	var requests atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := requests.Add(1)
@@ -48,6 +50,7 @@ func TestWaitReady_NonOKThenOK(t *testing.T) {
 }
 
 func TestWaitReady_TimeoutNeverReady(t *testing.T) {
+	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
@@ -61,6 +64,7 @@ func TestWaitReady_TimeoutNeverReady(t *testing.T) {
 }
 
 func TestWaitReady_ConnectionRefusedRetriedNotFailed(t *testing.T) {
+	t.Parallel()
 	// Nothing listens on this URL: every attempt is a transport error, which
 	// waitReady must treat as "not yet ready" and keep polling, not fail fast.
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
@@ -71,6 +75,7 @@ func TestWaitReady_ConnectionRefusedRetriedNotFailed(t *testing.T) {
 }
 
 func TestWaitReady_TEIProbesHealthNotModels(t *testing.T) {
+	t.Parallel()
 	// A TEI member's readinessTarget must poll /health, never /v1/models --
 	// TEI's own surface has no such route.
 	var gotPath string
@@ -88,6 +93,7 @@ func TestWaitReady_TEIProbesHealthNotModels(t *testing.T) {
 }
 
 func TestReadinessPath(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "/v1/models", readinessPath(FamilyMeta))
 	assert.Equal(t, "/health", readinessPath(FamilyTEI))
 	// An unrecognised family is treated the same as TEI (every non-vLLM
@@ -96,6 +102,7 @@ func TestReadinessPath(t *testing.T) {
 }
 
 func TestWaitReadyAll_MixedEnginesProbeTheirOwnRoute(t *testing.T) {
+	t.Parallel()
 	var vllmPath, teiPath string
 	vllmTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		vllmPath = r.URL.Path
@@ -122,6 +129,7 @@ func TestWaitReadyAll_MixedEnginesProbeTheirOwnRoute(t *testing.T) {
 }
 
 func TestWaitReadyAll_JoinsPerMemberFailures(t *testing.T) {
+	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))

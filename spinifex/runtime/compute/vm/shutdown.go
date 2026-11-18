@@ -569,6 +569,10 @@ func (m *Manager) releaseAutoAssignedPublicIP(instance *VM) {
 		v.PublicIP = ""
 		v.PublicIPPool = ""
 		v.AutoAssignPublicIP = true
+		if v.Instance != nil {
+			v.Instance.PublicIpAddress = nil
+			v.Instance.PublicDnsName = nil
+		}
 	})
 }
 

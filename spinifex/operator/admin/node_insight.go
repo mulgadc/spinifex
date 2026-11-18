@@ -408,7 +408,11 @@ func (d Deps) runNetworkTestPair(ctx context.Context, test *NetworkTest, from, t
 	if err != nil {
 		return res, fmt.Errorf("encode serve request: %w", err)
 	}
-	sctx, scancel := context.WithTimeout(ctx, networkTestServeTimeout)
+	serveTimeout := networkTestServeTimeout
+	if d.networkTestServeTimeout > 0 {
+		serveTimeout = d.networkTestServeTimeout
+	}
+	sctx, scancel := context.WithTimeout(ctx, serveTimeout)
 	defer scancel()
 	msg, err := d.NATS.RequestWithContext(sctx, clusterv1.NetTestServeSubject(to), serveReq)
 	if err != nil {

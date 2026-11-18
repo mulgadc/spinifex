@@ -463,6 +463,8 @@ func (e *mariadbEngine) ApplyParameters(ctx context.Context, params []rdsinstanc
 		return e.restartOnRepairSetLocked(ctx)
 	case engineRecovering:
 		return nil, errors.Join(errors.New("the engine entered startup or recovery during the parameter apply"), restore())
+	case engineServing:
+		// A serving engine goes on to take the set.
 	}
 
 	// Before the set reaches the server: enforcement is one of the values below,

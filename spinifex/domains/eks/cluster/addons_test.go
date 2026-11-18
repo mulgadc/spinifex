@@ -79,16 +79,22 @@ func TestCreateAddon_UnknownClusterIsNotFound(t *testing.T) {
 	_, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
 		ClusterName: aws.String("missing"), AddonName: aws.String(albController),
 	}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	require.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestCreateAddon_UnknownAddonRejected(t *testing.T) {
 	t.Parallel()
 	svc, _ := setupAddonService(t)
-	_, err := svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
-		ClusterName: aws.String("c1"), AddonName: aws.String("not-a-real-addon"),
+	kv, err := GetOrCreateAccountBucket(t.Context(), testutil.NewJetStream(t, svc.deps.NATSConn), testAccountID)
+	require.NoError(t, err)
+	require.NoError(t, PutClusterMeta(t.Context(), kv, &ClusterMeta{Name: "c137", Version: "1.37", Status: ClusterStatusActive}))
+	_, err = svc.CreateAddon(context.Background(), &eks.CreateAddonInput{
+		ClusterName: aws.String("c137"), AddonName: aws.String("not-a-real-addon"),
 	}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
+	code, msg, ok := awserrors.ResolveErrorDetail(err)
+	require.True(t, ok)
+	assert.Equal(t, awserrors.ErrorEKSInvalidParameter, code)
+	assert.Equal(t, "Addon not-a-real-addon specified is not supported in 1.37 kubernetes version", msg)
 }
 
 func TestCreateAddon_UnknownVersionRejected(t *testing.T) {
@@ -175,20 +181,24 @@ func TestAddon_DescribeListDelete(t *testing.T) {
 	_, err = svc.DescribeAddon(context.Background(), &eks.DescribeAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
 	}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	require.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err))
 }
 
 func TestDescribeDeleteAddon_MissingIsNotFound(t *testing.T) {
 	t.Parallel()
 	svc, _ := setupAddonService(t)
-	_, err := svc.DescribeAddon(context.Background(), &eks.DescribeAddonInput{
+	_, descErr := svc.DescribeAddon(context.Background(), &eks.DescribeAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
 	}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
-	_, err = svc.DeleteAddon(context.Background(), &eks.DeleteAddonInput{
+	_, delErr := svc.DeleteAddon(context.Background(), &eks.DeleteAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String(albController),
 	}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	for _, err := range []error{descErr, delErr} {
+		code, msg, ok := awserrors.ResolveErrorDetail(err)
+		require.True(t, ok)
+		assert.Equal(t, awserrors.ErrorEKSResourceNotFound, code)
+		assert.Equal(t, "The requested resource does not exist.", msg)
+	}
 }
 
 func TestUpdateAddon_ChangesVersionAndReinstalls(t *testing.T) {
@@ -243,7 +253,7 @@ func TestUpdateAddon_MissingIsNotFound(t *testing.T) {
 	_, err := svc.UpdateAddon(context.Background(), &eks.UpdateAddonInput{
 		ClusterName: aws.String("c1"), AddonName: aws.String("argocd"),
 	}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	require.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err))
 }
 
 // The default (uninjected) installer stages a manifest in KV that the VM-side
@@ -308,7 +318,7 @@ func TestListStagedAddonManifests(t *testing.T) {
 
 	// Unknown cluster surfaces ResourceNotFound; empty cluster name is invalid.
 	_, err = svc.ListStagedAddonManifests(context.Background(), &ListStagedAddonManifestsInput{ClusterName: "missing"}, testAccountID)
-	require.EqualError(t, err, awserrors.ErrorEKSResourceNotFound)
+	require.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err))
 	_, err = svc.ListStagedAddonManifests(context.Background(), &ListStagedAddonManifestsInput{ClusterName: ""}, testAccountID)
 	require.EqualError(t, err, awserrors.ErrorInvalidParameterValue)
 }
@@ -343,7 +353,7 @@ func TestCreateAddon_RejectsMalformedServiceAccountRoleArn(t *testing.T) {
 			_, descErr := svc.DescribeAddon(context.Background(), &eks.DescribeAddonInput{
 				ClusterName: aws.String("c1"), AddonName: aws.String(albController),
 			}, testAccountID)
-			require.EqualError(t, descErr, awserrors.ErrorEKSResourceNotFound, "a rejected create must not persist a record")
+			require.Equal(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(descErr), "a rejected create must not persist a record")
 		})
 	}
 }

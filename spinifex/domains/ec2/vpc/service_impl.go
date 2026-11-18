@@ -91,6 +91,8 @@ type VPCServiceImpl struct {
 	rtbKV      jetstream.KeyValue // route table bucket for auto-creating main route table
 	igwKV      jetstream.KeyValue // internet gateway bucket for the DeleteVpc dependency check
 	eigwKV     jetstream.KeyValue // egress-only internet gateway bucket for the DeleteVpc dependency check
+	natgwKV    jetstream.KeyValue // NAT gateway bucket for the DeleteSubnet dependency check
+	natgwIdxKV jetstream.KeyValue // per-subnet NAT gateway index for the same check
 	ipam       *IPAM
 
 	// Optional: injected after construction for public IP cleanup in DeleteNetworkInterface.
@@ -110,6 +112,15 @@ type VPCServiceImpl struct {
 	// (non-pool external modes have no public IPs to assign). Zero value keeps
 	// the AWS-faithful default of true.
 	disableDefaultPublicIP bool
+
+	// Optional: reports whether a VPC's peering connections block DeleteVpc.
+	// Nil checks nothing.
+	peeringBlocks func(ctx context.Context, vpcID string) (bool, error)
+}
+
+// SetPeeringCheck injects the DeleteVpc peering dependency check.
+func (s *VPCServiceImpl) SetPeeringCheck(check func(ctx context.Context, vpcID string) (bool, error)) {
+	s.peeringBlocks = check
 }
 
 // SetDefaultPublicIPMapping controls whether default subnets are seeded with
@@ -236,6 +247,14 @@ func NewVPCServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn
 	if err != nil {
 		return nil, fmt.Errorf("failed to create KV bucket spinifex-eigw: %w", err)
 	}
+	natgwKV, err := kvstore.GetOrCreateBucket(ctx, js, kvBucketNatGateways, 10)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create KV bucket %s: %w", kvBucketNatGateways, err)
+	}
+	natgwIdxKV, err := kvstore.GetOrCreateBucket(ctx, js, KVBucketSubnetNatGateways, KVBucketSubnetNatGatewaysHistory)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create KV bucket %s: %w", KVBucketSubnetNatGateways, err)
+	}
 
 	ipam, err := NewIPAM(ctx, js)
 	if err != nil {
@@ -261,6 +280,8 @@ func NewVPCServiceImplWithNATS(ctx context.Context, cfg *config.Config, natsConn
 		rtbKV:      rtbKV,
 		igwKV:      igwKV,
 		eigwKV:     eigwKV,
+		natgwKV:    natgwKV,
+		natgwIdxKV: natgwIdxKV,
 		ipam:       ipam,
 	}, nil
 }
@@ -514,6 +535,9 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 	if err := rejectAttachedGateway(ctx, s.eigwKV, accountID, vpcID); err != nil {
 		return nil, err
 	}
+	if err := s.rejectPeeringDependency(ctx, vpcID); err != nil {
+		return nil, err
+	}
 
 	// Cascade-delete the default SG before removing the VPC record so a vpcd
 	// failure surfaces to the caller and leaves both records intact for retry.
@@ -552,6 +576,24 @@ func (s *VPCServiceImpl) DeleteVpc(ctx context.Context, input *ec2.DeleteVpcInpu
 	s.publishVPCEvent(networkv1.VPCDeleteSubject, vpcID, "", 0)
 
 	return &ec2.DeleteVpcOutput{}, nil
+}
+
+// rejectPeeringDependency returns DependencyViolation while a peering
+// connection links vpcID or another account's request awaits its acceptance.
+// Any other pending request ends once the VPC record is gone.
+func (s *VPCServiceImpl) rejectPeeringDependency(ctx context.Context, vpcID string) error {
+	if s.peeringBlocks == nil {
+		return nil
+	}
+	blocked, err := s.peeringBlocks(ctx, vpcID)
+	if err != nil {
+		slog.WarnContext(ctx, "DeleteVpc: peering check failed", "vpcId", vpcID, "err", err)
+		return errors.New(awserrors.ErrorServerInternal)
+	}
+	if blocked {
+		return awserrors.HasDependencies("vpc", vpcID)
+	}
+	return nil
 }
 
 // rejectAttachedGateway returns DependencyViolation when a gateway record in kv
@@ -921,7 +963,7 @@ func (s *VPCServiceImpl) checkSubnetResidents(ctx context.Context, accountID, su
 			return awserrors.HasDependencies("subnet", subnetID)
 		}
 	}
-	return nil
+	return s.checkSubnetNatGateways(ctx, accountID, subnetID)
 }
 
 // clearRouteTableAssociationsForSubnet removes every route table association

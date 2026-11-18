@@ -76,13 +76,16 @@ func TestDaemonReconnectBumpsRetryCount(t *testing.T) {
 	defer d.natsConn.Close()
 	require.Equal(t, int64(0), d.NATSRetryCount())
 
+	// Wait on the daemon's flag, not the client status: nats.go marks the
+	// client reconnecting before it runs the disconnect callback.
 	ns.Shutdown()
-	require.Eventually(t, func() bool { return !d.natsConn.IsConnected() }, 3*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return d.Mode() == DaemonModeStandalone }, 3*time.Second, 10*time.Millisecond,
+		"mode should flip to standalone after NATS shutdown")
 
 	startTestNATSOnPortForTest(t, port)
-	require.Eventually(t, func() bool { return d.Mode() == DaemonModeCluster }, 5*time.Second, 10*time.Millisecond,
-		"mode should flip back to cluster on reconnect")
-	assert.GreaterOrEqual(t, d.NATSRetryCount(), int64(1))
+	require.Eventually(t, func() bool { return d.NATSRetryCount() >= 1 }, 5*time.Second, 10*time.Millisecond,
+		"reconnect should bump the retry count")
+	assert.Equal(t, DaemonModeCluster, d.Mode(), "mode should flip back to cluster on reconnect")
 }
 
 func freePortForTest(t *testing.T) int {

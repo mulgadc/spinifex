@@ -290,12 +290,12 @@ func TestAnonymousAssumeRoleWithWebIdentity(t *testing.T) {
 		"RoleSessionName": "s1", "WebIdentityToken": "h.p.s",
 	}
 	t.Run("nil service fails closed", func(t *testing.T) {
-		_, err := NewAnonymousAssumeRoleWithWebIdentity(Deps{})(q)
+		_, err := NewAnonymousAssumeRoleWithWebIdentity(Deps{})("", q)
 		assert.True(t, awserrors.IsErrorCode(err, awserrors.ErrorInternalError))
 	})
 	t.Run("runs the handler with no caller", func(t *testing.T) {
 		svc := &webIdentitySTS{}
-		out, err := NewAnonymousAssumeRoleWithWebIdentity(Deps{STS: svc})(q)
+		out, err := NewAnonymousAssumeRoleWithWebIdentity(Deps{STS: svc})("", q)
 		require.NoError(t, err)
 		assert.Contains(t, string(out), "AssumeRoleWithWebIdentityResult")
 	})

@@ -16,46 +16,13 @@ jobs:
         with:
           path: spinifex
 
-      - name: Resolve sibling release tags from go.mod
-        id: siblings
-        run: bash spinifex/.github/scripts/resolve-release-sibling-refs.sh spinifex/go.mod
-
-      - name: Checkout Predastore
-        uses: actions/checkout@v7.0.1
+      - name: Go workspace
+        uses: $/.github/actions/go-workspace
         with:
-          repository: mulgadc/predastore
-          ref: ${{ steps.siblings.outputs.predastore }}
-          path: predastore
-
-      - name: Checkout Viperblock
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/viperblock
-          ref: ${{ steps.siblings.outputs.viperblock }}
-          path: viperblock
-
-      - name: Checkout Northstar
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/northstar
-          ref: ${{ steps.siblings.outputs.northstar }}
-          path: northstar
-
-      - name: Checkout Bluebottle
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/bluebottle
-          ref: ${{ steps.siblings.outputs.bluebottle }}
-          path: bluebottle
+          siblings: release
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4.4.1
-
-      - name: Set up Go
-        uses: actions/setup-go@v7.0.0
-        with:
-          go-version-file: spinifex/go.mod
-          cache: false
 
       - name: Build microVM artifacts (lb-agent + kernel + initramfs + qboot + SQS store and worker images)
         run: cd spinifex && make build-microvm-image build-sqs-worker-microvm-image
@@ -83,37 +50,10 @@ jobs:
         with:
           path: spinifex
 
-      - name: Resolve sibling release tags from go.mod
-        id: siblings
-        run: bash spinifex/.github/scripts/resolve-release-sibling-refs.sh spinifex/go.mod
-
-      - name: Checkout Predastore
-        uses: actions/checkout@v7.0.1
+      - name: Go workspace
+        uses: $/.github/actions/go-workspace
         with:
-          repository: mulgadc/predastore
-          ref: ${{ steps.siblings.outputs.predastore }}
-          path: predastore
-
-      - name: Checkout Viperblock
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/viperblock
-          ref: ${{ steps.siblings.outputs.viperblock }}
-          path: viperblock
-
-      - name: Checkout Northstar
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/northstar
-          ref: ${{ steps.siblings.outputs.northstar }}
-          path: northstar
-
-      - name: Checkout Bluebottle
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/bluebottle
-          ref: ${{ steps.siblings.outputs.bluebottle }}
-          path: bluebottle
+          siblings: release
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4.4.1
@@ -150,7 +90,7 @@ jobs:
           path: artifacts
 
       - name: Create Draft GitHub Release
-        uses: softprops/action-gh-release@v3.0.3
+        uses: softprops/action-gh-release@v3.0.4
         with:
           draft: true
           files: |
@@ -218,6 +158,8 @@ jobs:
         working-directory: mulga/scripts/tofu-cluster
         run: |
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/hv-lock.sh"
+          hv_lock_acquire "envs/${SPINIFEX_CI_ENV}.tfvars"
           tofu init -input=false >> "$TOFU_LOG" 2>&1
           tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
           tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false >> "$TOFU_LOG" 2>&1 || true
@@ -236,6 +178,9 @@ jobs:
         working-directory: mulga/scripts/tofu-cluster
         run: |
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/hv-lock.sh"
+          hv_lock_acquire "envs/${SPINIFEX_CI_ENV}.tfvars" || {
+            echo "::error::teardown skipped: ${SPINIFEX_CI_ENV} is left up for the next job's pre-clean destroy"; exit 1; }
           tofu workspace select -or-create "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1
           retry_run "tofu destroy" "$TOFU_LOG" tofu destroy -var-file=envs/${SPINIFEX_CI_ENV}.tfvars -auto-approve -input=false
           ./scrub-env.sh "${SPINIFEX_CI_ENV}" >> "$TOFU_LOG" 2>&1 || true
@@ -333,37 +278,10 @@ jobs:
           path: spinifex
           ref: ${{ github.ref }}
 
-      - name: Resolve sibling release tags from go.mod
-        id: siblings
-        run: bash spinifex/.github/scripts/resolve-release-sibling-refs.sh spinifex/go.mod
-
-      - name: Checkout Predastore
-        uses: actions/checkout@v7.0.1
+      - name: Go workspace
+        uses: $/.github/actions/go-workspace
         with:
-          repository: mulgadc/predastore
-          ref: ${{ steps.siblings.outputs.predastore }}
-          path: predastore
-
-      - name: Checkout Viperblock
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/viperblock
-          ref: ${{ steps.siblings.outputs.viperblock }}
-          path: viperblock
-
-      - name: Checkout Northstar
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/northstar
-          ref: ${{ steps.siblings.outputs.northstar }}
-          path: northstar
-
-      - name: Checkout Bluebottle
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: mulgadc/bluebottle
-          ref: ${{ steps.siblings.outputs.bluebottle }}
-          path: bluebottle
+          siblings: release
 
       - name: Checkout Mulga iso-builder
         uses: actions/checkout@v7.0.1
@@ -375,15 +293,6 @@ jobs:
 
       - name: Clean ISO builder cache
         run: sudo make -C mulga/scripts/iso-builder clean
-
-      - name: Set up Go
-        uses: actions/setup-go@v7.0.0
-        with:
-          go-version-file: spinifex/go.mod
-          cache: false
-
-      - name: Configure Go workspace
-        run: go work init ./spinifex ./predastore ./viperblock ./northstar ./bluebottle
 
       - name: Install ISO builder dependencies
         run: |

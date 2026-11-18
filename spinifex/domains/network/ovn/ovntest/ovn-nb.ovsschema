@@ -51,6 +51,7 @@
         "mac": {"type": "string"},
         "networks": {"type": {"key": "string", "min": 0, "max": "unlimited"}},
         "gateway_chassis": {"type": {"key": {"type": "uuid", "refTable": "Gateway_Chassis", "refType": "weak"}, "min": 0, "max": "unlimited"}},
+        "peer": {"type": {"key": "string", "min": 0, "max": 1}},
         "external_ids": {"type": {"key": "string", "value": "string", "min": 0, "max": "unlimited"}},
         "options": {"type": {"key": "string", "value": "string", "min": 0, "max": "unlimited"}}
       }

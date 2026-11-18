@@ -10,3 +10,16 @@ type ENIRequests struct {
 	AvailableSlots  []int          `json:"available_slots"`
 	AttachedByENIID map[string]int `json:"attached_by_eni_id"`
 }
+
+// SlotHeld reports whether a hot-plugged ENI holds slot, which is also the
+// device index the ENI's record reports.
+func (r *ENIRequests) SlotHeld(slot int64) bool {
+	r.Mu.Lock()
+	defer r.Mu.Unlock()
+	for _, held := range r.AttachedByENIID {
+		if int64(held) == slot {
+			return true
+		}
+	}
+	return false
+}

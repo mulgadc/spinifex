@@ -18,7 +18,7 @@ tags:
 
 ## Overview
 
-Spinifex implements **127 operations** in the EC2 `2016-11-15` API model.
+Spinifex implements **148 operations** in the EC2 `2016-11-15` API model.
 
 ### Spot Instances Are a Mock
 
@@ -62,6 +62,7 @@ Whether new volumes are encrypted is decided by the platform's encryption key, n
 
 | Operation |
 |---|
+| `AcceptVpcPeeringConnection` |
 | `AllocateAddress` |
 | `AssociateAddress` |
 | `AssociateIamInstanceProfile` |
@@ -93,6 +94,7 @@ Whether new volumes are encrypted is decided by the platform's encryption key, n
 | `CreateTags` |
 | `CreateVolume` |
 | `CreateVpc` |
+| `CreateVpcPeeringConnection` |
 | `DeleteEgressOnlyInternetGateway` |
 | `DeleteInternetGateway` |
 | `DeleteKeyPair` |
@@ -109,14 +111,18 @@ Whether new volumes are encrypted is decided by the platform's encryption key, n
 | `DeleteTags` |
 | `DeleteVolume` |
 | `DeleteVpc` |
+| `DeleteVpcPeeringConnection` |
 | `DeregisterImage` |
 | `DescribeAccountAttributes` |
 | `DescribeAddresses` |
 | `DescribeAddressesAttribute` |
+| `DescribeAggregateIdFormat` |
 | `DescribeAvailabilityZones` |
 | `DescribeCapacityReservations` |
 | `DescribeEgressOnlyInternetGateways` |
 | `DescribeIamInstanceProfileAssociations` |
+| `DescribeIdFormat` |
+| `DescribeIdentityIdFormat` |
 | `DescribeImageAttribute` |
 | `DescribeImages` |
 | `DescribeInstanceAttribute` |
@@ -130,34 +136,45 @@ Whether new volumes are encrypted is decided by the platform's encryption key, n
 | `DescribeLaunchTemplateVersions` |
 | `DescribeLaunchTemplates` |
 | `DescribeNatGateways` |
+| `DescribeNetworkInterfaceAttribute` |
 | `DescribeNetworkInterfaces` |
 | `DescribePlacementGroups` |
+| `DescribePrincipalIdFormat` |
 | `DescribeRegions` |
 | `DescribeRouteTables` |
 | `DescribeSecurityGroupRules` |
 | `DescribeSecurityGroups` |
+| `DescribeSnapshotAttribute` |
 | `DescribeSnapshots` |
 | `DescribeSpotInstanceRequests` |
 | `DescribeSubnets` |
 | `DescribeTags` |
+| `DescribeVolumeAttribute` |
 | `DescribeVolumeStatus` |
 | `DescribeVolumes` |
 | `DescribeVolumesModifications` |
 | `DescribeVpcAttribute` |
 | `DescribeVpcEndpoints` |
+| `DescribeVpcPeeringConnections` |
 | `DescribeVpcs` |
 | `DetachInternetGateway` |
 | `DetachNetworkInterface` |
 | `DetachVolume` |
 | `DisableEbsEncryptionByDefault` |
+| `DisableImageDeprecation` |
+| `DisableImageDeregistrationProtection` |
 | `DisableSerialConsoleAccess` |
 | `DisassociateAddress` |
 | `DisassociateIamInstanceProfile` |
 | `DisassociateRouteTable` |
 | `EnableEbsEncryptionByDefault` |
+| `EnableImageDeprecation` |
+| `EnableImageDeregistrationProtection` |
 | `EnableSerialConsoleAccess` |
 | `GetConsoleOutput` |
+| `GetDefaultCreditSpecification` |
 | `GetEbsEncryptionByDefault` |
+| `GetInstanceUefiData` |
 | `GetPasswordData` |
 | `GetSecurityGroupsForVpc` |
 | `GetSerialConsoleAccessStatus` |
@@ -171,15 +188,19 @@ Whether new volumes are encrypted is decided by the platform's encryption key, n
 | `ModifySubnetAttribute` |
 | `ModifyVolume` |
 | `ModifyVpcAttribute` |
+| `ModifyVpcPeeringConnectionOptions` |
 | `MonitorInstances` |
 | `RebootInstances` |
 | `RegisterImage` |
+| `RejectVpcPeeringConnection` |
 | `ReleaseAddress` |
 | `ReplaceIamInstanceProfileAssociation` |
 | `ReplaceRoute` |
 | `ReplaceRouteTableAssociation` |
 | `RequestSpotInstances` |
 | `ResetImageAttribute` |
+| `ResetInstanceAttribute` |
+| `ResetNetworkInterfaceAttribute` |
 | `RevokeSecurityGroupEgress` |
 | `RevokeSecurityGroupIngress` |
 | `RunInstances` |

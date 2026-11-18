@@ -50,8 +50,7 @@ func TestCreateListener_HTTPSRequiresCert(t *testing.T) {
 		Port:            aws.Int64(443),
 		DefaultActions:  fixedResponseAction(),
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorELBv2CertificateNotFound)
+	assert.EqualError(t, err, "A certificate must be specified for HTTPS listeners: ValidationError")
 }
 
 func TestCreateListener_HTTPSDefaultsSslPolicy(t *testing.T) {
@@ -158,8 +157,7 @@ func TestModifyListener_SwitchToHTTPSRequiresCert(t *testing.T) {
 		ListenerArn: arn,
 		Protocol:    aws.String(ProtocolHTTPS),
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorELBv2CertificateNotFound)
+	assert.EqualError(t, err, "A certificate must be specified for HTTPS listeners: ValidationError")
 
 	// HTTP -> HTTPS with a cert succeeds and defaults the policy.
 	out, err := svc.ModifyListener(context.Background(), &elbv2.ModifyListenerInput{
@@ -197,7 +195,9 @@ func TestListenerCertificates_AddRemoveDescribe(t *testing.T) {
 		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn2)}},
 	}, testAccountID)
 	require.NoError(t, err)
-	require.Len(t, addOut.Certificates, 2)
+	require.Len(t, addOut.Certificates, 1, "AWS returns only the requested certificate")
+	assert.Equal(t, testCertArn2, aws.StringValue(addOut.Certificates[0].CertificateArn))
+	assert.False(t, aws.BoolValue(addOut.Certificates[0].IsDefault))
 
 	// Re-adding is idempotent.
 	addOut, err = svc.AddListenerCertificates(context.Background(), &elbv2.AddListenerCertificatesInput{
@@ -205,7 +205,7 @@ func TestListenerCertificates_AddRemoveDescribe(t *testing.T) {
 		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn2)}},
 	}, testAccountID)
 	require.NoError(t, err)
-	require.Len(t, addOut.Certificates, 2)
+	require.Len(t, addOut.Certificates, 1)
 
 	// Describe shows both.
 	desc, err := svc.DescribeListenerCertificates(context.Background(), &elbv2.DescribeListenerCertificatesInput{
@@ -219,8 +219,7 @@ func TestListenerCertificates_AddRemoveDescribe(t *testing.T) {
 		ListenerArn:  aws.String(arn),
 		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}},
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorELBv2InvalidConfigurationRequest)
+	assert.EqualError(t, err, "Default certificate cannot be removed: OperationNotPermitted")
 
 	// Removing the SNI cert succeeds.
 	_, err = svc.RemoveListenerCertificates(context.Background(), &elbv2.RemoveListenerCertificatesInput{
@@ -235,6 +234,27 @@ func TestListenerCertificates_AddRemoveDescribe(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, desc.Certificates, 1)
 	assert.Equal(t, testCertArn, aws.StringValue(desc.Certificates[0].CertificateArn))
+}
+
+func TestAddListenerCertificates_MoreThanOneRejected(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	arn := createHTTPSListener(t, svc)
+
+	_, err := svc.AddListenerCertificates(context.Background(), &elbv2.AddListenerCertificatesInput{
+		ListenerArn: aws.String(arn),
+		Certificates: []*elbv2.Certificate{
+			{CertificateArn: aws.String(testCertArn2)},
+			{CertificateArn: aws.String(testCertArn)},
+		},
+	}, testAccountID)
+	assert.EqualError(t, err, "Up to '1' certificate ARNs can be specified, but '2' were specified: "+awserrors.ErrorValidationError)
+
+	desc, err := svc.DescribeListenerCertificates(context.Background(), &elbv2.DescribeListenerCertificatesInput{
+		ListenerArn: aws.String(arn),
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Len(t, desc.Certificates, 1, "a refused call attaches nothing")
 }
 
 func TestAddListenerCertificates_HTTPRejected(t *testing.T) {
@@ -253,8 +273,7 @@ func TestAddListenerCertificates_HTTPRejected(t *testing.T) {
 		ListenerArn:  lst.Listeners[0].ListenerArn,
 		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn)}},
 	}, testAccountID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), awserrors.ErrorELBv2InvalidConfigurationRequest)
+	assert.EqualError(t, err, "A certificate cannot be specified for HTTP listeners: ValidationError")
 }
 
 func TestListenerCertificates_ValidationAndNotFound(t *testing.T) {
@@ -447,4 +466,27 @@ func TestListenerCerts_DefaultCertRendersFirstAndKeepsItsPath(t *testing.T) {
 	assert.Contains(t, lb.CertFiles, defaultPath)
 	assert.Contains(t, lb.ConfigText, "ssl crt "+defaultPath,
 		"the default cert must be the first crt on the bind line")
+}
+
+func TestDescribeListenerCertificates_PageSize(t *testing.T) {
+	t.Parallel()
+	svc := setupTestService(t)
+	arn := createHTTPSListener(t, svc)
+	_, err := svc.AddListenerCertificates(context.Background(), &elbv2.AddListenerCertificatesInput{
+		ListenerArn:  aws.String(arn),
+		Certificates: []*elbv2.Certificate{{CertificateArn: aws.String(testCertArn2)}},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	first, err := svc.DescribeListenerCertificates(context.Background(), &elbv2.DescribeListenerCertificatesInput{ListenerArn: aws.String(arn), PageSize: aws.Int64(1)}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, first.Certificates, 1)
+	assert.Equal(t, testCertArn, *first.Certificates[0].CertificateArn)
+	require.NotNil(t, first.NextMarker)
+
+	second, err := svc.DescribeListenerCertificates(context.Background(), &elbv2.DescribeListenerCertificatesInput{ListenerArn: aws.String(arn), PageSize: aws.Int64(1), Marker: first.NextMarker}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, second.Certificates, 1)
+	assert.Equal(t, testCertArn2, *second.Certificates[0].CertificateArn)
+	assert.Nil(t, second.NextMarker)
 }

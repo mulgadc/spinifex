@@ -19,6 +19,10 @@ import (
 
 var errFinalSnapshotInProgress = errors.New("rds: final DB snapshot creation is still in progress")
 
+// errFinalSnapshotFailed holds a deletion in deleting with its data volume kept:
+// the final snapshot's EC2 snapshot ended in error, so the volume is the only copy.
+var errFinalSnapshotFailed = errors.New("rds: the final DB snapshot failed")
+
 // errModifyInProgress defers a teardown until a modify that already holds the
 // lease, and may be growing the data volume, has let go of it.
 var errModifyInProgress = errors.New("rds: a modification of the DB instance is still in progress")
@@ -52,7 +56,7 @@ func (s *Service) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInsta
 	}
 	if rec.DeletionProtection {
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameterCombination,
-			"DB instance %s cannot be deleted because deletion protection is enabled", id)
+			"Cannot delete protected DB Instance, please disable deletion protection and try again.")
 	}
 	if err := s.checkFinalSnapshotAvailable(ctx, kv, rec, finalSnapshot); err != nil {
 		return nil, err
@@ -84,6 +88,7 @@ func (s *Service) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInsta
 	rec.Status = StatusDeleting
 	rec.FailureReason = ""
 	rec.FinalSnapshotIdentifier = finalSnapshot
+	rec.TeardownHandedOff = false
 	rec.TransitionStartedAt = &now
 	rec.UpdatedAt = now
 	if err := updateJSON(ctx, kv, DBInstanceKey(id), rev, rec); err != nil {
@@ -102,17 +107,37 @@ func (s *Service) DeleteDBInstance(ctx context.Context, input *rds.DeleteDBInsta
 	// handler's alone until the reconciler may resume it.
 	teardownCtx, cancel := context.WithDeadline(ctx, deleteClaimEnds(rec))
 	defer cancel()
-	if err := s.teardownDBInstance(teardownCtx, kv, accountID, rec, reservation.creator); err != nil {
-		// The reconciler finishes the delete once the modify lets go.
-		if errors.Is(err, errModifyInProgress) {
+	if _, err := s.retireDBInstanceVM(teardownCtx, kv, accountID, rec, reservation.creator); err != nil {
+		// The reconciler finishes the delete once the modify lets go, or once
+		// the final snapshot settles.
+		if errors.Is(err, errModifyInProgress) || errors.Is(err, errFinalSnapshotInProgress) ||
+			errors.Is(err, errFinalSnapshotFailed) {
 			return &rds.DeleteDBInstanceOutput{DBInstance: s.projectDBInstance(rec)}, nil
 		}
 		return nil, err
 	}
+	// Purging the automated backups scales with how many are stored, so the rest
+	// of the teardown is the reconciler's, which this hands it straight away.
+	s.handOffTeardown(teardownCtx, kv, id)
 
-	// The record is gone, so the customer is answered with the last state it
-	// held — as AWS does, which reports the instance as deleting.
+	// Answered with the state the delete recorded, as AWS does, which reports
+	// the instance as deleting.
 	return &rds.DeleteDBInstanceOutput{DBInstance: s.projectDBInstance(rec)}, nil
+}
+
+// Ends the handler's claim early. A write that does not land only leaves the
+// reconciler waiting for the claim to run out.
+func (s *Service) handOffTeardown(ctx context.Context, kv *kvstore.Bucket, id string) {
+	if _, err := s.updateInstanceIf(ctx, kv, id, func(stored *DBInstanceRecord) bool {
+		if stored.Status != StatusDeleting {
+			return false
+		}
+		stored.TeardownHandedOff = true
+		return true
+	}); err != nil {
+		slog.WarnContext(ctx, "rds: handing a delete to the reconciler failed; it resumes once the claim ends",
+			"dbInstance", id, "err", err)
+	}
 }
 
 // One of the two is required, exactly as AWS: omitting both is the request that
@@ -130,10 +155,10 @@ func validateDeleteRequest(input *rds.DeleteDBInstanceInput) (string, error) {
 	switch {
 	case skip && identifier != "":
 		return "", awserrors.Errorf(awserrors.ErrorInvalidParameterCombination,
-			"FinalDBSnapshotIdentifier cannot be supplied with SkipFinalSnapshot")
+			"Only one of SkipFinalSnapshot and FinalDBSnapshotIdentifier can be specified")
 	case !skip && identifier == "":
 		return "", awserrors.Errorf(awserrors.ErrorInvalidParameterCombination,
-			"FinalDBSnapshotIdentifier is required unless SkipFinalSnapshot is set")
+			"FinalDBSnapshotIdentifier is required unless SkipFinalSnapshot is specified.")
 	}
 	if identifier != "" {
 		if err := validateDBSnapshotIdentifier(identifier); err != nil {
@@ -191,36 +216,13 @@ func (s *Service) checkFinalSnapshotAvailable(ctx context.Context, kv *kvstore.B
 // any point it stopped at.
 func (s *Service) teardownDBInstance(ctx context.Context, kv *kvstore.Bucket, accountID string,
 	rec *DBInstanceRecord, finalSnapshotCreator bool) error {
-	current, _, err := s.getDBInstance(ctx, kv, rec.DBInstanceIdentifier)
-	if err != nil {
-		return err
-	}
-	if current.ModifyLease.live() {
-		return errModifyInProgress
-	}
-	// A modify that finished since the delete was accepted may have replaced the
-	// VM, so the teardown works from the record as it is now.
-	rec = current
-
-	// Asked to stop cleanly even though the VM is about to go: it is what makes
-	// the final snapshot a clean checkpoint rather than one needing WAL replay.
-	if rec.FinalSnapshotIdentifier != "" {
-		s.stopEngineOrRecordFallback(ctx, accountID, rec, "deleting")
-	}
-
-	// The engine stop swallows a deadline, and a handler past its claim must not
-	// start a terminate the reconciler may already be running.
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := s.terminateInstanceVM(ctx, rec.InstanceID, rec.DataVolumeID); err != nil {
-		return fmt.Errorf("rds: terminate the VM behind %s: %w", rec.DBInstanceIdentifier, err)
-	}
-	if err := s.requireDataVolumeDetached(ctx, rec.DataVolumeID, rec.InstanceID); err != nil {
-		return err
-	}
-	if err := s.takeFinalSnapshot(ctx, kv, accountID, rec, finalSnapshotCreator); err != nil {
-		return err
+	// A handed-off delete has already retired its VM and cut its final snapshot.
+	if !rec.TeardownHandedOff {
+		retired, err := s.retireDBInstanceVM(ctx, kv, accountID, rec, finalSnapshotCreator)
+		if err != nil {
+			return err
+		}
+		rec = retired
 	}
 	// Before the volume is released, so the automated backups are no longer holding
 	// its chunks when that decides between deleting and retaining it. AWS keeps
@@ -255,6 +257,46 @@ func (s *Service) teardownDBInstance(ctx context.Context, kv *kvstore.Bucket, ac
 		"dbInstance", rec.DBInstanceIdentifier, "accountId", accountID,
 		"finalSnapshot", rec.FinalSnapshotIdentifier)
 	return nil
+}
+
+// The request-scaled head of the teardown, up to a sealed data volume and the
+// final snapshot, returning the record it worked from.
+func (s *Service) retireDBInstanceVM(ctx context.Context, kv *kvstore.Bucket, accountID string,
+	rec *DBInstanceRecord, finalSnapshotCreator bool) (*DBInstanceRecord, error) {
+	current, _, err := s.getDBInstance(ctx, kv, rec.DBInstanceIdentifier)
+	if err != nil {
+		return nil, err
+	}
+	if current.ModifyLease.live() {
+		return nil, errModifyInProgress
+	}
+	// A modify that finished since the delete was accepted may have replaced the
+	// VM, so the teardown works from the record as it is now.
+	rec = current
+
+	// Asked to stop cleanly even though the VM is about to go: it is what makes
+	// the final snapshot a clean checkpoint rather than one needing WAL replay.
+	// Once the final snapshot is cut the VM is already gone, so a resumed
+	// teardown waiting on that snapshot has no engine left to stop.
+	if rec.FinalSnapshotIdentifier != "" && !s.finalSnapshotCut(ctx, kv, rec) {
+		s.stopEngineOrRecordFallback(ctx, accountID, rec, "deleting")
+	}
+
+	// The engine stop swallows a deadline, and a handler past its claim must not
+	// start a terminate the reconciler may already be running.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.terminateInstanceVM(ctx, rec.InstanceID, rec.DataVolumeID); err != nil {
+		return nil, fmt.Errorf("rds: terminate the VM behind %s: %w", rec.DBInstanceIdentifier, err)
+	}
+	if err := s.requireDataVolumeDetached(ctx, rec.DataVolumeID, rec.InstanceID); err != nil {
+		return nil, err
+	}
+	if err := s.takeFinalSnapshot(ctx, kv, accountID, rec, finalSnapshotCreator); err != nil {
+		return nil, err
+	}
+	return rec, nil
 }
 
 // A VM no node owns is either already gone or stopped, and a stopped one is
@@ -355,10 +397,9 @@ func (s *Service) reserveFinalSnapshot(ctx context.Context, kv *kvstore.Bucket, 
 
 	// Manual, deliberately: the customer named it, so only the customer removes it
 	// — which is also what keeps the retention sweep away from it.
-	record := newDBSnapshotRecord(accountID, rec, &validatedSnapshot{
+	record := s.newDBSnapshotRecord(accountID, rec, &validatedSnapshot{
 		DBSnapshotIdentifier: identifier,
 		SnapshotType:         SnapshotTypeManual,
-		Tags:                 rec.Tags,
 	})
 	record.FinalSnapshot = true
 	rev, err := createJSONRevision(ctx, kv, DBSnapshotKey(identifier), &record)
@@ -433,30 +474,28 @@ func (s *Service) takeFinalSnapshot(ctx context.Context, kv *kvstore.Bucket, acc
 		return awserrors.Errorf(awserrors.ErrorDBSnapshotAlreadyExists,
 			"DB snapshot %s already exists", rec.FinalSnapshotIdentifier)
 	}
-	if record.Status == SnapshotStatusAvailable && record.SnapshotID != "" {
+	switch {
+	case record.Status == SnapshotStatusAvailable && record.SnapshotID != "":
 		return nil
-	}
-	if record.Status != SnapshotStatusCreating {
+	case record.Status == SnapshotStatusFailed:
+		return fmt.Errorf("%w: %s", errFinalSnapshotFailed, rec.FinalSnapshotIdentifier)
+	case record.Status != SnapshotStatusCreating:
 		return awserrors.Errorf(awserrors.ErrorDBSnapshotInvalidState,
 			"DB snapshot %s is %s; expected %s", rec.FinalSnapshotIdentifier, record.Status, SnapshotStatusCreating)
+	case record.SnapshotID != "":
+		// Already cut and still settling, which reconcileSnapshots records.
+		return errFinalSnapshotInProgress
 	}
 
 	if !creator {
-		snapshotID, err := s.findEC2SnapshotFor(ctx, accountID, rec.FinalSnapshotIdentifier)
+		snapshotID, state, err := s.findEC2SnapshotFor(ctx, accountID, rec.FinalSnapshotIdentifier)
 		if err != nil {
 			return err
 		}
 		if snapshotID == "" {
 			return errFinalSnapshotInProgress
 		}
-		completed, err := s.completeFinalSnapshot(ctx, kv, rec, snapshotID)
-		if err != nil {
-			return err
-		}
-		if completed {
-			s.recordFinalSnapshotCreated(ctx, accountID, rec, snapshotID)
-		}
-		return nil
+		return s.settleFinalSnapshot(ctx, kv, accountID, rec, snapshotID, state)
 	}
 
 	// System-owned, like the volume it is taken from: the customer addresses it
@@ -483,66 +522,117 @@ func (s *Service) takeFinalSnapshot(ctx context.Context, kv *kvstore.Bucket, acc
 		return fmt.Errorf("rds: take the final snapshot of %s: empty snapshot id", rec.DBInstanceIdentifier)
 	}
 	snapshotID := aws.StringValue(snapshot.SnapshotId)
-	completed, err := s.completeFinalSnapshot(ctx, kv, rec, snapshotID)
-	if err != nil {
+	if err := s.settleFinalSnapshot(ctx, kv, accountID, rec, snapshotID, aws.StringValue(snapshot.State)); err != nil {
 		return fmt.Errorf("rds: record the final snapshot of %s: %w", rec.DBInstanceIdentifier, err)
-	}
-	if completed {
-		s.recordFinalSnapshotCreated(ctx, accountID, rec, snapshotID)
 	}
 	return nil
 }
 
-// Completes only the snapshot fields under CAS, preserving tags changed while
-// the EC2 snapshot was being cut.
+// Records the final snapshot's EC2 snapshot and its state, reporting a pending
+// one as errFinalSnapshotInProgress and an errored or gone one as errFinalSnapshotFailed.
+func (s *Service) settleFinalSnapshot(ctx context.Context, kv *kvstore.Bucket, accountID string,
+	rec *DBInstanceRecord, snapshotID, state string) error {
+	written, err := s.completeFinalSnapshot(ctx, kv, rec, snapshotID, state)
+	if err != nil {
+		return err
+	}
+	if written != nil {
+		s.recordSnapshotSettled(ctx, accountID, written, state)
+	}
+	switch status, _ := rdsSnapshotStatus(state); status {
+	case SnapshotStatusCreating:
+		return errFinalSnapshotInProgress
+	case SnapshotStatusFailed:
+		return fmt.Errorf("%w: %s", errFinalSnapshotFailed, rec.FinalSnapshotIdentifier)
+	}
+	return nil
+}
+
+// Whether the final snapshot's record already names its EC2 snapshot. A read
+// that fails answers false, so the engine stop it guards still runs.
+func (s *Service) finalSnapshotCut(ctx context.Context, kv *kvstore.Bucket, rec *DBInstanceRecord) bool {
+	var record DBSnapshotRecord
+	found, err := getJSON(ctx, kv, DBSnapshotKey(rec.FinalSnapshotIdentifier), &record)
+	return err == nil && found && record.SnapshotID != "" && finalSnapshotIsOurs(&record, rec)
+}
+
+// How long a deletion has spent tearing down, which transitionTimeout bounds:
+// from the later of its start and its final snapshot's creation, so a retaken
+// snapshot starts afresh, less the time that snapshot was pending.
+func (s *Service) deletionElapsed(ctx context.Context, kv *kvstore.Bucket, rec *DBInstanceRecord) (time.Duration, error) {
+	start := transitionStarted(rec)
+	if rec.FinalSnapshotIdentifier == "" {
+		return time.Since(start), nil
+	}
+	var record DBSnapshotRecord
+	found, err := getJSON(ctx, kv, DBSnapshotKey(rec.FinalSnapshotIdentifier), &record)
+	if err != nil {
+		return 0, fmt.Errorf("rds: read the final snapshot %s: %w", rec.FinalSnapshotIdentifier, err)
+	}
+	if !found || !finalSnapshotIsOurs(&record, rec) {
+		return time.Since(start), nil
+	}
+	if record.CreatedAt.After(start) {
+		start = record.CreatedAt
+	}
+	settled := time.Now()
+	if record.SettledAt != nil {
+		settled = *record.SettledAt
+	}
+	return time.Since(start) - max(settled.Sub(record.CreatedAt), 0), nil
+}
+
+// Writes only the snapshot fields under CAS, preserving tags changed while the
+// EC2 snapshot was being cut. It returns the record it wrote, nil when the
+// record already said as much.
 func (s *Service) completeFinalSnapshot(ctx context.Context, kv *kvstore.Bucket,
-	source *DBInstanceRecord, snapshotID string) (bool, error) {
+	source *DBInstanceRecord, snapshotID, state string) (*DBSnapshotRecord, error) {
 	key := DBSnapshotKey(source.FinalSnapshotIdentifier)
 	for range tagWriteAttempts {
 		var record DBSnapshotRecord
 		rev, found, err := getJSONRevision(ctx, kv, key, &record)
 		if err != nil {
-			return false, err
+			return nil, err
 		}
 		if !found {
-			return false, fmt.Errorf("final snapshot reservation %s is missing", source.FinalSnapshotIdentifier)
+			return nil, fmt.Errorf("final snapshot reservation %s is missing", source.FinalSnapshotIdentifier)
 		}
 		if !finalSnapshotIsOurs(&record, source) {
-			return false, awserrors.Errorf(awserrors.ErrorDBSnapshotAlreadyExists,
+			return nil, awserrors.Errorf(awserrors.ErrorDBSnapshotAlreadyExists,
 				"DB snapshot %s already exists", source.FinalSnapshotIdentifier)
 		}
-		if record.Status == SnapshotStatusAvailable {
-			if record.SnapshotID != snapshotID {
-				return false, fmt.Errorf("final snapshot %s already points to %s, not %s",
-					source.FinalSnapshotIdentifier, record.SnapshotID, snapshotID)
-			}
-			return false, nil
+		if record.SnapshotID != "" && record.SnapshotID != snapshotID {
+			return nil, fmt.Errorf("final snapshot %s already points to %s, not %s",
+				source.FinalSnapshotIdentifier, record.SnapshotID, snapshotID)
+		}
+		want, known := rdsSnapshotStatus(state)
+		if !known {
+			return nil, fmt.Errorf("final snapshot %s: EC2 snapshot %s reports state %q",
+				source.FinalSnapshotIdentifier, snapshotID, state)
+		}
+		if record.Status == want && record.SnapshotID == snapshotID {
+			return nil, nil
 		}
 		if record.Status != SnapshotStatusCreating {
-			return false, awserrors.Errorf(awserrors.ErrorDBSnapshotInvalidState,
+			return nil, awserrors.Errorf(awserrors.ErrorDBSnapshotInvalidState,
 				"DB snapshot %s is %s; expected %s", source.FinalSnapshotIdentifier,
 				record.Status, SnapshotStatusCreating)
 		}
 
 		record.SnapshotID = snapshotID
-		record.Status = SnapshotStatusAvailable
+		record.Status = want
+		if want != SnapshotStatusCreating {
+			now := time.Now().UTC()
+			record.SettledAt = &now
+		}
 		if err := updateJSON(ctx, kv, key, rev, &record); err == nil {
-			return true, nil
+			return &record, nil
 		} else if !errors.Is(err, kvstore.ErrConflict) {
-			return false, err
+			return nil, err
 		}
 	}
-	return false, fmt.Errorf("rds: completing final snapshot %s contended after %d attempts",
+	return nil, fmt.Errorf("rds: completing final snapshot %s contended after %d attempts",
 		source.FinalSnapshotIdentifier, tagWriteAttempts)
-}
-
-func (s *Service) recordFinalSnapshotCreated(ctx context.Context, accountID string,
-	rec *DBInstanceRecord, snapshotID string) {
-	s.RecordEvent(ctx, accountID, EventSourceTypeDBSnapshot, rec.FinalSnapshotIdentifier,
-		"Final DB snapshot created.", EventCategoryBackup, EventCategoryCreation)
-	slog.InfoContext(ctx, "rds: final DB snapshot created",
-		"dbSnapshot", rec.FinalSnapshotIdentifier, "dbInstance", rec.DBInstanceIdentifier,
-		"snapshotId", snapshotID)
 }
 
 // A viperblock snapshot references its source volume's chunk files rather than

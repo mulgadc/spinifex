@@ -1,6 +1,7 @@
 import type { LinkProps } from "@tanstack/react-router"
 import {
   Activity,
+  ArrowLeftRight,
   Boxes,
   Brain,
   Camera,
@@ -220,6 +221,19 @@ export const NAV: readonly NavGroup[] = [
         to: "/ec2/describe-nat-gateways",
         create: { label: "Create NAT gateway", to: "/ec2/create-nat-gateway" },
         match: ["/ec2/describe-nat-gateways", "/ec2/create-nat-gateway"],
+      },
+      {
+        label: "Peering Connections",
+        icon: ArrowLeftRight,
+        to: "/ec2/describe-vpc-peering-connections",
+        create: {
+          label: "Create peering connection",
+          to: "/ec2/create-vpc-peering-connection",
+        },
+        match: [
+          "/ec2/describe-vpc-peering-connections",
+          "/ec2/create-vpc-peering-connection",
+        ],
       },
     ],
   },

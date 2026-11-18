@@ -45,7 +45,8 @@ func (s *NATSECSService) ListClusters(ctx context.Context, input *ecs.ListCluste
 // --- Task definition ---
 
 func (s *NATSECSService) RegisterTaskDefinition(ctx context.Context, input *ecs.RegisterTaskDefinitionInput, accountID string) (*ecs.RegisterTaskDefinitionOutput, error) {
-	return natsmsg.NATSRequest[ecs.RegisterTaskDefinitionOutput](ctx, s.natsConn, "ecs.RegisterTaskDefinition", input, defaultTimeout, accountID)
+	return natsmsg.NATSRequest[ecs.RegisterTaskDefinitionOutput](ctx, s.natsConn, "ecs.RegisterTaskDefinition", input, defaultTimeout, accountID,
+		natsmsg.NATSHeader{Key: natsmsg.PrincipalARNHeader, Value: CallerARN(ctx)})
 }
 
 func (s *NATSECSService) DeregisterTaskDefinition(ctx context.Context, input *ecs.DeregisterTaskDefinitionInput, accountID string) (*ecs.DeregisterTaskDefinitionOutput, error) {
@@ -111,7 +112,8 @@ func (s *NATSECSService) SubmitTaskStateChange(ctx context.Context, input *ecs.S
 // --- Service ---
 
 func (s *NATSECSService) CreateService(ctx context.Context, input *ecs.CreateServiceInput, accountID string) (*ecs.CreateServiceOutput, error) {
-	return natsmsg.NATSRequest[ecs.CreateServiceOutput](ctx, s.natsConn, "ecs.CreateService", input, defaultTimeout, accountID)
+	return natsmsg.NATSRequest[ecs.CreateServiceOutput](ctx, s.natsConn, "ecs.CreateService", input, defaultTimeout, accountID,
+		natsmsg.NATSHeader{Key: natsmsg.PrincipalARNHeader, Value: CallerARN(ctx)})
 }
 
 func (s *NATSECSService) UpdateService(ctx context.Context, input *ecs.UpdateServiceInput, accountID string) (*ecs.UpdateServiceOutput, error) {

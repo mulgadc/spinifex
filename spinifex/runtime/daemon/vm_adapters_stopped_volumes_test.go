@@ -8,7 +8,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
@@ -28,7 +27,7 @@ func TestUnmount_LeavesDataVolumesAttached(t *testing.T) {
 		ID:        "i-stop-keep",
 		AccountID: "000000000042",
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{
+			Requests: []vm.EBSRequest{
 				{Name: "vol-root", Boot: true},
 				{Name: "vol-efi", Boot: true, EFI: true},
 				{Name: "vol-data-a", DeviceName: "/dev/sdf"},
@@ -69,7 +68,7 @@ func TestStoppedInstanceVolume_CannotBeAttachedElsewhere(t *testing.T) {
 		ID:        stoppedID,
 		AccountID: testAccountID,
 		EBSRequests: vm.EBSRequests{
-			Requests: []viperblocklegacyv1.EBSRequest{{Name: volumeID, DeviceName: "/dev/sdf"}},
+			Requests: []vm.EBSRequest{{Name: volumeID, DeviceName: "/dev/sdf"}},
 		},
 	}
 	require.NoError(t, adapter.Unmount(t.Context(), stopped))

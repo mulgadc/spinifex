@@ -93,6 +93,7 @@ func seedJWKSReaderFixture(t *testing.T) (*recordingJS, *OIDCJWKSReader) {
 // clusters/{cluster}/oidc-jwks.json, pinned as literals independent of
 // AccountBucketName/OIDCJWKSKey.
 func TestOIDCJWKSReader_UsesLiteralBucketAndKey(t *testing.T) {
+	t.Parallel()
 	rec, reader := seedJWKSReaderFixture(t)
 
 	raw, found, err := reader.LookupClusterJWKS(t.Context(), jwksReaderAccountID, jwksReaderCluster)
@@ -115,6 +116,7 @@ func TestOIDCJWKSReader_UsesLiteralBucketAndKey(t *testing.T) {
 // Bucket-open and key-get dependency failures are reported as err, distinct
 // from not-found; a tombstoned key reads as not published.
 func TestOIDCJWKSReader_DependencyFailureSemantics(t *testing.T) {
+	t.Parallel()
 	rec, reader := seedJWKSReaderFixture(t)
 
 	rec.openErr = func(string) error { return context.DeadlineExceeded }
@@ -144,6 +146,7 @@ func TestOIDCJWKSReader_DependencyFailureSemantics(t *testing.T) {
 
 // A missing account bucket is not-found, not an error.
 func TestOIDCJWKSReader_AccountBucketMissingIsNotFound(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	reader := NewOIDCJWKSReader(js)
@@ -161,6 +164,7 @@ func TestOIDCJWKSReader_NilJetStream(t *testing.T) {
 }
 
 func TestOIDCJWKSReader_EmptyArgs(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	reader := NewOIDCJWKSReader(js)
@@ -174,6 +178,7 @@ func TestOIDCJWKSReader_EmptyArgs(t *testing.T) {
 // Pins today's behaviour, not the target: the reader returns a published JWKS
 // whatever the cluster's ClusterMeta status, or with no cluster record at all.
 func TestCurrentBehaviour_ClusterRecordStateIsNotConsulted(t *testing.T) {
+	t.Parallel()
 	for _, status := range []ClusterStatus{
 		"", // no cluster record at all
 		ClusterStatusCreating,
@@ -182,6 +187,7 @@ func TestCurrentBehaviour_ClusterRecordStateIsNotConsulted(t *testing.T) {
 		ClusterStatusFailed,
 	} {
 		t.Run(string(status)+"_", func(t *testing.T) {
+			t.Parallel()
 			_, nc, _ := testutil.StartTestJetStream(t)
 			js := testutil.NewJetStream(t, nc)
 			kv, err := GetOrCreateAccountBucket(t.Context(), js, jwksReaderAccountID)
@@ -206,6 +212,7 @@ func TestCurrentBehaviour_ClusterRecordStateIsNotConsulted(t *testing.T) {
 // Pins today's behaviour: once teardown sweeps clusters/{name}/, a previously
 // published JWKS reads as not found.
 func TestCurrentBehaviour_ClusterPrefixDeletedIsNotFound(t *testing.T) {
+	t.Parallel()
 	_, nc, _ := testutil.StartTestJetStream(t)
 	js := testutil.NewJetStream(t, nc)
 	kv, err := GetOrCreateAccountBucket(t.Context(), js, jwksReaderAccountID)

@@ -1,12 +1,14 @@
 package awsapi
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
 
+	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/passrole"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
@@ -94,6 +96,7 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 		roles = d.Roles
 	}
 	ctx := withOverrideRoleCheck(r.Context(), roleChecker(roles, passrole.AuthorizeFunc(inv.Authorize), accountID, unableToAssume))
+	ctx = ecsdomain.WithCallerARN(ctx, creatorARN(r.Context(), action, inv.Actor))
 
 	output, err := handler(ctx, d.NATS, accountID, body, passRoleCheck)
 	if err != nil {
@@ -106,4 +109,21 @@ func (d Deps) dispatch(w http.ResponseWriter, inv dispatch.Invocation) error {
 	}
 	WriteJSONResponse(w, output)
 	return nil
+}
+
+// creatorARN is the ARN AWS records as the creator of what action creates: a
+// service's createdBy names the IAM role, a task definition's registeredBy the
+// session. An actor error only means the session ARN is empty, so none is recorded.
+func creatorARN(ctx context.Context, action string, resolve dispatch.ActorFunc) string {
+	if action != "CreateService" && action != "RegisterTaskDefinition" || resolve == nil {
+		return ""
+	}
+	actor, err := resolve()
+	if err != nil {
+		slog.DebugContext(ctx, "ECS dispatch: caller ARN unresolved", "err", err)
+	}
+	if action == "CreateService" {
+		return actor.PrincipalARN
+	}
+	return actor.CallerARN
 }

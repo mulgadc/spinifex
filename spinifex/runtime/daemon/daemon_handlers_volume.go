@@ -68,7 +68,7 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 					"attachedDevice", volMeta.DeviceName)
 				// AWS returns VolumeInUse (not InvalidParameterValue) when a
 				// re-attach targets a device other than the one already in use.
-				return respondErrorOutcome(d.node, msg, awserrors.ErrorVolumeInUse)
+				return respondServiceErrorOutcome(d.node, msg, volumeAttachedError(volumeID))
 			}
 
 			// Volume is already attached to this instance (e.g. a CSI
@@ -82,7 +82,10 @@ func (d *Daemon) handleAttachVolume(ctx context.Context, msg *nats.Msg, command 
 
 		slog.ErrorContext(ctx, "AttachVolume: volume not available",
 			"volumeId", volumeID, "state", volMeta.State)
-		return respondErrorOutcome(d.node, msg, awserrors.ErrorVolumeInUse)
+		if volMeta.State != "in-use" {
+			return respondErrorOutcome(d.node, msg, awserrors.ErrorVolumeInUse)
+		}
+		return respondServiceErrorOutcome(d.node, msg, volumeAttachedError(volumeID))
 	}
 
 	if volMeta.AvailabilityZone != "" && d.config.AZ != "" &&
@@ -128,11 +131,25 @@ func (d *Daemon) handleDetachVolume(ctx context.Context, msg *nats.Msg, command 
 		command.DetachVolumeData.Force,
 	)
 	if err != nil {
+		if errors.Is(err, vm.ErrVolumeNotAttached) {
+			volumeID := command.DetachVolumeData.VolumeID
+			meta, metaErr := d.volumeService.GetVolumeMetadata(natsmsg.AccountIDFromMsg(msg), volumeID)
+			if metaErr == nil && meta.State == "available" {
+				return respondServiceErrorOutcome(d.node, msg, awserrors.Errorf(awserrors.ErrorIncorrectState,
+					"Volume '%s' is in the '%s' state.", volumeID, meta.State))
+			}
+		}
 		return respondErrorOutcome(d.node, msg, attachDetachErrorCode(err))
 	}
 
 	d.respondWithVolumeAttachment(msg, command.DetachVolumeData.VolumeID, command.ID, deviceName, "detaching")
 	return outcomeSuccess
+}
+
+// volumeAttachedError is AWS's VolumeInUse refusal to attach a volume that is
+// already attached.
+func volumeAttachedError(volumeID string) error {
+	return awserrors.Errorf(awserrors.ErrorVolumeInUse, "%s is already attached to an instance", volumeID)
 }
 
 // attachDetachErrorCode maps a vm.Manager error returned by AttachVolume

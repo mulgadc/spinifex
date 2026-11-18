@@ -63,6 +63,7 @@ const (
 	KVBucketAccountHistory = 1
 	kvFunctionKeyPrefix    = "fn."
 	kvUploadKeyPrefix      = "upload."
+	kvDeletedKeyPrefix     = "deleted."
 )
 
 // KVUploadKey returns the key of the record that tracks one code upload. The
@@ -103,10 +104,18 @@ func KVFunctionKey(region, name string) string { return kvFunctionKeyPrefix + re
 
 // NATS subjects served by the daemon's metadata service.
 const (
-	SubjectCreate         = "lambda.function.create"
-	SubjectGet            = "lambda.function.get"
-	SubjectCodeStored     = "lambda.function.code-stored"
-	SubjectRollbackCreate = "lambda.function.rollback-create"
+	SubjectCreate          = "lambda.function.create"
+	SubjectGet             = "lambda.function.get"
+	SubjectCodeStored      = "lambda.function.code-stored"
+	SubjectRollbackCreate  = "lambda.function.rollback-create"
+	SubjectCodeUpdateBegin = "lambda.function.code-update-begin"
+	SubjectCodeUpdated     = "lambda.function.code-updated"
+	// SubjectConfigurationUpdated commits new settings for an Active function.
+	SubjectConfigurationUpdated = "lambda.function.configuration-updated"
+	// SubjectList pages the function records of one Region.
+	SubjectList = "lambda.function.list"
+	// SubjectDelete unbinds a function name and retains its cleanup obligation.
+	SubjectDelete = "lambda.function.delete"
 )
 
 // CreateRequest carries the record the gateway built; the daemon owns the
@@ -158,3 +167,109 @@ type RollbackCreateRequest struct {
 
 // RollbackCreateResponse is empty: success means the name is free.
 type RollbackCreateResponse struct{}
+
+// CodeUpdateBeginRequest asks for an owed upload of new code for the function
+// as it stood at Revision; RevisionID names the new code copy.
+type CodeUpdateBeginRequest struct {
+	Region       string `json:"region"`
+	FunctionName string `json:"functionName"`
+	FunctionID   string `json:"functionId"`
+	Revision     uint64 `json:"revision"`
+	RevisionID   string `json:"revisionId"`
+}
+
+// CodeUpdateBeginResponse is empty: success means the upload is owed.
+type CodeUpdateBeginResponse struct{}
+
+// CodeUpdatedRequest names the stored new copy for the function at Revision.
+type CodeUpdatedRequest struct {
+	Region       string `json:"region"`
+	FunctionName string `json:"functionName"`
+	FunctionID   string `json:"functionId"`
+	Revision     uint64 `json:"revision"`
+	RevisionID   string `json:"revisionId"`
+	SHA256       string `json:"sha256"`
+	Size         int64  `json:"size"`
+}
+
+// CodeUpdatedResponse returns the committed record and its revision.
+type CodeUpdatedResponse struct {
+	Record   Record `json:"record"`
+	Revision uint64 `json:"revision"`
+}
+
+// Configuration is the complete set of settings an update leaves on the
+// function; the gateway merges omitted members from the record it read.
+type Configuration struct {
+	Role        string `json:"role"`
+	Handler     string `json:"handler"`
+	Description string `json:"description,omitempty"`
+	Timeout     int64  `json:"timeout"`
+	MemorySize  int64  `json:"memorySize"`
+	EnvCipher   string `json:"envCipher,omitempty"`
+}
+
+// ConfigurationUpdatedRequest replaces the settings of the function at Revision.
+type ConfigurationUpdatedRequest struct {
+	Region        string        `json:"region"`
+	FunctionName  string        `json:"functionName"`
+	FunctionID    string        `json:"functionId"`
+	Revision      uint64        `json:"revision"`
+	Configuration Configuration `json:"configuration"`
+}
+
+// ConfigurationUpdatedResponse returns the committed record and its revision.
+type ConfigurationUpdatedResponse struct {
+	Record   Record `json:"record"`
+	Revision uint64 `json:"revision"`
+}
+
+// KVDeletedKey returns the key of the obligation a deleted function leaves
+// behind. A recreated function receives a new random ID, and an obligation
+// whose identity does not match the deleted function is refused.
+func KVDeletedKey(region, functionID string) string {
+	return kvDeletedKeyPrefix + region + "." + functionID
+}
+
+// Deletion is the retained cleanup obligation of a deleted function: its code
+// copies and upload records are kept until a later owner proves them unused.
+// It is written before the name is unbound, so it alone proves no deletion.
+type Deletion struct {
+	FormatVersion int       `json:"formatVersion"`
+	AccountID     string    `json:"accountId"`
+	Region        string    `json:"region"`
+	FunctionName  string    `json:"functionName"`
+	FunctionID    string    `json:"functionId"`
+	RecordedAt    time.Time `json:"recordedAt"`
+}
+
+// ListRequest asks for one page of a Region's functions after Marker, which
+// is empty for the first page or a NextMarker the owner returned.
+type ListRequest struct {
+	Region   string `json:"region"`
+	Marker   string `json:"marker,omitempty"`
+	MaxItems int    `json:"maxItems"`
+}
+
+// ListedFunction is one function record and its revision.
+type ListedFunction struct {
+	Record   Record `json:"record"`
+	Revision uint64 `json:"revision"`
+}
+
+// ListResponse is one page; NextMarker is empty once the walk has ended.
+type ListResponse struct {
+	Functions  []ListedFunction `json:"functions"`
+	NextMarker string           `json:"nextMarker,omitempty"`
+}
+
+// DeleteRequest unbinds the function the caller read at Revision.
+type DeleteRequest struct {
+	Region       string `json:"region"`
+	FunctionName string `json:"functionName"`
+	FunctionID   string `json:"functionId"`
+	Revision     uint64 `json:"revision"`
+}
+
+// DeleteResponse is empty: success means the name was unbound.
+type DeleteResponse struct{}

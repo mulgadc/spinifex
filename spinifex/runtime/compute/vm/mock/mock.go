@@ -147,6 +147,28 @@ func (s *StateStore) LoadStoppedInstance(id string) (*vm.VM, error) {
 	return v, nil
 }
 
+// InstanceStateOf answers from the stopped set, then every saved-running set,
+// then the terminated set.
+func (s *StateStore) InstanceStateOf(id string) (vm.InstanceState, string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.LoadStoppedErr != nil {
+		return "", "", false, s.LoadStoppedErr
+	}
+	if v, ok := s.Stopped[id]; ok {
+		return v.Status, v.AccountID, true, nil
+	}
+	for _, node := range s.Saved {
+		if v, ok := node[id]; ok {
+			return v.Status, v.AccountID, true, nil
+		}
+	}
+	if v, ok := s.Terminated[id]; ok {
+		return v.Status, v.AccountID, true, nil
+	}
+	return "", "", false, nil
+}
+
 // DeleteStoppedInstance mimics a transient-then-success retry (DeleteFailFirst)
 // and a hard injected error (DeleteStoppedErr); the two knobs are mutually
 // exclusive in practice, DeleteFailFirst is checked first.

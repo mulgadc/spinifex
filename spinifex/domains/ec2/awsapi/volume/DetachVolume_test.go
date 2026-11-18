@@ -163,3 +163,51 @@ func TestDetachVolume_DeadlineOutlastsTheDaemonBudget(t *testing.T) {
 	assert.Greater(t, detachRequestTimeout, daemonBudget,
 		"detachRequestTimeout must exceed the daemon's seal plus unplug budget")
 }
+
+// Without an instance ID the gateway resolves the attachment itself, so it is
+// the gateway that refuses a volume with none, naming the volume's state.
+func TestDetachVolume_UnattachedVolumeNamesItsState(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+
+	sub, err := nc.Subscribe("ec2.DescribeVolumes", func(msg *nats.Msg) {
+		data, err := json.Marshal(&ec2.DescribeVolumesOutput{Volumes: []*ec2.Volume{{
+			VolumeId: aws.String("vol-064feb2e41c378860"), State: aws.String("available"),
+		}}})
+		require.NoError(t, err)
+		require.NoError(t, msg.Respond(data))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	require.NoError(t, nc.Flush())
+
+	_, err = DetachVolume(context.Background(), &ec2.DetachVolumeInput{VolumeId: aws.String("vol-064feb2e41c378860")}, nc, "000000000001")
+	code, message, _ := awserrors.ResolveErrorDetail(err)
+	assert.Equal(t, awserrors.ErrorIncorrectState, code)
+	assert.Equal(t, "Volume 'vol-064feb2e41c378860' is in the 'available' state.", message)
+}
+
+// The owning daemon's refusal reaches the caller with the daemon's message, for
+// both attach and detach.
+func TestVolumeAttachment_DaemonMessageReachesTheCaller(t *testing.T) {
+	_, nc := testutil.StartTestNATS(t)
+
+	sub, err := nc.Subscribe("ec2.cmd.i-owner", func(msg *nats.Msg) {
+		require.NoError(t, msg.Respond(awserrors.GenerateErrorPayloadWithMessage(awserrors.ErrorVolumeInUse, "daemon text")))
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	require.NoError(t, nc.Flush())
+
+	_, attachErr := AttachVolume(context.Background(), &ec2.AttachVolumeInput{
+		VolumeId: aws.String("vol-a"), InstanceId: aws.String("i-owner"), Device: aws.String("/dev/sdf"),
+	}, nc, "000000000001")
+	_, detachErr := DetachVolume(context.Background(), &ec2.DetachVolumeInput{
+		VolumeId: aws.String("vol-a"), InstanceId: aws.String("i-owner"),
+	}, nc, "000000000001")
+
+	for _, err := range []error{attachErr, detachErr} {
+		code, message, _ := awserrors.ResolveErrorDetail(err)
+		assert.Equal(t, awserrors.ErrorVolumeInUse, code)
+		assert.Equal(t, "daemon text", message)
+	}
+}

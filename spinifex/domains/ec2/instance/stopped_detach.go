@@ -8,18 +8,17 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	ebsmetadata "github.com/mulgadc/spinifex/spinifex/domains/ec2/ebs/metadata"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 )
 
-func findVolumeRequest(v *vm.VM, volumeID string) (viperblocklegacyv1.EBSRequest, bool) {
+func findVolumeRequest(v *vm.VM, volumeID string) (vm.EBSRequest, bool) {
 	v.EBSRequests.Mu.Lock()
 	defer v.EBSRequests.Mu.Unlock()
-	i := slices.IndexFunc(v.EBSRequests.Requests, func(r viperblocklegacyv1.EBSRequest) bool { return r.Name == volumeID })
+	i := slices.IndexFunc(v.EBSRequests.Requests, func(r vm.EBSRequest) bool { return r.Name == volumeID })
 	if i < 0 {
-		return viperblocklegacyv1.EBSRequest{}, false
+		return vm.EBSRequest{}, false
 	}
 	return v.EBSRequests.Requests[i], true
 }
@@ -29,7 +28,7 @@ func findVolumeRequest(v *vm.VM, volumeID string) (viperblocklegacyv1.EBSRequest
 func removeVolumeFromRecord(v *vm.VM, volumeID string) bool {
 	v.EBSRequests.Mu.Lock()
 	defer v.EBSRequests.Mu.Unlock()
-	i := slices.IndexFunc(v.EBSRequests.Requests, func(r viperblocklegacyv1.EBSRequest) bool { return r.Name == volumeID })
+	i := slices.IndexFunc(v.EBSRequests.Requests, func(r vm.EBSRequest) bool { return r.Name == volumeID })
 	if i < 0 || v.EBSRequests.Requests[i].EFI {
 		return false
 	}
@@ -93,7 +92,7 @@ func stoppedAttachDevice(v *vm.VM, requested string) (string, bool, error) {
 func addVolumeToRecord(v *vm.VM, volumeID, device string, boot bool) {
 	v.EBSRequests.Mu.Lock()
 	defer v.EBSRequests.Mu.Unlock()
-	v.EBSRequests.Requests = append(v.EBSRequests.Requests, viperblocklegacyv1.EBSRequest{
+	v.EBSRequests.Requests = append(v.EBSRequests.Requests, vm.EBSRequest{
 		Name:       volumeID,
 		DeviceName: device,
 		Boot:       boot,

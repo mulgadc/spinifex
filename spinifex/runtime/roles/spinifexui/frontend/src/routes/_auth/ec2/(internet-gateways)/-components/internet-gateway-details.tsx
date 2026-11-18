@@ -12,6 +12,7 @@ import {
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
 import { Ec2Tags } from "@/components/resource-tags"
 import { StateBadge } from "@/components/state-badge"
+import { useTopologyTab } from "@/components/topology/resource-topology"
 import { Button, buttonVariants } from "@/components/ui/button"
 import type { PanelTab } from "@/lib/panel-search"
 import { getNameTag } from "@/lib/utils"
@@ -124,6 +125,15 @@ export function InternetGatewayDetails({
   const id = igw.InternetGatewayId ?? ""
   const name = getNameTag(igw.Tags)
 
+  const topology = useTopologyTab({
+    page: layout === "page",
+    tab,
+    vpcId: igw.Attachments?.find((a) => a.VpcId && a.State !== "detached")
+      ?.VpcId,
+    focus: { kind: "igw", id },
+    noVpc: "This internet gateway is attached to no VPC, so it has no map.",
+  })
+
   return (
     <DetailPanel
       closeLabel={
@@ -149,7 +159,12 @@ export function InternetGatewayDetails({
       onClose={onClose}
       onTabChange={onTabChange}
       subtitle={name ? id : undefined}
-      summary={<StateBadge state={attachmentState(igw)} />}
+      summary={
+        <>
+          <StateBadge state={attachmentState(igw)} />
+          {topology.toggle}
+        </>
+      }
       tab={tab}
       tabs={[
         {
@@ -158,6 +173,7 @@ export function InternetGatewayDetails({
           icon: Eye,
           content: <Overview gateways={gateways} igw={igw} />,
         },
+        topology.spec,
         {
           id: "settings",
           label: "Settings",

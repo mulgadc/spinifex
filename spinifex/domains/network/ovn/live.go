@@ -545,7 +545,7 @@ func (c *LiveClient) GetLogicalRouter(ctx context.Context, name string) (*nbdb.L
 		return nil, fmt.Errorf("get logical router: %w", err)
 	}
 	if len(routers) == 0 {
-		return nil, fmt.Errorf("logical router %q not found", name)
+		return nil, fmt.Errorf("%w: %q", ErrLogicalRouterNotFound, name)
 	}
 	return &routers[0], nil
 }
@@ -1122,6 +1122,18 @@ func (c *LiveClient) FindStaticRoute(ctx context.Context, routerName, ipPrefix s
 	return &routes[0], nil
 }
 
+func (c *LiveClient) ListStaticRoutes(ctx context.Context, routerName string) ([]nbdb.LogicalRouterStaticRoute, error) {
+	lr, err := c.GetLogicalRouter(ctx, routerName)
+	if err != nil {
+		return nil, fmt.Errorf("get logical router for static route list: %w", err)
+	}
+	routes, err := rowsIn(ctx, c, lr.StaticRoutes, routeStamp)
+	if err != nil {
+		return nil, fmt.Errorf("list static routes: %w", err)
+	}
+	return routes, nil
+}
+
 func (c *LiveClient) DeleteStaticRoute(ctx context.Context, routerName string, ipPrefix string) error {
 	route, err := c.FindStaticRoute(ctx, routerName, ipPrefix)
 	if err != nil {
@@ -1235,6 +1247,33 @@ func (c *LiveClient) ListLogicalRouterPolicies(ctx context.Context, routerName s
 		return nil, fmt.Errorf("list LR policies: %w", err)
 	}
 	return policies, nil
+}
+
+func (c *LiveClient) UpdateLogicalRouterPolicy(ctx context.Context, routerName string, policy *nbdb.LogicalRouterPolicy) error {
+	existing, err := c.FindLogicalRouterPolicy(ctx, routerName, policy.Priority, policy.Match)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return fmt.Errorf("LR policy %d %q not found on %s", policy.Priority, policy.Match, routerName)
+	}
+	row := *existing
+	row.Action, row.Nexthop, row.Nexthops = policy.Action, policy.Nexthop, policy.Nexthops
+	row.Options, row.ExternalIDs = policy.Options, policy.ExternalIDs
+	if row.Options == nil {
+		row.Options = map[string]string{}
+	}
+	if row.ExternalIDs == nil {
+		row.ExternalIDs = map[string]string{}
+	}
+	ops, err := c.client.Where(&row).Update(&row, &row.Action, &row.Nexthop, &row.Nexthops, &row.Options, &row.ExternalIDs)
+	if err != nil {
+		return fmt.Errorf("update LR policy ops: %w", err)
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		return fmt.Errorf("update LR policy transact: %w", err)
+	}
+	return nil
 }
 
 func (c *LiveClient) DeleteLogicalRouterPolicy(ctx context.Context, routerName string, priority int, match string) error {

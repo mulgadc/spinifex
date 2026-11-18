@@ -40,6 +40,26 @@ func (*spyFunctions) RollbackCreate(context.Context, string, string, string, uin
 	return errors.New("unused")
 }
 
+func (*spyFunctions) BeginCodeUpdate(context.Context, string, string, function.Record, uint64, string) error {
+	return errors.New("unused")
+}
+
+func (*spyFunctions) CodeUpdated(context.Context, string, string, function.Record, uint64, string, string, int64) (function.Record, uint64, error) {
+	return function.Record{}, 0, errors.New("unused")
+}
+
+func (*spyFunctions) UpdateConfiguration(context.Context, string, string, function.Record, uint64, function.Configuration) (function.Record, uint64, error) {
+	return function.Record{}, 0, errors.New("unused")
+}
+
+func (*spyFunctions) List(context.Context, string, string, string, int) ([]function.ListedFunction, string, error) {
+	return nil, "", errors.New("unused")
+}
+
+func (*spyFunctions) Delete(context.Context, string, string, function.Record, uint64) error {
+	return errors.New("unused")
+}
+
 // spyExec counts invocations that would start an attempt.
 type spyExec struct{ calls atomic.Int32 }
 

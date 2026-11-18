@@ -173,7 +173,7 @@ func TestUEFIWriter_WritesAChangeBackAfterTheQuietPeriod(t *testing.T) {
 	require.Eventually(t, func() bool {
 		clock.Advance(uefiWriteBackQuiet)
 		return f.mustRecord(t).Pointer.Key != before.Pointer.Key
-	}, 10*time.Second, 10*time.Millisecond)
+	}, 10*time.Second, 2*time.Millisecond)
 
 	assert.Equal(t, want, f.pointedRegion(t))
 	rec := f.mustRecord(t)
@@ -182,7 +182,7 @@ func TestUEFIWriter_WritesAChangeBackAfterTheQuietPeriod(t *testing.T) {
 	require.Eventually(t, func() bool {
 		seed := f.seed(t)
 		return seed.Key == rec.Pointer.Key && !seed.WriteBackOwed
-	}, 10*time.Second, 10*time.Millisecond)
+	}, 10*time.Second, 2*time.Millisecond)
 	assert.Equal(t, landed+1, uefiCounter(t, "mulga.vm.uefi_store.write_backs", "outcome", "landed"))
 	assert.Contains(t, f.m.uefi.drainPrune(), testUEFIInstance)
 }
@@ -284,7 +284,7 @@ func TestUEFIWriter_FencedMoveStopsWritingBackAndIsCounted(t *testing.T) {
 	require.Eventually(t, func() bool {
 		clock.Advance(uefiWriteBackQuiet)
 		return uefiCounter(t, "mulga.vm.uefi_store.write_backs", "outcome", "fenced") == fenced+1
-	}, 10*time.Second, 10*time.Millisecond)
+	}, 10*time.Second, 2*time.Millisecond)
 	f.m.finishUEFIWriteBack(instance)
 
 	assert.Equal(t, before, f.mustRecord(t).Pointer.Key)
@@ -327,7 +327,7 @@ func TestResumeUEFIWriter_WritesBackWhatARestartMayHaveMissed(t *testing.T) {
 	require.Eventually(t, func() bool {
 		clock.Advance(uefiWriteBackQuiet)
 		return string(f.pointedRegion(t)[:6]) == "missed"
-	}, 10*time.Second, 10*time.Millisecond)
+	}, 10*time.Second, 2*time.Millisecond)
 	assert.Equal(t, want, f.pointedRegion(t))
 }
 
@@ -346,7 +346,7 @@ func TestUEFIWriter_PollsWhenItCannotWatch(t *testing.T) {
 	require.Eventually(t, func() bool {
 		clock.Advance(uefiWriteBackPoll)
 		return bytes.Equal(want, f.pointedRegion(t))
-	}, 10*time.Second, 10*time.Millisecond)
+	}, 10*time.Second, 2*time.Millisecond)
 }
 
 // flakyClaimStore fails as many claim reads and deletes as the test arms, as
@@ -459,12 +459,12 @@ func TestResumeUEFIWriter_RetriesAFailedClaimReadBeforeTheReaper(t *testing.T) {
 	clock.Advance(uefiResumeRetry)
 
 	require.Eventually(t, func() bool { return f.m.uefi.get(testUEFIInstance) != nil },
-		10*time.Second, 10*time.Millisecond, "one retry interval registers the writer with no reaper sweep")
+		10*time.Second, 2*time.Millisecond, "one retry interval registers the writer with no reaper sweep")
 	want := f.guestWrites(t, "retried")
 	require.Eventually(t, func() bool {
 		clock.Advance(uefiWriteBackQuiet)
 		return bytes.Equal(want, f.pointedRegion(t))
-	}, 10*time.Second, 10*time.Millisecond)
+	}, 10*time.Second, 2*time.Millisecond)
 }
 
 // A reconnect retry that finds the claim held by another node stops: that node
@@ -483,12 +483,12 @@ func TestResumeUEFIWriter_StopsRetryingOnceTheClaimIsHeldElsewhere(t *testing.T)
 	require.NoError(t, err)
 	loads := flaky.loads.Load()
 	clock.Advance(uefiResumeRetry)
-	require.Eventually(t, func() bool { return flaky.loads.Load() > loads }, 10*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return flaky.loads.Load() > loads }, 10*time.Second, 2*time.Millisecond)
 	loads = flaky.loads.Load()
 
 	assert.Never(t, func() bool {
 		clock.Advance(uefiResumeRetry)
 		return flaky.loads.Load() > loads
-	}, 500*time.Millisecond, 10*time.Millisecond, "a claim held elsewhere ends the retries")
+	}, 100*time.Millisecond, 5*time.Millisecond, "a claim held elsewhere ends the retries")
 	assert.Nil(t, f.m.uefi.get(testUEFIInstance))
 }

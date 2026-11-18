@@ -167,6 +167,8 @@ jobs:
         run: |
           set -euo pipefail
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/hv-lock.sh"
+          hv_lock_acquire "envs/${SPINIFEX_CI_ENV}.tfvars"
           export TF_VAR_git_branch="${GIT_BRANCH}"
           quiet_run "tofu init"                "$TOFU_LOG" tofu init -input=false
           quiet_run "tofu workspace select"    "$TOFU_LOG" tofu workspace select -or-create "${SPINIFEX_CI_ENV}"
@@ -384,6 +386,9 @@ jobs:
         run: |
           set +e
           source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/ci-fmt.sh"
+          source "${GITHUB_WORKSPACE}/spinifex/.github/scripts/hv-lock.sh"
+          hv_lock_acquire "envs/${SPINIFEX_CI_ENV}.tfvars" || {
+            echo "::error::teardown skipped: ${SPINIFEX_CI_ENV} is left up for the next job's pre-clean destroy"; exit 1; }
           UID_SELF=$(id -u)
           WS="${GITHUB_WORKSPACE}"
           reap() {

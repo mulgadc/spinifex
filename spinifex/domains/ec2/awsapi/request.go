@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/mulgadc/bluebottle/pkg/iampolicy"
 	ec2instanceapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/instance"
+	ec2vpcpeeringapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpcpeering"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/query"
@@ -73,6 +74,16 @@ func (h *Handler) Dispatch(w http.ResponseWriter, inv dispatch.Invocation) error
 	resources, err := ResourceARNs(action, inv.Region, accountID, input)
 	if err != nil {
 		return err
+	}
+	// Accept is also authorised on the accepter VPC, which only a lookup names.
+	if acceptInput, ok := input.(*ec2.AcceptVpcPeeringConnectionInput); ok && h.NATS != nil {
+		vpcARN, err := ec2vpcpeeringapi.AccepterVpcARN(r.Context(), h.NATS, inv.Region, accountID, acceptInput)
+		if err != nil {
+			return err
+		}
+		if vpcARN != "" {
+			resources = append(resources, vpcARN)
+		}
 	}
 	if err := inv.Authorize(ServiceName, action, resources, nil); err != nil {
 		// EC2 answers a policy denial with UnauthorizedOperation, not AccessDenied.

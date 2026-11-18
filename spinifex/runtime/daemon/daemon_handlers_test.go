@@ -20,7 +20,6 @@ import (
 
 	clusterv1 "github.com/mulgadc/spinifex/contracts/cluster/v1"
 	"github.com/mulgadc/spinifex/contracts/ec2/v1"
-	viperblocklegacyv1 "github.com/mulgadc/spinifex/contracts/viperblockd/legacy/v1"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/internal/testkit/ebsfake"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
@@ -1037,7 +1036,7 @@ func TestRespondWithVolumeAttachment(t *testing.T) {
 	assert.Equal(t, "/dev/sdf", *attachment.Device)
 	assert.Equal(t, "attached", *attachment.State)
 	assert.NotNil(t, attachment.AttachTime)
-	assert.False(t, *attachment.DeleteOnTermination)
+	assert.Nil(t, attachment.DeleteOnTermination, "AWS omits DeleteOnTermination from AttachVolume and DetachVolume")
 }
 
 // --- handleEC2ModifyVolume tests ---
@@ -2080,7 +2079,7 @@ func TestHandleEC2DescribeInstanceAttribute_UnsupportedAttribute(t *testing.T) {
 
 	input := &ec2.DescribeInstanceAttributeInput{
 		InstanceId: aws.String(instanceID),
-		Attribute:  aws.String(ec2.InstanceAttributeNameBlockDeviceMapping),
+		Attribute:  aws.String(ec2.InstanceAttributeNameEnaSupport),
 	}
 	reqData, _ := json.Marshal(input)
 	reply, err := natsRequest(daemon.natsConn, "ec2.DescribeInstanceAttribute", reqData, 5*time.Second)
@@ -2090,6 +2089,7 @@ func TestHandleEC2DescribeInstanceAttribute_UnsupportedAttribute(t *testing.T) {
 	err = json.Unmarshal(reply.Data, &errResp)
 	require.NoError(t, err)
 	assert.Equal(t, awserrors.ErrorInvalidParameterValue, errResp["Code"])
+	assert.Equal(t, "Value (enaSupport) for parameter attribute is invalid. Unknown attribute.", errResp["Message"])
 }
 
 func TestHandleEC2DescribeInstanceAttribute_InvalidJSON(t *testing.T) {
@@ -2834,7 +2834,7 @@ func TestHandleEC2ModifyVolume_Success(t *testing.T) {
 		VolumeType:  "gp3",
 	})
 
-	syncSub, err := daemon.natsConn.SubscribeSync(viperblocklegacyv1.SyncSubject)
+	syncSub, err := daemon.natsConn.SubscribeSync("ebs.sync")
 	require.NoError(t, err)
 	defer syncSub.Unsubscribe()
 
@@ -3347,7 +3347,7 @@ func TestDetachVolume_BootVolumeRejected(t *testing.T) {
 		Instance:     &ec2.Instance{},
 		QMPClient:    &qmp.QMPClient{},
 	}
-	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+	instance.EBSRequests.Requests = []vm.EBSRequest{
 		{Name: "vol-boot-001", Boot: true, DeviceName: "/dev/sda1"},
 	}
 	daemon.vmMgr.Insert(instance)
@@ -3392,7 +3392,7 @@ func TestDetachVolume_DeviceMismatch(t *testing.T) {
 		Instance:     &ec2.Instance{},
 		QMPClient:    &qmp.QMPClient{},
 	}
-	instance.EBSRequests.Requests = []viperblocklegacyv1.EBSRequest{
+	instance.EBSRequests.Requests = []vm.EBSRequest{
 		{Name: "vol-mismatch-001", DeviceName: "/dev/sdf"},
 	}
 	daemon.vmMgr.Insert(instance)
@@ -3719,7 +3719,7 @@ func TestDelegateHandlers_EIP(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	eipSvc, err := ec2eip.NewEIPServiceImpl(t.Context(), nc, ipam, daemon.vpcService)
+	eipSvc, err := ec2eip.NewEIPServiceImpl(t.Context(), nc, ipam, daemon.vpcService, "ap-southeast-2")
 	require.NoError(t, err)
 	daemon.eipService = eipSvc
 
@@ -4326,7 +4326,6 @@ func TestHandleEC2Events_CommandValidation(t *testing.T) {
 		attrs ec2v1.EC2CommandAttributes
 		want  string
 	}{
-		{"start a running instance", ec2v1.EC2CommandAttributes{StartInstance: true}, awserrors.ErrorIncorrectInstanceState},
 		{"attach ENI without data", ec2v1.EC2CommandAttributes{AttachENI: true}, awserrors.ErrorInvalidParameterValue},
 		{"detach ENI without data", ec2v1.EC2CommandAttributes{DetachENI: true}, awserrors.ErrorInvalidParameterValue},
 		{"associate profile without data", ec2v1.EC2CommandAttributes{AssociateIamInstanceProfile: true}, awserrors.ErrorMissingParameter},
@@ -4345,6 +4344,33 @@ func TestHandleEC2Events_CommandValidation(t *testing.T) {
 	var status vm.InstanceState
 	d.vmMgr.UpdateState(instanceID, func(v *vm.VM) { status = v.Status })
 	assert.Equal(t, vm.StateRunning, status, "rejected commands must leave the instance alone")
+}
+
+// Starting a running instance succeeds without touching it, and the reply says
+// it was already running so the gateway can report running to running.
+func TestDispatchEC2Command_StartRunningInstance(t *testing.T) {
+	d := createTestDaemon(t, sharedNATSURL)
+	instanceID := "i-p1-start-running"
+	d.vmMgr.Insert(&vm.VM{
+		ID:           instanceID,
+		InstanceType: getTestInstanceType(t),
+		Status:       vm.StateRunning,
+		Instance:     &ec2.Instance{},
+		AccountID:    testAccountID,
+	})
+
+	body, err := json.Marshal(ec2v1.EC2InstanceCommand{ID: instanceID, Attributes: ec2v1.EC2CommandAttributes{StartInstance: true}})
+	require.NoError(t, err)
+	reply := requestHandler(t, d.natsConn, "ec2.cmd.p1-start-running", d.handleEC2Events, testAccountID, body)
+
+	var out struct {
+		PreviousStatus string `json:"previousStatus"`
+	}
+	require.NoError(t, json.Unmarshal(reply.Data, &out))
+	assert.Equal(t, "running", out.PreviousStatus)
+	var status vm.InstanceState
+	d.vmMgr.UpdateState(instanceID, func(v *vm.VM) { status = v.Status })
+	assert.Equal(t, vm.StateRunning, status)
 }
 
 // A requester that has gone away cannot be answered, but the admitted reboot

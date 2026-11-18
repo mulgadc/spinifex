@@ -32,6 +32,7 @@ var _ NatGatewayService = (*NatGatewayServiceImpl)(nil)
 type NatGatewayServiceImpl struct {
 	natgwKV        jetstream.KeyValue
 	deletedNatgwKV jetstream.KeyValue
+	natgwIdxKV     jetstream.KeyValue
 	eipKV          jetstream.KeyValue
 	subnetKV       jetstream.KeyValue
 	vpcKV          jetstream.KeyValue
@@ -61,6 +62,16 @@ func NewNatGatewayServiceImplWithNATS(ctx context.Context, natsConn *nats.Conn) 
 		return nil, fmt.Errorf("migrate %s: %w", KVBucketDeletedNatGateways, err)
 	}
 
+	natgwIdxKV, err := kvstore.GetOrCreateBucket(ctx, js, ec2vpc.KVBucketSubnetNatGateways, ec2vpc.KVBucketSubnetNatGatewaysHistory)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create KV bucket %s: %w", ec2vpc.KVBucketSubnetNatGateways, err)
+	}
+	// Before any request is served, so DeleteSubnet sees gateways stored before
+	// the index existed, or by a node that did not yet write it.
+	if err := backfillSubnetIndex(ctx, natgwKV, natgwIdxKV); err != nil {
+		return nil, fmt.Errorf("backfill %s: %w", ec2vpc.KVBucketSubnetNatGateways, err)
+	}
+
 	eipKV, err := kvstore.GetOrCreateBucket(ctx, js, ec2eip.KVBucketEIPs, 10)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get EIP KV bucket: %w", err)
@@ -81,6 +92,7 @@ func NewNatGatewayServiceImplWithNATS(ctx context.Context, natsConn *nats.Conn) 
 	return &NatGatewayServiceImpl{
 		natgwKV:        natgwKV,
 		deletedNatgwKV: deletedKV,
+		natgwIdxKV:     natgwIdxKV,
 		eipKV:          eipKV,
 		subnetKV:       subnetKV,
 		vpcKV:          vpcKV,
@@ -125,7 +137,7 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 	// Validate EIP exists and is not already associated
 	eipEntry, err := s.eipKV.Get(ctx, kvstore.AccountKey(accountID, allocID))
 	if err != nil {
-		return nil, errors.New(awserrors.ErrorInvalidAllocationIDNotFound)
+		return nil, awserrors.IDNotFound(awserrors.ErrorInvalidElasticIpIDNotFound, "elasticIp", allocID)
 	}
 	var eipRecord ec2eip.EIPRecord
 	if err := json.Unmarshal(eipEntry.Value(), &eipRecord); err != nil {
@@ -137,19 +149,28 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 
 	natgwID := awsidentifiers.GenerateResourceID("nat")
 	record := NatGatewayRecord{
-		NatGatewayId: natgwID,
-		VpcId:        subnetRecord.VpcId,
-		SubnetId:     subnetID,
-		AllocationId: allocID,
-		PublicIp:     eipRecord.PublicIp,
-		State:        "available",
-		AccountID:    accountID,
-		Tags:         awstags.Extract(input.TagSpecifications, ec2.ResourceTypeNatgateway),
-		CreatedAt:    time.Now(),
+		NatGatewayId:  natgwID,
+		VpcId:         subnetRecord.VpcId,
+		SubnetId:      subnetID,
+		AllocationId:  allocID,
+		PublicIp:      eipRecord.PublicIp,
+		AssociationId: awsidentifiers.GenerateResourceID("eipassoc"),
+		State:         "available",
+		AccountID:     accountID,
+		Tags:          awstags.Extract(input.TagSpecifications, ec2.ResourceTypeNatgateway),
+		CreatedAt:     time.Now(),
 	}
 
 	data, err := json.Marshal(record)
 	if err != nil {
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	// Indexed before the record is stored, so no stored gateway is missing from
+	// DeleteSubnet's lookup. The key stays if the store fails: a failed write may
+	// still have landed, and a key without a record pins nothing.
+	idxKey := ec2vpc.SubnetNatGatewayKey(accountID, subnetID, natgwID)
+	if _, err := s.natgwIdxKV.Put(ctx, idxKey, []byte(natgwID)); err != nil {
+		slog.ErrorContext(ctx, "Failed to index NAT Gateway by subnet", "natGatewayId", natgwID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 	if _, err := s.natgwKV.Put(ctx, kvstore.AccountKey(accountID, natgwID), data); err != nil {
@@ -161,7 +182,8 @@ func (s *NatGatewayServiceImpl) CreateNatGateway(ctx context.Context, input *ec2
 	// NAT GW reusing the same allocation). Linkage is the shared AllocationId;
 	// DeleteNatGateway clears it back to allocated. Non-fatal: the NAT GW is
 	// already stored, so a failed mark only weakens the reuse guard until then.
-	eipRecord.AssociationId = awsidentifiers.GenerateResourceID("eipassoc")
+	eipRecord.AssociationId = record.AssociationId
+	eipRecord.NatGatewayId = natgwID
 	eipRecord.VpcId = subnetRecord.VpcId
 	eipRecord.State = "associated"
 	if eipData, err := json.Marshal(eipRecord); err == nil {
@@ -190,9 +212,7 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(ctx context.Context, input *ec2
 	entry, err := s.natgwKV.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			// AWS-faithful: an absent NAT gateway is NatGatewayNotFound (provider
-			// tolerates it on destroy); destroy orchestration tolerates it too.
-			return nil, errors.New(awserrors.ErrorNatGatewayNotFound)
+			return s.deleteAlreadyDeletedNatGateway(ctx, key, natgwID)
 		}
 		slog.ErrorContext(ctx, "Failed to read NAT Gateway", "natGatewayId", natgwID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
@@ -225,6 +245,8 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(ctx context.Context, input *ec2
 		slog.ErrorContext(ctx, "Failed to delete NAT Gateway from active bucket", "natGatewayId", natgwID, "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
+	// Only after the record is gone, so the subnet stays pinned until then.
+	s.removeSubnetIndex(ctx, ec2vpc.SubnetNatGatewayKey(accountID, record.SubnetId, natgwID), natgwID)
 
 	// Disassociate the EIP, keeping the allocation (AWS parity).
 	s.disassociateEIP(ctx, &record, accountID)
@@ -234,6 +256,71 @@ func (s *NatGatewayServiceImpl) DeleteNatGateway(ctx context.Context, input *ec2
 	return &ec2.DeleteNatGatewayOutput{
 		NatGatewayId: aws.String(natgwID),
 	}, nil
+}
+
+// removeSubnetIndex drops a deleted gateway's subnet index key. Best-effort: a
+// key whose gateway record is gone no longer pins the subnet.
+func (s *NatGatewayServiceImpl) removeSubnetIndex(ctx context.Context, idxKey, natgwID string) {
+	if err := s.natgwIdxKV.Delete(ctx, idxKey); err != nil {
+		slog.WarnContext(ctx, "Failed to remove NAT Gateway subnet index", "natGatewayId", natgwID, "err", err)
+	}
+}
+
+// backfillSubnetIndex indexes every stored gateway by subnet. Its cost grows
+// with the bucket, so it runs at service start and never inside a request.
+func backfillSubnetIndex(ctx context.Context, natgwKV, idxKV jetstream.KeyValue) error {
+	keys, err := natgwKV.Keys(ctx)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrNoKeysFound) {
+			return nil
+		}
+		return fmt.Errorf("list NAT gateways: %w", err)
+	}
+	indexed := 0
+	for _, key := range keys {
+		accountID, natgwID, ok := strings.Cut(key, ".")
+		if !ok {
+			continue
+		}
+		entry, err := natgwKV.Get(ctx, key)
+		if err != nil {
+			if errors.Is(err, jetstream.ErrKeyNotFound) {
+				continue
+			}
+			return fmt.Errorf("read NAT gateway %s: %w", key, err)
+		}
+		var record NatGatewayRecord
+		if err := json.Unmarshal(entry.Value(), &record); err != nil || record.SubnetId == "" {
+			slog.ErrorContext(ctx, "NAT gateway subnet index backfill: record has no subnet, not indexed", "key", key, "err", err)
+			continue
+		}
+		idxKey := ec2vpc.SubnetNatGatewayKey(accountID, record.SubnetId, natgwID)
+		if _, err := idxKV.Create(ctx, idxKey, []byte(natgwID)); err != nil {
+			if errors.Is(err, jetstream.ErrKeyExists) {
+				continue
+			}
+			return fmt.Errorf("index NAT gateway %s: %w", key, err)
+		}
+		indexed++
+	}
+	if indexed > 0 {
+		slog.InfoContext(ctx, "NAT gateway subnet index backfilled", "indexed", indexed)
+	}
+	return nil
+}
+
+// deleteAlreadyDeletedNatGateway answers a repeat delete the way AWS does: a
+// gateway still listed as deleted returns its ID with no side effects, and an
+// ID that was never seen (or has expired) is NatGatewayNotFound.
+func (s *NatGatewayServiceImpl) deleteAlreadyDeletedNatGateway(ctx context.Context, key, natgwID string) (*ec2.DeleteNatGatewayOutput, error) {
+	if _, err := s.deletedNatgwKV.Get(ctx, key); err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return nil, errors.New(awserrors.ErrorNatGatewayNotFound)
+		}
+		slog.ErrorContext(ctx, "Failed to read deleted NAT Gateway", "natGatewayId", natgwID, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	return &ec2.DeleteNatGatewayOutput{NatGatewayId: aws.String(natgwID)}, nil
 }
 
 // kvBucketRouteTables is the route-table KV bucket. Duplicated as a literal
@@ -343,6 +430,7 @@ func (s *NatGatewayServiceImpl) disassociateEIP(ctx context.Context, record *Nat
 	eip.PrivateIp = ""
 	eip.MacAddress = ""
 	eip.VpcId = ""
+	eip.NatGatewayId = ""
 	eip.State = "allocated"
 	data, err := json.Marshal(eip)
 	if err != nil {
@@ -365,7 +453,10 @@ func (s *NatGatewayServiceImpl) DescribeNatGateways(ctx context.Context, input *
 	parsedFilters, err := awsfilters.ParseFilters(input.Filter, describeNatGatewaysValidFilters)
 	if err != nil {
 		slog.WarnContext(ctx, "DescribeNatGateways: invalid filter", "err", err)
-		return nil, err
+		// AWS answers InvalidParameter here, where other EC2 describes answer
+		// InvalidParameterValue with the same text.
+		_, msg, _ := awserrors.ResolveErrorDetail(err)
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameter, "%s", msg)
 	}
 
 	natgwIDs := awsidentifiers.Set(input.NatGatewayIds)
@@ -490,7 +581,12 @@ func recordToEC2(record *NatGatewayRecord) *ec2.NatGateway {
 			{
 				AllocationId: aws.String(record.AllocationId),
 				PublicIp:     aws.String(record.PublicIp),
+				IsPrimary:    aws.Bool(true),
+				Status:       aws.String(ec2.NatGatewayAddressStatusSucceeded),
 			},
+		}
+		if record.AssociationId != "" {
+			ngw.NatGatewayAddresses[0].AssociationId = aws.String(record.AssociationId)
 		}
 	}
 

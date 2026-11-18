@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
 	"strings"
 	"time"
@@ -82,6 +83,48 @@ type Snapshot struct {
 	AvailabilityZone string            `json:"availability_zone"`
 	Tags             map[string]string `json:"tags,omitempty"`
 	ProviderHandle   string            `json:"provider_handle,omitempty"`
+	// DeleteRequested is a DeleteSnapshot accepted before the snapshot could be
+	// deleted; the snapshot is hidden from then on and the reaper deletes it.
+	DeleteRequested bool `json:"delete_requested,omitempty"`
+	// AmbiguousCreate is set before every provider CreateSnapshot call and kept
+	// while any call on the document went unanswered, as one may still be accepted.
+	AmbiguousCreate bool `json:"ambiguous_create,omitempty"`
+	// TombstonedAt is when a deleted AmbiguousCreate snapshot's document became
+	// a tombstone, under which a late-accepted snapshot of its ID is deleted.
+	TombstonedAt time.Time `json:"tombstoned_at,omitzero"`
+}
+
+// Hidden reports a snapshot a customer has deleted: it is absent to every
+// request, and only the reaper still acts on its document.
+func (s Snapshot) Hidden() bool {
+	return s.DeleteRequested || !s.TombstonedAt.IsZero()
+}
+
+// Tombstoned reports a document kept only to catch a late-accepted create.
+func (s Snapshot) Tombstoned() bool {
+	return !s.TombstonedAt.IsZero()
+}
+
+// SnapshotStateCompleted is the one snapshot state a consumer may use.
+const SnapshotStateCompleted = "completed"
+
+// The states of an AMI document. A CreateImage's AMI is pending until its
+// snapshot settles; available is the one state an instance may launch from.
+const (
+	AMIStatePending   = "pending"
+	AMIStateAvailable = "available"
+	AMIStateFailed    = "failed"
+)
+
+// Ready reports a snapshot whose contents a consumer may read.
+func (s Snapshot) Ready() bool {
+	return s.State == SnapshotStateCompleted
+}
+
+// NotReadyError is the IncorrectState a consumer answers for a snapshot that
+// is not Ready.
+func (s Snapshot) NotReadyError() error {
+	return awserrors.Errorf(awserrors.ErrorIncorrectState, "Snapshot is in invalid state - %s", s.State)
 }
 
 // RootDeviceName is the device every image this platform serves reports as its
@@ -110,9 +153,48 @@ type AMI struct {
 	Tags            map[string]string `json:"tags,omitempty"`
 	SourceDigest    *ImageDigest      `json:"source_digest,omitempty"`
 	State           string            `json:"state,omitempty"`
+	// SourceInstanceID names the instance CreateImage made the image from.
+	SourceInstanceID string `json:"source_instance_id,omitempty"`
+	// ImdsSupport is "v2.0" for an image whose instances require IMDSv2.
+	ImdsSupport string `json:"imds_support,omitempty"`
+	// RootIOPS and RootThroughput are the root volume's performance at CreateImage.
+	RootIOPS       int `json:"root_iops,omitempty"`
+	RootThroughput int `json:"root_throughput,omitempty"`
 	// UEFIData names the image's own UEFI variable store object; nil launches
 	// from the node's VARS template.
 	UEFIData *UEFIDataRef `json:"uefi_data,omitempty"`
+	// DeregistrationProtection is the protection state; empty is disabled.
+	DeregistrationProtection string `json:"deregistration_protection,omitempty"`
+	// DeprecationTime is when EnableImageDeprecation deprecates the image;
+	// nil means the image is never deprecated.
+	DeprecationTime *time.Time `json:"deprecation_time,omitempty"`
+}
+
+// The DeregistrationProtection states EC2 renders for an image.
+const (
+	DeregistrationProtectionDisabled               = "disabled"
+	DeregistrationProtectionEnabledWithoutCooldown = "enabled-without-cooldown"
+)
+
+// DeregistrationProtectionState renders the stored protection, an absent
+// field being AWS's default of disabled.
+func (a AMI) DeregistrationProtectionState() string {
+	if a.DeregistrationProtection == "" {
+		return DeregistrationProtectionDisabled
+	}
+	return a.DeregistrationProtection
+}
+
+// Available reports an AMI an instance may launch from or a copy may read. An
+// empty State predates the field, and every such image is complete.
+func (a AMI) Available() bool {
+	return a.State == "" || a.State == AMIStateAvailable
+}
+
+// UnavailableError is the InvalidAMIID.Unavailable answer for imageID, whose
+// document is a, when a is not Available.
+func (a AMI) UnavailableError(imageID string) error {
+	return awserrors.Errorf(awserrors.ErrorInvalidAMIIDUnavailable, "The image '%s' is %s, not available.", imageID, a.State)
 }
 
 // UEFIDataRef names an image's UEFI variable store object and the firmware it

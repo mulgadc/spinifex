@@ -10,10 +10,8 @@ import (
 )
 
 // TestMountVolume_AlreadyMountedReturnsExistingExport pins the guard at
-// mountVolume rather than at one handler. The legacy ebs.<node>.mount subject
-// is the route production takes for instance launch and hot-attach, so a guard
-// that only sits in handlePublishVolume leaves a retried attach free to start a
-// second nbdkit against a volume this node already exports.
+// mountVolume: a retried attach must not start a second nbdkit against a
+// volume this node already exports.
 func TestMountVolume_AlreadyMountedReturnsExistingExport(t *testing.T) {
 	_, natsURL := setupEmbeddedNATS(t)
 	cfg := setupTestConfig(t, natsURL)

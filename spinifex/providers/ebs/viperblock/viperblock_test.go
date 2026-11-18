@@ -141,7 +141,7 @@ func TestValidVolumeName(t *testing.T) {
 	}
 }
 
-// TestLocalVolumeDir is the regression test for the ebs.delete data-destruction
+// TestLocalVolumeDir is the regression test for the local-delete data-destruction
 // hazard: an unvalidated volume name reaching os.RemoveAll could wipe BaseDir
 // itself (empty name) or escape it entirely ("../.."). Every case here must be
 // rejected before a caller ever gets a path back to remove.

@@ -21,7 +21,7 @@ func TestRLC1_EKSDeleteClusterNotFoundOnAbsent(t *testing.T) {
 	f := newEKSServiceFixture(t)
 
 	out, err := f.svc.DeleteCluster(context.Background(), deleteInput("absent"), testAccountID)
-	require.EqualErrorf(t, err, awserrors.ErrorEKSResourceNotFound, "ADR-0003:S3: DeleteCluster on an absent cluster must return ResourceNotFoundException, as AWS does")
+	require.Equalf(t, awserrors.ErrorEKSResourceNotFound, awserrors.ValidErrorCodeFromError(err), "ADR-0003:S3: DeleteCluster on an absent cluster must return ResourceNotFoundException, as AWS does")
 	assert.Nil(t, out)
 	assert.Empty(t, f.inst.terminateCalls, "an absent cluster must trigger no billable teardown")
 }

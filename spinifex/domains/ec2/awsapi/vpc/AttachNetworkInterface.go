@@ -76,6 +76,9 @@ func AttachNetworkInterface(ctx context.Context, input *ec2.AttachNetworkInterfa
 
 	responseError, err := awserrors.ValidateErrorPayload(msg.Data)
 	if err != nil {
+		if text := aws.StringValue(responseError.Message); text != "" {
+			return output, awserrors.Errorf(*responseError.Code, "%s", text)
+		}
 		return output, errors.New(*responseError.Code)
 	}
 

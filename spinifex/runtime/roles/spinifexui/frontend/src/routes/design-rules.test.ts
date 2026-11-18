@@ -315,7 +315,7 @@ describe("resource tags are edited in place with InlineTags", () => {
 
 const FILTER_TOGGLES = {
   "src/components/filter-bar.tsx": "the filter bar is the one toggle group",
-  "src/routes/_auth/nodes/topology.tsx":
+  "src/components/topology/topology-canvas.tsx":
     "the topology toggle picks a layout direction and filters nothing",
 } satisfies Allowlist
 

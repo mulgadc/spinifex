@@ -11,6 +11,8 @@ import {
 } from "@/components/detail-panel"
 import { ResourceDeleteDialog } from "@/components/resource-delete-dialog"
 import { Ec2Tags } from "@/components/resource-tags"
+import { useDirectionTab } from "@/components/topology/resource-topology"
+import { SecurityGroupTopology } from "@/components/topology/security-group-topology"
 import { Button, buttonVariants } from "@/components/ui/button"
 import type { PanelTab } from "@/lib/panel-search"
 import { useDeleteSecurityGroup } from "@/mutations/ec2"
@@ -125,6 +127,10 @@ export function SecurityGroupDetails({
 }: SecurityGroupDetailsProps) {
   const id = sg.GroupId ?? ""
 
+  const topology = useDirectionTab(layout === "page", tab, (direction) => (
+    <SecurityGroupTopology direction={direction} group={sg} />
+  ))
+
   return (
     <DetailPanel
       closeLabel={
@@ -150,6 +156,7 @@ export function SecurityGroupDetails({
       onClose={onClose}
       onTabChange={onTabChange}
       subtitle={sg.GroupName ? id : undefined}
+      summary={topology.toggle}
       tab={tab}
       tabs={[
         {
@@ -158,6 +165,7 @@ export function SecurityGroupDetails({
           icon: Eye,
           content: <Overview sg={sg} />,
         },
+        topology.spec,
         {
           id: "settings",
           label: "Settings",

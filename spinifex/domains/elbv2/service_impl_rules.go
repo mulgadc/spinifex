@@ -48,6 +48,15 @@ func (s *ELBv2ServiceImpl) CreateRule(ctx context.Context, input *elbv2.CreateRu
 	if listener == nil || listener.AccountID != accountID {
 		return nil, errors.New(awserrors.ErrorELBv2ListenerNotFound)
 	}
+	lb, err := s.store.GetLoadBalancerByArn(ctx, listener.LoadBalancerArn)
+	if err != nil {
+		slog.ErrorContext(ctx, "CreateRule: failed to get LB", "arn", listener.LoadBalancerArn, "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	// Spinifex NLBs are IPv4 only, so every NLB listener is non-dualstack.
+	if lb != nil && lb.Type == LoadBalancerTypeNetwork {
+		return nil, awserrors.Errorf(awserrors.ErrorValidationError, "Rules are unsupported for non-dualstack network load balancer listeners")
+	}
 
 	priority := int(*input.Priority)
 	if priority < RuleMinPriority || priority > RuleMaxPriority {
@@ -74,7 +83,7 @@ func (s *ELBv2ServiceImpl) CreateRule(ctx context.Context, input *elbv2.CreateRu
 	}
 	for _, r := range existing {
 		if r.Priority == priority {
-			return nil, errors.New(awserrors.ErrorELBv2PriorityInUse)
+			return nil, awserrors.Errorf(awserrors.ErrorELBv2PriorityInUse, "Priority '%d' is currently in use", priority)
 		}
 	}
 
@@ -175,6 +184,17 @@ func (s *ELBv2ServiceImpl) DeleteRule(ctx context.Context, input *elbv2.DeleteRu
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
+	if listenerArn, ok := listenerArnFromDefaultRuleArn(*input.RuleArn); ok {
+		listener, err := s.store.GetListenerByArn(ctx, listenerArn)
+		if err != nil {
+			slog.ErrorContext(ctx, "DeleteRule: failed to get listener", "arn", listenerArn, "err", err)
+			return nil, errors.New(awserrors.ErrorServerInternal)
+		}
+		if listener != nil && listener.AccountID == accountID {
+			return nil, awserrors.Errorf(awserrors.ErrorOperationNotPermitted, "Default rule '%s' cannot be deleted", *input.RuleArn)
+		}
+	}
+
 	rule, err := s.store.GetRuleByArn(ctx, *input.RuleArn)
 	if err != nil {
 		slog.ErrorContext(ctx, "DeleteRule: failed to get rule", "arn", *input.RuleArn, "err", err)
@@ -271,6 +291,11 @@ func (s *ELBv2ServiceImpl) DescribeRules(ctx context.Context, input *elbv2.Descr
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
 
+	page, nextMarker, err := pageResults(out.Rules, input.Marker, input.PageSize)
+	if err != nil {
+		return nil, err
+	}
+	out.Rules, out.NextMarker = page, nextMarker
 	return out, nil
 }
 
@@ -335,7 +360,7 @@ func (s *ELBv2ServiceImpl) SetRulePriorities(ctx context.Context, input *elbv2.S
 			continue
 		}
 		if _, claimed := seen[r.Priority]; claimed {
-			return nil, errors.New(awserrors.ErrorELBv2PriorityInUse)
+			return nil, awserrors.Errorf(awserrors.ErrorELBv2PriorityInUse, "One or more priorities not found")
 		}
 	}
 

@@ -32,6 +32,7 @@ func (s stubLoggingConfigReader) Get(context.Context, string) (LoggingConfig, bo
 }
 
 func TestLoggingConfigStore_PutGetDelete(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	store := NewLoggingConfigStore(js)
 	ctx := context.Background()
@@ -58,6 +59,7 @@ func TestLoggingConfigStore_PutGetDelete(t *testing.T) {
 }
 
 func TestPutModelInvocationLoggingConfiguration_RejectsCloudWatch(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	store := NewLoggingConfigStore(js)
 
@@ -73,6 +75,7 @@ func TestPutModelInvocationLoggingConfiguration_RejectsCloudWatch(t *testing.T) 
 }
 
 func TestPutModelInvocationLoggingConfiguration_RequiresBucketWhenDeliveryEnabled(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	store := NewLoggingConfigStore(js)
 
@@ -88,6 +91,7 @@ func TestPutModelInvocationLoggingConfiguration_RequiresBucketWhenDeliveryEnable
 // covers embedding delivery on its own: enabling it with no bucket is as
 // undeliverable as text or image, so it must not slip past the same gate.
 func TestPutModelInvocationLoggingConfiguration_RequiresBucketForEmbeddingDelivery(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	store := NewLoggingConfigStore(js)
 
@@ -104,6 +108,7 @@ func TestPutModelInvocationLoggingConfiguration_RequiresBucketForEmbeddingDelive
 // same shapes a genuine SDK client marshals, rather than this package's own
 // internal LoggingConfig.
 func TestModelInvocationLoggingConfiguration_RoundTripsViaSDKStructs(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	store := NewLoggingConfigStore(js)
 	ctx := context.Background()
@@ -158,6 +163,7 @@ func TestStreamRecorder_DropsAndCountsWhenStreamMissing(t *testing.T) {
 // publisher: body text only survives onto the stream when the account's own
 // logging config enables delivery.
 func TestStreamRecorder_Record_BodyOnlyWhenLoggingEnabled(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx := context.Background()
 	_, err := EnsureInvocationStream(ctx, js)
@@ -244,6 +250,7 @@ func TestDeliveryConsumer_Run_WritesS3AndNeverLogsBodyText(t *testing.T) {
 // only, InputText/OutputText empty) — S3 delivery is not itself gated on
 // body presence, only the body fields are.
 func TestDeliveryConsumer_Run_DeliversMetadataOnlyRecordToS3(t *testing.T) {
+	t.Parallel()
 	_, _, js := testutil.StartTestJetStream(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -295,6 +302,7 @@ func TestDeliveryConsumer_Run_DeliversMetadataOnlyRecordToS3(t *testing.T) {
 // JetStream client: every accessor must report the misconfiguration rather
 // than panic on a nil handle.
 func TestLoggingConfigStore_RequiresJetStream(t *testing.T) {
+	t.Parallel()
 	store := NewLoggingConfigStore(nil)
 	ctx := context.Background()
 

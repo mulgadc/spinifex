@@ -121,5 +121,9 @@ func statusText(s featurelevel.NodeStatus) string {
 	if s.Reply == nil {
 		return "status: none (" + s.Reason + ")"
 	}
-	return fmt.Sprintf("status: build %d, revision %d, in flight %d", s.Reply.Build, s.Reply.Revision, s.Reply.InFlightTotal)
+	text := fmt.Sprintf("status: build %d, revision %d, in flight %d", s.Reply.Build, s.Reply.Revision, s.Reply.InFlightTotal)
+	for _, n := range slices.Sorted(maps.Keys(s.Reply.Holding)) {
+		text += fmt.Sprintf(", holding %d at level %d", s.Reply.Holding[n], n)
+	}
+	return text
 }

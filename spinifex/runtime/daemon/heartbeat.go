@@ -4,7 +4,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mulgadc/spinifex/spinifex/foundation/release/featurelevel"
 	"github.com/mulgadc/spinifex/spinifex/foundation/telemetry"
 )
 
@@ -73,6 +72,6 @@ func (d *Daemon) buildHeartbeat() *Heartbeat {
 		AvailableMem:  totalMem - allocMem,
 		ReservedVCPU:  reservedVCPU,
 		ReservedMem:   reservedMem,
-		FeatureLevel:  featurelevel.Build,
+		FeatureLevel:  d.advertisedFeatureLevel(),
 	}
 }

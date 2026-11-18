@@ -1,6 +1,7 @@
 package vpcendpoint
 
 import (
+	"errors"
 	"context"
 	"strings"
 	"testing"
@@ -137,7 +138,7 @@ func TestCreate_DefaultPolicyGivenExplicitly(t *testing.T) {
 
 func TestCreate_InactiveServiceDoesNotExist(t *testing.T) {
 	f := newFixture(t)
-	f.svc.SetActivation(nil)
+	f.svc.SetActivation(nil, nil)
 	_, err := f.createIn(t, vpcA, rtbA1)
 	requireCode(t, err, awserrors.ErrorInvalidServiceName, "The Vpc Endpoint Service '"+s3Service+"' does not exist")
 	assert.Empty(t, f.keys(t))
@@ -399,4 +400,74 @@ func TestVpcBlocksDeletion(t *testing.T) {
 	blocked, err = f.svc.VpcBlocksDeletion(context.Background(), testAccount, vpcA)
 	require.NoError(t, err)
 	assert.False(t, blocked)
+}
+
+// A create holds the feature-level admission until its record is written, so a
+// rollback waiting on in-flight work cannot pass while an endpoint is landing.
+func TestCreate_HoldsAdmissionUntilWritten(t *testing.T) {
+	f := newFixture(t)
+	var keysAtRelease []string
+	f.gate.onDone = func() { keysAtRelease = f.keys(t) }
+	id := f.create(t, rtbA1)
+	assert.Contains(t, keysAtRelease, recordKey(testAccount, id), "admission released before the record was written")
+	assert.Zero(t, f.gate.held, "admission not released")
+}
+
+func TestCreate_AdmissionRefusals(t *testing.T) {
+	f := newFixture(t)
+	f.gate.closed = true
+	_, err := f.createIn(t, vpcA, rtbA1)
+	requireCode(t, err, awserrors.ErrorInvalidServiceName, "")
+
+	f.gate.closed, f.gate.err = false, errors.New("kv down")
+	_, err = f.createIn(t, vpcA, rtbA1)
+	requireCode(t, err, awserrors.ErrorServerInternal, "")
+	assert.Empty(t, f.keys(t), "a refused create writes nothing")
+	assert.Zero(t, f.gate.held, "a refusal still releases admission")
+}
+
+// With the level closed, as during a rollback, an endpoint cannot gain a route,
+// but can still lose one or change its policy, so customers can drain it.
+func TestModify_AddingATableNeedsAdmission(t *testing.T) {
+	f := newFixture(t)
+	id := f.create(t, rtbA1, rtbA3)
+	f.gate.closed = true
+
+	requireCode(t, f.modify(t, &ec2.ModifyVpcEndpointInput{VpcEndpointId: aws.String(id),
+		AddRouteTableIds: aws.StringSlice([]string{rtbA2})}), awserrors.ErrorServiceUnavailable, "")
+	assert.Empty(t, f.routeOn(t, rtbA2))
+
+	require.NoError(t, f.modify(t, &ec2.ModifyVpcEndpointInput{VpcEndpointId: aws.String(id),
+		RemoveRouteTableIds: aws.StringSlice([]string{rtbA3}), ResetPolicy: aws.Bool(true)}))
+	assert.Equal(t, []string{rtbA1}, aws.StringValueSlice(f.describe(t, id).RouteTableIds))
+	assert.Zero(t, f.gate.held)
+
+	f.gate.closed = false
+	var routeAtRelease string
+	f.gate.onDone = func() { routeAtRelease = f.routeOn(t, rtbA2) }
+	require.NoError(t, f.modify(t, &ec2.ModifyVpcEndpointInput{VpcEndpointId: aws.String(id),
+		AddRouteTableIds: aws.StringSlice([]string{rtbA2})}))
+	assert.Equal(t, id, routeAtRelease, "admission released before the table's claim was written")
+}
+
+// The rollback drain counts every account's available endpoints and creates
+// still in flight, and nothing a delete or an abandoned create left.
+func TestCountLive(t *testing.T) {
+	f := newFixture(t)
+	count := func() int {
+		n, err := CountLive(t.Context(), f.js, f.clock.now())
+		require.NoError(t, err)
+		return n
+	}
+	assert.Zero(t, count(), "an empty bucket holds none")
+
+	f.create(t, rtbA1)
+	gone := f.create(t, rtbA2)
+	f.del(t, gone)
+	require.NoError(t, putJSON(t.Context(), f.svc.kv, recordKey(otherAccount, "vpce-0aaaaaaaaaaaaaaa1"),
+		&EndpointRecord{ID: "vpce-0aaaaaaaaaaaaaaa1", AccountID: otherAccount, State: StatePending, CreatedAt: f.clock.now()}))
+	assert.Equal(t, 2, count(), "the available endpoint and the create in flight; not the deleted one")
+
+	f.clock.t = f.clock.t.Add(claimGrace)
+	assert.Equal(t, 1, count(), "a pending record past the grace is an abandoned create")
 }

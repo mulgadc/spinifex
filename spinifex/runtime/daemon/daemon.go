@@ -186,6 +186,8 @@ type Daemon struct {
 	eipService            ec2eip.EIPService
 	elbv2Service          *elbv2domain.ELBv2ServiceImpl
 	featureGate           *featurelevel.Gate // admission for N-only work; set by checkFeatureLevel
+	// advertisedLevel is the last level the heartbeat reported, 0 before the first.
+	advertisedLevel atomic.Int64
 	eksService            *ekscluster.EKSServiceImpl
 	ecsService            *ecsdomain.Service
 	ecsScheduler          *ecsdomain.Scheduler
@@ -2253,7 +2255,6 @@ func (d *Daemon) startCluster() error {
 		return d.vpcPeeringService.VpcBlocksDeletion(ctx, vpcID)
 	})
 
-	// No activation is installed, so the endpoint service is never offered.
 	endpointSettings := ec2vpcendpoint.Settings{Region: d.config.Region, AZ: d.config.AZ}
 	if d.clusterConfig != nil {
 		endpointSettings.ServicesDomain = strings.TrimSpace(d.clusterConfig.AWS.ServicesDomain)
@@ -2265,6 +2266,7 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize VPC endpoint service: %w", err)
 	}
 	d.vpcEndpointService.SetTableLookup(d.routeTableService)
+	d.vpcEndpointService.SetActivation(endpointAdmission(d.featureGate), endpointOffered(d.featureGate))
 	d.vpcEndpointService.SetCentralTagStore(d.tagsService)
 	d.routeTableService.SetEndpointLookup(d.vpcEndpointService.Store)
 	d.vpcService.SetDependencyCheck("vpc-endpoint", d.vpcEndpointService.VpcBlocksDeletion)

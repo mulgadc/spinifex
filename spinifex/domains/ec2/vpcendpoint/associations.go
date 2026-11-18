@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
@@ -50,4 +51,39 @@ func ListAssociations(ctx context.Context, kv jetstream.KeyValue) ([]Association
 		out = append(out, Association{RouteTableID: table, Endpoint: *rec})
 	}
 	return out, nil
+}
+
+// CountLive counts every account's live endpoints: available, or a create
+// still in flight at now. It scans the bucket, for the operator's rollback
+// drain only; a missing bucket holds none.
+func CountLive(ctx context.Context, js jetstream.JetStream, now time.Time) (int, error) {
+	kv, err := js.KeyValue(ctx, KVBucketVpcEndpoints)
+	if errors.Is(err, jetstream.ErrBucketNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("open %s: %w", KVBucketVpcEndpoints, err)
+	}
+	keys, err := kvstore.Keys(ctx, kv)
+	if errors.Is(err, jetstream.ErrNoKeysFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("list %s: %w", KVBucketVpcEndpoints, err)
+	}
+	s := &Store{kv: kv, now: func() time.Time { return now }}
+	n := 0
+	for _, key := range keys {
+		if _, isClaim := rtbFromClaimKey(key); isClaim || key == kvstore.VersionKey {
+			continue
+		}
+		rec, _, err := getJSON[EndpointRecord](ctx, kv, key)
+		if err != nil {
+			return 0, err
+		}
+		if rec != nil && s.live(rec) {
+			n++
+		}
+	}
+	return n, nil
 }

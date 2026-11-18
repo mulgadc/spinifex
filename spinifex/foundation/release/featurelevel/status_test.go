@@ -113,3 +113,23 @@ func TestProbe_MalformedReplyAndInvalidNodeID(t *testing.T) {
 	assert.Equal(t, "invalid-node-id", got[0].Reason, "sorted: a.b first")
 	assert.Equal(t, "malformed", got[1].Reason)
 }
+
+// A node reports the obligations it holds outside any request, read fresh on
+// each answer, so a drain check sees them appear and go.
+func TestServeStatus_ReportsHoldingPerLevel(t *testing.T) {
+	t.Parallel()
+	s, _ := newStore(t)
+	g := NewGate(s)
+	held := 1
+	g.SetHolding(GatewayEndpoints, func() int { return held })
+	h := g.ServeStatus("n1", Build)
+
+	got, err := h(t.Context(), &StatusRequest{Node: "n1"}, "")
+	require.NoError(t, err)
+	assert.Equal(t, map[int]int{GatewayEndpoints: 1}, got.Holding)
+
+	held = 0
+	got, err = h(t.Context(), &StatusRequest{Node: "n1"}, "")
+	require.NoError(t, err)
+	assert.Empty(t, got.Holding, "a level holding nothing is omitted")
+}

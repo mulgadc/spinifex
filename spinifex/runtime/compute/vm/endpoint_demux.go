@@ -46,8 +46,14 @@ type endpointDemux struct {
 }
 
 // EndpointDemuxHeld reports whether this node may hold an endpoint demux flow:
-// true until a pass has read the bridge and left none.
-func (m *Manager) EndpointDemuxHeld() bool { return !m.endpointDemux.clear.Load() }
+// true until a pass has read the bridge and left none. A manager with no
+// demuxer installs none.
+func (m *Manager) EndpointDemuxHeld() bool {
+	if m.deps.EndpointDemuxer == nil || m.deps.EndpointIntent == nil {
+		return false
+	}
+	return !m.endpointDemux.clear.Load()
+}
 
 // ReconcileEndpointDemux makes each running guest's demux match its subnet's
 // intent: the entries if its subnet routes to an endpoint, none otherwise.

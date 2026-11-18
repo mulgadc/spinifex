@@ -13,7 +13,7 @@ import (
 
 // Build is the highest level this binary supports. Any change that adds an
 // N-only semantic raises it and declares the level below.
-const Build = 1
+const Build = 2
 
 // Level names one N-only semantic.
 type Level struct {
@@ -24,7 +24,14 @@ type Level struct {
 // Baseline is level 1: this build's first release, with no N-only semantic.
 const Baseline = 1
 
-var declared = []Level{{N: Baseline, Name: "baseline"}}
+// GatewayEndpoints is level 2: S3 gateway VPC endpoints, which need every
+// node's gate to serve endpoint proxies and every node's proxy to capture.
+const GatewayEndpoints = 2
+
+var declared = []Level{
+	{N: Baseline, Name: "baseline"},
+	{N: GatewayEndpoints, Name: "vpc-gateway-endpoints"},
+}
 
 // Levels returns every declared level in ascending order.
 func Levels() []Level { return slices.Clone(declared) }

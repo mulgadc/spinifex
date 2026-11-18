@@ -37,13 +37,15 @@ type StatusRequest struct {
 
 // StatusReply is one node's status. Revision is the record revision the node
 // read to answer, not one it holds from earlier. InFlight is the count of
-// admitted callers per level and InFlightTotal their sum.
+// admitted callers per level and InFlightTotal their sum. Holding is the
+// node-local obligations per level; an older build omits it.
 type StatusReply struct {
 	Node          string      `json:"node"`
 	Build         int         `json:"build"`
 	Revision      uint64      `json:"revision"`
 	InFlight      map[int]int `json:"in_flight"`
 	InFlightTotal int         `json:"in_flight_total"`
+	Holding       map[int]int `json:"holding,omitempty"`
 }
 
 // ServeStatus answers the status route for node. It re-reads the record on every
@@ -65,7 +67,7 @@ func (g *Gate) ServeStatus(node string, build int) func(context.Context, *Status
 		for _, c := range in {
 			total += c
 		}
-		return &StatusReply{Node: node, Build: build, Revision: rev, InFlight: in, InFlightTotal: total}, nil
+		return &StatusReply{Node: node, Build: build, Revision: rev, InFlight: in, InFlightTotal: total, Holding: g.Holding()}, nil
 	}
 }
 

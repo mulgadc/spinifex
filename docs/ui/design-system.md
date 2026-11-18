@@ -390,9 +390,9 @@ It runs on the `.nvmrc` Node, as CI does: when the image's Node differs, it down
 It refuses to run when the image's Playwright differs from the lockfile's.
 `make test-ui-e2e` and `pnpm e2e` still run on the host, where screenshots compare reliably only against baselines drawn on that host, so do not commit baselines from `pnpm e2e:update`.
 
-The `UI End-to-End` job in `.github/workflows/ui.yml` runs the suite inside the pinned image on every pull request touching the frontend, and screenshots gate the merge with every behavioural and CSP test.
+The `UI End-to-End` job in `.github/workflows/ui.yml` runs the suite as three Playwright shards inside the pinned image on every pull request touching the frontend, and a screenshot mismatch fails the job as a behavioural or CSP test does.
 A preceding `UI End-to-End Image` job reads `playwright.image`, so the workflow and the `make` targets cannot disagree about the image.
-On a failure the job uploads `test-results/` as the `ui-e2e-test-results` artifact, holding each failed screenshot's expected, actual and diff images and the trace.
+On a failure the job uploads `test-results/` as the `ui-e2e-test-results-<shard>` artifact, holding each failed screenshot's expected, actual and diff images and the trace.
 
 ## Open
 

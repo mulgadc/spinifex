@@ -134,7 +134,9 @@
     "runner": "ci-single",
     "extra": "rds",
     "suite": "rds",
-    "timeout_minutes": 120
+    "timeout_minutes": 120,
+    "shard": 1,
+    "shards": 2
   },
   {
     "cell": 29,
@@ -146,7 +148,9 @@
     "runner": "ci-multi",
     "extra": "",
     "suite": "storagefault",
-    "timeout_minutes": 100
+    "timeout_minutes": 100,
+    "shard": 1,
+    "shards": 2
   },
   {
     "cell": 30,
@@ -250,5 +254,33 @@
     "runner": "ci-multi",
     "extra": "nat-multi",
     "suite": ""
+  },
+  {
+    "cell": 39,
+    "install": "binary",
+    "topo": "single",
+    "net": "static",
+    "host": "debian-13",
+    "arch": "x86_64",
+    "runner": "ci-single",
+    "extra": "rds",
+    "suite": "rds",
+    "timeout_minutes": 120,
+    "shard": 2,
+    "shards": 2
+  },
+  {
+    "cell": 40,
+    "install": "binary",
+    "topo": "real-multi",
+    "net": "static",
+    "host": "debian-13",
+    "arch": "x86_64",
+    "runner": "ci-multi",
+    "extra": "",
+    "suite": "storagefault",
+    "timeout_minutes": 100,
+    "shard": 2,
+    "shards": 2
   }
 ]

@@ -315,6 +315,9 @@ test-build-scripts:
 		.github/scripts/go-build-cache.sh \
 		.github/scripts/e2e-select.sh \
 		.github/scripts/e2e-shard.sh \
+		.github/scripts/e2e-suite-shard.sh \
+		.github/scripts/go-pkg-shard.sh \
+		.github/scripts/go-pkg-shard-union.sh \
 		.github/scripts/hv-lock.sh
 	@$(_HDR) "\n....Running shellcheck over build/scripts/**/*.sh + the node scripts...."
 	$(_Q)shellcheck -S warning $$(find build/scripts -name '*.sh' | sort) $(NODE_SCRIPTS)
@@ -387,15 +390,32 @@ GOTESTFLAGS ?=
 
 # Run unit tests with coverage profile
 COVERPROFILE ?= coverage.out
+# The packages test-cover and test-race run; CI shards this same list.
+GO_TEST_PKGS := ./spinifex/... ./cmd/... ./internal/... ./contracts/... ./architecture/...
 test-cover:
 	@echo -e "\n....Running tests with coverage for $(GO_PROJECT_NAME)...."
-	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -timeout 180s -coverprofile=$(COVERPROFILE) -covermode=atomic ./spinifex/... ./cmd/... ./internal/... ./contracts/... ./architecture/... $(_COVQ)
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -timeout 180s -coverprofile=$(COVERPROFILE) -covermode=atomic $(GO_TEST_PKGS) $(_COVQ)
 	@scripts/check-coverage.sh $(COVERPROFILE) $(QUIET)
+
+# One CI shard of test-cover: the packages listed one per line in PKGS_FILE,
+# with no total-coverage gate, which runs once on the merged profile.
+test-cover-pkgs:
+	@test -s "$(PKGS_FILE)" || { echo "test-cover-pkgs: PKGS_FILE is empty or unset"; exit 1; }
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -timeout 180s -coverprofile=$(COVERPROFILE) -covermode=atomic $$(cat "$(PKGS_FILE)") $(_COVQ)
+
+# Print the package list test-cover runs, one import path per line.
+list-test-pkgs:
+	@go list $(GO_TEST_PKGS)
 
 # Run unit tests with race detector
 test-race:
 	@echo -e "\n....Running tests with race detector for $(GO_PROJECT_NAME)...."
-	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -timeout 300s ./spinifex/... ./cmd/... ./internal/... ./contracts/... ./architecture/... $(_RACEQ)
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -timeout 300s $(GO_TEST_PKGS) $(_RACEQ)
+
+# One CI shard of test-race: the packages listed one per line in PKGS_FILE.
+test-race-pkgs:
+	@test -s "$(PKGS_FILE)" || { echo "test-race-pkgs: PKGS_FILE is empty or unset"; exit 1; }
+	$(_Q)LOG_IGNORE=1 go test $(GOTESTFLAGS) -race -timeout 300s $$(cat "$(PKGS_FILE)") $(_RACEQ)
 
 # Unit tests for in-repo GitHub Actions (e.g. .github/actions/e2e-analyze).
 # Kept out of `test-cover` so coverage % isn't diluted by CI-only tooling.
@@ -606,7 +626,7 @@ distro-arm64:
 distro-clean:
 	rm -rf dist/
 
-.PHONY: test-package-check build build-lambda-testlink build-lambda-testlink-image build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-worker-microvm-image build-lambda-runtime-microvm-image install-microvm install-sqs-worker-microvm go_build preflight test test-cover test-race diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration test-gated generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
+.PHONY: test-package-check build build-lambda-testlink build-lambda-testlink-image build-ui test-ui-e2e ui-e2e-container ui-baselines build-installer build-lb-agent build-ecs-agent build-system-image build-eks-node-image import-eks-node-image publish-eks-node-image build-ecs-node-image import-ecs-node-image build-rds-postgres-image import-rds-postgres-image build-rds-mariadb-image import-rds-mariadb-image build-microvm-image build-sqs-worker-microvm-image build-lambda-runtime-microvm-image install-microvm install-sqs-worker-microvm go_build preflight test test-cover test-cover-pkgs list-test-pkgs test-race test-race-pkgs diff-coverage bench fuzz test-actions test-images test-build-scripts test-harness test-integration test-gated generate-aws-model-coverage aws-model-coverage test-segscan-oracle \
 	deploy reinstall clean \
 	install-system install-go install-aws quickinstall \
 	lint fix govulncheck nilaway \

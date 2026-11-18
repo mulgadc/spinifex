@@ -1,0 +1,22 @@
+# Seconds per top-level test in the rds suite, from dev nightly 43925793022 (cell-27). e2e-shard.sh balances the nightly's two rds cells on these.
+TestMariaDBInstance 1097
+TestDelete 1054
+TestModifyStorageAndClass 1036
+TestLifecycle 1000
+TestSnapshotRestore 897
+TestAutomatedBackups 781
+TestMariaDBSnapshotRestore 623
+TestDBVMIsolation 595
+TestLoadedGracefulReboot 566
+TestSubnetAndParameterGroups 518
+TestFailureDetection 399
+TestMariaDBValidation 304
+TestCrossSubnetConnectivity 260
+TestAuthorization 212
+TestConnectivity 169
+TestAPIMatrix 134
+TestCreateDescribe 119
+TestRotationOverlapped 0
+TestRetryUntilOverlap 0
+TestMariaDBSystemImage 0
+TestClassifyOverlapAttempt 0

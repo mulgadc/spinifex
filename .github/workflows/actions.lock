@@ -73,7 +73,9 @@ workflows:
     '.github/workflows/spinifex.yml':
         - 'actions/cache@v6.1.0'
         - 'actions/checkout@v7.0.1'
+        - 'actions/download-artifact@v8.0.2'
         - 'actions/setup-go@v7.0.0'
+        - 'actions/upload-artifact@v7.0.2'
         - 'golangci/golangci-lint-action@v9.3.0'
     '.github/workflows/ui.yml':
         - 'actions/checkout@v7.0.1'

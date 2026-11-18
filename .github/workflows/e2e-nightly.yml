@@ -971,8 +971,8 @@ jobs:
   # together: the same test list in every cell, each test run by one of them.
   shard_union:
     name: shard union
-    needs: [matrix]
-    if: always()
+    needs: [select, matrix]
+    if: always() && needs.select.outputs.any == 'true'
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7.0.1
@@ -980,6 +980,7 @@ jobs:
           sparse-checkout: .github/scripts/go-pkg-shard-union.sh
           sparse-checkout-cone-mode: false
 
+      # No match is not an error here: the next step names every list it expects.
       - name: Collect shard test lists
         uses: actions/download-artifact@v8.0.2
         with:
@@ -988,21 +989,32 @@ jobs:
           path: shard-tests
         continue-on-error: true
 
+      # Expected lists come from the selected cells, not from what downloaded,
+      # so a cell that uploaded nothing fails here. A suite whose other shard
+      # was not selected is checked for presence only.
       - name: Check every split suite ran each test once
+        env:
+          CELLS: ${{ needs.select.outputs.cells }}
         run: |
           set -euo pipefail
-          shopt -s nullglob
           rc=0
-          while read -r suite shards; do
-            runs=(shard-tests/"${suite}"-*-of-"${shards}".runs)
-            if [ "${#runs[@]}" -lt "${shards}" ]; then
-              echo "::warning::${suite}: ${#runs[@]} of ${shards} shards listed their tests; the rest failed early or were not selected"
-              continue
+          while IFS=$'\t' read -r cell suite shard shards; do
+            [ -s "shard-tests/${suite}-${shard}-of-${shards}.runs" ] ||
+              { echo "::error::cell-${cell} (${suite} shard ${shard}/${shards}) uploaded no test list"; rc=1; }
+          done < <(jq -r '.[] | select((.shards // 0) > 1) | [.cell, .suite, .shard, .shards] | @tsv' <<<"${CELLS}")
+          while IFS=$'\t' read -r suite shards; do
+            runs=() alls=() whole=1
+            for n in $(seq 1 "${shards}"); do
+              f="shard-tests/${suite}-${n}-of-${shards}"
+              [ -s "${f}.runs" ] || whole=0
+              runs+=("${f}.runs"); alls+=("${f}.all")
+            done
+            if [ "${whole}" -eq 0 ]; then
+              echo "::notice::${suite}: not every shard has a test list, so the union is not checked"; continue
             fi
-            alls=("${runs[@]/%.runs/.all}")
             echo "${suite}:"
             NOUN=tests .github/scripts/go-pkg-shard-union.sh "${alls[@]}" -- "${runs[@]}" || rc=1
-          done < <(for f in shard-tests/*.runs; do basename "$f" | sed -E 's/-[0-9]+-of-([0-9]+)\.runs$/ \1/'; done | sort -u)
+          done < <(jq -r '[.[] | select((.shards // 0) > 1) | [.suite, (.shards | tostring)]] | unique | .[] | @tsv' <<<"${CELLS}")
           exit "${rc}"
 
   # Bare-metal single-node suite. Doesn't fit the tofu matrix shape, so it

@@ -27,6 +27,8 @@ const (
 	vpceObjectKey = "vpce-e2e-marker"
 	vpceCredAllow = "/home/ubuntu/.vpce-allow.curl"
 	vpceCredSrcIP = "/home/ubuntu/.vpce-sourceip.curl"
+	vpceCredVpce  = "/home/ubuntu/.vpce-sourcevpce.curl"
+	vpceCredOther = "/home/ubuntu/.vpce-othervpce.curl"
 
 	// vpceConvergeBudget is generous against the ~10 s the node takes to
 	// apply an endpoint change; the multinode suite asserts the bound itself.
@@ -231,6 +233,36 @@ func runVPCGatewayEndpoint(t *testing.T, fix *Fixture) {
 	if !createOK {
 		t.Fatalf("CreateOpensPath failed; every later stage depends on the open path")
 	}
+
+	// An allow conditioned on aws:SourceVpce matches only through the endpoint it
+	// names: the ordinary path and an allow naming another endpoint are denied.
+	t.Run("SourceVpcePolicyMatchesOnlyItsEndpoint", func(t *testing.T) {
+		onVpce := func(name, id string) harness.S3Principal {
+			return harness.CreateS3Principal(t, c, fmt.Sprintf("%s-%d", name, suffix), []map[string]any{{
+				"Effect":    "Allow",
+				"Action":    "s3:ListBucket",
+				"Resource":  "arn:aws:s3:::" + bucket,
+				"Condition": map[string]any{"StringEquals": map[string]any{"aws:SourceVpce": id}},
+			}})
+		}
+		named := onVpce("vpce-named", epID)
+		other := onVpce("vpce-other", "vpce-00000000000000000")
+		direct := harness.WaitS3PrincipalLive(t, gate, named, bucket)
+		require.Truef(t, harness.ErrorCodeIs(direct, "AccessDenied"),
+			"an allow on aws:SourceVpce %s must not match a request on the ordinary path; got %v", epID, direct)
+		for path, p := range map[string]harness.S3Principal{vpceCredVpce: named, vpceCredOther: other} {
+			if _, werr := harness.GuestExecViaBastion(bastion, privIP, harness.GuestS3CurlConfigCmd(path, p), 30*time.Second); werr != nil {
+				t.Fatalf("writing the curl config for %s into the guest: %v", p.UserName, werr)
+			}
+		}
+
+		g, ms := harness.WaitGuestS3(t, vpceConvergeBudget, probe(vpceCredVpce, gate), listed, "a listing allowed by aws:SourceVpce")
+		harness.Detail(t, "after", "source_vpce_allow", "probe", g.String(), "converge_ms", ms)
+		g, err := probe(vpceCredOther, gate)()
+		require.NoError(t, err, "probe as %s", other.UserName)
+		require.Equalf(t, "403", g.Code, "an allow naming another endpoint must not match; got %s", g)
+		assert.Contains(t, g.Body, "AccessDenied")
+	})
 
 	// An allow conditioned on aws:SourceIp being a node address must not match
 	// a request through the endpoint, which carries no public source address.

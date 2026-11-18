@@ -8,7 +8,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"strconv"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -203,18 +203,38 @@ func vpceTargets(fix *Fixture, p spreadPrivate, entries []string) []vpceTarget {
 	return out
 }
 
-// vpceFlipScript prints "ready", then probes until the listing reaches want
-// ("up": HTTP 200, "down": no HTTP status) and prints "flip <ms>", the guest
-// time from ready to the start of the probe that saw it.
+// vpceFlipScript waits until three successive probes show the opposite of
+// want and prints "ready". After a "go" line on stdin it probes until want
+// ("up": HTTP 200, "down": no HTTP status), prints "seen", and prints "held"
+// once three more probes agree, or "flapped" when one does not.
 func vpceFlipScript(want, region string, port int, bucket string) string {
-	return fmt.Sprintf(`start=$(date +%%s%%3N); echo ready
-while :; do
-  s=$(date +%%s%%3N)
-  code=$(curl -sk -K %[1]s --aws-sigv4 %[2]s --connect-timeout 1 --max-time 3 -o /dev/null -w '%%{http_code}' "https://$GATE:%[3]d/%[4]s?list-type=2")
-  case "%[5]s:$code" in up:200|down:000) echo "flip $((s-start))"; exit 0;; esac
-  if [ $((s-start)) -ge 60000 ]; then echo "expired $code"; exit 0; fi
+	other := "up"
+	if want == "up" {
+		other = "down"
+	}
+	return fmt.Sprintf(`probe() { curl -sk -K %[1]s --aws-sigv4 %[2]s --connect-timeout 1 --max-time 3 -o /dev/null -w '%%{http_code}' "https://$GATE:%[3]d/%[4]s?list-type=2"; }
+is() { case "$1:$2" in up:200|down:000) return 0;; esac; return 1; }
+t0=$(date +%%s); n=0
+while [ $n -lt 3 ]; do
+  code=$(probe)
+  if is %[6]s "$code"; then n=$((n+1)); else n=0; fi
+  if [ $(($(date +%%s)-t0)) -ge 60 ]; then echo "unsettled $code"; exit 0; fi
   sleep 0.2
-done`, harness.ShellQuote(vpceCred), harness.ShellQuote("aws:amz:"+region+":s3"), port, bucket, want)
+done
+echo ready
+read -r _
+t0=$(date +%%s)
+until is %[5]s "$(probe)"; do
+  if [ $(($(date +%%s)-t0)) -ge 60 ]; then echo "expired"; exit 0; fi
+  sleep 0.2
+done
+echo seen
+for i in 1 2 3; do
+  sleep 0.5
+  code=$(probe)
+  is %[5]s "$code" || { echo "flapped $code"; exit 0; }
+done
+echo held`, harness.ShellQuote(vpceCred), harness.ShellQuote("aws:amz:"+region+":s3"), port, bucket, want, other)
 }
 
 // vpceLine is one line of a flip script's output and when the runner read it.
@@ -225,16 +245,16 @@ type vpceLine struct {
 
 // vpceWatch is one guest's running flip script.
 type vpceWatch struct {
-	target  vpceTarget
-	cmd     *exec.Cmd
-	stderr  *bytes.Buffer
-	lines   chan vpceLine
-	readyAt time.Time
+	target vpceTarget
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stderr *bytes.Buffer
+	lines  chan vpceLine
 }
 
-// vpceTimeFlip runs act once the flip script probes on every target, asserts
-// each guest saw the change within vpceFlipBound of the request, logs each in
-// milliseconds, and reports whether every guest saw it at all.
+// vpceTimeFlip runs act once every target shows the opposite state, then lets
+// the guests probe. It asserts each guest's first probe to see the change was
+// read within vpceFlipBound of the request and that the change held.
 func vpceTimeFlip(t *testing.T, bastion harness.SSHTarget, targets []vpceTarget, phase, want, script string, act func() error) bool {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -251,7 +271,9 @@ func vpceTimeFlip(t *testing.T, bastion harness.SSHTarget, targets []vpceTarget,
 		cmd.WaitDelay = 5 * time.Second
 		stdout, err := cmd.StdoutPipe()
 		require.NoError(t, err, "stdout pipe for %s", tg.InstanceID)
-		w := &vpceWatch{target: tg, cmd: cmd, stderr: &bytes.Buffer{}, lines: make(chan vpceLine, 16)}
+		stdin, err := cmd.StdinPipe()
+		require.NoError(t, err, "stdin pipe for %s", tg.InstanceID)
+		w := &vpceWatch{target: tg, cmd: cmd, stdin: stdin, stderr: &bytes.Buffer{}, lines: make(chan vpceLine, 16)}
 		cmd.Stderr = w.stderr
 		require.NoError(t, cmd.Start(), "start flip script on %s", tg.InstanceID)
 		watches = append(watches, w)
@@ -265,32 +287,38 @@ func vpceTimeFlip(t *testing.T, bastion harness.SSHTarget, targets []vpceTarget,
 	}
 	for _, w := range watches {
 		line, ok := vpceNextLine(w, 90*time.Second)
-		require.Truef(t, ok && line.text == "ready", "flip script on %s never started (got %q): %s",
-			w.target.InstanceID, line.text, strings.TrimSpace(w.stderr.String()))
-		w.readyAt = line.at
+		require.Truef(t, ok && line.text == "ready", "%s on %s never settled before %s (got %q): %s",
+			w.target.InstanceID, w.target.Node, phase, line.text, strings.TrimSpace(w.stderr.String()))
 	}
 
+	// Probing starts only once the request has returned, so no probe can
+	// complete before the change was asked for.
 	start := time.Now()
 	require.NoError(t, act(), "%s request", phase)
 	apiMS := time.Since(start).Milliseconds()
+	for _, w := range watches {
+		_, err := io.WriteString(w.stdin, "go\n")
+		require.NoError(t, err, "release flip script on %s", w.target.InstanceID)
+	}
 
 	allSaw := true
 	for _, w := range watches {
 		line, ok := vpceNextLine(w, 90*time.Second)
-		ms, found := strings.CutPrefix(line.text, "flip ")
-		if !ok || !found {
+		if !ok || line.text != "seen" {
 			allSaw = false
 			t.Errorf("%s on %s never saw %s after %s (got %q): %s", w.target.InstanceID, w.target.Node, want, phase,
 				line.text, strings.TrimSpace(w.stderr.String()))
 			continue
 		}
-		guestMS, err := strconv.ParseInt(ms, 10, 64)
-		require.NoError(t, err, "flip line %q", line.text)
-		flipMS := w.readyAt.Add(time.Duration(guestMS) * time.Millisecond).Sub(start).Milliseconds()
+		flipMS := line.at.Sub(start).Milliseconds()
 		harness.Detail(t, "phase", phase, "instance", w.target.InstanceID, "node", w.target.Node,
 			"gate", w.target.Gate, "api_ms", apiMS, "flip_ms", flipMS, "bound_ms", vpceFlipBound.Milliseconds())
 		assert.LessOrEqualf(t, flipMS, vpceFlipBound.Milliseconds(),
 			"%s on %s took %dms to see %s after %s", w.target.InstanceID, w.target.Node, flipMS, want, phase)
+		if line, ok := vpceNextLine(w, 30*time.Second); !ok || line.text != "held" {
+			allSaw = false
+			t.Errorf("%s on %s did not hold %s after %s (got %q)", w.target.InstanceID, w.target.Node, want, phase, line.text)
+		}
 	}
 	return allSaw
 }

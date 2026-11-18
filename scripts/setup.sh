@@ -740,7 +740,9 @@ table inet spinifex_filter {
         # predastore's unauthenticated /healthz and /readyz, which name the
         # peers a gate cannot reach, so it belongs here for the same reason.
         # 5001 is the admin network test, listening only while one runs.
-        ip saddr $spinifex_peers tcp dport { 4222, 4248, 4432, 5001, 5300, 6641, 6642, 6643, 6644, 8660 } accept
+        # 8474 is predastore's endpoint listener, dialled only by a peer
+        # node's VPC endpoint proxy, which proves itself with its node cert.
+        ip saddr $spinifex_peers tcp dport { 4222, 4248, 4432, 5001, 5300, 6641, 6642, 6643, 6644, 8474, 8660 } accept
         ip saddr $spinifex_peers udp dport { 5300, 6660, 7660 } accept
 
         # Encap plane, peer-scoped: Geneve, IKE, NAT-T and ESP. Geneve is a

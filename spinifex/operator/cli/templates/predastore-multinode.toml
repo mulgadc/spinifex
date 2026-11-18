@@ -35,6 +35,9 @@ addr = "{{$host.Host}}"
 data_dir = "{{$.PredastoreDataDir}}"
 tls_cert = "{{$.ConfigDir}}/server.pem"
 tls_key = "{{$.ConfigDir}}/server.key"
+# The formation CA: the gate's endpoint listener admits only a client
+# certificate it issued, which every node's endpoint proxy presents.
+tls_ca = "{{$.ConfigDir}}/ca.pem"
 encryption_key = "{{$.ConfigDir}}/predastore/encryption.key"
 admin_port = {{$.AdminPort}}
 {{- range $.ClusterNodes}}
@@ -48,6 +51,8 @@ port = {{.Port}}
 # S3 is the public plane and answers on every interface; the host's bind_addr
 # above keeps raft and blob traffic off them. Only a gate may set this.
 bind_addr = "0.0.0.0"
+# VPC gateway endpoint traffic from node proxies, over mutual TLS.
+endpoint_port = 8474
 {{- end}}
 {{- end}}
 {{- end}}

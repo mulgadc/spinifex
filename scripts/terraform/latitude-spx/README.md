@@ -1,7 +1,8 @@
 # latitude-spx
 
 Builds a Spinifex deployment on latitude.sh bare metal from your laptop with `deploy-latitude.sh`.
-The commands, flags, step markers and state layout follow `vultr-spx`. The customer guide is [`docs/latitude-integration/README.md`](../../../docs/latitude-integration/README.md).
+The commands, flags, step markers and state layout follow `vultr-spx`.
+The customer guide is [`docs/latitude-integration/README.md`](../../../docs/latitude-integration/README.md).
 
 **Status: one node is proven end to end on v1.25.0; three nodes are only partly proven.**
 One node: `up`, `status`, `credentials`, a guest on the Elastic IP through the `nginx-webserver` workbook, and `destroy`.

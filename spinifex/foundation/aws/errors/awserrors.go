@@ -272,6 +272,7 @@ var (
 	ErrorInvalidRouteNotFound                                 = "InvalidRoute.NotFound"
 	ErrorInvalidRouteTableIDNotFound                          = "InvalidRouteTableID.NotFound"
 	ErrorInvalidRouteTableIdMalformed                         = "InvalidRouteTableId.Malformed"
+	ErrorInvalidRouteTableIdNotFound                          = "InvalidRouteTableId.NotFound"
 	ErrorInvalidScheduledInstance                             = "InvalidScheduledInstance"
 	ErrorInvalidSecurityRequestHasExpired                     = "InvalidSecurity.RequestHasExpired"
 	ErrorInvalidSecurityGroupIDNotFound                       = "InvalidSecurityGroupID.NotFound"
@@ -320,6 +321,7 @@ var (
 	ErrorInvalidVpcIDMalformed                                = "InvalidVpcID.Malformed"
 	ErrorInvalidVpcIdMalformed                                = "InvalidVpcId.Malformed"
 	ErrorInvalidVpcIDNotFound                                 = "InvalidVpcID.NotFound"
+	ErrorInvalidVpcIdNotFound                                 = "InvalidVpcId.NotFound"
 	ErrorInvalidVpcPeeringConnectionIDNotFound                = "InvalidVpcPeeringConnectionID.NotFound"
 	ErrorInvalidVpcPeeringConnectionIdMalformed               = "InvalidVpcPeeringConnectionId.Malformed"
 	ErrorInvalidVpcPeeringConnectionStateDnsHostnamesDisabled = "InvalidVpcPeeringConnectionState.DnsHostnamesDisabled"
@@ -1137,6 +1139,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInvalidRouteInvalidState:                              {HTTPCode: 400, Message: "The specified route is not valid."},
 	ErrorInvalidRouteMalformed:                                 {HTTPCode: 400, Message: "The specified route is not valid. If you are deleting a route in a VPN connection, ensure that you've entered the value for the CIDR block correctly."},
 	ErrorInvalidRouteNotFound:                                  {HTTPCode: 404, Message: "The specified route does not exist in the specified route table. Ensure that you indicate the exact CIDR range for the route in the request. This error can also occur if you've specified a route table ID in the request that does not exist."},
+	ErrorInvalidRouteTableIdNotFound:                           {HTTPCode: 400, Message: "The specified route table does not exist."},
 	ErrorInvalidRouteTableIDNotFound:                           {HTTPCode: 400, Message: "The specified route table does not exist. Ensure that you specify the AWS Region in which the route table is located, if it's not in the default Region."},
 	ErrorInvalidRouteTableIdMalformed:                          {HTTPCode: 400, Message: "The specified route table ID is malformed. Ensure that you specify the route table ID in the form rtb-xxxxxxxxxxxxxxxxx."},
 	ErrorInvalidScheduledInstance:                              {HTTPCode: 404, Message: "The specified Scheduled Instance does not exist."},
@@ -1187,6 +1190,7 @@ var ErrorLookup = map[string]ErrorMessage{
 	ErrorInvalidVpcIDMalformed:                                 {HTTPCode: 400, Message: "The specified VPC ID is malformed. Ensure that you've specified the ID in the form vpc-xxxxxxxxxxxxxxxxx."},
 	ErrorInvalidVpcIdMalformed:                                 {HTTPCode: 400, Message: "The specified VPC ID is malformed. Ensure that you've specified the ID in the form vpc-xxxxxxxxxxxxxxxxx."},
 	ErrorInvalidVpcIDNotFound:                                  {HTTPCode: 400, Message: "The specified VPC does not exist."},
+	ErrorInvalidVpcIdNotFound:                                  {HTTPCode: 400, Message: "The specified VPC does not exist."},
 	ErrorInvalidVpcPeeringConnectionIDNotFound:                 {HTTPCode: 400, Message: "The specified VPC peering connection ID does not exist."},
 	ErrorInvalidVpcPeeringConnectionIdMalformed:                {HTTPCode: 400, Message: "The specified VPC peering connection ID is malformed. Ensure that you provide the ID in the form pcx-xxxxxxxxxxxxxxxxx."},
 	ErrorInvalidVpcPeeringConnectionStateDnsHostnamesDisabled:  {HTTPCode: 400, Message: "To enable DNS hostname resolution for the VPC peering connection, DNS hostname support must be enabled for the VPCs."},

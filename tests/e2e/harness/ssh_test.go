@@ -4,6 +4,9 @@ package harness
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -130,5 +133,92 @@ func TestPollHandshakeReturnsOnTheFirstSuccess(t *testing.T) {
 	})
 	if !got || attempts != 2 {
 		t.Fatalf("ready = %v after %d attempts, want true after 2", got, attempts)
+	}
+}
+
+// exitWith returns the *exec.ExitError a process exiting with code produces.
+func exitWith(t *testing.T, code int) error {
+	t.Helper()
+	err := exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
+	if err == nil {
+		t.Fatalf("sh exit %d returned no error", code)
+	}
+	return err
+}
+
+func TestRetrySSHTransportRetriesA255ThenReturnsTheOutput(t *testing.T) {
+	drop := exitWith(t, 255)
+	attempts, retries := 0, 0
+	stdout, _, err := retrySSHTransport(time.Second, time.Millisecond,
+		func(context.Context) (string, string, error) {
+			attempts++
+			if attempts == 1 {
+				return "", "Connection to 192.0.2.1 closed by remote host.", drop
+			}
+			return "uid=1000(ubuntu)", "", nil
+		},
+		func(_ int, stderr string) {
+			retries++
+			if !strings.Contains(stderr, "closed by remote host") {
+				t.Errorf("onRetry got stderr %q, want the dropped attempt's", stderr)
+			}
+		})
+	if err != nil || stdout != "uid=1000(ubuntu)" || attempts != 2 || retries != 1 {
+		t.Fatalf("stdout=%q err=%v attempts=%d retries=%d, want the second attempt's output after one retry",
+			stdout, err, attempts, retries)
+	}
+}
+
+// Any exit but 255 is the remote command's own verdict and must not be retried.
+func TestRetrySSHTransportFailsAtOnceOnANon255Exit(t *testing.T) {
+	failed := exitWith(t, 1)
+	attempts := 0
+	_, _, err := retrySSHTransport(time.Second, time.Millisecond,
+		func(context.Context) (string, string, error) {
+			attempts++
+			return "", "", failed
+		},
+		func(int, string) { t.Error("onRetry called for a non-255 exit") })
+	if !errors.Is(err, failed) || attempts != 1 {
+		t.Fatalf("err=%v attempts=%d, want exit 1 after one attempt", err, attempts)
+	}
+}
+
+func TestRetrySSHTransportStopsAtTheBudgetWithTheLastStderr(t *testing.T) {
+	drop := exitWith(t, 255)
+	attempts := 0
+	start := time.Now()
+	_, stderr, err := retrySSHTransport(100*time.Millisecond, 10*time.Millisecond,
+		func(context.Context) (string, string, error) {
+			attempts++
+			return "", fmt.Sprintf("drop %d", attempts), drop
+		},
+		func(int, string) {})
+	if !isSSHExit255(err) || attempts < 2 {
+		t.Fatalf("err=%v attempts=%d, want exit 255 after several attempts", err, attempts)
+	}
+	if want := fmt.Sprintf("drop %d", attempts); stderr != want {
+		t.Fatalf("stderr = %q, want the last attempt's %q", stderr, want)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("retries ran %s against a 100ms budget", elapsed)
+	}
+}
+
+// A session that stalls after connecting never exits 255 on its own, so the
+// shared deadline is the only thing that ends it.
+func TestRetrySSHTransportCancelsAStalledAttemptAtTheBudget(t *testing.T) {
+	start := time.Now()
+	_, _, err := retrySSHTransport(100*time.Millisecond, time.Millisecond,
+		func(ctx context.Context) (string, string, error) {
+			<-ctx.Done()
+			return "", "", ctx.Err()
+		},
+		func(int, string) { t.Error("onRetry called for a cancelled attempt") })
+	if err == nil {
+		t.Fatal("a stalled attempt reported success")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("a stalled attempt held the call for %s against a 100ms budget", elapsed)
 	}
 }

@@ -5,6 +5,7 @@ package harness
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -45,10 +46,16 @@ func RunGuestSSH(ctx context.Context, target SSHTarget, cmd string) ([]byte, err
 // guestSSHArgs is the non-interactive, no-host-key-check ssh(1) argument list
 // every guest probe uses; connectTimeout is in seconds.
 func guestSSHArgs(tgt SSHTarget, connectTimeout int, cmd string) []string {
+	return guestSSHArgsAt(tgt, connectTimeout, "ERROR", cmd)
+}
+
+// guestSSHArgsAt is guestSSHArgs at an explicit ssh LogLevel. Above ERROR,
+// ssh also prints a host-key notice, so only use it where stderr is separate.
+func guestSSHArgsAt(tgt SSHTarget, connectTimeout int, logLevel, cmd string) []string {
 	return []string{
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "LogLevel=ERROR",
+		"-o", "LogLevel=" + logLevel,
 		"-o", "ConnectTimeout=" + strconv.Itoa(connectTimeout),
 		"-o", "BatchMode=yes",
 		"-p", strconv.Itoa(tgt.Port),
@@ -71,6 +78,64 @@ func RunSSH(t *testing.T, tgt SSHTarget, command string) string {
 			tgt.User, tgt.Host, tgt.Port, command, err, stderr.String())
 	}
 	return stdout.String()
+}
+
+// SSHSettleBudget bounds RunSSHSettled: long enough for one vpcd reconcile
+// pass or a guest finishing boot, short against SSHReadyBudget.
+const SSHSettleBudget = 30 * time.Second
+
+// RunSSHSettled is RunSSH that retries ssh's exit 255 within budget, logging
+// ssh's INFO-level stderr for each drop. A remote command's own 255 looks the
+// same, so pass only read-only commands that are safe to run twice.
+func RunSSHSettled(t *testing.T, tgt SSHTarget, command string, budget time.Duration) string {
+	t.Helper()
+	args := guestSSHArgsAt(tgt, 5, "INFO", command)
+	stdout, stderr, err := retrySSHTransport(budget, 2*time.Second,
+		func(ctx context.Context) (string, string, error) {
+			var o, e bytes.Buffer
+			cmd := exec.CommandContext(ctx, "ssh", args...)
+			cmd.Stdout = &o
+			cmd.Stderr = &e
+			err := cmd.Run()
+			return o.String(), e.String(), err
+		},
+		func(attempt int, stderr string) {
+			Step(t, "ssh %s@%s:%d %q exited 255 on attempt %d; retrying\nstderr: %s",
+				tgt.User, tgt.Host, tgt.Port, command, attempt, strings.TrimSpace(stderr))
+		})
+	if err != nil {
+		t.Fatalf("ssh %s@%s:%d %q failed within %s: %v\nstderr: %s",
+			tgt.User, tgt.Host, tgt.Port, command, budget, err, stderr)
+	}
+	return stdout
+}
+
+// retrySSHTransport runs attempt under one deadline of budget, pausing and
+// retrying while it exits 255. Every attempt shares the deadline, so a stalled
+// session is killed at the budget rather than holding the caller past it.
+func retrySSHTransport(budget, pause time.Duration,
+	attempt func(context.Context) (stdout, stderr string, err error),
+	onRetry func(attempt int, stderr string),
+) (string, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	for n := 1; ; n++ {
+		stdout, stderr, err := attempt(ctx)
+		if err == nil || !isSSHExit255(err) || ctx.Err() != nil {
+			return stdout, stderr, err
+		}
+		onRetry(n, stderr)
+		select {
+		case <-ctx.Done():
+			return stdout, stderr, err
+		case <-time.After(pause):
+		}
+	}
+}
+
+func isSSHExit255(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == 255
 }
 
 // RunSSHCombined runs command in the guest and returns combined stdout+stderr

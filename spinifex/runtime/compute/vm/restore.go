@@ -333,7 +333,9 @@ func (m *Manager) finalizeTransitionalRestore(instance *VM) bool {
 	// The interrupted stop or terminate may not have given its address back; a
 	// drained guest keeps it for the relaunch, as a live stop would.
 	if instance.Status == StateTerminated || instance.DesiredState == DesiredStopped {
-		m.releaseMgmt(instance, m.mgmtGeneration(instance))
+		if !m.releaseMgmt(instance, m.mgmtGeneration(instance)) && instance.Status == StateTerminated {
+			m.markTeardown(instance, TeardownMgmt, TeardownFailed)
+		}
 	}
 
 	if instance.Status == StateStopped && m.MigrateStoppedToSharedKV(instance) {

@@ -2,6 +2,9 @@ package vm
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -129,4 +132,57 @@ func TestFinalizeTransitionalRestore_ReleasesTheInterruptedLaunchsAddress(t *tes
 			assert.Equal(t, !tc.released, held)
 		})
 	}
+}
+
+// A stop whose launch is not yet proven stopped still records the release, so
+// the retry gives the address back once the process has gone.
+func TestReleaseMgmt_UnprovenStopIsReleasedOnceProven(t *testing.T) {
+	r := newMgmtRig(t)
+	r.put(t, mgmtLaunchRecord{InstanceID: "i-1", Generation: 1, State: MgmtLaunchRunning, PID: 4001, StartTime: 1})
+	r.addrs.held[mgmtTestIP] = "i-1"
+	r.process(t, 4001, 'S', 1, "i-1")
+
+	require.True(t, r.m.releaseMgmt(mgmtVM("i-1"), 1))
+	require.Equal(t, "i-1", r.addrs.held[mgmtTestIP], "an unproven stop keeps the address")
+	require.True(t, r.record(t, "i-1").ReleasePending)
+
+	require.NoError(t, os.RemoveAll(filepath.Join(r.proc, strconv.Itoa(4001))))
+	n, err := r.m.NewMgmtReleaseReaper().Sweep(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	assert.Empty(t, r.addrs.held)
+}
+
+// A terminate that cannot write the release mark keeps the obligation in its
+// teardown record; the teardown reaper records it later and the release follows.
+func TestTerminate_UnrecordedReleaseIsKeptAsATeardownObligation(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("a read-only directory does not stop root writing the launch record")
+	}
+	r := newCrashMgmtRig(t, &fakeVolumeMounter{})
+	r.put(t, mgmtLaunchRecord{InstanceID: "i-1", Generation: 1, State: MgmtLaunchRunning, PID: 4001, StartTime: 1})
+	r.addrs.held[mgmtTestIP] = "i-1"
+	v := mgmtVM("i-1")
+	v.Status = StateShuttingDown
+	v.mgmtGen.Store(1)
+	r.m.Insert(v)
+	require.NoError(t, os.Chmod(r.dir, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(r.dir, 0o700) })
+
+	require.True(t, r.m.terminateCleanup(v, 1))
+
+	assert.Equal(t, string(TeardownFailed), v.Teardown[TeardownMgmt])
+	assert.False(t, r.record(t, "i-1").ReleasePending)
+	assert.Equal(t, "i-1", r.addrs.held[mgmtTestIP])
+
+	require.NoError(t, os.Chmod(r.dir, 0o700))
+	results := r.m.NewTerminatedTeardownReaper().retryOutstanding(v)
+	assert.Equal(t, TeardownDone, results[TeardownMgmt])
+	assert.True(t, r.record(t, "i-1").ReleasePending)
+
+	n, err := r.m.NewMgmtReleaseReaper().Sweep(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	assert.Empty(t, r.addrs.held)
 }

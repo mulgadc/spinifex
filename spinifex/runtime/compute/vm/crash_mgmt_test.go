@@ -73,7 +73,7 @@ func TestHandleCrash_ReplacementMountWaitsForCrashUnmount(t *testing.T) {
 	crashed := make(chan struct{})
 	go func() {
 		defer close(crashed)
-		r.m.HandleCrash(v, errors.New("qemu exited"))
+		r.m.HandleCrash(v, v.qemuPID.Load(), errors.New("qemu exited"))
 	}()
 	<-mounter.entered
 
@@ -100,9 +100,30 @@ func TestHandleCrash_StaleGenerationLeavesTheReplacement(t *testing.T) {
 	v.mgmtGen.Store(1)
 	r.m.Insert(v)
 
-	r.m.HandleCrash(v, errors.New("qemu exited"))
+	r.m.HandleCrash(v, v.qemuPID.Load(), errors.New("qemu exited"))
 
 	assert.Equal(t, StateRunning, r.m.Status(v))
 	assert.Empty(t, mounter.seen(), "a stale crash must not unmount the replacement's volumes")
+	assert.Zero(t, v.Health.CrashCount)
+}
+
+// A crash callback that saw the old process end, but runs after a reboot gave
+// the same VM object a new process and launch, leaves the replacement alone.
+func TestHandleCrash_ReplacedProcessOnTheSameObjectIsIgnored(t *testing.T) {
+	mounter := &gatedUnmountMounter{entered: make(chan struct{}), release: make(chan struct{})}
+	close(mounter.release)
+	r := newCrashMgmtRig(t, mounter)
+	v := mgmtVM("i-1")
+	v.Status = StateRunning
+	v.qemuPID.Store(4001)
+	r.m.Insert(v)
+	r.put(t, mgmtLaunchRecord{InstanceID: "i-1", Generation: 2, State: MgmtLaunchRunning, PID: 4002, StartTime: 2})
+	v.mgmtGen.Store(2)
+	v.qemuPID.Store(4002)
+
+	r.m.HandleCrash(v, 4001, errors.New("qemu exited"))
+
+	assert.Equal(t, StateRunning, r.m.Status(v))
+	assert.Empty(t, mounter.seen(), "a callback for the replaced process must not unmount the replacement's volumes")
 	assert.Zero(t, v.Health.CrashCount)
 }

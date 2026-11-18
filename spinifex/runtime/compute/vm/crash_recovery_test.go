@@ -150,7 +150,7 @@ func TestHandleCrash_SkipsNonRunning(t *testing.T) {
 	}
 	m.Insert(instance)
 
-	m.HandleCrash(instance, fmt.Errorf("test error"))
+	m.HandleCrash(instance, instance.qemuPID.Load(), fmt.Errorf("test error"))
 
 	assert.Equal(t, StateStopped, m.Status(instance), "non-running instance must not transition on crash")
 	assert.Zero(t, rc.deallocateCount("t3.micro"), "non-running instance must not deallocate")
@@ -167,7 +167,7 @@ func TestHandleCrash_SkipsShuttingDown(t *testing.T) {
 	}
 	m.Insert(instance)
 
-	m.HandleCrash(instance, fmt.Errorf("test error"))
+	m.HandleCrash(instance, instance.qemuPID.Load(), fmt.Errorf("test error"))
 
 	assert.Equal(t, StateRunning, m.Status(instance), "shutdown skip must leave status untouched")
 	assert.Zero(t, rc.deallocateCount("t3.micro"), "shutdown skip must not deallocate")
@@ -190,7 +190,7 @@ func TestHandleCrash_CoreFlow(t *testing.T) {
 	}
 	m.Insert(instance)
 
-	m.HandleCrash(instance, fmt.Errorf("test crash"))
+	m.HandleCrash(instance, instance.qemuPID.Load(), fmt.Errorf("test crash"))
 
 	assert.Equal(t, StateError, m.Status(instance), "crash must transition to Error")
 	targets := rt.targets("i-core")
@@ -226,7 +226,7 @@ func TestHandleCrash_ReservationBoundReleasesToReservation(t *testing.T) {
 	}
 	m.Insert(instance)
 
-	m.HandleCrash(instance, fmt.Errorf("test crash"))
+	m.HandleCrash(instance, instance.qemuPID.Load(), fmt.Errorf("test crash"))
 
 	assert.Equal(t, 1, rc.releaseCount(), "slot must return to the reservation")
 	assert.Zero(t, rc.deallocateCount("t3.micro"), "reservation-bound release must not hit the general pool")
@@ -246,7 +246,7 @@ func TestHandleCrash_ReservationBoundClearsBindingForRestart(t *testing.T) {
 	}
 	m.Insert(instance)
 
-	m.HandleCrash(instance, fmt.Errorf("test crash"))
+	m.HandleCrash(instance, instance.qemuPID.Load(), fmt.Errorf("test crash"))
 
 	assert.Equal(t, 1, rc.releaseCount(), "slot must return to the reservation on crash")
 	assert.Empty(t, instance.CapacityReservationId, "binding must be cleared so restart uses general capacity")
@@ -265,7 +265,7 @@ func TestHandleCrash_FirstCrashSetsTime(t *testing.T) {
 	}
 	m.Insert(instance)
 
-	m.HandleCrash(instance, fmt.Errorf("crash 1"))
+	m.HandleCrash(instance, instance.qemuPID.Load(), fmt.Errorf("crash 1"))
 	firstTime := instance.Health.FirstCrashTime
 	assert.False(t, firstTime.IsZero())
 	assert.Equal(t, 1, instance.Health.CrashCount)
@@ -274,7 +274,7 @@ func TestHandleCrash_FirstCrashSetsTime(t *testing.T) {
 		v.Status = StateRunning
 	})
 
-	m.HandleCrash(instance, fmt.Errorf("crash 2"))
+	m.HandleCrash(instance, instance.qemuPID.Load(), fmt.Errorf("crash 2"))
 
 	assert.Equal(t, firstTime, instance.Health.FirstCrashTime,
 		"FirstCrashTime must remain set to the first crash")
@@ -295,7 +295,7 @@ func TestHandleCrash_UnknownInstanceType(t *testing.T) {
 	}
 	m.Insert(instance)
 
-	m.HandleCrash(instance, fmt.Errorf("crash"))
+	m.HandleCrash(instance, instance.qemuPID.Load(), fmt.Errorf("crash"))
 
 	assert.Equal(t, StateError, m.Status(instance))
 	assert.Equal(t, 1, instance.Health.CrashCount)

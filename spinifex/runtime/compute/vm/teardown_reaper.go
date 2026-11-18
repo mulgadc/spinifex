@@ -201,6 +201,7 @@ func (r *TerminatedTeardownReaper) retryOutstanding(v *VM) map[string]TeardownSt
 	}
 	retry(TeardownGPU, func() error { return c.ReleaseGPU(v) })
 	retry(TeardownPlacement, func() error { return c.RemoveFromPlacementGroup(v) })
+	retry(TeardownMgmt, func() error { return r.m.recordMgmtReleaseIntent(v) })
 
 	// NAT: re-publishes vpc.delete-nat + frees the IPAM slot. The cluster
 	// reconciler heals the dataplane NAT rule.

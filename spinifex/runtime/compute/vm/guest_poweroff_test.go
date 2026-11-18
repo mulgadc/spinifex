@@ -82,7 +82,7 @@ func TestHandleQEMUExit_GuestPoweroffStopsInstance(t *testing.T) {
 	m.Insert(instance)
 
 	started := time.Now()
-	m.HandleQEMUExit(instance, nil)
+	m.HandleQEMUExit(instance, instance.qemuPID.Load(), nil)
 
 	assert.Less(t, time.Since(started), qmpHeartbeatInterval,
 		"the stop must not wait for the next heartbeat")
@@ -103,7 +103,7 @@ func TestHandleQEMUExit_CleanExitWithoutMarkIsLeftToCrashRecovery(t *testing.T) 
 	instance := &VM{ID: "i-clean", Status: StateRunning, InstanceType: "t3.micro", Instance: &ec2.Instance{}}
 	m.Insert(instance)
 
-	m.HandleQEMUExit(instance, nil)
+	m.HandleQEMUExit(instance, instance.qemuPID.Load(), nil)
 
 	assert.Empty(t, rt.targets(instance.ID), "no stop without the mark")
 	assert.Equal(t, StateRunning, m.Status(instance))
@@ -119,7 +119,7 @@ func TestHandleQEMUExit_WaitErrorIsACrashEvenWithMark(t *testing.T) {
 	instance.guestPoweroff.Store(true)
 	m.Insert(instance)
 
-	m.HandleQEMUExit(instance, errors.New("signal: killed"))
+	m.HandleQEMUExit(instance, instance.qemuPID.Load(), errors.New("signal: killed"))
 
 	assert.Contains(t, rt.targets(instance.ID), StateError)
 	assert.NotContains(t, rt.targets(instance.ID), StateStopped)
@@ -147,7 +147,7 @@ func TestGuestPoweroff_ReachesStoppedFromOnePollWithoutCrashCounting(t *testing.
 	m.Insert(instance)
 
 	require.True(t, m.qmpHeartbeatPoll(instance), "the poll keeps running until QEMU exits")
-	m.HandleQEMUExit(instance, nil)
+	m.HandleQEMUExit(instance, instance.qemuPID.Load(), nil)
 
 	assert.Equal(t, []InstanceState{StateStopping, StateStopped}, rt.targets(instance.ID))
 	assert.Zero(t, instance.Health.QMPConsecutiveFailures, "a powered-off guest is not a failed heartbeat")

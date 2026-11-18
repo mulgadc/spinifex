@@ -46,7 +46,7 @@ type Deps struct {
 
 	// CrashHandler is invoked from the QEMU exit goroutine when the process
 	// terminates unexpectedly after startup was confirmed.
-	CrashHandler func(*VM, error)
+	CrashHandler func(instance *VM, pid int64, err error)
 
 	// TransitionState applies a state transition to the supplied VM and
 	// persists the resulting running-state snapshot.

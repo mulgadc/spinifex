@@ -104,8 +104,9 @@ func ClassifyCrashReason(waitErr error) string {
 
 // HandleCrash reacts to an unexpected QEMU exit after startup was confirmed:
 // classifies the reason, transitions to error, releases resources, unmounts
-// volumes, and calls MaybeRestart. Wired as Deps.CrashHandler.
-func (m *Manager) HandleCrash(instance *VM, waitErr error) {
+// volumes, and calls MaybeRestart. Wired as Deps.CrashHandler. pid is the
+// process the caller saw end; a crash of a process since replaced is ignored.
+func (m *Manager) HandleCrash(instance *VM, pid int64, waitErr error) {
 	if status := m.Status(instance); status != StateRunning {
 		slog.Debug("QEMU exited but instance not in running state, skipping crash handler",
 			"instance", instance.ID, "status", status)
@@ -124,7 +125,7 @@ func (m *Manager) HandleCrash(instance *VM, waitErr error) {
 	// until the crashed launch's volumes are released.
 	mgmtGen := m.mgmtGeneration(instance)
 	cleaned := false
-	m.mgmtTeardown(instance, mgmtGen, "crash", func() { cleaned = m.crashCleanup(instance, reason) })
+	m.mgmtTeardown(instance, mgmtGen, "crash", func() { cleaned = m.crashCleanup(instance, pid, reason) })
 	if cleaned {
 		m.MaybeRestart(instance)
 	}
@@ -132,7 +133,14 @@ func (m *Manager) HandleCrash(instance *VM, waitErr error) {
 
 // crashCleanup moves a crashed instance to error and releases what its
 // process held. A stop or terminate that took the instance first owns it.
-func (m *Manager) crashCleanup(instance *VM, reason string) bool {
+func (m *Manager) crashCleanup(instance *VM, pid int64, reason string) bool {
+	// Read under the launch guard, which a relaunch holds while it replaces the
+	// process, so a late callback cannot act on the replacement.
+	if current := instance.qemuPID.Load(); current != pid {
+		slog.Info("Crashed process was already replaced, skipping crash handler",
+			"instance", instance.ID, "pid", pid, "current_pid", current)
+		return false
+	}
 	if status := m.Status(instance); status != StateRunning {
 		slog.Info("Crashed instance left running state before cleanup, skipping crash handler",
 			"instance", instance.ID, "status", status)

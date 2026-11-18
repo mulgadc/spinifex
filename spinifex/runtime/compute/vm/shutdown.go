@@ -550,8 +550,9 @@ func (m *Manager) stopCleanup(instance *VM, mgmtGen uint64, releaseMgmt bool) er
 	current := m.mgmtTeardown(instance, mgmtGen, "stop", func() {
 		sealErr = m.shutdownAndUnmount(instance, m.finishStoppedUEFIWriteBack)
 		m.cleanupTapDevices(instance)
-		if releaseMgmt {
-			m.releaseMgmtLocked(instance, mgmtGen)
+		if releaseMgmt && !m.releaseMgmtLocked(instance, mgmtGen) {
+			slog.Error("Stopped instance keeps its management address: the release could not be recorded",
+				"instanceId", instance.ID, "ip", instance.MgmtIP)
 		}
 	})
 	if !current {
@@ -611,6 +612,7 @@ func (m *Manager) releaseAutoAssignedPublicIP(instance *VM) {
 // mgmtGen is the launch the teardown belongs to, read before it began. It
 // reports false, having touched nothing, for a superseded object.
 func (m *Manager) terminateCleanup(instance *VM, mgmtGen uint64) bool {
+	mgmtRecorded := true
 	current := m.mgmtTeardown(instance, mgmtGen, "terminate", func() {
 		// Terminate deletes the volumes next, so an unsealed block map loses
 		// nothing a caller can still ask for. Tolerated to keep terminate
@@ -618,12 +620,15 @@ func (m *Manager) terminateCleanup(instance *VM, mgmtGen uint64) bool {
 		_ = m.shutdownAndUnmount(instance, func(v *VM) { m.dropUEFIWriter(v.ID, "terminate", false) })
 		m.cleanupAfterQEMU(instance)
 		m.cleanupTapDevices(instance)
-		m.releaseMgmtLocked(instance, mgmtGen)
+		mgmtRecorded = m.releaseMgmtLocked(instance, mgmtGen)
 	})
 	if !current {
 		return false
 	}
 	m.markTeardown(instance, TeardownTap, TeardownDone)
+	if !mgmtRecorded {
+		m.markTeardown(instance, TeardownMgmt, TeardownFailed)
+	}
 
 	if m.deps.InstanceCleaner != nil {
 		gpuErr := m.deps.InstanceCleaner.ReleaseGPU(instance)

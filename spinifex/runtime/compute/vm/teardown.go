@@ -23,6 +23,9 @@ const (
 	TeardownENI       = "eni"
 	TeardownOVN       = "ovn"
 	TeardownPlacement = "placement"
+	// TeardownMgmt is the management address release intent a terminate could
+	// not record in the launch record.
+	TeardownMgmt = "mgmt"
 	// TeardownUEFI is pending once the variable store is recorded for
 	// deletion; the cluster-wide store reaper marks it done.
 	TeardownUEFI = "uefi"

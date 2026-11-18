@@ -99,7 +99,7 @@ func (m *Manager) Reboot(ctx context.Context, id string) error {
 		// The old process is gone and no new one runs, which is a crash in
 		// all but name: recovery relaunches it under the restart policy.
 		if errors.Is(err, errRelaunchFailed) {
-			m.HandleCrash(instance, err)
+			m.HandleCrash(instance, instance.qemuPID.Load(), err)
 		}
 	})
 	return nil

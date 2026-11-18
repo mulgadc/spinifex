@@ -604,17 +604,18 @@ func (m *Manager) mgmtGeneration(instance *VM) uint64 {
 
 // releaseMgmt gives back the address of the launch a teardown captured, only
 // once that launch is proven stopped and is still the latest. Anything else
-// keeps the reservation and says why.
-func (m *Manager) releaseMgmt(instance *VM, gen uint64) {
+// keeps the reservation and says why. It reports false when the release was
+// owed but could not be recorded, so the caller must keep the obligation.
+func (m *Manager) releaseMgmt(instance *VM, gen uint64) bool {
 	unlock := m.lockMgmt(instance)
 	defer unlock()
-	m.releaseMgmtLocked(instance, gen)
+	return m.releaseMgmtLocked(instance, gen)
 }
 
 // releaseMgmtLocked is releaseMgmt for a caller holding the guard.
-func (m *Manager) releaseMgmtLocked(instance *VM, gen uint64) {
+func (m *Manager) releaseMgmtLocked(instance *VM, gen uint64) bool {
 	if !m.mgmtDurable() || instance.MgmtIP == "" {
-		return
+		return true
 	}
 	hold := func(reason string, err error) {
 		slog.Warn("Holding management address", "instanceId", instance.ID, "ip", instance.MgmtIP,
@@ -624,35 +625,60 @@ func (m *Manager) releaseMgmtLocked(instance *VM, gen uint64) {
 	rec, err := readMgmtLaunch(dir, instance.ID)
 	if err != nil {
 		hold("launch record unreadable", err)
-		return
+		return errors.Is(err, errMgmtLaunchMissing)
 	}
 	if err := m.mgmtRecordMatches(rec, instance); err != nil {
 		hold("launch record names another node or address", err)
-		return
+		return true
 	}
 	if rec.Generation != gen {
 		hold("teardown belongs to an earlier launch", fmt.Errorf("record is at generation %d", rec.Generation))
-		return
+		return true
 	}
-	if err := m.mgmtProvenStopped(rec); err != nil {
-		hold("launch not proven stopped", err)
-		return
-	}
-	if m.deps.MgmtLaunch.Addresses == nil {
-		hold("management address record not wired", nil)
-		return
-	}
+	// Recorded before the proof, so a launch that is not yet proven stopped is
+	// still released by the retry once it is.
 	if !rec.ReleasePending {
 		marked := *rec
 		marked.ReleasePending = true
 		if err := writeMgmtLaunch(dir, &marked); err != nil {
-			slog.Error("Failed to record pending management address release; a failed release will not be retried",
-				"instanceId", instance.ID, "err", err)
-		} else {
-			rec = &marked
+			hold("release intent not recorded", err)
+			return false
 		}
+		rec = &marked
+	}
+	if err := m.mgmtProvenStopped(rec); err != nil {
+		hold("launch not proven stopped", err)
+		return true
+	}
+	if m.deps.MgmtLaunch.Addresses == nil {
+		hold("management address record not wired", nil)
+		return true
 	}
 	m.completeMgmtRelease(rec)
+	return true
+}
+
+// recordMgmtReleaseIntent marks a terminated instance's launch for release
+// when its terminate could not. The release still waits for the retry and the
+// launch record's own proof of stop.
+func (m *Manager) recordMgmtReleaseIntent(v *VM) error {
+	if !m.mgmtDurable() || v.MgmtIP == "" {
+		return nil
+	}
+	unlock := m.mgmtLocks.lock(v.ID)
+	defer unlock()
+	rec, err := readMgmtLaunch(m.deps.MgmtLaunch.Dir, v.ID)
+	switch {
+	case errors.Is(err, errMgmtLaunchMissing):
+		return nil
+	case err != nil:
+		return err
+	case m.mgmtRecordMatches(rec, v) != nil || rec.ReleasePending:
+		return nil
+	}
+	next := *rec
+	next.ReleasePending = true
+	return writeMgmtLaunch(m.deps.MgmtLaunch.Dir, &next)
 }
 
 // completeMgmtRelease gives back a proven-stopped launch's address and records

@@ -692,7 +692,7 @@ func (m *Manager) startQEMU(instance *VM) (err error) {
 			slog.Info("Replaced VM process exited", "instance", instance.ID, "pid", cmd.Process.Pid, "err", waitErr)
 			return
 		}
-		m.HandleQEMUExit(instance, waitErr)
+		m.HandleQEMUExit(instance, int64(cmd.Process.Pid), waitErr)
 	}()
 
 	pid := <-processChan
@@ -1066,10 +1066,11 @@ func (m *Manager) qmpHeartbeatPoll(instance *VM) bool {
 		if failures < QMPMaxConsecutiveFailures {
 			return true
 		}
+		pid := instance.qemuPID.Load()
 		if !isInstanceProcessRunning(instance) {
 			slog.Error("QEMU process dead and QMP unhealthy, triggering crash recovery",
 				"instance", instance.ID, "consecutiveFailures", failures)
-			m.HandleCrash(instance, fmt.Errorf("qmp unhealthy (%d failures), process dead: %w", failures, err))
+			m.HandleCrash(instance, pid, fmt.Errorf("qmp unhealthy (%d failures), process dead: %w", failures, err))
 			return false
 		}
 		slog.Error("QEMU process alive but QMP unhealthy", "instance", instance.ID, "consecutiveFailures", failures)

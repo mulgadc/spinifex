@@ -6,11 +6,11 @@ import "log/slog"
 // confirmed. A wait error is a crash. A clean exit after the heartbeat saw the
 // guest power itself off is a customer stop, kept in the stopped bucket so
 // StartInstances can bring it back. Any other clean exit is left to the
-// heartbeat's crash detection.
-func (m *Manager) HandleQEMUExit(instance *VM, waitErr error) {
+// heartbeat's crash detection. pid is the process that exited.
+func (m *Manager) HandleQEMUExit(instance *VM, pid int64, waitErr error) {
 	if waitErr != nil {
 		if m.deps.CrashHandler != nil {
-			m.deps.CrashHandler(instance, waitErr)
+			m.deps.CrashHandler(instance, pid, waitErr)
 		}
 		return
 	}

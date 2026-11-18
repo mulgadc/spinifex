@@ -42,7 +42,7 @@ func TestBindVFIO_BoundToDriver(t *testing.T) {
 	if got := readSysfsTestFile(t, filepath.Join(root, "bus/pci/drivers/nvidia/unbind")); got != "0000:03:00.0" {
 		t.Errorf("nvidia/unbind = %q, want 0000:03:00.0", got)
 	}
-	if got := readSysfsTestFile(t, filepath.Join(devPath, "driver_override")); got != "vfio-pci" {
+	if got := readSysfsTestFile(t, filepath.Join(devPath, "driver_override")); got != "vfio-pci\n" {
 		t.Errorf("driver_override = %q, want vfio-pci", got)
 	}
 	if got := readSysfsTestFile(t, filepath.Join(root, "bus/pci/drivers/vfio-pci/bind")); got != "0000:03:00.0" {
@@ -90,7 +90,7 @@ func TestBindVFIO_Unbound(t *testing.T) {
 	}
 
 	devPath := filepath.Join(root, "bus/pci/devices/0000:03:00.0")
-	if got := readSysfsTestFile(t, filepath.Join(devPath, "driver_override")); got != "vfio-pci" {
+	if got := readSysfsTestFile(t, filepath.Join(devPath, "driver_override")); got != "vfio-pci\n" {
 		t.Errorf("driver_override = %q, want vfio-pci", got)
 	}
 }
@@ -100,22 +100,25 @@ func TestUnbindVFIO_WithOriginalDriver(t *testing.T) {
 	buildSysfsDevice(t, root, "0000:03:00.0", "0x030200", "0x10de", "0x2236", "vfio-pci", 7)
 	makeSysfsDriverDir(t, root, "vfio-pci")
 	makeSysfsDriverDir(t, root, "nvidia")
+	devPath := filepath.Join(root, "bus/pci/devices/0000:03:00.0")
+	must(t, kernfsWrite(filepath.Join(devPath, "driver_override"), "vfio-pci"))
 
 	err := unbindVFIO(root, "0000:03:00.0", "nvidia")
 	if err != nil {
 		t.Fatalf("unbindVFIO: %v", err)
 	}
 
-	devPath := filepath.Join(root, "bus/pci/devices/0000:03:00.0")
-
 	if got := readSysfsTestFile(t, filepath.Join(root, "bus/pci/drivers/vfio-pci/unbind")); got != "0000:03:00.0" {
 		t.Errorf("vfio-pci/unbind = %q, want 0000:03:00.0", got)
 	}
-	if got := readSysfsTestFile(t, filepath.Join(devPath, "driver_override")); got != "" {
-		t.Errorf("driver_override = %q, want empty after unbind", got)
+	if got := readSysfsTestFile(t, filepath.Join(devPath, "driver_override")); got != "(null)\n" {
+		t.Errorf("driver_override = %q, want (null) after unbind", got)
 	}
 	if got := readSysfsTestFile(t, filepath.Join(root, "bus/pci/drivers/nvidia/bind")); got != "0000:03:00.0" {
 		t.Errorf("nvidia/bind = %q, want 0000:03:00.0", got)
+	}
+	if got, _ := readDriver(devPath); got != "nvidia" {
+		t.Errorf("driver = %q, want nvidia", got)
 	}
 }
 

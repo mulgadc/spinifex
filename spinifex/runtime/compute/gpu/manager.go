@@ -177,19 +177,24 @@ func (m *Manager) Claim(instanceID, profileName string) (*GPUDevice, *MIGInstanc
 	members = filterBridgeMembers(members)
 
 	drivers := make(map[string]string, len(members))
-	var bound []string
+	// Only members this claim moved to vfio-pci; pre-bound ones stay as found.
+	var moved []string
 
 	for _, member := range members {
 		orig, err := bindVFIO(m.sysfsRoot, member.PCIAddress)
 		if err != nil {
-			// Rollback any members already bound in this attempt.
-			for _, addr := range bound {
+			for _, addr := range moved {
 				if rbErr := unbindVFIO(m.sysfsRoot, addr, drivers[addr]); rbErr != nil {
-					slog.Error("GPU claim rollback failed", "addr", addr, "err", rbErr)
+					entry.Available = false
+					slog.Error("GPU claim rollback failed, GPU marked unavailable — operator action required",
+						"gpu", entry.Device.PCIAddress, "addr", addr, "err", rbErr)
 				}
 			}
 			m.mu.Unlock()
 			return nil, nil, fmt.Errorf("bind IOMMU group member %s: %w", member.PCIAddress, err)
+		}
+		if orig != "vfio-pci" {
+			moved = append(moved, member.PCIAddress)
 		}
 		// bindVFIO returns "vfio-pci" when the device was already bound (idempotent
 		// path — e.g. pre-bound by spx-test-gpu, or after a daemon restart with a
@@ -203,7 +208,6 @@ func (m *Manager) Claim(instanceID, profileName string) (*GPUDevice, *MIGInstanc
 			// so Release leaves it bound rather than unbinding without a rebind target.
 		}
 		drivers[member.PCIAddress] = orig
-		bound = append(bound, member.PCIAddress)
 	}
 
 	entry.InstanceID = instanceID

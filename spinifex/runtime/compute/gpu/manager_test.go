@@ -454,3 +454,209 @@ func TestManagerReclaim_GroupMembersError(t *testing.T) {
 		t.Errorf("want AllocatedCount=1, got %d", m.AllocatedCount())
 	}
 }
+
+// assertBinding checks a function's bound driver and its driver_override.
+func assertBinding(t *testing.T, root, addr, driver, override string) {
+	t.Helper()
+	devPath := filepath.Join(root, "bus/pci/devices", addr)
+	if got, err := readDriver(devPath); err != nil || got != driver {
+		t.Errorf("%s driver = %q (err %v), want %q", addr, got, err, driver)
+	}
+	if got := readSysfsTestFile(t, filepath.Join(devPath, "driver_override")); got != override+"\n" {
+		t.Errorf("%s driver_override = %q, want %q", addr, got, override)
+	}
+}
+
+func TestManagerRelease_RestoresGroupDriversForReclaim(t *testing.T) {
+	root, gpu := buildManagerSysfs(t)
+	m := newManagerForTest([]GPUDevice{gpu}, root)
+
+	if _, _, err := m.Claim("i-001", ""); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	assertBinding(t, root, "0000:03:00.0", "vfio-pci", "vfio-pci")
+	assertBinding(t, root, "0000:03:00.1", "vfio-pci", "vfio-pci")
+
+	if err := m.Release("i-001"); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	assertBinding(t, root, "0000:03:00.0", "nvidia", "(null)")
+	assertBinding(t, root, "0000:03:00.1", "snd_hda_intel", "(null)")
+	if m.Available() != 1 {
+		t.Fatalf("want Available=1 after release, got %d", m.Available())
+	}
+	if _, _, err := m.Claim("i-002", ""); err != nil {
+		t.Fatalf("re-Claim after release: %v", err)
+	}
+	assertBinding(t, root, "0000:03:00.1", "vfio-pci", "vfio-pci")
+}
+
+func TestManagerRelease_FailedClearHoldsGPU(t *testing.T) {
+	root, gpu := buildManagerSysfs(t)
+	m := newManagerForTest([]GPUDevice{gpu}, root)
+	if _, _, err := m.Claim("i-001", ""); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	// A directory in the attribute's place fails the clear whatever the uid.
+	override := filepath.Join(root, "bus/pci/devices/0000:03:00.1/driver_override")
+	must(t, os.Remove(override))
+	must(t, os.Mkdir(override, 0o755))
+
+	if err := m.Release("i-001"); err == nil {
+		t.Fatal("want Release error when the override cannot be cleared")
+	}
+	if m.Available() != 0 {
+		t.Errorf("want Available=0 after failed clear, got %d", m.Available())
+	}
+	if _, err := os.Stat(filepath.Join(root, "bus/pci/drivers/snd_hda_intel/bind")); !os.IsNotExist(err) {
+		t.Errorf("snd_hda_intel/bind must not be written after a failed clear (stat err %v)", err)
+	}
+}
+
+// buildRollbackSysfs builds group 7 with a GPU, a second function bound to
+// second, and an audio function whose override is a directory, so binding it
+// to vfio-pci fails after the earlier members have been handled.
+func buildRollbackSysfs(t *testing.T, gpuDriver, second string) (string, GPUDevice) {
+	t.Helper()
+	root := t.TempDir()
+	buildSysfsDevice(t, root, "0000:03:00.0", "0x030200", "0x10de", "0x2236", gpuDriver, 7)
+	buildSysfsDevice(t, root, "0000:03:00.1", "0x0c0330", "0x10de", "0x1ad6", second, 7)
+	buildSysfsDevice(t, root, "0000:03:00.2", "0x040300", "0x10de", "0x1aef", "snd_hda_intel", 7)
+	for _, d := range []string{"vfio-pci", "nvidia", "xhci_hcd", "snd_hda_intel"} {
+		makeSysfsDriverDir(t, root, d)
+	}
+	for _, addr := range []string{"0000:03:00.0", "0000:03:00.1"} {
+		ov := "(null)"
+		if driver, _ := readDriver(filepath.Join(root, "bus/pci/devices", addr)); driver == "vfio-pci" {
+			ov = "vfio-pci"
+		}
+		must(t, os.WriteFile(filepath.Join(root, "bus/pci/devices", addr, "driver_override"), []byte(ov+"\n"), 0o600))
+	}
+	must(t, os.Mkdir(filepath.Join(root, "bus/pci/devices/0000:03:00.2/driver_override"), 0o755))
+	return root, GPUDevice{
+		PCIAddress: "0000:03:00.0", Vendor: VendorNVIDIA,
+		VendorID: "10de", DeviceID: "2236", IOMMUGroup: 7, OriginalDriver: "nvidia",
+	}
+}
+
+func TestManagerClaim_RollbackLeavesPreBoundPrimary(t *testing.T) {
+	// Discovery saw nvidia, but the GPU was already on vfio-pci at claim time.
+	root, gpu := buildRollbackSysfs(t, "vfio-pci", "xhci_hcd")
+	m := newManagerForTest([]GPUDevice{gpu}, root)
+
+	if _, _, err := m.Claim("i-001", ""); err == nil {
+		t.Fatal("want Claim error when a later member fails to bind")
+	}
+	assertBinding(t, root, "0000:03:00.0", "vfio-pci", "vfio-pci")
+	assertBinding(t, root, "0000:03:00.1", "xhci_hcd", "(null)")
+	if m.Available() != 1 {
+		t.Errorf("want Available=1 after a clean rollback, got %d", m.Available())
+	}
+}
+
+func TestManagerClaim_RollbackLeavesPreBoundCompanion(t *testing.T) {
+	root, gpu := buildRollbackSysfs(t, "nvidia", "vfio-pci")
+	m := newManagerForTest([]GPUDevice{gpu}, root)
+
+	if _, _, err := m.Claim("i-001", ""); err == nil {
+		t.Fatal("want Claim error when a later member fails to bind")
+	}
+	assertBinding(t, root, "0000:03:00.0", "nvidia", "(null)")
+	assertBinding(t, root, "0000:03:00.1", "vfio-pci", "vfio-pci")
+	if m.Available() != 1 {
+		t.Errorf("want Available=1 after a clean rollback, got %d", m.Available())
+	}
+}
+
+func TestManagerClaim_FailedRollbackHoldsGPU(t *testing.T) {
+	root, gpu := buildRollbackSysfs(t, "nvidia", "xhci_hcd")
+	// Restoring the GPU to nvidia fails, so the rollback cannot complete.
+	must(t, os.Mkdir(filepath.Join(root, "bus/pci/drivers/nvidia/bind"), 0o755))
+	m := newManagerForTest([]GPUDevice{gpu}, root)
+
+	if _, _, err := m.Claim("i-001", ""); err == nil {
+		t.Fatal("want Claim error when a later member fails to bind")
+	}
+	if m.Available() != 0 {
+		t.Errorf("want Available=0 after a failed rollback, got %d", m.Available())
+	}
+	if m.AllocatedCount() != 0 {
+		t.Errorf("want AllocatedCount=0 after a failed claim, got %d", m.AllocatedCount())
+	}
+}
+
+// Release must not report success for a function already moved off vfio-pci
+// unless it is back on its original driver with no override.
+func TestManagerRelease_ChecksFunctionsAlreadyOffVFIO(t *testing.T) {
+	const audio = "0000:03:00.1"
+	unbindVFIOExternally := func(t *testing.T, root string) {
+		must(t, kernfsWrite(filepath.Join(root, "bus/pci/drivers/vfio-pci/unbind"), audio))
+	}
+	clearOverride := func(t *testing.T, root string) {
+		must(t, kernfsWrite(filepath.Join(root, "bus/pci/devices", audio, "driver_override"), "\n"))
+	}
+	cases := []struct {
+		name      string
+		origAudio string
+		mutate    func(t *testing.T, root string)
+		wantErr   bool
+	}{
+		{"stale override", "snd_hda_intel", unbindVFIOExternally, true},
+		{"originally unbound with stale override", "", unbindVFIOExternally, true},
+		{"missing device", "snd_hda_intel", func(t *testing.T, root string) {
+			must(t, os.RemoveAll(filepath.Join(root, "bus/pci/devices", audio)))
+		}, true},
+		{"bound to another driver", "snd_hda_intel", func(t *testing.T, root string) {
+			unbindVFIOExternally(t, root)
+			clearOverride(t, root)
+			makeSysfsDriverDir(t, root, "other")
+			must(t, kernfsWrite(filepath.Join(root, "bus/pci/drivers/other/bind"), audio))
+		}, true},
+		{"originally unbound and cleared", "", func(t *testing.T, root string) {
+			unbindVFIOExternally(t, root)
+			clearOverride(t, root)
+		}, false},
+		{"already restored", "snd_hda_intel", func(t *testing.T, root string) {
+			unbindVFIOExternally(t, root)
+			clearOverride(t, root)
+			must(t, kernfsWrite(filepath.Join(root, "bus/pci/drivers/snd_hda_intel/bind"), audio))
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			buildSysfsDevice(t, root, "0000:03:00.0", "0x030200", "0x10de", "0x2236", "nvidia", 7)
+			buildSysfsDevice(t, root, audio, "0x040300", "0x10de", "0x1aef", tc.origAudio, 7)
+			for _, d := range []string{"vfio-pci", "nvidia", "snd_hda_intel"} {
+				makeSysfsDriverDir(t, root, d)
+			}
+			gpu := GPUDevice{
+				PCIAddress: "0000:03:00.0", Vendor: VendorNVIDIA,
+				VendorID: "10de", DeviceID: "2236", IOMMUGroup: 7, OriginalDriver: "nvidia",
+			}
+			m := newManagerForTest([]GPUDevice{gpu}, root)
+			if _, _, err := m.Claim("i-001", ""); err != nil {
+				t.Fatalf("Claim: %v", err)
+			}
+			tc.mutate(t, root)
+
+			err := m.Release("i-001")
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("want Release error")
+				}
+				if m.Available() != 0 {
+					t.Errorf("want Available=0, got %d", m.Available())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Release: %v", err)
+			}
+			if m.Available() != 1 {
+				t.Errorf("want Available=1, got %d", m.Available())
+			}
+		})
+	}
+}

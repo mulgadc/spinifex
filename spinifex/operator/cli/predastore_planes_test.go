@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	pds "github.com/mulgadc/predastore"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
 	"github.com/mulgadc/spinifex/spinifex/operator/admin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -159,7 +160,7 @@ func TestPredastoreTemplatesServeTheEndpointListener(t *testing.T) {
 				for _, n := range host.Nodes {
 					want := 0
 					if n.Role == pds.RoleGate {
-						want = 8474
+						want = projection.EndpointListenerPort
 					}
 					assert.Equal(t, want, n.EndpointPort, "node %d (%s)", n.ID, n.Role)
 				}

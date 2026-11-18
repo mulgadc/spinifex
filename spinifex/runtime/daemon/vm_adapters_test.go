@@ -367,6 +367,36 @@ func TestPrepareInstanceRelaunch_Durable_RefusesAnUnreservedAddress(t *testing.T
 	}
 }
 
+// With no allocator (no bridge, or a refused allocator mode) only legacy mode
+// lets a guest with a management address relaunch.
+func TestPrepareInstanceRelaunch_NoAllocatorFailsClosedOutsideLegacy(t *testing.T) {
+	cases := []struct {
+		mode    string
+		mgmtIP  string
+		wantErr bool
+	}{
+		{mode: MgmtIPAMDurable, mgmtIP: "10.15.8.10", wantErr: true},
+		{mode: "durabel", mgmtIP: "10.15.8.10", wantErr: true},
+		{mode: MgmtIPAMLegacy, mgmtIP: "10.15.8.10"},
+		{mode: "", mgmtIP: "10.15.8.10"},
+		{mode: MgmtIPAMDurable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.mode+"/"+tc.mgmtIP, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.Daemon.MgmtIPAM = tc.mode
+			d := &Daemon{config: cfg, vmMgr: vm.NewManager()}
+			err := d.prepareInstanceRelaunch(&vm.VM{ID: "i-1", MgmtIP: tc.mgmtIP})
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "no \""+tc.mode+"\" mgmt IP allocator")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 // --- DetachAndDeleteENI: post-launch attach enumeration ---
 
 // TestInstanceCleanerAdapter_DetachAndDeleteENI_ReleasesPostLaunchAttach locks

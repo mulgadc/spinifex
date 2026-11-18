@@ -3113,18 +3113,6 @@ func (d *Daemon) LoadState() error {
 	return nil
 }
 
-// restoreInstances delegates to vm.Manager.Restore and syncs the local state
-// file so it matches in-memory state.
-//
-// It then starts the recovery retry loop in the background. Restore is a single
-// pass: any instance whose relaunch lost a race with a still-starting dependency
-// is parked in StateError and, before this, stayed there until an operator
-// noticed. The loop reconsiders exactly those, once the backing store is
-// confirmed ready, and returns as soon as there is nothing left to retry.
-//
-// Backgrounded because it must not hold up the rest of daemon start: the guests
-// it is recovering are already down, and blocking here would keep the API from
-// coming up while it waits.
 // bindMgmtIPAllocator binds the allocator to cluster KV (startLocal built it
 // KV-less), then reconciles this node's already-running VMs into the
 // cluster-wide record so another node cannot reuse their addresses.
@@ -3137,6 +3125,18 @@ func (d *Daemon) bindMgmtIPAllocator() {
 	slog.Info("Rebuilt mgmt IP allocator from restored instances", "allocated", d.mgmtIPAllocator.AllocatedCount())
 }
 
+// restoreInstances delegates to vm.Manager.Restore and syncs the local state
+// file so it matches in-memory state.
+//
+// It then starts the recovery retry loop in the background. Restore is a single
+// pass: any instance whose relaunch lost a race with a still-starting dependency
+// is parked in StateError and, before this, stayed there until an operator
+// noticed. The loop reconsiders exactly those, once the backing store is
+// confirmed ready, and returns as soon as there is nothing left to retry.
+//
+// Backgrounded because it must not hold up the rest of daemon start: the guests
+// it is recovering are already down, and blocking here would keep the API from
+// coming up while it waits.
 func (d *Daemon) restoreInstances() error {
 	d.forgetSupersededInstances()
 	d.vmMgr.Restore()

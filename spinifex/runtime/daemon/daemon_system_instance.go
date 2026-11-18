@@ -791,12 +791,14 @@ func (d *Daemon) rebootSystemInstanceLocal(instanceID string) error {
 // onto a survivor they point at another node. So both concerns below are the same
 // question asked twice — what does this record assume that is not true here yet.
 func (d *Daemon) prepareInstanceRelaunch(inst *vm.VM) error {
-	// Before the launch. Only a durable record can refuse, and then the guest
-	// must not start on an address the record does not reserve for it here.
+	// Before the launch. Outside legacy mode the guest must not start on an
+	// address the record does not reserve for it here, nor with no allocator.
 	if d.mgmtIPAllocator != nil {
 		if err := d.mgmtIPAllocator.ClaimChecked(inst.ID, inst.MgmtIP); err != nil {
 			return fmt.Errorf("relaunch %s: %w", inst.ID, err)
 		}
+	} else if mode := d.mgmtIPAMMode(); inst.MgmtIP != "" && mode != "" && mode != MgmtIPAMLegacy {
+		return fmt.Errorf("relaunch %s at mgmt IP %s: no %q mgmt IP allocator on this node", inst.ID, inst.MgmtIP, mode)
 	}
 	return d.refreshSystemInstanceState(inst)
 }

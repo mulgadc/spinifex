@@ -179,6 +179,14 @@ Instances get a private IP only. They can communicate with other instances in th
 
 Private subnet instances reach the internet only if their route table has a default route to the IGW (shared SNAT, outbound only — they share the gateway IP) or to a NAT gateway. With no default route, egress is dropped. Either way they cannot be reached from the WAN because they have no public IP.
 
+## S3 From a Private Subnet (Gateway Endpoints)
+
+A private subnet reaches the S3 API without an internet gateway or NAT once its route table is named by an S3 gateway endpoint (`CreateVpcEndpoint` with service `com.amazonaws.<region>.s3`). The table gains a route to the endpoint's prefix list, whose entries are the cluster's S3 gate addresses and ports.
+
+The guest's connection to an entry never leaves the host. On the guest's `br-imds` bridge, endpoint flows send it to the guest's `ime-*` port, where a `TPROXY` rule hands it to vpcd's endpoint proxy on port 8473. The proxy admits it only if the destination is an entry, the subnet's endpoint is in the same VPC, the source is the interface's primary address and the security groups allow the egress. It then relays the connection over mutual TLS to the gate's endpoint listener on port 8474 on the node the guest dialled, and every refusal resets the connection. Requests through an endpoint carry `aws:SourceVpce`, `aws:SourceVpc` and `aws:VpcSourceIp`, not the node's address, so an allow on `aws:SourceIp` does not match them.
+
+The service is offered once every node reports feature level 2. A node reports it only when its kernel passes the capture probe, its proxy can present the node certificate, and, on a node running Predastore, its own gate accepts that certificate. Until then `DescribeVpcEndpointServices` omits S3 and `CreateVpcEndpoint` refuses it. `spx admin cluster status` shows each node's level.
+
 ## Public Subnet
 
 Instances get both a private IP and a public IP. The public IP is a 1:1 NAT managed by OVN — the instance OS only sees its private IP.

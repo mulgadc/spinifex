@@ -190,7 +190,7 @@ Default external surface is five listeners — **9999** (AWS API), **3000** (UI)
 Every node ships a host firewall policy, `table inet spinifex_filter` in `/etc/spinifex/firewall/spinifex.nft`, written by `setup.sh`; `spinifex-daemon` loads it once cluster peers resolve, filling the peer and encap sets itself.
 It is armed by default on ISO installs; a `setup.sh` install arms it with `--firewall=on`, or when firewalld was active, and otherwise installs it unarmed, so on those nodes the scope split is still the operator's to enforce.
 `setup.sh` masks firewalld wherever it is installed, and `spx admin preflight` fails while firewalld or ufw is active, because a second ruleset silently drops routed NAT, elastic IP and metadata traffic.
-The shipped policy is the authority; the reference below explains the rules it needs and is looser than the shipped one in places, such as accepting all `ime-*` traffic where the shipped policy accepts only the metadata and DNS endpoints.
+The shipped policy is the authority; the reference below explains the rules it needs and is looser than the shipped one in places, such as accepting all `ime-*` traffic where the shipped policy accepts only the metadata and DNS endpoints and untracked TCP carrying the gateway endpoint capture mark `0x8473`.
 
 > **Read the notes under the ruleset before applying it.** A default-deny input policy that
 > omits any of the loopback, conntrack, `ime-*` or Geneve rules will break instance

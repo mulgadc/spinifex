@@ -693,6 +693,10 @@ table inet spinifex_filter {
         iifname "ime-*" ct original ip daddr 169.254.169.254 tcp dport 80 accept
         iifname "ime-*" ct original ip daddr 169.254.169.253 udp dport 53 accept
         iifname "ime-*" ct original ip daddr 169.254.169.253 tcp dport 53 accept
+        # VPC gateway endpoint traffic is untracked, so the ct rules above never
+        # see it; only the mark the endpoint TPROXY rule sets is accepted, and
+        # that rule delivers solely to the endpoint proxy's transparent socket.
+        iifname "ime-*" ct state untracked meta mark 0x8473 meta l4proto tcp accept
 
         # PMTUD is not optional under a Geneve overlay.
         icmp type { echo-request, destination-unreachable, time-exceeded, parameter-problem } accept

@@ -7,8 +7,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/internal/testkit"
 	ec2idemapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/idem"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/idempotency"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -100,4 +102,29 @@ func TestRun_BucketFailure(t *testing.T) {
 	out, err := ec2idemapi.Run(t.Context(), broken, "", "acct", &ec2.RunInstancesInput{}, work)
 	require.NoError(t, err)
 	assert.Equal(t, "ok", out)
+}
+
+// Reusing a token with other parameters answers IdempotentParameterMismatch,
+// with AWS's own wording where it was captured and the default elsewhere.
+func TestRun_ParamMismatchMessage(t *testing.T) {
+	t.Parallel()
+	_, _, js := testutil.StartTestJetStream(t)
+	kv, err := idempotency.OpenBucket(t.Context(), js, ec2idemapi.KVBucket, ec2idemapi.TTL)
+	require.NoError(t, err)
+	bucket := func(context.Context) (jetstream.KeyValue, error) { return kv, nil }
+	work := func() (string, error) { return "ok", nil }
+
+	for action, want := range map[string]string{
+		"CreateVpcEndpoint": "Wrong arguments for token: tok",
+		"RunInstances":      "",
+	} {
+		_, err := ec2idemapi.Run(t.Context(), bucket, action, "acct",
+			&ec2.CreateVpcEndpointInput{ClientToken: aws.String("tok"), VpcId: aws.String("vpc-a")}, work)
+		require.NoError(t, err)
+		_, err = ec2idemapi.Run(t.Context(), bucket, action, "acct",
+			&ec2.CreateVpcEndpointInput{ClientToken: aws.String("tok"), VpcId: aws.String("vpc-b")}, work)
+		code, msg, _ := awserrors.ResolveErrorDetail(err)
+		assert.Equal(t, awserrors.ErrorIdempotentParameterMismatch, code, action)
+		assert.Equal(t, want, msg, action)
+	}
 }

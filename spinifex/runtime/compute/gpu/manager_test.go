@@ -1,7 +1,10 @@
 package gpu
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1032,6 +1035,62 @@ func TestManagerClaim_FailedRollbackFencesIdleSibling(t *testing.T) {
 	}
 	if m.Available() != 0 {
 		t.Errorf("want both GPUs in the group held, got Available=%d", m.Available())
+	}
+}
+
+// captureLogs routes slog to a JSON buffer for the rest of the test.
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// Both GPUs of the group fail to return to nvidia during one claim rollback: each
+// failure is logged, and the group is fenced once, so each GPU is reported once.
+func TestManagerClaim_RollbackFailuresFenceGroupOnce(t *testing.T) {
+	useKernfs(t)
+	root, gpus := buildSharedGroupSysfs(t, "snd_hda_intel")
+	must(t, os.RemoveAll(filepath.Join(root, "bus/pci/devices/0000:03:00.2/driver_override")))
+	must(t, os.Mkdir(filepath.Join(root, "bus/pci/devices/0000:03:00.2/driver_override"), 0o755))
+	must(t, os.Mkdir(filepath.Join(root, "bus/pci/drivers/nvidia/bind"), 0o755))
+	m := newManagerForTest(gpus, root)
+	logs := captureLogs(t)
+
+	if _, _, err := m.Claim("i-001", ""); err == nil {
+		t.Fatal("want Claim error when the audio function fails to bind")
+	}
+	if m.Available() != 0 {
+		t.Errorf("want both GPUs in the group held, got Available=%d", m.Available())
+	}
+	if _, _, err := m.Claim("i-002", ""); err == nil {
+		t.Error("want Claim to refuse a GPU of the fenced group")
+	}
+
+	rollbackFailed := map[string]int{}
+	fenced := map[string]int{}
+	for _, line := range bytes.Split(bytes.TrimSpace(logs.Bytes()), []byte("\n")) {
+		var rec struct{ Msg, GPU, Addr string }
+		must(t, json.Unmarshal(line, &rec))
+		switch {
+		case strings.HasPrefix(rec.Msg, "GPU claim rollback failed"):
+			rollbackFailed[rec.Addr]++
+		case strings.HasPrefix(rec.Msg, "GPU marked unavailable"):
+			fenced[rec.GPU]++
+		}
+	}
+	for _, addr := range []string{"0000:03:00.0", "0000:03:00.1"} {
+		if rollbackFailed[addr] != 1 {
+			t.Errorf("rollback failure for %s logged %d times, want 1", addr, rollbackFailed[addr])
+		}
+		if fenced[addr] != 1 {
+			t.Errorf("fence of %s logged %d times, want 1", addr, fenced[addr])
+		}
+	}
+	if len(rollbackFailed) != 2 || len(fenced) != 2 {
+		t.Errorf("unexpected log targets: rollback %v, fenced %v", rollbackFailed, fenced)
 	}
 }
 

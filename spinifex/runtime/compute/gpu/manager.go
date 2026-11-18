@@ -185,12 +185,17 @@ func (m *Manager) Claim(instanceID, profileName string) (*GPUDevice, *MIGInstanc
 	for _, member := range members {
 		orig, err := bindVFIO(m.sysfsRoot, member.PCIAddress)
 		if err != nil {
+			rollbackFailed := false
 			for _, addr := range moved {
 				if rbErr := unbindVFIO(m.sysfsRoot, addr, drivers[addr]); rbErr != nil {
-					m.fenceGroupLocked(idx)
+					rollbackFailed = true
 					slog.Error("GPU claim rollback failed, GPU marked unavailable — operator action required",
 						"gpu", entry.Device.PCIAddress, "addr", addr, "err", rbErr)
 				}
+			}
+			// One fence covers the group however many members failed to restore.
+			if rollbackFailed {
+				m.fenceGroupLocked(idx)
 			}
 			m.mu.Unlock()
 			return nil, nil, fmt.Errorf("bind IOMMU group member %s: %w", member.PCIAddress, err)

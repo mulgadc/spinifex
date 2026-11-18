@@ -82,6 +82,12 @@ func TestVPCPeeringCrossAccount(t *testing.T) {
 	runVPCPeeringCrossAccount(t, requireSingleNodeFixture(t))
 }
 
+// TestVPCGatewayEndpoint covers an S3 gateway endpoint on a private subnet's
+// datapath: create, modify, delete, security groups and the DeleteVpc fence.
+func TestVPCGatewayEndpoint(t *testing.T) {
+	runVPCGatewayEndpoint(t, requireSingleNodeFixture(t))
+}
+
 // TestWANEgressSMTPBlock boots one public guest and asserts the platform
 // egress ACL drops outbound SMTP (25/465/587) to a public destination while
 // ordinary WAN egress still works — the AWS-parity default block.

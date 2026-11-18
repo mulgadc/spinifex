@@ -1,0 +1,392 @@
+package vpcendpoint
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"slices"
+	"strings"
+
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/prefixlist"
+	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
+	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
+	awstags "github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+)
+
+var _ VpcEndpointService = (*ServiceImpl)(nil)
+
+// Settings are the formation facts the endpoint service renders.
+type Settings struct {
+	Region         string
+	ServicesDomain string
+	AZ             string
+}
+
+// ServiceImpl serves the endpoint actions from the endpoint bucket.
+type ServiceImpl struct {
+	*Store
+
+	settings Settings
+	// active reports whether every node can carry endpoint traffic; until it
+	// does, the S3 endpoint service is not offered. nil is never active.
+	active func(context.Context) bool
+}
+
+// NewServiceImpl wraps an open store.
+func NewServiceImpl(store *Store, settings Settings) *ServiceImpl {
+	return &ServiceImpl{Store: store, settings: settings}
+}
+
+// NewServiceImplWithNATS opens the buckets and returns the service.
+func NewServiceImplWithNATS(ctx context.Context, natsConn *nats.Conn, settings Settings) (*ServiceImpl, error) {
+	js, err := jetstream.New(natsConn)
+	if err != nil {
+		return nil, fmt.Errorf("jetstream: %w", err)
+	}
+	store, err := OpenStore(ctx, js)
+	if err != nil {
+		return nil, err
+	}
+	slog.Info("VPC endpoint service initialized", "bucket", KVBucketVpcEndpoints)
+	return NewServiceImpl(store, settings), nil
+}
+
+// SetActivation installs the check that offers the S3 endpoint service.
+func (s *ServiceImpl) SetActivation(active func(context.Context) bool) { s.active = active }
+
+func (s *ServiceImpl) serviceActive(ctx context.Context) bool {
+	return s.active != nil && s.active(ctx)
+}
+
+func (s *ServiceImpl) serviceName() string { return prefixlist.ServiceName(s.settings.Region) }
+
+// internalError logs a store failure and answers it as AWS's server error.
+func internalError(ctx context.Context, op string, err error) error {
+	slog.ErrorContext(ctx, op+": store failure", "err", err)
+	return errors.New(awserrors.ErrorServerInternal)
+}
+
+func endpointNotFound(id string) error {
+	return awserrors.Errorf(awserrors.ErrorInvalidVpcEndpointIdNotFound, "The Vpc Endpoint Id '%s' does not exist", id)
+}
+
+func unknownService(name string) error {
+	return awserrors.Errorf(awserrors.ErrorInvalidServiceName, "The Vpc Endpoint Service '%s' does not exist", name)
+}
+
+func (s *ServiceImpl) routeExists(table string) error {
+	return awserrors.Errorf(awserrors.ErrorRouteAlreadyExists,
+		"route table %s already has a route with destination-prefix-list-id %s", table, prefixlist.ID(s.settings.Region))
+}
+
+// checkTypeAndService applies AWS's type and service checks: a type outside
+// AWS's enum, a service not offered here, then a type the service lacks.
+func (s *ServiceImpl) checkTypeAndService(typ, name string) error {
+	if typ == "" {
+		typ = TypeGateway
+	}
+	switch typ {
+	case TypeGateway, ec2.VpcEndpointTypeInterface, ec2.VpcEndpointTypeGatewayLoadBalancer:
+	default:
+		return awserrors.Errorf(awserrors.ErrorInvalidVpcEndpointType,
+			"Unrecognized VPC endpoint type %s, expected one of [Gateway, Interface, GatewayLoadBalancer]", typ)
+	}
+	if name == "" {
+		return awserrors.Errorf(awserrors.ErrorInvalidParameter, "service_name is a required member")
+	}
+	if name != s.serviceName() {
+		// Another Region's S3 is an interface service on AWS.
+		if strings.HasPrefix(name, "com.amazonaws.") && strings.HasSuffix(name, ".s3") {
+			return awserrors.Errorf(awserrors.ErrorInvalidParameter,
+				"Endpoint type (%s) does not match available service types ([Interface]).", typ)
+		}
+		return unknownService(name)
+	}
+	if typ != TypeGateway {
+		return awserrors.Errorf(awserrors.ErrorInvalidParameter,
+			"Endpoint type (%s) does not match available service types ([Gateway]).", typ)
+	}
+	return nil
+}
+
+// interfaceOnlyFields refuses the fields AWS accepts only on interface
+// endpoints, in AWS's order.
+func interfaceOnlyFields(subnets, groups bool, privateDNS *bool, subnetConfigs bool) error {
+	switch {
+	case subnets:
+		return awserrors.Errorf(awserrors.ErrorInvalidParameter, "Subnet IDs are only supported for Interface and GatewayLoadBalancer type VPC Endpoints.")
+	case groups:
+		return awserrors.Errorf(awserrors.ErrorInvalidParameter, "Security Group IDs are only supported for Interface type VPC Endpoint.")
+	case privateDNS != nil:
+		return awserrors.Errorf(awserrors.ErrorInvalidParameter, "Private DNS is only supported for Interface type VPC Endpoint.")
+	case subnetConfigs:
+		return awserrors.Errorf(awserrors.ErrorInvalidParameter, "SubnetConfigurations are only supported for Interface type VPC Endpoint.")
+	}
+	return nil
+}
+
+// checkIPAddressType accepts ipv4 only: there is no IPv6 datapath.
+func checkIPAddressType(name, value string) error {
+	switch value {
+	case "", ec2.IpAddressTypeIpv4:
+		return nil
+	case ec2.IpAddressTypeIpv6, ec2.IpAddressTypeDualstack:
+		return awserrors.Errorf(awserrors.ErrorInvalidParameter,
+			"%s %s is not supported: only ipv4 endpoints are available in this Region.", name, value)
+	}
+	return awserrors.Errorf(awserrors.ErrorInvalidParameterValue, "Invalid value '%s' for %s.", value, name)
+}
+
+// dnsRecordIPType returns the DnsRecordIpType to store, which AWS echoes.
+func dnsRecordIPType(spec *ec2.DnsOptionsSpecification) (string, error) {
+	if spec == nil || spec.DnsRecordIpType == nil {
+		return "", nil
+	}
+	v := aws.StringValue(spec.DnsRecordIpType)
+	if v == ec2.DnsRecordIpTypeServiceDefined {
+		return "", nil
+	}
+	return v, checkIPAddressType("DnsRecordIpType", v)
+}
+
+// checkTables validates each named table against vpcID and returns them
+// sorted and distinct.
+func (s *Store) checkTables(ctx context.Context, accountID, vpcID string, ids []*string) ([]string, error) {
+	tables := awsidentifiers.Distinct(ids)
+	slices.Sort(tables)
+	for _, t := range tables {
+		vpc, err := s.tableVpc(ctx, accountID, t)
+		if err != nil {
+			return nil, err
+		}
+		if vpc == "" {
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidRouteTableIdNotFound, "The Route Table Id '%s' does not exist.", t)
+		}
+		if vpc != vpcID {
+			return nil, awserrors.Errorf(awserrors.ErrorInvalidParameter, "%s is not in %s", t, vpcID)
+		}
+	}
+	return tables, nil
+}
+
+// heldByOther returns the first of tables whose S3 route another endpoint
+// holds, or "".
+func (s *Store) heldByOther(ctx context.Context, tables []string, id string) (string, error) {
+	for _, t := range tables {
+		_, holder, err := s.claimHolder(ctx, t)
+		if err != nil {
+			return "", err
+		}
+		if holder != nil && holder.ID != id {
+			return t, nil
+		}
+	}
+	return "", nil
+}
+
+// overLimit reports whether one more endpoint would pass the per-account or
+// per-VPC quota. Concurrent creates may each pass the last free slot.
+func (s *Store) overLimit(ctx context.Context, accountID, vpcID string) (bool, error) {
+	recs, err := s.accountRecords(ctx, accountID)
+	if err != nil {
+		return false, err
+	}
+	if countLive(s, recs) >= accountLimit {
+		return true, nil
+	}
+	recs, err = s.vpcRecords(ctx, vpcID)
+	if err != nil {
+		return false, err
+	}
+	return countLive(s, recs) >= vpcLimit, nil
+}
+
+func countLive(s *Store, recs []*EndpointRecord) int {
+	n := 0
+	for _, r := range recs {
+		if s.live(r) {
+			n++
+		}
+	}
+	return n
+}
+
+// CreateVpcEndpoint creates a gateway endpoint for S3, available on return.
+func (s *ServiceImpl) CreateVpcEndpoint(ctx context.Context, input *ec2.CreateVpcEndpointInput, accountID string) (*ec2.CreateVpcEndpointOutput, error) {
+	vpcID := aws.StringValue(input.VpcId)
+	if vpcID == "" {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameter, "vpc_id is a required member")
+	}
+	// Until every node can carry endpoint traffic the service does not exist,
+	// as DescribeVpcEndpointServices shows.
+	if !s.serviceActive(ctx) {
+		return nil, unknownService(aws.StringValue(input.ServiceName))
+	}
+	vpc, err := s.vpcRecord(ctx, accountID, vpcID)
+	if err != nil {
+		return nil, internalError(ctx, "CreateVpcEndpoint", err)
+	}
+	if vpc == nil {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidVpcIdNotFound, "The Vpc Id %s does not exist", vpcID)
+	}
+	if err := s.checkTypeAndService(aws.StringValue(input.VpcEndpointType), aws.StringValue(input.ServiceName)); err != nil {
+		return nil, err
+	}
+	if err := interfaceOnlyFields(len(input.SubnetIds) > 0, len(input.SecurityGroupIds) > 0, input.PrivateDnsEnabled, len(input.SubnetConfigurations) > 0); err != nil {
+		return nil, err
+	}
+	if err := checkIPAddressType("IpAddressType", aws.StringValue(input.IpAddressType)); err != nil {
+		return nil, err
+	}
+	dnsType, err := dnsRecordIPType(input.DnsOptions)
+	if err != nil {
+		return nil, err
+	}
+	tables, err := s.checkTables(ctx, accountID, vpcID, input.RouteTableIds)
+	if err != nil {
+		return nil, s.requestError(ctx, "CreateVpcEndpoint", err)
+	}
+	if held, err := s.heldByOther(ctx, tables, ""); err != nil {
+		return nil, internalError(ctx, "CreateVpcEndpoint", err)
+	} else if held != "" {
+		return nil, s.routeExists(held)
+	}
+	if input.PolicyDocument != nil {
+		if _, err := checkPolicy(aws.StringValue(input.PolicyDocument)); err != nil {
+			return nil, err
+		}
+	}
+	if over, err := s.overLimit(ctx, accountID, vpcID); err != nil {
+		return nil, internalError(ctx, "CreateVpcEndpoint", err)
+	} else if over {
+		return nil, awserrors.Errorf(awserrors.ErrorVpcEndpointLimitExceeded, "The maximum number of VPC endpoints has been reached.")
+	}
+
+	rec := &EndpointRecord{
+		ID:              awsidentifiers.GenerateResourceID("vpce"),
+		AccountID:       accountID,
+		VpcID:           vpcID,
+		ServiceName:     s.serviceName(),
+		Type:            TypeGateway,
+		RouteTableIds:   tables,
+		DnsRecordIpType: dnsType,
+		Generation:      1,
+		Tags:            awstags.Extract(input.TagSpecifications, ec2.ResourceTypeVpcEndpoint),
+		CreatedAt:       s.now().UTC(),
+	}
+	if err := s.create(ctx, rec); err != nil {
+		if lost, ok := errors.AsType[*claimLostError](err); ok {
+			return nil, s.routeExists(lost.table)
+		}
+		return nil, internalError(ctx, "CreateVpcEndpoint", err)
+	}
+	out := recordToEC2(rec, tables)
+	if len(rec.Tags) == 0 {
+		out.Tags = nil
+	}
+	return &ec2.CreateVpcEndpointOutput{VpcEndpoint: out, ClientToken: input.ClientToken}, nil
+}
+
+// requestError passes an AWS error through and answers anything else as an
+// internal failure.
+func (s *ServiceImpl) requestError(ctx context.Context, op string, err error) error {
+	if _, ok := awserrors.ResolveErrorCode(err); ok {
+		return err
+	}
+	return internalError(ctx, op, err)
+}
+
+// ModifyVpcEndpoint changes an endpoint's tables, policy or DNS options.
+func (s *ServiceImpl) ModifyVpcEndpoint(ctx context.Context, input *ec2.ModifyVpcEndpointInput, accountID string) (*ec2.ModifyVpcEndpointOutput, error) {
+	id := aws.StringValue(input.VpcEndpointId)
+	rec, _, err := s.load(ctx, accountID, id)
+	if err != nil {
+		return nil, internalError(ctx, "ModifyVpcEndpoint", err)
+	}
+	if rec == nil || rec.State != StateAvailable {
+		return nil, endpointNotFound(id)
+	}
+	subnets := len(input.AddSubnetIds) > 0 || len(input.RemoveSubnetIds) > 0
+	groups := len(input.AddSecurityGroupIds) > 0 || len(input.RemoveSecurityGroupIds) > 0
+	if err := interfaceOnlyFields(subnets, groups, input.PrivateDnsEnabled, len(input.SubnetConfigurations) > 0); err != nil {
+		return nil, err
+	}
+	if err := checkIPAddressType("IpAddressType", aws.StringValue(input.IpAddressType)); err != nil {
+		return nil, err
+	}
+	m := modification{}
+	if input.DnsOptions != nil {
+		dnsType, err := dnsRecordIPType(input.DnsOptions)
+		if err != nil {
+			return nil, err
+		}
+		m.dns = &dnsType
+	}
+	reset := aws.BoolValue(input.ResetPolicy)
+	switch {
+	case input.PolicyDocument != nil && reset:
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameter, "Please specify either a reset flag or a policy document.")
+	case input.PolicyDocument != nil:
+		doc, err := checkPolicy(aws.StringValue(input.PolicyDocument))
+		if err != nil {
+			return nil, err
+		}
+		m.policy = &doc
+	case reset:
+		m.policy = aws.String("")
+	}
+	if m.add, err = s.checkTables(ctx, accountID, rec.VpcID, input.AddRouteTableIds); err != nil {
+		return nil, s.requestError(ctx, "ModifyVpcEndpoint", err)
+	}
+	m.remove = awsidentifiers.Distinct(input.RemoveRouteTableIds)
+	if held, err := s.heldByOther(ctx, m.add, id); err != nil {
+		return nil, internalError(ctx, "ModifyVpcEndpoint", err)
+	} else if held != "" {
+		return nil, s.routeExists(held)
+	}
+
+	if _, err := s.modify(ctx, accountID, id, m); err != nil {
+		if lost, ok := errors.AsType[*claimLostError](err); ok {
+			return nil, s.routeExists(lost.table)
+		}
+		switch {
+		case errors.Is(err, errAbsent):
+			return nil, endpointNotFound(id)
+		case errors.Is(err, errNotAssociated):
+			return nil, errors.New(awserrors.ErrorInvalidParameter)
+		}
+		return nil, internalError(ctx, "ModifyVpcEndpoint", err)
+	}
+	return &ec2.ModifyVpcEndpointOutput{Return: aws.Bool(true)}, nil
+}
+
+// DeleteVpcEndpoints fences and removes each named endpoint with two writes,
+// whatever its associations; what they leave is the sweep's.
+func (s *ServiceImpl) DeleteVpcEndpoints(ctx context.Context, input *ec2.DeleteVpcEndpointsInput, accountID string) (*ec2.DeleteVpcEndpointsOutput, error) {
+	ids := awsidentifiers.Distinct(input.VpcEndpointIds)
+	if len(ids) == 0 {
+		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameter, "vpc_endpoint_id is a required member")
+	}
+	out := &ec2.DeleteVpcEndpointsOutput{Unsuccessful: []*ec2.UnsuccessfulItem{}}
+	for _, id := range ids {
+		found, err := s.remove(ctx, accountID, id)
+		if err != nil {
+			return nil, internalError(ctx, "DeleteVpcEndpoints", err)
+		}
+		if !found {
+			out.Unsuccessful = append(out.Unsuccessful, &ec2.UnsuccessfulItem{
+				ResourceId: aws.String(id),
+				Error: &ec2.UnsuccessfulItemError{
+					Code:    aws.String(awserrors.ErrorInvalidVpcEndpointNotFound),
+					Message: aws.String(fmt.Sprintf("user %s does not own a resource %s", accountID, id)),
+				},
+			})
+		}
+	}
+	return out, nil
+}

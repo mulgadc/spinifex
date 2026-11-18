@@ -339,8 +339,8 @@ func loadSGs(ctx context.Context, js jetstream.JetStream, localVPCs map[string]s
 		out[rec.GroupId] = policy.SGSpec{
 			GroupID:      rec.GroupId,
 			VPCID:        rec.VpcId,
-			IngressRules: sgRulesToPolicyRules(rec.IngressRules),
-			EgressRules:  sgRulesToPolicyRules(rec.EgressRules),
+			IngressRules: SGRulesToPolicyRules(rec.IngressRules),
+			EgressRules:  SGRulesToPolicyRules(rec.EgressRules),
 		}
 	}
 	return nil
@@ -675,11 +675,10 @@ func loadNATGWs(
 	return nil
 }
 
-// sgRulesToPolicyRules adapts handler-side SGRule to policy.Rule, dropping any
-// rule with no IPv4 source. The ACL builder is IPv4-only, and an IPv6 rule
-// reaching it carries an empty CIDR and an empty SourceSG, which is not a
-// narrower ACL but an unspecified one.
-func sgRulesToPolicyRules(in []ec2vpc.SGRule) []policy.Rule {
+// SGRulesToPolicyRules adapts stored SGRules to policy.Rule for the ACL builder
+// and the endpoint proxy's egress check alike, dropping any rule with no IPv4
+// source, which would reach them as an unspecified rule, not a narrower one.
+func SGRulesToPolicyRules(in []ec2vpc.SGRule) []policy.Rule {
 	if len(in) == 0 {
 		return nil
 	}

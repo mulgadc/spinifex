@@ -3,6 +3,7 @@ package vm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"slices"
 	"sync"
@@ -229,5 +230,30 @@ func TestEndpointDemuxHeld_UntilAPassShowsNone(t *testing.T) {
 	}
 	if m.EndpointDemuxHeld() {
 		t.Error("node with no flow reports a demux")
+	}
+}
+
+// A pass that leaves some taps alone and rewrites others reports the node as
+// holding flows, whichever finishes first.
+func TestReconcileEndpointDemux_MixedPassReportsHeld(t *testing.T) {
+	d := &fakeDemuxer{flows: map[string][]netip.AddrPort{}}
+	m := demuxManager(d, routed("subnet-0abc"))
+	for i := range 16 {
+		eni := fmt.Sprintf("eni-%02d", i)
+		m.Insert(imdsTestVM(fmt.Sprintf("i-%02d", i), eni, StateRunning))
+		if i%2 == 0 {
+			d.flows[eni] = sortedEntries()
+		} else {
+			d.flows[eni] = demuxEntries[:1]
+		}
+	}
+	if err := m.ReconcileEndpointDemux(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.sets) != 8 {
+		t.Errorf("rewrote %d taps, want the 8 that differ", len(d.sets))
+	}
+	if !m.EndpointDemuxHeld() {
+		t.Error("node with installed flows reports none")
 	}
 }

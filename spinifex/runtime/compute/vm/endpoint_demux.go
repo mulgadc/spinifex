@@ -101,7 +101,9 @@ func (m *Manager) ReconcileEndpointDemux(ctx context.Context) error {
 		have := slices.Clone(states.ByENI[t.eniID])
 		slices.SortFunc(have, netip.AddrPort.Compare)
 		if slices.Equal(have, tw) {
+			mu.Lock()
 			held = held || len(have) > 0
+			mu.Unlock()
 			continue
 		}
 		sem <- struct{}{}

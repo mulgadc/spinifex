@@ -18,6 +18,12 @@ inputs:
       with the go-build-cache-save action at the end of the job.
     required: false
     default: ""
+  cache-fallback:
+    description: >-
+      A second prefix to restore from when cache has no entry yet, so a new
+      prefix starts warm from the job it replaced until dev saves its own.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -98,7 +104,9 @@ runs:
       with:
         path: ~/.cache/go-build
         key: ${{ inputs.cache }}-${{ github.run_id }}
-        restore-keys: ${{ inputs.cache }}-
+        restore-keys: |
+          ${{ inputs.cache }}-
+          ${{ inputs.cache-fallback && format('{0}-', inputs.cache-fallback) || '' }}
 
     # Go refreshes an entry's mtime on use only when it is over an hour old, so
     # restored entries are backdated before any Go command runs and the trim

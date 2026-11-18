@@ -48,6 +48,7 @@ jobs:
         with:
           siblings: branch
           cache: gobuild-unit-${{ matrix.shard }}
+          cache-fallback: gobuild-build_and_test
 
       # The EBS provider contract suite needs a real implementation on each
       # side of the boundary: qemu-img/qemu-nbd/qemu-io back qemunbdd, which
@@ -111,6 +112,7 @@ jobs:
         with:
           siblings: branch
           cache: gobuild-${{ github.job }}
+          cache-fallback: gobuild-build_and_test
 
       # The headers and nbdkit.pc that cgo needs to build viperblock's plugin.
       - name: Install plugin build packages
@@ -207,6 +209,7 @@ jobs:
         with:
           siblings: branch
           cache: gobuild-race-${{ matrix.shard }}
+          cache-fallback: gobuild-race_detection
 
       - name: Select Packages
         run: |

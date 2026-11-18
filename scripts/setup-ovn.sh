@@ -876,18 +876,17 @@ record_management_role() {
 }
 
 # perms_units <layout> — the unit:socket-glob pairs that get the perms hook.
-# Each DB unit recreates /var/run/ovn root-owned on start, so each needs one.
+# Every OVN daemon ovn-ctl starts re-owns /var/run/ovn root:root, so each needs one.
 perms_units() {
     echo "ovs-vswitchd:/var/run/openvswitch/ovs-vswitchd.*.ctl"
     echo "ovn-controller:/var/run/ovn/*.ctl"
     echo "openvswitch-ipsec:/var/run/openvswitch/ovs-monitor-ipsec.*.ctl"
+    echo "ovn-northd:/var/run/ovn/ovn-northd.*.ctl"
     case "$1" in
         split)
             echo "ovn-ovsdb-server-nb:/var/run/ovn/ovnnb_db.sock"
             echo "ovn-ovsdb-server-sb:/var/run/ovn/ovnsb_db.sock"
             ;;
-        # EL's ovn-northd.service starts the NB and SB databases as well as northd.
-        lone-northd) echo "ovn-northd:/var/run/ovn/ovn-northd.*.ctl" ;;
     esac
 }
 

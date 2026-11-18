@@ -120,8 +120,12 @@ type proxyHarness struct {
 	src    atomic.Value // netip.Addr the guest's socket reads as
 	skew   atomic.Int64 // nanoseconds added to the proxy's clock
 	egress atomic.Bool
-	dialed atomic.Value
-	groups chan []string
+	// egressFail, refreshFail and eniGone make those reads fail or find nothing.
+	egressFail  atomic.Bool
+	refreshFail atomic.Bool
+	eniGone     atomic.Bool
+	dialed      atomic.Value
+	groups      chan []string
 }
 
 // newProxyHarness serves one tap over loopback. The accepted socket's loopback
@@ -143,13 +147,24 @@ func newProxyHarness(t *testing.T, dial func(h *proxyHarness) EndpointDialFunc) 
 			assert.Equal(t, epTestAccount, accountID)
 			assert.Equal(t, epTestEntry, dst)
 			h.groups <- groups
+			if h.egressFail.Load() {
+				return false, errors.New("security group bucket unavailable")
+			}
 			return h.egress.Load(), nil
 		},
 		Dial:   dial(h),
 		MaxAge: time.Minute,
 	})
 	require.NoError(t, err)
-	p.refresh = func(context.Context, *eniFacts) (*eniFacts, error) { return h.eni, nil }
+	p.refresh = func(context.Context, *eniFacts) (*eniFacts, error) {
+		switch {
+		case h.refreshFail.Load():
+			return nil, errors.New("eni bucket unavailable")
+		case h.eniGone.Load():
+			return nil, nil
+		}
+		return h.eni, nil
+	}
 	p.now = func() time.Time { return time.Now().Add(time.Duration(h.skew.Load())) }
 	p.connAddrs = func(c net.Conn) (netip.AddrPort, netip.AddrPort, error) {
 		r, ok := c.RemoteAddr().(*net.TCPAddr)
@@ -238,6 +253,18 @@ func TestEndpointProxy_RefusedConnectionsAreReset(t *testing.T) {
 		{"view withdrawn after a failed pass", func(h *proxyHarness) {
 			h.p.Publish(testView())
 			h.p.Invalidate()
+		}},
+		{"interface record unreadable", func(h *proxyHarness) {
+			h.p.Publish(testView())
+			h.refreshFail.Store(true)
+		}},
+		{"interface record gone", func(h *proxyHarness) {
+			h.p.Publish(testView())
+			h.eniGone.Store(true)
+		}},
+		{"security groups unreadable", func(h *proxyHarness) {
+			h.p.Publish(testView())
+			h.egressFail.Store(true)
 		}},
 	}
 	for _, tt := range tests {
@@ -353,7 +380,7 @@ func TestEndpointProxy_PublishClosesSessionsTheViewNoLongerAdmits(t *testing.T) 
 			require.NoError(t, err)
 			defer c.Close()
 			<-up.headers
-			require.Eventually(t, func() bool { return h.p.Sessions() == 1 }, 5*time.Second, 10*time.Millisecond)
+			require.Eventually(t, func() bool { return registered(h.p) == 1 }, 5*time.Second, 10*time.Millisecond)
 
 			closed := h.p.Publish(tt.view())
 			if tt.keeps {
@@ -408,7 +435,7 @@ func TestEndpointProxy_ShutdownResetsSessionsAndRefusesNewOnes(t *testing.T) {
 	require.NoError(t, err)
 	defer c.Close()
 	<-up.headers
-	require.Eventually(t, func() bool { return h.p.Sessions() == 1 }, 5*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return registered(h.p) == 1 }, 5*time.Second, 10*time.Millisecond)
 
 	h.p.shutdown()
 
@@ -440,7 +467,7 @@ func TestTapResponder_StoppingATapResetsItsEndpointSessions(t *testing.T) {
 	require.NoError(t, err)
 	defer c.Close()
 	<-up.headers
-	require.Eventually(t, func() bool { return h.p.Sessions() == 1 }, 5*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return registered(h.p) == 1 }, 5*time.Second, 10*time.Millisecond)
 
 	m.reconcile(t.Context(), map[string]string{})
 
@@ -470,4 +497,58 @@ func TestEndpointProxyBinder_AcceptsWithTheDialledLocalAddress(t *testing.T) {
 	_, dst, err := socketAddrs(got)
 	require.NoError(t, err)
 	assert.Equal(t, netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(tcp.Port)), dst)
+}
+
+// A refusal by policy is told apart from an admission a failed read left
+// undecided, which is what an operator needs to see at the default level.
+func TestEndpointProxy_AdmitMarksOnlyPolicyRefusals(t *testing.T) {
+	h := newProxyHarness(t, noDial(t))
+	h.p.Publish(testView())
+	h.p.connAddrs = func(net.Conn) (netip.AddrPort, netip.AddrPort, error) {
+		return netip.AddrPortFrom(epTestGuest, 40000), epTestEntry, nil
+	}
+	admit := func() error {
+		_, _, err := h.p.admit(t.Context(), nil, h.eni)
+		select {
+		case <-h.groups:
+		default:
+		}
+		return err
+	}
+	h.egress.Store(false)
+	assert.ErrorIs(t, admit(), errEndpointRefused, "a security-group deny")
+	h.egress.Store(true)
+	h.egressFail.Store(true)
+	err := admit()
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, errEndpointRefused, "an unreadable security group")
+	h.egressFail.Store(false)
+	h.refreshFail.Store(true)
+	err = admit()
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, errEndpointRefused, "an unreadable interface record")
+}
+
+// One warning passes per interval, and the next reports how many were held back.
+func TestWarnLimiter_OnePerInterval(t *testing.T) {
+	var w warnLimiter
+	at := time.Unix(1_000_000, 0)
+	n, ok := w.allow(at)
+	assert.True(t, ok)
+	assert.Zero(t, n)
+	for range 3 {
+		_, ok = w.allow(at.Add(time.Second))
+		assert.False(t, ok)
+	}
+	n, ok = w.allow(at.Add(endpointWarnInterval))
+	assert.True(t, ok)
+	assert.Equal(t, 3, n)
+}
+
+// registered is the number of sessions past admission and dial, the ones a
+// Publish, a tap stop or a shutdown resets.
+func registered(p *EndpointProxy) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.sessions)
 }

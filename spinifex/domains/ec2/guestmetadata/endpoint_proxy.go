@@ -100,9 +100,11 @@ type EndpointProxy struct {
 	mu       sync.Mutex
 	view     *endpointView // nil admits nothing
 	sessions map[*endpointSession]struct{}
-	handlers int // connections being admitted, dialled, relayed or closed
-	closed   bool
-	wg       sync.WaitGroup
+	// admitFailures limits warnings for admissions a failed read left undecided.
+	admitFailures warnLimiter
+	handlers      int // connections being admitted, dialled, relayed or closed
+	closed        bool
+	wg            sync.WaitGroup
 }
 
 // NewEndpointProxy validates cfg. Nothing is served until the IMDS service is
@@ -287,7 +289,12 @@ func (p *EndpointProxy) handle(ctx context.Context, guest net.Conn, pinned *eniF
 
 	s, header, err := p.admit(admitCtx, guest, pinned)
 	if err != nil {
-		slog.DebugContext(ctx, "IMDS: endpoint connection refused", "eni_id", pinned.eniID, "err", err)
+		if errors.Is(err, errEndpointRefused) {
+			slog.DebugContext(ctx, "IMDS: endpoint connection refused", "eni_id", pinned.eniID, "err", err)
+		} else if n, ok := p.admitFailures.allow(p.now()); ok {
+			slog.WarnContext(ctx, "IMDS: endpoint connection could not be checked, connection reset",
+				"eni_id", pinned.eniID, "err", err, "suppressed", n)
+		}
 		resetConn(guest)
 		return
 	}
@@ -317,6 +324,34 @@ func (p *EndpointProxy) handle(ctx context.Context, guest net.Conn, pinned *eniF
 	splice(s)
 }
 
+// errEndpointRefused marks an admission refused by policy, as opposed to one
+// that could not be decided because a read failed.
+var errEndpointRefused = errors.New("refused")
+
+// endpointWarnInterval spaces the warnings for admissions that could not be
+// decided, so an outage logs once per interval rather than per connection.
+const endpointWarnInterval = 10 * time.Second
+
+// warnLimiter lets one warning through per endpointWarnInterval and counts the
+// ones it held back.
+type warnLimiter struct {
+	mu         sync.Mutex
+	last       time.Time
+	suppressed int
+}
+
+func (w *warnLimiter) allow(now time.Time) (int, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.last.IsZero() && now.Sub(w.last) < endpointWarnInterval {
+		w.suppressed++
+		return 0, false
+	}
+	n := w.suppressed
+	w.last, w.suppressed = now, 0
+	return n, true
+}
+
 // admit runs the checks a captured connection must pass before it is dialled:
 // the destination is a current entry, the ENI's subnet routes to an endpoint,
 // and the ENI's security groups allow the egress.
@@ -330,30 +365,30 @@ func (p *EndpointProxy) admit(ctx context.Context, guest net.Conn, pinned *eniFa
 		return nil, nil, errors.New("no current endpoint view")
 	}
 	if _, ok := view.entries[dst]; !ok {
-		return nil, nil, fmt.Errorf("destination %s is not a prefix-list entry", dst)
+		return nil, nil, fmt.Errorf("%w: destination %s is not a prefix-list entry", errEndpointRefused, dst)
 	}
 	eni, err := p.refresh(ctx, pinned)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read eni: %w", err)
 	}
 	if eni == nil {
-		return nil, nil, errors.New("eni record gone")
+		return nil, nil, fmt.Errorf("%w: eni record gone", errEndpointRefused)
 	}
 	// The demux matches on the tap, not the source, so a forged source would
 	// otherwise reach the gate as aws:VpcSourceIp.
 	if ip, perr := netip.ParseAddr(eni.privateIP); perr != nil || ip != src.Addr() {
-		return nil, nil, fmt.Errorf("source %s is not the interface's address", src.Addr())
+		return nil, nil, fmt.Errorf("%w: source %s is not the interface's address", errEndpointRefused, src.Addr())
 	}
 	ep, ok := view.endpoints[eni.subnetID]
 	if !ok || ep.VpcID != eni.vpcID {
-		return nil, nil, fmt.Errorf("subnet %s routes to no gateway endpoint", eni.subnetID)
+		return nil, nil, fmt.Errorf("%w: subnet %s routes to no gateway endpoint", errEndpointRefused, eni.subnetID)
 	}
 	allowed, err := p.cfg.Egress(ctx, eni.accountID, eni.securityGroupIDs, dst)
 	if err != nil {
 		return nil, nil, fmt.Errorf("evaluate security groups: %w", err)
 	}
 	if !allowed {
-		return nil, nil, fmt.Errorf("security groups deny egress to %s", dst)
+		return nil, nil, fmt.Errorf("%w: security groups deny egress to %s", errEndpointRefused, dst)
 	}
 	header, err := endpointproxy.Header{
 		Version: endpointproxy.ContractVersion1, Source: src, Destination: dst,

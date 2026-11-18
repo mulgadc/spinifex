@@ -117,8 +117,8 @@ type proxyHarness struct {
 	p      *EndpointProxy
 	addr   string
 	eni    *eniFacts
-	src    atomic.Value  // netip.Addr the guest's socket reads as
-	skew   atomic.Int64  // nanoseconds added to the proxy's clock
+	src    atomic.Value // netip.Addr the guest's socket reads as
+	skew   atomic.Int64 // nanoseconds added to the proxy's clock
 	egress atomic.Bool
 	dialed atomic.Value
 	groups chan []string
@@ -157,7 +157,7 @@ func newProxyHarness(t *testing.T, dial func(h *proxyHarness) EndpointDialFunc) 
 			return netip.AddrPort{}, netip.AddrPort{}, errors.New("not tcp")
 		}
 		src, _ := h.src.Load().(netip.Addr)
-		return netip.AddrPortFrom(src, uint16(r.Port)), epTestEntry, nil //nolint:gosec // G115: a TCP port.
+		return netip.AddrPortFrom(src, uint16(r.Port)), epTestEntry, nil
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -281,7 +281,7 @@ func TestEndpointProxy_AdmittedConnectionCarriesTheHeaderAndSplices(t *testing.T
 		require.True(t, ok)
 		assert.Equal(t, endpointproxy.Header{
 			Version:     endpointproxy.ContractVersion1,
-			Source:      netip.AddrPortFrom(epTestGuest, uint16(local.Port)), //nolint:gosec // G115: a TCP port.
+			Source:      netip.AddrPortFrom(epTestGuest, uint16(local.Port)),
 			Destination: epTestEntry,
 			VpceID:      epTestVpce, VpcID: epTestVPC, AccountID: epTestAccount,
 		}, hdr)
@@ -439,5 +439,5 @@ func TestEndpointProxyBinder_AcceptsWithTheDialledLocalAddress(t *testing.T) {
 	defer got.Close()
 	_, dst, err := socketAddrs(got)
 	require.NoError(t, err)
-	assert.Equal(t, netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(tcp.Port)), dst) //nolint:gosec // G115: a TCP port.
+	assert.Equal(t, netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(tcp.Port)), dst)
 }

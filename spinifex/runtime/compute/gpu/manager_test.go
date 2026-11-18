@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -982,5 +983,182 @@ func TestManagerRelease_UngroupedEntriesAreNotCoalesced(t *testing.T) {
 	assertBinding(t, root, "0000:03:00.0", "nvidia", "(null)")
 	if m.Available() != 1 {
 		t.Errorf("want only the missing GPU held, got Available=%d", m.Available())
+	}
+}
+
+// A claim moves the whole IOMMU group, so a failed restoration must also hold
+// an idle GPU in that group: claiming it would take the half-restored members.
+func TestManagerRelease_FailureFencesIdleSibling(t *testing.T) {
+	useKernfs(t)
+	for _, rollback := range []bool{false, true} {
+		t.Run(map[bool]string{false: "release", true: "rollback"}[rollback], func(t *testing.T) {
+			root, gpus := buildSharedGroupSysfs(t, "snd_hda_intel")
+			m := newManagerForTest(gpus, root)
+			if _, _, err := m.Claim("i-001", ""); err != nil {
+				t.Fatalf("Claim: %v", err)
+			}
+			override := filepath.Join(root, "bus/pci/devices/0000:03:00.2/driver_override")
+			must(t, os.Remove(override))
+			must(t, os.Mkdir(override, 0o755))
+
+			release := m.Release
+			if rollback {
+				release = m.RollbackClaim
+			}
+			if err := release("i-001"); err == nil {
+				t.Fatal("want an error when a group member cannot be restored")
+			}
+			if m.Available() != 0 {
+				t.Errorf("want the idle sibling held too, got Available=%d", m.Available())
+			}
+			if _, _, err := m.Claim("i-002", ""); err == nil {
+				t.Error("want Claim to refuse the idle sibling of a failed group")
+			}
+		})
+	}
+}
+
+func TestManagerClaim_FailedRollbackFencesIdleSibling(t *testing.T) {
+	useKernfs(t)
+	root, gpus := buildSharedGroupSysfs(t, "snd_hda_intel")
+	// The audio function cannot bind to vfio-pci, and the GPUs cannot return to nvidia.
+	must(t, os.RemoveAll(filepath.Join(root, "bus/pci/devices/0000:03:00.2/driver_override")))
+	must(t, os.Mkdir(filepath.Join(root, "bus/pci/devices/0000:03:00.2/driver_override"), 0o755))
+	must(t, os.Mkdir(filepath.Join(root, "bus/pci/drivers/nvidia/bind"), 0o755))
+	m := newManagerForTest(gpus, root)
+
+	if _, _, err := m.Claim("i-001", ""); err == nil {
+		t.Fatal("want Claim error when the audio function fails to bind")
+	}
+	if m.Available() != 0 {
+		t.Errorf("want both GPUs in the group held, got Available=%d", m.Available())
+	}
+}
+
+// restoreExternally moves addr back to driver with a literal "(null)" override,
+// which reads exactly like a cleared one.
+func restoreExternally(t *testing.T, root, addr, driver string) {
+	t.Helper()
+	devPath := filepath.Join(root, "bus/pci/devices", addr)
+	must(t, kernfsWrite(filepath.Join(root, "bus/pci/drivers/vfio-pci/unbind"), addr))
+	must(t, kernfsWrite(filepath.Join(devPath, "driver_override"), "\n"))
+	must(t, kernfsWrite(filepath.Join(root, "bus/pci/drivers", driver, "bind"), addr))
+	must(t, kernfsWrite(filepath.Join(devPath, "driver_override"), "(null)"))
+}
+
+func TestManagerRelease_ClearsLiteralNullOnRestoredMember(t *testing.T) {
+	useKernfs(t)
+	const audio = "0000:03:00.2"
+	root, gpus := buildSharedGroupSysfs(t, "snd_hda_intel")
+	m := newManagerForTest(gpus[:1], root)
+	if _, _, err := m.Claim("i-001", ""); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	restoreExternally(t, root, audio, "snd_hda_intel")
+
+	if err := m.Release("i-001"); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if got := kernfsOverride(filepath.Join(root, "bus/pci/devices", audio)); got != "" {
+		t.Errorf("audio override after release = %q, want it cleared", got)
+	}
+}
+
+func TestManagerRelease_FailedClearOnRestoredMemberFencesGroup(t *testing.T) {
+	useKernfs(t)
+	const audio = "0000:03:00.2"
+	root, gpus := buildSharedGroupSysfs(t, "snd_hda_intel")
+	m := newManagerForTest(gpus, root)
+	if _, _, err := m.Claim("i-001", ""); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	restoreExternally(t, root, audio, "snd_hda_intel")
+	override := filepath.Join(root, "bus/pci/devices", audio, "driver_override")
+	sysfsWrite = func(path, value string) error {
+		if path == override {
+			return syscall.EIO
+		}
+		return kernfsWrite(path, value)
+	}
+
+	if err := m.Release("i-001"); err == nil {
+		t.Fatal("want Release error when the override clear fails")
+	}
+	if m.Available() != 0 {
+		t.Errorf("want both GPUs in the group held, got Available=%d", m.Available())
+	}
+}
+
+func TestManagerRollback_LeavesPreBoundMemberUnwritten(t *testing.T) {
+	useKernfs(t)
+	root := t.TempDir()
+	buildSysfsDevice(t, root, "0000:03:00.0", "0x030200", "0x10de", "0x2236", "vfio-pci", 7)
+	buildSysfsDevice(t, root, "0000:03:00.1", "0x040300", "0x10de", "0x1aef", "snd_hda_intel", 7)
+	for _, d := range []string{"vfio-pci", "nvidia", "snd_hda_intel"} {
+		makeSysfsDriverDir(t, root, d)
+	}
+	gpuDev := filepath.Join(root, "bus/pci/devices/0000:03:00.0")
+	must(t, kernfsWrite(filepath.Join(gpuDev, "driver_override"), "vfio-pci"))
+	m := newManagerForTest([]GPUDevice{{PCIAddress: "0000:03:00.0", Vendor: VendorNVIDIA,
+		VendorID: "10de", DeviceID: "2236", IOMMUGroup: 7, OriginalDriver: "nvidia"}}, root)
+	if _, _, err := m.Claim("i-001", ""); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	var written []string
+	sysfsWrite = func(path, value string) error {
+		written = append(written, path)
+		return kernfsWrite(path, value)
+	}
+
+	if err := m.RollbackClaim("i-001"); err != nil {
+		t.Fatalf("RollbackClaim: %v", err)
+	}
+	for _, path := range written {
+		if strings.HasPrefix(path, gpuDev+"/") {
+			t.Errorf("rollback wrote %s on the pre-bound GPU", path)
+		}
+	}
+	assertBinding(t, root, "0000:03:00.0", "vfio-pci", "vfio-pci")
+	assertBinding(t, root, "0000:03:00.1", "snd_hda_intel", "(null)")
+}
+
+// The claim that moved a function holds its true original, even an empty one;
+// a later claim of the same group sees it on vfio-pci and only has discovery.
+func TestManagerRelease_MoverRecordBeatsDiscoveryDriver(t *testing.T) {
+	useKernfs(t)
+	const second = "0000:03:00.1"
+	for _, mover := range []bool{true, false} {
+		t.Run(map[bool]string{true: "mover", false: "no mover"}[mover], func(t *testing.T) {
+			root, gpus := buildSharedGroupSysfs(t, "snd_hda_intel")
+			if mover {
+				must(t, kernfsWrite(filepath.Join(root, "bus/pci/drivers/nvidia/unbind"), second))
+			} else {
+				must(t, kernfsWrite(filepath.Join(root, "bus/pci/drivers/nvidia/unbind"), second))
+				must(t, kernfsWrite(filepath.Join(root, "bus/pci/devices", second, "driver_override"), "vfio-pci"))
+				must(t, kernfsWrite(filepath.Join(root, "bus/pci/drivers/vfio-pci/bind"), second))
+			}
+			// Pool order puts the second GPU first, so its discovery record is merged first.
+			m := newManagerForTest([]GPUDevice{gpus[1], gpus[0]}, root)
+			m.pool[0].Available = false
+			if _, _, err := m.Claim("i-001", ""); err != nil {
+				t.Fatalf("first Claim: %v", err)
+			}
+			m.pool[0].Available = true
+			if _, _, err := m.Claim("i-001", ""); err != nil {
+				t.Fatalf("second Claim: %v", err)
+			}
+
+			if err := m.Release("i-001"); err != nil {
+				t.Fatalf("Release: %v", err)
+			}
+			if mover {
+				assertBinding(t, root, second, "", "(null)")
+			} else {
+				assertBinding(t, root, second, "nvidia", "(null)")
+			}
+			if m.Available() != 2 {
+				t.Errorf("want Available=2, got %d", m.Available())
+			}
+		})
 	}
 }

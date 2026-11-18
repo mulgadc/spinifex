@@ -71,7 +71,14 @@ func restoreVFIO(sysfsRoot, addr, originalDriver string, originalKnown bool) err
 		if !originalKnown {
 			return fmt.Errorf("%s is bound to %q with its original driver unknown", addr, current)
 		}
-		return checkRestored(devPath, addr, current, originalDriver)
+		if err := checkRestored(devPath, addr, current, originalDriver); err != nil {
+			return err
+		}
+		// A literal "(null)" override reads like an unset one, so clear it anyway.
+		if err := sysfsWrite(filepath.Join(devPath, "driver_override"), "\n"); err != nil {
+			return fmt.Errorf("clear driver_override for %s: %w", addr, err)
+		}
+		return nil
 	}
 
 	if err := sysfsWrite(filepath.Join(sysfsRoot, "bus/pci/drivers/vfio-pci/unbind"), addr); err != nil {

@@ -16,8 +16,13 @@ import (
 func useKernfs(t *testing.T) {
 	t.Helper()
 	sysfsWrite = kernfsWrite
-	t.Cleanup(func() { sysfsWrite = writeSysfs })
+	kernfsSet = map[string]string{}
+	t.Cleanup(func() { sysfsWrite = writeSysfs; kernfsSet = map[string]string{} })
 }
+
+// kernfsSet holds each device's true override, keyed by device path, since the
+// kernel shows an unset override and a literal "(null)" alike.
+var kernfsSet = map[string]string{}
 
 // kernfsWrite models PCI sysfs: opening without O_TRUNC keeps path errors but
 // not truncation, a zero-length write never reaches the store, a newline clears
@@ -36,6 +41,7 @@ func kernfsWrite(path, value string) error {
 		return nil
 	case attr == "driver_override":
 		v, _, _ := strings.Cut(value, "\n")
+		kernfsSet[dir] = v
 		if v == "" {
 			v = "(null)"
 		}
@@ -65,6 +71,9 @@ func kernfsWrite(path, value string) error {
 
 // kernfsOverride returns the driver a device's override names, or "" if unset.
 func kernfsOverride(devPath string) string {
+	if v, ok := kernfsSet[devPath]; ok {
+		return v
+	}
 	b, err := os.ReadFile(filepath.Join(devPath, "driver_override"))
 	if err != nil {
 		return ""
@@ -104,6 +113,25 @@ func TestKernfsWrite_ModelsOverrideAndBind(t *testing.T) {
 	if got, _ := readDriver(devPath); got != "" {
 		t.Fatalf("driver after unbind = %q, want unbound", got)
 	}
+}
+
+func TestKernfsWrite_LiteralNullOverrideBlocksBind(t *testing.T) {
+	useKernfs(t)
+	root := t.TempDir()
+	buildSysfsDevice(t, root, "0000:03:00.0", "0x030200", "0x10de", "0x2236", "", 7)
+	makeSysfsDriverDir(t, root, "nvidia")
+	override := filepath.Join(root, "bus/pci/devices/0000:03:00.0/driver_override")
+	nvidiaBind := filepath.Join(root, "bus/pci/drivers/nvidia/bind")
+
+	must(t, kernfsWrite(override, "(null)"))
+	if got := readSysfsTestFile(t, override); got != "(null)\n" {
+		t.Fatalf("override after a literal (null) = %q, want it shown as (null)", got)
+	}
+	if err := kernfsWrite(nvidiaBind, "0000:03:00.0"); !errors.Is(err, syscall.ENODEV) {
+		t.Fatalf("bind with a literal (null) override = %v, want ENODEV", err)
+	}
+	must(t, kernfsWrite(override, "\n"))
+	must(t, kernfsWrite(nvidiaBind, "0000:03:00.0"))
 }
 
 func TestKernfsWrite_WhitespaceOverrideBlocksBind(t *testing.T) {

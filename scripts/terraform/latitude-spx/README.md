@@ -37,11 +37,15 @@ Nodes are reached as `ubuntu` with the deployment's SSH key, and remote commands
 
 ## Usage
 
+`read -rs` takes the token without echoing it, so it stays out of your shell history.
+
 ```
-export LATITUDESH_AUTH_TOKEN=...        # from the latitude.sh dashboard
+read -rs LATITUDESH_AUTH_TOKEN          # paste the token from the latitude.sh dashboard, then Enter
+export LATITUDESH_AUTH_TOKEN
 ./deploy-latitude.sh up --name demo     # one node
 
-export LATITUDESH_NODE_TOKEN=...        # a second, writable key
+read -rs LATITUDESH_NODE_TOKEN          # a second, writable key
+export LATITUDESH_NODE_TOKEN
 ./deploy-latitude.sh up --name demo3 --nodes 3
 ./deploy-latitude.sh status --name demo
 ./deploy-latitude.sh ssh --name demo node1 'systemctl status spinifex.target'
@@ -52,7 +56,7 @@ export LATITUDESH_NODE_TOKEN=...        # a second, writable key
 ```
 
 Options: `--name`, `--site` (alias `--region`), `--plan`, `--os`, `--project ID|SLUG`, `--distro TARBALL`, `--channel`, `--spx-region`, `--spx-az`, `--ssh-key`, `--image`, `--data-disk-id`, `--vpc-subnet` (the VLAN's /24, three nodes), `--nodes 1|3`, `--yes`.
-`./deploy-latitude.sh --help` lists them with defaults.
+`./deploy-latitude.sh up --help` lists them with defaults.
 
 Three nodes need `--distro` with a tarball built from this branch (`make distro-amd64`) until a release carries the latitude provider.
 A released spx rejects `source="latitude"` and its daemon restarts in a loop, so `up --nodes 3` without `--distro` stops in preflight.
@@ -115,6 +119,7 @@ Not yet seen on real servers:
 - `GET /auth/api_keys` and its `token_last_slice` and `read_only` fields, which the node key check relies on; and that a key with `allowed_ips` set to the nodes' addresses still works from them.
 - The Elastic IP move's error codes and how long a move takes; the client waits up to its move timeout and makes one write per call.
 - That the daemon fails over when a node stops (`stop node1`) and the address lands on another node.
+- The `GET` and `DELETE` paths for `/user_data/{id}` and `/virtual_networks/{id}`, which only the fallback deletes use and never ran live.
 - The VLAN's MTU (the script uses 1500), and that the networkd files persist the VLAN across a reboot.
 
 ## Not exercised

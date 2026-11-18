@@ -125,17 +125,18 @@ The node runs **Ubuntu 26.04** as its host operating system, and Spinifex runs o
 latitude.sh installs the operating system when it creates the server, so there is no host to prepare first.
 The script installs the `latest` Spinifex release channel.
 
-Set your API token, then run:
+Read your API token without echoing it, so it stays out of your shell history, then run:
 
 ```bash
-export LATITUDESH_AUTH_TOKEN=<your token>
+read -rs LATITUDESH_AUTH_TOKEN
+export LATITUDESH_AUTH_TOKEN
 
 ./deploy-latitude.sh up
 ```
 
 Bare metal is slow to arrive: in our run latitude.sh delivered the server after about 10½ minutes, and the rest of `up` took about 3½ minutes.
 The default latitude.sh site is `DAL`; pass `--site` for another, such as `--site LON2`.
-Run `./deploy-latitude.sh --help` for every option.
+Run `./deploy-latitude.sh up --help` for every option.
 
 If a site has no `m4-metal-medium` in stock, the deploy stops and you pick another site with `--site`.
 
@@ -206,6 +207,9 @@ The output has this shape:
 aws_access_key_id = <access-key>
 aws_secret_access_key = <secret-key>
 ```
+
+The browser must trust the cluster's certificate authority before the console login works, as [Setting Up Your Cluster](../admin/setting-up-your-cluster/README.md#trust-the-self-signed-certificate-required) explains.
+The deploy already saved the CA as `~/.spinifex/latitude-default-ca.pem`, which you can import instead of downloading it.
 
 Use these to sign in to the web console at the `console` address the deploy printed, `https://<node1 address>:3000/`.
 
@@ -304,7 +308,7 @@ In our run the destroy took about 1½ minutes, including both prompts, and left 
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `shopt: inherit_errexit: invalid shell option name` | Your `bash` is older than 4.4, which Spinifex v1.25.0 needs. Install a newer `bash`, for example with `brew install bash`, and run the script with it, as `$(brew --prefix)/bin/bash ./deploy-latitude.sh up`. Releases after v1.25.0 run on the older `bash`. |
+| `shopt: inherit_errexit: invalid shell option name` | Your `bash` is older than 4.4, which Spinifex v1.25.0 needs. Install a newer `bash`, for example with `brew install bash`, and run every command with it, including `status`, `credentials` and `destroy`, as `$(brew --prefix)/bin/bash ./deploy-latitude.sh <command>`. Releases after v1.25.0 run on the older `bash`. |
 | The site has no `m4-metal-medium` in stock | Pick another site with `--site`. |
 | `Connection was closed before we received a valid response from endpoint URL: "http://127.0.0.1:8080/"` | `AWS_ENDPOINT_URL_EC2`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` or `AWS_DEFAULT_REGION` is set in your shell and overrides the profile. Run `unset` on each, then `export AWS_PROFILE=spinifex-latitude-default`. |
 | The workbook targets the wrong region or a local endpoint | Pass `-var region=us-east-1` and `-var spinifex_endpoint="$(aws configure get endpoint_url)"` to both `apply` and `destroy`. |

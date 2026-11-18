@@ -234,6 +234,7 @@ node_field() {
 }
 load_nodes
 check_result "three addresses are read in order" "${IPS[*]}" "203.0.113.11 203.0.113.12 203.0.113.13"
+check_result "server IDs are read in order" "${IDS[*]}" "sv_a sv_b sv_c"
 check_result "address and server ID stay paired" "${IPS[1]} ${IDS[1]}" "203.0.113.12 sv_b"
 check_result "the last address pairs with the last ID" "${IPS[2]} ${IDS[2]}" "203.0.113.13 sv_c"
 

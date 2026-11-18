@@ -18,10 +18,14 @@ name: E2E Nightly
 #   19  routed NAT                     31  instance recovery
 #   25  eks                            32  load balancer recovery
 #   26  ecs                            33  KV bucket quorum under node loss
-#   27  rds                            37  Oracle Linux 10, DHCP
+#   27  rds, shard 1 of 2              37  Oracle Linux 10, DHCP
 #   34  Oracle Linux 10, DHCP          38  Oracle Linux 10, routed NAT
-#   35  Oracle Linux 10, reboot
+#   35  Oracle Linux 10, reboot        40  storage fault injection, shard 2 of 2
 #   36  Oracle Linux 10, routed NAT
+#   39  rds, shard 2 of 2
+#
+#   cell-29 is storage fault injection shard 1 of 2. Select 27,39 or 29,40 to
+#   run a whole suite.
 #
 #   Standalone jobs
 #   20  bare metal (PXE)               23  predastore throughput
@@ -32,6 +36,9 @@ on:
     inputs:
       cells:
         description: "Comma-separated cell numbers, no spaces, e.g. 1,25,27 (blank = all). The cell list is at the top of .github/workflows/e2e-nightly.yml."
+        required: false
+      max_parallel:
+        description: "Matrix cells at once (blank = the E2E_NIGHTLY_MAX_PARALLEL variable, else 6)."
         required: false
 
 permissions:
@@ -131,11 +138,12 @@ jobs:
       matrix.host }}${{ matrix.extra && format('/{0}', matrix.extra) || '' }})"
     needs: select
     if: needs.select.outputs.any == 'true'
-    # Six is the ci-single and ci-multi runner count. Provisioning is serialised
-    # per hypervisor by hv-lock.sh, which is what made more than three unsafe.
+    # Six by default; the E2E_NIGHTLY_MAX_PARALLEL variable or the dispatch input
+    # raises it to the 11 ci-single and ci-multi runners once a sampled nightly
+    # shows the rack holds it. hv-lock.sh serialises provisioning per hypervisor.
     strategy:
       fail-fast: false
-      max-parallel: 6
+      max-parallel: ${{ fromJSON(inputs.max_parallel || vars.E2E_NIGHTLY_MAX_PARALLEL || '6') }}
       matrix:
         include: ${{ fromJSON(needs.select.outputs.cells) }}
     runs-on: [self-hosted, "${{ matrix.runner }}"]
@@ -567,6 +575,8 @@ jobs:
         if: matrix.suite != '' && matrix.topo == 'single'
         env:
           SUITE: ${{ matrix.suite }}
+          SHARD: ${{ matrix.shard || 0 }}
+          SHARDS: ${{ matrix.shards || 0 }}
         run: |
           set -euo pipefail
           # Same guard as the permutation steps, against the full single-node
@@ -575,6 +585,13 @@ jobs:
           . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
           e2e_suites_assert_subset "e2e-nightly cell-${{ matrix.cell }}" "${SUITE}" "${E2E_SUITES_SINGLE}"
           TMO="$(e2e_suite_timeout "${SUITE}")"
+          SKIP_FLAG=""
+          if [ "${SHARDS:-0}" -gt 1 ]; then
+            SKIP_RE=$("${GITHUB_WORKSPACE}/spinifex/.github/scripts/e2e-suite-shard.sh" \
+              "${SUITE}" "${SHARD}" "${SHARDS}" "${RUNNER_TEMP}/spinifex-tests.tar" \
+              "${GITHUB_WORKSPACE}/spinifex/.github/e2e-weights")
+            [ -z "${SKIP_RE}" ] || SKIP_FLAG="-test.skip='${SKIP_RE}'"
+          fi
 
           ssh -tt -o StrictHostKeyChecking=no -i "${{ steps.vm.outputs.ssh_key }}" \
             tf-user@${{ steps.vm.outputs.wan_ip }} \
@@ -585,7 +602,7 @@ jobs:
                SPINIFEX_NODES='${{ steps.vm.outputs.wan_ip }}' SPINIFEX_SSH_USER=tf-user \
                SPINIFEX_SSH_KEY=\$HOME/.ssh/tf-user-ap-southeast-2 \
                ARTIFACT_DIR='${ARTIFACT_DIR}' \
-               ./${SUITE}.test -test.v -test.timeout=${TMO} \
+               ./${SUITE}.test -test.v -test.timeout=${TMO} ${SKIP_FLAG} \
                2>&1 | tee '${ARTIFACT_DIR}/test-${SUITE}.log'; \
              rc=\${PIPESTATUS[0]}; echo \"::endgroup::\"; \
              if [ \$rc -ne 0 ]; then echo \"${SUITE}: FAILED\" >> '${ARTIFACT_DIR}/suite-status.txt'; fi; \
@@ -599,11 +616,20 @@ jobs:
         working-directory: mulga/scripts/tofu-cluster
         env:
           SUITE: ${{ matrix.suite }}
+          SHARD: ${{ matrix.shard || 0 }}
+          SHARDS: ${{ matrix.shards || 0 }}
         run: |
           set -euo pipefail
           . "${GITHUB_WORKSPACE}/spinifex/.github/scripts/suite-sets.sh"
           e2e_suites_assert_subset "e2e-nightly cell-${{ matrix.cell }}" "${SUITE}" "${E2E_SUITES_MULTI}"
           TMO="$(e2e_suite_timeout "${SUITE}")"
+          SKIP_FLAG=""
+          if [ "${SHARDS:-0}" -gt 1 ]; then
+            SKIP_RE=$("${GITHUB_WORKSPACE}/spinifex/.github/scripts/e2e-suite-shard.sh" \
+              "${SUITE}" "${SHARD}" "${SHARDS}" "${RUNNER_TEMP}/spinifex-tests.tar" \
+              "${GITHUB_WORKSPACE}/spinifex/.github/e2e-weights")
+            [ -z "${SKIP_RE}" ] || SKIP_FLAG="-test.skip='${SKIP_RE}'"
+          fi
 
           INVENTORY=$(tofu output -json inventory)
           NODE1_IP=$(echo "$INVENTORY" | jq -r '.nodes[0].wan_ip')
@@ -625,7 +651,7 @@ jobs:
                SPINIFEX_NODES='${NODES_CSV}' SPINIFEX_NODE_IPS='${NODES_CSV}' \
                SPINIFEX_SSH_USER=tf-user SPINIFEX_SSH_KEY=\$HOME/.ssh/tf-user-ap-southeast-2 \
                ARTIFACT_DIR='${ARTIFACT_DIR}' \
-               ./${SUITE}.test -test.v -test.timeout=${TMO} \
+               ./${SUITE}.test -test.v -test.timeout=${TMO} ${SKIP_FLAG} \
                2>&1 | tee '${ARTIFACT_DIR}/test-${SUITE}.log'; \
              rc=\${PIPESTATUS[0]}; echo \"::endgroup::\"; \
              if [ \$rc -ne 0 ]; then echo \"${SUITE}: FAILED\" >> '${ARTIFACT_DIR}/suite-status.txt'; fi; \

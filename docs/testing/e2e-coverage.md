@@ -19,6 +19,10 @@ A leg passes the other shards' names to `-test.skip` and never names a test in `
 A failed or empty listing fails the leg, and any failed leg fails the `e2e` status.
 The rest of the push base set (`iam`, `cert`, `partialblock`) runs whole on a `ci-pseudo` env.
 
+**The nightly runs `rds` and `storagefault` as two shards each**: cells 27 and 39 hold `rds`, cells 29 and 40 hold `storagefault`, each on its own environment.
+A cell with `shard` and `shards` in `.github/e2e-cells.json` gets its `-test.skip` from `.github/scripts/e2e-suite-shard.sh`, which lists the suite binary from the run's tests tar and partitions it with `e2e-shard.sh` by `.github/e2e-weights/<suite>.txt`, as the push legs do.
+A whole suite is the pair of cells, so a dispatch selecting one suite names both.
+
 **`multinode` carries the KV replication sweep as well**, which is why the thing `kvquorum` proves is still checked in every multi-node permutation cell even though the suite itself is not. The read-only half costs a NATS connection and a stream listing; only the node-loss half needs a cell of its own.
 
 ## The suites
@@ -157,7 +161,7 @@ The create/describe/connect path against a live cluster: a DB VM that actually b
 
 ### Storage and durability
 
-- **`storagefault`** — what a guest does when its storage backend stops answering, and what stop/start does when the seal failed. **The claim is about corruption, not availability.** SIGSTOPs a cluster-wide service, so it always runs last and in its own cell. Three-node, because the RS(2,1) shard floor and cross-node takeover after a failed seal do not exist on one node.
+- **`storagefault`** — what a guest does when its storage backend stops answering, and what stop/start does when the seal failed. **The claim is about corruption, not availability.** SIGSTOPs a cluster-wide service, so it always runs last and in cells of its own, split across two. Three-node, because the RS(2,1) shard floor and cross-node takeover after a failed seal do not exist on one node.
 - **No suite reaches a `pending` snapshot.** Every e2e cell runs the default `viperblockd` provider, which finishes a snapshot before `CreateSnapshot` answers, so `single`'s `TestSnapshotLifecycle`, `TestSnapshotBackedLaunch` and `TestCreateImage`, and `rds`'s `TestSnapshotRestore` and `TestDelete`, run the create that writes the snapshot document `pending` before the provider call and settle it `completed` within the request, and the pending-snapshot reaper finds nothing to settle. The `pending` paths are unit-tested against the memory provider answering `pending`: the reaper settling snapshots and AMIs and carrying out deferred deletes, the request's rollback and its ambiguous calls, and `DeleteSnapshot` of a pending snapshot in `domains/ec2/snapshot`; `CreateImage` and the readiness gates in `domains/ec2/image`, `domains/ec2/instance` and `domains/ec2/volume`; DB snapshots and the final snapshot waiting in `creating` in `domains/rds/instance`; and the import's wait in `operator/admin`. The contract's `pending` answer, its filtered `ListSnapshots` and the `state` it reports are in the conformance suite (`providers/ebs/conformance`), which every provider runs.
 - **`partialblock`** — concurrent sub-block writes to the same block surviving a cold reread through NBD from a real guest.
 - **`storagegrowth`** — volume growth and image pull. Requires `external_mode=pool`; skips on a nat env, which has no EIP and therefore no guest SSH.

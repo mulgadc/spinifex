@@ -1,0 +1,5 @@
+# Seconds per top-level test in the storagefault suite, from dev nightly 43925793022 (cell-29). e2e-shard.sh balances the nightly's two storagefault cells on these.
+TestGuestSurvivesNbdkitLoss 1416
+TestCrossNodeStartAfterFailedSealTakesOverLoudly 691
+TestGuestSurvivesBackendOutage 672
+TestStopStartPreservesWritesOnSameNode 596

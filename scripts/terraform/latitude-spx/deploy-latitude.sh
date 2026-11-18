@@ -25,7 +25,8 @@
 # data and project spinifex-<name>; Elastic IPs only by the IDs it recorded.
 
 set -euo pipefail
-shopt -s inherit_errexit
+# bash 4.4 and newer only; an older bash keeps going without it.
+shopt -s inherit_errexit 2>/dev/null || true
 # A provider trace log would carry the Authorization header.
 unset TF_LOG TF_LOG_PATH TF_LOG_CORE TF_LOG_PROVIDER
 
@@ -116,6 +117,7 @@ die() { log "ERROR: $*"; exit 1; }
 [[ "$NAME" =~ ^[a-z0-9][a-z0-9-]{0,15}$ ]] || die "--name must be 1-16 lowercase letters, digits or hyphens"
 [ "$NODES" = 1 ] || [ "$NODES" = 3 ] || die "--nodes must be 1 or 3"
 [[ "$VPC_SUBNET" =~ ^([0-9]{1,3}\.){3}0$ ]] || die "--vpc-subnet must be a /24 network address such as 10.10.8.0"
+SITE="$(printf '%s' "$SITE" | tr '[:lower:]' '[:upper:]')"
 [[ "$SITE" =~ ^[A-Za-z0-9]+$ ]] || die "--site must be a site slug such as DAL"
 [[ "$SPX_REGION" =~ ^[a-z0-9-]+$ ]] || die "--spx-region must be lowercase letters, digits and hyphens"
 [[ "$SPX_AZ" =~ ^[a-z0-9-]+$ ]] || die "--spx-az must be lowercase letters, digits and hyphens"
@@ -142,7 +144,7 @@ latitude() {
     local out code body=()
     if [ -n "${3:-}" ]; then body=(-H 'Content-Type: application/json' -d "$3"); fi
     out="$(printf 'header = "Authorization: Bearer %s"\n' "$LATITUDESH_AUTH_TOKEN" |
-        curl -sS -g -K - -w '\n%{http_code}' -X "$1" -H 'Accept: application/json' "${body[@]}" "$LAT_API$2")" || return 1
+        curl -sS -g -K - -w '\n%{http_code}' -X "$1" -H 'Accept: application/json' ${body[@]+"${body[@]}"} "$LAT_API$2")" || return 1
     code="${out##*$'\n'}"
     out="${out%$'\n'*}"
     case "$code" in
@@ -233,6 +235,14 @@ tf_output() { "$TF_BIN" -chdir="$SCRIPT_DIR" output -state="$TF_STATE" "$@"; }
 # node_field FIELD prints FIELD of every node, in node order.
 node_field() {
     tf_output -json nodes | python3 -I -c 'import json,sys; [print(n[sys.argv[1]]) for n in json.load(sys.stdin)]' "$1"
+}
+
+# load_nodes fills IPS and IDS, in node order, one element per node.
+load_nodes() {
+    local line
+    IPS=() IDS=()
+    while IFS= read -r line; do IPS+=("$line"); done < <(node_field public_ip)
+    while IFS= read -r line; do IDS+=("$line"); done < <(node_field provider_host_id)
 }
 
 # for_nodes STEP FN runs FN once per node with IP, SERVER_ID and NODE_NAME set,
@@ -863,8 +873,7 @@ write_profile() {
 cmd_up() {
     preflight
     done_step terraform || { provision; mark_step terraform; }
-    mapfile -t IPS < <(node_field public_ip)
-    mapfile -t IDS < <(node_field provider_host_id)
+    load_nodes
     [ "${#IPS[@]}" = "$NODES" ] || die "the state holds ${#IPS[@]} node(s), not $NODES; destroy it or pass --nodes ${#IPS[@]}"
     for_nodes host wait_host
     for_nodes disk data_disk

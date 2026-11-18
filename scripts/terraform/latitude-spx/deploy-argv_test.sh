@@ -225,4 +225,24 @@ extract configure_latitude_pool | python3 -I - proj_1 eip_1,eip_2 node1=sv_1,nod
 check_result "writing the config again changes nothing" "$(grep -c 'imds_host_meta_ip' "$cfg")" 1
 unset FAKE_SSH_EVAL
 
+# Node addresses and server IDs stay paired by index, in node order.
+node_field() {
+    case "$1" in
+        public_ip) printf '%s\n' 203.0.113.11 203.0.113.12 203.0.113.13 ;;
+        provider_host_id) printf '%s\n' sv_a sv_b sv_c ;;
+    esac
+}
+load_nodes
+check_result "three addresses are read in order" "${IPS[*]}" "203.0.113.11 203.0.113.12 203.0.113.13"
+check_result "server IDs are read in order" "${IDS[*]}" "sv_a sv_b sv_c"
+check_result "address and server ID stay paired" "${IPS[1]} ${IDS[1]}" "203.0.113.12 sv_b"
+check_result "the last address pairs with the last ID" "${IPS[2]} ${IDS[2]}" "203.0.113.13 sv_c"
+
+# A lower-case --site reaches Terraform in upper case.
+printf '#!/bin/sh\necho "$*" >> "%s/tfargs"\n' "$work" > "$work/bin/tofu"
+chmod +x "$work/bin/tofu"
+: > "$work/tfargs"
+(set -- up --site lon2; source "$here/deploy-latitude.sh"; tf plan) >/dev/null 2>&1 || true
+check_result "--site lon2 reaches Terraform as LON2" "$(grep -c -- '-var site=LON2' "$work/tfargs" || true)" 1
+
 [ "$fails" -eq 0 ]

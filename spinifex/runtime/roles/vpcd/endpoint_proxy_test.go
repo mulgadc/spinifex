@@ -77,7 +77,9 @@ type loopHarness struct {
 	revErr    error
 }
 
-func newLoopHarness(withGate bool) *loopHarness {
+// newLoopHarness builds the loop; ownGate makes n1 check its own gate rather
+// than its peer's.
+func newLoopHarness(ownGate bool) *loopHarness {
 	h := &loopHarness{sink: &recordingSink{}}
 	h.loop = &endpointLoop{
 		probe: func(context.Context) error { return h.probeErr },
@@ -98,11 +100,10 @@ func newLoopHarness(withGate bool) *loopHarness {
 			return h.rev, h.revErr
 		},
 	}
-	if withGate {
-		h.loop.gate = func(_ context.Context, addr netip.Addr) error {
-			h.gateAsked = append(h.gateAsked, addr)
-			return h.gateErr
-		}
+	h.loop.ownGate = ownGate
+	h.loop.gate = func(_ context.Context, addr netip.Addr) error {
+		h.gateAsked = append(h.gateAsked, addr)
+		return h.gateErr
 	}
 	return h
 }
@@ -181,11 +182,46 @@ func TestEndpointLoop_GateReadinessIsCheckedUntilItHoldsThenSticks(t *testing.T)
 	assert.Equal(t, []netip.Addr{netip.MustParseAddr("10.0.0.2"), netip.MustParseAddr("10.0.0.2")}, h.gateAsked)
 }
 
-func TestEndpointLoop_ANodeWithoutAGateIsReady(t *testing.T) {
+// A node running no Predastore is ready only once a peer's gate accepts its
+// proxy, since every connection it proxies goes to a peer.
+func TestEndpointLoop_ANodeWithoutAGateChecksAPeers(t *testing.T) {
 	h := newLoopHarness(false)
+	n1 := h.loop.cluster.Nodes["n1"]
+	n1.Services = []string{"vpcd"}
+	h.loop.cluster.Nodes["n1"] = n1
+	h.gateErr = errors.New("certificate refused")
 	_, err := h.loop.reconcile(t.Context())
 	require.NoError(t, err)
+	assert.False(t, h.loop.status("n1").GateReady)
+
+	h.gateErr = nil
+	_, err = h.loop.reconcile(t.Context())
+	require.NoError(t, err)
 	assert.True(t, h.loop.status("n1").GateReady)
+	assert.Equal(t, []netip.Addr{netip.MustParseAddr("10.0.0.3"), netip.MustParseAddr("10.0.0.3")}, h.gateAsked)
+}
+
+// A node with no peer running Predastore has no gate to check and stays not ready.
+func TestEndpointLoop_NoGateAnywhereIsNotReady(t *testing.T) {
+	h := newLoopHarness(false)
+	for name, n := range h.loop.cluster.Nodes {
+		n.Services = []string{"vpcd"}
+		h.loop.cluster.Nodes[name] = n
+	}
+	_, err := h.loop.reconcile(t.Context())
+	require.NoError(t, err)
+	assert.False(t, h.loop.status("n1").GateReady)
+	assert.Empty(t, h.gateAsked)
+}
+
+// The status counts endpoints, not the subnets they govern.
+func TestEndpointLoop_CountsEachEndpointOnce(t *testing.T) {
+	h := newLoopHarness(false)
+	ep := loopEndpoints["subnet-1"]
+	h.endpoints = map[string]projection.GatewayEndpoint{"subnet-1": ep, "subnet-2": ep}
+	_, err := h.loop.reconcile(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, 1, h.loop.status("n1").Endpoints)
 }
 
 // A node whose proxy cannot present its certificate resets every connection,

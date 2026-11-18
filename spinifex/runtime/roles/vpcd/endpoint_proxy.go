@@ -66,9 +66,10 @@ type endpointLoop struct {
 	mgmtIP  func() string
 	load    func(ctx context.Context) (map[string]projection.GatewayEndpoint, error)
 	proxy   endpointViewSink
-	// gate checks that this node's own gate accepts the proxy's mutual TLS;
-	// nil when the node runs no Predastore.
-	gate func(ctx context.Context, addr netip.Addr) error
+	// gate checks that a gate accepts the proxy's mutual TLS: this node's own
+	// when ownGate, else a peer's, since this node's proxy dials only peers.
+	gate    func(ctx context.Context, addr netip.Addr) error
+	ownGate bool
 	// dialErr is why the proxy cannot present this node's certificate; while
 	// set, the node is never ready, whether or not it runs a gate.
 	dialErr error
@@ -111,7 +112,11 @@ func (l *endpointLoop) reconcile(ctx context.Context) (time.Duration, error) {
 	// Published first, so a withdrawn endpoint's sessions close even if the
 	// rule change below fails.
 	l.proxy.Publish(view)
-	l.viewEndpoints.Store(int64(len(endpoints)))
+	ids := make(map[string]struct{}, len(endpoints))
+	for _, ep := range endpoints {
+		ids[ep.ID] = struct{}{}
+	}
+	l.viewEndpoints.Store(int64(len(ids)))
 	if revErr != nil {
 		slog.WarnContext(ctx, "vpcd: feature level unreadable; endpoint proxy revision not advanced", "err", revErr)
 	} else {
@@ -145,27 +150,37 @@ func (l *endpointLoop) probeCapture(ctx context.Context) {
 	slog.InfoContext(ctx, "vpcd: gateway endpoint capture probe passed")
 }
 
-// probeGate checks this node's own gate endpoint listener until it accepts the
-// proxy once. A node running no Predastore has no gate to wait for.
+// probeGate checks a gate endpoint listener until it accepts the proxy once:
+// this node's own on a node running Predastore, else a peer's.
 func (l *endpointLoop) probeGate(ctx context.Context, mgmt string) {
 	if l.gateReady.Load() || l.dialErr != nil {
 		return
 	}
-	if l.gate == nil {
-		l.gateReady.Store(true)
-		return
-	}
-	addr, ok := localServiceAddr(l.cluster, mgmt)
+	addr, ok := l.gateAddr(mgmt)
 	if !ok {
-		slog.WarnContext(ctx, "vpcd: this node has no service address to check its gate endpoint listener on", "node", l.cluster.Node)
+		slog.WarnContext(ctx, "vpcd: no gate address to check the endpoint listener on", "node", l.cluster.Node, "own_gate", l.ownGate)
 		return
 	}
 	if err := l.gate(ctx, addr); err != nil {
-		slog.WarnContext(ctx, "vpcd: own gate endpoint listener not ready", "addr", addr.String(), "err", err)
+		slog.WarnContext(ctx, "vpcd: gate endpoint listener not ready", "addr", addr.String(), "own_gate", l.ownGate, "err", err)
 		return
 	}
 	l.gateReady.Store(true)
-	slog.InfoContext(ctx, "vpcd: own gate endpoint listener accepted the proxy", "addr", addr.String())
+	slog.InfoContext(ctx, "vpcd: gate endpoint listener accepted the proxy", "addr", addr.String(), "own_gate", l.ownGate)
+}
+
+// gateAddr is the address probeGate checks: this node's own service address,
+// or the first peer running Predastore.
+func (l *endpointLoop) gateAddr(mgmt string) (netip.Addr, bool) {
+	if l.ownGate {
+		return localServiceAddr(l.cluster, mgmt)
+	}
+	for _, ep := range config.ServiceEndpoints(l.cluster, mgmt) {
+		if ep.Node != l.cluster.Node && ep.Addr.Is4() && l.cluster.Nodes[ep.Node].HasService("predastore") {
+			return ep.Addr, true
+		}
+	}
+	return netip.Addr{}, false
 }
 
 // localServiceAddr is the prefix-list address of this node.
@@ -222,8 +237,9 @@ type statusRefusal struct {
 // featureLevelRevision reads the feature-level record's revision; a record
 // never written is revision 0.
 func featureLevelRevision(js jetstream.JetStream) func(ctx context.Context) (uint64, error) {
+	level := kvstore.NewBucket(js, kvstore.Config{Name: featureLevelBucket, AttachOnly: true})
 	return func(ctx context.Context) (uint64, error) {
-		kv, err := js.KeyValue(ctx, featureLevelBucket)
+		kv, err := level.KV(ctx)
 		if errors.Is(err, jetstream.ErrBucketNotFound) {
 			return 0, nil
 		}
@@ -245,17 +261,18 @@ func featureLevelRevision(js jetstream.JetStream) func(ctx context.Context) (uin
 // through the same rule conversion the ACL compiler is fed. A group whose
 // record is gone grants nothing; any other read failure refuses.
 func securityGroupEgress(js jetstream.JetStream) guestmetadata.EndpointEgressFunc {
+	groups := kvstore.NewBucket(js, kvstore.Config{Name: ec2vpc.KVBucketSecurityGroups, AttachOnly: true})
 	return func(ctx context.Context, accountID string, groupIDs []string, dst netip.AddrPort) (bool, error) {
 		if len(groupIDs) == 0 {
 			return false, nil
 		}
-		kv, err := js.KeyValue(ctx, ec2vpc.KVBucketSecurityGroups)
+		kv, err := groups.KV(ctx)
 		if err != nil {
 			return false, fmt.Errorf("open %s: %w", ec2vpc.KVBucketSecurityGroups, err)
 		}
 		var rules []policy.Rule
 		for _, id := range groupIDs {
-			entry, err := kv.Get(ctx, accountID+"."+id)
+			entry, err := kv.Get(ctx, kvstore.AccountKey(accountID, id))
 			if errors.Is(err, jetstream.ErrKeyNotFound) {
 				continue
 			}
@@ -393,9 +410,8 @@ func setupEndpointProxy(cfg *Config, js jetstream.JetStream, imds *guestmetadata
 		proxy:         proxy,
 		dialErr:       dialErr,
 		levelRevision: featureLevelRevision(js),
-	}
-	if cfg.Cluster.Nodes[cfg.Cluster.Node].HasService("predastore") {
-		l.gate = gateAccepts(dial)
+		gate:          gateAccepts(dial),
+		ownGate:       cfg.Cluster.Nodes[cfg.Cluster.Node].HasService("predastore"),
 	}
 	return l, nil
 }

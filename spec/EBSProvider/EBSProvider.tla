@@ -1,7 +1,4 @@
 ------------------------------------------------- MODULE EBSProvider --------------------------------------------------
-(*********************************************************************************************************************)
-(* The state that an implementation exposes, and the types and constants that every other module shares.             *)
-(*********************************************************************************************************************)
 EXTENDS
   Naturals,
   Sequences,
@@ -38,7 +35,6 @@ ASSUME None \notin UNION {VolumeIds, VolumeHandles, NodeIds, SnapshotIds, Snapsh
 ASSUME Capabilities \in [onlineExpansion         : BOOLEAN,
                          sparseExtentReporting   : BOOLEAN,
                          crashConsistentSnapshot : BOOLEAN,
-                         volumeSeeding           : BOOLEAN,
                          readOnlyPublish         : BOOLEAN,
                          volumeEnumeration       : BOOLEAN,
                          snapshotEnumeration     : BOOLEAN,
@@ -88,11 +84,6 @@ KeyExists(f, x) == x \in DOMAIN f
 -----------------------------------------------------------------------------------------------------------------------
 \* Types
 
-Bytes == 0..MaxBytes
-
-\* A requested capacity, where a limit of zero sets none.
-CapacityRanges == [requiredBytes : Bytes, limitBytes : Bytes]
-
 \* The interface methods that a call may name.
 Methods == {"GetCapabilities",
             "CreateVolume", "GetVolume", "ListVolumes", "ExpandVolume",
@@ -109,14 +100,9 @@ ProviderErrors == IF ProviderMayFail
                   \* Otherwise an implementation could conform by refusing to answer.
                   ELSE {}
 
-VolumeStates == {"available", "in-use"}
-
-Volumes == [capacityBytes    : 1..MaxBytes,
-            state            : VolumeStates,
-            handle           : VolumeHandles,
+Volumes == [handle           : VolumeHandles,
+            sizeBytes        : 1..MaxBytes,
             availabilityZone : Optional(AvailabilityZones),
-
-            \* Never returned, but kept to tell a retry from a conflicting request.
             sourceSnapshotId : Optional(SnapshotIds),
             parameters       : Optional(Parameters),
             providerData     : Optional(ProviderData)]
@@ -141,16 +127,20 @@ Snapshots == [sizeBytes      : 1..MaxBytes,
 -----------------------------------------------------------------------------------------------------------------------
 \* State helpers
 
-\* The part of a volume that the implementation returns.
-VolumeView(volId) ==
-  ("id" :> volId) @@ Restrict(volumes[volId], {"capacityBytes",
-                                               "state",
-                                               "handle",
-                                               "availabilityZone",
-                                               "providerData"})
-
 \* The nodes that a volume is published to.
 PublishedNodes(volId) == {n \in NodeIds : KeyExists(publications, <<volId, n>>)}
+
+\* The part of a volume that the implementation returns.
+VolumeView(volId) ==
+  [id    |-> volId,
+   state |-> CASE volId \notin DOMAIN volumes -> "deleted"
+               [] PublishedNodes(volId) = {}  -> "available"
+               [] PublishedNodes(volId) /= {} -> "in-use"]
+  @@
+  Restrict(volumes[volId], {"sizeBytes",
+                            "handle",
+                            "availabilityZone",
+                            "providerData"})
 
 \* The part of a publication that the implementation returns.
 PublicationView(volId, nodeId) == [volumeId |-> volId,
@@ -201,11 +191,9 @@ TypeOK ==
   /\ err \in Optional(ErrorCodes)
   /\ err \in ErrorCodes => val = None
 
-ExistsAndInUseIffPublished ==
+ExistsIfPublished ==
   \A volId \in VolumeIds :
-    KeyExists(volumes, volId) /\ volumes[volId].state = "in-use"
-    <=>
-    PublishedNodes(volId) /= {}
+    PublishedNodes(volId) /= {} => volId \in DOMAIN volumes
 
 OnlyPublishedOnce ==
   \A volId \in VolumeIds :
@@ -221,8 +209,8 @@ ExportPathsAreUniquePerNode ==
   \A i, j \in DOMAIN publications :
     i[2] = j[2] /\ publications[i].export.path = publications[j].export.path => i = j
 
-ExportSizeMatchesCapacity ==
+ExportSizeMatchesVolume ==
   \A p \in DOMAIN publications :
-    publications[p].export.sizeBytes = volumes[p[1]].capacityBytes
+    publications[p].export.sizeBytes = volumes[p[1]].sizeBytes
 
 =======================================================================================================================

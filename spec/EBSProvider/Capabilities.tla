@@ -1,7 +1,4 @@
 ------------------------------------------------- MODULE Capabilities -------------------------------------------------
-(*********************************************************************************************************************)
-(* The optional behaviour that an implementation advertises.                                                         *)
-(*********************************************************************************************************************)
 EXTENDS EBSProvider
 
 -----------------------------------------------------------------------------------------------------------------------
@@ -18,7 +15,7 @@ GetCapabilities(req) ==
      /\ err' \in ProviderErrors
      /\ UNCHANGED state
 
-     \* The request was accepted.
+     \* The operation was successful.
      \* Every answer is the same, so an earlier one may be cached.
   \/ /\ val' = Capabilities
      /\ err' = None

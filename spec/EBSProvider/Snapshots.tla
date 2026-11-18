@@ -1,7 +1,4 @@
 -------------------------------------------------- MODULE Snapshots ---------------------------------------------------
-(*********************************************************************************************************************)
-(* The lifecycle of a snapshot, from its creation to its deletion.                                                   *)
-(*********************************************************************************************************************)
 EXTENDS EBSProvider
 
 -----------------------------------------------------------------------------------------------------------------------
@@ -20,6 +17,8 @@ CreateSnapshot(req) ==
   LET snapId == req.snapshotId
       volId  == req.volumeId
 
+      \* The set of errors that this call may return in the current system state. If there are multiple possible
+      \* errors for a single call, the exact one that is returned is left to the implementation.
       Errors ==
         LET checks == [alreadyExists   |-> /\ KeyExists(snapshots, snapId)
                                            /\ snapshots[snapId].sourceVolumeId /= volId,
@@ -29,27 +28,29 @@ CreateSnapshot(req) ==
                                               \/ req.volumeHandle \notin {None, volumes[volId].handle}]
         IN {e \in DOMAIN checks : checks[e]}
 
-     \* The request was rejected, or the provider failed to answer.
+     \* The operation was refused, or the provider failed to answer.
   IN \/ /\ val' = None
         /\ err' \in Errors \union ProviderErrors
         /\ UNCHANGED state
 
-     \* The request was accepted.
+     \* The operation was successful.
      \/ /\ Errors = {}
            \* A retry returns the existing snapshot.
         /\ \/ /\ KeyExists(snapshots, snapId)
               /\ UNCHANGED snapshots
 
            \/ /\ ~KeyExists(snapshots, snapId)
-              \* The handle, creation time and state are the implementation's choice.
-              /\ \E h \in SnapshotHandles \ {snapshots[x].handle : x \in DOMAIN snapshots},
+              \* The handle, creation time and state are determined by the implementation.
+              /\ \E h \in SnapshotHandles,
                     t \in Timestamps,
                     s \in {"pending", "completed"} :
-                   snapshots' = InsertKey(snapshots, snapId, [sizeBytes      |-> volumes[volId].capacityBytes,
-                                                              createdAt      |-> t,
-                                                              state          |-> s,
-                                                              handle         |-> h,
-                                                              sourceVolumeId |-> volId])
+                   \* No two snapshots are given the same handle.
+                   /\ h \notin {snapshots[x].handle : x \in DOMAIN snapshots}
+                   /\ snapshots' = InsertKey(snapshots, snapId, [sizeBytes      |-> volumes[volId].sizeBytes,
+                                                                 createdAt      |-> t,
+                                                                 state          |-> s,
+                                                                 handle         |-> h,
+                                                                 sourceVolumeId |-> volId])
         /\ val' = SnapshotView(snapId)'
         /\ err' = None
         /\ UNCHANGED <<volumes, publications>>
@@ -68,6 +69,8 @@ CopySnapshot(req) ==
       dstSnapId == req.destinationSnapshotId
       volId     == req.volumeId
 
+      \* The set of errors that this call may return in the current system state. If there are multiple possible
+      \* errors for a single call, the exact one that is returned is left to the implementation.
       Errors ==
         LET checks == [invalidArgument       |-> \/ srcSnapId = dstSnapId
                                                  \* Only compared, not looked up, since a snapshot outlives its volume.
@@ -78,19 +81,21 @@ CopySnapshot(req) ==
                        unsupportedCapability |-> ~Capabilities.snapshotCopy]
         IN {e \in DOMAIN checks : checks[e]}
 
-     \* The request was rejected, or the provider failed to answer.
+     \* The operation was refused, or the provider failed to answer.
   IN \/ /\ val' = None
         /\ err' \in Errors \union ProviderErrors
         /\ UNCHANGED state
 
-     \* The request was accepted.
+     \* The operation was successful.
      \/ /\ Errors = {}
-        \* The handle and creation time are the implementation's choice.
-        /\ \E h \in SnapshotHandles \ {snapshots[x].handle : x \in DOMAIN snapshots},
+        \* The handle and creation time are determined by the implementation.
+        /\ \E h \in SnapshotHandles,
               t \in Timestamps :
-             snapshots' = InsertKey(snapshots, dstSnapId, [createdAt |-> t,
-                                                           handle    |-> h]
-                                                           @@ snapshots[srcSnapId])
+             \* No two snapshots are given the same handle.
+             /\ h \notin {snapshots[x].handle : x \in DOMAIN snapshots}
+             /\ snapshots' = InsertKey(snapshots, dstSnapId, [createdAt |-> t,
+                                                              handle    |-> h]
+                                                              @@ snapshots[srcSnapId])
         /\ val' = SnapshotView(dstSnapId)'
         /\ err' = None
         /\ UNCHANGED <<volumes, publications>>
@@ -114,12 +119,14 @@ ListSnapshots(req) ==
   (*******************************************************************************************************************)
   LET snapId == req.snapshotId
 
+      \* The set of errors that this call may return in the current system state. If there are multiple possible
+      \* errors for a single call, the exact one that is returned is left to the implementation.
       Errors ==
         \* A call that names a snapshot reads only that one, so it needs no enumeration.
         LET checks == [unsupportedCapability |-> snapId = None /\ ~Capabilities.snapshotEnumeration]
         IN {e \in DOMAIN checks : checks[e]}
 
-     \* The request was rejected, or the provider failed to answer.
+     \* The operation was refused, or the provider failed to answer.
   IN \/ /\ val' = None
         /\ err' \in Errors \union ProviderErrors
         /\ UNCHANGED state
@@ -132,11 +139,11 @@ ListSnapshots(req) ==
         /\ err' = None
         /\ UNCHANGED state
 
-     \* The request was accepted.
+     \* The operation was successful.
      \/ /\ Errors = {}
         /\ snapId = None
         /\ LET refs == {SnapshotRef(id) : id \in DOMAIN snapshots}
-           \* The page and the next token are the implementation's choice.
+           \* The page and the next token are determined by the implementation.
            IN \E page \in SUBSET refs, next \in Optional(ListTokens) :
                 /\ Cardinality(page) <= PageSize(req.maxResults)
                 /\ next /= None => Cardinality(page) = PageSize(req.maxResults)
@@ -161,7 +168,7 @@ DeleteSnapshot(req) ==
         /\ err' \in ProviderErrors
         /\ UNCHANGED state
 
-     \* The request was accepted.
+     \* The operation was successful.
      \/ /\ snapshots' = IF /\ KeyExists(snapshots, snapId)
                            /\ req.handle \notin {None, snapshots[snapId].handle}
                         THEN snapshots

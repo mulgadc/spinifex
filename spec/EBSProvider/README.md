@@ -23,34 +23,19 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 - Must a present but malformed ID be refused with `invalidArgument`?
   IDs are opaque here, so only an omitted one is refused.
 
-### Capabilities
-
-#### GetCapabilities
-
-- Is it a lasting promise that capabilities never change, even when an implementation or its provider is upgraded or reconfigured after an earlier answer was cached?
-
 ### Volumes
-
-- Who decides whether a volume is `in-use`?
-  An implementation may track attachments itself, or derive the state from whether a publication claim is held.
 
 #### CreateVolume
 
-- May the capacity be anywhere in the requested range, as CSI allows?
-  An implementation that rounds up would then fail the comparison that tells a retry from a conflicting request.
-- May seed data be combined with a source snapshot?
-  The Viperblock implementation refuses, the memory implementation accepts.
 - Must the source snapshot be completed?
   AWS refuses one that is not.
 - Must an implementation store the availability zone, parameters and source snapshot, so that it can detect a conflicting retry?
   The Viperblock implementation does not.
 - Should a retry be compared against the original request rather than the current volume?
-  A retry after ExpandVolume conflicts on capacity.
+  A retry after ExpandVolume conflicts on size.
 - Should a retry with a different source snapshot volume ID conflict?
   It is not compared.
 - Is byte equality the meaning of equal parameters, or may an implementation compare them semantically?
-- Should `MaxSeedBytes` be modelled?
-  Seed data larger than it is refused with `invalidArgument`.
 
 #### GetVolume
 
@@ -69,15 +54,13 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 
 #### ExpandVolume
 
-- Should a request below the current capacity succeed without change, as CSI recommends, rather than be refused with `invalidArgument`?
+- Should a request below the current size succeed without change, as CSI recommends, rather than be refused with `invalidArgument`?
   It is refused here, as AWS refuses `ModifyVolume` to a smaller size and the conformance suite tests, while CSI says the plugin should reply OK when the volume is already at least the requested size.
 
 #### PublishVolume
 
 - Should `volumeInUse` depend on the exclusion scope?
   An implementation whose scope is `none` lets two writers in, and one whose scope is `node` cannot see another node, yet both are refused here.
-- Must a republish to the same node with a different `readOnly` be refused?
-  The Viperblock implementation refuses it with `volumeInUse`, while the memory implementation ignores the flag.
 
 #### UnpublishVolume
 

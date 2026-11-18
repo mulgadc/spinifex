@@ -4,7 +4,6 @@ EXTENDS Capabilities, Volumes, Snapshots
 MCCapabilities == [onlineExpansion         |-> TRUE,
                    sparseExtentReporting   |-> TRUE,
                    crashConsistentSnapshot |-> TRUE,
-                   volumeSeeding           |-> TRUE,
                    readOnlyPublish         |-> TRUE,
                    volumeEnumeration       |-> TRUE,
                    snapshotEnumeration     |-> TRUE,
@@ -17,16 +16,11 @@ MCCapabilities == [onlineExpansion         |-> TRUE,
 MCSymmetry == Permutations(VolumeIds) \union Permutations(VolumeHandles) \union Permutations(NodeIds)
               \union Permutations(SnapshotIds) \union Permutations(SnapshotHandles)
 
-ValidCapacity(c) == /\ c.requiredBytes > 0
-                    /\ c.limitBytes = 0 \/ c.requiredBytes <= c.limitBytes
-
 MCCreateVolumeRequests == {r \in CreateVolumeRequests :
-                             /\ ValidCapacity(r.capacityRange)
-                             /\ r.seedData <= r.capacityRange.requiredBytes
-                             /\ r.sourceSnapshotId /= None => r.sourceSnapshotVolumeId /= None
-                             /\ r.seedData > 0 => Capabilities.volumeSeeding}
+                             /\ r.sizeBytes > 0
+                             /\ r.sourceSnapshotId /= None => r.sourceSnapshotVolumeId /= None}
 
-MCExpandVolumeRequests == {r \in ExpandVolumeRequests : ValidCapacity(r.capacityRange)}
+MCExpandVolumeRequests == {r \in ExpandVolumeRequests : r.sizeBytes > 0}
 
 MCPublishVolumeRequests == {r \in PublishVolumeRequests : r.readOnly => Capabilities.readOnlyPublish}
 

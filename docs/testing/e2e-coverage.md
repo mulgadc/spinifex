@@ -186,6 +186,7 @@ The create/describe/connect path against a live cluster: a DB VM that actually b
 - **`route53`** — hosted zones as northstar serves them, on every node. `TestNorthstarServesZonesBeyondFirstListPage` writes 1,100 zone objects (more than one `ListObjectsV2` page), requires the last one to resolve on every node and the platform base zone to survive the sync, then requires the deleted zones to stop resolving.
 - **`gpu`** — device visible in the guest, driver access, launch.
 - **`bedrock`** — `ListFoundationModels`/`GetFoundationModel` against a running cluster. Wire-format parity is unit-tested, not here.
+  - `TestConverseSelfHost` and `TestInvokeModelSelfHost` drive real inference through a self-hosted model. They skip unless `OCHRE_E2E_SELFHOST=1`, which needs a GPU host with the model's weights staged so the runtime can start its endpoint. `bedrock` is in none of the suite sets above.
 - **`ddil`** — Denied, Disrupted, Intermittent, Limited network scenarios.
 - **`teardown`** — sweeps leftovers.
 - **`harness`** — shared primitives, not a suite. `harness/vpc_egress.go` carries the VPC/subnet/IGW/NAT-gateway fixtures the egress scenarios build on.

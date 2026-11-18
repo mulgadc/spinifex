@@ -10,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/prefixlist"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsidentifiers "github.com/mulgadc/spinifex/spinifex/foundation/aws/identifiers"
@@ -128,7 +129,8 @@ func (s *ServiceImpl) checkTypeAndService(typ, name string) error {
 	}
 	if name != s.serviceName() {
 		// Another Region's S3 is an interface service on AWS.
-		if strings.HasPrefix(name, "com.amazonaws.") && strings.HasSuffix(name, ".s3") {
+		if (strings.HasPrefix(name, "com.amazonaws.") && strings.HasSuffix(name, ".s3")) ||
+			(typ != ec2.VpcEndpointTypeInterface && s.interfaceOnly(name)) {
 			return awserrors.Errorf(awserrors.ErrorInvalidParameter,
 				"Endpoint type (%s) does not match available service types ([Interface]).", typ)
 		}
@@ -139,6 +141,13 @@ func (s *ServiceImpl) checkTypeAndService(typ, name string) error {
 			"Endpoint type (%s) does not match available service types ([Gateway]).", typ)
 	}
 	return nil
+}
+
+// interfaceOnly reports whether name is one of this Region's services that
+// AWS offers only as an interface endpoint: the ones Spinifex also serves.
+func (s *ServiceImpl) interfaceOnly(name string) bool {
+	svc, ok := strings.CutPrefix(name, "com.amazonaws."+s.settings.Region+".")
+	return ok && (slices.Contains(config.AWSGWServiceNames, svc) || svc == "ecr.api" || svc == "ecr.dkr")
 }
 
 // interfaceOnlyFields refuses the fields AWS accepts only on interface

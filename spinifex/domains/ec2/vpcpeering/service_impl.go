@@ -150,6 +150,7 @@ func (s *ServiceImpl) CreateVpcPeeringConnection(ctx context.Context, input *ec2
 		if err := s.writeTerminal(ctx, rec); err != nil {
 			return nil, internalError(ctx, "CreateVpcPeeringConnection", err)
 		}
+		s.projectTags(ctx, accountID, rec.ID, rec.Tags[accountID])
 		slog.InfoContext(ctx, "CreateVpcPeeringConnection failed the connection", "vpcPeeringConnectionId", rec.ID,
 			"vpcId", vpcID, "peerVpcId", peerVpcID, "peerMissing", peerMissing, "cidrOverlap", overlap, "azHomesDiffer", homesDiffer, "accountID", accountID)
 		return &ec2.CreateVpcPeeringConnectionOutput{
@@ -197,6 +198,7 @@ func (s *ServiceImpl) CreateVpcPeeringConnection(ctx context.Context, input *ec2
 		}
 		return nil, internalError(ctx, "CreateVpcPeeringConnection", err)
 	}
+	s.projectTags(ctx, accountID, rec.ID, rec.Tags[accountID])
 
 	slog.InfoContext(ctx, "CreateVpcPeeringConnection completed", "vpcPeeringConnectionId", rec.ID,
 		"vpcId", vpcID, "peerVpcId", peerVpcID, "accountID", accountID)

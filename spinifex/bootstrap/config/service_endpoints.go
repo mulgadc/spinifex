@@ -8,7 +8,7 @@ import (
 
 // GatewayHostForNode returns the host a node serves AWS service endpoints on.
 // Precedence: mgmt-dedicated AWSGW IP, AdvertiseIP, br-mgmt IP, DevNetworking,
-// then the AWSGW bind IP; "" when none applies.
+// the AWSGW bind IP, then Host, which is all a peer's section carries.
 func GatewayHostForNode(node Config, mgmtBridgeIP string) string {
 	awsgwBindIP := ""
 	if node.AWSGW.Host != "" {
@@ -30,8 +30,16 @@ func GatewayHostForNode(node Config, mgmtBridgeIP string) string {
 		return "10.0.2.2"
 	case awsgwBindIP != "" && awsgwBindIP != "0.0.0.0":
 		return awsgwBindIP
+	case dialableIP(node.Host):
+		return node.Host
 	}
 	return ""
+}
+
+// dialableIP reports whether host is an IP literal another machine can dial.
+func dialableIP(host string) bool {
+	addr, err := netip.ParseAddr(host)
+	return err == nil && !addr.IsUnspecified() && !addr.IsLoopback()
 }
 
 // ServiceEndpoint is one node address that serves the AWS service endpoints,

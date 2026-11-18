@@ -18,7 +18,7 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 - Is the schema version part of the contract?
   Every method refuses an unsupported version with `unsupportedVersion`, and the conformance suite tests it, but the specification does not model versions.
   A block export arrives at contract version 2: a PublishVolume call below it, for a volume that only a host block device can export, is refused with `unsupportedVersion`.
-  A snapshot's `state` in a ListSnapshots ref, and the `snapshotId` filter, arrive at contract version 4: a ref carries no state below it, and a filtered call below it is refused with `unsupportedVersion` rather than answered with every snapshot.
+  The `snapshotId` filter on ListSnapshots arrives at contract version 4: a filtered call below it is refused with `unsupportedVersion` rather than answered with every snapshot.
 - Are `internal` and `unavailable` the only errors that a failed provider may cause?
 - Must a present but malformed ID be refused with `invalidArgument`?
   IDs are opaque here, so only an omitted one is refused.
@@ -27,8 +27,6 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 
 #### CreateVolume
 
-- Must the source snapshot be completed?
-  AWS refuses one that is not.
 - Must an implementation store the availability zone, parameters and source snapshot, so that it can detect a conflicting retry?
   The Viperblock implementation does not.
 - Should a retry be compared against the original request rather than the current volume?
@@ -95,10 +93,6 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 #### CopySnapshot
 
 - Should a retried copy return the existing copy, as a retried CreateVolume does, rather than `alreadyExists`?
-- May a source that is not completed be copied?
-  AWS refuses until it is.
-- What state does a copy start in?
-  The memory implementation always returns `completed`, while AWS starts a copy as `pending`.
 
 #### ListSnapshots
 
@@ -110,8 +104,6 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 
 - Is the handle check part of the contract?
   The Viperblock implementation ignores the handle and deletes anyway.
-- May a pending snapshot be deleted?
-  AWS allows it, while OCI refuses to delete a backup that is still being created, so the control plane never asks: it defers a customer's delete of a pending snapshot until the snapshot settles.
 - What does success promise?
   The Go docs say the snapshot is gone, but a snapshot whose handle did not match is left in place.
 - Should a snapshot that does not exist be refused with `notFound`?

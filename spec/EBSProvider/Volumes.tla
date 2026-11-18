@@ -30,6 +30,7 @@ CreateVolume(req) ==
                                               /\ \/ req.sizeBytes < snapshots[snapId].sizeBytes
                                                  \/ snapshots[snapId].sourceVolumeId /= snapVolId,
                        alreadyExists   |-> /\ KeyExists(volumes, volId)
+                                           \* Only refuse retried calls that would conflict with the existing volume.
                                            /\ \/ volumes[volId].sizeBytes        /= req.sizeBytes
                                               \/ volumes[volId].availabilityZone /= req.availabilityZone
                                               \/ volumes[volId].sourceSnapshotId /= snapId

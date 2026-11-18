@@ -11,8 +11,9 @@ CreateSnapshotRequests == [snapshotId   : SnapshotIds,
 CreateSnapshot(req) ==
   (*******************************************************************************************************************)
   (* A volume's data is frozen as a snapshot, from which new volumes can be restored. The snapshot holds the         *)
-  (* volume's data as it was when the call returned, even while it is pending, and a pending snapshot settles later  *)
-  (* without a call (SettleSnapshot). A retry of a call that already succeeded returns the same snapshot.            *)
+  (* volume's data as it was at some instant during the call, and exists only once that data is durable, so          *)
+  (* a snapshot that is still being made is not found. A retry of a call that already succeeded returns the          *)
+  (* same snapshot.                                                                                                  *)
   (*******************************************************************************************************************)
   LET snapId == req.snapshotId
       volId  == req.volumeId
@@ -40,15 +41,13 @@ CreateSnapshot(req) ==
               /\ UNCHANGED snapshots
 
            \/ /\ ~KeyExists(snapshots, snapId)
-              \* The handle, creation time and state are determined by the implementation.
+              \* The handle and creation time are determined by the implementation.
               /\ \E h \in SnapshotHandles,
-                    t \in Timestamps,
-                    s \in {"pending", "completed"} :
+                    t \in Timestamps :
                    \* No two snapshots are given the same handle.
                    /\ h \notin {snapshots[x].handle : x \in DOMAIN snapshots}
                    /\ snapshots' = InsertKey(snapshots, snapId, [sizeBytes      |-> volumes[volId].sizeBytes,
                                                                  createdAt      |-> t,
-                                                                 state          |-> s,
                                                                  handle         |-> h,
                                                                  sourceVolumeId |-> volId])
         /\ val' = SnapshotView(snapId)'
@@ -105,17 +104,16 @@ ListSnapshotsRequests == [maxResults    : -1..(MaxListResults + 1),
                           startingToken : Optional(ListTokens),
                           snapshotId    : Optional(SnapshotIds)]
 
-\* The ref that ListSnapshots returns for a snapshot, carrying its current state.
+\* The ref that ListSnapshots returns for a snapshot.
 SnapshotRef(id) == [id             |-> id,
                     sourceVolumeId |-> snapshots[id].sourceVolumeId,
-                    handle         |-> snapshots[id].handle,
-                    state          |-> snapshots[id].state]
+                    handle         |-> snapshots[id].handle]
 
 ListSnapshots(req) ==
   (*******************************************************************************************************************)
   (* Some of the snapshots are listed, a page at a time, and nothing changes. A call with no starting token that     *)
-  (* returns no next token lists every snapshot. A call that names a snapshot returns that snapshot in its current   *)
-  (* state, or nothing when it does not exist, so an accepted snapshot is never reported absent while it is pending. *)
+  (* returns no next token lists every snapshot. A call that names a snapshot returns that snapshot, or nothing      *)
+  (* when it does not exist.                                                                                         *)
   (*******************************************************************************************************************)
   LET snapId == req.snapshotId
 
@@ -177,19 +175,5 @@ DeleteSnapshot(req) ==
         /\ val' = None
         /\ err' = None
         /\ UNCHANGED <<volumes, publications>>
-
------------------------------------------------------------------------------------------------------------------------
-\* Steps without a call
-
-SettleSnapshot(snapId) ==
-  (*******************************************************************************************************************)
-  (* A pending snapshot settles as completed or error, as the provider finishes it. Its data is unchanged, since it  *)
-  (* was fixed when CreateSnapshot returned, and a snapshot that has settled never changes state again.              *)
-  (*******************************************************************************************************************)
-  /\ KeyExists(snapshots, snapId)
-  /\ snapshots[snapId].state = "pending"
-  /\ \E s \in {"completed", "error"} :
-       snapshots' = [snapshots EXCEPT ![snapId].state = s]
-  /\ UNCHANGED <<volumes, publications>>
 
 =======================================================================================================================

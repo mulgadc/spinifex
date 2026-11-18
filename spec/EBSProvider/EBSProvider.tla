@@ -116,11 +116,8 @@ Exports == [kind      : {"nbd", "block"},
 Publications == [export   : Exports,
                  readOnly : BOOLEAN]
 
-SnapshotStates == {"pending", "completed", "error"}
-
 Snapshots == [sizeBytes      : 1..MaxBytes,
               createdAt      : Timestamps,
-              state          : SnapshotStates,
               handle         : SnapshotHandles,
               sourceVolumeId : VolumeIds]
 
@@ -160,12 +157,6 @@ PageSize(m) == IF m <= 0 \/ m > MaxListResults THEN MaxListResults ELSE m
 Call(m, req, Action(_)) == /\ method' = m
                            /\ params' = req
                            /\ Action(req)
-
-\* A step that answers no call, such as one that the provider itself takes.
-NoCall == /\ method' = None
-          /\ params' = None
-          /\ val'    = None
-          /\ err'    = None
 
 -----------------------------------------------------------------------------------------------------------------------
 \* Initial state

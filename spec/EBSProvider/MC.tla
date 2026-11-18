@@ -28,7 +28,7 @@ MCCopySnapshotRequests == IF Capabilities.snapshotCopy
                           THEN {r \in CopySnapshotRequests : r.sourceSnapshotId /= r.destinationSnapshotId}
                           ELSE {}
 
-Caller ==
+Next ==
   /\ err' = None
   /\ \/ \E req \in MCCreateVolumeRequests  : Call("CreateVolume",    req, CreateVolume)
      \/ \E req \in MCExpandVolumeRequests  : Call("ExpandVolume",    req, ExpandVolume)
@@ -39,12 +39,6 @@ Caller ==
      \/ \E req \in CreateSnapshotRequests  : Call("CreateSnapshot",  req, CreateSnapshot)
      \/ \E req \in MCCopySnapshotRequests  : Call("CopySnapshot",    req, CopySnapshot)
      \/ \E req \in DeleteSnapshotRequests  : Call("DeleteSnapshot",  req, DeleteSnapshot)
-
-Provider ==
-  /\ NoCall
-  /\ \E snapId \in SnapshotIds : SettleSnapshot(snapId)
-
-Next == Caller \/ Provider
 
 Spec == Init /\ [][Next]_vars
 

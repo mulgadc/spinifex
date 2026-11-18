@@ -1869,6 +1869,12 @@ TMPEOF
     $SUDO chown "spinifex-daemon:$SPINIFEX_GROUP" /var/lib/spinifex/spinifex
     $SUDO chmod 0700 /var/lib/spinifex/spinifex
 
+    # System VM launch records live under the data dir, which the daemon cannot
+    # write; only the directory's mode changes, so existing records are kept.
+    $SUDO mkdir -p /var/lib/spinifex/mgmt-launch
+    $SUDO chown "spinifex-daemon:$SPINIFEX_GROUP" /var/lib/spinifex/mgmt-launch
+    $SUDO chmod 0700 /var/lib/spinifex/mgmt-launch
+
     $SUDO mkdir -p /var/lib/spinifex/predastore
     $SUDO chown "spinifex-storage:$SPINIFEX_GROUP" /var/lib/spinifex/predastore
     $SUDO chmod 0700 /var/lib/spinifex/predastore

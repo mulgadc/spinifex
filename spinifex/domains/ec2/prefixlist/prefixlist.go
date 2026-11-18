@@ -43,12 +43,12 @@ type Entry struct {
 // CIDR renders the entry as AWS lists it.
 func (e Entry) CIDR() string { return netip.PrefixFrom(e.Addr, 32).String() }
 
-// Entries derives the list from the gossiped node set: one IPv4 /32 per node
-// service address. Every node passes no br-mgmt address, so every node, and
-// the API and the datapath, derive the same list.
-func Entries(cc *config.ClusterConfig) []Entry {
+// Entries derives the list from the node set: one IPv4 /32 per node service
+// address, from the same derivation and br-mgmt address as the published DNS
+// records, so every address DNS can hand out is listed.
+func Entries(cc *config.ClusterConfig, localMgmtBridgeIP string) []Entry {
 	var out []Entry
-	for _, ep := range config.ServiceEndpoints(cc, "") {
+	for _, ep := range config.ServiceEndpoints(cc, localMgmtBridgeIP) {
 		if !ep.Addr.Is4() {
 			continue
 		}

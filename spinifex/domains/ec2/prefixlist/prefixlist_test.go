@@ -46,16 +46,38 @@ func TestEntries_FollowTheNodeSet(t *testing.T) {
 		{Addr: mustAddr("10.0.0.2"), GatePort: 8443},
 		{Addr: mustAddr("10.0.0.7"), GatePort: DefaultGatePort},
 		{Addr: mustAddr("10.0.0.10"), GatePort: 9443},
-	}, Entries(cc))
+	}, Entries(cc, ""))
 
 	nodes["n8"] = node("10.0.0.8", "")
-	assert.Len(t, Entries(cc), 4)
-	assert.Nil(t, Entries(nil))
+	assert.Len(t, Entries(cc, ""), 4)
+	assert.Nil(t, Entries(nil, ""))
+}
+
+// The local node's br-mgmt address is listed wherever DNS publishes it, and
+// the list holds exactly the IPv4 addresses DNS publishes.
+func TestEntries_MatchTheDNSAddresses(t *testing.T) {
+	cc := cluster(map[string]config.Config{
+		"n1": node("", "0.0.0.0:8443"),
+		"n2": node("10.0.0.10", ""),
+	})
+	got := Entries(cc, config.DefaultMgmtBridgeIP)
+	assert.Equal(t, []Entry{
+		{Addr: mustAddr("10.0.0.10"), GatePort: DefaultGatePort},
+		{Addr: mustAddr(config.DefaultMgmtBridgeIP), GatePort: 8443},
+	}, got)
+	var dns []netip.Addr
+	for _, ep := range config.ServiceEndpoints(cc, config.DefaultMgmtBridgeIP) {
+		dns = append(dns, ep.Addr)
+	}
+	require.Len(t, got, len(dns))
+	for i, e := range got {
+		assert.Equal(t, dns[i], e.Addr)
+	}
 }
 
 func newService(nodes map[string]config.Config) *ServiceImpl {
 	cc := cluster(nodes)
-	return NewServiceImpl(region, func() *config.ClusterConfig { return cc })
+	return NewServiceImpl(region, "", func() *config.ClusterConfig { return cc })
 }
 
 func TestDescribeManagedPrefixLists_RendersTheAWSManagedShape(t *testing.T) {

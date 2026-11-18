@@ -16,17 +16,19 @@ import (
 // ServiceImpl answers the prefix-list reads from the node set; each costs the
 // node count.
 type ServiceImpl struct {
-	region  string
-	cluster func() *config.ClusterConfig
+	region       string
+	mgmtBridgeIP string
+	cluster      func() *config.ClusterConfig
 }
 
-// NewServiceImpl reads the node set through cluster on every call.
-func NewServiceImpl(region string, cluster func() *config.ClusterConfig) *ServiceImpl {
-	return &ServiceImpl{region: region, cluster: cluster}
+// NewServiceImpl reads the node set through cluster on every call;
+// mgmtBridgeIP is this node's br-mgmt address, as DNS publication uses it.
+func NewServiceImpl(region, mgmtBridgeIP string, cluster func() *config.ClusterConfig) *ServiceImpl {
+	return &ServiceImpl{region: region, mgmtBridgeIP: mgmtBridgeIP, cluster: cluster}
 }
 
 func (s *ServiceImpl) cidrs() []string {
-	entries := Entries(s.cluster())
+	entries := Entries(s.cluster(), s.mgmtBridgeIP)
 	out := make([]string, 0, len(entries))
 	for _, e := range entries {
 		out = append(out, e.CIDR())

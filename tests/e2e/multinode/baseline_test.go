@@ -5,6 +5,7 @@ package multinode
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -161,6 +162,7 @@ func pingUntil(budget time.Duration, attempt func(left time.Duration) (string, b
 // count and how long convergence took, not counting onFirstFail.
 func pingConvergedCrossHost(keyPath, host string, port int, dstPriv string, timeout time.Duration, onFirstFail func()) (string, bool, int, time.Duration) {
 	res := pingUntil(timeout, func(left time.Duration) (string, bool) {
+		left = min(30*time.Second, left)
 		out, err := sshCaptureWithin(left, keyPath, "ubuntu", host, port,
 			fmt.Sprintf("ping -c 3 -W 2 -w %d %s", max(1, int(left/time.Second)), dstPriv))
 		return out, err == nil && strings.Contains(out, " 0% packet loss")
@@ -181,10 +183,8 @@ func dumpSameSGDiag(t *testing.T, fix *Fixture, tag, keyPath, host string, port 
 	t.Logf("dumpSameSGDiag(%s): src=%s dst=%s dst_ip=%s nodes=%d -> %s",
 		tag, srcID, dstID, dstPriv, len(fix.Cluster.Nodes), artifactDir)
 
-	probes := []struct {
-		name string
-		cmd  string
-	}{
+	type probe struct{ name, cmd string }
+	ovnProbes := []probe{
 		{"ovn-nb-address-set", "sudo ovn-nbctl --no-leader-only list address_set 2>&1 || true"},
 		{"ovn-sb-address-set", "sudo ovn-sbctl --no-leader-only list address_set 2>&1 || true"},
 		{"ovn-nb-port-group", "sudo ovn-nbctl --no-leader-only list port_group 2>&1 || true"},
@@ -194,20 +194,29 @@ func dumpSameSGDiag(t *testing.T, fix *Fixture, tag, keyPath, host string, port 
 		{"ovs-ofctl-br-int-dst", fmt.Sprintf("sudo ovs-ofctl dump-flows br-int 2>/dev/null | grep -F %s || true", dstPriv)},
 		{"ovn-sbctl-show", "sudo ovn-sbctl --no-leader-only show 2>&1 || true"},
 		{"arp", "arp -an 2>&1 || true"},
-		// Never list xfrm state without nokeys: it prints the SA keys into artifacts.
+	}
+	// xfrm state uses nokeys because these artifacts are uploaded and the
+	// plain listing includes each SA's encryption key.
+	ipsecProbes := []probe{
 		{"xfrm-state", "sudo ip xfrm state list nokeys 2>&1 || true"},
 		{"xfrm-policy", "sudo ip xfrm policy list 2>&1 || true"},
 		{"xfrm-sysctl", "grep -H . /proc/sys/net/core/xfrm_acq_expires /proc/sys/net/core/xfrm_larval_drop 2>&1 || true"},
 		{"ipsec-status", "sudo ipsec statusall 2>&1 || sudo ipsec status 2>&1 || true"},
 		{"ipsec-guard", "sudo nft list table inet spinifex_ipsec_guard 2>&1 || true"},
 	}
+	// The probes for the suspected layer run first, on every node, so the
+	// capture bound cuts the less relevant ones.
+	probes := slices.Concat(ovnProbes, ipsecProbes)
+	if tag == "ipsec" {
+		probes = slices.Concat(ipsecProbes, ovnProbes)
+	}
 
 	// One bound for the whole capture, so a hung node cannot stall the test.
 	capture, cancelCapture := context.WithTimeout(context.Background(), sameSGDiagTimeout)
 	defer cancelCapture()
 	ssh := harness.NewPeerSSH()
-	for _, n := range fix.Cluster.Nodes {
-		for _, p := range probes {
+	for _, p := range probes {
+		for _, n := range fix.Cluster.Nodes {
 			header := fmt.Sprintf("# tag=%s host=%s cmd=%s\n", tag, n.Addr, p.cmd)
 			if capture.Err() != nil {
 				harness.DumpFile(t, artifactDir, fmt.Sprintf("samesg-%s-%s-%s.log", tag, n.Name, p.name),

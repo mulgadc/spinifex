@@ -3,6 +3,7 @@
 package multinode
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -87,7 +88,7 @@ func TestWaitSAsReadyAtOnce(t *testing.T) {
 	clk := &fakeClock{now: time.Unix(0, 0)}
 	triggered := 0
 	res := waitSAs([]testLeg{"a", "b"}, time.Minute,
-		func(testLeg, time.Duration) bool { return true },
+		func(testLeg, time.Duration) (bool, error) { return true, nil },
 		func(testLeg, time.Duration) { triggered++ },
 		clk.Now, clk.Advance)
 	assert.True(t, res.ready)
@@ -100,7 +101,7 @@ func TestWaitSAsTriggersOnlyMissingLegUntilReady(t *testing.T) {
 	upAt := clk.now.Add(165 * time.Second)
 	var triggered []testLeg
 	res := waitSAs([]testLeg{"up", "stuck"}, ipsecSAReadyTimeout,
-		func(l testLeg, _ time.Duration) bool { return l == "up" || !clk.now.Before(upAt) },
+		func(l testLeg, _ time.Duration) (bool, error) { return l == "up" || !clk.now.Before(upAt), nil },
 		func(l testLeg, _ time.Duration) { triggered = append(triggered, l) },
 		clk.Now, clk.Advance)
 	assert.True(t, res.ready)
@@ -111,16 +112,50 @@ func TestWaitSAsTriggersOnlyMissingLegUntilReady(t *testing.T) {
 
 func TestWaitSAsExpiresNamingMissingLeg(t *testing.T) {
 	clk := &fakeClock{now: time.Unix(0, 0)}
-	res := waitSAs([]testLeg{"up", "stuck"}, 10*time.Second,
-		func(l testLeg, limit time.Duration) bool {
+	res := waitSAs([]testLeg{"up", "stuck", "unreadable"}, 10*time.Second,
+		func(l testLeg, limit time.Duration) (bool, error) {
 			assert.LessOrEqual(t, limit, 10*time.Second)
-			return l == "up"
+			if l == "unreadable" {
+				return false, errors.New("ssh: connection refused")
+			}
+			return l == "up", nil
 		},
 		func(testLeg, time.Duration) {},
 		clk.Now, clk.Advance)
 	assert.False(t, res.ready)
-	assert.Equal(t, []string{"stuck"}, res.missing)
+	assert.Equal(t, []string{"stuck", "unreadable (unverified: ssh: connection refused)"}, res.missing,
+		"a leg whose state could not be read is not reported as an observed missing SA")
 	assert.Equal(t, 10*time.Second, res.elapsed, "the pause is capped at the time left")
+}
+
+func TestWaitSAsStartsNothingAfterExpiry(t *testing.T) {
+	clk := &fakeClock{now: time.Unix(0, 0)}
+	var probes, triggers int
+	res := waitSAs([]testLeg{"a", "b"}, 10*time.Second,
+		func(_ testLeg, limit time.Duration) (bool, error) {
+			probes++
+			clk.Advance(limit) // each probe uses all the time it is given
+			return false, nil
+		},
+		func(testLeg, time.Duration) { triggers++ },
+		clk.Now, clk.Advance)
+	assert.False(t, res.ready)
+	assert.Equal(t, 1, probes, "the second leg's probe would start after the deadline")
+	assert.Zero(t, triggers, "no trigger once the budget is spent")
+	assert.Equal(t, 10*time.Second, res.elapsed)
+}
+
+func TestWaitSAsRejectsLateReadiness(t *testing.T) {
+	clk := &fakeClock{now: time.Unix(0, 0)}
+	res := waitSAs([]testLeg{"a"}, 10*time.Second,
+		func(_ testLeg, limit time.Duration) (bool, error) {
+			clk.Advance(limit + time.Second) // SSH overran its context
+			return true, nil
+		},
+		func(testLeg, time.Duration) {},
+		clk.Now, clk.Advance)
+	assert.False(t, res.ready, "readiness observed after the deadline does not count")
+	assert.NotEmpty(t, res.missing)
 }
 
 func TestPingUntilExcludesFirstFailHook(t *testing.T) {

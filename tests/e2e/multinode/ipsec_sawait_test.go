@@ -17,47 +17,70 @@ import (
 // any retry for that long.
 const ipsecSAReadyTimeout = 200 * time.Second
 
-// saWaitResult is the outcome of waitSAs: whether every leg came up, how long
-// that took, and the legs still missing an SA when the budget ran out.
+// saWaitResult is the outcome of waitSAs: whether every leg came up by the
+// deadline, how long that took, and each leg still missing an SA, marked
+// unverified when its last probe could not read the node's state.
 type saWaitResult struct {
 	ready   bool
 	elapsed time.Duration
 	missing []string
 }
 
-// waitSAs polls each leg until all report an SA or budget runs out, calling
-// trigger on the missing legs between polls. Each call gets the time left,
-// capped at 10 s, so the wait overshoots its deadline by at most one probe.
-func waitSAs[L fmt.Stringer](legs []L, budget time.Duration, ready func(L, time.Duration) bool,
+// waitSAs polls each leg until all report an SA by the deadline, calling
+// trigger on the missing legs between polls. Every probe, trigger and pause
+// gets only the time left (at most 10 s), and nothing starts after expiry.
+func waitSAs[L fmt.Stringer](legs []L, budget time.Duration, ready func(L, time.Duration) (bool, error),
 	trigger func(L, time.Duration), now func() time.Time, pause func(time.Duration)) saWaitResult {
 	start := now()
 	deadline := start.Add(budget)
-	limit := func() time.Duration {
-		return min(10*time.Second, max(time.Second, deadline.Sub(now())))
+	lastErr := make(map[int]error, len(legs))
+	missing := make([]int, 0, len(legs))
+	for i := range legs {
+		missing = append(missing, i)
 	}
 	for {
-		var missing []L
-		for _, l := range legs {
-			if !ready(l, limit()) {
-				missing = append(missing, l)
+		var still []int
+		for _, i := range missing {
+			left := deadline.Sub(now())
+			if left <= 0 {
+				still = append(still, i)
+				continue
+			}
+			ok, err := ready(legs[i], min(10*time.Second, left))
+			lastErr[i] = err
+			if !ok {
+				still = append(still, i)
 			}
 		}
-		if len(missing) == 0 {
+		missing = still
+		late := now().After(deadline)
+		if len(missing) == 0 && !late {
 			return saWaitResult{ready: true, elapsed: now().Sub(start)}
 		}
-		remaining := deadline.Sub(now())
-		if remaining <= 0 {
-			names := make([]string, 0, len(missing))
-			for _, l := range missing {
-				names = append(names, l.String())
+		if late || !deadline.After(now()) {
+			break
+		}
+		for _, i := range missing {
+			if left := deadline.Sub(now()); left > 0 {
+				trigger(legs[i], min(10*time.Second, left))
 			}
-			return saWaitResult{elapsed: now().Sub(start), missing: names}
 		}
-		for _, l := range missing {
-			trigger(l, limit())
+		if left := deadline.Sub(now()); left > 0 {
+			pause(min(2*time.Second, left))
 		}
-		pause(min(2*time.Second, remaining))
 	}
+	res := saWaitResult{elapsed: now().Sub(start)}
+	for _, i := range missing {
+		name := legs[i].String()
+		if err := lastErr[i]; err != nil {
+			name += fmt.Sprintf(" (unverified: %v)", err)
+		}
+		res.missing = append(res.missing, name)
+	}
+	if len(res.missing) == 0 {
+		res.missing = []string{"every leg, ready only after the deadline"}
+	}
+	return res
 }
 
 // geneveOutReqid returns the reqid of the outbound policy for the Geneve src
@@ -121,8 +144,8 @@ func hasLiveSA(states, src, dst, reqid string) bool {
 const xfrmStateMarker = "=== xfrm state ==="
 
 // legHasGeneveSA reports whether the leg's node holds a live outbound SA for
-// the Geneve it sends to the peer. A probe error reads as not ready.
-func legHasGeneveSA(t *testing.T, ssh *harness.PeerSSH, l ipsecLeg, limit time.Duration) bool {
+// the Geneve it sends to the peer. An error means the state was not read.
+func legHasGeneveSA(ssh *harness.PeerSSH, l ipsecLeg, limit time.Duration) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	raw, err := ssh.Run(ctx, l.self.Addr, fmt.Sprintf(
@@ -130,12 +153,11 @@ func legHasGeneveSA(t *testing.T, ssh *harness.PeerSSH, l ipsecLeg, limit time.D
 			"sudo ip xfrm state list src %[1]s dst %[2]s proto esp nokeys",
 		l.selfEncap, l.peerEncap, xfrmStateMarker))
 	if err != nil {
-		t.Logf("%s: xfrm probe: %v", l, err)
-		return false
+		return false, err
 	}
 	policies, states, _ := strings.Cut(string(raw), xfrmStateMarker)
 	reqid, ok := geneveOutReqid(policies, l.selfEncap, l.peerEncap)
-	return ok && hasLiveSA(states, l.selfEncap, l.peerEncap, reqid)
+	return ok && hasLiveSA(states, l.selfEncap, l.peerEncap, reqid), nil
 }
 
 // triggerAcquire sends one UDP datagram from the node to the peer's Geneve
@@ -166,7 +188,7 @@ func waitCrossHostSAs(t *testing.T, src, dst harness.Node) []string {
 		{self: dst, peer: src, selfEncap: dstEncap, peerEncap: srcEncap},
 	}
 	res := waitSAs(legs, ipsecSAReadyTimeout,
-		func(l ipsecLeg, limit time.Duration) bool { return legHasGeneveSA(t, ssh, l, limit) },
+		func(l ipsecLeg, limit time.Duration) (bool, error) { return legHasGeneveSA(ssh, l, limit) },
 		func(l ipsecLeg, limit time.Duration) { triggerAcquire(t, ssh, l, limit) },
 		time.Now, time.Sleep)
 	if !res.ready {

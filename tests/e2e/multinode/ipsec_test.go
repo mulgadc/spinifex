@@ -71,7 +71,7 @@ func runIPSec(t *testing.T, fix *Fixture) {
 	harness.EventuallyErr(t, func() error {
 		for _, n := range fix.Cluster.Nodes {
 			c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			raw, err := ssh.Run(c, n.Addr, "sudo ip xfrm state")
+			raw, err := ssh.Run(c, n.Addr, "sudo ip xfrm state list nokeys")
 			cancel()
 			if err != nil {
 				return fmt.Errorf("%s ip xfrm state: %w", n.Name, err)

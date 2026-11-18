@@ -195,6 +195,20 @@ A node reports it only when its kernel passes the capture probe, its proxy can p
 Until then `DescribeVpcEndpointServices` omits S3 and `CreateVpcEndpoint` refuses it.
 `spx admin cluster status` shows each node's level.
 
+### Formations Installed With v1.25.0 or Earlier
+
+A formation installed with v1.25.0 or earlier stays at level 1 after an upgrade, because its `predastore.toml` does not configure the gate's endpoint listener.
+Upgrading does not change that file, so add two settings by hand on every node:
+
+1. In `/etc/spinifex/predastore/predastore.toml`, add `tls_ca = "/etc/spinifex/ca.pem"` to every `[[host]]` table.
+2. Add `endpoint_port = 8474` to every `[[host.node]]` table with `role = "gate"`.
+   Leave `version = 1` as it is.
+3. Re-run `setup.sh` on the node if it was upgraded without the `firewall` stage, so the host firewall accepts port 8474 from peers and the captured guest traffic.
+4. Restart Predastore with `sudo systemctl restart spinifex-predastore`.
+
+Once every node is done, `spx admin cluster status` shows level 2.
+If `spinifex-predastore` fails to start after the change, remove the two settings and restart it; `journalctl -u spinifex-predastore` names the setting it rejected.
+
 ## Public Subnet
 
 Instances get both a private IP and a public IP. The public IP is a 1:1 NAT managed by OVN — the instance OS only sees its private IP.

@@ -108,11 +108,16 @@ jobs:
   # The browser suite: the console against a faked API on Vite dev, plus the
   # built dist under the production CSP. It runs in Playwright's own image, which
   # carries the browsers, so screenshots rasterise as they did for the baselines.
+  # Three shards of one suite; fullyParallel lets Playwright split by test.
   ui_e2e:
-    name: UI End-to-End
+    name: UI End-to-End (${{ matrix.shard }}/3)
     needs: ui_e2e_image
     runs-on: ubuntu-26.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     container:
       image: ${{ needs.ui_e2e_image.outputs.image }}
       options: --ipc=host
@@ -157,13 +162,13 @@ jobs:
         run: pnpm build
 
       - name: Run End-to-End Suite
-        run: pnpm e2e
+        run: pnpm e2e --shard=${{ matrix.shard }}/3
 
       - name: Upload Screenshot Diffs
         if: failure()
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: ui-e2e-test-results
+          name: ui-e2e-test-results-${{ matrix.shard }}
           path: spinifex/runtime/roles/spinifexui/frontend/test-results/
           if-no-files-found: ignore
           retention-days: 14

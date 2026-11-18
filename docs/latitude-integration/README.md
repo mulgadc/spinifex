@@ -116,6 +116,11 @@ The deploy puts Spinifex's data on the largest blank NVMe disk it finds, and in 
 OpenTofu or Terraform creates a project, an SSH key, the server and one Elastic IP.
 The script then installs Spinifex on the server over SSH and starts it.
 
+<p align="center">
+  <img src="../../.github/assets/diagrams/latitude-deployment.svg" alt="Spinifex on latitude.sh: deploy-latitude.sh calls the latitude.sh API to create a project, a bare-metal server and an Elastic IP, then installs Spinifex on the node over SSH; the Elastic IP routes customer traffic to a guest in a public subnet on the node" width="900">
+</p>
+<p align="center"><em>One bare-metal node, with an Elastic IP routed to a guest in a public subnet.</em></p>
+
 The node runs **Ubuntu 26.04** as its host operating system, and Spinifex runs on top of it.
 latitude.sh installs the operating system when it creates the server, so there is no host to prepare first.
 The script installs the `latest` Spinifex release channel.

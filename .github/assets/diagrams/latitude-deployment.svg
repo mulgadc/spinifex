@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="520" viewBox="0 0 900 520">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0a0a0a"/>
+      <stop offset="100%" style="stop-color:#0d1117"/>
+    </linearGradient>
+    <linearGradient id="vpc-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#58a6ff14"/>
+      <stop offset="100%" style="stop-color:#58a6ff05"/>
+    </linearGradient>
+    <linearGradient id="node-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#3fb9501f"/>
+      <stop offset="100%" style="stop-color:#3fb95008"/>
+    </linearGradient>
+    <linearGradient id="svc-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#a855f71f"/>
+      <stop offset="100%" style="stop-color:#a855f708"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#71717a"/>
+    </marker>
+  </defs>
+  <rect width="900" height="520" fill="url(#bg)" rx="12"/>
+  <text x="24" y="30" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#a1a1aa" letter-spacing="2.5" font-weight="600">SPINIFEX ON LATITUDE.SH · ONE NODE</text>
+  <text x="876" y="30" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#71717a" text-anchor="end">--nodes 1 · m4-metal-medium bare metal</text>
+  <rect x="30" y="52" width="230" height="56" rx="8" fill="#e4e4e70d" stroke="#e4e4e7" stroke-width="1.1" stroke-opacity="0.6"/>
+  <text x="145.0" y="76" font-family="'SF Mono', ui-monospace, monospace" font-size="12.5" fill="#e4e4e7" text-anchor="middle" font-weight="700">Your machine</text>
+  <text x="145.0" y="94" font-family="'Segoe UI', system-ui, sans-serif" font-size="10" fill="#a1a1aa" text-anchor="middle">deploy-latitude.sh · OpenTofu or Terraform</text>
+  <rect x="335" y="52" width="230" height="56" rx="8" fill="#58a6ff12" stroke="#58a6ff" stroke-width="1.1" stroke-opacity="0.6"/>
+  <text x="450.0" y="76" font-family="'SF Mono', ui-monospace, monospace" font-size="12.5" fill="#79c0ff" text-anchor="middle" font-weight="700">latitude.sh API</text>
+  <text x="450.0" y="94" font-family="'Segoe UI', system-ui, sans-serif" font-size="10" fill="#a5d6ff" text-anchor="middle">project · server · Elastic IP</text>
+  <rect x="640" y="52" width="230" height="56" rx="8" fill="#3fb9500d" stroke="#3fb950" stroke-width="1.1" stroke-opacity="0.6"/>
+  <text x="755.0" y="76" font-family="'SF Mono', ui-monospace, monospace" font-size="12.5" fill="#3fb950" text-anchor="middle" font-weight="700">Internet</text>
+  <text x="755.0" y="94" font-family="'Segoe UI', system-ui, sans-serif" font-size="10" fill="#7ee787" text-anchor="middle">customers reach your guest</text>
+  <line x1="260" y1="80" x2="333" y2="80" stroke="#71717a" stroke-width="1.2" opacity="0.8" marker-end="url(#arrow)"/>
+  <text x="296" y="72" font-family="'Segoe UI', system-ui, sans-serif" font-size="10" fill="#a1a1aa" text-anchor="middle">API calls</text>
+  <rect x="30" y="160" width="840" height="330" rx="10" fill="url(#vpc-grad)" stroke="#58a6ff" stroke-width="1.2" stroke-opacity="0.55" stroke-dasharray="6,4"/>
+  <text x="50" y="184" font-family="'SF Mono', ui-monospace, monospace" font-size="12" fill="#79c0ff" font-weight="700">latitude.sh site</text>
+  <text x="850" y="184" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#58a6ff" text-anchor="end">DAL by default · --site for another</text>
+  <line x1="145" y1="108" x2="145" y2="158" stroke="#71717a" stroke-width="1.2" opacity="0.8" marker-end="url(#arrow)"/>
+  <text x="155" y="138" font-family="'Segoe UI', system-ui, sans-serif" font-size="10" fill="#a1a1aa" text-anchor="start">SSH installs Spinifex</text>
+  <line x1="450" y1="108" x2="450" y2="158" stroke="#71717a" stroke-width="1.2" opacity="0.8" marker-end="url(#arrow)"/>
+  <text x="460" y="138" font-family="'Segoe UI', system-ui, sans-serif" font-size="10" fill="#a1a1aa" text-anchor="start">creates the server and Elastic IP</text>
+  <rect x="60" y="205" width="580" height="260" rx="8" fill="url(#node-grad)" stroke="#3fb950" stroke-width="1.2" stroke-opacity="0.6"/>
+  <text x="78" y="229" font-family="'SF Mono', ui-monospace, monospace" font-size="12.5" fill="#3fb950" font-weight="700">node1</text>
+  <text x="622" y="229" font-family="'Segoe UI', system-ui, sans-serif" font-size="9.5" fill="#7ee787" text-anchor="end">bare metal · Ubuntu 26.04 · Spinifex</text>
+  <line x1="74" y1="237" x2="626" y2="237" stroke="#3fb950" stroke-opacity="0.3" stroke-width="0.6"/>
+  <rect x="76" y="250" width="74" height="24" rx="5" fill="#3fb9501a" stroke="#3fb950" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="113.0" y="266.0" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#7ee787" text-anchor="middle" font-weight="700">nats</text>
+  <rect x="154" y="250" width="74" height="24" rx="5" fill="#3fb9501a" stroke="#3fb950" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="191.0" y="266.0" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#7ee787" text-anchor="middle" font-weight="700">predastore</text>
+  <rect x="232" y="250" width="74" height="24" rx="5" fill="#3fb9501a" stroke="#3fb950" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="269.0" y="266.0" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#7ee787" text-anchor="middle" font-weight="700">viperblock</text>
+  <rect x="310" y="250" width="74" height="24" rx="5" fill="#3fb9501a" stroke="#3fb950" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="347.0" y="266.0" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#7ee787" text-anchor="middle" font-weight="700">daemon</text>
+  <rect x="388" y="250" width="74" height="24" rx="5" fill="#3fb9501a" stroke="#3fb950" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="425.0" y="266.0" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#7ee787" text-anchor="middle" font-weight="700">awsgw</text>
+  <rect x="466" y="250" width="74" height="24" rx="5" fill="#3fb9501a" stroke="#3fb950" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="503.0" y="266.0" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#7ee787" text-anchor="middle" font-weight="700">vpcd</text>
+  <rect x="544" y="250" width="74" height="24" rx="5" fill="#3fb9501a" stroke="#3fb950" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="581.0" y="266.0" font-family="'SF Mono', ui-monospace, monospace" font-size="10" fill="#7ee787" text-anchor="middle" font-weight="700">ui</text>
+  <rect x="76" y="290" width="548" height="160" rx="8" fill="url(#vpc-grad)" stroke="#58a6ff" stroke-width="1" stroke-opacity="0.5" stroke-dasharray="5,3"/>
+  <text x="92" y="311" font-family="'SF Mono', ui-monospace, monospace" font-size="11" fill="#79c0ff" font-weight="700">Your VPC</text>
+  <text x="608" y="311" font-family="'Segoe UI', system-ui, sans-serif" font-size="9.5" fill="#a5d6ff" text-anchor="end">built by the nginx-webserver workbook</text>
+  <rect x="92" y="324" width="516" height="112" rx="6" fill="#58a6ff0a" stroke="#58a6ff" stroke-width="0.8" stroke-opacity="0.4" stroke-dasharray="3,3"/>
+  <text x="106" y="343" font-family="'SF Mono', ui-monospace, monospace" font-size="10.5" fill="#79c0ff">public subnet</text>
+  <rect x="110" y="360" width="180" height="56" rx="5" fill="#a855f71a" stroke="#a855f7" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="200.0" y="386.0" font-family="'SF Mono', ui-monospace, monospace" font-size="11" fill="#d8b4fe" text-anchor="middle" font-weight="700">EBS volume</text>
+  <text x="200.0" y="400.0" font-family="'Segoe UI', system-ui, sans-serif" font-size="9" fill="#a1a1aa" text-anchor="middle">guest root disk</text>
+  <rect x="404" y="360" width="190" height="56" rx="5" fill="#a855f71a" stroke="#a855f7" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="499.0" y="386.0" font-family="'SF Mono', ui-monospace, monospace" font-size="11" fill="#d8b4fe" text-anchor="middle" font-weight="700">EC2 guest</text>
+  <text x="499.0" y="400.0" font-family="'Segoe UI', system-ui, sans-serif" font-size="9" fill="#a1a1aa" text-anchor="middle">Nginx web server</text>
+  <rect x="700" y="350" width="140" height="76" rx="5" fill="#3fb9501a" stroke="#3fb950" stroke-opacity="0.5" stroke-width="0.6"/>
+  <text x="770.0" y="386.0" font-family="'SF Mono', ui-monospace, monospace" font-size="12" fill="#7ee787" text-anchor="middle" font-weight="700">Elastic IP</text>
+  <text x="770.0" y="400.0" font-family="'Segoe UI', system-ui, sans-serif" font-size="9" fill="#a1a1aa" text-anchor="middle">static pool address</text>
+  <line x1="770" y1="108" x2="770" y2="348" stroke="#71717a" stroke-width="1.2" opacity="0.8" marker-end="url(#arrow)"/>
+  <text x="760" y="260" font-family="'Segoe UI', system-ui, sans-serif" font-size="10" fill="#a1a1aa" text-anchor="end">traffic from customers</text>
+  <line x1="698" y1="388" x2="596" y2="388" stroke="#3fb950" stroke-width="1.2" opacity="0.8" marker-end="url(#arrow)"/>
+  <text x="648" y="380" font-family="'Segoe UI', system-ui, sans-serif" font-size="9.5" fill="#7ee787" text-anchor="middle">routed to the guest</text>
+  <text x="450" y="482" font-family="'Segoe UI', system-ui, sans-serif" font-size="9.5" fill="#71717a" text-anchor="middle">The deployment holds one Elastic IP, so one public instance. The API token stays on your machine.</text>
+</svg>

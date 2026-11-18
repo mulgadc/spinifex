@@ -73,6 +73,8 @@ type loopHarness struct {
 	endpoints map[string]projection.GatewayEndpoint
 	gateErr   error
 	gateAsked []netip.Addr
+	rev       uint64
+	revErr    error
 }
 
 func newLoopHarness(withGate bool) *loopHarness {
@@ -92,6 +94,9 @@ func newLoopHarness(withGate bool) *loopHarness {
 			return h.endpoints, h.loadErr
 		},
 		proxy: h.sink,
+		levelRevision: func(context.Context) (uint64, error) {
+			return h.rev, h.revErr
+		},
 	}
 	if withGate {
 		h.loop.gate = func(_ context.Context, addr netip.Addr) error {
@@ -183,13 +188,66 @@ func TestEndpointLoop_ANodeWithoutAGateIsReady(t *testing.T) {
 	assert.True(t, h.loop.status("n1").GateReady)
 }
 
+// A node whose proxy cannot present its certificate resets every connection,
+// so it never reads ready, with or without a gate of its own.
+func TestEndpointLoop_UnusableCredentialsAreNeverReady(t *testing.T) {
+	for _, withGate := range []bool{false, true} {
+		h := newLoopHarness(withGate)
+		h.loop.dialErr = errors.New("no client key")
+		revisit, err := h.loop.reconcile(t.Context())
+		require.NoError(t, err)
+		assert.False(t, h.loop.status("n1").GateReady, "with gate %v", withGate)
+		assert.Equal(t, endpointProbeRetry, revisit)
+		assert.Empty(t, h.gateAsked)
+	}
+}
+
+// The revision acknowledged is the one read before the endpoints the published
+// view was built from: a rollback written during the load waits for the next
+// pass, and a pass that publishes nothing acknowledges nothing.
+func TestEndpointLoop_AcknowledgesOnlyARevisionItsViewPostdates(t *testing.T) {
+	h := newLoopHarness(false)
+	h.rev, h.endpoints = 7, loopEndpoints
+	load := h.loop.load
+	h.loop.load = func(ctx context.Context) (map[string]projection.GatewayEndpoint, error) {
+		h.rev = 8
+		return load(ctx)
+	}
+	_, err := h.loop.reconcile(t.Context())
+	require.NoError(t, err)
+	st := h.loop.status("n1")
+	assert.Equal(t, uint64(7), st.Revision)
+	assert.Equal(t, 1, st.Endpoints)
+
+	h.loadErr = errors.New("kv down")
+	_, err = h.loop.reconcile(t.Context())
+	require.Error(t, err)
+	st = h.loop.status("n1")
+	assert.Equal(t, uint64(7), st.Revision)
+	assert.Zero(t, st.Endpoints, "a withdrawn view admits by no endpoint")
+
+	h.loadErr, h.endpoints = nil, nil
+	h.loop.load = load
+	_, err = h.loop.reconcile(t.Context())
+	require.NoError(t, err)
+	st = h.loop.status("n1")
+	assert.Equal(t, uint64(8), st.Revision)
+	assert.Zero(t, st.Endpoints)
+
+	h.rev, h.revErr = 9, errors.New("kv down")
+	_, err = h.loop.reconcile(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, uint64(8), h.loop.status("n1").Revision)
+}
+
 // The status subject answers for its own node only; anything else gets an
 // error and nothing that could be read as a status.
 func TestEndpointLoop_StatusAnswersOnlyItsOwnNode(t *testing.T) {
 	_, nc, _ := testutil.StartTestJetStream(t)
 	h := newLoopHarness(false)
 	h.sink.sessions = 3
-	h.loop.revision.Store(42)
+	h.rev = 42
+	h.endpoints = loopEndpoints
 	_, err := h.loop.reconcile(t.Context())
 	require.NoError(t, err)
 	sub, err := nc.Subscribe(projection.EndpointProxyStatusSubject("n1"), h.loop.serveStatus("n1"))
@@ -205,7 +263,7 @@ func TestEndpointLoop_StatusAnswersOnlyItsOwnNode(t *testing.T) {
 
 	var got projection.EndpointProxyStatus
 	require.NoError(t, json.Unmarshal(ask([]byte(`{"node":"n1"}`)), &got))
-	assert.Equal(t, projection.EndpointProxyStatus{Node: "n1", Revision: 42, Sessions: 3, ProbePassed: true, GateReady: true}, got)
+	assert.Equal(t, projection.EndpointProxyStatus{Node: "n1", Revision: 42, Sessions: 3, Endpoints: 1, ProbePassed: true, GateReady: true}, got)
 
 	for _, body := range [][]byte{[]byte(`{"node":"n2"}`), []byte(`not json`)} {
 		var refusal map[string]any
@@ -215,25 +273,31 @@ func TestEndpointLoop_StatusAnswersOnlyItsOwnNode(t *testing.T) {
 	}
 }
 
-// The revision reported is the latest version of the feature-level record.
-func TestWatchFeatureLevel_ReportsTheLatestRevision(t *testing.T) {
+// The revision read is the feature-level record's latest version, and 0 before
+// one is written.
+func TestFeatureLevelRevision_ReadsTheLatestVersion(t *testing.T) {
 	_, _, js := testutil.StartTestJetStream(t)
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
+	ctx := t.Context()
+	read := featureLevelRevision(js)
+	rev, err := read(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, rev)
+
 	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: daemon.ClusterConfigBucket})
 	require.NoError(t, err)
-	first, err := kv.Put(ctx, featurelevel.Key, []byte("1"))
+	rev, err = read(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, rev)
+
+	_, err = kv.Put(ctx, featurelevel.Key, []byte("1"))
+	require.NoError(t, err)
+	second, err := kv.Put(ctx, featurelevel.Key, []byte("2"))
 	require.NoError(t, err)
 	_, err = kv.Put(ctx, "other", []byte("x"))
 	require.NoError(t, err)
-
-	l := newLoopHarness(false).loop
-	go watchFeatureLevel(ctx, js, l.revision.Store)
-	require.Eventually(t, func() bool { return l.revision.Load() == first }, 5*time.Second, 10*time.Millisecond)
-
-	second, err := kv.Put(ctx, featurelevel.Key, []byte("2"))
+	rev, err = read(ctx)
 	require.NoError(t, err)
-	require.Eventually(t, func() bool { return l.revision.Load() == second }, 5*time.Second, 10*time.Millisecond)
+	assert.Equal(t, second, rev)
 }
 
 func putSecurityGroup(t *testing.T, kv jetstream.KeyValue, account string, rec ec2vpc.SecurityGroupRecord) {
@@ -280,7 +344,7 @@ func TestSecurityGroupEgress_UsesTheStoredGroups(t *testing.T) {
 	}
 }
 
-// The feature-level watch reads the bucket the daemon writes.
+// The feature-level read uses the bucket the daemon writes.
 func TestFeatureLevelBucket_IsTheDaemonsClusterConfigBucket(t *testing.T) {
 	assert.Equal(t, daemon.ClusterConfigBucket, featureLevelBucket)
 }

@@ -84,6 +84,9 @@ func TestGatewayEndpointDrain_CountsEveryDependent(t *testing.T) {
 		"an open session": func(f *drainFixture) {
 			f.proxies["n2"] = projection.EndpointProxyStatus{Node: "n2", Revision: f.rev, Sessions: 1}
 		},
+		"an endpoint a proxy still admits by": func(f *drainFixture) {
+			f.proxies["n2"] = projection.EndpointProxyStatus{Node: "n2", Revision: f.rev, Endpoints: 1}
+		},
 		"a node's demux flows": func(f *drainFixture) { f.holding["n1"] = 1 },
 	}
 	for name, mutate := range cases {

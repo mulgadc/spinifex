@@ -33,8 +33,8 @@ type gatewayEndpointDrain struct {
 var endpointDrain = &gatewayEndpointDrain{}
 
 // check counts what still depends on the endpoint listener: live endpoints,
-// open proxied sessions and installed demux flows. Any vpcd that is silent or
-// has not read the rollback fails the check rather than counting as idle.
+// endpoints a proxy still admits by, unfinished connections and demux flows.
+// A vpcd that is silent or has not published since the rollback fails it.
 func (g *gatewayEndpointDrain) check(ctx context.Context) (int, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -60,7 +60,7 @@ func (g *gatewayEndpointDrain) check(ctx context.Context) (int, error) {
 		demuxNodes += s.Reply.Holding[featurelevel.GatewayEndpoints]
 	}
 
-	sessions := 0
+	sessions, admitting := 0, 0
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, node := range g.nodes {
@@ -77,6 +77,7 @@ func (g *gatewayEndpointDrain) check(ctx context.Context) (int, error) {
 				unread = append(unread, fmt.Sprintf("vpcd on %s: has read revision %d, need %d", node, st.Revision, rev))
 			default:
 				sessions += st.Sessions
+				admitting += st.Endpoints
 			}
 		})
 	}
@@ -85,13 +86,13 @@ func (g *gatewayEndpointDrain) check(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("not every node has answered after the rollback: %s", strings.Join(unread, "; "))
 	}
 	if g.out != nil {
-		fmt.Fprintf(g.out, "Gateway endpoints: %d live endpoint(s), %d open proxied session(s), %d node(s) with endpoint flows.\n",
-			live, sessions, demuxNodes)
+		fmt.Fprintf(g.out, "Gateway endpoints: %d live endpoint(s), %d still admitted by a proxy, %d open proxied connection(s), %d node(s) with endpoint flows.\n",
+			live, admitting, sessions, demuxNodes)
 		if live > 0 {
 			fmt.Fprintln(g.out, "Delete every VPC endpoint before rolling back: rollback never deletes one.")
 		}
 	}
-	return live + sessions + demuxNodes, nil
+	return live + admitting + sessions + demuxNodes, nil
 }
 
 // requestProxyStatus asks node's vpcd for its endpoint proxy status.

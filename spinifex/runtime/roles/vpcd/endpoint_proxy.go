@@ -45,8 +45,6 @@ const (
 	// gateVerdictWait is how long the gate probe waits for the gate to refuse
 	// its certificate after the client's handshake completes.
 	gateVerdictWait = time.Second
-	// featureLevelRewatch spaces attempts to re-open the feature-level watch.
-	featureLevelRewatch = 5 * time.Second
 )
 
 // endpointViewSink is the proxy the capture loop publishes each pass's view to.
@@ -71,11 +69,17 @@ type endpointLoop struct {
 	// gate checks that this node's own gate accepts the proxy's mutual TLS;
 	// nil when the node runs no Predastore.
 	gate func(ctx context.Context, addr netip.Addr) error
+	// dialErr is why the proxy cannot present this node's certificate; while
+	// set, the node is never ready, whether or not it runs a gate.
+	dialErr error
+	// levelRevision reads the feature-level record's current revision.
+	levelRevision func(ctx context.Context) (uint64, error)
 
-	probePassed atomic.Bool
-	gateReady   atomic.Bool
-	revision    atomic.Uint64
-	probeFailed atomic.Bool // the last capture probe failed, so the next pass logs only a change
+	probePassed   atomic.Bool
+	gateReady     atomic.Bool
+	revision      atomic.Uint64 // the level revision read before the last published view
+	viewEndpoints atomic.Int64  // endpoints in the view the proxy admits by
+	probeFailed   atomic.Bool   // the last capture probe failed, so the next pass logs only a change
 }
 
 // reconcile is one node-local pass. A failed projection read withdraws the
@@ -86,9 +90,13 @@ func (l *endpointLoop) reconcile(ctx context.Context) (time.Duration, error) {
 	mgmt := l.mgmtIP()
 	l.probeGate(ctx, mgmt)
 
+	// Read before the endpoints, so an acknowledged revision means the view
+	// published after it was loaded once that revision was written.
+	rev, revErr := l.levelRevision(ctx)
 	endpoints, err := l.load(ctx)
 	if err != nil {
 		l.proxy.Invalidate()
+		l.viewEndpoints.Store(0)
 		return l.revisit(), fmt.Errorf("load gateway endpoints: %w", err)
 	}
 	entries := prefixlist.Entries(l.cluster, mgmt)
@@ -103,6 +111,12 @@ func (l *endpointLoop) reconcile(ctx context.Context) (time.Duration, error) {
 	// Published first, so a withdrawn endpoint's sessions close even if the
 	// rule change below fails.
 	l.proxy.Publish(view)
+	l.viewEndpoints.Store(int64(len(endpoints)))
+	if revErr != nil {
+		slog.WarnContext(ctx, "vpcd: feature level unreadable; endpoint proxy revision not advanced", "err", revErr)
+	} else {
+		l.revision.Store(rev)
+	}
 	if err := l.capture(ctx, want); err != nil {
 		return l.revisit(), fmt.Errorf("reconcile endpoint capture: %w", err)
 	}
@@ -134,7 +148,7 @@ func (l *endpointLoop) probeCapture(ctx context.Context) {
 // probeGate checks this node's own gate endpoint listener until it accepts the
 // proxy once. A node running no Predastore has no gate to wait for.
 func (l *endpointLoop) probeGate(ctx context.Context, mgmt string) {
-	if l.gateReady.Load() {
+	if l.gateReady.Load() || l.dialErr != nil {
 		return
 	}
 	if l.gate == nil {
@@ -170,6 +184,7 @@ func (l *endpointLoop) status(node string) projection.EndpointProxyStatus {
 		Node:        node,
 		Revision:    l.revision.Load(),
 		Sessions:    l.proxy.Sessions(),
+		Endpoints:   int(l.viewEndpoints.Load()),
 		ProbePassed: l.probePassed.Load(),
 		GateReady:   l.gateReady.Load(),
 	}
@@ -204,43 +219,25 @@ type statusRefusal struct {
 	Error string `json:"error"`
 }
 
-// watchFeatureLevel records the revision of every feature-level record version
-// this vpcd observes, re-opening the watch until ctx ends.
-func watchFeatureLevel(ctx context.Context, js jetstream.JetStream, observe func(rev uint64)) {
-	for ctx.Err() == nil {
-		if err := watchFeatureLevelOnce(ctx, js, observe); err != nil && ctx.Err() == nil {
-			slog.WarnContext(ctx, "vpcd: feature level watch unavailable, retrying", "err", err)
+// featureLevelRevision reads the feature-level record's revision; a record
+// never written is revision 0.
+func featureLevelRevision(js jetstream.JetStream) func(ctx context.Context) (uint64, error) {
+	return func(ctx context.Context) (uint64, error) {
+		kv, err := js.KeyValue(ctx, featureLevelBucket)
+		if errors.Is(err, jetstream.ErrBucketNotFound) {
+			return 0, nil
 		}
-		select {
-		case <-ctx.Done():
-		case <-time.After(featureLevelRewatch):
+		if err != nil {
+			return 0, fmt.Errorf("open %s: %w", featureLevelBucket, err)
 		}
-	}
-}
-
-func watchFeatureLevelOnce(ctx context.Context, js jetstream.JetStream, observe func(rev uint64)) error {
-	kv, err := js.KeyValue(ctx, featureLevelBucket)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", featureLevelBucket, err)
-	}
-	w, err := kv.Watch(ctx, featurelevel.Key)
-	if err != nil {
-		return fmt.Errorf("watch %s/%s: %w", featureLevelBucket, featurelevel.Key, err)
-	}
-	defer func() { _ = w.Stop() }()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case e, ok := <-w.Updates():
-			if !ok {
-				return errors.New("feature level watch closed")
-			}
-			// A nil entry marks the end of the initial values, not a change.
-			if e != nil {
-				observe(e.Revision())
-			}
+		e, err := kv.Get(ctx, featurelevel.Key)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return 0, nil
 		}
+		if err != nil {
+			return 0, fmt.Errorf("read %s/%s: %w", featureLevelBucket, featurelevel.Key, err)
+		}
+		return e.Revision(), nil
 	}
 }
 
@@ -339,11 +336,12 @@ func gateAccepts(dial guestmetadata.EndpointDialFunc) func(ctx context.Context, 
 // endpointSources are the buckets whose changes alter which subnets route to
 // an endpoint. Attach-only: vpcd reads them and never creates one.
 func endpointSources(js jetstream.JetStream) []reconciler.Source {
-	out := make([]reconciler.Source, 0, len(projection.EndpointBuckets))
+	out := make([]reconciler.Source, 0, len(projection.EndpointBuckets)+1)
 	for _, b := range projection.EndpointBuckets {
 		out = append(out, reconciler.Fixed(kvstore.NewBucket(js, kvstore.Config{Name: b, AttachOnly: true}), ">"))
 	}
-	return out
+	// A rollback writes the level record, and its drain waits on this pass.
+	return append(out, reconciler.Fixed(kvstore.NewBucket(js, kvstore.Config{Name: featureLevelBucket, AttachOnly: true}), featurelevel.Key))
 }
 
 // setupEndpointProxy builds the proxy and hands it to IMDS, which must not yet
@@ -354,10 +352,10 @@ func setupEndpointProxy(cfg *Config, js jetstream.JetStream, imds *guestmetadata
 		slog.Warn("vpcd: no cluster config; the gateway endpoint proxy is not served")
 		return nil, nil
 	}
-	dial, err := newEndpointDialer(cfg.NodeTLSCert, cfg.NodeTLSKey, cfg.CACert, projection.EndpointListenerPort)
-	if err != nil {
-		slog.Error("vpcd: endpoint proxy cannot present this node's certificate; every endpoint connection will be reset", "err", err)
-		dial = unavailableDialer(err)
+	dial, dialErr := newEndpointDialer(cfg.NodeTLSCert, cfg.NodeTLSKey, cfg.CACert, projection.EndpointListenerPort)
+	if dialErr != nil {
+		slog.Error("vpcd: endpoint proxy cannot present this node's certificate; every endpoint connection will be reset", "err", dialErr)
+		dial = unavailableDialer(dialErr)
 	}
 	proxy, err := guestmetadata.NewEndpointProxy(guestmetadata.EndpointProxyConfig{
 		Port:   host.EndpointProxyPort,
@@ -392,7 +390,9 @@ func setupEndpointProxy(cfg *Config, js jetstream.JetStream, imds *guestmetadata
 		load: func(ctx context.Context) (map[string]projection.GatewayEndpoint, error) {
 			return projection.LoadGatewayEndpoints(ctx, js)
 		},
-		proxy: proxy,
+		proxy:         proxy,
+		dialErr:       dialErr,
+		levelRevision: featureLevelRevision(js),
 	}
 	if cfg.Cluster.Nodes[cfg.Cluster.Node].HasService("predastore") {
 		l.gate = gateAccepts(dial)
@@ -403,7 +403,6 @@ func setupEndpointProxy(cfg *Config, js jetstream.JetStream, imds *guestmetadata
 // run drives the loop and serves its status until ctx ends. The returned
 // subscription is nil when the node name cannot be a subject token.
 func (l *endpointLoop) run(ctx context.Context, nc *nats.Conn, js jetstream.JetStream) (*nats.Subscription, error) {
-	go watchFeatureLevel(ctx, js, l.revision.Store)
 	// The node set is the config loaded at start, as the daemon's prefix list
 	// is, so no gossip signal exists to trigger on; the resync is the backstop.
 	go reconciler.Run(ctx, reconciler.Config{

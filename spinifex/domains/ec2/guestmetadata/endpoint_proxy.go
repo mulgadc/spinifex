@@ -100,6 +100,7 @@ type EndpointProxy struct {
 	mu       sync.Mutex
 	view     *endpointView // nil admits nothing
 	sessions map[*endpointSession]struct{}
+	handlers int // connections being admitted, dialled, relayed or closed
 	closed   bool
 	wg       sync.WaitGroup
 }
@@ -163,11 +164,13 @@ func (p *EndpointProxy) Invalidate() {
 	p.mu.Unlock()
 }
 
-// Sessions is the number of open proxied sessions.
+// Sessions is the number of guest connections not yet finished, counted from
+// accept until both sockets are closed, so a rollback never sees a pending
+// dial or a closing session as idle.
 func (p *EndpointProxy) Sessions() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return len(p.sessions)
+	return p.handlers
 }
 
 // currentView returns the view if one is published and not past its age.
@@ -188,8 +191,17 @@ func (p *EndpointProxy) track() bool {
 	if p.closed {
 		return false
 	}
+	p.handlers++
 	p.wg.Add(1)
 	return true
+}
+
+// untrack counts a handler out once its sockets are closed.
+func (p *EndpointProxy) untrack() {
+	p.mu.Lock()
+	p.handlers--
+	p.mu.Unlock()
+	p.wg.Done()
 }
 
 // register records s, re-checking the view under the lock, so a Publish that
@@ -261,7 +273,7 @@ func (p *EndpointProxy) serve(ctx context.Context, ln net.Listener, pinned *eniF
 			continue
 		}
 		go func() {
-			defer p.wg.Done()
+			defer p.untrack()
 			p.handle(ctx, c, pinned)
 		}()
 	}

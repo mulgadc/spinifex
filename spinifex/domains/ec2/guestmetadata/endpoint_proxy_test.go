@@ -245,7 +245,7 @@ func TestEndpointProxy_RefusedConnectionsAreReset(t *testing.T) {
 			h := newProxyHarness(t, noDial(t))
 			tt.prepare(h)
 			expectReset(t, h.addr)
-			assert.Zero(t, h.p.Sessions())
+			assert.Eventually(t, func() bool { return h.p.Sessions() == 0 }, 5*time.Second, 10*time.Millisecond)
 		})
 	}
 }
@@ -362,12 +362,42 @@ func TestEndpointProxy_PublishClosesSessionsTheViewNoLongerAdmits(t *testing.T) 
 				return
 			}
 			assert.Equal(t, 1, closed)
-			assert.Zero(t, h.p.Sessions())
+			assert.Eventually(t, func() bool { return h.p.Sessions() == 0 }, 5*time.Second, 10*time.Millisecond)
 			require.NoError(t, c.SetReadDeadline(time.Now().Add(5*time.Second)))
 			_, err = c.Read(make([]byte, 1))
 			assert.ErrorIs(t, err, syscall.ECONNRESET, "a withdrawn session is reset")
 		})
 	}
+}
+
+// A connection counts from accept until its handler has closed both sockets,
+// so a dial still in progress when its endpoint is withdrawn holds a rollback.
+func TestEndpointProxy_PendingDialCountsUntilItFinishes(t *testing.T) {
+	up := startUpstream(t)
+	release := make(chan struct{})
+	h := newProxyHarness(t, func(h *proxyHarness) EndpointDialFunc {
+		dial := up.dial(&h.dialed)
+		return func(ctx context.Context, addr netip.Addr) (net.Conn, error) {
+			<-release
+			return dial(ctx, addr)
+		}
+	})
+	h.p.Publish(testView())
+	c, err := net.Dial("tcp", h.addr)
+	require.NoError(t, err)
+	defer c.Close()
+	require.Eventually(t, func() bool { return h.p.Sessions() == 1 }, 5*time.Second, 10*time.Millisecond, "a dial in progress is not counted")
+
+	v := testView()
+	v.Endpoints = map[string]projection.GatewayEndpoint{}
+	assert.Zero(t, h.p.Publish(v), "no session was registered to close")
+	assert.Equal(t, 1, h.p.Sessions(), "a withdrawn dial still in progress reads as idle")
+
+	close(release)
+	require.NoError(t, c.SetReadDeadline(time.Now().Add(5*time.Second)))
+	_, err = c.Read(make([]byte, 1))
+	assert.ErrorIs(t, err, syscall.ECONNRESET, "a dial the view withdrew is reset")
+	assert.Eventually(t, func() bool { return h.p.Sessions() == 0 }, 5*time.Second, 10*time.Millisecond)
 }
 
 func TestEndpointProxy_ShutdownResetsSessionsAndRefusesNewOnes(t *testing.T) {
@@ -414,7 +444,7 @@ func TestTapResponder_StoppingATapResetsItsEndpointSessions(t *testing.T) {
 
 	m.reconcile(t.Context(), map[string]string{})
 
-	assert.Zero(t, h.p.Sessions(), "a gone tap keeps no session")
+	assert.Eventually(t, func() bool { return h.p.Sessions() == 0 }, 5*time.Second, 10*time.Millisecond, "a gone tap keeps no session")
 	_, err = net.DialTimeout("tcp", addr, time.Second)
 	assert.Error(t, err, "a gone tap keeps no proxy listener")
 }

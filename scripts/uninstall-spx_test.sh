@@ -172,6 +172,12 @@ for unit in $(sed -n '/^perms_units() {/,/^}/s/.*echo "\([a-z-]*\):.*/\1/p' "$SC
         && pass "removes the $unit perms drop-in" || fail "leaves the $unit perms drop-in"
 done
 
+# The SB PIDFile= override is removed, and a copy left behind fails the verify.
+sb_pidfile=/etc/systemd/system/ovn-ovsdb-server-sb.service.d/spinifex-pidfile.conf
+[ "$(grep -cF "$sb_pidfile" "$UNINSTALL")" -ge 2 ] \
+    && pass "removes the SB PIDFile override and verifies it is gone" \
+    || fail "does not both remove and verify $sb_pidfile"
+
 # --------------------------------------------------------------------------
 if [ "$fails" -gt 0 ]; then
     echo "  $fails check(s) failed"

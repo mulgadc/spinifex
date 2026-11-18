@@ -263,7 +263,7 @@ esac
 # OVN central options file and management role.
 # --------------------------------------------------------------------------
 # The functions run on their own against scratch paths, through the stub sudo.
-for fn in write_ovn_central_opts record_management_role management_role_markers cap_logrotate perms_units; do
+for fn in write_ovn_central_opts record_management_role management_role_markers cap_logrotate perms_units sb_pidfile_override_needed; do
     awk -v f="$fn() {" '$0 == f { on = 1 } on { print } on && $0 == "}" { exit }' "$SETUP" >>"$TMP/ovn_fn.sh"
 done
 
@@ -329,6 +329,23 @@ mgmt_head=$(awk '/^if \[ "\$MANAGEMENT" = true \]; then/ { on = 1 } on && /^    
 case "$mgmt_head" in
     *"no-manage-ovsdb.conf"*) pass "northd: the ExecStop override is written for standalone and clustered DBs" ;;
     *) fail "northd: the ExecStop override is written only on the clustered branch" ;;
+esac
+
+# The packaged SB unit's PIDFile= names a file nothing writes, so with the perms
+# hook a restart waits for it until the start times out.
+for c in "simple /run/run/ovn/ovnsb_db.pid 0" "simple /run/ovn/ovnsb_db.pid 1" "simple '' 1" "forking /run/run/ovn/ovnsb_db.pid 1"; do
+    eval "set -- $c"
+    ovn_fn sb_pidfile_override_needed "$1" "$2"
+    if [ "$RC" = "$3" ]; then pass "sb pidfile: Type=$1 PIDFile='$2' gives rc=$3"; else fail "sb pidfile: Type=$1 PIDFile='$2' gave rc=$RC"; fi
+done
+
+# Before any DB restart, and with our override removed and reloaded before the
+# unit is read, or a re-run reads its own empty PIDFile= and drops the override.
+sb_order=$(printf '%s\n' "$mgmt_head" | grep -nE 'rm -f "\$SB_PIDFILE_OVERRIDE"|systemctl daemon-reload|systemctl show -p (Type|PIDFile) --value ovn-ovsdb-server-sb' | cut -d: -f2- | sed -E 's/^ +//' | sed -n '/rm -f/,$p' | head -3)
+case "$sb_order" in
+    'sudo rm -f "$SB_PIDFILE_OVERRIDE"'*'sudo systemctl daemon-reload'*'systemctl show -p Type --value ovn-ovsdb-server-sb'*)
+        pass "sb pidfile: the override is cleared and reloaded before the unit is read, ahead of any DB restart" ;;
+    *) fail "sb pidfile: management block order is: $sb_order" ;;
 esac
 
 # --------------------------------------------------------------------------

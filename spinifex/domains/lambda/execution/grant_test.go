@@ -11,6 +11,7 @@ import (
 
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -26,7 +27,12 @@ func (c *clock) add(d time.Duration) { c.mu.Lock(); c.t = c.t.Add(d); c.mu.Unloc
 func newStore(t *testing.T) (*Store, *clock) {
 	t.Helper()
 	_, nc, _ := testutil.StartTestJetStream(t)
-	s, err := Open(context.Background(), testutil.NewJetStream(t, nc))
+	return newStoreOn(t, testutil.NewJetStream(t, nc))
+}
+
+func newStoreOn(t *testing.T, js jetstream.JetStream) (*Store, *clock) {
+	t.Helper()
+	s, err := Open(context.Background(), js)
 	require.NoError(t, err)
 	c := &clock{t: time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)}
 	s.now = c.now
@@ -373,4 +379,30 @@ func TestGrant_LaunchedRecordsACompleteIdentityOnce(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, rec.Launch)
 	require.Equal(t, l, *rec.Launch)
+}
+
+// Attach never creates the bucket; once it exists, the leader read and the
+// node listing report the latest attempt and every node with a record.
+func TestAttach_LeaderReadsTheLatestAttemptAndListsNodes(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	js := testutil.NewJetStream(t, nc)
+	_, err := Attach(context.Background(), js)
+	require.ErrorIs(t, err, jetstream.ErrBucketNotFound)
+	s, c := newStoreOn(t, js)
+	a := started(t, s, c, "a1")
+	ro, err := Attach(context.Background(), js)
+	require.NoError(t, err)
+
+	cur, err := ro.LeaderCurrent(context.Background(), "node1")
+	require.NoError(t, err)
+	assert.Equal(t, StateRunning, cur.State)
+	require.NoError(t, s.Ambiguous(context.Background(), a.Grant))
+	cur, err = ro.LeaderCurrent(context.Background(), "node1")
+	require.NoError(t, err)
+	assert.Equal(t, StateAmbiguous, cur.State)
+	_, err = ro.LeaderCurrent(context.Background(), "node2")
+	require.ErrorIs(t, err, ErrNotCurrent)
+	nodes, err := ro.Nodes(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"node1"}, nodes)
 }

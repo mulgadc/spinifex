@@ -33,7 +33,7 @@ func TestLockMgmtLaunchDir_SecondDaemonOnTheSameStateFails(t *testing.T) {
 	t.Cleanup(func() { _ = first.mgmtLaunchLock.Close() })
 	err := second.lockMgmtLaunchDir()
 
-	require.ErrorIs(t, err, errMgmtLaunchLocked)
+	require.ErrorIs(t, err, ErrMgmtLaunchLocked)
 	assert.Nil(t, second.mgmtLaunchLock)
 }
 

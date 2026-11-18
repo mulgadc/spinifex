@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -402,4 +403,58 @@ func KnownInstanceIDs(ctx context.Context, js jetstream.JetStream) (map[string]b
 		_ = lister.Stop()
 	}
 	return ids, nil
+}
+
+// InstanceMgmtIP is an instance record's claim on a management address.
+type InstanceMgmtIP struct {
+	InstanceID string
+	MgmtIP     string
+	Node       string
+}
+
+// ErrInstanceStateAbsent reports that the instance-state bucket does not exist.
+var ErrInstanceStateAbsent = errors.New("instance-state bucket does not exist")
+
+// legacyInstanceRecordPrefix is the key space records used before re-keying.
+const legacyInstanceRecordPrefix = "i/"
+
+// InstanceMgmtIPs lists every instance record naming a management address,
+// from a complete key listing and leader reads, so a partial or lagging view
+// is an error rather than a shorter list.
+func InstanceMgmtIPs(ctx context.Context, js jetstream.JetStream) ([]InstanceMgmtIP, error) {
+	kv, err := js.KeyValue(ctx, InstanceStateBucket)
+	if errors.Is(err, jetstream.ErrBucketNotFound) {
+		return nil, ErrInstanceStateAbsent
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", InstanceStateBucket, err)
+	}
+	keys, err := kvstore.CompleteKeys(ctx, kv)
+	if err != nil {
+		return nil, fmt.Errorf("list %s: %w", InstanceStateBucket, err)
+	}
+	var out []InstanceMgmtIP
+	for _, key := range keys {
+		id, ok := strings.CutPrefix(key, InstanceRecordPrefix)
+		if !ok {
+			if id, ok = strings.CutPrefix(key, legacyInstanceRecordPrefix); !ok {
+				continue
+			}
+		}
+		raw, _, err := kvstore.LeaderValue(ctx, js, InstanceStateBucket, key)
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read instance record %s: %w", key, err)
+		}
+		var rec vm.InstanceRecord
+		if err := json.Unmarshal(raw, &rec); err != nil {
+			return nil, fmt.Errorf("decode instance record %s: %w", key, err)
+		}
+		if rec.Status.MgmtIP != "" {
+			out = append(out, InstanceMgmtIP{InstanceID: id, MgmtIP: rec.Status.MgmtIP, Node: rec.Status.LastNode})
+		}
+	}
+	return out, nil
 }

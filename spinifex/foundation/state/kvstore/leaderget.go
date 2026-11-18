@@ -3,6 +3,7 @@ package kvstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -70,6 +71,26 @@ func LeaderMsgGet(ctx context.Context, js jetstream.JetStream, stream string, se
 		Header: hdr, Data: resp.Message.Data, Time: resp.Message.Time,
 	}, nil
 }
+
+// LeaderValue reads a key's current value from the stream leader. A key that
+// is missing, deleted, purged or removed by a server marker is
+// jetstream.ErrKeyNotFound. The revision is the stream sequence.
+func LeaderValue(ctx context.Context, js jetstream.JetStream, bucket, key string) ([]byte, uint64, error) {
+	msg, err := LeaderMsgGet(ctx, js, "KV_"+bucket, MsgGetRequest{LastFor: "$KV." + bucket + "." + key})
+	if errors.Is(err, jetstream.ErrMsgNotFound) {
+		return nil, 0, fmt.Errorf("%w: %s", jetstream.ErrKeyNotFound, key)
+	}
+	if err != nil {
+		return nil, 0, fmt.Errorf("kvstore: leader get %s: %w", key, err)
+	}
+	if op := msg.Header.Get(kvOperationHeader); op == "DEL" || op == "PURGE" || msg.Header.Get(markerReasonHeader) != "" {
+		return nil, 0, fmt.Errorf("%w: %s", jetstream.ErrKeyNotFound, key)
+	}
+	return msg.Data, msg.Sequence, nil
+}
+
+// markerReasonHeader is set on a delete marker the server writes itself.
+const markerReasonHeader = "Nats-Marker-Reason"
 
 // APIPrefix is the request prefix nats.go itself uses for js.
 func APIPrefix(o jetstream.JetStreamOptions) string {

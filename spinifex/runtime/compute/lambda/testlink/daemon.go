@@ -411,7 +411,7 @@ func (d *Daemon) run(ctx context.Context, req Request, code []byte, lib *os.File
 		return refused("management address unavailable"), false, marker
 	}
 	a.ip = true
-	tapName := "lm" + req.AttemptID
+	tapName := execution.TapName(req.AttemptID)
 	a.tap, err = d.Taps.CreateOwnedTap(vm.TapSpec{Name: tapName, Bridge: d.Bridge, MTU: d.MTU}, a.id)
 	if err != nil {
 		slog.Error("Lambda test link: guest tap", "attempt", req.AttemptID, "err", err)

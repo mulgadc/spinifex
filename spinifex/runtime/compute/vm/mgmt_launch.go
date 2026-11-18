@@ -468,6 +468,33 @@ func (m *Manager) InitMgmtLaunch(instance *VM) error {
 	return nil
 }
 
+// RecordStoppedMgmtLaunch writes an exited first record for a legacy guest the
+// operator attests is stopped with its old launchers quiesced. A record for the
+// same node and address is kept; one naming another node or address refuses.
+func RecordStoppedMgmtLaunch(dir, node, instanceID, ip string) (written bool, err error) {
+	rec, err := readMgmtLaunch(dir, instanceID)
+	if err == nil {
+		if rec.Node != node || rec.MgmtIP != ip {
+			return false, fmt.Errorf("%w: %s at %s on %s", errMgmtLaunchMismatch, instanceID, rec.MgmtIP, rec.Node)
+		}
+		return false, nil
+	}
+	if !errors.Is(err, errMgmtLaunchMissing) {
+		return false, err
+	}
+	boot, err := mgmtBootID()
+	if err != nil {
+		return false, fmt.Errorf("read boot id: %w", err)
+	}
+	if err := writeMgmtLaunch(dir, &mgmtLaunchRecord{
+		Schema: mgmtLaunchSchema, InstanceID: instanceID, Node: node,
+		MgmtIP: ip, BootID: boot, Generation: 1, State: MgmtLaunchExited,
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // bindMgmtLaunch binds an object loaded from saved state to its instance's
 // current launch. Restore calls it before anything can launch a replacement.
 func (m *Manager) bindMgmtLaunch(instance *VM) {

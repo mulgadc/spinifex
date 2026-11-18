@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -196,6 +197,37 @@ func Keys(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
 		return nil, ctxErr
 	}
 	return keys, err
+}
+
+// ErrIncompleteListing reports a key listing that ended before the bucket's
+// initial snapshot had been delivered in full.
+var ErrIncompleteListing = errors.New("kvstore: key listing ended before the snapshot completed")
+
+// CompleteKeys lists a bucket's live keys only once the watcher marks the end
+// of its initial snapshot. A channel that closes, or a context that ends, first
+// is ErrIncompleteListing, never a shorter list.
+func CompleteKeys(ctx context.Context, kv jetstream.KeyValue) ([]string, error) {
+	w, err := kv.WatchAll(ctx, jetstream.IgnoreDeletes(), jetstream.MetaOnly())
+	if err != nil {
+		return nil, fmt.Errorf("watch keys: %w", err)
+	}
+	defer func() { _ = w.Stop() }()
+	var keys []string
+	for {
+		select {
+		case e, ok := <-w.Updates():
+			if !ok {
+				return nil, ErrIncompleteListing
+			}
+			if e == nil {
+				slices.Sort(keys)
+				return slices.Compact(keys), nil
+			}
+			keys = append(keys, e.Key())
+		case <-ctx.Done():
+			return nil, fmt.Errorf("%w: %w", ErrIncompleteListing, ctx.Err())
+		}
+	}
 }
 
 // WriteVersion writes the schema version to a bucket, only if missing or older.

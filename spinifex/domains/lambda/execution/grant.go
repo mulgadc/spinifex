@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
@@ -21,6 +22,9 @@ import (
 const KVBucket = "lambda-execution"
 
 const formatVersion = 1
+
+// TapName is the host tap the Lambda test link creates for an attempt.
+func TapName(attemptID string) string { return "lm" + attemptID }
 
 // Attempt states. The attempt lives in its node's record, and every change is
 // a conditional write on that one key, so a start, a withdrawal and the next
@@ -125,6 +129,7 @@ type nodeRecord struct {
 // Store is the only writer of node records.
 type Store struct {
 	kv  jetstream.KeyValue
+	js  jetstream.JetStream
 	now func() time.Time
 	// beforeWrite runs between a read and its conditional write; tests use it.
 	beforeWrite func()
@@ -139,7 +144,34 @@ func Open(ctx context.Context, js jetstream.KeyValueManager) (*Store, error) {
 	return &Store{kv: kv, now: time.Now}, nil
 }
 
-func nodeKey(node string) string { return "node." + node }
+const nodeKeyPrefix = "node."
+
+func nodeKey(node string) string { return nodeKeyPrefix + node }
+
+// Attach opens the existing execution bucket and never creates it.
+func Attach(ctx context.Context, js jetstream.JetStream) (*Store, error) {
+	kv, err := js.KeyValue(ctx, KVBucket)
+	if err != nil {
+		return nil, fmt.Errorf("execution: attach bucket: %w", err)
+	}
+	return &Store{kv: kv, js: js, now: time.Now}, nil
+}
+
+// Nodes lists every node that has a record, including former members, and
+// fails rather than return a partial list.
+func (s *Store) Nodes(ctx context.Context) ([]string, error) {
+	keys, err := kvstore.CompleteKeys(ctx, s.kv)
+	if err != nil {
+		return nil, fmt.Errorf("execution: list node records: %w", err)
+	}
+	var nodes []string
+	for _, key := range keys {
+		if node, ok := strings.CutPrefix(key, nodeKeyPrefix); ok {
+			nodes = append(nodes, node)
+		}
+	}
+	return nodes, nil
+}
 
 // Issue records a new attempt and its grant before anything is dispatched.
 // It succeeds only if the node's current attempt ended, was withdrawn, or
@@ -343,12 +375,43 @@ func (s *Store) read(ctx context.Context, node string) (nodeRecord, uint64, erro
 	if err != nil {
 		return nodeRecord{}, 0, fmt.Errorf("execution: read node record: %w", err)
 	}
-	var rec nodeRecord
-	if err := json.Unmarshal(e.Value(), &rec); err != nil || rec.FormatVersion != formatVersion || rec.Seq == 0 ||
-		(rec.Attempt != nil && (rec.Attempt.Grant.Node != node || rec.Attempt.Grant.Seq != rec.Seq)) {
-		return nodeRecord{}, 0, ErrUnknownRecord
+	rec, err := decodeNodeRecord(node, e.Value())
+	if err != nil {
+		return nodeRecord{}, 0, err
 	}
 	return rec, e.Revision(), nil
+}
+
+func decodeNodeRecord(node string, raw []byte) (nodeRecord, error) {
+	var rec nodeRecord
+	if err := json.Unmarshal(raw, &rec); err != nil || rec.FormatVersion != formatVersion || rec.Seq == 0 ||
+		(rec.Attempt != nil && (rec.Attempt.Grant.Node != node || rec.Attempt.Grant.Seq != rec.Seq)) {
+		return nodeRecord{}, ErrUnknownRecord
+	}
+	return rec, nil
+}
+
+// LeaderCurrent is Current answered by the stream leader, so a lagging
+// replica's older attempt cannot hide a newer one. Only Attach provides it.
+func (s *Store) LeaderCurrent(ctx context.Context, node string) (Attempt, error) {
+	if s.js == nil {
+		return Attempt{}, errors.New("execution: no JetStream client for a leader read")
+	}
+	raw, _, err := kvstore.LeaderValue(ctx, s.js, KVBucket, nodeKey(node))
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return Attempt{}, ErrNotCurrent
+	}
+	if err != nil {
+		return Attempt{}, fmt.Errorf("execution: read node record: %w", err)
+	}
+	rec, err := decodeNodeRecord(node, raw)
+	if err != nil {
+		return Attempt{}, err
+	}
+	if rec.Attempt == nil {
+		return Attempt{}, ErrNotCurrent
+	}
+	return *rec.Attempt, nil
 }
 
 func (s *Store) create(ctx context.Context, node string, rec nodeRecord) error {

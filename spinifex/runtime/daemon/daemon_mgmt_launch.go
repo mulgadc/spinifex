@@ -13,9 +13,12 @@ import (
 // mgmtLaunchDirName holds each system VM's launch record under the data dir.
 const mgmtLaunchDirName = "mgmt-launch"
 
-func (d *Daemon) mgmtLaunchDir() string {
-	return filepath.Join(DataDirOrDefault(d.config.DataDir), mgmtLaunchDirName)
+// MgmtLaunchDir is where a node keeps its system VMs' launch records.
+func MgmtLaunchDir(dataDir string) string {
+	return filepath.Join(DataDirOrDefault(dataDir), mgmtLaunchDirName)
 }
+
+func (d *Daemon) mgmtLaunchDir() string { return MgmtLaunchDir(d.config.DataDir) }
 
 // mgmtLaunchDeps wires launch identity only when this node's allocator uses
 // the durable record; otherwise the cleaner releases addresses as before.
@@ -26,29 +29,39 @@ func (d *Daemon) mgmtLaunchDeps() vm.MgmtLaunchDeps {
 	return vm.MgmtLaunchDeps{Dir: d.mgmtLaunchDir(), Addresses: mgmtLaunchAddresses{a: d.mgmtIPAllocator}}
 }
 
-var errMgmtLaunchLocked = errors.New("another daemon holds this node's management launch records")
+// ErrMgmtLaunchLocked reports that another process holds the launch records.
+var ErrMgmtLaunchLocked = errors.New("another daemon holds this node's management launch records")
 
 // lockMgmtLaunchDir takes the exclusive lock that keeps a second daemon on
 // this state directory from launching or releasing alongside this one. It is
 // held until the process exits; it does not fence other hosts.
 func (d *Daemon) lockMgmtLaunchDir() error {
-	dir := d.mgmtLaunchDir()
+	f, err := LockMgmtLaunchDir(d.mgmtLaunchDir())
+	if err != nil {
+		return err
+	}
+	d.mgmtLaunchLock = f
+	return nil
+}
+
+// LockMgmtLaunchDir takes the launch records' exclusive lock without waiting.
+// The lock lasts until the returned file is closed.
+func LockMgmtLaunchDir(dir string) (*os.File, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create management launch dir: %w", err)
+		return nil, fmt.Errorf("create management launch dir: %w", err)
 	}
 	f, err := os.OpenFile(filepath.Join(dir, ".lock"), os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
-		return fmt.Errorf("open management launch lock: %w", err)
+		return nil, fmt.Errorf("open management launch lock: %w", err)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return fmt.Errorf("%w: %s", errMgmtLaunchLocked, dir)
+			return nil, fmt.Errorf("%w: %s", ErrMgmtLaunchLocked, dir)
 		}
-		return fmt.Errorf("lock management launch dir: %w", err)
+		return nil, fmt.Errorf("lock management launch dir: %w", err)
 	}
-	d.mgmtLaunchLock = f
-	return nil
+	return f, nil
 }
 
 // recordNewMgmtLaunch writes a new system VM's first launch record once its

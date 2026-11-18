@@ -22,6 +22,9 @@ import (
 // never contend on the same key.
 const mgmtIPAMKeyPrefix = "mgmt-ipam."
 
+// MgmtIPAMLegacyKey is the cluster-state key of a subnet's legacy record.
+func MgmtIPAMLegacyKey(subnet string) string { return mgmtIPAMKeyPrefix + subnet }
+
 // mgmtCASOuterRetries bounds the outer retry loop Allocate/Release/Rebuild
 // wrap around UpdateMgmtIPAM. casUpdate already retries a revision conflict
 // internally (maxCASRetries), but that window only absorbs one overlapping

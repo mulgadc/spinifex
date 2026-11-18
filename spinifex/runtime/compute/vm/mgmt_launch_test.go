@@ -939,3 +939,37 @@ func TestMgmtLaunch_RecordForAnotherNodeOrAddressHolds(t *testing.T) {
 		})
 	}
 }
+
+// A legacy guest the operator attested stopped gets an exited first record, so
+// a customer start can claim its address and launch generation 2.
+func TestMgmtLegacyStopped_AttestedRecordLetsTheStartProceed(t *testing.T) {
+	r := newMgmtRig(t)
+	calls := 0
+
+	written, err := RecordStoppedMgmtLaunch(r.dir, mgmtTestNode, "i-legacy", mgmtTestIP)
+	require.NoError(t, err)
+	require.True(t, written)
+	require.NoError(t, r.m.startGuestQEMU(mgmtVM("i-legacy"), r.starter(t, 700, 2, &calls), true))
+
+	assert.Equal(t, 1, calls)
+	assert.Equal(t, uint64(2), r.record(t, "i-legacy").Generation)
+	assert.Equal(t, "i-legacy", r.addrs.held[mgmtTestIP])
+}
+
+// An existing record keeps its generation; one for another node or address
+// is refused and left as it was.
+func TestMgmtLegacyStopped_ExistingRecordIsKeptOrRefused(t *testing.T) {
+	r := newMgmtRig(t)
+	r.put(t, mgmtLaunchRecord{InstanceID: "i-kept", Generation: 5, State: MgmtLaunchRunning, PID: 500, StartTime: 9})
+	r.put(t, mgmtLaunchRecord{InstanceID: "i-moved", Node: "node-other", Generation: 2, State: MgmtLaunchExited})
+
+	written, err := RecordStoppedMgmtLaunch(r.dir, mgmtTestNode, "i-kept", mgmtTestIP)
+	require.NoError(t, err)
+	assert.False(t, written)
+	_, err = RecordStoppedMgmtLaunch(r.dir, mgmtTestNode, "i-moved", mgmtTestIP)
+	require.ErrorIs(t, err, errMgmtLaunchMismatch)
+
+	assert.Equal(t, uint64(5), r.record(t, "i-kept").Generation)
+	assert.Equal(t, MgmtLaunchRunning, r.record(t, "i-kept").State)
+	assert.Equal(t, "node-other", r.record(t, "i-moved").Node)
+}

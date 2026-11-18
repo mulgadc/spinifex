@@ -366,7 +366,7 @@ func (m *igwManager) RebindGatewayIP(ctx context.Context, vpcID, newIP string, p
 		return err
 	}
 	if err := m.barrier(); err != nil {
-		return fmt.Errorf("flows barrier after rebinding %s: %w", gwPortName, err)
+		slog.Warn("external: flows barrier after gateway rebind failed", "vpc_id", vpcID, "gw_port", gwPortName, "err", err)
 	}
 	slog.Warn("external: gateway LRP rebound after DHCP lease moved",
 		"vpc_id", vpcID, "gw_port", gwPortName, "old_networks", oldNetworks, "new_network", network)

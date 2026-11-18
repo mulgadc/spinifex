@@ -119,13 +119,6 @@ func deleteAt(ctx context.Context, kv jetstream.KeyValue, key string, rev uint64
 	return fmt.Errorf("delete %s: %w", key, err)
 }
 
-func deleteKey(ctx context.Context, kv jetstream.KeyValue, key string) error {
-	if err := kv.Delete(ctx, key); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
-		return fmt.Errorf("delete %s: %w", key, err)
-	}
-	return nil
-}
-
 // listKeys returns the keys under prefix, which ends in ".".
 func listKeys(ctx context.Context, kv jetstream.KeyValue, prefix string) ([]string, error) {
 	lister, err := kv.ListKeysFiltered(ctx, prefix+"*")

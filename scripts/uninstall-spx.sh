@@ -369,6 +369,7 @@ rm_path /etc/systemd/system/openvswitch-switch.service.d/spinifex-perms.conf \
         /etc/systemd/system/ovn-northd.service.d/no-manage-ovsdb.conf \
         /etc/systemd/system/ovn-ovsdb-server-nb.service.d/spinifex-perms.conf \
         /etc/systemd/system/ovn-ovsdb-server-sb.service.d/spinifex-perms.conf \
+        /etc/systemd/system/ovn-ovsdb-server-sb.service.d/spinifex-pidfile.conf \
         /etc/systemd/system/ipsec.service.d/spinifex-guard.conf
 # Only if we emptied them — another package may own the same override dir.
 for d in openvswitch-switch ovs-vswitchd ovn-controller openvswitch-ipsec ovn-northd ovn-ovsdb-server-nb ovn-ovsdb-server-sb ipsec; do
@@ -633,6 +634,7 @@ if ! $DRY_RUN; then
              /etc/NetworkManager/conf.d/*spinifex* \
              /etc/systemd/system/*.service.d/spinifex-perms.conf \
              /etc/systemd/system/ovn-northd.service.d/no-manage-ovsdb.conf \
+             /etc/systemd/system/ovn-ovsdb-server-sb.service.d/spinifex-pidfile.conf \
              /etc/systemd/system/ipsec.service.d/spinifex-guard.conf \
              /etc/systemd/system/ovn-controller.service.d/log-level.conf; do
         exists "$p" && LEFT+=("$p")

@@ -891,6 +891,13 @@ perms_units() {
     esac
 }
 
+# sb_pidfile_override_needed <type> <pidfile> — true for a Type=simple SB unit
+# whose PIDFile= is not the file ovn-ctl writes. With an ExecStartPost, systemd
+# waits for that file until the start times out and kills the server.
+sb_pidfile_override_needed() {
+    [ "$1" = simple ] && [ -n "$2" ] && [ "$2" != /run/ovn/ovnsb_db.pid ]
+}
+
 # management_role_markers — prints each file recording that a previous run set
 # this node up with --management, one per line; returns 1 when there is none.
 management_role_markers() {
@@ -979,7 +986,17 @@ if [ "$MANAGEMENT" = true ]; then
 ExecStop=
 ExecStop=/usr/share/ovn/scripts/ovn-ctl stop_northd --no-monitor --ovn-manage-ovsdb=no
 EOF
+        # Written before any DB restart, as Step 8's perms hook may already be on
+        # SB. Our override is dropped first so the packaged values are what's read.
+        SB_PIDFILE_OVERRIDE=/etc/systemd/system/ovn-ovsdb-server-sb.service.d/spinifex-pidfile.conf
+        sudo rm -f "$SB_PIDFILE_OVERRIDE"
         sudo systemctl daemon-reload
+        if sb_pidfile_override_needed "$(systemctl show -p Type --value ovn-ovsdb-server-sb.service)" \
+            "$(systemctl show -p PIDFile --value ovn-ovsdb-server-sb.service)"; then
+            sudo mkdir -p "$(dirname "$SB_PIDFILE_OVERRIDE")"
+            printf '[Service]\nPIDFile=\n' | sudo tee "$SB_PIDFILE_OVERRIDE" >/dev/null
+            sudo systemctl daemon-reload
+        fi
     fi
 
     if [ -n "$DB_CLUSTER_LOCAL_ADDR" ]; then

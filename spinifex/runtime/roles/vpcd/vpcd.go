@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/guestmetadata"
 	ec2igw "github.com/mulgadc/spinifex/spinifex/domains/ec2/igw"
 	ec2vpcpeering "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcpeering"
@@ -198,6 +199,16 @@ type Config struct {
 	// OpenInstanceRecords opens the shared instance record space over vpcd's
 	// NATS connection. Required: vpcd fails to start without it.
 	OpenInstanceRecords func(ctx context.Context, nc *nats.Conn) (guestmetadata.RecordLoader, error)
+	// Cluster is the node set loaded at start, from which the gateway endpoint
+	// prefix list derives as the daemon's does. Nil serves no endpoint proxy.
+	Cluster *config.ClusterConfig
+	// MgmtBridge is the management bridge whose address joins this node's
+	// prefix-list entry; empty is br-mgmt.
+	MgmtBridge string
+	// NodeTLSCert and NodeTLSKey are this node's certificate, which the
+	// endpoint proxy presents to a gate's endpoint listener.
+	NodeTLSCert string
+	NodeTLSKey  string
 }
 
 // Service implements the Spinifex service interface for vpcd.
@@ -628,6 +639,10 @@ func launchService(cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("construct IMDS service: %w", err)
 	}
+	endpoints, err := setupEndpointProxy(cfg, js, imdsSvc)
+	if err != nil {
+		return err
+	}
 	go func() {
 		if err := imdsSvc.Run(imdsCtx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Error("vpcd: IMDS service exited", "err", err)
@@ -842,6 +857,18 @@ func launchService(cfg *Config) error {
 	// Host MSS clamp for peers behind NAT that never receive gateway_mtu's ICMP;
 	// physical uplinks have no host hop, so the loop only clears a stale table.
 	go runMSSClampLoop(loopCtx, host.NewExecRunner(), uplinkMode, topology.GatewayMTU(cfg.UnderlayMTU, cfg.IPSecEnabled))
+
+	// Gateway endpoint capture, proxy view and status, on every node: the
+	// capture rules and the proxy serve this host's own guests.
+	if endpoints != nil {
+		statusSub, err := endpoints.run(loopCtx, nc, js)
+		if err != nil {
+			return err
+		}
+		if statusSub != nil {
+			defer func() { _ = statusSub.Unsubscribe() }()
+		}
+	}
 
 	slog.Info("vpcd service started, waiting for VPC lifecycle events",
 		"subscriptions", len(subs))

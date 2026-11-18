@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -786,6 +787,15 @@ func checkLegacyWanBridgeKey(node, cfgFile string) error {
 	)
 }
 
+// configRelativePath resolves a relative certificate path against the config
+// file's directory, as the daemon resolves the same keys.
+func configRelativePath(cfgFile, path string) string {
+	if path == "" || filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(filepath.Dir(cfgFile), filepath.Base(path))
+}
+
 var vpcdStartCmd = &cobra.Command{
 	Use:           "start",
 	Short:         "Start the vpcd service",
@@ -882,6 +892,10 @@ var vpcdStartCmd = &cobra.Command{
 			IMDSHostDNSIP:           clusterConfig.Network.IMDSHostDNSIP,
 			LocalVMs:                state.NewLocalVMReader(nodeConfig.DataDir),
 			OpenInstanceRecords:     state.OpenInstanceRecordLoader,
+			Cluster:                 clusterConfig,
+			MgmtBridge:              nodeConfig.Daemon.MgmtBridge,
+			NodeTLSCert:             configRelativePath(cfgFile, nodeConfig.Daemon.TLSCert),
+			NodeTLSKey:              configRelativePath(cfgFile, nodeConfig.Daemon.TLSKey),
 		})
 		if err != nil {
 			return fmt.Errorf("create vpcd service: %w", err)

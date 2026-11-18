@@ -532,6 +532,50 @@ func TestLaunchSystemInstance_MgmtNIC(t *testing.T) {
 	}
 }
 
+// A node with no management allocator or bridge skips the allocation block, so
+// a guest that is reachable only over that NIC has to be refused after it.
+func TestLaunchSystemInstance_RequiredMgmtNICWithoutAllocatorFails(t *testing.T) {
+	cases := []struct {
+		name     string
+		scheme   string
+		bridgeIP string
+		alloc    bool
+		wantErr  bool
+	}{
+		{name: "internal, no allocator", scheme: elbv2domain.SchemeInternal, bridgeIP: "10.93.8.1", wantErr: true},
+		{name: "internal, no bridge", scheme: elbv2domain.SchemeInternal, alloc: true, wantErr: true},
+		{name: "internet-facing, no allocator", bridgeIP: "10.93.8.1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSysInstFixture(t)
+			d := f.d
+			sysInstLaunchRuns(d)
+			d.mgmtBridgeIP = tc.bridgeIP
+			d.mgmtIPAllocator = nil
+			if tc.alloc {
+				d.mgmtIPAllocator = sysInstMgmtAllocator(t, "10.93.8.1")
+			}
+
+			in := f.input(f.newENI(t))
+			in.Scheme = tc.scheme
+			in.NICs = append(in.NICs, elbv2domain.NICConfig{})
+
+			out, err := d.LaunchSystemInstance(in)
+			if !tc.wantErr {
+				require.NoError(t, err)
+				v, ok := d.vmMgr.Get(out.InstanceID)
+				require.True(t, ok)
+				assert.Empty(t, v.MgmtIP)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "internal-scheme ALB: no mgmt NIC on this node")
+			assert.Nil(t, out)
+		})
+	}
+}
+
 func TestLaunchSystemInstance_ConfigAndRun(t *testing.T) {
 	f := newSysInstFixture(t)
 	d := f.d

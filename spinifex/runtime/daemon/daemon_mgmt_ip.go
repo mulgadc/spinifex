@@ -375,16 +375,25 @@ func (a *MgmtIPAllocator) release(instanceID string, requireOwner bool) (ip, for
 // gets one for the address the instance already carries, because that address is
 // in use on the segment whether or not anything wrote it down.
 func (a *MgmtIPAllocator) Claim(instanceID, mgmtIP string) {
+	if err := a.ClaimChecked(instanceID, mgmtIP); err != nil {
+		slog.Error("Management IP claim refused", "instance", instanceID, "ip", mgmtIP, "err", err)
+	}
+}
+
+// ClaimChecked is Claim for a caller that must not proceed on a refused claim.
+// Only durable mode can refuse; the legacy record has no acknowledged claim.
+func (a *MgmtIPAllocator) ClaimChecked(instanceID, mgmtIP string) error {
 	if instanceID == "" || mgmtIP == "" {
-		return
+		return nil
 	}
 	if a.isDurable() {
-		if err := a.confirmDurable(instanceID, mgmtIP); err != nil {
-			slog.Error("Management IP claim refused", "instance", instanceID, "ip", mgmtIP, "err", err)
-		}
-		return
+		return a.confirmDurable(instanceID, mgmtIP)
 	}
+	a.claimLegacy(instanceID, mgmtIP)
+	return nil
+}
 
+func (a *MgmtIPAllocator) claimLegacy(instanceID, mgmtIP string) {
 	a.mu.Lock()
 	a.allocated[instanceID] = mgmtIP
 	jsManager, node, subnet := a.jsManager, a.node, a.subnet

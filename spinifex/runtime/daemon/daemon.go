@@ -2566,19 +2566,18 @@ func (d *Daemon) startCluster() error {
 
 	d.waitForClusterReady()
 	d.upgradeJetStreamReplicas()
+
+	// A durable record is bound before restore, so a relaunch's claim is checked
+	// against it rather than refused as unbound.
+	durableMgmt := d.mgmtIPAllocator != nil && d.mgmtIPAllocator.isDurable()
+	if durableMgmt {
+		d.bindMgmtIPAllocator()
+	}
 	if err := d.restoreInstances(); err != nil {
 		return fmt.Errorf("restore instances: %w", err)
 	}
-
-	// Bind the mgmt IP allocator to cluster KV now that JetStream is up (DDIL
-	// §1e-audit: startLocal built it KV-less). Rebuild then reconciles this
-	// node's already-running VMs into the cluster-wide record instead of
-	// just refreshing the local cache, so already-allocated IPs aren't
-	// reused by another node either.
-	if d.mgmtIPAllocator != nil && d.jsManager != nil {
-		d.mgmtIPAllocator.BindKV(d.jsManager, d.node)
-		d.mgmtIPAllocator.Rebuild(d.vmMgr.SnapshotMap())
-		slog.Info("Rebuilt mgmt IP allocator from restored instances", "allocated", d.mgmtIPAllocator.AllocatedCount())
+	if !durableMgmt {
+		d.bindMgmtIPAllocator()
 	}
 
 	// Before any request is served, so no claim a request of this process
@@ -3126,6 +3125,18 @@ func (d *Daemon) LoadState() error {
 // Backgrounded because it must not hold up the rest of daemon start: the guests
 // it is recovering are already down, and blocking here would keep the API from
 // coming up while it waits.
+// bindMgmtIPAllocator binds the allocator to cluster KV (startLocal built it
+// KV-less), then reconciles this node's already-running VMs into the
+// cluster-wide record so another node cannot reuse their addresses.
+func (d *Daemon) bindMgmtIPAllocator() {
+	if d.mgmtIPAllocator == nil || d.jsManager == nil {
+		return
+	}
+	d.mgmtIPAllocator.BindKV(d.jsManager, d.node)
+	d.mgmtIPAllocator.Rebuild(d.vmMgr.SnapshotMap())
+	slog.Info("Rebuilt mgmt IP allocator from restored instances", "allocated", d.mgmtIPAllocator.AllocatedCount())
+}
+
 func (d *Daemon) restoreInstances() error {
 	d.forgetSupersededInstances()
 	d.vmMgr.Restore()

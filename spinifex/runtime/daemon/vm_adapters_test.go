@@ -15,6 +15,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/tags"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/gpu"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
+	"github.com/mulgadc/spinifex/spinifex/runtime/daemon/mgmtipstore"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -331,6 +332,39 @@ func TestPrepareInstanceRelaunch_ClaimsTheManagementAddress(t *testing.T) {
 
 	assert.Equal(t, 1, alloc.AllocatedCount(),
 		"an instance that arrived here holds its address here, and the allocator has to know before the next launch")
+}
+
+// A durable record that does not reserve the address for the instance on this
+// node fails the relaunch, so the guest never starts on an address another
+// instance may hold.
+func TestPrepareInstanceRelaunch_Durable_RefusesAnUnreservedAddress(t *testing.T) {
+	cases := []struct {
+		name    string
+		entries []mgmtipstore.Entry
+		wantErr error
+	}{
+		{name: "held by another instance", entries: []mgmtipstore.Entry{durableEntry("10.15.8.10", "i-other", "node2")},
+			wantErr: errMgmtIPNotReserved},
+		{name: "held on another node", entries: []mgmtipstore.Entry{durableEntry("10.15.8.10", "i-1", "node2")},
+			wantErr: mgmtipstore.ErrForeignHolder},
+		{name: "missing", wantErr: errMgmtIPNotReserved},
+		{name: "reserved here", entries: []mgmtipstore.Entry{durableEntry("10.15.8.10", "i-1", "node1")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			jsm := newTestMgmtJSM(t)
+			store := createDurableMgmtBucket(t, jsm, tc.entries...)
+			d := &Daemon{config: &config.Config{}, vmMgr: vm.NewManager(), mgmtIPAllocator: newDurableAllocator(t, jsm, "node1")}
+
+			err := d.prepareInstanceRelaunch(&vm.VM{ID: "i-1", MgmtIP: "10.15.8.10"})
+			if tc.wantErr == nil {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, tc.wantErr)
+			}
+			assert.ElementsMatch(t, tc.entries, durableEntries(t, store), "a refused relaunch changes no reservation")
+		})
+	}
 }
 
 // --- DetachAndDeleteENI: post-launch attach enumeration ---

@@ -399,9 +399,10 @@ func (d *Daemon) launchDirectSystemInstance(input *elbv2domain.SystemInstanceInp
 		}
 	}
 
-	if guest != nil && guest.needsMgmtNIC() && instance.MgmtIP == "" {
+	// Also covers a node with no allocator or bridge, where the block above is skipped.
+	if mgmtRequired && instance.MgmtIP == "" {
 		d.cleanupFailedSystemInstance(instance, instanceType)
-		return nil, fmt.Errorf("%s: no mgmt NIC on this node", guest.label())
+		return nil, fmt.Errorf("%s: no mgmt NIC on this node", mgmtFor)
 	}
 
 	// The requested guest ports. The host ports they land on are observed by
@@ -790,11 +791,12 @@ func (d *Daemon) rebootSystemInstanceLocal(instanceID string) error {
 // onto a survivor they point at another node. So both concerns below are the same
 // question asked twice — what does this record assume that is not true here yet.
 func (d *Daemon) prepareInstanceRelaunch(inst *vm.VM) error {
-	// Before the launch, and not fatal. The instance is running on this node
-	// either way, and the reservation naming the node it left is what stops that
-	// node's own teardown from handing the address to somebody else.
+	// Before the launch. Only a durable record can refuse, and then the guest
+	// must not start on an address the record does not reserve for it here.
 	if d.mgmtIPAllocator != nil {
-		d.mgmtIPAllocator.Claim(inst.ID, inst.MgmtIP)
+		if err := d.mgmtIPAllocator.ClaimChecked(inst.ID, inst.MgmtIP); err != nil {
+			return fmt.Errorf("relaunch %s: %w", inst.ID, err)
+		}
 	}
 	return d.refreshSystemInstanceState(inst)
 }

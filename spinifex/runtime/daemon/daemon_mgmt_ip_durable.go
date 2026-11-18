@@ -39,6 +39,16 @@ func entryFor(snap *mgmtipstore.Snapshot, instanceID string) (mgmtipstore.Entry,
 	return mgmtipstore.Entry{}, false
 }
 
+// validateMgmtIPAMMode refuses a mgmt_ipam value that names no allocator, so
+// the daemon never starts unsure which record guards its addresses.
+func validateMgmtIPAMMode(mode string) error {
+	switch mode {
+	case "", MgmtIPAMLegacy, MgmtIPAMDurable:
+		return nil
+	}
+	return fmt.Errorf("daemon mgmt_ipam %q is neither %q nor %q", mode, MgmtIPAMLegacy, MgmtIPAMDurable)
+}
+
 // SetMode selects the allocator. Durable mode never falls back to the legacy
 // record: until BindKV binds the durable bucket, every operation that needs the
 // record refuses. An unknown mode is refused and leaves the allocator unchanged.

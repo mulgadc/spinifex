@@ -156,3 +156,53 @@ func TestAttachSystemMgmtNIC_TapFailureReleasesOnlyACreatedReservation(t *testin
 
 	assert.Equal(t, []mgmtipstore.Entry{durableEntry("10.15.8.10", "i-reused", "node-a")}, durableEntries(t, store))
 }
+
+// A mode the daemon does not know names no allocator, so startup refuses it
+// rather than guessing which record guards the node's addresses.
+func TestValidateMgmtIPAMMode_RefusesUnknownMode(t *testing.T) {
+	for _, mode := range []string{"", MgmtIPAMLegacy, MgmtIPAMDurable} {
+		assert.NoError(t, validateMgmtIPAMMode(mode), mode)
+	}
+	assert.Error(t, validateMgmtIPAMMode("Durable"))
+}
+
+// Without a durable allocator, a node configured for anything but legacy keeps
+// launch records and no address record, so every system VM launch refuses.
+func TestMgmtLaunchDeps_NoDurableAllocatorFailsClosed(t *testing.T) {
+	for _, mode := range []string{MgmtIPAMDurable, "durble"} {
+		d := &Daemon{config: &config.Config{DataDir: t.TempDir(), Daemon: config.DaemonConfig{MgmtIPAM: mode}}}
+		deps := d.mgmtLaunchDeps()
+		assert.Equal(t, d.mgmtLaunchDir(), deps.Dir, mode)
+		assert.Nil(t, deps.Addresses, mode)
+	}
+	legacy := &Daemon{config: &config.Config{DataDir: t.TempDir(), Daemon: config.DaemonConfig{MgmtIPAM: MgmtIPAMLegacy}}}
+	assert.Equal(t, vm.MgmtLaunchDeps{}, legacy.mgmtLaunchDeps())
+}
+
+// A durable node whose allocator never came up refuses a local start of a
+// system VM before mounting its volumes, leaving its launch record unchanged.
+func TestStart_DurableNodeWithoutAllocatorRefusesBeforeMount(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	d := &Daemon{
+		config: &config.Config{DataDir: t.TempDir(), Daemon: config.DaemonConfig{MgmtIPAM: MgmtIPAMDurable}},
+		node:   "node-a",
+		vmMgr:  vm.NewManager(),
+	}
+	mounts := 0
+	d.vmMgr.SetDeps(vm.Deps{
+		NodeID:        d.node,
+		VolumeMounter: &hookVolumeMounter{onMount: func(*vm.VM) { mounts++ }},
+		MgmtLaunch:    d.mgmtLaunchDeps(),
+	})
+	instance := &vm.VM{ID: "i-sys", Status: vm.StateStopped, MgmtIP: "10.15.8.10"}
+	d.vmMgr.Insert(instance)
+	require.NoError(t, d.vmMgr.InitMgmtLaunch(instance))
+
+	err := d.vmMgr.Start(t.Context(), "i-sys")
+
+	require.ErrorContains(t, err, "management address record not wired")
+	assert.Zero(t, mounts)
+	rec := readLaunchRecord(t, d, "i-sys")
+	assert.Equal(t, "claimed", rec["state"])
+	assert.InDelta(t, 1, rec["generation"], 0)
+}

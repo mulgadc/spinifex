@@ -20,13 +20,17 @@ func MgmtLaunchDir(dataDir string) string {
 
 func (d *Daemon) mgmtLaunchDir() string { return MgmtLaunchDir(d.config.DataDir) }
 
-// mgmtLaunchDeps wires launch identity only when this node's allocator uses
-// the durable record; otherwise the cleaner releases addresses as before.
+// mgmtLaunchDeps wires launch identity unless legacy mode is configured, so a
+// missing allocator or unknown mode leaves no address record and every launch
+// refuses. In legacy mode the cleaner releases addresses as before.
 func (d *Daemon) mgmtLaunchDeps() vm.MgmtLaunchDeps {
-	if d.mgmtIPAllocator == nil || !d.mgmtIPAllocator.isDurable() {
+	if d.mgmtIPAllocator != nil && d.mgmtIPAllocator.isDurable() {
+		return vm.MgmtLaunchDeps{Dir: d.mgmtLaunchDir(), Addresses: mgmtLaunchAddresses{a: d.mgmtIPAllocator}}
+	}
+	if mode := d.mgmtIPAMMode(); mode == "" || mode == MgmtIPAMLegacy {
 		return vm.MgmtLaunchDeps{}
 	}
-	return vm.MgmtLaunchDeps{Dir: d.mgmtLaunchDir(), Addresses: mgmtLaunchAddresses{a: d.mgmtIPAllocator}}
+	return vm.MgmtLaunchDeps{Dir: d.mgmtLaunchDir()}
 }
 
 // ErrMgmtLaunchLocked reports that another process holds the launch records.

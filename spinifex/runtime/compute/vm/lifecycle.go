@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -160,6 +161,17 @@ func (m *Manager) launch(ctx context.Context, instance *VM, pre *uefiPrecheck, f
 	// A reason left by the stop, or by a restore that found this node could not
 	// schedule the instance, describes a state the instance is now leaving.
 	// Clearing it here keeps the node the only writer of the field.
+	// Held until QEMU has started, so a crash cleanup still unmounting the
+	// previous launch's volumes finishes before this one mounts them.
+	unlockMgmt := sync.OnceFunc(m.lockMgmt(instance))
+	defer unlockMgmt()
+	if !m.launchStillValid(instance) {
+		return nil
+	}
+	if err := m.mgmtLaunchWired(instance); err != nil {
+		return err
+	}
+
 	m.Inspect(instance, func(v *VM) {
 		if v.Instance != nil {
 			v.Instance.StateReason = nil
@@ -231,7 +243,8 @@ func (m *Manager) launch(ctx context.Context, instance *VM, pre *uefiPrecheck, f
 
 	_, qemuSpan := otel.Tracer(vmTracerName).Start(ctx, "vm.launch.start_qemu")
 	m.startUEFIWriter(instance.ID, uefiHeld != nil && uefiHeld.reused)
-	qemuErr := m.startGuestQEMU(instance, m.startQEMU, freshMgmt)
+	qemuErr := m.startGuestQEMULocked(instance, m.startQEMU, freshMgmt)
+	unlockMgmt()
 	guestMayHaveRun = !errors.Is(qemuErr, errQEMUNotStarted)
 	endSpanWithError(qemuSpan, qemuErr)
 	if qemuErr != nil {

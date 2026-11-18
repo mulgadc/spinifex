@@ -330,6 +330,11 @@ func (m *Manager) finalizeTransitionalRestore(instance *VM) bool {
 	}
 	slog.Info("QEMU exited during transition, finalizing state",
 		"instance", instance.ID, "from", prevStatus, "to", instance.Status)
+	// The interrupted stop or terminate may not have given its address back; a
+	// drained guest keeps it for the relaunch, as a live stop would.
+	if instance.Status == StateTerminated || instance.DesiredState == DesiredStopped {
+		m.releaseMgmt(instance, m.mgmtGeneration(instance))
+	}
 
 	if instance.Status == StateStopped && m.MigrateStoppedToSharedKV(instance) {
 		return true

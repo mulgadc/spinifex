@@ -1476,6 +1476,10 @@ func (d *Daemon) startLocal() error {
 		return fmt.Errorf("failed to start cluster manager: %w", err)
 	}
 
+	if err := validateMgmtIPAMMode(d.mgmtIPAMMode()); err != nil {
+		return err
+	}
+
 	// Detect management bridge for system instance control plane NICs.
 	mgmtBridge := d.mgmtBridgeName()
 	bridgeIP, bridgeErr := host.GetBridgeIPv4(mgmtBridge)
@@ -2666,6 +2670,7 @@ func (d *Daemon) startCluster() error {
 			d.vmMgr.NewOrphanQEMUReaper(),
 			d.vmMgr.NewStuckTerminateReaper(),
 			d.vmMgr.NewLocalConsoleLogReaper(),
+			d.vmMgr.NewMgmtReleaseReaper(),
 		}
 		if eniRec := d.newENIReconciler(); eniRec != nil {
 			reapers = append(reapers, eniRec)

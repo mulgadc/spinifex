@@ -266,9 +266,9 @@ func TestMgmtIPAMActivate_RefusesWithoutWriting(t *testing.T) {
 			want: "host node-b: Lambda attempt a1 names tap lma2, but its tap is lma1",
 		},
 		{
-			name: "no holder without --form",
-			inv:  cutoverInventory(attestedHost("node-a"), attestedHost("node-b")),
-			want: "rerun with --form only if this is an empty first formation",
+			name: "inventory with no host",
+			inv:  cutoverInventory(),
+			want: "the inventory lists no host",
 		},
 	}
 	for _, tc := range cases {
@@ -336,8 +336,77 @@ func TestMgmtIPAMActivate_FormOnlyForAnAttestedEmptyCluster(t *testing.T) {
 	})
 }
 
+// An existing cluster whose last holder released its address migrates to an
+// empty record on its complete, quiesced inventory, whether the old key is
+// empty or gone; allocation then starts from the bottom of the subnet.
+func TestMgmtIPAMActivate_ExistingClusterWithNoHolderMigratesEmpty(t *testing.T) {
+	for name, setup := range map[string]func(t *testing.T, c *cutoverCluster){
+		"old key empty":  func(t *testing.T, c *cutoverCluster) { c.legacyKey(t) },
+		"old key absent": func(*testing.T, *cutoverCluster) {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := newCutoverCluster(t)
+			setup(t, c)
+
+			out, err := c.activate(t, cutoverInventory(attestedHost("node-a"), attestedHost("node-b")), false)
+
+			require.NoError(t, err, out)
+			assert.Contains(t, out, "seeding an empty migrated record on the inventory's attestation")
+			rec := c.seeded(t)
+			assert.Equal(t, mgmtipstore.AuthorityMigrated, rec.Authority)
+			assert.Empty(t, rec.Entries)
+
+			jsm, err := daemon.NewJetStreamManager(c.nc)
+			require.NoError(t, err)
+			a, err := daemon.NewMgmtIPAllocator("10.15.8.1")
+			require.NoError(t, err)
+			require.NoError(t, a.SetMode(daemon.MgmtIPAMDurable))
+			a.BindKV(jsm, "node-b")
+			ip, err := a.Allocate("i-new")
+			require.NoError(t, err)
+			assert.Equal(t, "10.15.8.10", ip)
+		})
+	}
+}
+
 // A stopped guest whose saved address another holder took is not seeded; the
 // operator is told its start will be refused.
+// The legacy key expired and no instance record names the guest, so only the
+// inventory places it; an unattested stop keeps its address out of reuse.
+func TestMgmtIPAMActivate_UnattestedStoppedGuestStaysReserved(t *testing.T) {
+	c := newCutoverCluster(t)
+
+	out, err := c.activate(t, cutoverInventory(
+		attestedHost("node-a", running("i-a", "10.15.8.10"), stopped("i-held", "10.15.8.11", false)),
+		attestedHost("node-b", stopped("i-done", "10.15.8.12", true)),
+	), false)
+	require.NoError(t, err, out)
+	assert.Equal(t, []mgmtipstore.Entry{entry("10.15.8.10", "i-a", "node-a"), entry("10.15.8.11", "i-held", "node-a")}, c.seeded(t).Entries)
+
+	jsm, err := daemon.NewJetStreamManager(c.nc)
+	require.NoError(t, err)
+	a, err := daemon.NewMgmtIPAllocator("10.15.8.1")
+	require.NoError(t, err)
+	require.NoError(t, a.SetMode(daemon.MgmtIPAMDurable))
+	a.BindKV(jsm, "node-b")
+	ip, err := a.Allocate("i-new")
+	require.NoError(t, err)
+	assert.Equal(t, "10.15.8.12", ip, "another node allocates past the unproven holder")
+}
+
+func TestMgmtIPAMActivate_UnattestedStoppedGuestSharingAnAddressRefuses(t *testing.T) {
+	c := newCutoverCluster(t)
+
+	out, err := c.activate(t, cutoverInventory(
+		attestedHost("node-a", running("i-a", "10.15.8.10"), stopped("i-s", "10.15.8.10", false)),
+		attestedHost("node-b"),
+	), false)
+
+	require.Error(t, err)
+	assert.Contains(t, out, "address 10.15.8.10 is held by both i-a and i-s")
+	c.assertNothingWritten(t)
+}
+
 func TestMgmtIPAMActivate_StoppedGuestWhoseAddressWasReusedIsReported(t *testing.T) {
 	c := newCutoverCluster(t)
 

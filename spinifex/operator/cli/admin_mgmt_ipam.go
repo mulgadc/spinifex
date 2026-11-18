@@ -426,7 +426,8 @@ func planMgmtCutover(inv *mgmtInventory, clusterNodes []string, ev *mgmtCutoverE
 			}
 			holder := mgmtHolder{source: "inventory " + v.State, instanceID: v.InstanceID, ip: v.MgmtIP, node: h.Node}
 			account(holder)
-			if v.State == inventoryRunning {
+			// A stop nobody attests is no evidence the guest left its address.
+			if v.State == inventoryRunning || !v.StoppedAttested {
 				inventoryHolders = append(inventoryHolders, holder)
 			}
 		}
@@ -511,9 +512,13 @@ func planMgmtCutover(inv *mgmtInventory, clusterNodes []string, ev *mgmtCutoverE
 
 	switch {
 	case form && (ev.legacyKey || len(seed) > 0 || len(accounted) > 0):
-		p.refusef("--form is only for a cluster with no address holder; the stores or the inventory name one")
+		p.refusef("--form is only for a cluster with no address holder; the stores or the inventory name one, so migrate without --form")
+	case !form && len(inv.Hosts) == 0:
+		p.refusef("the inventory lists no host, so nothing accounts for the subnet's addresses")
 	case !form && len(seed) == 0:
-		p.refusef("no source names an address holder; rerun with --form only if this is an empty first formation")
+		// Only the complete, quiesced inventory shows the subnet is empty; an
+		// empty or missing old key is no evidence on its own.
+		p.warnf("no source or inventory host names an address holder; seeding an empty migrated record on the inventory's attestation")
 	}
 
 	for _, h := range seed {

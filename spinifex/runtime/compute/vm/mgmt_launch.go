@@ -78,6 +78,9 @@ type mgmtLaunchRecord struct {
 	State      MgmtLaunchState `json:"state"`
 	PID        int             `json:"pid,omitempty"`
 	StartTime  uint64          `json:"start_time,omitempty"`
+	// ReleasePending records a proven-stopped launch whose address release is
+	// not yet acknowledged, so a retry can finish it after a failure or restart.
+	ReleasePending bool `json:"release_pending,omitempty"`
 }
 
 // Host probes, overridden in tests.
@@ -335,6 +338,15 @@ func (m *Manager) lockMgmt(instance *VM) (unlock func()) {
 	return m.mgmtLocks.lock(instance.ID)
 }
 
+// mgmtLaunchWired refuses a durable launch on a node with no address record,
+// before anything is mounted or started.
+func (m *Manager) mgmtLaunchWired(instance *VM) error {
+	if m.mgmtDurable() && instance.MgmtIP != "" && m.deps.MgmtLaunch.Addresses == nil {
+		return fmt.Errorf("%w: %s: management address record not wired", errQEMUNotStarted, instance.ID)
+	}
+	return nil
+}
+
 // startGuestQEMU runs start under the instance's launch guard, between proof
 // that the previous launch stopped and the record of what this one became.
 func (m *Manager) startGuestQEMU(instance *VM, start func(*VM) error, fresh bool) error {
@@ -551,6 +563,7 @@ func (m *Manager) beginMgmtLaunch(instance *VM, fresh bool) (*mgmtLaunchRecord, 
 		next.Generation++
 	}
 	next.BootID, next.State, next.PID, next.StartTime = boot, MgmtLaunchStarting, 0, 0
+	next.ReleasePending = false
 	if err := writeMgmtLaunch(dir, &next); err != nil {
 		return nil, fmt.Errorf("record launch of %s: %w", instance.ID, err)
 	}
@@ -629,17 +642,36 @@ func (m *Manager) releaseMgmtLocked(instance *VM, gen uint64) {
 		hold("management address record not wired", nil)
 		return
 	}
-	if err := m.deps.MgmtLaunch.Addresses.Release(instance.ID, instance.MgmtIP); err != nil {
-		hold("release not acknowledged", err)
-		return
-	}
-	if rec.State != MgmtLaunchExited {
-		next := *rec
-		next.State = MgmtLaunchExited
-		if err := writeMgmtLaunch(dir, &next); err != nil {
-			slog.Error("Failed to record management launch exit", "instanceId", instance.ID, "err", err)
+	if !rec.ReleasePending {
+		marked := *rec
+		marked.ReleasePending = true
+		if err := writeMgmtLaunch(dir, &marked); err != nil {
+			slog.Error("Failed to record pending management address release; a failed release will not be retried",
+				"instanceId", instance.ID, "err", err)
+		} else {
+			rec = &marked
 		}
 	}
+	m.completeMgmtRelease(rec)
+}
+
+// completeMgmtRelease gives back a proven-stopped launch's address and records
+// the launch exited. An unacknowledged release leaves any pending mark for the
+// retry. Called with the guard held, after the caller's proofs.
+func (m *Manager) completeMgmtRelease(rec *mgmtLaunchRecord) bool {
+	if err := m.deps.MgmtLaunch.Addresses.Release(rec.InstanceID, rec.MgmtIP); err != nil {
+		slog.Warn("Holding management address", "instanceId", rec.InstanceID, "ip", rec.MgmtIP,
+			"generation", rec.Generation, "reason", "release not acknowledged", "pending", rec.ReleasePending, "err", err)
+		return false
+	}
+	if rec.State != MgmtLaunchExited || rec.ReleasePending {
+		next := *rec
+		next.State, next.ReleasePending = MgmtLaunchExited, false
+		if err := writeMgmtLaunch(m.deps.MgmtLaunch.Dir, &next); err != nil {
+			slog.Error("Failed to record management launch exit", "instanceId", rec.InstanceID, "err", err)
+		}
+	}
+	return true
 }
 
 // mgmtTeardown runs a teardown's process, volume and network steps under the

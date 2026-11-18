@@ -120,6 +120,24 @@ func (m *Manager) HandleCrash(instance *VM, waitErr error) {
 
 	reason := ClassifyCrashReason(waitErr)
 	slog.Error("VM process crashed", "instance", instance.ID, "reason", reason, "err", waitErr)
+	// Cleanup holds the launch guard so a replacement cannot mount or start
+	// until the crashed launch's volumes are released.
+	mgmtGen := m.mgmtGeneration(instance)
+	cleaned := false
+	m.mgmtTeardown(instance, mgmtGen, "crash", func() { cleaned = m.crashCleanup(instance, reason) })
+	if cleaned {
+		m.MaybeRestart(instance)
+	}
+}
+
+// crashCleanup moves a crashed instance to error and releases what its
+// process held. A stop or terminate that took the instance first owns it.
+func (m *Manager) crashCleanup(instance *VM, reason string) bool {
+	if status := m.Status(instance); status != StateRunning {
+		slog.Info("Crashed instance left running state before cleanup, skipping crash handler",
+			"instance", instance.ID, "status", status)
+		return false
+	}
 	m.dropUEFIWriter(instance.ID, "crash", false)
 
 	if m.deps.TransitionState != nil {
@@ -163,8 +181,7 @@ func (m *Manager) HandleCrash(instance *VM, waitErr error) {
 		slog.Error("Failed to persist state after crash handling",
 			"instance", instance.ID, "err", err)
 	}
-
-	m.MaybeRestart(instance)
+	return true
 }
 
 // MaybeRestart checks restart policy and schedules a restart via time.AfterFunc.

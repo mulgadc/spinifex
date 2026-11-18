@@ -1,8 +1,8 @@
 package vpcendpoint
 
 import (
-	"errors"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 

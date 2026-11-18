@@ -187,29 +187,29 @@ type Daemon struct {
 	elbv2Service          *elbv2domain.ELBv2ServiceImpl
 	featureGate           *featurelevel.Gate // admission for N-only work; set by checkFeatureLevel
 	// advertisedLevel is the last level the heartbeat reported, 0 before the first.
-	advertisedLevel atomic.Int64
-	eksService            *ekscluster.EKSServiceImpl
-	ecsService            *ecsdomain.Service
-	ecsScheduler          *ecsdomain.Scheduler
-	rdsService            *rdsinstance.Service
-	rdsReconciler         *rdsinstance.Reconciler
-	bedrockService        *ochre.Service
-	bedrockReaper         *ochre.Reaper
-	acmService            *acmdomain.ACMServiceImpl
-	acmRenewalWorker      *acmdomain.Worker
-	route53Service        *route53domain.Service
-	route53Verifier       *route53domain.Verifier
-	ochreVectorService    ochrevector.VectorService
-	ochreAppliance        *ochrevector.Appliance
-	ochreBackupService    *ochrevector.BackupService
-	ecrMetaService        *ecr.MetaServiceImpl
-	lambdaMetaService     *lambdafunction.MetaService
-	routeTableService     *ec2routetable.RouteTableServiceImpl
-	natGatewayService     *ec2natgw.NatGatewayServiceImpl
-	vpcPeeringService     *ec2vpcpeering.ServiceImpl
-	vpcEndpointService    *ec2vpcendpoint.ServiceImpl
-	prefixListService     *ec2prefixlist.ServiceImpl
-	externalIPAM          *ec2vpc.ExternalIPAM
+	advertisedLevel    atomic.Int64
+	eksService         *ekscluster.EKSServiceImpl
+	ecsService         *ecsdomain.Service
+	ecsScheduler       *ecsdomain.Scheduler
+	rdsService         *rdsinstance.Service
+	rdsReconciler      *rdsinstance.Reconciler
+	bedrockService     *ochre.Service
+	bedrockReaper      *ochre.Reaper
+	acmService         *acmdomain.ACMServiceImpl
+	acmRenewalWorker   *acmdomain.Worker
+	route53Service     *route53domain.Service
+	route53Verifier    *route53domain.Verifier
+	ochreVectorService ochrevector.VectorService
+	ochreAppliance     *ochrevector.Appliance
+	ochreBackupService *ochrevector.BackupService
+	ecrMetaService     *ecr.MetaServiceImpl
+	lambdaMetaService  *lambdafunction.MetaService
+	routeTableService  *ec2routetable.RouteTableServiceImpl
+	natGatewayService  *ec2natgw.NatGatewayServiceImpl
+	vpcPeeringService  *ec2vpcpeering.ServiceImpl
+	vpcEndpointService *ec2vpcendpoint.ServiceImpl
+	prefixListService  *ec2prefixlist.ServiceImpl
+	externalIPAM       *ec2vpc.ExternalIPAM
 	// floatingAllocators is every floating-address pool (source="vultr" or "latitude") on
 	// this node, written once during startup like ociAllocators.
 	floatingAllocators []floatingPool

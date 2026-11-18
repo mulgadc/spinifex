@@ -30,13 +30,13 @@ type ManagerHooks struct {
 type Deps struct {
 	NodeID string
 
-	StateStore         StateStore
-	VolumeMounter      VolumeMounter
-	NetworkPlumber     NetworkPlumber
+	StateStore     StateStore
+	VolumeMounter  VolumeMounter
+	NetworkPlumber NetworkPlumber
 	// EndpointDemuxer and EndpointIntent drive the gateway-endpoint demux;
 	// either nil leaves it off.
-	EndpointDemuxer EndpointDemuxer
-	EndpointIntent  func(context.Context) (EndpointIntent, error)
+	EndpointDemuxer    EndpointDemuxer
+	EndpointIntent     func(context.Context) (EndpointIntent, error)
 	InstanceTypes      InstanceTypeResolver
 	Resources          ResourceController
 	VolumeStateUpdater VolumeStateUpdater

@@ -2,6 +2,7 @@ package featurelevel
 
 import (
 	"context"
+	"maps"
 	"sync"
 )
 
@@ -35,9 +36,7 @@ func (g *Gate) SetHolding(n int, count func() int) {
 func (g *Gate) Holding() map[int]int {
 	g.mu.Lock()
 	counts := make(map[int]func() int, len(g.holding))
-	for n, f := range g.holding {
-		counts[n] = f
-	}
+	maps.Copy(counts, g.holding)
 	g.mu.Unlock()
 	out := map[int]int{}
 	for n, f := range counts {

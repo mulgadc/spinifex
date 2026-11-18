@@ -38,8 +38,8 @@ type EndpointIntent struct {
 }
 
 // endpointDemux is the manager's view of its endpoint demux, for the rollback
-// drain. clear is set only by a pass that left no flow on the node, so a fresh
-// process, which may inherit flows, reports them held.
+// drain. clear is set only by a finished pass that left no flow on the node,
+// so a running pass and a fresh process, which may inherit flows, read held.
 type endpointDemux struct {
 	clear atomic.Bool
 	// pass serialises reconcile passes, which the KV watch and the IMDS tick
@@ -67,11 +67,13 @@ func (m *Manager) ReconcileEndpointDemux(ctx context.Context) error {
 	}
 	m.endpointDemux.pass.Lock()
 	defer m.endpointDemux.pass.Unlock()
+	// A pass may install flows from intent read before a delete, so the node
+	// reads held from before that read until the pass ends.
+	m.endpointDemux.clear.Store(false)
 
 	intent, err := intentOf(ctx)
 	if err != nil {
 		// Existing flows stay: the proxy re-checks the route on every accept.
-		m.endpointDemux.clear.Store(false)
 		return fmt.Errorf("read endpoint intent: %w", err)
 	}
 	want := slices.Clone(intent.Entries)
@@ -87,7 +89,6 @@ func (m *Manager) ReconcileEndpointDemux(ctx context.Context) error {
 	states, err := d.EndpointDemuxStates(readCtx, eniIDs)
 	cancel()
 	if err != nil {
-		m.endpointDemux.clear.Store(false)
 		return fmt.Errorf("read endpoint demux: %w", err)
 	}
 

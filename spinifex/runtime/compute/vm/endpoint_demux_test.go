@@ -251,6 +251,31 @@ func TestEndpointDemuxHeld_UntilAPassShowsNone(t *testing.T) {
 	}
 }
 
+// A pass that read intent before an endpoint was deleted may still install its
+// flows, so a clear node reads held from the moment a pass starts until it ends.
+func TestEndpointDemuxHeld_WhileAPassRuns(t *testing.T) {
+	read, release := make(chan struct{}), make(chan struct{})
+	m := demuxManager(&fakeDemuxer{}, func(context.Context) (EndpointIntent, error) {
+		close(read)
+		<-release
+		return EndpointIntent{}, nil
+	})
+	m.endpointDemux.clear.Store(true)
+	done := make(chan error, 1)
+	go func() { done <- m.ReconcileEndpointDemux(context.Background()) }()
+	<-read
+	if !m.EndpointDemuxHeld() {
+		t.Error("a node whose pass is still running reports no demux")
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if m.EndpointDemuxHeld() {
+		t.Error("node with no flow left reports a demux")
+	}
+}
+
 // A pass that leaves some taps alone and rewrites others reports the node as
 // holding flows, whichever finishes first.
 func TestReconcileEndpointDemux_MixedPassReportsHeld(t *testing.T) {

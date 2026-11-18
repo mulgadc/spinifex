@@ -103,6 +103,7 @@ behavior in other words.
 | 5300 | northstar | DNS (UDP + TCP) | Cluster | Forward target for every node's per-instance DNS shim, dialled cross-node. Binds the wildcard by design. | None — restrict by firewall |
 | 6660 | predastore (blob node) | QUIC / UDP | Cluster | Erasure-coded object shard transport between hosts. Multi-node clusters only — see *Predastore ports* below. | TLS 1.3, server certificate verified against the cluster CA |
 | 7660 | predastore (meta node) | QUIC / UDP | Cluster | Raft consensus over global state — buckets and the object index — between hosts. Multi-node clusters only. | TLS 1.3, server certificate verified against the cluster CA |
+| 8474 | spinifex-predastore (gate endpoint listener) | TLS 1.3 + PROXY v2 | Cluster | VPC gateway endpoint traffic, dialled by a peer node's endpoint proxy carrying a guest's S3 session behind a PROXY v2 header naming the guest and its endpoint. It shares the gate's address, so it binds the wildcard by design. | Mutual TLS: a client certificate chaining to the formation CA, which only node certificates carry |
 | 8660 | predastore (admin) | HTTP | Cluster | `/healthz` and `/readyz`. Readiness names the blob peers a gate cannot reach, so it must not face the WAN. Binds the host's cluster `bind_addr`, never the wildcard. | None — unauthenticated by design; restrict by firewall |
 | 6641 | OVN Northbound DB (client) | OVSDB/TCP | Cluster | Logical network topology consumed by vpcd. Binds `127.0.0.1` plus the node's lan-plane address (`--lan-addr`), never the wildcard address. On a node with no separate lan plane that address is the public one, and a host firewall is the only remaining control. | Cluster network only; TLS planned |
 | 6642 | OVN Southbound DB (client) | OVSDB/TCP | Cluster | Chassis / port / MAC binding state. Binds `127.0.0.1` plus the node's lan-plane address (`--lan-addr`), never the wildcard address. On a node with no separate lan plane that address is the public one, and a host firewall is the only remaining control. | Cluster network only; TLS planned |
@@ -114,6 +115,7 @@ behavior in other words.
 | 8222 | spinifex-nats (monitoring) | HTTP | Localhost | `varz`/`subsz` metrics consumed by the daemon | Loopback only |
 | 323 | chronyd | NTP | Localhost | Time sync client control socket | Loopback only |
 | 169.254.169.254:80 | spinifex-vpcd (IMDS) | HTTP | Guest | Instance metadata service. One socket per instance, bound to that instance's `ime-*` interface. Terminates on the host, so it traverses the netfilter input hook. | Instance identity by interface; IMDSv2 tokens |
+| 0.0.0.0:8473 | spinifex-vpcd (VPC endpoint proxy) | TCP | Guest | Takes the guest's S3 connections to a prefix-list address that the `TPROXY` capture delivers, after checking the endpoint route and the security groups' egress, and relays them to the target node's `:8474`. One socket per instance, bound to its `ime-*` interface with `IP_TRANSPARENT`. | Instance identity by interface; a refused connection is reset |
 | 169.254.169.253:53 | spinifex-vpcd (VPC DNS) | DNS (UDP + TCP) | Guest | Per-VPC DNS resolver, forwarding to northstar `:5300` on peer nodes. Same per-instance binding as above. | Instance identity by interface |
 | socket / dynamic TCP | nbdkit (Viperblock) | NBD | Host-local / cluster | Block device transport for guest EBS volumes | Unix socket by default; TCP only in remote/DPU mode |
 
@@ -170,6 +172,7 @@ Control-plane and data-plane traffic between Spinifex nodes, for completeness an
 |-----------|---------|-------------------|-------|
 | NATS cluster routes | 4248 | Mutual TLS + cluster token | Full mesh between NATS servers |
 | Predastore S3 (gate) | TCP 8443 | TLS + AWS SigV4 | Cross-node object reads/writes |
+| Predastore endpoint listener | TCP 8474 | Mutual TLS 1.3 against the formation CA, then the guest's own TLS + AWS SigV4 | A node's VPC endpoint proxy relaying a guest's S3 connection to the node it dialled |
 | Predastore blob | UDP 6660 | QUIC with TLS 1.3; server certificate verified against the cluster CA | Erasure-coded object shards. Same port on every machine. |
 | Predastore meta | UDP 7660 | QUIC with TLS 1.3; server certificate verified against the cluster CA | Raft consensus over buckets and the object index. Same port on every machine. |
 | OVN NB/SB (client) | 6641 / 6642 | Cluster network only (TLS planned) | Network control plane; vpcd and ovn-controller dial the quorum |
@@ -187,7 +190,7 @@ Default external surface is five listeners — **9999** (AWS API), **3000** (UI)
 Every node ships a host firewall policy, `table inet spinifex_filter` in `/etc/spinifex/firewall/spinifex.nft`, written by `setup.sh`; `spinifex-daemon` loads it once cluster peers resolve, filling the peer and encap sets itself.
 It is armed by default on ISO installs; a `setup.sh` install arms it with `--firewall=on`, or when firewalld was active, and otherwise installs it unarmed, so on those nodes the scope split is still the operator's to enforce.
 `setup.sh` masks firewalld wherever it is installed, and `spx admin preflight` fails while firewalld or ufw is active, because a second ruleset silently drops routed NAT, elastic IP and metadata traffic.
-The shipped policy is the authority; the reference below explains the rules it needs and is looser than the shipped one in places, such as accepting all `ime-*` traffic where the shipped policy accepts only the metadata and DNS endpoints.
+The shipped policy is the authority; the reference below explains the rules it needs and is looser than the shipped one in places, such as accepting all `ime-*` traffic where the shipped policy accepts only the metadata and DNS endpoints and untracked TCP carrying the gateway endpoint capture mark `0x8473`.
 
 > **Read the notes under the ruleset before applying it.** A default-deny input policy that
 > omits any of the loopback, conntrack, `ime-*` or Geneve rules will break instance
@@ -222,7 +225,7 @@ table inet spinifex_filter {
 
     # Cluster, from peer nodes only. Replace with your nodes' lan-plane
     # addresses — a CIDR does not generalise to nodes on different subnets.
-    ip saddr { 10.0.1.1, 10.0.1.2, 10.0.1.3 } tcp dport { 4222, 4248, 4432, 5001, 5300, 6641, 6642, 6643, 6644, 8660 } accept
+    ip saddr { 10.0.1.1, 10.0.1.2, 10.0.1.3 } tcp dport { 4222, 4248, 4432, 5001, 5300, 6641, 6642, 6643, 6644, 8474, 8660 } accept
     ip saddr { 10.0.1.1, 10.0.1.2, 10.0.1.3 } udp dport { 5300, 6660, 7660 } accept
 
     # Encap, from peer chassis only. Replace with your nodes' vpc-plane

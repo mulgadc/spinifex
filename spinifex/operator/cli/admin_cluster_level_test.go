@@ -53,3 +53,11 @@ func TestCancelError_ExplainsALoweredLevel(t *testing.T) {
 	other := assert.AnError
 	assert.Equal(t, other, cancelError(other))
 }
+
+func TestStatusText_NamesWhatANodeHolds(t *testing.T) {
+	t.Parallel()
+	got := statusText(featurelevel.NodeStatus{Node: "n1", Reply: &featurelevel.StatusReply{
+		Node: "n1", Build: 2, Revision: 7, Holding: map[int]int{featurelevel.GatewayEndpoints: 1},
+	}})
+	assert.Equal(t, "status: build 2, revision 7, in flight 0, holding 1 at level 2", got)
+}

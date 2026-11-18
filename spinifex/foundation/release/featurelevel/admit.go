@@ -2,6 +2,7 @@ package featurelevel
 
 import (
 	"context"
+	"maps"
 	"sync"
 )
 
@@ -13,11 +14,37 @@ type Gate struct {
 
 	mu       sync.Mutex
 	inFlight map[int]int
+	holding  map[int]func() int
 }
 
 // NewGate returns a gate over store.
 func NewGate(store *Store) *Gate {
-	return &Gate{store: store, inFlight: map[int]int{}}
+	return &Gate{store: store, inFlight: map[int]int{}, holding: map[int]func() int{}}
+}
+
+// SetHolding installs the count of level n's obligations this node holds
+// outside any request, such as installed datapath state, which its status
+// reports for a drain check to read.
+func (g *Gate) SetHolding(n int, count func() int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.holding[n] = count
+}
+
+// Holding returns the node-local obligations per level, omitting levels that
+// hold none.
+func (g *Gate) Holding() map[int]int {
+	g.mu.Lock()
+	counts := make(map[int]func() int, len(g.holding))
+	maps.Copy(counts, g.holding)
+	g.mu.Unlock()
+	out := map[int]int{}
+	for n, f := range counts {
+		if c := f(); c > 0 {
+			out[n] = c
+		}
+	}
+	return out
 }
 
 // Admit reports whether level n is active: the recorded level is at least n and
@@ -43,6 +70,16 @@ func (g *Gate) Admit(ctx context.Context, n int) (done func(), ok bool, err erro
 		return done, false, err
 	}
 	return done, active(rec, n), nil
+}
+
+// Active reports whether level n is active without admitting anything, for a
+// read that creates no obligation. It is one uncached read.
+func (g *Gate) Active(ctx context.Context, n int) (bool, error) {
+	rec, _, err := g.store.Read(ctx)
+	if err != nil {
+		return false, err
+	}
+	return active(rec, n), nil
 }
 
 func active(rec Record, n int) bool {

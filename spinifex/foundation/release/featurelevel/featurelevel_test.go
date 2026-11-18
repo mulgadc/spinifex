@@ -306,7 +306,9 @@ func TestAdmit_ReadFailureIsAnErrorAndStillReleasesTheCount(t *testing.T) {
 
 func TestEveryDeclaredLevelHasExactlyOneDrainCheck(t *testing.T) {
 	t.Parallel()
-	assert.Empty(t, UncoveredLevels(), "every declared level must register a drain check")
+	// A feature's check reads its own domain, so its composition root registers
+	// it; the operator CLI's test asserts every level is then covered.
+	assert.Equal(t, []int{GatewayEndpoints}, UncoveredLevels(), "only the levels a composition root covers may be uncovered here")
 	require.NotEmpty(t, Levels())
 	assert.Equal(t, Build, Levels()[len(Levels())-1].N, "Build is the highest declared level")
 
@@ -345,4 +347,28 @@ func TestCancelRollback_RestoresThePriorHold(t *testing.T) {
 	rec, err = s2.CancelRollback(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, Hold{}, rec.Hold)
+}
+
+// A read-only check answers as Admit would, and counts nothing in flight, so
+// reads never hold a rollback's acknowledgement.
+func TestGateActive_AnswersAsAdmitWithoutCounting(t *testing.T) {
+	t.Parallel()
+	s, _ := newStore(t)
+	g := NewGate(s)
+	ok, err := g.Active(t.Context(), GatewayEndpoints)
+	require.NoError(t, err)
+	assert.False(t, ok, "below the level")
+
+	_, _, err = s.Advance(t.Context(), members(GatewayEndpoints, true, true))
+	require.NoError(t, err)
+	ok, err = g.Active(t.Context(), GatewayEndpoints)
+	require.NoError(t, err)
+	assert.True(t, ok)
+
+	_, _, err = s.StartRollback(t.Context(), Baseline, Build)
+	require.NoError(t, err)
+	ok, err = g.Active(t.Context(), GatewayEndpoints)
+	require.NoError(t, err)
+	assert.False(t, ok, "a rollback below the level closes it")
+	assert.Empty(t, g.InFlight())
 }

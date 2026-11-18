@@ -78,6 +78,33 @@ type fixture struct {
 	svc    *ServiceImpl
 	clock  *fakeClock
 	tables *fakeTables
+	gate   *fakeGate
+	js     jetstream.JetStream
+}
+
+// fakeGate is a feature-level admission: whether it admits, its read error,
+// and what each release saw.
+type fakeGate struct {
+	closed  bool
+	err     error
+	onDone  func()
+	held    int
+	maxHeld int
+}
+
+func (g *fakeGate) offered(context.Context) (bool, error) {
+	return !g.closed && g.err == nil, g.err
+}
+
+func (g *fakeGate) admit(context.Context) (func(), bool, error) {
+	g.held++
+	g.maxHeld = max(g.maxHeld, g.held)
+	return func() {
+		if g.onDone != nil {
+			g.onDone()
+		}
+		g.held--
+	}, !g.closed && g.err == nil, g.err
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -90,8 +117,9 @@ func newFixture(t *testing.T) *fixture {
 	tables := &fakeTables{tables: map[string]string{}}
 	store.SetTableLookup(tables)
 	svc := NewServiceImpl(store, Settings{Region: testRegion, ServicesDomain: "services.internal", AZ: testRegion + "a"})
-	svc.SetActivation(func(context.Context) bool { return true })
-	f := &fixture{svc: svc, clock: clock, tables: tables}
+	gate := &fakeGate{}
+	svc.SetActivation(gate.admit, gate.offered)
+	f := &fixture{svc: svc, clock: clock, tables: tables, gate: gate, js: js}
 	f.putVPC(t, testAccount, vpcA)
 	f.putVPC(t, testAccount, vpcB)
 	for _, rtb := range []string{rtbA1, rtbA2, rtbA3} {

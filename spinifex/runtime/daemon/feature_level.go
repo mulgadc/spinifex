@@ -218,5 +218,6 @@ func (d *Daemon) checkFeatureLevel() error {
 		return err
 	}
 	d.featureGate = featurelevel.NewGate(store)
+	d.featureGate.SetHolding(featurelevel.GatewayEndpoints, d.endpointDemuxHolding)
 	return nil
 }

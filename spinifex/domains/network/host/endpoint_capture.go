@@ -233,8 +233,11 @@ func removeEndpointCapture(ctx context.Context, r Runner) error {
 			break
 		}
 	}
-	if out, err := r.Run(ctx, "ip", "route", "flush", "table", EndpointCaptureTable); err != nil {
-		errs = append(errs, fmt.Errorf("flush endpoint capture table %s: %s: %w", EndpointCaptureTable, string(out), err))
+	// A table never created fails to list, so it has nothing to flush.
+	if out, err := r.Run(ctx, "ip", "route", "show", "table", EndpointCaptureTable); err == nil && strings.TrimSpace(string(out)) != "" {
+		if out, err := r.Run(ctx, "ip", "route", "flush", "table", EndpointCaptureTable); err != nil {
+			errs = append(errs, fmt.Errorf("flush endpoint capture table %s: %s: %w", EndpointCaptureTable, string(out), err))
+		}
 	}
 	return errors.Join(errs...)
 }

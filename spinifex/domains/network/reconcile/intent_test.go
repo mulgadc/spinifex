@@ -490,7 +490,7 @@ func TestLoadIntentFromKV_NoDropGateWithoutIGW(t *testing.T) {
 	}
 }
 
-// Tenant SG rules reach the ACL builder only through sgRulesToPolicyRules. The
+// Tenant SG rules reach the ACL builder only through SGRulesToPolicyRules. The
 // golden scenarios construct IntentState by hand and never exercise it, so a
 // field dropped or transposed here would silently ship an ACL that opens or
 // closes the wrong port.
@@ -635,7 +635,7 @@ func mustJSON(t *testing.T, v any) []byte {
 // address for it to match.
 func TestSGRulesToPolicyRules_DropsIPv6(t *testing.T) {
 	t.Parallel()
-	out := sgRulesToPolicyRules([]ec2vpc.SGRule{
+	out := SGRulesToPolicyRules([]ec2vpc.SGRule{
 		{IpProtocol: "-1", CidrIp: "0.0.0.0/0"},
 		{IpProtocol: "-1", CidrIpv6: "::/0"},
 		{IpProtocol: "tcp", FromPort: 443, ToPort: 443, SourceSG: "sg-abc"},

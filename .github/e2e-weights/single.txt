@@ -1,6 +1,7 @@
 # Median seconds per top-level test in the single suite, from E2E push runs
 # 42920949994, 42959551411 and 43080409096. e2e-shard.sh balances on these.
 TestVPCEgressPaths 301
+TestVPCGatewayEndpoint 240
 TestGuestChurnDurability 197
 TestInstanceStatus 140
 TestLaunchTemplateBoot 134

@@ -693,6 +693,10 @@ table inet spinifex_filter {
         iifname "ime-*" ct original ip daddr 169.254.169.254 tcp dport 80 accept
         iifname "ime-*" ct original ip daddr 169.254.169.253 udp dport 53 accept
         iifname "ime-*" ct original ip daddr 169.254.169.253 tcp dport 53 accept
+        # VPC gateway endpoint traffic is untracked, so the ct rules above never
+        # see it; only the mark the endpoint TPROXY rule sets is accepted, and
+        # that rule delivers solely to the endpoint proxy's transparent socket.
+        iifname "ime-*" ct state untracked meta mark 0x8473 meta l4proto tcp accept
 
         # PMTUD is not optional under a Geneve overlay.
         icmp type { echo-request, destination-unreachable, time-exceeded, parameter-problem } accept
@@ -740,7 +744,9 @@ table inet spinifex_filter {
         # predastore's unauthenticated /healthz and /readyz, which name the
         # peers a gate cannot reach, so it belongs here for the same reason.
         # 5001 is the admin network test, listening only while one runs.
-        ip saddr $spinifex_peers tcp dport { 4222, 4248, 4432, 5001, 5300, 6641, 6642, 6643, 6644, 8660 } accept
+        # 8474 is predastore's endpoint listener, dialled only by a peer
+        # node's VPC endpoint proxy, which proves itself with its node cert.
+        ip saddr $spinifex_peers tcp dport { 4222, 4248, 4432, 5001, 5300, 6641, 6642, 6643, 6644, 8474, 8660 } accept
         ip saddr $spinifex_peers udp dport { 5300, 6660, 7660 } accept
 
         # Encap plane, peer-scoped: Geneve, IKE, NAT-T and ESP. Geneve is a

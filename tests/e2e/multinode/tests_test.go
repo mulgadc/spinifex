@@ -107,6 +107,12 @@ func TestMultinodeVPCPeering(t *testing.T) {
 	runMultinodeVPCPeering(t, requireMultiNodeFixture(t))
 }
 
+// TestMultinodeVPCGatewayEndpoint is sequential: it reuses the spread topology
+// (10.100.0.0/16 and the nat-spread placement group) that TestMultinodeSpread owns.
+func TestMultinodeVPCGatewayEndpoint(t *testing.T) {
+	runMultinodeVPCGatewayEndpoint(t, requireMultiNodeFixture(t))
+}
+
 // TestMultinodeVPCNetworking owns 10.200.0.0/16 (no EIP use); safe to run in parallel.
 func TestMultinodeVPCNetworking(t *testing.T) {
 	t.Parallel()

@@ -32,10 +32,17 @@ type ServiceImpl struct {
 	*Store
 
 	settings Settings
-	// active reports whether every node can carry endpoint traffic; until it
-	// does, the S3 endpoint service is not offered. nil is never active.
-	active func(context.Context) bool
+	// active admits work that needs every node to carry endpoint traffic, and
+	// offered answers reads; until then the S3 endpoint service is not offered.
+	// nil never admits.
+	active  Admission
+	offered func(context.Context) (bool, error)
 }
+
+// Admission reports whether every node can carry endpoint traffic. The caller
+// holds done until its last write, and calls it on every path. A read failure
+// returns an error and false.
+type Admission func(ctx context.Context) (done func(), ok bool, err error)
 
 // NewServiceImpl wraps an open store.
 func NewServiceImpl(store *Store, settings Settings) *ServiceImpl {
@@ -56,11 +63,31 @@ func NewServiceImplWithNATS(ctx context.Context, natsConn *nats.Conn, settings S
 	return NewServiceImpl(store, settings), nil
 }
 
-// SetActivation installs the check that offers the S3 endpoint service.
-func (s *ServiceImpl) SetActivation(active func(context.Context) bool) { s.active = active }
+// SetActivation installs the admission writes hold and the check reads use,
+// which together offer the S3 endpoint service.
+func (s *ServiceImpl) SetActivation(admit Admission, offered func(context.Context) (bool, error)) {
+	s.active, s.offered = admit, offered
+}
 
+// serviceActive answers a read: whether the service is offered right now.
 func (s *ServiceImpl) serviceActive(ctx context.Context) bool {
-	return s.active != nil && s.active(ctx)
+	if s.offered == nil {
+		return false
+	}
+	ok, err := s.offered(ctx)
+	if err != nil {
+		slog.WarnContext(ctx, "VPC endpoint: feature level unreadable; service not offered", "err", err)
+	}
+	return ok && err == nil
+}
+
+// admit holds the service's admission for a write. Without one installed it
+// admits nothing.
+func (s *ServiceImpl) admit(ctx context.Context) (done func(), ok bool, err error) {
+	if s.active == nil {
+		return func() {}, false, nil
+	}
+	return s.active(ctx)
 }
 
 func (s *ServiceImpl) serviceName() string { return prefixlist.ServiceName(s.settings.Region) }
@@ -207,8 +234,13 @@ func (s *ServiceImpl) CreateVpcEndpoint(ctx context.Context, input *ec2.CreateVp
 		return nil, awserrors.Errorf(awserrors.ErrorInvalidParameter, "vpc_id is a required member")
 	}
 	// Until every node can carry endpoint traffic the service does not exist,
-	// as DescribeVpcEndpointServices shows.
-	if !s.serviceActive(ctx) {
+	// as DescribeVpcEndpointServices shows. Admission is held to the last write.
+	done, ok, err := s.admit(ctx)
+	defer done()
+	if err != nil {
+		return nil, internalError(ctx, "CreateVpcEndpoint", err)
+	}
+	if !ok {
 		return nil, unknownService(aws.StringValue(input.ServiceName))
 	}
 	vpc, err := s.vpcRecord(ctx, accountID, vpcID)
@@ -330,6 +362,18 @@ func (s *ServiceImpl) ModifyVpcEndpoint(ctx context.Context, input *ec2.ModifyVp
 		m.policy = &doc
 	case reset:
 		m.policy = aws.String("")
+	}
+	// A new route needs every node able to carry it; a rollback in progress
+	// refuses it. Admission is held to the last write.
+	if len(input.AddRouteTableIds) > 0 {
+		done, ok, err := s.admit(ctx)
+		defer done()
+		if err != nil {
+			return nil, internalError(ctx, "ModifyVpcEndpoint", err)
+		}
+		if !ok {
+			return nil, awserrors.Errorf(awserrors.ErrorServiceUnavailable, "Route tables cannot be added to VPC endpoints at the moment.")
+		}
 	}
 	if m.add, err = s.checkTables(ctx, accountID, rec.VpcID, input.AddRouteTableIds); err != nil {
 		return nil, s.requestError(ctx, "ModifyVpcEndpoint", err)

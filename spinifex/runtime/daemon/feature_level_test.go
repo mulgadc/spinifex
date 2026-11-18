@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -152,6 +154,12 @@ func (k *flakyKV) Get(ctx context.Context, key string) (jetstream.KeyValueEntry,
 	return k.KV.Get(ctx, key)
 }
 
+// atBuild and aboveBuild are records at this build's level and one above it.
+var (
+	atBuild    = fmt.Sprintf(`{"level":%d}`, featurelevel.Build)
+	aboveBuild = fmt.Sprintf(`{"level":%d}`, featurelevel.Build+1)
+)
+
 func recordLevel(t *testing.T, m *JetStreamManager, body string) {
 	t.Helper()
 	kv, err := m.clusterConfig.KV(t.Context())
@@ -167,17 +175,19 @@ func TestEnforceFeatureLevel_RefusesOnlyWhenTheBuildIsBelowTheRecord(t *testing.
 	require.NoError(t, enforceFeatureLevel(t.Context(), store, noPublish), "an absent record is level 0")
 
 	recordLevel(t, m, `{"level":1}`)
+	require.NoError(t, enforceFeatureLevel(t.Context(), store, noPublish), "below starts")
+	recordLevel(t, m, atBuild)
 	require.NoError(t, enforceFeatureLevel(t.Context(), store, noPublish), "equal starts")
 
-	recordLevel(t, m, `{"level":2}`)
+	recordLevel(t, m, aboveBuild)
 	err := enforceFeatureLevel(t.Context(), store, noPublish)
 	var refused *FeatureLevelRefusedError
 	require.ErrorAs(t, err, &refused)
 	require.ErrorIs(t, err, errStartupPermanent)
 	assert.Equal(t, featurelevel.Build, refused.Build)
-	assert.Equal(t, 2, refused.Recorded)
-	assert.Contains(t, err.Error(), "spx admin cluster rollback --to 1")
-	assert.Contains(t, err.Error(), "2")
+	assert.Equal(t, featurelevel.Build+1, refused.Recorded)
+	assert.Contains(t, err.Error(), fmt.Sprintf("spx admin cluster rollback --to %d", featurelevel.Build))
+	assert.Contains(t, err.Error(), strconv.Itoa(featurelevel.Build+1))
 }
 
 func TestEnforceFeatureLevel_ReadFailureRetriesThenStartsWithoutRefusing(t *testing.T) {
@@ -197,7 +207,7 @@ func TestEnforceFeatureLevel_ReadFailureThenARefusingRecordStillRefuses(t *testi
 	noSleep(t)
 
 	m, _ := levelManager(t)
-	recordLevel(t, m, `{"level":3}`)
+	recordLevel(t, m, aboveBuild)
 	kv, err := m.clusterConfig.KV(t.Context())
 	require.NoError(t, err)
 	err = enforceFeatureLevel(t.Context(), featurelevel.NewStore(&flakyKV{KV: kv, failures: 2}), noPublish)
@@ -210,7 +220,7 @@ func TestStartCluster_BuildBelowFeatureLevelExitsBeforeAnyClaim(t *testing.T) {
 	t.Setenv("SPINIFEX_REQUIRE_NATS", "")
 	ns, _, js := testutil.StartTestJetStream(t)
 	seed := newLockManager(t, ns.ClientURL())
-	recordLevel(t, seed, `{"level":2}`)
+	recordLevel(t, seed, aboveBuild)
 
 	tmpDir := t.TempDir()
 	cfg := &config.ClusterConfig{
@@ -400,14 +410,14 @@ func TestEnforceFeatureLevel_RaiseBetweenCheckAndWriteRefuses(t *testing.T) {
 	t.Parallel()
 	m, store := levelManager(t)
 	publish := func() error {
-		recordLevel(t, m, `{"level":2}`)
+		recordLevel(t, m, aboveBuild)
 		return nil
 	}
 	err := enforceFeatureLevel(t.Context(), store, publish)
 	var refused *FeatureLevelRefusedError
 	require.ErrorAs(t, err, &refused)
 	require.ErrorIs(t, err, errStartupPermanent)
-	assert.Equal(t, 2, refused.Recorded)
+	assert.Equal(t, featurelevel.Build+1, refused.Recorded)
 }
 
 // Activation reads heartbeats from the stream leader, never a follower.
@@ -466,7 +476,7 @@ func TestTickFeatureLevel_ExitsWhenTheLevelRisesAboveTheBuild(t *testing.T) {
 	default:
 	}
 
-	recordLevel(t, m, `{"level":2}`)
+	recordLevel(t, m, aboveBuild)
 	d.tickFeatureLevel()
 	select {
 	case code := <-exitCh:

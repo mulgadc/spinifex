@@ -7,10 +7,12 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/release/featurelevel"
 	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/spf13/cobra"
 )
 
@@ -44,10 +46,17 @@ func init() {
 	clusterRollbackCmd.Flags().DurationVar(&rollbackTimeout, "timeout", featurelevel.DefaultAckTimeout, "how long to wait for every member to acknowledge")
 }
 
+var registerDrainsOnce = sync.OnceValue(func() error {
+	return featurelevel.RegisterDrain(featurelevel.GatewayEndpoints, endpointDrain.check)
+})
+
 // registerDrainChecks is the composition root for drain checks: every declared
 // level above the baseline registers its check here, and a level left without
 // one stops a rollback from running.
 func registerDrainChecks() error {
+	if err := registerDrainsOnce(); err != nil {
+		return err
+	}
 	if missing := featurelevel.UncoveredLevels(); len(missing) > 0 {
 		return fmt.Errorf("feature levels %v have no drain check registered; this build cannot roll back safely", missing)
 	}
@@ -93,6 +102,11 @@ func runClusterRollback(cmd *cobra.Command, _ []string) {
 
 	nodes := slices.Sorted(maps.Keys(cfg.Nodes))
 	probe := featurelevel.NewProbe(nc, nodes)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		fail(err)
+	}
+	endpointDrain.connect(store, nodes, probe.Probe, nc, js, os.Stdout)
 	rec, err := featurelevel.RunRollback(ctx, rollbackTo, featurelevel.RollbackDeps{
 		Store:      store,
 		Probe:      probe.Probe,

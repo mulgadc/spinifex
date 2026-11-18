@@ -186,28 +186,30 @@ type Daemon struct {
 	eipService            ec2eip.EIPService
 	elbv2Service          *elbv2domain.ELBv2ServiceImpl
 	featureGate           *featurelevel.Gate // admission for N-only work; set by checkFeatureLevel
-	eksService            *ekscluster.EKSServiceImpl
-	ecsService            *ecsdomain.Service
-	ecsScheduler          *ecsdomain.Scheduler
-	rdsService            *rdsinstance.Service
-	rdsReconciler         *rdsinstance.Reconciler
-	bedrockService        *ochre.Service
-	bedrockReaper         *ochre.Reaper
-	acmService            *acmdomain.ACMServiceImpl
-	acmRenewalWorker      *acmdomain.Worker
-	route53Service        *route53domain.Service
-	route53Verifier       *route53domain.Verifier
-	ochreVectorService    ochrevector.VectorService
-	ochreAppliance        *ochrevector.Appliance
-	ochreBackupService    *ochrevector.BackupService
-	ecrMetaService        *ecr.MetaServiceImpl
-	lambdaMetaService     *lambdafunction.MetaService
-	routeTableService     *ec2routetable.RouteTableServiceImpl
-	natGatewayService     *ec2natgw.NatGatewayServiceImpl
-	vpcPeeringService     *ec2vpcpeering.ServiceImpl
-	vpcEndpointService    *ec2vpcendpoint.ServiceImpl
-	prefixListService     *ec2prefixlist.ServiceImpl
-	externalIPAM          *ec2vpc.ExternalIPAM
+	// advertisedLevel is the last level the heartbeat reported, 0 before the first.
+	advertisedLevel    atomic.Int64
+	eksService         *ekscluster.EKSServiceImpl
+	ecsService         *ecsdomain.Service
+	ecsScheduler       *ecsdomain.Scheduler
+	rdsService         *rdsinstance.Service
+	rdsReconciler      *rdsinstance.Reconciler
+	bedrockService     *ochre.Service
+	bedrockReaper      *ochre.Reaper
+	acmService         *acmdomain.ACMServiceImpl
+	acmRenewalWorker   *acmdomain.Worker
+	route53Service     *route53domain.Service
+	route53Verifier    *route53domain.Verifier
+	ochreVectorService ochrevector.VectorService
+	ochreAppliance     *ochrevector.Appliance
+	ochreBackupService *ochrevector.BackupService
+	ecrMetaService     *ecr.MetaServiceImpl
+	lambdaMetaService  *lambdafunction.MetaService
+	routeTableService  *ec2routetable.RouteTableServiceImpl
+	natGatewayService  *ec2natgw.NatGatewayServiceImpl
+	vpcPeeringService  *ec2vpcpeering.ServiceImpl
+	vpcEndpointService *ec2vpcendpoint.ServiceImpl
+	prefixListService  *ec2prefixlist.ServiceImpl
+	externalIPAM       *ec2vpc.ExternalIPAM
 	// floatingAllocators is every floating-address pool (source="vultr" or "latitude") on
 	// this node, written once during startup like ociAllocators.
 	floatingAllocators []floatingPool
@@ -2253,7 +2255,6 @@ func (d *Daemon) startCluster() error {
 		return d.vpcPeeringService.VpcBlocksDeletion(ctx, vpcID)
 	})
 
-	// No activation is installed, so the endpoint service is never offered.
 	endpointSettings := ec2vpcendpoint.Settings{Region: d.config.Region, AZ: d.config.AZ}
 	if d.clusterConfig != nil {
 		endpointSettings.ServicesDomain = strings.TrimSpace(d.clusterConfig.AWS.ServicesDomain)
@@ -2265,6 +2266,7 @@ func (d *Daemon) startCluster() error {
 		return fmt.Errorf("failed to initialize VPC endpoint service: %w", err)
 	}
 	d.vpcEndpointService.SetTableLookup(d.routeTableService)
+	d.vpcEndpointService.SetActivation(endpointAdmission(d.featureGate), endpointOffered(d.featureGate))
 	d.vpcEndpointService.SetCentralTagStore(d.tagsService)
 	d.routeTableService.SetEndpointLookup(d.vpcEndpointService.Store)
 	d.vpcService.SetDependencyCheck("vpc-endpoint", d.vpcEndpointService.VpcBlocksDeletion)
@@ -2707,6 +2709,7 @@ func (d *Daemon) startCluster() error {
 	// ovs-vswitchd keeps br-imds flows only in memory and nothing else restores
 	// them, so a restart would leave every guest on this node without a network.
 	d.vmMgr.StartIMDSDatapathReconcile(d.ctx)
+	d.startEndpointDemuxReconcile(d.ctx)
 
 	// Reality→desired GC backstop (historic PROP-LIFECYCLE-003 §3): finish teardown interrupted by
 	// a node-down mid-cascade and purge completed terminated records. The volume

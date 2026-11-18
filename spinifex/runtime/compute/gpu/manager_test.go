@@ -635,6 +635,14 @@ func TestManagerRelease_ChecksFunctionsAlreadyOffVFIO(t *testing.T) {
 			must(t, kernfsWrite(filepath.Join(root, "bus/pci/drivers/snd_hda_intel/bind"), audio))
 			must(t, kernfsWrite(filepath.Join(root, "bus/pci/devices", audio, "driver_override"), " "))
 		}, true},
+		{"unreadable override on the original driver", "snd_hda_intel", func(t *testing.T, root string) {
+			unbindVFIOExternally(t, root)
+			clearOverride(t, root)
+			must(t, kernfsWrite(filepath.Join(root, "bus/pci/drivers/snd_hda_intel/bind"), audio))
+			override := filepath.Join(root, "bus/pci/devices", audio, "driver_override")
+			must(t, os.Remove(override))
+			must(t, os.Mkdir(override, 0o755))
+		}, true},
 		{"already restored", "snd_hda_intel", func(t *testing.T, root string) {
 			unbindVFIOExternally(t, root)
 			clearOverride(t, root)
@@ -731,6 +739,117 @@ func TestManagerRelease_ChecksPreBoundMember(t *testing.T) {
 			if before != "" {
 				assertBinding(t, root, audio, tc.wantDriver, strings.TrimSuffix(before, "\n"))
 			}
+		})
+	}
+}
+
+// preBindGPU moves the primary onto vfio-pci after discovery recorded nvidia.
+func preBindGPU(t *testing.T, root string) {
+	t.Helper()
+	const gpuAddr = "0000:03:00.0"
+	must(t, kernfsWrite(filepath.Join(root, "bus/pci/drivers/nvidia/unbind"), gpuAddr))
+	must(t, kernfsWrite(filepath.Join(root, "bus/pci/devices", gpuAddr, "driver_override"), "vfio-pci"))
+	must(t, kernfsWrite(filepath.Join(root, "bus/pci/drivers/vfio-pci/bind"), gpuAddr))
+}
+
+func TestManagerRollbackClaim_LeavesClaimTimePreBoundGPU(t *testing.T) {
+	useKernfs(t)
+	root, gpu := buildManagerSysfs(t)
+	preBindGPU(t, root)
+	m := newManagerForTest([]GPUDevice{gpu}, root)
+	if _, _, err := m.Claim("i-001", ""); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	if err := m.RollbackClaim("i-001"); err != nil {
+		t.Fatalf("RollbackClaim: %v", err)
+	}
+	assertBinding(t, root, "0000:03:00.0", "vfio-pci", "vfio-pci")
+	assertBinding(t, root, "0000:03:00.1", "snd_hda_intel", "(null)")
+	if m.Available() != 1 {
+		t.Errorf("want Available=1, got %d", m.Available())
+	}
+}
+
+func TestManagerRollbackClaim_RestoresClaimMovedGPU(t *testing.T) {
+	useKernfs(t)
+	root, gpu := buildManagerSysfs(t)
+	m := newManagerForTest([]GPUDevice{gpu}, root)
+	if _, _, err := m.Claim("i-001", ""); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	if err := m.RollbackClaim("i-001"); err != nil {
+		t.Fatalf("RollbackClaim: %v", err)
+	}
+	assertBinding(t, root, "0000:03:00.0", "nvidia", "(null)")
+	assertBinding(t, root, "0000:03:00.1", "snd_hda_intel", "(null)")
+	if m.Available() != 1 {
+		t.Errorf("want Available=1, got %d", m.Available())
+	}
+}
+
+// Normal release still returns a claim-time pre-bound primary to its discovery driver.
+func TestManagerRelease_PreBoundPrimaryReturnsToDiscoveryDriver(t *testing.T) {
+	useKernfs(t)
+	root, gpu := buildManagerSysfs(t)
+	preBindGPU(t, root)
+	m := newManagerForTest([]GPUDevice{gpu}, root)
+	if _, _, err := m.Claim("i-001", ""); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+
+	if err := m.Release("i-001"); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	assertBinding(t, root, "0000:03:00.0", "nvidia", "(null)")
+}
+
+// A companion re-claimed after a restart has no recorded original driver.
+func TestManagerRelease_ReclaimedCompanionWithUnknownOriginal(t *testing.T) {
+	useKernfs(t)
+	const audio = "0000:03:00.1"
+	cases := []struct {
+		name       string
+		mutate     func(t *testing.T, root string)
+		wantErr    bool
+		wantDriver string
+	}{
+		{"still on vfio-pci is unbound and cleared", func(t *testing.T, root string) {}, false, ""},
+		{"already unbound", func(t *testing.T, root string) {
+			must(t, kernfsWrite(filepath.Join(root, "bus/pci/drivers/vfio-pci/unbind"), audio))
+			must(t, kernfsWrite(filepath.Join(root, "bus/pci/devices", audio, "driver_override"), "\n"))
+		}, true, ""},
+		{"already on another driver", func(t *testing.T, root string) {
+			must(t, kernfsWrite(filepath.Join(root, "bus/pci/drivers/vfio-pci/unbind"), audio))
+			must(t, kernfsWrite(filepath.Join(root, "bus/pci/devices", audio, "driver_override"), "\n"))
+			must(t, kernfsWrite(filepath.Join(root, "bus/pci/drivers/snd_hda_intel/bind"), audio))
+		}, true, "snd_hda_intel"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root, gpu := buildManagerSysfs(t)
+			// A live instance survived the restart, so discovery saw vfio-pci.
+			preBindGPU(t, root)
+			must(t, kernfsWrite(filepath.Join(root, "bus/pci/drivers/snd_hda_intel/unbind"), audio))
+			must(t, kernfsWrite(filepath.Join(root, "bus/pci/devices", audio, "driver_override"), "vfio-pci"))
+			must(t, kernfsWrite(filepath.Join(root, "bus/pci/drivers/vfio-pci/bind"), audio))
+			gpu.OriginalDriver = "vfio-pci"
+			m := newManagerForTest([]GPUDevice{gpu}, root)
+			if err := m.ReclaimByAddress(gpu.PCIAddress, "i-001"); err != nil {
+				t.Fatalf("ReclaimByAddress: %v", err)
+			}
+			tc.mutate(t, root)
+
+			err := m.Release("i-001")
+			if tc.wantErr != (err != nil) {
+				t.Fatalf("Release err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if want := map[bool]int{true: 0, false: 1}[tc.wantErr]; m.Available() != want {
+				t.Errorf("want Available=%d, got %d", want, m.Available())
+			}
+			assertBinding(t, root, gpu.PCIAddress, "vfio-pci", "vfio-pci")
+			assertBinding(t, root, audio, tc.wantDriver, "(null)")
 		})
 	}
 }

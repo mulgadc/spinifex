@@ -22,6 +22,7 @@ type gpuEntry struct {
 	Available     bool               // false = error state requiring operator action
 	groupMembers  []IOMMUGroupMember // only populated for whole-GPU entries
 	memberDrivers map[string]string  // PCI addr -> driver held before VFIO takeover; whole-GPU only
+	claimPreBound map[string]bool    // members Claim found already on vfio-pci; whole-GPU only
 }
 
 // Manager is a thread-safe pool of passthrough-eligible GPUs.
@@ -179,6 +180,7 @@ func (m *Manager) Claim(instanceID, profileName string) (*GPUDevice, *MIGInstanc
 	drivers := make(map[string]string, len(members))
 	// Only members this claim moved to vfio-pci; pre-bound ones stay as found.
 	var moved []string
+	preBound := make(map[string]bool, len(members))
 
 	for _, member := range members {
 		orig, err := bindVFIO(m.sysfsRoot, member.PCIAddress)
@@ -195,6 +197,8 @@ func (m *Manager) Claim(instanceID, profileName string) (*GPUDevice, *MIGInstanc
 		}
 		if orig != "vfio-pci" {
 			moved = append(moved, member.PCIAddress)
+		} else {
+			preBound[member.PCIAddress] = true
 		}
 		// bindVFIO returns "vfio-pci" when the device was already bound (idempotent
 		// path — e.g. pre-bound by spx-test-gpu, or after a daemon restart with a
@@ -213,6 +217,7 @@ func (m *Manager) Claim(instanceID, profileName string) (*GPUDevice, *MIGInstanc
 	entry.InstanceID = instanceID
 	entry.groupMembers = members
 	entry.memberDrivers = drivers
+	entry.claimPreBound = preBound
 
 	slog.Info("GPU claimed", "instance", instanceID,
 		"gpu", entry.Device.PCIAddress, "model", entry.Device.Model)
@@ -229,6 +234,17 @@ func (m *Manager) Claim(instanceID, profileName string) (*GPUDevice, *MIGInstanc
 // than a fault: it says the desired state already holds. Callers that re-drive
 // releases decide for themselves whether that counts as success.
 func (m *Manager) Release(instanceID string) error {
+	return m.release(instanceID, false)
+}
+
+// RollbackClaim undoes a claim the caller could not complete. Unlike Release,
+// every member Claim found already on vfio-pci is left there, whatever the
+// driver recorded at discovery.
+func (m *Manager) RollbackClaim(instanceID string) error {
+	return m.release(instanceID, true)
+}
+
+func (m *Manager) release(instanceID string, rollback bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -257,12 +273,22 @@ func (m *Manager) Release(instanceID string) error {
 		var entryErr error
 
 		for _, member := range entry.groupMembers {
-			orig := entry.memberDrivers[member.PCIAddress]
+			orig, known := entry.memberDrivers[member.PCIAddress]
 			release := unbindVFIO
-			if orig == "vfio-pci" {
+			switch {
+			case orig == "vfio-pci" || (rollback && entry.claimPreBound[member.PCIAddress]):
 				// Pre-bound before this instance (e.g. by spx-test-gpu): it stays on
 				// vfio-pci for the next claim, so only confirm it is still there.
 				release = func(root, addr, _ string) error { return checkStillVFIO(root, addr) }
+			case !known:
+				// A member re-claimed after a restart has no recorded original; one
+				// already off vfio-pci cannot be shown restored, so it is fenced.
+				release = func(root, addr, _ string) error {
+					if err := checkStillVFIO(root, addr); err != nil {
+						return fmt.Errorf("original driver unknown: %w", err)
+					}
+					return unbindVFIO(root, addr, "")
+				}
 			}
 			if err := release(m.sysfsRoot, member.PCIAddress, orig); err != nil {
 				slog.Error("GPU release failed for IOMMU group member",
@@ -279,6 +305,7 @@ func (m *Manager) Release(instanceID string) error {
 		entry.InstanceID = ""
 		entry.groupMembers = nil
 		entry.memberDrivers = nil
+		entry.claimPreBound = nil
 
 		if entryErr != nil {
 			entry.Available = false

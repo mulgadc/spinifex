@@ -132,10 +132,20 @@
     "ServiceUnavailable",
     "Unavailable"
   ],
-  "observedSource": "live AWS responses in ap-southeast-2, recorded in mulga scripts/aws-compliance/aws-response-diff/baselines/vpc-peering-aws.json",
-  "observedOn": "2026-11-17",
+  "observedSource": "live AWS responses in ap-southeast-2, recorded in mulga scripts/aws-compliance/aws-response-diff/baselines/vpc-peering-aws.json and vpc-endpoints-aws.json",
+  "observedOn": "2026-11-18",
   "observedClient": [
     "CidrConflict",
-    "InvalidVpcId.Malformed"
+    "InvalidFilter",
+    "InvalidPolicyDocument",
+    "InvalidPrefixListID.NotFound",
+    "InvalidRouteTableId.NotFound",
+    "InvalidServiceName",
+    "InvalidVpcEndpoint.NotFound",
+    "InvalidVpcEndpointId.NotFound",
+    "InvalidVpcEndpointType",
+    "InvalidVpcId.Malformed",
+    "InvalidVpcId.NotFound",
+    "VpcEndpointLimitExceeded"
   ]
 }

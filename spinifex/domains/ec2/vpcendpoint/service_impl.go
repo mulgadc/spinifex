@@ -128,7 +128,8 @@ func (s *ServiceImpl) checkTypeAndService(typ, name string) error {
 	}
 	if name != s.serviceName() {
 		// Another Region's S3 is an interface service on AWS.
-		if strings.HasPrefix(name, "com.amazonaws.") && strings.HasSuffix(name, ".s3") {
+		if (strings.HasPrefix(name, "com.amazonaws.") && strings.HasSuffix(name, ".s3")) ||
+			(typ != ec2.VpcEndpointTypeInterface && s.interfaceOnly(name)) {
 			return awserrors.Errorf(awserrors.ErrorInvalidParameter,
 				"Endpoint type (%s) does not match available service types ([Interface]).", typ)
 		}
@@ -139,6 +140,16 @@ func (s *ServiceImpl) checkTypeAndService(typ, name string) error {
 			"Endpoint type (%s) does not match available service types ([Gateway]).", typ)
 	}
 	return nil
+}
+
+// interfaceOnlyServices are services Spinifex also serves that AWS offers in
+// a Region only as interface endpoints, per AWS's PrivateLink service list.
+var interfaceOnlyServices = []string{"ec2", "ecr.api", "ecr.dkr", "ecs", "eks", "elasticloadbalancing", "sts"}
+
+// interfaceOnly reports whether name is one of interfaceOnlyServices in this Region.
+func (s *ServiceImpl) interfaceOnly(name string) bool {
+	svc, ok := strings.CutPrefix(name, "com.amazonaws."+s.settings.Region+".")
+	return ok && slices.Contains(interfaceOnlyServices, svc)
 }
 
 // interfaceOnlyFields refuses the fields AWS accepts only on interface

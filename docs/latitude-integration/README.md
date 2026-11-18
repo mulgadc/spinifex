@@ -299,6 +299,7 @@ In our run the destroy took about 1½ minutes, including both prompts, and left 
 
 | Symptom | Cause and fix |
 | --- | --- |
+| `shopt: inherit_errexit: invalid shell option name` | The shell `bash` is older than 4.4, as some systems ship. Run the script with a newer `bash`, for example one installed with Homebrew, as `bash ./deploy-latitude.sh up` using that `bash`. Or use a Spinifex release after v1.25.0, which runs on the older `bash`. |
 | The site has no `m4-metal-medium` in stock | Pick another site with `--site`. |
 | `Connection was closed before we received a valid response from endpoint URL: "http://127.0.0.1:8080/"` | `AWS_ENDPOINT_URL_EC2`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` or `AWS_DEFAULT_REGION` is set in your shell and overrides the profile. Run `unset` on each, then `export AWS_PROFILE=spinifex-latitude-default`. |
 | The workbook targets the wrong region or a local endpoint | Pass `-var region=us-east-1` and `-var spinifex_endpoint="$(aws configure get endpoint_url)"` to both `apply` and `destroy`. |

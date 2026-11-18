@@ -59,6 +59,10 @@ var startRelaunchedQEMU = func(m *Manager, instance *VM) error {
 // its replacement. The guest is down, so crash recovery takes over.
 var errRelaunchFailed = errors.New("relaunch after reboot failed")
 
+// rebootReleased runs once a reboot has released its claim; tests use it to
+// admit the next reboot at that moment.
+var rebootReleased = func(*VM) {}
+
 // Reboot admits a reboot and runs it in the background, the way EC2 does: the
 // answer says the request was accepted, not that the guest is back. Asking a
 // guest to shut down takes as long as the guest takes, which is far longer than
@@ -86,7 +90,11 @@ func (m *Manager) Reboot(ctx context.Context, id string) error {
 	rebootCtx := context.WithoutCancel(ctx)
 	m.goroutineWg.Go(func() {
 		err := m.rebootNow(rebootCtx, instance)
+		// Read while the claim still holds off another reboot, so a crash
+		// handed on below names this reboot's process, not a later one's.
+		failedPID := instance.qemuPID.Load()
 		instance.rebooting.Store(false)
+		rebootReleased(instance)
 		if err == nil {
 			return
 		}
@@ -99,7 +107,7 @@ func (m *Manager) Reboot(ctx context.Context, id string) error {
 		// The old process is gone and no new one runs, which is a crash in
 		// all but name: recovery relaunches it under the restart policy.
 		if errors.Is(err, errRelaunchFailed) {
-			m.HandleCrash(instance, instance.qemuPID.Load(), err)
+			m.HandleCrash(instance, failedPID, err)
 		}
 	})
 	return nil

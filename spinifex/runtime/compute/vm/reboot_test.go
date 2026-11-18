@@ -339,6 +339,26 @@ func TestReboot_FailedRelaunchGoesToCrashRecovery(t *testing.T) {
 	assert.Equal(t, 1, crashes, "the failed relaunch is handed to crash recovery")
 }
 
+// A reboot admitted once a failed one released its claim replaces the process;
+// the failed reboot's crash handling must not then tear the replacement down.
+func TestReboot_FailedRelaunchLeavesALaterReplacementAlone(t *testing.T) {
+	r := newRebootRig(t, Deps{}, "x")
+	startRelaunchedQEMU = func(_ *Manager, v *VM) error {
+		v.qemuPID.Store(4001)
+		return errors.New("no qemu")
+	}
+	previous := rebootReleased
+	rebootReleased = func(v *VM) { v.qemuPID.Store(4002) }
+	t.Cleanup(func() { rebootReleased = previous })
+
+	r.reboot(t)
+
+	var crashes int
+	r.m.Inspect(r.vm, func(v *VM) { crashes = v.Health.CrashCount })
+	assert.Zero(t, crashes, "the failed reboot's crash handling acted on the replacement")
+	assert.Equal(t, StateRunning, r.m.Status(r.vm))
+}
+
 // TestReboot_StopWhileOldQEMUEndsSkipsTheRelaunch: a stop that lands while the
 // old process is ending owns the instance, so no new process is started.
 func TestReboot_StopWhileOldQEMUEndsSkipsTheRelaunch(t *testing.T) {

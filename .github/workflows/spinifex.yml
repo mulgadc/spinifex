@@ -173,7 +173,12 @@ jobs:
       - name: Merge Coverage Profiles
         run: |
           set -euo pipefail
-          { head -1 shards/coverage-1.out; for f in shards/coverage-*.out; do tail -n +2 "$f"; done; } > spinifex/coverage.out
+          # Every shard's profile, by number: a missing one must fail, not shrink the total.
+          for n in 1 2 3 4; do
+            [ "$(head -1 "shards/coverage-${n}.out" 2>/dev/null)" = "mode: atomic" ] ||
+              { echo "::error::shard ${n} has no atomic coverage profile"; exit 1; }
+          done
+          { echo "mode: atomic"; for n in 1 2 3 4; do tail -n +2 "shards/coverage-${n}.out"; done; } > spinifex/coverage.out
           grep -c '' spinifex/coverage.out
 
       - name: Check Total Coverage

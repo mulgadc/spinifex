@@ -26,6 +26,10 @@ s2=$("$ss" demo 2 2 "$tmp/tests.tar" "$tmp/w" 2>/dev/null)
 check "the two shards run every test once" "$({ runs "$s1"; runs "$s2"; } | sort | tr '\n' ' ')" "TestA TestB TestC TestD "
 check "the heaviest test runs alone in shard 1" "$(runs "$s1" | tr '\n' ' ')" "TestA "
 
+"$ss" demo 1 2 "$tmp/tests.tar" "$tmp/w" "$tmp/m1" >/dev/null 2>&1
+"$ss" demo 2 2 "$tmp/tests.tar" "$tmp/w" "$tmp/m2" >/dev/null 2>&1
+check "the manifest lists every test" "$(tr '\n' ' ' <"$tmp/m1.all")" "TestA TestB TestC TestD "
+check "the manifests' run lists match the skip regexes" "$(cat "$tmp/m1.runs" "$tmp/m2.runs" | tr '\n' ' ')" "$({ runs "$s1"; runs "$s2"; } | tr '\n' ' ')"
 check "one shard prints no regex" "$("$ss" demo 1 1 "$tmp/tests.tar" "$tmp/w")" ""
 "$ss" absent 1 2 "$tmp/tests.tar" "$tmp/w" >/dev/null 2>&1
 check "a suite missing from the tar fails" "$?" "1"

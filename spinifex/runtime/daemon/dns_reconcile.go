@@ -2,12 +2,12 @@ package daemon
 
 import (
 	"context"
+	"slices"
 	"log/slog"
-	"net"
-	"sort"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/dns"
 	ekscluster "github.com/mulgadc/spinifex/spinifex/domains/eks/cluster"
 	elbv2domain "github.com/mulgadc/spinifex/spinifex/domains/elbv2"
@@ -149,34 +149,13 @@ func (d *Daemon) desiredServiceEndpointDNSChanges() ([]dns.Change, bool) {
 		return nil, false
 	}
 
-	seen := map[string]bool{}
-	var addresses []string
-	for name, node := range d.clusterConfig.Nodes {
-		mgmtBridgeIP := ""
-		if name == d.clusterConfig.Node {
-			mgmtBridgeIP = d.mgmtBridgeIP
-		}
-		host := gatewayHostForNode(node, mgmtBridgeIP)
-		if host == "" {
-			continue
-		}
-		// resolveGatewayHost (and its per-node generalisation) can return a
-		// non-IP host; the writer supports only A records, so skip rather than
-		// write a malformed one.
-		ip := net.ParseIP(host)
-		if ip == nil {
-			continue
-		}
-		addr := ip.String()
-		if seen[addr] {
-			continue
-		}
-		seen[addr] = true
-		addresses = append(addresses, addr)
+	endpoints := config.ServiceEndpoints(d.clusterConfig, d.mgmtBridgeIP)
+	addresses := make([]string, 0, len(endpoints))
+	for _, e := range endpoints {
+		addresses = append(addresses, e.Addr.String())
 	}
-	// Deterministic order so an unchanged address set produces an unchanged
-	// zone body (the writer skips a no-op write) regardless of map iteration.
-	sort.Strings(addresses)
+	// Sorted as strings, so an unchanged set renders an unchanged zone body.
+	slices.Sort(addresses)
 
 	return dns.ServiceEndpointChanges(d.config.Region, suffix, addresses), true
 }

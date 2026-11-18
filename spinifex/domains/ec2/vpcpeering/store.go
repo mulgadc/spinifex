@@ -31,6 +31,8 @@ type Store struct {
 	term  jetstream.KeyValue
 	vpcKV jetstream.KeyValue
 	now   func() time.Time
+
+	centralTags CentralTagStore
 }
 
 // NewStore wraps already-open buckets.

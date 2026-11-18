@@ -20,6 +20,7 @@ import (
 	ec2instance "github.com/mulgadc/spinifex/spinifex/domains/ec2/instance"
 	ec2key "github.com/mulgadc/spinifex/spinifex/domains/ec2/key"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	ec2vpcpeering "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcpeering"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/arn"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	awsfilters "github.com/mulgadc/spinifex/spinifex/foundation/aws/filters"
@@ -39,6 +40,9 @@ var _ ec2vpc.CentralTagStore = (*TagsServiceImpl)(nil)
 
 // Ensure TagsServiceImpl can both project and clear key-pair record tags.
 var _ ec2key.CentralTagStore = (*TagsServiceImpl)(nil)
+
+// Ensure TagsServiceImpl can project, scan and clear peering connection tags.
+var _ ec2vpcpeering.CentralTagStore = (*TagsServiceImpl)(nil)
 
 // TagsServiceImpl implements TagsService over a JetStream KV bucket, one entry
 // per resource, scoped by account in the key.

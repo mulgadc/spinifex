@@ -17,6 +17,7 @@ type SweepResult struct {
 	Moved          int // expired or rejected requests, and interrupted moves, finished
 	DiscardedStale int // pending records no request claim names
 	KeysRemoved    int // index keys and claims with no live owner
+	TagsRemoved    int // central tag entries of connections in neither bucket
 }
 
 // Sweep is the one pass that scans the live bucket. It moves expired requests
@@ -43,6 +44,9 @@ func (s *Store) Sweep(ctx context.Context) (SweepResult, error) {
 		if err := s.sweepKey(ctx, key, &res); err != nil {
 			return res, fmt.Errorf("sweep %s: %w", key, err)
 		}
+	}
+	if err := s.sweepTags(ctx, &res); err != nil {
+		return res, fmt.Errorf("sweep central tags: %w", err)
 	}
 	return res, nil
 }
@@ -165,13 +169,13 @@ func (r *SweepReaper) Sweep(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 	res, err := r.store.Sweep(ctx)
-	n := res.Moved + res.DiscardedStale + res.KeysRemoved
+	n := res.Moved + res.DiscardedStale + res.KeysRemoved + res.TagsRemoved
 	if err != nil {
 		return n, err
 	}
 	r.last = now
 	if n > 0 {
-		slog.InfoContext(ctx, "VPC peering sweep", "moved", res.Moved, "discarded_stale", res.DiscardedStale, "keys_removed", res.KeysRemoved)
+		slog.InfoContext(ctx, "VPC peering sweep", "moved", res.Moved, "discarded_stale", res.DiscardedStale, "keys_removed", res.KeysRemoved, "tags_removed", res.TagsRemoved)
 	}
 	return n, nil
 }

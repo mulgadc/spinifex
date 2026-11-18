@@ -26,6 +26,8 @@ type resourceScope struct {
 	kind     arn.EC2ResourceType
 	byPrefix bool
 	optional bool
+	// owner replaces the caller's account in the ARN of an AWS-owned resource.
+	owner string
 }
 
 // Scopes shared across actions. Names ending in New resolve to <type>/*, which
@@ -88,6 +90,15 @@ var (
 
 	vpcPeeringScope    = &resourceScope{paths: []string{"VpcPeeringConnectionId"}, kind: arn.EC2VPCPeeringConnection}
 	vpcPeeringNewScope = &resourceScope{kind: arn.EC2VPCPeeringConnection}
+
+	vpcEndpointScope     = &resourceScope{paths: []string{"VpcEndpointId"}, kind: arn.EC2VPCEndpoint}
+	vpcEndpointListScope = &resourceScope{paths: []string{"VpcEndpointIds"}, kind: arn.EC2VPCEndpoint}
+	vpcEndpointNewScope  = &resourceScope{kind: arn.EC2VPCEndpoint}
+	routeTableListOpt    = &resourceScope{paths: []string{"RouteTableIds"}, kind: arn.EC2RouteTable, optional: true}
+	routeTableAddOpt     = &resourceScope{paths: []string{"AddRouteTableIds"}, kind: arn.EC2RouteTable, optional: true}
+	routeTableRemoveOpt  = &resourceScope{paths: []string{"RemoveRouteTableIds"}, kind: arn.EC2RouteTable, optional: true}
+
+	prefixListScope = &resourceScope{paths: []string{"PrefixListId"}, kind: arn.EC2PrefixList, owner: "aws"}
 
 	keyPairScope    = &resourceScope{paths: []string{"KeyPairId", "KeyName"}, kind: arn.EC2KeyPair}
 	keyPairOptScope = &resourceScope{paths: []string{"KeyName"}, kind: arn.EC2KeyPair, optional: true}
@@ -216,6 +227,12 @@ var ec2Scopes = map[string][]*resourceScope{
 	"DeleteVpcPeeringConnection":        {vpcPeeringScope},
 	"ModifyVpcPeeringConnectionOptions": {vpcPeeringScope},
 
+	// VPC endpoints and the managed prefix list.
+	"CreateVpcEndpoint":           {vpcEndpointNewScope, vpcScope, routeTableListOpt},
+	"ModifyVpcEndpoint":           {vpcEndpointScope, routeTableAddOpt, routeTableRemoveOpt},
+	"DeleteVpcEndpoints":          {vpcEndpointListScope},
+	"GetManagedPrefixListEntries": {prefixListScope},
+
 	// Network interfaces.
 	"CreateNetworkInterface":          {eniNewScope, subnetScope, securityGroupsOptList},
 	"DeleteNetworkInterface":          {eniScope},
@@ -322,6 +339,9 @@ var ec2Scopes = map[string][]*resourceScope{
 	"DescribeVolumesModifications":           unscoped,
 	"DescribeVpcAttribute":                   unscoped,
 	"DescribeVpcEndpoints":                   unscoped,
+	"DescribeVpcEndpointServices":            unscoped,
+	"DescribeManagedPrefixLists":             unscoped,
+	"DescribePrefixLists":                    unscoped,
 	"DescribeVpcs":                           unscoped,
 }
 
@@ -372,6 +392,9 @@ func ResourceARNs(action, region, accountID string, input any) ([]string, error)
 
 // resolve returns the ARNs one scope contributes, which may be none.
 func (s *resourceScope) resolve(region, accountID string, input any) ([]string, error) {
+	if s.owner != "" {
+		accountID = s.owner
+	}
 	if len(s.paths) == 0 {
 		if s.kind == "" {
 			return []string{anyResource}, nil

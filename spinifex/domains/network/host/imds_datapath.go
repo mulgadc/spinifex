@@ -197,6 +197,9 @@ func RemoveTapDatapath(ctx context.Context, r Runner, d IMDSTapDatapath) error {
 	if err := clearIMDSFlowsByCookie(ctx, r, imdsFlowCookie(d.Endpoint)); err != nil {
 		slog.Warn("Failed to clear IMDS tap flows", "endpoint", d.Endpoint, "err", err)
 	}
+	if err := clearIMDSFlowsByCookie(ctx, r, endpointFlowCookie(d.Endpoint)); err != nil {
+		slog.Warn("Failed to clear endpoint demux flows", "endpoint", d.Endpoint, "err", err)
+	}
 	// Every port is deleted regardless of an earlier failure, or teardown leaks the
 	// endpoint (and its captured .254/.253 addresses) on br-imds. The IMDSBridge patch
 	// end is best-effort; the br-int end and endpoint surface their errors.

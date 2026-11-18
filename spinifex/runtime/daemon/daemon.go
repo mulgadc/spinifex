@@ -57,6 +57,7 @@ import (
 	ec2launchtemplate "github.com/mulgadc/spinifex/spinifex/domains/ec2/launchtemplate"
 	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
 	ec2placementgroup "github.com/mulgadc/spinifex/spinifex/domains/ec2/placementgroup"
+	ec2prefixlist "github.com/mulgadc/spinifex/spinifex/domains/ec2/prefixlist"
 	ec2routetable "github.com/mulgadc/spinifex/spinifex/domains/ec2/routetable"
 	ec2snapshot "github.com/mulgadc/spinifex/spinifex/domains/ec2/snapshot"
 	ec2spotinstance "github.com/mulgadc/spinifex/spinifex/domains/ec2/spotinstance"
@@ -64,6 +65,7 @@ import (
 	ec2tags "github.com/mulgadc/spinifex/spinifex/domains/ec2/tags"
 	ec2volume "github.com/mulgadc/spinifex/spinifex/domains/ec2/volume"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
+	ec2vpcendpoint "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcendpoint"
 	ec2vpcpeering "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcpeering"
 	"github.com/mulgadc/spinifex/spinifex/domains/ecr"
 	ecsdomain "github.com/mulgadc/spinifex/spinifex/domains/ecs"
@@ -203,6 +205,8 @@ type Daemon struct {
 	routeTableService     *ec2routetable.RouteTableServiceImpl
 	natGatewayService     *ec2natgw.NatGatewayServiceImpl
 	vpcPeeringService     *ec2vpcpeering.ServiceImpl
+	vpcEndpointService    *ec2vpcendpoint.ServiceImpl
+	prefixListService     *ec2prefixlist.ServiceImpl
 	externalIPAM          *ec2vpc.ExternalIPAM
 	// floatingAllocators is every floating-address pool (source="vultr" or "latitude") on
 	// this node, written once during startup like ociAllocators.
@@ -1023,6 +1027,14 @@ func (d *Daemon) subscribeAll() error {
 		{"ec2.DeleteVpcPeeringConnection", handleNATSRequest(d.node, d.vpcPeeringService.DeleteVpcPeeringConnection), "spinifex-workers"},
 		{"ec2.DescribeVpcPeeringConnections", handleNATSRequest(d.node, d.vpcPeeringService.DescribeVpcPeeringConnections), "spinifex-workers"},
 		{"ec2.ModifyVpcPeeringConnectionOptions", handleNATSRequest(d.node, d.vpcPeeringService.ModifyVpcPeeringConnectionOptions), "spinifex-workers"},
+		{"ec2.CreateVpcEndpoint", handleNATSRequest(d.node, d.vpcEndpointService.CreateVpcEndpoint), "spinifex-workers"},
+		{"ec2.ModifyVpcEndpoint", handleNATSRequest(d.node, d.vpcEndpointService.ModifyVpcEndpoint), "spinifex-workers"},
+		{"ec2.DeleteVpcEndpoints", handleNATSRequest(d.node, d.vpcEndpointService.DeleteVpcEndpoints), "spinifex-workers"},
+		{"ec2.DescribeVpcEndpoints", handleNATSRequest(d.node, d.vpcEndpointService.DescribeVpcEndpoints), "spinifex-workers"},
+		{"ec2.DescribeVpcEndpointServices", handleNATSRequest(d.node, d.vpcEndpointService.DescribeVpcEndpointServices), "spinifex-workers"},
+		{"ec2.DescribePrefixLists", handleNATSRequest(d.node, d.prefixListService.DescribePrefixLists), "spinifex-workers"},
+		{"ec2.DescribeManagedPrefixLists", handleNATSRequest(d.node, d.prefixListService.DescribeManagedPrefixLists), "spinifex-workers"},
+		{"ec2.GetManagedPrefixListEntries", handleNATSRequest(d.node, d.prefixListService.GetManagedPrefixListEntries), "spinifex-workers"},
 		{"ec2.CreateRouteTable", handleNATSRequest(d.node, d.routeTableService.CreateRouteTable), "spinifex-workers"},
 		{"ec2.DeleteRouteTable", handleNATSRequest(d.node, d.routeTableService.DeleteRouteTable), "spinifex-workers"},
 		{"ec2.DescribeRouteTables", handleNATSRequest(d.node, d.routeTableService.DescribeRouteTables), "spinifex-workers"},
@@ -2003,6 +2015,10 @@ func (d *Daemon) assertNoClusterServicesInitialised() error {
 		return errors.New("d.natGatewayService must be nil before startCluster")
 	case d.vpcPeeringService != nil:
 		return errors.New("d.vpcPeeringService must be nil before startCluster")
+	case d.vpcEndpointService != nil:
+		return errors.New("d.vpcEndpointService must be nil before startCluster")
+	case d.prefixListService != nil:
+		return errors.New("d.prefixListService must be nil before startCluster")
 	case d.externalIPAM != nil:
 		return errors.New("d.externalIPAM must be nil before startCluster")
 	case d.eipService != nil:
@@ -2233,7 +2249,26 @@ func (d *Daemon) startCluster() error {
 	}
 	d.vpcPeeringService.SetCentralTagStore(d.tagsService)
 	d.routeTableService.SetPeeringLookup(d.vpcPeeringService.Store)
-	d.vpcService.SetPeeringCheck(d.vpcPeeringService.VpcBlocksDeletion)
+	d.vpcService.SetDependencyCheck("vpc-peering-connection", func(ctx context.Context, _, vpcID string) (bool, error) {
+		return d.vpcPeeringService.VpcBlocksDeletion(ctx, vpcID)
+	})
+
+	// No activation is installed, so the endpoint service is never offered.
+	endpointSettings := ec2vpcendpoint.Settings{Region: d.config.Region, AZ: d.config.AZ}
+	if d.clusterConfig != nil {
+		endpointSettings.ServicesDomain = strings.TrimSpace(d.clusterConfig.AWS.ServicesDomain)
+	}
+	d.vpcEndpointService, err = initServiceWithRetry("VPC endpoint service", func() (*ec2vpcendpoint.ServiceImpl, error) {
+		return ec2vpcendpoint.NewServiceImplWithNATS(d.ctx, d.natsConn, endpointSettings)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize VPC endpoint service: %w", err)
+	}
+	d.vpcEndpointService.SetTableLookup(d.routeTableService)
+	d.vpcEndpointService.SetCentralTagStore(d.tagsService)
+	d.routeTableService.SetEndpointLookup(d.vpcEndpointService.Store)
+	d.vpcService.SetDependencyCheck("vpc-endpoint", d.vpcEndpointService.VpcBlocksDeletion)
+	d.prefixListService = ec2prefixlist.NewServiceImpl(d.config.Region, d.mgmtBridgeIP, func() *config.ClusterConfig { return d.clusterConfig })
 
 	// A node declaring public pools must serve EIPs or refuse to start: EIP
 	// subjects are a queue group, so one node silently on the disabled stub
@@ -2706,6 +2741,9 @@ func (d *Daemon) startCluster() error {
 		}
 		if d.vpcPeeringService != nil {
 			reapers = append(reapers, clusterWideReaper{d.vpcPeeringService.NewSweepReaper()})
+		}
+		if d.vpcEndpointService != nil {
+			reapers = append(reapers, clusterWideReaper{d.vpcEndpointService.NewSweepReaper()})
 		}
 		if d.volumeService != nil {
 			reapers = append(reapers, d.volumeService.NewVolumeLeakReaper(d.leakedVolumeInstances))

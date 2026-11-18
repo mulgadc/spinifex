@@ -108,6 +108,7 @@ func TestValidateCreateRouteInput(t *testing.T) {
 		{"missing DestinationCidrBlock", &ec2.CreateRouteInput{RouteTableId: aws.String("rtb-1")}, awserrors.ErrorMissingParameter},
 		{"empty DestinationCidrBlock", &ec2.CreateRouteInput{RouteTableId: aws.String("rtb-1"), DestinationCidrBlock: aws.String("")}, awserrors.ErrorMissingParameter},
 		{"valid input", &ec2.CreateRouteInput{RouteTableId: aws.String("rtb-1"), DestinationCidrBlock: aws.String("0.0.0.0/0")}, ""},
+		{"prefix-list destination", &ec2.CreateRouteInput{RouteTableId: aws.String("rtb-1"), DestinationPrefixListId: aws.String("pl-1")}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -146,6 +147,7 @@ func TestValidateDeleteRouteInput(t *testing.T) {
 		{"missing RouteTableId", &ec2.DeleteRouteInput{DestinationCidrBlock: aws.String("0.0.0.0/0")}, awserrors.ErrorMissingParameter},
 		{"missing DestinationCidrBlock", &ec2.DeleteRouteInput{RouteTableId: aws.String("rtb-1")}, awserrors.ErrorMissingParameter},
 		{"valid input", &ec2.DeleteRouteInput{RouteTableId: aws.String("rtb-1"), DestinationCidrBlock: aws.String("0.0.0.0/0")}, ""},
+		{"prefix-list destination", &ec2.DeleteRouteInput{RouteTableId: aws.String("rtb-1"), DestinationPrefixListId: aws.String("pl-1")}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -184,6 +186,7 @@ func TestValidateReplaceRouteInput(t *testing.T) {
 		{"missing RouteTableId", &ec2.ReplaceRouteInput{DestinationCidrBlock: aws.String("0.0.0.0/0")}, awserrors.ErrorMissingParameter},
 		{"missing DestinationCidrBlock", &ec2.ReplaceRouteInput{RouteTableId: aws.String("rtb-1")}, awserrors.ErrorMissingParameter},
 		{"valid input", &ec2.ReplaceRouteInput{RouteTableId: aws.String("rtb-1"), DestinationCidrBlock: aws.String("0.0.0.0/0")}, ""},
+		{"prefix-list destination", &ec2.ReplaceRouteInput{RouteTableId: aws.String("rtb-1"), DestinationPrefixListId: aws.String("pl-1")}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

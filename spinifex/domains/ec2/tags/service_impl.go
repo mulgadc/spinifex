@@ -240,6 +240,11 @@ func (s *TagsServiceImpl) CreateTags(ctx context.Context, input *ec2.CreateTagsI
 			slog.InfoContext(ctx, "CreateTags rejected unrecognised resource id", "resourceId", *resourceID)
 			return nil, errors.New(awserrors.ErrorInvalidID)
 		}
+		// The only prefix list is AWS-managed and derived, with no record to hold
+		// a per-account tag.
+		if resourceID != nil && strings.HasPrefix(*resourceID, "pl-") {
+			return nil, awserrors.Errorf(awserrors.ErrorUnsupportedOperation, "The action is not supported for an AWS-managed prefix list.")
+		}
 	}
 
 	for _, resourceID := range input.Resources {

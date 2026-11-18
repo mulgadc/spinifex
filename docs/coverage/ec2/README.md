@@ -18,7 +18,7 @@ tags:
 
 ## Overview
 
-Spinifex implements **148 operations** in the EC2 `2016-11-15` API model.
+Spinifex implements **155 operations** in the EC2 `2016-11-15` API model.
 
 ### Spot Instances Are a Mock
 
@@ -94,6 +94,7 @@ Whether new volumes are encrypted is decided by the platform's encryption key, n
 | `CreateTags` |
 | `CreateVolume` |
 | `CreateVpc` |
+| `CreateVpcEndpoint` |
 | `CreateVpcPeeringConnection` |
 | `DeleteEgressOnlyInternetGateway` |
 | `DeleteInternetGateway` |
@@ -111,6 +112,7 @@ Whether new volumes are encrypted is decided by the platform's encryption key, n
 | `DeleteTags` |
 | `DeleteVolume` |
 | `DeleteVpc` |
+| `DeleteVpcEndpoints` |
 | `DeleteVpcPeeringConnection` |
 | `DeregisterImage` |
 | `DescribeAccountAttributes` |
@@ -135,10 +137,12 @@ Whether new volumes are encrypted is decided by the platform's encryption key, n
 | `DescribeKeyPairs` |
 | `DescribeLaunchTemplateVersions` |
 | `DescribeLaunchTemplates` |
+| `DescribeManagedPrefixLists` |
 | `DescribeNatGateways` |
 | `DescribeNetworkInterfaceAttribute` |
 | `DescribeNetworkInterfaces` |
 | `DescribePlacementGroups` |
+| `DescribePrefixLists` |
 | `DescribePrincipalIdFormat` |
 | `DescribeRegions` |
 | `DescribeRouteTables` |
@@ -154,6 +158,7 @@ Whether new volumes are encrypted is decided by the platform's encryption key, n
 | `DescribeVolumes` |
 | `DescribeVolumesModifications` |
 | `DescribeVpcAttribute` |
+| `DescribeVpcEndpointServices` |
 | `DescribeVpcEndpoints` |
 | `DescribeVpcPeeringConnections` |
 | `DescribeVpcs` |
@@ -175,6 +180,7 @@ Whether new volumes are encrypted is decided by the platform's encryption key, n
 | `GetDefaultCreditSpecification` |
 | `GetEbsEncryptionByDefault` |
 | `GetInstanceUefiData` |
+| `GetManagedPrefixListEntries` |
 | `GetPasswordData` |
 | `GetSecurityGroupsForVpc` |
 | `GetSerialConsoleAccessStatus` |
@@ -188,6 +194,7 @@ Whether new volumes are encrypted is decided by the platform's encryption key, n
 | `ModifySubnetAttribute` |
 | `ModifyVolume` |
 | `ModifyVpcAttribute` |
+| `ModifyVpcEndpoint` |
 | `ModifyVpcPeeringConnectionOptions` |
 | `MonitorInstances` |
 | `RebootInstances` |

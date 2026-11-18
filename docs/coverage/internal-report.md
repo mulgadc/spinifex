@@ -49,7 +49,7 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 
 ## ec2
 
-`2016-11-15` — 148 of 811 modelled operations implemented (18.2%), 0 stubbed, 186 require SDK v2, 35 not applicable, 0 registered outside the pinned model.
+`2016-11-15` — 155 of 811 modelled operations implemented (19.1%), 0 stubbed, 186 require SDK v2, 35 not applicable, 0 registered outside the pinned model.
 
 ### Not implemented
 
@@ -145,7 +145,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `CreateVerifiedAccessGroup`
 - `CreateVerifiedAccessInstance`
 - `CreateVerifiedAccessTrustProvider`
-- `CreateVpcEndpoint`
 - `CreateVpcEndpointConnectionNotification`
 - `CreateVpcEndpointServiceConfiguration`
 - `CreateVpnConnection`
@@ -203,7 +202,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `DeleteVerifiedAccessTrustProvider`
 - `DeleteVpcEndpointConnectionNotifications`
 - `DeleteVpcEndpointServiceConfigurations`
-- `DeleteVpcEndpoints`
 - `DeleteVpnConnection`
 - `DeleteVpnConnectionRoute`
 - `DeleteVpnGateway`
@@ -261,14 +259,12 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `DescribeLocalGateways`
 - `DescribeLockedSnapshots`
 - `DescribeMacHosts`
-- `DescribeManagedPrefixLists`
 - `DescribeNetworkAcls`
 - `DescribeNetworkInsightsAccessScopeAnalyses`
 - `DescribeNetworkInsightsAccessScopes`
 - `DescribeNetworkInsightsAnalyses`
 - `DescribeNetworkInsightsPaths`
 - `DescribeNetworkInterfacePermissions`
-- `DescribePrefixLists`
 - `DescribePublicIpv4Pools`
 - `DescribeReplaceRootVolumeTasks`
 - `DescribeReservedInstances`
@@ -308,7 +304,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `DescribeVpcEndpointConnections`
 - `DescribeVpcEndpointServiceConfigurations`
 - `DescribeVpcEndpointServicePermissions`
-- `DescribeVpcEndpointServices`
 - `DescribeVpnConnections`
 - `DescribeVpnGateways`
 - `DetachVerifiedAccessTrustProvider`
@@ -371,7 +366,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `GetIpamResourceCidrs`
 - `GetLaunchTemplateData`
 - `GetManagedPrefixListAssociations`
-- `GetManagedPrefixListEntries`
 - `GetNetworkInsightsAccessScopeAnalysisFindings`
 - `GetNetworkInsightsAccessScopeContent`
 - `GetReservedInstancesExchangeQuote`
@@ -440,7 +434,6 @@ Pinned model source: `github.com/aws/api-models-aws@e10d6a1c5ac3, 2026-10-28`.
 - `ModifyVerifiedAccessInstanceLoggingConfiguration`
 - `ModifyVerifiedAccessTrustProvider`
 - `ModifyVolumeAttribute`
-- `ModifyVpcEndpoint`
 - `ModifyVpcEndpointConnectionNotification`
 - `ModifyVpcEndpointServiceConfiguration`
 - `ModifyVpcEndpointServicePayerResponsibility`

@@ -29,6 +29,7 @@ import (
 	ec2tagsapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/tags"
 	ec2volumeapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/volume"
 	ec2vpcapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpc"
+	ec2vpcendpointapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpcendpoint"
 	ec2vpcpeeringapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/vpcpeering"
 	ec2zoneapi "github.com/mulgadc/spinifex/spinifex/domains/ec2/awsapi/zone"
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -126,6 +127,7 @@ var ec2ListsAsSet = map[reflect.Type][]string{
 	reflect.TypeFor[ec2.DescribeSnapshotAttributeOutput]():         {"ProductCodes", "CreateVolumePermissions"},
 	reflect.TypeFor[ec2.DescribeNetworkInterfaceAttributeOutput](): {"Groups"},
 	reflect.TypeFor[ec2.VpcPeeringConnectionVpcInfo]():             {"CidrBlockSet", "Ipv6CidrBlockSet"},
+	reflect.TypeFor[ec2.VpcEndpoint]():                             {"Tags"},
 }
 
 // marshalEC2Response renders an EC2 handler's output into the action's XML
@@ -514,14 +516,6 @@ var ec2Actions = map[string]ec2Action{
 	"DescribeVpcAttribute": ec2Handler(func(ctx context.Context, input *ec2.DescribeVpcAttributeInput, c *call, accountID string) (any, error) {
 		return ec2vpcapi.DescribeVpcAttribute(ctx, input, c.NATS, accountID)
 	}),
-	// No VPC endpoint can exist here, because CreateVpcEndpoint is not served, so
-	// the empty list is the true answer rather than a stand-in for one. It has to
-	// be answered all the same: the Terraform AWS provider calls this on every VPC
-	// delete to sweep GuardDuty-managed endpoints, and an InvalidAction there fails
-	// the destroy and strands the VPC.
-	"DescribeVpcEndpoints": ec2Handler(func(_ context.Context, _ *ec2.DescribeVpcEndpointsInput, _ *call, _ string) (any, error) {
-		return ec2.DescribeVpcEndpointsOutput{VpcEndpoints: []*ec2.VpcEndpoint{}}, nil
-	}),
 	"CreateSubnet": ec2Handler(func(ctx context.Context, input *ec2.CreateSubnetInput, c *call, accountID string) (any, error) {
 		if err := c.Quota.EnforceSubnets(ctx, c.NATS, accountID, 1); err != nil {
 			return nil, err
@@ -671,6 +665,32 @@ var ec2Actions = map[string]ec2Action{
 	}),
 	"ModifyVpcPeeringConnectionOptions": ec2Handler(func(ctx context.Context, input *ec2.ModifyVpcPeeringConnectionOptionsInput, c *call, accountID string) (any, error) {
 		return ec2vpcpeeringapi.ModifyVpcPeeringConnectionOptions(ctx, input, c.NATS, accountID)
+	}),
+	"CreateVpcEndpoint": ec2IdempotentHandler(func(ctx context.Context, input *ec2.CreateVpcEndpointInput, c *call, accountID string) (ec2.CreateVpcEndpointOutput, error) {
+		return ec2vpcendpointapi.CreateVpcEndpoint(ctx, input, c.NATS, accountID)
+	}),
+	"ModifyVpcEndpoint": ec2Handler(func(ctx context.Context, input *ec2.ModifyVpcEndpointInput, c *call, accountID string) (any, error) {
+		return ec2vpcendpointapi.ModifyVpcEndpoint(ctx, input, c.NATS, accountID)
+	}),
+	"DeleteVpcEndpoints": ec2Handler(func(ctx context.Context, input *ec2.DeleteVpcEndpointsInput, c *call, accountID string) (any, error) {
+		return ec2vpcendpointapi.DeleteVpcEndpoints(ctx, input, c.NATS, accountID)
+	}),
+	// The Terraform AWS provider calls this on every VPC delete, so it must
+	// answer even before any endpoint can be created.
+	"DescribeVpcEndpoints": ec2Handler(func(ctx context.Context, input *ec2.DescribeVpcEndpointsInput, c *call, accountID string) (any, error) {
+		return ec2vpcendpointapi.DescribeVpcEndpoints(ctx, input, c.NATS, accountID)
+	}),
+	"DescribeVpcEndpointServices": ec2Handler(func(ctx context.Context, input *ec2.DescribeVpcEndpointServicesInput, c *call, accountID string) (any, error) {
+		return ec2vpcendpointapi.DescribeVpcEndpointServices(ctx, input, c.NATS, accountID)
+	}),
+	"DescribePrefixLists": ec2Handler(func(ctx context.Context, input *ec2.DescribePrefixListsInput, c *call, accountID string) (any, error) {
+		return ec2vpcendpointapi.DescribePrefixLists(ctx, input, c.NATS, accountID)
+	}),
+	"DescribeManagedPrefixLists": ec2Handler(func(ctx context.Context, input *ec2.DescribeManagedPrefixListsInput, c *call, accountID string) (any, error) {
+		return ec2vpcendpointapi.DescribeManagedPrefixLists(ctx, input, c.NATS, accountID)
+	}),
+	"GetManagedPrefixListEntries": ec2Handler(func(ctx context.Context, input *ec2.GetManagedPrefixListEntriesInput, c *call, accountID string) (any, error) {
+		return ec2vpcendpointapi.GetManagedPrefixListEntries(ctx, input, c.NATS, accountID)
 	}),
 }
 

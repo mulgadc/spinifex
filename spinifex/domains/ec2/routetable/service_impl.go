@@ -36,14 +36,15 @@ var _ RouteTableService = (*RouteTableServiceImpl)(nil)
 
 // RouteTableServiceImpl implements Route Table operations with NATS JetStream persistence.
 type RouteTableServiceImpl struct {
-	config   *config.Config
-	rtbKV    jetstream.KeyValue
-	vpcKV    jetstream.KeyValue
-	igwKV    jetstream.KeyValue
-	subnetKV jetstream.KeyValue
-	natgwKV  jetstream.KeyValue
-	natsConn *nats.Conn
-	peering  PeeringLookup
+	config    *config.Config
+	rtbKV     jetstream.KeyValue
+	vpcKV     jetstream.KeyValue
+	igwKV     jetstream.KeyValue
+	subnetKV  jetstream.KeyValue
+	natgwKV   jetstream.KeyValue
+	natsConn  *nats.Conn
+	peering   PeeringLookup
+	endpoints EndpointLookup
 }
 
 // NewRouteTableServiceImplWithNATS creates a Route Table service with NATS JetStream for persistence.
@@ -600,6 +601,7 @@ var describeRouteTablesValidFilters = map[string]bool{
 	"association.route-table-association-id": true,
 	"association.subnet-id":                  true,
 	"route.destination-cidr-block":           true,
+	"route.destination-prefix-list-id":       true,
 	"route.gateway-id":                       true,
 	"route.nat-gateway-id":                   true,
 	"route.vpc-peering-connection-id":        true,
@@ -660,6 +662,10 @@ func (s *RouteTableServiceImpl) DescribeRouteTables(ctx context.Context, input *
 
 	if err := s.derivePeeringStates(ctx, records); err != nil {
 		slog.ErrorContext(ctx, "DescribeRouteTables: peering route state lookup failed", "err", err)
+		return nil, errors.New(awserrors.ErrorServerInternal)
+	}
+	if err := s.deriveEndpointRoutes(ctx, records); err != nil {
+		slog.ErrorContext(ctx, "DescribeRouteTables: endpoint route lookup failed", "err", err)
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
@@ -727,6 +733,9 @@ func gatewayNotFoundError(id string) error {
 func (s *RouteTableServiceImpl) CreateRoute(ctx context.Context, input *ec2.CreateRouteInput, accountID string) (*ec2.CreateRouteOutput, error) {
 	if input.RouteTableId == nil || *input.RouteTableId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if err := s.endpointRouteWrite(input.DestinationPrefixListId, input.GatewayId, input.VpcEndpointId); err != nil {
+		return nil, err
 	}
 	if input.DestinationCidrBlock == nil || *input.DestinationCidrBlock == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -859,6 +868,12 @@ func (s *RouteTableServiceImpl) DeleteRoute(ctx context.Context, input *ec2.Dele
 	if input.RouteTableId == nil || *input.RouteTableId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
+	if pl := aws.StringValue(input.DestinationPrefixListId); pl != "" && pl == s.s3PrefixList() {
+		if _, err := s.getRouteTable(ctx, accountID, *input.RouteTableId); err != nil {
+			return nil, err
+		}
+		return nil, s.endpointRouteDelete(ctx, *input.RouteTableId)
+	}
 	if input.DestinationCidrBlock == nil || *input.DestinationCidrBlock == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
 	}
@@ -919,6 +934,9 @@ func (s *RouteTableServiceImpl) DeleteRoute(ctx context.Context, input *ec2.Dele
 func (s *RouteTableServiceImpl) ReplaceRoute(ctx context.Context, input *ec2.ReplaceRouteInput, accountID string) (*ec2.ReplaceRouteOutput, error) {
 	if input.RouteTableId == nil || *input.RouteTableId == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
+	}
+	if err := s.endpointRouteWrite(input.DestinationPrefixListId, input.GatewayId, input.VpcEndpointId); err != nil {
+		return nil, err
 	}
 	if input.DestinationCidrBlock == nil || *input.DestinationCidrBlock == "" {
 		return nil, errors.New(awserrors.ErrorMissingParameter)
@@ -1316,51 +1334,32 @@ func rtbMatchesFilters(record *RouteTableRecord, filters map[string][]string) bo
 			}) {
 				return false
 			}
-		case "route.destination-cidr-block":
-			if !slices.ContainsFunc(record.Routes, func(r RouteRecord) bool {
-				return awsfilters.MatchesAny(values, r.DestinationCidrBlock)
-			}) {
-				return false
-			}
-		case "route.gateway-id":
-			if !slices.ContainsFunc(record.Routes, func(r RouteRecord) bool {
-				return awsfilters.MatchesAny(values, r.GatewayId)
-			}) {
-				return false
-			}
-		case "route.nat-gateway-id":
-			if !slices.ContainsFunc(record.Routes, func(r RouteRecord) bool {
-				return awsfilters.MatchesAny(values, r.NatGatewayId)
-			}) {
-				return false
-			}
-		case "route.vpc-peering-connection-id":
-			if !slices.ContainsFunc(record.Routes, func(r RouteRecord) bool {
-				return awsfilters.MatchesAny(values, r.VpcPeeringConnectionId)
-			}) {
-				return false
-			}
-		case "route.state":
-			if !slices.ContainsFunc(record.Routes, func(r RouteRecord) bool {
-				return awsfilters.MatchesAny(values, r.State)
-			}) {
-				return false
-			}
-		case "route.origin":
-			if !slices.ContainsFunc(record.Routes, func(r RouteRecord) bool {
-				return awsfilters.MatchesAny(values, r.Origin)
-			}) {
-				return false
-			}
 		case "owner-id":
 			if !awsfilters.MatchesAny(values, record.AccountID) {
 				return false
 			}
 		default:
-			return false
+			field, ok := routeFilterFields[name]
+			if !ok || !slices.ContainsFunc(record.Routes, func(r RouteRecord) bool {
+				return awsfilters.MatchesAny(values, field(r))
+			}) {
+				return false
+			}
 		}
 	}
 	return awsfilters.MatchesTags(filters, record.Tags)
+}
+
+// routeFilterFields reads the route member each route.* filter matches; a
+// table matches when any of its routes does.
+var routeFilterFields = map[string]func(RouteRecord) string{
+	"route.destination-cidr-block":     func(r RouteRecord) string { return r.DestinationCidrBlock },
+	"route.destination-prefix-list-id": func(r RouteRecord) string { return r.DestinationPrefixListId },
+	"route.gateway-id":                 func(r RouteRecord) string { return r.GatewayId },
+	"route.nat-gateway-id":             func(r RouteRecord) string { return r.NatGatewayId },
+	"route.vpc-peering-connection-id":  func(r RouteRecord) string { return r.VpcPeeringConnectionId },
+	"route.state":                      func(r RouteRecord) string { return r.State },
+	"route.origin":                     func(r RouteRecord) string { return r.Origin },
 }
 
 // publishNatGatewayEvents publishes vpc.add-nat-gateway for each associated subnet
@@ -1575,9 +1574,14 @@ func recordToEC2(record *RouteTableRecord) *ec2.RouteTable {
 
 	for _, r := range record.Routes {
 		route := &ec2.Route{
-			DestinationCidrBlock: aws.String(r.DestinationCidrBlock),
-			State:                aws.String(r.State),
-			Origin:               aws.String(r.Origin),
+			State:  aws.String(r.State),
+			Origin: aws.String(r.Origin),
+		}
+		if r.DestinationCidrBlock != "" {
+			route.DestinationCidrBlock = aws.String(r.DestinationCidrBlock)
+		}
+		if r.DestinationPrefixListId != "" {
+			route.DestinationPrefixListId = aws.String(r.DestinationPrefixListId)
 		}
 		if r.GatewayId != "" {
 			route.GatewayId = aws.String(r.GatewayId)

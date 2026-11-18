@@ -30,6 +30,8 @@ func TestEC2TypeForID(t *testing.T) {
 		{"key-abc123", arn.EC2KeyPair, true},
 		{"pg-abc123", arn.EC2PlacementGroup, true},
 		{"pcx-abc123", arn.EC2VPCPeeringConnection, true},
+		{"vpce-abc123", arn.EC2VPCEndpoint, true},
+		{"pl-abc123", arn.EC2PrefixList, true},
 		{"unknown-abc123", "", false},
 		{"", "", false},
 		{"i", "", false},

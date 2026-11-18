@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
 	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
+	ec2vpcendpoint "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcendpoint"
 	ec2vpcpeering "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcpeering"
 	awserrors "github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
 	"github.com/stretchr/testify/assert"
@@ -189,4 +190,54 @@ func TestVPCPeeringReaper(t *testing.T) {
 	assert.Equal(t, []string{"pcx-incoming"}, f.rejected)
 
 	require.NoError(t, r.Delete(t.Context(), acct, Resource{Kind: r.Kind(), ID: "pcx-gone"}, false), "a connection already gone is done")
+}
+
+// fakeVpcEndpoints serves one account's endpoints and records the deletes.
+type fakeVpcEndpoints struct {
+	ec2vpcendpoint.VpcEndpointService
+
+	ids     []string
+	refuse  map[string]string
+	deleted []string
+}
+
+func (f *fakeVpcEndpoints) DescribeVpcEndpoints(context.Context, *ec2.DescribeVpcEndpointsInput, string) (*ec2.DescribeVpcEndpointsOutput, error) {
+	out := &ec2.DescribeVpcEndpointsOutput{}
+	for _, id := range f.ids {
+		out.VpcEndpoints = append(out.VpcEndpoints, &ec2.VpcEndpoint{VpcEndpointId: aws.String(id), State: aws.String("available")})
+	}
+	return out, nil
+}
+
+func (f *fakeVpcEndpoints) DeleteVpcEndpoints(_ context.Context, in *ec2.DeleteVpcEndpointsInput, _ string) (*ec2.DeleteVpcEndpointsOutput, error) {
+	out := &ec2.DeleteVpcEndpointsOutput{}
+	for _, id := range aws.StringValueSlice(in.VpcEndpointIds) {
+		if code, ok := f.refuse[id]; ok {
+			out.Unsuccessful = append(out.Unsuccessful, &ec2.UnsuccessfulItem{
+				ResourceId: aws.String(id), Error: &ec2.UnsuccessfulItemError{Code: aws.String(code), Message: aws.String("refused")},
+			})
+			continue
+		}
+		f.deleted = append(f.deleted, id)
+	}
+	return out, nil
+}
+
+// Termination deletes every endpoint before the VPC it blocks; one already gone
+// is done, and any other refusal fails the pass so it is retried.
+func TestVPCEndpointReaper(t *testing.T) {
+	f := &fakeVpcEndpoints{
+		ids:    []string{"vpce-1", "vpce-2"},
+		refuse: map[string]string{"vpce-gone": "InvalidVpcEndpoint.NotFound", "vpce-stuck": "InternalError"},
+	}
+	r := &vpcEndpointReaper{svc: f}
+	found, err := r.List(t.Context(), "000000000001")
+	require.NoError(t, err)
+	for _, res := range found {
+		require.NoError(t, r.Delete(t.Context(), "000000000001", res, false))
+	}
+	assert.Equal(t, []string{"vpce-1", "vpce-2"}, f.deleted)
+
+	require.NoError(t, r.Delete(t.Context(), "000000000001", Resource{Kind: r.Kind(), ID: "vpce-gone"}, false))
+	require.Error(t, r.Delete(t.Context(), "000000000001", Resource{Kind: r.Kind(), ID: "vpce-stuck"}, false))
 }

@@ -1,7 +1,6 @@
 package policy
 
 import (
-	"fmt"
 	"net/netip"
 	"sort"
 	"strconv"

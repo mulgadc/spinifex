@@ -48,6 +48,7 @@ var ec2TaggableTypes = map[string]taggableTypes{
 	"CreateVolume":                    taggable("volume"),
 	"CreateVpc":                       {types: []string{"vpc"}, code: awserrors.ErrorInvalidParameter},
 	"CreateVpcPeeringConnection":      taggable("vpc-peering-connection"),
+	"CreateVpcEndpoint":               taggable("vpc-endpoint"),
 	"ImportKeyPair":                   taggable("key-pair"),
 	"RegisterImage":                   taggable("image"),
 	"RequestSpotInstances":            taggable("spot-instances-request"),

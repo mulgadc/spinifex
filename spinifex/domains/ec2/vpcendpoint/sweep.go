@@ -15,12 +15,13 @@ import (
 // SweepResult counts what one sweep pass removed.
 type SweepResult struct {
 	Records int // pending records past the grace, and deleting records
-	Keys    int // index keys and claims with no effective owner
+	Keys    int // index keys, claims and central tags with no effective owner
 }
 
 // Sweep is the one pass that scans the bucket. It removes what an interrupted
 // request left: records that never became available or were part way through
-// a delete, index keys with no record, and stale claims.
+// a delete, index keys with no record, stale claims, and central tags of
+// endpoints that are gone.
 func (s *Store) Sweep(ctx context.Context) (SweepResult, error) {
 	var res SweepResult
 	keys, err := kvstore.Keys(ctx, s.kv)
@@ -44,6 +45,9 @@ func (s *Store) Sweep(ctx context.Context) (SweepResult, error) {
 		if err := s.sweepKey(ctx, key, &res); err != nil {
 			return res, fmt.Errorf("sweep %s: %w", key, err)
 		}
+	}
+	if err := s.sweepTags(ctx, &res); err != nil {
+		return res, fmt.Errorf("sweep tags: %w", err)
 	}
 	return res, nil
 }

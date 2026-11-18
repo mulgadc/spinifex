@@ -3,7 +3,6 @@ package prefixlist
 import (
 	"context"
 	"net/netip"
-	"regexp"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -25,8 +24,7 @@ func cluster(nodes map[string]config.Config) *config.ClusterConfig {
 
 // The ID is AWS's 8-hex form for a managed list, and depends on the region alone.
 func TestID_IsStablePerRegion(t *testing.T) {
-	assert.Regexp(t, regexp.MustCompile(`^pl-[0-9a-f]{8}$`), ID(region))
-	assert.Equal(t, ID(region), ID(region))
+	assert.Regexp(t, `^pl-[0-9a-f]{8}$`, ID(region))
 	assert.NotEqual(t, ID(region), ID("us-east-1"))
 	assert.Equal(t, "com.amazonaws.ap-southeast-2.s3", ServiceName(region))
 }

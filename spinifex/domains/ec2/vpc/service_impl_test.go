@@ -2788,14 +2788,14 @@ func TestDeleteSubnet_NatGatewayCheckFailsClosedOnReadError(t *testing.T) {
 	require.Len(t, desc.Subnets, 1)
 }
 
-// AWS refuses DeleteVpc while a provisioning or active peering connection
-// links the VPC, and keeps the VPC so the caller can delete it and retry.
-func TestDeleteVpc_RejectsLinkedPeering(t *testing.T) {
+// AWS refuses DeleteVpc while a provisioning or active peering connection, or
+// an endpoint, needs the VPC, and keeps the VPC so the caller can retry.
+func TestDeleteVpc_RejectsOwnedDependencies(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.65.0.0/16")
 	var asked string
-	svc.SetPeeringCheck(func(_ context.Context, id string) (bool, error) {
+	svc.SetDependencyCheck("vpc-peering-connection", func(_ context.Context, id string) (bool, error) {
 		asked = id
 		return true, nil
 	})
@@ -2807,9 +2807,14 @@ func TestDeleteVpc_RejectsLinkedPeering(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, desc.Vpcs, 1)
 
-	svc.SetPeeringCheck(func(context.Context, string) (bool, error) { return false, nil })
+	svc.SetDependencyCheck("vpc-peering-connection", func(context.Context, string) (bool, error) { return false, nil })
+	svc.SetDependencyCheck("vpc-endpoint", func(context.Context, string) (bool, error) { return true, nil })
 	_, err = svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
-	require.NoError(t, err, "a VPC with no linked connection deletes")
+	testutil.RequireAWSError(t, err, awserrors.ErrorDependencyViolation, "The vpc '"+vpcID+"' has dependencies and cannot be deleted.")
+
+	svc.SetDependencyCheck("vpc-endpoint", func(context.Context, string) (bool, error) { return false, nil })
+	_, err = svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
+	require.NoError(t, err, "a VPC with no linked connection or endpoint deletes")
 }
 
 // A failed peering check fails closed: the VPC is not deleted past a
@@ -2818,7 +2823,7 @@ func TestDeleteVpc_PeeringCheckErrorFailsClosed(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
 	vpcID := createTestVPC(t, svc, "10.66.0.0/16")
-	svc.SetPeeringCheck(func(context.Context, string) (bool, error) { return false, errors.New("bucket unavailable") })
+	svc.SetDependencyCheck("vpc-peering-connection", func(context.Context, string) (bool, error) { return false, errors.New("bucket unavailable") })
 
 	_, err := svc.DeleteVpc(context.Background(), &ec2.DeleteVpcInput{VpcId: aws.String(vpcID)}, testAccountID)
 	testutil.RequireAWSCode(t, err, awserrors.ErrorServerInternal)

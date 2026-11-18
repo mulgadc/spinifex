@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
@@ -26,10 +27,11 @@ type TableLookup interface {
 
 // Store holds the endpoint bucket and the VPC bucket creates validate against.
 type Store struct {
-	kv     jetstream.KeyValue
-	vpcKV  jetstream.KeyValue
-	tables TableLookup
-	now    func() time.Time
+	kv          jetstream.KeyValue
+	vpcKV       jetstream.KeyValue
+	tables      TableLookup
+	centralTags CentralTagStore
+	now         func() time.Time
 }
 
 // NewStore wraps already-open buckets.
@@ -217,10 +219,8 @@ func (s *Store) VpcBlocksDeletion(ctx context.Context, vpcID string) (bool, erro
 	if err != nil {
 		return false, err
 	}
-	for _, rec := range recs {
-		if s.live(rec) {
-			return true, nil
-		}
+	if slices.ContainsFunc(recs, s.live) {
+		return true, nil
 	}
 	return false, nil
 }

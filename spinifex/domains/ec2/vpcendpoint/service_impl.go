@@ -285,6 +285,7 @@ func (s *ServiceImpl) CreateVpcEndpoint(ctx context.Context, input *ec2.CreateVp
 		}
 		return nil, internalError(ctx, "CreateVpcEndpoint", err)
 	}
+	s.projectTags(ctx, accountID, rec.ID, rec.Tags)
 	out := recordToEC2(rec, tables)
 	if len(rec.Tags) == 0 {
 		out.Tags = nil
@@ -378,15 +379,17 @@ func (s *ServiceImpl) DeleteVpcEndpoints(ctx context.Context, input *ec2.DeleteV
 		if err != nil {
 			return nil, internalError(ctx, "DeleteVpcEndpoints", err)
 		}
-		if !found {
-			out.Unsuccessful = append(out.Unsuccessful, &ec2.UnsuccessfulItem{
-				ResourceId: aws.String(id),
-				Error: &ec2.UnsuccessfulItemError{
-					Code:    aws.String(awserrors.ErrorInvalidVpcEndpointNotFound),
-					Message: aws.String(fmt.Sprintf("user %s does not own a resource %s", accountID, id)),
-				},
-			})
+		if found {
+			s.dropTags(ctx, accountID, id)
+			continue
 		}
+		out.Unsuccessful = append(out.Unsuccessful, &ec2.UnsuccessfulItem{
+			ResourceId: aws.String(id),
+			Error: &ec2.UnsuccessfulItemError{
+				Code:    aws.String(awserrors.ErrorInvalidVpcEndpointNotFound),
+				Message: aws.String(fmt.Sprintf("user %s does not own a resource %s", accountID, id)),
+			},
+		})
 	}
 	return out, nil
 }

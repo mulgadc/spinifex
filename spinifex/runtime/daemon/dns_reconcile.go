@@ -2,8 +2,8 @@ package daemon
 
 import (
 	"context"
-	"slices"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"

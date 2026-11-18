@@ -10,15 +10,9 @@ import (
 // DefaultPolicy is the policy AWS gives a gateway endpoint created without one.
 const DefaultPolicy = `{"Version":"2008-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":"*","Resource":"*"}]}`
 
-var defaultStatements = mustStatements(DefaultPolicy)
-
-func mustStatements(doc string) []any {
-	st, ok := statements(doc)
-	if !ok {
-		panic("vpcendpoint: default policy does not parse")
-	}
-	return st
-}
+// defaultStatements is DefaultPolicy's statements as statements reads them; a
+// create given DefaultPolicy explicitly proves the two agree.
+var defaultStatements = []any{map[string]any{"Effect": "Allow", "Principal": "*", "Action": "*", "Resource": "*"}}
 
 func invalidPolicy() error {
 	return awserrors.Errorf(awserrors.ErrorInvalidPolicyDocument, "Please provide a valid VPC Endpoint policy")

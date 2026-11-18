@@ -2,11 +2,14 @@ package accountlifecycle
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	ec2eigw "github.com/mulgadc/spinifex/spinifex/domains/ec2/eigw"
 	ec2natgw "github.com/mulgadc/spinifex/spinifex/domains/ec2/natgw"
+	ec2vpcendpoint "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcendpoint"
 	ec2vpcpeering "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcpeering"
 	"github.com/nats-io/nats.go"
 )
@@ -21,6 +24,7 @@ func EC2ExtraReapers(nc *nats.Conn) []Reaper {
 		&natGatewayReaper{svc: ec2natgw.NewNATSNatGatewayService(nc)},
 		&egressOnlyIGWReaper{svc: ec2eigw.NewNATSEgressOnlyIGWService(nc)},
 		&vpcPeeringReaper{svc: ec2vpcpeering.NewNATSVpcPeeringService(nc)},
+		&vpcEndpointReaper{svc: ec2vpcendpoint.NewNATSVpcEndpointService(nc)},
 	}
 }
 
@@ -177,4 +181,47 @@ func (r *vpcPeeringReaper) Delete(ctx context.Context, accountID string, resourc
 		VpcPeeringConnectionId: aws.String(resource.ID),
 	}, accountID)
 	return ignoreAlreadyGone(err)
+}
+
+// vpcEndpointReaper deletes the account's endpoints, which block DeleteVpc.
+type vpcEndpointReaper struct {
+	svc ec2vpcendpoint.VpcEndpointService
+}
+
+func (r *vpcEndpointReaper) Kind() string { return "vpc-endpoint" }
+func (r *vpcEndpointReaper) Stage() Stage { return StageNetwork }
+
+func (r *vpcEndpointReaper) List(ctx context.Context, accountID string) ([]Resource, error) {
+	out, err := r.svc.DescribeVpcEndpoints(ctx, &ec2.DescribeVpcEndpointsInput{}, accountID)
+	if err != nil {
+		return nil, err
+	}
+	var found []Resource
+	for _, e := range out.VpcEndpoints {
+		if e == nil || e.VpcEndpointId == nil {
+			continue
+		}
+		found = append(found, Resource{Kind: r.Kind(), ID: aws.StringValue(e.VpcEndpointId), Detail: aws.StringValue(e.State)})
+	}
+	return found, nil
+}
+
+// Delete answers an endpoint already gone as done; any other refusal of the
+// batch item is a failure the next pass retries.
+func (r *vpcEndpointReaper) Delete(ctx context.Context, accountID string, resource Resource, _ bool) error {
+	out, err := r.svc.DeleteVpcEndpoints(ctx, &ec2.DeleteVpcEndpointsInput{
+		VpcEndpointIds: []*string{aws.String(resource.ID)},
+	}, accountID)
+	if err != nil {
+		return ignoreAlreadyGone(err)
+	}
+	var errs []error
+	for _, item := range out.Unsuccessful {
+		if item == nil || item.Error == nil {
+			continue
+		}
+		code := aws.StringValue(item.Error.Code)
+		errs = append(errs, ignoreAlreadyGone(fmt.Errorf("%s: %s", code, aws.StringValue(item.Error.Message))))
+	}
+	return errors.Join(errs...)
 }

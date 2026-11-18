@@ -169,6 +169,22 @@ func TestResourceARNs(t *testing.T) {
 			[]string{ec2arn("vpc-peering-connection", "pcx-1")}},
 		{"DescribeVpcPeeringConnections", map[string]string{"VpcPeeringConnectionId.1": "pcx-1"}, []string{"*"}},
 
+		// VPC endpoints and the managed prefix list, which AWS owns.
+		{"CreateVpcEndpoint", map[string]string{"VpcId": "vpc-1", "RouteTableId.1": "rtb-1", "RouteTableId.2": "rtb-2"},
+			[]string{ec2arn("vpc-endpoint", "*"), ec2arn("vpc", "vpc-1"), ec2arn("route-table", "rtb-1"), ec2arn("route-table", "rtb-2")}},
+		{"CreateVpcEndpoint", map[string]string{"VpcId": "vpc-1"}, []string{ec2arn("vpc-endpoint", "*"), ec2arn("vpc", "vpc-1")}},
+		{"ModifyVpcEndpoint", map[string]string{"VpcEndpointId": "vpce-1", "AddRouteTableId.1": "rtb-1", "RemoveRouteTableId.1": "rtb-2"},
+			[]string{ec2arn("vpc-endpoint", "vpce-1"), ec2arn("route-table", "rtb-1"), ec2arn("route-table", "rtb-2")}},
+		{"DeleteVpcEndpoints", map[string]string{"VpcEndpointId.1": "vpce-1", "VpcEndpointId.2": "vpce-2"},
+			[]string{ec2arn("vpc-endpoint", "vpce-1"), ec2arn("vpc-endpoint", "vpce-2")}},
+		{"GetManagedPrefixListEntries", map[string]string{"PrefixListId": "pl-1"},
+			[]string{"arn:aws:ec2:" + testRegion + ":aws:prefix-list/pl-1"}},
+		{"CreateRoute", map[string]string{"RouteTableId": "rtb-1", "GatewayId": "vpce-1"},
+			[]string{ec2arn("route-table", "rtb-1"), ec2arn("vpc-endpoint", "vpce-1")}},
+		{"DescribeVpcEndpointServices", map[string]string{}, []string{"*"}},
+		{"DescribeManagedPrefixLists", map[string]string{}, []string{"*"}},
+		{"DescribePrefixLists", map[string]string{}, []string{"*"}},
+
 		// Network interfaces.
 		{"CreateNetworkInterface", map[string]string{"SubnetId": "subnet-1", "SecurityGroupId.1": "sg-1"},
 			[]string{ec2arn("network-interface", "*"), ec2arn("subnet", "subnet-1"), ec2arn("security-group", "sg-1")}},
@@ -437,6 +453,10 @@ var ec2Inputs = map[string]any{
 	"DeleteVpcPeeringConnection":                 &ec2.DeleteVpcPeeringConnectionInput{},
 	"CreateVpcPeeringConnection":                 &ec2.CreateVpcPeeringConnectionInput{},
 	"AcceptVpcPeeringConnection":                 &ec2.AcceptVpcPeeringConnectionInput{},
+	"CreateVpcEndpoint":                          &ec2.CreateVpcEndpointInput{},
+	"ModifyVpcEndpoint":                          &ec2.ModifyVpcEndpointInput{},
+	"DeleteVpcEndpoints":                         &ec2.DeleteVpcEndpointsInput{},
+	"GetManagedPrefixListEntries":                &ec2.GetManagedPrefixListEntriesInput{},
 	"UpdateSecurityGroupRuleDescriptionsEgress":  &ec2.UpdateSecurityGroupRuleDescriptionsEgressInput{},
 	"UpdateSecurityGroupRuleDescriptionsIngress": &ec2.UpdateSecurityGroupRuleDescriptionsIngressInput{},
 }

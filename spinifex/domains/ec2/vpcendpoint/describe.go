@@ -2,9 +2,9 @@ package vpcendpoint
 
 import (
 	"context"
-	"maps"
 	"crypto/sha256"
 	"encoding/hex"
+	"maps"
 	"slices"
 	"strings"
 

@@ -141,6 +141,9 @@ func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input
 	if err != nil {
 		return nil, err
 	}
+	if err = refuseSystemEmbeddingCommitment(ptAccountID, modelID); err != nil {
+		return nil, err
+	}
 
 	// Assigns the named err, so the deferred closure records a denied
 	// invocation the same as any other failed one.
@@ -149,6 +152,10 @@ func (rt *Router) Converse(ctx context.Context, accountID, modelID string, input
 		return nil, err
 	}
 	backend = entry.Provider
+	// An embedding model has no chat endpoint; refused before admission.
+	if err = refuseEmbeddingOperation(entry); err != nil {
+		return nil, err
+	}
 
 	var p Provider
 	if entry.Provider == tierSelfHost {
@@ -259,9 +266,16 @@ func (rt *Router) ConverseStream(ctx context.Context, accountID, modelID string,
 	if err != nil {
 		return nil, err
 	}
+	if err := refuseSystemEmbeddingCommitment(ptAccountID, modelID); err != nil {
+		return nil, err
+	}
 
 	entry, err := grantedCatalogEntry(ctx, accountID, modelID, rt.access)
 	if err != nil {
+		return nil, err
+	}
+	// An embedding model has no chat endpoint; refused before admission.
+	if err := refuseEmbeddingOperation(entry); err != nil {
 		return nil, err
 	}
 

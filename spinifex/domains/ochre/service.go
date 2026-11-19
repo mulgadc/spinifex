@@ -74,6 +74,10 @@ type Service struct {
 
 	// launchWG tracks in-flight async launches for test determinism (WaitLaunches).
 	launchWG sync.WaitGroup
+
+	// afterEvictionSelect, nil outside tests, runs between choosing an
+	// eviction victim and its guarded teardown.
+	afterEvictionSelect func(EndpointRecord)
 }
 
 var _ EndpointService = (*Service)(nil)
@@ -281,7 +285,21 @@ func (s *Service) evictForCapacity(ctx context.Context, wantModelID string, minV
 	slog.InfoContext(ctx, "bedrock: evicting an idle endpoint to make room",
 		"evicting", victim.ModelID, "instanceId", victim.InstanceID, "for", wantModelID,
 		"idleSince", victim.LastActive())
-	if _, err := s.Delete(ctx, &DeleteEndpointInput{ModelID: victim.ModelID}, awsidentifiers.GlobalAccountID); err != nil {
+	if s.afterEvictionSelect != nil {
+		s.afterEvictionSelect(victim)
+	}
+	// Re-checked under the key's lock: a selection gone stale (replaced,
+	// pinned, or otherwise moved on) is not torn down.
+	admit := func(current EndpointRecord) bool {
+		return current.State == StateReady && !current.Pinned && sameIncarnation(current, victim) &&
+			current.Generation == victim.Generation
+	}
+	key := resolveKey(resolveAccountID(victim.AccountID), victim.ModelID)
+	if _, err := s.deleteEndpoint(ctx, key, victim.ModelID, admit); errors.Is(err, errReclaimSuperseded) {
+		slog.InfoContext(ctx, "bedrock: eviction victim changed since selection; not evicting",
+			"evicting", victim.ModelID, "for", wantModelID)
+		return false
+	} else if err != nil {
 		slog.ErrorContext(ctx, "bedrock: eviction failed; the pending launch keeps its capacity refusal",
 			"evicting", victim.ModelID, "for", wantModelID, "err", err)
 		return false

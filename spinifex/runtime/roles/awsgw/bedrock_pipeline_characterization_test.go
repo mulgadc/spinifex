@@ -442,3 +442,38 @@ func TestBedrockPipeline_BodyTooLarge(t *testing.T) {
 	got := probeBedrock(t, app, signBedrockRequest(t, "bedrock", "POST", "/guardrails", big))
 	require.Equal(t, http.StatusRequestEntityTooLarge, got.Status, got.Body[:min(len(got.Body), 200)])
 }
+
+// An embedding InvokeModel through the signed pipeline reaches TEI, and the
+// same request carrying guardrail headers is refused before it does.
+func TestBedrockPipeline_EmbeddingInvokeRefusesGuardrail(t *testing.T) {
+	const embedModel = "nomic-embed-text-v1.5"
+	var teiCalls int
+	tei := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		teiCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","embedding":[0.5],"index":0}],"model":"/guest/path","usage":{"prompt_tokens":3,"total_tokens":3}}`))
+	}))
+	t.Cleanup(tei.Close)
+	app := bedrockPipelineApp(t, func(c *bedrockPipelineEnv) {
+		c.Deps.Endpoints = ochre.NewStaticEndpointResolver(map[string]string{embedModel: tei.URL})
+	}, allowBedrock())
+	body := []byte(`{"input":"hello"}`)
+	path := "/model/" + embedModel + "/invoke"
+
+	ok := probeBedrock(t, app, signBedrockRequest(t, "bedrock", "POST", path, body))
+	require.Equal(t, http.StatusOK, ok.Status, ok.Body)
+	assert.Contains(t, ok.Body, `"model":"`+embedModel+`"`)
+	assert.NotContains(t, ok.Body, "/guest/path")
+	require.Equal(t, 1, teiCalls)
+
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+	req.Host = "localhost:9999"
+	req.Header.Set("X-Amzn-Bedrock-Guardrailidentifier", "gr-embed")
+	req.Header.Set("X-Amzn-Bedrock-Guardrailversion", "1")
+	gwfix.SignRequestAs(t, req, body, gwfix.AccessKey, gwfix.SecretKey, "bedrock", time.Now().UTC())
+
+	refused := probeBedrock(t, app, req)
+	assert.Equal(t, http.StatusBadRequest, refused.Status, refused.Body)
+	assert.Equal(t, "ValidationException", refused.Type)
+	assert.Equal(t, 1, teiCalls, "a guardrail request never reaches TEI")
+}

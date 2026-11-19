@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -26,9 +27,10 @@ const (
 	// rather than mis-served through Llama's native request schema.
 	familyMeta = "meta"
 	// familyTEI is the self-host family for the TEI engine (EMBEDDING and
-	// RERANK entries). No InvokeAdapter serves it yet, so it is unhandled and
-	// refused the same as any other family besides familyMeta.
+	// RERANK entries). Only its EMBEDDING entries have an InvokeAdapter.
 	familyTEI = "tei"
+	// modalityEmbedding marks an entry whose output is a vector embedding.
+	modalityEmbedding = "EMBEDDING"
 	// coServeGroupOchreDemo is the one populated co-serve group: the demo
 	// LLM plus its embedder and reranker, admitted and launched as a bundle.
 	coServeGroupOchreDemo = "ochre-demo-bundle"
@@ -70,13 +72,27 @@ type catalogEntry struct {
 	MinVRAMMiB                 int      // self-host only; 0 for provider entries
 	InstanceType               string   // self-host only; system-instance type a launcher boots
 	VLLMArgs                   []string // self-host only; extra vLLM server args this model needs
-	// MaxConcurrency is the self-host admission-gate capacity and must stay
-	// equal to the entry's --max-num-seqs VLLMArgs value (or vLLM's own
-	// default when that flag is absent) — edit the two together.
+	// MaxConcurrency is the per-gateway self-host admission capacity. For vLLM
+	// it equals --max-num-seqs (or vLLM's default); for TEI it is
+	// teiMaxConcurrentRequests / teiMaxClientBatchSize, as each input holds a permit.
 	MaxConcurrency                int
 	InputPriceMicroUSDPerMillion  int64 // provider entries only; meaningless unless PriceKnown
 	OutputPriceMicroUSDPerMillion int64 // provider entries only; meaningless unless PriceKnown
 	PriceKnown                    bool  // provider entries only; self-host is always known-zero
+}
+
+// TEI's own limits for embedding endpoints, pinned rather than left to the
+// engine default: each input of a request holds one of the permits, and a
+// request carries at most teiMaxClientBatchSize inputs.
+const (
+	teiMaxConcurrentRequests   = 512
+	teiMaxClientBatchSize      = 32
+	teiEmbeddingMaxConcurrency = teiMaxConcurrentRequests / teiMaxClientBatchSize
+)
+
+var teiEmbeddingArgs = []string{
+	"--max-concurrent-requests=" + strconv.Itoa(teiMaxConcurrentRequests),
+	"--max-client-batch-size=" + strconv.Itoa(teiMaxClientBatchSize),
 }
 
 // catalog is the static model set: self-hosted open models only. v1 does not
@@ -145,7 +161,8 @@ var catalog = []catalogEntry{
 		InstanceType:               "g5.xlarge",
 		// Mean pooling stated explicitly: the flat weights layout omits
 		// 1_Pooling/config.json, so TEI would otherwise default to CLS.
-		VLLMArgs: []string{"--pooling", "mean"},
+		VLLMArgs:       append([]string{"--pooling", "mean"}, teiEmbeddingArgs...),
+		MaxConcurrency: teiEmbeddingMaxConcurrency,
 	},
 	{
 		ModelID:                    "bge-base-en-v1.5",
@@ -161,8 +178,10 @@ var catalog = []catalogEntry{
 		InferenceTypesSupported:    []string{"ON_DEMAND"},
 		// 768-dim, 512-token context; standard BERT, TEI-native. Standalone
 		// alternative embedder to nomic.
-		MinVRAMMiB:   512,
-		InstanceType: "g5.xlarge",
+		MinVRAMMiB:     512,
+		InstanceType:   "g5.xlarge",
+		VLLMArgs:       teiEmbeddingArgs,
+		MaxConcurrency: teiEmbeddingMaxConcurrency,
 	},
 	{
 		ModelID:                    "bge-reranker-v2-m3",
@@ -259,6 +278,30 @@ func (e catalogEntry) toDetails() *bedrock.FoundationModelDetails {
 
 func modelARN(modelID string) string {
 	return fmt.Sprintf(modelARNFormat, modelID)
+}
+
+// isEmbeddingEntry reports whether entry is a self-host TEI embedding model,
+// the only TEI entries InvokeModel serves.
+func isEmbeddingEntry(entry catalogEntry) bool {
+	if entry.Provider != tierSelfHost || entry.Family != familyTEI {
+		return false
+	}
+	return slices.Contains(entry.OutputModalities, modalityEmbedding)
+}
+
+// coServeGroupHasEmbedding reports whether modelID's co-serve group includes
+// an embedding model; known is false when modelID is not a self-host entry.
+func coServeGroupHasEmbedding(modelID string) (has, known bool) {
+	spec, found, selfHost := LookupCoServeGroup(modelID)
+	if !found || !selfHost {
+		return false, false
+	}
+	for _, m := range spec.Members {
+		if entry, ok := lookupCatalogEntry(m.ModelID); ok && isEmbeddingEntry(entry) {
+			return true, true
+		}
+	}
+	return false, true
 }
 
 // lookupCatalogEntry finds a catalog entry by exact modelId, ignoring both

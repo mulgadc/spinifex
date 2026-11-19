@@ -30,6 +30,13 @@ type EndpointResolver interface {
 	EndpointForAccount(ctx context.Context, accountID, modelID string) (baseURL string, ok bool, err error)
 }
 
+// PinnedEndpointResolver is the lookup-only capability a caller needs when it
+// must never start, or wait for, an endpoint: only a static or an
+// operator-pinned READY endpoint resolves.
+type PinnedEndpointResolver interface {
+	PinnedEndpoint(ctx context.Context, modelID string) (baseURL string, ok bool, err error)
+}
+
 // staticEndpointResolver is a fixed modelID->baseURL map, for tests and
 // config-driven single-endpoint setups.
 type staticEndpointResolver map[string]string
@@ -50,6 +57,13 @@ func (s staticEndpointResolver) Endpoint(_ context.Context, modelID string) (str
 // EndpointForAccount ignores accountID: a fixed config-driven map has no
 // per-account entries to scope against, so it answers exactly like Endpoint.
 func (s staticEndpointResolver) EndpointForAccount(ctx context.Context, _, modelID string) (string, bool, error) {
+	return s.Endpoint(ctx, modelID)
+}
+
+var _ PinnedEndpointResolver = staticEndpointResolver(nil)
+
+// PinnedEndpoint answers like Endpoint: a static entry is operator-managed.
+func (s staticEndpointResolver) PinnedEndpoint(ctx context.Context, modelID string) (string, bool, error) {
 	return s.Endpoint(ctx, modelID)
 }
 

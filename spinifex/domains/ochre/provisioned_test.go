@@ -30,6 +30,10 @@ type stubEndpointProvisioner struct {
 
 	ensureErr error
 	deleteErr error
+
+	// afterEndpointState runs after EndpointState answers, so a test can land
+	// a concurrent writer between that read and the caller's next step.
+	afterEndpointState func()
 }
 
 type provisionerCall struct {
@@ -66,8 +70,18 @@ func (s *stubEndpointProvisioner) EnsurePinned(_ context.Context, accountID, mod
 
 func (s *stubEndpointProvisioner) EndpointState(_ context.Context, accountID, modelID string) (string, error) {
 	s.mu.Lock()
+	state, hook := s.state[provisionerStateKey(accountID, modelID)], s.afterEndpointState
+	s.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return state, nil
+}
+
+func (s *stubEndpointProvisioner) stateOf(accountID, modelID string) string {
+	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.state[provisionerStateKey(accountID, modelID)], nil
+	return s.state[provisionerStateKey(accountID, modelID)]
 }
 
 func (s *stubEndpointProvisioner) DeletePinned(_ context.Context, accountID, modelID string) error {

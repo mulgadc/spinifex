@@ -38,7 +38,12 @@ current record rather than launching a second VM.
 
 The daemon replies STARTING as soon as it has claimed the model, and the
 launch continues in the background. Pass --wait to poll until the endpoint
-reaches READY and report how long the cold start took.`,
+reaches READY and report how long the cold start took.
+
+--pinned reserves the shared bundle: a pinned endpoint is never idle-reclaimed
+or evicted, and keeps its GPU until deleted. Embedding InvokeModel serves only
+from a pinned bundle. An endpoint already running unpinned is not converted;
+ensure reports that and changes nothing.`,
 	Run: runOchreEndpointEnsure,
 }
 
@@ -72,6 +77,7 @@ func init() {
 	ochreEndpointEnsureCmd.Flags().String("model-id", "", "Catalog model ID to bring an endpoint up for (required)")
 	ochreEndpointEnsureCmd.Flags().Bool("wait", false, "Poll until the endpoint is READY and report the elapsed cold start")
 	ochreEndpointEnsureCmd.Flags().Duration("timeout", defaultEndpointWaitTimeout, "How long --wait polls before giving up")
+	ochreEndpointEnsureCmd.Flags().Bool("pinned", false, "Reserve the shared endpoint: never idle-reclaimed or evicted until deleted")
 	mustMarkFlagRequired(ochreEndpointEnsureCmd, "model-id")
 
 	ochreEndpointDescribeCmd.Flags().String("model-id", "", "Model ID to describe (required)")
@@ -239,11 +245,18 @@ func listEndpointsOutput(ctx context.Context, svc ochre.EndpointService) (string
 
 // runEnsureEndpoint is the testable core of 'ochre endpoint ensure': request
 // the endpoint, then optionally wait for it. Returns the message to print.
-func runEnsureEndpoint(ctx context.Context, svc ochre.EndpointService, modelID string,
+func runEnsureEndpoint(ctx context.Context, svc ochre.EndpointService, modelID string, pinned,
 	wait bool, timeout time.Duration, clock endpointWaitClock) (string, error) {
-	out, err := svc.Ensure(ctx, &ochre.EnsureEndpointInput{ModelID: modelID}, awsidentifiers.GlobalAccountID)
+	out, err := svc.Ensure(ctx, &ochre.EnsureEndpointInput{ModelID: modelID, Pinned: pinned}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", err
+	}
+	// Ensure returns a running endpoint unchanged, so an unpinned one stays
+	// unpinned; that is reported rather than claimed as a reservation.
+	if pinned && !out.Endpoint.Pinned {
+		return "", fmt.Errorf("endpoint for %s is already %s without a pin and cannot be pinned in place; "+
+			"it is a shared bundle other clients may be using, so only after confirming it is safe to remove, "+
+			"delete it and run ensure --pinned again to reserve it\n\n%s", modelID, out.Endpoint.State, formatEndpointRecord(out.Endpoint))
 	}
 	if !wait {
 		return fmt.Sprintf("Endpoint for %s is %s.\n\n%s", modelID, out.Endpoint.State, formatEndpointRecord(out.Endpoint)), nil
@@ -277,6 +290,7 @@ func runOchreEndpointEnsure(cmd *cobra.Command, _ []string) {
 	modelID, _ := cmd.Flags().GetString("model-id")
 	wait, _ := cmd.Flags().GetBool("wait")
 	timeout, _ := cmd.Flags().GetDuration("timeout")
+	pinned, _ := cmd.Flags().GetBool("pinned")
 
 	svc, closeFn, err := endpointServiceFn()
 	if err != nil {
@@ -286,7 +300,7 @@ func runOchreEndpointEnsure(cmd *cobra.Command, _ []string) {
 	}
 	defer closeFn()
 
-	msg, err := runEnsureEndpoint(context.Background(), svc, modelID, wait, timeout, realEndpointWaitClock())
+	msg, err := runEnsureEndpoint(context.Background(), svc, modelID, pinned, wait, timeout, realEndpointWaitClock())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		ochreExit(1)

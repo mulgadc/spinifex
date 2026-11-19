@@ -203,9 +203,20 @@ var actions = map[string]action{
 		}
 		return DescribeAccountLimits(input, loadBalancers), nil
 	}),
-	"DescribeListenerAttributes": handler(func(ctx context.Context, input *DescribeListenerAttributesInput, d Deps, accountID string) (any, error) {
-		return DescribeListenerAttributes(ctx, input, d.NATS, accountID)
-	}),
+	"DescribeListenerAttributes": {
+		parse: handler[DescribeListenerAttributesInput](nil).parse,
+		dispatch: func(ctx context.Context, _ string, parsed any, d Deps, accountID, requestID string) ([]byte, error) {
+			input, ok := parsed.(*DescribeListenerAttributesInput)
+			if !ok {
+				return nil, errors.New(awserrors.ErrorInternalError)
+			}
+			out, err := DescribeListenerAttributes(ctx, input, d.NATS, accountID)
+			if err != nil {
+				return nil, err
+			}
+			return marshalDescribeListenerAttributes(out, requestID)
+		},
+	},
 	"ModifyListenerAttributes": handler(func(ctx context.Context, input *ModifyListenerAttributesInput, d Deps, accountID string) (any, error) {
 		return ModifyListenerAttributes(input, accountID)
 	}),

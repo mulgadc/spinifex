@@ -277,9 +277,8 @@ func TestRegistrationDispatch_DescribeListenerAttributes(t *testing.T) {
 
 		w, _, err := invoke(t, elbv2awsapi.Deps{NATS: nc}, body, nil)
 		require.NoError(t, err)
-		// The SDK marshaller does not keep sibling element order.
-		assert.Contains(t, w.Body.String(), "<Key>tcp.idle_timeout.seconds</Key>")
-		assert.Contains(t, w.Body.String(), "<Value>350</Value>")
+		assert.Contains(t, w.Body.String(),
+			"<Attributes><member><Key>tcp.idle_timeout.seconds</Key><Value>350</Value></member></Attributes>")
 
 		var in elbv2.DescribeListenersInput
 		select {

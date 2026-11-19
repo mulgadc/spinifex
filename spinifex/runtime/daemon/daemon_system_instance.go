@@ -884,34 +884,6 @@ func (d *Daemon) cleanupFailedSystemInstance(instance *vm.VM, _ *ec2.InstanceTyp
 	d.vmMgr.MarkFailed(context.Background(), instance, "system_instance_launch_failed")
 }
 
-// waitPollSleep is the poll delay seam used by WaitForSystemInstance; tests override it.
-var waitPollSleep = time.Sleep
-
-// WaitForSystemInstance polls until the instance reaches running state or times out.
-func (d *Daemon) WaitForSystemInstance(instanceID string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		var status vm.InstanceState
-		exists := d.vmMgr.UpdateState(instanceID, func(v *vm.VM) { status = v.Status })
-
-		if !exists {
-			return fmt.Errorf("instance %s disappeared", instanceID)
-		}
-
-		switch status {
-		case vm.StateRunning:
-			return nil
-		case vm.StateError, vm.StateShuttingDown, vm.StateTerminated:
-			return fmt.Errorf("instance %s in terminal state: %s", instanceID, status)
-		case vm.StateProvisioning, vm.StatePending, vm.StateStopping, vm.StateStopped:
-			// Not settled: keep polling until the timeout.
-		}
-
-		waitPollSleep(500 * time.Millisecond)
-	}
-	return fmt.Errorf("instance %s did not reach running state within %s", instanceID, timeout)
-}
-
 // microvmDir holds the microvm kernel, initramfs and firmware. A variable so
 // tests can supply their own.
 var microvmDir = vm.MicroVMDir

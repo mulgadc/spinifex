@@ -17,7 +17,7 @@ import (
 
 // levelWatch is vpcd's view of the cluster feature level. It refuses a level
 // above this build, as the daemon does, and reports whether security-group
-// rules naming a prefix list may grant: only while level 3 is active.
+// rules naming a prefix list may grant: only while level 2 is active.
 type levelWatch struct {
 	read func(ctx context.Context) (featurelevel.Record, uint64, error)
 
@@ -57,7 +57,7 @@ func (w *levelWatch) observe(ctx context.Context) error {
 	}
 	// Granted before the revision, so a status reporting this revision
 	// already reflects it.
-	w.grant(rec.Active(featurelevel.SGPrefixList))
+	w.grant(rec.Active(featurelevel.GatewayEndpoints))
 	w.revision.Store(rev)
 	return nil
 }

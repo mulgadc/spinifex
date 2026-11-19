@@ -105,7 +105,7 @@ func (l *endpointLoop) reconcile(ctx context.Context) (time.Duration, error) {
 		l.viewEndpoints.Store(0)
 		return l.revisit(), fmt.Errorf("load gateway endpoints: %w", err)
 	}
-	// While level 3 holds, the gossiped derivation, so capture, discovery and
+	// While level 2 holds, the gossiped derivation, so capture, discovery and
 	// the security-group set list one set of addresses on every node.
 	listMgmt := mgmt
 	if l.grant != nil && l.grant.level.Granted() {

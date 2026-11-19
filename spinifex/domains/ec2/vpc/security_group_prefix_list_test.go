@@ -23,7 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeLevel is the feature-level admission: whether level 3 is active, and
+// fakeLevel is the feature-level admission: whether level 2 is active, and
 // what each admitted write held.
 type fakeLevel struct {
 	mu       sync.Mutex
@@ -345,7 +345,7 @@ func TestPrefixListRule_RevokeWithAStaleDescriptionIsNotFound(t *testing.T) {
 	assert.Empty(t, storedEgressPrefixListRules(t, svc, sgID))
 }
 
-// Below level 3 the list does not exist yet: a write adding it answers as an
+// Below level 2 the list does not exist yet: a write adding it answers as an
 // unknown list and stores nothing, with or without an admission installed,
 // while a write naming no list is not gated.
 func TestPrefixListRule_BelowLevelIsNotFound(t *testing.T) {
@@ -425,7 +425,7 @@ func storedEgressPrefixListRules(t *testing.T, svc *VPCServiceImpl, sgID string)
 	return out
 }
 
-// While a rollback below level 3 is pending, a customer can still remove the
+// While a rollback below level 2 is pending, a customer can still remove the
 // rules it waits on, by permission or by rule ID, and update their
 // descriptions; only adding a peer is refused.
 func TestPrefixListRule_RemovableDuringRollback(t *testing.T) {

@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// prefixListFixture is a two-node formation at level 3 with a rollback to 2
+// prefixListFixture is a two-node formation at level 2 with a rollback to 1
 // recorded, both vpcds having observed it, idle unless a test changes it.
 type prefixListFixture struct {
 	drain   *sgPrefixListDrain
@@ -33,9 +33,9 @@ func newPrefixListFixture(t *testing.T) *prefixListFixture {
 	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: "feature-level-test"})
 	require.NoError(t, err)
 	store := featurelevel.NewStore(kv)
-	_, _, err = store.Advance(t.Context(), []featurelevel.Member{{Node: "n1", Level: 3, Current: true}, {Node: "n2", Level: 3, Current: true}})
+	_, _, err = store.Advance(t.Context(), []featurelevel.Member{{Node: "n1", Level: 2, Current: true}, {Node: "n2", Level: 2, Current: true}})
 	require.NoError(t, err)
-	_, rev, err := store.StartRollback(t.Context(), 2, featurelevel.Build)
+	_, rev, err := store.StartRollback(t.Context(), 1, featurelevel.Build)
 	require.NoError(t, err)
 
 	observed := func(n string) projection.EndpointProxyStatus {

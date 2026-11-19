@@ -558,7 +558,7 @@ func launchService(cfg *Config) error {
 	}
 
 	// Read before anything applies a security group: a level above this build
-	// refuses to start, and prefix-list peers grant only while level 3 holds.
+	// refuses to start, and prefix-list peers grant only while level 2 holds.
 	level := &levelWatch{read: featureLevelRecord(js), changed: make(chan struct{}, 1)}
 	if err := level.start(ctx); err != nil {
 		slog.Error("vpcd: refusing to start", "err", err)

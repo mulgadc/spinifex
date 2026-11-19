@@ -419,7 +419,7 @@ func mustStatus(t *testing.T, l *endpointLoop) projection.EndpointProxyStatus {
 	return st
 }
 
-// grantedLevel is a level watch that has observed level 3 active, or not.
+// grantedLevel is a level watch that has observed level 2 active, or not.
 func grantedLevel(granted bool, rev uint64) *levelWatch {
 	w := &levelWatch{}
 	w.granted.Store(granted)
@@ -554,7 +554,7 @@ func TestEndpointLoop_DrainPollWakesThePassForALeftoverACL(t *testing.T) {
 	}
 }
 
-// While level 3 holds, capture and the proxy's view use the gossiped
+// While level 2 holds, capture and the proxy's view use the gossiped
 // derivation, ignoring this node's bridge address.
 func TestEndpointLoop_GossipedDerivationWhileGranted(t *testing.T) {
 	h := newLoopHarness(false)

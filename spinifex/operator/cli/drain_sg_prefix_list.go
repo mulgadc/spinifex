@@ -72,7 +72,7 @@ func (g *sgPrefixListDrain) check(ctx context.Context) (int, error) {
 			switch {
 			case err != nil:
 				unread = append(unread, "vpcd on "+node+": "+err.Error())
-			case st.Build < featurelevel.SGPrefixList:
+			case st.Build < featurelevel.GatewayEndpoints:
 				unread = append(unread, fmt.Sprintf("vpcd on %s: reports build %d, which cannot report prefix-list state", node, st.Build))
 			case st.LevelRevision < rev:
 				unread = append(unread, fmt.Sprintf("vpcd on %s: has observed revision %d, need %d", node, st.LevelRevision, rev))

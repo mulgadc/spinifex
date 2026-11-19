@@ -47,11 +47,19 @@ func init() {
 }
 
 var registerDrainsOnce = sync.OnceValue(func() error {
-	return errors.Join(
-		featurelevel.RegisterDrain(featurelevel.GatewayEndpoints, endpointDrain.check),
-		featurelevel.RegisterDrain(featurelevel.SGPrefixList, prefixListDrain.check),
-	)
+	return featurelevel.RegisterDrain(featurelevel.GatewayEndpoints, gatewayEndpointsDrain)
 })
+
+// gatewayEndpointsDrain is level 2's check: its endpoints and demux flows, and
+// the security-group rules naming the S3 prefix list that the level grants.
+func gatewayEndpointsDrain(ctx context.Context) (int, error) {
+	endpoints, epErr := endpointDrain.check(ctx)
+	rules, plErr := prefixListDrain.check(ctx)
+	if err := errors.Join(epErr, plErr); err != nil {
+		return 0, err
+	}
+	return endpoints + rules, nil
+}
 
 // registerDrainChecks is the composition root for drain checks: every declared
 // level above the baseline registers its check here, and a level left without

@@ -17,8 +17,8 @@ import (
 const endpointProxyStatusWait = 2 * time.Second
 
 // advertisedFeatureLevel is the level this node's heartbeat reports: below 2
-// until its vpcd can capture and its gate serve endpoint proxies, and below 3
-// until its vpcd renders prefix-list rules and its entry is the gossiped one.
+// until its vpcd can capture and render prefix-list peers, its gate serves
+// endpoint proxies, and its prefix-list entry is the gossiped one.
 func (d *Daemon) advertisedFeatureLevel() int {
 	parent := d.ctx
 	if parent == nil {
@@ -29,11 +29,8 @@ func (d *Daemon) advertisedFeatureLevel() int {
 	st, err := projection.RequestEndpointProxyStatus(ctx, d.natsConn, d.node)
 	agree := prefixListDerivationsAgree(d.clusterConfig, d.mgmtBridgeIP)
 	level := featurelevel.Build
-	switch {
-	case err != nil || !st.ProbePassed || !st.GateReady:
+	if err != nil || !st.ProbePassed || !st.GateReady || st.Build < featurelevel.GatewayEndpoints || !agree {
 		level = featurelevel.GatewayEndpoints - 1
-	case st.Build < featurelevel.SGPrefixList || !agree:
-		level = featurelevel.SGPrefixList - 1
 	}
 	if prev := d.advertisedLevel.Swap(int64(level)); prev != int64(level) {
 		slog.Info("Feature level advertised", "level", level, "build", featurelevel.Build,
@@ -45,7 +42,7 @@ func (d *Daemon) advertisedFeatureLevel() int {
 
 // prefixListDerivationsAgree reports whether the gossiped node set gives this
 // node its own IPv4 entry, and its entries derived with its bridge address equal
-// those every node derives from that set, which level 3 switches to.
+// those every node derives from that set, which level 2 switches to.
 func prefixListDerivationsAgree(cc *config.ClusterConfig, mgmtBridgeIP string) bool {
 	own := cc != nil && slices.ContainsFunc(config.ServiceEndpoints(cc, ""), func(ep config.ServiceEndpoint) bool {
 		return ep.Node == cc.Node && ep.Addr.Is4()
@@ -53,7 +50,7 @@ func prefixListDerivationsAgree(cc *config.ClusterConfig, mgmtBridgeIP string) b
 	return own && slices.Equal(prefixlist.Entries(cc, mgmtBridgeIP), prefixlist.Entries(cc, ""))
 }
 
-// prefixListGossiped reports whether level 3 is active, for the prefix-list
+// prefixListGossiped reports whether level 2 is active, for the prefix-list
 // reads; an unreadable level keeps the local derivation, which agreed at
 // activation.
 func prefixListGossiped(gate *featurelevel.Gate) func(context.Context) bool {
@@ -61,7 +58,7 @@ func prefixListGossiped(gate *featurelevel.Gate) func(context.Context) bool {
 		if gate == nil {
 			return false
 		}
-		ok, err := gate.Active(ctx, featurelevel.SGPrefixList)
+		ok, err := gate.Active(ctx, featurelevel.GatewayEndpoints)
 		return err == nil && ok
 	}
 }
@@ -72,7 +69,7 @@ func prefixListAdmission(gate *featurelevel.Gate) func(context.Context) (func(),
 		if gate == nil {
 			return func() {}, false, errors.New("feature level gate not ready")
 		}
-		return gate.Admit(ctx, featurelevel.SGPrefixList)
+		return gate.Admit(ctx, featurelevel.GatewayEndpoints)
 	}
 }
 

@@ -24,18 +24,18 @@ func (f *fixedRecord) read(context.Context) (featurelevel.Record, uint64, error)
 	return f.rec, f.rev, f.err
 }
 
-// Prefix-list peers grant only while level 3 is active: a pending rollback
+// Prefix-list peers grant only while level 2 is active: a pending rollback
 // below it withdraws the grant at the revision it is observed, and a failed
 // read changes nothing.
-func TestLevelWatch_GrantFollowsLevel3(t *testing.T) {
-	src := &fixedRecord{rec: Record{Level: 2}, rev: 1}
+func TestLevelWatch_GrantFollowsLevel2(t *testing.T) {
+	src := &fixedRecord{rec: Record{Level: 1}, rev: 1}
 	w := &levelWatch{read: src.read}
 	assert.False(t, w.Granted(), "nothing is granted before the first read")
 
 	require.NoError(t, w.observe(t.Context()))
 	assert.False(t, w.Granted())
 
-	src.rec, src.rev = Record{Level: 3}, 2
+	src.rec, src.rev = Record{Level: 2}, 2
 	require.NoError(t, w.observe(t.Context()))
 	assert.True(t, w.Granted())
 
@@ -45,14 +45,14 @@ func TestLevelWatch_GrantFollowsLevel3(t *testing.T) {
 	assert.Equal(t, uint64(2), w.Revision())
 
 	src.err = nil
-	src.rec, src.rev = Record{Level: 3, Rollback: &featurelevel.Rollback{Target: 2}}, 3
+	src.rec, src.rev = Record{Level: 2, Rollback: &featurelevel.Rollback{Target: 1}}, 3
 	require.NoError(t, w.observe(t.Context()))
-	assert.False(t, w.Granted(), "a pending rollback below 3 withdraws the grant")
+	assert.False(t, w.Granted(), "a pending rollback below 2 withdraws the grant")
 	assert.Equal(t, uint64(3), w.Revision())
 
-	src.rec, src.rev = Record{Level: 3, Rollback: &featurelevel.Rollback{Target: 3}}, 4
+	src.rec, src.rev = Record{Level: 2, Rollback: &featurelevel.Rollback{Target: 2}}, 4
 	require.NoError(t, w.observe(t.Context()))
-	assert.True(t, w.Granted(), "a rollback that keeps level 3 keeps the grant")
+	assert.True(t, w.Granted(), "a rollback that keeps level 2 keeps the grant")
 }
 
 // vpcd refuses a level above its build at start, before it serves anything,
@@ -76,7 +76,7 @@ func TestLevelWatch_StartRefusesAboveBuildAndRetriesOtherwise(t *testing.T) {
 		if calls < 3 {
 			return Record{}, 0, errors.New("no leader yet")
 		}
-		return Record{Level: 3}, 7, nil
+		return Record{Level: 2}, 7, nil
 	}}
 	require.NoError(t, flaky.start(t.Context()))
 	assert.Equal(t, 2, sleeps)
@@ -86,7 +86,7 @@ func TestLevelWatch_StartRefusesAboveBuildAndRetriesOtherwise(t *testing.T) {
 // A level raised above this build while vpcd runs is refused and withdraws
 // the grant.
 func TestLevelWatch_ObserveAboveBuildWithdrawsTheGrant(t *testing.T) {
-	src := &fixedRecord{rec: Record{Level: 3}, rev: 1}
+	src := &fixedRecord{rec: Record{Level: 2}, rev: 1}
 	w := &levelWatch{read: src.read}
 	require.NoError(t, w.observe(t.Context()))
 	src.rec, src.rev = Record{Level: featurelevel.Build + 1}, 2
@@ -100,7 +100,7 @@ func TestLevelWatch_ObserveAboveBuildWithdrawsTheGrant(t *testing.T) {
 // installed prefix-list ACL without waiting for the resync; a re-read that
 // changes nothing wakes nothing.
 func TestLevelWatch_GrantFlipWakesTheReconcilePass(t *testing.T) {
-	src := &fixedRecord{rec: Record{Level: 2}, rev: 1}
+	src := &fixedRecord{rec: Record{Level: 1}, rev: 1}
 	w := &levelWatch{read: src.read, changed: make(chan struct{}, 1)}
 	woken := func() bool {
 		select {
@@ -112,14 +112,14 @@ func TestLevelWatch_GrantFlipWakesTheReconcilePass(t *testing.T) {
 	}
 
 	require.NoError(t, w.observe(t.Context()))
-	assert.False(t, woken(), "level 2 grants nothing, so nothing flipped")
-	src.rec, src.rev = Record{Level: 3}, 2
+	assert.False(t, woken(), "level 1 grants nothing, so nothing flipped")
+	src.rec, src.rev = Record{Level: 2}, 2
 	require.NoError(t, w.observe(t.Context()))
 	assert.True(t, woken(), "the grant arriving wakes a pass")
 	src.rev = 3
 	require.NoError(t, w.observe(t.Context()))
 	assert.False(t, woken(), "an unchanged grant wakes nothing")
-	src.rec, src.rev = Record{Level: 3, Rollback: &featurelevel.Rollback{Target: 2}}, 4
+	src.rec, src.rev = Record{Level: 2, Rollback: &featurelevel.Rollback{Target: 1}}, 4
 	require.NoError(t, w.observe(t.Context()))
 	assert.True(t, woken(), "a rollback withdrawing the grant wakes a pass")
 }

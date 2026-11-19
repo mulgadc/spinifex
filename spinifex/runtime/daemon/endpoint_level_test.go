@@ -13,12 +13,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The node reports level 2 only while its vpcd can capture and its gate serves
-// endpoint proxies, and level 3 only while its vpcd names that build and its
-// own prefix-list entry is the one every node derives.
+// The node reports level 2 only while its vpcd can capture and names that
+// build, its gate serves endpoint proxies, and its own prefix-list entry is
+// the one every node derives.
 func TestAdvertisedFeatureLevel_FollowsLocalVpcd(t *testing.T) {
 	below := featurelevel.GatewayEndpoints - 1
-	noPrefixList := featurelevel.SGPrefixList - 1
 	advertised := &config.ClusterConfig{Node: "n1", Nodes: map[string]config.Config{"n1": {AdvertiseIP: "10.0.0.2"}}}
 	unadvertised := &config.ClusterConfig{Node: "n1", Nodes: map[string]config.Config{
 		"n1": {Predastore: config.PredastoreConfig{Host: "0.0.0.0:8443"}},
@@ -45,10 +44,10 @@ func TestAdvertisedFeatureLevel_FollowsLocalVpcd(t *testing.T) {
 		{"another node answered", with(func(s *projection.EndpointProxyStatus) { s.Node = "n2" }), advertised, config.DefaultMgmtBridgeIP, below},
 		{"refused", with(func(s *projection.EndpointProxyStatus) { s.Error = "no" }), advertised, config.DefaultMgmtBridgeIP, below},
 		{"vpcd silent", nil, advertised, config.DefaultMgmtBridgeIP, below},
-		{"vpcd omits its build", with(func(s *projection.EndpointProxyStatus) { s.Build = 0 }), advertised, config.DefaultMgmtBridgeIP, noPrefixList},
-		{"vpcd below the prefix-list build", with(func(s *projection.EndpointProxyStatus) { s.Build = featurelevel.GatewayEndpoints }), advertised, config.DefaultMgmtBridgeIP, noPrefixList},
-		{"entry only at the bridge address", &ready, unadvertised, config.DefaultMgmtBridgeIP, noPrefixList},
-		{"no entry of its own in either derivation", &ready, peerOnly, "", noPrefixList},
+		{"vpcd omits its build", with(func(s *projection.EndpointProxyStatus) { s.Build = 0 }), advertised, config.DefaultMgmtBridgeIP, below},
+		{"vpcd reports an older build", with(func(s *projection.EndpointProxyStatus) { s.Build = featurelevel.Baseline }), advertised, config.DefaultMgmtBridgeIP, below},
+		{"entry only at the bridge address", &ready, unadvertised, config.DefaultMgmtBridgeIP, below},
+		{"no entry of its own in either derivation", &ready, peerOnly, "", below},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

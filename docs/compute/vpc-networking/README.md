@@ -191,21 +191,21 @@ It then relays the connection over mutual TLS to the gate's endpoint listener on
 Requests through an endpoint carry `aws:SourceVpce`, `aws:SourceVpc` and `aws:VpcSourceIp`, not the node's address, so an allow on `aws:SourceIp` does not match them.
 The service is offered once every node reports feature level 2.
 A node reports it only when its kernel passes the capture probe, its proxy can present the node certificate, and a gate accepts that certificate: its own on a node running Predastore, otherwise a peer's.
+Its vpcd must also run this release, and its own prefix-list entry must be its advertised address rather than its management bridge address.
 Until then `DescribeVpcEndpointServices` omits S3 and `CreateVpcEndpoint` refuses it.
 `spx admin cluster status` shows each node's level.
 
 ### Security Groups Naming the S3 Prefix List
 
-A security-group rule can name the S3 prefix list as its peer, in either direction, once every node reports feature level 3.
-A node reports it only when it reports level 2, its vpcd runs this release, and its own prefix-list entry is its advertised address rather than its management bridge address.
+A security-group rule can name the S3 prefix list as its peer, in either direction, from feature level 2, the same level that offers the endpoint service.
 Until then a rule adding the list is refused with `InvalidPrefixListID.NotFound`, as any other prefix list always is.
-From level 3, `DescribePrefixLists`, `GetManagedPrefixListEntries` and the capture rules list each node at its advertised address.
+From level 2, `DescribePrefixLists`, `GetManagedPrefixListEntries` and the capture rules list each node at its advertised address.
 
 The rule matches an OVN address set `spx_pl_<id>`, so it governs S3 traffic by the public path as well as the proxy's check, and the proxy reads the same set.
 A security-group change creates the set empty if it is absent; vpcd's reconcile pass alone fills it, after the drift loop's debounce, so a new rule grants nothing for those seconds.
 
-Rolling back below level 3 withdraws every prefix-list grant once each vpcd has read the rollback, and leaves the rules stored.
-The rollback then waits until every rule naming the prefix list is revoked and no ACL names the set; `RevokeSecurityGroupEgress` and `RevokeSecurityGroupIngress` still work during it, and nothing revokes a rule automatically.
+Rolling back to level 1 withdraws every prefix-list grant once each vpcd has read the rollback, and leaves the rules stored.
+Besides deleting every endpoint, the rollback then waits until every rule naming the prefix list is revoked and no ACL names the set; `RevokeSecurityGroupEgress` and `RevokeSecurityGroupIngress` still work during it, and nothing revokes a rule automatically.
 
 ### Formations Installed With v1.25.0 or Earlier
 

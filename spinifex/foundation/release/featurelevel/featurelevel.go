@@ -13,7 +13,7 @@ import (
 
 // Build is the highest level this binary supports. Any change that adds an
 // N-only semantic raises it and declares the level below.
-const Build = 3
+const Build = 2
 
 // Level names one N-only semantic.
 type Level struct {
@@ -24,18 +24,14 @@ type Level struct {
 // Baseline is level 1: this build's first release, with no N-only semantic.
 const Baseline = 1
 
-// GatewayEndpoints is level 2: S3 gateway VPC endpoints, which need every
-// node's gate to serve endpoint proxies and every node's proxy to capture.
+// GatewayEndpoints is level 2: S3 gateway VPC endpoints and security-group
+// rules naming the S3 prefix list. Every node's gate must serve endpoint
+// proxies, its proxy capture, and its vpcd render prefix-list peers.
 const GatewayEndpoints = 2
-
-// SGPrefixList is level 3: security-group rules naming a prefix list, which an
-// older daemon drops when it rewrites a group and an older vpcd omits.
-const SGPrefixList = 3
 
 var declared = []Level{
 	{N: Baseline, Name: "baseline"},
 	{N: GatewayEndpoints, Name: "vpc-gateway-endpoints"},
-	{N: SGPrefixList, Name: "sg-prefix-list"},
 }
 
 // Levels returns every declared level in ascending order.

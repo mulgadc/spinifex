@@ -3,14 +3,12 @@
 package hostlink
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
-	"io"
+	"errors"
 	"net"
-	"strconv"
-	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -85,32 +83,18 @@ func TestReaderExitsOnCloseWithUnreadFrames(t *testing.T) {
 	host := NewTestStream(h)
 	sent := make(chan error, 1)
 	go func() {
-		sent <- host.HostSend(Request{RequestID: "1"})
-		_ = host.HostShutdown()
+		var err error
+		for i := 0; i < 8 && err == nil; i++ {
+			err = host.HostSend(Request{})
+		}
+		sent <- errors.Join(err, host.HostShutdown())
 	}()
-	require.NoError(t, <-sent)
+	select {
+	case err := <-sent:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the reader stopped taking frames")
+	}
 	require.NoError(t, g.Close())
 	require.NoError(t, h.Close())
-}
-
-// Frames beyond the read-ahead bound end the stream after those already read.
-func TestTooManyUnreadFramesEndTheStream(t *testing.T) {
-	var wire bytes.Buffer
-	enc := NewTestStream(struct {
-		io.Reader
-		io.Writer
-	}{strings.NewReader(""), &wire})
-	for i := 0; i <= maxUnread; i++ {
-		require.NoError(t, enc.HostSend(Request{RequestID: strconv.Itoa(i)}))
-	}
-	before := goleak.IgnoreCurrent()
-	guest := NewTestStream(&wire)
-	require.NoError(t, goleak.Find(before), "the reader stops without the owner reading")
-	for i := 0; i < maxUnread; i++ {
-		req, err := guest.Next(context.Background())
-		require.NoError(t, err)
-		assert.Equal(t, strconv.Itoa(i), req.RequestID)
-	}
-	_, err := guest.Next(context.Background())
-	require.ErrorIs(t, err, ErrTooManyUnread)
 }

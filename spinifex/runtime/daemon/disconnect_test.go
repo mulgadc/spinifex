@@ -41,8 +41,7 @@ func TestDaemonModeDefaultStandalone(t *testing.T) {
 // TestDaemonModeFlipsOnConnectAndDisconnect — connecting flips to cluster,
 // killing NATS flips back to standalone.
 func TestDaemonModeFlipsOnConnectAndDisconnect(t *testing.T) {
-	port := freePortForTest(t)
-	ns := startTestNATSOnPortForTest(t, port)
+	ns := startTestNATSOnPortForTest(t, server.RANDOM_PORT)
 
 	clusterCfg := &config.ClusterConfig{
 		Node:  "node-1",
@@ -62,8 +61,10 @@ func TestDaemonModeFlipsOnConnectAndDisconnect(t *testing.T) {
 
 // TestDaemonReconnectBumpsRetryCount — reconnect callback fires, count++.
 func TestDaemonReconnectBumpsRetryCount(t *testing.T) {
-	port := freePortForTest(t)
-	ns := startTestNATSOnPortForTest(t, port)
+	ns := startTestNATSOnPortForTest(t, server.RANDOM_PORT)
+	addr, ok := ns.Addr().(*net.TCPAddr)
+	require.True(t, ok)
+	port := addr.Port
 
 	clusterCfg := &config.ClusterConfig{
 		Node:  "node-1",
@@ -88,17 +89,8 @@ func TestDaemonReconnectBumpsRetryCount(t *testing.T) {
 	assert.Equal(t, DaemonModeCluster, d.Mode(), "mode should flip back to cluster on reconnect")
 }
 
-func freePortForTest(t *testing.T) int {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	addr, ok := l.Addr().(*net.TCPAddr)
-	require.True(t, ok)
-	port := addr.Port
-	require.NoError(t, l.Close())
-	return port
-}
-
+// startTestNATSOnPortForTest starts a server on port; pass server.RANDOM_PORT
+// to let the kernel choose one at bind time.
 func startTestNATSOnPortForTest(t *testing.T, port int) *server.Server {
 	t.Helper()
 	opts := &server.Options{Host: "127.0.0.1", Port: port, NoLog: true, NoSigs: true}

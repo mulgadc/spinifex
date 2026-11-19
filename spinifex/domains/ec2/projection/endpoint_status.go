@@ -36,7 +36,14 @@ type EndpointProxyStatus struct {
 	Endpoints   int    `json:"endpoints"`
 	ProbePassed bool   `json:"probe_passed"`
 	GateReady   bool   `json:"gate_ready"`
-	Error       string `json:"error,omitempty"`
+	// Build is vpcd's feature-level build; an older vpcd omits it.
+	Build int `json:"build,omitempty"`
+	// LevelRevision is the record revision of the prefix-list grant vpcd last
+	// observed, read before the applies and ACLs that grant left behind.
+	LevelRevision     uint64 `json:"level_revision,omitempty"`
+	PrefixListApplies int    `json:"prefix_list_applies,omitempty"`
+	PrefixListACLs    int    `json:"prefix_list_acls,omitempty"`
+	Error             string `json:"error,omitempty"`
 }
 
 // RequestEndpointProxyStatus asks node's vpcd for its endpoint proxy status. A

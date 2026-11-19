@@ -2271,6 +2271,8 @@ func (d *Daemon) startCluster() error {
 	d.routeTableService.SetEndpointLookup(d.vpcEndpointService.Store)
 	d.vpcService.SetDependencyCheck("vpc-endpoint", d.vpcEndpointService.VpcBlocksDeletion)
 	d.prefixListService = ec2prefixlist.NewServiceImpl(d.config.Region, d.mgmtBridgeIP, func() *config.ClusterConfig { return d.clusterConfig })
+	d.prefixListService.SetGossiped(prefixListGossiped(d.featureGate))
+	d.vpcService.SetPrefixListAdmission(prefixListAdmission(d.featureGate))
 
 	// A node declaring public pools must serve EIPs or refuse to start: EIP
 	// subjects are a queue group, so one node silently on the disabled stub

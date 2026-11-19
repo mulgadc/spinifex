@@ -270,6 +270,12 @@ func (r *reconciler) applySubnets(ctx context.Context, intent IntentState, actua
 // deletes sg_* PGs with no matching intent SG. Startup passes false to avoid
 // deleting in-flight resources before peer subscribers have converged.
 func (r *reconciler) applySGs(ctx context.Context, intent IntentState, actual ActualState, pruneOrphans bool, res *passResult) {
+	// The pass is the prefix-list sets' only membership writer, so it fills them
+	// before applying the groups whose ACLs name them.
+	if err := r.sg.ConvergePrefixLists(ctx); err != nil {
+		slog.Error("reconcile/apply: ConvergePrefixLists failed", "err", err)
+		res.fail(classSG, "prefix-lists", err)
+	}
 	for groupID, spec := range intent.SGs {
 		if err := r.topology.EnsureSGPortGroup(ctx, groupID); err != nil {
 			slog.Error("reconcile/apply: EnsureSGPortGroup failed", "sg", groupID, "err", err)

@@ -19,6 +19,7 @@ type ServiceImpl struct {
 	region       string
 	mgmtBridgeIP string
 	cluster      func() *config.ClusterConfig
+	gossiped     func(ctx context.Context) bool
 }
 
 // NewServiceImpl reads the node set through cluster on every call;
@@ -27,8 +28,16 @@ func NewServiceImpl(region, mgmtBridgeIP string, cluster func() *config.ClusterC
 	return &ServiceImpl{region: region, mgmtBridgeIP: mgmtBridgeIP, cluster: cluster}
 }
 
-func (s *ServiceImpl) cidrs() []string {
-	entries := Entries(s.cluster(), s.mgmtBridgeIP)
+// SetGossiped makes the reads derive every entry from the gossiped node set,
+// ignoring this node's bridge address, while gossiped reports true.
+func (s *ServiceImpl) SetGossiped(gossiped func(ctx context.Context) bool) { s.gossiped = gossiped }
+
+func (s *ServiceImpl) cidrs(ctx context.Context) []string {
+	mgmt := s.mgmtBridgeIP
+	if s.gossiped != nil && s.gossiped(ctx) {
+		mgmt = ""
+	}
+	entries := Entries(s.cluster(), mgmt)
 	out := make([]string, 0, len(entries))
 	for _, e := range entries {
 		out = append(out, e.CIDR())
@@ -73,7 +82,7 @@ var describePaging = paging.EC2{
 }
 
 // DescribePrefixLists lists the S3 list with its CIDRs.
-func (s *ServiceImpl) DescribePrefixLists(_ context.Context, input *ec2.DescribePrefixListsInput, _ string) (*ec2.DescribePrefixListsOutput, error) {
+func (s *ServiceImpl) DescribePrefixLists(ctx context.Context, input *ec2.DescribePrefixListsInput, _ string) (*ec2.DescribePrefixListsOutput, error) {
 	if _, err := describePaging.Parse(input.MaxResults, input.NextToken, len(input.PrefixListIds)); err != nil {
 		return nil, err
 	}
@@ -90,7 +99,7 @@ func (s *ServiceImpl) DescribePrefixLists(_ context.Context, input *ec2.Describe
 		out.PrefixLists = append(out.PrefixLists, &ec2.PrefixList{
 			PrefixListId:   aws.String(ID(s.region)),
 			PrefixListName: aws.String(ServiceName(s.region)),
-			Cidrs:          aws.StringSlice(s.cidrs()),
+			Cidrs:          aws.StringSlice(s.cidrs(ctx)),
 		})
 	}
 	return out, nil
@@ -141,7 +150,7 @@ func (s *ServiceImpl) DescribeManagedPrefixLists(_ context.Context, input *ec2.D
 
 // GetManagedPrefixListEntries pages the list's CIDRs. AWS shows no version for
 // an AWS-managed list, so any TargetVersion is refused.
-func (s *ServiceImpl) GetManagedPrefixListEntries(_ context.Context, input *ec2.GetManagedPrefixListEntriesInput, _ string) (*ec2.GetManagedPrefixListEntriesOutput, error) {
+func (s *ServiceImpl) GetManagedPrefixListEntries(ctx context.Context, input *ec2.GetManagedPrefixListEntriesInput, _ string) (*ec2.GetManagedPrefixListEntriesOutput, error) {
 	id := aws.StringValue(input.PrefixListId)
 	if id == "" {
 		return nil, awserrors.Errorf(awserrors.ErrorMissingParameter, "The request must contain the parameter PrefixListId")
@@ -157,7 +166,7 @@ func (s *ServiceImpl) GetManagedPrefixListEntries(_ context.Context, input *ec2.
 		return nil, err
 	}
 	entries := make([]*ec2.PrefixListEntry, 0)
-	for _, c := range s.cidrs() {
+	for _, c := range s.cidrs(ctx) {
 		entries = append(entries, &ec2.PrefixListEntry{Cidr: aws.String(c)})
 	}
 	page, next := paging.EC2Page(entries, func(e *ec2.PrefixListEntry) string { return *e.Cidr }, req)

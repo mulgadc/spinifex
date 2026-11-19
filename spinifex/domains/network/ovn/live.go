@@ -1494,6 +1494,43 @@ func (c *LiveClient) EnsureAddressSet(ctx context.Context, name string, addresse
 	return created.UUID, nil
 }
 
+// addressSetInsertHook runs between CreateAddressSetIfAbsent's cache miss and
+// its insert; tests use it to lose the race deterministically.
+var addressSetInsertHook func()
+
+// CreateAddressSetIfAbsent inserts the named set with no addresses unless a row
+// with that name exists. A set in the cache is returned without its addresses
+// being read, and a lost insert race returns the winner's row untouched.
+func (c *LiveClient) CreateAddressSetIfAbsent(ctx context.Context, name string) (string, error) {
+	if existing, err := c.GetAddressSet(ctx, name); err == nil {
+		return existing.UUID, nil
+	}
+	if addressSetInsertHook != nil {
+		addressSetInsertHook()
+	}
+	as := &nbdb.AddressSet{
+		UUID:        namedUUID("as_", name),
+		Name:        name,
+		Addresses:   []string{},
+		ExternalIDs: map[string]string{},
+	}
+	ops, err := c.ensureNamedRowOps("Address_Set", name, as)
+	if err != nil {
+		return "", err
+	}
+	if err := c.transactOps(ctx, ops); err != nil {
+		if existing, refErr := c.waitForCachedAddressSet(ctx, name); refErr == nil {
+			return existing.UUID, nil
+		}
+		return "", fmt.Errorf("create address set %q: %w", name, err)
+	}
+	created, err := c.waitForCachedAddressSet(ctx, name)
+	if err != nil {
+		return "", fmt.Errorf("resolve address set %q uuid after insert: %w", name, err)
+	}
+	return created.UUID, nil
+}
+
 // convergeAddressSet updates the row's addresses when they differ from want.
 func (c *LiveClient) convergeAddressSet(ctx context.Context, existing *nbdb.AddressSet, want []string) error {
 	have := slices.Clone(existing.Addresses)
@@ -1675,6 +1712,15 @@ func (c *LiveClient) aclSetUnchanged(ctx context.Context, pg *nbdb.PortGroup, sp
 		rows = append(rows, *acl)
 	}
 	return ACLSetEqual(rows, specs), nil
+}
+
+// ListACLs returns every ACL row in the NB cache.
+func (c *LiveClient) ListACLs(ctx context.Context) ([]nbdb.ACL, error) {
+	var acls []nbdb.ACL
+	if err := c.client.List(ctx, &acls); err != nil {
+		return nil, fmt.Errorf("list ACLs: %w", err)
+	}
+	return acls, nil
 }
 
 // ReplaceACLs atomically swaps the port group's ACL set in one transaction.

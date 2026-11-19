@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"time"
 
+	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/prefixlist"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
 	"github.com/mulgadc/spinifex/spinifex/foundation/release/featurelevel"
 )
@@ -13,9 +16,9 @@ import (
 // endpointProxyStatusWait bounds the heartbeat's ask of its own vpcd.
 const endpointProxyStatusWait = 2 * time.Second
 
-// advertisedFeatureLevel is the level this node's heartbeat reports. Gateway
-// endpoints need this node to capture their traffic and its gate to serve
-// endpoint proxies, so until its vpcd reports both it reports the level below.
+// advertisedFeatureLevel is the level this node's heartbeat reports: below 2
+// until its vpcd can capture and its gate serve endpoint proxies, and below 3
+// until its vpcd renders prefix-list rules and its entry is the gossiped one.
 func (d *Daemon) advertisedFeatureLevel() int {
 	parent := d.ctx
 	if parent == nil {
@@ -24,15 +27,50 @@ func (d *Daemon) advertisedFeatureLevel() int {
 	ctx, cancel := context.WithTimeout(parent, endpointProxyStatusWait)
 	defer cancel()
 	st, err := projection.RequestEndpointProxyStatus(ctx, d.natsConn, d.node)
+	agree := prefixListDerivationsAgree(d.clusterConfig, d.mgmtBridgeIP)
 	level := featurelevel.Build
-	if err != nil || !st.ProbePassed || !st.GateReady {
+	switch {
+	case err != nil || !st.ProbePassed || !st.GateReady:
 		level = featurelevel.GatewayEndpoints - 1
+	case st.Build < featurelevel.SGPrefixList || !agree:
+		level = featurelevel.SGPrefixList - 1
 	}
 	if prev := d.advertisedLevel.Swap(int64(level)); prev != int64(level) {
 		slog.Info("Feature level advertised", "level", level, "build", featurelevel.Build,
-			"capture_probe", st.ProbePassed, "gate_ready", st.GateReady, "err", err)
+			"capture_probe", st.ProbePassed, "gate_ready", st.GateReady, "vpcd_build", st.Build,
+			"prefix_list_derivations_agree", agree, "err", err)
 	}
 	return level
+}
+
+// prefixListDerivationsAgree reports whether this node's prefix-list entries
+// derived with its bridge address equal those every node derives from the
+// gossiped node set, which level 3 switches discovery and capture to.
+func prefixListDerivationsAgree(cc *config.ClusterConfig, mgmtBridgeIP string) bool {
+	return slices.Equal(prefixlist.Entries(cc, mgmtBridgeIP), prefixlist.Entries(cc, ""))
+}
+
+// prefixListGossiped reports whether level 3 is active, for the prefix-list
+// reads; an unreadable level keeps the local derivation, which agreed at
+// activation.
+func prefixListGossiped(gate *featurelevel.Gate) func(context.Context) bool {
+	return func(ctx context.Context) bool {
+		if gate == nil {
+			return false
+		}
+		ok, err := gate.Active(ctx, featurelevel.SGPrefixList)
+		return err == nil && ok
+	}
+}
+
+// prefixListAdmission admits security-group writes adding a prefix-list peer.
+func prefixListAdmission(gate *featurelevel.Gate) func(context.Context) (func(), bool, error) {
+	return func(ctx context.Context) (func(), bool, error) {
+		if gate == nil {
+			return func() {}, false, errors.New("feature level gate not ready")
+		}
+		return gate.Admit(ctx, featurelevel.SGPrefixList)
+	}
 }
 
 // endpointDemuxHolding reports this node's endpoint demux to the rollback

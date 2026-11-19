@@ -59,13 +59,16 @@ type Rule struct {
 // interpolated into an address-set name.
 var prefixListIDRegex = regexp.MustCompile(`^pl-[0-9a-f]{8,17}$`)
 
+// PrefixListSetPrefix begins the name of every prefix list's NB address set.
+const PrefixListSetPrefix = "spx_pl_"
+
 // PrefixListAddressSet names the NB address set holding a prefix list's
 // entries. OVN identifiers take no hyphen, so only the ID's hex suffix is kept.
 func PrefixListAddressSet(id string) (string, error) {
 	if !prefixListIDRegex.MatchString(id) {
 		return "", fmt.Errorf("invalid prefix list ID %q", id)
 	}
-	return "spx_pl_" + strings.TrimPrefix(id, "pl-"), nil
+	return PrefixListSetPrefix + strings.TrimPrefix(id, "pl-"), nil
 }
 
 // InfrastructureACLs returns the platform ACLs every PG carries: logged

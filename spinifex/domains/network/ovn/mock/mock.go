@@ -994,6 +994,19 @@ func (m *Client) EnsureAddressSet(_ context.Context, name string, addresses []st
 	return as.UUID, nil
 }
 
+// CreateAddressSetIfAbsent inserts the named set empty, leaving an existing
+// set's addresses alone.
+func (m *Client) CreateAddressSetIfAbsent(_ context.Context, name string) (string, error) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	if existing, ok := m.AddressSets[name]; ok {
+		return existing.UUID, nil
+	}
+	as := &nbdb.AddressSet{UUID: awsidentifiers.GenerateResourceID("as"), Name: name, Addresses: []string{}}
+	m.AddressSets[name] = as
+	return as.UUID, nil
+}
+
 // GetAddressSet returns the address set, or ovn.ErrAddressSetNotFound.
 func (m *Client) GetAddressSet(_ context.Context, name string) (*nbdb.AddressSet, error) {
 	m.Mu.Lock()
@@ -1007,6 +1020,17 @@ func (m *Client) GetAddressSet(_ context.Context, name string) (*nbdb.AddressSet
 }
 
 // ACLs
+
+// ListACLs returns a snapshot of every ACL.
+func (m *Client) ListACLs(_ context.Context) ([]nbdb.ACL, error) {
+	m.Mu.Lock()
+	defer m.Mu.Unlock()
+	out := make([]nbdb.ACL, 0, len(m.ACLs))
+	for _, a := range m.ACLs {
+		out = append(out, *a)
+	}
+	return out, nil
+}
 
 func (m *Client) AddACLs(_ context.Context, portGroupName string, specs []ovn.ACLSpec) error {
 	m.Mu.Lock()

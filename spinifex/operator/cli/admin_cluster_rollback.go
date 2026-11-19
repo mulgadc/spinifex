@@ -47,7 +47,10 @@ func init() {
 }
 
 var registerDrainsOnce = sync.OnceValue(func() error {
-	return featurelevel.RegisterDrain(featurelevel.GatewayEndpoints, endpointDrain.check)
+	return errors.Join(
+		featurelevel.RegisterDrain(featurelevel.GatewayEndpoints, endpointDrain.check),
+		featurelevel.RegisterDrain(featurelevel.SGPrefixList, prefixListDrain.check),
+	)
 })
 
 // registerDrainChecks is the composition root for drain checks: every declared
@@ -107,6 +110,7 @@ func runClusterRollback(cmd *cobra.Command, _ []string) {
 		fail(err)
 	}
 	endpointDrain.connect(store, nodes, probe.Probe, nc, js, os.Stdout)
+	prefixListDrain.connect(store, nodes, nc, js, os.Stdout)
 	rec, err := featurelevel.RunRollback(ctx, rollbackTo, featurelevel.RollbackDeps{
 		Store:      store,
 		Probe:      probe.Probe,

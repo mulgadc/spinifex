@@ -383,9 +383,10 @@ func (s *VPCServiceImpl) DeleteSecurityGroup(ctx context.Context, input *ec2.Del
 // InvalidPrefixListID.NotFound for any prefix list but the Region's S3 list.
 func (s *VPCServiceImpl) validateSGRuleReferences(ctx context.Context, accountID, ownerVpcId string, rules []SGRule) error {
 	for _, r := range rules {
-		if r.PrefixListId != "" && r.PrefixListId != prefixlist.ID(s.region()) {
-			return awserrors.Errorf(awserrors.ErrorInvalidPrefixListIDNotFound,
-				"The prefix list ID '%s' does not exist", r.PrefixListId)
+		if r.PrefixListId != "" {
+			if err := s.validatePrefixListID(r.PrefixListId); err != nil {
+				return err
+			}
 		}
 		if r.SourceSG == "" {
 			continue
@@ -403,6 +404,64 @@ func (s *VPCServiceImpl) validateSGRuleReferences(ctx context.Context, accountID
 		}
 	}
 	return nil
+}
+
+// validatePrefixListID refuses any prefix list but the Region's S3 list,
+// including an empty ID, as AWS does.
+func (s *VPCServiceImpl) validatePrefixListID(id string) error {
+	if id != prefixlist.ID(s.region()) {
+		return prefixListNotFound(id)
+	}
+	return nil
+}
+
+func prefixListNotFound(id string) error {
+	return awserrors.Errorf(awserrors.ErrorInvalidPrefixListIDNotFound, "The prefix list ID '%s' does not exist", id)
+}
+
+// validatePermissionPrefixLists checks every prefix-list peer a request's
+// permissions supply, before any is matched or committed, so one bad peer
+// refuses the whole request.
+func (s *VPCServiceImpl) validatePermissionPrefixLists(perms []*ec2.IpPermission) error {
+	for _, perm := range perms {
+		if perm == nil {
+			continue
+		}
+		for _, pl := range perm.PrefixListIds {
+			if pl == nil || pl.PrefixListId == nil {
+				continue
+			}
+			if err := s.validatePrefixListID(*pl.PrefixListId); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// admitPrefixListPeers admits a write whose rules add a prefix-list peer at the
+// feature level; done is held until the record is written. Below the level the
+// list does not exist yet, so the write answers InvalidPrefixListID.NotFound.
+func (s *VPCServiceImpl) admitPrefixListPeers(ctx context.Context, rules []SGRule) (done func(), err error) {
+	i := slices.IndexFunc(rules, func(r SGRule) bool { return r.PrefixListId != "" })
+	if i < 0 {
+		return func() {}, nil
+	}
+	id := rules[i].PrefixListId
+	if s.prefixListAdmit == nil {
+		return func() {}, prefixListNotFound(id)
+	}
+	done, ok, err := s.prefixListAdmit(ctx)
+	if err != nil {
+		done()
+		slog.ErrorContext(ctx, "security group prefix-list admission unreadable", "err", err)
+		return func() {}, errors.New(awserrors.ErrorServerInternal)
+	}
+	if !ok {
+		done()
+		return func() {}, prefixListNotFound(id)
+	}
+	return done, nil
 }
 
 // checkSGDependencies returns DependencyViolation if the given SG is still
@@ -1088,6 +1147,9 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(ctx context.Context, inpu
 		return nil, err
 	}
 
+	if err := s.validatePermissionPrefixLists(input.IpPermissions); err != nil {
+		return nil, err
+	}
 	newRules, err := ipPermissionsToSGRules(input.IpPermissions, sgParseAuthorize)
 	if err != nil {
 		slog.WarnContext(ctx, "AuthorizeSecurityGroupIngress: invalid rule", "groupId", groupId, "err", err)
@@ -1100,6 +1162,11 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupIngress(ctx context.Context, inpu
 	if err := s.validateSGRuleReferences(ctx, accountID, record.VpcId, newRules); err != nil {
 		return nil, err
 	}
+	admitted, err := s.admitPrefixListPeers(ctx, newRules)
+	if err != nil {
+		return nil, err
+	}
+	defer admitted()
 	existing := make(map[string]struct{}, len(record.IngressRules))
 	for _, r := range record.IngressRules {
 		existing[sgRuleKey(r)] = struct{}{}
@@ -1166,6 +1233,9 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(ctx context.Context, input
 		return nil, err
 	}
 
+	if err := s.validatePermissionPrefixLists(input.IpPermissions); err != nil {
+		return nil, err
+	}
 	newRules, err := ipPermissionsToSGRules(input.IpPermissions, sgParseAuthorize)
 	if err != nil {
 		slog.WarnContext(ctx, "AuthorizeSecurityGroupEgress: invalid rule", "groupId", groupId, "err", err)
@@ -1178,6 +1248,11 @@ func (s *VPCServiceImpl) AuthorizeSecurityGroupEgress(ctx context.Context, input
 	if err := s.validateSGRuleReferences(ctx, accountID, record.VpcId, newRules); err != nil {
 		return nil, err
 	}
+	admitted, err := s.admitPrefixListPeers(ctx, newRules)
+	if err != nil {
+		return nil, err
+	}
+	defer admitted()
 	existing := make(map[string]struct{}, len(record.EgressRules))
 	for _, r := range record.EgressRules {
 		existing[sgRuleKey(r)] = struct{}{}
@@ -1240,6 +1315,9 @@ func (s *VPCServiceImpl) RevokeSecurityGroupIngress(ctx context.Context, input *
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	if err := s.validatePermissionPrefixLists(input.IpPermissions); err != nil {
+		return nil, err
+	}
 	revokeRules, err := ipPermissionsToSGRules(input.IpPermissions, sgParseRevoke)
 	if err != nil {
 		slog.WarnContext(ctx, "RevokeSecurityGroupIngress: invalid rule", "groupId", groupId, "err", err)
@@ -1305,6 +1383,9 @@ func (s *VPCServiceImpl) RevokeSecurityGroupEgress(ctx context.Context, input *e
 		return nil, errors.New(awserrors.ErrorServerInternal)
 	}
 
+	if err := s.validatePermissionPrefixLists(input.IpPermissions); err != nil {
+		return nil, err
+	}
 	revokeRules, err := ipPermissionsToSGRules(input.IpPermissions, sgParseRevoke)
 	if err != nil {
 		slog.WarnContext(ctx, "RevokeSecurityGroupEgress: invalid rule", "groupId", groupId, "err", err)
@@ -1411,6 +1492,9 @@ func (s *VPCServiceImpl) updateSGRuleDescriptions(ctx context.Context, accountID
 	// two lists name the same rule and resolve last-wins, invisibly.
 	if len(req.descriptions) > 0 && len(req.permissions) > 0 {
 		return errors.New(awserrors.ErrorInvalidParameterCombination)
+	}
+	if err := s.validatePermissionPrefixLists(req.permissions); err != nil {
+		return err
 	}
 
 	key := kvstore.AccountKey(accountID, req.groupId)
@@ -1629,6 +1713,11 @@ func (s *VPCServiceImpl) ModifySecurityGroupRules(ctx context.Context, input *ec
 	if err := s.validateSGRuleReferences(ctx, accountID, record.VpcId, modified); err != nil {
 		return nil, err
 	}
+	admitted, err := s.admitPrefixListPeers(ctx, modified)
+	if err != nil {
+		return nil, err
+	}
+	defer admitted()
 
 	data, err := json.Marshal(record)
 	if err != nil {

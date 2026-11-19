@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"sync/atomic"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
@@ -23,6 +24,12 @@ type SecurityGroupManager interface {
 	// EnsureSG replaces the full ACL set (infra + tenant) in one OVSDB
 	// transaction; idempotent, so it serves both create and update.
 	EnsureSG(ctx context.Context, sg SGSpec) error
+	// ConvergePrefixLists sets each known prefix list's address set to the
+	// list's derived entries. Only the leader-gated reconcile pass calls it.
+	ConvergePrefixLists(ctx context.Context) error
+	// GrantingApplies counts EnsureSG calls in flight that started while
+	// prefix-list peers were rendered.
+	GrantingApplies() int
 }
 
 // EgressPolicy is the platform egress-abuse policy applied to every guest port
@@ -41,7 +48,10 @@ type EgressPolicy struct {
 type sgManager struct {
 	ovn         ovn.Client
 	egress      EgressPolicy
+	listIDs     []string
 	prefixLists PrefixLists
+	granted     func() bool
+	granting    atomic.Int64
 }
 
 var _ SecurityGroupManager = (*sgManager)(nil)
@@ -49,10 +59,16 @@ var _ SecurityGroupManager = (*sgManager)(nil)
 // SGOption configures a SecurityGroupManager.
 type SGOption func(*sgManager)
 
-// WithPrefixLists supplies the entries of the prefix lists a rule may name.
-// Without it, a group with such a rule fails to apply.
-func WithPrefixLists(lists PrefixLists) SGOption {
-	return func(m *sgManager) { m.prefixLists = lists }
+// WithPrefixLists names the prefix lists a rule may name and derives their
+// entries for ConvergePrefixLists. Without it, a group with such a rule fails.
+func WithPrefixLists(lists PrefixLists, ids ...string) SGOption {
+	return func(m *sgManager) { m.prefixLists, m.listIDs = lists, ids }
+}
+
+// WithPrefixListGrants reports whether prefix-list peers may grant. While it
+// is false a rule naming a list renders no ACL and no set is written.
+func WithPrefixListGrants(granted func() bool) SGOption {
+	return func(m *sgManager) { m.granted = granted }
 }
 
 // NewSecurityGroupManager constructs a SecurityGroupManager backed by client.
@@ -66,7 +82,48 @@ func NewSecurityGroupManager(client ovn.Client, egress EgressPolicy, opts ...SGO
 }
 
 func (m *sgManager) EnsureSG(ctx context.Context, sg SGSpec) error {
+	// Decided once, so an apply never mixes the two views of its own rules.
+	if !m.grants() {
+		sg.IngressRules = withoutPrefixLists(sg.IngressRules)
+		sg.EgressRules = withoutPrefixLists(sg.EgressRules)
+		return m.applyACLs(ctx, sg)
+	}
+	m.granting.Add(1)
+	defer m.granting.Add(-1)
 	return m.applyACLs(ctx, sg)
+}
+
+func (m *sgManager) grants() bool { return m.granted == nil || m.granted() }
+
+func (m *sgManager) GrantingApplies() int { return int(m.granting.Load()) }
+
+func withoutPrefixLists(rules []Rule) []Rule {
+	return slices.DeleteFunc(slices.Clone(rules), func(r Rule) bool { return r.PrefixListID != "" })
+}
+
+// ConvergePrefixLists writes each known list's derived entries to its set,
+// while prefix-list peers may grant. A list with no entries is an empty set.
+func (m *sgManager) ConvergePrefixLists(ctx context.Context) error {
+	if !m.grants() || m.prefixLists == nil {
+		return nil
+	}
+	for _, id := range m.listIDs {
+		name, err := PrefixListAddressSet(id)
+		if err != nil {
+			return err
+		}
+		cidrs, ok := m.prefixLists(id)
+		if !ok {
+			return fmt.Errorf("unknown prefix list %s", id)
+		}
+		if cidrs == nil {
+			cidrs = []string{}
+		}
+		if _, err := m.ovn.EnsureAddressSet(ctx, name, cidrs); err != nil {
+			return fmt.Errorf("converge address set %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // applyACLs atomically replaces infra + tenant ACLs in one OVSDB transaction.
@@ -96,9 +153,9 @@ func (m *sgManager) applyACLs(ctx context.Context, sg SGSpec) error {
 	return nil
 }
 
-// ensurePrefixListSets converges the address set of every prefix list sg's
-// rules name to the list's current entries. A list with no entries gets an
-// empty set, which matches nothing; an unknown list fails the group.
+// ensurePrefixListSets creates, empty, the set of every prefix list sg's rules
+// name that is absent, and never touches an existing set's members; the
+// reconcile pass fills it. An unknown list fails the group.
 func (m *sgManager) ensurePrefixListSets(ctx context.Context, sg SGSpec) error {
 	done := map[string]bool{}
 	for _, r := range slices.Concat(sg.IngressRules, sg.EgressRules) {
@@ -110,18 +167,10 @@ func (m *sgManager) ensurePrefixListSets(ctx context.Context, sg SGSpec) error {
 		if err != nil {
 			return err
 		}
-		var cidrs []string
-		ok := false
-		if m.prefixLists != nil {
-			cidrs, ok = m.prefixLists(r.PrefixListID)
-		}
-		if !ok {
+		if m.prefixLists == nil || !slices.Contains(m.listIDs, r.PrefixListID) {
 			return fmt.Errorf("unknown prefix list %s", r.PrefixListID)
 		}
-		if cidrs == nil {
-			cidrs = []string{}
-		}
-		if _, err := m.ovn.EnsureAddressSet(ctx, name, cidrs); err != nil {
+		if _, err := m.ovn.CreateAddressSetIfAbsent(ctx, name); err != nil {
 			return fmt.Errorf("address set %s: %w", name, err)
 		}
 	}

@@ -214,3 +214,65 @@ func TestSetNATExemptedExtIPs_Live(t *testing.T) {
 		t.Fatalf("missing NAT: err = %v, want ErrNATNotFound", err)
 	}
 }
+
+// The request path's create leaves an existing set's members alone and creates
+// an absent one empty.
+func TestCreateAddressSetIfAbsent_NeverTouchesMembers(t *testing.T) {
+	cli, ctx := liveClient(t)
+
+	uuid, err := cli.CreateAddressSetIfAbsent(ctx, "spx_pl_new")
+	if err != nil {
+		t.Fatalf("CreateAddressSetIfAbsent absent: %v", err)
+	}
+	as, err := cli.GetAddressSet(ctx, "spx_pl_new")
+	if err != nil || as.UUID != uuid || len(as.Addresses) != 0 {
+		t.Fatalf("absent set: got %+v err %v, want empty row %q", as, err, uuid)
+	}
+
+	filled, err := cli.EnsureAddressSet(ctx, "spx_pl_filled", []string{"10.0.0.1/32"})
+	if err != nil {
+		t.Fatalf("EnsureAddressSet: %v", err)
+	}
+	got, err := cli.CreateAddressSetIfAbsent(ctx, "spx_pl_filled")
+	if err != nil || got != filled {
+		t.Fatalf("existing set: uuid %q err %v, want %q", got, err, filled)
+	}
+	as, err = cli.GetAddressSet(ctx, "spx_pl_filled")
+	if err != nil || len(as.Addresses) != 1 || as.Addresses[0] != "10.0.0.1/32" {
+		t.Fatalf("existing set members changed: %+v err %v", as, err)
+	}
+}
+
+// A request that misses the cache and then loses the insert to the reconciler,
+// which inserts and fills the set in between, succeeds and keeps its members.
+func TestCreateAddressSetIfAbsent_LostRaceKeepsMembers(t *testing.T) {
+	nb := ovntest.StartNB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	connect := func() *ovn.LiveClient {
+		c := ovn.NewLiveClient(nb.Endpoint)
+		if err := c.Connect(ctx); err != nil {
+			t.Fatalf("Connect: %v", err)
+		}
+		t.Cleanup(c.Close)
+		return c
+	}
+	request, reconciler := connect(), connect()
+	want := []string{"10.0.0.1/32", "10.0.0.2/32"}
+	ovn.SetAddressSetInsertHook(t, func() {
+		if _, err := reconciler.EnsureAddressSet(ctx, "spx_pl_race", want); err != nil {
+			t.Errorf("reconciler EnsureAddressSet: %v", err)
+		}
+	})
+
+	if _, err := request.CreateAddressSetIfAbsent(ctx, "spx_pl_race"); err != nil {
+		t.Fatalf("CreateAddressSetIfAbsent after a lost race: %v", err)
+	}
+	as, err := reconciler.GetAddressSet(ctx, "spx_pl_race")
+	if err != nil {
+		t.Fatalf("GetAddressSet: %v", err)
+	}
+	if len(as.Addresses) != len(want) {
+		t.Fatalf("members after the lost race = %v, want %v", as.Addresses, want)
+	}
+}

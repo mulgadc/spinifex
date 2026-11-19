@@ -2,11 +2,13 @@ package policy
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn/mock"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
 )
@@ -169,15 +171,16 @@ func s3Lists(id string, cidrs ...string) PrefixLists {
 	}
 }
 
-// The address set a rule names is written with the list's entries before the
-// ACL naming it, in either direction, and converges when the entries change.
-func TestSGManager_EnsureSG_WritesPrefixListAddressSet(t *testing.T) {
+// A security-group apply creates an absent set empty before the ACL naming it
+// and never rewrites an existing set's members; only the reconcile pass fills
+// and converges them.
+func TestSGManager_EnsureSG_CreatesPrefixListSetEmpty(t *testing.T) {
 	ctx := context.Background()
 	m, pg := newSGMockWithPG(t, "sg-web")
 	entries := []string{"192.0.2.10/32", "192.0.2.11/32"}
 	sg := NewSecurityGroupManager(m, EgressPolicy{}, WithPrefixLists(func(id string) ([]string, bool) {
 		return entries, id == "pl-6ca54005"
-	}))
+	}, "pl-6ca54005"))
 	spec := SGSpec{
 		GroupID:      "sg-web",
 		IngressRules: []Rule{{IPProtocol: "tcp", FromPort: 443, ToPort: 443, PrefixListID: "pl-6ca54005"}},
@@ -185,27 +188,84 @@ func TestSGManager_EnsureSG_WritesPrefixListAddressSet(t *testing.T) {
 	}
 	require.NoError(t, sg.EnsureSG(ctx, spec))
 	require.Contains(t, m.AddressSets, "spx_pl_6ca54005")
-	assert.ElementsMatch(t, entries, m.AddressSets["spx_pl_6ca54005"].Addresses)
+	assert.Empty(t, m.AddressSets["spx_pl_6ca54005"].Addresses, "a request grants nothing until the pass fills the set")
 	assert.Len(t, m.AddressSets, 1, "one set per list, however many rules name it")
 	assert.Len(t, m.PortGroups[pg].ACLs, 8) // 6 infra + 2 tenant
 
+	require.NoError(t, sg.ConvergePrefixLists(ctx))
+	assert.ElementsMatch(t, entries, m.AddressSets["spx_pl_6ca54005"].Addresses)
+
 	entries = []string{"192.0.2.12/32"}
 	require.NoError(t, sg.EnsureSG(ctx, spec))
+	assert.Len(t, m.AddressSets["spx_pl_6ca54005"].Addresses, 2, "an apply leaves an existing set's members alone")
+	require.NoError(t, sg.ConvergePrefixLists(ctx))
 	assert.Equal(t, []string{"192.0.2.12/32"}, m.AddressSets["spx_pl_6ca54005"].Addresses)
 }
 
-// A list with no entries yields an empty set, which matches nothing.
-func TestSGManager_EnsureSG_EmptyPrefixListIsAnEmptySet(t *testing.T) {
+// A list with no entries converges to an empty set, which matches nothing.
+func TestSGManager_ConvergePrefixLists_EmptyListIsAnEmptySet(t *testing.T) {
 	ctx := context.Background()
 	m, _ := newSGMockWithPG(t, "sg-web")
-	sg := NewSecurityGroupManager(m, EgressPolicy{}, WithPrefixLists(s3Lists("pl-6ca54005")))
-	require.NoError(t, sg.EnsureSG(ctx, SGSpec{
-		GroupID:     "sg-web",
-		EgressRules: []Rule{{IPProtocol: "-1", PrefixListID: "pl-6ca54005"}},
-	}))
+	sg := NewSecurityGroupManager(m, EgressPolicy{}, WithPrefixLists(s3Lists("pl-6ca54005"), "pl-6ca54005"))
+	require.NoError(t, sg.ConvergePrefixLists(ctx))
 	require.Contains(t, m.AddressSets, "spx_pl_6ca54005")
 	assert.NotNil(t, m.AddressSets["spx_pl_6ca54005"].Addresses)
 	assert.Empty(t, m.AddressSets["spx_pl_6ca54005"].Addresses)
+}
+
+// While prefix-list grants are withdrawn, an apply renders no prefix-list ACL
+// and writes no set, the pass converges nothing, and only applies that started
+// while grants held are counted.
+func TestSGManager_WithdrawnGrantsRenderNoPrefixListPeer(t *testing.T) {
+	ctx := context.Background()
+	m, pg := newSGMockWithPG(t, "sg-web")
+	var granted atomic.Bool
+	blocking := &blockingACLs{Client: m}
+	sg := NewSecurityGroupManager(blocking, EgressPolicy{},
+		WithPrefixLists(s3Lists("pl-6ca54005", "192.0.2.10/32"), "pl-6ca54005"),
+		WithPrefixListGrants(granted.Load))
+	spec := SGSpec{
+		GroupID: "sg-web",
+		EgressRules: []Rule{
+			{IPProtocol: "-1", CIDR: "10.0.0.0/16"},
+			{IPProtocol: "tcp", FromPort: 443, ToPort: 443, PrefixListID: "pl-6ca54005"},
+		},
+	}
+
+	require.NoError(t, sg.EnsureSG(ctx, spec))
+	for _, uuid := range m.PortGroups[pg].ACLs {
+		assert.NotContains(t, m.ACLs[uuid].Match, "spx_pl_", "no ACL names a prefix-list set while grants are withdrawn")
+	}
+	assert.Len(t, m.PortGroups[pg].ACLs, 7) // 6 infra + the CIDR rule
+	require.NoError(t, sg.ConvergePrefixLists(ctx))
+	assert.Empty(t, m.AddressSets)
+	assert.Zero(t, sg.GrantingApplies())
+
+	granted.Store(true)
+	blocking.entered, blocking.release = make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- sg.EnsureSG(ctx, spec) }()
+	<-blocking.entered
+	granted.Store(false)
+	assert.Equal(t, 1, sg.GrantingApplies(), "an apply that started while grants held is counted until it returns")
+	close(blocking.release)
+	require.NoError(t, <-done)
+	assert.Zero(t, sg.GrantingApplies())
+}
+
+// blockingACLs holds ReplaceACLs open while release is set.
+type blockingACLs struct {
+	*mock.Client
+
+	entered, release chan struct{}
+}
+
+func (b *blockingACLs) ReplaceACLs(ctx context.Context, pg string, specs []ovn.ACLSpec) error {
+	if b.release != nil {
+		b.entered <- struct{}{}
+		<-b.release
+	}
+	return b.Client.ReplaceACLs(ctx, pg, specs)
 }
 
 // A rule naming a list the source does not know fails the group, leaving its
@@ -214,7 +274,7 @@ func TestSGManager_EnsureSG_UnknownPrefixListFailsTheGroup(t *testing.T) {
 	ctx := context.Background()
 	for name, opts := range map[string][]SGOption{
 		"no source":    nil,
-		"unknown list": {WithPrefixLists(s3Lists("pl-6ca54005"))},
+		"unknown list": {WithPrefixLists(s3Lists("pl-6ca54005"), "pl-6ca54005")},
 	} {
 		t.Run(name, func(t *testing.T) {
 			m, pg := newSGMockWithPG(t, "sg-web")

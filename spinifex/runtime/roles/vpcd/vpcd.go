@@ -552,12 +552,28 @@ func launchService(cfg *Config) error {
 			egressPolicy.ExemptVPCs[id] = true
 		}
 	}
-	sgMgr := policy.NewSecurityGroupManager(liveClient, egressPolicy,
-		policy.WithPrefixLists(s3PrefixLists(cfg.Region, cfg.Cluster, mgmtBridgeIP(cfg.MgmtBridge))))
-
 	js, err := jetstream.New(nc)
 	if err != nil {
 		return fmt.Errorf("get JetStream context: %w", err)
+	}
+
+	// Read before anything applies a security group: a level above this build
+	// refuses to start, and prefix-list peers grant only while level 3 holds.
+	level := &levelWatch{read: featureLevelRecord(js)}
+	if err := level.start(ctx); err != nil {
+		slog.Error("vpcd: refusing to start", "err", err)
+		return err
+	}
+	s3Lists, s3ListID := s3PrefixLists(cfg.Region, cfg.Cluster)
+	sgMgr := policy.NewSecurityGroupManager(liveClient, egressPolicy,
+		policy.WithPrefixLists(s3Lists, s3ListID),
+		policy.WithPrefixListGrants(level.Granted))
+	grant := &prefixListGrant{
+		level:   level,
+		applies: sgMgr.GrantingApplies,
+		acls:    liveClient.ListACLs,
+		set:     nbPrefixListSet(liveClient),
+		id:      s3ListID,
 	}
 
 	natOpts := []policy.Option{
@@ -640,7 +656,7 @@ func launchService(cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("construct IMDS service: %w", err)
 	}
-	endpoints, err := setupEndpointProxy(cfg, js, imdsSvc)
+	endpoints, err := setupEndpointProxy(cfg, js, imdsSvc, grant)
 	if err != nil {
 		return err
 	}
@@ -816,6 +832,15 @@ func launchService(cfg *Config) error {
 	// Periodic drift detection, leader-gated so only one vpcd scans at a time.
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer loopCancel()
+	// A level raised above this build while vpcd runs stops it, ending its
+	// security-group subscriptions and its drift loop.
+	fatal := make(chan error, 1)
+	go level.run(loopCtx, js, func(err error) {
+		select {
+		case fatal <- err:
+		default:
+		}
+	})
 	loopDone := make(chan struct{})
 	go func() {
 		reconcile.DriftLoop(loopCtx, rec, nc, leader, cfg.AZ, startupErr)
@@ -876,12 +901,16 @@ func launchService(cfg *Config) error {
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
-
-	slog.Info("vpcd service shutting down")
+	var stopErr error
+	select {
+	case <-sigChan:
+		slog.Info("vpcd service shutting down")
+	case stopErr = <-fatal:
+		slog.Error("vpcd: stopping; the cluster feature level is above this build", "err", stopErr)
+	}
 	loopCancel()
 	<-loopDone
-	return nil
+	return stopErr
 }
 
 // resolverDNSServer returns the OVN dhcp_options dns_server advertised to

@@ -146,6 +146,10 @@ type Client interface {
 	// addresses on the existing row (see EnsureLogicalRouter for the wait-op
 	// rationale). Returns the persisted row UUID.
 	EnsureAddressSet(ctx context.Context, name string, addresses []string) (uuid string, err error)
+	// CreateAddressSetIfAbsent inserts the named set empty unless it exists. It
+	// never reads or writes an existing set's addresses, including when it
+	// loses the insert to a concurrent writer.
+	CreateAddressSetIfAbsent(ctx context.Context, name string) (uuid string, err error)
 	GetAddressSet(ctx context.Context, name string) (*nbdb.AddressSet, error)
 
 	// Static routes
@@ -200,6 +204,8 @@ type Client interface {
 	// ReplaceACLs atomically swaps the port group's ACL set in one transaction.
 	// Use instead of ClearACLs+AddACLs to avoid a zero-ACL window (defaults to drop).
 	ReplaceACLs(ctx context.Context, portGroupName string, specs []ACLSpec) error
+	// ListACLs returns every ACL row in the client's view.
+	ListACLs(ctx context.Context) ([]nbdb.ACL, error)
 
 	// Gateway Chassis (HA scheduling for gateway router ports)
 	SetGatewayChassis(ctx context.Context, lrpName string, chassisName string, priority int) error

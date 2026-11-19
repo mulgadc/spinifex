@@ -28,6 +28,16 @@ func del(name, handle string) message.DeleteInput {
 	return message.DeleteInput{Account: acct, Region: region, Queue: name, ReceiptHandle: handle}
 }
 
+// tamper changes the handle's second-to-last character to a different one,
+// which always alters the decoded bytes under strict unpadded base64.
+func tamper(h string) string {
+	c := byte('A')
+	if h[len(h)-2] == c {
+		c = 'B'
+	}
+	return h[:len(h)-2] + string(c) + h[len(h)-1:]
+}
+
 // receiveOne sends a message and receives it, returning the received copy.
 func (e receiveEnv) receiveOne(t *testing.T, name string) message.Received {
 	t.Helper()
@@ -159,7 +169,7 @@ func TestDeleteRefusesInvalidHandles(t *testing.T) {
 	for name, in := range map[string]message.DeleteInput{
 		"malformed":         del("orders", "not-a-handle"),
 		"empty":             del("orders", ""),
-		"tampered":          del("orders", m.ReceiptHandle[:len(m.ReceiptHandle)-2]+"AA"),
+		"tampered":          del("orders", tamper(m.ReceiptHandle)),
 		"unknown key":       del("orders", forged),
 		"another queue":     del("audit", m.ReceiptHandle),
 		"another account's": {Account: other, Region: region, Queue: "orders", ReceiptHandle: m.ReceiptHandle},
@@ -244,7 +254,7 @@ func TestDeleteKeepsHandlesOutOfErrorsAndLogs(t *testing.T) {
 	var errs []string
 	for _, in := range []message.DeleteInput{
 		del("audit", m.ReceiptHandle),
-		del("orders", m.ReceiptHandle[:len(m.ReceiptHandle)-2]+"AA"),
+		del("orders", tamper(m.ReceiptHandle)),
 	} {
 		if err := e.deleter(&lostPut{Store: e.store}).Delete(context.Background(), in); err != nil {
 			errs = append(errs, err.Error())

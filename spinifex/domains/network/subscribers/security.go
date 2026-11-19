@@ -26,20 +26,21 @@ func toSGSpec(e networkv1.SecurityGroupEvent) policy.SGSpec {
 }
 
 // toPolicyRules drops any rule with no IPv4 source. The ACL builder is
-// IPv4-only, and an IPv6 rule reaching it carries an empty CIDR and an empty
-// SourceSG, which is not a narrower ACL but an unspecified one.
+// IPv4-only, and an IPv6 rule reaching it carries no CIDR, SourceSG or prefix
+// list, which is not a narrower ACL but an unspecified one.
 func toPolicyRules(in []networkv1.SecurityGroupRule) []policy.Rule {
 	out := make([]policy.Rule, 0, len(in))
 	for _, r := range in {
-		if r.CidrIp == "" && r.SourceSG == "" {
+		if r.CidrIp == "" && r.SourceSG == "" && r.PrefixListId == "" {
 			continue
 		}
 		out = append(out, policy.Rule{
-			IPProtocol: r.IpProtocol,
-			FromPort:   r.FromPort,
-			ToPort:     r.ToPort,
-			CIDR:       r.CidrIp,
-			SourceSG:   r.SourceSG,
+			IPProtocol:   r.IpProtocol,
+			FromPort:     r.FromPort,
+			ToPort:       r.ToPort,
+			CIDR:         r.CidrIp,
+			SourceSG:     r.SourceSG,
+			PrefixListID: r.PrefixListId,
 		})
 	}
 	return out

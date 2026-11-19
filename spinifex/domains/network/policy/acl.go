@@ -2,6 +2,7 @@ package policy
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -46,11 +47,25 @@ const denyACLSeverity = "info"
 // Rule is the policy-layer view of an AWS-style SG rule. CIDR / SourceSG
 // MUST be validated upstream; values are interpolated verbatim.
 type Rule struct {
-	IPProtocol string // "tcp", "udp", "icmp", or "-1" (all)
-	FromPort   int64  // ICMP type for "icmp", -1 for any
-	ToPort     int64  // ICMP code for "icmp", -1 for any
-	CIDR       string
-	SourceSG   string
+	IPProtocol   string // "tcp", "udp", "icmp", or "-1" (all)
+	FromPort     int64  // ICMP type for "icmp", -1 for any
+	ToPort       int64  // ICMP code for "icmp", -1 for any
+	CIDR         string
+	SourceSG     string
+	PrefixListID string // matched against the list's NB address set
+}
+
+// prefixListIDRegex is the form a prefix-list ID must have before it is
+// interpolated into an address-set name.
+var prefixListIDRegex = regexp.MustCompile(`^pl-[0-9a-f]{8,17}$`)
+
+// PrefixListAddressSet names the NB address set holding a prefix list's
+// entries. OVN identifiers take no hyphen, so only the ID's hex suffix is kept.
+func PrefixListAddressSet(id string) (string, error) {
+	if !prefixListIDRegex.MatchString(id) {
+		return "", fmt.Errorf("invalid prefix list ID %q", id)
+	}
+	return "spx_pl_" + strings.TrimPrefix(id, "pl-"), nil
 }
 
 // InfrastructureACLs returns the platform ACLs every PG carries: logged
@@ -146,6 +161,13 @@ func BuildIngressACLMatch(portGroupName string, rule Rule) (string, error) {
 	if rule.SourceSG != "" {
 		parts = append(parts, fmt.Sprintf("ip4.src == $%s", addressSetName(topology.SecurityGroupPortGroup(rule.SourceSG))))
 	}
+	if rule.PrefixListID != "" {
+		set, err := PrefixListAddressSet(rule.PrefixListID)
+		if err != nil {
+			return "", err
+		}
+		parts = append(parts, fmt.Sprintf("ip4.src == $%s", set))
+	}
 	return strings.Join(parts, " && "), nil
 }
 
@@ -161,6 +183,13 @@ func BuildEgressACLMatch(portGroupName string, rule Rule) (string, error) {
 	}
 	if rule.SourceSG != "" {
 		parts = append(parts, fmt.Sprintf("ip4.dst == $%s", addressSetName(topology.SecurityGroupPortGroup(rule.SourceSG))))
+	}
+	if rule.PrefixListID != "" {
+		set, err := PrefixListAddressSet(rule.PrefixListID)
+		if err != nil {
+			return "", err
+		}
+		parts = append(parts, fmt.Sprintf("ip4.dst == $%s", set))
 	}
 	return strings.Join(parts, " && "), nil
 }

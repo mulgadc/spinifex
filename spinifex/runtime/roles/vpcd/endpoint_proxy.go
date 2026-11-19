@@ -257,10 +257,45 @@ func featureLevelRevision(js jetstream.JetStream) func(ctx context.Context) (uin
 	}
 }
 
+// s3PrefixLists resolves the Region's S3 prefix list to the entries this node
+// derives from the node set, as its capture rules are; it knows no other list.
+func s3PrefixLists(region string, cluster *config.ClusterConfig, mgmtIP func() string) policy.PrefixLists {
+	if region == "" {
+		region = config.DefaultAWSRegion
+	}
+	id := prefixlist.ID(region)
+	return func(want string) ([]string, bool) {
+		if want != id {
+			return nil, false
+		}
+		entries := prefixlist.Entries(cluster, mgmtIP())
+		cidrs := make([]string, 0, len(entries))
+		for _, e := range entries {
+			cidrs = append(cidrs, e.CIDR())
+		}
+		return cidrs, true
+	}
+}
+
+// mgmtBridgeIP reads the management bridge's address on every call, since the
+// bridge can be readdressed while vpcd runs.
+func mgmtBridgeIP(bridge string) func() string {
+	if bridge == "" {
+		bridge = defaultMgmtBridge
+	}
+	return func() string {
+		ip, err := host.GetBridgeIPv4(bridge)
+		if err != nil {
+			slog.Debug("vpcd: management bridge address unavailable", "bridge", bridge, "err", err)
+		}
+		return ip
+	}
+}
+
 // securityGroupEgress evaluates an ENI's security groups from their records,
 // through the same rule conversion the ACL compiler is fed. A group whose
 // record is gone grants nothing; any other read failure refuses.
-func securityGroupEgress(js jetstream.JetStream) guestmetadata.EndpointEgressFunc {
+func securityGroupEgress(js jetstream.JetStream, lists policy.PrefixLists) guestmetadata.EndpointEgressFunc {
 	groups := kvstore.NewBucket(js, kvstore.Config{Name: ec2vpc.KVBucketSecurityGroups, AttachOnly: true})
 	return func(ctx context.Context, accountID string, groupIDs []string, dst netip.AddrPort) (bool, error) {
 		if len(groupIDs) == 0 {
@@ -285,7 +320,7 @@ func securityGroupEgress(js jetstream.JetStream) guestmetadata.EndpointEgressFun
 			}
 			rules = append(rules, reconcile.SGRulesToPolicyRules(rec.EgressRules)...)
 		}
-		return policy.EgressAllows(rules, dst.Addr(), "tcp", dst.Port()), nil
+		return policy.EgressAllows(rules, lists, dst.Addr(), "tcp", dst.Port()), nil
 	}
 }
 
@@ -374,9 +409,10 @@ func setupEndpointProxy(cfg *Config, js jetstream.JetStream, imds *guestmetadata
 		slog.Error("vpcd: endpoint proxy cannot present this node's certificate; every endpoint connection will be reset", "err", dialErr)
 		dial = unavailableDialer(dialErr)
 	}
+	mgmtIP := mgmtBridgeIP(cfg.MgmtBridge)
 	proxy, err := guestmetadata.NewEndpointProxy(guestmetadata.EndpointProxyConfig{
 		Port:   host.EndpointProxyPort,
-		Egress: securityGroupEgress(js),
+		Egress: securityGroupEgress(js, s3PrefixLists(cfg.Region, cfg.Cluster, mgmtIP)),
 		Dial:   dial,
 		// Twice the resync, so only a loop that has stopped passing stops admitting.
 		MaxAge: 2 * reconciler.DefaultResync,
@@ -386,10 +422,6 @@ func setupEndpointProxy(cfg *Config, js jetstream.JetStream, imds *guestmetadata
 	}
 	imds.EnableEndpointProxy(proxy)
 
-	bridge := cfg.MgmtBridge
-	if bridge == "" {
-		bridge = defaultMgmtBridge
-	}
 	runner := host.NewExecRunner()
 	l := &endpointLoop{
 		probe: func(ctx context.Context) error { return host.ProbeEndpointCapture(ctx, runner) },
@@ -397,13 +429,7 @@ func setupEndpointProxy(cfg *Config, js jetstream.JetStream, imds *guestmetadata
 			return host.EnsureEndpointCapture(ctx, runner, want)
 		},
 		cluster: cfg.Cluster,
-		mgmtIP: func() string {
-			ip, err := host.GetBridgeIPv4(bridge)
-			if err != nil {
-				slog.Debug("vpcd: management bridge address unavailable", "bridge", bridge, "err", err)
-			}
-			return ip
-		},
+		mgmtIP:  mgmtIP,
 		load: func(ctx context.Context) (map[string]projection.GatewayEndpoint, error) {
 			return projection.LoadGatewayEndpoints(ctx, js)
 		},

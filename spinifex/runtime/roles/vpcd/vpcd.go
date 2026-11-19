@@ -552,7 +552,8 @@ func launchService(cfg *Config) error {
 			egressPolicy.ExemptVPCs[id] = true
 		}
 	}
-	sgMgr := policy.NewSecurityGroupManager(liveClient, egressPolicy)
+	sgMgr := policy.NewSecurityGroupManager(liveClient, egressPolicy,
+		policy.WithPrefixLists(s3PrefixLists(cfg.Region, cfg.Cluster, mgmtBridgeIP(cfg.MgmtBridge))))
 
 	js, err := jetstream.New(nc)
 	if err != nil {

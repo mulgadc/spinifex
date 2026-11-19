@@ -23,6 +23,7 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/guestmetadata"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/prefixlist"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
@@ -357,7 +358,7 @@ func TestSecurityGroupEgress_UsesTheStoredGroups(t *testing.T) {
 		{IpProtocol: "tcp", FromPort: 443, ToPort: 443, CidrIp: "0.0.0.0/0"},
 	}})
 	dst := netip.MustParseAddrPort("10.0.0.2:8443")
-	egress := securityGroupEgress(js)
+	egress := securityGroupEgress(js, nil)
 
 	cases := []struct {
 		name    string
@@ -378,6 +379,55 @@ func TestSecurityGroupEgress_UsesTheStoredGroups(t *testing.T) {
 			assert.Equal(t, tc.want, ok)
 		})
 	}
+}
+
+// A rule naming the S3 prefix list allows exactly the list's entries, as this
+// node derives them, on the rule's ports.
+func TestSecurityGroupEgress_PrefixListRule(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: ec2vpc.KVBucketSecurityGroups})
+	require.NoError(t, err)
+	const account = "123456789012"
+	cluster := &config.ClusterConfig{Node: "n1", Nodes: map[string]config.Config{
+		"n1": {AdvertiseIP: "10.0.0.2"},
+		"n2": {AdvertiseIP: "10.0.0.3"},
+	}}
+	putSecurityGroup(t, kv, account, ec2vpc.SecurityGroupRecord{GroupId: "sg-s3", EgressRules: []ec2vpc.SGRule{
+		{IpProtocol: "tcp", FromPort: 8443, ToPort: 8443, PrefixListId: prefixlist.ID("ap-southeast-2")},
+	}})
+	egress := securityGroupEgress(js, s3PrefixLists("ap-southeast-2", cluster, func() string { return "" }))
+
+	for dst, want := range map[string]bool{
+		"10.0.0.2:8443": true,
+		"10.0.0.3:8443": true,
+		"10.0.0.4:8443": false,
+		"10.0.0.2:443":  false,
+	} {
+		ok, err := egress(t.Context(), account, []string{"sg-s3"}, netip.MustParseAddrPort(dst))
+		require.NoError(t, err)
+		assert.Equal(t, want, ok, dst)
+	}
+
+	other := securityGroupEgress(js, s3PrefixLists("eu-west-1", cluster, func() string { return "" }))
+	ok, err := other(t.Context(), account, []string{"sg-s3"}, netip.MustParseAddrPort("10.0.0.2:8443"))
+	require.NoError(t, err)
+	assert.False(t, ok, "another Region's list is unknown here and grants nothing")
+}
+
+// The source knows only the Region's S3 list; an unset Region is the default
+// one, as the API's is.
+func TestS3PrefixLists(t *testing.T) {
+	cluster := &config.ClusterConfig{Node: "n1", Nodes: map[string]config.Config{"n1": {AdvertiseIP: "10.0.0.2"}}}
+	lists := s3PrefixLists("", cluster, func() string { return "" })
+	cidrs, ok := lists(prefixlist.ID(config.DefaultAWSRegion))
+	require.True(t, ok)
+	assert.Equal(t, []string{"10.0.0.2/32"}, cidrs)
+	_, ok = lists("pl-0123456789abcdef0")
+	assert.False(t, ok)
+
+	cidrs, ok = s3PrefixLists("us-east-1", nil, func() string { return "" })(prefixlist.ID("us-east-1"))
+	require.True(t, ok, "with no cluster config the list is known and empty")
+	assert.Empty(t, cidrs)
 }
 
 // The feature-level read uses the bucket the daemon writes.

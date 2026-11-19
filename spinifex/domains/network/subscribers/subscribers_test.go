@@ -702,3 +702,14 @@ func TestToPolicyRules_DropsIPv6(t *testing.T) {
 	assert.Equal(t, "0.0.0.0/0", out[0].CIDR)
 	assert.Equal(t, "sg-abc", out[1].SourceSG)
 }
+
+// A rule naming a prefix list reaches the ACL builder with the list as its peer.
+func TestToPolicyRules_CarriesPrefixList(t *testing.T) {
+	t.Parallel()
+	out := toPolicyRules([]networkv1.SecurityGroupRule{
+		{IpProtocol: "tcp", FromPort: 443, ToPort: 443, PrefixListId: "pl-6ca54005"},
+	})
+	require.Len(t, out, 1)
+	assert.Equal(t, "pl-6ca54005", out[0].PrefixListID)
+	assert.Empty(t, out[0].CIDR)
+}

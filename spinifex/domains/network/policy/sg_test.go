@@ -158,3 +158,82 @@ func TestSGManager_EnsureSG_Idempotent(t *testing.T) {
 	require.NoError(t, sg.EnsureSG(ctx, spec))
 	assert.Len(t, m.PortGroups[pg].ACLs, first)
 }
+
+// s3Lists knows one list, as vpcd's source does.
+func s3Lists(id string, cidrs ...string) PrefixLists {
+	return func(want string) ([]string, bool) {
+		if want != id {
+			return nil, false
+		}
+		return cidrs, true
+	}
+}
+
+// The address set a rule names is written with the list's entries before the
+// ACL naming it, in either direction, and converges when the entries change.
+func TestSGManager_EnsureSG_WritesPrefixListAddressSet(t *testing.T) {
+	ctx := context.Background()
+	m, pg := newSGMockWithPG(t, "sg-web")
+	entries := []string{"192.0.2.10/32", "192.0.2.11/32"}
+	sg := NewSecurityGroupManager(m, EgressPolicy{}, WithPrefixLists(func(id string) ([]string, bool) {
+		return entries, id == "pl-6ca54005"
+	}))
+	spec := SGSpec{
+		GroupID:      "sg-web",
+		IngressRules: []Rule{{IPProtocol: "tcp", FromPort: 443, ToPort: 443, PrefixListID: "pl-6ca54005"}},
+		EgressRules:  []Rule{{IPProtocol: "tcp", FromPort: 8443, ToPort: 8443, PrefixListID: "pl-6ca54005"}},
+	}
+	require.NoError(t, sg.EnsureSG(ctx, spec))
+	require.Contains(t, m.AddressSets, "spx_pl_6ca54005")
+	assert.ElementsMatch(t, entries, m.AddressSets["spx_pl_6ca54005"].Addresses)
+	assert.Len(t, m.AddressSets, 1, "one set per list, however many rules name it")
+	assert.Len(t, m.PortGroups[pg].ACLs, 8) // 6 infra + 2 tenant
+
+	entries = []string{"192.0.2.12/32"}
+	require.NoError(t, sg.EnsureSG(ctx, spec))
+	assert.Equal(t, []string{"192.0.2.12/32"}, m.AddressSets["spx_pl_6ca54005"].Addresses)
+}
+
+// A list with no entries yields an empty set, which matches nothing.
+func TestSGManager_EnsureSG_EmptyPrefixListIsAnEmptySet(t *testing.T) {
+	ctx := context.Background()
+	m, _ := newSGMockWithPG(t, "sg-web")
+	sg := NewSecurityGroupManager(m, EgressPolicy{}, WithPrefixLists(s3Lists("pl-6ca54005")))
+	require.NoError(t, sg.EnsureSG(ctx, SGSpec{
+		GroupID:     "sg-web",
+		EgressRules: []Rule{{IPProtocol: "-1", PrefixListID: "pl-6ca54005"}},
+	}))
+	require.Contains(t, m.AddressSets, "spx_pl_6ca54005")
+	assert.NotNil(t, m.AddressSets["spx_pl_6ca54005"].Addresses)
+	assert.Empty(t, m.AddressSets["spx_pl_6ca54005"].Addresses)
+}
+
+// A rule naming a list the source does not know fails the group, leaving its
+// ACLs as they were, as an unrenderable protocol does.
+func TestSGManager_EnsureSG_UnknownPrefixListFailsTheGroup(t *testing.T) {
+	ctx := context.Background()
+	for name, opts := range map[string][]SGOption{
+		"no source":    nil,
+		"unknown list": {WithPrefixLists(s3Lists("pl-6ca54005"))},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, pg := newSGMockWithPG(t, "sg-web")
+			sg := NewSecurityGroupManager(m, EgressPolicy{}, opts...)
+			require.NoError(t, sg.EnsureSG(ctx, SGSpec{
+				GroupID:     "sg-web",
+				EgressRules: []Rule{{IPProtocol: "-1", CIDR: "0.0.0.0/0"}},
+			}))
+			before := len(m.PortGroups[pg].ACLs)
+			err := sg.EnsureSG(ctx, SGSpec{
+				GroupID: "sg-web",
+				EgressRules: []Rule{
+					{IPProtocol: "-1", CIDR: "0.0.0.0/0"},
+					{IPProtocol: "tcp", FromPort: 443, ToPort: 443, PrefixListID: "pl-0123456789abcdef0"},
+				},
+			})
+			require.ErrorContains(t, err, "unknown prefix list pl-0123456789abcdef0")
+			assert.Len(t, m.PortGroups[pg].ACLs, before)
+			assert.Empty(t, m.AddressSets)
+		})
+	}
+}

@@ -648,6 +648,16 @@ func TestSGRulesToPolicyRules_DropsIPv6(t *testing.T) {
 	}
 }
 
+// A stored rule naming a prefix list reaches the ACL builder and the endpoint
+// proxy's egress check with the list as its peer.
+func TestSGRulesToPolicyRules_CarriesPrefixList(t *testing.T) {
+	t.Parallel()
+	out := SGRulesToPolicyRules([]ec2vpc.SGRule{{IpProtocol: "tcp", FromPort: 443, ToPort: 443, PrefixListId: "pl-6ca54005"}})
+	if len(out) != 1 || out[0].PrefixListID != "pl-6ca54005" || out[0].CIDR != "" {
+		t.Fatalf("want the prefix list as the rule's peer, got %+v", out)
+	}
+}
+
 // A read failure and an unparseable record are different faults and get
 // different answers: a failed Get fails the pass, because a dropped record
 // narrows intent and the orphan sweeps read that as permission to delete live

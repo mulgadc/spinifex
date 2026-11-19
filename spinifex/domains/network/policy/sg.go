@@ -3,6 +3,7 @@ package policy
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/topology"
@@ -38,16 +39,30 @@ type EgressPolicy struct {
 }
 
 type sgManager struct {
-	ovn    ovn.Client
-	egress EgressPolicy
+	ovn         ovn.Client
+	egress      EgressPolicy
+	prefixLists PrefixLists
 }
 
 var _ SecurityGroupManager = (*sgManager)(nil)
 
+// SGOption configures a SecurityGroupManager.
+type SGOption func(*sgManager)
+
+// WithPrefixLists supplies the entries of the prefix lists a rule may name.
+// Without it, a group with such a rule fails to apply.
+func WithPrefixLists(lists PrefixLists) SGOption {
+	return func(m *sgManager) { m.prefixLists = lists }
+}
+
 // NewSecurityGroupManager constructs a SecurityGroupManager backed by client.
 // egress carries the platform WAN egress block applied to every guest.
-func NewSecurityGroupManager(client ovn.Client, egress EgressPolicy) SecurityGroupManager {
-	return &sgManager{ovn: client, egress: egress}
+func NewSecurityGroupManager(client ovn.Client, egress EgressPolicy, opts ...SGOption) SecurityGroupManager {
+	m := &sgManager{ovn: client, egress: egress}
+	for _, o := range opts {
+		o(m)
+	}
+	return m
 }
 
 func (m *sgManager) EnsureSG(ctx context.Context, sg SGSpec) error {
@@ -70,8 +85,45 @@ func (m *sgManager) applyACLs(ctx context.Context, sg SGSpec) error {
 			specs = append(specs, block)
 		}
 	}
+	// Written before the ACLs that name them, so no ACL ever names a set that
+	// does not exist yet.
+	if err := m.ensurePrefixListSets(ctx, sg); err != nil {
+		return fmt.Errorf("ensure prefix list sets for %s: %w", pg, err)
+	}
 	if err := m.ovn.ReplaceACLs(ctx, pg, specs); err != nil {
 		return fmt.Errorf("replace ACLs on %s: %w", pg, err)
+	}
+	return nil
+}
+
+// ensurePrefixListSets converges the address set of every prefix list sg's
+// rules name to the list's current entries. A list with no entries gets an
+// empty set, which matches nothing; an unknown list fails the group.
+func (m *sgManager) ensurePrefixListSets(ctx context.Context, sg SGSpec) error {
+	done := map[string]bool{}
+	for _, r := range slices.Concat(sg.IngressRules, sg.EgressRules) {
+		if r.PrefixListID == "" || done[r.PrefixListID] {
+			continue
+		}
+		done[r.PrefixListID] = true
+		name, err := PrefixListAddressSet(r.PrefixListID)
+		if err != nil {
+			return err
+		}
+		var cidrs []string
+		ok := false
+		if m.prefixLists != nil {
+			cidrs, ok = m.prefixLists(r.PrefixListID)
+		}
+		if !ok {
+			return fmt.Errorf("unknown prefix list %s", r.PrefixListID)
+		}
+		if cidrs == nil {
+			cidrs = []string{}
+		}
+		if _, err := m.ovn.EnsureAddressSet(ctx, name, cidrs); err != nil {
+			return fmt.Errorf("address set %s: %w", name, err)
+		}
 	}
 	return nil
 }

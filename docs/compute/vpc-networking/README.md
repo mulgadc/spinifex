@@ -189,6 +189,8 @@ On the guest's `br-imds` bridge, endpoint flows send it to the guest's `ime-*` p
 The proxy admits it only if the destination is an entry, the subnet's endpoint is in the same VPC, the source is the interface's primary address and the security groups allow the egress.
 It then relays the connection over mutual TLS to the gate's endpoint listener on port 8474 on the node the guest dialled, and every refusal resets the connection.
 Requests through an endpoint carry `aws:SourceVpce`, `aws:SourceVpc` and `aws:VpcSourceIp`, not the node's address, so an allow on `aws:SourceIp` does not match them.
+A security-group rule can name the S3 prefix list as its peer, in either direction.
+vpcd keeps an OVN address set `spx_pl_<id>` holding the list's entries, so the rule governs S3 traffic by the public path as well as the proxy's check; any other prefix list is refused with `InvalidPrefixListID.NotFound`.
 
 The service is offered once every node reports feature level 2.
 A node reports it only when its kernel passes the capture probe, its proxy can present the node certificate, and a gate accepts that certificate: its own on a node running Predastore, otherwise a peer's.
@@ -948,6 +950,7 @@ Every VPC gets a default security group that:
 | Ingress TCP/22 from 0.0.0.0/0   | `outport == @sg && ip4 && tcp.dst == 22`                           |
 | Ingress TCP/443 from 10.0.0.0/8 | `outport == @sg && ip4 && tcp.dst == 443 && ip4.src == 10.0.0.0/8` |
 | Ingress ALL from sg-other       | `outport == @sg && ip4 && ip4.src == $sg_other_ip4`                |
+| Egress TCP/8443 to pl-1a2b3c4d  | `inport == @sg && ip4 && tcp.dst == 8443 && ip4.dst == $spx_pl_1a2b3c4d` |
 | Ingress ICMP from anywhere      | `outport == @sg && ip4 && icmp4`                                   |
 | Egress ALL to 0.0.0.0/0         | `inport == @sg && ip4`                                             |
 | Default deny inbound            | `outport == @sg && ip4` (priority 900, action=drop)                |

@@ -15,18 +15,21 @@ const (
 )
 
 // SecurityGroupRule is a security-group rule as EC2 stores it. Network's ACL
-// builder only reads IpProtocol, FromPort, ToPort, CidrIp and SourceSG; the
-// rest exist so the wire shape matches the publisher's stored record exactly.
+// builder only reads IpProtocol, the ports, CidrIp, SourceSG and PrefixListId;
+// the rest exist so the wire shape matches the publisher's stored record.
 type SecurityGroupRule struct {
-	RuleId      string            `json:"rule_id"`
-	IpProtocol  string            `json:"ip_protocol"`
-	FromPort    int64             `json:"from_port"`
-	ToPort      int64             `json:"to_port"`
-	CidrIp      string            `json:"cidr_ip,omitempty"`
-	CidrIpv6    string            `json:"cidr_ipv6,omitempty"`
-	SourceSG    string            `json:"source_sg,omitempty"`
-	Description string            `json:"description,omitempty"`
-	Tags        map[string]string `json:"tags,omitempty"`
+	RuleId     string `json:"rule_id"`
+	IpProtocol string `json:"ip_protocol"`
+	FromPort   int64  `json:"from_port"`
+	ToPort     int64  `json:"to_port"`
+	CidrIp     string `json:"cidr_ip,omitempty"`
+	CidrIpv6   string `json:"cidr_ipv6,omitempty"`
+	SourceSG   string `json:"source_sg,omitempty"`
+	// PrefixListId is omitted when empty, so a consumer that predates it reads
+	// a rule naming one as having no source and drops it.
+	PrefixListId string            `json:"prefix_list_id,omitempty"`
+	Description  string            `json:"description,omitempty"`
+	Tags         map[string]string `json:"tags,omitempty"`
 }
 
 // SecurityGroupEvent is the payload on SecurityGroupCreateSubject,

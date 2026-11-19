@@ -509,10 +509,6 @@ func TestSGRuleRequestToSGRule_Rejections(t *testing.T) {
 			IpProtocol: aws.String("tcp"), FromPort: aws.Int64(22), ToPort: aws.Int64(22),
 			CidrIpv4: aws.String("10.0.0.0/24"), ReferencedGroupId: aws.String("sg-0123456789abcdef0"),
 		}, awserrors.ErrorInvalidParameterCombination},
-		"prefix list": {&ec2.SecurityGroupRuleRequest{
-			IpProtocol: aws.String("tcp"), FromPort: aws.Int64(22), ToPort: aws.Int64(22),
-			PrefixListId: aws.String("pl-0123456789abcdef0"),
-		}, awserrors.ErrorInvalidPrefixListIDNotFound},
 		"non-canonical cidr": {tcpCIDRRequest(22, "10.0.0.1/24"), awserrors.ErrorInvalidParameterValue},
 		"unparseable cidr":   {tcpCIDRRequest(22, "10.0.0.0/33"), awserrors.ErrorInvalidParameterValue},
 		"ipv6 in CidrIpv4":   {tcpCIDRRequest(22, "2001:db8::/32"), awserrors.ErrorInvalidParameterValue},

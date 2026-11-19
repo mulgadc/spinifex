@@ -1,6 +1,13 @@
 package policy
 
-import "net/netip"
+import (
+	"net/netip"
+	"slices"
+)
+
+// PrefixLists resolves a prefix-list ID to its entries' CIDRs; ok is false
+// for a list it does not know.
+type PrefixLists func(id string) (cidrs []string, ok bool)
 
 // EgressAllows reports whether egress rules, the union of every group on an
 // ENI, allow a new connection to a host-owned dst, such as an S3 endpoint
@@ -8,15 +15,17 @@ import "net/netip"
 //
 // It answers what BuildEgressACLMatch's ACLs would decide for that connection,
 // for traffic that bypasses them. A rule naming a security group grants
-// nothing, because dst is never in a group's address set. A rule with neither
-// a CIDR nor a group, or with a protocol the compiler refuses, also grants
-// nothing, where the compiler would match everything or fail.
-func EgressAllows(rules []Rule, dst netip.Addr, proto string, port uint16) bool {
+// nothing, because dst is never in a group's address set. A rule naming a
+// prefix list grants what its entries in lists would, and nothing for a list
+// lists does not know. A rule with no destination, or with a protocol the
+// compiler refuses, also grants nothing, where the compiler would match
+// everything or fail.
+func EgressAllows(rules []Rule, lists PrefixLists, dst netip.Addr, proto string, port uint16) bool {
 	if !dst.Is4() {
 		return false
 	}
 	for _, r := range rules {
-		if r.SourceSG != "" || r.CIDR == "" || !cidrContains(r.CIDR, dst) {
+		if r.SourceSG != "" || !ruleContains(r, lists, dst) {
 			continue
 		}
 		if protocolAllows(r, proto, port) {
@@ -24,6 +33,25 @@ func EgressAllows(rules []Rule, dst netip.Addr, proto string, port uint16) bool 
 		}
 	}
 	return false
+}
+
+// ruleContains reports whether dst is in the rule's CIDR and prefix list, as
+// the compiler's conjunction of the two terms would.
+func ruleContains(r Rule, lists PrefixLists, dst netip.Addr) bool {
+	if r.CIDR == "" && r.PrefixListID == "" {
+		return false
+	}
+	if r.CIDR != "" && !cidrContains(r.CIDR, dst) {
+		return false
+	}
+	if r.PrefixListID == "" {
+		return true
+	}
+	if lists == nil || !prefixListIDRegex.MatchString(r.PrefixListID) {
+		return false
+	}
+	cidrs, ok := lists(r.PrefixListID)
+	return ok && slices.ContainsFunc(cidrs, func(c string) bool { return cidrContains(c, dst) })
 }
 
 // cidrContains reads CIDR as the compiler does: a prefix or a lone address,

@@ -25,16 +25,6 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 
 ### Volumes
 
-#### CreateVolume
-
-- Must an implementation store the availability zone, parameters and source snapshot, so that it can detect a conflicting retry?
-  The Viperblock implementation does not.
-- Should a retry be compared against the original request rather than the current volume?
-  A retry after ExpandVolume conflicts on size.
-- Should a retry with a different source snapshot volume ID conflict?
-  It is not compared.
-- Is byte equality the meaning of equal parameters, or may an implementation compare them semantically?
-
 #### GetVolume
 
 - Must an implementation compare the handle?

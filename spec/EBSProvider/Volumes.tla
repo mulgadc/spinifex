@@ -8,7 +8,6 @@ CreateVolumeRequests == [volumeId               : VolumeIds,
                          sizeBytes              : 0..MaxBytes,
                          availabilityZone       : Optional(AvailabilityZones),
                          sourceSnapshotId       : Optional(SnapshotIds),
-                         sourceSnapshotVolumeId : Optional(VolumeIds),
                          parameters             : Optional(Parameters)]
 
 CreateVolume(req) ==
@@ -18,23 +17,23 @@ CreateVolume(req) ==
   (*******************************************************************************************************************)
   LET volId     == req.volumeId
       snapId    == req.sourceSnapshotId
-      snapVolId == req.sourceSnapshotVolumeId
 
       \* The set of errors that this call may return in the current system state. If there are multiple possible
       \* errors for a single call, the exact one that is returned is left to the implementation.
       Errors ==
         LET checks == [invalidArgument |-> \/ req.sizeBytes = 0
-                                           \/ snapId /= None /\ snapVolId = None
                                            \/ /\ ~KeyExists(volumes, volId)
                                               /\ KeyExists(snapshots, snapId)
-                                              /\ \/ req.sizeBytes < snapshots[snapId].sizeBytes
-                                                 \/ snapshots[snapId].sourceVolumeId /= snapVolId,
+                                              /\ req.sizeBytes < snapshots[snapId].sizeBytes,
                        alreadyExists   |-> /\ KeyExists(volumes, volId)
                                            \* Only refuse retried calls that would conflict with the existing volume.
-                                           /\ \/ volumes[volId].sizeBytes        /= req.sizeBytes
+                                           /\ \/ volumes[volId].sizeBytes < req.sizeBytes
                                               \/ volumes[volId].availabilityZone /= req.availabilityZone
                                               \/ volumes[volId].sourceSnapshotId /= snapId
-                                              \/ volumes[volId].parameters       /= req.parameters,
+                                              \* Volume parameters are compared to determine semantic "compatibility".
+                                              \* Byte equivalence may, or may not, be part of that check. It is up to
+                                              \* each implementation how exactly this comparison is carried out.
+                                              \/ volumes[volId].parameters /= req.parameters,
                        notFound        |-> /\ ~KeyExists(volumes, volId)
                                            /\ snapId \notin Optional(DOMAIN snapshots)]
         IN {e \in DOMAIN checks : checks[e]}

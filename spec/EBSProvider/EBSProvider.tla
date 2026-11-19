@@ -104,6 +104,8 @@ Volumes == [handle           : VolumeHandles,
             sizeBytes        : 1..MaxBytes,
             availabilityZone : Optional(AvailabilityZones),
             sourceSnapshotId : Optional(SnapshotIds),
+            \* The following fields are opaque to the contract. They may differ in
+            \* content/structure between implementations.
             parameters       : Optional(Parameters),
             providerData     : Optional(ProviderData)]
 

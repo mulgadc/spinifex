@@ -555,7 +555,14 @@ func TestPollAssignments_StopReapsAndSuppressesAssign(t *testing.T) {
 		case <-time.After(2 * time.Millisecond):
 		}
 	}
-	time.Sleep(20 * time.Millisecond)
+	// A third poll means both polls carrying the assign have been dispatched.
+	for countStopAcks(cp.stopAcks(), as.TaskID) == 0 || len(cp.stopAcks()) < 3 {
+		select {
+		case <-deadline:
+			t.Fatalf("stop %s was never acked; stopAcks=%v", as.TaskID, cp.stopAcks())
+		case <-time.After(2 * time.Millisecond):
+		}
+	}
 	cancel()
 
 	// The assign for the stopping task must never have started a container.
@@ -564,17 +571,6 @@ func TestPollAssignments_StopReapsAndSuppressesAssign(t *testing.T) {
 	}
 	if running := countStatus(cp.taskStates(), as.TaskID, ecsv1.TaskStatusRunning); running != 0 {
 		t.Errorf("stopping task should never report RUNNING, got %d", running)
-	}
-	acked := false
-	for _, ack := range cp.stopAcks() {
-		for _, id := range ack {
-			if id == as.TaskID {
-				acked = true
-			}
-		}
-	}
-	if !acked {
-		t.Errorf("stop %s was never acked; stopAcks=%v", as.TaskID, cp.stopAcks())
 	}
 }
 

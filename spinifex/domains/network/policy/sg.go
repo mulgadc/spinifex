@@ -92,7 +92,17 @@ func (m *sgManager) EnsureSG(ctx context.Context, sg SGSpec) error {
 		return m.applyACLs(ctx, sg)
 	}
 	defer m.granting.Add(-1)
-	return m.applyACLs(ctx, sg)
+	if err := m.applyACLs(ctx, sg); err != nil {
+		return err
+	}
+	// Withdrawn while this apply wrote: the withdrawal's pass may have run
+	// before the write landed, so this apply removes its own peers.
+	if !m.grants() {
+		sg.IngressRules = withoutPrefixLists(sg.IngressRules)
+		sg.EgressRules = withoutPrefixLists(sg.EgressRules)
+		return m.applyACLs(ctx, sg)
+	}
+	return nil
 }
 
 func (m *sgManager) grants() bool { return m.granted == nil || m.granted() }

@@ -237,6 +237,11 @@ func (l *endpointLoop) status(ctx context.Context, node string, countACLs bool) 
 			st.PrefixListACLs++
 		}
 	}
+	// An apply on a node that saw the withdrawal late can land after the pass
+	// that removed such ACLs; the drain's poll asks for another.
+	if st.PrefixListACLs > 0 && !l.grant.level.Granted() {
+		l.grant.level.wake()
+	}
 	return st, nil
 }
 

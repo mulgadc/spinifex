@@ -535,6 +535,25 @@ func TestEndpointLoop_StatusReportsThePrefixListGrant(t *testing.T) {
 	assert.Zero(t, st.PrefixListACLs)
 }
 
+// A drain poll that finds a prefix-list ACL left after the grant was withdrawn
+// wakes the reconcile pass to remove it; while the grant holds it wakes none.
+func TestEndpointLoop_DrainPollWakesThePassForALeftoverACL(t *testing.T) {
+	m := mock.New()
+	_, _, err := m.EnsurePortGroup(t.Context(), "pg_sg_a", nil)
+	require.NoError(t, err)
+	require.NoError(t, m.ReplaceACLs(t.Context(), "pg_sg_a", []ovn.ACLSpec{
+		{Direction: "from-lport", Priority: 1000, Match: "inport == @pg_sg_a && ip4 && ip4.dst == $spx_pl_6ca54005", Action: "allow-related"},
+	}))
+	for _, granted := range []bool{true, false} {
+		h := newLoopHarness(false)
+		level := grantedLevel(granted, 3)
+		level.changed = make(chan struct{}, 1)
+		h.loop.grant = &prefixListGrant{level: level, applies: func() int { return 0 }, acls: m.ListACLs}
+		assert.Equal(t, 1, mustStatus(t, h.loop).PrefixListACLs)
+		assert.Equal(t, !granted, len(level.changed) == 1, "granted=%v", granted)
+	}
+}
+
 // While level 3 holds, capture and the proxy's view use the gossiped
 // derivation, ignoring this node's bridge address.
 func TestEndpointLoop_GossipedDerivationWhileGranted(t *testing.T) {

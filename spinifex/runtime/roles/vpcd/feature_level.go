@@ -63,9 +63,13 @@ func (w *levelWatch) observe(ctx context.Context) error {
 }
 
 func (w *levelWatch) grant(granted bool) {
-	if w.granted.Swap(granted) == granted {
-		return
+	if w.granted.Swap(granted) != granted {
+		w.wake()
 	}
+}
+
+// wake asks for a reconcile pass without blocking.
+func (w *levelWatch) wake() {
 	select {
 	case w.changed <- struct{}{}:
 	default:

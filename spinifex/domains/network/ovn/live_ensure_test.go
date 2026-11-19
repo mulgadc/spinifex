@@ -276,3 +276,48 @@ func TestCreateAddressSetIfAbsent_LostRaceKeepsMembers(t *testing.T) {
 		t.Fatalf("members after the lost race = %v, want %v", as.Addresses, want)
 	}
 }
+
+// A remembered set that another writer deleted and recreated is looked up
+// again, so the caller gets the live row rather than the one it remembered.
+func TestCreateAddressSetIfAbsent_RecreatedSetIsLookedUpAgain(t *testing.T) {
+	nb := ovntest.StartNB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	connect := func() *ovn.LiveClient {
+		c := ovn.NewLiveClient(nb.Endpoint)
+		if err := c.Connect(ctx); err != nil {
+			t.Fatalf("Connect: %v", err)
+		}
+		t.Cleanup(c.Close)
+		return c
+	}
+	request, other := connect(), connect()
+
+	first, err := request.CreateAddressSetIfAbsent(ctx, "spx_pl_again")
+	if err != nil {
+		t.Fatalf("first CreateAddressSetIfAbsent: %v", err)
+	}
+	ovn.DeleteAddressSet(ctx, t, other, "spx_pl_again")
+	recreated, err := other.EnsureAddressSet(ctx, "spx_pl_again", []string{"10.0.0.9/32"})
+	if err != nil {
+		t.Fatalf("recreate: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got, err := request.CreateAddressSetIfAbsent(ctx, "spx_pl_again")
+		if err != nil {
+			t.Fatalf("CreateAddressSetIfAbsent after recreate: %v", err)
+		}
+		if got == recreated {
+			break
+		}
+		if got != first || time.Now().After(deadline) {
+			t.Fatalf("uuid after recreate = %q, want %q (first %q)", got, recreated, first)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	as, err := other.GetAddressSet(ctx, "spx_pl_again")
+	if err != nil || len(as.Addresses) != 1 {
+		t.Fatalf("recreated set members changed: %+v err %v", as, err)
+	}
+}

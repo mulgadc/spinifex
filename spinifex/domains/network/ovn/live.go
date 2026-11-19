@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
@@ -123,6 +124,9 @@ func namedUUID(prefix, name string) string {
 type LiveClient struct {
 	endpoint string
 	client   client.Client
+	// setUUIDs remembers created sets by name, so the request path confirms
+	// one by UUID without reading its row.
+	setUUIDs sync.Map
 }
 
 var _ Client = (*LiveClient)(nil)
@@ -1494,16 +1498,22 @@ func (c *LiveClient) EnsureAddressSet(ctx context.Context, name string, addresse
 	return created.UUID, nil
 }
 
-// addressSetInsertHook runs between CreateAddressSetIfAbsent's cache miss and
-// its insert; tests use it to lose the race deterministically.
+// addressSetInsertHook runs between CreateAddressSetIfAbsent's miss and its
+// insert; tests use it to lose the race deterministically.
 var addressSetInsertHook func()
 
 // CreateAddressSetIfAbsent inserts the named set with no addresses unless a row
-// with that name exists. An existing set is found by name and never written,
-// and a lost insert race returns the winner's row untouched.
+// with that name exists. It reads only the set's UUID, never its members, and
+// a lost insert race returns the winner's row untouched.
 func (c *LiveClient) CreateAddressSetIfAbsent(ctx context.Context, name string) (string, error) {
-	if uuid, err := c.addressSetUUID(ctx, name); err == nil {
-		return uuid, nil
+	if v, ok := c.setUUIDs.Load(name); ok {
+		if uuid, ok := v.(string); ok && c.cachedRow("Address_Set", uuid) {
+			return uuid, nil
+		}
+	}
+	uuid, err := c.selectAddressSetUUID(ctx, name)
+	if err != nil || uuid != "" {
+		return c.rememberSet(name, uuid, err)
 	}
 	if addressSetInsertHook != nil {
 		addressSetInsertHook()
@@ -1518,42 +1528,59 @@ func (c *LiveClient) CreateAddressSetIfAbsent(ctx context.Context, name string) 
 	if err != nil {
 		return "", err
 	}
-	if err := c.transactOps(ctx, ops); err != nil {
-		if uuid, refErr := c.waitForAddressSetUUID(ctx, name); refErr == nil {
-			return uuid, nil
-		}
-		return "", fmt.Errorf("create address set %q: %w", name, err)
+	insertErr := c.transactOps(ctx, ops)
+	uuid, err = c.selectAddressSetUUID(ctx, name)
+	switch {
+	case err == nil && uuid == "" && insertErr != nil:
+		return "", fmt.Errorf("create address set %q: %w", name, insertErr)
+	case err == nil && uuid == "":
+		return "", fmt.Errorf("address set %q absent after insert", name)
 	}
-	uuid, err := c.waitForAddressSetUUID(ctx, name)
+	return c.rememberSet(name, uuid, err)
+}
+
+func (c *LiveClient) rememberSet(name, uuid string, err error) (string, error) {
 	if err != nil {
-		return "", fmt.Errorf("resolve address set %q uuid after insert: %w", name, err)
+		return "", err
 	}
+	c.setUUIDs.Store(name, uuid)
 	return uuid, nil
 }
 
-// addressSetUUID looks the set up through the schema's name index rather than
-// scanning the table, so the cost is one row whatever the formation's size.
-func (c *LiveClient) addressSetUUID(ctx context.Context, name string) (string, error) {
-	as := &nbdb.AddressSet{Name: name}
-	if err := c.client.Get(ctx, as); err != nil {
-		return "", fmt.Errorf("get address set %q: %w", name, err)
+// cachedRow reports whether the monitor cache holds the row, without copying it.
+func (c *LiveClient) cachedRow(table, uuid string) bool {
+	tc := c.client.Cache()
+	if tc == nil {
+		return false
 	}
-	return as.UUID, nil
+	t := tc.Table(table)
+	return t != nil && t.HasRow(uuid)
 }
 
-func (c *LiveClient) waitForAddressSetUUID(ctx context.Context, name string) (string, error) {
-	deadline := time.Now().Add(ensureRefetchTimeout)
-	for {
-		uuid, err := c.addressSetUUID(ctx, name)
-		if err == nil || time.Now().After(deadline) {
-			return uuid, err
-		}
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(ensureRefetchInterval):
-		}
+// selectAddressSetUUID asks the server for the UUID of the set named name, or
+// "" when there is none; only the _uuid column is returned.
+func (c *LiveClient) selectAddressSetUUID(ctx context.Context, name string) (string, error) {
+	op := ovsdb.Operation{
+		Op:      ovsdb.OperationSelect,
+		Table:   "Address_Set",
+		Where:   []ovsdb.Condition{{Column: "name", Function: ovsdb.ConditionEqual, Value: name}},
+		Columns: []string{"_uuid"},
 	}
+	results, err := c.client.Transact(ctx, op)
+	if err == nil {
+		_, err = ovsdb.CheckOperationResults(results, []ovsdb.Operation{op})
+	}
+	if err != nil {
+		return "", fmt.Errorf("select address set %q: %w", name, err)
+	}
+	if len(results) == 0 || len(results[0].Rows) == 0 {
+		return "", nil
+	}
+	u, ok := results[0].Rows[0]["_uuid"].(ovsdb.UUID)
+	if !ok {
+		return "", fmt.Errorf("select address set %q: no _uuid in reply", name)
+	}
+	return u.GoUUID, nil
 }
 
 // convergeAddressSet updates the row's addresses when they differ from want.

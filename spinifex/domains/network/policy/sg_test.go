@@ -249,8 +249,12 @@ func TestSGManager_WithdrawnGrantsRenderNoPrefixListPeer(t *testing.T) {
 	granted.Store(false)
 	assert.Equal(t, 1, sg.GrantingApplies(), "an apply that started while grants held is counted until it returns")
 	close(blocking.release)
+	<-blocking.entered // the apply sees the withdrawal after its write and rewrites
 	require.NoError(t, <-done)
 	assert.Zero(t, sg.GrantingApplies())
+	for _, uuid := range m.PortGroups[pg].ACLs {
+		assert.NotContains(t, m.ACLs[uuid].Match, "spx_pl_", "an apply whose grant was withdrawn mid-write leaves no prefix-list ACL")
+	}
 }
 
 // An apply paused while it reads the grant is already counted, so a rollback

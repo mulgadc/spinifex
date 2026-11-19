@@ -2,6 +2,7 @@ package awsapi
 
 import (
 	"context"
+	encodingxml "encoding/xml"
 	"errors"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -21,8 +22,8 @@ type DescribeListenerAttributesInput struct {
 // ListenerAttribute is one Key/Value listener attribute in the ELBv2 Query wire format.
 type ListenerAttribute struct {
 	_     struct{} `type:"structure"`
-	Key   *string  `type:"string"`
-	Value *string  `type:"string"`
+	Key   *string  `type:"string" xml:"Key"`
+	Value *string  `type:"string" xml:"Value"`
 }
 
 // DescribeListenerAttributesOutput is the ELBv2 DescribeListenerAttributes response, encoded as
@@ -66,4 +67,25 @@ func DescribeListenerAttributes(ctx context.Context, input *DescribeListenerAttr
 		attrs = append(attrs, ListenerAttribute{Key: aws.String("tcp.idle_timeout.seconds"), Value: aws.String(tcpIdleTimeoutDefault)})
 	}
 	return DescribeListenerAttributesOutput{Attributes: attrs}, nil
+}
+
+// describeListenerAttributesResponse is encoded with encoding/xml because the SDK
+// builder emits sibling elements in map order, and AWS emits Key before Value.
+type describeListenerAttributesResponse struct {
+	XMLName encodingxml.Name `xml:"DescribeListenerAttributesResponse"`
+	Result  struct {
+		Attributes struct {
+			Members []ListenerAttribute `xml:"member"`
+		} `xml:"Attributes"`
+	} `xml:"DescribeListenerAttributesResult"`
+	RequestID string `xml:"ResponseMetadata>RequestId"`
+}
+
+// marshalDescribeListenerAttributes renders out in the Query envelope with each
+// attribute's elements in declaration order.
+func marshalDescribeListenerAttributes(out DescribeListenerAttributesOutput, requestID string) ([]byte, error) {
+	var resp describeListenerAttributesResponse
+	resp.Result.Attributes.Members = out.Attributes
+	resp.RequestID = requestID
+	return encodingxml.Marshal(resp)
 }

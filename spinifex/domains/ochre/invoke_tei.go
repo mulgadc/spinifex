@@ -27,8 +27,8 @@ const teiEmbeddingsResponseLimit = 16 << 20
 // null: TEI truncates without the model's own Matryoshka normalisation.
 type teiEmbeddingsRequest struct {
 	Input          json.RawMessage `json:"input"`
-	Model          *string         `json:"model,omitempty"`
-	EncodingFormat *string         `json:"encoding_format,omitempty"`
+	Model          json.RawMessage `json:"model,omitempty"`
+	EncodingFormat json.RawMessage `json:"encoding_format,omitempty"`
 	Dimensions     json.RawMessage `json:"dimensions,omitempty"`
 }
 
@@ -72,7 +72,11 @@ var _ InvokeAdapter = (*teiEmbeddingInvokeAdapter)(nil)
 func newTEIEmbeddingInvokeAdapter(endpointResolver EndpointResolver) *teiEmbeddingInvokeAdapter {
 	return &teiEmbeddingInvokeAdapter{
 		endpointResolver: endpointResolver,
-		httpClient:       &http.Client{Timeout: providerHTTPTimeout},
+		httpClient: &http.Client{
+			Timeout: providerHTTPTimeout,
+			// A redirect would resend the embedding input to another host.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 	}
 }
 
@@ -90,10 +94,7 @@ func parseTEIEmbeddingsRequest(modelID string, body []byte) ([]byte, int, error)
 	if err := dec.Decode(&req); err != nil {
 		return nil, 0, invalid
 	}
-	if req.Model != nil && *req.Model != modelID {
-		return nil, 0, invalid
-	}
-	if req.EncodingFormat != nil && *req.EncodingFormat != "float" {
+	if !optionalStringIs(req.Model, modelID) || !optionalStringIs(req.EncodingFormat, "float") {
 		return nil, 0, invalid
 	}
 	if len(req.Dimensions) > 0 && !bytes.Equal(bytes.TrimSpace(req.Dimensions), []byte("null")) {
@@ -108,6 +109,19 @@ func parseTEIEmbeddingsRequest(modelID string, body []byte) ([]byte, int, error)
 		return nil, 0, errors.New(awserrors.ErrorInternalError)
 	}
 	return upstream, n, nil
+}
+
+// optionalStringIs reports whether raw was omitted or is the JSON string want.
+// An explicit null is neither, so it is refused rather than read as omission.
+func optionalStringIs(raw json.RawMessage, want string) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	var got string
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &got) != nil {
+		return false
+	}
+	return got == want
 }
 
 // countEmbeddingInputs accepts a nonempty string or 1..teiMaxClientBatchSize

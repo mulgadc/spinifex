@@ -244,6 +244,8 @@ func TestEmbeddingInvoke_RejectsInvalidBodiesBeforeTEI(t *testing.T) {
 		"guest path as model":    `{"input":"a","model":"` + teiGuestModelPath + `"}`,
 		"body is not an object":  `"a"`,
 		"input is not text json": `{"input":{"text":"a"}}`,
+		"null model":             `{"input":"a","model":null}`,
+		"null encoding format":   `{"input":"a","encoding_format":null}`,
 	}
 	tei := newFakeTEI(t)
 	rt := staticTEIRouter(t, tei, &fakeRecorder{})
@@ -693,4 +695,34 @@ func TestEmbeddingInvoke_TransportFailureLogOmitsUserinfo(t *testing.T) {
 	assert.Contains(t, logs, `"failure":"unreachable"`)
 	assert.NotContains(t, logs, "alice")
 	assert.NotContains(t, logs, "s3cret-token")
+}
+
+// A redirect from the TEI endpoint is answered as an upstream failure and
+// never followed, so the embedding input cannot reach another host.
+func TestEmbeddingInvoke_DoesNotFollowRedirects(t *testing.T) {
+	for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			var elsewhere sync.Mutex
+			var elsewhereCalls int
+			other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				elsewhere.Lock()
+				defer elsewhere.Unlock()
+				elsewhereCalls++
+			}))
+			t.Cleanup(other.Close)
+			redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, other.URL+r.URL.Path, status)
+			}))
+			t.Cleanup(redirector.Close)
+
+			resolver := NewStaticEndpointResolver(map[string]string{nomicModel: redirector.URL})
+			rt := NewRouter(nil, resolver, &fakeRecorder{}, grantAll{}, nil, nil, nil)
+			_, _, err := rt.InvokeModel(context.Background(), "000000000001", nomicModel, embeddingBody("search_document: secret"), "", "")
+			require.Error(t, err)
+			assert.Equal(t, awserrors.ErrorModelErrorException, err.Error())
+			elsewhere.Lock()
+			defer elsewhere.Unlock()
+			assert.Zero(t, elsewhereCalls, "the redirect target must receive nothing")
+		})
+	}
 }

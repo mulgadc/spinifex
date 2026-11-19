@@ -114,6 +114,16 @@ func (f *fakeTEI) hostPort(t *testing.T) (string, int) {
 	return host, port
 }
 
+func vectorValues(t *testing.T, v []*float64) []float64 {
+	t.Helper()
+	out := make([]float64, len(v))
+	for i, f := range v {
+		require.NotNil(t, f)
+		out[i] = *f
+	}
+	return out
+}
+
 func embeddingBody(inputs ...string) []byte {
 	if len(inputs) == 1 {
 		b, _ := json.Marshal(map[string]any{"input": inputs[0]})
@@ -155,7 +165,7 @@ func TestEmbeddingInvoke_ServesBothCatalogEmbeddersFromStaticEndpoint(t *testing
 			assert.NotContains(t, string(respBody), teiGuestModelPath)
 			assert.Equal(t, "list", out.Object)
 			require.Len(t, out.Data, 1)
-			assert.Equal(t, []float64{0.5, 0.25, -1}, out.Data[0].Embedding)
+			assert.Equal(t, []float64{0.5, 0.25, -1}, vectorValues(t, out.Data[0].Embedding))
 			require.NotNil(t, out.Usage)
 			assert.Equal(t, int64(7), *out.Usage.PromptTokens)
 
@@ -189,7 +199,7 @@ func TestEmbeddingInvoke_BatchLimit(t *testing.T) {
 	require.Len(t, out.Data, teiMaxClientBatchSize)
 	for _, d := range out.Data {
 		require.NotNil(t, d.Index)
-		assert.InDelta(t, float64(*d.Index)+0.5, d.Embedding[0], 0, "each vector keeps its own index")
+		assert.InDelta(t, float64(*d.Index)+0.5, vectorValues(t, d.Embedding)[0], 0, "each vector keeps its own index")
 	}
 	assert.Equal(t, int64(7*teiMaxClientBatchSize), rec.all()[0].InputTokens)
 
@@ -239,13 +249,16 @@ func TestEmbeddingInvoke_MalformedUpstreamResponseIsModelError(t *testing.T) {
 		"not json":                `not json`,
 		"missing usage":           `{"data":[{` + vec + `,"index":0}]}`,
 		"missing prompt tokens":   `{"data":[{` + vec + `,"index":0}],"usage":{"total_tokens":3}}`,
-		"negative prompt tokens":  `{"data":[{` + vec + `,"index":0}],"usage":{"prompt_tokens":-1}}`,
-		"wrong vector count":      `{"data":[{` + vec + `,"index":0},{` + vec + `,"index":1}],"usage":{"prompt_tokens":1}}`,
-		"missing index":           `{"data":[{` + vec + `}],"usage":{"prompt_tokens":1}}`,
-		"out of range index":      `{"data":[{` + vec + `,"index":1}],"usage":{"prompt_tokens":1}}`,
-		"empty vector":            `{"data":[{"embedding":[],"index":0}],"usage":{"prompt_tokens":1}}`,
-		"string prompt tokens":    `{"data":[{` + vec + `,"index":0}],"usage":{"prompt_tokens":"1"}}`,
-		"duplicate index (batch)": `{"data":[{` + vec + `,"index":0},{` + vec + `,"index":0}],"usage":{"prompt_tokens":1}}`,
+		"negative prompt tokens":  `{"data":[{` + vec + `,"index":0}],"usage":{"prompt_tokens":-1,"total_tokens":1}}`,
+		"wrong vector count":      `{"data":[{` + vec + `,"index":0},{` + vec + `,"index":1}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
+		"missing index":           `{"data":[{` + vec + `}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
+		"out of range index":      `{"data":[{` + vec + `,"index":1}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
+		"empty vector":            `{"data":[{"embedding":[],"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
+		"null vector element":     `{"data":[{"embedding":[0.4,null,0.5],"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
+		"missing total tokens":    `{"data":[{` + vec + `,"index":0}],"usage":{"prompt_tokens":1}}`,
+		"negative total tokens":   `{"data":[{` + vec + `,"index":0}],"usage":{"prompt_tokens":1,"total_tokens":-1}}`,
+		"string prompt tokens":    `{"data":[{` + vec + `,"index":0}],"usage":{"prompt_tokens":"1","total_tokens":1}}`,
+		"duplicate index (batch)": `{"data":[{` + vec + `,"index":0},{` + vec + `,"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
 	}
 	for name, body := range bodies {
 		t.Run(name, func(t *testing.T) {
@@ -268,19 +281,6 @@ func TestEmbeddingInvoke_MalformedUpstreamResponseIsModelError(t *testing.T) {
 			assert.Empty(t, records[0].InputText)
 		})
 	}
-}
-
-func TestEmbeddingInvoke_TotalTokensDefaultsToPromptTokens(t *testing.T) {
-	tei := newFakeTEI(t)
-	tei.reply(0, `{"data":[{"embedding":[0.1],"index":0}],"model":"x","usage":{"prompt_tokens":4}}`)
-	rt := staticTEIRouter(t, tei, &fakeRecorder{})
-
-	respBody, _, err := rt.InvokeModel(context.Background(), "000000000001", nomicModel, embeddingBody("a"), "", "")
-	require.NoError(t, err)
-	var out teiEmbeddingsResponse
-	require.NoError(t, json.Unmarshal(respBody, &out))
-	require.NotNil(t, out.Usage.TotalTokens)
-	assert.Equal(t, int64(4), *out.Usage.TotalTokens)
 }
 
 func TestEmbeddingInvoke_MapsUpstreamStatus(t *testing.T) {

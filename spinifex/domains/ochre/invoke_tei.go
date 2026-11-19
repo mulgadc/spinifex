@@ -38,7 +38,8 @@ type teiEmbeddingsUpstreamRequest struct {
 
 type teiEmbeddingsDatum struct {
 	Object    string    `json:"object"`
-	Embedding []float64 `json:"embedding"`
+	// Pointers, because encoding/json decodes a null element as 0.
+	Embedding []*float64 `json:"embedding"`
 	Index     *int      `json:"index"`
 }
 
@@ -192,8 +193,8 @@ func mapTEIStatus(status int) string {
 	}
 }
 
-// normalizeTEIEmbeddingsResponse requires n vectors indexed 0..n-1 and a
-// nonnegative prompt token count, and replaces model with modelID.
+// normalizeTEIEmbeddingsResponse requires n vectors indexed 0..n-1 and
+// nonnegative prompt and total token counts, and replaces model with modelID.
 func normalizeTEIEmbeddingsResponse(modelID string, body []byte, n int) ([]byte, error) {
 	var r teiEmbeddingsResponse
 	if err := json.Unmarshal(body, &r); err != nil {
@@ -207,13 +208,14 @@ func normalizeTEIEmbeddingsResponse(modelID string, body []byte, n int) ([]byte,
 		if d.Index == nil || *d.Index < 0 || *d.Index >= n || seen[*d.Index] || len(d.Embedding) == 0 {
 			return nil, errors.New("missing, duplicate or out-of-range vector")
 		}
+		if slices.Contains(d.Embedding, nil) {
+			return nil, errors.New("null vector element")
+		}
 		seen[*d.Index] = true
 	}
-	if r.Usage == nil || r.Usage.PromptTokens == nil || *r.Usage.PromptTokens < 0 {
-		return nil, errors.New("missing or negative prompt token usage")
-	}
-	if r.Usage.TotalTokens == nil {
-		r.Usage.TotalTokens = r.Usage.PromptTokens
+	if r.Usage == nil || r.Usage.PromptTokens == nil || *r.Usage.PromptTokens < 0 ||
+		r.Usage.TotalTokens == nil || *r.Usage.TotalTokens < 0 {
+		return nil, errors.New("missing or negative token usage")
 	}
 	r.Object = "list"
 	r.Model = modelID

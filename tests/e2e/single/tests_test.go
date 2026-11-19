@@ -30,6 +30,13 @@ func TestAccountScoping(t *testing.T) {
 	runAccountScoping(t, requireSingleNodeFixture(t))
 }
 
+// Owns a throwaway account and one bucket inside it, so it mutates nothing
+// another test can see.
+func TestAccountVersionedBucketTeardown(t *testing.T) {
+	t.Parallel()
+	runAccountVersionedBucketTeardown(t, requireSingleNodeFixture(t))
+}
+
 // TestKVReplication reads the cluster's own state and runs a repair that has
 // nothing to repair, so it mutates nothing another test can see.
 func TestKVReplication(t *testing.T) {

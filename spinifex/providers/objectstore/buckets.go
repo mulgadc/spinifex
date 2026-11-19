@@ -46,9 +46,10 @@ func (s *S3ObjectStore) ListBucketsForOwner(ctx context.Context, accountID strin
 // ListMultipartUploads returns the uploads started against bucket and not yet
 // completed. They are invisible to an object listing and hold real storage, so
 // a bucket can list as empty and still have parts in it.
-func (s *S3ObjectStore) ListMultipartUploads(ctx context.Context, bucket string) ([]MultipartUploadRef, error) {
+func (s *S3ObjectStore) ListMultipartUploads(ctx context.Context, bucket, accountID string) ([]MultipartUploadRef, error) {
 	out, err := s.client.ListMultipartUploadsWithContext(ctx, &s3.ListMultipartUploadsInput{
-		Bucket: aws.String(bucket),
+		Bucket:              aws.String(bucket),
+		ExpectedBucketOwner: expectedOwner(accountID),
 	})
 	if err != nil {
 		return nil, err
@@ -70,19 +71,54 @@ func (s *S3ObjectStore) ListMultipartUploads(ctx context.Context, bucket string)
 
 // AbortMultipartUpload discards an upload's parts. The object it would have
 // written is untouched.
-func (s *S3ObjectStore) AbortMultipartUpload(ctx context.Context, upload MultipartUploadRef) error {
+func (s *S3ObjectStore) AbortMultipartUpload(ctx context.Context, upload MultipartUploadRef, accountID string) error {
 	_, err := s.client.AbortMultipartUploadWithContext(ctx, &s3.AbortMultipartUploadInput{
-		Bucket:   aws.String(upload.Bucket),
-		Key:      aws.String(upload.Key),
-		UploadId: aws.String(upload.UploadID),
+		Bucket:              aws.String(upload.Bucket),
+		Key:                 aws.String(upload.Key),
+		UploadId:            aws.String(upload.UploadID),
+		ExpectedBucketOwner: expectedOwner(accountID),
 	})
 	return err
 }
 
 // DeleteBucket removes an empty bucket.
-func (s *S3ObjectStore) DeleteBucket(ctx context.Context, bucket string) error {
-	_, err := s.client.DeleteBucketWithContext(ctx, &s3.DeleteBucketInput{Bucket: aws.String(bucket)})
+func (s *S3ObjectStore) DeleteBucket(ctx context.Context, bucket, accountID string) error {
+	_, err := s.client.DeleteBucketWithContext(ctx, &s3.DeleteBucketInput{
+		Bucket:              aws.String(bucket),
+		ExpectedBucketOwner: expectedOwner(accountID),
+	})
 	return err
+}
+
+// GetBucketVersioning reports a bucket's versioning status, empty for a bucket
+// that was never versioned. That is AWS's answer too: the configuration
+// carries no Status until versioning has been enabled once.
+func (s *S3ObjectStore) GetBucketVersioning(ctx context.Context, bucket, accountID string) (string, error) {
+	out, err := s.client.GetBucketVersioningWithContext(ctx, &s3.GetBucketVersioningInput{
+		Bucket:              aws.String(bucket),
+		ExpectedBucketOwner: expectedOwner(accountID),
+	})
+	if err != nil {
+		return "", err
+	}
+	return aws.StringValue(out.Status), nil
+}
+
+// ListObjectVersions pages the retained versions and delete markers of a
+// bucket. They are the only thing a versioned bucket's delete refuses on once
+// every current key is hidden, and a versionless delete cannot remove one.
+func (s *S3ObjectStore) ListObjectVersions(ctx context.Context, input *s3.ListObjectVersionsInput) (*s3.ListObjectVersionsOutput, error) {
+	return s.client.ListObjectVersionsWithContext(ctx, input)
+}
+
+// expectedOwner carries the account a caller believes owns the bucket, so a
+// name that changed hands since it was listed is refused rather than mutated.
+// An empty account asserts nothing, which is what an unscoped caller means.
+func expectedOwner(accountID string) *string {
+	if accountID == "" {
+		return nil
+	}
+	return aws.String(accountID)
 }
 
 // withOwnerAccount sets the owner header on the request before it is signed, so

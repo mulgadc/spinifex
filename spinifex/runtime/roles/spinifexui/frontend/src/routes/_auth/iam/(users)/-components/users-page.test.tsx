@@ -3,7 +3,11 @@ import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import { CLOSED_PANEL } from "@/lib/panel-search"
-import { createTestQueryClient, renderWithClient } from "@/test/render"
+import {
+  createTestQueryClient,
+  renderWithClient,
+  waitForPanelLoaded,
+} from "@/test/render"
 
 const send = vi.hoisted(() =>
   vi.fn(
@@ -54,7 +58,7 @@ describe("UsersPage", () => {
     })
   })
 
-  it("shows the selected user's details", () => {
+  it("shows the selected user's details", async () => {
     renderWithClient(
       <UsersPage
         onSearchChange={vi.fn()}
@@ -64,9 +68,9 @@ describe("UsersPage", () => {
       createTestQueryClient(),
     )
 
-    expect(
-      screen.getByRole("region", { name: "User details" }),
-    ).toHaveTextContent("AIDA1")
+    const panel = screen.getByRole("region", { name: "User details" })
+    await waitForPanelLoaded(panel)
+    expect(panel).toHaveTextContent("AIDA1")
   })
 
   it("deletes the selected users, one call each", async () => {

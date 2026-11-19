@@ -4,7 +4,11 @@ import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
-import { createTestQueryClient, renderWithClient } from "@/test/render"
+import {
+  createTestQueryClient,
+  renderWithClient,
+  waitForPanelLoaded,
+} from "@/test/render"
 
 const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
@@ -90,11 +94,11 @@ describe("DBInstancesListPage", () => {
     ).toBeNull()
   })
 
-  it("renders the create form in the panel when asked", () => {
+  it("renders the create form in the panel when asked", async () => {
     renderList([], { create: true })
-    expect(
-      screen.getByRole("region", { name: "Create database" }),
-    ).toBeInTheDocument()
+    const panel = screen.getByRole("region", { name: "Create database" })
+    await waitForPanelLoaded(panel)
+    expect(panel).toBeInTheDocument()
   })
 
   it("deletes each selected instance with its own call, keeping a final snapshot", async () => {

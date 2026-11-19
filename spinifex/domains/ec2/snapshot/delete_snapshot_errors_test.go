@@ -279,12 +279,12 @@ func (s *readFailingObjectStore) GetObject(ctx context.Context, input *s3.GetObj
 	return s.ObjectStore.GetObject(ctx, input)
 }
 
-// The production incident was an object whose read returns 500 forever, not a
-// document that parses badly, and the two reach the collector by different
-// paths. A teardown must drain past one belonging to an unrelated tenant.
+// The incident this reproduces was an object whose read returns 500 forever,
+// not a document that parses badly, and the two reach the collector by
+// different paths. A teardown must drain past one belonging to another tenant.
 func TestDeleteSnapshot_TeardownDrainsPastAForeignUnreadableObject(t *testing.T) {
 	memory := objectstore.NewMemoryObjectStore()
-	foreignKey, err := ebsmetadata.VolumeKey(otherAccountID, "vol-c81ca91c65c309c05")
+	foreignKey, err := ebsmetadata.VolumeKey(otherAccountID, "vol-0f1e2d3c4b5a69788")
 	require.NoError(t, err)
 	store := &readFailingObjectStore{ObjectStore: memory, failing: map[string]bool{foreignKey: true}}
 
@@ -293,7 +293,7 @@ func TestDeleteSnapshot_TeardownDrainsPastAForeignUnreadableObject(t *testing.T)
 	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
 	snapshotID := unreferencedSnapshot(t, svc, memory)
 	seedVolumeDocument(t, memory, ebsmetadata.Volume{
-		VolumeID: "vol-c81ca91c65c309c05", TenantID: otherAccountID, CapacityGiB: 50,
+		VolumeID: "vol-0f1e2d3c4b5a69788", TenantID: otherAccountID, CapacityGiB: 50,
 	})
 
 	require.NoError(t, deleteSnapshot(svc, snapshotID))

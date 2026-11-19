@@ -456,7 +456,7 @@ func TestBedrockPipeline_EmbeddingInvokeRefusesGuardrail(t *testing.T) {
 	tei := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		teiCalls++
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","embedding":[`+strings.TrimSuffix(strings.Repeat("0.5,", 768), ",")+`],"index":0}],"model":"/guest/path","usage":{"prompt_tokens":3,"total_tokens":3}}`))
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","embedding":[` + strings.TrimSuffix(strings.Repeat("0.5,", 768), ",") + `],"index":0}],"model":"/guest/path","usage":{"prompt_tokens":3,"total_tokens":3}}`))
 	}))
 	t.Cleanup(tei.Close)
 	app := bedrockPipelineApp(t, func(c *bedrockPipelineEnv) {

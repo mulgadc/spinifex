@@ -96,10 +96,9 @@ func (r *bucketReaper) Delete(ctx context.Context, accountID string, resource Re
 	return ignoreAlreadyGone(r.store.DeleteBucket(ctx, bucket, accountID))
 }
 
-// abortUploads discards uploads in flight. They are invisible to an object
-// listing and hold real storage, so a bucket can list as empty and still have
-// parts in it — and predastore's bucket delete only checks for objects, so
-// nothing else would ever notice them.
+// abortUploads discards uploads in flight. An upload's parts belong to no key
+// and no version, so neither listing reports them and neither emptying path
+// reaches them, while the storage they hold is real.
 func (r *bucketReaper) abortUploads(ctx context.Context, bucket, accountID string) error {
 	uploads, err := r.store.ListMultipartUploads(ctx, bucket, accountID)
 	if err != nil {

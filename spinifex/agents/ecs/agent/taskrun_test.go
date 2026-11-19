@@ -555,8 +555,8 @@ func TestPollAssignments_StopReapsAndSuppressesAssign(t *testing.T) {
 		case <-time.After(2 * time.Millisecond):
 		}
 	}
-	// A third poll means both polls carrying the assign have been dispatched.
-	for countStopAcks(cp.stopAcks(), as.TaskID) == 0 || len(cp.stopAcks()) < 3 {
+	// The ack rides the third poll at the earliest, after both assign polls are handled.
+	for countStopAcks(cp.stopAcks(), as.TaskID) == 0 {
 		select {
 		case <-deadline:
 			t.Fatalf("stop %s was never acked; stopAcks=%v", as.TaskID, cp.stopAcks())

@@ -153,14 +153,14 @@ func (s *ServiceImpl) interfaceOnly(name string) bool {
 }
 
 // interfaceOnlyFields refuses the fields AWS accepts only on interface
-// endpoints, in AWS's order.
-func interfaceOnlyFields(subnets, groups bool, privateDNS *bool, subnetConfigs bool) error {
+// endpoints, in AWS's order. PrivateDnsEnabled=false is accepted, as on AWS.
+func interfaceOnlyFields(subnets, groups, privateDNS, subnetConfigs bool) error {
 	switch {
 	case subnets:
 		return awserrors.Errorf(awserrors.ErrorInvalidParameter, "Subnet IDs are only supported for Interface and GatewayLoadBalancer type VPC Endpoints.")
 	case groups:
 		return awserrors.Errorf(awserrors.ErrorInvalidParameter, "Security Group IDs are only supported for Interface type VPC Endpoint.")
-	case privateDNS != nil:
+	case privateDNS:
 		return awserrors.Errorf(awserrors.ErrorInvalidParameter, "Private DNS is only supported for Interface type VPC Endpoint.")
 	case subnetConfigs:
 		return awserrors.Errorf(awserrors.ErrorInvalidParameter, "SubnetConfigurations are only supported for Interface type VPC Endpoint.")
@@ -264,7 +264,7 @@ func (s *ServiceImpl) CreateVpcEndpoint(ctx context.Context, input *ec2.CreateVp
 	if err := s.checkTypeAndService(aws.StringValue(input.VpcEndpointType), aws.StringValue(input.ServiceName)); err != nil {
 		return nil, err
 	}
-	if err := interfaceOnlyFields(len(input.SubnetIds) > 0, len(input.SecurityGroupIds) > 0, input.PrivateDnsEnabled, len(input.SubnetConfigurations) > 0); err != nil {
+	if err := interfaceOnlyFields(len(input.SubnetIds) > 0, len(input.SecurityGroupIds) > 0, aws.BoolValue(input.PrivateDnsEnabled), len(input.SubnetConfigurations) > 0); err != nil {
 		return nil, err
 	}
 	if err := checkIPAddressType("IpAddressType", aws.StringValue(input.IpAddressType)); err != nil {
@@ -347,7 +347,7 @@ func (s *ServiceImpl) ModifyVpcEndpoint(ctx context.Context, input *ec2.ModifyVp
 	}
 	subnets := len(input.AddSubnetIds) > 0 || len(input.RemoveSubnetIds) > 0
 	groups := len(input.AddSecurityGroupIds) > 0 || len(input.RemoveSecurityGroupIds) > 0
-	if err := interfaceOnlyFields(subnets, groups, input.PrivateDnsEnabled, len(input.SubnetConfigurations) > 0); err != nil {
+	if err := interfaceOnlyFields(subnets, groups, aws.BoolValue(input.PrivateDnsEnabled), len(input.SubnetConfigurations) > 0); err != nil {
 		return nil, err
 	}
 	if err := checkIPAddressType("IpAddressType", aws.StringValue(input.IpAddressType)); err != nil {

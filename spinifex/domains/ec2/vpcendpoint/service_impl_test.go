@@ -92,7 +92,7 @@ func TestCreate_Refusals(t *testing.T) {
 			awserrors.ErrorInvalidParameter, "Subnet IDs are only supported for Interface and GatewayLoadBalancer type VPC Endpoints."},
 		{"groups", ec2.CreateVpcEndpointInput{VpcId: aws.String(vpcA), ServiceName: aws.String(s3Service), SecurityGroupIds: aws.StringSlice([]string{"sg-1"})},
 			awserrors.ErrorInvalidParameter, "Security Group IDs are only supported for Interface type VPC Endpoint."},
-		{"private DNS", ec2.CreateVpcEndpointInput{VpcId: aws.String(vpcA), ServiceName: aws.String(s3Service), PrivateDnsEnabled: aws.Bool(false)},
+		{"private DNS", ec2.CreateVpcEndpointInput{VpcId: aws.String(vpcA), ServiceName: aws.String(s3Service), PrivateDnsEnabled: aws.Bool(true)},
 			awserrors.ErrorInvalidParameter, "Private DNS is only supported for Interface type VPC Endpoint."},
 		{"subnet configurations", ec2.CreateVpcEndpointInput{VpcId: aws.String(vpcA), ServiceName: aws.String(s3Service), SubnetConfigurations: []*ec2.SubnetConfiguration{{}}},
 			awserrors.ErrorInvalidParameter, "SubnetConfigurations are only supported for Interface type VPC Endpoint."},
@@ -126,6 +126,27 @@ func TestCreate_Refusals(t *testing.T) {
 			assert.Empty(t, f.keys(t), "a refused create writes nothing")
 		})
 	}
+}
+
+// The Terraform provider sends PrivateDnsEnabled=false on every gateway create,
+// and AWS accepts it on create and modify; only true is refused.
+func TestGateway_PrivateDnsFalseIsAccepted(t *testing.T) {
+	f := newFixture(t)
+	out, err := f.svc.CreateVpcEndpoint(t.Context(), &ec2.CreateVpcEndpointInput{
+		VpcId: aws.String(vpcA), ServiceName: aws.String(s3Service), RouteTableIds: aws.StringSlice([]string{rtbA1}),
+		PrivateDnsEnabled: aws.Bool(false),
+	}, testAccount)
+	require.NoError(t, err)
+	require.NotNil(t, out.VpcEndpoint.PrivateDnsEnabled, "AWS renders an explicit false")
+	assert.False(t, *out.VpcEndpoint.PrivateDnsEnabled)
+
+	id := aws.StringValue(out.VpcEndpoint.VpcEndpointId)
+	mod, err := f.svc.ModifyVpcEndpoint(t.Context(), &ec2.ModifyVpcEndpointInput{VpcEndpointId: aws.String(id), PrivateDnsEnabled: aws.Bool(false)}, testAccount)
+	require.NoError(t, err)
+	assert.True(t, aws.BoolValue(mod.Return))
+	d := f.describe(t, id)
+	require.NotNil(t, d.PrivateDnsEnabled, "AWS renders an explicit false")
+	assert.False(t, *d.PrivateDnsEnabled)
 }
 
 func TestCreate_DefaultPolicyGivenExplicitly(t *testing.T) {

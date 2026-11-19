@@ -1071,8 +1071,12 @@ func TestManagerClaim_RollbackFailuresFenceGroupOnce(t *testing.T) {
 
 	rollbackFailed := map[string]int{}
 	fenced := map[string]int{}
-	for _, line := range bytes.Split(bytes.TrimSpace(logs.Bytes()), []byte("\n")) {
-		var rec struct{ Msg, GPU, Addr string }
+	for line := range bytes.SplitSeq(bytes.TrimSpace(logs.Bytes()), []byte("\n")) {
+		var rec struct {
+			Msg  string `json:"msg"`
+			GPU  string `json:"gpu"`
+			Addr string `json:"addr"`
+		}
 		must(t, json.Unmarshal(line, &rec))
 		switch {
 		case strings.HasPrefix(rec.Msg, "GPU claim rollback failed"):

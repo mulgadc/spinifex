@@ -343,7 +343,16 @@ func TestEndpointProxy_SecurityGroupChangeAppliesToTheNextConnection(t *testing.
 
 	h.egress.Store(false)
 	expectReset(t, h.addr)
-	assert.Equal(t, 1, h.p.Sessions(), "an established session continues, as conntrack lets it on AWS")
+	// The guest sees the RST before the refused handler returns and is uncounted.
+	assert.Eventually(t, func() bool { return h.p.Sessions() == 1 }, 5*time.Second, 10*time.Millisecond)
+
+	require.NoError(t, first.SetDeadline(time.Now().Add(5*time.Second)))
+	_, err = first.Write([]byte("still here"))
+	require.NoError(t, err)
+	got := make([]byte, len("still here"))
+	_, err = io.ReadFull(first, got)
+	require.NoError(t, err, "an established session continues, as conntrack lets it on AWS")
+	assert.Equal(t, "still here", string(got))
 }
 
 func TestEndpointProxy_PublishClosesSessionsTheViewNoLongerAdmits(t *testing.T) {

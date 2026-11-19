@@ -13,8 +13,7 @@ MCCapabilities == [onlineExpansion         |-> TRUE,
                                                 claimTtlSeconds |-> 0,
                                                 fencesLostClaim |-> TRUE]]
 
-MCSymmetry == Permutations(VolumeIds) \union Permutations(VolumeHandles) \union Permutations(NodeIds)
-              \union Permutations(SnapshotIds) \union Permutations(SnapshotHandles)
+MCSymmetry == Permutations(VolumeIds) \union Permutations(NodeIds) \union Permutations(SnapshotIds)
 
 MCCreateVolumeRequests == {r \in CreateVolumeRequests : r.sizeBytes > 0}
 

@@ -11,11 +11,11 @@ EXTENDS
 
 CONSTANTS
   MaxBytes,
-  VolumeIds, VolumeHandles,
+  VolumeIds,
   NodeIds, ExportPaths,
-  SnapshotIds, SnapshotHandles,
+  SnapshotIds,
   AvailabilityZones, Timestamps,
-  Parameters, ProviderData,
+  Parameters, Metadata,
   ListTokens, MaxListResults,
   \* The optional behaviour that the implementation advertises, which never changes.
   Capabilities,
@@ -25,13 +25,13 @@ CONSTANTS
   None
 
 ASSUME MaxBytes \in Nat \ {0}
-ASSUME VolumeIds /= {} /\ VolumeHandles /= {}
+ASSUME VolumeIds /= {}
 ASSUME NodeIds /= {} => ExportPaths /= {}
-ASSUME SnapshotIds /= {} => SnapshotHandles /= {} /\ Timestamps /= {}
+ASSUME SnapshotIds /= {} => Timestamps /= {}
 ASSUME ListTokens /= {}
 ASSUME MaxListResults \in Nat \ {0}
-ASSUME None \notin UNION {VolumeIds, VolumeHandles, NodeIds, SnapshotIds, SnapshotHandles,
-                          AvailabilityZones, Timestamps, Parameters, ProviderData, ListTokens}
+ASSUME None \notin UNION {VolumeIds, NodeIds, SnapshotIds,
+                          AvailabilityZones, Timestamps, Parameters, Metadata, ListTokens}
 ASSUME Capabilities \in [onlineExpansion         : BOOLEAN,
                          sparseExtentReporting   : BOOLEAN,
                          crashConsistentSnapshot : BOOLEAN,
@@ -100,14 +100,14 @@ ProviderErrors == IF ProviderMayFail
                   \* Otherwise an implementation could conform by refusing to answer.
                   ELSE {}
 
-Volumes == [handle           : VolumeHandles,
-            sizeBytes        : 1..MaxBytes,
+Volumes == [sizeBytes        : 1..MaxBytes,
             availabilityZone : Optional(AvailabilityZones),
             sourceSnapshotId : Optional(SnapshotIds),
-            \* The following fields are opaque to the contract. They may differ in
-            \* content/structure between implementations.
+            \* Caller-provided configuration parameters passed to the implementation at volume creation. Opaque to the
+            \* contract.
             parameters       : Optional(Parameters),
-            providerData     : Optional(ProviderData)]
+            \* Any provider specific metadata the implementation attaches to the volume. Opaque to the contract.
+            metadata         : Optional(Metadata)]
 
 \* How a published volume is reached on its node, either over NBD or as a host block device.
 Exports == [kind      : {"nbd", "block"},
@@ -120,8 +120,8 @@ Publications == [export   : Exports,
 
 Snapshots == [sizeBytes      : 1..MaxBytes,
               createdAt      : Timestamps,
-              handle         : SnapshotHandles,
-              sourceVolumeId : VolumeIds]
+              sourceVolumeId : VolumeIds,
+              metadata       : Optional(Metadata)]
 
 -----------------------------------------------------------------------------------------------------------------------
 \* State helpers
@@ -137,9 +137,8 @@ VolumeView(volId) ==
                [] PublishedNodes(volId) /= {} -> "in-use"]
   @@
   Restrict(volumes[volId], {"sizeBytes",
-                            "handle",
                             "availabilityZone",
-                            "providerData"})
+                            "metadata"})
 
 \* The part of a publication that the implementation returns.
 PublicationView(volId, nodeId) == [volumeId |-> volId,
@@ -191,12 +190,6 @@ ExistsIfPublished ==
 OnlyPublishedOnce ==
   \A volId \in VolumeIds :
     Cardinality(PublishedNodes(volId)) <= 1
-
-HandlesAreUnique ==
-  /\ \A i, j \in DOMAIN volumes :
-       volumes[i].handle = volumes[j].handle => i = j
-  /\ \A i, j \in DOMAIN snapshots :
-       snapshots[i].handle = snapshots[j].handle => i = j
 
 ExportPathsAreUniquePerNode ==
   \A i, j \in DOMAIN publications :

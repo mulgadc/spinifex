@@ -25,12 +25,6 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 
 ### Volumes
 
-#### GetVolume
-
-- Must an implementation compare the handle?
-  The Viperblock implementation ignores it.
-- Is `notFound` the right error for a volume that was deleted and recreated under the same ID?
-
 #### ListVolumes
 
 - Must following next tokens list every volume that exists throughout the walk exactly once?
@@ -52,8 +46,6 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 
 #### UnpublishVolume
 
-- Must an implementation compare the handle?
-  Both the Viperblock and memory implementations ignore it.
 - Is a provider that fails to seal the volume a failed provider?
   The Viperblock implementation answers `internal` and leaves the volume published, which the specification allows only when the provider may fail.
 - Should a claim that lapses through its TTL be modelled, as a step that happens without a call?
@@ -62,8 +54,6 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 
 #### DeleteVolume
 
-- Must an implementation compare the handle before refusing a published volume?
-  The memory implementation does, and succeeds without deleting it, while the Viperblock implementation ignores the handle and refuses with `volumeInUse`.
 - Should a volume that does not exist be refused with `notFound`?
   It succeeds here, as CSI requires and the conformance suite tests, while AWS refuses `DeleteVolume` on a missing volume with `InvalidVolume.NotFound`.
 
@@ -73,8 +63,6 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 
 - May a provider forget a snapshot's source?
   The control plane mints every snapshot ID and records it before the first call, so the ID alone names the request. A provider that no longer knows a snapshot's source, such as qemu-nbd after a restart, answers a retry with the snapshot, and refuses with `alreadyExists` only when it knows the source differs. The specification models a provider that always knows the source.
-- Must a retry compare the volume handle?
-  It is ignored, as in the memory implementation, so a volume deleted and recreated under the same ID returns the old snapshot.
 - Should a copy's ID count as a retry?
   A copy keeps its source's volume ID, so creating a snapshot of that volume under the copy's ID returns the copy.
 - Should `crashConsistentSnapshot` be modelled?
@@ -92,10 +80,6 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 
 #### DeleteSnapshot
 
-- Is the handle check part of the contract?
-  The Viperblock implementation ignores the handle and deletes anyway.
-- What does success promise?
-  The Go docs say the snapshot is gone, but a snapshot whose handle did not match is left in place.
 - Should a snapshot that does not exist be refused with `notFound`?
   It succeeds here, as CSI requires and the conformance suite tests, while AWS refuses `DeleteSnapshot` on a missing snapshot with `InvalidSnapshot.NotFound`.
 

@@ -4,9 +4,8 @@ EXTENDS EBSProvider
 -----------------------------------------------------------------------------------------------------------------------
 \* Interface methods
 
-CreateSnapshotRequests == [snapshotId   : SnapshotIds,
-                           volumeId     : VolumeIds,
-                           volumeHandle : Optional(VolumeHandles)]
+CreateSnapshotRequests == [snapshotId : SnapshotIds,
+                           volumeId   : VolumeIds]
 
 CreateSnapshot(req) ==
   (*******************************************************************************************************************)
@@ -25,8 +24,7 @@ CreateSnapshot(req) ==
                                            /\ snapshots[snapId].sourceVolumeId /= volId,
                        \* Only checked for a new snapshot, so a retry outlives the volume.
                        notFound        |-> /\ ~KeyExists(snapshots, snapId)
-                                           /\ \/ ~KeyExists(volumes, volId)
-                                              \/ req.volumeHandle \notin {None, volumes[volId].handle}]
+                                           /\ ~KeyExists(volumes, volId)]
         IN {e \in DOMAIN checks : checks[e]}
 
      \* The operation was refused, or the provider failed to answer.
@@ -41,15 +39,13 @@ CreateSnapshot(req) ==
               /\ UNCHANGED snapshots
 
            \/ /\ ~KeyExists(snapshots, snapId)
-              \* The handle and creation time are determined by the implementation.
-              /\ \E h \in SnapshotHandles,
+              \* The creation time and metadata are determined by the implementation.
+              /\ \E md \in Optional(Metadata),
                     t \in Timestamps :
-                   \* No two snapshots are given the same handle.
-                   /\ h \notin {snapshots[x].handle : x \in DOMAIN snapshots}
                    /\ snapshots' = InsertKey(snapshots, snapId, [sizeBytes      |-> volumes[volId].sizeBytes,
                                                                  createdAt      |-> t,
-                                                                 handle         |-> h,
-                                                                 sourceVolumeId |-> volId])
+                                                                 sourceVolumeId |-> volId,
+                                                                 metadata       |-> md])
         /\ val' = SnapshotView(snapId)'
         /\ err' = None
         /\ UNCHANGED <<volumes, publications>>
@@ -87,13 +83,11 @@ CopySnapshot(req) ==
 
      \* The operation was successful.
      \/ /\ Errors = {}
-        \* The handle and creation time are determined by the implementation.
-        /\ \E h \in SnapshotHandles,
+        \* The creation time and metadata are determined by the implementation.
+        /\ \E md \in Optional(Metadata),
               t \in Timestamps :
-             \* No two snapshots are given the same handle.
-             /\ h \notin {snapshots[x].handle : x \in DOMAIN snapshots}
              /\ snapshots' = InsertKey(snapshots, dstSnapId, [createdAt |-> t,
-                                                              handle    |-> h]
+                                                              metadata  |-> md]
                                                               @@ snapshots[srcSnapId])
         /\ val' = SnapshotView(dstSnapId)'
         /\ err' = None
@@ -107,7 +101,7 @@ ListSnapshotsRequests == [maxResults    : -1..(MaxListResults + 1),
 \* The ref that ListSnapshots returns for a snapshot.
 SnapshotRef(id) == [id             |-> id,
                     sourceVolumeId |-> snapshots[id].sourceVolumeId,
-                    handle         |-> snapshots[id].handle]
+                    metadata       |-> snapshots[id].metadata]
 
 ListSnapshots(req) ==
   (*******************************************************************************************************************)
@@ -151,8 +145,7 @@ ListSnapshots(req) ==
         /\ UNCHANGED state
 
 
-DeleteSnapshotRequests == [snapshotId : SnapshotIds,
-                           handle     : Optional(SnapshotHandles)]
+DeleteSnapshotRequests == [snapshotId : SnapshotIds]
 
 DeleteSnapshot(req) ==
   (*******************************************************************************************************************)
@@ -166,12 +159,8 @@ DeleteSnapshot(req) ==
         /\ err' \in ProviderErrors
         /\ UNCHANGED state
 
-     \* The operation was successful.
-     \/ /\ snapshots' = IF /\ KeyExists(snapshots, snapId)
-                           /\ req.handle \notin {None, snapshots[snapId].handle}
-                        THEN snapshots
-                        \* Record removal is idempotent so that retries succeed.
-                        ELSE RemoveKey(snapshots, snapId)
+     \* The operation was successful, and record removal is idempotent so that retries succeed.
+     \/ /\ snapshots' = RemoveKey(snapshots, snapId)
         /\ val' = None
         /\ err' = None
         /\ UNCHANGED <<volumes, publications>>

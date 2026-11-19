@@ -50,20 +50,16 @@ CreateVolume(req) ==
               /\ UNCHANGED volumes
 
            \/ /\ ~KeyExists(volumes, volId)
-              \* The handle and provider data is determined by the implementation.
-              /\ \E h \in VolumeHandles,
-                    pd \in Optional(ProviderData) :
-                   \* No two volumes are given the same handle.
-                   /\ h \notin {volumes[v].handle : v \in DOMAIN volumes}
-                   /\ volumes' = InsertKey(volumes, volId, [handle           |-> h,
-                                                            \* An implementation may allocate more backing storage
-                                                            \* if necessary (e.g. to handle OCI's 50GB minimum), but
-                                                            \* the volume record must report the exact requested size.
-                                                            sizeBytes        |-> req.sizeBytes,
+              \* The metadata is determined by the implementation.
+              /\ \E md \in Optional(Metadata) :
+                   \* An implementation may allocate more backing storage
+                   \* if necessary (e.g. to handle OCI's 50GB minimum), but
+                   \* the volume record must report the exact requested size.
+                   /\ volumes' = InsertKey(volumes, volId, [sizeBytes        |-> req.sizeBytes,
                                                             availabilityZone |-> req.availabilityZone,
                                                             sourceSnapshotId |-> snapId,
                                                             parameters       |-> req.parameters,
-                                                            providerData     |-> pd])
+                                                            metadata         |-> md])
         \* NOTE: The UNCHANGED assertion is placed before the val' assignment here to prevent TLC from trying to read 
         \* publications' inside VolumeView(id)' before it is assigned a value, in behaviors where CreateVolume is
         \* the first action.
@@ -72,20 +68,18 @@ CreateVolume(req) ==
         /\ err' = None
 
 
-GetVolumeRequests == [volumeId : VolumeIds,
-                      handle   : Optional(VolumeHandles)]
+GetVolumeRequests == [volumeId : VolumeIds]
 
 GetVolume(req) ==
   (*******************************************************************************************************************)
-  (* A volume's current size, state and handle are read, and nothing changes.                                        *)
+  (* A volume's current size and state are read, and nothing changes.                                                *)
   (*******************************************************************************************************************)
   LET volId == req.volumeId
 
       \* The set of errors that this call may return in the current system state. If there are multiple possible
       \* errors for a single call, the exact one that is returned is left to the implementation.
       Errors ==
-        LET checks == [notFound |-> \/ ~KeyExists(volumes, volId)
-                                    \/ req.handle \notin {None, volumes[volId].handle}]
+        LET checks == [notFound |-> ~KeyExists(volumes, volId)]
         IN {e \in DOMAIN checks : checks[e]}
 
      \* The operation was refused, or the provider failed to answer.
@@ -121,7 +115,7 @@ ListVolumes(req) ==
 
      \* The operation was successful.
      \/ /\ Errors = {}
-        /\ LET refs == {[id |-> id, handle |-> volumes[id].handle] : id \in DOMAIN volumes}
+        /\ LET refs == {[id |-> id, metadata |-> volumes[id].metadata] : id \in DOMAIN volumes}
            \* The page and the next token are determined by the implementation.
            IN \E page \in SUBSET refs, next \in Optional(ListTokens) :
                 /\ Cardinality(page) <= PageSize(req.maxResults)
@@ -133,7 +127,6 @@ ListVolumes(req) ==
 
 
 ExpandVolumeRequests == [volumeId  : VolumeIds,
-                         handle    : Optional(VolumeHandles),
                          sizeBytes : 0..MaxBytes]
 
 ExpandVolume(req) ==
@@ -149,8 +142,7 @@ ExpandVolume(req) ==
         LET checks == [invalidArgument |-> \/ req.sizeBytes = 0
                                            \/ /\ KeyExists(volumes, volId)
                                               /\ req.sizeBytes < volumes[volId].sizeBytes,
-                       notFound        |-> \/ ~KeyExists(volumes, volId)
-                                           \/ req.handle \notin {None, volumes[volId].handle},
+                       notFound        |-> ~KeyExists(volumes, volId),
                        volumeInUse     |-> /\ PublishedNodes(volId) /= {}
                                            /\ ~Capabilities.onlineExpansion
                                            /\ req.sizeBytes > volumes[volId].sizeBytes]
@@ -177,7 +169,6 @@ ExpandVolume(req) ==
 
 
 PublishVolumeRequests == [volumeId : VolumeIds,
-                          handle   : Optional(VolumeHandles),
                           nodeId   : NodeIds,
                           readOnly : BOOLEAN]
 
@@ -193,8 +184,7 @@ PublishVolume(req) ==
       \* The set of errors that this call may return in the current system state. If there are multiple possible
       \* errors for a single call, the exact one that is returned is left to the implementation.
       Errors ==
-        LET checks == [notFound              |-> \/ ~KeyExists(volumes, volId)
-                                                 \/ req.handle \notin {None, volumes[volId].handle},
+        LET checks == [notFound              |-> ~KeyExists(volumes, volId),
                        unsupportedCapability |-> /\ req.readOnly
                                                  /\ ~Capabilities.readOnlyPublish,
                        volumeInUse           |-> \/ PublishedNodes(volId) \ {nodeId} /= {}
@@ -232,7 +222,6 @@ PublishVolume(req) ==
 
 
 UnpublishVolumeRequests == [volumeId : VolumeIds,
-                            handle   : Optional(VolumeHandles),
                             nodeId   : NodeIds]
 
 UnpublishVolume(req) ==
@@ -255,8 +244,7 @@ UnpublishVolume(req) ==
         /\ UNCHANGED <<volumes, snapshots>>
 
 
-DeleteVolumeRequests == [volumeId : VolumeIds,
-                         handle   : Optional(VolumeHandles)]
+DeleteVolumeRequests == [volumeId : VolumeIds]
 
 DeleteVolume(req) ==
   (*******************************************************************************************************************)
@@ -267,8 +255,7 @@ DeleteVolume(req) ==
       \* The set of errors that this call may return in the current system state. If there are multiple possible
       \* errors for a single call, the exact one that is returned is left to the implementation.
       Errors ==
-        LET checks == [volumeInUse |-> /\ PublishedNodes(volId) /= {}
-                                       /\ req.handle \in {None, volumes[volId].handle}]
+        LET checks == [volumeInUse |-> PublishedNodes(volId) /= {}]
         IN {e \in DOMAIN checks : checks[e]}
 
      \* The operation was refused, or the provider failed to answer.
@@ -279,10 +266,7 @@ DeleteVolume(req) ==
      \* The operation was successful.
      \/ /\ Errors = {}
         \* Record removal is idempotent so that retries succeed.
-        /\ volumes' = IF /\ KeyExists(volumes, volId)
-                         /\ req.handle \notin {None, volumes[volId].handle}
-                      THEN volumes
-                      ELSE RemoveKey(volumes, volId)
+        /\ volumes' = RemoveKey(volumes, volId)
         /\ val' = None
         /\ err' = None
         /\ UNCHANGED <<publications, snapshots>>

@@ -19,8 +19,11 @@ func TestAgent_RunRegistersThenStopsOnContext(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- a.Run(ctx) }()
 
-	// Give it time to register + re-register (heartbeat) a few times.
-	time.Sleep(30 * time.Millisecond)
+	// Wait for the boot register plus at least one heartbeat re-register.
+	deadline := time.Now().Add(5 * time.Second)
+	for cp.registerCount() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
 	cancel()
 
 	select {

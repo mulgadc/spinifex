@@ -317,6 +317,9 @@ type EKSServiceImpl struct {
 	// giving up and marking the nodegroup CREATE_FAILED. Tests inject small values.
 	workerLaunchRetryTimeout time.Duration
 	workerLaunchRetryBackoff time.Duration
+	// workerLaunchMaxAttempts, when positive, also caps the shortfall retries by
+	// attempt count so tests stay deterministic; zero leaves only the deadline.
+	workerLaunchMaxAttempts int
 
 	// spawnScanRetryBackoff paces the boot-time reconciler re-scan when JetStream
 	// enumeration is still catching up. Tests inject a small value.

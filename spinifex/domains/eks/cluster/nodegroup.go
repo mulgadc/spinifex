@@ -613,7 +613,8 @@ func (s *EKSServiceImpl) launchWorkers(ctx context.Context, acctKV jetstream.Key
 // host capacity pressure) instead of abandoning the nodegroup at its first
 // failed launch. Each retry relaunches only what's still missing —
 // already-launched workers are never reissued — until the desired count is
-// reached, workerLaunchRetryTimeout elapses, or bgCtx is cancelled. Every retry
+// reached, workerLaunchRetryTimeout elapses, workerLaunchMaxAttempts (when set)
+// is used up, or bgCtx is cancelled. Every retry
 // is logged so a stuck launch is diagnosable without live-tailing the daemon.
 func (s *EKSServiceImpl) launchWorkersUntilDesired(ctx context.Context, acctKV jetstream.KeyValue, accountID string, rec *NodegroupRecord, meta *ClusterMeta, ngSGID, amiID, token string, count int) ([]string, error) {
 	deadline := time.Now().Add(s.workerLaunchRetryTimeout)
@@ -628,7 +629,8 @@ func (s *EKSServiceImpl) launchWorkersUntilDesired(ctx context.Context, acctKV j
 			return all, nil
 		}
 		lastErr = err
-		if time.Now().After(deadline) {
+		attemptsUsed := s.workerLaunchMaxAttempts > 0 && attempt >= s.workerLaunchMaxAttempts
+		if attemptsUsed || time.Now().After(deadline) {
 			return all, fmt.Errorf("worker launch shortfall after %d attempt(s), %d still missing: %w", attempt, remaining, lastErr)
 		}
 		slog.WarnContext(ctx, "launchNodegroupInfra: worker launch failed short of desired capacity, relaunching shortfall",

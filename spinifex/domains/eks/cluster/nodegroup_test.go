@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/private/protocol/json/jsonutil"
@@ -743,6 +744,14 @@ func TestCreateNodegroup_RelaunchesOnWorkerLaunchFailure(t *testing.T) {
 	// and succeed on its next attempt instead of leaving the nodegroup stuck.
 	f.worker.runErr = errors.New("qmp: timeout waiting for launch")
 	f.worker.failNextN = 1
+	// The failed attempt is slow, as on a loaded host; it must still be retried.
+	slowFirst := true
+	f.worker.beforeRun = func(*ec2.RunInstancesInput) {
+		if slowFirst {
+			slowFirst = false
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
 
 	markWorkersReady(t, f, "c1", "ng1", 1)
 	_, err := f.svc.CreateNodegroup(context.Background(), createNGInput("c1", "ng1", 1), testAccountID)
@@ -775,8 +784,8 @@ func TestCreateNodegroup_WorkerLaunchFailureExhaustsRetryBudget(t *testing.T) {
 	rec, err := GetNodegroupRecord(t.Context(), f.kv, "c1", "ng1")
 	require.NoError(t, err)
 	assert.Equal(t, eks.NodegroupStatusCreateFailed, rec.Status)
-	assert.Contains(t, rec.StatusReason, "worker launch shortfall after")
-	assert.Greater(t, len(f.worker.runCalls), 1, "must have retried at least once before giving up")
+	assert.Contains(t, rec.StatusReason, "worker launch shortfall after 3 attempt(s)")
+	assert.Len(t, f.worker.runCalls, 3, "must spend the whole attempt budget before giving up")
 }
 
 func TestCreateNodegroup_DiskSizePropagatesToBlockDeviceMapping(t *testing.T) {

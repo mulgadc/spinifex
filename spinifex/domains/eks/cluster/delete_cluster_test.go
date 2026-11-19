@@ -116,10 +116,11 @@ func newEKSServiceFixture(t *testing.T) *eksServiceFixture {
 	svc.workersEndPoll = time.Millisecond
 	svc.nodegroupReadyTimeout = 50 * time.Millisecond
 	svc.nodegroupReadyPoll = 2 * time.Millisecond
-	// Tight worker-launch-retry knobs so a launch-failure retry test resolves
-	// quickly instead of against the production 5m/10s budget.
-	svc.workerLaunchRetryTimeout = 30 * time.Millisecond
-	svc.workerLaunchRetryBackoff = 20 * time.Millisecond
+	// Bound worker-launch retries by attempt count, not elapsed time, so a slow
+	// attempt on a loaded host never ends the retry loop early.
+	svc.workerLaunchRetryTimeout = time.Hour
+	svc.workerLaunchRetryBackoff = 2 * time.Millisecond
+	svc.workerLaunchMaxAttempts = 3
 	// Tight boot-scan re-scan backoff so the eventually-consistent JetStream
 	// enumeration settles fast in tests instead of the production 100ms.
 	svc.spawnScanRetryBackoff = 2 * time.Millisecond

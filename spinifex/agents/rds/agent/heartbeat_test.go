@@ -105,9 +105,14 @@ func TestHeartbeater_ReportsPromptlyUntilTheEngineHasServed(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go h.Run(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.Run(ctx)
+	}()
 	waitFor(t, func() bool { return len(cp.snapshotStates()) > 0 }, "the first heartbeat")
 	cancel()
+	<-done
 
 	if states := cp.snapshotStates(); states[0].health != rdsinstance.EngineHealthStarting {
 		t.Errorf("first beat health = %q, want %q", states[0].health, rdsinstance.EngineHealthStarting)

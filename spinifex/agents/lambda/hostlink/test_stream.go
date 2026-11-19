@@ -28,6 +28,14 @@ const (
 // ErrFrameTooLarge is returned for a frame beyond the size bound.
 var ErrFrameTooLarge = errors.New("hostlink: frame too large")
 
+// maxUnread bounds the frames read ahead of the owner; the reader never waits
+// on the owner, so a close always ends it.
+const maxUnread = 4
+
+// ErrTooManyUnread is returned once the peer sent more than maxUnread frames
+// the owner had not taken.
+var ErrTooManyUnread = errors.New("hostlink: too many unread frames")
+
 type frame struct {
 	Type     string    `json:"type"`
 	Request  *Request  `json:"request,omitempty"`
@@ -53,7 +61,7 @@ var _ Link = (*TestStream)(nil)
 
 // NewTestStream starts reading frames from rw.
 func NewTestStream(rw io.ReadWriter) *TestStream {
-	s := &TestStream{rw: rw, in: make(chan frame), wslot: make(chan struct{}, 1)}
+	s := &TestStream{rw: rw, in: make(chan frame, maxUnread), wslot: make(chan struct{}, 1)}
 	s.conn, _ = rw.(net.Conn)
 	go s.readLoop()
 	return s
@@ -67,7 +75,12 @@ func (s *TestStream) readLoop() {
 			s.err = err
 			return
 		}
-		s.in <- f
+		select {
+		case s.in <- f:
+		default:
+			s.err = ErrTooManyUnread
+			return
+		}
 	}
 }
 

@@ -137,11 +137,16 @@ func TestGateway_PrivateDnsFalseIsAccepted(t *testing.T) {
 		PrivateDnsEnabled: aws.Bool(false),
 	}, testAccount)
 	require.NoError(t, err)
-	assert.False(t, aws.BoolValue(out.VpcEndpoint.PrivateDnsEnabled))
+	require.NotNil(t, out.VpcEndpoint.PrivateDnsEnabled, "AWS renders an explicit false")
+	assert.False(t, *out.VpcEndpoint.PrivateDnsEnabled)
 
 	id := aws.StringValue(out.VpcEndpoint.VpcEndpointId)
-	require.NoError(t, f.modify(t, &ec2.ModifyVpcEndpointInput{VpcEndpointId: aws.String(id), PrivateDnsEnabled: aws.Bool(false)}))
-	assert.False(t, aws.BoolValue(f.describe(t, id).PrivateDnsEnabled))
+	mod, err := f.svc.ModifyVpcEndpoint(t.Context(), &ec2.ModifyVpcEndpointInput{VpcEndpointId: aws.String(id), PrivateDnsEnabled: aws.Bool(false)}, testAccount)
+	require.NoError(t, err)
+	assert.True(t, aws.BoolValue(mod.Return))
+	d := f.describe(t, id)
+	require.NotNil(t, d.PrivateDnsEnabled, "AWS renders an explicit false")
+	assert.False(t, *d.PrivateDnsEnabled)
 }
 
 func TestCreate_DefaultPolicyGivenExplicitly(t *testing.T) {

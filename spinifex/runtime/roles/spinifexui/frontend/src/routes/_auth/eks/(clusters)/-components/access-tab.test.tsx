@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import { createTestQueryClient, renderWithClient } from "@/test/render"
 
-const send = vi.hoisted(() => vi.fn())
+const send = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
 vi.mock("@/lib/aws-client", async () => {
   const { mockAwsClients } = await import("@/test/aws-clients")

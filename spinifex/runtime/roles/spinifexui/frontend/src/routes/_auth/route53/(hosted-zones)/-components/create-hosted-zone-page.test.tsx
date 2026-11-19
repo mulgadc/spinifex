@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react"
+import { act, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -211,14 +211,18 @@ describe("create-hosted-zone walkthrough", () => {
     const callsWhilePending = activation.get.mock.calls.length
 
     activation.get.mockResolvedValue(ACTIVE)
-    await vi.advanceTimersByTimeAsync(5000)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000)
+    })
 
     await expect(screen.findByText("Registered")).resolves.toBeInTheDocument()
     expect(activation.get.mock.calls.length).toBeGreaterThan(callsWhilePending)
 
     // Active stops the polling.
     const callsWhenActive = activation.get.mock.calls.length
-    await vi.advanceTimersByTimeAsync(15_000)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000)
+    })
     await waitFor(() => {
       expect(activation.get).toHaveBeenCalledTimes(callsWhenActive)
     })

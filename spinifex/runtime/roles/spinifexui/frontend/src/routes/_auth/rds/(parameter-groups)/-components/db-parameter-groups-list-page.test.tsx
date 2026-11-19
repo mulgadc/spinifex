@@ -7,7 +7,11 @@ import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import { CLOSED_PANEL, type PanelSearch } from "@/lib/panel-search"
-import { createTestQueryClient, renderWithClient } from "@/test/render"
+import {
+  createTestQueryClient,
+  renderWithClient,
+  waitForPanelLoaded,
+} from "@/test/render"
 
 const mockSend = vi.hoisted(() => vi.fn().mockResolvedValue({}))
 
@@ -88,11 +92,15 @@ describe("DBParameterGroupsListPage", () => {
     ).toBeInTheDocument()
   })
 
-  it("renders the create form in the panel when asked", () => {
+  it("renders the create form in the panel when asked", async () => {
     renderPage([], { create: true })
-    expect(
-      screen.getByRole("region", { name: "Create DB parameter group" }),
-    ).toBeInTheDocument()
+
+    const panel = screen.getByRole("region", {
+      name: "Create DB parameter group",
+    })
+
+    await waitForPanelLoaded(panel)
+    expect(panel).toBeInTheDocument()
   })
 
   it("deletes each selected DB parameter group with its own call", async () => {

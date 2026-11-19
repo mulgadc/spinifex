@@ -1,6 +1,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { render, renderHook, type RenderOptions } from "@testing-library/react"
+import {
+  render,
+  renderHook,
+  type RenderOptions,
+  waitFor,
+  within,
+} from "@testing-library/react"
 import type { ReactElement, ReactNode } from "react"
+import { expect } from "vitest"
 
 export function createTestQueryClient(): QueryClient {
   return new QueryClient({
@@ -40,4 +47,14 @@ export function renderMutationHook<TResult>(
     queryClient,
     ...renderHook(hook, { wrapper: clientWrapper(queryClient) }),
   }
+}
+
+// A panel's sections suspend on their own queries. Wait for the spinner to go
+// so they resolve inside act rather than after the test returns.
+export async function waitForPanelLoaded(panel: HTMLElement): Promise<void> {
+  await waitFor(() => {
+    expect(
+      within(panel).queryByRole("status", { name: "Loading" }),
+    ).not.toBeInTheDocument()
+  })
 }

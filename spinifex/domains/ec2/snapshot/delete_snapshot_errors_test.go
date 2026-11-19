@@ -3,6 +3,7 @@ package snapshot
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -161,19 +162,30 @@ func TestDeleteSnapshot_PromotedResidueStillScansEveryAccount(t *testing.T) {
 // Absence of the global document is what permits the narrow scan, so one that
 // failed to read has to widen it rather than read as absent.
 func TestDeleteSnapshot_UnreadableGlobalSnapshotDocumentScansEveryAccount(t *testing.T) {
-	svc, store := setupTestSnapshotService(t)
-	snapshotID := unreferencedSnapshot(t, svc, store)
+	memory := objectstore.NewMemoryObjectStore()
+	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
+	svc := NewSnapshotServiceImplWithStore(cfg, memory, nil)
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+	snapshotID := unreferencedSnapshot(t, svc, memory)
+
 	globalKey, err := ebsmetadata.SnapshotKey(awsidentifiers.GlobalAccountID, snapshotID)
 	require.NoError(t, err)
-	putCorruptDocument(t, store, globalKey)
-
-	volumeKey, err := ebsmetadata.VolumeKey(otherAccountID, "vol-foreign-corrupt")
+	foreignKey, err := ebsmetadata.VolumeKey(otherAccountID, "vol-foreign-clone")
 	require.NoError(t, err)
-	putCorruptDocument(t, store, volumeKey)
+	seedVolumeDocument(t, memory, ebsmetadata.Volume{
+		VolumeID: "vol-foreign-clone", TenantID: otherAccountID, CapacityGiB: 50, SnapshotID: snapshotID,
+	})
 
-	code, message := clientErrorDetail(t, deleteSnapshot(svc, snapshotID))
-	assert.Equal(t, awserrors.ErrorServerInternal, code)
-	assert.Contains(t, message, "could not be read")
+	// The read of the foreign key is the evidence, because the refusal redacts
+	// the volume it found and a short circuit at the global read would produce
+	// a refusal of its own.
+	store := &readFailingObjectStore{ObjectStore: memory, failing: map[string]bool{globalKey: true}}
+	svc = NewSnapshotServiceImplWithStore(cfg, store, nil)
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+
+	code, _ := clientErrorDetail(t, deleteSnapshot(svc, snapshotID))
+	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, code)
+	assert.Contains(t, store.reads, foreignKey, "the foreign prefix must have been read")
 	requireSnapshotSurvives(t, svc, snapshotID)
 }
 
@@ -247,6 +259,46 @@ func TestDeleteSnapshot_RegisteredAMIWinsOverUnreadableVolume(t *testing.T) {
 	code, _ := clientErrorDetail(t, deleteSnapshot(svc, snapshotID))
 	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, code)
 	requireSnapshotSurvives(t, svc, snapshotID)
+}
+
+// readFailingObjectStore fails the read of named keys the way predastore fails
+// an object whose shards can no longer reconstruct: a 500, not a missing key.
+type readFailingObjectStore struct {
+	objectstore.ObjectStore
+
+	failing map[string]bool
+	reads   []string
+}
+
+func (s *readFailingObjectStore) GetObject(ctx context.Context, input *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+	key := aws.StringValue(input.Key)
+	s.reads = append(s.reads, key)
+	if s.failing[key] {
+		return nil, fmt.Errorf("InternalError: reconstruct %s: every data shard rejected stale_epoch", key)
+	}
+	return s.ObjectStore.GetObject(ctx, input)
+}
+
+// The production incident was an object whose read returns 500 forever, not a
+// document that parses badly, and the two reach the collector by different
+// paths. A teardown must drain past one belonging to an unrelated tenant.
+func TestDeleteSnapshot_TeardownDrainsPastAForeignUnreadableObject(t *testing.T) {
+	memory := objectstore.NewMemoryObjectStore()
+	foreignKey, err := ebsmetadata.VolumeKey(otherAccountID, "vol-c81ca91c65c309c05")
+	require.NoError(t, err)
+	store := &readFailingObjectStore{ObjectStore: memory, failing: map[string]bool{foreignKey: true}}
+
+	cfg := &config.Config{Predastore: config.PredastoreConfig{Bucket: "test-bucket"}}
+	svc := NewSnapshotServiceImplWithStore(cfg, store, nil)
+	svc.SetEBSProvider(ebsprovider.NewMemoryProvider(ebsprovider.Capabilities{}))
+	snapshotID := unreferencedSnapshot(t, svc, memory)
+	seedVolumeDocument(t, memory, ebsmetadata.Volume{
+		VolumeID: "vol-c81ca91c65c309c05", TenantID: otherAccountID, CapacityGiB: 50,
+	})
+
+	require.NoError(t, deleteSnapshot(svc, snapshotID))
+	assert.NotContains(t, store.reads, foreignKey,
+		"the foreign object must not be read at all, or a 500 there can still refuse a teardown")
 }
 
 // vanishingObjectStore lists keys whose documents have already been deleted,

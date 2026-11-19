@@ -100,14 +100,10 @@ func TestRollback_GatewayEndpointDrainHoldsUntilEndpointsAndPrefixListRulesAreGo
 	var out bytes.Buffer
 	probe := featurelevel.NewProbe(nc, nodes)
 	endpointDrain.connect(store, nodes, probe.Probe, nc, js, &out)
-	prefixListDrain.connect(store, nodes, nc, js, &out)
 	t.Cleanup(func() {
 		endpointDrain.mu.Lock()
-		endpointDrain.store, endpointDrain.daemons, endpointDrain.proxy, endpointDrain.live = nil, nil, nil, nil
+		endpointDrain.store, endpointDrain.daemons, endpointDrain.proxy, endpointDrain.live, endpointDrain.rules = nil, nil, nil, nil, nil
 		endpointDrain.mu.Unlock()
-		prefixListDrain.mu.Lock()
-		prefixListDrain.store, prefixListDrain.proxy, prefixListDrain.rules = nil, nil, nil
-		prefixListDrain.mu.Unlock()
 	})
 	deps := featurelevel.RollbackDeps{
 		Store: store, Probe: probe.Probe, Drains: featurelevel.DrainChecks, Build: featurelevel.Build,

@@ -47,19 +47,8 @@ func init() {
 }
 
 var registerDrainsOnce = sync.OnceValue(func() error {
-	return featurelevel.RegisterDrain(featurelevel.GatewayEndpoints, gatewayEndpointsDrain)
+	return featurelevel.RegisterDrain(featurelevel.GatewayEndpoints, endpointDrain.check)
 })
-
-// gatewayEndpointsDrain is level 2's check: its endpoints and demux flows, and
-// the security-group rules naming the S3 prefix list that the level grants.
-func gatewayEndpointsDrain(ctx context.Context) (int, error) {
-	endpoints, epErr := endpointDrain.check(ctx)
-	rules, plErr := prefixListDrain.check(ctx)
-	if err := errors.Join(epErr, plErr); err != nil {
-		return 0, err
-	}
-	return endpoints + rules, nil
-}
 
 // registerDrainChecks is the composition root for drain checks: every declared
 // level above the baseline registers its check here, and a level left without
@@ -118,7 +107,6 @@ func runClusterRollback(cmd *cobra.Command, _ []string) {
 		fail(err)
 	}
 	endpointDrain.connect(store, nodes, probe.Probe, nc, js, os.Stdout)
-	prefixListDrain.connect(store, nodes, nc, js, os.Stdout)
 	rec, err := featurelevel.RunRollback(ctx, rollbackTo, featurelevel.RollbackDeps{
 		Store:      store,
 		Probe:      probe.Probe,

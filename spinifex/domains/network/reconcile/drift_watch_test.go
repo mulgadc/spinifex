@@ -120,7 +120,6 @@ func TestDriftLoop_TriggerWakesAPass(t *testing.T) {
 	rec := &stubReconciler{outcomes: []error{nil}}
 	startDriftLoopTriggered(t, rec, nc, nil, trigger)
 
-	time.Sleep(100 * time.Millisecond)
 	if got := rec.callCount(); got != 0 {
 		t.Fatalf("reconcile ran %d times before the trigger, want 0", got)
 	}

@@ -88,7 +88,7 @@ func validateSGRulePorts(proto string, fromPort, toPort int64) error {
 // cannot express, and SourceSG values not matching the sg-ID format. At least
 // one source must be specified. The two CIDR fields stay strictly separated so
 // that address family remains part of a rule's identity. A PrefixListId is
-// checked against the lists offered by validateSGRuleReferences.
+// checked against the Region's list before the request is parsed.
 func validateSGRule(r SGRule) error {
 	if r.CidrIp == "" && r.CidrIpv6 == "" && r.SourceSG == "" && r.PrefixListId == "" {
 		return errors.New("rule must specify CidrIp, CidrIpv6, SourceSG or PrefixListId")
@@ -379,15 +379,9 @@ func (s *VPCServiceImpl) DeleteSecurityGroup(ctx context.Context, input *ec2.Del
 
 // validateSGRuleReferences returns InvalidGroup.NotFound if any SourceSG in
 // rules is missing or belongs to a different VPC (cross-VPC refs not
-// supported; AWS uses the same error for both cases), and
-// InvalidPrefixListID.NotFound for any prefix list but the Region's S3 list.
+// supported; AWS uses the same error for both cases).
 func (s *VPCServiceImpl) validateSGRuleReferences(ctx context.Context, accountID, ownerVpcId string, rules []SGRule) error {
 	for _, r := range rules {
-		if r.PrefixListId != "" {
-			if err := s.validatePrefixListID(r.PrefixListId); err != nil {
-				return err
-			}
-		}
 		if r.SourceSG == "" {
 			continue
 		}
@@ -437,6 +431,23 @@ func (s *VPCServiceImpl) validatePermissionPrefixLists(perms []*ec2.IpPermission
 		}
 	}
 	return nil
+}
+
+// ruleUpdatePrefixListPeers validates every prefix-list peer a modify
+// supplies and returns them as rules, for admission.
+func (s *VPCServiceImpl) ruleUpdatePrefixListPeers(updates []*ec2.SecurityGroupRuleUpdate) ([]SGRule, error) {
+	var peers []SGRule
+	for _, u := range updates {
+		if u == nil || u.SecurityGroupRule == nil || u.SecurityGroupRule.PrefixListId == nil {
+			continue
+		}
+		id := *u.SecurityGroupRule.PrefixListId
+		if err := s.validatePrefixListID(id); err != nil {
+			return nil, err
+		}
+		peers = append(peers, SGRule{PrefixListId: id})
+	}
+	return peers, nil
 }
 
 // admitPrefixListPeers admits a write whose rules add a prefix-list peer at the
@@ -1705,6 +1716,17 @@ func (s *VPCServiceImpl) ModifySecurityGroupRules(ctx context.Context, input *ec
 		return nil, err
 	}
 
+	// Peers are validated and admitted before any rule is matched, so below
+	// the level the list is not found whatever rule it would replace.
+	peers, err := s.ruleUpdatePrefixListPeers(input.SecurityGroupRules)
+	if err != nil {
+		return nil, err
+	}
+	admitted, err := s.admitPrefixListPeers(ctx, peers)
+	if err != nil {
+		return nil, err
+	}
+	defer admitted()
 	modified, err := applySGRuleModifications(&record, input.SecurityGroupRules)
 	if err != nil {
 		slog.WarnContext(ctx, "ModifySecurityGroupRules: invalid update", "groupId", groupId, "err", err)
@@ -1713,11 +1735,6 @@ func (s *VPCServiceImpl) ModifySecurityGroupRules(ctx context.Context, input *ec
 	if err := s.validateSGRuleReferences(ctx, accountID, record.VpcId, modified); err != nil {
 		return nil, err
 	}
-	admitted, err := s.admitPrefixListPeers(ctx, modified)
-	if err != nil {
-		return nil, err
-	}
-	defer admitted()
 
 	data, err := json.Marshal(record)
 	if err != nil {
@@ -1973,8 +1990,8 @@ const sgPermissionNoPeer = "IpPermission must specify at least one IpRange, Ipv6
 
 // ipPermissionsToSGRules converts AWS IpPermission slice to SGRule slice,
 // normalising IpProtocol to its canonical name and validating every
-// tenant-supplied CidrIp/CidrIpv6/SourceSG. A PrefixListId is checked by
-// validateSGRuleReferences, which knows the Region.
+// tenant-supplied CidrIp/CidrIpv6/SourceSG. A PrefixListId is checked first,
+// by validatePermissionPrefixLists, which knows the Region.
 func ipPermissionsToSGRules(perms []*ec2.IpPermission, mode sgParseMode) ([]SGRule, error) {
 	var rules []SGRule
 	for _, perm := range perms {

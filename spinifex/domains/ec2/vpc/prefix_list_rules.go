@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/mulgadc/spinifex/spinifex/foundation/release/featurelevel"
 	"github.com/mulgadc/spinifex/spinifex/foundation/state/kvstore"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 // CountPrefixListRules counts the security-group rules, in every account and
-// direction, naming a prefix list. An absent bucket holds none.
+// direction, naming a prefix list. An absent bucket holds none. Records are
+// read through the stream leader, so a lagging replica cannot hide a rule.
 func CountPrefixListRules(ctx context.Context, js jetstream.JetStream) (int, error) {
 	kv, err := js.KeyValue(ctx, KVBucketSecurityGroups)
 	if errors.Is(err, jetstream.ErrBucketNotFound) {
@@ -27,12 +29,13 @@ func CountPrefixListRules(ctx context.Context, js jetstream.JetStream) (int, err
 	if err != nil {
 		return 0, fmt.Errorf("list %s: %w", KVBucketSecurityGroups, err)
 	}
+	leader := featurelevel.LeaderKV(js, kv)
 	n := 0
 	for _, key := range keys {
 		if key == kvstore.VersionKey {
 			continue
 		}
-		entry, err := kv.Get(ctx, key)
+		entry, err := leader.Get(ctx, key)
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			continue
 		}

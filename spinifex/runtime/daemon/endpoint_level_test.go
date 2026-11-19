@@ -22,6 +22,9 @@ func TestAdvertisedFeatureLevel_FollowsLocalVpcd(t *testing.T) {
 	unadvertised := &config.ClusterConfig{Node: "n1", Nodes: map[string]config.Config{
 		"n1": {Predastore: config.PredastoreConfig{Host: "0.0.0.0:8443"}},
 	}}
+	reboundGateway := &config.ClusterConfig{Node: "n1", Nodes: map[string]config.Config{
+		"n1": {AdvertiseIP: "10.0.0.2", AWSGW: config.AWSGWConfig{Host: "10.0.0.9:9999"}},
+	}}
 	peerOnly := &config.ClusterConfig{Node: "n1", Nodes: map[string]config.Config{
 		"n1": {}, "n2": {AdvertiseIP: "10.0.0.3"},
 	}}
@@ -48,6 +51,7 @@ func TestAdvertisedFeatureLevel_FollowsLocalVpcd(t *testing.T) {
 		{"vpcd reports an older build", with(func(s *projection.EndpointProxyStatus) { s.Build = featurelevel.Baseline }), advertised, config.DefaultMgmtBridgeIP, below},
 		{"entry only at the bridge address", &ready, unadvertised, config.DefaultMgmtBridgeIP, below},
 		{"no entry of its own in either derivation", &ready, peerOnly, "", below},
+		{"gateway bound away from its advertise address", &ready, reboundGateway, config.DefaultMgmtBridgeIP, below},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -69,4 +73,52 @@ func TestAdvertisedFeatureLevel_FollowsLocalVpcd(t *testing.T) {
 func TestAdvertisedFeatureLevel_NoNATSHoldsBelow(t *testing.T) {
 	d := &Daemon{node: "n1"}
 	assert.Equal(t, featurelevel.GatewayEndpoints-1, d.advertisedFeatureLevel())
+}
+
+// The demux matches the gossiped derivation while level 2 holds, so a node
+// rebound after activation demuxes the addresses vpcd captures.
+func TestEndpointEntries_GossipedWhileLevel2Holds(t *testing.T) {
+	t.Parallel()
+	_, store := levelManager(t)
+	cc := &config.ClusterConfig{Node: "n1", Nodes: map[string]config.Config{
+		"n1": {Predastore: config.PredastoreConfig{Host: "0.0.0.0:8443"}},
+	}}
+	d := &Daemon{node: "n1", clusterConfig: cc, mgmtBridgeIP: config.DefaultMgmtBridgeIP, featureGate: featurelevel.NewGate(store)}
+	local := d.endpointEntries(t.Context())
+	require.NotEmpty(t, local, "below level 2 the node's own bridge entry is listed")
+
+	_, _, err := store.Advance(t.Context(), []featurelevel.Member{{Node: "n1", Level: featurelevel.GatewayEndpoints, Current: true}})
+	require.NoError(t, err)
+	assert.Empty(t, d.endpointEntries(t.Context()), "level 2 lists only gossiped addresses")
+}
+
+// Prefix-list writes are admitted, and reads switch to the gossiped
+// derivation, only while level 2 is active: not at 1, nor once a rollback
+// below 2 is recorded.
+func TestPrefixListActivation_FollowsLevel2(t *testing.T) {
+	t.Parallel()
+	_, store := levelManager(t)
+	gate := featurelevel.NewGate(store)
+	admit, gossiped := prefixListAdmission(gate), prefixListGossiped(gate)
+	assertActive := func(want bool, msg string) {
+		t.Helper()
+		done, ok, err := admit(t.Context())
+		require.NoError(t, err, msg)
+		done()
+		assert.Equal(t, want, ok, msg)
+		assert.Equal(t, want, gossiped(t.Context()), msg)
+	}
+
+	assertActive(false, "level 1")
+	_, _, err := store.Advance(t.Context(), []featurelevel.Member{{Node: "n1", Level: featurelevel.GatewayEndpoints, Current: true}})
+	require.NoError(t, err)
+	assertActive(true, "level 2")
+	_, _, err = store.StartRollback(t.Context(), featurelevel.GatewayEndpoints-1, featurelevel.Build)
+	require.NoError(t, err)
+	assertActive(false, "rollback below 2 recorded")
+
+	_, ok, err := prefixListAdmission(nil)(t.Context())
+	require.Error(t, err, "no gate yet")
+	assert.False(t, ok)
+	assert.False(t, prefixListGossiped(nil)(t.Context()))
 }

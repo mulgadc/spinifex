@@ -2,11 +2,14 @@ package vpcd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
+	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/foundation/release/featurelevel"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -122,4 +125,49 @@ func TestLevelWatch_GrantFlipWakesTheReconcilePass(t *testing.T) {
 	src.rec, src.rev = Record{Level: 2, Rollback: &featurelevel.Rollback{Target: 1}}, 4
 	require.NoError(t, w.observe(t.Context()))
 	assert.True(t, woken(), "a rollback withdrawing the grant wakes a pass")
+}
+
+// An absent record is level 0; a level raised above this build while vpcd
+// runs withdraws the grant and is handed to fatal, which stops vpcd.
+func TestLevelWatch_RunStopsVpcdWhenTheLevelRisesAboveItsBuild(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	read := featureLevelRecord(js)
+	rec, rev, err := read(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, Record{}, rec, "an absent bucket is level 0")
+	assert.Zero(t, rev)
+
+	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: featureLevelBucket})
+	require.NoError(t, err)
+	store := featurelevel.NewStore(kv)
+	_, _, err = store.Advance(t.Context(), []featurelevel.Member{{Node: "n1", Level: featurelevel.Build, Current: true}})
+	require.NoError(t, err)
+	w := &levelWatch{read: read, changed: make(chan struct{}, 1)}
+	require.NoError(t, w.start(t.Context()))
+	require.True(t, w.Granted())
+	<-w.changed
+
+	fatal := make(chan error, 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go w.run(ctx, js, func(err error) { fatal <- err })
+	// A newer build's record: Advance caps at this build, so it is written raw.
+	above, err := json.Marshal(Record{Level: featurelevel.Build + 1})
+	require.NoError(t, err)
+	_, err = kv.Put(t.Context(), featurelevel.Key, above)
+	require.NoError(t, err)
+
+	select {
+	case err := <-fatal:
+		_, above := errors.AsType[*LevelAboveBuildError](err)
+		assert.True(t, above, "fatal gets the refusal: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("vpcd kept running above its build")
+	}
+	assert.False(t, w.Granted(), "the grant is withdrawn before vpcd stops")
+	select {
+	case <-w.changed:
+	default:
+		t.Fatal("the withdrawal wakes the reconcile pass")
+	}
 }

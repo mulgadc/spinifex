@@ -203,6 +203,8 @@ From level 2, `DescribePrefixLists`, `GetManagedPrefixListEntries` and the captu
 
 The rule matches an OVN address set `spx_pl_<id>`, so it governs S3 traffic by the public path as well as the proxy's check, and the proxy reads the same set.
 A security-group change creates the set empty if it is absent; vpcd's reconcile pass alone fills it, after the drift loop's debounce, so a new rule grants nothing for those seconds.
+Each vpcd reads the node set when it starts and fills the set from that copy.
+After a node joins, leaves or changes its advertised address, restart vpcd on every node; until then the set's members change whenever the reconcile lease moves to a vpcd holding a different copy.
 
 Rolling back to level 1 withdraws every prefix-list grant once each vpcd has read the rollback, and leaves the rules stored.
 Besides deleting every endpoint, the rollback then waits until every rule naming the prefix list is revoked and no ACL names the set; `RevokeSecurityGroupEgress` and `RevokeSecurityGroupIngress` still work during it, and nothing revokes a rule automatically.

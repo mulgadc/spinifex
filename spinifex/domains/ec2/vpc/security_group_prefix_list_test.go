@@ -511,3 +511,100 @@ func TestPrefixListRule_PeersValidatedBeforeAnyMatch(t *testing.T) {
 
 	assert.ElementsMatch(t, before, describeRules(t, svc, sgID), "a refused request changes nothing")
 }
+
+// A modify naming an unknown list, or the S3 list below the level, is not
+// found before its rule ID is matched or its peer type compared.
+func TestPrefixListRule_ModifyValidatesPeersBeforeAnyMatch(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := setupTestVPCService(t)
+	level := activatePrefixLists(svc)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "pl-modify-validate")
+	out, err := svc.AuthorizeSecurityGroupEgress(ctx, &ec2.AuthorizeSecurityGroupEgressInput{
+		GroupId: aws.String(sgID), IpPermissions: []*ec2.IpPermission{{
+			IpProtocol: aws.String("tcp"), FromPort: aws.Int64(443), ToPort: aws.Int64(443),
+			IpRanges: []*ec2.IpRange{{CidrIp: aws.String("10.8.0.0/16")}},
+		}},
+	}, testAccountID)
+	require.NoError(t, err)
+	cidrRuleID := out.SecurityGroupRules[0].SecurityGroupRuleId
+	before := describeRules(t, svc, sgID)
+
+	unknown := "pl-0123456789abcdef0"
+	for name, ruleID := range map[string]*string{
+		"an existing CIDR rule": cidrRuleID,
+		"an unknown rule ID":    aws.String("sgr-0123456789abcdef0"),
+	} {
+		_, err := svc.ModifySecurityGroupRules(ctx, &ec2.ModifySecurityGroupRulesInput{
+			GroupId: aws.String(sgID),
+			SecurityGroupRules: []*ec2.SecurityGroupRuleUpdate{{
+				SecurityGroupRuleId: ruleID,
+				SecurityGroupRule: &ec2.SecurityGroupRuleRequest{
+					IpProtocol: aws.String("tcp"), FromPort: aws.Int64(443), ToPort: aws.Int64(443),
+					PrefixListId: aws.String(unknown),
+				},
+			}},
+		}, testAccountID)
+		require.ErrorContains(t, err, awserrors.ErrorInvalidPrefixListIDNotFound, name)
+		assert.Contains(t, err.Error(), "The prefix list ID '"+unknown+"' does not exist", name)
+	}
+
+	level.active = false
+	s3 := prefixlist.ID(svc.region())
+	_, err = svc.ModifySecurityGroupRules(ctx, &ec2.ModifySecurityGroupRulesInput{
+		GroupId: aws.String(sgID),
+		SecurityGroupRules: []*ec2.SecurityGroupRuleUpdate{{
+			SecurityGroupRuleId: cidrRuleID,
+			SecurityGroupRule: &ec2.SecurityGroupRuleRequest{
+				IpProtocol: aws.String("tcp"), FromPort: aws.Int64(443), ToPort: aws.Int64(443), PrefixListId: aws.String(s3),
+			},
+		}},
+	}, testAccountID)
+	require.ErrorContains(t, err, awserrors.ErrorInvalidPrefixListIDNotFound, "below the level the S3 list does not exist either")
+	assert.Contains(t, err.Error(), "The prefix list ID '"+s3+"' does not exist")
+	assert.ElementsMatch(t, before, describeRules(t, svc, sgID), "a refused modify changes nothing")
+}
+
+// A modify that sets a prefix-list peer is admitted like an authorize: below
+// level 2 it is not found and changes nothing, and while active the admission
+// is released only after the new body is stored.
+func TestPrefixListRule_ModifyIsAdmittedUntilWritten(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc := setupTestVPCService(t)
+	level := activatePrefixLists(svc)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "pl-modify-held")
+	out, err := svc.AuthorizeSecurityGroupEgress(ctx, &ec2.AuthorizeSecurityGroupEgressInput{
+		GroupId: aws.String(sgID), IpPermissions: []*ec2.IpPermission{s3Permission(svc, 443, "")},
+	}, testAccountID)
+	require.NoError(t, err)
+	modify := func(port int64) error {
+		_, err := svc.ModifySecurityGroupRules(ctx, &ec2.ModifySecurityGroupRulesInput{
+			GroupId: aws.String(sgID),
+			SecurityGroupRules: []*ec2.SecurityGroupRuleUpdate{{
+				SecurityGroupRuleId: out.SecurityGroupRules[0].SecurityGroupRuleId,
+				SecurityGroupRule: &ec2.SecurityGroupRuleRequest{
+					IpProtocol: aws.String("tcp"), FromPort: aws.Int64(port), ToPort: aws.Int64(port),
+					PrefixListId: aws.String(prefixlist.ID(svc.region())),
+				},
+			}},
+		}, testAccountID)
+		return err
+	}
+
+	level.active = false
+	require.ErrorContains(t, modify(8443), awserrors.ErrorInvalidPrefixListIDNotFound)
+	stored := storedEgressPrefixListRules(t, svc, sgID)
+	require.Len(t, stored, 1)
+	assert.Equal(t, int64(443), stored[0].FromPort, "a refused modify changes nothing")
+	assert.Zero(t, level.held())
+
+	level.active = true
+	storedAtRelease := int64(-1)
+	level.onDone = func() { storedAtRelease = storedEgressPrefixListRules(t, svc, sgID)[0].FromPort }
+	require.NoError(t, modify(8443))
+	assert.Equal(t, int64(8443), storedAtRelease, "the admission is released only after the new body is stored")
+	assert.Zero(t, level.held())
+}

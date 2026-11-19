@@ -27,7 +27,6 @@ import (
 // their connections to an entry carry the same 4-tuple.
 var (
 	liveGuestAddr   = netip.MustParseAddr("10.77.0.5")
-	liveGuestPrefix = "10.77.0.0/24"
 	liveGateway     = "10.77.0.1"
 	liveGatewayMAC  = "02:00:00:77:00:01"
 	liveEntry       = netip.MustParseAddrPort("192.0.2.10:8443")
@@ -59,11 +58,35 @@ func requireLiveEndpointHost(t *testing.T) host.Runner {
 	if _, err := r.Run(ctx, "ovs-vsctl", "br-exists", host.IMDSBridge); err != nil {
 		t.Skipf("no %s on this host", host.IMDSBridge)
 	}
+	if _, err := r.Run(ctx, "iptables", "-C", "INPUT", "-i", host.IMDSEndpointPrefix+"+",
+		"-m", "comment", "--comment", "spinifex-imds", "-j", "ACCEPT"); err != nil {
+		t.Skip("the host's IMDS input rule is missing; run on a host Spinifex has set up")
+	}
+	lockLiveHost(t)
 	if _, err := r.Run(ctx, "iptables", "-t", "mangle", "-S", "SPX-VPCE-TPROXY"); err == nil {
 		t.Skip("this host already captures endpoint traffic; refusing to disturb it")
 	}
-	require.NoError(t, host.EnsureIMDSInputRule(ctx, r))
 	return r
+}
+
+// liveHostLock is shared with the network/host live tests, so packages run
+// together never interleave changes to the host-wide capture rules.
+const liveHostLock = "/run/lock/spinifex-endpoint-live.lock"
+
+func lockLiveHost(t *testing.T) {
+	t.Helper()
+	f, err := os.OpenFile(liveHostLock, os.O_CREATE|os.O_RDWR, 0o600)
+	require.NoError(t, err)
+	require.NoError(t, unix.Flock(int(f.Fd()), unix.LOCK_EX))
+	t.Cleanup(func() { _ = f.Close() })
+}
+
+// requireAbsent fails rather than adopt a name this test would later delete.
+func requireAbsent(t *testing.T, r host.Runner, what string, args ...string) {
+	t.Helper()
+	if _, err := r.Run(context.Background(), args[0], args[1:]...); err == nil {
+		t.Fatalf("%s already exists on this host; remove it or rerun on a clean host", what)
+	}
 }
 
 func liveRun(t *testing.T, r host.Runner, name string, args ...string) {
@@ -78,6 +101,7 @@ type liveGuest struct {
 	facts    *eniFacts
 	vpceID   string
 	ns       string
+	tap      string
 	endpoint string
 }
 
@@ -95,17 +119,23 @@ func newLiveGuest(t *testing.T, r host.Runner, tag string) *liveGuest {
 		endpoint: host.IMDSEndpointName(eniID),
 	}
 	tap, mac := vm.TapDeviceName(eniID), "02:00:00:77:0"+tag[:1]+":05"
+	g.tap = tap
 	d := host.IMDSTapDatapath{
 		Tap: tap, Endpoint: g.endpoint, EndpointMAC: host.IMDSEndpointMAC(eniID),
 		GuestMAC: mac, GatewayMAC: liveGatewayMAC,
 	}
+	requireAbsent(t, r, "port "+tap, "ovs-vsctl", "port-to-br", tap)
+	requireAbsent(t, r, "port "+g.endpoint, "ovs-vsctl", "port-to-br", g.endpoint)
+	requireAbsent(t, r, "link "+tap, "ip", "link", "show", tap)
+	requireAbsent(t, r, "link "+g.endpoint, "ip", "link", "show", g.endpoint)
+	requireAbsent(t, r, "namespace "+g.ns, "test", "-e", "/run/netns/"+g.ns)
 	t.Cleanup(func() {
 		_ = host.RemoveTapReplyRouting(ctx, r, d)
 		_ = host.RemoveTapDatapath(ctx, r, d)
 		_, _ = r.Run(ctx, "ovs-vsctl", "--if-exists", "del-port", host.IMDSBridge, tap)
 		_, _ = r.Run(ctx, "ip", "netns", "del", g.ns)
 	})
-	liveRun(t, r, "ovs-vsctl", "--may-exist", "add-port", host.IMDSBridge, tap, "--", "set", "Interface", tap, "type=internal")
+	liveRun(t, r, "ovs-vsctl", "add-port", host.IMDSBridge, tap, "--", "set", "Interface", tap, "type=internal")
 	liveRun(t, r, "ip", "netns", "add", g.ns)
 	liveRun(t, r, "ip", "link", "set", tap, "netns", g.ns)
 	liveRun(t, r, "ip", "-n", g.ns, "link", "set", tap, "address", mac)
@@ -255,23 +285,6 @@ func readLine(t *testing.T, c net.Conn) string {
 	return strings.TrimSuffix(line, "\n")
 }
 
-// conntrackTo returns the host's conntrack entries for connections to dst.
-func conntrackTo(t *testing.T, dst netip.AddrPort) []string {
-	t.Helper()
-	b, err := os.ReadFile("/proc/net/nf_conntrack")
-	if os.IsNotExist(err) {
-		t.Skip("conntrack is not loaded on this host")
-	}
-	require.NoError(t, err)
-	var hits []string
-	for l := range strings.SplitSeq(string(b), "\n") {
-		if strings.Contains(l, "dst="+dst.Addr().String()+" ") && strings.Contains(l, "dport="+strconv.Itoa(int(dst.Port()))+" ") {
-			hits = append(hits, l)
-		}
-	}
-	return hits
-}
-
 // Two guests in overlapping VPCs on one host dial the same entry from the same
 // address and port at once. Each reply reaches its own guest, each proxied
 // connection carries its own endpoint, and neither is tracked.
@@ -339,17 +352,16 @@ func TestLive_EndpointProxyIsolatesOverlappingVPCs(t *testing.T) {
 		assert.Equal(t, g.facts.vpcID, h.VpcID)
 		t.Logf("guest %s: source %s, destination %s, header endpoint %s, vpc %s", g.ns, h.Source, h.Destination, h.VpceID, h.VpcID)
 	}
-	assert.Empty(t, conntrackTo(t, liveEntry), "an endpoint connection was tracked")
 
 	// With an endpoint on the tap, metadata and DNS still answer each guest
 	// from its own endpoint.
+	var imdsTuples []string
 	for _, g := range guests {
 		c, err := g.dial("tcp", netip.AddrPort{}, netip.MustParseAddrPort("169.254.169.254:80"), 5*time.Second)
 		require.NoError(t, err, "guest %s lost IMDS", g.ns)
 		assert.Equal(t, "imds "+g.endpoint, readLine(t, c))
+		imdsTuples = append(imdsTuples, conntrackTuple(c.LocalAddr(), c.RemoteAddr()))
 		_ = c.Close()
-		// IMDS is tracked as ever, so an empty read above means untracked.
-		assert.NotEmpty(t, conntrackTo(t, netip.MustParseAddrPort("169.254.169.254:80")), "conntrack recorded no IMDS connection")
 
 		u, err := g.dial("udp", netip.AddrPort{}, netip.MustParseAddrPort("169.254.169.253:53"), 5*time.Second)
 		require.NoError(t, err)
@@ -362,53 +374,120 @@ func TestLive_EndpointProxyIsolatesOverlappingVPCs(t *testing.T) {
 		assert.Equal(t, "dns "+g.endpoint, string(buf[:n]))
 		_ = u.Close()
 	}
+
+	t.Run("endpoint connections are untracked", func(t *testing.T) {
+		table := hostConntrack(t)
+		// Both guests share the tuple, and their connections are still open.
+		endpointTuple := conntrackTuple(conns[0].LocalAddr(), conns[0].RemoteAddr())
+		assert.NotContains(t, table, endpointTuple, "an endpoint connection was tracked")
+		// The IMDS connections take the same path in and are tracked, so the
+		// absence above is not an unreadable table.
+		for _, tuple := range imdsTuples {
+			assert.Contains(t, table, tuple, "conntrack recorded no IMDS connection")
+		}
+	})
 }
 
-// A tap with the demux but no capture rule hands the packet to the host stack,
-// which owns the entry's address here as on a gate node; the connection must
-// time out without the gate ever accepting it.
+// hostConntrack reads the host's conntrack table; the test thread is in the
+// host's namespace, since dial returns every thread it moves.
+func hostConntrack(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile("/proc/net/nf_conntrack")
+	if os.IsNotExist(err) {
+		t.Skip("this kernel does not expose /proc/net/nf_conntrack")
+	}
+	require.NoError(t, err)
+	return string(b)
+}
+
+// conntrackTuple renders a connection's original direction as the conntrack
+// table lists it.
+func conntrackTuple(local, remote net.Addr) string {
+	l := netip.MustParseAddrPort(local.String())
+	r := netip.MustParseAddrPort(remote.String())
+	return "src=" + l.Addr().String() + " dst=" + r.Addr().String() +
+		" sport=" + strconv.Itoa(int(l.Port())) + " dport=" + strconv.Itoa(int(r.Port())) + " "
+}
+
+// demuxPackets counts the packets the tap's demux flow to dst has matched.
+func demuxPackets(t *testing.T, r host.Runner, tap string, dst netip.AddrPort) int {
+	t.Helper()
+	out, err := r.Run(context.Background(), "ovs-ofctl", "dump-flows", host.IMDSBridge,
+		"table=0,in_port="+tap+",tcp,nw_dst="+dst.Addr().String()+",tp_dst="+strconv.Itoa(int(dst.Port())))
+	require.NoError(t, err)
+	total := 0
+	for f := range strings.FieldsSeq(strings.ReplaceAll(string(out), ",", " ")) {
+		if v, ok := strings.CutPrefix(f, "n_packets="); ok {
+			n, err := strconv.Atoi(v)
+			require.NoError(t, err)
+			total += n
+		}
+	}
+	return total
+}
+
+// A tap with the demux but no capture rule hands the guest's SYN to the host
+// stack, which owns the entry's address here as on a gate node. The gate's
+// answer leaves by the host's own routes, so the guest never connects.
 func TestLive_EndpointDemuxWithoutCaptureNeverConnects(t *testing.T) {
 	r := requireLiveEndpointHost(t)
 	ctx := context.Background()
 	const gateDev = "spxisogate0"
 
-	t.Cleanup(func() {
-		_, _ = r.Run(ctx, "ip", "link", "del", gateDev)
-		_, _ = r.Run(ctx, "ip", "route", "del", "blackhole", liveGuestPrefix)
-	})
+	requireAbsent(t, r, "link "+gateDev, "ip", "link", "show", gateDev)
+	t.Cleanup(func() { _, _ = r.Run(ctx, "ip", "link", "del", gateDev) })
 	liveRun(t, r, "ip", "link", "add", gateDev, "type", "dummy")
 	liveRun(t, r, "ip", "addr", "add", liveLocalEntry.Addr().String()+"/32", "dev", gateDev)
 	liveRun(t, r, "ip", "link", "set", gateDev, "up")
-	// The gate's answer would otherwise leave by the default route.
-	liveRun(t, r, "ip", "route", "add", "blackhole", liveGuestPrefix)
 
 	ln, err := net.Listen("tcp", liveLocalEntry.String())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ln.Close() })
-	accepted := make(chan struct{}, 1)
+	accepted := make(chan netip.AddrPort, 4)
 	go func() {
-		if c, err := ln.Accept(); err == nil {
-			accepted <- struct{}{}
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepted <- netip.MustParseAddrPort(c.RemoteAddr().String())
 			_ = c.Close()
 		}
 	}()
+	// The gate accepts an ordinary connection, so its silence below is the path.
+	control, err := net.DialTimeout("tcp", liveLocalEntry.String(), 3*time.Second)
+	require.NoError(t, err, "the stand-in gate is unreachable from the host")
+	_ = control.Close()
+	select {
+	case <-accepted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the stand-in gate accepted no control connection")
+	}
 
 	g := newLiveGuest(t, r, "c")
 	require.NoError(t, host.EnsureEndpointCapture(ctx, r, nil))
 	require.NoError(t, host.EnsureEndpointDemux(ctx, r, g.facts.eniID, []host.EndpointEntry{{Addr: liveLocalEntry.Addr(), Port: liveLocalEntry.Port()}}))
 
-	c, err := g.dial("tcp", netip.AddrPortFrom(liveGuestAddr, 40000), liveLocalEntry, 3*time.Second)
+	src := netip.AddrPortFrom(liveGuestAddr, 40000)
+	c, dialErr := g.dial("tcp", src, liveLocalEntry, 3*time.Second)
 	if c != nil {
 		_ = c.Close()
 	}
-	require.Error(t, err, "a demuxed connection with no capture rule connected")
+	require.Error(t, dialErr, "a demuxed connection with no capture rule connected")
 	var ne net.Error
-	require.ErrorAs(t, err, &ne)
-	assert.True(t, ne.Timeout(), "the connection must time out, not be refused: %v", err)
+	require.ErrorAs(t, dialErr, &ne)
+	assert.True(t, ne.Timeout(), "the connection must time out, not be refused: %v", dialErr)
+	// OVS folds datapath counters into flow stats about once a second.
+	assert.Eventually(t, func() bool { return demuxPackets(t, r, g.tap, liveLocalEntry) > 0 }, 5*time.Second, 250*time.Millisecond,
+		"the guest's SYN never matched the demux flow")
+	// The SYN reached the gate's socket; the handshake never completed.
+	out, err := r.Run(ctx, "ss", "-Htn", "state", "syn-recv", "src", liveLocalEntry.String(), "dst", src.Addr().String())
+	require.NoError(t, err)
+	assert.NotEmpty(t, strings.TrimSpace(string(out)), "the guest's SYN never reached the gate's socket")
 	select {
-	case <-accepted:
-		t.Fatal("the gate accepted a connection that bypassed the proxy")
+	case from := <-accepted:
+		t.Fatalf("the gate accepted a connection from %s that bypassed the proxy", from)
 	default:
 	}
-	t.Logf("guest %s: dial to %s without capture: %v", g.ns, liveLocalEntry, err)
+	t.Logf("guest %s: dial to %s without capture: %v; half-open at the gate: %s", g.ns, liveLocalEntry, dialErr, strings.TrimSpace(string(out)))
 }

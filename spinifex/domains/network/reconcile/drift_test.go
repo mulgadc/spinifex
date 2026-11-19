@@ -68,11 +68,16 @@ func shrinkDriftTiming(t *testing.T, interval, base time.Duration) {
 // loop is still reading the timing vars when they are restored.
 func startDriftLoop(t *testing.T, rec Reconciler, nc *nats.Conn, startup error) {
 	t.Helper()
+	startDriftLoopTriggered(t, rec, nc, startup, nil)
+}
+
+func startDriftLoopTriggered(t *testing.T, rec Reconciler, nc *nats.Conn, startup error, trigger <-chan struct{}) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		DriftLoop(ctx, rec, nc, vpcdLease(testutil.NewJetStream(t, nc), "node-1"), "us-east-1a", startup)
+		DriftLoop(ctx, rec, nc, vpcdLease(testutil.NewJetStream(t, nc), "node-1"), "us-east-1a", startup, trigger)
 	}()
 	t.Cleanup(func() {
 		cancel()

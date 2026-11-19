@@ -253,6 +253,31 @@ func TestSGManager_WithdrawnGrantsRenderNoPrefixListPeer(t *testing.T) {
 	assert.Zero(t, sg.GrantingApplies())
 }
 
+// An apply paused while it reads the grant is already counted, so a rollback
+// that reports no apply in flight is one every later grant read observes.
+func TestSGManager_ApplyIsCountedBeforeItReadsTheGrant(t *testing.T) {
+	ctx := context.Background()
+	m, pg := newSGMockWithPG(t, "sg-web")
+	reading, answer := make(chan struct{}), make(chan bool)
+	sg := NewSecurityGroupManager(m, EgressPolicy{},
+		WithPrefixLists(s3Lists("pl-6ca54005", "192.0.2.10/32"), "pl-6ca54005"),
+		WithPrefixListGrants(func() bool { reading <- struct{}{}; return <-answer }))
+	spec := SGSpec{GroupID: "sg-web", EgressRules: []Rule{
+		{IPProtocol: "tcp", FromPort: 443, ToPort: 443, PrefixListID: "pl-6ca54005"},
+	}}
+
+	done := make(chan error, 1)
+	go func() { done <- sg.EnsureSG(ctx, spec) }()
+	<-reading
+	assert.Equal(t, 1, sg.GrantingApplies(), "an apply is counted before it reads the grant")
+	answer <- false
+	require.NoError(t, <-done)
+	assert.Zero(t, sg.GrantingApplies())
+	for _, uuid := range m.PortGroups[pg].ACLs {
+		assert.NotContains(t, m.ACLs[uuid].Match, "spx_pl_", "an apply that read a withdrawn grant writes no prefix-list ACL")
+	}
+}
+
 // blockingACLs holds ReplaceACLs open while release is set.
 type blockingACLs struct {
 	*mock.Client

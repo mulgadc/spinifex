@@ -24,6 +24,9 @@ func EndpointProxyStatusSubject(node string) string {
 // A vpcd refuses a request naming another node.
 type EndpointProxyStatusRequest struct {
 	Node string `json:"node"`
+	// CountPrefixListACLs asks for PrefixListACLs, which reads every ACL; only
+	// the rollback drain asks.
+	CountPrefixListACLs bool `json:"count_prefix_list_acls,omitempty"`
 }
 
 // EndpointProxyStatus is vpcd's answer: the feature-level revision read before
@@ -49,6 +52,17 @@ type EndpointProxyStatus struct {
 // RequestEndpointProxyStatus asks node's vpcd for its endpoint proxy status. A
 // refusal, a malformed reply or a reply naming another node is an error.
 func RequestEndpointProxyStatus(ctx context.Context, nc *nats.Conn, node string) (EndpointProxyStatus, error) {
+	return requestEndpointProxyStatus(ctx, nc, EndpointProxyStatusRequest{Node: node})
+}
+
+// RequestPrefixListStatus is RequestEndpointProxyStatus with PrefixListACLs
+// counted, for the rollback drain.
+func RequestPrefixListStatus(ctx context.Context, nc *nats.Conn, node string) (EndpointProxyStatus, error) {
+	return requestEndpointProxyStatus(ctx, nc, EndpointProxyStatusRequest{Node: node, CountPrefixListACLs: true})
+}
+
+func requestEndpointProxyStatus(ctx context.Context, nc *nats.Conn, req EndpointProxyStatusRequest) (EndpointProxyStatus, error) {
+	node := req.Node
 	var st EndpointProxyStatus
 	if nc == nil {
 		return st, errors.New("no NATS connection")
@@ -56,7 +70,7 @@ func RequestEndpointProxyStatus(ctx context.Context, nc *nats.Conn, node string)
 	if !featurelevel.ValidNode(node) {
 		return st, errors.New("invalid node ID")
 	}
-	body, err := json.Marshal(EndpointProxyStatusRequest{Node: node})
+	body, err := json.Marshal(req)
 	if err != nil {
 		return st, err
 	}

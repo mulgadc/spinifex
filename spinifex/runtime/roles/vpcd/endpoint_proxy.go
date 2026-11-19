@@ -208,7 +208,7 @@ func localServiceAddr(cc *config.ClusterConfig, mgmt string) (netip.Addr, bool) 
 const statusWait = 2 * time.Second
 
 // status is the reply on this node's endpoint proxy status subject.
-func (l *endpointLoop) status(ctx context.Context, node string) (projection.EndpointProxyStatus, error) {
+func (l *endpointLoop) status(ctx context.Context, node string, countACLs bool) (projection.EndpointProxyStatus, error) {
 	st := projection.EndpointProxyStatus{
 		Node:        node,
 		Revision:    l.revision.Load(),
@@ -225,6 +225,9 @@ func (l *endpointLoop) status(ctx context.Context, node string) (projection.Endp
 	// predate the grant it reports.
 	st.LevelRevision = l.grant.level.Revision()
 	st.PrefixListApplies = l.grant.applies()
+	if !countACLs {
+		return st, nil
+	}
 	acls, err := l.grant.acls(ctx)
 	if err != nil {
 		return st, fmt.Errorf("list ACLs: %w", err)
@@ -249,7 +252,7 @@ func (l *endpointLoop) serveStatus(node string) nats.MsgHandler {
 			reply = statusRefusal{Error: fmt.Sprintf("endpoint proxy status for node %q answered by node %q", req.Node, node)}
 		default:
 			ctx, cancel := context.WithTimeout(context.Background(), statusWait)
-			st, err := l.status(ctx, node)
+			st, err := l.status(ctx, node, req.CountPrefixListACLs)
 			cancel()
 			if err != nil {
 				reply = statusRefusal{Error: "endpoint proxy status unavailable: " + err.Error()}

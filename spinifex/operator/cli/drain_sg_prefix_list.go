@@ -34,7 +34,9 @@ func (g *sgPrefixListDrain) connect(store *featurelevel.Store, nodes []string, n
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.store, g.nodes, g.out = store, nodes, out
-	g.proxy = requestProxyStatus(nc)
+	g.proxy = func(ctx context.Context, node string) (projection.EndpointProxyStatus, error) {
+		return projection.RequestPrefixListStatus(ctx, nc, node)
+	}
 	g.rules = func(ctx context.Context) (int, error) { return ec2vpc.CountPrefixListRules(ctx, js) }
 }
 

@@ -2155,17 +2155,18 @@ func sgRulesToIpPermissions(rules []SGRule, accountID string) []*ec2.IpPermissio
 
 // assertRulesPresent returns InvalidPermission.NotFound if any rule in
 // toRevoke is absent from existing, matching AWS's non-idempotent revoke
-// behavior.
+// behavior. A prefix-list peer naming a description must name the stored one.
 func assertRulesPresent(existing, toRevoke []SGRule) error {
 	if len(toRevoke) == 0 {
 		return nil
 	}
-	have := make(map[string]struct{}, len(existing))
+	have := make(map[string]SGRule, len(existing))
 	for _, r := range existing {
-		have[sgRuleKey(r)] = struct{}{}
+		have[sgRuleKey(r)] = r
 	}
 	for _, r := range toRevoke {
-		if _, ok := have[sgRuleKey(r)]; !ok {
+		stored, ok := have[sgRuleKey(r)]
+		if !ok || (r.PrefixListId != "" && r.Description != "" && r.Description != stored.Description) {
 			return errors.New(awserrors.ErrorInvalidPermissionNotFound)
 		}
 	}

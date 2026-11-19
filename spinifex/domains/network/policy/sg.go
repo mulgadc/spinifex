@@ -82,13 +82,15 @@ func NewSecurityGroupManager(client ovn.Client, egress EgressPolicy, opts ...SGO
 }
 
 func (m *sgManager) EnsureSG(ctx context.Context, sg SGSpec) error {
-	// Decided once, so an apply never mixes the two views of its own rules.
+	// Counted before the grant is read, so a rollback that sees no apply in
+	// flight is seen by every later apply. Decided once per apply.
+	m.granting.Add(1)
 	if !m.grants() {
+		m.granting.Add(-1)
 		sg.IngressRules = withoutPrefixLists(sg.IngressRules)
 		sg.EgressRules = withoutPrefixLists(sg.EgressRules)
 		return m.applyACLs(ctx, sg)
 	}
-	m.granting.Add(1)
 	defer m.granting.Add(-1)
 	return m.applyACLs(ctx, sg)
 }

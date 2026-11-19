@@ -95,3 +95,31 @@ func TestLevelWatch_ObserveAboveBuildWithdrawsTheGrant(t *testing.T) {
 	require.True(t, ok)
 	assert.False(t, w.Granted())
 }
+
+// Each grant flip wakes the reconcile pass once, so a rollback withdraws an
+// installed prefix-list ACL without waiting for the resync; a re-read that
+// changes nothing wakes nothing.
+func TestLevelWatch_GrantFlipWakesTheReconcilePass(t *testing.T) {
+	src := &fixedRecord{rec: Record{Level: 2}, rev: 1}
+	w := &levelWatch{read: src.read, changed: make(chan struct{}, 1)}
+	woken := func() bool {
+		select {
+		case <-w.changed:
+			return true
+		default:
+			return false
+		}
+	}
+
+	require.NoError(t, w.observe(t.Context()))
+	assert.False(t, woken(), "level 2 grants nothing, so nothing flipped")
+	src.rec, src.rev = Record{Level: 3}, 2
+	require.NoError(t, w.observe(t.Context()))
+	assert.True(t, woken(), "the grant arriving wakes a pass")
+	src.rev = 3
+	require.NoError(t, w.observe(t.Context()))
+	assert.False(t, woken(), "an unchanged grant wakes nothing")
+	src.rec, src.rev = Record{Level: 3, Rollback: &featurelevel.Rollback{Target: 2}}, 4
+	require.NoError(t, w.observe(t.Context()))
+	assert.True(t, woken(), "a rollback withdrawing the grant wakes a pass")
+}

@@ -83,15 +83,16 @@ func intentSource(js jetstream.JetStream) loop.Source {
 	}, ">")
 }
 
-// DriftLoop reconciles on every intent change and every DriftInterval, gated on
-// AcquireLeader on lease so only one vpcd scans at a time. An incomplete pass asks to be
-// revisited on a short backoff instead. Returns when ctx is cancelled.
+// DriftLoop reconciles on every intent change, every receive on trigger and
+// every DriftInterval, gated on AcquireLeader on lease so only one vpcd scans at
+// a time. An incomplete pass asks to be revisited on a short backoff instead.
+// Returns when ctx is cancelled.
 //
 // startup is the outcome of the bootstrap ReconcileApplyOnly pass, or nil when
 // this node did not run one. It seeds the first deadline rather than triggering
 // a pass: that bootstrap pass is the startup scan, and running a second one here
 // would duplicate it and pull a scan forward on every clean boot.
-func DriftLoop(ctx context.Context, rec Reconciler, nc *nats.Conn, lease *kvsync.Lease, localAZ string, startup error) {
+func DriftLoop(ctx context.Context, rec Reconciler, nc *nats.Conn, lease *kvsync.Lease, localAZ string, startup error, trigger <-chan struct{}) {
 	js, err := jetstream.New(nc)
 	if err != nil {
 		slog.Error("reconcile/drift: JetStream context unavailable, drift loop disabled", "err", err)
@@ -102,6 +103,7 @@ func DriftLoop(ctx context.Context, rec Reconciler, nc *nats.Conn, lease *kvsync
 		Name:      "vpcd/drift",
 		Sources:   []loop.Source{intentSource(js)},
 		Reconcile: driftPass(rec, lease, js, localAZ, startup),
+		Trigger:   trigger,
 		Resync:    DriftInterval,
 		Debounce:  driftDebounce,
 	})

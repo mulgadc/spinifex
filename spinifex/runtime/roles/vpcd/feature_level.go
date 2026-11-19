@@ -23,6 +23,9 @@ type levelWatch struct {
 
 	granted  atomic.Bool
 	revision atomic.Uint64 // the record revision granted was last set from
+	// changed receives, without blocking, each time the grant flips, so the
+	// reconcile pass re-renders installed ACLs without waiting for a resync.
+	changed chan struct{}
 }
 
 // LevelAboveBuildError is a recorded level this vpcd cannot serve; no retry
@@ -49,14 +52,24 @@ func (w *levelWatch) observe(ctx context.Context) error {
 		return err
 	}
 	if rec.Level > featurelevel.Build {
-		w.granted.Store(false)
+		w.grant(false)
 		return &LevelAboveBuildError{Recorded: rec.Level}
 	}
 	// Granted before the revision, so a status reporting this revision
 	// already reflects it.
-	w.granted.Store(rec.Active(featurelevel.SGPrefixList))
+	w.grant(rec.Active(featurelevel.SGPrefixList))
 	w.revision.Store(rev)
 	return nil
+}
+
+func (w *levelWatch) grant(granted bool) {
+	if w.granted.Swap(granted) == granted {
+		return
+	}
+	select {
+	case w.changed <- struct{}{}:
+	default:
+	}
 }
 
 // levelRetrySleep is the startup backoff seam; tests replace it.

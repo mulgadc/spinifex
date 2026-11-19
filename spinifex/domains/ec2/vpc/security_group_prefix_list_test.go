@@ -313,6 +313,38 @@ func TestPrefixListRule_DescriptionByPermission(t *testing.T) {
 	require.ErrorContains(t, err, awserrors.ErrorInvalidPermissionNotFound)
 }
 
+// As AWS does, a revoke naming a prefix-list rule by its old description after
+// a rename is not found and leaves the rule; the current description revokes.
+func TestPrefixListRule_RevokeWithAStaleDescriptionIsNotFound(t *testing.T) {
+	t.Parallel()
+	svc := setupTestVPCService(t)
+	activatePrefixLists(svc)
+	vpcID := createTestVPC(t, svc, "10.0.0.0/16")
+	sgID := createTestSG(t, svc, vpcID, "pl-stale")
+	ctx := context.Background()
+
+	_, err := svc.AuthorizeSecurityGroupEgress(ctx, &ec2.AuthorizeSecurityGroupEgressInput{
+		GroupId: aws.String(sgID), IpPermissions: []*ec2.IpPermission{s3Permission(svc, 443, "s3")},
+	}, testAccountID)
+	require.NoError(t, err)
+	_, err = svc.UpdateSecurityGroupRuleDescriptionsEgress(ctx, &ec2.UpdateSecurityGroupRuleDescriptionsEgressInput{
+		GroupId: aws.String(sgID), IpPermissions: []*ec2.IpPermission{s3Permission(svc, 443, "s3 renamed")},
+	}, testAccountID)
+	require.NoError(t, err)
+
+	_, err = svc.RevokeSecurityGroupEgress(ctx, &ec2.RevokeSecurityGroupEgressInput{
+		GroupId: aws.String(sgID), IpPermissions: []*ec2.IpPermission{s3Permission(svc, 443, "s3")},
+	}, testAccountID)
+	require.ErrorContains(t, err, awserrors.ErrorInvalidPermissionNotFound)
+	require.Len(t, storedEgressPrefixListRules(t, svc, sgID), 1, "a stale revoke leaves the rule")
+
+	_, err = svc.RevokeSecurityGroupEgress(ctx, &ec2.RevokeSecurityGroupEgressInput{
+		GroupId: aws.String(sgID), IpPermissions: []*ec2.IpPermission{s3Permission(svc, 443, "s3 renamed")},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, storedEgressPrefixListRules(t, svc, sgID))
+}
+
 // Below level 3 the list does not exist yet: a write adding it answers as an
 // unknown list and stores nothing, with or without an admission installed,
 // while a write naming no list is not gated.

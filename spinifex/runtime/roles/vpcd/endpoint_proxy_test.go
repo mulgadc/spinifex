@@ -320,6 +320,27 @@ func TestEndpointLoop_StatusAnswersOnlyItsOwnNode(t *testing.T) {
 	}
 }
 
+// The heartbeat's status never reads the ACL table, so an unreadable NB view
+// cannot hold a node below level 2; only the drain's request reads and counts.
+func TestEndpointLoop_OnlyTheDrainsRequestReadsACLs(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	h := newLoopHarness(false)
+	h.loop.grant = &prefixListGrant{
+		level:   grantedLevel(true, 4),
+		applies: func() int { return 0 },
+		acls:    func(context.Context) ([]nbdb.ACL, error) { return nil, errors.New("nb gone") },
+	}
+	sub, err := nc.Subscribe(projection.EndpointProxyStatusSubject("n1"), h.loop.serveStatus("n1"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	st, err := projection.RequestEndpointProxyStatus(t.Context(), nc, "n1")
+	require.NoError(t, err)
+	assert.Equal(t, uint64(4), st.LevelRevision)
+	_, err = projection.RequestPrefixListStatus(t.Context(), nc, "n1")
+	require.ErrorContains(t, err, "nb gone")
+}
+
 // The revision read is the feature-level record's latest version, and 0 before
 // one is written.
 func TestFeatureLevelRevision_ReadsTheLatestVersion(t *testing.T) {
@@ -393,7 +414,7 @@ func TestSecurityGroupEgress_UsesTheStoredGroups(t *testing.T) {
 
 func mustStatus(t *testing.T, l *endpointLoop) projection.EndpointProxyStatus {
 	t.Helper()
-	st, err := l.status(t.Context(), "n1")
+	st, err := l.status(t.Context(), "n1", true)
 	require.NoError(t, err)
 	return st
 }
@@ -506,8 +527,12 @@ func TestEndpointLoop_StatusReportsThePrefixListGrant(t *testing.T) {
 	assert.Equal(t, 1, st.PrefixListACLs)
 
 	h.loop.grant.acls = func(context.Context) ([]nbdb.ACL, error) { return nil, errors.New("nb gone") }
-	_, err = h.loop.status(t.Context(), "n1")
+	_, err = h.loop.status(t.Context(), "n1", true)
 	require.Error(t, err, "an unreadable NB view is no answer, never a zero count")
+	st, err = h.loop.status(t.Context(), "n1", false)
+	require.NoError(t, err, "a status that does not ask for ACLs never reads them")
+	assert.Equal(t, 2, st.PrefixListApplies)
+	assert.Zero(t, st.PrefixListACLs)
 }
 
 // While level 3 holds, capture and the proxy's view use the gossiped

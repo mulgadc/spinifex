@@ -43,11 +43,14 @@ func (d *Daemon) advertisedFeatureLevel() int {
 	return level
 }
 
-// prefixListDerivationsAgree reports whether this node's prefix-list entries
-// derived with its bridge address equal those every node derives from the
-// gossiped node set, which level 3 switches discovery and capture to.
+// prefixListDerivationsAgree reports whether the gossiped node set gives this
+// node its own IPv4 entry, and its entries derived with its bridge address equal
+// those every node derives from that set, which level 3 switches to.
 func prefixListDerivationsAgree(cc *config.ClusterConfig, mgmtBridgeIP string) bool {
-	return slices.Equal(prefixlist.Entries(cc, mgmtBridgeIP), prefixlist.Entries(cc, ""))
+	own := cc != nil && slices.ContainsFunc(config.ServiceEndpoints(cc, ""), func(ep config.ServiceEndpoint) bool {
+		return ep.Node == cc.Node && ep.Addr.Is4()
+	})
+	return own && slices.Equal(prefixlist.Entries(cc, mgmtBridgeIP), prefixlist.Entries(cc, ""))
 }
 
 // prefixListGossiped reports whether level 3 is active, for the prefix-list

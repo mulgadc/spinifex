@@ -23,6 +23,9 @@ func TestAdvertisedFeatureLevel_FollowsLocalVpcd(t *testing.T) {
 	unadvertised := &config.ClusterConfig{Node: "n1", Nodes: map[string]config.Config{
 		"n1": {Predastore: config.PredastoreConfig{Host: "0.0.0.0:8443"}},
 	}}
+	peerOnly := &config.ClusterConfig{Node: "n1", Nodes: map[string]config.Config{
+		"n1": {}, "n2": {AdvertiseIP: "10.0.0.3"},
+	}}
 	ready := projection.EndpointProxyStatus{Node: "n1", ProbePassed: true, GateReady: true, Build: featurelevel.Build}
 	with := func(f func(*projection.EndpointProxyStatus)) *projection.EndpointProxyStatus {
 		st := ready
@@ -33,17 +36,19 @@ func TestAdvertisedFeatureLevel_FollowsLocalVpcd(t *testing.T) {
 		name    string
 		reply   *projection.EndpointProxyStatus
 		cluster *config.ClusterConfig
+		mgmt    string
 		want    int
 	}{
-		{"ready", &ready, advertised, featurelevel.Build},
-		{"no capture", with(func(s *projection.EndpointProxyStatus) { s.ProbePassed = false }), advertised, below},
-		{"no gate listener", with(func(s *projection.EndpointProxyStatus) { s.GateReady = false }), advertised, below},
-		{"another node answered", with(func(s *projection.EndpointProxyStatus) { s.Node = "n2" }), advertised, below},
-		{"refused", with(func(s *projection.EndpointProxyStatus) { s.Error = "no" }), advertised, below},
-		{"vpcd silent", nil, advertised, below},
-		{"vpcd omits its build", with(func(s *projection.EndpointProxyStatus) { s.Build = 0 }), advertised, noPrefixList},
-		{"vpcd below the prefix-list build", with(func(s *projection.EndpointProxyStatus) { s.Build = featurelevel.GatewayEndpoints }), advertised, noPrefixList},
-		{"entry only at the bridge address", &ready, unadvertised, noPrefixList},
+		{"ready", &ready, advertised, config.DefaultMgmtBridgeIP, featurelevel.Build},
+		{"no capture", with(func(s *projection.EndpointProxyStatus) { s.ProbePassed = false }), advertised, config.DefaultMgmtBridgeIP, below},
+		{"no gate listener", with(func(s *projection.EndpointProxyStatus) { s.GateReady = false }), advertised, config.DefaultMgmtBridgeIP, below},
+		{"another node answered", with(func(s *projection.EndpointProxyStatus) { s.Node = "n2" }), advertised, config.DefaultMgmtBridgeIP, below},
+		{"refused", with(func(s *projection.EndpointProxyStatus) { s.Error = "no" }), advertised, config.DefaultMgmtBridgeIP, below},
+		{"vpcd silent", nil, advertised, config.DefaultMgmtBridgeIP, below},
+		{"vpcd omits its build", with(func(s *projection.EndpointProxyStatus) { s.Build = 0 }), advertised, config.DefaultMgmtBridgeIP, noPrefixList},
+		{"vpcd below the prefix-list build", with(func(s *projection.EndpointProxyStatus) { s.Build = featurelevel.GatewayEndpoints }), advertised, config.DefaultMgmtBridgeIP, noPrefixList},
+		{"entry only at the bridge address", &ready, unadvertised, config.DefaultMgmtBridgeIP, noPrefixList},
+		{"no entry of its own in either derivation", &ready, peerOnly, "", noPrefixList},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -56,7 +61,7 @@ func TestAdvertisedFeatureLevel_FollowsLocalVpcd(t *testing.T) {
 				require.NoError(t, err)
 				t.Cleanup(func() { _ = sub.Unsubscribe() })
 			}
-			d := &Daemon{node: "n1", natsConn: nc, clusterConfig: tc.cluster, mgmtBridgeIP: config.DefaultMgmtBridgeIP}
+			d := &Daemon{node: "n1", natsConn: nc, clusterConfig: tc.cluster, mgmtBridgeIP: tc.mgmt}
 			assert.Equal(t, tc.want, d.advertisedFeatureLevel())
 		})
 	}

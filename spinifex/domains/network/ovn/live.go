@@ -1499,11 +1499,11 @@ func (c *LiveClient) EnsureAddressSet(ctx context.Context, name string, addresse
 var addressSetInsertHook func()
 
 // CreateAddressSetIfAbsent inserts the named set with no addresses unless a row
-// with that name exists. A set in the cache is returned without its addresses
-// being read, and a lost insert race returns the winner's row untouched.
+// with that name exists. An existing set is found by name and never written,
+// and a lost insert race returns the winner's row untouched.
 func (c *LiveClient) CreateAddressSetIfAbsent(ctx context.Context, name string) (string, error) {
-	if existing, err := c.GetAddressSet(ctx, name); err == nil {
-		return existing.UUID, nil
+	if uuid, err := c.addressSetUUID(ctx, name); err == nil {
+		return uuid, nil
 	}
 	if addressSetInsertHook != nil {
 		addressSetInsertHook()
@@ -1519,16 +1519,41 @@ func (c *LiveClient) CreateAddressSetIfAbsent(ctx context.Context, name string) 
 		return "", err
 	}
 	if err := c.transactOps(ctx, ops); err != nil {
-		if existing, refErr := c.waitForCachedAddressSet(ctx, name); refErr == nil {
-			return existing.UUID, nil
+		if uuid, refErr := c.waitForAddressSetUUID(ctx, name); refErr == nil {
+			return uuid, nil
 		}
 		return "", fmt.Errorf("create address set %q: %w", name, err)
 	}
-	created, err := c.waitForCachedAddressSet(ctx, name)
+	uuid, err := c.waitForAddressSetUUID(ctx, name)
 	if err != nil {
 		return "", fmt.Errorf("resolve address set %q uuid after insert: %w", name, err)
 	}
-	return created.UUID, nil
+	return uuid, nil
+}
+
+// addressSetUUID looks the set up through the schema's name index rather than
+// scanning the table, so the cost is one row whatever the formation's size.
+func (c *LiveClient) addressSetUUID(ctx context.Context, name string) (string, error) {
+	as := &nbdb.AddressSet{Name: name}
+	if err := c.client.Get(ctx, as); err != nil {
+		return "", fmt.Errorf("get address set %q: %w", name, err)
+	}
+	return as.UUID, nil
+}
+
+func (c *LiveClient) waitForAddressSetUUID(ctx context.Context, name string) (string, error) {
+	deadline := time.Now().Add(ensureRefetchTimeout)
+	for {
+		uuid, err := c.addressSetUUID(ctx, name)
+		if err == nil || time.Now().After(deadline) {
+			return uuid, err
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(ensureRefetchInterval):
+		}
+	}
 }
 
 // convergeAddressSet updates the row's addresses when they differ from want.

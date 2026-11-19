@@ -86,15 +86,27 @@ func CheckHost() []Result {
 	return CheckHostAt("/")
 }
 
+// CheckHostAssets is CheckHost without the running-binary check, for a gate run
+// before a binary swap, when every running service is on the old build by design.
+func CheckHostAssets() []Result {
+	return checkHostAt("/", false)
+}
+
 // CheckHostAt verifies every managed asset with paths resolved under root.
 // It is the test seam CheckHost uses with root "/".
 func CheckHostAt(root string) []Result {
+	return checkHostAt(root, true)
+}
+
+func checkHostAt(root string, runningBinaries bool) []Result {
 	results := make([]Result, 0, len(managedHelpers)+1)
 	for _, path := range managedHelpers {
 		results = append(results, checkHelper(root, path))
 	}
 	results = append(results, checkSudoersGrant(root))
-	results = append(results, checkRunningBinaries(root)...)
+	if runningBinaries {
+		results = append(results, checkRunningBinaries(root)...)
+	}
 	results = append(results, checkMicroVM(root)...)
 	results = append(results, checkHostnet(root))
 	results = append(results, checkHostFirewalls(root)...)

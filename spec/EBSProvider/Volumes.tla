@@ -11,10 +11,6 @@ CreateVolumeRequests == [volumeId               : VolumeIds,
                          parameters             : Optional(Parameters)]
 
 CreateVolume(req) ==
-  (*******************************************************************************************************************)
-  (* A volume of the requested size is created, either blank or holding a snapshot's data. A retry of a              *)
-  (* call that already succeeded returns the same volume.                                                            *)
-  (*******************************************************************************************************************)
   LET volId     == req.volumeId
       snapId    == req.sourceSnapshotId
 
@@ -52,9 +48,8 @@ CreateVolume(req) ==
            \/ /\ ~KeyExists(volumes, volId)
               \* The metadata is determined by the implementation.
               /\ \E md \in Optional(Metadata) :
-                   \* An implementation may allocate more backing storage
-                   \* if necessary (e.g. to handle OCI's 50GB minimum), but
-                   \* the volume record must report the exact requested size.
+                   \* The volume record must report the exact requested size, but the implementation may allocate more
+                   \* backing storage if necessary. To handle OCI's 50GB minimum, for example. 
                    /\ volumes' = InsertKey(volumes, volId, [sizeBytes        |-> req.sizeBytes,
                                                             availabilityZone |-> req.availabilityZone,
                                                             sourceSnapshotId |-> snapId,
@@ -71,9 +66,6 @@ CreateVolume(req) ==
 GetVolumeRequests == [volumeId : VolumeIds]
 
 GetVolume(req) ==
-  (*******************************************************************************************************************)
-  (* A volume's current size and state are read, and nothing changes.                                                *)
-  (*******************************************************************************************************************)
   LET volId == req.volumeId
 
       \* The set of errors that this call may return in the current system state. If there are multiple possible
@@ -95,13 +87,9 @@ GetVolume(req) ==
 
 
 ListVolumesRequests == [maxResults    : -1..(MaxListResults + 1),
-                        startingToken : Optional(ListTokens)]
+                        startingToken : Optional(SUBSET VolumeIds)]
 
 ListVolumes(req) ==
-  (*******************************************************************************************************************)
-  (* Some of the volumes are listed, a page at a time, and nothing changes. A call with no starting token that       *)
-  (* returns no next token lists every volume.                                                                       *)
-  (*******************************************************************************************************************)
   \* The set of errors that this call may return in the current system state. If there are multiple possible
   \* errors for a single call, the exact one that is returned is left to the implementation.
   LET Errors ==
@@ -115,13 +103,18 @@ ListVolumes(req) ==
 
      \* The operation was successful.
      \/ /\ Errors = {}
-        /\ LET refs == {[id |-> id, metadata |-> volumes[id].metadata] : id \in DOMAIN volumes}
+        /\ LET covered   == IF req.startingToken = None THEN {} ELSE req.startingToken
+               remaining == DOMAIN volumes \ covered
+               size      == PageSize(req.maxResults)
            \* The page and the next token are determined by the implementation.
-           IN \E page \in SUBSET refs, next \in Optional(ListTokens) :
-                /\ Cardinality(page) <= PageSize(req.maxResults)
-                /\ next /= None => Cardinality(page) = PageSize(req.maxResults)
-                /\ req.startingToken = None /\ next = None => page = refs
-                /\ val' = [volumes |-> page, nextToken |-> next]
+           IN \E ids  \in SUBSET remaining,
+                 gone \in SUBSET (VolumeIds \ DOMAIN volumes) :
+                /\ Cardinality(ids) <= size
+                /\ Cardinality(ids) < size => ids = remaining
+                /\ val' = [volumes   |-> {[id |-> id, metadata |-> volumes[id].metadata] : id \in ids},
+                           nextToken |-> IF remaining \ ids = {}
+                                         THEN None
+                                         ELSE covered \union ids \union gone]
                 /\ err' = None
         /\ UNCHANGED state
 
@@ -130,21 +123,15 @@ ExpandVolumeRequests == [volumeId  : VolumeIds,
                          sizeBytes : 0..MaxBytes]
 
 ExpandVolume(req) ==
-  (*******************************************************************************************************************)
-  (* A volume grows to the requested size, keeping its data. A published volume grows only if the                    *)
-  (* implementation supports online expansion, and a request for the current size succeeds without change.           *)
-  (*******************************************************************************************************************)
   LET volId == req.volumeId
 
       \* The set of errors that this call may return in the current system state. If there are multiple possible
       \* errors for a single call, the exact one that is returned is left to the implementation.
       Errors ==
-        LET checks == [invalidArgument |-> \/ req.sizeBytes = 0
-                                           \/ /\ KeyExists(volumes, volId)
-                                              /\ req.sizeBytes < volumes[volId].sizeBytes,
+        LET checks == [invalidArgument |-> req.sizeBytes = 0,
                        notFound        |-> ~KeyExists(volumes, volId),
-                       volumeInUse     |-> /\ PublishedNodes(volId) /= {}
-                                           /\ ~Capabilities.onlineExpansion
+                       volumeInUse     |-> /\ ~Capabilities.onlineExpansion
+                                           /\ PublishedNodes(volId) /= {}
                                            /\ req.sizeBytes > volumes[volId].sizeBytes]
         IN {e \in DOMAIN checks : checks[e]}
 
@@ -155,17 +142,24 @@ ExpandVolume(req) ==
 
      \* The operation was successful.
      \/ /\ Errors = {}
-        /\ volumes' = [volumes EXCEPT ![volId].sizeBytes = req.sizeBytes]
-        \* The new volume size propagates through to any nodes it is published on via the size field
-        \* on the export record. If the target and current volume sizes are equal, which is always the case
-        \* if the volume is published and online expansion is not supported, this is a no-op.
-        /\ publications' = [p \in DOMAIN publications |->
-                              IF p[1] = volId
-                              THEN [publications[p] EXCEPT !.export.sizeBytes = req.sizeBytes]
-                              ELSE publications[p]]
-        /\ val' = VolumeView(volId)'
-        /\ err' = None
-        /\ UNCHANGED snapshots
+        /\ \/ /\ req.sizeBytes > volumes[volId].sizeBytes
+              /\ volumes' = [volumes EXCEPT ![volId].sizeBytes = req.sizeBytes ]
+              \* The new volume size propagates through to any nodes it is published on via the size field on the
+              \* export record.
+              /\ publications' = [p \in DOMAIN publications |->
+                                    IF p[1] = volId
+                                    THEN [publications[p] EXCEPT !.export.sizeBytes = req.sizeBytes]
+                                    ELSE publications[p]]
+              /\ val' = VolumeView(volId)'
+              /\ err' = None
+              /\ UNCHANGED snapshots
+
+           \* A no-op if the target size is less than or equal to the volume's current size, ensuring that this
+           \* operation is idempotent.
+           \/ /\ req.sizeBytes <= volumes[volId].sizeBytes
+              /\ val' = VolumeView(volId)
+              /\ err' = None
+              /\ UNCHANGED state
 
 
 PublishVolumeRequests == [volumeId : VolumeIds,
@@ -173,11 +167,6 @@ PublishVolumeRequests == [volumeId : VolumeIds,
                           readOnly : BOOLEAN]
 
 PublishVolume(req) ==
-  (*******************************************************************************************************************)
-  (* A volume's data becomes reachable on a node, through an export that a VM there can attach, either an NBD        *)
-  (* URI or a host block device. Reads and writes through the export reach the volume, and a read-only export        *)
-  (* refuses writes. Only one node at a time may reach a volume.                                                     *)
-  (*******************************************************************************************************************)
   LET volId  == req.volumeId
       nodeId == req.nodeId
 
@@ -225,10 +214,6 @@ UnpublishVolumeRequests == [volumeId : VolumeIds,
                             nodeId   : NodeIds]
 
 UnpublishVolume(req) ==
-  (*******************************************************************************************************************)
-  (* A volume's export on a node is torn down, so that its data is no longer reachable there. Once no node           *)
-  (* can reach the volume, it is available again.                                                                    *)
-  (*******************************************************************************************************************)
   LET volId  == req.volumeId
       nodeId == req.nodeId
 
@@ -247,9 +232,6 @@ UnpublishVolume(req) ==
 DeleteVolumeRequests == [volumeId : VolumeIds]
 
 DeleteVolume(req) ==
-  (*******************************************************************************************************************)
-  (* A volume is deleted, so that its data is gone. Snapshots taken from it are unaffected.                          *)
-  (*******************************************************************************************************************)
   LET volId == req.volumeId
 
       \* The set of errors that this call may return in the current system state. If there are multiple possible

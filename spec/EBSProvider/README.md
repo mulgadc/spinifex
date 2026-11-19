@@ -34,11 +34,6 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 - May a page hold fewer refs than requested yet carry a next token?
   AWS and CSI allow it, but here a next token comes only with a full page, so that a walk cannot stall on empty pages.
 
-#### ExpandVolume
-
-- Should a request below the current size succeed without change, as CSI recommends, rather than be refused with `invalidArgument`?
-  It is refused here, as AWS refuses `ModifyVolume` to a smaller size and the conformance suite tests, while CSI says the plugin should reply OK when the volume is already at least the requested size.
-
 #### PublishVolume
 
 - Should `volumeInUse` depend on the exclusion scope?
@@ -86,4 +81,4 @@ The contract that every implementation of the `EBSProvider` interface must meet.
 ## TODO
 
 - Model the data plane.
-- Clean up comments.
+- Write action header comments.

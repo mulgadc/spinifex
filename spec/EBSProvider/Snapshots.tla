@@ -8,12 +8,6 @@ CreateSnapshotRequests == [snapshotId : SnapshotIds,
                            volumeId   : VolumeIds]
 
 CreateSnapshot(req) ==
-  (*******************************************************************************************************************)
-  (* A volume's data is frozen as a snapshot, from which new volumes can be restored. The snapshot holds the         *)
-  (* volume's data as it was at some instant during the call, and exists only once that data is durable, so          *)
-  (* a snapshot that is still being made is not found. A retry of a call that already succeeded returns the          *)
-  (* same snapshot.                                                                                                  *)
-  (*******************************************************************************************************************)
   LET snapId == req.snapshotId
       volId  == req.volumeId
 
@@ -56,10 +50,6 @@ CopySnapshotRequests == [sourceSnapshotId      : SnapshotIds,
                          volumeId              : VolumeIds]
 
 CopySnapshot(req) ==
-  (*******************************************************************************************************************)
-  (* A snapshot is copied under a new ID, sharing its frozen data, and the copy can be deleted independently         *)
-  (* of it.                                                                                                          *)
-  (*******************************************************************************************************************)
   LET srcSnapId == req.sourceSnapshotId
       dstSnapId == req.destinationSnapshotId
       volId     == req.volumeId
@@ -95,7 +85,7 @@ CopySnapshot(req) ==
 
 
 ListSnapshotsRequests == [maxResults    : -1..(MaxListResults + 1),
-                          startingToken : Optional(ListTokens),
+                          startingToken : Optional(SUBSET SnapshotIds),
                           snapshotId    : Optional(SnapshotIds)]
 
 \* The ref that ListSnapshots returns for a snapshot.
@@ -104,11 +94,6 @@ SnapshotRef(id) == [id             |-> id,
                     metadata       |-> snapshots[id].metadata]
 
 ListSnapshots(req) ==
-  (*******************************************************************************************************************)
-  (* Some of the snapshots are listed, a page at a time, and nothing changes. A call with no starting token that     *)
-  (* returns no next token lists every snapshot. A call that names a snapshot returns that snapshot, or nothing      *)
-  (* when it does not exist.                                                                                         *)
-  (*******************************************************************************************************************)
   LET snapId == req.snapshotId
 
       \* The set of errors that this call may return in the current system state. If there are multiple possible
@@ -134,13 +119,18 @@ ListSnapshots(req) ==
      \* The operation was successful.
      \/ /\ Errors = {}
         /\ snapId = None
-        /\ LET refs == {SnapshotRef(id) : id \in DOMAIN snapshots}
+        /\ LET covered   == IF req.startingToken = None THEN {} ELSE req.startingToken
+               remaining == DOMAIN snapshots \ covered
+               size      == PageSize(req.maxResults)
            \* The page and the next token are determined by the implementation.
-           IN \E page \in SUBSET refs, next \in Optional(ListTokens) :
-                /\ Cardinality(page) <= PageSize(req.maxResults)
-                /\ next /= None => Cardinality(page) = PageSize(req.maxResults)
-                /\ req.startingToken = None /\ next = None => page = refs
-                /\ val' = [snapshots |-> page, nextToken |-> next]
+           IN \E ids  \in SUBSET remaining,
+                 gone \in SUBSET (SnapshotIds \ DOMAIN snapshots) :
+                /\ Cardinality(ids) <= size
+                /\ Cardinality(ids) < size => ids = remaining
+                /\ val' = [snapshots |-> {SnapshotRef(id) : id \in ids},
+                           nextToken |-> IF remaining \ ids = {}
+                                         THEN None
+                                         ELSE covered \union ids \union gone]
                 /\ err' = None
         /\ UNCHANGED state
 
@@ -148,10 +138,6 @@ ListSnapshots(req) ==
 DeleteSnapshotRequests == [snapshotId : SnapshotIds]
 
 DeleteSnapshot(req) ==
-  (*******************************************************************************************************************)
-  (* A snapshot is deleted, so that no new volume can be restored from it. Volumes already restored from it,         *)
-  (* and copies of it, are unaffected.                                                                               *)
-  (*******************************************************************************************************************)
   LET snapId == req.snapshotId
 
      \* The provider failed to answer.

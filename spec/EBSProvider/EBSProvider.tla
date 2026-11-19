@@ -16,7 +16,7 @@ CONSTANTS
   SnapshotIds,
   AvailabilityZones, Timestamps,
   Parameters, Metadata,
-  ListTokens, MaxListResults,
+  MaxListResults,
   \* The optional behaviour that the implementation advertises, which never changes.
   Capabilities,
   \* Whether the provider may fail to answer at any point in a behaviour.
@@ -28,10 +28,9 @@ ASSUME MaxBytes \in Nat \ {0}
 ASSUME VolumeIds /= {}
 ASSUME NodeIds /= {} => ExportPaths /= {}
 ASSUME SnapshotIds /= {} => Timestamps /= {}
-ASSUME ListTokens /= {}
 ASSUME MaxListResults \in Nat \ {0}
 ASSUME None \notin UNION {VolumeIds, NodeIds, SnapshotIds,
-                          AvailabilityZones, Timestamps, Parameters, Metadata, ListTokens}
+                          AvailabilityZones, Timestamps, Parameters, Metadata}
 ASSUME Capabilities \in [onlineExpansion         : BOOLEAN,
                          sparseExtentReporting   : BOOLEAN,
                          crashConsistentSnapshot : BOOLEAN,

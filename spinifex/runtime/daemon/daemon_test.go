@@ -56,6 +56,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/qmp"
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	vmmock "github.com/mulgadc/spinifex/spinifex/runtime/compute/vm/mock"
+	"github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
@@ -4342,10 +4343,9 @@ func TestReloadGPUTypes_CallsUpdateInstanceSubscriptions(t *testing.T) {
 	// per-type subscribe loop ran exactly once for the new map state.
 	// Requires a non-nil gpuManager because canAllocate gates GPU types on
 	// availGPU > 0.
-	port := freePortForTest(t)
-	startTestNATSOnPortForTest(t, port)
+	ns := startTestNATSOnPortForTest(t, server.RANDOM_PORT)
 
-	nc, err := nats.Connect(fmt.Sprintf("nats://127.0.0.1:%d", port))
+	nc, err := nats.Connect(ns.ClientURL())
 	require.NoError(t, err)
 	t.Cleanup(func() { drainAndClose(t, nc) })
 

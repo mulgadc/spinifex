@@ -219,6 +219,8 @@ func (s *Service) Ensure(ctx context.Context, in *EnsureEndpointInput, _ string)
 		CreatedAt:  time.Now().UTC(),
 		Generation: 1,
 		Pinned:     in.Pinned,
+
+		OperatorReserved: in.Pinned && in.OperatorReserved,
 	}
 	if _, err := s.store.Create(ctx, key, &rec); err != nil {
 		if errors.Is(err, kvstore.ErrExists) {
@@ -499,13 +501,15 @@ func (s *Service) deleteEndpoint(ctx context.Context, key, modelID string, admit
 		}
 		rec.State = StateDraining
 		rec.Generation++
-		if _, err := s.store.CompareAndSet(ctx, key, &rec, rev); err != nil {
+		next, err := s.store.CompareAndSet(ctx, key, &rec, rev)
+		if err != nil {
 			// A record moved since admission belongs to whoever moved it.
 			if admit != nil && errors.Is(err, kvstore.ErrConflict) {
 				return nil, errReclaimSuperseded
 			}
 			return nil, fmt.Errorf("bedrock: mark endpoint %s draining: %w", modelID, err)
 		}
+		rev = next
 	}
 
 	if err := TerminateServingVM(ctx, s.deps.Launch, rec); err != nil {
@@ -514,8 +518,14 @@ func (s *Service) deleteEndpoint(ctx context.Context, key, modelID string, admit
 	if err := validateTransition(StateDraining, StateAbsent); err != nil {
 		return nil, err
 	}
-	if err := s.store.Purge(ctx, key); err != nil {
-		return nil, fmt.Errorf("bedrock: remove endpoint %s record: %w", modelID, err)
+	// Guarded on the draining revision: another daemon may have finished this
+	// teardown and claimed the key for a new endpoint, whose record stays.
+	if err := s.store.CompareAndDelete(ctx, key, rev); err != nil {
+		if !errors.Is(err, kvstore.ErrConflict) {
+			return nil, fmt.Errorf("bedrock: remove endpoint %s record: %w", modelID, err)
+		}
+		slog.InfoContext(ctx, "bedrock: endpoint record replaced during teardown; leaving the replacement",
+			"model", modelID, "instanceId", rec.InstanceID)
 	}
 	return &DeleteEndpointOutput{Removed: true}, nil
 }

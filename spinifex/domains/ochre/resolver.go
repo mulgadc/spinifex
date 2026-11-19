@@ -169,7 +169,7 @@ func (r *DynamicEndpointResolver) PinnedEndpoint(ctx context.Context, modelID st
 	rec := out.Endpoint
 	// A record without this member predates per-member ports, so its BaseURL
 	// would name the bundle's generative engine rather than this model.
-	if _, member := rec.Members[modelID]; rec.State != StateReady || !rec.Pinned || !member {
+	if _, member := rec.Members[modelID]; rec.State != StateReady || !rec.Pinned || !rec.OperatorReserved || !member {
 		return "", false, nil
 	}
 	url := rec.MemberBaseURL(modelID)

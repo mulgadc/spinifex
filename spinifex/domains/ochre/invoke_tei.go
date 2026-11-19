@@ -7,7 +7,9 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"slices"
 
 	"github.com/mulgadc/spinifex/spinifex/foundation/aws/errors"
@@ -37,10 +39,10 @@ type teiEmbeddingsUpstreamRequest struct {
 }
 
 type teiEmbeddingsDatum struct {
-	Object    string    `json:"object"`
+	Object    string     `json:"object"`
 	// Pointers, because encoding/json decodes a null element as 0.
 	Embedding []*float64 `json:"embedding"`
-	Index     *int      `json:"index"`
+	Index     *int       `json:"index"`
 }
 
 type teiEmbeddingsUsage struct {
@@ -147,21 +149,24 @@ func (a *teiEmbeddingInvokeAdapter) InvokeModel(ctx context.Context, modelID str
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+teiEmbeddingsPath, bytes.NewReader(upstream))
 	if err != nil {
-		slog.Error("tei invoke: failed to build request", "model", modelID, "err", err)
+		slog.Error("tei invoke: failed to build request", "model", modelID, "endpoint", endpointLogID(baseURL))
 		return nil, "", errors.New(awserrors.ErrorInternalError)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := a.httpClient.Do(httpReq)
 	if err != nil {
-		slog.Error("tei invoke: request failed", "model", modelID, "endpoint", baseURL, "err", err)
+		// Neither the URL nor err is logged: a static URL may carry userinfo.
+		slog.Error("tei invoke: request failed", "model", modelID, "endpoint", endpointLogID(baseURL),
+			"failure", transportFailureClass(err))
 		return nil, "", errors.New(awserrors.ErrorServiceUnavailableException)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, teiEmbeddingsResponseLimit+1))
 	if err != nil {
-		slog.Error("tei invoke: failed to read response body", "model", modelID, "err", err)
+		slog.Error("tei invoke: failed to read response body", "model", modelID, "endpoint", endpointLogID(baseURL),
+			"failure", transportFailureClass(err))
 		return nil, "", errors.New(awserrors.ErrorServiceUnavailableException)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -174,12 +179,37 @@ func (a *teiEmbeddingInvokeAdapter) InvokeModel(ctx context.Context, modelID str
 		return nil, "", errors.New(awserrors.ErrorModelErrorException)
 	}
 
-	out, err := normalizeTEIEmbeddingsResponse(modelID, respBody, n)
+	entry, _ := lookupCatalogEntry(modelID)
+	out, err := normalizeTEIEmbeddingsResponse(modelID, respBody, n, entry.EmbeddingDimensions)
 	if err != nil {
 		slog.Error("tei invoke: malformed response", "model", modelID, "err", err)
 		return nil, "", errors.New(awserrors.ErrorModelErrorException)
 	}
 	return out, "application/json", nil
+}
+
+// endpointLogID names baseURL by scheme and host only, dropping any userinfo,
+// path or query.
+func endpointLogID(baseURL string) string {
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Host == "" {
+		return "unparseable"
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+// transportFailureClass reduces a transport error to a fixed label, since
+// its text can quote the request URL.
+func transportFailureClass(err error) string {
+	var netErr net.Error
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout():
+		return "timeout"
+	default:
+		return "unreachable"
+	}
 }
 
 // mapTEIStatus maps TEI's input rejections (413 payload too large, 422
@@ -193,9 +223,9 @@ func mapTEIStatus(status int) string {
 	}
 }
 
-// normalizeTEIEmbeddingsResponse requires n vectors indexed 0..n-1 and
-// nonnegative prompt and total token counts, and replaces model with modelID.
-func normalizeTEIEmbeddingsResponse(modelID string, body []byte, n int) ([]byte, error) {
+// normalizeTEIEmbeddingsResponse requires n vectors of dims numbers indexed
+// 0..n-1 and nonnegative token counts, and replaces model with modelID.
+func normalizeTEIEmbeddingsResponse(modelID string, body []byte, n, dims int) ([]byte, error) {
 	var r teiEmbeddingsResponse
 	if err := json.Unmarshal(body, &r); err != nil {
 		return nil, err
@@ -205,8 +235,11 @@ func normalizeTEIEmbeddingsResponse(modelID string, body []byte, n int) ([]byte,
 	}
 	seen := make([]bool, n)
 	for _, d := range r.Data {
-		if d.Index == nil || *d.Index < 0 || *d.Index >= n || seen[*d.Index] || len(d.Embedding) == 0 {
+		if d.Index == nil || *d.Index < 0 || *d.Index >= n || seen[*d.Index] {
 			return nil, errors.New("missing, duplicate or out-of-range vector")
+		}
+		if dims <= 0 || len(d.Embedding) != dims {
+			return nil, errors.New("vector width differs from the model's native width")
 		}
 		if slices.Contains(d.Embedding, nil) {
 			return nil, errors.New("null vector element")

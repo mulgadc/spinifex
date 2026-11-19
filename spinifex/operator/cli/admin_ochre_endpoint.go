@@ -247,16 +247,22 @@ func listEndpointsOutput(ctx context.Context, svc ochre.EndpointService) (string
 // the endpoint, then optionally wait for it. Returns the message to print.
 func runEnsureEndpoint(ctx context.Context, svc ochre.EndpointService, modelID string, pinned,
 	wait bool, timeout time.Duration, clock endpointWaitClock) (string, error) {
-	out, err := svc.Ensure(ctx, &ochre.EnsureEndpointInput{ModelID: modelID, Pinned: pinned}, awsidentifiers.GlobalAccountID)
+	out, err := svc.Ensure(ctx, &ochre.EnsureEndpointInput{ModelID: modelID, Pinned: pinned, OperatorReserved: pinned}, awsidentifiers.GlobalAccountID)
 	if err != nil {
 		return "", err
 	}
-	// Ensure returns a running endpoint unchanged, so an unpinned one stays
-	// unpinned; that is reported rather than claimed as a reservation.
+	// Ensure returns a running endpoint unchanged, so one without an operator
+	// reservation stays without it; that is reported, not claimed.
 	if pinned && !out.Endpoint.Pinned {
 		return "", fmt.Errorf("endpoint for %s is already %s without a pin and cannot be pinned in place; "+
 			"it is a shared bundle other clients may be using, so only after confirming it is safe to remove, "+
 			"delete it and run ensure --pinned again to reserve it\n\n%s", modelID, out.Endpoint.State, formatEndpointRecord(out.Endpoint))
+	}
+	if pinned && !out.Endpoint.OperatorReserved {
+		return "", fmt.Errorf("endpoint for %s is already %s and pinned by a provisioned-throughput commitment, "+
+			"not reserved by an operator; it is a shared bundle other clients may be using, so only after confirming "+
+			"it is safe to remove, delete it and run ensure --pinned again to reserve it\n\n%s",
+			modelID, out.Endpoint.State, formatEndpointRecord(out.Endpoint))
 	}
 	if !wait {
 		return fmt.Sprintf("Endpoint for %s is %s.\n\n%s", modelID, out.Endpoint.State, formatEndpointRecord(out.Endpoint)), nil

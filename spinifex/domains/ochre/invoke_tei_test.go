@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -85,10 +86,19 @@ func (f *fakeTEI) serve(w http.ResponseWriter, r *http.Request) {
 	for i := range n {
 		// Reversed order: callers must rely on index, not position.
 		idx := n - 1 - i
-		data[i] = fmt.Sprintf(`{"object":"embedding","embedding":[%d.5,0.25,-1],"index":%d}`, idx, idx)
+		data[i] = fmt.Sprintf(`{"object":"embedding","embedding":[%d.5,%s-1],"index":%d}`, idx, nativeWidthFill, idx)
 	}
 	_, _ = fmt.Fprintf(w, `{"object":"list","data":[%s],"model":%q,"usage":{"prompt_tokens":%d,"total_tokens":%d}}`,
 		strings.Join(data, ","), teiGuestModelPath, 7*n, 7*n)
+}
+
+// nativeWidthFill is 766 coordinates, so a vector of first, fill and last
+// value has the catalog embedders' native width of 768.
+var nativeWidthFill = strings.Repeat("0.25,", 766)
+
+// nativeVector is a 768-coordinate JSON array whose first value is first.
+func nativeVector(first string) string {
+	return "[" + first + "," + nativeWidthFill + "-1]"
 }
 
 func (f *fakeTEI) reply(status int, body string) {
@@ -165,7 +175,11 @@ func TestEmbeddingInvoke_ServesBothCatalogEmbeddersFromStaticEndpoint(t *testing
 			assert.NotContains(t, string(respBody), teiGuestModelPath)
 			assert.Equal(t, "list", out.Object)
 			require.Len(t, out.Data, 1)
-			assert.Equal(t, []float64{0.5, 0.25, -1}, vectorValues(t, out.Data[0].Embedding))
+			vector := vectorValues(t, out.Data[0].Embedding)
+			require.Len(t, vector, 768, "the native width reaches the caller")
+			assert.InDelta(t, 0.5, vector[0], 0)
+			assert.InDelta(t, 0.25, vector[1], 0)
+			assert.InDelta(t, -1.0, vector[767], 0)
 			require.NotNil(t, out.Usage)
 			assert.Equal(t, int64(7), *out.Usage.PromptTokens)
 
@@ -244,7 +258,7 @@ func TestEmbeddingInvoke_RejectsInvalidBodiesBeforeTEI(t *testing.T) {
 }
 
 func TestEmbeddingInvoke_MalformedUpstreamResponseIsModelError(t *testing.T) {
-	vec := `"embedding":[0.1]`
+	vec := `"embedding":` + nativeVector("0.1")
 	bodies := map[string]string{
 		"not json":                `not json`,
 		"missing usage":           `{"data":[{` + vec + `,"index":0}]}`,
@@ -253,8 +267,10 @@ func TestEmbeddingInvoke_MalformedUpstreamResponseIsModelError(t *testing.T) {
 		"wrong vector count":      `{"data":[{` + vec + `,"index":0},{` + vec + `,"index":1}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
 		"missing index":           `{"data":[{` + vec + `}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
 		"out of range index":      `{"data":[{` + vec + `,"index":1}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
+		"null vector element":     `{"data":[{"embedding":` + nativeVector("null") + `,"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
+		"narrower than native":    `{"data":[{"embedding":[` + nativeWidthFill + `-1],"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
+		"wider than native":       `{"data":[{"embedding":` + nativeVector("0.1,0.2") + `,"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
 		"empty vector":            `{"data":[{"embedding":[],"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
-		"null vector element":     `{"data":[{"embedding":[0.4,null,0.5],"index":0}],"usage":{"prompt_tokens":1,"total_tokens":1}}`,
 		"missing total tokens":    `{"data":[{` + vec + `,"index":0}],"usage":{"prompt_tokens":1}}`,
 		"negative total tokens":   `{"data":[{` + vec + `,"index":0}],"usage":{"prompt_tokens":1,"total_tokens":-1}}`,
 		"string prompt tokens":    `{"data":[{` + vec + `,"index":0}],"usage":{"prompt_tokens":"1","total_tokens":1}}`,
@@ -336,12 +352,13 @@ func sharedBundleRecord(t *testing.T, tei *fakeTEI, state EndpointState, pinned 
 	t.Helper()
 	host, port := tei.hostPort(t)
 	return EndpointRecord{
-		AccountID: awsidentifiers.GlobalAccountID,
-		ModelID:   selfHostTestModel,
-		State:     state,
-		Pinned:    pinned,
-		PrivateIP: host,
-		BaseURL:   "http://" + net.JoinHostPort(host, "1"),
+		AccountID:        awsidentifiers.GlobalAccountID,
+		ModelID:          selfHostTestModel,
+		State:            state,
+		Pinned:           pinned,
+		OperatorReserved: pinned,
+		PrivateIP:        host,
+		BaseURL:          "http://" + net.JoinHostPort(host, "1"),
 		Members: map[string]MemberEndpoint{
 			selfHostTestModel: {Port: 1, Family: familyMeta},
 			nomicModel:        {Port: port, Family: familyTEI},
@@ -369,9 +386,9 @@ func TestEmbeddingInvoke_ServesReadyPinnedSharedBundle(t *testing.T) {
 	assert.Zero(t, svc.ensureCalls.Load())
 }
 
-// Anything short of a READY, pinned record carrying this member is not
-// served, and the lookup never starts or waits for an endpoint even with a
-// nonzero cold-start wait configured.
+// Anything short of a READY record an operator pinned, carrying this member,
+// is not served, and the lookup never starts or waits for an endpoint even
+// with a nonzero cold-start wait configured.
 func TestEmbeddingInvoke_LookupOnlyRefusesUnservableRecords(t *testing.T) {
 	cases := map[string]func(*testing.T, *fakeTEI) EndpointRecord{
 		"absent": func(*testing.T, *fakeTEI) EndpointRecord {
@@ -379,6 +396,11 @@ func TestEmbeddingInvoke_LookupOnlyRefusesUnservableRecords(t *testing.T) {
 		},
 		"ready unpinned": func(t *testing.T, tei *fakeTEI) EndpointRecord {
 			return sharedBundleRecord(t, tei, StateReady, false)
+		},
+		"ready pinned by a commitment, not an operator": func(t *testing.T, tei *fakeTEI) EndpointRecord {
+			rec := sharedBundleRecord(t, tei, StateReady, true)
+			rec.OperatorReserved = false
+			return rec
 		},
 		"starting pinned": func(t *testing.T, tei *fakeTEI) EndpointRecord {
 			return sharedBundleRecord(t, tei, StateStarting, true)
@@ -645,4 +667,30 @@ func TestEmbeddingInvoke_DeniedRequestRecordsNoBody(t *testing.T) {
 	assert.Equal(t, awserrors.ErrorAccessDeniedException, rec.ErrorCode)
 	assert.Empty(t, rec.InputText)
 	assert.NotContains(t, string(raw), passage)
+}
+
+// A transport failure logs the endpoint by scheme and host and a fixed
+// failure label, never the URL's userinfo or the raw client error.
+func TestEmbeddingInvoke_TransportFailureLogOmitsUserinfo(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	require.NoError(t, ln.Close())
+
+	var logBuf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logBuf, nil)))
+	defer slog.SetDefault(prev)
+
+	resolver := NewStaticEndpointResolver(map[string]string{nomicModel: "http://alice:s3cret-token@" + addr})
+	rt := NewRouter(nil, resolver, &fakeRecorder{}, grantAll{}, nil, nil, nil)
+	_, _, err = rt.InvokeModel(context.Background(), "000000000001", nomicModel, embeddingBody("a"), "", "")
+	require.Error(t, err)
+	assert.Equal(t, awserrors.ErrorServiceUnavailableException, err.Error())
+
+	logs := logBuf.String()
+	require.Contains(t, logs, `"endpoint":"http://`+addr+`"`)
+	assert.Contains(t, logs, `"failure":"unreachable"`)
+	assert.NotContains(t, logs, "alice")
+	assert.NotContains(t, logs, "s3cret-token")
 }

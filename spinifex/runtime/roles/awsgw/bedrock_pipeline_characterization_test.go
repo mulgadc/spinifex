@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
@@ -55,6 +56,10 @@ func (weightsStub) Resolve(_ context.Context, modelID string) (string, bool, err
 type bedrockPipelineEnv struct {
 	Deps   ochreawsapi.Deps
 	NoNATS bool
+
+	// CallerAccountID owns the signing access key; JS lets a case seed state.
+	CallerAccountID string
+	JS              jetstream.JetStream
 }
 
 // bedrockPipelineApp wires SigV4AuthMiddleware -> Request as SetupRoutes does,
@@ -62,24 +67,6 @@ type bedrockPipelineEnv struct {
 // unless mutate clears it. Policy statements are the caller's only IAM policy.
 func bedrockPipelineApp(t *testing.T, mutate func(*bedrockPipelineEnv), statements ...iamdomain.Statement) http.Handler {
 	t.Helper()
-	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
-	require.NoError(t, err)
-	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
-	svc := &gwfix.PolicyIAM{
-		IAM: gwfix.IAM{
-			MasterKey: gwfix.MasterKey,
-			AccessKeys: map[string]*iamdomain.AccessKey{
-				gwfix.AccessKey: {
-					AccessKeyID:     gwfix.AccessKey,
-					SecretAccessKey: encryptedSecret,
-					UserName:        "alice",
-					AccountID:       authzAccountID,
-					Status:          "Active",
-				},
-			},
-		},
-		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
-	}
 	_, nc, js := testutil.StartTestJetStream(t)
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -98,9 +85,27 @@ func bedrockPipelineApp(t *testing.T, mutate func(*bedrockPipelineEnv), statemen
 		KB:          ochrevector.NewKBStore(js),
 		DataSources: ochrevector.NewDataSourceStore(js),
 		Vector:      unusedVector{},
-	}}
+	}, CallerAccountID: authzAccountID, JS: js}
 	if mutate != nil {
 		mutate(env)
+	}
+	encryptedSecret, err := iamdomain.EncryptSecret(gwfix.SecretKey, gwfix.MasterKey)
+	require.NoError(t, err)
+	docs := []iamdomain.PolicyDocument{{Version: "2012-10-17", Statement: statements}}
+	svc := &gwfix.PolicyIAM{
+		IAM: gwfix.IAM{
+			MasterKey: gwfix.MasterKey,
+			AccessKeys: map[string]*iamdomain.AccessKey{
+				gwfix.AccessKey: {
+					AccessKeyID:     gwfix.AccessKey,
+					SecretAccessKey: encryptedSecret,
+					UserName:        "alice",
+					AccountID:       env.CallerAccountID,
+					Status:          "Active",
+				},
+			},
+		},
+		GetUserPoliciesFn: func(_, _ string) ([]iamdomain.PolicyDocument, error) { return docs, nil },
 	}
 	cfg := gwfix.WithDeps(&pipeline.Config{DisableLogging: true, Region: gwfix.Region}, gwfix.Deps{NATS: nc, IAM: svc})
 	if env.NoNATS {
@@ -451,7 +456,7 @@ func TestBedrockPipeline_EmbeddingInvokeRefusesGuardrail(t *testing.T) {
 	tei := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		teiCalls++
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","embedding":[0.5],"index":0}],"model":"/guest/path","usage":{"prompt_tokens":3,"total_tokens":3}}`))
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","embedding":[`+strings.TrimSuffix(strings.Repeat("0.5,", 768), ",")+`],"index":0}],"model":"/guest/path","usage":{"prompt_tokens":3,"total_tokens":3}}`))
 	}))
 	t.Cleanup(tei.Close)
 	app := bedrockPipelineApp(t, func(c *bedrockPipelineEnv) {

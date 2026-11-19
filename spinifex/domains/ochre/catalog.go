@@ -76,6 +76,7 @@ type catalogEntry struct {
 	// it equals --max-num-seqs (or vLLM's default); for TEI it is
 	// teiMaxConcurrentRequests / teiMaxClientBatchSize, as each input holds a permit.
 	MaxConcurrency                int
+	EmbeddingDimensions           int   // embedding entries only; the native vector width TEI must return
 	InputPriceMicroUSDPerMillion  int64 // provider entries only; meaningless unless PriceKnown
 	OutputPriceMicroUSDPerMillion int64 // provider entries only; meaningless unless PriceKnown
 	PriceKnown                    bool  // provider entries only; self-host is always known-zero
@@ -161,8 +162,9 @@ var catalog = []catalogEntry{
 		InstanceType:               "g5.xlarge",
 		// Mean pooling stated explicitly: the flat weights layout omits
 		// 1_Pooling/config.json, so TEI would otherwise default to CLS.
-		VLLMArgs:       append([]string{"--pooling", "mean"}, teiEmbeddingArgs...),
-		MaxConcurrency: teiEmbeddingMaxConcurrency,
+		VLLMArgs:            append([]string{"--pooling", "mean"}, teiEmbeddingArgs...),
+		MaxConcurrency:      teiEmbeddingMaxConcurrency,
+		EmbeddingDimensions: 768,
 	},
 	{
 		ModelID:                    "bge-base-en-v1.5",
@@ -178,10 +180,11 @@ var catalog = []catalogEntry{
 		InferenceTypesSupported:    []string{"ON_DEMAND"},
 		// 768-dim, 512-token context; standard BERT, TEI-native. Standalone
 		// alternative embedder to nomic.
-		MinVRAMMiB:     512,
-		InstanceType:   "g5.xlarge",
-		VLLMArgs:       teiEmbeddingArgs,
-		MaxConcurrency: teiEmbeddingMaxConcurrency,
+		MinVRAMMiB:          512,
+		InstanceType:        "g5.xlarge",
+		VLLMArgs:            teiEmbeddingArgs,
+		MaxConcurrency:      teiEmbeddingMaxConcurrency,
+		EmbeddingDimensions: 768,
 	},
 	{
 		ModelID:                    "bge-reranker-v2-m3",

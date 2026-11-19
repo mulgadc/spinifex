@@ -159,13 +159,14 @@ func TestRunEnsureEndpoint_NoWaitReportsStarting(t *testing.T) {
 }
 
 func TestRunEnsureEndpoint_PinnedSendsPinAndReportsReservation(t *testing.T) {
-	svc := &fakeEndpointService{ensure: ochre.EndpointRecord{ModelID: testModelID, State: ochre.StateStarting, Pinned: true}}
+	svc := &fakeEndpointService{ensure: ochre.EndpointRecord{ModelID: testModelID, State: ochre.StateStarting, Pinned: true, OperatorReserved: true}}
 	now := time.Unix(0, 0).UTC()
 
 	msg, err := runEnsureEndpoint(context.Background(), svc, testModelID, true, false, time.Minute, fakeClock(&now))
 	require.NoError(t, err)
 	require.Len(t, svc.ensureInputs, 1)
 	require.True(t, svc.ensureInputs[0].Pinned, "--pinned must reach the service")
+	require.True(t, svc.ensureInputs[0].OperatorReserved, "--pinned must record an operator reservation")
 	require.Contains(t, msg, "STARTING")
 	require.Contains(t, msg, "Pinned")
 }
@@ -178,6 +179,7 @@ func TestRunEnsureEndpoint_WithoutPinnedSendsNoPin(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, svc.ensureInputs, 1)
 	require.False(t, svc.ensureInputs[0].Pinned)
+	require.False(t, svc.ensureInputs[0].OperatorReserved)
 }
 
 // Ensure returns a running endpoint unchanged, so a pin request against an
@@ -199,8 +201,22 @@ func TestRunEnsureEndpoint_PinnedOnExistingUnpinnedEndpointErrors(t *testing.T) 
 	}
 }
 
+// A pin a commitment made, with no operator reservation recorded, is a shared
+// bundle the operator never claimed, so --pinned must not adopt it.
+func TestRunEnsureEndpoint_PinnedOnLegacyCommitmentPinErrors(t *testing.T) {
+	svc := &fakeEndpointService{ensure: ochre.EndpointRecord{ModelID: testModelID, State: ochre.StateReady, Pinned: true, InstanceID: "i-legacy"}}
+	now := time.Unix(0, 0).UTC()
+
+	msg, err := runEnsureEndpoint(context.Background(), svc, testModelID, true, true, time.Minute, fakeClock(&now))
+	require.Error(t, err)
+	require.Empty(t, msg)
+	require.Contains(t, err.Error(), "not reserved by an operator")
+	require.Equal(t, 0, svc.describeCalls, "a refused pin must not wait on the endpoint")
+	require.Equal(t, 0, svc.deleteCalls, "a refused pin must not delete or replace the endpoint")
+}
+
 func TestRunEnsureEndpoint_PinnedOnExistingPinnedEndpointPrintsRecord(t *testing.T) {
-	svc := &fakeEndpointService{ensure: ochre.EndpointRecord{ModelID: testModelID, State: ochre.StateReady, Pinned: true, InstanceID: "i-pinned"}}
+	svc := &fakeEndpointService{ensure: ochre.EndpointRecord{ModelID: testModelID, State: ochre.StateReady, Pinned: true, OperatorReserved: true, InstanceID: "i-pinned"}}
 	now := time.Unix(0, 0).UTC()
 
 	msg, err := runEnsureEndpoint(context.Background(), svc, testModelID, true, false, time.Minute, fakeClock(&now))

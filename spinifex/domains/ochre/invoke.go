@@ -120,16 +120,16 @@ func (rt *Router) InvokeModel(ctx context.Context, accountID, modelID string, bo
 	if known, ok := lookupCatalogEntry(modelID); ok {
 		embedding = isEmbeddingEntry(known)
 	}
-	if err = refuseSystemEmbeddingCommitment(ptAccountID, modelID); err != nil {
-		return nil, "", err
-	}
-
 	// Assigns the named err, so the deferred closure records a denied
 	// invocation the same as any other failed one.
 	entry, err := grantedCatalogEntry(ctx, accountID, modelID, rt.access)
 	if err != nil {
 		return nil, "", err
 	}
+	if err = refuseSystemEmbeddingCommitment(ptAccountID, modelID); err != nil {
+		return nil, "", err
+	}
+
 	backend = entry.Provider
 
 	// Embedding models are on-demand only and support no guardrails, as AWS
@@ -264,14 +264,14 @@ func (rt *Router) InvokeModelWithResponseStream(ctx context.Context, accountID, 
 	if err != nil {
 		return nil, err
 	}
-	if err := refuseSystemEmbeddingCommitment(ptAccountID, modelID); err != nil {
-		return nil, err
-	}
-
 	entry, err := grantedCatalogEntry(ctx, accountID, modelID, rt.access)
 	if err != nil {
 		return nil, err
 	}
+	if err := refuseSystemEmbeddingCommitment(ptAccountID, modelID); err != nil {
+		return nil, err
+	}
+
 	// Embedding models do not stream; refused before admission.
 	if err := refuseEmbeddingOperation(entry); err != nil {
 		return nil, err

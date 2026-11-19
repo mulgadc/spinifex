@@ -188,22 +188,36 @@ func runtimeOps(rt *Router, accountID, modelID string) map[string]func() error {
 }
 
 func TestRouter_LegacySystemCommitmentRefusedOnAllOperations(t *testing.T) {
-	models := append([]string{"retired.model-v1:0"}, embeddingGroupMembers...)
-	for _, modelID := range models {
+	type opCase struct {
+		modelID string
+		access  AccessResolver
+		want    string
+	}
+	cases := []opCase{
+		// A retired model no longer resolves in the catalog, so the access
+		// check refuses it before the commitment is examined.
+		{"retired.model-v1:0", grantAll{}, awserrors.ErrorResourceNotFoundException},
+	}
+	for _, m := range embeddingGroupMembers {
+		cases = append(cases,
+			opCase{m, grantAll{}, awserrors.ErrorValidationException},
+			opCase{m, grantSet{}, awserrors.ErrorAccessDeniedException})
+	}
+	for _, tc := range cases {
 		store := newProvisionedTestStore(t, newStubEndpointProvisioner())
-		arn, _ := seedLegacySystemCommitment(t, store, modelID)
+		arn, _ := seedLegacySystemCommitment(t, store, tc.modelID)
 
 		spy := &spyEndpointResolver{baseURL: "http://unused:1"}
-		rt := NewRouter(nil, spy, &fakeRecorder{}, grantAll{}, store, nil, nil)
+		rt := NewRouter(nil, spy, &fakeRecorder{}, tc.access, store, nil, nil)
 		for op, call := range runtimeOps(rt, systemAccount, arn) {
-			t.Run(modelID+"/"+op, func(t *testing.T) {
+			t.Run(tc.modelID+"/"+tc.want+"/"+op, func(t *testing.T) {
 				err := call()
 				require.Error(t, err)
-				assert.Equal(t, awserrors.ErrorValidationException, err.Error())
+				assert.Equal(t, tc.want, err.Error())
 			})
 		}
-		assert.Empty(t, spy.endpointCalls, modelID)
-		assert.Empty(t, spy.endpointForAccountCalls, modelID)
+		assert.Empty(t, spy.endpointCalls, tc.modelID)
+		assert.Empty(t, spy.endpointForAccountCalls, tc.modelID)
 	}
 }
 

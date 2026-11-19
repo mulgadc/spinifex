@@ -684,15 +684,16 @@ func SGRulesToPolicyRules(in []ec2vpc.SGRule) []policy.Rule {
 	}
 	out := make([]policy.Rule, 0, len(in))
 	for _, r := range in {
-		if r.CidrIp == "" && r.SourceSG == "" {
+		if r.CidrIp == "" && r.SourceSG == "" && r.PrefixListId == "" {
 			continue
 		}
 		out = append(out, policy.Rule{
-			IPProtocol: r.IpProtocol,
-			FromPort:   r.FromPort,
-			ToPort:     r.ToPort,
-			CIDR:       r.CidrIp,
-			SourceSG:   r.SourceSG,
+			IPProtocol:   r.IpProtocol,
+			FromPort:     r.FromPort,
+			ToPort:       r.ToPort,
+			CIDR:         r.CidrIp,
+			SourceSG:     r.SourceSG,
+			PrefixListID: r.PrefixListId,
 		})
 	}
 	return out

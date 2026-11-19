@@ -108,6 +108,10 @@ type VPCServiceImpl struct {
 	// addresses. Nil leaves them unnamed.
 	privateDNSName func(privateIP string) string
 
+	// Optional: admits a write adding a prefix-list peer at the feature level.
+	// Nil refuses every such write as an unknown list.
+	prefixListAdmit func(ctx context.Context) (done func(), ok bool, err error)
+
 	// disableDefaultPublicIP seeds default subnets with MapPublicIpOnLaunch=false
 	// (non-pool external modes have no public IPs to assign). Zero value keeps
 	// the AWS-faithful default of true.
@@ -129,6 +133,12 @@ func (s *VPCServiceImpl) SetDependencyCheck(kind string, check DependencyCheck) 
 		s.dependencyChecks = map[string]DependencyCheck{}
 	}
 	s.dependencyChecks[kind] = check
+}
+
+// SetPrefixListAdmission installs the feature-level admission a write adding a
+// prefix-list peer holds until its record is written.
+func (s *VPCServiceImpl) SetPrefixListAdmission(admit func(ctx context.Context) (done func(), ok bool, err error)) {
+	s.prefixListAdmit = admit
 }
 
 // SetDefaultPublicIPMapping controls whether default subnets are seeded with

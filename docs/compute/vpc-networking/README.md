@@ -189,11 +189,25 @@ On the guest's `br-imds` bridge, endpoint flows send it to the guest's `ime-*` p
 The proxy admits it only if the destination is an entry, the subnet's endpoint is in the same VPC, the source is the interface's primary address and the security groups allow the egress.
 It then relays the connection over mutual TLS to the gate's endpoint listener on port 8474 on the node the guest dialled, and every refusal resets the connection.
 Requests through an endpoint carry `aws:SourceVpce`, `aws:SourceVpc` and `aws:VpcSourceIp`, not the node's address, so an allow on `aws:SourceIp` does not match them.
-
 The service is offered once every node reports feature level 2.
 A node reports it only when its kernel passes the capture probe, its proxy can present the node certificate, and a gate accepts that certificate: its own on a node running Predastore, otherwise a peer's.
+Its vpcd must also run this release, and its own prefix-list entry must be its advertised address rather than its management bridge address.
 Until then `DescribeVpcEndpointServices` omits S3 and `CreateVpcEndpoint` refuses it.
 `spx admin cluster status` shows each node's level.
+
+### Security Groups Naming the S3 Prefix List
+
+A security-group rule can name the S3 prefix list as its peer, in either direction, from feature level 2, the same level that offers the endpoint service.
+Until then a rule adding the list is refused with `InvalidPrefixListID.NotFound`, as any other prefix list always is.
+From level 2, `DescribePrefixLists`, `GetManagedPrefixListEntries` and the capture rules list each node at its advertised address.
+
+The rule matches an OVN address set `spx_pl_<id>`, so it governs S3 traffic by the public path as well as the proxy's check, and the proxy reads the same set.
+A security-group change creates the set empty if it is absent; vpcd's reconcile pass alone fills it, after the drift loop's debounce, so a new rule grants nothing for those seconds.
+Each vpcd reads the node set when it starts and fills the set from that copy.
+After a node joins, leaves or changes its advertised address, restart vpcd on every node; until then the set's members change whenever the reconcile lease moves to a vpcd holding a different copy.
+
+Rolling back to level 1 withdraws every prefix-list grant once each vpcd has read the rollback, and leaves the rules stored.
+Besides deleting every endpoint, the rollback then waits until every rule naming the prefix list is revoked and no ACL names the set; `RevokeSecurityGroupEgress` and `RevokeSecurityGroupIngress` still work during it, and nothing revokes a rule automatically.
 
 ### Formations Installed With v1.25.0 or Earlier
 
@@ -948,6 +962,7 @@ Every VPC gets a default security group that:
 | Ingress TCP/22 from 0.0.0.0/0   | `outport == @sg && ip4 && tcp.dst == 22`                           |
 | Ingress TCP/443 from 10.0.0.0/8 | `outport == @sg && ip4 && tcp.dst == 443 && ip4.src == 10.0.0.0/8` |
 | Ingress ALL from sg-other       | `outport == @sg && ip4 && ip4.src == $sg_other_ip4`                |
+| Egress TCP/8443 to pl-1a2b3c4d  | `inport == @sg && ip4 && tcp.dst == 8443 && ip4.dst == $spx_pl_1a2b3c4d` |
 | Ingress ICMP from anywhere      | `outport == @sg && ip4 && icmp4`                                   |
 | Egress ALL to 0.0.0.0/0         | `inport == @sg && ip4`                                             |
 | Default deny inbound            | `outport == @sg && ip4` (priority 900, action=drop)                |

@@ -37,10 +37,22 @@ func (d *Daemon) endpointIntent(ctx context.Context) (vm.EndpointIntent, error) 
 	if len(in.Subnets) == 0 {
 		return in, nil
 	}
-	for _, e := range prefixlist.Entries(d.clusterConfig, d.mgmtBridgeIP) {
-		in.Entries = append(in.Entries, netip.AddrPortFrom(e.Addr, e.GatePort))
-	}
+	in.Entries = d.endpointEntries(ctx)
 	return in, nil
+}
+
+// endpointEntries lists the gate addresses the demux matches: while level 2
+// holds, the gossiped derivation vpcd's capture uses, else this node's view.
+func (d *Daemon) endpointEntries(ctx context.Context) []netip.AddrPort {
+	mgmt := d.mgmtBridgeIP
+	if prefixListGossiped(d.featureGate)(ctx) {
+		mgmt = ""
+	}
+	var out []netip.AddrPort
+	for _, e := range prefixlist.Entries(d.clusterConfig, mgmt) {
+		out = append(out, netip.AddrPortFrom(e.Addr, e.GatePort))
+	}
+	return out
 }
 
 // startEndpointDemuxReconcile runs the demux pass on every endpoint, route

@@ -23,9 +23,14 @@ import (
 	"github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/bootstrap/config"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/guestmetadata"
+	"github.com/mulgadc/spinifex/spinifex/domains/ec2/prefixlist"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn/mock"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn/nbdb"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/foundation/release/featurelevel"
 	"github.com/mulgadc/spinifex/spinifex/runtime/daemon"
 	"github.com/nats-io/nats.go/jetstream"
@@ -48,6 +53,12 @@ func (s *recordingSink) Publish(v guestmetadata.EndpointView) int {
 	defer s.mu.Unlock()
 	s.views = append(s.views, v)
 	return 0
+}
+
+func (s *recordingSink) last() guestmetadata.EndpointView {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.views[len(s.views)-1]
 }
 
 func (s *recordingSink) Invalidate() {
@@ -142,7 +153,7 @@ func TestEndpointLoop_CapturesOnlyWhileAnEndpointExistsOnACapableNode(t *testing
 			assert.Equal(t, tc.want, h.captures[0])
 			require.Len(t, h.sink.views, 1)
 			assert.Equal(t, loopEntries, h.sink.views[0].Entries)
-			assert.Equal(t, tc.probeErr == nil, h.loop.status("n1").ProbePassed)
+			assert.Equal(t, tc.probeErr == nil, mustStatus(t, h.loop).ProbePassed)
 		})
 	}
 }
@@ -166,19 +177,19 @@ func TestEndpointLoop_GateReadinessIsCheckedUntilItHoldsThenSticks(t *testing.T)
 	h.gateErr = errors.New("handshake refused")
 	revisit, err := h.loop.reconcile(t.Context())
 	require.NoError(t, err)
-	assert.False(t, h.loop.status("n1").GateReady)
+	assert.False(t, mustStatus(t, h.loop).GateReady)
 	assert.Equal(t, endpointProbeRetry, revisit)
 
 	h.gateErr = nil
 	revisit, err = h.loop.reconcile(t.Context())
 	require.NoError(t, err)
-	assert.True(t, h.loop.status("n1").GateReady)
+	assert.True(t, mustStatus(t, h.loop).GateReady)
 	assert.Zero(t, revisit)
 
 	h.gateErr = errors.New("gate restarted")
 	_, err = h.loop.reconcile(t.Context())
 	require.NoError(t, err)
-	assert.True(t, h.loop.status("n1").GateReady)
+	assert.True(t, mustStatus(t, h.loop).GateReady)
 	assert.Equal(t, []netip.Addr{netip.MustParseAddr("10.0.0.2"), netip.MustParseAddr("10.0.0.2")}, h.gateAsked)
 }
 
@@ -192,12 +203,12 @@ func TestEndpointLoop_ANodeWithoutAGateChecksAPeers(t *testing.T) {
 	h.gateErr = errors.New("certificate refused")
 	_, err := h.loop.reconcile(t.Context())
 	require.NoError(t, err)
-	assert.False(t, h.loop.status("n1").GateReady)
+	assert.False(t, mustStatus(t, h.loop).GateReady)
 
 	h.gateErr = nil
 	_, err = h.loop.reconcile(t.Context())
 	require.NoError(t, err)
-	assert.True(t, h.loop.status("n1").GateReady)
+	assert.True(t, mustStatus(t, h.loop).GateReady)
 	assert.Equal(t, []netip.Addr{netip.MustParseAddr("10.0.0.3"), netip.MustParseAddr("10.0.0.3")}, h.gateAsked)
 }
 
@@ -210,7 +221,7 @@ func TestEndpointLoop_NoGateAnywhereIsNotReady(t *testing.T) {
 	}
 	_, err := h.loop.reconcile(t.Context())
 	require.NoError(t, err)
-	assert.False(t, h.loop.status("n1").GateReady)
+	assert.False(t, mustStatus(t, h.loop).GateReady)
 	assert.Empty(t, h.gateAsked)
 }
 
@@ -221,7 +232,7 @@ func TestEndpointLoop_CountsEachEndpointOnce(t *testing.T) {
 	h.endpoints = map[string]projection.GatewayEndpoint{"subnet-1": ep, "subnet-2": ep}
 	_, err := h.loop.reconcile(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, 1, h.loop.status("n1").Endpoints)
+	assert.Equal(t, 1, mustStatus(t, h.loop).Endpoints)
 }
 
 // A node whose proxy cannot present its certificate resets every connection,
@@ -232,7 +243,7 @@ func TestEndpointLoop_UnusableCredentialsAreNeverReady(t *testing.T) {
 		h.loop.dialErr = errors.New("no client key")
 		revisit, err := h.loop.reconcile(t.Context())
 		require.NoError(t, err)
-		assert.False(t, h.loop.status("n1").GateReady, "with gate %v", withGate)
+		assert.False(t, mustStatus(t, h.loop).GateReady, "with gate %v", withGate)
 		assert.Equal(t, endpointProbeRetry, revisit)
 		assert.Empty(t, h.gateAsked)
 	}
@@ -251,14 +262,14 @@ func TestEndpointLoop_AcknowledgesOnlyARevisionItsViewPostdates(t *testing.T) {
 	}
 	_, err := h.loop.reconcile(t.Context())
 	require.NoError(t, err)
-	st := h.loop.status("n1")
+	st := mustStatus(t, h.loop)
 	assert.Equal(t, uint64(7), st.Revision)
 	assert.Equal(t, 1, st.Endpoints)
 
 	h.loadErr = errors.New("kv down")
 	_, err = h.loop.reconcile(t.Context())
 	require.Error(t, err)
-	st = h.loop.status("n1")
+	st = mustStatus(t, h.loop)
 	assert.Equal(t, uint64(7), st.Revision)
 	assert.Zero(t, st.Endpoints, "a withdrawn view admits by no endpoint")
 
@@ -266,14 +277,14 @@ func TestEndpointLoop_AcknowledgesOnlyARevisionItsViewPostdates(t *testing.T) {
 	h.loop.load = load
 	_, err = h.loop.reconcile(t.Context())
 	require.NoError(t, err)
-	st = h.loop.status("n1")
+	st = mustStatus(t, h.loop)
 	assert.Equal(t, uint64(8), st.Revision)
 	assert.Zero(t, st.Endpoints)
 
 	h.rev, h.revErr = 9, errors.New("kv down")
 	_, err = h.loop.reconcile(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, uint64(8), h.loop.status("n1").Revision)
+	assert.Equal(t, uint64(8), mustStatus(t, h.loop).Revision)
 }
 
 // The status subject answers for its own node only; anything else gets an
@@ -299,7 +310,7 @@ func TestEndpointLoop_StatusAnswersOnlyItsOwnNode(t *testing.T) {
 
 	var got projection.EndpointProxyStatus
 	require.NoError(t, json.Unmarshal(ask([]byte(`{"node":"n1"}`)), &got))
-	assert.Equal(t, projection.EndpointProxyStatus{Node: "n1", Revision: 42, Sessions: 3, Endpoints: 1, ProbePassed: true, GateReady: true}, got)
+	assert.Equal(t, projection.EndpointProxyStatus{Node: "n1", Revision: 42, Sessions: 3, Endpoints: 1, ProbePassed: true, GateReady: true, Build: featurelevel.Build}, got)
 
 	for _, body := range [][]byte{[]byte(`{"node":"n2"}`), []byte(`not json`)} {
 		var refusal map[string]any
@@ -307,6 +318,27 @@ func TestEndpointLoop_StatusAnswersOnlyItsOwnNode(t *testing.T) {
 		require.Len(t, refusal, 1, "%s", body)
 		assert.NotEmpty(t, refusal["error"])
 	}
+}
+
+// The heartbeat's status never reads the ACL table, so an unreadable NB view
+// cannot hold a node below level 2; only the drain's request reads and counts.
+func TestEndpointLoop_OnlyTheDrainsRequestReadsACLs(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	h := newLoopHarness(false)
+	h.loop.grant = &prefixListGrant{
+		level:   grantedLevel(true, 4),
+		applies: func() int { return 0 },
+		acls:    func(context.Context) ([]nbdb.ACL, error) { return nil, errors.New("nb gone") },
+	}
+	sub, err := nc.Subscribe(projection.EndpointProxyStatusSubject("n1"), h.loop.serveStatus("n1"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+
+	st, err := projection.RequestEndpointProxyStatus(t.Context(), nc, "n1")
+	require.NoError(t, err)
+	assert.Equal(t, uint64(4), st.LevelRevision)
+	_, err = projection.RequestPrefixListStatus(t.Context(), nc, "n1")
+	require.ErrorContains(t, err, "nb gone")
 }
 
 // The revision read is the feature-level record's latest version, and 0 before
@@ -357,7 +389,7 @@ func TestSecurityGroupEgress_UsesTheStoredGroups(t *testing.T) {
 		{IpProtocol: "tcp", FromPort: 443, ToPort: 443, CidrIp: "0.0.0.0/0"},
 	}})
 	dst := netip.MustParseAddrPort("10.0.0.2:8443")
-	egress := securityGroupEgress(js)
+	egress := securityGroupEgress(js, nil)
 
 	cases := []struct {
 		name    string
@@ -378,6 +410,167 @@ func TestSecurityGroupEgress_UsesTheStoredGroups(t *testing.T) {
 			assert.Equal(t, tc.want, ok)
 		})
 	}
+}
+
+func mustStatus(t *testing.T, l *endpointLoop) projection.EndpointProxyStatus {
+	t.Helper()
+	st, err := l.status(t.Context(), "n1", true)
+	require.NoError(t, err)
+	return st
+}
+
+// grantedLevel is a level watch that has observed level 2 active, or not.
+func grantedLevel(granted bool, rev uint64) *levelWatch {
+	w := &levelWatch{}
+	w.granted.Store(granted)
+	w.revision.Store(rev)
+	return w
+}
+
+// A rule naming the S3 prefix list allows exactly the members of the list's NB
+// set, which the ACLs match, on the rule's ports; an absent set, another
+// Region's list, or a withdrawn grant allows nothing.
+func TestSecurityGroupEgress_PrefixListRuleReadsTheNBSet(t *testing.T) {
+	_, _, js := testutil.StartTestJetStream(t)
+	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: ec2vpc.KVBucketSecurityGroups})
+	require.NoError(t, err)
+	const account = "123456789012"
+	id := prefixlist.ID("ap-southeast-2")
+	putSecurityGroup(t, kv, account, ec2vpc.SecurityGroupRecord{GroupId: "sg-s3", EgressRules: []ec2vpc.SGRule{
+		{IpProtocol: "tcp", FromPort: 8443, ToPort: 8443, PrefixListId: id},
+	}})
+	m := mock.New()
+	set, err := policy.PrefixListAddressSet(id)
+	require.NoError(t, err)
+	grant := &prefixListGrant{level: grantedLevel(true, 1), set: nbPrefixListSet(m), id: id}
+	egress := securityGroupEgress(js, grant.lists())
+	allows := func(dst string) bool {
+		ok, err := egress(t.Context(), account, []string{"sg-s3"}, netip.MustParseAddrPort(dst))
+		require.NoError(t, err)
+		return ok
+	}
+
+	assert.False(t, allows("10.0.0.2:8443"), "an absent set grants nothing")
+	_, err = m.EnsureAddressSet(t.Context(), set, []string{"10.0.0.2/32", "10.0.0.3/32"})
+	require.NoError(t, err)
+	for dst, want := range map[string]bool{
+		"10.0.0.2:8443": true,
+		"10.0.0.3:8443": true,
+		"10.0.0.4:8443": false,
+		"10.0.0.2:443":  false,
+	} {
+		assert.Equal(t, want, allows(dst), dst)
+	}
+
+	grant.level.granted.Store(false)
+	assert.False(t, allows("10.0.0.2:8443"), "a withdrawn grant allows nothing, as the ACL compiler then renders nothing")
+
+	other := &prefixListGrant{level: grantedLevel(true, 1), set: nbPrefixListSet(m), id: prefixlist.ID("eu-west-1")}
+	ok, err := securityGroupEgress(js, other.lists())(t.Context(), account, []string{"sg-s3"}, netip.MustParseAddrPort("10.0.0.2:8443"))
+	require.NoError(t, err)
+	assert.False(t, ok, "another Region's list is unknown here and grants nothing")
+}
+
+// The set's membership is the gossiped derivation, so two pass winners whose
+// local bridge addresses differ converge it to the same members; an unset
+// Region is the default one, as the API's is.
+func TestS3PrefixLists_EveryPassWinnerDerivesTheSameMembers(t *testing.T) {
+	nodes := map[string]config.Config{
+		"n1": {AdvertiseIP: "10.0.0.2"},
+		"n2": {AdvertiseIP: "10.0.0.3"},
+		"n3": {Predastore: config.PredastoreConfig{Host: "0.0.0.0:8443"}},
+	}
+	onN1, id := s3PrefixLists("", &config.ClusterConfig{Node: "n1", Nodes: nodes})
+	onN3, _ := s3PrefixLists("", &config.ClusterConfig{Node: "n3", Nodes: nodes})
+	assert.Equal(t, prefixlist.ID(config.DefaultAWSRegion), id)
+	a, ok := onN1(id)
+	require.True(t, ok)
+	b, ok := onN3(id)
+	require.True(t, ok)
+	assert.Equal(t, a, b)
+	assert.Contains(t, a, "10.0.0.2/32")
+	_, ok = onN1("pl-0123456789abcdef0")
+	assert.False(t, ok)
+
+	empty, id := s3PrefixLists("us-east-1", nil)
+	cidrs, ok := empty(id)
+	require.True(t, ok, "with no cluster config the list is known and empty")
+	assert.Empty(t, cidrs)
+}
+
+// The status names vpcd's build and, read after the grant's revision, the
+// applies that started while it held and the ACLs naming a prefix-list set.
+func TestEndpointLoop_StatusReportsThePrefixListGrant(t *testing.T) {
+	h := newLoopHarness(false)
+	m := mock.New()
+	applies := 0
+	h.loop.grant = &prefixListGrant{
+		level:   grantedLevel(false, 9),
+		applies: func() int { return applies },
+		acls:    m.ListACLs,
+	}
+	st := mustStatus(t, h.loop)
+	assert.Equal(t, featurelevel.Build, st.Build)
+	assert.Equal(t, uint64(9), st.LevelRevision)
+	assert.Zero(t, st.PrefixListApplies)
+	assert.Zero(t, st.PrefixListACLs)
+
+	_, _, err := m.EnsurePortGroup(t.Context(), "pg_sg_a", nil)
+	require.NoError(t, err)
+	require.NoError(t, m.ReplaceACLs(t.Context(), "pg_sg_a", []ovn.ACLSpec{
+		{Direction: "from-lport", Priority: 1000, Match: "inport == @pg_sg_a && ip4 && ip4.dst == $spx_pl_6ca54005", Action: "allow-related"},
+		{Direction: "from-lport", Priority: 1000, Match: "inport == @pg_sg_a && ip4 && ip4.dst == 10.0.0.0/16", Action: "allow-related"},
+	}))
+	applies = 2
+	st = mustStatus(t, h.loop)
+	assert.Equal(t, 2, st.PrefixListApplies)
+	assert.Equal(t, 1, st.PrefixListACLs)
+
+	h.loop.grant.acls = func(context.Context) ([]nbdb.ACL, error) { return nil, errors.New("nb gone") }
+	_, err = h.loop.status(t.Context(), "n1", true)
+	require.Error(t, err, "an unreadable NB view is no answer, never a zero count")
+	st, err = h.loop.status(t.Context(), "n1", false)
+	require.NoError(t, err, "a status that does not ask for ACLs never reads them")
+	assert.Equal(t, 2, st.PrefixListApplies)
+	assert.Zero(t, st.PrefixListACLs)
+}
+
+// A drain poll that finds a prefix-list ACL left after the grant was withdrawn
+// wakes the reconcile pass to remove it; while the grant holds it wakes none.
+func TestEndpointLoop_DrainPollWakesThePassForALeftoverACL(t *testing.T) {
+	m := mock.New()
+	_, _, err := m.EnsurePortGroup(t.Context(), "pg_sg_a", nil)
+	require.NoError(t, err)
+	require.NoError(t, m.ReplaceACLs(t.Context(), "pg_sg_a", []ovn.ACLSpec{
+		{Direction: "from-lport", Priority: 1000, Match: "inport == @pg_sg_a && ip4 && ip4.dst == $spx_pl_6ca54005", Action: "allow-related"},
+	}))
+	for _, granted := range []bool{true, false} {
+		h := newLoopHarness(false)
+		level := grantedLevel(granted, 3)
+		level.changed = make(chan struct{}, 1)
+		h.loop.grant = &prefixListGrant{level: level, applies: func() int { return 0 }, acls: m.ListACLs}
+		assert.Equal(t, 1, mustStatus(t, h.loop).PrefixListACLs)
+		assert.Equal(t, !granted, len(level.changed) == 1, "granted=%v", granted)
+	}
+}
+
+// While level 2 holds, capture and the proxy's view use the gossiped
+// derivation, ignoring this node's bridge address.
+func TestEndpointLoop_GossipedDerivationWhileGranted(t *testing.T) {
+	h := newLoopHarness(false)
+	h.loop.cluster.Nodes["n1"] = config.Config{Predastore: config.PredastoreConfig{Host: "0.0.0.0:8443"}}
+	h.loop.mgmtIP = func() string { return "10.9.9.9" }
+	h.endpoints = loopEndpoints
+	h.loop.grant = &prefixListGrant{level: grantedLevel(false, 1)}
+
+	_, err := h.loop.reconcile(t.Context())
+	require.NoError(t, err)
+	assert.Contains(t, h.sink.last().Entries, netip.MustParseAddrPort("10.9.9.9:8443"))
+
+	h.loop.grant.level.granted.Store(true)
+	_, err = h.loop.reconcile(t.Context())
+	require.NoError(t, err)
+	assert.NotContains(t, h.sink.last().Entries, netip.MustParseAddrPort("10.9.9.9:8443"))
 }
 
 // The feature-level read uses the bucket the daemon writes.

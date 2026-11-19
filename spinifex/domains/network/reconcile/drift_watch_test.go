@@ -109,6 +109,26 @@ func TestDriftLoop_IntentWriteWakesAPass(t *testing.T) {
 	waitForWatch(t, rec, kv, "vpc-watch-")
 }
 
+// A receive on the trigger wakes a pass well inside DriftInterval, which is how
+// a change no intent bucket records reaches the reconcile pass.
+func TestDriftLoop_TriggerWakesAPass(t *testing.T) {
+	_, nc, _ := testutil.StartTestJetStream(t)
+	shrinkDriftTiming(t, time.Minute, time.Millisecond)
+	shrinkDriftDebounce(t, 20*time.Millisecond)
+
+	trigger := make(chan struct{}, 1)
+	rec := &stubReconciler{outcomes: []error{nil}}
+	startDriftLoopTriggered(t, rec, nc, nil, trigger)
+
+	if got := rec.callCount(); got != 0 {
+		t.Fatalf("reconcile ran %d times before the trigger, want 0", got)
+	}
+	trigger <- struct{}{}
+	if got := waitForCalls(t, rec, 1, 5*time.Second); got < 1 {
+		t.Fatal("a trigger receive never woke a pass")
+	}
+}
+
 // A burst is one pass, not one per key: the debounce coalesces it and the floor
 // keeps a launch storm from turning a five-minute OVN scan into a running one.
 func TestDriftLoop_BurstOfWritesIsOnePass(t *testing.T) {

@@ -144,3 +144,32 @@ func TestGetManagedPrefixListEntries(t *testing.T) {
 }
 
 func mustAddr(s string) netip.Addr { return netip.MustParseAddr(s) }
+
+// While gossiped holds, the reads drop this node's bridge address and list
+// only what every node derives from the node set.
+func TestReads_UseTheGossipedDerivationWhenSet(t *testing.T) {
+	cc := cluster(map[string]config.Config{
+		"n1": node("", "0.0.0.0:8443"),
+		"n2": node("10.0.0.10", ""),
+	})
+	s := NewServiceImpl(region, config.DefaultMgmtBridgeIP, func() *config.ClusterConfig { return cc })
+	gossiped := false
+	s.SetGossiped(func(context.Context) bool { return gossiped })
+	read := func() []string {
+		out, err := s.GetManagedPrefixListEntries(context.Background(), &ec2.GetManagedPrefixListEntriesInput{PrefixListId: aws.String(ID(region))}, "000000000001")
+		require.NoError(t, err)
+		var cidrs []string
+		for _, e := range out.Entries {
+			cidrs = append(cidrs, *e.Cidr)
+		}
+		described, err := s.DescribePrefixLists(context.Background(), &ec2.DescribePrefixListsInput{}, "000000000001")
+		require.NoError(t, err)
+		require.Len(t, described.PrefixLists, 1)
+		assert.ElementsMatch(t, cidrs, aws.StringValueSlice(described.PrefixLists[0].Cidrs))
+		return cidrs
+	}
+
+	assert.ElementsMatch(t, []string{"10.0.0.10/32", config.DefaultMgmtBridgeIP + "/32"}, read())
+	gossiped = true
+	assert.Equal(t, []string{"10.0.0.10/32"}, read())
+}

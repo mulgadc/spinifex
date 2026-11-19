@@ -24,8 +24,9 @@ type Level struct {
 // Baseline is level 1: this build's first release, with no N-only semantic.
 const Baseline = 1
 
-// GatewayEndpoints is level 2: S3 gateway VPC endpoints, which need every
-// node's gate to serve endpoint proxies and every node's proxy to capture.
+// GatewayEndpoints is level 2: S3 gateway VPC endpoints and security-group
+// rules naming the S3 prefix list. Every node's gate must serve endpoint
+// proxies, its proxy capture, and its vpcd render prefix-list peers.
 const GatewayEndpoints = 2
 
 var declared = []Level{

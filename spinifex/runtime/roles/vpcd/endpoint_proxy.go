@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -20,6 +21,8 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
 	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/host"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn"
+	"github.com/mulgadc/spinifex/spinifex/domains/network/ovn/nbdb"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/policy"
 	"github.com/mulgadc/spinifex/spinifex/domains/network/reconcile"
 	"github.com/mulgadc/spinifex/spinifex/foundation/lifecycle/reconciler"
@@ -75,6 +78,8 @@ type endpointLoop struct {
 	dialErr error
 	// levelRevision reads the feature-level record's current revision.
 	levelRevision func(ctx context.Context) (uint64, error)
+	// grant is the prefix-list grant; nil on a vpcd that serves none.
+	grant *prefixListGrant
 
 	probePassed   atomic.Bool
 	gateReady     atomic.Bool
@@ -100,7 +105,13 @@ func (l *endpointLoop) reconcile(ctx context.Context) (time.Duration, error) {
 		l.viewEndpoints.Store(0)
 		return l.revisit(), fmt.Errorf("load gateway endpoints: %w", err)
 	}
-	entries := prefixlist.Entries(l.cluster, mgmt)
+	// While level 2 holds, the gossiped derivation, so capture, discovery and
+	// the security-group set list one set of addresses on every node.
+	listMgmt := mgmt
+	if l.grant != nil && l.grant.level.Granted() {
+		listMgmt = ""
+	}
+	entries := prefixlist.Entries(l.cluster, listMgmt)
 	view := guestmetadata.EndpointView{Entries: make([]netip.AddrPort, 0, len(entries)), Endpoints: endpoints}
 	var want []host.EndpointEntry
 	for _, e := range entries {
@@ -193,16 +204,45 @@ func localServiceAddr(cc *config.ClusterConfig, mgmt string) (netip.Addr, bool) 
 	return netip.Addr{}, false
 }
 
+// statusWait bounds the NB read behind one status reply.
+const statusWait = 2 * time.Second
+
 // status is the reply on this node's endpoint proxy status subject.
-func (l *endpointLoop) status(node string) projection.EndpointProxyStatus {
-	return projection.EndpointProxyStatus{
+func (l *endpointLoop) status(ctx context.Context, node string, countACLs bool) (projection.EndpointProxyStatus, error) {
+	st := projection.EndpointProxyStatus{
 		Node:        node,
 		Revision:    l.revision.Load(),
 		Sessions:    l.proxy.Sessions(),
 		Endpoints:   int(l.viewEndpoints.Load()),
 		ProbePassed: l.probePassed.Load(),
 		GateReady:   l.gateReady.Load(),
+		Build:       featurelevel.Build,
 	}
+	if l.grant == nil {
+		return st, nil
+	}
+	// The revision first: an apply or ACL counted after it was read cannot
+	// predate the grant it reports.
+	st.LevelRevision = l.grant.level.Revision()
+	st.PrefixListApplies = l.grant.applies()
+	if !countACLs {
+		return st, nil
+	}
+	acls, err := l.grant.acls(ctx)
+	if err != nil {
+		return st, fmt.Errorf("list ACLs: %w", err)
+	}
+	for _, a := range acls {
+		if strings.Contains(a.Match, "$"+policy.PrefixListSetPrefix) {
+			st.PrefixListACLs++
+		}
+	}
+	// An apply on a node that saw the withdrawal late can land after the pass
+	// that removed such ACLs; the drain's poll asks for another.
+	if st.PrefixListACLs > 0 && !l.grant.level.Granted() {
+		l.grant.level.wake()
+	}
+	return st, nil
 }
 
 // serveStatus answers a status request naming node, and refuses any other.
@@ -216,7 +256,14 @@ func (l *endpointLoop) serveStatus(node string) nats.MsgHandler {
 		case req.Node != node:
 			reply = statusRefusal{Error: fmt.Sprintf("endpoint proxy status for node %q answered by node %q", req.Node, node)}
 		default:
-			reply = l.status(node)
+			ctx, cancel := context.WithTimeout(context.Background(), statusWait)
+			st, err := l.status(ctx, node, req.CountPrefixListACLs)
+			cancel()
+			if err != nil {
+				reply = statusRefusal{Error: "endpoint proxy status unavailable: " + err.Error()}
+			} else {
+				reply = st
+			}
 		}
 		data, err := json.Marshal(reply)
 		if err != nil {
@@ -257,10 +304,93 @@ func featureLevelRevision(js jetstream.JetStream) func(ctx context.Context) (uin
 	}
 }
 
+// s3PrefixLists resolves the Region's S3 prefix list to the entries every node
+// derives from the gossiped node set alone, so any pass winner converges the
+// set to the same members; it knows no other list.
+func s3PrefixLists(region string, cluster *config.ClusterConfig) (policy.PrefixLists, string) {
+	id := prefixlist.ID(regionOrDefault(region))
+	return func(want string) ([]string, bool) {
+		if want != id {
+			return nil, false
+		}
+		entries := prefixlist.Entries(cluster, "")
+		cidrs := make([]string, 0, len(entries))
+		for _, e := range entries {
+			cidrs = append(cidrs, e.CIDR())
+		}
+		return cidrs, true
+	}, id
+}
+
+func regionOrDefault(region string) string {
+	if region == "" {
+		return config.DefaultAWSRegion
+	}
+	return region
+}
+
+// prefixListGrant is what the proxy and its status need of the prefix-list
+// grant: whether it holds, the security-group applies that started while it
+// did, and the NB ACLs.
+type prefixListGrant struct {
+	level   *levelWatch
+	applies func() int
+	acls    func(ctx context.Context) ([]nbdb.ACL, error)
+	// set reads a prefix list's NB address set from vpcd's NB cache.
+	set func(ctx context.Context, id string) ([]string, error)
+	id  string
+}
+
+// lists is the proxy's view of the prefix lists: the members of the NB set the
+// ACLs match, so the two enforce one membership. While the grant is withdrawn,
+// or the set is absent or unreadable, a list grants nothing.
+func (g *prefixListGrant) lists() policy.PrefixLists {
+	return func(want string) ([]string, bool) {
+		if want != g.id || !g.level.Granted() {
+			return nil, false
+		}
+		members, err := g.set(context.Background(), want)
+		if err != nil {
+			return nil, false
+		}
+		return members, true
+	}
+}
+
+// nbPrefixListSet reads a prefix list's address set from the NB cache.
+func nbPrefixListSet(client ovn.Client) func(ctx context.Context, id string) ([]string, error) {
+	return func(ctx context.Context, id string) ([]string, error) {
+		name, err := policy.PrefixListAddressSet(id)
+		if err != nil {
+			return nil, err
+		}
+		as, err := client.GetAddressSet(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		return as.Addresses, nil
+	}
+}
+
+// mgmtBridgeIP reads the management bridge's address on every call, since the
+// bridge can be readdressed while vpcd runs.
+func mgmtBridgeIP(bridge string) func() string {
+	if bridge == "" {
+		bridge = defaultMgmtBridge
+	}
+	return func() string {
+		ip, err := host.GetBridgeIPv4(bridge)
+		if err != nil {
+			slog.Debug("vpcd: management bridge address unavailable", "bridge", bridge, "err", err)
+		}
+		return ip
+	}
+}
+
 // securityGroupEgress evaluates an ENI's security groups from their records,
 // through the same rule conversion the ACL compiler is fed. A group whose
 // record is gone grants nothing; any other read failure refuses.
-func securityGroupEgress(js jetstream.JetStream) guestmetadata.EndpointEgressFunc {
+func securityGroupEgress(js jetstream.JetStream, lists policy.PrefixLists) guestmetadata.EndpointEgressFunc {
 	groups := kvstore.NewBucket(js, kvstore.Config{Name: ec2vpc.KVBucketSecurityGroups, AttachOnly: true})
 	return func(ctx context.Context, accountID string, groupIDs []string, dst netip.AddrPort) (bool, error) {
 		if len(groupIDs) == 0 {
@@ -285,7 +415,7 @@ func securityGroupEgress(js jetstream.JetStream) guestmetadata.EndpointEgressFun
 			}
 			rules = append(rules, reconcile.SGRulesToPolicyRules(rec.EgressRules)...)
 		}
-		return policy.EgressAllows(rules, dst.Addr(), "tcp", dst.Port()), nil
+		return policy.EgressAllows(rules, lists, dst.Addr(), "tcp", dst.Port()), nil
 	}
 }
 
@@ -364,7 +494,7 @@ func endpointSources(js jetstream.JetStream) []reconciler.Source {
 // setupEndpointProxy builds the proxy and hands it to IMDS, which must not yet
 // be running. A node certificate that cannot be loaded leaves a proxy that
 // resets every connection and a gate that never reads ready.
-func setupEndpointProxy(cfg *Config, js jetstream.JetStream, imds *guestmetadata.IMDSServiceImpl) (*endpointLoop, error) {
+func setupEndpointProxy(cfg *Config, js jetstream.JetStream, imds *guestmetadata.IMDSServiceImpl, grant *prefixListGrant) (*endpointLoop, error) {
 	if cfg.Cluster == nil {
 		slog.Warn("vpcd: no cluster config; the gateway endpoint proxy is not served")
 		return nil, nil
@@ -374,9 +504,10 @@ func setupEndpointProxy(cfg *Config, js jetstream.JetStream, imds *guestmetadata
 		slog.Error("vpcd: endpoint proxy cannot present this node's certificate; every endpoint connection will be reset", "err", dialErr)
 		dial = unavailableDialer(dialErr)
 	}
+	mgmtIP := mgmtBridgeIP(cfg.MgmtBridge)
 	proxy, err := guestmetadata.NewEndpointProxy(guestmetadata.EndpointProxyConfig{
 		Port:   host.EndpointProxyPort,
-		Egress: securityGroupEgress(js),
+		Egress: securityGroupEgress(js, grant.lists()),
 		Dial:   dial,
 		// Twice the resync, so only a loop that has stopped passing stops admitting.
 		MaxAge: 2 * reconciler.DefaultResync,
@@ -386,10 +517,6 @@ func setupEndpointProxy(cfg *Config, js jetstream.JetStream, imds *guestmetadata
 	}
 	imds.EnableEndpointProxy(proxy)
 
-	bridge := cfg.MgmtBridge
-	if bridge == "" {
-		bridge = defaultMgmtBridge
-	}
 	runner := host.NewExecRunner()
 	l := &endpointLoop{
 		probe: func(ctx context.Context) error { return host.ProbeEndpointCapture(ctx, runner) },
@@ -397,19 +524,14 @@ func setupEndpointProxy(cfg *Config, js jetstream.JetStream, imds *guestmetadata
 			return host.EnsureEndpointCapture(ctx, runner, want)
 		},
 		cluster: cfg.Cluster,
-		mgmtIP: func() string {
-			ip, err := host.GetBridgeIPv4(bridge)
-			if err != nil {
-				slog.Debug("vpcd: management bridge address unavailable", "bridge", bridge, "err", err)
-			}
-			return ip
-		},
+		mgmtIP:  mgmtIP,
 		load: func(ctx context.Context) (map[string]projection.GatewayEndpoint, error) {
 			return projection.LoadGatewayEndpoints(ctx, js)
 		},
 		proxy:         proxy,
 		dialErr:       dialErr,
 		levelRevision: featureLevelRevision(js),
+		grant:         grant,
 		gate:          gateAccepts(dial),
 		ownGate:       cfg.Cluster.Nodes[cfg.Cluster.Node].HasService("predastore"),
 	}

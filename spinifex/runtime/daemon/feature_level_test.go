@@ -303,20 +303,22 @@ func TestFeatureLevelStore_ReadsThroughTheLeader(t *testing.T) {
 	store, err := m.FeatureLevelStore(t.Context())
 	require.NoError(t, err)
 
-	var mu sync.Mutex
-	var subjects []string
-	sub, err := nc.Subscribe("$JS.API.>", func(msg *nats.Msg) {
-		mu.Lock()
-		subjects = append(subjects, msg.Subject)
-		mu.Unlock()
-	})
+	// Synchronous: every request is queued once Flush returns, where an
+	// async handler may not yet have run.
+	sub, err := nc.SubscribeSync("$JS.API.>")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
 	require.NoError(t, enforceFeatureLevel(t.Context(), store, noPublish))
 	require.NoError(t, nc.Flush())
-	mu.Lock()
-	defer mu.Unlock()
+	var subjects []string
+	for {
+		msg, err := sub.NextMsg(0)
+		if err != nil {
+			break
+		}
+		subjects = append(subjects, msg.Subject)
+	}
 	leaderGets := 0
 	for _, s := range subjects {
 		assert.False(t, strings.HasPrefix(s, "$JS.API.DIRECT.GET."), "startup check used a direct get: %s", s)

@@ -8,6 +8,7 @@ import (
 
 	testutil "github.com/mulgadc/spinifex/internal/testkit"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/projection"
+	ec2vpc "github.com/mulgadc/spinifex/spinifex/domains/ec2/vpc"
 	"github.com/mulgadc/spinifex/spinifex/domains/ec2/vpcendpoint"
 	natsmsg "github.com/mulgadc/spinifex/spinifex/foundation/messaging/nats"
 	"github.com/mulgadc/spinifex/spinifex/foundation/release/featurelevel"
@@ -46,7 +47,7 @@ func serveVpcdStatus(t *testing.T, nc *nats.Conn, node string, store *featurelev
 	t.Helper()
 	sub, err := nc.Subscribe(projection.EndpointProxyStatusSubject(node), func(m *nats.Msg) {
 		_, rev, err := store.Read(t.Context())
-		st := projection.EndpointProxyStatus{Node: node, Revision: rev, ProbePassed: true, GateReady: true}
+		st := projection.EndpointProxyStatus{Node: node, Revision: rev, ProbePassed: true, GateReady: true, Build: featurelevel.Build, LevelRevision: rev}
 		if err != nil {
 			st = projection.EndpointProxyStatus{Error: err.Error()}
 		}
@@ -57,9 +58,10 @@ func serveVpcdStatus(t *testing.T, nc *nats.Conn, node string, store *featurelev
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 }
 
-// The registered gateway endpoint drain refuses a rollback while an endpoint
-// is live, and the same command finishes it once the endpoint is deleted.
-func TestRollback_GatewayEndpointDrainHoldsUntilTheEndpointIsDeleted(t *testing.T) {
+// The registered level 2 drain refuses a rollback while an endpoint is live or
+// a rule names the S3 prefix list, and the same command finishes it once both
+// are gone.
+func TestRollback_GatewayEndpointDrainHoldsUntilEndpointsAndPrefixListRulesAreGone(t *testing.T) {
 	_, nc, js := testutil.StartTestJetStream(t)
 	kv, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: "cluster-config-drain-it", History: 1})
 	require.NoError(t, err)
@@ -85,13 +87,22 @@ func TestRollback_GatewayEndpointDrainHoldsUntilTheEndpointIsDeleted(t *testing.
 	_, err = endpoints.Put(t.Context(), "000000000001.vpce-0a1b2c3d4e5f60718", rec)
 	require.NoError(t, err)
 
+	groups, err := js.CreateKeyValue(t.Context(), jetstream.KeyValueConfig{Bucket: ec2vpc.KVBucketSecurityGroups})
+	require.NoError(t, err)
+	sg, err := json.Marshal(ec2vpc.SecurityGroupRecord{GroupId: "sg-0a1b2c3d4e5f60718", EgressRules: []ec2vpc.SGRule{
+		{IpProtocol: "tcp", FromPort: 443, ToPort: 443, PrefixListId: "pl-6ca54005"},
+	}})
+	require.NoError(t, err)
+	_, err = groups.Put(t.Context(), "000000000001.sg-0a1b2c3d4e5f60718", sg)
+	require.NoError(t, err)
+
 	require.NoError(t, registerDrainChecks())
 	var out bytes.Buffer
 	probe := featurelevel.NewProbe(nc, nodes)
 	endpointDrain.connect(store, nodes, probe.Probe, nc, js, &out)
 	t.Cleanup(func() {
 		endpointDrain.mu.Lock()
-		endpointDrain.store, endpointDrain.daemons, endpointDrain.proxy, endpointDrain.live = nil, nil, nil, nil
+		endpointDrain.store, endpointDrain.daemons, endpointDrain.proxy, endpointDrain.live, endpointDrain.rules = nil, nil, nil, nil, nil
 		endpointDrain.mu.Unlock()
 	})
 	deps := featurelevel.RollbackDeps{
@@ -103,12 +114,17 @@ func TestRollback_GatewayEndpointDrainHoldsUntilTheEndpointIsDeleted(t *testing.
 	var outstanding *featurelevel.DrainOutstandingError
 	require.ErrorAs(t, err, &outstanding)
 	assert.Equal(t, featurelevel.GatewayEndpoints, outstanding.Level)
-	assert.Equal(t, 1, outstanding.Outstanding)
+	assert.Equal(t, 2, outstanding.Outstanding, "the endpoint and the prefix-list rule")
 	level, _, err := store.Read(t.Context())
 	require.NoError(t, err)
 	assert.Equal(t, 2, level.Level, "a refused drain leaves the level where it was")
 
 	require.NoError(t, endpoints.Delete(t.Context(), "000000000001.vpce-0a1b2c3d4e5f60718"))
+	_, err = featurelevel.RunRollback(t.Context(), 1, deps)
+	require.ErrorAs(t, err, &outstanding)
+	assert.Equal(t, 1, outstanding.Outstanding, "the prefix-list rule still holds the rollback")
+
+	require.NoError(t, groups.Delete(t.Context(), "000000000001.sg-0a1b2c3d4e5f60718"))
 	got, err := featurelevel.RunRollback(t.Context(), 1, deps)
 	require.NoError(t, err, "drain output: %s", out.String())
 	assert.Equal(t, 1, got.Level)

@@ -69,7 +69,7 @@ func (g *Gate) Admit(ctx context.Context, n int) (done func(), ok bool, err erro
 	if err != nil {
 		return done, false, err
 	}
-	return done, active(rec, n), nil
+	return done, rec.Active(n), nil
 }
 
 // Active reports whether level n is active without admitting anything, for a
@@ -79,10 +79,12 @@ func (g *Gate) Active(ctx context.Context, n int) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return active(rec, n), nil
+	return rec.Active(n), nil
 }
 
-func active(rec Record, n int) bool {
+// Active reports whether level n is active in the record: recorded at least n,
+// with no rollback below n in progress.
+func (rec Record) Active(n int) bool {
 	if rec.Level < n {
 		return false
 	}

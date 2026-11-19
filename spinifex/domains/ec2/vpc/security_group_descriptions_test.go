@@ -288,7 +288,7 @@ func TestUpdateSecurityGroupRuleDescriptionsIngress_UnmatchedPermission(t *testi
 
 // TestUpdateSecurityGroupRuleDescriptions_UnresolvablePermission pins that a
 // permission naming no rule the store can hold is an error. Authorize rejects
-// both of these, so no matching rule can exist to describe.
+// it, so no matching rule can exist to describe.
 func TestUpdateSecurityGroupRuleDescriptions_UnresolvablePermission(t *testing.T) {
 	t.Parallel()
 	svc := setupTestVPCService(t)
@@ -297,12 +297,6 @@ func TestUpdateSecurityGroupRuleDescriptions_UnresolvablePermission(t *testing.T
 	ruleID := authorizeIngressTCP(t, svc, sgID, 443, "10.0.0.0/24")
 
 	cases := map[string]*ec2.IpPermission{
-		"prefix list only": {
-			IpProtocol:    aws.String("tcp"),
-			FromPort:      aws.Int64(443),
-			ToPort:        aws.Int64(443),
-			PrefixListIds: []*ec2.PrefixListId{{PrefixListId: aws.String("pl-0123456789abcdef0"), Description: aws.String("pl")}},
-		},
 		"no source at all": {
 			IpProtocol: aws.String("tcp"),
 			FromPort:   aws.Int64(443),

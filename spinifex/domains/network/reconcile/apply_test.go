@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/mulgadc/spinifex/spinifex/domains/network/external"
@@ -1754,5 +1755,67 @@ func TestReconcile_ConvergesGatewayMTUOnAnAttachedVPC(t *testing.T) {
 		if got, _ := gwMTU(); got != want {
 			t.Errorf("gateway_mtu = %q after reconcile, want %q", got, want)
 		}
+	}
+}
+
+// The pass fills a prefix-list set a group's rule names, which a request only
+// creates empty, before applying that group.
+func TestReconcile_ApplySGs_ConvergesPrefixListSets(t *testing.T) {
+	r, m := newTestReconciler(t)
+	ctx := context.Background()
+	r.sg = policy.NewSecurityGroupManager(m, policy.EgressPolicy{}, policy.WithPrefixLists(
+		func(id string) ([]string, bool) { return []string{"192.0.2.10/32"}, id == "pl-6ca54005" }, "pl-6ca54005"))
+	intent := freshIntent(t)
+	spec := intent.SGs["sg-a"]
+	spec.EgressRules = append(spec.EgressRules, policy.Rule{IPProtocol: "tcp", FromPort: 443, ToPort: 443, PrefixListID: "pl-6ca54005"})
+	intent.SGs["sg-a"] = spec
+
+	res := &passResult{}
+	r.applySGs(ctx, intent, scanOrFail(t, ctx, r), false, res)
+
+	if len(res.failures) != 0 {
+		t.Fatalf("pass failures: %+v", res.failures)
+	}
+	as, ok := m.AddressSets["spx_pl_6ca54005"]
+	if !ok || len(as.Addresses) != 1 || as.Addresses[0] != "192.0.2.10/32" {
+		t.Fatalf("prefix-list set after the pass = %+v, want the derived entry", as)
+	}
+}
+
+// A pass after the grant is withdrawn removes the prefix-list ACL an earlier
+// pass installed, though the intent is unchanged, so a rollback's drain clears.
+func TestReconcile_ApplySGs_WithdrawnGrantRemovesPrefixListACLs(t *testing.T) {
+	r, m := newTestReconciler(t)
+	ctx := context.Background()
+	var granted atomic.Bool
+	granted.Store(true)
+	r.sg = policy.NewSecurityGroupManager(m, policy.EgressPolicy{},
+		policy.WithPrefixLists(func(id string) ([]string, bool) { return []string{"192.0.2.10/32"}, id == "pl-6ca54005" }, "pl-6ca54005"),
+		policy.WithPrefixListGrants(granted.Load))
+	intent := freshIntent(t)
+	spec := intent.SGs["sg-a"]
+	spec.EgressRules = append(spec.EgressRules, policy.Rule{IPProtocol: "tcp", FromPort: 443, ToPort: 443, PrefixListID: "pl-6ca54005"})
+	intent.SGs["sg-a"] = spec
+	prefixListACLs := func() int {
+		n := 0
+		for _, a := range m.ACLs {
+			if strings.Contains(a.Match, "$spx_pl_") {
+				n++
+			}
+		}
+		return n
+	}
+
+	res := &passResult{}
+	r.applySGs(ctx, intent, scanOrFail(t, ctx, r), false, res)
+	if len(res.failures) != 0 || prefixListACLs() != 1 {
+		t.Fatalf("granted pass: failures %+v, prefix-list ACLs %d, want 1", res.failures, prefixListACLs())
+	}
+
+	granted.Store(false)
+	res = &passResult{}
+	r.applySGs(ctx, intent, scanOrFail(t, ctx, r), false, res)
+	if len(res.failures) != 0 || prefixListACLs() != 0 {
+		t.Fatalf("withdrawn pass: failures %+v, prefix-list ACLs %d, want 0", res.failures, prefixListACLs())
 	}
 }

@@ -26,10 +26,10 @@ import (
 // Both live guests sit in VPCs with the same CIDR and the same address, so
 // their connections to an entry carry the same 4-tuple.
 var (
-	liveGuestAddr   = netip.MustParseAddr("10.77.0.5")
-	liveGateway     = "10.77.0.1"
-	liveGatewayMAC  = "02:00:00:77:00:01"
-	liveEntry       = netip.MustParseAddrPort("192.0.2.10:8443")
+	liveGuestAddr  = netip.MustParseAddr("10.77.0.5")
+	liveGateway    = "10.77.0.1"
+	liveGatewayMAC = "02:00:00:77:00:01"
+	liveEntry      = netip.MustParseAddrPort("192.0.2.10:8443")
 	// A port of its own, clear of the real gate listening on every address.
 	liveLocalEntry = netip.MustParseAddrPort("192.0.2.20:9443")
 )

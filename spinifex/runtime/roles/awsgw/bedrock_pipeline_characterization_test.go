@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/mulgadc/spinifex/internal/testkit"
 	admissionquota "github.com/mulgadc/spinifex/spinifex/domains/admission/quota"
 	iamdomain "github.com/mulgadc/spinifex/spinifex/domains/iam"
@@ -26,6 +25,7 @@ import (
 	ochreawsapi "github.com/mulgadc/spinifex/spinifex/domains/ochre/awsapi"
 	ochrevector "github.com/mulgadc/spinifex/spinifex/domains/ochre/vector"
 	"github.com/mulgadc/spinifex/spinifex/ingress/aws/dispatch"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -38,9 +38,10 @@ type teiEmbeddingsUpstreamRequest struct {
 	EncodingFormat string          `json:"encoding_format"`
 }
 
+// teiEmbeddingsDatum holds coordinates as pointers, because encoding/json
+// decodes a null element as 0.
 type teiEmbeddingsDatum struct {
 	Object    string     `json:"object"`
-	// Pointers, because encoding/json decodes a null element as 0.
 	Embedding []*float64 `json:"embedding"`
 	Index     *int       `json:"index"`
 }

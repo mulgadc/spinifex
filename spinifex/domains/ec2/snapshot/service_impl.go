@@ -773,11 +773,16 @@ func snapshotMatchesFilters(cfg ebsmetadata.Snapshot, filters map[string][]strin
 // snapshot, and the ID of one owned by accountID if any. A clone records its
 // source in its ebsmetadata document; missing one would strip chunks it reads.
 func (s *SnapshotServiceImpl) snapshotInUseByVolumes(ctx context.Context, snapshotID, accountID string) (bool, string, error) {
-	// Whole-cluster, and not scoping this to the snapshot's own account is the
-	// point: launching from a system AMI writes a root volume owned by the
-	// launching tenant whose SnapshotID is the system snapshot, so a clone
-	// routinely lives outside the snapshot owner's prefix.
-	volumes, unreadable, err := s.metadata.ListAllVolumesPartial(ctx)
+	var (
+		volumes    []ebsmetadata.Volume
+		unreadable []ebsmetadata.UnreadableDocument
+		err        error
+	)
+	if s.cloneMayLiveOutsideAccount(ctx, snapshotID, accountID) {
+		volumes, unreadable, err = s.metadata.ListAllVolumesPartial(ctx)
+	} else {
+		volumes, unreadable, err = s.metadata.ListVolumesPartial(ctx, accountID)
+	}
 	if err != nil {
 		return false, "", awserrors.Errorf(awserrors.ErrorServerInternal, "check whether snapshot %s is in use: list volumes: %v", snapshotID, err)
 	}
@@ -802,6 +807,28 @@ func (s *SnapshotServiceImpl) snapshotInUseByVolumes(ctx context.Context, snapsh
 		return false, "", unreadableRecordError(ctx, snapshotID, accountID, "volume", unreadable)
 	}
 	return false, "", nil
+}
+
+// cloneMayLiveOutsideAccount reports whether a volume in another account can
+// have been created from this snapshot, which decides how wide the volume scan
+// has to be.
+//
+// Reaching another account takes a system AMI, and that takes the snapshot
+// resolving under the global account. Deleting the global document is itself a
+// global-account deletion and so takes the whole-cluster branch, which means it
+// cannot go while such a clone survives. Its absence is therefore what makes
+// the single-prefix scan safe, rather than the snapshot's own owner.
+func (s *SnapshotServiceImpl) cloneMayLiveOutsideAccount(ctx context.Context, snapshotID, accountID string) bool {
+	if accountID == awsidentifiers.GlobalAccountID {
+		return true
+	}
+	_, err := s.metadata.GetSnapshot(ctx, awsidentifiers.GlobalAccountID, snapshotID)
+	if err == nil {
+		return true
+	}
+	// Absence is what permits the narrow scan, and a document that failed to
+	// read is not absent, so anything but a clean miss widens the scan.
+	return !objectstore.IsNoSuchKeyError(err)
 }
 
 // amiInUseBySnapshot checks if any registered AMI names the given snapshot as

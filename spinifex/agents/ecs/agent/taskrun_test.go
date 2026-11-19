@@ -542,6 +542,7 @@ func TestPollAssignments_StopReapsAndSuppressesAssign(t *testing.T) {
 	a := newAgent(Config{PollInterval: 5 * time.Millisecond}, testIdentity(), cp, rt, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	go a.pollAssignments(ctx, map[string]bool{})
 
 	deadline := time.After(time.Second)
@@ -555,7 +556,14 @@ func TestPollAssignments_StopReapsAndSuppressesAssign(t *testing.T) {
 		case <-time.After(2 * time.Millisecond):
 		}
 	}
-	time.Sleep(20 * time.Millisecond)
+	// The ack rides the third poll at the earliest, after both assign polls are handled.
+	for countStopAcks(cp.stopAcks(), as.TaskID) == 0 {
+		select {
+		case <-deadline:
+			t.Fatalf("stop %s was never acked; stopAcks=%v", as.TaskID, cp.stopAcks())
+		case <-time.After(2 * time.Millisecond):
+		}
+	}
 	cancel()
 
 	// The assign for the stopping task must never have started a container.
@@ -564,17 +572,6 @@ func TestPollAssignments_StopReapsAndSuppressesAssign(t *testing.T) {
 	}
 	if running := countStatus(cp.taskStates(), as.TaskID, ecsv1.TaskStatusRunning); running != 0 {
 		t.Errorf("stopping task should never report RUNNING, got %d", running)
-	}
-	acked := false
-	for _, ack := range cp.stopAcks() {
-		for _, id := range ack {
-			if id == as.TaskID {
-				acked = true
-			}
-		}
-	}
-	if !acked {
-		t.Errorf("stop %s was never acked; stopAcks=%v", as.TaskID, cp.stopAcks())
 	}
 }
 

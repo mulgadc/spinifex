@@ -254,6 +254,7 @@ func requireSnapshot(t *testing.T, snapshot string) {
 // existing identifiers distinguish it from every earlier fired window.
 func waitForNextAutomatedSnapshot(t *testing.T, f *Fixture, id string) string {
 	t.Helper()
+	waitForAvailableAfterBackup(t, f, id)
 	before, err := automatedSnapshots(f, id)
 	require.NoError(t, err, "describe automated snapshots before moving the window")
 	beforeIDs := automatedSnapshotIDs(before)

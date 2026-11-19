@@ -180,15 +180,23 @@ func (emptyBucketStore) DeleteObject(context.Context, *s3.DeleteObjectInput) (*s
 	return &s3.DeleteObjectOutput{}, nil
 }
 
-func (emptyBucketStore) ListMultipartUploads(context.Context, string) ([]objectstore.MultipartUploadRef, error) {
+func (emptyBucketStore) ListMultipartUploads(context.Context, string, string) ([]objectstore.MultipartUploadRef, error) {
 	return nil, nil
 }
 
-func (emptyBucketStore) AbortMultipartUpload(context.Context, objectstore.MultipartUploadRef) error {
+func (emptyBucketStore) AbortMultipartUpload(context.Context, objectstore.MultipartUploadRef, string) error {
 	return nil
 }
 
-func (emptyBucketStore) DeleteBucket(context.Context, string) error { return nil }
+func (emptyBucketStore) DeleteBucket(context.Context, string, string) error { return nil }
+
+func (emptyBucketStore) GetBucketVersioning(context.Context, string, string) (string, error) {
+	return "", nil
+}
+
+func (emptyBucketStore) ListObjectVersions(context.Context, *s3.ListObjectVersionsInput) (*s3.ListObjectVersionsOutput, error) {
+	return &s3.ListObjectVersionsOutput{}, nil
+}
 
 // newTenantAccount creates an account that is safe to delete. Account ids are
 // sequential and the first belongs to the super admin, which is protected, so

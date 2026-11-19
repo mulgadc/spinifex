@@ -80,6 +80,41 @@ func TestDeleteSnapshot_ForeignUnreadableVolumeRecordDoesNotBlockATenantSnapshot
 	require.NoError(t, deleteSnapshot(svc, snapshotID))
 }
 
+// Account teardown drains snapshots with the pair of calls the storage-stage
+// reaper issues: DescribeSnapshots owner-scoped, then DeleteSnapshot for each.
+// The incident's state is an unreadable volume record belonging to an unrelated
+// tenant, which must leave the inventory empty and the foreign record intact.
+func TestDeleteSnapshot_TeardownDrainsTheAccountDespiteAForeignUnreadableRecord(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+	first := unreferencedSnapshot(t, svc, store)
+	second := unreferencedSnapshot(t, svc, store)
+	foreignKey, err := ebsmetadata.VolumeKey(otherAccountID, "vol-foreign-corrupt")
+	require.NoError(t, err)
+	putCorruptDocument(t, store, foreignKey)
+
+	listed, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{
+		OwnerIds: []*string{aws.String(testAccountID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	require.Len(t, listed.Snapshots, 2)
+
+	for _, snap := range listed.Snapshots {
+		require.NoError(t, deleteSnapshot(svc, aws.StringValue(snap.SnapshotId)),
+			"teardown cannot converge while a snapshot refuses to go")
+	}
+
+	remaining, err := svc.DescribeSnapshots(context.Background(), &ec2.DescribeSnapshotsInput{
+		OwnerIds: []*string{aws.String(testAccountID)},
+	}, testAccountID)
+	require.NoError(t, err)
+	assert.Empty(t, remaining.Snapshots, "snapshots %s and %s must both be gone", first, second)
+
+	_, err = store.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: aws.String("test-bucket"), Key: aws.String(foreignKey),
+	})
+	require.NoError(t, err, "the other tenant's record must survive a teardown that is not theirs")
+}
+
 // deleteSnapshotAs is deleteSnapshot for a caller other than testAccountID,
 // which the global account has to be for the system-snapshot case.
 func deleteSnapshotAs(svc *SnapshotServiceImpl, snapshotID, accountID string) error {
@@ -103,26 +138,15 @@ func promotedResidue(t *testing.T, svc *SnapshotServiceImpl, store *objectstore.
 
 // A snapshot that also resolves under the global account can have been launched
 // by any account, so every prefix is still read and a foreign clone refuses it.
+//
+// No AMI names the snapshot, which is what makes the refusal attributable to
+// the volume scan: breadth comes from the global document, so deregistering the
+// promoted AMI cannot narrow the scan while the residue and its clones remain.
 func TestDeleteSnapshot_PromotedResidueStillScansEveryAccount(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 	snapshotID := promotedResidue(t, svc, store)
 	seedVolumeDocument(t, store, ebsmetadata.Volume{
 		VolumeID: "vol-foreign-clone", TenantID: otherAccountID, CapacityGiB: 50, SnapshotID: snapshotID,
-	})
-
-	code, _ := clientErrorDetail(t, deleteSnapshot(svc, snapshotID))
-	assert.Equal(t, awserrors.ErrorInvalidSnapshotInUse, code)
-	requireSnapshotSurvives(t, svc, snapshotID)
-}
-
-// The same, with no AMI naming the snapshot. Deregistering the promoted AMI
-// must not narrow the scan while the residue and its clones are both still
-// there, which is why breadth comes from the global document and not the AMI.
-func TestDeleteSnapshot_PromotedResidueStillRefusesAfterTheAMIIsGone(t *testing.T) {
-	svc, store := setupTestSnapshotService(t)
-	snapshotID := promotedResidue(t, svc, store)
-	seedVolumeDocument(t, store, ebsmetadata.Volume{
-		VolumeID: "vol-orphaned-clone", TenantID: otherAccountID, CapacityGiB: 50, SnapshotID: snapshotID,
 	})
 
 	amis, err := svc.metadata.ListAMIs(context.Background())
@@ -215,7 +239,7 @@ func TestDeleteSnapshot_RegisteredAMIWinsOverUnreadableAMI(t *testing.T) {
 func TestDeleteSnapshot_RegisteredAMIWinsOverUnreadableVolume(t *testing.T) {
 	svc, store := setupTestSnapshotService(t)
 	snapshotID := unreferencedSnapshot(t, svc, store)
-	key, err := ebsmetadata.VolumeKey(otherAccountID, "vol-foreign-corrupt")
+	key, err := ebsmetadata.VolumeKey(testAccountID, "vol-corrupt")
 	require.NoError(t, err)
 	putCorruptDocument(t, store, key)
 	require.NoError(t, svc.metadata.PutAMI(context.Background(), ebsmetadata.AMI{ImageID: "ami-registered", SnapshotID: snapshotID}))
@@ -244,7 +268,7 @@ func (s *vanishingObjectStore) GetObject(ctx context.Context, input *s3.GetObjec
 // does not stop an unreferenced snapshot from being deleted.
 func TestDeleteSnapshot_RecordDeletedMidScanIsAbsent(t *testing.T) {
 	memory := objectstore.NewMemoryObjectStore()
-	volumeKey, err := ebsmetadata.VolumeKey(otherAccountID, "vol-deleted")
+	volumeKey, err := ebsmetadata.VolumeKey(testAccountID, "vol-deleted")
 	require.NoError(t, err)
 	amiKey, err := ebsmetadata.AMIKey("ami-deregistered")
 	require.NoError(t, err)
@@ -258,6 +282,56 @@ func TestDeleteSnapshot_RecordDeletedMidScanIsAbsent(t *testing.T) {
 	putCorruptDocument(t, memory, amiKey)
 
 	require.NoError(t, deleteSnapshot(svc, snapshotID))
+}
+
+// deleteRecordingProvider records the snapshots the service asked it to
+// destroy, so a test can assert that none was.
+type deleteRecordingProvider struct {
+	ebsprovider.EBSProvider
+
+	deleted []string
+}
+
+func (p *deleteRecordingProvider) DeleteSnapshot(ctx context.Context, req ebsprovider.DeleteSnapshotRequest) error {
+	p.deleted = append(p.deleted, req.SnapshotID)
+	return p.EBSProvider.DeleteSnapshot(ctx, req)
+}
+
+// Verifies: ADR-0003:S7
+//
+// A refusal has to leave the blocks, not just the document. Provider deletion
+// runs before the document is removed, so a surviving document is not evidence
+// on its own that the data survived.
+func TestS7_RefusedDeleteDoesNotDestroyTheBlocks(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+	snapshotID := unreferencedSnapshot(t, svc, store)
+	recorder := &deleteRecordingProvider{EBSProvider: svc.provider}
+	svc.SetEBSProvider(recorder)
+	key, err := ebsmetadata.VolumeKey(testAccountID, "vol-corrupt")
+	require.NoError(t, err)
+	putCorruptDocument(t, store, key)
+
+	code, _ := clientErrorDetail(t, deleteSnapshot(svc, snapshotID))
+	require.Equal(t, awserrors.ErrorServerInternal, code)
+	require.Empty(t, recorder.deleted,
+		"ADR-0003:S7: automatic failure handling never destroys data. "+
+			"DeleteSnapshot refused %s because a volume record could not be read, "+
+			"yet asked the provider to delete %v. The refusal must return before "+
+			"provider deletion in snapshot/service_impl.go.", snapshotID, recorder.deleted)
+	requireSnapshotSurvives(t, svc, snapshotID)
+}
+
+// The recorder above observes a delete that is allowed to proceed, so its
+// silence in the refusal case is the absence of a call rather than a test
+// watching the wrong provider.
+func TestS7_RecorderObservesAnUnobstructedDelete(t *testing.T) {
+	svc, store := setupTestSnapshotService(t)
+	snapshotID := unreferencedSnapshot(t, svc, store)
+	recorder := &deleteRecordingProvider{EBSProvider: svc.provider}
+	svc.SetEBSProvider(recorder)
+
+	require.NoError(t, deleteSnapshot(svc, snapshotID))
+	require.Equal(t, []string{snapshotID}, recorder.deleted)
 }
 
 // deleteFailingProvider fails only DeleteSnapshot, with err.

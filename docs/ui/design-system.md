@@ -156,7 +156,7 @@ Three lint rules and three source tests keep pages on the system.
 
 | Rule | Where | What it catches |
 |---|---|---|
-| `shadcn/no-unknown-classes` | all source, not tests | a class Tailwind does not generate, such as a typo or a removed token |
+| `shadcn/no-unknown-classes` | all source | a class Tailwind does not generate, such as a typo or a removed token |
 | `shadcn/no-restyle` | all source | a page passing layout or colour classes to a primitive |
 | `eslint/no-restricted-imports` | `src/routes/**` | a route importing a chart library directly |
 | `src/routes/route-files.test.ts` | test suite | a route that builds a table by hand, with `<table>` or the `ui/table` primitives |

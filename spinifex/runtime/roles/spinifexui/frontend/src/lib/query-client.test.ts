@@ -10,7 +10,7 @@ vi.mock("./auth", () => ({
   onSessionChangedInOtherTab: (handler: () => void) => {
     otherTabHandlers.push(handler)
 
-    return () => undefined
+    return vi.fn()
   },
 }))
 

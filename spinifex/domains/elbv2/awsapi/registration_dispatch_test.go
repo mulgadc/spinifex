@@ -279,6 +279,7 @@ func TestRegistrationDispatch_DescribeListenerAttributes(t *testing.T) {
 		require.NoError(t, err)
 		assert.Contains(t, w.Body.String(),
 			"<Attributes><member><Key>tcp.idle_timeout.seconds</Key><Value>350</Value></member></Attributes>")
+		assert.Contains(t, w.Body.String(), "<RequestId>"+w.Header().Get("X-Amzn-Requestid")+"</RequestId>")
 
 		var in elbv2.DescribeListenersInput
 		select {

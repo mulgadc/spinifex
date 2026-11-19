@@ -22,8 +22,8 @@ type DescribeListenerAttributesInput struct {
 // ListenerAttribute is one Key/Value listener attribute in the ELBv2 Query wire format.
 type ListenerAttribute struct {
 	_     struct{} `type:"structure"`
-	Key   *string  `type:"string" xml:"Key"`
-	Value *string  `type:"string" xml:"Value"`
+	Key   *string  `type:"string"`
+	Value *string  `type:"string"`
 }
 
 // DescribeListenerAttributesOutput is the ELBv2 DescribeListenerAttributes response, encoded as

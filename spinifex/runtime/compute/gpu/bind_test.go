@@ -25,6 +25,7 @@ func readSysfsTestFile(t *testing.T, path string) string {
 }
 
 func TestBindVFIO_BoundToDriver(t *testing.T) {
+	useKernfs(t)
 	root := t.TempDir()
 	buildSysfsDevice(t, root, "0000:03:00.0", "0x030200", "0x10de", "0x2236", "nvidia", 7)
 	makeSysfsDriverDir(t, root, "vfio-pci")
@@ -42,7 +43,7 @@ func TestBindVFIO_BoundToDriver(t *testing.T) {
 	if got := readSysfsTestFile(t, filepath.Join(root, "bus/pci/drivers/nvidia/unbind")); got != "0000:03:00.0" {
 		t.Errorf("nvidia/unbind = %q, want 0000:03:00.0", got)
 	}
-	if got := readSysfsTestFile(t, filepath.Join(devPath, "driver_override")); got != "vfio-pci" {
+	if got := readSysfsTestFile(t, filepath.Join(devPath, "driver_override")); got != "vfio-pci\n" {
 		t.Errorf("driver_override = %q, want vfio-pci", got)
 	}
 	if got := readSysfsTestFile(t, filepath.Join(root, "bus/pci/drivers/vfio-pci/bind")); got != "0000:03:00.0" {
@@ -70,6 +71,7 @@ func TestBindVFIO_AlreadyBoundToVFIO(t *testing.T) {
 }
 
 func TestBindVFIO_Unbound(t *testing.T) {
+	useKernfs(t)
 	root := t.TempDir()
 	// No driver symlink — device is unbound.
 	buildSysfsDevice(t, root, "0000:03:00.0", "0x030200", "0x10de", "0x2236", "", 7)
@@ -90,32 +92,36 @@ func TestBindVFIO_Unbound(t *testing.T) {
 	}
 
 	devPath := filepath.Join(root, "bus/pci/devices/0000:03:00.0")
-	if got := readSysfsTestFile(t, filepath.Join(devPath, "driver_override")); got != "vfio-pci" {
+	if got := readSysfsTestFile(t, filepath.Join(devPath, "driver_override")); got != "vfio-pci\n" {
 		t.Errorf("driver_override = %q, want vfio-pci", got)
 	}
 }
 
 func TestUnbindVFIO_WithOriginalDriver(t *testing.T) {
+	useKernfs(t)
 	root := t.TempDir()
 	buildSysfsDevice(t, root, "0000:03:00.0", "0x030200", "0x10de", "0x2236", "vfio-pci", 7)
 	makeSysfsDriverDir(t, root, "vfio-pci")
 	makeSysfsDriverDir(t, root, "nvidia")
+	devPath := filepath.Join(root, "bus/pci/devices/0000:03:00.0")
+	must(t, kernfsWrite(filepath.Join(devPath, "driver_override"), "vfio-pci"))
 
 	err := unbindVFIO(root, "0000:03:00.0", "nvidia")
 	if err != nil {
 		t.Fatalf("unbindVFIO: %v", err)
 	}
 
-	devPath := filepath.Join(root, "bus/pci/devices/0000:03:00.0")
-
 	if got := readSysfsTestFile(t, filepath.Join(root, "bus/pci/drivers/vfio-pci/unbind")); got != "0000:03:00.0" {
 		t.Errorf("vfio-pci/unbind = %q, want 0000:03:00.0", got)
 	}
-	if got := readSysfsTestFile(t, filepath.Join(devPath, "driver_override")); got != "" {
-		t.Errorf("driver_override = %q, want empty after unbind", got)
+	if got := readSysfsTestFile(t, filepath.Join(devPath, "driver_override")); got != "(null)\n" {
+		t.Errorf("driver_override = %q, want (null) after unbind", got)
 	}
 	if got := readSysfsTestFile(t, filepath.Join(root, "bus/pci/drivers/nvidia/bind")); got != "0000:03:00.0" {
 		t.Errorf("nvidia/bind = %q, want 0000:03:00.0", got)
+	}
+	if got, _ := readDriver(devPath); got != "nvidia" {
+		t.Errorf("driver = %q, want nvidia", got)
 	}
 }
 
@@ -160,5 +166,21 @@ func TestUnbindVFIO_NoOriginalDriver(t *testing.T) {
 	matches, _ := filepath.Glob(filepath.Join(root, "bus/pci/drivers/*/bind"))
 	if len(matches) > 0 {
 		t.Errorf("no driver rebind expected when originalDriver is empty, got: %v", matches)
+	}
+}
+
+// With the original unknown, the one driver read decides: off vfio-pci is an error.
+func TestRestoreVFIO_UnknownOriginalOffVFIO(t *testing.T) {
+	useKernfs(t)
+	root := t.TempDir()
+	buildSysfsDevice(t, root, "0000:03:00.1", "0x040300", "0x10de", "0x1aef", "", 7)
+	makeSysfsDriverDir(t, root, "vfio-pci")
+	must(t, kernfsWrite(filepath.Join(root, "bus/pci/devices/0000:03:00.1/driver_override"), "\n"))
+
+	if err := restoreVFIO(root, "0000:03:00.1", "", false); err == nil {
+		t.Fatal("want an error for an unbound function whose original driver is unknown")
+	}
+	if err := restoreVFIO(root, "0000:03:00.1", "", true); err != nil {
+		t.Fatalf("known unbound original: %v", err)
 	}
 }

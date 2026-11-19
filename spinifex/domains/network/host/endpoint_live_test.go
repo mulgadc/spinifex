@@ -10,6 +10,7 @@ import (
 	"github.com/mulgadc/spinifex/spinifex/runtime/compute/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 )
 
 // requireLiveHost skips unless the operator opted in: these tests change the
@@ -24,7 +25,20 @@ func requireLiveHost(t *testing.T) Runner {
 			t.Skipf("%s not installed", tool)
 		}
 	}
+	lockLiveHost(t)
 	return NewExecRunner()
+}
+
+// liveHostLock is shared with the guestmetadata live tests, so packages run
+// together never interleave changes to the host-wide capture rules.
+const liveHostLock = "/run/lock/spinifex-endpoint-live.lock"
+
+func lockLiveHost(t *testing.T) {
+	t.Helper()
+	f, err := os.OpenFile(liveHostLock, os.O_CREATE|os.O_RDWR, 0o600)
+	require.NoError(t, err)
+	require.NoError(t, unix.Flock(int(f.Fd()), unix.LOCK_EX))
+	t.Cleanup(func() { _ = f.Close() })
 }
 
 // toolInstalled also looks in the sbin directories, which sudo searches but an
